@@ -1,0 +1,26 @@
+{
+  "name": "cpu-emulator",
+  "version": "0.1.0",
+  "description": "",
+  "main": "app.js",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/misdake/CpuEmulator.git"
+  },
+  "scripts": {
+    "build": "webpack --env.production",
+    "dev": "webpack-dev-server"
+  },
+  "dependencies": {
+    "lit-element": "^2.4.0",
+    "lit-html": "^1.3.0"
+  },
+  "devDependencies": {
+    "ts-loader": "^8.0.4",
+    "tslib": "^2.0.1",
+    "typescript": "^4.0.3",
+    "webpack": "^4.44.2",
+    "webpack-cli": "^3.3.12",
+    "webpack-dev-server": "^3.11.0"
+  }
+}

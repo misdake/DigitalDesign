@@ -1,0 +1,21 @@
+{
+  "compilerOptions": {
+    "experimentalDecorators": true,
+    "rootDir": "./src/",
+    "module": "es6",
+    "target": "es6",
+    "sourceMap": true,
+    "noImplicitAny": true,
+    "noImplicitReturns": true,
+    "noImplicitThis": true,
+    "outDir": "./js/",
+    "moduleResolution": "node",
+    "types": [
+      "lit-html",
+      "lit-element"
+    ]
+  },
+  "exclude": [
+    "node_modules"
+  ]
+}
