@@ -19,7 +19,6 @@ export class System {
         w2.input = c2.output;
         w2.output = c3.input;
 
-
         this.components = [c1, c2, c3];
         this.wires = [w1, w2];
         this.runners = [c1, w1, c2, w2, c3];

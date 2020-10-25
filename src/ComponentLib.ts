@@ -13,6 +13,7 @@ export class ComponentNot extends Component {
     }
 }
 
+@component
 export class ComponentInput extends Component {
     constructor(data: number) {
         super();
@@ -29,6 +30,7 @@ export class ComponentInput extends Component {
     }
 }
 
+@component
 export class ComponentOutput extends Component {
     @inputPin(1)
     input: InputPin;

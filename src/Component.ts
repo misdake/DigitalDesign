@@ -1,5 +1,5 @@
 export function component<T extends { new(...args: any[]): {} }>(constructor: T) {
-    // console.log("class decorator");
+    console.log("Register Component:", constructor.name);
     //把名称和构造函数加入到list或map里，作为总的资源库
     return class extends constructor {
     };
@@ -29,7 +29,7 @@ export interface LogicRun {
     run(): void; //TODO 需要参数，改个名字
 }
 
-export class Wire implements LogicRun{
+export class Wire implements LogicRun {
     input: OutputPin;
     output: InputPin;
 
