@@ -1,11 +1,11 @@
 {
-  "name": "cpu-emulator",
+  "name": "circuit-design",
   "version": "0.1.0",
   "description": "",
   "main": "app.js",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/misdake/CpuEmulator.git"
+    "url": "git+https://github.com/misdake/CircuitDesign.git"
   },
   "scripts": {
     "build": "webpack --env.production",

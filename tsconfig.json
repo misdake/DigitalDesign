@@ -2,7 +2,7 @@
   "compilerOptions": {
     "experimentalDecorators": true,
     "rootDir": "./src/",
-    "module": "es6",
+    "module": "CommonJS",
     "target": "es6",
     "sourceMap": true,
     "noImplicitAny": true,
@@ -11,8 +11,6 @@
     "outDir": "./js/",
     "moduleResolution": "node",
     "types": [
-      "lit-html",
-      "lit-element"
     ]
   },
   "exclude": [

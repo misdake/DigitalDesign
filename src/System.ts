@@ -1,38 +1,35 @@
-import {Logic, Not, Reg} from "./Component";
-import {OutputPin1} from "./Pin";
+import {Component, LogicRun, Wire} from "./Component";
+import {ComponentInput, ComponentNot, ComponentOutput} from "./ComponentLib";
 
-export class EmulatorSystem {
+export class System {
+
+    components: Component[];
+    wires: Wire[];
+    runners: LogicRun[];
 
     constructor() {
+        let c1 = new ComponentInput(1);
+        let c2 = new ComponentNot();
+        let c3 = new ComponentOutput();
 
-    }
+        let w1 = new Wire();
+        w1.input = c1.output;
+        w1.output = c2.input;
+        let w2 = new Wire();
+        w2.input = c2.output;
+        w2.output = c3.input;
 
-    regList: Reg[] = [];
-    logicList: Logic[] = [];
 
-    loadGraph() {
-        this.regList = [];
-        this.logicList = [];
-
-        let mem = new Reg("mem", 1);
-        this.regList.push(mem);
-        let not = new Not();
-        this.logicList.push(not);
-        not.inputs["input"].connect(mem.outputs["currValue"]);
-        mem.inputs["nextValue"].connect(not.outputs["output"]);
-        mem.inputs["writeEnable"].connect(new OutputPin1(1));
-
-        this.regList.forEach(i => i.initialize());
+        this.components = [c1, c2, c3];
+        this.wires = [w1, w2];
+        this.runners = [c1, w1, c2, w2, c3];
     }
 
     run() {
-        for (let i = 0; i < 10; i++) {
-            this.regList.forEach(i => i.startCycle());
-            this.logicList.forEach(i => i.execute());
-            this.regList.forEach(i => i.endCycle());
+        let c1 = this.components[0] as ComponentInput;
+        c1.data = 1 - c1.data;
 
-            console.log("after", i + 1, this.regList[0].value[0]);
-        }
+        this.runners.forEach(runner => runner.run());
     }
 
 }

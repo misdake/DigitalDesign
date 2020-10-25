@@ -1,86 +1,86 @@
-import {arrayOf, InputPin, OutputPin} from "./Pin";
+export function component<T extends { new(...args: any[]): {} }>(constructor: T) {
+    // console.log("class decorator");
+    //把名称和构造函数加入到list或map里，作为总的资源库
+    return class extends constructor {
+    };
+}
 
-export class Component {
-    name: string;
+export function inputPin(width: number) {
+    return function (target: Component, propertyKey: string | symbol) {
+        let pin = new InputPin(propertyKey.toString(), width);
+        target.inputPins = target.inputPins || [];
+        target.inputPins.push(pin);
+        // @ts-ignore
+        target[propertyKey] = pin;
+    };
+}
+
+export function outputPin(width: number) {
+    return function (target: Component, propertyKey: string | symbol) {
+        let pin = new OutputPin(propertyKey.toString(), width);
+        target.outputPins = target.outputPins || [];
+        target.outputPins.push(pin);
+        // @ts-ignore
+        target[propertyKey] = pin;
+    };
+}
+
+export interface LogicRun {
+    run(): void; //TODO 需要参数，改个名字
+}
+
+export class Wire implements LogicRun{
+    input: OutputPin;
+    output: InputPin;
+
+    run() {
+        this.output.writeByWire(this.input.data); //TODO 检查？
+    }
+}
+
+export class InputPin {
+    readonly name: string;
+    readonly width: number;
+
+    constructor(name: string, width: number) { //THINK 最大设置多少宽度
+        this.name = name;
+        this.width = width;
+    }
+
+    data: number;
+
+    writeByWire(data: number): void { //THINK 检查宽度？
+        this.data = data;
+        //TODO 如何通知component？
+        //TODO 一个component的所有input都好了之后，就可以开始执行了（其实可以更早，但这个就作为）
+    }
+
+    read(): number {
+        return this.data;
+    }
+}
+
+export class OutputPin {
+    readonly name: string;
+    readonly width: number;
+
+    constructor(name: string, width: number) { //THINK 最大设置多少宽度
+        this.name = name;
+        this.width = width;
+    }
+
+    data: number;
+
+    write(data: number): void { //THINK 检查宽度？
+        this.data = data;
+    }
+}
+
+export class Component implements LogicRun {
     inputPins: InputPin[];
     outputPins: OutputPin[];
-    inputs: { [key: string]: InputPin };
-    outputs: { [key: string]: OutputPin };
 
-    constructor(name: string, inputPins: { name: string, width: number }[], outputPins: { name: string, width: number }[]) {
-        this.name = name;
-
-        this.inputPins = [];
-        this.outputPins = [];
-        this.inputs = {};
-        this.outputs = {};
-
-        inputPins.forEach(inputPin => {
-            let i = new InputPin(inputPin.name, this, inputPin.width);
-            this.inputPins.push(i);
-            this.inputs[inputPin.name] = i;
-        });
-        outputPins.forEach(outputPin => {
-            let i = new OutputPin(outputPin.name, this, outputPin.width);
-            this.outputPins.push(i);
-            this.outputs[outputPin.name] = i;
-        });
-    }
+    run() {
+        console.log("not implemented");
+    };
 }
-
-export class Reg extends Component {
-    constructor(name: string, width: number) {
-        super(
-            name,
-            [{name: "nextValue", width: width}, {name: "writeEnable", width: 1}],
-            [{name: "currValue", width: width}],
-        );
-        this.width = width;
-        this.nextValue = this.inputs["nextValue"];
-        this.writeEnable = this.inputs["writeEnable"];
-        this.currValue = this.outputs["currValue"];
-    }
-
-    nextValue: InputPin;
-    writeEnable: InputPin;
-
-    width: number;
-    value: number[];
-
-    currValue: OutputPin;
-
-    initialize() {
-        this.value = arrayOf(0, this.width);
-    }
-
-    startCycle() {
-        this.currValue.write(this.value);
-    }
-
-    endCycle() {
-        if (this.writeEnable) {
-            this.value = this.nextValue.readAll();
-        }
-    }
-}
-
-export class Logic extends Component {
-    execute() {
-
-    }
-}
-
-export class Not extends Logic {
-    constructor() {
-        super(
-            "Not",
-            [{name: "input", width: 1}],
-            [{name: "output", width: 1}],
-        );
-    }
-
-    execute() {
-        this.outputs["output"].write([this.inputs["input"].read(0) ? 0 : 1]);
-    }
-}
-
