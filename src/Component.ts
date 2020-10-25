@@ -1,8 +1,7 @@
 export function component<T extends { new(...args: any[]): {} }>(constructor: T) {
     console.log("Register Component:", constructor.name);
     //把名称和构造函数加入到list或map里，作为总的资源库
-    return class extends constructor {
-    };
+    return constructor;
 }
 
 export function inputPin(width: number) {
@@ -30,11 +29,23 @@ export interface LogicRun {
 }
 
 export class Wire implements LogicRun {
-    input: OutputPin;
-    output: InputPin;
+    fromPin: OutputPin;
+    fromComponent: Component;
+
+    toPin: InputPin;
+    toComponent: Component;
+
+    setFrom(fromPin: OutputPin, fromComponent: Component) {
+        this.fromPin = fromPin;
+        this.fromComponent = fromComponent;
+    }
+    setTo(toPin: InputPin, toComponent: Component) {
+        this.toPin = toPin;
+        this.toComponent = toComponent;
+    }
 
     run() {
-        this.output.writeByWire(this.input.data); //TODO 检查？
+        this.toPin.writeByWire(this.fromPin.data); //TODO 检查宽度？
     }
 }
 

@@ -63,17 +63,3 @@ export class DependencyGraph<Vertex, Edge> {
     }
 
 }
-
-let g = new DependencyGraph<string, string>();
-g.addVertex("1");
-g.addVertex("2");
-g.addVertex("3");
-g.addVertex("4");
-
-g.addEdge("1", "2", "a");
-g.addEdge("1", "3", "b");
-g.addEdge("2", "4", "c");
-g.addEdge("3", "4", "d");
-g.addEdge("4", "2", "d");
-
-console.log(g.calcOrder());

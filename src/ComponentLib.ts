@@ -26,6 +26,7 @@ export class ComponentInput extends Component {
     output: OutputPin;
 
     run() {
+        console.log("input:", this.data);
         this.output.write(this.data);
     }
 }
