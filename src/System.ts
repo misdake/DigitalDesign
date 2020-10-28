@@ -1,5 +1,5 @@
 import {Component, LogicRun, Wire} from "./Component";
-import {ComponentInput, ComponentNAND, ComponentOutput} from "./ComponentLib";
+import {ComponentInput, ComponentNAND, ComponentOR, ComponentOutput, ComponentXOR} from "./ComponentLib";
 import {DependencyGraph} from "./DependencyGraph";
 
 export class System {
@@ -13,7 +13,7 @@ export class System {
     constructor() {
         let c1a = new ComponentInput(0);
         let c1b = new ComponentInput(1);
-        let c2 = new ComponentNAND();
+        let c2 = new ComponentXOR();
         let c3 = new ComponentOutput();
 
         let w1a = new Wire();

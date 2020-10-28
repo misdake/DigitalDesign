@@ -9,7 +9,8 @@
   },
   "scripts": {
     "build": "webpack --env.production",
-    "dev": "webpack-dev-server"
+    "dev": "webpack-dev-server",
+    "test": "ts-node src/test.ts"
   },
   "dependencies": {
     "lit-element": "^2.4.0",

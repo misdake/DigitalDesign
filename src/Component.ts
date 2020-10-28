@@ -72,8 +72,8 @@ export class InputPin {
         return this.data;
     }
 
-    read1(): number {
-        return this.data ? 1 : 0;
+    read1(): boolean {
+        return !!this.data;
     }
 }
 
@@ -92,6 +92,10 @@ export class OutputPin {
 
     write(data: number): void { //THINK 检查宽度？
         this.data = data;
+    }
+
+    write1(data: boolean): void {
+        this.data = data ? 1 : 0;
     }
 }
 
