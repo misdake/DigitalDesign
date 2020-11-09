@@ -17,14 +17,14 @@ export class System {
         let c3 = new ComponentOutput();
 
         let w1a = new Wire();
-        w1a.setFrom(c1a.output, c1a);
-        w1a.setTo(c2.input1, c2);
+        w1a.setFrom(c1a.output);
+        w1a.setTo(c2.input1);
         let w1b = new Wire();
-        w1b.setFrom(c1b.output, c1b);
-        w1b.setTo(c2.input2, c2);
+        w1b.setFrom(c1b.output);
+        w1b.setTo(c2.input2);
         let w2 = new Wire();
-        w2.setFrom(c2.output, c2);
-        w2.setTo(c3.input, c3);
+        w2.setFrom(c2.output);
+        w2.setTo(c3.input);
 
         this.inputComponents = [c1a, c1b];
         this.outputComponents = [c3];
@@ -33,7 +33,7 @@ export class System {
 
         let g = new DependencyGraph<Component, Wire>();
         this.components.forEach(component => g.addVertex(component));
-        this.wires.forEach(wire => g.addEdge(wire.fromComponent, wire.toComponent, wire));
+        this.wires.forEach(wire => g.addEdge(wire.fromPin.component, wire.toPin.component, wire));
         this.runners = g.calcOrder();
         console.log(this.runners);
     }
