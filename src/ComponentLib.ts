@@ -8,7 +8,7 @@ export class ComponentInput extends Component {
     output: OutputPin;
 
     constructor(data: number) {
-        super();
+        super("input");
         this.data = data;
     }
 
@@ -23,6 +23,10 @@ export class ComponentOutput extends Component {
     @inputPin(1)
     input: InputPin;
 
+    constructor() {
+        super("output");
+    }
+
     run() {
         console.log("output:", this.input.read());
     }
@@ -34,6 +38,10 @@ export class ComponentNOT extends Component {
     input: InputPin;
     @outputPin(1)
     output: OutputPin;
+
+    constructor() {
+        super("not");
+    }
 
     run() {
         this.output.write(this.input.read() ? 0 : 1);
@@ -48,6 +56,10 @@ export class ComponentNAND extends Component {
     input2: InputPin;
     @outputPin(1)
     output: OutputPin;
+
+    constructor() {
+        super("nand");
+    }
 
     run() {
         let read1 = this.input1.read1();
@@ -67,6 +79,10 @@ export class ComponentAND extends Component {
     @outputPin(1)
     output: OutputPin;
 
+    constructor() {
+        super("and");
+    }
+
     run() {
         let read1 = this.input1.read1();
         let read2 = this.input2.read1();
@@ -85,6 +101,10 @@ export class ComponentOR extends Component {
     @outputPin(1)
     output: OutputPin;
 
+    constructor() {
+        super("or");
+    }
+
     run() {
         let read1 = this.input1.read1();
         let read2 = this.input2.read1();
@@ -102,6 +122,10 @@ export class ComponentXOR extends Component {
     input2: InputPin;
     @outputPin(1)
     output: OutputPin;
+
+    constructor() {
+        super("xor");
+    }
 
     run() {
         let read1 = this.input1.read1();

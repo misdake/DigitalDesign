@@ -6,17 +6,17 @@ export function component<T extends { new(...args: any[]): {} }>(constructor: T)
     return constructor;
 }
 
-export function inputPin(width: number) {
+export function inputPin(width: number, name: string = null) {
     return function (target: Component, propertyKey: string | symbol) {
-        let pin = new InputPin("", propertyKey.toString(), width, null); //component不存在，会在从proto复制数据的时候设置到新的pin中
+        let pin = new InputPin("", name || propertyKey.toString(), width, null); //component不存在，会在从proto复制数据的时候设置到新的pin中
         target.proto_inputPins = target.proto_inputPins || [];
         target.proto_inputPins.push(pin);
     };
 }
 
-export function outputPin(width: number) {
+export function outputPin(width: number, name: string = null) {
     return function (target: Component, propertyKey: string | symbol) {
-        let pin = new OutputPin("", propertyKey.toString(), width, null); //component不存在，会在从proto复制数据的时候设置到新的pin中
+        let pin = new OutputPin("", name || propertyKey.toString(), width, null); //component不存在，会在从proto复制数据的时候设置到新的pin中
         target.proto_outputPins = target.proto_outputPins || [];
         target.proto_outputPins.push(pin);
     };
@@ -69,6 +69,9 @@ export class InputPin {
     data: number;
 
     writeByWire(data: number): void { //THINK 检查宽度？
+        if (data < 0 || data > 1 << (this.width)) {
+            //TODO 数据不合规怎么办
+        }
         this.data = data;
     }
 
@@ -105,15 +108,17 @@ export class OutputPin {
     }
 }
 
-export class Component implements LogicRun { //TODO 名字
+export class Component implements LogicRun {
+    name: string;
+
     proto_inputPins: InputPin[];
     proto_outputPins: OutputPin[];
 
     inputPins: InputPin[];
     outputPins: OutputPin[];
 
-    constructor() {
-        // console.log("Component construct");
+    constructor(name: string) {
+        this.name = name;
         this.initPins();
     }
 
