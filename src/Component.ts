@@ -23,8 +23,8 @@ export function outputPin(width: number, name: string = null) {
 }
 
 export interface LogicRun {
-    //检查是否有问题 TODO 是不是返回个string好一点?
-    validate(): boolean;
+    //检查是否有问题，没问题=>null，有问题=>带有问题信息的string
+    validate(): string;
 
     //执行 TODO 需要参数，改个名字
     run(): void;
@@ -42,14 +42,17 @@ export class Wire implements LogicRun {
         this.toPin = toPin;
     }
 
-    validate() : boolean {
-        return this.fromPin && this.toPin //两端都连上了
-            && this.fromPin.width === this.toPin.width; //并且宽度一致
+    validate(): string {
+        let pin = this.fromPin && this.toPin;
+        let width = this.fromPin.width === this.toPin.width;
+        if (!pin) return "pin not connected";
+        if (!width) return "width not matched";
+        return null;
     }
 
     run() {
         // console.log(`wire ${this.fromPin.name}(${this.fromPin.id}) to ${this.toPin.name}(${this.toPin.id}), ${this.fromPin.data}`);
-        this.toPin.writeByWire(this.fromPin.data); //TODO 检查宽度？
+        this.toPin.writeByWire(this.fromPin.data);
     }
 }
 
@@ -138,8 +141,8 @@ export class Component implements LogicRun {
         });
     }
 
-    validate(): boolean {
-        return true; //TODO 其实component自己不知道pin都连到哪里去了，需要外部统计
+    validate(): string {
+        return null; //TODO 其实component自己不知道pin都连到哪里去了，需要外部统计
     }
 
     run() {
