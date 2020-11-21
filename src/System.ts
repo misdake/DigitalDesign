@@ -1,45 +1,79 @@
-import {Component, LogicRun, Wire} from "./Component";
-import {ComponentInput, ComponentNAND, ComponentOR, ComponentOutput, ComponentXOR} from "./ComponentLib";
 import {DependencyGraph} from "./DependencyGraph";
+import {Component, ComponentGenerator, Pin, Wire} from "./Component";
+import {ComponentTemplate} from "./ComponentTemplate";
 
 export class System {
 
-    inputComponents: Component[];
-    outputComponents: Component[];
-    components: Component[];
-    wires: Wire[];
-    runners: LogicRun[];
+    componentGenerators: Map<string, ComponentGenerator> = new Map<string, ComponentGenerator>();
 
-    constructor() {
-        let c1a = new ComponentInput(0);
-        let c1b = new ComponentInput(1);
-        let c2 = new ComponentXOR();
-        let c3 = new ComponentOutput();
-
-        let w1a = new Wire();
-        w1a.setFrom(c1a.output);
-        w1a.setTo(c2.input1);
-        let w1b = new Wire();
-        w1b.setFrom(c1b.output);
-        w1b.setTo(c2.input2);
-        let w2 = new Wire();
-        w2.setFrom(c2.output);
-        w2.setTo(c3.input);
-
-        this.inputComponents = [c1a, c1b];
-        this.outputComponents = [c3];
-        this.components = [c1a, c1b, c2, c3];
-        this.wires = [w1a, w1b, w2];
-
-        let g = new DependencyGraph<Component, Wire>();
-        this.components.forEach(component => g.addVertex(component));
-        this.wires.forEach(wire => g.addEdge(wire.fromPin.component, wire.toPin.component, wire));
-        this.runners = g.calcOrder();
-        console.log(this.runners);
+    registerLibraryComponent(type: string, generator: ComponentGenerator) {
+        this.componentGenerators.set(type, generator);
     }
 
-    run() {
-        this.runners.forEach(runner => runner.run());
+    getComponentTemplate(type: string) {
+        return this.componentGenerators.get(type);
+    }
+
+    createCustomComponent(name: string, template: ComponentTemplate) {
+        return new Component(name, true, template, this.componentGenerators);
+    }
+
+    createLibraryComponent(name: string, type: string) {
+        return this.componentGenerators.get(type)(name, this.componentGenerators); //TODO 检查存在
+    }
+
+    private mainComponent: Component;
+    private runners: (Component | Pin | Wire)[];
+
+    setMainComponent(component: Component) {
+        this.mainComponent = component;
+    }
+
+    constructGraph() {
+        let g = new DependencyGraph<Component | Pin, Wire>();
+
+        function add(component: Component) {
+            for (let child of component.components.values()) {
+                add(child);
+            }
+
+            if (component.isCustom) {
+                //custom component => 添加pin作为vertex，不添加自己，添加内部所有wire
+                for (let inputPin of component.inputPins.values()) g.addVertex(inputPin);
+                for (let outputPin of component.outputPins.values()) g.addVertex(outputPin);
+
+                for (let wire of component.wires) {
+                    let from = wire.fromComponent.isCustom ? wire.fromPin : wire.fromComponent;
+                    let to = wire.toComponent.isCustom ? wire.toPin : wire.toComponent;
+                    g.addEdge(from, to, wire);
+                }
+            } else {
+                //builtin component => 添加自己作为vertex，没有内部wire
+                g.addVertex(component);
+            }
+        }
+
+        add(this.mainComponent);
+
+        this.runners = g.calcOrder();
+
+        console.log("order-----------------------");
+        for (let runner of this.runners) {
+            console.log(runner.constructor.name, runner.name);
+        }
+    }
+
+    runClock() {
+        for (let runner of this.runners) {
+            runner.run();
+        }
+        console.log("run-------------------------");
+        for (let input of this.mainComponent.inputPins.values()) {
+            console.log(`input: ${input.name} => ${input.read()}`);
+        }
+        for (let output of this.mainComponent.outputPins.values()) {
+            console.log(`output: ${output.name} => ${output.read()}`);
+        }
     }
 
 }

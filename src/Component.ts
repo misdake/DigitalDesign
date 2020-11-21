@@ -1,151 +1,114 @@
-let index = 0;
+import {ComponentTemplate, PinType} from "./ComponentTemplate";
 
-export function component<T extends { new(...args: any[]): {} }>(constructor: T) {
-    console.log("Register Component:", constructor.name);
-    //把名称和构造函数加入到list或map里，作为总的资源库
-    return constructor;
-}
+export type ComponentGenerator = (name: string, componentLibrary: Map<string, ComponentGenerator>) => Component;
 
-export function inputPin(width: number, name: string = null) {
-    return function (target: Component, propertyKey: string | symbol) {
-        let pin = new InputPin("", name || propertyKey.toString(), width, null); //component不存在，会在从proto复制数据的时候设置到新的pin中
-        target.proto_inputPins = target.proto_inputPins || [];
-        target.proto_inputPins.push(pin);
-    };
-}
+export class Pin {
+    readonly name: string;
+    readonly width: number;
+    readonly type: PinType;
+    private data: number;
 
-export function outputPin(width: number, name: string = null) {
-    return function (target: Component, propertyKey: string | symbol) {
-        let pin = new OutputPin("", name || propertyKey.toString(), width, null); //component不存在，会在从proto复制数据的时候设置到新的pin中
-        target.proto_outputPins = target.proto_outputPins || [];
-        target.proto_outputPins.push(pin);
-    };
-}
-
-export interface LogicRun {
-    //检查是否有问题，没问题=>null，有问题=>带有问题信息的string
-    validate(): string;
-
-    //执行 TODO 需要参数，改个名字
-    run(): void;
-}
-
-export class Wire implements LogicRun {
-    fromPin: OutputPin;
-    toPin: InputPin;
-
-    setFrom(fromPin: OutputPin) {
-        this.fromPin = fromPin;
+    constructor(name: string, width: number, type: PinType, data: number) {
+        this.name = name;
+        this.width = width;
+        this.type = type;
+        this.data = data;
     }
 
-    setTo(toPin: InputPin) {
+    read() {
+        return this.data; //TODO 检查宽度
+    }
+
+    write(data: number, width: number) {
+        this.data = data; //TODO 检查宽度
+    }
+
+    run() {
+
+    }
+}
+
+export class Wire {
+    name: string;
+    width: number;
+    fromComponent: Component;
+    fromPin: Pin;
+    toComponent: Component;
+    toPin: Pin;
+
+    constructor(name: string, width: number, fromComponent: Component, fromPin: Pin, toComponent: Component, toPin: Pin) {
+        this.name = name;
+        this.width = width;
+        this.fromComponent = fromComponent;
+        this.fromPin = fromPin;
+        this.toComponent = toComponent;
         this.toPin = toPin;
     }
 
-    validate(): string {
-        let pin = this.fromPin && this.toPin;
-        let width = this.fromPin.width === this.toPin.width;
-        if (!pin) return "pin not connected";
-        if (!width) return "width not matched";
-        return null;
-    }
-
     run() {
-        // console.log(`wire ${this.fromPin.name}(${this.fromPin.id}) to ${this.toPin.name}(${this.toPin.id}), ${this.fromPin.data}`);
-        this.toPin.writeByWire(this.fromPin.data);
+        this.toPin.write(this.fromPin.read(), this.width); //TODO 检查宽度
     }
 }
 
-export class InputPin {
-    readonly id: string;
-    readonly name: string;
-    readonly width: number;
-    readonly component: Component;
+export class Component {
+    readonly name: string; //TODO 改名?
+    readonly isCustom: boolean; //是否是用自定义的Component，如果是=>Component用于连接内部组件，如果不是=>使用run方法执行逻辑
+    // template: ComponentTemplate;
 
-    constructor(id: string, name: string, width: number, component: Component) {
-        this.id = id;
+    inputPins: Map<string, Pin>;
+    components: Map<string, Component>;
+    outputPins: Map<string, Pin>;
+
+    wires: Wire[];
+
+    constructor(name: string, isCustom: boolean, template: ComponentTemplate, componentLibrary: Map<string, ComponentGenerator>) {
         this.name = name;
-        this.width = width;
-        this.component = component;
-    }
+        this.isCustom = isCustom;
 
-    data: number;
+        //根据模板设置自己的内容
 
-    writeByWire(data: number): void { //THINK 检查宽度？
-        if (data < 0 || data > 1 << (this.width)) {
-            //TODO 数据不合规怎么办
+        // this.template = template;
+        this.inputPins = new Map<string, Pin>();
+        this.components = new Map<string, Component>();
+        this.outputPins = new Map<string, Pin>();
+        this.wires = [];
+
+        let components = template.components;
+        for (let component of components) {
+            let generator = componentLibrary.get(component.type);
+            if (!generator) {
+                //TODO 没有这个component，报错
+            }
+            let created = generator(component.name, componentLibrary);
+            this.components.set(component.name, created);
         }
-        this.data = data;
-    }
 
-    read(): number {
-        return this.data;
-    }
+        template.inputPins.forEach(input => this.inputPins.set(input.name, new Pin(input.name, input.width, input.type, -1)));
+        template.outputPins.forEach(output => this.outputPins.set(output.name, new Pin(output.name, output.width, output.type, -1)));
 
-    read1(): boolean {
-        return !!this.data;
-    }
-}
-
-export class OutputPin {
-    readonly id: string;
-    readonly name: string;
-    readonly width: number;
-    readonly component: Component;
-
-    constructor(id: string, name: string, width: number, component: Component) {
-        this.id = id;
-        this.name = name;
-        this.width = width;
-        this.component = component;
-    }
-
-    data: number;
-
-    write(data: number): void { //THINK 检查宽度？
-        this.data = data;
-    }
-
-    write1(data: boolean): void {
-        this.data = data ? 1 : 0;
-    }
-}
-
-export class Component implements LogicRun {
-    name: string;
-
-    proto_inputPins: InputPin[];
-    proto_outputPins: OutputPin[];
-
-    inputPins: InputPin[];
-    outputPins: OutputPin[];
-
-    constructor(name: string) {
-        this.name = name;
-        this.initPins();
-    }
-
-    initPins() {
-        // console.log("initPins");
-        this.inputPins = (this.proto_inputPins || []).map(i => {
-            let ip = new InputPin(`input_id_${++index}`, i.name, i.width, this);
-            // @ts-ignore
-            this[i.name] = ip;
-            return ip;
+        template.wires.forEach(w => {
+            let fromComponent = w.fromComponent ? this.getComponent(w.fromComponent) : this;
+            let fromPin = w.fromComponent ? fromComponent.getOutputPin(w.fromPin) : this.getInputPin(w.fromPin);
+            let toComponent = w.toComponent ? this.getComponent(w.toComponent) : this;
+            let toPin = w.toComponent ? toComponent.getInputPin(w.toPin) : this.getOutputPin(w.toPin);
+            this.wires.push(new Wire(w.name, w.width, fromComponent, fromPin, toComponent, toPin));
         });
-        this.outputPins = (this.proto_outputPins || []).map(i => {
-            let op = new OutputPin(`output_id_${++index}`, i.name, i.width, this);
-            // @ts-ignore
-            this[i.name] = op;
-            return op;
-        });
+
     }
 
-    validate(): string {
-        return null; //TODO 其实component自己不知道pin都连到哪里去了，需要外部统计
+    getComponent(name: string) {
+        return this.components.get(name); //TODO 检查是否为空
+    }
+
+    getInputPin(name: string) {
+        return this.inputPins.get(name); //TODO 检查是否为空
+    }
+
+    getOutputPin(name: string) {
+        return this.outputPins.get(name); //TODO 检查是否为空
     }
 
     run() {
-        console.log("not implemented");
-    };
+
+    }
 }

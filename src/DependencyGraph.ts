@@ -21,7 +21,7 @@ export class DependencyGraph<Vertex, Edge> {
 
     private result: (Vertex | Edge)[] = null;
 
-    calcOrder() {
+    calcOrder() : (Vertex | Edge)[] {
         if (this.result) return this.result;
 
         let output: (Vertex | Edge)[] = [];

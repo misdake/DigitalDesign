@@ -1,31 +1,38 @@
 import {System} from "./System";
-import {ComponentInput} from "./ComponentLib";
+import {Component, ComponentGenerator} from "./Component";
+import {PinType} from "./ComponentTemplate";
 
 let system = new System();
+system.registerLibraryComponent("not", (name: string, componentLibrary: Map<string, ComponentGenerator>) => {
+    return new class ComponentNOT extends Component {
+        run() {
+            this.getOutputPin("out").write(this.getInputPin("in").read() ? 0 : 1, 1);
+        }
+    }(name, false, {
+        type: "not",
+        inputPins: [{name: "in", width: 1, type: PinType.BOOL}],
+        components: [],
+        outputPins: [{name: "out", width: 1, type: PinType.BOOL}],
+        wires: [],
+    }, componentLibrary);
+});
 
-let c1a = system.inputComponents[0] as ComponentInput;
-let c1b = system.inputComponents[1] as ComponentInput;
+let m = system.createCustomComponent("c_not", {
+    type: "level1",
+    inputPins: [{name: "in", width: 1, type: PinType.BOOL}],
+    components: [{name: "c_name", type: "not"}],
+    outputPins: [{name: "out", width: 1, type: PinType.BOOL}],
+    wires: [
+        {name: "i", width: 1, fromComponent: null, fromPin: "in", toComponent: "c_name", toPin: "in"},
+        {name: "o", width: 1, fromComponent: "c_name", fromPin: "out", toComponent: null, toPin: "out"},
+    ],
+});
+system.setMainComponent(m);
+system.constructGraph();
 
-c1a.data = 0;
-c1b.data = 0;
-console.log("run1:");
-system.run();
-console.log("");
-
-c1a.data = 1;
-c1b.data = 0;
-console.log("run2:");
-system.run();
-console.log("");
-
-c1a.data = 0;
-c1b.data = 1;
-console.log("run3:");
-system.run();
-console.log("");
-
-c1a.data = 1;
-c1b.data = 1;
-console.log("run4:");
-system.run();
-console.log("");
+m.getInputPin("in").write(1, 1);
+system.runClock();
+m.getInputPin("in").write(0, 1);
+system.runClock();
+m.getInputPin("in").write(1, 1);
+system.runClock();
