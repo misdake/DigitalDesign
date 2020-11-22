@@ -5,7 +5,7 @@ import {PinTemplate, PinType, WireTemplate} from "../ComponentTemplate";
 export function registerBasicComponents(system: System) {
 
     system.registerLibraryComponent("not", (name: string, componentLibrary: Map<string, ComponentGenerator>) => {
-        return new class ComponentNOT extends Component {
+        return new class ComponentNot extends Component {
             run() {
                 this.getOutputPin("out").write(this.getInputPin("in").read() ? 0 : 1, 1);
             }
@@ -25,7 +25,7 @@ export function registerBasicComponents(system: System) {
         wires: [] as WireTemplate[],
     };
     system.registerLibraryComponent("and", (name: string, componentLibrary: Map<string, ComponentGenerator>) => {
-        return new class ComponentNOT extends Component {
+        return new class ComponentAnd extends Component {
             run() {
                 let in1 = this.getInputPin("in1").read();
                 let in2 = this.getInputPin("in2").read();
@@ -34,7 +34,7 @@ export function registerBasicComponents(system: System) {
         }(name, false, Object.assign({type: "and"}, in2out1), componentLibrary);
     });
     system.registerLibraryComponent("or", (name: string, componentLibrary: Map<string, ComponentGenerator>) => {
-        return new class ComponentNOT extends Component {
+        return new class ComponentOr extends Component {
             run() {
                 let in1 = this.getInputPin("in1").read();
                 let in2 = this.getInputPin("in2").read();
@@ -43,7 +43,7 @@ export function registerBasicComponents(system: System) {
         }(name, false, Object.assign({type: "and"}, in2out1), componentLibrary);
     });
     system.registerLibraryComponent("nand", (name: string, componentLibrary: Map<string, ComponentGenerator>) => {
-        return new class ComponentNOT extends Component {
+        return new class ComponentNand extends Component {
             run() {
                 let in1 = this.getInputPin("in1").read();
                 let in2 = this.getInputPin("in2").read();
@@ -52,7 +52,7 @@ export function registerBasicComponents(system: System) {
         }(name, false, Object.assign({type: "nand"}, in2out1), componentLibrary);
     });
     system.registerLibraryComponent("xor", (name: string, componentLibrary: Map<string, ComponentGenerator>) => {
-        return new class ComponentNOT extends Component {
+        return new class ComponentXor extends Component {
             run() {
                 let in1 = this.getInputPin("in1").read();
                 let in2 = this.getInputPin("in2").read();

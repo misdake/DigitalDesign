@@ -1,6 +1,7 @@
 import {DependencyGraph} from "./DependencyGraph";
 import {Component, ComponentGenerator, DummyWire, Pin, Wire} from "./Component";
 import {ComponentTemplate} from "./ComponentTemplate";
+import {error} from "./util";
 
 export class System {
 
@@ -12,6 +13,12 @@ export class System {
 
     createCustomComponent(name: string, template: ComponentTemplate) {
         return new Component(name, true, template, this.componentGenerators);
+    }
+
+    createLibraryComponent(name: string, type: string) {
+        let generator = this.componentGenerators.get(type);
+        if (!generator) error("Generator not found!");
+        return generator(name, this.componentGenerators);
     }
 
     private mainComponent: Component;
@@ -55,6 +62,8 @@ export class System {
 
         add(this.mainComponent);
 
+        //TODO 检查是否所有Wire的宽度都正常，所有的Wire都有两端
+
         let runners = g.calcOrder();
         this.runners = runners.filter(runner => runner.needRun);
 
@@ -65,6 +74,7 @@ export class System {
     }
 
     runClock() {
+        //TODO 清空所有Pin的数据
         for (let runner of this.runners) {
             runner.run();
         }
