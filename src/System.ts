@@ -10,16 +10,8 @@ export class System {
         this.componentGenerators.set(type, generator);
     }
 
-    getComponentTemplate(type: string) {
-        return this.componentGenerators.get(type);
-    }
-
     createCustomComponent(name: string, template: ComponentTemplate) {
         return new Component(name, true, template, this.componentGenerators);
-    }
-
-    createLibraryComponent(name: string, type: string) {
-        return this.componentGenerators.get(type)(name, this.componentGenerators); //TODO 检查存在
     }
 
     private mainComponent: Component;

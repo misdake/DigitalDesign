@@ -1,4 +1,5 @@
 import {ComponentTemplate, PinType} from "./ComponentTemplate";
+import {error} from "./util";
 
 export type ComponentGenerator = (name: string, componentLibrary: Map<string, ComponentGenerator>) => Component;
 
@@ -16,11 +17,12 @@ export class Pin {
     }
 
     read() {
-        return this.data; //TODO 检查宽度
+        return this.data;
     }
 
     write(data: number, width: number) {
-        this.data = data; //TODO 检查宽度
+        if (this.width !== width) error("Write width not matched!");
+        this.data = data;
     }
 
     needRun: false;
@@ -50,7 +52,9 @@ export class Wire {
     needRun: boolean = true;
 
     run() {
-        this.toPin.write(this.fromPin.read(), this.width); //TODO 检查宽度
+        if (this.fromPin.width !== this.width) error("toPin width not matched!");
+        if (this.toPin.width !== this.width) error("toPin width not matched!");
+        this.toPin.write(this.fromPin.read(), this.width);
     }
 }
 
@@ -66,7 +70,7 @@ export class DummyWire extends Wire {
 }
 
 export class Component {
-    readonly name: string; //TODO 改名?
+    name: string;
     readonly isCustom: boolean; //是否是用自定义的Component，如果是=>Component用于连接内部组件，如果不是=>使用run方法执行逻辑
 
     inputPins: Map<string, Pin>;
@@ -90,9 +94,7 @@ export class Component {
         let components = template.components;
         for (let component of components) {
             let generator = componentLibrary.get(component.type);
-            if (!generator) {
-                //TODO 没有这个component，报错
-            }
+            if (!generator) error("Generator not found!");
             let created = generator(component.name, componentLibrary);
             this.components.set(component.name, created);
         }
@@ -110,15 +112,21 @@ export class Component {
     }
 
     getComponent(name: string) {
-        return this.components.get(name); //TODO 检查是否为空
+        let component = this.components.get(name);
+        if (!component) error("Component not found!");
+        return component;
     }
 
     getInputPin(name: string) {
-        return this.inputPins.get(name); //TODO 检查是否为空
+        let pin = this.inputPins.get(name);
+        if (!pin) error("Pin not found!");
+        return pin;
     }
 
     getOutputPin(name: string) {
-        return this.outputPins.get(name); //TODO 检查是否为空
+        let pin = this.outputPins.get(name);
+        if (!pin) error("Pin not found!");
+        return pin;
     }
 
     needRun: boolean = false;
