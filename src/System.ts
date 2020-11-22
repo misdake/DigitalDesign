@@ -1,5 +1,5 @@
 import {DependencyGraph} from "./DependencyGraph";
-import {Component, ComponentGenerator, Pin, Wire} from "./Component";
+import {Component, ComponentGenerator, DummyWire, Pin, Wire} from "./Component";
 import {ComponentTemplate} from "./ComponentTemplate";
 
 export class System {
@@ -43,19 +43,28 @@ export class System {
                 for (let outputPin of component.outputPins.values()) g.addVertex(outputPin);
 
                 for (let wire of component.wires) {
-                    let from = wire.fromComponent.isCustom ? wire.fromPin : wire.fromComponent;
-                    let to = wire.toComponent.isCustom ? wire.toPin : wire.toComponent;
+                    let from = wire.fromPin;
+                    let to = wire.toPin;
                     g.addEdge(from, to, wire);
                 }
             } else {
                 //builtin component => 添加自己作为vertex，没有内部wire
                 g.addVertex(component);
+                for (let inputPin of component.inputPins.values()) {
+                    g.addVertex(inputPin);
+                    g.addEdge(inputPin, component, new DummyWire());
+                }
+                for (let outputPin of component.outputPins.values()) {
+                    g.addVertex(outputPin);
+                    g.addEdge(component, outputPin, new DummyWire());
+                }
             }
         }
 
         add(this.mainComponent);
 
-        this.runners = g.calcOrder();
+        let runners = g.calcOrder();
+        this.runners = runners.filter(runner => runner.needRun);
 
         console.log("order-----------------------");
         for (let runner of this.runners) {

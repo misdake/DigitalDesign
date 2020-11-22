@@ -23,6 +23,8 @@ export class Pin {
         this.data = data; //TODO 检查宽度
     }
 
+    needRun: false;
+
     run() {
 
     }
@@ -45,15 +47,27 @@ export class Wire {
         this.toPin = toPin;
     }
 
+    needRun: boolean = true;
+
     run() {
         this.toPin.write(this.fromPin.read(), this.width); //TODO 检查宽度
+    }
+}
+
+export class DummyWire extends Wire {
+    constructor() {
+        super("", 1, null, null, null, null);
+    }
+
+    needRun: boolean = false;
+
+    run() {
     }
 }
 
 export class Component {
     readonly name: string; //TODO 改名?
     readonly isCustom: boolean; //是否是用自定义的Component，如果是=>Component用于连接内部组件，如果不是=>使用run方法执行逻辑
-    // template: ComponentTemplate;
 
     inputPins: Map<string, Pin>;
     components: Map<string, Component>;
@@ -64,10 +78,10 @@ export class Component {
     constructor(name: string, isCustom: boolean, template: ComponentTemplate, componentLibrary: Map<string, ComponentGenerator>) {
         this.name = name;
         this.isCustom = isCustom;
+        this.needRun = !isCustom;
 
         //根据模板设置自己的内容
 
-        // this.template = template;
         this.inputPins = new Map<string, Pin>();
         this.components = new Map<string, Component>();
         this.outputPins = new Map<string, Pin>();
@@ -93,7 +107,6 @@ export class Component {
             let toPin = w.toComponent ? toComponent.getInputPin(w.toPin) : this.getOutputPin(w.toPin);
             this.wires.push(new Wire(w.name, w.width, fromComponent, fromPin, toComponent, toPin));
         });
-
     }
 
     getComponent(name: string) {
@@ -108,6 +121,7 @@ export class Component {
         return this.outputPins.get(name); //TODO 检查是否为空
     }
 
+    needRun: boolean = false;
     run() {
 
     }
