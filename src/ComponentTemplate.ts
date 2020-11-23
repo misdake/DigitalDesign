@@ -12,7 +12,6 @@ export class PinTemplate {
 
 export class WireTemplate {
     name: string;
-    width: number;
     fromComponent: string;
     fromPin: string;
     toComponent: string;

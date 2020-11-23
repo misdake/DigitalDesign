@@ -34,15 +34,13 @@ export class Pin {
 
 export class Wire {
     name: string;
-    width: number;
     fromComponent: Component;
     fromPin: Pin;
     toComponent: Component;
     toPin: Pin;
 
-    constructor(name: string, width: number, fromComponent: Component, fromPin: Pin, toComponent: Component, toPin: Pin) {
+    constructor(name: string, fromComponent: Component, fromPin: Pin, toComponent: Component, toPin: Pin) {
         this.name = name;
-        this.width = width;
         this.fromComponent = fromComponent;
         this.fromPin = fromPin;
         this.toComponent = toComponent;
@@ -52,15 +50,14 @@ export class Wire {
     needRun: boolean = true;
 
     run() {
-        if (this.fromPin.width !== this.width) error("toPin width not matched!");
-        if (this.toPin.width !== this.width) error("toPin width not matched!");
-        this.toPin.write(this.fromPin.read(), this.width);
+        if (this.fromPin.width !== this.toPin.width) error("toPin width not matched!");
+        this.toPin.write(this.fromPin.read(), this.fromPin.width);
     }
 }
 
 export class DummyWire extends Wire {
     constructor() {
-        super("", 1, null, null, null, null);
+        super("", null, null, null, null);
     }
 
     needRun: boolean = false;
@@ -107,7 +104,7 @@ export class Component {
             let fromPin = w.fromComponent ? fromComponent.getOutputPin(w.fromPin) : this.getInputPin(w.fromPin);
             let toComponent = w.toComponent ? this.getComponent(w.toComponent) : this;
             let toPin = w.toComponent ? toComponent.getInputPin(w.toPin) : this.getOutputPin(w.toPin);
-            this.wires.push(new Wire(w.name, w.width, fromComponent, fromPin, toComponent, toPin));
+            this.wires.push(new Wire(w.name, fromComponent, fromPin, toComponent, toPin));
         });
     }
 

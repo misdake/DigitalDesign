@@ -35,20 +35,20 @@ export function registerArithmeticComponents(system: System) {
                 //TODO component+pin用更简单的方式识别，比如"xor1.out"
 
                 //低位
-                {name: "", width: 1, fromComponent: null, fromPin: "A", toComponent: "xor1", toPin: "in1"},
-                {name: "", width: 1, fromComponent: null, fromPin: "B", toComponent: "xor1", toPin: "in2"},
-                {name: "", width: 1, fromComponent: "xor1", fromPin: "out", toComponent: "xor2", toPin: "in1"},
-                {name: "", width: 1, fromComponent: null, fromPin: "Cin", toComponent: "xor2", toPin: "in2"},
-                {name: "", width: 1, fromComponent: "xor2", fromPin: "out", toComponent: null, toPin: "S"},
+                {name: "", fromComponent: null, fromPin: "A", toComponent: "xor1", toPin: "in1"},
+                {name: "", fromComponent: null, fromPin: "B", toComponent: "xor1", toPin: "in2"},
+                {name: "", fromComponent: "xor1", fromPin: "out", toComponent: "xor2", toPin: "in1"},
+                {name: "", fromComponent: null, fromPin: "Cin", toComponent: "xor2", toPin: "in2"},
+                {name: "", fromComponent: "xor2", fromPin: "out", toComponent: null, toPin: "S"},
 
                 //进位
-                {name: "", width: 1, fromComponent: null, fromPin: "A", toComponent: "and1", toPin: "in1"},
-                {name: "", width: 1, fromComponent: null, fromPin: "B", toComponent: "and1", toPin: "in2"},
-                {name: "", width: 1, fromComponent: "xor1", fromPin: "out", toComponent: "and2", toPin: "in1"},
-                {name: "", width: 1, fromComponent: null, fromPin: "Cin", toComponent: "and2", toPin: "in2"},
-                {name: "", width: 1, fromComponent: "and1", fromPin: "out", toComponent: "or", toPin: "in1"},
-                {name: "", width: 1, fromComponent: "and2", fromPin: "out", toComponent: "or", toPin: "in2"},
-                {name: "", width: 1, fromComponent: "or", fromPin: "out", toComponent: null, toPin: "Cout"},
+                {name: "", fromComponent: null, fromPin: "A", toComponent: "and1", toPin: "in1"},
+                {name: "", fromComponent: null, fromPin: "B", toComponent: "and1", toPin: "in2"},
+                {name: "", fromComponent: "xor1", fromPin: "out", toComponent: "and2", toPin: "in1"},
+                {name: "", fromComponent: null, fromPin: "Cin", toComponent: "and2", toPin: "in2"},
+                {name: "", fromComponent: "and1", fromPin: "out", toComponent: "or", toPin: "in1"},
+                {name: "", fromComponent: "and2", fromPin: "out", toComponent: "or", toPin: "in2"},
+                {name: "", fromComponent: "or", fromPin: "out", toComponent: null, toPin: "Cout"},
 
             ] as WireTemplate[],
         });
