@@ -125,4 +125,39 @@ export class Component {
     needRun: boolean = false;
     run() {
     }
+
+}
+
+export type ComponentLogic = (inputs: { [key: string]: number }, outputs: { [key: string]: number }) => void;
+
+export class ComponentBuiltin extends Component {
+    private readonly logic: ComponentLogic;
+
+    constructor(name: string, template: ComponentTemplate, componentLibrary: Map<string, ComponentGenerator>, logic: ComponentLogic) {
+        super(name, false, template, componentLibrary);
+        this.needRun = true;
+        this.logic = logic;
+    }
+
+    run() {
+        if (this.needRun) {
+            let inputs: { [key: string]: number } = {};
+            let outputs: { [key: string]: number } = {};
+
+            for (let pin of this.inputPins.values()) {
+                inputs[pin.name] = pin.read();
+            }
+
+            this.logic(inputs, outputs);
+
+            for (let key of Object.keys(outputs)) {
+                let pin = this.outputPins.get(key);
+                if (pin) {
+                    let value = outputs[key];
+                    value = value & ((1 << pin.width) - 1);
+                    pin.write(value, pin.width);
+                }
+            }
+        }
+    }
 }

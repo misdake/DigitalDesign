@@ -1,5 +1,5 @@
 import {DependencyGraph} from "./DependencyGraph";
-import {Component, ComponentGenerator, DummyWire, Pin, Wire} from "./Component";
+import {Component, ComponentGenerator, DummyWire, ComponentLogic, Pin, Wire, ComponentBuiltin} from "./Component";
 import {ComponentTemplate} from "./ComponentTemplate";
 import {error} from "./util";
 
@@ -9,6 +9,12 @@ export class System {
 
     registerLibraryComponent(type: string, generator: ComponentGenerator) {
         this.componentGenerators.set(type, generator);
+    }
+
+    registerBuiltinComponent(template: ComponentTemplate, logic: ComponentLogic) {
+        this.registerLibraryComponent(template.type, (name, componentLibrary) => {
+            return new ComponentBuiltin(name, template, componentLibrary, logic);
+        });
     }
 
     createCustomComponent(name: string, template: ComponentTemplate) {
@@ -79,12 +85,12 @@ export class System {
             runner.run();
         }
         console.log("run-------------------------");
-        for (let input of this.mainComponent.inputPins.values()) {
-            console.log(`input: ${input.name} => ${input.read()}`);
-        }
-        for (let output of this.mainComponent.outputPins.values()) {
-            console.log(`output: ${output.name} => ${output.read()}`);
-        }
+        // for (let input of this.mainComponent.inputPins.values()) {
+        //     console.log(`input: ${input.name} => ${input.read()}`);
+        // }
+        // for (let output of this.mainComponent.outputPins.values()) {
+        //     console.log(`output: ${output.name} => ${output.read()}`);
+        // }
     }
 
 }

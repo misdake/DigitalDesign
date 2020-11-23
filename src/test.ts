@@ -12,42 +12,15 @@ let fulladder = system.createLibraryComponent("fulladder", "full-adder");
 system.setMainComponent(fulladder);
 system.constructGraph();
 
-fulladder.getInputPin("A").write(0, 1);
-fulladder.getInputPin("B").write(0, 1);
-fulladder.getInputPin("Cin").write(0, 1);
-system.runClock();
-
-fulladder.getInputPin("A").write(1, 1);
-fulladder.getInputPin("B").write(0, 1);
-fulladder.getInputPin("Cin").write(0, 1);
-system.runClock();
-
-fulladder.getInputPin("A").write(0, 1);
-fulladder.getInputPin("B").write(1, 1);
-fulladder.getInputPin("Cin").write(0, 1);
-system.runClock();
-
-fulladder.getInputPin("A").write(1, 1);
-fulladder.getInputPin("B").write(1, 1);
-fulladder.getInputPin("Cin").write(0, 1);
-system.runClock();
-
-fulladder.getInputPin("A").write(0, 1);
-fulladder.getInputPin("B").write(0, 1);
-fulladder.getInputPin("Cin").write(1, 1);
-system.runClock();
-
-fulladder.getInputPin("A").write(1, 1);
-fulladder.getInputPin("B").write(0, 1);
-fulladder.getInputPin("Cin").write(1, 1);
-system.runClock();
-
-fulladder.getInputPin("A").write(0, 1);
-fulladder.getInputPin("B").write(1, 1);
-fulladder.getInputPin("Cin").write(1, 1);
-system.runClock();
-
-fulladder.getInputPin("A").write(1, 1);
-fulladder.getInputPin("B").write(1, 1);
-fulladder.getInputPin("Cin").write(1, 1);
-system.runClock();
+for (let i = 0; i < 8; i++) {
+    let A = (i & 1) >> 0;
+    let B = (i & 2) >> 1;
+    let Cin = (i & 4) >> 2;
+    fulladder.getInputPin("A").write(A, 1);
+    fulladder.getInputPin("B").write(B, 1);
+    fulladder.getInputPin("Cin").write(Cin, 1);
+    system.runClock();
+    let S = fulladder.getOutputPin("S").read();
+    let Cout = fulladder.getOutputPin("Cout").read();
+    console.log(`${A}+${B}+${Cin} = ${Cout}${S}`);
+}
