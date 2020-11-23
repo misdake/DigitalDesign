@@ -31,24 +31,21 @@ export function registerArithmeticComponents(system: System) {
 
             wires: [
 
-                //TODO Wire不保存宽度，自动判断
-                //TODO component+pin用更简单的方式识别，比如"xor1.out"
-
                 //低位
-                {name: "", fromComponent: null, fromPin: "A", toComponent: "xor1", toPin: "in1"},
-                {name: "", fromComponent: null, fromPin: "B", toComponent: "xor1", toPin: "in2"},
-                {name: "", fromComponent: "xor1", fromPin: "out", toComponent: "xor2", toPin: "in1"},
-                {name: "", fromComponent: null, fromPin: "Cin", toComponent: "xor2", toPin: "in2"},
-                {name: "", fromComponent: "xor2", fromPin: "out", toComponent: null, toPin: "S"},
+                WireTemplate.create("this.A", "xor1.in1"),
+                WireTemplate.create("this.B", "xor1.in2"),
+                WireTemplate.create("xor1.out", "xor2.in1"),
+                WireTemplate.create("this.Cin", "xor2.in2"),
+                WireTemplate.create("xor2.out", "this.S"),
 
                 //进位
-                {name: "", fromComponent: null, fromPin: "A", toComponent: "and1", toPin: "in1"},
-                {name: "", fromComponent: null, fromPin: "B", toComponent: "and1", toPin: "in2"},
-                {name: "", fromComponent: "xor1", fromPin: "out", toComponent: "and2", toPin: "in1"},
-                {name: "", fromComponent: null, fromPin: "Cin", toComponent: "and2", toPin: "in2"},
-                {name: "", fromComponent: "and1", fromPin: "out", toComponent: "or", toPin: "in1"},
-                {name: "", fromComponent: "and2", fromPin: "out", toComponent: "or", toPin: "in2"},
-                {name: "", fromComponent: "or", fromPin: "out", toComponent: null, toPin: "Cout"},
+                WireTemplate.create("this.A", "and1.in1"),
+                WireTemplate.create("this.B", "and1.in2"),
+                WireTemplate.create("xor1.out", "and2.in1"),
+                WireTemplate.create("this.Cin", "and2.in2"),
+                WireTemplate.create("and1.out", "or.in1"),
+                WireTemplate.create("and2.out", "or.in2"),
+                WireTemplate.create("or.out", "this.Cout"),
 
             ] as WireTemplate[],
         });

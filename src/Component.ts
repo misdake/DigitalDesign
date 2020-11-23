@@ -26,9 +26,7 @@ export class Pin {
     }
 
     needRun: false;
-
     run() {
-
     }
 }
 
@@ -48,7 +46,6 @@ export class Wire {
     }
 
     needRun: boolean = true;
-
     run() {
         if (this.fromPin.width !== this.toPin.width) error("toPin width not matched!");
         this.toPin.write(this.fromPin.read(), this.fromPin.width);
@@ -61,7 +58,6 @@ export class DummyWire extends Wire {
     }
 
     needRun: boolean = false;
-
     run() {
     }
 }
@@ -128,6 +124,5 @@ export class Component {
 
     needRun: boolean = false;
     run() {
-
     }
 }
