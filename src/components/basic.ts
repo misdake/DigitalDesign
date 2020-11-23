@@ -14,14 +14,14 @@ export function registerBasicComponents(system: System) {
     });
 
     let in2out1 = {
-        inputPins: [{name: "in1", width: 1, type: PinType.BOOL}, {name: "in2", width: 1, type: PinType.BOOL}] as PinTemplate[],
+        inputPins: [{name: "in0", width: 1, type: PinType.BOOL}, {name: "in1", width: 1, type: PinType.BOOL}] as PinTemplate[],
         components: [] as ({ name: string, type: string })[],
         outputPins: [{name: "out", width: 1, type: PinType.BOOL}] as PinTemplate[],
         wires: [] as WireTemplate[],
     };
-    system.registerBuiltinComponent(Object.assign({type: "and"}, in2out1), (inputs, outputs) => outputs.out = (inputs.in1 && inputs.in2) ? 1 : 0);
-    system.registerBuiltinComponent(Object.assign({type: "or"}, in2out1), (inputs, outputs) => outputs.out = (inputs.in1 || inputs.in2) ? 1 : 0);
-    system.registerBuiltinComponent(Object.assign({type: "nand"}, in2out1), (inputs, outputs) => outputs.out = (inputs.in1 && inputs.in2) ? 0 : 1);
-    system.registerBuiltinComponent(Object.assign({type: "xor"}, in2out1), (inputs, outputs) => outputs.out = (inputs.in1 === inputs.in2) ? 0 : 1);
+    system.registerBuiltinComponent(Object.assign({type: "and"}, in2out1), (inputs, outputs) => outputs.out = (inputs.in0 && inputs.in1) ? 1 : 0);
+    system.registerBuiltinComponent(Object.assign({type: "or"}, in2out1), (inputs, outputs) => outputs.out = (inputs.in0 || inputs.in1) ? 1 : 0);
+    system.registerBuiltinComponent(Object.assign({type: "nand"}, in2out1), (inputs, outputs) => outputs.out = (inputs.in0 && inputs.in1) ? 0 : 1);
+    system.registerBuiltinComponent(Object.assign({type: "xor"}, in2out1), (inputs, outputs) => outputs.out = (inputs.in0 === inputs.in1) ? 0 : 1);
 
 }

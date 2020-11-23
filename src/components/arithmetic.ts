@@ -32,19 +32,19 @@ export function registerArithmeticComponents(system: System) {
             wires: [
 
                 //低位
-                WireTemplate.create("this.A", "xor1.in1"),
-                WireTemplate.create("this.B", "xor1.in2"),
-                WireTemplate.create("xor1.out", "xor2.in1"),
-                WireTemplate.create("this.Cin", "xor2.in2"),
+                WireTemplate.create("this.A", "xor1.in0"),
+                WireTemplate.create("this.B", "xor1.in1"),
+                WireTemplate.create("xor1.out", "xor2.in0"),
+                WireTemplate.create("this.Cin", "xor2.in1"),
                 WireTemplate.create("xor2.out", "this.S"),
 
                 //进位
-                WireTemplate.create("this.A", "and1.in1"),
-                WireTemplate.create("this.B", "and1.in2"),
-                WireTemplate.create("xor1.out", "and2.in1"),
-                WireTemplate.create("this.Cin", "and2.in2"),
-                WireTemplate.create("and1.out", "or.in1"),
-                WireTemplate.create("and2.out", "or.in2"),
+                WireTemplate.create("this.A", "and1.in0"),
+                WireTemplate.create("this.B", "and1.in1"),
+                WireTemplate.create("xor1.out", "and2.in0"),
+                WireTemplate.create("this.Cin", "and2.in1"),
+                WireTemplate.create("and1.out", "or.in0"),
+                WireTemplate.create("and2.out", "or.in1"),
                 WireTemplate.create("or.out", "this.Cout"),
 
             ] as WireTemplate[],
