@@ -7,8 +7,14 @@ export class System {
 
     componentGenerators: Map<string, ComponentGenerator> = new Map<string, ComponentGenerator>();
 
-    registerLibraryComponent(type: string, generator: ComponentGenerator) {
+    private registerLibraryComponent(type: string, generator: ComponentGenerator) {
         this.componentGenerators.set(type, generator);
+    }
+
+    registerCustomComponent(template: ComponentTemplate) {
+        this.registerLibraryComponent(template.type, (name, componentLibrary) => {
+            return this.createCustomComponent(name, template);
+        });
     }
 
     registerBuiltinComponent(template: ComponentTemplate, logic: ComponentLogic) {
@@ -79,7 +85,7 @@ export class System {
         }
     }
 
-    runClock() {
+    runLogic() {
         //TODO 清空所有Pin的数据
         for (let runner of this.runners) {
             runner.run();

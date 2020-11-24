@@ -7,6 +7,7 @@ let system = new System();
 registerBasicComponents(system);
 registerArithmeticComponents(system);
 
+/*
 let fulladder = system.createLibraryComponent("fulladder", "full-adder");
 
 system.setMainComponent(fulladder);
@@ -19,8 +20,29 @@ for (let i = 0; i < 8; i++) {
     fulladder.getInputPin("A").write(A, 1);
     fulladder.getInputPin("B").write(B, 1);
     fulladder.getInputPin("Cin").write(Cin, 1);
-    system.runClock();
+    system.runLogic();
     let S = fulladder.getOutputPin("S").read();
     let Cout = fulladder.getOutputPin("Cout").read();
     console.log(`${A}+${B}+${Cin} = ${Cout}${S}`);
+}
+*/
+
+let adder = system.createLibraryComponent("adder", "4bit-adder");
+
+system.setMainComponent(adder);
+system.constructGraph();
+
+for (let i = 0; i < 15; i++) {
+    for (let j = 0; j < 15; j++) {
+        let A = i;
+        let B = j;
+        let Cin = 0;
+        adder.getInputPin("A").write(A, 4);
+        adder.getInputPin("B").write(B, 4);
+        adder.getInputPin("Cin").write(Cin, 1);
+        system.runLogic();
+        let S = adder.getOutputPin("S").read();
+        let Cout = adder.getOutputPin("Cout").read();
+        console.log(`${A}+${B}+${Cin} = ${Cout ? 'Cout ' : ''}${S}`);
+    }
 }
