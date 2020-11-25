@@ -65,6 +65,7 @@ export class DummyWire extends Wire {
 export class Component {
     name: string;
     readonly isCustom: boolean; //是否是用自定义的Component，如果是=>Component用于连接内部组件，如果不是=>使用run方法执行逻辑
+    readonly type: string;
 
     inputPins: Map<string, Pin>;
     components: Map<string, Component>;
@@ -76,6 +77,7 @@ export class Component {
         this.name = name;
         this.isCustom = isCustom;
         this.needRun = !isCustom;
+        this.type = template.type;
 
         //根据模板设置自己的内容
 
@@ -102,6 +104,26 @@ export class Component {
             let toPin = w.toComponent ? toComponent.getInputPin(w.toPin) : this.getOutputPin(w.toPin);
             this.wires.push(new Wire(w.name, fromComponent, fromPin, toComponent, toPin));
         });
+    }
+
+    exportTemplate(): ComponentTemplate {
+        let r = new ComponentTemplate();
+        r.type = this.type;
+        r.inputPins = [];
+        r.components = [];
+        r.outputPins = [];
+        r.wires = [];
+        this.inputPins.forEach(pin => r.inputPins.push({name: pin.name, width: pin.width, type: pin.type}));
+        this.components.forEach(component => r.components.push({name: component.name, type: component.type}));
+        this.outputPins.forEach(pin => r.outputPins.push({name: pin.name, width: pin.width, type: pin.type}));
+        this.wires.forEach(wire => r.wires.push({
+            name: wire.name,
+            fromComponent: wire.fromComponent === this ? null : wire.fromComponent.name,
+            fromPin: wire.fromPin.name,
+            toComponent: wire.toComponent === this ? null : wire.toComponent.name,
+            toPin: wire.toPin.name,
+        }));
+        return r;
     }
 
     getComponent(name: string) {

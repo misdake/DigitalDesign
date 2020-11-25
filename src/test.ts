@@ -8,7 +8,7 @@ registerBasicComponents(system);
 registerArithmeticComponents(system);
 
 /*
-let fulladder = system.createLibraryComponent("fulladder", "full-adder");
+let fulladder = system.createComponent("fulladder", "full-adder");
 
 system.setMainComponent(fulladder);
 system.constructGraph();
@@ -27,7 +27,7 @@ for (let i = 0; i < 8; i++) {
 }
 */
 
-let adder = system.createLibraryComponent("adder", "4bit-adder");
+let adder = system.createComponent("adder", "4bit-adder");
 
 system.setMainComponent(adder);
 system.constructGraph();
@@ -46,3 +46,7 @@ for (let i = 0; i < 15; i++) {
         console.log(`${A}+${B}+${Cin} = ${Cout ? 'Cout ' : ''}${S}`);
     }
 }
+
+let r1 = adder.exportTemplate();
+let r2 = system.componentTemplates.get("4bit-adder");
+console.log(JSON.stringify(r1) === JSON.stringify(r2));

@@ -1,10 +1,11 @@
 import {DependencyGraph} from "./DependencyGraph";
-import {Component, ComponentGenerator, DummyWire, ComponentLogic, Pin, Wire, ComponentBuiltin} from "./Component";
+import {Component, ComponentBuiltin, ComponentGenerator, ComponentLogic, DummyWire, Pin, Wire} from "./Component";
 import {ComponentTemplate} from "./ComponentTemplate";
 import {error} from "./util";
 
 export class System {
 
+    componentTemplates: Map<string, ComponentTemplate> = new Map<string, ComponentTemplate>();
     componentGenerators: Map<string, ComponentGenerator> = new Map<string, ComponentGenerator>();
 
     private registerLibraryComponent(type: string, generator: ComponentGenerator) {
@@ -12,22 +13,20 @@ export class System {
     }
 
     registerCustomComponent(template: ComponentTemplate) {
-        this.registerLibraryComponent(template.type, (name, componentLibrary) => {
-            return this.createCustomComponent(name, template);
+        this.componentTemplates.set(template.type, template);
+        this.registerLibraryComponent(template.type, (name, _) => {
+            return new Component(name, true, template, this.componentGenerators);
         });
     }
 
     registerBuiltinComponent(template: ComponentTemplate, logic: ComponentLogic) {
+        this.componentTemplates.set(template.type, template);
         this.registerLibraryComponent(template.type, (name, componentLibrary) => {
             return new ComponentBuiltin(name, template, componentLibrary, logic);
         });
     }
 
-    createCustomComponent(name: string, template: ComponentTemplate) {
-        return new Component(name, true, template, this.componentGenerators);
-    }
-
-    createLibraryComponent(name: string, type: string) {
+    createComponent(name: string, type: string) {
         let generator = this.componentGenerators.get(type);
         if (!generator) error("Generator not found!");
         return generator(name, this.componentGenerators);
