@@ -144,7 +144,46 @@ export class Component {
         return pin;
     }
 
+    getInputValues() {
+        let inputs: { [key: string]: number } = {};
+        for (let pin of this.inputPins.values()) {
+            inputs[pin.name] = pin.read();
+        }
+        return inputs;
+    }
+
+    getOutputValues() {
+        let outputs: { [key: string]: number } = {};
+        for (let pin of this.outputPins.values()) {
+            outputs[pin.name] = pin.read();
+        }
+        return outputs;
+    }
+
+    applyInputValues(inputs: { [key: string]: number }) {
+        for (let key of Object.keys(inputs)) {
+            let pin = this.inputPins.get(key);
+            if (pin) {
+                let value = inputs[key];
+                value = value & ((1 << pin.width) - 1);
+                pin.write(value, pin.width);
+            }
+        }
+    }
+
+    applyOutputValues(outputs: { [key: string]: number }) {
+        for (let key of Object.keys(outputs)) {
+            let pin = this.outputPins.get(key);
+            if (pin) {
+                let value = outputs[key];
+                value = value & ((1 << pin.width) - 1);
+                pin.write(value, pin.width);
+            }
+        }
+    }
+
     needRun: boolean = false;
+
     run() {
     }
 
@@ -163,23 +202,10 @@ export class ComponentBuiltin extends Component {
 
     run() {
         if (this.needRun) {
-            let inputs: { [key: string]: number } = {};
+            let inputs = this.getInputValues();
             let outputs: { [key: string]: number } = {};
-
-            for (let pin of this.inputPins.values()) {
-                inputs[pin.name] = pin.read();
-            }
-
             this.logic(inputs, outputs);
-
-            for (let key of Object.keys(outputs)) {
-                let pin = this.outputPins.get(key);
-                if (pin) {
-                    let value = outputs[key];
-                    value = value & ((1 << pin.width) - 1);
-                    pin.write(value, pin.width);
-                }
-            }
+            this.applyOutputValues(outputs);
         }
     }
 }

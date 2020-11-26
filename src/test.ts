@@ -1,6 +1,7 @@
 import {System} from "./System";
 import {registerArithmeticComponents} from "./components/arithmetic";
 import {registerBasicComponents} from "./components/basic";
+import {Component, ComponentLogic} from "./Component";
 
 let system = new System();
 
@@ -27,26 +28,104 @@ for (let i = 0; i < 8; i++) {
 }
 */
 
-let adder = system.createComponent("adder", "4bit-adder");
+function testPinsEqual(pins1: { [key: string]: number }, pins2: { [key: string]: number }): boolean {
+    let keys1 = Object.keys(pins1);
+    let keys2 = Object.keys(pins2);
+    if (keys1.length !== keys2.length) {
+        return false;
+    }
 
-system.setMainComponent(adder);
-system.constructGraph();
+    for (let key of keys1) {
+        if (pins1[key] !== pins2[key]) {
+            return false;
+        }
+    }
+    // for (let key of keys2) {
+    //     if (pins1[key] !== pins2[key]) return false;
+    // }
 
-for (let i = 0; i < 15; i++) {
-    for (let j = 0; j < 15; j++) {
-        let A = i;
-        let B = j;
-        let Cin = 0;
-        adder.getInputPin("A").write(A, 4);
-        adder.getInputPin("B").write(B, 4);
-        adder.getInputPin("Cin").write(Cin, 1);
-        system.runLogic();
-        let S = adder.getOutputPin("S").read();
-        let Cout = adder.getOutputPin("Cout").read();
-        console.log(`${A}+${B}+${Cin} = ${Cout ? 'Cout ' : ''}${S}`);
+    return true;
+}
+
+function padLeft(text: string, length: number) {
+    if (text.length >= length) return text;
+    let n = length - text.length;
+    let r = "";
+    for (let i = 0; i < n; i++) {
+        r += " ";
+    }
+    r += text;
+    return r;
+}
+
+function printPins(pins: { [key: string]: number }) {
+    let keys = Object.keys(pins);
+    let maxKeyLength = Math.max(...keys.map(i => i.length));
+    for (let key of keys) {
+        let value = pins[key];
+        console.log(`${padLeft(key, maxKeyLength)}: ${value}`);
     }
 }
 
-let r1 = adder.exportTemplate();
-let r2 = system.componentTemplates.get("4bit-adder");
-console.log(JSON.stringify(r1) === JSON.stringify(r2));
+function print2Pins(pins1: { [key: string]: number }, pins2: { [key: string]: number }) {
+    let keys1 = Object.keys(pins1);
+    let keys2 = Object.keys(pins2);
+    let allKeys = new Set<string>([...keys1, ...keys2]);
+    let maxKeyLength = Math.max(...([...allKeys.values()].map(i => i.length)));
+    for (let key of allKeys) {
+        let value1 = pins1[key];
+        let value2 = pins2[key];
+        if (value1 === value2) {
+            console.log(`${padLeft(key, maxKeyLength)}: ${value1}`);
+        } else {
+            console.log(`${padLeft(key, maxKeyLength)}: expected ${value1} <> actual ${value2}`);
+        }
+    }
+}
+
+function testComponent(system: System, component: Component, inputEntries: { [key: string]: number }[], logic: ComponentLogic) {
+    system.setMainComponent(component);
+    system.constructGraph();
+
+    for (let inputs of inputEntries) {
+        //TODO system.clear清空pin数据
+        component.applyInputValues(inputs);
+        system.runLogic();
+
+        let outputs1: { [key: string]: number } = {};
+        logic(inputs, outputs1);
+        let outputs2 = component.getOutputValues();
+
+        if (!testPinsEqual(outputs1, outputs2)) {
+            console.log("-----------------------------");
+            console.log("--inputs---------------------");
+            printPins(inputs);
+            console.log("--outputs--------------------");
+            print2Pins(outputs1, outputs2);
+            console.log("-----------------------------");
+            break;
+        }
+    }
+}
+
+let inputEntries: { [key: string]: number }[] = [];
+for (let i = 0; i <= 15; i++) {
+    for (let j = 0; j <= 15; j++) {
+        let A = i;
+        let B = j;
+        let Cin = 0;
+        inputEntries.push({A, B, Cin});
+    }
+}
+
+let adder = system.createComponent("adder", "4bit-adder");
+
+testComponent(system, adder, inputEntries, (inputs, outputs) => {
+    let x = inputs.A + inputs.B;
+    outputs.Cout = (x >= 16) ? 1 : 0;
+    outputs.S = x & 0b1111;
+});
+
+// let r1 = adder.exportTemplate();
+// let r2 = system.componentTemplates.get("4bit-adder");
+// console.log(JSON.stringify(r1) === JSON.stringify(r2));

@@ -78,10 +78,10 @@ export class System {
         let runners = g.calcOrder();
         this.runners = runners.filter(runner => runner.needRun);
 
-        console.log("order-----------------------");
-        for (let runner of this.runners) {
-            console.log(runner.constructor.name, runner.name);
-        }
+        // console.log("order-----------------------");
+        // for (let runner of this.runners) {
+        //     console.log(runner.constructor.name, runner.name);
+        // }
     }
 
     runLogic() {
@@ -89,7 +89,7 @@ export class System {
         for (let runner of this.runners) {
             runner.run();
         }
-        console.log("run-------------------------");
+        // console.log("run-------------------------");
         // for (let input of this.mainComponent.inputPins.values()) {
         //     console.log(`input: ${input.name} => ${input.read()}`);
         // }
