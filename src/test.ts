@@ -108,20 +108,39 @@ function testComponent(system: System, component: Component, inputEntries: { [ke
     }
 }
 
-let inputEntries: { [key: string]: number }[] = [];
-for (let i = 0; i <= 15; i++) {
-    for (let j = 0; j <= 15; j++) {
-        let A = i;
-        let B = j;
-        let Cin = 0;
-        inputEntries.push({A, B, Cin});
+const MAX_ALLINPUT_WIDTH = 16;
+
+function generateAllInputEntries(component: Component): { [key: string]: number }[] {
+    let pins = [...component.inputPins.values()];
+
+    let bitRanges: { name: string, mask: number, offset: number }[] = [];
+    let total = 0;
+    for (let pin of pins) {
+        bitRanges.push({name: pin.name, offset: total, mask: (1 << pin.width) - 1});
+        total = total + pin.width;
     }
+    if (total > MAX_ALLINPUT_WIDTH) {
+        console.log(`AllInputEntries max width is 16. Actual width is ${total}`);
+        return [];
+    }
+
+    let r: { [key: string]: number }[] = [];
+    const max = 1 << total;
+    for (let i = 0; i < max; i++) {
+        let input: { [key: string]: number } = {};
+        for (let {name, mask, offset} of bitRanges) {
+            input[name] = (i >> offset) & mask;
+        }
+        r.push(input);
+    }
+    return r;
 }
 
 let adder = system.createComponent("adder", "4bit-adder");
 
+let inputEntries = generateAllInputEntries(adder);
 testComponent(system, adder, inputEntries, (inputs, outputs) => {
-    let x = inputs.A + inputs.B;
+    let x = inputs.A + inputs.B + inputs.Cin;
     outputs.Cout = (x >= 16) ? 1 : 0;
     outputs.S = x & 0b1111;
 });
