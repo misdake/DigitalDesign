@@ -43,14 +43,14 @@ export class System {
         let g = new DependencyGraph<Component | Pin, Wire>();
 
         function add(component: Component) {
-            for (let child of component.components.values()) {
+            for (let child of Object.values(component.components)) {
                 add(child);
             }
 
             if (component.isCustom) {
                 //custom component => 添加pin作为vertex，不添加自己，添加内部所有wire
-                for (let inputPin of component.inputPins.values()) g.addVertex(inputPin);
-                for (let outputPin of component.outputPins.values()) g.addVertex(outputPin);
+                for (let inputPin of Object.values(component.inputPins)) g.addVertex(inputPin);
+                for (let outputPin of Object.values(component.outputPins)) g.addVertex(outputPin);
 
                 for (let wire of component.wires) {
                     let from = wire.fromPin;
@@ -60,11 +60,11 @@ export class System {
             } else {
                 //builtin component => 添加自己作为vertex，没有内部wire
                 g.addVertex(component);
-                for (let inputPin of component.inputPins.values()) {
+                for (let inputPin of Object.values(component.inputPins)) {
                     g.addVertex(inputPin);
                     g.addEdge(inputPin, component, new DummyWire());
                 }
-                for (let outputPin of component.outputPins.values()) {
+                for (let outputPin of Object.values(component.outputPins)) {
                     g.addVertex(outputPin);
                     g.addEdge(component, outputPin, new DummyWire());
                 }

@@ -71,8 +71,8 @@ function print2Pins(pins1: { [key: string]: number }, pins2: { [key: string]: nu
     let keys1 = Object.keys(pins1);
     let keys2 = Object.keys(pins2);
     let allKeys = new Set<string>([...keys1, ...keys2]);
-    let maxKeyLength = Math.max(...([...allKeys.values()].map(i => i.length)));
-    for (let key of allKeys) {
+    let maxKeyLength = Math.max(...(Array.from(allKeys.values()).map(i => i.length)));
+    allKeys.forEach(key => {
         let value1 = pins1[key];
         let value2 = pins2[key];
         if (value1 === value2) {
@@ -80,7 +80,7 @@ function print2Pins(pins1: { [key: string]: number }, pins2: { [key: string]: nu
         } else {
             console.log(`${padLeft(key, maxKeyLength)}: expected ${value1} <> actual ${value2}`);
         }
-    }
+    });
 }
 
 function testComponent(system: System, component: Component, inputEntries: { [key: string]: number }[], logic: ComponentLogic) {
@@ -111,7 +111,7 @@ function testComponent(system: System, component: Component, inputEntries: { [ke
 const MAX_ALLINPUT_WIDTH = 16;
 
 function generateAllInputEntries(component: Component): { [key: string]: number }[] {
-    let pins = [...component.inputPins.values()];
+    let pins = Object.values(component.inputPins);
 
     let bitRanges: { name: string, mask: number, offset: number }[] = [];
     let total = 0;

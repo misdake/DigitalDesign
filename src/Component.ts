@@ -67,9 +67,9 @@ export class Component {
     readonly isCustom: boolean; //是否是用自定义的Component，如果是=>Component用于连接内部组件，如果不是=>使用run方法执行逻辑
     readonly type: string;
 
-    inputPins: Map<string, Pin>;
-    components: Map<string, Component>;
-    outputPins: Map<string, Pin>;
+    inputPins: { [key: string]: Pin };
+    components: { [key: string]: Component };
+    outputPins: { [key: string]: Pin };
 
     wires: Wire[];
 
@@ -81,9 +81,9 @@ export class Component {
 
         //根据模板设置自己的内容
 
-        this.inputPins = new Map<string, Pin>();
-        this.components = new Map<string, Component>();
-        this.outputPins = new Map<string, Pin>();
+        this.inputPins = {};
+        this.components = {};
+        this.outputPins = {};
         this.wires = [];
 
         let components = template.components;
@@ -91,11 +91,11 @@ export class Component {
             let generator = componentLibrary.get(component.type);
             if (!generator) error("Generator not found!");
             let created = generator(component.name, componentLibrary);
-            this.components.set(component.name, created);
+            this.components[component.name] = created;
         }
 
-        template.inputPins.forEach(input => this.inputPins.set(input.name, new Pin(input.name, input.width, input.type, -1)));
-        template.outputPins.forEach(output => this.outputPins.set(output.name, new Pin(output.name, output.width, output.type, -1)));
+        template.inputPins.forEach(input => this.inputPins[input.name] = new Pin(input.name, input.width, input.type, -1));
+        template.outputPins.forEach(output => this.outputPins[output.name] = new Pin(output.name, output.width, output.type, -1));
 
         template.wires.forEach(w => {
             let fromComponent = w.fromComponent ? this.getComponent(w.fromComponent) : this;
@@ -113,9 +113,9 @@ export class Component {
         r.components = [];
         r.outputPins = [];
         r.wires = [];
-        this.inputPins.forEach(pin => r.inputPins.push({name: pin.name, width: pin.width, type: pin.type}));
-        this.components.forEach(component => r.components.push({name: component.name, type: component.type}));
-        this.outputPins.forEach(pin => r.outputPins.push({name: pin.name, width: pin.width, type: pin.type}));
+        Object.values(this.inputPins).forEach(pin => r.inputPins.push({name: pin.name, width: pin.width, type: pin.type}));
+        Object.values(this.components).forEach(component => r.components.push({name: component.name, type: component.type}));
+        Object.values(this.outputPins).forEach(pin => r.outputPins.push({name: pin.name, width: pin.width, type: pin.type}));
         this.wires.forEach(wire => r.wires.push({
             name: wire.name,
             fromComponent: wire.fromComponent === this ? null : wire.fromComponent.name,
@@ -127,26 +127,26 @@ export class Component {
     }
 
     getComponent(name: string) {
-        let component = this.components.get(name);
+        let component = this.components[name];
         if (!component) error("Component not found!");
         return component;
     }
 
     getInputPin(name: string) {
-        let pin = this.inputPins.get(name);
+        let pin = this.inputPins[name];
         if (!pin) error("Pin not found!");
         return pin;
     }
 
     getOutputPin(name: string) {
-        let pin = this.outputPins.get(name);
+        let pin = this.outputPins[name];
         if (!pin) error("Pin not found!");
         return pin;
     }
 
     getInputValues() {
         let inputs: { [key: string]: number } = {};
-        for (let pin of this.inputPins.values()) {
+        for (let pin of Object.values(this.inputPins)) {
             inputs[pin.name] = pin.read();
         }
         return inputs;
@@ -154,7 +154,7 @@ export class Component {
 
     getOutputValues() {
         let outputs: { [key: string]: number } = {};
-        for (let pin of this.outputPins.values()) {
+        for (let pin of Object.values(this.outputPins)) {
             outputs[pin.name] = pin.read();
         }
         return outputs;
@@ -162,7 +162,7 @@ export class Component {
 
     applyInputValues(inputs: { [key: string]: number }) {
         for (let key of Object.keys(inputs)) {
-            let pin = this.inputPins.get(key);
+            let pin = this.inputPins[key];
             if (pin) {
                 let value = inputs[key];
                 value = value & ((1 << pin.width) - 1);
@@ -173,7 +173,7 @@ export class Component {
 
     applyOutputValues(outputs: { [key: string]: number }) {
         for (let key of Object.keys(outputs)) {
-            let pin = this.outputPins.get(key);
+            let pin = this.outputPins[key];
             if (pin) {
                 let value = outputs[key];
                 value = value & ((1 << pin.width) - 1);

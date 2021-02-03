@@ -3,7 +3,7 @@
     "experimentalDecorators": true,
     "rootDir": "./src/",
     "module": "CommonJS",
-    "target": "es6",
+    "target": "es2017",
     "sourceMap": true,
     "noImplicitAny": true,
     "noImplicitReturns": true,
