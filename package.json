@@ -10,7 +10,7 @@
   "scripts": {
     "build": "webpack --env.production",
     "dev": "webpack-dev-server",
-    "test": "ts-node src/test.ts"
+    "test": "ts-node src/logic/test.ts"
   },
   "dependencies": {
     "lit-element": "^2.4.0",
