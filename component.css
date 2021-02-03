@@ -1,0 +1,84 @@
+.component {
+    background: #CCC;
+    position: relative;
+    border-radius: 5px;
+    overflow: hidden;
+/*  width, height set by code  */
+}
+
+.component-name {
+    position: absolute;
+    bottom: 50%;
+    width: 100%;
+    height: 50px;
+    font-size: 24px;
+    line-height: 50px;
+    text-align: center;
+
+    opacity: 1;
+    transition: opacity 0.5s;
+}
+.component:hover .component-name {
+    opacity: 0.5;
+}
+
+.component-type {
+    position: absolute;
+    top: 50%;
+    width: 100%;
+    height: 50px;
+    font-size: 24px;
+    line-height: 50px;
+    text-align: center;
+
+    opacity: 1;
+    transition: opacity 0.5s;
+}
+.component:hover .component-type {
+    opacity: 0.5;
+}
+
+.pin {
+    width: 100px;
+    height: 50px;
+    line-height: 50px;
+    font-size: 16px;
+    vertical-align: middle;
+
+    box-sizing: border-box;
+
+    background: rgb(255, 255, 255);
+    background: linear-gradient(156deg, rgba(255, 255, 255, 1) 0%, rgba(204, 204, 204, 1) 35%, rgba(0, 212, 255, 1) 100%);
+
+    opacity: 0;
+    transition: opacity 0.5s;
+}
+
+.input-pin-list {
+    position: absolute;
+    left: 0;
+    top: 0;
+    width: 100px;
+    transition: opacity 0.5s;
+}
+.input-pin {
+    text-align: left;
+    padding-left: 20px;
+}
+.component:hover .input-pin {
+    opacity: 1;
+}
+
+.output-pin-list {
+    position: absolute;
+    right: 0;
+    top: 0;
+    width: 100px;
+}
+.output-pin {
+    text-align: right;
+    padding-right: 20px;
+}
+.component:hover .output-pin {
+    opacity: 1;
+}
