@@ -8,4 +8,4 @@ registerBasicComponents(system);
 let component = system.createComponent("and_gate", "and");
 
 console.log("hi~");
-render(html`<component-element .component=${component}></component-element>`, document.body);
+render(html`<component-element .component=${component} style="position: absolute; left: 100px;"></component-element>`, document.body);

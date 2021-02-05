@@ -1,5 +1,6 @@
 import {customElement, html, LitElement, property} from "lit-element";
 import {Component} from "../../logic/Component";
+import "./PinElement"
 
 @customElement('component-element')
 export class ComponentElement extends LitElement {
@@ -14,8 +15,8 @@ export class ComponentElement extends LitElement {
         let width = 300; //TODO 从component获取
         let height = 50 * Math.max(2, inputPins.length, outputPins.length); //TODO 从component获取
 
-        let inputs = inputPins.map(pin => html`<div class="pin input-pin">${pin.name}</div>`);
-        let outputs = outputPins.map(pin => html`<div class="pin output-pin">${pin.name}</div>`);
+        let inputs = inputPins.map(pin => html`<inputpin-element .pin=${pin}></inputpin-element>`);
+        let outputs = outputPins.map(pin => html`<outputpin-element .pin=${pin}></outputpin-element>`);
 
         return html`
             <div class="component" style="width: ${width}px; height: ${height}px;">
