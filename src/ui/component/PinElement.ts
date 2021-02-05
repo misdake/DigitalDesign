@@ -4,7 +4,7 @@ import {Pin} from "../../logic/Component";
 @customElement('inputpin-element')
 export class InputPinElement extends LitElement {
     @property()
-    private pin: Pin;
+    pin: Pin;
 
     render() {
         return html`
@@ -25,7 +25,7 @@ export class InputPinElement extends LitElement {
 @customElement('outputpin-element')
 export class OutputPinElement extends LitElement {
     @property()
-    private pin: Pin;
+    pin: Pin;
 
     render() {
         return html`
