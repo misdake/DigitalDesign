@@ -9,7 +9,6 @@ export class GameCompElement extends LitElement {
     @property()
     gameComp: GameComp;
 
-    private element: HTMLDivElement;
     private tx: number;
     private ty: number;
 
@@ -24,8 +23,8 @@ export class GameCompElement extends LitElement {
         let width = 50 * this.gameComp.w;
         let height = 50 * Math.max(this.gameComp.h);
 
-        let inputs = inputPins.map(pin => html`<inputpin-element .gamePin=${pin}></inputpin-element>`);
-        let outputs = outputPins.map(pin => html`<outputpin-element .gamePin=${pin}></outputpin-element>`);
+        let inputs = inputPins.map(pin => html`<inputpin-element .gameComp=${this.gameComp} .gamePin=${pin}></inputpin-element>`);
+        let outputs = outputPins.map(pin => html`<outputpin-element .gameComp=${this.gameComp} .gamePin=${pin}></outputpin-element>`);
 
         let tx = this.gameComp.x * 50;
         let ty = this.gameComp.y * 50;
@@ -33,13 +32,14 @@ export class GameCompElement extends LitElement {
         this.ty = ty;
 
         //transform translate set in updated() callback
+        //TODO 如果name===type，那么不使用动画显示name，只固定显示type
         return html`
-            <div class="component" style="width: ${width}px; height: ${height}px;">
+            <div class="component" style="touch-action: none; width: ${width}px; height: ${height}px;">
                 <div class="component-bg"></div>
-                <div class="component-name">${component.name}</div>
-                <div class="component-type">${component.type}</div>
-                <div class="input-pin-list">${inputs}</div>
-                <div class="output-pin-list">${outputs}</div>
+                <div style="pointer-events: none;" class="component-name">${component.name}</div>
+                <div style="pointer-events: none;" class="component-type">${component.type}</div>
+                <div style="pointer-events: none;" class="input-pin-list">${inputs}</div>
+                <div style="pointer-events: none;" class="output-pin-list">${outputs}</div>
             </div>
         `;
     }
@@ -62,30 +62,28 @@ export class GameCompElement extends LitElement {
     updated() {
         let self = this;
 
-        let element = this.getElementsByClassName("component").item(0) as HTMLDivElement;
-        if (this.element !== element) {
-            this.element = element;
+        let dragElement = this.getElementsByClassName("component-bg").item(0) as HTMLDivElement;
+        let compElement = this.getElementsByClassName("component").item(0) as HTMLDivElement;
 
-            GameCompElement.updateXY(element, this.gameComp, this.gameComp.x, this.gameComp.y, true);
+        GameCompElement.updateXY(compElement, this.gameComp, this.gameComp.x, this.gameComp.y, true);
 
-            interact(element).draggable({
-                listeners: {
-                    start(event) {
-                        console.log(event.type, event.target);
-                    },
-                    move(event) {
-                        self.tx += event.dx;
-                        self.ty += event.dy;
-
-                        let x = Math.round(self.tx / 50);
-                        let y = Math.round(self.ty / 50);
-
-                        //TODO 限制最大最小值
-                        GameCompElement.updateXY(element, self.gameComp, x, y);
-                    },
+        interact(dragElement).draggable({
+            listeners: {
+                start(event) {
+                    // console.log(event.type, event.target);
                 },
-            });
-        }
+                move(event) {
+                    self.tx += event.dx;
+                    self.ty += event.dy;
+
+                    let x = Math.round(self.tx / 50);
+                    let y = Math.round(self.ty / 50);
+
+                    //TODO 从Editor走一圈来更新xy，同时限制最大最小值
+                    GameCompElement.updateXY(compElement, self.gameComp, x, y);
+                },
+            },
+        });
     }
 
     createRenderRoot() {

@@ -90,3 +90,24 @@
     text-align: right;
     padding-right: 10px;
 }
+
+.pin-circle {
+    pointer-events: all; position: absolute; background: #fff;
+    width: 20px; height: 20px; border: 2px #ccc solid; box-sizing: border-box; border-radius: 10px; top: 15px;
+}
+.inputpin-circle {
+    left: -35px;
+}
+.outputpin-circle {
+    right: -35px;
+}
+
+.pin-dash {
+    position: absolute; background: #ccc; width: 15px; height: 2px; top: 24px;
+}
+.inputpin-dash {
+    left: -15px;
+}
+.outputpin-dash {
+    right: -15px;
+}

@@ -7,6 +7,8 @@ export class GamePin {
     readonly pin: Pin;
     readonly index: number;
 
+    //TODO wire
+
     constructor(pin: Pin, index: number, isInput: boolean, isOutput: boolean) {
         this.pin = pin;
         this.index = index;
