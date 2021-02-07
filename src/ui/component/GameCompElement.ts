@@ -10,6 +10,8 @@ export class GameCompElement extends LitElement {
     gameComp: GameComp;
 
     render() {
+        this.gameComp.uiElement = this;
+
         let component = this.gameComp.component;
         let inputPins = Object.values(component.inputPins);
         let outputPins = Object.values(component.outputPins);
@@ -22,6 +24,7 @@ export class GameCompElement extends LitElement {
 
         return html`
             <div class="component" style="width: ${width}px; height: ${height}px;">
+                <div class="component-bg"></div>
                 <div class="component-name">${component.name}</div>
                 <div class="component-type">${component.type}</div>
                 <div class="input-pin-list">${inputs}</div>
