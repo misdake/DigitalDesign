@@ -1,12 +1,15 @@
 import {Component} from "../logic/Component";
 import {GameCompElement} from "../ui/component/GameCompElement";
 import {System} from "../logic/System";
+import {GamePin} from "./GamePin";
 
 export class GameCompTemplate {
     name: string;
     type: string;
     w: number;
     h: number;
+
+    // pinOrder? TODO
 }
 
 export class GameCompPack extends GameCompTemplate {
@@ -15,9 +18,12 @@ export class GameCompPack extends GameCompTemplate {
 }
 
 export class GameComp extends GameCompPack {
-    id: number;
-    component: Component;
-    uiElement: GameCompElement; //to be filled by GameCompElement
+    readonly id: number;
+    readonly component: Component;
+    uiElement: GameCompElement; //to be filled by GameCompElement, kinda readonly
+
+    readonly inputPins: GamePin[];
+    readonly outputPins: GamePin[];
 
     highlight: boolean;
 
@@ -33,6 +39,10 @@ export class GameComp extends GameCompPack {
         this.h = pack.h;
 
         this.component = system.createComponent(pack.name, pack.type);
+
+        //设置inputPins和outputPins
+        this.inputPins = Object.values(this.component.inputPins).map(pin => new GamePin(pin, true, false));
+        this.outputPins = Object.values(this.component.outputPins).map(pin => new GamePin(pin, false, true));
     }
 
     pack(): GameCompPack {
