@@ -46,24 +46,27 @@ export class GameCompElement extends LitElement {
 
     private static updateXY(element: HTMLDivElement, gameComp: GameComp, x: number, y: number, force: boolean = false) {
         if (force || gameComp.x !== x || gameComp.y !== y) {
-            console.log("updateXY");
+            // console.log("updateXY");
             gameComp.x = x;
             gameComp.y = y;
             let tx = x * 50;
             let ty = y * 50;
             element.style.transform = `translate(${tx}px, ${ty}px)`;
+
+            if (!force) {
+                //TODO 通知，用来更新连线
+            }
         }
     }
 
     updated() {
-        console.log("updated");
         let self = this;
 
         let element = this.getElementsByClassName("component").item(0) as HTMLDivElement;
         if (this.element !== element) {
             this.element = element;
 
-            GameCompElement.updateXY(element, this.gameComp, this.gameComp.x, this.gameComp.y);
+            GameCompElement.updateXY(element, this.gameComp, this.gameComp.x, this.gameComp.y, true);
 
             interact(element).draggable({
                 listeners: {

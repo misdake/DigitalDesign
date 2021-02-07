@@ -41,8 +41,8 @@ export class GameComp extends GameCompPack {
         this.component = system.createComponent(pack.name, pack.type);
 
         //设置inputPins和outputPins
-        this.inputPins = Object.values(this.component.inputPins).map(pin => new GamePin(pin, true, false));
-        this.outputPins = Object.values(this.component.outputPins).map(pin => new GamePin(pin, false, true));
+        this.inputPins = Object.values(this.component.inputPins).map((pin, index) => new GamePin(pin, index, true, false));
+        this.outputPins = Object.values(this.component.outputPins).map((pin, index) => new GamePin(pin, index, false, true));
     }
 
     pack(): GameCompPack {

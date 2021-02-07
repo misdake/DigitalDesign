@@ -5,9 +5,11 @@ export class GamePin {
     readonly isInput: boolean;
     readonly isOutput: boolean;
     readonly pin: Pin;
+    readonly index: number;
 
-    constructor(pin: Pin, isInput: boolean, isOutput: boolean) {
+    constructor(pin: Pin, index: number, isInput: boolean, isOutput: boolean) {
         this.pin = pin;
+        this.index = index;
         this.isInput = isInput;
         this.isOutput = isOutput;
     }
