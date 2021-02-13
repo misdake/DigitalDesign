@@ -2,9 +2,12 @@ import {customElement, html, LitElement, property} from "lit-element";
 import {GamePin} from "../../game/GamePin";
 import interact from "interactjs";
 import {GameComp} from "../../game/GameComp";
+import {Game} from "../../game/Game";
 
 @customElement('inputpin-element')
 export class InputPinElement extends LitElement {
+    @property()
+    game: Game;
     @property()
     gameComp: GameComp;
     @property()
@@ -25,6 +28,7 @@ export class InputPinElement extends LitElement {
                 </svg>
             </div>
         `;
+        //TODO 连线是否要单独放到一个地方去？这样便于控制zindex
     }
 
     private getPosition() {

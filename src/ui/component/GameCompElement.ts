@@ -2,10 +2,13 @@ import interact from 'interactjs';
 import {customElement, html, LitElement, property} from "lit-element";
 import "./PinElement";
 import {GameComp} from "../../game/GameComp";
+import {Game} from "../../game/Game";
 
 @customElement('gamecomp-element')
 export class GameCompElement extends LitElement {
 
+    @property()
+    game: Game;
     @property()
     gameComp: GameComp;
 
@@ -23,8 +26,8 @@ export class GameCompElement extends LitElement {
         let width = 50 * this.gameComp.w;
         let height = 50 * Math.max(this.gameComp.h);
 
-        let inputs = inputPins.map(pin => html`<inputpin-element .gameComp=${this.gameComp} .gamePin=${pin}></inputpin-element>`);
-        let outputs = outputPins.map(pin => html`<outputpin-element .gameComp=${this.gameComp} .gamePin=${pin}></outputpin-element>`);
+        let inputs = inputPins.map(pin => html`<inputpin-element .game=${this.game} .gameComp=${this.gameComp} .gamePin=${pin}></inputpin-element>`);
+        let outputs = outputPins.map(pin => html`<outputpin-element .game=${this.game} .gameComp=${this.gameComp} .gamePin=${pin}></outputpin-element>`);
 
         let tx = this.gameComp.x * 50;
         let ty = this.gameComp.y * 50;
@@ -44,7 +47,8 @@ export class GameCompElement extends LitElement {
         `;
     }
 
-    private static updateXY(element: HTMLDivElement, gameComp: GameComp, x: number, y: number, force: boolean = false) {
+    private updateXY(element: HTMLDivElement, x: number, y: number, force: boolean = false) {
+        let gameComp = this.gameComp;
         if (force || gameComp.x !== x || gameComp.y !== y) {
             // console.log("updateXY");
             gameComp.x = x;
@@ -54,7 +58,11 @@ export class GameCompElement extends LitElement {
             element.style.transform = `translate(${tx}px, ${ty}px)`;
 
             if (!force) {
-                //TODO 通知，用来更新连线
+                //通知，用来更新连线
+
+                //TODO 把上面gameComp的修改放到editor.moveComponent里
+
+                this.game.editor.moveComponent(this.gameComp, x, y);
             }
         }
     }
@@ -65,7 +73,7 @@ export class GameCompElement extends LitElement {
         let dragElement = this.getElementsByClassName("component-bg").item(0) as HTMLDivElement;
         let compElement = this.getElementsByClassName("component").item(0) as HTMLDivElement;
 
-        GameCompElement.updateXY(compElement, this.gameComp, this.gameComp.x, this.gameComp.y, true);
+        this.updateXY(compElement, this.gameComp.x, this.gameComp.y, true);
 
         interact(dragElement).draggable({
             listeners: {
@@ -80,7 +88,7 @@ export class GameCompElement extends LitElement {
                     let y = Math.round(self.ty / 50);
 
                     //TODO 从Editor走一圈来更新xy，同时限制最大最小值
-                    GameCompElement.updateXY(compElement, self.gameComp, x, y);
+                    self.updateXY(compElement, x, y);
                 },
             },
         });
