@@ -7,6 +7,15 @@ export class Editor {
     constructor(game:Game) {
         //TODO 输入画布div
         this.game = game;
+
+
+        // @ts-ignore
+        window.deleteSelected = () => {
+            if (this.selectedGameComp) {
+                this.removeComponent(this.selectedGameComp);
+                this.selectedGameComp = null;
+            }
+        };
     }
 
     private callbacks: (()=>void)[] = [];
@@ -14,6 +23,7 @@ export class Editor {
     public registerUpdate(callback: () => void) {
         this.callbacks.push(callback);
     }
+
     private doUpdate() {
         this.callbacks.forEach(callback => callback()); //TODO 区分不同级别的修改
     }
@@ -22,9 +32,11 @@ export class Editor {
         //返回个啥
     }
 
-    createComponent(template: GameCompTemplate, x: number, y: number) : GameComp { //TODO dummy component?
+    private nextCompId = 1;
+
+    createComponent(template: GameCompTemplate, x: number, y: number): GameComp { //TODO dummy component?
         let pack = {...template, x: x, y: y};
-        let comp = new GameComp(1, this.game.system, pack); //TODO generate id
+        let comp = new GameComp(this.nextCompId++, this.game.system, pack);
         this.game.components.push(comp);
         this.doUpdate(); //TODO 支持一次添加多个
         return comp;
@@ -34,8 +46,16 @@ export class Editor {
         console.log("editor moveComponent", gameComp.name, x, y);
     }
 
-    removeComponent() {
+    removeComponent(gameComp: GameComp): boolean {
+        const index = this.game.components.indexOf(gameComp);
+        if (index > -1) {
+            this.game.components.splice(index, 1);
 
+            this.doUpdate();
+
+            return true;
+        }
+        return false;
     }
 
 
@@ -49,6 +69,12 @@ export class Editor {
 
     removeWire() {
 
+    }
+
+
+    selectedGameComp: GameComp; //TODO move to Game?
+    selectGameComp(gameComp: GameComp) {
+        this.selectedGameComp = gameComp;
     }
 
 

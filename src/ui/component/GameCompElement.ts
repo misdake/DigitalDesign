@@ -37,7 +37,7 @@ export class GameCompElement extends LitElement {
         //transform translate set in updated() callback
         //TODO 如果name===type，那么不使用动画显示name，只固定显示type
         return html`
-            <div class="component" style="touch-action: none; width: ${width}px; height: ${height}px;">
+            <div class="component" style="touch-action: none; width: ${width}px; height: ${height}px;" @click=${() => this.game.editor.selectGameComp(this.gameComp)}>
                 <div class="component-bg"></div>
                 <div style="pointer-events: none;" class="component-name">${component.name}</div>
                 <div style="pointer-events: none;" class="component-type">${component.type}</div>

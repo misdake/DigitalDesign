@@ -14,16 +14,16 @@ export class PlaygroundElement extends LitElement {
         this.game.editor.registerUpdate(() => {
             //TODO 检查是否只进行增删
             console.log("update");
-            this.requestUpdate();
+            this.requestUpdateInternal();
         });
     }
 
     render() {
         //TODO 添加每个gameComp的id
         let components = this.game.components.map(component => html`
-            <gamecomp-element .game=${this.game} .gameComp=${component} style="position: absolute;"></gamecomp-element>`);
+            <gamecomp-element id="gameComp_${component.id}" .game=${this.game} .gameComp=${component} style="position: absolute;"></gamecomp-element>`);
 
-        console.log("render");
+        console.log("render", this.game.components);
         return html`
             <div class="playground">
                 <div class="components">${components}</div>
