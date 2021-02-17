@@ -1,11 +1,11 @@
 {
-  "name": "circuit-design",
+  "name": "digital-design",
   "version": "0.1.0",
   "description": "",
   "main": "app.js",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/misdake/CircuitDesign.git"
+    "url": "git+https://github.com/misdake/DigitalDesign.git"
   },
   "scripts": {
     "build": "webpack --env.production",
