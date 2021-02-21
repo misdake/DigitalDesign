@@ -28,13 +28,9 @@ export class Editor {
         this.callbacks.forEach(callback => callback()); //TODO 区分不同级别的修改
     }
 
-    createComponentDummy(template: GameCompTemplate) {
-        //返回个啥
-    }
-
     private nextCompId = 1;
 
-    createComponent(template: GameCompTemplate, x: number, y: number): GameComp { //TODO dummy component?
+    createComponent(template: GameCompTemplate, x: number, y: number): GameComp {
         let pack = {...template, x: x, y: y};
         let comp = new GameComp(this.nextCompId++, this.game.system, pack);
         this.game.components.push(comp);
@@ -43,6 +39,8 @@ export class Editor {
     }
 
     moveComponent(gameComp: GameComp, x: number, y: number) {
+        gameComp.x = x;
+        gameComp.y = y;
         console.log("editor moveComponent", gameComp.name, x, y);
     }
 

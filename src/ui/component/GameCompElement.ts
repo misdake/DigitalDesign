@@ -50,20 +50,12 @@ export class GameCompElement extends LitElement {
     private updateXY(element: HTMLDivElement, x: number, y: number, force: boolean = false) {
         let gameComp = this.gameComp;
         if (force || gameComp.x !== x || gameComp.y !== y) {
-            // console.log("updateXY");
-            gameComp.x = x;
-            gameComp.y = y;
+            if (!force) {
+                this.game.editor.moveComponent(this.gameComp, x, y);
+            }
             let tx = x * 50;
             let ty = y * 50;
             element.style.transform = `translate(${tx}px, ${ty}px)`;
-
-            if (!force) {
-                //通知，用来更新连线
-
-                //TODO 把上面gameComp的修改放到editor.moveComponent里
-
-                this.game.editor.moveComponent(this.gameComp, x, y);
-            }
         }
     }
 
