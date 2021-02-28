@@ -1,5 +1,6 @@
 import {GameComp, GameCompTemplate} from "./GameComp";
 import {Game} from "./Game";
+import {GameWire, GameWireDummy} from "./GameWire";
 
 export class Editor {
     private game: Game;
@@ -47,6 +48,9 @@ export class Editor {
     removeComponent(gameComp: GameComp): boolean {
         const index = this.game.components.indexOf(gameComp);
         if (index > -1) {
+
+            //TODO 在这里删除相关的gameWire？
+
             this.game.components.splice(index, 1);
 
             this.doUpdate();
@@ -57,16 +61,32 @@ export class Editor {
     }
 
 
-    createWireDummy() {
+    createWireDummy() { //TODO 用什么参数
+        //TODO 干掉之前的wireDummy[0]
 
+        this.game.wireDummy[0] = new GameWireDummy();
+        //TODO 刷新UI
+
+        //返回这个wireDummy
     }
 
-    createWire() {
+    createWire(gameWire: GameWire) {
+        //TODO gameWire改为在这个方法里创建
 
+        this.game.wires.push(gameWire);
+        //TODO 刷新UI
     }
 
-    removeWire() {
+    removeWire(gameWire: GameWire) {
+        const index = this.game.wires.indexOf(gameWire);
+        if (index > -1) {
+            this.game.wires.splice(index, 1);
 
+            this.doUpdate(); //TODO 指明类型
+
+            return true;
+        }
+        return false;
     }
 
 
