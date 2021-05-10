@@ -1,11 +1,14 @@
 import {GameComp, GameCompTemplate} from "./GameComp";
 import {Game} from "./Game";
-import {GameWire, GameWireDummy} from "./GameWire";
+import {GameWire} from "./GameWire";
+import {InputPinElement, OutputPinElement} from "../ui/component/PinElement";
 
 export class Editor {
     private game: Game;
 
-    constructor(game:Game) {
+    //TODO 在这里统计原始对象和game对象之间的关系？
+
+    constructor(game: Game) {
         //TODO 输入画布div
         this.game = game;
 
@@ -60,14 +63,52 @@ export class Editor {
         return false;
     }
 
+    private selectedPin: InputPinElement | OutputPinElement = null;
+    isSelectedPin(element: InputPinElement | OutputPinElement) {
+        return element === this.selectedPin;
+    }
+    deselectPin() {
+        this.selectedPin = null;
+    }
+    selectInputPin(inputPin: InputPinElement) {
+        let oldSelected = this.selectedPin;
 
-    createWireDummy() { //TODO 用什么参数
-        //TODO 干掉之前的wireDummy[0]
+        if (this.selectedPin) {
+            if (this.selectedPin === inputPin) {
+                this.selectedPin = null;
+            } else if (this.selectedPin instanceof OutputPinElement) {
+                console.log(`connect ${inputPin} to ${this.selectedPin}`);
+                this.selectedPin = null;
+            } else if (this.selectedPin instanceof InputPinElement) {
+                this.selectedPin = inputPin;
+            }
+        } else {
+            this.selectedPin = inputPin;
+        }
+        if (oldSelected !== this.selectedPin) {
+            oldSelected?.requestUpdate();
+            this.selectedPin?.requestUpdate();
+        }
+    }
+    selectOutputPin(outputPin: OutputPinElement) {
+        let oldSelected = this.selectedPin;
 
-        this.game.wireDummy[0] = new GameWireDummy();
-        //TODO 刷新UI
-
-        //返回这个wireDummy
+        if (this.selectedPin) {
+            if (this.selectedPin === outputPin) {
+                this.selectedPin = null;
+            } else if (this.selectedPin instanceof InputPinElement) {
+                console.log(`connect ${this.selectedPin} to ${outputPin}`);
+                this.selectedPin = null;
+            } else if (this.selectedPin instanceof OutputPinElement) {
+                this.selectedPin = outputPin;
+            }
+        } else {
+            this.selectedPin = outputPin;
+        }
+        if (oldSelected !== this.selectedPin) {
+            oldSelected?.requestUpdate();
+            this.selectedPin?.requestUpdate();
+        }
     }
 
     createWire(gameWire: GameWire) {

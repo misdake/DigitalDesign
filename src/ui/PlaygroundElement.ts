@@ -19,9 +19,14 @@ export class PlaygroundElement extends LitElement {
     }
 
     render() {
-        //TODO 添加每个gameComp的id
-        let components = this.game.components.map(component => html`
-            <gamecomp-element id="gameComp_${component.id}" .game=${this.game} .gameComp=${component} style="position: absolute;"></gamecomp-element>`);
+        let components = this.game.components.map(component => html`<gamecomp-element id="gameComp_${component.id}" .game=${this.game} .gameComp=${component} style="position: absolute;"></gamecomp-element>`);
+
+        //TODO 实现id、拖拽，封装到一个GameWireElement里
+        let wires = this.game.wires.map(wire => html`
+            <svg class="pin-svg" width="100" height="100" style="position: absolute; left: -25px; top: 25px;">
+                <line class="pin-wire" stroke="red" stroke-width="5px"/>
+            </svg>
+        `);
 
         console.log("render", this.game.components);
         return html`
