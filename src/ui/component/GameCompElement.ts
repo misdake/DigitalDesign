@@ -51,7 +51,7 @@ export class GameCompElement extends LitElement {
         let gameComp = this.gameComp;
         if (force || gameComp.x !== x || gameComp.y !== y) {
             if (!force) {
-                this.game.editor.moveComponent(this.gameComp, x, y);
+                this.game.editor.component.moveComponent(this.gameComp, x, y);
             }
             let tx = x * 50;
             let ty = y * 50;

@@ -2,9 +2,13 @@ import {GameComp, GameCompTemplate} from "./GameComp";
 import {Game} from "./Game";
 import {GameWire} from "./GameWire";
 import {InputPinElement, OutputPinElement} from "../ui/component/PinElement";
+import {EditorPin} from "./editor/EditorPin";
+import {EditorComponent} from "./editor/EditorComponent";
 
 export class Editor {
     private game: Game;
+    public readonly pin: EditorPin;
+    public readonly component: EditorComponent;
 
     //TODO 在这里统计原始对象和game对象之间的关系？
 
@@ -12,11 +16,13 @@ export class Editor {
         //TODO 输入画布div
         this.game = game;
 
+        this.pin = new EditorPin(game, this);
+        this.component = new EditorComponent(game, this);
 
         // @ts-ignore
         window.deleteSelected = () => {
             if (this.selectedGameComp) {
-                this.removeComponent(this.selectedGameComp);
+                this.component.removeComponent(this.selectedGameComp);
                 this.selectedGameComp = null;
             }
         };
@@ -28,108 +34,9 @@ export class Editor {
         this.callbacks.push(callback);
     }
 
-    private doUpdate() {
+    public doUpdate() {
         this.callbacks.forEach(callback => callback()); //TODO 区分不同级别的修改
     }
-
-    private nextCompId = 1;
-
-    createComponent(template: GameCompTemplate, x: number, y: number): GameComp {
-        let pack = {...template, x: x, y: y};
-        let comp = new GameComp(this.nextCompId++, this.game.system, pack);
-        this.game.components.push(comp);
-        this.doUpdate(); //TODO 支持一次添加多个
-        return comp;
-    }
-
-    moveComponent(gameComp: GameComp, x: number, y: number) {
-        gameComp.x = x;
-        gameComp.y = y;
-        console.log("editor moveComponent", gameComp.name, x, y);
-    }
-
-    removeComponent(gameComp: GameComp): boolean {
-        const index = this.game.components.indexOf(gameComp);
-        if (index > -1) {
-
-            //TODO 在这里删除相关的gameWire？
-
-            this.game.components.splice(index, 1);
-
-            this.doUpdate();
-
-            return true;
-        }
-        return false;
-    }
-
-    private selectedPin: InputPinElement | OutputPinElement = null;
-    isSelectedPin(element: InputPinElement | OutputPinElement) {
-        return element === this.selectedPin;
-    }
-    deselectPin() {
-        this.selectedPin = null;
-    }
-    selectInputPin(inputPin: InputPinElement) {
-        let oldSelected = this.selectedPin;
-
-        if (this.selectedPin) {
-            if (this.selectedPin === inputPin) {
-                this.selectedPin = null;
-            } else if (this.selectedPin instanceof OutputPinElement) {
-                console.log(`connect ${inputPin} to ${this.selectedPin}`);
-                this.selectedPin = null;
-            } else if (this.selectedPin instanceof InputPinElement) {
-                this.selectedPin = inputPin;
-            }
-        } else {
-            this.selectedPin = inputPin;
-        }
-        if (oldSelected !== this.selectedPin) {
-            oldSelected?.requestUpdate();
-            this.selectedPin?.requestUpdate();
-        }
-    }
-    selectOutputPin(outputPin: OutputPinElement) {
-        let oldSelected = this.selectedPin;
-
-        if (this.selectedPin) {
-            if (this.selectedPin === outputPin) {
-                this.selectedPin = null;
-            } else if (this.selectedPin instanceof InputPinElement) {
-                console.log(`connect ${this.selectedPin} to ${outputPin}`);
-                this.selectedPin = null;
-            } else if (this.selectedPin instanceof OutputPinElement) {
-                this.selectedPin = outputPin;
-            }
-        } else {
-            this.selectedPin = outputPin;
-        }
-        if (oldSelected !== this.selectedPin) {
-            oldSelected?.requestUpdate();
-            this.selectedPin?.requestUpdate();
-        }
-    }
-
-    createWire(gameWire: GameWire) {
-        //TODO gameWire改为在这个方法里创建
-
-        this.game.wires.push(gameWire);
-        //TODO 刷新UI
-    }
-
-    removeWire(gameWire: GameWire) {
-        const index = this.game.wires.indexOf(gameWire);
-        if (index > -1) {
-            this.game.wires.splice(index, 1);
-
-            this.doUpdate(); //TODO 指明类型
-
-            return true;
-        }
-        return false;
-    }
-
 
     selectedGameComp: GameComp; //TODO move to Game?
     selectGameComp(gameComp: GameComp) {

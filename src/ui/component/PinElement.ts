@@ -24,7 +24,7 @@ export class InputPinElement extends LitElement {
             <div class="pin input-pin">
                 <div class="pin-name inputpin-name">${pin.name}</div>
                 <div class="pin-dash inputpin-dash"></div>
-                <div class="pin-circle inputpin-circle ${this.game.editor.isSelectedPin(this) ? 'inputpin-circle-selected' : ''}" @click=${() => this.clickCircle()}></div>
+                <div class="pin-circle inputpin-circle ${this.game.editor.pin.isSelectedPin(this) ? 'inputpin-circle-selected' : ''}" @click=${() => this.clickCircle()}></div>
             </div>
         `;
     }
@@ -36,7 +36,7 @@ export class InputPinElement extends LitElement {
     }
 
     private clickCircle() {
-        this.game.editor.selectInputPin(this);
+        this.game.editor.pin.selectInputPin(this);
     }
 
     createRenderRoot() {
@@ -59,13 +59,13 @@ export class OutputPinElement extends LitElement {
             <div class="pin output-pin">
                 <div class="pin-name outputpin-name">${pin.name}</div>
                 <div class="pin-dash outputpin-dash"></div>
-                <div class="pin-circle outputpin-circle ${this.game.editor.isSelectedPin(this) ? 'outputpin-circle-selected' : ''}" @click=${() => this.clickCircle()}></div>
+                <div class="pin-circle outputpin-circle ${this.game.editor.pin.isSelectedPin(this) ? 'outputpin-circle-selected' : ''}" @click=${() => this.clickCircle()}></div>
             </div>
         `;
     }
 
     private clickCircle() {
-        this.game.editor.selectOutputPin(this);
+        this.game.editor.pin.selectOutputPin(this);
     }
 
     createRenderRoot() {

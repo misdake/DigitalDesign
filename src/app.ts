@@ -12,7 +12,7 @@ let game = new Game();
 
 let template1 = {name: "pack4", type: "pack4", w: 6, h: 4};
 let template2 = {name: "and", type: "and", w: 4, h: 2};
-game.editor.createComponent(template1, 2, 2);
+game.editor.component.createComponent(template1, 2, 2);
 // this.editor.createComponent(template2, 12, 2);
 
 render(html`
@@ -20,7 +20,7 @@ render(html`
         <playground-element .game=${game}></playground-element>
 
         <div style="position: absolute; left: 0; top: 0;">
-            <button @click=${() => game.editor.createComponent(template2, 12, 2)}>createComponent2</button>
+            <button @click=${() => game.editor.component.createComponent(template2, 12, 2)}>createComponent2</button>
         </div>
     </div>
 `, document.body);
