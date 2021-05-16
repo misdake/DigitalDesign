@@ -1,14 +1,14 @@
-import {GameComp, GameCompTemplate} from "./GameComp";
+import {GameComp} from "./GameComp";
 import {Game} from "./Game";
-import {GameWire} from "./GameWire";
-import {InputPinElement, OutputPinElement} from "../ui/component/PinElement";
 import {EditorPin} from "./editor/EditorPin";
 import {EditorComponent} from "./editor/EditorComponent";
+import {EditorWire} from "./editor/EditorWire";
 
 export class Editor {
     private game: Game;
     public readonly pin: EditorPin;
     public readonly component: EditorComponent;
+    public readonly wire: EditorWire;
 
     //TODO 在这里统计原始对象和game对象之间的关系？
 
@@ -18,9 +18,12 @@ export class Editor {
 
         this.pin = new EditorPin(game, this);
         this.component = new EditorComponent(game, this);
+        this.wire = new EditorWire(game, this);
 
-        // @ts-ignore
-        window.deleteSelected = () => {
+        (window as any).refresh = () => {
+            this.doUpdate();
+        };
+        (window as any).deleteSelected = () => {
             if (this.selectedGameComp) {
                 this.component.removeComponent(this.selectedGameComp);
                 this.selectedGameComp = null;

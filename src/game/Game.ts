@@ -19,7 +19,7 @@ export class Game {
         this.components = [];
         this.wires = [];
 
-        this.editor = new Editor(this); //TODO 传入画布div
+        this.editor = new Editor(this);
     }
 
 }

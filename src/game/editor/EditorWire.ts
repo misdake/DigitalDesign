@@ -2,6 +2,7 @@ import {Game} from "../Game";
 import {Editor} from "../Editor";
 import {InputPinElement, OutputPinElement} from "../../ui/component/PinElement";
 import {GameWire} from "../GameWire";
+import {Wire} from "../../logic/Component";
 
 export class EditorWire {
     private game: Game;
@@ -11,20 +12,19 @@ export class EditorWire {
         this.editor = editor;
     }
 
-    createWire(gameWire: GameWire) {
-        //TODO gameWire改为在这个方法里创建
-
+    createWire(from: OutputPinElement, to: InputPinElement) {
+        let wire = new Wire("wire", from.gameComp.component, from.gamePin.pin, to.gameComp.component, to.gamePin.pin);
+        let gameWire = new GameWire(wire, from.gamePin, to.gamePin);
         this.game.wires.push(gameWire);
-        //TODO 刷新UI
+
+        this.editor.doUpdate();
     }
 
     removeWire(gameWire: GameWire) {
         const index = this.game.wires.indexOf(gameWire);
         if (index > -1) {
             this.game.wires.splice(index, 1);
-
-            this.editor.doUpdate(); //TODO 指明类型
-
+            this.editor.doUpdate();
             return true;
         }
         return false;

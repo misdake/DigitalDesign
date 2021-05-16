@@ -68,10 +68,10 @@ export class EditorPin {
         if (from.gameComp === to.gameComp) return false;
 
         //TODO 也不能构成环
-        this.game.wires
 
         //剩下情况都可以连接
         console.log("可以构成");
+        this.editor.wire.createWire(from, to); //TODO 这里面请求了更新，是不是外面就不要更新了？
 
         return true;
     }

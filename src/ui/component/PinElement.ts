@@ -1,4 +1,4 @@
-import {customElement, html, LitElement, property} from "lit-element";
+import {customElement, html, LitElement, property, TemplateResult} from "lit-element";
 import {GamePin} from "../../game/GamePin";
 import {GameComp} from "../../game/GameComp";
 import {Game} from "../../game/Game";

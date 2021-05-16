@@ -25,7 +25,12 @@ export class GameComp extends GameCompPack {
     readonly inputPins: GamePin[];
     readonly outputPins: GamePin[];
 
-    highlight: boolean;
+    getXy() {
+        return {
+            x: this.x,
+            y: this.y,
+        }
+    }
 
     constructor(id: number, system: System, pack: GameCompPack) {
         super();
@@ -41,8 +46,8 @@ export class GameComp extends GameCompPack {
         this.component = system.createComponent(pack.name, pack.type);
 
         //设置inputPins和outputPins
-        this.inputPins = Object.values(this.component.inputPins).map((pin, index) => new GamePin(pin, index, true, false));
-        this.outputPins = Object.values(this.component.outputPins).map((pin, index) => new GamePin(pin, index, false, true));
+        this.inputPins = Object.values(this.component.inputPins).map((pin, index) => new GamePin(this, pin, index, true, false));
+        this.outputPins = Object.values(this.component.outputPins).map((pin, index) => new GamePin(this, pin, index, false, true));
     }
 
     pack(): GameCompPack {
