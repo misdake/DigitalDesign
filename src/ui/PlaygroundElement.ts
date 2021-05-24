@@ -9,7 +9,6 @@ export class PlaygroundElement extends LitElement {
     @property()
     game: Game;
 
-
     protected firstUpdated(_changedProperties: PropertyValues) {
         super.firstUpdated(_changedProperties);
 
@@ -20,7 +19,7 @@ export class PlaygroundElement extends LitElement {
         });
     }
 
-    render() {
+    protected render() {
         let components = this.game.components.map(component => html`<gamecomp-element id="gameComp_${component.id}" .game=${this.game} .gameComp=${component} style="position: absolute;" />`);
 
         //TODO 实现id、拖拽，封装到一个GameWireElement里

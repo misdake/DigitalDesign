@@ -12,7 +12,7 @@ export class InputPinElement extends LitElement {
     @property()
     gamePin: GamePin;
 
-    render() {
+    protected render() {
         let pin = this.gamePin.pin;
 
         // UI有三个部分：
@@ -27,12 +27,6 @@ export class InputPinElement extends LitElement {
                 <div class="pin-circle inputpin-circle ${this.game.editor.pin.isSelectedPin(this) ? 'inputpin-circle-selected' : ''}" @click=${() => this.clickCircle()}></div>
             </div>
         `;
-    }
-
-    public getPosition() { //TODO 这个getPosition是不是放在GamePin更好
-        let centerX = this.gameComp.x * 50 - 25;
-        let centerY = this.gameComp.y * 50 + this.gamePin.index * 50 + 25;
-        return {x: centerX, y: centerY};
     }
 
     private clickCircle() {
@@ -53,7 +47,7 @@ export class OutputPinElement extends LitElement {
     @property()
     gamePin: GamePin;
 
-    render() {
+    protected render() {
         let pin = this.gamePin.pin;
         return html`
             <div class="pin output-pin">

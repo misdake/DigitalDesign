@@ -15,7 +15,7 @@ export class GameCompElement extends LitElement {
     private tx: number;
     private ty: number;
 
-    render() {
+    protected render() {
         this.gameComp.uiElement = this;
 
         let component = this.gameComp.component;
