@@ -14,11 +14,20 @@ export class EventHost {
         });
     }
 
-    on<T>(name: string, obj: T, callback: EventCallback<T>, allowReplace: boolean = false) {
+    on<T>(name: string, obj: T, callback: EventCallback<T>, allowReplace: boolean = false, log: boolean = false) {
         let map = this.events.get(name);
         if (!map) {
             this.events.set(name, map = new Map<any, EventCallback<any>>());
         }
+
+        if (log) {
+            let oldCallback = callback;
+            callback = (obj, ...params) => {
+                console.log(`event '${name}' fired\nfrom`, this, `\nto`, obj, `\nparams`, params);
+                oldCallback(obj, ...params);
+            };
+        }
+
         let cb = map.get(obj);
         if (!cb || allowReplace) {
             //set or replace

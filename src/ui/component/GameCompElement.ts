@@ -51,7 +51,9 @@ export class GameCompElement extends LitElement {
         let gameComp = this.gameComp;
         if (force || gameComp.x !== x || gameComp.y !== y) {
             if (!force) {
-                this.game.editor.component.moveComponent(this.gameComp, x, y);
+                this.gameComp.x = x;
+                this.gameComp.y = y;
+                this.gameComp.fire("move", x, y);
             }
             let tx = x * 50;
             let ty = y * 50;
@@ -67,9 +69,10 @@ export class GameCompElement extends LitElement {
 
         this.updateXY(compElement, this.gameComp.x, this.gameComp.y, true);
 
+        // noinspection JSUnusedGlobalSymbols
         interact(dragElement).draggable({
             listeners: {
-                start(event) {
+                start(_event) {
                     // console.log(event.type, event.target);
                 },
                 move(event) {

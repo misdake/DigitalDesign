@@ -21,13 +21,6 @@ export class EditorComponent {
         return comp;
     }
 
-    moveComponent(gameComp: GameComp, x: number, y: number) {
-        gameComp.x = x;
-        gameComp.y = y;
-        console.log("editor moveComponent", gameComp.name, x, y);
-        gameComp.fire("move", x, y);
-    }
-
     removeComponent(gameComp: GameComp): boolean {
         const index = this.game.components.indexOf(gameComp);
         if (index > -1) {
