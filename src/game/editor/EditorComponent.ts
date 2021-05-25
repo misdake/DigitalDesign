@@ -25,6 +25,7 @@ export class EditorComponent {
         gameComp.x = x;
         gameComp.y = y;
         console.log("editor moveComponent", gameComp.name, x, y);
+        gameComp.fire("move", x, y);
     }
 
     removeComponent(gameComp: GameComp): boolean {

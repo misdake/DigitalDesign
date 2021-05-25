@@ -10,6 +10,8 @@ export class WireElement extends LitElement {
     gameWire: GameWire;
 
     protected render() {
+        this.gameWire.on("render", this, () => this.requestUpdateInternal(), true);
+
         let {x: x1, y: y1} = this.gameWire.fromPin.getXy();
         let {x: x2, y: y2} = this.gameWire.toPin.getXy();
 

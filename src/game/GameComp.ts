@@ -2,14 +2,13 @@ import {Component} from "../logic/Component";
 import {GameCompElement} from "../ui/component/GameCompElement";
 import {System} from "../logic/System";
 import {GamePin} from "./GamePin";
+import {EventHost} from "../util/EventHost";
 
 export class GameCompTemplate {
     name: string;
     type: string;
     w: number;
     h: number;
-
-    // pinOrder? TODO
 }
 
 export class GameCompPack extends GameCompTemplate {
@@ -17,7 +16,14 @@ export class GameCompPack extends GameCompTemplate {
     y: number;
 }
 
-export class GameComp extends GameCompPack {
+export class GameComp extends EventHost {
+    name: string;
+    type: string;
+    w: number;
+    h: number;
+    x: number;
+    y: number;
+
     readonly id: number;
     readonly component: Component;
     uiElement: GameCompElement; //to be filled by GameCompElement, kinda readonly
@@ -48,16 +54,5 @@ export class GameComp extends GameCompPack {
         //设置inputPins和outputPins
         this.inputPins = Object.values(this.component.inputPins).map((pin, index) => new GamePin(this, pin, index, true, false));
         this.outputPins = Object.values(this.component.outputPins).map((pin, index) => new GamePin(this, pin, index, false, true));
-    }
-
-    pack(): GameCompPack {
-        return {
-            name: this.name,
-            type: this.type,
-            x: this.x,
-            y: this.y,
-            w: this.w,
-            h: this.h,
-        };
     }
 }

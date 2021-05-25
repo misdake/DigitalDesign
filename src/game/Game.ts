@@ -3,8 +3,9 @@ import {GameComp} from "./GameComp";
 import {System} from "../logic/System";
 import {registerBasicComponents} from "../logic/components/basic";
 import {GameWire} from "./GameWire";
+import {EventHost} from "../util/EventHost";
 
-export class Game {
+export class Game extends EventHost {
     readonly system: System;
 
     readonly components: GameComp[];
@@ -13,6 +14,8 @@ export class Game {
     readonly editor: Editor;
 
     constructor() {
+        super();
+
         this.system = new System();
         registerBasicComponents(this.system);
 
@@ -20,6 +23,7 @@ export class Game {
         this.wires = [];
 
         this.editor = new Editor(this);
-    }
 
+        this.fire("loaded");
+    }
 }
