@@ -3,6 +3,7 @@ import "./component/GameCompElement";
 import "./component/PinElement";
 import "./component/WireElement";
 import {Game} from "../game/Game";
+import {Events} from "../util/Events";
 
 @customElement('playground-element')
 export class PlaygroundElement extends LitElement {
@@ -12,16 +13,15 @@ export class PlaygroundElement extends LitElement {
     protected firstUpdated(_changedProperties: PropertyValues) {
         super.firstUpdated(_changedProperties);
 
-        let callback = (_obj : any) => {
-            console.log("update in PlaygroundElement");
+        let callback = (_obj: any) => {
             this.requestUpdateInternal();
         };
-        this.game.on("component_add", this, callback);
-        this.game.on("component_remove", this, callback);
-        this.game.on("component_update", this, callback);
-        this.game.on("wire_add", this, callback);
-        this.game.on("wire_remove", this, callback);
-        this.game.on("wire_update", this, callback);
+        this.game.on(Events.COMPONENT_ADD, this, callback, false, true);
+        this.game.on(Events.COMPONENT_REMOVE, this, callback, false, true);
+        this.game.on(Events.COMPONENT_UPDATE, this, callback, false, true);
+        this.game.on(Events.WIRE_ADD, this, callback, false, true);
+        this.game.on(Events.WIRE_REMOVE, this, callback, false, true);
+        this.game.on(Events.WIRE_UPDATE, this, callback, false, true);
     }
 
     protected render() {

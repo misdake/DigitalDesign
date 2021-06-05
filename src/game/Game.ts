@@ -23,7 +23,5 @@ export class Game extends EventHost {
         this.wires = [];
 
         this.editor = new Editor(this);
-
-        this.fire("loaded");
     }
 }

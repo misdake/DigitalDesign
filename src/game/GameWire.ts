@@ -1,6 +1,7 @@
 import {Wire} from "../logic/Component";
 import {GamePin} from "./GamePin";
 import {EventHost} from "../util/EventHost";
+import {Events} from "../util/Events";
 
 export class GameWire extends EventHost {
     readonly wire: Wire;
@@ -14,11 +15,11 @@ export class GameWire extends EventHost {
         this.fromPin = fromPin;
         this.toPin = toPin;
 
-        fromPin.gameComp.on("move", this, () => {
-            this.fire("render");
+        fromPin.gameComp.on(Events.COMPONENT_UPDATE, this, () => {
+            this.fire(Events.WIRE_UPDATE, this);
         });
-        toPin.gameComp.on("move", this, () => {
-            this.fire("render");
+        toPin.gameComp.on(Events.COMPONENT_UPDATE, this, () => {
+            this.fire(Events.WIRE_UPDATE, this);
         });
     }
 }

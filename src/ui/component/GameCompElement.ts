@@ -3,6 +3,7 @@ import {customElement, html, LitElement, property} from "lit-element";
 import "./PinElement";
 import {GameComp} from "../../game/GameComp";
 import {Game} from "../../game/Game";
+import {Events} from "../../util/Events";
 
 @customElement('gamecomp-element')
 export class GameCompElement extends LitElement {
@@ -53,8 +54,8 @@ export class GameCompElement extends LitElement {
             if (!force) {
                 this.gameComp.x = x;
                 this.gameComp.y = y;
-                this.gameComp.fire("move", x, y);
-                this.game.fire("component_update", this.gameComp, x, y);
+                this.gameComp.fire(Events.COMPONENT_UPDATE, this.gameComp, {x, y});
+                this.game.fire(Events.COMPONENT_UPDATE, this.gameComp, {x, y});
             }
             let tx = x * 50;
             let ty = y * 50;

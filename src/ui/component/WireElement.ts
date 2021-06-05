@@ -1,6 +1,7 @@
 import {customElement, html, LitElement, property} from "lit-element";
 import {Game} from "../../game/Game";
 import {GameWire} from "../../game/GameWire";
+import {Events} from "../../util/Events";
 
 @customElement('wire-element')
 export class WireElement extends LitElement {
@@ -10,7 +11,7 @@ export class WireElement extends LitElement {
     gameWire: GameWire;
 
     protected render() {
-        this.gameWire.on("render", this, () => this.requestUpdateInternal(), true);
+        this.gameWire.on(Events.WIRE_UPDATE, this, () => this.requestUpdateInternal(), true);
 
         let {x: x1, y: y1} = this.gameWire.fromPin.getXy();
         let {x: x2, y: y2} = this.gameWire.toPin.getXy();

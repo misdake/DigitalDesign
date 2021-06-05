@@ -1,6 +1,7 @@
 import {Game} from "../Game";
 import {Editor} from "../Editor";
 import {GameComp, GameCompTemplate} from "../GameComp";
+import {Events} from "../../util/Events";
 
 export class EditorComponent {
     private game: Game;
@@ -17,7 +18,7 @@ export class EditorComponent {
         let pack = {...template, x: x, y: y};
         let comp = new GameComp(this.nextCompId++, this.game.system, pack);
         this.game.components.push(comp);
-        this.game.fire("component_add", comp);
+        this.game.fire(Events.COMPONENT_ADD, comp);
         return comp;
     }
 
@@ -26,7 +27,7 @@ export class EditorComponent {
         if (index > -1) {
             //TODO 在这里删除相关的gameWire？
             this.game.components.splice(index, 1);
-            this.game.fire("component_remove", gameComp);
+            this.game.fire(Events.COMPONENT_REMOVE, gameComp);
             return true;
         }
         return false;
