@@ -12,27 +12,28 @@ export class PlaygroundElement extends LitElement {
     protected firstUpdated(_changedProperties: PropertyValues) {
         super.firstUpdated(_changedProperties);
 
-        this.game.editor.registerUpdate(() => {
-            //TODO 检查是否只进行增删
-            console.log("update");
+        let callback = (_obj : any) => {
+            console.log("update in PlaygroundElement");
             this.requestUpdateInternal();
-        });
+        };
+        this.game.on("component_add", this, callback);
+        this.game.on("component_remove", this, callback);
+        this.game.on("component_update", this, callback);
+        this.game.on("wire_add", this, callback);
+        this.game.on("wire_remove", this, callback);
+        this.game.on("wire_update", this, callback);
     }
 
     protected render() {
         let components = this.game.components.map(component => html`<gamecomp-element id="gameComp_${component.id}" .game=${this.game} .gameComp=${component} style="position: absolute;" />`);
-
-        //TODO 实现id、拖拽，封装到一个GameWireElement里
         let wires = this.game.wires.map(wire => html`<wire-element .gam=${this.game} .gameWire=${wire} />`);
 
-        console.log("render", this.game.components);
         return html`
             <div class="playground">
                 <div class="components">${components}</div>
                 <div class="wires">${wires}</div>
             </div>
         `;
-        //TODO 还有输入输出和连线
     }
 
     createRenderRoot() {

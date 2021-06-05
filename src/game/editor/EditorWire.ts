@@ -16,15 +16,14 @@ export class EditorWire {
         let wire = new Wire("wire", from.gameComp.component, from.gamePin.pin, to.gameComp.component, to.gamePin.pin);
         let gameWire = new GameWire(wire, from.gamePin, to.gamePin);
         this.game.wires.push(gameWire);
-
-        this.editor.doUpdate();
+        this.game.fire("wire_add", gameWire);
     }
 
     removeWire(gameWire: GameWire) {
         const index = this.game.wires.indexOf(gameWire);
         if (index > -1) {
             this.game.wires.splice(index, 1);
-            this.editor.doUpdate();
+            this.game.fire("wire_delete", gameWire);
             return true;
         }
         return false;

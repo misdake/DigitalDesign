@@ -54,6 +54,7 @@ export class GameCompElement extends LitElement {
                 this.gameComp.x = x;
                 this.gameComp.y = y;
                 this.gameComp.fire("move", x, y);
+                this.game.fire("component_update", this.gameComp, x, y);
             }
             let tx = x * 50;
             let ty = y * 50;

@@ -1,6 +1,7 @@
 import {html, render} from "lit-html";
 import "./ui/component/GameCompElement";
 import "./ui/PlaygroundElement";
+import "./ui/ToolboxElement";
 import {System} from "./logic/System";
 import {registerBasicComponents} from "./logic/components/basic";
 import {Game} from "./game/Game";
@@ -17,9 +18,10 @@ game.editor.component.createComponent(template1, 2, 2);
 
 render(html`
     <div id="content">
+        <toolbox-element .game=${game}></toolbox-element>
         <playground-element .game=${game}></playground-element>
 
-        <div style="position: absolute; left: 0; top: 0;">
+        <div style="z-index: 100; position: absolute; left: 0; top: 0;">
             <button @click=${() => game.editor.component.createComponent(template2, 12, 2)}>createComponent2</button>
         </div>
     </div>

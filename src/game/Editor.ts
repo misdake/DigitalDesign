@@ -20,25 +20,12 @@ export class Editor {
         this.component = new EditorComponent(game, this);
         this.wire = new EditorWire(game, this);
 
-        (window as any).refresh = () => {
-            this.doUpdate();
-        };
         (window as any).deleteSelected = () => {
             if (this.selectedGameComp) {
                 this.component.removeComponent(this.selectedGameComp);
                 this.selectedGameComp = null;
             }
         };
-    }
-
-    private callbacks: (()=>void)[] = [];
-
-    public registerUpdate(callback: () => void) {
-        this.callbacks.push(callback);
-    }
-
-    public doUpdate() {
-        this.callbacks.forEach(callback => callback()); //TODO 区分不同级别的修改
     }
 
     selectedGameComp: GameComp; //TODO move to Game?

@@ -17,20 +17,16 @@ export class EditorComponent {
         let pack = {...template, x: x, y: y};
         let comp = new GameComp(this.nextCompId++, this.game.system, pack);
         this.game.components.push(comp);
-        this.editor.doUpdate(); //TODO 支持一次添加多个
+        this.game.fire("component_add", comp);
         return comp;
     }
 
     removeComponent(gameComp: GameComp): boolean {
         const index = this.game.components.indexOf(gameComp);
         if (index > -1) {
-
             //TODO 在这里删除相关的gameWire？
-
             this.game.components.splice(index, 1);
-
-            this.editor.doUpdate();
-
+            this.game.fire("component_remove", gameComp);
             return true;
         }
         return false;
