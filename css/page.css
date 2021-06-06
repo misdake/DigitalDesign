@@ -36,5 +36,5 @@ playground-element {
 
     position: relative;
     flex-grow: 1;
-    background-size: 50px 50px;
+    background-size: var(--cell-size) var(--cell-size);
 }

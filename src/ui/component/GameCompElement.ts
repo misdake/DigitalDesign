@@ -4,6 +4,7 @@ import "./PinElement";
 import {GameComp} from "../../game/GameComp";
 import {Game} from "../../game/Game";
 import {Events} from "../../util/Events";
+import {CELL_SIZE} from "../../util/Constants";
 
 @customElement('gamecomp-element')
 export class GameCompElement extends LitElement {
@@ -23,15 +24,14 @@ export class GameCompElement extends LitElement {
         let inputPins = this.gameComp.inputPins;
         let outputPins = this.gameComp.outputPins;
 
-        //TODO 这个50改为从某个全局或传入属性获取获取，但是CSS里也有关于50的数据，包括pin的头的长度宽度等
-        let width = 50 * this.gameComp.w;
-        let height = 50 * Math.max(this.gameComp.h);
+        let width = CELL_SIZE * this.gameComp.w;
+        let height = CELL_SIZE * Math.max(this.gameComp.h);
 
         let inputs = inputPins.map(pin => html`<inputpin-element .game=${this.game} .gameComp=${this.gameComp} .gamePin=${pin}></inputpin-element>`);
         let outputs = outputPins.map(pin => html`<outputpin-element .game=${this.game} .gameComp=${this.gameComp} .gamePin=${pin}></outputpin-element>`);
 
-        let tx = this.gameComp.x * 50;
-        let ty = this.gameComp.y * 50;
+        let tx = this.gameComp.x * CELL_SIZE;
+        let ty = this.gameComp.y * CELL_SIZE;
         this.tx = tx;
         this.ty = ty;
 
@@ -57,8 +57,8 @@ export class GameCompElement extends LitElement {
                 this.gameComp.fire(Events.COMPONENT_UPDATE, this.gameComp, {x, y});
                 this.game.fire(Events.COMPONENT_UPDATE, this.gameComp, {x, y});
             }
-            let tx = x * 50;
-            let ty = y * 50;
+            let tx = x * CELL_SIZE;
+            let ty = y * CELL_SIZE;
             element.style.transform = `translate(${tx}px, ${ty}px)`;
         }
     }
@@ -81,8 +81,8 @@ export class GameCompElement extends LitElement {
                     self.tx += event.dx;
                     self.ty += event.dy;
 
-                    let x = Math.round(self.tx / 50);
-                    let y = Math.round(self.ty / 50);
+                    let x = Math.round(self.tx / CELL_SIZE);
+                    let y = Math.round(self.ty / CELL_SIZE);
 
                     //TODO 从Editor走一圈来更新xy，同时限制最大最小值
                     self.updateXY(compElement, x, y);

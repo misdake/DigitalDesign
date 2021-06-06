@@ -5,6 +5,7 @@ import "./ui/ToolboxElement";
 import {System} from "./logic/System";
 import {registerBasicComponents} from "./logic/components/basic";
 import {Game} from "./game/Game";
+import {CELL_SIZE} from "./util/Constants";
 
 let system = new System();
 registerBasicComponents(system);
@@ -18,6 +19,12 @@ game.editor.component.createComponent(template1, 2, 2);
 
 render(html`
     <div id="content">
+        <style>
+            :root {
+                --cell-size: ${CELL_SIZE}px;
+            }
+        </style>
+
         <toolbox-element .game=${game}></toolbox-element>
         <playground-element .game=${game}></playground-element>
 

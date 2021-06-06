@@ -10,7 +10,7 @@
     width: 100%;
     height: 100%;
     border: 2px #ccc solid;
-    border-radius: 5px;
+    border-radius: calc(var(--cell-size) * 0.1);
     background: #fff;
     box-sizing: border-box;
 }
@@ -20,7 +20,7 @@
     top: 50%;
     width: 100%;
     height: fit-content;
-    font-size: 24px;
+    font-size: calc(var(--cell-size) / 2);
     text-align: center;
     transform: translate(0, -50%);
 
@@ -36,7 +36,7 @@
     top: 50%;
     width: 100%;
     height: fit-content;
-    font-size: 24px;
+    font-size: calc(var(--cell-size) / 2);
     text-align: center;
     transform: translate(0, -50%);
 
@@ -49,16 +49,13 @@
 
 .pin {
     position: relative;
-    width: 100px;
-    height: 50px;
-    line-height: 50px;
-    font-size: 16px;
+    width: calc(var(var(--cell-size-x2)) * 2);
+    height: var(--cell-size);
+    line-height: var(--cell-size);
+    font-size: calc(var(--cell-size) / 3);
     vertical-align: middle;
 
     box-sizing: border-box;
-
-    /*background: rgb(255, 255, 255);*/
-    /*background: linear-gradient(156deg, rgba(255, 255, 255, 1) 0%, rgba(204, 204, 204, 1) 35%, rgba(0, 212, 255, 1) 100%);*/
 }
 
 .pin-name {
@@ -73,22 +70,22 @@
     position: absolute;
     left: 0;
     top: 0;
-    width: 100px;
+    width: calc(var(--cell-size) * 2);
 }
 .input-pin {
     text-align: left;
-    padding-left: 10px;
+    padding-left: calc(var(--cell-size) / 5);
 }
 
 .output-pin-list {
     position: absolute;
     right: 0;
     top: 0;
-    width: 100px;
+    width: calc(var(--cell-size) * 2);
 }
 .output-pin {
     text-align: right;
-    padding-right: 10px;
+    padding-right: calc(var(--cell-size) / 5);
 }
 
 @keyframes pin-circle-blink {
@@ -96,28 +93,35 @@
     to { background: #f88 }
 }
 .pin-circle {
-    pointer-events: all; position: absolute; background: #fff;
-    width: 20px; height: 20px; border: 2px #ccc solid; box-sizing: border-box; border-radius: 10px; top: 15px;
+    pointer-events: all;
+    position: absolute;
+    background: #fff;
+    width: calc(var(--cell-size) * 0.4);
+    height: calc(var(--cell-size) * 0.4);
+    border: 2px #ccc solid;
+    box-sizing: border-box;
+    border-radius: calc(var(--cell-size) * 0.2);
+    top: calc(var(--cell-size) * 0.3);
 }
 .inputpin-circle {
-    left: -35px;
+    left: calc(var(--cell-size) * -0.7);
 }
 .inputpin-circle-selected {
     animation: 0.5s ease-out 0s infinite alternate pin-circle-blink
 }
 .outputpin-circle {
-    right: -35px;
+    right: calc(var(--cell-size) * -0.7);
 }
 .outputpin-circle-selected {
     animation: 0.5s ease-out 0s infinite alternate pin-circle-blink
 }
 
 .pin-dash {
-    position: absolute; background: #ccc; width: 15px; height: 2px; top: 24px;
+    position: absolute; background: #ccc; width: calc(var(--cell-size) * 0.3); height: 2px; top: calc(var(--cell-size) * 0.5 - 1px);
 }
 .inputpin-dash {
-    left: -15px;
+    left: calc(var(--cell-size) * -0.3);
 }
 .outputpin-dash {
-    right: -15px;
+    right: calc(var(--cell-size) * -0.3);
 }
