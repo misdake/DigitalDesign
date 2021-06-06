@@ -7,7 +7,7 @@ import {Events} from "../../util/Events";
 import {CELL_SIZE} from "../../util/Constants";
 
 @customElement('gamecomp-element')
-export class GameCompElement extends LitElement {
+export class CompElement extends LitElement {
 
     @property()
     game: Game;

@@ -1,5 +1,5 @@
 import {customElement, html, LitElement, property, PropertyValues} from "lit-element";
-import "./component/GameCompElement";
+import "./component/CompElement";
 import "./component/PinElement";
 import "./component/WireElement";
 import {Game} from "../game/Game";

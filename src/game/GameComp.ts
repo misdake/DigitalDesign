@@ -1,5 +1,5 @@
 import {Component} from "../logic/Component";
-import {GameCompElement} from "../ui/component/GameCompElement";
+import {CompElement} from "../ui/component/CompElement";
 import {System} from "../logic/System";
 import {GamePin} from "./GamePin";
 import {EventHost} from "../util/EventHost";
@@ -26,7 +26,7 @@ export class GameComp extends EventHost {
 
     readonly id: number;
     readonly component: Component;
-    uiElement: GameCompElement; //to be filled by GameCompElement, kinda readonly
+    uiElement: CompElement; //to be filled by CompElement, kinda readonly
 
     readonly inputPins: GamePin[];
     readonly outputPins: GamePin[];

@@ -1,5 +1,5 @@
 import {html, render} from "lit-html";
-import "./ui/component/GameCompElement";
+import "./ui/component/CompElement";
 import "./ui/PlaygroundElement";
 import "./ui/ToolboxElement";
 import {System} from "./logic/System";
