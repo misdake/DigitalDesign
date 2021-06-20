@@ -40,11 +40,6 @@ export class CompElement extends LitElement {
         let outputs = outputPins.map(pin => html`
             <outputpin-element .game=${this.game} .gameComp=${this.gameComp} .gamePin=${pin}></outputpin-element>`);
 
-        let tx = this.gameComp.x * CELL_SIZE;
-        let ty = this.gameComp.y * CELL_SIZE;
-        this.tx = tx;
-        this.ty = ty;
-
         let content = this.smallMode ? html`
             <div style="pointer-events: none;" class="component-type component-type-always">${component.type}</div>
         ` : html`
@@ -90,20 +85,27 @@ export class CompElement extends LitElement {
         // noinspection JSUnusedGlobalSymbols
         interact(dragElement).draggable({
             listeners: {
-                start(_event) {
-                    // console.log(event.type, event.target);
+                start(event) {
+                    //保存点击位置的相对偏移
+                    self.tx = event.client.x - self.gameComp.x * CELL_SIZE;
+                    self.ty = event.client.y - self.gameComp.y * CELL_SIZE;
                 },
                 move(event) {
-                    self.smallMode = false;
+                    let dx = event.client.x - self.tx;
+                    let dy = event.client.y - self.ty;
 
-                    self.tx += event.dx;
-                    self.ty += event.dy;
+                    let x = Math.round(dx / CELL_SIZE);
+                    let y = Math.round(dy / CELL_SIZE);
 
-                    let x = Math.round(self.tx / CELL_SIZE);
-                    let y = Math.round(self.ty / CELL_SIZE);
-
-                    //TODO 从Editor走一圈来更新xy，同时限制最大最小值
-                    self.updateXY(compElement, x, y);
+                    //TODO 暂时留上3格给工具栏，到下面就放大，回不到上面
+                    if (y >= 3 && self.smallMode) {
+                        self.smallMode = false;
+                        self.updateXY(compElement, x, y);
+                    } else if (y < 3 && self.smallMode) {
+                        self.updateXY(compElement, x, y);
+                    } else if (y >= 3 && !self.smallMode) {
+                        self.updateXY(compElement, x, y);
+                    }
                 },
                 end(event) {
                     //TODO 再次检查是否可以放下，包括是否在装备栏里面没拿到场地里
