@@ -27,6 +27,9 @@
     opacity: 1.0;
     transition: opacity 0.3s ease-out;
 }
+.component-name-hide {
+    opacity: 0.0;
+}
 .component:hover .component-name {
     opacity: 0.0;
 }
@@ -42,6 +45,9 @@
 
     opacity: 0.0;
     transition: opacity 0.3s ease-in;
+}
+.component-type-always {
+    opacity: 1.0;
 }
 .component:hover .component-type {
     opacity: 1.0;

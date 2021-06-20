@@ -17,6 +17,9 @@ export class CompElement extends LitElement {
     private tx: number;
     private ty: number;
 
+    @property()
+    smallMode: boolean = true; //TODO
+
     protected render() {
         this.gameComp.uiElement = this;
 
@@ -27,23 +30,36 @@ export class CompElement extends LitElement {
         let width = CELL_SIZE * this.gameComp.w;
         let height = CELL_SIZE * Math.max(this.gameComp.h);
 
-        let inputs = inputPins.map(pin => html`<inputpin-element .game=${this.game} .gameComp=${this.gameComp} .gamePin=${pin}></inputpin-element>`);
-        let outputs = outputPins.map(pin => html`<outputpin-element .game=${this.game} .gameComp=${this.gameComp} .gamePin=${pin}></outputpin-element>`);
+        if (this.smallMode) {
+            width = CELL_SIZE * 2;
+            height = CELL_SIZE;
+        }
+
+        let inputs = inputPins.map(pin => html`
+            <inputpin-element .game=${this.game} .gameComp=${this.gameComp} .gamePin=${pin}></inputpin-element>`);
+        let outputs = outputPins.map(pin => html`
+            <outputpin-element .game=${this.game} .gameComp=${this.gameComp} .gamePin=${pin}></outputpin-element>`);
 
         let tx = this.gameComp.x * CELL_SIZE;
         let ty = this.gameComp.y * CELL_SIZE;
         this.tx = tx;
         this.ty = ty;
 
+        let content = this.smallMode ? html`
+            <div style="pointer-events: none;" class="component-type component-type-always">${component.type}</div>
+        ` : html`
+            <div style="pointer-events: none;" class="component-name">${component.name}</div>
+            <div style="pointer-events: none;" class="component-type">${component.type}</div>
+            <div style="pointer-events: none;" class="input-pin-list">${inputs}</div>
+            <div style="pointer-events: none;" class="output-pin-list">${outputs}</div>
+        `;
+
         //transform translate set in updated() callback
         //TODO 如果name===type，那么不使用动画显示name，只固定显示type
         return html`
             <div class="component" style="touch-action: none; width: ${width}px; height: ${height}px;" @click=${() => this.game.editor.selectGameComp(this.gameComp)}>
                 <div class="component-bg"></div>
-                <div style="pointer-events: none;" class="component-name">${component.name}</div>
-                <div style="pointer-events: none;" class="component-type">${component.type}</div>
-                <div style="pointer-events: none;" class="input-pin-list">${inputs}</div>
-                <div style="pointer-events: none;" class="output-pin-list">${outputs}</div>
+                ${content}
             </div>
         `;
     }
@@ -78,6 +94,8 @@ export class CompElement extends LitElement {
                     // console.log(event.type, event.target);
                 },
                 move(event) {
+                    self.smallMode = false;
+
                     self.tx += event.dx;
                     self.ty += event.dy;
 
