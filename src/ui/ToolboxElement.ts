@@ -8,9 +8,10 @@ export class ToolboxElement extends LitElement {
 
     protected render() {
         return html`
-            <div class="toolbox">
-                <div class="inventory"></div>
-                <div class="levelcontrol"></div>
+            <div id="inventory"></div>
+            <div id="toolbox">
+                <button>提交</button>
+                <button>debug类按钮</button>
             </div>
         `;
     }

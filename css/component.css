@@ -55,7 +55,7 @@
 
 .pin {
     position: relative;
-    width: calc(var(var(--cell-size-x2)) * 2);
+    width: calc(var(--cell-size) * 2);
     height: var(--cell-size);
     line-height: var(--cell-size);
     font-size: calc(var(--cell-size) / 3);

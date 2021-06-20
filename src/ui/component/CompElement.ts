@@ -105,6 +105,10 @@ export class CompElement extends LitElement {
                     //TODO 从Editor走一圈来更新xy，同时限制最大最小值
                     self.updateXY(compElement, x, y);
                 },
+                end(event) {
+                    //TODO 再次检查是否可以放下，包括是否在装备栏里面没拿到场地里
+                    // console.log("event end", event);
+                },
             },
         });
     }

@@ -4,6 +4,7 @@ import "./component/PinElement";
 import "./component/WireElement";
 import {Game} from "../game/Game";
 import {Events} from "../util/Events";
+import {CELL_SIZE} from "../util/Constants";
 
 @customElement('playground-element')
 export class PlaygroundElement extends LitElement {
@@ -28,8 +29,12 @@ export class PlaygroundElement extends LitElement {
         let components = this.game.components.map(component => html`<gamecomp-element id="gameComp_${component.id}" .game=${this.game} .gameComp=${component} style="position: absolute;" />`);
         let wires = this.game.wires.map(wire => html`<wire-element .gam=${this.game} .gameWire=${wire} />`);
 
+        //TODO extract playground size
+        let width = CELL_SIZE * 30;
+        let height = CELL_SIZE * 20;
+
         return html`
-            <div class="playground">
+            <div id="playground" style="width: ${width}px; height: ${height}px">
                 <div class="components">${components}</div>
                 <div class="wires">${wires}</div>
             </div>
