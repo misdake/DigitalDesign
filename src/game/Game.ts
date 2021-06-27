@@ -8,6 +8,7 @@ import {EventHost} from "../util/EventHost";
 export class Game extends EventHost {
     readonly system: System;
 
+    readonly templates: GameComp[];
     readonly components: GameComp[];
     readonly wires: GameWire[];
 
@@ -19,6 +20,7 @@ export class Game extends EventHost {
         this.system = new System();
         registerBasicComponents(this.system);
 
+        this.templates = [];
         this.components = [];
         this.wires = [];
 

@@ -97,15 +97,11 @@ export class CompElement extends LitElement {
                     let x = Math.round(dx / CELL_SIZE);
                     let y = Math.round(dy / CELL_SIZE);
 
-                    //TODO 暂时留上3格给工具栏，到下面就放大，回不到上面
-                    if (y >= 3 && self.smallMode) {
+                    if (self.smallMode) {
                         self.smallMode = false;
-                        self.updateXY(compElement, x, y);
-                    } else if (y < 3 && self.smallMode) {
-                        self.updateXY(compElement, x, y);
-                    } else if (y >= 3 && !self.smallMode) {
-                        self.updateXY(compElement, x, y);
+                        self.game.editor.component.createRealComponent(self.gameComp);
                     }
+                    self.updateXY(compElement, x, y);
                 },
                 end(event) {
                     //TODO 再次检查是否可以放下，包括是否在装备栏里面没拿到场地里

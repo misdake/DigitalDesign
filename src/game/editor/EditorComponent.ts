@@ -1,6 +1,6 @@
 import {Game} from "../Game";
 import {Editor} from "../Editor";
-import {GameComp, GameCompTemplate} from "../GameComp";
+import {GameComp, GameCompPack, GameCompTemplate} from "../GameComp";
 import {Events} from "../../util/Events";
 
 export class EditorComponent {
@@ -14,12 +14,25 @@ export class EditorComponent {
 
     private nextCompId = 1;
 
-    createComponent(template: GameCompTemplate, x: number, y: number): GameComp {
-        let pack = {...template, x: x, y: y};
+    createTemplateComponent(template: GameCompTemplate, x: number, y: number): GameComp {
+        let pack = new GameCompPack(template, x, y);
         let comp = new GameComp(this.nextCompId++, this.game.system, pack);
-        this.game.components.push(comp);
+        this.game.templates.push(comp);
         this.game.fire(Events.COMPONENT_ADD, comp);
         return comp;
+    }
+
+    createRealComponent(templateComp: GameComp) {
+        if (!templateComp.isTemplate) return;
+        let index = this.game.templates.indexOf(templateComp);
+        if (index >= 0) {
+            templateComp.isTemplate = false;
+            this.game.templates.splice(index, 1);
+            this.createTemplateComponent(templateComp, templateComp.x, templateComp.y);
+            this.game.components.push(templateComp);
+
+            this.game.fire(Events.COMPONENT_ADD, templateComp);
+        }
     }
 
     removeComponent(gameComp: GameComp): boolean {

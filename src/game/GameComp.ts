@@ -14,6 +14,16 @@ export class GameCompTemplate {
 export class GameCompPack extends GameCompTemplate {
     x: number;
     y: number;
+
+    constructor(template: GameCompTemplate, x: number, y: number) {
+        super();
+        this.name = template.name;
+        this.type = template.type;
+        this.w = template.w;
+        this.h = template.h;
+        this.x = x;
+        this.y = y;
+    }
 }
 
 export class GameComp extends EventHost {
@@ -24,6 +34,7 @@ export class GameComp extends EventHost {
     x: number;
     y: number;
 
+    isTemplate: boolean = true;
     readonly id: number;
     readonly component: Component;
     uiElement: CompElement; //to be filled by CompElement, kinda readonly
