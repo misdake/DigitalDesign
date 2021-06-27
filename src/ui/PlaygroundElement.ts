@@ -32,7 +32,7 @@ export class PlaygroundElement extends LitElement {
         source.sort((a, b) => a.id - b.id);
 
         let components = source.map(component => html`
-            <gamecomp-element id="gameComp-${component.id}" .game=${this.game} .gameComp=${component} style="position: absolute;"/>`);
+            <gamecomp-element id="gameComp-${component.id}" .game=${this.game} .gameComp=${component} style="position: absolute; pointer-events: none;" />`);
         let wires = this.game.wires.map(wire => html`
             <wire-element .gam=${this.game} .gameWire=${wire} />`);
 

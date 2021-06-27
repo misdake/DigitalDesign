@@ -35,7 +35,7 @@ export class EditorComponent {
         }
     }
 
-    removeComponent(gameComp: GameComp): boolean {
+    removeRealComponent(gameComp: GameComp): boolean {
         const index = this.game.components.indexOf(gameComp);
         if (index > -1) {
             //TODO 在这里删除相关的gameWire？

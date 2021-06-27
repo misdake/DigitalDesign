@@ -22,7 +22,7 @@ export class Editor {
 
         (window as any).deleteSelected = () => {
             if (this.selectedGameComp) {
-                this.component.removeComponent(this.selectedGameComp);
+                this.component.removeRealComponent(this.selectedGameComp);
                 this.selectedGameComp = null;
             }
         };
