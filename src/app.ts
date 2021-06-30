@@ -2,16 +2,28 @@ import {html, render} from "lit-html";
 import "./ui/component/CompElement";
 import "./ui/PlaygroundElement";
 import "./ui/ToolboxElement";
-import {System} from "./logic/System";
-import {registerBasicComponents} from "./logic/components/basic";
 import {Game} from "./game/Game";
 import {CELL_SIZE, PLAYGROUND_HEIGHT, PLAYGROUND_WIDTH} from "./util/Constants";
 import {GameCompTemplate} from "./game/GameComp";
-
-let system = new System();
-registerBasicComponents(system);
+import {ComponentTemplate, PinType} from "./logic/ComponentTemplate";
 
 let game = new Game();
+
+let template = new ComponentTemplate();
+template.type = "";
+template.components = [];
+template.wires = [];
+template.inputPins = [{
+    name: "in",
+    type: PinType.BOOL,
+    width: 1,
+}];
+template.outputPins = [{
+    name: "out",
+    type: PinType.BOOL,
+    width: 1,
+}];
+game.load(template);
 
 let templates = [
     {name: "pack4", type: "pack4", w: 6, h: 4},
@@ -30,6 +42,7 @@ function addTemplateComponents() {
         x += 3;
     }
 }
+``
 addTemplateComponents();
 
 let width = CELL_SIZE * PLAYGROUND_WIDTH;

@@ -4,6 +4,16 @@ import {PinTemplate, PinType, WireTemplate} from "../ComponentTemplate";
 export function registerBasicComponents(system: System) {
 
     system.registerBuiltinComponent({
+        type: "pass1",
+        inputPins: [{name: "in", width: 1, type: PinType.BOOL}],
+        components: [],
+        outputPins: [{name: "out", width: 1, type: PinType.BOOL}],
+        wires: [],
+    }, (inputs, outputs) => {
+        outputs.out = inputs.in;
+    });
+
+    system.registerBuiltinComponent({
         type: "not",
         inputPins: [{name: "in", width: 1, type: PinType.BOOL}],
         components: [],

@@ -17,8 +17,7 @@ export class CompElement extends LitElement {
     private tx: number;
     private ty: number;
 
-    @property()
-    smallMode: boolean = true; //TODO
+    //TODO 支持不允许移动，UI注意改成不能移动
 
     protected render() {
         this.gameComp.uiElement = this;
@@ -30,7 +29,7 @@ export class CompElement extends LitElement {
         let width = CELL_SIZE * this.gameComp.w;
         let height = CELL_SIZE * Math.max(this.gameComp.h);
 
-        if (this.smallMode) {
+        if (this.gameComp.isTemplate) {
             width = CELL_SIZE * 2;
             height = CELL_SIZE;
         }
@@ -40,7 +39,7 @@ export class CompElement extends LitElement {
         let outputs = outputPins.map(pin => html`
             <outputpin-element .game=${this.game} .gameComp=${this.gameComp} .gamePin=${pin}></outputpin-element>`);
 
-        let content = this.smallMode ? html`
+        let content = this.gameComp.isTemplate ? html`
             <div style="pointer-events: none;" class="component-type component-type-always">${component.type}</div>
         ` : html`
             <div style="pointer-events: none;" class="component-name">${component.name}</div>
@@ -97,9 +96,9 @@ export class CompElement extends LitElement {
                     let x = Math.round(dx / CELL_SIZE);
                     let y = Math.round(dy / CELL_SIZE);
 
-                    if (self.smallMode) {
-                        self.smallMode = false;
-                        self.game.editor.component.createRealComponent(self.gameComp);
+                    if (self.gameComp.isTemplate) {
+                        self.game.editor.component.createRealComponentFromTemplate(self.gameComp);
+                        self.requestUpdateInternal();
                     }
                     self.updateXY(compElement, x, y);
                 },

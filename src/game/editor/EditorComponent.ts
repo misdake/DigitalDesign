@@ -11,7 +11,6 @@ export class EditorComponent {
         this.editor = editor;
     }
 
-
     private nextCompId = 1;
 
     createTemplateComponent(template: GameCompTemplate, x: number, y: number): GameComp {
@@ -22,7 +21,16 @@ export class EditorComponent {
         return comp;
     }
 
-    createRealComponent(templateComp: GameComp) {
+    createRealComponent(template: GameCompTemplate, x: number, y: number) {
+        let pack = new GameCompPack(template, x, y);
+        let comp = new GameComp(this.nextCompId++, this.game.system, pack);
+        this.game.fire(Events.COMPONENT_ADD, comp);
+        comp.isTemplate = false;
+        this.game.components.push(comp);
+
+        this.game.fire(Events.COMPONENT_ADD, comp);
+    }
+    createRealComponentFromTemplate(templateComp: GameComp) {
         if (!templateComp.isTemplate) return;
         let index = this.game.templates.indexOf(templateComp);
         if (index >= 0) {
@@ -31,7 +39,7 @@ export class EditorComponent {
             this.createTemplateComponent(templateComp, templateComp.x, templateComp.y);
             this.game.components.push(templateComp);
 
-            this.game.fire(Events.COMPONENT_ADD, templateComp);
+            // this.game.fire(Events.COMPONENT_ADD, templateComp); TODO 这个是不是应该分开成template和real的两个add
         }
     }
 
