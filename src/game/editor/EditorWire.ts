@@ -18,9 +18,15 @@ export class EditorWire {
         let gameWire = new GameWire(wire, from.gamePin, to.gamePin);
         this.game.wires.push(gameWire);
         this.game.fire(Events.WIRE_ADD, gameWire);
+
+        this.game.editMain(main => {
+            main.wires.push(gameWire.wire);
+        });
     }
 
     removeWire(gameWire: GameWire) {
+        //TODO editMain修改mainComponent
+
         const index = this.game.wires.indexOf(gameWire);
         if (index > -1) {
             this.game.wires.splice(index, 1);

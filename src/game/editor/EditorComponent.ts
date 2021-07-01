@@ -35,12 +35,17 @@ export class EditorComponent {
         if (!templateComp.isTemplate) return;
         let index = this.game.templates.indexOf(templateComp);
         if (index >= 0) {
-            templateComp.isTemplate = false;
+            let comp = templateComp;
+            comp.isTemplate = false;
             this.game.templates.splice(index, 1);
-            this.createTemplateComponent(templateComp, templateComp.x, templateComp.y);
-            this.game.components.push(templateComp);
+            this.createTemplateComponent(comp, comp.x, comp.y);
+            this.game.components.push(comp);
 
             // this.game.fire(Events.COMPONENT_ADD, templateComp); TODO 这个是不是应该分开成template和real的两个add
+
+            this.game.editMain(main => {
+                main.components["component_" + comp.id] = comp.component;
+            });
         }
     }
 
