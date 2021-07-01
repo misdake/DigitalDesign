@@ -29,6 +29,7 @@ export class EditorComponent {
         this.game.components.push(comp);
 
         this.game.fire(Events.COMPONENT_ADD, comp);
+        return comp;
     }
     createRealComponentFromTemplate(templateComp: GameComp) {
         if (!templateComp.isTemplate) return;

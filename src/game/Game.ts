@@ -4,12 +4,13 @@ import {System} from "../logic/System";
 import {registerBasicComponents} from "../logic/components/basic";
 import {GameWire} from "./GameWire";
 import {EventHost} from "../util/EventHost";
-import {Component} from "../logic/Component";
+import {Component, Wire} from "../logic/Component";
 import {ComponentTemplate} from "../logic/ComponentTemplate";
 import {PLAYGROUND_WIDTH} from "../util/Constants";
 
 export class Game extends EventHost {
     readonly system: System;
+    mainComponent: Component;
 
     readonly templates: GameComp[];
     readonly components: GameComp[];
@@ -31,21 +32,32 @@ export class Game extends EventHost {
     }
 
     load(template: ComponentTemplate) {
-        let component = new Component("", true, template, null);
-        this.system.setMainComponent(component);
+        this.mainComponent = new Component("", true, template, null);
+        this.system.setMainComponent(this.mainComponent);
 
         //TODO 清空界面
         this.templates.length = 0;
         this.components.length = 0;
         this.wires.length = 0;
 
-        //TODO 初始化input和output的pin
         for (let inputPin of template.inputPins) {
-            this.editor.component.createRealComponent({name: "input", type: "pass1", w: 3, h: 1}, -1, 5);
+            //TODO 根据pin宽度和类型来决定component类型
+            let comp = this.editor.component.createRealComponent({name: "input", type: "pass1", w: 3, h: 1}, -1, 5);
+            let fromPin = this.mainComponent.inputPins[inputPin.name];
+            let toPin = comp.component.inputPins["in"];
+            this.mainComponent.wires.push(new Wire("in_dummy_" + inputPin.name, null, fromPin, comp.component, toPin));
+            this.mainComponent.components["in_dummy_" + inputPin.name] = comp.component;
         }
         for (let outputPin of template.outputPins) {
-            this.editor.component.createRealComponent({name: "output", type: "pass1", w: 3, h: 1}, PLAYGROUND_WIDTH - 2, 5);
+            //TODO 根据pin宽度和类型来决定component类型
+            let comp = this.editor.component.createRealComponent({name: "output", type: "pass1", w: 3, h: 1}, PLAYGROUND_WIDTH - 2, 5);
+            let fromPin = comp.component.outputPins["out"];
+            let toPin = this.mainComponent.outputPins[outputPin.name];
+            this.mainComponent.wires.push(new Wire("out_dummy_" + outputPin.name, null, fromPin, comp.component, toPin));
+            this.mainComponent.components["out_dummy_" + outputPin.name] = comp.component;
         }
+
+        console.log(this.mainComponent);
     }
 
 }
