@@ -43,7 +43,7 @@ export class EditorComponent {
 
             // this.game.fire(Events.COMPONENT_ADD, templateComp); TODO 这个是不是应该分开成template和real的两个add
 
-            this.game.editMain(main => {
+            this.game._editMain_editor(main => {
                 main.components["component_" + comp.id] = comp.component;
             });
         }

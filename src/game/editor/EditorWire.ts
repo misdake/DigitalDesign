@@ -19,7 +19,7 @@ export class EditorWire {
         this.game.wires.push(gameWire);
         this.game.fire(Events.WIRE_ADD, gameWire);
 
-        this.game.editMain(main => {
+        this.game._editMain_editor(main => {
             main.wires.push(gameWire.wire);
         });
     }
