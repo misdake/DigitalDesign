@@ -31,14 +31,12 @@ export class Pin {
 }
 
 export class Wire {
-    name: string;
     fromComponent: Component;
     fromPin: Pin;
     toComponent: Component;
     toPin: Pin;
 
-    constructor(name: string, fromComponent: Component, fromPin: Pin, toComponent: Component, toPin: Pin) {
-        this.name = name;
+    constructor(fromComponent: Component, fromPin: Pin, toComponent: Component, toPin: Pin) {
         this.fromComponent = fromComponent;
         this.fromPin = fromPin;
         this.toComponent = toComponent;
@@ -54,7 +52,7 @@ export class Wire {
 
 export class DummyWire extends Wire {
     constructor() {
-        super("", null, null, null, null);
+        super(null, null, null, null);
     }
 
     needRun: boolean = false;
@@ -102,7 +100,7 @@ export class Component {
             let fromPin = w.fromComponent ? fromComponent.getOutputPin(w.fromPin) : this.getInputPin(w.fromPin);
             let toComponent = w.toComponent ? this.getComponent(w.toComponent) : this;
             let toPin = w.toComponent ? toComponent.getInputPin(w.toPin) : this.getOutputPin(w.toPin);
-            this.wires.push(new Wire(w.name, fromComponent, fromPin, toComponent, toPin));
+            this.wires.push(new Wire(fromComponent, fromPin, toComponent, toPin));
         });
     }
 
@@ -117,7 +115,6 @@ export class Component {
         Object.values(this.components).forEach(component => r.components.push({name: component.name, type: component.type}));
         Object.values(this.outputPins).forEach(pin => r.outputPins.push({name: pin.name, width: pin.width, type: pin.type}));
         this.wires.forEach(wire => r.wires.push({
-            name: wire.name,
             fromComponent: wire.fromComponent === this ? null : wire.fromComponent.name,
             fromPin: wire.fromPin.name,
             toComponent: wire.toComponent === this ? null : wire.toComponent.name,

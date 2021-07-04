@@ -14,7 +14,7 @@ export class EditorWire {
     }
 
     createWire(from: OutputPinElement, to: InputPinElement) {
-        let wire = new Wire("wire", from.gameComp.component, from.gamePin.pin, to.gameComp.component, to.gamePin.pin);
+        let wire = new Wire(from.gameComp.component, from.gamePin.pin, to.gameComp.component, to.gamePin.pin);
         let gameWire = new GameWire(wire, from.gamePin, to.gamePin);
         this.game.wires.push(gameWire);
         this.game.fire(Events.WIRE_ADD, gameWire);

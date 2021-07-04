@@ -53,7 +53,7 @@ export class Game extends EventHost {
                 let comp = this.editor.component.createRealComponent({name: "input", type: "pass1", w: 3, h: 1}, -1, 5);
                 let fromPin = main.inputPins[inputPin.name];
                 let toPin = comp.component.inputPins["in"];
-                let wire = new Wire("in_dummy_" + inputPin.name, null, fromPin, comp.component, toPin);
+                let wire = new Wire(null, fromPin, comp.component, toPin);
                 main.wires.push(wire);
                 main.components["in_dummy_" + inputPin.name] = comp.component;
                 this.dummyPassWire.add(wire);
@@ -64,7 +64,7 @@ export class Game extends EventHost {
                 let comp = this.editor.component.createRealComponent({name: "output", type: "pass1", w: 3, h: 1}, PLAYGROUND_WIDTH - 2, 5);
                 let fromPin = comp.component.outputPins["out"];
                 let toPin = main.outputPins[outputPin.name];
-                let wire = new Wire("out_dummy_" + outputPin.name, comp.component, fromPin, null, toPin);
+                let wire = new Wire(comp.component, fromPin, null, toPin);
                 main.wires.push(wire);
                 main.components["out_dummy_" + outputPin.name] = comp.component;
                 this.dummyPassWire.add(wire);
