@@ -4,15 +4,15 @@ import {System} from "../logic/System";
 import {registerBasicComponents} from "../logic/components/basic";
 import {GameWire} from "./GameWire";
 import {EventHost} from "../util/EventHost";
-import {Component, Wire} from "../logic/Component";
+import {Component, Pin, Wire} from "../logic/Component";
 import {ComponentTemplate} from "../logic/ComponentTemplate";
 import {PLAYGROUND_WIDTH} from "../util/Constants";
 
 export class Game extends EventHost {
     readonly system: System;
     private mainComponent: Component;
-    private dummyPassComponent: Set<Component>;
-    private dummyPassWire: Set<Wire>;
+    private dummyPassComponent: Map<Component, Pin>;
+    private dummyPassWire: Map<Wire, Pin>;
 
     readonly templates: GameComp[];
     readonly components: GameComp[];
@@ -46,8 +46,8 @@ export class Game extends EventHost {
         this.wires.length = 0;
 
         this._editMain_editor(main => {
-            this.dummyPassComponent = new Set<Component>();
-            this.dummyPassWire = new Set<Wire>();
+            this.dummyPassComponent = new Map();
+            this.dummyPassWire = new Map();
             for (let inputPin of template.inputPins) {
                 //TODO 根据pin宽度和类型来决定component类型
                 let comp = this.editor.component.createRealComponent({name: "input", type: "pass1", w: 3, h: 1}, -1, 5);
@@ -56,8 +56,8 @@ export class Game extends EventHost {
                 let wire = new Wire(null, fromPin, comp.component, toPin);
                 main.wires.push(wire);
                 main.components["in_dummy_" + inputPin.name] = comp.component;
-                this.dummyPassWire.add(wire);
-                this.dummyPassComponent.add(comp.component);
+                this.dummyPassWire.set(wire, fromPin);
+                this.dummyPassComponent.set(comp.component, fromPin);
             }
             for (let outputPin of template.outputPins) {
                 //TODO 根据pin宽度和类型来决定component类型
@@ -67,8 +67,8 @@ export class Game extends EventHost {
                 let wire = new Wire(comp.component, fromPin, null, toPin);
                 main.wires.push(wire);
                 main.components["out_dummy_" + outputPin.name] = comp.component;
-                this.dummyPassWire.add(wire);
-                this.dummyPassComponent.add(comp.component);
+                this.dummyPassWire.set(wire, toPin);
+                this.dummyPassComponent.set(comp.component, fromPin);
             }
         });
     }
@@ -88,17 +88,30 @@ export class Game extends EventHost {
             width: i.width,
             type: i.type,
         }));
-        template.components = Object.values(component.components).filter(i => !this.dummyPassComponent.has(i)).map(i => ({
-            name: i.name,
-            type: i.type,
-        }));
-        template.wires = component.wires.filter(i => !this.dummyPassWire.has(i)).map(i => ({
-            name: "wire",
-            fromComponent: this.dummyPassComponent.has(i.fromComponent) ? null : i.fromComponent.name,
-            fromPin: i.fromPin.name,
-            toComponent: this.dummyPassComponent.has(i.toComponent) ? null : i.toComponent.name,
-            toPin: i.toPin.name,
-        }));
+
+        let validComponents = Object.values(component.components).filter(i => !this.dummyPassComponent.has(i));
+        let nameMap: Map<Component, string> = new Map();
+
+        template.components = validComponents.map(i => {
+            let size = nameMap.size;
+            let name = `comp_${size + 1}`;
+            nameMap.set(i, name);
+            return {
+                name: name,
+                type: i.type,
+            };
+        });
+        template.wires = component.wires.filter(i => !this.dummyPassWire.has(i)).map(i => {
+            let fromInput = this.dummyPassComponent.has(i.fromComponent);
+            let toOutput = this.dummyPassComponent.has(i.toComponent);
+            return ({
+                name: "wire",
+                fromComponent: fromInput ? null : nameMap.get(i.fromComponent),
+                fromPin: fromInput ? this.dummyPassComponent.get(i.fromComponent).name : i.fromPin.name,
+                toComponent: toOutput ? null : nameMap.get(i.toComponent),
+                toPin: toOutput ? this.dummyPassComponent.get(i.toComponent).name : i.toPin.name,
+            });
+        });
 
         console.log(template);
 
