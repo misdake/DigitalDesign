@@ -20,8 +20,8 @@ template.inputPins = [{
 }];
 template.outputPins = [{
     name: "out",
-    type: PinType.BOOL,
-    width: 1,
+    type: PinType.UNSIGNED,
+    width: 4,
 }];
 game.load(template);
 

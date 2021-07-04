@@ -50,8 +50,7 @@ export class Game extends EventHost {
             this.dummyPassComponent = new Map();
             this.dummyPassWire = new Map();
             for (let inputPin of template.inputPins) {
-                //TODO 根据pin宽度和类型来决定component类型
-                let comp = this.editor.component.createRealComponent({name: inputPin.name, type: "pass1", w: 2, h: 1}, 0, 5);
+                let comp = this.editor.component.createRealComponent({name: inputPin.name, type: `pass${inputPin.width}`, w: 2, h: 1}, 0, 5);
                 comp.showMode = GameCompShowMode.Name;
                 comp.movable = false;
                 let fromPin = main.inputPins[inputPin.name];
@@ -63,8 +62,7 @@ export class Game extends EventHost {
                 this.dummyPassComponent.set(comp.component, fromPin);
             }
             for (let outputPin of template.outputPins) {
-                //TODO 根据pin宽度和类型来决定component类型
-                let comp = this.editor.component.createRealComponent({name: outputPin.name, type: "pass1", w: 2, h: 1}, PLAYGROUND_WIDTH - 2, 5);
+                let comp = this.editor.component.createRealComponent({name: outputPin.name, type: `pass${outputPin.width}`, w: 2, h: 1}, PLAYGROUND_WIDTH - 2, 5);
                 comp.showMode = GameCompShowMode.Name;
                 comp.movable = false;
                 let fromPin = comp.component.outputPins["out"];

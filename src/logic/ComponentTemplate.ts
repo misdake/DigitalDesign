@@ -4,6 +4,7 @@ export enum PinType {
     BOOL,
     UNSIGNED,
     SIGNED,
+    //TODO 支持直接的1或0类型，只支持作为inputPin存在，不允许构成wire
 }
 
 export class PinTemplate {
