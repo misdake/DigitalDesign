@@ -32,15 +32,16 @@ export class Game extends EventHost {
 
         this.editor = new Editor(this);
 
-
         (window as any).save = () => this.save("out");
+        (window as any).run0 = () => this.run({in: 0});
+        (window as any).run1 = () => this.run({in: 1});
     }
 
     load(template: ComponentTemplate) {
         this.mainComponent = new Component("", true, template, null);
         this.system.setMainComponent(this.mainComponent);
 
-        //TODO 清空界面
+        //TODO 支持二次加载，清空数据，清空界面
         this.templates.length = 0;
         this.components.length = 0;
         this.wires.length = 0;
@@ -75,6 +76,14 @@ export class Game extends EventHost {
                 this.dummyPassComponent.set(comp.component, fromPin);
             }
         });
+    }
+
+    run(input: { [key: string]: number }) {
+        this.mainComponent.applyInputValues(input);
+        this.system.constructGraph();
+        this.system.runLogic();
+        console.clear();
+        console.log(this.mainComponent.getOutputValues());
     }
 
     save(typeName: string) {

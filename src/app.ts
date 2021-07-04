@@ -29,6 +29,7 @@ let templates = [
     {name: "pack4", type: "pack4", w: 6, h: 4},
     {name: "and", type: "and", w: 4, h: 2},
     {name: "xor", type: "xor", w: 4, h: 2},
+    {name: "not", type: "not", w: 3, h: 1},
 ];
 
 function addTemplateComponent(template: GameCompTemplate, startX: number) {
