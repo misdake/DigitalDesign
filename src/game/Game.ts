@@ -1,5 +1,5 @@
 import {Editor} from "./Editor";
-import {GameComp} from "./GameComp";
+import {GameComp, GameCompShowMode} from "./GameComp";
 import {System} from "../logic/System";
 import {registerBasicComponents} from "../logic/components/basic";
 import {GameWire} from "./GameWire";
@@ -50,7 +50,9 @@ export class Game extends EventHost {
             this.dummyPassWire = new Map();
             for (let inputPin of template.inputPins) {
                 //TODO 根据pin宽度和类型来决定component类型
-                let comp = this.editor.component.createRealComponent({name: "input", type: "pass1", w: 3, h: 1}, -1, 5);
+                let comp = this.editor.component.createRealComponent({name: inputPin.name, type: "pass1", w: 2, h: 1}, 0, 5);
+                comp.showMode = GameCompShowMode.Name;
+                comp.movable = false;
                 let fromPin = main.inputPins[inputPin.name];
                 let toPin = comp.component.inputPins["in"];
                 let wire = new Wire(null, fromPin, comp.component, toPin);
@@ -61,7 +63,9 @@ export class Game extends EventHost {
             }
             for (let outputPin of template.outputPins) {
                 //TODO 根据pin宽度和类型来决定component类型
-                let comp = this.editor.component.createRealComponent({name: "output", type: "pass1", w: 3, h: 1}, PLAYGROUND_WIDTH - 2, 5);
+                let comp = this.editor.component.createRealComponent({name: outputPin.name, type: "pass1", w: 2, h: 1}, PLAYGROUND_WIDTH - 2, 5);
+                comp.showMode = GameCompShowMode.Name;
+                comp.movable = false;
                 let fromPin = comp.component.outputPins["out"];
                 let toPin = main.outputPins[outputPin.name];
                 let wire = new Wire(comp.component, fromPin, null, toPin);
@@ -112,8 +116,6 @@ export class Game extends EventHost {
                 toPin: toOutput ? this.dummyPassComponent.get(i.toComponent).name : i.toPin.name,
             });
         });
-
-        console.log(template);
 
         return template;
     }

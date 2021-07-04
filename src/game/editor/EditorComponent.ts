@@ -21,7 +21,7 @@ export class EditorComponent {
         return comp;
     }
 
-    createRealComponent(template: GameCompTemplate, x: number, y: number) {
+    createRealComponent(template: GameCompTemplate, x: number, y: number) : GameComp {
         let pack = new GameCompPack(template, x, y);
         let comp = new GameComp(this.nextCompId++, this.game.system, pack);
         this.game.fire(Events.COMPONENT_ADD, comp);

@@ -26,6 +26,12 @@ export class GameCompPack extends GameCompTemplate {
     }
 }
 
+export enum GameCompShowMode {
+    Name = 1,
+    Type,
+    NameType,
+}
+
 export class GameComp extends EventHost {
     name: string;
     type: string;
@@ -33,6 +39,9 @@ export class GameComp extends EventHost {
     h: number;
     x: number;
     y: number;
+
+    showMode: GameCompShowMode = GameCompShowMode.Type;
+    movable: boolean = true;
 
     isTemplate: boolean = true;
     readonly id: number;

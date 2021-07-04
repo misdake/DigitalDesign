@@ -1,7 +1,7 @@
 import interact from 'interactjs';
 import {customElement, html, LitElement, property} from "lit-element";
 import "./PinElement";
-import {GameComp} from "../../game/GameComp";
+import {GameComp, GameCompShowMode} from "../../game/GameComp";
 import {Game} from "../../game/Game";
 import {Events} from "../../util/Events";
 import {CELL_SIZE} from "../../util/Constants";
@@ -16,8 +16,6 @@ export class CompElement extends LitElement {
 
     private tx: number;
     private ty: number;
-
-    //TODO 支持不允许移动，UI注意改成不能移动
 
     protected render() {
         this.gameComp.uiElement = this;
@@ -34,6 +32,34 @@ export class CompElement extends LitElement {
             height = CELL_SIZE;
         }
 
+        let nameClass: string;
+        let typeClass: string;
+        let pinsClass: string;
+
+        switch (this.gameComp.showMode) {
+            case GameCompShowMode.Name:
+                nameClass = "component-name component-name-always";
+                typeClass = null;
+                pinsClass = "pin-alwayshide";
+                break;
+            case GameCompShowMode.Type:
+                nameClass = null;
+                typeClass = "component-type component-type-always";
+                pinsClass = "pin-hovershow";
+                break;
+            case GameCompShowMode.NameType:
+                nameClass = "component-name component-name-hoverhide";
+                typeClass = "component-type component-type-hovershow";
+                pinsClass = "pin-hovershow";
+                break;
+        }
+
+        let dummyTemplate = html``;
+        let nameTemplate = nameClass ? html`
+            <div style="pointer-events: none;" class="${nameClass}">${component.name}</div>` : dummyTemplate;
+        let typeTemplate = typeClass ? html`
+            <div style="pointer-events: none;" class="${typeClass}">${component.type}</div>` : dummyTemplate;
+
         let inputs = inputPins.map(pin => html`
             <inputpin-element .game=${this.game} .gameComp=${this.gameComp} .gamePin=${pin}></inputpin-element>`);
         let outputs = outputPins.map(pin => html`
@@ -42,10 +68,10 @@ export class CompElement extends LitElement {
         let content = this.gameComp.isTemplate ? html`
             <div style="pointer-events: none;" class="component-type component-type-always">${component.type}</div>
         ` : html`
-            <div style="pointer-events: none;" class="component-name">${component.name}</div>
-            <div style="pointer-events: none;" class="component-type">${component.type}</div>
-            <div style="pointer-events: none;" class="input-pin-list">${inputs}</div>
-            <div style="pointer-events: none;" class="output-pin-list">${outputs}</div>
+            ${nameTemplate}
+            ${typeTemplate}
+            <div style="pointer-events: none;" class="${pinsClass} input-pin-list">${inputs}</div>
+            <div style="pointer-events: none;" class="${pinsClass} output-pin-list">${outputs}</div>
         `;
 
         //transform translate set in updated() callback
@@ -81,33 +107,35 @@ export class CompElement extends LitElement {
 
         this.updateXY(compElement, this.gameComp.x, this.gameComp.y, true);
 
-        // noinspection JSUnusedGlobalSymbols
-        interact(dragElement).draggable({
-            listeners: {
-                start(event) {
-                    //保存点击位置的相对偏移
-                    self.tx = event.client.x - self.gameComp.x * CELL_SIZE;
-                    self.ty = event.client.y - self.gameComp.y * CELL_SIZE;
-                },
-                move(event) {
-                    let dx = event.client.x - self.tx;
-                    let dy = event.client.y - self.ty;
+        if (this.gameComp.movable) {
+            // noinspection JSUnusedGlobalSymbols
+            interact(dragElement).draggable({
+                listeners: {
+                    start(event) {
+                        //保存点击位置的相对偏移
+                        self.tx = event.client.x - self.gameComp.x * CELL_SIZE;
+                        self.ty = event.client.y - self.gameComp.y * CELL_SIZE;
+                    },
+                    move(event) {
+                        let dx = event.client.x - self.tx;
+                        let dy = event.client.y - self.ty;
 
-                    let x = Math.round(dx / CELL_SIZE);
-                    let y = Math.round(dy / CELL_SIZE);
+                        let x = Math.round(dx / CELL_SIZE);
+                        let y = Math.round(dy / CELL_SIZE);
 
-                    if (self.gameComp.isTemplate) {
-                        self.game.editor.component.createRealComponentFromTemplate(self.gameComp);
-                        self.requestUpdateInternal();
-                    }
-                    self.updateXY(compElement, x, y);
+                        if (self.gameComp.isTemplate) {
+                            self.game.editor.component.createRealComponentFromTemplate(self.gameComp);
+                            self.requestUpdateInternal();
+                        }
+                        self.updateXY(compElement, x, y);
+                    },
+                    end(event) {
+                        //TODO 再次检查是否可以放下，包括是否在装备栏里面没拿到场地里
+                        // console.log("event end", event);
+                    },
                 },
-                end(event) {
-                    //TODO 再次检查是否可以放下，包括是否在装备栏里面没拿到场地里
-                    // console.log("event end", event);
-                },
-            },
-        });
+            });
+        }
     }
 
     createRenderRoot() {
