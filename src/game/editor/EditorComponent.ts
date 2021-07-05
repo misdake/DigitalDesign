@@ -2,6 +2,7 @@ import {Game} from "../Game";
 import {Editor} from "../Editor";
 import {GameComp, GameCompPack, GameCompTemplate} from "../GameComp";
 import {Events} from "../../util/Events";
+import {CELL_SIZE} from "../../util/Constants";
 
 export class EditorComponent {
     private game: Game;
@@ -60,4 +61,29 @@ export class EditorComponent {
         return false;
     }
 
+    private testCollision(gameComp: GameComp, x: number, y: number) {
+        let a = gameComp;
+        return this.game.components.some(b => {
+            if (b === a || a.isTemplate || b.isTemplate) return false;
+            let xx = (x + a.w + 1 < b.x) || (x > b.x + b.w + 1);
+            let yy = (y + a.h <= b.y) || (y >= b.y + b.h);
+            let outside = xx || yy;
+            return !outside;
+        });
+    }
+
+    tryMoveComponent(gameComp: GameComp, compElement: HTMLDivElement, x: number, y: number, force: boolean = false) {
+        if (force || gameComp.x !== x || gameComp.y !== y) {
+            let test = this.testCollision(gameComp, x, y);
+            if (force || !test) {
+                gameComp.x = x;
+                gameComp.y = y;
+                gameComp.fire(Events.COMPONENT_UPDATE, gameComp, {x, y});
+                this.game.fire(Events.COMPONENT_UPDATE, gameComp, {x, y});
+                let tx = x * CELL_SIZE;
+                let ty = y * CELL_SIZE;
+                compElement.style.transform = `translate(${tx}px, ${ty}px)`;
+            }
+        }
+    }
 }

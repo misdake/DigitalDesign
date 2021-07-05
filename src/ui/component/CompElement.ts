@@ -84,28 +84,13 @@ export class CompElement extends LitElement {
         `;
     }
 
-    private updateXY(element: HTMLDivElement, x: number, y: number, force: boolean = false) {
-        let gameComp = this.gameComp;
-        if (force || gameComp.x !== x || gameComp.y !== y) {
-            if (!force) {
-                this.gameComp.x = x;
-                this.gameComp.y = y;
-                this.gameComp.fire(Events.COMPONENT_UPDATE, this.gameComp, {x, y});
-                this.game.fire(Events.COMPONENT_UPDATE, this.gameComp, {x, y});
-            }
-            let tx = x * CELL_SIZE;
-            let ty = y * CELL_SIZE;
-            element.style.transform = `translate(${tx}px, ${ty}px)`;
-        }
-    }
-
     updated() {
         let self = this;
 
         let dragElement = this.getElementsByClassName("component-bg").item(0) as HTMLDivElement;
         let compElement = this.getElementsByClassName("component").item(0) as HTMLDivElement;
 
-        this.updateXY(compElement, this.gameComp.x, this.gameComp.y, true);
+        self.game.editor.component.tryMoveComponent(self.gameComp, compElement, this.gameComp.x, this.gameComp.y, true);
 
         if (this.gameComp.movable) {
             // noinspection JSUnusedGlobalSymbols
@@ -127,7 +112,7 @@ export class CompElement extends LitElement {
                             self.game.editor.component.createRealComponentFromTemplate(self.gameComp);
                             self.requestUpdateInternal();
                         }
-                        self.updateXY(compElement, x, y);
+                        self.game.editor.component.tryMoveComponent(self.gameComp, compElement, x, y);
                     },
                     end(event) {
                         //TODO 再次检查是否可以放下，包括是否在装备栏里面没拿到场地里
