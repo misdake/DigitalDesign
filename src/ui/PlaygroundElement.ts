@@ -5,6 +5,7 @@ import "./component/WireElement";
 import {Game} from "../game/Game";
 import {Events} from "../util/Events";
 import {GameComp} from "../game/GameComp";
+import {CELL_SIZE, GAME_HEIGHT, GAME_WIDTH, PLAYGROUND_TOP} from "../util/Constants";
 
 @customElement('playground-element')
 export class PlaygroundElement extends LitElement {
@@ -32,14 +33,20 @@ export class PlaygroundElement extends LitElement {
         source.sort((a, b) => a.id - b.id);
 
         let components = source.map(component => html`
-            <gamecomp-element id="gameComp-${component.id}" .game=${this.game} .gameComp=${component} style="position: absolute; pointer-events: none;" />`);
+            <gamecomp-element id="gameComp-${component.id}" .game=${this.game} .gameComp=${component} style="position: absolute; pointer-events: none;"/>`);
         let wires = this.game.wires.map(wire => html`
-            <wire-element .gam=${this.game} .gameWire=${wire} />`);
+            <wire-element .gam=${this.game} .gameWire=${wire}></wire-element>`);
+
+        let width = CELL_SIZE * GAME_WIDTH;
+        let height = CELL_SIZE * GAME_HEIGHT;
+        let top = CELL_SIZE * PLAYGROUND_TOP;
 
         return html`
-            <div id="playground">
-                <div class="components">${components}</div>
-                <div class="wires">${wires}</div>
+            <div id="playground" style="width: ${width}px; height: ${height}px;">
+                <div style="position: relative; top: ${top}px;">
+                    <div class="components">${components}</div>
+                    <div class="wires">${wires}</div>
+                </div>
             </div>
         `;
     }

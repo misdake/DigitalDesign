@@ -6,7 +6,7 @@ import {GameWire} from "./GameWire";
 import {EventHost} from "../util/EventHost";
 import {Component, Pin, Wire} from "../logic/Component";
 import {ComponentTemplate} from "../logic/ComponentTemplate";
-import {PLAYGROUND_WIDTH} from "../util/Constants";
+import {GAME_WIDTH} from "../util/Constants";
 
 export class Game extends EventHost {
     readonly system: System;
@@ -49,8 +49,11 @@ export class Game extends EventHost {
         this._editMain_editor(main => {
             this.dummyPassComponent = new Map();
             this.dummyPassWire = new Map();
+
+            let inputOffset = 1;
             for (let inputPin of template.inputPins) {
-                let comp = this.editor.component.createRealComponent({name: inputPin.name, type: `pass${inputPin.width}`, w: 2, h: 1}, 0, 5);
+                let comp = this.editor.component.createRealComponent({name: inputPin.name, type: `pass${inputPin.width}`, w: 2, h: 1}, 0, inputOffset);
+                inputOffset += inputPin.width;
                 comp.showMode = GameCompShowMode.Name;
                 comp.movable = false;
                 let fromPin = main.inputPins[inputPin.name];
@@ -61,8 +64,11 @@ export class Game extends EventHost {
                 this.dummyPassWire.set(wire, fromPin);
                 this.dummyPassComponent.set(comp.component, fromPin);
             }
+
+            let outputOffset = 1;
             for (let outputPin of template.outputPins) {
-                let comp = this.editor.component.createRealComponent({name: outputPin.name, type: `pass${outputPin.width}`, w: 2, h: 1}, PLAYGROUND_WIDTH - 2, 5);
+                let comp = this.editor.component.createRealComponent({name: outputPin.name, type: `pass${outputPin.width}`, w: 2, h: 1}, GAME_WIDTH - 2, outputOffset);
+                outputOffset += outputPin.width;
                 comp.showMode = GameCompShowMode.Name;
                 comp.movable = false;
                 let fromPin = comp.component.outputPins["out"];

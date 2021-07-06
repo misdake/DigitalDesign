@@ -3,7 +3,7 @@ import "./ui/component/CompElement";
 import "./ui/PlaygroundElement";
 import "./ui/ToolboxElement";
 import {Game} from "./game/Game";
-import {CELL_SIZE, PLAYGROUND_HEIGHT, PLAYGROUND_WIDTH} from "./util/Constants";
+import {CELL_SIZE, GAME_HEIGHT, GAME_WIDTH} from "./util/Constants";
 import {GameCompTemplate} from "./game/GameComp";
 import {ComponentTemplate, PinType} from "./logic/ComponentTemplate";
 
@@ -26,14 +26,14 @@ template.outputPins = [{
 game.load(template);
 
 let templates = [
-    {name: "pack4", type: "pack4", w: 6, h: 4},
-    {name: "and", type: "and", w: 4, h: 2},
-    {name: "xor", type: "xor", w: 4, h: 2},
-    {name: "not", type: "not", w: 3, h: 1},
+    {name: "pack4", type: "pack4", w: 4, h: 4},
+    {name: "and", type: "and", w: 3, h: 2},
+    {name: "xor", type: "xor", w: 3, h: 2},
+    {name: "not", type: "not", w: 2, h: 1},
 ];
 
 function addTemplateComponent(template: GameCompTemplate, startX: number) {
-    game.editor.component.createTemplateComponent(template, startX, 1);
+    game.editor.component.createTemplateComponent(template, startX, -2);
 }
 
 function addTemplateComponents() {
@@ -43,14 +43,14 @@ function addTemplateComponents() {
         x += 3;
     }
 }
-``
+
 addTemplateComponents();
 
-let width = CELL_SIZE * PLAYGROUND_WIDTH;
-let height = CELL_SIZE * PLAYGROUND_HEIGHT;
+let width = CELL_SIZE * GAME_WIDTH;
+let height = CELL_SIZE * GAME_HEIGHT;
 
 render(html`
-    <div id="content">
+    <div id="content" style="width: ${width}px; height: ${height}px;">
         <style>
             :root {
                 --cell-size: ${CELL_SIZE}px;

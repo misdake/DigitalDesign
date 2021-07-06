@@ -1,6 +1,6 @@
 import {customElement, html, LitElement, property} from "lit-element";
 import {Game} from "../game/Game";
-import {CELL_SIZE} from "../util/Constants";
+import {CELL_SIZE, PLAYGROUND_TOP} from "../util/Constants";
 
 @customElement('toolbox-element')
 export class ToolboxElement extends LitElement {
@@ -9,7 +9,7 @@ export class ToolboxElement extends LitElement {
 
     protected render() {
         let height = 4;
-        let top = CELL_SIZE * 3 - height / 2;
+        let top = CELL_SIZE * PLAYGROUND_TOP - height / 2;
 
         return html`
             <div class="separation-line" style="z-index: 5; position: absolute; background: white; left: 0; top: ${top}px; width: 100%; height: ${height}px;"></div>

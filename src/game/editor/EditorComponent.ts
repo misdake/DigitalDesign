@@ -2,7 +2,7 @@ import {Game} from "../Game";
 import {Editor} from "../Editor";
 import {GameComp, GameCompPack, GameCompTemplate} from "../GameComp";
 import {Events} from "../../util/Events";
-import {CELL_SIZE} from "../../util/Constants";
+import {CELL_SIZE, GAME_WIDTH, PLAYGROUND_HEIGHT} from "../../util/Constants";
 
 export class EditorComponent {
     private game: Game;
@@ -72,18 +72,31 @@ export class EditorComponent {
         });
     }
 
-    tryMoveComponent(gameComp: GameComp, compElement: HTMLDivElement, x: number, y: number, force: boolean = false) {
-        if (force || gameComp.x !== x || gameComp.y !== y) {
-            let test = this.testCollision(gameComp, x, y);
-            if (force || !test) {
-                gameComp.x = x;
-                gameComp.y = y;
-                gameComp.fire(Events.COMPONENT_UPDATE, gameComp, {x, y});
-                this.game.fire(Events.COMPONENT_UPDATE, gameComp, {x, y});
-                let tx = x * CELL_SIZE;
-                let ty = y * CELL_SIZE;
-                compElement.style.transform = `translate(${tx}px, ${ty}px)`;
-            }
+    private testInPlayground(gameComp: GameComp, x: number, y: number) {
+        let a = gameComp;
+        if (a.isTemplate) return false;
+        let xx = (x + a.w + 1 < GAME_WIDTH) && (x > 0);
+        let yy = (y + a.h <= PLAYGROUND_HEIGHT) && (y >= 0);
+        return xx && yy;
+    }
+
+    tryMoveComponent(gameComp: GameComp, comp: HTMLDivElement, border: HTMLDivElement, x: number, y: number, force: boolean = false) {
+        let tx = x * CELL_SIZE;
+        let ty = y * CELL_SIZE;
+
+        let collide = this.testCollision(gameComp, x, y);
+        let inside = this.testInPlayground(gameComp, x, y);
+        let canMove = !collide && inside;
+
+        if (force || canMove) {
+            gameComp.x = x;
+            gameComp.y = y;
+            gameComp.fire(Events.COMPONENT_UPDATE, gameComp, {x, y});
+            this.game.fire(Events.COMPONENT_UPDATE, gameComp, {x, y});
+            comp.style.transform = `translate(${tx}px, ${ty}px)`;
         }
+        if (!force) border.style.display = "block";
+        border.style.transform = `translate(${tx - CELL_SIZE}px, ${ty}px)`;
+        border.style.borderColor = canMove ? "white" : "red";
     }
 }

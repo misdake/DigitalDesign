@@ -77,6 +77,7 @@ export class CompElement extends LitElement {
         //transform translate set in updated() callback
         //TODO 如果name===type，那么不使用动画显示name，只固定显示type
         return html`
+            <div class="component-move-target" style="z-index: 999; position: absolute; pointer-events: auto; box-sizing: border-box; margin: -2px; touch-action: none; width: ${width + CELL_SIZE * 2 + 4}px; height: ${height + 4}px; border: 2px solid;"></div>
             <div class="component" style="pointer-events: auto; touch-action: none; width: ${width}px; height: ${height}px;" @click=${() => this.game.editor.selectGameComp(this.gameComp)}>
                 <div class="component-bg"></div>
                 ${content}
@@ -89,8 +90,10 @@ export class CompElement extends LitElement {
 
         let dragElement = this.getElementsByClassName("component-bg").item(0) as HTMLDivElement;
         let compElement = this.getElementsByClassName("component").item(0) as HTMLDivElement;
+        let targetElement = this.getElementsByClassName("component-move-target").item(0) as HTMLDivElement;
 
-        self.game.editor.component.tryMoveComponent(self.gameComp, compElement, this.gameComp.x, this.gameComp.y, true);
+        targetElement.style.display = "none";
+        self.game.editor.component.tryMoveComponent(self.gameComp, compElement, targetElement, this.gameComp.x, this.gameComp.y, true);
 
         if (this.gameComp.movable) {
             // noinspection JSUnusedGlobalSymbols
@@ -102,6 +105,8 @@ export class CompElement extends LitElement {
                         self.ty = event.client.y - self.gameComp.y * CELL_SIZE;
                     },
                     move(event) {
+                        // targetElement.style.display = "block"; //will be set in tryMoveComponent
+
                         let dx = event.client.x - self.tx;
                         let dy = event.client.y - self.ty;
 
@@ -112,10 +117,12 @@ export class CompElement extends LitElement {
                             self.game.editor.component.createRealComponentFromTemplate(self.gameComp);
                             self.requestUpdateInternal();
                         }
-                        self.game.editor.component.tryMoveComponent(self.gameComp, compElement, x, y);
+                        self.game.editor.component.tryMoveComponent(self.gameComp, compElement, targetElement, x, y);
                     },
                     end(event) {
-                        //TODO 再次检查是否可以放下，包括是否在装备栏里面没拿到场地里
+                        targetElement.style.display = "none";
+
+                        //TODO 再次检查是否可以放下，如果不能就删掉
                         // console.log("event end", event);
                     },
                 },
