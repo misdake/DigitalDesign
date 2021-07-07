@@ -33,7 +33,7 @@ export class EditorWire {
         this.game.wires.push(gameWire);
         this.game.fire(Events.WIRE_ADD, gameWire);
 
-        this.game._editMain_editor(main => {
+        this.game._editMain_editor("create wire", main => {
             main.wires.push(gameWire.wire);
         });
     }
@@ -43,7 +43,7 @@ export class EditorWire {
             let toRemove = wire.fromPin.gameComp === gameComp || wire.toPin.gameComp === gameComp;
             return !toRemove;
         });
-        this.game._editMain_editor(main => {
+        this.game._editMain_editor("remove wires", main => {
             main.wires = main.wires.filter((wire, i) => {
                 let toRemove = wire.fromComponent === gameComp.component || wire.toComponent === gameComp.component;
                 return !toRemove;
@@ -60,7 +60,7 @@ export class EditorWire {
             this.game.wires.splice(index, 1);
             this.game.fire(Events.WIRE_REMOVE, gameWire);
 
-            this.game._editMain_editor(main => {
+            this.game._editMain_editor("remove wire", main => {
                 main.wires.splice(index, 1);
             });
             return true;

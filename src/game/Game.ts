@@ -46,7 +46,7 @@ export class Game extends EventHost {
         this.components.length = 0;
         this.wires.length = 0;
 
-        this._editMain_editor(main => {
+        this._editMain_editor("load template", main => {
             this.dummyPassComponent = new Map();
             this.dummyPassWire = new Map();
 
@@ -86,8 +86,7 @@ export class Game extends EventHost {
         this.mainComponent.applyInputValues(input);
         this.system.constructGraph();
         this.system.runLogic();
-        console.clear();
-        console.log(this.mainComponent.getOutputValues());
+        return this.mainComponent.getOutputValues();
     }
 
     save(typeName: string) {
@@ -133,9 +132,9 @@ export class Game extends EventHost {
         return template;
     }
 
-    _editMain_editor(mutator: (main: Component) => void) {
+    _editMain_editor(title: string, mutator: (main: Component) => void) {
         mutator(this.mainComponent);
-        console.log("edit main component:", this.mainComponent.components, this.mainComponent.wires);
+        console.log(title, ":", this.mainComponent.components, this.mainComponent.wires);
     }
 
 }

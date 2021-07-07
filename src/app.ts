@@ -21,7 +21,7 @@ template.inputPins = [{
 template.outputPins = [{
     name: "out",
     type: PinType.UNSIGNED,
-    width: 4,
+    width: 1,
 }];
 game.load(template);
 

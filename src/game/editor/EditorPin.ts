@@ -62,15 +62,12 @@ export class EditorPin {
     }
 
     private tryConnect(from: OutputPinElement, to: InputPinElement): boolean {
-        console.log("connect", from.gamePin.pin.name, "to", to.gamePin.pin.name);
-
         //不同的component
         if (from.gameComp === to.gameComp) return false;
 
         //TODO 也不能构成环
 
         //剩下情况都可以连接
-        console.log("可以构成");
         this.editor.wire.createWire(from, to); //TODO 这里面请求了更新，是不是外面就不要更新了？
 
         return true;
