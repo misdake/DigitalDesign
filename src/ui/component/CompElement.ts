@@ -3,7 +3,6 @@ import {customElement, html, LitElement, property} from "lit-element";
 import "./PinElement";
 import {GameComp, GameCompShowMode} from "../../game/GameComp";
 import {Game} from "../../game/Game";
-import {Events} from "../../util/Events";
 import {CELL_SIZE} from "../../util/Constants";
 
 @customElement('gamecomp-element')
@@ -85,12 +84,19 @@ export class CompElement extends LitElement {
         `;
     }
 
+    private dragElement: HTMLDivElement;
+    private compElement: HTMLDivElement;
+    private targetElement: HTMLDivElement;
+
     updated() {
         let self = this;
 
         let dragElement = this.getElementsByClassName("component-bg").item(0) as HTMLDivElement;
         let compElement = this.getElementsByClassName("component").item(0) as HTMLDivElement;
         let targetElement = this.getElementsByClassName("component-move-target").item(0) as HTMLDivElement;
+        this.dragElement = dragElement;
+        this.compElement = compElement;
+        this.targetElement = targetElement;
 
         targetElement.style.display = "none";
         self.game.editor.component.tryMoveComponent(self.gameComp, compElement, targetElement, this.gameComp.x, this.gameComp.y, true);
@@ -106,10 +112,8 @@ export class CompElement extends LitElement {
                     },
                     move(event) {
                         // targetElement.style.display = "block"; //will be set in tryMoveComponent
-
                         let dx = event.client.x - self.tx;
                         let dy = event.client.y - self.ty;
-
                         let x = Math.round(dx / CELL_SIZE);
                         let y = Math.round(dy / CELL_SIZE);
 
@@ -121,6 +125,16 @@ export class CompElement extends LitElement {
                     },
                     end(event) {
                         targetElement.style.display = "none";
+                        let dx = event.client.x - self.tx;
+                        let dy = event.client.y - self.ty;
+                        let x = Math.round(dx / CELL_SIZE);
+                        let y = Math.round(dy / CELL_SIZE);
+
+                        if (!self.gameComp.isTemplate) {
+                            if (self.game.editor.component.testInTrash(self.gameComp, x, y)) {
+                                self.game.editor.component.removeRealComponent(self.gameComp);
+                            }
+                        }
 
                         //TODO 再次检查是否可以放下，如果不能就删掉
                         // console.log("event end", event);

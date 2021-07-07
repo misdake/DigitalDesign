@@ -4,6 +4,20 @@ import {InputPinElement, OutputPinElement} from "../../ui/component/PinElement";
 import {GameWire} from "../GameWire";
 import {Wire} from "../../logic/Component";
 import {Events} from "../../util/Events";
+import {GameComp} from "../GameComp";
+
+function filterInPlace<T>(array: T[], condition: (t: T, index: number, array: T[]) => boolean) {
+    let i = 0, j = 0;
+
+    while (i < array.length) {
+        const val = array[i];
+        if (condition(val, i, array)) array[j++] = val;
+        i++;
+    }
+
+    array.length = j;
+    return array;
+}
 
 export class EditorWire {
     private game: Game;
@@ -24,13 +38,31 @@ export class EditorWire {
         });
     }
 
-    removeWire(gameWire: GameWire) {
-        //TODO editMain修改mainComponent
+    removeWiresOfCompoment(gameComp: GameComp) {
+        filterInPlace(this.game.wires, (wire, i) => {
+            let toRemove = wire.fromPin.gameComp === gameComp || wire.toPin.gameComp === gameComp;
+            return !toRemove;
+        });
+        this.game._editMain_editor(main => {
+            main.wires = main.wires.filter((wire, i) => {
+                let toRemove = wire.fromComponent === gameComp.component || wire.toComponent === gameComp.component;
+                return !toRemove;
+            });
+        });
+    }
 
-        const index = this.game.wires.indexOf(gameWire);
+    removeWire(gameWire: GameWire, index: number = -1) {
+        if (!(index >= 0 && this.game.wires[index] === gameWire)) {
+            index = this.game.wires.indexOf(gameWire);
+        }
+
         if (index > -1) {
             this.game.wires.splice(index, 1);
             this.game.fire(Events.WIRE_REMOVE, gameWire);
+
+            this.game._editMain_editor(main => {
+                main.wires.splice(index, 1);
+            });
             return true;
         }
         return false;

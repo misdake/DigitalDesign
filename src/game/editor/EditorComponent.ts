@@ -53,9 +53,13 @@ export class EditorComponent {
     removeRealComponent(gameComp: GameComp): boolean {
         const index = this.game.components.indexOf(gameComp);
         if (index > -1) {
-            //TODO 在这里删除相关的gameWire？
+            this.game.editor.wire.removeWiresOfCompoment(gameComp);
             this.game.components.splice(index, 1);
             this.game.fire(Events.COMPONENT_REMOVE, gameComp);
+
+            this.game._editMain_editor(main => {
+                delete main.components["component_" + gameComp.id];
+            });
             return true;
         }
         return false;
@@ -79,6 +83,10 @@ export class EditorComponent {
         let yy = (y + a.h <= PLAYGROUND_HEIGHT) && (y >= 0);
         return xx && yy;
     }
+    testInTrash(gameComp: GameComp, x: number, y: number) {
+        if (gameComp.isTemplate) return false;
+        return y < 0;
+    }
 
     tryMoveComponent(gameComp: GameComp, comp: HTMLDivElement, border: HTMLDivElement, x: number, y: number, force: boolean = false) {
         let tx = x * CELL_SIZE;
@@ -87,6 +95,8 @@ export class EditorComponent {
         let collide = this.testCollision(gameComp, x, y);
         let inside = this.testInPlayground(gameComp, x, y);
         let canMove = !collide && inside;
+
+        let trash = this.testInTrash(gameComp, x, y);
 
         if (force || canMove) {
             gameComp.x = x;
@@ -97,6 +107,6 @@ export class EditorComponent {
         }
         if (!force) border.style.display = "block";
         border.style.transform = `translate(${tx - CELL_SIZE}px, ${ty}px)`;
-        border.style.borderColor = canMove ? "white" : "red";
+        border.style.borderColor = trash ? "red" : canMove ? "white" : "orange";
     }
 }
