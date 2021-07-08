@@ -29,7 +29,7 @@ export class EditorWire {
     }
 
     createWire(from: OutputPinElement, to: InputPinElement) {
-        this.removeWiresOfInputPin(to.gamePin);
+        this.removeWiresOfPin(to.gamePin);
 
         let wire = new Wire(from.gameComp.component, from.gamePin.pin, to.gameComp.component, to.gamePin.pin);
         let gameWire = new GameWire(wire, from.gamePin, to.gamePin);
@@ -41,30 +41,38 @@ export class EditorWire {
         });
     }
 
-    removeWiresOfInputPin(gamePin: GamePin) {
-        filterInPlace(this.game.wires, (wire, i) => {
-            let toRemove = wire.toPin === gamePin;
+    removeWiresOfPin(gamePin: GamePin) {
+        let count = this.game.wires.length;
+        let count2 = filterInPlace(this.game.wires, (wire, i) => {
+            let toRemove = wire.fromPin === gamePin || wire.toPin === gamePin;
             return !toRemove;
-        });
-        this.game._editMain_editor("remove wires", main => {
-            main.wires = main.wires.filter((wire, i) => {
-                let toRemove = wire.toPin === gamePin.pin;
-                return !toRemove;
+        }).length;
+        if (count !== count2) {
+            this.game.fire(Events.WIRES_REMOVE, null);
+            this.game._editMain_editor("remove wires", main => {
+                main.wires = main.wires.filter((wire, i) => {
+                    let toRemove = wire.fromPin === gamePin.pin || wire.toPin === gamePin.pin;
+                    return !toRemove;
+                });
             });
-        });
+        }
     }
 
     removeWiresOfCompoment(gameComp: GameComp) {
-        filterInPlace(this.game.wires, (wire, i) => {
+        let count = this.game.wires.length;
+        let count2 = filterInPlace(this.game.wires, (wire, i) => {
             let toRemove = wire.fromPin.gameComp === gameComp || wire.toPin.gameComp === gameComp;
             return !toRemove;
-        });
-        this.game._editMain_editor("remove wires", main => {
-            main.wires = main.wires.filter((wire, i) => {
-                let toRemove = wire.fromComponent === gameComp.component || wire.toComponent === gameComp.component;
-                return !toRemove;
+        }).length;
+        if (count !== count2) {
+            this.game.fire(Events.WIRES_REMOVE, null);
+            this.game._editMain_editor("remove wires", main => {
+                main.wires = main.wires.filter((wire, i) => {
+                    let toRemove = wire.fromComponent === gameComp.component || wire.toComponent === gameComp.component;
+                    return !toRemove;
+                });
             });
-        });
+        }
     }
 
     removeWire(gameWire: GameWire, index: number = -1) {

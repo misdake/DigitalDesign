@@ -23,6 +23,7 @@ export class PlaygroundElement extends LitElement {
         this.game.on(Events.COMPONENT_UPDATE, this, callback, false, false);
         this.game.on(Events.WIRE_ADD, this, callback, false, false);
         this.game.on(Events.WIRE_REMOVE, this, callback, false, false);
+        this.game.on(Events.WIRES_REMOVE, this, callback, false, false);
         this.game.on(Events.WIRE_UPDATE, this, callback, false, false);
     }
 
@@ -42,7 +43,7 @@ export class PlaygroundElement extends LitElement {
         let top = CELL_SIZE * PLAYGROUND_TOP;
 
         return html`
-            <div id="playground" style="width: ${width}px; height: ${height}px;">
+            <div id="playground" style="width: ${width}px; height: ${height}px;" oncontextmenu="return false;">
                 <div style="position: relative; top: ${top}px;">
                     <div class="components">${components}</div>
                     <div class="wires">${wires}</div>

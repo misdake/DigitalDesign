@@ -14,5 +14,6 @@ export namespace Events {
     export const COMPONENT_UPDATE = new Event<GameComp, { x: number, y: number }>("COMPONENT_UPDATE");
     export const WIRE_ADD = new Event<GameWire, void>("WIRE_ADD");
     export const WIRE_REMOVE = new Event<GameWire, void>("WIRE_REMOVE");
+    export const WIRES_REMOVE = new Event<void, void>("WIRES_REMOVE");
     export const WIRE_UPDATE = new Event<GameWire, void>("WIRE_UPDATE");
 }

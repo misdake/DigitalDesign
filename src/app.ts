@@ -26,7 +26,6 @@ template.outputPins = [{
 game.load(template);
 
 let templates = [
-    {name: "pack4", type: "pack4", w: 4, h: 4},
     {name: "and", type: "and", w: 3, h: 2},
     {name: "xor", type: "xor", w: 3, h: 2},
     {name: "not", type: "not", w: 2, h: 1},

@@ -1,4 +1,4 @@
-import {customElement, html, LitElement, property, TemplateResult} from "lit-element";
+import {customElement, html, LitElement, property} from "lit-element";
 import {GamePin} from "../../game/GamePin";
 import {GameComp} from "../../game/GameComp";
 import {Game} from "../../game/Game";
@@ -24,13 +24,17 @@ export class InputPinElement extends LitElement {
             <div class="pin input-pin">
                 <div class="pin-name inputpin-name">${pin.name}</div>
                 <div class="pin-dash inputpin-dash"></div>
-                <div class="pin-circle inputpin-circle ${this.game.editor.pin.isSelectedPin(this) ? 'inputpin-circle-selected' : ''}" @click=${() => this.clickCircle()}></div>
+                <div class="pin-circle inputpin-circle ${this.game.editor.pin.isSelectedPin(this) ? 'inputpin-circle-selected' : ''}" @click=${(event: MouseEvent) => this.leftClick(event)} @contextmenu=${(event: MouseEvent) => this.rightClick(event)}></div>
             </div>
         `;
     }
 
-    private clickCircle() {
+    private leftClick(event: MouseEvent) {
         this.game.editor.pin.selectInputPin(this);
+    }
+    private rightClick(event: MouseEvent) {
+        event.preventDefault();
+        this.game.editor.wire.removeWiresOfPin(this.gamePin);
     }
 
     createRenderRoot() {
@@ -53,13 +57,17 @@ export class OutputPinElement extends LitElement {
             <div class="pin output-pin">
                 <div class="pin-name outputpin-name">${pin.name}</div>
                 <div class="pin-dash outputpin-dash"></div>
-                <div class="pin-circle outputpin-circle ${this.game.editor.pin.isSelectedPin(this) ? 'outputpin-circle-selected' : ''}" @click=${() => this.clickCircle()}></div>
+                <div class="pin-circle outputpin-circle ${this.game.editor.pin.isSelectedPin(this) ? 'outputpin-circle-selected' : ''}" @click=${(event: MouseEvent) => this.leftClick(event)} @contextmenu=${(event: MouseEvent) => this.rightClick(event)}></div>
             </div>
         `;
     }
 
-    private clickCircle() {
+    private leftClick(event: MouseEvent) {
         this.game.editor.pin.selectOutputPin(this);
+    }
+    private rightClick(event: MouseEvent) {
+        event.preventDefault();
+        this.game.editor.wire.removeWiresOfPin(this.gamePin);
     }
 
     createRenderRoot() {
