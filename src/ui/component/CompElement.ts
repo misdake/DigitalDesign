@@ -74,7 +74,6 @@ export class CompElement extends LitElement {
         `;
 
         //transform translate set in updated() callback
-        //TODO 如果name===type，那么不使用动画显示name，只固定显示type
         return html`
             <div class="component-move-target" style="z-index: 999; position: absolute; pointer-events: auto; box-sizing: border-box; margin: -2px; touch-action: none; width: ${width + CELL_SIZE * 2 + 4}px; height: ${height + 4}px; border: 2px solid;"></div>
             <div class="component" style="pointer-events: auto; touch-action: none; width: ${width}px; height: ${height}px;" @click=${() => this.game.editor.selectGameComp(this.gameComp)}>

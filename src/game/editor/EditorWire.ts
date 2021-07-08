@@ -5,6 +5,7 @@ import {GameWire} from "../GameWire";
 import {Wire} from "../../logic/Component";
 import {Events} from "../../util/Events";
 import {GameComp} from "../GameComp";
+import {GamePin} from "../GamePin";
 
 function filterInPlace<T>(array: T[], condition: (t: T, index: number, array: T[]) => boolean) {
     let i = 0, j = 0;
@@ -28,6 +29,8 @@ export class EditorWire {
     }
 
     createWire(from: OutputPinElement, to: InputPinElement) {
+        this.removeWiresOfInputPin(to.gamePin);
+
         let wire = new Wire(from.gameComp.component, from.gamePin.pin, to.gameComp.component, to.gamePin.pin);
         let gameWire = new GameWire(wire, from.gamePin, to.gamePin);
         this.game.wires.push(gameWire);
@@ -35,6 +38,19 @@ export class EditorWire {
 
         this.game._editMain_editor("create wire", main => {
             main.wires.push(gameWire.wire);
+        });
+    }
+
+    removeWiresOfInputPin(gamePin: GamePin) {
+        filterInPlace(this.game.wires, (wire, i) => {
+            let toRemove = wire.toPin === gamePin;
+            return !toRemove;
+        });
+        this.game._editMain_editor("remove wires", main => {
+            main.wires = main.wires.filter((wire, i) => {
+                let toRemove = wire.toPin === gamePin.pin;
+                return !toRemove;
+            });
         });
     }
 
