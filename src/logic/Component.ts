@@ -157,6 +157,18 @@ export class Component {
         return outputs;
     }
 
+    clear0() {
+        for (let key of Object.keys(this.inputPins)) {
+            let pin = this.inputPins[key];
+            if (pin) {
+                pin.write(0, pin.width);
+            }
+        }
+        for (let key in this.components) {
+            this.components[key].clear0();
+        }
+    }
+
     applyInputValues(inputs: { [key: string]: number }) {
         for (let key of Object.keys(inputs)) {
             let pin = this.inputPins[key];

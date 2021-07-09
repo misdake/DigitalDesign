@@ -47,6 +47,7 @@ export class GameComp extends EventHost {
     readonly id: number;
     readonly component: Component;
     uiElement: CompElement; //to be filled by CompElement, kinda readonly
+    onCreatedUi: (element: CompElement) => void;
 
     readonly inputPins: GamePin[];
     readonly outputPins: GamePin[];

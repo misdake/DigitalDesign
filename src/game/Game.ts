@@ -5,8 +5,11 @@ import {registerBasicComponents} from "../logic/components/basic";
 import {GameWire} from "./GameWire";
 import {EventHost} from "../util/EventHost";
 import {Component, Pin, Wire} from "../logic/Component";
-import {ComponentTemplate} from "../logic/ComponentTemplate";
-import {GAME_WIDTH} from "../util/Constants";
+import {ComponentTemplate, PinType} from "../logic/ComponentTemplate";
+import {CELL_SIZE, GAME_WIDTH} from "../util/Constants";
+import {render} from "lit-html";
+import {html} from "lit-element";
+import {Events} from "../util/Events";
 
 export class Game extends EventHost {
     readonly system: System;
@@ -17,6 +20,9 @@ export class Game extends EventHost {
     readonly templates: GameComp[];
     readonly components: GameComp[];
     readonly wires: GameWire[];
+
+    private inputUiMap: Map<string, HTMLInputElement>;
+    private outputUiMap: Map<string, HTMLDivElement>;
 
     readonly editor: Editor;
 
@@ -35,6 +41,20 @@ export class Game extends EventHost {
         (window as any).save = () => this.save("out");
         (window as any).run0 = () => this.run({in: 0});
         (window as any).run1 = () => this.run({in: 1});
+        (window as any).run = () => this.run();
+
+        let callback = (_obj: any) => {
+            setTimeout(() => {
+                this.run();
+            });
+        };
+        // this.on(Events.COMPONENT_ADD, this, callback);
+        this.on(Events.COMPONENT_REMOVE, this, callback);
+        // this.on(Events.COMPONENT_UPDATE, this, callback);
+        this.on(Events.WIRE_ADD, this, callback);
+        this.on(Events.WIRE_REMOVE, this, callback);
+        this.on(Events.WIRES_REMOVE, this, callback);
+        // this.on(Events.WIRE_UPDATE, this, callback);
     }
 
     load(template: ComponentTemplate) {
@@ -50,10 +70,11 @@ export class Game extends EventHost {
             this.dummyPassComponent = new Map();
             this.dummyPassWire = new Map();
 
+            this.inputUiMap = new Map();
             let inputOffset = 1;
             for (let inputPin of template.inputPins) {
                 let comp = this.editor.component.createRealComponent({name: inputPin.name, type: `pass${inputPin.width}`, w: 2, h: 1}, 0, inputOffset);
-                inputOffset += inputPin.width;
+                inputOffset += inputPin.width + 1;
                 comp.showMode = GameCompShowMode.Name;
                 comp.movable = false;
                 let fromPin = main.inputPins[inputPin.name];
@@ -63,8 +84,37 @@ export class Game extends EventHost {
                 main.components["in_dummy_" + inputPin.name] = comp.component;
                 this.dummyPassWire.set(wire, fromPin);
                 this.dummyPassComponent.set(comp.component, fromPin);
+
+                comp.onCreatedUi = element => {
+                    let div = element.getElementsByClassName("component-placeholder")[0] as HTMLDivElement;
+                    div.style.display = "block";
+                    div.style.left = "0";
+
+                    //TODO support >1 width
+                    let onChange = (event: InputEvent) => {
+                        let target = event.target as HTMLInputElement;
+                        fromPin.write(target.checked ? 1 : 0, 1);
+
+                        this.run();
+                    };
+                    fromPin.write(0, 1);
+
+                    switch (inputPin.type) {
+                        case PinType.BOOL:
+                            render(html`<input class="input-checkbox" @change=${(event: InputEvent) => onChange(event)} type="checkbox"/>`, div);
+                            this.inputUiMap.set(fromPin.name, div.getElementsByClassName("input-checkbox")[0] as HTMLInputElement);
+                            break;
+                        case PinType.UNSIGNED:
+                            //TODO
+                            break;
+                        case PinType.SIGNED:
+                            //TODO
+                            break;
+                    }
+                };
             }
 
+            this.outputUiMap = new Map();
             let outputOffset = 1;
             for (let outputPin of template.outputPins) {
                 let comp = this.editor.component.createRealComponent({name: outputPin.name, type: `pass${outputPin.width}`, w: 2, h: 1}, GAME_WIDTH - 2, outputOffset);
@@ -78,15 +128,45 @@ export class Game extends EventHost {
                 main.components["out_dummy_" + outputPin.name] = comp.component;
                 this.dummyPassWire.set(wire, toPin);
                 this.dummyPassComponent.set(comp.component, fromPin);
+
+                comp.onCreatedUi = element => {
+                    let div = element.getElementsByClassName("component-placeholder")[0] as HTMLDivElement;
+                    div.style.display = "block";
+                    div.style.right = "0";
+
+                    //TODO 搞个好看一点儿的东西
+                    div.style.width = `${CELL_SIZE}px`;
+                    div.style.background = "#f00";
+
+                    this.outputUiMap.set(toPin.name, div);
+                };
             }
         });
     }
 
-    run(input: { [key: string]: number }) {
+    run(input?: { [key: string]: number }) {
+        if (!input) {
+            input = this.mainComponent.getInputValues();
+        }
+
+        this.mainComponent.clear0();
         this.mainComponent.applyInputValues(input);
+
         this.system.constructGraph();
         this.system.runLogic();
-        return this.mainComponent.getOutputValues();
+
+        let outputValues = this.mainComponent.getOutputValues();
+        if (this.outputUiMap) {
+            for (let key in outputValues) {
+                let r = this.outputUiMap.get(key);
+                //TODO support other types
+                if (r) {
+                    r.style.background = outputValues[key] > 0 ? "#0f0" : "#f00";
+                }
+            }
+        }
+        console.log("run!", outputValues);
+        return outputValues;
     }
 
     save(typeName: string) {

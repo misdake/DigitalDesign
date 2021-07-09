@@ -14,7 +14,11 @@ template.type = "";
 template.components = [];
 template.wires = [];
 template.inputPins = [{
-    name: "in",
+    name: "in1",
+    type: PinType.BOOL,
+    width: 1,
+},{
+    name: "in2",
     type: PinType.BOOL,
     width: 1,
 }];

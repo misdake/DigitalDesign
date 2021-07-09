@@ -79,6 +79,7 @@ export class CompElement extends LitElement {
             <div class="component" style="pointer-events: auto; touch-action: none; width: ${width}px; height: ${height}px;" @click=${() => this.game.editor.selectGameComp(this.gameComp)}>
                 <div class="component-bg"></div>
                 ${content}
+                <div class="component-placeholder" style="display: none; position: absolute; top: 0; align-content: center; line-height: ${CELL_SIZE}px; height: ${CELL_SIZE}px;"></div>
             </div>
         `;
     }
@@ -140,6 +141,10 @@ export class CompElement extends LitElement {
                     },
                 },
             });
+        }
+
+        if (this.gameComp.onCreatedUi) {
+            this.gameComp.onCreatedUi(this);
         }
     }
 
