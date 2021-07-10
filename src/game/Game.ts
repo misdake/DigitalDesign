@@ -39,8 +39,6 @@ export class Game extends EventHost {
         this.editor = new Editor(this);
 
         (window as any).save = () => this.save("out");
-        (window as any).run0 = () => this.run({in: 0});
-        (window as any).run1 = () => this.run({in: 1});
         (window as any).run = () => this.run();
 
         let callback = (_obj: any) => {
@@ -86,6 +84,11 @@ export class Game extends EventHost {
                 this.dummyPassComponent.set(comp.component, fromPin);
 
                 comp.onCreatedUi = element => {
+                    let name = element.getElementsByClassName("component-name")[0] as HTMLDivElement;
+                    name.style.textAlign = "right";
+                    name.style.boxSizing = "border-box";
+                    name.style.paddingRight = `${CELL_SIZE * 0.2}px`;
+
                     let div = element.getElementsByClassName("component-placeholder")[0] as HTMLDivElement;
                     div.style.display = "block";
                     div.style.left = "0";
@@ -130,13 +133,15 @@ export class Game extends EventHost {
                 this.dummyPassComponent.set(comp.component, fromPin);
 
                 comp.onCreatedUi = element => {
+                    let name = element.getElementsByClassName("component-name")[0] as HTMLDivElement;
+                    name.style.textAlign = "right";
+                    name.style.boxSizing = "border-box";
+                    name.style.paddingRight = `${CELL_SIZE * 0.2}px`;
+
                     let div = element.getElementsByClassName("component-placeholder")[0] as HTMLDivElement;
                     div.style.display = "block";
-                    div.style.right = "0";
-
-                    //TODO 搞个好看一点儿的东西
-                    div.style.width = `${CELL_SIZE}px`;
-                    div.style.background = "#f00";
+                    div.style.left = `${CELL_SIZE * 0.2}px`;
+                    div.innerHTML = "0";
 
                     this.outputUiMap.set(toPin.name, div);
                 };
@@ -161,7 +166,8 @@ export class Game extends EventHost {
                 let r = this.outputUiMap.get(key);
                 //TODO support other types
                 if (r) {
-                    r.style.background = outputValues[key] > 0 ? "#0f0" : "#f00";
+                    let value = outputValues[key];
+                    r.innerHTML = `${value}`;
                 }
             }
         }

@@ -76,7 +76,7 @@ export class CompElement extends LitElement {
         //transform translate set in updated() callback
         return html`
             <div class="component-move-target" style="z-index: 999; position: absolute; pointer-events: auto; box-sizing: border-box; margin: -2px; touch-action: none; width: ${width + CELL_SIZE * 2 + 4}px; height: ${height + 4}px; border: 2px solid;"></div>
-            <div class="component" style="pointer-events: auto; touch-action: none; width: ${width}px; height: ${height}px;" @click=${() => this.game.editor.selectGameComp(this.gameComp)}>
+            <div class="component" style="position: relative; pointer-events: auto; touch-action: none; width: ${width}px; height: ${height}px;" @click=${() => this.game.editor.selectGameComp(this.gameComp)}>
                 <div class="component-bg"></div>
                 ${content}
                 <div class="component-placeholder" style="display: none; position: absolute; top: 0; align-content: center; line-height: ${CELL_SIZE}px; height: ${CELL_SIZE}px;"></div>
