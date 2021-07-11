@@ -2,6 +2,7 @@ import {customElement, html, LitElement, property} from "lit-element";
 import {GamePin} from "../../game/GamePin";
 import {GameComp} from "../../game/GameComp";
 import {Game} from "../../game/Game";
+import {Events} from "../../util/Events";
 
 @customElement('inputpin-element')
 export class InputPinElement extends LitElement {
@@ -11,6 +12,8 @@ export class InputPinElement extends LitElement {
     gameComp: GameComp;
     @property()
     gamePin: GamePin;
+
+    private circle: SVGLineElement;
 
     protected render() {
         let pin = this.gamePin.pin;
@@ -37,6 +40,15 @@ export class InputPinElement extends LitElement {
         this.game.editor.wire.removeWiresOfPin(this.gamePin);
     }
 
+    updated() {
+        this.circle = this.getElementsByClassName("pin-circle")[0] as SVGLineElement;
+        this.gamePin.fire(Events.INPUTPIN_UI_CREATED, this);
+    }
+    updatePinValue() {
+        let value = this.gamePin.pin.read();
+        this.circle.style.background = value > 0 ? "#4DAA57" : "#BD4F6C"; //TODO 用class和css来实现变色
+    }
+
     createRenderRoot() {
         return this;
     }
@@ -50,6 +62,8 @@ export class OutputPinElement extends LitElement {
     gameComp: GameComp;
     @property()
     gamePin: GamePin;
+
+    private circle: SVGLineElement;
 
     protected render() {
         let pin = this.gamePin.pin;
@@ -68,6 +82,15 @@ export class OutputPinElement extends LitElement {
     private rightClick(event: MouseEvent) {
         event.preventDefault();
         this.game.editor.wire.removeWiresOfPin(this.gamePin);
+    }
+
+    updated() {
+        this.circle = this.getElementsByClassName("pin-circle")[0] as SVGLineElement;
+        this.gamePin.fire(Events.OUTPUTPIN_UI_CREATED, this);
+    }
+    updatePinValue() {
+        let value = this.gamePin.pin.read();
+        this.circle.style.background = value > 0 ? "#4DAA57" : "#BD4F6C"; //TODO 用class和css来实现变色
     }
 
     createRenderRoot() {

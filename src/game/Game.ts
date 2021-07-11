@@ -41,12 +41,17 @@ export class Game extends EventHost {
         (window as any).save = () => this.save("out");
         (window as any).run = () => this.run();
 
+        let needRun = false;
         let callback = (_obj: any) => {
+            needRun = true;
             setTimeout(() => {
-                this.run();
+                if (needRun) {
+                    this.run();
+                }
+                needRun = false;
             });
         };
-        // this.on(Events.COMPONENT_ADD, this, callback);
+        this.on(Events.COMPONENT_ADD, this, callback);
         this.on(Events.COMPONENT_REMOVE, this, callback);
         // this.on(Events.COMPONENT_UPDATE, this, callback);
         this.on(Events.WIRE_ADD, this, callback);
@@ -83,7 +88,7 @@ export class Game extends EventHost {
                 this.dummyPassWire.set(wire, fromPin);
                 this.dummyPassComponent.set(comp.component, fromPin);
 
-                comp.onCreatedUi = element => {
+                comp.on(Events.COMPONENT_UI_CREATED, this, element => {
                     let name = element.getElementsByClassName("component-name")[0] as HTMLDivElement;
                     name.style.textAlign = "right";
                     name.style.boxSizing = "border-box";
@@ -114,14 +119,14 @@ export class Game extends EventHost {
                             //TODO
                             break;
                     }
-                };
+                });
             }
 
             this.outputUiMap = new Map();
             let outputOffset = 1;
             for (let outputPin of template.outputPins) {
                 let comp = this.editor.component.createRealComponent({name: outputPin.name, type: `pass${outputPin.width}`, w: 2, h: 1}, GAME_WIDTH - 2, outputOffset);
-                outputOffset += outputPin.width;
+                outputOffset += outputPin.width + 1;
                 comp.showMode = GameCompShowMode.Name;
                 comp.movable = false;
                 let fromPin = comp.component.outputPins["out"];
@@ -132,7 +137,7 @@ export class Game extends EventHost {
                 this.dummyPassWire.set(wire, toPin);
                 this.dummyPassComponent.set(comp.component, fromPin);
 
-                comp.onCreatedUi = element => {
+                comp.on(Events.COMPONENT_UI_CREATED, this, element => {
                     let name = element.getElementsByClassName("component-name")[0] as HTMLDivElement;
                     name.style.textAlign = "right";
                     name.style.boxSizing = "border-box";
@@ -144,7 +149,7 @@ export class Game extends EventHost {
                     div.innerHTML = "0";
 
                     this.outputUiMap.set(toPin.name, div);
-                };
+                });
             }
         });
     }
@@ -160,6 +165,7 @@ export class Game extends EventHost {
         this.system.constructGraph();
         this.system.runLogic();
 
+        //update output display
         let outputValues = this.mainComponent.getOutputValues();
         if (this.outputUiMap) {
             for (let key in outputValues) {
@@ -171,6 +177,15 @@ export class Game extends EventHost {
                 }
             }
         }
+        //update wire display
+        this.wires.forEach(wire => {
+            wire.updateWireValue();
+        });
+        //update component display
+        this.components.forEach(component => {
+            component.updateCompValue();
+        });
+
         console.log("run!", outputValues);
         return outputValues;
     }

@@ -14,25 +14,34 @@ template.type = "";
 template.components = [];
 template.wires = [];
 template.inputPins = [{
-    name: "in1",
+    name: "Cin",
     type: PinType.BOOL,
     width: 1,
 },{
-    name: "in2",
+    name: "A",
+    type: PinType.BOOL,
+    width: 1,
+},{
+    name: "B",
     type: PinType.BOOL,
     width: 1,
 }];
 template.outputPins = [{
-    name: "out",
+    name: "Sum",
+    type: PinType.UNSIGNED,
+    width: 1,
+}, {
+    name: "Cout",
     type: PinType.UNSIGNED,
     width: 1,
 }];
 game.load(template);
 
 let templates = [
-    {name: "and", type: "and", w: 3, h: 2},
-    {name: "xor", type: "xor", w: 3, h: 2},
     {name: "not", type: "not", w: 2, h: 1},
+    {name: "and", type: "and", w: 3, h: 2},
+    {name: "or", type: "or", w: 3, h: 2},
+    {name: "xor", type: "xor", w: 3, h: 2},
 ];
 
 function addTemplateComponent(template: GameCompTemplate, startX: number) {

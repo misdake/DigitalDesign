@@ -3,6 +3,7 @@ import {CompElement} from "../ui/component/CompElement";
 import {System} from "../logic/System";
 import {GamePin} from "./GamePin";
 import {EventHost} from "../util/EventHost";
+import {Events} from "../util/Events";
 
 export class GameCompTemplate {
     name: string;
@@ -46,8 +47,8 @@ export class GameComp extends EventHost {
     isTemplate: boolean = true;
     readonly id: number;
     readonly component: Component;
-    uiElement: CompElement; //to be filled by CompElement, kinda readonly
-    onCreatedUi: (element: CompElement) => void;
+
+    private uiElement: CompElement;
 
     readonly inputPins: GamePin[];
     readonly outputPins: GamePin[];
@@ -63,6 +64,8 @@ export class GameComp extends EventHost {
         super();
         this.id = id;
 
+        this.on(Events.COMPONENT_UI_CREATED, this, ui => this.uiElement = ui);
+
         this.name = pack.name;
         this.type = pack.type;
         this.x = pack.x;
@@ -75,5 +78,10 @@ export class GameComp extends EventHost {
         //设置inputPins和outputPins
         this.inputPins = Object.values(this.component.inputPins).map((pin, index) => new GamePin(this, pin, index, true, false));
         this.outputPins = Object.values(this.component.outputPins).map((pin, index) => new GamePin(this, pin, index, false, true));
+    }
+
+    updateCompValue() {
+        this.inputPins.forEach(pin => pin.updatePinValue());
+        this.outputPins.forEach(pin => pin.updatePinValue());
     }
 }

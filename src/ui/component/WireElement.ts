@@ -11,6 +11,8 @@ export class WireElement extends LitElement {
     @property()
     gameWire: GameWire;
 
+    private line: SVGLineElement;
+
     protected render() {
         this.gameWire.on(Events.WIRE_UPDATE, this, () => this.requestUpdateInternal(), true);
 
@@ -37,6 +39,15 @@ export class WireElement extends LitElement {
                 />
             </svg>
         `;
+    }
+
+    updated() {
+        this.line = this.getElementsByClassName("pin-wire")[0] as SVGLineElement;
+        this.gameWire.fire(Events.WIRE_UI_CREATED, this);
+    }
+    updateWireValue() {
+        let value = this.gameWire.fromPin.pin.read();
+        this.line.style.stroke = value > 0 ? "#4DAA57" : "#BD4F6C"; //TODO 用class和css来实现变色
     }
 
     createRenderRoot() {

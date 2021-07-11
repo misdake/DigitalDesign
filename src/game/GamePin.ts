@@ -1,6 +1,8 @@
 import {Pin} from "../logic/Component";
 import {GameComp} from "./GameComp";
 import {EventHost} from "../util/EventHost";
+import {Events} from "../util/Events";
+import {InputPinElement, OutputPinElement} from "../ui/component/PinElement";
 
 export class GamePin extends EventHost {
 
@@ -10,6 +12,9 @@ export class GamePin extends EventHost {
     readonly pin: Pin;
     readonly index: number;
 
+    private uiElementIn: InputPinElement;
+    private uiElementOut: OutputPinElement;
+
     constructor(gameComp: GameComp, pin: Pin, index: number, isInput: boolean, isOutput: boolean) {
         super();
         this.gameComp = gameComp;
@@ -17,6 +22,9 @@ export class GamePin extends EventHost {
         this.index = index;
         this.isInput = isInput;
         this.isOutput = isOutput;
+
+        this.on(Events.INPUTPIN_UI_CREATED, this, ui => this.uiElementIn = ui);
+        this.on(Events.OUTPUTPIN_UI_CREATED, this, ui => this.uiElementOut = ui);
     }
 
     getXy() {
@@ -31,19 +39,8 @@ export class GamePin extends EventHost {
         return {x: 0, y: 0};
     }
 
-    // inWire: GameWire;
-    // readonly outWires: GameWire[] = [];
-    //
-    // setInWire(inWire: GameWire) {
-    //     this.inWire = inWire;
-    // }
-    // addOutWire(outWire: GameWire) {
-    //     this.outWires.push(outWire);
-    // }
-    // removeOutWire(outWire: GameWire) {
-    //     const index = this.outWires.indexOf(outWire);
-    //     if (index > -1) {
-    //         this.outWires.splice(index, 1);
-    //     }
-    // }
+    updatePinValue() {
+        if (this.uiElementIn) this.uiElementIn.updatePinValue();
+        if (this.uiElementOut) this.uiElementOut.updatePinValue();
+    }
 }

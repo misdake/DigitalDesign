@@ -4,6 +4,7 @@ import "./PinElement";
 import {GameComp, GameCompShowMode} from "../../game/GameComp";
 import {Game} from "../../game/Game";
 import {CELL_SIZE} from "../../util/Constants";
+import {Events} from "../../util/Events";
 
 @customElement('gamecomp-element')
 export class CompElement extends LitElement {
@@ -17,8 +18,6 @@ export class CompElement extends LitElement {
     private ty: number;
 
     protected render() {
-        this.gameComp.uiElement = this;
-
         let component = this.gameComp.component;
         let inputPins = this.gameComp.inputPins;
         let outputPins = this.gameComp.outputPins;
@@ -143,9 +142,7 @@ export class CompElement extends LitElement {
             });
         }
 
-        if (this.gameComp.onCreatedUi) {
-            this.gameComp.onCreatedUi(this);
-        }
+        this.gameComp.fire(Events.COMPONENT_UI_CREATED, this);
     }
 
     createRenderRoot() {

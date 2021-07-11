@@ -41,38 +41,32 @@ export class EditorWire {
         });
     }
 
-    removeWiresOfPin(gamePin: GamePin) {
-        let count = this.game.wires.length;
-        let count2 = filterInPlace(this.game.wires, (wire, i) => {
-            let toRemove = wire.fromPin === gamePin || wire.toPin === gamePin;
+    removeWires(filter: (wire: GameWire) => boolean) : number {
+        let removed: GameWire[] = [];
+        let wireSet: Set<Wire> = new Set<Wire>();
+        filterInPlace(this.game.wires, wire => {
+            let toRemove = filter(wire);
+            if (toRemove) {
+                removed.push(wire);
+                wireSet.add(wire.wire);
+            }
             return !toRemove;
-        }).length;
-        if (count !== count2) {
-            this.game.fire(Events.WIRES_REMOVE, null);
+        });
+        if (removed.length) {
+            this.game.fire(Events.WIRES_REMOVE, removed);
             this.game._editMain_editor("remove wires", main => {
-                main.wires = main.wires.filter((wire, i) => {
-                    let toRemove = wire.fromPin === gamePin.pin || wire.toPin === gamePin.pin;
-                    return !toRemove;
-                });
+                main.wires = main.wires.filter(wire => !wireSet.has(wire));
             });
         }
+        return removed.length;
     }
 
-    removeWiresOfCompoment(gameComp: GameComp) {
-        let count = this.game.wires.length;
-        let count2 = filterInPlace(this.game.wires, (wire, i) => {
-            let toRemove = wire.fromPin.gameComp === gameComp || wire.toPin.gameComp === gameComp;
-            return !toRemove;
-        }).length;
-        if (count !== count2) {
-            this.game.fire(Events.WIRES_REMOVE, null);
-            this.game._editMain_editor("remove wires", main => {
-                main.wires = main.wires.filter((wire, i) => {
-                    let toRemove = wire.fromComponent === gameComp.component || wire.toComponent === gameComp.component;
-                    return !toRemove;
-                });
-            });
-        }
+    removeWiresOfPin(gamePin: GamePin) : number {
+        return this.removeWires(wire => wire.fromPin === gamePin || wire.toPin === gamePin);
+    }
+
+    removeWiresOfCompoment(gameComp: GameComp) : number {
+        return this.removeWires(wire => wire.fromPin.gameComp === gameComp || wire.toPin.gameComp === gameComp);
     }
 
     removeWire(gameWire: GameWire, index: number = -1) {
