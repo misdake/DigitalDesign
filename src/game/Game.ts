@@ -162,7 +162,13 @@ export class Game extends EventHost {
         this.mainComponent.clear0();
         this.mainComponent.applyInputValues(input);
 
-        this.system.constructGraph();
+        let {error} = this.system.constructGraph(); //TODO 如果只改变了数据就不需要重新构建
+
+        if (error) {
+            console.log(error); //TODO 有问题 怎么显示呢？显示在右上角之类的？
+            return {};
+        }
+
         this.system.runLogic();
 
         //update output display

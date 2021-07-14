@@ -21,8 +21,8 @@ export class DependencyGraph<Vertex, Edge> {
 
     private result: (Vertex | Edge)[] = null;
 
-    calcOrder() : (Vertex | Edge)[] {
-        if (this.result) return this.result;
+    calcOrder(): { result: (Vertex | Edge)[], error?: string } {
+        if (this.result) return {result: this.result};
 
         let output: (Vertex | Edge)[] = [];
 
@@ -55,11 +55,11 @@ export class DependencyGraph<Vertex, Edge> {
             emptyVertices = [];
         }
 
-        if (this.inEdges.size > 0) {
-            console.log("have cycles");
-        }
         this.result = output;
-        return output;
+        if (this.inEdges.size > 0) {
+            return {result: output, error: "have cycles"};
+        }
+        return {result: output};
     }
 
 }

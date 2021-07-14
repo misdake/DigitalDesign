@@ -75,13 +75,10 @@ export class System {
 
         //TODO 检查是否所有Wire的宽度都正常，所有的Wire都有两端
 
-        let runners = g.calcOrder();
+        let {result: runners, error} = g.calcOrder();
         this.runners = runners.filter(runner => runner.needRun);
 
-        // console.log("order-----------------------");
-        // for (let runner of this.runners) {
-        //     console.log(runner.constructor.name, runner.name);
-        // }
+        return {result: runners, error};
     }
 
     runLogic() {
