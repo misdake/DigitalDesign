@@ -1,15 +1,34 @@
-import {customElement, html, LitElement, property} from "lit-element";
+import {customElement, html, LitElement, property, PropertyValues} from "lit-element";
 import {Game} from "../game/Game";
 import {CELL_SIZE, PLAYGROUND_TOP} from "../util/Constants";
+import {Events} from "../util/Events";
 
 @customElement('toolbox-element')
 export class ToolboxElement extends LitElement {
     @property()
     game: Game;
 
+    @property()
+    error: string;
+
+    protected firstUpdated(_changedProperties: PropertyValues) {
+        super.firstUpdated(_changedProperties);
+
+        this.game.on(Events.CIRCUIT_RUN, this, () => {
+            this.error = null;
+            this.requestUpdateInternal();
+        }, false, false);
+        this.game.on(Events.CIRCUIT_ERROR, this, error => {
+            this.error = error;
+            this.requestUpdateInternal();
+        }, false, false);
+    }
+
     protected render() {
         let height = 4;
         let top = CELL_SIZE * PLAYGROUND_TOP - height / 2;
+
+        let errorDiv = this.error ? html`<div style="color: red;">error: ${this.error}</div>` : html``;
 
         return html`
             <div class="separation-line" style="z-index: 5; position: absolute; background: white; left: 0; top: ${top}px; width: 100%; height: ${height}px;"></div>
@@ -19,6 +38,7 @@ export class ToolboxElement extends LitElement {
 <!--                    <path d="M7 4v16l13 -8z" />-->
 <!--                </svg>-->
                 <button>提交</button>
+                ${errorDiv}
             </div>
         `;
     }

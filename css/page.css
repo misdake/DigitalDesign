@@ -31,8 +31,8 @@ body {
     top: 0;
     right: 0;
     z-index: 20;
-    width: calc(var(--cell-size) * 4);
-    height: calc(var(--cell-size) * 2);
+    width: calc(var(--cell-size) * 5);
+    height: calc(var(--cell-size) * 3);
     background: white;
 }
 

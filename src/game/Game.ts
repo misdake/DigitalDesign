@@ -166,10 +166,12 @@ export class Game extends EventHost {
 
         if (error) {
             console.log(error); //TODO 有问题 怎么显示呢？显示在右上角之类的？
+            this.fire(Events.CIRCUIT_ERROR, error);
             return {};
         }
 
         this.system.runLogic();
+        this.fire(Events.CIRCUIT_RUN, null);
 
         //update output display
         let outputValues = this.mainComponent.getOutputValues();
