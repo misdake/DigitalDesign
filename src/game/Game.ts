@@ -165,7 +165,6 @@ export class Game extends EventHost {
         let {error} = this.system.constructGraph(); //TODO 如果只改变了数据就不需要重新构建
 
         if (error) {
-            console.log(error); //TODO 有问题 怎么显示呢？显示在右上角之类的？
             this.fire(Events.CIRCUIT_ERROR, error);
             return {};
         }
@@ -196,6 +195,54 @@ export class Game extends EventHost {
 
         console.log("run!", outputValues);
         return outputValues;
+    }
+
+    test() { //TODO input test entries or truth table or js function
+        let table: { input: number[], output: number[] }[] = [];
+        for (let i = 0; i < 8; i++) {
+            let cin = i & 1;
+            let a = (i & 2) >> 1;
+            let b = (i & 4) >> 2;
+            let sum = (a + b + cin) & 1;
+            let cout = (a + b + cin) > 1 ? 1 : 0;
+            table.push({input: [cin, a, b], output: [sum, cout]});
+        }
+
+        let {error} = this.system.constructGraph(); //TODO 如果只改变了数据就不需要重新构建
+        if (error) {
+            this.fire(Events.CIRCUIT_ERROR, error);
+            return false;
+        }
+
+        for (let {input, output} of table) {
+            this.mainComponent.clear0();
+            let inputValues: { [key: string]: number } = {
+                Cin: input[0],
+                A: input[1],
+                B: input[2],
+            };
+            this.mainComponent.applyInputValues(inputValues);
+
+            this.system.runLogic();
+            let outputValues = this.mainComponent.getOutputValues();
+
+            let sum = outputValues["Sum"];
+            let cout = outputValues["Cout"];
+            if (!(sum === output[0] && cout === output[1])) {
+                this.run(inputValues);
+
+                for (let key in inputValues) {
+                    let checkbox = this.inputUiMap.get(key);
+                    checkbox.checked = !!inputValues[key];
+                }
+
+                this.fire(Events.CIRCUIT_ERROR, `incorrect! expected: Sum=${output[0]} Cout=${output[1]}`);
+                return false;
+            }
+        }
+
+        this.fire(Events.CIRCUIT_RUN, `passed!`);
+        return true;
     }
 
     save(typeName: string) {

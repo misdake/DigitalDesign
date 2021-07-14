@@ -25,6 +25,6 @@ export namespace Events {
     export const OUTPUTPIN_UI_CREATED = new Event<OutputPinElement, void>("OUTPUTPIN_UI_CREATED");
     export const WIRE_UI_CREATED = new Event<WireElement, void>("WIRE_UI_CREATED");
 
-    export const CIRCUIT_RUN = new Event<void, void>("CIRCUIT_RUN");
+    export const CIRCUIT_RUN = new Event<string, void>("CIRCUIT_RUN");
     export const CIRCUIT_ERROR = new Event<string, void>("CIRCUIT_ERROR");
 }
