@@ -37,11 +37,12 @@ export class ToolboxElement extends LitElement {
         let top = CELL_SIZE * PLAYGROUND_TOP - height / 2;
 
         let resultDiv = this.result ? html`<div style="color: black;">result: ${this.result}</div>` : html``;
-        let errorDiv = this.error ? html`<div style="color: red;">error: ${this.error}</div>` : html``;
+        let errorDiv = this.error ? html`<div style="color: red;">${this.error}</div>` : html``;
 
         return html`
             <div class="separation-line" style="z-index: 5; position: absolute; background: white; left: 0; top: ${top}px; width: 100%; height: ${height}px;"></div>
             <div id="toolbox">
+                <div>Build a full adder!</div>
                 <button @click=${this.submit}>submit and test</button>
                 ${resultDiv}
                 ${errorDiv}

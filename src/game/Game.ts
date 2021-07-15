@@ -236,7 +236,7 @@ export class Game extends EventHost {
                     checkbox.checked = !!inputValues[key];
                 }
 
-                this.fire(Events.CIRCUIT_ERROR, `incorrect! expected: Sum=${output[0]} Cout=${output[1]}`);
+                this.fire(Events.CIRCUIT_ERROR, `fail, expected: Sum=${output[0]} Cout=${output[1]}`);
                 return false;
             }
         }
