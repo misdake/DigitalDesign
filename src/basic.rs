@@ -16,22 +16,22 @@ pub type WireValue = u8;
 pub type LatencyValue = u16;
 
 #[derive(Copy, Clone)]
-pub struct WireRef(usize);
+pub struct Wire(usize);
 
-static mut LATENCIES: Vec<LatencyValue> = Vec::new();
 static mut WIRES: Vec<WireValue> = Vec::new();
+static mut LATENCIES: Vec<LatencyValue> = Vec::new();
 static mut GATES: Vec<Gate> = Vec::new();
 
-pub fn input() -> WireRef {
+pub fn input() -> Wire {
     unsafe {
         let index = WIRES.len();
         WIRES.push(0);
         LATENCIES.push(0);
-        WireRef(index)
+        Wire(index)
     }
 }
 
-pub fn nand(a: WireRef, b: WireRef) -> WireRef {
+pub fn nand(a: Wire, b: Wire) -> Wire {
     unsafe {
         let out = input();
         GATES.push(Gate {
@@ -43,11 +43,9 @@ pub fn nand(a: WireRef, b: WireRef) -> WireRef {
     }
 }
 
-impl WireRef {
+impl Wire {
     pub fn get(self) -> WireValue {
-        unsafe {
-            WIRES[self.0]
-        }
+        unsafe { WIRES[self.0] }
     }
     pub fn set(self, value: WireValue) {
         unsafe {
@@ -55,9 +53,7 @@ impl WireRef {
         }
     }
     pub fn get_latency(self) -> LatencyValue {
-        unsafe {
-            LATENCIES[self.0]
-        }
+        unsafe { LATENCIES[self.0] }
     }
     pub fn set_latency(self, value: LatencyValue) {
         unsafe {
@@ -67,9 +63,9 @@ impl WireRef {
 }
 
 pub struct Gate {
-    pub wire_a: WireRef,
-    pub wire_b: WireRef,
-    pub wire_out: WireRef,
+    pub wire_a: Wire,
+    pub wire_b: Wire,
+    pub wire_out: Wire,
 }
 
 impl Gate {

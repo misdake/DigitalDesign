@@ -1,34 +1,28 @@
 // #![feature(generic_const_exprs)]
 // #![allow(incomplete_features)]
 
-pub mod basic_types;
+pub mod basic;
+pub mod binary_logic;
+pub mod test;
 
-pub use basic_types::*;
+pub use basic::*;
+pub use binary_logic::*;
+pub use test::*;
 
 fn main() {
     let a = input();
     let b = input();
 
     let c = nand(a, b);
+    let d = a & b;
+    let e = a | b;
+    let f = a ^ b;
 
-    a.set(0);
-    b.set(0);
-    execute_all_gates();
-    println!("nand({},{}) => {}", a.get(), b.get(), c.get());
+    test2("nand", a, b, c);
+    test2("and", a, b, d);
+    test2("or", a, b, e);
+    test2("xor", a, b, f);
 
-    a.set(1);
-    b.set(0);
-    execute_all_gates();
-    println!("nand({},{}) => {}", a.get(), b.get(), c.get());
-
-    a.set(0);
-    b.set(1);
-    execute_all_gates();
-    println!("nand({},{}) => {}", a.get(), b.get(), c.get());
-
-    a.set(1);
-    b.set(1);
-    let result = execute_all_gates();
-    println!("nand({},{}) => {}", a.get(), b.get(), c.get());
-    println!("{:?}", result);
+    let r = execute_all_gates();
+    println!("{:?}", r);
 }
