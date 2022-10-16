@@ -1,5 +1,3 @@
-// pub type WireSingleValue = bool;
-//
 // pub enum Assert<const CHECK: bool> {}
 //
 // pub trait IsTrue {}
@@ -14,16 +12,21 @@
 //     values: [bool; W],
 // }
 
+pub type WireValue = u8;
+pub type LatencyValue = u16;
+
 #[derive(Copy, Clone)]
 pub struct WireRef(usize);
 
-static mut WIRES: Vec<bool> = Vec::new();
+static mut LATENCIES: Vec<LatencyValue> = Vec::new();
+static mut WIRES: Vec<WireValue> = Vec::new();
 static mut GATES: Vec<Gate> = Vec::new();
 
 pub fn input() -> WireRef {
     unsafe {
         let index = WIRES.len();
-        WIRES.push(false);
+        WIRES.push(0);
+        LATENCIES.push(0);
         WireRef(index)
     }
 }
@@ -41,14 +44,24 @@ pub fn nand(a: WireRef, b: WireRef) -> WireRef {
 }
 
 impl WireRef {
-    pub fn get(self) -> bool {
+    pub fn get(self) -> WireValue {
         unsafe {
             WIRES[self.0]
         }
     }
-    pub fn set(self, value: bool) {
+    pub fn set(self, value: WireValue) {
         unsafe {
             WIRES[self.0] = value;
+        }
+    }
+    pub fn get_latency(self) -> LatencyValue {
+        unsafe {
+            LATENCIES[self.0]
+        }
+    }
+    pub fn set_latency(self, value: LatencyValue) {
+        unsafe {
+            LATENCIES[self.0] = value;
         }
     }
 }
@@ -60,17 +73,34 @@ pub struct Gate {
 }
 
 impl Gate {
-    pub fn execute(&self) {
+    fn execute(&self) {
         let a = self.wire_a.get();
         let b = self.wire_b.get();
-        self.wire_out.set(!(a & b));
+        let la = self.wire_a.get_latency();
+        let lb = self.wire_b.get_latency();
+        self.wire_out.set(!(a & b) & 1);
+        self.wire_out.set_latency(la.max(lb) + 1);
     }
 }
 
-pub fn execute_all_gates() {
+#[derive(Debug, Clone)]
+pub struct ExecutionResult {
+    pub gate_count: usize,
+    pub max_latency: LatencyValue,
+}
+
+pub fn execute_all_gates() -> ExecutionResult {
     unsafe {
+        let mut max_latency: LatencyValue = 0;
+        LATENCIES.fill(0);
         for gate in &GATES {
             gate.execute();
+            max_latency = max_latency.max(gate.wire_out.get_latency());
+        }
+
+        ExecutionResult {
+            gate_count: GATES.len(),
+            max_latency,
         }
     }
 }

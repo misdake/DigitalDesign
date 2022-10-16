@@ -11,23 +11,24 @@ fn main() {
 
     let c = nand(a, b);
 
-    a.set(false);
-    b.set(false);
+    a.set(0);
+    b.set(0);
     execute_all_gates();
     println!("nand({},{}) => {}", a.get(), b.get(), c.get());
 
-    a.set(true);
-    b.set(false);
+    a.set(1);
+    b.set(0);
     execute_all_gates();
     println!("nand({},{}) => {}", a.get(), b.get(), c.get());
 
-    a.set(false);
-    b.set(true);
+    a.set(0);
+    b.set(1);
     execute_all_gates();
     println!("nand({},{}) => {}", a.get(), b.get(), c.get());
 
-    a.set(true);
-    b.set(true);
-    execute_all_gates();
+    a.set(1);
+    b.set(1);
+    let result = execute_all_gates();
     println!("nand({},{}) => {}", a.get(), b.get(), c.get());
+    println!("{:?}", result);
 }
