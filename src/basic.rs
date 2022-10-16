@@ -1,22 +1,10 @@
-// pub enum Assert<const CHECK: bool> {}
-//
-// pub trait IsTrue {}
-//
-// impl IsTrue for Assert<true> {}
-//
-// pub struct Wire<const W: usize> where Assert<{ W - 1 > 0 }>: IsTrue {
-//     values: [bool; W - 1],
-// }
-//
-// pub struct Wire<const W: usize> {
-//     values: [bool; W],
-// }
+use std::fmt::{Debug, Formatter};
 
 pub type WireValue = u8;
 pub type LatencyValue = u16;
 
 #[derive(Copy, Clone)]
-pub struct Wire(usize);
+pub struct Wire(pub usize);
 
 static mut WIRES: Vec<WireValue> = Vec::new();
 static mut LATENCIES: Vec<LatencyValue> = Vec::new();
@@ -31,6 +19,15 @@ pub fn input() -> Wire {
     }
 }
 
+pub fn input_const(value: u8) -> Wire {
+    unsafe {
+        let index = WIRES.len();
+        WIRES.push((value > 0).into());
+        LATENCIES.push(0);
+        Wire(index)
+    }
+}
+
 pub fn nand(a: Wire, b: Wire) -> Wire {
     unsafe {
         let out = input();
@@ -40,6 +37,12 @@ pub fn nand(a: Wire, b: Wire) -> Wire {
             wire_out: out,
         });
         out
+    }
+}
+
+impl Debug for Wire {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Wire").field("index", &self.0).finish()
     }
 }
 
