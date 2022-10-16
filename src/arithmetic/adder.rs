@@ -1,5 +1,4 @@
 use crate::{input_const, Wire, Wires};
-use std::ops;
 
 #[derive(Copy, Clone)]
 pub struct AddResult {
@@ -28,22 +27,18 @@ pub struct WiresAddResult<const W: usize> {
     pub carry: Wire,
 }
 
-impl<'a, 'b, const W: usize> ops::Add<&'b Wires<W>> for &'a Wires<W> {
-    type Output = WiresAddResult<W>;
+pub fn add_naive<const W: usize>(a: &Wires<W>, b: &Wires<W>) -> WiresAddResult<W> {
+    let mut carry = input_const(0);
+    let mut out: [Wire; W] = [Wire(0); W];
 
-    fn add(self, rhs: &'b Wires<W>) -> Self::Output {
-        let mut carry = input_const(0);
-        let mut out: [Wire; W] = [Wire(0); W];
+    for i in 0..W {
+        let r = add(a.wires[i], b.wires[i], carry);
+        out[i] = r.sum;
+        carry = r.carry;
+    }
 
-        for i in 0..W {
-            let r = add(self.wires[i], rhs.wires[i], carry);
-            out[i] = r.sum;
-            carry = r.carry;
-        }
-
-        WiresAddResult::<W> {
-            sum: Wires { wires: out },
-            carry,
-        }
+    WiresAddResult::<W> {
+        sum: Wires { wires: out },
+        carry,
     }
 }

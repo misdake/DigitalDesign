@@ -73,6 +73,12 @@ pub struct Gate {
 
 impl Gate {
     fn execute(&self) {
+        assert_eq!(
+            self.wire_out.get_latency(),
+            0,
+            "wire should not be written twice!"
+        );
+
         let a = self.wire_a.get();
         let b = self.wire_b.get();
         let la = self.wire_a.get_latency();

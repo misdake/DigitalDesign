@@ -36,7 +36,7 @@ fn main() {
         println!("a {:08b}", a.get_u8());
         println!("b {:08b}", b.get_u8());
         let c = a & b;
-        let d = a + b;
+        let d = add_naive(a, b);
         execute_all_gates();
         println!("c {:08b}", c.get_u8());
         println!(
