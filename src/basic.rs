@@ -19,7 +19,7 @@ pub fn input() -> Wire {
     }
 }
 
-pub fn input_const(value: u8) -> Wire {
+pub fn input_const(value: WireValue) -> Wire {
     unsafe {
         let index = WIRES.len();
         WIRES.push((value > 0).into());

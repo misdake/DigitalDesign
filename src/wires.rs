@@ -1,5 +1,4 @@
-use crate::{input, input_const, nand, Wire};
-use std::ops;
+use crate::{input, input_const, Wire, WireValue};
 
 pub enum Assert<const CHECK: bool> {}
 
@@ -18,6 +17,29 @@ pub fn input_w<const W: usize>() -> Wires<W> {
         wires[i] = input();
     }
     Wires::<W> { wires }
+}
+pub fn input_w_const<const W: usize>(value: WireValue) -> Wires<W> {
+    let mut wires: [Wire; W] = [Wire(0); W];
+    for i in 0..W {
+        wires[i] = input_const(value);
+    }
+    Wires::<W> { wires }
+}
+
+impl<const F: usize> Wires<F> {
+    pub fn expand_signed<const T: usize>(&self) -> Wires<T>
+    where
+        Assert<{ F <= T }>: IsTrue,
+    {
+        let mut wires: [Wire; T] = [Wire(0); T];
+        for i in 0..F {
+            wires[i] = self.wires[i];
+        }
+        for i in F..T {
+            wires[i] = self.wires[F - 1];
+        }
+        Wires::<T> { wires }
+    }
 }
 
 impl<const W: usize> Wires<W>
@@ -43,60 +65,8 @@ where
         self.wires
             .iter()
             .enumerate()
-            .map(|(i, wire)| ((1 << i) * wire.get()) as u8)
+            .map(|(i, wire)| ((1 << i) * wire.get()) as WireValue)
             .reduce(|a, b| a + b)
             .unwrap()
-    }
-}
-
-impl<'a, const W: usize> ops::Not for &'a Wires<W> {
-    type Output = Wires<W>;
-    fn not(self) -> Self::Output {
-        let mut wires: [Wire; W] = [Wire(0); W];
-        for i in 0..W {
-            let w = self.wires[i];
-            wires[i] = nand(w, w);
-        }
-        Wires::<W> { wires }
-    }
-}
-
-impl<'a, 'b, const W: usize> ops::BitOr<&'b Wires<W>> for &'a Wires<W> {
-    type Output = Wires<W>;
-    fn bitor(self, rhs: &'b Wires<W>) -> Self::Output {
-        let mut wires: [Wire; W] = [Wire(0); W];
-        for i in 0..W {
-            let a = self.wires[i];
-            let b = rhs.wires[i];
-            wires[i] = nand(!a, !b);
-        }
-        Wires::<W> { wires }
-    }
-}
-
-impl<'a, 'b, const W: usize> ops::BitAnd<&'b Wires<W>> for &'a Wires<W> {
-    type Output = Wires<W>;
-    fn bitand(self, rhs: &'b Wires<W>) -> Self::Output {
-        let mut wires: [Wire; W] = [Wire(0); W];
-        for i in 0..W {
-            let a = self.wires[i];
-            let b = rhs.wires[i];
-            wires[i] = !nand(a, b);
-        }
-        Wires::<W> { wires }
-    }
-}
-
-impl<'a, 'b, const W: usize> ops::BitXor<&'b Wires<W>> for &'a Wires<W> {
-    type Output = Wires<W>;
-    fn bitxor(self, rhs: &'b Wires<W>) -> Self::Output {
-        let mut wires: [Wire; W] = [Wire(0); W];
-        for i in 0..W {
-            let a = self.wires[i];
-            let b = rhs.wires[i];
-            let c = nand(a, b);
-            wires[i] = nand(nand(a, c), nand(b, c))
-        }
-        Wires::<W> { wires }
     }
 }
