@@ -1,4 +1,4 @@
-use crate::{nand, Wire, Wires};
+use crate::{expand, nand, Wire, Wires};
 use std::ops;
 
 impl ops::Not for Wire {
@@ -80,4 +80,29 @@ impl<'a, 'b, const W: usize> ops::BitXor<&'b Wires<W>> for &'a Wires<W> {
         }
         Wires::<W> { wires }
     }
+}
+
+pub fn mux2(a: Wire, b: Wire, select: Wire) -> Wire {
+    (a & !select) | (b & select) // 0 -> a, 1 -> b
+}
+
+pub fn demux1(value: Wire, select: Wire) -> (Wire, Wire) {
+    (value & !select, value & select) // (0, 1)
+}
+
+pub fn mux2_n<const W: usize>(a: &Wires<W>, b: &Wires<W>, select: Wire) -> Wires<W> {
+    let select = &expand::<W>(select);
+    &(a & &!select) | &(b & select)
+}
+
+pub fn mux4_n<const W: usize>(
+    a: &Wires<W>,
+    b: &Wires<W>,
+    c: &Wires<W>,
+    d: &Wires<W>,
+    select: &Wires<2>,
+) -> Wires<W> {
+    let ab = mux2_n(a, b, select.wires[0]);
+    let cd = mux2_n(c, d, select.wires[0]);
+    mux2_n(&ab, &cd, select.wires[1])
 }

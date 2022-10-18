@@ -18,12 +18,17 @@ pub fn input_w<const W: usize>() -> Wires<W> {
     }
     Wires::<W> { wires }
 }
-pub fn input_w_const<const W: usize>(value: WireValue) -> Wires<W> {
+pub fn input_w_const<const W: usize>(each_wire: WireValue) -> Wires<W> {
     let mut wires: [Wire; W] = [Wire(0); W];
     for i in 0..W {
-        wires[i] = input_const(value);
+        wires[i] = input_const(each_wire);
     }
     Wires::<W> { wires }
+}
+pub fn expand<const W: usize>(wire: Wire) -> Wires<W> {
+    Wires {
+        wires: [Wire(wire.0); W],
+    }
 }
 
 impl<const F: usize> Wires<F> {

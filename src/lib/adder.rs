@@ -13,7 +13,7 @@ pub fn half_add(a: Wire, b: Wire) -> AddResult {
     }
 }
 
-pub fn add(a: Wire, b: Wire, c: Wire) -> AddResult {
+pub fn add1(a: Wire, b: Wire, c: Wire) -> AddResult {
     let r1 = half_add(a, b);
     let r2 = half_add(r1.sum, c);
     AddResult {
@@ -32,7 +32,7 @@ pub fn add_naive<const W: usize>(a: &Wires<W>, b: &Wires<W>) -> WiresAddResult<W
     let mut out: [Wire; W] = [Wire(0); W];
 
     for i in 0..W {
-        let r = add(a.wires[i], b.wires[i], carry);
+        let r = add1(a.wires[i], b.wires[i], carry);
         out[i] = r.sum;
         carry = r.carry;
     }
