@@ -1,33 +1,73 @@
-// #![feature(generic_const_exprs)]
-// #![allow(incomplete_features)]
+#![allow(incomplete_features)]
+#![feature(generic_const_exprs)]
 
-pub mod basic_types;
+pub mod basic;
+pub mod lib;
+pub mod test;
+pub mod wires;
 
-pub use basic_types::*;
+pub use basic::*;
+pub use lib::*;
+pub use test::*;
+pub use wires::*;
 
 fn main() {
-    let a = input();
-    let b = input();
+    // {
+    //     // basic binary
+    //     let a = input();
+    //     let b = input();
+    //
+    //     let c = nand(a, b);
+    //     let d = a & b;
+    //     let e = a | b;
+    //     let f = a ^ b;
+    //
+    //     test2_1("nand", a, b, c);
+    //     test2_1("and", a, b, d);
+    //     test2_1("or", a, b, e);
+    //     test2_1("xor", a, b, f);
+    // }
 
-    let c = nand(a, b);
+    // {
+    //     // add_naive
+    //     let a = &input_w::<8>();
+    //     let b = &input_w::<8>();
+    //     a.set_u8(123);
+    //     b.set_u8(45);
+    //     println!("a {:08b}", a.get_u8());
+    //     println!("b {:08b}", b.get_u8());
+    //     let c = a & b;
+    //     let d = add_naive(a, b);
+    //     execute_all_gates();
+    //     println!("c {:08b}", c.get_u8());
+    //     println!(
+    //         "d {:08b}({}) {}",
+    //         d.sum.get_u8(),
+    //         d.sum.get_u8(),
+    //         d.carry.get()
+    //     );
+    // }
 
-    a.set(false);
-    b.set(false);
-    execute_all_gates();
-    println!("nand({},{}) => {}", a.get(), b.get(), c.get());
+    // {
+    //     // expand_signed
+    //     let a = &input_w::<4>();
+    //     let b = &a.expand_signed::<8>();
+    //     a.set_u8(5);
+    //     println!("a {:04b} b {:08b}", a.get_u8(), b.get_u8());
+    //     a.set_u8(9);
+    //     println!("a {:04b} b {:08b}", a.get_u8(), b.get_u8());
+    // }
 
-    a.set(true);
-    b.set(false);
-    execute_all_gates();
-    println!("nand({},{}) => {}", a.get(), b.get(), c.get());
+    {
+        let a = input();
+        let b = cycle(|b| a | b);
+        for i in 0..20 {
+            a.set(if i == 5 { 1 } else { 0 });
+            simulate();
+            println!("{} {}", a.get(), b.get());
+        }
+    }
 
-    a.set(false);
-    b.set(true);
-    execute_all_gates();
-    println!("nand({},{}) => {}", a.get(), b.get(), c.get());
-
-    a.set(true);
-    b.set(true);
-    execute_all_gates();
-    println!("nand({},{}) => {}", a.get(), b.get(), c.get());
+    // let r = simulate();
+    // println!("{:?}", r);
 }
