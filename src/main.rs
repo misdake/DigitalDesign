@@ -48,16 +48,26 @@ fn main() {
     //     );
     // }
 
+    // {
+    //     // expand_signed
+    //     let a = &input_w::<4>();
+    //     let b = &a.expand_signed::<8>();
+    //     a.set_u8(5);
+    //     println!("a {:04b} b {:08b}", a.get_u8(), b.get_u8());
+    //     a.set_u8(9);
+    //     println!("a {:04b} b {:08b}", a.get_u8(), b.get_u8());
+    // }
+
     {
-        // expand_signed
-        let a = &input_w::<4>();
-        let b = &a.expand_signed::<8>();
-        a.set_u8(5);
-        println!("a {:04b} b {:08b}", a.get_u8(), b.get_u8());
-        a.set_u8(9);
-        println!("a {:04b} b {:08b}", a.get_u8(), b.get_u8());
+        let a = input();
+        let b = cycle(|b| a | b);
+        for i in 0..20 {
+            a.set(if i == 5 { 1 } else { 0 });
+            simulate();
+            println!("{} {}", a.get(), b.get());
+        }
     }
 
-    let r = execute_all_gates();
-    println!("{:?}", r);
+    // let r = simulate();
+    // println!("{:?}", r);
 }

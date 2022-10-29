@@ -9,6 +9,19 @@ pub struct Wire(pub usize);
 static mut WIRES: Vec<WireValue> = Vec::new();
 static mut LATENCIES: Vec<LatencyValue> = Vec::new();
 static mut GATES: Vec<Gate> = Vec::new();
+static mut REGS: Vec<Reg> = Vec::new();
+
+pub fn cycle<F: Fn(Wire) -> Wire>(f: F) -> Wire {
+    unsafe {
+        let out = input();
+        let next_in = f(out);
+        REGS.push(Reg {
+            wire_in: next_in,
+            wire_out: out,
+        });
+        out
+    }
+}
 
 pub fn input() -> Wire {
     unsafe {
@@ -65,6 +78,11 @@ impl Wire {
     }
 }
 
+pub struct Reg {
+    pub wire_in: Wire,
+    pub wire_out: Wire,
+}
+
 pub struct Gate {
     pub wire_a: Wire,
     pub wire_b: Wire,
@@ -73,12 +91,6 @@ pub struct Gate {
 
 impl Gate {
     fn execute(&self) {
-        assert_eq!(
-            self.wire_out.get_latency(),
-            0,
-            "wire should not be written twice!"
-        );
-
         let a = self.wire_a.get();
         let b = self.wire_b.get();
         let la = self.wire_a.get_latency();
@@ -94,13 +106,18 @@ pub struct ExecutionResult {
     pub max_latency: LatencyValue,
 }
 
-pub fn execute_all_gates() -> ExecutionResult {
+pub fn simulate() -> ExecutionResult {
     unsafe {
         let mut max_latency: LatencyValue = 0;
         LATENCIES.fill(0);
+
         for gate in &GATES {
             gate.execute();
             max_latency = max_latency.max(gate.wire_out.get_latency());
+        }
+
+        for reg in &REGS {
+            reg.wire_out.set(reg.wire_in.get());
         }
 
         ExecutionResult {
