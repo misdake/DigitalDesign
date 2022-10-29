@@ -3,11 +3,13 @@
 
 pub mod basic;
 pub mod lib;
+pub mod reg;
 pub mod test;
 pub mod wires;
 
 pub use basic::*;
 pub use lib::*;
+pub use reg::*;
 pub use test::*;
 pub use wires::*;
 
@@ -61,12 +63,25 @@ fn main() {
     {
         let a = input();
         let b = cycle(|b| a | b);
+        let c = reg(a);
+        let d = reg(c);
         for i in 0..20 {
             a.set(if i == 5 { 1 } else { 0 });
             simulate();
-            println!("{} {}", a.get(), b.get());
+            println!("{} {} {} {}", a.get(), b.get(), c.get(), d.get());
         }
     }
+    // {
+    //     let d = input();
+    //     let e = input();
+    //     let q = flipflop(d, e);
+    //     for i in 0..20 {
+    //         d.set(if i < 5 || i > 12 { 0 } else { 1 });
+    //         e.set(if i == 9 || i == 15 { 1 } else { 0 });
+    //         simulate();
+    //         println!("{} {} {}", d.get(), e.get(), q.get());
+    //     }
+    // }
 
     // let r = simulate();
     // println!("{:?}", r);

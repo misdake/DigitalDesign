@@ -82,8 +82,9 @@ impl<'a, 'b, const W: usize> ops::BitXor<&'b Wires<W>> for &'a Wires<W> {
     }
 }
 
+/// select: 0 -> a, 1 -> b
 pub fn mux2(a: Wire, b: Wire, select: Wire) -> Wire {
-    (a & !select) | (b & select) // 0 -> a, 1 -> b
+    (a & !select) | (b & select)
 }
 
 pub fn demux1(value: Wire, select: Wire) -> (Wire, Wire) {

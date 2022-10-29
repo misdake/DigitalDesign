@@ -116,9 +116,8 @@ pub fn simulate() -> ExecutionResult {
             max_latency = max_latency.max(gate.wire_out.get_latency());
         }
 
-        for reg in &REGS {
-            reg.wire_out.set(reg.wire_in.get());
-        }
+        let reg_in: Vec<_> = REGS.iter().map(|r| (r.wire_out, r.wire_in.get())).collect();
+        reg_in.iter().for_each(|(out, value)| out.set(*value));
 
         ExecutionResult {
             gate_count: GATES.len(),
