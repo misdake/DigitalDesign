@@ -10,6 +10,11 @@ impl IsTrue for Assert<true> {}
 pub struct Wires<const W: usize> {
     pub wires: [Wire; W],
 }
+impl<const W: usize> Wires<W> {
+    pub fn width(&self) -> usize {
+        W
+    }
+}
 
 pub fn input_w<const W: usize>() -> Wires<W> {
     let mut wires: [Wire; W] = [Wire(0); W];

@@ -18,6 +18,7 @@ pub fn cycle<F: Fn(Wire) -> Wire>(f: F) -> Wire {
         REGS.push(Reg {
             wire_in: next_in,
             wire_out: out,
+            temp_value: 0,
         });
         out
     }
@@ -81,6 +82,7 @@ impl Wire {
 pub struct Reg {
     pub wire_in: Wire,
     pub wire_out: Wire,
+    temp_value: WireValue,
 }
 
 pub struct Gate {
@@ -107,6 +109,12 @@ pub struct ExecutionResult {
 }
 
 pub fn simulate() -> ExecutionResult {
+    let result = execute_gates();
+    clock_tick();
+    result
+}
+
+pub fn execute_gates() -> ExecutionResult {
     unsafe {
         let mut max_latency: LatencyValue = 0;
         LATENCIES.fill(0);
@@ -116,12 +124,18 @@ pub fn simulate() -> ExecutionResult {
             max_latency = max_latency.max(gate.wire_out.get_latency());
         }
 
-        let reg_in: Vec<_> = REGS.iter().map(|r| (r.wire_out, r.wire_in.get())).collect();
-        reg_in.iter().for_each(|(out, value)| out.set(*value));
-
         ExecutionResult {
             gate_count: GATES.len(),
             max_latency,
         }
+    }
+}
+
+pub fn clock_tick() {
+    unsafe {
+        REGS.iter_mut()
+            .for_each(|reg| reg.temp_value = reg.wire_in.get());
+        REGS.iter_mut()
+            .for_each(|reg| reg.wire_out.set(reg.temp_value));
     }
 }
