@@ -1,11 +1,15 @@
-use crate::{cycle, mux2, Wire, Wires};
+use crate::{mux2, reg, Wire, Wires};
 
-pub fn reg(input: Wire) -> Wire {
-    cycle(|_| input)
+pub fn delay(input: Wire) -> Wire {
+    let r = reg();
+    r.set_in(input);
+    r.out()
 }
 
 pub fn flipflop(data: Wire, write_enabled: Wire) -> Wire {
-    cycle(|saved| mux2(saved, data, write_enabled))
+    let r = reg();
+    r.set_in(mux2(r.out(), data, write_enabled));
+    r.out()
 }
 
 pub fn flatten2<const A: usize, const B: usize>(a: &Wires<A>, b: &Wires<B>) -> Wires<{ A + B }> {
