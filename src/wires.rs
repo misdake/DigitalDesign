@@ -30,9 +30,11 @@ pub fn input_w_const<const W: usize>(each_wire: WireValue) -> Wires<W> {
     }
     Wires::<W> { wires }
 }
-pub fn expand<const W: usize>(wire: Wire) -> Wires<W> {
-    Wires {
-        wires: [Wire(wire.0); W],
+impl Wire {
+    pub fn expand<const W: usize>(self) -> Wires<W> {
+        Wires {
+            wires: [Wire(self.0); W],
+        }
     }
 }
 
@@ -80,3 +82,6 @@ where
             .unwrap()
     }
 }
+
+// TODO reg_w => Regs
+// TODO   set_in(Wires<W>)

@@ -7,7 +7,7 @@ pub type LatencyValue = u16;
 pub struct Wire(pub usize);
 
 #[derive(Copy, Clone)]
-pub struct Reg(pub usize);
+pub struct Reg(usize);
 
 static mut WIRES: Vec<WireValue> = Vec::new();
 static mut LATENCIES: Vec<LatencyValue> = Vec::new();

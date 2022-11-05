@@ -1,4 +1,4 @@
-use crate::{expand, nand, Wire, Wires};
+use crate::{nand, Wire, Wires};
 use std::ops;
 
 impl ops::Not for Wire {
@@ -92,7 +92,7 @@ pub fn demux1(value: Wire, select: Wire) -> (Wire, Wire) {
 }
 
 pub fn mux2_n<const W: usize>(a: &Wires<W>, b: &Wires<W>, select: Wire) -> Wires<W> {
-    let select = &expand::<W>(select);
+    let select = &select.expand::<W>();
     &(a & &!select) | &(b & select)
 }
 
