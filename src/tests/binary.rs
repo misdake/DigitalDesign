@@ -19,11 +19,10 @@ fn test_basic_binary() {
 }
 
 #[test]
-fn test_expand() {
+fn test_expand_signed() {
     use crate::{clear_all, input_w};
     clear_all();
 
-    // expand_signed
     let a = &input_w::<4>();
     let b = &a.expand_signed::<8>();
     a.set_u8(5);

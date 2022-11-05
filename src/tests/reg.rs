@@ -23,7 +23,6 @@ fn test_flipflop() {
     use crate::{clear_all, flipflop, input, simulate};
     clear_all();
 
-    // flipflop
     let d = input();
     let e = input();
     let q = flipflop(d, e);
@@ -32,5 +31,25 @@ fn test_flipflop() {
         e.set(if i == 9 || i == 15 { 1 } else { 0 });
         simulate();
         assert_eq!(if i >= 9 && i <= 14 { 1 } else { 0 }, q.get());
+    }
+}
+
+#[test]
+fn test_flipflop_w() {
+    use crate::{clear_all, flipflop_w, input, input_w, simulate};
+    clear_all();
+
+    let d = input_w::<4>();
+    let e = input();
+    let q = flipflop_w(&d, e);
+    for i in 0..8 {
+        d.set_u8(i);
+        e.set(if i == 3 || i == 6 { 1 } else { 0 });
+        simulate();
+        if i >= 3 {
+            assert_eq!(if i >= 6 { 6 } else { 3 }, q.get_u8());
+        } else {
+            assert_eq!(0, q.get_u8());
+        }
     }
 }

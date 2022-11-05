@@ -1,9 +1,8 @@
 #[test]
-fn test_adder() {
+fn test_add_naive() {
     use crate::{add_naive, clear_all, input_w, simulate};
     clear_all();
 
-    // add_naive
     let a = &input_w::<8>();
     let b = &input_w::<8>();
     a.set_u8(123);
