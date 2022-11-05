@@ -7,12 +7,21 @@ pub type LatencyValue = u16;
 pub struct Wire(pub usize);
 
 #[derive(Copy, Clone)]
-pub struct Reg(usize);
+pub struct Reg(pub usize);
 
 static mut WIRES: Vec<WireValue> = Vec::new();
 static mut LATENCIES: Vec<LatencyValue> = Vec::new();
 static mut GATES: Vec<Gate> = Vec::new();
 static mut REGS: Vec<RegValue> = Vec::new();
+
+pub fn clear_all() {
+    unsafe {
+        WIRES.clear();
+        LATENCIES.clear();
+        GATES.clear();
+        REGS.clear();
+    }
+}
 
 pub fn reg() -> Reg {
     let reg = RegValue {
