@@ -6,20 +6,45 @@ pub type LatencyValue = u16;
 #[derive(Copy, Clone)]
 pub struct Wire(pub usize);
 
+#[derive(Copy, Clone)]
+pub struct Reg(pub usize);
+
 static mut WIRES: Vec<WireValue> = Vec::new();
 static mut LATENCIES: Vec<LatencyValue> = Vec::new();
 static mut GATES: Vec<Gate> = Vec::new();
-static mut REGS: Vec<Reg> = Vec::new();
+static mut REGS: Vec<RegValue> = Vec::new();
 
-pub fn cycle<F: Fn(Wire) -> Wire>(f: F) -> Wire {
+pub fn clear_all() {
     unsafe {
-        let out = input();
-        let next_in = f(out);
-        REGS.push(Reg {
-            wire_in: next_in,
-            wire_out: out,
-        });
-        out
+        WIRES.clear();
+        LATENCIES.clear();
+        GATES.clear();
+        REGS.clear();
+    }
+}
+
+pub fn reg() -> Reg {
+    let reg = RegValue {
+        wire_in: None,
+        wire_out: input(),
+        temp_value: 0,
+    };
+    unsafe {
+        let index = REGS.len();
+        REGS.push(reg);
+        Reg(index)
+    }
+}
+impl Reg {
+    pub fn set_in(self, wire: Wire) {
+        unsafe {
+            let mut reg = &mut REGS[self.0];
+            assert!(reg.wire_in.is_none());
+            reg.wire_in = Some(wire);
+        }
+    }
+    pub fn out(self) -> Wire {
+        unsafe { REGS[self.0].wire_out }
     }
 }
 
@@ -78,9 +103,10 @@ impl Wire {
     }
 }
 
-pub struct Reg {
-    pub wire_in: Wire,
+pub struct RegValue {
+    wire_in: Option<Wire>,
     pub wire_out: Wire,
+    temp_value: WireValue,
 }
 
 pub struct Gate {
@@ -107,6 +133,12 @@ pub struct ExecutionResult {
 }
 
 pub fn simulate() -> ExecutionResult {
+    let result = execute_gates();
+    clock_tick();
+    result
+}
+
+pub fn execute_gates() -> ExecutionResult {
     unsafe {
         let mut max_latency: LatencyValue = 0;
         LATENCIES.fill(0);
@@ -116,13 +148,18 @@ pub fn simulate() -> ExecutionResult {
             max_latency = max_latency.max(gate.wire_out.get_latency());
         }
 
-        for reg in &REGS {
-            reg.wire_out.set(reg.wire_in.get());
-        }
-
         ExecutionResult {
             gate_count: GATES.len(),
             max_latency,
         }
+    }
+}
+
+pub fn clock_tick() {
+    unsafe {
+        REGS.iter_mut()
+            .for_each(|reg| reg.temp_value = reg.wire_in.unwrap().get());
+        REGS.iter_mut()
+            .for_each(|reg| reg.wire_out.set(reg.temp_value));
     }
 }

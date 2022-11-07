@@ -1,4 +1,4 @@
-use crate::{input, input_const, Wire, WireValue};
+use crate::{input, input_const, mux2_n, reg, Reg, Wire, WireValue};
 
 pub enum Assert<const CHECK: bool> {}
 
@@ -9,6 +9,11 @@ impl IsTrue for Assert<true> {}
 #[derive(Debug, Clone)]
 pub struct Wires<const W: usize> {
     pub wires: [Wire; W],
+}
+impl<const W: usize> Wires<W> {
+    pub fn width(&self) -> usize {
+        W
+    }
 }
 
 pub fn input_w<const W: usize>() -> Wires<W> {
@@ -25,9 +30,11 @@ pub fn input_w_const<const W: usize>(each_wire: WireValue) -> Wires<W> {
     }
     Wires::<W> { wires }
 }
-pub fn expand<const W: usize>(wire: Wire) -> Wires<W> {
-    Wires {
-        wires: [Wire(wire.0); W],
+impl Wire {
+    pub fn expand<const W: usize>(self) -> Wires<W> {
+        Wires {
+            wires: [Wire(self.0); W],
+        }
     }
 }
 
@@ -74,4 +81,39 @@ where
             .reduce(|a, b| a + b)
             .unwrap()
     }
+}
+
+#[derive(Clone)]
+pub struct Regs<const W: usize> {
+    regs: [Reg; W],
+    pub out: Wires<W>,
+}
+impl<const W: usize> Regs<W> {
+    pub fn width(&self) -> usize {
+        W
+    }
+
+    pub fn set_in(&mut self, wires: Wires<W>) {
+        for i in 0..W {
+            self.regs[i].set_in(wires.wires[i]);
+        }
+    }
+}
+pub fn reg_w<const W: usize>() -> Regs<W> {
+    let mut regs: [Reg; W] = [Reg(0); W];
+    let mut out: [Wire; W] = [Wire(0); W];
+    for i in 0..W {
+        regs[i] = reg();
+        out[i] = regs[i].out();
+    }
+    Regs::<W> {
+        regs,
+        out: Wires { wires: out },
+    }
+}
+
+pub fn flipflop_w<const W: usize>(data: &Wires<W>, write_enabled: Wire) -> Wires<W> {
+    let mut r = reg_w();
+    r.set_in(mux2_n(&r.out, data, write_enabled));
+    r.out
 }
