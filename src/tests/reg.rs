@@ -35,6 +35,21 @@ fn test_flipflop() {
 }
 
 #[test]
+fn test_reg_w() {
+    use crate::{add_naive, clear_all, input_w, reg_w, simulate};
+    clear_all();
+
+    let one = input_w::<4>();
+    one.set_u8(1);
+    let mut curr = reg_w::<4>();
+    curr.set_in(add_naive(&curr.out, &one).sum);
+    for i in 0..15 {
+        simulate();
+        assert_eq!(i + 1, curr.out.get_u8());
+    }
+}
+
+#[test]
 fn test_flipflop_w() {
     use crate::{clear_all, flipflop_w, input, input_w, simulate};
     clear_all();
