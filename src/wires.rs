@@ -54,6 +54,24 @@ impl<const F: usize> Wires<F> {
     }
 }
 
+pub trait WiresU8 {
+    fn set_u8(&self, value: u8);
+    fn get_u8(&self) -> u8;
+}
+
+impl<const W: usize> WiresU8 for Wires<W>
+where
+    Assert<{ W <= 8 }>: IsTrue,
+{
+    fn set_u8(&self, value: u8) {
+        self.set_u8(value);
+    }
+
+    fn get_u8(&self) -> u8 {
+        self.get_u8()
+    }
+}
+
 impl<const W: usize> Wires<W>
 where
     Assert<{ W <= 8 }>: IsTrue,
