@@ -1,3 +1,4 @@
+use std::any::Any;
 use std::fmt::{Debug, Formatter};
 
 pub type WireValue = u8;
@@ -12,6 +13,7 @@ pub struct Reg(pub usize);
 static mut WIRES: Vec<WireValue> = Vec::new();
 static mut LATENCIES: Vec<LatencyValue> = Vec::new();
 static mut GATES: Vec<Gate> = Vec::new();
+static mut EXTERNALS: Vec<Box<dyn External>> = Vec::new();
 static mut REGS: Vec<RegValue> = Vec::new();
 
 pub fn clear_all() {
@@ -19,7 +21,21 @@ pub fn clear_all() {
         WIRES.clear();
         LATENCIES.clear();
         GATES.clear();
+        EXTERNALS.clear();
         REGS.clear();
+    }
+}
+
+pub trait External: Any {
+    fn execute(&mut self);
+    fn as_any(&self) -> &dyn Any;
+}
+
+pub fn external<E: External>(e: E) -> &'static E {
+    unsafe {
+        EXTERNALS.push(Box::new(e));
+        let r = EXTERNALS.last().unwrap().as_ref();
+        r.as_any().downcast_ref::<E>().unwrap()
     }
 }
 
@@ -157,6 +173,7 @@ pub fn execute_gates() -> ExecutionResult {
 
 pub fn clock_tick() {
     unsafe {
+        EXTERNALS.iter_mut().for_each(|external| external.execute());
         REGS.iter_mut()
             .for_each(|reg| reg.temp_value = reg.wire_in.unwrap().get());
         REGS.iter_mut()
