@@ -12,26 +12,8 @@ impl Rom16x8 {
         self.data[addr as usize] = value;
     }
     pub fn apply(self, in_addr: Wires<4>) -> Wires<8> {
-        let data_wires: [Wires<8>; 16] = [
-            Wires::<8>::parse_u8(self.data[0]),
-            Wires::<8>::parse_u8(self.data[1]),
-            Wires::<8>::parse_u8(self.data[2]),
-            Wires::<8>::parse_u8(self.data[3]),
-            Wires::<8>::parse_u8(self.data[4]),
-            Wires::<8>::parse_u8(self.data[5]),
-            Wires::<8>::parse_u8(self.data[6]),
-            Wires::<8>::parse_u8(self.data[7]),
-            Wires::<8>::parse_u8(self.data[8]),
-            Wires::<8>::parse_u8(self.data[9]),
-            Wires::<8>::parse_u8(self.data[10]),
-            Wires::<8>::parse_u8(self.data[11]),
-            Wires::<8>::parse_u8(self.data[12]),
-            Wires::<8>::parse_u8(self.data[13]),
-            Wires::<8>::parse_u8(self.data[14]),
-            Wires::<8>::parse_u8(self.data[15]),
-        ];
-
-        mux16_w(data_wires, in_addr)
+        let data_wires: Vec<_> = self.data.iter().map(|v| Wires::<8>::parse_u8(*v)).collect();
+        mux16_w(data_wires.as_slice(), in_addr)
     }
 }
 

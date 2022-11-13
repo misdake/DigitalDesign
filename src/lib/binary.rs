@@ -143,7 +143,7 @@ pub fn mux4_w<const W: usize>(
     mux2_w(ab, cd, select.wires[1])
 }
 
-pub fn mux8_w<const W: usize>(v: [Wires<W>; 8], select: Wires<3>) -> Wires<W> {
+pub fn mux8_w<const W: usize>(v: &[Wires<W>], select: Wires<3>) -> Wires<W> {
     let select4 = Wires {
         wires: [select.wires[0], select.wires[1]],
     };
@@ -151,11 +151,11 @@ pub fn mux8_w<const W: usize>(v: [Wires<W>; 8], select: Wires<3>) -> Wires<W> {
     let v1 = mux4_w(v[4], v[5], v[6], v[7], select4);
     mux2_w(v0, v1, select.wires[2])
 }
-pub fn mux16_w<const W: usize>(v: [Wires<W>; 16], select: Wires<4>) -> Wires<W> {
+pub fn mux16_w<const W: usize>(v: &[Wires<W>], select: Wires<4>) -> Wires<W> {
     let select8 = Wires {
         wires: [select.wires[0], select.wires[1], select.wires[2]],
     };
-    let v0 = mux8_w(v[0..8].try_into().unwrap(), select8);
-    let v1 = mux8_w(v[8..16].try_into().unwrap(), select8);
+    let v0 = mux8_w(&v[0..8], select8);
+    let v1 = mux8_w(&v[8..16], select8);
     mux2_w(v0, v1, select.wires[3])
 }
