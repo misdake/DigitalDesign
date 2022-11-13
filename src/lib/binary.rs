@@ -155,7 +155,7 @@ pub fn mux16_w<const W: usize>(v: [Wires<W>; 16], select: Wires<4>) -> Wires<W> 
     let select8 = Wires {
         wires: [select.wires[0], select.wires[1], select.wires[2]],
     };
-    let v0 = mux8_w(v[0..7].try_into().unwrap(), select8);
+    let v0 = mux8_w(v[0..8].try_into().unwrap(), select8);
     let v1 = mux8_w(v[8..16].try_into().unwrap(), select8);
     mux2_w(v0, v1, select.wires[3])
 }

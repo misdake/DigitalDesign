@@ -34,3 +34,23 @@ impl Rom16x8 {
         mux16_w(data_wires, in_addr)
     }
 }
+
+#[test]
+fn test_rom16x8() {
+    use crate::*;
+    clear_all();
+
+    let mut rom = Rom16x8::create();
+    for i in 0..16 {
+        rom.set(i, 16 - i);
+    }
+
+    let addr = input_w::<4>();
+    let data = rom.apply(addr);
+
+    for i in 0..16 {
+        addr.set_u8(i);
+        simulate();
+        assert_eq!(16 - i, data.get_u8());
+    }
+}
