@@ -12,7 +12,7 @@ pub fn flipflop(data: Wire, write_enabled: Wire) -> Wire {
     r.out()
 }
 
-pub fn flatten2<const A: usize, const B: usize>(a: &Wires<A>, b: &Wires<B>) -> Wires<{ A + B }> {
+pub fn flatten2<const A: usize, const B: usize>(a: Wires<A>, b: Wires<B>) -> Wires<{ A + B }> {
     let mut wires = [Wire(0); { A + B }];
     wires[0..A].copy_from_slice(a.wires.as_slice());
     wires[A..].copy_from_slice(b.wires.as_slice());
@@ -20,9 +20,9 @@ pub fn flatten2<const A: usize, const B: usize>(a: &Wires<A>, b: &Wires<B>) -> W
 }
 
 pub fn flatten3<const A: usize, const B: usize, const C: usize>(
-    a: &Wires<A>,
-    b: &Wires<B>,
-    c: &Wires<C>,
+    a: Wires<A>,
+    b: Wires<B>,
+    c: Wires<C>,
 ) -> Wires<{ A + B + C }> {
     let mut wires = [Wire(0); { A + B + C }];
     wires[0..A].copy_from_slice(a.wires.as_slice());
@@ -31,7 +31,7 @@ pub fn flatten3<const A: usize, const B: usize, const C: usize>(
     Wires::<{ A + B + C }> { wires }
 }
 
-pub fn unflatten2<const A: usize, const B: usize>(r: &Wires<{ A + B }>) -> (Wires<A>, Wires<B>) {
+pub fn unflatten2<const A: usize, const B: usize>(r: Wires<{ A + B }>) -> (Wires<A>, Wires<B>) {
     let wires = r.wires;
     let mut a = [Wire(0); A];
     let mut b = [Wire(0); B];
@@ -45,7 +45,7 @@ pub fn unflatten2<const A: usize, const B: usize>(r: &Wires<{ A + B }>) -> (Wire
 }
 
 pub fn unflatten3<const A: usize, const B: usize, const C: usize>(
-    r: &Wires<{ A + B + C }>,
+    r: Wires<{ A + B + C }>,
 ) -> (Wires<A>, Wires<B>, Wires<C>) {
     let wires = r.wires;
     let mut a = [Wire(0); A];

@@ -31,25 +31,6 @@ impl Rom16x8 {
             Wires::<8>::parse_u8(self.data[15]),
         ];
 
-        let data_wires = [
-            &data_wires[0],
-            &data_wires[1],
-            &data_wires[2],
-            &data_wires[3],
-            &data_wires[4],
-            &data_wires[5],
-            &data_wires[6],
-            &data_wires[7],
-            &data_wires[8],
-            &data_wires[9],
-            &data_wires[10],
-            &data_wires[11],
-            &data_wires[12],
-            &data_wires[13],
-            &data_wires[14],
-            &data_wires[15],
-        ];
-
-        mux16_w(data_wires, &in_addr)
+        mux16_w(data_wires, in_addr)
     }
 }

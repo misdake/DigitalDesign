@@ -22,7 +22,7 @@ fn test_logger_u8() {
     let one = input_w::<4>();
     one.set_u8(1);
     let mut curr = reg_w::<4>();
-    curr.set_in(add_naive(&curr.out, &one).sum);
+    curr.set_in(add_naive(curr.out, one).sum);
     let logger = external(LoggerU8::new("inc".to_string(), curr.clone().out));
     for _ in 0..=16 {
         simulate();

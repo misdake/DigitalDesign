@@ -6,7 +6,7 @@ pub trait IsTrue {}
 
 impl IsTrue for Assert<true> {}
 
-#[derive(Debug, Clone)]
+#[derive(Copy, Clone)]
 pub struct Wires<const W: usize> {
     pub wires: [Wire; W],
 }
@@ -101,7 +101,7 @@ where
     }
 }
 
-#[derive(Clone)]
+#[derive(Copy, Clone)]
 pub struct Regs<const W: usize> {
     regs: [Reg; W],
     pub out: Wires<W>,
@@ -130,8 +130,8 @@ pub fn reg_w<const W: usize>() -> Regs<W> {
     }
 }
 
-pub fn flipflop_w<const W: usize>(data: &Wires<W>, write_enabled: Wire) -> Wires<W> {
+pub fn flipflop_w<const W: usize>(data: Wires<W>, write_enabled: Wire) -> Wires<W> {
     let mut r = reg_w();
-    r.set_in(mux2_w(&r.out, data, write_enabled));
+    r.set_in(mux2_w(r.out, data, write_enabled));
     r.out
 }
