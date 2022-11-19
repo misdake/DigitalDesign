@@ -16,7 +16,14 @@ pub use reg::*;
 pub use wires::*;
 
 fn main() {
+    let mut rom = Rom16x8::create();
+    for i in 0..16 {
+        rom.set(i, 16 - i);
+    }
 
-    // let r = simulate();
-    // println!("{:?}", r);
+    let addr = input_w::<4>();
+    let _ = rom.apply(addr);
+
+    let r = simulate();
+    println!("{:?}", r);
 }

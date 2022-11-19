@@ -1,4 +1,4 @@
-use crate::{mux16_w, Wires};
+use crate::Wires;
 
 pub struct Rom16x8 {
     data: [u8; 16],
@@ -13,7 +13,7 @@ impl Rom16x8 {
     }
     pub fn apply(self, in_addr: Wires<4>) -> Wires<8> {
         let data_wires: Vec<_> = self.data.iter().map(|v| Wires::<8>::parse_u8(*v)).collect();
-        mux16_w(data_wires.as_slice(), in_addr)
+        crate::mux16_w_v2(data_wires.as_slice(), in_addr)
     }
 }
 
