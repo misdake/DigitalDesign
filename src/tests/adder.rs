@@ -3,8 +3,8 @@ fn test_add_naive() {
     use crate::{add_naive, clear_all, input_w, simulate};
     clear_all();
 
-    let a = &input_w::<8>();
-    let b = &input_w::<8>();
+    let a = input_w::<8>();
+    let b = input_w::<8>();
     a.set_u8(123);
     b.set_u8(45);
     assert_eq!(123, a.get_u8());

@@ -1,5 +1,7 @@
 pub use adder::*;
-pub use binary_logic::*;
+pub use binary::*;
+pub use rom::*;
 
 pub mod adder;
-pub mod binary_logic;
+pub mod binary;
+pub mod rom;

@@ -27,7 +27,7 @@ pub struct WiresAddResult<const W: usize> {
     pub carry: Wire,
 }
 
-pub fn add_naive<const W: usize>(a: &Wires<W>, b: &Wires<W>) -> WiresAddResult<W> {
+pub fn add_naive<const W: usize>(a: Wires<W>, b: Wires<W>) -> WiresAddResult<W> {
     let mut carry = input_const(0);
     let mut out: [Wire; W] = [Wire(0); W];
 

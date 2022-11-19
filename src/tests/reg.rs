@@ -42,7 +42,7 @@ fn test_reg_w() {
     let one = input_w::<4>();
     one.set_u8(1);
     let mut curr = reg_w::<4>();
-    curr.set_in(add_naive(&curr.out, &one).sum);
+    curr.set_in(add_naive(curr.out, one).sum);
     for i in 0..15 {
         simulate();
         assert_eq!(i + 1, curr.out.get_u8());
@@ -56,7 +56,7 @@ fn test_flipflop_w() {
 
     let d = input_w::<4>();
     let e = input();
-    let q = flipflop_w(&d, e);
+    let q = flipflop_w(d, e);
     for i in 0..8 {
         d.set_u8(i);
         e.set(if i == 3 || i == 6 { 1 } else { 0 });
