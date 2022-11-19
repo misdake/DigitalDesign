@@ -1,4 +1,5 @@
 use std::any::Any;
+use std::collections::HashMap;
 use std::fmt::{Debug, Formatter};
 
 pub type WireValue = u8;
@@ -154,7 +155,41 @@ pub fn simulate() -> ExecutionResult {
     result
 }
 
-pub fn execute_gates() -> ExecutionResult {
+pub fn try_optimize() {
+    let mut gates: HashMap<(usize, usize), usize> = HashMap::new();
+    let mut wire_mapping: HashMap<usize, usize> = HashMap::new();
+
+    unsafe {
+        GATES.iter().for_each(|gate| {
+            let a: &Wire = &gate.wire_a;
+            let b: &Wire = &gate.wire_b;
+            let out: &Wire = &gate.wire_out;
+
+            let get_wire = |v: usize| {
+                let mut curr = v;
+                loop {
+                    if let Some(next) = wire_mapping.get(&curr) {
+                        curr = *next;
+                    } else {
+                        return curr;
+                    }
+                }
+            };
+
+            let a = get_wire(a.0);
+            let b = get_wire(b.0);
+            if let Some(e) = gates.get(&(a, b)) {
+                wire_mapping.insert(out.0, *e);
+            } else {
+                gates.insert((a, b), out.0);
+            }
+        });
+        println!("before: gates {}", GATES.len());
+    }
+    println!("after: gates {}", gates.len());
+}
+
+fn execute_gates() -> ExecutionResult {
     unsafe {
         let mut max_latency: LatencyValue = 0;
         LATENCIES.fill(0);
@@ -171,7 +206,7 @@ pub fn execute_gates() -> ExecutionResult {
     }
 }
 
-pub fn clock_tick() {
+fn clock_tick() {
     unsafe {
         EXTERNALS.iter_mut().for_each(|external| external.execute());
         REGS.iter_mut()
