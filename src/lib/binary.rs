@@ -142,7 +142,6 @@ pub fn mux4_w<const W: usize>(
     let cd = mux2_w(c, d, select.wires[0]);
     mux2_w(ab, cd, select.wires[1])
 }
-
 pub fn mux8_w<const W: usize>(v: &[Wires<W>], select: Wires<3>) -> Wires<W> {
     let select4 = Wires {
         wires: [select.wires[0], select.wires[1]],
@@ -151,15 +150,7 @@ pub fn mux8_w<const W: usize>(v: &[Wires<W>], select: Wires<3>) -> Wires<W> {
     let v1 = mux4_w(v[4], v[5], v[6], v[7], select4);
     mux2_w(v0, v1, select.wires[2])
 }
-pub fn mux16_w<const W: usize>(v: &[Wires<W>], select: Wires<4>) -> Wires<W> {
-    let select8 = Wires {
-        wires: [select.wires[0], select.wires[1], select.wires[2]],
-    };
-    let v0 = mux8_w(&v[0..8], select8);
-    let v1 = mux8_w(&v[8..16], select8);
-    mux2_w(v0, v1, select.wires[3])
-}
-pub fn mux16_w_v2<const W: usize>(v: &[Wires<W>], select4: Wires<4>) -> Wires<W> {
+pub fn mux16_w<const W: usize>(v: &[Wires<W>], select4: Wires<4>) -> Wires<W> {
     let t = select4;
     let f = !t;
     let mut lines: [Wires<W>; 16] = [Wires {
@@ -178,6 +169,29 @@ pub fn mux16_w_v2<const W: usize>(v: &[Wires<W>], select4: Wires<4>) -> Wires<W>
     }
     reduce16(lines.as_slice(), &|a, b| a | b)
 }
+pub fn mux256_w<const W: usize>(v: &[Wires<W>], select8: Wires<8>) -> Wires<W> {
+    let t = select8;
+    let f = !t;
+    let mut lines: [Wires<W>; 256] = [Wires {
+        wires: [Wire(0); W],
+    }; 256];
+    for i in 0..256 {
+        let s = Wires {
+            wires: [
+                select(i & (1 << 0) == 0, f.wires[0], t.wires[0]),
+                select(i & (1 << 1) == 0, f.wires[1], t.wires[1]),
+                select(i & (1 << 2) == 0, f.wires[2], t.wires[2]),
+                select(i & (1 << 3) == 0, f.wires[3], t.wires[3]),
+                select(i & (1 << 4) == 0, f.wires[4], t.wires[4]),
+                select(i & (1 << 5) == 0, f.wires[5], t.wires[5]),
+                select(i & (1 << 6) == 0, f.wires[6], t.wires[6]),
+                select(i & (1 << 7) == 0, f.wires[7], t.wires[7]),
+            ],
+        };
+        lines[i] = s.all_1().expand() & v[i];
+    }
+    reduce256(lines.as_slice(), &|a, b| a | b)
+}
 
 fn select<T>(b: bool, t: T, f: T) -> T {
     if b {
@@ -188,33 +202,27 @@ fn select<T>(b: bool, t: T, f: T) -> T {
 }
 
 pub fn reduce2<const W: usize>(
-    a: Wires<W>,
-    b: Wires<W>,
-    f: &impl Fn(Wires<W>, Wires<W>) -> Wires<W>,
-) -> Wires<W> {
-    f(a, b)
-}
-pub fn reduce4<const W: usize>(
     v: &[Wires<W>],
     f: &impl Fn(Wires<W>, Wires<W>) -> Wires<W>,
 ) -> Wires<W> {
-    let v0 = reduce2(v[0], v[1], f);
-    let v1 = reduce2(v[2], v[3], f);
-    f(v0, v1)
+    f(v[0], v[1])
 }
-pub fn reduce8<const W: usize>(
-    v: &[Wires<W>],
-    f: &impl Fn(Wires<W>, Wires<W>) -> Wires<W>,
-) -> Wires<W> {
-    let v0 = reduce4(&v[0..4], f);
-    let v1 = reduce4(&v[4..8], f);
-    f(v0, v1)
+macro_rules! reduce {
+    ($name:ident, $name2:ident, $n:expr) => {
+        pub fn $name<const W: usize>(
+            v: &[Wires<W>],
+            f: &impl Fn(Wires<W>, Wires<W>) -> Wires<W>,
+        ) -> Wires<W> {
+            let v0 = $name2(&v[0..$n], f);
+            let v1 = $name2(&v[$n..$n * 2], f);
+            f(v0, v1)
+        }
+    };
 }
-pub fn reduce16<const W: usize>(
-    v: &[Wires<W>],
-    f: &impl Fn(Wires<W>, Wires<W>) -> Wires<W>,
-) -> Wires<W> {
-    let v0 = reduce8(&v[0..8], f);
-    let v1 = reduce8(&v[8..16], f);
-    f(v0, v1)
-}
+reduce!(reduce4, reduce2, 2);
+reduce!(reduce8, reduce4, 4);
+reduce!(reduce16, reduce8, 8);
+reduce!(reduce32, reduce16, 16);
+reduce!(reduce64, reduce32, 32);
+reduce!(reduce128, reduce64, 64);
+reduce!(reduce256, reduce128, 128);

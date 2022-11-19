@@ -16,12 +16,12 @@ pub use reg::*;
 pub use wires::*;
 
 fn main() {
-    let mut rom = Rom16x8::create();
-    for i in 0..16 {
-        rom.set(i, 16 - i);
+    let mut rom = Rom256x8::create();
+    for i in 0..=255 {
+        rom.set(i, 255 - i);
     }
 
-    let addr = input_w::<4>();
+    let addr = input_w::<8>();
     let _ = rom.apply(addr);
 
     let r = simulate();
