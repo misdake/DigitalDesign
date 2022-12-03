@@ -102,6 +102,17 @@ fn test_regfile4x4_1r1w() {
             sim[a as usize] = v;
         }
     }
+
+    reset_all.set(1);
+    write_enable.set_u8(0);
+    simulate();
+    reset_all.set(0);
+
+    for i in 0..4 {
+        addr[0].set_u8(i);
+        simulate();
+        assert_eq!(0, read0.get_u8());
+    }
 }
 
 // pub struct Regfile4x4_2R1W;
