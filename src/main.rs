@@ -16,6 +16,8 @@ pub use reg::*;
 pub use wires::*;
 
 fn main() {
+    clear_all();
+
     let mut rom = Rom256x8::create();
     for i in 0..=255 {
         rom.set(i, 255 - i);

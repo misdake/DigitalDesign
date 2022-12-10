@@ -130,65 +130,36 @@ pub fn mux2_w<const W: usize>(a: Wires<W>, b: Wires<W>, select: Wire) -> Wires<W
     let select = select.expand::<W>();
     (a & !select) | (b & select)
 }
-
-pub fn mux4_w<const W: usize>(
-    a: Wires<W>,
-    b: Wires<W>,
-    c: Wires<W>,
-    d: Wires<W>,
-    select: Wires<2>,
-) -> Wires<W> {
-    let ab = mux2_w(a, b, select.wires[0]);
-    let cd = mux2_w(c, d, select.wires[0]);
+pub fn mux4_w<const W: usize>(v: &[Wires<W>], select: Wires<2>) -> Wires<W> {
+    let ab = mux2_w(v[0], v[1], select.wires[0]);
+    let cd = mux2_w(v[2], v[3], select.wires[1]);
     mux2_w(ab, cd, select.wires[1])
 }
 pub fn mux8_w<const W: usize>(v: &[Wires<W>], select: Wires<3>) -> Wires<W> {
     let select4 = Wires {
         wires: [select.wires[0], select.wires[1]],
     };
-    let v0 = mux4_w(v[0], v[1], v[2], v[3], select4);
-    let v1 = mux4_w(v[4], v[5], v[6], v[7], select4);
+    let v0 = mux4_w(&v[0..4], select4);
+    let v1 = mux4_w(&v[4..8], select4);
     mux2_w(v0, v1, select.wires[2])
 }
 pub fn mux16_w<const W: usize>(v: &[Wires<W>], select4: Wires<4>) -> Wires<W> {
-    let t = select4;
-    let f = !t;
     let mut lines: [Wires<W>; 16] = [Wires {
         wires: [Wire(0); W],
     }; 16];
+    let enable_line = decode4(select4);
     for i in 0..16 {
-        let s = Wires {
-            wires: [
-                select(i & (1 << 0) == 0, f.wires[0], t.wires[0]),
-                select(i & (1 << 1) == 0, f.wires[1], t.wires[1]),
-                select(i & (1 << 2) == 0, f.wires[2], t.wires[2]),
-                select(i & (1 << 3) == 0, f.wires[3], t.wires[3]),
-            ],
-        };
-        lines[i] = s.all_1().expand() & v[i];
+        lines[i] = enable_line[i].expand() & v[i];
     }
     reduce16(lines.as_slice(), &|a, b| a | b)
 }
 pub fn mux256_w<const W: usize>(v: &[Wires<W>], select8: Wires<8>) -> Wires<W> {
-    let t = select8;
-    let f = !t;
     let mut lines: [Wires<W>; 256] = [Wires {
         wires: [Wire(0); W],
     }; 256];
+    let enable_line = decode8(select8);
     for i in 0..256 {
-        let s = Wires {
-            wires: [
-                select(i & (1 << 0) == 0, f.wires[0], t.wires[0]),
-                select(i & (1 << 1) == 0, f.wires[1], t.wires[1]),
-                select(i & (1 << 2) == 0, f.wires[2], t.wires[2]),
-                select(i & (1 << 3) == 0, f.wires[3], t.wires[3]),
-                select(i & (1 << 4) == 0, f.wires[4], t.wires[4]),
-                select(i & (1 << 5) == 0, f.wires[5], t.wires[5]),
-                select(i & (1 << 6) == 0, f.wires[6], t.wires[6]),
-                select(i & (1 << 7) == 0, f.wires[7], t.wires[7]),
-            ],
-        };
-        lines[i] = s.all_1().expand() & v[i];
+        lines[i] = enable_line[i].expand() & v[i];
     }
     reduce256(lines.as_slice(), &|a, b| a | b)
 }
@@ -226,3 +197,57 @@ reduce!(reduce32, reduce16, 16);
 reduce!(reduce64, reduce32, 32);
 reduce!(reduce128, reduce64, 64);
 reduce!(reduce256, reduce128, 128);
+
+pub fn decode2(select2: Wires<2>) -> [Wire; 4] {
+    let t = select2;
+    let f = !t;
+    let mut lines = [Wire(0); 4];
+    for i in 0..4 {
+        let s = Wires {
+            wires: [
+                select(i & (1 << 0) == 0, f.wires[0], t.wires[0]),
+                select(i & (1 << 1) == 0, f.wires[1], t.wires[1]),
+            ],
+        };
+        lines[i] = s.all_1();
+    }
+    lines
+}
+pub fn decode4(select4: Wires<4>) -> [Wire; 16] {
+    let t = select4;
+    let f = !t;
+    let mut lines = [Wire(0); 16];
+    for i in 0..16 {
+        let s = Wires {
+            wires: [
+                select(i & (1 << 0) == 0, f.wires[0], t.wires[0]),
+                select(i & (1 << 1) == 0, f.wires[1], t.wires[1]),
+                select(i & (1 << 2) == 0, f.wires[2], t.wires[2]),
+                select(i & (1 << 3) == 0, f.wires[3], t.wires[3]),
+            ],
+        };
+        lines[i] = s.all_1();
+    }
+    lines
+}
+pub fn decode8(select8: Wires<8>) -> [Wire; 256] {
+    let t = select8;
+    let f = !t;
+    let mut lines = [Wire(0); 256];
+    for i in 0..256 {
+        let s = Wires {
+            wires: [
+                select(i & (1 << 0) == 0, f.wires[0], t.wires[0]),
+                select(i & (1 << 1) == 0, f.wires[1], t.wires[1]),
+                select(i & (1 << 2) == 0, f.wires[2], t.wires[2]),
+                select(i & (1 << 3) == 0, f.wires[3], t.wires[3]),
+                select(i & (1 << 4) == 0, f.wires[4], t.wires[4]),
+                select(i & (1 << 5) == 0, f.wires[5], t.wires[5]),
+                select(i & (1 << 6) == 0, f.wires[6], t.wires[6]),
+                select(i & (1 << 7) == 0, f.wires[7], t.wires[7]),
+            ],
+        };
+        lines[i] = s.all_1();
+    }
+    lines
+}
