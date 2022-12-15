@@ -17,6 +17,17 @@ pub use lib::*;
 pub use reg::*;
 pub use wires::*;
 
+#[cfg(test)]
+pub(crate) use tests::*;
+
+pub(crate) fn select<T>(b: bool, t: T, f: T) -> T {
+    if b {
+        t
+    } else {
+        f
+    }
+}
+
 fn main() {
     clear_all();
 
