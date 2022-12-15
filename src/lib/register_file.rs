@@ -9,18 +9,6 @@ pub trait Regfile<const ADDR: usize, const WIDTH: usize, const READ: usize, cons
     ) -> [Wires<WIDTH>; READ];
 }
 
-#[cfg(test)]
-fn shuffled_list(count: usize, seed: f32) -> Vec<usize> {
-    let hash = |v: &usize| -> f32 {
-        let v = (*v as f32) * seed;
-        v.sin()
-    };
-    let mut r: Vec<usize> = (0..count).collect();
-    r.sort_by(|a, b| hash(a).total_cmp(&hash(b)));
-    // println!("{:?}", r);
-    r
-}
-
 pub struct Regfile4x4_1R1W;
 impl Regfile<2, 4, 1, 1> for Regfile4x4_1R1W {
     fn apply(

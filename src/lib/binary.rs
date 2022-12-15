@@ -1,4 +1,4 @@
-use crate::{nand, Wire, Wires};
+use crate::{nand, select, Wire, Wires};
 use std::ops;
 
 impl Wires<2> {
@@ -162,14 +162,6 @@ pub fn mux256_w<const W: usize>(v: &[Wires<W>], select8: Wires<8>) -> Wires<W> {
         lines[i] = enable_line[i].expand() & v[i];
     }
     reduce256(lines.as_slice(), &|a, b| a | b)
-}
-
-fn select<T>(b: bool, t: T, f: T) -> T {
-    if b {
-        t
-    } else {
-        f
-    }
 }
 
 pub fn reduce2<const W: usize>(
