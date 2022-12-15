@@ -3,6 +3,8 @@
 
 mod tests;
 
+mod cpu_v1;
+
 pub mod basic;
 pub mod external;
 pub mod lib;
