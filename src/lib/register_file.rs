@@ -1,4 +1,4 @@
-use crate::{decode2, input, mux2_w, reduce4, reg_w, Wire, Wires};
+use crate::{decode2, input_w_const, mux2_w, reduce4, reg_w, Wire, Wires};
 
 pub trait Regfile<const ADDR: usize, const WIDTH: usize, const READ: usize, const WRITE: usize> {
     fn apply(
@@ -37,14 +37,11 @@ impl Regfile<2, 4, 1, 1> for Regfile4x4_1R1W {
             wires: [Wire(0); 4],
         }; 4];
 
-        let zero = input();
-        zero.set(0);
-
         for i in 0..4 {
             let port0_enable = port0_enable_each[i];
             port0_read_each[i] = port0_enable.expand() & reg[i].out;
 
-            let port0_write_data0 = mux2_w(reg[i].out, zero.expand(), reset_all);
+            let port0_write_data0 = mux2_w(reg[i].out, input_w_const(0), reset_all);
             let port0_write_data1 = write_data[0];
             let port0_write_enable = port0_enable & write_enable.wires[0];
             let port0_write_data = mux2_w(port0_write_data0, port0_write_data1, port0_write_enable);
@@ -141,16 +138,13 @@ impl Regfile<2, 4, 2, 1> for Regfile4x4_2R1W {
             wires: [Wire(0); 4],
         }; 4];
 
-        let zero = input();
-        zero.set(0);
-
         for i in 0..4 {
             let port0_enable = port0_enable_each[i];
             let port1_enable = port1_enable_each[i];
             port0_read_each[i] = port0_enable.expand() & reg[i].out;
             port1_read_each[i] = port1_enable.expand() & reg[i].out;
 
-            let port0_write_data0 = mux2_w(reg[i].out, zero.expand(), reset_all);
+            let port0_write_data0 = mux2_w(reg[i].out, input_w_const(0), reset_all);
             let port0_write_data1 = write_data[0];
             let port0_write_enable = port0_enable & write_enable.wires[0];
             let port0_write_data = mux2_w(port0_write_data0, port0_write_data1, port0_write_enable);
