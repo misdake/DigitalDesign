@@ -1,5 +1,15 @@
-use crate::{nand, Wire, Wires};
+use crate::{nand, unflatten2, Wire, WireValue, Wires};
 use std::ops;
+
+impl Wire {
+    pub fn eq_const(self, const_value: WireValue) -> Wire {
+        if const_value > 0 {
+            self
+        } else {
+            !self
+        }
+    }
+}
 
 impl Wires<2> {
     pub fn all_0(self) -> Wire {
@@ -11,6 +21,15 @@ impl Wires<2> {
     pub fn eq(self, rhs: Wires<2>) -> Wire {
         (self ^ rhs).all_0()
     }
+    pub fn eq_const(self, const_value: u8) -> Wire {
+        Wires {
+            wires: [
+                self.wires[0].eq_const((const_value >> 0) % 2),
+                self.wires[1].eq_const((const_value >> 1) % 2),
+            ],
+        }
+        .all_1()
+    }
 }
 impl Wires<4> {
     pub fn all_0(self) -> Wire {
@@ -21,6 +40,10 @@ impl Wires<4> {
     }
     pub fn eq(self, rhs: Wires<4>) -> Wire {
         (self ^ rhs).all_0()
+    }
+    pub fn eq_const(self, const_value: u8) -> Wire {
+        let (low, high) = unflatten2::<2, 2>(self);
+        low.eq_const((const_value >> 0) % 4) & high.eq_const((const_value >> 2) % 4)
     }
 }
 impl Wires<8> {
@@ -34,6 +57,10 @@ impl Wires<8> {
     }
     pub fn eq(self, rhs: Wires<8>) -> Wire {
         (self ^ rhs).all_0()
+    }
+    pub fn eq_const(self, const_value: u8) -> Wire {
+        let (low, high) = unflatten2::<4, 4>(self);
+        low.eq_const((const_value >> 0) % 16) & high.eq_const((const_value >> 4) % 16)
     }
 }
 

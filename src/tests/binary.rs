@@ -1,3 +1,5 @@
+use crate::{simulate, Wires};
+
 #[test]
 fn test_basic_binary() {
     use crate::tests::test_utils::test2_1;
@@ -16,6 +18,22 @@ fn test_basic_binary() {
     test2_1("and", a, b, d, |a, b| a & b);
     test2_1("or", a, b, e, |a, b| a | b);
     test2_1("xor", a, b, f, |a, b| a ^ b);
+}
+
+#[test]
+fn test_wire_eq() {
+    use crate::{clear_all, input_w};
+    clear_all();
+
+    let v = input_w::<4>();
+    for i in 0..16 {
+        v.set_u8(i);
+        let out1 = v.eq_const(5);
+        let out2 = v.eq(Wires::<4>::parse_u8(5));
+        simulate();
+        assert_eq!(out1.get() == 1, i == 5);
+        assert_eq!(out2.get() == 1, i == 5);
+    }
 }
 
 #[test]
