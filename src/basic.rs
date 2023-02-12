@@ -16,6 +16,9 @@ static mut GATES: Vec<Gate> = Vec::new();
 static mut EXTERNALS: Vec<Box<dyn External>> = Vec::new();
 static mut REGS: Vec<RegValue> = Vec::new();
 
+const WIRE_0: usize = 0;
+const WIRE_1: usize = 1;
+
 pub fn clear_all() {
     unsafe {
         WIRES.clear();
@@ -23,6 +26,10 @@ pub fn clear_all() {
         GATES.clear();
         EXTERNALS.clear();
         REGS.clear();
+        WIRES.push(0); // => WIRE_0
+        WIRES.push(1); // => WIRE_1
+        LATENCIES.push(0); // => WIRE_0
+        LATENCIES.push(0); // => WIRE_1
     }
 }
 
@@ -74,12 +81,14 @@ pub fn input() -> Wire {
 }
 
 pub fn input_const(value: WireValue) -> Wire {
-    unsafe {
-        let index = WIRES.len();
-        WIRES.push((value > 0).into());
-        LATENCIES.push(0);
-        Wire(index)
-    }
+    let index = match value {
+        0 => WIRE_0,
+        1 => WIRE_1,
+        _ => {
+            unreachable!()
+        }
+    };
+    Wire(index)
 }
 
 pub fn nand(a: Wire, b: Wire) -> Wire {
@@ -144,6 +153,7 @@ impl Gate {
 
 #[derive(Debug, Clone)]
 pub struct ExecutionResult {
+    pub wire_count: usize,
     pub gate_count: usize,
     pub max_latency: LatencyValue,
 }
@@ -165,6 +175,7 @@ pub fn execute_gates() -> ExecutionResult {
         }
 
         ExecutionResult {
+            wire_count: WIRES.len(),
             gate_count: GATES.len(),
             max_latency,
         }
