@@ -1,140 +1,94 @@
-pub const INST_BIT_LENGTH: u8 = 8;
 pub type InstBinaryType = u8;
 
 pub type InstRegType = u8;
 pub type InstImmType = u8;
 
 pub struct InstBinary {
-    binary: InstBinaryType,
-    desc: &'static InstBinaryDesc,
+    pub binary: InstBinaryType,
+    pub desc: &'static InstDesc,
 }
 impl InstBinary {}
 
-pub enum InstEncoding {
-    Op2,
-    Op1,
-    Op0i,
-    Op0,
+pub struct InstOpcodeDesc4 {
+    name: &'static str,
+    bits: u8,
 }
-pub enum InstBitType {
-    OpCode(u8),
-    Reg,
-    Imm,
-    None,
+pub struct InstOpcodeDesc6 {
+    name: &'static str,
+    bits: u8,
 }
-pub struct InstBinaryDesc {
-    pub name: &'static str,
-    pub encoding: InstEncoding,
-    pub opcode: InstBitDesc,
-    pub param: [InstBitDesc; 2],
+pub struct InstOpcodeDesc8 {
+    name: &'static str,
+    bits: u8,
 }
-pub struct InstBitDesc {
-    pub name: &'static str,
-    pub bit_count: u8,
-    pub bit_type: InstBitType,
-}
-impl InstBitDesc {
-    const fn op(name: &'static str, opcode: u8, bit_count: u8) -> InstBitDesc {
-        assert!((1 << bit_count) > (opcode as usize));
-        InstBitDesc {
-            name,
-            bit_count,
-            bit_type: InstBitType::OpCode(opcode),
+impl InstDesc {
+    fn name(&self) -> &'static str {
+        match &self {
+            InstDesc::Op2(opcode, _, _) => opcode.name,
+            InstDesc::Op1(opcode, _) => opcode.name,
+            InstDesc::Op0i(opcode, _) => opcode.name,
+            InstDesc::Op0(opcode) => opcode.name,
         }
     }
-    const fn reg0() -> InstBitDesc {
-        InstBitDesc {
-            name: "reg0",
-            bit_count: 2,
-            bit_type: InstBitType::Reg,
-        }
-    }
-    const fn reg1() -> InstBitDesc {
-        InstBitDesc {
-            name: "reg1",
-            bit_count: 2,
-            bit_type: InstBitType::Reg,
-        }
-    }
-    const fn imm() -> InstBitDesc {
-        InstBitDesc {
-            name: "imm",
-            bit_count: 4,
-            bit_type: InstBitType::Imm,
-        }
-    }
-    const fn empty() -> InstBitDesc {
-        InstBitDesc {
-            name: "",
-            bit_count: 0,
-            bit_type: InstBitType::None,
+    fn match_opcode(&self, inst_value: InstBinaryType) -> bool {
+        match &self {
+            InstDesc::Op2(opcode, _, _) => opcode.bits == (inst_value & 0b11110000) >> 4,
+            InstDesc::Op1(opcode, _) => opcode.bits == (inst_value & 0b11111100) >> 2,
+            InstDesc::Op0i(opcode, _) => opcode.bits == (inst_value & 0b11110000) >> 4,
+            InstDesc::Op0(opcode) => opcode.bits == inst_value,
         }
     }
 }
-impl InstBinaryDesc {
-    // different encodings
 
-    const fn op2(name: &'static str, opcode: u8) -> InstBinaryDesc {
-        InstBinaryDesc {
-            name,
-            encoding: InstEncoding::Op2,
-            opcode: InstBitDesc::op(name, opcode, 4),
-            param: [InstBitDesc::reg1(), InstBitDesc::reg0()],
-        }
+pub struct InstRegDesc {}
+pub struct InstImmDesc {}
+
+impl InstDesc {
+    const fn op2(name: &'static str, opcode: u8) -> InstDesc {
+        //TODO assert opcode max
+        InstDesc::Op2(
+            InstOpcodeDesc4 { name, bits: opcode },
+            InstRegDesc {},
+            InstRegDesc {},
+        )
     }
-    const fn op1(name: &'static str, opcode: u8) -> InstBinaryDesc {
-        InstBinaryDesc {
-            name,
-            encoding: InstEncoding::Op1,
-            opcode: InstBitDesc::op(name, opcode, 6),
-            param: [InstBitDesc::reg0(), InstBitDesc::empty()],
-        }
+    const fn op1(name: &'static str, opcode: u8) -> InstDesc {
+        InstDesc::Op1(InstOpcodeDesc6 { name, bits: opcode }, InstRegDesc {})
     }
-    const fn op0i(name: &'static str, opcode: u8) -> InstBinaryDesc {
-        InstBinaryDesc {
-            name,
-            encoding: InstEncoding::Op0i,
-            opcode: InstBitDesc::op(name, opcode, 4),
-            param: [InstBitDesc::imm(), InstBitDesc::empty()],
-        }
+    const fn op0i(name: &'static str, opcode: u8) -> InstDesc {
+        InstDesc::Op0i(InstOpcodeDesc4 { name, bits: opcode }, InstImmDesc {})
     }
-    const fn op0(name: &'static str, opcode: u8) -> InstBinaryDesc {
-        InstBinaryDesc {
-            name,
-            encoding: InstEncoding::Op0,
-            opcode: InstBitDesc::op(name, opcode, 8),
-            param: [InstBitDesc::empty(), InstBitDesc::empty()],
-        }
+    const fn op0(name: &'static str, opcode: u8) -> InstDesc {
+        InstDesc::Op0(InstOpcodeDesc8 { name, bits: opcode })
     }
 
-    pub fn parse(input_inst: InstBinaryType) -> Option<InstBinary> {
-        //TODO optimize later
+    pub fn parse(input: InstBinaryType) -> Option<InstBinary> {
         for inst_desc in ALL_INSTRUCTION_DESC {
-            let input_opcode = input_inst >> (INST_BIT_LENGTH - inst_desc.opcode.bit_count);
-
-            match inst_desc.opcode.bit_type {
-                InstBitType::OpCode(opcode) => {
-                    if input_opcode == opcode {
-                        return Some(InstBinary {
-                            binary: input_inst,
-                            desc: inst_desc,
-                        });
-                    }
-                }
-                _ => {}
+            if inst_desc.match_opcode(input) {
+                println!("{}", inst_desc.name());
+                return Some(InstBinary {
+                    binary: input,
+                    desc: inst_desc,
+                });
             }
         }
         None
     }
-    pub fn to_string(&self) {}
+}
+
+pub enum InstDesc {
+    Op2(InstOpcodeDesc4, InstRegDesc, InstRegDesc),
+    Op1(InstOpcodeDesc6, InstRegDesc),
+    Op0i(InstOpcodeDesc4, InstImmDesc),
+    Op0(InstOpcodeDesc8),
 }
 
 use paste::paste;
 macro_rules! inst_op2 {
     ($name: ident, $opcode: expr) => {
         paste! {
-            const [<INST_ $name:upper>]: InstBinaryDesc = InstBinaryDesc::op2(stringify!($name), $opcode);
-            fn [<inst_ $name>](reg1: InstRegType, reg0: InstRegType) -> InstBinary {
+            const [<INST_ $name:upper>]: InstDesc = InstDesc::op2(stringify!($name), $opcode);
+            pub fn [<inst_ $name>](reg1: InstRegType, reg0: InstRegType) -> InstBinary {
                 InstBinary {
                     binary: ($opcode << 4) | (reg1 << 2) | (reg0 << 0),
                     desc: &[<INST_ $name:upper>],
@@ -146,8 +100,8 @@ macro_rules! inst_op2 {
 macro_rules! inst_op1 {
     ($name: ident, $opcode: expr) => {
         paste! {
-            const [<INST_ $name:upper>]: InstBinaryDesc = InstBinaryDesc::op1(stringify!($name), $opcode);
-            fn [<inst_ $name>](reg0: InstRegType) -> InstBinary {
+            const [<INST_ $name:upper>]: InstDesc = InstDesc::op1(stringify!($name), $opcode);
+            pub fn [<inst_ $name>](reg0: InstRegType) -> InstBinary {
                 InstBinary {
                     binary: ($opcode << 2) | (reg0 << 0),
                     desc: &[<INST_ $name:upper>],
@@ -159,8 +113,8 @@ macro_rules! inst_op1 {
 macro_rules! inst_op0i {
     ($name: ident, $opcode: expr) => {
         paste! {
-            const [<INST_ $name:upper>]: InstBinaryDesc = InstBinaryDesc::op0i(stringify!($name), $opcode);
-            fn [<inst_ $name>](imm: InstImmType) -> InstBinary {
+            const [<INST_ $name:upper>]: InstDesc = InstDesc::op0i(stringify!($name), $opcode);
+            pub fn [<inst_ $name>](imm: InstImmType) -> InstBinary {
                 InstBinary {
                     binary: ($opcode << 4) | (imm << 0),
                     desc: &[<INST_ $name:upper>],
@@ -172,8 +126,8 @@ macro_rules! inst_op0i {
 macro_rules! inst_op0 {
     ($name: ident, $opcode: expr) => {
         paste! {
-            const [<INST_ $name:upper>]: InstBinaryDesc = InstBinaryDesc::op0(stringify!($name), $opcode);
-            fn [<inst_ $name>](imm: InstImmType) -> InstBinary {
+            const [<INST_ $name:upper>]: InstDesc = InstDesc::op0(stringify!($name), $opcode);
+            pub fn [<inst_ $name>](imm: InstImmType) -> InstBinary {
                 InstBinary {
                     binary: ($opcode << 0),
                     desc: &[<INST_ $name:upper>],
@@ -185,7 +139,7 @@ macro_rules! inst_op0 {
 
 //TODO test instruction space coverage
 //TODO test instruction intersection
-const ALL_INSTRUCTION_DESC: [&'static InstBinaryDesc; 30] = [
+const ALL_INSTRUCTION_DESC: [&'static InstDesc; 30] = [
     &INST_MOV,
     &INST_AND,
     &INST_OR,
