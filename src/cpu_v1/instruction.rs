@@ -30,13 +30,17 @@ impl InstDesc {
             InstDesc::Op0(opcode) => opcode.name,
         }
     }
-    fn match_opcode(&self, inst_value: InstBinaryType) -> bool {
+    fn opcode(&self) -> (u8, u8) {
         match &self {
-            InstDesc::Op2(opcode, _, _) => opcode.bits == (inst_value & 0b11110000) >> 4,
-            InstDesc::Op1(opcode, _) => opcode.bits == (inst_value & 0b11111100) >> 2,
-            InstDesc::Op0i(opcode, _) => opcode.bits == (inst_value & 0b11110000) >> 4,
-            InstDesc::Op0(opcode) => opcode.bits == inst_value,
+            InstDesc::Op2(opcode, _, _) => (opcode.bits, 4),
+            InstDesc::Op1(opcode, _) => (opcode.bits, 6),
+            InstDesc::Op0i(opcode, _) => (opcode.bits, 4),
+            InstDesc::Op0(opcode) => (opcode.bits, 8),
         }
+    }
+    fn match_opcode(&self, inst_value: InstBinaryType) -> bool {
+        let (bits, len) = self.opcode();
+        bits == (inst_value >> (8 - len))
     }
 }
 
