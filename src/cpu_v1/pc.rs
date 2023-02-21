@@ -1,15 +1,46 @@
-use crate::{add_naive, flatten2, input_const, reg_w, Wire, Wires};
+use super::CpuComponent;
+use crate::{add_naive, flatten2, input_const, Wire, Wires};
 
-pub fn pc(
+pub struct CpuPcInput {
+    pub prev_pc: Wires<8>,
+    pub jmp_offset_enable: Wire,
+    pub jmp_offset: Wires<4>,
+    pub jmp_long_enable: Wire,
+    pub jmp_long: Wires<4>,
+    pub no_jmp_enable: Wire,
+}
+pub struct CpuPcOutput {
+    pub next_pc: Wires<8>,
+}
+
+#[derive(Default)]
+pub struct CpuPc;
+impl CpuComponent for CpuPc {
+    type Input = CpuPcInput;
+    type Output = CpuPcOutput;
+
+    fn build(input: &CpuPcInput, output: &mut CpuPcOutput) {
+        let next_pc = next_pc(
+            input.prev_pc,
+            input.jmp_offset_enable,
+            input.jmp_offset,
+            input.jmp_long_enable,
+            input.jmp_long,
+            input.no_jmp_enable,
+        );
+        output.next_pc = next_pc;
+    }
+}
+
+fn next_pc(
+    prev_pc: Wires<8>,
     jmp_offset_enable: Wire,
     jmp_offset: Wires<4>,
     jmp_long_enable: Wire,
     jmp_long: Wires<4>,
     no_jmp_enable: Wire,
 ) -> Wires<8> {
-    let mut pc = reg_w::<8>();
-
-    let offset_target = add_naive(pc.out, jmp_offset.expand_signed::<8>());
+    let offset_target = add_naive(prev_pc, jmp_offset.expand_signed::<8>());
     let offset_target = jmp_offset_enable.expand() & offset_target.sum;
 
     let zero = input_const(0);
@@ -18,17 +49,15 @@ pub fn pc(
 
     let one = input_const(1);
     let one_8: Wires<8> = flatten2(one.expand::<1>(), zero.expand::<7>());
-    let next_target = add_naive(pc.out, one_8);
+    let next_target = add_naive(prev_pc, one_8);
     let next_target = no_jmp_enable.expand() & next_target.sum;
 
-    let new_pc = offset_target | (long_target | next_target);
-    pc.set_in(new_pc);
-
-    return pc.out;
+    let next_pc = offset_target | (long_target | next_target);
+    return next_pc;
 }
 
 #[test]
-fn test_pc() {
+fn test_next_pc() {
     use crate::*;
     clear_all();
 
@@ -58,13 +87,16 @@ fn test_pc() {
         no_jmp_enable.set(1);
     };
 
-    let pc_out = pc(
+    let mut pc = reg_w::<8>();
+    let next_pc = next_pc(
+        pc.out,
         jmp_offset_enable,
         jmp_offset,
         jmp_long_enable,
         jmp_long,
         no_jmp_enable,
     );
+    pc.set_in(next_pc);
 
     let mut reference_pc: i32 = 0;
     let testcases = shuffled_list(1 << 6, 123.4);
@@ -92,7 +124,7 @@ fn test_pc() {
 
         simulate();
         reference_pc = reference_pc % 256;
-        let result_pc = pc_out.get_u8();
+        let result_pc = pc.out.get_u8();
         println!(" => ref {}, result {}", reference_pc, result_pc);
 
         assert_eq!(result_pc as i32, reference_pc);
