@@ -1,6 +1,8 @@
 use super::CpuComponent;
-use crate::{add_naive, flatten2, input_const, Wire, Wires};
+use crate::cpu_v1::CpuComponentEmu;
+use crate::{add_naive, flatten2, input_const, input_w, Wire, Wires};
 
+#[derive(Clone)]
 pub struct CpuPcInput {
     pub prev_pc: Wires<8>,
     pub jmp_offset_enable: Wire,
@@ -9,17 +11,42 @@ pub struct CpuPcInput {
     pub jmp_long: Wires<4>,
     pub no_jmp_enable: Wire,
 }
+#[derive(Clone)]
 pub struct CpuPcOutput {
     pub next_pc: Wires<8>,
 }
 
-#[derive(Default)]
+pub struct CpuPcEmu;
+impl CpuComponentEmu<CpuPc> for CpuPcEmu {
+    fn init_output() -> CpuPcOutput {
+        CpuPcOutput { next_pc: input_w() }
+    }
+    fn execute(input: &CpuPcInput, output: &CpuPcOutput) {
+        assert_eq!(
+            1,
+            input.jmp_long_enable.get() + input.jmp_offset_enable.get() + input.no_jmp_enable.get()
+        );
+
+        let prev_pc = input.prev_pc.get_u8();
+        let offset = input.jmp_offset.get_u8();
+        let long = input.jmp_long.get_u8();
+        let next_pc = if input.jmp_offset_enable.is_one() {
+            prev_pc + offset
+        } else if input.jmp_long_enable.is_one() {
+            long * 16
+        } else {
+            prev_pc + 1
+        };
+        output.next_pc.set_u8(next_pc);
+    }
+}
+
 pub struct CpuPc;
 impl CpuComponent for CpuPc {
     type Input = CpuPcInput;
     type Output = CpuPcOutput;
 
-    fn build(input: &CpuPcInput, output: &mut CpuPcOutput) {
+    fn build(input: &CpuPcInput) -> CpuPcOutput {
         let next_pc = next_pc(
             input.prev_pc,
             input.jmp_offset_enable,
@@ -28,7 +55,7 @@ impl CpuComponent for CpuPc {
             input.jmp_long,
             input.no_jmp_enable,
         );
-        output.next_pc = next_pc;
+        CpuPcOutput { next_pc }
     }
 }
 

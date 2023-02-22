@@ -110,6 +110,9 @@ impl Debug for Wire {
 }
 
 impl Wire {
+    pub fn is_one(self) -> bool {
+        unsafe { WIRES[self.0] > 0 }
+    }
     pub fn get(self) -> WireValue {
         unsafe { WIRES[self.0] }
     }
