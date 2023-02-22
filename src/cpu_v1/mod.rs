@@ -1,10 +1,12 @@
 pub mod isa;
 pub use isa::*;
+mod inst_rom;
+use inst_rom::*;
 mod pc;
 
 use crate::cpu_v1::pc::{CpuPc, CpuPcEmu, CpuPcInput, CpuPcOutput};
 use crate::{
-    clear_all, external, input, input_w, reg, reg_w, simulate, External, Reg, Regs, Wires,
+    clear_all, external, input, input_w, reg, reg_w, simulate, External, Reg, Regs, Rom256x8, Wires,
 };
 use std::any::Any;
 use std::marker::PhantomData;
@@ -19,9 +21,9 @@ struct CpuV1State {
     flag_n: Reg,
 }
 impl CpuV1State {
-    fn create() -> Self {
+    fn create(inst: [u8; 256]) -> Self {
         Self {
-            inst: [Wires::uninitialized(); 256],
+            inst: inst.map(|v| Wires::<8>::parse_u8(v)),
             pc: reg_w(),
             mem: [reg_w(); 16],
             reg: [reg_w(); 4],
@@ -33,17 +35,29 @@ impl CpuV1State {
 }
 
 struct CpuV1StateInternal {
-    pc_in: CpuPcInput,
-    pc_out: CpuPcOutput,
+    inst_rom_in: CpuInstInput,
+    inst_rom_out: CpuInstOutput,
+
+    next_pc_in: CpuPcInput,
+    next_pc_out: CpuPcOutput,
 }
 
 trait CpuV1 {
     type Pc: CpuComponent<Input = CpuPcInput, Output = CpuPcOutput>;
+    type InstRom: CpuComponent<Input = CpuInstInput, Output = CpuInstOutput>;
+
     fn build(state: &mut CpuV1State) -> CpuV1StateInternal {
         let pc = &mut state.pc;
         let curr_pc = pc.out;
 
-        let pc_in = CpuPcInput {
+        let inst_rom_in = CpuInstInput {
+            inst: state.inst,
+            pc: curr_pc,
+        };
+
+        let inst_rom_out = Self::InstRom::build(&inst_rom_in);
+
+        let next_pc_in = CpuPcInput {
             curr_pc,
             jmp_offset_enable: input(),
             jmp_offset: input_w::<4>(),
@@ -51,11 +65,16 @@ trait CpuV1 {
             jmp_long: input_w::<4>(),
             no_jmp_enable: input(),
         };
-        let pc_out: CpuPcOutput = Self::Pc::build(&pc_in);
+        let next_pc_out: CpuPcOutput = Self::Pc::build(&next_pc_in);
 
-        pc.set_in(pc_out.next_pc);
+        pc.set_in(next_pc_out.next_pc);
 
-        CpuV1StateInternal { pc_in, pc_out }
+        CpuV1StateInternal {
+            inst_rom_in,
+            inst_rom_out,
+            next_pc_in,
+            next_pc_out,
+        }
     }
 }
 
@@ -63,27 +82,50 @@ struct CpuV1Instance;
 struct CpuV1EmuInstance;
 impl CpuV1 for CpuV1Instance {
     type Pc = CpuPc;
+    type InstRom = CpuInstRom;
 }
 impl CpuV1 for CpuV1EmuInstance {
     type Pc = CpuComponentEmuContext<CpuPc, CpuPcEmu>;
+    type InstRom = CpuComponentEmuContext<CpuInstRom, CpuInstRomEmu>;
 }
 #[test]
 fn cpu_v1_build() {
     clear_all();
-    let mut state1 = CpuV1State::create();
-    let mut state2 = CpuV1State::create();
+
+    let mut inst_rom = [0u8; 256];
+    inst_rom[0] = inst_mov(0, 1).binary;
+    inst_rom[1] = inst_add(0, 1).binary;
+
+    let mut state1 = CpuV1State::create(inst_rom.clone());
+    let mut state2 = CpuV1State::create(inst_rom.clone());
     let internal1 = CpuV1Instance::build(&mut state1);
     let internal2 = CpuV1EmuInstance::build(&mut state2);
-    internal1.pc_in.curr_pc.set_u8(123);
-    internal2.pc_in.curr_pc.set_u8(123);
-    internal1.pc_in.no_jmp_enable.set(1);
-    internal2.pc_in.no_jmp_enable.set(1);
-    simulate();
+    internal1.next_pc_in.curr_pc.set_u8(0);
+    internal2.next_pc_in.curr_pc.set_u8(0);
+    internal1.next_pc_in.no_jmp_enable.set(1);
+    internal2.next_pc_in.no_jmp_enable.set(1);
 
-    let next_pc1 = internal1.pc_out.next_pc.get_u8();
-    let next_pc2 = internal2.pc_out.next_pc.get_u8();
+    simulate();
+    let inst1 = internal1.inst_rom_out.inst.get_u8();
+    let inst2 = internal2.inst_rom_out.inst.get_u8();
+    assert_eq!(inst1, inst2);
+    let binary = InstDesc::parse(inst1).unwrap();
+    println!("inst: {}", binary.desc.name());
+
+    let next_pc1 = internal1.next_pc_out.next_pc.get_u8();
+    let next_pc2 = internal2.next_pc_out.next_pc.get_u8();
     assert_eq!(next_pc1, next_pc2);
-    //TODO simulate
+
+    simulate();
+    let inst1 = internal1.inst_rom_out.inst.get_u8();
+    let inst2 = internal2.inst_rom_out.inst.get_u8();
+    assert_eq!(inst1, inst2);
+    let binary = InstDesc::parse(inst1).unwrap();
+    println!("inst: {}", binary.desc.name());
+
+    let next_pc1 = internal1.next_pc_out.next_pc.get_u8();
+    let next_pc2 = internal2.next_pc_out.next_pc.get_u8();
+    assert_eq!(next_pc1, next_pc2);
 }
 
 pub trait CpuComponent: Any {

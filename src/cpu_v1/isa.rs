@@ -22,7 +22,7 @@ pub struct InstOpcodeDesc8 {
     bits: u8,
 }
 impl InstDesc {
-    fn name(&self) -> &'static str {
+    pub fn name(&self) -> &'static str {
         match &self {
             InstDesc::Op2(opcode, _, _) => opcode.name,
             InstDesc::Op1(opcode, _) => opcode.name,
@@ -69,7 +69,6 @@ impl InstDesc {
     pub fn parse(input: InstBinaryType) -> Option<InstBinary> {
         for inst_desc in ALL_INSTRUCTION_DESC {
             if inst_desc.match_opcode(input) {
-                println!("{}", inst_desc.name());
                 return Some(InstBinary {
                     binary: input,
                     desc: inst_desc,
