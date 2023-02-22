@@ -91,7 +91,9 @@ use paste::paste;
 macro_rules! inst_op2 {
     ($name: ident, $opcode: expr) => {
         paste! {
+            #[allow(unused)]
             const [<INST_ $name:upper>]: InstDesc = InstDesc::op2(stringify!($name), $opcode);
+            #[allow(unused)]
             pub fn [<inst_ $name>](reg1: InstRegType, reg0: InstRegType) -> InstBinary {
                 InstBinary {
                     binary: ($opcode << 4) | (reg1 << 2) | (reg0 << 0),
@@ -104,7 +106,9 @@ macro_rules! inst_op2 {
 macro_rules! inst_op1 {
     ($name: ident, $opcode: expr) => {
         paste! {
+            #[allow(unused)]
             const [<INST_ $name:upper>]: InstDesc = InstDesc::op1(stringify!($name), $opcode);
+            #[allow(unused)]
             pub fn [<inst_ $name>](reg0: InstRegType) -> InstBinary {
                 InstBinary {
                     binary: ($opcode << 2) | (reg0 << 0),
@@ -117,7 +121,9 @@ macro_rules! inst_op1 {
 macro_rules! inst_op0i {
     ($name: ident, $opcode: expr) => {
         paste! {
+            #[allow(unused)]
             const [<INST_ $name:upper>]: InstDesc = InstDesc::op0i(stringify!($name), $opcode);
+            #[allow(unused)]
             pub fn [<inst_ $name>](imm: InstImmType) -> InstBinary {
                 InstBinary {
                     binary: ($opcode << 4) | (imm << 0),
@@ -130,7 +136,9 @@ macro_rules! inst_op0i {
 macro_rules! inst_op0 {
     ($name: ident, $opcode: expr) => {
         paste! {
+            #[allow(unused)]
             const [<INST_ $name:upper>]: InstDesc = InstDesc::op0(stringify!($name), $opcode);
+            #[allow(unused)]
             pub fn [<inst_ $name>](imm: InstImmType) -> InstBinary {
                 InstBinary {
                     binary: ($opcode << 0),

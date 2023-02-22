@@ -4,7 +4,7 @@ use crate::{add_naive, flatten2, input_const, input_w, Wire, Wires};
 
 #[derive(Clone)]
 pub struct CpuPcInput {
-    pub prev_pc: Wires<8>,
+    pub curr_pc: Wires<8>,
     pub jmp_offset_enable: Wire,
     pub jmp_offset: Wires<4>,
     pub jmp_long_enable: Wire,
@@ -27,15 +27,15 @@ impl CpuComponentEmu<CpuPc> for CpuPcEmu {
             input.jmp_long_enable.get() + input.jmp_offset_enable.get() + input.no_jmp_enable.get()
         );
 
-        let prev_pc = input.prev_pc.get_u8();
+        let curr_pc = input.curr_pc.get_u8();
         let offset = input.jmp_offset.get_u8();
         let long = input.jmp_long.get_u8();
         let next_pc = if input.jmp_offset_enable.is_one() {
-            prev_pc + offset
+            curr_pc + offset
         } else if input.jmp_long_enable.is_one() {
             long * 16
         } else {
-            prev_pc + 1
+            curr_pc + 1
         };
         output.next_pc.set_u8(next_pc);
     }
@@ -48,7 +48,7 @@ impl CpuComponent for CpuPc {
 
     fn build(input: &CpuPcInput) -> CpuPcOutput {
         let next_pc = next_pc(
-            input.prev_pc,
+            input.curr_pc,
             input.jmp_offset_enable,
             input.jmp_offset,
             input.jmp_long_enable,
@@ -60,14 +60,14 @@ impl CpuComponent for CpuPc {
 }
 
 fn next_pc(
-    prev_pc: Wires<8>,
+    curr_pc: Wires<8>,
     jmp_offset_enable: Wire,
     jmp_offset: Wires<4>,
     jmp_long_enable: Wire,
     jmp_long: Wires<4>,
     no_jmp_enable: Wire,
 ) -> Wires<8> {
-    let offset_target = add_naive(prev_pc, jmp_offset.expand_signed::<8>());
+    let offset_target = add_naive(curr_pc, jmp_offset.expand_signed::<8>());
     let offset_target = jmp_offset_enable.expand() & offset_target.sum;
 
     let zero = input_const(0);
@@ -76,7 +76,7 @@ fn next_pc(
 
     let one = input_const(1);
     let one_8: Wires<8> = flatten2(one.expand::<1>(), zero.expand::<7>());
-    let next_target = add_naive(prev_pc, one_8);
+    let next_target = add_naive(curr_pc, one_8);
     let next_target = no_jmp_enable.expand() & next_target.sum;
 
     let next_pc = offset_target | (long_target | next_target);

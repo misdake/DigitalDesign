@@ -14,7 +14,7 @@ impl<const W: usize> Wires<W> {
     pub fn width(&self) -> usize {
         W
     }
-    pub fn create_uninitialized() -> Self {
+    pub fn uninitialized() -> Self {
         Self {
             wires: [Wire(0); W],
         }
