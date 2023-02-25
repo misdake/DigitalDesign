@@ -189,10 +189,10 @@ inst_op2!(or, 0b0010);
 inst_op2!(xor, 0b0011);
 inst_op2!(add, 0b0100);
 
-inst_op1!(not, 0b000000);
-inst_op1!(neg, 0b000000);
-inst_op1!(inc, 0b000000);
-inst_op1!(dec, 0b000000);
+inst_op1!(not, 0b010100);
+inst_op1!(neg, 0b010101);
+inst_op1!(inc, 0b010110);
+inst_op1!(dec, 0b010111);
 
 inst_op0i!(load_imm, 0b0000);
 inst_op0i!(load_mem_imm, 0b0000);

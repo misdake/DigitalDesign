@@ -3,8 +3,10 @@ pub use isa::*;
 mod inst_rom;
 use inst_rom::*;
 mod pc;
+use pc::*;
+mod decoder;
+use decoder::*;
 
-use crate::cpu_v1::pc::{CpuPc, CpuPcEmu, CpuPcInput, CpuPcOutput};
 use crate::{
     clear_all, external, input, input_w, reg, reg_w, simulate, External, Reg, Regs, Rom256x8, Wires,
 };
@@ -88,8 +90,13 @@ impl CpuV1 for CpuV1EmuInstance {
     type Pc = CpuComponentEmuContext<CpuPc, CpuPcEmu>;
     type InstRom = CpuComponentEmuContext<CpuInstRom, CpuInstRomEmu>;
 }
+
 #[test]
-fn cpu_v1_build() {
+fn test() {
+    cpu_v1_build();
+}
+
+pub fn cpu_v1_build() {
     clear_all();
 
     let mut inst_rom = [0u8; 256];
