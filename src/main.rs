@@ -17,6 +17,7 @@ pub use lib::*;
 pub use reg::*;
 pub use wires::*;
 
+use crate::cpu_v1::inst_mov;
 #[cfg(test)]
 pub(crate) use tests::*;
 
@@ -29,16 +30,8 @@ pub(crate) fn select<T>(b: bool, t: T, f: T) -> T {
 }
 
 fn main() {
-    clear_all();
-
-    let mut rom = Rom256x8::create();
-    for i in 0..=255 {
-        rom.set(i, 255 - i);
-    }
-
-    let addr = input_w::<8>();
-    let _ = rom.apply(addr);
-
-    let r = simulate();
-    println!("{:?}", r);
+    let inst: u8 = 0b0001_01_11;
+    let inst2 = inst_mov(0b01, 0b11).binary;
+    cpu_v1::InstDesc::parse(inst);
+    cpu_v1::InstDesc::parse(inst2);
 }

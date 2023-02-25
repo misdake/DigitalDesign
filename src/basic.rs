@@ -110,6 +110,9 @@ impl Debug for Wire {
 }
 
 impl Wire {
+    pub fn is_one(self) -> bool {
+        unsafe { WIRES[self.0] > 0 }
+    }
     pub fn get(self) -> WireValue {
         unsafe { WIRES[self.0] }
     }
@@ -185,8 +188,12 @@ pub fn execute_gates() -> ExecutionResult {
 pub fn clock_tick() {
     unsafe {
         EXTERNALS.iter_mut().for_each(|external| external.execute());
-        REGS.iter_mut()
-            .for_each(|reg| reg.temp_value = reg.wire_in.unwrap().get());
+        REGS.iter_mut().for_each(|reg| {
+            reg.temp_value = reg.wire_in.map(|w| w.get()).unwrap_or_else(|| {
+                // println!("reg without in");
+                0
+            })
+        });
         REGS.iter_mut()
             .for_each(|reg| reg.wire_out.set(reg.temp_value));
     }
