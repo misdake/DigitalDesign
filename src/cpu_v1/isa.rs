@@ -38,7 +38,7 @@ impl InstDesc {
             InstDesc::Op0(opcode) => (opcode.bits, 8),
         }
     }
-    fn match_opcode(&self, inst_value: InstBinaryType) -> bool {
+    pub fn match_opcode(&self, inst_value: InstBinaryType) -> bool {
         let (bits, len) = self.opcode();
         bits == (inst_value >> (8 - len))
     }
@@ -91,7 +91,7 @@ macro_rules! inst_op2 {
     ($name: ident, $opcode: expr) => {
         paste! {
             #[allow(unused)]
-            const [<INST_ $name:upper>]: InstDesc = InstDesc::op2(stringify!($name), $opcode);
+            pub const [<INST_ $name:upper>]: InstDesc = InstDesc::op2(stringify!($name), $opcode);
             #[allow(unused)]
             pub fn [<inst_ $name>](reg1: InstRegType, reg0: InstRegType) -> InstBinary {
                 InstBinary {
@@ -106,7 +106,7 @@ macro_rules! inst_op1 {
     ($name: ident, $opcode: expr) => {
         paste! {
             #[allow(unused)]
-            const [<INST_ $name:upper>]: InstDesc = InstDesc::op1(stringify!($name), $opcode);
+            pub const [<INST_ $name:upper>]: InstDesc = InstDesc::op1(stringify!($name), $opcode);
             #[allow(unused)]
             pub fn [<inst_ $name>](reg0: InstRegType) -> InstBinary {
                 InstBinary {
@@ -121,7 +121,7 @@ macro_rules! inst_op0i {
     ($name: ident, $opcode: expr) => {
         paste! {
             #[allow(unused)]
-            const [<INST_ $name:upper>]: InstDesc = InstDesc::op0i(stringify!($name), $opcode);
+            pub const [<INST_ $name:upper>]: InstDesc = InstDesc::op0i(stringify!($name), $opcode);
             #[allow(unused)]
             pub fn [<inst_ $name>](imm: InstImmType) -> InstBinary {
                 InstBinary {
@@ -136,7 +136,7 @@ macro_rules! inst_op0 {
     ($name: ident, $opcode: expr) => {
         paste! {
             #[allow(unused)]
-            const [<INST_ $name:upper>]: InstDesc = InstDesc::op0(stringify!($name), $opcode);
+            pub const [<INST_ $name:upper>]: InstDesc = InstDesc::op0(stringify!($name), $opcode);
             #[allow(unused)]
             pub fn [<inst_ $name>](imm: InstImmType) -> InstBinary {
                 InstBinary {
@@ -156,7 +156,7 @@ const ALL_INSTRUCTION_DESC: [&'static InstDesc; 30] = [
     &INST_OR,
     &INST_XOR,
     &INST_ADD,
-    &INST_NOT,
+    &INST_INV,
     &INST_NEG,
     &INST_INC,
     &INST_DEC,
@@ -189,7 +189,7 @@ inst_op2!(or, 0b0010);
 inst_op2!(xor, 0b0011);
 inst_op2!(add, 0b0100);
 
-inst_op1!(not, 0b010100);
+inst_op1!(inv, 0b010100);
 inst_op1!(neg, 0b010101);
 inst_op1!(inc, 0b010110);
 inst_op1!(dec, 0b010111);
