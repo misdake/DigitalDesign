@@ -207,6 +207,7 @@ inst_op0i!(jg_offset, 0b0000);
 inst_op1!(jmp_reg, 0b000000);
 inst_op0i!(jmp_long, 0b0000);
 
+//TODO
 inst_op0!(reset, 0b00000000);
 inst_op0!(halt, 0b00000000);
 
