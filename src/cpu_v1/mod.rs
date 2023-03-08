@@ -4,6 +4,8 @@ mod inst_rom;
 use inst_rom::*;
 mod pc;
 use pc::*;
+mod branch;
+use branch::*;
 mod decoder;
 use decoder::*;
 
