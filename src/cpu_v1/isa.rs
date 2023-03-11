@@ -150,7 +150,7 @@ macro_rules! inst_op0 {
 
 //TODO test instruction space coverage
 //TODO test instruction intersection
-const ALL_INSTRUCTION_DESC: [&'static InstDesc; 30] = [
+const ALL_INSTRUCTION_DESC: [&'static InstDesc; 31] = [
     &INST_MOV,
     &INST_AND,
     &INST_OR,
@@ -173,6 +173,7 @@ const ALL_INSTRUCTION_DESC: [&'static InstDesc; 30] = [
     &INST_JMP_LONG,
     &INST_RESET,
     &INST_HALT,
+    &INST_EXTERNAL_INPUT,
     &INST_EXTERNAL_SET_SIZE,
     &INST_EXTERNAL_SET_PALETTE,
     &INST_EXTERNAL_SET_POS,
@@ -211,6 +212,7 @@ inst_op0i!(jmp_long, 0b0000);
 inst_op0!(reset, 0b00000000);
 inst_op0!(halt, 0b00000000);
 
+inst_op0!(external_input, 0b00000000);
 inst_op0!(external_set_size, 0b00000000);
 inst_op0!(external_set_palette, 0b00000000);
 inst_op0!(external_set_pos, 0b00000000);
