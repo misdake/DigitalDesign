@@ -49,29 +49,73 @@ struct CpuV1StateInternal {
 trait CpuV1 {
     type Pc: CpuComponent<Input = CpuPcInput, Output = CpuPcOutput>;
     type InstRom: CpuComponent<Input = CpuInstInput, Output = CpuInstOutput>;
+    type Decoder: CpuComponent<Input = CpuDecoderInput, Output = CpuDecoderOutput>;
+    type Branch: CpuComponent<Input = CpuBranchInput, Output = CpuBranchOutput>;
 
     fn build(state: &mut CpuV1State) -> CpuV1StateInternal {
-        let pc = &mut state.pc;
-        let curr_pc = pc.out;
-
+        // Inst
         let inst_rom_in = CpuInstInput {
             inst: state.inst,
-            pc: curr_pc,
+            pc: state.pc.out,
         };
+        let inst_rom_out: CpuInstOutput = Self::InstRom::build(&inst_rom_in);
+        let CpuInstOutput { inst } = inst_rom_out;
 
-        let inst_rom_out = Self::InstRom::build(&inst_rom_in);
+        // Decoder
+        let decoder_in = CpuDecoderInput { inst };
+        let decoder_out: CpuDecoderOutput = Self::Decoder::build(&decoder_in);
+        let CpuDecoderOutput {
+            reg0_addr,
+            reg1_addr,
+            imm,
+            reg0_write_enable,
+            reg0_write_select,
+            alu_op,
+            alu0_select,
+            alu1_select,
+            mem_addr_select,
+            mem_write_enable,
+            jmp_op,
+            flag_write_enable,
+        } = decoder_out;
 
+        // Branch
+        let branch_in = CpuBranchInput {
+            imm,
+            reg0: input_w(),    //TODO from reg
+            alu_out: input_w(), //TODO from alu
+            flag_write_enable,
+            jmp_op,
+            flag_p: state.flag_p.out(),
+            flag_z: state.flag_z.out(),
+            flag_n: state.flag_n.out(),
+        };
+        let branch_out: CpuBranchOutput = Self::Branch::build(&branch_in);
+        let CpuBranchOutput {
+            pc_offset_enable,
+            pc_offset,
+            jmp_long_enable,
+            jmp_long,
+            flag_p,
+            flag_z,
+            flag_n,
+        } = branch_out;
+
+        // Next Pc
         let next_pc_in = CpuPcInput {
-            curr_pc,
-            jmp_offset_enable: input(),
-            jmp_offset: input_w::<4>(),
-            jmp_long_enable: input(),
-            jmp_long: input_w::<4>(),
-            no_jmp_enable: input(),
+            curr_pc: state.pc.out,
+            pc_offset_enable,
+            pc_offset,
+            jmp_long_enable,
+            jmp_long,
         };
         let next_pc_out: CpuPcOutput = Self::Pc::build(&next_pc_in);
 
-        pc.set_in(next_pc_out.next_pc);
+        // set regs
+        state.pc.set_in(next_pc_out.next_pc);
+        state.flag_p.set_in(flag_p);
+        state.flag_z.set_in(flag_z);
+        state.flag_n.set_in(flag_n);
 
         CpuV1StateInternal {
             inst_rom_in,
@@ -87,10 +131,14 @@ struct CpuV1EmuInstance;
 impl CpuV1 for CpuV1Instance {
     type Pc = CpuPc;
     type InstRom = CpuInstRom;
+    type Decoder = CpuDecoder;
+    type Branch = CpuBranch;
 }
 impl CpuV1 for CpuV1EmuInstance {
     type Pc = CpuComponentEmuContext<CpuPc, CpuPcEmu>;
     type InstRom = CpuComponentEmuContext<CpuInstRom, CpuInstRomEmu>;
+    type Decoder = CpuComponentEmuContext<CpuDecoder, CpuDecoderEmu>;
+    type Branch = CpuBranch; // CpuComponentEmuContext<CpuBranch, CpuBranchEmu>;
 }
 
 #[test]
@@ -111,8 +159,10 @@ pub fn cpu_v1_build() {
     let internal2 = CpuV1EmuInstance::build(&mut state2);
     internal1.next_pc_in.curr_pc.set_u8(0);
     internal2.next_pc_in.curr_pc.set_u8(0);
-    internal1.next_pc_in.no_jmp_enable.set(1);
-    internal2.next_pc_in.no_jmp_enable.set(1);
+    internal1.next_pc_in.pc_offset_enable.set(1);
+    internal2.next_pc_in.pc_offset_enable.set(1);
+    internal1.next_pc_in.pc_offset.set_u8(1);
+    internal2.next_pc_in.pc_offset.set_u8(1);
 
     simulate();
     let inst1 = internal1.inst_rom_out.inst.get_u8();

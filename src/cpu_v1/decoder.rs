@@ -71,6 +71,7 @@ enum MemAddrSelect {
     Reg1 = 2,
 }
 
+#[allow(unused)]
 #[repr(u8)]
 enum JmpOp {
     NoJmp = 1,
