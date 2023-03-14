@@ -76,7 +76,6 @@ trait CpuV1 {
             mem_addr_select,
             mem_write_enable,
             jmp_op,
-            flag_write_enable,
         } = decoder_out;
 
         // Branch
@@ -84,7 +83,6 @@ trait CpuV1 {
             imm,
             reg0: input_w(),    //TODO from reg
             alu_out: input_w(), //TODO from alu
-            flag_write_enable,
             jmp_op,
             flag_p: state.flag_p.out(),
             flag_z: state.flag_z.out(),

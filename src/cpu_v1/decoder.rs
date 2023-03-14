@@ -27,7 +27,6 @@ pub struct CpuDecoderOutput {
 
     // jmp control
     pub jmp_op: Wires<7>, // JmpOp: no_jmp, jmp, je, jl, jg, reg, long
-    pub flag_write_enable: Wire,
 }
 
 #[repr(u8)]
@@ -109,7 +108,6 @@ impl CpuComponentEmu<CpuDecoder> for CpuDecoderEmu {
             mem_addr_select: input_w(),
             mem_write_enable: input(),
             jmp_op: input_w(),
-            flag_write_enable: input(),
         }
     }
     fn execute(input: &CpuDecoderInput, output: &CpuDecoderOutput) {
@@ -156,7 +154,6 @@ impl CpuComponentEmu<CpuDecoder> for CpuDecoderEmu {
         let mem_addr_select: u8;
         let mem_write_enable: u8;
         let jmp_op: u8;
-        let flag_write_enable: u8;
 
         let is_alu = mov || and || or || xor || add || inv || neg || inc || dec;
         let is_load_imm = load_imm;
@@ -169,7 +166,6 @@ impl CpuComponentEmu<CpuDecoder> for CpuDecoderEmu {
             reg0_addr = (inst & 0b00000011) >> 0;
             reg1_addr = (inst & 0b00001100) >> 2;
             reg0_write_enable = 1;
-            flag_write_enable = 1;
             reg0_write_select = Reg0WriteSelect::AluOut as u8;
             mem_addr_select = 0;
             mem_write_enable = 0;
@@ -204,7 +200,6 @@ impl CpuComponentEmu<CpuDecoder> for CpuDecoderEmu {
             jmp_op = JmpOp::NoJmp as u8;
             reg0_addr = RegAddr::A as u8;
             reg1_addr = RegAddr::B as u8;
-            flag_write_enable = 0;
             alu_op = 0;
             alu0_select = 0;
             alu1_select = 0;
@@ -245,7 +240,6 @@ impl CpuComponentEmu<CpuDecoder> for CpuDecoderEmu {
             alu1_select = 0;
             mem_addr_select = 0;
             mem_write_enable = 0;
-            flag_write_enable = 0;
         } else {
             unimplemented!()
         }
@@ -261,6 +255,5 @@ impl CpuComponentEmu<CpuDecoder> for CpuDecoderEmu {
         output.mem_addr_select.set_u8(mem_addr_select);
         output.mem_write_enable.set(mem_write_enable);
         output.jmp_op.set_u8(jmp_op);
-        output.flag_write_enable.set(flag_write_enable);
     }
 }

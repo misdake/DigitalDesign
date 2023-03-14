@@ -6,7 +6,6 @@ pub struct CpuBranchInput {
     pub imm: Wires<4>,
     pub reg0: Wires<4>,
     pub alu_out: Wires<4>,
-    pub flag_write_enable: Wire,
 
     pub jmp_op: Wires<7>, // JmpOp: no_jmp, jmp, je, jl, jg, reg, long
 
