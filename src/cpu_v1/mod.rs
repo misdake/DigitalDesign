@@ -17,24 +17,26 @@ use std::any::Any;
 use std::marker::PhantomData;
 
 struct CpuV1State {
-    clock_enable: Reg,
+    clock_enable: Reg, // TODO impl
     inst: [Wires<8>; 256],
     pc: Regs<8>,
     mem: [Regs<4>; 64],
-    mem_bank: Regs<2>,
+    mem_bank: Regs<2>, // TODO impl
     reg: [Regs<4>; 4],
     flag_p: Reg,
     flag_z: Reg,
     flag_n: Reg,
-    external_device: Regs<4>,
+    external_device: Regs<4>, // TODO impl
 }
 impl CpuV1State {
     fn create(inst: [u8; 256]) -> Self {
+        let inst = inst.map(|v| Wires::<8>::parse_u8(v));
+        let mem = [0u8; 64].map(|_| reg_w());
         Self {
             clock_enable: reg(),
-            inst: inst.map(|v| Wires::<8>::parse_u8(v)),
+            inst,
             pc: reg_w(),
-            mem: [reg_w(); 64],
+            mem,
             mem_bank: reg_w(),
             reg: [reg_w(); 4],
             flag_p: reg(),
@@ -93,6 +95,7 @@ trait CpuV1 {
             reg0: input_w(),    //TODO from reg
             alu_out: input_w(), //TODO from alu
             jmp_op,
+            jmp_src_select,
             flag_p: state.flag_p.out(),
             flag_z: state.flag_z.out(),
             flag_n: state.flag_n.out(),
