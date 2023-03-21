@@ -148,8 +148,6 @@ macro_rules! inst_op0 {
     };
 }
 
-//TODO test instruction space coverage
-//TODO test instruction intersection
 const ALL_INSTRUCTION_DESC: &'static [&'static InstDesc] = &[
     &INST_MOV,
     &INST_AND,

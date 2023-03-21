@@ -26,7 +26,8 @@ pub struct CpuDecoderOutput {
     pub mem_write_enable: Wire,
 
     // jmp control
-    pub jmp_op: Wires<7>, // JmpOp: no_jmp, jmp, je, jl, jg, reg, long
+    pub jmp_op: Wires<6>,         // JmpOp: no_jmp, jmp, je, jl, jg, long
+    pub jmp_src_select: Wires<2>, // JmpSrcSelect: imm, regA
 }
 
 #[repr(u8)]
@@ -78,8 +79,12 @@ enum JmpOp {
     Je = 4,
     Jl = 8,
     Jg = 16,
-    Reg = 32,
-    Long = 64,
+    Long = 32,
+}
+#[repr(u8)]
+enum JmpSrcSelect {
+    Imm = 1,
+    RegA = 2,
 }
 
 pub struct CpuDecoder;
@@ -108,11 +113,16 @@ impl CpuComponentEmu<CpuDecoder> for CpuDecoderEmu {
             mem_addr_select: input_w(),
             mem_write_enable: input(),
             jmp_op: input_w(),
+            jmp_src_select: input_w(),
         }
     }
     fn execute(input: &CpuDecoderInput, output: &CpuDecoderOutput) {
         use cpu_v1::isa::*;
         let inst = input.inst.get_u8();
+
+        let reg0_bits: u8 = (inst & 0b00000011) >> 0;
+        let reg1_bits: u8 = (inst & 0b00001100) >> 2;
+        let imm: u8 = (inst & 0b00001111) >> 0;
 
         // alu_op2
         let mov = INST_MOV.match_opcode(inst);
@@ -127,23 +137,21 @@ impl CpuComponentEmu<CpuDecoder> for CpuDecoderEmu {
         let dec = INST_DEC.match_opcode(inst);
         // load store
         let load_imm = INST_LOAD_IMM.match_opcode(inst);
-        let load_mem_imm = INST_LOAD_MEM_IMM.match_opcode(inst);
-        let load_mem_reg = INST_LOAD_MEM_REG.match_opcode(inst);
-        let store_mem_imm = INST_STORE_MEM_IMM.match_opcode(inst);
-        let store_mem_reg = INST_STORE_MEM_REG.match_opcode(inst);
+        let load_mem_imm = INST_LOAD_MEM.match_opcode(inst) && (imm != 0);
+        let load_mem_reg = INST_LOAD_MEM.match_opcode(inst) && (imm == 0);
+        let store_mem_imm = INST_STORE_MEM.match_opcode(inst) && (imm != 0);
+        let store_mem_reg = INST_STORE_MEM.match_opcode(inst) && (imm == 0);
         // jmp
         let jmp_offset = INST_JMP_OFFSET.match_opcode(inst);
         let je_offset = INST_JE_OFFSET.match_opcode(inst);
         let jl_offset = INST_JL_OFFSET.match_opcode(inst);
         let jg_offset = INST_JG_OFFSET.match_opcode(inst);
-        let jmp_reg = INST_JMP_REG.match_opcode(inst);
         let jmp_long = INST_JMP_LONG.match_opcode(inst);
         // control TODO
         // let reset = INST_RESET.match_opcode(inst);
         // let halt = INST_HALT.match_opcode(inst);
 
         // immutable local variable => all output variables assigned once and only once.
-        let imm: u8 = (inst & 0b00001111) >> 0;
         let reg0_addr: u8;
         let reg1_addr: u8;
         let reg0_write_enable: u8;
@@ -154,17 +162,19 @@ impl CpuComponentEmu<CpuDecoder> for CpuDecoderEmu {
         let mem_addr_select: u8;
         let mem_write_enable: u8;
         let jmp_op: u8;
+        let jmp_src_select: u8;
 
         let is_alu = mov || and || or || xor || add || inv || neg || inc || dec;
         let is_load_imm = load_imm;
         let is_load_mem = load_mem_imm || load_mem_reg;
         let is_store_mem = store_mem_imm || store_mem_reg;
-        let is_jmp = jmp_offset || je_offset || jl_offset || jg_offset || jmp_reg || jmp_long;
+        let is_jmp = jmp_offset || je_offset || jl_offset || jg_offset || jmp_long;
 
         if is_alu || is_load_imm {
             jmp_op = JmpOp::NoJmp as u8;
-            reg0_addr = (inst & 0b00000011) >> 0;
-            reg1_addr = (inst & 0b00001100) >> 2;
+            jmp_src_select = JmpSrcSelect::Imm as u8;
+            reg0_addr = reg0_bits;
+            reg1_addr = reg1_bits;
             reg0_write_enable = 1;
             reg0_write_select = Reg0WriteSelect::AluOut as u8;
             mem_addr_select = 0;
@@ -198,6 +208,7 @@ impl CpuComponentEmu<CpuDecoder> for CpuDecoderEmu {
             alu1_select = v_alu1_select;
         } else if is_load_mem || is_store_mem {
             jmp_op = JmpOp::NoJmp as u8;
+            jmp_src_select = JmpSrcSelect::Imm as u8;
             reg0_addr = RegAddr::A as u8;
             reg1_addr = RegAddr::B as u8;
             alu_op = 0;
@@ -229,9 +240,8 @@ impl CpuComponentEmu<CpuDecoder> for CpuDecoderEmu {
                 | (je_offset as u8 >> 2)
                 | (jl_offset as u8 >> 3)
                 | (jg_offset as u8 >> 4)
-                | (jmp_reg as u8 >> 5)
-                | (jmp_long as u8 >> 6);
-            reg0_addr = 0; // used in jmp_reg, unused otherwise
+                | (jmp_long as u8 >> 5);
+            reg0_addr = 0; // used in, unused otherwise
             reg1_addr = 0;
             reg0_write_enable = 0;
             reg0_write_select = 0;
@@ -240,7 +250,14 @@ impl CpuComponentEmu<CpuDecoder> for CpuDecoderEmu {
             alu1_select = 0;
             mem_addr_select = 0;
             mem_write_enable = 0;
+            jmp_src_select = if imm == 0 {
+                JmpSrcSelect::RegA as u8
+            } else {
+                JmpSrcSelect::Imm as u8
+            };
         } else {
+            //TODO control
+            //TODO external
             unimplemented!()
         }
 
@@ -255,5 +272,6 @@ impl CpuComponentEmu<CpuDecoder> for CpuDecoderEmu {
         output.mem_addr_select.set_u8(mem_addr_select);
         output.mem_write_enable.set(mem_write_enable);
         output.jmp_op.set_u8(jmp_op);
+        output.jmp_src_select.set_u8(jmp_src_select);
     }
 }

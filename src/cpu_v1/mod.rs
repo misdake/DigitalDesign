@@ -10,30 +10,37 @@ mod decoder;
 use decoder::*;
 
 use crate::{
-    clear_all, external, input, input_w, reg, reg_w, simulate, External, Reg, Regs, Rom256x8, Wires,
+    clear_all, external, input, input_w, reg, reg_w, simulate, External, Reg, Regs, Rom256x8, Wire,
+    Wires,
 };
 use std::any::Any;
 use std::marker::PhantomData;
 
 struct CpuV1State {
+    clock_enable: Reg,
     inst: [Wires<8>; 256],
     pc: Regs<8>,
-    mem: [Regs<4>; 16],
+    mem: [Regs<4>; 64],
+    mem_bank: Regs<2>,
     reg: [Regs<4>; 4],
     flag_p: Reg,
     flag_z: Reg,
     flag_n: Reg,
+    external_device: Regs<4>,
 }
 impl CpuV1State {
     fn create(inst: [u8; 256]) -> Self {
         Self {
+            clock_enable: reg(),
             inst: inst.map(|v| Wires::<8>::parse_u8(v)),
             pc: reg_w(),
-            mem: [reg_w(); 16],
+            mem: [reg_w(); 64],
+            mem_bank: reg_w(),
             reg: [reg_w(); 4],
             flag_p: reg(),
             flag_z: reg(),
             flag_n: reg(),
+            external_device: reg_w(),
         }
     }
 }
@@ -77,6 +84,7 @@ trait CpuV1 {
             mem_addr_select,
             mem_write_enable,
             jmp_op,
+            jmp_src_select,
         } = decoder_out;
 
         // Branch
