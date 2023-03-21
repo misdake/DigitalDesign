@@ -38,6 +38,7 @@ impl CpuV1State {
     }
 }
 
+#[allow(unused)] // internal struct for debugging only
 struct CpuV1StateInternal {
     inst_rom_in: CpuInstInput,
     inst_rom_out: CpuInstOutput,
@@ -150,6 +151,7 @@ pub fn cpu_v1_build() {
     let mut inst_rom = [0u8; 256];
     inst_rom[0] = inst_mov(0, 1).binary;
     inst_rom[1] = inst_add(0, 1).binary;
+    inst_rom[2] = inst_inv(2).binary;
 
     let mut state1 = CpuV1State::create(inst_rom.clone());
     let mut state2 = CpuV1State::create(inst_rom.clone());

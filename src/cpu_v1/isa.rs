@@ -88,7 +88,7 @@ pub enum InstDesc {
 
 use paste::paste;
 macro_rules! inst_op2 {
-    ($name: ident, $opcode: expr) => {
+    ($opcode: expr, $name: ident) => {
         paste! {
             #[allow(unused)]
             pub const [<INST_ $name:upper>]: InstDesc = InstDesc::op2(stringify!($name), $opcode);
@@ -103,7 +103,7 @@ macro_rules! inst_op2 {
     };
 }
 macro_rules! inst_op1 {
-    ($name: ident, $opcode: expr) => {
+    ($opcode: expr, $name: ident) => {
         paste! {
             #[allow(unused)]
             pub const [<INST_ $name:upper>]: InstDesc = InstDesc::op1(stringify!($name), $opcode);
@@ -118,7 +118,7 @@ macro_rules! inst_op1 {
     };
 }
 macro_rules! inst_op0i {
-    ($name: ident, $opcode: expr) => {
+    ($opcode: expr, $name: ident) => {
         paste! {
             #[allow(unused)]
             pub const [<INST_ $name:upper>]: InstDesc = InstDesc::op0i(stringify!($name), $opcode);
@@ -133,7 +133,7 @@ macro_rules! inst_op0i {
     };
 }
 macro_rules! inst_op0 {
-    ($name: ident, $opcode: expr) => {
+    ($opcode: expr, $name: ident) => {
         paste! {
             #[allow(unused)]
             pub const [<INST_ $name:upper>]: InstDesc = InstDesc::op0(stringify!($name), $opcode);
@@ -150,7 +150,7 @@ macro_rules! inst_op0 {
 
 //TODO test instruction space coverage
 //TODO test instruction intersection
-const ALL_INSTRUCTION_DESC: [&'static InstDesc; 31] = [
+const ALL_INSTRUCTION_DESC: &'static [&'static InstDesc] = &[
     &INST_MOV,
     &INST_AND,
     &INST_OR,
@@ -161,63 +161,44 @@ const ALL_INSTRUCTION_DESC: [&'static InstDesc; 31] = [
     &INST_INC,
     &INST_DEC,
     &INST_LOAD_IMM,
-    &INST_LOAD_MEM_IMM,
-    &INST_LOAD_MEM_REG,
-    &INST_STORE_MEM_IMM,
-    &INST_STORE_MEM_REG,
+    &INST_LOAD_MEM,
+    &INST_STORE_MEM,
     &INST_JMP_OFFSET,
     &INST_JE_OFFSET,
     &INST_JL_OFFSET,
     &INST_JG_OFFSET,
-    &INST_JMP_REG,
     &INST_JMP_LONG,
     &INST_RESET,
     &INST_HALT,
-    &INST_EXTERNAL_INPUT,
-    &INST_EXTERNAL_SET_SIZE,
-    &INST_EXTERNAL_SET_PALETTE,
-    &INST_EXTERNAL_SET_POS,
-    &INST_EXTERNAL_NEXT_POS,
-    &INST_EXTERNAL_SET_COLOR,
-    &INST_EXTERNAL_CLEAR,
-    &INST_EXTERNAL_PRESENT,
-    &INST_EXTERNAL_IS_DONE,
+    &INST_EXTERNAL,
 ];
 
-inst_op2!(mov, 0b0000);
-inst_op2!(and, 0b0001);
-inst_op2!(or, 0b0010);
-inst_op2!(xor, 0b0011);
-inst_op2!(add, 0b0100);
-
-inst_op1!(inv, 0b010100);
-inst_op1!(neg, 0b010101);
-inst_op1!(inc, 0b010110);
-inst_op1!(dec, 0b010111);
-
-inst_op0i!(load_imm, 0b0000);
-inst_op0i!(load_mem_imm, 0b0000);
-inst_op0!(load_mem_reg, 0b00000000);
-inst_op0i!(store_mem_imm, 0b0000);
-inst_op0!(store_mem_reg, 0b00000000);
-
-inst_op0i!(jmp_offset, 0b0000);
-inst_op0i!(je_offset, 0b0000);
-inst_op0i!(jl_offset, 0b0000);
-inst_op0i!(jg_offset, 0b0000);
-inst_op1!(jmp_reg, 0b000000);
-inst_op0i!(jmp_long, 0b0000);
-
-//TODO
-inst_op0!(reset, 0b00000000);
-inst_op0!(halt, 0b00000000);
-
-inst_op0!(external_input, 0b00000000);
-inst_op0!(external_set_size, 0b00000000);
-inst_op0!(external_set_palette, 0b00000000);
-inst_op0!(external_set_pos, 0b00000000);
-inst_op0!(external_next_pos, 0b00000000);
-inst_op0!(external_set_color, 0b00000000);
-inst_op0!(external_clear, 0b00000000);
-inst_op0!(external_present, 0b00000000);
-inst_op0!(external_is_done, 0b00000000);
+// binary op
+inst_op2!(0b0000, mov);
+inst_op2!(0b0001, and);
+inst_op2!(0b0010, or);
+inst_op2!(0b0011, xor);
+inst_op2!(0b0100, add);
+// unary op
+inst_op1!(0b010100, inv);
+inst_op1!(0b010101, neg);
+inst_op1!(0b010110, inc);
+inst_op1!(0b010111, dec);
+// control
+inst_op0!(0b01100000, reset);
+inst_op0!(0b01100001, halt);
+inst_op0!(0b01100010, sleep);
+inst_op0!(0b01100011, set_mem_bank);
+inst_op0!(0b01100100, select_external);
+// external
+inst_op0i!(0b0111, external);
+// load store
+inst_op0i!(0b1000, load_imm);
+inst_op0i!(0b1001, load_mem);
+inst_op0i!(0b1010, store_mem);
+// jmp
+inst_op0i!(0b1011, jmp_long);
+inst_op0i!(0b1100, jmp_offset);
+inst_op0i!(0b1101, je_offset);
+inst_op0i!(0b1110, jl_offset);
+inst_op0i!(0b1111, jg_offset);
