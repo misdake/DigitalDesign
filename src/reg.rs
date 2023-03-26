@@ -36,10 +36,10 @@ pub fn unflatten2<const A: usize, const B: usize>(r: Wires<{ A + B }>) -> (Wires
     let mut a = [Wire(0); A];
     let mut b = [Wire(0); B];
     for i in 0..A {
-        a[i].0 = wires[i].0;
+        a[i] = wires[i];
     }
     for i in 0..B {
-        b[i].0 = wires[A + i].0;
+        b[i] = wires[A + i];
     }
     (Wires::<A> { wires: a }, Wires::<B> { wires: b })
 }
@@ -52,13 +52,13 @@ pub fn unflatten3<const A: usize, const B: usize, const C: usize>(
     let mut b = [Wire(0); B];
     let mut c = [Wire(0); C];
     for i in 0..A {
-        a[i].0 = wires[i].0;
+        a[i] = wires[i];
     }
     for i in 0..B {
-        b[i].0 = wires[A + i].0;
+        b[i] = wires[A + i];
     }
     for i in 0..C {
-        c[i].0 = wires[A + B + i].0;
+        c[i] = wires[A + B + i];
     }
     (
         Wires::<A> { wires: a },

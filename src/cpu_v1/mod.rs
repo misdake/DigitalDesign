@@ -9,10 +9,7 @@ use branch::*;
 mod decoder;
 use decoder::*;
 
-use crate::{
-    clear_all, external, input, input_w, reg, reg_w, simulate, External, Reg, Regs, Rom256x8, Wire,
-    Wires,
-};
+use crate::{clear_all, external, input_w, reg, reg_w, simulate, External, Reg, Regs, Wires};
 use std::any::Any;
 use std::marker::PhantomData;
 
@@ -156,6 +153,7 @@ fn test() {
     cpu_v1_build();
 }
 
+#[allow(unused)]
 pub fn cpu_v1_build() {
     clear_all();
 

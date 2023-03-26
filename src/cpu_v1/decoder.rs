@@ -1,5 +1,5 @@
-use crate::cpu_v1::{CpuComponent, CpuComponentEmu, INST_INC};
-use crate::{cpu_v1, input, input_w, Wire, Wires};
+use crate::cpu_v1::{CpuComponent, CpuComponentEmu};
+use crate::{cpu_v1, input, input_w, mux2_w, unflatten2, unflatten3, Wire, Wires};
 
 #[derive(Clone)]
 pub struct CpuDecoderInput {
@@ -8,11 +8,11 @@ pub struct CpuDecoderInput {
 #[derive(Clone)]
 pub struct CpuDecoderOutput {
     // data output
-    pub reg0_addr: Wires<2>, // RegAddr
-    pub reg1_addr: Wires<2>, // RegAddr
     pub imm: Wires<4>,
 
     // reg control
+    pub reg0_addr: Wires<2>, // RegAddr
+    pub reg1_addr: Wires<2>, // RegAddr
     pub reg0_write_enable: Wire,
     pub reg0_write_select: Wires<2>, // Reg0WriteSelect: alu out, mem out
 
@@ -30,6 +30,7 @@ pub struct CpuDecoderOutput {
     pub jmp_src_select: Wires<2>, // JmpSrcSelect: imm, regA
 }
 
+#[allow(unused)]
 #[repr(u8)]
 enum RegAddr {
     A = 0,
@@ -39,52 +40,51 @@ enum RegAddr {
 }
 #[repr(u8)]
 enum Reg0WriteSelect {
-    AluOut = 1,
-    MemOut = 2,
+    AluOut = 0,
+    MemOut = 1,
 }
 
 #[repr(u8)]
 enum AluOp {
-    And = 1,
-    Or = 2,
-    Xor = 4,
-    Add = 8,
+    And = 0,
+    Or = 1,
+    Xor = 2,
+    Add = 3,
 }
 #[repr(u8)]
 enum Alu0Select {
-    Reg0 = 1,
-    Reg0Inv = 2,
-    Zero = 4,
-    Imm = 8,
+    Reg0 = 0,
+    Reg0Inv = 1,
+    Zero = 2,
+    Imm = 3,
 }
 #[repr(u8)]
 enum Alu1Select {
-    Reg1 = 1,
-    NegOne = 2,
-    Zero = 4,
-    One = 8,
+    Reg1 = 0,
+    NegOne = 1,
+    Zero = 2,
+    One = 3,
 }
 
 #[repr(u8)]
 enum MemAddrSelect {
-    Imm = 1,
-    Reg1 = 2,
+    Imm = 0,
+    Reg1 = 1,
 }
 
-#[allow(unused)]
 #[repr(u8)]
 enum JmpOp {
-    NoJmp = 1,
-    Jmp = 2,
-    Je = 4,
-    Jl = 8,
-    Jg = 16,
-    Long = 32,
+    NoJmp = 0,
+    Jmp = 1,
+    Je = 2,
+    Jl = 3,
+    Jg = 4,
+    Long = 5,
 }
 #[repr(u8)]
 enum JmpSrcSelect {
-    Imm = 1,
-    RegA = 2,
+    Imm = 0,
+    Reg0 = 1,
 }
 
 pub struct CpuDecoder;
@@ -92,8 +92,106 @@ impl CpuComponent for CpuDecoder {
     type Input = CpuDecoderInput;
     type Output = CpuDecoderOutput;
 
-    fn build(_input: &CpuDecoderInput) -> CpuDecoderOutput {
-        todo!()
+    fn build(i: &CpuDecoderInput) -> CpuDecoderOutput {
+        let inst = i.inst;
+        let (imm, op4) = unflatten2::<4, 4>(inst);
+        let (inst_reg0, inst_reg1, _) = unflatten3::<2, 2, 4>(inst);
+
+        // io table: https://shimo.im/sheets/1lq7MRQe90I86Aew/Oj96h
+
+        let b0 = inst.wires[7];
+        let b1 = inst.wires[6];
+        let b2 = inst.wires[5];
+        let b3 = inst.wires[4];
+
+        // 0b00 | 0b010
+        let is_alu = !b0 & (!b1 | (b1 & !b2));
+
+        // is_alu => inst_reg0, false => regA(0)
+        let reg0_addr = mux2_w(Wires::parse_u8(0), inst_reg0, is_alu);
+        // is_alu => inst_reg1, false => regB(1)
+        let reg1_addr = mux2_w(Wires::parse_u8(1), inst_reg1, is_alu);
+        // 0b0 | 0b100
+        let reg0_write_enable = b0 | (!b1 & !b2);
+        // 0b0 | 0b1001 => AluOut, other => MemOut
+        let mut reg0_write_select = Wires::uninitialized();
+        reg0_write_select.wires[Reg0WriteSelect::AluOut as usize] = b0 | (!b1 & !b2 & !b3);
+        reg0_write_select.wires[Reg0WriteSelect::MemOut as usize] = !reg0_write_select.wires[0];
+
+        let imm_all_0 = imm.all_0();
+
+        let mut alu_op = Wires::uninitialized();
+        let is_op_and = op4.eq_const(0b0001);
+        let is_op_mov = op4.eq_const(0b0000);
+        let is_op_or = op4.eq_const(0b0010);
+        let is_op_xor = op4.eq_const(0b0011);
+        let is_op_add = op4.eq_const(0b0100);
+        let is_op_unary = op4.eq_const(0b0101);
+        let is_op_inv = is_op_unary & (!b0 & !b1);
+        let is_op_neg = is_op_unary & (!b0 & b1);
+        let is_op_dec = is_op_unary & (b0 & !b1);
+        let is_op_inc = is_op_unary & (b0 & b1);
+        let is_op_load_imm = op4.eq_const(0b1000);
+        let is_op_store_mem = op4.eq_const(0b1010);
+
+        let is_alu_add = !b0 | !b1; // all other instructions to simplify
+        alu_op.wires[AluOp::And as usize] = is_op_and;
+        alu_op.wires[AluOp::Or as usize] = is_op_mov | is_op_or;
+        alu_op.wires[AluOp::Xor as usize] = is_op_xor;
+        alu_op.wires[AluOp::Add as usize] = is_alu_add;
+
+        let is_reg0_inv = is_op_inv | is_op_neg;
+        let is_reg0 = !b0 & !is_op_mov & !is_reg0_inv;
+        let mut alu0_select = Wires::uninitialized();
+        alu0_select.wires[Alu0Select::Zero as usize] = is_op_mov;
+        alu0_select.wires[Alu0Select::Imm as usize] = is_op_load_imm;
+        alu0_select.wires[Alu0Select::Reg0 as usize] = is_reg0;
+        alu0_select.wires[Alu0Select::Reg0Inv as usize] = is_reg0_inv;
+
+        let mut alu1_select = Wires::uninitialized();
+        alu1_select.wires[Alu1Select::Zero as usize] = is_op_inv | is_op_inc;
+        alu1_select.wires[Alu1Select::One as usize] = is_op_neg;
+        alu1_select.wires[Alu1Select::NegOne as usize] = is_op_dec;
+        alu1_select.wires[Alu1Select::Reg1 as usize] = !b0 | is_op_add;
+
+        let mut mem_addr_select = Wires::uninitialized();
+        mem_addr_select.wires[MemAddrSelect::Imm as usize] = !imm_all_0;
+        mem_addr_select.wires[MemAddrSelect::Reg1 as usize] = imm_all_0;
+
+        let mem_write_enable = is_op_store_mem;
+
+        let mut jmp_op = Wires::uninitialized();
+        let is_op_jmp_long = op4.eq_const(0b1011);
+        let is_op_jmp_offset = op4.eq_const(0b1100);
+        let is_op_je_offset = op4.eq_const(0b1101);
+        let is_op_jl_offset = op4.eq_const(0b1110);
+        let is_op_jg_offset = op4.eq_const(0b1111);
+        jmp_op.wires[JmpOp::NoJmp as usize] = b0 & !b1 & !is_op_jmp_long;
+        jmp_op.wires[JmpOp::Jmp as usize] = is_op_jmp_offset;
+        jmp_op.wires[JmpOp::Je as usize] = is_op_je_offset;
+        jmp_op.wires[JmpOp::Jl as usize] = is_op_jl_offset;
+        jmp_op.wires[JmpOp::Jg as usize] = is_op_jg_offset;
+        jmp_op.wires[JmpOp::Long as usize] = is_op_jmp_long;
+        let mut jmp_src_select = Wires::uninitialized();
+        jmp_src_select.wires[JmpSrcSelect::Imm as usize] = !imm_all_0;
+        jmp_src_select.wires[JmpSrcSelect::Reg0 as usize] = imm_all_0;
+
+        CpuDecoderOutput {
+            imm,
+
+            reg0_addr,
+            reg1_addr,
+            reg0_write_enable,
+            reg0_write_select,
+
+            alu_op,
+            alu0_select,
+            alu1_select,
+            mem_addr_select,
+            mem_write_enable,
+            jmp_op,
+            jmp_src_select,
+        }
     }
 }
 
@@ -171,12 +269,12 @@ impl CpuComponentEmu<CpuDecoder> for CpuDecoderEmu {
         let is_jmp = jmp_offset || je_offset || jl_offset || jg_offset || jmp_long;
 
         if is_alu || is_load_imm {
-            jmp_op = JmpOp::NoJmp as u8;
-            jmp_src_select = JmpSrcSelect::Imm as u8;
+            jmp_op = 1 << JmpOp::NoJmp as u8;
+            jmp_src_select = 1 << JmpSrcSelect::Imm as u8;
             reg0_addr = reg0_bits;
             reg1_addr = reg1_bits;
             reg0_write_enable = 1;
-            reg0_write_select = Reg0WriteSelect::AluOut as u8;
+            reg0_write_select = 1 << Reg0WriteSelect::AluOut as u8;
             mem_addr_select = 0;
             mem_write_enable = 0;
 
@@ -185,9 +283,9 @@ impl CpuComponentEmu<CpuDecoder> for CpuDecoderEmu {
             let mut v_alu1_select: u8 = 0;
             let mut set_alu = |op_match: bool, op: AluOp, alu0: Alu0Select, alu1: Alu1Select| {
                 if op_match {
-                    v_alu_op = op as u8;
-                    v_alu0_select = alu0 as u8;
-                    v_alu1_select = alu1 as u8;
+                    v_alu_op = 1 << op as u8;
+                    v_alu0_select = 1 << alu0 as u8;
+                    v_alu1_select = 1 << alu1 as u8;
                 }
             };
 
@@ -197,18 +295,18 @@ impl CpuComponentEmu<CpuDecoder> for CpuDecoderEmu {
             set_alu(xor, AluOp::Xor, Alu0Select::Reg0, Alu1Select::Reg1);
             set_alu(add, AluOp::Add, Alu0Select::Reg0, Alu1Select::Reg1);
 
-            set_alu(inv, AluOp::Or, Alu0Select::Reg0Inv, Alu1Select::Zero);
+            set_alu(inv, AluOp::Add, Alu0Select::Reg0Inv, Alu1Select::Zero);
             set_alu(neg, AluOp::Add, Alu0Select::Reg0Inv, Alu1Select::One);
             set_alu(inc, AluOp::Add, Alu0Select::Reg0, Alu1Select::One);
             set_alu(dec, AluOp::Add, Alu0Select::Reg0, Alu1Select::NegOne);
-            set_alu(load_imm, AluOp::Or, Alu0Select::Imm, Alu1Select::Zero);
+            set_alu(load_imm, AluOp::Add, Alu0Select::Imm, Alu1Select::Zero);
 
             alu_op = v_alu_op;
             alu0_select = v_alu0_select;
             alu1_select = v_alu1_select;
         } else if is_load_mem || is_store_mem {
-            jmp_op = JmpOp::NoJmp as u8;
-            jmp_src_select = JmpSrcSelect::Imm as u8;
+            jmp_op = 1 << JmpOp::NoJmp as u8;
+            jmp_src_select = 1 << JmpSrcSelect::Imm as u8;
             reg0_addr = RegAddr::A as u8;
             reg1_addr = RegAddr::B as u8;
             alu_op = 0;
@@ -216,31 +314,31 @@ impl CpuComponentEmu<CpuDecoder> for CpuDecoderEmu {
             alu1_select = 0;
             if is_load_mem {
                 reg0_write_enable = 1;
-                reg0_write_select = Reg0WriteSelect::MemOut as u8;
+                reg0_write_select = 1 << Reg0WriteSelect::MemOut as u8;
                 mem_write_enable = 0;
                 if load_mem_imm {
-                    mem_addr_select = MemAddrSelect::Imm as u8;
+                    mem_addr_select = 1 << MemAddrSelect::Imm as u8;
                 } else {
-                    mem_addr_select = MemAddrSelect::Reg1 as u8;
+                    mem_addr_select = 1 << MemAddrSelect::Reg1 as u8;
                 }
             } else if is_store_mem {
                 reg0_write_enable = 0;
                 reg0_write_select = 0;
                 mem_write_enable = 1;
                 if store_mem_imm {
-                    mem_addr_select = MemAddrSelect::Imm as u8;
+                    mem_addr_select = 1 << MemAddrSelect::Imm as u8;
                 } else {
-                    mem_addr_select = MemAddrSelect::Reg1 as u8;
+                    mem_addr_select = 1 << MemAddrSelect::Reg1 as u8;
                 }
             } else {
                 unreachable!()
             }
         } else if is_jmp {
-            jmp_op = (jmp_offset as u8 >> 1)
-                | (je_offset as u8 >> 2)
-                | (jl_offset as u8 >> 3)
-                | (jg_offset as u8 >> 4)
-                | (jmp_long as u8 >> 5);
+            jmp_op = ((jmp_offset as u8) << (JmpOp::Jmp as u8))
+                | ((je_offset as u8) << (JmpOp::Je as u8))
+                | ((jl_offset as u8) << (JmpOp::Jl as u8))
+                | ((jg_offset as u8) << (JmpOp::Jg as u8))
+                | ((jmp_long as u8) << (JmpOp::Long as u8));
             reg0_addr = 0; // used in, unused otherwise
             reg1_addr = 0;
             reg0_write_enable = 0;
@@ -251,14 +349,14 @@ impl CpuComponentEmu<CpuDecoder> for CpuDecoderEmu {
             mem_addr_select = 0;
             mem_write_enable = 0;
             jmp_src_select = if imm == 0 {
-                JmpSrcSelect::RegA as u8
+                1 << JmpSrcSelect::Reg0 as u8
             } else {
-                JmpSrcSelect::Imm as u8
+                1 << JmpSrcSelect::Imm as u8
             };
         } else {
             //TODO control
             //TODO external
-            unimplemented!()
+            todo!()
         }
 
         output.imm.set_u8(imm);
