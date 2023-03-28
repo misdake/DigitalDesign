@@ -13,6 +13,7 @@ use crate::{clear_all, external, input_w, reg, reg_w, simulate, External, Reg, R
 use std::any::Any;
 use std::marker::PhantomData;
 
+#[allow(unused)]
 struct CpuV1State {
     clock_enable: Reg, // TODO impl
     inst: [Wires<8>; 256],
@@ -71,6 +72,7 @@ trait CpuV1 {
         // Decoder
         let decoder_in = CpuDecoderInput { inst };
         let decoder_out: CpuDecoderOutput = Self::Decoder::build(&decoder_in);
+        #[allow(unused)] //TODO
         let CpuDecoderOutput {
             reg0_addr,
             reg1_addr,

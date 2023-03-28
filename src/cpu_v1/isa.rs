@@ -156,8 +156,8 @@ const ALL_INSTRUCTION_DESC: &'static [&'static InstDesc] = &[
     &INST_ADD,
     &INST_INV,
     &INST_NEG,
-    &INST_INC,
     &INST_DEC,
+    &INST_INC,
     &INST_LOAD_IMM,
     &INST_LOAD_MEM,
     &INST_STORE_MEM,
@@ -180,8 +180,8 @@ inst_op2!(0b0100, add);
 // unary op
 inst_op1!(0b010100, inv);
 inst_op1!(0b010101, neg);
-inst_op1!(0b010110, inc);
-inst_op1!(0b010111, dec);
+inst_op1!(0b010110, dec);
+inst_op1!(0b010111, inc);
 // control
 inst_op0!(0b01100000, reset);
 inst_op0!(0b01100001, halt);

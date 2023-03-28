@@ -103,6 +103,8 @@ impl CpuComponent for CpuDecoder {
         let b1 = inst.wires[6];
         let b2 = inst.wires[5];
         let b3 = inst.wires[4];
+        let b4 = inst.wires[3];
+        let b5 = inst.wires[2];
 
         // 0b00 | 0b010
         let is_alu = !b0 & (!b1 | (b1 & !b2));
@@ -112,10 +114,10 @@ impl CpuComponent for CpuDecoder {
         // is_alu => inst_reg1, false => regB(1)
         let reg1_addr = mux2_w(Wires::parse_u8(1), inst_reg1, is_alu);
         // 0b0 | 0b100
-        let reg0_write_enable = b0 | (!b1 & !b2);
+        let reg0_write_enable = !b0 | (!b1 & !b2);
         // 0b0 | 0b1001 => AluOut, other => MemOut
         let mut reg0_write_select = Wires::uninitialized();
-        reg0_write_select.wires[Reg0WriteSelect::AluOut as usize] = b0 | (!b1 & !b2 & !b3);
+        reg0_write_select.wires[Reg0WriteSelect::AluOut as usize] = !b0 | (!b1 & !b2 & !b3);
         reg0_write_select.wires[Reg0WriteSelect::MemOut as usize] = !reg0_write_select.wires[0];
 
         let imm_all_0 = imm.all_0();
@@ -127,14 +129,14 @@ impl CpuComponent for CpuDecoder {
         let is_op_xor = op4.eq_const(0b0011);
         let is_op_add = op4.eq_const(0b0100);
         let is_op_unary = op4.eq_const(0b0101);
-        let is_op_inv = is_op_unary & (!b0 & !b1);
-        let is_op_neg = is_op_unary & (!b0 & b1);
-        let is_op_dec = is_op_unary & (b0 & !b1);
-        let is_op_inc = is_op_unary & (b0 & b1);
+        let is_op_inv = is_op_unary & (!b4 & !b5);
+        let is_op_neg = is_op_unary & (!b4 & b5);
+        let is_op_dec = is_op_unary & (b4 & !b5);
+        let is_op_inc = is_op_unary & (b4 & b5);
         let is_op_load_imm = op4.eq_const(0b1000);
         let is_op_store_mem = op4.eq_const(0b1010);
 
-        let is_alu_add = !b0 | !b1; // all other instructions to simplify
+        let is_alu_add = b0 | b1; // all other instructions to simplify
         alu_op.wires[AluOp::And as usize] = is_op_and;
         alu_op.wires[AluOp::Or as usize] = is_op_mov | is_op_or;
         alu_op.wires[AluOp::Xor as usize] = is_op_xor;
@@ -149,10 +151,10 @@ impl CpuComponent for CpuDecoder {
         alu0_select.wires[Alu0Select::Reg0Inv as usize] = is_reg0_inv;
 
         let mut alu1_select = Wires::uninitialized();
-        alu1_select.wires[Alu1Select::Zero as usize] = is_op_inv | is_op_inc;
-        alu1_select.wires[Alu1Select::One as usize] = is_op_neg;
+        alu1_select.wires[Alu1Select::Zero as usize] = is_op_inv | is_op_load_imm;
+        alu1_select.wires[Alu1Select::One as usize] = is_op_neg | is_op_inc;
         alu1_select.wires[Alu1Select::NegOne as usize] = is_op_dec;
-        alu1_select.wires[Alu1Select::Reg1 as usize] = !b0 | is_op_add;
+        alu1_select.wires[Alu1Select::Reg1 as usize] = (!b0 & !b1) | is_op_add;
 
         let mut mem_addr_select = Wires::uninitialized();
         mem_addr_select.wires[MemAddrSelect::Imm as usize] = !imm_all_0;
@@ -166,7 +168,7 @@ impl CpuComponent for CpuDecoder {
         let is_op_je_offset = op4.eq_const(0b1101);
         let is_op_jl_offset = op4.eq_const(0b1110);
         let is_op_jg_offset = op4.eq_const(0b1111);
-        jmp_op.wires[JmpOp::NoJmp as usize] = b0 & !b1 & !is_op_jmp_long;
+        jmp_op.wires[JmpOp::NoJmp as usize] = (!b0 | !b1) & !is_op_jmp_long;
         jmp_op.wires[JmpOp::Jmp as usize] = is_op_jmp_offset;
         jmp_op.wires[JmpOp::Je as usize] = is_op_je_offset;
         jmp_op.wires[JmpOp::Jl as usize] = is_op_jl_offset;
@@ -200,11 +202,12 @@ impl CpuComponentEmu<CpuDecoder> for CpuDecoderEmu {
     fn init_output() -> CpuDecoderOutput {
         CpuDecoderOutput {
             imm: input_w(),
+
             reg0_addr: input_w(),
             reg1_addr: input_w(),
-
             reg0_write_enable: input(),
             reg0_write_select: input_w(),
+
             alu_op: input_w(),
             alu0_select: input_w(),
             alu1_select: input_w(),
@@ -246,8 +249,7 @@ impl CpuComponentEmu<CpuDecoder> for CpuDecoderEmu {
         let jg_offset = INST_JG_OFFSET.match_opcode(inst);
         let jmp_long = INST_JMP_LONG.match_opcode(inst);
         // control TODO
-        // let reset = INST_RESET.match_opcode(inst);
-        // let halt = INST_HALT.match_opcode(inst);
+        // external TODO
 
         // immutable local variable => all output variables assigned once and only once.
         let reg0_addr: u8;
@@ -372,4 +374,75 @@ impl CpuComponentEmu<CpuDecoder> for CpuDecoderEmu {
         output.jmp_op.set_u8(jmp_op);
         output.jmp_src_select.set_u8(jmp_src_select);
     }
+}
+
+#[cfg(test)]
+use crate::cpu_v1::isa::*;
+#[cfg(test)]
+use std::fmt::Debug;
+
+#[cfg(test)]
+struct DecoderTestEnv {
+    inst: Wires<8>,
+    build1: CpuDecoderOutput,
+    build2: CpuDecoderOutput,
+}
+
+#[cfg(test)]
+fn test_result<T: PartialEq + Eq + Debug>(
+    inst: InstBinary,
+    env: &DecoderTestEnv,
+    fields: impl Fn(&CpuDecoderOutput) -> T,
+) {
+    env.inst.set_u8(inst.binary);
+    crate::simulate();
+    let r1 = fields(&env.build1);
+    let r2 = fields(&env.build2);
+    assert_eq!(r1, r2, "{:08b} {}", inst.binary, inst.desc.name());
+    println!("{:08b} {}, {:?}", inst.binary, inst.desc.name(), r1);
+}
+
+#[cfg(test)]
+fn init_decoder() -> DecoderTestEnv {
+    crate::clear_all();
+
+    let input = CpuDecoderInput { inst: input_w() };
+
+    DecoderTestEnv {
+        inst: input.inst,
+        build1: CpuDecoder::build(&input),
+        build2: CpuDecoderEmu::build(&input),
+    }
+}
+
+#[cfg(test)]
+fn test_decoder_alu(inst: InstBinary, env: &DecoderTestEnv) {
+    test_result(inst, &env, |o| {
+        (
+            o.reg0_addr.get_u8(),
+            o.reg1_addr.get_u8(),
+            o.reg0_write_enable.get(),
+            o.reg0_write_select.get_u8(),
+            o.reg1_addr.get_u8(),
+            o.alu_op.get_u8(),
+            o.alu0_select.get_u8(),
+            o.alu1_select.get_u8(),
+            o.mem_write_enable.get(),
+            o.jmp_op.get_u8(),
+        )
+    });
+}
+
+#[test]
+fn test_decoder() {
+    let env = init_decoder();
+    test_decoder_alu(inst_mov(0, 0), &env);
+    test_decoder_alu(inst_and(1, 2), &env);
+    test_decoder_alu(inst_or(3, 0), &env);
+    test_decoder_alu(inst_xor(2, 1), &env);
+    test_decoder_alu(inst_add(3, 0), &env);
+    test_decoder_alu(inst_inv(0), &env);
+    test_decoder_alu(inst_neg(1), &env);
+    test_decoder_alu(inst_dec(2), &env);
+    test_decoder_alu(inst_inc(3), &env);
 }
