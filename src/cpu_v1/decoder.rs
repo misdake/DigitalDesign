@@ -273,8 +273,13 @@ impl CpuComponentEmu<CpuDecoder> for CpuDecoderEmu {
         if is_alu || is_load_imm {
             jmp_op = 1 << JmpOp::NoJmp as u8;
             jmp_src_select = 1 << JmpSrcSelect::Imm as u8;
-            reg0_addr = reg0_bits;
-            reg1_addr = reg1_bits;
+            if is_load_imm {
+                reg0_addr = RegAddr::A as u8;
+                reg1_addr = RegAddr::B as u8; // not used
+            } else {
+                reg0_addr = reg0_bits;
+                reg1_addr = reg1_bits;
+            }
             reg0_write_enable = 1;
             reg0_write_select = 1 << Reg0WriteSelect::AluOut as u8;
             mem_addr_select = 0;
@@ -423,10 +428,47 @@ fn test_decoder_alu(inst: InstBinary, env: &DecoderTestEnv) {
             o.reg1_addr.get_u8(),
             o.reg0_write_enable.get(),
             o.reg0_write_select.get_u8(),
-            o.reg1_addr.get_u8(),
             o.alu_op.get_u8(),
             o.alu0_select.get_u8(),
             o.alu1_select.get_u8(),
+            o.mem_write_enable.get(),
+            o.jmp_op.get_u8(),
+        )
+    });
+}
+#[cfg(test)]
+fn test_decoder_jmp(inst: InstBinary, env: &DecoderTestEnv) {
+    test_result(inst, &env, |o| {
+        (
+            o.reg0_addr.get_u8(),
+            o.mem_write_enable.get(),
+            o.jmp_op.get_u8(),
+            o.jmp_src_select.get_u8(),
+        )
+    });
+}
+#[cfg(test)]
+fn test_decoder_load_mem(inst: InstBinary, env: &DecoderTestEnv) {
+    test_result(inst, &env, |o| {
+        (
+            o.reg0_addr.get_u8(),
+            o.reg1_addr.get_u8(),
+            o.reg0_write_enable.get(),
+            o.reg0_write_select.get_u8(),
+            o.mem_addr_select.get_u8(),
+            o.mem_write_enable.get(),
+            o.jmp_op.get_u8(),
+        )
+    });
+}
+#[cfg(test)]
+fn test_decoder_store_mem(inst: InstBinary, env: &DecoderTestEnv) {
+    test_result(inst, &env, |o| {
+        (
+            o.reg0_addr.get_u8(),
+            o.reg1_addr.get_u8(),
+            o.reg0_write_enable.get(),
+            o.mem_addr_select.get_u8(),
             o.mem_write_enable.get(),
             o.jmp_op.get_u8(),
         )
@@ -436,6 +478,7 @@ fn test_decoder_alu(inst: InstBinary, env: &DecoderTestEnv) {
 #[test]
 fn test_decoder() {
     let env = init_decoder();
+
     test_decoder_alu(inst_mov(0, 0), &env);
     test_decoder_alu(inst_and(1, 2), &env);
     test_decoder_alu(inst_or(3, 0), &env);
@@ -445,4 +488,25 @@ fn test_decoder() {
     test_decoder_alu(inst_neg(1), &env);
     test_decoder_alu(inst_dec(2), &env);
     test_decoder_alu(inst_inc(3), &env);
+    test_decoder_alu(inst_load_imm(9), &env);
+
+    test_decoder_load_mem(inst_load_mem(15), &env);
+    test_decoder_load_mem(inst_load_mem(0), &env);
+
+    test_decoder_store_mem(inst_store_mem(15), &env);
+    test_decoder_store_mem(inst_store_mem(0), &env);
+
+    test_decoder_jmp(inst_jmp_long(15), &env);
+    test_decoder_jmp(inst_jmp_long(0), &env);
+    test_decoder_jmp(inst_jmp_offset(14), &env);
+    test_decoder_jmp(inst_jmp_offset(0), &env);
+    test_decoder_jmp(inst_je_offset(13), &env);
+    test_decoder_jmp(inst_je_offset(0), &env);
+    test_decoder_jmp(inst_jl_offset(12), &env);
+    test_decoder_jmp(inst_jl_offset(0), &env);
+    test_decoder_jmp(inst_jg_offset(11), &env);
+    test_decoder_jmp(inst_jg_offset(0), &env);
+
+    //TODO control
+    //TODO external
 }
