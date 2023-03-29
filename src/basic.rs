@@ -1,5 +1,6 @@
 use std::any::Any;
 use std::fmt::{Debug, Formatter};
+use std::ops::Range;
 
 pub type WireValue = u8;
 pub type LatencyValue = u16;
@@ -10,11 +11,18 @@ pub struct Wire(pub usize);
 #[derive(Copy, Clone)]
 pub struct Reg(pub usize);
 
+#[derive(Debug)]
+enum ExecuteSegment {
+    Gate(Range<usize>),
+    External(Range<usize>),
+}
+
 static mut WIRES: Vec<WireValue> = Vec::new();
 static mut LATENCIES: Vec<LatencyValue> = Vec::new();
 static mut GATES: Vec<Gate> = Vec::new();
 static mut EXTERNALS: Vec<Box<dyn External>> = Vec::new();
 static mut REGS: Vec<RegValue> = Vec::new();
+static mut EXECUTE_SEGMENTS: Vec<ExecuteSegment> = Vec::new();
 
 const WIRE_0: usize = 0;
 const WIRE_1: usize = 1;
@@ -30,6 +38,7 @@ pub fn clear_all() {
         WIRES.push(1); // => WIRE_1
         LATENCIES.push(0); // => WIRE_0
         LATENCIES.push(0); // => WIRE_1
+        EXECUTE_SEGMENTS.clear();
     }
 }
 
@@ -39,6 +48,7 @@ pub trait External: Any {
 }
 
 pub fn external<E: External>(e: E) -> &'static E {
+    before_new_external();
     unsafe {
         EXTERNALS.push(Box::new(e));
         let r = EXTERNALS.last().unwrap().as_ref();
@@ -92,6 +102,7 @@ pub fn input_const(value: WireValue) -> Wire {
 }
 
 pub fn nand(a: Wire, b: Wire) -> Wire {
+    before_new_gate();
     unsafe {
         let out = input();
         GATES.push(Gate {
@@ -154,6 +165,48 @@ impl Gate {
     }
 }
 
+//region Execute Segments
+
+fn before_new_gate() {
+    unsafe {
+        if let Some(ExecuteSegment::Gate(range)) = EXECUTE_SEGMENTS.last_mut() {
+            range.end += 1;
+        } else {
+            let next = GATES.len();
+            EXECUTE_SEGMENTS.push(ExecuteSegment::Gate(next..(next + 1)));
+        }
+    }
+}
+fn before_new_external() {
+    unsafe {
+        if let Some(ExecuteSegment::External(range)) = EXECUTE_SEGMENTS.last_mut() {
+            range.end += 1;
+        } else {
+            let next = EXTERNALS.len();
+            EXECUTE_SEGMENTS.push(ExecuteSegment::External(next..(next + 1)));
+        }
+    }
+}
+
+impl ExecuteSegment {
+    fn execute(&self) {
+        match self {
+            ExecuteSegment::Gate(range) => unsafe {
+                for gate in &GATES[range.start..range.end] {
+                    gate.execute();
+                }
+            },
+            ExecuteSegment::External(range) => unsafe {
+                for external in &mut EXTERNALS[range.start..range.end] {
+                    external.execute();
+                }
+            },
+        }
+    }
+}
+
+//endregion
+
 #[derive(Debug, Clone)]
 pub struct ExecutionResult {
     pub wire_count: usize,
@@ -169,25 +222,23 @@ pub fn simulate() -> ExecutionResult {
 
 pub fn execute_gates() -> ExecutionResult {
     unsafe {
-        let mut max_latency: LatencyValue = 0;
         LATENCIES.fill(0);
 
-        for gate in &GATES {
-            gate.execute();
-            max_latency = max_latency.max(gate.wire_out.get_latency());
+        // println!("execute segments {:?}", EXECUTE_SEGMENTS);
+        for segment in &EXECUTE_SEGMENTS {
+            segment.execute()
         }
 
         ExecutionResult {
             wire_count: WIRES.len(),
             gate_count: GATES.len(),
-            max_latency,
+            max_latency: *LATENCIES.iter().max().unwrap_or(&0),
         }
     }
 }
 
 pub fn clock_tick() {
     unsafe {
-        EXTERNALS.iter_mut().for_each(|external| external.execute());
         REGS.iter_mut().for_each(|reg| {
             reg.temp_value = reg.wire_in.map(|w| w.get()).unwrap_or_else(|| {
                 // println!("reg without in");

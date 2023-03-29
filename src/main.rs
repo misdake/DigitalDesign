@@ -6,14 +6,14 @@ mod tests;
 mod cpu_v1;
 
 pub mod basic;
+pub mod component_lib;
 pub mod external;
-pub mod lib;
 pub mod reg;
 pub mod wires;
 
 pub use basic::*;
+pub use component_lib::*;
 pub use external::*;
-pub use lib::*;
 pub use reg::*;
 pub use wires::*;
 
