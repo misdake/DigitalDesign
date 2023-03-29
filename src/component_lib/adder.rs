@@ -56,7 +56,8 @@ fn test_add_naive() {
     assert_eq!(45, b.get_u8());
     let c = a & b;
     let d = add_naive(a, b);
-    simulate();
+    let r = simulate();
+    println!("adder {:?}", r);
     assert_eq!(0b101001, c.get_u8());
     assert_eq!(168, d.sum.get_u8());
     assert_eq!(0, d.carry.get());

@@ -16,7 +16,7 @@ enum ExecuteSegment {
     Gate(Range<usize>),
     External(Range<usize>),
 }
-// statis mut
+
 static mut WIRES: Vec<WireValue> = Vec::new();
 static mut LATENCIES: Vec<LatencyValue> = Vec::new();
 static mut GATES: Vec<Gate> = Vec::new();
@@ -197,8 +197,8 @@ impl ExecuteSegment {
                 }
             },
             ExecuteSegment::External(range) => unsafe {
-                for gate in &mut EXTERNALS[range.start..range.end] {
-                    gate.execute();
+                for external in &mut EXTERNALS[range.start..range.end] {
+                    external.execute();
                 }
             },
         }
