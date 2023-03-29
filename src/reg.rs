@@ -1,4 +1,4 @@
-use crate::{mux2, reg, Wire, Wires};
+use crate::{mux2, reg, Wire};
 
 pub fn delay(input: Wire) -> Wire {
     let r = reg();
@@ -12,57 +12,73 @@ pub fn flipflop(data: Wire, write_enabled: Wire) -> Wire {
     r.out()
 }
 
-pub fn flatten2<const A: usize, const B: usize>(a: Wires<A>, b: Wires<B>) -> Wires<{ A + B }> {
-    let mut wires = [Wire(0); { A + B }];
-    wires[0..A].copy_from_slice(a.wires.as_slice());
-    wires[A..].copy_from_slice(b.wires.as_slice());
-    Wires::<{ A + B }> { wires }
+#[test]
+fn test_reg() {
+    use crate::{clear_all, delay, input, reg, simulate};
+    clear_all();
+
+    let a = input();
+    let r = reg();
+    let b = r.out();
+    r.set_in(a | b);
+    let c = delay(a);
+    let d = delay(c);
+    for i in 0..10 {
+        a.set(if i == 5 { 1 } else { 0 });
+        simulate();
+        assert_eq!(if i >= 5 { 1 } else { 0 }, b.get());
+        assert_eq!(if i == 5 { 1 } else { 0 }, c.get());
+        assert_eq!(if i == 6 { 1 } else { 0 }, d.get());
+    }
 }
 
-pub fn flatten3<const A: usize, const B: usize, const C: usize>(
-    a: Wires<A>,
-    b: Wires<B>,
-    c: Wires<C>,
-) -> Wires<{ A + B + C }> {
-    let mut wires = [Wire(0); { A + B + C }];
-    wires[0..A].copy_from_slice(a.wires.as_slice());
-    wires[A..A + B].copy_from_slice(b.wires.as_slice());
-    wires[A + B..].copy_from_slice(c.wires.as_slice());
-    Wires::<{ A + B + C }> { wires }
+#[test]
+fn test_flipflop() {
+    use crate::{clear_all, flipflop, input, simulate};
+    clear_all();
+
+    let d = input();
+    let e = input();
+    let q = flipflop(d, e);
+    for i in 0..20 {
+        d.set(if i < 5 || i > 12 { 0 } else { 1 });
+        e.set(if i == 9 || i == 15 { 1 } else { 0 });
+        simulate();
+        assert_eq!(if i >= 9 && i <= 14 { 1 } else { 0 }, q.get());
+    }
 }
 
-pub fn unflatten2<const A: usize, const B: usize>(r: Wires<{ A + B }>) -> (Wires<A>, Wires<B>) {
-    let wires = r.wires;
-    let mut a = [Wire(0); A];
-    let mut b = [Wire(0); B];
-    for i in 0..A {
-        a[i] = wires[i];
+#[test]
+fn test_reg_w() {
+    use crate::{add_naive, clear_all, input_w, reg_w, simulate};
+    clear_all();
+
+    let one = input_w::<4>();
+    one.set_u8(1);
+    let mut curr = reg_w::<4>();
+    curr.set_in(add_naive(curr.out, one).sum);
+    for i in 0..15 {
+        simulate();
+        assert_eq!(i + 1, curr.out.get_u8());
     }
-    for i in 0..B {
-        b[i] = wires[A + i];
-    }
-    (Wires::<A> { wires: a }, Wires::<B> { wires: b })
 }
 
-pub fn unflatten3<const A: usize, const B: usize, const C: usize>(
-    r: Wires<{ A + B + C }>,
-) -> (Wires<A>, Wires<B>, Wires<C>) {
-    let wires = r.wires;
-    let mut a = [Wire(0); A];
-    let mut b = [Wire(0); B];
-    let mut c = [Wire(0); C];
-    for i in 0..A {
-        a[i] = wires[i];
+#[test]
+fn test_flipflop_w() {
+    use crate::{clear_all, flipflop_w, input, input_w, simulate};
+    clear_all();
+
+    let d = input_w::<4>();
+    let e = input();
+    let q = flipflop_w(d, e);
+    for i in 0..8 {
+        d.set_u8(i);
+        e.set(if i == 3 || i == 6 { 1 } else { 0 });
+        simulate();
+        if i >= 3 {
+            assert_eq!(if i >= 6 { 6 } else { 3 }, q.get_u8());
+        } else {
+            assert_eq!(0, q.get_u8());
+        }
     }
-    for i in 0..B {
-        b[i] = wires[A + i];
-    }
-    for i in 0..C {
-        c[i] = wires[A + B + i];
-    }
-    (
-        Wires::<A> { wires: a },
-        Wires::<B> { wires: b },
-        Wires::<C> { wires: c },
-    )
 }
