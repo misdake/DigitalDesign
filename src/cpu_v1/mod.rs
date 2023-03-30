@@ -8,6 +8,8 @@ mod branch;
 use branch::*;
 mod decoder;
 use decoder::*;
+mod alu;
+use alu::*;
 
 use crate::{clear_all, external, input_w, reg, reg_w, simulate, External, Reg, Regs, Wires};
 use std::any::Any;
@@ -58,6 +60,7 @@ trait CpuV1 {
     type Pc: CpuComponent<Input = CpuPcInput, Output = CpuPcOutput>;
     type InstRom: CpuComponent<Input = CpuInstInput, Output = CpuInstOutput>;
     type Decoder: CpuComponent<Input = CpuDecoderInput, Output = CpuDecoderOutput>;
+    type Alu: CpuComponent<Input = CpuAluInput, Output = CpuAluOutput>;
     type Branch: CpuComponent<Input = CpuBranchInput, Output = CpuBranchOutput>;
 
     fn build(state: &mut CpuV1State) -> CpuV1StateInternal {
@@ -141,11 +144,13 @@ impl CpuV1 for CpuV1Instance {
     type Pc = CpuPc;
     type InstRom = CpuInstRom;
     type Decoder = CpuDecoder;
+    type Alu = CpuAlu;
     type Branch = CpuBranch;
 }
 impl CpuV1 for CpuV1EmuInstance {
     type Pc = CpuComponentEmuContext<CpuPc, CpuPcEmu>;
     type InstRom = CpuComponentEmuContext<CpuInstRom, CpuInstRomEmu>;
+    type Decoder = CpuComponentEmuContext<CpuDecoder, CpuDecoderEmu>;
     type Decoder = CpuComponentEmuContext<CpuDecoder, CpuDecoderEmu>;
     type Branch = CpuBranch; // CpuComponentEmuContext<CpuBranch, CpuBranchEmu>;
 }
