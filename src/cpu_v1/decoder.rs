@@ -73,7 +73,7 @@ enum MemAddrSelect {
 }
 
 #[repr(u8)]
-enum JmpOp {
+pub enum JmpOp {
     NoJmp = 0,
     Jmp = 1,
     Je = 2,
@@ -82,7 +82,7 @@ enum JmpOp {
     Long = 5,
 }
 #[repr(u8)]
-enum JmpSrcSelect {
+pub enum JmpSrcSelect {
     Imm = 0,
     Reg0 = 1,
 }

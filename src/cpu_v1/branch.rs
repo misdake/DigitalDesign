@@ -1,3 +1,4 @@
+use crate::cpu_v1::decoder::{JmpOp, JmpSrcSelect};
 use crate::cpu_v1::CpuComponent;
 use crate::{Wire, Wires};
 
@@ -30,19 +31,18 @@ impl CpuComponent for CpuBranch {
     type Input = CpuBranchInput;
     type Output = CpuBranchOutput;
     fn build(input: &Self::Input) -> Self::Output {
-        //TODO jmp_op use enum as u8
-        let no_jmp = input.jmp_op.wires[0]
-            | (input.jmp_op.wires[2] & !input.flag_z)
-            | (input.jmp_op.wires[3] & !input.flag_n)
-            | (input.jmp_op.wires[4] & !input.flag_p);
-        let jmp = input.jmp_op.wires[1];
-        let je = input.jmp_op.wires[2] & input.flag_z;
-        let jl = input.jmp_op.wires[3] & input.flag_n;
-        let jg = input.jmp_op.wires[4] & input.flag_p;
-        let jmp_long = input.jmp_op.wires[5];
+        let no_jmp = input.jmp_op.wires[JmpOp::NoJmp as usize]
+            | (input.jmp_op.wires[JmpOp::Je as usize] & !input.flag_z)
+            | (input.jmp_op.wires[JmpOp::Jl as usize] & !input.flag_n)
+            | (input.jmp_op.wires[JmpOp::Jg as usize] & !input.flag_p);
+        let jmp = input.jmp_op.wires[JmpOp::Jmp as usize];
+        let je = input.jmp_op.wires[JmpOp::Je as usize] & input.flag_z;
+        let jl = input.jmp_op.wires[JmpOp::Jl as usize] & input.flag_n;
+        let jg = input.jmp_op.wires[JmpOp::Jg as usize] & input.flag_p;
+        let jmp_long = input.jmp_op.wires[JmpOp::Long as usize];
 
-        let jmp_src_imm = input.jmp_src_select.wires[0];
-        let jmp_src_reg = input.jmp_src_select.wires[1];
+        let jmp_src_imm = input.jmp_src_select.wires[JmpSrcSelect::Imm as usize];
+        let jmp_src_reg = input.jmp_src_select.wires[JmpSrcSelect::Reg0 as usize];
 
         let use_offset_jmp = (jmp | je) | (jl | jg);
 
