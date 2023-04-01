@@ -116,7 +116,7 @@ impl<const W: usize> Regs<W> {
         W
     }
 
-    pub fn set_in(&mut self, wires: Wires<W>) {
+    pub fn set_in(&self, wires: Wires<W>) {
         for i in 0..W {
             self.regs[i].set_in(wires.wires[i]);
         }
@@ -136,7 +136,7 @@ pub fn reg_w<const W: usize>() -> Regs<W> {
 }
 
 pub fn flipflop_w<const W: usize>(data: Wires<W>, write_enabled: Wire) -> Wires<W> {
-    let mut r = reg_w();
+    let r = reg_w();
     r.set_in(mux2_w(r.out, data, write_enabled));
     r.out
 }

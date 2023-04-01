@@ -91,11 +91,22 @@ trait CpuV1 {
             jmp_src_select,
         } = decoder_out;
 
+        let alu_in = CpuAluInput {
+            reg0_data: input_w(), // TODO from reg
+            reg1_data: input_w(), // TODO from reg
+            imm,
+            alu_op,
+            alu0_select,
+            alu1_select,
+        };
+        let alu_out = Self::Alu::build(&alu_in);
+        let CpuAluOutput { alu_out } = alu_out;
+
         // Branch
         let branch_in = CpuBranchInput {
             imm,
-            reg0: input_w(),    //TODO from reg
-            alu_out: input_w(), //TODO from alu
+            reg0: input_w(), //TODO from reg
+            alu_out,
             jmp_op,
             jmp_src_select,
             flag_p: state.flag_p.out(),
@@ -151,8 +162,8 @@ impl CpuV1 for CpuV1EmuInstance {
     type Pc = CpuComponentEmuContext<CpuPc, CpuPcEmu>;
     type InstRom = CpuComponentEmuContext<CpuInstRom, CpuInstRomEmu>;
     type Decoder = CpuComponentEmuContext<CpuDecoder, CpuDecoderEmu>;
-    type Decoder = CpuComponentEmuContext<CpuDecoder, CpuDecoderEmu>;
-    type Branch = CpuBranch; // CpuComponentEmuContext<CpuBranch, CpuBranchEmu>;
+    type Alu = CpuAlu;
+    type Branch = CpuBranch;
 }
 
 #[test]

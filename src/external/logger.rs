@@ -98,7 +98,7 @@ fn test_logger_u8() {
     clear_all();
 
     let one = Wires::<4>::parse_u8(1);
-    let mut curr = reg_w::<4>();
+    let curr = reg_w::<4>();
     curr.set_in(add_naive(curr.out, one).sum);
     let logger = external(LoggerU8::new("inc".to_string(), curr.clone().out));
     for _ in 0..=16 {

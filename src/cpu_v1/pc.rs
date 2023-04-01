@@ -101,7 +101,7 @@ fn test_next_pc() {
         jmp_long_enable.set(0);
     };
 
-    let mut pc = reg_w::<8>();
+    let pc = reg_w::<8>();
     let next_pc = next_pc(
         pc.out,
         pc_offset_enable,
