@@ -10,6 +10,8 @@ mod decoder;
 use decoder::*;
 mod alu;
 use alu::*;
+mod reg;
+use reg::*;
 
 use crate::{clear_all, external, input_w, reg, reg_w, simulate, External, Reg, Regs, Wires};
 use std::any::Any;

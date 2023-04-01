@@ -39,7 +39,7 @@ enum RegAddr {
     D = 3,
 }
 #[repr(u8)]
-enum Reg0WriteSelect {
+pub enum Reg0WriteSelect {
     AluOut = 0,
     MemOut = 1,
 }
