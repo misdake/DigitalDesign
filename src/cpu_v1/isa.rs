@@ -49,7 +49,7 @@ pub struct InstImmDesc {}
 
 impl InstDesc {
     const fn op2(name: &'static str, opcode: u8) -> InstDesc {
-        //TODO assert opcode max
+        assert!(opcode < (1 << 4));
         InstDesc::Op2(
             InstOpcodeDesc4 { name, bits: opcode },
             InstRegDesc {},
@@ -57,9 +57,11 @@ impl InstDesc {
         )
     }
     const fn op1(name: &'static str, opcode: u8) -> InstDesc {
+        assert!(opcode < (1 << 6));
         InstDesc::Op1(InstOpcodeDesc6 { name, bits: opcode }, InstRegDesc {})
     }
     const fn op0i(name: &'static str, opcode: u8) -> InstDesc {
+        assert!(opcode < (1 << 4));
         InstDesc::Op0i(InstOpcodeDesc4 { name, bits: opcode }, InstImmDesc {})
     }
     const fn op0(name: &'static str, opcode: u8) -> InstDesc {

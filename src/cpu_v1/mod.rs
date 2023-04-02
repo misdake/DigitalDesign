@@ -12,8 +12,10 @@ mod alu;
 use alu::*;
 mod regfile;
 use regfile::*;
+mod mem;
+use mem::*;
 
-use crate::{clear_all, external, input_w, reg, reg_w, simulate, External, Reg, Regs, Wires};
+use crate::{clear_all, external, reg, reg_w, simulate, External, Reg, Regs, Wires};
 use std::any::Any;
 use std::marker::PhantomData;
 
@@ -22,8 +24,8 @@ struct CpuV1State {
     clock_enable: Reg, // TODO impl
     inst: [Wires<8>; 256],
     pc: Regs<8>,
-    mem: [Regs<4>; 64],
-    mem_bank: Regs<2>, // TODO impl
+    mem: [Regs<4>; 256],
+    mem_bank: Regs<4>, // TODO impl
     reg: [Regs<4>; 4],
     flag_p: Reg,
     flag_z: Reg,
@@ -34,7 +36,7 @@ impl CpuV1State {
     fn create(inst: [u8; 256]) -> Self {
         let inst = inst.map(|v| Wires::<8>::parse_u8(v));
         let regs = [0u8; 4].map(|_| reg_w());
-        let mem = [0u8; 64].map(|_| reg_w());
+        let mem = [0u8; 256].map(|_| reg_w());
         Self {
             clock_enable: reg(),
             inst,
@@ -67,6 +69,7 @@ trait CpuV1 {
     type Branch: CpuComponent<Input = CpuBranchInput, Output = CpuBranchOutput>;
     type RegRead: CpuComponent<Input = CpuRegReadInput, Output = CpuRegReadOutput>;
     type RegWrite: CpuComponent<Input = CpuRegWriteInput, Output = CpuRegWriteOutput>;
+    type Mem: CpuComponent<Input = CpuMemInput, Output = CpuMemOutput>;
 
     fn build(state: &mut CpuV1State) -> CpuV1StateInternal {
         // Inst
@@ -121,7 +124,18 @@ trait CpuV1 {
         let alu_out = Self::Alu::build(&alu_in);
         let CpuAluOutput { alu_out } = alu_out;
 
-        // TODO Mem
+        // Mem
+        let mem_in = CpuMemInput {
+            mem: state.mem,
+            mem_bank: state.mem_bank,
+            reg0: reg0_data,
+            mem_write_enable,
+            imm,
+            reg1: reg1_data,
+            mem_addr_select,
+        };
+        let mem_out = Self::Mem::build(&mem_in);
+        let CpuMemOutput { mem_out } = mem_out;
 
         // RegWrite
         let reg_write_in = CpuRegWriteInput {
@@ -130,7 +144,7 @@ trait CpuV1 {
             reg0_write_enable,
             reg0_write_select,
             alu_out,
-            mem_out: input_w(), // TODO from mem
+            mem_out,
         };
         let reg_write_out = Self::RegWrite::build(&reg_write_in);
         let CpuRegWriteOutput {} = reg_write_out;
@@ -192,6 +206,7 @@ impl CpuV1 for CpuV1Instance {
     type Branch = CpuBranch;
     type RegRead = CpuRegRead;
     type RegWrite = CpuRegWrite;
+    type Mem = CpuMem;
 }
 impl CpuV1 for CpuV1EmuInstance {
     type Pc = CpuComponentEmuContext<CpuPc, CpuPcEmu>;
@@ -201,6 +216,7 @@ impl CpuV1 for CpuV1EmuInstance {
     type Branch = CpuBranch;
     type RegRead = CpuRegRead;
     type RegWrite = CpuRegWrite;
+    type Mem = CpuMem;
 }
 
 #[test]
