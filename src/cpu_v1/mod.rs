@@ -15,7 +15,7 @@ use regfile::*;
 mod mem;
 use mem::*;
 
-use crate::{clear_all, external, input_w, reg, reg_w, simulate, External, Reg, Regs, Wires};
+use crate::{clear_all, external, reg, reg_w, simulate, External, Reg, Regs, Wires};
 use std::any::Any;
 use std::marker::PhantomData;
 
@@ -124,7 +124,18 @@ trait CpuV1 {
         let alu_out = Self::Alu::build(&alu_in);
         let CpuAluOutput { alu_out } = alu_out;
 
-        // TODO Mem
+        // Mem
+        let mem_in = CpuMemInput {
+            mem: state.mem,
+            mem_bank: state.mem_bank,
+            reg0: reg0_data,
+            mem_write_enable,
+            imm,
+            reg1: reg1_data,
+            mem_addr_select,
+        };
+        let mem_out = Self::Mem::build(&mem_in);
+        let CpuMemOutput { mem_out } = mem_out;
 
         // RegWrite
         let reg_write_in = CpuRegWriteInput {
@@ -133,7 +144,7 @@ trait CpuV1 {
             reg0_write_enable,
             reg0_write_select,
             alu_out,
-            mem_out: input_w(), // TODO from mem
+            mem_out,
         };
         let reg_write_out = Self::RegWrite::build(&reg_write_in);
         let CpuRegWriteOutput {} = reg_write_out;
