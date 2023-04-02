@@ -82,7 +82,7 @@ where
     Assert<{ W <= 8 }>: IsTrue,
 {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str(&format!("{}", self.get_u8()))
+        f.write_str(&format!("{:b}", self.get_u8()))
     }
 }
 

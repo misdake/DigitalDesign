@@ -7,7 +7,7 @@ fn test_unary() {
         &[
             inst_inc(3),
             inst_inc(3),
-            inst_inc(3),
+            inst_inv(3),
             inst_inc(2),
             inst_inc(2),
             inst_inc(1),
@@ -16,6 +16,27 @@ fn test_unary() {
             inst_inc(0),
         ],
         10,
+        print_regs,
+    );
+}
+
+#[test]
+fn test_binary() {
+    let _ = test_cpu(
+        &[
+            inst_load_imm(2),
+            inst_mov(0, 3),
+            inst_load_imm(7),
+            inst_mov(0, 2),
+            inst_and(3, 2),
+            inst_mov(0, 2),
+            inst_xor(3, 2),
+            inst_mov(0, 2),
+            inst_or(3, 2),
+            inst_mov(0, 2),
+            inst_add(3, 2),
+        ],
+        13,
         print_regs,
     );
 }
