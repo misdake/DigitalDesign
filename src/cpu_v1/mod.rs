@@ -79,7 +79,7 @@ trait CpuV1 {
         // Decoder
         let decoder_in = CpuDecoderInput { inst };
         let decoder_out: CpuDecoderOutput = Self::Decoder::build(&decoder_in);
-        #[allow(unused)] // TODO
+        #[allow(unused)]
         let CpuDecoderOutput {
             reg0_addr,
             reg1_addr,
@@ -95,11 +95,23 @@ trait CpuV1 {
             jmp_src_select,
         } = decoder_out;
 
-        // TODO RegRead
+        // RegRead
+        let reg_read_in = CpuRegReadInput {
+            regs: state.reg,
+            reg0_addr,
+            reg1_addr,
+        };
+        let reg_read_out: CpuRegReadOutput = Self::RegRead::build(&reg_read_in);
+        let CpuRegReadOutput {
+            reg0_data,
+            reg1_data,
+            reg0_select,
+        } = reg_read_out;
 
+        // Alu
         let alu_in = CpuAluInput {
-            reg0_data: input_w(), // TODO from reg
-            reg1_data: input_w(), // TODO from reg
+            reg0_data,
+            reg1_data,
             imm,
             alu_op,
             alu0_select,
@@ -110,12 +122,22 @@ trait CpuV1 {
 
         // TODO Mem
 
-        // TODO RegWrite
+        // RegWrite
+        let reg_write_in = CpuRegWriteInput {
+            regs: state.reg,
+            reg0_select,
+            reg0_write_enable,
+            reg0_write_select,
+            mem_out: input_w(), // TODO from mem
+            alu_out,
+        };
+        let reg_write_out = Self::RegWrite::build(&reg_write_in);
+        let CpuRegWriteOutput {} = reg_write_out;
 
         // Branch
         let branch_in = CpuBranchInput {
             imm,
-            reg0: input_w(), // TODO from reg
+            reg0: reg0_data,
             alu_out,
             jmp_op,
             jmp_src_select,
