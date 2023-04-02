@@ -12,6 +12,8 @@ mod alu;
 use alu::*;
 mod regfile;
 use regfile::*;
+mod mem;
+use mem::*;
 
 use crate::{clear_all, external, input_w, reg, reg_w, simulate, External, Reg, Regs, Wires};
 use std::any::Any;
@@ -22,8 +24,8 @@ struct CpuV1State {
     clock_enable: Reg, // TODO impl
     inst: [Wires<8>; 256],
     pc: Regs<8>,
-    mem: [Regs<4>; 64],
-    mem_bank: Regs<2>, // TODO impl
+    mem: [Regs<4>; 256],
+    mem_bank: Regs<4>, // TODO impl
     reg: [Regs<4>; 4],
     flag_p: Reg,
     flag_z: Reg,
@@ -34,7 +36,7 @@ impl CpuV1State {
     fn create(inst: [u8; 256]) -> Self {
         let inst = inst.map(|v| Wires::<8>::parse_u8(v));
         let regs = [0u8; 4].map(|_| reg_w());
-        let mem = [0u8; 64].map(|_| reg_w());
+        let mem = [0u8; 256].map(|_| reg_w());
         Self {
             clock_enable: reg(),
             inst,
@@ -67,6 +69,7 @@ trait CpuV1 {
     type Branch: CpuComponent<Input = CpuBranchInput, Output = CpuBranchOutput>;
     type RegRead: CpuComponent<Input = CpuRegReadInput, Output = CpuRegReadOutput>;
     type RegWrite: CpuComponent<Input = CpuRegWriteInput, Output = CpuRegWriteOutput>;
+    type Mem: CpuComponent<Input = CpuMemInput, Output = CpuMemOutput>;
 
     fn build(state: &mut CpuV1State) -> CpuV1StateInternal {
         // Inst
@@ -192,6 +195,7 @@ impl CpuV1 for CpuV1Instance {
     type Branch = CpuBranch;
     type RegRead = CpuRegRead;
     type RegWrite = CpuRegWrite;
+    type Mem = CpuMem;
 }
 impl CpuV1 for CpuV1EmuInstance {
     type Pc = CpuComponentEmuContext<CpuPc, CpuPcEmu>;
@@ -201,6 +205,7 @@ impl CpuV1 for CpuV1EmuInstance {
     type Branch = CpuBranch;
     type RegRead = CpuRegRead;
     type RegWrite = CpuRegWrite;
+    type Mem = CpuMem;
 }
 
 #[test]

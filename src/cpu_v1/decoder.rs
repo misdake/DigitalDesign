@@ -68,7 +68,7 @@ pub enum Alu1Select {
 }
 
 #[repr(u8)]
-enum MemAddrSelect {
+pub enum MemAddrSelect {
     Imm = 0,
     Reg1 = 1,
 }
