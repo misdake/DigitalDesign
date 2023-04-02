@@ -1,5 +1,6 @@
+use crate::cpu_v1::decoder::Reg0WriteSelect;
 use crate::cpu_v1::CpuComponent;
-use crate::{decode2, reduce4, Regs, Wire, Wires};
+use crate::{decode2, mux2_w, reduce4, Regs, Wire, Wires};
 
 #[derive(Clone)]
 pub struct CpuRegReadInput {
@@ -16,8 +17,8 @@ pub struct CpuRegReadOutput {
     pub reg0_select: Wires<4>,
 }
 
-pub struct CpuReg;
-impl CpuComponent for CpuReg {
+pub struct CpuRegRead;
+impl CpuComponent for CpuRegRead {
     type Input = CpuRegReadInput;
     type Output = CpuRegReadOutput;
     fn build(input: &Self::Input) -> Self::Output {
@@ -48,10 +49,35 @@ pub struct CpuRegWriteInput {
     pub reg0_write_enable: Wire,
     pub reg0_write_select: Wires<2>, // Reg0WriteSelect: alu out, mem out
 
-    pub imm: Wires<4>,
+    pub mem_out: Wires<4>,
     pub alu_out: Wires<4>,
 }
 #[derive(Clone)]
 pub struct CpuRegWriteOutput {
     // ?
+}
+
+pub struct CpuRegWrite;
+impl CpuComponent for CpuRegWrite {
+    type Input = CpuRegWriteInput;
+    type Output = CpuRegWriteOutput;
+    fn build(input: &Self::Input) -> Self::Output {
+        let regs = input.regs;
+
+        let select_alu = input.reg0_write_select.wires[Reg0WriteSelect::AluOut as usize];
+        let select_mem = input.reg0_write_select.wires[Reg0WriteSelect::MemOut as usize];
+        let write_data_alu = select_alu.expand() & input.alu_out;
+        let write_data_mem = select_mem.expand() & input.mem_out;
+        let write_data = write_data_mem | write_data_alu;
+
+        for i in 0..4 {
+            let reg = regs[i];
+            let prev = reg.out;
+            let write_enable = input.reg0_select.wires[i] & input.reg0_write_enable;
+            let write_data = mux2_w(prev, write_data, write_enable);
+            regs[i].set_in(write_data);
+        }
+
+        CpuRegWriteOutput {}
+    }
 }

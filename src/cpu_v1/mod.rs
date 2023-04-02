@@ -10,8 +10,8 @@ mod decoder;
 use decoder::*;
 mod alu;
 use alu::*;
-mod reg;
-use reg::*;
+mod regfile;
+use regfile::*;
 
 use crate::{clear_all, external, input_w, reg, reg_w, simulate, External, Reg, Regs, Wires};
 use std::any::Any;
@@ -64,6 +64,8 @@ trait CpuV1 {
     type Decoder: CpuComponent<Input = CpuDecoderInput, Output = CpuDecoderOutput>;
     type Alu: CpuComponent<Input = CpuAluInput, Output = CpuAluOutput>;
     type Branch: CpuComponent<Input = CpuBranchInput, Output = CpuBranchOutput>;
+    type RegRead: CpuComponent<Input = CpuRegReadInput, Output = CpuRegReadOutput>;
+    type RegWrite: CpuComponent<Input = CpuRegWriteInput, Output = CpuRegWriteOutput>;
 
     fn build(state: &mut CpuV1State) -> CpuV1StateInternal {
         // Inst
@@ -77,7 +79,7 @@ trait CpuV1 {
         // Decoder
         let decoder_in = CpuDecoderInput { inst };
         let decoder_out: CpuDecoderOutput = Self::Decoder::build(&decoder_in);
-        #[allow(unused)] //TODO
+        #[allow(unused)] // TODO
         let CpuDecoderOutput {
             reg0_addr,
             reg1_addr,
@@ -93,6 +95,8 @@ trait CpuV1 {
             jmp_src_select,
         } = decoder_out;
 
+        // TODO RegRead
+
         let alu_in = CpuAluInput {
             reg0_data: input_w(), // TODO from reg
             reg1_data: input_w(), // TODO from reg
@@ -104,10 +108,14 @@ trait CpuV1 {
         let alu_out = Self::Alu::build(&alu_in);
         let CpuAluOutput { alu_out } = alu_out;
 
+        // TODO Mem
+
+        // TODO RegWrite
+
         // Branch
         let branch_in = CpuBranchInput {
             imm,
-            reg0: input_w(), //TODO from reg
+            reg0: input_w(), // TODO from reg
             alu_out,
             jmp_op,
             jmp_src_select,
@@ -159,6 +167,8 @@ impl CpuV1 for CpuV1Instance {
     type Decoder = CpuDecoder;
     type Alu = CpuAlu;
     type Branch = CpuBranch;
+    type RegRead = CpuRegRead;
+    type RegWrite = CpuRegWrite;
 }
 impl CpuV1 for CpuV1EmuInstance {
     type Pc = CpuComponentEmuContext<CpuPc, CpuPcEmu>;
@@ -166,6 +176,8 @@ impl CpuV1 for CpuV1EmuInstance {
     type Decoder = CpuComponentEmuContext<CpuDecoder, CpuDecoderEmu>;
     type Alu = CpuAlu;
     type Branch = CpuBranch;
+    type RegRead = CpuRegRead;
+    type RegWrite = CpuRegWrite;
 }
 
 #[test]
