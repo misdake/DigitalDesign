@@ -68,6 +68,7 @@ impl InstDesc {
         InstDesc::Op0(InstOpcodeDesc8 { name, bits: opcode })
     }
 
+    #[allow(unused)]
     pub fn parse(input: InstBinaryType) -> Option<InstBinary> {
         for inst_desc in ALL_INSTRUCTION_DESC {
             if inst_desc.match_opcode(input) {
@@ -150,6 +151,7 @@ macro_rules! inst_op0 {
     };
 }
 
+#[allow(unused)]
 const ALL_INSTRUCTION_DESC: &'static [&'static InstDesc] = &[
     &INST_MOV,
     &INST_AND,

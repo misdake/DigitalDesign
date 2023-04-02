@@ -2,7 +2,7 @@ use crate::cpu_v1::decoder::{JmpOp, JmpSrcSelect};
 use crate::cpu_v1::CpuComponent;
 use crate::{Wire, Wires};
 
-#[derive(Clone)]
+#[derive(Debug, Clone)]
 pub struct CpuBranchInput {
     pub imm: Wires<4>,
     pub reg0: Wires<4>,

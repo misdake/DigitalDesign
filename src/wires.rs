@@ -44,6 +44,19 @@ impl Wire {
 }
 
 impl<const F: usize> Wires<F> {
+    pub fn expand_unsigned<const T: usize>(&self) -> Wires<T>
+    where
+        Assert<{ F <= T }>: IsTrue,
+    {
+        let mut wires: [Wire; T] = [Wire(0); T];
+        for i in 0..F {
+            wires[i] = self.wires[i];
+        }
+        for i in F..T {
+            wires[i] = input_const(0);
+        }
+        Wires::<T> { wires }
+    }
     pub fn expand_signed<const T: usize>(&self) -> Wires<T>
     where
         Assert<{ F <= T }>: IsTrue,
@@ -62,6 +75,15 @@ impl<const F: usize> Wires<F> {
 pub trait WiresU8 {
     fn set_u8(&self, value: u8);
     fn get_u8(&self) -> u8;
+}
+
+impl<const W: usize> std::fmt::Debug for Wires<W>
+where
+    Assert<{ W <= 8 }>: IsTrue,
+{
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&format!("{}", self.get_u8()))
+    }
 }
 
 impl<const W: usize> WiresU8 for Wires<W>

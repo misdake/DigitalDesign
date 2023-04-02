@@ -17,7 +17,6 @@ pub use external::*;
 pub use reg::*;
 pub use wires::*;
 
-use crate::cpu_v1::inst_mov;
 #[cfg(test)]
 pub(crate) use tests::*;
 
@@ -29,9 +28,4 @@ pub(crate) fn select<T>(b: bool, t: T, f: T) -> T {
     }
 }
 
-fn main() {
-    let inst: u8 = 0b0001_01_11;
-    let inst2 = inst_mov(0b01, 0b11).binary;
-    cpu_v1::InstDesc::parse(inst);
-    cpu_v1::InstDesc::parse(inst2);
-}
+fn main() {}

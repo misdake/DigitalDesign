@@ -1,7 +1,7 @@
 use crate::cpu_v1::{CpuComponent, CpuComponentEmu};
 use crate::{cpu_v1, input, input_w, mux2_w, unflatten2, unflatten3, Wire, Wires};
 
-#[derive(Clone)]
+#[derive(Debug, Clone)]
 pub struct CpuDecoderInput {
     pub inst: Wires<8>,
 }

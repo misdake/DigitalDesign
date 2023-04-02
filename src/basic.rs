@@ -17,6 +17,17 @@ enum ExecuteSegment {
     External(Range<usize>),
 }
 
+impl Debug for Wire {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&format!("{}", self.get()))
+    }
+}
+impl Debug for Reg {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&format!("{}", self.out().get()))
+    }
+}
+
 static mut WIRES: Vec<WireValue> = Vec::new();
 static mut LATENCIES: Vec<LatencyValue> = Vec::new();
 static mut GATES: Vec<Gate> = Vec::new();
@@ -111,12 +122,6 @@ pub fn nand(a: Wire, b: Wire) -> Wire {
             wire_out: out,
         });
         out
-    }
-}
-
-impl Debug for Wire {
-    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("Wire").field("index", &self.0).finish()
     }
 }
 
