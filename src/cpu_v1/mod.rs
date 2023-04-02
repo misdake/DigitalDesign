@@ -33,6 +33,7 @@ struct CpuV1State {
 impl CpuV1State {
     fn create(inst: [u8; 256]) -> Self {
         let inst = inst.map(|v| Wires::<8>::parse_u8(v));
+        let regs = [0u8; 4].map(|_| reg_w());
         let mem = [0u8; 64].map(|_| reg_w());
         Self {
             clock_enable: reg(),
@@ -40,7 +41,7 @@ impl CpuV1State {
             pc: reg_w(),
             mem,
             mem_bank: reg_w(),
-            reg: [reg_w(); 4],
+            reg: regs,
             flag_p: reg(),
             flag_z: reg(),
             flag_n: reg(),
@@ -128,8 +129,8 @@ trait CpuV1 {
             reg0_select,
             reg0_write_enable,
             reg0_write_select,
-            mem_out: input_w(), // TODO from mem
             alu_out,
+            mem_out: input_w(), // TODO from mem
         };
         let reg_write_out = Self::RegWrite::build(&reg_write_in);
         let CpuRegWriteOutput {} = reg_write_out;

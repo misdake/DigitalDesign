@@ -49,8 +49,8 @@ pub struct CpuRegWriteInput {
     pub reg0_write_enable: Wire,
     pub reg0_write_select: Wires<2>, // Reg0WriteSelect: alu out, mem out
 
-    pub mem_out: Wires<4>,
     pub alu_out: Wires<4>,
+    pub mem_out: Wires<4>,
 }
 #[derive(Clone)]
 pub struct CpuRegWriteOutput {
@@ -79,5 +79,107 @@ impl CpuComponent for CpuRegWrite {
         }
 
         CpuRegWriteOutput {}
+    }
+}
+
+#[test]
+fn test_reg() {
+    use crate::*;
+    clear_all();
+
+    let regs = [0u8; 4].map(|_| reg_w());
+
+    let reg0_addr = input_w();
+    let reg1_addr = input_w();
+    let reg0_write_enable = input();
+    let reg0_write_select = input_w();
+    let alu_out = input_w();
+    let mem_out = input_w();
+
+    let (reg0_data, reg1_data) = {
+        let read_input = CpuRegReadInput {
+            regs,
+            reg0_addr,
+            reg1_addr,
+        };
+        let CpuRegReadOutput {
+            reg0_data,
+            reg1_data,
+            reg0_select,
+        } = CpuRegRead::build(&read_input);
+        let write_input = CpuRegWriteInput {
+            regs,
+            reg0_select,
+            reg0_write_enable,
+            reg0_write_select,
+            alu_out,
+            mem_out,
+        };
+        let CpuRegWriteOutput {} = CpuRegWrite::build(&write_input);
+        (reg0_data, reg1_data)
+    };
+
+    let mut regs_sw = [0u8; 4];
+
+    let mut test =
+        |reg0: u8, reg1: u8, write: bool, src: Reg0WriteSelect, alu_value: u8, mem_value: u8| {
+            // input
+            reg0_addr.set_u8(reg0);
+            reg1_addr.set_u8(reg1);
+            reg0_write_select.set_u8(1 << src as u8);
+            reg0_write_enable.set(write as u8);
+            alu_out.set_u8(alu_value);
+            mem_out.set_u8(mem_value);
+
+            simulate();
+
+            let (reg0_data_ref, reg1_data_ref) = {
+                let reg0_data = regs_sw[reg0 as usize];
+                let reg1_data = regs_sw[reg1 as usize];
+                if write {
+                    let write_data = match src {
+                        Reg0WriteSelect::AluOut => alu_value,
+                        Reg0WriteSelect::MemOut => mem_value,
+                    };
+                    regs_sw[reg0 as usize] = write_data;
+                }
+                (reg0_data, reg1_data)
+            };
+            //         println!("test reg0 {reg0}, reg1 {reg1}, write {write}, src {src:?}, alu {alu_value}, mem {mem_value} => ref {}|{}, ref {}|{}", reg0_data_ref, reg0_data.get_u8(),
+            // reg1_data_ref, reg1_data.get_u8());
+            //         println!(
+            //             "regs {} {} {} {}",
+            //             regs[0].out.get_u8(),
+            //             regs[1].out.get_u8(),
+            //             regs[2].out.get_u8(),
+            //             regs[3].out.get_u8()
+            //         );
+            //         println!(
+            //             "regs_sw {} {} {} {}",
+            //             regs_sw[0], regs_sw[1], regs_sw[2], regs_sw[3]
+            //         );
+
+            assert_eq!(reg0_data_ref, reg0_data.get_u8());
+            assert_eq!(reg1_data_ref, reg1_data.get_u8());
+            assert_eq!(regs_sw[0], regs[0].out.get_u8());
+            assert_eq!(regs_sw[1], regs[1].out.get_u8());
+            assert_eq!(regs_sw[2], regs[2].out.get_u8());
+            assert_eq!(regs_sw[3], regs[3].out.get_u8());
+        };
+
+    let testcases = shuffled_list(1 << 9, 0.123);
+    for i in testcases {
+        let reg0 = ((i >> 0) % (1 << 2)) as u8;
+        let reg1 = ((i >> 2) % (1 << 2)) as u8;
+        let write = (i >> 4) % (1 << 1) > 0;
+        let src = if (i >> 5) % (1 << 1) > 0 {
+            Reg0WriteSelect::AluOut
+        } else {
+            Reg0WriteSelect::MemOut
+        };
+        let alu_value = ((i >> 1) % (1 << 4)) as u8;
+        let mem_value = ((i >> 3) % (1 << 4)) as u8;
+
+        test(reg0, reg1, write, src, alu_value, mem_value);
     }
 }
