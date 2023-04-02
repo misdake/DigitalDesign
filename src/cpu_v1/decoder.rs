@@ -39,27 +39,28 @@ enum RegAddr {
     D = 3,
 }
 #[repr(u8)]
-enum Reg0WriteSelect {
+#[derive(Copy, Clone, Debug)]
+pub enum Reg0WriteSelect {
     AluOut = 0,
     MemOut = 1,
 }
 
 #[repr(u8)]
-enum AluOp {
+pub enum AluOp {
     And = 0,
     Or = 1,
     Xor = 2,
     Add = 3,
 }
 #[repr(u8)]
-enum Alu0Select {
+pub enum Alu0Select {
     Reg0 = 0,
     Reg0Inv = 1,
     Zero = 2,
     Imm = 3,
 }
 #[repr(u8)]
-enum Alu1Select {
+pub enum Alu1Select {
     Reg1 = 0,
     NegOne = 1,
     Zero = 2,
@@ -73,7 +74,7 @@ enum MemAddrSelect {
 }
 
 #[repr(u8)]
-enum JmpOp {
+pub enum JmpOp {
     NoJmp = 0,
     Jmp = 1,
     Je = 2,
@@ -82,7 +83,7 @@ enum JmpOp {
     Long = 5,
 }
 #[repr(u8)]
-enum JmpSrcSelect {
+pub enum JmpSrcSelect {
     Imm = 0,
     Reg0 = 1,
 }

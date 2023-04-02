@@ -8,6 +8,10 @@ mod branch;
 use branch::*;
 mod decoder;
 use decoder::*;
+mod alu;
+use alu::*;
+mod regfile;
+use regfile::*;
 
 use crate::{clear_all, external, input_w, reg, reg_w, simulate, External, Reg, Regs, Wires};
 use std::any::Any;
@@ -29,6 +33,7 @@ struct CpuV1State {
 impl CpuV1State {
     fn create(inst: [u8; 256]) -> Self {
         let inst = inst.map(|v| Wires::<8>::parse_u8(v));
+        let regs = [0u8; 4].map(|_| reg_w());
         let mem = [0u8; 64].map(|_| reg_w());
         Self {
             clock_enable: reg(),
@@ -36,7 +41,7 @@ impl CpuV1State {
             pc: reg_w(),
             mem,
             mem_bank: reg_w(),
-            reg: [reg_w(); 4],
+            reg: regs,
             flag_p: reg(),
             flag_z: reg(),
             flag_n: reg(),
@@ -58,7 +63,10 @@ trait CpuV1 {
     type Pc: CpuComponent<Input = CpuPcInput, Output = CpuPcOutput>;
     type InstRom: CpuComponent<Input = CpuInstInput, Output = CpuInstOutput>;
     type Decoder: CpuComponent<Input = CpuDecoderInput, Output = CpuDecoderOutput>;
+    type Alu: CpuComponent<Input = CpuAluInput, Output = CpuAluOutput>;
     type Branch: CpuComponent<Input = CpuBranchInput, Output = CpuBranchOutput>;
+    type RegRead: CpuComponent<Input = CpuRegReadInput, Output = CpuRegReadOutput>;
+    type RegWrite: CpuComponent<Input = CpuRegWriteInput, Output = CpuRegWriteOutput>;
 
     fn build(state: &mut CpuV1State) -> CpuV1StateInternal {
         // Inst
@@ -72,7 +80,7 @@ trait CpuV1 {
         // Decoder
         let decoder_in = CpuDecoderInput { inst };
         let decoder_out: CpuDecoderOutput = Self::Decoder::build(&decoder_in);
-        #[allow(unused)] //TODO
+        #[allow(unused)]
         let CpuDecoderOutput {
             reg0_addr,
             reg1_addr,
@@ -88,11 +96,50 @@ trait CpuV1 {
             jmp_src_select,
         } = decoder_out;
 
+        // RegRead
+        let reg_read_in = CpuRegReadInput {
+            regs: state.reg,
+            reg0_addr,
+            reg1_addr,
+        };
+        let reg_read_out: CpuRegReadOutput = Self::RegRead::build(&reg_read_in);
+        let CpuRegReadOutput {
+            reg0_data,
+            reg1_data,
+            reg0_select,
+        } = reg_read_out;
+
+        // Alu
+        let alu_in = CpuAluInput {
+            reg0_data,
+            reg1_data,
+            imm,
+            alu_op,
+            alu0_select,
+            alu1_select,
+        };
+        let alu_out = Self::Alu::build(&alu_in);
+        let CpuAluOutput { alu_out } = alu_out;
+
+        // TODO Mem
+
+        // RegWrite
+        let reg_write_in = CpuRegWriteInput {
+            regs: state.reg,
+            reg0_select,
+            reg0_write_enable,
+            reg0_write_select,
+            alu_out,
+            mem_out: input_w(), // TODO from mem
+        };
+        let reg_write_out = Self::RegWrite::build(&reg_write_in);
+        let CpuRegWriteOutput {} = reg_write_out;
+
         // Branch
         let branch_in = CpuBranchInput {
             imm,
-            reg0: input_w(),    //TODO from reg
-            alu_out: input_w(), //TODO from alu
+            reg0: reg0_data,
+            alu_out,
             jmp_op,
             jmp_src_select,
             flag_p: state.flag_p.out(),
@@ -141,13 +188,19 @@ impl CpuV1 for CpuV1Instance {
     type Pc = CpuPc;
     type InstRom = CpuInstRom;
     type Decoder = CpuDecoder;
+    type Alu = CpuAlu;
     type Branch = CpuBranch;
+    type RegRead = CpuRegRead;
+    type RegWrite = CpuRegWrite;
 }
 impl CpuV1 for CpuV1EmuInstance {
     type Pc = CpuComponentEmuContext<CpuPc, CpuPcEmu>;
     type InstRom = CpuComponentEmuContext<CpuInstRom, CpuInstRomEmu>;
     type Decoder = CpuComponentEmuContext<CpuDecoder, CpuDecoderEmu>;
-    type Branch = CpuBranch; // CpuComponentEmuContext<CpuBranch, CpuBranchEmu>;
+    type Alu = CpuAlu;
+    type Branch = CpuBranch;
+    type RegRead = CpuRegRead;
+    type RegWrite = CpuRegWrite;
 }
 
 #[test]

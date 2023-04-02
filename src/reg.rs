@@ -55,7 +55,7 @@ fn test_reg_w() {
 
     let one = input_w::<4>();
     one.set_u8(1);
-    let mut curr = reg_w::<4>();
+    let curr = reg_w::<4>();
     curr.set_in(add_naive(curr.out, one).sum);
     for i in 0..15 {
         simulate();
