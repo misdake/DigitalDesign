@@ -41,8 +41,8 @@ impl CpuComponent for CpuBranch {
         let jg = input.jmp_op.wires[JmpOp::Jg as usize] & input.flag_p;
         let jmp_long = input.jmp_op.wires[JmpOp::Long as usize];
 
-        let jmp_src_imm = input.jmp_src_select.wires[JmpSrcSelect::Imm as usize];
-        let jmp_src_reg = input.jmp_src_select.wires[JmpSrcSelect::Reg0 as usize];
+        let jmp_src_imm = !no_jmp & input.jmp_src_select.wires[JmpSrcSelect::Imm as usize];
+        let jmp_src_reg = !no_jmp & input.jmp_src_select.wires[JmpSrcSelect::Reg0 as usize];
 
         let use_offset_jmp = (jmp | je) | (jl | jg);
 
