@@ -1,8 +1,8 @@
 use super::CpuComponent;
 use crate::cpu_v1::CpuComponentEmu;
-use crate::{add_naive, flatten2, input_const, input_w, Wire, Wires};
+use crate::{add_naive, flatten2, input_w, Wire, Wires};
 
-#[derive(Clone)]
+#[derive(Debug, Clone)]
 pub struct CpuPcInput {
     pub curr_pc: Wires<8>,
     pub pc_offset_enable: Wire,
@@ -10,7 +10,7 @@ pub struct CpuPcInput {
     pub jmp_long_enable: Wire,
     pub jmp_long: Wires<4>,
 }
-#[derive(Clone)]
+#[derive(Debug, Clone)]
 pub struct CpuPcOutput {
     pub next_pc: Wires<8>,
 }
@@ -67,8 +67,7 @@ fn next_pc(
     let offset_target = add_naive(curr_pc, pc_offset.expand_signed::<8>());
     let offset_target = pc_offset_enable.expand() & offset_target.sum;
 
-    let zero = input_const(0);
-    let long_target: Wires<8> = flatten2(zero.expand::<4>(), jmp_long);
+    let long_target: Wires<8> = flatten2(Wires::<4>::parse_u8(0), jmp_long);
     let long_target = jmp_long_enable.expand() & long_target;
 
     let next_pc = offset_target | long_target;
