@@ -87,3 +87,36 @@ fn test_jmp_condition_reg() {
 
     assert_eq!(state.reg[0].out.get_u8(), 12);
 }
+
+#[test]
+fn test_jmp_long() {
+    let mut inst_rom = [inst_mov(0, 0); 256];
+    inst_rom[0] = inst_jmp_long(1); // -> 16
+    inst_rom[16] = inst_jmp_long(4); // -> 64
+    inst_rom[32] = inst_jmp_long(5); // -> 80
+    inst_rom[48] = inst_jmp_long(2); // -> 32
+    inst_rom[64] = inst_load_imm(2); // -> 65
+    inst_rom[65] = inst_jmp_long(3); // -> 48
+    inst_rom[80] = inst_load_imm(15);
+    let state = test_cpu(inst_rom.as_slice(), 8, print_regs);
+
+    assert_eq!(state.reg[0].out.get_u8(), 15);
+}
+
+#[test]
+fn test_loop() {
+    let state = test_cpu(
+        &[
+            inst_load_imm(7),
+            inst_inc(1), // r += 1
+            inst_dec(0), // i -= 1
+            inst_jg_offset(16 - 2),
+        ],
+        25,
+        print_regs,
+    );
+
+    assert_eq!(state.reg[0].out.get_u8(), 0);
+    assert_eq!(state.reg[1].out.get_u8(), 7);
+    assert!(state.pc.out.get_u8() >= 4);
+}
