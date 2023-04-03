@@ -85,7 +85,6 @@ trait CpuV1 {
         // Decoder
         let decoder_in = CpuDecoderInput { inst };
         let decoder_out: CpuDecoderOutput = Self::Decoder::build(&decoder_in);
-        #[allow(unused)]
         let CpuDecoderOutput {
             reg0_addr,
             reg1_addr,
