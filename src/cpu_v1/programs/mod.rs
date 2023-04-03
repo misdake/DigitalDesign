@@ -2,6 +2,7 @@ use crate::cpu_v1::isa::InstBinary;
 use crate::cpu_v1::{cpu_v1_build, CpuV1State};
 use crate::{clock_tick, execute_gates};
 
+mod test_jmp;
 mod test_reg;
 
 fn print_regs(_: u32, state: &CpuV1State) {

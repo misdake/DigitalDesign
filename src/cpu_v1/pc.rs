@@ -30,7 +30,11 @@ impl CpuComponentEmu<CpuPc> for CpuPcEmu {
         let offset = input.pc_offset.get_u8();
         let long = input.jmp_long.get_u8();
         let next_pc = if input.pc_offset_enable.is_one() {
-            curr_pc + offset
+            if offset < 8 {
+                curr_pc + offset
+            } else {
+                curr_pc + offset - 16
+            }
         } else if input.jmp_long_enable.is_one() {
             long * 16
         } else {

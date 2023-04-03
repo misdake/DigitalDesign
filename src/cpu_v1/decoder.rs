@@ -347,7 +347,7 @@ impl CpuComponentEmu<CpuDecoder> for CpuDecoderEmu {
                 | ((jl_offset as u8) << (JmpOp::Jl as u8))
                 | ((jg_offset as u8) << (JmpOp::Jg as u8))
                 | ((jmp_long as u8) << (JmpOp::Long as u8));
-            reg0_addr = 0; // used in, unused otherwise
+            reg0_addr = 0;
             reg1_addr = 0;
             reg0_write_enable = 0;
             reg0_write_select = 0;

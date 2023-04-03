@@ -56,9 +56,9 @@ impl CpuComponent for CpuBranch {
             pc_offset: target,
             jmp_long_enable: jmp_long,
             jmp_long: target,
-            flag_p: input.alu_out.wires[3],
+            flag_p: !input.alu_out.wires[3],
             flag_z: input.alu_out.all_0(),
-            flag_n: !input.alu_out.wires[3],
+            flag_n: input.alu_out.wires[3],
         }
     }
 }
