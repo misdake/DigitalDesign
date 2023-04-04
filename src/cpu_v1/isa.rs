@@ -187,13 +187,13 @@ inst_op1!(0b010101, neg);
 inst_op1!(0b010110, dec);
 inst_op1!(0b010111, inc);
 // TODO control
-// inst_op0!(0b01100000, reset);
-// inst_op0!(0b01100001, halt);
-// inst_op0!(0b01100010, sleep);
-// inst_op0!(0b01100011, set_mem_bank);
-// inst_op0!(0b01100100, select_external);
+inst_op0!(0b01100000, reset);
+inst_op0!(0b01100001, halt);
+inst_op0!(0b01100010, sleep);
+inst_op0!(0b01100011, set_mem_bank);
+inst_op0!(0b01100100, select_external);
 // TODO external
-// inst_op0i!(0b0111, external);
+inst_op0i!(0b0111, external);
 // load store
 inst_op0i!(0b1000, load_imm);
 inst_op0i!(0b1001, load_mem);
