@@ -1,7 +1,7 @@
 use crate::cpu_v1::{CpuComponent, CpuComponentEmu};
 use crate::{cpu_v1, input, input_w, mux2_w, unflatten2, unflatten3, Wire, Wires};
 
-#[derive(Clone)]
+#[derive(Debug, Clone)]
 pub struct CpuDecoderInput {
     pub inst: Wires<8>,
 }
@@ -347,7 +347,7 @@ impl CpuComponentEmu<CpuDecoder> for CpuDecoderEmu {
                 | ((jl_offset as u8) << (JmpOp::Jl as u8))
                 | ((jg_offset as u8) << (JmpOp::Jg as u8))
                 | ((jmp_long as u8) << (JmpOp::Long as u8));
-            reg0_addr = 0; // used in, unused otherwise
+            reg0_addr = 0;
             reg1_addr = 0;
             reg0_write_enable = 0;
             reg0_write_select = 0;

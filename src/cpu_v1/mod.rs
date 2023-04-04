@@ -1,6 +1,5 @@
-pub mod isa;
-pub use isa::*;
 mod inst_rom;
+mod isa;
 use inst_rom::*;
 mod pc;
 use pc::*;
@@ -15,7 +14,10 @@ use regfile::*;
 mod mem;
 use mem::*;
 
-use crate::{clear_all, external, reg, reg_w, simulate, External, Reg, Regs, Wires};
+#[cfg(test)]
+mod programs;
+
+use crate::{clear_all, external, reg, reg_w, External, Reg, Regs, Wires};
 use std::any::Any;
 use std::marker::PhantomData;
 
@@ -23,13 +25,13 @@ use std::marker::PhantomData;
 struct CpuV1State {
     clock_enable: Reg, // TODO impl
     inst: [Wires<8>; 256],
-    pc: Regs<8>,
-    mem: [Regs<4>; 256],
-    mem_bank: Regs<4>, // TODO impl
-    reg: [Regs<4>; 4],
-    flag_p: Reg,
-    flag_z: Reg,
-    flag_n: Reg,
+    pc: Regs<8>,              // write in CpuV1
+    reg: [Regs<4>; 4],        // write in RegWrite
+    mem: [Regs<4>; 256],      // write in Mem
+    mem_bank: Regs<4>,        // TODO impl write in Mem
+    flag_p: Reg,              // write in CpuV1
+    flag_z: Reg,              // write in CpuV1
+    flag_n: Reg,              // write in CpuV1
     external_device: Regs<4>, // TODO impl
 }
 impl CpuV1State {
@@ -52,11 +54,11 @@ impl CpuV1State {
     }
 }
 
-#[allow(unused)] // internal struct for debugging only
+#[derive(Debug, Clone)]
+#[allow(unused)] // internal struct for debugging and testing
 struct CpuV1StateInternal {
-    inst_rom_in: CpuInstInput,
-    inst_rom_out: CpuInstOutput,
-
+    decoder_in: CpuDecoderInput,
+    branch_in: CpuBranchInput,
     next_pc_in: CpuPcInput,
     next_pc_out: CpuPcOutput,
 }
@@ -83,7 +85,6 @@ trait CpuV1 {
         // Decoder
         let decoder_in = CpuDecoderInput { inst };
         let decoder_out: CpuDecoderOutput = Self::Decoder::build(&decoder_in);
-        #[allow(unused)]
         let CpuDecoderOutput {
             reg0_addr,
             reg1_addr,
@@ -188,8 +189,8 @@ trait CpuV1 {
         state.flag_n.set_in(flag_n);
 
         CpuV1StateInternal {
-            inst_rom_in,
-            inst_rom_out,
+            decoder_in,
+            branch_in,
             next_pc_in,
             next_pc_out,
         }
@@ -219,52 +220,21 @@ impl CpuV1 for CpuV1EmuInstance {
     type Mem = CpuMem;
 }
 
-#[test]
-fn test() {
-    cpu_v1_build();
-}
-
 #[allow(unused)]
-pub fn cpu_v1_build() {
+fn cpu_v1_build(
+    inst_rom: [u8; 256],
+) -> (
+    CpuV1State,
+    CpuV1State,
+    CpuV1StateInternal,
+    CpuV1StateInternal,
+) {
     clear_all();
-
-    let mut inst_rom = [0u8; 256];
-    inst_rom[0] = inst_mov(0, 1).binary;
-    inst_rom[1] = inst_add(0, 1).binary;
-    inst_rom[2] = inst_inv(2).binary;
-
     let mut state1 = CpuV1State::create(inst_rom.clone());
     let mut state2 = CpuV1State::create(inst_rom.clone());
     let internal1 = CpuV1Instance::build(&mut state1);
     let internal2 = CpuV1EmuInstance::build(&mut state2);
-    internal1.next_pc_in.curr_pc.set_u8(0);
-    internal2.next_pc_in.curr_pc.set_u8(0);
-    internal1.next_pc_in.pc_offset_enable.set(1);
-    internal2.next_pc_in.pc_offset_enable.set(1);
-    internal1.next_pc_in.pc_offset.set_u8(1);
-    internal2.next_pc_in.pc_offset.set_u8(1);
-
-    simulate();
-    let inst1 = internal1.inst_rom_out.inst.get_u8();
-    let inst2 = internal2.inst_rom_out.inst.get_u8();
-    assert_eq!(inst1, inst2);
-    let binary = InstDesc::parse(inst1).unwrap();
-    println!("inst: {}", binary.desc.name());
-
-    let next_pc1 = internal1.next_pc_out.next_pc.get_u8();
-    let next_pc2 = internal2.next_pc_out.next_pc.get_u8();
-    assert_eq!(next_pc1, next_pc2);
-
-    simulate();
-    let inst1 = internal1.inst_rom_out.inst.get_u8();
-    let inst2 = internal2.inst_rom_out.inst.get_u8();
-    assert_eq!(inst1, inst2);
-    let binary = InstDesc::parse(inst1).unwrap();
-    println!("inst: {}", binary.desc.name());
-
-    let next_pc1 = internal1.next_pc_out.next_pc.get_u8();
-    let next_pc2 = internal2.next_pc_out.next_pc.get_u8();
-    assert_eq!(next_pc1, next_pc2);
+    (state1, state2, internal1, internal2)
 }
 
 pub trait CpuComponent: Any {

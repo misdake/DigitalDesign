@@ -2,7 +2,7 @@ use crate::cpu_v1::decoder::{JmpOp, JmpSrcSelect};
 use crate::cpu_v1::CpuComponent;
 use crate::{Wire, Wires};
 
-#[derive(Clone)]
+#[derive(Debug, Clone)]
 pub struct CpuBranchInput {
     pub imm: Wires<4>,
     pub reg0: Wires<4>,
@@ -41,8 +41,8 @@ impl CpuComponent for CpuBranch {
         let jg = input.jmp_op.wires[JmpOp::Jg as usize] & input.flag_p;
         let jmp_long = input.jmp_op.wires[JmpOp::Long as usize];
 
-        let jmp_src_imm = input.jmp_src_select.wires[JmpSrcSelect::Imm as usize];
-        let jmp_src_reg = input.jmp_src_select.wires[JmpSrcSelect::Reg0 as usize];
+        let jmp_src_imm = !no_jmp & input.jmp_src_select.wires[JmpSrcSelect::Imm as usize];
+        let jmp_src_reg = !no_jmp & input.jmp_src_select.wires[JmpSrcSelect::Reg0 as usize];
 
         let use_offset_jmp = (jmp | je) | (jl | jg);
 
@@ -56,9 +56,9 @@ impl CpuComponent for CpuBranch {
             pc_offset: target,
             jmp_long_enable: jmp_long,
             jmp_long: target,
-            flag_p: input.alu_out.wires[3],
+            flag_p: !input.alu_out.wires[3] & !input.alu_out.all_0(),
             flag_z: input.alu_out.all_0(),
-            flag_n: !input.alu_out.wires[3],
+            flag_n: input.alu_out.wires[3],
         }
     }
 }
