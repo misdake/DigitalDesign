@@ -24,6 +24,7 @@ pub struct CpuDecoderOutput {
     // mem control
     pub mem_addr_select: Wires<2>, // MemAddrSelect: imm, reg1
     pub mem_write_enable: Wire,
+    pub mem_bank_write_enable: Wire,
 
     // jmp control
     pub jmp_op: Wires<6>,         // JmpOp: no_jmp, jmp, je, jl, jg, long
@@ -162,6 +163,7 @@ impl CpuComponent for CpuDecoder {
         mem_addr_select.wires[MemAddrSelect::Reg1 as usize] = imm_all_0;
 
         let mem_write_enable = is_op_store_mem;
+        let mem_bank_write_enable = inst.eq_const(0b01100011);
 
         let mut jmp_op = Wires::uninitialized();
         let is_op_jmp_long = op4.eq_const(0b1011);
@@ -192,6 +194,7 @@ impl CpuComponent for CpuDecoder {
             alu1_select,
             mem_addr_select,
             mem_write_enable,
+            mem_bank_write_enable,
             jmp_op,
             jmp_src_select,
         }
@@ -214,6 +217,7 @@ impl CpuComponentEmu<CpuDecoder> for CpuDecoderEmu {
             alu1_select: input_w(),
             mem_addr_select: input_w(),
             mem_write_enable: input(),
+            mem_bank_write_enable: input(),
             jmp_op: input_w(),
             jmp_src_select: input_w(),
         }
@@ -250,6 +254,7 @@ impl CpuComponentEmu<CpuDecoder> for CpuDecoderEmu {
         let jg_offset = INST_JG_OFFSET.match_opcode(inst);
         let jmp_long = INST_JMP_LONG.match_opcode(inst);
         // control TODO
+        let set_mem_bank = INST_SET_MEM_BANK.match_opcode(inst);
         // external TODO
 
         // immutable local variable => all output variables assigned once and only once.
@@ -262,6 +267,7 @@ impl CpuComponentEmu<CpuDecoder> for CpuDecoderEmu {
         let alu1_select: u8;
         let mem_addr_select: u8;
         let mem_write_enable: u8;
+        let mem_bank_write_enable: u8;
         let jmp_op: u8;
         let jmp_src_select: u8;
 
@@ -270,6 +276,7 @@ impl CpuComponentEmu<CpuDecoder> for CpuDecoderEmu {
         let is_load_mem = load_mem_imm || load_mem_reg;
         let is_store_mem = store_mem_imm || store_mem_reg;
         let is_jmp = jmp_offset || je_offset || jl_offset || jg_offset || jmp_long;
+        let is_control = set_mem_bank; // TODO other control instructions
 
         if is_alu || is_load_imm {
             jmp_op = 1 << JmpOp::NoJmp as u8;
@@ -285,6 +292,7 @@ impl CpuComponentEmu<CpuDecoder> for CpuDecoderEmu {
             reg0_write_select = 1 << Reg0WriteSelect::AluOut as u8;
             mem_addr_select = 0;
             mem_write_enable = 0;
+            mem_bank_write_enable = 0;
 
             let mut v_alu_op: u8 = 0;
             let mut v_alu0_select: u8 = 0;
@@ -320,6 +328,7 @@ impl CpuComponentEmu<CpuDecoder> for CpuDecoderEmu {
             alu_op = 0;
             alu0_select = 0;
             alu1_select = 0;
+            mem_bank_write_enable = 0;
             if is_load_mem {
                 reg0_write_enable = 1;
                 reg0_write_select = 1 << Reg0WriteSelect::MemOut as u8;
@@ -356,13 +365,27 @@ impl CpuComponentEmu<CpuDecoder> for CpuDecoderEmu {
             alu1_select = 0;
             mem_addr_select = 0;
             mem_write_enable = 0;
+            mem_bank_write_enable = 0;
             jmp_src_select = if imm == 0 {
                 1 << JmpSrcSelect::Reg0 as u8
             } else {
                 1 << JmpSrcSelect::Imm as u8
             };
-        } else {
+        } else if is_control {
+            reg0_addr = 0;
+            reg1_addr = 0;
+            reg0_write_enable = 0;
+            reg0_write_select = 0;
+            alu_op = 0;
+            alu0_select = 0;
+            alu1_select = 0;
+            mem_addr_select = 0;
+            mem_write_enable = 0;
+            mem_bank_write_enable = 1;
+            jmp_op = 1 << JmpOp::NoJmp as u8;
+            jmp_src_select = 1 << JmpSrcSelect::Imm as u8;
             //TODO control
+        } else {
             //TODO external
             todo!()
         }
@@ -377,6 +400,7 @@ impl CpuComponentEmu<CpuDecoder> for CpuDecoderEmu {
         output.alu1_select.set_u8(alu1_select);
         output.mem_addr_select.set_u8(mem_addr_select);
         output.mem_write_enable.set(mem_write_enable);
+        output.mem_bank_write_enable.set(mem_bank_write_enable);
         output.jmp_op.set_u8(jmp_op);
         output.jmp_src_select.set_u8(jmp_src_select);
     }

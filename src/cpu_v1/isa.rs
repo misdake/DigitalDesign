@@ -154,6 +154,7 @@ macro_rules! inst_op0 {
 
 #[allow(unused)]
 const ALL_INSTRUCTION_DESC: &'static [&'static InstDesc] = &[
+    // Alu
     &INST_MOV,
     &INST_AND,
     &INST_OR,
@@ -163,15 +164,22 @@ const ALL_INSTRUCTION_DESC: &'static [&'static InstDesc] = &[
     &INST_NEG,
     &INST_DEC,
     &INST_INC,
+    // Load/Store
     &INST_LOAD_IMM,
     &INST_LOAD_MEM,
     &INST_STORE_MEM,
+    // Jmp
     &INST_JMP_OFFSET,
     &INST_JE_OFFSET,
     &INST_JL_OFFSET,
     &INST_JG_OFFSET,
     &INST_JMP_LONG,
-    // TODO control
+    // control
+    &INST_RESET,
+    &INST_HALT,
+    &INST_SLEEP,
+    &INST_SET_MEM_BANK,
+    &INST_SELECT_EXTERNAL,
     // TODO external
 ];
 
@@ -186,14 +194,6 @@ inst_op1!(0b010100, inv);
 inst_op1!(0b010101, neg);
 inst_op1!(0b010110, dec);
 inst_op1!(0b010111, inc);
-// TODO control
-inst_op0!(0b01100000, reset);
-inst_op0!(0b01100001, halt);
-inst_op0!(0b01100010, sleep);
-inst_op0!(0b01100011, set_mem_bank);
-inst_op0!(0b01100100, select_external);
-// TODO external
-inst_op0i!(0b0111, external);
 // load store
 inst_op0i!(0b1000, load_imm);
 inst_op0i!(0b1001, load_mem);
@@ -204,3 +204,13 @@ inst_op0i!(0b1100, jmp_offset);
 inst_op0i!(0b1101, je_offset);
 inst_op0i!(0b1110, jl_offset);
 inst_op0i!(0b1111, jg_offset);
+
+// control
+inst_op0!(0b01100000, reset); // TODO
+inst_op0!(0b01100001, halt); // TODO
+inst_op0!(0b01100010, sleep); // TODO
+inst_op0!(0b01100011, set_mem_bank); // TODO
+inst_op0!(0b01100100, select_external); // TODO
+
+// external
+inst_op0i!(0b0111, external); // TODO
