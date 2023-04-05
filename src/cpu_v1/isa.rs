@@ -142,7 +142,7 @@ macro_rules! inst_op0 {
             #[allow(unused)]
             pub const [<INST_ $name:upper>]: InstDesc = InstDesc::op0(stringify!($name), $opcode);
             #[allow(unused)]
-            pub fn [<inst_ $name>](imm: InstImmType) -> InstBinary {
+            pub fn [<inst_ $name>]() -> InstBinary {
                 InstBinary {
                     binary: ($opcode << 0),
                     desc: &[<INST_ $name:upper>],
