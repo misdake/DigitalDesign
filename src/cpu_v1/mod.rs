@@ -25,14 +25,14 @@ use std::marker::PhantomData;
 struct CpuV1State {
     clock_enable: Reg, // TODO impl
     inst: [Wires<8>; 256],
-    pc: Regs<8>,              // write in CpuV1
-    reg: [Regs<4>; 4],        // write in RegWrite
-    mem: [Regs<4>; 256],      // write in Mem
-    mem_bank: Regs<4>,        // write in Mem
-    flag_p: Reg,              // write in CpuV1
-    flag_z: Reg,              // write in CpuV1
-    flag_n: Reg,              // write in CpuV1
-    external_device: Regs<4>, // TODO impl
+    pc: Regs<8>,         // write in CpuV1
+    reg: [Regs<4>; 4],   // write in RegWrite
+    mem: [Regs<4>; 256], // write in Mem
+    mem_bank: Regs<4>,   // write in Mem
+    flag_p: Reg,         // write in CpuV1
+    flag_z: Reg,         // write in CpuV1
+    flag_n: Reg,         // write in CpuV1
+    bus_addr: Regs<4>,   // TODO impl
 }
 impl CpuV1State {
     fn create(inst: [u8; 256]) -> Self {
@@ -49,7 +49,7 @@ impl CpuV1State {
             flag_p: reg(),
             flag_z: reg(),
             flag_n: reg(),
-            external_device: reg_w(),
+            bus_addr: reg_w(),
         }
     }
 }

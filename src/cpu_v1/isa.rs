@@ -179,8 +179,8 @@ const ALL_INSTRUCTION_DESC: &'static [&'static InstDesc] = &[
     &INST_HALT,
     &INST_SLEEP,
     &INST_SET_MEM_BANK,
-    &INST_SELECT_EXTERNAL,
-    // TODO external
+    &INST_SELECT_DEVICE,
+    // TODO bus
 ];
 
 // binary op
@@ -209,8 +209,8 @@ inst_op0i!(0b1111, jg_offset);
 inst_op0!(0b01100000, reset); // TODO
 inst_op0!(0b01100001, halt); // TODO
 inst_op0!(0b01100010, sleep); // TODO
-inst_op0!(0b01100011, set_mem_bank); // TODO
-inst_op0!(0b01100100, select_external); // TODO
+inst_op0!(0b01100011, set_mem_bank);
+inst_op0!(0b01100100, select_device); // TODO
 
-// external
-inst_op0i!(0b0111, external); // TODO
+// bus
+inst_op0i!(0b0111, bus); // TODO

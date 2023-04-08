@@ -255,7 +255,7 @@ impl CpuComponentEmu<CpuDecoder> for CpuDecoderEmu {
         let jmp_long = INST_JMP_LONG.match_opcode(inst);
         // control TODO
         let set_mem_bank = INST_SET_MEM_BANK.match_opcode(inst);
-        // external TODO
+        // bus TODO
 
         // immutable local variable => all output variables assigned once and only once.
         let reg0_addr: u8;
@@ -386,7 +386,7 @@ impl CpuComponentEmu<CpuDecoder> for CpuDecoderEmu {
             jmp_src_select = 1 << JmpSrcSelect::Imm as u8;
             //TODO control
         } else {
-            //TODO external
+            //TODO bus
             todo!()
         }
 
@@ -533,5 +533,7 @@ fn test_decoder() {
     test_decoder_jmp(inst_jg_offset(0), &env);
 
     //TODO control
-    //TODO external
+    test_decoder_jmp(inst_set_mem_bank(), &env);
+
+    //TODO bus
 }
