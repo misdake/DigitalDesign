@@ -32,3 +32,22 @@ fn test_load_store() {
     assert_eq!(state.mem[14].out.get_u8(), 14);
     assert_eq!(state.mem[15].out.get_u8(), 15);
 }
+
+#[test]
+fn test_mem_bank() {
+    let state = test_cpu(
+        &[
+            inst_load_imm(15),
+            inst_store_mem(15),  // mem[0][15] = 15
+            inst_set_mem_bank(), // mem[15]
+            inst_load_mem(15),   // r0 = mem[15][15] (=0)
+            inst_set_mem_bank(), // mem[0]
+            inst_load_mem(15),   // r0 = mem[0][15] (=15)
+        ],
+        8,
+        print_regs,
+    );
+
+    assert_eq!(state.mem[15].out.get_u8(), 15);
+    assert_eq!(state.reg[0].out.get_u8(), 15);
+}

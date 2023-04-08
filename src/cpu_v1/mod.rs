@@ -28,7 +28,7 @@ struct CpuV1State {
     pc: Regs<8>,              // write in CpuV1
     reg: [Regs<4>; 4],        // write in RegWrite
     mem: [Regs<4>; 256],      // write in Mem
-    mem_bank: Regs<4>,        // TODO impl write in Mem
+    mem_bank: Regs<4>,        // write in Mem
     flag_p: Reg,              // write in CpuV1
     flag_z: Reg,              // write in CpuV1
     flag_n: Reg,              // write in CpuV1
@@ -96,6 +96,7 @@ trait CpuV1 {
             alu1_select,
             mem_addr_select,
             mem_write_enable,
+            mem_bank_write_enable,
             jmp_op,
             jmp_src_select,
         } = decoder_out;
@@ -131,6 +132,7 @@ trait CpuV1 {
             mem_bank: state.mem_bank,
             reg0: reg0_data,
             mem_write_enable,
+            mem_bank_write_enable,
             imm,
             reg1: reg1_data,
             mem_addr_select,
