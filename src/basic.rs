@@ -168,6 +168,11 @@ impl Gate {
         self.wire_out.set(!(a & b) & 1);
         self.wire_out.set_latency(la.max(lb) + 1);
     }
+    fn execute_latency_only(&self) {
+        let la = self.wire_a.get_latency();
+        let lb = self.wire_b.get_latency();
+        self.wire_out.set_latency(la.max(lb) + 1);
+    }
 }
 
 //region Execute Segments
@@ -223,6 +228,22 @@ pub fn simulate() -> ExecutionResult {
     let result = execute_gates();
     clock_tick();
     result
+}
+
+pub fn execute_latency_only() -> ExecutionResult {
+    unsafe {
+        LATENCIES.fill(0);
+
+        for gate in &GATES {
+            gate.execute_latency_only();
+        }
+
+        ExecutionResult {
+            wire_count: WIRES.len(),
+            gate_count: GATES.len(),
+            max_latency: *LATENCIES.iter().max().unwrap_or(&0),
+        }
+    }
 }
 
 pub fn execute_gates() -> ExecutionResult {

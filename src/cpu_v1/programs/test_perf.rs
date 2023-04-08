@@ -1,7 +1,7 @@
 #![cfg(test)]
 
 use crate::cpu_v1::{CpuV1, CpuV1Instance, CpuV1State};
-use crate::{clear_all, execute_gates};
+use crate::{clear_all, execute_latency_only};
 
 #[test]
 fn raw_circuit() {
@@ -11,6 +11,6 @@ fn raw_circuit() {
     let mut state1 = CpuV1State::create(inst_rom);
     let _ = CpuV1Instance::build(&mut state1);
 
-    let result = execute_gates();
+    let result = execute_latency_only();
     println!("{:?}", result);
 }
