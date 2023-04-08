@@ -149,7 +149,7 @@ fn test_mem() {
     for t in testcases {
         let v0 = (t % 16) as u8;
         let v1 = ((t >> 4) % 16) as u8;
-        let v2 = ((t >> 3) % 8) as u8;
+        let v2 = ((t >> 3) % 7) as u8;
 
         let mem_out_sw = match v2 {
             0 => load_mem_imm(&mut bank_sw, &mut mem_sw, v0),
@@ -158,8 +158,7 @@ fn test_mem() {
             3 => store_mem_reg(&mut bank_sw, &mut mem_sw, v0, v1),
             4 => load_mem_imm(&mut bank_sw, &mut mem_sw, v0),
             5 => store_mem_imm(&mut bank_sw, &mut mem_sw, v0, v1),
-            6 => store_mem_imm(&mut bank_sw, &mut mem_sw, v0, v1),
-            7 => set_bank(&mut bank_sw, v0),
+            6 => set_bank(&mut bank_sw, v0),
             _ => unreachable!(),
         };
         if let Some(mem_out_sw) = mem_out_sw {
