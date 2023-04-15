@@ -179,8 +179,10 @@ const ALL_INSTRUCTION_DESC: &'static [&'static InstDesc] = &[
     &INST_HALT,
     &INST_SLEEP,
     &INST_SET_MEM_BANK,
-    &INST_SELECT_DEVICE,
-    // TODO bus
+    &INST_SET_BUS_ADDR,
+    // bus
+    //&INST_BUS_READ // special case of INST_BUS
+    &INST_BUS,
 ];
 
 // binary op
@@ -210,7 +212,8 @@ inst_op0!(0b01100000, reset); // TODO
 inst_op0!(0b01100001, halt); // TODO
 inst_op0!(0b01100010, sleep); // TODO
 inst_op0!(0b01100011, set_mem_bank);
-inst_op0!(0b01100100, select_device); // TODO
+inst_op0!(0b01100100, set_bus_addr); // TODO
 
 // bus
+inst_op0!(0b01110000, bus_read); // TODO
 inst_op0i!(0b0111, bus); // TODO

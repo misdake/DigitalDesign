@@ -29,6 +29,9 @@ pub struct CpuDecoderOutput {
     // jmp control
     pub jmp_op: Wires<6>,         // JmpOp: no_jmp, jmp, je, jl, jg, long
     pub jmp_src_select: Wires<2>, // JmpSrcSelect: imm, regA
+
+    // bus control
+    pub bus_enable: Wire,
 }
 
 #[allow(unused)]
@@ -44,6 +47,7 @@ enum RegAddr {
 pub enum Reg0WriteSelect {
     AluOut = 0,
     MemOut = 1,
+    BusOut = 2,
 }
 
 #[repr(u8)]
@@ -117,10 +121,17 @@ impl CpuComponent for CpuDecoder {
         let reg1_addr = mux2_w(Wires::parse_u8(1), inst_reg1, is_alu);
         // 0b0 | 0b100
         let reg0_write_enable = !b0 | (!b1 & !b2);
-        // 0b0 | 0b1001 => AluOut, other => MemOut
+        // (0b0 & !0b0111) | 0b1001 => AluOut, other => MemOut
         let mut reg0_write_select = Wires::uninitialized();
-        reg0_write_select.wires[Reg0WriteSelect::AluOut as usize] = !b0 | (!b1 & !b2 & !b3);
-        reg0_write_select.wires[Reg0WriteSelect::MemOut as usize] = !reg0_write_select.wires[0];
+
+        let is_op_bus = op4.eq_const(0b0111);
+        let is_op_bus_read = inst.eq_const(0b01110000);
+        let bus_enable = is_op_bus;
+
+        reg0_write_select.wires[Reg0WriteSelect::AluOut as usize] =
+            (!b0 | (!b1 & !b2 & !b3)) & !is_op_bus;
+        reg0_write_select.wires[Reg0WriteSelect::MemOut as usize] = b0 & (b1 | b2 | b3);
+        reg0_write_select.wires[Reg0WriteSelect::BusOut as usize] = is_op_bus;
 
         let imm_all_0 = imm.all_0();
 
@@ -162,7 +173,7 @@ impl CpuComponent for CpuDecoder {
         mem_addr_select.wires[MemAddrSelect::Imm as usize] = !imm_all_0;
         mem_addr_select.wires[MemAddrSelect::Reg1 as usize] = imm_all_0;
 
-        let mem_write_enable = is_op_store_mem;
+        let mem_write_enable = is_op_store_mem | is_op_bus_read;
         let mem_bank_write_enable = inst.eq_const(0b01100011);
 
         let mut jmp_op = Wires::uninitialized();
@@ -197,6 +208,7 @@ impl CpuComponent for CpuDecoder {
             mem_bank_write_enable,
             jmp_op,
             jmp_src_select,
+            bus_enable,
         }
     }
 }
@@ -220,6 +232,7 @@ impl CpuComponentEmu<CpuDecoder> for CpuDecoderEmu {
             mem_bank_write_enable: input(),
             jmp_op: input_w(),
             jmp_src_select: input_w(),
+            bus_enable: input(),
         }
     }
     fn execute(input: &CpuDecoderInput, output: &CpuDecoderOutput) {
@@ -256,6 +269,8 @@ impl CpuComponentEmu<CpuDecoder> for CpuDecoderEmu {
         // control TODO
         let set_mem_bank = INST_SET_MEM_BANK.match_opcode(inst);
         // bus TODO
+        let is_bus = INST_BUS.match_opcode(inst);
+        let is_bus_read = INST_BUS_READ.match_opcode(inst);
 
         // immutable local variable => all output variables assigned once and only once.
         let reg0_addr: u8;
@@ -270,6 +285,7 @@ impl CpuComponentEmu<CpuDecoder> for CpuDecoderEmu {
         let mem_bank_write_enable: u8;
         let jmp_op: u8;
         let jmp_src_select: u8;
+        let bus_enable: u8;
 
         let is_alu = mov || and || or || xor || add || inv || neg || inc || dec;
         let is_load_imm = load_imm;
@@ -293,6 +309,7 @@ impl CpuComponentEmu<CpuDecoder> for CpuDecoderEmu {
             mem_addr_select = 0;
             mem_write_enable = 0;
             mem_bank_write_enable = 0;
+            bus_enable = 0;
 
             let mut v_alu_op: u8 = 0;
             let mut v_alu0_select: u8 = 0;
@@ -329,6 +346,8 @@ impl CpuComponentEmu<CpuDecoder> for CpuDecoderEmu {
             alu0_select = 0;
             alu1_select = 0;
             mem_bank_write_enable = 0;
+            bus_enable = 0;
+
             if is_load_mem {
                 reg0_write_enable = 1;
                 reg0_write_select = 1 << Reg0WriteSelect::MemOut as u8;
@@ -366,12 +385,17 @@ impl CpuComponentEmu<CpuDecoder> for CpuDecoderEmu {
             mem_addr_select = 0;
             mem_write_enable = 0;
             mem_bank_write_enable = 0;
+            bus_enable = 0;
+
             jmp_src_select = if imm == 0 {
                 1 << JmpSrcSelect::Reg0 as u8
             } else {
                 1 << JmpSrcSelect::Imm as u8
             };
         } else if is_control {
+            //TODO other control instructions
+
+            // set_mem_bank
             reg0_addr = 0;
             reg1_addr = 0;
             reg0_write_enable = 0;
@@ -384,10 +408,23 @@ impl CpuComponentEmu<CpuDecoder> for CpuDecoderEmu {
             mem_bank_write_enable = 1;
             jmp_op = 1 << JmpOp::NoJmp as u8;
             jmp_src_select = 1 << JmpSrcSelect::Imm as u8;
-            //TODO control
+            bus_enable = 0;
+        } else if is_bus {
+            reg0_addr = 0;
+            reg1_addr = 1;
+            reg0_write_enable = is_bus_read as u8;
+            reg0_write_select = 1 << Reg0WriteSelect::BusOut as u8;
+            alu_op = 0;
+            alu0_select = 0;
+            alu1_select = 0;
+            mem_addr_select = 0;
+            mem_write_enable = 0;
+            mem_bank_write_enable = 0;
+            jmp_op = 1 << JmpOp::NoJmp as u8;
+            jmp_src_select = 1 << JmpSrcSelect::Imm as u8;
+            bus_enable = 1;
         } else {
-            //TODO bus
-            todo!()
+            unreachable!("unknown instruction")
         }
 
         output.imm.set_u8(imm);
@@ -403,6 +440,7 @@ impl CpuComponentEmu<CpuDecoder> for CpuDecoderEmu {
         output.mem_bank_write_enable.set(mem_bank_write_enable);
         output.jmp_op.set_u8(jmp_op);
         output.jmp_src_select.set_u8(jmp_src_select);
+        output.bus_enable.set(bus_enable);
     }
 }
 
@@ -499,6 +537,21 @@ fn test_decoder_store_mem(inst: InstBinary, env: &DecoderTestEnv) {
         )
     });
 }
+#[cfg(test)]
+fn test_decoder_special(inst: InstBinary, env: &DecoderTestEnv) {
+    test_result(inst, &env, |o| {
+        (
+            o.reg0_addr.get_u8(),
+            o.reg1_addr.get_u8(),
+            o.reg0_write_enable.get(),
+            o.mem_addr_select.get_u8(),
+            o.mem_write_enable.get(),
+            o.mem_bank_write_enable.get(),
+            o.jmp_op.get_u8(),
+            o.bus_enable.get(),
+        )
+    });
+}
 
 #[test]
 fn test_decoder() {
@@ -533,7 +586,8 @@ fn test_decoder() {
     test_decoder_jmp(inst_jg_offset(0), &env);
 
     //TODO control
-    test_decoder_jmp(inst_set_mem_bank(), &env);
+    test_decoder_special(inst_set_mem_bank(), &env);
 
-    //TODO bus
+    test_decoder_special(inst_bus(0), &env);
+    test_decoder_special(inst_bus(1), &env);
 }

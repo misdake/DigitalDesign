@@ -13,6 +13,10 @@ mod regfile;
 use regfile::*;
 mod mem;
 use mem::*;
+mod bus;
+use bus::*;
+mod bus_devices;
+use bus_devices::*;
 
 #[cfg(test)]
 mod programs;
@@ -72,6 +76,7 @@ trait CpuV1 {
     type RegRead: CpuComponent<Input = CpuRegReadInput, Output = CpuRegReadOutput>;
     type RegWrite: CpuComponent<Input = CpuRegWriteInput, Output = CpuRegWriteOutput>;
     type Mem: CpuComponent<Input = CpuMemInput, Output = CpuMemOutput>;
+    type Bus: CpuComponent<Input = CpuBusInput, Output = CpuBusOutput>;
 
     fn build(state: &mut CpuV1State) -> CpuV1StateInternal {
         // Inst
@@ -99,6 +104,7 @@ trait CpuV1 {
             mem_bank_write_enable,
             jmp_op,
             jmp_src_select,
+            bus_enable,
         } = decoder_out;
 
         // RegRead
@@ -210,6 +216,7 @@ impl CpuV1 for CpuV1Instance {
     type RegRead = CpuRegRead;
     type RegWrite = CpuRegWrite;
     type Mem = CpuMem;
+    type Bus = CpuComponentEmuContext<CpuBus, CpuBusEmu>;
 }
 impl CpuV1 for CpuV1EmuInstance {
     type Pc = CpuComponentEmuContext<CpuPc, CpuPcEmu>;
@@ -220,6 +227,7 @@ impl CpuV1 for CpuV1EmuInstance {
     type RegRead = CpuRegRead;
     type RegWrite = CpuRegWrite;
     type Mem = CpuMem;
+    type Bus = CpuComponentEmuContext<CpuBus, CpuBusEmu>;
 }
 
 #[allow(unused)]
