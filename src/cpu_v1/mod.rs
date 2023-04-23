@@ -246,10 +246,10 @@ pub trait CpuComponent: Any {
 }
 
 pub trait CpuComponentEmu<T: CpuComponent>: Sized + Any {
-    fn init_output() -> T::Output;
+    fn init_output(input: &T::Input) -> T::Output;
     fn execute(input: &T::Input, output: &T::Output);
     fn build(input: &T::Input) -> T::Output {
-        let output = Self::init_output();
+        let output = Self::init_output(input);
         let ctx: CpuComponentEmuContext<T, Self> = CpuComponentEmuContext {
             _phantom: Default::default(),
             input: input.clone(),

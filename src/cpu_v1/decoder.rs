@@ -203,8 +203,8 @@ impl CpuComponent for CpuDecoder {
 
 pub struct CpuDecoderEmu;
 impl CpuComponentEmu<CpuDecoder> for CpuDecoderEmu {
-    fn init_output() -> CpuDecoderOutput {
-        CpuDecoderOutput {
+    fn init_output(i: &CpuDecoderInput) -> CpuDecoderOutput {
+        let output = CpuDecoderOutput {
             imm: input_w(),
 
             reg0_addr: input_w(),
@@ -220,7 +220,24 @@ impl CpuComponentEmu<CpuDecoder> for CpuDecoderEmu {
             mem_bank_write_enable: input(),
             jmp_op: input_w(),
             jmp_src_select: input_w(),
-        }
+        };
+
+        let latency = i.inst.get_max_latency() + 15;
+        output.imm.set_latency(latency);
+        output.reg0_addr.set_latency(latency);
+        output.reg1_addr.set_latency(latency);
+        output.reg0_write_enable.set_latency(latency);
+        output.reg0_write_select.set_latency(latency);
+        output.alu_op.set_latency(latency);
+        output.alu0_select.set_latency(latency);
+        output.alu1_select.set_latency(latency);
+        output.mem_addr_select.set_latency(latency);
+        output.mem_write_enable.set_latency(latency);
+        output.mem_bank_write_enable.set_latency(latency);
+        output.jmp_op.set_latency(latency);
+        output.jmp_src_select.set_latency(latency);
+
+        output
     }
     fn execute(input: &CpuDecoderInput, output: &CpuDecoderOutput) {
         use cpu_v1::isa::*;

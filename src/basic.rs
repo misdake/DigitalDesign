@@ -11,10 +11,10 @@ pub struct Wire(pub usize);
 #[derive(Copy, Clone)]
 pub struct Reg(pub usize);
 
-#[derive(Debug)]
 enum ExecuteSegment {
-    Gate(Range<usize>),
-    External(Range<usize>),
+    Gates(Range<usize>),
+    GatesGroupedByLatency(Vec<Vec<Gate>>),
+    Externals(Range<usize>),
 }
 
 impl Debug for Wire {
@@ -25,6 +25,17 @@ impl Debug for Wire {
 impl Debug for Reg {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
         f.write_str(&format!("{}", self.out().get()))
+    }
+}
+impl Debug for ExecuteSegment {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        let mut r = f.debug_struct("ExecuteSegment");
+        match self {
+            ExecuteSegment::Gates(gates) => r.field("Gates", gates),
+            ExecuteSegment::GatesGroupedByLatency(groups) => r.field("Groups", &groups.len()),
+            ExecuteSegment::Externals(externals) => r.field("Externals", externals),
+        };
+        r.finish()
     }
 }
 
@@ -116,6 +127,7 @@ pub fn nand(a: Wire, b: Wire) -> Wire {
     before_new_gate();
     unsafe {
         let out = input();
+        out.set_latency(a.get_latency().max(b.get_latency()) + 1);
         GATES.push(Gate {
             wire_a: a,
             wire_b: b,
@@ -153,6 +165,7 @@ pub struct RegValue {
     temp_value: WireValue,
 }
 
+#[derive(Debug, Copy, Clone)]
 pub struct Gate {
     pub wire_a: Wire,
     pub wire_b: Wire,
@@ -163,10 +176,7 @@ impl Gate {
     fn execute(&self) {
         let a = self.wire_a.get();
         let b = self.wire_b.get();
-        let la = self.wire_a.get_latency();
-        let lb = self.wire_b.get_latency();
         self.wire_out.set(!(a & b) & 1);
-        self.wire_out.set_latency(la.max(lb) + 1);
     }
     fn execute_latency_only(&self) {
         let la = self.wire_a.get_latency();
@@ -179,38 +189,81 @@ impl Gate {
 
 fn before_new_gate() {
     unsafe {
-        if let Some(ExecuteSegment::Gate(range)) = EXECUTE_SEGMENTS.last_mut() {
+        if let Some(ExecuteSegment::Gates(range)) = EXECUTE_SEGMENTS.last_mut() {
             range.end += 1;
         } else {
             let next = GATES.len();
-            EXECUTE_SEGMENTS.push(ExecuteSegment::Gate(next..(next + 1)));
+            EXECUTE_SEGMENTS.push(ExecuteSegment::Gates(next..(next + 1)));
         }
     }
 }
 fn before_new_external() {
     unsafe {
-        if let Some(ExecuteSegment::External(range)) = EXECUTE_SEGMENTS.last_mut() {
+        if let Some(ExecuteSegment::Externals(range)) = EXECUTE_SEGMENTS.last_mut() {
             range.end += 1;
         } else {
             let next = EXTERNALS.len();
-            EXECUTE_SEGMENTS.push(ExecuteSegment::External(next..(next + 1)));
+            EXECUTE_SEGMENTS.push(ExecuteSegment::Externals(next..(next + 1)));
         }
     }
 }
 
 impl ExecuteSegment {
+    fn optimize(&mut self, max_latency: LatencyValue) {
+        let mut groups: Vec<Vec<Gate>> = Vec::new();
+        groups.resize_with(max_latency as usize + 1, || Vec::new());
+        if let ExecuteSegment::Gates(range) = self {
+            let gates = unsafe { &GATES[range.start..range.end] };
+            gates.iter().for_each(|gate| {
+                let latency = gate.wire_out.get_latency();
+                groups[latency as usize].push(*gate);
+            });
+
+            for group in groups.iter_mut() {
+                group.sort_by(|a, b| a.wire_a.0.partial_cmp(&b.wire_a.0).unwrap());
+            }
+
+            // for (latency, group) in groups.iter().enumerate() {
+            //     println!("latency {}: {} gates", latency, group.len());
+            // }
+
+            // for (latency, group) in groups.iter().enumerate() {
+            //     print!("latency {}: ", latency);
+            //     for gate in group {
+            //         print!(
+            //             "({},{}=>{}) ",
+            //             gate.wire_a.0, gate.wire_b.0, gate.wire_out.0
+            //         );
+            //     }
+            //     println!();
+            // }
+
+            *self = ExecuteSegment::GatesGroupedByLatency(groups);
+        }
+    }
     fn execute(&self) {
         match self {
-            ExecuteSegment::Gate(range) => unsafe {
-                for gate in &GATES[range.start..range.end] {
-                    gate.execute();
+            ExecuteSegment::Gates(range) => {
+                let gates = unsafe { &GATES[range.start..range.end] };
+                gates.iter().for_each(|gate| gate.execute());
+            }
+            ExecuteSegment::GatesGroupedByLatency(groups) => {
+                use rayon::prelude::*;
+                const PARALLEL_CHUNK_SIZE: usize = 512;
+                for group in groups {
+                    if group.len() < PARALLEL_CHUNK_SIZE {
+                        group.iter().for_each(|gate| gate.execute());
+                    } else {
+                        group.par_chunks(PARALLEL_CHUNK_SIZE).for_each(|gates| {
+                            gates.iter().for_each(|gate| gate.execute());
+                        });
+                    }
                 }
-            },
-            ExecuteSegment::External(range) => unsafe {
-                for external in &mut EXTERNALS[range.start..range.end] {
-                    external.execute();
-                }
-            },
+            }
+            ExecuteSegment::Externals(range) => {
+                let externals = unsafe { &mut EXTERNALS[range.start..range.end] };
+                externals.iter_mut().for_each(|external| external.execute());
+            }
         }
     }
 }
@@ -230,10 +283,17 @@ pub fn simulate() -> ExecutionResult {
     result
 }
 
-pub fn execute_latency_only() -> ExecutionResult {
+pub fn optimize() {
     unsafe {
-        LATENCIES.fill(0);
+        let max_latency = *LATENCIES.iter().max().unwrap_or(&0);
 
+        EXECUTE_SEGMENTS
+            .iter_mut()
+            .for_each(|segment| segment.optimize(max_latency));
+    }
+}
+pub fn get_statistics() -> ExecutionResult {
+    unsafe {
         for gate in &GATES {
             gate.execute_latency_only();
         }
@@ -248,8 +308,6 @@ pub fn execute_latency_only() -> ExecutionResult {
 
 pub fn execute_gates() -> ExecutionResult {
     unsafe {
-        LATENCIES.fill(0);
-
         // println!("execute segments {:?}", EXECUTE_SEGMENTS);
         for segment in &EXECUTE_SEGMENTS {
             segment.execute()
