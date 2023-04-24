@@ -1,4 +1,6 @@
+use once_cell::sync::Lazy;
 use std::any::Any;
+use std::collections::HashMap;
 use std::fmt::{Debug, Formatter};
 use std::ops::Range;
 
@@ -41,6 +43,7 @@ impl Debug for ExecuteSegment {
 
 static mut WIRES: Vec<WireValue> = Vec::new();
 static mut LATENCIES: Vec<LatencyValue> = Vec::new();
+static mut GATES_MAP: Lazy<HashMap<(usize, usize), Wire>> = Lazy::new(|| HashMap::new()); // (a, b) -> out
 static mut GATES: Vec<Gate> = Vec::new();
 static mut EXTERNALS: Vec<Box<dyn External>> = Vec::new();
 static mut REGS: Vec<RegValue> = Vec::new();
@@ -53,6 +56,7 @@ pub fn clear_all() {
     unsafe {
         WIRES.clear();
         LATENCIES.clear();
+        GATES_MAP.clear();
         GATES.clear();
         EXTERNALS.clear();
         REGS.clear();
@@ -123,10 +127,31 @@ pub fn input_const(value: WireValue) -> Wire {
     Wire(index)
 }
 
+fn find_gate(a: Wire, b: Wire) -> Option<Wire> {
+    unsafe {
+        let v1 = GATES_MAP.get(&(a.0, b.0));
+        if v1.is_some() {
+            return v1.copied();
+        }
+        let v2 = GATES_MAP.get(&(b.0, a.0));
+        if v2.is_some() {
+            return v2.copied();
+        }
+    }
+    None
+}
+
 pub fn nand(a: Wire, b: Wire) -> Wire {
+    // deduplicate
+    let duplicated = find_gate(a, b);
+    if let Some(out) = duplicated {
+        return out;
+    }
+
     before_new_gate();
     unsafe {
         let out = input();
+        GATES_MAP.insert((a.0, b.0), out);
         out.set_latency(a.get_latency().max(b.get_latency()) + 1);
         GATES.push(Gate {
             wire_a: a,
@@ -178,11 +203,6 @@ impl Gate {
         let b = self.wire_b.get();
         self.wire_out.set(!(a & b) & 1);
     }
-    fn execute_latency_only(&self) {
-        let la = self.wire_a.get_latency();
-        let lb = self.wire_b.get_latency();
-        self.wire_out.set_latency(la.max(lb) + 1);
-    }
 }
 
 //region Execute Segments
@@ -209,6 +229,7 @@ fn before_new_external() {
 }
 
 impl ExecuteSegment {
+    // convert Gates to GatesGroupedByLatency, then possibly execute gates in parallel
     fn optimize(&mut self, max_latency: LatencyValue) {
         let mut groups: Vec<Vec<Gate>> = Vec::new();
         groups.resize_with(max_latency as usize + 1, || Vec::new());
@@ -294,10 +315,6 @@ pub fn optimize() {
 }
 pub fn get_statistics() -> ExecutionResult {
     unsafe {
-        for gate in &GATES {
-            gate.execute_latency_only();
-        }
-
         ExecutionResult {
             wire_count: WIRES.len(),
             gate_count: GATES.len(),

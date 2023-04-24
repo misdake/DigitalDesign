@@ -6,3 +6,4 @@ edition = "2021"
 [dependencies]
 paste = "1.0.11"
 rayon = "1.7.0"
+once_cell = "1.17.0"

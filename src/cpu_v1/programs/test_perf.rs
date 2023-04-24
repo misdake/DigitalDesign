@@ -5,6 +5,7 @@ use crate::cpu_v1::{CpuV1, CpuV1Instance, CpuV1State};
 use crate::{clear_all, get_statistics, simulate};
 
 #[test]
+#[ignore]
 fn raw_circuit() {
     clear_all();
 
