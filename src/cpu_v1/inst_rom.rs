@@ -26,7 +26,7 @@ pub struct CpuInstRomEmu;
 impl CpuComponentEmu<CpuInstRom> for CpuInstRomEmu {
     fn init_output(i: &CpuInstInput) -> CpuInstOutput {
         let output = CpuInstOutput { inst: input_w() };
-        output.inst.set_latency(i.pc.get_max_latency() + 10);
+        output.inst.set_latency(i.pc.get_max_latency() + 10); //TODO accurate latency
         output
     }
     fn execute(input: &CpuInstInput, output: &CpuInstOutput) {

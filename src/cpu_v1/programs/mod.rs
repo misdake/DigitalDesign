@@ -29,19 +29,20 @@ fn test_cpu(
         .enumerate()
         .for_each(|(i, inst)| inst_rom[i] = inst.binary);
 
-    let (state, state_ref, internal, _internal_ref) = cpu_v1_build(inst_rom);
+    let (state, state_ref, internal, internal_ref) = cpu_v1_build(inst_rom);
 
     for i in 0..max_cycle {
         execute_gates();
 
         println!("pc {:08b}", state.pc.out.get_u8());
         println!("internal: {internal:?}");
+        println!("internal_ref: {internal_ref:?}");
 
         assert_eq!(state.pc.out.get_u8(), state_ref.pc.out.get_u8());
         for j in 0..4 {
             assert_eq!(state.reg[j].out.get_u8(), state_ref.reg[j].out.get_u8());
         }
-        for j in 0..=255 {
+        for j in 0..256 {
             assert_eq!(state.mem[j].out.get_u8(), state_ref.mem[j].out.get_u8());
         }
         assert_eq!(state.mem_bank.out.get_u8(), state_ref.mem_bank.out.get_u8());
