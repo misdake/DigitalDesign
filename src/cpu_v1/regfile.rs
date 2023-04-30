@@ -51,10 +51,11 @@ pub struct CpuRegWriteInput {
 
     pub alu_out: Wires<4>,
     pub mem_out: Wires<4>,
+    // TODO bus_out
 }
 #[derive(Clone)]
 pub struct CpuRegWriteOutput {
-    // ?
+    // TODO written data or 0, to be used by branch
 }
 
 pub struct CpuRegWrite;
@@ -66,6 +67,7 @@ impl CpuComponent for CpuRegWrite {
 
         let select_alu = input.reg0_write_select.wires[Reg0WriteSelect::AluOut as usize];
         let select_mem = input.reg0_write_select.wires[Reg0WriteSelect::MemOut as usize];
+        // TODO BusOut
         let write_data_alu = select_alu.expand() & input.alu_out;
         let write_data_mem = select_mem.expand() & input.mem_out;
         let write_data = write_data_mem | write_data_alu;
@@ -140,6 +142,7 @@ fn test_reg() {
                     let write_data = match src {
                         Reg0WriteSelect::AluOut => alu_value,
                         Reg0WriteSelect::MemOut => mem_value,
+                        // TODO BusOut
                     };
                     regs_sw[reg0 as usize] = write_data;
                 }

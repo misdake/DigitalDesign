@@ -215,5 +215,5 @@ inst_op0!(0b01100011, set_mem_bank);
 inst_op0!(0b01100100, set_bus_addr); // TODO
 
 // bus
-inst_op0!(0b01110000, bus_read); // TODO
+inst_op0!(0b01110000, bus_read); // 0000 to enable reg0 write
 inst_op0i!(0b0111, bus); // TODO

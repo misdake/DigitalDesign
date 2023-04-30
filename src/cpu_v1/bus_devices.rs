@@ -1,17 +1,30 @@
 use std::sync::{Arc, Mutex};
 
+// Device
+
 #[repr(u8)]
 enum DeviceType {
     Print = 0,
-    // Math = 1, TODO
+    Math = 1,
     // Graphics = 2,
 }
 trait Device: 'static {
-    fn reset(&mut self) {}
+    fn reset(&mut self);
     fn device_type(&self) -> DeviceType;
-    fn execute(&mut self, opcode: u8, reg0: u8, reg1: u8);
-    fn read(&mut self, reg0: u8, reg1: u8) -> (u8, u16); // value, latency
+    fn exec(&mut self, opcode4: u8, reg0: u8, reg1: u8);
+    fn read(&mut self, reg0: u8, reg1: u8) -> DeviceReadResult;
 }
+#[derive(Default)]
+pub struct DeviceReadResult {
+    pub out_data: u8,
+    pub self_latency: u16,
+}
+
+// Devices
+
+use once_cell::sync::Lazy;
+static DEVICES: Lazy<Arc<Mutex<Devices>>> =
+    Lazy::new(|| Arc::new(Mutex::new(Devices::create_empty())));
 pub struct Devices {
     devices: [Option<Box<dyn Device>>; 16],
 }
@@ -42,34 +55,55 @@ impl Devices {
             device.as_mut().map(|d| d.reset());
         })
     }
-    pub fn execute(&mut self, bus_addr: u8, bus_opcode: u8, reg0: u8, reg1: u8) {
+    pub fn execute(&mut self, bus_addr: u8, bus_opcode4: u8, reg0: u8, reg1: u8) {
         self.devices[bus_addr as usize].as_mut().map(|d| {
-            d.execute(bus_opcode, reg0, reg1);
+            d.exec(bus_opcode4, reg0, reg1);
         });
     }
-    pub fn read(&mut self, bus_addr: u8, reg0: u8, reg1: u8) -> (u8, u16) {
+    pub fn read(&mut self, bus_addr: u8, reg0: u8, reg1: u8) -> DeviceReadResult {
         self.devices[bus_addr as usize]
             .as_mut()
-            .map_or((0, 1), |d| d.read(reg0, reg1))
+            .map_or(DeviceReadResult::default(), |d| d.read(reg0, reg1))
     }
 }
 
-use once_cell::sync::Lazy;
-static DEVICES: Lazy<Arc<Mutex<Devices>>> =
-    Lazy::new(|| Arc::new(Mutex::new(Devices::create_empty())));
-
 struct DevicePrint {}
 impl Device for DevicePrint {
+    fn reset(&mut self) {}
     fn device_type(&self) -> DeviceType {
         DeviceType::Print
     }
-
-    fn execute(&mut self, _opcode: u8, reg0: u8, _reg1: u8) {
+    fn exec(&mut self, _opcode: u8, reg0: u8, _reg1: u8) {
         println!("DevicePrint exec {reg0}")
     }
-
-    fn read(&mut self, reg0: u8, _reg1: u8) -> (u8, u16) {
+    fn read(&mut self, reg0: u8, _reg1: u8) -> DeviceReadResult {
         println!("DevicePrint read {reg0}");
-        (reg0, 1)
+        DeviceReadResult {
+            out_data: reg0,
+            self_latency: 0,
+        }
+    }
+}
+
+struct DeviceMath {
+    value: u8, // 4 bits
+}
+#[repr(u8)]
+pub enum DeviceMathOpcode {
+    Pop = 0,         // will write to reg0
+    ExtractBits = 1, //
+}
+impl Device for DeviceMath {
+    fn reset(&mut self) {
+        self.value = 0;
+    }
+    fn device_type(&self) -> DeviceType {
+        DeviceType::Math
+    }
+    fn exec(&mut self, opcode4: u8, _reg0: u8, _reg1: u8) {
+        todo!() //TODO
+    }
+    fn read(&mut self, reg0: u8, _reg1: u8) -> DeviceReadResult {
+        todo!() //TODO
     }
 }

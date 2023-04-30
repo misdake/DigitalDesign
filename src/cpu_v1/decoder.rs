@@ -115,18 +115,18 @@ impl CpuComponent for CpuDecoder {
         // 0b00 | 0b010
         let is_alu = !b0 & (!b1 | (b1 & !b2));
 
+        let is_op_bus = op4.eq_const(0b0111);
+        let is_op_bus_read = is_op_bus & (imm.eq_const(0)); // opcode 0 => read, >0 => exec
+        let bus_enable = is_op_bus;
+
         // is_alu => inst_reg0, false => regA(0)
         let reg0_addr = mux2_w(Wires::parse_u8(0), inst_reg0, is_alu);
         // is_alu => inst_reg1, false => regB(1)
         let reg1_addr = mux2_w(Wires::parse_u8(1), inst_reg1, is_alu);
-        // 0b0 | 0b100
-        let reg0_write_enable = !b0 | (!b1 & !b2);
-        // (0b0 & !0b0111) | 0b1001 => AluOut, other => MemOut
+        // 0b0 | 0b100 | 0b01111
+        let reg0_write_enable = !b0 | (!b1 & !b2) | is_op_bus_read;
+        // AluOut, MemOut, BusOut
         let mut reg0_write_select = Wires::uninitialized();
-
-        let is_op_bus = op4.eq_const(0b0111);
-        let is_op_bus_read = inst.eq_const(0b01110000);
-        let bus_enable = is_op_bus;
 
         reg0_write_select.wires[Reg0WriteSelect::AluOut as usize] =
             (!b0 | (!b1 & !b2 & !b3)) & !is_op_bus;
@@ -149,7 +149,7 @@ impl CpuComponent for CpuDecoder {
         let is_op_load_imm = op4.eq_const(0b1000);
         let is_op_store_mem = op4.eq_const(0b1010);
 
-        let is_alu_add = b0 | b1; // all other instructions to simplify
+        let is_alu_add = b0 | b1; // all other instructions to simplify TODO new reg0 write select type to improve latency
         alu_op.wires[AluOp::And as usize] = is_op_and;
         alu_op.wires[AluOp::Or as usize] = is_op_mov | is_op_or;
         alu_op.wires[AluOp::Xor as usize] = is_op_xor;
@@ -173,7 +173,7 @@ impl CpuComponent for CpuDecoder {
         mem_addr_select.wires[MemAddrSelect::Imm as usize] = !imm_all_0;
         mem_addr_select.wires[MemAddrSelect::Reg1 as usize] = imm_all_0;
 
-        let mem_write_enable = is_op_store_mem | is_op_bus_read;
+        let mem_write_enable = is_op_store_mem;
         let mem_bank_write_enable = inst.eq_const(0b01100011);
 
         let mut jmp_op = Wires::uninitialized();
@@ -268,7 +268,7 @@ impl CpuComponentEmu<CpuDecoder> for CpuDecoderEmu {
         let jmp_long = INST_JMP_LONG.match_opcode(inst);
         // control TODO
         let set_mem_bank = INST_SET_MEM_BANK.match_opcode(inst);
-        // bus TODO
+        // bus
         let is_bus = INST_BUS.match_opcode(inst);
         let is_bus_read = INST_BUS_READ.match_opcode(inst);
 

@@ -1,4 +1,4 @@
-use crate::cpu_v1::bus_devices::Devices;
+use crate::cpu_v1::bus_devices::{DeviceReadResult, Devices};
 use crate::cpu_v1::{CpuComponent, CpuComponentEmu};
 use crate::{input_w, Wire, Wires};
 
@@ -45,7 +45,12 @@ impl CpuComponentEmu<CpuBus> for CpuBusEmu {
                 let mut out = 0;
                 let mut latency = 0;
                 Devices::visit(|devices| {
-                    (out, latency) = devices.read(bus_addr, reg0, reg1);
+                    let DeviceReadResult {
+                        out_data,
+                        self_latency,
+                    } = devices.read(bus_addr, reg0, reg1);
+                    out = out_data;
+                    latency = self_latency;
                 });
                 bus_out = out;
                 bus_out_latency = latency;
