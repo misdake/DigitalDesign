@@ -120,6 +120,16 @@ trait CpuV1 {
             reg0_select,
         } = reg_read_out;
 
+        let bus_in = CpuBusInput {
+            bus_enable,
+            bus_addr: state.bus_addr.out,
+            reg0_data,
+            reg1_data,
+            imm,
+        };
+        let bus_out: CpuBusOutput = Self::Bus::build(&bus_in);
+        let CpuBusOutput { bus_out } = bus_out;
+
         // Alu
         let alu_in = CpuAluInput {
             reg0_data,
@@ -154,15 +164,17 @@ trait CpuV1 {
             reg0_write_select,
             alu_out,
             mem_out,
+            bus_out,
         };
         let reg_write_out = Self::RegWrite::build(&reg_write_in);
-        let CpuRegWriteOutput {} = reg_write_out;
+        let CpuRegWriteOutput { reg0_write_data } = reg_write_out;
 
         // Branch
         let branch_in = CpuBranchInput {
             imm,
             reg0: reg0_data,
-            alu_out,
+            reg0_write_enable,
+            reg0_write_data,
             jmp_op,
             jmp_src_select,
             flag_p: state.flag_p.out(),

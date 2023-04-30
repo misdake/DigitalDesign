@@ -47,15 +47,15 @@ pub struct CpuRegWriteInput {
 
     pub reg0_select: Wires<4>, // from CpuRegReadOutput
     pub reg0_write_enable: Wire,
-    pub reg0_write_select: Wires<2>, // Reg0WriteSelect: alu out, mem out
+    pub reg0_write_select: Wires<3>, // Reg0WriteSelect: alu out, mem out, bus out
 
     pub alu_out: Wires<4>,
     pub mem_out: Wires<4>,
-    // TODO bus_out
+    pub bus_out: Wires<4>,
 }
 #[derive(Clone)]
 pub struct CpuRegWriteOutput {
-    // TODO written data or 0, to be used by branch
+    pub reg0_write_data: Wires<4>, // 0 if reg0_write_enable
 }
 
 pub struct CpuRegWrite;
@@ -67,10 +67,11 @@ impl CpuComponent for CpuRegWrite {
 
         let select_alu = input.reg0_write_select.wires[Reg0WriteSelect::AluOut as usize];
         let select_mem = input.reg0_write_select.wires[Reg0WriteSelect::MemOut as usize];
-        // TODO BusOut
+        let select_bus = input.reg0_write_select.wires[Reg0WriteSelect::BusOut as usize];
         let write_data_alu = select_alu.expand() & input.alu_out;
         let write_data_mem = select_mem.expand() & input.mem_out;
-        let write_data = write_data_mem | write_data_alu;
+        let write_data_bus = select_bus.expand() & input.bus_out;
+        let write_data = write_data_mem | write_data_alu | write_data_bus;
 
         for i in 0..4 {
             let reg = regs[i];
@@ -80,7 +81,9 @@ impl CpuComponent for CpuRegWrite {
             regs[i].set_in(write_data);
         }
 
-        CpuRegWriteOutput {}
+        CpuRegWriteOutput {
+            reg0_write_data: write_data,
+        }
     }
 }
 
@@ -97,6 +100,7 @@ fn test_reg() {
     let reg0_write_select = input_w();
     let alu_out = input_w();
     let mem_out = input_w();
+    let bus_out = input_w();
 
     let (reg0_data, reg1_data) = {
         let read_input = CpuRegReadInput {
@@ -116,8 +120,9 @@ fn test_reg() {
             reg0_write_select,
             alu_out,
             mem_out,
+            bus_out,
         };
-        let CpuRegWriteOutput {} = CpuRegWrite::build(&write_input);
+        let CpuRegWriteOutput { .. } = CpuRegWrite::build(&write_input);
         (reg0_data, reg1_data)
     };
 
@@ -142,7 +147,7 @@ fn test_reg() {
                     let write_data = match src {
                         Reg0WriteSelect::AluOut => alu_value,
                         Reg0WriteSelect::MemOut => mem_value,
-                        // TODO BusOut
+                        Reg0WriteSelect::BusOut => 0, // not testing this
                     };
                     regs_sw[reg0 as usize] = write_data;
                 }

@@ -14,7 +14,7 @@ pub struct CpuDecoderOutput {
     pub reg0_addr: Wires<2>, // RegAddr
     pub reg1_addr: Wires<2>, // RegAddr
     pub reg0_write_enable: Wire,
-    pub reg0_write_select: Wires<2>, // Reg0WriteSelect: alu out, mem out
+    pub reg0_write_select: Wires<3>, // Reg0WriteSelect: alu out, mem out, bus out
 
     // alu control
     pub alu_op: Wires<4>,      // AluOp: &, |, ^, +
