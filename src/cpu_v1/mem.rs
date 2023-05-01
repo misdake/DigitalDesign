@@ -96,7 +96,7 @@ impl CpuComponentEmu<CpuMem> for CpuMemEmu {
         }
 
         let addr_low = imm * addr_imm + reg1 * addr_reg1;
-        let addr = addr_low + mem_bank << 4;
+        let addr = addr_low + (mem_bank << 4);
 
         output.mem_out.set_u8(input.mem[addr as usize].get_u8());
         (0..256).for_each(|i| {
