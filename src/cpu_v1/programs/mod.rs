@@ -1,5 +1,5 @@
 use crate::cpu_v1::isa::InstBinary;
-use crate::cpu_v1::{cpu_v1_build, CpuV1State};
+use crate::cpu_v1::{cpu_v1_build_with_ref, CpuV1State};
 use crate::{clock_tick, execute_gates};
 
 mod example;
@@ -28,7 +28,7 @@ fn test_cpu(
         .enumerate()
         .for_each(|(i, inst)| inst_rom[i] = inst.binary);
 
-    let (state, state_ref, internal, _internal_ref) = cpu_v1_build(inst_rom);
+    let (state, state_ref, internal, _internal_ref) = cpu_v1_build_with_ref(inst_rom);
 
     for i in 0..max_cycle {
         execute_gates();

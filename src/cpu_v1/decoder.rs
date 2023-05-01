@@ -32,6 +32,7 @@ pub struct CpuDecoderOutput {
 
     // bus control
     pub bus_enable: Wire,
+    pub bus_addr_write: Wire,
 }
 
 #[allow(unused)]
@@ -174,7 +175,10 @@ impl CpuComponent for CpuDecoder {
         mem_addr_select.wires[MemAddrSelect::Reg1 as usize] = imm_all_0;
 
         let mem_write_enable = is_op_store_mem;
+
+        // control
         let mem_bank_write_enable = inst.eq_const(0b01100011);
+        let bus_addr_write = inst.eq_const(0b01100100);
 
         let mut jmp_op = Wires::uninitialized();
         let is_op_jmp_long = op4.eq_const(0b1011);
@@ -209,6 +213,7 @@ impl CpuComponent for CpuDecoder {
             jmp_op,
             jmp_src_select,
             bus_enable,
+            bus_addr_write,
         }
     }
 }
@@ -233,6 +238,7 @@ impl CpuComponentEmu<CpuDecoder> for CpuDecoderEmu {
             jmp_op: input_w(),
             jmp_src_select: input_w(),
             bus_enable: input(),
+            bus_addr_write: input(),
         }
     }
     fn execute(input: &CpuDecoderInput, output: &CpuDecoderOutput) {
@@ -268,6 +274,8 @@ impl CpuComponentEmu<CpuDecoder> for CpuDecoderEmu {
         let jmp_long = INST_JMP_LONG.match_opcode(inst);
         // control TODO
         let set_mem_bank = INST_SET_MEM_BANK.match_opcode(inst);
+        let set_bus_addr = INST_SET_BUS_ADDR.match_opcode(inst);
+        let is_control = set_mem_bank | set_bus_addr;
         // bus
         let is_bus = INST_BUS.match_opcode(inst);
         let is_bus_read = INST_BUS_READ.match_opcode(inst);
@@ -286,13 +294,13 @@ impl CpuComponentEmu<CpuDecoder> for CpuDecoderEmu {
         let jmp_op: u8;
         let jmp_src_select: u8;
         let bus_enable: u8;
+        let bus_addr_write: u8;
 
         let is_alu = mov || and || or || xor || add || inv || neg || inc || dec;
         let is_load_imm = load_imm;
         let is_load_mem = load_mem_imm || load_mem_reg;
         let is_store_mem = store_mem_imm || store_mem_reg;
         let is_jmp = jmp_offset || je_offset || jl_offset || jg_offset || jmp_long;
-        let is_control = set_mem_bank; // TODO other control instructions
 
         if is_alu || is_load_imm {
             jmp_op = 1 << JmpOp::NoJmp as u8;
@@ -310,6 +318,7 @@ impl CpuComponentEmu<CpuDecoder> for CpuDecoderEmu {
             mem_write_enable = 0;
             mem_bank_write_enable = 0;
             bus_enable = 0;
+            bus_addr_write = 0;
 
             let mut v_alu_op: u8 = 0;
             let mut v_alu0_select: u8 = 0;
@@ -347,6 +356,7 @@ impl CpuComponentEmu<CpuDecoder> for CpuDecoderEmu {
             alu1_select = 0;
             mem_bank_write_enable = 0;
             bus_enable = 0;
+            bus_addr_write = 0;
 
             if is_load_mem {
                 reg0_write_enable = 1;
@@ -386,6 +396,7 @@ impl CpuComponentEmu<CpuDecoder> for CpuDecoderEmu {
             mem_write_enable = 0;
             mem_bank_write_enable = 0;
             bus_enable = 0;
+            bus_addr_write = 0;
 
             jmp_src_select = if imm == 0 {
                 1 << JmpSrcSelect::Reg0 as u8
@@ -394,8 +405,6 @@ impl CpuComponentEmu<CpuDecoder> for CpuDecoderEmu {
             };
         } else if is_control {
             //TODO other control instructions
-
-            // set_mem_bank
             reg0_addr = 0;
             reg1_addr = 0;
             reg0_write_enable = 0;
@@ -405,10 +414,19 @@ impl CpuComponentEmu<CpuDecoder> for CpuDecoderEmu {
             alu1_select = 0;
             mem_addr_select = 0;
             mem_write_enable = 0;
-            mem_bank_write_enable = 1;
             jmp_op = 1 << JmpOp::NoJmp as u8;
             jmp_src_select = 1 << JmpSrcSelect::Imm as u8;
             bus_enable = 0;
+
+            if set_mem_bank {
+                mem_bank_write_enable = 1;
+                bus_addr_write = 0;
+            } else if set_bus_addr {
+                mem_bank_write_enable = 0;
+                bus_addr_write = 1;
+            } else {
+                todo!()
+            }
         } else if is_bus {
             reg0_addr = 0;
             reg1_addr = 1;
@@ -423,6 +441,7 @@ impl CpuComponentEmu<CpuDecoder> for CpuDecoderEmu {
             jmp_op = 1 << JmpOp::NoJmp as u8;
             jmp_src_select = 1 << JmpSrcSelect::Imm as u8;
             bus_enable = 1;
+            bus_addr_write = 0;
         } else {
             unreachable!("unknown instruction")
         }
@@ -441,6 +460,7 @@ impl CpuComponentEmu<CpuDecoder> for CpuDecoderEmu {
         output.jmp_op.set_u8(jmp_op);
         output.jmp_src_select.set_u8(jmp_src_select);
         output.bus_enable.set(bus_enable);
+        output.bus_addr_write.set(bus_addr_write);
     }
 }
 

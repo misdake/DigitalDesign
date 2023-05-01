@@ -4,6 +4,7 @@ use crate::{input_w, Wire, Wires};
 
 #[derive(Clone)]
 pub struct CpuBusInput {
+    pub bus_addr_write: Wire,
     pub bus_enable: Wire,
     pub bus_addr: Wires<4>,
     pub reg0_data: Wires<4>,
@@ -13,6 +14,7 @@ pub struct CpuBusInput {
 #[derive(Clone)]
 pub struct CpuBusOutput {
     pub bus_out: Wires<4>,
+    pub bus_addr_next: Wires<4>,
 }
 
 pub struct CpuBus;
@@ -27,9 +29,19 @@ impl CpuComponent for CpuBus {
 pub struct CpuBusEmu;
 impl CpuComponentEmu<CpuBus> for CpuBusEmu {
     fn init_output() -> CpuBusOutput {
-        CpuBusOutput { bus_out: input_w() }
+        CpuBusOutput {
+            bus_out: input_w(),
+            bus_addr_next: input_w(),
+        }
     }
     fn execute(input: &CpuBusInput, output: &CpuBusOutput) {
+        let bus_addr_write = input.bus_addr_write.get() > 0;
+        if bus_addr_write {
+            output.bus_addr_next.set_u8(input.reg0_data.get_u8());
+        } else {
+            output.bus_addr_next.set_u8(input.bus_addr.get_u8());
+        }
+
         let bus_enable = input.bus_enable.get() > 0;
         let bus_addr = input.bus_addr.get_u8();
         let reg0 = input.reg0_data.get_u8();

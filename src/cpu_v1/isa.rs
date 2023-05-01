@@ -212,7 +212,7 @@ inst_op0!(0b01100000, reset); // TODO
 inst_op0!(0b01100001, halt); // TODO
 inst_op0!(0b01100010, sleep); // TODO
 inst_op0!(0b01100011, set_mem_bank);
-inst_op0!(0b01100100, set_bus_addr); // TODO
+inst_op0!(0b01100100, set_bus_addr);
 
 // bus
 inst_op0!(0b01110000, bus_read); // 0000 to enable reg0 write

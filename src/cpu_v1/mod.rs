@@ -105,6 +105,7 @@ trait CpuV1 {
             jmp_op,
             jmp_src_select,
             bus_enable,
+            bus_addr_write,
         } = decoder_out;
 
         // RegRead
@@ -121,6 +122,7 @@ trait CpuV1 {
         } = reg_read_out;
 
         let bus_in = CpuBusInput {
+            bus_addr_write,
             bus_enable,
             bus_addr: state.bus_addr.out,
             reg0_data,
@@ -128,7 +130,11 @@ trait CpuV1 {
             imm,
         };
         let bus_out: CpuBusOutput = Self::Bus::build(&bus_in);
-        let CpuBusOutput { bus_out } = bus_out;
+        let CpuBusOutput {
+            bus_out,
+            bus_addr_next,
+        } = bus_out;
+        state.bus_addr.set_in(bus_addr_next);
 
         // Alu
         let alu_in = CpuAluInput {
@@ -243,7 +249,7 @@ impl CpuV1 for CpuV1EmuInstance {
 }
 
 #[allow(unused)]
-fn cpu_v1_build(
+fn cpu_v1_build_with_ref(
     inst_rom: [u8; 256],
 ) -> (
     CpuV1State,
@@ -257,6 +263,13 @@ fn cpu_v1_build(
     let internal1 = CpuV1Instance::build(&mut state1);
     let internal2 = CpuV1EmuInstance::build(&mut state2);
     (state1, state2, internal1, internal2)
+}
+#[allow(unused)]
+fn cpu_v1_build(inst_rom: [u8; 256]) -> (CpuV1State, CpuV1StateInternal) {
+    clear_all();
+    let mut state1 = CpuV1State::create(inst_rom.clone());
+    let internal1 = CpuV1Instance::build(&mut state1);
+    (state1, internal1)
 }
 
 pub trait CpuComponent: Any {

@@ -86,11 +86,13 @@ fn test_device(inst: &[InstBinary], max_cycle: u32, regs_ref: [u8; 4]) {
         .enumerate()
         .for_each(|(i, inst)| inst_rom[i] = inst.binary);
 
-    let (state, _state_ref, _internal, _internal_ref) = cpu_v1_build(inst_rom);
+    let (state, _internal) = cpu_v1_build(inst_rom);
 
     for _ in 0..max_cycle {
-        execute_gates();
         let pc = state.pc.out.get_u8();
+        if pc as usize >= inst.len() {
+            break;
+        }
         let inst = inst[pc as usize];
         println!(
             "pc {:08b}: inst {} {:08b}",
@@ -98,6 +100,7 @@ fn test_device(inst: &[InstBinary], max_cycle: u32, regs_ref: [u8; 4]) {
             inst.desc.name(),
             inst.binary
         );
+        execute_gates();
         clock_tick();
     }
 
