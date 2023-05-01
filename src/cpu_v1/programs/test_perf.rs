@@ -1,7 +1,7 @@
 #![cfg(test)]
 
 use crate::cpu_v1::isa::*;
-use crate::cpu_v1::{CpuV1, CpuV1Instance, CpuV1State};
+use crate::cpu_v1::{CpuV1, CpuV1MixInstance, CpuV1State};
 use crate::{clear_all, get_statistics, simulate};
 
 #[test]
@@ -30,13 +30,13 @@ fn raw_circuit() {
 
     let inst_rom = [0u8; 256];
     let mut state1 = CpuV1State::create(inst_rom);
-    let _ = CpuV1Instance::build(&mut state1);
+    let _ = CpuV1MixInstance::build(&mut state1);
 
     // use crate::optimize;
     // optimize();
 
     let start = std::time::Instant::now();
-    const CYCLES: usize = 10000;
+    const CYCLES: usize = 100000;
     for _ in 0..CYCLES {
         simulate();
     }

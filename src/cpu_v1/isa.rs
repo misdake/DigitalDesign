@@ -23,6 +23,7 @@ pub struct InstOpcodeDesc8 {
     bits: u8,
 }
 impl InstDesc {
+    #[allow(unused)]
     pub fn name(&self) -> &'static str {
         match &self {
             InstDesc::Op2(opcode, _, _) => opcode.name,

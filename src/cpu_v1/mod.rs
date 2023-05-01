@@ -208,7 +208,9 @@ trait CpuV1 {
 }
 
 struct CpuV1Instance;
+struct CpuV1MixInstance;
 struct CpuV1EmuInstance;
+
 impl CpuV1 for CpuV1Instance {
     type Pc = CpuPc;
     type InstRom = CpuInstRom;
@@ -218,6 +220,16 @@ impl CpuV1 for CpuV1Instance {
     type RegRead = CpuRegRead;
     type RegWrite = CpuRegWrite;
     type Mem = CpuMem;
+}
+impl CpuV1 for CpuV1MixInstance {
+    type Pc = CpuPc;
+    type InstRom = CpuComponentEmuContext<CpuInstRom, CpuInstRomEmu>;
+    type Decoder = CpuDecoder;
+    type Alu = CpuAlu;
+    type Branch = CpuBranch;
+    type RegRead = CpuRegRead;
+    type RegWrite = CpuRegWrite;
+    type Mem = CpuComponentEmuContext<CpuMem, CpuMemEmu>;
 }
 impl CpuV1 for CpuV1EmuInstance {
     type Pc = CpuComponentEmuContext<CpuPc, CpuPcEmu>;
