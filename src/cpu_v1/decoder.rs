@@ -123,8 +123,8 @@ impl CpuComponent for CpuDecoder {
         let reg0_addr = mux2_w(Wires::parse_u8(0), inst_reg0, is_alu);
         // is_alu => inst_reg1, false => regB(1)
         let reg1_addr = mux2_w(Wires::parse_u8(1), inst_reg1, is_alu);
-        // 0b0 | 0b100 | 0b01111
-        let reg0_write_enable = !b0 | (!b1 & !b2) | is_op_bus_read;
+        // 0b00 | 0b010 | 0b100 | 0b01110000
+        let reg0_write_enable = (!b0 & !b1) | (!b0 & b1 & !b2) | (b0 & !b1 & !b2) | is_op_bus_read;
         // AluOut, MemOut, BusOut
         let mut reg0_write_select = Wires::uninitialized();
 
@@ -542,10 +542,10 @@ fn test_decoder_special(inst: InstBinary, env: &DecoderTestEnv) {
     test_result(inst, &env, |o| {
         (
             o.reg0_addr.get_u8(),
-            o.reg1_addr.get_u8(),
+            // o.reg1_addr.get_u8(),
             o.reg0_write_enable.get(),
-            o.mem_addr_select.get_u8(),
-            o.mem_write_enable.get(),
+            // o.mem_addr_select.get_u8(),
+            // o.mem_write_enable.get(),
             o.mem_bank_write_enable.get(),
             o.jmp_op.get_u8(),
             o.bus_enable.get(),

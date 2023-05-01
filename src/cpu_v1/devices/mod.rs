@@ -1,14 +1,15 @@
-use std::sync::{Arc, Mutex};
+mod device_0_print;
+mod device_1_math;
 
 // Device
 
 #[repr(u8)]
-enum DeviceType {
+pub enum DeviceType {
     Print = 0,
     Math = 1,
     // Graphics = 2,
 }
-trait Device: 'static {
+pub trait Device: 'static {
     fn reset(&mut self);
     fn device_type(&self) -> DeviceType;
     fn exec(&mut self, opcode4: u8, reg0: u8, reg1: u8);
@@ -22,7 +23,11 @@ pub struct DeviceReadResult {
 
 // Devices
 
+use crate::cpu_v1::devices::device_0_print::DevicePrint;
+use crate::cpu_v1::devices::device_1_math::DeviceMath;
 use once_cell::sync::Lazy;
+use std::sync::{Arc, Mutex};
+
 static DEVICES: Lazy<Arc<Mutex<Devices>>> =
     Lazy::new(|| Arc::new(Mutex::new(Devices::create_empty())));
 pub struct Devices {
@@ -44,7 +49,8 @@ impl Devices {
         devices
     }
     fn register_default(&mut self) {
-        self.register(DevicePrint {});
+        self.register(DevicePrint::default());
+        self.register(DeviceMath::default());
     }
     fn register(&mut self, device: impl Device) {
         let device_type = device.device_type();
@@ -67,43 +73,35 @@ impl Devices {
     }
 }
 
-struct DevicePrint {}
-impl Device for DevicePrint {
-    fn reset(&mut self) {}
-    fn device_type(&self) -> DeviceType {
-        DeviceType::Print
-    }
-    fn exec(&mut self, _opcode: u8, reg0: u8, _reg1: u8) {
-        println!("DevicePrint exec {reg0}")
-    }
-    fn read(&mut self, reg0: u8, _reg1: u8) -> DeviceReadResult {
-        println!("DevicePrint read {reg0}");
-        DeviceReadResult {
-            out_data: reg0,
-            self_latency: 0,
-        }
-    }
-}
+#[cfg(test)]
+use crate::cpu_v1::InstBinary;
 
-struct DeviceMath {
-    value: u8, // 4 bits
-}
-#[repr(u8)]
-pub enum DeviceMathOpcode {
-    Pop = 0,         // will write to reg0
-    ExtractBits = 1, //
-}
-impl Device for DeviceMath {
-    fn reset(&mut self) {
-        self.value = 0;
+#[cfg(test)]
+fn test_device(inst: &[InstBinary], max_cycle: u32, regs_ref: [u8; 4]) {
+    use crate::cpu_v1::cpu_v1_build;
+    use crate::*;
+
+    let mut inst_rom = [0u8; 256];
+    inst.iter()
+        .enumerate()
+        .for_each(|(i, inst)| inst_rom[i] = inst.binary);
+
+    let (state, _state_ref, _internal, _internal_ref) = cpu_v1_build(inst_rom);
+
+    for _ in 0..max_cycle {
+        execute_gates();
+        let pc = state.pc.out.get_u8();
+        let inst = inst[pc as usize];
+        println!(
+            "pc {:08b}: inst {} {:08b}",
+            pc,
+            inst.desc.name(),
+            inst.binary
+        );
+        clock_tick();
     }
-    fn device_type(&self) -> DeviceType {
-        DeviceType::Math
-    }
-    fn exec(&mut self, opcode4: u8, _reg0: u8, _reg1: u8) {
-        todo!() //TODO
-    }
-    fn read(&mut self, reg0: u8, _reg1: u8) -> DeviceReadResult {
-        todo!() //TODO
+
+    for i in 0..4 {
+        assert_eq!(state.reg[i].out.get_u8(), regs_ref[i]);
     }
 }

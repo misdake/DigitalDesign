@@ -1,4 +1,4 @@
-use crate::cpu_v1::bus_devices::{DeviceReadResult, Devices};
+use crate::cpu_v1::devices::{DeviceReadResult, Devices};
 use crate::cpu_v1::{CpuComponent, CpuComponentEmu};
 use crate::{input_w, Wire, Wires};
 

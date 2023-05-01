@@ -1,5 +1,4 @@
 mod inst_rom;
-mod isa;
 use inst_rom::*;
 mod pc;
 use pc::*;
@@ -15,9 +14,10 @@ mod mem;
 use mem::*;
 mod bus;
 use bus::*;
-mod bus_devices;
-use bus_devices::*;
 
+mod isa;
+use isa::*;
+mod devices;
 #[cfg(test)]
 mod programs;
 
