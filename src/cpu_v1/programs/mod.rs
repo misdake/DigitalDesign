@@ -6,6 +6,7 @@ mod example;
 mod test_alu;
 mod test_jmp;
 mod test_mem;
+mod test_perf;
 
 fn print_regs(_: u32, state: &CpuV1State) {
     print!(

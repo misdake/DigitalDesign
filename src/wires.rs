@@ -1,4 +1,4 @@
-use crate::{input, input_const, mux2_w, reg, Reg, Wire, WireValue};
+use crate::{input, input_const, mux2_w, reg, LatencyValue, Reg, Wire, WireValue};
 
 pub enum Assert<const CHECK: bool> {}
 
@@ -18,6 +18,16 @@ impl<const W: usize> Wires<W> {
         Self {
             wires: [Wire(0); W],
         }
+    }
+    pub fn set_latency(&self, latency: LatencyValue) {
+        self.wires.iter().for_each(|w| w.set_latency(latency));
+    }
+    pub fn get_max_latency(&self) -> LatencyValue {
+        self.wires
+            .iter()
+            .map(|w| w.get_latency())
+            .max()
+            .unwrap_or(0)
     }
 }
 

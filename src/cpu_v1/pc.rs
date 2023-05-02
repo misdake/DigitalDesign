@@ -17,8 +17,10 @@ pub struct CpuPcOutput {
 
 pub struct CpuPcEmu;
 impl CpuComponentEmu<CpuPc> for CpuPcEmu {
-    fn init_output() -> CpuPcOutput {
-        CpuPcOutput { next_pc: input_w() }
+    fn init_output(i: &CpuPcInput) -> CpuPcOutput {
+        let output = CpuPcOutput { next_pc: input_w() };
+        output.next_pc.set_latency(i.curr_pc.get_max_latency() + 30);
+        output
     }
     fn execute(input: &CpuPcInput, output: &CpuPcOutput) {
         assert_eq!(
