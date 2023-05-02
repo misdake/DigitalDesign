@@ -56,6 +56,7 @@ impl Devices {
         let device_type = device.device_type();
         self.devices[device_type as u8 as usize] = Some(Box::new(device));
     }
+    #[allow(unused)]
     pub fn reset(&mut self) {
         self.devices.iter_mut().for_each(|device| {
             device.as_mut().map(|d| d.reset());

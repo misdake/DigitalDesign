@@ -255,6 +255,7 @@ impl CpuV1 for CpuV1MixInstance {
     type RegRead = CpuRegRead;
     type RegWrite = CpuRegWrite;
     type Mem = CpuComponentEmuContext<CpuMem, CpuMemEmu>;
+    type Bus = CpuComponentEmuContext<CpuBus, CpuBusEmu>;
 }
 impl CpuV1 for CpuV1EmuInstance {
     type Pc = CpuComponentEmuContext<CpuPc, CpuPcEmu>;

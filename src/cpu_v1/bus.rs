@@ -28,10 +28,14 @@ impl CpuComponent for CpuBus {
 
 pub struct CpuBusEmu;
 impl CpuComponentEmu<CpuBus> for CpuBusEmu {
-    fn init_output() -> CpuBusOutput {
+    fn init_output(i: &CpuBusInput) -> CpuBusOutput {
+        let bus_out = input_w();
+        let bus_addr_next = input_w();
+        bus_out.set_latency(i.reg0_data.get_max_latency() + 2);
+        bus_addr_next.set_latency(i.reg0_data.get_max_latency() + 2);
         CpuBusOutput {
-            bus_out: input_w(),
-            bus_addr_next: input_w(),
+            bus_out,
+            bus_addr_next,
         }
     }
     fn execute(input: &CpuBusInput, output: &CpuBusOutput) {
