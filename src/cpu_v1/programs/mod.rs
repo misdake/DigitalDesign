@@ -29,24 +29,37 @@ fn test_cpu(
         .enumerate()
         .for_each(|(i, inst)| inst_rom[i] = inst.binary);
 
-    let (state, state_ref, internal, _internal_ref) = cpu_v1_build_with_ref(inst_rom);
+    let (state, state_ref, internal, internal_ref) = cpu_v1_build_with_ref(inst_rom);
 
     for i in 0..max_cycle {
+        assert_eq!(state.pc.out.get_u8(), state_ref.pc.out.get_u8());
+
+        let pc = state.pc.out.get_u8();
+        if pc as usize >= inst.len() {
+            break;
+        }
+        let inst_desc = inst[pc as usize];
+        println!(
+            "pc {:08b}: inst {} {:08b}",
+            pc,
+            inst_desc.desc.name(),
+            inst_desc.binary
+        );
+
         execute_gates();
 
-        println!("pc {:08b}", state.pc.out.get_u8());
         println!("internal: {internal:?}");
+        println!("internal_ref: {internal_ref:?}");
 
-        assert_eq!(state.pc.out.get_u8(), state_ref.pc.out.get_u8());
+        clock_tick();
+
         for j in 0..4 {
             assert_eq!(state.reg[j].out.get_u8(), state_ref.reg[j].out.get_u8());
         }
-        for j in 0..=255 {
+        for j in 0..256 {
             assert_eq!(state.mem[j].out.get_u8(), state_ref.mem[j].out.get_u8());
         }
         assert_eq!(state.mem_bank.out.get_u8(), state_ref.mem_bank.out.get_u8());
-
-        clock_tick();
 
         f(i, &state);
     }

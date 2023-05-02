@@ -1,12 +1,12 @@
 use crate::cpu_v1::decoder::MemAddrSelect;
-use crate::cpu_v1::CpuComponent;
-use crate::{decode8, flatten2, mux2_w, reduce256, Regs, Wire, Wires};
+use crate::cpu_v1::{CpuComponent, CpuComponentEmu};
+use crate::{decode8, flatten2, input_w, mux2_w, reduce256, Wire, Wires};
 
 #[derive(Clone)]
 pub struct CpuMemInput {
-    pub mem: [Regs<4>; 256],
+    pub mem: [Wires<4>; 256],
     // bank
-    pub mem_bank: Regs<4>,
+    pub mem_bank: Wires<4>,
     pub mem_bank_write_enable: Wire,
     // write
     pub reg0: Wires<4>,
@@ -18,7 +18,11 @@ pub struct CpuMemInput {
 }
 #[derive(Clone)]
 pub struct CpuMemOutput {
+    // read mem
     pub mem_out: Wires<4>,
+    // write regs
+    pub mem_next: [Wires<4>; 256],
+    pub mem_bank_next: Wires<4>,
 }
 
 pub struct CpuMem;
@@ -28,30 +32,79 @@ impl CpuComponent for CpuMem {
 
     fn build(input: &CpuMemInput) -> CpuMemOutput {
         let mem_array = input.mem;
-        let mem_data = mem_array.map(|i| i.out);
-        let mem_data = mem_data.as_slice();
+        let mem_data = mem_array.as_slice();
 
         let use_imm = input.mem_addr_select.wires[MemAddrSelect::Imm as usize];
         let use_reg1 = input.mem_addr_select.wires[MemAddrSelect::Reg1 as usize];
         let addr_low = (use_imm.expand() & input.imm) | (use_reg1.expand() & input.reg1);
-        let addr_high = input.mem_bank.out;
+        let addr_high = input.mem_bank;
         let addr: Wires<8> = flatten2(addr_low, addr_high);
 
         let enable_line = decode8(addr);
         let mut lines: [Wires<4>; 256] = [Wires::uninitialized(); 256];
+        let mut mem_next: [Wires<4>; 256] = [Wires::uninitialized(); 256];
         for i in 0..256 {
             lines[i] = enable_line[i].expand() & mem_data[i];
 
             let write_enable = enable_line[i] & input.mem_write_enable;
             let write_data = mux2_w(mem_data[i], input.reg0, write_enable);
-            mem_array[i].set_in(write_data);
+            mem_next[i] = write_data;
         }
         let output = reduce256(lines.as_slice(), &|a, b| a | b);
 
-        let next_bank = mux2_w(input.mem_bank.out, input.reg0, input.mem_bank_write_enable);
-        input.mem_bank.set_in(next_bank);
+        let bank_next = mux2_w(input.mem_bank, input.reg0, input.mem_bank_write_enable);
 
-        CpuMemOutput { mem_out: output }
+        CpuMemOutput {
+            mem_out: output,
+            mem_next,
+            mem_bank_next: bank_next,
+        }
+    }
+}
+
+pub struct CpuMemEmu;
+impl CpuComponentEmu<CpuMem> for CpuMemEmu {
+    fn init_output(i: &CpuMemInput) -> CpuMemOutput {
+        let output = CpuMemOutput {
+            mem_out: input_w(),
+            mem_next: [0; 256].map(|_| input_w()),
+            mem_bank_next: input_w(),
+        };
+        //TODO accurate latency
+        output.mem_out.set_latency(i.imm.get_max_latency() + 10);
+        output
+            .mem_next
+            .map(|mem| mem.set_latency(i.reg0.get_max_latency() + 1));
+        output
+            .mem_bank_next
+            .set_latency(i.reg0.get_max_latency() + 1);
+        output
+    }
+    fn execute(input: &CpuMemInput, output: &CpuMemOutput) {
+        let mem_bank = input.mem_bank.get_u8();
+        let imm = input.imm.get_u8();
+        let reg0 = input.reg0.get_u8();
+        let reg1 = input.reg1.get_u8();
+
+        let addr_imm = input.mem_addr_select.wires[MemAddrSelect::Imm as usize].get();
+        let addr_reg1 = input.mem_addr_select.wires[MemAddrSelect::Reg1 as usize].get();
+
+        if input.mem_bank_write_enable.get() > 0 {
+            output.mem_bank_next.set_u8(reg0);
+        } else {
+            output.mem_bank_next.set_u8(mem_bank);
+        }
+
+        let addr_low = imm * addr_imm + reg1 * addr_reg1;
+        let addr = addr_low + (mem_bank << 4);
+
+        output.mem_out.set_u8(input.mem[addr as usize].get_u8());
+        (0..256).for_each(|i| {
+            output.mem_next[i].set_u8(input.mem[i].get_u8());
+        });
+        if input.mem_write_enable.get() > 0 {
+            output.mem_next[addr as usize].set_u8(reg0);
+        }
     }
 }
 
@@ -71,8 +124,8 @@ fn test_mem() {
     let mem_bank_write_enable = input();
 
     let input = CpuMemInput {
-        mem,
-        mem_bank,
+        mem: mem.map(|v| v.out),
+        mem_bank: mem_bank.out,
         mem_bank_write_enable,
         reg0,
         mem_write_enable,
@@ -80,7 +133,15 @@ fn test_mem() {
         reg1,
         mem_addr_select,
     };
-    let CpuMemOutput { mem_out } = CpuMem::build(&input);
+    let CpuMemOutput {
+        mem_out,
+        mem_next,
+        mem_bank_next,
+    } = CpuMem::build(&input);
+    for i in 0..256 {
+        mem[i].set_in(mem_next[i]);
+    }
+    mem_bank.set_in(mem_bank_next);
 
     let mut bank_sw = 0u8;
     let mut mem_sw = [[0u8; 16]; 16];

@@ -29,14 +29,14 @@ use std::marker::PhantomData;
 struct CpuV1State {
     clock_enable: Reg, // TODO impl
     inst: [Wires<8>; 256],
-    pc: Regs<8>,         // write in CpuV1
-    reg: [Regs<4>; 4],   // write in RegWrite
-    mem: [Regs<4>; 256], // write in Mem
-    mem_bank: Regs<4>,   // write in Mem
-    flag_p: Reg,         // write in CpuV1
-    flag_z: Reg,         // write in CpuV1
-    flag_n: Reg,         // write in CpuV1
-    bus_addr: Regs<4>,   // TODO impl
+    pc: Regs<8>,       // write in CpuV1
+    reg: [Regs<4>; 4], // write in RegWrite
+    mem: [Regs<4>; 256],
+    mem_bank: Regs<4>,
+    flag_p: Reg,       // write in CpuV1
+    flag_z: Reg,       // write in CpuV1
+    flag_n: Reg,       // write in CpuV1
+    bus_addr: Regs<4>, // TODO impl
 }
 impl CpuV1State {
     fn create(inst: [u8; 256]) -> Self {
@@ -150,8 +150,8 @@ trait CpuV1 {
 
         // Mem
         let mem_in = CpuMemInput {
-            mem: state.mem,
-            mem_bank: state.mem_bank,
+            mem: state.mem.map(|v| v.out),
+            mem_bank: state.mem_bank.out,
             reg0: reg0_data,
             mem_write_enable,
             mem_bank_write_enable,
@@ -160,7 +160,15 @@ trait CpuV1 {
             mem_addr_select,
         };
         let mem_out = Self::Mem::build(&mem_in);
-        let CpuMemOutput { mem_out } = mem_out;
+        let CpuMemOutput {
+            mem_out,
+            mem_next,
+            mem_bank_next,
+        } = mem_out;
+        for i in 0..256 {
+            state.mem[i].set_in(mem_next[i]);
+        }
+        state.mem_bank.set_in(mem_bank_next);
 
         // RegWrite
         let reg_write_in = CpuRegWriteInput {
@@ -224,7 +232,9 @@ trait CpuV1 {
 }
 
 struct CpuV1Instance;
+struct CpuV1MixInstance;
 struct CpuV1EmuInstance;
+
 impl CpuV1 for CpuV1Instance {
     type Pc = CpuPc;
     type InstRom = CpuInstRom;
@@ -236,6 +246,16 @@ impl CpuV1 for CpuV1Instance {
     type Mem = CpuMem;
     type Bus = CpuComponentEmuContext<CpuBus, CpuBusEmu>;
 }
+impl CpuV1 for CpuV1MixInstance {
+    type Pc = CpuPc;
+    type InstRom = CpuComponentEmuContext<CpuInstRom, CpuInstRomEmu>;
+    type Decoder = CpuDecoder;
+    type Alu = CpuAlu;
+    type Branch = CpuBranch;
+    type RegRead = CpuRegRead;
+    type RegWrite = CpuRegWrite;
+    type Mem = CpuComponentEmuContext<CpuMem, CpuMemEmu>;
+}
 impl CpuV1 for CpuV1EmuInstance {
     type Pc = CpuComponentEmuContext<CpuPc, CpuPcEmu>;
     type InstRom = CpuComponentEmuContext<CpuInstRom, CpuInstRomEmu>;
@@ -244,7 +264,7 @@ impl CpuV1 for CpuV1EmuInstance {
     type Branch = CpuBranch;
     type RegRead = CpuRegRead;
     type RegWrite = CpuRegWrite;
-    type Mem = CpuMem;
+    type Mem = CpuComponentEmuContext<CpuMem, CpuMemEmu>;
     type Bus = CpuComponentEmuContext<CpuBus, CpuBusEmu>;
 }
 
