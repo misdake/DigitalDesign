@@ -1,5 +1,4 @@
 mod inst_rom;
-mod isa;
 use inst_rom::*;
 mod pc;
 use pc::*;
@@ -13,7 +12,12 @@ mod regfile;
 use regfile::*;
 mod mem;
 use mem::*;
+mod bus;
+use bus::*;
 
+mod isa;
+use isa::*;
+mod devices;
 #[cfg(test)]
 mod programs;
 
@@ -25,14 +29,14 @@ use std::marker::PhantomData;
 struct CpuV1State {
     clock_enable: Reg, // TODO impl
     inst: [Wires<8>; 256],
-    pc: Regs<8>,              // write in CpuV1
-    reg: [Regs<4>; 4],        // write in RegWrite
-    mem: [Regs<4>; 256],      // write in Mem
-    mem_bank: Regs<4>,        // write in Mem
-    flag_p: Reg,              // write in CpuV1
-    flag_z: Reg,              // write in CpuV1
-    flag_n: Reg,              // write in CpuV1
-    external_device: Regs<4>, // TODO impl
+    pc: Regs<8>,         // write in CpuV1
+    reg: [Regs<4>; 4],   // write in RegWrite
+    mem: [Regs<4>; 256], // write in Mem
+    mem_bank: Regs<4>,   // write in Mem
+    flag_p: Reg,         // write in CpuV1
+    flag_z: Reg,         // write in CpuV1
+    flag_n: Reg,         // write in CpuV1
+    bus_addr: Regs<4>,   // TODO impl
 }
 impl CpuV1State {
     fn create(inst: [u8; 256]) -> Self {
@@ -49,7 +53,7 @@ impl CpuV1State {
             flag_p: reg(),
             flag_z: reg(),
             flag_n: reg(),
-            external_device: reg_w(),
+            bus_addr: reg_w(),
         }
     }
 }
@@ -72,6 +76,7 @@ trait CpuV1 {
     type RegRead: CpuComponent<Input = CpuRegReadInput, Output = CpuRegReadOutput>;
     type RegWrite: CpuComponent<Input = CpuRegWriteInput, Output = CpuRegWriteOutput>;
     type Mem: CpuComponent<Input = CpuMemInput, Output = CpuMemOutput>;
+    type Bus: CpuComponent<Input = CpuBusInput, Output = CpuBusOutput>;
 
     fn build(state: &mut CpuV1State) -> CpuV1StateInternal {
         // Inst
@@ -99,6 +104,8 @@ trait CpuV1 {
             mem_bank_write_enable,
             jmp_op,
             jmp_src_select,
+            bus_enable,
+            bus_addr_write,
         } = decoder_out;
 
         // RegRead
@@ -113,6 +120,21 @@ trait CpuV1 {
             reg1_data,
             reg0_select,
         } = reg_read_out;
+
+        let bus_in = CpuBusInput {
+            bus_addr_write,
+            bus_enable,
+            bus_addr: state.bus_addr.out,
+            reg0_data,
+            reg1_data,
+            imm,
+        };
+        let bus_out: CpuBusOutput = Self::Bus::build(&bus_in);
+        let CpuBusOutput {
+            bus_out,
+            bus_addr_next,
+        } = bus_out;
+        state.bus_addr.set_in(bus_addr_next);
 
         // Alu
         let alu_in = CpuAluInput {
@@ -148,15 +170,17 @@ trait CpuV1 {
             reg0_write_select,
             alu_out,
             mem_out,
+            bus_out,
         };
         let reg_write_out = Self::RegWrite::build(&reg_write_in);
-        let CpuRegWriteOutput {} = reg_write_out;
+        let CpuRegWriteOutput { reg0_write_data } = reg_write_out;
 
         // Branch
         let branch_in = CpuBranchInput {
             imm,
             reg0: reg0_data,
-            alu_out,
+            reg0_write_enable,
+            reg0_write_data,
             jmp_op,
             jmp_src_select,
             flag_p: state.flag_p.out(),
@@ -210,6 +234,7 @@ impl CpuV1 for CpuV1Instance {
     type RegRead = CpuRegRead;
     type RegWrite = CpuRegWrite;
     type Mem = CpuMem;
+    type Bus = CpuComponentEmuContext<CpuBus, CpuBusEmu>;
 }
 impl CpuV1 for CpuV1EmuInstance {
     type Pc = CpuComponentEmuContext<CpuPc, CpuPcEmu>;
@@ -220,10 +245,11 @@ impl CpuV1 for CpuV1EmuInstance {
     type RegRead = CpuRegRead;
     type RegWrite = CpuRegWrite;
     type Mem = CpuMem;
+    type Bus = CpuComponentEmuContext<CpuBus, CpuBusEmu>;
 }
 
 #[allow(unused)]
-fn cpu_v1_build(
+fn cpu_v1_build_with_ref(
     inst_rom: [u8; 256],
 ) -> (
     CpuV1State,
@@ -237,6 +263,13 @@ fn cpu_v1_build(
     let internal1 = CpuV1Instance::build(&mut state1);
     let internal2 = CpuV1EmuInstance::build(&mut state2);
     (state1, state2, internal1, internal2)
+}
+#[allow(unused)]
+fn cpu_v1_build(inst_rom: [u8; 256]) -> (CpuV1State, CpuV1StateInternal) {
+    clear_all();
+    let mut state1 = CpuV1State::create(inst_rom.clone());
+    let internal1 = CpuV1Instance::build(&mut state1);
+    (state1, internal1)
 }
 
 pub trait CpuComponent: Any {

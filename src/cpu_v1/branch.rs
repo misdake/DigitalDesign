@@ -1,12 +1,13 @@
 use crate::cpu_v1::decoder::{JmpOp, JmpSrcSelect};
 use crate::cpu_v1::CpuComponent;
-use crate::{Wire, Wires};
+use crate::{mux2, Wire, Wires};
 
 #[derive(Debug, Clone)]
 pub struct CpuBranchInput {
     pub imm: Wires<4>,
     pub reg0: Wires<4>,
-    pub alu_out: Wires<4>,
+    pub reg0_write_enable: Wire,
+    pub reg0_write_data: Wires<4>,
 
     pub jmp_op: Wires<6>,         // JmpOp: no_jmp, jmp, je, jl, jg, long
     pub jmp_src_select: Wires<2>, // JmpSrcSelect: imm, regA
@@ -51,14 +52,21 @@ impl CpuComponent for CpuBranch {
         let reg_offset = jmp_src_reg.expand() & input.reg0;
         let target = no_jmp_offset | imm_offset | reg_offset;
 
+        let flag_p_new = !input.reg0_write_data.wires[3] & !input.reg0_write_data.all_0();
+        let flag_z_new = input.reg0_write_data.all_0();
+        let flag_n_new = input.reg0_write_data.wires[3];
+        let flag_p_next = mux2(input.flag_p, flag_p_new, input.reg0_write_enable);
+        let flag_z_next = mux2(input.flag_z, flag_z_new, input.reg0_write_enable);
+        let flag_n_next = mux2(input.flag_n, flag_n_new, input.reg0_write_enable);
+
         CpuBranchOutput {
             pc_offset_enable: no_jmp | use_offset_jmp,
             pc_offset: target,
             jmp_long_enable: jmp_long,
             jmp_long: target,
-            flag_p: !input.alu_out.wires[3] & !input.alu_out.all_0(),
-            flag_z: input.alu_out.all_0(),
-            flag_n: input.alu_out.wires[3],
+            flag_p: flag_p_next,
+            flag_z: flag_z_next,
+            flag_n: flag_n_next,
         }
     }
 }
