@@ -8,22 +8,31 @@ pub struct DeviceMath {
 #[repr(u8)]
 #[allow(unused)]
 pub enum DeviceMathOpcode {
-    Pop = 0,              // will write to reg0, or use inst_bus_read()
+    Pop = 0,              // will pop to reg0
     ExtractBits = 1,      // split each bit of reg0 and push onto stack (& only)
     ExtractBitsShift = 2, // push 4 bits of reg0 into stack (& then >>)
 }
 impl Device for DeviceMath {
-    fn reset(&mut self) {
-        self.value.clear();
-    }
     fn device_type(&self) -> DeviceType {
         DeviceType::Math
     }
-    fn exec(&mut self, opcode4: u8, reg0: u8, _reg1: u8) {
+    fn exec(&mut self, opcode4: u8, reg0: u8, _reg1: u8) -> DeviceReadResult {
         let opcode: DeviceMathOpcode = unsafe { transmute(opcode4) };
         match opcode {
             DeviceMathOpcode::Pop => {
-                unreachable!()
+                return if let Some(v) = self.value.pop() {
+                    println!("DeviceMath Pop {}", v);
+                    DeviceReadResult {
+                        reg0_write_data: v,
+                        self_latency: 3,
+                    }
+                } else {
+                    println!("DeviceMath Pop empty!");
+                    DeviceReadResult {
+                        reg0_write_data: 0,
+                        self_latency: 3,
+                    }
+                }
             }
             DeviceMathOpcode::ExtractBits => {
                 print!("DeviceMath ExtractBits reg0 {:04b}", reg0);
@@ -46,20 +55,9 @@ impl Device for DeviceMath {
             .collect::<Vec<_>>()
             .join(", ");
         println!(" => [{values}]");
-    }
-    fn read(&mut self, _reg0: u8, _reg1: u8) -> DeviceReadResult {
-        if self.value.is_empty() {
-            DeviceReadResult {
-                out_data: 0,
-                self_latency: 3,
-            }
-        } else {
-            let v = self.value.pop().unwrap();
-            println!("DeviceMath Pop {}", v);
-            DeviceReadResult {
-                out_data: v,
-                self_latency: 3,
-            }
+        DeviceReadResult {
+            reg0_write_data: reg0,
+            self_latency: 3,
         }
     }
 }

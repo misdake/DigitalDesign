@@ -51,32 +51,23 @@ impl CpuComponentEmu<CpuBus> for CpuBusEmu {
         let reg0 = input.reg0_data.get_u8();
         let reg1 = input.reg1_data.get_u8();
         let bus_opcode = input.imm.get_u8();
-        let is_read = bus_opcode == 0;
 
         let bus_out: u8;
         let bus_out_latency: u16;
 
         if bus_enable {
-            if is_read {
-                let mut out = 0;
-                let mut latency = 0;
-                Devices::visit(|devices| {
-                    let DeviceReadResult {
-                        out_data,
-                        self_latency,
-                    } = devices.read(bus_addr, reg0, reg1);
-                    out = out_data;
-                    latency = self_latency;
-                });
-                bus_out = out;
-                bus_out_latency = latency;
-            } else {
-                Devices::visit(|devices| {
-                    devices.execute(bus_addr, bus_opcode, reg0, reg1);
-                });
-                bus_out = 0;
-                bus_out_latency = 0;
-            }
+            let mut out = 0;
+            let mut latency = 0;
+            Devices::visit(|devices| {
+                let DeviceReadResult {
+                    reg0_write_data: out_data,
+                    self_latency,
+                } = devices.execute(bus_addr, bus_opcode, reg0, reg1);
+                out = out_data;
+                latency = self_latency;
+            });
+            bus_out = out;
+            bus_out_latency = latency;
         } else {
             bus_out = 0;
             bus_out_latency = 0;

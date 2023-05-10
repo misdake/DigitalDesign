@@ -1,5 +1,6 @@
 mod device_0_print;
 mod device_1_math;
+mod device_2_gamepad;
 
 // Device
 
@@ -10,14 +11,12 @@ pub enum DeviceType {
     // Graphics = 2,
 }
 pub trait Device: 'static {
-    fn reset(&mut self);
     fn device_type(&self) -> DeviceType;
-    fn exec(&mut self, opcode4: u8, reg0: u8, reg1: u8);
-    fn read(&mut self, reg0: u8, reg1: u8) -> DeviceReadResult;
+    fn exec(&mut self, opcode4: u8, reg0: u8, reg1: u8) -> DeviceReadResult;
 }
 #[derive(Default)]
 pub struct DeviceReadResult {
-    pub out_data: u8,
+    pub reg0_write_data: u8,
     pub self_latency: u16,
 }
 
@@ -56,21 +55,18 @@ impl Devices {
         let device_type = device.device_type();
         self.devices[device_type as u8 as usize] = Some(Box::new(device));
     }
-    #[allow(unused)]
-    pub fn reset(&mut self) {
-        self.devices.iter_mut().for_each(|device| {
-            device.as_mut().map(|d| d.reset());
-        })
-    }
-    pub fn execute(&mut self, bus_addr: u8, bus_opcode4: u8, reg0: u8, reg1: u8) {
-        self.devices[bus_addr as usize].as_mut().map(|d| {
-            d.exec(bus_opcode4, reg0, reg1);
-        });
-    }
-    pub fn read(&mut self, bus_addr: u8, reg0: u8, reg1: u8) -> DeviceReadResult {
+    pub fn execute(
+        &mut self,
+        bus_addr: u8,
+        bus_opcode4: u8,
+        reg0: u8,
+        reg1: u8,
+    ) -> DeviceReadResult {
         self.devices[bus_addr as usize]
             .as_mut()
-            .map_or(DeviceReadResult::default(), |d| d.read(reg0, reg1))
+            .map_or(DeviceReadResult::default(), |d| {
+                d.exec(bus_opcode4, reg0, reg1)
+            })
     }
 }
 

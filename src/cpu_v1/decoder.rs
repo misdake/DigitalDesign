@@ -117,15 +117,14 @@ impl CpuComponent for CpuDecoder {
         let is_alu = !b0 & (!b1 | (b1 & !b2));
 
         let is_op_bus = op4.eq_const(0b0111);
-        let is_op_bus_read = is_op_bus & (imm.eq_const(0)); // opcode 0 => read, >0 => exec
         let bus_enable = is_op_bus;
 
         // is_alu => inst_reg0, false => regA(0)
         let reg0_addr = mux2_w(Wires::parse_u8(0), inst_reg0, is_alu);
         // is_alu => inst_reg1, false => regB(1)
         let reg1_addr = mux2_w(Wires::parse_u8(1), inst_reg1, is_alu);
-        // 0b00 | 0b010 | 0b100 | 0b01110000
-        let reg0_write_enable = (!b0 & !b1) | (!b0 & b1 & !b2) | (b0 & !b1 & !b2) | is_op_bus_read;
+        // 0b00 | 0b010 | 0b100 | 0b0111
+        let reg0_write_enable = (!b0 & !b1) | (!b0 & b1 & !b2) | (b0 & !b1 & !b2) | is_op_bus;
         // AluOut, MemOut, BusOut
         let mut reg0_write_select = Wires::uninitialized();
 
@@ -295,7 +294,6 @@ impl CpuComponentEmu<CpuDecoder> for CpuDecoderEmu {
         let is_control = set_mem_bank | set_bus_addr;
         // bus
         let is_bus = INST_BUS.match_opcode(inst);
-        let is_bus_read = INST_BUS_READ.match_opcode(inst);
 
         // immutable local variable => all output variables assigned once and only once.
         let reg0_addr: u8;
@@ -447,7 +445,7 @@ impl CpuComponentEmu<CpuDecoder> for CpuDecoderEmu {
         } else if is_bus {
             reg0_addr = 0;
             reg1_addr = 1;
-            reg0_write_enable = is_bus_read as u8;
+            reg0_write_enable = 1;
             reg0_write_select = 1 << Reg0WriteSelect::BusOut as u8;
             alu_op = 0;
             alu0_select = 0;
