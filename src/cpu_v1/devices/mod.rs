@@ -1,6 +1,7 @@
 mod device_0_print;
 mod device_1_math;
 mod device_2_gamepad;
+mod device_3_graphics_v1;
 
 // Device
 
@@ -8,7 +9,8 @@ mod device_2_gamepad;
 pub enum DeviceType {
     Print = 0,
     Math = 1,
-    // Graphics = 2,
+    Gamepad = 2,
+    GraphicsV1 = 3,
 }
 pub trait Device: 'static {
     fn device_type(&self) -> DeviceType;
