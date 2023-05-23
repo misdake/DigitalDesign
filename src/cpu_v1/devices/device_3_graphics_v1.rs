@@ -1,6 +1,5 @@
 use crate::cpu_v1::devices::{Device, DeviceReadResult, DeviceType};
 
-#[derive(Default)]
 pub struct DeviceGraphicsV1 {
     //TODO receiver for frame id
     //TODO sender for present frame
@@ -8,7 +7,7 @@ pub struct DeviceGraphicsV1 {
     width: usize,
     height: usize,
     buffer: Vec<u32>,
-    palette: [u32; 16],
+    palette: &'static [u32; 16],
     cursor_x: usize,
     cursor_y: usize,
 }
@@ -29,7 +28,98 @@ impl Device for DeviceGraphicsV1 {
     fn device_type(&self) -> DeviceType {
         DeviceType::GraphicsV1
     }
-    fn exec(&mut self, _opcode4: u8, _reg0: u8, _reg1: u8) -> DeviceReadResult {
-        todo!()
+    fn exec(&mut self, opcode4: u8, reg0: u8, reg1: u8) -> DeviceReadResult {
+        let opcode: DeviceGraphicsV1Opcode = unsafe { std::mem::transmute(opcode4) };
+        let r = match opcode {
+            DeviceGraphicsV1Opcode::GetFrameId => Some((self.frame_id % 16) as u8),
+            DeviceGraphicsV1Opcode::Resize => {
+                self.resize(reg0, reg1);
+                None
+            }
+            DeviceGraphicsV1Opcode::SetCursor => {
+                self.cursor_y = reg0 as usize;
+                self.cursor_x = reg1 as usize;
+                None
+            }
+            DeviceGraphicsV1Opcode::NextPosition => {
+                self.next_position();
+                None
+            }
+            DeviceGraphicsV1Opcode::SetColor => {
+                self.set_color(reg0);
+                None
+            }
+            DeviceGraphicsV1Opcode::SetColorNext => {
+                self.set_color(reg0);
+                self.next_position();
+                None
+            }
+            DeviceGraphicsV1Opcode::PresentFrame => {
+                self.present_frame();
+                None
+            }
+        };
+
+        DeviceReadResult {
+            reg0_write_data: r.unwrap_or(reg0),
+            self_latency: 0,
+        }
+    }
+}
+
+/// https://thestarman.pcministry.com/RGB/16WinColorT.html
+const PALETTE_16: [u32; 16] = [
+    0x000000FF, //Blac
+    0x800000FF, //Maroon
+    0x008000FF, //Green
+    0x808000FF, //Olive
+    0x000080FF, //Navy
+    0x800080FF, //Purple
+    0x008080FF, //Teal
+    0xC0C0C0FF, //Silver
+    0x808080FF, //Gray
+    0xFF0000FF, //Red
+    0x00FF00FF, //Lime
+    0xFFFF00FF, //Yellow
+    0x0000FFFF, //Blue
+    0xFF00FFFF, //Fuchsia
+    0x00FFFFFF, //Aqua
+    0xFFFFFFFF, //White
+];
+
+impl DeviceGraphicsV1 {
+    fn new() -> Self {
+        Self {
+            //TODO
+            frame_id: 0,
+            width: 0,
+            height: 0,
+            buffer: vec![],
+            palette: &PALETTE_16,
+            cursor_x: 0,
+            cursor_y: 0,
+        }
+    }
+
+    fn resize(&mut self, width: u8, height: u8) {
+        self.width = width as usize;
+        self.height = height as usize;
+        let len = (width * height) as usize;
+        self.buffer = vec![0; len];
+    }
+    fn next_position(&mut self) {
+        self.cursor_x += 1;
+        if self.cursor_x >= self.width {
+            self.cursor_y += 1;
+        }
+        self.cursor_x %= self.width;
+        self.cursor_y %= self.height;
+    }
+    fn set_color(&mut self, color_index: u8) {
+        self.buffer[self.width * self.cursor_y + self.cursor_x] =
+            self.palette[color_index as usize];
+    }
+    fn present_frame(&mut self) {
+        //TODO send buffer copy
     }
 }
