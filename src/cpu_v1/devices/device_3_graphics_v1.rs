@@ -68,22 +68,23 @@ impl Device for DeviceGraphicsV1 {
 }
 
 /// https://thestarman.pcministry.com/RGB/16WinColorT.html
+/// u32 in bgra format
 const PALETTE_16: [u32; 16] = [
-    0x000000FF, //Blac
-    0x800000FF, //Maroon
+    0x000000FF, //Black
+    0x000080FF, //Maroon
     0x008000FF, //Green
-    0x808000FF, //Olive
-    0x000080FF, //Navy
+    0x008080FF, //Olive
+    0x800000FF, //Navy
     0x800080FF, //Purple
-    0x008080FF, //Teal
+    0x808000FF, //Teal
     0xC0C0C0FF, //Silver
     0x808080FF, //Gray
-    0xFF0000FF, //Red
+    0x0000FFFF, //Red
     0x00FF00FF, //Lime
-    0xFFFF00FF, //Yellow
-    0x0000FFFF, //Blue
+    0x00FFFFFF, //Yellow
+    0xFF0000FF, //Blue
     0xFF00FFFF, //Fuchsia
-    0x00FFFFFF, //Aqua
+    0xFFFF00FF, //Aqua
     0xFFFFFFFF, //White
 ];
 

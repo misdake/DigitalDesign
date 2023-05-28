@@ -1,0 +1,168 @@
+use minifb::{clamp, Key, KeyRepeat, ScaleMode, Window, WindowOptions};
+use std::sync::mpsc::{Receiver, Sender, TryRecvError};
+use std::time::{Duration, Instant};
+
+fn register_device_2_and_3() {}
+
+enum Control {
+    W,
+    A,
+    S,
+    D,
+}
+struct Submit {
+    size: usize,
+    buffer: Vec<u32>,
+}
+
+struct Controller {
+    size: usize,
+    x: usize,
+    y: usize,
+
+    buffer: Vec<u32>,
+    control_rx: Receiver<Control>,
+    submit_tx: Sender<Submit>,
+}
+impl Controller {
+    fn create(size: usize, control_rx: Receiver<Control>, submit_tx: Sender<Submit>) -> Self {
+        let mut buffer = vec![];
+        buffer.resize(size * size, 0);
+        Self {
+            size,
+            x: 0,
+            y: 0,
+            buffer,
+            control_rx,
+            submit_tx,
+        }
+    }
+
+    fn control_then_update(&mut self, c: Control) {
+        let mut x = self.x as isize;
+        let mut y = self.y as isize;
+        match c {
+            Control::W => {
+                y -= 1;
+            }
+            Control::S => {
+                y += 1;
+            }
+            Control::A => {
+                x -= 1;
+            }
+            Control::D => {
+                x += 1;
+            }
+        }
+        self.x = clamp(0, x, self.size as isize - 1) as usize;
+        self.y = clamp(0, y, self.size as isize - 1) as usize;
+        self.update();
+    }
+
+    fn update(&mut self) {
+        self.buffer.fill(0);
+        self.buffer[self.size * self.y + self.x] = 0xff0000ff;
+        self.submit_tx
+            .send(Submit {
+                size: self.size,
+                buffer: self.buffer.clone(),
+            })
+            .unwrap();
+    }
+
+    fn start(&mut self) {
+        loop {
+            let result = self.control_rx.try_recv();
+            match result {
+                Ok(control) => self.control_then_update(control),
+                Err(TryRecvError::Empty) => std::thread::sleep(Duration::from_millis(1)),
+                Err(TryRecvError::Disconnected) => break,
+            }
+        }
+    }
+}
+
+fn start_window() {
+    const RENDER_SIZE: usize = 16;
+    const SCALE: usize = 32;
+    const DISPLAY_SIZE: usize = RENDER_SIZE * SCALE;
+
+    let (control_tx, control_rx) = std::sync::mpsc::channel::<Control>();
+    let (submit_tx, submit_rx) = std::sync::mpsc::channel::<Submit>();
+
+    std::thread::spawn(move || {
+        let mut controller = Controller::create(RENDER_SIZE, control_rx, submit_tx);
+        controller.update();
+        controller.start();
+    });
+
+    let mut window = Window::new(
+        "Window",
+        DISPLAY_SIZE,
+        DISPLAY_SIZE,
+        WindowOptions {
+            resize: false,
+            scale_mode: ScaleMode::UpperLeft,
+            ..WindowOptions::default()
+        },
+    )
+    .expect("Unable to create window");
+
+    window.limit_update_rate(Some(Duration::from_micros(10000)));
+
+    let mut time = Instant::now();
+
+    while window.is_open() && !window.is_key_down(Key::Escape) {
+        match submit_rx.try_recv() {
+            Ok(v) => {
+                assert_eq!(v.size, RENDER_SIZE);
+                let mut buf = vec![0u32; DISPLAY_SIZE * DISPLAY_SIZE];
+                for i in 0..RENDER_SIZE {
+                    let mut line = vec![0u32; DISPLAY_SIZE];
+                    for j in 0..RENDER_SIZE {
+                        let v = v.buffer[i * RENDER_SIZE + j];
+                        line[(j * SCALE)..(j * SCALE) + SCALE].fill(v);
+                    }
+                    for k in 0..SCALE {
+                        let start = i * SCALE * DISPLAY_SIZE + k * RENDER_SIZE * SCALE;
+                        let end = i * SCALE * DISPLAY_SIZE + (k + 1) * RENDER_SIZE * SCALE;
+                        buf[start..end].copy_from_slice(line.as_slice());
+                    }
+                }
+
+                window
+                    .update_with_buffer(buf.as_slice(), DISPLAY_SIZE, DISPLAY_SIZE)
+                    .unwrap();
+            }
+            Err(_) => {
+                window.update();
+            }
+        }
+
+        window
+            .get_keys_pressed(KeyRepeat::Yes)
+            .iter()
+            .for_each(|key| match key {
+                Key::W => control_tx.send(Control::W).unwrap(),
+                Key::A => control_tx.send(Control::A).unwrap(),
+                Key::S => control_tx.send(Control::S).unwrap(),
+                Key::D => control_tx.send(Control::D).unwrap(),
+                _ => (),
+            });
+
+        // window.get_keys_released().iter().for_each(|key| match key {
+        //     Key::W => control_tx.send(Control::W).unwrap(),
+        //     Key::A => control_tx.send(Control::A).unwrap(),
+        //     Key::S => control_tx.send(Control::S).unwrap(),
+        //     Key::D => control_tx.send(Control::D).unwrap(),
+        //     _ => (),
+        // });
+
+        let time3 = Instant::now();
+
+        println!("frame: buffer {}ms", (time3 - time).as_secs_f32() * 1000.,);
+
+        time = time3;
+    }
+}

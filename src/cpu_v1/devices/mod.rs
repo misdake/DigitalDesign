@@ -1,5 +1,6 @@
 mod device_0_print;
 mod device_1_math;
+mod device_2_and_3_util;
 mod device_2_gamepad;
 mod device_3_graphics_v1;
 
@@ -29,8 +30,7 @@ use crate::cpu_v1::devices::device_1_math::DeviceMath;
 use once_cell::sync::Lazy;
 use std::sync::{Arc, Mutex};
 
-static DEVICES: Lazy<Arc<Mutex<Devices>>> =
-    Lazy::new(|| Arc::new(Mutex::new(Devices::create_empty())));
+static DEVICES: Lazy<Arc<Mutex<Devices>>> = Lazy::new(|| Arc::new(Mutex::new(Devices::new())));
 pub struct Devices {
     devices: [Option<Box<dyn Device>>; 16],
 }
@@ -42,7 +42,7 @@ impl Devices {
         f(&mut *result)
     }
 
-    fn create_empty() -> Self {
+    fn new() -> Self {
         let mut devices = Self {
             devices: [0; 16].map(|_| None),
         };
