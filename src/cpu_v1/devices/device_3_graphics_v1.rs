@@ -92,9 +92,9 @@ impl DeviceGraphicsV1 {
         Self {
             //TODO
             frame_id: 0,
-            width: 0,
-            height: 0,
-            buffer: vec![],
+            width: 4,
+            height: 4,
+            buffer: vec![0; 16],
             palette: &PALETTE_16,
             cursor_x: 0,
             cursor_y: 0,
