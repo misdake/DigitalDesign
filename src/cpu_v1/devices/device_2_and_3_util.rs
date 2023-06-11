@@ -1,8 +1,158 @@
 use minifb::{clamp, Key, KeyRepeat, ScaleMode, Window, WindowOptions};
+use std::collections::HashMap;
+use std::ops::{Deref, DerefMut};
 use std::sync::mpsc::{Receiver, Sender, TryRecvError};
 use std::time::{Duration, Instant};
 
 fn register_device_2_and_3() {}
+
+struct Tx<T: Send + Sync + Clone> {
+    sender: Sender<T>,
+    value: T,
+}
+
+impl<T: Send + Sync + Clone> Tx<T> {
+    fn set_send(&mut self, value: T) {
+        self.value = value;
+        self.send();
+    }
+    fn send(&self) {
+        self.sender.send(self.value.clone()).unwrap(); //TODO window closed?
+    }
+}
+impl<T: Send + Sync + Clone> Deref for Tx<T> {
+    type Target = T;
+    fn deref(&self) -> &T {
+        &self.value
+    }
+}
+impl<T: Send + Sync + Clone> DerefMut for Tx<T> {
+    fn deref_mut(&mut self) -> &mut T {
+        &mut self.value
+    }
+}
+
+struct Rx<T: 'static + Send + Sync + Clone> {
+    receiver: Receiver<T>,
+    value: T,
+}
+impl<T: Send + Sync + Clone> Deref for Rx<T> {
+    type Target = T;
+    fn deref(&self) -> &T {
+        &self.value
+    }
+}
+impl<T: Send + Sync + Clone> DerefMut for Rx<T> {
+    fn deref_mut(&mut self) -> &mut T {
+        &mut self.value
+    }
+}
+
+impl<T: Send + Sync + Clone> Rx<T> {
+    fn update_get(&mut self) -> &T {
+        loop {
+            match self.receiver.try_recv() {
+                Ok(t) => {
+                    self.value = t;
+                }
+                Err(TryRecvError::Empty) => {
+                    break;
+                }
+                Err(TryRecvError::Disconnected) => {
+                    break;
+                } //TODO window closed?
+            }
+        }
+        &self.value
+    }
+}
+
+#[derive(Copy, Clone, Hash, Eq, PartialEq)]
+enum GamepadButton {
+    Up = 1,
+    Down,
+    Left,
+    Right,
+    A,
+    B,
+    X,
+    Y,
+    LB,
+    RB,
+    Start,
+    Option,
+}
+// #[derive(Copy, Clone, Hash, Eq, PartialEq)]
+// enum GamepadAnalog {
+//     LT,
+//     RT,
+//     LX,
+//     LY,
+//     RX,
+//     RY,
+// }
+
+struct GamepadState {
+    key_mapping: HashMap<Key, GamepadButton>,
+    state_prev: HashMap<GamepadButton, i8>,
+    state_curr: HashMap<GamepadButton, i8>,
+}
+impl GamepadState {
+    fn new() -> GamepadState {
+        let mut state = GamepadState {
+            key_mapping: Default::default(),
+            state_prev: Default::default(),
+            state_curr: Default::default(),
+        };
+        state.key_mapping.insert(Key::W, GamepadButton::Up);
+        state.key_mapping.insert(Key::S, GamepadButton::Up);
+        state.key_mapping.insert(Key::A, GamepadButton::Up);
+        state.key_mapping.insert(Key::D, GamepadButton::Up);
+
+        state
+    }
+
+    fn next_frame(&mut self) {
+        self.state_prev = self.state_curr.clone();
+    }
+    fn update(&mut self, keys: Vec<Key>) {
+        //TODO read keys from rx?
+        self.state_curr.clear();
+    }
+    fn get_prev(&self, key: GamepadButton) -> i8 {
+        *self.state_prev.get(&key).unwrap_or(&0)
+    }
+    fn get_curr(&self, key: GamepadButton) -> i8 {
+        *self.state_prev.get(&key).unwrap_or(&0)
+    }
+    fn is_down(&self, key: GamepadButton) -> bool {
+        self.get_prev(key) == 0 && self.get_curr(key) == 1
+    }
+    fn is_pressed(&self, key: GamepadButton) -> bool {
+        self.get_curr(key) == 1
+    }
+    fn is_up(&self, key: GamepadButton) -> bool {
+        self.get_prev(key) == 1 && self.get_curr(key) == 0
+    }
+}
+
+struct MinifbWindow {
+    frame_id: Tx<u64>,
+    frame_buffer: Rx<FrameBuffer>,
+}
+#[derive(Clone)]
+struct FrameBuffer {
+    w: u8,
+    h: u8,
+    buffer: Vec<u32>,
+}
+struct MinifbWindowAsyncController {
+    frame_id: Rx<u64>,
+    frame_buffer: Tx<FrameBuffer>,
+}
+impl MinifbWindowAsyncController {
+    fn get_frame_id(&self) {}
+}
 
 enum Control {
     W,
