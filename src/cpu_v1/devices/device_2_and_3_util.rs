@@ -93,21 +93,29 @@ enum GamepadButton {
 // }
 
 struct GamepadState {
-    key_mapping: HashMap<Key, GamepadButton>,
+    receiver: Rx<Vec<Key>>,
+    mapping: HashMap<Key, GamepadButton>,
     state_prev: HashMap<GamepadButton, i8>,
     state_curr: HashMap<GamepadButton, i8>,
 }
 impl GamepadState {
-    fn new() -> GamepadState {
+    fn new(receiver: Rx<Vec<Key>>) -> GamepadState {
         let mut state = GamepadState {
-            key_mapping: Default::default(),
+            receiver,
+            mapping: Default::default(),
             state_prev: Default::default(),
             state_curr: Default::default(),
         };
-        state.key_mapping.insert(Key::W, GamepadButton::Up);
-        state.key_mapping.insert(Key::S, GamepadButton::Up);
-        state.key_mapping.insert(Key::A, GamepadButton::Up);
-        state.key_mapping.insert(Key::D, GamepadButton::Up);
+        state.mapping.insert(Key::W, GamepadButton::Up);
+        state.mapping.insert(Key::S, GamepadButton::Down);
+        state.mapping.insert(Key::A, GamepadButton::Left);
+        state.mapping.insert(Key::D, GamepadButton::Right);
+        state.mapping.insert(Key::J, GamepadButton::A);
+        state.mapping.insert(Key::K, GamepadButton::B);
+        state.mapping.insert(Key::L, GamepadButton::X);
+        state.mapping.insert(Key::Semicolon, GamepadButton::Y);
+        state.mapping.insert(Key::Enter, GamepadButton::Start);
+        state.mapping.insert(Key::LeftShift, GamepadButton::Option);
 
         state
     }
@@ -139,6 +147,8 @@ impl GamepadState {
 struct MinifbWindow {
     frame_id: Tx<u64>,
     frame_buffer: Rx<FrameBuffer>,
+
+    gamepad: Tx<Vec<Key>>,
 }
 #[derive(Clone)]
 struct FrameBuffer {
