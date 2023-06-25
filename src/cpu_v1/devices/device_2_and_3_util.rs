@@ -1,59 +1,45 @@
 use minifb::{clamp, Key, KeyRepeat, ScaleMode, Window, WindowOptions};
+use std::any::Any;
 use std::collections::HashMap;
-use std::ops::{Deref, DerefMut};
 use std::sync::mpsc::{Receiver, Sender, TryRecvError};
+use std::sync::{Arc, RwLock};
 use std::time::{Duration, Instant};
 
 fn register_device_2_and_3() {}
 
-struct Tx<T: Send + Sync + Clone> {
+trait Message: Any + Send + Sync + PartialEq + Clone {}
+impl<T: Any + Send + Sync + PartialEq + Clone> Message for T {}
+
+struct Tx<T: Message> {
     sender: Sender<T>,
-    value: T,
 }
 
-impl<T: Send + Sync + Clone> Tx<T> {
-    fn set_send(&mut self, value: T) {
-        self.value = value;
-        self.send();
-    }
-    fn send(&self) {
-        self.sender.send(self.value.clone()).unwrap(); //TODO window closed?
-    }
-}
-impl<T: Send + Sync + Clone> Deref for Tx<T> {
-    type Target = T;
-    fn deref(&self) -> &T {
-        &self.value
-    }
-}
-impl<T: Send + Sync + Clone> DerefMut for Tx<T> {
-    fn deref_mut(&mut self) -> &mut T {
-        &mut self.value
+impl<T: Message> Tx<T> {
+    fn send(&mut self, value: T) {
+        self.sender.send(value).unwrap();
     }
 }
 
-struct Rx<T: 'static + Send + Sync + Clone> {
+struct Rx<T: Message> {
     receiver: Receiver<T>,
     value: T,
 }
-impl<T: Send + Sync + Clone> Deref for Rx<T> {
-    type Target = T;
-    fn deref(&self) -> &T {
-        &self.value
-    }
-}
-impl<T: Send + Sync + Clone> DerefMut for Rx<T> {
-    fn deref_mut(&mut self) -> &mut T {
-        &mut self.value
-    }
+struct SharedRxWithDiff<T: Message> {
+    inner: Arc<RwLock<Rx<T>>>,
+    value: T,
 }
 
-impl<T: Send + Sync + Clone> Rx<T> {
+impl<T: Message> Rx<T> {
     fn update_get(&mut self) -> &T {
+        self.update_get_check().0
+    }
+    fn update_get_check(&mut self) -> (&T, bool) {
+        let mut updated = false;
         loop {
             match self.receiver.try_recv() {
                 Ok(t) => {
                     self.value = t;
+                    updated = true;
                 }
                 Err(TryRecvError::Empty) => {
                     break;
@@ -63,7 +49,15 @@ impl<T: Send + Sync + Clone> Rx<T> {
                 } //TODO window closed?
             }
         }
-        &self.value
+        (&self.value, updated)
+    }
+}
+impl<T: Message> SharedRxWithDiff<T> {
+    fn update_get_check<R>(&mut self, f: impl FnOnce(&T, bool) -> R) -> R {
+        let mut guard = self.inner.write().unwrap();
+        let (value, _) = guard.update_get_check();
+        let updated = *value != self.value;
+        f(value, !updated)
     }
 }
 
@@ -93,15 +87,17 @@ enum GamepadButton {
 // }
 
 struct GamepadState {
-    receiver: Rx<Vec<Key>>,
+    frame_id: SharedRxWithDiff<u64>,
+    keys: Rx<Vec<Key>>,
     mapping: HashMap<Key, GamepadButton>,
     state_prev: HashMap<GamepadButton, i8>,
     state_curr: HashMap<GamepadButton, i8>,
 }
 impl GamepadState {
-    fn new(receiver: Rx<Vec<Key>>) -> GamepadState {
+    pub fn new(frame_id: SharedRxWithDiff<u64>, keys: Rx<Vec<Key>>) -> GamepadState {
         let mut state = GamepadState {
-            receiver,
+            frame_id,
+            keys,
             mapping: Default::default(),
             state_prev: Default::default(),
             state_curr: Default::default(),
@@ -119,13 +115,22 @@ impl GamepadState {
 
         state
     }
-
-    fn next_frame(&mut self) {
-        self.state_prev = self.state_curr.clone();
-    }
-    fn update(&mut self, keys: Vec<Key>) {
-        //TODO read keys from rx?
-        self.state_curr.clear();
+    pub fn update(&mut self) {
+        self.frame_id.update_get_check(|_, updated| {
+            if updated {
+                std::mem::swap(&mut self.state_prev, &mut self.state_curr);
+                self.state_curr.clear();
+            }
+        });
+        let (keys, changed) = self.keys.update_get_check();
+        if changed {
+            self.state_curr.clear();
+            for key in keys {
+                self.mapping.get(key).map(|key| {
+                    self.state_curr.insert(*key, 1);
+                });
+            }
+        }
     }
     fn get_prev(&self, key: GamepadButton) -> i8 {
         *self.state_prev.get(&key).unwrap_or(&0)
@@ -133,13 +138,13 @@ impl GamepadState {
     fn get_curr(&self, key: GamepadButton) -> i8 {
         *self.state_prev.get(&key).unwrap_or(&0)
     }
-    fn is_down(&self, key: GamepadButton) -> bool {
+    pub fn is_down(&self, key: GamepadButton) -> bool {
         self.get_prev(key) == 0 && self.get_curr(key) == 1
     }
-    fn is_pressed(&self, key: GamepadButton) -> bool {
+    pub fn is_pressed(&self, key: GamepadButton) -> bool {
         self.get_curr(key) == 1
     }
-    fn is_up(&self, key: GamepadButton) -> bool {
+    pub fn is_up(&self, key: GamepadButton) -> bool {
         self.get_prev(key) == 1 && self.get_curr(key) == 0
     }
 }
@@ -147,21 +152,31 @@ impl GamepadState {
 struct MinifbWindow {
     frame_id: Tx<u64>,
     frame_buffer: Rx<FrameBuffer>,
-
     gamepad: Tx<Vec<Key>>,
 }
-#[derive(Clone)]
+#[derive(Clone, PartialEq)]
 struct FrameBuffer {
     w: u8,
     h: u8,
     buffer: Vec<u32>,
 }
-struct MinifbWindowAsyncController {
-    frame_id: Rx<u64>,
+struct FrameBufferController {
+    frame_id: SharedRxWithDiff<u64>,
     frame_buffer: Tx<FrameBuffer>,
 }
-impl MinifbWindowAsyncController {
-    fn get_frame_id(&self) {}
+impl FrameBufferController {
+    pub fn new(frame_id: SharedRxWithDiff<u64>, frame_buffer: Tx<FrameBuffer>) -> Self {
+        Self {
+            frame_id,
+            frame_buffer,
+        }
+    }
+    pub fn get_frame_id(&mut self) -> u64 {
+        self.frame_id.update_get_check(|id, _| *id)
+    }
+    pub fn send_framebuffer(&mut self, framebuffer: FrameBuffer) {
+        self.frame_buffer.send(framebuffer);
+    }
 }
 
 enum Control {
