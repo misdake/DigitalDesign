@@ -1,19 +1,27 @@
-use minifb::{clamp, Key, KeyRepeat, ScaleMode, Window, WindowOptions};
+use minifb::{Key, ScaleMode, Window, WindowOptions};
 use std::any::Any;
 use std::collections::HashMap;
-use std::sync::mpsc::{Receiver, Sender, TryRecvError};
+use std::sync::mpsc::{channel, Receiver, Sender, TryRecvError};
 use std::sync::{Arc, RwLock};
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
-fn register_device_2_and_3() {}
+trait Message: Any + Default + Send + Sync + PartialEq + Clone {}
+impl<T: Any + Default + Send + Sync + PartialEq + Clone> Message for T {}
 
-trait Message: Any + Send + Sync + PartialEq + Clone {}
-impl<T: Any + Send + Sync + PartialEq + Clone> Message for T {}
+fn create_channel<T: Message>() -> (Tx<T>, Rx<T>) {
+    let (sender, receiver) = channel();
+    (
+        Tx { sender },
+        Rx {
+            receiver,
+            value: T::default(),
+        },
+    )
+}
 
 struct Tx<T: Message> {
     sender: Sender<T>,
 }
-
 impl<T: Message> Tx<T> {
     fn send(&mut self, value: T) {
         self.sender.send(value).unwrap();
@@ -24,11 +32,7 @@ struct Rx<T: Message> {
     receiver: Receiver<T>,
     value: T,
 }
-struct SharedRxWithDiff<T: Message> {
-    inner: Arc<RwLock<Rx<T>>>,
-    value: T,
-}
-
+unsafe impl<T: Message> Send for Rx<T> {}
 impl<T: Message> Rx<T> {
     fn update_get(&mut self) -> &T {
         self.update_get_check().0
@@ -52,16 +56,29 @@ impl<T: Message> Rx<T> {
         (&self.value, updated)
     }
 }
+
+#[derive(Clone)]
+struct SharedRxWithDiff<T: Message> {
+    inner: Arc<RwLock<Rx<T>>>,
+    value: T,
+}
+unsafe impl<T: Message> Send for SharedRxWithDiff<T> {}
 impl<T: Message> SharedRxWithDiff<T> {
-    fn update_get_check<R>(&mut self, f: impl FnOnce(&T, bool) -> R) -> R {
+    fn new(rx: Rx<T>) -> SharedRxWithDiff<T> {
+        Self {
+            inner: Arc::new(RwLock::new(rx)),
+            value: T::default(),
+        }
+    }
+    fn update_get_diff_local<R>(&mut self, f: impl FnOnce(&T, bool) -> R) -> R {
         let mut guard = self.inner.write().unwrap();
         let (value, _) = guard.update_get_check();
         let updated = *value != self.value;
-        f(value, !updated)
+        f(value, updated)
     }
 }
 
-#[derive(Copy, Clone, Hash, Eq, PartialEq)]
+#[derive(Debug, Copy, Clone, Hash, Eq, PartialEq)]
 enum GamepadButton {
     Up = 1,
     Down,
@@ -116,10 +133,9 @@ impl GamepadState {
         state
     }
     pub fn update(&mut self) {
-        self.frame_id.update_get_check(|_, updated| {
+        self.frame_id.update_get_diff_local(|_, updated| {
             if updated {
-                std::mem::swap(&mut self.state_prev, &mut self.state_curr);
-                self.state_curr.clear();
+                self.state_prev = self.state_curr.clone();
             }
         });
         let (keys, changed) = self.keys.update_get_check();
@@ -131,12 +147,26 @@ impl GamepadState {
                 });
             }
         }
+
+        // let prev = self
+        //     .state_prev
+        //     .keys()
+        //     .map(|key| format!("{:?}", key))
+        //     .collect::<Vec<_>>()
+        //     .join(",");
+        // let curr = self
+        //     .state_curr
+        //     .keys()
+        //     .map(|key| format!("{:?}", key))
+        //     .collect::<Vec<_>>()
+        //     .join(",");
+        // println!("keys: prev {prev}, curr {curr}");
     }
     fn get_prev(&self, key: GamepadButton) -> i8 {
         *self.state_prev.get(&key).unwrap_or(&0)
     }
     fn get_curr(&self, key: GamepadButton) -> i8 {
-        *self.state_prev.get(&key).unwrap_or(&0)
+        *self.state_curr.get(&key).unwrap_or(&0)
     }
     pub fn is_down(&self, key: GamepadButton) -> bool {
         self.get_prev(key) == 0 && self.get_curr(key) == 1
@@ -149,12 +179,31 @@ impl GamepadState {
     }
 }
 
+fn create_window() -> (MinifbWindow, FrameBufferController, GamepadState) {
+    let frame_id = create_channel::<u64>();
+    let frame_buffer = create_channel::<FrameBuffer>();
+    let gamepad = create_channel::<Vec<Key>>();
+    let frame_id_rx = SharedRxWithDiff::new(frame_id.1);
+
+    let window = MinifbWindow {
+        frame_id: frame_id.0,
+        frame_buffer: frame_buffer.1,
+        gamepad: gamepad.0,
+    };
+    let frame_buffer_controller = FrameBufferController {
+        frame_id: frame_id_rx.clone(),
+        frame_buffer: frame_buffer.0,
+    };
+    let gamepad_state = GamepadState::new(frame_id_rx, gamepad.1);
+    (window, frame_buffer_controller, gamepad_state)
+}
+
 struct MinifbWindow {
     frame_id: Tx<u64>,
     frame_buffer: Rx<FrameBuffer>,
     gamepad: Tx<Vec<Key>>,
 }
-#[derive(Clone, PartialEq)]
+#[derive(Default, Clone, PartialEq)]
 struct FrameBuffer {
     w: u8,
     h: u8,
@@ -172,172 +221,149 @@ impl FrameBufferController {
         }
     }
     pub fn get_frame_id(&mut self) -> u64 {
-        self.frame_id.update_get_check(|id, _| *id)
+        self.frame_id.update_get_diff_local(|id, _| *id)
     }
     pub fn send_framebuffer(&mut self, framebuffer: FrameBuffer) {
         self.frame_buffer.send(framebuffer);
     }
 }
 
-enum Control {
-    W,
-    A,
-    S,
-    D,
-}
-struct Submit {
-    size: usize,
-    buffer: Vec<u32>,
-}
+impl MinifbWindow {
+    fn start_event_loop(mut self, width: usize, height: usize) {
+        let mut window = Window::new(
+            "Window",
+            width,
+            height,
+            WindowOptions {
+                resize: false,
+                scale_mode: ScaleMode::AspectRatioStretch,
+                ..WindowOptions::default()
+            },
+        )
+        .expect("Unable to create window");
 
-struct Controller {
-    size: usize,
-    x: usize,
-    y: usize,
+        window.limit_update_rate(Some(Duration::from_micros(10000)));
 
-    buffer: Vec<u32>,
-    control_rx: Receiver<Control>,
-    submit_tx: Sender<Submit>,
-}
-impl Controller {
-    fn create(size: usize, control_rx: Receiver<Control>, submit_tx: Sender<Submit>) -> Self {
-        let mut buffer = vec![];
-        buffer.resize(size * size, 0);
-        Self {
-            size,
-            x: 0,
-            y: 0,
-            buffer,
-            control_rx,
-            submit_tx,
-        }
-    }
+        // let mut time = Instant::now();
+        let mut frame_id = 1;
+        self.frame_id.send(frame_id);
+        self.gamepad.sender.send(window.get_keys()).unwrap();
 
-    fn control_then_update(&mut self, c: Control) {
-        let mut x = self.x as isize;
-        let mut y = self.y as isize;
-        match c {
-            Control::W => {
-                y -= 1;
-            }
-            Control::S => {
-                y += 1;
-            }
-            Control::A => {
-                x -= 1;
-            }
-            Control::D => {
-                x += 1;
-            }
-        }
-        self.x = clamp(0, x, self.size as isize - 1) as usize;
-        self.y = clamp(0, y, self.size as isize - 1) as usize;
-        self.update();
-    }
-
-    fn update(&mut self) {
-        self.buffer.fill(0);
-        self.buffer[self.size * self.y + self.x] = 0xff0000ff;
-        self.submit_tx
-            .send(Submit {
-                size: self.size,
-                buffer: self.buffer.clone(),
-            })
-            .unwrap();
-    }
-
-    fn start(&mut self) {
-        loop {
-            let result = self.control_rx.try_recv();
-            match result {
-                Ok(control) => self.control_then_update(control),
-                Err(TryRecvError::Empty) => std::thread::sleep(Duration::from_millis(1)),
-                Err(TryRecvError::Disconnected) => break,
-            }
-        }
-    }
-}
-
-fn start_window() {
-    const RENDER_SIZE: usize = 16;
-    const SCALE: usize = 32;
-    const DISPLAY_SIZE: usize = RENDER_SIZE * SCALE;
-
-    let (control_tx, control_rx) = std::sync::mpsc::channel::<Control>();
-    let (submit_tx, submit_rx) = std::sync::mpsc::channel::<Submit>();
-
-    std::thread::spawn(move || {
-        let mut controller = Controller::create(RENDER_SIZE, control_rx, submit_tx);
-        controller.update();
-        controller.start();
-    });
-
-    let mut window = Window::new(
-        "Window",
-        DISPLAY_SIZE,
-        DISPLAY_SIZE,
-        WindowOptions {
-            resize: false,
-            scale_mode: ScaleMode::UpperLeft,
-            ..WindowOptions::default()
-        },
-    )
-    .expect("Unable to create window");
-
-    window.limit_update_rate(Some(Duration::from_micros(10000)));
-
-    let mut time = Instant::now();
-
-    while window.is_open() && !window.is_key_down(Key::Escape) {
-        match submit_rx.try_recv() {
-            Ok(v) => {
-                assert_eq!(v.size, RENDER_SIZE);
-                let mut buf = vec![0u32; DISPLAY_SIZE * DISPLAY_SIZE];
-                for i in 0..RENDER_SIZE {
-                    let mut line = vec![0u32; DISPLAY_SIZE];
-                    for j in 0..RENDER_SIZE {
-                        let v = v.buffer[i * RENDER_SIZE + j];
-                        line[(j * SCALE)..(j * SCALE) + SCALE].fill(v);
-                    }
-                    for k in 0..SCALE {
-                        let start = i * SCALE * DISPLAY_SIZE + k * RENDER_SIZE * SCALE;
-                        let end = i * SCALE * DISPLAY_SIZE + (k + 1) * RENDER_SIZE * SCALE;
-                        buf[start..end].copy_from_slice(line.as_slice());
-                    }
-                }
-
+        while window.is_open() && !window.is_key_down(Key::Escape) {
+            let (buffer, updated) = self.frame_buffer.update_get_check();
+            if updated {
+                // println!("frame receive buffer");
                 window
-                    .update_with_buffer(buf.as_slice(), DISPLAY_SIZE, DISPLAY_SIZE)
+                    .update_with_buffer(
+                        buffer.buffer.as_slice(),
+                        buffer.w as usize,
+                        buffer.h as usize,
+                    )
                     .unwrap();
-            }
-            Err(_) => {
+                frame_id += 1;
+                self.frame_id.send(frame_id);
+            } else {
                 window.update();
             }
+
+            self.gamepad.sender.send(window.get_keys()).unwrap();
+
+            // let time3 = Instant::now();
+            // println!("frame: buffer {}ms", (time3 - time).as_secs_f32() * 1000.,);
+            // time = time3;
         }
-
-        window
-            .get_keys_pressed(KeyRepeat::Yes)
-            .iter()
-            .for_each(|key| match key {
-                Key::W => control_tx.send(Control::W).unwrap(),
-                Key::A => control_tx.send(Control::A).unwrap(),
-                Key::S => control_tx.send(Control::S).unwrap(),
-                Key::D => control_tx.send(Control::D).unwrap(),
-                _ => (),
-            });
-
-        // window.get_keys_released().iter().for_each(|key| match key {
-        //     Key::W => control_tx.send(Control::W).unwrap(),
-        //     Key::A => control_tx.send(Control::A).unwrap(),
-        //     Key::S => control_tx.send(Control::S).unwrap(),
-        //     Key::D => control_tx.send(Control::D).unwrap(),
-        //     _ => (),
-        // });
-
-        let time3 = Instant::now();
-
-        println!("frame: buffer {}ms", (time3 - time).as_secs_f32() * 1000.,);
-
-        time = time3;
     }
+}
+
+#[test]
+fn start_test_window() {
+    struct Game {
+        gamepad: GamepadState,
+        framebuffer: FrameBufferController,
+
+        initialized: bool,
+        size: i8,
+        x: i8,
+        y: i8,
+    }
+    impl Game {
+        pub fn new(size: u8, gamepad: GamepadState, framebuffer: FrameBufferController) -> Self {
+            Self {
+                gamepad,
+                framebuffer,
+                initialized: false,
+                size: size as i8,
+                x: 2,
+                y: 2,
+            }
+        }
+        pub fn start(&mut self) {
+            loop {
+                self.gamepad.update();
+                let mut changed = false;
+                if self.gamepad.is_down(GamepadButton::Left) {
+                    self.x -= 1;
+                    self.x = self.x.clamp(0, self.size - 1);
+                    changed = true;
+                }
+                if self.gamepad.is_down(GamepadButton::Right) {
+                    self.x += 1;
+                    self.x = self.x.clamp(0, self.size - 1);
+                    changed = true;
+                }
+                if self.gamepad.is_down(GamepadButton::Up) {
+                    self.y -= 1;
+                    self.y = self.y.clamp(0, self.size - 1);
+                    changed = true;
+                }
+                if self.gamepad.is_down(GamepadButton::Down) {
+                    self.y += 1;
+                    self.y = self.y.clamp(0, self.size - 1);
+                    changed = true;
+                }
+                if !self.initialized {
+                    changed = true;
+                    self.initialized = true;
+                }
+
+                fn from_u8_rgb(r: u8, g: u8, b: u8) -> u32 {
+                    let (r, g, b) = (r as u32, g as u32, b as u32);
+                    (r << 16) | (g << 8) | b
+                }
+
+                if changed {
+                    let mut buffer: Vec<u32> = vec![];
+                    for y in 0..self.size {
+                        for x in 0..self.size {
+                            if x == self.x && y == self.y {
+                                buffer.push(from_u8_rgb(255, 0, 0));
+                            } else {
+                                buffer.push(from_u8_rgb(255, 255, 255))
+                            }
+                        }
+                    }
+
+                    self.framebuffer.send_framebuffer(FrameBuffer {
+                        w: self.size as u8,
+                        h: self.size as u8,
+                        buffer,
+                    });
+                }
+
+                std::thread::sleep(Duration::from_millis(1));
+            }
+        }
+    }
+
+    let (fbwindow, framebuffer, gamepad) = create_window();
+
+    const RENDER_SIZE: u8 = 5;
+    const DISPLAY_SIZE: usize = 512;
+
+    std::thread::spawn(move || {
+        let mut game = Game::new(RENDER_SIZE, gamepad, framebuffer);
+        game.start();
+    });
+
+    fbwindow.start_event_loop(DISPLAY_SIZE, DISPLAY_SIZE);
 }
