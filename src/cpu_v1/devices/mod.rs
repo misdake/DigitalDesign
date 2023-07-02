@@ -27,6 +27,7 @@ pub struct DeviceReadResult {
 
 use crate::cpu_v1::devices::device_0_print::DevicePrint;
 use crate::cpu_v1::devices::device_1_math::DeviceMath;
+use crate::cpu_v1::devices::device_2_and_3_util::create_device_gamepad_graphics_v1_start;
 use once_cell::sync::Lazy;
 use std::sync::{Arc, Mutex};
 
@@ -52,13 +53,22 @@ impl Devices {
         devices
     }
     fn register_default(&mut self) {
+        const WINDOW_WIDTH: usize = 512;
+        const WINDOW_HEIGHT: usize = 512;
+
         self.register(DeviceType::Print, |d| d.set_device(DevicePrint::default()));
         self.register(DeviceType::Math, |d| d.set_device(DeviceMath::default()));
         self.register(DeviceType::Gamepad, |d| {
-            //TODO set gamepad + graphics_v1
+            let (gamepad, fb) =
+                create_device_gamepad_graphics_v1_start(WINDOW_WIDTH, WINDOW_HEIGHT);
+            d.set_device(gamepad);
+            d.set_device(fb);
         });
         self.register(DeviceType::GraphicsV1, |d| {
-            //TODO set gamepad + graphics_v1
+            let (gamepad, fb) =
+                create_device_gamepad_graphics_v1_start(WINDOW_WIDTH, WINDOW_HEIGHT);
+            d.set_device(gamepad);
+            d.set_device(fb);
         });
     }
     fn set_device(&mut self, device: impl Device) {

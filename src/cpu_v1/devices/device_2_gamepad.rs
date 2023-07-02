@@ -12,7 +12,16 @@ enum ButtonQueryMode {
 pub struct DeviceGamepad {
     stack: Vec<u8>,
     button_query_mode: ButtonQueryMode,
-    states: GamepadState,
+    gamepad_state: GamepadState,
+}
+impl DeviceGamepad {
+    pub fn create(gamepad_state: GamepadState) -> Self {
+        Self {
+            stack: vec![],
+            button_query_mode: ButtonQueryMode::Down,
+            gamepad_state,
+        }
+    }
 }
 
 #[repr(u8)]
@@ -43,9 +52,9 @@ pub enum DeviceGamepadOpcode {
 impl DeviceGamepad {
     fn query_button(&mut self, button: GamepadButton) {
         let v = match self.button_query_mode {
-            ButtonQueryMode::Down => self.states.is_down(button),
-            ButtonQueryMode::Press => self.states.is_pressed(button),
-            ButtonQueryMode::Up => self.states.is_up(button),
+            ButtonQueryMode::Down => self.gamepad_state.is_down(button),
+            ButtonQueryMode::Press => self.gamepad_state.is_pressed(button),
+            ButtonQueryMode::Up => self.gamepad_state.is_up(button),
         };
         if v {
             self.stack.push(1)
@@ -68,11 +77,11 @@ impl Device for DeviceGamepad {
     fn exec(&mut self, opcode4: u8, reg0: u8, _reg1: u8) -> DeviceReadResult {
         let mut r = reg0;
 
-        self.states.update();
+        self.gamepad_state.update();
         let opcode4: DeviceGamepadOpcode = unsafe { std::mem::transmute(opcode4) };
         match opcode4 {
             DeviceGamepadOpcode::NextFrame => {
-                self.states.next_frame();
+                self.gamepad_state.next_frame();
             }
 
             DeviceGamepadOpcode::ButtonPop => {

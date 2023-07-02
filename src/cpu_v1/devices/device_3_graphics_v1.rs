@@ -1,9 +1,9 @@
+use crate::cpu_v1::devices::device_2_and_3_util::{FrameBuffer, FrameBufferController};
 use crate::cpu_v1::devices::{Device, DeviceReadResult, DeviceType};
 
 pub struct DeviceGraphicsV1 {
-    //TODO receiver for frame id
-    //TODO sender for present frame
-    frame_id: usize,
+    fb_controller: FrameBufferController,
+
     width: usize,
     height: usize,
     buffer: Vec<u32>,
@@ -31,7 +31,9 @@ impl Device for DeviceGraphicsV1 {
     fn exec(&mut self, opcode4: u8, reg0: u8, reg1: u8) -> DeviceReadResult {
         let opcode: DeviceGraphicsV1Opcode = unsafe { std::mem::transmute(opcode4) };
         let r = match opcode {
-            DeviceGraphicsV1Opcode::GetFrameId => Some((self.frame_id % 16) as u8),
+            DeviceGraphicsV1Opcode::GetFrameId => {
+                Some((self.fb_controller.get_frame_id() % 16) as u8)
+            }
             DeviceGraphicsV1Opcode::Resize => {
                 self.resize(reg0, reg1);
                 None
@@ -89,13 +91,12 @@ const PALETTE_16: [u32; 16] = [
 ];
 
 impl DeviceGraphicsV1 {
-    fn new() -> Self {
+    pub fn create(fb_controller: FrameBufferController) -> Self {
         Self {
-            //TODO
-            frame_id: 0,
-            width: 4,
-            height: 4,
-            buffer: vec![0; 16],
+            fb_controller,
+            width: 5,
+            height: 5,
+            buffer: vec![0; 25],
             palette: &PALETTE_16,
             cursor_x: 0,
             cursor_y: 0,
@@ -121,6 +122,10 @@ impl DeviceGraphicsV1 {
             self.palette[color_index as usize];
     }
     fn present_frame(&mut self) {
-        //TODO send buffer copy
+        self.fb_controller.send_framebuffer(FrameBuffer {
+            w: self.width,
+            h: self.height,
+            buffer: self.buffer.clone(),
+        })
     }
 }

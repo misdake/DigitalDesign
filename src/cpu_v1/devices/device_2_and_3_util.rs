@@ -1,10 +1,12 @@
+use crate::cpu_v1::devices::device_2_gamepad::DeviceGamepad;
+use crate::cpu_v1::devices::device_3_graphics_v1::DeviceGraphicsV1;
 use minifb::{Key, ScaleMode, Window, WindowOptions};
 use std::any::Any;
 use std::collections::HashMap;
 use std::sync::mpsc::{channel, Receiver, Sender, TryRecvError};
 use std::time::Duration;
 
-pub trait Message: Any + Default + Send + Sync + PartialEq + Clone {}
+trait Message: Any + Default + Send + Sync + PartialEq + Clone {}
 impl<T: Any + Default + Send + Sync + PartialEq + Clone> Message for T {}
 
 fn create_channel<T: Message>() -> (Tx<T>, Rx<T>) {
@@ -18,25 +20,22 @@ fn create_channel<T: Message>() -> (Tx<T>, Rx<T>) {
     )
 }
 
-pub struct Tx<T: Message> {
+struct Tx<T: Message> {
     sender: Sender<T>,
 }
 impl<T: Message> Tx<T> {
-    pub fn send(&mut self, value: T) {
+    fn send(&mut self, value: T) {
         self.sender.send(value).unwrap();
     }
 }
 
-pub struct Rx<T: Message> {
+struct Rx<T: Message> {
     receiver: Receiver<T>,
     value: T,
 }
 unsafe impl<T: Message> Send for Rx<T> {}
 impl<T: Message> Rx<T> {
-    pub fn update_get(&mut self) -> &T {
-        self.update_get_check().0
-    }
-    pub fn update_get_check(&mut self) -> (&T, bool) {
+    fn update_get_check(&mut self) -> (&T, bool) {
         let mut updated = false;
         loop {
             match self.receiver.try_recv() {
@@ -56,7 +55,7 @@ impl<T: Message> Rx<T> {
     }
 }
 
-pub struct RxWithDiff<T: Message> {
+struct RxWithDiff<T: Message> {
     inner: Rx<T>,
     value: T,
 }
@@ -108,7 +107,7 @@ pub struct GamepadState {
     state_curr: HashMap<GamepadButton, i8>,
 }
 impl GamepadState {
-    pub fn new(keys: Rx<Vec<Key>>) -> GamepadState {
+    fn new(keys: Rx<Vec<Key>>) -> GamepadState {
         let mut state = GamepadState {
             keys,
             mapping: Default::default(),
@@ -173,7 +172,7 @@ impl GamepadState {
     }
 }
 
-pub fn create_window() -> (MinifbWindow, FrameBufferController, GamepadState) {
+fn create_minifb_window() -> (MinifbWindow, FrameBufferController, GamepadState) {
     let frame_id = create_channel::<u64>();
     let frame_buffer = create_channel::<FrameBuffer>();
     let gamepad = create_channel::<Vec<Key>>();
@@ -184,31 +183,41 @@ pub fn create_window() -> (MinifbWindow, FrameBufferController, GamepadState) {
         frame_buffer: frame_buffer.1,
         gamepad: gamepad.0,
     };
-    let frame_buffer_controller = FrameBufferController {
-        frame_id: frame_id_rx,
-        frame_buffer: frame_buffer.0,
-    };
+    let frame_buffer_controller = FrameBufferController::create(frame_id_rx, frame_buffer.0);
     let gamepad_state = GamepadState::new(gamepad.1);
     (window, frame_buffer_controller, gamepad_state)
 }
 
-pub struct MinifbWindow {
+pub fn create_device_gamepad_graphics_v1_start(
+    width: usize,
+    height: usize,
+) -> (DeviceGamepad, DeviceGraphicsV1) {
+    let (window, fb, gamepad) = create_minifb_window();
+
+    std::thread::spawn(move || window.start_event_loop(width, height));
+
+    let gamepad = DeviceGamepad::create(gamepad);
+    let graphics_v1 = DeviceGraphicsV1::create(fb);
+    (gamepad, graphics_v1)
+}
+
+struct MinifbWindow {
     frame_id: Tx<u64>,
     frame_buffer: Rx<FrameBuffer>,
     gamepad: Tx<Vec<Key>>,
 }
 #[derive(Default, Clone, PartialEq)]
 pub struct FrameBuffer {
-    w: u8,
-    h: u8,
-    buffer: Vec<u32>,
+    pub w: usize,
+    pub h: usize,
+    pub buffer: Vec<u32>,
 }
 pub struct FrameBufferController {
     frame_id: RxWithDiff<u64>,
     frame_buffer: Tx<FrameBuffer>,
 }
 impl FrameBufferController {
-    pub fn new(frame_id: RxWithDiff<u64>, frame_buffer: Tx<FrameBuffer>) -> Self {
+    fn create(frame_id: RxWithDiff<u64>, frame_buffer: Tx<FrameBuffer>) -> Self {
         Self {
             frame_id,
             frame_buffer,
@@ -223,7 +232,7 @@ impl FrameBufferController {
 }
 
 impl MinifbWindow {
-    pub fn start_event_loop(mut self, width: usize, height: usize) {
+    fn start_event_loop(mut self, width: usize, height: usize) {
         let mut window = Window::new(
             "Window",
             width,
@@ -246,13 +255,9 @@ impl MinifbWindow {
         while window.is_open() && !window.is_key_down(Key::Escape) {
             let (buffer, updated) = self.frame_buffer.update_get_check();
             if updated {
-                println!("frame receive buffer");
+                // println!("frame receive buffer");
                 window
-                    .update_with_buffer(
-                        buffer.buffer.as_slice(),
-                        buffer.w as usize,
-                        buffer.h as usize,
-                    )
+                    .update_with_buffer(buffer.buffer.as_slice(), buffer.w, buffer.h)
                     .unwrap();
                 frame_id += 1;
                 self.frame_id.send(frame_id);
@@ -280,7 +285,7 @@ fn start_test_window() {
         y: i8,
     }
     impl Game {
-        pub fn new(size: u8, gamepad: GamepadState, framebuffer: FrameBufferController) -> Self {
+        fn new(size: u8, gamepad: GamepadState, framebuffer: FrameBufferController) -> Self {
             Self {
                 gamepad,
                 framebuffer,
@@ -289,7 +294,7 @@ fn start_test_window() {
                 y: 2,
             }
         }
-        pub fn start(&mut self) {
+        fn start(&mut self) {
             // game loop
             loop {
                 // input
@@ -329,8 +334,8 @@ fn start_test_window() {
 
                 // present
                 self.framebuffer.send_framebuffer(FrameBuffer {
-                    w: self.size as u8,
-                    h: self.size as u8,
+                    w: self.size as usize,
+                    h: self.size as usize,
                     buffer,
                 });
                 self.gamepad.next_frame();
@@ -350,7 +355,7 @@ fn start_test_window() {
         }
     }
 
-    let (fbwindow, framebuffer, gamepad) = create_window();
+    let (fbwindow, framebuffer, gamepad) = create_minifb_window();
 
     const RENDER_SIZE: u8 = 5;
     const DISPLAY_SIZE: usize = 512;
