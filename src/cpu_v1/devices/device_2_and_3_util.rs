@@ -156,20 +156,20 @@ impl GamepadState {
         //     .join(",");
         // println!("keys: prev {prev}, curr {curr}");
     }
-    fn get_prev(&self, key: GamepadButton) -> i8 {
-        *self.state_prev.get(&key).unwrap_or(&0)
+    fn get_prev(&self, button: GamepadButton) -> i8 {
+        *self.state_prev.get(&button).unwrap_or(&0)
     }
-    fn get_curr(&self, key: GamepadButton) -> i8 {
-        *self.state_curr.get(&key).unwrap_or(&0)
+    fn get_curr(&self, button: GamepadButton) -> i8 {
+        *self.state_curr.get(&button).unwrap_or(&0)
     }
-    pub fn is_down(&self, key: GamepadButton) -> bool {
-        self.get_prev(key) == 0 && self.get_curr(key) == 1
+    pub fn is_down(&self, button: GamepadButton) -> bool {
+        self.get_prev(button) == 0 && self.get_curr(button) == 1
     }
-    pub fn is_pressed(&self, key: GamepadButton) -> bool {
-        self.get_curr(key) == 1
+    pub fn is_pressed(&self, button: GamepadButton) -> bool {
+        self.get_curr(button) == 1
     }
-    pub fn is_up(&self, key: GamepadButton) -> bool {
-        self.get_prev(key) == 1 && self.get_curr(key) == 0
+    pub fn is_up(&self, button: GamepadButton) -> bool {
+        self.get_prev(button) == 1 && self.get_curr(button) == 0
     }
 }
 
