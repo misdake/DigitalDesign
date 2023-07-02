@@ -32,6 +32,7 @@ use std::sync::{Arc, Mutex};
 
 static DEVICES: Lazy<Arc<Mutex<Devices>>> = Lazy::new(|| Arc::new(Mutex::new(Devices::new())));
 pub struct Devices {
+    generators: [Option<Box<dyn FnOnce(&mut Devices)>>; 16],
     devices: [Option<Box<dyn Device>>; 16],
 }
 unsafe impl Send for Devices {}
@@ -44,18 +45,32 @@ impl Devices {
 
     fn new() -> Self {
         let mut devices = Self {
+            generators: [0; 16].map(|_| None),
             devices: [0; 16].map(|_| None),
         };
         devices.register_default();
         devices
     }
     fn register_default(&mut self) {
-        self.register(DevicePrint::default());
-        self.register(DeviceMath::default());
+        self.register(DeviceType::Print, |d| d.set_device(DevicePrint::default()));
+        self.register(DeviceType::Math, |d| d.set_device(DeviceMath::default()));
+        self.register(DeviceType::Gamepad, |d| {
+            //TODO set gamepad + graphics_v1
+        });
+        self.register(DeviceType::GraphicsV1, |d| {
+            //TODO set gamepad + graphics_v1
+        });
     }
-    fn register(&mut self, device: impl Device) {
+    fn set_device(&mut self, device: impl Device) {
         let device_type = device.device_type();
         self.devices[device_type as u8 as usize] = Some(Box::new(device));
+    }
+    pub fn register(
+        &mut self,
+        device_type: DeviceType,
+        device: impl FnOnce(&mut Devices) + 'static,
+    ) {
+        self.generators[device_type as u8 as usize] = Some(Box::new(device));
     }
     pub fn execute(
         &mut self,
@@ -64,11 +79,15 @@ impl Devices {
         reg0: u8,
         reg1: u8,
     ) -> DeviceReadResult {
-        self.devices[bus_addr as usize]
-            .as_mut()
-            .map_or(DeviceReadResult::default(), |d| {
-                d.exec(bus_opcode4, reg0, reg1)
-            })
+        if self.devices[bus_addr as usize].is_none() {
+            if let Some(generator) = self.generators[bus_addr as usize].take() {
+                generator(self);
+            }
+        }
+        let device = &mut self.devices[bus_addr as usize];
+        device.as_mut().map_or(DeviceReadResult::default(), |d| {
+            d.exec(bus_opcode4, reg0, reg1)
+        })
     }
 }
 
