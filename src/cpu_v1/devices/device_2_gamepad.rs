@@ -13,30 +13,29 @@ pub struct DeviceGamepad {
     //TODO receiver
     button_query_mode: ButtonQueryMode,
     //TODO all the buttons
-    //values to pop
-    stack: Vec<u8>,
 }
 
 #[repr(u8)]
 #[allow(unused)]
 pub enum DeviceGamepadOpcode {
-    Next = 0, // write next bit to reg0, value 0 or 1
+    // control
+    NextFrame = 0,   // refresh prev/curr state
+    ButtonDownMode,  // prev=0 && curr=1
+    ButtonPressMode, // curr=1
+    ButtonUpMode,    // prev=1 && curr=0
 
-    // buttons
-    ButtonDownMode = 1,
-    ButtonPressMode = 2,
-    ButtonUpMode = 3,
-    ButtonArrowKey = 4,      // up, right, down left
-    ButtonABXY = 5,          // A, B, X, Y
-    ButtonLRStartOption = 6, // LB, RB, Start, Option
+    // buttons, set values (4bits)
+    ButtonArrowKey,      // up, right, down, left
+    ButtonABXY,          // A, B, X, Y
+    ButtonLRStartOption, // LB, RB, Start, Option
 
-    // analog
-    TriggerL = 8,    // LT (0 to 15)
-    TriggerR = 9,    // RT (0 to 15)
-    JoystickLX = 10, // Left/Right -7 to 7
-    JoystickLY = 11, // Up/Down -7 to 7
-    JoystickRX = 12, // Left/Right -7 to 7
-    JoystickRY = 13, // Up/Down -7 to 7
+    // analog, set value
+    TriggerL,   // LT (0 to 7)
+    TriggerR,   // RT (0 to 7)
+    JoystickLX, // Left/Right -7 to 7
+    JoystickLY, // Up/Down -7 to 7
+    JoystickRX, // Left/Right -7 to 7
+    JoystickRY, // Up/Down -7 to 7
 }
 
 impl Device for DeviceGamepad {
