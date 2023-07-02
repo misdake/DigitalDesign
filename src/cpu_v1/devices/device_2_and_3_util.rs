@@ -2,10 +2,9 @@ use minifb::{Key, ScaleMode, Window, WindowOptions};
 use std::any::Any;
 use std::collections::HashMap;
 use std::sync::mpsc::{channel, Receiver, Sender, TryRecvError};
-use std::sync::{Arc, RwLock};
 use std::time::Duration;
 
-trait Message: Any + Default + Send + Sync + PartialEq + Clone {}
+pub trait Message: Any + Default + Send + Sync + PartialEq + Clone {}
 impl<T: Any + Default + Send + Sync + PartialEq + Clone> Message for T {}
 
 fn create_channel<T: Message>() -> (Tx<T>, Rx<T>) {
@@ -19,25 +18,25 @@ fn create_channel<T: Message>() -> (Tx<T>, Rx<T>) {
     )
 }
 
-struct Tx<T: Message> {
+pub struct Tx<T: Message> {
     sender: Sender<T>,
 }
 impl<T: Message> Tx<T> {
-    fn send(&mut self, value: T) {
+    pub fn send(&mut self, value: T) {
         self.sender.send(value).unwrap();
     }
 }
 
-struct Rx<T: Message> {
+pub struct Rx<T: Message> {
     receiver: Receiver<T>,
     value: T,
 }
 unsafe impl<T: Message> Send for Rx<T> {}
 impl<T: Message> Rx<T> {
-    fn update_get(&mut self) -> &T {
+    pub fn update_get(&mut self) -> &T {
         self.update_get_check().0
     }
-    fn update_get_check(&mut self) -> (&T, bool) {
+    pub fn update_get_check(&mut self) -> (&T, bool) {
         let mut updated = false;
         loop {
             match self.receiver.try_recv() {
@@ -57,29 +56,28 @@ impl<T: Message> Rx<T> {
     }
 }
 
-#[derive(Clone)]
-struct SharedRxWithDiff<T: Message> {
-    inner: Arc<RwLock<Rx<T>>>,
+pub struct RxWithDiff<T: Message> {
+    inner: Rx<T>,
     value: T,
 }
-unsafe impl<T: Message> Send for SharedRxWithDiff<T> {}
-impl<T: Message> SharedRxWithDiff<T> {
-    fn new(rx: Rx<T>) -> SharedRxWithDiff<T> {
+unsafe impl<T: Message> Send for RxWithDiff<T> {}
+impl<T: Message> RxWithDiff<T> {
+    fn new(rx: Rx<T>) -> RxWithDiff<T> {
         Self {
-            inner: Arc::new(RwLock::new(rx)),
+            inner: rx,
             value: T::default(),
         }
     }
     fn update_get_diff_local<R>(&mut self, f: impl FnOnce(&T, bool) -> R) -> R {
-        let mut guard = self.inner.write().unwrap();
-        let (value, _) = guard.update_get_check();
+        let (value, _) = self.inner.update_get_check();
         let updated = *value != self.value;
+        self.value = value.clone();
         f(value, updated)
     }
 }
 
 #[derive(Debug, Copy, Clone, Hash, Eq, PartialEq)]
-enum GamepadButton {
+pub enum GamepadButton {
     Up = 1,
     Down,
     Left,
@@ -103,17 +101,15 @@ enum GamepadButton {
 //     RY,
 // }
 
-struct GamepadState {
-    frame_id: SharedRxWithDiff<u64>,
+pub struct GamepadState {
     keys: Rx<Vec<Key>>,
     mapping: HashMap<Key, GamepadButton>,
     state_prev: HashMap<GamepadButton, i8>,
     state_curr: HashMap<GamepadButton, i8>,
 }
 impl GamepadState {
-    pub fn new(frame_id: SharedRxWithDiff<u64>, keys: Rx<Vec<Key>>) -> GamepadState {
+    pub fn new(keys: Rx<Vec<Key>>) -> GamepadState {
         let mut state = GamepadState {
-            frame_id,
             keys,
             mapping: Default::default(),
             state_prev: Default::default(),
@@ -132,12 +128,10 @@ impl GamepadState {
 
         state
     }
+    pub fn next_frame(&mut self) {
+        self.state_prev = self.state_curr.clone();
+    }
     pub fn update(&mut self) {
-        self.frame_id.update_get_diff_local(|_, updated| {
-            if updated {
-                self.state_prev = self.state_curr.clone();
-            }
-        });
         let (keys, changed) = self.keys.update_get_check();
         if changed {
             self.state_curr.clear();
@@ -179,11 +173,11 @@ impl GamepadState {
     }
 }
 
-fn create_window() -> (MinifbWindow, FrameBufferController, GamepadState) {
+pub fn create_window() -> (MinifbWindow, FrameBufferController, GamepadState) {
     let frame_id = create_channel::<u64>();
     let frame_buffer = create_channel::<FrameBuffer>();
     let gamepad = create_channel::<Vec<Key>>();
-    let frame_id_rx = SharedRxWithDiff::new(frame_id.1);
+    let frame_id_rx = RxWithDiff::new(frame_id.1);
 
     let window = MinifbWindow {
         frame_id: frame_id.0,
@@ -191,30 +185,30 @@ fn create_window() -> (MinifbWindow, FrameBufferController, GamepadState) {
         gamepad: gamepad.0,
     };
     let frame_buffer_controller = FrameBufferController {
-        frame_id: frame_id_rx.clone(),
+        frame_id: frame_id_rx,
         frame_buffer: frame_buffer.0,
     };
-    let gamepad_state = GamepadState::new(frame_id_rx, gamepad.1);
+    let gamepad_state = GamepadState::new(gamepad.1);
     (window, frame_buffer_controller, gamepad_state)
 }
 
-struct MinifbWindow {
+pub struct MinifbWindow {
     frame_id: Tx<u64>,
     frame_buffer: Rx<FrameBuffer>,
     gamepad: Tx<Vec<Key>>,
 }
 #[derive(Default, Clone, PartialEq)]
-struct FrameBuffer {
+pub struct FrameBuffer {
     w: u8,
     h: u8,
     buffer: Vec<u32>,
 }
-struct FrameBufferController {
-    frame_id: SharedRxWithDiff<u64>,
+pub struct FrameBufferController {
+    frame_id: RxWithDiff<u64>,
     frame_buffer: Tx<FrameBuffer>,
 }
 impl FrameBufferController {
-    pub fn new(frame_id: SharedRxWithDiff<u64>, frame_buffer: Tx<FrameBuffer>) -> Self {
+    pub fn new(frame_id: RxWithDiff<u64>, frame_buffer: Tx<FrameBuffer>) -> Self {
         Self {
             frame_id,
             frame_buffer,
@@ -229,7 +223,7 @@ impl FrameBufferController {
 }
 
 impl MinifbWindow {
-    fn start_event_loop(mut self, width: usize, height: usize) {
+    pub fn start_event_loop(mut self, width: usize, height: usize) {
         let mut window = Window::new(
             "Window",
             width,
@@ -244,7 +238,7 @@ impl MinifbWindow {
 
         window.limit_update_rate(Some(Duration::from_micros(10000)));
 
-        // let mut time = Instant::now();
+        // let mut time = std::time::Instant::now();
         let mut frame_id = 1;
         self.frame_id.send(frame_id);
         self.gamepad.sender.send(window.get_keys()).unwrap();
@@ -252,7 +246,7 @@ impl MinifbWindow {
         while window.is_open() && !window.is_key_down(Key::Escape) {
             let (buffer, updated) = self.frame_buffer.update_get_check();
             if updated {
-                // println!("frame receive buffer");
+                println!("frame receive buffer");
                 window
                     .update_with_buffer(
                         buffer.buffer.as_slice(),
@@ -268,7 +262,7 @@ impl MinifbWindow {
 
             self.gamepad.sender.send(window.get_keys()).unwrap();
 
-            // let time3 = Instant::now();
+            // let time3 = std::time::Instant::now();
             // println!("frame: buffer {}ms", (time3 - time).as_secs_f32() * 1000.,);
             // time = time3;
         }
@@ -281,7 +275,6 @@ fn start_test_window() {
         gamepad: GamepadState,
         framebuffer: FrameBufferController,
 
-        initialized: bool,
         size: i8,
         x: i8,
         y: i8,
@@ -291,66 +284,68 @@ fn start_test_window() {
             Self {
                 gamepad,
                 framebuffer,
-                initialized: false,
                 size: size as i8,
                 x: 2,
                 y: 2,
             }
         }
         pub fn start(&mut self) {
+            // game loop
             loop {
+                // input
                 self.gamepad.update();
-                let mut changed = false;
                 if self.gamepad.is_down(GamepadButton::Left) {
                     self.x -= 1;
                     self.x = self.x.clamp(0, self.size - 1);
-                    changed = true;
                 }
                 if self.gamepad.is_down(GamepadButton::Right) {
                     self.x += 1;
                     self.x = self.x.clamp(0, self.size - 1);
-                    changed = true;
                 }
                 if self.gamepad.is_down(GamepadButton::Up) {
                     self.y -= 1;
                     self.y = self.y.clamp(0, self.size - 1);
-                    changed = true;
                 }
                 if self.gamepad.is_down(GamepadButton::Down) {
                     self.y += 1;
                     self.y = self.y.clamp(0, self.size - 1);
-                    changed = true;
-                }
-                if !self.initialized {
-                    changed = true;
-                    self.initialized = true;
                 }
 
+                // draw buffer
                 fn from_u8_rgb(r: u8, g: u8, b: u8) -> u32 {
                     let (r, g, b) = (r as u32, g as u32, b as u32);
                     (r << 16) | (g << 8) | b
                 }
-
-                if changed {
-                    let mut buffer: Vec<u32> = vec![];
-                    for y in 0..self.size {
-                        for x in 0..self.size {
-                            if x == self.x && y == self.y {
-                                buffer.push(from_u8_rgb(255, 0, 0));
-                            } else {
-                                buffer.push(from_u8_rgb(255, 255, 255))
-                            }
+                let mut buffer: Vec<u32> = vec![];
+                for y in 0..self.size {
+                    for x in 0..self.size {
+                        if x == self.x && y == self.y {
+                            buffer.push(from_u8_rgb(255, 0, 0));
+                        } else {
+                            buffer.push(from_u8_rgb(255, 255, 255))
                         }
                     }
-
-                    self.framebuffer.send_framebuffer(FrameBuffer {
-                        w: self.size as u8,
-                        h: self.size as u8,
-                        buffer,
-                    });
                 }
 
-                std::thread::sleep(Duration::from_millis(1));
+                // present
+                self.framebuffer.send_framebuffer(FrameBuffer {
+                    w: self.size as u8,
+                    h: self.size as u8,
+                    buffer,
+                });
+                self.gamepad.next_frame();
+
+                // wait for next frame
+                loop {
+                    let frame_updated = self
+                        .framebuffer
+                        .frame_id
+                        .update_get_diff_local(|_, changed| changed);
+                    if frame_updated {
+                        break;
+                    }
+                    std::thread::sleep(Duration::from_millis(1));
+                }
             }
         }
     }
