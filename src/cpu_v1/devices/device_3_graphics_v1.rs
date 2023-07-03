@@ -1,8 +1,10 @@
 use crate::cpu_v1::devices::device_2_and_3_util::{FrameBuffer, FrameBufferController};
 use crate::cpu_v1::devices::{Device, DeviceReadResult, DeviceType};
+use std::time::Duration;
 
 pub struct DeviceGraphicsV1 {
     fb_controller: FrameBufferController,
+    last_frame_id: usize,
 
     width: usize,
     height: usize,
@@ -15,7 +17,7 @@ pub struct DeviceGraphicsV1 {
 #[repr(u8)]
 #[allow(unused)]
 pub enum DeviceGraphicsV1Opcode {
-    GetFrameId = 0,
+    WaitNextFrame = 0,
     Resize,       // width = regA, height = regB
     SetCursor,    // x = regA, y = regB
     NextPosition, // x++, if overflow y++
@@ -31,8 +33,12 @@ impl Device for DeviceGraphicsV1 {
     fn exec(&mut self, opcode4: u8, reg0: u8, reg1: u8) -> DeviceReadResult {
         let opcode: DeviceGraphicsV1Opcode = unsafe { std::mem::transmute(opcode4) };
         let r = match opcode {
-            DeviceGraphicsV1Opcode::GetFrameId => {
-                Some((self.fb_controller.get_frame_id() % 16) as u8)
+            DeviceGraphicsV1Opcode::WaitNextFrame => {
+                while self.last_frame_id == self.fb_controller.get_presented_frame_id() {
+                    std::thread::sleep(Duration::from_millis(1));
+                }
+                self.last_frame_id = self.fb_controller.get_presented_frame_id();
+                None
             }
             DeviceGraphicsV1Opcode::Resize => {
                 self.resize(reg0, reg1);
@@ -41,6 +47,8 @@ impl Device for DeviceGraphicsV1 {
             DeviceGraphicsV1Opcode::SetCursor => {
                 self.cursor_y = reg0 as usize;
                 self.cursor_x = reg1 as usize;
+                self.cursor_x %= self.width;
+                self.cursor_y %= self.height;
                 None
             }
             DeviceGraphicsV1Opcode::NextPosition => {
@@ -94,6 +102,7 @@ impl DeviceGraphicsV1 {
     pub fn create(fb_controller: FrameBufferController) -> Self {
         Self {
             fb_controller,
+            last_frame_id: 0x1000,
             width: 5,
             height: 5,
             buffer: vec![0; 25],
@@ -123,6 +132,7 @@ impl DeviceGraphicsV1 {
     }
     fn present_frame(&mut self) {
         self.fb_controller.send_framebuffer(FrameBuffer {
+            id: (self.last_frame_id + 1) % 0x1000,
             w: self.width,
             h: self.height,
             buffer: self.buffer.clone(),

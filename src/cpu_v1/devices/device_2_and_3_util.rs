@@ -173,17 +173,18 @@ impl GamepadState {
 }
 
 fn create_minifb_window() -> (MinifbWindow, FrameBufferController, GamepadState) {
-    let frame_id = create_channel::<u64>();
+    let frame_id = create_channel::<usize>();
     let frame_buffer = create_channel::<FrameBuffer>();
     let gamepad = create_channel::<Vec<Key>>();
-    let frame_id_rx = RxWithDiff::new(frame_id.1);
+    let presented_frame_id_rx = RxWithDiff::new(frame_id.1);
 
     let window = MinifbWindow {
         frame_id: frame_id.0,
         frame_buffer: frame_buffer.1,
         gamepad: gamepad.0,
     };
-    let frame_buffer_controller = FrameBufferController::create(frame_id_rx, frame_buffer.0);
+    let frame_buffer_controller =
+        FrameBufferController::create(presented_frame_id_rx, frame_buffer.0);
     let gamepad_state = GamepadState::new(gamepad.1);
     (window, frame_buffer_controller, gamepad_state)
 }
@@ -202,29 +203,30 @@ pub fn create_device_gamepad_graphics_v1_start(
 }
 
 struct MinifbWindow {
-    frame_id: Tx<u64>,
+    frame_id: Tx<usize>,
     frame_buffer: Rx<FrameBuffer>,
     gamepad: Tx<Vec<Key>>,
 }
 #[derive(Default, Clone, PartialEq)]
 pub struct FrameBuffer {
+    pub id: usize,
     pub w: usize,
     pub h: usize,
     pub buffer: Vec<u32>,
 }
 pub struct FrameBufferController {
-    frame_id: RxWithDiff<u64>,
+    presented_frame_id: RxWithDiff<usize>,
     frame_buffer: Tx<FrameBuffer>,
 }
 impl FrameBufferController {
-    fn create(frame_id: RxWithDiff<u64>, frame_buffer: Tx<FrameBuffer>) -> Self {
+    fn create(presented_frame_id: RxWithDiff<usize>, frame_buffer: Tx<FrameBuffer>) -> Self {
         Self {
-            frame_id,
+            presented_frame_id,
             frame_buffer,
         }
     }
-    pub fn get_frame_id(&mut self) -> u64 {
-        self.frame_id.update_get_diff_local(|id, _| *id)
+    pub fn get_presented_frame_id(&mut self) -> usize {
+        self.presented_frame_id.update_get_diff_local(|id, _| *id)
     }
     pub fn send_framebuffer(&mut self, framebuffer: FrameBuffer) {
         self.frame_buffer.send(framebuffer);
@@ -248,19 +250,16 @@ impl MinifbWindow {
         window.limit_update_rate(Some(Duration::from_micros(10000)));
 
         // let mut time = std::time::Instant::now();
-        let mut frame_id = 1;
-        self.frame_id.send(frame_id);
         self.gamepad.sender.send(window.get_keys()).unwrap();
 
         while window.is_open() && !window.is_key_down(Key::Escape) {
             let (buffer, updated) = self.frame_buffer.update_get_check();
             if updated {
-                // println!("frame receive buffer");
+                self.frame_id.send(buffer.id);
+                println!("frame receive buffer {}", buffer.id);
                 window
                     .update_with_buffer(buffer.buffer.as_slice(), buffer.w, buffer.h)
                     .unwrap();
-                frame_id += 1;
-                self.frame_id.send(frame_id);
             } else {
                 window.update();
             }
@@ -280,6 +279,7 @@ fn start_test_window() {
         gamepad: GamepadState,
         framebuffer: FrameBufferController,
 
+        last_frame_id: usize,
         size: i8,
         x: i8,
         y: i8,
@@ -289,6 +289,7 @@ fn start_test_window() {
             Self {
                 gamepad,
                 framebuffer,
+                last_frame_id: 0x1000,
                 size: size as i8,
                 x: 2,
                 y: 2,
@@ -334,23 +335,18 @@ fn start_test_window() {
 
                 // present
                 self.framebuffer.send_framebuffer(FrameBuffer {
+                    id: (self.last_frame_id + 1) % 0x1000, // new frame_id
                     w: self.size as usize,
                     h: self.size as usize,
                     buffer,
                 });
                 self.gamepad.next_frame();
 
-                // wait for next frame
-                loop {
-                    let frame_updated = self
-                        .framebuffer
-                        .frame_id
-                        .update_get_diff_local(|_, changed| changed);
-                    if frame_updated {
-                        break;
-                    }
+                // wait for last frame to present
+                while self.last_frame_id == self.framebuffer.get_presented_frame_id() {
                     std::thread::sleep(Duration::from_millis(1));
                 }
+                self.last_frame_id = self.framebuffer.get_presented_frame_id();
             }
         }
     }
