@@ -1,23 +1,46 @@
 use crate::cpu_v1::devices::device_2_and_3_util::{GamepadButton, GamepadState};
 use crate::cpu_v1::devices::{Device, DeviceReadResult, DeviceType};
 
-#[derive(Default)]
+#[repr(u8)]
 enum ButtonQueryMode {
-    #[default]
     Down,
     Press,
     Up,
 }
+#[repr(u8)]
+enum ButtonQueryType {
+    PlaceHolder = 0,
+    ButtonUp,
+    ButtonDown,
+    ButtonLeft,
+    ButtonRight,
+    ButtonA,
+    ButtonB,
+    ButtonX,
+    ButtonY,
+    ButtonLB,
+    ButtonRB,
+    ButtonStart,
+    ButtonOption,
+}
+#[repr(u8)]
+enum AnalogQueryType {
+    PlaceHolder = 0,
+    TriggerL,   // LT (0 to 7)
+    TriggerR,   // RT (0 to 7)
+    JoystickLX, // Left/Right -7 to 7
+    JoystickLY, // Up/Down -7 to 7
+    JoystickRX, // Left/Right -7 to 7
+    JoystickRY, // Up/Down -7 to 7
+}
 
 pub struct DeviceGamepad {
-    stack: Vec<u8>,
     button_query_mode: ButtonQueryMode,
     gamepad_state: GamepadState,
 }
 impl DeviceGamepad {
     pub fn create(gamepad_state: GamepadState) -> Self {
         Self {
-            stack: vec![],
             button_query_mode: ButtonQueryMode::Down,
             gamepad_state,
         }
@@ -28,45 +51,21 @@ impl DeviceGamepad {
 #[allow(unused)]
 pub enum DeviceGamepadOpcode {
     NextFrame = 0, // refresh prev/curr state
-
-    // button control
-    ButtonPop,       // pop value for buttons
-    ButtonDownMode,  // prev=0 && curr=1
-    ButtonPressMode, // curr=1
-    ButtonUpMode,    // prev=1 && curr=0
-
-    // buttons, pop order left to right
-    ButtonDpad,          // left, right, up, down
-    ButtonABXY,          // A, B, X, Y
-    ButtonLRStartOption, // LB, RB, Start, Option
-
-    // analog, set value
-    TriggerL,   // LT (0 to 7)
-    TriggerR,   // RT (0 to 7)
-    JoystickLX, // Left/Right -7 to 7
-    JoystickLY, // Up/Down -7 to 7
-    JoystickRX, // Left/Right -7 to 7
-    JoystickRY, // Up/Down -7 to 7
+    // button
+    SetButtonQueryMode, // reg0 = ButtonQueryMode
+    QueryButton,        // reg0 = ButtonQueryType
+    // analog
+    QueryAnalog, // reg0 = AnalogQueryType
 }
 
 impl DeviceGamepad {
-    fn query_button(&mut self, button: GamepadButton) {
+    fn query_button(&mut self, button: GamepadButton) -> u8 {
         let v = match self.button_query_mode {
             ButtonQueryMode::Down => self.gamepad_state.is_down(button),
             ButtonQueryMode::Press => self.gamepad_state.is_pressed(button),
             ButtonQueryMode::Up => self.gamepad_state.is_up(button),
         };
-        if v {
-            self.stack.push(1)
-        } else {
-            self.stack.push(0)
-        }
-    }
-    fn query_buttons(&mut self, buttons: [GamepadButton; 4]) {
-        self.query_button(buttons[3]);
-        self.query_button(buttons[2]);
-        self.query_button(buttons[1]);
-        self.query_button(buttons[0]);
+        v as u8
     }
 }
 
@@ -83,57 +82,35 @@ impl Device for DeviceGamepad {
             DeviceGamepadOpcode::NextFrame => {
                 self.gamepad_state.next_frame();
             }
-
-            DeviceGamepadOpcode::ButtonPop => {
-                if let Some(v) = self.stack.pop() {
-                    r = v;
+            DeviceGamepadOpcode::SetButtonQueryMode => {
+                self.button_query_mode = unsafe { std::mem::transmute(reg0) };
+            }
+            DeviceGamepadOpcode::QueryButton => {
+                let button: ButtonQueryType = unsafe { std::mem::transmute(reg0) };
+                r = match button {
+                    ButtonQueryType::PlaceHolder => 0,
+                    ButtonQueryType::ButtonUp => self.query_button(GamepadButton::Up),
+                    ButtonQueryType::ButtonDown => self.query_button(GamepadButton::Down),
+                    ButtonQueryType::ButtonLeft => self.query_button(GamepadButton::Left),
+                    ButtonQueryType::ButtonRight => self.query_button(GamepadButton::Right),
+                    ButtonQueryType::ButtonA => self.query_button(GamepadButton::A),
+                    ButtonQueryType::ButtonB => self.query_button(GamepadButton::B),
+                    ButtonQueryType::ButtonX => self.query_button(GamepadButton::X),
+                    ButtonQueryType::ButtonY => self.query_button(GamepadButton::Y),
+                    ButtonQueryType::ButtonLB => self.query_button(GamepadButton::LB),
+                    ButtonQueryType::ButtonRB => self.query_button(GamepadButton::RB),
+                    ButtonQueryType::ButtonStart => self.query_button(GamepadButton::Start),
+                    ButtonQueryType::ButtonOption => self.query_button(GamepadButton::Option),
                 }
-            }
-            DeviceGamepadOpcode::ButtonDownMode => {
-                self.button_query_mode = ButtonQueryMode::Down;
-            }
-            DeviceGamepadOpcode::ButtonPressMode => {
-                self.button_query_mode = ButtonQueryMode::Press;
-            }
-            DeviceGamepadOpcode::ButtonUpMode => {
-                self.button_query_mode = ButtonQueryMode::Up;
-            }
-
-            DeviceGamepadOpcode::ButtonDpad => {
-                self.query_buttons([
-                    GamepadButton::Left,
-                    GamepadButton::Right,
-                    GamepadButton::Up,
-                    GamepadButton::Down,
-                ]);
-            }
-            DeviceGamepadOpcode::ButtonABXY => {
-                self.query_buttons([
-                    GamepadButton::A,
-                    GamepadButton::B,
-                    GamepadButton::X,
-                    GamepadButton::Y,
-                ]);
-            }
-            DeviceGamepadOpcode::ButtonLRStartOption => {
-                self.query_buttons([
-                    GamepadButton::LB,
-                    GamepadButton::RB,
-                    GamepadButton::Start,
-                    GamepadButton::Option,
-                ]);
             }
 
             //TODO
-            DeviceGamepadOpcode::TriggerL => {}
-            DeviceGamepadOpcode::TriggerR => {}
-            DeviceGamepadOpcode::JoystickLX => {}
-            DeviceGamepadOpcode::JoystickLY => {}
-            DeviceGamepadOpcode::JoystickRX => {}
-            DeviceGamepadOpcode::JoystickRY => {}
+            DeviceGamepadOpcode::QueryAnalog => {
+                // let ty: AnalogQueryType = unsafe { std::mem::transmute(reg0) };
+                todo!()
+            }
         }
 
-        //pop value
         DeviceReadResult {
             reg0_write_data: r,
             self_latency: 4,

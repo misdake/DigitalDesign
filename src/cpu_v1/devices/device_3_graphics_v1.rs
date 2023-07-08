@@ -20,7 +20,6 @@ pub enum DeviceGraphicsV1Opcode {
     WaitNextFrame = 0,
     Resize,       // width = regA, height = regB
     SetCursor,    // x = regA, y = regB
-    NextPosition, // x++, if overflow y++
     SetColor,     // buffer[x, y] = palette[regA]
     SetColorNext, // set color, then next position
     PresentFrame, // send buffer to window
@@ -45,14 +44,7 @@ impl Device for DeviceGraphicsV1 {
                 None
             }
             DeviceGraphicsV1Opcode::SetCursor => {
-                self.cursor_y = reg0 as usize;
-                self.cursor_x = reg1 as usize;
-                self.cursor_x %= self.width;
-                self.cursor_y %= self.height;
-                None
-            }
-            DeviceGraphicsV1Opcode::NextPosition => {
-                self.next_position();
+                self.set_position(reg0, reg1);
                 None
             }
             DeviceGraphicsV1Opcode::SetColor => {
@@ -97,6 +89,25 @@ const PALETTE_16: [u32; 16] = [
     0xFFFF00FF, //Aqua
     0xFFFFFFFF, //White
 ];
+#[repr(u8)]
+pub enum Color {
+    Black,
+    Maroon,
+    Green,
+    Olive,
+    Navy,
+    Purple,
+    Teal,
+    Silver,
+    Gray,
+    Red,
+    Lime,
+    Yellow,
+    Blue,
+    Fuchsia,
+    Aqua,
+    White,
+}
 
 impl DeviceGraphicsV1 {
     pub fn create(fb_controller: FrameBufferController) -> Self {
@@ -117,6 +128,12 @@ impl DeviceGraphicsV1 {
         self.height = height as usize;
         let len = (width * height) as usize;
         self.buffer = vec![0; len];
+    }
+    fn set_position(&mut self, x: u8, y: u8) {
+        self.cursor_x = x as usize;
+        self.cursor_y = y as usize;
+        self.cursor_x %= self.width;
+        self.cursor_y %= self.height;
     }
     fn next_position(&mut self) {
         self.cursor_x += 1;
