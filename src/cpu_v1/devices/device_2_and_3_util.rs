@@ -9,6 +9,8 @@ use std::time::Duration;
 trait Message: Any + Default + Send + Sync + PartialEq + Clone {}
 impl<T: Any + Default + Send + Sync + PartialEq + Clone> Message for T {}
 
+//TODO impl single value channel
+
 fn create_channel<T: Message>() -> (Tx<T>, Rx<T>) {
     let (sender, receiver) = channel();
     (
@@ -47,8 +49,8 @@ impl<T: Message> Rx<T> {
                     break;
                 }
                 Err(TryRecvError::Disconnected) => {
-                    break;
-                } //TODO window closed?
+                    std::process::exit(0);
+                }
             }
         }
         (&self.value, updated)
@@ -264,7 +266,7 @@ impl MinifbWindow {
                 window.update();
             }
 
-            self.gamepad.sender.send(window.get_keys()).unwrap();
+            self.gamepad.sender.send(window.get_keys()).unwrap(); // TODO use single value channel
 
             // let time3 = std::time::Instant::now();
             // println!("frame: buffer {}ms", (time3 - time).as_secs_f32() * 1000.,);

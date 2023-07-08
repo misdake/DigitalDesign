@@ -117,3 +117,27 @@ impl Device for DeviceGamepad {
         }
     }
 }
+
+#[test]
+fn test_gamepad() {
+    use crate::cpu_v1::devices::test_device;
+    use crate::cpu_v1::devices::{Device, DeviceReadResult, DeviceType};
+    use crate::cpu_v1::isa::*;
+
+    test_device(
+        &[
+            inst_load_imm(DeviceType::Gamepad as u8),
+            inst_set_bus_addr0(),
+            inst_load_imm(DeviceType::Print as u8),
+            inst_set_bus_addr1(),
+            inst_load_imm(ButtonQueryMode::Press as u8),
+            inst_bus0(DeviceGamepadOpcode::SetButtonQueryMode as u8), // set press mode
+            inst_load_imm(ButtonQueryType::ButtonStart as u8),
+            inst_bus0(DeviceGamepadOpcode::QueryButton as u8), // query start button
+            inst_bus1(0),                                      // print 0
+            inst_jmp_offset(16 - 3),
+        ],
+        100000000, // just big enough to keep it running
+        [0, 0, 0, 0],
+    );
+}

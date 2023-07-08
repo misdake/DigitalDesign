@@ -106,8 +106,8 @@ fn test_device(inst: &[InstBinary], max_cycle: u32, regs_ref: [u8; 4]) {
         .enumerate()
         .for_each(|(i, inst)| inst_rom[i] = inst.binary);
 
-    // let (state, _internal) = cpu_v1_build(inst_rom);
-    let (_state1, state, _internal1, _internal2) = cpu_v1_build_with_ref(inst_rom);
+    let (state, _internal) = cpu_v1_build(inst_rom);
+    // let (_state1, state, _internal1, _internal2) = cpu_v1_build_with_ref(inst_rom);
 
     for _ in 0..max_cycle {
         let pc = state.pc.out.get_u8();
