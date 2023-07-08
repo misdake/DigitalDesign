@@ -1,3 +1,5 @@
+#![allow(unused)]
+
 use crate::cpu_v1::devices::device_2_and_3_util::{GamepadButton, GamepadState};
 use crate::cpu_v1::devices::{Device, DeviceReadResult, DeviceType};
 

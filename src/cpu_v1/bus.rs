@@ -72,20 +72,15 @@ impl CpuComponentEmu<CpuBus> for CpuBusEmu {
         let bus_out_latency: u16;
 
         if bus_enable {
-            let mut out = 0;
-            let mut latency = 0;
-
             let mut devices = input.devices.borrow_mut();
 
             let DeviceReadResult {
                 reg0_write_data: out_data,
                 self_latency,
             } = devices.execute(bus_addr, bus_opcode, reg0, reg1);
-            out = out_data;
-            latency = self_latency;
 
-            bus_out = out;
-            bus_out_latency = latency;
+            bus_out = out_data;
+            bus_out_latency = self_latency;
         } else {
             bus_out = 0;
             bus_out_latency = 0;
