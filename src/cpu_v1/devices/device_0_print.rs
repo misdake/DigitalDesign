@@ -23,11 +23,11 @@ fn test_device_print() {
     test_device(
         &[
             inst_load_imm(DeviceType::Print as u8),
-            inst_set_bus_addr(),
+            inst_set_bus_addr0(),
             inst_load_imm(1),
-            inst_bus(0), // => print 1
+            inst_bus0(0), // => print 1
             inst_load_imm(2),
-            inst_bus(0), // => print 2
+            inst_bus0(0), // => print 2
         ],
         1000,
         [2, 0, 0, 0],

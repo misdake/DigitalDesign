@@ -15,8 +15,8 @@ impl Device for DeviceMath {
     fn device_type(&self) -> DeviceType {
         DeviceType::Math
     }
-    fn exec(&mut self, opcode4: u8, reg0: u8, _reg1: u8) -> DeviceReadResult {
-        let opcode: DeviceMathOpcode = unsafe { std::mem::transmute(opcode4) };
+    fn exec(&mut self, opcode3: u8, reg0: u8, _reg1: u8) -> DeviceReadResult {
+        let opcode: DeviceMathOpcode = unsafe { std::mem::transmute(opcode3) };
         match opcode {
             DeviceMathOpcode::Pop => {
                 return if let Some(v) = self.value.pop() {
@@ -69,18 +69,18 @@ fn test_device_extract_bits() {
     test_device(
         &[
             inst_load_imm(DeviceType::Math as u8),
-            inst_set_bus_addr(),
+            inst_set_bus_addr0(),
             inst_load_imm(0b1010),
-            inst_bus(DeviceMathOpcode::ExtractBits01 as u8),
-            inst_bus(DeviceMathOpcode::Pop as u8), // & 0b0001
+            inst_bus0(DeviceMathOpcode::ExtractBits01 as u8),
+            inst_bus0(DeviceMathOpcode::Pop as u8), // & 0b0001
             inst_mov(0, 3),
-            inst_bus(DeviceMathOpcode::Pop as u8), // & 0b0010, >> 1
+            inst_bus0(DeviceMathOpcode::Pop as u8), // & 0b0010, >> 1
             inst_mov(0, 2),
-            inst_bus(DeviceMathOpcode::Pop as u8), // & 0b0100, >> 2
+            inst_bus0(DeviceMathOpcode::Pop as u8), // & 0b0100, >> 2
             inst_mov(0, 1),
-            inst_bus(DeviceMathOpcode::Pop as u8), // & 0b1000, >> 3
+            inst_bus0(DeviceMathOpcode::Pop as u8), // & 0b1000, >> 3
         ],
-        1000,
+        15,
         [1, 0, 1, 0],
     );
 }

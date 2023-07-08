@@ -14,6 +14,10 @@ pub struct InstOpcodeDesc4 {
     name: &'static str,
     bits: u8,
 }
+pub struct InstOpcodeDesc5 {
+    name: &'static str,
+    bits: u8,
+}
 pub struct InstOpcodeDesc6 {
     name: &'static str,
     bits: u8,
@@ -28,7 +32,8 @@ impl InstDesc {
         match &self {
             InstDesc::Op2(opcode, _, _) => opcode.name,
             InstDesc::Op1(opcode, _) => opcode.name,
-            InstDesc::Op0i(opcode, _) => opcode.name,
+            InstDesc::Op0i4(opcode, _) => opcode.name,
+            InstDesc::Op0i3(opcode, _) => opcode.name,
             InstDesc::Op0(opcode) => opcode.name,
         }
     }
@@ -36,7 +41,8 @@ impl InstDesc {
         match &self {
             InstDesc::Op2(opcode, _, _) => (opcode.bits, 4),
             InstDesc::Op1(opcode, _) => (opcode.bits, 6),
-            InstDesc::Op0i(opcode, _) => (opcode.bits, 4),
+            InstDesc::Op0i4(opcode, _) => (opcode.bits, 4),
+            InstDesc::Op0i3(opcode, _) => (opcode.bits, 5),
             InstDesc::Op0(opcode) => (opcode.bits, 8),
         }
     }
@@ -62,9 +68,13 @@ impl InstDesc {
         assert!(opcode < (1 << 6));
         InstDesc::Op1(InstOpcodeDesc6 { name, bits: opcode }, InstRegDesc {})
     }
-    const fn op0i(name: &'static str, opcode: u8) -> InstDesc {
+    const fn op0i4(name: &'static str, opcode: u8) -> InstDesc {
         assert!(opcode < (1 << 4));
-        InstDesc::Op0i(InstOpcodeDesc4 { name, bits: opcode }, InstImmDesc {})
+        InstDesc::Op0i4(InstOpcodeDesc4 { name, bits: opcode }, InstImmDesc {})
+    }
+    const fn op0i3(name: &'static str, opcode: u8) -> InstDesc {
+        assert!(opcode < (1 << 5));
+        InstDesc::Op0i3(InstOpcodeDesc5 { name, bits: opcode }, InstImmDesc {})
     }
     const fn op0(name: &'static str, opcode: u8) -> InstDesc {
         InstDesc::Op0(InstOpcodeDesc8 { name, bits: opcode })
@@ -87,7 +97,8 @@ impl InstDesc {
 pub enum InstDesc {
     Op2(InstOpcodeDesc4, InstRegDesc, InstRegDesc),
     Op1(InstOpcodeDesc6, InstRegDesc),
-    Op0i(InstOpcodeDesc4, InstImmDesc),
+    Op0i4(InstOpcodeDesc4, InstImmDesc),
+    Op0i3(InstOpcodeDesc5, InstImmDesc),
     Op0(InstOpcodeDesc8),
 }
 
@@ -122,15 +133,30 @@ macro_rules! inst_op1 {
         }
     };
 }
-macro_rules! inst_op0i {
+macro_rules! inst_op0i4 {
     ($opcode: expr, $name: ident) => {
         paste! {
             #[allow(unused)]
-            pub const [<INST_ $name:upper>]: InstDesc = InstDesc::op0i(stringify!($name), $opcode);
+            pub const [<INST_ $name:upper>]: InstDesc = InstDesc::op0i4(stringify!($name), $opcode);
             #[allow(unused)]
             pub fn [<inst_ $name>](imm: InstImmType) -> InstBinary {
                 InstBinary {
                     binary: ($opcode << 4) | (imm << 0),
+                    desc: &[<INST_ $name:upper>],
+                }
+            }
+        }
+    };
+}
+macro_rules! inst_op0i3 {
+    ($opcode: expr, $name: ident) => {
+        paste! {
+            #[allow(unused)]
+            pub const [<INST_ $name:upper>]: InstDesc = InstDesc::op0i3(stringify!($name), $opcode);
+            #[allow(unused)]
+            pub fn [<inst_ $name>](imm: InstImmType) -> InstBinary {
+                InstBinary {
+                    binary: ($opcode << 3) | (imm << 0),
                     desc: &[<INST_ $name:upper>],
                 }
             }
@@ -180,9 +206,11 @@ const ALL_INSTRUCTION_DESC: &'static [&'static InstDesc] = &[
     &INST_HALT,
     &INST_SLEEP,
     &INST_SET_MEM_BANK,
-    &INST_SET_BUS_ADDR,
+    &INST_SET_BUS_ADDR0,
+    &INST_SET_BUS_ADDR1,
     // bus
-    &INST_BUS,
+    &INST_BUS0,
+    &INST_BUS1,
 ];
 
 // binary op
@@ -197,22 +225,24 @@ inst_op1!(0b010101, neg);
 inst_op1!(0b010110, dec);
 inst_op1!(0b010111, inc);
 // load store
-inst_op0i!(0b1000, load_imm);
-inst_op0i!(0b1001, load_mem);
-inst_op0i!(0b1010, store_mem);
+inst_op0i4!(0b1000, load_imm);
+inst_op0i4!(0b1001, load_mem);
+inst_op0i4!(0b1010, store_mem);
 // jmp
-inst_op0i!(0b1011, jmp_long);
-inst_op0i!(0b1100, jmp_offset);
-inst_op0i!(0b1101, je_offset);
-inst_op0i!(0b1110, jl_offset);
-inst_op0i!(0b1111, jg_offset);
+inst_op0i4!(0b1011, jmp_long);
+inst_op0i4!(0b1100, jmp_offset);
+inst_op0i4!(0b1101, je_offset);
+inst_op0i4!(0b1110, jl_offset);
+inst_op0i4!(0b1111, jg_offset);
 
 // control
 inst_op0!(0b01100000, reset); // TODO
 inst_op0!(0b01100001, halt); // TODO
 inst_op0!(0b01100010, sleep); // TODO
 inst_op0!(0b01100011, set_mem_bank);
-inst_op0!(0b01100100, set_bus_addr);
+inst_op0!(0b01100100, set_bus_addr0);
+inst_op0!(0b01100101, set_bus_addr1);
 
 // bus0
-inst_op0i!(0b0111, bus);
+inst_op0i3!(0b01110, bus0);
+inst_op0i3!(0b01111, bus1);

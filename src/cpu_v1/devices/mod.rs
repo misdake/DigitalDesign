@@ -8,14 +8,14 @@ mod device_3_graphics_v1;
 
 #[repr(u8)]
 pub enum DeviceType {
-    Print = 0,
-    Math = 1,
-    Gamepad = 2,
-    GraphicsV1 = 3,
+    Print = 1,
+    Math,
+    Gamepad,
+    GraphicsV1,
 }
 pub trait Device: 'static {
     fn device_type(&self) -> DeviceType;
-    fn exec(&mut self, opcode4: u8, reg0: u8, reg1: u8) -> DeviceReadResult;
+    fn exec(&mut self, opcode3: u8, reg0: u8, reg1: u8) -> DeviceReadResult;
 }
 #[derive(Default)]
 pub struct DeviceReadResult {
@@ -28,10 +28,7 @@ pub struct DeviceReadResult {
 use crate::cpu_v1::devices::device_0_print::DevicePrint;
 use crate::cpu_v1::devices::device_1_math::DeviceMath;
 use crate::cpu_v1::devices::device_2_and_3_util::create_device_gamepad_graphics_v1_start;
-use once_cell::sync::Lazy;
-use std::sync::{Arc, Mutex};
 
-static DEVICES: Lazy<Arc<Mutex<Devices>>> = Lazy::new(|| Arc::new(Mutex::new(Devices::new())));
 pub struct Devices {
     generators: [Option<Box<dyn FnOnce(&mut Devices)>>; 16],
     devices: [Option<Box<dyn Device>>; 16],
@@ -39,12 +36,7 @@ pub struct Devices {
 unsafe impl Send for Devices {}
 
 impl Devices {
-    pub fn visit(f: impl FnOnce(&mut Devices)) {
-        let mut result = DEVICES.lock().unwrap();
-        f(&mut *result)
-    }
-
-    fn new() -> Self {
+    pub fn new() -> Self {
         let mut devices = Self {
             generators: [0; 16].map(|_| None),
             devices: [0; 16].map(|_| None),
@@ -85,7 +77,7 @@ impl Devices {
     pub fn execute(
         &mut self,
         bus_addr: u8,
-        bus_opcode4: u8,
+        bus_opcode3: u8,
         reg0: u8,
         reg1: u8,
     ) -> DeviceReadResult {
@@ -96,7 +88,7 @@ impl Devices {
         }
         let device = &mut self.devices[bus_addr as usize];
         device.as_mut().map_or(DeviceReadResult::default(), |d| {
-            d.exec(bus_opcode4, reg0, reg1)
+            d.exec(bus_opcode3, reg0, reg1)
         })
     }
 }
@@ -106,7 +98,7 @@ use crate::cpu_v1::InstBinary;
 
 #[cfg(test)]
 fn test_device(inst: &[InstBinary], max_cycle: u32, regs_ref: [u8; 4]) {
-    use crate::cpu_v1::cpu_v1_build;
+    use crate::cpu_v1::*;
     use crate::*;
 
     let mut inst_rom = [0u8; 256];
@@ -114,7 +106,8 @@ fn test_device(inst: &[InstBinary], max_cycle: u32, regs_ref: [u8; 4]) {
         .enumerate()
         .for_each(|(i, inst)| inst_rom[i] = inst.binary);
 
-    let (state, _internal) = cpu_v1_build(inst_rom);
+    // let (state, _internal) = cpu_v1_build(inst_rom);
+    let (_state1, state, _internal1, _internal2) = cpu_v1_build_with_ref(inst_rom);
 
     for _ in 0..max_cycle {
         let pc = state.pc.out.get_u8();

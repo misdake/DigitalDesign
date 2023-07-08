@@ -21,22 +21,26 @@ mod devices;
 #[cfg(test)]
 mod programs;
 
+use crate::cpu_v1::devices::Devices;
 use crate::{clear_all, external, reg, reg_w, External, Reg, Regs, Wires};
 use std::any::Any;
+use std::cell::RefCell;
 use std::marker::PhantomData;
+use std::rc::Rc;
 
 #[allow(unused)]
 struct CpuV1State {
-    clock_enable: Reg, // TODO impl
     inst: [Wires<8>; 256],
     pc: Regs<8>,       // write in CpuV1
     reg: [Regs<4>; 4], // write in RegWrite
     mem: [Regs<4>; 256],
     mem_bank: Regs<4>,
-    flag_p: Reg,       // write in CpuV1
-    flag_z: Reg,       // write in CpuV1
-    flag_n: Reg,       // write in CpuV1
-    bus_addr: Regs<4>, // TODO impl
+    flag_p: Reg, // write in CpuV1
+    flag_z: Reg, // write in CpuV1
+    flag_n: Reg, // write in CpuV1
+    bus_addr0: Regs<4>,
+    bus_addr1: Regs<4>,
+    devices: Rc<RefCell<Devices>>,
 }
 impl CpuV1State {
     fn create(inst: [u8; 256]) -> Self {
@@ -44,7 +48,6 @@ impl CpuV1State {
         let regs = [0u8; 4].map(|_| reg_w());
         let mem = [0u8; 256].map(|_| reg_w());
         Self {
-            clock_enable: reg(),
             inst,
             pc: reg_w(),
             mem,
@@ -53,7 +56,9 @@ impl CpuV1State {
             flag_p: reg(),
             flag_z: reg(),
             flag_n: reg(),
-            bus_addr: reg_w(),
+            bus_addr0: reg_w(),
+            bus_addr1: reg_w(),
+            devices: Rc::new(RefCell::new(Devices::new())),
         }
     }
 }
@@ -105,7 +110,8 @@ trait CpuV1 {
             jmp_op,
             jmp_src_select,
             bus_enable,
-            bus_addr_write,
+            bus_addr0_write,
+            bus_addr1_write,
         } = decoder_out;
 
         // RegRead
@@ -122,19 +128,24 @@ trait CpuV1 {
         } = reg_read_out;
 
         let bus_in = CpuBusInput {
-            bus_addr_write,
+            bus_addr0_write,
+            bus_addr1_write,
             bus_enable,
-            bus_addr: state.bus_addr.out,
+            bus_addr0: state.bus_addr0.out,
+            bus_addr1: state.bus_addr1.out,
             reg0_data,
             reg1_data,
             imm,
+            devices: state.devices.clone(),
         };
         let bus_out: CpuBusOutput = Self::Bus::build(&bus_in);
         let CpuBusOutput {
             bus_out,
-            bus_addr_next,
+            bus_addr0_next,
+            bus_addr1_next,
         } = bus_out;
-        state.bus_addr.set_in(bus_addr_next);
+        state.bus_addr0.set_in(bus_addr0_next);
+        state.bus_addr1.set_in(bus_addr1_next);
 
         // Alu
         let alu_in = CpuAluInput {

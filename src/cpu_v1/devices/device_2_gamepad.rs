@@ -73,12 +73,12 @@ impl Device for DeviceGamepad {
     fn device_type(&self) -> DeviceType {
         DeviceType::Gamepad
     }
-    fn exec(&mut self, opcode4: u8, reg0: u8, _reg1: u8) -> DeviceReadResult {
+    fn exec(&mut self, opcode3: u8, reg0: u8, _reg1: u8) -> DeviceReadResult {
         let mut r = reg0;
 
         self.gamepad_state.update();
-        let opcode4: DeviceGamepadOpcode = unsafe { std::mem::transmute(opcode4) };
-        match opcode4 {
+        let opcode3: DeviceGamepadOpcode = unsafe { std::mem::transmute(opcode3) };
+        match opcode3 {
             DeviceGamepadOpcode::NextFrame => {
                 self.gamepad_state.next_frame();
             }
@@ -103,8 +103,6 @@ impl Device for DeviceGamepad {
                     ButtonQueryType::ButtonOption => self.query_button(GamepadButton::Option),
                 }
             }
-
-            //TODO
             DeviceGamepadOpcode::QueryAnalog => {
                 // let ty: AnalogQueryType = unsafe { std::mem::transmute(reg0) };
                 todo!()

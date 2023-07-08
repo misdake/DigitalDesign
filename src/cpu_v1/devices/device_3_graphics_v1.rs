@@ -29,8 +29,8 @@ impl Device for DeviceGraphicsV1 {
     fn device_type(&self) -> DeviceType {
         DeviceType::GraphicsV1
     }
-    fn exec(&mut self, opcode4: u8, reg0: u8, reg1: u8) -> DeviceReadResult {
-        let opcode: DeviceGraphicsV1Opcode = unsafe { std::mem::transmute(opcode4) };
+    fn exec(&mut self, opcode3: u8, reg0: u8, reg1: u8) -> DeviceReadResult {
+        let opcode: DeviceGraphicsV1Opcode = unsafe { std::mem::transmute(opcode3) };
         let r = match opcode {
             DeviceGraphicsV1Opcode::WaitNextFrame => {
                 while self.last_frame_id == self.fb_controller.get_presented_frame_id() {
