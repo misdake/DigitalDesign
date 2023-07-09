@@ -3,18 +3,14 @@ use crate::cpu_v1::devices::{Device, DeviceReadResult, DeviceType};
 #[derive(Default)]
 pub struct DevicePrint {}
 impl Device for DevicePrint {
-    fn reset(&mut self) {}
     fn device_type(&self) -> DeviceType {
         DeviceType::Print
     }
-    fn exec(&mut self, _opcode: u8, reg0: u8, _reg1: u8) {
-        println!("DevicePrint exec {reg0}")
-    }
-    fn read(&mut self, reg0: u8, _reg1: u8) -> DeviceReadResult {
-        println!("DevicePrint read {reg0}");
+    fn exec(&mut self, _opcode: u8, reg0: u8, _reg1: u8) -> DeviceReadResult {
+        println!("DevicePrint {reg0}");
         DeviceReadResult {
-            out_data: reg0,
-            self_latency: 0,
+            reg0_write_data: reg0,
+            self_latency: 1,
         }
     }
 }
@@ -27,13 +23,19 @@ fn test_device_print() {
     test_device(
         &[
             inst_load_imm(DeviceType::Print as u8),
-            inst_set_bus_addr(),
+            inst_set_bus_addr0(),
             inst_load_imm(1),
-            inst_bus(0), // => print 1
+            inst_bus0(0), // => print 1
             inst_load_imm(2),
-            inst_bus_read(), // => print 2
+            inst_bus0(0), // => print 2
+            inst_load_imm(DeviceType::Print as u8),
+            inst_set_bus_addr1(),
+            inst_load_imm(3),
+            inst_bus1(0), // => print 3
+            inst_load_imm(4),
+            inst_bus1(0), // => print 4
         ],
-        1000,
-        [2, 0, 0, 0],
+        20,
+        [4, 0, 0, 0],
     );
 }
