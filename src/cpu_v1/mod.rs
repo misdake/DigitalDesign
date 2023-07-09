@@ -14,14 +14,15 @@ mod mem;
 use mem::*;
 mod bus;
 use bus::*;
-
 mod isa;
 use isa::*;
+
 mod devices;
+use devices::*;
+mod assembler;
 #[cfg(test)]
 mod programs;
 
-use crate::cpu_v1::devices::Devices;
 use crate::{clear_all, external, reg, reg_w, External, Reg, Regs, Wires};
 use std::any::Any;
 use std::cell::RefCell;
