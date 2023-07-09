@@ -19,6 +19,7 @@ pub struct DeviceGraphicsV1 {
 pub enum DeviceGraphicsV1Opcode {
     WaitNextFrame = 0,
     Resize,       // width = regA, height = regB
+    Clear,        // clear with regA color
     SetCursor,    // x = regA, y = regB
     SetColor,     // buffer[x, y] = palette[regA]
     SetColorNext, // set color, then next position
@@ -41,6 +42,11 @@ impl Device for DeviceGraphicsV1 {
             }
             DeviceGraphicsV1Opcode::Resize => {
                 self.resize(reg0, reg1);
+                None
+            }
+            DeviceGraphicsV1Opcode::Clear => {
+                self.set_position(0, 0);
+                self.clear_with_color(reg0);
                 None
             }
             DeviceGraphicsV1Opcode::SetCursor => {
@@ -90,6 +96,7 @@ const PALETTE_16: [u32; 16] = [
     0xFFFFFFFF, //White
 ];
 #[repr(u8)]
+#[allow(unused)]
 pub enum Color {
     Black,
     Maroon,
@@ -143,6 +150,9 @@ impl DeviceGraphicsV1 {
         self.cursor_x %= self.width;
         self.cursor_y %= self.height;
     }
+    fn clear_with_color(&mut self, color_index: u8) {
+        self.buffer.fill(self.palette[color_index as usize]);
+    }
     fn set_color(&mut self, color_index: u8) {
         self.buffer[self.width * self.cursor_y + self.cursor_x] =
             self.palette[color_index as usize];
@@ -155,4 +165,48 @@ impl DeviceGraphicsV1 {
             buffer: self.buffer.clone(),
         })
     }
+}
+
+#[test]
+fn test_frame_sync() {
+    use crate::cpu_v1::devices::device_2_gamepad::*;
+    use crate::cpu_v1::devices::*;
+    use crate::cpu_v1::isa::*;
+
+    test_device(
+        &[
+            // init devices and modes
+            inst_load_imm(DeviceType::Gamepad as u8),
+            inst_set_bus_addr0(),
+            inst_load_imm(DeviceType::GraphicsV1 as u8),
+            inst_set_bus_addr1(),
+            inst_load_imm(ButtonQueryMode::Press as u8),
+            inst_bus0(DeviceGamepadOpcode::SetButtonQueryMode as u8), // set press mode
+            // nops to align game logic
+            inst_mov(0, 0), // nop
+            inst_mov(0, 0), // nop
+            inst_mov(0, 0), // nop
+            inst_mov(0, 0), // nop
+            inst_mov(0, 0), // nop
+            inst_mov(0, 0), // nop
+            inst_mov(0, 0), // nop
+            inst_mov(0, 0), // nop
+            inst_mov(0, 0), // nop
+            inst_mov(0, 0), // nop
+            // game logic, starting at 0x10 to longjump to
+            inst_load_imm(Color::Navy as u8),
+            inst_bus1(DeviceGraphicsV1Opcode::Clear as u8), // clear with color
+            inst_load_imm(ButtonQueryType::ButtonStart as u8),
+            inst_bus0(DeviceGamepadOpcode::QueryButton as u8), // query start button, pressed -> 1, not pressed -> 0
+            inst_inc(0), // pressed -> 2 -> Green, not pressed -> 1 -> Maroon
+            inst_bus1(DeviceGraphicsV1Opcode::SetColor as u8), // set color
+            // game present
+            inst_bus0(DeviceGamepadOpcode::NextFrame as u8),
+            inst_bus1(DeviceGraphicsV1Opcode::PresentFrame as u8),
+            inst_bus1(DeviceGraphicsV1Opcode::WaitNextFrame as u8),
+            inst_jmp_long(1), // restart game logic
+        ],
+        100000000, // just big enough to keep it running
+        [0, 0, 0, 0],
+    );
 }

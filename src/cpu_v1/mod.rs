@@ -303,6 +303,13 @@ fn cpu_v1_build(inst_rom: [u8; 256]) -> (CpuV1State, CpuV1StateInternal) {
     let internal1 = CpuV1Instance::build(&mut state1);
     (state1, internal1)
 }
+#[allow(unused)]
+fn cpu_v1_build_mix(inst_rom: [u8; 256]) -> (CpuV1State, CpuV1StateInternal) {
+    clear_all();
+    let mut state1 = CpuV1State::create(inst_rom.clone());
+    let internal1 = CpuV1MixInstance::build(&mut state1);
+    (state1, internal1)
+}
 
 pub trait CpuComponent: Any {
     type Input: Clone;

@@ -4,13 +4,13 @@ use crate::cpu_v1::devices::device_2_and_3_util::{GamepadButton, GamepadState};
 use crate::cpu_v1::devices::{Device, DeviceReadResult, DeviceType};
 
 #[repr(u8)]
-enum ButtonQueryMode {
+pub enum ButtonQueryMode {
     Down,
     Press,
     Up,
 }
 #[repr(u8)]
-enum ButtonQueryType {
+pub enum ButtonQueryType {
     PlaceHolder = 0,
     ButtonUp,
     ButtonDown,
@@ -26,7 +26,7 @@ enum ButtonQueryType {
     ButtonOption,
 }
 #[repr(u8)]
-enum AnalogQueryType {
+pub enum AnalogQueryType {
     PlaceHolder = 0,
     TriggerL,   // LT (0 to 7)
     TriggerR,   // RT (0 to 7)
@@ -120,8 +120,7 @@ impl Device for DeviceGamepad {
 
 #[test]
 fn test_gamepad() {
-    use crate::cpu_v1::devices::test_device;
-    use crate::cpu_v1::devices::{Device, DeviceReadResult, DeviceType};
+    use crate::cpu_v1::devices::*;
     use crate::cpu_v1::isa::*;
 
     test_device(
