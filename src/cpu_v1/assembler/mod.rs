@@ -1,3 +1,5 @@
+use crate::cpu_v1::isa::*;
+
 #[derive(Copy, Clone)]
 struct Instruction {
     comment: &'static str,
@@ -8,7 +10,6 @@ struct Instruction {
 struct Assembler {
     instructions: [Option<Instruction>; 256],
     functions: Vec<(u8, &'static str)>,
-
     cursor: usize,
 }
 
@@ -16,6 +17,7 @@ impl Assembler {
     pub fn new() -> Self {
         Self {
             instructions: [None; 256],
+            functions: vec![],
             cursor: 0,
         }
     }
@@ -43,32 +45,95 @@ impl Assembler {
 }
 
 #[repr(u8)]
-enum Register {
-    Reg0,
+#[derive(Copy, Clone)]
+enum RegisterIndex {
+    Reg0 = 0,
     Reg1,
     Reg2,
     Reg3,
 }
+struct Reg0<'a> {
+    asembler: &'a mut Assembler,
+}
 struct Reg<'a> {
     asembler: &'a mut Assembler,
-    reg_addr: Register,
+    reg_addr: RegisterIndex,
+}
+impl<'a> RegisterCommon for Reg0<'a> {
+    fn assembler(&mut self) -> &mut Assembler {
+        self.asembler
+    }
+    fn self_reg(&self) -> RegisterIndex {
+        RegisterIndex::Reg0
+    }
+}
+impl<'a> RegisterCommon for Reg<'a> {
+    fn assembler(&mut self) -> &mut Assembler {
+        self.asembler
+    }
+    fn self_reg(&self) -> RegisterIndex {
+        self.reg_addr
+    }
 }
 
 trait RegisterCommon {
-    fn mov(&mut self, rhs: Register) {}
-    fn and_assign(&mut self, rhs: Register) {}
-    fn or_assign(&mut self, rhs: Register) {}
-    fn xor_assign(&mut self, rhs: Register) {}
-    fn add_assign(&mut self, rhs: Register) {}
-    fn inc(&mut self) {}
-    fn dec(&mut self) {}
-    fn inv(&mut self) {}
-    fn neg(&mut self) {}
+    fn assembler(&mut self) -> &mut Assembler;
+    fn self_reg(&self) -> RegisterIndex;
+
+    fn mov(&mut self, rhs: RegisterIndex) {
+        let reg = self.self_reg() as u8;
+        self.assembler().inst(inst_mov(rhs as u8, reg).binary);
+    }
+    fn and_assign(&mut self, rhs: RegisterIndex) {
+        let reg = self.self_reg() as u8;
+        self.assembler().inst(inst_and(rhs as u8, reg).binary);
+    }
+    fn or_assign(&mut self, rhs: RegisterIndex) {
+        let reg = self.self_reg() as u8;
+        self.assembler().inst(inst_or(rhs as u8, reg).binary);
+    }
+    fn xor_assign(&mut self, rhs: RegisterIndex) {
+        let reg = self.self_reg() as u8;
+        self.assembler().inst(inst_xor(rhs as u8, reg).binary);
+    }
+    fn add_assign(&mut self, rhs: RegisterIndex) {
+        let reg = self.self_reg() as u8;
+        self.assembler().inst(inst_add(rhs as u8, reg).binary);
+    }
+    fn inc(&mut self) {
+        let reg = self.self_reg() as u8;
+        self.assembler().inst(inst_inc(reg).binary);
+    }
+    fn dec(&mut self) {
+        let reg = self.self_reg() as u8;
+        self.assembler().inst(inst_dec(reg).binary);
+    }
+    fn inv(&mut self) {
+        let reg = self.self_reg() as u8;
+        self.assembler().inst(inst_inv(reg).binary);
+    }
+    fn neg(&mut self) {
+        let reg = self.self_reg() as u8;
+        self.assembler().inst(inst_neg(reg).binary);
+    }
 }
-trait Register0 {
-    fn load_imm(&mut self, imm: u8) {}
-    fn load_mem_imm(&mut self, imm: u8) {}
-    fn load_mem_reg(&mut self) {}
-    fn store_mem_imm(&mut self, imm: u8) {}
-    fn store_mem_reg(&mut self) {}
+
+trait RegisterSpecial: RegisterCommon {
+    fn load_imm(&mut self, imm: u8) {
+        self.assembler().inst(inst_load_imm(imm).binary);
+    }
+    fn load_mem_imm(&mut self, imm: u8) {
+        assert_ne!(imm, 0);
+        self.assembler().inst(inst_load_mem(imm).binary);
+    }
+    fn load_mem_reg(&mut self) {
+        self.assembler().inst(inst_load_mem(0).binary);
+    }
+    fn store_mem_imm(&mut self, imm: u8) {
+        assert_ne!(imm, 0);
+        self.assembler().inst(inst_store_mem(imm).binary);
+    }
+    fn store_mem_reg(&mut self) {
+        self.assembler().inst(inst_store_mem(0).binary);
+    }
 }
