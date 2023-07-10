@@ -24,7 +24,7 @@ pub struct CpuDecoderOutput {
     // mem control
     pub mem_addr_select: Wires<2>, // MemAddrSelect: imm, reg1
     pub mem_write_enable: Wire,
-    pub mem_bank_write_enable: Wire,
+    pub mem_page_write_enable: Wire,
 
     // jmp control
     pub jmp_op: Wires<6>,         // JmpOp: no_jmp, jmp, je, jl, jg, long
@@ -177,7 +177,7 @@ impl CpuComponent for CpuDecoder {
         let mem_write_enable = is_op_store_mem;
 
         // control
-        let mem_bank_write_enable = inst.eq_const(0b01100011);
+        let mem_page_write_enable = inst.eq_const(0b01100011);
         let bus_addr0_write = inst.eq_const(0b01100100);
         let bus_addr1_write = inst.eq_const(0b01100101);
 
@@ -210,7 +210,7 @@ impl CpuComponent for CpuDecoder {
             alu1_select,
             mem_addr_select,
             mem_write_enable,
-            mem_bank_write_enable,
+            mem_page_write_enable,
             jmp_op,
             jmp_src_select,
             bus_enable,
@@ -236,7 +236,7 @@ impl CpuComponentEmu<CpuDecoder> for CpuDecoderEmu {
             alu1_select: input_w(),
             mem_addr_select: input_w(),
             mem_write_enable: input(),
-            mem_bank_write_enable: input(),
+            mem_page_write_enable: input(),
             jmp_op: input_w(),
             jmp_src_select: input_w(),
             bus_enable: input(),
@@ -255,7 +255,7 @@ impl CpuComponentEmu<CpuDecoder> for CpuDecoderEmu {
         output.alu1_select.set_latency(latency);
         output.mem_addr_select.set_latency(latency);
         output.mem_write_enable.set_latency(latency);
-        output.mem_bank_write_enable.set_latency(latency);
+        output.mem_page_write_enable.set_latency(latency);
         output.jmp_op.set_latency(latency);
         output.jmp_src_select.set_latency(latency);
 
@@ -293,10 +293,10 @@ impl CpuComponentEmu<CpuDecoder> for CpuDecoderEmu {
         let jg_offset = INST_JG_OFFSET.match_opcode(inst);
         let jmp_long = INST_JMP_LONG.match_opcode(inst);
         // control TODO
-        let set_mem_bank = INST_SET_MEM_BANK.match_opcode(inst);
+        let set_mem_page = INST_SET_MEM_PAGE.match_opcode(inst);
         let set_bus_addr0 = INST_SET_BUS_ADDR0.match_opcode(inst);
         let set_bus_addr1 = INST_SET_BUS_ADDR1.match_opcode(inst);
-        let is_control = set_mem_bank | (set_bus_addr0 | set_bus_addr1);
+        let is_control = set_mem_page | (set_bus_addr0 | set_bus_addr1);
         // bus
         let is_bus = INST_BUS0.match_opcode(inst) | INST_BUS1.match_opcode(inst);
 
@@ -310,7 +310,7 @@ impl CpuComponentEmu<CpuDecoder> for CpuDecoderEmu {
         let alu1_select: u8;
         let mem_addr_select: u8;
         let mem_write_enable: u8;
-        let mem_bank_write_enable: u8;
+        let mem_page_write_enable: u8;
         let jmp_op: u8;
         let jmp_src_select: u8;
         let bus_enable: u8;
@@ -337,7 +337,7 @@ impl CpuComponentEmu<CpuDecoder> for CpuDecoderEmu {
             reg0_write_select = 1 << Reg0WriteSelect::AluOut as u8;
             mem_addr_select = 0;
             mem_write_enable = 0;
-            mem_bank_write_enable = 0;
+            mem_page_write_enable = 0;
             bus_enable = 0;
             bus_addr0_write = 0;
             bus_addr1_write = 0;
@@ -376,7 +376,7 @@ impl CpuComponentEmu<CpuDecoder> for CpuDecoderEmu {
             alu_op = 0;
             alu0_select = 0;
             alu1_select = 0;
-            mem_bank_write_enable = 0;
+            mem_page_write_enable = 0;
             bus_enable = 0;
             bus_addr0_write = 0;
             bus_addr1_write = 0;
@@ -417,7 +417,7 @@ impl CpuComponentEmu<CpuDecoder> for CpuDecoderEmu {
             alu1_select = 0;
             mem_addr_select = 0;
             mem_write_enable = 0;
-            mem_bank_write_enable = 0;
+            mem_page_write_enable = 0;
             bus_enable = 0;
             bus_addr0_write = 0;
             bus_addr1_write = 0;
@@ -442,16 +442,16 @@ impl CpuComponentEmu<CpuDecoder> for CpuDecoderEmu {
             jmp_src_select = 1 << JmpSrcSelect::Imm as u8;
             bus_enable = 0;
 
-            if set_mem_bank {
-                mem_bank_write_enable = 1;
+            if set_mem_page {
+                mem_page_write_enable = 1;
                 bus_addr0_write = 0;
                 bus_addr1_write = 0;
             } else if set_bus_addr0 {
-                mem_bank_write_enable = 0;
+                mem_page_write_enable = 0;
                 bus_addr0_write = 1;
                 bus_addr1_write = 0;
             } else if set_bus_addr1 {
-                mem_bank_write_enable = 0;
+                mem_page_write_enable = 0;
                 bus_addr0_write = 0;
                 bus_addr1_write = 1;
             } else {
@@ -467,7 +467,7 @@ impl CpuComponentEmu<CpuDecoder> for CpuDecoderEmu {
             alu1_select = 0;
             mem_addr_select = 0;
             mem_write_enable = 0;
-            mem_bank_write_enable = 0;
+            mem_page_write_enable = 0;
             jmp_op = 1 << JmpOp::NoJmp as u8;
             jmp_src_select = 1 << JmpSrcSelect::Imm as u8;
             bus_enable = 1;
@@ -487,7 +487,7 @@ impl CpuComponentEmu<CpuDecoder> for CpuDecoderEmu {
         output.alu1_select.set_u8(alu1_select);
         output.mem_addr_select.set_u8(mem_addr_select);
         output.mem_write_enable.set(mem_write_enable);
-        output.mem_bank_write_enable.set(mem_bank_write_enable);
+        output.mem_page_write_enable.set(mem_page_write_enable);
         output.jmp_op.set_u8(jmp_op);
         output.jmp_src_select.set_u8(jmp_src_select);
         output.bus_enable.set(bus_enable);
@@ -598,7 +598,7 @@ fn test_decoder_special(inst: InstBinary, env: &DecoderTestEnv) {
             o.reg0_write_enable.get(),
             // o.mem_addr_select.get_u8(),
             // o.mem_write_enable.get(),
-            o.mem_bank_write_enable.get(),
+            o.mem_page_write_enable.get(),
             o.jmp_op.get_u8(),
             o.bus_enable.get(),
         )
@@ -638,7 +638,7 @@ fn test_decoder() {
     test_decoder_jmp(inst_jg_offset(0), &env);
 
     //TODO control
-    test_decoder_special(inst_set_mem_bank(), &env);
+    test_decoder_special(inst_set_mem_page(), &env);
 
     test_decoder_special(inst_bus0(0), &env);
     test_decoder_special(inst_bus0(1), &env);

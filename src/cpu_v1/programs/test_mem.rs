@@ -34,14 +34,14 @@ fn test_load_store() {
 }
 
 #[test]
-fn test_mem_bank() {
+fn test_mem_page() {
     let state = test_cpu(
         &[
             inst_load_imm(15),
             inst_store_mem(15),  // mem[0][15] = 15
-            inst_set_mem_bank(), // mem[15]
+            inst_set_mem_page(), // mem[15]
             inst_load_mem(15),   // r0 = mem[15][15] (=0)
-            inst_set_mem_bank(), // mem[0]
+            inst_set_mem_page(), // mem[0]
             inst_load_mem(15),   // r0 = mem[0][15] (=15)
         ],
         8,

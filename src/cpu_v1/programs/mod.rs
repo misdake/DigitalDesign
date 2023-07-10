@@ -59,7 +59,7 @@ fn test_cpu(
         for j in 0..256 {
             assert_eq!(state.mem[j].out.get_u8(), state_ref.mem[j].out.get_u8());
         }
-        assert_eq!(state.mem_bank.out.get_u8(), state_ref.mem_bank.out.get_u8());
+        assert_eq!(state.mem_page.out.get_u8(), state_ref.mem_page.out.get_u8());
 
         f(i, &state);
     }

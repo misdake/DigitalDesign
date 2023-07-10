@@ -34,7 +34,7 @@ struct CpuV1State {
     pc: Regs<8>,       // write in CpuV1
     reg: [Regs<4>; 4], // write in RegWrite
     mem: [Regs<4>; 256],
-    mem_bank: Regs<4>,
+    mem_page: Regs<4>,
     flag_p: Reg, // write in CpuV1
     flag_z: Reg, // write in CpuV1
     flag_n: Reg, // write in CpuV1
@@ -51,7 +51,7 @@ impl CpuV1State {
             inst,
             pc: reg_w(),
             mem,
-            mem_bank: reg_w(),
+            mem_page: reg_w(),
             reg: regs,
             flag_p: reg(),
             flag_z: reg(),
@@ -106,7 +106,7 @@ trait CpuV1 {
             alu1_select,
             mem_addr_select,
             mem_write_enable,
-            mem_bank_write_enable,
+            mem_page_write_enable,
             jmp_op,
             jmp_src_select,
             bus_enable,
@@ -162,10 +162,10 @@ trait CpuV1 {
         // Mem
         let mem_in = CpuMemInput {
             mem: state.mem.map(|v| v.out),
-            mem_bank: state.mem_bank.out,
+            mem_page: state.mem_page.out,
             reg0: reg0_data,
             mem_write_enable,
-            mem_bank_write_enable,
+            mem_page_write_enable: mem_page_write_enable,
             imm,
             reg1: reg1_data,
             mem_addr_select,
@@ -174,12 +174,12 @@ trait CpuV1 {
         let CpuMemOutput {
             mem_out,
             mem_next,
-            mem_bank_next,
+            mem_page_next,
         } = mem_out;
         for i in 0..256 {
             state.mem[i].set_in(mem_next[i]);
         }
-        state.mem_bank.set_in(mem_bank_next);
+        state.mem_page.set_in(mem_page_next);
 
         // RegWrite
         let reg_write_in = CpuRegWriteInput {

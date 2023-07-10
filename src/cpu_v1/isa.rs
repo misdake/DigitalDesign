@@ -205,7 +205,7 @@ const ALL_INSTRUCTION_DESC: &'static [&'static InstDesc] = &[
     &INST_RESET,
     &INST_HALT,
     &INST_SLEEP,
-    &INST_SET_MEM_BANK,
+    &INST_SET_MEM_PAGE,
     &INST_SET_BUS_ADDR0,
     &INST_SET_BUS_ADDR1,
     // bus
@@ -239,7 +239,7 @@ inst_op0i4!(0b1111, jg_offset);
 inst_op0!(0b01100000, reset); // TODO
 inst_op0!(0b01100001, halt); // TODO
 inst_op0!(0b01100010, sleep); // TODO
-inst_op0!(0b01100011, set_mem_bank);
+inst_op0!(0b01100011, set_mem_page);
 inst_op0!(0b01100100, set_bus_addr0);
 inst_op0!(0b01100101, set_bus_addr1);
 

@@ -41,11 +41,10 @@ fn raw_circuit() {
         simulate();
     }
     let duration = start.elapsed();
-    println!("simulate {CYCLES} time: {}ms", duration.as_millis());
-    println!(
-        "{} cycles for 30fps",
-        1. / 30. / (duration.as_secs_f64() / CYCLES as f64)
-    );
+    println!("simulate {CYCLES} cycles: {}ms", duration.as_millis());
+    let time_per_cycle = duration.as_secs_f64() / CYCLES as f64;
+    println!("{:.0} cycles for 30fps", 1. / 30. / time_per_cycle);
+    println!("{:.0} cycles for 60fps", 1. / 60. / time_per_cycle);
 
     let result = get_statistics();
     println!("{:?}", result);
