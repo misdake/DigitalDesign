@@ -15,7 +15,6 @@ pub struct Reg(pub usize);
 
 enum ExecuteSegment {
     Gates(Range<usize>),
-    GatesGroupedByLatency(Vec<Vec<Gate>>),
     Externals(Range<usize>),
 }
 
@@ -34,7 +33,6 @@ impl Debug for ExecuteSegment {
         let mut r = f.debug_struct("ExecuteSegment");
         match self {
             ExecuteSegment::Gates(gates) => r.field("Gates", gates),
-            ExecuteSegment::GatesGroupedByLatency(groups) => r.field("Groups", &groups.len()),
             ExecuteSegment::Externals(externals) => r.field("Externals", externals),
         };
         r.finish()
@@ -60,11 +58,12 @@ pub fn clear_all() {
         GATES.clear();
         EXTERNALS.clear();
         REGS.clear();
+        EXECUTE_SEGMENTS.clear();
+
         WIRES.push(0); // => WIRE_0
         WIRES.push(1); // => WIRE_1
         LATENCIES.push(0); // => WIRE_0
         LATENCIES.push(0); // => WIRE_1
-        EXECUTE_SEGMENTS.clear();
     }
 }
 
@@ -229,57 +228,11 @@ fn before_new_external() {
 }
 
 impl ExecuteSegment {
-    // convert Gates to GatesGroupedByLatency, then possibly execute gates in parallel
-    fn optimize(&mut self, max_latency: LatencyValue) {
-        let mut groups: Vec<Vec<Gate>> = Vec::new();
-        groups.resize_with(max_latency as usize + 1, || Vec::new());
-        if let ExecuteSegment::Gates(range) = self {
-            let gates = unsafe { &GATES[range.start..range.end] };
-            gates.iter().for_each(|gate| {
-                let latency = gate.wire_out.get_latency();
-                groups[latency as usize].push(*gate);
-            });
-
-            for group in groups.iter_mut() {
-                group.sort_by(|a, b| a.wire_a.0.partial_cmp(&b.wire_a.0).unwrap());
-            }
-
-            // for (latency, group) in groups.iter().enumerate() {
-            //     println!("latency {}: {} gates", latency, group.len());
-            // }
-
-            // for (latency, group) in groups.iter().enumerate() {
-            //     print!("latency {}: ", latency);
-            //     for gate in group {
-            //         print!(
-            //             "({},{}=>{}) ",
-            //             gate.wire_a.0, gate.wire_b.0, gate.wire_out.0
-            //         );
-            //     }
-            //     println!();
-            // }
-
-            *self = ExecuteSegment::GatesGroupedByLatency(groups);
-        }
-    }
     fn execute(&self) {
         match self {
             ExecuteSegment::Gates(range) => {
                 let gates = unsafe { &GATES[range.start..range.end] };
                 gates.iter().for_each(|gate| gate.execute());
-            }
-            ExecuteSegment::GatesGroupedByLatency(groups) => {
-                use rayon::prelude::*;
-                const PARALLEL_CHUNK_SIZE: usize = 512;
-                for group in groups {
-                    if group.len() < PARALLEL_CHUNK_SIZE {
-                        group.iter().for_each(|gate| gate.execute());
-                    } else {
-                        group.par_chunks(PARALLEL_CHUNK_SIZE).for_each(|gates| {
-                            gates.iter().for_each(|gate| gate.execute());
-                        });
-                    }
-                }
             }
             ExecuteSegment::Externals(range) => {
                 let externals = unsafe { &mut EXTERNALS[range.start..range.end] };
@@ -304,15 +257,6 @@ pub fn simulate() -> ExecutionResult {
     result
 }
 
-pub fn optimize() {
-    unsafe {
-        let max_latency = *LATENCIES.iter().max().unwrap_or(&0);
-
-        EXECUTE_SEGMENTS
-            .iter_mut()
-            .for_each(|segment| segment.optimize(max_latency));
-    }
-}
 pub fn get_statistics() -> ExecutionResult {
     unsafe {
         ExecutionResult {
