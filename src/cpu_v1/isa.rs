@@ -8,7 +8,32 @@ pub struct InstBinary {
     pub binary: InstBinaryType,
     pub desc: &'static InstDesc,
 }
-impl InstBinary {}
+impl InstBinary {
+    pub fn to_string(&self) -> String {
+        let bits3210 = self.binary & 0b1111;
+        let bits210 = self.binary & 0b111;
+        let bits32 = (self.binary & 0b1100) >> 2;
+        let bits10 = self.binary & 0b11;
+
+        match self.desc {
+            InstDesc::Op2(op, _, _) => {
+                format!("{} r{} <- r{}", op.name, bits32, bits10)
+            }
+            InstDesc::Op1(op, _) => {
+                format!("{} r{}", op.name, bits10)
+            }
+            InstDesc::Op0i4(op, _) => {
+                format!("{} 0b{:04b}({})", op.name, bits3210, bits3210)
+            }
+            InstDesc::Op0i3(op, _) => {
+                format!("{} 0b{:03b}({})", op.name, bits210, bits210)
+            }
+            InstDesc::Op0(op) => {
+                format!("{}", op.name)
+            }
+        }
+    }
+}
 
 pub struct InstOpcodeDesc4 {
     name: &'static str,
