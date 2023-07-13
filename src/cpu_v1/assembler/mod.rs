@@ -13,18 +13,22 @@ pub struct Assembler {
     instructions: [Option<Instruction>; 256],
     function_names: HashMap<usize, &'static str>,
     function_addrs: HashMap<&'static str, usize>,
-    comments: HashMap<usize, &'static str>,
+    comments: HashMap<usize, String>,
 
     cursor: usize,
 }
 
 #[test]
 fn print() {
-    let mut assembler = Assembler::new();
-    assembler.func("main", 0, |assembler, _| {
-        assembler.reg0().load_imm(10);
+    let mut asm = Assembler::new();
+    asm.func("main", 0, |asm, _| {
+        asm.reg0().load_imm(10);
     });
-    println!("{}", assembler.print());
+    asm.func("add", 1, |asm, _| {
+        let i = asm.reg0().load_imm(12);
+        asm.jmp_offset(i);
+    });
+    println!("{}", asm.print());
 }
 
 impl Assembler {
@@ -44,9 +48,9 @@ impl Assembler {
             .enumerate()
             .map(|(i, inst)| {
                 let addr = if i % 16 == 0 {
-                    format!("0b{:04b} {:04b}: ", i / 16, i % 16)
+                    format!("{:3} {:04b}: ", i / 16, i % 16)
                 } else {
-                    format!("       {:04b}: ", i % 16)
+                    format!("    {:04b}: ", i % 16)
                 };
                 let inst = inst
                     .map(|inst| inst.data.to_string())
@@ -54,15 +58,15 @@ impl Assembler {
                 let func = self
                     .function_names
                     .get(&i)
-                    .map(|func_name| format!(" <--- {func_name}"))
+                    .map(|func_name| format!(" <-- {func_name}"))
                     .unwrap_or_else(|| "".to_string());
                 let comment = self
                     .comments
                     .get(&i)
-                    .map(|comment| format!(" // {comment}"))
+                    .map(|comment| format!(" {comment}"))
                     .unwrap_or_else(|| "".to_string());
 
-                format!("{addr}{inst}{func}{comment}")
+                format!("{addr}{inst:22}{func}{comment}")
             })
             .collect::<Vec<_>>()
             .join("\n")
@@ -79,13 +83,14 @@ impl Assembler {
         addr_high: usize,
         f: impl FnOnce(&mut Assembler, usize),
     ) {
-        assert!(self.function_names.insert(addr_high, name).is_none());
-        assert!(self.function_addrs.insert(name, addr_high).is_none());
-        self.cursor = addr_high * 16;
-        f(self, addr_high);
+        let addr = addr_high * 16;
+        assert!(self.function_names.insert(addr, name).is_none());
+        assert!(self.function_addrs.insert(name, addr).is_none());
+        self.cursor = addr;
+        f(self, addr);
     }
 
-    pub fn inst_comment(&mut self, inst: InstBinary, comment: &'static str) -> Instruction {
+    pub fn inst_comment(&mut self, inst: InstBinary, comment: String) -> Instruction {
         assert!(self.comments.insert(self.cursor, comment).is_none());
         self.inst(inst)
     }
@@ -128,43 +133,46 @@ impl Assembler {
         }
     }
 
-    fn addr_offset(&self, target: Instruction) -> u8 {
+    fn addr_offset(&self, target: Instruction) -> (u8, String) {
         let offset = target.addr as i64 - self.cursor as i64;
         assert!(
-            -8 <= offset && offset < 7 && offset != 0,
+            -8 <= offset && offset <= 7 && offset != 0,
             "offset: {}, cursor {}, target {}",
             offset,
             self.cursor,
             target.addr
         );
-        if offset < 0 {
+        let offset = if offset < 0 {
             (offset + 16) as u8
         } else {
             offset as u8
-        }
+        };
+        let comment = format!("--> {:3} {:04b}", target.addr / 16, target.addr % 16);
+        (offset, comment)
     }
     pub fn jmp_offset(&mut self, target: Instruction) {
-        let offset = self.addr_offset(target);
-        self.inst(inst_jmp_offset(offset));
+        let (offset, comment) = self.addr_offset(target);
+        self.inst_comment(inst_jmp_offset(offset), comment);
     }
     pub fn je_offset(&mut self, target: Instruction) {
-        let offset = self.addr_offset(target);
-        self.inst(inst_je_offset(offset));
+        let (offset, comment) = self.addr_offset(target);
+        self.inst_comment(inst_je_offset(offset), comment);
     }
     pub fn jl_offset(&mut self, target: Instruction) {
-        let offset = self.addr_offset(target);
-        self.inst(inst_jl_offset(offset));
+        let (offset, comment) = self.addr_offset(target);
+        self.inst_comment(inst_jl_offset(offset), comment);
     }
     pub fn jg_offset(&mut self, target: Instruction) {
-        let offset = self.addr_offset(target);
-        self.inst(inst_jg_offset(offset));
+        let (offset, comment) = self.addr_offset(target);
+        self.inst_comment(inst_jg_offset(offset), comment);
     }
     pub fn jmp_long(&mut self, function_name: &'static str) {
-        let addr_high = *self
+        let addr = *self
             .function_addrs
             .get(function_name)
             .expect("cannot find function name");
-        self.inst(inst_jmp_long(addr_high as u8));
+        assert_eq!(addr % 16, 0);
+        self.inst(inst_jmp_long(addr as u8 % 16));
     }
     pub fn jmp_offset_reg0(&mut self) {
         self.inst(inst_jmp_offset(0));
@@ -224,60 +232,60 @@ pub trait RegisterCommon {
     fn assembler(&mut self) -> &mut Assembler;
     fn self_reg(&self) -> RegisterIndex;
 
-    fn mov(&mut self, rhs: RegisterIndex) {
+    fn mov(&mut self, rhs: RegisterIndex) -> Instruction {
         let reg = self.self_reg() as u8;
-        self.assembler().inst(inst_mov(rhs as u8, reg));
+        self.assembler().inst(inst_mov(rhs as u8, reg))
     }
-    fn and_assign(&mut self, rhs: RegisterIndex) {
+    fn and_assign(&mut self, rhs: RegisterIndex) -> Instruction {
         let reg = self.self_reg() as u8;
-        self.assembler().inst(inst_and(rhs as u8, reg));
+        self.assembler().inst(inst_and(rhs as u8, reg))
     }
-    fn or_assign(&mut self, rhs: RegisterIndex) {
+    fn or_assign(&mut self, rhs: RegisterIndex) -> Instruction {
         let reg = self.self_reg() as u8;
-        self.assembler().inst(inst_or(rhs as u8, reg));
+        self.assembler().inst(inst_or(rhs as u8, reg))
     }
-    fn xor_assign(&mut self, rhs: RegisterIndex) {
+    fn xor_assign(&mut self, rhs: RegisterIndex) -> Instruction {
         let reg = self.self_reg() as u8;
-        self.assembler().inst(inst_xor(rhs as u8, reg));
+        self.assembler().inst(inst_xor(rhs as u8, reg))
     }
-    fn add_assign(&mut self, rhs: RegisterIndex) {
+    fn add_assign(&mut self, rhs: RegisterIndex) -> Instruction {
         let reg = self.self_reg() as u8;
-        self.assembler().inst(inst_add(rhs as u8, reg));
+        self.assembler().inst(inst_add(rhs as u8, reg))
     }
-    fn inc(&mut self) {
+    fn inc(&mut self) -> Instruction {
         let reg = self.self_reg() as u8;
-        self.assembler().inst(inst_inc(reg));
+        self.assembler().inst(inst_inc(reg))
     }
-    fn dec(&mut self) {
+    fn dec(&mut self) -> Instruction {
         let reg = self.self_reg() as u8;
-        self.assembler().inst(inst_dec(reg));
+        self.assembler().inst(inst_dec(reg))
     }
-    fn inv(&mut self) {
+    fn inv(&mut self) -> Instruction {
         let reg = self.self_reg() as u8;
-        self.assembler().inst(inst_inv(reg));
+        self.assembler().inst(inst_inv(reg))
     }
-    fn neg(&mut self) {
+    fn neg(&mut self) -> Instruction {
         let reg = self.self_reg() as u8;
-        self.assembler().inst(inst_neg(reg));
+        self.assembler().inst(inst_neg(reg))
     }
 }
 
 pub trait RegisterSpecial: RegisterCommon {
-    fn load_imm(&mut self, imm: u8) {
-        self.assembler().inst(inst_load_imm(imm));
+    fn load_imm(&mut self, imm: u8) -> Instruction {
+        self.assembler().inst(inst_load_imm(imm))
     }
-    fn load_mem_imm(&mut self, imm: u8) {
+    fn load_mem_imm(&mut self, imm: u8) -> Instruction {
         assert_ne!(imm, 0);
-        self.assembler().inst(inst_load_mem(imm));
+        self.assembler().inst(inst_load_mem(imm))
     }
-    fn load_mem_reg(&mut self) {
-        self.assembler().inst(inst_load_mem(0));
+    fn load_mem_reg(&mut self) -> Instruction {
+        self.assembler().inst(inst_load_mem(0))
     }
-    fn store_mem_imm(&mut self, imm: u8) {
+    fn store_mem_imm(&mut self, imm: u8) -> Instruction {
         assert_ne!(imm, 0);
-        self.assembler().inst(inst_store_mem(imm));
+        self.assembler().inst(inst_store_mem(imm))
     }
-    fn store_mem_reg(&mut self) {
-        self.assembler().inst(inst_store_mem(0));
+    fn store_mem_reg(&mut self) -> Instruction {
+        self.assembler().inst(inst_store_mem(0))
     }
 }
