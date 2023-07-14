@@ -72,9 +72,9 @@ impl Assembler {
             .join("\n")
     }
 
-    pub fn finish(&self) -> [u8; 256] {
+    pub fn finish(&self) -> [InstBinary; 256] {
         self.instructions
-            .map(|i| i.map(|i| i.data.binary).unwrap_or(0))
+            .map(|i| i.map(|i| i.data).unwrap_or(inst_mov(0, 0)))
     }
 
     pub fn func(

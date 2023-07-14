@@ -20,6 +20,7 @@ use isa::*;
 mod devices;
 use devices::*;
 mod assembler;
+use assembler::*;
 #[cfg(test)]
 mod programs;
 

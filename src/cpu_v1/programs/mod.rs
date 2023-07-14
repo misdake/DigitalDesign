@@ -8,9 +8,10 @@ mod test_jmp;
 mod test_mem;
 mod test_perf;
 
-fn print_regs(_: u32, state: &CpuV1State) {
+fn print_regs(cycle: u32, state: &CpuV1State) {
     print!(
-        "regs: {} {} {} {}",
+        "cycle {}, regs: {} {} {} {}",
+        cycle,
         state.reg[0].out.get_u8(),
         state.reg[1].out.get_u8(),
         state.reg[2].out.get_u8(),
