@@ -1,3 +1,4 @@
+use crate::cpu_v1::devices::device_0_terminal::DeviceTerminalOp;
 use crate::cpu_v1::devices::{Device, DeviceReadResult, DeviceType};
 
 #[derive(Default)]
@@ -68,23 +69,23 @@ fn test_device_extract_bits() {
 
     test_device(
         &[
-            inst_load_imm(DeviceType::Print as u8),
+            inst_load_imm(DeviceType::Terminal as u8),
             inst_set_bus_addr1(),
             inst_load_imm(DeviceType::Math as u8),
             inst_set_bus_addr0(),
             inst_load_imm(0b1010),
             inst_bus0(DeviceMathOpcode::ExtractBits01 as u8),
             inst_bus0(DeviceMathOpcode::Pop as u8), // & 0b0001 => 0
-            inst_bus1(0),                           // print 0
+            inst_bus1(DeviceTerminalOp::Print as u8), // print 0
             inst_mov(0, 3),
             inst_bus0(DeviceMathOpcode::Pop as u8), // & 0b0010, >> 1 => 1
-            inst_bus1(0),                           // print 1
+            inst_bus1(DeviceTerminalOp::Print as u8), // print 1
             inst_mov(0, 2),
             inst_bus0(DeviceMathOpcode::Pop as u8), // & 0b0100, >> 2 => 0
-            inst_bus1(0),                           // print 0
+            inst_bus1(DeviceTerminalOp::Print as u8), // print 0
             inst_mov(0, 1),
             inst_bus0(DeviceMathOpcode::Pop as u8), // & 0b1000, >> 3 => 1
-            inst_bus1(0),                           // print 1
+            inst_bus1(DeviceTerminalOp::Print as u8), // print 1
         ],
         20,
         [1, 0, 1, 0],

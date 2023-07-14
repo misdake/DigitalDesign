@@ -1,4 +1,4 @@
-mod device_0_print;
+mod device_0_terminal;
 mod device_1_math;
 mod device_2_and_3_util;
 mod device_2_gamepad;
@@ -8,7 +8,7 @@ mod device_3_graphics_v1;
 
 #[repr(u8)]
 pub enum DeviceType {
-    Print = 1,
+    Terminal = 1,
     Math,
     Gamepad,
     GraphicsV1,
@@ -25,7 +25,7 @@ pub struct DeviceReadResult {
 
 // Devices
 
-use crate::cpu_v1::devices::device_0_print::DevicePrint;
+use crate::cpu_v1::devices::device_0_terminal::DeviceTerminal;
 use crate::cpu_v1::devices::device_1_math::DeviceMath;
 use crate::cpu_v1::devices::device_2_and_3_util::create_device_gamepad_graphics_v1_start;
 
@@ -48,7 +48,9 @@ impl Devices {
         const WINDOW_WIDTH: usize = 512;
         const WINDOW_HEIGHT: usize = 512;
 
-        self.register(DeviceType::Print, |d| d.set_device(DevicePrint::default()));
+        self.register(DeviceType::Terminal, |d| {
+            d.set_device(DeviceTerminal::default())
+        });
         self.register(DeviceType::Math, |d| d.set_device(DeviceMath::default()));
         self.register(DeviceType::Gamepad, |d| {
             let (gamepad, fb) =
