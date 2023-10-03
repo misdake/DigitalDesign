@@ -165,7 +165,7 @@ trait CpuV1 {
             mem_page: state.mem_page.out,
             reg0: reg0_data,
             mem_write_enable,
-            mem_page_write_enable: mem_page_write_enable,
+            mem_page_write_enable,
             imm,
             reg1: reg1_data,
             mem_addr_select,

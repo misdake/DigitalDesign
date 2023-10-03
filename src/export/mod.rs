@@ -5,12 +5,17 @@ use crate::{ExportGateReg, Wire, Wires};
 #[derive(Default)]
 pub struct ExportModuleInterface {
     module_name: &'static str,
+    clk: &'static str,
     input_wires: Vec<(String, Wire)>,
     output_wires: Vec<(String, Wire)>,
 }
 impl ExportModuleInterface {
     pub fn module_name(&mut self, module_name: &'static str) -> &mut Self {
         self.module_name = module_name;
+        self
+    }
+    pub fn clk(&mut self, clk: &'static str) -> &mut Self {
+        self.clk = clk;
         self
     }
     pub fn input_wire(&mut self, name: &'static str, wire: Wire) -> &mut Self {

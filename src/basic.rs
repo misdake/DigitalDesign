@@ -107,6 +107,11 @@ pub fn export_gate_reg() -> ExportGateReg {
             })
             .collect::<Vec<_>>();
 
+        assert!(
+            EXTERNALS.is_empty(),
+            "Export wire/reg only! Externals are not supported!"
+        );
+
         ExportGateReg {
             wire_0_value,
             wire_1_value,
