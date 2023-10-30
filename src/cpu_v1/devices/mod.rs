@@ -4,6 +4,12 @@ mod device_2_and_3_util;
 mod device_2_gamepad;
 mod device_3_graphics_v1;
 
+pub use device_0_terminal::*;
+pub use device_1_math::*;
+pub use device_2_and_3_util::*;
+pub use device_2_gamepad::*;
+pub use device_3_graphics_v1::*;
+
 // Device
 
 #[repr(u8)]
@@ -99,7 +105,7 @@ impl Devices {
 use crate::cpu_v1::InstBinary;
 
 #[cfg(test)]
-fn test_device(inst: &[InstBinary], max_cycle: u32, regs_ref: [u8; 4]) {
+pub fn test_device(inst: &[InstBinary], max_cycle: u32, regs_ref: [u8; 4]) {
     use crate::cpu_v1::*;
     use crate::*;
 

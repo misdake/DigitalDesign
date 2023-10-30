@@ -113,6 +113,9 @@ impl Assembler {
         self.cursor += 1;
         addr
     }
+    pub fn set_cursor(&mut self, cursor: usize) {
+        self.cursor = cursor;
+    }
 
     pub fn reg0(&mut self) -> Reg0 {
         Reg0 { assembler: self }

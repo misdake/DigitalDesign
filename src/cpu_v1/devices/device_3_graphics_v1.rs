@@ -9,7 +9,7 @@ pub struct DeviceGraphicsV1 {
     width: usize,
     height: usize,
     buffer: Vec<u32>,
-    palette: &'static [u32; 16],
+    palette: [u32; 16],
     cursor_x: usize,
     cursor_y: usize,
 }
@@ -20,6 +20,7 @@ pub enum DeviceGraphicsV1Opcode {
     WaitNextFrame = 0,
     Resize,       // width = regA, height = regB
     Clear,        // clear with regA color
+    SetPalette,   // palette[regB] = palette_src[regA]
     SetCursor,    // x = regA, y = regB
     SetColor,     // buffer[x, y] = palette[regA]
     SetColorNext, // set color, then next position
@@ -32,44 +33,40 @@ impl Device for DeviceGraphicsV1 {
     }
     fn exec(&mut self, opcode3: u8, reg0: u8, reg1: u8) -> DeviceReadResult {
         let opcode: DeviceGraphicsV1Opcode = unsafe { std::mem::transmute(opcode3) };
-        let r = match opcode {
+        match opcode {
             DeviceGraphicsV1Opcode::WaitNextFrame => {
                 while self.last_frame_id == self.fb_controller.get_presented_frame_id() {
                     std::thread::sleep(Duration::from_millis(1));
                 }
                 self.last_frame_id = self.fb_controller.get_presented_frame_id();
-                None
             }
             DeviceGraphicsV1Opcode::Resize => {
                 self.resize(reg0, reg1);
-                None
             }
             DeviceGraphicsV1Opcode::Clear => {
                 self.set_position(0, 0);
                 self.clear_with_color(reg0);
-                None
+            }
+            DeviceGraphicsV1Opcode::SetPalette => {
+                self.set_palette(reg1, reg0);
             }
             DeviceGraphicsV1Opcode::SetCursor => {
                 self.set_position(reg0, reg1);
-                None
             }
             DeviceGraphicsV1Opcode::SetColor => {
                 self.set_color(reg0);
-                None
             }
             DeviceGraphicsV1Opcode::SetColorNext => {
                 self.set_color(reg0);
                 self.next_position();
-                None
             }
             DeviceGraphicsV1Opcode::PresentFrame => {
                 self.present_frame();
-                None
             }
         };
 
         DeviceReadResult {
-            reg0_write_data: r.unwrap_or(reg0),
+            reg0_write_data: reg0,
             self_latency: 0,
         }
     }
@@ -98,7 +95,7 @@ const PALETTE_16: [u32; 16] = [
 #[repr(u8)]
 #[allow(unused)]
 pub enum Color {
-    Black,
+    Black = 0,
     Maroon,
     Green,
     Olive,
@@ -124,7 +121,7 @@ impl DeviceGraphicsV1 {
             width: 5,
             height: 5,
             buffer: vec![0; 25],
-            palette: &PALETTE_16,
+            palette: PALETTE_16, // copy as default
             cursor_x: 0,
             cursor_y: 0,
         }
@@ -135,6 +132,9 @@ impl DeviceGraphicsV1 {
         self.height = height as usize;
         let len = (width * height) as usize;
         self.buffer = vec![0; len];
+    }
+    fn set_palette(&mut self, dst_index: u8, src_index: u8) {
+        self.palette[dst_index as usize] = PALETTE_16[src_index as usize];
     }
     fn set_position(&mut self, x: u8, y: u8) {
         self.cursor_x = x as usize;
