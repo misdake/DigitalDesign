@@ -3,12 +3,14 @@ mod device_1_math;
 mod device_2_and_3_util;
 mod device_2_gamepad;
 mod device_3_graphics_v1;
+mod device_4_rom;
 
 pub use device_0_terminal::*;
 pub use device_1_math::*;
 pub use device_2_and_3_util::*;
 pub use device_2_gamepad::*;
 pub use device_3_graphics_v1::*;
+pub use device_4_rom::*;
 
 // Device
 
@@ -18,6 +20,7 @@ pub enum DeviceType {
     Math,
     Gamepad,
     GraphicsV1,
+    Rom,
 }
 pub trait Device: 'static {
     fn device_type(&self) -> DeviceType;
@@ -70,6 +73,7 @@ impl Devices {
             d.set_device(gamepad);
             d.set_device(fb);
         });
+        self.register(DeviceType::Rom, |d| d.set_device(DeviceRom::default()));
     }
     fn set_device(&mut self, device: impl Device) {
         let device_type = device.device_type();
