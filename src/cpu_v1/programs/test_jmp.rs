@@ -29,8 +29,8 @@ fn test_jmp() {
 fn test_jmp_condition_taken() {
     let state = test_cpu(
         &[
-            inst_load_imm(0),       //  0  0000
-            inst_je_offset(3),      //  1  0001
+            inst_load_imm(1),       //  0  0000
+            inst_jne_offset(3),     //  1  0001
             inst_load_imm(8),       //  2  0010
             inst_jl_offset(3),      //  3  0011
             inst_load_imm(1),       //  4  0100
@@ -49,13 +49,13 @@ fn test_jmp_condition_taken() {
 fn test_jmp_condition_not_taken() {
     let state = test_cpu(
         &[
-            inst_load_imm(1),  //  0  0000
-            inst_je_offset(3), //  1  0001
-            inst_load_imm(1),  //  2  0010
-            inst_jl_offset(7), //  3  0011
-            inst_load_imm(8),  //  4  0100
-            inst_jg_offset(7), //  5  0101
-            inst_load_imm(13), //  6  0110
+            inst_load_imm(0),   //  0  0000
+            inst_jne_offset(3), //  1  0001
+            inst_load_imm(1),   //  2  0010
+            inst_jl_offset(7),  //  3  0011
+            inst_load_imm(8),   //  4  0100
+            inst_jg_offset(7),  //  5  0101
+            inst_load_imm(13),  //  6  0110
         ],
         8,
         print_regs,

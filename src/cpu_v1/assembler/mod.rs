@@ -160,9 +160,9 @@ impl Assembler {
         let (offset, comment) = self.addr_offset(target);
         self.inst_comment(inst_jmp_offset(offset), comment);
     }
-    pub fn je_offset(&mut self, target: Instruction) {
+    pub fn jne_offset(&mut self, target: Instruction) {
         let (offset, comment) = self.addr_offset(target);
-        self.inst_comment(inst_je_offset(offset), comment);
+        self.inst_comment(inst_jne_offset(offset), comment);
     }
     pub fn jl_offset(&mut self, target: Instruction) {
         let (offset, comment) = self.addr_offset(target);
@@ -183,8 +183,8 @@ impl Assembler {
     pub fn jmp_offset_reg0(&mut self) {
         self.inst(inst_jmp_offset(0));
     }
-    pub fn je_offset_reg0(&mut self) {
-        self.inst(inst_je_offset(0));
+    pub fn jne_offset_reg0(&mut self) {
+        self.inst(inst_jne_offset(0));
     }
     pub fn jl_offset_reg0(&mut self) {
         self.inst(inst_jl_offset(0));

@@ -222,7 +222,7 @@ const ALL_INSTRUCTION_DESC: &'static [&'static InstDesc] = &[
     &INST_STORE_MEM,
     // Jmp
     &INST_JMP_OFFSET,
-    &INST_JE_OFFSET,
+    &INST_JNE_OFFSET,
     &INST_JL_OFFSET,
     &INST_JG_OFFSET,
     &INST_JMP_LONG,
@@ -256,7 +256,7 @@ inst_op0i4!(0b1010, store_mem);
 // jmp
 inst_op0i4!(0b1011, jmp_long);
 inst_op0i4!(0b1100, jmp_offset);
-inst_op0i4!(0b1101, je_offset);
+inst_op0i4!(0b1101, jne_offset);
 inst_op0i4!(0b1110, jl_offset);
 inst_op0i4!(0b1111, jg_offset);
 

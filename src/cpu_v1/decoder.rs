@@ -27,7 +27,7 @@ pub struct CpuDecoderOutput {
     pub mem_page_write_enable: Wire,
 
     // jmp control
-    pub jmp_op: Wires<6>,         // JmpOp: no_jmp, jmp, je, jl, jg, long
+    pub jmp_op: Wires<6>,         // JmpOp: no_jmp, jmp, jne, jl, jg, long
     pub jmp_src_select: Wires<2>, // JmpSrcSelect: imm, regA
 
     // bus control
@@ -84,7 +84,7 @@ pub enum MemAddrSelect {
 pub enum JmpOp {
     NoJmp = 0,
     Jmp = 1,
-    Je = 2,
+    Jne = 2,
     Jl = 3,
     Jg = 4,
     Long = 5,
@@ -184,12 +184,12 @@ impl CpuComponent for CpuDecoder {
         let mut jmp_op = Wires::uninitialized();
         let is_op_jmp_long = op4.eq_const(0b1011);
         let is_op_jmp_offset = op4.eq_const(0b1100);
-        let is_op_je_offset = op4.eq_const(0b1101);
+        let is_op_jne_offset = op4.eq_const(0b1101);
         let is_op_jl_offset = op4.eq_const(0b1110);
         let is_op_jg_offset = op4.eq_const(0b1111);
         jmp_op.wires[JmpOp::NoJmp as usize] = (!b0 | !b1) & !is_op_jmp_long;
         jmp_op.wires[JmpOp::Jmp as usize] = is_op_jmp_offset;
-        jmp_op.wires[JmpOp::Je as usize] = is_op_je_offset;
+        jmp_op.wires[JmpOp::Jne as usize] = is_op_jne_offset;
         jmp_op.wires[JmpOp::Jl as usize] = is_op_jl_offset;
         jmp_op.wires[JmpOp::Jg as usize] = is_op_jg_offset;
         jmp_op.wires[JmpOp::Long as usize] = is_op_jmp_long;
@@ -288,7 +288,7 @@ impl CpuComponentEmu<CpuDecoder> for CpuDecoderEmu {
         let store_mem_reg = INST_STORE_MEM.match_opcode(inst) && (imm == 0);
         // jmp
         let jmp_offset = INST_JMP_OFFSET.match_opcode(inst);
-        let je_offset = INST_JE_OFFSET.match_opcode(inst);
+        let jne_offset = INST_JNE_OFFSET.match_opcode(inst);
         let jl_offset = INST_JL_OFFSET.match_opcode(inst);
         let jg_offset = INST_JG_OFFSET.match_opcode(inst);
         let jmp_long = INST_JMP_LONG.match_opcode(inst);
@@ -321,7 +321,7 @@ impl CpuComponentEmu<CpuDecoder> for CpuDecoderEmu {
         let is_load_imm = load_imm;
         let is_load_mem = load_mem_imm || load_mem_reg;
         let is_store_mem = store_mem_imm || store_mem_reg;
-        let is_jmp = jmp_offset || je_offset || jl_offset || jg_offset || jmp_long;
+        let is_jmp = jmp_offset || jne_offset || jl_offset || jg_offset || jmp_long;
 
         if is_alu || is_load_imm {
             jmp_op = 1 << JmpOp::NoJmp as u8;
@@ -404,7 +404,7 @@ impl CpuComponentEmu<CpuDecoder> for CpuDecoderEmu {
             }
         } else if is_jmp {
             jmp_op = ((jmp_offset as u8) << (JmpOp::Jmp as u8))
-                | ((je_offset as u8) << (JmpOp::Je as u8))
+                | ((jne_offset as u8) << (JmpOp::Jne as u8))
                 | ((jl_offset as u8) << (JmpOp::Jl as u8))
                 | ((jg_offset as u8) << (JmpOp::Jg as u8))
                 | ((jmp_long as u8) << (JmpOp::Long as u8));
@@ -630,8 +630,8 @@ fn test_decoder() {
     test_decoder_jmp(inst_jmp_long(0), &env);
     test_decoder_jmp(inst_jmp_offset(14), &env);
     test_decoder_jmp(inst_jmp_offset(0), &env);
-    test_decoder_jmp(inst_je_offset(13), &env);
-    test_decoder_jmp(inst_je_offset(0), &env);
+    test_decoder_jmp(inst_jne_offset(13), &env);
+    test_decoder_jmp(inst_jne_offset(0), &env);
     test_decoder_jmp(inst_jl_offset(12), &env);
     test_decoder_jmp(inst_jl_offset(0), &env);
     test_decoder_jmp(inst_jg_offset(11), &env);

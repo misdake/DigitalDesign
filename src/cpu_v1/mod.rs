@@ -37,9 +37,9 @@ struct CpuV1State {
     reg: [Regs<4>; 4], // write in RegWrite
     mem: [Regs<4>; 256],
     mem_page: Regs<4>,
-    flag_p: Reg, // write in CpuV1
-    flag_z: Reg, // write in CpuV1
-    flag_n: Reg, // write in CpuV1
+    flag_p: Reg,  // write in CpuV1
+    flag_nz: Reg, // write in CpuV1
+    flag_n: Reg,  // write in CpuV1
     bus_addr0: Regs<4>,
     bus_addr1: Regs<4>,
     devices: Rc<RefCell<Devices>>,
@@ -56,7 +56,7 @@ impl CpuV1State {
             mem_page: reg_w(),
             reg: regs,
             flag_p: reg(),
-            flag_z: reg(),
+            flag_nz: reg(),
             flag_n: reg(),
             bus_addr0: reg_w(),
             bus_addr1: reg_w(),
@@ -205,7 +205,7 @@ trait CpuV1 {
             jmp_op,
             jmp_src_select,
             flag_p: state.flag_p.out(),
-            flag_z: state.flag_z.out(),
+            flag_nz: state.flag_nz.out(),
             flag_n: state.flag_n.out(),
         };
         let branch_out: CpuBranchOutput = Self::Branch::build(&branch_in);
@@ -215,7 +215,7 @@ trait CpuV1 {
             jmp_long_enable,
             jmp_long,
             flag_p,
-            flag_z,
+            flag_nz,
             flag_n,
         } = branch_out;
 
@@ -232,7 +232,7 @@ trait CpuV1 {
         // set regs
         state.pc.set_in(next_pc_out.next_pc);
         state.flag_p.set_in(flag_p);
-        state.flag_z.set_in(flag_z);
+        state.flag_nz.set_in(flag_nz);
         state.flag_n.set_in(flag_n);
 
         CpuV1StateInternal {
