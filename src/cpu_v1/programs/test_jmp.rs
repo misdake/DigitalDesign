@@ -120,3 +120,27 @@ fn test_loop() {
     assert_eq!(state.reg[1].out.get_u8(), 7);
     assert!(state.pc.out.get_u8() >= 4);
 }
+
+#[test]
+fn test_loop2() {
+    let state = test_cpu(
+        &[
+            inst_load_imm(2),
+            inst_mov(0, 1),
+            inst_dec(1),
+            inst_load_imm(2),
+            inst_inc(3),             // log loop count
+            inst_dec(0),             // inner-=1
+            inst_jne_offset(16 - 2), // inner loop done
+            inst_mov(1, 1),
+            inst_jne_offset(16 - 6),
+        ],
+        25,
+        print_regs,
+    );
+
+    assert_eq!(state.reg[0].out.get_u8(), 0);
+    assert_eq!(state.reg[1].out.get_u8(), 0);
+    assert_eq!(state.reg[2].out.get_u8(), 0);
+    assert_eq!(state.reg[3].out.get_u8(), 4);
+}

@@ -6,8 +6,8 @@ fn get_rom_content() -> &'static [u8] {
     unsafe { ROM.as_slice() }
 }
 pub fn set_rom_content(content: &[u8]) {
-    if content.len() > 255 {
-        println!("rom content is too long {}. max 255.", content.len())
+    if content.len() > 256 {
+        println!("rom content is too long {}. max 256.", content.len())
     }
     unsafe {
         ROM = Vec::from(content);
@@ -40,7 +40,8 @@ impl Device for DeviceRom {
                 let content = get_rom_content();
                 let len = content.len();
                 if (0..len).contains(&self.cursor) {
-                    r = content[self.cursor]
+                    r = content[self.cursor];
+                    // println!("read from rom: cursor {}, data {}", self.cursor, r);
                 } else {
                     println!("reading rom oob!");
                 };
@@ -93,5 +94,51 @@ fn test_device_rom() {
         ],
         13,
         [4, 0, 0, 0],
+    );
+}
+
+#[test]
+fn test_copy_rom_to_mem() {
+    use crate::cpu_v1::devices::*;
+    use crate::cpu_v1::isa::*;
+
+    let mut rom = [0; 256];
+    for i in 0..256 {
+        rom[i] = (i / 16) as u8;
+    }
+
+    set_rom_content(rom.as_slice());
+
+    test_device_full(
+        &[
+            inst_load_imm(DeviceType::Terminal as u8),
+            inst_set_bus_addr1(),
+            inst_load_imm(DeviceType::Rom as u8),
+            inst_set_bus_addr0(),
+            // inputs
+            inst_load_imm(0), // cursor high
+            inst_bus0(DeviceRomOpcode::SetCursorHigh as u8),
+            inst_load_imm(0), // cursor low
+            inst_bus0(DeviceRomOpcode::SetCursorLow as u8),
+            inst_load_imm(0), // start mem page
+            inst_mov(0, 3),   // write page to reg3
+            inst_load_imm(0),
+            inst_mov(0, 1), // reg1 <- 0
+            // page loop
+            inst_mov(3, 0),      // reg0 <- reg3
+            inst_set_mem_page(), // set page <- reg0
+            inst_inc(3),         // reg3++
+            // inner loop
+            inst_bus0(DeviceRomOpcode::ReadNext as u8), // reg0 <- rom[cursor++]
+            inst_store_mem(0),                          // mem[page][reg1] <- reg0
+            inst_inc(1),                                // reg1++
+            inst_jne_offset(16 - 3),                    // jmp to inner loop if reg1 != 0 (overflow)
+            // inner loop finish
+            inst_mov(3, 3),          // set flags of reg3
+            inst_jne_offset(16 - 8), // jmp to page loop if reg3 != 0 (overflow)
+        ],
+        1500,
+        None,
+        Some(rom),
     );
 }

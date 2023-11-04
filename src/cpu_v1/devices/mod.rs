@@ -109,7 +109,12 @@ impl Devices {
 use crate::cpu_v1::InstBinary;
 
 #[cfg(test)]
-pub fn test_device(inst: &[InstBinary], max_cycle: u32, regs_ref: [u8; 4]) {
+pub fn test_device_full(
+    inst: &[InstBinary],
+    max_cycle: u32,
+    reg_ref: Option<[u8; 4]>,
+    mem_ref: Option<[u8; 256]>,
+) {
     use crate::cpu_v1::*;
     use crate::*;
 
@@ -127,17 +132,24 @@ pub fn test_device(inst: &[InstBinary], max_cycle: u32, regs_ref: [u8; 4]) {
             break;
         }
         let inst = inst[pc as usize];
-        println!(
-            "pc {:08b}: inst {} {:08b}",
-            pc,
-            inst.desc.name(),
-            inst.binary
-        );
+        println!("pc {:02x} {:08b}: inst {}", pc, pc, inst.to_string());
         execute_gates();
         clock_tick();
     }
 
-    for i in 0..4 {
-        assert_eq!(state.reg[i].out.get_u8(), regs_ref[i]);
+    if let Some(reg_ref) = reg_ref {
+        for i in 0..4 {
+            assert_eq!(state.reg[i].out.get_u8(), reg_ref[i]);
+        }
     }
+    if let Some(mem_ref) = mem_ref {
+        for i in 0..256 {
+            assert_eq!(state.mem[i].out.get_u8(), mem_ref[i]);
+        }
+    }
+}
+
+#[cfg(test)]
+pub fn test_device(inst: &[InstBinary], max_cycle: u32, reg_ref: [u8; 4]) {
+    test_device_full(inst, max_cycle, Some(reg_ref), None);
 }
