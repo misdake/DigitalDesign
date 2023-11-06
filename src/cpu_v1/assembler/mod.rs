@@ -238,7 +238,7 @@ pub trait RegisterCommon {
     fn assembler(&mut self) -> &mut Assembler;
     fn self_reg(&self) -> RegisterIndex;
 
-    fn mov(&mut self, rhs: RegisterIndex) -> Instruction {
+    fn assign_from(&mut self, rhs: RegisterIndex) -> Instruction {
         let reg = self.self_reg() as u8;
         self.assembler().inst(inst_mov(rhs as u8, reg))
     }

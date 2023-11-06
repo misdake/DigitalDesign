@@ -26,13 +26,13 @@ fn test_fibonacci2() {
     use crate::cpu_v1::assembler::RegisterIndex::*;
     let mut asm = Assembler::new();
     asm.reg0().load_imm(5);
-    asm.reg3().mov(Reg0);
+    asm.reg3().assign_from(Reg0);
     asm.reg0().load_imm(1);
     asm.reg1().inc();
     let add = asm.reg0().add_assign(Reg1);
-    asm.reg2().mov(Reg0);
-    asm.reg0().mov(Reg1);
-    asm.reg1().mov(Reg2);
+    asm.reg2().assign_from(Reg0);
+    asm.reg0().assign_from(Reg1);
+    asm.reg1().assign_from(Reg2);
     asm.reg3().dec();
     asm.jg_offset(add);
 

@@ -93,6 +93,7 @@ const PALETTE_16: [u32; 16] = [
     0xFFFFFFFF, //White
 ];
 #[repr(u8)]
+#[derive(Copy, Clone)]
 #[allow(unused)]
 pub enum Color {
     Black = 0,

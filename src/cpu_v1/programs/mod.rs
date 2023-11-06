@@ -3,6 +3,7 @@ use crate::cpu_v1::{cpu_v1_build_with_ref, CpuV1State};
 use crate::{clock_tick, execute_gates};
 
 mod example;
+mod game_sokoban;
 mod test_alu;
 mod test_jmp;
 mod test_mem;
