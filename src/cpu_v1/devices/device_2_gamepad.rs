@@ -122,20 +122,21 @@ impl Device for DeviceGamepad {
 #[test]
 fn test_gamepad() {
     use crate::cpu_v1::devices::*;
-    use crate::cpu_v1::isa::*;
+    use crate::cpu_v1::isa::Instruction::*;
+    use crate::cpu_v1::isa::RegisterIndex::*;
 
     test_device(
         &[
-            inst_load_imm(DeviceType::Gamepad as u8),
-            inst_set_bus_addr0(),
-            inst_load_imm(DeviceType::Terminal as u8),
-            inst_set_bus_addr1(),
-            inst_load_imm(ButtonQueryMode::Press as u8),
-            inst_bus0(DeviceGamepadOpcode::SetButtonQueryMode as u8), // set press mode
-            inst_load_imm(ButtonQueryType::ButtonStart as u8),
-            inst_bus0(DeviceGamepadOpcode::QueryButton as u8), // query start button
-            inst_bus1(DeviceTerminalOp::Print as u8),          // print 0
-            inst_jmp_offset(16 - 3),
+            load_imm(DeviceType::Gamepad as u8),
+            set_bus_addr0(()),
+            load_imm(DeviceType::Terminal as u8),
+            set_bus_addr1(()),
+            load_imm(ButtonQueryMode::Press as u8),
+            bus0(DeviceGamepadOpcode::SetButtonQueryMode as u8), // set press mode
+            load_imm(ButtonQueryType::ButtonStart as u8),
+            bus0(DeviceGamepadOpcode::QueryButton as u8), // query start button
+            bus1(DeviceTerminalOp::Print as u8),          // print 0
+            jmp_offset(16 - 3),
         ],
         100000000, // just big enough to keep it running
         [0, 0, 0, 0],

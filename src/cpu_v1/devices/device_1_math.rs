@@ -1,4 +1,3 @@
-use crate::cpu_v1::devices::device_0_terminal::DeviceTerminalOp;
 use crate::cpu_v1::devices::{Device, DeviceReadResult, DeviceType};
 
 #[derive(Default)]
@@ -64,28 +63,30 @@ impl Device for DeviceMath {
 
 #[test]
 fn test_device_extract_bits() {
+    use crate::cpu_v1::devices::device_0_terminal::DeviceTerminalOp;
     use crate::cpu_v1::devices::test_device;
-    use crate::cpu_v1::isa::*;
+    use crate::cpu_v1::isa::Instruction::*;
+    use crate::cpu_v1::isa::RegisterIndex::*;
 
     test_device(
         &[
-            inst_load_imm(DeviceType::Terminal as u8),
-            inst_set_bus_addr1(),
-            inst_load_imm(DeviceType::Math as u8),
-            inst_set_bus_addr0(),
-            inst_load_imm(0b1010),
-            inst_bus0(DeviceMathOpcode::ExtractBits01 as u8),
-            inst_bus0(DeviceMathOpcode::Pop as u8), // & 0b0001 => 0
-            inst_bus1(DeviceTerminalOp::Print as u8), // print 0
-            inst_mov(0, 3),
-            inst_bus0(DeviceMathOpcode::Pop as u8), // & 0b0010, >> 1 => 1
-            inst_bus1(DeviceTerminalOp::Print as u8), // print 1
-            inst_mov(0, 2),
-            inst_bus0(DeviceMathOpcode::Pop as u8), // & 0b0100, >> 2 => 0
-            inst_bus1(DeviceTerminalOp::Print as u8), // print 0
-            inst_mov(0, 1),
-            inst_bus0(DeviceMathOpcode::Pop as u8), // & 0b1000, >> 3 => 1
-            inst_bus1(DeviceTerminalOp::Print as u8), // print 1
+            load_imm(DeviceType::Terminal as u8),
+            set_bus_addr1(()),
+            load_imm(DeviceType::Math as u8),
+            set_bus_addr0(()),
+            load_imm(0b1010),
+            bus0(DeviceMathOpcode::ExtractBits01 as u8),
+            bus0(DeviceMathOpcode::Pop as u8),   // & 0b0001 => 0
+            bus1(DeviceTerminalOp::Print as u8), // print 0
+            mov((Reg0, Reg3)),
+            bus0(DeviceMathOpcode::Pop as u8), // & 0b0010, >> 1 => 1
+            bus1(DeviceTerminalOp::Print as u8), // print 1
+            mov((Reg0, Reg2)),
+            bus0(DeviceMathOpcode::Pop as u8), // & 0b0100, >> 2 => 0
+            bus1(DeviceTerminalOp::Print as u8), // print 0
+            mov((Reg0, Reg1)),
+            bus0(DeviceMathOpcode::Pop as u8), // & 0b1000, >> 3 => 1
+            bus1(DeviceTerminalOp::Print as u8), // print 1
         ],
         20,
         [1, 0, 1, 0],

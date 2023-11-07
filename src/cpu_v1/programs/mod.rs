@@ -1,4 +1,4 @@
-use crate::cpu_v1::isa::InstBinary;
+use crate::cpu_v1::isa::Instruction;
 use crate::cpu_v1::{cpu_v1_build_with_ref, CpuV1State};
 use crate::{clock_tick, execute_gates};
 
@@ -22,14 +22,14 @@ fn print_regs(cycle: u32, state: &CpuV1State) {
 }
 
 fn test_cpu(
-    inst: &[InstBinary],
+    inst: &[Instruction],
     max_cycle: u32,
     mut f: impl FnMut(u32, &CpuV1State),
 ) -> CpuV1State {
-    let mut inst_rom = [0u8; 256];
+    let mut inst_rom = [Instruction::default(); 256];
     inst.iter()
         .enumerate()
-        .for_each(|(i, inst)| inst_rom[i] = inst.binary);
+        .for_each(|(i, inst)| inst_rom[i] = *inst);
 
     let (state, state_ref, internal, internal_ref) = cpu_v1_build_with_ref(inst_rom);
 
@@ -41,12 +41,7 @@ fn test_cpu(
             break;
         }
         let inst_desc = inst[pc as usize];
-        println!(
-            "pc {:08b}: inst {} {:08b}",
-            pc,
-            inst_desc.desc.name(),
-            inst_desc.binary
-        );
+        println!("pc {:08b}: inst {}", pc, inst_desc.to_string());
 
         execute_gates();
 

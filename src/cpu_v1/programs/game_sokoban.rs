@@ -1,7 +1,5 @@
-use crate::cpu_v1::assembler::RegisterIndex::Reg0;
 use crate::cpu_v1::assembler::{Assembler, RegisterCommon, RegisterSpecial};
 use crate::cpu_v1::devices::*;
-use crate::cpu_v1::isa::*;
 
 const MAP_WIDTH: usize = 8;
 const MAP_HEIGHT: usize = 8;
@@ -85,6 +83,8 @@ impl GameMap {
 
         r[ADDR_PLAYER_X] = self.start.0 as u8;
         r[ADDR_PLAYER_Y] = self.start.1 as u8;
+
+        assert!(self.target_list.len() < TARGET_MAX);
         r[ADDR_TARGET_COUNT] = self.target_list.len() as u8;
 
         for i in 0..16 {
@@ -105,7 +105,7 @@ impl GameMap {
 #[test]
 fn test_frame_sync() {
     #[rustfmt::skip]
-    let map = GameMap::parse([
+        let map = GameMap::parse([
         "########",
         "#......#",
         "#......#",
@@ -146,26 +146,29 @@ fn test_frame_sync() {
 
 /// set devices, set gamepad mode, set palette
 fn init(asm: &mut Assembler) {
+    use crate::cpu_v1::isa::Instruction::*;
+    use crate::cpu_v1::isa::RegisterIndex::*;
+
     /// assuming rom cursor=0
     fn copy_rom(asm: &mut Assembler) {
         [
-            inst_load_imm(0),
-            inst_load_imm(DeviceType::Rom as u8),
-            inst_set_bus_addr0(),
-            inst_mov(0, 3), // write page to reg3
-            inst_mov(0, 1), // reg1 <- 0
+            load_imm(0),
+            load_imm(DeviceType::Rom as u8),
+            set_bus_addr0(()),
+            mov((Reg0, Reg3)), // write page to reg3
+            mov((Reg0, Reg1)), // reg1 <- 0
             // page loop
-            inst_mov(3, 0),      // reg0 <- reg3
-            inst_set_mem_page(), // set page <- reg0
-            inst_inc(3),         // reg3++
+            mov((Reg3, Reg0)), // reg0 <- reg3
+            set_mem_page(()),  // set page <- reg0
+            inc(Reg3),         // reg3++
             // inner loop
-            inst_bus0(DeviceRomOpcode::ReadNext as u8), // reg0 <- rom[cursor++]
-            inst_store_mem(0),                          // mem[page][reg1] <- reg0
-            inst_inc(1),                                // reg1++
-            inst_jne_offset(16 - 3),                    // jmp to inner loop if reg1 != 0 (overflow)
+            bus0(DeviceRomOpcode::ReadNext as u8), // reg0 <- rom[cursor++]
+            store_mem(0),                          // mem[page][reg1] <- reg0
+            inc(Reg1),                             // reg1++
+            jne_offset(16 - 3),                    // jmp to inner loop if reg1 != 0 (overflow)
             // inner loop finish
-            inst_mov(3, 3),          // set flags of reg3
-            inst_jne_offset(16 - 8), // jmp to page loop if reg3 != 0 (overflow)
+            mov((Reg3, Reg3)),  // set flags of reg3
+            jne_offset(16 - 8), // jmp to page loop if reg3 != 0 (overflow)
         ]
         .into_iter()
         .for_each(|inst| {
@@ -177,11 +180,11 @@ fn init(asm: &mut Assembler) {
     fn load_palette(asm: &mut Assembler) {
         assert_eq!(ADDR_PALETTE & 0b1111, 0); // multiple of 16
         asm.reg0().load_imm((ADDR_PALETTE / 16) as u8);
-        asm.inst(inst_set_mem_page()); // set page <- reg0
+        asm.inst(set_mem_page(())); // set page <- reg0
         asm.reg0().load_imm(0);
         asm.reg1().assign_from(Reg0);
-        let loop_start = asm.inst(inst_load_mem(0)); // reg0 = mem[page][reg1]
-        asm.inst(inst_bus1(DeviceGraphicsV1Opcode::SetPalette as u8));
+        let loop_start = asm.inst(load_mem(0)); // reg0 = mem[page][reg1]
+        asm.inst(bus1(DeviceGraphicsV1Opcode::SetPalette as u8));
         asm.reg1().inc();
         asm.jne_offset(loop_start);
     }
@@ -190,12 +193,12 @@ fn init(asm: &mut Assembler) {
     copy_rom(asm);
 
     // setup devices, gamepad on addr0, graphics on addr1
-    asm.inst(inst_load_imm(DeviceType::Gamepad as u8));
-    asm.inst(inst_set_bus_addr0());
-    asm.inst(inst_load_imm(DeviceType::GraphicsV1 as u8));
-    asm.inst(inst_set_bus_addr1());
-    asm.inst(inst_load_imm(ButtonQueryMode::Press as u8));
-    asm.inst(inst_bus0(DeviceGamepadOpcode::SetButtonQueryMode as u8));
+    asm.inst(load_imm(DeviceType::Gamepad as u8));
+    asm.inst(set_bus_addr0(()));
+    asm.inst(load_imm(DeviceType::GraphicsV1 as u8));
+    asm.inst(set_bus_addr1(()));
+    asm.inst(load_imm(ButtonQueryMode::Press as u8));
+    asm.inst(bus0(DeviceGamepadOpcode::SetButtonQueryMode as u8));
 
     // load palette to graphics
     load_palette(asm);

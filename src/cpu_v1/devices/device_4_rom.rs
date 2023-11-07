@@ -1,4 +1,4 @@
-use crate::cpu_v1::devices::{Device, DeviceReadResult, DeviceTerminalOp, DeviceType};
+use crate::cpu_v1::devices::{Device, DeviceReadResult, DeviceType};
 
 static mut ROM: Vec<u8> = Vec::new();
 
@@ -72,25 +72,26 @@ impl Device for DeviceRom {
 
 #[test]
 fn test_device_rom() {
+    use crate::cpu_v1::devices::device_0_terminal::DeviceTerminalOp;
     use crate::cpu_v1::devices::test_device;
-    use crate::cpu_v1::isa::*;
+    use crate::cpu_v1::isa::Instruction::*;
 
     set_rom_content(&[0x1, 0x2, 0x3, 0x4]);
 
     test_device(
         &[
-            inst_load_imm(DeviceType::Terminal as u8),
-            inst_set_bus_addr1(),
-            inst_load_imm(DeviceType::Rom as u8),
-            inst_set_bus_addr0(),
-            inst_bus0(DeviceRomOpcode::ReadNext as u8), // reg0 <= 1, cursor = 1
-            inst_bus1(DeviceTerminalOp::Print as u8),   // print 1
-            inst_load_imm(2),
-            inst_bus0(DeviceRomOpcode::Skip as u8), // cursor = 3
-            inst_bus0(DeviceRomOpcode::ReadNext as u8), // reg0 <= 4, cursor = 4(oob)
-            inst_bus1(DeviceTerminalOp::Print as u8), // print 4
-            inst_bus0(DeviceRomOpcode::GetCursorLow as u8), // reg0 <= 4
-            inst_bus1(DeviceTerminalOp::Print as u8), // print 4
+            load_imm(DeviceType::Terminal as u8),
+            set_bus_addr1(()),
+            load_imm(DeviceType::Rom as u8),
+            set_bus_addr0(()),
+            bus0(DeviceRomOpcode::ReadNext as u8), // reg0 <= 1, cursor = 1
+            bus1(DeviceTerminalOp::Print as u8),   // print 1
+            load_imm(2),
+            bus0(DeviceRomOpcode::Skip as u8),         // cursor = 3
+            bus0(DeviceRomOpcode::ReadNext as u8),     // reg0 <= 4, cursor = 4(oob)
+            bus1(DeviceTerminalOp::Print as u8),       // print 4
+            bus0(DeviceRomOpcode::GetCursorLow as u8), // reg0 <= 4
+            bus1(DeviceTerminalOp::Print as u8),       // print 4
         ],
         13,
         [4, 0, 0, 0],
@@ -100,7 +101,8 @@ fn test_device_rom() {
 #[test]
 fn test_copy_rom_to_mem() {
     use crate::cpu_v1::devices::*;
-    use crate::cpu_v1::isa::*;
+    use crate::cpu_v1::isa::Instruction::*;
+    use crate::cpu_v1::isa::RegisterIndex::*;
 
     let mut rom = [0; 256];
     for i in 0..256 {
@@ -111,31 +113,31 @@ fn test_copy_rom_to_mem() {
 
     test_device_full(
         &[
-            inst_load_imm(DeviceType::Terminal as u8),
-            inst_set_bus_addr1(),
-            inst_load_imm(DeviceType::Rom as u8),
-            inst_set_bus_addr0(),
+            load_imm(DeviceType::Terminal as u8),
+            set_bus_addr1(()),
+            load_imm(DeviceType::Rom as u8),
+            set_bus_addr0(()),
             // inputs
-            inst_load_imm(0), // cursor high
-            inst_bus0(DeviceRomOpcode::SetCursorHigh as u8),
-            inst_load_imm(0), // cursor low
-            inst_bus0(DeviceRomOpcode::SetCursorLow as u8),
-            inst_load_imm(0), // start mem page
-            inst_mov(0, 3),   // write page to reg3
-            inst_load_imm(0),
-            inst_mov(0, 1), // reg1 <- 0
+            load_imm(0), // cursor high
+            bus0(DeviceRomOpcode::SetCursorHigh as u8),
+            load_imm(0), // cursor low
+            bus0(DeviceRomOpcode::SetCursorLow as u8),
+            load_imm(0),       // start mem page
+            mov((Reg0, Reg3)), // write page to reg3
+            load_imm(0),
+            mov((Reg0, Reg1)), // reg1 <- 0
             // page loop
-            inst_mov(3, 0),      // reg0 <- reg3
-            inst_set_mem_page(), // set page <- reg0
-            inst_inc(3),         // reg3++
+            mov((Reg3, Reg0)), // reg0 <- reg3
+            set_mem_page(()),  // set page <- reg0
+            inc(Reg3),         // reg3++
             // inner loop
-            inst_bus0(DeviceRomOpcode::ReadNext as u8), // reg0 <- rom[cursor++]
-            inst_store_mem(0),                          // mem[page][reg1] <- reg0
-            inst_inc(1),                                // reg1++
-            inst_jne_offset(16 - 3),                    // jmp to inner loop if reg1 != 0 (overflow)
+            bus0(DeviceRomOpcode::ReadNext as u8), // reg0 <- rom[cursor++]
+            store_mem(0),                          // mem[page][reg1] <- reg0
+            inc(Reg1),                             // reg1++
+            jne_offset(16 - 3),                    // jmp to inner loop if reg1 != 0 (overflow)
             // inner loop finish
-            inst_mov(3, 3),          // set flags of reg3
-            inst_jne_offset(16 - 8), // jmp to page loop if reg3 != 0 (overflow)
+            mov((Reg3, Reg3)),  // set flags of reg3
+            jne_offset(16 - 8), // jmp to page loop if reg3 != 0 (overflow)
         ],
         1500,
         None,

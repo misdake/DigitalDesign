@@ -32,6 +32,7 @@ use std::rc::Rc;
 
 #[allow(unused)]
 struct CpuV1State {
+    inst_src: [Instruction; 256],
     inst: [Wires<8>; 256],
     pc: Regs<8>,       // write in CpuV1
     reg: [Regs<4>; 4], // write in RegWrite
@@ -45,11 +46,12 @@ struct CpuV1State {
     devices: Rc<RefCell<Devices>>,
 }
 impl CpuV1State {
-    fn create(inst: [u8; 256]) -> Self {
-        let inst = inst.map(|v| Wires::<8>::parse_u8(v));
+    fn create(inst_src: [Instruction; 256]) -> Self {
+        let inst = inst_src.map(|v| Wires::<8>::parse_u8(v.to_binary()));
         let regs = [0u8; 4].map(|_| reg_w());
         let mem = [0u8; 256].map(|_| reg_w());
         Self {
+            inst_src,
             inst,
             pc: reg_w(),
             mem,
@@ -284,7 +286,7 @@ impl CpuV1 for CpuV1EmuInstance {
 
 #[allow(unused)]
 fn cpu_v1_build_with_ref(
-    inst_rom: [u8; 256],
+    inst_rom: [Instruction; 256],
 ) -> (
     CpuV1State,
     CpuV1State,
@@ -299,14 +301,14 @@ fn cpu_v1_build_with_ref(
     (state1, state2, internal1, internal2)
 }
 #[allow(unused)]
-fn cpu_v1_build(inst_rom: [u8; 256]) -> (CpuV1State, CpuV1StateInternal) {
+fn cpu_v1_build(inst_rom: [Instruction; 256]) -> (CpuV1State, CpuV1StateInternal) {
     clear_all();
     let mut state1 = CpuV1State::create(inst_rom.clone());
     let internal1 = CpuV1Instance::build(&mut state1);
     (state1, internal1)
 }
 #[allow(unused)]
-fn cpu_v1_build_mix(inst_rom: [u8; 256]) -> (CpuV1State, CpuV1StateInternal) {
+fn cpu_v1_build_mix(inst_rom: [Instruction; 256]) -> (CpuV1State, CpuV1StateInternal) {
     clear_all();
     let mut state1 = CpuV1State::create(inst_rom.clone());
     let internal1 = CpuV1MixInstance::build(&mut state1);

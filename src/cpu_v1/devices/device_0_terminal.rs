@@ -38,22 +38,22 @@ pub enum DeviceTerminalOp {
 #[test]
 fn test_print() {
     use crate::cpu_v1::devices::test_device;
-    use crate::cpu_v1::isa::*;
+    use crate::cpu_v1::isa::Instruction::*;
 
     test_device(
         &[
-            inst_load_imm(DeviceType::Terminal as u8),
-            inst_set_bus_addr0(),
-            inst_load_imm(1),
-            inst_bus0(DeviceTerminalOp::Print as u8), // => print 1
-            inst_load_imm(2),
-            inst_bus0(DeviceTerminalOp::Print as u8), // => print 2
-            inst_load_imm(DeviceType::Terminal as u8),
-            inst_set_bus_addr1(),
-            inst_load_imm(3),
-            inst_bus1(DeviceTerminalOp::Print as u8), // => print 3
-            inst_load_imm(4),
-            inst_bus1(DeviceTerminalOp::Print as u8), // => print 4
+            load_imm(DeviceType::Terminal as u8),
+            set_bus_addr0(()),
+            load_imm(1),
+            bus0(DeviceTerminalOp::Print as u8), // => print 1
+            load_imm(2),
+            bus0(DeviceTerminalOp::Print as u8), // => print 2
+            load_imm(DeviceType::Terminal as u8),
+            set_bus_addr1(()),
+            load_imm(3),
+            bus1(DeviceTerminalOp::Print as u8), // => print 3
+            load_imm(4),
+            bus1(DeviceTerminalOp::Print as u8), // => print 4
         ],
         20,
         [4, 0, 0, 0],

@@ -106,11 +106,11 @@ impl Devices {
 }
 
 #[cfg(test)]
-use crate::cpu_v1::InstBinary;
+use crate::cpu_v1::Instruction;
 
 #[cfg(test)]
 pub fn test_device_full(
-    inst: &[InstBinary],
+    inst: &[Instruction],
     max_cycle: u32,
     reg_ref: Option<[u8; 4]>,
     mem_ref: Option<[u8; 256]>,
@@ -118,10 +118,10 @@ pub fn test_device_full(
     use crate::cpu_v1::*;
     use crate::*;
 
-    let mut inst_rom = [0u8; 256];
+    let mut inst_rom = [Instruction::default(); 256];
     inst.iter()
         .enumerate()
-        .for_each(|(i, inst)| inst_rom[i] = inst.binary);
+        .for_each(|(i, inst)| inst_rom[i] = *inst);
 
     let (state, _internal) = cpu_v1_build(inst_rom);
     // let (_state1, state, _internal1, _internal2) = cpu_v1_build_with_ref(inst_rom);
@@ -150,6 +150,6 @@ pub fn test_device_full(
 }
 
 #[cfg(test)]
-pub fn test_device(inst: &[InstBinary], max_cycle: u32, reg_ref: [u8; 4]) {
+pub fn test_device(inst: &[Instruction], max_cycle: u32, reg_ref: [u8; 4]) {
     test_device_full(inst, max_cycle, Some(reg_ref), None);
 }
