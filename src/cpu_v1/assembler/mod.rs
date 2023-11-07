@@ -33,7 +33,7 @@ fn print() {
         let i = asm.reg0().load_imm(12);
         asm.jmp_offset(i);
     });
-    println!("{}", asm.print());
+    println!("{}", asm.to_pretty_string());
 }
 
 impl Assembler {
@@ -47,7 +47,7 @@ impl Assembler {
         }
     }
 
-    pub fn print(&self) -> String {
+    pub fn to_pretty_string(&self) -> String {
         self.instructions
             .iter()
             .enumerate()
@@ -63,7 +63,7 @@ impl Assembler {
                 let func = self
                     .function_names
                     .get(&i)
-                    .map(|func_name| format!(" <-- {func_name}"))
+                    .map(|func_name| format!(" <-- fn {func_name}"))
                     .unwrap_or_else(|| "".to_string());
                 let comment = self
                     .comments
@@ -95,6 +95,9 @@ impl Assembler {
         f(self, addr);
     }
 
+    pub fn comment(&mut self, comment: String) {
+        assert!(self.comments.insert(self.cursor, comment).is_none());
+    }
     pub fn inst_comment(&mut self, inst: Instruction, comment: String) -> InstructionType {
         assert!(self.comments.insert(self.cursor, comment).is_none());
         self.inst(inst)

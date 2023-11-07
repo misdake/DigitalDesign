@@ -62,8 +62,8 @@ impl InstEncoded {
                 format!("{} r{} <- r{}", name, reg0 as u8, reg1 as u8)
             }
             InstEncoded::Op1(name, _, reg0) => format!("{} r{}", name, reg0 as u8),
-            InstEncoded::Op0i4(name, _, imm4) => format!("{} 0b{:04b}({})", name, imm4, imm4),
-            InstEncoded::Op0i3(name, _, imm3) => format!("{} 0b{:03b}({})", name, imm3, imm3),
+            InstEncoded::Op0i4(name, _, imm4) => format!("{} {} (0b{:04b})", name, imm4, imm4),
+            InstEncoded::Op0i3(name, _, imm3) => format!("{} {} (0b{:04b})", name, imm3, imm3),
             InstEncoded::Op0(name, _, _) => format!("{}", name),
         }
     }

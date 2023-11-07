@@ -132,7 +132,7 @@ pub fn test_device_full(
             break;
         }
         let inst = inst[pc as usize];
-        println!("pc {:02x} {:08b}: inst {}", pc, pc, inst.to_string());
+        println!("pc {:08b}: inst {}", pc, inst.to_string());
         execute_gates();
         clock_tick();
     }
