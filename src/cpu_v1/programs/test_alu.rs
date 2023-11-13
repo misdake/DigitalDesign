@@ -1,10 +1,12 @@
 use crate::cpu_v1::isa::Instruction::*;
 use crate::cpu_v1::isa::RegisterIndex::*;
-use crate::cpu_v1::programs::{print_regs, test_cpu};
+use crate::cpu_v1::programs::{print_regs, test_cpu_with_emu};
+use crate::global_lock;
 
 #[test]
 fn test_unary() {
-    let _ = test_cpu(
+    let _lock = global_lock();
+    test_cpu_with_emu(
         &[
             inc(Reg3),
             inc(Reg3),
@@ -23,7 +25,8 @@ fn test_unary() {
 
 #[test]
 fn test_binary() {
-    let _ = test_cpu(
+    let _lock = global_lock();
+    test_cpu_with_emu(
         &[
             load_imm(2),
             mov((Reg0, Reg3)),
@@ -44,7 +47,8 @@ fn test_binary() {
 
 #[test]
 fn test_load_imm() {
-    let state = test_cpu(
+    let _lock = global_lock();
+    test_cpu_with_emu(
         &[
             load_imm(3),
             mov((Reg0, Reg3)),
@@ -57,9 +61,4 @@ fn test_load_imm() {
         10,
         print_regs,
     );
-
-    assert_eq!(state.reg[0].out.get_u8(), 0);
-    assert_eq!(state.reg[1].out.get_u8(), 1);
-    assert_eq!(state.reg[2].out.get_u8(), 2);
-    assert_eq!(state.reg[3].out.get_u8(), 3);
 }

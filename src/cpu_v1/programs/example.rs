@@ -1,11 +1,13 @@
 use crate::cpu_v1::programs::*;
 use crate::cpu_v1::*;
+use crate::global_lock;
 
 #[test]
 fn test_fibonacci() {
+    let _lock = global_lock();
     use isa::Instruction::*;
     use isa::RegisterIndex::*;
-    let _ = test_cpu(
+    test_cpu_with_emu(
         &[
             load_imm(5),
             mov((Reg0, Reg3)),
@@ -25,6 +27,7 @@ fn test_fibonacci() {
 
 #[test]
 fn test_fibonacci2() {
+    let _lock = global_lock();
     use isa::RegisterIndex::*;
     let mut asm = Assembler::new();
     asm.reg0().load_imm(5);
@@ -38,5 +41,5 @@ fn test_fibonacci2() {
     asm.reg3().dec();
     asm.jg_offset(loop_start);
 
-    let _ = test_cpu(asm.finish().as_slice(), 35, print_regs);
+    test_cpu_with_emu(asm.finish().as_slice(), 35, print_regs);
 }

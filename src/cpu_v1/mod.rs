@@ -17,7 +17,7 @@ use bus::*;
 mod isa;
 use isa::*;
 mod emu;
-use emu::*;
+// use emu::*;
 
 mod devices;
 use devices::*;

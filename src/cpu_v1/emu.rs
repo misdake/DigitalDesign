@@ -1,16 +1,18 @@
 use crate::cpu_v1;
 use crate::cpu_v1::devices::Devices;
-use crate::cpu_v1::isa::{Instruction, Op2Param, RegisterIndex};
+use crate::cpu_v1::isa::{Instruction, RegisterIndex};
 use crate::cpu_v1::CpuV1State;
 use std::cell::RefCell;
 use std::rc::Rc;
 
-struct EmuEnv {
+pub struct EmuEnv {
     inst: [Instruction; 256],
     state: EmuState,
     device: Rc<RefCell<Devices>>,
 }
-struct EmuState {
+
+#[derive(Copy, Clone, Eq, PartialEq)]
+pub struct EmuState {
     pc: u8,
     reg: [u8; 4],
     mem: [u8; 256],
@@ -21,9 +23,57 @@ struct EmuState {
     bus_addr0: u8,
     bus_addr1: u8,
 }
+impl Default for EmuState {
+    fn default() -> Self {
+        Self {
+            pc: 0,
+            reg: [0; 4],
+            mem: [0; 256],
+            mem_page: 0,
+            flag_p: 0,
+            flag_nz: 0,
+            flag_n: 0,
+            bus_addr0: 0,
+            bus_addr1: 0,
+        }
+    }
+}
+impl EmuState {
+    pub fn diff(a: &EmuState, b: &EmuState) -> String {
+        let mut r = vec![];
+        if a.pc != b.pc {
+            r.push(format!("pc {:?} {:?}", a.pc, b.pc));
+        }
+        if a.reg != b.reg {
+            r.push(format!("reg {:?} {:?}", a.reg, b.reg));
+        }
+        if a.mem != b.mem {
+            r.push(format!("mem {:?} {:?}", a.mem, b.mem));
+        }
+        if a.mem_page != b.mem_page {
+            r.push(format!("mem_page {:?} {:?}", a.mem_page, b.mem_page));
+        }
+        if a.flag_p != b.flag_p {
+            r.push(format!("flag_p {:?} {:?}", a.flag_p, b.flag_p));
+        }
+        if a.flag_nz != b.flag_nz {
+            r.push(format!("flag_nz {:?} {:?}", a.flag_nz, b.flag_nz));
+        }
+        if a.flag_n != b.flag_n {
+            r.push(format!("flag_n {:?} {:?}", a.flag_n, b.flag_n));
+        }
+        if a.bus_addr0 != b.bus_addr0 {
+            r.push(format!("bus_addr0 {:?} {:?}", a.bus_addr0, b.bus_addr0));
+        }
+        if a.bus_addr1 != b.bus_addr1 {
+            r.push(format!("bus_addr1 {:?} {:?}", a.bus_addr1, b.bus_addr1));
+        }
+        r.join(", ")
+    }
+}
 
 impl CpuV1State {
-    fn export_emu_state(&self) -> EmuState {
+    pub fn export_emu_state(&self) -> EmuState {
         EmuState {
             pc: self.pc.out.get_u8(),
             reg: self.reg.map(|i| i.out.get_u8()),
@@ -41,11 +91,23 @@ impl CpuV1State {
 fn update_flags(state: &mut EmuState, value: u8) {
     state.flag_n = (8u8..16u8).contains(&value) as u8;
     state.flag_nz = (value != 0) as u8;
-    state.flag_p = (1u8..7u8).contains(&value) as u8;
+    state.flag_p = (1u8..8u8).contains(&value) as u8;
 }
 
 impl EmuEnv {
-    pub fn clock(&mut self, inst: Instruction) {
+    pub fn new(inst: [Instruction; 256]) -> EmuEnv {
+        Self {
+            inst,
+            state: EmuState::default(),
+            device: Rc::new(RefCell::new(Devices::new())),
+        }
+    }
+
+    pub fn get_state(&self) -> &EmuState {
+        &self.state
+    }
+
+    pub fn clock(&mut self) {
         use cpu_v1::isa::Instruction::*;
         use cpu_v1::isa::RegisterIndex::*;
 
@@ -62,20 +124,21 @@ impl EmuEnv {
             state: &mut EmuState,
             f: impl FnOnce(u8, u8) -> u8,
         ) {
-            let reg0 = state.reg[reg0 as usize];
-            let reg1 = state.reg[reg1 as usize];
-            let reg0_next = f(reg1, reg0);
+            let reg0_curr = state.reg[reg0 as usize];
+            let reg1_curr = state.reg[reg1 as usize];
+            let reg0_next = f(reg1_curr, reg0_curr);
             state.reg[reg0 as usize] = reg0_next;
             update_flags(state, reg0_next);
         }
         fn op1(reg0: RegisterIndex, state: &mut EmuState, f: impl FnOnce(u8) -> u8) {
-            let reg0 = state.reg[reg0 as usize];
-            let reg0_next = f(reg0);
+            let reg0_curr = state.reg[reg0 as usize];
+            let reg0_next = f(reg0_curr);
             state.reg[reg0 as usize] = reg0_next;
             update_flags(state, reg0_next);
         }
 
         let pc = self.state.pc;
+        let inst = self.inst[pc as usize];
         let mut pc_next = pc + 1;
         let reg = &mut self.state.reg;
 
