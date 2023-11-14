@@ -1,10 +1,12 @@
 use crate::cpu_v1::isa::Instruction::*;
 use crate::cpu_v1::isa::RegisterIndex::*;
-use crate::cpu_v1::programs::{print_regs, test_cpu};
+use crate::cpu_v1::programs::{print_regs, test_cpu_with_emu};
+use crate::global_lock;
 
 #[test]
 fn test_load_store() {
-    let state = test_cpu(
+    let _lock = global_lock();
+    test_cpu_with_emu(
         &[
             load_imm(15),  // r0 = 15
             store_mem(15), // mem[15] = r0
@@ -25,18 +27,19 @@ fn test_load_store() {
         print_regs,
     );
 
-    assert_eq!(state.reg[0].out.get_u8(), 15);
-    assert_eq!(state.reg[1].out.get_u8(), 15);
-    assert_eq!(state.reg[2].out.get_u8(), 14);
-    assert_eq!(state.reg[3].out.get_u8(), 13);
-    assert_eq!(state.mem[13].out.get_u8(), 13);
-    assert_eq!(state.mem[14].out.get_u8(), 14);
-    assert_eq!(state.mem[15].out.get_u8(), 15);
+    // assert_eq!(state.reg[0].out.get_u8(), 15);
+    // assert_eq!(state.reg[1].out.get_u8(), 15);
+    // assert_eq!(state.reg[2].out.get_u8(), 14);
+    // assert_eq!(state.reg[3].out.get_u8(), 13);
+    // assert_eq!(state.mem[13].out.get_u8(), 13);
+    // assert_eq!(state.mem[14].out.get_u8(), 14);
+    // assert_eq!(state.mem[15].out.get_u8(), 15);
 }
 
 #[test]
 fn test_mem_page() {
-    let state = test_cpu(
+    let _lock = global_lock();
+    test_cpu_with_emu(
         &[
             load_imm(15),
             store_mem(15),    // mem[0][15] = 15
@@ -49,6 +52,6 @@ fn test_mem_page() {
         print_regs,
     );
 
-    assert_eq!(state.mem[15].out.get_u8(), 15);
-    assert_eq!(state.reg[0].out.get_u8(), 15);
+    // assert_eq!(state.mem[15].out.get_u8(), 15);
+    // assert_eq!(state.reg[0].out.get_u8(), 15);
 }

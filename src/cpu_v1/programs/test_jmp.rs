@@ -1,11 +1,13 @@
 use crate::cpu_v1::isa::Instruction;
 use crate::cpu_v1::isa::Instruction::*;
 use crate::cpu_v1::isa::RegisterIndex::*;
-use crate::cpu_v1::programs::{print_regs, test_cpu};
+use crate::cpu_v1::programs::{print_regs, test_cpu_with_emu};
+use crate::global_lock;
 
 #[test]
 fn test_jmp() {
-    let state = test_cpu(
+    let _lock = global_lock();
+    test_cpu_with_emu(
         &[
             jmp_offset(2),      // 0  0000
             load_imm(2),        // 1  0001
@@ -20,16 +22,12 @@ fn test_jmp() {
     );
 
     // 0 0000 -> 2 0010 -> 5 0101 -> 3 0011 -> 4 0100 -> 6 0110
-
-    assert_eq!(state.reg[0].out.get_u8(), 0);
-    assert_eq!(state.reg[1].out.get_u8(), 0);
-    assert_eq!(state.reg[2].out.get_u8(), 1);
-    assert_eq!(state.reg[3].out.get_u8(), 0);
 }
 
 #[test]
 fn test_jmp_condition_taken() {
-    let state = test_cpu(
+    let _lock = global_lock();
+    test_cpu_with_emu(
         &[
             load_imm(1),       //  0  0000
             jne_offset(3),     //  1  0001
@@ -43,13 +41,12 @@ fn test_jmp_condition_taken() {
     );
 
     // 0 0000 -> 1 0001 -> 4 0100 -> 5 0101 -> 2 0010 -> 3 0011 -> 6 idle
-
-    assert_eq!(state.reg[0].out.get_u8(), 8);
 }
 
 #[test]
 fn test_jmp_condition_not_taken() {
-    let state = test_cpu(
+    let _lock = global_lock();
+    test_cpu_with_emu(
         &[
             load_imm(0),   //  0  0000
             jne_offset(3), //  1  0001
@@ -62,13 +59,12 @@ fn test_jmp_condition_not_taken() {
         8,
         print_regs,
     );
-
-    assert_eq!(state.reg[0].out.get_u8(), 13);
 }
 
 #[test]
 fn test_jmp_condition_reg() {
-    let state = test_cpu(
+    let _lock = global_lock();
+    test_cpu_with_emu(
         &[
             load_imm(2), // 0 or 1 or 2 or 3
             add((Reg0, Reg0)),
@@ -86,12 +82,11 @@ fn test_jmp_condition_reg() {
         6,
         print_regs,
     );
-
-    assert_eq!(state.reg[0].out.get_u8(), 12);
 }
 
 #[test]
 fn test_jmp_long() {
+    let _lock = global_lock();
     let mut inst_rom = [Instruction::default(); 256];
     inst_rom[0] = jmp_long(1); // -> 16
     inst_rom[16] = jmp_long(4); // -> 64
@@ -100,14 +95,13 @@ fn test_jmp_long() {
     inst_rom[64] = load_imm(2); // -> 65
     inst_rom[65] = jmp_long(3); // -> 48
     inst_rom[80] = load_imm(15);
-    let state = test_cpu(inst_rom.as_slice(), 8, print_regs);
-
-    assert_eq!(state.reg[0].out.get_u8(), 15);
+    test_cpu_with_emu(inst_rom.as_slice(), 8, print_regs);
 }
 
 #[test]
 fn test_loop() {
-    let state = test_cpu(
+    let _lock = global_lock();
+    test_cpu_with_emu(
         &[
             load_imm(7),
             inc(Reg1), // r += 1
@@ -117,15 +111,12 @@ fn test_loop() {
         25,
         print_regs,
     );
-
-    assert_eq!(state.reg[0].out.get_u8(), 0);
-    assert_eq!(state.reg[1].out.get_u8(), 7);
-    assert!(state.pc.out.get_u8() >= 4);
 }
 
 #[test]
 fn test_loop2() {
-    let state = test_cpu(
+    let _lock = global_lock();
+    test_cpu_with_emu(
         &[
             load_imm(2),
             mov((Reg0, Reg1)),
@@ -140,9 +131,4 @@ fn test_loop2() {
         25,
         print_regs,
     );
-
-    assert_eq!(state.reg[0].out.get_u8(), 0);
-    assert_eq!(state.reg[1].out.get_u8(), 0);
-    assert_eq!(state.reg[2].out.get_u8(), 0);
-    assert_eq!(state.reg[3].out.get_u8(), 4);
 }
