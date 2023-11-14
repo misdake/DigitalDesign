@@ -2,16 +2,26 @@ use crate::cpu_v1::assembler::{Assembler, RegisterCommon, RegisterSpecial};
 use crate::cpu_v1::cpu_v1_build_mix;
 use crate::cpu_v1::devices::*;
 use crate::{clock_tick, execute_gates};
+use std::ops::Range;
 
 const MAP_SIZE: usize = 8;
 const TARGET_MAX: usize = 8;
 
-const ADDR_PLAYER_X: usize = 0;
-const ADDR_PLAYER_Y: usize = 1;
-const ADDR_TARGET_COUNT: usize = 2;
-const PAGE_PALETTE: usize = 10;
-const PAGE_TARGET_LIST: usize = 11; // max 8 pairs of xy
-const PAGE_MAP: usize = 12; // [12, 16)
+// page 0:
+const ADDR_PLAYER_X: usize = 1;
+const ADDR_PLAYER_Y: usize = 2;
+const ADDR_TARGET_COUNT: usize = 3;
+const ADDR_GAME_STATE: usize = 4;
+
+const PAGE_PALETTE: usize = 6;
+const PAGE_TARGET_LIST: usize = 7; // max 8 pairs of xy
+const PAGE_MAP: usize = 8; // [8, 16), map[y][x] on page(PAGE_MAP+y) addr(x)
+
+#[repr(u8)]
+enum GameState {
+    Play = 0,
+    Win = 1,
+}
 
 const TILE_WALL: u8 = 0b1000;
 const TILE_PLAYER: u8 = 0b0100;
@@ -39,7 +49,7 @@ const PALETTE: [Color; 16] = [
 fn parse_tile(c: char) -> u8 {
     match c {
         '#' => TILE_WALL,
-        '.' => 0b0000, // ground
+        '.' => 0, // ground
         'x' => TILE_PLAYER,
         'b' => TILE_BOX,
         'X' => TILE_PLAYER | TILE_TARGET,
@@ -88,6 +98,8 @@ impl GameMap {
         assert!(self.target_list.len() < TARGET_MAX);
         r[ADDR_TARGET_COUNT] = self.target_list.len() as u8;
 
+        r[ADDR_GAME_STATE] = GameState::Win as u8;
+
         for i in 0..16 {
             r[PAGE_PALETTE * 16 + i] = PALETTE[i] as u8;
         }
@@ -95,8 +107,10 @@ impl GameMap {
             r[PAGE_TARGET_LIST * 16 + i * 2] = *x as u8;
             r[PAGE_TARGET_LIST * 16 + i * 2 + 1] = *y as u8;
         }
-        for i in 0..(MAP_SIZE * MAP_SIZE) {
-            r[PAGE_MAP * 16 + i] = self.map[i];
+        for y in 0..MAP_SIZE {
+            for x in 0..MAP_SIZE {
+                r[(PAGE_MAP + y) * 16 + x] = self.map[y * MAP_SIZE + x];
+            }
         }
 
         r
@@ -135,22 +149,42 @@ fn test_frame_sync() {
 
     set_rom_content(&rom);
 
+    const INST_ADDR_INIT: Range<usize> = 0..3;
+    const INST_ADDR_GAME_LOOP: Range<usize> = 3..4;
+    const INST_ADDR_GAME_WIN: Range<usize> = 4..6; // TODO
+    const INST_ADDR_GAME_PLAY: Range<usize> = 6..10; // TODO
+    const INST_ADDR_RENDER: Range<usize> = 14..16;
+
+    // init()
+    // game_loop() {
+    //     if GameState == Play {
+    //         game_play()
+    //     } else {
+    //         game_win()
+    //     }
+    //     render()
+    // }
+
     let mut asm = Assembler::new();
 
-    asm.func("init", 0, |asm, _| init(asm));
+    asm.func_decl("init", INST_ADDR_INIT);
+    asm.func_decl("game_loop", INST_ADDR_GAME_LOOP);
+    asm.func_decl("game_win", INST_ADDR_GAME_WIN);
+    asm.func_decl("game_play", INST_ADDR_GAME_PLAY);
+    asm.func_decl("render", INST_ADDR_RENDER);
 
-    //TODO gameloop
+    asm.func_impl("init", |asm| init(asm));
+    asm.func_impl("game_loop", |asm| game_loop(asm));
+    asm.func_impl("game_win", |asm| game_win(asm));
+    asm.func_impl("game_play", |asm| game_play(asm));
+    asm.func_impl("render", |asm| render(asm));
 
-    //TODO read input
-    //TODO gameplay
+    println!("asm:\n{}\n", asm.to_pretty_string());
 
-    asm.func("render", 14, |asm, _| render(asm));
-
-    start(asm);
+    start_emulation(asm);
 }
 
-fn start(asm: Assembler) {
-    println!("asm:\n{}\n", asm.to_pretty_string());
+fn start_emulation(asm: Assembler) {
     let inst = asm.finish();
 
     let (state, _state_ref) = cpu_v1_build_mix(inst);
@@ -160,8 +194,8 @@ fn start(asm: Assembler) {
         if pc as usize >= inst.len() {
             break;
         }
-        // let inst_desc = inst[pc as usize];
-        // println!("pc {:08b}: inst {}", pc, inst_desc.to_string());
+        let inst_desc = inst[pc as usize];
+        println!("pc {:08b}: inst {}", pc, inst_desc.to_string());
 
         execute_gates();
 
@@ -179,6 +213,8 @@ fn init(asm: &mut Assembler) {
         asm.reg0().load_imm(DeviceType::Rom as u8);
         asm.inst(set_bus_addr0(()));
         asm.reg0().load_imm(0);
+        asm.inst(bus0(DeviceRomOpcode::SetCursorHigh as u8));
+        asm.inst(bus0(DeviceRomOpcode::SetCursorLow as u8));
         asm.reg3().assign_from(Reg0); // reg3 <- 0 (reg3 saves page index)
         asm.reg1().assign_from(Reg0); // reg1 <- 0 (addr in page)
 
@@ -224,11 +260,139 @@ fn init(asm: &mut Assembler) {
     asm.reg1().assign_from(Reg0);
     asm.inst(bus1(DeviceGraphicsV1Opcode::Resize as u8));
 
-    asm.inst(load_imm(ButtonQueryMode::Press as u8));
+    asm.inst(load_imm(ButtonQueryMode::Down as u8));
     asm.inst(bus0(DeviceGamepadOpcode::SetButtonQueryMode as u8));
 
     // load palette to graphics
     load_palette(asm);
+}
+
+/// game loop, assuming graphics on bus1, bus0 unknown
+fn game_loop(asm: &mut Assembler) {
+    use crate::cpu_v1::isa::Instruction::*;
+
+    asm.comment("game loop start".to_string());
+    // lock last frame input
+    asm.reg0().load_imm(DeviceType::Gamepad as u8);
+    asm.inst(set_bus_addr0(()));
+    asm.inst(bus0(DeviceGamepadOpcode::NextFrame as u8));
+
+    asm.comment("  read game state".to_string());
+    asm.reg0().load_imm(0);
+    asm.inst(set_mem_page(()));
+    asm.reg0().load_mem_imm(ADDR_GAME_STATE as u8);
+    asm.inst(jne_offset(2));
+    asm.comment("if GameState==Play => jmp to game_play".to_string());
+    asm.jmp_long("game_play"); // GameState == Play
+    asm.comment("if GameState==Win => jmp to game_win".to_string());
+    asm.jmp_long("game_win"); // GameState == Win
+}
+
+/// helper function to read map tile
+/// x in reg1, y in reg2
+/// return tile in reg0, x in reg1, y in reg2, mem page loaded
+fn read_map_tile(asm: &mut Assembler) {
+    use crate::cpu_v1::isa::Instruction::*;
+    use crate::cpu_v1::isa::RegisterIndex::*;
+
+    // page = PAGE_MAP + y;
+    // addr = x;
+    asm.reg0().load_imm(PAGE_MAP as u8);
+    asm.reg0().add_assign(Reg2);
+    asm.inst(set_mem_page(()));
+    asm.reg0().load_mem_reg(); // reg0 = map[y][x]
+}
+/// helper function to write map tile
+/// tile in reg0, x in reg1, y in reg2
+fn write_map_tile(asm: &mut Assembler, skip_set_page: bool) {
+    use crate::cpu_v1::isa::Instruction::*;
+    use crate::cpu_v1::isa::RegisterIndex::*;
+
+    if !skip_set_page {
+        asm.reg3().assign_from(Reg0);
+        asm.reg0().load_imm(PAGE_MAP as u8);
+        asm.reg0().add_assign(Reg2);
+        asm.inst(set_mem_page(()));
+        asm.reg0().assign_from(Reg3);
+    }
+    asm.reg0().store_mem_reg(); // map[y][x] = reg0
+}
+
+/// gamepad on bus0
+fn game_win(asm: &mut Assembler) {
+    use crate::cpu_v1::isa::Instruction::*;
+    use crate::cpu_v1::isa::RegisterIndex::*;
+
+    asm.reg0().load_imm(ButtonQueryType::ButtonStart as u8);
+    asm.inst(bus0(DeviceGamepadOpcode::QueryButton as u8));
+    asm.inst(jne_offset(2));
+    asm.inst(jmp_offset(3)); // TODO jmp forward impl
+    asm.comment("if start pressed -> init".to_string());
+    asm.reg0().load_imm(0);
+    asm.jmp_long_reg0();
+    asm.comment("if start not pressed".to_string());
+
+    // read player xy
+    asm.reg0().xor_assign(Reg0);
+    asm.inst(set_mem_page(()));
+    asm.reg0().load_mem_imm(ADDR_PLAYER_X as u8);
+    asm.reg1().assign_from(Reg0);
+    asm.reg0().load_mem_imm(ADDR_PLAYER_Y as u8);
+    asm.reg2().assign_from(Reg0);
+
+    // flash player tile to indicate GameState::Win
+    read_map_tile(asm);
+    asm.reg0().inc();
+    write_map_tile(asm, true);
+
+    asm.jmp_long("render");
+}
+
+/// gamepad on bus0
+fn game_play(asm: &mut Assembler) {
+    use crate::cpu_v1::isa::Instruction::*;
+    use crate::cpu_v1::isa::RegisterIndex::*;
+
+    /// read input, return dx in reg2, dy in reg3
+    fn read_input(asm: &mut Assembler) {
+        use crate::cpu_v1::isa::Instruction::*;
+        use crate::cpu_v1::isa::RegisterIndex::*;
+
+        // reg2: dx, reg3: dy
+        asm.reg2().xor_assign(Reg2); // reg2 = 0
+        asm.reg3().xor_assign(Reg3); // reg3 = 0
+
+        // up -> dy -= 1
+        asm.reg0().load_imm(ButtonQueryType::ButtonUp as u8);
+        asm.inst(bus0(DeviceGamepadOpcode::QueryButton as u8));
+        asm.reg0().neg();
+        asm.reg3().add_assign(Reg0);
+        // down -> dy += 1
+        asm.reg0().load_imm(ButtonQueryType::ButtonDown as u8);
+        asm.inst(bus0(DeviceGamepadOpcode::QueryButton as u8));
+        asm.reg3().add_assign(Reg0);
+        // left -> dx -= 1
+        asm.reg0().load_imm(ButtonQueryType::ButtonLeft as u8);
+        asm.inst(bus0(DeviceGamepadOpcode::QueryButton as u8));
+        asm.reg0().neg();
+        asm.reg2().add_assign(Reg0);
+        // right -> dx += 1
+        asm.reg0().load_imm(ButtonQueryType::ButtonRight as u8);
+        asm.inst(bus0(DeviceGamepadOpcode::QueryButton as u8));
+        asm.reg2().add_assign(Reg0);
+    }
+
+    // read input
+    read_input(asm);
+
+    // TODO calculate p+1, p+2 position, check bounds (highest bit)
+    // TODO read p+1, p+2 map tile to memory? or in reg?
+    // TODO try push box, write memory
+    // TODO move player, write memory
+
+    // TODO check targets -> set game state
+
+    asm.jmp_long("render");
 }
 
 /// read map tiles, call graphics set pixel
@@ -249,19 +413,21 @@ fn render(asm: &mut Assembler) {
     let page_loop = asm.reg0().assign_from(Reg3);
     asm.inst(set_mem_page(()));
     asm.reg3().inc();
+    asm.reg1().xor_assign(Reg1);
+    asm.inst(jmp_offset(2));
+    let page_loop_mid = asm.jmp_offset(page_loop); // page_loop is out of range, insert a mid point
 
     let inner_loop = asm.inst(load_mem(0)); // reg0 = mem[page][reg1]
     asm.inst(bus1(DeviceGraphicsV1Opcode::SetColorNext as u8));
     asm.reg1().inc();
-    asm.jne_offset(inner_loop);
+    asm.jg_offset(inner_loop);
 
     asm.reg3().assign_from(Reg3); // set flags of reg3
-    asm.jne_offset(page_loop); // jmp to page loop if reg3 != 0 (overflow)
+    asm.jne_offset(page_loop_mid); // jmp to page loop if reg3 != 0 (overflow)
 
     asm.comment("finish frame".to_string());
-    asm.inst(bus0(DeviceGamepadOpcode::NextFrame as u8));
-    asm.inst(bus1(DeviceGraphicsV1Opcode::PresentFrame as u8));
     asm.inst(bus1(DeviceGraphicsV1Opcode::WaitNextFrame as u8));
+    asm.inst(bus1(DeviceGraphicsV1Opcode::PresentFrame as u8));
 
-    asm.jmp_long("render");
+    asm.jmp_long("game_loop");
 }

@@ -300,6 +300,7 @@ fn cpu_v1_build_with_ref(
     let mut state2 = CpuV1State::create(inst_rom.clone());
     let internal1 = CpuV1Instance::build(&mut state1);
     let internal2 = CpuV1EmuInstance::build(&mut state2);
+    println!("cpu_v1_build_with_ref {:?}", crate::get_statistics());
     (state1, state2, internal1, internal2)
 }
 #[allow(unused)]
@@ -307,6 +308,7 @@ fn cpu_v1_build(inst_rom: [Instruction; 256]) -> (CpuV1State, CpuV1StateInternal
     clear_all();
     let mut state1 = CpuV1State::create(inst_rom.clone());
     let internal1 = CpuV1Instance::build(&mut state1);
+    println!("cpu_v1_build {:?}", crate::get_statistics());
     (state1, internal1)
 }
 #[allow(unused)]
@@ -314,6 +316,7 @@ fn cpu_v1_build_mix(inst_rom: [Instruction; 256]) -> (CpuV1State, CpuV1StateInte
     clear_all();
     let mut state1 = CpuV1State::create(inst_rom.clone());
     let internal1 = CpuV1MixInstance::build(&mut state1);
+    println!("cpu_v1_build_mix {:?}", crate::get_statistics());
     (state1, internal1)
 }
 

@@ -107,6 +107,7 @@ pub struct GamepadState {
     mapping: HashMap<Key, GamepadButton>,
     state_prev: HashMap<GamepadButton, i8>,
     state_curr: HashMap<GamepadButton, i8>,
+    state_next: HashMap<GamepadButton, i8>,
 }
 impl GamepadState {
     fn new(keys: Rx<Vec<Key>>) -> GamepadState {
@@ -115,6 +116,7 @@ impl GamepadState {
             mapping: Default::default(),
             state_prev: Default::default(),
             state_curr: Default::default(),
+            state_next: Default::default(),
         };
         state.mapping.insert(Key::W, GamepadButton::Up);
         state.mapping.insert(Key::S, GamepadButton::Down);
@@ -131,14 +133,15 @@ impl GamepadState {
     }
     pub fn next_frame(&mut self) {
         self.state_prev = self.state_curr.clone();
+        self.state_curr = self.state_next.clone();
     }
     pub fn update(&mut self) {
         let (keys, changed) = self.keys.update_get_check();
         if changed {
-            self.state_curr.clear();
+            self.state_next.clear();
             for key in keys {
                 self.mapping.get(key).map(|key| {
-                    self.state_curr.insert(*key, 1);
+                    self.state_next.insert(*key, 1);
                 });
             }
         }
@@ -251,7 +254,7 @@ impl MinifbWindow {
 
         window.limit_update_rate(Some(Duration::from_micros(10000)));
 
-        // let mut time = std::time::Instant::now();
+        let mut time = std::time::Instant::now();
         self.gamepad.sender.send(window.get_keys()).unwrap();
 
         while window.is_open() && !window.is_key_down(Key::Escape) {
@@ -268,9 +271,9 @@ impl MinifbWindow {
 
             self.gamepad.sender.send(window.get_keys()).unwrap(); // TODO use single value channel
 
-            // let time3 = std::time::Instant::now();
-            // println!("frame: buffer {}ms", (time3 - time).as_secs_f32() * 1000.,);
-            // time = time3;
+            let time3 = std::time::Instant::now();
+            println!("frame: buffer {}ms", (time3 - time).as_secs_f32() * 1000.,);
+            time = time3;
         }
     }
 }

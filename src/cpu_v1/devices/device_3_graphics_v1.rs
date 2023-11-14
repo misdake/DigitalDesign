@@ -204,8 +204,8 @@ fn test_frame_sync() {
             bus1(DeviceGraphicsV1Opcode::SetColor as u8), // set color
             // game present
             bus0(DeviceGamepadOpcode::NextFrame as u8),
-            bus1(DeviceGraphicsV1Opcode::PresentFrame as u8),
             bus1(DeviceGraphicsV1Opcode::WaitNextFrame as u8),
+            bus1(DeviceGraphicsV1Opcode::PresentFrame as u8),
             jmp_long(1), // restart game logic
         ],
         100000000, // just big enough to keep it running
