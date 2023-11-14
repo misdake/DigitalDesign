@@ -17,6 +17,8 @@ pub use external::*;
 pub use reg::*;
 pub use wires::*;
 
+mod export;
+
 #[cfg(test)]
 pub(crate) use tests::*;
 

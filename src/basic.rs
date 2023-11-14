@@ -67,6 +67,61 @@ pub fn clear_all() {
     }
 }
 
+#[derive(Debug, Copy, Clone)]
+pub struct GateExport {
+    pub wire_a_index: usize,
+    pub wire_b_index: usize,
+    pub wire_out_index: usize,
+}
+#[derive(Debug, Copy, Clone)]
+pub struct RegExport {
+    pub wire_in_index: usize,
+    pub wire_out_index: usize,
+}
+pub struct ExportGateReg {
+    pub wire_0_value: u8,
+    pub wire_1_value: u8,
+    pub wire_count: usize,
+    pub gates: Vec<GateExport>,
+    pub regs: Vec<RegExport>,
+}
+pub fn export_gate_reg() -> ExportGateReg {
+    unsafe {
+        let wire_0_value = WIRES[WIRE_0];
+        let wire_1_value = WIRES[WIRE_1];
+
+        let gates = GATES
+            .iter()
+            .map(|gate| GateExport {
+                wire_a_index: gate.wire_a.0,
+                wire_b_index: gate.wire_b.0,
+                wire_out_index: gate.wire_out.0,
+            })
+            .collect::<Vec<_>>();
+
+        let regs = REGS
+            .iter()
+            .map(|reg| RegExport {
+                wire_in_index: reg.wire_in.unwrap().0,
+                wire_out_index: reg.wire_out.0,
+            })
+            .collect::<Vec<_>>();
+
+        assert!(
+            EXTERNALS.is_empty(),
+            "Export wire/reg only! Externals are not supported!"
+        );
+
+        ExportGateReg {
+            wire_0_value,
+            wire_1_value,
+            wire_count: WIRES.len(),
+            gates,
+            regs,
+        }
+    }
+}
+
 pub trait External: Any {
     fn execute(&mut self);
     fn as_any(&self) -> &dyn Any;
