@@ -9,6 +9,8 @@ pub struct ExportModuleInterface {
     input_wires: Vec<(String, Wire)>,
     output_wires: Vec<(String, Wire)>,
 }
+
+#[allow(unused)]
 impl ExportModuleInterface {
     pub fn module_name(&mut self, module_name: &'static str) -> &mut Self {
         self.module_name = module_name;

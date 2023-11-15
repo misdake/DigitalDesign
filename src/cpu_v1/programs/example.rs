@@ -39,7 +39,7 @@ fn test_fibonacci2() {
     asm.reg0().assign_from(Reg1);
     asm.reg1().assign_from(Reg2);
     asm.reg3().dec();
-    asm.jg_offset(loop_start);
+    asm.jg_back(loop_start);
 
     test_cpu_with_emu(asm.finish().as_slice(), 35, print_regs);
 }

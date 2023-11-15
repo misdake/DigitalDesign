@@ -306,10 +306,9 @@ pub struct ExecutionResult {
     pub max_latency: LatencyValue,
 }
 
-pub fn simulate() -> ExecutionResult {
-    let result = execute_gates();
+pub fn simulate() {
+    execute_gates();
     clock_tick();
-    result
 }
 
 pub fn get_statistics() -> ExecutionResult {
@@ -322,17 +321,11 @@ pub fn get_statistics() -> ExecutionResult {
     }
 }
 
-pub fn execute_gates() -> ExecutionResult {
+pub fn execute_gates() {
     unsafe {
         // println!("execute segments {:?}", EXECUTE_SEGMENTS);
         for segment in &EXECUTE_SEGMENTS {
             segment.execute()
-        }
-
-        ExecutionResult {
-            wire_count: WIRES.len(),
-            gate_count: GATES.len(),
-            max_latency: *LATENCIES.iter().max().unwrap_or(&0),
         }
     }
 }

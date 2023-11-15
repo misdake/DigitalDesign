@@ -203,47 +203,46 @@ fn start_emulation(asm: Assembler) {
     }
 }
 
+use crate::cpu_v1::isa::RegisterIndex::*;
+
 /// set devices, set gamepad mode, set palette
 fn init(asm: &mut Assembler) {
-    use crate::cpu_v1::isa::Instruction::*;
-    use crate::cpu_v1::isa::RegisterIndex::*;
-
     /// assuming rom cursor=0
     fn copy_rom(asm: &mut Assembler) {
         asm.reg0().load_imm(DeviceType::Rom as u8);
-        asm.inst(set_bus_addr0(()));
+        asm.reg0().set_bus_addr0();
         asm.reg0().load_imm(0);
-        asm.inst(bus0(DeviceRomOpcode::SetCursorHigh as u8));
-        asm.inst(bus0(DeviceRomOpcode::SetCursorLow as u8));
+        asm.bus0(DeviceRomOpcode::SetCursorHigh as u8);
+        asm.bus0(DeviceRomOpcode::SetCursorLow as u8);
         asm.reg3().assign_from(Reg0); // reg3 <- 0 (reg3 saves page index)
         asm.reg1().assign_from(Reg0); // reg1 <- 0 (addr in page)
 
         asm.comment("start copy rom to mem".to_string());
         let page_loop = asm.reg0().assign_from(Reg3);
-        asm.inst(set_mem_page(()));
+        asm.reg0().set_mem_page();
         asm.reg3().inc();
 
-        let inner_loop = asm.inst(bus0(DeviceRomOpcode::ReadNext as u8)); // reg0 <- rom[cursor++]
-        asm.inst(store_mem(0)); // mem[page][reg1] <- reg0
+        let inner_loop = asm.bus0(DeviceRomOpcode::ReadNext as u8); // reg0 <- rom[cursor++]
+        asm.reg0().store_mem_reg(); // mem[page][reg1] <- reg0
         asm.reg1().inc();
-        asm.jne_offset(inner_loop); // jmp to inner loop if reg1 != 0 (overflow)
+        asm.jne_back(inner_loop); // jmp to inner loop if reg1 != 0 (overflow)
 
         asm.reg3().assign_from(Reg3); // set flags of reg3
-        asm.jne_offset(page_loop); // jmp to page loop if reg3 != 0 (overflow)
+        asm.jne_back(page_loop); // jmp to page loop if reg3 != 0 (overflow)
     }
 
     /// assuming graphics on bus_addr1
     fn load_palette(asm: &mut Assembler) {
         asm.comment("load palette".to_string());
         asm.reg0().load_imm(PAGE_PALETTE as u8);
-        asm.inst(set_mem_page(())); // set page <- reg0
+        asm.reg0().set_mem_page(); // set page <- reg0
         asm.reg0().load_imm(0);
         asm.reg1().assign_from(Reg0);
         // do { load_mem; set_palette; inc(reg1); } while reg1!=0 (overflow)
-        let loop_start = asm.inst(load_mem(0)); // reg0 = mem[page][reg1]
-        asm.inst(bus1(DeviceGraphicsV1Opcode::SetPalette as u8));
+        let loop_start = asm.reg0().load_mem_reg(); // reg0 = mem[page][reg1]
+        asm.bus1(DeviceGraphicsV1Opcode::SetPalette as u8);
         asm.reg1().inc();
-        asm.jne_offset(loop_start);
+        asm.jne_back(loop_start);
     }
 
     // copy all from rom
@@ -251,17 +250,17 @@ fn init(asm: &mut Assembler) {
 
     // setup devices, gamepad on addr0, graphics on addr1
     asm.comment("init gamepad and graphics".to_string());
-    asm.inst(load_imm(DeviceType::Gamepad as u8));
-    asm.inst(set_bus_addr0(()));
-    asm.inst(load_imm(DeviceType::GraphicsV1 as u8));
-    asm.inst(set_bus_addr1(()));
+    asm.reg0().load_imm(DeviceType::Gamepad as u8);
+    asm.reg0().set_bus_addr0();
+    asm.reg0().load_imm(DeviceType::GraphicsV1 as u8);
+    asm.reg0().set_bus_addr1();
 
     asm.reg0().load_imm(MAP_SIZE as u8);
     asm.reg1().assign_from(Reg0);
-    asm.inst(bus1(DeviceGraphicsV1Opcode::Resize as u8));
+    asm.bus1(DeviceGraphicsV1Opcode::Resize as u8);
 
-    asm.inst(load_imm(ButtonQueryMode::Down as u8));
-    asm.inst(bus0(DeviceGamepadOpcode::SetButtonQueryMode as u8));
+    asm.reg0().load_imm(ButtonQueryMode::Down as u8);
+    asm.bus0(DeviceGamepadOpcode::SetButtonQueryMode as u8);
 
     // load palette to graphics
     load_palette(asm);
@@ -269,21 +268,20 @@ fn init(asm: &mut Assembler) {
 
 /// game loop, assuming graphics on bus1, bus0 unknown
 fn game_loop(asm: &mut Assembler) {
-    use crate::cpu_v1::isa::Instruction::*;
-
     asm.comment("game loop start".to_string());
     // lock last frame input
     asm.reg0().load_imm(DeviceType::Gamepad as u8);
-    asm.inst(set_bus_addr0(()));
-    asm.inst(bus0(DeviceGamepadOpcode::NextFrame as u8));
+    asm.reg0().set_bus_addr0();
+    asm.bus0(DeviceGamepadOpcode::NextFrame as u8);
 
     asm.comment("  read game state".to_string());
     asm.reg0().load_imm(0);
-    asm.inst(set_mem_page(()));
+    asm.reg0().set_mem_page();
     asm.reg0().load_mem_imm(ADDR_GAME_STATE as u8);
-    asm.inst(jne_offset(2));
+    let win = asm.jne_forward();
     asm.comment("if GameState==Play => jmp to game_play".to_string());
     asm.jmp_long("game_play"); // GameState == Play
+    asm.resolve_jmp(win);
     asm.comment("if GameState==Win => jmp to game_win".to_string());
     asm.jmp_long("game_win"); // GameState == Win
 }
@@ -292,27 +290,21 @@ fn game_loop(asm: &mut Assembler) {
 /// x in reg1, y in reg2
 /// return tile in reg0, x in reg1, y in reg2, mem page loaded
 fn read_map_tile(asm: &mut Assembler) {
-    use crate::cpu_v1::isa::Instruction::*;
-    use crate::cpu_v1::isa::RegisterIndex::*;
-
     // page = PAGE_MAP + y;
     // addr = x;
     asm.reg0().load_imm(PAGE_MAP as u8);
     asm.reg0().add_assign(Reg2);
-    asm.inst(set_mem_page(()));
+    asm.reg0().set_mem_page();
     asm.reg0().load_mem_reg(); // reg0 = map[y][x]
 }
 /// helper function to write map tile
 /// tile in reg0, x in reg1, y in reg2
 fn write_map_tile(asm: &mut Assembler, skip_set_page: bool) {
-    use crate::cpu_v1::isa::Instruction::*;
-    use crate::cpu_v1::isa::RegisterIndex::*;
-
     if !skip_set_page {
         asm.reg3().assign_from(Reg0);
         asm.reg0().load_imm(PAGE_MAP as u8);
         asm.reg0().add_assign(Reg2);
-        asm.inst(set_mem_page(()));
+        asm.reg0().set_mem_page();
         asm.reg0().assign_from(Reg3);
     }
     asm.reg0().store_mem_reg(); // map[y][x] = reg0
@@ -320,21 +312,19 @@ fn write_map_tile(asm: &mut Assembler, skip_set_page: bool) {
 
 /// gamepad on bus0
 fn game_win(asm: &mut Assembler) {
-    use crate::cpu_v1::isa::Instruction::*;
-    use crate::cpu_v1::isa::RegisterIndex::*;
-
     asm.reg0().load_imm(ButtonQueryType::ButtonStart as u8);
-    asm.inst(bus0(DeviceGamepadOpcode::QueryButton as u8));
-    asm.inst(jne_offset(2));
-    asm.inst(jmp_offset(3)); // TODO jmp forward impl
+    asm.bus0(DeviceGamepadOpcode::QueryButton as u8);
+    let pressed = asm.jne_forward();
+    let not_pressed = asm.jmp_forward();
+    asm.resolve_jmp(pressed);
     asm.comment("if start pressed -> init".to_string());
-    asm.reg0().load_imm(0);
-    asm.jmp_long_reg0();
+    asm.jmp_long("init");
     asm.comment("if start not pressed".to_string());
+    asm.resolve_jmp(not_pressed);
 
     // read player xy
     asm.reg0().xor_assign(Reg0);
-    asm.inst(set_mem_page(()));
+    asm.reg0().set_mem_page();
     asm.reg0().load_mem_imm(ADDR_PLAYER_X as u8);
     asm.reg1().assign_from(Reg0);
     asm.reg0().load_mem_imm(ADDR_PLAYER_Y as u8);
@@ -350,35 +340,29 @@ fn game_win(asm: &mut Assembler) {
 
 /// gamepad on bus0
 fn game_play(asm: &mut Assembler) {
-    use crate::cpu_v1::isa::Instruction::*;
-    use crate::cpu_v1::isa::RegisterIndex::*;
-
     /// read input, return dx in reg2, dy in reg3
     fn read_input(asm: &mut Assembler) {
-        use crate::cpu_v1::isa::Instruction::*;
-        use crate::cpu_v1::isa::RegisterIndex::*;
-
         // reg2: dx, reg3: dy
         asm.reg2().xor_assign(Reg2); // reg2 = 0
         asm.reg3().xor_assign(Reg3); // reg3 = 0
 
         // up -> dy -= 1
         asm.reg0().load_imm(ButtonQueryType::ButtonUp as u8);
-        asm.inst(bus0(DeviceGamepadOpcode::QueryButton as u8));
+        asm.bus0(DeviceGamepadOpcode::QueryButton as u8);
         asm.reg0().neg();
         asm.reg3().add_assign(Reg0);
         // down -> dy += 1
         asm.reg0().load_imm(ButtonQueryType::ButtonDown as u8);
-        asm.inst(bus0(DeviceGamepadOpcode::QueryButton as u8));
+        asm.bus0(DeviceGamepadOpcode::QueryButton as u8);
         asm.reg3().add_assign(Reg0);
         // left -> dx -= 1
         asm.reg0().load_imm(ButtonQueryType::ButtonLeft as u8);
-        asm.inst(bus0(DeviceGamepadOpcode::QueryButton as u8));
+        asm.bus0(DeviceGamepadOpcode::QueryButton as u8);
         asm.reg0().neg();
         asm.reg2().add_assign(Reg0);
         // right -> dx += 1
         asm.reg0().load_imm(ButtonQueryType::ButtonRight as u8);
-        asm.inst(bus0(DeviceGamepadOpcode::QueryButton as u8));
+        asm.bus0(DeviceGamepadOpcode::QueryButton as u8);
         asm.reg2().add_assign(Reg0);
     }
 
@@ -398,36 +382,33 @@ fn game_play(asm: &mut Assembler) {
 /// read map tiles, call graphics set pixel
 /// assuming graphics on bus_addr1 and frame initialized
 fn render(asm: &mut Assembler) {
-    use crate::cpu_v1::isa::Instruction::*;
-    use crate::cpu_v1::isa::RegisterIndex::*;
-
     asm.reg0().load_imm(0);
     asm.reg1().assign_from(Reg0);
     asm.comment("reset graphics cursor".to_string());
-    asm.inst(bus1(DeviceGraphicsV1Opcode::SetCursor as u8));
+    asm.bus1(DeviceGraphicsV1Opcode::SetCursor as u8);
 
     asm.comment("reg0: color, reg1: addr, reg3: page".to_string());
     asm.reg0().load_imm(PAGE_MAP as u8);
     asm.reg3().assign_from(Reg0);
 
     let page_loop = asm.reg0().assign_from(Reg3);
-    asm.inst(set_mem_page(()));
+    asm.reg0().set_mem_page();
     asm.reg3().inc();
     asm.reg1().xor_assign(Reg1);
-    asm.inst(jmp_offset(2));
-    let page_loop_mid = asm.jmp_offset(page_loop); // page_loop is out of range, insert a mid point
-
-    let inner_loop = asm.inst(load_mem(0)); // reg0 = mem[page][reg1]
-    asm.inst(bus1(DeviceGraphicsV1Opcode::SetColorNext as u8));
+    let skip_jmp_back = asm.jmp_forward();
+    let page_loop_mid = asm.jmp_back(page_loop); // page_loop is out of range, insert a mid point
+    asm.resolve_jmp(skip_jmp_back);
+    let inner_loop = asm.reg0().load_mem_reg(); // reg0 = mem[page][reg1]
+    asm.bus1(DeviceGraphicsV1Opcode::SetColorNext as u8);
     asm.reg1().inc();
-    asm.jg_offset(inner_loop);
+    asm.jg_back(inner_loop);
 
     asm.reg3().assign_from(Reg3); // set flags of reg3
-    asm.jne_offset(page_loop_mid); // jmp to page loop if reg3 != 0 (overflow)
+    asm.jne_back(page_loop_mid); // jmp to page loop if reg3 != 0 (overflow)
 
     asm.comment("finish frame".to_string());
-    asm.inst(bus1(DeviceGraphicsV1Opcode::WaitNextFrame as u8));
-    asm.inst(bus1(DeviceGraphicsV1Opcode::PresentFrame as u8));
+    asm.bus1(DeviceGraphicsV1Opcode::WaitNextFrame as u8);
+    asm.bus1(DeviceGraphicsV1Opcode::PresentFrame as u8);
 
     asm.jmp_long("game_loop");
 }

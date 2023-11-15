@@ -1,6 +1,6 @@
 use crate::cpu_v1::emu::{EmuEnv, EmuState};
 use crate::cpu_v1::isa::Instruction;
-use crate::cpu_v1::{cpu_v1_build_mix, cpu_v1_build_with_ref, CpuV1State};
+use crate::cpu_v1::{cpu_v1_build_mix, CpuV1State};
 use crate::{clock_tick, execute_gates};
 
 mod example;

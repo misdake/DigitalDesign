@@ -14,6 +14,15 @@ pub struct InstructionSlot {
     data: Instruction,
     addr: usize,
 }
+pub struct PendingJump {
+    data: fn(&mut Assembler, usize) -> InstructionSlot, // addr, target
+    addr: usize,
+}
+impl Assembler {
+    pub fn resolve_jmp(&mut self, jmp: PendingJump) -> InstructionSlot {
+        (jmp.data)(self, jmp.addr)
+    }
+}
 
 pub struct Assembler {
     instructions: [Option<InstructionSlot>; 256],
@@ -32,7 +41,7 @@ fn print() {
     });
     asm.func("add", 1..2, |asm| {
         let i = asm.reg0().load_imm(12);
-        asm.jmp_offset(i);
+        asm.jmp_back(i);
     });
     println!("{}", asm.to_pretty_string());
 }
@@ -112,6 +121,9 @@ impl Assembler {
     pub fn comment(&mut self, comment: String) {
         assert!(self.comments.insert(self.cursor, comment).is_none());
     }
+    pub fn comment_at(&mut self, addr: usize, comment: String) {
+        assert!(self.comments.insert(addr, comment).is_none());
+    }
     pub fn inst_comment(&mut self, inst: Instruction, comment: String) -> InstructionSlot {
         assert!(self.comments.insert(self.cursor, comment).is_none());
         self.inst(inst)
@@ -158,47 +170,108 @@ impl Assembler {
         }
     }
 
-    fn addr_offset(&self, target: InstructionSlot) -> (u8, String) {
-        let offset = target.addr as i64 - self.cursor as i64;
+    fn addr_offset(cursor: usize, target: usize) -> (u8, String) {
+        let offset = target as i64 - cursor as i64;
         assert!(
             -8 <= offset && offset <= 7 && offset != 0,
             "offset: {}, cursor {}, target {}",
             offset,
-            self.cursor,
-            target.addr
+            cursor,
+            target
         );
         let offset = if offset < 0 {
             (offset + 16) as u8
         } else {
             offset as u8
         };
-        let comment = format!("--> {:3} {:04b}", target.addr / 16, target.addr % 16);
+        let comment = format!("--> {:3} {:04b}", target / 16, target % 16);
         (offset, comment)
     }
-    pub fn jmp_offset(&mut self, target: InstructionSlot) -> InstructionSlot {
-        let (offset, comment) = self.addr_offset(target);
+
+    pub fn jmp_forward(&mut self) -> PendingJump {
+        fn jmp_forward(asm: &mut Assembler, base: usize) -> InstructionSlot {
+            let (offset, comment) = Assembler::addr_offset(base, asm.cursor);
+            asm.comment_at(base, comment);
+            asm.inst_at(base, jmp_offset(offset))
+        }
+        let cursor = self.cursor;
+        self.skip_addr();
+        PendingJump {
+            data: jmp_forward,
+            addr: cursor,
+        }
+    }
+    pub fn jne_forward(&mut self) -> PendingJump {
+        fn jne_forward(asm: &mut Assembler, base: usize) -> InstructionSlot {
+            let (offset, comment) = Assembler::addr_offset(base, asm.cursor);
+            asm.comment_at(base, comment);
+            asm.inst_at(base, jne_offset(offset))
+        }
+        let cursor = self.cursor;
+        self.skip_addr();
+        PendingJump {
+            data: jne_forward,
+            addr: cursor,
+        }
+    }
+    pub fn jl_forward(&mut self) -> PendingJump {
+        fn jl_forward(asm: &mut Assembler, base: usize) -> InstructionSlot {
+            let (offset, comment) = Assembler::addr_offset(base, asm.cursor);
+            asm.comment_at(base, comment);
+            asm.inst_at(base, jl_offset(offset))
+        }
+        let cursor = self.cursor;
+        self.skip_addr();
+        PendingJump {
+            data: jl_forward,
+            addr: cursor,
+        }
+    }
+    pub fn jg_forward(&mut self) -> PendingJump {
+        fn jg_forward(asm: &mut Assembler, base: usize) -> InstructionSlot {
+            let (offset, comment) = Assembler::addr_offset(base, asm.cursor);
+            asm.comment_at(base, comment);
+            asm.inst_at(base, jg_offset(offset))
+        }
+        let cursor = self.cursor;
+        self.skip_addr();
+        PendingJump {
+            data: jg_forward,
+            addr: cursor,
+        }
+    }
+
+    pub fn jmp_back(&mut self, target: InstructionSlot) -> InstructionSlot {
+        let (offset, comment) = Self::addr_offset(self.cursor, target.addr);
         self.inst_comment(jmp_offset(offset), comment)
     }
-    pub fn jne_offset(&mut self, target: InstructionSlot) -> InstructionSlot {
-        let (offset, comment) = self.addr_offset(target);
+    pub fn jne_back(&mut self, target: InstructionSlot) -> InstructionSlot {
+        let (offset, comment) = Self::addr_offset(self.cursor, target.addr);
         self.inst_comment(jne_offset(offset), comment)
     }
-    pub fn jl_offset(&mut self, target: InstructionSlot) -> InstructionSlot {
-        let (offset, comment) = self.addr_offset(target);
+    pub fn jl_back(&mut self, target: InstructionSlot) -> InstructionSlot {
+        let (offset, comment) = Self::addr_offset(self.cursor, target.addr);
         self.inst_comment(jl_offset(offset), comment)
     }
-    pub fn jg_offset(&mut self, target: InstructionSlot) -> InstructionSlot {
-        let (offset, comment) = self.addr_offset(target);
+    pub fn jg_back(&mut self, target: InstructionSlot) -> InstructionSlot {
+        let (offset, comment) = Self::addr_offset(self.cursor, target.addr);
         self.inst_comment(jg_offset(offset), comment)
     }
+
     pub fn jmp_long(&mut self, function_name: &'static str) {
         let addr = self
             .function_addrs
             .get(function_name)
-            .expect("cannot find function name");
-        assert_ne!(addr.start, 0);
-        self.inst(jmp_long(addr.start as u8));
+            .expect("cannot find function name")
+            .clone();
+        if addr.start == 0 {
+            self.reg0().load_imm(0);
+            self.inst(jmp_long(0));
+        } else {
+            self.inst(jmp_long(addr.start as u8));
+        }
     }
+
     pub fn jmp_offset_reg0(&mut self) {
         self.inst(jmp_offset(0));
     }
@@ -211,8 +284,12 @@ impl Assembler {
     pub fn jg_offset_reg0(&mut self) {
         self.inst(jg_offset(0));
     }
-    pub fn jmp_long_reg0(&mut self) {
-        self.inst(jmp_long(0));
+
+    pub fn bus0(&mut self, op3: u8) -> InstructionSlot {
+        self.inst(bus0(op3))
+    }
+    pub fn bus1(&mut self, op3: u8) -> InstructionSlot {
+        self.inst(bus1(op3))
     }
 }
 
@@ -304,5 +381,14 @@ pub trait RegisterSpecial: RegisterCommon {
     }
     fn store_mem_reg(&mut self) -> InstructionSlot {
         self.assembler().inst(store_mem(0))
+    }
+    fn set_mem_page(&mut self) -> InstructionSlot {
+        self.assembler().inst(set_mem_page(()))
+    }
+    fn set_bus_addr0(&mut self) -> InstructionSlot {
+        self.assembler().inst(set_bus_addr0(()))
+    }
+    fn set_bus_addr1(&mut self) -> InstructionSlot {
+        self.assembler().inst(set_bus_addr1(()))
     }
 }
