@@ -286,9 +286,11 @@ impl Assembler {
     }
 
     pub fn bus0(&mut self, op3: u8) -> InstructionSlot {
+        assert!(op3 < 8);
         self.inst(bus0(op3))
     }
     pub fn bus1(&mut self, op3: u8) -> InstructionSlot {
+        assert!(op3 < 8);
         self.inst(bus1(op3))
     }
 }

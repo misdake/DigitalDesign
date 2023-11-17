@@ -7,15 +7,25 @@ use std::ops::Range;
 const MAP_SIZE: usize = 8;
 const TARGET_MAX: usize = 8;
 
-// page 0:
 const ADDR_PLAYER_X: usize = 1;
 const ADDR_PLAYER_Y: usize = 2;
 const ADDR_TARGET_COUNT: usize = 3;
 const ADDR_GAME_STATE: usize = 4;
 
-const PAGE_PALETTE: usize = 6;
-const PAGE_TARGET_LIST: usize = 7; // max 8 pairs of xy
-const PAGE_MAP: usize = 8; // [8, 16), map[y][x] on page(PAGE_MAP+y) addr(x)
+const ADDR_N1_X: usize = 7;
+const ADDR_N1_Y: usize = 8;
+const ADDR_N2_X: usize = 9;
+const ADDR_N2_Y: usize = 10;
+const ADDR_N1_BOX: usize = 11;
+const ADDR_N1_GROUND: usize = 12;
+const ADDR_N2_BOX: usize = 13;
+const ADDR_N2_GROUND: usize = 14;
+
+const PAGE_GAME: usize = 0;
+const PAGE_PALETTE: usize = 1;
+const PAGE_TARGET_LIST: usize = 2; // max 8 pairs of xy
+                                   // alloc [4, 16) for map, so that out of bound coordinates will read 0 from map!
+const PAGE_MAP: usize = 6; // [6, 14), map[y][x] on page(PAGE_MAP+y) addr(x)
 
 #[repr(u8)]
 enum GameState {
@@ -98,7 +108,7 @@ impl GameMap {
         assert!(self.target_list.len() < TARGET_MAX);
         r[ADDR_TARGET_COUNT] = self.target_list.len() as u8;
 
-        r[ADDR_GAME_STATE] = GameState::Win as u8;
+        r[ADDR_GAME_STATE] = GameState::Win as u8; // TODO Play
 
         for i in 0..16 {
             r[PAGE_PALETTE * 16 + i] = PALETTE[i] as u8;
@@ -323,7 +333,7 @@ fn game_win(asm: &mut Assembler) {
     asm.resolve_jmp(not_pressed);
 
     // read player xy
-    asm.reg0().xor_assign(Reg0);
+    asm.reg0().load_imm(PAGE_GAME as u8);
     asm.reg0().set_mem_page();
     asm.reg0().load_mem_imm(ADDR_PLAYER_X as u8);
     asm.reg1().assign_from(Reg0);
@@ -366,13 +376,27 @@ fn game_play(asm: &mut Assembler) {
         asm.reg2().add_assign(Reg0);
     }
 
-    // read input
+    // read input, reg2: dx, reg3: dy
     read_input(asm);
 
-    // TODO calculate p+1, p+2 position, check bounds (highest bit)
-    // TODO read p+1, p+2 map tile to memory? or in reg?
-    // TODO try push box, write memory
-    // TODO move player, write memory
+    asm.reg0().load_imm(PAGE_GAME as u8);
+    asm.reg0().set_mem_page();
+
+    // TODO move map memory to 6..14? so that N1 & N2 tiles (page 4..16) always return 0 if out of bounds.
+    // TODO invert WALL bit to GROUND bit. tile value 0 => WALL.
+
+    // write n1x, n2x to memory
+    asm.reg0().load_mem_imm(ADDR_PLAYER_X as u8);
+    asm.reg0().add_assign(Reg2);
+    asm.reg0().store_mem_imm(ADDR_N1_X as u8);
+    asm.reg0().add_assign(Reg2);
+    asm.reg0().store_mem_imm(ADDR_N2_X as u8);
+
+    // TODO
+    //  push = !N2_BOX && N2_GROUND && N1_BOX
+    //  if push -> N2 |= BOX, N1 &= ~BOX
+    //  move = N1_GROUND && (!N1_BOX || push)
+    //  if move -> player xy = N1, P &= ~PLAYER, N1 |= PLAYER
 
     // TODO check targets -> set game state
 
