@@ -12,14 +12,16 @@ const ADDR_PLAYER_Y: usize = 2;
 const ADDR_TARGET_COUNT: usize = 3;
 const ADDR_GAME_STATE: usize = 4;
 
-const ADDR_N1_X: usize = 7;
-const ADDR_N1_Y: usize = 8;
-const ADDR_N2_X: usize = 9;
-const ADDR_N2_Y: usize = 10;
-const ADDR_N1_BOX: usize = 11;
-const ADDR_N1_GROUND: usize = 12;
-const ADDR_N2_BOX: usize = 13;
-const ADDR_N2_GROUND: usize = 14;
+const ADDR_N1_X: u8 = 5;
+const ADDR_N1_Y: u8 = 6;
+const ADDR_N2_X: u8 = 7;
+const ADDR_N2_Y: u8 = 8;
+const ADDR_N1_BOX: u8 = 9;
+const ADDR_N1_GROUND: u8 = 10;
+const ADDR_N2_BOX: u8 = 11;
+const ADDR_N2_GROUND: u8 = 12;
+const ADDR_N1_TILE: u8 = 13;
+const ADDR_N2_TILE: u8 = 14;
 
 const PAGE_GAME: usize = 0;
 const PAGE_PALETTE: usize = 1;
@@ -33,20 +35,12 @@ enum GameState {
     Win = 1,
 }
 
-const TILE_WALL: u8 = 0b1000;
+const TILE_GROUND: u8 = 0b1000;
 const TILE_PLAYER: u8 = 0b0100;
 const TILE_BOX: u8 = 0b0010;
 const TILE_TARGET: u8 = 0b0001;
 
 const PALETTE: [Color; 16] = [
-    Color::Silver,  // 0000 ground
-    Color::Olive,   // 0001 target
-    Color::Lime,    // 0010 box
-    Color::Yellow,  // 0011 box+target
-    Color::Aqua,    // 0100 player
-    Color::Fuchsia, // 0101 player+target
-    Color::Purple,  // 0110 X
-    Color::Purple,  // 0111 X
     Color::Blue,    // 1000 wall
     Color::Purple,  // 1001 X
     Color::Purple,  // 1010 X
@@ -55,16 +49,24 @@ const PALETTE: [Color; 16] = [
     Color::Purple,  // 1101 X
     Color::Purple,  // 1110 X
     Color::Purple,  // 1111 X
+    Color::Silver,  // 0000 ground
+    Color::Olive,   // 0001 target
+    Color::Lime,    // 0010 box
+    Color::Yellow,  // 0011 box+target
+    Color::Aqua,    // 0100 player
+    Color::Fuchsia, // 0101 player+target
+    Color::Purple,  // 0110 X
+    Color::Purple,  // 0111 X
 ];
 fn parse_tile(c: char) -> u8 {
     match c {
-        '#' => TILE_WALL,
-        '.' => 0, // ground
-        'x' => TILE_PLAYER,
-        'b' => TILE_BOX,
-        'X' => TILE_PLAYER | TILE_TARGET,
-        'B' => TILE_BOX | TILE_TARGET,
-        'T' => TILE_TARGET,
+        '#' => 0, // wall
+        '.' => TILE_GROUND,
+        'x' => TILE_GROUND | TILE_PLAYER,
+        'b' => TILE_GROUND | TILE_BOX,
+        'X' => TILE_GROUND | TILE_PLAYER | TILE_TARGET,
+        'B' => TILE_GROUND | TILE_BOX | TILE_TARGET,
+        'T' => TILE_GROUND | TILE_TARGET,
         _ => unreachable!(),
     }
 }
@@ -352,6 +354,7 @@ fn game_win(asm: &mut Assembler) {
 fn game_play(asm: &mut Assembler) {
     /// read input, return dx in reg2, dy in reg3
     fn read_input(asm: &mut Assembler) {
+        asm.comment("read_input".to_string());
         // reg2: dx, reg3: dy
         asm.reg2().xor_assign(Reg2); // reg2 = 0
         asm.reg3().xor_assign(Reg3); // reg3 = 0
@@ -376,29 +379,141 @@ fn game_play(asm: &mut Assembler) {
         asm.reg2().add_assign(Reg0);
     }
 
-    // read input, reg2: dx, reg3: dy
+    /// input: reg2: dx, reg3: dy
+    /// output: reg2: n1, reg3: n2
+    fn read_n1_n2(asm: &mut Assembler) {
+        asm.comment("read_n1_n2".to_string());
+        asm.reg0().load_imm(PAGE_GAME as u8);
+        asm.reg0().set_mem_page();
+
+        // write n1x, n2x to memory
+        asm.reg0().load_mem_imm(ADDR_PLAYER_X as u8);
+        asm.reg0().add_assign(Reg2);
+        asm.reg0().store_mem_imm(ADDR_N1_X);
+        asm.reg0().add_assign(Reg2);
+        asm.reg0().store_mem_imm(ADDR_N2_X);
+        // write n1y, n2y to memory
+        asm.reg0().load_mem_imm(ADDR_PLAYER_Y as u8);
+        asm.reg0().add_assign(Reg2);
+        asm.reg0().store_mem_imm(ADDR_N1_Y);
+        asm.reg0().add_assign(Reg2);
+        asm.reg0().store_mem_imm(ADDR_N2_Y);
+
+        // load n1 map tile
+        asm.reg0().load_mem_imm(ADDR_N1_X);
+        asm.reg1().assign_from(Reg0);
+        asm.reg0().load_mem_imm(ADDR_N1_Y);
+        asm.reg2().assign_from(Reg0);
+        read_map_tile(asm); // mem page changed
+        asm.reg3().assign_from(Reg0);
+
+        asm.reg0().load_imm(PAGE_GAME as u8);
+        asm.reg0().set_mem_page();
+
+        asm.reg0().load_mem_imm(ADDR_N2_X);
+        asm.reg1().assign_from(Reg0);
+        asm.reg0().load_mem_imm(ADDR_N2_Y);
+        asm.reg2().assign_from(Reg0);
+        read_map_tile(asm); // mem page changed
+        asm.reg2().assign_from(Reg0);
+
+        asm.reg0().load_imm(PAGE_GAME as u8);
+        asm.reg0().set_mem_page();
+
+        asm.reg0().assign_from(Reg2);
+        asm.reg0().store_mem_imm(ADDR_N1_TILE);
+        asm.reg0().assign_from(Reg3);
+        asm.reg0().store_mem_imm(ADDR_N2_TILE);
+    }
+
+    /// input: reg2: n1, reg3: n2, mem_page: PAGE_GAME
+    /// output: TODO?
+    fn push_and_move(asm: &mut Assembler) {
+        asm.comment("push_and_move".to_string());
+
+        // core logic:
+        // push = !N2_BOX && N2_GROUND && N1_BOX
+        // if push -> N2 |= BOX, N1 &= ~BOX
+        // move = N1_GROUND && (!N1_BOX || push)
+        // if move -> player xy = N1, P &= ~PLAYER, N1 |= PLAYER
+
+        // translated logic:
+
+        // push_bit = 0
+        // if N2_GROUND(0000 or 1000) > 0 {
+        //     push_bit(0000 or 0010) = ~N2_BOX(1111 or 1101) & N1_BOX(0000 or 0010)
+        // }
+        // N2_TILE |= push_bit
+        // N1_TILE &= ~push_bit
+
+        asm.reg1().xor_assign(Reg1); // push_bit = 0
+
+        asm.reg0().load_imm(TILE_BOX);
+        asm.reg0().and_assign(Reg2);
+        asm.reg0().store_mem_imm(ADDR_N1_BOX);
+        asm.reg0().load_imm(TILE_GROUND);
+        asm.reg0().and_assign(Reg2);
+        asm.reg0().store_mem_imm(ADDR_N1_GROUND);
+        asm.reg0().load_imm(TILE_BOX);
+        asm.reg0().and_assign(Reg3);
+        asm.reg0().store_mem_imm(ADDR_N2_BOX);
+        asm.reg0().load_imm(TILE_GROUND);
+        asm.reg0().and_assign(Reg3);
+        asm.reg0().store_mem_imm(ADDR_N2_GROUND);
+
+        asm.comment("test and push".to_string());
+        asm.reg0().inv(); // ~N2_GROUND to jmp (0111 or 1111)
+        let jmp_if_n2_wall = asm.jl_forward(); // TODO if ~N2_GROUND & 1000 => skip
+        asm.reg0().load_mem_imm(ADDR_N2_BOX);
+        asm.reg0().inv(); // ~N2_BOX
+        asm.reg1().assign_from(Reg0);
+        asm.resolve_jmp(jmp_if_n2_wall);
+        asm.reg0().load_mem_imm(ADDR_N1_BOX);
+        asm.reg1().and_assign(Reg0); // reg1 saves push_bit
+        asm.reg3().assign_from(Reg0); // reg3 saves N1_BOX
+        asm.reg2().assign_from(Reg1);
+        asm.reg2().inv(); // reg2 saves ~push_bit
+        let jmp_if_no_push = asm.jl_forward(); // TODO if ~push_bit(1111 or 1101) > 0
+        asm.reg0().load_mem_imm(ADDR_N2_TILE);
+        asm.reg0().or_assign(Reg1); // N2_TILE |= push_bit
+        asm.reg0().store_mem_imm(ADDR_N2_TILE);
+        asm.reg0().load_mem_imm(ADDR_N1_TILE);
+        asm.reg0().and_assign(Reg1); // N1_TILE &= ~push_bit
+        asm.reg0().store_mem_imm(ADDR_N1_TILE);
+        asm.resolve_jmp(jmp_if_no_push);
+
+        // move_bit(1000 or 0000) = (~N1_BOX(1111 or 1101) | push_bit(0000 or 0010)) * 4 & N1_GROUND
+        // if move_bit > 0 {
+        //     N1 |= PLAYER
+        //     P &= ~PLAYER (read, and, write)
+        //     Player XY = N1 XY
+        // }
+
+        asm.comment("test and push".to_string());
+        // reg0 N1 tile, reg1 push bit, reg3 N1_BOX
+        asm.reg3().inv(); // ~N1_BOX
+        asm.reg1().or_assign(Reg3);
+        asm.reg1().add_assign(Reg1);
+        asm.reg1().add_assign(Reg1); // reg1 = 1000 or 0000
+        asm.reg0().load_mem_imm(ADDR_N1_GROUND);
+        asm.reg0().and_assign(Reg1);
+        // asm.jn TODO
+    }
+
+    //TODO
+    fn check_win(asm: &mut Assembler) {
+        asm.comment("check_win".to_string());
+    }
+
     read_input(asm);
 
-    asm.reg0().load_imm(PAGE_GAME as u8);
-    asm.reg0().set_mem_page();
+    //TODO if no input => call render
 
-    // TODO move map memory to 6..14? so that N1 & N2 tiles (page 4..16) always return 0 if out of bounds.
-    // TODO invert WALL bit to GROUND bit. tile value 0 => WALL.
+    read_map_tile(asm);
 
-    // write n1x, n2x to memory
-    asm.reg0().load_mem_imm(ADDR_PLAYER_X as u8);
-    asm.reg0().add_assign(Reg2);
-    asm.reg0().store_mem_imm(ADDR_N1_X as u8);
-    asm.reg0().add_assign(Reg2);
-    asm.reg0().store_mem_imm(ADDR_N2_X as u8);
+    push_and_move(asm);
 
-    // TODO
-    //  push = !N2_BOX && N2_GROUND && N1_BOX
-    //  if push -> N2 |= BOX, N1 &= ~BOX
-    //  move = N1_GROUND && (!N1_BOX || push)
-    //  if move -> player xy = N1, P &= ~PLAYER, N1 |= PLAYER
-
-    // TODO check targets -> set game state
+    check_win(asm);
 
     asm.jmp_long("render");
 }

@@ -188,6 +188,43 @@ impl Assembler {
         (offset, comment)
     }
 
+    pub fn if_is_zero(
+        &mut self,
+        if_case: impl FnOnce(&mut Self),
+        else_case: impl FnOnce(&mut Self),
+    ) {
+        let skip_if = self.jne_forward();
+        if_case(self);
+        let skip_else = self.jmp_forward();
+        self.resolve_jmp(skip_if);
+        else_case(self);
+        self.resolve_jmp(skip_else);
+    }
+    pub fn if_is_1_to_7(
+        &mut self,
+        if_case: impl FnOnce(&mut Self),
+        else_case: impl FnOnce(&mut Self),
+    ) {
+        let skip_if = self.jg_forward();
+        else_case(self);
+        let skip_else = self.jmp_forward();
+        self.resolve_jmp(skip_if);
+        if_case(self);
+        self.resolve_jmp(skip_else);
+    }
+    pub fn if_is_8_to_15(
+        &mut self,
+        if_case: impl FnOnce(&mut Self),
+        else_case: impl FnOnce(&mut Self),
+    ) {
+        let skip_if = self.jl_forward();
+        else_case(self);
+        let skip_else = self.jmp_forward();
+        self.resolve_jmp(skip_if);
+        if_case(self);
+        self.resolve_jmp(skip_else);
+    }
+
     pub fn jmp_forward(&mut self) -> PendingJump {
         fn jmp_forward(asm: &mut Assembler, base: usize) -> InstructionSlot {
             let (offset, comment) = Assembler::addr_offset(base, asm.cursor);
@@ -201,6 +238,7 @@ impl Assembler {
             addr: cursor,
         }
     }
+    /// 1~15
     pub fn jne_forward(&mut self) -> PendingJump {
         fn jne_forward(asm: &mut Assembler, base: usize) -> InstructionSlot {
             let (offset, comment) = Assembler::addr_offset(base, asm.cursor);
@@ -214,6 +252,7 @@ impl Assembler {
             addr: cursor,
         }
     }
+    /// 8~15
     pub fn jl_forward(&mut self) -> PendingJump {
         fn jl_forward(asm: &mut Assembler, base: usize) -> InstructionSlot {
             let (offset, comment) = Assembler::addr_offset(base, asm.cursor);
@@ -227,6 +266,7 @@ impl Assembler {
             addr: cursor,
         }
     }
+    /// 1~7
     pub fn jg_forward(&mut self) -> PendingJump {
         fn jg_forward(asm: &mut Assembler, base: usize) -> InstructionSlot {
             let (offset, comment) = Assembler::addr_offset(base, asm.cursor);
