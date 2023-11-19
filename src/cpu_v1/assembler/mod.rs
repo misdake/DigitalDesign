@@ -117,7 +117,13 @@ impl Assembler {
         self.func_decl(name, addr_high);
         self.func_impl(name, f);
     }
+    pub fn get_func_name(&self, pc: u8) -> Option<&str> {
+        self.function_names.get(&(pc as usize)).map(|s| *s)
+    }
 
+    pub fn get_comment(&self, pc: u8) -> Option<&str> {
+        self.comments.get(&(pc as usize)).map(|s| s.as_str())
+    }
     pub fn comment(&mut self, comment: String) {
         assert!(self.comments.insert(self.cursor, comment).is_none());
     }

@@ -23,11 +23,12 @@ const ADDR_N2_GROUND: u8 = 12;
 const ADDR_N1_TILE: u8 = 13;
 const ADDR_N2_TILE: u8 = 14;
 
-const PAGE_GAME: usize = 0;
-const PAGE_PALETTE: usize = 1;
-const PAGE_TARGET_LIST: usize = 2; // max 8 pairs of xy
-                                   // alloc [4, 16) for map, so that out of bound coordinates will read 0 from map!
-const PAGE_MAP: usize = 6; // [6, 14), map[y][x] on page(PAGE_MAP+y) addr(x)
+const PAGE_GAME: usize = 2;
+const PAGE_PALETTE: usize = 3;
+const PAGE_TARGET_LIST: usize = 4; // max 8 pairs of xy
+
+// alloc [6,16)+[0,1) for map, so that out of bound coordinates will read 0 from map!
+const PAGE_MAP: usize = 8; // [8, 16) + padding=2, map[y][x] on page(PAGE_MAP+y) addr(x)
 
 #[repr(u8)]
 enum GameState {
@@ -104,13 +105,13 @@ impl GameMap {
     fn export_rom(&self) -> [u8; 256] {
         let mut r = [0; 256];
 
-        r[ADDR_PLAYER_X] = self.start.0 as u8;
-        r[ADDR_PLAYER_Y] = self.start.1 as u8;
+        r[PAGE_GAME * 16 + ADDR_PLAYER_X] = self.start.0 as u8;
+        r[PAGE_GAME * 16 + ADDR_PLAYER_Y] = self.start.1 as u8;
 
         assert!(self.target_list.len() < TARGET_MAX);
-        r[ADDR_TARGET_COUNT] = self.target_list.len() as u8;
+        r[PAGE_GAME * 16 + ADDR_TARGET_COUNT] = self.target_list.len() as u8;
 
-        r[ADDR_GAME_STATE] = GameState::Win as u8; // TODO Play
+        r[PAGE_GAME * 16 + ADDR_GAME_STATE] = GameState::Play as u8;
 
         for i in 0..16 {
             r[PAGE_PALETTE * 16 + i] = PALETTE[i] as u8;
@@ -161,10 +162,10 @@ fn test_frame_sync() {
 
     set_rom_content(&rom);
 
-    const INST_ADDR_INIT: Range<usize> = 0..3;
-    const INST_ADDR_GAME_LOOP: Range<usize> = 3..4;
-    const INST_ADDR_GAME_WIN: Range<usize> = 4..6; // TODO
-    const INST_ADDR_GAME_PLAY: Range<usize> = 6..10; // TODO
+    const INST_ADDR_INIT: Range<usize> = 0..2;
+    const INST_ADDR_GAME_LOOP: Range<usize> = 2..3;
+    const INST_ADDR_GAME_WIN: Range<usize> = 3..4;
+    const INST_ADDR_GAME_PLAY: Range<usize> = 4..14;
     const INST_ADDR_RENDER: Range<usize> = 14..16;
 
     // init()
@@ -207,11 +208,44 @@ fn start_emulation(asm: Assembler) {
             break;
         }
         let inst_desc = inst[pc as usize];
-        println!("pc {:08b}: inst {}", pc, inst_desc.to_string());
+        let comment = asm.get_comment(pc).map_or("", |s| s);
+        println!(
+            "pc {} {:04b}: inst {} {}",
+            pc / 16,
+            pc % 16,
+            inst_desc.to_string(),
+            comment
+        );
 
         execute_gates();
 
         clock_tick();
+
+        let get_game_mem =
+            |addr: u8| -> u8 { state.mem[PAGE_GAME * 16 + addr as usize].out.get_u8() };
+        println!("Reg: {:?}", state.reg.map(|r| r.out.get_u8()));
+        println!("Player X: {}", get_game_mem(ADDR_PLAYER_X as u8));
+        println!("Player Y: {}", get_game_mem(ADDR_PLAYER_Y as u8));
+        println!("ADDR_N1_X: {}", get_game_mem(ADDR_N1_X));
+        println!("ADDR_N1_Y: {}", get_game_mem(ADDR_N1_Y));
+        println!("ADDR_N2_X: {}", get_game_mem(ADDR_N2_X));
+        println!("ADDR_N2_Y: {}", get_game_mem(ADDR_N2_Y));
+        println!("ADDR_N1_BOX: {}", get_game_mem(ADDR_N1_BOX));
+        println!("ADDR_N1_GROUND: {}", get_game_mem(ADDR_N1_GROUND));
+        println!("ADDR_N2_BOX: {}", get_game_mem(ADDR_N2_BOX));
+        println!("ADDR_N2_GROUND: {}", get_game_mem(ADDR_N2_GROUND));
+        println!("ADDR_N1_TILE: {}", get_game_mem(ADDR_N1_TILE));
+        println!("ADDR_N2_TILE: {}", get_game_mem(ADDR_N2_TILE));
+
+        if asm.get_func_name(pc).is_some() {
+            println!("!");
+        }
+
+        if pc == 11 * 16 {
+            println!("!");
+        }
+
+        println!("-----------------------");
     }
 }
 
@@ -225,9 +259,9 @@ fn init(asm: &mut Assembler) {
         asm.reg0().set_bus_addr0();
         asm.reg0().load_imm(0);
         asm.bus0(DeviceRomOpcode::SetCursorHigh as u8);
-        asm.bus0(DeviceRomOpcode::SetCursorLow as u8);
-        asm.reg3().assign_from(Reg0); // reg3 <- 0 (reg3 saves page index)
-        asm.reg1().assign_from(Reg0); // reg1 <- 0 (addr in page)
+        // asm.bus0(DeviceRomOpcode::SetCursorLow as u8); // always 0
+        asm.reg3().xor_assign(Reg3); // reg3 <- 0 (reg3 saves page index)
+        asm.reg1().xor_assign(Reg1); // reg1 <- 0 (addr in page)
 
         asm.comment("start copy rom to mem".to_string());
         let page_loop = asm.reg0().assign_from(Reg3);
@@ -309,31 +343,8 @@ fn read_map_tile(asm: &mut Assembler) {
     asm.reg0().set_mem_page();
     asm.reg0().load_mem_reg(); // reg0 = map[y][x]
 }
-/// helper function to write map tile
-/// tile in reg0, x in reg1, y in reg2
-fn write_map_tile(asm: &mut Assembler, skip_set_page: bool) {
-    if !skip_set_page {
-        asm.reg3().assign_from(Reg0);
-        asm.reg0().load_imm(PAGE_MAP as u8);
-        asm.reg0().add_assign(Reg2);
-        asm.reg0().set_mem_page();
-        asm.reg0().assign_from(Reg3);
-    }
-    asm.reg0().store_mem_reg(); // map[y][x] = reg0
-}
 
-/// gamepad on bus0
 fn game_win(asm: &mut Assembler) {
-    asm.reg0().load_imm(ButtonQueryType::ButtonStart as u8);
-    asm.bus0(DeviceGamepadOpcode::QueryButton as u8);
-    let pressed = asm.jne_forward();
-    let not_pressed = asm.jmp_forward();
-    asm.resolve_jmp(pressed);
-    asm.comment("if start pressed -> init".to_string());
-    asm.jmp_long("init");
-    asm.comment("if start not pressed".to_string());
-    asm.resolve_jmp(not_pressed);
-
     // read player xy
     asm.reg0().load_imm(PAGE_GAME as u8);
     asm.reg0().set_mem_page();
@@ -345,37 +356,42 @@ fn game_win(asm: &mut Assembler) {
     // flash player tile to indicate GameState::Win
     read_map_tile(asm);
     asm.reg0().inc();
-    write_map_tile(asm, true);
+    asm.reg0().store_mem_reg();
 
     asm.jmp_long("render");
 }
 
 /// gamepad on bus0
 fn game_play(asm: &mut Assembler) {
-    /// read input, return dx in reg2, dy in reg3
+    /// read input, return any: reg1, dx in reg2, dy in reg3
     fn read_input(asm: &mut Assembler) {
         asm.comment("read_input".to_string());
-        // reg2: dx, reg3: dy
+        // reg1: any, reg2: dx, reg3: dy
+        asm.reg1().xor_assign(Reg1); // reg1 = 0
         asm.reg2().xor_assign(Reg2); // reg2 = 0
         asm.reg3().xor_assign(Reg3); // reg3 = 0
 
         // up -> dy -= 1
         asm.reg0().load_imm(ButtonQueryType::ButtonUp as u8);
         asm.bus0(DeviceGamepadOpcode::QueryButton as u8);
+        asm.reg1().or_assign(Reg0);
         asm.reg0().neg();
         asm.reg3().add_assign(Reg0);
         // down -> dy += 1
         asm.reg0().load_imm(ButtonQueryType::ButtonDown as u8);
         asm.bus0(DeviceGamepadOpcode::QueryButton as u8);
+        asm.reg1().or_assign(Reg0);
         asm.reg3().add_assign(Reg0);
         // left -> dx -= 1
         asm.reg0().load_imm(ButtonQueryType::ButtonLeft as u8);
         asm.bus0(DeviceGamepadOpcode::QueryButton as u8);
+        asm.reg1().or_assign(Reg0);
         asm.reg0().neg();
         asm.reg2().add_assign(Reg0);
         // right -> dx += 1
         asm.reg0().load_imm(ButtonQueryType::ButtonRight as u8);
         asm.bus0(DeviceGamepadOpcode::QueryButton as u8);
+        asm.reg1().or_assign(Reg0);
         asm.reg2().add_assign(Reg0);
     }
 
@@ -394,9 +410,9 @@ fn game_play(asm: &mut Assembler) {
         asm.reg0().store_mem_imm(ADDR_N2_X);
         // write n1y, n2y to memory
         asm.reg0().load_mem_imm(ADDR_PLAYER_Y as u8);
-        asm.reg0().add_assign(Reg2);
+        asm.reg0().add_assign(Reg3);
         asm.reg0().store_mem_imm(ADDR_N1_Y);
-        asm.reg0().add_assign(Reg2);
+        asm.reg0().add_assign(Reg3);
         asm.reg0().store_mem_imm(ADDR_N2_Y);
 
         // load n1 map tile
@@ -459,28 +475,29 @@ fn game_play(asm: &mut Assembler) {
         asm.reg0().store_mem_imm(ADDR_N2_BOX);
         asm.reg0().load_imm(TILE_GROUND);
         asm.reg0().and_assign(Reg3);
+        asm.comment("test and push".to_string());
         asm.reg0().store_mem_imm(ADDR_N2_GROUND);
 
-        asm.comment("test and push".to_string());
-        asm.reg0().inv(); // ~N2_GROUND to jmp (0111 or 1111)
-        let jmp_if_n2_wall = asm.jl_forward(); // TODO if ~N2_GROUND & 1000 => skip
-        asm.reg0().load_mem_imm(ADDR_N2_BOX);
-        asm.reg0().inv(); // ~N2_BOX
-        asm.reg1().assign_from(Reg0);
-        asm.resolve_jmp(jmp_if_n2_wall);
+        asm.if_is_8_to_15(
+            // N2_GROUND = 8
+            |asm| {
+                asm.reg0().load_mem_imm(ADDR_N2_BOX);
+                asm.reg0().inv(); // ~N2_BOX
+                asm.reg1().assign_from(Reg0);
+            },
+            |_| {},
+        );
         asm.reg0().load_mem_imm(ADDR_N1_BOX);
         asm.reg1().and_assign(Reg0); // reg1 saves push_bit
         asm.reg3().assign_from(Reg0); // reg3 saves N1_BOX
         asm.reg2().assign_from(Reg1);
         asm.reg2().inv(); // reg2 saves ~push_bit
-        let jmp_if_no_push = asm.jl_forward(); // TODO if ~push_bit(1111 or 1101) > 0
         asm.reg0().load_mem_imm(ADDR_N2_TILE);
         asm.reg0().or_assign(Reg1); // N2_TILE |= push_bit
         asm.reg0().store_mem_imm(ADDR_N2_TILE);
         asm.reg0().load_mem_imm(ADDR_N1_TILE);
-        asm.reg0().and_assign(Reg1); // N1_TILE &= ~push_bit
+        asm.reg0().and_assign(Reg2); // N1_TILE &= ~push_bit
         asm.reg0().store_mem_imm(ADDR_N1_TILE);
-        asm.resolve_jmp(jmp_if_no_push);
 
         // move_bit(1000 or 0000) = (~N1_BOX(1111 or 1101) | push_bit(0000 or 0010)) * 4 & N1_GROUND
         // if move_bit > 0 {
@@ -489,31 +506,89 @@ fn game_play(asm: &mut Assembler) {
         //     Player XY = N1 XY
         // }
 
-        asm.comment("test and push".to_string());
+        asm.comment("test and move".to_string());
         // reg0 N1 tile, reg1 push bit, reg3 N1_BOX
         asm.reg3().inv(); // ~N1_BOX
         asm.reg1().or_assign(Reg3);
         asm.reg1().add_assign(Reg1);
         asm.reg1().add_assign(Reg1); // reg1 = 1000 or 0000
         asm.reg0().load_mem_imm(ADDR_N1_GROUND);
-        asm.reg0().and_assign(Reg1);
-        // asm.jn TODO
-    }
+        asm.reg1().and_assign(Reg0); // move_bit
+        asm.if_is_zero(
+            |asm| {
+                asm.reg0().load_imm(0);
+            },
+            |asm| {
+                asm.reg0().load_imm(TILE_PLAYER);
+            },
+        );
+        asm.reg3().assign_from(Reg0);
+        asm.reg0().load_mem_imm(ADDR_N1_TILE);
+        asm.comment("    N1_TILE |= PLAYER".to_string());
+        asm.reg0().or_assign(Reg3);
+        asm.reg0().store_mem_imm(ADDR_N1_TILE);
+        // read/write player tile
+        asm.comment("    read/write player tile".to_string());
+        asm.reg0().load_mem_imm(ADDR_PLAYER_X as u8);
+        asm.reg1().assign_from(Reg0);
+        asm.reg0().load_mem_imm(ADDR_PLAYER_Y as u8);
+        asm.reg2().assign_from(Reg0);
+        read_map_tile(asm); // mem page changed
+        asm.reg3().assign_from(Reg3); // reset flag
+        asm.if_is_zero(
+            |_| {},
+            |asm| {
+                asm.reg3().inv();
+                asm.reg0().and_assign(Reg3);
+                asm.reg0().store_mem_reg();
+            },
+        );
+        // write player xy
+        asm.comment("    write player xy".to_string());
+        asm.reg0().load_imm(PAGE_GAME as u8);
+        asm.reg0().set_mem_page();
+        asm.reg3().assign_from(Reg3);
+        asm.if_is_zero(
+            |_| {},
+            |asm| {
+                asm.reg0().load_mem_imm(ADDR_N1_X);
+                asm.reg0().store_mem_imm(ADDR_PLAYER_X as u8);
+                asm.reg0().load_mem_imm(ADDR_N1_Y);
+                asm.reg0().store_mem_imm(ADDR_PLAYER_Y as u8);
+            },
+        );
 
-    //TODO
-    fn check_win(asm: &mut Assembler) {
-        asm.comment("check_win".to_string());
+        fn write_tile_to_mem(asm: &mut Assembler, addr_x: u8, addr_y: u8, addr_tile: u8) {
+            asm.reg0().load_imm(PAGE_GAME as u8);
+            asm.reg0().set_mem_page();
+            asm.reg0().load_mem_imm(addr_x);
+            asm.reg1().assign_from(Reg0);
+            asm.reg0().load_mem_imm(addr_y);
+            asm.reg2().assign_from(Reg0);
+            asm.reg0().load_mem_imm(addr_tile);
+            asm.reg3().assign_from(Reg0);
+
+            asm.reg0().load_imm(PAGE_MAP as u8);
+            asm.reg0().add_assign(Reg2);
+            asm.reg0().set_mem_page();
+            asm.reg0().assign_from(Reg3);
+            asm.reg0().store_mem_reg(); // map[y][x] = reg0
+        }
+        // write n1 n2 tile to mem
+        write_tile_to_mem(asm, ADDR_N1_X, ADDR_N1_Y, ADDR_N1_TILE);
+        write_tile_to_mem(asm, ADDR_N2_X, ADDR_N2_Y, ADDR_N2_TILE);
     }
 
     read_input(asm);
+    // reg1: any input
 
-    //TODO if no input => call render
+    // if no input => call render
+    asm.reg1().assign_from(Reg1);
+    asm.if_is_zero(|asm| asm.jmp_long("render"), |_| {});
 
-    read_map_tile(asm);
+    read_n1_n2(asm);
 
     push_and_move(asm);
-
-    check_win(asm);
 
     asm.jmp_long("render");
 }
@@ -529,6 +604,8 @@ fn render(asm: &mut Assembler) {
     asm.comment("reg0: color, reg1: addr, reg3: page".to_string());
     asm.reg0().load_imm(PAGE_MAP as u8);
     asm.reg3().assign_from(Reg0);
+
+    //TODO check TARGET & BOX to check WIN, set game state
 
     let page_loop = asm.reg0().assign_from(Reg3);
     asm.reg0().set_mem_page();
