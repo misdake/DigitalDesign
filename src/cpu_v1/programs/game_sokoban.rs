@@ -209,43 +209,43 @@ fn start_emulation(asm: Assembler) {
         }
         let inst_desc = inst[pc as usize];
         let comment = asm.get_comment(pc).map_or("", |s| s);
-        println!(
-            "pc {} {:04b}: inst {} {}",
-            pc / 16,
-            pc % 16,
-            inst_desc.to_string(),
-            comment
-        );
+        // println!(
+        //     "pc {} {:04b}: inst {} {}",
+        //     pc / 16,
+        //     pc % 16,
+        //     inst_desc.to_string(),
+        //     comment
+        // );
 
         execute_gates();
 
         clock_tick();
 
-        let get_game_mem =
-            |addr: u8| -> u8 { state.mem[PAGE_GAME * 16 + addr as usize].out.get_u8() };
-        println!("Reg: {:?}", state.reg.map(|r| r.out.get_u8()));
-        println!("Player X: {}", get_game_mem(ADDR_PLAYER_X as u8));
-        println!("Player Y: {}", get_game_mem(ADDR_PLAYER_Y as u8));
-        println!("ADDR_N1_X: {}", get_game_mem(ADDR_N1_X));
-        println!("ADDR_N1_Y: {}", get_game_mem(ADDR_N1_Y));
-        println!("ADDR_N2_X: {}", get_game_mem(ADDR_N2_X));
-        println!("ADDR_N2_Y: {}", get_game_mem(ADDR_N2_Y));
-        println!("ADDR_N1_BOX: {}", get_game_mem(ADDR_N1_BOX));
-        println!("ADDR_N1_GROUND: {}", get_game_mem(ADDR_N1_GROUND));
-        println!("ADDR_N2_BOX: {}", get_game_mem(ADDR_N2_BOX));
-        println!("ADDR_N2_GROUND: {}", get_game_mem(ADDR_N2_GROUND));
-        println!("ADDR_N1_TILE: {}", get_game_mem(ADDR_N1_TILE));
-        println!("ADDR_N2_TILE: {}", get_game_mem(ADDR_N2_TILE));
-
-        if asm.get_func_name(pc).is_some() {
-            println!("!");
-        }
-
-        if pc == 11 * 16 {
-            println!("!");
-        }
-
-        println!("-----------------------");
+        // let get_game_mem =
+        //     |addr: u8| -> u8 { state.mem[PAGE_GAME * 16 + addr as usize].out.get_u8() };
+        // println!("Reg: {:?}", state.reg.map(|r| r.out.get_u8()));
+        // println!("Player X: {}", get_game_mem(ADDR_PLAYER_X as u8));
+        // println!("Player Y: {}", get_game_mem(ADDR_PLAYER_Y as u8));
+        // println!("ADDR_N1_X: {}", get_game_mem(ADDR_N1_X));
+        // println!("ADDR_N1_Y: {}", get_game_mem(ADDR_N1_Y));
+        // println!("ADDR_N2_X: {}", get_game_mem(ADDR_N2_X));
+        // println!("ADDR_N2_Y: {}", get_game_mem(ADDR_N2_Y));
+        // println!("ADDR_N1_BOX: {}", get_game_mem(ADDR_N1_BOX));
+        // println!("ADDR_N1_GROUND: {}", get_game_mem(ADDR_N1_GROUND));
+        // println!("ADDR_N2_BOX: {}", get_game_mem(ADDR_N2_BOX));
+        // println!("ADDR_N2_GROUND: {}", get_game_mem(ADDR_N2_GROUND));
+        // println!("ADDR_N1_TILE: {}", get_game_mem(ADDR_N1_TILE));
+        // println!("ADDR_N2_TILE: {}", get_game_mem(ADDR_N2_TILE));
+        //
+        // if asm.get_func_name(pc).is_some() {
+        //     println!("!");
+        // }
+        //
+        // if pc == 8 * 16 {
+        //     println!("!");
+        // }
+        //
+        // println!("-----------------------");
     }
 }
 
@@ -415,20 +415,20 @@ fn game_play(asm: &mut Assembler) {
         asm.reg0().add_assign(Reg3);
         asm.reg0().store_mem_imm(ADDR_N2_Y);
 
-        // load n1 map tile
-        asm.reg0().load_mem_imm(ADDR_N1_X);
+        // load n2 to reg3
+        asm.reg0().load_mem_imm(ADDR_N2_X);
         asm.reg1().assign_from(Reg0);
-        asm.reg0().load_mem_imm(ADDR_N1_Y);
+        asm.reg0().load_mem_imm(ADDR_N2_Y);
         asm.reg2().assign_from(Reg0);
         read_map_tile(asm); // mem page changed
         asm.reg3().assign_from(Reg0);
 
         asm.reg0().load_imm(PAGE_GAME as u8);
         asm.reg0().set_mem_page();
-
-        asm.reg0().load_mem_imm(ADDR_N2_X);
+        // load n1 to reg2
+        asm.reg0().load_mem_imm(ADDR_N1_X);
         asm.reg1().assign_from(Reg0);
-        asm.reg0().load_mem_imm(ADDR_N2_Y);
+        asm.reg0().load_mem_imm(ADDR_N1_Y);
         asm.reg2().assign_from(Reg0);
         read_map_tile(asm); // mem page changed
         asm.reg2().assign_from(Reg0);
