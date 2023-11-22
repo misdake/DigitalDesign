@@ -5,7 +5,6 @@ use crate::{clock_tick, execute_gates};
 use std::ops::Range;
 
 const MAP_SIZE: usize = 8;
-const TARGET_MAX: usize = 8;
 
 const ADDR_PLAYER_X: usize = 1;
 const ADDR_PLAYER_Y: usize = 2;
@@ -24,7 +23,6 @@ const ADDR_N2_TILE: u8 = 14;
 
 const PAGE_GAME: usize = 2;
 const PAGE_PALETTE: usize = 3;
-const PAGE_TARGET_LIST: usize = 4; // max 8 pairs of xy
 
 // alloc [6,16)+[0,1) for map, so that out of bound coordinates will read 0 from map!
 const PAGE_MAP: usize = 8; // [8, 16) + padding=2, map[y][x] on page(PAGE_MAP+y) addr(x)
