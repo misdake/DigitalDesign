@@ -9,8 +9,7 @@ const TARGET_MAX: usize = 8;
 
 const ADDR_PLAYER_X: usize = 1;
 const ADDR_PLAYER_Y: usize = 2;
-const ADDR_TARGET_COUNT: usize = 3;
-const ADDR_GAME_STATE: usize = 4;
+const ADDR_GAME_STATE: usize = 3;
 
 const ADDR_N1_X: u8 = 5;
 const ADDR_N1_Y: u8 = 6;
@@ -74,14 +73,12 @@ fn parse_tile(c: char) -> u8 {
 
 struct GameMap {
     start: (usize, usize),
-    target_list: Vec<(usize, usize)>,
     map: [u8; MAP_SIZE * MAP_SIZE],
 }
 impl GameMap {
     fn parse(tiles: [&'static str; MAP_SIZE]) -> Self {
         let mut map = GameMap {
             start: (0, 0),
-            target_list: vec![],
             map: [0; MAP_SIZE * MAP_SIZE],
         };
 
@@ -92,9 +89,6 @@ impl GameMap {
                 map.map[y * MAP_SIZE + x] = i;
                 if i & TILE_PLAYER > 0 {
                     map.start = (x, y);
-                }
-                if i & TILE_TARGET > 0 {
-                    map.target_list.push((x, y));
                 }
             }
         }
@@ -108,17 +102,10 @@ impl GameMap {
         r[PAGE_GAME * 16 + ADDR_PLAYER_X] = self.start.0 as u8;
         r[PAGE_GAME * 16 + ADDR_PLAYER_Y] = self.start.1 as u8;
 
-        assert!(self.target_list.len() < TARGET_MAX);
-        r[PAGE_GAME * 16 + ADDR_TARGET_COUNT] = self.target_list.len() as u8;
-
         r[PAGE_GAME * 16 + ADDR_GAME_STATE] = GameState::Play as u8;
 
         for i in 0..16 {
             r[PAGE_PALETTE * 16 + i] = PALETTE[i] as u8;
-        }
-        for (i, (x, y)) in self.target_list.iter().enumerate() {
-            r[PAGE_TARGET_LIST * 16 + i * 2] = *x as u8;
-            r[PAGE_TARGET_LIST * 16 + i * 2 + 1] = *y as u8;
         }
         for y in 0..MAP_SIZE {
             for x in 0..MAP_SIZE {
@@ -251,12 +238,6 @@ fn start_emulation(asm: Assembler) {
         // println!("ADDR_N2_GROUND: {}", get_game_mem(ADDR_N2_GROUND));
         // println!("ADDR_N1_TILE: {}", get_game_mem(ADDR_N1_TILE));
         // println!("ADDR_N2_TILE: {}", get_game_mem(ADDR_N2_TILE));
-        //
-        // if asm.get_func_name(pc).is_some() {
-        //     println!("!");
-        // }
-
-        // println!("-----------------------");
     }
 }
 
@@ -331,7 +312,7 @@ fn game_loop(asm: &mut Assembler) {
     asm.reg0().set_bus_addr0();
     asm.bus0(DeviceGamepadOpcode::NextFrame as u8);
 
-    // Enter -> restart
+    asm.comment("Enter -> Restart".to_string());
     asm.reg0().load_imm(ButtonQueryType::ButtonStart as u8);
     asm.bus0(DeviceGamepadOpcode::QueryButton as u8);
     asm.if_is_1_to_7(
