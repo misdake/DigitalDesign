@@ -17,8 +17,16 @@ pub use external::*;
 pub use reg::*;
 pub use wires::*;
 
+mod export;
+
 #[cfg(test)]
 pub(crate) use tests::*;
+
+use std::sync::{LockResult, Mutex, MutexGuard};
+static GLOBAL_LOCK: Mutex<()> = Mutex::new(());
+pub fn global_lock() -> LockResult<MutexGuard<'static, ()>> {
+    GLOBAL_LOCK.lock()
+}
 
 pub(crate) fn select<T>(b: bool, t: T, f: T) -> T {
     if b {

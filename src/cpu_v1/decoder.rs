@@ -27,7 +27,7 @@ pub struct CpuDecoderOutput {
     pub mem_page_write_enable: Wire,
 
     // jmp control
-    pub jmp_op: Wires<6>,         // JmpOp: no_jmp, jmp, je, jl, jg, long
+    pub jmp_op: Wires<6>,         // JmpOp: no_jmp, jmp, jne, jl, jg, long
     pub jmp_src_select: Wires<2>, // JmpSrcSelect: imm, regA
 
     // bus control
@@ -84,7 +84,7 @@ pub enum MemAddrSelect {
 pub enum JmpOp {
     NoJmp = 0,
     Jmp = 1,
-    Je = 2,
+    Jne = 2,
     Jl = 3,
     Jg = 4,
     Long = 5,
@@ -184,12 +184,12 @@ impl CpuComponent for CpuDecoder {
         let mut jmp_op = Wires::uninitialized();
         let is_op_jmp_long = op4.eq_const(0b1011);
         let is_op_jmp_offset = op4.eq_const(0b1100);
-        let is_op_je_offset = op4.eq_const(0b1101);
+        let is_op_jne_offset = op4.eq_const(0b1101);
         let is_op_jl_offset = op4.eq_const(0b1110);
         let is_op_jg_offset = op4.eq_const(0b1111);
         jmp_op.wires[JmpOp::NoJmp as usize] = (!b0 | !b1) & !is_op_jmp_long;
         jmp_op.wires[JmpOp::Jmp as usize] = is_op_jmp_offset;
-        jmp_op.wires[JmpOp::Je as usize] = is_op_je_offset;
+        jmp_op.wires[JmpOp::Jne as usize] = is_op_jne_offset;
         jmp_op.wires[JmpOp::Jl as usize] = is_op_jl_offset;
         jmp_op.wires[JmpOp::Jg as usize] = is_op_jg_offset;
         jmp_op.wires[JmpOp::Long as usize] = is_op_jmp_long;
@@ -269,36 +269,40 @@ impl CpuComponentEmu<CpuDecoder> for CpuDecoderEmu {
         let reg1_bits: u8 = (inst & 0b00001100) >> 2;
         let imm: u8 = (inst & 0b00001111) >> 0;
 
+        let inst = Instruction::parse(inst).unwrap();
+
         // alu_op2
-        let mov = INST_MOV.match_opcode(inst);
-        let and = INST_AND.match_opcode(inst);
-        let or = INST_OR.match_opcode(inst);
-        let xor = INST_XOR.match_opcode(inst);
-        let add = INST_ADD.match_opcode(inst);
+        let mov = matches!(inst, Instruction::mov(..));
+        let and = matches!(inst, Instruction::and(..));
+        let or = matches!(inst, Instruction::or(..));
+        let xor = matches!(inst, Instruction::xor(..));
+        let add = matches!(inst, Instruction::add(..));
         // alu_op1
-        let inv = INST_INV.match_opcode(inst);
-        let neg = INST_NEG.match_opcode(inst);
-        let inc = INST_INC.match_opcode(inst);
-        let dec = INST_DEC.match_opcode(inst);
+        let inv = matches!(inst, Instruction::inv(..));
+        let neg = matches!(inst, Instruction::neg(..));
+        let inc = matches!(inst, Instruction::inc(..));
+        let dec = matches!(inst, Instruction::dec(..));
         // load store
-        let load_imm = INST_LOAD_IMM.match_opcode(inst);
-        let load_mem_imm = INST_LOAD_MEM.match_opcode(inst) && (imm != 0);
-        let load_mem_reg = INST_LOAD_MEM.match_opcode(inst) && (imm == 0);
-        let store_mem_imm = INST_STORE_MEM.match_opcode(inst) && (imm != 0);
-        let store_mem_reg = INST_STORE_MEM.match_opcode(inst) && (imm == 0);
+        let load_imm = matches!(inst, Instruction::load_imm(..));
+        let load_mem_imm = matches!(inst, Instruction::load_mem(..)) && (imm != 0);
+        let load_mem_reg = matches!(inst, Instruction::load_mem(..)) && (imm == 0);
+        let store_mem_imm = matches!(inst, Instruction::store_mem(..)) && (imm != 0);
+        let store_mem_reg = matches!(inst, Instruction::store_mem(..)) && (imm == 0);
         // jmp
-        let jmp_offset = INST_JMP_OFFSET.match_opcode(inst);
-        let je_offset = INST_JE_OFFSET.match_opcode(inst);
-        let jl_offset = INST_JL_OFFSET.match_opcode(inst);
-        let jg_offset = INST_JG_OFFSET.match_opcode(inst);
-        let jmp_long = INST_JMP_LONG.match_opcode(inst);
+        let jmp_offset = matches!(inst, Instruction::jmp_offset(..));
+        let jne_offset = matches!(inst, Instruction::jne_offset(..));
+        let jl_offset = matches!(inst, Instruction::jl_offset(..));
+        let jg_offset = matches!(inst, Instruction::jg_offset(..));
+        let jmp_long = matches!(inst, Instruction::jmp_long(..));
         // control TODO
-        let set_mem_page = INST_SET_MEM_PAGE.match_opcode(inst);
-        let set_bus_addr0 = INST_SET_BUS_ADDR0.match_opcode(inst);
-        let set_bus_addr1 = INST_SET_BUS_ADDR1.match_opcode(inst);
+        let set_mem_page = matches!(inst, Instruction::set_mem_page(..));
+        let set_bus_addr0 = matches!(inst, Instruction::set_bus_addr0(..));
+        let set_bus_addr1 = matches!(inst, Instruction::set_bus_addr1(..));
         let is_control = set_mem_page | (set_bus_addr0 | set_bus_addr1);
         // bus
-        let is_bus = INST_BUS0.match_opcode(inst) | INST_BUS1.match_opcode(inst);
+        let bus0 = matches!(inst, Instruction::bus0(..));
+        let bus1 = matches!(inst, Instruction::bus1(..));
+        let is_bus = bus0 || bus1;
 
         // immutable local variable => all output variables assigned once and only once.
         let reg0_addr: u8;
@@ -321,7 +325,7 @@ impl CpuComponentEmu<CpuDecoder> for CpuDecoderEmu {
         let is_load_imm = load_imm;
         let is_load_mem = load_mem_imm || load_mem_reg;
         let is_store_mem = store_mem_imm || store_mem_reg;
-        let is_jmp = jmp_offset || je_offset || jl_offset || jg_offset || jmp_long;
+        let is_jmp = jmp_offset || jne_offset || jl_offset || jg_offset || jmp_long;
 
         if is_alu || is_load_imm {
             jmp_op = 1 << JmpOp::NoJmp as u8;
@@ -404,7 +408,7 @@ impl CpuComponentEmu<CpuDecoder> for CpuDecoderEmu {
             }
         } else if is_jmp {
             jmp_op = ((jmp_offset as u8) << (JmpOp::Jmp as u8))
-                | ((je_offset as u8) << (JmpOp::Je as u8))
+                | ((jne_offset as u8) << (JmpOp::Jne as u8))
                 | ((jl_offset as u8) << (JmpOp::Jl as u8))
                 | ((jg_offset as u8) << (JmpOp::Jg as u8))
                 | ((jmp_long as u8) << (JmpOp::Long as u8));
@@ -510,16 +514,16 @@ struct DecoderTestEnv {
 
 #[cfg(test)]
 fn test_result<T: PartialEq + Eq + Debug>(
-    inst: InstBinary,
+    inst: Instruction,
     env: &DecoderTestEnv,
     fields: impl Fn(&CpuDecoderOutput) -> T,
 ) {
-    env.inst.set_u8(inst.binary);
+    env.inst.set_u8(inst.to_binary());
     crate::simulate();
     let r1 = fields(&env.build1);
     let r2 = fields(&env.build2);
-    assert_eq!(r1, r2, "{:08b} {}", inst.binary, inst.desc.name());
-    println!("{:08b} {}, {:?}", inst.binary, inst.desc.name(), r1);
+    assert_eq!(r1, r2, "{:08b} {}", inst.to_binary(), inst.to_string());
+    println!("{:08b} {}, {:?}", inst.to_binary(), inst.to_string(), r1);
 }
 
 #[cfg(test)]
@@ -536,7 +540,7 @@ fn init_decoder() -> DecoderTestEnv {
 }
 
 #[cfg(test)]
-fn test_decoder_alu(inst: InstBinary, env: &DecoderTestEnv) {
+fn test_decoder_alu(inst: Instruction, env: &DecoderTestEnv) {
     test_result(inst, &env, |o| {
         (
             o.reg0_addr.get_u8(),
@@ -552,7 +556,7 @@ fn test_decoder_alu(inst: InstBinary, env: &DecoderTestEnv) {
     });
 }
 #[cfg(test)]
-fn test_decoder_jmp(inst: InstBinary, env: &DecoderTestEnv) {
+fn test_decoder_jmp(inst: Instruction, env: &DecoderTestEnv) {
     test_result(inst, &env, |o| {
         (
             o.reg0_addr.get_u8(),
@@ -563,7 +567,7 @@ fn test_decoder_jmp(inst: InstBinary, env: &DecoderTestEnv) {
     });
 }
 #[cfg(test)]
-fn test_decoder_load_mem(inst: InstBinary, env: &DecoderTestEnv) {
+fn test_decoder_load_mem(inst: Instruction, env: &DecoderTestEnv) {
     test_result(inst, &env, |o| {
         (
             o.reg0_addr.get_u8(),
@@ -577,7 +581,7 @@ fn test_decoder_load_mem(inst: InstBinary, env: &DecoderTestEnv) {
     });
 }
 #[cfg(test)]
-fn test_decoder_store_mem(inst: InstBinary, env: &DecoderTestEnv) {
+fn test_decoder_store_mem(inst: Instruction, env: &DecoderTestEnv) {
     test_result(inst, &env, |o| {
         (
             o.reg0_addr.get_u8(),
@@ -590,7 +594,7 @@ fn test_decoder_store_mem(inst: InstBinary, env: &DecoderTestEnv) {
     });
 }
 #[cfg(test)]
-fn test_decoder_special(inst: InstBinary, env: &DecoderTestEnv) {
+fn test_decoder_special(inst: Instruction, env: &DecoderTestEnv) {
     test_result(inst, &env, |o| {
         (
             o.reg0_addr.get_u8(),
@@ -607,39 +611,42 @@ fn test_decoder_special(inst: InstBinary, env: &DecoderTestEnv) {
 
 #[test]
 fn test_decoder() {
+    use crate::cpu_v1::isa::Instruction::*;
+    use crate::cpu_v1::isa::RegisterIndex::*;
+
     let env = init_decoder();
 
-    test_decoder_alu(inst_mov(0, 0), &env);
-    test_decoder_alu(inst_and(1, 2), &env);
-    test_decoder_alu(inst_or(3, 0), &env);
-    test_decoder_alu(inst_xor(2, 1), &env);
-    test_decoder_alu(inst_add(3, 0), &env);
-    test_decoder_alu(inst_inv(0), &env);
-    test_decoder_alu(inst_neg(1), &env);
-    test_decoder_alu(inst_dec(2), &env);
-    test_decoder_alu(inst_inc(3), &env);
-    test_decoder_alu(inst_load_imm(9), &env);
+    test_decoder_alu(mov((Reg0, Reg0)), &env);
+    test_decoder_alu(and((Reg1, Reg2)), &env);
+    test_decoder_alu(or((Reg3, Reg0)), &env);
+    test_decoder_alu(xor((Reg2, Reg1)), &env);
+    test_decoder_alu(add((Reg3, Reg0)), &env);
+    test_decoder_alu(inv(Reg0), &env);
+    test_decoder_alu(neg(Reg1), &env);
+    test_decoder_alu(dec(Reg2), &env);
+    test_decoder_alu(inc(Reg3), &env);
+    test_decoder_alu(load_imm(9), &env);
 
-    test_decoder_load_mem(inst_load_mem(15), &env);
-    test_decoder_load_mem(inst_load_mem(0), &env);
+    test_decoder_load_mem(load_mem(15), &env);
+    test_decoder_load_mem(load_mem(0), &env);
 
-    test_decoder_store_mem(inst_store_mem(15), &env);
-    test_decoder_store_mem(inst_store_mem(0), &env);
+    test_decoder_store_mem(store_mem(15), &env);
+    test_decoder_store_mem(store_mem(0), &env);
 
-    test_decoder_jmp(inst_jmp_long(15), &env);
-    test_decoder_jmp(inst_jmp_long(0), &env);
-    test_decoder_jmp(inst_jmp_offset(14), &env);
-    test_decoder_jmp(inst_jmp_offset(0), &env);
-    test_decoder_jmp(inst_je_offset(13), &env);
-    test_decoder_jmp(inst_je_offset(0), &env);
-    test_decoder_jmp(inst_jl_offset(12), &env);
-    test_decoder_jmp(inst_jl_offset(0), &env);
-    test_decoder_jmp(inst_jg_offset(11), &env);
-    test_decoder_jmp(inst_jg_offset(0), &env);
+    test_decoder_jmp(jmp_long(15), &env);
+    test_decoder_jmp(jmp_long(0), &env);
+    test_decoder_jmp(jmp_offset(14), &env);
+    test_decoder_jmp(jmp_offset(0), &env);
+    test_decoder_jmp(jne_offset(13), &env);
+    test_decoder_jmp(jne_offset(0), &env);
+    test_decoder_jmp(jl_offset(12), &env);
+    test_decoder_jmp(jl_offset(0), &env);
+    test_decoder_jmp(jg_offset(11), &env);
+    test_decoder_jmp(jg_offset(0), &env);
 
     //TODO control
-    test_decoder_special(inst_set_mem_page(), &env);
+    test_decoder_special(set_mem_page(()), &env);
 
-    test_decoder_special(inst_bus0(0), &env);
-    test_decoder_special(inst_bus0(1), &env);
+    test_decoder_special(bus0(0), &env);
+    test_decoder_special(bus0(1), &env);
 }

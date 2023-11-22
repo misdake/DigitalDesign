@@ -14,14 +14,18 @@ mod mem;
 use mem::*;
 mod bus;
 use bus::*;
-
 mod isa;
 use isa::*;
+mod emu;
+// use emu::*;
+
 mod devices;
+use devices::*;
+mod assembler;
+use assembler::*;
 #[cfg(test)]
 mod programs;
 
-use crate::cpu_v1::devices::Devices;
 use crate::{clear_all, external, reg, reg_w, External, Reg, Regs, Wires};
 use std::any::Any;
 use std::cell::RefCell;
@@ -30,31 +34,33 @@ use std::rc::Rc;
 
 #[allow(unused)]
 struct CpuV1State {
+    inst_src: [Instruction; 256],
     inst: [Wires<8>; 256],
     pc: Regs<8>,       // write in CpuV1
     reg: [Regs<4>; 4], // write in RegWrite
     mem: [Regs<4>; 256],
     mem_page: Regs<4>,
-    flag_p: Reg, // write in CpuV1
-    flag_z: Reg, // write in CpuV1
-    flag_n: Reg, // write in CpuV1
+    flag_p: Reg,  // write in CpuV1
+    flag_nz: Reg, // write in CpuV1
+    flag_n: Reg,  // write in CpuV1
     bus_addr0: Regs<4>,
     bus_addr1: Regs<4>,
     devices: Rc<RefCell<Devices>>,
 }
 impl CpuV1State {
-    fn create(inst: [u8; 256]) -> Self {
-        let inst = inst.map(|v| Wires::<8>::parse_u8(v));
+    fn create(inst_src: [Instruction; 256]) -> Self {
+        let inst = inst_src.map(|v| Wires::<8>::parse_u8(v.to_binary()));
         let regs = [0u8; 4].map(|_| reg_w());
         let mem = [0u8; 256].map(|_| reg_w());
         Self {
+            inst_src,
             inst,
             pc: reg_w(),
             mem,
             mem_page: reg_w(),
             reg: regs,
             flag_p: reg(),
-            flag_z: reg(),
+            flag_nz: reg(),
             flag_n: reg(),
             bus_addr0: reg_w(),
             bus_addr1: reg_w(),
@@ -165,7 +171,7 @@ trait CpuV1 {
             mem_page: state.mem_page.out,
             reg0: reg0_data,
             mem_write_enable,
-            mem_page_write_enable: mem_page_write_enable,
+            mem_page_write_enable,
             imm,
             reg1: reg1_data,
             mem_addr_select,
@@ -203,7 +209,7 @@ trait CpuV1 {
             jmp_op,
             jmp_src_select,
             flag_p: state.flag_p.out(),
-            flag_z: state.flag_z.out(),
+            flag_nz: state.flag_nz.out(),
             flag_n: state.flag_n.out(),
         };
         let branch_out: CpuBranchOutput = Self::Branch::build(&branch_in);
@@ -213,7 +219,7 @@ trait CpuV1 {
             jmp_long_enable,
             jmp_long,
             flag_p,
-            flag_z,
+            flag_nz,
             flag_n,
         } = branch_out;
 
@@ -230,7 +236,7 @@ trait CpuV1 {
         // set regs
         state.pc.set_in(next_pc_out.next_pc);
         state.flag_p.set_in(flag_p);
-        state.flag_z.set_in(flag_z);
+        state.flag_nz.set_in(flag_nz);
         state.flag_n.set_in(flag_n);
 
         CpuV1StateInternal {
@@ -282,7 +288,7 @@ impl CpuV1 for CpuV1EmuInstance {
 
 #[allow(unused)]
 fn cpu_v1_build_with_ref(
-    inst_rom: [u8; 256],
+    inst_rom: [Instruction; 256],
 ) -> (
     CpuV1State,
     CpuV1State,
@@ -294,20 +300,23 @@ fn cpu_v1_build_with_ref(
     let mut state2 = CpuV1State::create(inst_rom.clone());
     let internal1 = CpuV1Instance::build(&mut state1);
     let internal2 = CpuV1EmuInstance::build(&mut state2);
+    println!("cpu_v1_build_with_ref {:?}", crate::get_statistics());
     (state1, state2, internal1, internal2)
 }
 #[allow(unused)]
-fn cpu_v1_build(inst_rom: [u8; 256]) -> (CpuV1State, CpuV1StateInternal) {
+fn cpu_v1_build(inst_rom: [Instruction; 256]) -> (CpuV1State, CpuV1StateInternal) {
     clear_all();
     let mut state1 = CpuV1State::create(inst_rom.clone());
     let internal1 = CpuV1Instance::build(&mut state1);
+    println!("cpu_v1_build {:?}", crate::get_statistics());
     (state1, internal1)
 }
 #[allow(unused)]
-fn cpu_v1_build_mix(inst_rom: [u8; 256]) -> (CpuV1State, CpuV1StateInternal) {
+fn cpu_v1_build_mix(inst_rom: [Instruction; 256]) -> (CpuV1State, CpuV1StateInternal) {
     clear_all();
     let mut state1 = CpuV1State::create(inst_rom.clone());
     let internal1 = CpuV1MixInstance::build(&mut state1);
+    println!("cpu_v1_build_mix {:?}", crate::get_statistics());
     (state1, internal1)
 }
 

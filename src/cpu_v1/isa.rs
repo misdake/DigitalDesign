@@ -1,248 +1,163 @@
 pub type InstBinaryType = u8;
 
-pub type InstRegType = u8;
-pub type InstImmType = u8;
-
-#[derive(Copy, Clone)]
-pub struct InstBinary {
-    pub binary: InstBinaryType,
-    pub desc: &'static InstDesc,
-}
-impl InstBinary {}
-
-pub struct InstOpcodeDesc4 {
-    name: &'static str,
-    bits: u8,
-}
-pub struct InstOpcodeDesc5 {
-    name: &'static str,
-    bits: u8,
-}
-pub struct InstOpcodeDesc6 {
-    name: &'static str,
-    bits: u8,
-}
-pub struct InstOpcodeDesc8 {
-    name: &'static str,
-    bits: u8,
-}
-impl InstDesc {
-    #[allow(unused)]
-    pub fn name(&self) -> &'static str {
-        match &self {
-            InstDesc::Op2(opcode, _, _) => opcode.name,
-            InstDesc::Op1(opcode, _) => opcode.name,
-            InstDesc::Op0i4(opcode, _) => opcode.name,
-            InstDesc::Op0i3(opcode, _) => opcode.name,
-            InstDesc::Op0(opcode) => opcode.name,
-        }
-    }
-    fn opcode(&self) -> (u8, u8) {
-        match &self {
-            InstDesc::Op2(opcode, _, _) => (opcode.bits, 4),
-            InstDesc::Op1(opcode, _) => (opcode.bits, 6),
-            InstDesc::Op0i4(opcode, _) => (opcode.bits, 4),
-            InstDesc::Op0i3(opcode, _) => (opcode.bits, 5),
-            InstDesc::Op0(opcode) => (opcode.bits, 8),
-        }
-    }
-    pub fn match_opcode(&self, inst_value: InstBinaryType) -> bool {
-        let (bits, len) = self.opcode();
-        bits == (inst_value >> (8 - len))
+fn match_op2(binary: InstBinaryType, op4: u8) -> Option<(RegisterIndex, RegisterIndex)> {
+    if op4 == binary >> 4 {
+        let reg1 = unsafe { std::mem::transmute((binary & 0b1100) >> 2) };
+        let reg0 = unsafe { std::mem::transmute(binary & 0b0011) };
+        Some((reg1, reg0))
+    } else {
+        None
     }
 }
-
-pub struct InstRegDesc {}
-pub struct InstImmDesc {}
-
-impl InstDesc {
-    const fn op2(name: &'static str, opcode: u8) -> InstDesc {
-        assert!(opcode < (1 << 4));
-        InstDesc::Op2(
-            InstOpcodeDesc4 { name, bits: opcode },
-            InstRegDesc {},
-            InstRegDesc {},
-        )
+fn match_op1(binary: InstBinaryType, op6: u8) -> Option<RegisterIndex> {
+    if op6 == binary >> 2 {
+        let reg0 = unsafe { std::mem::transmute(binary & 0b11) };
+        Some(reg0)
+    } else {
+        None
     }
-    const fn op1(name: &'static str, opcode: u8) -> InstDesc {
-        assert!(opcode < (1 << 6));
-        InstDesc::Op1(InstOpcodeDesc6 { name, bits: opcode }, InstRegDesc {})
+}
+fn match_op0i4(binary: InstBinaryType, op4: u8) -> Option<Imm4> {
+    if op4 == binary >> 4 {
+        let imm4 = unsafe { std::mem::transmute(binary & 0b1111) };
+        Some(imm4)
+    } else {
+        None
     }
-    const fn op0i4(name: &'static str, opcode: u8) -> InstDesc {
-        assert!(opcode < (1 << 4));
-        InstDesc::Op0i4(InstOpcodeDesc4 { name, bits: opcode }, InstImmDesc {})
+}
+fn match_op0i3(binary: InstBinaryType, op5: u8) -> Option<Imm3> {
+    if op5 == binary >> 3 {
+        let imm3 = unsafe { std::mem::transmute(binary & 0b111) };
+        Some(imm3)
+    } else {
+        None
     }
-    const fn op0i3(name: &'static str, opcode: u8) -> InstDesc {
-        assert!(opcode < (1 << 5));
-        InstDesc::Op0i3(InstOpcodeDesc5 { name, bits: opcode }, InstImmDesc {})
-    }
-    const fn op0(name: &'static str, opcode: u8) -> InstDesc {
-        InstDesc::Op0(InstOpcodeDesc8 { name, bits: opcode })
-    }
-
-    #[allow(unused)]
-    pub fn parse(input: InstBinaryType) -> Option<InstBinary> {
-        for inst_desc in ALL_INSTRUCTION_DESC {
-            if inst_desc.match_opcode(input) {
-                return Some(InstBinary {
-                    binary: input,
-                    desc: inst_desc,
-                });
-            }
-        }
+}
+fn match_op0(binary: InstBinaryType, op8: u8) -> Option<()> {
+    if op8 == binary {
+        Some(())
+    } else {
         None
     }
 }
 
-pub enum InstDesc {
-    Op2(InstOpcodeDesc4, InstRegDesc, InstRegDesc),
-    Op1(InstOpcodeDesc6, InstRegDesc),
-    Op0i4(InstOpcodeDesc4, InstImmDesc),
-    Op0i3(InstOpcodeDesc5, InstImmDesc),
-    Op0(InstOpcodeDesc8),
+pub type Op2Param = (RegisterIndex, RegisterIndex);
+pub type Op1Param = RegisterIndex;
+pub type Op0i4Param = Imm4;
+pub type Op0i3Param = Imm3;
+pub type Op0Param = ();
+
+#[derive(Copy, Clone)]
+enum InstEncoded {
+    Op2(&'static str, u8, (RegisterIndex, RegisterIndex)),
+    Op1(&'static str, u8, RegisterIndex),
+    Op0i4(&'static str, u8, Imm4),
+    Op0i3(&'static str, u8, Imm3),
+    Op0(&'static str, u8, ()),
 }
+impl InstEncoded {
+    fn to_string(self) -> String {
+        match self {
+            InstEncoded::Op2(name, _, (reg1, reg0)) => {
+                format!("{} r{} <- r{}", name, reg0 as u8, reg1 as u8)
+            }
+            InstEncoded::Op1(name, _, reg0) => format!("{} r{}", name, reg0 as u8),
+            InstEncoded::Op0i4(name, _, imm4) => format!("{} {} (0b{:04b})", name, imm4, imm4),
+            InstEncoded::Op0i3(name, _, imm3) => format!("{} {} (0b{:04b})", name, imm3, imm3),
+            InstEncoded::Op0(name, _, _) => format!("{}", name),
+        }
+    }
+    fn to_binary(self) -> InstBinaryType {
+        match self {
+            InstEncoded::Op2(_, opcode4, (reg1, reg0)) => {
+                (opcode4 << 4) | ((reg1 as u8) << 2) | ((reg0 as u8) << 0)
+            }
+            InstEncoded::Op1(_, opcode6, reg0) => (opcode6 << 2) | ((reg0 as u8) << 0),
+            InstEncoded::Op0i4(_, opcode4, imm4) => (opcode4 << 4) | (imm4 << 0),
+            InstEncoded::Op0i3(_, opcode5, imm3) => (opcode5 << 3) | (imm3 << 0),
+            InstEncoded::Op0(_, opcode8, _) => opcode8,
+        }
+    }
+}
+
+#[repr(u8)]
+#[derive(Copy, Clone)]
+pub enum RegisterIndex {
+    Reg0 = 0,
+    Reg1,
+    Reg2,
+    Reg3,
+}
+pub type Imm3 = u8;
+pub type Imm4 = u8;
 
 use paste::paste;
-macro_rules! inst_op2 {
-    ($opcode: expr, $name: ident) => {
+
+macro_rules! define_isa {
+    ($enum_name:ident, $(($encoding: ident, $opcode: expr, $name: ident),)*) => {
         paste! {
-            #[allow(unused)]
-            pub const [<INST_ $name:upper>]: InstDesc = InstDesc::op2(stringify!($name), $opcode);
-            #[allow(unused)]
-            pub fn [<inst_ $name>](reg1: InstRegType, reg0: InstRegType) -> InstBinary {
-                InstBinary {
-                    binary: ($opcode << 4) | (reg1 << 2) | (reg0 << 0),
-                    desc: &[<INST_ $name:upper>],
-                }
+            #[allow(non_camel_case_types)]
+            #[derive(Copy, Clone)]
+            pub enum $enum_name {
+                $($name( [<$encoding Param>] )),+
             }
-        }
-    };
-}
-macro_rules! inst_op1 {
-    ($opcode: expr, $name: ident) => {
-        paste! {
-            #[allow(unused)]
-            pub const [<INST_ $name:upper>]: InstDesc = InstDesc::op1(stringify!($name), $opcode);
-            #[allow(unused)]
-            pub fn [<inst_ $name>](reg0: InstRegType) -> InstBinary {
-                InstBinary {
-                    binary: ($opcode << 2) | (reg0 << 0),
-                    desc: &[<INST_ $name:upper>],
+
+            impl $enum_name {
+                fn to_encoded(self) -> InstEncoded {
+                    use $enum_name::*;
+                    match self {
+                        $($name(param) => InstEncoded::$encoding(stringify!($name), $opcode, param)),+
+                    }
                 }
-            }
-        }
-    };
-}
-macro_rules! inst_op0i4 {
-    ($opcode: expr, $name: ident) => {
-        paste! {
-            #[allow(unused)]
-            pub const [<INST_ $name:upper>]: InstDesc = InstDesc::op0i4(stringify!($name), $opcode);
-            #[allow(unused)]
-            pub fn [<inst_ $name>](imm: InstImmType) -> InstBinary {
-                InstBinary {
-                    binary: ($opcode << 4) | (imm << 0),
-                    desc: &[<INST_ $name:upper>],
-                }
-            }
-        }
-    };
-}
-macro_rules! inst_op0i3 {
-    ($opcode: expr, $name: ident) => {
-        paste! {
-            #[allow(unused)]
-            pub const [<INST_ $name:upper>]: InstDesc = InstDesc::op0i3(stringify!($name), $opcode);
-            #[allow(unused)]
-            pub fn [<inst_ $name>](imm: InstImmType) -> InstBinary {
-                InstBinary {
-                    binary: ($opcode << 3) | (imm << 0),
-                    desc: &[<INST_ $name:upper>],
-                }
-            }
-        }
-    };
-}
-macro_rules! inst_op0 {
-    ($opcode: expr, $name: ident) => {
-        paste! {
-            #[allow(unused)]
-            pub const [<INST_ $name:upper>]: InstDesc = InstDesc::op0(stringify!($name), $opcode);
-            #[allow(unused)]
-            pub fn [<inst_ $name>]() -> InstBinary {
-                InstBinary {
-                    binary: ($opcode << 0),
-                    desc: &[<INST_ $name:upper>],
+                pub fn parse(binary: InstBinaryType) -> Option<Self> {
+                    use $enum_name::*;
+                    $(if let Some(param) = [<match_$encoding:lower>](binary, $opcode) { return Some($name(param)); })+
+                    None
                 }
             }
         }
     };
 }
 
-#[allow(unused)]
-const ALL_INSTRUCTION_DESC: &'static [&'static InstDesc] = &[
-    // Alu
-    &INST_MOV,
-    &INST_AND,
-    &INST_OR,
-    &INST_XOR,
-    &INST_ADD,
-    &INST_INV,
-    &INST_NEG,
-    &INST_DEC,
-    &INST_INC,
-    // Load/Store
-    &INST_LOAD_IMM,
-    &INST_LOAD_MEM,
-    &INST_STORE_MEM,
-    // Jmp
-    &INST_JMP_OFFSET,
-    &INST_JE_OFFSET,
-    &INST_JL_OFFSET,
-    &INST_JG_OFFSET,
-    &INST_JMP_LONG,
-    // control
-    &INST_RESET,
-    &INST_HALT,
-    &INST_SLEEP,
-    &INST_SET_MEM_PAGE,
-    &INST_SET_BUS_ADDR0,
-    &INST_SET_BUS_ADDR1,
-    // bus
-    &INST_BUS0,
-    &INST_BUS1,
-];
-
-// binary op
-inst_op2!(0b0000, mov);
-inst_op2!(0b0001, and);
-inst_op2!(0b0010, or);
-inst_op2!(0b0011, xor);
-inst_op2!(0b0100, add);
-// unary op
-inst_op1!(0b010100, inv);
-inst_op1!(0b010101, neg);
-inst_op1!(0b010110, dec);
-inst_op1!(0b010111, inc);
-// load store
-inst_op0i4!(0b1000, load_imm);
-inst_op0i4!(0b1001, load_mem);
-inst_op0i4!(0b1010, store_mem);
-// jmp
-inst_op0i4!(0b1011, jmp_long);
-inst_op0i4!(0b1100, jmp_offset);
-inst_op0i4!(0b1101, je_offset);
-inst_op0i4!(0b1110, jl_offset);
-inst_op0i4!(0b1111, jg_offset);
-
-// control
-inst_op0!(0b01100000, reset); // TODO
-inst_op0!(0b01100001, halt); // TODO
-inst_op0!(0b01100010, sleep); // TODO
-inst_op0!(0b01100011, set_mem_page);
-inst_op0!(0b01100100, set_bus_addr0);
-inst_op0!(0b01100101, set_bus_addr1);
-
-// bus0
-inst_op0i3!(0b01110, bus0);
-inst_op0i3!(0b01111, bus1);
+define_isa!(
+    Instruction,
+    (Op2, 0b0000, mov),
+    (Op2, 0b0001, and),
+    (Op2, 0b0010, or),
+    (Op2, 0b0011, xor),
+    (Op2, 0b0100, add),
+    (Op1, 0b010100, inv),
+    (Op1, 0b010101, neg),
+    (Op1, 0b010110, dec),
+    (Op1, 0b010111, inc),
+    (Op0i4, 0b1000, load_imm),
+    (Op0i4, 0b1001, load_mem),
+    (Op0i4, 0b1010, store_mem),
+    (Op0i4, 0b1011, jmp_long),
+    (Op0i4, 0b1100, jmp_offset),
+    (Op0i4, 0b1101, jne_offset),
+    (Op0i4, 0b1110, jl_offset),
+    (Op0i4, 0b1111, jg_offset),
+    (Op0, 0b01100000, reset),
+    (Op0, 0b01100001, halt),
+    (Op0, 0b01100010, sleep),
+    (Op0, 0b01100011, set_mem_page),
+    (Op0, 0b01100100, set_bus_addr0),
+    (Op0, 0b01100101, set_bus_addr1),
+    (Op0i3, 0b01110, bus0),
+    (Op0i3, 0b01111, bus1),
+);
+impl Default for Instruction {
+    fn default() -> Self {
+        use RegisterIndex::*;
+        Instruction::mov((Reg0, Reg0))
+    }
+}
+impl Instruction {
+    pub fn to_binary(self) -> InstBinaryType {
+        self.to_encoded().to_binary()
+    }
+    pub fn to_string(self) -> String {
+        self.to_encoded().to_string()
+    }
+}

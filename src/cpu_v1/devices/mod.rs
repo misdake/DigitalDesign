@@ -1,17 +1,26 @@
-mod device_0_print;
+mod device_0_terminal;
 mod device_1_math;
 mod device_2_and_3_util;
 mod device_2_gamepad;
 mod device_3_graphics_v1;
+mod device_4_rom;
+
+pub use device_0_terminal::*;
+pub use device_1_math::*;
+pub use device_2_and_3_util::*;
+pub use device_2_gamepad::*;
+pub use device_3_graphics_v1::*;
+pub use device_4_rom::*;
 
 // Device
 
 #[repr(u8)]
 pub enum DeviceType {
-    Print = 1,
+    Terminal = 1,
     Math,
     Gamepad,
     GraphicsV1,
+    Rom,
 }
 pub trait Device: 'static {
     fn device_type(&self) -> DeviceType;
@@ -25,7 +34,7 @@ pub struct DeviceReadResult {
 
 // Devices
 
-use crate::cpu_v1::devices::device_0_print::DevicePrint;
+use crate::cpu_v1::devices::device_0_terminal::DeviceTerminal;
 use crate::cpu_v1::devices::device_1_math::DeviceMath;
 use crate::cpu_v1::devices::device_2_and_3_util::create_device_gamepad_graphics_v1_start;
 
@@ -48,7 +57,9 @@ impl Devices {
         const WINDOW_WIDTH: usize = 512;
         const WINDOW_HEIGHT: usize = 512;
 
-        self.register(DeviceType::Print, |d| d.set_device(DevicePrint::default()));
+        self.register(DeviceType::Terminal, |d| {
+            d.set_device(DeviceTerminal::default())
+        });
         self.register(DeviceType::Math, |d| d.set_device(DeviceMath::default()));
         self.register(DeviceType::Gamepad, |d| {
             let (gamepad, fb) =
@@ -62,6 +73,7 @@ impl Devices {
             d.set_device(gamepad);
             d.set_device(fb);
         });
+        self.register(DeviceType::Rom, |d| d.set_device(DeviceRom::default()));
     }
     fn set_device(&mut self, device: impl Device) {
         let device_type = device.device_type();
@@ -94,17 +106,22 @@ impl Devices {
 }
 
 #[cfg(test)]
-use crate::cpu_v1::InstBinary;
+use crate::cpu_v1::Instruction;
 
 #[cfg(test)]
-fn test_device(inst: &[InstBinary], max_cycle: u32, regs_ref: [u8; 4]) {
+pub fn test_device_full(
+    inst: &[Instruction],
+    max_cycle: u32,
+    reg_ref: Option<[u8; 4]>,
+    mem_ref: Option<[u8; 256]>,
+) {
     use crate::cpu_v1::*;
     use crate::*;
 
-    let mut inst_rom = [0u8; 256];
+    let mut inst_rom = [Instruction::default(); 256];
     inst.iter()
         .enumerate()
-        .for_each(|(i, inst)| inst_rom[i] = inst.binary);
+        .for_each(|(i, inst)| inst_rom[i] = *inst);
 
     let (state, _internal) = cpu_v1_build(inst_rom);
     // let (_state1, state, _internal1, _internal2) = cpu_v1_build_with_ref(inst_rom);
@@ -115,17 +132,24 @@ fn test_device(inst: &[InstBinary], max_cycle: u32, regs_ref: [u8; 4]) {
             break;
         }
         let inst = inst[pc as usize];
-        println!(
-            "pc {:08b}: inst {} {:08b}",
-            pc,
-            inst.desc.name(),
-            inst.binary
-        );
+        println!("pc {:08b}: inst {}", pc, inst.to_string());
         execute_gates();
         clock_tick();
     }
 
-    for i in 0..4 {
-        assert_eq!(state.reg[i].out.get_u8(), regs_ref[i]);
+    if let Some(reg_ref) = reg_ref {
+        for i in 0..4 {
+            assert_eq!(state.reg[i].out.get_u8(), reg_ref[i]);
+        }
     }
+    if let Some(mem_ref) = mem_ref {
+        for i in 0..256 {
+            assert_eq!(state.mem[i].out.get_u8(), mem_ref[i]);
+        }
+    }
+}
+
+#[cfg(test)]
+pub fn test_device(inst: &[Instruction], max_cycle: u32, reg_ref: [u8; 4]) {
+    test_device_full(inst, max_cycle, Some(reg_ref), None);
 }
