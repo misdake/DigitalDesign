@@ -209,13 +209,13 @@ fn start_emulation(asm: Assembler) {
         }
         let inst_desc = inst[pc as usize];
         let comment = asm.get_comment(pc).map_or("", |s| s);
-        // println!(
-        //     "pc {} {:04b}: inst {} {}",
-        //     pc / 16,
-        //     pc % 16,
-        //     inst_desc.to_string(),
-        //     comment
-        // );
+        println!(
+            "pc {} {:04b}: inst {} {}",
+            pc / 16,
+            pc % 16,
+            inst_desc.to_string(),
+            comment
+        );
 
         execute_gates();
 
@@ -223,7 +223,7 @@ fn start_emulation(asm: Assembler) {
 
         // let get_game_mem =
         //     |addr: u8| -> u8 { state.mem[PAGE_GAME * 16 + addr as usize].out.get_u8() };
-        // println!("Reg: {:?}", state.reg.map(|r| r.out.get_u8()));
+        println!("Reg: {:?}", state.reg.map(|r| r.out.get_u8()));
         // println!("Player X: {}", get_game_mem(ADDR_PLAYER_X as u8));
         // println!("Player Y: {}", get_game_mem(ADDR_PLAYER_Y as u8));
         // println!("ADDR_N1_X: {}", get_game_mem(ADDR_N1_X));
@@ -241,11 +241,11 @@ fn start_emulation(asm: Assembler) {
         //     println!("!");
         // }
         //
-        // if pc == 8 * 16 {
-        //     println!("!");
-        // }
-        //
-        // println!("-----------------------");
+        if pc == 15 * 16 {
+            println!("!");
+        }
+
+        println!("-----------------------");
     }
 }
 
@@ -443,7 +443,7 @@ fn game_play(asm: &mut Assembler) {
     }
 
     /// input: reg2: n1, reg3: n2, mem_page: PAGE_GAME
-    /// output: TODO?
+    /// output: nothing, map tiles already modified
     fn push_and_move(asm: &mut Assembler) {
         asm.comment("push_and_move".to_string());
 
@@ -605,7 +605,7 @@ fn render(asm: &mut Assembler) {
     asm.reg0().load_imm(PAGE_MAP as u8);
     asm.reg3().assign_from(Reg0);
 
-    //TODO check TARGET & BOX to check WIN, set game state
+    asm.reg2().xor_assign(Reg2); // any "xx01"(!box & target) tile
 
     let page_loop = asm.reg0().assign_from(Reg3);
     asm.reg0().set_mem_page();
@@ -616,11 +616,30 @@ fn render(asm: &mut Assembler) {
     asm.resolve_jmp(skip_jmp_back);
     let inner_loop = asm.reg0().load_mem_reg(); // reg0 = mem[page][reg1]
     asm.bus1(DeviceGraphicsV1Opcode::SetColorNext as u8);
+
+    assert_eq!((!TILE_BOX & TILE_TARGET) & 0b11, 0);
+    asm.reg0().dec(); // if !box & target => becomes xx00
+    asm.reg2().or_assign(Reg0); // all them together, to see if any
+
     asm.reg1().inc();
     asm.jg_back(inner_loop);
 
     asm.reg3().assign_from(Reg3); // set flags of reg3
     asm.jne_back(page_loop_mid); // jmp to page loop if reg3 != 0 (overflow)
+
+    asm.comment("check any '!box & target' tile".to_string());
+    asm.reg0().load_imm(0b0011);
+    asm.reg2().and_assign(Reg0);
+    asm.if_is_zero(
+        |asm| {
+            // no tile
+            asm.reg0().load_imm(PAGE_GAME as u8);
+            asm.reg0().set_mem_page();
+            asm.reg0().load_imm(GameState::Win as u8);
+            asm.reg0().store_mem_imm(ADDR_GAME_STATE as u8);
+        },
+        |_| {}, // some target not finished
+    );
 
     asm.comment("finish frame".to_string());
     asm.bus1(DeviceGraphicsV1Opcode::WaitNextFrame as u8);
