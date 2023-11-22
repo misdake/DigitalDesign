@@ -17,14 +17,13 @@ pub struct DeviceGraphicsV1 {
 #[repr(u8)]
 #[allow(unused)]
 pub enum DeviceGraphicsV1Opcode {
-    WaitNextFrame = 0,
-    Resize,       // width = regA, height = regB
-    Clear,        // clear with regA color
-    SetPalette,   // palette[regB] = palette_src[regA]
-    SetCursor,    // x = regA, y = regB
-    SetColor,     // buffer[x, y] = palette[regA]
-    SetColorNext, // set color, then next position
-    PresentFrame, // send buffer to window
+    Resize = 1,     // width = regA, height = regB
+    Clear,          // clear with regA color
+    SetPalette,     // palette[regB] = palette_src[regA]
+    SetCursor,      // x = regA, y = regB
+    SetColor,       // buffer[x, y] = palette[regA]
+    SetColorNext,   // set color, then next position
+    SendFrameVsync, // wait for vsync + send buffer to window
 }
 
 impl Device for DeviceGraphicsV1 {
@@ -34,12 +33,6 @@ impl Device for DeviceGraphicsV1 {
     fn exec(&mut self, opcode3: u8, reg0: u8, reg1: u8) -> DeviceReadResult {
         let opcode: DeviceGraphicsV1Opcode = unsafe { std::mem::transmute(opcode3) };
         match opcode {
-            DeviceGraphicsV1Opcode::WaitNextFrame => {
-                while self.last_frame_id == self.fb_controller.get_presented_frame_id() {
-                    std::thread::sleep(Duration::from_millis(1));
-                }
-                self.last_frame_id = self.fb_controller.get_presented_frame_id();
-            }
             DeviceGraphicsV1Opcode::Resize => {
                 self.resize(reg0, reg1);
             }
@@ -60,7 +53,8 @@ impl Device for DeviceGraphicsV1 {
                 self.set_color(reg0);
                 self.next_position();
             }
-            DeviceGraphicsV1Opcode::PresentFrame => {
+            DeviceGraphicsV1Opcode::SendFrameVsync => {
+                self.wait_vsync();
                 self.present_frame();
             }
         };
@@ -158,6 +152,12 @@ impl DeviceGraphicsV1 {
         self.buffer[self.width * self.cursor_y + self.cursor_x] =
             self.palette[color_index as usize];
     }
+    fn wait_vsync(&mut self) {
+        while self.last_frame_id == self.fb_controller.get_presented_frame_id() {
+            std::thread::sleep(Duration::from_millis(1));
+        }
+        self.last_frame_id = self.fb_controller.get_presented_frame_id();
+    }
     fn present_frame(&mut self) {
         self.fb_controller.send_framebuffer(FrameBuffer {
             id: (self.last_frame_id + 1) % 0x1000,
@@ -204,8 +204,7 @@ fn test_frame_sync() {
             bus1(DeviceGraphicsV1Opcode::SetColor as u8), // set color
             // game present
             bus0(DeviceGamepadOpcode::NextFrame as u8),
-            bus1(DeviceGraphicsV1Opcode::WaitNextFrame as u8),
-            bus1(DeviceGraphicsV1Opcode::PresentFrame as u8),
+            bus1(DeviceGraphicsV1Opcode::SendFrameVsync as u8),
             jmp_long(1), // restart game logic
         ],
         100000000, // just big enough to keep it running

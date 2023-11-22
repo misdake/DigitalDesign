@@ -206,6 +206,11 @@ impl Assembler {
         else_case(self);
         self.resolve_jmp(skip_else);
     }
+    pub fn if_is_zero_no_else(&mut self, if_case: impl FnOnce(&mut Self)) {
+        let skip_if = self.jne_forward();
+        if_case(self);
+        self.resolve_jmp(skip_if);
+    }
     pub fn if_is_1_to_7(
         &mut self,
         if_case: impl FnOnce(&mut Self),

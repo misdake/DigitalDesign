@@ -133,16 +133,31 @@ impl GameMap {
 #[test]
 fn test_frame_sync() {
     #[rustfmt::skip]
-        let map = GameMap::parse([
-        "########",
-        "#......#",
-        "#......#",
-        "#.x....#",
-        "#...b..#",
-        "#....T.#",
-        "#......#",
-        "########",
-    ]);
+    let levels: Vec<[&str;8]> = vec![
+        [
+            "########",
+            "###T####",
+            "###.####",
+            "###b.bT#",
+            "#T.bx###",
+            "####b###",
+            "####T###",
+            "########",
+        ],
+        [
+            "########",
+            "###....#",
+            "###bbb.#",
+            "#x.bTT.#",
+            "#.bTTT##",
+            "####..##",
+            "########",
+            "########",
+        ],
+    ];
+
+    #[rustfmt::skip]
+    let map = GameMap::parse(levels[1]);
     let rom = map.export_rom();
 
     println!("rom content:");
@@ -207,15 +222,15 @@ fn start_emulation(asm: Assembler) {
         if pc as usize >= inst.len() {
             break;
         }
-        let inst_desc = inst[pc as usize];
-        let comment = asm.get_comment(pc).map_or("", |s| s);
-        println!(
-            "pc {} {:04b}: inst {} {}",
-            pc / 16,
-            pc % 16,
-            inst_desc.to_string(),
-            comment
-        );
+        // let inst_desc = inst[pc as usize];
+        // let comment = asm.get_comment(pc).map_or("", |s| s);
+        // println!(
+        //     "pc {} {:04b}: inst {} {}",
+        //     pc / 16,
+        //     pc % 16,
+        //     inst_desc.to_string(),
+        //     comment
+        // );
 
         execute_gates();
 
@@ -223,7 +238,7 @@ fn start_emulation(asm: Assembler) {
 
         // let get_game_mem =
         //     |addr: u8| -> u8 { state.mem[PAGE_GAME * 16 + addr as usize].out.get_u8() };
-        println!("Reg: {:?}", state.reg.map(|r| r.out.get_u8()));
+        // println!("Reg: {:?}", state.reg.map(|r| r.out.get_u8()));
         // println!("Player X: {}", get_game_mem(ADDR_PLAYER_X as u8));
         // println!("Player Y: {}", get_game_mem(ADDR_PLAYER_Y as u8));
         // println!("ADDR_N1_X: {}", get_game_mem(ADDR_N1_X));
@@ -240,12 +255,8 @@ fn start_emulation(asm: Assembler) {
         // if asm.get_func_name(pc).is_some() {
         //     println!("!");
         // }
-        //
-        if pc == 15 * 16 {
-            println!("!");
-        }
 
-        println!("-----------------------");
+        // println!("-----------------------");
     }
 }
 
@@ -320,8 +331,18 @@ fn game_loop(asm: &mut Assembler) {
     asm.reg0().set_bus_addr0();
     asm.bus0(DeviceGamepadOpcode::NextFrame as u8);
 
+    // Enter -> restart
+    asm.reg0().load_imm(ButtonQueryType::ButtonStart as u8);
+    asm.bus0(DeviceGamepadOpcode::QueryButton as u8);
+    asm.if_is_1_to_7(
+        |asm| {
+            asm.jmp_long("init");
+        },
+        |_| {},
+    );
+
     asm.comment("  read game state".to_string());
-    asm.reg0().load_imm(0);
+    asm.reg0().load_imm(PAGE_GAME as u8);
     asm.reg0().set_mem_page();
     asm.reg0().load_mem_imm(ADDR_GAME_STATE as u8);
     let win = asm.jne_forward();
@@ -596,54 +617,66 @@ fn game_play(asm: &mut Assembler) {
 /// read map tiles, call graphics set pixel
 /// assuming graphics on bus_addr1 and frame initialized
 fn render(asm: &mut Assembler) {
-    asm.reg0().load_imm(0);
-    asm.reg1().assign_from(Reg0);
+    asm.reg0().xor_assign(Reg0);
+    asm.reg1().xor_assign(Reg1);
     asm.comment("reset graphics cursor".to_string());
     asm.bus1(DeviceGraphicsV1Opcode::SetCursor as u8);
+
+    // use reg2 as super heavy target checker, if any target => set high bits
+    asm.reg0().load_imm(0b0011);
+    asm.reg2().assign_from(Reg0);
 
     asm.comment("reg0: color, reg1: addr, reg3: page".to_string());
     asm.reg0().load_imm(PAGE_MAP as u8);
     asm.reg3().assign_from(Reg0);
 
-    asm.reg2().xor_assign(Reg2); // any "xx01"(!box & target) tile
-
     let page_loop = asm.reg0().assign_from(Reg3);
     asm.reg0().set_mem_page();
-    asm.reg3().inc();
     asm.reg1().xor_assign(Reg1);
-    let skip_jmp_back = asm.jmp_forward();
-    let page_loop_mid = asm.jmp_back(page_loop); // page_loop is out of range, insert a mid point
-    asm.resolve_jmp(skip_jmp_back);
+
     let inner_loop = asm.reg0().load_mem_reg(); // reg0 = mem[page][reg1]
     asm.bus1(DeviceGraphicsV1Opcode::SetColorNext as u8);
 
-    assert_eq!((!TILE_BOX & TILE_TARGET) & 0b11, 0);
-    asm.reg0().dec(); // if !box & target => becomes xx00
-    asm.reg2().or_assign(Reg0); // all them together, to see if any
+    assert_eq!(TILE_BOX | TILE_TARGET, 0b11);
+    asm.reg0().dec(); // (!box & target) tile becomes 0bXX00
+
+    // mid point
+    let skip_jmp_back = asm.jmp_forward();
+    let inner_loop_mid = asm.jmp_back(inner_loop); // out of range, insert a mid point
+    let page_loop_mid = asm.jmp_back(page_loop); // out of range, insert a mid point
+    asm.resolve_jmp(skip_jmp_back);
+
+    asm.reg0().and_assign(Reg2); // (!box & target) tile becomes 0b0000
+    asm.if_is_zero_no_else(|asm| {
+        // if zero => taret found => set flag to reg2
+        // asm.reg0().load_imm(0b1111);
+        // asm.reg2().assign_from(Reg0);
+
+        // hack! Reg3 is [8, 16), high bits always on
+        asm.reg2().or_assign(Reg3);
+    });
 
     asm.reg1().inc();
-    asm.jg_back(inner_loop);
+    asm.jg_back(inner_loop_mid);
 
-    asm.reg3().assign_from(Reg3); // set flags of reg3
+    asm.reg3().inc();
     asm.jne_back(page_loop_mid); // jmp to page loop if reg3 != 0 (overflow)
 
     asm.comment("check any '!box & target' tile".to_string());
-    asm.reg0().load_imm(0b0011);
-    asm.reg2().and_assign(Reg0);
-    asm.if_is_zero(
+    asm.reg2().assign_from(Reg2);
+    // if == 3 => all target are satisfied
+    asm.if_is_1_to_7(
         |asm| {
-            // no tile
             asm.reg0().load_imm(PAGE_GAME as u8);
             asm.reg0().set_mem_page();
             asm.reg0().load_imm(GameState::Win as u8);
             asm.reg0().store_mem_imm(ADDR_GAME_STATE as u8);
         },
-        |_| {}, // some target not finished
+        |_| {},
     );
 
     asm.comment("finish frame".to_string());
-    asm.bus1(DeviceGraphicsV1Opcode::WaitNextFrame as u8);
-    asm.bus1(DeviceGraphicsV1Opcode::PresentFrame as u8);
+    asm.bus1(DeviceGraphicsV1Opcode::SendFrameVsync as u8);
 
     asm.jmp_long("game_loop");
 }
