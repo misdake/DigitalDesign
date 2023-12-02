@@ -1,7 +1,8 @@
 [workspace]
 members = [
     "core",
-    "cpu_v1"
+    "cpu_v1",
+    "cpu_v2",
 ]
 
 # https://doc.rust-lang.org/nightly/cargo/reference/features.html#feature-resolver-version-2
