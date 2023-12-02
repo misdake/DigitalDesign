@@ -1,0 +1,7 @@
+[package]
+name = "digital-design-code"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+once_cell = "1.17.0"
