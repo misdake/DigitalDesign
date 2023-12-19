@@ -137,17 +137,21 @@ use paste::*;
 use std::fmt::{Display, Formatter};
 define_isa!(
     Instruction,
-    (E30, 0b0000, mov),
+    //TODO opcode
     (E30, 0b0001, and),
     (E30, 0b0010, or),
     (E30, 0b0011, xor),
     (E30, 0b0100, add),
+    (E20, 0b0000, mov),
+    // (E20, 0b0000, inv),
+    // (E20, 0b0000, neg),
+    // (E20, 0b0000, inc),
     //TODO more
 );
 
 impl Default for Instruction {
     fn default() -> Self {
-        Instruction::mov((0, 0, 0))
+        Instruction::mov((0, 0))
     }
 }
 impl Display for Instruction {
