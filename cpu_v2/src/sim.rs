@@ -1,4 +1,5 @@
 use crate::isa::Instruction;
+use digital_design_code::select;
 
 pub struct SimEnv {
     inst: Box<[Instruction; 65536]>,
@@ -56,8 +57,30 @@ impl SimEnv {
             Instruction::and((r2, r1, r0)) => changes.push(StateChange::Reg(r0, reg(r1) & reg(r2))),
             Instruction::or((r2, r1, r0)) => changes.push(StateChange::Reg(r0, reg(r1) | reg(r2))),
             Instruction::xor((r2, r1, r0)) => changes.push(StateChange::Reg(r0, reg(r1) ^ reg(r2))),
-            Instruction::add((r2, r1, r0)) => changes.push(StateChange::Reg(r0, reg(r1) + reg(r2))),
+            Instruction::add((r2, r1, r0)) => {
+                changes.push(StateChange::Reg(r0, reg(r1).wrapping_add(reg(r2))))
+            }
+            Instruction::sub((r2, r1, r0)) => {
+                changes.push(StateChange::Reg(r0, reg(r1).wrapping_sub(reg(r2))))
+            }
             Instruction::mov((r1, r0)) => changes.push(StateChange::Reg(r0, reg(r1))),
+            Instruction::inv((r1, r0)) => changes.push(StateChange::Reg(r0, !reg(r1))),
+            Instruction::neg((r1, r0)) => changes.push(StateChange::Reg(r0, u16::MAX - reg(r1))),
+            Instruction::addi((imm, r1, r0)) => {
+                changes.push(StateChange::Reg(r0, reg(r1).wrapping_sub(reg(imm))))
+            }
+            Instruction::shlu((imm, r1, r0)) => changes.push(StateChange::Reg(r0, reg(r1) << imm)),
+            Instruction::shru((imm, r1, r0)) => changes.push(StateChange::Reg(r0, reg(r1) >> imm)),
+            Instruction::not0((r1, r0)) => {
+                changes.push(StateChange::Reg(r0, select(reg(r1) != 0, 1, 0)))
+            }
+            Instruction::load_hi((hi, lo, r0)) => changes.push(StateChange::Reg(
+                r0,
+                (((hi as u16) << 12) | ((lo as u16) << 8)) | (reg(r0) & 0b11111111),
+            )),
+            Instruction::load_lo((hi, lo, r0)) => {
+                changes.push(StateChange::Reg(r0, ((hi as u16) << 4) | (lo as u16)))
+            }
         }
 
         if pc != pc_next {

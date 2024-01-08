@@ -3,51 +3,90 @@
 type Op4 = u8;
 type Op8 = u8;
 type Reg = u8;
+type Flag = u8;
 type Imm4 = u8;
+type Flag4 = u8;
 type Imm8Lo = u8;
 type Imm8Hi = u8;
 
-pub type E30Param = (Reg, Reg, Reg);
-pub type E21Param = (Imm4, Reg, Reg);
-pub type E20Param = (Reg, Reg);
-//TODO more
+pub type RRRParam = (Reg, Reg, Reg);
+pub type IRRParam = (Imm4, Reg, Reg);
+pub type RRParam = (Reg, Reg);
+pub type IIRParam = (Imm8Hi, Imm8Lo, Reg);
+pub type IRParam = (Imm4, Reg);
+pub type IIFParam = (Imm8Hi, Imm8Lo, Flag4);
+pub type IFParam = (Imm4, Flag4);
 
 #[derive(Copy, Clone)]
 enum InstEncoded {
-    E30(&'static str, Op4, E30Param),
-    E21(&'static str, Op4, E21Param),
-    E20(&'static str, Op8, E20Param),
-    //TODO more
+    RRR(&'static str, Op4, RRRParam),
+    IRR(&'static str, Op4, IRRParam),
+    RR(&'static str, Op8, RRParam),
+    IIR(&'static str, Op4, IIRParam),
+    IR(&'static str, Op8, IRParam),
+    IIF(&'static str, Op4, IIFParam),
+    IF(&'static str, Op8, IFParam),
 }
 
-impl Display for InstEncoded {
-    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
-        f.write_str(&match self {
-            InstEncoded::E30(name, _, (reg2, reg1, reg0)) => {
-                format!("r{reg0} <- r{reg1} {name} r{reg2}")
-            }
-            InstEncoded::E21(name, _, (imm4, reg1, reg0)) => {
-                format!("r{reg0} <- r{reg1} {name} r{imm4}")
-            }
-            InstEncoded::E20(name, _, (reg1, reg0)) => {
-                format!("r{reg0} <- {name} r{reg1}")
-            } //TODO more
-        })
-    }
-}
+// TODO impl Display for Instruction
+// impl Display for InstEncoded {
+//     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+//         f.write_str(&match self {
+//             InstEncoded::RRR(name, _, (reg2, reg1, reg0)) => {
+//                 format!("r{reg0} <- r{reg1} {name} r{reg2}")
+//             }
+//             InstEncoded::RRI(name, _, (imm, reg1, reg0)) => {
+//                 format!("r{reg0} <- r{reg1} {name} {imm:04b}({imm})")
+//             }
+//             InstEncoded::RR(name, _, (reg1, reg0)) => {
+//                 format!("r{reg0} <- {name} r{reg1}")
+//             }
+//             InstEncoded::RII(name, _, (hi, lo, reg0)) => {
+//                 format!("r{reg0} <- {name} {hi:04b} {lo:04b} ({})", (*hi << 4) | *lo)
+//             }
+//             InstEncoded::RI(name, _, (op, reg0)) => {
+//                 format!("r{reg0} <- {name} op{op:04b}")
+//             }
+//             InstEncoded::FII(name, _, (imm, op)) => {
+//                 format!("{name} op{op:04b} {imm:04b}({imm})")
+//             }
+//             InstEncoded::FI(name, _, (reg1, flag)) => {
+//                 format!("{name} flag{flag:04b} r{reg1}")
+//             }
+//             InstEncoded::E02J(name, _, (hi, lo, flag)) => {
+//                 format!(
+//                     "{name} flag{flag:04b} {hi:04b} {lo:04b} ({})",
+//                     (*hi << 4) | *lo
+//                 )
+//             }
+//         })
+//     }
+// }
 
 impl InstEncoded {
     fn to_binary(self) -> InstBinaryType {
         let r = match self {
-            InstEncoded::E30(_, op4, (reg2, reg1, reg0)) => {
+            InstEncoded::RRR(_, op4, (reg2, reg1, reg0)) => {
                 ((op4 as u32) << 12) | ((reg2 as u32) << 8) | ((reg1 as u32) << 4) | (reg0 as u32)
             }
-            InstEncoded::E21(_, op4, (imm4, reg1, reg0)) => {
-                ((op4 as u32) << 12) | ((imm4 as u32) << 8) | ((reg1 as u32) << 4) | (reg0 as u32)
+            InstEncoded::IRR(_, op4, (imm, reg1, reg0)) => {
+                ((op4 as u32) << 12) | ((imm as u32) << 8) | ((reg1 as u32) << 4) | (reg0 as u32)
             }
-            InstEncoded::E20(_, op8, (reg1, reg0)) => {
+            InstEncoded::RR(_, op8, (reg1, reg0)) => {
                 ((op8 as u32) << 8) | ((reg1 as u32) << 4) | (reg0 as u32)
-            } //TODO more
+            }
+            InstEncoded::IIR(_, op4, (hi, lo, reg0)) => {
+                ((op4 as u32) << 12) | ((hi as u32) << 8) | ((lo as u32) << 4) | (reg0 as u32)
+            }
+            InstEncoded::IR(_, op8, (op, reg0)) => {
+                ((op8 as u32) << 8) | ((op as u32) << 4) | (reg0 as u32)
+            }
+            InstEncoded::IIF(_, op4, (hi, lo, flag)) => {
+                ((op4 as u32) << 12) | ((hi as u32) << 8) | ((lo as u32) << 4) | (flag as u32)
+            }
+            InstEncoded::IF(_, op8, (reg1, flag)) => {
+                ((op8 as u32) << 8) | ((reg1 as u32) << 4) | (flag as u32)
+            }
         };
         r as InstBinaryType
     }
@@ -77,7 +116,7 @@ fn part32(binary: InstBinaryType) -> u8 {
     (part3(binary) << 4) | part2(binary)
 }
 
-fn match_e30(binary: InstBinaryType, op4: u8) -> Option<E30Param> {
+fn match_rrr(binary: InstBinaryType, op4: u8) -> Option<RRRParam> {
     if op4 == part3(binary) {
         let reg2 = part2(binary);
         let reg1 = part1(binary);
@@ -87,7 +126,7 @@ fn match_e30(binary: InstBinaryType, op4: u8) -> Option<E30Param> {
         None
     }
 }
-fn match_e21(binary: InstBinaryType, op4: u8) -> Option<E21Param> {
+fn match_irr(binary: InstBinaryType, op4: u8) -> Option<IRRParam> {
     if op4 == part3(binary) {
         let imm4 = part2(binary);
         let reg1 = part1(binary);
@@ -97,11 +136,31 @@ fn match_e21(binary: InstBinaryType, op4: u8) -> Option<E21Param> {
         None
     }
 }
-fn match_e20(binary: InstBinaryType, op8: u8) -> Option<E20Param> {
+fn match_rr(binary: InstBinaryType, op8: u8) -> Option<RRParam> {
     if op8 == part32(binary) {
         let reg1 = part1(binary);
         let reg0 = part0(binary);
         Some((reg1, reg0))
+    } else {
+        None
+    }
+}
+fn match_iir(binary: InstBinaryType, op4: u8) -> Option<IIRParam> {
+    if op4 == part3(binary) {
+        let hi = part2(binary);
+        let lo = part1(binary);
+        let reg0 = part0(binary);
+        Some((hi, lo, reg0))
+    } else {
+        None
+    }
+}
+fn match_iir(binary: InstBinaryType, op4: u8) -> Option<IIRParam> {
+    if op4 == part3(binary) {
+        let hi = part2(binary);
+        let lo = part1(binary);
+        let reg0 = part0(binary);
+        Some((hi, lo, reg0))
     } else {
         None
     }
@@ -133,19 +192,75 @@ macro_rules! define_isa {
     };
 }
 
+fn encode4444(op4: Op4, b2: u8, b1: u8, b0: u8) -> InstBinaryType {
+    (((op4 as u32) << 12) | ((b2 as u32) << 8) | ((b1 as u32) << 4) | (b0 as u32)) as InstBinaryType
+}
+fn encode844(op8: Op8, b1: u8, b0: u8) -> InstBinaryType {
+    (((op8 as u32) << 8) | ((b1 as u32) << 4) | (b0 as u32)) as InstBinaryType
+}
+
+macro_rules! inst_param_type {
+    (R) => {
+        Reg
+    };
+    (I) => {
+        Imm
+    };
+    (F) => {
+        Flag
+    };
+}
+macro_rules! inst_param {
+    ($($e:ident )+) => {
+        ($(inst_param_type!($e), )+)
+    };
+}
+
+#[allow(non_camel_case_types)]
+pub enum Inst2 {
+    add(inst_param!(R R R)),
+}
+impl Inst2 {
+    fn encode(self) -> InstBinaryType {
+        use Inst2::*;
+        match self {
+            add((reg2, reg1, reg0)) => encode4444(0b0000, reg2, reg1, reg0),
+        }
+    }
+    fn parse(binary: InstBinaryType) -> Option<Self> {
+        use Inst2::*;
+        if 0b0000 == part3(binary) {
+            return Some(add((part2(binary), part1(binary), part0(binary))));
+        }
+        None
+    }
+    fn print(&self) -> String {
+        use Inst2::*;
+        match self {
+            add((reg2, reg1, reg0)) => format!("r{0} = r{1} + r{2}", reg0, reg1, reg2),
+        }
+    }
+}
+
 use paste::*;
 use std::fmt::{Display, Formatter};
 define_isa!(
     Instruction,
     //TODO opcode
-    (E30, 0b0001, and),
-    (E30, 0b0010, or),
-    (E30, 0b0011, xor),
-    (E30, 0b0100, add),
-    (E20, 0b0000, mov),
-    // (E20, 0b0000, inv),
-    // (E20, 0b0000, neg),
-    // (E20, 0b0000, inc),
+    (RRR, 0b0000, and),
+    (RRR, 0b0000, or),
+    (RRR, 0b0000, xor),
+    (RRR, 0b0000, add),
+    (RRR, 0b0000, sub),
+    (IRR, 0b0000, addi),
+    (IRR, 0b0000, shlu),
+    (IRR, 0b0000, shru),
+    (RR, 0b00000000, mov),
+    (RR, 0b00000000, inv),
+    (RR, 0b00000000, neg),
+    (RR, 0b00000000, not0),
+    (IIR, 0b0000, load_hi),
+    (IIR, 0b0000, load_lo),
     //TODO more
 );
 
