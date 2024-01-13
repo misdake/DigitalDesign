@@ -155,16 +155,6 @@ fn match_iir(binary: InstBinaryType, op4: u8) -> Option<IIRParam> {
         None
     }
 }
-fn match_iir(binary: InstBinaryType, op4: u8) -> Option<IIRParam> {
-    if op4 == part3(binary) {
-        let hi = part2(binary);
-        let lo = part1(binary);
-        let reg0 = part0(binary);
-        Some((hi, lo, reg0))
-    } else {
-        None
-    }
-}
 
 macro_rules! define_isa {
     ($enum_name:ident, $(($encoding: ident, $opcode: expr, $name: ident),)*) => {
@@ -210,35 +200,93 @@ macro_rules! inst_param_type {
         Flag
     };
 }
-macro_rules! inst_param {
-    ($($e:ident )+) => {
-        ($(inst_param_type!($e), )+)
+
+//TODO see impl
+// macro_rules! define_isa2 {
+//     ($enum_name:ident, $(($name: ident, $opcode: expr, $a:ident $b:ident $($c:ident)?),)+) => {
+//         #[allow(non_camel_case_types)]
+//         #[derive(Copy, Clone)]
+//         pub enum $enum_name {
+//             $(
+//             $name( inst_param_type!($a), inst_param_type!($b) $(, inst_param_type!($c))? )
+//             ),+
+//         }
+//         impl $enum_name {
+//             fn encode(self) -> InstBinaryType {
+//                 use $enum_name::*;
+//                 match self {
+//                     $(
+//                     $name( $( paste!{[<b2$c>]}, )? b1, b0 ) => inst_encode!($opcode, $( paste!{[<b2$c>]}, )? b1, b0),
+//                     ),+
+//                 }
+//             }
+//         }
+//     };
+// }
+
+//TODO encoding to megatype?
+
+macro_rules! inst_enum {
+    ($enum_name:ident, $( $inst_name:ident,  ,)+) => {
+        #[allow(non_camel_case_types)]
+        #[derive(Copy, Clone)]
+        pub enum $enum_name {}
+    };
+}
+//TODO define for each encoding megatype
+macro_rules! inst_encode {
+    ($val:expr, $name:ident, $op:expr, RRR) => {
+        match &$val {
+            $name(b2, b1, b0) => return encode4444($op, *b2, *b1, *b0),
+            _ => {}
+        }
+    };
+}
+macro_rules! inst_parse {
+    ($binary:expr, $name:ident, $op4:expr, RRR) => {
+        if $op4 == part3($binary) {
+            return Some($name(part2($binary), part1($binary), part0($binary)));
+        }
+    };
+}
+//TODO define for each encoding megatype
+macro_rules! inst_string {
+    ($val:expr, $name:ident, RRR, $format:expr) => {
+        match &$val {
+            $name(b2, b1, b0) => return format!($format, *b0, *b1, *b2),
+            _ => {}
+        }
     };
 }
 
+// define_isa2!(
+//     InstX,
+//     (add, 0b0000, RRR, "r{0} = r{1} + r{2}"),
+// );
 #[allow(non_camel_case_types)]
-pub enum Inst2 {
-    add(inst_param!(R R R)),
+#[derive(Copy, Clone)]
+pub enum InstX {
+    add(Reg, Reg, Reg),
+    addi(Reg, Imm4),
 }
-impl Inst2 {
+impl InstX {
     fn encode(self) -> InstBinaryType {
-        use Inst2::*;
-        match self {
-            add((reg2, reg1, reg0)) => encode4444(0b0000, reg2, reg1, reg0),
-        }
+        use InstX::*;
+        inst_encode!(self, add, 0b0000, RRR);
+        //TODO more
+        unreachable!()
     }
     fn parse(binary: InstBinaryType) -> Option<Self> {
-        use Inst2::*;
-        if 0b0000 == part3(binary) {
-            return Some(add((part2(binary), part1(binary), part0(binary))));
-        }
+        use InstX::*;
+        inst_parse!(binary, add, 0b0000, RRR);
+        //TODO more
         None
     }
-    fn print(&self) -> String {
-        use Inst2::*;
-        match self {
-            add((reg2, reg1, reg0)) => format!("r{0} = r{1} + r{2}", reg0, reg1, reg2),
-        }
+    fn string(&self) -> String {
+        use InstX::*;
+        inst_string!(self, add, RRR, "r{0} = r{1} + r{2}");
+        //TODO more
+        unreachable!()
     }
 }
 
@@ -264,18 +312,18 @@ define_isa!(
     //TODO more
 );
 
-impl Default for Instruction {
-    fn default() -> Self {
-        Instruction::mov((0, 0))
-    }
-}
-impl Display for Instruction {
-    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
-        self.to_encoded().fmt(f)
-    }
-}
-impl Instruction {
-    pub fn to_binary(self) -> InstBinaryType {
-        self.to_encoded().to_binary()
-    }
-}
+// impl Default for Instruction {
+//     fn default() -> Self {
+//         Instruction::mov((0, 0))
+//     }
+// }
+// impl Display for Instruction {
+//     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+//         self.to_encoded().fmt(f)
+//     }
+// }
+// impl Instruction {
+//     pub fn to_binary(self) -> InstBinaryType {
+//         self.to_encoded().to_binary()
+//     }
+// }
