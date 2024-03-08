@@ -1,14 +1,9 @@
-use proc_macro::{Group, TokenStream, TokenTree};
-use syn::parse;
+use proc_macro::{TokenStream, TokenTree};
 
-#[proc_macro]
-pub fn make_answer(item: TokenStream) -> TokenStream {
-    for t in item {
-        println!("{t}");
-    }
-
-    "fn answer() -> u32 { 42 }".parse().unwrap()
-}
+// define_isa!{
+//     Isa
+//     (add, 0b0000, RRR, "r{0} = r{1} + r{2}"),
+// }
 
 // pub enum Isa {
 //     ...
@@ -20,11 +15,7 @@ pub fn make_answer(item: TokenStream) -> TokenStream {
 // impl Display for Isa {
 //     fn fmt...
 // }
-// pub fn add(reg2: Reg, reg1: Reg, reg0: Reg) -> Isa { Isa::add(reg2, reg1, reg0) } TODO constructor
-
-// define_isa!{
-//     (add, 0b0000, RRR, "r{0} = r{1} + r{2}"),
-// }
+// pub fn add(reg2: Reg, reg1: Reg, reg0: Reg) -> Isa { Isa::add(reg2, reg1, reg0) }
 
 fn parse_u16(s: &str) -> Result<u16, std::num::ParseIntError> {
     if let Some(s) = s.strip_prefix("0x") {
@@ -61,7 +52,7 @@ impl IsaDesc {
         //    add(Reg, Reg, Reg),
         //}
         format!(
-            "#[allow(non_camel_case_types)]\npub enum {} {{\n{}\n}}",
+            "#[allow(non_camel_case_types)]\n#[derive(Copy, Clone)]\npub enum {} {{\n{}\n}}",
             self.isa_name.as_str(),
             self.insts
                 .iter()
@@ -74,11 +65,11 @@ impl IsaDesc {
         //    pub fn encode(&self) -> u16 {
         //        use Isa::*;
         //        match self {
-        //            add(reg2, reg1, reg0) => { (0b0000 << 12) | (reg2 << 8) | (reg1 << 4) | (reg0 << 0) },
+        //            add(reg2, reg1, reg0) => { (0b0000 << 12) | ((*reg2 as u16) << 8) | ((*reg1 as u16) << 4) | ((*reg0 as u16) << 0) }
         //        }
         //    }
         format!(
-            "    #[allow(clippy::identity_op)]\n    pub fn encode(&self) -> u16 {{\n        use {}::*;\n        match self {{\n            {}\n        }}\n    }}",
+            "    #[allow(clippy::eq_op)]\n    #[allow(clippy::identity_op)]\n    pub fn encode(&self) -> u16 {{\n        use {}::*;\n        match self {{\n            {}\n        }}\n    }}",
             self.isa_name.as_str(),
             self.insts
                 .iter()
@@ -104,8 +95,8 @@ impl IsaDesc {
         )
     }
     fn display(&self) -> String {
-        //impl Display for Isa {
-        //    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        //impl std::fmt::Display for Isa {
+        //    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         //        use Isa::*;
         //        match self {
         //            add(reg2, reg1, reg0) => { write!(f, "r{0} = r{1} + r{2}", reg0, reg1, reg2) }
@@ -367,11 +358,10 @@ fn parse_isa_desc(insts: TokenStream) -> IsaDesc {
 #[proc_macro]
 pub fn define_isa(insts: TokenStream) -> TokenStream {
     let isa_desc = parse_isa_desc(insts);
-
-    println!("{isa_desc:?}");
+    // println!("{isa_desc:?}");
 
     let generated = isa_desc.generate();
-    println!("{}", generated);
+    // println!("{}", generated);
 
     generated.parse().unwrap()
 }
