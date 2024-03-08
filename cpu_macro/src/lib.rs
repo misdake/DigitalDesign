@@ -49,7 +49,11 @@ impl IsaDesc {
         let enum_decl = self.enum_decl();
         let encode = self.encode();
         let parse = self.parse();
-        format!("{enum_decl}\n\nimpl {name} {{\n{encode}\n{parse}\n}}",)
+        let display = self.display();
+        let constructor = self.constructor();
+        format!(
+            "{enum_decl}\n#[rustfmt::skip]\nimpl {name} {{\n{encode}\n{parse}\n}}\n{display}\n{constructor}",
+        )
     }
 
     fn enum_decl(&self) -> String {
@@ -57,7 +61,8 @@ impl IsaDesc {
         //    add(Reg, Reg, Reg),
         //}
         format!(
-            "pub enum Isa {{\n{}\n}}",
+            "#[allow(non_camel_case_types)]\npub enum {} {{\n{}\n}}",
+            self.isa_name.as_str(),
             self.insts
                 .iter()
                 .map(|i| i.enum_item())
@@ -67,28 +72,30 @@ impl IsaDesc {
     }
     fn encode(&self) -> String {
         //    pub fn encode(&self) -> u16 {
-        //        use Self::*;
+        //        use Isa::*;
         //        match self {
         //            add(reg2, reg1, reg0) => { (0b0000 << 12) | (reg2 << 8) | (reg1 << 4) | (reg0 << 0) },
         //        }
         //    }
         format!(
-            "    pub fn encode(&self) -> u16 {{\n        use Self::*;\n        match self {{\n            {}\n        }}\n    }}",
+            "    #[allow(clippy::identity_op)]\n    pub fn encode(&self) -> u16 {{\n        use {}::*;\n        match self {{\n            {}\n        }}\n    }}",
+            self.isa_name.as_str(),
             self.insts
                 .iter()
                 .map(|i| i.encode_item())
                 .collect::<Vec<_>>()
-                .join(",\n            ")
+                .join("\n            ")
         )
     }
     fn parse(&self) -> String {
         //    pub fn parse(inst: InstBinaryType) -> Self {
-        //        use Self::*;
+        //        use Isa::*;
         //        if part3(inst) == 0b0000 { return add(part2(inst), part1(inst), part0(inst)); }
         //        unreachable!()
         //    }
         format!(
-            "    pub fn parse(inst: InstBinaryType) -> Self {{\n        use Self::*;\n        {}\n        unreachable!()\n    }}",
+            "    pub fn parse(inst: InstBinaryType) -> Self {{\n        use {}::*;\n        {}\n        unreachable!()\n    }}",
+            self.isa_name.as_str(),
             self.insts
                 .iter()
                 .map(|i| i.parse())
@@ -99,15 +106,16 @@ impl IsaDesc {
     fn display(&self) -> String {
         //impl Display for Isa {
         //    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
-        //        use Self::*;
+        //        use Isa::*;
         //        match self {
         //            add(reg2, reg1, reg0) => { write!(f, "r{0} = r{1} + r{2}", reg0, reg1, reg2) }
         //        }
         //    }
         //}
-        let name = self.isa_name.as_str();
         format!(
-            "impl Display for {name} {{\n    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {{\n        use Self::*;\n        match self {{\n            {}\n        }}\n    }}\n}}",
+            "impl std::fmt::Display for {} {{\n    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {{\n        use {}::*;\n        match self {{\n            {}\n        }}\n    }}\n}}",
+            self.isa_name.as_str(),
+            self.isa_name.as_str(),
             self.insts
                 .iter()
                 .map(|i| i.display())
@@ -115,7 +123,15 @@ impl IsaDesc {
                 .join("\n            ")
         )
     }
-    //TODO constructor
+    fn constructor(&self) -> String {
+        //pub fn add(reg2: Reg, reg1: Reg, reg0: Reg) -> Isa { Isa::add(reg2, reg1, reg0) }
+        let name = self.isa_name.as_str();
+        self.insts
+            .iter()
+            .map(|inst| inst.constructor(name))
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
 }
 
 #[derive(Debug)]
@@ -267,7 +283,7 @@ impl EncodingPart {
     }
     fn check_op(self, pos: usize) -> Option<String> {
         if let EncodingPart::O(op) = self {
-            Some(format!("part{pos} == 0b{op:04b}"))
+            Some(format!("part{pos}(inst) == 0b{op:04b}"))
         } else {
             None
         }
@@ -275,9 +291,9 @@ impl EncodingPart {
     fn value(self, pos: usize) -> Option<String> {
         match self {
             EncodingPart::O(op) => Some(format!("(0b{op:04b} << {})", pos * 4)),
-            EncodingPart::R => Some(format!("(reg{pos} << {})", pos * 4)),
-            EncodingPart::I => Some(format!("(imm{pos} << {})", pos * 4)),
-            EncodingPart::J => Some(format!("(jflags << {})", pos * 4)),
+            EncodingPart::R => Some(format!("((*reg{pos} as u16) << {})", pos * 4)),
+            EncodingPart::I => Some(format!("((*imm{pos} as u16) << {})", pos * 4)),
+            EncodingPart::J => Some(format!("((*jflags as u16) << {})", pos * 4)),
             EncodingPart::X => None,
         }
     }
@@ -354,7 +370,8 @@ pub fn define_isa(insts: TokenStream) -> TokenStream {
 
     println!("{isa_desc:?}");
 
-    println!("{}", isa_desc.generate());
+    let generated = isa_desc.generate();
+    println!("{}", generated);
 
-    "fn answer() -> u32 { 42 }".parse().unwrap()
+    generated.parse().unwrap()
 }
