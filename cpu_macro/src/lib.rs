@@ -221,7 +221,7 @@ enum EncodingPart {
     O(u8), // opcode4
     R,     // reg
     I,     // imm4
-    J,     // jmp flags
+    F,     // jmp flags
     X,     // nothing
 }
 impl EncodingPart {
@@ -230,7 +230,7 @@ impl EncodingPart {
             'O' => EncodingPart::O(op),
             'R' => EncodingPart::R,
             'I' => EncodingPart::I,
-            'J' => EncodingPart::J,
+            'F' => EncodingPart::F,
             'X' => EncodingPart::X,
             _ => unreachable!(),
         }
@@ -241,7 +241,7 @@ impl EncodingPart {
             EncodingPart::O(_) => None,
             EncodingPart::R => Some(format!("part{pos}(inst)")),
             EncodingPart::I => Some(format!("part{pos}(inst)")),
-            EncodingPart::J => Some(format!("part{pos}(inst)")),
+            EncodingPart::F => Some(format!("part{pos}(inst)")),
             EncodingPart::X => None,
         }
     }
@@ -250,7 +250,7 @@ impl EncodingPart {
             EncodingPart::O(_) => None,
             EncodingPart::R => Some(format!("reg{pos}")),
             EncodingPart::I => Some(format!("imm{pos}")),
-            EncodingPart::J => Some("jflags".to_string()),
+            EncodingPart::F => Some("flags".to_string()),
             EncodingPart::X => None,
         }
     }
@@ -259,7 +259,7 @@ impl EncodingPart {
             EncodingPart::O(_) => None,
             EncodingPart::R => Some("Reg".to_string()),
             EncodingPart::I => Some("Imm4".to_string()),
-            EncodingPart::J => Some("Flag4".to_string()),
+            EncodingPart::F => Some("Flag4".to_string()),
             EncodingPart::X => None,
         }
     }
@@ -268,7 +268,7 @@ impl EncodingPart {
             EncodingPart::O(_) => None,
             EncodingPart::R => Some(format!("reg{pos}: Reg")),
             EncodingPart::I => Some(format!("imm{pos}: Imm4")),
-            EncodingPart::J => Some("jflags: Flag4".to_string()),
+            EncodingPart::F => Some("flags: Flag4".to_string()),
             EncodingPart::X => None,
         }
     }
@@ -284,7 +284,7 @@ impl EncodingPart {
             EncodingPart::O(op) => Some(format!("(0b{op:04b} << {})", pos * 4)),
             EncodingPart::R => Some(format!("((*reg{pos} as u16) << {})", pos * 4)),
             EncodingPart::I => Some(format!("((*imm{pos} as u16) << {})", pos * 4)),
-            EncodingPart::J => Some(format!("((*jflags as u16) << {})", pos * 4)),
+            EncodingPart::F => Some(format!("((*flags as u16) << {})", pos * 4)),
             EncodingPart::X => None,
         }
     }

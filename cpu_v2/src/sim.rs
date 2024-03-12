@@ -10,7 +10,7 @@ struct SimState {
     reg: [u16; 16],
     mem: Box<[u16; 65536]>,
     pc: u16,
-    stack_ptr: u16,
+    sp: u16,
     flags: u8,
 }
 
@@ -20,7 +20,7 @@ impl Default for SimState {
             reg: [0; 16],
             mem: Box::new([0; 65536]),
             pc: 0,
-            stack_ptr: 0,
+            sp: 0,
             flags: 0,
         }
     }
@@ -31,7 +31,7 @@ pub enum StateChange {
     Reg(u8, u16),
     Mem(u16, u16),
     Pc(u16),
-    StackPtr(u16),
+    Sp(u16),
     Flags(u8),
 }
 
@@ -69,8 +69,8 @@ impl SimEnv {
             Instruction::addi(imm, r1, r0) => {
                 changes.push(StateChange::Reg(r0, reg(r1).wrapping_sub(reg(imm))))
             }
-            Instruction::shlu(imm, r1, r0) => changes.push(StateChange::Reg(r0, reg(r1) << imm)),
-            Instruction::shru(imm, r1, r0) => changes.push(StateChange::Reg(r0, reg(r1) >> imm)),
+            Instruction::lsl(imm, r1, r0) => changes.push(StateChange::Reg(r0, reg(r1) << imm)),
+            Instruction::lsr(imm, r1, r0) => changes.push(StateChange::Reg(r0, reg(r1) >> imm)),
             Instruction::not0(r1, r0) => {
                 changes.push(StateChange::Reg(r0, select(reg(r1) != 0, 1, 0)))
             }
@@ -101,7 +101,7 @@ impl SimEnv {
                 StateChange::Reg(addr, v) => self.state.reg[addr as usize] = v,
                 StateChange::Mem(addr, v) => self.state.mem[addr as usize] = v,
                 StateChange::Pc(pc) => self.state.pc = pc,
-                StateChange::StackPtr(ptr) => self.state.stack_ptr = ptr,
+                StateChange::Sp(ptr) => self.state.sp = ptr,
                 StateChange::Flags(flags) => self.state.flags = flags,
             }
         }

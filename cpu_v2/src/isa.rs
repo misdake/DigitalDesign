@@ -22,20 +22,48 @@ fn part0(binary: InstBinaryType) -> u8 {
 
 define_isa! {
     Instruction
-    (and  0x0 ORRR "r{0} = r{1} & r{2}")
-    (or   0x1 ORRR "r{0} = r{1} | r{2}")
-    (xor  0x2 ORRR "r{0} = r{1} ^ r{2}")
-    (add  0x3 ORRR "r{0} = r{1} + r{2}")
-    (sub  0x4 ORRR "r{0} = r{1} - r{2}")
-    (addi 0x5 OIRR "r{0} = r{1} + 0x{2:x}")
-    (shlu 0x6 OIRR "r{0} = r{1} >> {2}")
-    (shru 0x7 OIRR "r{0} = r{1} << {2}")
-    (mov  0x80 OORR "r{0} = r{1}")
-    (inv  0x81 OORR "r{0} = !r{1}")
-    (neg  0x82 OORR "r{0} = -r{1}")
-    (not0 0x83 OORR "r{0} = !!r{1}")
-    (load_hi 0x9 OIIR "r{0}_hi = 0x{2:x}{1:x}")
-    (load_lo 0xa OIIR "r{0}_lo = 0x{2:x}{1:x}")
+
+    // 0x00 triggers halt?
+    (mov  0x01 OORR "r{0} = r{1}")
+    (inv  0x02 OORR "r{0} = !r{1}")
+    (neg  0x03 OORR "r{0} = -r{1}")
+    (not0 0x04 OORR "r{0} = !!r{1}")
+    (cnt1 0x05 OORR "r{0} = cnt1(r{1})")
+    (log2 0x06 OORR "r{0} = log2(r{1})")
+    (cmp_i 0x07 OOIR "flags = flags(r{0} - {1})")
+    (cmp_r 0x08 OORR "flags = flags(r{0} - r{1})")
+
+    (and  0x8 ORRR "r{0} = r{1} & r{2}")
+    (or   0x9 ORRR "r{0} = r{1} | r{2}")
+    (xor  0xa ORRR "r{0} = r{1} ^ r{2}")
+    (add  0xb ORRR "r{0} = r{1} + r{2}")
+    (sub  0xc ORRR "r{0} = r{1} - r{2}")
+    (addi 0xd OIRR "r{0} = r{1} + i4(0x{2:x})")
+    (lsl  0xe OIRR "r{0} = r{1} << {2}")
+    (lsr  0xf OIRR "r{0} = r{1} >> {2}")
+
+    (load_hi 0x1 OIIR "r{0}_hi = 0x{2:x}{1:x}")
+    (load_lo 0x2 OIIR "r{0}_lo = 0x{2:x}{1:x}")
+
+    (stack_push_r  0x30 OOXR "mem[sp--] = r{0}")
+    (stack_pop_r   0x31 OOXR "r{0} = mem[sp++]")
+    (stack_write_r 0x32 OOIR "mem[sp + {1}] = r{0}")
+    (stack_read_r  0x33 OOIR "r{0} = mem[sp + {1}]")
+    (stack_push_sp 0x34 OOXX "mem[sp--] = sp")
+    (stack_pop_sp  0x35 OOXX "sp = mem[sp]")
+    (stack_ret     0x36 OOXX "pc = mem[sp++]")
+    (sp_set_r  0x38 OOIR "sp = r{0} + i4(0x{1:x})")
+    (sp_inc_i  0x39 OOIX "sp += {0}")
+    (sp_dec_i  0x3a OOIX "sp -= {0}")
+    (sp_get_i  0x3b OOIR "r{0} = sp + {1}")
+    (sp_get_r  0x3c OOIR "r{0} = sp + r{1}")
+
+    (j_add_i 0x4  OIIF "if jmp({0:x}) pc += 0x{2:x}{1:x}")
+    (j_add_r 0x50 OORF "if jmp({0:x}) pc += r{1:x}")
+    (j_set_r 0x51 OORF "if jmp({0:x}) pc = r{1:x}")
+
+    (dev_recv 0x6 OIIR "r{0} <- device[{2}].out[{1}]")
+    (dev_send 0x7 OIIR "device[{2}].in[{1}] <- r{0}")
 }
 
 #[test]
