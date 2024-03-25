@@ -297,7 +297,7 @@ fn parse_isa_desc(insts: TokenStream) -> IsaDesc {
 
     let inst_desc = iter
         .map(|inst| {
-            println!("{}", inst);
+            // println!("{}", inst);
             if let TokenTree::Group(inst) = inst {
                 let desc = inst.stream();
                 let list = desc

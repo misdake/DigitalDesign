@@ -47,11 +47,11 @@ define_isa! {
 
     (store_mem     0x30 OORR "mem[r{1}] = r{0}")
     (load_mem      0x31 OORR "r{0} = mem[r{1}]")
-    (stack_write_r 0x32 OOIR "mem[sp + {1}] = r{0}")
-    (stack_read_r  0x33 OOIR "r{0} = mem[sp + {1}]")
-    (stack_push_sp 0x34 OOXX "mem[sp--] = sp")
-    (stack_pop_sp  0x35 OOXX "sp = mem[sp]")
-    (stack_push_pc 0x36 OOXX "mem[sp--] = pc")
+    (stack_push    0x32 OOXR "mem[--sp] = r{0}")
+    (stack_pop     0x33 OOXR "r{0} = mem[sp++]")
+    (stack_write   0x34 OOIR "mem[sp + {1}] = r{0}")
+    (stack_read    0x35 OOIR "r{0} = mem[sp + {1}]")
+    (stack_push_pc 0x36 OOXX "mem[--sp] = pc")
     (stack_pop_pc  0x37 OOXX "pc = mem[sp++]")
 
     (sp_set_r  0x38 OOIR "sp  = r{0} + i4(0x{1:x})")
