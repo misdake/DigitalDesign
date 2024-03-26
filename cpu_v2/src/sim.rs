@@ -63,15 +63,24 @@ impl Default for SimState {
     }
 }
 
-#[derive(Default, Copy, Clone, Debug, Eq, PartialEq)]
+#[derive(Copy, Clone, Debug, Eq, PartialEq)]
 pub struct StateChange {
+    pc_next: u16,
     reg: Option<(u8, u16)>,  // addr, data
     mem: Option<(u16, u16)>, // addr, data
-    pc_next: Option<u16>,    // only Some when it's not pc+1
     sp: Option<u16>,
     flags: Option<u8>,
 }
 impl StateChange {
+    fn new(pc_next: u16) -> Self {
+        Self {
+            pc_next,
+            reg: None,
+            mem: None,
+            sp: None,
+            flags: None,
+        }
+    }
     fn reg(&mut self, r: u8, data: u16) {
         assert!(self.reg.is_none());
         self.reg = Some((r, data));
@@ -81,8 +90,7 @@ impl StateChange {
         self.mem = Some((addr, data));
     }
     fn pc_next(&mut self, pc_next: u16) {
-        assert!(self.pc_next.is_none());
-        self.pc_next = Some(pc_next);
+        self.pc_next = pc_next;
     }
     fn sp(&mut self, sp: u16) {
         assert!(self.sp.is_none());
@@ -103,13 +111,12 @@ impl SimEnv {
     }
 
     pub fn eval(&self) -> StateChange {
-        let mut changes = StateChange::default();
-
         let pc = self.state.pc;
         let inst = self.inst[pc as usize];
         let reg = |r: u8| self.state.reg[r as usize];
         let mem = |addr: u16| self.state.mem[addr as usize];
         let sp = self.state.sp;
+        let mut changes = StateChange::new(pc + 1);
 
         fn j(state: &SimState, cond: Flag4, changes: &mut StateChange, f: impl FnOnce(u16) -> u16) {
             let cond: Condition = unsafe { std::mem::transmute(cond) };
@@ -206,16 +213,12 @@ impl SimEnv {
     }
 
     pub fn commit(&mut self, changes: StateChange) {
+        self.state.pc = changes.pc_next;
         if let Some((r, data)) = changes.reg {
             self.state.reg[r as usize] = data;
         }
         if let Some((m, data)) = changes.mem {
             self.state.mem[m as usize] = data;
-        }
-        if let Some(pc_next) = changes.pc_next {
-            self.state.pc = pc_next;
-        } else {
-            self.state.pc += 1;
         }
         if let Some(sp) = changes.sp {
             self.state.sp = sp;
