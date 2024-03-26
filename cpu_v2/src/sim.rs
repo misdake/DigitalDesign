@@ -136,7 +136,9 @@ impl SimEnv {
             Instruction::mov(r1, r0) => changes.reg(r0, reg(r1)),
             Instruction::inv(r1, r0) => changes.reg(r0, !reg(r1)),
             Instruction::neg(r1, r0) => changes.reg(r0, u16::MAX - reg(r1)),
-            Instruction::addi(imm, r1, r0) => changes.reg(r0, reg(r1).wrapping_sub(reg(imm))),
+            Instruction::addi(i4, r1, r0) => {
+                changes.reg(r0, reg(r1).wrapping_sub(i4_to_i16(i4) as u16))
+            }
             Instruction::cnt1(r1, r0) => changes.reg(r0, reg(r1).count_ones() as u16),
             Instruction::log2(r1, r0) => changes.reg(r0, reg(r1).ilog2() as u16),
             Instruction::not0(r1, r0) => changes.reg(r0, select(reg(r1) != 0, 1, 0)),
@@ -179,7 +181,7 @@ impl SimEnv {
 
             Instruction::j_add_i(hi, lo, cond) => {
                 j(&self.state, cond, &mut changes, |pc| {
-                    pc.wrapping_add(((hi << 4) | lo) as u16)
+                    pc.wrapping_add(((hi << 4) | lo) as i8 as i16 as u16) // signed offset
                 });
             }
             Instruction::j_add_r(r1, cond) => {
@@ -197,10 +199,10 @@ impl SimEnv {
 
         changes
     }
-    pub fn test(&self, ref_changes: StateChange) -> SimTestResult {
-        //TODO call eval
-        //TODO new result
-        todo!()
+
+    pub fn test(&self, real_changes: StateChange) -> SimTestResult {
+        let sim_changes = self.eval();
+        SimTestResult::new(sim_changes, real_changes)
     }
 
     pub fn commit(&mut self, changes: StateChange) {
@@ -239,4 +241,9 @@ impl SimTestResult {
     }
     //TODO to string? debug?
     //TODO is_passed()
+}
+
+fn i4_to_i16(i4: u8) -> i16 {
+    let sign_bit = (i4 & 0b1000) != 0;
+    (i4 as u16 | (0b1111_1111_1111_0000 * sign_bit as u16)) as i16
 }
