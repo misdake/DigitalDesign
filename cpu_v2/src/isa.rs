@@ -30,8 +30,8 @@ define_isa! {
     (not0 0x04 OORR "r{0} = !!r{1}")
     (cnt1 0x05 OORR "r{0} = cnt1(r{1})")
     (log2 0x06 OORR "r{0} = log2(r{1})")
-    (cmp_i 0x07 OOIR "flags = flags(r{0} - {1})")
-    (cmp_r 0x08 OORR "flags = flags(r{0} - r{1})")
+    (cmp_i 0x08 OOIR "flags = flags(r{0} - {1})")
+    (cmp_r 0x09 OORR "flags = flags(r{0} - r{1})")
 
     (and  0x8 ORRR "r{0} = r{1} & r{2}")
     (or   0x9 ORRR "r{0} = r{1} | r{2}")
@@ -68,6 +68,24 @@ define_isa! {
     (dev_recv 0x6 OIIR "r{0} <- device[{2}].out[{1}]")
     (dev_send 0x7 OIIR "device[{2}].in[{1}] <- r{0}")
 }
+
+#[repr(u8)]
+#[derive(Copy, Clone)]
+pub enum Condition {
+    Never = 0,
+    Greater = FLAGS_GREATER,
+    Equal = FLAGS_EQUAL,
+    Less = FLAGS_LESS,
+    NotEqual = FLAGS_GREATER | FLAGS_LESS,
+    LessEqual = FLAGS_LESS | FLAGS_EQUAL,
+    GreaterEqual = FLAGS_GREATER | FLAGS_EQUAL,
+    Always = FLAGS_GREATER | FLAGS_EQUAL | FLAGS_LESS,
+
+    Call = 15,
+}
+pub const FLAGS_GREATER: u8 = 1 << 0;
+pub const FLAGS_EQUAL: u8 = 1 << 1;
+pub const FLAGS_LESS: u8 = 1 << 2;
 
 #[test]
 fn test_print() {

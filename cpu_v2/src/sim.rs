@@ -1,4 +1,4 @@
-use crate::isa::{Flag4, Instruction};
+use crate::isa::*;
 use digital_design_code::select;
 
 pub struct SimEnv {
@@ -14,9 +14,6 @@ struct SimState {
     flags: u8,
 }
 
-const FLAGS_GREATER: u8 = 1 << 0;
-const FLAGS_EQUAL: u8 = 1 << 1;
-const FLAGS_LESS: u8 = 1 << 2;
 #[rustfmt::skip]
 pub fn calc_flags(x: u16, y: u16) -> u8 {
     let mut r = 0;
@@ -26,20 +23,6 @@ pub fn calc_flags(x: u16, y: u16) -> u8 {
     r
 }
 
-#[repr(u8)]
-#[derive(Copy, Clone)]
-pub enum Condition {
-    Never = 0,
-    Greater = FLAGS_GREATER,
-    Equal = FLAGS_EQUAL,
-    Less = FLAGS_LESS,
-    NotEqual = FLAGS_GREATER | FLAGS_LESS,
-    LessEqual = FLAGS_LESS | FLAGS_EQUAL,
-    GreaterEqual = FLAGS_GREATER | FLAGS_EQUAL,
-    Always = FLAGS_GREATER | FLAGS_EQUAL | FLAGS_LESS,
-
-    Call = 15,
-}
 impl Condition {
     /// Return (jmp_enable, is_call)
     fn check_flags(self, flags: u8) -> (bool, bool) {
