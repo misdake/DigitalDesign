@@ -20,12 +20,6 @@ pub use wires::*;
 mod tests;
 pub use tests::*;
 
-use std::sync::{LockResult, Mutex, MutexGuard};
-static GLOBAL_LOCK: Mutex<()> = Mutex::new(());
-pub fn global_lock() -> LockResult<MutexGuard<'static, ()>> {
-    GLOBAL_LOCK.lock()
-}
-
 pub fn select<T>(b: bool, t: T, f: T) -> T {
     if b {
         t

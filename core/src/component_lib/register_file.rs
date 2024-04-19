@@ -46,25 +46,27 @@ impl Regfile<2, 4, 1, 1> for Regfile4x4_1R1W {
 #[test]
 fn test_regfile4x4_1r1w() {
     use crate::*;
-    clear_all();
+    let (mut circuit, (reset_all, addr, read0, write_data, write_enable)) = build_circuit(|| {
+        let reset_all = input();
+        let addr = [input_w::<2>()];
+        let write_data = [input_w::<4>()];
+        let write_enable = input_w::<1>();
 
-    let reset_all = input();
-    let addr = [input_w::<2>()];
-    let write_data = [input_w::<4>()];
-    let write_enable = input_w::<1>();
+        let regs = Regfile4x4_1R1W::create_regs();
+        let read0 = Regfile4x4_1R1W::apply(regs, addr, write_enable, write_data, reset_all)[0];
 
-    let regs = Regfile4x4_1R1W::create_regs();
-    let read0 = Regfile4x4_1R1W::apply(regs, addr, write_enable, write_data, reset_all)[0];
+        (reset_all, addr, read0, write_data, write_enable)
+    });
 
-    reset_all.set(1);
-    write_enable.set_u8(0);
-    simulate();
-    reset_all.set(0);
+    reset_all.set(&mut circuit, 1);
+    write_enable.set_u8(&mut circuit, 0);
+    circuit.simulate();
+    reset_all.set(&mut circuit, 0);
 
     for i in 0..4 {
-        addr[0].set_u8(i);
-        simulate();
-        assert_eq!(0, read0.get_u8());
+        addr[0].set_u8(&mut circuit, i);
+        circuit.simulate();
+        assert_eq!(0, read0.get_u8(&circuit));
     }
 
     let testcases = shuffled_list(1 << 7, 4.567);
@@ -76,10 +78,10 @@ fn test_regfile4x4_1r1w() {
         let w = ((i >> 2) % 2) as u8; // 1bit
         let v = ((i >> 3) % 16) as u8; // 4bits
 
-        addr[0].set_u8(a);
-        write_data[0].set_u8(v);
-        write_enable.set_u8(w);
-        simulate();
+        addr[0].set_u8(&mut circuit, a);
+        write_data[0].set_u8(&mut circuit, v);
+        write_enable.set_u8(&mut circuit, w);
+        circuit.simulate();
 
         // println!(
         //     "a {}, w {}, v {}. {:?}. sim {}, read {}",
@@ -91,22 +93,22 @@ fn test_regfile4x4_1r1w() {
         //     read0.get_u8()
         // );
 
-        assert_eq!(sim[a as usize], read0.get_u8());
+        assert_eq!(sim[a as usize], read0.get_u8(&circuit));
 
         if w == 1 {
             sim[a as usize] = v;
         }
     }
 
-    reset_all.set(1);
-    write_enable.set_u8(0);
-    simulate();
-    reset_all.set(0);
+    reset_all.set(&mut circuit, 1);
+    write_enable.set_u8(&mut circuit, 0);
+    circuit.simulate();
+    reset_all.set(&mut circuit, 0);
 
     for i in 0..4 {
-        addr[0].set_u8(i);
-        simulate();
-        assert_eq!(0, read0.get_u8());
+        addr[0].set_u8(&mut circuit, i);
+        circuit.simulate();
+        assert_eq!(0, read0.get_u8(&circuit));
     }
 }
 

@@ -1,4 +1,4 @@
-use crate::{input, input_const, mux2_w, reg, LatencyValue, Reg, Wire, WireValue};
+use crate::{input, input_const, mux2_w, reg, Circuit, LatencyValue, Reg, Wire, WireValue};
 
 pub enum Assert<const CHECK: bool> {}
 
@@ -83,30 +83,31 @@ impl<const F: usize> Wires<F> {
 }
 
 pub trait WiresU8 {
-    fn set_u8(&self, value: u8);
-    fn get_u8(&self) -> u8;
+    fn set_u8(&self, circuit: &mut Circuit, value: u8);
+    fn get_u8(&self, circuit: &mut Circuit) -> u8;
 }
 
-impl<const W: usize> std::fmt::Debug for Wires<W>
-where
-    Assert<{ W <= 8 }>: IsTrue,
-{
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        let v = self.get_u8();
-        f.write_str(&format!("{v}({v:b})"))
-    }
-}
+//TODO how?
+// impl<const W: usize> std::fmt::Debug for Wires<W>
+// where
+//     Assert<{ W <= 8 }>: IsTrue,
+// {
+//     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+//         let v = self.get_u8();
+//         f.write_str(&format!("{v}({v:b})"))
+//     }
+// }
 
 impl<const W: usize> WiresU8 for Wires<W>
 where
     Assert<{ W <= 8 }>: IsTrue,
 {
-    fn set_u8(&self, value: u8) {
-        self.set_u8(value);
+    fn set_u8(&self, circuit: &mut Circuit, value: u8) {
+        self.set_u8(circuit, value);
     }
 
-    fn get_u8(&self) -> u8 {
-        self.get_u8()
+    fn get_u8(&self, circuit: &mut Circuit) -> u8 {
+        self.get_u8(circuit)
     }
 }
 
@@ -115,25 +116,24 @@ where
     Assert<{ W <= 8 }>: IsTrue,
 {
     pub fn parse_u8(value: u8) -> Wires<W> {
-        let wires: [Wire; W] = (0..W)
-            .map(|i| input_const(((value & (1 << i)) > 0).into()))
-            .collect::<Vec<Wire>>()
-            .try_into()
-            .unwrap();
+        let mut wires = [Wire(0); W];
+        for i in 0..W {
+            wires[i] = input_const(((value & (1 << i)) > 0).into());
+        }
         Wires::<W> { wires }
     }
 
-    pub fn set_u8(&self, value: u8) {
+    pub fn set_u8(&self, circuit: &mut Circuit, value: u8) {
         for i in 0..W {
-            self.wires[i].set(((value & (1 << i)) > 0).into());
+            self.wires[i].set(circuit, ((value & (1 << i)) > 0).into());
         }
     }
 
-    pub fn get_u8(&self) -> u8 {
+    pub fn get_u8(&self, circuit: &Circuit) -> u8 {
         self.wires
             .iter()
             .enumerate()
-            .map(|(i, wire)| ((1 << i) * wire.get()) as WireValue)
+            .map(|(i, wire)| ((1 << i) * wire.get(circuit)) as WireValue)
             .reduce(|a, b| a + b)
             .unwrap()
     }

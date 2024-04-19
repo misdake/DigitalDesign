@@ -1,4 +1,4 @@
-use crate::{nand, select, unflatten2, Wire, WireValue, Wires};
+use crate::{build_circuit, nand, select, unflatten2, Wire, WireValue, Wires};
 use std::ops;
 
 impl Wire {
@@ -274,48 +274,55 @@ pub fn decode8(select8: Wires<8>) -> [Wire; 256] {
 #[test]
 fn test_basic_binary() {
     use crate::tests::test2_1;
-    use crate::{clear_all, input, nand};
-    clear_all();
+    use crate::{build_circuit, input, nand};
 
-    let a = input();
-    let b = input();
+    let (mut circuit, (a, b, c, d, e, f)) = build_circuit(|| {
+        let a = input();
+        let b = input();
 
-    let c = nand(a, b);
-    let d = a & b;
-    let e = a | b;
-    let f = a ^ b;
+        let c = nand(a, b);
+        let d = a & b;
+        let e = a | b;
+        let f = a ^ b;
+        (a, b, c, d, e, f)
+    });
 
-    test2_1("nand", a, b, c, |a, b| !(a & b) & 1);
-    test2_1("and", a, b, d, |a, b| a & b);
-    test2_1("or", a, b, e, |a, b| a | b);
-    test2_1("xor", a, b, f, |a, b| a ^ b);
+    test2_1(&mut circuit, "nand", a, b, c, |a, b| !(a & b) & 1);
+    test2_1(&mut circuit, "and", a, b, d, |a, b| a & b);
+    test2_1(&mut circuit, "or", a, b, e, |a, b| a | b);
+    test2_1(&mut circuit, "xor", a, b, f, |a, b| a ^ b);
 }
 
 #[test]
 fn test_wire_eq() {
-    use crate::{clear_all, input_w, simulate};
-    clear_all();
+    use crate::{build_circuit, input_w};
 
-    let v = input_w::<4>();
-    for i in 0..16 {
-        v.set_u8(i);
+    let (mut circuit, (out1, out2)) = build_circuit(|| {
+        let v = input_w::<4>();
         let out1 = v.eq_const(5);
         let out2 = v.eq(Wires::<4>::parse_u8(5));
-        simulate();
-        assert_eq!(out1.get() == 1, i == 5);
-        assert_eq!(out2.get() == 1, i == 5);
+        (out1, out2)
+    });
+
+    for i in 0..16 {
+        circuit.simulate();
+        assert_eq!(out1.get(&circuit) == 1, i == 5);
+        assert_eq!(out2.get(&circuit) == 1, i == 5);
     }
 }
 
 #[test]
 fn test_expand_signed() {
-    use crate::{clear_all, input_w};
-    clear_all();
+    use crate::{build_circuit, input_w};
 
-    let a = &input_w::<4>();
-    let b = &a.expand_signed::<8>();
-    a.set_u8(5);
-    assert_eq!(0b00000101, b.get_u8());
-    a.set_u8(9);
-    assert_eq!(0b11111001, b.get_u8());
+    let (mut circuit, (a, b)) = build_circuit(|| {
+        let a = input_w::<4>();
+        let b = a.expand_signed::<8>();
+        (a, b)
+    });
+
+    a.set_u8(&mut circuit, 5);
+    assert_eq!(0b00000101, b.get_u8(&circuit));
+    a.set_u8(&mut circuit, 9);
+    assert_eq!(0b11111001, b.get_u8(&circuit));
 }
