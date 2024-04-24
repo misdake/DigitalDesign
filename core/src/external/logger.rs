@@ -1,4 +1,4 @@
-use crate::{External, Wire, WireValue, Wires, WiresU8};
+use crate::{Circuit, External, Wire, WireValue, Wires, WiresU8};
 use std::any::Any;
 
 pub struct Logger {
@@ -7,8 +7,8 @@ pub struct Logger {
     values: Vec<WireValue>,
 }
 impl External for Logger {
-    fn execute(&mut self) {
-        self.values.push(self.wire.get());
+    fn execute(&mut self, circuit: &mut Circuit) {
+        self.values.push(circuit.get_wire(self.wire));
     }
     fn as_any(&self) -> &dyn Any {
         self
@@ -46,8 +46,8 @@ impl<const W: usize> External for LoggerU8<W>
 where
     Wires<W>: WiresU8,
 {
-    fn execute(&mut self) {
-        self.values.push(self.wires.get_u8());
+    fn execute(&mut self, circuit: &mut Circuit) {
+        self.values.push(self.wires.get_u8(circuit));
     }
     fn as_any(&self) -> &dyn Any {
         self
@@ -79,30 +79,34 @@ where
 #[test]
 fn test_logger() {
     use crate::*;
-    clear_all();
+    let (mut circuit, (a, b, logger)) = build_circuit(|| {
+        let a = input();
+        let b = input();
+        let c = a | b;
+        let logger = external(Logger::new("or".to_string(), c));
+        (a, b, logger)
+    });
 
-    let a = input();
-    let b = input();
-    let c = a | b;
-    let logger = external(Logger::new("or".to_string(), c));
     for i in 0..10 {
-        a.set(if i % 3 == 0 { 1 } else { 0 });
-        b.set(if i % 2 == 0 { 1 } else { 0 });
-        simulate();
+        circuit.set_wire(a, if i % 3 == 0 { 1 } else { 0 });
+        circuit.set_wire(b, if i % 2 == 0 { 1 } else { 0 });
+        circuit.simulate();
     }
     assert_eq!(logger.get_values(), &vec![1, 0, 1, 1, 1, 0, 1, 0, 1, 1]);
 }
 #[test]
 fn test_logger_u8() {
     use crate::*;
-    clear_all();
 
-    let one = Wires::<4>::parse_u8(1);
-    let curr = reg_w::<4>();
-    curr.set_in(add_naive(curr.out, one).sum);
-    let logger = external(LoggerU8::new("inc".to_string(), curr.clone().out));
+    let (mut circuit, logger) = build_circuit(|| {
+        let one = Wires::<4>::parse_u8(1);
+        let curr = reg_w::<4>();
+        curr.set_in(add_naive(curr.out, one).sum);
+        let logger = external(LoggerU8::new("inc".to_string(), curr.clone().out));
+        logger
+    });
     for _ in 0..=16 {
-        simulate();
+        circuit.simulate();
     }
     assert_eq!(
         logger.get_values(),

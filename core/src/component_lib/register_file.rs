@@ -58,15 +58,15 @@ fn test_regfile4x4_1r1w() {
         (reset_all, addr, read0, write_data, write_enable)
     });
 
-    reset_all.set(&mut circuit, 1);
+    circuit.set_wire(reset_all, 1);
     write_enable.set_u8(&mut circuit, 0);
     circuit.simulate();
-    reset_all.set(&mut circuit, 0);
+    circuit.set_wire(reset_all, 0);
 
     for i in 0..4 {
         addr[0].set_u8(&mut circuit, i);
         circuit.simulate();
-        assert_eq!(0, read0.get_u8(&circuit));
+        assert_eq!(0, circuit.get_wires_u8(read0));
     }
 
     let testcases = shuffled_list(1 << 7, 4.567);
@@ -93,22 +93,22 @@ fn test_regfile4x4_1r1w() {
         //     read0.get_u8()
         // );
 
-        assert_eq!(sim[a as usize], read0.get_u8(&circuit));
+        assert_eq!(sim[a as usize], circuit.get_wires_u8(read0));
 
         if w == 1 {
             sim[a as usize] = v;
         }
     }
 
-    reset_all.set(&mut circuit, 1);
+    circuit.set_wire(reset_all, 1);
     write_enable.set_u8(&mut circuit, 0);
     circuit.simulate();
-    reset_all.set(&mut circuit, 0);
+    circuit.set_wire(reset_all, 0);
 
     for i in 0..4 {
         addr[0].set_u8(&mut circuit, i);
         circuit.simulate();
-        assert_eq!(0, read0.get_u8(&circuit));
+        assert_eq!(0, circuit.get_wires_u8(read0));
     }
 }
 
@@ -152,25 +152,29 @@ impl Regfile<2, 4, 2, 1> for Regfile4x4_2R1W {
 #[test]
 fn test_regfile4x4_2r1w() {
     use crate::*;
-    clear_all();
+    let (mut circuit, (reset_all, addr, read0, read1, write_data, write_enable)) =
+        build_circuit(|| {
+            let reset_all = input();
+            let addr = [input_w::<2>(), input_w::<2>()];
+            let write_data = [input_w::<4>()];
+            let write_enable = input_w::<1>();
 
-    let reset_all = input();
-    let addr = [input_w::<2>(), input_w::<2>()];
-    let write_data = [input_w::<4>()];
-    let write_enable = input_w::<1>();
+            let regs = Regfile4x4_2R1W::create_regs();
+            let [read0, read1] =
+                Regfile4x4_2R1W::apply(regs, addr, write_enable, write_data, reset_all);
 
-    let regs = Regfile4x4_2R1W::create_regs();
-    let [read0, read1] = Regfile4x4_2R1W::apply(regs, addr, write_enable, write_data, reset_all);
+            (reset_all, addr, read0, read1, write_data, write_enable)
+        });
 
-    reset_all.set(1);
-    write_enable.set_u8(0);
-    simulate();
-    reset_all.set(0);
+    circuit.set_wire(reset_all, 1);
+    circuit.set_wires_u8(write_enable, 0);
+    circuit.simulate();
+    circuit.set_wire(reset_all, 0);
 
     for i in 0..4 {
-        addr[0].set_u8(i);
-        simulate();
-        assert_eq!(0, read0.get_u8());
+        circuit.set_wires_u8(addr[0], i);
+        circuit.simulate();
+        assert_eq!(0, circuit.get_wires_u8(read0));
     }
 
     let testcases = shuffled_list(1 << 9, 4.567);
@@ -183,28 +187,28 @@ fn test_regfile4x4_2r1w() {
         let w = ((i >> 4) % 2) as u8; // 1bit
         let v = ((i >> 5) % 16) as u8; // 4bits
 
-        addr[0].set_u8(a0);
-        addr[1].set_u8(a1);
-        write_data[0].set_u8(v);
-        write_enable.set_u8(w);
-        simulate();
+        circuit.set_wires_u8(addr[0], a0);
+        circuit.set_wires_u8(addr[1], a1);
+        circuit.set_wires_u8(write_data[0], v);
+        circuit.set_wires_u8(write_enable, w);
+        circuit.simulate();
 
-        assert_eq!(sim[a0 as usize], read0.get_u8());
-        assert_eq!(sim[a1 as usize], read1.get_u8());
+        assert_eq!(sim[a0 as usize], circuit.get_wires_u8(read0));
+        assert_eq!(sim[a1 as usize], circuit.get_wires_u8(read1));
 
         if w == 1 {
             sim[a0 as usize] = v;
         }
     }
 
-    reset_all.set(1);
-    write_enable.set_u8(0);
-    simulate();
-    reset_all.set(0);
+    circuit.set_wire(reset_all, 1);
+    circuit.set_wires_u8(write_enable, 0);
+    circuit.simulate();
+    circuit.set_wire(reset_all, 0);
 
     for i in 0..4 {
-        addr[1].set_u8(i);
-        simulate();
-        assert_eq!(0, read1.get_u8());
+        circuit.set_wires_u8(addr[1], i);
+        circuit.simulate();
+        assert_eq!(0, circuit.get_wires_u8(read1));
     }
 }

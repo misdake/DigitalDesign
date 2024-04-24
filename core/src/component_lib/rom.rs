@@ -37,38 +37,38 @@ impl Rom256x8 {
 #[test]
 fn test_rom16x8() {
     use crate::*;
-    clear_all();
+    let (mut circuit, (addr, data)) = build_circuit(|| {
+        let mut rom = Rom16x8::create();
+        for i in 0..16 {
+            rom.set(i, 16 - i);
+        }
+        let addr = input_w::<4>();
+        let (_, data) = rom.apply(addr);
+        (addr, data)
+    });
 
-    let mut rom = Rom16x8::create();
     for i in 0..16 {
-        rom.set(i, 16 - i);
-    }
-
-    let addr = input_w::<4>();
-    let (_, data) = rom.apply(addr);
-
-    for i in 0..16 {
-        addr.set_u8(i);
-        simulate();
-        assert_eq!(16 - i, data.get_u8());
+        circuit.set_wires_u8(addr, i);
+        circuit.simulate();
+        assert_eq!(16 - i, circuit.get_wires_u8(data));
     }
 }
 #[test]
 fn test_rom256x8() {
     use crate::*;
-    clear_all();
+    let (mut circuit, (addr, data)) = build_circuit(|| {
+        let mut rom = Rom256x8::create();
+        for i in 0..=255 {
+            rom.set(i, 255 - i);
+        }
+        let addr = input_w::<8>();
+        let (_, data) = rom.apply(addr);
+        (addr, data)
+    });
 
-    let mut rom = Rom256x8::create();
     for i in 0..=255 {
-        rom.set(i, 255 - i);
-    }
-
-    let addr = input_w::<8>();
-    let (_, data) = rom.apply(addr);
-
-    for i in 0..=255 {
-        addr.set_u8(i);
-        simulate();
-        assert_eq!(255 - i, data.get_u8());
+        circuit.set_wires_u8(addr, i);
+        circuit.simulate();
+        assert_eq!(255 - i, circuit.get_wires_u8(data));
     }
 }

@@ -1,4 +1,4 @@
-use crate::{build_circuit, nand, select, unflatten2, Wire, WireValue, Wires};
+use crate::{nand, select, unflatten2, Wire, WireValue, Wires};
 use std::ops;
 
 impl Wire {
@@ -306,8 +306,8 @@ fn test_wire_eq() {
 
     for i in 0..16 {
         circuit.simulate();
-        assert_eq!(out1.get(&circuit) == 1, i == 5);
-        assert_eq!(out2.get(&circuit) == 1, i == 5);
+        assert_eq!(circuit.get_wire(out1) == 1, i == 5);
+        assert_eq!(circuit.get_wire(out2) == 1, i == 5);
     }
 }
 
@@ -321,8 +321,8 @@ fn test_expand_signed() {
         (a, b)
     });
 
-    a.set_u8(&mut circuit, 5);
-    assert_eq!(0b00000101, b.get_u8(&circuit));
-    a.set_u8(&mut circuit, 9);
-    assert_eq!(0b11111001, b.get_u8(&circuit));
+    circuit.set_wires_u8(a, 5);
+    assert_eq!(0b00000101, circuit.get_wires_u8(b));
+    circuit.set_wires_u8(a, 9);
+    assert_eq!(0b11111001, circuit.get_wires_u8(b));
 }

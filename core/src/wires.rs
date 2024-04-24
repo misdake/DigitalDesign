@@ -19,13 +19,19 @@ impl<const W: usize> Wires<W> {
             wires: [Wire(0); W],
         }
     }
-    pub fn set_latency(&self, latency: LatencyValue) {
-        self.wires.iter().for_each(|w| w.set_latency(latency));
+}
+impl Circuit {
+    pub fn set_wires_latency<const W: usize>(&mut self, wires: Wires<W>, latency: LatencyValue) {
+        wires
+            .wires
+            .into_iter()
+            .for_each(|w| self.set_wire_latency(w, latency));
     }
-    pub fn get_max_latency(&self) -> LatencyValue {
-        self.wires
-            .iter()
-            .map(|w| w.get_latency())
+    pub fn get_max_latency<const W: usize>(&mut self, wires: Wires<W>) -> LatencyValue {
+        wires
+            .wires
+            .into_iter()
+            .map(|w| self.get_wire_latency(w))
             .max()
             .unwrap_or(0)
     }
@@ -123,19 +129,34 @@ where
         Wires::<W> { wires }
     }
 
-    pub fn set_u8(&self, circuit: &mut Circuit, value: u8) {
+    fn set_u8(&self, circuit: &mut Circuit, value: u8) {
         for i in 0..W {
-            self.wires[i].set(circuit, ((value & (1 << i)) > 0).into());
+            circuit.set_wire(self.wires[i], ((value & (1 << i)) > 0).into());
         }
     }
 
-    pub fn get_u8(&self, circuit: &Circuit) -> u8 {
+    fn get_u8(&self, circuit: &Circuit) -> u8 {
         self.wires
             .iter()
             .enumerate()
-            .map(|(i, wire)| ((1 << i) * wire.get(circuit)) as WireValue)
+            .map(|(i, wire)| ((1 << i) * circuit.get_wire(*wire)) as WireValue)
             .reduce(|a, b| a + b)
             .unwrap()
+    }
+}
+
+impl Circuit {
+    pub fn set_wires_u8<const W: usize>(&mut self, wires: Wires<W>, value: u8)
+    where
+        Assert<{ W <= 8 }>: IsTrue,
+    {
+        wires.set_u8(self, value)
+    }
+    pub fn get_wires_u8<const W: usize>(&self, wires: Wires<W>) -> u8
+    where
+        Assert<{ W <= 8 }>: IsTrue,
+    {
+        wires.get_u8(self)
     }
 }
 

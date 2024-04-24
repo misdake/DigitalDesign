@@ -13,27 +13,33 @@ pub fn shuffled_list(count: usize, seed: f32) -> Vec<u32> {
 use crate::{Circuit, Wire, WireValue};
 
 #[cfg(test)]
-pub fn test<F: Fn()>(a: Wire, f: F) {
-    a.set(0);
-    f();
-    a.set(1);
-    f();
+pub fn test<F: Fn(&mut Circuit)>(circuit: &mut Circuit, a: Wire, f: F) {
+    circuit.set_wire(a, 0);
+    f(circuit);
+    circuit.set_wire(a, 1);
+    f(circuit);
 }
 
 #[cfg(test)]
 pub fn test2_1(
-    circuit: &mut Circuit,
+    c: &mut Circuit,
     name: &str,
     a: Wire,
     b: Wire,
     out: Wire,
     f: fn(a: WireValue, b: WireValue) -> WireValue,
 ) {
-    test(a, || {
-        test(b, || {
-            circuit.simulate();
-            println!("{}({}, {}) = {}", name, a.get(), b.get(), out.get());
-            assert_eq!(out.get(), f(a.get(), b.get()));
+    test(c, a, |c| {
+        test(c, b, |c| {
+            c.simulate();
+            println!(
+                "{}({}, {}) = {}",
+                name,
+                c.get_wire(a),
+                c.get_wire(b),
+                c.get_wire(out)
+            );
+            assert_eq!(c.get_wire(out), f(c.get_wire(a), c.get_wire(b)));
         });
     });
 }

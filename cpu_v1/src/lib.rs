@@ -32,8 +32,8 @@ use assembler::*;
 mod programs;
 
 extern crate digital_design_code;
-use digital_design_code::get_statistics;
 pub(crate) use digital_design_code::{clear_all, external, reg, reg_w, External, Reg, Regs, Wires};
+use digital_design_code::{get_statistics, Circuit};
 use std::any::Any;
 use std::cell::RefCell;
 use std::marker::PhantomData;
@@ -353,7 +353,7 @@ struct CpuComponentEmuContext<T: CpuComponent, E: CpuComponentEmu<T>> {
     output: T::Output,
 }
 impl<T: CpuComponent, E: CpuComponentEmu<T>> External for CpuComponentEmuContext<T, E> {
-    fn execute(&mut self) {
+    fn execute(&mut self, x: &mut &mut Circuit) {
         E::execute(&self.input, &self.output);
     }
     fn as_any(&self) -> &dyn Any {

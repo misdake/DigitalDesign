@@ -66,23 +66,23 @@ fn test_flatten_unflatten() {
         let d = input_w::<8>();
         (a, b, c, d)
     });
-    a.set_u8(&mut circuit, 1);
-    b.set_u8(&mut circuit, 2);
-    c.set_u8(&mut circuit, 3);
-    d.set_u8(&mut circuit, 46);
+    circuit.set_wires_u8(a, 1);
+    circuit.set_wires_u8(b, 2);
+    circuit.set_wires_u8(c, 3);
+    circuit.set_wires_u8(d, 46);
     let f = flatten3(a, b, c);
-    assert_eq!(105, f.get_u8(&circuit)); // 1 + 2<<2 + 3<<5
+    assert_eq!(105, circuit.get_wires_u8(f)); // 1 + 2<<2 + 3<<5
     let r = add_naive(d, f); // 105 + 46 = 151
     circuit.simulate();
-    assert_eq!(151, r.sum.get_u8(&circuit));
+    assert_eq!(151, circuit.get_wires_u8(r.sum));
     let (x, y, z) = unflatten3::<2, 3, 3>(f);
-    assert_eq!(1, x.get_u8(&circuit));
-    assert_eq!(2, y.get_u8(&circuit));
-    assert_eq!(3, z.get_u8(&circuit));
+    assert_eq!(1, circuit.get_wires_u8(x));
+    assert_eq!(2, circuit.get_wires_u8(y));
+    assert_eq!(3, circuit.get_wires_u8(z));
 
-    d.set_u8(&circuit, 0b11010010);
+    circuit.set_wires_u8(d, 0b11010010);
     let (x, y, z) = unflatten3::<2, 2, 4>(d);
-    assert_eq!(0b10, x.get_u8(&circuit));
-    assert_eq!(0b00, y.get_u8(&circuit));
-    assert_eq!(0b1101, z.get_u8(&circuit));
+    assert_eq!(0b10, circuit.get_wires_u8(x));
+    assert_eq!(0b00, circuit.get_wires_u8(y));
+    assert_eq!(0b1101, circuit.get_wires_u8(z));
 }

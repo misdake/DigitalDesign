@@ -1,8 +1,7 @@
-use once_cell::sync::Lazy;
 use std::any::Any;
 use std::collections::HashMap;
 use std::fmt::{Debug, Formatter};
-use std::ops::{DerefMut, Range};
+use std::ops::Range;
 use std::sync::Mutex;
 
 pub type WireValue = u8;
@@ -150,7 +149,9 @@ impl Circuit {
         self.before_new_gate();
         let out = input();
         self.gates_map.insert((a.0, b.0), out);
-        out.set_latency(self, a.get_latency(self).max(b.get_latency(self)) + 1);
+        let a_latency = self.get_wire_latency(a);
+        let b_latency = self.get_wire_latency(b);
+        self.set_wire_latency(out, a_latency.max(b_latency) + 1);
         self.gates.push(Gate {
             wire_a: a,
             wire_b: b,
@@ -195,7 +196,9 @@ impl Circuit {
                 }
                 ExecuteSegment::Externals(range) => {
                     let externals = &mut self.externals[range.start..range.end];
-                    externals.iter_mut().for_each(|external| external.execute());
+                    externals
+                        .iter_mut()
+                        .for_each(|external| external.execute(self));
                 }
             }
         }
@@ -205,12 +208,12 @@ impl Circuit {
         self.regs.iter_mut().for_each(|reg| {
             reg.temp_value = reg
                 .wire_in
-                .map(|w| w.get(self))
+                .map(|w| self.get_wire(w))
                 .expect("reg with no input!")
         });
         self.regs
             .iter_mut()
-            .for_each(|reg| reg.wire_out.set(self, reg.temp_value));
+            .for_each(|reg| self.set_wire(reg.wire_out, reg.temp_value));
     }
     pub fn simulate(&mut self) {
         self.execute_gates();
@@ -256,7 +259,7 @@ impl Circuit {
 }
 
 pub trait External: Any {
-    fn execute(&mut self);
+    fn execute(&mut self, circuit: &mut Circuit);
     fn as_any(&self) -> &dyn Any;
 }
 
@@ -298,22 +301,21 @@ pub fn nand(a: Wire, b: Wire) -> Wire {
     circuit_mut().nand(a, b)
 }
 
-//TODO call from Circuit?
-impl Wire {
-    pub fn is_one(self, circuit: &Circuit) -> bool {
-        circuit.wires[self.0] > 0
+impl Circuit {
+    pub fn set_wire(&mut self, wire: Wire, value: WireValue) {
+        self.wires[wire.0] = value;
     }
-    pub fn get(self, circuit: &Circuit) -> WireValue {
-        circuit.wires[self.0]
+    pub fn is_wire_one(&self, wire: Wire) -> bool {
+        self.wires[wire.0] > 0
     }
-    pub fn set(self, circuit: &mut Circuit, value: WireValue) {
-        circuit.wires[self.0] = value;
+    pub fn get_wire(&self, wire: Wire) -> WireValue {
+        self.wires[wire.0]
     }
-    pub fn get_latency(self, circuit: &Circuit) -> LatencyValue {
-        circuit.latencies[self.0]
+    pub fn set_wire_latency(&mut self, wire: Wire, value: LatencyValue) {
+        self.latencies[wire.0] = value;
     }
-    pub fn set_latency(self, circuit: &mut Circuit, value: LatencyValue) {
-        circuit.latencies[self.0] = value;
+    pub fn get_wire_latency(&self, wire: Wire) -> LatencyValue {
+        self.latencies[wire.0]
     }
 }
 
@@ -332,9 +334,9 @@ pub struct Gate {
 
 impl Gate {
     fn execute(&self, circuit: &mut Circuit) {
-        let a = self.wire_a.get(circuit);
-        let b = self.wire_b.get(circuit);
-        self.wire_out.set(circuit, !(a & b) & 1);
+        let a = circuit.get_wire(self.wire_a);
+        let b = circuit.get_wire(self.wire_b);
+        circuit.set_wire(self.wire_out, !(a & b) & 1);
     }
 }
 

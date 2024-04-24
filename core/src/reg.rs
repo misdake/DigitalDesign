@@ -19,7 +19,7 @@ use crate::build_circuit;
 fn test_reg() {
     use crate::{delay, input, reg};
 
-    let (mut circult, (a, b, c, d)) = build_circuit(|| {
+    let (mut circuit, (a, b, c, d)) = build_circuit(|| {
         let a = input();
         let r = reg();
         let b = r.out();
@@ -29,28 +29,28 @@ fn test_reg() {
         (a, b, c, d)
     });
     for i in 0..10 {
-        a.set(if i == 5 { 1 } else { 0 });
-        circult.simulate();
-        assert_eq!(if i >= 5 { 1 } else { 0 }, b.get());
-        assert_eq!(if i == 5 { 1 } else { 0 }, c.get());
-        assert_eq!(if i == 6 { 1 } else { 0 }, d.get());
+        circuit.set_wire(a, if i == 5 { 1 } else { 0 });
+        circuit.simulate();
+        assert_eq!(if i >= 5 { 1 } else { 0 }, circuit.get_wire(b));
+        assert_eq!(if i == 5 { 1 } else { 0 }, circuit.get_wire(c));
+        assert_eq!(if i == 6 { 1 } else { 0 }, circuit.get_wire(d));
     }
 }
 
 #[test]
 fn test_flipflop() {
     use crate::{flipflop, input};
-    let (mut circult, (d, e, q)) = build_circuit(|| {
+    let (mut circuit, (d, e, q)) = build_circuit(|| {
         let d = input();
         let e = input();
         let q = flipflop(d, e);
         (d, e, q)
     });
     for i in 0..20 {
-        d.set(if i < 5 || i > 12 { 0 } else { 1 });
-        e.set(if i == 9 || i == 15 { 1 } else { 0 });
-        circult.simulate();
-        assert_eq!(if i >= 9 && i <= 14 { 1 } else { 0 }, q.get());
+        circuit.set_wire(d, if i < 5 || i > 12 { 0 } else { 1 });
+        circuit.set_wire(e, if i == 9 || i == 15 { 1 } else { 0 });
+        circuit.simulate();
+        assert_eq!(if i >= 9 && i <= 14 { 1 } else { 0 }, circuit.get_wire(q));
     }
 }
 
@@ -58,16 +58,18 @@ fn test_flipflop() {
 fn test_reg_w() {
     use crate::{add_naive, input_w, reg_w};
 
-    let (mut circult, curr) = build_circuit(|| {
+    let (mut circuit, (one, curr)) = build_circuit(|| {
         let one = input_w::<4>();
-        one.set_u8(1);
         let curr = reg_w::<4>();
         curr.set_in(add_naive(curr.out, one).sum);
-        curr
+        (one, curr)
     });
+
+    circuit.set_wires_u8(one, 1);
+
     for i in 0..15 {
-        circult.simulate();
-        assert_eq!(i + 1, curr.out.get_u8());
+        circuit.simulate();
+        assert_eq!(i + 1, circuit.get_wires_u8(curr.out));
     }
 }
 
@@ -75,20 +77,20 @@ fn test_reg_w() {
 fn test_flipflop_w() {
     use crate::{flipflop_w, input, input_w};
 
-    let (mut circult, (d, e, q)) = build_circuit(|| {
+    let (mut circuit, (d, e, q)) = build_circuit(|| {
         let d = input_w::<4>();
         let e = input();
         let q = flipflop_w(d, e);
         (d, e, q)
     });
     for i in 0..8 {
-        d.set_u8(i);
-        e.set(if i == 3 || i == 6 { 1 } else { 0 });
-        circult.simulate();
+        circuit.set_wires_u8(d, i);
+        circuit.set_wire(e, if i == 3 || i == 6 { 1 } else { 0 });
+        circuit.simulate();
         if i >= 3 {
-            assert_eq!(if i >= 6 { 6 } else { 3 }, q.get_u8());
+            assert_eq!(if i >= 6 { 6 } else { 3 }, circuit.get_wires_u8(q));
         } else {
-            assert_eq!(0, q.get_u8());
+            assert_eq!(0, circuit.get_wires_u8(q));
         }
     }
 }
