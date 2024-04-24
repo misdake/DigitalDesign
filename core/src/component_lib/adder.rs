@@ -46,7 +46,7 @@ pub fn add_naive<const W: usize>(a: Wires<W>, b: Wires<W>) -> WiresAddResult<W> 
 
 #[test]
 fn test_add_naive() {
-    use crate::{add_naive, build_circuit, build_circuit, input_w};
+    use crate::*;
     let (mut circuit, (a, b, c, d)) = build_circuit(|| {
         let a = input_w::<8>();
         let b = input_w::<8>();

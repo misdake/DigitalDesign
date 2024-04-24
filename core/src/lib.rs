@@ -2,6 +2,8 @@
 #![feature(generic_const_exprs)]
 #![allow(clippy::manual_memcpy)]
 #![allow(clippy::needless_range_loop)]
+#![allow(clippy::bool_to_int_with_if)]
+#![allow(clippy::manual_range_contains)]
 
 mod basic;
 mod component_lib;

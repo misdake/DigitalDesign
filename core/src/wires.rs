@@ -1,4 +1,6 @@
-use crate::{input, input_const, mux2_w, reg, Circuit, LatencyValue, Reg, Wire, WireValue};
+use crate::{
+    input, input_const, mux2_w, reg, CircuitWires, LatencyValue, Reg, Wire, WireValue,
+};
 
 pub enum Assert<const CHECK: bool> {}
 
@@ -19,14 +21,21 @@ impl<const W: usize> Wires<W> {
             wires: [Wire(0); W],
         }
     }
-}
-impl Circuit {
-    pub fn set_wires_latency<const W: usize>(&mut self, wires: Wires<W>, latency: LatencyValue) {
-        wires
-            .wires
+
+    pub fn set_latency_external(self, latency: LatencyValue) {
+        self.wires
             .into_iter()
-            .for_each(|w| self.set_wire_latency(w, latency));
+            .for_each(|wire| wire.set_latency_external(latency));
     }
+    pub fn get_max_latency_external(self) -> LatencyValue {
+        self.wires
+            .into_iter()
+            .map(|w| w.get_latency_external())
+            .max()
+            .unwrap_or(0)
+    }
+}
+impl CircuitWires {
     pub fn get_max_latency<const W: usize>(&mut self, wires: Wires<W>) -> LatencyValue {
         wires
             .wires
@@ -89,8 +98,8 @@ impl<const F: usize> Wires<F> {
 }
 
 pub trait WiresU8 {
-    fn set_u8(&self, circuit: &mut Circuit, value: u8);
-    fn get_u8(&self, circuit: &mut Circuit) -> u8;
+    fn set_u8(&self, circuit: &mut CircuitWires, value: u8);
+    fn get_u8(&self, circuit: &CircuitWires) -> u8;
 }
 
 //TODO how?
@@ -108,11 +117,11 @@ impl<const W: usize> WiresU8 for Wires<W>
 where
     Assert<{ W <= 8 }>: IsTrue,
 {
-    fn set_u8(&self, circuit: &mut Circuit, value: u8) {
+    fn set_u8(&self, circuit: &mut CircuitWires, value: u8) {
         self.set_u8(circuit, value);
     }
 
-    fn get_u8(&self, circuit: &mut Circuit) -> u8 {
+    fn get_u8(&self, circuit: &CircuitWires) -> u8 {
         self.get_u8(circuit)
     }
 }
@@ -129,13 +138,13 @@ where
         Wires::<W> { wires }
     }
 
-    fn set_u8(&self, circuit: &mut Circuit, value: u8) {
+    fn set_u8(&self, circuit: &mut CircuitWires, value: u8) {
         for i in 0..W {
             circuit.set_wire(self.wires[i], ((value & (1 << i)) > 0).into());
         }
     }
 
-    fn get_u8(&self, circuit: &Circuit) -> u8 {
+    fn get_u8(&self, circuit: &CircuitWires) -> u8 {
         self.wires
             .iter()
             .enumerate()
@@ -145,7 +154,7 @@ where
     }
 }
 
-impl Circuit {
+impl CircuitWires {
     pub fn set_wires_u8<const W: usize>(&mut self, wires: Wires<W>, value: u8)
     where
         Assert<{ W <= 8 }>: IsTrue,

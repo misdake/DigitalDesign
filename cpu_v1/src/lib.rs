@@ -32,8 +32,8 @@ use assembler::*;
 mod programs;
 
 extern crate digital_design_code;
-pub(crate) use digital_design_code::{clear_all, external, reg, reg_w, External, Reg, Regs, Wires};
-use digital_design_code::{get_statistics, Circuit};
+use digital_design_code::{build_circuit, Circuit, CircuitWires};
+pub(crate) use digital_design_code::{external, reg, reg_w, External, Reg, Regs, Wires};
 use std::any::Any;
 use std::cell::RefCell;
 use std::marker::PhantomData;
@@ -297,34 +297,41 @@ impl CpuV1 for CpuV1EmuInstance {
 fn cpu_v1_build_with_ref(
     inst_rom: [Instruction; 256],
 ) -> (
+    Circuit,
     CpuV1State,
     CpuV1State,
     CpuV1StateInternal,
     CpuV1StateInternal,
 ) {
-    clear_all();
-    let mut state1 = CpuV1State::create(inst_rom);
-    let mut state2 = CpuV1State::create(inst_rom);
-    let internal1 = CpuV1Instance::build(&mut state1);
-    let internal2 = CpuV1EmuInstance::build(&mut state2);
-    println!("cpu_v1_build_with_ref {:?}", get_statistics());
-    (state1, state2, internal1, internal2)
+    let (circuit, (state1, internal1, state2, internal2)) = build_circuit(|| {
+        let mut state1 = CpuV1State::create(inst_rom);
+        let mut state2 = CpuV1State::create(inst_rom);
+        let internal1 = CpuV1Instance::build(&mut state1);
+        let internal2 = CpuV1EmuInstance::build(&mut state2);
+        (state1, internal1, state2, internal2)
+    });
+    println!("cpu_v1_build_with_ref {:?}", circuit.get_statistics());
+    (circuit, state1, state2, internal1, internal2)
 }
 #[allow(unused)]
-fn cpu_v1_build(inst_rom: [Instruction; 256]) -> (CpuV1State, CpuV1StateInternal) {
-    clear_all();
-    let mut state1 = CpuV1State::create(inst_rom);
-    let internal1 = CpuV1Instance::build(&mut state1);
-    println!("cpu_v1_build {:?}", get_statistics());
-    (state1, internal1)
+fn cpu_v1_build(inst_rom: [Instruction; 256]) -> (Circuit, CpuV1State, CpuV1StateInternal) {
+    let (circuit, (state1, internal1)) = build_circuit(|| {
+        let mut state1 = CpuV1State::create(inst_rom);
+        let internal1 = CpuV1Instance::build(&mut state1);
+        (state1, internal1)
+    });
+    println!("cpu_v1_build {:?}", circuit.get_statistics());
+    (circuit, state1, internal1)
 }
 #[allow(unused)]
-fn cpu_v1_build_mix(inst_rom: [Instruction; 256]) -> (CpuV1State, CpuV1StateInternal) {
-    clear_all();
-    let mut state1 = CpuV1State::create(inst_rom);
-    let internal1 = CpuV1MixInstance::build(&mut state1);
-    println!("cpu_v1_build_mix {:?}", get_statistics());
-    (state1, internal1)
+fn cpu_v1_build_mix(inst_rom: [Instruction; 256]) -> (Circuit, CpuV1State, CpuV1StateInternal) {
+    let (circuit, (state1, internal1)) = build_circuit(|| {
+        let mut state1 = CpuV1State::create(inst_rom);
+        let internal1 = CpuV1MixInstance::build(&mut state1);
+        (state1, internal1)
+    });
+    println!("cpu_v1_build_mix {:?}", circuit.get_statistics());
+    (circuit, state1, internal1)
 }
 
 pub trait CpuComponent: Any {
@@ -335,7 +342,7 @@ pub trait CpuComponent: Any {
 
 pub trait CpuComponentEmu<T: CpuComponent>: Sized + Any {
     fn init_output(input: &T::Input) -> T::Output;
-    fn execute(input: &T::Input, output: &T::Output);
+    fn execute(circuits: &mut CircuitWires, input: &T::Input, output: &T::Output);
     fn build(input: &T::Input) -> T::Output {
         let output = Self::init_output(input);
         let ctx: CpuComponentEmuContext<T, Self> = CpuComponentEmuContext {
@@ -353,8 +360,8 @@ struct CpuComponentEmuContext<T: CpuComponent, E: CpuComponentEmu<T>> {
     output: T::Output,
 }
 impl<T: CpuComponent, E: CpuComponentEmu<T>> External for CpuComponentEmuContext<T, E> {
-    fn execute(&mut self, x: &mut &mut Circuit) {
-        E::execute(&self.input, &self.output);
+    fn execute(&mut self, circuit: &mut CircuitWires) {
+        E::execute(circuit, &self.input, &self.output);
     }
     fn as_any(&self) -> &dyn Any {
         self

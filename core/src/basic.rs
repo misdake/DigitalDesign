@@ -1,7 +1,7 @@
 use std::any::Any;
 use std::collections::HashMap;
 use std::fmt::{Debug, Formatter};
-use std::ops::Range;
+use std::ops::{Deref, DerefMut, Range};
 use std::sync::Mutex;
 
 pub type WireValue = u8;
@@ -41,20 +41,42 @@ impl Debug for ExecuteSegment {
     }
 }
 
-pub struct Circuit {
-    pub wires: Vec<WireValue>,
-    pub latencies: Vec<LatencyValue>,
-    gates_map: HashMap<(usize, usize), Wire>,
-    gates: Vec<Gate>,
-    externals: Vec<Box<dyn External>>,
-    pub regs: Vec<RegValue>,
-    execute_segments: Vec<ExecuteSegment>,
+pub struct CircuitWires {
+    wires: Vec<WireValue>,
+    latencies: Vec<LatencyValue>,
 }
-impl Circuit {
+impl CircuitWires {
     fn new() -> Self {
         Self {
             wires: vec![0, 1],
             latencies: vec![0, 0],
+        }
+    }
+}
+
+pub struct Circuit {
+    wires_latencies: CircuitWires,
+    gates_map: HashMap<(usize, usize), Wire>,
+    gates: Vec<Gate>,
+    externals: Vec<Box<dyn External>>,
+    regs: Vec<RegValue>,
+    execute_segments: Vec<ExecuteSegment>,
+}
+impl Deref for Circuit {
+    type Target = CircuitWires;
+    fn deref(&self) -> &Self::Target {
+        &self.wires_latencies
+    }
+}
+impl DerefMut for Circuit {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.wires_latencies
+    }
+}
+impl Circuit {
+    fn new() -> Self {
+        Self {
+            wires_latencies: CircuitWires::new(),
             gates_map: HashMap::new(),
             gates: Vec::new(),
             externals: Vec::new(),
@@ -178,7 +200,7 @@ impl Circuit {
                 .push(ExecuteSegment::Externals(next..(next + 1)));
         }
     }
-    pub fn get_statistics(&mut self) -> ExecutionResult {
+    pub fn get_statistics(&self) -> ExecutionResult {
         ExecutionResult {
             wire_count: self.wires.len(),
             gate_count: self.gates.len(),
@@ -189,16 +211,18 @@ impl Circuit {
     pub fn execute_gates(&mut self) {
         // println!("execute segments {:?}", EXECUTE_SEGMENTS);
         for segment in &self.execute_segments {
-            match &segment {
+            match segment.clone() {
                 ExecuteSegment::Gates(range) => {
                     let gates = &self.gates[range.start..range.end];
-                    gates.iter().for_each(|gate| gate.execute(self));
+                    gates
+                        .iter()
+                        .for_each(|gate| gate.execute(&mut self.wires_latencies));
                 }
                 ExecuteSegment::Externals(range) => {
                     let externals = &mut self.externals[range.start..range.end];
                     externals
                         .iter_mut()
-                        .for_each(|external| external.execute(self));
+                        .for_each(|external| external.execute(&mut self.wires_latencies));
                 }
             }
         }
@@ -208,12 +232,12 @@ impl Circuit {
         self.regs.iter_mut().for_each(|reg| {
             reg.temp_value = reg
                 .wire_in
-                .map(|w| self.get_wire(w))
+                .map(|w| self.wires_latencies.get_wire(w))
                 .expect("reg with no input!")
         });
         self.regs
             .iter_mut()
-            .for_each(|reg| self.set_wire(reg.wire_out, reg.temp_value));
+            .for_each(|reg| self.wires_latencies.set_wire(reg.wire_out, reg.temp_value));
     }
     pub fn simulate(&mut self) {
         self.execute_gates();
@@ -259,8 +283,16 @@ impl Circuit {
 }
 
 pub trait External: Any {
-    fn execute(&mut self, circuit: &mut Circuit);
+    fn execute(&mut self, circuit: &mut CircuitWires);
     fn as_any(&self) -> &dyn Any;
+}
+impl Wire {
+    pub fn set_latency_external(self, latency: LatencyValue) {
+        circuit_mut().set_wire_latency(self, latency);
+    }
+    pub fn get_latency_external(self) -> LatencyValue {
+        circuit_mut().get_wire_latency(self)
+    }
 }
 
 pub fn external<E: External>(e: E) -> &'static E {
@@ -301,7 +333,7 @@ pub fn nand(a: Wire, b: Wire) -> Wire {
     circuit_mut().nand(a, b)
 }
 
-impl Circuit {
+impl CircuitWires {
     pub fn set_wire(&mut self, wire: Wire, value: WireValue) {
         self.wires[wire.0] = value;
     }
@@ -333,7 +365,7 @@ pub struct Gate {
 }
 
 impl Gate {
-    fn execute(&self, circuit: &mut Circuit) {
+    fn execute(&self, circuit: &mut CircuitWires) {
         let a = circuit.get_wire(self.wire_a);
         let b = circuit.get_wire(self.wire_b);
         circuit.set_wire(self.wire_out, !(a & b) & 1);

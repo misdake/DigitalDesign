@@ -1,5 +1,6 @@
-use crate::{Circuit, External, Wire, WireValue, Wires, WiresU8};
 use std::any::Any;
+
+use crate::{CircuitWires, External, Wire, WireValue, Wires, WiresU8};
 
 pub struct Logger {
     name: String,
@@ -7,7 +8,7 @@ pub struct Logger {
     values: Vec<WireValue>,
 }
 impl External for Logger {
-    fn execute(&mut self, circuit: &mut Circuit) {
+    fn execute(&mut self, circuit: &mut CircuitWires) {
         self.values.push(circuit.get_wire(self.wire));
     }
     fn as_any(&self) -> &dyn Any {
@@ -46,7 +47,7 @@ impl<const W: usize> External for LoggerU8<W>
 where
     Wires<W>: WiresU8,
 {
-    fn execute(&mut self, circuit: &mut Circuit) {
+    fn execute(&mut self, circuit: &mut CircuitWires) {
         self.values.push(self.wires.get_u8(circuit));
     }
     fn as_any(&self) -> &dyn Any {
@@ -102,7 +103,7 @@ fn test_logger_u8() {
         let one = Wires::<4>::parse_u8(1);
         let curr = reg_w::<4>();
         curr.set_in(add_naive(curr.out, one).sum);
-        let logger = external(LoggerU8::new("inc".to_string(), curr.clone().out));
+        let logger = external(LoggerU8::new("inc".to_string(), curr.out));
         logger
     });
     for _ in 0..=16 {

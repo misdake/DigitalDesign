@@ -134,7 +134,7 @@ endmodule
 #[test]
 fn test_basic_nand() {
     use crate::*;
-    let (mut circuit, (a, b, out0, out1, out2, out3)) = build_circuit(|| {
+    let (circuit, (a, b, out0, out1, out2, out3)) = build_circuit(|| {
         let a = input();
         let b = input();
         let out0 = !a;
