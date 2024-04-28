@@ -3,6 +3,7 @@
 use crate::devices::Devices;
 use crate::isa::{Instruction, RegisterIndex};
 use crate::CpuV1State;
+use digital_design_code::*;
 use std::cell::RefCell;
 use std::rc::Rc;
 
@@ -74,17 +75,17 @@ impl EmuState {
 }
 
 impl CpuV1State {
-    pub fn export_emu_state(&self) -> EmuState {
+    pub fn export_emu_state(&self, c: &mut Circuit) -> EmuState {
         EmuState {
-            pc: self.pc.out.get_u8(),
-            reg: self.reg.map(|i| i.out.get_u8()),
-            mem: self.mem.map(|i| i.out.get_u8()),
-            mem_page: self.mem_page.out.get_u8(),
-            flag_p: self.flag_p.out().get(),
-            flag_nz: self.flag_nz.out().get(),
-            flag_n: self.flag_n.out().get(),
-            bus_addr0: self.bus_addr0.out.get_u8(),
-            bus_addr1: self.bus_addr1.out.get_u8(),
+            pc: self.pc.out.get_u8(c),
+            reg: self.reg.map(|i| i.out.get_u8(c)),
+            mem: self.mem.map(|i| i.out.get_u8(c)),
+            mem_page: self.mem_page.out.get_u8(c),
+            flag_p: self.flag_p.out().get(c),
+            flag_nz: self.flag_nz.out().get(c),
+            flag_n: self.flag_n.out().get(c),
+            bus_addr0: self.bus_addr0.out.get_u8(c),
+            bus_addr1: self.bus_addr1.out.get_u8(c),
         }
     }
 }

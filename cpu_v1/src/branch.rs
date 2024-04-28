@@ -2,7 +2,7 @@ use crate::decoder::{JmpOp, JmpSrcSelect};
 use crate::CpuComponent;
 use digital_design_code::{mux2, Wire, Wires};
 
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct CpuBranchInput {
     pub imm: Wires<4>,
     pub reg0: Wires<4>,

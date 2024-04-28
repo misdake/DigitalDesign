@@ -1,6 +1,6 @@
 use crate::devices::{DeviceReadResult, Devices};
 use crate::{CpuComponent, CpuComponentEmu};
-use digital_design_code::{input_w, select, Wire, Wires};
+use digital_design_code::*;
 use std::cell::RefCell;
 use std::rc::Rc;
 
@@ -38,34 +38,34 @@ impl CpuComponentEmu<CpuBus> for CpuBusEmu {
         let bus_out = input_w();
         let bus_addr0_next = input_w();
         let bus_addr1_next = input_w();
-        bus_out.set_latency(i.reg0_data.get_max_latency() + 2);
-        bus_addr0_next.set_latency(i.reg0_data.get_max_latency() + 2);
-        bus_addr1_next.set_latency(i.reg0_data.get_max_latency() + 2);
+        bus_out.set_latency_external(i.reg0_data.get_max_latency_external() + 2);
+        bus_addr0_next.set_latency_external(i.reg0_data.get_max_latency_external() + 2);
+        bus_addr1_next.set_latency_external(i.reg0_data.get_max_latency_external() + 2);
         CpuBusOutput {
             bus_out,
             bus_addr0_next,
             bus_addr1_next,
         }
     }
-    fn execute(input: &CpuBusInput, output: &CpuBusOutput) {
-        let bus_addr0_write = input.bus_addr0_write.get() > 0;
-        let bus_addr1_write = input.bus_addr1_write.get() > 0;
+    fn execute(c: &mut CircuitWires, input: &CpuBusInput, output: &CpuBusOutput) {
+        let bus_addr0_write = input.bus_addr0_write.get(c) > 0;
+        let bus_addr1_write = input.bus_addr1_write.get(c) > 0;
         let bus_addr0_src = select(bus_addr0_write, input.reg0_data, input.bus_addr0);
         let bus_addr1_src = select(bus_addr1_write, input.reg0_data, input.bus_addr1);
-        output.bus_addr0_next.set_u8(bus_addr0_src.get_u8());
-        output.bus_addr1_next.set_u8(bus_addr1_src.get_u8());
+        output.bus_addr0_next.set_u8(c, bus_addr0_src.get_u8(c));
+        output.bus_addr1_next.set_u8(c, bus_addr1_src.get_u8(c));
 
-        let bus_enable = input.bus_enable.get() > 0;
-        let reg0 = input.reg0_data.get_u8();
-        let reg1 = input.reg1_data.get_u8();
-        let imm = input.imm.get_u8(); // high 1 bit -> bus0 or bus1, low 3 bit -> opcode
+        let bus_enable = input.bus_enable.get(c) > 0;
+        let reg0 = input.reg0_data.get_u8(c);
+        let reg1 = input.reg1_data.get_u8(c);
+        let imm = input.imm.get_u8(c); // high 1 bit -> bus0 or bus1, low 3 bit -> opcode
 
         let bus0_enable = (imm & (0b1000)) == 0;
         let bus1_enable = (imm & (0b1000)) > 0;
         let bus_opcode = imm & 0b0111;
 
-        let bus_addr0 = input.bus_addr0.get_u8() * (bus0_enable as u8);
-        let bus_addr1 = input.bus_addr1.get_u8() * (bus1_enable as u8);
+        let bus_addr0 = input.bus_addr0.get_u8(c) * (bus0_enable as u8);
+        let bus_addr1 = input.bus_addr1.get_u8(c) * (bus1_enable as u8);
         let bus_addr = bus_addr0 | bus_addr1;
 
         let bus_out: u8;
@@ -86,20 +86,20 @@ impl CpuComponentEmu<CpuBus> for CpuBusEmu {
             bus_out_latency = 0;
         }
 
-        let latency1 = input.bus_enable.get_latency();
+        let latency1 = input.bus_enable.get_latency(c);
         let latency2 = input
             .reg0_data
             .wires
             .iter()
-            .map(|w| w.get_latency())
+            .map(|w| w.get_latency(c))
             .max()
             .unwrap();
         let latency = latency1.max(latency2) + bus_out_latency;
-        output.bus_out.set_u8(bus_out);
+        output.bus_out.set_u8(c, bus_out);
         output
             .bus_out
             .wires
             .iter()
-            .for_each(|w| w.set_latency(latency));
+            .for_each(|w| w.set_latency(c, latency));
     }
 }

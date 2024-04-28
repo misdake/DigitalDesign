@@ -1,10 +1,8 @@
 use crate::programs::*;
 use crate::*;
-use digital_design_code::global_lock;
 
 #[test]
 fn test_fibonacci() {
-    let _lock = global_lock();
     use isa::Instruction::*;
     use isa::RegisterIndex::*;
     test_cpu_with_emu(
@@ -27,7 +25,6 @@ fn test_fibonacci() {
 
 #[test]
 fn test_fibonacci2() {
-    let _lock = global_lock();
     use isa::RegisterIndex::*;
     let mut asm = Assembler::new();
     asm.reg0().load_imm(5);

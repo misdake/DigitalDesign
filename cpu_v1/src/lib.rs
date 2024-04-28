@@ -76,7 +76,7 @@ impl CpuV1State {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 #[allow(unused)] // internal struct for debugging and testing
 struct CpuV1StateInternal {
     decoder_in: CpuDecoderInput,

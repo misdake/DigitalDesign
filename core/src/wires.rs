@@ -1,6 +1,4 @@
-use crate::{
-    input, input_const, mux2_w, reg, CircuitWires, LatencyValue, Reg, Wire, WireValue,
-};
+use crate::{input, input_const, mux2_w, reg, CircuitWires, LatencyValue, Reg, Wire, WireValue};
 
 pub enum Assert<const CHECK: bool> {}
 
@@ -118,27 +116,6 @@ where
     Assert<{ W <= 8 }>: IsTrue,
 {
     fn set_u8(&self, circuit: &mut CircuitWires, value: u8) {
-        self.set_u8(circuit, value);
-    }
-
-    fn get_u8(&self, circuit: &CircuitWires) -> u8 {
-        self.get_u8(circuit)
-    }
-}
-
-impl<const W: usize> Wires<W>
-where
-    Assert<{ W <= 8 }>: IsTrue,
-{
-    pub fn parse_u8(value: u8) -> Wires<W> {
-        let mut wires = [Wire(0); W];
-        for i in 0..W {
-            wires[i] = input_const(((value & (1 << i)) > 0).into());
-        }
-        Wires::<W> { wires }
-    }
-
-    fn set_u8(&self, circuit: &mut CircuitWires, value: u8) {
         for i in 0..W {
             circuit.set_wire(self.wires[i], ((value & (1 << i)) > 0).into());
         }
@@ -154,7 +131,21 @@ where
     }
 }
 
+impl<const W: usize> Wires<W>
+where
+    Assert<{ W <= 8 }>: IsTrue,
+{
+    pub fn parse_u8(value: u8) -> Wires<W> {
+        let mut wires = [Wire(0); W];
+        for i in 0..W {
+            wires[i] = input_const(((value & (1 << i)) > 0).into());
+        }
+        Wires::<W> { wires }
+    }
+}
+
 impl CircuitWires {
+    // constraints don't work outside crate
     pub fn set_wires_u8<const W: usize>(&mut self, wires: Wires<W>, value: u8)
     where
         Assert<{ W <= 8 }>: IsTrue,

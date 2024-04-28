@@ -85,9 +85,9 @@ impl Circuit {
         }
     }
 
-    fn clear(&mut self) {
-        *self = Self::new();
-    }
+    // fn clear(&mut self) {
+    //     *self = Self::new();
+    // }
 }
 
 static mut CIRCUIT_LOCK: Mutex<()> = Mutex::new(());
@@ -333,6 +333,23 @@ pub fn nand(a: Wire, b: Wire) -> Wire {
     circuit_mut().nand(a, b)
 }
 
+impl Wire {
+    pub fn is_one(self, circuit: &CircuitWires) -> bool {
+        circuit.is_wire_one(self)
+    }
+    pub fn get(self, circuit: &CircuitWires) -> WireValue {
+        circuit.get_wire(self)
+    }
+    pub fn set(self, circuit: &mut CircuitWires, value: WireValue) {
+        circuit.set_wire(self, value);
+    }
+    pub fn get_latency(self, circuit: &CircuitWires) -> LatencyValue {
+        circuit.get_wire_latency(self)
+    }
+    pub fn set_latency(self, circuit: &mut CircuitWires, value: LatencyValue) {
+        circuit.set_wire_latency(self, value);
+    }
+}
 impl CircuitWires {
     pub fn set_wire(&mut self, wire: Wire, value: WireValue) {
         self.wires[wire.0] = value;

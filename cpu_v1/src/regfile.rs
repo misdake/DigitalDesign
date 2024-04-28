@@ -90,55 +90,82 @@ impl CpuComponent for CpuRegWrite {
 #[test]
 fn test_reg() {
     use digital_design_code::*;
-    clear_all();
 
-    let regs = [0u8; 4].map(|_| reg_w());
-
-    let reg0_addr = input_w();
-    let reg1_addr = input_w();
-    let reg0_write_enable = input();
-    let reg0_write_select = input_w();
-    let alu_out = input_w();
-    let mem_out = input_w();
-    let bus_out = input_w();
-
-    let (reg0_data, reg1_data) = {
-        let read_input = CpuRegReadInput {
+    let (
+        mut c,
+        (
             regs,
             reg0_addr,
             reg1_addr,
-        };
-        let CpuRegReadOutput {
-            reg0_data,
-            reg1_data,
-            reg0_select,
-        } = CpuRegRead::build(&read_input);
-        let write_input = CpuRegWriteInput {
-            regs,
-            reg0_select,
             reg0_write_enable,
             reg0_write_select,
             alu_out,
             mem_out,
-            bus_out,
+            reg0_data,
+            reg1_data,
+        ),
+    ) = build_circuit(|| {
+        let regs = [0u8; 4].map(|_| reg_w());
+
+        let reg0_addr = input_w();
+        let reg1_addr = input_w();
+        let reg0_write_enable = input();
+        let reg0_write_select = input_w();
+        let alu_out = input_w();
+        let mem_out = input_w();
+        let bus_out = input_w();
+
+        let (reg0_data, reg1_data) = {
+            let read_input = CpuRegReadInput {
+                regs,
+                reg0_addr,
+                reg1_addr,
+            };
+            let CpuRegReadOutput {
+                reg0_data,
+                reg1_data,
+                reg0_select,
+            } = CpuRegRead::build(&read_input);
+            let write_input = CpuRegWriteInput {
+                regs,
+                reg0_select,
+                reg0_write_enable,
+                reg0_write_select,
+                alu_out,
+                mem_out,
+                bus_out,
+            };
+            let CpuRegWriteOutput { .. } = CpuRegWrite::build(&write_input);
+            (reg0_data, reg1_data)
         };
-        let CpuRegWriteOutput { .. } = CpuRegWrite::build(&write_input);
-        (reg0_data, reg1_data)
-    };
+
+        (
+            regs,
+            reg0_addr,
+            reg1_addr,
+            reg0_write_enable,
+            reg0_write_select,
+            alu_out,
+            mem_out,
+            reg0_data,
+            reg1_data,
+        )
+    });
+    let c = &mut c;
 
     let mut regs_sw = [0u8; 4];
 
     let mut test =
         |reg0: u8, reg1: u8, write: bool, src: Reg0WriteSelect, alu_value: u8, mem_value: u8| {
             // input
-            reg0_addr.set_u8(reg0);
-            reg1_addr.set_u8(reg1);
-            reg0_write_select.set_u8(1 << src as u8);
-            reg0_write_enable.set(write as u8);
-            alu_out.set_u8(alu_value);
-            mem_out.set_u8(mem_value);
+            reg0_addr.set_u8(c, reg0);
+            reg1_addr.set_u8(c, reg1);
+            reg0_write_select.set_u8(c, 1 << src as u8);
+            reg0_write_enable.set(c, write as u8);
+            alu_out.set_u8(c, alu_value);
+            mem_out.set_u8(c, mem_value);
 
-            simulate();
+            c.simulate();
 
             let (reg0_data_ref, reg1_data_ref) = {
                 let reg0_data = regs_sw[reg0 as usize];
@@ -167,12 +194,12 @@ fn test_reg() {
             //             regs_sw[0], regs_sw[1], regs_sw[2], regs_sw[3]
             //         );
 
-            assert_eq!(reg0_data_ref, reg0_data.get_u8());
-            assert_eq!(reg1_data_ref, reg1_data.get_u8());
-            assert_eq!(regs_sw[0], regs[0].out.get_u8());
-            assert_eq!(regs_sw[1], regs[1].out.get_u8());
-            assert_eq!(regs_sw[2], regs[2].out.get_u8());
-            assert_eq!(regs_sw[3], regs[3].out.get_u8());
+            assert_eq!(reg0_data_ref, reg0_data.get_u8(c));
+            assert_eq!(reg1_data_ref, reg1_data.get_u8(c));
+            assert_eq!(regs_sw[0], regs[0].out.get_u8(c));
+            assert_eq!(regs_sw[1], regs[1].out.get_u8(c));
+            assert_eq!(regs_sw[2], regs[2].out.get_u8(c));
+            assert_eq!(regs_sw[3], regs[3].out.get_u8(c));
         };
 
     let testcases = shuffled_list(1 << 9, 0.123);

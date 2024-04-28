@@ -1,7 +1,7 @@
 use crate::assembler::{Assembler, RegisterCommon, RegisterSpecial};
 use crate::cpu_v1_build_mix;
 use crate::devices::*;
-use digital_design_code::{clear_all, clock_tick, execute_gates, global_lock};
+use digital_design_code::*;
 use std::ops::Range;
 
 const MAP_SIZE: usize = 8;
@@ -198,14 +198,12 @@ fn test_frame_sync() {
 }
 
 fn start_emulation(asm: Assembler) {
-    let _lock = global_lock();
-    clear_all();
     let inst = asm.finish();
 
-    let (state, _state_ref) = cpu_v1_build_mix(inst);
+    let (mut circuit, state, _state_ref) = cpu_v1_build_mix(inst);
 
     loop {
-        let pc = state.pc.out.get_u8();
+        let pc = state.pc.out.get_u8(&circuit);
         if pc as usize >= inst.len() {
             break;
         }
@@ -219,9 +217,7 @@ fn start_emulation(asm: Assembler) {
         //     comment
         // );
 
-        execute_gates();
-
-        clock_tick();
+        circuit.simulate()
 
         // let get_game_mem =
         //     |addr: u8| -> u8 { state.mem[PAGE_GAME * 16 + addr as usize].out.get_u8() };
