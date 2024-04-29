@@ -1,3 +1,4 @@
+mod assembler;
 mod isa;
 mod sim;
 
