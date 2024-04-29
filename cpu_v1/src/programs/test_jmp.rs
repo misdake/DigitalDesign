@@ -2,11 +2,9 @@ use crate::isa::Instruction;
 use crate::isa::Instruction::*;
 use crate::isa::RegisterIndex::*;
 use crate::programs::{print_regs, test_cpu_with_emu};
-use digital_design_code::global_lock;
 
 #[test]
 fn test_jmp() {
-    let _lock = global_lock();
     test_cpu_with_emu(
         &[
             jmp_offset(2),      // 0  0000
@@ -26,7 +24,6 @@ fn test_jmp() {
 
 #[test]
 fn test_jmp_condition_taken() {
-    let _lock = global_lock();
     test_cpu_with_emu(
         &[
             load_imm(1),       //  0  0000
@@ -45,7 +42,6 @@ fn test_jmp_condition_taken() {
 
 #[test]
 fn test_jmp_condition_not_taken() {
-    let _lock = global_lock();
     test_cpu_with_emu(
         &[
             load_imm(0),   //  0  0000
@@ -63,7 +59,6 @@ fn test_jmp_condition_not_taken() {
 
 #[test]
 fn test_jmp_condition_reg() {
-    let _lock = global_lock();
     test_cpu_with_emu(
         &[
             load_imm(2), // 0 or 1 or 2 or 3
@@ -86,7 +81,6 @@ fn test_jmp_condition_reg() {
 
 #[test]
 fn test_jmp_long() {
-    let _lock = global_lock();
     let mut inst_rom = [Instruction::default(); 256];
     inst_rom[0] = jmp_long(1); // -> 16
     inst_rom[16] = jmp_long(4); // -> 64
@@ -100,7 +94,6 @@ fn test_jmp_long() {
 
 #[test]
 fn test_loop() {
-    let _lock = global_lock();
     test_cpu_with_emu(
         &[
             load_imm(7),
@@ -115,7 +108,6 @@ fn test_loop() {
 
 #[test]
 fn test_loop2() {
-    let _lock = global_lock();
     test_cpu_with_emu(
         &[
             load_imm(2),

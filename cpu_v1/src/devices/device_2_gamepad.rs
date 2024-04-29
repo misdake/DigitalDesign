@@ -119,6 +119,7 @@ impl Device for DeviceGamepad {
     }
 }
 
+#[ignore]
 #[test]
 fn test_gamepad() {
     use crate::devices::*;

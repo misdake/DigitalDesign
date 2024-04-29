@@ -1,11 +1,9 @@
 use crate::isa::Instruction::*;
 use crate::isa::RegisterIndex::*;
 use crate::programs::{print_regs, test_cpu_with_emu};
-use digital_design_code::global_lock;
 
 #[test]
 fn test_unary() {
-    let _lock = global_lock();
     test_cpu_with_emu(
         &[
             inc(Reg3),
@@ -25,7 +23,6 @@ fn test_unary() {
 
 #[test]
 fn test_binary() {
-    let _lock = global_lock();
     test_cpu_with_emu(
         &[
             load_imm(2),
@@ -47,7 +44,6 @@ fn test_binary() {
 
 #[test]
 fn test_load_imm() {
-    let _lock = global_lock();
     test_cpu_with_emu(
         &[
             load_imm(3),

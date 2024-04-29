@@ -4,13 +4,11 @@ use crate::isa::Instruction;
 use crate::isa::Instruction::*;
 use crate::isa::RegisterIndex::*;
 use crate::{CpuV1, CpuV1MixInstance, CpuV1State};
-use digital_design_code::{clear_all, get_statistics, simulate};
+use digital_design_code::*;
 
 #[test]
 #[ignore]
 fn raw_circuit() {
-    clear_all();
-
     let mut inst_rom = [Instruction::default(); 256];
     let inst = &[
         load_imm(5),
@@ -30,13 +28,15 @@ fn raw_circuit() {
         .enumerate()
         .for_each(|(i, inst)| inst_rom[i] = *inst);
 
-    let mut state1 = CpuV1State::create(inst_rom);
-    let _ = CpuV1MixInstance::build(&mut state1);
+    let (mut circuit, _) = build_circuit(|| {
+        let mut state1 = CpuV1State::create(inst_rom);
+        let _ = CpuV1MixInstance::build(&mut state1);
+    });
 
     let start = std::time::Instant::now();
     const CYCLES: usize = 100000;
     for _ in 0..CYCLES {
-        simulate();
+        circuit.simulate();
     }
     let duration = start.elapsed();
     println!("simulate {CYCLES} cycles: {}ms", duration.as_millis());
@@ -44,6 +44,6 @@ fn raw_circuit() {
     println!("{:.0} cycles for 30fps", 1. / 30. / time_per_cycle);
     println!("{:.0} cycles for 60fps", 1. / 60. / time_per_cycle);
 
-    let result = get_statistics();
+    let result = circuit.get_statistics();
     println!("{:?}", result);
 }

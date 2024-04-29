@@ -57,30 +57,32 @@ pub fn unflatten3<const A: usize, const B: usize, const C: usize>(
 
 #[test]
 fn test_flatten_unflatten() {
-    use crate::{add_naive, clear_all, flatten3, input_w, simulate, unflatten3};
-    clear_all();
+    use crate::{add_naive, build_circuit, flatten3, input_w, unflatten3};
 
-    let a = input_w::<2>();
-    let b = input_w::<3>();
-    let c = input_w::<3>();
-    let d = input_w::<8>();
-    a.set_u8(1);
-    b.set_u8(2);
-    c.set_u8(3);
-    d.set_u8(46);
-    let f = flatten3(a, b, c);
-    assert_eq!(105, f.get_u8()); // 1 + 2<<2 + 3<<5
-    let r = add_naive(d, f); // 105 + 46 = 151
-    simulate();
-    assert_eq!(151, r.sum.get_u8());
-    let (x, y, z) = unflatten3::<2, 3, 3>(f);
-    assert_eq!(1, x.get_u8());
-    assert_eq!(2, y.get_u8());
-    assert_eq!(3, z.get_u8());
+    let (mut circuit, (a, b, c, d, f, x, y, z, r)) = build_circuit(|| {
+        let a = input_w::<2>();
+        let b = input_w::<3>();
+        let c = input_w::<3>();
+        let d = input_w::<8>();
+        let f = flatten3(a, b, c);
+        let (x, y, z) = unflatten3::<2, 3, 3>(f);
+        let r = add_naive(d, f); // 105 + 46 = 151
+        (a, b, c, d, f, x, y, z, r)
+    });
+    circuit.set_wires_u8(a, 1);
+    circuit.set_wires_u8(b, 2);
+    circuit.set_wires_u8(c, 3);
+    circuit.set_wires_u8(d, 46);
+    assert_eq!(105, circuit.get_wires_u8(f)); // 1 + 2<<2 + 3<<5
+    circuit.simulate();
+    assert_eq!(151, circuit.get_wires_u8(r.sum));
+    assert_eq!(1, circuit.get_wires_u8(x));
+    assert_eq!(2, circuit.get_wires_u8(y));
+    assert_eq!(3, circuit.get_wires_u8(z));
 
-    d.set_u8(0b11010010);
+    circuit.set_wires_u8(d, 0b11010010);
     let (x, y, z) = unflatten3::<2, 2, 4>(d);
-    assert_eq!(0b10, x.get_u8());
-    assert_eq!(0b00, y.get_u8());
-    assert_eq!(0b1101, z.get_u8());
+    assert_eq!(0b10, circuit.get_wires_u8(x));
+    assert_eq!(0b00, circuit.get_wires_u8(y));
+    assert_eq!(0b1101, circuit.get_wires_u8(z));
 }

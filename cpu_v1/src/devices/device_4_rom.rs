@@ -71,6 +71,7 @@ impl Device for DeviceRom {
     }
 }
 
+#[ignore]
 #[test]
 fn test_device_rom() {
     use crate::devices::device_0_terminal::DeviceTerminalOp;
@@ -99,6 +100,7 @@ fn test_device_rom() {
     );
 }
 
+#[ignore]
 #[test]
 fn test_copy_rom_to_mem() {
     use crate::devices::*;

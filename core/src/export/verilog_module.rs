@@ -133,16 +133,18 @@ endmodule
 
 #[test]
 fn test_basic_nand() {
-    use crate::{clear_all, export_gate_reg, input};
-    clear_all();
-    let a = input();
-    let b = input();
-    let out0 = !a;
-    let out1 = !b;
-    let out2 = !a & !b;
-    let out3 = !a | !b;
+    use crate::*;
+    let (circuit, (a, b, out0, out1, out2, out3)) = build_circuit(|| {
+        let a = input();
+        let b = input();
+        let out0 = !a;
+        let out1 = !b;
+        let out2 = !a & !b;
+        let out3 = !a | !b;
+        (a, b, out0, out1, out2, out3)
+    });
 
-    let content = export_gate_reg();
+    let content = circuit.export_gate_reg();
     let mut interface = ExportModuleInterface::default();
     interface
         .module_name("led2")
@@ -161,17 +163,21 @@ fn test_basic_nand() {
 #[test]
 fn test_basic_reg() {
     use crate::*;
-    clear_all();
-    let r1 = reg();
-    let r2 = reg();
-    let button1 = input();
-    let button2 = input();
-    r1.set_in(!r1.out());
-    r2.set_in(!r1.out());
-    let led0 = !r1.out();
-    let led1 = !r2.out();
 
-    let content = export_gate_reg();
+    let (circuit, (button1, button2, led0, led1)) = build_circuit(|| {
+        let r1 = reg();
+        let r2 = reg();
+        let button1 = input();
+        let button2 = input();
+        r1.set_in(!r1.out());
+        r2.set_in(!r1.out());
+        let led0 = !r1.out();
+        let led1 = !r2.out();
+
+        (button1, button2, led0, led1)
+    });
+
+    let content = circuit.export_gate_reg();
     let mut interface = ExportModuleInterface::default();
     interface
         .module_name("led2")
@@ -192,15 +198,18 @@ fn test_basic_reg() {
 #[test]
 fn test_basic_adder() {
     use crate::*;
-    clear_all();
-    let r = reg_w::<6>();
-    let button1 = input();
-    let button2 = input();
-    let out = add_naive(r.out, Wires::parse_u8(1));
-    r.set_in(out.sum & !button2.expand());
-    let led = !r.out;
 
-    let content = export_gate_reg();
+    let (circuit, (button1, button2, led)) = build_circuit(|| {
+        let r = reg_w::<6>();
+        let button1 = input();
+        let button2 = input();
+        let out = add_naive(r.out, Wires::parse_u8(1));
+        r.set_in(out.sum & !button2.expand());
+        let led = !r.out;
+        (button1, button2, led)
+    });
+
+    let content = circuit.export_gate_reg();
     let mut interface = ExportModuleInterface::default();
     interface
         .module_name("led2")

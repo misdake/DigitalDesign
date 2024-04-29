@@ -1,7 +1,7 @@
 use crate::{CpuComponent, CpuComponentEmu};
-use digital_design_code::{input, input_w, mux2_w, unflatten2, unflatten3, Wire, Wires};
+use digital_design_code::*;
 
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct CpuDecoderInput {
     pub inst: Wires<8>,
 }
@@ -245,26 +245,26 @@ impl CpuComponentEmu<CpuDecoder> for CpuDecoderEmu {
             bus_addr1_write: input(),
         };
 
-        let latency = i.inst.get_max_latency() + 15;
-        output.imm.set_latency(latency);
-        output.reg0_addr.set_latency(latency);
-        output.reg1_addr.set_latency(latency);
-        output.reg0_write_enable.set_latency(latency);
-        output.reg0_write_select.set_latency(latency);
-        output.alu_op.set_latency(latency);
-        output.alu0_select.set_latency(latency);
-        output.alu1_select.set_latency(latency);
-        output.mem_addr_select.set_latency(latency);
-        output.mem_write_enable.set_latency(latency);
-        output.mem_page_write_enable.set_latency(latency);
-        output.jmp_op.set_latency(latency);
-        output.jmp_src_select.set_latency(latency);
+        let latency = i.inst.get_max_latency_external() + 15;
+        output.imm.set_latency_external(latency);
+        output.reg0_addr.set_latency_external(latency);
+        output.reg1_addr.set_latency_external(latency);
+        output.reg0_write_enable.set_latency_external(latency);
+        output.reg0_write_select.set_latency_external(latency);
+        output.alu_op.set_latency_external(latency);
+        output.alu0_select.set_latency_external(latency);
+        output.alu1_select.set_latency_external(latency);
+        output.mem_addr_select.set_latency_external(latency);
+        output.mem_write_enable.set_latency_external(latency);
+        output.mem_page_write_enable.set_latency_external(latency);
+        output.jmp_op.set_latency_external(latency);
+        output.jmp_src_select.set_latency_external(latency);
 
         output
     }
-    fn execute(input: &CpuDecoderInput, output: &CpuDecoderOutput) {
+    fn execute(c: &mut CircuitWires, input: &CpuDecoderInput, output: &CpuDecoderOutput) {
         use crate::isa::*;
-        let inst = input.inst.get_u8();
+        let inst = input.inst.get_u8(c);
 
         let reg0_bits: u8 = inst & 0b00000011;
         let reg1_bits: u8 = (inst & 0b00001100) >> 2;
@@ -482,22 +482,22 @@ impl CpuComponentEmu<CpuDecoder> for CpuDecoderEmu {
             unreachable!("unknown instruction")
         }
 
-        output.imm.set_u8(imm);
-        output.reg0_addr.set_u8(reg0_addr);
-        output.reg1_addr.set_u8(reg1_addr);
-        output.reg0_write_enable.set(reg0_write_enable);
-        output.reg0_write_select.set_u8(reg0_write_select);
-        output.alu_op.set_u8(alu_op);
-        output.alu0_select.set_u8(alu0_select);
-        output.alu1_select.set_u8(alu1_select);
-        output.mem_addr_select.set_u8(mem_addr_select);
-        output.mem_write_enable.set(mem_write_enable);
-        output.mem_page_write_enable.set(mem_page_write_enable);
-        output.jmp_op.set_u8(jmp_op);
-        output.jmp_src_select.set_u8(jmp_src_select);
-        output.bus_enable.set(bus_enable);
-        output.bus_addr0_write.set(bus_addr0_write);
-        output.bus_addr1_write.set(bus_addr1_write);
+        output.imm.set_u8(c, imm);
+        output.reg0_addr.set_u8(c, reg0_addr);
+        output.reg1_addr.set_u8(c, reg1_addr);
+        output.reg0_write_enable.set(c, reg0_write_enable);
+        output.reg0_write_select.set_u8(c, reg0_write_select);
+        output.alu_op.set_u8(c, alu_op);
+        output.alu0_select.set_u8(c, alu0_select);
+        output.alu1_select.set_u8(c, alu1_select);
+        output.mem_addr_select.set_u8(c, mem_addr_select);
+        output.mem_write_enable.set(c, mem_write_enable);
+        output.mem_page_write_enable.set(c, mem_page_write_enable);
+        output.jmp_op.set_u8(c, jmp_op);
+        output.jmp_src_select.set_u8(c, jmp_src_select);
+        output.bus_enable.set(c, bus_enable);
+        output.bus_addr0_write.set(c, bus_addr0_write);
+        output.bus_addr1_write.set(c, bus_addr1_write);
     }
 }
 
@@ -517,95 +517,102 @@ struct DecoderTestEnv {
 fn test_result<T: PartialEq + Eq + Debug>(
     inst: Instruction,
     env: &DecoderTestEnv,
-    fields: impl Fn(&CpuDecoderOutput) -> T,
+    circuit: &mut Circuit,
+    fields: impl Fn(&Circuit, &CpuDecoderOutput) -> T,
 ) {
-    env.inst.set_u8(inst.to_binary());
-    digital_design_code::simulate();
-    let r1 = fields(&env.build1);
-    let r2 = fields(&env.build2);
+    env.inst.set_u8(circuit, inst.to_binary());
+    circuit.simulate();
+    let r1 = fields(circuit, &env.build1);
+    let r2 = fields(circuit, &env.build2);
     assert_eq!(r1, r2, "{:08b} {}", inst.to_binary(), inst.to_string());
     println!("{:08b} {}, {:?}", inst.to_binary(), inst.to_string(), r1);
 }
 
 #[cfg(test)]
-fn init_decoder() -> DecoderTestEnv {
-    crate::clear_all();
+fn init_decoder() -> (DecoderTestEnv, Circuit) {
+    let (circuit, (input, build1, build2)) = build_circuit(|| {
+        let input = CpuDecoderInput { inst: input_w() };
+        let build1 = CpuDecoder::build(&input);
+        let build2 = CpuDecoderEmu::build(&input);
+        (input, build1, build2)
+    });
 
-    let input = CpuDecoderInput { inst: input_w() };
-
-    DecoderTestEnv {
-        inst: input.inst,
-        build1: CpuDecoder::build(&input),
-        build2: CpuDecoderEmu::build(&input),
-    }
+    (
+        DecoderTestEnv {
+            inst: input.inst,
+            build1,
+            build2,
+        },
+        circuit,
+    )
 }
 
 #[cfg(test)]
-fn test_decoder_alu(inst: Instruction, env: &DecoderTestEnv) {
-    test_result(inst, env, |o| {
+fn test_decoder_alu(inst: Instruction, env: &DecoderTestEnv, circuit: &mut Circuit) {
+    test_result(inst, env, circuit, |c, o| {
         (
-            o.reg0_addr.get_u8(),
-            o.reg1_addr.get_u8(),
-            o.reg0_write_enable.get(),
-            o.reg0_write_select.get_u8(),
-            o.alu_op.get_u8(),
-            o.alu0_select.get_u8(),
-            o.alu1_select.get_u8(),
-            o.mem_write_enable.get(),
-            o.jmp_op.get_u8(),
+            o.reg0_addr.get_u8(c),
+            o.reg1_addr.get_u8(c),
+            o.reg0_write_enable.get(c),
+            o.reg0_write_select.get_u8(c),
+            o.alu_op.get_u8(c),
+            o.alu0_select.get_u8(c),
+            o.alu1_select.get_u8(c),
+            o.mem_write_enable.get(c),
+            o.jmp_op.get_u8(c),
         )
     });
 }
 #[cfg(test)]
-fn test_decoder_jmp(inst: Instruction, env: &DecoderTestEnv) {
-    test_result(inst, env, |o| {
+fn test_decoder_jmp(inst: Instruction, env: &DecoderTestEnv, circuit: &mut Circuit) {
+    test_result(inst, env, circuit, |c, o| {
         (
-            o.reg0_addr.get_u8(),
-            o.mem_write_enable.get(),
-            o.jmp_op.get_u8(),
-            o.jmp_src_select.get_u8(),
+            o.reg0_addr.get_u8(c),
+            o.mem_write_enable.get(c),
+            o.jmp_op.get_u8(c),
+            o.jmp_src_select.get_u8(c),
         )
     });
 }
 #[cfg(test)]
-fn test_decoder_load_mem(inst: Instruction, env: &DecoderTestEnv) {
-    test_result(inst, env, |o| {
+fn test_decoder_load_mem(inst: Instruction, env: &DecoderTestEnv, circuit: &mut Circuit) {
+    test_result(inst, env, circuit, |c, o| {
         (
-            o.reg0_addr.get_u8(),
-            o.reg1_addr.get_u8(),
-            o.reg0_write_enable.get(),
-            o.reg0_write_select.get_u8(),
-            o.mem_addr_select.get_u8(),
-            o.mem_write_enable.get(),
-            o.jmp_op.get_u8(),
+            o.reg0_addr.get_u8(c),
+            o.reg1_addr.get_u8(c),
+            o.reg0_write_enable.get(c),
+            o.reg0_write_select.get_u8(c),
+            o.mem_addr_select.get_u8(c),
+            o.mem_write_enable.get(c),
+            o.jmp_op.get_u8(c),
         )
     });
 }
 #[cfg(test)]
-fn test_decoder_store_mem(inst: Instruction, env: &DecoderTestEnv) {
-    test_result(inst, env, |o| {
+fn test_decoder_store_mem(inst: Instruction, env: &DecoderTestEnv, circuit: &mut Circuit) {
+    test_result(inst, env, circuit, |c, o| {
         (
-            o.reg0_addr.get_u8(),
-            o.reg1_addr.get_u8(),
-            o.reg0_write_enable.get(),
-            o.mem_addr_select.get_u8(),
-            o.mem_write_enable.get(),
-            o.jmp_op.get_u8(),
+            o.reg0_addr.get_u8(c),
+            o.reg1_addr.get_u8(c),
+            o.reg0_write_enable.get(c),
+            o.mem_addr_select.get_u8(c),
+            o.mem_write_enable.get(c),
+            o.jmp_op.get_u8(c),
         )
     });
 }
 #[cfg(test)]
-fn test_decoder_special(inst: Instruction, env: &DecoderTestEnv) {
-    test_result(inst, env, |o| {
+fn test_decoder_special(inst: Instruction, env: &DecoderTestEnv, circuit: &mut Circuit) {
+    test_result(inst, env, circuit, |c, o| {
         (
-            o.reg0_addr.get_u8(),
-            // o.reg1_addr.get_u8(),
-            o.reg0_write_enable.get(),
-            // o.mem_addr_select.get_u8(),
-            // o.mem_write_enable.get(),
-            o.mem_page_write_enable.get(),
-            o.jmp_op.get_u8(),
-            o.bus_enable.get(),
+            o.reg0_addr.get_u8(c),
+            // o.reg1_addr.get_u8(c),
+            o.reg0_write_enable.get(c),
+            // o.mem_addr_select.get_u8(c),
+            // o.mem_write_enable.get(c),
+            o.mem_page_write_enable.get(c),
+            o.jmp_op.get_u8(c),
+            o.bus_enable.get(c),
         )
     });
 }
@@ -615,39 +622,40 @@ fn test_decoder() {
     use crate::isa::Instruction::*;
     use crate::isa::RegisterIndex::*;
 
-    let env = init_decoder();
+    let (env, mut c) = init_decoder();
+    let c = &mut c;
 
-    test_decoder_alu(mov((Reg0, Reg0)), &env);
-    test_decoder_alu(and((Reg1, Reg2)), &env);
-    test_decoder_alu(or((Reg3, Reg0)), &env);
-    test_decoder_alu(xor((Reg2, Reg1)), &env);
-    test_decoder_alu(add((Reg3, Reg0)), &env);
-    test_decoder_alu(inv(Reg0), &env);
-    test_decoder_alu(neg(Reg1), &env);
-    test_decoder_alu(dec(Reg2), &env);
-    test_decoder_alu(inc(Reg3), &env);
-    test_decoder_alu(load_imm(9), &env);
+    test_decoder_alu(mov((Reg0, Reg0)), &env, c);
+    test_decoder_alu(and((Reg1, Reg2)), &env, c);
+    test_decoder_alu(or((Reg3, Reg0)), &env, c);
+    test_decoder_alu(xor((Reg2, Reg1)), &env, c);
+    test_decoder_alu(add((Reg3, Reg0)), &env, c);
+    test_decoder_alu(inv(Reg0), &env, c);
+    test_decoder_alu(neg(Reg1), &env, c);
+    test_decoder_alu(dec(Reg2), &env, c);
+    test_decoder_alu(inc(Reg3), &env, c);
+    test_decoder_alu(load_imm(9), &env, c);
 
-    test_decoder_load_mem(load_mem(15), &env);
-    test_decoder_load_mem(load_mem(0), &env);
+    test_decoder_load_mem(load_mem(15), &env, c);
+    test_decoder_load_mem(load_mem(0), &env, c);
 
-    test_decoder_store_mem(store_mem(15), &env);
-    test_decoder_store_mem(store_mem(0), &env);
+    test_decoder_store_mem(store_mem(15), &env, c);
+    test_decoder_store_mem(store_mem(0), &env, c);
 
-    test_decoder_jmp(jmp_long(15), &env);
-    test_decoder_jmp(jmp_long(0), &env);
-    test_decoder_jmp(jmp_offset(14), &env);
-    test_decoder_jmp(jmp_offset(0), &env);
-    test_decoder_jmp(jne_offset(13), &env);
-    test_decoder_jmp(jne_offset(0), &env);
-    test_decoder_jmp(jl_offset(12), &env);
-    test_decoder_jmp(jl_offset(0), &env);
-    test_decoder_jmp(jg_offset(11), &env);
-    test_decoder_jmp(jg_offset(0), &env);
+    test_decoder_jmp(jmp_long(15), &env, c);
+    test_decoder_jmp(jmp_long(0), &env, c);
+    test_decoder_jmp(jmp_offset(14), &env, c);
+    test_decoder_jmp(jmp_offset(0), &env, c);
+    test_decoder_jmp(jne_offset(13), &env, c);
+    test_decoder_jmp(jne_offset(0), &env, c);
+    test_decoder_jmp(jl_offset(12), &env, c);
+    test_decoder_jmp(jl_offset(0), &env, c);
+    test_decoder_jmp(jg_offset(11), &env, c);
+    test_decoder_jmp(jg_offset(0), &env, c);
 
     //TODO control
-    test_decoder_special(set_mem_page(()), &env);
+    test_decoder_special(set_mem_page(()), &env, c);
 
-    test_decoder_special(bus0(0), &env);
-    test_decoder_special(bus0(1), &env);
+    test_decoder_special(bus0(0), &env, c);
+    test_decoder_special(bus0(1), &env, c);
 }

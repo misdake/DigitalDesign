@@ -124,28 +124,27 @@ pub fn test_device_full(
         .enumerate()
         .for_each(|(i, inst)| inst_rom[i] = *inst);
 
-    let (state, _internal) = cpu_v1_build(inst_rom);
+    let (mut circuit, state, _internal) = cpu_v1_build(inst_rom);
     // let (_state1, state, _internal1, _internal2) = cpu_v1_build_with_ref(inst_rom);
 
     for _ in 0..max_cycle {
-        let pc = state.pc.out.get_u8();
+        let pc = state.pc.out.get_u8(&circuit);
         if pc as usize >= inst.len() {
             break;
         }
         let inst = inst[pc as usize];
         println!("pc {:08b}: inst {}", pc, inst.to_string());
-        execute_gates();
-        clock_tick();
+        circuit.simulate()
     }
 
     if let Some(reg_ref) = reg_ref {
         for i in 0..4 {
-            assert_eq!(state.reg[i].out.get_u8(), reg_ref[i]);
+            assert_eq!(state.reg[i].out.get_u8(&circuit), reg_ref[i]);
         }
     }
     if let Some(mem_ref) = mem_ref {
         for i in 0..256 {
-            assert_eq!(state.mem[i].out.get_u8(), mem_ref[i]);
+            assert_eq!(state.mem[i].out.get_u8(&circuit), mem_ref[i]);
         }
     }
 }
