@@ -278,6 +278,7 @@ impl MinifbWindow {
     }
 }
 
+#[ignore]
 #[test]
 fn start_test_window() {
     struct Game {

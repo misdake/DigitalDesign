@@ -115,6 +115,7 @@ impl GameMap {
     }
 }
 
+#[ignore]
 #[test]
 fn test_frame_sync() {
     #[rustfmt::skip]

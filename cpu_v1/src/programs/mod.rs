@@ -14,10 +14,10 @@ fn print_regs(cycle: u32, state: &CpuV1State, circuit: &CircuitWires) {
     print!(
         "cycle {}, regs: {} {} {} {}",
         cycle,
-        state.reg[0].out.get_u8(&circuit),
-        state.reg[1].out.get_u8(&circuit),
-        state.reg[2].out.get_u8(&circuit),
-        state.reg[3].out.get_u8(&circuit)
+        state.reg[0].out.get_u8(circuit),
+        state.reg[1].out.get_u8(circuit),
+        state.reg[2].out.get_u8(circuit),
+        state.reg[3].out.get_u8(circuit)
     );
     println!();
 }

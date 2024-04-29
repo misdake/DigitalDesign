@@ -530,12 +530,11 @@ fn test_result<T: PartialEq + Eq + Debug>(
 
 #[cfg(test)]
 fn init_decoder() -> (DecoderTestEnv, Circuit) {
-    let input = CpuDecoderInput { inst: input_w() };
-
-    let (circuit, (build1, build2)) = build_circuit(|| {
+    let (circuit, (input, build1, build2)) = build_circuit(|| {
+        let input = CpuDecoderInput { inst: input_w() };
         let build1 = CpuDecoder::build(&input);
         let build2 = CpuDecoderEmu::build(&input);
-        (build1, build2)
+        (input, build1, build2)
     });
 
     (

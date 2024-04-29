@@ -297,14 +297,15 @@ fn test_basic_binary() {
 fn test_wire_eq() {
     use crate::{build_circuit, input_w};
 
-    let (mut circuit, (out1, out2)) = build_circuit(|| {
+    let (mut circuit, (v, out1, out2)) = build_circuit(|| {
         let v = input_w::<4>();
         let out1 = v.eq_const(5);
         let out2 = v.eq(Wires::<4>::parse_u8(5));
-        (out1, out2)
+        (v, out1, out2)
     });
 
     for i in 0..16 {
+        circuit.set_wires_u8(v, i);
         circuit.simulate();
         assert_eq!(circuit.get_wire(out1) == 1, i == 5);
         assert_eq!(circuit.get_wire(out2) == 1, i == 5);

@@ -81,9 +81,9 @@ impl CpuV1State {
             reg: self.reg.map(|i| i.out.get_u8(c)),
             mem: self.mem.map(|i| i.out.get_u8(c)),
             mem_page: self.mem_page.out.get_u8(c),
-            flag_p: self.flag_p.out().get(c),
-            flag_nz: self.flag_nz.out().get(c),
-            flag_n: self.flag_n.out().get(c),
+            flag_p: self.flag_p.out_value(c),
+            flag_nz: self.flag_nz.out_value(c),
+            flag_n: self.flag_n.out_value(c),
             bus_addr0: self.bus_addr0.out.get_u8(c),
             bus_addr1: self.bus_addr1.out.get_u8(c),
         }

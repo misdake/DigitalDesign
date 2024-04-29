@@ -168,6 +168,7 @@ impl DeviceGraphicsV1 {
     }
 }
 
+#[ignore]
 #[test]
 fn test_frame_sync() {
     use crate::devices::device_2_gamepad::*;

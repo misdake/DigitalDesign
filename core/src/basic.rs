@@ -312,6 +312,10 @@ impl Reg {
     pub fn out(self) -> Wire {
         circuit_mut().regs[self.0].wire_out
     }
+    pub fn out_value(self, circuit: &Circuit) -> WireValue {
+        let out = circuit.regs[self.0].wire_out;
+        circuit.get_wire(out)
+    }
 }
 
 pub fn input() -> Wire {
