@@ -2,16 +2,16 @@ use crate::isa::*;
 use digital_design_code::select;
 
 pub struct SimEnv {
-    inst: Box<[Instruction; 65536]>,
-    state: SimState,
+    pub inst: Box<[Instruction; 65536]>,
+    pub state: SimState,
 }
 
-struct SimState {
-    reg: [u16; 16],
-    mem: Box<[u16; 65536]>,
-    pc: u16,
-    sp: u16,
-    flags: u8,
+pub struct SimState {
+    pub reg: [u16; 16],
+    pub mem: Box<[u16; 65536]>,
+    pub pc: u16,
+    pub sp: u16,
+    pub flags: u8,
 }
 
 #[rustfmt::skip]
@@ -48,11 +48,11 @@ impl Default for SimState {
 
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
 pub struct StateChange {
-    pc_next: u16,
-    reg: Option<(u8, u16)>,  // addr, data
-    mem: Option<(u16, u16)>, // addr, data
-    sp: Option<u16>,
-    flags: Option<u8>,
+    pub pc_next: u16,
+    pub reg: Option<(u8, u16)>,  // addr, data
+    pub mem: Option<(u16, u16)>, // addr, data
+    pub sp: Option<u16>,
+    pub flags: Option<u8>,
 }
 impl StateChange {
     fn new(pc_next: u16) -> Self {
