@@ -80,20 +80,21 @@ impl SimEnv {
     }
 
     pub fn eval(&self) -> StateChange {
+        use Cond::*;
+
         let pc = self.state.pc;
         let inst = self.inst[pc as usize];
         let reg = |r: u8| self.state.reg[r as usize];
         let mem = |addr: u16| self.state.mem[addr as usize];
         let mut changes = StateChange::new(pc + 1);
 
-        fn j_offset(state: &SimState, cond: Flag4, changes: &mut StateChange, offset: u16) {
-            let jmp = state.flags & cond > 0;
+        fn j_offset(state: &SimState, cond: Cond, changes: &mut StateChange, offset: u16) {
+            let jmp = state.flags & (cond as u8) > 0;
             if jmp {
                 changes.pc_next(state.pc.wrapping_add(offset));
             }
         }
 
-        // real sim
         match inst {
             Instruction::halt() => {
                 changes.halt();
@@ -133,35 +134,28 @@ impl SimEnv {
             }
 
             Instruction::j_offset_g(lo, hi) => {
-                let flags = FLAGS_GREATER;
-                j_offset(&self.state, flags, &mut changes, hilo_as_u16(hi, lo));
+                j_offset(&self.state, Greater, &mut changes, hilo_as_u16(hi, lo));
             }
             Instruction::j_offset_e(lo, hi) => {
-                let flags = FLAGS_EQUAL;
-                j_offset(&self.state, flags, &mut changes, hilo_as_u16(hi, lo));
+                j_offset(&self.state, Equal, &mut changes, hilo_as_u16(hi, lo));
             }
             Instruction::j_offset_l(lo, hi) => {
-                let flags = FLAGS_LESS;
-                j_offset(&self.state, flags, &mut changes, hilo_as_u16(hi, lo));
+                j_offset(&self.state, Less, &mut changes, hilo_as_u16(hi, lo));
             }
             Instruction::j_offset(lo, hi) => {
-                let flags = FLAGS_GREATER | FLAGS_EQUAL | FLAGS_LESS;
-                j_offset(&self.state, flags, &mut changes, hilo_as_u16(hi, lo));
+                j_offset(&self.state, Always, &mut changes, hilo_as_u16(hi, lo));
             }
             Instruction::j_offset_le(lo, hi) => {
-                let flags = FLAGS_EQUAL | FLAGS_LESS;
-                j_offset(&self.state, flags, &mut changes, hilo_as_u16(hi, lo));
+                j_offset(&self.state, LessEqual, &mut changes, hilo_as_u16(hi, lo));
             }
             Instruction::j_offset_ne(lo, hi) => {
-                let flags = FLAGS_GREATER | FLAGS_LESS;
-                j_offset(&self.state, flags, &mut changes, hilo_as_u16(hi, lo));
+                j_offset(&self.state, NotEqual, &mut changes, hilo_as_u16(hi, lo));
             }
             Instruction::j_offset_ge(lo, hi) => {
-                let flags = FLAGS_GREATER | FLAGS_EQUAL;
-                j_offset(&self.state, flags, &mut changes, hilo_as_u16(hi, lo));
+                j_offset(&self.state, GreaterEqual, &mut changes, hilo_as_u16(hi, lo));
             }
-            Instruction::jmp(r1) => changes.pc_next(reg(r1)),
-            Instruction::call(r1, r0) => {
+            Instruction::jmp_reg(r1) => changes.pc_next(reg(r1)),
+            Instruction::call_reg(r1, r0) => {
                 changes.reg(r0, pc + 1);
                 changes.pc_next(reg(r1));
             }

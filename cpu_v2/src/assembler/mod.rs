@@ -1,6 +1,6 @@
 #![allow(clippy::manual_range_contains)]
 
-use crate::isa::{halt, Instruction, Reg};
+use crate::isa::*;
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::rc::Rc;
@@ -10,8 +10,9 @@ struct InstructionSlot {
     addr: usize,
 }
 struct PendingJump {
-    inst: fn(&mut AssemblerInner, usize) -> InstructionSlot, // addr, target
-    addr: usize,
+    inst: fn(&mut AssemblerInner, InstructionSlot, Cond) -> InstructionSlot,
+    addr: InstructionSlot,
+    cond: Cond,
 }
 
 pub struct AssemblerInner {
@@ -53,6 +54,11 @@ impl AssemblerInner {
         assert!(!self.inst_valid[slot.addr]);
         self.comments.insert(slot.addr, comment);
     }
+    fn inst_comment(&mut self, inst: Instruction, comment: String) -> InstructionSlot {
+        let slot = self.inst(inst);
+        self.comment(slot, comment);
+        slot
+    }
     fn skip(&mut self) -> InstructionSlot {
         let addr = self.cursor;
         self.cursor += 1;
@@ -71,31 +77,118 @@ impl AssemblerInner {
     }
 }
 
+fn addr_offset(from: usize, to: usize) -> (u8, u8, String) {
+    let offset = to as i64 - from as i64;
+    assert!(
+        -128 <= offset && offset <= 127 && offset != 0,
+        "offset: {}, from {}, to {}",
+        offset,
+        from,
+        to
+    );
+    let comment = format!("--> to 0x{to:4x}");
+
+    let offset = offset as i16 as u16;
+    let hi = (offset >> 8) as u8;
+    let lo = (offset & 0xff) as u8;
+    (hi, lo, comment)
+}
+fn cond_to_jmp_inst(cond: Cond) -> fn(Imm4, Imm4) -> Instruction {
+    let inst = match cond {
+        Cond::Never => panic!("never"),
+        Cond::Greater => j_offset_g,
+        Cond::Equal => j_offset_e,
+        Cond::Less => j_offset_l,
+        Cond::GreaterEqual => j_offset_ge,
+        Cond::LessEqual => j_offset_le,
+        Cond::NotEqual => j_offset_ne,
+        Cond::Always => j_offset,
+    };
+    inst
+}
+fn jmp_forward(asm: &mut AssemblerInner, base: InstructionSlot, cond: Cond) -> InstructionSlot {
+    let (hi, lo, comment) = addr_offset(base.addr, asm.cursor);
+    asm.comment(base, comment);
+
+    let inst = cond_to_jmp_inst(cond);
+
+    asm.inst_at(inst(lo, hi), base.addr)
+}
+
+/// jump/branch/call
 impl AssemblerInner {
-    fn addr_offset(from: usize, to: usize, name: &str) -> (u8, String) {
-        let offset = to as i64 - from as i64;
-        assert!(
-            -128 <= offset && offset <= 127 && offset != 0,
-            "offset: {}, cursor {}, target {}",
-            offset,
-            from,
-            to
-        );
-        let offset = if offset < 0 {
-            (offset + 16) as u8
-        } else {
-            offset as u8
-        };
-        let comment = format!("--> {}", name);
-        (offset, comment)
+    pub fn jmp_forward(&mut self, cond: Cond) -> PendingJump {
+        let cursor = self.cursor;
+        self.skip();
+        PendingJump {
+            inst: jmp_forward,
+            cond,
+            addr: InstructionSlot { addr: cursor },
+        }
+    }
+    fn resolve_jmp(&mut self, jmp: PendingJump) -> InstructionSlot {
+        (jmp.inst)(self, jmp.addr, jmp.cond)
     }
 
-    //TODO jmps
+    pub fn jmp_back(&mut self, target: InstructionSlot, cond: Cond) -> InstructionSlot {
+        let (hi, lo, comment) = addr_offset(self.cursor, target.addr);
+        let jmp_inst = cond_to_jmp_inst(cond);
+        self.inst_comment(jmp_inst(lo, hi), comment)
+    }
 
-    //TODO then if
+    pub fn jmp_reg(&mut self, target: Reg) -> InstructionSlot {
+        self.inst_comment(jmp_reg(target), format!("--> jmp r{:x}", target))
+    }
+    pub fn call_reg(&mut self, target: Reg, back: Reg) -> InstructionSlot {
+        self.inst_comment(
+            call_reg(target, back),
+            format!("--> call r{:x}, save r{:x}", target, back),
+        )
+    }
 
-    fn resolve_jmp(&mut self, jmp: PendingJump) -> InstructionSlot {
-        (jmp.inst)(self, jmp.addr)
+    pub fn if_u4(&mut self, reg0: Reg, u4: Imm4, cond: Cond, if_case: impl FnOnce(&mut Self)) {
+        self.inst(cmp_i(u4, reg0));
+        let skip_if = self.jmp_forward(cond);
+        if_case(self);
+        self.resolve_jmp(skip_if);
+    }
+    pub fn if_else_u4(
+        &mut self,
+        reg0: Reg,
+        u4: Imm4,
+        cond: Cond,
+        if_case: impl FnOnce(&mut Self),
+        else_case: impl FnOnce(&mut Self),
+    ) {
+        self.inst(cmp_i(u4, reg0));
+        let skip_if = self.jmp_forward(cond);
+        if_case(self);
+        let skip_else = self.jmp_forward(Cond::Always);
+        self.resolve_jmp(skip_if);
+        else_case(self);
+        self.resolve_jmp(skip_else);
+    }
+    pub fn if_reg(&mut self, reg0: Reg, reg1: Reg, cond: Cond, if_case: impl FnOnce(&mut Self)) {
+        self.inst(cmp_r(reg1, reg0));
+        let skip_if = self.jmp_forward(cond);
+        if_case(self);
+        self.resolve_jmp(skip_if);
+    }
+    pub fn if_else_reg(
+        &mut self,
+        reg0: Reg,
+        reg1: Reg,
+        cond: Cond,
+        if_case: impl FnOnce(&mut Self),
+        else_case: impl FnOnce(&mut Self),
+    ) {
+        self.inst(cmp_r(reg1, reg0));
+        let skip_if = self.jmp_forward(cond);
+        if_case(self);
+        let skip_else = self.jmp_forward(Cond::Always);
+        self.resolve_jmp(skip_if);
+        else_case(self);
+        self.resolve_jmp(skip_else);
     }
 }
 

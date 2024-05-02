@@ -5,7 +5,6 @@ use cpu_macro::define_isa;
 pub type InstBinaryType = u16;
 pub type Reg = u8;
 pub type Imm4 = u8;
-pub type Flag4 = u8;
 
 fn part3(binary: InstBinaryType) -> u8 {
     ((binary >> 12) & 0b1111) as u8
@@ -57,8 +56,8 @@ define_isa! {
     (j_offset_le 0x55 OOII "jle: pc += 0x{0:x}{1:x}")
     (j_offset_ne 0x56 OOII "jne: pc += 0x{0:x}{1:x}")
     (j_offset_ge 0x57 OOII "jge: pc += 0x{0:x}{1:x}")
-    (jmp  0x5e OORX "jmp:  pc = r{0:x}")
-    (call 0x5f OORR "call: r{0:x} = pc + 1; pc = r{1:x}")
+    (jmp_reg     0x5e OORX "jmp:  pc = r{0:x}")
+    (call_reg    0x5f OORR "call: r{0:x} = pc + 1; pc = r{1:x}")
 
     (dev_recv 0x6 OIIR "r{0} <- device[{2}].out[{1}]")
     (dev_send 0x7 OIIR "device[{2}].in[{1}] <- r{0}")
@@ -67,6 +66,18 @@ define_isa! {
 pub const FLAGS_GREATER: u8 = 1 << 0;
 pub const FLAGS_EQUAL: u8 = 1 << 1;
 pub const FLAGS_LESS: u8 = 1 << 2;
+#[repr(u8)]
+#[derive(Copy, Clone)]
+pub enum Cond {
+    Never = 0,
+    Greater = FLAGS_GREATER,
+    Equal = FLAGS_EQUAL,
+    Less = FLAGS_LESS,
+    GreaterEqual = FLAGS_GREATER | FLAGS_EQUAL,
+    LessEqual = FLAGS_LESS | FLAGS_EQUAL,
+    NotEqual = FLAGS_GREATER | FLAGS_LESS,
+    Always = FLAGS_GREATER | FLAGS_EQUAL | FLAGS_LESS,
+}
 
 #[test]
 fn test_print() {
