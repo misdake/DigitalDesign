@@ -39,6 +39,7 @@ pub struct StateChange {
     pub reg: Option<(u8, u16)>,  // addr, data
     pub mem: Option<(u16, u16)>, // addr, data
     pub flags: Option<u8>,
+    pub halt: bool,
 }
 impl StateChange {
     fn new(pc_next: u16) -> Self {
@@ -47,6 +48,7 @@ impl StateChange {
             reg: None,
             mem: None,
             flags: None,
+            halt: false,
         }
     }
     fn reg(&mut self, r: u8, data: u16) {
@@ -63,6 +65,9 @@ impl StateChange {
     fn flags(&mut self, flags: u8) {
         assert!(self.flags.is_none());
         self.flags = Some(flags);
+    }
+    fn halt(&mut self) {
+        self.halt = true;
     }
 }
 
@@ -90,6 +95,9 @@ impl SimEnv {
 
         // real sim
         match inst {
+            Instruction::halt() => {
+                changes.halt();
+            }
             Instruction::and(r2, r1, r0) => changes.reg(r0, reg(r1) & reg(r2)),
             Instruction::or(r2, r1, r0) => changes.reg(r0, reg(r1) | reg(r2)),
             Instruction::xor(r2, r1, r0) => changes.reg(r0, reg(r1) ^ reg(r2)),

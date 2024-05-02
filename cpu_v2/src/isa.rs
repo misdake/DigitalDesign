@@ -23,7 +23,7 @@ fn part0(binary: InstBinaryType) -> u8 {
 define_isa! {
     Instruction
 
-    // 0x00 triggers halt?
+    (halt  0x00 OOOO "halt")
     (mov   0x01 OORR "r{0} = r{1}")
     (inv   0x02 OORR "r{0} = !r{1}")
     (neg   0x03 OORR "r{0} = -r{1}")
@@ -32,7 +32,7 @@ define_isa! {
     (log2  0x06 OORR "r{0} = log2(r{1})")
     (cmp_r 0x07 OORR "flags = flags(r{0} - r{1})") // unsigned? signed?
     (pc    0x08 OOIR "r{0} = pc + i4(0x{1:x})")
-    (cmp_i 0x15 OOIR "flags = flags(r{0} - {1})") // unsigned? signed?
+    (cmp_i 0x0f OOIR "flags = flags(r{0} - {1})") // unsigned? signed?
 
     (and  0x8 ORRR "r{0} = r{1} & r{2}")
     (or   0x9 ORRR "r{0} = r{1} | r{2}")
