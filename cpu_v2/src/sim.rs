@@ -10,7 +10,6 @@ pub struct SimState {
     pub reg: [u16; 16],
     pub mem: Box<[u16; 65536]>,
     pub pc: u16,
-    pub sp: u16,
     pub flags: u8,
 }
 
@@ -23,24 +22,12 @@ pub fn calc_flags(x: u16, y: u16) -> u8 {
     r
 }
 
-impl Condition {
-    /// Return (jmp_enable, is_call)
-    fn check_flags(self, flags: u8) -> (bool, bool) {
-        let c = self as u8;
-        let is_call = c == Condition::Call as u8;
-        let cond = c & 0b111;
-        let jmp_enable = is_call || (cond & flags > 0);
-        (jmp_enable, is_call)
-    }
-}
-
 impl Default for SimState {
     fn default() -> Self {
         Self {
             reg: [0; 16],
             mem: Box::new([0; 65536]),
             pc: 0,
-            sp: 0,
             flags: 0,
         }
     }
@@ -51,7 +38,6 @@ pub struct StateChange {
     pub pc_next: u16,
     pub reg: Option<(u8, u16)>,  // addr, data
     pub mem: Option<(u16, u16)>, // addr, data
-    pub sp: Option<u16>,
     pub flags: Option<u8>,
 }
 impl StateChange {
@@ -60,7 +46,6 @@ impl StateChange {
             pc_next,
             reg: None,
             mem: None,
-            sp: None,
             flags: None,
         }
     }
@@ -74,10 +59,6 @@ impl StateChange {
     }
     fn pc_next(&mut self, pc_next: u16) {
         self.pc_next = pc_next;
-    }
-    fn sp(&mut self, sp: u16) {
-        assert!(self.sp.is_none());
-        self.sp = Some(sp);
     }
     fn flags(&mut self, flags: u8) {
         assert!(self.flags.is_none());
@@ -98,18 +79,12 @@ impl SimEnv {
         let inst = self.inst[pc as usize];
         let reg = |r: u8| self.state.reg[r as usize];
         let mem = |addr: u16| self.state.mem[addr as usize];
-        let sp = self.state.sp;
         let mut changes = StateChange::new(pc + 1);
 
-        fn j(state: &SimState, cond: Flag4, changes: &mut StateChange, f: impl FnOnce(u16) -> u16) {
-            let cond: Condition = unsafe { std::mem::transmute(cond) };
-            let (jmp, is_call) = cond.check_flags(state.flags);
+        fn j_offset(state: &SimState, cond: Flag4, changes: &mut StateChange, offset: u16) {
+            let jmp = state.flags & cond > 0;
             if jmp {
-                changes.pc_next(f(state.pc));
-            }
-            if is_call {
-                changes.sp(state.sp - 1);
-                changes.mem(state.sp - 1, state.pc + 1);
+                changes.pc_next(state.pc.wrapping_add(offset));
             }
         }
 
@@ -120,19 +95,18 @@ impl SimEnv {
             Instruction::xor(r2, r1, r0) => changes.reg(r0, reg(r1) ^ reg(r2)),
             Instruction::add(r2, r1, r0) => changes.reg(r0, reg(r1).wrapping_add(reg(r2))),
             Instruction::sub(r2, r1, r0) => changes.reg(r0, reg(r1).wrapping_sub(reg(r2))),
-            Instruction::lsl(imm, r1, r0) => changes.reg(r0, reg(r1) << imm),
-            Instruction::lsr(imm, r1, r0) => changes.reg(r0, reg(r1) >> imm),
+            Instruction::addi(r2, i4, r0) => changes.reg(r0, reg(r2).wrapping_sub(imm_as_i16(i4))),
+            Instruction::lsl(r2, u4, r0) => changes.reg(r0, reg(r2) << u4),
+            Instruction::lsr(r2, u4, r0) => changes.reg(r0, reg(r2) >> u4),
 
             Instruction::mov(r1, r0) => changes.reg(r0, reg(r1)),
             Instruction::inv(r1, r0) => changes.reg(r0, !reg(r1)),
             Instruction::neg(r1, r0) => changes.reg(r0, u16::MAX - reg(r1)),
-            Instruction::addi(i4, r1, r0) => {
-                changes.reg(r0, reg(r1).wrapping_sub(i4_to_i16(i4) as u16))
-            }
             Instruction::cnt1(r1, r0) => changes.reg(r0, reg(r1).count_ones() as u16),
             Instruction::log2(r1, r0) => changes.reg(r0, reg(r1).ilog2() as u16),
             Instruction::not0(r1, r0) => changes.reg(r0, select(reg(r1) != 0, 1, 0)),
             Instruction::cmp_i(u4, r0) => changes.flags(calc_flags(reg(r0), u4 as u16)),
+            Instruction::pc(i4, r0) => changes.reg(r0, pc.wrapping_add(imm_as_i16(i4))),
             Instruction::cmp_r(r1, r0) => changes.flags(calc_flags(reg(r0), reg(r1))),
 
             Instruction::load_hi(hi, lo, r0) => changes.reg(
@@ -141,46 +115,47 @@ impl SimEnv {
             ),
             Instruction::load_lo(hi, lo, r0) => changes.reg(r0, ((hi as u16) << 4) | (lo as u16)),
 
-            Instruction::store_mem(r1, r0) => changes.mem(reg(r1), reg(r0)),
-            Instruction::load_mem(r1, r0) => changes.reg(r0, mem(reg(r1))),
-            Instruction::stack_write(u4, r0) => changes.mem(sp + u4 as u16, reg(r0)),
-            Instruction::stack_read(u4, r0) => changes.reg(r0, mem(sp + u4 as u16)),
-            Instruction::stack_push(r0) => {
-                changes.sp(sp - 1);
-                changes.mem(sp - 1, reg(r0));
+            Instruction::store_mem(r2, offset, r0) => {
+                let addr = reg(r2).wrapping_add(imm_as_i16(offset));
+                changes.mem(addr, reg(r0))
             }
-            Instruction::stack_pop(r0) => {
-                changes.reg(r0, mem(sp));
-                changes.sp(sp + 1);
-            }
-            Instruction::stack_push_pc() => {
-                changes.sp(sp - 1);
-                changes.mem(sp - 1, pc + 1);
-            }
-            Instruction::stack_pop_pc() => {
-                changes.pc_next(mem(sp));
-                changes.sp(sp + 1);
+            Instruction::load_mem(r2, offset, r0) => {
+                let addr = reg(r2).wrapping_add(imm_as_i16(offset));
+                changes.reg(r0, mem(addr))
             }
 
-            Instruction::sp_set_r(u4, r0) => changes.sp(reg(r0) + u4 as u16),
-            Instruction::sp_add_r(r0) => changes.sp(sp + reg(r0)),
-            Instruction::sp_inc_i(u4) => changes.sp(sp.wrapping_add(u4 as u16)),
-            Instruction::sp_dec_i(u4) => changes.sp(sp.wrapping_sub(u4 as u16)),
-            Instruction::sp_get_i(u4, r0) => changes.reg(r0, sp.wrapping_add(u4 as u16)),
-            Instruction::sp_get_r(r1, r0) => changes.reg(r0, sp.wrapping_add(reg(r1))),
-
-            Instruction::j_add_i(hi, lo, cond) => {
-                j(&self.state, cond, &mut changes, |pc| {
-                    pc.wrapping_add(((hi << 4) | lo) as i8 as i16 as u16) // signed offset
-                });
+            Instruction::j_offset_g(lo, hi) => {
+                let flags = FLAGS_GREATER;
+                j_offset(&self.state, flags, &mut changes, hilo_as_u16(hi, lo));
             }
-            Instruction::j_add_r(r1, cond) => {
-                j(&self.state, cond, &mut changes, |pc| {
-                    pc.wrapping_add(reg(r1))
-                });
+            Instruction::j_offset_e(lo, hi) => {
+                let flags = FLAGS_EQUAL;
+                j_offset(&self.state, flags, &mut changes, hilo_as_u16(hi, lo));
             }
-            Instruction::j_set_r(r1, cond) => {
-                j(&self.state, cond, &mut changes, |_pc| reg(r1));
+            Instruction::j_offset_l(lo, hi) => {
+                let flags = FLAGS_LESS;
+                j_offset(&self.state, flags, &mut changes, hilo_as_u16(hi, lo));
+            }
+            Instruction::j_offset(lo, hi) => {
+                let flags = FLAGS_GREATER | FLAGS_EQUAL | FLAGS_LESS;
+                j_offset(&self.state, flags, &mut changes, hilo_as_u16(hi, lo));
+            }
+            Instruction::j_offset_le(lo, hi) => {
+                let flags = FLAGS_EQUAL | FLAGS_LESS;
+                j_offset(&self.state, flags, &mut changes, hilo_as_u16(hi, lo));
+            }
+            Instruction::j_offset_ne(lo, hi) => {
+                let flags = FLAGS_GREATER | FLAGS_LESS;
+                j_offset(&self.state, flags, &mut changes, hilo_as_u16(hi, lo));
+            }
+            Instruction::j_offset_ge(lo, hi) => {
+                let flags = FLAGS_GREATER | FLAGS_EQUAL;
+                j_offset(&self.state, flags, &mut changes, hilo_as_u16(hi, lo));
+            }
+            Instruction::jmp(r1) => changes.pc_next(reg(r1)),
+            Instruction::call(r1, r0) => {
+                changes.reg(r0, pc + 1);
+                changes.pc_next(reg(r1));
             }
 
             Instruction::dev_recv(_idx, _op, _r0) => todo!(),
@@ -202,9 +177,6 @@ impl SimEnv {
         }
         if let Some((m, data)) = changes.mem {
             self.state.mem[m as usize] = data;
-        }
-        if let Some(sp) = changes.sp {
-            self.state.sp = sp;
         }
         if let Some(flags) = changes.flags {
             self.state.flags = flags;
@@ -229,7 +201,10 @@ impl SimTestResult {
     //TODO is_passed()
 }
 
-fn i4_to_i16(i4: u8) -> i16 {
+fn imm_as_i16(i4: Imm4) -> u16 {
     let sign_bit = (i4 & 0b1000) != 0;
-    (i4 as u16 | (0b1111_1111_1111_0000 * sign_bit as u16)) as i16
+    i4 as u16 | (0b1111_1111_1111_0000 * sign_bit as u16)
+}
+fn hilo_as_u16(hi: Imm4, lo: Imm4) -> u16 {
+    ((hi as u16) << 4) | (lo as u16)
 }

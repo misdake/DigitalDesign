@@ -21,7 +21,7 @@ pub struct Assembler {
 
 pub struct SharedAsm {
     assembler: Rc<RefCell<Assembler>>,
-    //TODO .pc, .sp?
+    //TODO .pc
     //TODO .r0~r15 -> AsmRegister
     //TODO .reg(usize) -> AsmRegister
     //TODO .mem(usize) -> AsmMemoryAddr

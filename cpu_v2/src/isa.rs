@@ -24,16 +24,15 @@ define_isa! {
     Instruction
 
     // 0x00 triggers halt?
-    (mov  0x01 OORR "r{0} = r{1}")
-    (inv  0x02 OORR "r{0} = !r{1}")
-    (neg  0x03 OORR "r{0} = -r{1}")
-    (not0 0x04 OORR "r{0} = !!r{1}")
-    (cnt1 0x05 OORR "r{0} = cnt1(r{1})")
-    (log2 0x06 OORR "r{0} = log2(r{1})")
-    (pc   0x07 OOIR "r{0} = pc + i4(0x{1:x})")
-    // unsigned? signed?
-    (cmp_i 0x08 OOIR "flags = flags(r{0} - {1})")
-    (cmp_r 0x09 OORR "flags = flags(r{0} - r{1})")
+    (mov   0x01 OORR "r{0} = r{1}")
+    (inv   0x02 OORR "r{0} = !r{1}")
+    (neg   0x03 OORR "r{0} = -r{1}")
+    (not0  0x04 OORR "r{0} = !!r{1}")
+    (cnt1  0x05 OORR "r{0} = cnt1(r{1})")
+    (log2  0x06 OORR "r{0} = log2(r{1})")
+    (cmp_r 0x07 OORR "flags = flags(r{0} - r{1})") // unsigned? signed?
+    (pc    0x08 OOIR "r{0} = pc + i4(0x{1:x})")
+    (cmp_i 0x15 OOIR "flags = flags(r{0} - {1})") // unsigned? signed?
 
     (and  0x8 ORRR "r{0} = r{1} & r{2}")
     (or   0x9 ORRR "r{0} = r{1} | r{2}")
@@ -58,7 +57,6 @@ define_isa! {
     (j_offset_le 0x55 OOII "jle: pc += 0x{0:x}{1:x}")
     (j_offset_ne 0x56 OOII "jne: pc += 0x{0:x}{1:x}")
     (j_offset_ge 0x57 OOII "jge: pc += 0x{0:x}{1:x}")
-
     (jmp  0x5e OORX "jmp:  pc = r{0:x}")
     (call 0x5f OORR "call: r{0:x} = pc + 1; pc = r{1:x}")
 
@@ -66,20 +64,6 @@ define_isa! {
     (dev_send 0x7 OIIR "device[{2}].in[{1}] <- r{0}")
 }
 
-#[repr(u8)]
-#[derive(Copy, Clone)]
-pub enum Condition {
-    Never = 0,
-    Greater = FLAGS_GREATER,
-    Equal = FLAGS_EQUAL,
-    Less = FLAGS_LESS,
-    NotEqual = FLAGS_GREATER | FLAGS_LESS,
-    LessEqual = FLAGS_LESS | FLAGS_EQUAL,
-    GreaterEqual = FLAGS_GREATER | FLAGS_EQUAL,
-    Always = FLAGS_GREATER | FLAGS_EQUAL | FLAGS_LESS,
-
-    Call = 15,
-}
 pub const FLAGS_GREATER: u8 = 1 << 0;
 pub const FLAGS_EQUAL: u8 = 1 << 1;
 pub const FLAGS_LESS: u8 = 1 << 2;
