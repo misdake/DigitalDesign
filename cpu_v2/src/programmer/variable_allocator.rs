@@ -36,7 +36,8 @@ impl<T: Oprand> RawOperation<T> {
                 ResultOp::Addi(v, _) => f(v),
             },
             RawOperation::Update(op) => match op {
-                UpdateOp::LoadImm(v, _) => f(v),
+                UpdateOp::LoadImmLo(v, _) => f(v),
+                UpdateOp::LoadImmHi(v, _) => f(v),
             },
         }
     }
@@ -45,11 +46,12 @@ impl<T: Oprand> RawOperation<T> {
 #[derive(Copy, Clone, Debug)]
 pub enum ResultOp<T: Oprand> {
     Add(T, T),
-    Addi(T, u16),
+    Addi(T, i8),
 }
 #[derive(Copy, Clone, Debug)]
 pub enum UpdateOp<T: Oprand> {
-    LoadImm(T, u16),
+    LoadImmLo(T, u8),
+    LoadImmHi(T, u8),
 }
 
 #[derive(Copy, Clone, Debug)]
@@ -77,7 +79,8 @@ impl<T: Oprand> ResultOp<T> {
 impl<T: Oprand> UpdateOp<T> {
     pub(crate) fn convert<R: Oprand>(self, mut f: impl FnMut(T) -> R) -> UpdateOp<R> {
         match self {
-            UpdateOp::LoadImm(v, i) => UpdateOp::LoadImm(f(v), i),
+            UpdateOp::LoadImmLo(v, i) => UpdateOp::LoadImmLo(f(v), i),
+            UpdateOp::LoadImmHi(v, i) => UpdateOp::LoadImmHi(f(v), i),
         }
     }
 }
@@ -182,8 +185,8 @@ fn test_variable_allocator() {
     let mut r = VariableAllocator::new();
     let a = r.alloc();
     let b = r.alloc();
-    r.new_update(UpdateOp::LoadImm(a, 1));
-    r.new_update(UpdateOp::LoadImm(b, 1));
+    r.new_update(UpdateOp::LoadImmLo(a, 1));
+    r.new_update(UpdateOp::LoadImmLo(b, 1));
     let c = r.new_result(ResultOp::Add(a, b));
     let d = r.new_result(ResultOp::Add(b, c));
     let _e = r.new_result(ResultOp::Add(c, d));

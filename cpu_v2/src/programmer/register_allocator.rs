@@ -1,4 +1,5 @@
-use crate::programmer::{ResultOp, UpdateOp, Variable, VariableAllocator, VariableOperation};
+use crate::isa::Instruction;
+use crate::programmer::*;
 use std::collections::{BinaryHeap, HashMap};
 
 type Reg = u8; // u4 actually
@@ -23,6 +24,33 @@ enum RegisterOperation {
     Result(ResultOp<Reg>, Reg),
     Update(UpdateOp<Reg>),
 }
+impl RegisterOperation {
+    pub fn to_inst(self) -> Instruction {
+        match self {
+            RegisterOperation::Result(op, r0) => match op {
+                ResultOp::Add(r1, r2) => Instruction::add(r2, r1, r0),
+                ResultOp::Addi(r1, i) => {
+                    assert!(i >= -8);
+                    assert!(i <= 7);
+                    Instruction::addi(r1, i as u8, r0)
+                }
+            },
+            RegisterOperation::Update(op) => match op {
+                UpdateOp::LoadImmLo(r0, u8) => {
+                    let hi = u8 >> 4;
+                    let lo = u8 & 0b1111;
+                    Instruction::load_lo(hi, lo, r0)
+                }
+                UpdateOp::LoadImmHi(r0, u8) => {
+                    let hi = u8 >> 4;
+                    let lo = u8 & 0b1111;
+                    Instruction::load_hi(hi, lo, r0)
+                }
+            },
+        }
+    }
+}
+
 struct RegisterAllocator {
     /// constant reg priority provided by user
     reg_priority: HashMap<Reg, usize>,
@@ -112,8 +140,8 @@ fn test_map_var_to_reg() {
     let mut r = VariableAllocator::new();
     let a = r.alloc();
     let b = r.alloc();
-    r.new_update(UpdateOp::LoadImm(a, 1));
-    r.new_update(UpdateOp::LoadImm(b, 1));
+    r.new_update(UpdateOp::LoadImmLo(a, 1));
+    r.new_update(UpdateOp::LoadImmLo(b, 1));
     let c = r.new_result(ResultOp::Add(a, b));
     let d = r.new_result(ResultOp::Add(b, c));
     let _e = r.new_result(ResultOp::Add(c, d));
@@ -130,5 +158,11 @@ fn test_map_var_to_reg() {
     println!("Register ops:");
     for op in &ops2 {
         println!("  {op:?}");
+    }
+
+    println!("Instructions:");
+    for op in &ops2 {
+        let inst = op.to_inst();
+        println!("  {}", inst);
     }
 }
