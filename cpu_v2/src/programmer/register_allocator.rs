@@ -160,9 +160,16 @@ fn test_map_var_to_reg() {
         println!("  {op:?}");
     }
 
+    let instructions = ops2.iter().map(|op| op.to_inst()).collect::<Vec<_>>();
     println!("Instructions:");
-    for op in &ops2 {
-        let inst = op.to_inst();
+    for inst in &instructions {
         println!("  {}", inst);
     }
+
+    use crate::sim::SimEnv;
+    let mut env = SimEnv::new(instructions.as_slice());
+
+    let cycles = env.run_to_halt(10);
+    assert_eq!(cycles, 5);
+    assert_eq!(env.state.reg[0], 5);
 }

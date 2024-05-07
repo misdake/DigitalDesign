@@ -1,5 +1,6 @@
 use crate::isa::*;
 use digital_design_code::select;
+use std::cmp::max;
 
 pub struct SimEnv {
     pub inst: Box<[Instruction; 65536]>,
@@ -72,11 +73,26 @@ impl StateChange {
 }
 
 impl SimEnv {
-    pub fn new(inst: Box<[Instruction; 65536]>) -> SimEnv {
+    pub fn new(inst: &[Instruction]) -> SimEnv {
+        let mut inst_array = box [Instruction::halt(); 65536];
+        assert!(inst.len() <= 65536);
+        inst_array[..inst.len()].copy_from_slice(inst);
+
         Self {
-            inst,
+            inst: inst_array,
             state: SimState::default(),
         }
+    }
+
+    pub fn run_to_halt(&mut self, max_cycle: usize) -> usize {
+        for i in 0..max_cycle {
+            let change = self.eval();
+            if change.halt {
+                return i;
+            }
+            self.commit(change);
+        }
+        max_cycle
     }
 
     pub fn eval(&self) -> StateChange {
