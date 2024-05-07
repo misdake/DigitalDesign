@@ -2,10 +2,10 @@ use crate::isa::*;
 use std::collections::HashMap;
 
 #[derive(Copy, Clone)]
-struct InstructionSlot {
+pub struct InstructionSlot {
     addr: usize,
 }
-struct PendingJump {
+pub struct PendingJump {
     inst: fn(&mut Assembler1, InstructionSlot, Cond) -> InstructionSlot,
     addr: InstructionSlot,
     cond: Cond,

@@ -1,7 +1,7 @@
 #![feature(box_syntax)]
 
-mod assembler;
 mod isa;
+mod programmer;
 mod sim;
 
 fn main() {
