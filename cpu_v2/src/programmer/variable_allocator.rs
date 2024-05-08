@@ -1,5 +1,6 @@
 use std::collections::HashMap;
 use std::hash::Hash;
+use std::slice::SliceIndex;
 use std::sync::atomic::{AtomicUsize, Ordering::Relaxed};
 
 static NEXT_VARIABLE: AtomicUsize = AtomicUsize::new(1);
@@ -120,10 +121,19 @@ impl VariableAllocator {
         });
     }
 
-    pub(crate) fn export_ops(&self) -> Vec<VariableOperation> {
+    pub fn get_cursor(&self) -> usize {
+        self.ops.len()
+    }
+
+    pub(crate) fn export_ops<
+        R: SliceIndex<[RawOperation<Variable>], Output = [RawOperation<Variable>]>,
+    >(
+        &self,
+        range: R,
+    ) -> Vec<VariableOperation> {
         let mut result = vec![];
 
-        for (index, op) in self.ops.iter().cloned().enumerate() {
+        for (index, op) in self.ops[range].iter().cloned().enumerate() {
             match op {
                 RawOperation::Alloc(_) => {
                     // not emitting anything
@@ -192,7 +202,7 @@ fn test_variable_allocator() {
     let _e = r.new_result(ResultOp::Add(c, d));
 
     let mut reg_count = 0;
-    for op in r.export_ops() {
+    for op in r.export_ops(..) {
         match op {
             VariableOperation::Alloc(_) => reg_count += 1,
             VariableOperation::Result(_) => {}

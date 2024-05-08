@@ -51,27 +51,38 @@ impl RegisterOperation {
     }
 }
 
+type ValidRegsMask = u16;
 struct RegisterAllocator {
     /// constant reg priority provided by user
-    reg_priority: HashMap<Reg, usize>,
+    reg_priority: [usize; 16],
     /// keep track on valid registers
     valid_regs: BinaryHeap<ValidReg>,
+
+    result: Vec<RegisterOperation>,
+    mapping: HashMap<Variable, Reg>,
+    last_result: Option<ResultOp<Reg>>,
 }
 impl RegisterAllocator {
-    pub fn new(priority: [Reg; 16]) -> Self {
-        let mut reg_priority = HashMap::new();
-        let mut valid_regs = BinaryHeap::new();
+    //TODO configure valid_regs
+    pub fn new(priority: [Reg; 16], valid_regs: ValidRegsMask) -> Self {
+        let mut this = Self {
+            reg_priority: [0; 16],
+            valid_regs: BinaryHeap::new(),
+            result: vec![],
+            mapping: HashMap::default(),
+            last_result: None,
+        };
+
         for (i, reg) in priority.into_iter().enumerate() {
-            reg_priority.insert(reg, 16 - i);
-            valid_regs.push(ValidReg {
-                reg,
-                priority: 16 - i,
-            })
+            this.reg_priority[reg as usize] = 16 - i;
         }
-        Self {
-            reg_priority,
-            valid_regs,
+        for reg in 0..16 {
+            if valid_regs & (1 << reg) != 0 {
+                this.free(reg);
+            }
         }
+
+        this
     }
 
     fn alloc(&mut self) -> Reg {
@@ -79,47 +90,48 @@ impl RegisterAllocator {
         self.valid_regs.pop().unwrap().reg
     }
     fn free(&mut self, reg: Reg) {
-        let priority = *self.reg_priority.get(&reg).unwrap();
+        let priority = self.reg_priority[reg as usize];
         self.valid_regs.push(ValidReg { reg, priority });
     }
 
-    pub fn map_var_to_reg(&mut self, ops: Vec<VariableOperation>) -> Vec<RegisterOperation> {
-        let mut result = vec![];
-        let mut mapping: HashMap<Variable, Reg> = HashMap::new();
-        let mut last_result = None;
+    pub fn get_valid_regs(&self) -> ValidRegsMask {
+        self.valid_regs.iter().map(|v| 1 << v.reg).sum::<u16>()
+    }
+    pub fn export_ops(&self) -> Vec<RegisterOperation> {
+        self.result.clone()
+    }
 
-        for op in ops {
-            match op {
-                VariableOperation::Alloc(v) => {
-                    let reg = self.alloc();
-                    mapping.insert(v, reg);
-                }
-                VariableOperation::Result(op) => {
-                    let op2 = op.convert(|v| *mapping.get(&v).unwrap());
-                    last_result = Some(op2);
-                }
-                VariableOperation::Update(op) => {
-                    let op2 = op.convert(|v| *mapping.get(&v).unwrap());
-                    result.push(RegisterOperation::Update(op2));
-                }
-                VariableOperation::Write(v) => {
-                    let op = last_result.take().unwrap();
-                    let reg = *mapping.get(&v).unwrap();
-                    result.push(RegisterOperation::Result(op, reg));
-                }
-                VariableOperation::Free(v) => {
-                    self.free(*mapping.get(&v).unwrap());
-                }
+    pub fn new_op(&mut self, op: VariableOperation) {
+        match op {
+            VariableOperation::Alloc(v) => {
+                let reg = self.alloc();
+                self.mapping.insert(v, reg);
+            }
+            VariableOperation::Result(op) => {
+                let op2 = op.convert(|v| *self.mapping.get(&v).unwrap());
+                self.last_result = Some(op2);
+            }
+            VariableOperation::Update(op) => {
+                let op2 = op.convert(|v| *self.mapping.get(&v).unwrap());
+                self.result.push(RegisterOperation::Update(op2));
+            }
+            VariableOperation::Write(v) => {
+                let op = self.last_result.take().unwrap();
+                let reg = *self.mapping.get(&v).unwrap();
+                self.result.push(RegisterOperation::Result(op, reg));
+            }
+            VariableOperation::Free(v) => {
+                let reg = self.mapping.remove(&v).unwrap();
+                self.free(reg);
             }
         }
-
-        result
     }
 }
 
 #[test]
 fn test_register_allocator() {
-    let mut r = RegisterAllocator::new([0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15]);
+    const PRIORITY: [Reg; 16] = [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15];
+    let mut r = RegisterAllocator::new(PRIORITY, u16::MAX);
     let a = r.alloc();
     let b = r.alloc();
     let c = r.alloc();
@@ -146,15 +158,19 @@ fn test_map_var_to_reg() {
     let d = r.new_result(ResultOp::Add(b, c));
     let _e = r.new_result(ResultOp::Add(c, d));
 
-    let ops1 = r.export_ops();
+    let ops1 = r.export_ops(..);
     println!("Variable ops:");
     for op in &ops1 {
         println!("  {op:?}");
     }
 
-    let mut r = RegisterAllocator::new([0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15]);
+    const PRIORITY: [Reg; 16] = [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15];
+    let mut r = RegisterAllocator::new(PRIORITY, u16::MAX);
 
-    let ops2 = r.map_var_to_reg(ops1);
+    for op in ops1 {
+        r.new_op(op);
+    }
+    let ops2 = r.export_ops();
     println!("Register ops:");
     for op in &ops2 {
         println!("  {op:?}");
