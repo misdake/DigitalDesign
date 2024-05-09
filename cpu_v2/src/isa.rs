@@ -67,7 +67,7 @@ pub const FLAGS_GREATER: u8 = 1 << 0;
 pub const FLAGS_EQUAL: u8 = 1 << 1;
 pub const FLAGS_LESS: u8 = 1 << 2;
 #[repr(u8)]
-#[derive(Copy, Clone)]
+#[derive(Copy, Clone, Debug)]
 pub enum Cond {
     Never = 0,
     Greater = FLAGS_GREATER,
