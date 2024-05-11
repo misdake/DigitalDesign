@@ -1,6 +1,5 @@
 use crate::isa::*;
 use digital_design_code::select;
-use std::cmp::max;
 
 pub struct SimEnv {
     pub inst: Box<[Instruction; 65536]>,

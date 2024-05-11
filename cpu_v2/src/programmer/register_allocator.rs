@@ -28,6 +28,7 @@ impl RegisterOperation {
     pub fn to_inst(self) -> Instruction {
         match self {
             RegisterOperation::Result(op, r0) => match op {
+                ResultOp::Mov(r1) => Instruction::mov(r1, r0),
                 ResultOp::Add(r1, r2) => Instruction::add(r2, r1, r0),
                 ResultOp::Addi(r1, i) => {
                     assert!(i >= -8);

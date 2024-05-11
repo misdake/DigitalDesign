@@ -1,8 +1,13 @@
-use crate::isa::Cond;
+use arrayvec::ArrayVec;
 use std::collections::HashMap;
 use std::hash::Hash;
+use std::ops::Deref;
 use std::slice::SliceIndex;
 use std::sync::atomic::{AtomicUsize, Ordering::Relaxed};
+
+use smallvec::SmallVec;
+
+use crate::isa::Cond;
 
 static NEXT_VARIABLE: AtomicUsize = AtomicUsize::new(1);
 
@@ -36,7 +41,7 @@ impl<T: Oprand> CondOp<T> {
     }
 }
 impl<T: Oprand> CondOp<T> {
-    fn op_touch_input(&self, mut f: impl FnMut(&T, TouchType)) {
+    fn touch(&self, mut f: impl FnMut(&T, TouchType)) {
         match self {
             CondOp::Cmp(a, b, _) => {
                 f(a, TouchType::Input);
@@ -48,10 +53,8 @@ impl<T: Oprand> CondOp<T> {
 }
 
 #[derive(Clone, Debug)]
-pub enum RawOperationX<T: Oprand> {
-    /// block of operations
-    Scope(Vec<RawOperationX<T>>),
-
+pub enum RawOperation1<T: Oprand> {
+    // basic linear operations
     /// result(output)
     Alloc(T),
     /// op, result(output)
@@ -59,19 +62,286 @@ pub enum RawOperationX<T: Oprand> {
     /// overwrite value, no new results
     Update(UpdateOp<T>),
 
+    // recursive structures
+    /// list of operations
+    List(Vec<RawOperation1<T>>),
     /// condition, then, else
     If(
         CondOp<T>,
-        Box<RawOperationX<T>>,
-        Option<Box<RawOperationX<T>>>,
+        Box<RawOperation1<T>>,
+        Option<Box<RawOperation1<T>>>,
     ),
     /// condition, loop body
-    Loop(CondOp<T>, Box<RawOperationX<T>>), //TODO continue and break? Continue(), Break()
+    Loop(CondOp<T>, Box<RawOperation1<T>>), //TODO support continue and break
 
+    // external flow control
     /// function name, params, return addr(output)
-    Call(&'static str, [Option<T>; 4], T),
+    Call(&'static str, ArrayVec<T, 4>, T),
     /// return addr, return values
-    Return(T, [Option<T>; 4]),
+    Return(T, ArrayVec<T, 4>),
+}
+#[derive(Clone, Debug)]
+pub enum RawOperationExt<T: Oprand> {
+    // basic linear operations
+    /// result(output)
+    Alloc(T),
+    /// op, result(output)
+    Result(ResultOp<T>, T),
+    /// overwrite value, no new results
+    Update(UpdateOp<T>),
+
+    // recursive structures
+    /// list of operations
+    List(Vec<RawOperationScope<T>>),
+    /// condition, then, else
+    If(
+        CondOp<T>,
+        Box<RawOperationScope<T>>,
+        Option<Box<RawOperationScope<T>>>,
+    ),
+    /// condition, loop body
+    Loop(CondOp<T>, Box<RawOperationScope<T>>),
+
+    // external flow control
+    /// function name, params, return addr(output)
+    Call(&'static str, ArrayVec<T, 4>, T),
+    /// return addr, return values
+    Return(T, ArrayVec<T, 4>),
+}
+impl<T: Oprand> RawOperation1<T> {
+    fn touch_primitive(&self, mut f: impl FnMut(&T, TouchType)) {
+        match self {
+            RawOperation1::Alloc(v) => f(v, TouchType::UserAlloc),
+            RawOperation1::Result(op, v) => {
+                op.touch(&mut f);
+                f(v, TouchType::Output);
+            }
+            RawOperation1::Update(op) => op.touch(&mut f),
+            _ => {}
+        }
+    }
+}
+
+#[derive(Clone, Debug)]
+pub struct RawOperationScope<T: Oprand> {
+    op: RawOperationExt<T>,
+    // internal variables allocated in this scope
+    variable_alloc_in_scope: SmallVec<[T; 1]>,
+    // all used inputs
+    used_inputs: SmallVec<[T; 2]>,
+    // all outputs that can be exported (not necessarily used)
+    all_outputs: SmallVec<[T; 1]>,
+}
+impl<T: Oprand> Deref for RawOperationScope<T> {
+    type Target = RawOperationExt<T>;
+    fn deref(&self) -> &Self::Target {
+        &self.op
+    }
+}
+impl<T: Oprand> RawOperationScope<T> {
+    pub fn from_raw(op: RawOperation1<T>) -> Self {
+        match op {
+            op @ RawOperation1::Alloc(_)
+            | op @ RawOperation1::Result(_, _)
+            | op @ RawOperation1::Update(_) => Self::basic(op),
+            RawOperation1::List(list) => {
+                let list = list
+                    .into_iter()
+                    .map(|item| Self::from_raw(item))
+                    .collect::<Vec<_>>();
+                Self::list(list)
+            }
+            RawOperation1::If(cond, if_block, else_block) => {
+                let if_block = Self::from_raw(*if_block);
+                let else_block = else_block.map(|op| Self::from_raw(*op));
+                Self::if_block(cond, if_block, else_block)
+            }
+            RawOperation1::Loop(cond, loop_block) => {
+                let loop_block = Self::from_raw(*loop_block);
+                Self::loop_block(cond, loop_block)
+            }
+            RawOperation1::Call(name, param, ra) => Self::call(name, param, ra),
+            RawOperation1::Return(ra, rv) => Self::ret(ra, rv),
+        }
+    }
+
+    fn basic(op: RawOperation1<T>) -> Self {
+        let mut variable_alloc_in_scope = SmallVec::new();
+        let mut used_inputs = SmallVec::new();
+        let mut all_outputs = SmallVec::new();
+
+        // touch top level
+        op.touch_primitive(|v, ty| match ty {
+            TouchType::Input => {
+                if !variable_alloc_in_scope.contains(v) {
+                    used_inputs.push(*v);
+                }
+            }
+            TouchType::Output => {
+                variable_alloc_in_scope.push(*v);
+                all_outputs.push(*v);
+            }
+            TouchType::UserAlloc => {
+                variable_alloc_in_scope.push(*v);
+                all_outputs.push(*v);
+            }
+        });
+
+        let op = match op {
+            RawOperation1::Alloc(r) => RawOperationExt::Alloc(r),
+            RawOperation1::Result(op, r) => RawOperationExt::Result(op, r),
+            RawOperation1::Update(op) => RawOperationExt::Update(op),
+            _ => {
+                unreachable!()
+            }
+        };
+
+        Self {
+            variable_alloc_in_scope,
+            op,
+            used_inputs,
+            all_outputs,
+        }
+    }
+    fn list(list: Vec<RawOperationScope<T>>) -> Self {
+        let mut variable_alloc_in_scope = SmallVec::new();
+        let mut used_inputs = SmallVec::new();
+        let mut all_outputs = SmallVec::new();
+
+        for op in &list {
+            variable_alloc_in_scope.extend_from_slice(&op.variable_alloc_in_scope);
+            for v in &op.used_inputs {
+                if !variable_alloc_in_scope.contains(v) {
+                    used_inputs.push(*v); // list have all external inputs
+                }
+            }
+            all_outputs.extend_from_slice(&op.all_outputs); // list have all outputs
+        }
+
+        let op = RawOperationExt::List(list);
+
+        Self {
+            variable_alloc_in_scope,
+            op,
+            used_inputs,
+            all_outputs,
+        }
+    }
+    fn if_block(
+        cond: CondOp<T>,
+        then_block: RawOperationScope<T>,
+        else_block: Option<RawOperationScope<T>>,
+    ) -> Self {
+        // inputs from cond and two blocks
+        let mut used_inputs = SmallVec::new();
+        cond.touch(|v, ty| match ty {
+            TouchType::Input => {
+                used_inputs.push(*v);
+            }
+            _ => {
+                unreachable!("no alloc or output allowed in CondOp")
+            }
+        });
+        used_inputs.extend_from_slice(&then_block.used_inputs);
+        if let Some(else_block) = &else_block {
+            used_inputs.extend_from_slice(&else_block.used_inputs);
+        }
+        // no output
+
+        let op = RawOperationExt::If(cond, Box::new(then_block), else_block.map(Box::new));
+
+        Self {
+            variable_alloc_in_scope: SmallVec::new(),
+            op,
+            used_inputs,
+            all_outputs: SmallVec::new(),
+        }
+    }
+    fn loop_block(cond: CondOp<T>, loop_block: RawOperationScope<T>) -> Self {
+        // inputs from cond and loop block
+        let mut used_inputs = SmallVec::new();
+        cond.touch(|v, ty| match ty {
+            TouchType::Input => {
+                used_inputs.push(*v);
+            }
+            _ => {
+                unreachable!("no alloc or output allowed in CondOp")
+            }
+        });
+        used_inputs.extend_from_slice(&loop_block.used_inputs);
+        // no output
+
+        let op = RawOperationExt::Loop(cond, Box::new(loop_block));
+
+        Self {
+            variable_alloc_in_scope: SmallVec::new(),
+            op,
+            used_inputs,
+            all_outputs: SmallVec::new(),
+        }
+    }
+    fn call(name: &'static str, params: ArrayVec<T, 4>, ra: T) -> Self {
+        let mut variable_alloc_in_scope = SmallVec::new();
+        let mut used_inputs = SmallVec::new();
+        let mut all_outputs = SmallVec::new();
+
+        for param in &params {
+            used_inputs.push(*param)
+        }
+        variable_alloc_in_scope.push(ra);
+        all_outputs.push(ra);
+
+        Self {
+            op: RawOperationExt::Call(name, params, ra),
+            variable_alloc_in_scope,
+            used_inputs,
+            all_outputs,
+        }
+    }
+    fn ret(ra: T, rv: ArrayVec<T, 4>) -> Self {
+        let mut used_inputs = SmallVec::new();
+
+        for param in &rv {
+            used_inputs.push(*param)
+        }
+        used_inputs.push(ra);
+
+        Self {
+            op: RawOperationExt::Return(ra, rv),
+            variable_alloc_in_scope: SmallVec::new(),
+            used_inputs,
+            all_outputs: SmallVec::new(),
+        }
+    }
+}
+
+#[test]
+fn test_raw_operation_scope() {
+    let a = Variable::new();
+    let b = Variable::new();
+    let c = Variable::new();
+    let d = Variable::new();
+
+    let init = RawOperation1::List(vec![
+        RawOperation1::Alloc(a),
+        RawOperation1::Alloc(b),
+        RawOperation1::Alloc(c),
+        RawOperation1::Alloc(d),
+        RawOperation1::Update(UpdateOp::LoadImmLo(a, 10)),
+        RawOperation1::Update(UpdateOp::LoadImmLo(b, 20)),
+        RawOperation1::Update(UpdateOp::LoadImmLo(c, 2)),
+        RawOperation1::Update(UpdateOp::LoadImmLo(d, 30)),
+    ]);
+    let if_block = RawOperation1::If(
+        CondOp::CmpI(c, 1, Cond::Greater),
+        Box::new(RawOperation1::Result(ResultOp::Mov(a), d)),
+        Some(Box::new(RawOperation1::Result(ResultOp::Mov(b), d))),
+    );
+    let result = RawOperation1::Update(UpdateOp::LoadImmHi(d, 1));
+    let all = RawOperation1::List(vec![init, if_block, result]);
+
+    println!("RawOperation: {:?}", all);
+    println!("RawOperationScope: {:?}", RawOperationScope::from_raw(all));
 }
 
 #[derive(Copy, Clone, Eq, PartialEq)]
@@ -79,46 +349,6 @@ enum TouchType {
     Input,
     Output,
     UserAlloc,
-}
-impl<T: Oprand> RawOperationX<T> {
-    fn op_touch_input(&self, mut f: impl FnMut(&T, TouchType)) {
-        match self {
-            RawOperationX::Scope(list) => {
-                for op in list {
-                    op.op_touch_input(&mut f);
-                }
-            }
-            RawOperationX::Alloc(v) => f(v, TouchType::Output),
-            RawOperationX::Result(op, v) => {
-                op.op_touch_input(&mut f);
-                f(v, TouchType::Output);
-            }
-            RawOperationX::Update(op) => op.op_touch_input(&mut f),
-            RawOperationX::If(cond, then_block, else_block) => {
-                cond.op_touch_input(&mut f);
-                then_block.op_touch_input(&mut f);
-                if let Some(else_block) = else_block {
-                    else_block.op_touch_input(&mut f);
-                }
-            }
-            RawOperationX::Loop(cond, loop_block) => {
-                cond.op_touch_input(&mut f);
-                loop_block.op_touch_input(&mut f);
-            }
-            RawOperationX::Call(_, v, addr) => {
-                f(addr, TouchType::Output);
-                for v in v.iter().flatten() {
-                    f(v, TouchType::Input)
-                }
-            }
-            RawOperationX::Return(addr, v) => {
-                f(addr, TouchType::Input);
-                for v in v.iter().flatten() {
-                    f(v, TouchType::Input)
-                }
-            }
-        }
-    }
 }
 
 #[derive(Clone, Debug)]
@@ -128,20 +358,21 @@ pub enum RawOperation<T: Oprand> {
     Update(UpdateOp<T>),
 }
 impl<T: Oprand> RawOperation<T> {
-    fn op_touch_input(&self, mut f: impl FnMut(&T, TouchType)) {
+    fn touch(&self, mut f: impl FnMut(&T, TouchType)) {
         match self {
             RawOperation::Alloc(v) => f(v, TouchType::UserAlloc),
             RawOperation::Result(op, v) => {
-                op.op_touch_input(&mut f);
+                op.touch(&mut f);
                 f(v, TouchType::Output);
             }
-            RawOperation::Update(op) => op.op_touch_input(&mut f),
+            RawOperation::Update(op) => op.touch(&mut f),
         }
     }
 }
 
 #[derive(Copy, Clone, Debug)]
 pub enum ResultOp<T: Oprand> {
+    Mov(T),
     Add(T, T),
     Addi(T, i8),
 }
@@ -166,8 +397,11 @@ pub(crate) enum VariableOperation {
 }
 
 impl<T: Oprand> ResultOp<T> {
-    fn op_touch_input(&self, mut f: impl FnMut(&T, TouchType)) {
+    fn touch(&self, mut f: impl FnMut(&T, TouchType)) {
         match self {
+            ResultOp::Mov(v) => {
+                f(v, TouchType::Input);
+            }
             ResultOp::Add(v1, v2) => {
                 f(v1, TouchType::Input);
                 f(v2, TouchType::Input);
@@ -181,6 +415,7 @@ impl<T: Oprand> ResultOp<T> {
 impl<T: Oprand> ResultOp<T> {
     pub(crate) fn convert<R: Oprand>(self, mut f: impl FnMut(T) -> R) -> ResultOp<R> {
         match self {
+            ResultOp::Mov(v) => ResultOp::Mov(f(v)),
             ResultOp::Add(v1, v2) => ResultOp::Add(f(v1), f(v2)),
             ResultOp::Addi(v, i) => ResultOp::Addi(f(v), i),
         }
@@ -188,7 +423,7 @@ impl<T: Oprand> ResultOp<T> {
 }
 
 impl<T: Oprand> UpdateOp<T> {
-    fn op_touch_input(&self, mut f: impl FnMut(&T, TouchType)) {
+    fn touch(&self, mut f: impl FnMut(&T, TouchType)) {
         match self {
             UpdateOp::LoadImmLo(v, _) => f(v, TouchType::Input),
             UpdateOp::LoadImmHi(v, _) => f(v, TouchType::Input),
@@ -206,7 +441,7 @@ impl<T: Oprand> UpdateOp<T> {
 
 pub struct VariableAllocatorX {
     ops: Vec<RawOperation<Variable>>,
-    variable_life: HashMap<Variable, (usize, usize)>, // index is op_touch_input order
+    variable_life: HashMap<Variable, (usize, usize)>, // index is touch order
     curr_index: usize,
 }
 impl VariableAllocatorX {
@@ -271,7 +506,7 @@ impl VariableAllocator {
     }
     fn new_op(&mut self, op: RawOperation<Variable>) {
         let index = self.ops.len();
-        op.op_touch_input(|v, t| match t {
+        op.touch(|v, t| match t {
             TouchType::Input => {
                 let life = self.variable_life.get_mut(v).unwrap();
                 if life.first_usage.is_none() {
@@ -340,7 +575,7 @@ impl VariableAllocator {
         index: usize,
         raw_op: &RawOperation<Variable>,
     ) {
-        raw_op.op_touch_input(|v, t| {
+        raw_op.touch(|v, t| {
             let life = self.variable_life.get(v).unwrap();
             if t == TouchType::Input && life.first_usage == Some(index) {
                 result.push(VariableOperation::Alloc(*v));
@@ -353,7 +588,7 @@ impl VariableAllocator {
         index: usize,
         raw_op: &RawOperation<Variable>,
     ) {
-        raw_op.op_touch_input(|v, t| {
+        raw_op.touch(|v, t| {
             let life = self.variable_life.get(v).unwrap();
             if t == TouchType::Input && life.last_usage == Some(index) {
                 result.push(VariableOperation::Free(*v));
