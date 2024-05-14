@@ -1,13 +1,15 @@
 use arrayvec::ArrayVec;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::hash::Hash;
 use std::ops::Deref;
 use std::slice::SliceIndex;
 use std::sync::atomic::{AtomicUsize, Ordering::Relaxed};
 
-use smallvec::SmallVec;
-
 use crate::isa::Cond;
+
+const MAX_RETURN: usize = 4;
+const MAX_PARAM: usize = 4;
+type FuncName = &'static str;
 
 static NEXT_VARIABLE: AtomicUsize = AtomicUsize::new(1);
 
@@ -59,7 +61,7 @@ pub enum RawOperation1<T: Oprand> {
     Alloc(T),
     /// op, result(output)
     Result(ResultOp<T>, T),
-    /// overwrite value, no new results
+    /// overwrite value
     Update(UpdateOp<T>),
 
     // recursive structures
@@ -75,10 +77,12 @@ pub enum RawOperation1<T: Oprand> {
     Loop(CondOp<T>, Box<RawOperation1<T>>), //TODO support continue and break
 
     // external flow control
-    /// function name, params, return addr(output)
-    Call(&'static str, ArrayVec<T, 4>, T),
+    /// function name, params(output)
+    Func(FuncName, ArrayVec<T, MAX_PARAM>),
+    /// function name, params, return addr(output), return values(output)
+    Call(FuncName, ArrayVec<T, MAX_PARAM>, T, ArrayVec<T, MAX_RETURN>),
     /// return addr, return values
-    Return(T, ArrayVec<T, 4>),
+    Return(T, ArrayVec<T, MAX_RETURN>),
 }
 #[derive(Clone, Debug)]
 pub enum RawOperationExt<T: Oprand> {
@@ -87,7 +91,7 @@ pub enum RawOperationExt<T: Oprand> {
     Alloc(T),
     /// op, result(output)
     Result(ResultOp<T>, T),
-    /// overwrite value, no new results
+    /// overwrite value
     Update(UpdateOp<T>),
 
     // recursive structures
@@ -103,10 +107,12 @@ pub enum RawOperationExt<T: Oprand> {
     Loop(CondOp<T>, Box<RawOperationScope<T>>),
 
     // external flow control
-    /// function name, params, return addr(output)
-    Call(&'static str, ArrayVec<T, 4>, T),
+    /// function name, params(output)
+    Func(FuncName, ArrayVec<T, MAX_PARAM>),
+    /// function name, params, return addr(output), return values(output)
+    Call(FuncName, ArrayVec<T, MAX_PARAM>, T, ArrayVec<T, MAX_RETURN>),
     /// return addr, return values
-    Return(T, ArrayVec<T, 4>),
+    Return(T, ArrayVec<T, MAX_RETURN>),
 }
 impl<T: Oprand> RawOperation1<T> {
     fn touch_primitive(&self, mut f: impl FnMut(&T, TouchType)) {
@@ -125,12 +131,12 @@ impl<T: Oprand> RawOperation1<T> {
 #[derive(Clone, Debug)]
 pub struct RawOperationScope<T: Oprand> {
     op: RawOperationExt<T>,
-    // internal variables allocated in this scope
-    variable_alloc_in_scope: SmallVec<[T; 1]>,
     // all used inputs
-    used_inputs: SmallVec<[T; 2]>,
-    // all outputs that can be exported (not necessarily used)
-    all_outputs: SmallVec<[T; 1]>,
+    inputs: HashSet<T>,
+    // all allocated variables that can be exported (not necessarily used)
+    possible_outputs: HashSet<T>,
+    // outputs that are used later, subset of all_outputs
+    real_outputs: HashSet<T>,
 }
 impl<T: Oprand> Deref for RawOperationScope<T> {
     type Target = RawOperationExt<T>;
@@ -160,30 +166,26 @@ impl<T: Oprand> RawOperationScope<T> {
                 let loop_block = Self::from_raw(*loop_block);
                 Self::loop_block(cond, loop_block)
             }
-            RawOperation1::Call(name, param, ra) => Self::call(name, param, ra),
+            RawOperation1::Func(name, param) => Self::func(name, param),
+            RawOperation1::Call(name, param, ra, rv) => Self::call(name, param, ra, rv),
             RawOperation1::Return(ra, rv) => Self::ret(ra, rv),
         }
     }
 
     fn basic(op: RawOperation1<T>) -> Self {
-        let mut variable_alloc_in_scope = SmallVec::new();
-        let mut used_inputs = SmallVec::new();
-        let mut all_outputs = SmallVec::new();
+        let mut inputs = HashSet::new();
+        let mut possible_outputs = HashSet::new();
 
         // touch top level
         op.touch_primitive(|v, ty| match ty {
             TouchType::Input => {
-                if !variable_alloc_in_scope.contains(v) {
-                    used_inputs.push(*v);
-                }
+                inputs.insert(*v);
             }
             TouchType::Output => {
-                variable_alloc_in_scope.push(*v);
-                all_outputs.push(*v);
+                possible_outputs.insert(*v);
             }
             TouchType::UserAlloc => {
-                variable_alloc_in_scope.push(*v);
-                all_outputs.push(*v);
+                possible_outputs.insert(*v);
             }
         });
 
@@ -197,34 +199,32 @@ impl<T: Oprand> RawOperationScope<T> {
         };
 
         Self {
-            variable_alloc_in_scope,
             op,
-            used_inputs,
-            all_outputs,
+            inputs,
+            possible_outputs,
+            real_outputs: Default::default(),
         }
     }
     fn list(list: Vec<RawOperationScope<T>>) -> Self {
-        let mut variable_alloc_in_scope = SmallVec::new();
-        let mut used_inputs = SmallVec::new();
-        let mut all_outputs = SmallVec::new();
+        let mut inputs = HashSet::new();
+        let mut possible_outputs = HashSet::new();
 
         for op in &list {
-            variable_alloc_in_scope.extend_from_slice(&op.variable_alloc_in_scope);
-            for v in &op.used_inputs {
-                if !variable_alloc_in_scope.contains(v) {
-                    used_inputs.push(*v); // list have all external inputs
+            for output in &op.possible_outputs {
+                possible_outputs.insert(*output);
+            }
+            for v in &op.inputs {
+                if !possible_outputs.contains(v) {
+                    inputs.insert(*v); // only outer inputs
                 }
             }
-            all_outputs.extend_from_slice(&op.all_outputs); // list have all outputs
         }
 
-        let op = RawOperationExt::List(list);
-
         Self {
-            variable_alloc_in_scope,
-            op,
-            used_inputs,
-            all_outputs,
+            op: RawOperationExt::List(list),
+            inputs,
+            possible_outputs,
+            real_outputs: Default::default(),
         }
     }
     fn if_block(
@@ -233,84 +233,124 @@ impl<T: Oprand> RawOperationScope<T> {
         else_block: Option<RawOperationScope<T>>,
     ) -> Self {
         // inputs from cond and two blocks
-        let mut used_inputs = SmallVec::new();
+        let mut used_inputs = HashSet::new();
         cond.touch(|v, ty| match ty {
             TouchType::Input => {
-                used_inputs.push(*v);
+                used_inputs.insert(*v);
             }
             _ => {
                 unreachable!("no alloc or output allowed in CondOp")
             }
         });
-        used_inputs.extend_from_slice(&then_block.used_inputs);
+        used_inputs.extend(then_block.inputs.iter());
         if let Some(else_block) = &else_block {
-            used_inputs.extend_from_slice(&else_block.used_inputs);
+            used_inputs.extend(else_block.inputs.iter());
         }
         // no output
 
-        let op = RawOperationExt::If(cond, Box::new(then_block), else_block.map(Box::new));
-
         Self {
-            variable_alloc_in_scope: SmallVec::new(),
-            op,
-            used_inputs,
-            all_outputs: SmallVec::new(),
+            op: RawOperationExt::If(cond, Box::new(then_block), else_block.map(Box::new)),
+            inputs: used_inputs,
+            possible_outputs: Default::default(),
+            real_outputs: Default::default(),
         }
     }
     fn loop_block(cond: CondOp<T>, loop_block: RawOperationScope<T>) -> Self {
         // inputs from cond and loop block
-        let mut used_inputs = SmallVec::new();
+        let mut inputs = HashSet::new();
         cond.touch(|v, ty| match ty {
             TouchType::Input => {
-                used_inputs.push(*v);
+                inputs.insert(*v);
             }
             _ => {
                 unreachable!("no alloc or output allowed in CondOp")
             }
         });
-        used_inputs.extend_from_slice(&loop_block.used_inputs);
+        for v in &loop_block.inputs {
+            inputs.insert(*v);
+        }
         // no output
 
-        let op = RawOperationExt::Loop(cond, Box::new(loop_block));
-
         Self {
-            variable_alloc_in_scope: SmallVec::new(),
-            op,
-            used_inputs,
-            all_outputs: SmallVec::new(),
+            op: RawOperationExt::Loop(cond, Box::new(loop_block)),
+            inputs,
+            possible_outputs: Default::default(),
+            real_outputs: Default::default(),
         }
     }
-    fn call(name: &'static str, params: ArrayVec<T, 4>, ra: T) -> Self {
-        let mut variable_alloc_in_scope = SmallVec::new();
-        let mut used_inputs = SmallVec::new();
-        let mut all_outputs = SmallVec::new();
-
+    fn func(name: &'static str, params: ArrayVec<T, 4>) -> Self {
+        let mut possible_outputs = HashSet::new();
         for param in &params {
-            used_inputs.push(*param)
+            possible_outputs.insert(*param);
         }
-        variable_alloc_in_scope.push(ra);
-        all_outputs.push(ra);
+        // no output
 
         Self {
-            op: RawOperationExt::Call(name, params, ra),
-            variable_alloc_in_scope,
-            used_inputs,
-            all_outputs,
+            op: RawOperationExt::Func(name, params),
+            inputs: Default::default(),
+            possible_outputs,
+            real_outputs: Default::default(),
+        }
+    }
+    fn call(
+        name: &'static str,
+        params: ArrayVec<T, MAX_PARAM>,
+        ra: T,
+        rv: ArrayVec<T, MAX_RETURN>,
+    ) -> Self {
+        let mut inputs = HashSet::new();
+        let mut possible_outputs = HashSet::new();
+
+        for param in &params {
+            inputs.insert(*param);
+        }
+        possible_outputs.insert(ra);
+        for rv in &rv {
+            possible_outputs.insert(*rv);
+        }
+
+        Self {
+            op: RawOperationExt::Call(name, params, ra, rv),
+            inputs,
+            possible_outputs,
+            real_outputs: Default::default(),
         }
     }
     fn ret(ra: T, rv: ArrayVec<T, 4>) -> Self {
-        let mut used_inputs = SmallVec::new();
-
+        let mut inputs = HashSet::new();
         for param in &rv {
-            used_inputs.push(*param)
+            inputs.insert(*param);
         }
-        used_inputs.push(ra);
+        inputs.insert(ra);
 
         Self {
             op: RawOperationExt::Return(ra, rv),
-            variable_alloc_in_scope: SmallVec::new(),
-            used_inputs,
-            all_outputs: SmallVec::new(),
+            inputs,
+            possible_outputs: Default::default(),
+            real_outputs: Default::default(),
+        }
+    }
+
+    fn gen_real_outputs(&mut self, later_inputs: &mut HashSet<T>) {
+        let used_outputs = self
+            .possible_outputs
+            .iter()
+            .filter(|v| later_inputs.contains(*v))
+            .cloned()
+            .collect();
+        self.real_outputs = used_outputs;
+
+        #[allow(clippy::single_match)]
+        match &mut self.op {
+            RawOperationExt::List(list) => {
+                let mut later_inputs = HashSet::new();
+                // bottom to top, collect inputs
+                for scope in list.iter_mut().rev() {
+                    scope.gen_real_outputs(&mut later_inputs);
+                    later_inputs.extend(scope.inputs.iter().cloned());
+                }
+            }
+            _ => {}
         }
     }
 }
@@ -338,10 +378,16 @@ fn test_raw_operation_scope() {
         Some(Box::new(RawOperation1::Result(ResultOp::Mov(b), d))),
     );
     let result = RawOperation1::Update(UpdateOp::LoadImmHi(d, 1));
-    let all = RawOperation1::List(vec![init, if_block, result]);
+    let mut r = ArrayVec::<Variable, MAX_RETURN>::new();
+    r.push(a);
+    r.push(b);
+    let ret = RawOperation1::Return(d, r);
+    let all = RawOperation1::List(vec![init, if_block, result, ret]);
 
-    println!("RawOperation: {:?}", all);
-    println!("RawOperationScope: {:?}", RawOperationScope::from_raw(all));
+    // println!("RawOperation: {:#?}", all);
+    let mut scope = RawOperationScope::from_raw(all);
+    scope.gen_real_outputs(&mut HashSet::new());
+    println!("RawOperationScope: {:#?}", scope);
 }
 
 #[derive(Copy, Clone, Eq, PartialEq)]
