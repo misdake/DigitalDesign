@@ -28,7 +28,6 @@ impl RegisterOperation {
     pub fn to_inst(self) -> Instruction {
         match self {
             RegisterOperation::Result(op, r0) => match op {
-                ResultOp::Mov(r1) => Instruction::mov(r1, r0),
                 ResultOp::Add(r1, r2) => Instruction::add(r2, r1, r0),
                 ResultOp::Addi(r1, i) => {
                     assert!(i >= -8);
@@ -37,6 +36,7 @@ impl RegisterOperation {
                 }
             },
             RegisterOperation::Update(op) => match op {
+                UpdateOp::Mov(r0, r1) => Instruction::mov(r1, r0), //TODO check r0==r1 return None
                 UpdateOp::LoadImmLo(r0, u8) => {
                     let hi = u8 >> 4;
                     let lo = u8 & 0b1111;
@@ -159,7 +159,7 @@ fn test_map_var_to_reg() {
     let d = r.new_result(ResultOp::Add(b, c));
     let _e = r.new_result(ResultOp::Add(c, d));
 
-    let ops1 = r.export_ops(..);
+    let ops1 = r.export_ops();
     println!("Variable ops:");
     for op in &ops1 {
         println!("  {op:?}");

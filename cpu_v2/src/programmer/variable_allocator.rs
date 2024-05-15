@@ -1,9 +1,10 @@
-use arrayvec::ArrayVec;
 use std::collections::{HashMap, HashSet};
+use std::fmt::{Debug, Formatter, Write};
 use std::hash::Hash;
-use std::ops::Deref;
-use std::slice::SliceIndex;
+use std::ops::Sub;
 use std::sync::atomic::{AtomicUsize, Ordering::Relaxed};
+
+use arrayvec::ArrayVec;
 
 use crate::isa::Cond;
 
@@ -11,9 +12,9 @@ const MAX_RETURN: usize = 4;
 const MAX_PARAM: usize = 4;
 type FuncName = &'static str;
 
-static NEXT_VARIABLE: AtomicUsize = AtomicUsize::new(1);
+static NEXT_VARIABLE: AtomicUsize = AtomicUsize::new(0);
 
-#[derive(Copy, Clone, Hash, Eq, PartialEq, Debug)]
+#[derive(Copy, Clone, Hash, Eq, PartialEq)]
 pub struct Variable(usize);
 impl Variable {
     fn new() -> Self {
@@ -21,6 +22,22 @@ impl Variable {
     }
     fn reset() {
         NEXT_VARIABLE.store(1, Relaxed)
+    }
+}
+impl Debug for Variable {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        const A: u8 = b'a';
+        let mut curr = self.0;
+        let mut s = String::new();
+        if curr == 0 {
+            return f.write_char('a');
+        }
+        while curr > 0 {
+            let c = (curr % 26) as u8;
+            curr /= 26;
+            s.push((A + c) as char);
+        }
+        f.write_str(&s)
     }
 }
 
@@ -99,12 +116,15 @@ pub enum RawOperationExt<T: Oprand> {
     List(Vec<RawOperationScope<T>>),
     /// condition, then, else
     If(
-        CondOp<T>,
+        Box<RawOperationScope<T, CondOp<T>>>,
         Box<RawOperationScope<T>>,
         Option<Box<RawOperationScope<T>>>,
     ),
     /// condition, loop body
-    Loop(CondOp<T>, Box<RawOperationScope<T>>),
+    Loop(
+        Box<RawOperationScope<T, CondOp<T>>>,
+        Box<RawOperationScope<T>>,
+    ),
 
     // external flow control
     /// function name, params(output)
@@ -129,23 +149,39 @@ impl<T: Oprand> RawOperation1<T> {
 }
 
 #[derive(Clone, Debug)]
-pub struct RawOperationScope<T: Oprand> {
-    op: RawOperationExt<T>,
+pub struct ScopeInfo<T: Oprand> {
     // all used inputs
     inputs: HashSet<T>,
+    // inputs not in living after
+    inputs_drop_after: HashSet<T>,
     // all allocated variables that can be exported (not necessarily used)
     possible_outputs: HashSet<T>,
     // outputs that are used later, subset of all_outputs
     real_outputs: HashSet<T>,
 }
-impl<T: Oprand> Deref for RawOperationScope<T> {
-    type Target = RawOperationExt<T>;
-    fn deref(&self) -> &Self::Target {
-        &self.op
+impl<T: Oprand> Default for ScopeInfo<T> {
+    fn default() -> Self {
+        Self {
+            inputs: HashSet::new(),
+            inputs_drop_after: HashSet::new(),
+            possible_outputs: HashSet::new(),
+            real_outputs: HashSet::new(),
+        }
     }
 }
-impl<T: Oprand> RawOperationScope<T> {
-    pub fn from_raw(op: RawOperation1<T>) -> Self {
+
+#[derive(Clone, Debug)]
+pub struct RawOperationScope<T: Oprand, Op = RawOperationExt<T>> {
+    op: Op,
+    info: ScopeInfo<T>,
+}
+impl<T: Oprand> RawOperationScope<T, RawOperationExt<T>> {
+    pub fn from(op: RawOperation1<T>) -> Self {
+        let mut this = Self::from_raw(op);
+        this.second_pass(&mut HashSet::new());
+        this
+    }
+    fn from_raw(op: RawOperation1<T>) -> Self {
         match op {
             op @ RawOperation1::Alloc(_)
             | op @ RawOperation1::Result(_, _)
@@ -200,9 +236,11 @@ impl<T: Oprand> RawOperationScope<T> {
 
         Self {
             op,
-            inputs,
-            possible_outputs,
-            real_outputs: Default::default(),
+            info: ScopeInfo {
+                inputs,
+                possible_outputs,
+                ..Default::default()
+            },
         }
     }
     fn list(list: Vec<RawOperationScope<T>>) -> Self {
@@ -210,10 +248,10 @@ impl<T: Oprand> RawOperationScope<T> {
         let mut possible_outputs = HashSet::new();
 
         for op in &list {
-            for output in &op.possible_outputs {
+            for output in &op.info.possible_outputs {
                 possible_outputs.insert(*output);
             }
-            for v in &op.inputs {
+            for v in &op.info.inputs {
                 if !possible_outputs.contains(v) {
                     inputs.insert(*v); // only outer inputs
                 }
@@ -222,9 +260,11 @@ impl<T: Oprand> RawOperationScope<T> {
 
         Self {
             op: RawOperationExt::List(list),
-            inputs,
-            possible_outputs,
-            real_outputs: Default::default(),
+            info: ScopeInfo {
+                inputs,
+                possible_outputs,
+                ..Default::default()
+            },
         }
     }
     fn if_block(
@@ -233,52 +273,74 @@ impl<T: Oprand> RawOperationScope<T> {
         else_block: Option<RawOperationScope<T>>,
     ) -> Self {
         // inputs from cond and two blocks
-        let mut used_inputs = HashSet::new();
+        let mut cond_inputs = HashSet::new();
         cond.touch(|v, ty| match ty {
             TouchType::Input => {
-                used_inputs.insert(*v);
+                cond_inputs.insert(*v);
             }
             _ => {
                 unreachable!("no alloc or output allowed in CondOp")
             }
         });
-        used_inputs.extend(then_block.inputs.iter());
+        let mut if_inputs = cond_inputs.clone();
+        if_inputs.extend(then_block.info.inputs.iter());
         if let Some(else_block) = &else_block {
-            used_inputs.extend(else_block.inputs.iter());
+            if_inputs.extend(else_block.info.inputs.iter());
         }
         // no output
 
+        let cond: RawOperationScope<T, CondOp<T>> = RawOperationScope {
+            op: cond,
+            info: ScopeInfo {
+                inputs: cond_inputs,
+                ..Default::default()
+            },
+        };
+
         Self {
-            op: RawOperationExt::If(cond, Box::new(then_block), else_block.map(Box::new)),
-            inputs: used_inputs,
-            possible_outputs: Default::default(),
-            real_outputs: Default::default(),
+            op: RawOperationExt::If(
+                Box::new(cond),
+                Box::new(then_block),
+                else_block.map(Box::new),
+            ),
+            info: ScopeInfo {
+                inputs: if_inputs,
+                ..Default::default()
+            },
         }
     }
     fn loop_block(cond: CondOp<T>, loop_block: RawOperationScope<T>) -> Self {
         // inputs from cond and loop block
-        let mut inputs = HashSet::new();
+        let mut cond_inputs = HashSet::new();
         cond.touch(|v, ty| match ty {
             TouchType::Input => {
-                inputs.insert(*v);
+                cond_inputs.insert(*v);
             }
             _ => {
                 unreachable!("no alloc or output allowed in CondOp")
             }
         });
-        for v in &loop_block.inputs {
-            inputs.insert(*v);
-        }
+        let mut loop_inputs = cond_inputs.clone();
+        loop_inputs.extend(loop_block.info.inputs.iter());
         // no output
 
+        let cond: RawOperationScope<T, CondOp<T>> = RawOperationScope {
+            op: cond,
+            info: ScopeInfo {
+                inputs: cond_inputs,
+                ..Default::default()
+            },
+        };
+
         Self {
-            op: RawOperationExt::Loop(cond, Box::new(loop_block)),
-            inputs,
-            possible_outputs: Default::default(),
-            real_outputs: Default::default(),
+            op: RawOperationExt::Loop(Box::new(cond), Box::new(loop_block)),
+            info: ScopeInfo {
+                inputs: loop_inputs,
+                ..Default::default()
+            },
         }
     }
-    fn func(name: &'static str, params: ArrayVec<T, 4>) -> Self {
+    fn func(name: &'static str, params: ArrayVec<T, MAX_PARAM>) -> Self {
         let mut possible_outputs = HashSet::new();
         for param in &params {
             possible_outputs.insert(*param);
@@ -287,9 +349,10 @@ impl<T: Oprand> RawOperationScope<T> {
 
         Self {
             op: RawOperationExt::Func(name, params),
-            inputs: Default::default(),
-            possible_outputs,
-            real_outputs: Default::default(),
+            info: ScopeInfo {
+                possible_outputs,
+                ..Default::default()
+            },
         }
     }
     fn call(
@@ -311,12 +374,14 @@ impl<T: Oprand> RawOperationScope<T> {
 
         Self {
             op: RawOperationExt::Call(name, params, ra, rv),
-            inputs,
-            possible_outputs,
-            real_outputs: Default::default(),
+            info: ScopeInfo {
+                inputs,
+                possible_outputs,
+                ..Default::default()
+            },
         }
     }
-    fn ret(ra: T, rv: ArrayVec<T, 4>) -> Self {
+    fn ret(ra: T, rv: ArrayVec<T, MAX_RETURN>) -> Self {
         let mut inputs = HashSet::new();
         for param in &rv {
             inputs.insert(*param);
@@ -325,33 +390,66 @@ impl<T: Oprand> RawOperationScope<T> {
 
         Self {
             op: RawOperationExt::Return(ra, rv),
-            inputs,
-            possible_outputs: Default::default(),
-            real_outputs: Default::default(),
+            info: ScopeInfo {
+                inputs,
+                ..Default::default()
+            },
         }
     }
+}
 
-    fn gen_real_outputs(&mut self, later_inputs: &mut HashSet<T>) {
-        let used_outputs = self
+impl<T: Oprand> ScopeInfo<T> {
+    fn second_pass1(&mut self, later_inputs: &mut HashSet<T>) {
+        self.inputs_drop_after = self.inputs.sub(later_inputs);
+
+        self.real_outputs = self
             .possible_outputs
-            .iter()
-            .filter(|v| later_inputs.contains(*v))
-            .cloned()
+            .drain()
+            .filter(|v| later_inputs.contains(v))
             .collect();
-        self.real_outputs = used_outputs;
+    }
+    fn second_pass2(&mut self, later_inputs: &mut HashSet<T>) {
+        later_inputs.extend(self.inputs.iter().cloned());
+        for output in &self.possible_outputs {
+            later_inputs.remove(output);
+        }
+    }
+}
+impl<T: Oprand> RawOperationScope<T> {
+    fn second_pass(&mut self, later_inputs: &mut HashSet<T>) {
+        self.info.second_pass1(later_inputs);
 
         #[allow(clippy::single_match)]
         match &mut self.op {
             RawOperationExt::List(list) => {
-                let mut later_inputs = HashSet::new();
                 // bottom to top, collect inputs
                 for scope in list.iter_mut().rev() {
-                    scope.gen_real_outputs(&mut later_inputs);
-                    later_inputs.extend(scope.inputs.iter().cloned());
+                    scope.second_pass(later_inputs);
                 }
+            }
+            RawOperationExt::If(cond, then_block, else_block) => {
+                if let Some(else_block) = else_block {
+                    else_block.second_pass(&mut later_inputs.clone());
+                }
+                then_block.second_pass(&mut later_inputs.clone());
+
+                if let Some(else_block) = else_block {
+                    later_inputs.extend(else_block.info.inputs.iter());
+                }
+                later_inputs.extend(then_block.info.inputs.iter());
+
+                cond.info.second_pass1(later_inputs);
+                cond.info.second_pass2(later_inputs);
+            }
+            RawOperationExt::Loop(cond, loop_block) => {
+                loop_block.second_pass(later_inputs);
+                cond.info.second_pass1(later_inputs);
+                cond.info.second_pass2(later_inputs);
             }
             _ => {}
         }
+
+        self.info.second_pass2(later_inputs);
     }
 }
 
@@ -374,19 +472,18 @@ fn test_raw_operation_scope() {
     ]);
     let if_block = RawOperation1::If(
         CondOp::CmpI(c, 1, Cond::Greater),
-        Box::new(RawOperation1::Result(ResultOp::Mov(a), d)),
-        Some(Box::new(RawOperation1::Result(ResultOp::Mov(b), d))),
+        Box::new(RawOperation1::Update(UpdateOp::Mov(d, a))),
+        Some(Box::new(RawOperation1::Update(UpdateOp::Mov(d, b)))),
     );
     let result = RawOperation1::Update(UpdateOp::LoadImmHi(d, 1));
     let mut r = ArrayVec::<Variable, MAX_RETURN>::new();
-    r.push(a);
-    r.push(b);
+    r.push(d);
     let ret = RawOperation1::Return(d, r);
     let all = RawOperation1::List(vec![init, if_block, result, ret]);
 
     // println!("RawOperation: {:#?}", all);
-    let mut scope = RawOperationScope::from_raw(all);
-    scope.gen_real_outputs(&mut HashSet::new());
+    let scope = RawOperationScope::from(all);
+
     println!("RawOperationScope: {:#?}", scope);
 }
 
@@ -418,14 +515,17 @@ impl<T: Oprand> RawOperation<T> {
 
 #[derive(Copy, Clone, Debug)]
 pub enum ResultOp<T: Oprand> {
-    Mov(T),
     Add(T, T),
     Addi(T, i8),
 }
 #[derive(Copy, Clone, Debug)]
 pub enum UpdateOp<T: Oprand> {
+    /// dst, value
     LoadImmLo(T, u8),
+    /// dst, value
     LoadImmHi(T, u8),
+    /// dst, src
+    Mov(T, T),
 }
 
 #[derive(Copy, Clone, Debug)]
@@ -445,9 +545,6 @@ pub(crate) enum VariableOperation {
 impl<T: Oprand> ResultOp<T> {
     fn touch(&self, mut f: impl FnMut(&T, TouchType)) {
         match self {
-            ResultOp::Mov(v) => {
-                f(v, TouchType::Input);
-            }
             ResultOp::Add(v1, v2) => {
                 f(v1, TouchType::Input);
                 f(v2, TouchType::Input);
@@ -461,7 +558,6 @@ impl<T: Oprand> ResultOp<T> {
 impl<T: Oprand> ResultOp<T> {
     pub(crate) fn convert<R: Oprand>(self, mut f: impl FnMut(T) -> R) -> ResultOp<R> {
         match self {
-            ResultOp::Mov(v) => ResultOp::Mov(f(v)),
             ResultOp::Add(v1, v2) => ResultOp::Add(f(v1), f(v2)),
             ResultOp::Addi(v, i) => ResultOp::Addi(f(v), i),
         }
@@ -473,6 +569,10 @@ impl<T: Oprand> UpdateOp<T> {
         match self {
             UpdateOp::LoadImmLo(v, _) => f(v, TouchType::Input),
             UpdateOp::LoadImmHi(v, _) => f(v, TouchType::Input),
+            UpdateOp::Mov(dst, src) => {
+                f(dst, TouchType::Input);
+                f(src, TouchType::Input);
+            }
         }
     }
 }
@@ -481,6 +581,7 @@ impl<T: Oprand> UpdateOp<T> {
         match self {
             UpdateOp::LoadImmLo(v, i) => UpdateOp::LoadImmLo(f(v), i),
             UpdateOp::LoadImmHi(v, i) => UpdateOp::LoadImmHi(f(v), i),
+            UpdateOp::Mov(dst, src) => UpdateOp::Mov(f(dst), f(src)),
         }
     }
 }
@@ -576,15 +677,10 @@ impl VariableAllocator {
         self.ops.len()
     }
 
-    pub(crate) fn export_ops<
-        R: SliceIndex<[RawOperation<Variable>], Output = [RawOperation<Variable>]>,
-    >(
-        &self,
-        range: R,
-    ) -> Vec<VariableOperation> {
+    pub(crate) fn export_ops(&self) -> Vec<VariableOperation> {
         let mut result = vec![];
 
-        for (index, op) in self.ops[range].iter().cloned().enumerate() {
+        for (index, op) in self.ops.iter().cloned().enumerate() {
             match op {
                 RawOperation::Alloc(_) => {
                     // not emitting anything
@@ -655,7 +751,7 @@ fn test_variable_allocator() {
     let _e = r.new_result(ResultOp::Add(c, d));
 
     let mut reg_count = 0;
-    for op in r.export_ops(..) {
+    for op in r.export_ops() {
         match op {
             VariableOperation::Alloc(_) => reg_count += 1,
             VariableOperation::Result(_) => {}
