@@ -30,7 +30,7 @@ pub(crate) enum VariableOperation {
     Result(ResultOp<Variable>),
     /// update value of variable
     Update(UpdateOp<Variable>),
-    /// write last alloc op result to this variable
+    /// write last result op result to this variable
     Write(Variable),
     /// after last result/update usage
     Free(Variable),

@@ -5,8 +5,8 @@ use std::ops::Sub;
 
 #[derive(Clone, Debug)]
 pub struct VariableOperation2Scope<Op = VariableOperation2> {
-    op: Op,
-    info: ScopeInfo,
+    pub op: Op,
+    pub info: ScopeInfo,
 }
 
 /// VariableOperation1 with scope input/output info
@@ -52,15 +52,15 @@ pub enum VariableOperation2 {
 pub struct ScopeInfo {
     // first pass:
     /// all used inputs
-    inputs: HashSet<Variable>,
+    pub inputs: HashSet<Variable>,
     /// all allocated variables that can be exported (not necessarily used)
     possible_outputs: HashSet<Variable>,
 
     // second pass:
     /// inputs not in living after, filled in second_pass
-    inputs_drop_after: HashSet<Variable>,
+    pub inputs_drop_after: HashSet<Variable>,
     /// outputs that are used later, subset of all_outputs, filled in second_pass
-    real_outputs: HashSet<Variable>,
+    pub real_outputs: HashSet<Variable>,
 }
 
 impl VariableOperation2Scope<VariableOperation2> {
@@ -351,71 +351,20 @@ impl VariableOperation2Scope {
     }
 }
 
-#[test]
-fn test_vo2s() {
-    use crate::isa::Cond;
-
-    let a = Variable::new();
-    let b = Variable::new();
-    let c = Variable::new();
-    let d = Variable::new();
-
-    let init = VariableOperation1::List(vec![
-        VariableOperation1::Alloc(a),
-        VariableOperation1::Alloc(b),
-        VariableOperation1::Alloc(c),
-        VariableOperation1::Alloc(d),
-        VariableOperation1::Update(UpdateOp::LoadImmLo(a, 10)),
-        VariableOperation1::Update(UpdateOp::LoadImmLo(b, 20)),
-        VariableOperation1::Update(UpdateOp::LoadImmLo(c, 2)),
-        VariableOperation1::Update(UpdateOp::LoadImmLo(d, 30)),
-    ]);
-    let if_block = VariableOperation1::If(
-        CondOp::CmpI(c, 1, Cond::Greater),
-        Box::new(VariableOperation1::Update(UpdateOp::Mov(d, a))),
-        Some(Box::new(VariableOperation1::Update(UpdateOp::Mov(d, b)))),
-    );
-    let result = VariableOperation1::Update(UpdateOp::LoadImmHi(d, 1));
-    let mut r = ArrayVec::<Variable, MAX_RETURN>::new();
-    r.push(d);
-    let ret = VariableOperation1::Return(d, r);
-    let all = VariableOperation1::List(vec![init, if_block, result, ret]);
-
-    // println!("RawOperation: {:#?}", all);
-    let scope = VariableOperation2Scope::from(all);
-
-    println!("RawOperationScope: {:#?}", scope);
+#[cfg(test)]
+fn test_print(vo1: VariableOperation1) {
+    let scope = VariableOperation2Scope::from(vo1);
+    println!("vo2s: {:#?}", scope);
 }
 #[test]
-fn test_vo2s_2() {
-    use crate::isa::Cond;
-
-    let s = Variable::new();
-    let i = Variable::new();
-    let ra = Variable::new();
-
-    let func = VariableOperation1::Func("sum", ra, ArrayVec::new());
-
-    let init = VariableOperation1::List(vec![
-        VariableOperation1::Alloc(s),
-        VariableOperation1::Alloc(i),
-        VariableOperation1::Update(UpdateOp::LoadImmLo(s, 0)),
-        VariableOperation1::Update(UpdateOp::LoadImmLo(i, 1)),
-    ]);
-    let loop_block = VariableOperation1::Loop(
-        CondOp::CmpI(i, 10, Cond::LessEqual),
-        Box::new(VariableOperation1::List(vec![
-            VariableOperation1::Update(UpdateOp::AddAssign(s, i)),
-            VariableOperation1::Update(UpdateOp::AddiAssign(i, 1)),
-        ])),
-    );
-    let mut r = ArrayVec::<Variable, MAX_RETURN>::new();
-    r.push(s);
-    let ret = VariableOperation1::Return(ra, r);
-    let all = VariableOperation1::List(vec![func, init, loop_block, ret]);
-
-    // println!("RawOperation: {:#?}", all);
-    let scope = VariableOperation2Scope::from(all);
-
-    println!("RawOperationScope: {:#?}", scope);
+fn test_vo2s_basic() {
+    test_print(vo1_basic_program());
+}
+#[test]
+fn test_vo2s_if() {
+    test_print(vo1_if_program());
+}
+#[test]
+fn test_vo2s_loop() {
+    test_print(vo1_loop_program());
 }

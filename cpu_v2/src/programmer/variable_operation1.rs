@@ -1,9 +1,22 @@
 use crate::programmer::*;
 use arrayvec::ArrayVec;
 
-pub const MAX_RETURN: usize = 4;
+pub const MAX_RETURN: usize = 2;
 pub const MAX_PARAM: usize = 4;
 pub type FuncName = &'static str;
+
+pub type FuncParams = ArrayVec<Variable, MAX_PARAM>;
+pub type ReturnValues = ArrayVec<Variable, MAX_RETURN>;
+pub fn func_params<const C: usize>(params: [Variable; C]) -> FuncParams {
+    let mut r = ArrayVec::new();
+    r.extend(params.into_iter());
+    r
+}
+pub fn return_values<const C: usize>(params: [Variable; C]) -> ReturnValues {
+    let mut r = ArrayVec::new();
+    r.extend(params.into_iter());
+    r
+}
 
 /// basic operations generated directly from DSL
 #[derive(Clone, Debug)]
@@ -53,4 +66,85 @@ impl VariableOperation1 {
             _ => {}
         }
     }
+}
+
+#[cfg(test)]
+pub(crate) fn vo1_basic_program() -> VariableOperation1 {
+    let a = Variable::new();
+    let b = Variable::new();
+    let c = Variable::new();
+    let d = Variable::new();
+    let e = Variable::new();
+
+    let ra = Variable::new();
+
+    VariableOperation1::List(vec![
+        VariableOperation1::Func("add", ra, func_params([])),
+        VariableOperation1::Update(UpdateOp::LoadImmLo(a, 1)),
+        VariableOperation1::Update(UpdateOp::LoadImmLo(b, 1)),
+        VariableOperation1::Result(ResultOp::Add(a, b), c),
+        VariableOperation1::Result(ResultOp::Add(b, c), d),
+        VariableOperation1::Result(ResultOp::Add(c, d), e),
+        VariableOperation1::Return(ra, return_values([e])),
+    ])
+}
+
+#[cfg(test)]
+pub(crate) fn vo1_if_program() -> VariableOperation1 {
+    use crate::isa::Cond;
+
+    let a = Variable::new();
+    let b = Variable::new();
+    let c = Variable::new();
+    let d = Variable::new();
+    let ra = Variable::new();
+
+    let func = VariableOperation1::Func("if", ra, func_params([]));
+
+    let init = VariableOperation1::List(vec![
+        VariableOperation1::Alloc(a),
+        VariableOperation1::Alloc(b),
+        VariableOperation1::Alloc(c),
+        VariableOperation1::Alloc(d),
+        VariableOperation1::Update(UpdateOp::LoadImmLo(a, 10)),
+        VariableOperation1::Update(UpdateOp::LoadImmLo(b, 20)),
+        VariableOperation1::Update(UpdateOp::LoadImmLo(c, 2)),
+        VariableOperation1::Update(UpdateOp::LoadImmLo(d, 30)),
+    ]);
+    let if_block = VariableOperation1::If(
+        CondOp::CmpI(c, 1, Cond::Greater),
+        Box::new(VariableOperation1::Update(UpdateOp::Mov(d, a))),
+        Some(Box::new(VariableOperation1::Update(UpdateOp::Mov(d, b)))),
+    );
+    let result = VariableOperation1::Update(UpdateOp::LoadImmHi(d, 1));
+    let ret = VariableOperation1::Return(ra, return_values([d]));
+    VariableOperation1::List(vec![func, init, if_block, result, ret])
+}
+
+#[cfg(test)]
+pub(crate) fn vo1_loop_program() -> VariableOperation1 {
+    use crate::isa::Cond;
+
+    let s = Variable::new();
+    let i = Variable::new();
+    let ra = Variable::new();
+
+    let func = VariableOperation1::Func("loop", ra, func_params([]));
+
+    let init = VariableOperation1::List(vec![
+        VariableOperation1::Alloc(s),
+        VariableOperation1::Alloc(i),
+        VariableOperation1::Update(UpdateOp::LoadImmLo(s, 0)),
+        VariableOperation1::Update(UpdateOp::LoadImmLo(i, 1)),
+    ]);
+    let loop_block = VariableOperation1::Loop(
+        CondOp::CmpI(i, 10, Cond::LessEqual),
+        Box::new(VariableOperation1::List(vec![
+            VariableOperation1::Update(UpdateOp::AddAssign(s, i)),
+            VariableOperation1::Update(UpdateOp::AddiAssign(i, 1)),
+        ])),
+    );
+    let ret = VariableOperation1::Return(ra, return_values([s]));
+
+    VariableOperation1::List(vec![func, init, loop_block, ret])
 }
