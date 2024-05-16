@@ -29,13 +29,12 @@ pub enum VariableOperation1 {
     Loop(CondOp<Variable>, Box<VariableOperation1>), //TODO support continue and break
 
     // external flow control
-    /// function name, params(output)
-    Func(FuncName, ArrayVec<Variable, MAX_PARAM>),
-    /// function name, params, return addr(output), return values(output)
+    /// function name, return addr(output), params(output)
+    Func(FuncName, Variable, ArrayVec<Variable, MAX_PARAM>),
+    /// function name, params, return values(output)
     Call(
         FuncName,
         ArrayVec<Variable, MAX_PARAM>,
-        Variable,
         ArrayVec<Variable, MAX_RETURN>,
     ),
     /// return addr, return values

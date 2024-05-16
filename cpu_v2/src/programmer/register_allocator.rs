@@ -32,7 +32,7 @@ impl RegisterOperation {
                 ResultOp::Addi(r1, i) => {
                     assert!(i >= -8);
                     assert!(i <= 7);
-                    Instruction::addi(r1, i as u8, r0)
+                    Instruction::addi(r1, (i as u8) & 0b1111, r0)
                 }
             },
             RegisterOperation::Update(op) => match op {
@@ -46,6 +46,12 @@ impl RegisterOperation {
                     let hi = u8 >> 4;
                     let lo = u8 & 0b1111;
                     Instruction::load_hi(hi, lo, r0)
+                }
+                UpdateOp::AddAssign(r0, r1) => Instruction::add(r0, r1, r0),
+                UpdateOp::AddiAssign(r0, i) => {
+                    assert!(i >= -8);
+                    assert!(i <= 7);
+                    Instruction::addi(r0, (i as u8) & 0b1111, r0)
                 }
             },
         }

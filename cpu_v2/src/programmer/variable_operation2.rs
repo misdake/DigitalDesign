@@ -36,13 +36,12 @@ pub enum VariableOperation2 {
     ),
 
     // external flow control
-    /// function name, params(output)
-    Func(FuncName, ArrayVec<Variable, MAX_PARAM>),
-    /// function name, params, return addr(output), return values(output)
+    /// function name, return addr(output), params(output)
+    Func(FuncName, Variable, ArrayVec<Variable, MAX_PARAM>),
+    /// function name, params, return values(output)
     Call(
         FuncName,
         ArrayVec<Variable, MAX_PARAM>,
-        Variable,
         ArrayVec<Variable, MAX_RETURN>,
     ),
     /// return addr, return values
@@ -91,8 +90,8 @@ impl VariableOperation2Scope<VariableOperation2> {
                 let loop_block = Self::from_raw(*loop_block);
                 Self::loop_block(cond, loop_block)
             }
-            VariableOperation1::Func(name, param) => Self::func(name, param),
-            VariableOperation1::Call(name, param, ra, rv) => Self::call(name, param, ra, rv),
+            VariableOperation1::Func(name, ra, param) => Self::func(name, ra, param),
+            VariableOperation1::Call(name, param, rv) => Self::call(name, param, rv),
             VariableOperation1::Return(ra, rv) => Self::ret(ra, rv),
         }
     }
@@ -229,15 +228,20 @@ impl VariableOperation2Scope<VariableOperation2> {
             },
         }
     }
-    fn func(name: &'static str, params: ArrayVec<Variable, MAX_PARAM>) -> Self {
+    fn func(
+        name: &'static str,
+        return_addr: Variable,
+        params: ArrayVec<Variable, MAX_PARAM>,
+    ) -> Self {
         let mut possible_outputs = HashSet::new();
+        possible_outputs.insert(return_addr);
         for param in &params {
             possible_outputs.insert(*param);
         }
         // no output
 
         Self {
-            op: VariableOperation2::Func(name, params),
+            op: VariableOperation2::Func(name, return_addr, params),
             info: ScopeInfo {
                 possible_outputs,
                 ..Default::default()
@@ -247,7 +251,6 @@ impl VariableOperation2Scope<VariableOperation2> {
     fn call(
         name: &'static str,
         params: ArrayVec<Variable, MAX_PARAM>,
-        ra: Variable,
         rv: ArrayVec<Variable, MAX_RETURN>,
     ) -> Self {
         let mut inputs = HashSet::new();
@@ -256,13 +259,12 @@ impl VariableOperation2Scope<VariableOperation2> {
         for param in &params {
             inputs.insert(*param);
         }
-        possible_outputs.insert(ra);
         for rv in &rv {
             possible_outputs.insert(*rv);
         }
 
         Self {
-            op: VariableOperation2::Call(name, params, ra, rv),
+            op: VariableOperation2::Call(name, params, rv),
             info: ScopeInfo {
                 inputs,
                 possible_outputs,
@@ -331,9 +333,16 @@ impl VariableOperation2Scope {
                 cond.info.second_pass2(later_inputs);
             }
             VariableOperation2::Loop(cond, loop_block) => {
+                // treat inputs as later_inputs
+                later_inputs.extend(cond.info.inputs.iter());
+                later_inputs.extend(loop_block.info.inputs.iter());
+
                 loop_block.second_pass(later_inputs);
+                loop_block.info.inputs_drop_after.clear();
+
                 cond.info.second_pass1(later_inputs);
                 cond.info.second_pass2(later_inputs);
+                cond.info.inputs_drop_after.clear();
             }
             _ => {}
         }
@@ -343,7 +352,7 @@ impl VariableOperation2Scope {
 }
 
 #[test]
-fn test_raw_operation_scope() {
+fn test_vo2s() {
     use crate::isa::Cond;
 
     let a = Variable::new();
@@ -371,6 +380,39 @@ fn test_raw_operation_scope() {
     r.push(d);
     let ret = VariableOperation1::Return(d, r);
     let all = VariableOperation1::List(vec![init, if_block, result, ret]);
+
+    // println!("RawOperation: {:#?}", all);
+    let scope = VariableOperation2Scope::from(all);
+
+    println!("RawOperationScope: {:#?}", scope);
+}
+#[test]
+fn test_vo2s_2() {
+    use crate::isa::Cond;
+
+    let s = Variable::new();
+    let i = Variable::new();
+    let ra = Variable::new();
+
+    let func = VariableOperation1::Func("sum", ra, ArrayVec::new());
+
+    let init = VariableOperation1::List(vec![
+        VariableOperation1::Alloc(s),
+        VariableOperation1::Alloc(i),
+        VariableOperation1::Update(UpdateOp::LoadImmLo(s, 0)),
+        VariableOperation1::Update(UpdateOp::LoadImmLo(i, 1)),
+    ]);
+    let loop_block = VariableOperation1::Loop(
+        CondOp::CmpI(i, 10, Cond::LessEqual),
+        Box::new(VariableOperation1::List(vec![
+            VariableOperation1::Update(UpdateOp::AddAssign(s, i)),
+            VariableOperation1::Update(UpdateOp::AddiAssign(i, 1)),
+        ])),
+    );
+    let mut r = ArrayVec::<Variable, MAX_RETURN>::new();
+    r.push(s);
+    let ret = VariableOperation1::Return(ra, r);
+    let all = VariableOperation1::List(vec![func, init, loop_block, ret]);
 
     // println!("RawOperation: {:#?}", all);
     let scope = VariableOperation2Scope::from(all);

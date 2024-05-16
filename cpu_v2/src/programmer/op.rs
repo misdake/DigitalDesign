@@ -73,6 +73,10 @@ pub enum UpdateOp<T: Oprand> {
     LoadImmHi(T, u8),
     /// dst, src
     Mov(T, T),
+    /// dst, src
+    AddAssign(T, T),
+    /// dst, value
+    AddiAssign(T, i8),
 }
 impl<T: Oprand> UpdateOp<T> {
     pub fn touch(&self, mut f: impl FnMut(&T, TouchType)) {
@@ -83,6 +87,11 @@ impl<T: Oprand> UpdateOp<T> {
                 f(dst, TouchType::Input);
                 f(src, TouchType::Input);
             }
+            UpdateOp::AddAssign(dst, src) => {
+                f(dst, TouchType::Input);
+                f(src, TouchType::Input);
+            }
+            UpdateOp::AddiAssign(v, _) => f(v, TouchType::Input),
         }
     }
 }
@@ -92,6 +101,8 @@ impl<T: Oprand> UpdateOp<T> {
             UpdateOp::LoadImmLo(v, i) => UpdateOp::LoadImmLo(f(v), i),
             UpdateOp::LoadImmHi(v, i) => UpdateOp::LoadImmHi(f(v), i),
             UpdateOp::Mov(dst, src) => UpdateOp::Mov(f(dst), f(src)),
+            UpdateOp::AddAssign(dst, src) => UpdateOp::AddAssign(f(dst), f(src)),
+            UpdateOp::AddiAssign(v, i) => UpdateOp::AddiAssign(f(v), i),
         }
     }
 }
