@@ -1,4 +1,5 @@
 use crate::isa::Instruction;
+use crate::programmer::variable_allocator::VariableOperation;
 use crate::programmer::*;
 use std::collections::{BinaryHeap, HashMap};
 
@@ -156,6 +157,7 @@ fn test_register_allocator() {
 }
 #[test]
 fn test_map_var_to_reg() {
+    use crate::programmer::variable_allocator::VariableAllocator;
     let mut r = VariableAllocator::new();
     let a = r.alloc();
     let b = r.alloc();
