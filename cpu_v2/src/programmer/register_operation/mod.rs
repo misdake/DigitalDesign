@@ -4,7 +4,7 @@ pub use register_operation1::*;
 
 use std::fmt::{Debug, Formatter};
 
-#[derive(Copy, Clone, Hash, Eq, PartialEq)]
+#[derive(Copy, Clone, Hash, Eq, PartialEq, Ord, PartialOrd)]
 pub struct Reg(pub u8); // u4 actually
 
 impl Debug for Reg {

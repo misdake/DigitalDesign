@@ -168,6 +168,7 @@ impl VariableOperation3 {
             }
             VariableOperation2::Return(return_addr, return_values) => {
                 output.push(VariableOperation3::Return(return_addr, return_values));
+                //TODO drop all living variables?
             }
         }
 

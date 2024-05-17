@@ -1,9 +1,12 @@
-use crate::programmer::*;
-use arrayvec::ArrayVec;
-
-use std::collections::{BinaryHeap, HashMap};
+use std::collections::{BTreeSet, HashMap, HashSet};
 use std::fmt::{Debug, Formatter};
 
+use arrayvec::ArrayVec;
+
+use crate::programmer::*;
+
+/// basic register operations with unlimited registers
+/// calling convention is not considered (handled in later passes)
 #[derive(Clone)]
 pub enum RegisterOperation1 {
     /// basic ops with output
@@ -25,15 +28,17 @@ pub enum RegisterOperation1 {
     // external flow control
     /// function name, return addr(output), params(output)
     Func(FuncName, Reg, ArrayVec<Reg, MAX_PARAM>),
-    // /// function name, params, return values(output) TODO implement call with calling convention
-    // Call(
-    //     FuncName,
-    //     ArrayVec<Reg, MAX_PARAM>,
-    //     ArrayVec<Reg, MAX_RETURN>,
-    // ),
-    /// return addr, return values
-    Return(Reg, ArrayVec<Reg, MAX_RETURN>),
+    /// function name, params, living registers, return values(output)
+    Call(
+        FuncName,
+        ArrayVec<Reg, MAX_PARAM>,
+        HashSet<Reg>,
+        ArrayVec<Reg, MAX_RETURN>,
+    ),
+    /// return addr, return values, ever allocated registers
+    Return(Reg, ArrayVec<Reg, MAX_RETURN>, HashSet<Reg>),
 }
+
 impl Debug for RegisterOperation1 {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
         match self {
@@ -58,101 +63,130 @@ impl Debug for RegisterOperation1 {
             RegisterOperation1::Func(name, ra, params) => {
                 f.write_fmt(format_args!("Func({name}, {ra:?}, {params:?})"))
             }
-            RegisterOperation1::Return(ra, return_values) => {
-                f.write_fmt(format_args!("Return({ra:?}, {return_values:?})"))
+            RegisterOperation1::Call(name, params, living_regs, return_values) => f.write_fmt(
+                format_args!("Call({name}, {params:?}, {return_values:?}) living: {living_regs:?}"),
+            ),
+            RegisterOperation1::Return(ra, return_values, ever_allocated_regs) => {
+                f.write_fmt(format_args!(
+                    "Return({ra:?}, {return_values:?}) ever_allocated: {ever_allocated_regs:?}"
+                ))
             }
         }
     }
 }
 
-#[derive(Copy, Clone, Eq, PartialEq)]
-pub struct ValidReg {
-    reg: Reg,
-    priority: usize,
-}
-impl PartialOrd for ValidReg {
-    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
-        Some(self.priority.cmp(&other.priority))
+impl RegisterOperation1 {
+    pub fn from(vo3: VariableOperation3) -> Self {
+        let mut r = RegisterAllocator1::new();
+        let vec = r.new_op(vo3);
+        vec_to_ro1(vec)
     }
-}
-impl Ord for ValidReg {
-    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
-        self.priority.cmp(&other.priority)
-    }
+
+    // //TODO use assembler
+    // pub fn into_inst(self) -> Vec<Instruction> {
+    //     fn i4_to_u4(i4: i8) -> u8 {
+    //         assert!(i4 >= -8);
+    //         assert!(i4 <= 7);
+    //         (i4 as u8) & 0b1111
+    //     }
+    //
+    //     let mut r = vec![];
+    //     match self {
+    //         RegisterOperation1::Result(op, r0) => match op {
+    //             ResultOp::Add(r1, r2) => r.push(Instruction::add(r2.0, r1.0, r0.0)),
+    //             ResultOp::Addi(r1, i4) => r.push(Instruction::addi(r1.0, i4_to_u4(i4), r0.0)),
+    //         },
+    //         RegisterOperation1::Update(op) => match op {
+    //             UpdateOp::Mov(r0, r1) => {
+    //                 if r0 != r1 {
+    //                     r.push(Instruction::mov(r1.0, r0.0))
+    //                 }
+    //             }
+    //             UpdateOp::LoadImmLo(r0, u8) => {
+    //                 let hi = u8 >> 4;
+    //                 let lo = u8 & 0b1111;
+    //                 r.push(Instruction::load_lo(hi, lo, r0.0))
+    //             }
+    //             UpdateOp::LoadImmHi(r0, u8) => {
+    //                 let hi = u8 >> 4;
+    //                 let lo = u8 & 0b1111;
+    //                 r.push(Instruction::load_hi(hi, lo, r0.0))
+    //             }
+    //             UpdateOp::AddAssign(r0, r1) => r.push(Instruction::add(r0.0, r1.0, r0.0)),
+    //             UpdateOp::AddiAssign(r0, i4) => r.push(Instruction::addi(r0.0, i4_to_u4(i4), r0.0)),
+    //         },
+    //
+    //         RegisterOperation1::List(list) => {
+    //             for op in list {
+    //                 r.extend(op.into_inst())
+    //             }
+    //         }
+    //         RegisterOperation1::If(_, _, _) => todo!(),
+    //         RegisterOperation1::Loop(_, _) => todo!(),
+    //
+    //         RegisterOperation1::Func(_, _, _) => {
+    //             // todo!()
+    //         }
+    //         RegisterOperation1::Call(_, _, _) => {
+    //             // todo!()
+    //         }
+    //         RegisterOperation1::Return(_, _) => {
+    //             // todo!()
+    //         }
+    //     }
+    //     r
+    // }
 }
 
-const MAX_REG_COUNT: usize = 16;
-pub type ValidRegsMask = u16;
+/// unlimited(256) register allocator, first registers are of higher priority
 #[derive(Clone)]
 pub struct RegisterAllocator1 {
-    /// constant reg priority provided by user
-    reg_priority: [usize; MAX_REG_COUNT],
-    /// keep track on valid registers
-    valid_regs: BinaryHeap<ValidReg>,
-
+    /// freed registers
+    valid_regs: BTreeSet<Reg>,
+    /// allocated and not freed registers, used to detect caller saved registers
+    living_regs: HashSet<Reg>,
+    /// all registered ever used, used to detect callee saved registers
+    ever_allocated: HashSet<Reg>,
+    /// map variables to registers
     mapping: HashMap<Variable, Reg>,
+
+    /// remember last result op for Write(Variable)
     last_result: Option<ResultOp<Reg>>,
 }
 impl RegisterAllocator1 {
-    pub fn new(priority: [u8; MAX_REG_COUNT], valid_regs: ValidRegsMask) -> Self {
-        let mut this = Self {
-            reg_priority: [0; MAX_REG_COUNT],
-            valid_regs: BinaryHeap::new(),
+    pub fn new() -> Self {
+        Self {
+            valid_regs: BTreeSet::new(),
+            living_regs: HashSet::new(),
+            ever_allocated: HashSet::new(),
             mapping: HashMap::default(),
             last_result: None,
-        };
-
-        for (i, reg) in priority.into_iter().enumerate() {
-            this.reg_priority[reg as usize] = MAX_REG_COUNT - i;
         }
-        for reg in 0..MAX_REG_COUNT {
-            if valid_regs & (1 << reg) != 0 {
-                this.free(Reg(reg as u8));
-            }
-        }
-
-        this
     }
-
-    fn alloc(&mut self) -> Reg {
-        //TODO if empty -> spill, what to return?
-        self.valid_regs.pop().unwrap().reg
+    fn alloc(&mut self, variable: Variable) -> Reg {
+        let reg = if let Some(reg) = self.valid_regs.pop_first() {
+            reg
+        } else {
+            let new_reg = self.ever_allocated.len();
+            let reg = Reg(new_reg as u8);
+            self.ever_allocated.insert(reg);
+            reg
+        };
+        self.living_regs.insert(reg);
+        self.mapping.insert(variable, reg);
+        reg
     }
     fn free(&mut self, reg: Reg) {
-        let priority = self.reg_priority[reg.0 as usize];
-        self.valid_regs.push(ValidReg { reg, priority });
+        self.valid_regs.insert(reg);
+        self.living_regs.remove(&reg);
     }
 
-    pub fn get_living_variables(&self) -> Vec<Variable> {
-        self.mapping.keys().cloned().collect()
-    }
-    pub fn get_valid_regs(&self) -> ValidRegsMask {
-        self.valid_regs.iter().map(|v| 1 << v.reg.0).sum::<u16>()
-    }
-
-    pub fn convert(&mut self, op: VariableOperation3) -> RegisterOperation1 {
-        let mut r = self.new_op(op);
-        match r.len() {
-            0 => panic!("no op?"),
-            1 => r.remove(0),
-            _ => RegisterOperation1::List(r),
-        }
-    }
     fn new_op(&mut self, op: VariableOperation3) -> Vec<RegisterOperation1> {
         let mut r = vec![];
 
-        fn vec_to_ro1(mut r: Vec<RegisterOperation1>) -> RegisterOperation1 {
-            match r.len() {
-                0 => panic!("no op?"),
-                1 => r.remove(0),
-                _ => RegisterOperation1::List(r),
-            }
-        }
-
         match op {
             VariableOperation3::Alloc(v) => {
-                let reg = self.alloc();
-                self.mapping.insert(v, reg);
+                self.alloc(v);
             }
             VariableOperation3::Result(op) => {
                 let op2 = op.convert(|v| *self.mapping.get(&v).unwrap());
@@ -200,20 +234,25 @@ impl RegisterAllocator1 {
                 r.push(RegisterOperation1::Loop(cond, loop_block))
             }
             VariableOperation3::Func(func_name, return_addr, params) => {
-                let ra = self.alloc();
-                self.mapping.insert(return_addr, ra);
-                let params = params
-                    .into_iter()
-                    .map(|v| {
-                        let param = self.alloc();
-                        self.mapping.insert(v, param);
-                        param
-                    })
-                    .collect();
+                let ra = self.alloc(return_addr);
+                let params = params.into_iter().map(|v| self.alloc(v)).collect();
                 r.push(RegisterOperation1::Func(func_name, ra, params))
             }
             VariableOperation3::Call(func_name, params, return_values) => {
-                todo!()
+                let living = self.living_regs.clone();
+
+                let params = params
+                    .into_iter()
+                    .map(|v| *self.mapping.get(&v).unwrap())
+                    .collect();
+                let return_values = return_values.into_iter().map(|v| self.alloc(v)).collect();
+
+                r.push(RegisterOperation1::Call(
+                    func_name,
+                    params,
+                    living,
+                    return_values,
+                ))
             }
             VariableOperation3::Return(return_addr, return_values) => {
                 let return_addr = *self.mapping.get(&return_addr).unwrap();
@@ -221,7 +260,12 @@ impl RegisterAllocator1 {
                     .into_iter()
                     .map(|v| *self.mapping.get(&v).unwrap())
                     .collect();
-                r.push(RegisterOperation1::Return(return_addr, return_values));
+                let ever_allocated = self.ever_allocated.clone();
+                r.push(RegisterOperation1::Return(
+                    return_addr,
+                    return_values,
+                    ever_allocated,
+                ))
             }
         }
 
@@ -231,29 +275,28 @@ impl RegisterAllocator1 {
 
 #[test]
 fn test_register_allocator() {
-    const PRIORITY: [u8; MAX_REG_COUNT] = [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15];
-    let mut r = RegisterAllocator1::new(PRIORITY, 0b0011111111111111); // no 14 and 15
-    let a = r.alloc();
-    let b = r.alloc();
-    let c = r.alloc();
+    let mut r = RegisterAllocator1::new();
+    let a = r.alloc(Variable::new());
+    let b = r.alloc(Variable::new());
+    let c = r.alloc(Variable::new());
     assert_eq!(a.0, 0);
     assert_eq!(b.0, 1);
     assert_eq!(c.0, 2);
     r.free(b);
     r.free(c);
-    let d = r.alloc();
-    let e = r.alloc();
-    let f = r.alloc();
+    let d = r.alloc(Variable::new());
+    let e = r.alloc(Variable::new());
+    let f = r.alloc(Variable::new());
     assert_eq!(d.0, 1);
     assert_eq!(e.0, 2);
     assert_eq!(f.0, 3);
 }
 
-impl RegisterOperation1 {
-    pub fn from(vo3: VariableOperation3) -> Self {
-        const PRIORITY: [u8; 16] = [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15];
-        let mut allocator = RegisterAllocator1::new(PRIORITY, u16::MAX);
-        allocator.convert(vo3)
+fn vec_to_ro1(mut r: Vec<RegisterOperation1>) -> RegisterOperation1 {
+    match r.len() {
+        0 => panic!("no op?"),
+        1 => r.remove(0),
+        _ => RegisterOperation1::List(r),
     }
 }
 
@@ -262,7 +305,7 @@ fn test_print(vo1: VariableOperation1) {
     let vo2s = VariableOperation2Scope::from(vo1);
     let vo3 = VariableOperation3::from(vo2s);
     let ro1 = RegisterOperation1::from(vo3);
-    println!("ro1: {:#?}", ro1);
+    println!("ro1: {ro1:#?}");
 }
 #[test]
 fn test_vo3s_basic() {

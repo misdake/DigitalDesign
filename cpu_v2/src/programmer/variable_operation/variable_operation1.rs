@@ -78,9 +78,11 @@ pub(crate) fn vo1_basic_program() -> VariableOperation1 {
         VariableOperation1::Func("add", ra, func_params([])),
         VariableOperation1::Update(UpdateOp::LoadImmLo(a, 1)),
         VariableOperation1::Update(UpdateOp::LoadImmLo(b, 1)),
+        VariableOperation1::Call("print", func_params([a]), return_values([])),
         VariableOperation1::Result(ResultOp::Add(a, b), c),
         VariableOperation1::Result(ResultOp::Add(b, c), d),
         VariableOperation1::Result(ResultOp::Add(c, d), e),
+        VariableOperation1::Call("print", func_params([e]), return_values([])),
         VariableOperation1::Return(ra, return_values([e])),
     ])
 }
