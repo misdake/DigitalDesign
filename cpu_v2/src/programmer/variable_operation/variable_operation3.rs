@@ -1,5 +1,4 @@
 use crate::programmer::*;
-use arrayvec::ArrayVec;
 use std::collections::HashSet;
 use std::fmt::Debug;
 use std::ops::Sub;
@@ -21,6 +20,7 @@ pub enum VariableOperation3 {
     /// list of operations
     List(Vec<VariableOperation3>),
     /// condition, after condition (free), then, else
+    /// then and else will free the same variables
     If(
         CondOp<Variable>,
         Option<Box<VariableOperation3>>,
@@ -31,16 +31,12 @@ pub enum VariableOperation3 {
     Loop(CondOp<Variable>, Box<VariableOperation3>),
 
     // external flow control
-    /// function name, return addr(output), params(output)
-    Func(FuncName, Variable, ArrayVec<Variable, MAX_PARAM>),
-    /// function name, params, return values(output)
-    Call(
-        FuncName,
-        ArrayVec<Variable, MAX_PARAM>,
-        ArrayVec<Variable, MAX_RETURN>,
-    ),
+    /// function name, return addr(output no alloc), params(output no alloc)
+    Func(FuncName, Variable, FuncParams),
+    /// function name, params, return values(output no alloc)
+    Call(FuncName, FuncParams, ReturnValues),
     /// return addr, return values
-    Return(Variable, ArrayVec<Variable, MAX_RETURN>),
+    Return(Variable, ReturnValues),
 }
 
 struct Context {

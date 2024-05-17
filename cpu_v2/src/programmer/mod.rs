@@ -7,7 +7,3 @@ mod variable_operation;
 pub use assembler1::*;
 pub use register_operation::*;
 pub use variable_operation::*;
-
-//TODO remove
-mod register_allocator;
-mod variable_allocator;

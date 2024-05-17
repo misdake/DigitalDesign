@@ -43,15 +43,11 @@ pub enum VariableOperation1 {
 
     // external flow control
     /// function name, return addr(output), params(output)
-    Func(FuncName, Variable, ArrayVec<Variable, MAX_PARAM>),
+    Func(FuncName, Variable, FuncParams),
     /// function name, params, return values(output)
-    Call(
-        FuncName,
-        ArrayVec<Variable, MAX_PARAM>,
-        ArrayVec<Variable, MAX_RETURN>,
-    ),
+    Call(FuncName, FuncParams, ReturnValues),
     /// return addr, return values
-    Return(Variable, ArrayVec<Variable, MAX_RETURN>),
+    Return(Variable, ReturnValues),
 }
 
 impl VariableOperation1 {
