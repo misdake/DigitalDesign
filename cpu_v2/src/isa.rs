@@ -42,20 +42,20 @@ define_isa! {
     (lsl  0xe ORIR "r{0} = r{2} << {1}")
     (lsr  0xf ORIR "r{0} = r{2} >> {1}")
 
-    (load_hi 0x1 OIIR "r{0}_hi = 0x{2:x}{1:x}")
-    (load_lo 0x2 OIIR "r{0}_lo = 0x{2:x}{1:x}")
+    (load_hi 0x1 OIIR "r{0}_hi = 0x{2:x}{1:x}") // hi, lo, reg
+    (load_lo 0x2 OIIR "r{0}_lo = 0x{2:x}{1:x}") // hi, lo, reg
 
     (store_mem 0x3 ORIR "mem[r{2} + {1}] = r{0}")
     (load_mem  0x4 ORIR "r{0} = mem[r{2} + {1}]")
 
     // 0x50~0x53 is 0x54~0x57 inverted
-    (j_offset_g  0x51 OOII "jg:  pc += 0x{0:x}{1:x}")
-    (j_offset_e  0x52 OOII "je:  pc += 0x{0:x}{1:x}")
-    (j_offset_l  0x53 OOII "jl:  pc += 0x{0:x}{1:x}")
-    (j_offset    0x54 OOII "jmp: pc += 0x{0:x}{1:x}")
-    (j_offset_le 0x55 OOII "jle: pc += 0x{0:x}{1:x}")
-    (j_offset_ne 0x56 OOII "jne: pc += 0x{0:x}{1:x}")
-    (j_offset_ge 0x57 OOII "jge: pc += 0x{0:x}{1:x}")
+    (j_offset_g  0x51 OOII "jg:  pc += 0x{0:x}{1:x}") // lo, hi
+    (j_offset_e  0x52 OOII "je:  pc += 0x{0:x}{1:x}") // lo, hi
+    (j_offset_l  0x53 OOII "jl:  pc += 0x{0:x}{1:x}") // lo, hi
+    (j_offset    0x54 OOII "jmp: pc += 0x{0:x}{1:x}") // lo, hi
+    (j_offset_le 0x55 OOII "jle: pc += 0x{0:x}{1:x}") // lo, hi
+    (j_offset_ne 0x56 OOII "jne: pc += 0x{0:x}{1:x}") // lo, hi
+    (j_offset_ge 0x57 OOII "jge: pc += 0x{0:x}{1:x}") // lo, hi
     (jmp_reg     0x5e OORX "jmp:  pc = r{0:x}")
     (call_reg    0x5f OORR "call: r{0:x} = pc + 1; pc = r{1:x}")
 

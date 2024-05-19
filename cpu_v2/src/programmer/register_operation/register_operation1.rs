@@ -274,7 +274,7 @@ impl RegisterAllocator1 {
 }
 
 #[test]
-fn test_register_allocator() {
+fn test_ro1() {
     let mut r = RegisterAllocator1::new();
     let a = r.alloc(Variable::new());
     let b = r.alloc(Variable::new());

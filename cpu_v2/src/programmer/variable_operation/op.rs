@@ -42,6 +42,7 @@ impl<T: Oprand> CondOp<T> {
 pub enum ResultOp<T: Oprand> {
     Add(T, T),
     Addi(T, i8),
+    LoadMem(T, u8), // base, offset
 }
 impl<T: Oprand> ResultOp<T> {
     pub fn touch(&self, mut f: impl FnMut(&T, TouchType)) {
@@ -53,6 +54,7 @@ impl<T: Oprand> ResultOp<T> {
             ResultOp::Addi(v, _) => {
                 f(v, TouchType::Input);
             }
+            ResultOp::LoadMem(base, _) => f(base, TouchType::Input),
         }
     }
 }
@@ -61,6 +63,7 @@ impl<T: Oprand> ResultOp<T> {
         match self {
             ResultOp::Add(v1, v2) => ResultOp::Add(f(v1), f(v2)),
             ResultOp::Addi(v, i) => ResultOp::Addi(f(v), i),
+            ResultOp::LoadMem(v, i) => ResultOp::LoadMem(f(v), i),
         }
     }
 }
@@ -77,6 +80,8 @@ pub enum UpdateOp<T: Oprand> {
     AddAssign(T, T),
     /// dst, value
     AddiAssign(T, i8),
+    /// base, offset, value
+    StoreMem(T, i8, T),
 }
 impl<T: Oprand> UpdateOp<T> {
     pub fn touch(&self, mut f: impl FnMut(&T, TouchType)) {
@@ -92,6 +97,10 @@ impl<T: Oprand> UpdateOp<T> {
                 f(src, TouchType::Input);
             }
             UpdateOp::AddiAssign(v, _) => f(v, TouchType::Input),
+            UpdateOp::StoreMem(base, _, value) => {
+                f(base, TouchType::Input);
+                f(value, TouchType::Input);
+            }
         }
     }
 }
@@ -103,6 +112,7 @@ impl<T: Oprand> UpdateOp<T> {
             UpdateOp::Mov(dst, src) => UpdateOp::Mov(f(dst), f(src)),
             UpdateOp::AddAssign(dst, src) => UpdateOp::AddAssign(f(dst), f(src)),
             UpdateOp::AddiAssign(v, i) => UpdateOp::AddiAssign(f(v), i),
+            UpdateOp::StoreMem(base, i, value) => UpdateOp::StoreMem(f(base), i, f(value)),
         }
     }
 }
