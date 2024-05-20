@@ -1,15 +1,28 @@
+use std::cmp::Ordering;
+use std::collections::{BTreeSet, HashMap};
+
 use crate::programmer::*;
-use std::collections::{BTreeSet, HashMap, HashSet};
 
 #[derive(Clone, Debug)]
 pub struct RegisterOperation2(pub RegisterOperation);
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Eq, PartialEq)]
 struct RegisterInfo {
     reg: Reg,
     priority: u8,
     caller_save: bool,
     callee_save: bool,
+}
+
+impl PartialOrd for RegisterInfo {
+    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
+        self.priority.partial_cmp(&other.priority)
+    }
+}
+impl Ord for RegisterInfo {
+    fn cmp(&self, other: &Self) -> Ordering {
+        self.priority.cmp(&other.priority)
+    }
 }
 
 // maybe track source register
@@ -31,34 +44,59 @@ pub struct RegisterAllocator2 {
     /// temporary register, handles imm, return addr, reg swapping
     temp_reg: Reg,
 
+    /// variable lifetime
+    variable_info: HashMap<Variable, VariableTouchInfo>,
+
     /// freed registers
-    valid_regs: BTreeSet<RegisterInfo>,
-    /// living registers and its offset
-    living_regs: HashMap<Reg, LivingReg>,
+    free_regs: BTreeSet<RegisterInfo>,
+    /// living variables
+    living_variables: HashMap<Variable, LivingReg>,
+    /// max stack size
+    spill_stack_max: usize,
+    /// spilled variables for each stack position, len = spill_stack_max
+    spill_stack: Box<[Option<Variable>]>,
 }
 
 #[derive(Clone, Debug)]
-struct LivingReg {
-    ra1_reg: Reg,
-    ra2_reg: Reg,
-    sp_offset: u8,
+enum LivingReg {
+    Reg(Reg),
+    Stack(u8), // sp offset
+}
+
+#[derive(Clone, Debug)]
+struct VariableTouchInfo {
+    reads: Vec<usize>,  // sorted
+    writes: Vec<usize>, // sorted
 }
 
 impl RegisterAllocator2 {
-    fn alloc(&mut self, ra1_reg: Reg) -> Reg {}
+    /// fill variable_info
+    fn touch(&mut self, op: &VariableOperation3) {
+        //TODO
+        // op.match, touch each variable, fill variable_info
+        // for each variable_info, sort
+    }
 
-    fn process(op: RegisterOperation1) -> RegisterOperation2 {
-        match op.0 {
-            RegisterOperation::Result(op, r) => {}
-            RegisterOperation::Update(op) => {}
-            RegisterOperation::List(list) => {}
-            RegisterOperation::If(cond, then_block, else_block) => {}
-            RegisterOperation::Loop(cond, loop_block) => {}
-            RegisterOperation::Func(name, ra, params) => {}
-            RegisterOperation::Call(name, params, living_regs, return_values) => {}
-            RegisterOperation::Return(ra, return_values, ever_allocated_regs) => {}
-        }
+    fn alloc(&mut self, variable: Variable) -> LivingReg {
+        //TODO
+        // check free_regs, any => return
+        // empty => spill
+    }
+    fn find_and_spill_variable(&mut self) -> LivingReg {
+        //TODO
+        // for each living variable, find next read
+        // select farmost variable to spill
+    }
 
-        todo!()
+    fn prepare_variable_as_input(&mut self, variable: Variable) -> Reg {
+        //TODO
+        // check variable reg/stack
+        // if reg => return reg
+        // if on stack => alloc reg, read from stack
+    }
+    fn spill_variable(&mut self, variable: Variable) {
+        //TODO
+        // basic checks
+        // find stack position, set living_variables and spill_stack
     }
 }
