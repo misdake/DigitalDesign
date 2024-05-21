@@ -1,5 +1,6 @@
 use std::cmp::Ordering;
 use std::collections::{BTreeSet, HashMap};
+use std::rc::Rc;
 
 use crate::programmer::*;
 
@@ -27,9 +28,8 @@ impl Ord for RegisterInfo {
 
 // maybe track source register
 
-/// limited register allocator with spilling
-#[derive(Clone)]
-pub struct RegisterAllocator2 {
+#[derive(Clone, Debug)]
+pub struct RegisterUsages {
     // general purpose registers
     /// general purpose registers with priority
     reg_info: HashMap<Reg, RegisterInfo>,
@@ -44,6 +44,16 @@ pub struct RegisterAllocator2 {
     /// temporary register, handles imm, return addr, reg swapping
     temp_reg: Reg,
 
+    /// max stack size
+    spill_stack_max: usize,
+}
+
+/// limited register allocator with spilling
+#[derive(Clone)]
+pub struct RegisterAllocator2 {
+    /// defines calling convention
+    reg_usage: Rc<RegisterUsages>,
+
     /// variable lifetime
     variable_info: HashMap<Variable, VariableTouchInfo>,
 
@@ -51,8 +61,6 @@ pub struct RegisterAllocator2 {
     free_regs: BTreeSet<RegisterInfo>,
     /// living variables
     living_variables: HashMap<Variable, LivingReg>,
-    /// max stack size
-    spill_stack_max: usize,
     /// spilled variables for each stack position, len = spill_stack_max
     spill_stack: Box<[Option<Variable>]>,
 }
@@ -70,6 +78,16 @@ struct VariableTouchInfo {
 }
 
 impl RegisterAllocator2 {
+    pub fn new(reg_usage: Rc<RegisterUsages>) -> Self {
+        Self {
+            reg_usage,
+            variable_info: Default::default(),
+            free_regs: Default::default(),
+            living_variables: Default::default(),
+            spill_stack: vec![None; reg_usage.spill_stack_max].into_boxed_slice(),
+        }
+    }
+
     /// fill variable_info
     fn touch(&mut self, op: &VariableOperation3) {
         //TODO
