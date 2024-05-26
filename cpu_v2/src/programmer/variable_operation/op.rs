@@ -81,7 +81,7 @@ pub enum UpdateOp<T: Oprand> {
     /// dst, value
     AddiAssign(T, i8),
     /// base, offset, value
-    StoreMem(T, i8, T),
+    StoreMem(T, u8, T),
 }
 impl<T: Oprand> UpdateOp<T> {
     pub fn touch(&self, mut f: impl FnMut(&T, TouchType)) {
