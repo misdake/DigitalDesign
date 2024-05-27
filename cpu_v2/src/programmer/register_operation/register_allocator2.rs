@@ -60,7 +60,7 @@ pub struct RegisterAllocator2 {
     /// freed registers, general purpose only
     free_regs: BTreeSet<RegisterInfo>,
     /// living variables
-    living_variables: HashMap<Variable, LivingReg>,
+    living_variables: HashMap<Variable, VariableLocation>,
     /// spilled variables for each stack position, len = spill_stack_max
     spill_stack: Box<[Option<Variable>]>,
 
@@ -68,7 +68,7 @@ pub struct RegisterAllocator2 {
 }
 
 #[derive(Clone, Debug)]
-enum LivingReg {
+enum VariableLocation {
     Reg(Reg),
     Stack(u8), // sp offset
 }
@@ -118,7 +118,7 @@ impl RegisterAllocator2 {
         entry.reads.push(index);
     }
     /// fill variable_info
-    fn touch(&mut self, op: &VariableOperation3, mut index: usize) -> usize {
+    pub fn touch(&mut self, op: &VariableOperation3, mut index: usize) -> usize {
         index += 1;
         match op {
             VariableOperation3::Alloc(v) => {
@@ -185,28 +185,60 @@ impl RegisterAllocator2 {
         index
     }
 
-    fn alloc(&mut self, variable: Variable) -> LivingReg {
-        //TODO
-        // check free_regs, any => return
-        // empty => spill
-        todo!()
-    }
-    fn free(&mut self) {
+    /// execute
+    pub fn execute(&mut self, op: &VariableOperation3, mut index: usize) -> usize {
+        //TODO match op
+        // maintain index the same way as touch
+        // for each result/update op -> prepare variables
+
         todo!()
     }
 
-    fn prepare_variable_as_input(&mut self, variable: Variable) -> Reg {
+    fn alloc_for_variable(&mut self, variable: Variable, index: usize) -> Reg {
+        // if no free register to use => spill existing
+        if self.free_regs.is_empty() {
+            let v = self.find_variable_to_spill(index);
+            assert_ne!(variable, v);
+            self.spill_variable(v);
+        }
+
+        // alloc reg
+        assert!(!self.free_regs.is_empty());
+        let info = self.free_regs.pop_first().unwrap();
+        self.living_variables
+            .insert(variable, VariableLocation::Reg(info.reg));
+        info.reg
+    }
+    fn free(&mut self, variable: Variable) {
+        let loc = self.living_variables.remove(&variable).unwrap();
+        match loc {
+            VariableLocation::Reg(reg) => {
+                self.free_regs
+                    .insert(self.reg_usage.reg_info.get(&reg).unwrap().clone());
+            }
+            VariableLocation::Stack(pos) => {
+                assert_eq!(self.spill_stack[pos as usize], Some(variable));
+                self.spill_stack[pos as usize] = None;
+            }
+        }
+    }
+
+    fn prepare_variable_as_input(&mut self, variable: Variable, index: usize) -> Reg {
         let pos = self.living_variables.get(&variable).unwrap().clone();
         // check variable reg/stack
         match pos {
             // if reg => return reg
-            LivingReg::Reg(reg) => {
-                return reg;
-            }
+            VariableLocation::Reg(reg) => reg,
             // if on stack => alloc reg, read from stack, update allocator
-            LivingReg::Stack(pos) => {
-                let reg = self.alloc();
-
+            VariableLocation::Stack(pos) => {
+                assert_eq!(self.spill_stack[pos as usize], Some(variable));
+                let reg = self.alloc_for_variable(variable, index);
+                self.ops.push(RegisterOperation::Result(
+                    ResultOp::LoadMem(self.reg_usage.sp_reg, pos),
+                    reg,
+                ));
+                self.spill_stack[pos as usize] = None;
+                // free_regs and living_variables already updated in alloc
                 reg
             }
         }
@@ -219,11 +251,11 @@ impl RegisterAllocator2 {
             .iter()
             // get distance to next read of each reg variable
             .filter_map(|(v, state)| match state {
-                LivingReg::Reg(_) => {
+                VariableLocation::Reg(_) => {
                     let info = self.variable_info.get(v).unwrap();
                     Some((*v, info.distance_to_next_read(curr)))
                 }
-                LivingReg::Stack(_) => None,
+                VariableLocation::Stack(_) => None,
             })
             // select max distance
             .max_by_key(|(_, dist)| *dist)
@@ -235,9 +267,9 @@ impl RegisterAllocator2 {
     fn spill_variable(&mut self, variable: Variable) {
         // basic checks
         let stat = self.living_variables.get_mut(&variable).cloned();
-        assert!(matches!(stat, Some(LivingReg::Reg(_))));
+        assert!(matches!(stat, Some(VariableLocation::Reg(_))));
 
-        if let Some(LivingReg::Reg(reg)) = stat {
+        if let Some(VariableLocation::Reg(reg)) = stat {
             let info = self.reg_usage.reg_info.get(&reg).unwrap();
             let pos = self.find_empty_stack_pos();
 
@@ -251,7 +283,7 @@ impl RegisterAllocator2 {
             // update allocator: free reg, set living_variables and spill_stack
             self.free_regs.insert(info.clone());
             self.living_variables
-                .insert(variable, LivingReg::Stack(pos as u8));
+                .insert(variable, VariableLocation::Stack(pos as u8));
             self.spill_stack[pos] = Some(variable);
         }
     }
@@ -267,7 +299,7 @@ impl RegisterAllocator2 {
         // update allocator: free reg, set living_variables and spill_stack
         self.free_regs.remove(info);
         self.living_variables
-            .insert(variable, LivingReg::Reg(target_reg));
+            .insert(variable, VariableLocation::Reg(target_reg));
         self.spill_stack[stack_pos] = None;
     }
     fn find_empty_stack_pos(&self) -> usize {
