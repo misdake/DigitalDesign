@@ -1,5 +1,6 @@
 use crate::isa::*;
 use digital_design_code::select;
+use std::ops::Shr;
 
 pub struct SimEnv {
     pub inst: Box<[Instruction; 65536]>,
@@ -119,9 +120,11 @@ impl SimEnv {
             Instruction::xor(r2, r1, r0) => changes.reg(r0, reg(r1) ^ reg(r2)),
             Instruction::add(r2, r1, r0) => changes.reg(r0, reg(r1).wrapping_add(reg(r2))),
             Instruction::sub(r2, r1, r0) => changes.reg(r0, reg(r1).wrapping_sub(reg(r2))),
-            Instruction::addi(r2, i4, r0) => changes.reg(r0, reg(r2).wrapping_sub(imm_as_i16(i4))),
-            Instruction::lsl(r2, u4, r0) => changes.reg(r0, reg(r2) << u4),
-            Instruction::lsr(r2, u4, r0) => changes.reg(r0, reg(r2) >> u4),
+            Instruction::addi(r2, u4, r0) => changes.reg(r0, reg(r2).wrapping_add(u4 as u16)),
+            Instruction::subi(r2, u4, r0) => changes.reg(r0, reg(r2).wrapping_sub(u4 as u16)),
+            Instruction::lsl(u4, r0) => changes.reg(r0, reg(r0) << u4),
+            Instruction::lsr(u4, r0) => changes.reg(r0, reg(r0) >> u4),
+            Instruction::asr(u4, r0) => changes.reg(r0, ((reg(r0) as i16) >> u4) as u16),
 
             Instruction::mov(r1, r0) => changes.reg(r0, reg(r1)),
             Instruction::inv(r1, r0) => changes.reg(r0, !reg(r1)),

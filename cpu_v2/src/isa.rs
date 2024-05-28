@@ -30,17 +30,23 @@ define_isa! {
     (cnt1  0x05 OORR "r{0} = cnt1(r{1})")
     (log2  0x06 OORR "r{0} = log2(r{1})")
     (cmp_r 0x07 OORR "flags = flags(r{0} - r{1})") // unsigned? signed?
-    (pc    0x08 OOIR "r{0} = pc + i4(0x{1:x})")
+    (lsl   0x08 OOIR "r{0} = r{0} << {1}")
+    (lsr   0x09 OOIR "r{0} = r{0} >> {1}")
+    (asr   0x0a OOIR "r{0} = r{0} >>> {1}")
+    // 0x0b
+    // 0x0c
+    // 0x0d
+    (pc    0x0e OOIR "r{0} = pc + i4(0x{1:x})")
     (cmp_i 0x0f OOIR "flags = flags(r{0} - {1})") // unsigned? signed?
 
-    (and  0x8 ORRR "r{0} = r{1} & r{2}")
-    (or   0x9 ORRR "r{0} = r{1} | r{2}")
-    (xor  0xa ORRR "r{0} = r{1} ^ r{2}")
-    (add  0xb ORRR "r{0} = r{1} + r{2}")
-    (sub  0xc ORRR "r{0} = r{1} - r{2}")
-    (addi 0xd ORIR "r{0} = r{2} + i4(0x{1:x})")
-    (lsl  0xe ORIR "r{0} = r{2} << {1}")
-    (lsr  0xf ORIR "r{0} = r{2} >> {1}")
+    (and  0x8 ORRR "r{0} = r{2} & r{1}")
+    (or   0x9 ORRR "r{0} = r{2} | r{1}")
+    (xor  0xa ORRR "r{0} = r{2} ^ r{1}")
+    (add  0xb ORRR "r{0} = r{2} + r{1}")
+    (sub  0xc ORRR "r{0} = r{2} - r{1}")
+    (addi 0xd ORIR "r{0} = r{2} + {1}")
+    (subi 0xe ORIR "r{0} = r{2} - {1}")
+    // 0xf
 
     (load_hi 0x1 OIIR "r{0}_hi = 0x{2:x}{1:x}") // hi, lo, reg
     (load_lo 0x2 OIIR "r{0}_lo = 0x{2:x}{1:x}") // hi, lo, reg
