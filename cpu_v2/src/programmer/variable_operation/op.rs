@@ -79,7 +79,7 @@ pub enum UpdateOp<T: Oprand> {
     /// dst, src
     AddAssign(T, T),
     /// dst, value
-    AddiAssign(T, i8),
+    AddiAssign(T, u8),
     /// base, offset, value
     StoreMem(T, u8, T),
 }

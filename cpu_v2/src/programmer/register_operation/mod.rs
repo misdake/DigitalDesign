@@ -52,6 +52,15 @@ pub enum RegisterOperation {
     /// return addr, return values, ever allocated registers
     Return(Reg, ArrayVec<Reg, MAX_RETURN>, HashSet<Reg>),
 }
+impl RegisterOperation {
+    pub fn vec_to_box_ra(mut list: Vec<RegisterOperation>) -> Option<Box<RegisterOperation>> {
+        match list.len() {
+            0 => None,
+            1 => Some(Box::new(list.remove(0))),
+            _ => Some(Box::new(RegisterOperation::List(list))),
+        }
+    }
+}
 
 impl Debug for RegisterOperation {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
