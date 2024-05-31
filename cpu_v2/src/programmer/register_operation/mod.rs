@@ -1,8 +1,10 @@
 mod register_allocator1;
 mod register_allocator2;
+mod state_sync;
 
 pub use register_allocator1::*;
 pub use register_allocator2::*;
+pub(crate) use state_sync::*;
 
 use arrayvec::ArrayVec;
 use std::collections::HashSet;

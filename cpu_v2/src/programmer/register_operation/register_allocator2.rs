@@ -1,5 +1,5 @@
 use std::cmp::Ordering;
-use std::collections::{BTreeSet, HashMap};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::rc::Rc;
 
 use crate::programmer::*;
@@ -42,7 +42,7 @@ pub struct RegisterUsages {
     /// stack pointer, base of stack l/s instructions
     sp_reg: Reg,
     /// temporary register, handles imm, return addr, reg swapping
-    temp_reg: Reg,
+    tmp_reg: Reg,
 
     /// max stack size
     spill_stack_max: usize,
@@ -61,11 +61,13 @@ pub struct RegisterAllocator2 {
     free_regs: BTreeSet<RegisterInfo>,
     /// living variables
     living_variables: HashMap<Variable, VariableLocation>,
+    /// registers ever allocated, used to save register at function calls
+    ever_allocated: HashSet<Reg>,
     /// spilled variables for each stack position, len = spill_stack_max
     spill_stack: Box<[Option<Variable>]>,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Copy, Clone, Hash, Eq, PartialEq, Ord, PartialOrd, Debug)]
 enum VariableLocation {
     Reg(Reg),
     Stack(u8), // sp offset
@@ -100,8 +102,9 @@ impl RegisterAllocator2 {
         Self {
             reg_usage,
             variable_info: Default::default(),
-            free_regs: Default::default(),
+            free_regs: Default::default(), //TODO initialize free regs based on reg_usage
             living_variables: Default::default(),
+            ever_allocated: Default::default(),
             spill_stack: vec![None; spill_stack_max].into_boxed_slice(),
         }
     }
@@ -183,7 +186,7 @@ impl RegisterAllocator2 {
     }
 
     //TODO extract program context to save ops and functions?
-    //TODO each allocator defines a function?
+    //TODO each allocator defines a function? (with real params and return values)
     /// execute
     pub fn execute(
         &mut self,
@@ -325,7 +328,7 @@ impl RegisterAllocator2 {
             }
             VariableOperation3::Func(_name, _return_addr, _params) => {
                 //TODO each allocator defines a function???
-                // push callee-saved registers
+                // push callee-saved registers (ever used)
                 // intiialize param registers
             }
             VariableOperation3::Call(_name, params, return_values) => {
@@ -382,16 +385,45 @@ impl RegisterAllocator2 {
         target: &HashMap<Variable, VariableLocation>,
         ops: &mut Vec<RegisterOperation>,
     ) {
-        //TODO curr is self.living_variables
-        // check variable
-        // if on stack => good, just read to return reg
-        // if on reg => check reg collision
-        //  loop {
-        //   if all remaining collide => move one to tmp
-        //   find a non-colliding reg, move to return reg
-        //  }
+        let sp = self.reg_usage.sp_reg;
+        let tmp = self.reg_usage.tmp_reg;
 
-        todo!()
+        self.living_variables = target.clone();
+        self.spill_stack = vec![None; self.reg_usage.spill_stack_max].into_boxed_slice();
+
+        let mapping = target
+            .iter()
+            .map(|(v, dst)| {
+                match dst {
+                    VariableLocation::Reg(_) => {}
+                    VariableLocation::Stack(pos) => {
+                        self.spill_stack[*pos as usize] = Some(*v);
+                    }
+                }
+                let src = self.living_variables.get(v).unwrap();
+                (*src, *dst)
+            })
+            .collect::<BTreeMap<_, _>>();
+
+        let reg_to_reg_ops = move_items(mapping, VariableLocation::Reg(tmp));
+
+        for Move(src, dst) in reg_to_reg_ops {
+            match (src, dst) {
+                (VariableLocation::Reg(src), VariableLocation::Reg(dst)) => {
+                    ops.push(RegisterOperation::Update(UpdateOp::Mov(dst, src)));
+                }
+                (VariableLocation::Reg(src), VariableLocation::Stack(dst)) => {
+                    ops.push(RegisterOperation::Update(UpdateOp::StoreMem(sp, dst, src)));
+                }
+                (VariableLocation::Stack(src), VariableLocation::Reg(dst)) => {
+                    ops.push(RegisterOperation::Result(ResultOp::LoadMem(sp, src), dst));
+                }
+                (VariableLocation::Stack(src), VariableLocation::Stack(dst)) => {
+                    ops.push(RegisterOperation::Result(ResultOp::LoadMem(sp, src), tmp));
+                    ops.push(RegisterOperation::Update(UpdateOp::StoreMem(sp, dst, tmp)));
+                }
+            }
+        }
     }
 
     fn alloc_for_variable(
@@ -412,6 +444,7 @@ impl RegisterAllocator2 {
         let info = self.free_regs.pop_first().unwrap();
         self.living_variables
             .insert(variable, VariableLocation::Reg(info.reg));
+        self.ever_allocated.insert(info.reg);
         info.reg
     }
     fn free(&mut self, variable: Variable) {
@@ -435,7 +468,7 @@ impl RegisterAllocator2 {
         load_value: bool,
         ops: &mut Vec<RegisterOperation>,
     ) -> Reg {
-        let pos = self.living_variables.get(&variable).unwrap().clone();
+        let pos = *self.living_variables.get(&variable).unwrap();
         // check variable reg/stack
         match pos {
             // if reg => return reg
@@ -537,10 +570,10 @@ fn test_touch() {
 
     let mut allocator = RegisterAllocator2::new(Rc::new(RegisterUsages {
         reg_info: Default::default(),
-        call_params: [Reg(0), Reg(1), Reg(2), Reg(3)],
+        call_params: [Reg(2), Reg(3), Reg(4), Reg(5)],
         return_values: [Reg(0), Reg(1)],
         sp_reg: Reg(14),
-        temp_reg: Reg(15),
+        tmp_reg: Reg(15),
         spill_stack_max: 16,
     }));
 
