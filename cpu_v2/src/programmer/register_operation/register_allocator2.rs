@@ -118,132 +118,132 @@ impl RegisterAllocator2 {
         entry.reads.push(index);
     }
     /// fill variable_info, must be called exactly once before execute()
-    pub fn touch(&mut self, op: &VariableOperation3, mut index: usize) -> usize {
-        index += 1;
+    pub fn touch(&mut self, op: &VariableOperation3, index: &mut usize) {
+        *index += 1;
         match op {
             VariableOperation3::Alloc(v) => {
-                self.touch_write(*v, index);
+                self.touch_write(*v, *index);
             }
             VariableOperation3::Result(op) => op.touch(|v, ty| match ty {
-                TouchType::Input => self.touch_read(*v, index),
+                TouchType::Input => self.touch_read(*v, *index),
                 _ => unreachable!(),
             }),
             VariableOperation3::Update(op) => op.touch(|v, ty| match ty {
-                TouchType::Input => self.touch_read(*v, index),
+                TouchType::Input => self.touch_read(*v, *index),
                 _ => unreachable!(),
             }),
             VariableOperation3::Write(v) => {
-                self.touch_write(*v, index);
+                self.touch_write(*v, *index);
             }
             VariableOperation3::Free(_v) => {}
             VariableOperation3::List(list) => {
                 for op in list {
-                    index = self.touch(op, index);
+                    self.touch(op, index);
                 }
             }
             VariableOperation3::If(cond, after_cond, then_block, else_block) => {
                 cond.touch(|v, ty| match ty {
-                    TouchType::Input => self.touch_read(*v, index),
+                    TouchType::Input => self.touch_read(*v, *index),
                     _ => unreachable!(),
                 });
                 if let Some(after_cond) = after_cond {
-                    index = self.touch(after_cond.as_ref(), index);
+                    self.touch(after_cond.as_ref(), index);
                 }
                 // start from the same index
-                let index1 = self.touch(then_block.as_ref(), index);
-                let index2 = if let Some(else_block) = else_block {
-                    self.touch(else_block, index)
+                let mut index1 = *index;
+                let mut index2 = *index;
+                self.touch(then_block.as_ref(), &mut index1);
+                if let Some(else_block) = else_block {
+                    self.touch(else_block, &mut index2);
                 } else {
-                    index1
+                    index2 = index1;
                 };
-                index = index1.max(index2);
+                *index = index1.max(index2);
             }
             VariableOperation3::Loop(cond, loop_block) => {
                 cond.touch(|v, ty| match ty {
-                    TouchType::Input => self.touch_read(*v, index),
+                    TouchType::Input => self.touch_read(*v, *index),
                     _ => unreachable!(),
                 });
-                index = self.touch(loop_block.as_ref(), index);
+                self.touch(loop_block.as_ref(), index);
             }
             VariableOperation3::Func(_name, _return_addr, _params) => {}
             VariableOperation3::Call(_name, params, return_values) => {
                 for v in params {
-                    self.touch_read(*v, index);
+                    self.touch_read(*v, *index);
                 }
                 for v in return_values {
-                    self.touch_write(*v, index);
+                    self.touch_write(*v, *index);
                 }
             }
             VariableOperation3::Return(return_addr, return_values) => {
-                self.touch_read(*return_addr, index);
+                self.touch_read(*return_addr, *index);
                 for v in return_values {
-                    self.touch_read(*v, index);
+                    self.touch_read(*v, *index);
                 }
             }
         }
-
-        index
     }
 
     //TODO extract program context to save ops and functions?
     //TODO each allocator defines a function? (with real params and return values)
-    /// execute
+    /// execute, write register operations
     pub fn execute(
         &mut self,
         op: &VariableOperation3,
-        mut index: usize,
+        index: &mut usize,
         ops: &mut Vec<RegisterOperation>,
-    ) -> usize {
+    ) {
         let mut last_result: Option<ResultOp<Reg>> = None;
 
-        index += 1; // TODO &mut usize as param
+        *index += 1;
         match op {
             VariableOperation3::Alloc(v) => {
-                self.alloc_for_variable(*v, index, ops);
+                self.alloc_for_variable(*v, *index, ops);
             }
             VariableOperation3::Result(op) => {
                 last_result = Some(match op {
                     ResultOp::Add(r1, r2) => {
-                        let r1 = self.prepare_variable(*r1, index, true, ops);
-                        let r2 = self.prepare_variable(*r2, index, true, ops);
+                        let r1 = self.prepare_variable(*r1, *index, true, ops);
+                        let r2 = self.prepare_variable(*r2, *index, true, ops);
                         ResultOp::Add(r1, r2)
                     }
                     ResultOp::Addi(r1, i) => {
-                        let r1 = self.prepare_variable(*r1, index, true, ops);
+                        let r1 = self.prepare_variable(*r1, *index, true, ops);
                         ResultOp::Addi(r1, *i)
                     }
                     ResultOp::LoadMem(base, offset) => {
-                        let base = self.prepare_variable(*base, index, true, ops);
+                        let base = self.prepare_variable(*base, *index, true, ops);
                         ResultOp::LoadMem(base, *offset)
                     }
                 });
             }
             VariableOperation3::Update(op) => match op {
                 UpdateOp::LoadImmLo(r0, u8) => {
-                    let r0 = self.prepare_variable(*r0, index, false, ops);
+                    let r0 = self.prepare_variable(*r0, *index, false, ops);
                     ops.push(RegisterOperation::Update(UpdateOp::LoadImmLo(r0, *u8)));
                 }
                 UpdateOp::LoadImmHi(r0, u8) => {
-                    let r0 = self.prepare_variable(*r0, index, true, ops);
+                    let r0 = self.prepare_variable(*r0, *index, true, ops);
                     ops.push(RegisterOperation::Update(UpdateOp::LoadImmHi(r0, *u8)));
                 }
                 UpdateOp::Mov(r0, r1) => {
-                    let r0 = self.prepare_variable(*r0, index, false, ops);
-                    let r1 = self.prepare_variable(*r1, index, true, ops);
+                    let r0 = self.prepare_variable(*r0, *index, false, ops);
+                    let r1 = self.prepare_variable(*r1, *index, true, ops);
                     ops.push(RegisterOperation::Update(UpdateOp::Mov(r0, r1)));
                 }
                 UpdateOp::AddAssign(r0, r1) => {
-                    let r0 = self.prepare_variable(*r0, index, true, ops);
-                    let r1 = self.prepare_variable(*r1, index, true, ops);
+                    let r0 = self.prepare_variable(*r0, *index, true, ops);
+                    let r1 = self.prepare_variable(*r1, *index, true, ops);
                     ops.push(RegisterOperation::Update(UpdateOp::AddAssign(r0, r1)));
                 }
                 UpdateOp::AddiAssign(r0, u4) => {
-                    let r0 = self.prepare_variable(*r0, index, true, ops);
+                    let r0 = self.prepare_variable(*r0, *index, true, ops);
                     ops.push(RegisterOperation::Update(UpdateOp::AddiAssign(r0, *u4)));
                 }
                 UpdateOp::StoreMem(base, offset, r0) => {
-                    let r0 = self.prepare_variable(*r0, index, true, ops);
-                    let base = self.prepare_variable(*base, index, true, ops);
+                    let r0 = self.prepare_variable(*r0, *index, true, ops);
+                    let base = self.prepare_variable(*base, *index, true, ops);
                     ops.push(RegisterOperation::Update(UpdateOp::StoreMem(
                         base, *offset, r0,
                     )));
@@ -252,7 +252,7 @@ impl RegisterAllocator2 {
             VariableOperation3::Write(v) => {
                 assert!(last_result.is_some());
                 let op = last_result.take().unwrap();
-                let r0 = self.prepare_variable(*v, index, false, ops);
+                let r0 = self.prepare_variable(*v, *index, false, ops);
                 ops.push(RegisterOperation::Result(op, r0));
             }
             VariableOperation3::Free(v) => {
@@ -270,14 +270,14 @@ impl RegisterAllocator2 {
             }
             VariableOperation3::List(list) => {
                 for op in list {
-                    index = self.execute(op, index, ops);
+                    self.execute(op, index, ops);
                 }
             }
             VariableOperation3::If(cond, after_cond, then_block, else_block) => {
-                let cond = self.prepare_cond(index, ops, cond);
+                let cond = self.prepare_cond(*index, ops, cond);
                 if let Some(after_cond) = after_cond {
                     // free operations only
-                    index = self.execute(after_cond.as_ref(), index, ops);
+                    self.execute(after_cond.as_ref(), index, ops);
                 }
                 // remember locations of all living variables
                 let mut living_prev = self.living_variables.clone();
@@ -285,9 +285,12 @@ impl RegisterAllocator2 {
                 // clone current allocator state for else block
                 let else_allocator = else_block.as_ref().map(|_| self.clone());
 
+                let mut index1 = *index;
+                let mut index2 = *index;
+
                 // process then_block
                 let mut then_ops = vec![];
-                let index1 = self.execute(then_block.as_ref(), index, &mut then_ops);
+                self.execute(then_block.as_ref(), &mut index1, &mut then_ops);
 
                 // remove freed variables in target state
                 living_prev.retain(|v, _| self.living_variables.contains_key(v));
@@ -295,22 +298,20 @@ impl RegisterAllocator2 {
                 self.restore_variable_locations(&living_prev, &mut then_ops);
 
                 let mut else_ops = None;
-                let index2 = if let Some(else_block) = else_block {
+                if let Some(else_block) = else_block {
                     let mut else_allocator = else_allocator.unwrap();
                     else_ops = Some(vec![]);
                     // start from the same index
                     let else_ops = else_ops.as_mut().unwrap();
-                    let index2 = else_allocator.execute(else_block, index, else_ops);
+                    else_allocator.execute(else_block, &mut index2, else_ops);
 
                     // restore locations of all living variables
                     else_allocator.restore_variable_locations(&living_prev, else_ops);
-
-                    index2
                 } else {
-                    index1
+                    index2 = index1
                 };
 
-                index = index1.max(index2);
+                *index = index1.max(index2);
 
                 let then_block = RegisterOperation::vec_to_box_ra(then_ops).unwrap();
                 let else_block =
@@ -318,9 +319,9 @@ impl RegisterAllocator2 {
                 ops.push(RegisterOperation::If(cond, then_block, else_block))
             }
             VariableOperation3::Loop(cond, loop_block) => {
-                let cond = self.prepare_cond(index, ops, cond);
+                let cond = self.prepare_cond(*index, ops, cond);
                 let mut loop_ops = vec![];
-                index = self.execute(loop_block.as_ref(), index, &mut loop_ops);
+                self.execute(loop_block.as_ref(), index, &mut loop_ops);
                 ops.push(RegisterOperation::Loop(
                     cond,
                     RegisterOperation::vec_to_box_ra(loop_ops).unwrap(),
@@ -340,10 +341,10 @@ impl RegisterAllocator2 {
                 // intiialize return value registers
 
                 for v in params {
-                    self.touch_read(*v, index);
+                    self.touch_read(*v, *index);
                 }
                 for v in return_values {
-                    self.touch_write(*v, index);
+                    self.touch_write(*v, *index);
                 }
             }
             VariableOperation3::Return(return_addr, return_values) => {
@@ -352,14 +353,12 @@ impl RegisterAllocator2 {
                 // pop callee-saved registers
                 // return
 
-                self.touch_read(*return_addr, index);
+                self.touch_read(*return_addr, *index);
                 for v in return_values {
-                    self.touch_read(*v, index);
+                    self.touch_read(*v, *index);
                 }
             }
         }
-
-        index
     }
 
     fn prepare_cond(
@@ -380,6 +379,7 @@ impl RegisterAllocator2 {
             }
         }
     }
+
     fn restore_variable_locations(
         &mut self,
         target: &HashMap<Variable, VariableLocation>,
@@ -577,7 +577,8 @@ fn test_touch() {
         spill_stack_max: 16,
     }));
 
-    allocator.touch(&vo3, 0);
+    let mut index = 0;
+    allocator.touch(&vo3, &mut index);
     println!("program: {vo3:#?}");
     println!("touch: {:#?}", allocator.variable_info);
 }
