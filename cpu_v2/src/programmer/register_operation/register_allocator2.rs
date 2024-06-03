@@ -48,7 +48,8 @@ pub struct RegisterUsages {
     spill_stack_max: usize,
 }
 
-/// limited register allocator with spilling
+/// register allocator with spilling
+/// each allocator defines a function
 #[derive(Clone)]
 pub struct RegisterAllocator2 {
     /// defines calling convention
@@ -65,6 +66,17 @@ pub struct RegisterAllocator2 {
     ever_allocated: HashSet<Reg>,
     /// spilled variables for each stack position, len = spill_stack_max
     spill_stack: Box<[Option<Variable>]>,
+
+    // function definition
+    function_name: &'static str,
+    params: Vec<&'static str>,
+    return_values: Vec<&'static str>,
+
+    // fields for touch/execute
+    /// current touch index to update variable_info
+    touch_index: usize,
+    /// remember last result op for Write(Variable)
+    last_result: Option<ResultOp<Reg>>,
 }
 
 #[derive(Copy, Clone, Hash, Eq, PartialEq, Ord, PartialOrd, Debug)]
@@ -96,17 +108,10 @@ impl VariableTouchInfo {
     }
 }
 
+//TODO replace ctx with self
 pub struct ExecuteContext<'a> {
     index: &'a mut usize,
     last_result: &'a mut Option<ResultOp<Reg>>,
-}
-impl<'a> ExecuteContext<'a> {
-    fn with_index(&'a mut self, index: &'a mut usize) -> Self {
-        Self {
-            index,
-            last_result: self.last_result,
-        }
-    }
 }
 
 impl RegisterAllocator2 {
@@ -119,6 +124,14 @@ impl RegisterAllocator2 {
             living_variables: Default::default(),
             ever_allocated: Default::default(),
             spill_stack: vec![None; spill_stack_max].into_boxed_slice(),
+
+            //TODO input
+            function_name: "",
+            params: vec![],
+            return_values: vec![],
+
+            touch_index: 0,
+            last_result: None,
         }
     }
 
@@ -317,7 +330,7 @@ impl RegisterAllocator2 {
                     then_block.as_ref(),
                     &mut ExecuteContext {
                         index: &mut index1,
-                        last_result: &mut ctx.last_result,
+                        last_result: ctx.last_result,
                     },
                     &mut then_ops,
                 );
@@ -337,7 +350,7 @@ impl RegisterAllocator2 {
                         else_block,
                         &mut ExecuteContext {
                             index: &mut index2,
-                            last_result: &mut ctx.last_result,
+                            last_result: ctx.last_result,
                         },
                         else_ops,
                     );
