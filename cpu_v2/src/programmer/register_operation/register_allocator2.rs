@@ -34,7 +34,7 @@ pub struct RegisterUsages {
     /// general purpose registers with priority
     reg_info: HashMap<Reg, RegisterInfo>,
     /// registers for calling parameters, included in reg_info
-    call_params: [Reg; MAX_PARAM],
+    params: [Reg; MAX_PARAM],
     /// registers for return values, included in reg_info
     return_values: [Reg; MAX_RETURN],
 
@@ -58,6 +58,8 @@ pub struct RegisterAllocator2 {
     /// variable lifetime
     variable_info: HashMap<Variable, VariableTouchInfo>,
 
+    /// callee-saved variables
+    callee_saved_variables: HashMap<Reg, Variable>,
     /// freed registers, general purpose only
     free_regs: BTreeSet<RegisterInfo>,
     /// living variables
@@ -67,10 +69,10 @@ pub struct RegisterAllocator2 {
     /// spilled variables for each stack position, len = spill_stack_max
     spill_stack: Box<[Option<Variable>]>,
 
-    // function definition
-    function_name: &'static str,
+    // function definition, for code printing and param/return count check
+    func_name: FuncName,
     params: Vec<&'static str>,
-    return_values: Vec<&'static str>,
+    return_values_names: Vec<&'static str>,
 
     // fields for touch/execute
     /// current touch index to update variable_info
@@ -115,121 +117,155 @@ pub struct ExecuteContext<'a> {
 }
 
 impl RegisterAllocator2 {
-    pub fn new(reg_usage: Rc<RegisterUsages>) -> Self {
+    pub fn new(
+        reg_usage: Rc<RegisterUsages>,
+        func_name: FuncName,
+        params: &[&'static str],
+        return_value_names: &[&'static str],
+    ) -> Self {
         let spill_stack_max = reg_usage.spill_stack_max;
+
+        let mut callee_saved_variables = HashMap::new();
+        let mut variable_info = HashMap::new();
+        let mut living_variables = HashMap::new();
+        let mut ever_allocated = HashSet::new();
+
+        let mut callee_save_variables: Vec<Variable> = vec![];
+
+        // all general purpose registers are free
+        let free_regs = reg_usage
+            .reg_info
+            .values()
+            .filter(|info| {
+                if info.callee_save {
+                    let variable = Variable::new();
+                    callee_saved_variables.insert(info.reg, variable);
+                    callee_save_variables.push(variable);
+                    living_variables.insert(variable, VariableLocation::Reg(info.reg));
+                    ever_allocated.insert(info.reg);
+                    variable_info.insert(
+                        variable,
+                        VariableTouchInfo {
+                            reads: vec![],
+                            writes: vec![],
+                        },
+                    );
+                    false
+                } else {
+                    true
+                }
+            })
+            .cloned()
+            .collect();
+
         Self {
             reg_usage,
-            variable_info: Default::default(),
-            free_regs: Default::default(), //TODO initialize free regs based on reg_usage
-            living_variables: Default::default(),
-            ever_allocated: Default::default(),
+            variable_info,
+            callee_saved_variables,
+            free_regs,
+            living_variables,
+            ever_allocated,
             spill_stack: vec![None; spill_stack_max].into_boxed_slice(),
 
-            //TODO input
-            function_name: "",
-            params: vec![],
-            return_values: vec![],
+            func_name,
+            params: Vec::from(params),
+            return_values_names: Vec::from(return_value_names),
 
             touch_index: 0,
             last_result: None,
         }
     }
 
-    fn touch_write(&mut self, variable: Variable, index: usize) {
+    fn touch_write(&mut self, variable: Variable) {
         let entry = self.variable_info.entry(variable).or_default();
-        entry.writes.push(index);
+        entry.writes.push(self.touch_index);
     }
-    fn touch_read(&mut self, variable: Variable, index: usize) {
+    fn touch_read(&mut self, variable: Variable) {
         let entry = self.variable_info.entry(variable).or_default();
-        entry.reads.push(index);
+        entry.reads.push(self.touch_index);
     }
     /// fill variable_info, must be called exactly once before execute()
-    pub fn touch(&mut self, op: &VariableOperation3, ctx: &mut ExecuteContext) {
-        *ctx.index += 1;
+    pub fn touch(&mut self, op: &VariableOperation3) {
+        self.touch_index += 1;
         match op {
             VariableOperation3::Alloc(v) => {
-                self.touch_write(*v, *ctx.index);
+                self.touch_write(*v);
             }
             VariableOperation3::Result(op) => op.touch(|v, ty| match ty {
-                TouchType::Input => self.touch_read(*v, *ctx.index),
+                TouchType::Input => self.touch_read(*v),
                 _ => unreachable!(),
             }),
             VariableOperation3::Update(op) => op.touch(|v, ty| match ty {
-                TouchType::Input => self.touch_read(*v, *ctx.index),
+                TouchType::Input => self.touch_read(*v),
                 _ => unreachable!(),
             }),
             VariableOperation3::Write(v) => {
-                self.touch_write(*v, *ctx.index);
+                self.touch_write(*v);
             }
             VariableOperation3::Free(_v) => {}
             VariableOperation3::List(list) => {
                 for op in list {
-                    self.touch(op, ctx);
+                    self.touch(op);
                 }
             }
             VariableOperation3::If(cond, after_cond, then_block, else_block) => {
                 cond.touch(|v, ty| match ty {
-                    TouchType::Input => self.touch_read(*v, *ctx.index),
+                    TouchType::Input => self.touch_read(*v),
                     _ => unreachable!(),
                 });
                 if let Some(after_cond) = after_cond {
-                    self.touch(after_cond.as_ref(), ctx);
+                    self.touch(after_cond.as_ref());
                 }
-                // start from the same index
-                let mut index1 = *ctx.index;
-                let mut index2 = *ctx.index;
-                self.touch(
-                    then_block.as_ref(),
-                    &mut ExecuteContext {
-                        index: &mut index1,
-                        last_result: ctx.last_result,
-                    },
-                );
-                if let Some(else_block) = else_block {
-                    self.touch(
-                        else_block,
-                        &mut ExecuteContext {
-                            index: &mut index2,
-                            last_result: ctx.last_result,
-                        },
-                    );
+
+                let start = self.touch_index;
+                self.touch(then_block.as_ref());
+                let end1 = self.touch_index;
+
+                let end2 = if let Some(else_block) = else_block {
+                    // start from the same index
+                    self.touch_index = start;
+                    self.touch(else_block);
+                    self.touch_index
                 } else {
-                    index2 = index1;
+                    end1
                 };
-                *ctx.index = index1.max(index2);
+                self.touch_index = end1.max(end2);
             }
             VariableOperation3::Loop(cond, loop_block) => {
                 cond.touch(|v, ty| match ty {
-                    TouchType::Input => self.touch_read(*v, *ctx.index),
+                    TouchType::Input => self.touch_read(*v),
                     _ => unreachable!(),
                 });
-                self.touch(loop_block.as_ref(), ctx);
+                self.touch(loop_block.as_ref());
             }
-            VariableOperation3::Func(_name, _return_addr, _params) => {}
+            VariableOperation3::Func(_name, return_addr, params) => {
+                for v in params {
+                    self.touch_write(*v);
+                }
+                self.touch_write(*return_addr);
+            }
             VariableOperation3::Call(_name, params, return_values) => {
                 for v in params {
-                    self.touch_read(*v, *ctx.index);
+                    self.touch_read(*v);
                 }
                 for v in return_values {
-                    self.touch_write(*v, *ctx.index);
+                    self.touch_write(*v);
                 }
             }
             VariableOperation3::Return(return_addr, return_values) => {
-                self.touch_read(*return_addr, *ctx.index);
+                self.touch_read(*return_addr);
                 for v in return_values {
-                    self.touch_read(*v, *ctx.index);
+                    self.touch_read(*v);
                 }
             }
         }
     }
 
-    //TODO extract program context to save ops and functions?
-    //TODO each allocator defines a function? (with real params and return values)
     /// execute, write register operations
     pub fn execute(
         &mut self,
         op: &VariableOperation3,
-        ctx: &mut ExecuteContext,
+        ctx: &mut ExecuteContext, //TODO use self
         ops: &mut Vec<RegisterOperation>,
     ) {
         *ctx.index += 1;
@@ -378,8 +414,7 @@ impl RegisterAllocator2 {
                 ));
             }
             VariableOperation3::Func(_name, _return_addr, _params) => {
-                //TODO each allocator defines a function???
-                // push callee-saved registers (ever used)
+                //TODO assert param count
                 // intiialize param registers
             }
             VariableOperation3::Call(_name, params, return_values) => {
@@ -389,24 +424,12 @@ impl RegisterAllocator2 {
                 // call
                 // pop caller-saved registers
                 // intiialize return value registers
-
-                for v in params {
-                    self.touch_read(*v, *ctx.index);
-                }
-                for v in return_values {
-                    self.touch_write(*v, *ctx.index);
-                }
             }
             VariableOperation3::Return(return_addr, return_values) => {
                 //TODO execute
+                // assert return count
                 // move variables to return registers
-                // pop callee-saved registers
                 // return
-
-                self.touch_read(*return_addr, *ctx.index);
-                for v in return_values {
-                    self.touch_read(*v, *ctx.index);
-                }
             }
         }
     }
@@ -620,7 +643,7 @@ fn test_touch() {
 
     let mut allocator = RegisterAllocator2::new(Rc::new(RegisterUsages {
         reg_info: Default::default(),
-        call_params: [Reg(2), Reg(3), Reg(4), Reg(5)],
+        params: [Reg(2), Reg(3), Reg(4), Reg(5)],
         return_values: [Reg(0), Reg(1)],
         sp_reg: Reg(14),
         tmp_reg: Reg(15),
