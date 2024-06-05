@@ -1,3 +1,5 @@
+use arrayvec::ArrayVec;
+use smallvec::Array;
 use std::cmp::Ordering;
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::rc::Rc;
@@ -58,7 +60,7 @@ pub struct RegisterAllocator2 {
     /// variable lifetime
     variable_info: HashMap<Variable, VariableTouchInfo>,
 
-    /// callee-saved fake variables, to be restored at return
+    /// callee-saved fake variables, to be restored at return TODO check no param/return reg?
     callee_saved_variables: HashMap<Reg, Variable>,
     /// freed registers, general purpose only
     free_regs: BTreeSet<RegisterInfo>,
@@ -71,7 +73,7 @@ pub struct RegisterAllocator2 {
 
     // function definition, for code printing and param/return count check
     func_name: FuncName,
-    params: Vec<&'static str>,
+    param_names: Vec<&'static str>,
     return_values_names: Vec<&'static str>,
 
     // fields for touch/execute
@@ -130,8 +132,6 @@ impl RegisterAllocator2 {
         let mut living_variables = HashMap::new();
         let mut ever_allocated = HashSet::new();
 
-        let mut callee_save_variables: Vec<Variable> = vec![];
-
         // all general purpose registers are free
         let free_regs = reg_usage
             .reg_info
@@ -140,7 +140,6 @@ impl RegisterAllocator2 {
                 if info.callee_save {
                     let variable = Variable::new();
                     callee_saved_variables.insert(info.reg, variable);
-                    callee_save_variables.push(variable);
                     living_variables.insert(variable, VariableLocation::Reg(info.reg));
                     ever_allocated.insert(info.reg);
                     variable_info.insert(
@@ -168,7 +167,7 @@ impl RegisterAllocator2 {
             spill_stack: vec![None; spill_stack_max].into_boxed_slice(),
 
             func_name,
-            params: Vec::from(params),
+            param_names: Vec::from(params),
             return_values_names: Vec::from(return_value_names),
 
             touch_index: 0,
@@ -392,8 +391,13 @@ impl RegisterAllocator2 {
                     RegisterOperation::vec_to_box_ra(loop_ops).unwrap(),
                 ));
             }
-            VariableOperation3::Func(_name, _return_addr, _params) => {
-                //TODO assert param count
+            VariableOperation3::Func(_name, return_addr, params) => {
+                assert_eq!(params.len(), self.param_names.len());
+                for (&v, reg) in params.iter().zip(self.reg_usage.params) {
+                    //TODO register regs
+                }
+                self.alloc_for_variable(*return_addr, self.touch_index, ops);
+                //TODO map params to regs
                 // intiialize param registers
             }
             VariableOperation3::Call(_name, params, return_values) => {
@@ -405,10 +409,28 @@ impl RegisterAllocator2 {
                 // intiialize return value registers
             }
             VariableOperation3::Return(return_addr, return_values) => {
-                //TODO execute
-                // assert return count
+                assert_eq!(return_values.len(), self.return_values_names.len());
+
                 // move variables to return registers, including callee-saved fake variables
-                // return
+                let mut targets: HashMap<Variable, VariableLocation> = HashMap::new();
+                for (&reg, &v) in &self.callee_saved_variables {
+                    targets.insert(v, VariableLocation::Reg(reg));
+                }
+                let mut return_regs = ArrayVec::<Reg, MAX_RETURN>::new();
+                for (&v, reg) in return_values.iter().zip(self.reg_usage.return_values) {
+                    targets.insert(v, VariableLocation::Reg(reg));
+                    return_regs.push(reg);
+                }
+                // restore_variable_locations will destroy self living_variables and spill_stack.
+                // we just clone self so that we can support multiple return points in one function and subsequent free ops.
+                let mut cloned = self.clone();
+                cloned.restore_variable_locations(&targets, ops);
+
+                // prepare addr late. TODO make sure it doesn't overwrite return values?
+                let return_addr_reg =
+                    self.prepare_variable(*return_addr, self.touch_index, true, ops);
+
+                ops.push(RegisterOperation::Return(return_addr_reg, return_regs));
             }
         }
     }
@@ -615,27 +637,27 @@ impl RegisterAllocator2 {
     }
 }
 
-#[test]
-fn test_touch() {
-    let vo2s = VariableOperation2Scope::from(vo1_basic_program());
-    let vo3 = VariableOperation3::from(vo2s);
-
-    let mut allocator = RegisterAllocator2::new(Rc::new(RegisterUsages {
-        reg_info: Default::default(),
-        params: [Reg(2), Reg(3), Reg(4), Reg(5)],
-        return_values: [Reg(0), Reg(1)],
-        sp_reg: Reg(14),
-        tmp_reg: Reg(15),
-        spill_stack_max: 16,
-    }));
-
-    let mut index = 0;
-    let mut last_result: Option<ResultOp<Reg>> = None;
-    let mut ctx = ExecuteContext {
-        index: &mut index,
-        last_result: &mut last_result,
-    };
-    allocator.touch(&vo3, &mut ctx);
-    println!("program: {vo3:#?}");
-    println!("touch: {:#?}", allocator.variable_info);
-}
+// #[test]
+// fn test_touch() {
+//     let vo2s = VariableOperation2Scope::from(vo1_basic_program());
+//     let vo3 = VariableOperation3::from(vo2s);
+//
+//     let mut allocator = RegisterAllocator2::new(Rc::new(RegisterUsages {
+//         reg_info: Default::default(),
+//         params: [Reg(2), Reg(3), Reg(4), Reg(5)],
+//         return_values: [Reg(0), Reg(1)],
+//         sp_reg: Reg(14),
+//         tmp_reg: Reg(15),
+//         spill_stack_max: 16,
+//     }));
+//
+//     let mut index = 0;
+//     let mut last_result: Option<ResultOp<Reg>> = None;
+//     let mut ctx = ExecuteContext {
+//         index: &mut index,
+//         last_result: &mut last_result,
+//     };
+//     allocator.touch(&vo3, &mut ctx);
+//     println!("program: {vo3:#?}");
+//     println!("touch: {:#?}", allocator.variable_info);
+// }

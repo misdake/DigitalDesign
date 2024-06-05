@@ -44,15 +44,14 @@ pub enum RegisterOperation {
     // external flow control
     /// function name, return addr(output), params(output)
     Func(FuncName, Reg, ArrayVec<Reg, MAX_PARAM>),
-    /// function name, params, living registers, return values(output)
+    /// function name, params, return values(output)
     Call(
         FuncName,
         ArrayVec<Reg, MAX_PARAM>,
-        HashSet<Reg>,
         ArrayVec<Reg, MAX_RETURN>,
     ),
-    /// return addr, return values, ever allocated registers
-    Return(Reg, ArrayVec<Reg, MAX_RETURN>, HashSet<Reg>),
+    /// return addr, return values
+    Return(Reg, ArrayVec<Reg, MAX_RETURN>),
 }
 impl RegisterOperation {
     pub fn vec_to_box_ra(mut list: Vec<RegisterOperation>) -> Option<Box<RegisterOperation>> {
@@ -88,13 +87,11 @@ impl Debug for RegisterOperation {
             RegisterOperation::Func(name, ra, params) => {
                 f.write_fmt(format_args!("Func({name}, {ra:?}, {params:?})"))
             }
-            RegisterOperation::Call(name, params, living_regs, return_values) => f.write_fmt(
-                format_args!("Call({name}, {params:?}, {return_values:?}) living: {living_regs:?}"),
-            ),
-            RegisterOperation::Return(ra, return_values, ever_allocated_regs) => {
-                f.write_fmt(format_args!(
-                    "Return({ra:?}, {return_values:?}) ever_allocated: {ever_allocated_regs:?}"
-                ))
+            RegisterOperation::Call(name, params, return_values) => {
+                f.write_fmt(format_args!("Call({name}, {params:?}, {return_values:?})"))
+            }
+            RegisterOperation::Return(ra, return_values) => {
+                f.write_fmt(format_args!("Return({ra:?}, {return_values:?})"))
             }
         }
     }

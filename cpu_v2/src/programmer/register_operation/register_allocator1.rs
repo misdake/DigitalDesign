@@ -106,20 +106,13 @@ impl RegisterAllocator1 {
                 r.push(RegisterOperation::Func(func_name, ra, params))
             }
             VariableOperation3::Call(func_name, params, return_values) => {
-                let living = self.living_regs.clone();
-
                 let params = params
                     .into_iter()
                     .map(|v| *self.mapping.get(&v).unwrap())
                     .collect();
                 let return_values = return_values.into_iter().map(|v| self.alloc(v)).collect();
 
-                r.push(RegisterOperation::Call(
-                    func_name,
-                    params,
-                    living,
-                    return_values,
-                ))
+                r.push(RegisterOperation::Call(func_name, params, return_values))
             }
             VariableOperation3::Return(return_addr, return_values) => {
                 let return_addr = *self.mapping.get(&return_addr).unwrap();
@@ -127,12 +120,7 @@ impl RegisterAllocator1 {
                     .into_iter()
                     .map(|v| *self.mapping.get(&v).unwrap())
                     .collect();
-                let ever_allocated = self.ever_allocated.clone();
-                r.push(RegisterOperation::Return(
-                    return_addr,
-                    return_values,
-                    ever_allocated,
-                ))
+                r.push(RegisterOperation::Return(return_addr, return_values))
             }
         }
 
