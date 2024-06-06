@@ -65,6 +65,10 @@ impl VariableOperation1 {
 }
 
 #[cfg(test)]
+pub(crate) fn vo1_basic_program_decl() -> FuncDecl {
+    FuncDecl::new("try", &[], &["r"])
+}
+#[cfg(test)]
 pub(crate) fn vo1_basic_program() -> VariableOperation1 {
     let a = Variable::new();
     let b = Variable::new();

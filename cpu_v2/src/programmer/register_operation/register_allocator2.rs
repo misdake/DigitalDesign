@@ -1,6 +1,4 @@
 use arrayvec::ArrayVec;
-use smallvec::Array;
-use std::cmp::Ordering;
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::rc::Rc;
 
@@ -8,47 +6,6 @@ use crate::programmer::*;
 
 #[derive(Clone, Debug)]
 pub struct RegisterOperation2(pub RegisterOperation);
-
-#[derive(Clone, Debug, Eq, PartialEq)]
-struct RegisterInfo {
-    reg: Reg,
-    priority: u8,
-    caller_save: bool,
-    callee_save: bool,
-}
-
-impl PartialOrd for RegisterInfo {
-    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
-        self.priority.partial_cmp(&other.priority)
-    }
-}
-impl Ord for RegisterInfo {
-    fn cmp(&self, other: &Self) -> Ordering {
-        self.priority.cmp(&other.priority)
-    }
-}
-
-// maybe track source register
-
-#[derive(Clone, Debug)]
-pub struct RegisterUsages {
-    // general purpose registers
-    /// general purpose registers with priority
-    reg_info: HashMap<Reg, RegisterInfo>,
-    /// registers for calling parameters, included in reg_info
-    params: [Reg; MAX_PARAM],
-    /// registers for return values, included in reg_info
-    return_values: [Reg; MAX_RETURN],
-
-    // special registers not included in reg_info
-    /// stack pointer, base of stack l/s instructions
-    sp_reg: Reg,
-    /// temporary register, handles imm, return addr, reg swapping
-    tmp_reg: Reg,
-
-    /// max stack size
-    spill_stack_max: usize,
-}
 
 /// register allocator with spilling
 /// each allocator defines a function
@@ -66,15 +23,11 @@ pub struct RegisterAllocator2 {
     free_regs: BTreeSet<RegisterInfo>,
     /// living variables
     living_variables: HashMap<Variable, VariableLocation>,
-    /// registers ever allocated, used to save register at function calls
-    ever_allocated: HashSet<Reg>,
     /// spilled variables for each stack position, len = spill_stack_max
     spill_stack: Box<[Option<Variable>]>,
 
     // function definition, for code printing and param/return count check
-    func_name: FuncName,
-    param_names: Vec<&'static str>,
-    return_values_names: Vec<&'static str>,
+    func_decl: FuncDecl,
 
     // fields for touch/execute
     /// current touch index to update variable_info
@@ -112,19 +65,8 @@ impl VariableTouchInfo {
     }
 }
 
-//TODO replace ctx with self
-pub struct ExecuteContext<'a> {
-    index: &'a mut usize,
-    last_result: &'a mut Option<ResultOp<Reg>>,
-}
-
 impl RegisterAllocator2 {
-    pub fn new(
-        reg_usage: Rc<RegisterUsages>,
-        func_name: FuncName,
-        params: &[&'static str],
-        return_value_names: &[&'static str],
-    ) -> Self {
+    pub fn new(reg_usage: Rc<RegisterUsages>, func_decl: FuncDecl) -> Self {
         let spill_stack_max = reg_usage.spill_stack_max;
 
         let mut callee_saved_variables = HashMap::new();
@@ -163,12 +105,9 @@ impl RegisterAllocator2 {
             callee_saved_variables,
             free_regs,
             living_variables,
-            ever_allocated,
             spill_stack: vec![None; spill_stack_max].into_boxed_slice(),
 
-            func_name,
-            param_names: Vec::from(params),
-            return_values_names: Vec::from(return_value_names),
+            func_decl,
 
             touch_index: 0,
             last_result: None,
@@ -307,6 +246,10 @@ impl RegisterAllocator2 {
                     let r0 = self.prepare_variable(*r0, self.touch_index, true, ops);
                     ops.push(RegisterOperation::Update(UpdateOp::AddiAssign(r0, *u4)));
                 }
+                UpdateOp::SubiAssign(r0, u4) => {
+                    let r0 = self.prepare_variable(*r0, self.touch_index, true, ops);
+                    ops.push(RegisterOperation::Update(UpdateOp::SubiAssign(r0, *u4)));
+                }
                 UpdateOp::StoreMem(base, offset, r0) => {
                     let r0 = self.prepare_variable(*r0, self.touch_index, true, ops);
                     let base = self.prepare_variable(*base, self.touch_index, true, ops);
@@ -392,43 +335,74 @@ impl RegisterAllocator2 {
                 ));
             }
             VariableOperation3::Func(_name, return_addr, params) => {
-                assert_eq!(params.len(), self.param_names.len());
+                // this is always the first operation
+
+                // sp -= 16
+                ops.push(RegisterOperation::Update(UpdateOp::SubiAssign(
+                    self.reg_usage.sp_reg,
+                    16,
+                )));
+
+                // register params to registers
+                assert_eq!(params.len(), self.func_decl.param_names.len());
                 for (&v, reg) in params.iter().zip(self.reg_usage.params) {
-                    //TODO register regs
+                    self.living_variables.insert(v, VariableLocation::Reg(reg));
+                    self.free_regs
+                        .remove(&self.reg_usage.reg_info.get(&reg).unwrap().clone());
                 }
-                self.alloc_for_variable(*return_addr, self.touch_index, ops);
-                //TODO map params to regs
-                // intiialize param registers
+                // register return_addr to self.reg_usage.return_address
+                let return_address_reg = self.reg_usage.return_address;
+                self.living_variables
+                    .insert(*return_addr, VariableLocation::Reg(return_address_reg));
+                self.free_regs.remove(
+                    &self
+                        .reg_usage
+                        .reg_info
+                        .get(&return_address_reg)
+                        .unwrap()
+                        .clone(),
+                );
             }
-            VariableOperation3::Call(_name, params, return_values) => {
+            VariableOperation3::Call(_name, _params, _return_values) => {
                 //TODO execute
-                // move variables to param registers
-                // push caller-saved registers
+                // move variables to params and return_address registers
+                // push caller-saved registers with self.living_variables
                 // call
                 // pop caller-saved registers
                 // intiialize return value registers
             }
             VariableOperation3::Return(return_addr, return_values) => {
-                assert_eq!(return_values.len(), self.return_values_names.len());
+                assert_eq!(return_values.len(), self.func_decl.return_value_names.len());
+                let mut target_regs = HashSet::new();
 
-                // move variables to return registers, including callee-saved fake variables
+                // move callee-saved fake variables
                 let mut targets: HashMap<Variable, VariableLocation> = HashMap::new();
                 for (&reg, &v) in &self.callee_saved_variables {
                     targets.insert(v, VariableLocation::Reg(reg));
+                    target_regs.insert(reg);
                 }
+                // move return values
                 let mut return_regs = ArrayVec::<Reg, MAX_RETURN>::new();
                 for (&v, reg) in return_values.iter().zip(self.reg_usage.return_values) {
                     targets.insert(v, VariableLocation::Reg(reg));
+                    target_regs.insert(reg);
                     return_regs.push(reg);
                 }
+                // move return addr TODO not necessary to specify a register
+                let return_addr_reg = self.reg_usage.return_address;
+                targets.insert(*return_addr, VariableLocation::Reg(return_addr_reg));
+                target_regs.insert(return_addr_reg);
+
                 // restore_variable_locations will destroy self living_variables and spill_stack.
                 // we just clone self so that we can support multiple return points in one function and subsequent free ops.
                 let mut cloned = self.clone();
                 cloned.restore_variable_locations(&targets, ops);
 
-                // prepare addr late. TODO make sure it doesn't overwrite return values?
-                let return_addr_reg =
-                    self.prepare_variable(*return_addr, self.touch_index, true, ops);
+                // sp += 16
+                ops.push(RegisterOperation::Update(UpdateOp::AddiAssign(
+                    self.reg_usage.sp_reg,
+                    16,
+                )));
 
                 ops.push(RegisterOperation::Return(return_addr_reg, return_regs));
             }
@@ -461,9 +435,6 @@ impl RegisterAllocator2 {
     ) {
         let sp = self.reg_usage.sp_reg;
         let tmp = self.reg_usage.tmp_reg;
-
-        self.living_variables = target.clone();
-        self.spill_stack = vec![None; self.reg_usage.spill_stack_max].into_boxed_slice();
 
         let mapping = target
             .iter()
@@ -498,6 +469,9 @@ impl RegisterAllocator2 {
                 }
             }
         }
+
+        self.living_variables = target.clone();
+        self.spill_stack = vec![None; self.reg_usage.spill_stack_max].into_boxed_slice();
     }
 
     fn alloc_for_variable(
@@ -518,7 +492,6 @@ impl RegisterAllocator2 {
         let info = self.free_regs.pop_first().unwrap();
         self.living_variables
             .insert(variable, VariableLocation::Reg(info.reg));
-        self.ever_allocated.insert(info.reg);
         info.reg
     }
     fn free(&mut self, variable: Variable) {
@@ -637,27 +610,27 @@ impl RegisterAllocator2 {
     }
 }
 
-// #[test]
-// fn test_touch() {
-//     let vo2s = VariableOperation2Scope::from(vo1_basic_program());
-//     let vo3 = VariableOperation3::from(vo2s);
-//
-//     let mut allocator = RegisterAllocator2::new(Rc::new(RegisterUsages {
-//         reg_info: Default::default(),
-//         params: [Reg(2), Reg(3), Reg(4), Reg(5)],
-//         return_values: [Reg(0), Reg(1)],
-//         sp_reg: Reg(14),
-//         tmp_reg: Reg(15),
-//         spill_stack_max: 16,
-//     }));
-//
-//     let mut index = 0;
-//     let mut last_result: Option<ResultOp<Reg>> = None;
-//     let mut ctx = ExecuteContext {
-//         index: &mut index,
-//         last_result: &mut last_result,
-//     };
-//     allocator.touch(&vo3, &mut ctx);
-//     println!("program: {vo3:#?}");
-//     println!("touch: {:#?}", allocator.variable_info);
-// }
+#[cfg(test)]
+fn test_program(vo1: VariableOperation1, vo1_decl: FuncDecl) {
+    let vo2s = VariableOperation2Scope::from(vo1);
+    let vo3 = VariableOperation3::from(vo2s);
+    println!("program: {vo3:#?}");
+
+    let mut allocator = RegisterAllocator2::new(Rc::new(ra2_usages()), vo1_decl);
+    let mut ops = vec![];
+
+    allocator.touch_index = 0;
+    allocator.touch(&vo3);
+    println!("touch: {:#?}", allocator.variable_info);
+
+    allocator.touch_index = 0;
+    allocator.execute(&vo3, &mut ops);
+    println!("execute: {:#?}", ops);
+}
+
+#[test]
+fn test_basic() {
+    let vo1 = vo1_basic_program();
+    let vo1_decl = vo1_basic_program_decl();
+    test_program(vo1, vo1_decl);
+}

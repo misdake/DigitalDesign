@@ -1,13 +1,14 @@
 mod register_allocator1;
 mod register_allocator2;
+mod register_usages;
 mod state_sync;
 
 pub use register_allocator1::*;
 pub use register_allocator2::*;
+pub use register_usages::*;
 pub(crate) use state_sync::*;
 
 use arrayvec::ArrayVec;
-use std::collections::HashSet;
 use std::fmt::{Debug, Formatter};
 
 use crate::programmer::*;
@@ -95,61 +96,4 @@ impl Debug for RegisterOperation {
             }
         }
     }
-}
-
-impl RegisterOperation {
-    // //TODO use assembler
-    // pub fn into_inst(self) -> Vec<Instruction> {
-    //     fn i4_to_u4(i4: i8) -> u8 {
-    //         assert!(i4 >= -8);
-    //         assert!(i4 <= 7);
-    //         (i4 as u8) & 0b1111
-    //     }
-    //
-    //     let mut r = vec![];
-    //     match self {
-    //         RegisterOperation1::Result(op, r0) => match op {
-    //             ResultOp::Add(r1, r2) => r.push(Instruction::add(r2.0, r1.0, r0.0)),
-    //             ResultOp::Addi(r1, i4) => r.push(Instruction::addi(r1.0, i4_to_u4(i4), r0.0)),
-    //         },
-    //         RegisterOperation1::Update(op) => match op {
-    //             UpdateOp::Mov(r0, r1) => {
-    //                 if r0 != r1 {
-    //                     r.push(Instruction::mov(r1.0, r0.0))
-    //                 }
-    //             }
-    //             UpdateOp::LoadImmLo(r0, u8) => {
-    //                 let hi = u8 >> 4;
-    //                 let lo = u8 & 0b1111;
-    //                 r.push(Instruction::load_lo(hi, lo, r0.0))
-    //             }
-    //             UpdateOp::LoadImmHi(r0, u8) => {
-    //                 let hi = u8 >> 4;
-    //                 let lo = u8 & 0b1111;
-    //                 r.push(Instruction::load_hi(hi, lo, r0.0))
-    //             }
-    //             UpdateOp::AddAssign(r0, r1) => r.push(Instruction::add(r0.0, r1.0, r0.0)),
-    //             UpdateOp::AddiAssign(r0, i4) => r.push(Instruction::addi(r0.0, i4_to_u4(i4), r0.0)),
-    //         },
-    //
-    //         RegisterOperation1::List(list) => {
-    //             for op in list {
-    //                 r.extend(op.into_inst())
-    //             }
-    //         }
-    //         RegisterOperation1::If(_, _, _) => todo!(),
-    //         RegisterOperation1::Loop(_, _) => todo!(),
-    //
-    //         RegisterOperation1::Func(_, _, _) => {
-    //             // todo!()
-    //         }
-    //         RegisterOperation1::Call(_, _, _) => {
-    //             // todo!()
-    //         }
-    //         RegisterOperation1::Return(_, _) => {
-    //             // todo!()
-    //         }
-    //     }
-    //     r
-    // }
 }

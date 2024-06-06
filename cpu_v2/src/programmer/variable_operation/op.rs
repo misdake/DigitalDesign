@@ -80,6 +80,8 @@ pub enum UpdateOp<T: Oprand> {
     AddAssign(T, T),
     /// dst, value
     AddiAssign(T, u8),
+    /// dst, value
+    SubiAssign(T, u8),
     /// base, offset, value
     StoreMem(T, u8, T),
 }
@@ -97,6 +99,7 @@ impl<T: Oprand> UpdateOp<T> {
                 f(src, TouchType::Input);
             }
             UpdateOp::AddiAssign(v, _) => f(v, TouchType::Input),
+            UpdateOp::SubiAssign(v, _) => f(v, TouchType::Input),
             UpdateOp::StoreMem(base, _, value) => {
                 f(base, TouchType::Input);
                 f(value, TouchType::Input);
@@ -112,6 +115,7 @@ impl<T: Oprand> UpdateOp<T> {
             UpdateOp::Mov(dst, src) => UpdateOp::Mov(f(dst), f(src)),
             UpdateOp::AddAssign(dst, src) => UpdateOp::AddAssign(f(dst), f(src)),
             UpdateOp::AddiAssign(v, i) => UpdateOp::AddiAssign(f(v), i),
+            UpdateOp::SubiAssign(v, i) => UpdateOp::SubiAssign(f(v), i),
             UpdateOp::StoreMem(base, i, value) => UpdateOp::StoreMem(f(base), i, f(value)),
         }
     }
