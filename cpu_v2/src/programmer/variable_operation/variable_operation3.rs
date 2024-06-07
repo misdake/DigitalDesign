@@ -192,13 +192,13 @@ fn test_print(vo1: VariableOperation1) {
 }
 #[test]
 fn test_vo3s_basic() {
-    test_print(vo1_basic_program());
+    test_print(vo1_basic_program().0);
 }
 #[test]
 fn test_vo3s_if() {
-    test_print(vo1_if_program());
+    test_print(vo1_if_program().0);
 }
 #[test]
 fn test_vo3s_loop() {
-    test_print(vo1_loop_program());
+    test_print(vo1_loop_program().0);
 }

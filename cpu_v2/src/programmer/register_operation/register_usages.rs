@@ -73,6 +73,6 @@ pub fn ra2_usages() -> RegisterUsages {
         return_values: [Reg(0), Reg(1)],
         sp_reg: Reg(14),
         tmp_reg: Reg(15),
-        spill_stack_max: 16,
+        spill_stack_max: 15,
     }
 }

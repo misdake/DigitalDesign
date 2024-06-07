@@ -65,11 +65,7 @@ impl VariableOperation1 {
 }
 
 #[cfg(test)]
-pub(crate) fn vo1_basic_program_decl() -> FuncDecl {
-    FuncDecl::new("try", &[], &["r"])
-}
-#[cfg(test)]
-pub(crate) fn vo1_basic_program() -> VariableOperation1 {
+pub(crate) fn vo1_basic_program() -> (VariableOperation1, FuncDecl) {
     let a = Variable::new();
     let b = Variable::new();
     let c = Variable::new();
@@ -78,7 +74,7 @@ pub(crate) fn vo1_basic_program() -> VariableOperation1 {
 
     let ra = Variable::new();
 
-    VariableOperation1::List(vec![
+    let vo1 = VariableOperation1::List(vec![
         VariableOperation1::Func("add", ra, func_params([])),
         VariableOperation1::Update(UpdateOp::LoadImmLo(a, 1)),
         VariableOperation1::Update(UpdateOp::LoadImmLo(b, 1)),
@@ -88,11 +84,31 @@ pub(crate) fn vo1_basic_program() -> VariableOperation1 {
         VariableOperation1::Result(ResultOp::Add(c, d), e),
         VariableOperation1::Call("print", func_params([e]), return_values([])),
         VariableOperation1::Return(ra, return_values([e])),
-    ])
+    ]);
+    let decl = FuncDecl::new("try", &[], &["r"]);
+    (vo1, decl)
 }
 
 #[cfg(test)]
-pub(crate) fn vo1_if_program() -> VariableOperation1 {
+pub(crate) fn vo1_func_program() -> (VariableOperation1, FuncDecl) {
+    let a = Variable::new();
+    let b = Variable::new();
+    let c = Variable::new();
+
+    let ra = Variable::new();
+
+    let vo1 = VariableOperation1::List(vec![
+        VariableOperation1::Func("add", ra, func_params([a, b])),
+        VariableOperation1::Alloc(c),
+        VariableOperation1::Result(ResultOp::Add(a, b), c),
+        VariableOperation1::Return(ra, return_values([c])),
+    ]);
+    let decl = FuncDecl::new("add", &["a", "b"], &["c"]);
+    (vo1, decl)
+}
+
+#[cfg(test)]
+pub(crate) fn vo1_if_program() -> (VariableOperation1, FuncDecl) {
     use crate::isa::Cond;
 
     let a = Variable::new();
@@ -120,11 +136,13 @@ pub(crate) fn vo1_if_program() -> VariableOperation1 {
     );
     let result = VariableOperation1::Update(UpdateOp::LoadImmHi(d, 1));
     let ret = VariableOperation1::Return(ra, return_values([d]));
-    VariableOperation1::List(vec![func, init, if_block, result, ret])
+    let vo1 = VariableOperation1::List(vec![func, init, if_block, result, ret]);
+    let decl = FuncDecl::new("if", &[], &["d"]);
+    (vo1, decl)
 }
 
 #[cfg(test)]
-pub(crate) fn vo1_loop_program() -> VariableOperation1 {
+pub(crate) fn vo1_loop_program() -> (VariableOperation1, FuncDecl) {
     use crate::isa::Cond;
 
     let s = Variable::new();
@@ -148,5 +166,7 @@ pub(crate) fn vo1_loop_program() -> VariableOperation1 {
     );
     let ret = VariableOperation1::Return(ra, return_values([s]));
 
-    VariableOperation1::List(vec![func, init, loop_block, ret])
+    let vo1 = VariableOperation1::List(vec![func, init, loop_block, ret]);
+    let decl = FuncDecl::new("loop", &[], &["sum"]);
+    (vo1, decl)
 }

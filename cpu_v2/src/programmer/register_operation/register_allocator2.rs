@@ -337,10 +337,10 @@ impl RegisterAllocator2 {
             VariableOperation3::Func(_name, return_addr, params) => {
                 // this is always the first operation
 
-                // sp -= 16
+                // sp -= stack frame size
                 ops.push(RegisterOperation::Update(UpdateOp::SubiAssign(
                     self.reg_usage.sp_reg,
-                    16,
+                    self.reg_usage.spill_stack_max as u8,
                 )));
 
                 // register params to registers
@@ -363,7 +363,15 @@ impl RegisterAllocator2 {
                         .clone(),
                 );
             }
-            VariableOperation3::Call(_name, _params, _return_values) => {
+            VariableOperation3::Call(_name, _params, return_values) => {
+                let mut targets = HashMap::new();
+                for (&v, reg) in return_values.iter().zip(self.reg_usage.return_values) {
+                    targets.insert(v, VariableLocation::Reg(reg));
+                    // target_regs.insert(reg);
+                    // return_regs.push(reg);
+                }
+
+                for (v, pos) in &self.living_variables {}
                 //TODO execute
                 // move variables to params and return_address registers
                 // push caller-saved registers with self.living_variables
@@ -398,10 +406,10 @@ impl RegisterAllocator2 {
                 let mut cloned = self.clone();
                 cloned.restore_variable_locations(&targets, ops);
 
-                // sp += 16
+                // sp += stack frame size
                 ops.push(RegisterOperation::Update(UpdateOp::AddiAssign(
                     self.reg_usage.sp_reg,
-                    16,
+                    self.reg_usage.spill_stack_max as u8,
                 )));
 
                 ops.push(RegisterOperation::Return(return_addr_reg, return_regs));
@@ -601,6 +609,25 @@ impl RegisterAllocator2 {
             .insert(variable, VariableLocation::Reg(target_reg));
         self.spill_stack[stack_pos] = None;
     }
+
+    fn find_empty_location(&self, except_reg: &[Reg]) -> VariableLocation {
+        // find in regs
+        let valid_reg = self
+            .free_regs
+            .iter()
+            .filter_map(|info| (!except_reg.iter().any(|i| *i == info.reg)).then_some(info.reg))
+            .next();
+        if let Some(valid_reg) = valid_reg {
+            return VariableLocation::Reg(valid_reg);
+        }
+
+        // find in stack
+        self.spill_stack
+            .iter()
+            .enumerate()
+            .find_map(|(i, v)| v.is_none().then_some(VariableLocation::Stack(i as u8)))
+            .expect("no empty stack position!")
+    }
     fn find_empty_stack_pos(&self) -> usize {
         self.spill_stack
             .iter()
@@ -611,12 +638,12 @@ impl RegisterAllocator2 {
 }
 
 #[cfg(test)]
-fn test_program(vo1: VariableOperation1, vo1_decl: FuncDecl) {
+fn test_program((vo1, decl): (VariableOperation1, FuncDecl)) {
     let vo2s = VariableOperation2Scope::from(vo1);
     let vo3 = VariableOperation3::from(vo2s);
     println!("program: {vo3:#?}");
 
-    let mut allocator = RegisterAllocator2::new(Rc::new(ra2_usages()), vo1_decl);
+    let mut allocator = RegisterAllocator2::new(Rc::new(ra2_usages()), decl);
     let mut ops = vec![];
 
     allocator.touch_index = 0;
@@ -630,7 +657,17 @@ fn test_program(vo1: VariableOperation1, vo1_decl: FuncDecl) {
 
 #[test]
 fn test_basic() {
-    let vo1 = vo1_basic_program();
-    let vo1_decl = vo1_basic_program_decl();
-    test_program(vo1, vo1_decl);
+    test_program(vo1_basic_program());
+}
+#[test]
+fn test_func() {
+    test_program(vo1_func_program());
+}
+#[test]
+fn test_if() {
+    test_program(vo1_if_program());
+}
+#[test]
+fn test_loop() {
+    test_program(vo1_loop_program());
 }
