@@ -48,7 +48,7 @@ pub enum RegisterOperation {
     /// function name, params, return values(output)
     Call(
         FuncName,
-        ArrayVec<Reg, MAX_PARAM>,
+        ArrayVec<Reg, MAX_PARAM>, // TODO variables that are freed at call (before return)?
         ArrayVec<Reg, MAX_RETURN>,
     ),
     /// return addr, return values

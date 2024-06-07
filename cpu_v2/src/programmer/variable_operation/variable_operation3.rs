@@ -34,7 +34,7 @@ pub enum VariableOperation3 {
     /// function name, return addr(output no alloc), params(output no alloc)
     Func(FuncName, Variable, FuncParams),
     /// function name, params, return values(output no alloc)
-    Call(FuncName, FuncParams, ReturnValues),
+    Call(FuncName, FuncParams, ReturnValues), //TODO freed params at call (before return)
     /// return addr, return values
     Return(Variable, ReturnValues),
 }

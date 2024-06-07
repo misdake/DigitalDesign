@@ -72,7 +72,6 @@ impl RegisterAllocator2 {
         let mut callee_saved_variables = HashMap::new();
         let mut variable_info = HashMap::new();
         let mut living_variables = HashMap::new();
-        let mut ever_allocated = HashSet::new();
 
         // all general purpose registers are free
         let free_regs = reg_usage
@@ -83,7 +82,6 @@ impl RegisterAllocator2 {
                     let variable = Variable::new();
                     callee_saved_variables.insert(info.reg, variable);
                     living_variables.insert(variable, VariableLocation::Reg(info.reg));
-                    ever_allocated.insert(info.reg);
                     variable_info.insert(
                         variable,
                         VariableTouchInfo {
@@ -363,21 +361,69 @@ impl RegisterAllocator2 {
                         .clone(),
                 );
             }
-            VariableOperation3::Call(_name, _params, return_values) => {
-                let mut targets = HashMap::new();
-                for (&v, reg) in return_values.iter().zip(self.reg_usage.return_values) {
-                    targets.insert(v, VariableLocation::Reg(reg));
-                    // target_regs.insert(reg);
-                    // return_regs.push(reg);
+            VariableOperation3::Call(name, params, return_values) => {
+                //TODO check func param/return len?
+
+                let param_regs = self.reg_usage.params[0..params.len()]
+                    .iter()
+                    .cloned()
+                    .collect::<ArrayVec<Reg, MAX_PARAM>>();
+                let return_regs = self.reg_usage.return_values[0..return_values.len()]
+                    .iter()
+                    .cloned()
+                    .collect::<ArrayVec<Reg, MAX_RETURN>>();
+
+                let mut spill_variables = HashSet::new();
+
+                // call phase
+                // 1. find caller-saved variables TODO if it will be freed at call -> can be optimized to a move
+                // 2. spill them to stack
+                // 3. move params to param registers
+                {
+                    for (v, pos) in &self.living_variables {
+                        if let VariableLocation::Reg(reg) = pos {
+                            if self.reg_usage.reg_info.get(reg).unwrap().caller_save {
+                                // if variable is caller_saved => spill
+                                spill_variables.insert(*v);
+                            }
+                        }
+                    }
+
+                    let usage = self.reg_usage.clone();
+                    for v in spill_variables {
+                        // ok to spill to register
+                        self.spill_variable(v, Some(&usage.caller_save_regs), ops);
+                    }
+
+                    for (index, v) in params.iter().enumerate() {
+                        match self.living_variables.get(v).unwrap() {
+                            VariableLocation::Reg(reg) => {
+                                let target = self.reg_usage.params[index];
+                                ops.push(RegisterOperation::Update(UpdateOp::Mov(target, *reg)));
+                            }
+                            VariableLocation::Stack(offset) => {
+                                let target = self.reg_usage.params[index];
+                                ops.push(RegisterOperation::Result(
+                                    ResultOp::LoadMem(self.reg_usage.sp_reg, *offset),
+                                    target,
+                                ));
+                            }
+                        }
+                    }
                 }
 
-                for (v, pos) in &self.living_variables {}
-                //TODO execute
-                // move variables to params and return_address registers
-                // push caller-saved registers with self.living_variables
-                // call
-                // pop caller-saved registers
-                // intiialize return value registers
+                ops.push(RegisterOperation::Call(name, param_regs, return_regs));
+
+                // return phase
+                // 1. initialize return value registers
+                // 2. leave caller-saved registers as-is
+                {
+                    for (&v, reg) in return_values.iter().zip(self.reg_usage.return_values) {
+                        self.living_variables.insert(v, VariableLocation::Reg(reg));
+                        self.free_regs
+                            .remove(&self.reg_usage.reg_info.get(&reg).unwrap().clone());
+                    }
+                }
             }
             VariableOperation3::Return(return_addr, return_values) => {
                 assert_eq!(return_values.len(), self.func_decl.return_value_names.len());
@@ -492,7 +538,7 @@ impl RegisterAllocator2 {
         if self.free_regs.is_empty() {
             let v = self.find_variable_to_spill(index);
             assert_ne!(variable, v);
-            self.spill_variable(v, ops);
+            self.spill_variable(v, None, ops);
         }
 
         // alloc reg
@@ -565,27 +611,47 @@ impl RegisterAllocator2 {
         println!("found variable to spill: {v:?}, dist {dist:?}");
         v
     }
-    fn spill_variable(&mut self, variable: Variable, ops: &mut Vec<RegisterOperation>) {
+    fn spill_variable(
+        &mut self,
+        variable: Variable,
+        allow_to_reg_except: Option<&HashSet<Reg>>,
+        ops: &mut Vec<RegisterOperation>,
+    ) {
         // basic checks
         let stat = self.living_variables.get_mut(&variable).cloned();
         assert!(matches!(stat, Some(VariableLocation::Reg(_))));
 
         if let Some(VariableLocation::Reg(reg)) = stat {
             let info = self.reg_usage.reg_info.get(&reg).unwrap();
-            let pos = self.find_empty_stack_pos();
 
-            // now write reg to stack position
-            ops.push(RegisterOperation::Update(UpdateOp::StoreMem(
-                self.reg_usage.sp_reg,
-                pos as u8,
-                reg,
-            )));
+            let pos = if let Some(exclude) = allow_to_reg_except {
+                self.find_empty_location(exclude)
+            } else {
+                VariableLocation::Stack(self.find_empty_stack_pos())
+            };
 
-            // update allocator: free reg, set living_variables and spill_stack
-            self.free_regs.insert(info.clone());
-            self.living_variables
-                .insert(variable, VariableLocation::Stack(pos as u8));
-            self.spill_stack[pos] = Some(variable);
+            match pos {
+                VariableLocation::Reg(target_reg) => {
+                    // now write reg to stack position
+                    ops.push(RegisterOperation::Update(UpdateOp::Mov(target_reg, reg)));
+                    self.living_variables
+                        .insert(variable, VariableLocation::Reg(target_reg));
+                }
+                VariableLocation::Stack(pos) => {
+                    // now write reg to stack position
+                    ops.push(RegisterOperation::Update(UpdateOp::StoreMem(
+                        self.reg_usage.sp_reg,
+                        pos,
+                        reg,
+                    )));
+
+                    // update allocator: free reg, set living_variables and spill_stack
+                    self.free_regs.insert(info.clone());
+                    self.living_variables
+                        .insert(variable, VariableLocation::Stack(pos));
+                    self.spill_stack[pos as usize] = Some(variable);
+                }
+            }
         }
     }
     fn load_variable_from_stack(
@@ -610,12 +676,12 @@ impl RegisterAllocator2 {
         self.spill_stack[stack_pos] = None;
     }
 
-    fn find_empty_location(&self, except_reg: &[Reg]) -> VariableLocation {
+    fn find_empty_location(&self, except_reg: &HashSet<Reg>) -> VariableLocation {
         // find in regs
         let valid_reg = self
             .free_regs
             .iter()
-            .filter_map(|info| (!except_reg.iter().any(|i| *i == info.reg)).then_some(info.reg))
+            .filter_map(|info| (!except_reg.contains(&info.reg)).then_some(info.reg))
             .next();
         if let Some(valid_reg) = valid_reg {
             return VariableLocation::Reg(valid_reg);
@@ -628,12 +694,12 @@ impl RegisterAllocator2 {
             .find_map(|(i, v)| v.is_none().then_some(VariableLocation::Stack(i as u8)))
             .expect("no empty stack position!")
     }
-    fn find_empty_stack_pos(&self) -> usize {
+    fn find_empty_stack_pos(&self) -> u8 {
         self.spill_stack
             .iter()
             .enumerate()
             .find_map(|(i, v)| v.is_none().then_some(i))
-            .expect("no empty stack position!")
+            .expect("no empty stack position!") as u8
     }
 }
 
