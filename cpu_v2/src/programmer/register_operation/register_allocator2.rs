@@ -340,6 +340,8 @@ impl RegisterAllocator2 {
                 );
             }
             VariableOperation3::Func(_name, return_addr, params) => {
+                //TODO name
+
                 // this is always the first operation
 
                 // sp -= stack frame size
@@ -567,6 +569,7 @@ impl RegisterAllocator2 {
 
     fn alloc_variable_to_reg(&mut self, variable: Variable, reg: Reg) {
         let info = self.reg_usage.reg_info.get(&reg).unwrap();
+        assert!(self.free_regs.contains(info));
         self.living_variables
             .insert(variable, VariableLocation::Reg(info.reg));
         self.free_regs.remove(info);
@@ -779,5 +782,5 @@ fn test_spill1() {
 }
 #[test]
 fn test_spill2() {
-    test_program(vo1_spill_program(5, 2));
+    test_program(vo1_spill_program(10, 2));
 }
