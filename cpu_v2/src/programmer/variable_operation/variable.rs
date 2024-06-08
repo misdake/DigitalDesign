@@ -12,7 +12,7 @@ impl Variable {
     pub fn new() -> Self {
         Self(NEXT_VARIABLE.fetch_add(1, Relaxed))
     }
-    fn reset() {
+    pub fn reset() {
         NEXT_VARIABLE.store(1, Relaxed)
     }
 }

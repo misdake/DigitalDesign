@@ -33,6 +33,9 @@ pub fn move_items<T: Debug + Copy + Eq + PartialEq + Hash + Ord + PartialOrd>(
             }
             stack.push(to);
             from = to;
+            if done.contains(&to) {
+                break;
+            }
         }
 
         let mut to = stack.pop().unwrap();
@@ -52,6 +55,13 @@ pub fn move_items<T: Debug + Copy + Eq + PartialEq + Hash + Ord + PartialOrd>(
 
 #[test]
 fn test_move_items() {
+    let moves = move_items(BTreeMap::from([(1, 0), (2, 1)]), 10);
+    for m in &moves {
+        println!("{m:?}");
+    }
+    assert_eq!(moves, vec![Move(1, 0), Move(2, 1)]);
+    println!("-----------");
+
     let moves = move_items(BTreeMap::from([(0, 0), (1, 2), (3, 4), (2, 3)]), 10);
     for m in &moves {
         println!("{m:?}");

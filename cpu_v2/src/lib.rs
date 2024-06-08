@@ -4,6 +4,6 @@ mod isa;
 mod programmer;
 mod sim;
 
-fn main() {
-    println!("Hello, world!");
-}
+pub use isa::*;
+pub use programmer::*;
+pub use sim::*;

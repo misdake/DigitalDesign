@@ -263,17 +263,7 @@ impl RegisterAllocator2 {
                 ops.push(RegisterOperation::Result(op, r0));
             }
             VariableOperation3::Free(v) => {
-                let location = self.living_variables.remove(&v).unwrap();
-                match location {
-                    VariableLocation::Reg(reg) => {
-                        self.free_regs
-                            .insert(self.reg_usage.reg_info.get(&reg).unwrap().clone());
-                    }
-                    VariableLocation::Stack(pos) => {
-                        assert!(self.spill_stack[pos as usize].is_some());
-                        self.spill_stack[pos as usize] = None;
-                    }
-                }
+                self.free(*v);
             }
             VariableOperation3::List(list) => {
                 for op in list {
@@ -447,6 +437,8 @@ impl RegisterAllocator2 {
                 targets.insert(*return_addr, VariableLocation::Reg(return_addr_reg));
                 target_regs.insert(return_addr_reg);
 
+                println!("current ops: {:?}", ops);
+
                 // restore_variable_locations will destroy self living_variables and spill_stack.
                 // we just clone self so that we can support multiple return points in one function and subsequent free ops.
                 let mut cloned = self.clone();
@@ -503,6 +495,8 @@ impl RegisterAllocator2 {
                 (*src, *dst)
             })
             .collect::<BTreeMap<_, _>>();
+
+        println!("mapping: {:?}", mapping);
 
         let reg_to_reg_ops = move_items(mapping, VariableLocation::Reg(tmp));
 
@@ -654,27 +648,6 @@ impl RegisterAllocator2 {
             }
         }
     }
-    fn load_variable_from_stack(
-        &mut self,
-        variable: Variable,
-        stack_pos: usize,
-        target_reg: Reg,
-        ops: &mut Vec<RegisterOperation>,
-    ) {
-        let info = self.reg_usage.reg_info.get(&target_reg).unwrap();
-
-        // now write reg to stack position
-        ops.push(RegisterOperation::Result(
-            ResultOp::LoadMem(self.reg_usage.sp_reg, stack_pos as u8),
-            target_reg,
-        ));
-
-        // update allocator: free reg, set living_variables and spill_stack
-        self.free_regs.remove(info);
-        self.living_variables
-            .insert(variable, VariableLocation::Reg(target_reg));
-        self.spill_stack[stack_pos] = None;
-    }
 
     fn find_empty_location(&self, except_reg: &HashSet<Reg>) -> VariableLocation {
         // find in regs
@@ -736,4 +709,8 @@ fn test_if() {
 #[test]
 fn test_loop() {
     test_program(vo1_loop_program());
+}
+#[test]
+fn test_spill() {
+    test_program(vo1_spill_program());
 }
