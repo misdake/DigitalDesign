@@ -172,24 +172,29 @@ pub(crate) fn vo1_loop_program() -> (VariableOperation1, FuncDecl) {
 }
 
 #[cfg(test)]
-pub(crate) fn vo1_spill_program() -> (VariableOperation1, FuncDecl) {
+pub(crate) fn vo1_spill_program(n: usize, pass: usize) -> (VariableOperation1, FuncDecl) {
     let ra = Variable::new();
-    let v = [0; 20].map(|_| Variable::new());
+    let mut v = vec![];
     let mut list = vec![];
     list.push(VariableOperation1::Func("loop", ra, func_params([])));
-    for i in 0..20 {
+    for i in 0..n {
+        v.push(Variable::new());
         list.push(VariableOperation1::Alloc(v[i]));
         list.push(VariableOperation1::Update(UpdateOp::LoadImmLo(
             v[i], i as u8,
         )));
     }
-    for i in 1..20 {
-        list.push(VariableOperation1::Update(UpdateOp::AddAssign(
-            v[i],
-            v[i - 1],
-        )));
+
+    for _ in 0..pass {
+        for i in 1..n {
+            list.push(VariableOperation1::Update(UpdateOp::AddAssign(
+                v[i],
+                v[i - 1],
+            )));
+        }
     }
-    list.push(VariableOperation1::Return(ra, return_values([v[19]])));
+
+    list.push(VariableOperation1::Return(ra, return_values([v[n - 1]])));
     let vo1 = VariableOperation1::List(list);
     let decl = FuncDecl::new("spill", &[], &["sum"]);
     (vo1, decl)

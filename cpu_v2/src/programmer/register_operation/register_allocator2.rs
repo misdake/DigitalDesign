@@ -7,6 +7,11 @@ use crate::programmer::*;
 #[derive(Clone, Debug)]
 pub struct RegisterOperation2(pub RegisterOperation);
 
+fn new_op(ops: &mut Vec<RegisterOperation>, op: RegisterOperation) {
+    // println!("op: {:?}", op);
+    ops.push(op);
+}
+
 /// register allocator with spilling
 /// each allocator defines a function
 #[derive(Clone)]
@@ -19,6 +24,9 @@ pub struct RegisterAllocator2 {
 
     /// callee-saved fake variables, to be restored at return TODO check no param/return reg?
     callee_saved_variables: HashMap<Reg, Variable>,
+    /// ever allocated callee saved registers, reg -> stack offset
+    /// when inserting -> save operation will happen at the beginning of function
+    allocated_callee_save_regs: BTreeMap<Reg, u8>,
     /// freed registers, general purpose only
     free_regs: BTreeSet<RegisterInfo>,
     /// living variables
@@ -69,40 +77,16 @@ impl RegisterAllocator2 {
     pub fn new(reg_usage: Rc<RegisterUsages>, func_decl: FuncDecl) -> Self {
         let spill_stack_max = reg_usage.spill_stack_max;
 
-        let mut callee_saved_variables = HashMap::new();
-        let mut variable_info = HashMap::new();
-        let mut living_variables = HashMap::new();
-
-        // all general purpose registers are free
-        let free_regs = reg_usage
-            .reg_info
-            .values()
-            .filter(|info| {
-                if info.callee_save {
-                    let variable = Variable::new();
-                    callee_saved_variables.insert(info.reg, variable);
-                    living_variables.insert(variable, VariableLocation::Reg(info.reg));
-                    variable_info.insert(
-                        variable,
-                        VariableTouchInfo {
-                            reads: vec![],
-                            writes: vec![],
-                        },
-                    );
-                    false
-                } else {
-                    true
-                }
-            })
-            .cloned()
-            .collect();
+        // all general purpose registers are free, callee-saved registers are handled in alloc_variable
+        let free_regs = reg_usage.reg_info.values().cloned().collect();
 
         Self {
             reg_usage,
-            variable_info,
-            callee_saved_variables,
+            variable_info: HashMap::new(),
+            callee_saved_variables: HashMap::new(),
+            allocated_callee_save_regs: BTreeMap::new(),
             free_regs,
-            living_variables,
+            living_variables: HashMap::new(),
             spill_stack: vec![None; spill_stack_max].into_boxed_slice(),
 
             func_decl,
@@ -110,6 +94,29 @@ impl RegisterAllocator2 {
             touch_index: 0,
             last_result: None,
         }
+    }
+
+    pub fn run(&mut self, vo3: &VariableOperation3) -> Vec<RegisterOperation> {
+        let mut ops = vec![];
+
+        self.touch_index = 0;
+        self.touch(vo3);
+
+        self.touch_index = 0;
+        self.execute(vo3, &mut ops);
+
+        let sp_reg = self.reg_usage.sp_reg;
+        let mut callee_save_ops = self
+            .allocated_callee_save_regs
+            .iter()
+            .map(|(&reg, &offset)| {
+                RegisterOperation::Update(UpdateOp::StoreMem(sp_reg, offset, reg))
+            })
+            .collect::<Vec<_>>();
+
+        callee_save_ops.append(&mut ops); // put ops at the beginning
+        ops = std::mem::take(&mut callee_save_ops);
+        ops
     }
 
     fn touch_write(&mut self, variable: Variable) {
@@ -121,7 +128,7 @@ impl RegisterAllocator2 {
         entry.reads.push(self.touch_index);
     }
     /// fill variable_info, must be called exactly once before execute()
-    pub fn touch(&mut self, op: &VariableOperation3) {
+    fn touch(&mut self, op: &VariableOperation3) {
         self.touch_index += 1;
         match op {
             VariableOperation3::Alloc(v) => {
@@ -198,7 +205,7 @@ impl RegisterAllocator2 {
     }
 
     /// execute, write register operations
-    pub fn execute(&mut self, op: &VariableOperation3, ops: &mut Vec<RegisterOperation>) {
+    fn execute(&mut self, op: &VariableOperation3, ops: &mut Vec<RegisterOperation>) {
         self.touch_index += 1;
         match op {
             VariableOperation3::Alloc(v) => {
@@ -224,43 +231,50 @@ impl RegisterAllocator2 {
             VariableOperation3::Update(op) => match op {
                 UpdateOp::LoadImmLo(r0, u8) => {
                     let r0 = self.prepare_variable(*r0, self.touch_index, false, ops);
-                    ops.push(RegisterOperation::Update(UpdateOp::LoadImmLo(r0, *u8)));
+                    new_op(ops, RegisterOperation::Update(UpdateOp::LoadImmLo(r0, *u8)));
                 }
                 UpdateOp::LoadImmHi(r0, u8) => {
                     let r0 = self.prepare_variable(*r0, self.touch_index, true, ops);
-                    ops.push(RegisterOperation::Update(UpdateOp::LoadImmHi(r0, *u8)));
+                    new_op(ops, RegisterOperation::Update(UpdateOp::LoadImmHi(r0, *u8)));
                 }
                 UpdateOp::Mov(r0, r1) => {
                     let r0 = self.prepare_variable(*r0, self.touch_index, false, ops);
                     let r1 = self.prepare_variable(*r1, self.touch_index, true, ops);
-                    ops.push(RegisterOperation::Update(UpdateOp::Mov(r0, r1)));
+                    new_op(ops, RegisterOperation::Update(UpdateOp::Mov(r0, r1)));
                 }
                 UpdateOp::AddAssign(r0, r1) => {
                     let r0 = self.prepare_variable(*r0, self.touch_index, true, ops);
                     let r1 = self.prepare_variable(*r1, self.touch_index, true, ops);
-                    ops.push(RegisterOperation::Update(UpdateOp::AddAssign(r0, r1)));
+                    new_op(ops, RegisterOperation::Update(UpdateOp::AddAssign(r0, r1)));
                 }
                 UpdateOp::AddiAssign(r0, u4) => {
                     let r0 = self.prepare_variable(*r0, self.touch_index, true, ops);
-                    ops.push(RegisterOperation::Update(UpdateOp::AddiAssign(r0, *u4)));
+                    new_op(
+                        ops,
+                        RegisterOperation::Update(UpdateOp::AddiAssign(r0, *u4)),
+                    );
                 }
                 UpdateOp::SubiAssign(r0, u4) => {
                     let r0 = self.prepare_variable(*r0, self.touch_index, true, ops);
-                    ops.push(RegisterOperation::Update(UpdateOp::SubiAssign(r0, *u4)));
+                    new_op(
+                        ops,
+                        RegisterOperation::Update(UpdateOp::SubiAssign(r0, *u4)),
+                    );
                 }
                 UpdateOp::StoreMem(base, offset, r0) => {
                     let r0 = self.prepare_variable(*r0, self.touch_index, true, ops);
                     let base = self.prepare_variable(*base, self.touch_index, true, ops);
-                    ops.push(RegisterOperation::Update(UpdateOp::StoreMem(
-                        base, *offset, r0,
-                    )));
+                    new_op(
+                        ops,
+                        RegisterOperation::Update(UpdateOp::StoreMem(base, *offset, r0)),
+                    );
                 }
             },
             VariableOperation3::Write(v) => {
                 assert!(self.last_result.is_some());
                 let op = self.last_result.take().unwrap();
                 let r0 = self.prepare_variable(*v, self.touch_index, false, ops);
-                ops.push(RegisterOperation::Result(op, r0));
+                new_op(ops, RegisterOperation::Result(op, r0));
             }
             VariableOperation3::Free(v) => {
                 self.free(*v);
@@ -311,25 +325,31 @@ impl RegisterAllocator2 {
                 let then_block = RegisterOperation::vec_to_box_ra(then_ops).unwrap();
                 let else_block =
                     else_ops.map(|else_ops| RegisterOperation::vec_to_box_ra(else_ops).unwrap());
-                ops.push(RegisterOperation::If(cond, then_block, else_block))
+                new_op(ops, RegisterOperation::If(cond, then_block, else_block))
             }
             VariableOperation3::Loop(cond, loop_block) => {
                 let cond = self.prepare_cond(self.touch_index, ops, cond);
                 let mut loop_ops = vec![];
                 self.execute(loop_block.as_ref(), &mut loop_ops);
-                ops.push(RegisterOperation::Loop(
-                    cond,
-                    RegisterOperation::vec_to_box_ra(loop_ops).unwrap(),
-                ));
+                new_op(
+                    ops,
+                    RegisterOperation::Loop(
+                        cond,
+                        RegisterOperation::vec_to_box_ra(loop_ops).unwrap(),
+                    ),
+                );
             }
             VariableOperation3::Func(_name, return_addr, params) => {
                 // this is always the first operation
 
                 // sp -= stack frame size
-                ops.push(RegisterOperation::Update(UpdateOp::SubiAssign(
-                    self.reg_usage.sp_reg,
-                    self.reg_usage.spill_stack_max as u8,
-                )));
+                new_op(
+                    ops,
+                    RegisterOperation::Update(UpdateOp::SubiAssign(
+                        self.reg_usage.sp_reg,
+                        self.reg_usage.spill_stack_max as u8,
+                    )),
+                );
 
                 // register params to registers
                 assert_eq!(params.len(), self.func_decl.param_names.len());
@@ -389,20 +409,23 @@ impl RegisterAllocator2 {
                         match self.living_variables.get(v).unwrap() {
                             VariableLocation::Reg(reg) => {
                                 let target = self.reg_usage.params[index];
-                                ops.push(RegisterOperation::Update(UpdateOp::Mov(target, *reg)));
+                                new_op(ops, RegisterOperation::Update(UpdateOp::Mov(target, *reg)));
                             }
                             VariableLocation::Stack(offset) => {
                                 let target = self.reg_usage.params[index];
-                                ops.push(RegisterOperation::Result(
-                                    ResultOp::LoadMem(self.reg_usage.sp_reg, *offset),
-                                    target,
-                                ));
+                                new_op(
+                                    ops,
+                                    RegisterOperation::Result(
+                                        ResultOp::LoadMem(self.reg_usage.sp_reg, *offset),
+                                        target,
+                                    ),
+                                );
                             }
                         }
                     }
                 }
 
-                ops.push(RegisterOperation::Call(name, param_regs, return_regs));
+                new_op(ops, RegisterOperation::Call(name, param_regs, return_regs));
 
                 // return phase
                 // 1. initialize return value registers
@@ -437,20 +460,30 @@ impl RegisterAllocator2 {
                 targets.insert(*return_addr, VariableLocation::Reg(return_addr_reg));
                 target_regs.insert(return_addr_reg);
 
-                println!("current ops: {:?}", ops);
-
                 // restore_variable_locations will destroy self living_variables and spill_stack.
                 // we just clone self so that we can support multiple return points in one function and subsequent free ops.
                 let mut cloned = self.clone();
                 cloned.restore_variable_locations(&targets, ops);
 
-                // sp += stack frame size
-                ops.push(RegisterOperation::Update(UpdateOp::AddiAssign(
-                    self.reg_usage.sp_reg,
-                    self.reg_usage.spill_stack_max as u8,
-                )));
+                // restore callee-saved registers, they are not affected by restore_variable_locations
+                let sp_reg = self.reg_usage.sp_reg;
+                for (&reg, &offset) in &self.allocated_callee_save_regs {
+                    new_op(
+                        ops,
+                        RegisterOperation::Result(ResultOp::LoadMem(sp_reg, offset), reg),
+                    );
+                }
 
-                ops.push(RegisterOperation::Return(return_addr_reg, return_regs));
+                // sp += stack frame size
+                new_op(
+                    ops,
+                    RegisterOperation::Update(UpdateOp::AddiAssign(
+                        self.reg_usage.sp_reg,
+                        self.reg_usage.spill_stack_max as u8,
+                    )),
+                );
+
+                new_op(ops, RegisterOperation::Return(return_addr_reg, return_regs));
             }
         }
     }
@@ -496,30 +529,55 @@ impl RegisterAllocator2 {
             })
             .collect::<BTreeMap<_, _>>();
 
-        println!("mapping: {:?}", mapping);
-
         let reg_to_reg_ops = move_items(mapping, VariableLocation::Reg(tmp));
 
         for Move(src, dst) in reg_to_reg_ops {
             match (src, dst) {
                 (VariableLocation::Reg(src), VariableLocation::Reg(dst)) => {
-                    ops.push(RegisterOperation::Update(UpdateOp::Mov(dst, src)));
+                    new_op(ops, RegisterOperation::Update(UpdateOp::Mov(dst, src)));
                 }
                 (VariableLocation::Reg(src), VariableLocation::Stack(dst)) => {
-                    ops.push(RegisterOperation::Update(UpdateOp::StoreMem(sp, dst, src)));
+                    new_op(
+                        ops,
+                        RegisterOperation::Update(UpdateOp::StoreMem(sp, dst, src)),
+                    );
                 }
                 (VariableLocation::Stack(src), VariableLocation::Reg(dst)) => {
-                    ops.push(RegisterOperation::Result(ResultOp::LoadMem(sp, src), dst));
+                    new_op(
+                        ops,
+                        RegisterOperation::Result(ResultOp::LoadMem(sp, src), dst),
+                    );
                 }
                 (VariableLocation::Stack(src), VariableLocation::Stack(dst)) => {
-                    ops.push(RegisterOperation::Result(ResultOp::LoadMem(sp, src), tmp));
-                    ops.push(RegisterOperation::Update(UpdateOp::StoreMem(sp, dst, tmp)));
+                    new_op(
+                        ops,
+                        RegisterOperation::Result(ResultOp::LoadMem(sp, src), tmp),
+                    );
+                    new_op(
+                        ops,
+                        RegisterOperation::Update(UpdateOp::StoreMem(sp, dst, tmp)),
+                    );
                 }
             }
         }
 
         self.living_variables = target.clone();
         self.spill_stack = vec![None; self.reg_usage.spill_stack_max].into_boxed_slice();
+    }
+
+    fn alloc_variable_to_reg(&mut self, variable: Variable, reg: Reg) {
+        let info = self.reg_usage.reg_info.get(&reg).unwrap();
+        self.living_variables
+            .insert(variable, VariableLocation::Reg(info.reg));
+        self.free_regs.remove(info);
+
+        // if alloc callee-saved for the first time
+        if info.callee_save && !self.allocated_callee_save_regs.contains_key(&info.reg) {
+            let pos = self.find_empty_stack_pos();
+            // will be moved to stack at the beginning of function
+            self.allocated_callee_save_regs.insert(info.reg, pos);
+            self.spill_stack[pos as usize] = Some(Variable::new()); // take this stack position with fake variable
+        }
     }
 
     fn alloc_for_variable(
@@ -537,9 +595,9 @@ impl RegisterAllocator2 {
 
         // alloc reg
         assert!(!self.free_regs.is_empty());
-        let info = self.free_regs.pop_first().unwrap();
-        self.living_variables
-            .insert(variable, VariableLocation::Reg(info.reg));
+        let info = self.free_regs.first().unwrap().clone();
+        self.alloc_variable_to_reg(variable, info.reg);
+
         info.reg
     }
     fn free(&mut self, variable: Variable) {
@@ -573,10 +631,13 @@ impl RegisterAllocator2 {
                 assert_eq!(self.spill_stack[pos as usize], Some(variable));
                 let reg = self.alloc_for_variable(variable, index, ops);
                 if load_value {
-                    ops.push(RegisterOperation::Result(
-                        ResultOp::LoadMem(self.reg_usage.sp_reg, pos),
-                        reg,
-                    ));
+                    new_op(
+                        ops,
+                        RegisterOperation::Result(
+                            ResultOp::LoadMem(self.reg_usage.sp_reg, pos),
+                            reg,
+                        ),
+                    );
                 }
                 self.spill_stack[pos as usize] = None;
                 // free_regs and living_variables already updated in alloc
@@ -626,18 +687,27 @@ impl RegisterAllocator2 {
 
             match pos {
                 VariableLocation::Reg(target_reg) => {
+                    self.alloc_variable_to_reg(variable, target_reg);
+                    let info = self.reg_usage.reg_info.get(&target_reg).unwrap();
                     // now write reg to stack position
-                    ops.push(RegisterOperation::Update(UpdateOp::Mov(target_reg, reg)));
+                    new_op(
+                        ops,
+                        RegisterOperation::Update(UpdateOp::Mov(target_reg, reg)),
+                    );
                     self.living_variables
                         .insert(variable, VariableLocation::Reg(target_reg));
+                    self.free_regs.remove(info);
                 }
                 VariableLocation::Stack(pos) => {
                     // now write reg to stack position
-                    ops.push(RegisterOperation::Update(UpdateOp::StoreMem(
-                        self.reg_usage.sp_reg,
-                        pos,
-                        reg,
-                    )));
+                    new_op(
+                        ops,
+                        RegisterOperation::Update(UpdateOp::StoreMem(
+                            self.reg_usage.sp_reg,
+                            pos,
+                            reg,
+                        )),
+                    );
 
                     // update allocator: free reg, set living_variables and spill_stack
                     self.free_regs.insert(info.clone());
@@ -683,14 +753,7 @@ fn test_program((vo1, decl): (VariableOperation1, FuncDecl)) {
     println!("program: {vo3:#?}");
 
     let mut allocator = RegisterAllocator2::new(Rc::new(ra2_usages()), decl);
-    let mut ops = vec![];
-
-    allocator.touch_index = 0;
-    allocator.touch(&vo3);
-    println!("touch: {:#?}", allocator.variable_info);
-
-    allocator.touch_index = 0;
-    allocator.execute(&vo3, &mut ops);
+    let ops = allocator.run(&vo3);
     println!("execute: {:#?}", ops);
 }
 
@@ -711,6 +774,10 @@ fn test_loop() {
     test_program(vo1_loop_program());
 }
 #[test]
-fn test_spill() {
-    test_program(vo1_spill_program());
+fn test_spill1() {
+    test_program(vo1_spill_program(20, 1));
+}
+#[test]
+fn test_spill2() {
+    test_program(vo1_spill_program(5, 2));
 }
