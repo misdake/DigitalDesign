@@ -63,7 +63,7 @@ define_isa! {
     (j_offset_ne 0x56 OOII "jne: pc += 0x{0:x}{1:x}") // lo, hi
     (j_offset_ge 0x57 OOII "jge: pc += 0x{0:x}{1:x}") // lo, hi
     (jmp_reg     0x5e OORX "jmp:  pc = r{0:x}")
-    (call_reg    0x5f OORR "call: r{0:x} = pc + 1; pc = r{1:x}")
+    (call_reg    0x5f OORR "call: r{0} = pc + 1; pc = r{1}")
 
     (dev_recv 0x6 OIIR "r{0} <- device[{2}].out[{1}]")
     (dev_send 0x7 OIIR "device[{2}].in[{1}] <- r{0}")
