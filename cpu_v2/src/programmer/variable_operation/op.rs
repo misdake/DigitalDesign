@@ -16,7 +16,7 @@ impl<T> Oprand for T where T: Copy + Clone + Hash + Eq + PartialEq {}
 #[derive(Copy, Clone, Debug)]
 pub enum CondOp<T: Oprand> {
     Cmp(T, T, Cond),
-    CmpI(T, u16, Cond),
+    CmpI(T, u8, Cond),
 }
 impl<T: Oprand> CondOp<T> {
     pub(crate) fn convert<R: Oprand>(self, mut f: impl FnMut(T) -> R) -> CondOp<R> {
@@ -41,7 +41,7 @@ impl<T: Oprand> CondOp<T> {
 #[derive(Copy, Clone, Debug)]
 pub enum ResultOp<T: Oprand> {
     Add(T, T),
-    Addi(T, i8),
+    Addi(T, u8),
     LoadMem(T, u8), // base, offset
 }
 impl<T: Oprand> ResultOp<T> {

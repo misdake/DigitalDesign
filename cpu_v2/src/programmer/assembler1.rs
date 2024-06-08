@@ -158,6 +158,7 @@ impl Assembler1 {
         else_case(self);
         self.resolve_jmp(skip_else);
     }
+
     pub fn if_reg(&mut self, reg0: Reg, reg1: Reg, cond: Cond, if_case: impl FnOnce(&mut Self)) {
         self.inst(cmp_r(reg1, reg0));
         let skip_if = self.jmp_forward(cond);
@@ -179,5 +180,26 @@ impl Assembler1 {
         self.resolve_jmp(skip_if);
         else_case(self);
         self.resolve_jmp(skip_else);
+    }
+
+    pub fn loop_reg(
+        &mut self,
+        reg0: Reg,
+        reg1: Reg,
+        cond: Cond,
+        loop_block: impl FnOnce(&mut Self),
+    ) {
+        let slot = self.inst(cmp_r(reg1, reg0));
+        let skip_if = self.jmp_forward(cond);
+        loop_block(self);
+        self.jmp_back(slot, Cond::Always);
+        self.resolve_jmp(skip_if);
+    }
+    pub fn loop_u4(&mut self, reg0: Reg, u4: Imm4, cond: Cond, loop_block: impl FnOnce(&mut Self)) {
+        let slot = self.inst(cmp_i(u4, reg0));
+        let skip_if = self.jmp_forward(cond);
+        loop_block(self);
+        self.jmp_back(slot, Cond::Always);
+        self.resolve_jmp(skip_if);
     }
 }

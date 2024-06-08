@@ -49,7 +49,7 @@ define_isa! {
     // 0xf
 
     (load_hi 0x1 OIIR "r{0}_hi = 0x{2:x}{1:x}") // hi, lo, reg
-    (load_lo 0x2 OIIR "r{0}_lo = 0x{2:x}{1:x}") // hi, lo, reg
+    (load_lo 0x2 OIIR "r{0}_lo = 0x{2:x}{1:x}") // hi, lo, reg, clears high 8 bits
 
     (store_mem 0x3 ORIR "mem[r{2} + {1}] = r{0}")
     (load_mem  0x4 ORIR "r{0} = mem[r{2} + {1}]")
