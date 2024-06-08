@@ -49,9 +49,10 @@ pub struct RegisterUsages {
 }
 
 /// default register usages:
-///
-pub fn ra2_usages() -> RegisterUsages {
-    // return 0, 1, param 2, 3, 4, 5, return addr 13
+/// return 0, 1, param 2, 3, 4, 5, return addr 13
+/// caller save: 0, 1, 2, 3, 4, 5, 6, 13
+/// callee save: 7, 8, 9, 10, 11, 12
+pub fn default_reg_usages() -> RegisterUsages {
     let caller_save = vec![0, 1, 2, 3, 4, 5, 6, 13];
     let callee_save = vec![7, 8, 9, 10, 11, 12];
 

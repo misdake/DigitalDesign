@@ -4,9 +4,6 @@ use std::rc::Rc;
 
 use crate::programmer::*;
 
-#[derive(Clone, Debug)]
-pub struct RegisterOperation2(pub RegisterOperation);
-
 fn new_op(ops: &mut Vec<RegisterOperation>, op: RegisterOperation) {
     // println!("op: {:?}", op);
     ops.push(op);
@@ -15,14 +12,14 @@ fn new_op(ops: &mut Vec<RegisterOperation>, op: RegisterOperation) {
 /// register allocator with spilling
 /// each allocator defines a function
 #[derive(Clone)]
-pub struct RegisterAllocator2 {
+pub struct RegisterAllocator {
     /// defines calling convention
     reg_usage: Rc<RegisterUsages>,
 
     /// variable lifetime
     variable_info: HashMap<Variable, VariableTouchInfo>,
 
-    /// callee-saved fake variables, to be restored at return TODO check no param/return reg?
+    /// callee-saved fake variables, to be restored at return
     callee_saved_variables: HashMap<Reg, Variable>,
     /// ever allocated callee saved registers, reg -> stack offset
     /// when inserting -> save operation will happen at the beginning of function
@@ -73,7 +70,7 @@ impl VariableTouchInfo {
     }
 }
 
-impl RegisterAllocator2 {
+impl RegisterAllocator {
     pub fn new(reg_usage: Rc<RegisterUsages>, func_decl: FuncDecl) -> Self {
         let spill_stack_max = reg_usage.spill_stack_max;
 
@@ -374,7 +371,7 @@ impl RegisterAllocator2 {
                 );
             }
             VariableOperation3::Call(name, params, return_values) => {
-                //TODO check func param/return len?
+                // func param/return len to be checked by linker
 
                 let param_regs = self.reg_usage.params[0..params.len()]
                     .iter()
@@ -457,7 +454,7 @@ impl RegisterAllocator2 {
                     target_regs.insert(reg);
                     return_regs.push(reg);
                 }
-                // move return addr TODO not necessary to specify a register
+                // move return addr TODO not necessary to specify a register, if it's caller-saved and not return regs => just use it
                 let return_addr_reg = self.reg_usage.return_address;
                 targets.insert(*return_addr, VariableLocation::Reg(return_addr_reg));
                 target_regs.insert(return_addr_reg);
@@ -755,7 +752,7 @@ fn test_program((vo1, decl): (VariableOperation1, FuncDecl)) {
     let vo3 = VariableOperation3::from(vo2s);
     println!("program: {vo3:#?}");
 
-    let mut allocator = RegisterAllocator2::new(Rc::new(ra2_usages()), decl);
+    let mut allocator = RegisterAllocator::new(Rc::new(default_reg_usages()), decl);
     let ops = allocator.run(&vo3);
     println!("execute: {:#?}", ops);
 }

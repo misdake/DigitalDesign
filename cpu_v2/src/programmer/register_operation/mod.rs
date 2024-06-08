@@ -1,10 +1,10 @@
-mod register_allocator1;
-mod register_allocator2;
+mod linker;
+mod register_allocator;
 mod register_usages;
 mod state_sync;
 
-pub use register_allocator1::*;
-pub use register_allocator2::*;
+pub use linker::*;
+pub use register_allocator::*;
 pub use register_usages::*;
 pub(crate) use state_sync::*;
 
