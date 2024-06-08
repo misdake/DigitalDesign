@@ -48,6 +48,10 @@ pub struct RegisterUsages {
     pub spill_stack_max: usize,
 }
 
+pub const RETURN_ADDR_REG: u8 = 13;
+pub const SP_REG: u8 = 14;
+pub const TMP_REG: u8 = 15;
+
 /// default register usages:
 /// return 0, 1, param 2, 3, 4, 5, return addr 13
 /// caller save: 0, 1, 2, 3, 4, 5, 6, 13
@@ -78,7 +82,7 @@ pub fn default_reg_usages() -> RegisterUsages {
         params: [Reg(2), Reg(3), Reg(4), Reg(5)],
         return_address: Reg(13),
         return_values: [Reg(0), Reg(1)],
-        sp_reg: Reg(14),
+        sp_reg: Reg(14), //TODO remove field, use constant
         tmp_reg: Reg(15),
         spill_stack_max: 15,
     }

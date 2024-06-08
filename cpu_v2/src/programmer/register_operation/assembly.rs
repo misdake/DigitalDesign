@@ -3,8 +3,8 @@ use crate::FuncName;
 
 #[derive(Copy, Clone, Debug)]
 pub struct Relocation {
-    func_name: FuncName,
-    slots: [InstructionSlot; 2], // load_lo(tmp), load_hi(tmp)
+    pub func_name: FuncName,
+    pub slots: [InstructionSlot; 2], // load_lo(tmp), load_hi(tmp)
 }
 
 impl RegisterOperation {
@@ -127,7 +127,7 @@ impl RegisterOperation {
                     func_name: name,
                     slots: [asm.skip(), asm.skip()], // load_lo(tmp), load_hi(tmp)
                 });
-                asm.inst(call_reg(14, 13)); // call_reg(tmp, r13)
+                asm.inst(call_reg(TMP_REG, RETURN_ADDR_REG)); // call_reg(tmp, r13)
             }
             RegisterOperation::Return(ra, _rv) => {
                 asm.inst(jmp_reg(ra.0));
@@ -136,7 +136,7 @@ impl RegisterOperation {
     }
 }
 
-fn u8_to_hi_lo(v: u8) -> (u8, u8) {
+pub fn u8_to_hi_lo(v: u8) -> (u8, u8) {
     (v >> 4 & 0xf, v & 0xf)
 }
 
@@ -157,7 +157,7 @@ fn test_program((vo1, decl): (VariableOperation1, FuncDecl)) {
     let instructions = &instructions[0..end];
 
     for (addr, inst) in instructions.iter().enumerate() {
-        println!("{addr:04x}: {inst}");
+        println!("inst {addr:04x}: {inst}");
     }
 
     println!("relocations: {relocations:#?}");

@@ -108,6 +108,26 @@ pub(crate) fn vo1_func_program() -> (VariableOperation1, FuncDecl) {
 }
 
 #[cfg(test)]
+pub(crate) fn vo1_call_program() -> (VariableOperation1, FuncDecl) {
+    let a = Variable::new();
+    let b = Variable::new();
+    let r = Variable::new();
+    let ra = Variable::new();
+
+    let vo1 = VariableOperation1::List(vec![
+        VariableOperation1::Func("call", ra, func_params([])),
+        VariableOperation1::Alloc(a),
+        VariableOperation1::Alloc(b),
+        VariableOperation1::Update(UpdateOp::LoadImmLo(a, 10)),
+        VariableOperation1::Update(UpdateOp::LoadImmLo(b, 20)),
+        VariableOperation1::Call("add", func_params([a, b]), return_values([r])),
+        VariableOperation1::Return(ra, return_values([r])),
+    ]);
+    let decl = FuncDecl::new("call", &[], &["r"]);
+    (vo1, decl)
+}
+
+#[cfg(test)]
 pub(crate) fn vo1_if_program() -> (VariableOperation1, FuncDecl) {
     use crate::isa::Cond;
 

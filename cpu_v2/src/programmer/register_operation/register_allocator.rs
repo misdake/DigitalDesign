@@ -102,18 +102,30 @@ impl RegisterAllocator {
         self.touch_index = 0;
         self.execute(vo3, &mut ops);
 
-        let sp_reg = self.reg_usage.sp_reg;
-        let mut callee_save_ops = self
-            .allocated_callee_save_regs
-            .iter()
-            .map(|(&reg, &offset)| {
-                RegisterOperation::Update(UpdateOp::StoreMem(sp_reg, offset, reg))
-            })
-            .collect::<Vec<_>>();
+        let mut result = vec![];
 
-        callee_save_ops.append(&mut ops); // put ops at the beginning
-        ops = std::mem::take(&mut callee_save_ops);
-        ops
+        // sp -= stack frame size
+        new_op(
+            &mut result,
+            RegisterOperation::Update(UpdateOp::SubiAssign(
+                self.reg_usage.sp_reg,
+                self.reg_usage.spill_stack_max as u8,
+            )),
+        );
+
+        // callee-saved registers
+        let sp_reg = self.reg_usage.sp_reg;
+        self.allocated_callee_save_regs
+            .iter()
+            .for_each(|(&reg, &offset)| {
+                new_op(
+                    &mut result,
+                    RegisterOperation::Update(UpdateOp::StoreMem(sp_reg, offset, reg)),
+                );
+            });
+
+        result.extend(ops);
+        result
     }
 
     fn touch_write(&mut self, variable: Variable) {
@@ -340,15 +352,6 @@ impl RegisterAllocator {
                 //TODO name
 
                 // this is always the first operation
-
-                // sp -= stack frame size
-                new_op(
-                    ops,
-                    RegisterOperation::Update(UpdateOp::SubiAssign(
-                        self.reg_usage.sp_reg,
-                        self.reg_usage.spill_stack_max as u8,
-                    )),
-                );
 
                 // register params to registers
                 assert_eq!(params.len(), self.func_decl.param_names.len());
@@ -764,6 +767,10 @@ fn test_basic() {
 #[test]
 fn test_func() {
     test_program(vo1_func_program());
+}
+#[test]
+fn test_call() {
+    test_program(vo1_call_program());
 }
 #[test]
 fn test_if() {

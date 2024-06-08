@@ -1,11 +1,9 @@
 mod assembly;
-mod linker;
 mod register_allocator;
 mod register_usages;
 mod state_sync;
 
 pub use assembly::*;
-pub use linker::*;
 pub use register_allocator::*;
 pub use register_usages::*;
 pub(crate) use state_sync::*;

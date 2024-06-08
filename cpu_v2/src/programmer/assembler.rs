@@ -3,7 +3,7 @@ use std::collections::HashMap;
 
 #[derive(Copy, Clone, Debug)]
 pub struct InstructionSlot {
-    addr: usize,
+    pub addr: usize,
 }
 impl InstructionSlot {
     pub fn new(addr: usize) -> Self {
