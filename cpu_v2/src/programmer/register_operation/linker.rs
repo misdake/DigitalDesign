@@ -1,2 +1,1 @@
-pub struct Linker {
-}
+pub struct Linker {}

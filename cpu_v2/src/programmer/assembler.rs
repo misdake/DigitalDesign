@@ -1,12 +1,18 @@
 use crate::isa::*;
 use std::collections::HashMap;
 
-#[derive(Copy, Clone)]
+#[derive(Copy, Clone, Debug)]
 pub struct InstructionSlot {
     addr: usize,
 }
+impl InstructionSlot {
+    pub fn new(addr: usize) -> Self {
+        Self { addr }
+    }
+}
+
 pub struct PendingJump {
-    inst: fn(&mut Assembler1, InstructionSlot, Cond) -> InstructionSlot,
+    inst: fn(&mut Assembler, InstructionSlot, Cond) -> InstructionSlot,
     addr: InstructionSlot,
     cond: Cond,
 }
@@ -14,7 +20,7 @@ pub struct PendingJump {
 /// Assembler1
 /// this struct is the lowest level assembler at instruction level.
 /// supports raw instructions with jmp/branch support, hiding hardcoded jmp target addresses.
-pub struct Assembler1 {
+pub struct Assembler {
     instructions: Box<[Instruction; 65536]>,
     inst_valid: Box<[bool; 65536]>,
     comments: HashMap<usize, String>,
@@ -23,8 +29,8 @@ pub struct Assembler1 {
 }
 
 /// core functions
-impl Assembler1 {
-    pub fn new() -> Self {
+impl Default for Assembler {
+    fn default() -> Self {
         Self {
             instructions: box [halt(); 65536],
             inst_valid: box [false; 65536],
@@ -32,9 +38,13 @@ impl Assembler1 {
             cursor: 0,
         }
     }
-
+}
+impl Assembler {
     pub fn set_cursor(&mut self, addr: usize) {
         self.cursor = addr;
+    }
+    pub fn get_cursor(&self) -> usize {
+        self.cursor
     }
     pub fn inst_at(&mut self, inst: Instruction, addr: usize) -> InstructionSlot {
         assert!(!self.inst_valid[addr]);
@@ -96,7 +106,7 @@ fn cond_to_jmp_inst(cond: Cond) -> fn(Imm4, Imm4) -> Instruction {
     };
     inst
 }
-fn jmp_forward(asm: &mut Assembler1, base: InstructionSlot, cond: Cond) -> InstructionSlot {
+fn jmp_forward(asm: &mut Assembler, base: InstructionSlot, cond: Cond) -> InstructionSlot {
     let (hi, lo, comment) = addr_offset(base.addr, asm.cursor);
     asm.comment_at(base, comment);
 
@@ -106,7 +116,7 @@ fn jmp_forward(asm: &mut Assembler1, base: InstructionSlot, cond: Cond) -> Instr
 }
 
 /// jump/branch/call
-impl Assembler1 {
+impl Assembler {
     pub fn jmp_forward(&mut self, cond: Cond) -> PendingJump {
         let cursor = self.cursor;
         self.skip();

@@ -1,28 +1,29 @@
 use crate::programmer::*;
 use crate::FuncName;
 
+#[derive(Copy, Clone, Debug)]
 pub struct Relocation {
     func_name: FuncName,
-    slots: [InstructionSlot; 3],
+    slots: [InstructionSlot; 2], // load_lo(tmp), load_hi(tmp)
 }
 
 impl RegisterOperation {
     /// convert register operation to instructions, write to assembler, return relocation info
-    pub fn write_assembly(
+    pub fn write_function_assembly(
         ops: &Vec<RegisterOperation>,
-        assembler1: &mut Assembler1,
+        assembler: &mut Assembler,
         start_address: usize,
     ) -> Vec<Relocation> {
-        assembler1.set_cursor(start_address);
+        assembler.set_cursor(start_address);
 
         let mut r = vec![];
         for op in ops {
-            Self::write_asm_inner(op, assembler1, &mut r);
+            Self::write_asm_inner(op, assembler, &mut r);
         }
 
         r
     }
-    fn write_asm_inner(op: &RegisterOperation, asm: &mut Assembler1, r: &mut Vec<Relocation>) {
+    fn write_asm_inner(op: &RegisterOperation, asm: &mut Assembler, r: &mut Vec<Relocation>) {
         use crate::Instruction::*;
         match op {
             RegisterOperation::Result(op, dst) => {
@@ -117,12 +118,16 @@ impl RegisterOperation {
                     }),
                 }
             }
-            RegisterOperation::Func(_name, _ra, _param) => {}
+            RegisterOperation::Func(name, _ra, _param) => {
+                let slot = InstructionSlot::new(asm.get_cursor());
+                asm.comment_at(slot, format!("fn {name}")); //TODO write param+return?
+            }
             RegisterOperation::Call(name, _param, _rv) => {
                 r.push(Relocation {
                     func_name: name,
-                    slots: [asm.skip(), asm.skip(), asm.skip()], // load_lo(tmp), load_hi(tmp), call_reg(tmp, r13)
+                    slots: [asm.skip(), asm.skip()], // load_lo(tmp), load_hi(tmp)
                 });
+                asm.inst(call_reg(14, 13)); // call_reg(tmp, r13)
             }
             RegisterOperation::Return(ra, _rv) => {
                 asm.inst(jmp_reg(ra.0));
@@ -133,4 +138,32 @@ impl RegisterOperation {
 
 fn u8_to_hi_lo(v: u8) -> (u8, u8) {
     (v >> 4 & 0xf, v & 0xf)
+}
+
+#[cfg(test)]
+fn test_program((vo1, decl): (VariableOperation1, FuncDecl)) {
+    let vo2s = VariableOperation2Scope::from(vo1);
+    let vo3 = VariableOperation3::from(vo2s);
+
+    use std::rc::Rc;
+    let mut allocator = RegisterAllocator::new(Rc::new(default_reg_usages()), decl);
+    let ops = allocator.run(&vo3);
+
+    let mut asm = Assembler::default();
+    let relocations = RegisterOperation::write_function_assembly(&ops, &mut asm, 0);
+    let end = asm.get_cursor();
+
+    let instructions = asm.finish();
+    let instructions = &instructions[0..end];
+
+    for (addr, inst) in instructions.iter().enumerate() {
+        println!("{addr:04x}: {inst}");
+    }
+
+    println!("relocations: {relocations:#?}");
+}
+
+#[test]
+fn test_basic() {
+    test_program(vo1_basic_program());
 }
