@@ -48,6 +48,7 @@ impl RegisterOperation {
                     UpdateOp::AddiAssign(dst, v) => asm.inst(addi(dst.0, v, dst.0)),
                     UpdateOp::SubiAssign(dst, v) => asm.inst(subi(dst.0, v, dst.0)),
                     UpdateOp::StoreMem(base, offset, v) => asm.inst(store_mem(base.0, offset, v.0)),
+                    UpdateOp::Halt() => asm.inst(halt()),
                 };
             }
             RegisterOperation::List(list) => {
@@ -153,7 +154,7 @@ fn test_program((vo1, decl): (VariableOperation1, FuncDecl)) {
     let relocations = RegisterOperation::write_function_assembly(&ops, &mut asm, 0);
     let end = asm.get_cursor();
 
-    let instructions = asm.finish();
+    let instructions = asm.slice_ref();
     let instructions = &instructions[0..end];
 
     for (addr, inst) in instructions.iter().enumerate() {

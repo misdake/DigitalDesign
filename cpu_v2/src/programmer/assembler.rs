@@ -75,6 +75,9 @@ impl Assembler {
     pub fn finish(&self) -> Box<[Instruction; 65536]> {
         self.instructions.clone()
     }
+    pub fn slice_ref(&self) -> &[Instruction] {
+        self.instructions.as_ref()
+    }
 }
 
 fn addr_offset(from: usize, to: usize) -> (u8, u8, String) {

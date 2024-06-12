@@ -84,6 +84,8 @@ pub enum UpdateOp<T: Oprand> {
     SubiAssign(T, u8),
     /// base, offset, value
     StoreMem(T, u8, T),
+
+    Halt(),
 }
 impl<T: Oprand> UpdateOp<T> {
     pub fn touch(&self, mut f: impl FnMut(&T, TouchType)) {
@@ -104,6 +106,7 @@ impl<T: Oprand> UpdateOp<T> {
                 f(base, TouchType::Input);
                 f(value, TouchType::Input);
             }
+            UpdateOp::Halt() => {}
         }
     }
 }

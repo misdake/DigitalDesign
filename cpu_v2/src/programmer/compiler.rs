@@ -1,7 +1,4 @@
-use crate::{
-    default_reg_usages, Assembler, FuncDecl, Linker, RegisterAllocator, RegisterOperation,
-    VariableOperation1, VariableOperation2Scope, VariableOperation3,
-};
+use crate::*;
 
 #[derive(Default)]
 pub struct Compiler {
@@ -35,7 +32,8 @@ impl Compiler {
     }
 }
 
-fn test_program(functions: Vec<(VariableOperation1, FuncDecl)>) {
+#[cfg(test)]
+fn test_program(functions: Vec<(VariableOperation1, FuncDecl)>) -> Vec<Instruction> {
     let mut compiler = Compiler::default();
     for (vo1, decl) in functions {
         compiler.new_function((vo1.clone(), decl.clone()));
@@ -43,17 +41,28 @@ fn test_program(functions: Vec<(VariableOperation1, FuncDecl)>) {
     let asm = compiler.finish();
 
     let end = asm.get_cursor();
-    let instructions = asm.finish();
-    let instructions = &instructions[0..end];
+    let instructions = asm.slice_ref();
+    let instructions = instructions[0..end].to_vec();
 
     for (addr, inst) in instructions.iter().enumerate() {
         println!("inst {addr:04x}: {inst}");
     }
+
+    instructions
 }
 
-#[cfg(test)]
-use crate::programmer::*;
 #[test]
 fn test_basic() {
-    test_program(vec![vo1_call_program(), vo1_func_program()])
+    use crate::*;
+    let x = 12;
+    let y = 43;
+
+    let instructions = test_program(vec![vo1_call_program(x, y), vo1_func_program()]);
+    let mut sim = SimEnv::new(&instructions);
+    let cycles = sim.run_to_halt(100, |pc, inst| {
+        println!("pc {pc:04x}: {inst}");
+    });
+    println!("r0 = {}", sim.state.reg[0]);
+    println!("cycles = {}", cycles);
+    assert_eq!(sim.state.reg[0], (x + y) as u16);
 }

@@ -83,8 +83,13 @@ impl SimEnv {
         }
     }
 
-    pub fn run_to_halt(&mut self, max_cycle: usize) -> usize {
+    pub fn run_to_halt(
+        &mut self,
+        max_cycle: usize,
+        before_inst: impl Fn(u16, Instruction),
+    ) -> usize {
         for i in 0..max_cycle {
+            before_inst(self.state.pc, self.inst[self.state.pc as usize]);
             let change = self.eval();
             if change.halt {
                 return i;

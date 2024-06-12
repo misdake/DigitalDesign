@@ -7,6 +7,7 @@ pub struct Linker {
     functions: HashMap<FuncName, FunctionObj>,
 }
 
+#[allow(unused)] //TODO use decl
 struct FunctionObj {
     inst_range: (usize, usize),
     func_decl: FuncDecl,

@@ -278,6 +278,9 @@ impl RegisterAllocator {
                         RegisterOperation::Update(UpdateOp::StoreMem(base, *offset, r0)),
                     );
                 }
+                UpdateOp::Halt() => {
+                    new_op(ops, RegisterOperation::Update(UpdateOp::Halt()));
+                }
             },
             VariableOperation3::Write(v) => {
                 assert!(self.last_result.is_some());
@@ -770,7 +773,7 @@ fn test_func() {
 }
 #[test]
 fn test_call() {
-    test_program(vo1_call_program());
+    test_program(vo1_call_program(10, 20));
 }
 #[test]
 fn test_if() {
