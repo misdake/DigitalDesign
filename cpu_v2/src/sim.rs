@@ -69,6 +69,26 @@ impl StateChange {
     fn halt(&mut self) {
         self.halt = true;
     }
+
+    pub fn desc(&self, pc: u16) -> String {
+        let mut outputs = vec![];
+        if pc + 1 != self.pc_next {
+            outputs.push(format!("pc = {:04x}", self.pc_next));
+        }
+        if let Some((r, data)) = self.reg {
+            outputs.push(format!("r{0} = {1} ({1:04x})", r, data));
+        }
+        if let Some((addr, data)) = self.mem {
+            outputs.push(format!("mem[{0:04x}] = {1} ({1:04x})", addr, data));
+        }
+        if let Some(flags) = self.flags {
+            outputs.push(format!("flags = {0} ({0:04x})", flags));
+        }
+        if self.halt {
+            outputs.push("halt".to_string());
+        }
+        outputs.join(", ")
+    }
 }
 
 impl SimEnv {
@@ -86,11 +106,11 @@ impl SimEnv {
     pub fn run_to_halt(
         &mut self,
         max_cycle: usize,
-        before_inst: impl Fn(u16, Instruction),
+        on_inst: impl Fn(u16, Instruction, &StateChange),
     ) -> usize {
         for i in 0..max_cycle {
-            before_inst(self.state.pc, self.inst[self.state.pc as usize]);
             let change = self.eval();
+            on_inst(self.state.pc, self.inst[self.state.pc as usize], &change);
             if change.halt {
                 return i;
             }

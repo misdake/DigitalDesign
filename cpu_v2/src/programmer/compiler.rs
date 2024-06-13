@@ -59,8 +59,10 @@ fn test_basic() {
 
     let instructions = test_program(vec![vo1_call_program(x, y), vo1_func_program()]);
     let mut sim = SimEnv::new(&instructions);
-    let cycles = sim.run_to_halt(100, |pc, inst| {
-        println!("pc {pc:04x}: {inst}");
+    let cycles = sim.run_to_halt(100, |pc, inst, change| {
+        let inst = format!("pc {pc:04x}: {inst}");
+        let change = change.desc(pc);
+        println!("{inst:40}{change}");
     });
     println!("r0 = {}", sim.state.reg[0]);
     println!("cycles = {}", cycles);
