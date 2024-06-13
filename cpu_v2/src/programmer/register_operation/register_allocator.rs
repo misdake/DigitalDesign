@@ -221,70 +221,16 @@ impl RegisterAllocator {
             VariableOperation3::Alloc(v) => {
                 self.alloc_for_variable(*v, self.touch_index, ops);
             }
-            //TODO convert?
             VariableOperation3::Result(op) => {
-                self.last_result = Some(match op {
-                    ResultOp::Add(r1, r2) => {
-                        let r1 = self.prepare_variable(*r1, self.touch_index, true, ops);
-                        let r2 = self.prepare_variable(*r2, self.touch_index, true, ops);
-                        ResultOp::Add(r1, r2)
-                    }
-                    ResultOp::Addi(r1, i) => {
-                        let r1 = self.prepare_variable(*r1, self.touch_index, true, ops);
-                        ResultOp::Addi(r1, *i)
-                    }
-                    ResultOp::LoadMem(base, offset) => {
-                        let base = self.prepare_variable(*base, self.touch_index, true, ops);
-                        ResultOp::LoadMem(base, *offset)
-                    }
-                });
+                self.last_result =
+                    Some(op.convert(|v| self.prepare_variable(v, self.touch_index, true, ops)));
             }
-            //TODO convert?
-            VariableOperation3::Update(op) => match op {
-                UpdateOp::LoadImmLo(r0, u8) => {
-                    let r0 = self.prepare_variable(*r0, self.touch_index, false, ops);
-                    new_op(ops, RegisterOperation::Update(UpdateOp::LoadImmLo(r0, *u8)));
-                }
-                UpdateOp::LoadImmHi(r0, u8) => {
-                    let r0 = self.prepare_variable(*r0, self.touch_index, true, ops);
-                    new_op(ops, RegisterOperation::Update(UpdateOp::LoadImmHi(r0, *u8)));
-                }
-                UpdateOp::Mov(r0, r1) => {
-                    let r0 = self.prepare_variable(*r0, self.touch_index, false, ops);
-                    let r1 = self.prepare_variable(*r1, self.touch_index, true, ops);
-                    new_op(ops, RegisterOperation::Update(UpdateOp::Mov(r0, r1)));
-                }
-                UpdateOp::AddAssign(r0, r1) => {
-                    let r0 = self.prepare_variable(*r0, self.touch_index, true, ops);
-                    let r1 = self.prepare_variable(*r1, self.touch_index, true, ops);
-                    new_op(ops, RegisterOperation::Update(UpdateOp::AddAssign(r0, r1)));
-                }
-                UpdateOp::AddiAssign(r0, u4) => {
-                    let r0 = self.prepare_variable(*r0, self.touch_index, true, ops);
-                    new_op(
-                        ops,
-                        RegisterOperation::Update(UpdateOp::AddiAssign(r0, *u4)),
-                    );
-                }
-                UpdateOp::SubiAssign(r0, u4) => {
-                    let r0 = self.prepare_variable(*r0, self.touch_index, true, ops);
-                    new_op(
-                        ops,
-                        RegisterOperation::Update(UpdateOp::SubiAssign(r0, *u4)),
-                    );
-                }
-                UpdateOp::StoreMem(base, offset, r0) => {
-                    let r0 = self.prepare_variable(*r0, self.touch_index, true, ops);
-                    let base = self.prepare_variable(*base, self.touch_index, true, ops);
-                    new_op(
-                        ops,
-                        RegisterOperation::Update(UpdateOp::StoreMem(base, *offset, r0)),
-                    );
-                }
-                UpdateOp::Halt() => {
-                    new_op(ops, RegisterOperation::Update(UpdateOp::Halt()));
-                }
-            },
+            VariableOperation3::Update(op) => {
+                let op = op.convert(|v, load_value| {
+                    self.prepare_variable(v, self.touch_index, load_value, ops)
+                });
+                new_op(ops, RegisterOperation::Update(op));
+            }
             VariableOperation3::Write(v) => {
                 assert!(self.last_result.is_some());
                 let op = self.last_result.take().unwrap();

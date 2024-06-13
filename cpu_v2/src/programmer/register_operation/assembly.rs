@@ -28,6 +28,11 @@ impl RegisterOperation {
         match op {
             RegisterOperation::Result(op, dst) => {
                 match *op {
+                    ResultOp::Inv(v) => asm.inst(inv(v.0, dst.0)),
+                    ResultOp::Neg(v) => asm.inst(neg(v.0, dst.0)),
+                    ResultOp::Not0(v) => asm.inst(not0(v.0, dst.0)),
+                    ResultOp::Cnt1(v) => asm.inst(cnt1(v.0, dst.0)),
+                    ResultOp::Log2(v) => asm.inst(log2(v.0, dst.0)),
                     ResultOp::Add(v2, v1) => asm.inst(add(v2.0, v1.0, dst.0)),
                     ResultOp::Addi(v2, v) => asm.inst(addi(v2.0, v, dst.0)),
                     ResultOp::LoadMem(base, offset) => asm.inst(load_mem(base.0, offset, dst.0)),
@@ -35,6 +40,11 @@ impl RegisterOperation {
             }
             RegisterOperation::Update(op) => {
                 match *op {
+                    UpdateOp::Inv(dst) => asm.inst(inv(dst.0, dst.0)),
+                    UpdateOp::Neg(dst) => asm.inst(neg(dst.0, dst.0)),
+                    UpdateOp::Not0(dst) => asm.inst(not0(dst.0, dst.0)),
+                    UpdateOp::Cnt1(dst) => asm.inst(cnt1(dst.0, dst.0)),
+                    UpdateOp::Log2(dst) => asm.inst(log2(dst.0, dst.0)),
                     UpdateOp::LoadImmLo(dst, v) => {
                         let (hi, lo) = u8_to_hi_lo(v);
                         asm.inst(load_lo(hi, lo, dst.0))
