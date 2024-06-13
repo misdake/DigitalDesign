@@ -137,6 +137,9 @@ impl RegisterOperation {
     }
 }
 
+pub fn u16_to_hi_lo(v: u16) -> (u8, u8) {
+    ((v >> 8 & 0xff) as u8, (v & 0xff) as u8)
+}
 pub fn u8_to_hi_lo(v: u8) -> (u8, u8) {
     (v >> 4 & 0xf, v & 0xf)
 }

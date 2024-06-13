@@ -32,8 +32,7 @@ impl Compiler {
     }
 }
 
-#[cfg(test)]
-fn test_program(functions: Vec<(VariableOperation1, FuncDecl)>) -> Vec<Instruction> {
+pub fn compile_program(functions: Vec<(VariableOperation1, FuncDecl)>) -> Vec<Instruction> {
     let mut compiler = Compiler::default();
     for (vo1, decl) in functions {
         compiler.new_function((vo1.clone(), decl.clone()));
@@ -51,19 +50,24 @@ fn test_program(functions: Vec<(VariableOperation1, FuncDecl)>) -> Vec<Instructi
     instructions
 }
 
+pub fn simulate(instructions: &[Instruction], max_cycles: usize) -> (SimEnv, usize) {
+    let mut sim = SimEnv::new(instructions);
+    let cycles = sim.run_to_halt(max_cycles, |pc, inst, change| {
+        let inst = format!("pc {pc:04x}: {inst}");
+        let change = change.desc(pc);
+        println!("{inst:40}{change}");
+    });
+    (sim, cycles)
+}
+
 #[test]
 fn test_basic() {
     use crate::*;
     let x = 12;
     let y = 43;
 
-    let instructions = test_program(vec![vo1_call_program(x, y), vo1_func_program()]);
-    let mut sim = SimEnv::new(&instructions);
-    let cycles = sim.run_to_halt(100, |pc, inst, change| {
-        let inst = format!("pc {pc:04x}: {inst}");
-        let change = change.desc(pc);
-        println!("{inst:40}{change}");
-    });
+    let instructions = compile_program(vec![vo1_call_program(x, y), vo1_func_program()]);
+    let (sim, cycles) = simulate(&instructions, 100);
     println!("r0 = {}", sim.state.reg[0]);
     println!("cycles = {}", cycles);
     assert_eq!(sim.state.reg[0], (x + y) as u16);

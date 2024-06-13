@@ -71,7 +71,7 @@ impl<T: Oprand> ResultOp<T> {
 #[derive(Copy, Clone, Debug)]
 pub enum UpdateOp<T: Oprand> {
     /// dst, value
-    LoadImmLo(T, u8), //TODO actually this is a resultop
+    LoadImmLo(T, u8),
     /// dst, value
     LoadImmHi(T, u8),
     /// dst, src
