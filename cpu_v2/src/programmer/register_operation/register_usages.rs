@@ -80,10 +80,10 @@ pub fn default_reg_usages() -> RegisterUsages {
         caller_save_regs: caller_save.into_iter().map(Reg).collect(),
         callee_save_regs: callee_save.into_iter().map(Reg).collect(),
         params: [Reg(2), Reg(3), Reg(4), Reg(5)],
-        return_address: Reg(13),
+        return_address: Reg(RETURN_ADDR_REG),
         return_values: [Reg(0), Reg(1)],
-        sp_reg: Reg(14), //TODO remove field, use constant
-        tmp_reg: Reg(15),
+        sp_reg: Reg(SP_REG),
+        tmp_reg: Reg(TMP_REG),
         spill_stack_max: 15,
     }
 }

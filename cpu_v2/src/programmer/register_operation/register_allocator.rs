@@ -104,6 +104,7 @@ impl RegisterAllocator {
 
         let mut result = vec![];
 
+        //TODO if program doesn't touch any stack space -> skip sp +- 15
         // sp -= stack frame size
         new_op(
             &mut result,
@@ -220,6 +221,7 @@ impl RegisterAllocator {
             VariableOperation3::Alloc(v) => {
                 self.alloc_for_variable(*v, self.touch_index, ops);
             }
+            //TODO convert?
             VariableOperation3::Result(op) => {
                 self.last_result = Some(match op {
                     ResultOp::Add(r1, r2) => {
@@ -237,6 +239,7 @@ impl RegisterAllocator {
                     }
                 });
             }
+            //TODO convert?
             VariableOperation3::Update(op) => match op {
                 UpdateOp::LoadImmLo(r0, u8) => {
                     let r0 = self.prepare_variable(*r0, self.touch_index, false, ops);
