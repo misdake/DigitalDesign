@@ -38,7 +38,7 @@ pub enum VariableOperation1 {
         Box<VariableOperation1>,
         Option<Box<VariableOperation1>>,
     ),
-    /// condition, loop body
+    /// while condition, loop body
     Loop(CondOp<Variable>, Box<VariableOperation1>), //TODO support continue and break
 
     // external flow control
