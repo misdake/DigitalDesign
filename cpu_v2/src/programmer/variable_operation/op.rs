@@ -104,11 +104,11 @@ pub enum UpdateOp<T: Oprand> {
     Log2(T),
     // binary
     /// dst = dst << u4
-    ShiftLeftU(T, u8),
+    Lsl(T, u8),
     /// dst = dst >> u4
-    ShiftRightU(T, u8),
+    Lsr(T, u8),
     /// dst = dst >>> u4
-    ShiftRightS(T, u8),
+    Asr(T, u8),
     /// flags = compare(v1, v2)
     CmpReg(T, T),
     /// flags = compare(v, u4)
@@ -163,9 +163,9 @@ impl<T: Oprand> UpdateOp<T> {
             Not0(v) => Not0(f(v, true)),
             Cnt1(v) => Cnt1(f(v, true)),
             Log2(v) => Log2(f(v, true)),
-            ShiftLeftU(dst, u4) => ShiftLeftU(f(dst, true), u4),
-            ShiftRightU(dst, u4) => ShiftRightU(f(dst, true), u4),
-            ShiftRightS(dst, u4) => ShiftRightS(f(dst, true), u4),
+            Lsl(dst, u4) => Lsl(f(dst, true), u4),
+            Lsr(dst, u4) => Lsr(f(dst, true), u4),
+            Asr(dst, u4) => Asr(f(dst, true), u4),
             CmpReg(v1, v2) => CmpReg(f(v1, true), f(v2, true)),
             CmpImm(v, u4) => CmpImm(f(v, true), u4),
             GetPc(dst, u4) => GetPc(f(dst, true), u4),
