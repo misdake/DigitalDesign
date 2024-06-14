@@ -189,8 +189,7 @@ fn test_program((vo1, decl): (VariableOperation1, FuncDecl)) {
     let vo3 = VariableOperation3::from(vo2s);
 
     use std::rc::Rc;
-    let mut allocator = RegisterAllocator::new(Rc::new(default_reg_usages()), decl);
-    let ops = allocator.run(&vo3);
+    let ops = RegisterAllocator::execute(Rc::new(default_reg_usages()), decl, &vo3);
 
     let mut asm = Assembler::default();
     let relocations = RegisterOperation::write_function_assembly(&ops, &mut asm, 0);

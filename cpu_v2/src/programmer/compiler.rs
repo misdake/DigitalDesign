@@ -13,8 +13,7 @@ impl Compiler {
         let vo3 = VariableOperation3::from(vo2s);
 
         use std::rc::Rc;
-        let mut allocator = RegisterAllocator::new(Rc::new(default_reg_usages()), decl.clone());
-        let ops = allocator.run(&vo3);
+        let ops = RegisterAllocator::execute(Rc::new(default_reg_usages()), decl.clone(), &vo3);
 
         let relocations =
             RegisterOperation::write_function_assembly(&ops, &mut self.asm, self.cursor);

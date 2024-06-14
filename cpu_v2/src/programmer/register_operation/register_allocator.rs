@@ -30,6 +30,10 @@ pub struct RegisterAllocator {
     living_variables: HashMap<Variable, VariableLocation>,
     /// spilled variables for each stack position, len = spill_stack_max
     spill_stack: Box<[Option<Variable>]>,
+    /// whether to enable stack spilling
+    enable_stack: bool,
+    /// ever spilled any variable to stack
+    stack_used: bool,
 
     // function definition, for code printing and param/return count check
     func_decl: FuncDecl,
@@ -71,7 +75,22 @@ impl VariableTouchInfo {
 }
 
 impl RegisterAllocator {
-    pub fn new(reg_usage: Rc<RegisterUsages>, func_decl: FuncDecl) -> Self {
+    pub fn execute(
+        reg_usage: Rc<RegisterUsages>,
+        func_decl: FuncDecl,
+        vo3: &VariableOperation3,
+    ) -> Vec<RegisterOperation> {
+        let mut ra1 = Self::new(reg_usage, func_decl, true);
+        let result = ra1.run(vo3);
+        if !ra1.stack_used {
+            let mut ra2 = Self::new(ra1.reg_usage, ra1.func_decl, false);
+            ra2.run(vo3)
+        } else {
+            result
+        }
+    }
+
+    pub fn new(reg_usage: Rc<RegisterUsages>, func_decl: FuncDecl, enable_stack: bool) -> Self {
         let spill_stack_max = reg_usage.spill_stack_max;
 
         // all general purpose registers are free, callee-saved registers are handled in alloc_variable
@@ -85,6 +104,8 @@ impl RegisterAllocator {
             free_regs,
             living_variables: HashMap::new(),
             spill_stack: vec![None; spill_stack_max].into_boxed_slice(),
+            enable_stack,
+            stack_used: false,
 
             func_decl,
 
@@ -100,19 +121,20 @@ impl RegisterAllocator {
         self.touch(vo3);
 
         self.touch_index = 0;
-        self.execute(vo3, &mut ops);
+        self.execute_vo3(vo3, &mut ops);
 
         let mut result = vec![];
 
-        //TODO if program doesn't touch any stack space -> skip sp +- 15
         // sp -= stack frame size
-        new_op(
-            &mut result,
-            RegisterOperation::Update(UpdateOp::SubiAssign(
-                self.reg_usage.sp_reg,
-                self.reg_usage.spill_stack_max as u8,
-            )),
-        );
+        if self.enable_stack {
+            new_op(
+                &mut result,
+                RegisterOperation::Update(UpdateOp::SubiAssign(
+                    self.reg_usage.sp_reg,
+                    self.reg_usage.spill_stack_max as u8,
+                )),
+            );
+        }
 
         // callee-saved registers
         let sp_reg = self.reg_usage.sp_reg;
@@ -123,7 +145,12 @@ impl RegisterAllocator {
                     &mut result,
                     RegisterOperation::Update(UpdateOp::StoreMem(sp_reg, offset, reg)),
                 );
+                self.stack_used = true;
             });
+
+        if self.stack_used && !self.enable_stack {
+            panic!("stack disabled but used");
+        }
 
         result.extend(ops);
         result
@@ -215,7 +242,7 @@ impl RegisterAllocator {
     }
 
     /// execute, write register operations
-    fn execute(&mut self, op: &VariableOperation3, ops: &mut Vec<RegisterOperation>) {
+    fn execute_vo3(&mut self, op: &VariableOperation3, ops: &mut Vec<RegisterOperation>) {
         self.touch_index += 1;
         match op {
             VariableOperation3::Alloc(v) => {
@@ -242,14 +269,14 @@ impl RegisterAllocator {
             }
             VariableOperation3::List(list) => {
                 for op in list {
-                    self.execute(op, ops);
+                    self.execute_vo3(op, ops);
                 }
             }
             VariableOperation3::If(cond, after_cond, then_block, else_block) => {
                 let cond = self.prepare_cond(self.touch_index, ops, cond);
                 if let Some(after_cond) = after_cond {
                     // free operations only
-                    self.execute(after_cond.as_ref(), ops);
+                    self.execute_vo3(after_cond.as_ref(), ops);
                 }
                 // remember locations of all living variables
                 let mut living_prev = self.living_variables.clone();
@@ -259,7 +286,7 @@ impl RegisterAllocator {
 
                 // process then_block
                 let mut then_ops = vec![];
-                self.execute(then_block.as_ref(), &mut then_ops);
+                self.execute_vo3(then_block.as_ref(), &mut then_ops);
 
                 // remove freed variables in target state
                 living_prev.retain(|v, _| self.living_variables.contains_key(v));
@@ -272,7 +299,7 @@ impl RegisterAllocator {
                     else_ops = Some(vec![]);
                     // start from the same index
                     let else_ops = else_ops.as_mut().unwrap();
-                    else_allocator.execute(else_block, else_ops);
+                    else_allocator.execute_vo3(else_block, else_ops);
 
                     // restore locations of all living variables
                     else_allocator.restore_variable_locations(&living_prev, else_ops);
@@ -291,7 +318,7 @@ impl RegisterAllocator {
             VariableOperation3::Loop(cond, loop_block) => {
                 let cond = self.prepare_cond(self.touch_index, ops, cond);
                 let mut loop_ops = vec![];
-                self.execute(loop_block.as_ref(), &mut loop_ops);
+                self.execute_vo3(loop_block.as_ref(), &mut loop_ops);
                 new_op(
                     ops,
                     RegisterOperation::Loop(
@@ -301,8 +328,6 @@ impl RegisterAllocator {
                 );
             }
             VariableOperation3::Func(_name, return_addr, params) => {
-                //TODO name
-
                 // this is always the first operation
 
                 // register params to registers
@@ -429,13 +454,15 @@ impl RegisterAllocator {
                 }
 
                 // sp += stack frame size
-                new_op(
-                    ops,
-                    RegisterOperation::Update(UpdateOp::AddiAssign(
-                        self.reg_usage.sp_reg,
-                        self.reg_usage.spill_stack_max as u8,
-                    )),
-                );
+                if self.enable_stack {
+                    new_op(
+                        ops,
+                        RegisterOperation::Update(UpdateOp::AddiAssign(
+                            self.reg_usage.sp_reg,
+                            self.reg_usage.spill_stack_max as u8,
+                        )),
+                    );
+                }
 
                 new_op(ops, RegisterOperation::Return(return_addr_reg, return_regs));
             }
@@ -663,6 +690,7 @@ impl RegisterAllocator {
                             reg,
                         )),
                     );
+                    self.stack_used = true;
 
                     // update allocator: free reg, set living_variables and spill_stack
                     self.free_regs.insert(info.clone());
@@ -707,8 +735,7 @@ fn test_program((vo1, decl): (VariableOperation1, FuncDecl)) {
     let vo3 = VariableOperation3::from(vo2s);
     println!("program: {vo3:#?}");
 
-    let mut allocator = RegisterAllocator::new(Rc::new(default_reg_usages()), decl);
-    let ops = allocator.run(&vo3);
+    let ops = RegisterAllocator::execute(Rc::new(default_reg_usages()), decl, &vo3);
     println!("execute: {:#?}", ops);
 }
 
