@@ -46,10 +46,22 @@ pub enum ResultOp<T: Oprand> {
     Not0(T),
     Cnt1(T),
     Log2(T),
+    /// pc + u4
+    GetPc(u8),
 
+    Mov(T),
+    And(T, T),
+    Or(T, T),
+    Xor(T, T),
     Add(T, T),
     Addi(T, u8),
+    Sub(T, T),
+    Subi(T, u8),
+
     LoadMem(T, u8), // base, offset
+
+    /// device, channel
+    DeviceReceive(u8, u8),
 }
 impl<T: Oprand> ResultOp<T> {
     pub fn touch(&self, mut f: impl FnMut(&T, TouchType)) {
@@ -58,44 +70,82 @@ impl<T: Oprand> ResultOp<T> {
 }
 impl<T: Oprand> ResultOp<T> {
     pub fn convert<R: Oprand>(self, mut f: impl FnMut(T) -> R) -> ResultOp<R> {
+        use ResultOp::*;
         match self {
-            ResultOp::Inv(v) => ResultOp::Inv(f(v)),
-            ResultOp::Neg(v) => ResultOp::Neg(f(v)),
-            ResultOp::Not0(v) => ResultOp::Not0(f(v)),
-            ResultOp::Cnt1(v) => ResultOp::Cnt1(f(v)),
-            ResultOp::Log2(v) => ResultOp::Log2(f(v)),
-            ResultOp::Add(v1, v2) => ResultOp::Add(f(v1), f(v2)),
-            ResultOp::Addi(v, i) => ResultOp::Addi(f(v), i),
-            ResultOp::LoadMem(v, i) => ResultOp::LoadMem(f(v), i),
+            Inv(v) => Inv(f(v)),
+            Neg(v) => Neg(f(v)),
+            Not0(v) => Not0(f(v)),
+            Cnt1(v) => Cnt1(f(v)),
+            Log2(v) => Log2(f(v)),
+            Mov(v) => Mov(f(v)),
+            And(v1, v2) => And(f(v1), f(v2)),
+            Or(v1, v2) => Or(f(v1), f(v2)),
+            Xor(v1, v2) => Xor(f(v1), f(v2)),
+            Add(v1, v2) => Add(f(v1), f(v2)),
+            Addi(v, i) => Addi(f(v), i),
+            Sub(v1, v2) => Sub(f(v1), f(v2)),
+            Subi(v, i) => Subi(f(v), i),
+            LoadMem(v, i) => LoadMem(f(v), i),
+            GetPc(offset) => GetPc(offset),
+            DeviceReceive(device, channel) => DeviceReceive(device, channel),
         }
     }
 }
 
 #[derive(Copy, Clone, Debug)]
 pub enum UpdateOp<T: Oprand> {
+    /// just halt
+    Halt(),
     // unary
     Inv(T),
     Neg(T),
     Not0(T),
     Cnt1(T),
     Log2(T),
+    // binary
+    /// dst = dst << u4
+    ShiftLeftU(T, u8),
+    /// dst = dst >> u4
+    ShiftRightU(T, u8),
+    /// dst = dst >>> u4
+    ShiftRightS(T, u8),
+    /// flags = compare(v1, v2)
+    CmpReg(T, T),
+    /// flags = compare(v, u4)
+    CmpImm(T, u8),
+    /// dst = pc + u4
+    GetPc(T, u8),
+
+    /// dst, src
+    Mov(T, T),
+    /// dst, src
+    AndAssign(T, T),
+    /// dst, src
+    OrAssign(T, T),
+    /// dst, src
+    XorAssign(T, T),
+    /// dst, src
+    AddAssign(T, T),
+    /// dst, value
+    AddiAssign(T, u8),
+    /// dst, src
+    SubAssign(T, T),
+    /// dst, value
+    SubiAssign(T, u8),
 
     /// dst, value
     LoadImmLo(T, u8),
     /// dst, value
     LoadImmHi(T, u8),
-    /// dst, src
-    Mov(T, T),
-    /// dst, src
-    AddAssign(T, T),
-    /// dst, value
-    AddiAssign(T, u8),
-    /// dst, value
-    SubiAssign(T, u8),
     /// base, offset, value
     StoreMem(T, u8, T),
-    /// just halt
-    Halt(),
+    /// base, offset, dst
+    LoadMem(T, u8, T),
+
+    /// device, channel, dst
+    DeviceReceive(u8, u8, T),
+    /// device, channel, src
+    DeviceSend(u8, u8, T),
 }
 impl<T: Oprand> UpdateOp<T> {
     pub fn touch(&self, mut f: impl FnMut(&T, TouchType)) {
@@ -105,22 +155,35 @@ impl<T: Oprand> UpdateOp<T> {
 impl<T: Oprand> UpdateOp<T> {
     /// f: FnMut(v, load_value)
     pub(crate) fn convert<R: Oprand>(self, mut f: impl FnMut(T, bool) -> R) -> UpdateOp<R> {
+        use UpdateOp::*;
         match self {
-            UpdateOp::Inv(v) => UpdateOp::Inv(f(v, true)),
-            UpdateOp::Neg(v) => UpdateOp::Neg(f(v, true)),
-            UpdateOp::Not0(v) => UpdateOp::Not0(f(v, true)),
-            UpdateOp::Cnt1(v) => UpdateOp::Cnt1(f(v, true)),
-            UpdateOp::Log2(v) => UpdateOp::Log2(f(v, true)),
-            UpdateOp::LoadImmLo(v, i) => UpdateOp::LoadImmLo(f(v, false), i),
-            UpdateOp::LoadImmHi(v, i) => UpdateOp::LoadImmHi(f(v, true), i),
-            UpdateOp::Mov(dst, src) => UpdateOp::Mov(f(dst, false), f(src, true)),
-            UpdateOp::AddAssign(dst, src) => UpdateOp::AddAssign(f(dst, true), f(src, true)),
-            UpdateOp::AddiAssign(v, i) => UpdateOp::AddiAssign(f(v, true), i),
-            UpdateOp::SubiAssign(v, i) => UpdateOp::SubiAssign(f(v, true), i),
-            UpdateOp::StoreMem(base, i, value) => {
-                UpdateOp::StoreMem(f(base, true), i, f(value, true))
-            }
-            UpdateOp::Halt() => UpdateOp::Halt(),
+            Halt() => Halt(),
+            Inv(v) => Inv(f(v, true)),
+            Neg(v) => Neg(f(v, true)),
+            Not0(v) => Not0(f(v, true)),
+            Cnt1(v) => Cnt1(f(v, true)),
+            Log2(v) => Log2(f(v, true)),
+            ShiftLeftU(dst, u4) => ShiftLeftU(f(dst, true), u4),
+            ShiftRightU(dst, u4) => ShiftRightU(f(dst, true), u4),
+            ShiftRightS(dst, u4) => ShiftRightS(f(dst, true), u4),
+            CmpReg(v1, v2) => CmpReg(f(v1, true), f(v2, true)),
+            CmpImm(v, u4) => CmpImm(f(v, true), u4),
+            GetPc(dst, u4) => GetPc(f(dst, true), u4),
+            LoadImmLo(v, i) => LoadImmLo(f(v, false), i),
+            LoadImmHi(v, i) => LoadImmHi(f(v, true), i),
+            Mov(dst, src) => Mov(f(dst, false), f(src, true)),
+            AndAssign(dst, src) => AndAssign(f(dst, true), f(src, true)),
+            OrAssign(dst, src) => OrAssign(f(dst, true), f(src, true)),
+            XorAssign(dst, src) => XorAssign(f(dst, true), f(src, true)),
+            AddAssign(dst, src) => AddAssign(f(dst, true), f(src, true)),
+            AddiAssign(v, i) => AddiAssign(f(v, true), i),
+            SubAssign(dst, src) => SubAssign(f(dst, true), f(src, true)),
+            SubiAssign(v, i) => SubiAssign(f(v, true), i),
+            StoreMem(base, i, value) => StoreMem(f(base, true), i, f(value, true)),
+            LoadMem(base, i, dst) => LoadMem(f(base, true), i, f(dst, false)),
+
+            DeviceReceive(device, channel, dst) => DeviceReceive(device, channel, f(dst, false)),
+            DeviceSend(device, channel, src) => DeviceSend(device, channel, f(src, true)),
         }
     }
 }

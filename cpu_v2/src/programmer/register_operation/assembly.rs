@@ -33,18 +33,35 @@ impl RegisterOperation {
                     ResultOp::Not0(v) => asm.inst(not0(v.0, dst.0)),
                     ResultOp::Cnt1(v) => asm.inst(cnt1(v.0, dst.0)),
                     ResultOp::Log2(v) => asm.inst(log2(v.0, dst.0)),
+                    ResultOp::Mov(v) => asm.inst(mov(v.0, dst.0)),
                     ResultOp::Add(v2, v1) => asm.inst(add(v2.0, v1.0, dst.0)),
                     ResultOp::Addi(v2, v) => asm.inst(addi(v2.0, v, dst.0)),
+                    ResultOp::Sub(v2, v1) => asm.inst(sub(v2.0, v1.0, dst.0)),
+                    ResultOp::Subi(v2, v) => asm.inst(subi(v2.0, v, dst.0)),
                     ResultOp::LoadMem(base, offset) => asm.inst(load_mem(base.0, offset, dst.0)),
+                    ResultOp::GetPc(u4) => asm.inst(pc(u4, dst.0)),
+                    ResultOp::And(v2, v1) => asm.inst(and(v2.0, v1.0, dst.0)),
+                    ResultOp::Or(v2, v1) => asm.inst(or(v2.0, v1.0, dst.0)),
+                    ResultOp::Xor(v2, v1) => asm.inst(xor(v2.0, v1.0, dst.0)),
+                    ResultOp::DeviceReceive(device, channel) => {
+                        asm.inst(dev_recv(device, channel, dst.0))
+                    }
                 };
             }
             RegisterOperation::Update(op) => {
                 match *op {
+                    UpdateOp::Halt() => asm.inst(halt()),
                     UpdateOp::Inv(dst) => asm.inst(inv(dst.0, dst.0)),
                     UpdateOp::Neg(dst) => asm.inst(neg(dst.0, dst.0)),
                     UpdateOp::Not0(dst) => asm.inst(not0(dst.0, dst.0)),
                     UpdateOp::Cnt1(dst) => asm.inst(cnt1(dst.0, dst.0)),
                     UpdateOp::Log2(dst) => asm.inst(log2(dst.0, dst.0)),
+                    UpdateOp::ShiftLeftU(dst, u4) => asm.inst(lsl(u4, dst.0)),
+                    UpdateOp::ShiftRightU(dst, u4) => asm.inst(lsr(u4, dst.0)),
+                    UpdateOp::ShiftRightS(dst, u4) => asm.inst(asr(u4, dst.0)),
+                    UpdateOp::CmpReg(v1, v2) => asm.inst(cmp_r(v2.0, v1.0)),
+                    UpdateOp::CmpImm(v, u4) => asm.inst(cmp_i(u4, v.0)),
+                    UpdateOp::GetPc(dst, offset) => asm.inst(pc(offset, dst.0)),
                     UpdateOp::LoadImmLo(dst, v) => {
                         let (hi, lo) = u8_to_hi_lo(v);
                         asm.inst(load_lo(hi, lo, dst.0))
@@ -54,11 +71,23 @@ impl RegisterOperation {
                         asm.inst(load_hi(hi, lo, dst.0))
                     }
                     UpdateOp::Mov(dst, v) => asm.inst(mov(v.0, dst.0)),
-                    UpdateOp::AddAssign(dst, v) => asm.inst(add(v.0, dst.0, dst.0)),
+                    UpdateOp::AndAssign(dst, v) => asm.inst(and(dst.0, v.0, dst.0)),
+                    UpdateOp::OrAssign(dst, v) => asm.inst(or(dst.0, v.0, dst.0)),
+                    UpdateOp::XorAssign(dst, v) => asm.inst(xor(dst.0, v.0, dst.0)),
+                    UpdateOp::AddAssign(dst, v) => asm.inst(add(dst.0, v.0, dst.0)),
                     UpdateOp::AddiAssign(dst, v) => asm.inst(addi(dst.0, v, dst.0)),
+                    UpdateOp::SubAssign(dst, v) => asm.inst(sub(dst.0, v.0, dst.0)),
                     UpdateOp::SubiAssign(dst, v) => asm.inst(subi(dst.0, v, dst.0)),
                     UpdateOp::StoreMem(base, offset, v) => asm.inst(store_mem(base.0, offset, v.0)),
-                    UpdateOp::Halt() => asm.inst(halt()),
+                    UpdateOp::LoadMem(base, offset, dst) => {
+                        asm.inst(load_mem(base.0, offset, dst.0))
+                    }
+                    UpdateOp::DeviceReceive(device, channel, dst) => {
+                        asm.inst(dev_recv(device, channel, dst.0))
+                    }
+                    UpdateOp::DeviceSend(device, channel, src) => {
+                        asm.inst(dev_send(device, channel, src.0))
+                    }
                 };
             }
             RegisterOperation::List(list) => {
