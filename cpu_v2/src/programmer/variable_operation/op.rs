@@ -94,8 +94,8 @@ impl<T: Oprand> ResultOp<T> {
 
 #[derive(Copy, Clone, Debug)]
 pub enum UpdateOp<T: Oprand> {
-    /// just halt
-    Halt(),
+    /// halt with signal
+    Halt(T),
     // unary
     Inv(T),
     Neg(T),
@@ -157,7 +157,7 @@ impl<T: Oprand> UpdateOp<T> {
     pub(crate) fn convert<R: Oprand>(self, mut f: impl FnMut(T, bool) -> R) -> UpdateOp<R> {
         use UpdateOp::*;
         match self {
-            Halt() => Halt(),
+            Halt(v) => Halt(f(v, true)),
             Inv(v) => Inv(f(v, true)),
             Neg(v) => Neg(f(v, true)),
             Not0(v) => Not0(f(v, true)),

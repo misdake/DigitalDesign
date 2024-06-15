@@ -8,8 +8,8 @@ pub fn v(v: u16) -> Variable {
     r
 }
 
-pub fn h() {
-    push_op(VariableOperation1::Update(UpdateOp::Halt()));
+pub fn halt_with_signal(variable: Variable) {
+    push_op(VariableOperation1::Update(UpdateOp::Halt(variable)));
 }
 
 impl Variable {
@@ -36,12 +36,12 @@ pub fn while_loop(cond: CondOp<Variable>, loop_block: impl FnOnce()) {
     let loop_block = compose_variable_operations(loop_block);
     push_op(VariableOperation1::Loop(cond, Box::new(loop_block)));
 }
-pub fn for_loop_u4(range: Range<u8>, loop_block: impl FnOnce()) {
+pub fn for_loop_u4(range: Range<u8>, loop_block: impl FnOnce(Variable)) {
     assert!(range.start < 16);
     assert!(range.end < 16);
     let mut i = v(range.start as u16);
     let loop_block = compose_variable_operations(|| {
-        loop_block();
+        loop_block(i);
         i += 1;
     });
     push_op(VariableOperation1::Loop(
@@ -49,10 +49,10 @@ pub fn for_loop_u4(range: Range<u8>, loop_block: impl FnOnce()) {
         Box::new(loop_block),
     ));
 }
-pub fn for_loop_reg_up(start: u16, end: Variable, loop_block: impl FnOnce()) {
+pub fn for_loop_reg_up(start: u16, end: Variable, loop_block: impl FnOnce(Variable)) {
     let mut i = v(start);
     let loop_block = compose_variable_operations(|| {
-        loop_block();
+        loop_block(i);
         i += 1;
     });
     push_op(VariableOperation1::Loop(

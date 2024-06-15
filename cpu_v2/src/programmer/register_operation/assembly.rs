@@ -50,7 +50,7 @@ impl RegisterOperation {
             }
             RegisterOperation::Update(op) => {
                 match *op {
-                    UpdateOp::Halt() => asm.inst(halt()),
+                    UpdateOp::Halt(src) => asm.inst(halt(src.0)),
                     UpdateOp::Inv(dst) => asm.inst(inv(dst.0, dst.0)),
                     UpdateOp::Neg(dst) => asm.inst(neg(dst.0, dst.0)),
                     UpdateOp::Not0(dst) => asm.inst(not0(dst.0, dst.0)),

@@ -121,7 +121,7 @@ pub(crate) fn vo1_call_program(x: u8, y: u8) -> (VariableOperation1, FuncDecl) {
         VariableOperation1::Update(UpdateOp::LoadImmLo(a, x)),
         VariableOperation1::Update(UpdateOp::LoadImmLo(b, y)),
         VariableOperation1::Call("add", func_params([a, b]), return_values([r])),
-        VariableOperation1::Update(UpdateOp::Halt()),
+        VariableOperation1::Update(UpdateOp::Halt(r)),
     ]);
     let decl = FuncDecl::new("call", &[], &["r"]);
     (vo1, decl)

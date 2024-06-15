@@ -39,7 +39,7 @@ pub struct StateChange {
     pub reg: Option<(u8, u16)>,  // addr, data
     pub mem: Option<(u16, u16)>, // addr, data
     pub flags: Option<u8>,
-    pub halt: bool,
+    pub halt: Option<u16>,
 }
 impl StateChange {
     fn new(pc_next: u16) -> Self {
@@ -48,7 +48,7 @@ impl StateChange {
             reg: None,
             mem: None,
             flags: None,
-            halt: false,
+            halt: None,
         }
     }
     fn reg(&mut self, r: u8, data: u16) {
@@ -66,8 +66,8 @@ impl StateChange {
         assert!(self.flags.is_none());
         self.flags = Some(flags);
     }
-    fn halt(&mut self) {
-        self.halt = true;
+    fn halt(&mut self, signal: u16) {
+        self.halt = Some(signal);
     }
 
     pub fn desc(&self, pc: u16) -> String {
@@ -84,8 +84,8 @@ impl StateChange {
         if let Some(flags) = self.flags {
             outputs.push(format!("flags = {0} ({0:04x})", flags));
         }
-        if self.halt {
-            outputs.push("halt".to_string());
+        if let Some(signal) = self.halt {
+            outputs.push(format!("halt {0} ({0:04x})", signal));
         }
         outputs.join(", ")
     }
@@ -93,7 +93,7 @@ impl StateChange {
 
 impl SimEnv {
     pub fn new(inst: &[Instruction]) -> SimEnv {
-        let mut inst_array = box [Instruction::halt(); 65536];
+        let mut inst_array = box [Instruction::halt(0); 65536];
         assert!(inst.len() <= 65536);
         inst_array[..inst.len()].copy_from_slice(inst);
 
@@ -107,16 +107,16 @@ impl SimEnv {
         &mut self,
         max_cycle: usize,
         on_inst: impl Fn(u16, Instruction, &StateChange),
-    ) -> usize {
-        for i in 0..max_cycle {
+    ) -> Option<u16> {
+        for _ in 0..max_cycle {
             let change = self.eval();
             on_inst(self.state.pc, self.inst[self.state.pc as usize], &change);
-            if change.halt {
-                return i;
-            }
             self.commit(change);
+            if let Some(signal) = change.halt {
+                return Some(signal);
+            }
         }
-        max_cycle
+        None
     }
 
     pub fn eval(&self) -> StateChange {
@@ -131,13 +131,14 @@ impl SimEnv {
         fn j_offset(state: &SimState, cond: Cond, changes: &mut StateChange, offset: u16) {
             let jmp = state.flags & (cond as u8) > 0;
             if jmp {
-                changes.pc_next(state.pc.wrapping_add(offset));
+                let pc_next = state.pc.wrapping_add(offset);
+                changes.pc_next(pc_next);
             }
         }
 
         match inst {
-            Instruction::halt() => {
-                changes.halt();
+            Instruction::halt(r1) => {
+                changes.halt(reg(r1));
             }
             Instruction::and(r2, r1, r0) => changes.reg(r0, reg(r1) & reg(r2)),
             Instruction::or(r2, r1, r0) => changes.reg(r0, reg(r1) | reg(r2)),
@@ -250,5 +251,5 @@ fn imm_as_i16(i4: Imm4) -> u16 {
     i4 as u16 | (0b1111_1111_1111_0000 * sign_bit as u16)
 }
 fn hilo_as_u16(hi: Imm4, lo: Imm4) -> u16 {
-    ((hi as u16) << 4) | (lo as u16)
+    ((hi as u16) << 8) | (lo as u16)
 }

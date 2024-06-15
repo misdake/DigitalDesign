@@ -469,7 +469,7 @@ impl RegisterAllocator {
                 targets.insert(*return_addr, VariableLocation::Reg(return_addr_reg));
                 target_regs.insert(return_addr_reg);
 
-                // restore_variable_locations will destroy self living_variables and spill_stack.
+                // we only have return values in targets, restore_variable_locations will destroy self living_variables and spill_stack
                 // we just clone self so that we can support multiple return points in one function and subsequent free ops.
                 let mut cloned = self.clone();
                 cloned.restore_variable_locations(&targets, ops);

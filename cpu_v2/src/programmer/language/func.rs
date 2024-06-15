@@ -31,7 +31,7 @@ impl<const PARAM: usize, const RETURN: usize> ProgramFunction<PARAM, RETURN> {
         let params = [0; PARAM].map(|_| Variable::new());
         let return_addr = Variable::new();
 
-        compose_variable_operations(|| {
+        compose_variable_operations_lock(|| {
             push_op(VariableOperation1::Func(
                 self.name,
                 return_addr,

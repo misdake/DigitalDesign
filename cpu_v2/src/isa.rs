@@ -22,7 +22,7 @@ fn part0(binary: InstBinaryType) -> u8 {
 define_isa! {
     Instruction
 
-    (halt  0x00 OOOO "halt")
+    (halt  0x00 OORX "halt r{0}")
     (mov   0x01 OORR "r{0} = r{1}")
     (inv   0x02 OORR "r{0} = !r{1}")
     (neg   0x03 OORR "r{0} = -r{1}")
@@ -80,9 +80,23 @@ pub enum Cond {
     Equal = FLAGS_EQUAL,
     Less = FLAGS_LESS,
     GreaterEqual = FLAGS_GREATER | FLAGS_EQUAL,
-    LessEqual = FLAGS_LESS | FLAGS_EQUAL,
     NotEqual = FLAGS_GREATER | FLAGS_LESS,
+    LessEqual = FLAGS_LESS | FLAGS_EQUAL,
     Always = FLAGS_GREATER | FLAGS_EQUAL | FLAGS_LESS,
+}
+impl Cond {
+    pub fn invert(self) -> Self {
+        match self {
+            Cond::Never => Cond::Always,
+            Cond::Greater => Cond::LessEqual,
+            Cond::Equal => Cond::NotEqual,
+            Cond::Less => Cond::GreaterEqual,
+            Cond::GreaterEqual => Cond::Less,
+            Cond::NotEqual => Cond::Equal,
+            Cond::LessEqual => Cond::Greater,
+            Cond::Always => Cond::Never,
+        }
+    }
 }
 
 #[test]

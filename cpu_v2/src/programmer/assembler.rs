@@ -32,7 +32,7 @@ pub struct Assembler {
 impl Default for Assembler {
     fn default() -> Self {
         Self {
-            instructions: box [halt(); 65536],
+            instructions: box [halt(0); 65536],
             inst_valid: box [false; 65536],
             comments: HashMap::new(),
             cursor: 0,
@@ -58,7 +58,6 @@ impl Assembler {
         self.inst_at(inst, addr)
     }
     pub fn comment_at(&mut self, slot: InstructionSlot, comment: String) {
-        assert!(!self.inst_valid[slot.addr]);
         self.comments.insert(slot.addr, comment);
     }
     pub fn inst_comment(&mut self, inst: Instruction, comment: String) -> InstructionSlot {
@@ -174,7 +173,7 @@ impl Assembler {
 
     pub fn if_reg(&mut self, reg0: Reg, reg1: Reg, cond: Cond, if_case: impl FnOnce(&mut Self)) {
         self.inst(cmp_r(reg1, reg0));
-        let skip_if = self.jmp_forward(cond);
+        let skip_if = self.jmp_forward(cond.invert());
         if_case(self);
         self.resolve_jmp(skip_if);
     }
@@ -187,7 +186,7 @@ impl Assembler {
         else_case: impl FnOnce(&mut Self),
     ) {
         self.inst(cmp_r(reg1, reg0));
-        let skip_if = self.jmp_forward(cond);
+        let skip_if = self.jmp_forward(cond.invert());
         if_case(self);
         let skip_else = self.jmp_forward(Cond::Always);
         self.resolve_jmp(skip_if);
@@ -203,16 +202,16 @@ impl Assembler {
         loop_block: impl FnOnce(&mut Self),
     ) {
         let slot = self.inst(cmp_r(reg1, reg0));
-        let skip_if = self.jmp_forward(cond);
+        let skip_while = self.jmp_forward(cond.invert());
         loop_block(self);
         self.jmp_back(slot, Cond::Always);
-        self.resolve_jmp(skip_if);
+        self.resolve_jmp(skip_while);
     }
     pub fn loop_u4(&mut self, reg0: Reg, u4: Imm4, cond: Cond, loop_block: impl FnOnce(&mut Self)) {
         let slot = self.inst(cmp_i(u4, reg0));
-        let skip_if = self.jmp_forward(cond);
+        let skip_while = self.jmp_forward(cond.invert());
         loop_block(self);
         self.jmp_back(slot, Cond::Always);
-        self.resolve_jmp(skip_if);
+        self.resolve_jmp(skip_while);
     }
 }

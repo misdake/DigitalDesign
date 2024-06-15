@@ -49,14 +49,14 @@ pub fn compile_program(functions: Vec<(VariableOperation1, FuncDecl)>) -> Vec<In
     instructions
 }
 
-pub fn simulate(instructions: &[Instruction], max_cycles: usize) -> (SimEnv, usize) {
+pub fn simulate(instructions: &[Instruction], max_cycles: usize) -> (SimState, Option<u16>) {
     let mut sim = SimEnv::new(instructions);
-    let cycles = sim.run_to_halt(max_cycles, |pc, inst, change| {
+    let halt_signal = sim.run_to_halt(max_cycles, |pc, inst, change| {
         let inst = format!("pc {pc:04x}: {inst}");
         let change = change.desc(pc);
         println!("{inst:40}{change}");
     });
-    (sim, cycles)
+    (sim.state, halt_signal)
 }
 
 #[test]
@@ -66,8 +66,7 @@ fn test_basic() {
     let y = 43;
 
     let instructions = compile_program(vec![vo1_call_program(x, y), vo1_func_program()]);
-    let (sim, cycles) = simulate(&instructions, 100);
-    println!("r0 = {}", sim.state.reg[0]);
-    println!("cycles = {}", cycles);
-    assert_eq!(sim.state.reg[0], (x + y) as u16);
+    let (_state, halt_signal) = simulate(&instructions, 100);
+    println!("halt_signal = {:?}", halt_signal);
+    assert_eq!(halt_signal, Some((x + y) as u16));
 }
