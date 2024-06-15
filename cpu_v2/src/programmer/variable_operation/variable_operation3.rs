@@ -33,8 +33,13 @@ pub enum VariableOperation3 {
     // external flow control
     /// function name, return addr(output no alloc), params(output no alloc)
     Func(FuncName, Variable, FuncParams),
-    /// function name, params, return values(output no alloc)
-    Call(FuncName, FuncParams, ReturnValues), //TODO freed params at call (before return)
+    /// function name, params, after params (free), return values(output no alloc)
+    Call(
+        FuncName,
+        FuncParams,
+        Option<Box<VariableOperation3>>,
+        ReturnValues,
+    ),
     /// return addr, return values
     Return(Variable, ReturnValues),
 }
@@ -161,10 +166,19 @@ impl VariableOperation3 {
                 output.push(VariableOperation3::Func(name, return_addr, params));
             }
             VariableOperation2::Call(name, params, return_values) => {
+                let mut params_free = vec![];
+                ctx.check_free(&info, &mut params_free);
+                let cond_free = vec_to_vo3(params_free);
+
                 for value in &return_values {
                     ctx.input_no_alloc(*value);
                 }
-                output.push(VariableOperation3::Call(name, params, return_values));
+                output.push(VariableOperation3::Call(
+                    name,
+                    params,
+                    cond_free,
+                    return_values,
+                ));
             }
             VariableOperation2::Return(return_addr, return_values) => {
                 output.push(VariableOperation3::Return(return_addr, return_values));
@@ -201,4 +215,8 @@ fn test_vo3s_if() {
 #[test]
 fn test_vo3s_loop() {
     test_print(vo1_loop_program().0);
+}
+#[test]
+fn test_vo3s_call() {
+    test_print(vo1_call_program(12, 43).0);
 }

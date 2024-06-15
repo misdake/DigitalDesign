@@ -224,9 +224,12 @@ impl RegisterAllocator {
                 }
                 self.touch_write(*return_addr);
             }
-            VariableOperation3::Call(_name, params, return_values) => {
+            VariableOperation3::Call(_name, params, after_params, return_values) => {
                 for v in params {
                     self.touch_read(*v);
+                }
+                if let Some(after_params) = after_params {
+                    self.touch(after_params.as_ref());
                 }
                 for v in return_values {
                     self.touch_write(*v);
@@ -350,7 +353,7 @@ impl RegisterAllocator {
                         .clone(),
                 );
             }
-            VariableOperation3::Call(name, params, return_values) => {
+            VariableOperation3::Call(name, params, after_params, return_values) => {
                 // func param/return len to be checked by linker
 
                 let param_regs = self.reg_usage.params[0..params.len()]
@@ -362,13 +365,12 @@ impl RegisterAllocator {
                     .cloned()
                     .collect::<ArrayVec<Reg, MAX_RETURN>>();
 
-                let mut spill_variables = HashSet::new();
-
                 // call phase
                 // 1. find caller-saved variables TODO if it will be freed at call -> can be optimized to a move
                 // 2. spill them to stack
                 // 3. move params to param registers
                 {
+                    let mut spill_variables = HashSet::new();
                     for (v, pos) in &self.living_variables {
                         if let VariableLocation::Reg(reg) = pos {
                             if self.reg_usage.reg_info.get(reg).unwrap().caller_save {
