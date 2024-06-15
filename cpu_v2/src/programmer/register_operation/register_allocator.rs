@@ -365,45 +365,73 @@ impl RegisterAllocator {
                     .cloned()
                     .collect::<ArrayVec<Reg, MAX_RETURN>>();
 
+                let mut freed_params = vec![];
+                if let Some(op) = after_params.as_ref() {
+                    collect_free(op, &mut freed_params);
+                }
+
                 // call phase
-                // 1. find caller-saved variables TODO if it will be freed at call -> can be optimized to a move
-                // 2. spill them to stack
-                // 3. move params to param registers
                 {
+                    // 1. find living caller-saved variables
                     let mut spill_variables = HashSet::new();
                     for (v, pos) in &self.living_variables {
-                        if let VariableLocation::Reg(reg) = pos {
-                            if self.reg_usage.reg_info.get(reg).unwrap().caller_save {
-                                // if variable is caller_saved => spill
-                                spill_variables.insert(*v);
+                        // if this variable is still living => need to spill to stack or callee save register
+                        if !freed_params.contains(v) {
+                            if let VariableLocation::Reg(reg) = pos {
+                                if self.reg_usage.reg_info.get(reg).unwrap().caller_save {
+                                    // if variable is caller_saved => spill
+                                    spill_variables.insert(*v);
+                                }
                             }
                         }
                     }
 
+                    // 2. spill them to callee save register or stack
                     let usage = self.reg_usage.clone();
                     for v in spill_variables {
                         // ok to spill to register
                         self.spill_variable(v, Some(&usage.caller_save_regs), ops);
                     }
 
+                    // 3. move to-be-freed params to param registers
+                    let mut targets = self.living_variables.clone();
                     for (index, v) in params.iter().enumerate() {
-                        match self.living_variables.get(v).unwrap() {
-                            VariableLocation::Reg(reg) => {
-                                let target = self.reg_usage.params[index];
-                                new_op(ops, RegisterOperation::Update(UpdateOp::Mov(target, *reg)));
-                            }
-                            VariableLocation::Stack(offset) => {
-                                let target = self.reg_usage.params[index];
-                                new_op(
-                                    ops,
-                                    RegisterOperation::Result(
-                                        ResultOp::LoadMem(self.reg_usage.sp_reg, *offset),
-                                        target,
-                                    ),
-                                );
+                        let target = self.reg_usage.params[index];
+                        if freed_params.contains(v) {
+                            targets.insert(*v, VariableLocation::Reg(target));
+                        }
+                    }
+                    let mut cloned = self.clone();
+                    cloned.restore_variable_locations(&targets, ops);
+
+                    // 4. move spilled params to param registers
+                    for (index, v) in params.iter().enumerate() {
+                        let target = self.reg_usage.params[index];
+                        if !freed_params.contains(v) {
+                            match self.living_variables.get(v).unwrap() {
+                                VariableLocation::Reg(reg) => {
+                                    new_op(
+                                        ops,
+                                        RegisterOperation::Update(UpdateOp::Mov(target, *reg)),
+                                    );
+                                }
+                                VariableLocation::Stack(offset) => {
+                                    new_op(
+                                        ops,
+                                        RegisterOperation::Result(
+                                            ResultOp::LoadMem(self.reg_usage.sp_reg, *offset),
+                                            target,
+                                        ),
+                                    );
+                                }
                             }
                         }
                     }
+                }
+
+                // free param variables
+                if let Some(op) = after_params.as_ref() {
+                    self.execute_vo3(op, ops);
                 }
 
                 new_op(ops, RegisterOperation::Call(name, param_regs, return_regs));
@@ -728,6 +756,20 @@ impl RegisterAllocator {
             .enumerate()
             .find_map(|(i, v)| v.is_none().then_some(i))
             .expect("no empty stack position!") as u8
+    }
+}
+
+fn collect_free(op: &VariableOperation3, freed: &mut Vec<Variable>) {
+    match op {
+        VariableOperation3::Free(v) => {
+            freed.push(*v);
+        }
+        VariableOperation3::List(list) => {
+            for op in list {
+                collect_free(op, freed);
+            }
+        }
+        _ => panic!("unknown op when collecting freed variables"),
     }
 }
 
