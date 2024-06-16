@@ -153,7 +153,7 @@ impl SimEnv {
 
             Instruction::mov(r1, r0) => changes.reg(r0, reg(r1)),
             Instruction::inv(r1, r0) => changes.reg(r0, !reg(r1)),
-            Instruction::neg(r1, r0) => changes.reg(r0, u16::MAX - reg(r1)),
+            Instruction::neg(r1, r0) => changes.reg(r0, -(reg(r1) as i16) as u16),
             Instruction::cnt1(r1, r0) => changes.reg(r0, reg(r1).count_ones() as u16),
             Instruction::log2(r1, r0) => changes.reg(r0, reg(r1).ilog2() as u16),
             Instruction::not0(r1, r0) => changes.reg(r0, select(reg(r1) != 0, 1, 0)),

@@ -1,10 +1,13 @@
+pub mod builtin;
 mod func;
 mod helper;
 mod operators;
+mod r#struct;
 
 pub use func::*;
 pub use operators::*;
 pub mod dsl {
+    pub use super::builtin::*;
     pub use super::helper::*;
 }
 
@@ -51,9 +54,9 @@ pub fn compose_variable_operations(f: impl FnOnce()) -> VariableOperation1 {
 }
 
 #[cfg(test)]
-fn test(functions: Vec<(VariableOperation1, FuncDecl)>) -> (SimState, Option<u16>) {
+pub fn test(functions: Vec<(VariableOperation1, FuncDecl)>) -> (SimState, Option<u16>) {
     let instructions = compile_program(functions);
-    simulate(&instructions, 100)
+    simulate(&instructions, 1000)
 }
 
 #[test]

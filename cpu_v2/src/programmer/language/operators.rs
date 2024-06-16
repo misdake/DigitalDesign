@@ -53,6 +53,11 @@ impl Variable {
             push_op(VariableOperation1::Update(UpdateOp::LoadImmHi(self, hi)));
         }
     }
+    pub fn clone_value(self) -> Variable {
+        let r = Variable::new();
+        r.assign_from(self);
+        r
+    }
     pub fn assign_from(self, v: Variable) {
         push_op(VariableOperation1::Update(UpdateOp::Mov(self, v)));
     }
