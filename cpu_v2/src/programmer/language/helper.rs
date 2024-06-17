@@ -38,7 +38,7 @@ pub fn while_loop(cond: CondOp<Variable>, loop_block: impl FnOnce()) {
 }
 pub fn for_loop_u4(range: Range<u8>, loop_block: impl FnOnce(Variable)) {
     assert!(range.start < 16);
-    assert!(range.end < 16);
+    assert!(range.end <= 16);
     let mut i = v(range.start as u16);
     let loop_block = compose_variable_operations(|| {
         loop_block(i);
