@@ -2,7 +2,7 @@ use crate::*;
 use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
 
-pub type LibFunc = dyn FnOnce() -> (VariableOperation1, FuncDecl);
+type FuncGen = Box<dyn FnOnce() -> VariableOperation1>;
 
 pub struct Compiler {
     reg_usages: Rc<RegisterUsages>,
@@ -10,7 +10,7 @@ pub struct Compiler {
     linker: Linker,
     cursor: usize,
 
-    functions: HashMap<&'static str, Box<LibFunc>>,
+    functions: HashMap<FuncName, (FuncGen, FuncDecl)>,
 }
 impl Default for Compiler {
     fn default() -> Self {
@@ -25,71 +25,75 @@ impl Default for Compiler {
 }
 
 impl Compiler {
-    pub fn function(&mut self, name: &'static str, creator: Box<LibFunc>) {
-        self.functions.insert(name, creator);
+    /// used by user defined functions, it's prefered to just call DslFunc::compile
+    pub fn func_op(&mut self, func_decl: &FuncDecl, op: VariableOperation1) {
+        self.functions
+            .insert(func_decl.func_name, (box move || op, func_decl.clone()));
     }
 
-    pub fn finish(mut self, entry: &'static str) -> Vec<Instruction> {
+    /// used by builtin functions for on-demand code generation
+    pub fn func_gen<const PARAM: usize, const RETURN: usize>(
+        &mut self,
+        func: &DslFunction<PARAM, RETURN>,
+        generator: Box<dyn FnOnce() -> VariableOperation1>,
+    ) {
+        self.functions.insert(
+            func.func_decl.func_name,
+            (generator, func.func_decl.clone()),
+        );
+    }
+
+    pub fn finish(mut self, main: &'static str) -> Vec<Instruction> {
         let mut called = HashSet::new();
         let mut called_vec = vec![];
-        let mut next = vec![entry];
+        let mut next = vec![main];
+        called.insert(main);
 
         while !next.is_empty() {
             let curr = std::mem::take(&mut next);
             for name in curr {
-                if !called.contains(name) {
-                    called.insert(name);
-                    called_vec.push(name);
-                    next.push(name);
+                let (generator, decl) = self
+                    .functions
+                    .remove(name)
+                    .unwrap_or_else(|| panic!("unknown function `{name}`"));
+
+                let vo1 = generator();
+                let vo2s = VariableOperation2Scope::from(vo1);
+                let vo3 = VariableOperation3::from(vo2s);
+                let ro = RegisterAllocator::execute(self.reg_usages.clone(), decl.clone(), &vo3);
+
+                let relocations =
+                    RegisterOperation::write_function_assembly(&ro, &mut self.asm, self.cursor);
+
+                let end = self.asm.get_cursor();
+
+                // enqueue called functions
+                for rel in &relocations {
+                    if !called.contains(rel.func_name) {
+                        called.insert(rel.func_name);
+                        called_vec.push(rel.func_name);
+                        next.push(rel.func_name);
+                    }
                 }
+
+                self.linker
+                    .register_function((self.cursor, end), decl, relocations);
+
+                self.cursor = end + 4;
             }
         }
-        println!("functions: {:?}", called);
-
-        for name in called_vec {
-            let creator = self
-                .functions
-                .remove(name)
-                .expect(format!("unknown function `{name}`").as_str());
-            let (op, decl) = creator();
-            self.new_function((op, decl));
-        }
+        println!("main: {main:?}, functions: {called:?}");
 
         self.linker.relocate_all(&mut self.asm);
         let end = self.asm.get_cursor();
-        let instructions = self.asm.slice_ref();
+        let instructions = self.asm.slice_ref()[0..end].to_vec();
 
         for (addr, inst) in instructions.iter().enumerate() {
             println!("inst {addr:04x}: {inst}");
         }
 
-        instructions[0..end].to_vec()
+        instructions
     }
-
-    fn new_function(&mut self, (vo1, decl): (VariableOperation1, FuncDecl)) {
-        let vo2s = VariableOperation2Scope::from(vo1);
-        let vo3 = VariableOperation3::from(vo2s);
-
-        let ops = RegisterAllocator::execute(self.reg_usages.clone(), decl.clone(), &vo3);
-
-        let relocations =
-            RegisterOperation::write_function_assembly(&ops, &mut self.asm, self.cursor);
-
-        let end = self.asm.get_cursor();
-
-        self.linker
-            .register_function((self.cursor, end), decl, relocations);
-
-        self.cursor = end + 4;
-    }
-}
-
-pub fn compile_program(functions: Vec<(VariableOperation1, FuncDecl)>) -> Vec<Instruction> {
-    let mut compiler = Compiler::default();
-    for (vo1, decl) in functions {
-        compiler.new_function((vo1.clone(), decl.clone()));
-    }
-    compiler.finish()
 }
 
 pub fn simulate(instructions: &[Instruction], max_cycles: usize) -> (SimState, Option<u16>) {
@@ -99,6 +103,12 @@ pub fn simulate(instructions: &[Instruction], max_cycles: usize) -> (SimState, O
         let change = change.desc(pc);
         println!("{inst:40}{change}");
     });
+    if let Some(halt_signal) = halt_signal {
+        println!(
+            "halt with signal = {halt_signal} after {} cycles",
+            sim.state.cycles
+        )
+    }
     (sim.state, halt_signal)
 }
 
@@ -108,10 +118,11 @@ fn test_basic() {
     let x = 12;
     let y = 43;
     let mut compiler = Compiler::default();
-    compiler.function("func", box vo1_func_program);
-    compiler.function("call", box || vo1_call_program(x, y));
+    let (func_vo1, func_decl) = vo1_func_program();
+    let (call_vo1, call_decl) = vo1_call_program(x, y);
+    compiler.func_op(&func_decl, func_vo1);
+    compiler.func_op(&call_decl, call_vo1);
     let instructions = compiler.finish("call");
     let (_state, halt_signal) = simulate(&instructions, 100);
-    println!("halt_signal = {:?}", halt_signal);
     assert_eq!(halt_signal, Some((x + y) as u16));
 }

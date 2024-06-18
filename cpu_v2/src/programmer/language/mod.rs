@@ -53,47 +53,50 @@ pub fn compose_variable_operations(f: impl FnOnce()) -> VariableOperation1 {
     }
 }
 
-#[cfg(test)]
-pub fn test(functions: Vec<(VariableOperation1, FuncDecl)>) -> (SimState, Option<u16>) {
-    let instructions = compile_program(functions);
-    simulate(&instructions, 1000)
-}
-
 #[test]
 fn test_call_add() {
     use crate::programmer::language::dsl::*;
     let x = 12;
     let y = 43;
-    let call = ProgramFunction::new("call", [], []);
-    let add = ProgramFunction::new("add", ["a", "b"], ["r"]);
+    let call = DslFunction::new("call", [], []);
+    let add = DslFunction::new("add", ["a", "b"], ["r"]);
 
-    let call_vo1 = call.define(|[], _ret| {
+    let mut compiler = Compiler::default();
+    call.compile(&mut compiler, |[], _ret| {
         let a = v(x);
         let b = v(y);
         let [r] = add.call([a, b]);
-        halt_with_signal(r);
+        halt_with_signal(r)
     });
-    let add_vo1 = add.define(|[a, b], ret| {
+    add.compile(&mut compiler, |[a, b], ret| {
         let r = a + b;
         ret([r]);
     });
-    let (_state, signal) = test(vec![(call_vo1, call.func_decl), (add_vo1, add.func_decl)]);
+
+    let instructions = compiler.finish("call");
+    let (_state, signal) = simulate(&instructions, 1000);
     assert_eq!(signal, Some(x + y));
 }
 #[test]
 fn test_for_loop() {
     use crate::programmer::language::dsl::*;
     let n = 10;
-    let call = ProgramFunction::new("loop", [], []);
+    let call = DslFunction::new("loop", [], []);
 
-    let call_vo1 = call.define(|[], _ret| {
-        let mut sum = v(0);
-        for_loop_u4(1..(n + 1), |i| {
-            sum += i;
-        });
-        halt_with_signal(sum);
-    });
-    let (_state, signal) = test(vec![(call_vo1, call.func_decl)]);
+    let mut compiler = Compiler::default();
+    compiler.func_op(
+        &call.func_decl,
+        call.define(|[], _ret| {
+            let mut sum = v(0);
+            for_loop_u4(1..(n + 1), |i| {
+                sum += i;
+            });
+            halt_with_signal(sum);
+        }),
+    );
+
+    let instructions = compiler.finish("call");
+    let (_state, signal) = simulate(&instructions, 1000);
     let n = n as u16;
     assert_eq!(signal, Some(n * (n + 1) / 2));
 }

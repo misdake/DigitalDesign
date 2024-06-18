@@ -7,6 +7,7 @@ pub struct SimEnv {
 }
 
 pub struct SimState {
+    pub cycles: usize,
     pub reg: [u16; 16],
     pub mem: Box<[u16; 65536]>,
     pub pc: u16,
@@ -25,6 +26,7 @@ pub fn calc_flags(x: u16, y: u16) -> u8 {
 impl Default for SimState {
     fn default() -> Self {
         Self {
+            cycles: 0,
             reg: [0; 16],
             mem: Box::new([0; 65536]),
             pc: 0,
@@ -216,6 +218,7 @@ impl SimEnv {
     }
 
     pub fn commit(&mut self, changes: StateChange) {
+        self.state.cycles += 1;
         self.state.pc = changes.pc_next;
         if let Some((r, data)) = changes.reg {
             self.state.reg[r as usize] = data;

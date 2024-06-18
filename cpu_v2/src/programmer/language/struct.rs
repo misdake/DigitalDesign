@@ -1,14 +1,5 @@
 use crate::programmer::language::push_op;
-use crate::{test, ProgramFunction, ResultOp, UpdateOp, Variable, VariableOperation1};
-
-struct Field {
-    name: String,
-    offset: u16,
-}
-
-struct Struct {
-    fields: Vec<Field>,
-}
+use crate::*;
 
 #[derive(Copy, Clone)]
 pub struct DslPtr {
@@ -19,6 +10,7 @@ impl DslPtr {
     pub fn new(ptr: Variable) -> Self {
         Self { ptr, offset: 0 }
     }
+    #[allow(unused)]
     pub fn resolve(&mut self) {
         if self.offset > 0 {
             self.ptr += self.offset;
@@ -128,9 +120,10 @@ impl<const STRIDE: usize> DslArray<STRIDE> {
 #[test]
 fn test_ptr() {
     use crate::programmer::language::dsl::*;
-    let func = ProgramFunction::new("test_ptr", [], []);
+    let func = DslFunction::new("test_ptr", [], []);
 
-    let func_vo1 = func.define(|[], _ret| {
+    let mut compiler = Compiler::default();
+    func.compile(&mut compiler, |[], _ret| {
         let c = v(11);
         let d = v(4);
         let e = v(7);
@@ -158,6 +151,8 @@ fn test_ptr() {
 
         halt_with_signal(sum);
     });
-    let (_state, signal) = test(vec![(func_vo1, func.func_decl)]);
-    assert_eq!(signal, Some(11 * 12));
+
+    let instructions = compiler.finish("test_ptr");
+    let (_state, halt_signal) = crate::simulate(&instructions, 100);
+    assert_eq!(halt_signal, Some(11 * 12));
 }

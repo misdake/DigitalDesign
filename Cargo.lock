@@ -73,8 +73,8 @@ dependencies = [
  "cpu-macro",
  "digital-design-code",
  "minifb",
+ "once_cell",
  "paste",
- "smallvec",
 ]
 
 [[package]]
@@ -86,9 +86,6 @@ checksum = "b365fabc795046672053e29c954733ec3b05e4be654ab130fe8f1f94d7051f35"
 [[package]]
 name = "digital-design-code"
 version = "0.1.0"
-dependencies = [
- "once_cell",
-]
 
 [[package]]
 name = "dlib"

@@ -1,103 +1,70 @@
 use crate::dsl::v;
-use crate::{ProgramFunction, VariableOperation1};
+use crate::{Compiler, DslFunction, Variable, VariableOperation1};
+use once_cell::sync::Lazy;
 use std::ops::Neg;
 
-pub fn mul_16x4() -> (ProgramFunction<2, 1>, VariableOperation1) {
-    const BIT: usize = 4;
-    let mul_16x4 = ProgramFunction::new("mul_16x4", ["b16", "b4"], ["r"]);
-
-    let ops = mul_16x4.define(|[b, a], ret| {
-        let one_bit = v(1);
-        let mut sum = v(0);
-
-        let bit0 = a & one_bit;
-        sum += bit0.neg() & b;
-
-        // unrolled
-        for _ in 1..BIT {
-            a.lsr_assign(1);
-            b.lsl_assign(1);
-            let bit = a & one_bit;
-            sum += bit.neg() & b;
-        }
-
-        ret([sum]);
-    });
-
-    (mul_16x4, ops)
+pub fn define_mul(compiler: &mut Compiler) {
+    compiler.func_gen(&MUL_16X4_FUNC, box || mul_define(&MUL_16X4_FUNC, 4));
+    compiler.func_gen(&MUL_16X8_FUNC, box || mul_define(&MUL_16X8_FUNC, 8));
+    compiler.func_gen(&MUL_16X16_FUNC, box || mul_define(&MUL_16X16_FUNC, 16));
 }
 
-pub fn mul_16x8() -> (ProgramFunction<2, 1>, VariableOperation1) {
-    const BIT: usize = 8;
-    let mul_16x8 = ProgramFunction::new("mul_16x8", ["b16", "b8"], ["r"]);
+pub static MUL_16X4_FUNC: Lazy<DslFunction<2, 1>> =
+    Lazy::new(|| DslFunction::new("mul_16x4", ["a", "b4"], ["r"]));
+pub static MUL_16X8_FUNC: Lazy<DslFunction<2, 1>> =
+    Lazy::new(|| DslFunction::new("mul_16x8", ["a", "b8"], ["r"]));
+pub static MUL_16X16_FUNC: Lazy<DslFunction<2, 1>> =
+    Lazy::new(|| DslFunction::new("mul_16x16", ["a", "b16"], ["r"]));
 
-    let ops = mul_16x8.define(|[b, a], ret| {
-        let one_bit = v(1);
-        let mut sum = v(0);
-
-        let bit0 = a & one_bit;
-        sum += bit0.neg() & b;
-
-        // unrolled
-        for _ in 1..BIT {
-            a.lsr_assign(1);
-            b.lsl_assign(1);
-            let bit = a & one_bit;
-            sum += bit.neg() & b;
-        }
-
-        ret([sum]);
-    });
-
-    (mul_16x8, ops)
+pub fn mul_16x4(a: Variable, b4: Variable) -> Variable {
+    MUL_16X4_FUNC.call([a, b4])[0]
+}
+pub fn mul_16x8(a: Variable, b8: Variable) -> Variable {
+    MUL_16X8_FUNC.call([a, b8])[0]
+}
+pub fn mul_16x16(a: Variable, b16: Variable) -> Variable {
+    MUL_16X16_FUNC.call([a, b16])[0]
 }
 
-pub fn mul_16x16() -> (ProgramFunction<2, 1>, VariableOperation1) {
-    const BIT: usize = 16;
-    let mul_16x16 = ProgramFunction::new("mul_16x16", ["b16", "b16"], ["r"]);
-
-    let ops = mul_16x16.define(|[b, a], ret| {
+fn mul_define(func: &DslFunction<2, 1>, bit: usize) -> VariableOperation1 {
+    func.define(|[a, b], ret| {
         let one_bit = v(1);
         let mut sum = v(0);
 
-        let bit0 = a & one_bit;
-        sum += bit0.neg() & b;
+        let bit0 = b & one_bit;
+        sum += bit0.neg() & a;
 
         // unrolled
-        for _ in 1..BIT {
-            a.lsr_assign(1);
-            b.lsl_assign(1);
-            let bit = a & one_bit;
-            sum += bit.neg() & b;
+        for _ in 1..bit {
+            b.lsr_assign(1);
+            a.lsl_assign(1);
+            let bit = b & one_bit;
+            sum += bit.neg() & a;
         }
 
         ret([sum]);
-    });
-
-    (mul_16x16, ops)
+    })
 }
 
 #[test]
 fn test_mul() {
     use crate::programmer::language::dsl::*;
-    use crate::test;
 
     let x = 37;
     let y = 1111;
 
-    let (mul, mul_vo1) = mul_16x16();
+    let mut compiler = Compiler::default();
+    define_mul(&mut compiler);
 
-    let test_mul = ProgramFunction::new("test_mul", [], []);
-
-    let call_vo1 = test_mul.define(|[], _ret| {
+    let test_mul = DslFunction::new("test_mul", [], []);
+    test_mul.compile(&mut compiler, |[], _ret| {
         let a = v(x);
         let b = v(y);
-        let [r] = mul.call([a, b]);
+        let r = mul_16x16(a, b);
         halt_with_signal(r);
     });
-    let (_state, signal) = test(vec![
-        (call_vo1, test_mul.func_decl),
-        (mul_vo1, mul.func_decl),
-    ]);
-    assert_eq!(signal, Some(x * y));
+
+    let instructions = compiler.finish("test_mul");
+    let (_state, halt_signal) = crate::simulate(&instructions, 1000);
+    assert_eq!(halt_signal, Some(x * y));
 }

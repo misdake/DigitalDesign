@@ -1,14 +1,15 @@
 use crate::programmer::language::push_op;
 use crate::*;
 
-pub struct ProgramFunction<const PARAM: usize, const RETURN: usize> {
+#[derive(Clone, Debug)]
+pub struct DslFunction<const PARAM: usize, const RETURN: usize> {
     pub name: &'static str,
     pub param_names: [&'static str; PARAM],
     pub return_names: [&'static str; RETURN],
     pub func_decl: FuncDecl,
 }
 
-impl<const PARAM: usize, const RETURN: usize> ProgramFunction<PARAM, RETURN> {
+impl<const PARAM: usize, const RETURN: usize> DslFunction<PARAM, RETURN> {
     pub fn new(
         name: &'static str,
         param_names: [&'static str; PARAM],
@@ -22,6 +23,15 @@ impl<const PARAM: usize, const RETURN: usize> ProgramFunction<PARAM, RETURN> {
             return_names,
             func_decl,
         }
+    }
+
+    pub fn compile(
+        &self,
+        compiler: &mut Compiler,
+        f: impl FnOnce([Variable; PARAM], &dyn Fn([Variable; RETURN])),
+    ) {
+        let vo = self.define(f);
+        compiler.func_op(&self.func_decl, vo);
     }
 
     pub fn define(
