@@ -118,9 +118,9 @@ impl<const STRIDE: usize> DslArray<STRIDE> {
 }
 
 #[test]
-fn test_ptr() {
+fn test_ptr_array() {
     use crate::programmer::language::dsl::*;
-    let func = DslFunction::new("test_ptr", [], []);
+    let func = DslFunction::new("test_ptr_array", [], []);
 
     let mut compiler = Compiler::default();
     func.compile(&mut compiler, |[], _ret| {
@@ -152,7 +152,7 @@ fn test_ptr() {
         halt_with_signal(sum);
     });
 
-    let instructions = compiler.finish("test_ptr");
-    let (_state, halt_signal) = crate::simulate(&instructions, 100);
+    let instructions = compiler.finish("test_ptr_array");
+    let (_state, halt_signal) = crate::simulate(&instructions, 1000);
     assert_eq!(halt_signal, Some(11 * 12));
 }

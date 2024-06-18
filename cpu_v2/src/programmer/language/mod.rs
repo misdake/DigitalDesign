@@ -2,7 +2,7 @@ pub mod builtin;
 mod func;
 mod helper;
 mod operators;
-mod r#struct;
+mod ptr;
 
 pub use func::*;
 pub use operators::*;
