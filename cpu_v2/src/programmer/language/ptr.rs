@@ -3,8 +3,8 @@ use crate::*;
 
 #[derive(Copy, Clone)]
 pub struct DslPtr {
-    ptr: Variable,
-    offset: u16,
+    pub ptr: Variable,
+    pub offset: u16,
 }
 impl DslPtr {
     pub fn new(ptr: Variable) -> Self {
@@ -55,8 +55,7 @@ impl std::ops::Add<u16> for DslPtr {
 }
 impl std::ops::AddAssign<u16> for DslPtr {
     fn add_assign(&mut self, rhs: u16) {
-        self.ptr += self.offset + rhs;
-        self.offset = 0;
+        self.offset = self.offset + rhs;
     }
 }
 impl std::ops::Add<Variable> for DslPtr {
@@ -74,8 +73,9 @@ impl std::ops::AddAssign<Variable> for DslPtr {
     }
 }
 
-struct DslArray<const STRIDE: usize> {
-    base: DslPtr,
+#[derive(Copy, Clone)]
+pub struct DslArray<const STRIDE: usize> {
+    pub base: DslPtr,
 }
 impl<const STRIDE: usize> DslArray<STRIDE> {
     pub fn new(base: DslPtr) -> Self {

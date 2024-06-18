@@ -3,12 +3,15 @@ mod func;
 mod helper;
 mod operators;
 mod ptr;
+mod structure;
 
 pub use func::*;
 pub use operators::*;
 pub mod dsl {
     pub use super::builtin::*;
     pub use super::helper::*;
+    pub use super::ptr::*;
+    pub use super::structure::*;
 }
 
 use crate::*;
