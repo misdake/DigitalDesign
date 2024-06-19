@@ -3,6 +3,8 @@ use crate::dsl::DslPtr;
 
 pub trait DslStruct {
     const SIZE: usize;
+    type ValueType;
+    fn read(self) -> Self::ValueType;
 }
 
 #[allow(unused_macros)] // used in define_struct
@@ -13,10 +15,14 @@ macro_rules! count {
 
 #[macro_export]
 macro_rules! define_struct {
-    ($struct_name:ident { $($field_name:ident),+ }) => {
+    ($struct_name:ident { $($field_name:ident),+ }) => { paste::paste! {
         #[allow(unused)]
         pub struct $struct_name {
             $($field_name: DslPtr,)+
+        }
+        #[allow(unused)]
+        pub struct [< $struct_name Value >] {
+            $($field_name: Variable,)+
         }
         impl $struct_name {
             #[allow(unused)]
@@ -29,9 +35,15 @@ macro_rules! define_struct {
         }
         impl DslStruct for $struct_name {
             const SIZE: usize = count!($($field_name)+);
+            type ValueType = [< $struct_name Value >];
+            fn read(self) -> Self::ValueType {
+                Self::ValueType {
+                    $($field_name: self.$field_name.read(),)+
+                }
+            }
         }
     };
-}
+}}
 
 #[test]
 fn test_struct() {
@@ -51,9 +63,9 @@ fn test_struct() {
             vec2.x.write(v(123));
             vec2.y.write(v(456));
 
-            let x = vec2.x.read();
+            let value = vec2.read();
 
-            halt_with_signal(x);
+            halt_with_signal(value.x);
         }),
     );
 
