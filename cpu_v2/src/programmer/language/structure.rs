@@ -8,7 +8,7 @@ pub trait DslStruct {
     fn write(self, value: Self::ValueType);
 }
 
-#[allow(unused_macros)] // used in define_struct
+#[macro_export] // used in define_struct
 macro_rules! count {
     () => (0usize);
     ( $x:tt $($xs:tt)* ) => (1usize + count!($($xs)*));

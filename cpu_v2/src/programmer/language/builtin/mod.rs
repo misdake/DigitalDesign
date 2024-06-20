@@ -1,9 +1,9 @@
-mod alloc;
 mod arithmetic;
 mod hashmap;
+mod memory;
 mod vec;
 
-pub use alloc::*;
 pub use arithmetic::*;
 pub use hashmap::*;
+pub use memory::*;
 pub use vec::*;
