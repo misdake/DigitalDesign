@@ -5,6 +5,7 @@ pub trait DslStruct {
     const SIZE: usize;
     type ValueType;
     fn read(self) -> Self::ValueType;
+    fn write(self, value: Self::ValueType);
 }
 
 #[allow(unused_macros)] // used in define_struct
@@ -40,6 +41,9 @@ macro_rules! define_struct {
                 Self::ValueType {
                     $($field_name: self.$field_name.read(),)+
                 }
+            }
+            fn write(self, value: Self::ValueType) {
+                $(self.$field_name.write(value.$field_name);)+
             }
         }
     };
