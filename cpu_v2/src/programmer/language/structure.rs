@@ -4,8 +4,9 @@ use crate::dsl::DslPtr;
 pub trait DslStruct {
     const SIZE: usize;
     type ValueType;
-    fn read(self) -> Self::ValueType;
-    fn write(self, value: Self::ValueType);
+    fn read(&self) -> Self::ValueType;
+    fn read_to(&self, value: &Self::ValueType);
+    fn write(&self, value: Self::ValueType);
 }
 
 #[macro_export] // used in define_struct
@@ -37,16 +38,19 @@ macro_rules! define_struct {
         impl DslStruct for $struct_name {
             const SIZE: usize = count!($($field_name)+);
             type ValueType = [< $struct_name Value >];
-            fn read(self) -> Self::ValueType {
+            fn read(&self) -> Self::ValueType {
                 Self::ValueType {
                     $($field_name: self.$field_name.read(),)+
                 }
             }
-            fn write(self, value: Self::ValueType) {
+            fn read_to(&self, value: &Self::ValueType) {
+                $(self.$field_name.read_to(value.$field_name);)+
+            }
+            fn write(&self, value: Self::ValueType) {
                 $(self.$field_name.write(value.$field_name);)+
             }
         }
-    };
+    }
 }}
 
 #[test]

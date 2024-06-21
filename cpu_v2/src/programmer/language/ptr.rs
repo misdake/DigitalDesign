@@ -17,6 +17,16 @@ impl DslPtr {
         }
         self.offset = 0;
     }
+
+    pub fn add_u4(self, u4: u8) {
+        push_op(VariableOperation1::Update(UpdateOp::AddiAssign(
+            self.ptr, u4,
+        )));
+    }
+    pub fn add_var(self, v: Variable) {
+        push_op(VariableOperation1::Update(UpdateOp::AddAssign(self.ptr, v)));
+    }
+
     pub fn read(self) -> Variable {
         if self.offset < 16 {
             let r = Variable::new();
@@ -27,8 +37,19 @@ impl DslPtr {
             r
         } else {
             let r = self.ptr + self.offset;
-            push_op(VariableOperation1::Result(ResultOp::LoadMem(r, 0), r));
+            push_op(VariableOperation1::Update(UpdateOp::LoadMem(r, 0, r)));
             r
+        }
+    }
+    pub fn read_to(self, v: Variable) {
+        if self.offset < 16 {
+            push_op(VariableOperation1::Result(
+                ResultOp::LoadMem(self.ptr, self.offset as u8),
+                v,
+            ));
+        } else {
+            let r = self.ptr + self.offset;
+            push_op(VariableOperation1::Result(ResultOp::LoadMem(r, 0), v));
         }
     }
     pub fn write(self, v: Variable) {

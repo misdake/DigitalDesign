@@ -9,11 +9,11 @@ pub fn define_mul(compiler: &mut Compiler) {
     compiler.func_gen(&MUL_16X16_FUNC, box || mul_define(&MUL_16X16_FUNC, 16));
 }
 
-pub static MUL_16X4_FUNC: Lazy<DslFunction<2, 1>> =
+static MUL_16X4_FUNC: Lazy<DslFunction<2, 1>> =
     Lazy::new(|| DslFunction::new("mul_16x4", ["a", "b4"], ["r"]));
-pub static MUL_16X8_FUNC: Lazy<DslFunction<2, 1>> =
+static MUL_16X8_FUNC: Lazy<DslFunction<2, 1>> =
     Lazy::new(|| DslFunction::new("mul_16x8", ["a", "b8"], ["r"]));
-pub static MUL_16X16_FUNC: Lazy<DslFunction<2, 1>> =
+static MUL_16X16_FUNC: Lazy<DslFunction<2, 1>> =
     Lazy::new(|| DslFunction::new("mul_16x16", ["a", "b16"], ["r"]));
 
 pub fn mul_16x4(a: Variable, b4: Variable) -> Variable {

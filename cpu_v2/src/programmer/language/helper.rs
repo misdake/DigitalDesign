@@ -32,6 +32,15 @@ pub fn if_then_else(cond: CondOp<Variable>, then_block: impl FnOnce(), else_bloc
     ));
 }
 
+pub fn while_loop_cond(cond1: impl FnOnce(), cond2: CondOp<Variable>, loop_block: impl FnOnce()) {
+    let pre_cond_op = compose_variable_operations(cond1);
+    push_op(pre_cond_op.clone());
+    let loop_block_op = compose_variable_operations(|| {
+        loop_block();
+        push_op(pre_cond_op);
+    });
+    push_op(VariableOperation1::Loop(cond2, Box::new(loop_block_op)));
+}
 pub fn while_loop(cond: CondOp<Variable>, loop_block: impl FnOnce()) {
     let loop_block = compose_variable_operations(loop_block);
     push_op(VariableOperation1::Loop(cond, Box::new(loop_block)));
