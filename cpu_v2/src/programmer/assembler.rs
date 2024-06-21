@@ -150,7 +150,7 @@ impl Assembler {
 
     pub fn if_u4(&mut self, reg0: Reg, u4: Imm4, cond: Cond, if_case: impl FnOnce(&mut Self)) {
         self.inst(cmp_i(u4, reg0));
-        let skip_if = self.jmp_forward(cond);
+        let skip_if = self.jmp_forward(cond.invert());
         if_case(self);
         self.resolve_jmp(skip_if);
     }
@@ -163,7 +163,7 @@ impl Assembler {
         else_case: impl FnOnce(&mut Self),
     ) {
         self.inst(cmp_i(u4, reg0));
-        let skip_if = self.jmp_forward(cond);
+        let skip_if = self.jmp_forward(cond.invert());
         if_case(self);
         let skip_else = self.jmp_forward(Cond::Always);
         self.resolve_jmp(skip_if);

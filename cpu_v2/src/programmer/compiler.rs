@@ -56,7 +56,7 @@ impl Compiler {
                     .functions
                     .remove(name)
                     .unwrap_or_else(|| panic!("unknown function `{name}`"));
-
+                println!("generating {}", decl.func_name);
                 let vo1 = generator();
                 let vo2s = VariableOperation2Scope::from(vo1);
                 let vo3 = VariableOperation3::from(vo2s);

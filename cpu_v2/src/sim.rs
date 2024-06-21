@@ -84,7 +84,10 @@ impl StateChange {
             outputs.push(format!("mem[{0:04x}] = {1} ({1:04x})", addr, data));
         }
         if let Some(flags) = self.flags {
-            outputs.push(format!("flags = {0} ({0:04x})", flags));
+            let g = select((flags & FLAGS_GREATER) != 0, "g", "");
+            let l = select((flags & FLAGS_LESS) != 0, "l", "");
+            let e = select((flags & FLAGS_EQUAL) != 0, "e", "");
+            outputs.push(format!("flags = {g}{l}{e}"));
         }
         if let Some(signal) = self.halt {
             outputs.push(format!("halt {0} ({0:04x})", signal));
@@ -142,11 +145,11 @@ impl SimEnv {
             Instruction::halt(r1) => {
                 changes.halt(reg(r1));
             }
-            Instruction::and(r2, r1, r0) => changes.reg(r0, reg(r1) & reg(r2)),
-            Instruction::or(r2, r1, r0) => changes.reg(r0, reg(r1) | reg(r2)),
-            Instruction::xor(r2, r1, r0) => changes.reg(r0, reg(r1) ^ reg(r2)),
-            Instruction::add(r2, r1, r0) => changes.reg(r0, reg(r1).wrapping_add(reg(r2))),
-            Instruction::sub(r2, r1, r0) => changes.reg(r0, reg(r1).wrapping_sub(reg(r2))),
+            Instruction::and(r2, r1, r0) => changes.reg(r0, reg(r2) & reg(r1)),
+            Instruction::or(r2, r1, r0) => changes.reg(r0, reg(r2) | reg(r1)),
+            Instruction::xor(r2, r1, r0) => changes.reg(r0, reg(r2) ^ reg(r1)),
+            Instruction::add(r2, r1, r0) => changes.reg(r0, reg(r2).wrapping_add(reg(r1))),
+            Instruction::sub(r2, r1, r0) => changes.reg(r0, reg(r2).wrapping_sub(reg(r1))),
             Instruction::addi(r2, u4, r0) => changes.reg(r0, reg(r2).wrapping_add(u4 as u16)),
             Instruction::subi(r2, u4, r0) => changes.reg(r0, reg(r2).wrapping_sub(u4 as u16)),
             Instruction::lsl(u4, r0) => changes.reg(r0, reg(r0) << u4),
