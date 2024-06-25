@@ -58,7 +58,9 @@ fn define_malloc() -> VariableOperation1 {
                         || {
                             // next block exists, write next block
                             let next_block_ptr = ptr + size;
-                            next_block_ptr.write(next_block_size | free_bit);
+                            let flag = next_block_size | free_bit;
+                            next_block_ptr.write(flag);
+                            (next_block_ptr + (next_block_size - 1)).write(flag);
                         },
                         || {
                             // next block does not exist, set size = block_size
@@ -82,15 +84,55 @@ fn define_malloc() -> VariableOperation1 {
 }
 fn define_free() -> VariableOperation1 {
     FREE.define(|[mut ptr], ret| {
-        ptr -= 1;
-        let ptr = DslPtr::new(ptr);
-        let size = ptr.read();
-        let flag = size | v(FREE_BIT);
-        ptr.write(flag);
-        (ptr + (size - 1)).write(flag);
+        let free_bit = v(FREE_BIT);
+        ptr -= 1; // header
+        let self_header = DslPtr::new(ptr);
+        let local_size = self_header.read();
+        let mut flag = local_size | free_bit;
+        let mut left_footer = self_header.ptr - 1;
+        let mut self_footer = left_footer + local_size;
 
-        //TODO try merge left
-        //TODO try merge right
+        // merge left block
+        let left_limit = v(HEAP_BEGIN - 1);
+        let right_limit = v(HEAP_END - 1);
+        while_loop(CondOp::Cmp(left_footer, left_limit, Cond::Greater), || {
+            let left_flag = DslPtr::new(left_footer).read();
+            if_then_else(
+                CondOp::Cmp(left_flag, free_bit, Cond::Greater),
+                || {
+                    //left block is free
+                    let left_size = left_flag - free_bit;
+                    left_footer -= left_size; // goes to left'left footer
+                    flag += left_size;
+                },
+                || {
+                    left_limit.assign_from(right_limit); // break
+                },
+            );
+        });
+
+        // merge right block
+        let left_limit = v(HEAP_BEGIN - 1);
+        while_loop(CondOp::Cmp(self_footer, right_limit, Cond::Less), || {
+            let right_flag = (DslPtr::new(self_footer) + 1).read();
+            if_then_else(
+                CondOp::Cmp(right_flag, free_bit, Cond::Greater),
+                || {
+                    //riht block is free
+                    let right_size = right_flag - free_bit;
+                    self_footer += right_size; // goes to right footer
+                    flag += right_size;
+                },
+                || {
+                    right_limit.assign_from(left_limit); // break
+                },
+            );
+        });
+
+        let self_header = DslPtr::new(left_footer) + 1;
+        self_header.write(flag);
+        let self_footer = DslPtr::new(self_footer);
+        self_footer.write(flag);
 
         ret([]);
     })
@@ -117,14 +159,37 @@ fn test_malloc() {
     test_malloc.compile(&mut compiler, |[], _ret| {
         init_heap();
         let ptr1 = malloc(v(1));
-        let _ptr2 = malloc(v(2));
+        let ptr2 = malloc(v(2));
         let _ptr3 = malloc(v(3));
+        free(ptr2);
         free(ptr1);
         halt_with_signal(v(0));
     });
 
     let instructions = compiler.finish("test_malloc");
     let (state, _halt_signal) = simulate(&instructions, 1000);
-    let heap_mem_slice = &state.mem[HEAP_BEGIN as usize..(HEAP_BEGIN as usize + 20)];
-    println!("heap mem: {:?}", heap_mem_slice)
+    let mem = &state.mem[HEAP_BEGIN as usize..HEAP_END as usize];
+
+    println!("heap mem: {:?}", &mem[0..20]);
+
+    let mut sum = 0;
+    println!("heap dump:");
+    let mut ptr = 0;
+    while ptr < HEAP_SIZE as usize {
+        let flag = mem[ptr];
+        if flag > FREE_BIT {
+            let size = flag - FREE_BIT;
+            sum += size;
+            println!("  free {} at {}", size - 2, ptr);
+            assert_eq!(flag, mem[ptr + size as usize - 1]);
+            ptr += size as usize;
+        } else {
+            let size = flag;
+            sum += size;
+            println!("  used {} at {}", size - 2, ptr);
+            assert_eq!(flag, mem[ptr + size as usize - 1]);
+            ptr += size as usize;
+        }
+    }
+    assert_eq!(sum, HEAP_SIZE);
 }
