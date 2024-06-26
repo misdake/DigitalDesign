@@ -1,9 +1,10 @@
+use crate::builtin::mem::{define_mem, mem_copy, mem_set};
 use crate::dsl::*;
 use crate::*;
 use once_cell::sync::Lazy;
 
 const HEAP_BEGIN: u16 = 0x1000;
-const HEAP_SIZE: u16 = 0x1000;
+const HEAP_SIZE: u16 = 20;
 const HEAP_END: u16 = HEAP_BEGIN + HEAP_SIZE;
 const FREE_BIT: u16 = 1 << 15;
 
@@ -12,7 +13,7 @@ static MALLOC: Lazy<DslFunction<1, 1>> =
     Lazy::new(|| DslFunction::new("malloc", ["size"], ["ptr"]));
 static FREE: Lazy<DslFunction<1, 0>> = Lazy::new(|| DslFunction::new("free", ["ptr"], []));
 
-pub fn define_memory(compiler: &mut Compiler) {
+pub fn define_heap(compiler: &mut Compiler) {
     compiler.func_gen(&INIT_HEAP, box define_init_heap);
     compiler.func_gen(&MALLOC, box define_malloc);
     compiler.func_gen(&FREE, box define_free);
@@ -54,7 +55,7 @@ fn define_malloc() -> VariableOperation1 {
                     // check whether next block exists
                     let next_block_size = block_size - size;
                     if_then_else(
-                        CondOp::CmpI(next_block_size, 0, Cond::Greater),
+                        CondOp::CmpI(next_block_size, 2, Cond::Greater),
                         || {
                             // next block exists, write next block
                             let next_block_ptr = ptr + size;
@@ -153,7 +154,8 @@ fn test_malloc() {
     use crate::programmer::language::dsl::*;
 
     let mut compiler = Compiler::default();
-    define_memory(&mut compiler);
+    define_heap(&mut compiler);
+    define_mem(&mut compiler);
 
     let test_malloc = DslFunction::new("test_malloc", [], []);
     test_malloc.compile(&mut compiler, |[], _ret| {
@@ -163,6 +165,12 @@ fn test_malloc() {
         let _ptr3 = malloc(v(3));
         free(ptr2);
         free(ptr1);
+        let ptr4 = malloc(v(2));
+        let ptr5 = malloc(v(5));
+        mem_set(DslPtr::new(ptr4), v(2), v(44));
+        mem_set(DslPtr::new(ptr5), v(5), v(55));
+        mem_copy(DslPtr::new(ptr5), DslPtr::new(ptr4), v(2));
+
         halt_with_signal(v(0));
     });
 

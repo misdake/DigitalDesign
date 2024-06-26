@@ -1,6 +1,7 @@
 mod arithmetic;
 mod hashmap;
 mod heap;
+mod mem;
 mod vec;
 
 pub use arithmetic::*;

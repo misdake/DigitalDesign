@@ -58,8 +58,9 @@ pub fn for_loop_u4(range: Range<u8>, loop_block: impl FnOnce(Variable)) {
         Box::new(loop_block),
     ));
 }
-pub fn for_loop_reg_up(start: u16, end: Variable, loop_block: impl FnOnce(Variable)) {
-    let mut i = v(start);
+pub fn for_loop_reg_up(start: Variable, end: Variable, loop_block: impl FnOnce(Variable)) {
+    let mut i = Variable::new();
+    i.assign_from(start);
     let loop_block = compose_variable_operations(|| {
         loop_block(i);
         i += 1;
