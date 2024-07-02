@@ -199,5 +199,9 @@ fn test_malloc() {
             ptr += size as usize;
         }
     }
+    assert_eq!(
+        mem,
+        [4, 44, 44, 4, 32771, 0, 32771, 5, 0, 0, 0, 5, 8, 44, 44, 55, 55, 55, 0, 8]
+    );
     assert_eq!(sum, HEAP_SIZE);
 }
