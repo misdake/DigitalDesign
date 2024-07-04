@@ -7,4 +7,5 @@ mod vec;
 pub use arithmetic::*;
 pub use hashmap::*;
 pub use heap::*;
+pub use mem::*;
 pub use vec::*;

@@ -28,8 +28,8 @@ macro_rules! define_struct {
         }
         impl $struct_name {
             #[allow(unused)]
-            pub fn new(mut ptr: DslPtr) -> Self {
-                $( let $field_name = ptr ; ptr += 1; )+
+            pub fn new(mut _ptr: DslPtr) -> Self {
+                $( let $field_name = _ptr ; _ptr += 1; )+
                 Self {
                     $($field_name,)+
                 }

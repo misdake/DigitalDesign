@@ -10,13 +10,6 @@ impl DslPtr {
     pub fn new(ptr: Variable) -> Self {
         Self { ptr, offset: 0 }
     }
-    #[allow(unused)]
-    pub fn resolve(&mut self) {
-        if self.offset > 0 {
-            self.ptr += self.offset;
-        }
-        self.offset = 0;
-    }
 
     pub fn add_u4(self, u4: u8) {
         push_op(VariableOperation1::Update(UpdateOp::AddiAssign(
@@ -86,11 +79,6 @@ impl std::ops::Add<Variable> for DslPtr {
             ptr: self.ptr + rhs,
             offset: self.offset,
         }
-    }
-}
-impl std::ops::AddAssign<Variable> for DslPtr {
-    fn add_assign(&mut self, rhs: Variable) {
-        self.ptr += rhs;
     }
 }
 
@@ -174,6 +162,6 @@ fn test_ptr_array() {
     });
 
     let instructions = compiler.finish("test_ptr_array");
-    let (_state, halt_signal) = crate::simulate(&instructions, 1000);
+    let (_state, halt_signal) = simulate(&instructions, 1000);
     assert_eq!(halt_signal, Some(11 * 12));
 }
