@@ -1,7 +1,8 @@
+use std::ops::*;
+
 use crate::dsl::v;
 use crate::programmer::language::push_op;
 use crate::{u16_to_hi_lo, ResultOp, UpdateOp, Variable, VariableOperation1};
-use std::ops::*;
 
 macro_rules! define_op_with_assign {
     ($op_ty: ident, $op_name: ident, $vo_name: ident) => {
@@ -108,6 +109,18 @@ impl Variable {
         push_op(VariableOperation1::Result(ResultOp::Mov(self), r));
         push_op(VariableOperation1::Update(UpdateOp::Asr(r, u4)));
         r
+    }
+
+    pub fn mul_imm_simple(self, imm: usize) -> Variable {
+        match imm {
+            1 => self.clone_value(),
+            2 => self.lsl(1),
+            3 => self.lsl(1) + self,
+            4 => self.lsl(2),
+            6 => (self.lsl(1) + self).lsl(1),
+            8 => self.lsl(3),
+            _ => unimplemented!(),
+        }
     }
 }
 

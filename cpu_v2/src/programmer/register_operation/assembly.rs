@@ -25,6 +25,14 @@ impl RegisterOperation {
     }
     fn write_asm_inner(op: &RegisterOperation, asm: &mut Assembler, r: &mut Vec<Relocation>) {
         use crate::Instruction::*;
+
+        if let RegisterOperation::Update(UpdateOp::Mov(a, b)) = op {
+            if a.0 == b.0 {
+                println!("skip move to self: {} -> {}", a.0, b.0);
+                return;
+            }
+        }
+
         match op {
             RegisterOperation::Result(op, dst) => {
                 match *op {

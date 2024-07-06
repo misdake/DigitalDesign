@@ -95,33 +95,9 @@ impl<const STRIDE: usize> DslArray<STRIDE> {
         self.base + offset
     }
     pub fn index_reg(&self, index: Variable) -> DslPtr {
-        match STRIDE {
-            1 => DslPtr {
-                ptr: self.base.ptr + index,
-                offset: 0,
-            },
-            2 => DslPtr {
-                ptr: self.base.ptr + index.lsl(1),
-                offset: 0,
-            },
-            3 => DslPtr {
-                ptr: self.base.ptr + (index.lsl(1) + index),
-                offset: 0,
-            },
-            4 => DslPtr {
-                ptr: self.base.ptr + index.lsl(2),
-                offset: 0,
-            },
-            6 => DslPtr {
-                ptr: self.base.ptr + (index.lsl(1) + index).lsl(1),
-                offset: 0,
-            },
-            8 => DslPtr {
-                ptr: self.base.ptr + index.lsl(3),
-                offset: 0,
-            },
-
-            _ => unimplemented!(),
+        DslPtr {
+            ptr: self.base.ptr + index.mul_imm_simple(STRIDE),
+            offset: 0,
         }
     }
 }

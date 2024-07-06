@@ -4,6 +4,8 @@ use crate::dsl::DslPtr;
 pub trait DslStruct {
     const SIZE: usize;
     type ValueType;
+    fn new(ptr: DslPtr) -> Self;
+    fn base(&self) -> DslPtr;
     fn read(&self) -> Self::ValueType;
     fn read_to(&self, value: &Self::ValueType);
     fn write(&self, value: Self::ValueType);
@@ -20,24 +22,27 @@ macro_rules! define_struct {
     ($struct_name:ident { $($field_name:ident),+ }) => { paste::paste! {
         #[allow(unused)]
         pub struct $struct_name {
+            base: DslPtr,
             $($field_name: DslPtr,)+
         }
         #[allow(unused)]
         pub struct [< $struct_name Value >] {
             $($field_name: Variable,)+
         }
-        impl $struct_name {
-            #[allow(unused)]
-            pub fn new(mut _ptr: DslPtr) -> Self {
-                $( let $field_name = _ptr ; _ptr += 1; )+
-                Self {
-                    $($field_name,)+
-                }
-            }
-        }
         impl DslStruct for $struct_name {
             const SIZE: usize = count!($($field_name)+);
             type ValueType = [< $struct_name Value >];
+            fn new(mut _ptr: DslPtr) -> Self {
+                let base = _ptr;
+                $( let $field_name = _ptr ; _ptr += 1; )+
+                Self {
+                    base,
+                    $($field_name,)+
+                }
+            }
+            fn base(&self) -> DslPtr {
+                self.base
+            }
             fn read(&self) -> Self::ValueType {
                 Self::ValueType {
                     $($field_name: self.$field_name.read(),)+

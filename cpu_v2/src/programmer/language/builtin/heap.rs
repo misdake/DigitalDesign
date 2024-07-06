@@ -1,4 +1,3 @@
-use crate::builtin::mem::{define_mem, mem_copy, mem_set};
 use crate::dsl::*;
 use crate::*;
 use once_cell::sync::Lazy;
