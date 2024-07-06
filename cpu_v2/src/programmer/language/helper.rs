@@ -58,15 +58,40 @@ pub fn for_loop_u4(range: Range<u8>, loop_block: impl FnOnce(Variable)) {
         Box::new(loop_block),
     ));
 }
-pub fn for_loop_reg_up(start: Variable, end: Variable, loop_block: impl FnOnce(Variable)) {
+/// for i in start..end { loop_block() }
+pub fn for_loop_reg_up(
+    start: Variable,
+    end: Variable,
+    stride: u16,
+    loop_block: impl FnOnce(Variable),
+) {
     let mut i = Variable::new();
     i.assign_from(start);
     let loop_block = compose_variable_operations(|| {
         loop_block(i);
-        i += 1;
+        i += stride;
     });
     push_op(VariableOperation1::Loop(
         CondOp::Cmp(i, end, Cond::Less),
+        Box::new(loop_block),
+    ));
+}
+/// for i in (start..end).rev() { loop_block() }
+pub fn for_loop_reg_up_rev(
+    start: Variable,
+    end: Variable,
+    stride: u16,
+    loop_block: impl FnOnce(Variable),
+) {
+    let mut i = Variable::new();
+    let end = end - 1;
+    i.assign_from(end);
+    let loop_block = compose_variable_operations(|| {
+        loop_block(i);
+        i -= stride;
+    });
+    push_op(VariableOperation1::Loop(
+        CondOp::Cmp(i, start, Cond::GreaterEqual),
         Box::new(loop_block),
     ));
 }

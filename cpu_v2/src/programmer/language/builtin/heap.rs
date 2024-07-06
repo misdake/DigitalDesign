@@ -138,13 +138,13 @@ fn define_free() -> VariableOperation1 {
     })
 }
 
-pub fn init_heap() {
+pub fn heap_init() {
     INIT_HEAP.call([]);
 }
-pub fn malloc(size: Variable) -> Variable {
+pub fn heap_malloc(size: Variable) -> Variable {
     MALLOC.call([size])[0]
 }
-pub fn free(ptr: Variable) {
+pub fn heap_free(ptr: Variable) {
     FREE.call([ptr]);
 }
 
@@ -158,14 +158,14 @@ fn test_malloc() {
 
     let test_malloc = DslFunction::new("test_malloc", [], []);
     test_malloc.compile(&mut compiler, |[], _ret| {
-        init_heap();
-        let ptr1 = malloc(v(1));
-        let ptr2 = malloc(v(2));
-        let _ptr3 = malloc(v(3));
-        free(ptr2);
-        free(ptr1);
-        let ptr4 = malloc(v(2));
-        let ptr5 = malloc(v(5));
+        heap_init();
+        let ptr1 = heap_malloc(v(1));
+        let ptr2 = heap_malloc(v(2));
+        let _ptr3 = heap_malloc(v(3));
+        heap_free(ptr2);
+        heap_free(ptr1);
+        let ptr4 = heap_malloc(v(2));
+        let ptr5 = heap_malloc(v(5));
         mem_set(DslPtr::new(ptr4), v(2), v(44));
         mem_set(DslPtr::new(ptr5), v(5), v(55));
         mem_copy(DslPtr::new(ptr5), DslPtr::new(ptr4), v(2));

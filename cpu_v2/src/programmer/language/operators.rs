@@ -111,7 +111,7 @@ impl Variable {
         r
     }
 
-    pub fn mul_imm_simple(self, imm: usize) -> Variable {
+    pub fn mul_imm_simple(self, imm: u8) -> Variable {
         match imm {
             1 => self.clone_value(),
             2 => self.lsl(1),

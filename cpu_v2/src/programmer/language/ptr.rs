@@ -96,7 +96,7 @@ impl<const STRIDE: usize> DslArray<STRIDE> {
     }
     pub fn index_reg(&self, index: Variable) -> DslPtr {
         DslPtr {
-            ptr: self.base.ptr + index.mul_imm_simple(STRIDE),
+            ptr: self.base.ptr + index.mul_imm_simple(STRIDE as u8),
             offset: 0,
         }
     }

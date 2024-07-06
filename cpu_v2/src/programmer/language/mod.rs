@@ -98,8 +98,50 @@ fn test_for_loop() {
         }),
     );
 
-    let instructions = compiler.finish("call");
+    let instructions = compiler.finish("loop");
     let (_state, signal) = simulate(&instructions, 1000);
     let n = n as u16;
     assert_eq!(signal, Some(n * (n + 1) / 2));
+}
+
+#[test]
+fn test_for_loop2() {
+    use crate::programmer::language::dsl::*;
+    let call = DslFunction::new("loop2", [], []);
+
+    let mut compiler = Compiler::default();
+    compiler.func_op(
+        &call.func_decl,
+        call.define(|[], _ret| {
+            // 1..=5
+            let start = v(1);
+            let end = v(6);
+
+            let mut sum = v(0);
+            let r1 = v(0);
+            for_loop_reg_up(start, end, 1, |i| {
+                sum += i;
+                if_then(CondOp::CmpI(sum, 6, Cond::LessEqual), || {
+                    r1.assign_from(i);
+                })
+            });
+
+            let mut sum = v(0);
+            let r2 = v(0);
+            for_loop_reg_up_rev(start, end, 1, |i| {
+                sum += i;
+                if_then(CondOp::CmpI(sum, 6, Cond::Less), || {
+                    r2.assign_from(i);
+                })
+            });
+
+            halt_with_signal(r1.lsl(4) + r2);
+        }),
+    );
+
+    let instructions = compiler.finish("loop2");
+    let (_state, signal) = simulate(&instructions, 1000);
+    // up: 1 + 2 + 3, r1 = 3
+    // up_rev: 5, r2 = 5
+    assert_eq!(signal, Some((3 << 4) + 5));
 }

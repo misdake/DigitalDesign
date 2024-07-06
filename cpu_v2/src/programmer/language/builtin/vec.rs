@@ -3,11 +3,11 @@ use crate::Cond::*;
 use crate::*;
 use once_cell::sync::Lazy;
 
-static VEC_NEW: Lazy<DslFunction<1, 0>> = Lazy::new(|| DslFunction::new("vec_new", ["self"], []));
-static VEC_REMOVE: Lazy<DslFunction<2, 1>> =
-    Lazy::new(|| DslFunction::new("vec_remove", ["self", "index"], ["val"]));
-static VEC_POP: Lazy<DslFunction<1, 1>> =
-    Lazy::new(|| DslFunction::new("vec_pop", ["self"], ["val"]));
+static VEC_INSERT: Lazy<DslFunction<3, 1>> =
+    Lazy::new(|| DslFunction::new("vec_remove", ["self", "index", "len"], ["ptr"]));
+static VEC_REMOVE: Lazy<DslFunction<3, 0>> =
+    Lazy::new(|| DslFunction::new("vec_remove", ["self", "index", "len"], []));
+
 static VEC_DROP: Lazy<DslFunction<1, 0>> = Lazy::new(|| DslFunction::new("vec_drop", ["ptr"], []));
 
 static VEC_SUBALLOC: Lazy<DslFunction<2, 1>> =
@@ -21,12 +21,11 @@ pub fn define_vec(compiler: &mut Compiler) {
     define_heap(compiler);
     define_mem(compiler);
     //TODO
-    compiler.func_gen(&VEC_SUBALLOC, box define_vec_suballoc);
-    // compiler.func_gen(&VEC_GET, box define_vec_get);
+    // compiler.func_gen(&VEC_INSERT, box define_vec_insert);
     // compiler.func_gen(&VEC_REMOVE, box define_vec_remove);
-    // compiler.func_gen(&VEC_POP, box define_vec_pop);
+    compiler.func_gen(&VEC_SUBALLOC, box define_vec_suballoc);
     compiler.func_gen(&VEC_REALLOC, box define_vec_realloc);
-    // compiler.func_gen(&VEC_DROP, box define_vec_drop);
+    compiler.func_gen(&VEC_DROP, box define_vec_drop);
 }
 
 fn define_vec_suballoc() -> VariableOperation1 {
@@ -65,7 +64,7 @@ fn define_vec_realloc() -> VariableOperation1 {
         });
 
         // *buf = malloc(new_cap), *cap = new_cap
-        let curr_buf = malloc(curr_cap);
+        let curr_buf = heap_malloc(curr_cap);
         vec.buf.write(curr_buf);
         vec.cap.write(curr_cap);
 
@@ -74,9 +73,21 @@ fn define_vec_realloc() -> VariableOperation1 {
 
         // if buf != nullptr => free buf
         if_then(CondOp::CmpI(prev_buf_ptr, 0, Greater), || {
-            free(prev_buf_ptr);
+            heap_free(prev_buf_ptr);
         });
 
+        ret([]);
+    })
+}
+
+fn define_vec_drop() -> VariableOperation1 {
+    VEC_DROP.define(|[ptr], ret| {
+        let vec = Vec::new(DslPtr::new(ptr));
+        heap_free(vec.buf.read());
+        let z = v(0);
+        vec.buf.write(z);
+        vec.len.write(z);
+        vec.cap.write(z);
         ret([]);
     })
 }
@@ -107,23 +118,31 @@ impl Vec {
         let ptr = DslPtr::new(ptr);
         (0..N).for_each(|i| (ptr + i as u16).write(value[i]));
     }
+    pub fn push1(&self, value: Variable) {
+        self.push([value]);
+    }
+    pub fn push2(&self, a: Variable, b: Variable) {
+        self.push([a, b]);
+    }
+    pub fn push3(&self, a: Variable, b: Variable, c: Variable) {
+        self.push([a, b, c]);
+    }
+    pub fn push4(&self, a: Variable, b: Variable, c: Variable, d: Variable) {
+        self.push([a, b, c, d]);
+    }
 
     //TODO LEN check?
 
-    pub fn get_struct<T: DslStruct>(&self, index: Variable) -> DslPtr {
-        DslPtr::new(self.buf.read()) + index.mul_imm_simple(T::SIZE)
+    pub fn get_struct<T: DslStruct>(&self, index: Variable) -> T {
+        let ptr = DslPtr::new(self.buf.read()) + index.mul_imm_simple(T::SIZE as u8);
+        T::new(ptr)
     }
-    pub fn get1(&self, index: Variable) -> DslPtr {
-        DslPtr::new(self.buf.read()) + index
-    }
-    pub fn get2(&self, index: Variable) -> DslPtr {
-        DslPtr::new(self.buf.read()) + index.lsl(1)
-    }
-    pub fn get3(&self, index: Variable) -> DslPtr {
-        DslPtr::new(self.buf.read()) + (index.lsl(1) + index)
-    }
-    pub fn get4(&self, index: Variable) -> DslPtr {
-        DslPtr::new(self.buf.read()) + index.lsl(2)
+    pub fn get(&self, index: Variable, stride: u8) -> DslPtr {
+        if stride == 1 {
+            DslPtr::new(self.buf.read()) + index
+        } else {
+            DslPtr::new(self.buf.read()) + index.mul_imm_simple(stride)
+        }
     }
 
     //TODO LEN check? Call or inline?
@@ -137,50 +156,35 @@ impl Vec {
         self.len.write(new_len);
         r
     }
-    pub fn pop1(&self) -> Variable {
+    pub fn pop<const N: usize>(&self) -> [Variable; N] {
         let len = self.len.read();
-        let start_offset = len - 2;
-        let start_ptr = self.get1(start_offset);
-        let a = start_ptr.read();
-        let new_len = len - 1;
+        let start_offset = len - (N + 1) as u16;
+        let start_ptr = self.get(start_offset, 1);
+        let results = core::array::from_fn(|i| (start_ptr + i as u16).read());
+        let new_len = len - N as u16;
         self.len.write(new_len);
-        a
+        results
+    }
+    pub fn pop1(&self) -> Variable {
+        self.pop::<1>()[0]
     }
     pub fn pop2(&self) -> [Variable; 2] {
-        let len = self.len.read();
-        let start_offset = len - 2;
-        let start_ptr = self.get1(start_offset);
-        let a = start_ptr.read();
-        let b = (start_ptr + 1).read();
-        let new_len = len - 2;
-        self.len.write(new_len);
-        [a, b]
+        self.pop::<2>()
     }
     pub fn pop3(&self) -> [Variable; 3] {
-        let len = self.len.read();
-        let start_offset = len - 3;
-        let start_ptr = self.get1(start_offset);
-        let a = start_ptr.read();
-        let b = (start_ptr + 1).read();
-        let c = (start_ptr + 2).read();
-        let new_len = len - 3;
-        self.len.write(new_len);
-        [a, b, c]
+        self.pop::<3>()
     }
     pub fn pop4(&self) -> [Variable; 4] {
-        let len = self.len.read();
-        let start_offset = len - 4;
-        let start_ptr = self.get1(start_offset);
-        let a = start_ptr.read();
-        let b = (start_ptr + 1).read();
-        let c = (start_ptr + 2).read();
-        let d = (start_ptr + 3).read();
-        let new_len = len - 4;
-        self.len.write(new_len);
-        [a, b, c, d]
+        self.pop::<4>()
     }
 
+    //TODO insert (suballoc, mem_copy, return hole ptr)
+
+    //TODO remove (mem_copy, set len)
+
+    //TODO for each (with index and without)
+
     pub fn drop(&self) {
-        VEC_DROP.call([self.buf.read()]);
+        VEC_DROP.call([self.base.ptr]);
     }
 }
