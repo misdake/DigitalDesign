@@ -166,9 +166,9 @@ fn test_malloc() {
         heap_free(ptr1);
         let ptr4 = heap_malloc(v(2));
         let ptr5 = heap_malloc(v(5));
-        mem_set(DslPtr::new(ptr4), v(2), v(44));
-        mem_set(DslPtr::new(ptr5), v(5), v(55));
-        mem_copy(DslPtr::new(ptr5), DslPtr::new(ptr4), v(2));
+        mem_set(DslPtr::new(ptr4), v(2), v(44)); // 44 44
+        mem_set(DslPtr::new(ptr5), v(5), v(55)); // 55 55 55 55 55
+        mem_copy(DslPtr::new(ptr5), DslPtr::new(ptr4), v(2)); // 44 44 55 55 55
 
         halt_with_signal(v(0));
     });

@@ -3,26 +3,23 @@ use crate::Cond::*;
 use crate::*;
 use once_cell::sync::Lazy;
 
-static VEC_INSERT: Lazy<DslFunction<3, 1>> =
-    Lazy::new(|| DslFunction::new("vec_remove", ["self", "index", "len"], ["ptr"]));
-static VEC_REMOVE: Lazy<DslFunction<3, 0>> =
-    Lazy::new(|| DslFunction::new("vec_remove", ["self", "index", "len"], []));
+const VEC_LEN_INIT: usize = 8;
 
 static VEC_DROP: Lazy<DslFunction<1, 0>> = Lazy::new(|| DslFunction::new("vec_drop", ["ptr"], []));
 
+/// alloc block of size "size" at tail, return pointer of block start addr
 static VEC_SUBALLOC: Lazy<DslFunction<2, 1>> =
-    Lazy::new(|| DslFunction::new("vec_realloc", ["self", "size"], ["ptr"]));
-static VEC_REALLOC: Lazy<DslFunction<2, 0>> =
-    Lazy::new(|| DslFunction::new("vec_realloc", ["self", "cap"], []));
+    Lazy::new(|| DslFunction::new("vec_suballoc", ["self", "size"], ["ptr"]));
+/// alloc new buffer, copy buffer and free previous buffer. cap must be > 0.
+static VEC_REALLOC: Lazy<DslFunction<2, 1>> =
+    Lazy::new(|| DslFunction::new("vec_realloc", ["self", "cap"], ["new_buf"]));
 
 define_struct!(Vec { buf, len, cap });
 
 pub fn define_vec(compiler: &mut Compiler) {
     define_heap(compiler);
     define_mem(compiler);
-    //TODO
-    // compiler.func_gen(&VEC_INSERT, box define_vec_insert);
-    // compiler.func_gen(&VEC_REMOVE, box define_vec_remove);
+
     compiler.func_gen(&VEC_SUBALLOC, box define_vec_suballoc);
     compiler.func_gen(&VEC_REALLOC, box define_vec_realloc);
     compiler.func_gen(&VEC_DROP, box define_vec_drop);
@@ -33,21 +30,30 @@ fn define_vec_suballoc() -> VariableOperation1 {
         let vec = Vec::new(DslPtr::new(ptr));
         let prev_len = vec.len.read();
         let curr_len = prev_len + size;
-        let cap = vec.cap.read();
+        let prev_cap = vec.cap.read();
+        let curr_buf = vec.buf.read();
 
-        // if new_len > cap {
-        //     set_cap(cap * 2); // if cap == 0 => it will set cap to 10
-        // }
-        if_then(CondOp::Cmp(curr_len, cap, Greater), || {
-            VEC_REALLOC.call([ptr, cap.lsl(1)]);
+        if_then(CondOp::Cmp(curr_len, prev_cap, Greater), || {
+            // new_cap = prev_cap * 2;
+            // if new_cap == 0 { cap = VEC_LEN_INIT }
+            // while new_cap < curr_len { curr_cap *= 2 }
+            let new_cap = prev_cap.lsl(1);
+            if_then(CondOp::CmpI(new_cap, 0, Equal), || {
+                new_cap.set_imm(VEC_LEN_INIT as u16);
+            });
+            while_loop(CondOp::Cmp(new_cap, curr_len, Less), || {
+                new_cap.lsl_assign(1);
+            });
+
+            let [new_buf] = VEC_REALLOC.call([ptr, new_cap]); // writes vec.buf/cap memory
+            curr_buf.assign_from(new_buf);
         });
 
-        // *len = new_len
+        // *len = curr_len
         vec.len.write(curr_len);
 
         // return start of suballoc ptr
-        let data_ptr = vec.buf.read();
-        let val_ptr = data_ptr + prev_len;
+        let val_ptr = curr_buf + prev_len;
         ret([val_ptr]);
     })
 }
@@ -56,27 +62,22 @@ fn define_vec_realloc() -> VariableOperation1 {
     VEC_REALLOC.define(|[ptr, curr_cap], ret| {
         let vec = Vec::new(DslPtr::new(ptr));
         let prev_buf_ptr = vec.buf.read();
-        let prev_cap = vec.cap.read();
+        let prev_len = vec.len.read();
 
-        // if cap == 0 { cap = 10 }
-        if_then(CondOp::CmpI(curr_cap, 0, Equal), || {
-            curr_cap.set_imm(10);
-        });
-
-        // *buf = malloc(new_cap), *cap = new_cap
+        // *buf = malloc(curr_cap), *cap = curr_cap
         let curr_buf = heap_malloc(curr_cap);
         vec.buf.write(curr_buf);
         vec.cap.write(curr_cap);
 
         // copy buf from prev to curr
-        mem_copy(DslPtr::new(curr_buf), DslPtr::new(prev_buf_ptr), prev_cap);
+        mem_copy(DslPtr::new(curr_buf), DslPtr::new(prev_buf_ptr), prev_len);
 
         // if buf != nullptr => free buf
         if_then(CondOp::CmpI(prev_buf_ptr, 0, Greater), || {
             heap_free(prev_buf_ptr);
         });
 
-        ret([]);
+        ret([curr_buf]);
     })
 }
 
@@ -105,7 +106,7 @@ impl Vec {
         self.len.read()
     }
     pub fn cap(&self) -> Variable {
-        self.len.read()
+        self.cap.read()
     }
 
     pub fn push_struct<T: DslStruct>(&self, t: T::ValueType) {
@@ -130,8 +131,6 @@ impl Vec {
     pub fn push4(&self, a: Variable, b: Variable, c: Variable, d: Variable) {
         self.push([a, b, c, d]);
     }
-
-    //TODO LEN check?
 
     pub fn get_struct<T: DslStruct>(&self, index: Variable) -> T {
         let ptr = DslPtr::new(self.buf.read()) + index.mul_imm_simple(T::SIZE as u8);
@@ -178,9 +177,11 @@ impl Vec {
         self.pop::<4>()
     }
 
-    //TODO insert (suballoc, mem_copy, return hole ptr)
+    //TODO insert
 
     //TODO remove (mem_copy, set len)
+
+    //TODO iter?
 
     //TODO for each (with index and without)
 
