@@ -5,8 +5,9 @@ use once_cell::sync::Lazy;
 
 const VEC_LEN_INIT: usize = 8;
 
-static VEC_DROP: Lazy<DslFunction<1, 0>> = Lazy::new(|| DslFunction::new("vec_drop", ["ptr"], []));
-
+/// remove all items, free buffer
+static VEC_CLEAR: Lazy<DslFunction<1, 0>> =
+    Lazy::new(|| DslFunction::new("vec_drop", ["self"], []));
 /// alloc block of size "size" at tail, return pointer of block start addr
 static VEC_SUBALLOC: Lazy<DslFunction<2, 1>> =
     Lazy::new(|| DslFunction::new("vec_suballoc", ["self", "size"], ["ptr"]));
@@ -22,7 +23,7 @@ pub fn define_vec(compiler: &mut Compiler) {
 
     compiler.func_gen(&VEC_SUBALLOC, box define_vec_suballoc);
     compiler.func_gen(&VEC_REALLOC, box define_vec_realloc);
-    compiler.func_gen(&VEC_DROP, box define_vec_drop);
+    compiler.func_gen(&VEC_CLEAR, box define_vec_clear);
 }
 
 fn define_vec_suballoc() -> VariableOperation1 {
@@ -81,19 +82,36 @@ fn define_vec_realloc() -> VariableOperation1 {
     })
 }
 
-fn define_vec_drop() -> VariableOperation1 {
-    VEC_DROP.define(|[ptr], ret| {
+fn define_vec_clear() -> VariableOperation1 {
+    VEC_CLEAR.define(|[ptr], ret| {
         let vec = Vec::new(DslPtr::new(ptr));
-        heap_free(vec.buf.read());
-        let z = v(0);
-        vec.buf.write(z);
-        vec.len.write(z);
-        vec.cap.write(z);
+        let buf_ptr = vec.buf.read();
+        if_then(CondOp::CmpI(buf_ptr, 0, Greater), || {
+            heap_free(buf_ptr);
+            let z = v(0);
+            vec.buf.write(z);
+            vec.len.write(z);
+            vec.cap.write(z);
+        });
         ret([]);
     })
 }
 
 impl Vec {
+    pub fn alloc() -> Self {
+        let addr = heap_malloc(v(3));
+        let vec = Vec::new(DslPtr::new(addr));
+        let zero = v(0);
+        vec.buf.write(zero);
+        vec.len.write(zero);
+        vec.cap.write(zero);
+        vec
+    }
+    pub fn free(self) {
+        self.clear();
+        heap_free(self.base.ptr);
+    }
+
     pub fn new_at_addr(addr: DslPtr) -> Self {
         let vec = Vec::new(addr);
         let zero = v(0);
@@ -185,7 +203,7 @@ impl Vec {
 
     //TODO for each (with index and without)
 
-    pub fn drop(&self) {
-        VEC_DROP.call([self.base.ptr]);
+    pub fn clear(&self) {
+        VEC_CLEAR.call([self.base.ptr]);
     }
 }

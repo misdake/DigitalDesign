@@ -21,11 +21,13 @@ macro_rules! count {
 macro_rules! define_struct {
     ($struct_name:ident { $($field_name:ident),+ }) => { paste::paste! {
         #[allow(unused)]
+        #[derive(Clone)]
         pub struct $struct_name {
             base: DslPtr,
             $($field_name: DslPtr,)+
         }
         #[allow(unused)]
+        #[derive(Clone)]
         pub struct [< $struct_name Value >] {
             $($field_name: Variable,)+
         }
