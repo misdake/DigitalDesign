@@ -10,3 +10,5 @@ digital-design-code = { path = "../core" }
 cpu-macro = { path = "../cpu_macro" }
 paste = "1.0.11"
 minifb = "0.24"
+arrayvec = "0.7.4"
+once_cell = "1.18.0"
