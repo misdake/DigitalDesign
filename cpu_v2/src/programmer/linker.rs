@@ -4,14 +4,14 @@ use std::collections::HashMap;
 
 #[derive(Default)]
 pub struct Linker {
-    functions: HashMap<FuncName, FunctionObj>,
+    pub(crate) functions: HashMap<FuncName, FunctionObj>,
 }
 
 #[allow(unused)] //TODO use decl
-struct FunctionObj {
-    inst_range: (usize, usize),
-    func_decl: FuncDecl,
-    relocations: Vec<Relocation>,
+pub(crate) struct FunctionObj {
+    pub inst_range: (usize, usize),
+    pub func_decl: FuncDecl,
+    pub relocations: Vec<Relocation>,
 }
 
 impl Linker {
@@ -31,12 +31,6 @@ impl Linker {
         );
     }
 
-    pub fn functions(&self) -> impl Iterator<Item = (FuncDecl, (usize, usize))> + '_ {
-        self.functions
-            .values()
-            .map(|func| (func.func_decl.clone(), func.inst_range))
-    }
-
     pub fn relocate_all(&self, asm: &mut Assembler) {
         for func in self.functions.values() {
             self.relocate_func(func, asm);
@@ -51,6 +45,18 @@ impl Linker {
             let start = target.inst_range.0;
             far_jmp(asm, rel.slots[0].addr, rel.slots[1].addr, start);
         }
+    }
+
+    /// returns HashMap<addr, func_name>
+    pub fn get_all_calls(&self) -> HashMap<usize, &'static str> {
+        let mut map = HashMap::new();
+        for func in self.functions.values() {
+            for rel in &func.relocations {
+                let addr = rel.slots[1].addr + 1;
+                map.insert(addr, rel.func_name);
+            }
+        }
+        map
     }
 }
 

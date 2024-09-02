@@ -50,6 +50,7 @@ impl Compiler {
         let mut called_vec = vec![];
         let mut next = vec![main];
         called.insert(main);
+        called_vec.push(main);
 
         while !next.is_empty() {
             let curr = std::mem::take(&mut next);
@@ -84,19 +85,28 @@ impl Compiler {
                 self.cursor = end + 4;
             }
         }
-        println!("main: {main:?}, functions: {called:?}");
+        println!("main: {main:?}, functions: {called_vec:?}");
 
         self.linker.relocate_all(&mut self.asm);
         let end = self.asm.get_cursor();
         let instructions = self.asm.slice_ref()[0..end].to_vec();
+        let calls = self.linker.get_all_calls();
 
-        for (func_decl, (func_begin, func_end)) in self.linker.functions() {
-            println!("\n{} {{", func_decl.signature(&self.reg_usages));
-            for (addr, inst) in instructions[func_begin..func_end].iter().enumerate() {
-                let addr = addr + func_begin;
-                println!("  {addr:04x}: {inst}");
+        for name in &called_vec {
+            if let Some(func) = self.linker.functions.get(name) {
+                println!("\n{} {{", func.func_decl.signature(&self.reg_usages));
+                let func_begin = func.inst_range.0;
+                let func_end = func.inst_range.1;
+                for (addr, inst) in instructions[func_begin..func_end].iter().enumerate() {
+                    let addr = addr + func_begin;
+                    if let Some(name) = calls.get(&addr) {
+                        println!("  {addr:04x}: {inst} -----> {name}");
+                    } else {
+                        println!("  {addr:04x}: {inst}");
+                    }
+                }
+                println!("}}");
             }
-            println!("}}");
         }
 
         instructions
