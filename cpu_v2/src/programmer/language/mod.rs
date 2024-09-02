@@ -87,16 +87,13 @@ fn test_for_loop() {
     let call = DslFunction::new("loop", [], []);
 
     let mut compiler = Compiler::default();
-    compiler.func_op(
-        &call.func_decl,
-        call.define(|[], _ret| {
-            let mut sum = v(0);
-            for_loop_u4(1..(n + 1), |i| {
-                sum += i;
-            });
-            halt_with_signal(sum);
-        }),
-    );
+    call.compile(&mut compiler, |[], _ret| {
+        let mut sum = v(0);
+        for_loop_u4(1..(n + 1), |i| {
+            sum += i;
+        });
+        halt_with_signal(sum);
+    });
 
     let instructions = compiler.finish("loop");
     let (_state, signal) = simulate(&instructions, 1000);

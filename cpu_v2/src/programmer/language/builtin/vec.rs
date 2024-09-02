@@ -3,7 +3,7 @@ use crate::Cond::*;
 use crate::*;
 use once_cell::sync::Lazy;
 
-const VEC_LEN_INIT: usize = 8;
+const VEC_LEN_INIT: usize = 4;
 
 /// remove all items, free buffer
 static VEC_CLEAR: Lazy<DslFunction<1, 0>> =
@@ -100,12 +100,7 @@ fn define_vec_clear() -> VariableOperation1 {
 impl Vec {
     pub fn alloc() -> Self {
         let addr = heap_malloc(v(3));
-        let vec = Vec::new(DslPtr::new(addr));
-        let zero = v(0);
-        vec.buf.write(zero);
-        vec.len.write(zero);
-        vec.cap.write(zero);
-        vec
+        Self::new_at_addr(DslPtr::new(addr))
     }
     pub fn free(self) {
         self.clear();
@@ -154,12 +149,19 @@ impl Vec {
         let ptr = DslPtr::new(self.buf.read()) + index.mul_imm_simple(T::SIZE as u8);
         T::new(ptr)
     }
-    pub fn get(&self, index: Variable, stride: u8) -> DslPtr {
+    pub fn get_ptr(&self, index: Variable, stride: u8) -> DslPtr {
         if stride == 1 {
             DslPtr::new(self.buf.read()) + index
         } else {
             DslPtr::new(self.buf.read()) + index.mul_imm_simple(stride)
         }
+    }
+    pub fn get1(&self, index: Variable) -> Variable {
+        self.get_ptr(index, 1).read()
+    }
+    pub fn get2(&self, index: Variable) -> [Variable; 2] {
+        let ptr = self.get_ptr(index, 2);
+        [ptr.read(), (ptr + 1).read()]
     }
 
     //TODO LEN check? Call or inline?
@@ -176,7 +178,7 @@ impl Vec {
     pub fn pop<const N: usize>(&self) -> [Variable; N] {
         let len = self.len.read();
         let start_offset = len - (N + 1) as u16;
-        let start_ptr = self.get(start_offset, 1);
+        let start_ptr = self.get_ptr(start_offset, 1);
         let results = core::array::from_fn(|i| (start_ptr + i as u16).read());
         let new_len = len - N as u16;
         self.len.write(new_len);

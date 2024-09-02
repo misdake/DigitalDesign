@@ -175,32 +175,48 @@ fn test_malloc() {
 
     let instructions = compiler.finish("test_malloc");
     let (state, _halt_signal) = simulate(&instructions, 1000);
-    let mem = &state.mem[HEAP_BEGIN as usize..HEAP_END as usize];
 
-    println!("heap mem: {:?}", &mem[0..20]);
+    print_heap(state.mem.as_slice());
+    assert_eq!(
+        &state.mem[HEAP_BEGIN as usize..HEAP_END as usize],
+        [4, 44, 44, 4, 32771, 0, 32771, 5, 0, 0, 0, 5, 8, 44, 44, 55, 55, 55, 0, 8]
+    );
+}
+
+fn print_heap(mem: &[u16]) {
+    println!(
+        "heap mem: {:?}",
+        &mem[HEAP_BEGIN as usize..HEAP_END as usize]
+    );
 
     let mut sum = 0;
     println!("heap dump:");
-    let mut ptr = 0;
-    while ptr < HEAP_SIZE as usize {
+    let mut ptr = HEAP_BEGIN as usize;
+    while ptr < HEAP_END as usize {
         let flag = mem[ptr];
         if flag > FREE_BIT {
             let size = flag - FREE_BIT;
             sum += size;
-            println!("  free {} at {}", size - 2, ptr);
+            println!(
+                "  free {} at 0x{:x}({})",
+                size - 2,
+                ptr,
+                ptr - HEAP_BEGIN as usize
+            );
             assert_eq!(flag, mem[ptr + size as usize - 1]);
             ptr += size as usize;
         } else {
             let size = flag;
             sum += size;
-            println!("  used {} at {}", size - 2, ptr);
+            println!(
+                "  used {} at 0x{:x}({})",
+                size - 2,
+                ptr,
+                ptr - HEAP_BEGIN as usize
+            );
             assert_eq!(flag, mem[ptr + size as usize - 1]);
             ptr += size as usize;
         }
     }
-    assert_eq!(
-        mem,
-        [4, 44, 44, 4, 32771, 0, 32771, 5, 0, 0, 0, 5, 8, 44, 44, 55, 55, 55, 0, 8]
-    );
-    assert_eq!(sum, HEAP_SIZE);
+    assert_eq!(sum, HEAP_SIZE); // check corruption
 }

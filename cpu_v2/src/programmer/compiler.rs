@@ -31,6 +31,8 @@ impl Compiler {
             .insert(func_decl.func_name, (box move || op, func_decl.clone()));
     }
 
+    //TODO compiler flags? for example heap config
+    //TODO a hashset of markers to skip redundant, for example compiler.define_func(Marker, impl FnOnce(&mut Compiler))
     /// used by builtin functions for on-demand code generation
     pub fn func_gen<const PARAM: usize, const RETURN: usize>(
         &mut self,

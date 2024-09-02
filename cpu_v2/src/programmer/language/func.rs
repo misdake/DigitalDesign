@@ -1,6 +1,5 @@
 use crate::programmer::language::push_op;
 use crate::*;
-use std::cell::Cell;
 
 #[derive(Clone, Debug)]
 pub struct DslFunction<const PARAM: usize, const RETURN: usize> {
@@ -43,7 +42,9 @@ impl<const PARAM: usize, const RETURN: usize> DslFunction<PARAM, RETURN> {
         let return_addr = Variable::new();
 
         compose_variable_operations_lock(|| {
-            let ret_called = Cell::new(false);
+            //TODO add parameter to enable ret_called check for functions and not for main
+            // use std::cell::Cell;
+            // let ret_called = Cell::new(false);
 
             push_op(VariableOperation1::Func(
                 self.name,
@@ -52,13 +53,13 @@ impl<const PARAM: usize, const RETURN: usize> DslFunction<PARAM, RETURN> {
             ));
 
             f(params, &|rv| {
-                ret_called.set(true);
+                // ret_called.set(true);
                 push_op(VariableOperation1::Return(return_addr, return_values(rv)));
             });
 
-            if !ret_called.get() {
-                panic!("return not called?");
-            }
+            // if !ret_called.get() {
+            //     panic!("return not called?");
+            // }
         })
     }
 

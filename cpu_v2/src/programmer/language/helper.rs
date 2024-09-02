@@ -8,6 +8,12 @@ pub fn v(v: u16) -> Variable {
     r
 }
 
+pub fn assert_with_signal(cond: CondOp<Variable>, signal: u16) {
+    if_then(cond, || {
+        push_op(VariableOperation1::Update(UpdateOp::Halt(v(signal))));
+    });
+}
+
 pub fn halt_with_signal(variable: Variable) {
     push_op(VariableOperation1::Update(UpdateOp::Halt(variable)));
 }
