@@ -3,11 +3,11 @@ use crate::{Compiler, DslFunction, Variable, VariableOperation1};
 use once_cell::sync::Lazy;
 
 static MEM_SET: Lazy<DslFunction<3, 0>> =
-    Lazy::new(|| DslFunction::new("mem_clear", ["dst", "len", "value"], []));
+    Lazy::new(|| DslFunction::new("mem_set", ["dst", "len", "value"], []));
 static MEM_COPY: Lazy<DslFunction<3, 0>> =
     Lazy::new(|| DslFunction::new("mem_copy", ["dst", "src", "len"], []));
 static MEM_COPY_REV: Lazy<DslFunction<3, 0>> =
-    Lazy::new(|| DslFunction::new("mem_copy", ["dst", "src", "len"], []));
+    Lazy::new(|| DslFunction::new("mem_copy_rev", ["dst", "src", "len"], []));
 
 pub fn mem_copy(dst: DslPtr, src: DslPtr, len: Variable) {
     MEM_COPY.call([dst.ptr, src.ptr, len]);

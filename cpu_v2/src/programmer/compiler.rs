@@ -90,8 +90,13 @@ impl Compiler {
         let end = self.asm.get_cursor();
         let instructions = self.asm.slice_ref()[0..end].to_vec();
 
-        for (addr, inst) in instructions.iter().enumerate() {
-            println!("inst {addr:04x}: {inst}");
+        for (func_decl, (func_begin, func_end)) in self.linker.functions() {
+            println!("\n{} {{", func_decl.signature(&self.reg_usages));
+            for (addr, inst) in instructions[func_begin..func_end].iter().enumerate() {
+                let addr = addr + func_begin;
+                println!("  {addr:04x}: {inst}");
+            }
+            println!("}}");
         }
 
         instructions

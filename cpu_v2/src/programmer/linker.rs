@@ -31,6 +31,12 @@ impl Linker {
         );
     }
 
+    pub fn functions(&self) -> impl Iterator<Item = (FuncDecl, (usize, usize))> + '_ {
+        self.functions
+            .values()
+            .map(|func| (func.func_decl.clone(), func.inst_range))
+    }
+
     pub fn relocate_all(&self, asm: &mut Assembler) {
         for func in self.functions.values() {
             self.relocate_func(func, asm);

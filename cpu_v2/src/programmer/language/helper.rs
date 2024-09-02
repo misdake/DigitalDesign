@@ -9,7 +9,7 @@ pub fn v(v: u16) -> Variable {
 }
 
 pub fn assert_with_signal(cond: CondOp<Variable>, signal: u16) {
-    if_then(cond, || {
+    if_then(cond.invert(), || {
         push_op(VariableOperation1::Update(UpdateOp::Halt(v(signal))));
     });
 }

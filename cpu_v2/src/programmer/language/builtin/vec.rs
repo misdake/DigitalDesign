@@ -209,3 +209,37 @@ impl Vec {
         VEC_CLEAR.call([self.base.ptr]);
     }
 }
+
+#[test]
+fn test_vec_basic() {
+    use crate::programmer::language::dsl::*;
+
+    let mut compiler = Compiler::default();
+    define_vec(&mut compiler);
+
+    let test_vec_basic = DslFunction::new("test_vec_basic", [], []);
+    test_vec_basic.compile(&mut compiler, |[], _ret| {
+        let vec = Vec::new_at_addr(DslPtr::new(v(1)));
+        assert_with_signal(CondOp::CmpI(vec.len(), 0, Equal), 1);
+
+        vec.push1(v(123));
+        vec.push2(v(456), v(789));
+
+        assert_with_signal(CondOp::CmpI(vec.len(), 3, Equal), 2);
+        assert_with_signal(CondOp::CmpI(vec.get_ptr(v(0), 1).read(), 0, Equal), 3);
+        assert_with_signal(CondOp::CmpI(vec.get_ptr(v(1), 1).read(), 0, Equal), 4);
+        assert_with_signal(CondOp::CmpI(vec.get_ptr(v(2), 1).read(), 0, Equal), 5);
+
+        let p1 = vec.pop1();
+        assert_with_signal(CondOp::Cmp(p1, v(789), Equal), 6);
+        assert_with_signal(CondOp::CmpI(vec.len(), 2, Equal), 7);
+        vec.push4(v(1), v(2), v(3), v(4));
+        assert_with_signal(CondOp::CmpI(vec.len(), 6, Equal), 8);
+
+        halt_with_signal(v(0));
+    });
+
+    let instructions = compiler.finish("test_vec_basic");
+    let (_state, halt_signal) = simulate(&instructions, 1000);
+    assert_eq!(halt_signal, Some(0));
+}

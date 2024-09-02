@@ -18,14 +18,20 @@ pub enum CondOp<T: Oprand> {
     Cmp(T, T, Cond),
     CmpI(T, u8, Cond),
 }
-// impl<T: Oprand> CondOp<T> {
-//     pub(crate) fn convert<R: Oprand>(self, mut f: impl FnMut(T) -> R) -> CondOp<R> {
-//         match self {
-//             CondOp::Cmp(a, b, cond) => CondOp::Cmp(f(a), f(b), cond),
-//             CondOp::CmpI(a, i, cond) => CondOp::CmpI(f(a), i, cond),
-//         }
-//     }
-// }
+impl<T: Oprand> CondOp<T> {
+    pub fn invert(self) -> Self {
+        match self {
+            CondOp::Cmp(a, b, cond) => CondOp::Cmp(a, b, cond.invert()),
+            CondOp::CmpI(a, i, cond) => CondOp::CmpI(a, i, cond.invert()),
+        }
+    }
+    // pub(crate) fn convert<R: Oprand>(self, mut f: impl FnMut(T) -> R) -> CondOp<R> {
+    //     match self {
+    //         CondOp::Cmp(a, b, cond) => CondOp::Cmp(f(a), f(b), cond),
+    //         CondOp::CmpI(a, i, cond) => CondOp::CmpI(f(a), i, cond),
+    //     }
+    // }
+}
 impl<T: Oprand> CondOp<T> {
     pub fn touch(&self, mut f: impl FnMut(&T, TouchType)) {
         match self {
