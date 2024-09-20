@@ -168,7 +168,7 @@ impl Vec {
 
     pub fn pop_struct<T: DslStruct>(&self) -> T::ValueType {
         let len = self.len.read();
-        let start_offset = len - (1 + T::SIZE as u16);
+        let start_offset = len - T::SIZE as u16;
         let ptr = self.buf.read() + start_offset;
         let r = T::new(DslPtr::new(ptr)).read();
         let new_len = len - T::SIZE as u16;
@@ -177,7 +177,7 @@ impl Vec {
     }
     pub fn pop<const N: usize>(&self) -> [Variable; N] {
         let len = self.len.read();
-        let start_offset = len - (N + 1) as u16;
+        let start_offset = len - N as u16;
         let start_ptr = self.get_ptr(start_offset, 1);
         let results = core::array::from_fn(|i| (start_ptr + i as u16).read());
         let new_len = len - N as u16;
@@ -219,27 +219,52 @@ fn test_vec_basic() {
 
     let test_vec_basic = DslFunction::new("test_vec_basic", [], []);
     test_vec_basic.compile(&mut compiler, |[], _ret| {
+        heap_init();
         let vec = Vec::new_at_addr(DslPtr::new(v(1)));
-        assert_with_signal(CondOp::CmpI(vec.len(), 0, Equal), 1);
+        assert_with_signal(CondOp::CmpI(vec.len(), 0, Equal), 10);
 
-        vec.push1(v(123));
-        vec.push2(v(456), v(789));
+        vec.push1(v(12));
 
-        assert_with_signal(CondOp::CmpI(vec.len(), 3, Equal), 2);
-        assert_with_signal(CondOp::CmpI(vec.get_ptr(v(0), 1).read(), 0, Equal), 3);
-        assert_with_signal(CondOp::CmpI(vec.get_ptr(v(1), 1).read(), 0, Equal), 4);
-        assert_with_signal(CondOp::CmpI(vec.get_ptr(v(2), 1).read(), 0, Equal), 5);
+        assert_with_signal(CondOp::CmpI(vec.len(), 1, Equal), 20);
+        assert_with_signal(CondOp::CmpI(vec.get_ptr(v(0), 1).read(), 12, Equal), 21);
+
+        vec.push2(v(34), v(56));
+
+        assert_with_signal(CondOp::CmpI(vec.len(), 3, Equal), 30);
+        assert_with_signal(CondOp::CmpI(vec.get1(v(0)), 12, Equal), 31);
+        assert_with_signal(CondOp::CmpI(vec.get1(v(1)), 34, Equal), 32);
+        assert_with_signal(CondOp::CmpI(vec.get1(v(2)), 56, Equal), 33);
 
         let p1 = vec.pop1();
-        assert_with_signal(CondOp::Cmp(p1, v(789), Equal), 6);
-        assert_with_signal(CondOp::CmpI(vec.len(), 2, Equal), 7);
+        assert_with_signal(CondOp::Cmp(p1, v(56), Equal), 40);
+        assert_with_signal(CondOp::CmpI(vec.len(), 2, Equal), 41);
+        assert_with_signal(CondOp::CmpI(vec.get1(v(0)), 12, Equal), 42);
+        assert_with_signal(CondOp::CmpI(vec.get1(v(1)), 34, Equal), 43);
+
         vec.push4(v(1), v(2), v(3), v(4));
-        assert_with_signal(CondOp::CmpI(vec.len(), 6, Equal), 8);
+        assert_with_signal(CondOp::CmpI(vec.len(), 6, Equal), 50);
+        assert_with_signal(CondOp::CmpI(vec.get1(v(0)), 12, Equal), 51);
+        assert_with_signal(CondOp::CmpI(vec.get1(v(1)), 34, Equal), 52);
+        assert_with_signal(CondOp::CmpI(vec.get1(v(2)), 1, Equal), 53);
+        assert_with_signal(CondOp::CmpI(vec.get1(v(3)), 2, Equal), 54);
+        assert_with_signal(CondOp::CmpI(vec.get1(v(4)), 3, Equal), 55);
+        assert_with_signal(CondOp::CmpI(vec.get1(v(5)), 4, Equal), 56);
+
+        let [p3, p4] = vec.pop2();
+        assert_with_signal(CondOp::CmpI(vec.len(), 4, Equal), 60);
+        assert_with_signal(CondOp::CmpI(vec.get1(v(0)), 12, Equal), 61);
+        assert_with_signal(CondOp::CmpI(vec.get1(v(1)), 34, Equal), 62);
+        assert_with_signal(CondOp::CmpI(vec.get1(v(2)), 1, Equal), 63);
+        assert_with_signal(CondOp::CmpI(vec.get1(v(3)), 2, Equal), 64);
+        assert_with_signal(CondOp::CmpI(p3, 3, Equal), 65);
+        assert_with_signal(CondOp::CmpI(p4, 4, Equal), 66);
 
         halt_with_signal(v(0));
     });
 
     let instructions = compiler.finish("test_vec_basic");
-    let (_state, halt_signal) = simulate(&instructions, 1000);
+    let (state, halt_signal) = simulate(&instructions, 1000);
+    println!("vec {:?}", &state.mem[1..4]);
+    print_heap(state.mem.as_slice());
     assert_eq!(halt_signal, Some(0));
 }

@@ -183,7 +183,7 @@ fn test_malloc() {
     );
 }
 
-fn print_heap(mem: &[u16]) {
+pub(crate) fn print_heap(mem: &[u16]) {
     println!(
         "heap mem: {:?}",
         &mem[HEAP_BEGIN as usize..HEAP_END as usize]
