@@ -98,23 +98,33 @@ fn define_vec_clear() -> VariableOperation1 {
 }
 
 impl Vec {
-    pub fn alloc() -> Self {
+    pub fn alloc(init_size: u16) -> Self {
         let addr = heap_malloc(v(3));
-        Self::new_at_addr(DslPtr::new(addr))
+        Self::new_at_addr(DslPtr::new(addr), init_size)
     }
     pub fn free(self) {
         self.clear();
         heap_free(self.base.ptr);
     }
 
-    pub fn new_at_addr(addr: DslPtr) -> Self {
+    pub fn new_at_addr(addr: DslPtr, init_size: u16) -> Self {
         let vec = Vec::new(addr);
         let zero = v(0);
-        vec.buf.write(zero);
-        vec.len.write(zero);
-        vec.cap.write(zero);
+
+        if init_size > 0 {
+            let init_size = v(init_size);
+            vec.buf.write(heap_malloc(init_size));
+            vec.len.write(zero);
+            vec.cap.write(init_size);
+        } else {
+            vec.buf.write(zero);
+            vec.len.write(zero);
+            vec.cap.write(zero);
+        }
+
         vec
     }
+
     pub fn len(&self) -> Variable {
         self.len.read()
     }
@@ -220,16 +230,15 @@ fn test_vec_basic() {
     let test_vec_basic = DslFunction::new("test_vec_basic", [], []);
     test_vec_basic.compile(&mut compiler, |[], _ret| {
         heap_init();
-        let vec = Vec::new_at_addr(DslPtr::new(v(1)));
+        let vec = Vec::new_at_addr(DslPtr::new(v(1)), 0);
         assert_with_signal(CondOp::CmpI(vec.len(), 0, Equal), 10);
+        assert_with_signal(CondOp::CmpI(vec.cap(), 0, Equal), 11);
 
         vec.push1(v(12));
-
         assert_with_signal(CondOp::CmpI(vec.len(), 1, Equal), 20);
         assert_with_signal(CondOp::CmpI(vec.get_ptr(v(0), 1).read(), 12, Equal), 21);
 
         vec.push2(v(34), v(56));
-
         assert_with_signal(CondOp::CmpI(vec.len(), 3, Equal), 30);
         assert_with_signal(CondOp::CmpI(vec.get1(v(0)), 12, Equal), 31);
         assert_with_signal(CondOp::CmpI(vec.get1(v(1)), 34, Equal), 32);
@@ -259,12 +268,22 @@ fn test_vec_basic() {
         assert_with_signal(CondOp::CmpI(p3, 3, Equal), 65);
         assert_with_signal(CondOp::CmpI(p4, 4, Equal), 66);
 
+        let vec2 = Vec::new_at_addr(DslPtr::new(v(4)), 4); //  init size = 4 to avoid malloc round-up
+        assert_with_signal(CondOp::CmpI(vec2.len(), 0, Equal), 70);
+        assert_with_signal(CondOp::CmpI(vec2.cap(), 4, Equal), 71);
+
+        vec2.push1(v(123));
+        assert_with_signal(CondOp::CmpI(vec2.len(), 1, Equal), 80);
+        assert_with_signal(CondOp::CmpI(vec2.get1(v(0)), 123, Equal), 81);
+
         halt_with_signal(v(0));
     });
 
     let instructions = compiler.finish("test_vec_basic");
     let (state, halt_signal) = simulate(&instructions, 1000);
     println!("vec {:?}", &state.mem[1..4]);
-    print_heap(state.mem.as_slice());
+    let heap_stat = print_heap(state.mem.as_slice());
+    assert_eq!(heap_stat.alloc_count, 2);
+    assert_eq!(heap_stat.alloc_size, 12);
     assert_eq!(halt_signal, Some(0));
 }

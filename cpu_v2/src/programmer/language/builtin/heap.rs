@@ -176,18 +176,23 @@ fn test_malloc() {
     let instructions = compiler.finish("test_malloc");
     let (state, _halt_signal) = simulate(&instructions, 1000);
 
-    print_heap(state.mem.as_slice());
+    let heap_stat = print_heap(state.mem.as_slice());
+    assert_eq!(heap_stat.alloc_count, 3);
+    assert_eq!(heap_stat.alloc_size, 10);
     assert_eq!(
         &state.mem[HEAP_BEGIN as usize..HEAP_END as usize],
         [4, 44, 44, 4, 32771, 0, 32771, 5, 0, 0, 0, 5, 8, 44, 44, 55, 55, 55, 0, 8]
     );
 }
 
-pub(crate) fn print_heap(mem: &[u16]) {
+pub(crate) fn print_heap(mem: &[u16]) -> HeapStat {
     println!(
         "heap mem: {:?}",
         &mem[HEAP_BEGIN as usize..HEAP_END as usize]
     );
+
+    let mut sum_alloc_count: usize = 0;
+    let mut sum_alloc_size: usize = 0;
 
     let mut sum = 0;
     println!("heap dump:");
@@ -208,15 +213,29 @@ pub(crate) fn print_heap(mem: &[u16]) {
         } else {
             let size = flag;
             sum += size;
+            let alloc_size = size - 2;
             println!(
                 "  used {} at 0x{:x}({})",
-                size - 2,
+                alloc_size,
                 ptr,
                 ptr - HEAP_BEGIN as usize
             );
             assert_eq!(flag, mem[ptr + size as usize - 1]);
             ptr += size as usize;
+            sum_alloc_count += 1;
+            sum_alloc_size += alloc_size as usize;
         }
     }
     assert_eq!(sum, HEAP_SIZE); // check corruption
+
+    HeapStat {
+        alloc_count: sum_alloc_count,
+        alloc_size: sum_alloc_size,
+    }
+}
+
+#[derive(Copy, Clone, Eq, PartialEq)]
+pub(crate) struct HeapStat {
+    pub alloc_count: usize,
+    pub alloc_size: usize,
 }
