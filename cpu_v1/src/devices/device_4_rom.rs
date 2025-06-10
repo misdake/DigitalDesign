@@ -3,7 +3,10 @@ use crate::devices::{Device, DeviceReadResult, DeviceType};
 static mut ROM: Vec<u8> = Vec::new();
 
 fn get_rom_content() -> &'static [u8] {
-    unsafe { ROM.as_slice() }
+    #[allow(static_mut_refs)]
+    unsafe {
+        ROM.as_slice()
+    }
 }
 #[allow(unused)]
 pub fn set_rom_content(content: &[u8]) {

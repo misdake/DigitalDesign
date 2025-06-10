@@ -38,7 +38,7 @@ impl CpuComponent for CpuMem {
         let use_reg1 = input.mem_addr_select.wires[MemAddrSelect::Reg1 as usize];
         let addr_low = (use_imm.expand() & input.imm) | (use_reg1.expand() & input.reg1);
         let addr_high = input.mem_page;
-        let addr: Wires<8> = flatten2(addr_low, addr_high);
+        let addr = flatten2(addr_low, addr_high);
 
         let enable_line = decode8(addr);
         let mut lines: [Wires<4>; 256] = [Wires::uninitialized(); 256];

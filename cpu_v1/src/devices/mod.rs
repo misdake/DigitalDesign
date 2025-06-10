@@ -1,3 +1,5 @@
+#![allow(unused)]
+
 mod device_0_terminal;
 mod device_1_math;
 mod device_2_and_3_util;

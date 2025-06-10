@@ -1,3 +1,5 @@
+#![allow(incomplete_features)]
+#![feature(generic_const_exprs)]
 #![allow(clippy::needless_range_loop)]
 #![allow(clippy::manual_range_contains)]
 #![allow(clippy::inherent_to_string)]

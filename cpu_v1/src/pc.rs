@@ -75,7 +75,7 @@ fn next_pc(
     let offset_target = add_naive(curr_pc, pc_offset.expand_signed::<8>());
     let offset_target = pc_offset_enable.expand() & offset_target.sum;
 
-    let long_target: Wires<8> = flatten2(Wires::<4>::parse_u8(0), jmp_long);
+    let long_target = flatten2(Wires::<4>::parse_u8(0), jmp_long);
     let long_target = jmp_long_enable.expand() & long_target;
 
     offset_target | long_target
