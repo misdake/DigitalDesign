@@ -21,9 +21,9 @@ pub fn define_vec(compiler: &mut Compiler) {
     define_heap(compiler);
     define_mem(compiler);
 
-    compiler.func_gen(&VEC_SUBALLOC, box define_vec_suballoc);
-    compiler.func_gen(&VEC_REALLOC, box define_vec_realloc);
-    compiler.func_gen(&VEC_CLEAR, box define_vec_clear);
+    compiler.func_gen(&VEC_SUBALLOC, Box::new(define_vec_suballoc));
+    compiler.func_gen(&VEC_REALLOC, Box::new(define_vec_realloc));
+    compiler.func_gen(&VEC_CLEAR, Box::new(define_vec_clear));
 }
 
 fn define_vec_suballoc() -> VariableOperation1 {

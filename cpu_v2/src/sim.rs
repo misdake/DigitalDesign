@@ -98,7 +98,7 @@ impl StateChange {
 
 impl SimEnv {
     pub fn new(inst: &[Instruction]) -> SimEnv {
-        let mut inst_array = box [Instruction::halt(0); 65536];
+        let mut inst_array = Box::new([Instruction::halt(0); 65536]);
         assert!(inst.len() <= 65536);
         inst_array[..inst.len()].copy_from_slice(inst);
 

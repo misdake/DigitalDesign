@@ -1,3 +1,5 @@
+#![allow(static_mut_refs)]
+
 use std::any::Any;
 use std::collections::HashMap;
 use std::fmt::{Debug, Formatter};

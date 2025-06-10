@@ -27,8 +27,10 @@ impl Default for Compiler {
 impl Compiler {
     /// used by user defined functions, it's prefered to just call DslFunc::compile
     pub fn func_op(&mut self, func_decl: &FuncDecl, op: VariableOperation1) {
-        self.functions
-            .insert(func_decl.func_name, (box move || op, func_decl.clone()));
+        self.functions.insert(
+            func_decl.func_name,
+            (Box::new(move || op), func_decl.clone()),
+        );
     }
 
     //TODO compiler flags? for example heap config

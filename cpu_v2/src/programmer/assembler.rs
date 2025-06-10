@@ -32,8 +32,8 @@ pub struct Assembler {
 impl Default for Assembler {
     fn default() -> Self {
         Self {
-            instructions: box [halt(0); 65536],
-            inst_valid: box [false; 65536],
+            instructions: Box::new([halt(0); 65536]),
+            inst_valid: Box::new([false; 65536]),
             comments: HashMap::new(),
             cursor: 0,
         }

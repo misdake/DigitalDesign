@@ -17,9 +17,9 @@ pub fn mem_set(ptr: DslPtr, len: Variable, v: Variable) {
 }
 
 pub fn define_mem(compiler: &mut Compiler) {
-    compiler.func_gen(&MEM_SET, box define_mem_set);
-    compiler.func_gen(&MEM_COPY, box define_mem_copy);
-    compiler.func_gen(&MEM_COPY_REV, box define_mem_copy_rev);
+    compiler.func_gen(&MEM_SET, Box::new(define_mem_set));
+    compiler.func_gen(&MEM_COPY, Box::new(define_mem_copy));
+    compiler.func_gen(&MEM_COPY_REV, Box::new(define_mem_copy_rev));
 }
 
 fn define_mem_set() -> VariableOperation1 {

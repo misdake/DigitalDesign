@@ -13,9 +13,9 @@ static MALLOC: Lazy<DslFunction<1, 1>> =
 static FREE: Lazy<DslFunction<1, 0>> = Lazy::new(|| DslFunction::new("free", ["ptr"], []));
 
 pub fn define_heap(compiler: &mut Compiler) {
-    compiler.func_gen(&INIT_HEAP, box define_init_heap);
-    compiler.func_gen(&MALLOC, box define_malloc);
-    compiler.func_gen(&FREE, box define_free);
+    compiler.func_gen(&INIT_HEAP, Box::new(define_init_heap));
+    compiler.func_gen(&MALLOC, Box::new(define_malloc));
+    compiler.func_gen(&FREE, Box::new(define_free));
 }
 
 fn define_init_heap() -> VariableOperation1 {

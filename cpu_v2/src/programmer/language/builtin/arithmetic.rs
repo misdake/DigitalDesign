@@ -4,9 +4,12 @@ use once_cell::sync::Lazy;
 use std::ops::Neg;
 
 pub fn define_mul(compiler: &mut Compiler) {
-    compiler.func_gen(&MUL_16X4_FUNC, box || mul_define(&MUL_16X4_FUNC, 4));
-    compiler.func_gen(&MUL_16X8_FUNC, box || mul_define(&MUL_16X8_FUNC, 8));
-    compiler.func_gen(&MUL_16X16_FUNC, box || mul_define(&MUL_16X16_FUNC, 16));
+    compiler.func_gen(&MUL_16X4_FUNC, Box::new(|| mul_define(&MUL_16X4_FUNC, 4)));
+    compiler.func_gen(&MUL_16X8_FUNC, Box::new(|| mul_define(&MUL_16X8_FUNC, 8)));
+    compiler.func_gen(
+        &MUL_16X16_FUNC,
+        Box::new(|| mul_define(&MUL_16X16_FUNC, 16)),
+    );
 }
 
 static MUL_16X4_FUNC: Lazy<DslFunction<2, 1>> =
