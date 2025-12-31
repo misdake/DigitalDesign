@@ -39,7 +39,7 @@ fn define_malloc() -> VariableOperation1 {
         let ptr = DslPtr::new(ptr_var);
 
         // while not end of heap
-        while_loop(CondOp::Cmp(ptr_var, end, Cond::Less), || {
+        while_loop(cmp!(ptr_var < end), || {
             let header = ptr.read();
             let is_free_bit = header & free_bit;
             let block_size = header ^ is_free_bit;
@@ -47,33 +47,31 @@ fn define_malloc() -> VariableOperation1 {
             // free_mask == is_free ? 0xffff : 0x0000
 
             // if is_free && block.size >= size
-            if_then(
-                CondOp::Cmp(block_size & free_mask, size, Cond::GreaterEqual),
-                || {
-                    // found it
-                    // check whether next block exists
-                    let next_block_size = block_size - size;
-                    if_then_else(
-                        CondOp::CmpI(next_block_size, 2, Cond::Greater),
-                        || {
-                            // next block exists, write next block
-                            let next_block_ptr = ptr + size;
-                            let flag = next_block_size | free_bit;
-                            next_block_ptr.write(flag);
-                            (next_block_ptr + (next_block_size - 1)).write(flag);
-                        },
-                        || {
-                            // next block does not exist, set size = block_size
-                            size.assign_from(block_size);
-                        },
-                    );
-                    // write this block
-                    ptr.write(size);
-                    (ptr + (size - 1)).write(size);
+            let masked_size = block_size & free_mask;
+            if_then(cmp!(masked_size >= size), || {
+                // found it
+                // check whether next block exists
+                let next_block_size = block_size - size;
+                if_then_else(
+                    cmp!(next_block_size > 2),
+                    || {
+                        // next block exists, write next block
+                        let next_block_ptr = ptr + size;
+                        let flag = next_block_size | free_bit;
+                        next_block_ptr.write(flag);
+                        (next_block_ptr + (next_block_size - 1)).write(flag);
+                    },
+                    || {
+                        // next block does not exist, set size = block_size
+                        size.assign_from(block_size);
+                    },
+                );
+                // write this block
+                ptr.write(size);
+                (ptr + (size - 1)).write(size);
 
-                    ret([ptr_var + 1]);
-                },
-            );
+                ret([ptr_var + 1]);
+            });
 
             ptr.add_var(block_size);
         });
@@ -95,10 +93,10 @@ fn define_free() -> VariableOperation1 {
         // merge left block
         let left_limit = v(HEAP_BEGIN - 1);
         let right_limit = v(HEAP_END - 1);
-        while_loop(CondOp::Cmp(left_footer, left_limit, Cond::Greater), || {
+        while_loop(cmp!(left_footer > left_limit), || {
             let left_flag = DslPtr::new(left_footer).read();
             if_then_else(
-                CondOp::Cmp(left_flag, free_bit, Cond::Greater),
+                cmp!(left_flag > free_bit),
                 || {
                     //left block is free
                     let left_size = left_flag - free_bit;
@@ -113,10 +111,10 @@ fn define_free() -> VariableOperation1 {
 
         // merge right block
         let left_limit = v(HEAP_BEGIN - 1);
-        while_loop(CondOp::Cmp(self_footer, right_limit, Cond::Less), || {
+        while_loop(cmp!(self_footer < right_limit), || {
             let right_flag = (DslPtr::new(self_footer) + 1).read();
             if_then_else(
-                CondOp::Cmp(right_flag, free_bit, Cond::Greater),
+                cmp!(right_flag > free_bit),
                 || {
                     //riht block is free
                     let right_size = right_flag - free_bit;
