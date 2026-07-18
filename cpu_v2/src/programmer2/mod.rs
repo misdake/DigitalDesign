@@ -8,6 +8,7 @@ mod compiler2;
 mod ir;
 mod regalloc;
 
+pub mod builtin2;
 pub mod dsl2;
 
 pub use builder::*;

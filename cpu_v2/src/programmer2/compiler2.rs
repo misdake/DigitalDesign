@@ -26,6 +26,10 @@ impl Compiler2 {
         );
     }
 
+    pub fn has_func(&self, name: FuncName) -> bool {
+        self.funcs.contains_key(name)
+    }
+
     pub fn finish(self, main: FuncName) -> Vec<Instruction> {
         let mut asm = Assembler::default();
         let mut linker = Linker::default();

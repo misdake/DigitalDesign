@@ -553,12 +553,30 @@ impl Add<u16> for DslPtr2 {
         }
     }
 }
+impl Add<u16> for &DslPtr2 {
+    type Output = DslPtr2;
+    fn add(self, rhs: u16) -> DslPtr2 {
+        DslPtr2 {
+            ptr: self.ptr.clone(),
+            offset: self.offset + rhs as i16,
+        }
+    }
+}
 impl AddAssign<u16> for DslPtr2 {
     fn add_assign(&mut self, rhs: u16) {
         self.offset += rhs as i16;
     }
 }
 impl Add<&Variable> for DslPtr2 {
+    type Output = DslPtr2;
+    fn add(self, rhs: &Variable) -> DslPtr2 {
+        DslPtr2 {
+            ptr: &self.ptr + rhs,
+            offset: self.offset,
+        }
+    }
+}
+impl Add<&Variable> for &DslPtr2 {
     type Output = DslPtr2;
     fn add(self, rhs: &Variable) -> DslPtr2 {
         DslPtr2 {
