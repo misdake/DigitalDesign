@@ -49,7 +49,7 @@ pub struct RegisterUsages {
 }
 
 pub const RETURN_ADDR_REG: u8 = 13;
-pub const SP_REG: u8 = 14;
+pub use crate::isa::SP_REG;
 pub const TMP_REG: u8 = 15;
 
 /// default register usages:
@@ -84,6 +84,7 @@ pub fn default_reg_usages() -> RegisterUsages {
         return_values: [Reg(0), Reg(1)],
         sp_reg: Reg(SP_REG),
         tmp_reg: Reg(TMP_REG),
-        spill_stack_max: 15,
+        // u8 offset can address 256 slots, but sp_sub takes a u8 (max 255), so the reserved frame is capped at 255 slots
+        spill_stack_max: 255,
     }
 }

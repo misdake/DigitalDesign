@@ -23,6 +23,16 @@ pub fn calc_flags(x: u16, y: u16) -> u8 {
     r
 }
 
+#[rustfmt::skip]
+pub fn calc_flags_signed(x: u16, y: u16) -> u8 {
+    let (x, y) = (x as i16, y as i16);
+    let mut r = 0;
+    if x > y { r |= FLAGS_GREATER; }
+    if x == y { r |= FLAGS_EQUAL; }
+    if x < y { r |= FLAGS_LESS; }
+    r
+}
+
 impl Default for SimState {
     fn default() -> Self {
         Self {
@@ -133,10 +143,10 @@ impl SimEnv {
         let mem = |addr: u16| self.state.mem[addr as usize];
         let mut changes = StateChange::new(pc + 1);
 
-        fn j_offset(state: &SimState, cond: Cond, changes: &mut StateChange, offset: u16) {
+        fn j_cc(state: &SimState, cond: Cond, changes: &mut StateChange, hi: u8, lo: u8) {
             let jmp = state.flags & (cond as u8) > 0;
             if jmp {
-                let pc_next = state.pc.wrapping_add(offset);
+                let pc_next = state.pc.wrapping_add(imm8_as_i16(hi, lo));
                 changes.pc_next(pc_next);
             }
         }
@@ -150,8 +160,9 @@ impl SimEnv {
             Instruction::xor(r2, r1, r0) => changes.reg(r0, reg(r2) ^ reg(r1)),
             Instruction::add(r2, r1, r0) => changes.reg(r0, reg(r2).wrapping_add(reg(r1))),
             Instruction::sub(r2, r1, r0) => changes.reg(r0, reg(r2).wrapping_sub(reg(r1))),
-            Instruction::addi(r2, u4, r0) => changes.reg(r0, reg(r2).wrapping_add(u4 as u16)),
-            Instruction::subi(r2, u4, r0) => changes.reg(r0, reg(r2).wrapping_sub(u4 as u16)),
+            Instruction::addi(r2, i4, r0) => {
+                changes.reg(r0, reg(r2).wrapping_add(imm4_nz(i4) as u16))
+            }
             Instruction::lsl(u4, r0) => changes.reg(r0, reg(r0) << u4),
             Instruction::lsr(u4, r0) => changes.reg(r0, reg(r0) >> u4),
             Instruction::asr(u4, r0) => changes.reg(r0, ((reg(r0) as i16) >> u4) as u16),
@@ -162,9 +173,13 @@ impl SimEnv {
             Instruction::cnt1(r1, r0) => changes.reg(r0, reg(r1).count_ones() as u16),
             Instruction::log2(r1, r0) => changes.reg(r0, reg(r1).ilog2() as u16),
             Instruction::not0(r1, r0) => changes.reg(r0, select(reg(r1) != 0, 1, 0)),
-            Instruction::cmp_i(u4, r0) => changes.flags(calc_flags(reg(r0), u4 as u16)),
+            Instruction::sp_add(hi, lo) => {
+                changes.reg(SP_REG, reg(SP_REG).wrapping_add(hilo_as_u16(hi, lo)))
+            }
+            Instruction::sp_sub(hi, lo) => {
+                changes.reg(SP_REG, reg(SP_REG).wrapping_sub(hilo_as_u16(hi, lo)))
+            }
             Instruction::pc(i4, r0) => changes.reg(r0, pc.wrapping_add(imm_as_i16(i4))),
-            Instruction::cmp_r(r1, r0) => changes.flags(calc_flags(reg(r0), reg(r1))),
 
             Instruction::load_hi(hi, lo, r0) => changes.reg(
                 r0,
@@ -172,39 +187,49 @@ impl SimEnv {
             ),
             Instruction::load_lo(hi, lo, r0) => changes.reg(r0, ((hi as u16) << 4) | (lo as u16)),
 
-            Instruction::store_mem(r2, offset, r0) => {
+            Instruction::store_mem(r2, r1, offset) => {
                 let addr = reg(r2).wrapping_add(imm_as_i16(offset));
-                changes.mem(addr, reg(r0))
+                changes.mem(addr, reg(r1))
             }
             Instruction::load_mem(r2, offset, r0) => {
                 let addr = reg(r2).wrapping_add(imm_as_i16(offset));
                 changes.reg(r0, mem(addr))
             }
+            Instruction::store_sp(hi, lo, r0) => {
+                let addr = reg(SP_REG).wrapping_add(hilo_as_u16(hi, lo));
+                changes.mem(addr, reg(r0))
+            }
+            Instruction::load_sp(hi, lo, r0) => {
+                let addr = reg(SP_REG).wrapping_add(hilo_as_u16(hi, lo));
+                changes.reg(r0, mem(addr))
+            }
 
-            Instruction::j_offset_g(lo, hi) => {
-                j_offset(&self.state, Greater, &mut changes, hilo_as_u16(hi, lo));
+            Instruction::jg(hi, lo) => j_cc(&self.state, Greater, &mut changes, hi, lo),
+            Instruction::je(hi, lo) => j_cc(&self.state, Equal, &mut changes, hi, lo),
+            Instruction::jge(hi, lo) => j_cc(&self.state, GreaterEqual, &mut changes, hi, lo),
+            Instruction::jl(hi, lo) => j_cc(&self.state, Less, &mut changes, hi, lo),
+            Instruction::jne(hi, lo) => j_cc(&self.state, NotEqual, &mut changes, hi, lo),
+            Instruction::jle(hi, lo) => j_cc(&self.state, LessEqual, &mut changes, hi, lo),
+            Instruction::jmp(hi, lo) => j_cc(&self.state, Always, &mut changes, hi, lo),
+            Instruction::cmp_r(r1, r0) => changes.flags(calc_flags(reg(r0), reg(r1))),
+            Instruction::cmp_i(u4, r0) => changes.flags(calc_flags(reg(r0), u4 as u16)),
+            Instruction::cmp_s(r1, r0) => {
+                changes.flags(calc_flags_signed(reg(r0), reg(r1)))
             }
-            Instruction::j_offset_e(lo, hi) => {
-                j_offset(&self.state, Equal, &mut changes, hilo_as_u16(hi, lo));
+            Instruction::cmp_si(i4, r0) => {
+                changes.flags(calc_flags_signed(reg(r0), imm_as_i16(i4)))
             }
-            Instruction::j_offset_l(lo, hi) => {
-                j_offset(&self.state, Less, &mut changes, hilo_as_u16(hi, lo));
+            Instruction::call_rel(hi, lo) => {
+                changes.reg(RA_REG, pc + 1);
+                changes.pc_next(pc.wrapping_add(imm8_as_i16(hi, lo)));
             }
-            Instruction::j_offset(lo, hi) => {
-                j_offset(&self.state, Always, &mut changes, hilo_as_u16(hi, lo));
-            }
-            Instruction::j_offset_le(lo, hi) => {
-                j_offset(&self.state, LessEqual, &mut changes, hilo_as_u16(hi, lo));
-            }
-            Instruction::j_offset_ne(lo, hi) => {
-                j_offset(&self.state, NotEqual, &mut changes, hilo_as_u16(hi, lo));
-            }
-            Instruction::j_offset_ge(lo, hi) => {
-                j_offset(&self.state, GreaterEqual, &mut changes, hilo_as_u16(hi, lo));
+            Instruction::call_abs(hi, lo) => {
+                changes.reg(RA_REG, pc + 1);
+                changes.pc_next(mem(0xff00 + hilo_as_u16(hi, lo)));
             }
             Instruction::jmp_reg(r1) => changes.pc_next(reg(r1)),
-            Instruction::call_reg(r1, r0) => {
-                changes.reg(r0, pc + 1);
+            Instruction::call_reg(r1) => {
+                changes.reg(RA_REG, pc + 1);
                 changes.pc_next(reg(r1));
             }
 
@@ -250,12 +275,4 @@ impl SimTestResult {
     }
     //TODO to string? debug?
     //TODO is_passed()
-}
-
-fn imm_as_i16(i4: Imm4) -> u16 {
-    let sign_bit = (i4 & 0b1000) != 0;
-    i4 as u16 | (0b1111_1111_1111_0000 * sign_bit as u16)
-}
-fn hilo_as_u16(hi: Imm4, lo: Imm4) -> u16 {
-    ((hi as u16) << 8) | (lo as u16)
 }

@@ -139,6 +139,11 @@ pub enum UpdateOp<T: Oprand> {
     /// dst, value
     SubiAssign(T, u8),
 
+    /// r14 += u8 (epilogue, fixed sp)
+    SpAdd(u8),
+    /// r14 -= u8 (prologue, fixed sp)
+    SpSub(u8),
+
     /// dst, value
     LoadImmLo(T, u8),
     /// dst, value
@@ -185,6 +190,8 @@ impl<T: Oprand> UpdateOp<T> {
             AddiAssign(v, i) => AddiAssign(f(v, true), i),
             SubAssign(dst, src) => SubAssign(f(dst, true), f(src, true)),
             SubiAssign(v, i) => SubiAssign(f(v, true), i),
+            SpAdd(i) => SpAdd(i),
+            SpSub(i) => SpSub(i),
             StoreMem(base, i, value) => StoreMem(f(base, true), i, f(value, true)),
             LoadMem(base, i, dst) => LoadMem(f(base, true), i, f(dst, false)),
 

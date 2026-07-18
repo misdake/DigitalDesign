@@ -129,8 +129,7 @@ impl RegisterAllocator {
         if self.enable_stack {
             new_op(
                 &mut result,
-                RegisterOperation::Update(UpdateOp::SubiAssign(
-                    self.reg_usage.sp_reg,
+                RegisterOperation::Update(UpdateOp::SpSub(
                     self.reg_usage.spill_stack_max as u8,
                 )),
             );
@@ -487,8 +486,7 @@ impl RegisterAllocator {
                 if self.enable_stack {
                     new_op(
                         ops,
-                        RegisterOperation::Update(UpdateOp::AddiAssign(
-                            self.reg_usage.sp_reg,
+                        RegisterOperation::Update(UpdateOp::SpAdd(
                             self.reg_usage.spill_stack_max as u8,
                         )),
                     );

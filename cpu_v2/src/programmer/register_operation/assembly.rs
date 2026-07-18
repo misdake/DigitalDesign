@@ -4,7 +4,8 @@ use crate::FuncName;
 #[derive(Copy, Clone, Debug)]
 pub struct Relocation {
     pub func_name: FuncName,
-    pub slots: [InstructionSlot; 2], // load_lo(tmp), load_hi(tmp)
+    /// 3 reserved slots: near -> call_rel + 2 nop, far -> load_lo(tmp) + load_hi(tmp) + call_reg(tmp)
+    pub slots: [InstructionSlot; 3],
 }
 
 impl RegisterOperation {
@@ -43,10 +44,10 @@ impl RegisterOperation {
                     ResultOp::Log2(v) => asm.inst(log2(v.0, dst.0)),
                     ResultOp::Mov(v) => asm.inst(mov(v.0, dst.0)),
                     ResultOp::Add(v2, v1) => asm.inst(add(v2.0, v1.0, dst.0)),
-                    ResultOp::Addi(v2, v) => asm.inst(addi(v2.0, v, dst.0)),
+                    ResultOp::Addi(v2, v) => emit_addi(asm, v2.0, v, dst.0),
                     ResultOp::Sub(v2, v1) => asm.inst(sub(v2.0, v1.0, dst.0)),
-                    ResultOp::Subi(v2, v) => asm.inst(subi(v2.0, v, dst.0)),
-                    ResultOp::LoadMem(base, offset) => asm.inst(load_mem(base.0, offset, dst.0)),
+                    ResultOp::Subi(v2, v) => emit_subi(asm, v2.0, v, dst.0),
+                    ResultOp::LoadMem(base, offset) => emit_load_mem(asm, base.0, offset, dst.0),
                     ResultOp::GetPc(u4) => asm.inst(pc(u4, dst.0)),
                     ResultOp::And(v2, v1) => asm.inst(and(v2.0, v1.0, dst.0)),
                     ResultOp::Or(v2, v1) => asm.inst(or(v2.0, v1.0, dst.0)),
@@ -83,12 +84,20 @@ impl RegisterOperation {
                     UpdateOp::OrAssign(dst, v) => asm.inst(or(dst.0, v.0, dst.0)),
                     UpdateOp::XorAssign(dst, v) => asm.inst(xor(dst.0, v.0, dst.0)),
                     UpdateOp::AddAssign(dst, v) => asm.inst(add(dst.0, v.0, dst.0)),
-                    UpdateOp::AddiAssign(dst, v) => asm.inst(addi(dst.0, v, dst.0)),
+                    UpdateOp::AddiAssign(dst, v) => emit_addi(asm, dst.0, v, dst.0),
                     UpdateOp::SubAssign(dst, v) => asm.inst(sub(dst.0, v.0, dst.0)),
-                    UpdateOp::SubiAssign(dst, v) => asm.inst(subi(dst.0, v, dst.0)),
-                    UpdateOp::StoreMem(base, offset, v) => asm.inst(store_mem(base.0, offset, v.0)),
+                    UpdateOp::SubiAssign(dst, v) => emit_subi(asm, dst.0, v, dst.0),
+                    UpdateOp::SpAdd(v) => {
+                        let (hi, lo) = u8_to_hi_lo(v);
+                        asm.inst(sp_add(hi, lo))
+                    }
+                    UpdateOp::SpSub(v) => {
+                        let (hi, lo) = u8_to_hi_lo(v);
+                        asm.inst(sp_sub(hi, lo))
+                    }
+                    UpdateOp::StoreMem(base, offset, v) => emit_store_mem(asm, base.0, offset, v.0),
                     UpdateOp::LoadMem(base, offset, dst) => {
-                        asm.inst(load_mem(base.0, offset, dst.0))
+                        emit_load_mem(asm, base.0, offset, dst.0)
                     }
                     UpdateOp::DeviceReceive(device, channel, dst) => {
                         asm.inst(dev_recv(device, channel, dst.0))
@@ -173,9 +182,9 @@ impl RegisterOperation {
             RegisterOperation::Call(name, _param, _rv) => {
                 r.push(Relocation {
                     func_name: name,
-                    slots: [asm.skip(), asm.skip()], // load_lo(tmp), load_hi(tmp)
+                    // 3 reserved slots, filled by the linker (call_rel or far sequence)
+                    slots: [asm.skip(), asm.skip(), asm.skip()],
                 });
-                asm.inst(call_reg(TMP_REG, RETURN_ADDR_REG)); // call_reg(tmp, r13)
             }
             RegisterOperation::Return(ra, _rv) => {
                 asm.inst(jmp_reg(ra.0));
@@ -189,6 +198,53 @@ pub fn u16_to_hi_lo(v: u16) -> (u8, u8) {
 }
 pub fn u8_to_hi_lo(v: u8) -> (u8, u8) {
     (v >> 4 & 0xf, v & 0xf)
+}
+
+/// load with base register; stack slots (base == sp) use load_sp with u8 offset (0..=255)
+fn emit_load_mem(asm: &mut Assembler, base: u8, offset: u8, dst: u8) -> InstructionSlot {
+    if base == SP_REG {
+        let (hi, lo) = u8_to_hi_lo(offset);
+        asm.inst(crate::load_sp(hi, lo, dst))
+    } else {
+        asm.inst(crate::load_mem(base, offset, dst))
+    }
+}
+
+/// store with base register; stack slots (base == sp) use store_sp with u8 offset (0..=255)
+fn emit_store_mem(asm: &mut Assembler, base: u8, offset: u8, src: u8) -> InstructionSlot {
+    if base == SP_REG {
+        let (hi, lo) = u8_to_hi_lo(offset);
+        asm.inst(crate::store_sp(hi, lo, src))
+    } else {
+        asm.inst(crate::store_mem(base, src, offset))
+    }
+}
+
+/// emit `dst = src + v` (v in 0..=15) as one or two addi (zero-less i4, max ±8 per inst)
+fn emit_addi(asm: &mut Assembler, src: u8, v: u8, dst: u8) -> InstructionSlot {
+    assert!(v <= 15);
+    match v {
+        // mov rX,rX is harmless when src == dst (it's the nop)
+        0 => asm.inst(crate::mov(src, dst)),
+        1..=8 => asm.inst(crate::addi(src, crate::imm4_nz_encode(v as i8), dst)),
+        _ => {
+            asm.inst(crate::addi(src, crate::imm4_nz_encode(8), dst));
+            asm.inst(crate::addi(dst, crate::imm4_nz_encode((v - 8) as i8), dst))
+        }
+    }
+}
+
+/// emit `dst = src - v` (v in 0..=15) as one or two addi with negative delta
+fn emit_subi(asm: &mut Assembler, src: u8, v: u8, dst: u8) -> InstructionSlot {
+    assert!(v <= 15);
+    match v {
+        0 => asm.inst(crate::mov(src, dst)),
+        1..=8 => asm.inst(crate::addi(src, crate::imm4_nz_encode(-(v as i8)), dst)),
+        _ => {
+            asm.inst(crate::addi(src, crate::imm4_nz_encode(-8), dst));
+            asm.inst(crate::addi(dst, crate::imm4_nz_encode(-((v - 8) as i8)), dst))
+        }
+    }
 }
 
 #[cfg(test)]
