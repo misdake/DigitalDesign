@@ -425,7 +425,7 @@ fn remove_trivial_phis(func: &mut IrFunc) {
                     Instr::Un { src, .. } | Instr::Shift { src, .. } | Instr::Mov { src, .. } => {
                         subst(src)
                     }
-                    Instr::LoadImm { .. } | Instr::DevRecv { .. } => {}
+                    Instr::LoadImm { .. } | Instr::DevRecv { .. } | Instr::LoadSp { .. } => {}
                     Instr::LoadMem { base, .. } => subst(base),
                     Instr::StoreMem { base, src, .. } => {
                         subst(base);
@@ -433,6 +433,7 @@ fn remove_trivial_phis(func: &mut IrFunc) {
                     }
                     Instr::Call { args, .. } => args.iter_mut().for_each(|a| subst(a)),
                     Instr::DevSend { src, .. } => subst(src),
+                    Instr::StoreSp { src, .. } => subst(src),
                 }
             }
             if let Some(term) = &mut b.term {

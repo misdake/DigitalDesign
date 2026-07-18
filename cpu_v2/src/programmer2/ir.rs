@@ -78,6 +78,10 @@ pub enum Instr {
     Call { func: FuncName, args: Vec<VReg>, rets: Vec<VReg> },
     DevRecv { dst: VReg, device: u8, channel: u8 },
     DevSend { device: u8, channel: u8, src: VReg },
+    /// frame slot access (register allocator spills only; offset is a frame
+    /// slot index, resolved to load_sp/store_sp in codegen)
+    LoadSp { dst: VReg, slot: u8 },
+    StoreSp { slot: u8, src: VReg },
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -222,6 +226,8 @@ impl fmt::Display for Instr {
             }
             Instr::DevRecv { dst, device, channel } => write!(f, "v{dst} = dev_recv {device}, {channel}"),
             Instr::DevSend { device, channel, src } => write!(f, "dev_send {device}, {channel}, v{src}"),
+            Instr::LoadSp { dst, slot } => write!(f, "v{dst} = load_sp #{slot}"),
+            Instr::StoreSp { slot, src } => write!(f, "store_sp #{slot} = v{src}"),
         }
     }
 }
