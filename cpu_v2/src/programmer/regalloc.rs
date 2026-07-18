@@ -1,4 +1,4 @@
-//! register allocation for programmer2 IR.
+//! register allocation for programmer IR.
 //!
 //! pipeline per function:
 //! 1. ABI shims: params/call args/call results/ret values are copied through
@@ -11,7 +11,7 @@
 //!    the IR (explicit LoadSp/StoreSp) and rescans until fixpoint.
 //! 4. frame layout: [callee-save saves][spill slots], sized by actual need.
 
-use crate::programmer2::ir::*;
+use crate::programmer::ir::*;
 use std::collections::{BTreeSet, HashMap, HashSet};
 
 pub const REG_RA: u8 = 13;

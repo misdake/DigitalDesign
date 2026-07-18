@@ -1,17 +1,17 @@
 //! shift-add multiplication
 
-use crate::programmer2::compiler2::Compiler2;
-use crate::programmer2::dsl2::*;
+use crate::programmer::compiler::Compiler;
+use crate::programmer::dsl::*;
 use once_cell::sync::Lazy;
 
-pub static MUL_16X4: Lazy<DslFunction2<2, 1>> =
-    Lazy::new(|| DslFunction2::new("mul_16x4", ["a", "b4"], ["r"]));
-pub static MUL_16X8: Lazy<DslFunction2<2, 1>> =
-    Lazy::new(|| DslFunction2::new("mul_16x8", ["a", "b8"], ["r"]));
-pub static MUL_16X16: Lazy<DslFunction2<2, 1>> =
-    Lazy::new(|| DslFunction2::new("mul_16x16", ["a", "b16"], ["r"]));
+pub static MUL_16X4: Lazy<DslFunction<2, 1>> =
+    Lazy::new(|| DslFunction::new("mul_16x4", ["a", "b4"], ["r"]));
+pub static MUL_16X8: Lazy<DslFunction<2, 1>> =
+    Lazy::new(|| DslFunction::new("mul_16x8", ["a", "b8"], ["r"]));
+pub static MUL_16X16: Lazy<DslFunction<2, 1>> =
+    Lazy::new(|| DslFunction::new("mul_16x16", ["a", "b16"], ["r"]));
 
-pub fn define_mul(compiler: &mut Compiler2) {
+pub fn define_mul(compiler: &mut Compiler) {
     if compiler.has_func("mul_16x4") {
         return;
     }
@@ -60,10 +60,10 @@ mod tests {
         let x = 37u16;
         let y = 1111u16;
 
-        let mut compiler = Compiler2::new();
+        let mut compiler = Compiler::new();
         define_mul(&mut compiler);
 
-        let test_mul = DslFunction2::new("test_mul", [], []);
+        let test_mul = DslFunction::new("test_mul", [], []);
         test_mul.compile(&mut compiler, |b, [], _ret| {
             let a = b.v(x);
             let c = b.v(y);

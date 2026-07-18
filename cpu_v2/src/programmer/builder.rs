@@ -7,7 +7,7 @@
 
 use crate::isa::Cond;
 use crate::programmer::FuncName;
-use crate::programmer2::ir::*;
+use crate::programmer::ir::*;
 use std::collections::HashMap;
 
 /// a frontend variable handle (DSL-level mutable variable)

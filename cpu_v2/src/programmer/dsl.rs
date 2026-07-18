@@ -7,9 +7,9 @@
 //! mutation and control-flow joins (phis) behave as one expects.
 
 use crate::isa::Cond;
-use crate::programmer2::builder::{BoolExpr, FuncBuilder, VarId};
-use crate::programmer2::compiler2::Compiler2;
-use crate::programmer2::ir::*;
+use crate::programmer::builder::{BoolExpr, FuncBuilder, VarId};
+use crate::programmer::compiler::Compiler;
+use crate::programmer::ir::*;
 use std::cell::RefCell;
 use std::ops::*;
 use std::rc::Rc;
@@ -305,8 +305,8 @@ impl Variable {
 
     // ----- memory -----
 
-    pub fn ptr(&self) -> DslPtr2 {
-        DslPtr2::new(self.clone())
+    pub fn ptr(&self) -> DslPtr {
+        DslPtr::new(self.clone())
     }
 }
 
@@ -509,11 +509,11 @@ impl Not for Bool {
 // ---------------------------------------------------------------------------
 
 #[derive(Clone)]
-pub struct DslPtr2 {
+pub struct DslPtr {
     pub ptr: Variable,
     pub offset: i16,
 }
-impl DslPtr2 {
+impl DslPtr {
     pub fn new(ptr: Variable) -> Self {
         Self { ptr, offset: 0 }
     }
@@ -544,42 +544,42 @@ impl DslPtr2 {
         b.store_mem(base, self.offset, src);
     }
 }
-impl Add<u16> for DslPtr2 {
-    type Output = DslPtr2;
-    fn add(self, rhs: u16) -> DslPtr2 {
-        DslPtr2 {
+impl Add<u16> for DslPtr {
+    type Output = DslPtr;
+    fn add(self, rhs: u16) -> DslPtr {
+        DslPtr {
             ptr: self.ptr,
             offset: self.offset + rhs as i16,
         }
     }
 }
-impl Add<u16> for &DslPtr2 {
-    type Output = DslPtr2;
-    fn add(self, rhs: u16) -> DslPtr2 {
-        DslPtr2 {
+impl Add<u16> for &DslPtr {
+    type Output = DslPtr;
+    fn add(self, rhs: u16) -> DslPtr {
+        DslPtr {
             ptr: self.ptr.clone(),
             offset: self.offset + rhs as i16,
         }
     }
 }
-impl AddAssign<u16> for DslPtr2 {
+impl AddAssign<u16> for DslPtr {
     fn add_assign(&mut self, rhs: u16) {
         self.offset += rhs as i16;
     }
 }
-impl Add<&Variable> for DslPtr2 {
-    type Output = DslPtr2;
-    fn add(self, rhs: &Variable) -> DslPtr2 {
-        DslPtr2 {
+impl Add<&Variable> for DslPtr {
+    type Output = DslPtr;
+    fn add(self, rhs: &Variable) -> DslPtr {
+        DslPtr {
             ptr: &self.ptr + rhs,
             offset: self.offset,
         }
     }
 }
-impl Add<&Variable> for &DslPtr2 {
-    type Output = DslPtr2;
-    fn add(self, rhs: &Variable) -> DslPtr2 {
-        DslPtr2 {
+impl Add<&Variable> for &DslPtr {
+    type Output = DslPtr;
+    fn add(self, rhs: &Variable) -> DslPtr {
+        DslPtr {
             ptr: &self.ptr + rhs,
             offset: self.offset,
         }
@@ -587,52 +587,52 @@ impl Add<&Variable> for &DslPtr2 {
 }
 
 #[derive(Clone)]
-pub struct DslArray2<const STRIDE: usize> {
-    pub base: DslPtr2,
+pub struct DslArray<const STRIDE: usize> {
+    pub base: DslPtr,
 }
-impl<const STRIDE: usize> DslArray2<STRIDE> {
-    pub fn new(base: DslPtr2) -> Self {
+impl<const STRIDE: usize> DslArray<STRIDE> {
+    pub fn new(base: DslPtr) -> Self {
         Self { base }
     }
-    pub fn index_imm(&self, index: usize) -> DslPtr2 {
+    pub fn index_imm(&self, index: usize) -> DslPtr {
         self.base.clone() + (STRIDE * index) as u16
     }
-    pub fn index_reg(&self, index: &Variable) -> DslPtr2 {
-        DslPtr2 {
+    pub fn index_reg(&self, index: &Variable) -> DslPtr {
+        DslPtr {
             ptr: &self.base.ptr + &index.mul_imm_simple(STRIDE as u8),
             offset: 0,
         }
     }
 }
 
-pub trait DslStruct2 {
+pub trait DslStruct {
     const SIZE: usize;
     type ValueType;
-    fn new(ptr: DslPtr2) -> Self;
-    fn base(&self) -> DslPtr2;
+    fn new(ptr: DslPtr) -> Self;
+    fn base(&self) -> DslPtr;
     fn read(&self) -> Self::ValueType;
     fn read_to(&self, value: &Self::ValueType);
     fn write(&self, value: Self::ValueType);
 }
 
 #[macro_export]
-macro_rules! define_struct2 {
+macro_rules! define_struct {
     ($struct_name:ident { $($field_name:ident),+ }) => { paste::paste! {
         #[allow(unused)]
         #[derive(Clone)]
         pub struct $struct_name {
-            base: $crate::programmer2::dsl2::DslPtr2,
-            $($field_name: $crate::programmer2::dsl2::DslPtr2,)+
+            base: $crate::programmer::dsl::DslPtr,
+            $($field_name: $crate::programmer::dsl::DslPtr,)+
         }
         #[allow(unused)]
         #[derive(Clone)]
         pub struct [< $struct_name Value >] {
-            $($field_name: $crate::programmer2::dsl2::Variable,)+
+            $($field_name: $crate::programmer::dsl::Variable,)+
         }
-        impl $crate::programmer2::dsl2::DslStruct2 for $struct_name {
+        impl $crate::programmer::dsl::DslStruct for $struct_name {
             const SIZE: usize = [$(stringify!($field_name)),+].len();
             type ValueType = [< $struct_name Value >];
-            fn new(mut _ptr: $crate::programmer2::dsl2::DslPtr2) -> Self {
+            fn new(mut _ptr: $crate::programmer::dsl::DslPtr) -> Self {
                 let base = _ptr.clone();
                 $( let $field_name = _ptr.clone(); _ptr += 1; )+
                 Self {
@@ -640,7 +640,7 @@ macro_rules! define_struct2 {
                     $($field_name,)+
                 }
             }
-            fn base(&self) -> $crate::programmer2::dsl2::DslPtr2 {
+            fn base(&self) -> $crate::programmer::dsl::DslPtr {
                 self.base.clone()
             }
             fn read(&self) -> Self::ValueType {
@@ -662,13 +662,13 @@ macro_rules! define_struct2 {
 // functions
 // ---------------------------------------------------------------------------
 
-pub struct DslFunction2<const PARAM: usize, const RETURN: usize> {
+pub struct DslFunction<const PARAM: usize, const RETURN: usize> {
     pub name: &'static str,
     pub param_names: [&'static str; PARAM],
     pub return_names: [&'static str; RETURN],
 }
 
-impl<const PARAM: usize, const RETURN: usize> DslFunction2<PARAM, RETURN> {
+impl<const PARAM: usize, const RETURN: usize> DslFunction<PARAM, RETURN> {
     pub fn new(
         name: &'static str,
         param_names: [&'static str; PARAM],
@@ -687,7 +687,7 @@ impl<const PARAM: usize, const RETURN: usize> DslFunction2<PARAM, RETURN> {
     /// builder at finish).
     pub fn compile(
         &self,
-        compiler: &mut Compiler2,
+        compiler: &mut Compiler,
         f: impl FnOnce(&B, [Variable; PARAM], &dyn Fn(&B, [Variable; RETURN])),
     ) {
         let (builder, params) = FuncBuilder::new(self.name, PARAM, RETURN);
@@ -745,17 +745,17 @@ impl<const PARAM: usize, const RETURN: usize> DslFunction2<PARAM, RETURN> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::programmer2::compiler2::Compiler2;
+    use crate::programmer::compiler::Compiler;
     use crate::simulate;
 
     #[test]
     fn test_call_add() {
         let x = 12u16;
         let y = 43u16;
-        let call = DslFunction2::new("call", [], []);
-        let add = DslFunction2::new("add", ["a", "b"], ["r"]);
+        let call = DslFunction::new("call", [], []);
+        let add = DslFunction::new("add", ["a", "b"], ["r"]);
 
-        let mut compiler = Compiler2::new();
+        let mut compiler = Compiler::new();
         call.compile(&mut compiler, |b, [], _ret| {
             let a = b.v(x);
             let c = b.v(y);
@@ -775,9 +775,9 @@ mod tests {
     #[test]
     fn test_for_loop() {
         let n = 10u8;
-        let func = DslFunction2::new("loop", [], []);
+        let func = DslFunction::new("loop", [], []);
 
-        let mut compiler = Compiler2::new();
+        let mut compiler = Compiler::new();
         func.compile(&mut compiler, |b, [], _ret| {
             let mut sum = b.v(0);
             b.for_loop_u4(1..(n + 1), |_b, i| {
@@ -794,9 +794,9 @@ mod tests {
 
     #[test]
     fn test_for_loop2() {
-        let func = DslFunction2::new("loop2", [], []);
+        let func = DslFunction::new("loop2", [], []);
 
-        let mut compiler = Compiler2::new();
+        let mut compiler = Compiler::new();
         func.compile(&mut compiler, |b, [], _ret| {
             // 1..=5
             let start = b.v(1);
@@ -833,9 +833,9 @@ mod tests {
 
     #[test]
     fn test_ptr_array() {
-        let func = DslFunction2::new("ptr_array", [], []);
+        let func = DslFunction::new("ptr_array", [], []);
 
-        let mut compiler = Compiler2::new();
+        let mut compiler = Compiler::new();
         func.compile(&mut compiler, |b, [], _ret| {
             let c = b.v(11);
             let d = b.v(4);
@@ -843,8 +843,8 @@ mod tests {
             b.for_loop_u4(0..8, |_b, i| {
                 i.ptr().write(&c);
             });
-            let array1 = DslArray2::<2>::new(b.v(8).ptr());
-            let array2 = DslArray2::<2>::new(b.v(9).ptr());
+            let array1 = DslArray::<2>::new(b.v(8).ptr());
+            let array2 = DslArray::<2>::new(b.v(9).ptr());
             for j in 0..4 {
                 array1.index_imm(j).write(&d);
             }
@@ -876,12 +876,12 @@ mod tests {
 
     #[test]
     fn test_struct() {
-        define_struct2!(Vec2 { x, y });
+        define_struct!(Vec2 { x, y });
 
-        let func = DslFunction2::new("test_struct", [], []);
-        let mut compiler = Compiler2::new();
+        let func = DslFunction::new("test_struct", [], []);
+        let mut compiler = Compiler::new();
         func.compile(&mut compiler, |b, [], _ret| {
-            let base = DslArray2::<{ Vec2::SIZE }>::new(b.v(555).ptr());
+            let base = DslArray::<{ Vec2::SIZE }>::new(b.v(555).ptr());
 
             let vec2 = Vec2::new(base.index_imm(1));
             vec2.x.write(&b.v(123));
@@ -904,9 +904,9 @@ mod tests {
     #[test]
     fn test_bool_combinators() {
         // clamp(x) = (x >= 2 && x <= 10) ? x : 0
-        let clamp = DslFunction2::new("clamp", ["x"], ["r"]);
-        let main = DslFunction2::new("main", [], []);
-        let mut compiler = Compiler2::new();
+        let clamp = DslFunction::new("clamp", ["x"], ["r"]);
+        let main = DslFunction::new("main", [], []);
+        let mut compiler = Compiler::new();
         clamp.compile(&mut compiler, |b, [x], ret| {
             b.if_else(
                 x.ge_imm(2) & x.le_imm(10),
@@ -934,8 +934,8 @@ mod tests {
     #[test]
     fn test_while_loop_break() {
         // collatz steps until value reaches 1, with a step cap (break)
-        let func = DslFunction2::new("collatz", [], []);
-        let mut compiler = Compiler2::new();
+        let func = DslFunction::new("collatz", [], []);
+        let mut compiler = Compiler::new();
         func.compile(&mut compiler, |b, [], _ret| {
             let mut v = b.v(27);
             let mut steps = b.v(0);

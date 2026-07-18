@@ -1,17 +1,17 @@
 //! mem_set / mem_copy / mem_copy_rev
 
-use crate::programmer2::compiler2::Compiler2;
-use crate::programmer2::dsl2::*;
+use crate::programmer::compiler::Compiler;
+use crate::programmer::dsl::*;
 use once_cell::sync::Lazy;
 
-pub static MEM_SET: Lazy<DslFunction2<3, 0>> =
-    Lazy::new(|| DslFunction2::new("mem_set", ["dst", "len", "value"], []));
-pub static MEM_COPY: Lazy<DslFunction2<3, 0>> =
-    Lazy::new(|| DslFunction2::new("mem_copy", ["dst", "src", "len"], []));
-pub static MEM_COPY_REV: Lazy<DslFunction2<3, 0>> =
-    Lazy::new(|| DslFunction2::new("mem_copy_rev", ["dst", "src", "len"], []));
+pub static MEM_SET: Lazy<DslFunction<3, 0>> =
+    Lazy::new(|| DslFunction::new("mem_set", ["dst", "len", "value"], []));
+pub static MEM_COPY: Lazy<DslFunction<3, 0>> =
+    Lazy::new(|| DslFunction::new("mem_copy", ["dst", "src", "len"], []));
+pub static MEM_COPY_REV: Lazy<DslFunction<3, 0>> =
+    Lazy::new(|| DslFunction::new("mem_copy_rev", ["dst", "src", "len"], []));
 
-pub fn define_mem(compiler: &mut Compiler2) {
+pub fn define_mem(compiler: &mut Compiler) {
     if compiler.has_func("mem_set") {
         return;
     }
@@ -46,12 +46,12 @@ pub fn define_mem(compiler: &mut Compiler2) {
     });
 }
 
-pub fn mem_set(b: &B, ptr: &DslPtr2, len: &Variable, value: &Variable) {
+pub fn mem_set(b: &B, ptr: &DslPtr, len: &Variable, value: &Variable) {
     MEM_SET.call(b, [&ptr.ptr, len, value]);
 }
-pub fn mem_copy(b: &B, dst: &DslPtr2, src: &DslPtr2, len: &Variable) {
+pub fn mem_copy(b: &B, dst: &DslPtr, src: &DslPtr, len: &Variable) {
     MEM_COPY.call(b, [&dst.ptr, &src.ptr, len]);
 }
-pub fn mem_copy_rev(b: &B, dst: &DslPtr2, src: &DslPtr2, len: &Variable) {
+pub fn mem_copy_rev(b: &B, dst: &DslPtr, src: &DslPtr, len: &Variable) {
     MEM_COPY_REV.call(b, [&dst.ptr, &src.ptr, len]);
 }

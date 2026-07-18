@@ -1,27 +1,27 @@
 //! growable vector on top of the heap (buf/len/cap triple)
 
-use crate::define_struct2;
-use crate::programmer2::builtin2::heap::*;
-use crate::programmer2::builtin2::mem::*;
-use crate::programmer2::compiler2::Compiler2;
-use crate::programmer2::dsl2::*;
+use crate::define_struct;
+use crate::programmer::builtin::heap::*;
+use crate::programmer::builtin::mem::*;
+use crate::programmer::compiler::Compiler;
+use crate::programmer::dsl::*;
 use once_cell::sync::Lazy;
 
 const VEC_LEN_INIT: u16 = 4;
 
-define_struct2!(Vec2 { buf, len, cap });
+define_struct!(Vec { buf, len, cap });
 
 /// alloc `size` words at the tail of the vec's buffer, returns the start addr
-pub static VEC_SUBALLOC: Lazy<DslFunction2<2, 1>> =
-    Lazy::new(|| DslFunction2::new("vec_suballoc", ["self", "size"], ["ptr"]));
+pub static VEC_SUBALLOC: Lazy<DslFunction<2, 1>> =
+    Lazy::new(|| DslFunction::new("vec_suballoc", ["self", "size"], ["ptr"]));
 /// alloc a new buffer of `cap` words, copy contents, free the old one
-pub static VEC_REALLOC: Lazy<DslFunction2<2, 1>> =
-    Lazy::new(|| DslFunction2::new("vec_realloc", ["self", "cap"], ["new_buf"]));
+pub static VEC_REALLOC: Lazy<DslFunction<2, 1>> =
+    Lazy::new(|| DslFunction::new("vec_realloc", ["self", "cap"], ["new_buf"]));
 /// free the buffer and zero the header
-pub static VEC_CLEAR: Lazy<DslFunction2<1, 0>> =
-    Lazy::new(|| DslFunction2::new("vec_drop", ["self"], []));
+pub static VEC_CLEAR: Lazy<DslFunction<1, 0>> =
+    Lazy::new(|| DslFunction::new("vec_drop", ["self"], []));
 
-pub fn define_vec(compiler: &mut Compiler2) {
+pub fn define_vec(compiler: &mut Compiler) {
     define_heap(compiler);
     define_mem(compiler);
     if compiler.has_func("vec_suballoc") {
@@ -29,7 +29,7 @@ pub fn define_vec(compiler: &mut Compiler2) {
     }
 
     VEC_SUBALLOC.compile(compiler, |b, [ptr, size], ret| {
-        let vec = Vec2::new(ptr.ptr());
+        let vec = Vec::new(ptr.ptr());
         let prev_len = vec.len.read();
         let curr_len = &prev_len + &size;
         let prev_cap = vec.cap.read();
@@ -62,7 +62,7 @@ pub fn define_vec(compiler: &mut Compiler2) {
     });
 
     VEC_REALLOC.compile(compiler, |b, [ptr, curr_cap], ret| {
-        let vec = Vec2::new(ptr.ptr());
+        let vec = Vec::new(ptr.ptr());
         let prev_buf_ptr = vec.buf.read();
         let prev_len = vec.len.read();
 
@@ -83,7 +83,7 @@ pub fn define_vec(compiler: &mut Compiler2) {
     });
 
     VEC_CLEAR.compile(compiler, |b, [ptr], ret| {
-        let vec = Vec2::new(ptr.ptr());
+        let vec = Vec::new(ptr.ptr());
         let buf_ptr = vec.buf.read();
         b.if_then(buf_ptr.gt_imm(0), |b| {
             heap_free(b, &buf_ptr);
@@ -96,7 +96,7 @@ pub fn define_vec(compiler: &mut Compiler2) {
     });
 }
 
-impl Vec2 {
+impl Vec {
     /// heap-allocate a vec header (+ initial buffer if init_size > 0)
     pub fn alloc(b: &B, init_size: u16) -> Self {
         let addr = heap_malloc(b, &b.v(3));
@@ -107,8 +107,8 @@ impl Vec2 {
         heap_free(b, &self.base().ptr);
     }
 
-    pub fn new_at_addr(b: &B, addr: DslPtr2, init_size: u16) -> Self {
-        let vec = Vec2::new(addr);
+    pub fn new_at_addr(b: &B, addr: DslPtr, init_size: u16) -> Self {
+        let vec = Vec::new(addr);
         let zero = b.v(0);
         if init_size > 0 {
             let init_size = b.v(init_size);
@@ -131,7 +131,7 @@ impl Vec2 {
         self.cap.read()
     }
 
-    pub fn push_struct<T: DslStruct2>(&self, b: &B, t: T::ValueType) {
+    pub fn push_struct<T: DslStruct>(&self, b: &B, t: T::ValueType) {
         let [ptr] = VEC_SUBALLOC.call(b, [&self.buf.ptr, &b.v(T::SIZE as u16)]);
         T::new(ptr.ptr()).write(t);
     }
@@ -155,11 +155,11 @@ impl Vec2 {
         self.push(b, [a, c, d, e]);
     }
 
-    pub fn get_struct<T: DslStruct2>(&self, index: &Variable) -> T {
+    pub fn get_struct<T: DslStruct>(&self, index: &Variable) -> T {
         let ptr = self.buf.read().ptr() + &index.mul_imm_simple(T::SIZE as u8);
         T::new(ptr)
     }
-    pub fn get_ptr(&self, index: &Variable, stride: u8) -> DslPtr2 {
+    pub fn get_ptr(&self, index: &Variable, stride: u8) -> DslPtr {
         if stride == 1 {
             self.buf.read().ptr() + index
         } else {
@@ -174,7 +174,7 @@ impl Vec2 {
         [ptr.read(), (ptr + 1).read()]
     }
 
-    pub fn pop_struct<T: DslStruct2>(&self) -> T::ValueType {
+    pub fn pop_struct<T: DslStruct>(&self) -> T::ValueType {
         let len = self.len.read();
         let start_offset = &len - T::SIZE as u16;
         let ptr = &self.buf.read() + &start_offset;
@@ -214,18 +214,18 @@ impl Vec2 {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::programmer2::builtin2::heap::tests::print_heap;
+    use crate::programmer::builtin::heap::tests::print_heap;
     use crate::simulate;
 
     #[test]
     fn test_vec_basic() {
-        let mut compiler = Compiler2::new();
+        let mut compiler = Compiler::new();
         define_vec(&mut compiler);
 
-        let test_vec_basic = DslFunction2::new("test_vec_basic", [], []);
+        let test_vec_basic = DslFunction::new("test_vec_basic", [], []);
         test_vec_basic.compile(&mut compiler, |b, [], _ret| {
             heap_init(b);
-            let vec = Vec2::new_at_addr(b, b.v(1).ptr(), 0);
+            let vec = Vec::new_at_addr(b, b.v(1).ptr(), 0);
             b.assert(vec.len().eq_imm(0), 10);
             b.assert(vec.cap().eq_imm(0), 11);
 
@@ -263,7 +263,7 @@ mod tests {
             b.assert(p3.eq_imm(3), 65);
             b.assert(p4.eq_imm(4), 66);
 
-            let vec2 = Vec2::new_at_addr(b, b.v(4).ptr(), 4); // init size avoids malloc round-up
+            let vec2 = Vec::new_at_addr(b, b.v(4).ptr(), 4); // init size avoids malloc round-up
             b.assert(vec2.len().eq_imm(0), 70);
             b.assert(vec2.cap().eq_imm(4), 71);
 

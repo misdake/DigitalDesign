@@ -1,4 +1,4 @@
-//! SSA-based CFG IR for the new compiler pipeline (programmer2).
+//! SSA-based CFG IR for the new compiler pipeline (programmer).
 //!
 //! A function is a CFG of basic blocks. Each block holds a list of phi nodes,
 //! a list of instructions, and a terminator. Values are SSA virtual registers

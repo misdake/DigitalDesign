@@ -4,8 +4,8 @@
 
 use crate::isa::*;
 use crate::programmer::{Assembler, InstructionSlot, Relocation};
-use crate::programmer2::ir::*;
-use crate::programmer2::regalloc::*;
+use crate::programmer::ir::*;
+use crate::programmer::regalloc::*;
 use std::collections::HashMap;
 
 /// one emitted line: concrete instruction, unresolved branch, label marker,
@@ -20,6 +20,8 @@ enum Line {
     Label(usize),
     /// far jump: load_lo + load_hi + jmp_reg tmp (3 slots, absolute target)
     AbsJump { target: usize },
+    /// call placeholder: 3 reserved slots filled by the linker
+    Call3 { func: crate::programmer::FuncName },
     /// reserved slot, left invalid for the linker to fill
     Reserved,
 }
@@ -27,7 +29,7 @@ enum Line {
 fn line_size(line: &Line) -> usize {
     match line {
         Line::Inst(_) | Line::Branch { .. } | Line::Jump { .. } | Line::Reserved => 1,
-        Line::AbsJump { .. } => 3,
+        Line::AbsJump { .. } | Line::Call3 { .. } => 3,
         Line::Label(_) => 0,
     }
 }
@@ -145,8 +147,6 @@ pub fn compile_function(
 ) -> EmittedFunc {
     let layout = f.rpo();
     let mut lines: Vec<Line> = vec![];
-    // calls collected as (func, 3 line indices), turned into relocations below
-    let mut calls: Vec<(crate::programmer::FuncName, [usize; 3])> = vec![];
 
     let reg = |v: VReg| alloc.reg[&v];
 
@@ -183,7 +183,7 @@ pub fn compile_function(
         }
 
         for inst in &block.insts {
-            emit_inst(inst, &reg, alloc.callee_saved.len() as u8, &mut lines, &mut calls);
+            emit_inst(inst, &reg, alloc.callee_saved.len() as u8, &mut lines);
         }
 
         match &block.term {
@@ -251,6 +251,7 @@ pub fn compile_function(
     }
     let mut addr = start_address;
     let mut written = 0usize;
+    let mut relocations = vec![];
     for line in &lines {
         match line {
             Line::Label(_) => {}
@@ -291,6 +292,19 @@ pub fn compile_function(
                 addr += 3;
                 written += 3;
             }
+            Line::Call3 { func } => {
+                relocations.push(Relocation {
+                    func_name: func,
+                    slots: [
+                        InstructionSlot::new(addr),
+                        InstructionSlot::new(addr + 1),
+                        InstructionSlot::new(addr + 2),
+                    ],
+                });
+                // left invalid; the linker fills them during relocation
+                addr += 3;
+                written += 3;
+            }
             Line::Reserved => {
                 // left invalid; the linker fills it during relocation
                 addr += 1;
@@ -300,24 +314,7 @@ pub fn compile_function(
     }
 
     EmittedFunc {
-        relocations: calls
-            .into_iter()
-            .map(|(func, slots)| {
-                // call slots are line indices; map them to absolute addresses
-                // by walking the line sizes
-                let map = |i: usize| {
-                    let mut a = start_address;
-                    for line in &lines[..i] {
-                        a += line_size(line);
-                    }
-                    InstructionSlot::new(a)
-                };
-                Relocation {
-                    func_name: func,
-                    slots: slots.map(map),
-                }
-            })
-            .collect(),
+        relocations,
         len: written,
     }
 }
@@ -326,8 +323,8 @@ fn branch_offset(from: usize, to: usize, func: &str) -> (u8, u8) {
     let offset = to as i64 - from as i64;
     assert!(
         (-128..=127).contains(&offset) && offset != 0,
-        "branch out of range in function {func}: from 0x{from:04x} to 0x{to:04x} (offset {offset}); \
-         branch relaxation (M5) not implemented yet"
+        "branch still out of range after relaxation in function {func}: \
+         from 0x{from:04x} to 0x{to:04x} (offset {offset})"
     );
     let v = offset as i8 as u8;
     (v >> 4, v & 0xf)
@@ -395,7 +392,6 @@ fn emit_inst(
     reg: &dyn Fn(VReg) -> u8,
     spill_base: u8,
     lines: &mut Vec<Line>,
-    calls: &mut Vec<(crate::programmer::FuncName, [usize; 3])>,
 ) {
     match inst {
         Instr::Bin { dst, op, lhs, rhs } => {
@@ -455,12 +451,8 @@ fn emit_inst(
             });
         }
         Instr::Call { func, .. } => {
-            // args/results already moved by ABI shims; reserve 3 slots for the linker
-            let i = lines.len();
-            lines.push(Line::Reserved);
-            lines.push(Line::Reserved);
-            lines.push(Line::Reserved);
-            calls.push((*func, [i, i + 1, i + 2]));
+            // args/results already moved by ABI shims; the linker fills 3 slots
+            lines.push(Line::Call3 { func: *func });
         }
         Instr::DevRecv { dst, device, channel } => {
             assert!(*device <= 15 && *channel <= 15, "device/channel out of u4 range");

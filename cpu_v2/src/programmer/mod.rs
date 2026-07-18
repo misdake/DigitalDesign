@@ -1,15 +1,29 @@
-#![allow(clippy::manual_range_contains)]
+//! compiler pipeline (see docs/compiler_redesign.md): Rust-embedded DSL ->
+//! SSA/CFG IR -> optimization passes -> linear-scan register allocation ->
+//! codegen. reuses the Assembler/Linker from the previous implementation.
 
 mod assembler;
+mod builder;
+mod codegen;
 mod compiler;
-mod language;
+mod ir;
 mod linker;
-mod register_operation;
-mod variable_operation;
+mod passes;
+mod regalloc;
+mod shared;
+
+pub mod builtin;
+pub mod dsl;
+
+#[cfg(test)]
+mod proptest;
 
 pub use assembler::*;
+pub use builder::*;
+pub use codegen::*;
 pub use compiler::*;
-pub use language::*;
+pub use ir::*;
 pub use linker::*;
-pub use register_operation::*;
-pub use variable_operation::*;
+pub use passes::*;
+pub use regalloc::*;
+pub use shared::*;

@@ -1,8 +1,8 @@
 //! boundary-tag heap: block = header(1) + content(size) + footer(1);
 //! header == footer, bit 15: free flag, bits 14-0: block size (incl. tags)
 
-use crate::programmer2::compiler2::Compiler2;
-use crate::programmer2::dsl2::*;
+use crate::programmer::compiler::Compiler;
+use crate::programmer::dsl::*;
 use once_cell::sync::Lazy;
 
 pub const HEAP_BEGIN: u16 = 0x1000;
@@ -10,12 +10,12 @@ pub const HEAP_SIZE: u16 = 20;
 pub const HEAP_END: u16 = HEAP_BEGIN + HEAP_SIZE;
 pub const FREE_BIT: u16 = 1 << 15;
 
-pub static INIT_HEAP: Lazy<DslFunction2<0, 0>> = Lazy::new(|| DslFunction2::new("init_heap", [], []));
-pub static MALLOC: Lazy<DslFunction2<1, 1>> =
-    Lazy::new(|| DslFunction2::new("malloc", ["size"], ["ptr"]));
-pub static FREE: Lazy<DslFunction2<1, 0>> = Lazy::new(|| DslFunction2::new("free", ["ptr"], []));
+pub static INIT_HEAP: Lazy<DslFunction<0, 0>> = Lazy::new(|| DslFunction::new("init_heap", [], []));
+pub static MALLOC: Lazy<DslFunction<1, 1>> =
+    Lazy::new(|| DslFunction::new("malloc", ["size"], ["ptr"]));
+pub static FREE: Lazy<DslFunction<1, 0>> = Lazy::new(|| DslFunction::new("free", ["ptr"], []));
 
-pub fn define_heap(compiler: &mut Compiler2) {
+pub fn define_heap(compiler: &mut Compiler) {
     if compiler.has_func("init_heap") {
         return;
     }
@@ -154,7 +154,7 @@ pub fn heap_free(b: &B, ptr: &Variable) {
 #[cfg(test)]
 pub(crate) mod tests {
     use super::*;
-    use crate::programmer2::builtin2::mem::*;
+    use crate::programmer::builtin::mem::*;
     use crate::simulate;
 
     pub(crate) struct HeapStat {
@@ -197,11 +197,11 @@ pub(crate) mod tests {
 
     #[test]
     fn test_malloc() {
-        let mut compiler = Compiler2::new();
+        let mut compiler = Compiler::new();
         define_heap(&mut compiler);
         define_mem(&mut compiler);
 
-        let test_malloc = DslFunction2::new("test_malloc", [], []);
+        let test_malloc = DslFunction::new("test_malloc", [], []);
         test_malloc.compile(&mut compiler, |b, [], _ret| {
             heap_init(b);
             let ptr1 = heap_malloc(b, &b.v(1));
