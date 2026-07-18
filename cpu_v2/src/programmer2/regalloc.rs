@@ -43,7 +43,7 @@ impl Allocation {
     }
 }
 
-pub fn allocate(func: &IrFunc) -> (IrFunc, Allocation) {
+pub fn allocate(func: &IrFunc, coalesce: bool) -> (IrFunc, Allocation) {
     let mut f = func.clone();
     let abi = insert_abi_shims(&mut f);
     split_critical_edges(&mut f);
@@ -51,7 +51,12 @@ pub fn allocate(func: &IrFunc) -> (IrFunc, Allocation) {
     let mut spill_slots = 0u8;
     for _ in 0..8 {
         let intervals = compute_intervals(&f);
-        let scan = linear_scan(&intervals, &abi);
+        let affinity = if coalesce {
+            compute_affinity(&f)
+        } else {
+            HashMap::new()
+        };
+        let scan = linear_scan(&intervals, &abi, &affinity);
         if scan.spilled.is_empty() {
             let mut callee_saved: Vec<u8> = scan
                 .reg
@@ -489,12 +494,32 @@ fn compute_intervals(f: &IrFunc) -> Vec<Interval> {
         .collect()
 }
 
+/// coalescing hints: for `mov dst, src` the src's interval ends at the mov,
+/// so giving src the dst's register eliminates the move. same for phi args.
+/// (hint only — the allocator's usual checks still apply.)
+fn compute_affinity(f: &IrFunc) -> HashMap<VReg, VReg> {
+    let mut aff: HashMap<VReg, VReg> = HashMap::new();
+    for b in &f.blocks {
+        for inst in &b.insts {
+            if let Instr::Mov { dst, src } = inst {
+                aff.entry(*src).or_insert(*dst);
+            }
+        }
+        for phi in &b.phis {
+            for &(_, v) in &phi.args {
+                aff.entry(v).or_insert(phi.dst);
+            }
+        }
+    }
+    aff
+}
+
 struct ScanResult {
     reg: HashMap<VReg, u8>,
     spilled: Vec<VReg>,
 }
 
-fn linear_scan(intervals: &[Interval], abi: &AbiInfo) -> ScanResult {
+fn linear_scan(intervals: &[Interval], abi: &AbiInfo, affinity: &HashMap<VReg, VReg>) -> ScanResult {
     // fixed ranges per register (from pinned vregs), known upfront
     let mut fixed_ranges: HashMap<u8, Vec<(u32, u32)>> = HashMap::new();
     for (&v, &r) in &abi.pinned {
@@ -549,19 +574,30 @@ fn linear_scan(intervals: &[Interval], abi: &AbiInfo) -> ScanResult {
         } else {
             &[0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12]
         };
-        let mut chosen = None;
-        for &r in prefs {
-            if active.iter().any(|&(_, _, ar)| ar == r) {
-                continue;
+        let free = |r: u8| {
+            !active.iter().any(|&(_, _, ar)| ar == r)
+                && !fixed_ranges
+                    .get(&r)
+                    .is_some_and(|ranges| ranges.iter().any(|&fr| overlaps(fr, (iv.start, iv.end))))
+        };
+        // coalescing hint: prefer the affinity target's register
+        let preferred = affinity.get(&v).and_then(|&a| {
+            if let Some(&r) = abi.pinned.get(&a) {
+                Some(r)
+            } else {
+                reg.get(&a).copied()
             }
-            if fixed_ranges
-                .get(&r)
-                .is_some_and(|ranges| ranges.iter().any(|&fr| overlaps(fr, (iv.start, iv.end))))
-            {
-                continue;
+        });
+        let mut chosen = preferred.filter(|&r| {
+            prefs.contains(&r) && free(r)
+        });
+        if chosen.is_none() {
+            for &r in prefs {
+                if free(r) {
+                    chosen = Some(r);
+                    break;
+                }
             }
-            chosen = Some(r);
-            break;
         }
 
         if let Some(r) = chosen {

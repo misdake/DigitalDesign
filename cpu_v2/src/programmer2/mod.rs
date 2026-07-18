@@ -6,6 +6,7 @@ mod builder;
 mod codegen;
 mod compiler2;
 mod ir;
+mod passes;
 mod regalloc;
 
 pub mod builtin2;
@@ -15,4 +16,5 @@ pub use builder::*;
 pub use codegen::*;
 pub use compiler2::*;
 pub use ir::*;
+pub use passes::*;
 pub use regalloc::*;

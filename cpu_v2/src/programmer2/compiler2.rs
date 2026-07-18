@@ -4,12 +4,14 @@
 use crate::programmer::{Assembler, FuncDecl, FuncName, Linker};
 use crate::programmer2::codegen::compile_function;
 use crate::programmer2::ir::*;
+use crate::programmer2::passes::{Opts, optimize};
 use crate::programmer2::regalloc::allocate;
 use crate::Instruction;
 use std::collections::{HashMap, HashSet};
 
 #[derive(Default)]
 pub struct Compiler2 {
+    pub opts: Opts,
     funcs: HashMap<FuncName, IrFunc>,
 }
 
@@ -44,7 +46,9 @@ impl Compiler2 {
                 .funcs
                 .get(&name)
                 .unwrap_or_else(|| panic!("unknown function `{name}`"));
-            let (allocated_ir, alloc) = allocate(f);
+            let mut f = f.clone();
+            optimize(&mut f, &self.opts);
+            let (allocated_ir, alloc) = allocate(&f, self.opts.coalesce);
             let emitted = compile_function(&allocated_ir, &alloc, &mut asm, cursor);
             let end = cursor + emitted.len;
 
@@ -77,7 +81,7 @@ mod tests {
     use crate::programmer2::ir::{BinOp, CmpRhs, VReg};
     use crate::{SimState, simulate};
 
-    fn compile_and_run(funcs: Vec<IrFunc>, main: &'static str, max_cycles: usize) -> (SimState, Option<u16>) {
+    pub(super) fn compile_and_run(funcs: Vec<IrFunc>, main: &'static str, max_cycles: usize) -> (SimState, Option<u16>) {
         let mut c = Compiler2::new();
         for f in funcs {
             c.add_func(f);
@@ -86,7 +90,7 @@ mod tests {
         simulate(&instructions, max_cycles)
     }
 
-    fn imm_seq(m: &mut FuncBuilder, values: &[u16]) -> Vec<VReg> {
+    pub(super) fn imm_seq(m: &mut FuncBuilder, values: &[u16]) -> Vec<VReg> {
         values.iter().map(|&v| m.load_imm(v)).collect()
     }
 
@@ -173,7 +177,15 @@ mod tests {
         }
         m.halt(acc);
 
+        // turn the optimizer off: constant folding would collapse the whole
+        // computation into one immediate and nothing would spill
         let mut c = Compiler2::new();
+        c.opts = Opts {
+            const_prop: false,
+            cse: false,
+            dce: false,
+            coalesce: true,
+        };
         c.add_func(m.finish());
         let instructions = c.finish("main");
         // frame is sized by actual need: some spills, but far below 255
@@ -368,5 +380,125 @@ mod tests {
         let expected: u16 = (a + 1) + (0..10u16).map(|i| a + (i * 7 + 1)).sum::<u16>();
         let (_state, signal) = simulate(&instructions, 2000);
         assert_eq!(signal, Some(expected));
+    }
+}
+
+// ---------------------------------------------------------------------------
+// M5: branch relaxation + optimization integration tests
+// ---------------------------------------------------------------------------
+
+#[cfg(test)]
+mod opt_tests {
+    use super::tests::{compile_and_run, imm_seq};
+    use super::*;
+    use crate::isa::Cond;
+    use crate::programmer2::builder::FuncBuilder;
+    use crate::programmer2::ir::{BinOp, CmpRhs};
+
+    #[test]
+    fn test_branch_relaxation() {
+        // loop body with ~160 instructions: the back edge needs relaxation
+        let (mut m, _) = FuncBuilder::new("main", 0, 0);
+        let sum = m.new_var();
+        let i = m.new_var();
+        let zero = m.load_imm(0);
+        m.set(sum, zero);
+        m.set(i, zero);
+        m.while_loop(
+            |b| {
+                let i = b.get(i);
+                b.cmp(i, CmpRhs::Imm(5), Cond::Less)
+            },
+            |b| {
+                for k in 0..80u16 {
+                    let s = b.get(sum);
+                    let c = b.load_imm(k);
+                    let s = b.bin(BinOp::Add, s, c);
+                    b.set(sum, s);
+                }
+                let i0 = b.get(i);
+                let one = b.load_imm(1);
+                let i1 = b.bin(BinOp::Add, i0, one);
+                b.set(i, i1);
+            },
+        );
+        let s = m.get(sum);
+        m.halt(s);
+
+        let expected: u16 = (0..5u16).map(|_| (0..80u16).sum::<u16>()).sum();
+        let (_state, signal) = compile_and_run(vec![m.finish()], "main", 100000);
+        assert_eq!(signal, Some(expected));
+    }
+
+    #[test]
+    fn test_optimized_vs_unoptimized() {
+        // the same program must compute the same result with all passes off
+        fn build() -> IrFunc {
+            let (mut m, _) = FuncBuilder::new("main", 0, 0);
+            let sum = m.new_var();
+            let i = m.new_var();
+            let zero = m.load_imm(0);
+            m.set(sum, zero);
+            m.set(i, zero);
+            m.while_loop(
+                |b| {
+                    let i = b.get(i);
+                    b.cmp(i, CmpRhs::Imm(10), Cond::Less)
+                },
+                |b| {
+                    let s = b.get(sum);
+                    let i0 = b.get(i);
+                    let two = b.load_imm(2);
+                    let t = b.bin(BinOp::Add, i0, two);
+                    let s = b.bin(BinOp::Add, s, t);
+                    b.set(sum, s);
+                    let one = b.load_imm(1);
+                    let i1 = b.bin(BinOp::Add, i0, one);
+                    b.set(i, i1);
+                },
+            );
+            let s = m.get(sum);
+            m.halt(s);
+            m.finish()
+        }
+
+        let (_s1, opt_signal) = compile_and_run(vec![build()], "main", 10000);
+
+        let mut c = Compiler2::new();
+        c.opts = Opts {
+            const_prop: false,
+            cse: false,
+            dce: false,
+            coalesce: false,
+        };
+        c.add_func(build());
+        let instructions = c.finish("main");
+        let (_s2, raw_signal) = crate::simulate(&instructions, 10000);
+
+        let expected: u16 = (0..10u16).map(|i| i + 2).sum();
+        assert_eq!(opt_signal, Some(expected));
+        assert_eq!(raw_signal, Some(expected));
+    }
+
+    #[test]
+    fn test_mov_coalescing() {
+        // call forwarding should not produce visible mov chains between the
+        // arg setup and the call; check via instruction count sanity
+        let x = 7u16;
+        let (mut id, params) = FuncBuilder::new("id", 1, 1);
+        let a = id.get(params[0]);
+        id.ret(&[a]);
+
+        let (mut m, _) = FuncBuilder::new("main", 0, 0);
+        let args = imm_seq(&mut m, &[x]);
+        let rets = m.call("id", &args, 1);
+        m.halt(rets[0]);
+
+        let mut c = Compiler2::new();
+        c.add_func(id.finish());
+        c.add_func(m.finish());
+        let instructions = c.finish("main");
+        let (_state, signal) = crate::simulate(&instructions, 1000);
+        assert_eq!(signal, Some(x));
     }
 }

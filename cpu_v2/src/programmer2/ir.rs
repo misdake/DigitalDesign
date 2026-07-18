@@ -12,7 +12,7 @@ use std::fmt;
 pub type VReg = u32;
 pub type BlockId = usize;
 
-#[derive(Copy, Clone, Debug, Eq, PartialEq)]
+#[derive(Copy, Clone, Debug, Eq, PartialEq, Hash)]
 pub enum BinOp {
     Add,
     Sub,
@@ -22,6 +22,7 @@ pub enum BinOp {
 }
 
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
+#[derive(Hash)]
 pub enum UnOp {
     Inv,
     Neg,
@@ -31,7 +32,7 @@ pub enum UnOp {
 }
 
 /// shifts are in-place on the ISA (`r0 = r0 << imm`), codegen inserts a mov
-#[derive(Copy, Clone, Debug, Eq, PartialEq)]
+#[derive(Copy, Clone, Debug, Eq, PartialEq, Hash)]
 pub enum ShiftOp {
     Lsl,
     Lsr,

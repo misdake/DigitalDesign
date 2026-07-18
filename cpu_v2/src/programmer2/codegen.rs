@@ -8,16 +8,87 @@ use crate::programmer2::ir::*;
 use crate::programmer2::regalloc::*;
 use std::collections::HashMap;
 
-/// one emitted line: either a concrete instruction, an unresolved branch, or
-/// a reserved slot (filled by the linker, e.g. call sequences)
+/// one emitted line: concrete instruction, unresolved branch, label marker,
+/// far jump, or a reserved slot (filled by the linker, e.g. call sequences)
 enum Line {
     Inst(Instruction),
-    /// conditional branch (j_cc) to a block
-    Branch { cond: Cond, target: BlockId },
-    /// unconditional jump to a block
-    Jump { target: BlockId },
+    /// conditional branch (j_cc) to a block/label
+    Branch { cond: Cond, target: usize },
+    /// unconditional jump to a block/label
+    Jump { target: usize },
+    /// zero-width address marker (block ids and relaxation targets)
+    Label(usize),
+    /// far jump: load_lo + load_hi + jmp_reg tmp (3 slots, absolute target)
+    AbsJump { target: usize },
     /// reserved slot, left invalid for the linker to fill
     Reserved,
+}
+
+fn line_size(line: &Line) -> usize {
+    match line {
+        Line::Inst(_) | Line::Branch { .. } | Line::Jump { .. } | Line::Reserved => 1,
+        Line::AbsJump { .. } => 3,
+        Line::Label(_) => 0,
+    }
+}
+
+/// expand out-of-range branches until everything fits the i8 offset range:
+/// conditional -> inverted short branch over an AbsJump; unconditional -> AbsJump.
+fn relax(lines: &mut Vec<Line>, func: &str) {
+    let mut fresh_label = 1usize << 60;
+    for _ in 0..64 {
+        // current label addresses (relative to function start)
+        let mut label_addr: HashMap<usize, usize> = HashMap::new();
+        let mut addr = 0usize;
+        for line in lines.iter() {
+            if let Line::Label(l) = line {
+                label_addr.insert(*l, addr);
+            } else {
+                addr += line_size(line);
+            }
+        }
+        // find the first out-of-range branch and expand it
+        let mut addr = 0usize;
+        let mut expanded = false;
+        for i in 0..lines.len() {
+            let size = line_size(&lines[i]);
+            match &lines[i] {
+                Line::Branch { cond, target } => {
+                    let offset = label_addr[target] as i64 - addr as i64;
+                    if !(-128..=127).contains(&offset) || offset == 0 {
+                        let (inv, t) = (cond.invert(), *target);
+                        let skip = fresh_label;
+                        fresh_label += 1;
+                        lines.splice(
+                            i..i + 1,
+                            [
+                                Line::Branch { cond: inv, target: skip },
+                                Line::AbsJump { target: t },
+                                Line::Label(skip),
+                            ],
+                        );
+                        expanded = true;
+                        break;
+                    }
+                }
+                Line::Jump { target } => {
+                    let offset = label_addr[target] as i64 - addr as i64;
+                    if !(-128..=127).contains(&offset) || offset == 0 {
+                        let t = *target;
+                        lines.splice(i..i + 1, [Line::AbsJump { target: t }]);
+                        expanded = true;
+                        break;
+                    }
+                }
+                _ => {}
+            }
+            addr += size;
+        }
+        if !expanded {
+            return;
+        }
+    }
+    panic!("branch relaxation did not converge in {func}")
 }
 
 pub struct EmittedFunc {
@@ -74,7 +145,6 @@ pub fn compile_function(
 ) -> EmittedFunc {
     let layout = f.rpo();
     let mut lines: Vec<Line> = vec![];
-    let mut block_line: HashMap<BlockId, usize> = HashMap::new();
     // calls collected as (func, 3 line indices), turned into relocations below
     let mut calls: Vec<(crate::programmer::FuncName, [usize; 3])> = vec![];
 
@@ -91,7 +161,7 @@ pub fn compile_function(
     }
 
     for (idx, &b) in layout.iter().enumerate() {
-        block_line.insert(b, lines.len());
+        lines.push(Line::Label(b));
         let block = &f.blocks[b];
 
         // phi moves for a single-pred block go at the block top
@@ -165,17 +235,32 @@ pub fn compile_function(
         }
     }
 
-    // write lines into the assembler with resolved branch offsets
-    let block_addr: HashMap<BlockId, usize> =
-        block_line.iter().map(|(&b, &l)| (b, start_address + l)).collect();
-    for (i, line) in lines.iter().enumerate() {
-        let addr = start_address + i;
+    // expand out-of-range branches, then write everything into the assembler
+    relax(&mut lines, f.name);
+
+    let mut label_addr: HashMap<usize, usize> = HashMap::new();
+    {
+        let mut a = start_address;
+        for line in &lines {
+            if let Line::Label(l) = line {
+                label_addr.insert(*l, a);
+            } else {
+                a += line_size(line);
+            }
+        }
+    }
+    let mut addr = start_address;
+    let mut written = 0usize;
+    for line in &lines {
         match line {
+            Line::Label(_) => {}
             Line::Inst(inst) => {
                 asm.inst_at(*inst, addr);
+                addr += 1;
+                written += 1;
             }
             Line::Branch { cond, target } => {
-                let (hi, lo) = branch_offset(addr, block_addr[target], f.name);
+                let (hi, lo) = branch_offset(addr, label_addr[target], f.name);
                 let inst = match cond {
                     Cond::Never => panic!("branch with Cond::Never"),
                     Cond::Greater => jg(hi, lo),
@@ -187,13 +272,29 @@ pub fn compile_function(
                     Cond::Always => jmp(hi, lo),
                 };
                 asm.inst_at(inst, addr);
+                addr += 1;
+                written += 1;
             }
             Line::Jump { target } => {
-                let (hi, lo) = branch_offset(addr, block_addr[target], f.name);
+                let (hi, lo) = branch_offset(addr, label_addr[target], f.name);
                 asm.inst_at(jmp(hi, lo), addr);
+                addr += 1;
+                written += 1;
+            }
+            Line::AbsJump { target } => {
+                let t = label_addr[target] as u16;
+                let (hi, lo) = hi_lo(t as u8);
+                asm.inst_at(load_lo(hi, lo, REG_TMP), addr);
+                let (hi, lo) = hi_lo((t >> 8) as u8);
+                asm.inst_at(load_hi(hi, lo, REG_TMP), addr + 1);
+                asm.inst_at(jmp_reg(REG_TMP), addr + 2);
+                addr += 3;
+                written += 3;
             }
             Line::Reserved => {
                 // left invalid; the linker fills it during relocation
+                addr += 1;
+                written += 1;
             }
         }
     }
@@ -201,12 +302,23 @@ pub fn compile_function(
     EmittedFunc {
         relocations: calls
             .into_iter()
-            .map(|(func, slots)| Relocation {
-                func_name: func,
-                slots: slots.map(|i| InstructionSlot::new(start_address + i)),
+            .map(|(func, slots)| {
+                // call slots are line indices; map them to absolute addresses
+                // by walking the line sizes
+                let map = |i: usize| {
+                    let mut a = start_address;
+                    for line in &lines[..i] {
+                        a += line_size(line);
+                    }
+                    InstructionSlot::new(a)
+                };
+                Relocation {
+                    func_name: func,
+                    slots: slots.map(map),
+                }
             })
             .collect(),
-        len: lines.len(),
+        len: written,
     }
 }
 

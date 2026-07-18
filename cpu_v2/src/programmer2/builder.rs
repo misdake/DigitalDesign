@@ -565,8 +565,10 @@ impl FuncBuilder {
 }
 
 /// replace phis whose operands are all the same value (ignoring
-/// self-references) with that value, iteratively.
-fn remove_trivial_phis(func: &mut IrFunc) {
+/// self-references) with that value, iteratively. returns whether any phi
+/// was removed.
+pub(crate) fn remove_trivial_phis(func: &mut IrFunc) -> bool {
+    let mut any = false;
     loop {
         let mut replace: HashMap<VReg, VReg> = HashMap::new();
         for b in &func.blocks {
@@ -582,6 +584,7 @@ fn remove_trivial_phis(func: &mut IrFunc) {
         if replace.is_empty() {
             break;
         }
+        any = true;
         let subst = |v: &mut VReg| {
             while let Some(&r) = replace.get(v) {
                 *v = r;
@@ -629,6 +632,7 @@ fn remove_trivial_phis(func: &mut IrFunc) {
             }
         }
     }
+    any
 }
 
 #[cfg(test)]
