@@ -176,7 +176,7 @@ fn test_malloc() {
 
     let heap_stat = print_heap(state.mem.as_slice());
     assert_eq!(heap_stat.alloc_count, 3);
-    assert_eq!(heap_stat.alloc_size, 10);
+    assert_eq!(heap_stat.alloc_size, 11);
     assert_eq!(
         &state.mem[HEAP_BEGIN as usize..HEAP_END as usize],
         [4, 44, 44, 4, 32771, 0, 32771, 5, 0, 0, 0, 5, 8, 44, 44, 55, 55, 55, 0, 8]

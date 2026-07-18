@@ -52,7 +52,7 @@ impl ExportModuleInterface {
     }
 }
 
-trait Exporter {
+pub trait Exporter {
     fn exporter_name() -> &'static str;
     fn export(&self, interface: &ExportModuleInterface, content: &ExportGateReg) -> String;
 }
