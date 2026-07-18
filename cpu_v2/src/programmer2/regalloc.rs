@@ -334,11 +334,17 @@ struct Interval {
 
 /// position numbering: 2 per row (use at even, def at odd); phi defs at block
 /// start + 1; phi args used at pred end. params are defined at position 0.
+/// intervals are built from real liveness (backward dataflow), so values used
+/// in a loop header stay live across the whole loop body.
 fn compute_intervals(f: &IrFunc) -> Vec<Interval> {
     let n = f.vreg_count as usize;
+    let rpo = f.rpo();
+
+    // ----- position numbering + raw def/use positions -----
     let mut start = vec![u32::MAX; n];
     let mut end = vec![0u32; n];
     let mut calls: Vec<(u32, u32)> = vec![]; // (use pos, def pos)
+    let mut block_start = vec![0u32; f.blocks.len()];
     let mut block_end = vec![0u32; f.blocks.len()];
 
     let mut def = |start: &mut Vec<u32>, end: &mut Vec<u32>, v: VReg, pos: u32| {
@@ -349,7 +355,8 @@ fn compute_intervals(f: &IrFunc) -> Vec<Interval> {
     for &p in &f.params {
         def(&mut start, &mut end, p, 0);
     }
-    for b in f.rpo() {
+    for &b in &rpo {
+        block_start[b] = pos;
         let block = &f.blocks[b];
         for phi in &block.phis {
             def(&mut start, &mut end, phi.dst, pos + 1);
@@ -383,9 +390,92 @@ fn compute_intervals(f: &IrFunc) -> Vec<Interval> {
         }
     }
 
+    // ----- per-block use/def sets -----
+    let mut block_use: Vec<HashSet<VReg>> = vec![HashSet::new(); f.blocks.len()];
+    let mut block_def: Vec<HashSet<VReg>> = vec![HashSet::new(); f.blocks.len()];
+    let mut phi_defs: Vec<HashSet<VReg>> = vec![HashSet::new(); f.blocks.len()];
+    for &b in &rpo {
+        let block = &f.blocks[b];
+        let mut use_b = HashSet::new();
+        let mut def_b = HashSet::new();
+        for phi in &block.phis {
+            def_b.insert(phi.dst);
+            phi_defs[b].insert(phi.dst);
+        }
+        let mut touch = |v: VReg, is_def: bool| {
+            if is_def {
+                def_b.insert(v);
+            } else if !def_b.contains(&v) {
+                use_b.insert(v);
+            }
+        };
+        for inst in &block.insts {
+            for u in inst_uses(inst) {
+                touch(u, false);
+            }
+            for d in inst_defs(inst) {
+                touch(d, true);
+            }
+        }
+        if let Some(term) = &block.term {
+            for u in term_uses(term) {
+                touch(u, false);
+            }
+        }
+        block_use[b] = use_b;
+        block_def[b] = def_b;
+    }
+
+    // ----- backward liveness (phi args are live-out of their pred) -----
+    let mut live_in: Vec<HashSet<VReg>> = vec![HashSet::new(); f.blocks.len()];
+    let mut live_out: Vec<HashSet<VReg>> = vec![HashSet::new(); f.blocks.len()];
+    loop {
+        let mut changed = false;
+        for &b in rpo.iter().rev() {
+            let mut out: HashSet<VReg> = HashSet::new();
+            for s in f.successors(b) {
+                for &v in &live_in[s] {
+                    if !phi_defs[s].contains(&v) {
+                        out.insert(v);
+                    }
+                }
+                for phi in &f.blocks[s].phis {
+                    for (p, v) in &phi.args {
+                        if *p == b {
+                            out.insert(*v);
+                        }
+                    }
+                }
+            }
+            let mut in_b = block_use[b].clone();
+            for &v in &out {
+                if !block_def[b].contains(&v) {
+                    in_b.insert(v);
+                }
+            }
+            if in_b != live_in[b] || out != live_out[b] {
+                live_in[b] = in_b;
+                live_out[b] = out;
+                changed = true;
+            }
+        }
+        if !changed {
+            break;
+        }
+    }
+
+    // ----- intervals: raw def/use positions extended by live ranges -----
     (0..n as VReg)
         .map(|v| {
-            let (s, e) = (start[v as usize], end[v as usize]);
+            let (mut s, mut e) = (start[v as usize], end[v as usize]);
+            for &b in &rpo {
+                if live_in[b].contains(&v) {
+                    s = s.min(block_start[b]);
+                }
+                if live_out[b].contains(&v) {
+                    e = e.max(block_end[b]);
+                }
+            }
             // no def: dead leftover of a spill rewrite (def was renamed); a
             // use without def is a genuine bug
             assert!(s != u32::MAX || e == 0, "vreg v{v} used but never defined");

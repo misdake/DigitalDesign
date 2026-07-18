@@ -13,6 +13,26 @@ use std::collections::HashMap;
 /// a frontend variable handle (DSL-level mutable variable)
 pub type VarId = usize;
 
+/// boolean condition expression, lowered to short-circuit branch cascades
+#[derive(Clone, Debug, PartialEq)]
+pub enum BoolExpr {
+    Cmp(Cmp),
+    And(Box<BoolExpr>, Box<BoolExpr>),
+    Or(Box<BoolExpr>, Box<BoolExpr>),
+    Not(Box<BoolExpr>),
+}
+impl BoolExpr {
+    pub fn and(self, other: BoolExpr) -> BoolExpr {
+        BoolExpr::And(Box::new(self), Box::new(other))
+    }
+    pub fn or(self, other: BoolExpr) -> BoolExpr {
+        BoolExpr::Or(Box::new(self), Box::new(other))
+    }
+    pub fn not(self) -> BoolExpr {
+        BoolExpr::Not(Box::new(self))
+    }
+}
+
 struct LoopCtx {
     header: BlockId,
     exit: BlockId,
@@ -349,6 +369,164 @@ impl FuncBuilder {
 
     pub fn halt(&mut self, signal: VReg) {
         self.terminate(Terminator::Halt { signal });
+    }
+
+    // ----- boolean condition combinators (short-circuit) -----
+
+    /// lower a boolean expression into branches from the current block to
+    /// `t` (cond holds) and `f` (cond does not hold); records preds on both.
+    /// the current block must be unterminated; afterwards there is no
+    /// current block.
+    fn lower_cond(&mut self, cond: BoolExpr, t: BlockId, f: BlockId) {
+        match cond {
+            BoolExpr::Cmp(cmp) => {
+                let cur = self.cur();
+                self.func.blocks[t].preds.push(cur);
+                self.func.blocks[f].preds.push(cur);
+                self.terminate(Terminator::Br {
+                    cmp,
+                    if_true: t,
+                    if_false: f,
+                });
+            }
+            BoolExpr::And(a, b) => {
+                let m = self.new_block(&[]);
+                self.lower_cond(*a, m, f);
+                self.current = Some(m);
+                self.seal(m);
+                self.lower_cond(*b, t, f);
+            }
+            BoolExpr::Or(a, b) => {
+                let m = self.new_block(&[]);
+                self.lower_cond(*a, t, m);
+                self.current = Some(m);
+                self.seal(m);
+                self.lower_cond(*b, t, f);
+            }
+            BoolExpr::Not(a) => self.lower_cond(*a, f, t),
+        }
+    }
+
+    // ----- structured control flow primitives (begin/end) -----
+    //
+    // these exist so a DSL layer can drive block construction step by step
+    // (e.g. when the builder is behind a RefCell and closures cannot be
+    // nested inside a single borrow). prefer the convenience wrappers
+    // (if_bool/if_else_bool/while_bool) when driving FuncBuilder directly.
+
+    /// begin an if-then: returns the join block; current = then block
+    pub fn begin_if(&mut self, cond: BoolExpr) -> BlockId {
+        let then_b = self.new_block(&[]);
+        let join = self.new_block(&[]);
+        self.lower_cond(cond, then_b, join);
+        self.current = Some(then_b);
+        self.seal(then_b);
+        join
+    }
+    /// finish an if-then: wires the fall-through to the join
+    pub fn end_if(&mut self, join: BlockId) {
+        if let Some(end) = self.current {
+            self.func.blocks[join].preds.push(end);
+            self.terminate(Terminator::Jmp { target: join });
+        }
+        self.seal(join);
+        self.current = Some(join);
+    }
+
+    /// begin an if-else: returns (else block, join block); current = then block
+    pub fn begin_if_else(&mut self, cond: BoolExpr) -> (BlockId, BlockId) {
+        let then_b = self.new_block(&[]);
+        let else_b = self.new_block(&[]);
+        let join = self.new_block(&[]);
+        self.lower_cond(cond, then_b, else_b);
+        self.current = Some(then_b);
+        self.seal(then_b);
+        (else_b, join)
+    }
+    /// switch from then branch to else branch
+    pub fn mid_if_else(&mut self, else_b: BlockId, join: BlockId) {
+        if let Some(end) = self.current {
+            self.func.blocks[join].preds.push(end);
+            self.terminate(Terminator::Jmp { target: join });
+        }
+        self.current = Some(else_b);
+        self.seal(else_b);
+    }
+    /// finish an if-else
+    pub fn end_if_else(&mut self, join: BlockId) {
+        if let Some(end) = self.current {
+            self.func.blocks[join].preds.push(end);
+            self.terminate(Terminator::Jmp { target: join });
+        }
+        self.seal(join);
+        self.current = if self.func.blocks[join].preds.is_empty() {
+            None
+        } else {
+            Some(join)
+        };
+    }
+
+    /// begin a while loop: returns (header, body, exit); current = header
+    pub fn begin_while(&mut self) -> (BlockId, BlockId, BlockId) {
+        let cur = self.cur();
+        let header = self.new_block(&[cur]);
+        let body_b = self.new_block(&[]);
+        let exit = self.new_block(&[]);
+        self.terminate(Terminator::Jmp { target: header });
+        self.current = Some(header);
+        (header, body_b, exit)
+    }
+    /// evaluate at the header: branch on `cond` into body/exit; current = body
+    pub fn while_cond(&mut self, cond: BoolExpr, header: BlockId, body_b: BlockId, exit: BlockId) {
+        self.lower_cond(cond, body_b, exit);
+        self.loops.push(LoopCtx { header, exit });
+        self.current = Some(body_b);
+        self.seal(body_b);
+    }
+    /// finish a while loop (back edge, seal header/exit); current = exit
+    pub fn end_while(&mut self, header: BlockId, exit: BlockId) {
+        if let Some(end) = self.current {
+            self.func.blocks[header].preds.push(end);
+            self.terminate(Terminator::Jmp { target: header });
+        }
+        self.loops.pop();
+        self.seal(header);
+        self.seal(exit);
+        self.current = Some(exit);
+    }
+
+    // ----- structured control flow convenience wrappers -----
+
+    pub fn if_bool(&mut self, cond: BoolExpr, f: impl FnOnce(&mut Self)) {
+        let join = self.begin_if(cond);
+        f(self);
+        self.end_if(join);
+    }
+
+    pub fn if_else_bool(
+        &mut self,
+        cond: BoolExpr,
+        then_f: impl FnOnce(&mut Self),
+        else_f: impl FnOnce(&mut Self),
+    ) {
+        let (else_b, join) = self.begin_if_else(cond);
+        then_f(self);
+        self.mid_if_else(else_b, join);
+        else_f(self);
+        self.end_if_else(join);
+    }
+
+    /// while loop with a (possibly compound) condition evaluated at the header
+    pub fn while_bool(
+        &mut self,
+        cond: impl FnOnce(&mut Self) -> BoolExpr,
+        body: impl FnOnce(&mut Self),
+    ) {
+        let (header, body_b, exit) = self.begin_while();
+        let cond = cond(self);
+        self.while_cond(cond, header, body_b, exit);
+        body(self);
+        self.end_while(header, exit);
     }
 
     // ----- comparisons -----
