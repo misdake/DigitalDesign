@@ -1,7 +1,7 @@
 //! shift-add multiplication
 
-use crate::programmer::compiler::Compiler;
-use crate::programmer::dsl::*;
+use crate::Compiler;
+use crate::compiler::dsl::*;
 use once_cell::sync::Lazy;
 
 pub static MUL_16X4: Lazy<DslFunction<2, 1>> =
@@ -50,6 +50,8 @@ pub fn mul_16x16(b: &B, a: &Variable, b16: &Variable) -> Variable {
     r
 }
 
+// ---------------------------------------------------------------------------
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -71,7 +73,7 @@ mod tests {
             b.halt(&r);
         });
 
-        let instructions = compiler.finish("test_mul");
+        let (instructions, _) = compiler.finish("test_mul");
         let (_state, signal) = simulate(&instructions, 1000);
         assert_eq!(signal, Some(x.wrapping_mul(y)));
     }

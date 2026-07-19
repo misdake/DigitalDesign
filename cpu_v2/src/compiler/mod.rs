@@ -5,23 +5,22 @@
 mod assembler;
 mod builder;
 mod codegen;
-mod compiler;
+mod driver;
 mod ir;
 mod linker;
 mod passes;
 mod regalloc;
 mod shared;
 
-pub mod builtin;
 pub mod dsl;
 
 #[cfg(test)]
-mod proptest;
+mod tests;
 
 pub use assembler::*;
 pub use builder::*;
 pub use codegen::*;
-pub use compiler::*;
+pub use driver::*;
 pub use ir::*;
 pub use linker::*;
 pub use passes::*;

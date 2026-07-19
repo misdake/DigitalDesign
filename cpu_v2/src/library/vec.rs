@@ -1,10 +1,10 @@
 //! growable vector on top of the heap (buf/len/cap triple)
 
 use crate::define_struct;
-use crate::programmer::builtin::heap::*;
-use crate::programmer::builtin::mem::*;
-use crate::programmer::compiler::Compiler;
-use crate::programmer::dsl::*;
+use crate::library::heap::*;
+use crate::library::mem::*;
+use crate::Compiler;
+use crate::compiler::dsl::*;
 use once_cell::sync::Lazy;
 
 const VEC_LEN_INIT: u16 = 4;
@@ -214,7 +214,7 @@ impl Vec {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::programmer::builtin::heap::tests::print_heap;
+    use crate::library::heap::tests::print_heap;
     use crate::simulate;
 
     #[test]
@@ -275,7 +275,7 @@ mod tests {
             b.halt(&z);
         });
 
-        let instructions = compiler.finish("test_vec_basic");
+        let (instructions, _) = compiler.finish("test_vec_basic");
         let (state, signal) = simulate(&instructions, 4000);
         println!("vec {:?}", &state.mem[1..4]);
         let heap_stat = print_heap(state.mem.as_slice());

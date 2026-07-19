@@ -6,8 +6,8 @@
 //! phis for not-yet-sealed blocks such as loop headers).
 
 use crate::isa::Cond;
-use crate::programmer::FuncName;
-use crate::programmer::ir::*;
+use crate::compiler::FuncName;
+use crate::compiler::ir::*;
 use std::collections::HashMap;
 
 /// a frontend variable handle (DSL-level mutable variable)
@@ -70,6 +70,9 @@ impl FuncBuilder {
                 }],
                 entry,
                 vreg_count: n_params as u32,
+                param_names: vec![],
+                ret_names: vec![],
+                block_notes: vec![None],
             },
             sealed: vec![false],
             var_defs: vec![],
@@ -121,8 +124,15 @@ impl FuncBuilder {
             term: None,
             preds: preds.to_vec(),
         });
+        self.func.block_notes.push(None);
         self.sealed.push(false);
         id
+    }
+
+    /// attach source-level parameter/return names (shown in the listing)
+    pub fn set_names(&mut self, params: &[&'static str], rets: &[&'static str]) {
+        self.func.param_names = params.to_vec();
+        self.func.ret_names = rets.to_vec();
     }
 
     // ----- instruction emitters (SSA value producers) -----
@@ -249,23 +259,7 @@ impl FuncBuilder {
     // ----- control flow -----
 
     pub fn if_then(&mut self, cmp: Cmp, f: impl FnOnce(&mut Self)) {
-        let cur = self.cur();
-        let then_b = self.new_block(&[cur]);
-        let join = self.new_block(&[cur]);
-        self.terminate(Terminator::Br {
-            cmp,
-            if_true: then_b,
-            if_false: join,
-        });
-        self.current = Some(then_b);
-        self.seal(then_b);
-        f(self);
-        if let Some(end) = self.current {
-            self.func.blocks[join].preds.push(end);
-            self.terminate(Terminator::Jmp { target: join });
-        }
-        self.seal(join);
-        self.current = Some(join);
+        self.if_bool(BoolExpr::Cmp(cmp), f);
     }
 
     pub fn if_else(
@@ -274,72 +268,14 @@ impl FuncBuilder {
         then_f: impl FnOnce(&mut Self),
         else_f: impl FnOnce(&mut Self),
     ) {
-        let cur = self.cur();
-        let then_b = self.new_block(&[cur]);
-        let else_b = self.new_block(&[cur]);
-        let join = self.new_block(&[]);
-        self.terminate(Terminator::Br {
-            cmp,
-            if_true: then_b,
-            if_false: else_b,
-        });
-
-        self.current = Some(then_b);
-        self.seal(then_b);
-        then_f(self);
-        if let Some(end) = self.current {
-            self.func.blocks[join].preds.push(end);
-            self.terminate(Terminator::Jmp { target: join });
-        }
-
-        self.current = Some(else_b);
-        self.seal(else_b);
-        else_f(self);
-        if let Some(end) = self.current {
-            self.func.blocks[join].preds.push(end);
-            self.terminate(Terminator::Jmp { target: join });
-        }
-
-        self.seal(join);
-        // both branches terminated: join is unreachable, no current block
-        self.current = if self.func.blocks[join].preds.is_empty() {
-            None
-        } else {
-            Some(join)
-        };
+        self.if_else_bool(BoolExpr::Cmp(cmp), then_f, else_f);
     }
 
     /// while loop with the condition evaluated at the loop header.
     /// `cond` runs in the (unsealed) header block, so variables it reads
     /// become loop-carried phis automatically.
     pub fn while_loop(&mut self, cond: impl FnOnce(&mut Self) -> Cmp, body: impl FnOnce(&mut Self)) {
-        let cur = self.cur();
-        let header = self.new_block(&[cur]);
-        let body_b = self.new_block(&[header]);
-        let exit = self.new_block(&[header]);
-        self.terminate(Terminator::Jmp { target: header });
-
-        self.current = Some(header);
-        let cmp = cond(self);
-        self.terminate(Terminator::Br {
-            cmp,
-            if_true: body_b,
-            if_false: exit,
-        });
-
-        self.loops.push(LoopCtx { header, exit });
-        self.current = Some(body_b);
-        self.seal(body_b);
-        body(self);
-        if let Some(end) = self.current {
-            self.func.blocks[header].preds.push(end);
-            self.terminate(Terminator::Jmp { target: header });
-        }
-        self.loops.pop();
-
-        self.seal(header);
-        self.seal(exit);
-        self.current = Some(exit);
+        self.while_bool(|b| BoolExpr::Cmp(cond(b)), body);
     }
 
     pub fn break_(&mut self) {
@@ -421,6 +357,8 @@ impl FuncBuilder {
     pub fn begin_if(&mut self, cond: BoolExpr) -> BlockId {
         let then_b = self.new_block(&[]);
         let join = self.new_block(&[]);
+        self.func.block_notes[then_b] = Some("then");
+        self.func.block_notes[join] = Some("if-end");
         self.lower_cond(cond, then_b, join);
         self.current = Some(then_b);
         self.seal(then_b);
@@ -441,6 +379,9 @@ impl FuncBuilder {
         let then_b = self.new_block(&[]);
         let else_b = self.new_block(&[]);
         let join = self.new_block(&[]);
+        self.func.block_notes[then_b] = Some("then");
+        self.func.block_notes[else_b] = Some("else");
+        self.func.block_notes[join] = Some("if-end");
         self.lower_cond(cond, then_b, else_b);
         self.current = Some(then_b);
         self.seal(then_b);
@@ -475,6 +416,9 @@ impl FuncBuilder {
         let header = self.new_block(&[cur]);
         let body_b = self.new_block(&[]);
         let exit = self.new_block(&[]);
+        self.func.block_notes[header] = Some("loop header");
+        self.func.block_notes[body_b] = Some("loop body");
+        self.func.block_notes[exit] = Some("loop end");
         self.terminate(Terminator::Jmp { target: header });
         self.current = Some(header);
         (header, body_b, exit)

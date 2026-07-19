@@ -1,8 +1,8 @@
 //! boundary-tag heap: block = header(1) + content(size) + footer(1);
 //! header == footer, bit 15: free flag, bits 14-0: block size (incl. tags)
 
-use crate::programmer::compiler::Compiler;
-use crate::programmer::dsl::*;
+use crate::Compiler;
+use crate::compiler::dsl::*;
 use once_cell::sync::Lazy;
 
 pub const HEAP_BEGIN: u16 = 0x1000;
@@ -154,7 +154,7 @@ pub fn heap_free(b: &B, ptr: &Variable) {
 #[cfg(test)]
 pub(crate) mod tests {
     use super::*;
-    use crate::programmer::builtin::mem::*;
+    use crate::library::mem::*;
     use crate::simulate;
 
     pub(crate) struct HeapStat {
@@ -219,7 +219,7 @@ pub(crate) mod tests {
             b.halt(&z);
         });
 
-        let instructions = compiler.finish("test_malloc");
+        let (instructions, _) = compiler.finish("test_malloc");
         let (state, _signal) = simulate(&instructions, 2000);
 
         let heap_stat = print_heap(state.mem.as_slice());

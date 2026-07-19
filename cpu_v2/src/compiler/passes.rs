@@ -1,8 +1,8 @@
 //! optimization passes on IrFunc (run before register allocation).
 //! all passes are individually switchable via `Opts`.
 
-use crate::programmer::builder::remove_trivial_phis;
-use crate::programmer::ir::*;
+use crate::compiler::builder::remove_trivial_phis;
+use crate::compiler::ir::*;
 use crate::sim::{calc_flags, calc_flags_signed};
 use std::collections::{HashMap, HashSet};
 
@@ -403,9 +403,9 @@ fn dce(f: &mut IrFunc) -> bool {
                         | Instr::DevSend { .. }
                         | Instr::DevRecv { .. }
                 );
-                let defs = crate::programmer::regalloc::inst_defs(inst);
+                let defs = crate::compiler::regalloc::inst_defs(inst);
                 if root || defs.iter().any(|d| useful.contains(d)) {
-                    for u in crate::programmer::regalloc::inst_uses(inst) {
+                    for u in crate::compiler::regalloc::inst_uses(inst) {
                         mark(u, &mut useful, &mut changed);
                     }
                 }
@@ -434,7 +434,7 @@ fn dce(f: &mut IrFunc) -> bool {
         let before = b.insts.len() + b.phis.len();
         b.phis.retain(|p| useful.contains(&p.dst));
         b.insts.retain(|inst| {
-            let defs = crate::programmer::regalloc::inst_defs(inst);
+            let defs = crate::compiler::regalloc::inst_defs(inst);
             // removable instructions are those without side effects
             let removable = matches!(
                 inst,
@@ -461,7 +461,7 @@ fn dce(f: &mut IrFunc) -> bool {
 mod tests {
     use super::*;
     use crate::isa::Cond;
-    use crate::programmer::builder::FuncBuilder;
+    use crate::compiler::builder::FuncBuilder;
 
     fn opt(f: &mut IrFunc) {
         optimize(f, &Opts::default());

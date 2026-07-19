@@ -2,9 +2,11 @@
 #![feature(generic_const_exprs)]
 
 mod isa;
-mod programmer;
+mod compiler;
+mod library;
 mod sim;
 
 pub use isa::*;
-pub use programmer::*;
+pub use compiler::*;
+pub use library::*;
 pub use sim::*;

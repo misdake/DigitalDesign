@@ -1,4 +1,4 @@
-//! SSA-based CFG IR for the new compiler pipeline (programmer).
+//! SSA-based CFG IR for the new compiler pipeline (compiler).
 //!
 //! A function is a CFG of basic blocks. Each block holds a list of phi nodes,
 //! a list of instructions, and a terminator. Values are SSA virtual registers
@@ -6,7 +6,7 @@
 //! comparison (`Cmp`) matching the ISA's cmp + j_cc model.
 
 use crate::isa::Cond;
-use crate::programmer::FuncName;
+use crate::compiler::FuncName;
 use std::fmt;
 
 pub type VReg = u32;
@@ -118,6 +118,11 @@ pub struct IrFunc {
     pub blocks: Vec<Block>,
     pub entry: BlockId,
     pub vreg_count: u32,
+    /// source-level names for the disassembly listing (optional)
+    pub param_names: Vec<&'static str>,
+    pub ret_names: Vec<&'static str>,
+    /// per-block role notes for the disassembly listing (loop header, then, ...)
+    pub block_notes: Vec<Option<&'static str>>,
 }
 
 impl IrFunc {

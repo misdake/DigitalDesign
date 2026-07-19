@@ -1,7 +1,7 @@
 //! mem_set / mem_copy / mem_copy_rev
 
-use crate::programmer::compiler::Compiler;
-use crate::programmer::dsl::*;
+use crate::Compiler;
+use crate::compiler::dsl::*;
 use once_cell::sync::Lazy;
 
 pub static MEM_SET: Lazy<DslFunction<3, 0>> =

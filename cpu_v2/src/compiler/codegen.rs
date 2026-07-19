@@ -3,9 +3,9 @@
 //! out-of-range branches are a hard error here (branch relaxation is M5).
 
 use crate::isa::*;
-use crate::programmer::{Assembler, InstructionSlot, Relocation};
-use crate::programmer::ir::*;
-use crate::programmer::regalloc::*;
+use crate::compiler::{Assembler, InstructionSlot, Relocation};
+use crate::compiler::ir::*;
+use crate::compiler::regalloc::*;
 use std::collections::HashMap;
 
 /// one emitted line: concrete instruction, unresolved branch, label marker,
@@ -18,17 +18,19 @@ enum Line {
     Jump { target: usize },
     /// zero-width address marker (block ids and relaxation targets)
     Label(usize),
+    /// zero-width comment attached to the address of the next emitted line
+    Comment(String),
     /// far jump: load_lo + load_hi + jmp_reg tmp (3 slots, absolute target)
     AbsJump { target: usize },
     /// call placeholder: 3 reserved slots filled by the linker
-    Call3 { func: crate::programmer::FuncName },
+    Call3 { func: crate::compiler::FuncName },
 }
 
 fn line_size(line: &Line) -> usize {
     match line {
         Line::Inst(_) | Line::Branch { .. } | Line::Jump { .. } => 1,
         Line::AbsJump { .. } | Line::Call3 { .. } => 3,
-        Line::Label(_) => 0,
+        Line::Label(_) | Line::Comment(_) => 0,
     }
 }
 
@@ -95,6 +97,8 @@ pub struct EmittedFunc {
     pub relocations: Vec<Relocation>,
     /// number of instructions emitted
     pub len: usize,
+    /// (absolute address, comment) pairs for the disassembly listing
+    pub comments: Vec<(usize, String)>,
 }
 
 /// parallel move between registers, dst-centric (sources may repeat).
@@ -160,6 +164,9 @@ pub fn compile_function(
 
     for (idx, &b) in layout.iter().enumerate() {
         lines.push(Line::Label(b));
+        if let Some(note) = f.block_notes[b] {
+            lines.push(Line::Comment(note.to_string()));
+        }
         let block = &f.blocks[b];
 
         // phi moves for a single-pred block go at the block top
@@ -250,9 +257,13 @@ pub fn compile_function(
     let mut addr = start_address;
     let mut written = 0usize;
     let mut relocations = vec![];
+    let mut comments = vec![];
     for line in &lines {
         match line {
             Line::Label(_) => {}
+            Line::Comment(text) => {
+                comments.push((addr, text.clone()));
+            }
             Line::Inst(inst) => {
                 asm.inst_at(*inst, addr);
                 addr += 1;
@@ -309,6 +320,7 @@ pub fn compile_function(
     EmittedFunc {
         relocations,
         len: written,
+        comments,
     }
 }
 
@@ -445,6 +457,7 @@ fn emit_inst(
         }
         Instr::Call { func, .. } => {
             // args/results already moved by ABI shims; the linker fills 3 slots
+            lines.push(Line::Comment(format!("call {func}")));
             lines.push(Line::Call3 { func });
         }
         Instr::DevRecv { dst, device, channel } => {

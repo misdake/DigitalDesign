@@ -1,4 +1,4 @@
-//! register allocation for programmer IR.
+//! register allocation for compiler IR.
 //!
 //! pipeline per function:
 //! 1. ABI shims: params/call args/call results/ret values are copied through
@@ -11,7 +11,7 @@
 //!    the IR (explicit LoadSp/StoreSp) and rescans until fixpoint.
 //! 4. frame layout: [callee-save saves][spill slots], sized by actual need.
 
-use crate::programmer::ir::*;
+use crate::compiler::ir::*;
 use std::collections::{BTreeSet, HashMap, HashSet};
 
 pub const REG_RA: u8 = 13;
@@ -296,6 +296,7 @@ fn split_critical_edges(f: &mut IrFunc) {
                     term: Some(Terminator::Jmp { target }),
                     preds: vec![b],
                 });
+                f.block_notes.push(None);
                 // rewire the target's preds and phi args
                 for p in &mut f.blocks[target].preds {
                     if *p == b {

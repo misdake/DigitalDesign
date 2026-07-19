@@ -1,8 +1,8 @@
-//! builtin library ported to the new DSL (M4): mul, mem, heap, Vec.
+//! builtin library for the DSL: mul, mem, heap, Vec.
 //!
 //! each `define_*` is idempotent and declares its own dependencies, so users
 //! only call the top-level define they need (no manual ordering, no double
-//! registration).
+//! registration). each library keeps its own tests in its own file.
 
 pub mod arithmetic;
 pub mod heap;

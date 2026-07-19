@@ -1,11 +1,9 @@
 //! property tests: random small programs are compiled and simulated, then
-//! compared against an equivalent Rust reference evaluation (M6).
+//! compared against an equivalent Rust reference evaluation.
 
-use crate::isa::Cond;
-use crate::programmer::builder::{BoolExpr, VarId};
-use crate::programmer::compiler::Compiler;
-use crate::programmer::ir::*;
-use crate::programmer::{FuncBuilder, simulate};
+
+use crate::{BoolExpr, CmpRhs, Compiler, Cond, FuncBuilder, Opts, VarId, simulate};
+use crate::{BinOp, ShiftOp};
 
 /// deterministic xorshift64 PRNG
 struct Rng(u64);
@@ -210,7 +208,7 @@ fn run_case(seed: u64, n_ops: usize, opts_on: bool) {
 
     let mut c = Compiler::new();
     if !opts_on {
-        c.opts = crate::programmer::passes::Opts {
+        c.opts = Opts {
             const_prop: false,
             cse: false,
             dce: false,
@@ -219,7 +217,7 @@ fn run_case(seed: u64, n_ops: usize, opts_on: bool) {
     }
     c.add_func(cf.finish());
     c.add_func(b.finish());
-    let instructions = c.finish("main");
+    let (instructions, _) = c.finish("main");
     let (_state, signal) = simulate(&instructions, 100_000);
     assert_eq!(signal, Some(expected), "seed {seed} ops {ops:?}");
 }

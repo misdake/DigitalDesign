@@ -34,7 +34,7 @@ impl FuncDecl {
 pub struct Relocation {
     pub func_name: FuncName,
     /// 3 reserved slots: near -> call_rel + 2 nop, far -> load_lo(tmp) + load_hi(tmp) + call_reg(tmp)
-    pub slots: [crate::programmer::InstructionSlot; 3],
+    pub slots: [crate::compiler::InstructionSlot; 3],
 }
 
 pub fn u8_to_hi_lo(v: u8) -> (u8, u8) {
@@ -60,7 +60,7 @@ pub fn simulate(instructions: &[Instruction], max_cycles: usize) -> (SimState, O
 }
 
 /// flat disassembly of an instruction slice (no function boundaries; for a
-/// per-function listing see `Compiler::finish_with_listing`)
+/// per-function listing see `Compiler::finish`)
 pub fn disassemble(instructions: &[Instruction]) -> String {
     instructions
         .iter()
