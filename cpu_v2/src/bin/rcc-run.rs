@@ -2,7 +2,7 @@
 //!
 //! usage: rcc-run <input.bin> [max_cycles]
 
-use cpu_v2::{Instruction, simulate_quiet};
+use cpu_v2::{decode_binary, simulate_quiet};
 use std::process::ExitCode;
 
 fn main() -> ExitCode {
@@ -41,21 +41,3 @@ fn main() -> ExitCode {
     }
 }
 
-/// decode an image written by `rcc` (magic "RCC1", count u32 LE, words u16 LE)
-fn decode_binary(bytes: &[u8]) -> Option<Vec<Instruction>> {
-    let (magic, rest) = bytes.split_at_checked(4)?;
-    if magic != b"RCC1" {
-        return None;
-    }
-    let (count_bytes, rest) = rest.split_at_checked(4)?;
-    let count = u32::from_le_bytes(count_bytes.try_into().ok()?) as usize;
-    if rest.len() != count * 2 {
-        return None;
-    }
-    let mut out = Vec::with_capacity(count);
-    for w in rest.chunks_exact(2) {
-        let raw = u16::from_le_bytes([w[0], w[1]]);
-        out.push(Instruction::parse(raw));
-    }
-    Some(out)
-}

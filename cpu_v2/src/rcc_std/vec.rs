@@ -73,7 +73,7 @@ pub fn vec_push(v: Ptr, x: u16) {
         }
         let need = len + 1;
         while new_cap < need {
-            new_cap = new_cap << 1;
+            new_cap <<= 1;
         }
         vec_realloc(v, new_cap);
     }

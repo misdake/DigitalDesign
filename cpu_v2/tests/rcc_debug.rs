@@ -1,8 +1,6 @@
 //! debug info tests: variables/files/locations and the pc->line table.
 
-mod common;
 
-use common::*;
 use cpu_v2::CompilerOptions;
 
 #[test]

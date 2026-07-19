@@ -6,6 +6,7 @@ mod compiler;
 mod dsl_progs;
 mod sim;
 
+pub mod debugger;
 pub mod frontend;
 
 pub mod dsl_rt;

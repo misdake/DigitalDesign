@@ -42,6 +42,7 @@ set PATH=C:\Users\misdake\.cargo\bin;%PATH%
 - 构建二进制：`cargo build -p cpu_v2 --bins`（产物在 `target/debug/rcc.exe`、`rcc-run.exe`)
 - 编译 rcc 程序：`./target/debug/rcc <input.rs> [-o out.bin] [--lst out.lst] [--no-opt] [--stack-init N] [--data-base N] [--heap-begin N] [--heap-size N] [--vec-cap N]`（数字十进制或 0x 前缀）。`mod name;` 在输入文件旁解析（`<name>.rs`/`<name>.dsl.rs`/`<name>/mod.rs`)。产出三件：`.bin` 二进制镜像（RCC1 头 + u16-LE 指令）、`.lst` 反汇编（函数签名/块角色/调用名/`; line N`)、`.dbg` 调试信息（文件表、函数（地址/帧/变量位置 rN/frame+N/ssa)、全局变量地址、PC→行表，可供假想 debugger 使用）。
 - 运行：`./target/debug/rcc-run <input.bin> [max_cycles]` → 打印 halt 信号与周期数。
+- 调试：`./target/debug/rcc-dbg <input.bin> [--port 8321]` → 打开 http://127.0.0.1:8321：单页 web debugger（运行/断点（点反汇编行切换）/单步/继续/重置，寄存器+flags，内存查看器（地址/sp/heap/data 快捷跳转），globals（名称/类型/地址/值），当前函数的 locals（rN/frame+N 实时取值，ssa 标记不可见），当前源码行）。API：`GET /api/state`、`GET /api/mem?addr=&len=`、`POST /api/cmd?cmd=step|continue|reset`、`POST /api/break?addr=<hex>&on=0|1`。
 - 看反汇编：编译时 `--lst`；或测试 `test -p cpu_v2 compiler::tests::optimize::test_listing_demo -- --nocapture`;`Compiler::finish` 总是返回 `(Vec<Instruction>, String)`（带函数签名/块角色/调用名/`; line N`)。
 
 ## 约定

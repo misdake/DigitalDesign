@@ -97,3 +97,126 @@ fn unwrap_global(loc: &VarLoc) -> u16 {
         _ => 0,
     }
 }
+
+/// parse a `.dbg` file written by `DebugInfo::render` back into a DebugInfo
+pub fn parse_debug(text: &str) -> Result<DebugInfo, String> {
+    let mut info = DebugInfo::default();
+    let mut cur_func: Option<DebugFunc> = None;
+    for (ln, line) in text.lines().enumerate() {
+        let line = line.trim_end();
+        if line.is_empty() || line.starts_with('#') {
+            continue;
+        }
+        let err = || format!("line {}: cannot parse `{line}`", ln + 1);
+        let mut parts = line.split_whitespace();
+        match parts.next() {
+            Some("file") => {
+                let idx: usize = parts.next().ok_or_else(err)?.parse().map_err(|_| err())?;
+                let name = parts.next().ok_or_else(err)?;
+                if idx != info.files.len() {
+                    return Err(format!("line {}: file index out of order", ln + 1));
+                }
+                info.files.push(name.to_string());
+            }
+            Some("func") => {
+                if let Some(f) = cur_func.take() {
+                    info.functions.push(f);
+                }
+                let name = parts.next().ok_or_else(err)?.to_string();
+                let range_s = parts.next().ok_or_else(err)?;
+                let addr = parse_addr_range(range_s).ok_or_else(err)?;
+                let file_name = parts.next().ok_or_else(err)?;
+                let file = info
+                    .files
+                    .iter()
+                    .position(|f| f == file_name)
+                    .ok_or_else(|| format!("line {}: unknown file `{file_name}`", ln + 1))?
+                    as u16;
+                let _kw = parts.next(); // "frame"
+                let frame_size: usize = parts.next().ok_or_else(err)?.parse().map_err(|_| err())?;
+                cur_func = Some(DebugFunc {
+                    name,
+                    file,
+                    addr,
+                    frame_size,
+                    locals: vec![],
+                });
+            }
+            Some("global") => {
+                // type may contain spaces (`[u16; 3]`): take addr from the end
+                let toks: Vec<&str> = line.split_whitespace().collect();
+                if toks.len() < 4 {
+                    return Err(err());
+                }
+                let addr = parse_hex(toks[toks.len() - 1]).ok_or_else(err)?;
+                let name = toks[1].to_string();
+                let ty = toks[2..toks.len() - 1].join(" ");
+                info.globals.push(DebugVar {
+                    name,
+                    ty,
+                    loc: VarLoc::Global(addr),
+                });
+            }
+            Some("const") => {
+                let name = parts.next().ok_or_else(err)?.to_string();
+                let ty = parts.next().ok_or_else(err)?.to_string();
+                let value: u16 = parts.next().ok_or_else(err)?.parse().map_err(|_| err())?;
+                info.consts.push((name, ty, value));
+            }
+            Some("line") => {
+                let addr = parse_hex(parts.next().ok_or_else(err)?).ok_or_else(err)?;
+                let file: u16 = parts.next().ok_or_else(err)?.parse().map_err(|_| err())?;
+                let line_no: u32 = parts.next().ok_or_else(err)?.parse().map_err(|_| err())?;
+                info.lines.push((addr as usize, file, line_no));
+            }
+            _ if line.starts_with(' ') => {
+                // indented local variable line: `  <loc> <name> <ty>` (ty may contain spaces)
+                let toks: Vec<&str> = line.split_whitespace().collect();
+                if toks.len() < 3 {
+                    return Err(err());
+                }
+                let loc_s = toks[0];
+                let name = toks[1].to_string();
+                let ty = toks[2..].join(" ");
+                let loc = parse_loc(loc_s).ok_or_else(err)?;
+                cur_func
+                    .as_mut()
+                    .ok_or_else(|| format!("line {}: local outside of a func", ln + 1))?
+                    .locals
+                    .push(DebugVar { name, ty, loc });
+            }
+            _ => return Err(err()),
+        }
+    }
+    if let Some(f) = cur_func.take() {
+        info.functions.push(f);
+    }
+    Ok(info)
+}
+
+fn parse_hex(s: &str) -> Option<u16> {
+    s.strip_prefix("0x").and_then(|h| u16::from_str_radix(h, 16).ok())
+}
+
+fn parse_addr_range(s: &str) -> Option<(usize, usize)> {
+    let (a, b) = s.split_once("..")?;
+    let start = parse_hex(a)?;
+    let end = parse_hex(b)?;
+    Some((start as usize, end as usize))
+}
+
+fn parse_loc(s: &str) -> Option<VarLoc> {
+    if let Some(a) = s.strip_prefix("global@") {
+        return Some(VarLoc::Global(parse_hex(a)?));
+    }
+    if let Some(n) = s.strip_prefix("frame+") {
+        return Some(VarLoc::Frame(n.parse().ok()?));
+    }
+    if let Some(n) = s.strip_prefix('r') {
+        return Some(VarLoc::Param(n.parse().ok()?));
+    }
+    if s == "ssa" {
+        return Some(VarLoc::Ssa);
+    }
+    None
+}
