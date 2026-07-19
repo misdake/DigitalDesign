@@ -6,10 +6,12 @@
 <style>
   * { box-sizing: border-box; }
   body { margin: 0; font: 13px/1.45 ui-monospace, Consolas, monospace; background: #1e1f24; color: #d8d9dd; }
-  header { display: flex; align-items: center; gap: 10px; padding: 8px 12px; background: #26272e; border-bottom: 1px solid #33363f; position: sticky; top: 0; }
+  header { display: flex; align-items: center; gap: 8px; padding: 8px 12px; background: #26272e; border-bottom: 1px solid #33363f; position: sticky; top: 0; }
   header b { font-size: 14px; }
-  button { background: #3a3d47; color: #e8e9ec; border: 1px solid #4a4e5c; border-radius: 4px; padding: 4px 12px; cursor: pointer; font: inherit; }
+  button { background: #3a3d47; color: #e8e9ec; border: 1px solid #4a4e5c; border-radius: 4px; padding: 4px 10px; cursor: pointer; font: inherit; }
   button:hover { background: #484c59; }
+  button.primary { background: #2d5a80; border-color: #3d72a0; }
+  button.primary:hover { background: #366b96; }
   .badge { padding: 2px 8px; border-radius: 10px; background: #344; }
   .badge.halt { background: #5a2e2e; color: #ffb4b4; }
   main { display: grid; grid-template-columns: 40% 32% 28%; grid-template-rows: 1fr 260px; height: calc(100vh - 41px); }
@@ -21,15 +23,19 @@
   #memsec { grid-column: 2; grid-row: 2; border-top: 1px solid #33363f; }
   h3 { margin: 4px 0 6px; font-size: 12px; color: #9aa0ad; text-transform: uppercase; letter-spacing: .5px; }
   table { border-collapse: collapse; width: 100%; }
-  td, th { padding: 1px 6px; text-align: left; white-space: nowrap; }
-  tr.dline:hover td, tr.sline:hover td { background: #2c2f38; cursor: pointer; }
+  td, th { padding: 1px 6px; text-align: left; }
+  td.stext, td.dtext { white-space: pre; }
+  tr.dline td, tr.sline td { cursor: pointer; }
+  tr.dline:hover td, tr.sline:hover td { background: #2c2f38; }
   tr.pc td { background: #24425c; }
   tr.cur td { background: #2d4a35; }
+  tr.hl td { background: #3d3524; }
   tr.bp td:first-child::before { content: "● "; color: #ff6b6b; }
   .addr { color: #7f8896; }
   .regs td:nth-child(odd) { color: #7f8896; width: 30px; }
   .vname { color: #8ec7ff; }
   .vloc { color: #7f8896; }
+  .plink { color: #8ec7ff; text-decoration: underline; cursor: pointer; }
   #mem td:nth-child(even) { color: #7f8896; }
   input[type=text] { background: #1a1b20; color: inherit; border: 1px solid #4a4e5c; border-radius: 4px; padding: 3px 6px; width: 70px; font: inherit; }
   .row { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; margin-bottom: 6px; }
@@ -39,8 +45,10 @@
 <body>
 <header>
   <b>rcc debugger</b>
-  <button id="bstep">步进 (step)</button>
-  <button id="bnext">下一行 (next)</button>
+  <button id="bnext" class="primary">步进 (next line)</button>
+  <button id="bover">步过 (over)</button>
+  <button id="bout">步出 (out)</button>
+  <button id="bstep">指令 (instr)</button>
   <button id="bcont">继续 (continue)</button>
   <button id="breset">重置 (reset)</button>
   <span class="badge" id="cycles">cycles: 0</span>
@@ -51,6 +59,7 @@
   <section id="srccol"><h3 id="srctitle">source</h3><table id="src"></table></section>
   <section id="midcol"><h3>disassembly</h3><table id="dis"></table></section>
   <section id="varcol">
+    <h3>call stack</h3><table id="stack"></table>
     <h3>registers</h3><table class="regs" id="reg"></table>
     <h3 id="functitle">locals</h3><table id="locals"></table>
     <h3>globals</h3><table id="globals"></table>
@@ -73,11 +82,18 @@
 const $ = id => document.getElementById(id);
 const hx = (n, w) => '0x' + n.toString(16).padStart(w || 4, '0');
 let state = null;
+let pinnedLine = null;   // source line pinned by clicking its text
 
 async function refresh() {
   state = await (await fetch('/api/state')).json();
   render();
   renderMem();
+}
+
+// address set of the disasm instructions mapped to a source line
+function addrsOfLine(n) {
+  if (!state.src || !state.src.map) return new Set();
+  return new Set(state.src.map.filter(([a, l]) => l === n).map(([a]) => a));
 }
 
 function render() {
@@ -87,18 +103,31 @@ function render() {
   if (state.halted != null) { h.style.display = ''; h.textContent = 'halt: ' + state.halted + ' (' + hx(state.halted) + ')'; }
   else h.style.display = 'none';
 
-  // source view
+  // call stack
+  $('stack').innerHTML = ['<tr><td class="muted">(main)</td></tr>']
+    .concat(state.stack.map(f => `<tr><td>→ ${esc(f.func)}</td><td class="addr">ret ${hx(f.ret)}</td></tr>`))
+    .join('');
+
+  // source view (indentation preserved via CSS white-space:pre)
+  const curLine = state.line ? state.line.line : null;
   if (state.src) {
     $('srctitle').textContent = 'source';
     $('src').innerHTML = state.src.lines.map(l => {
-      const cls = [l.cur ? 'cur' : '', l.bp ? 'bp' : '', 'sline'].join(' ');
-      return `<tr class="${cls}" data-n="${l.n}"><td class="addr">${l.n}</td><td>${esc(l.text)}</td></tr>`;
+      const cls = [l.cur ? 'cur' : '', l.bp ? 'bp' : '', 'sline', pinnedLine === l.n ? 'hl' : ''].join(' ');
+      return `<tr class="${cls}" data-n="${l.n}"><td class="addr">${l.n}</td><td class="stext">${esc(l.text)}</td></tr>`;
     }).join('');
-    document.querySelectorAll('tr.sline').forEach(tr => tr.onclick = async () => {
+    document.querySelectorAll('tr.sline').forEach(tr => {
       const n = +tr.dataset.n;
-      const hasBp = state.src.lines.find(l => l.n === n && l.bp);
-      await fetch(`/api/breakline?file=${state.src.file}&line=${n}&on=${hasBp ? 0 : 1}`, {method: 'POST'});
-      refresh();
+      tr.querySelector('.addr').onclick = async (e) => {
+        e.stopPropagation();
+        const hasBp = state.src.lines.find(l => l.n === n && l.bp);
+        await fetch(`/api/breakline?file=${state.src.file}&line=${n}&on=${hasBp ? 0 : 1}`, {method: 'POST'});
+        refresh();
+      };
+      tr.querySelector('.stext').onclick = () => {
+        pinnedLine = (pinnedLine === n) ? null : n;
+        render();
+      };
     });
     const curRow = document.querySelector('#src tr.cur');
     if (curRow) curRow.scrollIntoView({block: 'nearest'});
@@ -107,11 +136,14 @@ function render() {
     $('src').innerHTML = '';
   }
 
-  // disassembly
+  // disassembly: pc row, breakpoint marks, pinned/current-line highlights
   const bps = new Set(state.breakpoints);
+  const hlAddrs = new Set();
+  if (pinnedLine != null) addrsOfLine(pinnedLine).forEach(a => hlAddrs.add(a));
+  else if (curLine != null) addrsOfLine(curLine).forEach(a => hlAddrs.add(a));
   $('dis').innerHTML = state.disasm.map(d => {
-    const cls = [(d.addr === state.pc) ? 'pc' : '', bps.has(d.addr) ? 'bp' : '', 'dline'].join(' ');
-    return `<tr class="${cls}" data-addr="${d.addr}"><td class="addr">${hx(d.addr)}</td><td>${esc(d.text)}</td></tr>`;
+    const cls = [(d.addr === state.pc) ? 'pc' : '', bps.has(d.addr) ? 'bp' : '', hlAddrs.has(d.addr) ? 'hl' : '', 'dline'].join(' ');
+    return `<tr class="${cls}" data-addr="${d.addr}"><td class="addr">${hx(d.addr)}</td><td class="dtext">${esc(d.text)}</td></tr>`;
   }).join('');
   document.querySelectorAll('tr.dline').forEach(tr => tr.onclick = async () => {
     const a = +tr.dataset.addr;
@@ -127,25 +159,35 @@ function render() {
     rt += `<tr><td>r${i}</td><td>${hx(state.regs[i])}</td><td>r${i+1}</td><td>${hx(state.regs[i+1])}</td></tr>`;
   $('reg').innerHTML = rt + `<tr><td>flags</td><td>${hx(state.flags, 2)}</td></tr>`;
 
-  // locals
+  // locals / globals / consts
   if (state.func) {
     $('functitle').textContent = `locals — ${state.func.name} (frame ${state.func.frame})`;
-    $('locals').innerHTML = state.func.locals.map(v => `<tr><td class="vname">${esc(v.name)}</td><td class="vloc">${esc(v.ty)}</td><td>${fmtVal(v.value)}</td></tr>`).join('');
+    $('locals').innerHTML = state.func.locals.map(v => varRow(v)).join('');
   } else {
     $('functitle').textContent = 'locals';
     $('locals').innerHTML = '';
   }
-  $('globals').innerHTML = state.globals.map(v => `<tr><td class="vname">${esc(v.name)}</td><td class="vloc">${esc(v.ty)}</td><td>${fmtVal(v.value)}</td></tr>`).join('');
+  $('globals').innerHTML = state.globals.map(v => varRow(v)).join('');
   $('consts').innerHTML = state.consts.map(v => `<tr><td class="vname">${esc(v.name)}</td><td class="vloc">${esc(v.ty)}</td><td>${v.value} (${hx(v.value)})</td></tr>`).join('');
 }
 
-function fmtVal(v) {
-  if (v == null) return '<i>ssa</i>';
-  if (v.reg != null) return `${v.reg} (${hx(v.reg)})`;
-  if (v.words) return `[${v.words.join(', ')}] @${hx(v.addr)}`;
-  return String(v);
+function varRow(v) {
+  return `<tr><td class="vname">${esc(v.name)}</td><td class="vloc">${esc(v.ty)}</td><td>${fmtVal(v)}</td></tr>`;
 }
-function esc(s) { return String(s).replace(/[&<>]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;'}[c])); }
+function fmtVal(v) {
+  const val = v.value;
+  if (val == null) return '<i>ssa</i>';
+  if (val.reg != null) {
+    // a Ptr-typed register value links into the memory viewer
+    const inner = `${val.reg} (${hx(val.reg)})`;
+    return v.ty === 'Ptr' ? `<span class="plink" data-addr="${val.reg}">${inner}</span>` : inner;
+  }
+  if (val.words) {
+    const head = val.words.slice(0, 4).join(', ');
+    return `[${head}${val.words.length > 4 ? ', …' : ''}] <span class="plink" data-addr="${val.addr}">@${hx(val.addr)}</span>`;
+  }
+  return String(val);
+}
 
 async function renderMem() {
   const addr = parseInt($('maddr').value.replace('0x', ''), 16) || 0;
@@ -159,8 +201,19 @@ async function renderMem() {
   $('mem').innerHTML = rows;
 }
 
+document.addEventListener('click', e => {
+  const p = e.target.closest('.plink');
+  if (p) {
+    $('maddr').value = hx(parseInt(p.dataset.addr));
+    renderMem();
+    document.getElementById('memsec').scrollIntoView();
+  }
+});
+
 $('bstep').onclick = () => fetch('/api/cmd?cmd=step', {method: 'POST'}).then(refresh);
 $('bnext').onclick = () => fetch('/api/cmd?cmd=next', {method: 'POST'}).then(refresh);
+$('bover').onclick = () => fetch('/api/cmd?cmd=over', {method: 'POST'}).then(refresh);
+$('bout').onclick = () => fetch('/api/cmd?cmd=out', {method: 'POST'}).then(refresh);
 $('bcont').onclick = () => fetch('/api/cmd?cmd=continue', {method: 'POST'}).then(refresh);
 $('breset').onclick = () => fetch('/api/cmd?cmd=reset', {method: 'POST'}).then(refresh);
 $('mgo').onclick = renderMem;

@@ -14,6 +14,18 @@ pub struct DebugSession {
     instructions: Vec<Instruction>,
     /// halt signal once a halt instruction has executed
     pub last_halt: Option<u16>,
+    /// shadow call stack, maintained by watching call/ret instructions
+    pub call_stack: Vec<CallFrame>,
+}
+
+#[derive(Clone, Debug)]
+pub struct CallFrame {
+    /// address the call jumped to (function entry)
+    pub func_addr: usize,
+    /// address control returns to (pc after the call)
+    pub return_addr: usize,
+    /// function name resolved from the debug ranges
+    pub func_name: String,
 }
 
 pub struct DisasmLine {
@@ -54,22 +66,102 @@ impl DebugSession {
             disasm,
             instructions,
             last_halt: None,
+            call_stack: vec![],
         })
     }
 
     pub fn reset(&mut self) {
         self.sim = SimEnv::new(&self.instructions);
         self.last_halt = None;
+        self.call_stack.clear();
     }
 
-    /// execute exactly one instruction, recording a halt if it happens
+    /// execute exactly one instruction, recording a halt if it happens and
+    /// maintaining the shadow call stack
     fn step_change(&mut self) -> crate::StateChange {
+        let pc = self.sim.state.pc;
+        let inst = self.sim.inst[pc as usize];
         let change = self.sim.eval();
+        // watch control flow for the shadow call stack
+        use crate::Instruction as I;
+        match inst {
+            I::call_rel(..) | I::call_abs(..) | I::call_reg(_) => {
+                let func_addr = change.pc_next as usize;
+                let func_name = self
+                    .debug
+                    .functions
+                    .iter()
+                    .find(|f| (f.addr.0..f.addr.1).contains(&func_addr))
+                    .map(|f| f.name.clone())
+                    .unwrap_or_else(|| format!("0x{func_addr:04x}"));
+                self.call_stack.push(CallFrame {
+                    func_addr,
+                    return_addr: (pc + 1) as usize,
+                    func_name,
+                });
+            }
+            I::jmp_reg(13) => {
+                self.call_stack.pop();
+            }
+            _ => {}
+        }
         if change.halt.is_some() {
             self.last_halt = change.halt;
         }
         self.sim.commit(change);
         change
+    }
+
+    /// shadow call depth (used by step-over/step-out)
+    pub fn depth(&self) -> usize {
+        self.call_stack.len()
+    }
+
+    /// step over: run until the source line changes without going deeper
+    /// (calls are executed but not stepped into)
+    pub fn step_over(&mut self, max_cycles: usize) -> Option<u16> {
+        if self.last_halt.is_some() {
+            return self.last_halt;
+        }
+        let cur = self.current_line();
+        let depth0 = self.depth();
+        for _ in 0..max_cycles {
+            self.step_change();
+            if let Some(sig) = self.last_halt {
+                return Some(sig);
+            }
+            if self.breakpoints.contains(&(self.sim.state.pc as usize)) {
+                return None;
+            }
+            if self.depth() <= depth0 && self.current_line() != cur {
+                return None;
+            }
+        }
+        None
+    }
+
+    /// step out: run until the current function returns
+    pub fn step_out(&mut self, max_cycles: usize) -> Option<u16> {
+        if self.last_halt.is_some() {
+            return self.last_halt;
+        }
+        if self.depth() == 0 {
+            return None;
+        }
+        let depth0 = self.depth();
+        for _ in 0..max_cycles {
+            self.step_change();
+            if let Some(sig) = self.last_halt {
+                return Some(sig);
+            }
+            if self.breakpoints.contains(&(self.sim.state.pc as usize)) {
+                return None;
+            }
+            if self.depth() < depth0 {
+                return None;
+            }
+        }
+        None
     }
 
     /// execute exactly one instruction
@@ -350,6 +442,20 @@ impl DebugSession {
             }
         }
 
+        // shadow call stack (innermost last)
+        let stack: Vec<String> = self
+            .call_stack
+            .iter()
+            .map(|f| {
+                format!(
+                    "{{\"func\":\"{}\",\"ret\":{}}}",
+                    esc(&f.func_name),
+                    f.return_addr
+                )
+            })
+            .collect();
+        let _ = write!(out, "\"stack\":[{}],", stack.join(","));
+
         // current source file with line numbers and breakpoint lines
         match self.current_line() {
             Some((file, _)) => {
@@ -373,7 +479,15 @@ impl DebugSession {
                     })
                     .collect();
                 let _ = write!(out, "{}", items.join(","));
-                let _ = write!(out, "]}},");
+                // address->line map of this file (for source<->disasm highlight)
+                let map: Vec<String> = self
+                    .debug
+                    .lines
+                    .iter()
+                    .filter(|(_, f, _)| *f == file)
+                    .map(|&(a, _, l)| format!("[{},{}]", a, l))
+                    .collect();
+                let _ = write!(out, "],\"map\":[{}]}},", map.join(","));
             }
             None => {
                 let _ = write!(out, "\"src\":null,");

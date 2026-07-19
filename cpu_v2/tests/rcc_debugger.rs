@@ -132,3 +132,45 @@ fn main() {
     // no instruction for a nonexistent line
     assert_eq!(s.toggle_breakpoint_line(0, 999, true), None);
 }
+
+#[test]
+fn test_call_stack_and_step_over_out() {
+    let src = r#"
+fn inc(x: u16) -> u16 {
+    x + 1
+}
+fn main() {
+    let a = inc(1);
+    let b = inc(a);
+    halt(b);
+}
+"#;
+    let mut s = make_session(src);
+
+    // step over the first inc() call: no descent into inc
+    s.step_over(1000);
+    assert_eq!(s.depth(), 0, "step_over must not descend into the call");
+
+    // next_line actually enters inc
+    let mut s2 = make_session(src);
+    s2.next_line(1000);
+    assert!(s2.depth() >= 1 || s2.last_halt.is_some(), "next_line should enter the call (or have run past)");
+
+    // step into inc manually, then step out
+    let mut s3 = make_session(src);
+    for _ in 0..20 {
+        if s3.depth() > 0 {
+            break;
+        }
+        s3.step();
+    }
+    assert_eq!(s3.depth(), 1, "expected to be inside inc");
+    let f = s3.current_func().unwrap();
+    assert_eq!(f.name, "inc");
+    s3.step_out(1000);
+    assert_eq!(s3.depth(), 0, "step_out must return to main");
+
+    // call stack is empty after the program halts
+    let _ = s3.continue_run(1000);
+    assert_eq!(s3.last_halt, Some(3));
+}

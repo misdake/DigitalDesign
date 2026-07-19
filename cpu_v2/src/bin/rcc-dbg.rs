@@ -136,6 +136,12 @@ fn route(method: &str, path: &str, _body: &[u8], session: &Arc<Mutex<DebugSessio
                 Some("next") => {
                     let _ = s.next_line(1_000_000);
                 }
+                Some("over") => {
+                    let _ = s.step_over(1_000_000);
+                }
+                Some("out") => {
+                    let _ = s.step_out(1_000_000);
+                }
                 Some("continue") => {
                     let _ = s.continue_run(5_000_000);
                 }
