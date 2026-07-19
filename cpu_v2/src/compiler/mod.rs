@@ -13,7 +13,6 @@ mod passes;
 mod regalloc;
 mod shared;
 
-pub mod dsl;
 
 
 #[cfg(test)]

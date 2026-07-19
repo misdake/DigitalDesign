@@ -4,14 +4,13 @@
 mod isa;
 mod compiler;
 mod dsl_progs;
-mod library;
 mod sim;
 
 pub mod frontend;
 
 pub mod dsl_rt;
+pub mod rcc_std;
 
 pub use isa::*;
 pub use compiler::*;
-pub use library::*;
 pub use sim::*;
