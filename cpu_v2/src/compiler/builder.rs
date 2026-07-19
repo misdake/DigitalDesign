@@ -73,6 +73,7 @@ impl FuncBuilder {
                 param_names: vec![],
                 ret_names: vec![],
                 block_notes: vec![None],
+                local_slots: 0,
             },
             sealed: vec![false],
             var_defs: vec![],
@@ -133,6 +134,29 @@ impl FuncBuilder {
     pub fn set_names(&mut self, params: &[&'static str], rets: &[&'static str]) {
         self.func.param_names = params.to_vec();
         self.func.ret_names = rets.to_vec();
+    }
+
+    /// allocate `n` frame-local slots (address-taken locals / local arrays),
+    /// returning the base slot index
+    pub fn alloc_local_slots(&mut self, n: u8) -> u8 {
+        let base = self.func.local_slots;
+        self.func.local_slots += n;
+        base
+    }
+
+    pub fn load_local(&mut self, slot: u8) -> VReg {
+        let dst = self.fresh_vreg();
+        self.push(Instr::LoadLocal { dst, slot });
+        dst
+    }
+    pub fn store_local(&mut self, slot: u8, src: VReg) {
+        self.push(Instr::StoreLocal { slot, src });
+    }
+    /// dst = sp + slot (address of a frame-local variable)
+    pub fn addr_of_local(&mut self, slot: u8) -> VReg {
+        let dst = self.fresh_vreg();
+        self.push(Instr::AddrOfLocal { dst, slot });
+        dst
     }
 
     // ----- instruction emitters (SSA value producers) -----
@@ -569,7 +593,7 @@ pub(crate) fn remove_trivial_phis(func: &mut IrFunc) -> bool {
                     Instr::Un { src, .. } | Instr::Shift { src, .. } | Instr::Mov { src, .. } => {
                         subst(src)
                     }
-                    Instr::LoadImm { .. } | Instr::DevRecv { .. } | Instr::LoadSp { .. } => {}
+                    Instr::LoadImm { .. } | Instr::DevRecv { .. } | Instr::LoadSp { .. } | Instr::LoadLocal { .. } | Instr::AddrOfLocal { .. } => {}
                     Instr::LoadMem { base, .. } => subst(base),
                     Instr::StoreMem { base, src, .. } => {
                         subst(base);
@@ -582,7 +606,7 @@ pub(crate) fn remove_trivial_phis(func: &mut IrFunc) -> bool {
                         args.iter_mut().for_each(&subst);
                     }
                     Instr::DevSend { src, .. } => subst(src),
-                    Instr::StoreSp { src, .. } => subst(src),
+                    Instr::StoreSp { src, .. } | Instr::StoreLocal { src, .. } => subst(src),
                 }
             }
             if let Some(term) = &mut b.term {

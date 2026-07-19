@@ -192,7 +192,7 @@ pub fn compile_function(
         }
 
         for inst in &block.insts {
-            emit_inst(inst, &reg, alloc.callee_saved.len() as u8, &mut lines);
+            emit_inst(inst, &reg, alloc.callee_saved.len() as u8, alloc.local_slots, &mut lines);
         }
 
         match &block.term {
@@ -409,7 +409,8 @@ fn emit_cmp(cmp: &Cmp, reg: &dyn Fn(VReg) -> u8, lines: &mut Vec<Line>) {
 fn emit_inst(
     inst: &Instr,
     reg: &dyn Fn(VReg) -> u8,
-    spill_base: u8,
+    local_base: u8,
+    n_locals: u8,
     lines: &mut Vec<Line>,
 ) {
     match inst {
@@ -491,12 +492,29 @@ fn emit_inst(
             lines.push(Line::Inst(dev_send(*device, *channel, reg(*src))));
         }
         Instr::LoadSp { dst, slot } => {
-            let (hi, lo) = hi_lo(spill_base + *slot);
+            let (hi, lo) = hi_lo(local_base + n_locals + *slot);
             lines.push(Line::Inst(load_sp(hi, lo, reg(*dst))));
         }
         Instr::StoreSp { slot, src } => {
-            let (hi, lo) = hi_lo(spill_base + *slot);
+            let (hi, lo) = hi_lo(local_base + n_locals + *slot);
             lines.push(Line::Inst(store_sp(hi, lo, reg(*src))));
+        }
+        Instr::LoadLocal { dst, slot } => {
+            let (hi, lo) = hi_lo(local_base + *slot);
+            lines.push(Line::Inst(load_sp(hi, lo, reg(*dst))));
+        }
+        Instr::StoreLocal { slot, src } => {
+            let (hi, lo) = hi_lo(local_base + *slot);
+            lines.push(Line::Inst(store_sp(hi, lo, reg(*src))));
+        }
+        Instr::AddrOfLocal { dst, slot } => {
+            // dst = sp + frame offset of the local slot
+            let (hi, lo) = hi_lo(local_base + *slot);
+            lines.push(Line::Inst(mov(REG_SP, reg(*dst))));
+            if local_base + *slot > 0 {
+                lines.push(Line::Inst(load_lo(hi, lo, REG_TMP)));
+                lines.push(Line::Inst(add(reg(*dst), REG_TMP, reg(*dst))));
+            }
         }
     }
 }

@@ -69,7 +69,7 @@ pub(crate) fn subst_uses(f: &mut IrFunc, replace: &HashMap<VReg, VReg>) {
                 Instr::Un { src, .. } | Instr::Shift { src, .. } | Instr::Mov { src, .. } => {
                     subst(src)
                 }
-                Instr::LoadImm { .. } | Instr::DevRecv { .. } | Instr::LoadSp { .. } => {}
+                Instr::LoadImm { .. } | Instr::DevRecv { .. } | Instr::LoadSp { .. } | Instr::LoadLocal { .. } | Instr::AddrOfLocal { .. } => {}
                 Instr::LoadMem { base, .. } => subst(base),
                 Instr::StoreMem { base, src, .. } => {
                     subst(base);
@@ -81,7 +81,7 @@ pub(crate) fn subst_uses(f: &mut IrFunc, replace: &HashMap<VReg, VReg>) {
                     subst(addr);
                     args.iter_mut().for_each(&subst);
                 }
-                Instr::DevSend { src, .. } | Instr::StoreSp { src, .. } => subst(src),
+                Instr::DevSend { src, .. } | Instr::StoreSp { src, .. } | Instr::StoreLocal { src, .. } => subst(src),
             }
         }
         if let Some(term) = &mut b.term {
@@ -404,6 +404,7 @@ fn dce(f: &mut IrFunc) -> bool {
                     inst,
                     Instr::StoreMem { .. }
                         | Instr::StoreSp { .. }
+                        | Instr::StoreLocal { .. }
                         | Instr::Call { .. }
                         | Instr::CallPtr { .. }
                         | Instr::DevSend { .. }
@@ -451,6 +452,8 @@ fn dce(f: &mut IrFunc) -> bool {
                     | Instr::LoadImm { .. }
                     | Instr::LoadMem { .. }
                     | Instr::LoadSp { .. }
+                    | Instr::LoadLocal { .. }
+                    | Instr::AddrOfLocal { .. }
             );
             !removable || defs.iter().any(|d| useful.contains(d))
         });

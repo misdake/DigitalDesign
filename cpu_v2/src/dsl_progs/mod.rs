@@ -3,6 +3,8 @@
 //! `compiler::frontend`). file names end with `_dsl.rs` to mark them.
 
 #[allow(dead_code)]
+mod arrays_dsl;
+#[allow(dead_code)]
 mod fnptr_dsl;
 #[allow(dead_code)]
 mod sum_dsl;

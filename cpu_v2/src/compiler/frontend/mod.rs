@@ -17,12 +17,26 @@ pub mod spec {}
 pub fn parse_source(src: &str) -> Result<Vec<IrFunc>, syn::Error> {
     let file = syn::parse_file(src)?;
     let mut fns = vec![];
+    let mut consts: HashMap<String, (u16, Ty)> = HashMap::new();
+    let mut globals = Globals::default();
     for item in &file.items {
         match item {
             Item::Fn(f) => fns.push(f),
             Item::Use(_) => { /* ignored: for the IDE only */ }
+            Item::Const(c) => {
+                let ty = ty_of(&c.ty)?;
+                if !matches!(ty, Ty::U16 | Ty::I16) {
+                    return Err(err(&c.ty, "const must be u16 or i16"));
+                }
+                let v = const_eval(&c.expr, &consts)?;
+                let name = c.ident.to_string();
+                if consts.insert(name.clone(), (v, ty)).is_some() {
+                    return Err(err(&c.ident, format!("const `{name}` defined twice")));
+                }
+            }
+            Item::Static(s) => add_static(s, &consts, &mut globals)?,
             Item::Verbatim(_) => { /* attributes on use items land here */ }
-            _ => return Err(err(item, "item not supported (only fn and use are allowed)")),
+            _ => return Err(err(item, "item not supported (only fn/use/const/static are allowed)")),
         }
     }
     // collect signatures first (functions can call each other regardless of order)
@@ -36,11 +50,52 @@ pub fn parse_source(src: &str) -> Result<Vec<IrFunc>, syn::Error> {
         }
         names.push(intern(&name));
     }
-    names
-        .into_iter()
-        .zip(fns)
-        .map(|(name, f)| lower_fn(name, f, &sigs))
-        .collect()
+    let mut out = vec![];
+    for (name, f) in names.into_iter().zip(fns) {
+        out.push(lower_fn(name, f, &sigs, &consts, &globals)?);
+    }
+    emit_data_init(&mut out, &globals)?;
+    Ok(out)
+}
+
+/// initialize non-zero static words at the start of main (__data_init)
+fn emit_data_init(out: &mut [IrFunc], globals: &Globals) -> Result<(), syn::Error> {
+    if globals.data_words.is_empty() {
+        return Ok(());
+    }
+    let Some(main) = out.iter_mut().find(|f| f.name == "main") else {
+        return Err(syn::Error::new(
+            proc_macro2::Span::call_site(),
+            "static data requires a `fn main` to host __data_init",
+        ));
+    };
+    let entry = main.entry;
+    let mut inits = vec![];
+    for &(addr, value) in &globals.data_words {
+        if value != 0 {
+            inits.push(Instr::LoadImm {
+                dst: main.vreg_count,
+                value: addr,
+            });
+            main.vreg_count += 1;
+            inits.push(Instr::LoadImm {
+                dst: main.vreg_count,
+                value,
+            });
+            main.vreg_count += 1;
+            let base = main.vreg_count - 2;
+            let val = main.vreg_count - 1;
+            inits.push(Instr::StoreMem {
+                base,
+                offset: 0,
+                src: val,
+            });
+        }
+    }
+    let old = std::mem::take(&mut main.blocks[entry].insts);
+    main.blocks[entry].insts = inits;
+    main.blocks[entry].insts.extend(old);
+    Ok(())
 }
 
 fn intern(s: &str) -> &'static str {
@@ -70,6 +125,141 @@ fn lit_int_value(i: &syn::LitInt) -> Result<u64, syn::Error> {
 
 
 // ---------------------------------------------------------------------------
+// constants and globals (data section)
+// ---------------------------------------------------------------------------
+
+#[derive(Default)]
+struct Globals {
+    scalars: HashMap<String, (u16, Ty)>,
+    arrays: HashMap<String, (u16, Ty, usize)>,
+    /// (addr, value) words for __data_init
+    data_words: Vec<(u16, u16)>,
+    next_addr: u16,
+}
+
+/// evaluate a constant expression (literals, other consts, wrapping arithmetic)
+fn const_eval(e: &Expr, consts: &HashMap<String, (u16, Ty)>) -> Result<u16, syn::Error> {
+    match e {
+        Expr::Paren(p) => const_eval(&p.expr, consts),
+        Expr::Lit(lit) => match &lit.lit {
+            Lit::Int(i) => {
+                let v = lit_int_value(i)?;
+                if v > u16::MAX as u64 {
+                    return Err(err(&lit.lit, "literal out of 16-bit range"));
+                }
+                Ok(v as u16)
+            }
+            _ => Err(err(&lit.lit, "not a constant expression")),
+        },
+        Expr::Path(_) => {
+            let name = path_ident(e)?;
+            consts
+                .get(&name)
+                .map(|&(v, _)| v)
+                .ok_or_else(|| err(e, format!("unknown const `{name}`")))
+        }
+        Expr::Unary(u) => match u.op {
+            SUnOp::Neg(_) => Ok(const_eval(&u.expr, consts)?.wrapping_neg()),
+            _ => Err(err(&u.op, "not a constant expression")),
+        },
+        Expr::Binary(b) => {
+            let (a, c) = (const_eval(&b.left, consts)?, const_eval(&b.right, consts)?);
+            match b.op {
+                SBinOp::Add(_) => Ok(a.wrapping_add(c)),
+                SBinOp::Sub(_) => Ok(a.wrapping_sub(c)),
+                SBinOp::BitAnd(_) => Ok(a & c),
+                SBinOp::BitOr(_) => Ok(a | c),
+                SBinOp::BitXor(_) => Ok(a ^ c),
+                SBinOp::Shl(_) => Ok(a.wrapping_shl(c as u32)),
+                SBinOp::Shr(_) => Ok(a.wrapping_shr(c as u32)),
+                SBinOp::Mul(_) => Ok(a.wrapping_mul(c)),
+                SBinOp::Div(_) => {
+                    if c == 0 {
+                        return Err(err(&b.op, "division by zero in const expression"));
+                    }
+                    Ok(a / c)
+                }
+                SBinOp::Rem(_) => {
+                    if c == 0 {
+                        return Err(err(&b.op, "remainder by zero in const expression"));
+                    }
+                    Ok(a % c)
+                }
+                _ => Err(err(&b.op, "not a constant expression")),
+            }
+        }
+        Expr::Cast(c) => {
+            // u16/i16 casts are free
+            let _ = ty_of(&c.ty)?;
+            const_eval(&c.expr, consts)
+        }
+        _ => Err(err(e, "not a constant expression")),
+    }
+}
+
+/// `static NAME: Ty = expr;` or `static NAME: [Ty; N] = [..];`
+fn add_static(
+    s: &syn::ItemStatic,
+    consts: &HashMap<String, (u16, Ty)>,
+    g: &mut Globals,
+) -> Result<(), syn::Error> {
+    if s.mutability.is_some() {
+        return Err(err(s, "static mut is not supported; write via addr_of(&X) (see spec §9.2)"));
+    }
+    let name = s.ident.to_string();
+    match s.ty.as_ref() {
+        Type::Array(a) => {
+            let elem = ty_of(&a.elem)?;
+            if !matches!(elem, Ty::U16 | Ty::I16) {
+                return Err(err(&a.elem, "array element type must be u16 or i16"));
+            }
+            let len = const_eval(&a.len, consts)? as usize;
+            let init: Vec<u16> = match s.expr.as_ref() {
+                Expr::Array(arr) => arr
+                    .elems
+                    .iter()
+                    .map(|e| const_eval(e, consts))
+                    .collect::<Result<_, _>>()?,
+                Expr::Repeat(r) => {
+                    let v = const_eval(&r.expr, consts)?;
+                    vec![v; len]
+                }
+                _ => return Err(err(&s.expr, "array static needs an initializer list or [v; N]")),
+            };
+            if init.len() != len {
+                return Err(err(
+                    &s.expr,
+                    format!("initializer has {} elements, expected {len}", init.len()),
+                ));
+            }
+            let addr = g.next_addr;
+            g.next_addr += len as u16;
+            for (i, w) in init.iter().enumerate() {
+                g.data_words.push((addr + i as u16, *w));
+            }
+            if g.arrays.insert(name.clone(), (addr, elem, len)).is_some() {
+                return Err(err(&s.ident, format!("static `{name}` defined twice")));
+            }
+            Ok(())
+        }
+        t => {
+            let ty = ty_of(t)?;
+            if !matches!(ty, Ty::U16 | Ty::I16) {
+                return Err(err(t, "static must be u16/i16 or an array of them"));
+            }
+            let v = const_eval(&s.expr, consts)?;
+            let addr = g.next_addr;
+            g.next_addr += 1;
+            g.data_words.push((addr, v));
+            if g.scalars.insert(name.clone(), (addr, ty)).is_some() {
+                return Err(err(&s.ident, format!("static `{name}` defined twice")));
+            }
+            Ok(())
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
 // types
 // ---------------------------------------------------------------------------
 
@@ -82,6 +272,8 @@ enum Ty {
     Ptr,
     Bool,
     FnPtr { params: Vec<Ty>, ret: Box<Ty> },
+    /// [u16; N] / [i16; N], memory-resident (data section or stack frame)
+    Array(Box<Ty>, usize),
     Unit,
 }
 impl Ty {
@@ -96,6 +288,7 @@ impl Ty {
             Ty::Ptr => "Ptr".into(),
             Ty::Bool => "bool".into(),
             Ty::FnPtr { .. } => "fn pointer".into(),
+            Ty::Array(elem, n) => format!("[{}; {n}]", elem.display()),
             Ty::Unit => "()".into(),
         }
     }
@@ -142,7 +335,53 @@ fn ty_of(ty: &Type) -> Result<Ty, syn::Error> {
         }
         Type::Never(_) => Ok(Ty::Unit),
         Type::Paren(p) => ty_of(&p.elem),
+        Type::Array(_) => Err(err(ty, "arrays are not allowed here (declare them in let/static, pass as Ptr)")),
         _ => Err(err(ty, "unsupported type")),
+    }
+}
+
+/// type annotation that may be an array type (valid only in let/static positions)
+fn ty_of_maybe_array(ty: &Type, consts: &HashMap<String, (u16, Ty)>) -> Result<Ty, syn::Error> {
+    match ty {
+        Type::Array(a) => {
+            let elem = ty_of(&a.elem)?;
+            if !matches!(elem, Ty::U16 | Ty::I16) {
+                return Err(err(&a.elem, "array element type must be u16 or i16"));
+            }
+            let len = const_eval(&a.len, consts)? as usize;
+            Ok(Ty::Array(Box::new(elem), len))
+        }
+        _ => ty_of(ty),
+    }
+}
+
+/// initialize a local array in the stack frame
+fn init_array(l: &mut FnLower, slot: u8, elem: &Ty, n: usize, init: &Expr) -> Result<(), syn::Error> {
+    let base = l.b.addr_of_local(slot);
+    match init {
+        Expr::Repeat(r) => {
+            let (v, _) = expr(l, &r.expr)?.reg(l, "array initializer")?;
+            let (v, _) = coerce(l, v, elem, elem, &r.expr)?;
+            for i in 0..n as i16 {
+                l.b.store_mem(base, i, v);
+            }
+            Ok(())
+        }
+        Expr::Array(arr) => {
+            if arr.elems.len() != n {
+                return Err(err(
+                    init,
+                    format!("array initializer has {} elements, expected {n}", arr.elems.len()),
+                ));
+            }
+            for (i, e) in arr.elems.iter().enumerate() {
+                let (v, _) = expr(l, e)?.reg(l, "array initializer")?;
+                let (v, _) = coerce(l, v, elem, elem, e)?;
+                l.b.store_mem(base, i as i16, v);
+            }
+            Ok(())
+        }
+        _ => Err(err(init, "array initializer must be [v; N] or [e0, e1, ...]")),
     }
 }
 
@@ -177,8 +416,16 @@ fn signature(f: &ItemFn) -> Result<Sig, syn::Error> {
 // per-function lowering
 // ---------------------------------------------------------------------------
 
+#[derive(Clone)]
+enum VarKind {
+    /// SSA value (register allocated)
+    Ssa { var: VarId },
+    /// memory-resident in the stack frame (address-taken locals and arrays)
+    Local { slot: u8 },
+}
+
 struct VarInfo {
-    var: VarId,
+    kind: VarKind,
     ty: Ty,
     mutable: bool,
 }
@@ -186,6 +433,9 @@ struct VarInfo {
 struct FnLower<'a> {
     b: FuncBuilder,
     sigs: &'a HashMap<String, Sig>,
+    consts: &'a HashMap<String, (u16, Ty)>,
+    globals: &'a Globals,
+    residents: HashMap<String, ResidentKind>,
     scopes: Vec<HashMap<String, VarInfo>>,
     ret_ty: Ty,
     /// true once the current block has ended (return/halt)
@@ -225,17 +475,168 @@ impl FnLower<'_> {
     fn declare(&mut self, name: String, info: VarInfo) {
         self.scopes.last_mut().unwrap().insert(name, info);
     }
+    fn read_var(&mut self, kind: &VarKind) -> VReg {
+        match kind {
+            VarKind::Ssa { var } => self.b.get(*var),
+            VarKind::Local { slot } => self.b.load_local(*slot),
+        }
+    }
+    fn write_var(&mut self, kind: &VarKind, v: VReg) {
+        match kind {
+            VarKind::Ssa { var } => self.b.set(*var, v),
+            VarKind::Local { slot } => self.b.store_local(*slot, v),
+        }
+    }
+    /// the address of a variable as a Ptr (addr_of / as_ptr)
+    fn addr_of_var(&mut self, name: &str, at: &Expr) -> Result<VReg, syn::Error> {
+        if let Some(info) = self.lookup(name) {
+            let kind = info.kind.clone();
+            return match kind {
+                VarKind::Local { slot } => Ok(self.b.addr_of_local(slot)),
+                VarKind::Ssa { .. } => Err(err(
+                    at,
+                    format!("`{name}` is not memory-resident; it must be declared as an array"),
+                )),
+            };
+        }
+        if let Some(&(addr, _)) = self.globals.scalars.get(name) {
+            return Ok(self.b.load_imm(addr));
+        }
+        if let Some(&(addr, _, _)) = self.globals.arrays.get(name) {
+            return Ok(self.b.load_imm(addr));
+        }
+        Err(err(at, format!("undefined name `{name}`")))
+    }
 }
 
-fn lower_fn(name: &'static str, f: &ItemFn, sigs: &HashMap<String, Sig>) -> Result<IrFunc, syn::Error> {
+/// why a variable must live in the stack frame instead of a register
+enum ResidentKind {
+    Scalar,
+    Array,
+}
+
+/// prescan a function body for names that must be memory-resident:
+/// variables whose address is taken (addr_of) and array-typed lets
+fn scan_residents(
+    blk: &Block,
+    consts: &HashMap<String, (u16, Ty)>,
+    out: &mut HashMap<String, ResidentKind>,
+) -> Result<(), syn::Error> {
+    for s in &blk.stmts {
+        scan_stmt(s, consts, out)?;
+    }
+    Ok(())
+}
+fn scan_stmt(s: &Stmt, consts: &HashMap<String, (u16, Ty)>, out: &mut HashMap<String, ResidentKind>) -> Result<(), syn::Error> {
+    match s {
+        Stmt::Local(local) => {
+            if let Pat::Type(pt) = &local.pat {
+                if let Type::Array(a) = pt.ty.as_ref() {
+                    ty_of(&a.elem)?;
+                    const_eval(&a.len, consts)?;
+                    if let Pat::Ident(p) = pt.pat.as_ref() {
+                        out.insert(p.ident.to_string(), ResidentKind::Array);
+                    }
+                }
+            }
+            if let Some((_, init)) = &local.init {
+                scan_expr(init, consts, out)?;
+            }
+        }
+        Stmt::Expr(e) | Stmt::Semi(e, _) => scan_expr(e, consts, out)?,
+        Stmt::Item(_) => {}
+    }
+    Ok(())
+}
+fn scan_expr(e: &Expr, consts: &HashMap<String, (u16, Ty)>, out: &mut HashMap<String, ResidentKind>) -> Result<(), syn::Error> {
+    match e {
+        Expr::Paren(x) => scan_expr(&x.expr, consts, out),
+        Expr::Binary(x) => {
+            scan_expr(&x.left, consts, out)?;
+            scan_expr(&x.right, consts, out)
+        }
+        Expr::Unary(x) => scan_expr(&x.expr, consts, out),
+        Expr::Cast(x) => scan_expr(&x.expr, consts, out),
+        Expr::Call(x) => {
+            if let Expr::Path(p) = x.func.as_ref() {
+                if p.path.is_ident("addr_of") {
+                    if let Some(Expr::Reference(r)) = x.args.first() {
+                        if let Ok(name) = path_ident(&r.expr) {
+                            out.entry(name).or_insert(ResidentKind::Scalar);
+                        }
+                    }
+                }
+            }
+            for a in &x.args {
+                scan_expr(a, consts, out)?;
+            }
+            Ok(())
+        }
+        Expr::MethodCall(x) => {
+            scan_expr(&x.receiver, consts, out)?;
+            for a in &x.args {
+                scan_expr(a, consts, out)?;
+            }
+            Ok(())
+        }
+        Expr::Assign(x) => {
+            scan_expr(&x.left, consts, out)?;
+            scan_expr(&x.right, consts, out)
+        }
+        Expr::AssignOp(x) => {
+            scan_expr(&x.left, consts, out)?;
+            scan_expr(&x.right, consts, out)
+        }
+        Expr::If(x) => {
+            scan_expr(&x.cond, consts, out)?;
+            scan_residents(&x.then_branch, consts, out)?;
+            if let Some((_, e)) = &x.else_branch {
+                scan_expr(e, consts, out)?;
+            }
+            Ok(())
+        }
+        Expr::While(x) => {
+            scan_expr(&x.cond, consts, out)?;
+            scan_residents(&x.body, consts, out)
+        }
+        Expr::Loop(x) => scan_residents(&x.body, consts, out),
+        Expr::ForLoop(x) => {
+            scan_expr(&x.expr, consts, out)?;
+            scan_residents(&x.body, consts, out)
+        }
+        Expr::Block(x) => scan_residents(&x.block, consts, out),
+        Expr::Return(x) => {
+            if let Some(e) = &x.expr {
+                scan_expr(e, consts, out)?;
+            }
+            Ok(())
+        }
+        _ => Ok(()),
+    }
+}
+
+fn lower_fn(
+    name: &'static str,
+    f: &ItemFn,
+    sigs: &HashMap<String, Sig>,
+    consts: &HashMap<String, (u16, Ty)>,
+    globals: &Globals,
+) -> Result<IrFunc, syn::Error> {
     let sig = sigs.get(&f.sig.ident.to_string()).unwrap().clone();
     let n_rets = if sig.ret == Ty::Unit { 0 } else { 1 };
     let (b, param_vars) = FuncBuilder::new(name, sig.params.len(), n_rets);
+
+    // prescan: which names must be memory-resident
+    let mut residents: HashMap<String, ResidentKind> = HashMap::new();
+    scan_residents(&f.block, consts, &mut residents)?;
 
     let mut param_names = vec![];
     let mut l = FnLower {
         b,
         sigs,
+        consts,
+        globals,
+        residents,
         scopes: vec![HashMap::new()],
         ret_ty: sig.ret.clone(),
         dead: false,
@@ -254,10 +655,23 @@ fn lower_fn(name: &'static str, f: &ItemFn, sigs: &HashMap<String, Sig>) -> Resu
             _ => return Err(err(&pt.pat, "unsupported parameter pattern")),
         };
         param_names.push(intern(&ident));
+        // an address-taken param is copied into a frame slot at entry
+        let kind = match l.residents.remove(&ident) {
+            Some(ResidentKind::Scalar) => {
+                let slot = l.b.alloc_local_slots(1);
+                let pv = l.b.get(*var);
+                l.b.store_local(slot, pv);
+                VarKind::Local { slot }
+            }
+            Some(ResidentKind::Array) => {
+                return Err(err(&pt.pat, "params cannot be arrays; pass a Ptr instead"))
+            }
+            None => VarKind::Ssa { var: *var },
+        };
         l.declare(
             ident,
             VarInfo {
-                var: *var,
+                kind,
                 ty: ty.clone(),
                 mutable: false,
             },
@@ -277,6 +691,11 @@ fn lower_fn(name: &'static str, f: &ItemFn, sigs: &HashMap<String, Sig>) -> Resu
             return Err(err(s, "unreachable code (after return/halt)"));
         }
         stmt(&mut l, s)?;
+    }
+    // procedures without explicit return fall through to a plain ret
+    if sig.ret == Ty::Unit && !l.dead {
+        l.b.ret(&[]);
+        l.dead = true;
     }
     if let Some(t) = tail {
         if l.dead {
@@ -307,7 +726,7 @@ fn stmt(l: &mut FnLower, s: &Stmt) -> Result<(), syn::Error> {
         Stmt::Local(local) => {
             let (inner_pat, annotated) = match &local.pat {
                 Pat::Type(pt) => {
-                    let ty = ty_of(&pt.ty)?;
+                    let ty = ty_of_maybe_array(&pt.ty, l.consts)?;
                     (pt.pat.as_ref(), Some(ty))
                 }
                 p => (p, None),
@@ -320,6 +739,26 @@ fn stmt(l: &mut FnLower, s: &Stmt) -> Result<(), syn::Error> {
                 .init
                 .as_ref()
                 .ok_or_else(|| err(s, "let without initializer is not supported"))?;
+
+            // local array: `let mut buf: [u16; N] = [0; N];`
+            if let Some(Ty::Array(elem, n)) = &annotated {
+                let (elem, n) = (elem.as_ref().clone(), *n);
+                let slot = l.b.alloc_local_slots(n as u8);
+                init_array(l, slot, &elem, n, &init.1)?;
+                l.declare(
+                    ident,
+                    VarInfo {
+                        kind: VarKind::Local { slot },
+                        ty: annotated.clone().unwrap(),
+                        mutable,
+                    },
+                );
+                return Ok(());
+            }
+            if matches!(l.residents.get(&ident), Some(ResidentKind::Array)) {
+                return Err(err(&local.pat, "arrays need a type annotation like `let mut buf: [u16; N] = [0; N];`"));
+            }
+
             let val = expr(l, &init.1)?;
             // fn pointer binding: `let f: fn(...) = some_fn;`
             let (v, ty) = match (val, &annotated) {
@@ -345,9 +784,17 @@ fn stmt(l: &mut FnLower, s: &Stmt) -> Result<(), syn::Error> {
                     (v, to)
                 }
             };
-            let var = l.b.new_var();
-            l.b.set(var, v);
-            l.declare(ident, VarInfo { var, ty, mutable });
+            // a scalar whose address is taken anywhere is memory-resident
+            let kind = if matches!(l.residents.get(&ident), Some(ResidentKind::Scalar)) {
+                let slot = l.b.alloc_local_slots(1);
+                l.b.store_local(slot, v);
+                VarKind::Local { slot }
+            } else {
+                let var = l.b.new_var();
+                l.b.set(var, v);
+                VarKind::Ssa { var }
+            };
+            l.declare(ident, VarInfo { kind, ty, mutable });
             Ok(())
         }
         Stmt::Expr(e) | Stmt::Semi(e, _) => stmt_expr(l, e),
@@ -366,11 +813,11 @@ fn stmt_expr(l: &mut FnLower, e: &Expr) -> Result<(), syn::Error> {
             if !info.mutable {
                 return Err(err(&a.left, format!("`{name}` is not mutable (declare with `let mut`)")));
             }
-            let (var, ty) = (info.var, info.ty.clone());
+            let (kind, ty) = (info.kind.clone(), info.ty.clone());
             let val = expr(l, &a.right)?;
             let (v, _) = val.reg(l, "assignment")?;
             let (v, _) = coerce(l, v, &ty, &ty, &a.right)?;
-            l.b.set(var, v);
+            l.write_var(&kind, v);
             Ok(())
         }
         Expr::AssignOp(a) => {
@@ -381,11 +828,11 @@ fn stmt_expr(l: &mut FnLower, e: &Expr) -> Result<(), syn::Error> {
             if !info.mutable {
                 return Err(err(&a.left, format!("`{name}` is not mutable (declare with `let mut`)")));
             }
-            let (var, ty) = (info.var, info.ty.clone());
+            let (kind, ty) = (info.kind.clone(), info.ty.clone());
             if !ty.is_int() {
                 return Err(err(&a.left, "compound assignment only works on integers"));
             }
-            let cur = l.b.get(var);
+            let cur = l.read_var(&kind);
             let (rhs, _) = expr(l, &a.right)?.reg(l, "compound assignment")?;
             let op = match a.op {
                 SBinOp::AddEq(_) => BinOp::Add,
@@ -397,13 +844,13 @@ fn stmt_expr(l: &mut FnLower, e: &Expr) -> Result<(), syn::Error> {
                     let amount = shift_amount(l, &a.right)?;
                     let sop = shift_op(&a.op, &ty);
                     let v = l.b.shift(sop, cur, amount);
-                    l.b.set(var, v);
+                    l.write_var(&kind, v);
                     return Ok(());
                 }
                 _ => return Err(err(&a.op, "unsupported compound assignment operator")),
             };
             let v = l.b.bin(op, cur, rhs);
-            l.b.set(var, v);
+            l.write_var(&kind, v);
             Ok(())
         }
         Expr::Return(r) => {
@@ -542,7 +989,7 @@ fn control_flow(l: &mut FnLower, e: &Expr) -> Result<(), syn::Error> {
             l.declare(
                 ident,
                 VarInfo {
-                    var: ivar,
+                    kind: VarKind::Ssa { var: ivar },
                     ty: ty.clone(),
                     mutable: true, // incremented by the loop itself
                 },
@@ -610,9 +1057,28 @@ fn expr(l: &mut FnLower, e: &Expr) -> Result<Val, syn::Error> {
         Expr::Path(p) => {
             let name = path_ident(e)?;
             if let Some(info) = l.lookup(&name) {
-                let (var, ty) = (info.var, info.ty.clone());
-                let v = l.b.get(var);
+                let (kind, ty) = (info.kind.clone(), info.ty.clone());
+                if matches!(ty, Ty::Array(..)) {
+                    return Err(err(&p, format!(
+                        "array `{name}` used as a value; use {name}.as_ptr() or {name}.read(i)"
+                    )));
+                }
+                let v = l.read_var(&kind);
                 return Ok(Val::V(v, ty));
+            }
+            if let Some((v, ty)) = l.consts.get(&name) {
+                let (v, ty) = (*v, ty.clone());
+                return Ok(Val::V(l.b.load_imm(v), ty));
+            }
+            if let Some((addr, ty)) = l.globals.scalars.get(&name) {
+                let (addr, ty) = (*addr, ty.clone());
+                let base = l.b.load_imm(addr);
+                let v = l.b.load_mem(base, 0);
+                return Ok(Val::V(v, ty));
+            }
+            if let Some(&(addr, _, _)) = l.globals.arrays.get(&name) {
+                // a global array used as a value decays to its address (like C)
+                return Ok(Val::V(l.b.load_imm(addr), Ty::Ptr));
             }
             if l.sigs.contains_key(&name) {
                 return Ok(Val::FnItem(intern(&name)));
@@ -847,8 +1313,19 @@ fn call_expr(l: &mut FnLower, call: &syn::ExprCall) -> Result<Val, syn::Error> {
     let name = &segs[0];
 
     // intrinsics with non-value arguments must be handled before generic arg
-    // evaluation (assert takes a condition, dev_* take literals)
+    // evaluation (assert takes a condition, addr_of takes a reference)
     match name.as_str() {
+        "addr_of" => {
+            if call.args.len() != 1 {
+                return Err(err(call, "addr_of(&x) takes 1 argument"));
+            }
+            let Expr::Reference(r) = &call.args[0] else {
+                return Err(err(&call.args[0], "addr_of expects a reference: addr_of(&x)"));
+            };
+            let target = path_ident(&r.expr)?;
+            let v = l.addr_of_var(&target, &call.args[0])?;
+            return Ok(Val::V(v, Ty::Ptr));
+        }
         "assert" => {
             if call.args.len() != 2 {
                 return Err(err(call, "assert(cond, sig) takes 2 arguments"));
@@ -899,7 +1376,10 @@ fn call_expr(l: &mut FnLower, call: &syn::ExprCall) -> Result<Val, syn::Error> {
             return Err(err(call, format!("`{name}` is not callable")));
         };
         check_call_args(call, &params, &arg_tys, name)?;
-        let addr = l.b.get(info.var);
+        let addr = {
+            let kind = info.kind.clone();
+            l.read_var(&kind)
+        };
         let n_rets = if *ret == Ty::Unit { 0 } else { 1 };
         let rets = l.b.call_ptr(addr, &arg_vregs, n_rets);
         return Ok(match n_rets {
@@ -910,11 +1390,71 @@ fn call_expr(l: &mut FnLower, call: &syn::ExprCall) -> Result<Val, syn::Error> {
     Err(err(&p, format!("undefined function `{name}`")))
 }
 
+/// array methods (Slice2 intrinsics): read/write/as_ptr/len
+fn array_method(
+    l: &mut FnLower,
+    base: VReg,
+    n: usize,
+    m: &syn::ExprMethodCall,
+) -> Result<Val, syn::Error> {
+    let method = m.method.to_string();
+    match method.as_str() {
+        "len" => {
+            if !m.args.is_empty() {
+                return Err(err(&m.method, "len() takes no arguments"));
+            }
+            Ok(Val::V(l.b.load_imm(n as u16), Ty::U16))
+        }
+        "as_ptr" => {
+            if !m.args.is_empty() {
+                return Err(err(&m.method, "as_ptr() takes no arguments"));
+            }
+            Ok(Val::V(base, Ty::Ptr))
+        }
+        "read" => {
+            if m.args.len() != 1 {
+                return Err(err(&m.method, "read(off) takes 1 argument"));
+            }
+            let (base2, off) = ptr_with_offset(l, base, &m.args[0])?;
+            Ok(Val::V(l.b.load_mem(base2, off), Ty::U16))
+        }
+        "write" => {
+            if m.args.len() != 2 {
+                return Err(err(&m.method, "write(off, v) takes 2 arguments"));
+            }
+            let (base2, off) = ptr_with_offset(l, base, &m.args[0])?;
+            let (v, _) = expr(l, &m.args[1])?.reg(l, "write value")?;
+            let (v, _) = coerce(l, v, &Ty::U16, &Ty::U16, &m.args[1])?;
+            l.b.store_mem(base2, off, v);
+            Ok(Val::V(v, Ty::Unit))
+        }
+        _ => Err(err(&m.method, format!("unknown array method `{method}`"))),
+    }
+}
+
 fn method_call(l: &mut FnLower, m: &syn::ExprMethodCall) -> Result<Val, syn::Error> {
+    // array methods on local arrays / global arrays
+    if let Ok(name) = path_ident(&m.receiver) {
+        if let Some(info) = l.lookup(&name) {
+            if let Ty::Array(_, n) = &info.ty {
+                let (kind, n) = (info.kind.clone(), *n);
+                let VarKind::Local { slot } = kind else {
+                    unreachable!("arrays are always memory-resident")
+                };
+                let base = l.b.addr_of_local(slot);
+                return array_method(l, base, n, m);
+            }
+        }
+        if let Some(&(addr, _, n)) = l.globals.arrays.get(&name) {
+            let base = l.b.load_imm(addr);
+            return array_method(l, base, n, m);
+        }
+    }
+
     let (base, base_ty) = expr(l, &m.receiver)?.reg(l, "method receiver")?;
     if base_ty != Ty::Ptr {
         return Err(err(&m.receiver, format!(
-            "methods only exist on Ptr (got {})",
+            "methods only exist on Ptr and arrays (got {})",
             base_ty.display()
         )));
     }

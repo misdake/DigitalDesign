@@ -87,6 +87,12 @@ pub enum Instr {
     /// slot index, resolved to load_sp/store_sp in codegen)
     LoadSp { dst: VReg, slot: u8 },
     StoreSp { slot: u8, src: VReg },
+    /// frame-local slot access for address-taken locals and local arrays;
+    /// slots are assigned by the frontend (distinct from spill slots)
+    LoadLocal { dst: VReg, slot: u8 },
+    StoreLocal { slot: u8, src: VReg },
+    /// dst = sp + slot (address of a frame-local variable)
+    AddrOfLocal { dst: VReg, slot: u8 },
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -127,6 +133,10 @@ pub struct IrFunc {
     pub ret_names: Vec<&'static str>,
     /// per-block role notes for the disassembly listing (loop header, then, ...)
     pub block_notes: Vec<Option<&'static str>>,
+    /// number of frame-local slots assigned by the frontend (address-taken
+    /// locals and local arrays); frame layout puts these after callee saves
+    /// and before spill slots
+    pub local_slots: u8,
 }
 
 impl IrFunc {
@@ -242,6 +252,9 @@ impl fmt::Display for Instr {
             Instr::DevSend { device, channel, src } => write!(f, "dev_send {device}, {channel}, v{src}"),
             Instr::LoadSp { dst, slot } => write!(f, "v{dst} = load_sp #{slot}"),
             Instr::StoreSp { slot, src } => write!(f, "store_sp #{slot} = v{src}"),
+            Instr::LoadLocal { dst, slot } => write!(f, "v{dst} = load_local #{slot}"),
+            Instr::StoreLocal { slot, src } => write!(f, "store_local #{slot} = v{src}"),
+            Instr::AddrOfLocal { dst, slot } => write!(f, "v{dst} = &local #{slot}"),
         }
     }
 }

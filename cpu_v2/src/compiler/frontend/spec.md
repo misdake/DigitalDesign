@@ -130,3 +130,105 @@ The output links with cpu_v2's `Compiler` and runs on the `sim` simulator.
   (they are both rcc sources and cargo modules, so rustc/rust-analyzer read them directly).
 - The compiler frontend lives in `cpu_v2/src/compiler/frontend/`
   (syn parsing → subset validation → AST→IR lowering).
+
+## 9. Constants and globals (data section)
+
+Three kinds of file-level data items; everything else (`static mut`, `let` at file scope) is an error.
+
+### 9.1 `const` — compile-time constants
+
+```rust
+const WIDTH: u16 = 160;
+const HALF: i16 = -3;
+```
+
+Inlined as immediates at every use; costs no memory. The initializer must be a constant
+expression (literals and arithmetic on other consts).
+
+### 9.2 `static NAME: Ty = expr;` — global scalars
+
+```rust
+static SCORE: u16 = 0;
+static TICK: i16 = -1;
+```
+
+One word in data memory at a compiler-assigned address; the compiler emits a hidden
+`__data_init` routine at the start of `main` that stores each non-zero initializer.
+- Reading `SCORE` as a value loads the word.
+- Writing goes through the address: `addr_of(&SCORE).write(0, v)` (immutable `static` reads
+  are safe Rust, so rust-analyzer stays quiet; mutation is intentionally explicit).
+
+### 9.3 `static NAME: [Ty; N] = [e0, e1, ...];` — global arrays
+
+```rust
+static TILE: [u16; 8] = [0x3c, 0x66, 0xc3, 0xff, 0xff, 0xc3, 0x66, 0x3c];
+```
+
+N consecutive words in data memory (the sprite/tile/palette data of a game). Same access
+rules as local arrays (§10), same `__data_init` emission for non-zero words.
+
+## 10. Arrays
+
+C semantics: an array is N consecutive words, addressed by a plain (single-word) pointer,
+**no bounds checks** on target. Array types are `[u16; N]` and `[i16; N]`.
+
+### 10.1 Local arrays
+
+```rust
+let mut buf: [u16; 8] = [0; 8];        // stack, zero-filled (or a full list [1,2,..,8])
+buf.write(i, 7);
+let x = buf.read(i) + buf.read(3);
+```
+
+Local arrays live in the stack frame (a compile-time sized local area, see §11).
+
+### 10.2 Accessing arrays (the `Slice2` trait)
+
+`dsl_rt` provides a real Rust extension trait `Slice2` implemented for `[u16; N]`/`[i16; N]`
+(const generics), so method calls resolve cleanly in rust-analyzer; the compiler recognizes
+them as intrinsics:
+
+| method | meaning |
+|---|---|
+| `arr.read(i) -> u16` | `arr[i]` (i is any integer expression) |
+| `arr.write(i, v)` | `arr[i] = v` |
+| `arr.as_ptr() -> Ptr` | address of element 0 (array *decays* to a pointer, like C) |
+| `arr.len() -> u16` | N as a compile-time constant |
+
+On the host these methods index real Rust arrays — so **the host run keeps Rust's bounds
+check for free**, while the target emits raw unchecked addressing (exactly the C model).
+
+### 10.3 Arrays as parameters
+
+There are no fat slices (`&[u16]` is two words — not supported). Pass arrays as `Ptr`:
+
+```rust
+fn blit(tiles: Ptr, n: u16) { ... }
+blit(TILE.as_ptr(), 8);
+```
+
+## 11. Taking addresses: `addr_of`
+
+There is no `&` operator (references are out of subset). The intrinsic
+`addr_of(&x) -> Ptr` takes the address of a variable:
+
+- **globals** (`addr_of(&SCORE)`, or `TILE.as_ptr()`): the address is a **compile-time
+  constant** (an immediate in the emitted code).
+- **locals** (`addr_of(&x)`): the *allocation* is decided at compile time — the variable is
+  placed in the function's stack frame instead of a register — but the **address value is
+  only known at run time** (`sp + slot`). The compiler emits `mov sp, t; addi t, slot`
+  wherever `addr_of(&x)` is evaluated. So: compile-time placement, run-time value.
+
+Any local whose address is taken, and every local array, becomes **memory-resident**: all
+its reads/writes go through frame slots (the existing `load_sp`/`store_sp` machinery).
+The frontend decides residency statically by scanning for `addr_of` uses and array-typed
+`let`s — no escape analysis. The frame layout becomes
+`[callee-save saves][locals/arrays][spill slots]`, all sized at compile time.
+
+Struct members (including array members) come with the library phase; nothing in §9–§11
+precludes them (a struct is just an address plus offsets).
+
+## 12. Out of scope for now
+
+`&x` references, fat slices, struct definitions, `static mut`, heap allocation of arrays,
+multi-dimensional arrays (use `arr[i * W + j]`), `*`, `/`, `%`.

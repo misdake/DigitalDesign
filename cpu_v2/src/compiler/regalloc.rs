@@ -30,16 +30,23 @@ pub struct Allocation {
     pub reg: HashMap<VReg, u8>,
     /// callee-save regs actually used; saved/restored at frame slots 0..k
     pub callee_saved: Vec<u8>,
-    /// number of spill frame slots used
+    /// frame-local slots assigned by the frontend (address-taken locals and
+    /// local arrays); they follow the callee-save area
+    pub local_slots: u8,
+    /// number of spill frame slots used (after the local area)
     pub spill_slots: u8,
 }
 impl Allocation {
     pub fn frame_size(&self) -> usize {
-        self.callee_saved.len() + self.spill_slots as usize
+        self.callee_saved.len() + self.local_slots as usize + self.spill_slots as usize
     }
-    /// frame slot index of a spill slot (they follow the callee-save area)
-    pub fn spill_frame_slot(&self, slot: u8) -> u8 {
+    /// frame slot index of a frontend local slot
+    pub fn local_frame_slot(&self, slot: u8) -> u8 {
         self.callee_saved.len() as u8 + slot
+    }
+    /// frame slot index of a spill slot (they follow the local area)
+    pub fn spill_frame_slot(&self, slot: u8) -> u8 {
+        self.callee_saved.len() as u8 + self.local_slots + slot
     }
 }
 
@@ -77,6 +84,7 @@ pub fn allocate(func: &IrFunc, coalesce: bool) -> (IrFunc, Allocation) {
             let alloc = Allocation {
                 reg: scan.reg,
                 callee_saved,
+                local_slots: f.local_slots,
                 spill_slots,
             };
             assert!(
@@ -100,9 +108,12 @@ pub(crate) fn inst_uses(inst: &Instr) -> Vec<VReg> {
     match inst {
         Instr::Bin { lhs, rhs, .. } => vec![*lhs, *rhs],
         Instr::Un { src, .. } | Instr::Shift { src, .. } | Instr::Mov { src, .. } => vec![*src],
-        Instr::LoadImm { .. } | Instr::DevRecv { .. } | Instr::LoadSp { .. } | Instr::LoadFuncAddr { .. } => {
-            vec![]
-        }
+        Instr::LoadImm { .. }
+        | Instr::DevRecv { .. }
+        | Instr::LoadSp { .. }
+        | Instr::LoadLocal { .. }
+        | Instr::AddrOfLocal { .. }
+        | Instr::LoadFuncAddr { .. } => vec![],
         Instr::LoadMem { base, .. } => vec![*base],
         Instr::StoreMem { base, src, .. } => vec![*base, *src],
         Instr::Call { args, .. } => args.clone(),
@@ -111,7 +122,7 @@ pub(crate) fn inst_uses(inst: &Instr) -> Vec<VReg> {
             u.extend_from_slice(args);
             u
         }
-        Instr::DevSend { src, .. } | Instr::StoreSp { src, .. } => vec![*src],
+        Instr::DevSend { src, .. } | Instr::StoreSp { src, .. } | Instr::StoreLocal { src, .. } => vec![*src],
     }
 }
 pub(crate) fn inst_defs(inst: &Instr) -> Vec<VReg> {
@@ -124,8 +135,12 @@ pub(crate) fn inst_defs(inst: &Instr) -> Vec<VReg> {
         | Instr::LoadMem { dst, .. }
         | Instr::DevRecv { dst, .. }
         | Instr::LoadFuncAddr { dst, .. }
+        | Instr::LoadLocal { dst, .. }
+        | Instr::AddrOfLocal { dst, .. }
         | Instr::LoadSp { dst, .. } => vec![*dst],
-        Instr::StoreMem { .. } | Instr::DevSend { .. } | Instr::StoreSp { .. } => vec![],
+        Instr::StoreMem { .. } | Instr::DevSend { .. } | Instr::StoreSp { .. } | Instr::StoreLocal { .. } => {
+            vec![]
+        }
         Instr::Call { rets, .. } | Instr::CallPtr { rets, .. } => rets.clone(),
     }
 }
@@ -163,8 +178,13 @@ fn replace_all_uses(f: &mut IrFunc, from: VReg, to: VReg) {
                 | Instr::Shift { src, .. }
                 | Instr::Mov { src, .. }
                 | Instr::DevSend { src, .. }
-                | Instr::StoreSp { src, .. } => subst(src),
-                Instr::LoadImm { .. } | Instr::DevRecv { .. } | Instr::LoadSp { .. } => {}
+                | Instr::StoreSp { src, .. }
+                | Instr::StoreLocal { src, .. } => subst(src),
+                Instr::LoadImm { .. }
+                | Instr::DevRecv { .. }
+                | Instr::LoadSp { .. }
+                | Instr::LoadLocal { .. }
+                | Instr::AddrOfLocal { .. } => {}
                 Instr::LoadMem { base, .. } => subst(base),
                 Instr::StoreMem { base, src, .. } => {
                     subst(base);
@@ -760,7 +780,11 @@ fn rewrite_spills(f: &mut IrFunc, spilled: &[VReg], next_slot: &mut u8) {
                 Instr::Un { src, .. } | Instr::Shift { src, .. } | Instr::Mov { src, .. } => {
                     reload(src, &slot_of, &spilled, f, &mut new_insts)
                 }
-                Instr::LoadImm { .. } | Instr::DevRecv { .. } | Instr::LoadSp { .. } => {}
+                Instr::LoadImm { .. }
+                | Instr::DevRecv { .. }
+                | Instr::LoadSp { .. }
+                | Instr::LoadLocal { .. }
+                | Instr::AddrOfLocal { .. } => {}
                 Instr::LoadMem { base, .. } => reload(base, &slot_of, &spilled, f, &mut new_insts),
                 Instr::StoreMem { base, src, .. } => {
                     reload(base, &slot_of, &spilled, f, &mut new_insts);
@@ -778,7 +802,7 @@ fn rewrite_spills(f: &mut IrFunc, spilled: &[VReg], next_slot: &mut u8) {
                         reload(a, &slot_of, &spilled, f, &mut new_insts);
                     }
                 }
-                Instr::DevSend { src, .. } | Instr::StoreSp { src, .. } => {
+                Instr::DevSend { src, .. } | Instr::StoreSp { src, .. } | Instr::StoreLocal { src, .. } => {
                     reload(src, &slot_of, &spilled, f, &mut new_insts)
                 }
             }
@@ -864,8 +888,12 @@ fn defs_mut(inst: &mut Instr) -> Vec<&mut VReg> {
         | Instr::LoadMem { dst, .. }
         | Instr::DevRecv { dst, .. }
         | Instr::LoadFuncAddr { dst, .. }
+        | Instr::LoadLocal { dst, .. }
+        | Instr::AddrOfLocal { dst, .. }
         | Instr::LoadSp { dst, .. } => vec![dst],
-        Instr::StoreMem { .. } | Instr::DevSend { .. } | Instr::StoreSp { .. } => vec![],
+        Instr::StoreMem { .. } | Instr::DevSend { .. } | Instr::StoreSp { .. } | Instr::StoreLocal { .. } => {
+            vec![]
+        }
         Instr::Call { rets, .. } | Instr::CallPtr { rets, .. } => rets.iter_mut().collect(),
     }
 }
