@@ -3,6 +3,7 @@
 //! codegen. reuses the Assembler/Linker from the previous implementation.
 
 mod assembler;
+mod debug;
 mod builder;
 mod codegen;
 mod driver;
@@ -19,6 +20,7 @@ mod shared;
 mod tests;
 
 pub use assembler::*;
+pub use debug::*;
 pub use builder::*;
 pub use codegen::*;
 pub use driver::*;

@@ -10,8 +10,8 @@ fn mul_bits(a: u16, b: u16, bits: u16) -> u16 {
         let bit = y & 1;
         let mask = 0u16 - bit; // bit ? 0xffff : 0
         sum += mask & x;
-        y = y >> 1;
-        x = x << 1;
+        y >>= 1;
+        x <<= 1;
         i += 1;
     }
     sum

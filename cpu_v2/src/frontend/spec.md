@@ -262,10 +262,26 @@ multi-dimensional arrays (use `arr[i * W + j]`), `*`, `/`, `%`.
 
 - `rcc <input.rs> [-o out.bin] [--lst out.lst] [--no-opt] [--stack-init N] [--data-base N]
   [--heap-begin N] [--heap-size N] [--vec-cap N]` — compiles to a binary image
-  (`RCC1` magic + word count + u16-LE words) and a disassembly listing with function
-  signatures, block roles, call targets, and source line comments (`; line N`).
+  (`RCC1` magic + word count + u16-LE words), a disassembly listing with function
+  signatures, block roles, call targets, and source line comments (`; line N`), and a
+  `.dbg` debug-info file (below).
 - `rcc-run <input.bin> [max_cycles]` — runs the image on the simulator and prints
   the halt signal (decimal/hex) and cycle count.
+
+### 13.6 Debug info (`.dbg`)
+
+Alongside the binary and listing, `rcc` writes `<input>.dbg` for a hypothetical debugger:
+
+- **files**: index of source files (main file, `mod` files, rcc_std files);
+- **functions**: name, address range, source file, frame size, and every local variable
+  with a location: `rN` (ABI register for params), `frame+N` (frame slot — arrays and
+  address-taken locals), `global@0xADDR`, or `ssa` (register/versioned);
+- **globals/consts**: static names with types and data addresses, constants with values;
+- **line table**: `line 0xADDR <file> <line>` per instruction that maps to a source line
+  (compiler-generated instructions have no entry).
+
+The mapping is statement-granular and best-effort through optimization (folded/eliminated
+code simply has no entries).
 
 ### 13.4 Library parameters and runtime cells
 

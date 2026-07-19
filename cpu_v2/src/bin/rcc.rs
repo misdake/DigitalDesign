@@ -3,7 +3,7 @@
 //! compiles an rcc source file (Rust subset, see frontend/spec.md) into a
 //! binary image and a disassembly listing.
 
-use cpu_v2::frontend::compile_program;
+use cpu_v2::frontend::compile_program_named;
 use cpu_v2::{Compiler, CompilerOptions, Instruction};
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
@@ -89,23 +89,32 @@ fn main() -> ExitCode {
         Err(format!("module file not found next to {}", input.display()))
     };
 
-    let funcs = match compile_program(&src, &opts, &mut loader) {
+    let program = match compile_program_named(
+        &input.display().to_string(),
+        &src,
+        &opts,
+        &mut loader,
+    ) {
         Ok(f) => f,
         Err(e) => die(&format!("{e}")),
     };
-    let n_funcs = funcs.len();
+    let n_funcs = program.funcs.len();
 
     let mut c = Compiler::new();
     c.opts = opts;
-    for f in funcs {
+    c.set_debug(program.debug);
+    for f in program.funcs {
         c.add_func(f);
     }
-    let (instructions, listing) = c.finish("main");
+    let (instructions, listing, debug) = c.finish_with_debug("main");
 
     std::fs::write(&out, encode_binary(&instructions))
         .unwrap_or_else(|e| die(&format!("cannot write {}: {e}", out.display())));
     std::fs::write(&lst, &listing)
         .unwrap_or_else(|e| die(&format!("cannot write {}: {e}", lst.display())));
+    let dbg_path = out.with_extension("dbg");
+    std::fs::write(&dbg_path, debug.render())
+        .unwrap_or_else(|e| die(&format!("cannot write {}: {e}", dbg_path.display())));
 
     println!(
         "compiled {} functions, {} instructions -> {} (+ {})",

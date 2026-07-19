@@ -7,9 +7,9 @@ use cpu_v2::{Compiler, SimState};
 /// compile an rcc source string and run `main` on the simulator (cycle-capped,
 /// so a runaway program cannot hang the suite)
 pub fn compile_and_run(src: &str, main: &'static str, max_cycles: usize) -> (SimState, Option<u16>) {
-    let funcs = parse_source(src).expect("parse failed");
+    let program = parse_source(src).expect("parse failed");
     let mut c = Compiler::new();
-    for f in funcs {
+    for f in program.funcs {
         c.add_func(f);
     }
     let (instructions, _) = c.finish(main);
@@ -22,13 +22,13 @@ pub fn compile_program_and_run(
     opts: &cpu_v2::CompilerOptions,
     max_cycles: usize,
 ) -> (SimState, Option<u16>, String) {
-    let funcs = cpu_v2::frontend::compile_program(src, opts, &mut |name| {
+    let program = cpu_v2::frontend::compile_program(src, opts, &mut |name| {
         Err(format!("unknown module `{name}`"))
     })
     .expect("parse failed");
     let mut c = Compiler::new();
     c.opts = opts.clone();
-    for f in funcs {
+    for f in program.funcs {
         c.add_func(f);
     }
     let (instructions, listing) = c.finish("main");

@@ -3,8 +3,10 @@
 
 use crate::compiler::{Assembler, FuncDecl, FuncName, Linker};
 use crate::compiler::codegen::compile_function;
+use crate::compiler::debug::{DebugFunc, DebugInfo, VarLoc};
 use crate::compiler::ir::*;
 use crate::compiler::options::CompilerOptions;
+use crate::frontend::FrontendDebug;
 use crate::compiler::passes::optimize;
 use crate::compiler::regalloc::allocate;
 use crate::Instruction;
@@ -14,6 +16,7 @@ use std::collections::{HashMap, HashSet};
 pub struct Compiler {
     pub opts: CompilerOptions,
     funcs: HashMap<FuncName, IrFunc>,
+    debug: Option<FrontendDebug>,
 }
 
 impl Compiler {
@@ -33,15 +36,34 @@ impl Compiler {
         self.funcs.contains_key(name)
     }
 
+    /// attach frontend debug data (variables/files) to be enriched with
+    /// addresses and the line table in `finish_with_debug`
+    pub fn set_debug(&mut self, debug: FrontendDebug) {
+        self.debug = Some(debug);
+    }
+
     /// compile everything reachable from `main` and return the instruction
     /// image plus a disassembly listing (per function, with source-level
     /// comments: signatures, block roles, call targets)
     pub fn finish(self, main: FuncName) -> (Vec<Instruction>, String) {
+        let (instructions, listing, _) = self.finish_impl(main);
+        (instructions, listing)
+    }
+
+    /// like `finish`, and also produces debugger info when `set_debug` was called
+    pub fn finish_with_debug(self, main: FuncName) -> (Vec<Instruction>, String, DebugInfo) {
+        let (instructions, listing, debug) = self.finish_impl(main);
+        (instructions, listing, debug.unwrap_or_default())
+    }
+
+    fn finish_impl(self, main: FuncName) -> (Vec<Instruction>, String, Option<DebugInfo>) {
         let mut asm = Assembler::default();
         let mut linker = Linker::default();
         let mut cursor = 0usize;
         let mut layout: Vec<(FuncName, (usize, usize))> = vec![];
         let mut all_comments: Vec<(usize, String)> = vec![];
+        let mut fn_debug: Vec<(FuncName, (usize, usize), usize, usize)> = vec![];
+        let mut line_map: Vec<(usize, u32)> = vec![];
 
         let mut called: HashSet<FuncName> = HashSet::new();
         let mut next = vec![main];
@@ -58,6 +80,8 @@ impl Compiler {
             let stack_init = if name == main { self.opts.stack_init } else { 0 };
             let emitted = compile_function(&allocated_ir, &alloc, &mut asm, cursor, stack_init);
             let end = cursor + emitted.len;
+            fn_debug.push((name, (cursor, end), alloc.frame_size(), alloc.callee_saved.len()));
+            line_map.extend(emitted.line_map);
 
             for rel in &emitted.relocations {
                 if called.insert(rel.func_name) {
@@ -120,6 +144,52 @@ impl Compiler {
             listing.push_str("}\n");
         }
 
-        (instructions, listing)
+        let debug = self.debug.map(|fd| {
+            let mut info = DebugInfo {
+                files: fd.files,
+                globals: fd.globals,
+                consts: fd.consts,
+                ..DebugInfo::default()
+            };
+            for (name, range, frame, callee_base) in &fn_debug {
+                let fdbg = fd.funcs.iter().find(|d| d.name == *name);
+                // frame-local slots follow the callee-save area in the frame
+                let locals = fdbg
+                    .map(|d| {
+                        d.locals
+                            .iter()
+                            .map(|v| {
+                                let mut v = v.clone();
+                                if let VarLoc::Frame(slot) = v.loc {
+                                    v.loc = VarLoc::Frame(*callee_base as u8 + slot);
+                                }
+                                v
+                            })
+                            .collect()
+                    })
+                    .unwrap_or_default();
+                info.functions.push(DebugFunc {
+                    name: name.to_string(),
+                    file: fdbg.map(|d| d.file).unwrap_or(0),
+                    addr: *range,
+                    frame_size: *frame,
+                    locals,
+                });
+            }
+            for (addr, line) in &line_map {
+                // attach each line entry to the function containing the address
+                let file = fn_debug
+                    .iter()
+                    .find(|(_, (s, e), _, _)| (s..e).contains(&addr))
+                    .and_then(|(name, _, _, _)| fd.funcs.iter().find(|d| d.name == *name))
+                    .map(|d| d.file)
+                    .unwrap_or(0);
+                info.lines.push((*addr, file, *line));
+            }
+            info.lines.sort();
+            info
+        });
+
+        (instructions, listing, debug)
     }
 }

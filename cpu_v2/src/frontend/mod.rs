@@ -3,6 +3,7 @@
 //!
 //! anything outside the subset is a hard error with a source span.
 
+use crate::{DebugVar, VarLoc};
 use crate::{BoolExpr, CompilerOptions, FuncBuilder, VarId};
 use crate::{BlockId, Cmp, CmpRhs, Instr, IrFunc, BinOp, ShiftOp, UnOp, VReg};
 use crate::isa::Cond;
@@ -12,25 +13,48 @@ use syn::{BinOp as SBinOp, Block, Expr, Item, ItemFn, Lit, Pat, Stmt, Type, UnOp
 #[cfg(doc)]
 pub mod spec {}
 
+/// a compiled program: functions plus the frontend half of the debug info
+pub struct Program {
+    pub funcs: Vec<IrFunc>,
+    pub debug: FrontendDebug,
+}
+
+/// debug data collected by the frontend (the driver adds addresses and the
+/// pc->line table to complete the picture)
+#[derive(Default)]
+pub struct FrontendDebug {
+    pub files: Vec<String>,
+    pub funcs: Vec<FnDebug>,
+    pub globals: Vec<DebugVar>,
+    pub consts: Vec<(String, String, u16)>,
+}
+
+pub struct FnDebug {
+    pub name: String,
+    pub file: u16,
+    pub locals: Vec<DebugVar>,
+}
+
 /// parse rcc source text into a list of functions (IR), or report the first
 /// subset violation with a span
-pub fn parse_source(src: &str) -> Result<Vec<IrFunc>, syn::Error> {
+pub fn parse_source(src: &str) -> Result<Program, syn::Error> {
     parse_source_with(src, 0)
 }
 
 /// like `parse_source`, with the static data section starting at `data_base`
-pub fn parse_source_with(src: &str, data_base: u16) -> Result<Vec<IrFunc>, syn::Error> {
+pub fn parse_source_with(src: &str, data_base: u16) -> Result<Program, syn::Error> {
     let file = syn::parse_file(src)?;
-    parse_files(vec![file], data_base)
+    let (funcs, debug) = parse_files(vec![file], data_base, &["<source>".to_string()])?;
+    Ok(Program { funcs, debug })
 }
 
 /// the rcc standard library, embedded and appended to every program compiled
 /// via `compile_program` (unused functions are dropped by the linker)
-const STD_SOURCES: &[&str] = &[
-    include_str!("../rcc_std/heap.rs"),
-    include_str!("../rcc_std/mem.rs"),
-    include_str!("../rcc_std/mul.rs"),
-    include_str!("../rcc_std/vec.rs"),
+const STD_SOURCES: &[(&str, &str)] = &[
+    ("rcc_std/heap.rs", include_str!("../rcc_std/heap.rs")),
+    ("rcc_std/mem.rs", include_str!("../rcc_std/mem.rs")),
+    ("rcc_std/mul.rs", include_str!("../rcc_std/mul.rs")),
+    ("rcc_std/vec.rs", include_str!("../rcc_std/vec.rs")),
 ];
 
 /// compile a full program: the user source, any `mod name;` files resolved
@@ -40,13 +64,23 @@ pub fn compile_program(
     src: &str,
     opts: &CompilerOptions,
     loader: &mut dyn FnMut(&str) -> Result<String, String>,
-) -> Result<Vec<IrFunc>, syn::Error> {
+) -> Result<Program, syn::Error> {
+    compile_program_named("<main>", src, opts, loader)
+}
+
+/// like `compile_program`, with the main source file named for debug output
+pub fn compile_program_named(
+    main_name: &str,
+    src: &str,
+    opts: &CompilerOptions,
+    loader: &mut dyn FnMut(&str) -> Result<String, String>,
+) -> Result<Program, syn::Error> {
     // gather sources: main file + user modules (recursive) + std
-    let mut srcs: Vec<String> = vec![src.to_string()];
+    let mut srcs: Vec<(String, String)> = vec![(main_name.to_string(), src.to_string())];
     let mut seen: HashSet<String> = HashSet::new();
     let mut i = 0;
     while i < srcs.len() {
-        let text = srcs[i].clone();
+        let text = srcs[i].1.clone();
         let file = syn::parse_file(&text)?;
         for item in &file.items {
             if let Item::Mod(m) = item {
@@ -57,26 +91,28 @@ pub fn compile_program(
                 if seen.insert(name.clone()) {
                     let text2 = loader(&name)
                         .map_err(|e| err(&m.ident, format!("cannot load module `{name}`: {e}")))?;
-                    srcs.push(text2);
+                    srcs.push((format!("{name}.rs"), text2));
                 }
             }
         }
         i += 1;
     }
-    srcs.extend(STD_SOURCES.iter().map(|t| t.to_string()));
+    srcs.extend(STD_SOURCES.iter().map(|(n, t)| (n.to_string(), t.to_string())));
 
     let mut files = vec![];
-    for text in &srcs {
+    let mut names = vec![];
+    for (name, text) in &srcs {
+        names.push(name.clone());
         files.push(syn::parse_file(text)?);
     }
-    let mut out = parse_files(files, opts.data_base)?;
-    auto_init(&mut out, opts)?;
-    Ok(out)
+    let (mut funcs, debug) = parse_files(files, opts.data_base, &names)?;
+    auto_init(&mut funcs, opts)?;
+    Ok(Program { funcs, debug })
 }
 
 /// insert library initialization calls at the start of `main`, driven by
 /// which library functions the program's call graph reaches
-fn auto_init(out: &mut Vec<IrFunc>, opts: &CompilerOptions) -> Result<(), syn::Error> {
+fn auto_init(out: &mut [IrFunc], opts: &CompilerOptions) -> Result<(), syn::Error> {
     // reachability over the call graph from main
     let mut reachable: HashSet<&str> = HashSet::new();
     let mut work = vec!["main"];
@@ -148,14 +184,18 @@ fn auto_init(out: &mut Vec<IrFunc>, opts: &CompilerOptions) -> Result<(), syn::E
     Ok(())
 }
 
-fn parse_files(files: Vec<syn::File>, data_base: u16) -> Result<Vec<IrFunc>, syn::Error> {
-    let mut fns = vec![];
+fn parse_files(
+    files: Vec<syn::File>,
+    data_base: u16,
+    file_names: &[String],
+) -> Result<(Vec<IrFunc>, FrontendDebug), syn::Error> {
+    let mut fns: Vec<(usize, &syn::ItemFn)> = vec![];
     let mut consts: HashMap<String, (u16, Ty)> = HashMap::new();
     let mut globals = Globals {
         next_addr: data_base,
         ..Globals::default()
     };
-    for file in &files {
+    for (fi, file) in files.iter().enumerate() {
         for item in &file.items {
             match item {
                 Item::Fn(f) => {
@@ -164,7 +204,7 @@ fn parse_files(files: Vec<syn::File>, data_base: u16) -> Result<Vec<IrFunc>, syn
                             return Err(err(attr, "attributes are not supported (except #[allow])"));
                         }
                     }
-                    fns.push(f)
+                    fns.push((fi, f))
                 }
                 Item::Use(_) => { /* ignored: for the IDE only */ }
                 Item::Const(c) => {
@@ -192,7 +232,7 @@ fn parse_files(files: Vec<syn::File>, data_base: u16) -> Result<Vec<IrFunc>, syn
     // collect signatures first (functions can call each other regardless of order)
     let mut sigs: HashMap<String, Sig> = HashMap::new();
     let mut names = vec![];
-    for f in &fns {
+    for (_, f) in &fns {
         let name = f.sig.ident.to_string();
         let sig = signature(f)?;
         if sigs.insert(name.clone(), sig).is_some() {
@@ -201,11 +241,36 @@ fn parse_files(files: Vec<syn::File>, data_base: u16) -> Result<Vec<IrFunc>, syn
         names.push(intern(&name));
     }
     let mut out = vec![];
-    for (name, f) in names.into_iter().zip(fns) {
-        out.push(lower_fn(name, f, &sigs, &consts, &globals)?);
+    let mut debug = FrontendDebug {
+        files: file_names.to_vec(),
+        ..FrontendDebug::default()
+    };
+    for (name, (fi, f)) in names.into_iter().zip(fns) {
+        let (ir, fdbg) = lower_fn(name, f, &sigs, &consts, &globals, fi as u16)?;
+        out.push(ir);
+        debug.funcs.push(fdbg);
     }
     emit_data_init(&mut out, &globals)?;
-    Ok(out)
+
+    // globals/consts for the debugger
+    for (name, (addr, ty)) in &globals.scalars {
+        debug.globals.push(DebugVar {
+            name: name.clone(),
+            ty: ty.display(),
+            loc: VarLoc::Global(*addr),
+        });
+    }
+    for (name, (addr, elem, len)) in &globals.arrays {
+        debug.globals.push(DebugVar {
+            name: name.clone(),
+            ty: Ty::Array(Box::new(elem.clone()), *len).display(),
+            loc: VarLoc::Global(*addr),
+        });
+    }
+    for (name, (v, ty)) in &consts {
+        debug.consts.push((name.clone(), ty.display(), *v));
+    }
+    Ok((out, debug))
 }
 
 /// initialize non-zero static words at the start of main (__data_init)
@@ -628,6 +693,7 @@ struct FnLower<'a> {
     globals: &'a Globals,
     residents: HashMap<String, ResidentKind>,
     scopes: Vec<HashMap<String, VarInfo>>,
+    debug_locals: Vec<DebugVar>,
     ret_ty: Ty,
     /// true once the current block has ended (return/halt)
     dead: bool,
@@ -667,6 +733,15 @@ impl FnLower<'_> {
         self.scopes.iter().rev().find_map(|s| s.get(name))
     }
     fn declare(&mut self, name: String, info: VarInfo) {
+        let loc = match info.kind {
+            VarKind::Ssa { .. } => VarLoc::Ssa,
+            VarKind::Local { slot } => VarLoc::Frame(slot),
+        };
+        self.debug_locals.push(DebugVar {
+            name: name.clone(),
+            ty: info.ty.display(),
+            loc,
+        });
         self.scopes.last_mut().unwrap().insert(name, info);
     }
     fn read_var(&mut self, kind: &VarKind) -> VReg {
@@ -815,7 +890,8 @@ fn lower_fn(
     sigs: &HashMap<String, Sig>,
     consts: &HashMap<String, (u16, Ty)>,
     globals: &Globals,
-) -> Result<IrFunc, syn::Error> {
+    file: u16,
+) -> Result<(IrFunc, FnDebug), syn::Error> {
     let sig = sigs.get(&f.sig.ident.to_string()).unwrap().clone();
     let n_rets = if sig.ret == Ty::Unit { 0 } else { 1 };
     let (b, param_vars) = FuncBuilder::new(name, sig.params.len(), n_rets);
@@ -832,6 +908,7 @@ fn lower_fn(
         globals,
         residents,
         scopes: vec![HashMap::new()],
+        debug_locals: vec![],
         ret_ty: sig.ret.clone(),
         dead: false,
     };
@@ -870,6 +947,13 @@ fn lower_fn(
                 mutable: false,
             },
         );
+    }
+    // params occupy the first entries of debug_locals (declaration order);
+    // rewrite their locations to ABI registers (frame slot when address-taken)
+    for (i, dv) in l.debug_locals.iter_mut().enumerate() {
+        if let VarLoc::Ssa = dv.loc {
+            dv.loc = VarLoc::Param(i as u8);
+        }
     }
     let ret_names: Vec<&'static str> = if sig.ret == Ty::Unit { vec![] } else { vec!["r"] };
     l.b.set_names(&param_names, &ret_names);
@@ -911,7 +995,12 @@ fn lower_fn(
             format!("function `{name}` may reach its end without returning a value"),
         ));
     }
-    Ok(l.b.finish())
+    let fdbg = FnDebug {
+        name: name.to_string(),
+        file,
+        locals: l.debug_locals,
+    };
+    Ok((l.b.finish(), fdbg))
 }
 
 fn block(l: &mut FnLower, blk: &Block) -> Result<(), syn::Error> {

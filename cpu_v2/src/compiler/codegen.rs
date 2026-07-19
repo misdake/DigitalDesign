@@ -11,7 +11,7 @@ use std::collections::HashMap;
 /// one emitted line: concrete instruction, unresolved branch, label marker,
 /// far jump, or a reserved slot (filled by the linker, e.g. call sequences)
 enum Line {
-    Inst(Instruction),
+    Inst(Instruction, Option<u32>),
     /// conditional branch (j_cc) to a block/label
     Branch { cond: Cond, target: usize },
     /// unconditional jump to a block/label
@@ -30,7 +30,7 @@ enum Line {
 
 fn line_size(line: &Line) -> usize {
     match line {
-        Line::Inst(_) | Line::Branch { .. } | Line::Jump { .. } => 1,
+        Line::Inst(_, _) | Line::Branch { .. } | Line::Jump { .. } => 1,
         Line::AbsJump { .. } => 3,
         Line::Call3 { .. } => 3,
         Line::LoadAddr2 { .. } => 2,
@@ -103,6 +103,8 @@ pub struct EmittedFunc {
     pub len: usize,
     /// (absolute address, comment) pairs for the disassembly listing
     pub comments: Vec<(usize, String)>,
+    /// (absolute address, source line) for the debugger's line table
+    pub line_map: Vec<(usize, u32)>,
 }
 
 /// parallel move between registers, dst-centric (sources may repeat).
@@ -160,20 +162,20 @@ pub fn compile_function(
     // entry-point stack pointer override (before the prologue)
     if stack_init != 0 {
         let (hi, lo) = hi_lo(stack_init as u8);
-        lines.push(Line::Inst(load_lo(hi, lo, REG_SP)));
+        lines.push(Line::Inst(load_lo(hi, lo, REG_SP), None));
         if stack_init > 255 {
             let (hi, lo) = hi_lo((stack_init >> 8) as u8);
-            lines.push(Line::Inst(load_hi(hi, lo, REG_SP)));
+            lines.push(Line::Inst(load_hi(hi, lo, REG_SP), None));
         }
     }
 
     // prologue
     if alloc.frame_size() > 0 {
         let (hi, lo) = hi_lo(alloc.frame_size() as u8);
-        lines.push(Line::Inst(sp_sub(hi, lo)));
+        lines.push(Line::Inst(sp_sub(hi, lo), None));
         for (slot, &r) in alloc.callee_saved.iter().enumerate() {
             let (hi, lo) = hi_lo(slot as u8);
-            lines.push(Line::Inst(store_sp(hi, lo, r)));
+            lines.push(Line::Inst(store_sp(hi, lo, r), None));
         }
     }
 
@@ -208,12 +210,12 @@ pub fn compile_function(
                 })
                 .collect();
             for (from, to) in parallel_moves(&moves, REG_TMP) {
-                lines.push(Line::Inst(mov(from, to)));
+                lines.push(Line::Inst(mov(from, to), None));
             }
         }
 
-        for inst in &block.insts {
-            emit_inst(inst, &reg, alloc.callee_saved.len() as u8, alloc.local_slots, &mut lines);
+        for (inst, ir_line) in block.insts.iter().zip(&block.lines) {
+            emit_inst(inst, *ir_line, &reg, alloc.callee_saved.len() as u8, alloc.local_slots, &mut lines);
         }
 
         match &block.term {
@@ -250,16 +252,16 @@ pub fn compile_function(
                 // values are already in r0/r1 via ABI shim movs
                 for (slot, &r) in alloc.callee_saved.iter().enumerate() {
                     let (hi, lo) = hi_lo(slot as u8);
-                    lines.push(Line::Inst(load_sp(hi, lo, r)));
+                    lines.push(Line::Inst(load_sp(hi, lo, r), None));
                 }
                 if alloc.frame_size() > 0 {
                     let (hi, lo) = hi_lo(alloc.frame_size() as u8);
-                    lines.push(Line::Inst(sp_add(hi, lo)));
+                    lines.push(Line::Inst(sp_add(hi, lo), None));
                 }
-                lines.push(Line::Inst(jmp_reg(REG_RA)));
+                lines.push(Line::Inst(jmp_reg(REG_RA), None));
             }
             Some(Terminator::Halt { signal }) => {
-                lines.push(Line::Inst(halt(reg(*signal))));
+                lines.push(Line::Inst(halt(reg(*signal)), None));
             }
             None => unreachable!("unterminated reachable block b{b}"),
         }
@@ -283,13 +285,17 @@ pub fn compile_function(
     let mut written = 0usize;
     let mut relocations = vec![];
     let mut comments = vec![];
+    let mut line_map = vec![];
     for line in &lines {
         match line {
             Line::Label(_) => {}
             Line::Comment(text) => {
                 comments.push((addr, text.clone()));
             }
-            Line::Inst(inst) => {
+            Line::Inst(inst, line) => {
+                if let Some(line) = line {
+                    line_map.push((addr, *line));
+                }
                 asm.inst_at(*inst, addr);
                 addr += 1;
                 written += 1;
@@ -356,6 +362,7 @@ pub fn compile_function(
         relocations,
         len: written,
         comments,
+        line_map,
     }
 }
 
@@ -395,33 +402,33 @@ fn emit_edge_moves(
         })
         .collect();
     for (from, to) in parallel_moves(&moves, REG_TMP) {
-        lines.push(Line::Inst(mov(from, to)));
+        lines.push(Line::Inst(mov(from, to), None));
     }
 }
 
 fn emit_cmp(cmp: &Cmp, reg: &dyn Fn(VReg) -> u8, lines: &mut Vec<Line>) {
     let lhs = reg(cmp.lhs);
     match (&cmp.rhs, cmp.signed) {
-        (CmpRhs::Reg(r), false) => lines.push(Line::Inst(cmp_r(reg(*r), lhs))),
-        (CmpRhs::Reg(r), true) => lines.push(Line::Inst(cmp_s(reg(*r), lhs))),
+        (CmpRhs::Reg(r), false) => lines.push(Line::Inst(cmp_r(reg(*r), lhs), None)),
+        (CmpRhs::Reg(r), true) => lines.push(Line::Inst(cmp_s(reg(*r), lhs), None)),
         (CmpRhs::Imm(v), false) if *v <= 15 => {
-            lines.push(Line::Inst(cmp_i(*v as u8, lhs)));
+            lines.push(Line::Inst(cmp_i(*v as u8, lhs), None));
         }
         (CmpRhs::Imm(v), true) if (-8..=7).contains(&(*v as i16)) => {
-            lines.push(Line::Inst(cmp_si((*v as u8) & 0xf, lhs)));
+            lines.push(Line::Inst(cmp_si((*v as u8) & 0xf, lhs), None));
         }
         (CmpRhs::Imm(v), signed) => {
             // materialize the immediate, then compare registers
             let (hi, lo) = hi_lo(*v as u8);
-            lines.push(Line::Inst(load_lo(hi, lo, REG_TMP)));
+            lines.push(Line::Inst(load_lo(hi, lo, REG_TMP), None));
             if *v > 255 {
                 let (hi, lo) = hi_lo((*v >> 8) as u8);
-                lines.push(Line::Inst(load_hi(hi, lo, REG_TMP)));
+                lines.push(Line::Inst(load_hi(hi, lo, REG_TMP), None));
             }
             if signed {
-                lines.push(Line::Inst(cmp_s(REG_TMP, lhs)));
+                lines.push(Line::Inst(cmp_s(REG_TMP, lhs), None));
             } else {
-                lines.push(Line::Inst(cmp_r(REG_TMP, lhs)));
+                lines.push(Line::Inst(cmp_r(REG_TMP, lhs), None));
             }
         }
     }
@@ -429,6 +436,7 @@ fn emit_cmp(cmp: &Cmp, reg: &dyn Fn(VReg) -> u8, lines: &mut Vec<Line>) {
 
 fn emit_inst(
     inst: &Instr,
+    ir_line: Option<u32>,
     reg: &dyn Fn(VReg) -> u8,
     local_base: u8,
     n_locals: u8,
@@ -443,7 +451,7 @@ fn emit_inst(
                 BinOp::Or => or,
                 BinOp::Xor => xor,
             };
-            lines.push(Line::Inst(f(reg(*lhs), reg(*rhs), reg(*dst))));
+            lines.push(Line::Inst(f(reg(*lhs), reg(*rhs), reg(*dst)), ir_line));
         }
         Instr::Un { dst, op, src } => {
             let f = match op {
@@ -453,42 +461,42 @@ fn emit_inst(
                 UnOp::Cnt1 => cnt1,
                 UnOp::Log2 => log2,
             };
-            lines.push(Line::Inst(f(reg(*src), reg(*dst))));
+            lines.push(Line::Inst(f(reg(*src), reg(*dst)), ir_line));
         }
         Instr::Shift { dst, op, src, amount } => {
             if reg(*dst) != reg(*src) {
-                lines.push(Line::Inst(mov(reg(*src), reg(*dst))));
+                lines.push(Line::Inst(mov(reg(*src), reg(*dst)), ir_line));
             }
             let f = match op {
                 ShiftOp::Lsl => lsl,
                 ShiftOp::Lsr => lsr,
                 ShiftOp::Asr => asr,
             };
-            lines.push(Line::Inst(f(*amount, reg(*dst))));
+            lines.push(Line::Inst(f(*amount, reg(*dst)), ir_line));
         }
         Instr::Mov { dst, src } => {
             if reg(*dst) != reg(*src) {
-                lines.push(Line::Inst(mov(reg(*src), reg(*dst))));
+                lines.push(Line::Inst(mov(reg(*src), reg(*dst)), ir_line));
             }
         }
         Instr::LoadImm { dst, value } => {
             let (hi, lo) = hi_lo(*value as u8);
-            lines.push(Line::Inst(load_lo(hi, lo, reg(*dst))));
+            lines.push(Line::Inst(load_lo(hi, lo, reg(*dst)), ir_line));
             if *value > 255 {
                 let (hi, lo) = hi_lo((*value >> 8) as u8);
-                lines.push(Line::Inst(load_hi(hi, lo, reg(*dst))));
+                lines.push(Line::Inst(load_hi(hi, lo, reg(*dst)), ir_line));
             }
         }
         Instr::LoadMem { dst, base, offset } => {
             let dst = reg(*dst);
             emit_mem(lines, *base, *offset, reg, |lines, base_reg, off| {
-                lines.push(Line::Inst(load_mem(base_reg, off, dst)));
+                lines.push(Line::Inst(load_mem(base_reg, off, dst), ir_line));
             });
         }
         Instr::StoreMem { base, offset, src } => {
             let src = reg(*src);
             emit_mem(lines, *base, *offset, reg, |lines, base_reg, off| {
-                lines.push(Line::Inst(store_mem(base_reg, src, off)));
+                lines.push(Line::Inst(store_mem(base_reg, src, off), ir_line));
             });
         }
         Instr::Call { func, .. } => {
@@ -502,39 +510,39 @@ fn emit_inst(
         }
         Instr::CallPtr { .. } => {
             // addr/args/results already moved by ABI shims (addr is in tmp)
-            lines.push(Line::Inst(call_reg(REG_TMP)));
+            lines.push(Line::Inst(call_reg(REG_TMP), ir_line));
         }
         Instr::DevRecv { dst, device, channel } => {
             assert!(*device <= 15 && *channel <= 15, "device/channel out of u4 range");
-            lines.push(Line::Inst(dev_recv(*device, *channel, reg(*dst))));
+            lines.push(Line::Inst(dev_recv(*device, *channel, reg(*dst)), ir_line));
         }
         Instr::DevSend { device, channel, src } => {
             assert!(*device <= 15 && *channel <= 15, "device/channel out of u4 range");
-            lines.push(Line::Inst(dev_send(*device, *channel, reg(*src))));
+            lines.push(Line::Inst(dev_send(*device, *channel, reg(*src)), ir_line));
         }
         Instr::LoadSp { dst, slot } => {
             let (hi, lo) = hi_lo(local_base + n_locals + *slot);
-            lines.push(Line::Inst(load_sp(hi, lo, reg(*dst))));
+            lines.push(Line::Inst(load_sp(hi, lo, reg(*dst)), ir_line));
         }
         Instr::StoreSp { slot, src } => {
             let (hi, lo) = hi_lo(local_base + n_locals + *slot);
-            lines.push(Line::Inst(store_sp(hi, lo, reg(*src))));
+            lines.push(Line::Inst(store_sp(hi, lo, reg(*src)), ir_line));
         }
         Instr::LoadLocal { dst, slot } => {
             let (hi, lo) = hi_lo(local_base + *slot);
-            lines.push(Line::Inst(load_sp(hi, lo, reg(*dst))));
+            lines.push(Line::Inst(load_sp(hi, lo, reg(*dst)), ir_line));
         }
         Instr::StoreLocal { slot, src } => {
             let (hi, lo) = hi_lo(local_base + *slot);
-            lines.push(Line::Inst(store_sp(hi, lo, reg(*src))));
+            lines.push(Line::Inst(store_sp(hi, lo, reg(*src)), ir_line));
         }
         Instr::AddrOfLocal { dst, slot } => {
             // dst = sp + frame offset of the local slot
             let (hi, lo) = hi_lo(local_base + *slot);
-            lines.push(Line::Inst(mov(REG_SP, reg(*dst))));
+            lines.push(Line::Inst(mov(REG_SP, reg(*dst)), ir_line));
             if local_base + *slot > 0 {
-                lines.push(Line::Inst(load_lo(hi, lo, REG_TMP)));
-                lines.push(Line::Inst(add(reg(*dst), REG_TMP, reg(*dst))));
+                lines.push(Line::Inst(load_lo(hi, lo, REG_TMP), ir_line));
+                lines.push(Line::Inst(add(reg(*dst), REG_TMP, reg(*dst)), ir_line));
             }
         }
     }
@@ -554,12 +562,12 @@ fn emit_mem(
     } else {
         // address = base + offset via tmp
         let (hi, lo) = hi_lo(offset as u8);
-        lines.push(Line::Inst(load_lo(hi, lo, REG_TMP)));
+        lines.push(Line::Inst(load_lo(hi, lo, REG_TMP), None));
         if (offset >> 8) != 0 {
             let (hi, lo) = hi_lo((offset >> 8) as u8);
-            lines.push(Line::Inst(load_hi(hi, lo, REG_TMP)));
+            lines.push(Line::Inst(load_hi(hi, lo, REG_TMP), None));
         }
-        lines.push(Line::Inst(add(reg(base), REG_TMP, REG_TMP)));
+        lines.push(Line::Inst(add(reg(base), REG_TMP, REG_TMP), None));
         emit(lines, REG_TMP, 0);
     }
 }
