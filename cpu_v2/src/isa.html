@@ -1,0 +1,242 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>cpu_v2 ISA v2.6 · Instruction Encoding & Hardware Control Signals</title>
+<style>
+  :root { --border: #d0d7de; --text: #1f2328; --dim: #57606a; --op: #0969da; }
+  * { box-sizing: border-box; }
+  body {
+    font-family: -apple-system, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
+    color: var(--text); margin: 0; padding: 24px; line-height: 1.55;
+    max-width: 1280px; margin-left: auto; margin-right: auto;
+  }
+  h1 { font-size: 22px; border-bottom: 2px solid var(--border); padding-bottom: 8px; }
+  h2 { font-size: 17px; margin-top: 36px; border-left: 4px solid var(--op); padding-left: 8px; }
+  p, li { font-size: 14px; }
+  code { background: #eff1f3; padding: 1px 5px; border-radius: 4px; font-size: 13px; }
+  table { border-collapse: collapse; width: 100%; margin: 12px 0; font-size: 13px; }
+  th, td { border: 1px solid var(--border); padding: 5px 8px; text-align: left; vertical-align: middle; }
+  th { background: #f6f8fa; font-weight: 600; white-space: nowrap; }
+  td.center, th.center { text-align: center; }
+  .nib { font-family: "Cascadia Code", Consolas, monospace; font-weight: 700; text-align: center; min-width: 34px; }
+  .nib.op  { background: #ddf4ff; color: #0550ae; }
+  .nib.reg { background: #dafbe1; color: #116329; }
+  .nib.imm { background: #fff8c5; color: #7d4e00; }
+  .nib.x   { background: #f6f8fa; color: #8c959f; }
+  .mn { font-family: "Cascadia Code", Consolas, monospace; font-weight: 700; white-space: nowrap; }
+  .sem { font-family: "Cascadia Code", Consolas, monospace; font-size: 12px; white-space: nowrap; }
+  .grp td { font-weight: 700; font-size: 13px; letter-spacing: 1px; }
+  .g-alu  td { background: #ddf4ff; } .g-misc td { background: #f6f8fa; }
+  .g-imm  td { background: #fff8c5; } .g-mem  td { background: #ffebe9; }
+  .g-ctrl td { background: #dafbe1; } .g-dev  td { background: #fbefff; }
+  .note { color: var(--dim); font-size: 12px; }
+  .map td, .map th { text-align: center; font-size: 12px; padding: 4px 3px; }
+  .map .cell { font-family: "Cascadia Code", Consolas, monospace; font-size: 11px; }
+  .map .axis { background: #f6f8fa; font-weight: 700; }
+  .m-alu { background: #ddf4ff; } .m-misc { background: #eceff3; } .m-imm { background: #fff8c5; }
+  .m-mem { background: #ffebe9; } .m-ctrl { background: #dafbe1; } .m-dev { background: #fbefff; }
+  .m-rsv { background: #fafbfc; color: #b7bec6; }
+</style>
+</head>
+<body>
+
+<h1>cpu_v2 ISA (v2.6) · Instruction Encoding &amp; Hardware Control Signals</h1>
+<p>
+  16-bit fixed-length instructions, 4 nibbles <code>[n3 n2 n1 n0]</code> (n3 = highest). 16 registers r0–r15;
+  r13 = ra (link register, hardwired for all calls), r14 = sp, r15 = compiler temp.
+  Flags G(bit0)/E(bit1)/L(bit2), set by cmp; condition test = <code>|(flags &amp; mask)</code>.
+  Immediates: u4/u8 unsigned, i4/i8 signed; <b>addi's i4 is zero-less</b> (raw 0..7 → +1..+8, raw 8..f → −8..−1).
+</p>
+<p class="note">
+  Port discipline: write addr = n0, read A = n1, read B ∈ {n2, n0}; r13/r14 in port columns are hardwired (implicit).
+  Columns: Rd A / Rd B = register-file read-port address sources; Wr = write-port address; B src = ALU second operand; Mem; flags; PC = next-pc source.
+  Defaults: PC = pc+1, no mem access, no flags write, single cycle.
+</p>
+
+<h2>1. Opcode Map (row = n3, col = n2)</h2>
+<table class="map">
+  <tr><th class="axis">n3 \ n2</th>
+    <th class="axis">0</th><th class="axis">1</th><th class="axis">2</th><th class="axis">3</th>
+    <th class="axis">4</th><th class="axis">5</th><th class="axis">6</th><th class="axis">7</th>
+    <th class="axis">8</th><th class="axis">9</th><th class="axis">a</th><th class="axis">b</th>
+    <th class="axis">c</th><th class="axis">d</th><th class="axis">e</th><th class="axis">f</th></tr>
+  <tr><th class="axis">0</th>
+    <td class="cell m-misc">halt</td><td class="cell m-misc">mov</td><td class="cell m-misc">inv</td><td class="cell m-misc">neg</td>
+    <td class="cell m-misc">not0</td><td class="cell m-misc">cnt1</td><td class="cell m-misc">log2</td><td class="cell m-rsv">·</td>
+    <td class="cell m-misc">lsl</td><td class="cell m-misc">lsr</td><td class="cell m-misc">asr</td><td class="cell m-rsv">·</td>
+    <td class="cell m-misc">sp_add</td><td class="cell m-misc">sp_sub</td><td class="cell m-rsv">·</td><td class="cell m-rsv">·</td></tr>
+  <tr><th class="axis">1</th>
+    <td class="cell m-ctrl">pc</td><td class="cell m-ctrl">jg</td><td class="cell m-ctrl">je</td><td class="cell m-ctrl">jge</td>
+    <td class="cell m-ctrl">jl</td><td class="cell m-ctrl">jne</td><td class="cell m-ctrl">jle</td><td class="cell m-ctrl">jmp</td>
+    <td class="cell m-ctrl">cmp_r</td><td class="cell m-ctrl">cmp_i</td><td class="cell m-ctrl">cmp_s</td><td class="cell m-ctrl">cmp_si</td>
+    <td class="cell m-ctrl">call_rel</td><td class="cell m-ctrl">call_abs</td><td class="cell m-ctrl">jmp_reg</td><td class="cell m-ctrl">call_reg</td></tr>
+  <tr><th class="axis">2</th><td class="cell m-imm" colspan="16">load_hi&nbsp;&nbsp;r{n0} = {u8, r{n0}[7:0]}</td></tr>
+  <tr><th class="axis">3</th><td class="cell m-imm" colspan="16">load_lo&nbsp;&nbsp;r{n0} = zext(u8)</td></tr>
+  <tr><th class="axis">4</th><td class="cell m-mem" colspan="16">store_mem&nbsp;&nbsp;mem[r{n2} + i4(n0)] = r{n1}</td></tr>
+  <tr><th class="axis">5</th><td class="cell m-mem" colspan="16">load_mem&nbsp;&nbsp;r{n0} = mem[r{n2} + i4(n1)]</td></tr>
+  <tr><th class="axis">6</th><td class="cell m-mem" colspan="16">store_sp&nbsp;&nbsp;mem[r14 + u8(n2:n1)] = r{n0}</td></tr>
+  <tr><th class="axis">7</th><td class="cell m-mem" colspan="16">load_sp&nbsp;&nbsp;r{n0} = mem[r14 + u8(n2:n1)]</td></tr>
+  <tr><th class="axis">8</th><td class="cell m-alu" colspan="16">and&nbsp;&nbsp;n0 = n2 &amp; n1</td></tr>
+  <tr><th class="axis">9</th><td class="cell m-alu" colspan="16">or&nbsp;&nbsp;n0 = n2 | n1</td></tr>
+  <tr><th class="axis">a</th><td class="cell m-alu" colspan="16">xor&nbsp;&nbsp;n0 = n2 ^ n1</td></tr>
+  <tr><th class="axis">b</th><td class="cell m-alu" colspan="16">add&nbsp;&nbsp;n0 = n2 + n1</td></tr>
+  <tr><th class="axis">c</th><td class="cell m-alu" colspan="16">sub&nbsp;&nbsp;n0 = n2 − n1</td></tr>
+  <tr><th class="axis">d</th><td class="cell m-alu" colspan="16">addi&nbsp;&nbsp;n0 = n2 + i4≠0(n1)</td></tr>
+  <tr><th class="axis">e</th><td class="cell m-dev" colspan="16">dev_recv&nbsp;&nbsp;r{n0} = dev[idx4(n2)].out[ch4(n1)]</td></tr>
+  <tr><th class="axis">f</th><td class="cell m-dev" colspan="16">dev_send&nbsp;&nbsp;dev[idx4(n2)].in[ch4(n1)] = r{n0}</td></tr>
+</table>
+
+<h2>2. Instruction Details &amp; Control Signals</h2>
+
+<!-- ============ Group 0 ============ -->
+<table>
+  <tr class="grp g-misc"><td colspan="14">n3 = 0 · unary / extended group</td></tr>
+  <tr>
+    <th>Inst</th><th class="center">n3</th><th class="center">n2</th><th class="center">n1</th><th class="center">n0</th>
+    <th>Semantics</th><th>Rd A</th><th>Rd B</th><th>Wr</th><th>ALU / B src</th><th>Mem</th><th>flags</th><th>PC</th><th>Notes</th>
+  </tr>
+  <tr><td class="mn">halt</td><td class="nib op">0</td><td class="nib op">0</td><td class="nib reg">R</td><td class="nib x">X</td>
+    <td class="sem">halt, signal = r{n1}</td><td>n1</td><td>—</td><td>—</td><td>—</td><td>—</td><td>—</td><td>stop</td><td></td></tr>
+  <tr><td class="mn">mov</td><td class="nib op">0</td><td class="nib op">1</td><td class="nib reg">R</td><td class="nib reg">R</td>
+    <td class="sem">r{n0} = r{n1}</td><td>n1</td><td>—</td><td>n0</td><td>pass A</td><td></td><td></td><td></td><td>nop = mov rX,rX</td></tr>
+  <tr><td class="mn">inv</td><td class="nib op">0</td><td class="nib op">2</td><td class="nib reg">R</td><td class="nib reg">R</td>
+    <td class="sem">r{n0} = !r{n1}</td><td>n1</td><td>—</td><td>n0</td><td>not</td><td></td><td></td><td></td><td></td></tr>
+  <tr><td class="mn">neg</td><td class="nib op">0</td><td class="nib op">3</td><td class="nib reg">R</td><td class="nib reg">R</td>
+    <td class="sem">r{n0} = −r{n1}</td><td>n1</td><td>—</td><td>n0</td><td>0−A</td><td></td><td></td><td></td><td></td></tr>
+  <tr><td class="mn">not0</td><td class="nib op">0</td><td class="nib op">4</td><td class="nib reg">R</td><td class="nib reg">R</td>
+    <td class="sem">r{n0} = r{n1}≠0 ? 1 : 0</td><td>n1</td><td>—</td><td>n0</td><td>or-reduce</td><td></td><td></td><td></td><td></td></tr>
+  <tr><td class="mn">cnt1</td><td class="nib op">0</td><td class="nib op">5</td><td class="nib reg">R</td><td class="nib reg">R</td>
+    <td class="sem">r{n0} = popcount(r{n1})</td><td>n1</td><td>—</td><td>n0</td><td>popcnt unit</td><td></td><td></td><td></td><td rowspan="2">multi-cycle OK</td></tr>
+  <tr><td class="mn">log2</td><td class="nib op">0</td><td class="nib op">6</td><td class="nib reg">R</td><td class="nib reg">R</td>
+    <td class="sem">r{n0} = ilog2(r{n1})</td><td>n1</td><td>—</td><td>n0</td><td>ilog2 unit</td><td></td><td></td><td></td></tr>
+  <tr><td class="mn">lsl</td><td class="nib op">0</td><td class="nib op">8</td><td class="nib imm">u4</td><td class="nib reg">R</td>
+    <td class="sem">r{n0} = r{n0} ≪ u4(n1)</td><td>—</td><td>n0</td><td>n0</td><td>shifter</td><td></td><td></td><td></td><td rowspan="3">shift = u4(n1)</td></tr>
+  <tr><td class="mn">lsr</td><td class="nib op">0</td><td class="nib op">9</td><td class="nib imm">u4</td><td class="nib reg">R</td>
+    <td class="sem">r{n0} = r{n0} ≫ u4(n1) (logical)</td><td>—</td><td>n0</td><td>n0</td><td>shifter</td><td></td><td></td><td></td></tr>
+  <tr><td class="mn">asr</td><td class="nib op">0</td><td class="nib op">a</td><td class="nib imm">u4</td><td class="nib reg">R</td>
+    <td class="sem">r{n0} = r{n0} ≫ u4(n1) (arith)</td><td>—</td><td>n0</td><td>n0</td><td>shifter</td><td></td><td></td><td></td></tr>
+  <tr><td class="mn">sp_add</td><td class="nib op">0</td><td class="nib op">c</td><td class="nib imm" colspan="2">u8</td>
+    <td class="sem">r14 += u8</td><td>r14</td><td>—</td><td>r14</td><td>add / u8</td><td></td><td></td><td></td><td>epilogue</td></tr>
+  <tr><td class="mn">sp_sub</td><td class="nib op">0</td><td class="nib op">d</td><td class="nib imm" colspan="2">u8</td>
+    <td class="sem">r14 −= u8</td><td>r14</td><td>—</td><td>r14</td><td>sub / u8</td><td></td><td></td><td></td><td>prologue</td></tr>
+</table>
+
+<!-- ============ Group 1 ============ -->
+<table>
+  <tr class="grp g-ctrl"><td colspan="14">n3 = 1 · control flow &amp; compare group</td></tr>
+  <tr><th>Inst</th><th class="center">n3</th><th class="center">n2</th><th class="center">n1</th><th class="center">n0</th>
+    <th>Semantics</th><th>Rd A</th><th>Rd B</th><th>Wr</th><th>ALU / B src</th><th>Mem</th><th>flags</th><th>PC</th><th>Notes</th></tr>
+  <tr><td class="mn">pc</td><td class="nib op">1</td><td class="nib op">0</td><td class="nib imm">i4</td><td class="nib reg">R</td>
+    <td class="sem">r{n0} = pc + i4(n1)</td><td>—</td><td>—</td><td>n0</td><td>pc add</td><td></td><td></td><td></td>
+    <td>shares j_cc adder</td></tr>
+  <tr><td class="mn">j_cc</td><td class="nib op">1</td><td class="nib imm">mask 1..7</td><td class="nib imm" colspan="2">i8</td>
+    <td class="sem">if flags&amp;mask: pc += i8</td><td>—</td><td>—</td><td>—</td><td>pc add</td><td></td><td>read</td><td>pc+imm</td>
+    <td>mask = n2[2:0], G=1,E=2,L=4; mask=7 = jmp (always); far jumps lowered by compiler</td></tr>
+  <tr><td class="mn">cmp_r</td><td class="nib op">1</td><td class="nib op">8</td><td class="nib reg">R</td><td class="nib reg">R</td>
+    <td class="sem">flags = ucmp(r{n0}, r{n1})</td><td>n1</td><td>n0</td><td>—</td><td>unsigned sub</td><td></td><td>write</td><td></td><td>same order as sub</td></tr>
+  <tr><td class="mn">cmp_i</td><td class="nib op">1</td><td class="nib op">9</td><td class="nib imm">u4</td><td class="nib reg">R</td>
+    <td class="sem">flags = ucmp(r{n0}, u4(n1))</td><td>—</td><td>n0</td><td>—</td><td>unsigned sub</td><td></td><td>write</td><td></td><td></td></tr>
+  <tr><td class="mn">cmp_s</td><td class="nib op">1</td><td class="nib op">a</td><td class="nib reg">R</td><td class="nib reg">R</td>
+    <td class="sem">flags = scmp(r{n0}, r{n1})</td><td>n1</td><td>n0</td><td>—</td><td>signed sub</td><td></td><td>write</td><td></td><td></td></tr>
+  <tr><td class="mn">cmp_si</td><td class="nib op">1</td><td class="nib op">b</td><td class="nib imm">i4</td><td class="nib reg">R</td>
+    <td class="sem">flags = scmp(r{n0}, i4(n1))</td><td>—</td><td>n0</td><td>—</td><td>signed sub</td><td></td><td>write</td><td></td><td></td></tr>
+  <tr><td class="mn">call_rel</td><td class="nib op">1</td><td class="nib op">c</td><td class="nib imm" colspan="2">i8</td>
+    <td class="sem">r13 = pc+1; pc += i8</td><td>—</td><td>—</td><td>r13</td><td>pc add</td><td></td><td></td><td>pc+imm</td>
+    <td>reuses j_cc path (forced true + link); far calls lowered by linker</td></tr>
+  <tr><td class="mn">call_abs</td><td class="nib op">1</td><td class="nib op">d</td><td class="nib imm" colspan="2">u8</td>
+    <td class="sem">r13 = pc+1; pc = mem[0xff00 + u8]</td><td>—</td><td>—</td><td>r13</td><td>—</td><td>read</td><td></td><td>mem read</td>
+    <td>jump table = top 256 words (0xff00–0xffff); not yet emitted by compiler</td></tr>
+  <tr><td class="mn">jmp_reg</td><td class="nib op">1</td><td class="nib op">e</td><td class="nib reg">R</td><td class="nib x">X</td>
+    <td class="sem">pc = r{n1}</td><td>n1</td><td>—</td><td>—</td><td>—</td><td></td><td></td><td>reg</td><td>ret = jmp_reg r13</td></tr>
+  <tr><td class="mn">call_reg</td><td class="nib op">1</td><td class="nib op">f</td><td class="nib reg">R</td><td class="nib x">X</td>
+    <td class="sem">r13 = pc+1; pc = r{n1}</td><td>n1</td><td>—</td><td>r13</td><td>—</td><td></td><td></td><td>reg</td>
+    <td>far call = load_lo + load_hi + call_reg</td></tr>
+</table>
+
+<!-- ============ Group 2/3 ============ -->
+<table>
+  <tr class="grp g-imm"><td colspan="14">n3 = 2 / 3 · immediate load</td></tr>
+  <tr><th>Inst</th><th class="center">n3</th><th class="center" colspan="2">n2 n1</th><th class="center">n0</th>
+    <th>Semantics</th><th>Rd A</th><th>Rd B</th><th>Wr</th><th>ALU / B src</th><th>Mem</th><th>flags</th><th>PC</th><th>Notes</th></tr>
+  <tr><td class="mn">load_hi</td><td class="nib op">2</td><td class="nib imm" colspan="2">u8</td><td class="nib reg">R</td>
+    <td class="sem">r{n0} = {u8, r{n0}[7:0]}</td><td>—</td><td>n0</td><td>n0</td><td>hi-byte merge</td><td></td><td></td><td></td><td rowspan="2">16-bit const = load_lo then load_hi</td></tr>
+  <tr><td class="mn">load_lo</td><td class="nib op">3</td><td class="nib imm" colspan="2">u8</td><td class="nib reg">R</td>
+    <td class="sem">r{n0} = zext(u8)</td><td>—</td><td>—</td><td>n0</td><td>zext</td><td></td><td></td><td></td></tr>
+</table>
+
+<!-- ============ Group 4/5 ============ -->
+<table>
+  <tr class="grp g-mem"><td colspan="14">n3 = 4 / 5 · data memory</td></tr>
+  <tr><th>Inst</th><th class="center">n3</th><th class="center">n2</th><th class="center">n1</th><th class="center">n0</th>
+    <th>Semantics</th><th>Rd A</th><th>Rd B</th><th>Wr</th><th>ALU / B src</th><th>Mem</th><th>flags</th><th>PC</th><th>Notes</th></tr>
+  <tr><td class="mn">store_mem</td><td class="nib op">4</td><td class="nib reg">R</td><td class="nib reg">R</td><td class="nib imm">i4</td>
+    <td class="sem">mem[r{n2} + i4(n0)] = r{n1}</td><td>n1</td><td>n2</td><td>—</td><td>add (addr)</td><td>write</td><td></td><td></td>
+    <td></td></tr>
+  <tr><td class="mn">load_mem</td><td class="nib op">5</td><td class="nib reg">R</td><td class="nib imm">i4</td><td class="nib reg">R</td>
+    <td class="sem">r{n0} = mem[r{n2} + i4(n1)]</td><td>—</td><td>n2</td><td>n0</td><td>add (addr)</td><td>read</td><td></td><td></td>
+    <td></td></tr>
+</table>
+
+<!-- ============ Group 6/7 ============ -->
+<table>
+  <tr class="grp g-mem"><td colspan="14">n3 = 6 / 7 · stack frame memory</td></tr>
+  <tr><th>Inst</th><th class="center">n3</th><th class="center" colspan="2">n2 n1</th><th class="center">n0</th>
+    <th>Semantics</th><th>Rd A</th><th>Rd B</th><th>Wr</th><th>ALU / B src</th><th>Mem</th><th>flags</th><th>PC</th><th>Notes</th></tr>
+  <tr><td class="mn">store_sp</td><td class="nib op">6</td><td class="nib imm" colspan="2">u8</td><td class="nib reg">R</td>
+    <td class="sem">mem[r14 + u8] = r{n0}</td><td>r14</td><td>n0</td><td>—</td><td>add (addr) / u8</td><td>write</td><td></td><td></td>
+    <td rowspan="2">frame slots 0..255</td></tr>
+  <tr><td class="mn">load_sp</td><td class="nib op">7</td><td class="nib imm" colspan="2">u8</td><td class="nib reg">R</td>
+    <td class="sem">r{n0} = mem[r14 + u8]</td><td>r14</td><td>—</td><td>n0</td><td>add (addr) / u8</td><td>read</td><td></td><td></td></tr>
+</table>
+
+<!-- ============ Group 8-d ============ -->
+<table>
+  <tr class="grp g-alu"><td colspan="14">n3 = 8–d · main ALU group</td></tr>
+  <tr><th>Inst</th><th class="center">n3</th><th class="center">n2</th><th class="center">n1</th><th class="center">n0</th>
+    <th>Semantics</th><th>Rd A</th><th>Rd B</th><th>Wr</th><th>ALU / B src</th><th>Mem</th><th>flags</th><th>PC</th><th>Notes</th></tr>
+  <tr><td class="mn">and / or / xor</td><td class="nib op">8/9/a</td><td class="nib reg">R</td><td class="nib reg">R</td><td class="nib reg">R</td>
+    <td class="sem">r{n0} = r{n2} op r{n1}</td><td>n1</td><td>n2</td><td>n0</td><td>logic / B=reg</td><td></td><td></td><td></td><td></td></tr>
+  <tr><td class="mn">add / sub</td><td class="nib op">b/c</td><td class="nib reg">R</td><td class="nib reg">R</td><td class="nib reg">R</td>
+    <td class="sem">r{n0} = r{n2} ± r{n1}</td><td>n1</td><td>n2</td><td>n0</td><td>add/sub / B=reg</td><td></td><td></td><td></td><td></td></tr>
+  <tr><td class="mn">addi</td><td class="nib op">d</td><td class="nib reg">R</td><td class="nib imm">i4</td><td class="nib reg">R</td>
+    <td class="sem">r{n0} = r{n2} + i4≠0(n1)</td><td>—</td><td>n2</td><td>n0</td><td>add / B=sext4+bias</td><td></td><td></td><td></td>
+    <td>bias = ¬sign as carry-in; no subi (use negative imm)</td></tr>
+</table>
+
+<!-- ============ Group e/f ============ -->
+<table>
+  <tr class="grp g-dev"><td colspan="14">n3 = e / f · device group</td></tr>
+  <tr><th>Inst</th><th class="center">n3</th><th class="center">n2</th><th class="center">n1</th><th class="center">n0</th>
+    <th>Semantics</th><th>Rd A</th><th>Rd B</th><th>Wr</th><th>ALU / B src</th><th>Mem</th><th>flags</th><th>PC</th><th>Notes</th></tr>
+  <tr><td class="mn">dev_recv</td><td class="nib op">e</td><td class="nib imm">idx</td><td class="nib imm">ch</td><td class="nib reg">R</td>
+    <td class="sem">r{n0} = dev[idx].out[ch]</td><td>—</td><td>—</td><td>n0</td><td>—</td><td>IO read</td><td></td><td></td><td rowspan="2">16 dev × 16 ch; wait states allowed</td></tr>
+  <tr><td class="mn">dev_send</td><td class="nib op">f</td><td class="nib imm">idx</td><td class="nib imm">ch</td><td class="nib reg">R</td>
+    <td class="sem">dev[idx].in[ch] = r{n0}</td><td>—</td><td>n0</td><td>—</td><td>—</td><td>IO write</td><td></td><td></td></tr>
+</table>
+
+<h2>3. Decode Summary</h2>
+<table>
+  <tr><th>Control signal</th><th>Source</th><th>Cost</th></tr>
+  <tr><td>Rd A addr</td><td>n1 ｜ r14 (sp_add / sp_sub / store_sp / load_sp)</td><td>2:1 mux</td></tr>
+  <tr><td>Rd B addr</td><td>n2 (ALU / mem base) ｜ n0 (shifts / cmp_i / cmp_si / dev_send / load_hi / store_sp)</td><td>2:1 mux</td></tr>
+  <tr><td>Wr addr</td><td>n0 ｜ r13 (calls) ｜ r14 (sp_add / sp_sub)</td><td>3:1 mux</td></tr>
+  <tr><td>RF WE</td><td>¬(stores / branches / halt / cmp / dev_send)</td><td>group decode</td></tr>
+  <tr><td>ALU op</td><td>is_alu = n3[3]·¬(n3[2]·n3[1]) (n3∈{8..d}); op = n3[2:0] ｜ groups 0/1: n2 sub-table</td><td>zero on main path</td></tr>
+  <tr><td>B src</td><td>regB ｜ sext4+bias (addi) ｜ zext u4 (cmp_i) ｜ i4 ｜ u8 (sp)</td><td>small mux</td></tr>
+  <tr><td>Group 0 format</td><td>n2[3:2]: 00/01 = OORR, 10 = OOIR, 11 = OOII</td><td>2 bits direct</td></tr>
+  <tr><td>Group 1 n2 decode</td><td>n2==0 → pc ｜ 1..7 → j_cc ｜ 8..b → cmp ｜ c..f → jmp/call</td><td>4-way</td></tr>
+  <tr><td>flags WE</td><td>n3==1 &amp;&amp; n2 ∈ {8..b}</td><td>group decode</td></tr>
+  <tr><td>Cond true</td><td>|(flags &amp; n2[2:0]) (call_rel: forced true)</td><td>3 AND + 1 OR</td></tr>
+  <tr><td>jmp/call (n2∈{c..f})</td><td>format = n2[1] (0 = OOII imm target, 1 = OORX reg target); link = ¬n2[1] | n2[0]; imm target n2[0]: 0 = pc+i8, 1 = mem[0xff00+u8]</td><td>2 bits direct</td></tr>
+  <tr><td>Next PC</td><td>pc+1 ｜ pc+i8 (j_cc / call_rel shared) ｜ regA ｜ mem read (call_abs) ｜ stop</td><td>5:1 mux</td></tr>
+  <tr><td>ra (r13) WE</td><td>n3==1 &amp;&amp; n2∈{c, d, f}</td><td>group decode</td></tr>
+  <tr><td>Mem</td><td>en = ¬n3[3]·n3[2] (4..7); write = ¬n3[0]; addr = rB+i4 (n3[1]=0) ｜ r14+u8 (n3[1]=1); call_abs also reads (0xff00+u8)</td><td>n3 direct</td></tr>
+  <tr><td>Imm load</td><td>n3[3:1]==001; hi/lo byte = ¬n3[0] / n3[0]</td><td>3 bits direct</td></tr>
+  <tr><td>IO</td><td>n3[3:1]==111; recv/send = ¬n3[0] / n3[0]</td><td>3 bits direct</td></tr>
+  <tr><td>sp (r14) WE</td><td>n3==0 &amp;&amp; n2 ∈ {c, d}</td><td>group decode</td></tr>
+</table>
+
+</body>
+</html>

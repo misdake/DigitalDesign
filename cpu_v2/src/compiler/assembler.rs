@@ -32,8 +32,8 @@ pub struct Assembler {
 impl Default for Assembler {
     fn default() -> Self {
         Self {
-            instructions: box [halt(0); 65536],
-            inst_valid: box [false; 65536],
+            instructions: Box::new([halt(0); 65536]),
+            inst_valid: Box::new([false; 65536]),
             comments: HashMap::new(),
             cursor: 0,
         }
@@ -82,7 +82,7 @@ impl Assembler {
 fn addr_offset(from: usize, to: usize) -> (u8, u8, String) {
     let offset = to as i64 - from as i64;
     assert!(
-        -128 <= offset && offset <= 127 && offset != 0,
+        (-128..=127).contains(&offset) && offset != 0,
         "offset: {}, from {}, to {}",
         offset,
         from,
@@ -90,23 +90,22 @@ fn addr_offset(from: usize, to: usize) -> (u8, u8, String) {
     );
     let comment = format!("--> to 0x{to:4x}");
 
-    let offset = offset as i16 as u16;
-    let hi = (offset >> 8) as u8;
-    let lo = (offset & 0xff) as u8;
-    (hi, lo, comment)
+    // i8 as hi:lo nibbles (n1 = high, n0 = low)
+    let v = offset as i8 as u8;
+    (v >> 4, v & 0xf, comment)
 }
 fn cond_to_jmp_inst(cond: Cond) -> fn(Imm4, Imm4) -> Instruction {
-    let inst = match cond {
+    
+    match cond {
         Cond::Never => panic!("never"),
-        Cond::Greater => j_offset_g,
-        Cond::Equal => j_offset_e,
-        Cond::Less => j_offset_l,
-        Cond::GreaterEqual => j_offset_ge,
-        Cond::LessEqual => j_offset_le,
-        Cond::NotEqual => j_offset_ne,
-        Cond::Always => j_offset,
-    };
-    inst
+        Cond::Greater => jg,
+        Cond::Equal => je,
+        Cond::Less => jl,
+        Cond::GreaterEqual => jge,
+        Cond::LessEqual => jle,
+        Cond::NotEqual => jne,
+        Cond::Always => jmp,
+    }
 }
 fn jmp_forward(asm: &mut Assembler, base: InstructionSlot, cond: Cond) -> InstructionSlot {
     let (hi, lo, comment) = addr_offset(base.addr, asm.cursor);
@@ -114,7 +113,7 @@ fn jmp_forward(asm: &mut Assembler, base: InstructionSlot, cond: Cond) -> Instru
 
     let inst = cond_to_jmp_inst(cond);
 
-    asm.inst_at(inst(lo, hi), base.addr)
+    asm.inst_at(inst(hi, lo), base.addr)
 }
 
 /// jump/branch/call
@@ -135,17 +134,14 @@ impl Assembler {
     pub fn jmp_back(&mut self, target: InstructionSlot, cond: Cond) -> InstructionSlot {
         let (hi, lo, comment) = addr_offset(self.cursor, target.addr);
         let jmp_inst = cond_to_jmp_inst(cond);
-        self.inst_comment(jmp_inst(lo, hi), comment)
+        self.inst_comment(jmp_inst(hi, lo), comment)
     }
 
     pub fn jmp_reg(&mut self, target: Reg) -> InstructionSlot {
         self.inst_comment(jmp_reg(target), format!("--> jmp r{:x}", target))
     }
-    pub fn call_reg(&mut self, target: Reg, back: Reg) -> InstructionSlot {
-        self.inst_comment(
-            call_reg(target, back),
-            format!("--> call r{:x}, save r{:x}", target, back),
-        )
+    pub fn call_reg(&mut self, target: Reg) -> InstructionSlot {
+        self.inst_comment(call_reg(target), format!("--> call r{:x}", target))
     }
 
     pub fn if_u4(&mut self, reg0: Reg, u4: Imm4, cond: Cond, if_case: impl FnOnce(&mut Self)) {
