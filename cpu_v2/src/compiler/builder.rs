@@ -73,6 +73,7 @@ impl FuncBuilder {
                 param_names: vec![],
                 ret_names: vec![],
                 block_notes: vec![None],
+                block_lines: vec![None],
                 local_slots: 0,
             },
             sealed: vec![false],
@@ -126,8 +127,19 @@ impl FuncBuilder {
             preds: preds.to_vec(),
         });
         self.func.block_notes.push(None);
+        self.func.block_lines.push(None);
         self.sealed.push(false);
         id
+    }
+
+    /// tag a block with a source line (shown in the disassembly listing)
+    pub fn set_block_line(&mut self, b: BlockId, line: u32) {
+        self.func.block_lines[b] = Some(line);
+    }
+
+    /// the entry block id
+    pub fn entry_block(&self) -> BlockId {
+        self.func.entry
     }
 
     /// attach source-level parameter/return names (shown in the listing)

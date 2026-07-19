@@ -67,6 +67,13 @@ pub fn simulate(instructions: &[Instruction], max_cycles: usize) -> (SimState, O
     (sim.state, halt_signal)
 }
 
+/// like `simulate` but without the per-instruction trace (for the rcc-run artifact)
+pub fn simulate_quiet(instructions: &[Instruction], max_cycles: usize) -> (SimState, Option<u16>) {
+    let mut sim = SimEnv::new(instructions);
+    let halt_signal = sim.run_to_halt(max_cycles, |_, _, _| {});
+    (sim.state, halt_signal)
+}
+
 /// flat disassembly of an instruction slice (no function boundaries; for a
 /// per-function listing see `Compiler::finish`)
 pub fn disassemble(instructions: &[Instruction]) -> String {

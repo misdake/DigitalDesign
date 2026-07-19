@@ -232,3 +232,49 @@ precludes them (a struct is just an address plus offsets).
 
 `&x` references, fat slices, struct definitions, `static mut`, heap allocation of arrays,
 multi-dimensional arrays (use `arr[i * W + j]`), `*`, `/`, `%`.
+
+## 13. The toolchain
+
+### 13.1 Compilation pipeline
+
+`frontend::compile_program(src, opts, loader)` compiles a whole program:
+
+1. the main source plus any `mod name;` files resolved through `loader`;
+2. the **rcc_std library** (`cpu_v2/src/rcc_std/`, written in rcc itself) is always appended;
+   unused functions are dropped by the linker;
+3. **automatic library initialization**: if the program's call graph reaches `malloc`/`free`,
+   a single `init_heap(heap_begin, heap_size)` call is inserted at the start of `main`; if it
+   reaches `vec_*`, a single `init_vec(vec_init_cap)` call follows. each init runs exactly once
+   per program, with parameters from `CompilerOptions`.
+
+### 13.2 `CompilerOptions`
+
+| option | default | meaning |
+|---|---|---|
+| `opt` | all on | optimization passes (const-prop/cse/dce/coalesce) |
+| `stack_init` | 0 | initial sp of the entry fn (0 = simulator default; frames grow downward) |
+| `data_base` | 0 | static data section base address |
+| `heap_begin` | 0x1000 | heap region start |
+| `heap_size` | 20 | heap region size in words |
+| `vec_init_cap` | 4 | `vec_new()` initial capacity |
+
+### 13.3 Artifacts
+
+- `rcc <input.rs> [-o out.bin] [--lst out.lst] [--no-opt] [--stack-init N] [--data-base N]
+  [--heap-begin N] [--heap-size N] [--vec-cap N]` — compiles to a binary image
+  (`RCC1` magic + word count + u16-LE words) and a disassembly listing with function
+  signatures, block roles, call targets, and source line comments (`; line N`).
+- `rcc-run <input.bin> [max_cycles]` — runs the image on the simulator and prints
+  the halt signal (decimal/hex) and cycle count.
+
+### 13.4 Library parameters and runtime cells
+
+`init_heap` stores the heap bounds in static cells (`HEAP_BEGIN`/`HEAP_END` in the data
+section) which `malloc`/`free` read at run time — no compile-time patching of library code.
+`init_vec` does the same for `VEC_INIT_CAP`.
+
+### 13.5 Host/IDE side
+
+`dsl_rt` keeps the subset programs valid Rust: `Ptr` methods, `Slice2` (const-generic array
+access with bounds checks on the host), `addr_of`, intrinsics. `rcc_std` is a real module
+tree for the same reason.

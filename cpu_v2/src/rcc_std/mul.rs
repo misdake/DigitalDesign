@@ -1,6 +1,5 @@
 //! shift-add multiplication (rcc subset): the ISA has no mul instruction
 
-use crate::dsl_rt::*;
 
 fn mul_bits(a: u16, b: u16, bits: u16) -> u16 {
     let mut x = a;

@@ -365,6 +365,7 @@ fn split_critical_edges(f: &mut IrFunc) {
                     preds: vec![b],
                 });
                 f.block_notes.push(None);
+                f.block_lines.push(None);
                 // rewire the target's preds and phi args
                 for p in &mut f.blocks[target].preds {
                     if *p == b {

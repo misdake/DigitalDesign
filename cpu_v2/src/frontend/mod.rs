@@ -249,6 +249,11 @@ fn intern(s: &str) -> &'static str {
     Box::leak(s.to_string().into_boxed_str())
 }
 
+/// source line of a syntax node (for listing comments)
+fn line_of(t: &impl syn::spanned::Spanned) -> u32 {
+    t.span().start().line as u32
+}
+
 fn err(tokens: &impl syn::spanned::Spanned, msg: impl std::fmt::Display) -> syn::Error {
     syn::Error::new(tokens.span(), msg.to_string())
 }
@@ -862,6 +867,7 @@ fn lower_fn(
     }
     let ret_names: Vec<&'static str> = if sig.ret == Ty::Unit { vec![] } else { vec!["r"] };
     l.b.set_names(&param_names, &ret_names);
+    l.b.set_block_line(l.b.entry_block(), line_of(&f.sig.ident));
 
     // function body; a trailing tail-expression (no semicolon) is the return value
     let stmts = &f.block.stmts;
@@ -1105,6 +1111,7 @@ fn control_flow(l: &mut FnLower, e: &Expr) -> Result<(), syn::Error> {
                 None => {
                     let then_b = l.b.raw_block(&[]);
                     let join = l.b.raw_block(&[]);
+                    l.b.set_block_line(then_b, line_of(&i.if_token));
                     cond_lazy(l, &i.cond, then_b, join)?;
                     l.b.enter_block(then_b);
                     block(l, &i.then_branch)?;
@@ -1115,6 +1122,8 @@ fn control_flow(l: &mut FnLower, e: &Expr) -> Result<(), syn::Error> {
                     let then_b = l.b.raw_block(&[]);
                     let else_b = l.b.raw_block(&[]);
                     let join = l.b.raw_block(&[]);
+                    l.b.set_block_line(then_b, line_of(&i.if_token));
+                    l.b.set_block_line(else_b, line_of(&i.if_token));
                     cond_lazy(l, &i.cond, then_b, else_b)?;
                     l.b.enter_block(then_b);
                     block(l, &i.then_branch)?;
@@ -1135,6 +1144,8 @@ fn control_flow(l: &mut FnLower, e: &Expr) -> Result<(), syn::Error> {
         }
         Expr::While(w) => {
             let (header, body_b, exit) = l.b.begin_while();
+            l.b.set_block_line(header, line_of(&w.while_token));
+            l.b.set_block_line(body_b, line_of(&w.while_token));
             cond_lazy(l, &w.cond, body_b, exit)?;
             l.b.begin_loop_body(header, body_b, exit);
             block(l, &w.body)?;
@@ -1215,9 +1226,11 @@ fn control_flow(l: &mut FnLower, e: &Expr) -> Result<(), syn::Error> {
                     exit,
                 );
             }
+            l.b.set_block_line(body_b, line_of(&fl.for_token));
             l.b.begin_loop_body(header, body_b, exit);
             // continue must hit the increment block, not the header
             let incr = l.b.begin_continue_block();
+            l.b.set_block_line(incr, line_of(&fl.for_token));
             block(l, &fl.body)?;
             l.dead = false;
             l.b.end_continue_block(incr);
@@ -1526,12 +1539,14 @@ fn cond_lazy(l: &mut FnLower, e: &Expr, t: BlockId, f: BlockId) -> Result<(), sy
         Expr::Binary(b) => match b.op {
             SBinOp::And(_) => {
                 let m = l.b.raw_block(&[]);
+                l.b.set_block_line(m, line_of(&b.op));
                 cond_lazy(l, &b.left, m, f)?;
                 l.b.enter_block(m);
                 cond_lazy(l, &b.right, t, f)
             }
             SBinOp::Or(_) => {
                 let m = l.b.raw_block(&[]);
+                l.b.set_block_line(m, line_of(&b.op));
                 cond_lazy(l, &b.left, t, m)?;
                 l.b.enter_block(m);
                 cond_lazy(l, &b.right, t, f)

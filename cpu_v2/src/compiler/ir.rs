@@ -133,6 +133,8 @@ pub struct IrFunc {
     pub ret_names: Vec<&'static str>,
     /// per-block role notes for the disassembly listing (loop header, then, ...)
     pub block_notes: Vec<Option<&'static str>>,
+    /// per-block source line numbers for the disassembly listing (best effort)
+    pub block_lines: Vec<Option<u32>>,
     /// number of frame-local slots assigned by the frontend (address-taken
     /// locals and local arrays); frame layout puts these after callee saves
     /// and before spill slots

@@ -179,8 +179,18 @@ pub fn compile_function(
 
     for (idx, &b) in layout.iter().enumerate() {
         lines.push(Line::Label(b));
+        let mut comment = String::new();
         if let Some(note) = f.block_notes[b] {
-            lines.push(Line::Comment(note.to_string()));
+            comment = note.to_string();
+        }
+        if let Some(line) = f.block_lines[b] {
+            if !comment.is_empty() {
+                comment.push_str(", ");
+            }
+            comment.push_str(&format!("line {line}"));
+        }
+        if !comment.is_empty() {
+            lines.push(Line::Comment(comment));
         }
         let block = &f.blocks[b];
 

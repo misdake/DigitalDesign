@@ -87,7 +87,6 @@ pub fn free(p: Ptr) {
     }
 
     // merge with free blocks on the right
-    let left_limit = begin - 1;
     while self_footer < right_limit {
         let right_flag = Ptr::from_addr(self_footer + 1).read(0);
         if right_flag > FREE_BIT {
