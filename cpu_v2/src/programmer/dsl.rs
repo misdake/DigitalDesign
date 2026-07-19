@@ -91,7 +91,7 @@ impl B {
     pub fn for_loop(&self, start: &Variable, end: &Variable, stride: u16, f: impl FnOnce(&B, Variable)) {
         let i = start.clone_value();
         self.while_loop(
-            |b| i.lt(end),
+            |_| i.lt(end),
             |b| {
                 f(b, i.clone());
                 let next = &i + stride;
@@ -113,7 +113,7 @@ impl B {
         let one = self.v(1);
         let i = (end - &one).clone_value();
         self.while_loop(
-            |b| i.ge(start),
+            |_| i.ge(start),
             |b| {
                 f(b, i.clone());
                 let next = &i - stride;
@@ -435,7 +435,7 @@ impl Neg for Variable {
 // ---------------------------------------------------------------------------
 
 #[derive(Clone)]
-enum CmpRhsD {
+pub enum CmpRhsD {
     Reg(Variable),
     Imm(u16),
 }
@@ -479,10 +479,6 @@ impl Bool {
             Bool::Or(a, x) => BoolExpr::Or(Box::new(a.lower(b)), Box::new(x.lower(b))),
             Bool::Not(a) => BoolExpr::Not(Box::new(a.lower(b))),
         }
-    }
-
-    pub fn not(self) -> Bool {
-        Bool::Not(Box::new(self))
     }
 }
 impl BitAnd for Bool {
@@ -928,7 +924,7 @@ mod tests {
 
         let instructions = compiler.finish("main");
         let (_state, signal) = simulate(&instructions, 1000);
-        assert_eq!(signal, Some((5 << 4) + 0));
+        assert_eq!(signal, Some(5 << 4));
     }
 
     #[test]
@@ -937,10 +933,10 @@ mod tests {
         let func = DslFunction::new("collatz", [], []);
         let mut compiler = Compiler::new();
         func.compile(&mut compiler, |b, [], _ret| {
-            let mut v = b.v(27);
-            let mut steps = b.v(0);
+            let v = b.v(27);
+            let steps = b.v(0);
             b.while_loop(
-                |b| v.ne_imm(1) & steps.lt_imm(200),
+                |_| v.ne_imm(1) & steps.lt_imm(200),
                 |b| {
                     // if v is even: v /= 2 else v = 3v + 1
                     let half = v.lsr(1);
@@ -948,8 +944,8 @@ mod tests {
                     let is_even = doubled.eq(&v);
                     b.if_else(
                         is_even,
-                        |b| v.assign_from(&half),
-                        |b| {
+                        |_| v.assign_from(&half),
+                        |_| {
                             let triple = &(&v.lsl(1) + &v) + 1;
                             v.assign_from(&triple);
                         },

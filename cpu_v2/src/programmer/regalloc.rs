@@ -161,7 +161,7 @@ fn replace_all_uses(f: &mut IrFunc, from: VReg, to: VReg) {
                     subst(base);
                     subst(src);
                 }
-                Instr::Call { args, .. } => args.iter_mut().for_each(|a| subst(a)),
+                Instr::Call { args, .. } => args.iter_mut().for_each(&subst),
             }
         }
         if let Some(term) = &mut b.term {
@@ -173,7 +173,7 @@ fn replace_all_uses(f: &mut IrFunc, from: VReg, to: VReg) {
                         subst(r);
                     }
                 }
-                Terminator::Ret { values } => values.iter_mut().for_each(|v| subst(v)),
+                Terminator::Ret { values } => values.iter_mut().for_each(&subst),
                 Terminator::Halt { signal } => subst(signal),
             }
         }
@@ -191,7 +191,7 @@ struct AbiInfo {
 
 fn insert_abi_shims(f: &mut IrFunc) -> AbiInfo {
     let mut pinned = HashMap::new();
-    let mut fresh = |f: &mut IrFunc| {
+    let fresh = |f: &mut IrFunc| {
         let v = f.vreg_count;
         f.vreg_count += 1;
         v
@@ -352,7 +352,7 @@ fn compute_intervals(f: &IrFunc) -> Vec<Interval> {
     let mut block_start = vec![0u32; f.blocks.len()];
     let mut block_end = vec![0u32; f.blocks.len()];
 
-    let mut def = |start: &mut Vec<u32>, end: &mut Vec<u32>, v: VReg, pos: u32| {
+    let def = |start: &mut Vec<u32>, end: &mut Vec<u32>, v: VReg, pos: u32| {
         start[v as usize] = start[v as usize].min(pos);
         end[v as usize] = end[v as usize].max(pos);
     };
@@ -645,8 +645,8 @@ fn rewrite_spills(f: &mut IrFunc, spilled: &[VReg], next_slot: &mut u8) {
         *next_slot += 1;
     }
 
-    let spilled: HashSet<VReg> = spilled.into_iter().copied().collect();
-    let mut fresh = |f: &mut IrFunc| {
+    let spilled: HashSet<VReg> = spilled.iter().copied().collect();
+    let fresh = |f: &mut IrFunc| {
         let v = f.vreg_count;
         f.vreg_count += 1;
         v

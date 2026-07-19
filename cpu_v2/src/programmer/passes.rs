@@ -75,7 +75,7 @@ pub(crate) fn subst_uses(f: &mut IrFunc, replace: &HashMap<VReg, VReg>) {
                     subst(base);
                     subst(src);
                 }
-                Instr::Call { args, .. } => args.iter_mut().for_each(|a| subst(a)),
+                Instr::Call { args, .. } => args.iter_mut().for_each(&subst),
                 Instr::DevSend { src, .. } | Instr::StoreSp { src, .. } => subst(src),
             }
         }
@@ -88,7 +88,7 @@ pub(crate) fn subst_uses(f: &mut IrFunc, replace: &HashMap<VReg, VReg>) {
                         subst(r);
                     }
                 }
-                Terminator::Ret { values } => values.iter_mut().for_each(|v| subst(v)),
+                Terminator::Ret { values } => values.iter_mut().for_each(&subst),
                 Terminator::Halt { signal } => subst(signal),
             }
         }
@@ -381,7 +381,7 @@ fn dce(f: &mut IrFunc) -> bool {
     // seed: side-effecting instructions and terminators
     loop {
         let mut changed = false;
-        let mut mark = |v: VReg, useful: &mut HashSet<VReg>, changed: &mut bool| {
+        let mark = |v: VReg, useful: &mut HashSet<VReg>, changed: &mut bool| {
             if useful.insert(v) {
                 *changed = true;
             }

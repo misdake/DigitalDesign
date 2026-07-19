@@ -22,13 +22,11 @@ enum Line {
     AbsJump { target: usize },
     /// call placeholder: 3 reserved slots filled by the linker
     Call3 { func: crate::programmer::FuncName },
-    /// reserved slot, left invalid for the linker to fill
-    Reserved,
 }
 
 fn line_size(line: &Line) -> usize {
     match line {
-        Line::Inst(_) | Line::Branch { .. } | Line::Jump { .. } | Line::Reserved => 1,
+        Line::Inst(_) | Line::Branch { .. } | Line::Jump { .. } => 1,
         Line::AbsJump { .. } | Line::Call3 { .. } => 3,
         Line::Label(_) => 0,
     }
@@ -305,11 +303,6 @@ pub fn compile_function(
                 addr += 3;
                 written += 3;
             }
-            Line::Reserved => {
-                // left invalid; the linker fills it during relocation
-                addr += 1;
-                written += 1;
-            }
         }
     }
 
@@ -452,7 +445,7 @@ fn emit_inst(
         }
         Instr::Call { func, .. } => {
             // args/results already moved by ABI shims; the linker fills 3 slots
-            lines.push(Line::Call3 { func: *func });
+            lines.push(Line::Call3 { func });
         }
         Instr::DevRecv { dst, device, channel } => {
             assert!(*device <= 15 && *channel <= 15, "device/channel out of u4 range");

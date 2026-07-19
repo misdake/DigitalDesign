@@ -58,3 +58,14 @@ pub fn simulate(instructions: &[Instruction], max_cycles: usize) -> (SimState, O
     }
     (sim.state, halt_signal)
 }
+
+/// flat disassembly of an instruction slice (no function boundaries; for a
+/// per-function listing see `Compiler::finish_with_listing`)
+pub fn disassemble(instructions: &[Instruction]) -> String {
+    instructions
+        .iter()
+        .enumerate()
+        .map(|(addr, inst)| format!("{addr:04x}: {inst}"))
+        .collect::<Vec<_>>()
+        .join("\n")
+}

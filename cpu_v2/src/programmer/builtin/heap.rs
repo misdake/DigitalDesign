@@ -49,7 +49,7 @@ pub fn define_heap(compiler: &mut Compiler) {
                     let next_block_size = &block_size - &size;
                     b.if_else(
                         next_block_size.gt_imm(2),
-                        |b| {
+                        |_b| {
                             // split: write the next (free) block's tags
                             let next_block_ptr = &ptr + &size;
                             let flag = &next_block_size | &free_bit;
@@ -57,7 +57,7 @@ pub fn define_heap(compiler: &mut Compiler) {
                             let footer_off = &next_block_size - 1;
                             (&next_block_ptr + &footer_off).write(&flag);
                         },
-                        |b| {
+                        |_b| {
                             // no room to split: take the whole block
                             size.assign_from(&block_size);
                         },
@@ -96,13 +96,13 @@ pub fn define_heap(compiler: &mut Compiler) {
                 let left_flag = left_footer.ptr().read();
                 b.if_else(
                     left_flag.gt(&free_bit),
-                    |b| {
+                    |_b| {
                         // left block is free
                         let left_size = &left_flag - &free_bit;
                         left_footer.assign_from(&(&left_footer - &left_size));
                         flag.assign_from(&(&flag + &left_size));
                     },
-                    |b| {
+                    |_b| {
                         left_limit.assign_from(&right_limit); // break
                     },
                 );
@@ -117,13 +117,13 @@ pub fn define_heap(compiler: &mut Compiler) {
                 let right_flag = (&self_footer.ptr() + 1).read();
                 b.if_else(
                     right_flag.gt(&free_bit),
-                    |b| {
+                    |_b| {
                         // right block is free
                         let right_size = &right_flag - &free_bit;
                         self_footer.assign_from(&(&self_footer + &right_size));
                         flag.assign_from(&(&flag + &right_size));
                     },
-                    |b| {
+                    |_b| {
                         right_limit.assign_from(&left_limit); // break
                     },
                 );

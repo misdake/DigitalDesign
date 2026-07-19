@@ -82,7 +82,7 @@ impl Assembler {
 fn addr_offset(from: usize, to: usize) -> (u8, u8, String) {
     let offset = to as i64 - from as i64;
     assert!(
-        -128 <= offset && offset <= 127 && offset != 0,
+        (-128..=127).contains(&offset) && offset != 0,
         "offset: {}, from {}, to {}",
         offset,
         from,
@@ -95,7 +95,8 @@ fn addr_offset(from: usize, to: usize) -> (u8, u8, String) {
     (v >> 4, v & 0xf, comment)
 }
 fn cond_to_jmp_inst(cond: Cond) -> fn(Imm4, Imm4) -> Instruction {
-    let inst = match cond {
+    
+    match cond {
         Cond::Never => panic!("never"),
         Cond::Greater => jg,
         Cond::Equal => je,
@@ -104,8 +105,7 @@ fn cond_to_jmp_inst(cond: Cond) -> fn(Imm4, Imm4) -> Instruction {
         Cond::LessEqual => jle,
         Cond::NotEqual => jne,
         Cond::Always => jmp,
-    };
-    inst
+    }
 }
 fn jmp_forward(asm: &mut Assembler, base: InstructionSlot, cond: Cond) -> InstructionSlot {
     let (hi, lo, comment) = addr_offset(base.addr, asm.cursor);

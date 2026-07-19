@@ -28,7 +28,10 @@ impl BoolExpr {
     pub fn or(self, other: BoolExpr) -> BoolExpr {
         BoolExpr::Or(Box::new(self), Box::new(other))
     }
-    pub fn not(self) -> BoolExpr {
+}
+impl std::ops::Not for BoolExpr {
+    type Output = BoolExpr;
+    fn not(self) -> BoolExpr {
         BoolExpr::Not(Box::new(self))
     }
 }
@@ -612,7 +615,7 @@ pub(crate) fn remove_trivial_phis(func: &mut IrFunc) -> bool {
                         subst(base);
                         subst(src);
                     }
-                    Instr::Call { args, .. } => args.iter_mut().for_each(|a| subst(a)),
+                    Instr::Call { args, .. } => args.iter_mut().for_each(&subst),
                     Instr::DevSend { src, .. } => subst(src),
                     Instr::StoreSp { src, .. } => subst(src),
                 }
@@ -626,7 +629,7 @@ pub(crate) fn remove_trivial_phis(func: &mut IrFunc) -> bool {
                             subst(r);
                         }
                     }
-                    Terminator::Ret { values } => values.iter_mut().for_each(|v| subst(v)),
+                    Terminator::Ret { values } => values.iter_mut().for_each(&subst),
                     Terminator::Halt { signal } => subst(signal),
                 }
             }

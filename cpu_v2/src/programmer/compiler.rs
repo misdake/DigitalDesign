@@ -33,9 +33,16 @@ impl Compiler {
     }
 
     pub fn finish(self, main: FuncName) -> Vec<Instruction> {
+        self.finish_with_listing(main).0
+    }
+
+    /// like `finish`, but also returns a disassembly listing of the whole
+    /// program (per function, with call targets annotated)
+    pub fn finish_with_listing(self, main: FuncName) -> (Vec<Instruction>, String) {
         let mut asm = Assembler::default();
         let mut linker = Linker::default();
         let mut cursor = 0usize;
+        let mut layout: Vec<(FuncName, (usize, usize))> = vec![];
 
         let mut called: HashSet<FuncName> = HashSet::new();
         let mut next = vec![main];
@@ -62,6 +69,7 @@ impl Compiler {
                 FuncDecl::new(name, &[], &[]),
                 emitted.relocations,
             );
+            layout.push((name, (cursor, end)));
             // 4-word gap between functions: disassembly readability + halt guard
             cursor = end + 4;
             asm.set_cursor(cursor);
@@ -69,7 +77,26 @@ impl Compiler {
 
         linker.relocate_all(&mut asm);
         let end = asm.get_cursor();
-        asm.slice_ref()[0..end].to_vec()
+        let instructions = asm.slice_ref()[0..end].to_vec();
+
+        // disassembly listing: per function, call targets annotated by name
+        let calls = linker.get_all_calls();
+        let mut listing = String::new();
+        for (name, (start, end)) in &layout {
+            listing.push_str(&format!("{name} {{\n"));
+            for (i, inst) in instructions[*start..*end].iter().enumerate() {
+                let addr = start + i;
+                match calls.get(&addr) {
+                    Some(target) => {
+                        listing.push_str(&format!("  {addr:04x}: {inst} -----> {target}\n"))
+                    }
+                    None => listing.push_str(&format!("  {addr:04x}: {inst}\n")),
+                }
+            }
+            listing.push_str("}\n");
+        }
+
+        (instructions, listing)
     }
 }
 
@@ -99,7 +126,7 @@ mod tests {
         instructions
             .iter()
             .filter_map(|i| match i {
-                Instruction::sp_sub(hi, lo) => Some((*hi as u16) << 4 | *lo as u16),
+                Instruction::sp_sub(hi, lo) => Some(((*hi as u16) << 4) | *lo as u16),
                 _ => None,
             })
             .collect()
@@ -369,7 +396,7 @@ mod tests {
         let adds: Vec<u16> = instructions
             .iter()
             .filter_map(|i| match i {
-                Instruction::sp_add(hi, lo) => Some((*hi as u16) << 4 | *lo as u16),
+                Instruction::sp_add(hi, lo) => Some(((*hi as u16) << 4) | *lo as u16),
                 _ => None,
             })
             .collect();
@@ -500,5 +527,53 @@ mod opt_tests {
         let instructions = c.finish("main");
         let (_state, signal) = crate::simulate(&instructions, 1000);
         assert_eq!(signal, Some(x));
+    }
+
+    #[test]
+    fn test_listing_demo() {
+        // prints a disassembly listing; view with:
+        //   cmd //c run_tests.bat test -p cpu_v2 test_listing_demo -- --nocapture
+        let (mut add, params) = FuncBuilder::new("add", 2, 1);
+        let s = {
+            let a = add.get(params[0]);
+            let b = add.get(params[1]);
+            add.bin(BinOp::Add, a, b)
+        };
+        add.ret(&[s]);
+
+        let n = 10u16;
+        let (mut m, _) = FuncBuilder::new("main", 0, 0);
+        let sum = m.new_var();
+        let i = m.new_var();
+        let zero = m.load_imm(0);
+        m.set(sum, zero);
+        m.set(i, zero);
+        m.while_loop(
+            |b| {
+                let i = b.get(i);
+                b.cmp(i, CmpRhs::Imm(n), Cond::Less)
+            },
+            |b| {
+                let s = b.get(sum);
+                let i0 = b.get(i);
+                let s = b.bin(BinOp::Add, s, i0);
+                b.set(sum, s);
+                let one = b.load_imm(1);
+                let i1 = b.bin(BinOp::Add, i0, one);
+                b.set(i, i1);
+            },
+        );
+        let s = m.get(sum);
+        let three = m.load_imm(3);
+        let rets = m.call("add", &[s, three], 1);
+        m.halt(rets[0]);
+
+        let mut c = Compiler::new();
+        c.add_func(add.finish());
+        c.add_func(m.finish());
+        let (instructions, listing) = c.finish_with_listing("main");
+        println!("{listing}");
+        let (_state, signal) = crate::simulate(&instructions, 1000);
+        assert_eq!(signal, Some((0..n).sum::<u16>() + 3));
     }
 }

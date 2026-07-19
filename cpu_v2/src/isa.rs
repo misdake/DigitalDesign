@@ -75,10 +75,10 @@ define_isa! {
     (cmp_i    0x19 OOIR "flags = ucmp(r{0}, u4(0x{1:x}))")
     (cmp_s    0x1a OORR "flags = scmp(r{0}, r{1})")
     (cmp_si   0x1b OOIR "flags = scmp(r{0}, i4(0x{1:x}))")
-    (call_rel 0x1c OOII "call_rel pc + 0x{1:x}{0:x} (r13 = pc + 1)") // hi, lo
-    (call_abs 0x1d OOII "call_abs 0x{1:x}{0:x} (r13 = pc + 1)") // hi, lo
+    (call_rel 0x1c OOII "call_rel pc + 0x{1:x}{0:x} (r13)") // hi, lo
+    (call_abs 0x1d OOII "call_abs 0x{1:x}{0:x} (r13)") // hi, lo
     (jmp_reg  0x1e OORX "jmp r{0}")
-    (call_reg 0x1f OORX "call r{0} (r13 = pc + 1)")
+    (call_reg 0x1f OORX "call r{0} (r13)")
 
     (dev_recv 0xe OIIR "r{0} <- device[{2}].out[{1}]")
     (dev_send 0xf OIIR "device[{2}].in[{1}] <- r{0}")
