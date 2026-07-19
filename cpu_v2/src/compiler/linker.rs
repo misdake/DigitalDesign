@@ -1,5 +1,5 @@
 use crate::Instruction::{call_reg, call_rel, load_hi, load_lo, mov};
-use crate::{u8_to_hi_lo, Assembler, FuncDecl, FuncName, InstructionSlot, Relocation, TMP_REG};
+use crate::{RelocKind, u8_to_hi_lo, Assembler, FuncDecl, FuncName, InstructionSlot, Relocation, TMP_REG};
 use std::collections::HashMap;
 
 #[derive(Default)]
@@ -43,7 +43,15 @@ impl Linker {
                 .get(&rel.func_name)
                 .unwrap_or_else(|| panic!("function not found: {}", rel.func_name));
             let start = target.inst_range.0;
-            relocate_call(asm, rel.slots, start);
+            match rel.kind {
+                RelocKind::Call3 => relocate_call(asm, &rel.slots, start),
+                RelocKind::LoadAddr { reg } => {
+                    let (hi, lo) = u8_to_hi_lo((start & 0xff) as u8);
+                    asm.inst_at(load_lo(hi, lo, reg), rel.slots[0].addr);
+                    let (hi, lo) = u8_to_hi_lo((start >> 8) as u8);
+                    asm.inst_at(load_hi(hi, lo, reg), rel.slots[1].addr);
+                }
+            }
         }
     }
 
@@ -52,6 +60,9 @@ impl Linker {
         let mut map = HashMap::new();
         for func in self.functions.values() {
             for rel in &func.relocations {
+                if !matches!(rel.kind, RelocKind::Call3) {
+                    continue;
+                }
                 let addr = match self.functions.get(&rel.func_name) {
                     Some(target) if call_rel_offset(rel.slots[0].addr, target.inst_range.0).is_some() => {
                         rel.slots[0].addr
@@ -81,7 +92,7 @@ fn call_rel_offset(from: usize, to: usize) -> Option<i8> {
 }
 
 /// fill the 3 reserved call slots: near -> call_rel + 2 nop, far -> load_lo(tmp) + load_hi(tmp) + call_reg(tmp)
-fn relocate_call(asm: &mut Assembler, slots: [InstructionSlot; 3], target: usize) {
+fn relocate_call(asm: &mut Assembler, slots: &[InstructionSlot], target: usize) {
     if let Some(offset) = call_rel_offset(slots[0].addr, target) {
         let v = offset as u8;
         asm.inst_at(call_rel(v >> 4, v & 0xf), slots[0].addr);

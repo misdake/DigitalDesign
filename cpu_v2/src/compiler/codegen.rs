@@ -24,12 +24,16 @@ enum Line {
     AbsJump { target: usize },
     /// call placeholder: 3 reserved slots filled by the linker
     Call3 { func: crate::compiler::FuncName },
+    /// load function address: 2 reserved slots filled by the linker
+    LoadAddr2 { func: crate::compiler::FuncName, reg: u8 },
 }
 
 fn line_size(line: &Line) -> usize {
     match line {
         Line::Inst(_) | Line::Branch { .. } | Line::Jump { .. } => 1,
-        Line::AbsJump { .. } | Line::Call3 { .. } => 3,
+        Line::AbsJump { .. } => 3,
+        Line::Call3 { .. } => 3,
+        Line::LoadAddr2 { .. } => 2,
         Line::Label(_) | Line::Comment(_) => 0,
     }
 }
@@ -304,7 +308,8 @@ pub fn compile_function(
             Line::Call3 { func } => {
                 relocations.push(Relocation {
                     func_name: func,
-                    slots: [
+                    kind: crate::compiler::RelocKind::Call3,
+                    slots: vec![
                         InstructionSlot::new(addr),
                         InstructionSlot::new(addr + 1),
                         InstructionSlot::new(addr + 2),
@@ -313,6 +318,15 @@ pub fn compile_function(
                 // left invalid; the linker fills them during relocation
                 addr += 3;
                 written += 3;
+            }
+            Line::LoadAddr2 { func, reg } => {
+                relocations.push(Relocation {
+                    func_name: func,
+                    kind: crate::compiler::RelocKind::LoadAddr { reg: *reg },
+                    slots: vec![InstructionSlot::new(addr), InstructionSlot::new(addr + 1)],
+                });
+                addr += 2;
+                written += 2;
             }
         }
     }
@@ -459,6 +473,14 @@ fn emit_inst(
             // args/results already moved by ABI shims; the linker fills 3 slots
             lines.push(Line::Comment(format!("call {func}")));
             lines.push(Line::Call3 { func });
+        }
+        Instr::LoadFuncAddr { dst, func } => {
+            lines.push(Line::Comment(format!("&{func}")));
+            lines.push(Line::LoadAddr2 { func, reg: reg(*dst) });
+        }
+        Instr::CallPtr { .. } => {
+            // addr/args/results already moved by ABI shims (addr is in tmp)
+            lines.push(Line::Inst(call_reg(REG_TMP)));
         }
         Instr::DevRecv { dst, device, channel } => {
             assert!(*device <= 15 && *channel <= 15, "device/channel out of u4 range");

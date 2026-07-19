@@ -180,6 +180,22 @@ impl FuncBuilder {
         });
         rets
     }
+    /// load the address of a function (as a function pointer value)
+    pub fn load_func_addr(&mut self, func: FuncName) -> VReg {
+        let dst = self.fresh_vreg();
+        self.push(Instr::LoadFuncAddr { dst, func });
+        dst
+    }
+    /// indirect call through a function pointer
+    pub fn call_ptr(&mut self, addr: VReg, args: &[VReg], n_rets: usize) -> Vec<VReg> {
+        let rets = (0..n_rets).map(|_| self.fresh_vreg()).collect::<Vec<_>>();
+        self.push(Instr::CallPtr {
+            addr,
+            args: args.to_vec(),
+            rets: rets.clone(),
+        });
+        rets
+    }
     pub fn dev_recv(&mut self, device: u8, channel: u8) -> VReg {
         let dst = self.fresh_vreg();
         self.push(Instr::DevRecv { dst, device, channel });
@@ -560,6 +576,11 @@ pub(crate) fn remove_trivial_phis(func: &mut IrFunc) -> bool {
                         subst(src);
                     }
                     Instr::Call { args, .. } => args.iter_mut().for_each(&subst),
+                    Instr::LoadFuncAddr { .. } => {}
+                    Instr::CallPtr { addr, args, .. } => {
+                        subst(addr);
+                        args.iter_mut().for_each(&subst);
+                    }
                     Instr::DevSend { src, .. } => subst(src),
                     Instr::StoreSp { src, .. } => subst(src),
                 }

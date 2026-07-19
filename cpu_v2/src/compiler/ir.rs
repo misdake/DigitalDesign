@@ -77,6 +77,10 @@ pub enum Instr {
     StoreMem { base: VReg, offset: i16, src: VReg },
     /// rets are SSA defs (filled by the callee per the calling convention)
     Call { func: FuncName, args: Vec<VReg>, rets: Vec<VReg> },
+    /// load the absolute address of a function (relocation slot)
+    LoadFuncAddr { dst: VReg, func: FuncName },
+    /// indirect call through a function pointer (Harvard: distinct from data ptr)
+    CallPtr { addr: VReg, args: Vec<VReg>, rets: Vec<VReg> },
     DevRecv { dst: VReg, device: u8, channel: u8 },
     DevSend { device: u8, channel: u8, src: VReg },
     /// frame slot access (register allocator spills only; offset is a frame
@@ -229,6 +233,10 @@ impl fmt::Display for Instr {
             Instr::StoreMem { base, offset, src } => write!(f, "store [v{base} + {offset}] = v{src}"),
             Instr::Call { func, args, rets } => {
                 write!(f, "({}) = call {}({})", fmt_vregs(rets), func, fmt_vregs(args))
+            }
+            Instr::LoadFuncAddr { dst, func } => write!(f, "v{dst} = &{func}"),
+            Instr::CallPtr { addr, args, rets } => {
+                write!(f, "({}) = call_ptr v{}({})", fmt_vregs(rets), addr, fmt_vregs(args))
             }
             Instr::DevRecv { dst, device, channel } => write!(f, "v{dst} = dev_recv {device}, {channel}"),
             Instr::DevSend { device, channel, src } => write!(f, "dev_send {device}, {channel}, v{src}"),

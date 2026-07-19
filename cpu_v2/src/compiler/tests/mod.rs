@@ -3,5 +3,6 @@
 mod backend;
 mod common;
 mod dsl;
+mod frontend;
 mod optimize;
 mod property;

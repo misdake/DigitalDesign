@@ -67,10 +67,11 @@ pub fn allocate(func: &IrFunc, coalesce: bool) -> (IrFunc, Allocation) {
                 .into_iter()
                 .collect();
             // non-leaf functions must also preserve ra (calls clobber r13)
-            if f.blocks
-                .iter()
-                .any(|b| b.insts.iter().any(|i| matches!(i, Instr::Call { .. })))
-            {
+            if f.blocks.iter().any(|b| {
+                b.insts
+                    .iter()
+                    .any(|i| matches!(i, Instr::Call { .. } | Instr::CallPtr { .. }))
+            }) {
                 callee_saved.push(REG_RA);
             }
             let alloc = Allocation {
@@ -99,10 +100,17 @@ pub(crate) fn inst_uses(inst: &Instr) -> Vec<VReg> {
     match inst {
         Instr::Bin { lhs, rhs, .. } => vec![*lhs, *rhs],
         Instr::Un { src, .. } | Instr::Shift { src, .. } | Instr::Mov { src, .. } => vec![*src],
-        Instr::LoadImm { .. } | Instr::DevRecv { .. } | Instr::LoadSp { .. } => vec![],
+        Instr::LoadImm { .. } | Instr::DevRecv { .. } | Instr::LoadSp { .. } | Instr::LoadFuncAddr { .. } => {
+            vec![]
+        }
         Instr::LoadMem { base, .. } => vec![*base],
         Instr::StoreMem { base, src, .. } => vec![*base, *src],
         Instr::Call { args, .. } => args.clone(),
+        Instr::CallPtr { addr, args, .. } => {
+            let mut u = vec![*addr];
+            u.extend_from_slice(args);
+            u
+        }
         Instr::DevSend { src, .. } | Instr::StoreSp { src, .. } => vec![*src],
     }
 }
@@ -115,9 +123,10 @@ pub(crate) fn inst_defs(inst: &Instr) -> Vec<VReg> {
         | Instr::LoadImm { dst, .. }
         | Instr::LoadMem { dst, .. }
         | Instr::DevRecv { dst, .. }
+        | Instr::LoadFuncAddr { dst, .. }
         | Instr::LoadSp { dst, .. } => vec![*dst],
         Instr::StoreMem { .. } | Instr::DevSend { .. } | Instr::StoreSp { .. } => vec![],
-        Instr::Call { rets, .. } => rets.clone(),
+        Instr::Call { rets, .. } | Instr::CallPtr { rets, .. } => rets.clone(),
     }
 }
 fn term_uses(term: &Terminator) -> Vec<VReg> {
@@ -162,6 +171,11 @@ fn replace_all_uses(f: &mut IrFunc, from: VReg, to: VReg) {
                     subst(src);
                 }
                 Instr::Call { args, .. } => args.iter_mut().for_each(&subst),
+                Instr::LoadFuncAddr { .. } => {}
+                Instr::CallPtr { addr, args, .. } => {
+                    subst(addr);
+                    args.iter_mut().for_each(&subst);
+                }
             }
         }
         if let Some(term) = &mut b.term {
@@ -248,6 +262,40 @@ fn insert_abi_shims(f: &mut IrFunc) -> AbiInfo {
                 }
                 new_insts.push(Instr::Call {
                     func,
+                    args: pinned_args,
+                    rets: pinned_rets,
+                });
+                new_insts.extend(result_movs);
+            } else if let Instr::CallPtr { addr, args, rets } = inst {
+                assert!(
+                    args.len() <= ARG_REGS.len() && rets.len() <= RET_REGS.len(),
+                    "indirect call exceeds ABI register count"
+                );
+                // the target address goes to tmp (r15): it must survive the
+                // argument parallel move, which only touches r2..r7
+                let alpha_addr = fresh(f);
+                pinned.insert(alpha_addr, REG_TMP);
+                new_insts.push(Instr::Mov {
+                    dst: alpha_addr,
+                    src: addr,
+                });
+                let mut pinned_args = Vec::with_capacity(args.len());
+                for (j, a) in args.iter().enumerate() {
+                    let alpha = fresh(f);
+                    pinned.insert(alpha, ARG_REGS[j]);
+                    new_insts.push(Instr::Mov { dst: alpha, src: *a });
+                    pinned_args.push(alpha);
+                }
+                let mut pinned_rets = Vec::with_capacity(rets.len());
+                let mut result_movs = Vec::with_capacity(rets.len());
+                for (k, r) in rets.iter().enumerate() {
+                    let rho = fresh(f);
+                    pinned.insert(rho, RET_REGS[k]);
+                    pinned_rets.push(rho);
+                    result_movs.push(Instr::Mov { dst: *r, src: rho });
+                }
+                new_insts.push(Instr::CallPtr {
+                    addr: alpha_addr,
                     args: pinned_args,
                     rets: pinned_rets,
                 });
@@ -372,7 +420,7 @@ fn compute_intervals(f: &IrFunc) -> Vec<Interval> {
             for u in inst_uses(inst) {
                 end[u as usize] = end[u as usize].max(pos);
             }
-            if let Instr::Call { .. } = inst {
+            if let Instr::Call { .. } | Instr::CallPtr { .. } = inst {
                 calls.push((pos, pos + 1));
             }
             for d in inst_defs(inst) {
@@ -723,6 +771,13 @@ fn rewrite_spills(f: &mut IrFunc, spilled: &[VReg], next_slot: &mut u8) {
                         reload(a, &slot_of, &spilled, f, &mut new_insts);
                     }
                 }
+                Instr::LoadFuncAddr { .. } => {}
+                Instr::CallPtr { addr, args, .. } => {
+                    reload(addr, &slot_of, &spilled, f, &mut new_insts);
+                    for a in args {
+                        reload(a, &slot_of, &spilled, f, &mut new_insts);
+                    }
+                }
                 Instr::DevSend { src, .. } | Instr::StoreSp { src, .. } => {
                     reload(src, &slot_of, &spilled, f, &mut new_insts)
                 }
@@ -808,8 +863,9 @@ fn defs_mut(inst: &mut Instr) -> Vec<&mut VReg> {
         | Instr::LoadImm { dst, .. }
         | Instr::LoadMem { dst, .. }
         | Instr::DevRecv { dst, .. }
+        | Instr::LoadFuncAddr { dst, .. }
         | Instr::LoadSp { dst, .. } => vec![dst],
         Instr::StoreMem { .. } | Instr::DevSend { .. } | Instr::StoreSp { .. } => vec![],
-        Instr::Call { rets, .. } => rets.iter_mut().collect(),
+        Instr::Call { rets, .. } | Instr::CallPtr { rets, .. } => rets.iter_mut().collect(),
     }
 }

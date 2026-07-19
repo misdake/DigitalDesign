@@ -31,10 +31,18 @@ impl FuncDecl {
 }
 
 #[derive(Copy, Clone, Debug)]
+pub enum RelocKind {
+    /// 3 slots: near -> call_rel + 2 nop; far -> load_lo(tmp) + load_hi(tmp) + call_reg(tmp)
+    Call3,
+    /// 2 slots: load_lo(reg) + load_hi(reg), filling in the absolute function address
+    LoadAddr { reg: u8 },
+}
+
+#[derive(Clone, Debug)]
 pub struct Relocation {
     pub func_name: FuncName,
-    /// 3 reserved slots: near -> call_rel + 2 nop, far -> load_lo(tmp) + load_hi(tmp) + call_reg(tmp)
-    pub slots: [crate::compiler::InstructionSlot; 3],
+    pub kind: RelocKind,
+    pub slots: Vec<crate::compiler::InstructionSlot>,
 }
 
 pub fn u8_to_hi_lo(v: u8) -> (u8, u8) {

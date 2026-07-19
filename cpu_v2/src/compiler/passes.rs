@@ -76,6 +76,11 @@ pub(crate) fn subst_uses(f: &mut IrFunc, replace: &HashMap<VReg, VReg>) {
                     subst(src);
                 }
                 Instr::Call { args, .. } => args.iter_mut().for_each(&subst),
+                Instr::LoadFuncAddr { .. } => {}
+                Instr::CallPtr { addr, args, .. } => {
+                    subst(addr);
+                    args.iter_mut().for_each(&subst);
+                }
                 Instr::DevSend { src, .. } | Instr::StoreSp { src, .. } => subst(src),
             }
         }
@@ -400,6 +405,7 @@ fn dce(f: &mut IrFunc) -> bool {
                     Instr::StoreMem { .. }
                         | Instr::StoreSp { .. }
                         | Instr::Call { .. }
+                        | Instr::CallPtr { .. }
                         | Instr::DevSend { .. }
                         | Instr::DevRecv { .. }
                 );

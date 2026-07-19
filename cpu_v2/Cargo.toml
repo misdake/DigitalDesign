@@ -11,3 +11,5 @@ cpu-macro = { path = "../cpu_macro" }
 paste = "1.0.11"
 arrayvec = "0.7.4"
 once_cell = "1.18.0"
+syn = { version = "1.0.109", features = ["full"] }
+proc-macro2 = "1"
