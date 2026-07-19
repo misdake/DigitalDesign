@@ -75,7 +75,7 @@ fn test_optimized_vs_unoptimized() {
     let (_s1, opt_signal) = compile_and_run(vec![build()], "main", 10000);
 
     let mut c = Compiler::new();
-    c.opts = Opts {
+    c.opts.opt = Opts {
         const_prop: false,
         cse: false,
         dce: false,

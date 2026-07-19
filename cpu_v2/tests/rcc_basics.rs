@@ -134,6 +134,7 @@ fn main() {
 }
 
 #[test]
+#[allow(clippy::identity_op)]
 fn test_shift_by_literal() {
     let src = r#"
 fn main() {
@@ -147,8 +148,7 @@ fn main() {
 "#;
     assert_eq!(
         run(src),
-        Some(((1u16 << 15) >> 15) + #[allow(clippy::identity_op)]
-            ((0x1234u16 << 4) >> 0) + (0x8000u16 >> 15))
+        Some(((1u16 << 15) >> 15) + ((0x1234u16 << 4) >> 0) + (0x8000u16 >> 15))
     );
 }
 

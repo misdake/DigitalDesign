@@ -15,10 +15,18 @@ pub mod spec {}
 /// parse rcc source text into a list of functions (IR), or report the first
 /// subset violation with a span
 pub fn parse_source(src: &str) -> Result<Vec<IrFunc>, syn::Error> {
+    parse_source_with(src, 0)
+}
+
+/// like `parse_source`, with the static data section starting at `data_base`
+pub fn parse_source_with(src: &str, data_base: u16) -> Result<Vec<IrFunc>, syn::Error> {
     let file = syn::parse_file(src)?;
     let mut fns = vec![];
     let mut consts: HashMap<String, (u16, Ty)> = HashMap::new();
-    let mut globals = Globals::default();
+    let mut globals = Globals {
+        next_addr: data_base,
+        ..Globals::default()
+    };
     for item in &file.items {
         match item {
             Item::Fn(f) => {

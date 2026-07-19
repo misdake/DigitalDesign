@@ -150,11 +150,22 @@ pub fn compile_function(
     alloc: &Allocation,
     asm: &mut Assembler,
     start_address: usize,
+    stack_init: u16,
 ) -> EmittedFunc {
     let layout = f.rpo();
     let mut lines: Vec<Line> = vec![];
 
     let reg = |v: VReg| alloc.reg[&v];
+
+    // entry-point stack pointer override (before the prologue)
+    if stack_init != 0 {
+        let (hi, lo) = hi_lo(stack_init as u8);
+        lines.push(Line::Inst(load_lo(hi, lo, REG_SP)));
+        if stack_init > 255 {
+            let (hi, lo) = hi_lo((stack_init >> 8) as u8);
+            lines.push(Line::Inst(load_hi(hi, lo, REG_SP)));
+        }
+    }
 
     // prologue
     if alloc.frame_size() > 0 {

@@ -4,14 +4,15 @@
 use crate::compiler::{Assembler, FuncDecl, FuncName, Linker};
 use crate::compiler::codegen::compile_function;
 use crate::compiler::ir::*;
-use crate::compiler::passes::{Opts, optimize};
+use crate::compiler::options::CompilerOptions;
+use crate::compiler::passes::optimize;
 use crate::compiler::regalloc::allocate;
 use crate::Instruction;
 use std::collections::{HashMap, HashSet};
 
 #[derive(Default)]
 pub struct Compiler {
-    pub opts: Opts,
+    pub opts: CompilerOptions,
     funcs: HashMap<FuncName, IrFunc>,
 }
 
@@ -52,9 +53,10 @@ impl Compiler {
                 .get(&name)
                 .unwrap_or_else(|| panic!("unknown function `{name}`"));
             let mut f = f.clone();
-            optimize(&mut f, &self.opts);
-            let (allocated_ir, alloc) = allocate(&f, self.opts.coalesce);
-            let emitted = compile_function(&allocated_ir, &alloc, &mut asm, cursor);
+            optimize(&mut f, &self.opts.opt);
+            let (allocated_ir, alloc) = allocate(&f, self.opts.opt.coalesce);
+            let stack_init = if name == main { self.opts.stack_init } else { 0 };
+            let emitted = compile_function(&allocated_ir, &alloc, &mut asm, cursor, stack_init);
             let end = cursor + emitted.len;
 
             for rel in &emitted.relocations {

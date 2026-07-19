@@ -208,7 +208,7 @@ fn run_case(seed: u64, n_ops: usize, opts_on: bool) {
 
     let mut c = Compiler::new();
     if !opts_on {
-        c.opts = Opts {
+        c.opts.opt = Opts {
             const_prop: false,
             cse: false,
             dce: false,

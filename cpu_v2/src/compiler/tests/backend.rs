@@ -80,7 +80,7 @@ fn test_spill_stress() {
     // turn the optimizer off: constant folding would collapse the whole
     // computation into one immediate and nothing would spill
     let mut c = Compiler::new();
-    c.opts = Opts {
+    c.opts.opt = Opts {
         const_prop: false,
         cse: false,
         dce: false,
