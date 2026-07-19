@@ -174,3 +174,35 @@ fn main() {
     let _ = s3.continue_run(1000);
     assert_eq!(s3.last_halt, Some(3));
 }
+
+#[test]
+fn test_call_site_in_stack_frame() {
+    let src = r#"
+fn inc(x: u16) -> u16 {
+    x + 1
+}
+fn main() {
+    let a = inc(1);
+    halt(a);
+}
+"#;
+    let mut s = make_session(src);
+    for _ in 0..30 {
+        if s.depth() > 0 {
+            break;
+        }
+        s.step();
+    }
+    assert_eq!(s.depth(), 1);
+    // the frame knows where inc was called from (the `let a = inc(1);` line)
+    let frame = &s.call_stack[0];
+    assert_eq!(frame.func_name, "inc");
+    let site = s
+        .debug
+        .lines
+        .iter()
+        .filter(|(a, _, _)| *a <= frame.return_addr.saturating_sub(1))
+        .max_by_key(|(a, _, _)| *a)
+        .map(|&(_, f, l)| (f, l));
+    assert_eq!(site, Some((0, 6)), "call site should be line 6");
+}

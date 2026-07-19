@@ -31,6 +31,10 @@ pub struct CallFrame {
 pub struct DisasmLine {
     pub addr: usize,
     pub text: String,
+    /// jump/call target address for drawing arrows (None for straight-line code)
+    pub target: Option<usize>,
+    /// function name at the target, when known
+    pub target_name: Option<String>,
 }
 
 impl DebugSession {
@@ -47,7 +51,7 @@ impl DebugSession {
 
         // disassembly: prefer the listing file (has comments), else decode
         let lst_path = bin_path.with_extension("lst");
-        let disasm = match std::fs::read_to_string(&lst_path) {
+        let mut disasm = match std::fs::read_to_string(&lst_path) {
             Ok(text) => parse_listing(&text),
             Err(_) => instructions
                 .iter()
@@ -55,9 +59,12 @@ impl DebugSession {
                 .map(|(addr, i)| DisasmLine {
                     addr,
                     text: i.to_string(),
+                    target: None,
+                    target_name: None,
                 })
                 .collect(),
         };
+        annotate_targets(&mut disasm, &instructions, &debug);
 
         Ok(DebugSession {
             sim: SimEnv::new(&instructions),
@@ -323,6 +330,67 @@ pub enum VarValue {
     Unavailable,
 }
 
+/// compute jump/call targets for the arrow overlay
+fn annotate_targets(disasm: &mut [DisasmLine], instructions: &[Instruction], debug: &DebugInfo) {
+    use crate::Instruction as I;
+    for line in disasm.iter_mut() {
+        let addr = line.addr;
+        if addr >= instructions.len() {
+            continue;
+        }
+        let (target, is_call) = match instructions[addr] {
+            I::jg(hi, lo) | I::je(hi, lo) | I::jge(hi, lo) | I::jl(hi, lo) | I::jne(hi, lo)
+            | I::jle(hi, lo) | I::jmp(hi, lo) => {
+                let off = crate::isa::imm8_as_i16(hi, lo) as i32;
+                let t = addr as i32 + off;
+                if (0..65536).contains(&t) {
+                    (Some(t as usize), false)
+                } else {
+                    (None, false)
+                }
+            }
+            I::call_rel(hi, lo) => {
+                let off = crate::isa::imm8_as_i16(hi, lo) as i32;
+                let t = addr as i32 + off;
+                if (0..65536).contains(&t) {
+                    (Some(t as usize), true)
+                } else {
+                    (None, false)
+                }
+            }
+            I::jmp_reg(r) | I::call_reg(r) => {
+                // far jump/call: load_lo + load_hi immediately before
+                let is_call = matches!(instructions[addr], I::call_reg(_));
+                let _ = r;
+                if addr >= 2 {
+                    let (I::load_hi(hi2, lo2, _), I::load_lo(hi1, lo1, _)) =
+                        (instructions[addr - 1], instructions[addr - 2])
+                    else {
+                        continue;
+                    };
+                    let t = (((hi2 as usize) << 12) | ((lo2 as usize) << 8) | ((hi1 as usize) << 4) | lo1 as usize) as usize;
+                    (Some(t), is_call)
+                } else {
+                    (None, false)
+                }
+            }
+            _ => (None, false),
+        };
+        line.target = target;
+        if is_call {
+            if let Some(t) = target {
+                line.target_name = debug
+                    .functions
+                    .iter()
+                    .find(|f| (f.addr.0..f.addr.1).contains(&t))
+                    .map(|f| f.name.clone());
+            }
+        } else {
+            let _ = is_call;
+        }
+    }
+}
+
 /// parse the `.lst` listing into disassembly lines
 fn parse_listing(text: &str) -> Vec<DisasmLine> {
     let mut out = vec![];
@@ -333,6 +401,8 @@ fn parse_listing(text: &str) -> Vec<DisasmLine> {
                 out.push(DisasmLine {
                     addr,
                     text: t[5..].trim().to_string(),
+                    target: None,
+                    target_name: None,
                 });
             }
         }
@@ -447,10 +517,20 @@ impl DebugSession {
             .call_stack
             .iter()
             .map(|f| {
+                // the call site is the instruction before the return address
+                let site = self
+                    .debug
+                    .lines
+                    .iter()
+                    .filter(|(a, _, _)| *a <= f.return_addr.saturating_sub(1))
+                    .max_by_key(|(a, _, _)| *a);
+                let (sf, sl) = site.map(|&(_, f, l)| (f, l)).unwrap_or((0, 0));
                 format!(
-                    "{{\"func\":\"{}\",\"ret\":{}}}",
+                    "{{\"func\":\"{}\",\"ret\":{},\"site_file\":{},\"site_line\":{}}}",
                     esc(&f.func_name),
-                    f.return_addr
+                    f.return_addr,
+                    sf,
+                    sl
                 )
             })
             .collect();
@@ -500,10 +580,16 @@ impl DebugSession {
             .disasm
             .iter()
             .map(|d| {
+                let target = match (d.target, &d.target_name) {
+                    (Some(t), Some(n)) => format!(",\"target\":{},\"tname\":\"{}\"", t, esc(n)),
+                    (Some(t), None) => format!(",\"target\":{}", t),
+                    _ => String::new(),
+                };
                 format!(
-                    "{{\"addr\":{},\"text\":\"{}\"}}",
+                    "{{\"addr\":{},\"text\":\"{}\"{}}}",
                     d.addr,
-                    esc(&d.text)
+                    esc(&d.text),
+                    target
                 )
             })
             .collect();

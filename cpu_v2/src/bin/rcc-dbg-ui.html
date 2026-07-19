@@ -18,7 +18,8 @@
   section { border-right: 1px solid #33363f; padding: 8px; overflow: auto; }
   section:last-child { border-right: none; }
   #srccol { grid-row: 1 / 3; }
-  #midcol { grid-row: 1; }
+  #midcol { grid-row: 1; position: relative; padding-left: 34px; }
+  #arrowSvg { position: absolute; left: 2px; top: 0; width: 30px; height: 100%; pointer-events: none; }
   #varcol { grid-column: 3; grid-row: 1 / 3; }
   #memsec { grid-column: 2; grid-row: 2; border-top: 1px solid #33363f; }
   h3 { margin: 4px 0 6px; font-size: 12px; color: #9aa0ad; text-transform: uppercase; letter-spacing: .5px; }
@@ -57,7 +58,7 @@
 </header>
 <main>
   <section id="srccol"><h3 id="srctitle">source</h3><table id="src"></table></section>
-  <section id="midcol"><h3>disassembly</h3><table id="dis"></table></section>
+  <section id="midcol"><h3>disassembly</h3><svg id="arrowSvg"></svg><table id="dis"></table></section>
   <section id="varcol">
     <h3>call stack</h3><table id="stack"></table>
     <h3>registers</h3><table class="regs" id="reg"></table>
@@ -105,7 +106,7 @@ function render() {
 
   // call stack
   $('stack').innerHTML = ['<tr><td class="muted">(main)</td></tr>']
-    .concat(state.stack.map(f => `<tr><td>→ ${esc(f.func)}</td><td class="addr">ret ${hx(f.ret)}</td></tr>`))
+    .concat(state.stack.map(f => `<tr><td>→ ${esc(f.func)}</td><td class="addr">${f.site_line ? 'from :' + f.site_line : '(generated)'} ret ${hx(f.ret)}</td></tr>`))
     .join('');
 
   // source view (indentation preserved via CSS white-space:pre)
@@ -143,8 +144,11 @@ function render() {
   else if (curLine != null) addrsOfLine(curLine).forEach(a => hlAddrs.add(a));
   $('dis').innerHTML = state.disasm.map(d => {
     const cls = [(d.addr === state.pc) ? 'pc' : '', bps.has(d.addr) ? 'bp' : '', hlAddrs.has(d.addr) ? 'hl' : '', 'dline'].join(' ');
-    return `<tr class="${cls}" data-addr="${d.addr}"><td class="addr">${hx(d.addr)}</td><td class="dtext">${esc(d.text)}</td></tr>`;
+    const t = d.target != null ? ` data-target="${d.target}"` : '';
+    const tn = d.tname ? ` data-tname="${esc(d.tname)}"` : '';
+    return `<tr class="${cls}" data-addr="${d.addr}"${t}${tn}><td class="addr">${hx(d.addr)}</td><td class="dtext">${esc(d.text)}</td></tr>`;
   }).join('');
+  drawArrows();
   document.querySelectorAll('tr.dline').forEach(tr => tr.onclick = async () => {
     const a = +tr.dataset.addr;
     await fetch(`/api/break?addr=${a.toString(16)}&on=${bps.has(a) ? 0 : 1}`, {method: 'POST'});
@@ -174,6 +178,7 @@ function render() {
 function varRow(v) {
   return `<tr><td class="vname">${esc(v.name)}</td><td class="vloc">${esc(v.ty)}</td><td>${fmtVal(v)}</td></tr>`;
 }
+function esc(s) { return String(s).replace(/[&<>]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;'}[c])); }
 function fmtVal(v) {
   const val = v.value;
   if (val == null) return '<i>ssa</i>';
@@ -221,6 +226,51 @@ document.querySelectorAll('.mq').forEach(b => b.onclick = () => {
   $('maddr').value = b.dataset.a === 'sp' ? hx(state.regs[14]) : b.dataset.a;
   renderMem();
 });
+function drawArrows() {
+  const svg = $('arrowSvg');
+  svg.innerHTML = '';
+  const rows = [...document.querySelectorAll('#dis tr.dline')];
+  const byAddr = new Map(rows.map(tr => [+tr.dataset.addr, tr]));
+  const NS = 'http://www.w3.org/2000/svg';
+  rows.forEach(tr => {
+    const t = tr.dataset.target;
+    if (t == null) return;
+    const to = byAddr.get(+t);
+    if (!to) return;
+    const y1 = tr.offsetTop + tr.offsetHeight / 2;
+    const y2 = to.offsetTop + to.offsetHeight / 2;
+    const isCall = !!tr.dataset.tname;
+    const w = 8 + Math.min(Math.abs(y2 - y1) / 24, 22);
+    const color = isCall ? '#6aa06a' : '#5b7a9f';
+    // arc from source row to target row, arrowhead at the target
+    const dir = y2 > y1 ? 1 : -1;
+    const path = document.createElementNS(NS, 'path');
+    path.setAttribute('d', `M 26 ${y1} C ${26 - w} ${y1 + 4 * dir}, ${26 - w} ${y2 - 4 * dir}, 24 ${y2}`);
+    path.setAttribute('stroke', color);
+    path.setAttribute('fill', 'none');
+    path.setAttribute('stroke-width', '1.3');
+    path.setAttribute('opacity', '0.85');
+    svg.appendChild(path);
+    const head = document.createElementNS(NS, 'path');
+    head.setAttribute('d', `M 19 ${y2 - 3 * dir} L 26 ${y2} L 19 ${y2 + 3 * dir}`);
+    head.setAttribute('stroke', color);
+    head.setAttribute('fill', 'none');
+    head.setAttribute('stroke-width', '1.3');
+    svg.appendChild(head);
+    if (isCall) {
+      const label = document.createElementNS(NS, 'text');
+      label.setAttribute('x', 2);
+      label.setAttribute('y', (y1 + y2) / 2);
+      label.setAttribute('fill', color);
+      label.setAttribute('font-size', '9');
+      label.textContent = '→';
+      svg.appendChild(label);
+    }
+  });
+  // keep the svg tall enough
+  svg.setAttribute('height', Math.max(svg.parentElement.scrollHeight, 200));
+}
+
 refresh();
 </script>
 </body>
