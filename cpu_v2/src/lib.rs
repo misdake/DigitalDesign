@@ -7,6 +7,8 @@ mod dsl_progs;
 mod library;
 mod sim;
 
+pub mod frontend;
+
 pub mod dsl_rt;
 
 pub use isa::*;

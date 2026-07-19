@@ -98,7 +98,7 @@ Declared for real in `dsl_rt` (so the IDE sees them); the compiler lowers them d
   and logical operators cover control flow; to keep a flag, use `u16` 0/1.
   `let b = x < y;` is currently an error (bool only lives in conditions).
 - **u16 vs i16 matters**: signed comparisons (`cmp_s`) and arithmetic shifts are only
-  produced when both operands are `i16`; mixed integer arithmetic is an error, because
+  produced when both operands are `i16`; mixed integer arithmetic is an error, because 
   implicit conversions hide too many bugs on a 16-bit machine.
 - **Unsupported means error**: these Rust features are rejected with a span — generics,
   traits, impls, closures, match, destructuring patterns, macros, references `&`, slices/array

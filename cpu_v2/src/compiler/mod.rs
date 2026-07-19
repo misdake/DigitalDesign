@@ -13,7 +13,7 @@ mod regalloc;
 mod shared;
 
 pub mod dsl;
-pub mod frontend;
+
 
 #[cfg(test)]
 mod tests;

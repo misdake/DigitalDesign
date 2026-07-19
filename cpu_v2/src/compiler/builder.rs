@@ -463,6 +463,61 @@ impl FuncBuilder {
         self.current = Some(header);
         (header, body_b, exit)
     }
+
+    /// create an unsealed block with the given preds (raw API for condition
+    /// cascades and custom loop shapes)
+    pub fn raw_block(&mut self, preds: &[BlockId]) -> BlockId {
+        self.new_block(preds)
+    }
+    /// set the current block to `b` and seal it (raw API)
+    pub fn enter_block(&mut self, b: BlockId) {
+        self.current = Some(b);
+        self.seal(b);
+    }
+    /// terminate the current block with a conditional branch, recording preds
+    pub fn br(&mut self, cmp: Cmp, if_true: BlockId, if_false: BlockId) {
+        let cur = self.cur();
+        self.func.blocks[if_true].preds.push(cur);
+        self.func.blocks[if_false].preds.push(cur);
+        self.terminate(Terminator::Br {
+            cmp,
+            if_true,
+            if_false,
+        });
+    }
+    /// terminate the current block with an unconditional jump
+    pub fn jmp(&mut self, target: BlockId) {
+        let cur = self.cur();
+        self.func.blocks[target].preds.push(cur);
+        self.terminate(Terminator::Jmp { target });
+    }
+
+    /// push a loop context and enter the body block (sealing it)
+    pub fn begin_loop_body(&mut self, header: BlockId, body_b: BlockId, exit: BlockId) {
+        self.loops.push(LoopCtx { header, exit });
+        self.current = Some(body_b);
+        self.seal(body_b);
+    }
+
+    /// redirect the innermost loop's continue target to a fresh block
+    /// (for-loop increment blocks); returns the new block, unsealed
+    pub fn begin_continue_block(&mut self) -> BlockId {
+        let incr = self.new_block(&[]);
+        self.loops.last_mut().expect("continue block outside of loop").header = incr;
+        incr
+    }
+    /// finish a continue block: wire the body's fall-through to it, seal it,
+    /// and make it the current block (the caller emits the increment there
+    /// and ends with the usual back edge via `end_while`)
+    pub fn end_continue_block(&mut self, incr: BlockId) {
+        if let Some(end) = self.current {
+            self.func.blocks[incr].preds.push(end);
+            self.terminate(Terminator::Jmp { target: incr });
+        }
+        self.seal(incr);
+        self.current = Some(incr);
+    }
+
     /// evaluate at the header: branch on `cond` into body/exit; current = body
     pub fn while_cond(&mut self, cond: BoolExpr, header: BlockId, body_b: BlockId, exit: BlockId) {
         self.lower_cond(cond, body_b, exit);

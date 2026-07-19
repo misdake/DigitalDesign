@@ -3,8 +3,8 @@
 //!
 //! anything outside the subset is a hard error with a source span.
 
-use crate::compiler::builder::{BoolExpr, FuncBuilder, VarId};
-use crate::compiler::ir::*;
+use crate::{BoolExpr, FuncBuilder, VarId};
+use crate::{BlockId, Cmp, CmpRhs, Instr, IrFunc, BinOp, ShiftOp, UnOp, VReg};
 use crate::isa::Cond;
 use std::collections::HashMap;
 use syn::{BinOp as SBinOp, Block, Expr, Item, ItemFn, Lit, Pat, Stmt, Type, UnOp as SUnOp};
@@ -21,7 +21,14 @@ pub fn parse_source(src: &str) -> Result<Vec<IrFunc>, syn::Error> {
     let mut globals = Globals::default();
     for item in &file.items {
         match item {
-            Item::Fn(f) => fns.push(f),
+            Item::Fn(f) => {
+                for attr in &f.attrs {
+                    if !attr.path.is_ident("allow") {
+                        return Err(err(attr, "attributes are not supported (except #[allow])"));
+                    }
+                }
+                fns.push(f)
+            }
             Item::Use(_) => { /* ignored: for the IDE only */ }
             Item::Const(c) => {
                 let ty = ty_of(&c.ty)?;
@@ -36,6 +43,10 @@ pub fn parse_source(src: &str) -> Result<Vec<IrFunc>, syn::Error> {
             }
             Item::Static(s) => add_static(s, &consts, &mut globals)?,
             Item::Verbatim(_) => { /* attributes on use items land here */ }
+            Item::Struct(_) => return Err(err(item, "structs are not supported (see spec §12)")),
+            Item::Trait(_) => return Err(err(item, "traits are not supported")),
+            Item::Impl(_) => return Err(err(item, "impl blocks are not supported")),
+            Item::Macro(_) => return Err(err(item, "macros are not supported")),
             _ => return Err(err(item, "item not supported (only fn/use/const/static are allowed)")),
         }
     }
@@ -221,6 +232,13 @@ fn add_static(
                     .map(|e| const_eval(e, consts))
                     .collect::<Result<_, _>>()?,
                 Expr::Repeat(r) => {
+                    let m = const_eval(&r.len, consts)? as usize;
+                    if m != len {
+                        return Err(err(
+                            &s.expr,
+                            format!("array repeat count {m} does not match declared length {len}"),
+                        ));
+                    }
                     let v = const_eval(&r.expr, consts)?;
                     vec![v; len]
                 }
@@ -287,7 +305,11 @@ impl Ty {
             Ty::UntypedInt => "integer literal".into(),
             Ty::Ptr => "Ptr".into(),
             Ty::Bool => "bool".into(),
-            Ty::FnPtr { .. } => "fn pointer".into(),
+            Ty::FnPtr { params, ret } => format!(
+                "fn({}) -> {}",
+                params.iter().map(|t| t.display()).collect::<Vec<_>>().join(", "),
+                ret.display()
+            ),
             Ty::Array(elem, n) => format!("[{}; {n}]", elem.display()),
             Ty::Unit => "()".into(),
         }
@@ -336,6 +358,8 @@ fn ty_of(ty: &Type) -> Result<Ty, syn::Error> {
         Type::Never(_) => Ok(Ty::Unit),
         Type::Paren(p) => ty_of(&p.elem),
         Type::Array(_) => Err(err(ty, "arrays are not allowed here (declare them in let/static, pass as Ptr)")),
+        Type::Reference(_) => Err(err(ty, "reference types `&T` are not supported (pass arrays as Ptr)")),
+        Type::Slice(_) => Err(err(ty, "slice types are not supported (pass arrays as Ptr)")),
         _ => Err(err(ty, "unsupported type")),
     }
 }
@@ -360,6 +384,13 @@ fn init_array(l: &mut FnLower, slot: u8, elem: &Ty, n: usize, init: &Expr) -> Re
     let base = l.b.addr_of_local(slot);
     match init {
         Expr::Repeat(r) => {
+            let m = const_eval(&r.len, l.consts)? as usize;
+            if m != n {
+                return Err(err(
+                    init,
+                    format!("array repeat count {m} does not match declared length {n}"),
+                ));
+            }
             let (v, _) = expr(l, &r.expr)?.reg(l, "array initializer")?;
             let (v, _) = coerce(l, v, elem, elem, &r.expr)?;
             for i in 0..n as i16 {
@@ -405,10 +436,21 @@ fn signature(f: &ItemFn) -> Result<Sig, syn::Error> {
     if params.len() > 6 {
         return Err(err(&f.sig, "too many parameters (max 6)"));
     }
+    for (i, ty) in params.iter().enumerate() {
+        if *ty == Ty::Bool {
+            return Err(err(&f.sig, format!(
+                "parameter {} is bool: bool only lives in conditions (use u16 0/1)",
+                i + 1
+            )));
+        }
+    }
     let ret = match &f.sig.output {
         syn::ReturnType::Default => Ty::Unit,
         syn::ReturnType::Type(_, t) => ty_of(t)?,
     };
+    if ret == Ty::Bool {
+        return Err(err(&f.sig, "bool return type is not supported (bool only lives in conditions)"));
+    }
     Ok(Sig { params, ret })
 }
 
@@ -701,10 +743,17 @@ fn lower_fn(
         if l.dead {
             return Err(err(t, "unreachable code (after return/halt)"));
         }
-        let (v, _) = expr(&mut l, t)?.reg(&mut l, "tail expression")?;
+        let (v, from) = expr(&mut l, t)?.reg(&mut l, "tail expression")?;
         let expected = sig.ret.clone();
-        let (v, _) = coerce(&mut l, v, &expected, &expected, t)?;
+        let (v, _) = coerce(&mut l, v, &from, &expected, t)?;
         l.b.ret(&[v]);
+        l.dead = true;
+    }
+    if sig.ret != Ty::Unit && !l.dead {
+        return Err(err(
+            &f.block,
+            format!("function `{name}` may reach its end without returning a value"),
+        ));
     }
     Ok(l.b.finish())
 }
@@ -815,6 +864,13 @@ fn stmt_expr(l: &mut FnLower, e: &Expr) -> Result<(), syn::Error> {
             }
             let (kind, ty) = (info.kind.clone(), info.ty.clone());
             let val = expr(l, &a.right)?;
+            // fn pointer reassignment: `f = other_fn;`
+            if let (Val::FnItem(fname), Ty::FnPtr { .. }) = (&val, &ty) {
+                check_fn_sig(l, fname, &ty)?;
+                let v = l.b.load_func_addr(fname);
+                l.write_var(&kind, v);
+                return Ok(());
+            }
             let (v, _) = val.reg(l, "assignment")?;
             let (v, _) = coerce(l, v, &ty, &ty, &a.right)?;
             l.write_var(&kind, v);
@@ -861,8 +917,8 @@ fn stmt_expr(l: &mut FnLower, e: &Expr) -> Result<(), syn::Error> {
                     return Err(err(e, "returning a value from a function without return type"))
                 }
                 (expected, Some(e)) => {
-                    let (v, _) = expr(l, e)?.reg(l, "return value")?;
-                    let (v, _) = coerce(l, v, expected, expected, e)?;
+                    let (v, from) = expr(l, e)?.reg(l, "return value")?;
+                    let (v, _) = coerce(l, v, &from, expected, e)?;
                     l.b.ret(&[v]);
                 }
                 (expected, None) => {
@@ -901,16 +957,22 @@ fn stmt_expr(l: &mut FnLower, e: &Expr) -> Result<(), syn::Error> {
 fn control_flow(l: &mut FnLower, e: &Expr) -> Result<(), syn::Error> {
     match e {
         Expr::If(i) => {
-            let cond = cond(l, &i.cond)?;
             match &i.else_branch {
                 None => {
-                    let join = l.b.begin_if(cond);
+                    let then_b = l.b.raw_block(&[]);
+                    let join = l.b.raw_block(&[]);
+                    cond_lazy(l, &i.cond, then_b, join)?;
+                    l.b.enter_block(then_b);
                     block(l, &i.then_branch)?;
                     l.b.end_if(join);
                     l.dead = false;
                 }
                 Some((_, else_e)) => {
-                    let (else_b, join) = l.b.begin_if_else(cond);
+                    let then_b = l.b.raw_block(&[]);
+                    let else_b = l.b.raw_block(&[]);
+                    let join = l.b.raw_block(&[]);
+                    cond_lazy(l, &i.cond, then_b, else_b)?;
+                    l.b.enter_block(then_b);
                     block(l, &i.then_branch)?;
                     let then_dead = l.dead;
                     l.dead = false;
@@ -929,8 +991,8 @@ fn control_flow(l: &mut FnLower, e: &Expr) -> Result<(), syn::Error> {
         }
         Expr::While(w) => {
             let (header, body_b, exit) = l.b.begin_while();
-            let cond = cond(l, &w.cond)?;
-            l.b.while_cond(cond, header, body_b, exit);
+            cond_lazy(l, &w.cond, body_b, exit)?;
+            l.b.begin_loop_body(header, body_b, exit);
             block(l, &w.body)?;
             l.b.end_while(header, exit);
             l.dead = false;
@@ -938,8 +1000,8 @@ fn control_flow(l: &mut FnLower, e: &Expr) -> Result<(), syn::Error> {
         }
         Expr::Loop(lp) => {
             let (header, body_b, exit) = l.b.begin_while();
-            let true_c = true_cond(l);
-            l.b.while_cond(true_c, header, body_b, exit);
+            l.b.jmp(body_b);
+            l.b.begin_loop_body(header, body_b, exit);
             block(l, &lp.body)?;
             l.b.end_while(header, exit);
             l.dead = false;
@@ -996,21 +1058,45 @@ fn control_flow(l: &mut FnLower, e: &Expr) -> Result<(), syn::Error> {
             );
 
             let (header, body_b, exit) = l.b.begin_while();
-            let cond = {
+            {
                 let i = l.b.get(ivar);
-                BoolExpr::Cmp(Cmp {
-                    lhs: i,
-                    rhs: CmpRhs::Reg(to_v),
-                    cond: if inclusive { Cond::LessEqual } else { Cond::Less },
-                    signed: ty == Ty::I16,
-                })
-            };
-            l.b.while_cond(cond, header, body_b, exit);
+                l.b.br(
+                    Cmp {
+                        lhs: i,
+                        rhs: CmpRhs::Reg(to_v),
+                        cond: if inclusive { Cond::LessEqual } else { Cond::Less },
+                        signed: ty == Ty::I16,
+                    },
+                    body_b,
+                    exit,
+                );
+            }
+            l.b.begin_loop_body(header, body_b, exit);
+            // continue must hit the increment block, not the header
+            let incr = l.b.begin_continue_block();
             block(l, &fl.body)?;
-            if l.dead {
-                // body always terminates (e.g. only break): skip the increment
-                l.dead = false;
-            } else {
+            l.dead = false;
+            l.b.end_continue_block(incr);
+            // inclusive ranges: stop before the increment wraps the end value
+            if inclusive {
+                let i = l.b.get(ivar);
+                let stop = l.b.raw_block(&[]);
+                let go = l.b.raw_block(&[]);
+                l.b.br(
+                    Cmp {
+                        lhs: i,
+                        rhs: CmpRhs::Reg(to_v),
+                        cond: Cond::Equal,
+                        signed: ty == Ty::I16,
+                    },
+                    stop,
+                    go,
+                );
+                l.b.enter_block(stop);
+                l.b.jmp(exit);
+                l.b.enter_block(go);
+            }
+            {
                 let i = l.b.get(ivar);
                 let one = l.b.load_imm(1);
                 let i = l.b.bin(BinOp::Add, i, one);
@@ -1052,6 +1138,8 @@ fn expr(l: &mut FnLower, e: &Expr) -> Result<Val, syn::Error> {
             } else {
                 false_cond(l)
             })),
+            Lit::Str(_) => Err(err(&lit.lit, "string literals are not supported")),
+            Lit::Float(_) => Err(err(&lit.lit, "float literals are not supported")),
             _ => Err(err(&lit.lit, "unsupported literal (only integers and bools)")),
         },
         Expr::Path(p) => {
@@ -1169,6 +1257,13 @@ fn expr(l: &mut FnLower, e: &Expr) -> Result<Val, syn::Error> {
             control_flow_value(l, e)
         }
         Expr::Block(b) => Err(err(&b, "blocks as expressions are not supported")),
+        Expr::Match(_) => Err(err(e, "match is not supported (use if/else)")),
+        Expr::Closure(_) => Err(err(e, "closures are not supported")),
+        Expr::Macro(_) => Err(err(e, "macros are not supported")),
+        Expr::Reference(_) => Err(err(
+            e,
+            "references `&` are not supported (take addresses with addr_of(&x))",
+        )),
         _ => Err(err(e, "expression not supported in this subset (see spec)")),
     }
 }
@@ -1179,8 +1274,11 @@ fn control_flow_value(l: &mut FnLower, e: &Expr) -> Result<Val, syn::Error> {
     let Some((_, else_e)) = &i.else_branch else {
         return Err(err(e, "if-expression needs an else branch"));
     };
-    let cond = cond(l, &i.cond)?;
-    let (else_b, join) = l.b.begin_if_else(cond);
+    let then_b = l.b.raw_block(&[]);
+    let else_b = l.b.raw_block(&[]);
+    let join = l.b.raw_block(&[]);
+    cond_lazy(l, &i.cond, then_b, else_b)?;
+    l.b.enter_block(then_b);
 
     // then branch value
     let (tv, tt) = if_expr_branch(l, &i.then_branch)?;
@@ -1273,6 +1371,62 @@ fn compare(
     }))
 }
 
+/// lower a condition into a branch cascade to `t`/`f`, evaluating each
+/// comparison exactly where the cascade reaches it — true short-circuit for
+/// side effects (calls inside conditions run only when reached)
+fn cond_lazy(l: &mut FnLower, e: &Expr, t: BlockId, f: BlockId) -> Result<(), syn::Error> {
+    match e {
+        Expr::Paren(p) => cond_lazy(l, &p.expr, t, f),
+        Expr::Binary(b) => match b.op {
+            SBinOp::And(_) => {
+                let m = l.b.raw_block(&[]);
+                cond_lazy(l, &b.left, m, f)?;
+                l.b.enter_block(m);
+                cond_lazy(l, &b.right, t, f)
+            }
+            SBinOp::Or(_) => {
+                let m = l.b.raw_block(&[]);
+                cond_lazy(l, &b.left, t, m)?;
+                l.b.enter_block(m);
+                cond_lazy(l, &b.right, t, f)
+            }
+            _ => {
+                // a comparison: evaluate its operands right here, then branch
+                let c = cond(l, e)?;
+                let BoolExpr::Cmp(cmp) = c else {
+                    return Err(err(e, "condition must be a boolean expression"));
+                };
+                l.b.br(cmp, t, f);
+                Ok(())
+            }
+        },
+        Expr::Unary(u) if matches!(u.op, SUnOp::Not(_)) => cond_lazy(l, &u.expr, f, t),
+        Expr::Lit(lit) => match &lit.lit {
+            Lit::Bool(b) => {
+                if b.value {
+                    l.b.jmp(t);
+                } else {
+                    l.b.jmp(f);
+                }
+                Ok(())
+            }
+            _ => Err(err(e, "condition must be a boolean expression (compare something)")),
+        },
+        _ => {
+            // delegate to the eager checker for a precise error message
+            match expr(l, e)? {
+                Val::Bool(_) => unreachable!(),
+                Val::V(_, ty) => Err(err(
+                    e,
+                    format!("condition must be a boolean expression, got {} (compare something)", ty.display()),
+                )),
+                Val::FnItem(_) => Err(err(e, "function used as a condition")),
+                Val::Unit => Err(err(e, "unit used as a condition")),
+            }
+        }
+    }
+}
+
 fn true_cond(l: &mut FnLower) -> BoolExpr {
     let zero = l.b.load_imm(0);
     BoolExpr::Cmp(Cmp {
@@ -1330,9 +1484,11 @@ fn call_expr(l: &mut FnLower, call: &syn::ExprCall) -> Result<Val, syn::Error> {
             if call.args.len() != 2 {
                 return Err(err(call, "assert(cond, sig) takes 2 arguments"));
             }
-            let c = cond(l, &call.args[0])?;
             let (sig_v, _) = expr(l, &call.args[1])?.reg(l, "assert signal")?;
-            let join = l.b.begin_if(BoolExpr::Not(Box::new(c)));
+            let fail = l.b.raw_block(&[]);
+            let join = l.b.raw_block(&[]);
+            cond_lazy(l, &call.args[0], join, fail)?;
+            l.b.enter_block(fail);
             l.b.halt(sig_v);
             l.b.end_if(join);
             return Ok(Val::Unit);
@@ -1343,11 +1499,31 @@ fn call_expr(l: &mut FnLower, call: &syn::ExprCall) -> Result<Val, syn::Error> {
         _ => {}
     }
 
-    // remaining calls take plain value arguments
+    // remaining calls take plain value arguments; function items passed as fn
+    // pointer arguments are materialized to their address inline
     let args: Vec<(VReg, Ty)> = call
         .args
         .iter()
-        .map(|a| expr(l, a).and_then(|v| v.reg(l, "argument")))
+        .map(|a| {
+            match expr(l, a)? {
+                Val::FnItem(fname) => {
+                    let sig = l
+                        .sigs
+                        .get(fname)
+                        .cloned()
+                        .ok_or_else(|| err(a, format!("undefined function `{fname}`")))?;
+                    let v = l.b.load_func_addr(fname);
+                    Ok((
+                        v,
+                        Ty::FnPtr {
+                            params: sig.params,
+                            ret: Box::new(sig.ret),
+                        },
+                    ))
+                }
+                val => val.reg(l, "argument"),
+            }
+        })
         .collect::<Result<_, _>>()?;
     if name.as_str() == "halt" {
         if args.len() != 1 {
@@ -1395,6 +1571,8 @@ fn array_method(
     l: &mut FnLower,
     base: VReg,
     n: usize,
+    mutable: bool,
+    name: &str,
     m: &syn::ExprMethodCall,
 ) -> Result<Val, syn::Error> {
     let method = m.method.to_string();
@@ -1419,6 +1597,11 @@ fn array_method(
             Ok(Val::V(l.b.load_mem(base2, off), Ty::U16))
         }
         "write" => {
+            if !mutable {
+                return Err(err(&m.method, format!(
+                    "array `{name}` is not mutable (declare with `let mut`)"
+                )));
+            }
             if m.args.len() != 2 {
                 return Err(err(&m.method, "write(off, v) takes 2 arguments"));
             }
@@ -1437,17 +1620,17 @@ fn method_call(l: &mut FnLower, m: &syn::ExprMethodCall) -> Result<Val, syn::Err
     if let Ok(name) = path_ident(&m.receiver) {
         if let Some(info) = l.lookup(&name) {
             if let Ty::Array(_, n) = &info.ty {
-                let (kind, n) = (info.kind.clone(), *n);
+                let (kind, n, mutable) = (info.kind.clone(), *n, info.mutable);
                 let VarKind::Local { slot } = kind else {
                     unreachable!("arrays are always memory-resident")
                 };
                 let base = l.b.addr_of_local(slot);
-                return array_method(l, base, n, m);
+                return array_method(l, base, n, mutable, &name, m);
             }
         }
         if let Some(&(addr, _, n)) = l.globals.arrays.get(&name) {
             let base = l.b.load_imm(addr);
-            return array_method(l, base, n, m);
+            return array_method(l, base, n, true, &name, m);
         }
     }
 
@@ -1540,18 +1723,19 @@ fn unify_int(a: Ty, b: Ty) -> Option<Ty> {
     }
 }
 
-/// convert a value to type `to` (only trivial int/ptr reinterpretation)
+/// implicit conversion at assignment/argument/return positions: only the
+/// same type, or an untyped literal adopting the target type. anything else
+/// needs an explicit `as` cast (see cast()).
 fn coerce(_l: &mut FnLower, v: VReg, from: &Ty, to: &Ty, at: &Expr) -> Result<(VReg, Ty), syn::Error> {
-    if from == to {
-        return Ok((v, to.clone()));
-    }
-    cast(at, v, from.clone(), to.clone()).map_err(|_| {
-        err(at, format!(
+    if from == to || (*from == Ty::UntypedInt && to.is_int()) {
+        Ok((v, to.clone()))
+    } else {
+        Err(err(at, format!(
             "type mismatch: expected {}, got {} (cast with `as`)",
             to.display(),
             from.display()
-        ))
-    })
+        )))
+    }
 }
 
 fn cast(e: &Expr, v: VReg, from: Ty, to: Ty) -> Result<(VReg, Ty), syn::Error> {
