@@ -440,7 +440,7 @@ fn dce(f: &mut IrFunc) -> bool {
     for b in &mut f.blocks {
         let before = b.insts.len() + b.phis.len();
         b.phis.retain(|p| useful.contains(&p.dst));
-        b.insts.retain(|inst| {
+        let keep = |inst: &Instr| {
             let defs = crate::compiler::regalloc::inst_defs(inst);
             // removable instructions are those without side effects
             let removable = matches!(
@@ -456,7 +456,15 @@ fn dce(f: &mut IrFunc) -> bool {
                     | Instr::AddrOfLocal { .. }
             );
             !removable || defs.iter().any(|d| useful.contains(d))
-        });
+        };
+        let insts = std::mem::take(&mut b.insts);
+        let lines = std::mem::take(&mut b.lines);
+        for (inst, line) in insts.into_iter().zip(lines) {
+            if keep(&inst) {
+                b.insts.push(inst);
+                b.lines.push(line);
+            }
+        }
         changed |= before != b.insts.len() + b.phis.len();
     }
     changed

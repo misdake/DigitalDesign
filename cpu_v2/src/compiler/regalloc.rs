@@ -253,13 +253,18 @@ fn insert_abi_shims(f: &mut IrFunc) -> AbiInfo {
             let p2 = fresh(f);
             replace_all_uses(f, *p, p2);
             f.blocks[f.entry].insts.insert(0, Instr::Mov { dst: p2, src: *p });
+            f.blocks[f.entry].lines.insert(0, None);
         }
     }
 
     // calls and rets
     for b in 0..f.blocks.len() {
         let mut new_insts = Vec::with_capacity(f.blocks[b].insts.len());
+        let mut new_lines = Vec::with_capacity(f.blocks[b].lines.len());
+        let old_lines = std::mem::take(&mut f.blocks[b].lines);
+        let mut old_lines = old_lines.into_iter();
         for inst in std::mem::take(&mut f.blocks[b].insts) {
+            let line = old_lines.next().unwrap_or(None);
             if let Instr::Call { func, args, rets } = inst {
                 assert!(
                     args.len() <= ARG_REGS.len() && rets.len() <= RET_REGS.len(),
@@ -270,6 +275,7 @@ fn insert_abi_shims(f: &mut IrFunc) -> AbiInfo {
                     let alpha = fresh(f);
                     pinned.insert(alpha, ARG_REGS[j]);
                     new_insts.push(Instr::Mov { dst: alpha, src: *a });
+                    new_lines.push(None);
                     pinned_args.push(alpha);
                 }
                 let mut pinned_rets = Vec::with_capacity(rets.len());
@@ -285,7 +291,10 @@ fn insert_abi_shims(f: &mut IrFunc) -> AbiInfo {
                     args: pinned_args,
                     rets: pinned_rets,
                 });
+                new_lines.push(line);
+                let n_movs = result_movs.len();
                 new_insts.extend(result_movs);
+                new_lines.extend(std::iter::repeat(None).take(n_movs));
             } else if let Instr::CallPtr { addr, args, rets } = inst {
                 assert!(
                     args.len() <= ARG_REGS.len() && rets.len() <= RET_REGS.len(),
@@ -299,11 +308,13 @@ fn insert_abi_shims(f: &mut IrFunc) -> AbiInfo {
                     dst: alpha_addr,
                     src: addr,
                 });
+                new_lines.push(None);
                 let mut pinned_args = Vec::with_capacity(args.len());
                 for (j, a) in args.iter().enumerate() {
                     let alpha = fresh(f);
                     pinned.insert(alpha, ARG_REGS[j]);
                     new_insts.push(Instr::Mov { dst: alpha, src: *a });
+                    new_lines.push(None);
                     pinned_args.push(alpha);
                 }
                 let mut pinned_rets = Vec::with_capacity(rets.len());
@@ -319,12 +330,18 @@ fn insert_abi_shims(f: &mut IrFunc) -> AbiInfo {
                     args: pinned_args,
                     rets: pinned_rets,
                 });
+                new_lines.push(line);
+                let n_movs = result_movs.len();
                 new_insts.extend(result_movs);
+                new_lines.extend(std::iter::repeat(None).take(n_movs));
             } else {
                 new_insts.push(inst);
+                new_lines.push(line);
             }
         }
+        debug_assert_eq!(new_insts.len(), new_lines.len());
         f.blocks[b].insts = new_insts;
+        f.blocks[b].lines = new_lines;
 
         if let Some(Terminator::Ret { values }) = f.blocks[b].term.clone() {
             let mut pinned_values = Vec::with_capacity(values.len());
@@ -332,6 +349,7 @@ fn insert_abi_shims(f: &mut IrFunc) -> AbiInfo {
                 let beta = fresh(f);
                 pinned.insert(beta, RET_REGS[k]);
                 f.blocks[b].insts.push(Instr::Mov { dst: beta, src: *v });
+                f.blocks[b].lines.push(None);
                 pinned_values.push(beta);
             }
             f.blocks[b].term = Some(Terminator::Ret { values: pinned_values });
@@ -361,6 +379,7 @@ fn split_critical_edges(f: &mut IrFunc) {
                 f.blocks.push(Block {
                     phis: vec![],
                     insts: vec![],
+                    lines: vec![],
                     term: Some(Terminator::Jmp { target }),
                     preds: vec![b],
                 });
@@ -771,43 +790,48 @@ fn rewrite_spills(f: &mut IrFunc, spilled: &[VReg], next_slot: &mut u8) {
     for b in 0..f.blocks.len() {
         // instructions
         let mut new_insts = Vec::with_capacity(f.blocks[b].insts.len());
+        let mut new_lines = Vec::with_capacity(f.blocks[b].lines.len());
+        let old_lines = std::mem::take(&mut f.blocks[b].lines);
+        let mut old_lines = old_lines.into_iter();
         for mut inst in std::mem::take(&mut f.blocks[b].insts) {
+            let line = old_lines.next().unwrap_or(None);
             // uses first
             match &mut inst {
                 Instr::Bin { lhs, rhs, .. } => {
-                    reload(lhs, &slot_of, &spilled, f, &mut new_insts);
-                    reload(rhs, &slot_of, &spilled, f, &mut new_insts);
+                    reload(lhs, &slot_of, &spilled, f, &mut new_insts, &mut new_lines);
+                    reload(rhs, &slot_of, &spilled, f, &mut new_insts, &mut new_lines);
                 }
                 Instr::Un { src, .. } | Instr::Shift { src, .. } | Instr::Mov { src, .. } => {
-                    reload(src, &slot_of, &spilled, f, &mut new_insts)
+                    reload(src, &slot_of, &spilled, f, &mut new_insts, &mut new_lines)
                 }
                 Instr::LoadImm { .. }
                 | Instr::DevRecv { .. }
                 | Instr::LoadSp { .. }
                 | Instr::LoadLocal { .. }
                 | Instr::AddrOfLocal { .. } => {}
-                Instr::LoadMem { base, .. } => reload(base, &slot_of, &spilled, f, &mut new_insts),
+                Instr::LoadMem { base, .. } => reload(base, &slot_of, &spilled, f, &mut new_insts, &mut new_lines),
                 Instr::StoreMem { base, src, .. } => {
-                    reload(base, &slot_of, &spilled, f, &mut new_insts);
-                    reload(src, &slot_of, &spilled, f, &mut new_insts);
+                    reload(base, &slot_of, &spilled, f, &mut new_insts, &mut new_lines);
+                    reload(src, &slot_of, &spilled, f, &mut new_insts, &mut new_lines);
                 }
                 Instr::Call { args, .. } => {
                     for a in args {
-                        reload(a, &slot_of, &spilled, f, &mut new_insts);
+                        reload(a, &slot_of, &spilled, f, &mut new_insts, &mut new_lines);
                     }
                 }
                 Instr::LoadFuncAddr { .. } => {}
                 Instr::CallPtr { addr, args, .. } => {
-                    reload(addr, &slot_of, &spilled, f, &mut new_insts);
+                    reload(addr, &slot_of, &spilled, f, &mut new_insts, &mut new_lines);
                     for a in args {
-                        reload(a, &slot_of, &spilled, f, &mut new_insts);
+                        reload(a, &slot_of, &spilled, f, &mut new_insts, &mut new_lines);
                     }
                 }
                 Instr::DevSend { src, .. } | Instr::StoreSp { src, .. } | Instr::StoreLocal { src, .. } => {
-                    reload(src, &slot_of, &spilled, f, &mut new_insts)
+                    reload(src, &slot_of, &spilled, f, &mut new_insts, &mut new_lines)
                 }
             }
             new_insts.push(inst.clone());
+            new_lines.push(line);
             // defs after
             for d in inst_defs(&inst) {
                 if spilled.contains(&d) {
@@ -823,38 +847,46 @@ fn rewrite_spills(f: &mut IrFunc, spilled: &[VReg], next_slot: &mut u8) {
                         slot: slot_of[&d],
                         src: t,
                     });
+                    new_lines.push(None);
                 }
             }
         }
+        // reloads were inserted before their users without source lines
+        debug_assert_eq!(new_insts.len(), new_lines.len());
         f.blocks[b].insts = new_insts;
+        f.blocks[b].lines = new_lines;
 
         // terminator uses (take the terminator out to avoid double-borrow of f)
         let mut taken_term = f.blocks[b].term.take();
         if let Some(term) = &mut taken_term {
             let mut pre = vec![];
+            let mut pre_lines = vec![];
             match term {
                 Terminator::Jmp { .. } => {}
                 Terminator::Br { cmp, .. } => {
-                    reload(&mut cmp.lhs, &slot_of, &spilled, f, &mut pre);
+                    reload(&mut cmp.lhs, &slot_of, &spilled, f, &mut pre, &mut pre_lines);
                     if let CmpRhs::Reg(r) = &mut cmp.rhs {
-                        reload(r, &slot_of, &spilled, f, &mut pre);
+                        reload(r, &slot_of, &spilled, f, &mut pre, &mut pre_lines);
                     }
                 }
                 Terminator::Ret { values } => {
                     for v in values {
-                        reload(v, &slot_of, &spilled, f, &mut pre);
+                        reload(v, &slot_of, &spilled, f, &mut pre, &mut pre_lines);
                     }
                 }
-                Terminator::Halt { signal } => reload(signal, &slot_of, &spilled, f, &mut pre),
+                Terminator::Halt { signal } => reload(signal, &slot_of, &spilled, f, &mut pre, &mut pre_lines),
             }
             f.blocks[b].insts.extend(pre);
+            f.blocks[b].lines.extend(pre_lines);
         }
         f.blocks[b].term = taken_term;
     }
 
     // edge appends targeted at pred blocks (from phis of successors)
     for (b, app) in edge_appends {
+        let n = app.len();
         f.blocks[b].insts.extend(app);
+        f.blocks[b].lines.extend(std::iter::repeat(None).take(n));
     }
 }
 
@@ -864,6 +896,7 @@ fn reload(
     spilled: &HashSet<VReg>,
     f: &mut IrFunc,
     out: &mut Vec<Instr>,
+    lines: &mut Vec<Option<u32>>,
 ) {
     if spilled.contains(v) {
         let t = {
@@ -875,6 +908,7 @@ fn reload(
             dst: t,
             slot: slot_of[v],
         });
+        lines.push(None);
         *v = t;
     }
 }

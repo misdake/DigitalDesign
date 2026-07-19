@@ -50,6 +50,8 @@ pub struct FuncBuilder {
     incomplete: HashMap<BlockId, Vec<(VReg, VarId)>>,
     current: Option<BlockId>,
     loops: Vec<LoopCtx>,
+    /// source line recorded for subsequently emitted instructions
+    line_hint: Option<u32>,
 }
 
 impl FuncBuilder {
@@ -65,6 +67,7 @@ impl FuncBuilder {
                 blocks: vec![Block {
                     phis: vec![],
                     insts: vec![],
+                    lines: vec![],
                     term: None,
                     preds: vec![],
                 }],
@@ -81,6 +84,7 @@ impl FuncBuilder {
             incomplete: HashMap::new(),
             current: Some(entry),
             loops: vec![],
+            line_hint: None,
         };
         let params = (0..n_params).map(|_| b.new_var()).collect::<Vec<_>>();
         for (i, &var) in params.iter().enumerate() {
@@ -109,6 +113,12 @@ impl FuncBuilder {
         let b = self.cur();
         assert!(self.func.blocks[b].term.is_none(), "block b{b} already terminated");
         self.func.blocks[b].insts.push(inst);
+        self.func.blocks[b].lines.push(self.line_hint);
+    }
+
+    /// record this source line for subsequently emitted instructions
+    pub fn set_line_hint(&mut self, line: u32) {
+        self.line_hint = Some(line);
     }
 
     fn terminate(&mut self, term: Terminator) {
@@ -123,6 +133,7 @@ impl FuncBuilder {
         self.func.blocks.push(Block {
             phis: vec![],
             insts: vec![],
+            lines: vec![],
             term: None,
             preds: preds.to_vec(),
         });

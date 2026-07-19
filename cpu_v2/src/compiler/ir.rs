@@ -114,6 +114,9 @@ pub enum Terminator {
 pub struct Block {
     pub phis: Vec<Phi>,
     pub insts: Vec<Instr>,
+    /// source line per instruction, parallel to `insts` (debugger line table;
+    /// None = no source line, e.g. compiler-generated)
+    pub lines: Vec<Option<u32>>,
     /// None while the block is still being built (or unreachable)
     pub term: Option<Terminator>,
     pub preds: Vec<BlockId>,

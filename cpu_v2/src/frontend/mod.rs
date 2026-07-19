@@ -139,9 +139,12 @@ fn auto_init(out: &mut Vec<IrFunc>, opts: &CompilerOptions) -> Result<(), syn::E
         });
     }
     main.vreg_count = next_v;
-    let old = std::mem::take(&mut main.blocks[entry].insts);
+    let old_insts = std::mem::take(&mut main.blocks[entry].insts);
+    let old_lines = std::mem::take(&mut main.blocks[entry].lines);
     main.blocks[entry].insts = pre;
-    main.blocks[entry].insts.extend(old);
+    main.blocks[entry].lines = vec![None; main.blocks[entry].insts.len()];
+    main.blocks[entry].insts.extend(old_insts);
+    main.blocks[entry].lines.extend(old_lines);
     Ok(())
 }
 
@@ -239,9 +242,12 @@ fn emit_data_init(out: &mut [IrFunc], globals: &Globals) -> Result<(), syn::Erro
             });
         }
     }
-    let old = std::mem::take(&mut main.blocks[entry].insts);
+    let old_insts = std::mem::take(&mut main.blocks[entry].insts);
+    let old_lines = std::mem::take(&mut main.blocks[entry].lines);
     main.blocks[entry].insts = inits;
-    main.blocks[entry].insts.extend(old);
+    main.blocks[entry].lines = vec![None; main.blocks[entry].insts.len()];
+    main.blocks[entry].insts.extend(old_insts);
+    main.blocks[entry].lines.extend(old_lines);
     Ok(())
 }
 
@@ -921,6 +927,7 @@ fn block(l: &mut FnLower, blk: &Block) -> Result<(), syn::Error> {
 }
 
 fn stmt(l: &mut FnLower, s: &Stmt) -> Result<(), syn::Error> {
+    l.b.set_line_hint(line_of(s));
     match s {
         Stmt::Local(local) => {
             let (inner_pat, annotated) = match &local.pat {
