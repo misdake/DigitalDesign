@@ -16,6 +16,26 @@ pub fn compile_and_run(src: &str, main: &'static str, max_cycles: usize) -> (Sim
     cpu_v2::simulate(&instructions, max_cycles)
 }
 
+/// compile with the std library + compile options, and run
+pub fn compile_program_and_run(
+    src: &str,
+    opts: &cpu_v2::CompilerOptions,
+    max_cycles: usize,
+) -> (SimState, Option<u16>, String) {
+    let funcs = cpu_v2::frontend::compile_program(src, opts, &mut |name| {
+        Err(format!("unknown module `{name}`"))
+    })
+    .expect("parse failed");
+    let mut c = Compiler::new();
+    c.opts = opts.clone();
+    for f in funcs {
+        c.add_func(f);
+    }
+    let (instructions, listing) = c.finish("main");
+    let (_state, signal) = cpu_v2::simulate(&instructions, max_cycles);
+    (_state, signal, listing)
+}
+
 /// just the halt signal of `compile_and_run`
 pub fn run(src: &str) -> Option<u16> {
     compile_and_run(src, "main", 10_000).1

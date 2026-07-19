@@ -3,10 +3,10 @@
 //!
 //! anything outside the subset is a hard error with a source span.
 
-use crate::{BoolExpr, FuncBuilder, VarId};
+use crate::{BoolExpr, CompilerOptions, FuncBuilder, VarId};
 use crate::{BlockId, Cmp, CmpRhs, Instr, IrFunc, BinOp, ShiftOp, UnOp, VReg};
 use crate::isa::Cond;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use syn::{BinOp as SBinOp, Block, Expr, Item, ItemFn, Lit, Pat, Stmt, Type, UnOp as SUnOp};
 
 #[cfg(doc)]
@@ -21,41 +21,169 @@ pub fn parse_source(src: &str) -> Result<Vec<IrFunc>, syn::Error> {
 /// like `parse_source`, with the static data section starting at `data_base`
 pub fn parse_source_with(src: &str, data_base: u16) -> Result<Vec<IrFunc>, syn::Error> {
     let file = syn::parse_file(src)?;
+    parse_files(vec![file], data_base)
+}
+
+/// the rcc standard library, embedded and appended to every program compiled
+/// via `compile_program` (unused functions are dropped by the linker)
+const STD_SOURCES: &[&str] = &[
+    include_str!("../rcc_std/heap.rs"),
+    include_str!("../rcc_std/mem.rs"),
+    include_str!("../rcc_std/mul.rs"),
+    include_str!("../rcc_std/vec.rs"),
+];
+
+/// compile a full program: the user source, any `mod name;` files resolved
+/// through `loader`, plus the rcc standard library, with automatic library
+/// initialization driven by `opts`
+pub fn compile_program(
+    src: &str,
+    opts: &CompilerOptions,
+    loader: &mut dyn FnMut(&str) -> Result<String, String>,
+) -> Result<Vec<IrFunc>, syn::Error> {
+    // gather sources: main file + user modules (recursive) + std
+    let mut srcs: Vec<String> = vec![src.to_string()];
+    let mut seen: HashSet<String> = HashSet::new();
+    let mut i = 0;
+    while i < srcs.len() {
+        let text = srcs[i].clone();
+        let file = syn::parse_file(&text)?;
+        for item in &file.items {
+            if let Item::Mod(m) = item {
+                if m.content.is_some() {
+                    return Err(err(&m.ident, "inline `mod name { }` is not supported; use `mod name;`"));
+                }
+                let name = m.ident.to_string();
+                if seen.insert(name.clone()) {
+                    let text2 = loader(&name)
+                        .map_err(|e| err(&m.ident, format!("cannot load module `{name}`: {e}")))?;
+                    srcs.push(text2);
+                }
+            }
+        }
+        i += 1;
+    }
+    srcs.extend(STD_SOURCES.iter().map(|t| t.to_string()));
+
+    let mut files = vec![];
+    for text in &srcs {
+        files.push(syn::parse_file(text)?);
+    }
+    let mut out = parse_files(files, opts.data_base)?;
+    auto_init(&mut out, opts)?;
+    Ok(out)
+}
+
+/// insert library initialization calls at the start of `main`, driven by
+/// which library functions the program's call graph reaches
+fn auto_init(out: &mut Vec<IrFunc>, opts: &CompilerOptions) -> Result<(), syn::Error> {
+    // reachability over the call graph from main
+    let mut reachable: HashSet<&str> = HashSet::new();
+    let mut work = vec!["main"];
+    reachable.insert("main");
+    while let Some(n) = work.pop() {
+        let Some(f) = out.iter().find(|f| f.name == n) else {
+            continue;
+        };
+        for b in &f.blocks {
+            for i in &b.insts {
+                if let Instr::Call { func, .. } = i {
+                    if reachable.insert(func) {
+                        work.push(func);
+                    }
+                }
+            }
+        }
+    }
+    let heap_used = reachable.contains("malloc") || reachable.contains("free");
+    let vec_used = reachable.contains("vec_new") || reachable.contains("init_vec");
+    if !heap_used && !vec_used {
+        return Ok(());
+    }
+    let Some(main) = out.iter_mut().find(|f| f.name == "main") else {
+        return Err(syn::Error::new(
+            proc_macro2::Span::call_site(),
+            "library initialization requires a `fn main`",
+        ));
+    };
+    let entry = main.entry;
+    let mut pre = vec![];
+    let mut next_v = main.vreg_count;
+    if heap_used {
+        pre.push(Instr::LoadImm {
+            dst: next_v,
+            value: opts.heap_begin,
+        });
+        next_v += 1;
+        pre.push(Instr::LoadImm {
+            dst: next_v,
+            value: opts.heap_size,
+        });
+        next_v += 1;
+        pre.push(Instr::Call {
+            func: "init_heap",
+            args: vec![next_v - 2, next_v - 1],
+            rets: vec![],
+        });
+    }
+    if vec_used {
+        pre.push(Instr::LoadImm {
+            dst: next_v,
+            value: opts.vec_init_cap,
+        });
+        next_v += 1;
+        pre.push(Instr::Call {
+            func: "init_vec",
+            args: vec![next_v - 1],
+            rets: vec![],
+        });
+    }
+    main.vreg_count = next_v;
+    let old = std::mem::take(&mut main.blocks[entry].insts);
+    main.blocks[entry].insts = pre;
+    main.blocks[entry].insts.extend(old);
+    Ok(())
+}
+
+fn parse_files(files: Vec<syn::File>, data_base: u16) -> Result<Vec<IrFunc>, syn::Error> {
     let mut fns = vec![];
     let mut consts: HashMap<String, (u16, Ty)> = HashMap::new();
     let mut globals = Globals {
         next_addr: data_base,
         ..Globals::default()
     };
-    for item in &file.items {
-        match item {
-            Item::Fn(f) => {
-                for attr in &f.attrs {
-                    if !attr.path.is_ident("allow") {
-                        return Err(err(attr, "attributes are not supported (except #[allow])"));
+    for file in &files {
+        for item in &file.items {
+            match item {
+                Item::Fn(f) => {
+                    for attr in &f.attrs {
+                        if !attr.path.is_ident("allow") && !attr.path.is_ident("doc") {
+                            return Err(err(attr, "attributes are not supported (except #[allow])"));
+                        }
+                    }
+                    fns.push(f)
+                }
+                Item::Use(_) => { /* ignored: for the IDE only */ }
+                Item::Const(c) => {
+                    let ty = ty_of(&c.ty)?;
+                    if !matches!(ty, Ty::U16 | Ty::I16) {
+                        return Err(err(&c.ty, "const must be u16 or i16"));
+                    }
+                    let v = const_eval(&c.expr, &consts)?;
+                    let name = c.ident.to_string();
+                    if consts.insert(name.clone(), (v, ty)).is_some() {
+                        return Err(err(&c.ident, format!("const `{name}` defined twice")));
                     }
                 }
-                fns.push(f)
+                Item::Static(s) => add_static(s, &consts, &mut globals)?,
+                Item::Verbatim(_) => { /* attributes on use items land here */ }
+                Item::Mod(_) => { /* already resolved by compile_program */ }
+                Item::Struct(_) => return Err(err(item, "structs are not supported (see spec §12)")),
+                Item::Trait(_) => return Err(err(item, "traits are not supported")),
+                Item::Impl(_) => return Err(err(item, "impl blocks are not supported")),
+                Item::Macro(_) => return Err(err(item, "macros are not supported")),
+                _ => return Err(err(item, "item not supported (only fn/use/const/static are allowed)")),
             }
-            Item::Use(_) => { /* ignored: for the IDE only */ }
-            Item::Const(c) => {
-                let ty = ty_of(&c.ty)?;
-                if !matches!(ty, Ty::U16 | Ty::I16) {
-                    return Err(err(&c.ty, "const must be u16 or i16"));
-                }
-                let v = const_eval(&c.expr, &consts)?;
-                let name = c.ident.to_string();
-                if consts.insert(name.clone(), (v, ty)).is_some() {
-                    return Err(err(&c.ident, format!("const `{name}` defined twice")));
-                }
-            }
-            Item::Static(s) => add_static(s, &consts, &mut globals)?,
-            Item::Verbatim(_) => { /* attributes on use items land here */ }
-            Item::Struct(_) => return Err(err(item, "structs are not supported (see spec §12)")),
-            Item::Trait(_) => return Err(err(item, "traits are not supported")),
-            Item::Impl(_) => return Err(err(item, "impl blocks are not supported")),
-            Item::Macro(_) => return Err(err(item, "macros are not supported")),
-            _ => return Err(err(item, "item not supported (only fn/use/const/static are allowed)")),
         }
     }
     // collect signatures first (functions can call each other regardless of order)
@@ -301,6 +429,7 @@ enum Ty {
     /// [u16; N] / [i16; N], memory-resident (data section or stack frame)
     Array(Box<Ty>, usize),
     Unit,
+    Never,
 }
 impl Ty {
     fn is_int(&self) -> bool {
@@ -320,6 +449,7 @@ impl Ty {
             ),
             Ty::Array(elem, n) => format!("[{}; {n}]", elem.display()),
             Ty::Unit => "()".into(),
+            Ty::Never => "!".into(),
         }
     }
 }
@@ -499,6 +629,8 @@ enum Val {
     Bool(BoolExpr),
     FnItem(&'static str),
     Unit,
+    /// the never type `!` (diverging expressions like halt)
+    Never,
 }
 impl Val {
     fn reg(self, l: &mut FnLower, what: &str) -> Result<(VReg, Ty), syn::Error> {
@@ -511,6 +643,7 @@ impl Val {
                 "function `{name}` used as {what}; assign it to a fn pointer variable or call it"
             ))),
             Val::Unit => Err(l.err_here(format!("unit value used as {what}"))),
+            Val::Never => Ok((0, Ty::Never)),
         }
     }
 }
@@ -751,11 +884,14 @@ fn lower_fn(
         if l.dead {
             return Err(err(t, "unreachable code (after return/halt)"));
         }
-        let (v, from) = expr(&mut l, t)?.reg(&mut l, "tail expression")?;
-        let expected = sig.ret.clone();
-        let (v, _) = coerce(&mut l, v, &from, &expected, t)?;
-        l.b.ret(&[v]);
-        l.dead = true;
+        let (v, from) = expr(&mut l, t)?.reg(&mut l, "tail expression").map_err(|e| syn::Error::new(e.span(), format!("in fn `{name}`: {e}")))?;
+        // a diverging tail (halt) terminates the block itself
+        if !l.dead {
+            let expected = sig.ret.clone();
+            let (v, _) = coerce(&mut l, v, &from, &expected, t)?;
+            l.b.ret(&[v]);
+            l.dead = true;
+        }
     }
     if sig.ret != Ty::Unit && !l.dead {
         return Err(err(
@@ -953,7 +1089,7 @@ fn stmt_expr(l: &mut FnLower, e: &Expr) -> Result<(), syn::Error> {
             // expression statement for side effects (calls, stores, intrinsics)
             let val = expr(l, e)?;
             match val {
-                Val::Unit | Val::V(_, _) | Val::Bool(_) => Ok(()),
+                Val::Unit | Val::V(_, _) | Val::Bool(_) | Val::Never => Ok(()),
                 Val::FnItem(name) => Err(l.err_here(format!(
                     "function `{name}` as a statement; did you mean to call it?"
                 ))),
@@ -1197,6 +1333,7 @@ fn expr(l: &mut FnLower, e: &Expr) -> Result<Val, syn::Error> {
                     Val::Bool(c) => Ok(Val::Bool(BoolExpr::Not(Box::new(c)))),
                     Val::FnItem(_) => Err(err(&u.op, "`!` does not apply to functions")),
                     Val::Unit => Err(err(&u.op, "`!` does not apply to unit")),
+                    Val::Never => Err(err(&u.op, "`!` does not apply to never")),
                 }
             }
             _ => Err(err(&u.op, "unsupported unary operator")),
@@ -1337,6 +1474,7 @@ fn cond(l: &mut FnLower, e: &Expr) -> Result<BoolExpr, syn::Error> {
         )),
         Val::FnItem(_) => Err(err(e, "function used as a condition")),
         Val::Unit => Err(err(e, "unit used as a condition")),
+        Val::Never => Err(err(e, "never used as a condition")),
     }
 }
 
@@ -1430,6 +1568,7 @@ fn cond_lazy(l: &mut FnLower, e: &Expr, t: BlockId, f: BlockId) -> Result<(), sy
                 )),
                 Val::FnItem(_) => Err(err(e, "function used as a condition")),
                 Val::Unit => Err(err(e, "unit used as a condition")),
+                Val::Never => Err(err(e, "never used as a condition")),
             }
         }
     }
@@ -1540,7 +1679,7 @@ fn call_expr(l: &mut FnLower, call: &syn::ExprCall) -> Result<Val, syn::Error> {
         let v = args[0].0;
         l.b.halt(v);
         l.dead = true;
-        return Ok(Val::Unit);
+        return Ok(Val::Never);
     }
 
     // direct or indirect call
@@ -1735,7 +1874,7 @@ fn unify_int(a: Ty, b: Ty) -> Option<Ty> {
 /// same type, or an untyped literal adopting the target type. anything else
 /// needs an explicit `as` cast (see cast()).
 fn coerce(_l: &mut FnLower, v: VReg, from: &Ty, to: &Ty, at: &Expr) -> Result<(VReg, Ty), syn::Error> {
-    if from == to || (*from == Ty::UntypedInt && to.is_int()) {
+    if from == to || *from == Ty::Never || (*from == Ty::UntypedInt && to.is_int()) {
         Ok((v, to.clone()))
     } else {
         Err(err(at, format!(
