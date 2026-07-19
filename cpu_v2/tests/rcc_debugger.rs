@@ -100,3 +100,35 @@ fn main() {
         _ => panic!("param g should be a register"),
     }
 }
+
+#[test]
+fn test_source_line_debugging() {
+    let src = r#"
+fn main() {
+    let mut x: u16 = 0;
+    for i in 0..10u16 {
+        x += i;
+    }
+    halt(x);
+}
+"#;
+    let mut s = make_session(src);
+
+    // the first mapped line: `let mut x = 0` (line 2) folds into the loop phi
+    // as an immediate, so the first surviving instruction is the loop cmp (3)
+    let (file, line) = s.current_line().unwrap();
+    assert_eq!((file, line), (0, 3));
+
+    // breakpoint on the halt line (7) maps to the halt instruction
+    let addr = s.toggle_breakpoint_line(0, 7, true).unwrap();
+    let (hit, halted) = s.continue_run(10_000);
+    assert_eq!(hit, Some(addr));
+    assert_eq!(halted, None);
+
+    // next_line runs to the halt and reports the signal
+    let halted = s.next_line(10_000);
+    assert_eq!(halted, Some(45));
+
+    // no instruction for a nonexistent line
+    assert_eq!(s.toggle_breakpoint_line(0, 999, true), None);
+}

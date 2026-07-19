@@ -116,6 +116,51 @@ impl DebugSession {
         }
     }
 
+    /// toggle a breakpoint on the first instruction mapped to a source line.
+    /// returns the instruction address if the line has one.
+    pub fn toggle_breakpoint_line(&mut self, file: u16, line: u32, on: bool) -> Option<usize> {
+        let addr = self
+            .debug
+            .lines
+            .iter()
+            .filter(|(_, f, l)| *f == file && *l == line)
+            .map(|&(a, _, _)| a)
+            .min()?;
+        self.toggle_breakpoint(addr, on);
+        Some(addr)
+    }
+
+    /// line numbers (of the current file) that have a breakpoint mapped to them
+    fn breakpoint_lines(&self, file: u16) -> Vec<u32> {
+        self.debug
+            .lines
+            .iter()
+            .filter(|(a, f, _)| *f == file && self.breakpoints.contains(a))
+            .map(|&(_, _, l)| l)
+            .collect()
+    }
+
+    /// step until the current source line changes (or the program halts)
+    pub fn next_line(&mut self, max_cycles: usize) -> Option<u16> {
+        if self.last_halt.is_some() {
+            return self.last_halt;
+        }
+        let cur = self.current_line();
+        for _ in 0..max_cycles {
+            self.step_change();
+            if let Some(sig) = self.last_halt {
+                return Some(sig);
+            }
+            if self.breakpoints.contains(&(self.sim.state.pc as usize)) {
+                return None;
+            }
+            if self.current_line() != cur {
+                return None;
+            }
+        }
+        None
+    }
+
     /// the function containing `pc`, if any
     pub fn current_func(&self) -> Option<&DebugFunc> {
         let pc = self.sim.state.pc as usize;
@@ -125,7 +170,9 @@ impl DebugSession {
             .find(|f| (f.addr.0..f.addr.1).contains(&pc))
     }
 
-    /// current source line (file index, line) closest to `pc`
+    /// current source line (file index, line) closest to `pc`: the nearest
+    /// entry at or below pc, else the first entry above it (before the
+    /// function prologue)
     pub fn current_line(&self) -> Option<(u16, u32)> {
         let pc = self.sim.state.pc as usize;
         let mut best: Option<&(usize, u16, u32)> = None;
@@ -133,6 +180,14 @@ impl DebugSession {
             if entry.0 <= pc && best.is_none_or(|b| entry.0 >= b.0) {
                 best = Some(entry);
             }
+        }
+        if best.is_none() {
+            best = self
+                .debug
+                .lines
+                .iter()
+                .filter(|(a, _, _)| *a >= pc)
+                .min_by_key(|(a, _, _)| *a);
         }
         best.map(|&(_, f, l)| (f, l))
     }
@@ -295,6 +350,36 @@ impl DebugSession {
             }
         }
 
+        // current source file with line numbers and breakpoint lines
+        match self.current_line() {
+            Some((file, _)) => {
+                let lines = self.source_lines(file);
+                let bps = self.breakpoint_lines(file);
+                let _ = write!(out, "\"src\":{{\"file\":{},\"lines\":[", file);
+                let items: Vec<String> = lines
+                    .iter()
+                    .enumerate()
+                    .map(|(i, t)| {
+                        let n = i + 1;
+                        let cur = self.current_line() == Some((file, n as u32));
+                        let bp = bps.contains(&(n as u32));
+                        format!(
+                            "{{\"n\":{},\"text\":\"{}\",\"cur\":{},\"bp\":{}}}",
+                            n,
+                            esc(t),
+                            cur,
+                            bp
+                        )
+                    })
+                    .collect();
+                let _ = write!(out, "{}", items.join(","));
+                let _ = write!(out, "]}},");
+            }
+            None => {
+                let _ = write!(out, "\"src\":null,");
+            }
+        }
+
         // disassembly with pc/breakpoint markers
         let _ = write!(out, "\"disasm\":[");
         let items: Vec<String> = self
@@ -339,6 +424,17 @@ impl DebugSession {
             return String::new();
         };
         text.lines().nth(line as usize - 1).unwrap_or("").trim().to_string()
+    }
+
+    /// full lines of a source file (empty when unreadable)
+    fn source_lines(&self, file: u16) -> Vec<String> {
+        let Some(path) = self.debug.files.get(file as usize) else {
+            return vec![];
+        };
+        let Ok(text) = std::fs::read_to_string(path) else {
+            return vec![];
+        };
+        text.lines().map(|l| l.to_string()).collect()
     }
 
     pub fn mem_json(&self, addr: u16, len: u16) -> String {

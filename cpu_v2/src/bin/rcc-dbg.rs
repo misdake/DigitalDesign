@@ -133,11 +133,31 @@ fn route(method: &str, path: &str, _body: &[u8], session: &Arc<Mutex<DebugSessio
             let mut s = session.lock().unwrap();
             match q.get("cmd").map(|s| s.as_str()) {
                 Some("step") => s.step(),
+                Some("next") => {
+                    let _ = s.next_line(1_000_000);
+                }
                 Some("continue") => {
                     let _ = s.continue_run(5_000_000);
                 }
                 Some("reset") => s.reset(),
                 _ => return ("400 Bad Request", "text/plain", b"unknown cmd".to_vec()),
+            }
+            let json = s.state_json();
+            ("200 OK", "application/json", json.into_bytes())
+        }
+        ("POST", "/api/breakline") => {
+            let q = parse_query(query);
+            let mut s = session.lock().unwrap();
+            let file = q.get("file").and_then(|v| v.parse().ok());
+            let line = q.get("line").and_then(|v| v.parse().ok());
+            let on = q.get("on").map(|v| v == "1").unwrap_or(true);
+            match (file, line) {
+                (Some(file), Some(line)) => {
+                    if s.toggle_breakpoint_line(file, line, on).is_none() {
+                        return ("404 Not Found", "text/plain", b"no instruction for that line".to_vec());
+                    }
+                }
+                _ => return ("400 Bad Request", "text/plain", b"missing file/line".to_vec()),
             }
             let json = s.state_json();
             ("200 OK", "application/json", json.into_bytes())

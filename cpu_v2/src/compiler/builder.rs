@@ -69,6 +69,7 @@ impl FuncBuilder {
                     insts: vec![],
                     lines: vec![],
                     term: None,
+                    term_line: None,
                     preds: vec![],
                 }],
                 entry,
@@ -125,6 +126,7 @@ impl FuncBuilder {
         let b = self.cur();
         assert!(self.func.blocks[b].term.is_none(), "block b{b} already terminated");
         self.func.blocks[b].term = Some(term);
+        self.func.blocks[b].term_line = self.line_hint;
         self.current = None;
     }
 
@@ -135,6 +137,7 @@ impl FuncBuilder {
             insts: vec![],
             lines: vec![],
             term: None,
+            term_line: None,
             preds: preds.to_vec(),
         });
         self.func.block_notes.push(None);

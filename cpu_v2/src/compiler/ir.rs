@@ -119,6 +119,8 @@ pub struct Block {
     pub lines: Vec<Option<u32>>,
     /// None while the block is still being built (or unreachable)
     pub term: Option<Terminator>,
+    /// source line of the terminator (debuggers map halts/rets/branches too)
+    pub term_line: Option<u32>,
     pub preds: Vec<BlockId>,
 }
 

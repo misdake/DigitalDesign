@@ -258,10 +258,10 @@ pub fn compile_function(
                     let (hi, lo) = hi_lo(alloc.frame_size() as u8);
                     lines.push(Line::Inst(sp_add(hi, lo), None));
                 }
-                lines.push(Line::Inst(jmp_reg(REG_RA), None));
+                lines.push(Line::Inst(jmp_reg(REG_RA), block.term_line));
             }
             Some(Terminator::Halt { signal }) => {
-                lines.push(Line::Inst(halt(reg(*signal)), None));
+                lines.push(Line::Inst(halt(reg(*signal)), block.term_line));
             }
             None => unreachable!("unterminated reachable block b{b}"),
         }

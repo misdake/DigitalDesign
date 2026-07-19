@@ -381,6 +381,7 @@ fn split_critical_edges(f: &mut IrFunc) {
                     insts: vec![],
                     lines: vec![],
                     term: Some(Terminator::Jmp { target }),
+                    term_line: None,
                     preds: vec![b],
                 });
                 f.block_notes.push(None);
