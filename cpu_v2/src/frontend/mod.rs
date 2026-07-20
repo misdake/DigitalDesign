@@ -8,6 +8,7 @@ use crate::{BoolExpr, CompilerOptions, FuncBuilder, VarId};
 use crate::{BlockId, Cmp, CmpRhs, Instr, IrFunc, BinOp, ShiftOp, UnOp, VReg};
 use crate::isa::Cond;
 use std::collections::{HashMap, HashSet};
+use std::fmt;
 use syn::{BinOp as SBinOp, Block, Expr, Item, ItemFn, Lit, Pat, Stmt, Type, UnOp as SUnOp};
 
 #[cfg(doc)]
@@ -35,16 +36,107 @@ pub struct FnDebug {
     pub locals: Vec<DebugVar>,
 }
 
+/// A source-aware compiler diagnostic. Unlike `syn::Error::to_string()`, its
+/// display includes the source file, one-based line/column, source text, and a
+/// caret. Full-program compilation uses this type so errors from module files
+/// retain their origin.
+#[derive(Clone, Debug)]
+pub struct CompileError {
+    diagnostics: Vec<SourceDiagnostic>,
+}
+
+#[derive(Clone, Debug)]
+struct SourceDiagnostic {
+    file: String,
+    source: String,
+    line: usize,
+    column: usize,
+    end_line: usize,
+    end_column: usize,
+    message: String,
+}
+
+impl CompileError {
+    fn from_syn(file: impl Into<String>, source: impl Into<String>, error: syn::Error) -> Self {
+        let file = file.into();
+        let source = source.into();
+        let diagnostics = error
+            .into_iter()
+            .map(|error| {
+                let start = error.span().start();
+                let end = error.span().end();
+                SourceDiagnostic {
+                    file: file.clone(),
+                    source: source.clone(),
+                    line: start.line,
+                    column: start.column + 1,
+                    end_line: end.line,
+                    end_column: end.column + 1,
+                    message: error.to_string(),
+                }
+            })
+            .collect();
+        Self { diagnostics }
+    }
+
+    /// Location of the primary diagnostic as `(file, one-based line, column)`.
+    pub fn location(&self) -> Option<(&str, usize, usize)> {
+        self.diagnostics
+            .first()
+            .map(|diagnostic| (diagnostic.file.as_str(), diagnostic.line, diagnostic.column))
+    }
+}
+
+impl fmt::Display for CompileError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        for (index, diagnostic) in self.diagnostics.iter().enumerate() {
+            if index != 0 {
+                writeln!(f)?;
+            }
+            writeln!(f, "error: {}", diagnostic.message)?;
+            writeln!(
+                f,
+                " --> {}:{}:{}",
+                diagnostic.file, diagnostic.line, diagnostic.column
+            )?;
+            if let Some(line) = diagnostic.source.lines().nth(diagnostic.line.saturating_sub(1)) {
+                let number_width = diagnostic.line.to_string().len();
+                writeln!(f, "{space:>width$} |", space = "", width = number_width)?;
+                writeln!(f, "{} | {}", diagnostic.line, line)?;
+                let caret_width = if diagnostic.end_line == diagnostic.line {
+                    diagnostic.end_column.saturating_sub(diagnostic.column).max(1)
+                } else {
+                    1
+                };
+                writeln!(
+                    f,
+                    "{space:>width$} | {padding}{carets}",
+                    space = "",
+                    width = number_width,
+                    padding = " ".repeat(diagnostic.column.saturating_sub(1)),
+                    carets = "^".repeat(caret_width),
+                )?;
+            }
+        }
+        Ok(())
+    }
+}
+
+impl std::error::Error for CompileError {}
+
 /// parse rcc source text into a list of functions (IR), or report the first
 /// subset violation with a span
-pub fn parse_source(src: &str) -> Result<Program, syn::Error> {
+pub fn parse_source(src: &str) -> Result<Program, CompileError> {
     parse_source_with(src, 0)
 }
 
 /// like `parse_source`, with the static data section starting at `data_base`
-pub fn parse_source_with(src: &str, data_base: u16) -> Result<Program, syn::Error> {
-    let file = syn::parse_file(src)?;
-    let (funcs, debug) = parse_files(vec![file], data_base, &["<source>".to_string()], false)?;
+pub fn parse_source_with(src: &str, data_base: u16) -> Result<Program, CompileError> {
+    let source_name = "<source>";
+    let file = syn::parse_file(src)
+        .map_err(|error| CompileError::from_syn(source_name, src, error))?;
+    let (funcs, debug) = parse_files(vec![file], data_base, &["<source>".to_string()], false)
+        .map_err(|(_, error)| CompileError::from_syn(source_name, src, error))?;
     Ok(Program { funcs, debug })
 }
 
@@ -64,7 +156,7 @@ pub fn compile_program(
     src: &str,
     opts: &CompilerOptions,
     loader: &mut dyn FnMut(&str) -> Result<String, String>,
-) -> Result<Program, syn::Error> {
+) -> Result<Program, CompileError> {
     compile_program_named("<main>", src, opts, loader)
 }
 
@@ -74,23 +166,34 @@ pub fn compile_program_named(
     src: &str,
     opts: &CompilerOptions,
     loader: &mut dyn FnMut(&str) -> Result<String, String>,
-) -> Result<Program, syn::Error> {
+) -> Result<Program, CompileError> {
     // gather sources: main file + user modules (recursive) + std
     let mut srcs: Vec<(String, String)> = vec![(main_name.to_string(), src.to_string())];
     let mut seen: HashSet<String> = HashSet::new();
     let mut i = 0;
     while i < srcs.len() {
+        let file_name = srcs[i].0.clone();
         let text = srcs[i].1.clone();
-        let file = syn::parse_file(&text)?;
+        let file = syn::parse_file(&text)
+            .map_err(|error| CompileError::from_syn(&file_name, &text, error))?;
         for item in &file.items {
             if let Item::Mod(m) = item {
                 if m.content.is_some() {
-                    return Err(err(&m.ident, "inline `mod name { }` is not supported; use `mod name;`"));
+                    return Err(CompileError::from_syn(
+                        &file_name,
+                        &text,
+                        err(&m.ident, "inline `mod name { }` is not supported; use `mod name;`"),
+                    ));
                 }
                 let name = m.ident.to_string();
                 if seen.insert(name.clone()) {
-                    let text2 = loader(&name)
-                        .map_err(|e| err(&m.ident, format!("cannot load module `{name}`: {e}")))?;
+                    let text2 = loader(&name).map_err(|error| {
+                        CompileError::from_syn(
+                            &file_name,
+                            &text,
+                            err(&m.ident, format!("cannot load module `{name}`: {error}")),
+                        )
+                    })?;
                     srcs.push((format!("{name}.rs"), text2));
                 }
             }
@@ -103,10 +206,18 @@ pub fn compile_program_named(
     let mut names = vec![];
     for (name, text) in &srcs {
         names.push(name.clone());
-        files.push(syn::parse_file(text)?);
+        files.push(
+            syn::parse_file(text)
+                .map_err(|error| CompileError::from_syn(name, text, error))?,
+        );
     }
-    let (mut funcs, debug) = parse_files(files, opts.data_base, &names, opts.opt.is_disabled())?;
-    auto_init(&mut funcs, opts)?;
+    let (mut funcs, debug) = parse_files(files, opts.data_base, &names, opts.opt.is_disabled())
+        .map_err(|(file, error)| {
+            let (name, text) = &srcs[file.min(srcs.len() - 1)];
+            CompileError::from_syn(name, text, error)
+        })?;
+    auto_init(&mut funcs, opts)
+        .map_err(|error| CompileError::from_syn(&srcs[0].0, &srcs[0].1, error))?;
     Ok(Program { funcs, debug })
 }
 
@@ -189,7 +300,7 @@ fn parse_files(
     data_base: u16,
     file_names: &[String],
     materialize_debug_locals: bool,
-) -> Result<(Vec<IrFunc>, FrontendDebug), syn::Error> {
+) -> Result<(Vec<IrFunc>, FrontendDebug), (usize, syn::Error)> {
     let mut fns: Vec<(usize, &syn::ItemFn)> = vec![];
     let mut consts: HashMap<String, (u16, Ty)> = HashMap::new();
     let mut globals = Globals {
@@ -197,47 +308,51 @@ fn parse_files(
         ..Globals::default()
     };
     for (fi, file) in files.iter().enumerate() {
-        for item in &file.items {
-            match item {
-                Item::Fn(f) => {
-                    for attr in &f.attrs {
-                        if !attr.path.is_ident("allow") && !attr.path.is_ident("doc") {
-                            return Err(err(attr, "attributes are not supported (except #[allow])"));
+        let result: Result<(), syn::Error> = (|| {
+            for item in &file.items {
+                match item {
+                    Item::Fn(f) => {
+                        for attr in &f.attrs {
+                            if !attr.path.is_ident("allow") && !attr.path.is_ident("doc") {
+                                return Err(err(attr, "attributes are not supported (except #[allow])"));
+                            }
+                        }
+                        fns.push((fi, f))
+                    }
+                    Item::Use(_) => { /* ignored: for the IDE only */ }
+                    Item::Const(c) => {
+                        let ty = ty_of(&c.ty)?;
+                        if !matches!(ty, Ty::U16 | Ty::I16) {
+                            return Err(err(&c.ty, "const must be u16 or i16"));
+                        }
+                        let v = const_eval(&c.expr, &consts)?;
+                        let name = c.ident.to_string();
+                        if consts.insert(name.clone(), (v, ty)).is_some() {
+                            return Err(err(&c.ident, format!("const `{name}` defined twice")));
                         }
                     }
-                    fns.push((fi, f))
+                    Item::Static(s) => add_static(s, &consts, &mut globals)?,
+                    Item::Verbatim(_) => { /* attributes on use items land here */ }
+                    Item::Mod(_) => { /* already resolved by compile_program */ }
+                    Item::Struct(_) => return Err(err(item, "structs are not supported (see spec §12)")),
+                    Item::Trait(_) => return Err(err(item, "traits are not supported")),
+                    Item::Impl(_) => return Err(err(item, "impl blocks are not supported")),
+                    Item::Macro(_) => return Err(err(item, "macros are not supported")),
+                    _ => return Err(err(item, "item not supported (only fn/use/const/static are allowed)")),
                 }
-                Item::Use(_) => { /* ignored: for the IDE only */ }
-                Item::Const(c) => {
-                    let ty = ty_of(&c.ty)?;
-                    if !matches!(ty, Ty::U16 | Ty::I16) {
-                        return Err(err(&c.ty, "const must be u16 or i16"));
-                    }
-                    let v = const_eval(&c.expr, &consts)?;
-                    let name = c.ident.to_string();
-                    if consts.insert(name.clone(), (v, ty)).is_some() {
-                        return Err(err(&c.ident, format!("const `{name}` defined twice")));
-                    }
-                }
-                Item::Static(s) => add_static(s, &consts, &mut globals)?,
-                Item::Verbatim(_) => { /* attributes on use items land here */ }
-                Item::Mod(_) => { /* already resolved by compile_program */ }
-                Item::Struct(_) => return Err(err(item, "structs are not supported (see spec §12)")),
-                Item::Trait(_) => return Err(err(item, "traits are not supported")),
-                Item::Impl(_) => return Err(err(item, "impl blocks are not supported")),
-                Item::Macro(_) => return Err(err(item, "macros are not supported")),
-                _ => return Err(err(item, "item not supported (only fn/use/const/static are allowed)")),
             }
-        }
+            Ok(())
+        })();
+        result.map_err(|error| (fi, error))?;
     }
     // collect signatures first (functions can call each other regardless of order)
     let mut sigs: HashMap<String, Sig> = HashMap::new();
     let mut names = vec![];
-    for (_, f) in &fns {
+    for (fi, f) in &fns {
         let name = f.sig.ident.to_string();
-        let sig = signature(f)?;
+        let sig = signature(f).map_err(|error| (*fi, error))?;
         if sigs.insert(name.clone(), sig).is_some() {
-            return Err(err(&f.sig.ident, format!("function `{name}` defined twice")));
+            return Err((*fi, err(&f.sig.ident, format!("function `{name}` defined twice"))));
         }
         names.push(intern(&name));
     }
@@ -255,11 +370,12 @@ fn parse_files(
             &globals,
             fi as u16,
             materialize_debug_locals,
-        )?;
+        )
+        .map_err(|error| (fi, error))?;
         out.push(ir);
         debug.funcs.push(fdbg);
     }
-    emit_data_init(&mut out, &globals)?;
+    emit_data_init(&mut out, &globals).map_err(|error| (0, error))?;
 
     // globals/consts for the debugger
     for (name, (addr, ty)) in &globals.scalars {
@@ -620,7 +736,7 @@ fn init_array(l: &mut FnLower, slot: u8, elem: &Ty, n: usize, init: &Expr) -> Re
                     format!("array repeat count {m} does not match declared length {n}"),
                 ));
             }
-            let (v, _) = expr(l, &r.expr)?.reg(l, "array initializer")?;
+            let (v, _) = expr(l, &r.expr)?.reg(l, &r.expr, "array initializer")?;
             let (v, _) = coerce(l, v, elem, elem, &r.expr)?;
             for i in 0..n as i16 {
                 l.b.store_mem(base, i, v);
@@ -635,7 +751,7 @@ fn init_array(l: &mut FnLower, slot: u8, elem: &Ty, n: usize, init: &Expr) -> Re
                 ));
             }
             for (i, e) in arr.elems.iter().enumerate() {
-                let (v, _) = expr(l, e)?.reg(l, "array initializer")?;
+                let (v, _) = expr(l, e)?.reg(l, e, "array initializer")?;
                 let (v, _) = coerce(l, v, elem, elem, e)?;
                 l.b.store_mem(base, i as i16, v);
             }
@@ -730,25 +846,27 @@ enum Val {
     Never,
 }
 impl Val {
-    fn reg(self, l: &mut FnLower, what: &str) -> Result<(VReg, Ty), syn::Error> {
+    fn reg(
+        self,
+        _l: &mut FnLower,
+        at: &impl syn::spanned::Spanned,
+        what: &str,
+    ) -> Result<(VReg, Ty), syn::Error> {
         match self {
             Val::V(v, ty) => Ok((v, ty)),
-            Val::Bool(_) => Err(l.err_here(format!(
+            Val::Bool(_) => Err(err(at, format!(
                 "boolean value used as {what}; bool only lives in conditions (see spec §6)"
             ))),
-            Val::FnItem(name) => Err(l.err_here(format!(
+            Val::FnItem(name) => Err(err(at, format!(
                 "function `{name}` used as {what}; assign it to a fn pointer variable or call it"
             ))),
-            Val::Unit => Err(l.err_here(format!("unit value used as {what}"))),
+            Val::Unit => Err(err(at, format!("unit value used as {what}"))),
             Val::Never => Ok((0, Ty::Never)),
         }
     }
 }
 
 impl FnLower<'_> {
-    fn err_here(&self, msg: impl std::fmt::Display) -> syn::Error {
-        syn::Error::new(proc_macro2::Span::call_site(), msg.to_string())
-    }
     fn lookup(&self, name: &str) -> Option<&VarInfo> {
         self.scopes.iter().rev().find_map(|s| s.get(name))
     }
@@ -1008,7 +1126,9 @@ fn lower_fn(
         // Unlike ordinary statements, a trailing return expression does not
         // pass through `stmt`, so establish its source line explicitly.
         l.b.set_line_hint(line_of(t));
-        let (v, from) = expr(&mut l, t)?.reg(&mut l, "tail expression").map_err(|e| syn::Error::new(e.span(), format!("in fn `{name}`: {e}")))?;
+        let (v, from) = expr(&mut l, t)?
+            .reg(&mut l, t, "tail expression")
+            .map_err(|e| syn::Error::new(e.span(), format!("in fn `{name}`: {e}")))?;
         // a diverging tail (halt) terminates the block itself
         if !l.dead {
             let expected = sig.ret.clone();
@@ -1089,7 +1209,7 @@ fn stmt(l: &mut FnLower, s: &Stmt) -> Result<(), syn::Error> {
             // fn pointer binding: `let f: fn(...) = some_fn;`
             let (v, ty) = match (val, &annotated) {
                 (Val::FnItem(name), Some(Ty::FnPtr { .. })) => {
-                    check_fn_sig(l, name, annotated.as_ref().unwrap())?;
+                    check_fn_sig(l, name, annotated.as_ref().unwrap(), &init.1)?;
                     let v = l.b.load_func_addr(name);
                     (v, annotated.clone().unwrap())
                 }
@@ -1104,7 +1224,7 @@ fn stmt(l: &mut FnLower, s: &Stmt) -> Result<(), syn::Error> {
                     )))
                 }
                 (val, _) => {
-                    let (v, from) = val.reg(l, "let initializer")?;
+                    let (v, from) = val.reg(l, &init.1, "let initializer")?;
                     let to = annotated.clone().unwrap_or_else(|| from.clone());
                     let (v, _) = coerce(l, v, &from, &to, &init.1)?;
                     (v, to)
@@ -1145,12 +1265,12 @@ fn stmt_expr(l: &mut FnLower, e: &Expr) -> Result<(), syn::Error> {
             let val = expr(l, &a.right)?;
             // fn pointer reassignment: `f = other_fn;`
             if let (Val::FnItem(fname), Ty::FnPtr { .. }) = (&val, &ty) {
-                check_fn_sig(l, fname, &ty)?;
+                check_fn_sig(l, fname, &ty, &a.right)?;
                 let v = l.b.load_func_addr(fname);
                 l.write_var(&kind, v);
                 return Ok(());
             }
-            let (v, _) = val.reg(l, "assignment")?;
+            let (v, _) = val.reg(l, &a.right, "assignment")?;
             let (v, _) = coerce(l, v, &ty, &ty, &a.right)?;
             l.write_var(&kind, v);
             Ok(())
@@ -1168,7 +1288,7 @@ fn stmt_expr(l: &mut FnLower, e: &Expr) -> Result<(), syn::Error> {
                 return Err(err(&a.left, "compound assignment only works on integers"));
             }
             let cur = l.read_var(&kind);
-            let (rhs, _) = expr(l, &a.right)?.reg(l, "compound assignment")?;
+            let (rhs, _) = expr(l, &a.right)?.reg(l, &a.right, "compound assignment")?;
             let op = match a.op {
                 SBinOp::AddEq(_) => BinOp::Add,
                 SBinOp::SubEq(_) => BinOp::Sub,
@@ -1196,7 +1316,7 @@ fn stmt_expr(l: &mut FnLower, e: &Expr) -> Result<(), syn::Error> {
                     return Err(err(e, "returning a value from a function without return type"))
                 }
                 (expected, Some(e)) => {
-                    let (v, from) = expr(l, e)?.reg(l, "return value")?;
+                    let (v, from) = expr(l, e)?.reg(l, e, "return value")?;
                     let (v, _) = coerce(l, v, &from, expected, e)?;
                     l.b.ret(&[v]);
                 }
@@ -1225,7 +1345,7 @@ fn stmt_expr(l: &mut FnLower, e: &Expr) -> Result<(), syn::Error> {
             let val = expr(l, e)?;
             match val {
                 Val::Unit | Val::V(_, _) | Val::Bool(_) | Val::Never => Ok(()),
-                Val::FnItem(name) => Err(l.err_here(format!(
+                Val::FnItem(name) => Err(err(e, format!(
                     "function `{name}` as a statement; did you mean to call it?"
                 ))),
             }
@@ -1316,8 +1436,8 @@ fn control_flow(l: &mut FnLower, e: &Expr) -> Result<(), syn::Error> {
                 }
                 _ => return Err(err(&fl.expr, "for loops need a range (a..b or a..=b)")),
             };
-            let (from_v, from_ty) = expr(l, from)?.reg(l, "range start")?;
-            let (to_v, to_ty) = expr(l, to)?.reg(l, "range end")?;
+            let (from_v, from_ty) = expr(l, from)?.reg(l, from, "range start")?;
+            let (to_v, to_ty) = expr(l, to)?.reg(l, to, "range end")?;
             let ty = match unify_int(from_ty.clone(), to_ty.clone()) {
                 Some(t) => t,
                 None => {
@@ -1464,7 +1584,7 @@ fn expr(l: &mut FnLower, e: &Expr) -> Result<Val, syn::Error> {
         }
         Expr::Unary(u) => match u.op {
             SUnOp::Neg(_) => {
-                let (v, ty) = expr(l, &u.expr)?.reg(l, "negation")?;
+                let (v, ty) = expr(l, &u.expr)?.reg(l, &u.expr, "negation")?;
                 if ty == Ty::U16 {
                     return Err(err(&u.op, "unary `-` is only allowed on i16"));
                 }
@@ -1487,8 +1607,8 @@ fn expr(l: &mut FnLower, e: &Expr) -> Result<Val, syn::Error> {
             use SBinOp::*;
             match b.op {
                 Add(_) | Sub(_) | BitAnd(_) | BitOr(_) | BitXor(_) => {
-                    let (lhs, lt) = expr(l, &b.left)?.reg(l, "binary operand")?;
-                    let (rhs, rt) = expr(l, &b.right)?.reg(l, "binary operand")?;
+                    let (lhs, lt) = expr(l, &b.left)?.reg(l, &b.left, "binary operand")?;
+                    let (rhs, rt) = expr(l, &b.right)?.reg(l, &b.right, "binary operand")?;
                     let ty = unify_int(lt.clone(), rt.clone()).ok_or_else(|| {
                         err(e, format!(
                             "type mismatch: {} vs {} (cast with `as`)",
@@ -1507,7 +1627,7 @@ fn expr(l: &mut FnLower, e: &Expr) -> Result<Val, syn::Error> {
                     Ok(Val::V(l.b.bin(op, lhs, rhs), ty))
                 }
                 Shl(_) | Shr(_) => {
-                    let (lhs, lt) = expr(l, &b.left)?.reg(l, "shift value")?;
+                    let (lhs, lt) = expr(l, &b.left)?.reg(l, &b.left, "shift value")?;
                     if !lt.is_int() {
                         return Err(err(&b.left, "shifts only work on integers"));
                     }
@@ -1519,8 +1639,8 @@ fn expr(l: &mut FnLower, e: &Expr) -> Result<Val, syn::Error> {
                     "`*`, `/`, `%` are not supported yet (hardware has no mul/div; mul will come via the library)",
                 )),
                 Lt(_) | Le(_) | Gt(_) | Ge(_) | Eq(_) | Ne(_) => {
-                    let (lhs, lt) = expr(l, &b.left)?.reg(l, "comparison")?;
-                    let (rhs, rt) = expr(l, &b.right)?.reg(l, "comparison")?;
+                    let (lhs, lt) = expr(l, &b.left)?.reg(l, &b.left, "comparison")?;
+                    let (rhs, rt) = expr(l, &b.right)?.reg(l, &b.right, "comparison")?;
                     compare(e, b.op, lhs, lt, rhs, rt).map(Val::Bool)
                 }
                 And(_) | Or(_) => {
@@ -1536,7 +1656,7 @@ fn expr(l: &mut FnLower, e: &Expr) -> Result<Val, syn::Error> {
             }
         }
         Expr::Cast(c) => {
-            let (v, from) = expr(l, &c.expr)?.reg(l, "cast")?;
+            let (v, from) = expr(l, &c.expr)?.reg(l, &c.expr, "cast")?;
             let to = ty_of(&c.ty)?;
             cast(e, v, from, to).map(|(v, t)| Val::V(v, t))
         }
@@ -1604,7 +1724,7 @@ fn if_expr_branch(l: &mut FnLower, blk: &Block) -> Result<(VReg, Ty), syn::Error
     match &blk.stmts[0] {
         Stmt::Expr(e) | Stmt::Semi(e, _) => {
             l.b.set_line_hint(line_of(e));
-            expr(l, e)?.reg(l, "if-expression")
+            expr(l, e)?.reg(l, e, "if-expression")
         }
         s => Err(err(s, "if-expression branches must be expressions")),
     }
@@ -1755,7 +1875,9 @@ fn call_expr(l: &mut FnLower, call: &syn::ExprCall) -> Result<Val, syn::Error> {
     // intrinsic or fn-item path (possibly qualified like Ptr::from_addr)
     let segs: Vec<String> = p.path.segments.iter().map(|s| s.ident.to_string()).collect();
     if segs == ["Ptr", "from_addr"] {
-        let (v, _) = exactly_args(l, &call.args, 1, "Ptr::from_addr")?[0].clone().reg(l, "Ptr::from_addr")?;
+        let (v, _) = exactly_args(l, &call.args, call, 1, "Ptr::from_addr")?[0]
+            .clone()
+            .reg(l, &call.args[0], "Ptr::from_addr")?;
         let (v, _) = coerce(l, v, &Ty::U16, &Ty::U16, &call.args[0])?;
         return Ok(Val::V(v, Ty::Ptr));
     }
@@ -1782,7 +1904,7 @@ fn call_expr(l: &mut FnLower, call: &syn::ExprCall) -> Result<Val, syn::Error> {
             if call.args.len() != 2 {
                 return Err(err(call, "assert(cond, sig) takes 2 arguments"));
             }
-            let (sig_v, _) = expr(l, &call.args[1])?.reg(l, "assert signal")?;
+            let (sig_v, _) = expr(l, &call.args[1])?.reg(l, &call.args[1], "assert signal")?;
             let fail = l.b.raw_block(&[]);
             let join = l.b.raw_block(&[]);
             cond_lazy(l, &call.args[0], join, fail)?;
@@ -1819,7 +1941,7 @@ fn call_expr(l: &mut FnLower, call: &syn::ExprCall) -> Result<Val, syn::Error> {
                         },
                     ))
                 }
-                val => val.reg(l, "argument"),
+                val => val.reg(l, a, "argument"),
             }
         })
         .collect::<Result<_, _>>()?;
@@ -1904,7 +2026,7 @@ fn array_method(
                 return Err(err(&m.method, "write(off, v) takes 2 arguments"));
             }
             let (base2, off) = ptr_with_offset(l, base, &m.args[0])?;
-            let (v, _) = expr(l, &m.args[1])?.reg(l, "write value")?;
+            let (v, _) = expr(l, &m.args[1])?.reg(l, &m.args[1], "write value")?;
             let (v, _) = coerce(l, v, &Ty::U16, &Ty::U16, &m.args[1])?;
             l.b.store_mem(base2, off, v);
             Ok(Val::V(v, Ty::Unit))
@@ -1932,7 +2054,7 @@ fn method_call(l: &mut FnLower, m: &syn::ExprMethodCall) -> Result<Val, syn::Err
         }
     }
 
-    let (base, base_ty) = expr(l, &m.receiver)?.reg(l, "method receiver")?;
+    let (base, base_ty) = expr(l, &m.receiver)?.reg(l, &m.receiver, "method receiver")?;
     if base_ty != Ty::Ptr {
         return Err(err(&m.receiver, format!(
             "methods only exist on Ptr and arrays (got {})",
@@ -1948,7 +2070,9 @@ fn method_call(l: &mut FnLower, m: &syn::ExprMethodCall) -> Result<Val, syn::Err
             Ok(Val::V(base, Ty::U16))
         }
         "add" => {
-            let (off, off_ty) = exactly_args(l, &m.args, 1, "add")?[0].clone().reg(l, "add offset")?;
+            let (off, off_ty) = exactly_args(l, &m.args, m, 1, "add")?[0]
+                .clone()
+                .reg(l, &m.args[0], "add offset")?;
             if !off_ty.is_int() {
                 return Err(err(&m.args[0], "pointer offset must be an integer"));
             }
@@ -1966,7 +2090,7 @@ fn method_call(l: &mut FnLower, m: &syn::ExprMethodCall) -> Result<Val, syn::Err
                 return Err(err(&m.method, "write(off, v) takes 2 arguments"));
             }
             let (base2, off) = ptr_with_offset(l, base, &m.args[0])?;
-            let (v, _) = expr(l, &m.args[1])?.reg(l, "write value")?;
+            let (v, _) = expr(l, &m.args[1])?.reg(l, &m.args[1], "write value")?;
             let (v, _) = coerce(l, v, &Ty::U16, &Ty::U16, &m.args[1])?;
             l.b.store_mem(base2, off, v);
             Ok(Val::V(v, Ty::Unit))
@@ -1990,7 +2114,7 @@ fn ptr_with_offset(l: &mut FnLower, base: VReg, off: &Expr) -> Result<(VReg, i16
             }
         }
     }
-    let (off_v, off_ty) = expr(l, off)?.reg(l, "pointer offset")?;
+    let (off_v, off_ty) = expr(l, off)?.reg(l, off, "pointer offset")?;
     if !off_ty.is_int() {
         return Err(err(off, "pointer offset must be an integer"));
     }
@@ -2081,11 +2205,12 @@ fn shift_op(op: &SBinOp, ty: &Ty) -> ShiftOp {
 fn exactly_args(
     l: &mut FnLower,
     args: &syn::punctuated::Punctuated<Expr, syn::Token![,]>,
+    at: &impl syn::spanned::Spanned,
     n: usize,
     what: &str,
 ) -> Result<Vec<Val>, syn::Error> {
     if args.len() != n {
-        return Err(l.err_here(format!("{what} takes {n} arguments, got {}", args.len())));
+        return Err(err(at, format!("{what} takes {n} arguments, got {}", args.len())));
     }
     args.iter().map(|a| expr(l, a)).collect()
 }
@@ -2112,11 +2237,16 @@ fn check_call_args(call: &syn::ExprCall, params: &[Ty], args: &[Ty], name: &str)
     Ok(())
 }
 
-fn check_fn_sig(l: &mut FnLower, name: &'static str, expected: &Ty) -> Result<(), syn::Error> {
-    let sig = l.sigs.get(name).ok_or_else(|| l.err_here(format!("undefined function `{name}`")))?;
+fn check_fn_sig(
+    l: &mut FnLower,
+    name: &'static str,
+    expected: &Ty,
+    at: &impl syn::spanned::Spanned,
+) -> Result<(), syn::Error> {
+    let sig = l.sigs.get(name).ok_or_else(|| err(at, format!("undefined function `{name}`")))?;
     let Ty::FnPtr { params, ret } = expected else { unreachable!() };
     if *params != sig.params || **ret != sig.ret {
-        return Err(l.err_here(format!(
+        return Err(err(at, format!(
             "fn pointer type mismatch for `{name}`: expected fn({}) -> {}",
             params.iter().map(|t| t.display()).collect::<Vec<_>>().join(", "),
             ret.display()

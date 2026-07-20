@@ -424,4 +424,22 @@ mod tests {
         assert!(matches!(session.var_value(&a), cpu_v2::debugger::VarValue::Mem(_, ref words) if words == &[7]));
         assert!(matches!(session.var_value(&b), cpu_v2::debugger::VarValue::Mem(_, ref words) if words == &[9]));
     }
+
+    #[test]
+    fn current_source_line_highlight_overrides_clicked_line() {
+        let clicked = UI.find("tr.hl td").expect("missing clicked-line style");
+        let current = UI.find("tr.cur td").expect("missing current-line style");
+        assert!(
+            clicked < current,
+            "the later CSS rule must keep the current source line visible when it is also clicked"
+        );
+    }
+
+    #[test]
+    fn call_ui_uses_text_navigation_instead_of_arrows() {
+        assert!(UI.contains("tr.call td.dtext"));
+        assert!(UI.contains("tr.dline.call[data-target] .dtext"));
+        assert!(UI.contains("if (tr.classList.contains('call')) return;"));
+        assert!(!UI.contains("label.textContent = '→'"));
+    }
 }

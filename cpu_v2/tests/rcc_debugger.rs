@@ -52,6 +52,19 @@ fn main() {
 "#;
 
 #[test]
+fn test_call_disassembly_is_marked_with_a_navigation_target() {
+    let s = make_session(SIGNED_OPS);
+    let clamp_calls: Vec<_> = s
+        .disasm
+        .iter()
+        .filter(|line| line.call && line.target_name.as_deref() == Some("clamp"))
+        .collect();
+    assert_eq!(clamp_calls.len(), 2);
+    assert!(clamp_calls.iter().all(|line| line.target.is_some()));
+    assert!(s.state_json().contains("\"call\":true"));
+}
+
+#[test]
 fn test_step_and_breakpoint() {
     let src = r#"
 fn main() {

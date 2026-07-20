@@ -38,7 +38,9 @@ pub struct CallFrame {
 pub struct DisasmLine {
     pub addr: usize,
     pub text: String,
-    /// jump/call target address for drawing arrows (None for straight-line code)
+    /// true for call instructions, including calls without a static target
+    pub call: bool,
+    /// static jump/call target for branch arrows and call navigation
     pub target: Option<usize>,
     /// function name at the target, when known
     pub target_name: Option<String>,
@@ -90,6 +92,7 @@ impl DebugSession {
                     disasm.push(DisasmLine {
                         addr,
                         text: signature(f),
+                        call: false,
                         target: None,
                         target_name: None,
                         header: true,
@@ -100,6 +103,7 @@ impl DebugSession {
             disasm.push(DisasmLine {
                 addr,
                 text: lst_text.get(&addr).cloned().unwrap_or_else(|| inst.to_string()),
+                call: false,
                 target: None,
                 target_name: None,
                 header: false,
@@ -441,6 +445,7 @@ fn annotate_targets(disasm: &mut [DisasmLine], instructions: &[Instruction], deb
         if addr >= instructions.len() {
             continue;
         }
+        line.call = matches!(instructions[addr], I::call_rel(..) | I::call_reg(_));
         let (target, is_call) = match instructions[addr] {
             I::jg(hi, lo) | I::je(hi, lo) | I::jge(hi, lo) | I::jl(hi, lo) | I::jne(hi, lo)
             | I::jle(hi, lo) | I::jmp(hi, lo) => {
@@ -718,11 +723,13 @@ impl DebugSession {
                     _ => String::new(),
                 };
                 let header = if d.header { ",\"header\":true" } else { "" };
+                let call = if d.call { ",\"call\":true" } else { "" };
                 format!(
-                    "{{\"addr\":{},\"text\":\"{}\"{}{}}}",
+                    "{{\"addr\":{},\"text\":\"{}\"{}{}{}}}",
                     d.addr,
                     esc(&d.text),
                     target,
+                    call,
                     header
                 )
             })

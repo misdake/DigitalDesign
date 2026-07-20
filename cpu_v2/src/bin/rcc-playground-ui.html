@@ -125,6 +125,20 @@ function setBusy(busy) {
   popup.disabled = busy;
 }
 
+function selectDiagnostic(message) {
+  const location = message.match(/ --> playground\.rs:(\d+):(\d+)/);
+  if (!location) return;
+  const targetLine = Number(location[1]);
+  const targetColumn = Number(location[2]);
+  const lines = source.value.split('\n');
+  if (targetLine < 1 || targetLine > lines.length) return;
+  let offset = 0;
+  for (let line = 1; line < targetLine; line++) offset += lines[line - 1].length + 1;
+  offset += Math.min(targetColumn - 1, lines[targetLine - 1].length);
+  source.focus();
+  source.setSelectionRange(offset, offset);
+}
+
 async function compile(mode) {
   if (compiling) return;
   let popupWindow = null;
@@ -162,10 +176,12 @@ async function compile(mode) {
     else showDebugger();
   } catch (error) {
     if (popupWindow) popupWindow.close();
-    errors.textContent = String(error.message || error);
+    const message = String(error.message || error);
+    errors.textContent = message;
     status.textContent = 'Compile failed';
     status.className = 'error';
     showEditor();
+    selectDiagnostic(message);
   } finally {
     setBusy(false);
   }

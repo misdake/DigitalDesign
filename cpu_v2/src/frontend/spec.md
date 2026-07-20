@@ -268,6 +268,11 @@ multi-dimensional arrays (use `arr[i * W + j]`), `*`, `/`, `%`.
 - `rcc-run <input.bin> [max_cycles]` — runs the image on the simulator and prints
   the halt signal (decimal/hex) and cycle count.
 
+Full-program compiler diagnostics include the originating source file, one-based line and
+column, the relevant source line, and a caret. This applies to syntax errors, subset/type
+errors, module loading errors, and errors produced while lowering a module function. The
+playground moves the editor caret to the primary diagnostic location after a failed build.
+
 ### 13.6 Debug info (`.dbg`)
 
 Alongside the binary and listing, `rcc` writes `<input>.dbg` for a hypothetical debugger:

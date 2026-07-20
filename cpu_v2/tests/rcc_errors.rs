@@ -5,6 +5,76 @@ mod common;
 use common::*;
 
 #[test]
+fn test_compile_diagnostics_include_file_line_column_and_source() {
+    let source = "fn main() {\n    let x = ;\n}\n";
+    let error = match cpu_v2::frontend::compile_program_named(
+        "broken.rs",
+        source,
+        &cpu_v2::CompilerOptions::default(),
+        &mut |name| Err(format!("unknown module `{name}`")),
+    ) {
+        Ok(_) => panic!("invalid syntax unexpectedly compiled"),
+        Err(error) => error,
+    };
+
+    let (file, line, column) = error.location().expect("missing diagnostic location");
+    assert_eq!(file, "broken.rs");
+    assert_eq!(line, 2);
+    assert!(column > 1);
+    let rendered = error.to_string();
+    assert!(rendered.contains(" --> broken.rs:2:"), "{rendered}");
+    assert!(rendered.contains("2 |     let x = ;"), "{rendered}");
+    assert!(rendered.contains('^'), "{rendered}");
+}
+
+#[test]
+fn test_module_semantic_error_keeps_its_source_file() {
+    let source = "mod helper;\nfn main() { helper(); }\n";
+    let error = match cpu_v2::frontend::compile_program_named(
+        "main.rs",
+        source,
+        &cpu_v2::CompilerOptions::default(),
+        &mut |name| match name {
+            "helper" => Ok("fn helper() {\n    let x = 1u16 * 2u16;\n    halt(x);\n}\n".to_string()),
+            _ => Err(format!("unknown module `{name}`")),
+        },
+    ) {
+        Ok(_) => panic!("unsupported module expression unexpectedly compiled"),
+        Err(error) => error,
+    };
+
+    let (file, line, column) = error.location().expect("missing diagnostic location");
+    assert_eq!((file, line), ("helper.rs", 2));
+    assert!(column > 1);
+    let rendered = error.to_string();
+    assert!(rendered.contains(" --> helper.rs:2:"), "{rendered}");
+    assert!(rendered.contains("not supported yet"), "{rendered}");
+}
+
+#[test]
+fn test_value_conversion_error_uses_the_expression_location() {
+    let source = concat!(
+        "fn main() {\n",
+        "    let x = 1u16;\n",
+        "    let invalid = x < 3u16;\n",
+        "}\n",
+    );
+    let error = match cpu_v2::frontend::compile_program_named(
+        "value.rs",
+        source,
+        &cpu_v2::CompilerOptions::default(),
+        &mut |name| Err(format!("unknown module `{name}`")),
+    ) {
+        Ok(_) => panic!("stored boolean unexpectedly compiled"),
+        Err(error) => error,
+    };
+
+    assert_eq!(error.location().map(|(_, line, _)| line), Some(3));
+    let rendered = error.to_string();
+    assert!(rendered.contains("3 |     let invalid = x < 3u16;"), "{rendered}");
+}
+
+#[test]
 fn test_unsupported_constructs() {
     expect_error("fn f(x: u16) -> u16 { x / 2 }", "not supported");
     expect_error("fn f(x: u16) -> u16 { x * 2 }", "not supported");
