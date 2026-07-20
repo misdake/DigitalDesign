@@ -83,6 +83,111 @@ fn main() {
 }
 
 #[test]
+fn test_typed_array_view_indexing() {
+    let src = r#"
+static WORDS: [u16; 3] = [10, 20, 30];
+fn bump(mut data: Array<u16>, i: u16) {
+    data[i] += 1;
+}
+fn main() {
+    let mut local: [u16; 3] = [1, 2, 3];
+    let mut data = local.as_array();
+    data[0u16] = 7;
+    bump(data, 1);
+
+    let mut signed: [i16; 2] = [-2, -4];
+    let mut signed_view = signed.as_array();
+    signed_view[1i16] += 2i16;
+
+    let global = WORDS.as_array();
+    let raw = data.as_ptr();
+    halt(raw.read(0) + data[1u16] + global[2u16] + (signed_view[1i16] as u16));
+}
+"#;
+    assert_eq!(run(src), Some(38));
+}
+
+#[test]
+fn test_ptr_to_typed_array_views() {
+    let src = r#"
+fn main() {
+    let p = Ptr::from_addr(0x0200);
+    let mut words = p.as_u16_array();
+    words[0u16] = 10;
+    let mut signed = p.as_i16_array();
+    signed[1i16] = -3i16;
+    words[2u16] = words[0u16] + (signed[1i16] as u16);
+    halt(words[2u16]);
+}
+"#;
+    assert_eq!(run(src), Some(7));
+}
+
+#[test]
+fn test_array_literal_indices_keep_memory_immediates() {
+    let src = r#"
+fn touch(mut words: Array<u16>, mut signed: Array<i16>) -> u16 {
+    words[3u16] = 9;
+    signed[-2i16] = -4i16;
+    words[3u16] + (signed[-2i16] as u16)
+}
+fn main() {
+    let p = Ptr::from_addr(0x0200);
+    halt(touch(p.as_u16_array(), p.add(8).as_i16_array()));
+}
+"#;
+    let program = cpu_v2::frontend::parse_source(src).expect("parse failed");
+    let touch = program.funcs.iter().find(|f| f.name == "touch").unwrap();
+    let offsets: Vec<_> = touch
+        .blocks
+        .iter()
+        .flat_map(|block| &block.insts)
+        .filter_map(|inst| match inst {
+            cpu_v2::Instr::LoadMem { offset, .. } | cpu_v2::Instr::StoreMem { offset, .. } => {
+                Some(*offset)
+            }
+            _ => None,
+        })
+        .collect();
+    assert!(offsets.contains(&3), "{offsets:?}");
+    assert!(offsets.contains(&-2), "{offsets:?}");
+
+    let (_, signal, listing) =
+        compile_program_and_run(src, &cpu_v2::CompilerOptions::default(), 10_000);
+    assert_eq!(signal, Some(5));
+    assert!(listing.contains(" + 3]"), "{listing}");
+    assert!(listing.contains(" + 14]"), "{listing}");
+}
+
+#[test]
+fn test_typed_array_view_errors() {
+    expect_error(
+        "fn f() { let mut a: [u16; 2] = [0; 2]; let view = a.as_array(); view[0u16] = 1; }",
+        "not mutable",
+    );
+    expect_error(
+        "fn f() { let p = Ptr::from_addr(0); let x = p[0u16]; }",
+        "indexing requires Array",
+    );
+    expect_error(
+        "fn f(a: Array<bool>) {}",
+        "Array element type must be u16 or i16",
+    );
+    expect_error(
+        "fn f(mut a: Array<u16>) { a[0u16] = -1i16; }",
+        "expected u16, got i16",
+    );
+    expect_error(
+        "fn f(a: Array<u16>) { let x = a[0]; }",
+        "array index literals need an explicit u16 or i16 suffix",
+    );
+    expect_error(
+        "fn f(a: Array<u16>) { let i = 0; let x = a[i]; }",
+        "array index must have type u16 or i16",
+    );
+}
+
+#[test]
 fn test_addr_of_param() {
     let src = r#"
 fn set1(p: Ptr) {

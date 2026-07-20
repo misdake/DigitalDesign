@@ -33,11 +33,11 @@ fn mix(x: u16, y: u16) -> u16 {
 
 fn benchmark_basics() -> u16 {
     let values: [u16; 8] = [3, 14, 15, 9, 26, 5, 35, 8];
-    let data = values.as_ptr();
+    let mut data = values.as_array();
     let mut acc: u16 = 0x1234;
 
     for i in 0..8u16 {
-        let value = data.read(i as i16);
+        let value = data[i];
         acc = mix(acc, value);
         if (value & 1) != 0 && i < 6 {
             acc ^= i << 2;
@@ -55,9 +55,9 @@ fn benchmark_basics() -> u16 {
     let signed = clamp_i16((-17i16) >> 1, -8, 7);
     let ones = cnt1(acc);
     let highest = log2(acc | 1);
-    data.write(0, acc);
+    data[0u16] = acc;
 
-    let result = data.read(0) ^ (signed as u16) ^ ones ^ highest;
+    let result = data[0u16] ^ (signed as u16) ^ ones ^ highest;
     addr_of(&BASIC_RESULT).write(0, result);
     BASIC_RESULT
 }
@@ -77,24 +77,24 @@ fn crc16_word(crc: u16, word: u16) -> u16 {
 fn benchmark_crc16() -> u16 {
     let mut crc: u16 = 0xffff;
     for i in 0..12u16 {
-        crc = crc16_word(crc, CRC_WORDS.read(i));
+        crc = crc16_word(crc, CRC_WORDS.as_array()[i]);
     }
     crc
 }
 
-fn swap(data: Ptr, a: u16, b: u16) {
-    let left = data.read(a as i16);
-    let right = data.read(b as i16);
-    data.write(a as i16, right);
-    data.write(b as i16, left);
+fn swap(mut data: Array<u16>, a: u16, b: u16) {
+    let left = data[a];
+    let right = data[b];
+    data[a] = right;
+    data[b] = left;
 }
 
-fn partition(data: Ptr, low: u16, high: u16) -> u16 {
-    let pivot = data.read(high as i16);
+fn partition(data: Array<u16>, low: u16, high: u16) -> u16 {
+    let pivot = data[high];
     let mut store = low;
     let mut scan = low;
     while scan < high {
-        let value = data.read(scan as i16);
+        let value = data[scan];
         if value <= pivot {
             swap(data, store, scan);
             store += 1;
@@ -105,7 +105,7 @@ fn partition(data: Ptr, low: u16, high: u16) -> u16 {
     store
 }
 
-fn quick_sort(data: Ptr, low: u16, high: u16) {
+fn quick_sort(data: Array<u16>, low: u16, high: u16) {
     if low < high {
         let pivot = partition(data, low, high);
         if pivot > 0 {
@@ -116,14 +116,14 @@ fn quick_sort(data: Ptr, low: u16, high: u16) {
 }
 
 fn benchmark_quicksort() -> u16 {
-    let data = SORT_DATA.as_ptr();
+    let data = SORT_DATA.as_array();
     quick_sort(data, 0, 15);
 
     let mut checksum: u16 = 0;
     let mut disorder: u16 = 0;
-    let mut previous = data.read(0);
+    let mut previous = data[0u16];
     for i in 0..16u16 {
-        let current = data.read(i as i16);
+        let current = data[i];
         if i > 0 && previous > current {
             disorder = 0xffff;
         }

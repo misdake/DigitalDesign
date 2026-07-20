@@ -15,20 +15,21 @@ pub fn init_vec(cap: u16) {
 
 pub fn vec_new() -> Ptr {
     let cap = VEC_INIT_CAP;
-    let h = malloc(3);
+    let mut h = malloc(3).as_u16_array();
     if cap > 0 {
         let buf = malloc(cap);
-        h.write(0, buf.addr());
+        h[0u16] = buf.addr();
     } else {
-        h.write(0, 0);
+        h[0u16] = 0;
     }
-    h.write(1, 0);
-    h.write(2, cap);
-    h
+    h[1u16] = 0;
+    h[2u16] = cap;
+    h.as_ptr()
 }
 
 pub fn vec_free(v: Ptr) {
-    let buf = v.read(0);
+    let header = v.as_u16_array();
+    let buf = header[0u16];
     if buf > 0 {
         free(Ptr::from_addr(buf));
     }
@@ -36,27 +37,29 @@ pub fn vec_free(v: Ptr) {
 }
 
 pub fn vec_len(v: Ptr) -> u16 {
-    v.read(1)
+    v.as_u16_array()[1u16]
 }
 pub fn vec_cap(v: Ptr) -> u16 {
-    v.read(2)
+    v.as_u16_array()[2u16]
 }
 
 pub fn vec_get(v: Ptr, i: u16) -> u16 {
-    let buf = Ptr::from_addr(v.read(0));
-    buf.add(i as i16).read(0)
+    let header = v.as_u16_array();
+    Ptr::from_addr(header[0u16]).as_u16_array()[i]
 }
 pub fn vec_set(v: Ptr, i: u16, x: u16) {
-    let buf = Ptr::from_addr(v.read(0));
-    buf.add(i as i16).write(0, x);
+    let header = v.as_u16_array();
+    let mut data = Ptr::from_addr(header[0u16]).as_u16_array();
+    data[i] = x;
 }
 
 fn vec_realloc(v: Ptr, new_cap: u16) {
-    let prev_buf = v.read(0);
-    let len = v.read(1);
+    let mut header = v.as_u16_array();
+    let prev_buf = header[0u16];
+    let len = header[1u16];
     let new_buf = malloc(new_cap);
-    v.write(0, new_buf.addr());
-    v.write(2, new_cap);
+    header[0u16] = new_buf.addr();
+    header[2u16] = new_cap;
     mem_copy(new_buf, Ptr::from_addr(prev_buf), len);
     if prev_buf > 0 {
         free(Ptr::from_addr(prev_buf));
@@ -64,8 +67,9 @@ fn vec_realloc(v: Ptr, new_cap: u16) {
 }
 
 pub fn vec_push(v: Ptr, x: u16) {
-    let len = v.read(1);
-    let cap = v.read(2);
+    let mut header = v.as_u16_array();
+    let len = header[1u16];
+    let cap = header[2u16];
     if len >= cap {
         let mut new_cap = cap << 1;
         if new_cap == 0 {
@@ -78,12 +82,13 @@ pub fn vec_push(v: Ptr, x: u16) {
         vec_realloc(v, new_cap);
     }
     vec_set(v, len, x);
-    v.write(1, len + 1);
+    header[1u16] = len + 1;
 }
 
 pub fn vec_pop(v: Ptr) -> u16 {
-    let len = v.read(1);
+    let mut header = v.as_u16_array();
+    let len = header[1u16];
     let x = vec_get(v, len - 1);
-    v.write(1, len - 1);
+    header[1u16] = len - 1;
     x
 }

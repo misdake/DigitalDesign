@@ -8,24 +8,25 @@ const WIDTH: u16 = 8;
 static SCORE: u16 = 0;
 static TILE: [u16; 4] = [0x3c66, 0xc3ff, 0xffc3, 0x663c];
 
-fn add_row(buf: Ptr, row: u16, value: u16) {
+fn add_row(mut buf: Array<u16>, row: u16, value: u16) {
     // row offset = row * WIDTH, WIDTH is 8
-    let base = buf.add((row << 3) as i16);
-    base.write(0, value);
+    buf[row << 3] = value;
 }
 
 fn main() {
     // local array on the stack
     let grid: [u16; 64] = [0; 64];
-    add_row(grid.as_ptr(), 2, TILE.read(1));
+    let grid_view = grid.as_array();
+    let tile = TILE.as_array();
+    add_row(grid_view, 2, tile[1u16]);
 
     // take the address of a local (sp + slot at run time)
     let total: u16 = 0;
-    let p = addr_of(&total);
-    p.write(0, grid.read(16));
+    let mut total_view = addr_of(&total).as_u16_array();
+    total_view[0u16] = grid_view[16u16];
 
     // take the address of a global (compile-time constant)
-    let s = addr_of(&SCORE);
-    s.write(0, total);
+    let mut score = addr_of(&SCORE).as_u16_array();
+    score[0u16] = total;
     halt(SCORE);
 }

@@ -149,15 +149,15 @@ fn test_unsupported_expressions() {
 
 #[test]
 fn test_unsupported_types() {
-    // only u16/i16/Ptr/fn pointer exist (spec §1)
+    // only u16/i16/Ptr/Array<T>/fn pointer types exist (spec §1)
     expect_error("fn f(x: u8) {}", "type not supported");
     expect_error("fn f(x: u32) {}", "type not supported");
     expect_error("fn f(x: usize) {}", "type not supported");
     expect_error("fn f() -> u16 { 1u8 as u16 }", "suffix");
-    // no fat slices, no references, no arrays in parameter position
+    // no fat slices, references, or owned arrays in parameter position
     expect_error("fn f(s: [u16]) {}", "slice");
     expect_error("fn f(r: &u16) {}", "reference");
-    expect_error("fn f(a: [u16; 2]) {}", "arrays are not allowed");
+    expect_error("fn f(a: [u16; 2]) {}", "owned arrays are not allowed");
 }
 
 #[test]

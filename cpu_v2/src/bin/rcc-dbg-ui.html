@@ -249,7 +249,8 @@ function fmtVal(v) {
   if (val == null) return '<i>ssa</i>';
   if (val.reg != null) {
     const inner = fmtWord(val.word, v.ty);
-    const value = v.ty === 'Ptr' ? `<span class="plink" data-addr="${val.word}">${inner}</span>` : inner;
+    const pointerLike = v.ty === 'Ptr' || v.ty.startsWith('Array<');
+    const value = pointerLike ? `<span class="plink" data-addr="${val.word}">${inner}</span>` : inner;
     return `${value} <span class="vloc">@r${val.reg}</span>`;
   }
   if (val.words) {

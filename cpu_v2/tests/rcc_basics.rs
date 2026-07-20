@@ -299,7 +299,10 @@ fn main() {
 fn test_param_immutable() {
     expect_error("fn f(x: u16) { x = 3; }", "not mutable");
     expect_error("fn f(x: u16) { x += 1; }", "not mutable");
-    expect_error("fn f(mut x: u16) { }", "params are always immutable");
+    expect_error(
+        "fn f(mut x: u16) { }",
+        "only Array<T> parameters may be declared mut",
+    );
 }
 
 #[test]

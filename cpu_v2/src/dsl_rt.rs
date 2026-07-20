@@ -9,6 +9,7 @@
 //! the host for debugging.
 
 use once_cell::sync::Lazy;
+use std::ops::{Index, IndexMut};
 use std::sync::Mutex;
 
 /// data memory shared by all subset programs running on the host
@@ -37,7 +38,52 @@ impl Ptr {
     pub fn write(self, off: i16, v: u16) {
         MEM.lock().unwrap()[self.add(off).0 as usize] = v;
     }
+    pub fn as_u16_array(self) -> Array<u16> {
+        unimplemented!("Ptr::as_u16_array is a target intrinsic")
+    }
+    pub fn as_i16_array(self) -> Array<i16> {
+        unimplemented!("Ptr::as_i16_array is a target intrinsic")
+    }
 }
+
+/// Typed, one-word array view used by rcc's indexing syntax. On the target it
+/// has exactly the same representation as Ptr and performs unchecked access.
+pub struct Array<T>(*mut T);
+
+impl<T> Copy for Array<T> {}
+impl<T> Clone for Array<T> {
+    fn clone(&self) -> Self {
+        *self
+    }
+}
+
+impl<T> Array<T> {
+    fn from_host_ptr(ptr: *mut T) -> Self {
+        Self(ptr)
+    }
+    pub fn as_ptr(self) -> Ptr {
+        unimplemented!("Array::as_ptr is a target intrinsic")
+    }
+}
+
+macro_rules! impl_array_index {
+    ($index:ty) => {
+        impl<T> Index<$index> for Array<T> {
+            type Output = T;
+            fn index(&self, index: $index) -> &Self::Output {
+                unsafe { &*self.0.offset(index as isize) }
+            }
+        }
+        impl<T> IndexMut<$index> for Array<T> {
+            fn index_mut(&mut self, index: $index) -> &mut Self::Output {
+                unsafe { &mut *self.0.offset(index as isize) }
+            }
+        }
+    };
+}
+
+impl_array_index!(u16);
+impl_array_index!(i16);
 
 /// halt the machine with a signal value
 pub fn halt(x: u16) -> ! {
@@ -84,13 +130,16 @@ pub fn addr_of<T>(_r: &T) -> Ptr {
 /// Rust arrays, so the host run keeps the bounds check for free.
 #[allow(clippy::len_without_is_empty)]
 pub trait Slice2 {
+    type Item;
     fn read(&self, i: u16) -> u16;
     fn write(&mut self, i: u16, v: u16);
     fn as_ptr(&self) -> Ptr;
+    fn as_array(&self) -> Array<Self::Item>;
     fn len(&self) -> u16;
 }
 
 impl<const N: usize> Slice2 for [u16; N] {
+    type Item = u16;
     fn read(&self, i: u16) -> u16 {
         self[i as usize]
     }
@@ -100,12 +149,16 @@ impl<const N: usize> Slice2 for [u16; N] {
     fn as_ptr(&self) -> Ptr {
         unimplemented!("as_ptr is a target intrinsic")
     }
+    fn as_array(&self) -> Array<u16> {
+        Array::from_host_ptr(self.as_slice().as_ptr() as *mut u16)
+    }
     fn len(&self) -> u16 {
         N as u16
     }
 }
 
 impl<const N: usize> Slice2 for [i16; N] {
+    type Item = i16;
     fn read(&self, i: u16) -> u16 {
         self[i as usize] as u16
     }
@@ -115,7 +168,28 @@ impl<const N: usize> Slice2 for [i16; N] {
     fn as_ptr(&self) -> Ptr {
         unimplemented!("as_ptr is a target intrinsic")
     }
+    fn as_array(&self) -> Array<i16> {
+        Array::from_host_ptr(self.as_slice().as_ptr() as *mut i16)
+    }
     fn len(&self) -> u16 {
         N as u16
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::Slice2;
+
+    #[test]
+    fn host_array_view_indexes_real_arrays() {
+        let words = [1u16, 2, 3];
+        let mut view = words.as_array();
+        view[1u16] = 7;
+        view[2u16] += 4;
+        assert_eq!(words, [1, 7, 7]);
+
+        let signed = [-3i16, 5];
+        let view = signed.as_array();
+        assert_eq!(view[0i16], -3);
     }
 }

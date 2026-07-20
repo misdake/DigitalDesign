@@ -18,6 +18,7 @@ Only these types exist; no other primitive types are supported:
 | `u16` | unsigned 16-bit word | default integer type; literals `123`, `0x1f`, `123u16` |
 | `i16` | signed 16-bit word | literals `123i16`, `-5i16`; comparisons/shifts are signed |
 | `Ptr` | **data pointer** (into data memory) | the `dsl_rt::Ptr` newtype over a u16 address; no plain arithmetic, only its methods and `as` casts |
+| `Array<T>` | **typed array view** | one-word unchecked address, where T is `u16` or `i16`; supports indexing and converts to/from `Ptr` |
 | `fn(A, B) -> R` | **function pointer** (into instruction memory) | plain Rust fn pointer type; on a Harvard machine this is a *different kind* from `Ptr` and they never convert |
 | `bool` | **condition expressions only** | the type of comparisons and `&& \|\| !`; cannot be stored in variables/memory (see §6) |
 | `()` | unit | return type of procedures |
@@ -50,11 +51,13 @@ impl Ptr {
     fn add(self, off: i16) -> Ptr;    // address + off (may be negative)
     fn read(self, off: i16) -> u16;   // mem[self + off]
     fn write(self, off: i16, v: u16); // mem[self + off] = v
+    fn as_u16_array(self) -> Array<u16>;
+    fn as_i16_array(self) -> Array<i16>;
 }
 ```
 
-There is no array/struct sugar: `p.add(i).read(0)` means `p[i]`. Struct memory layouts
-come with the library phase (out of P1 scope).
+`Ptr` remains the untyped interface for address arithmetic and raw words. Convert it to
+an `Array<T>` when typed indexing is clearer. Struct memory layouts remain out of scope.
 
 ## 3. Function pointers
 
@@ -184,29 +187,59 @@ let x = buf.read(i) + buf.read(3);
 
 Local arrays live in the stack frame (a compile-time sized local area, see §11).
 
-### 10.2 Accessing arrays (the `Slice2` trait)
+### 10.2 Typed array views and indexing
+
+`arr.as_array()` produces `Array<u16>` or `Array<i16>`. It is only a typed one-word
+address; the length is not carried at run time and target accesses are unchecked. Index
+expressions must be `u16` or `i16`. Give a bare literal an explicit suffix (`a[3u16]` or
+`a[-1i16]`) so the same source also type-checks in Rust; `i32` and `usize` indices are not
+supported. Small literal offsets lower directly to the load/store i4 address field.
+
+```rust
+let mut storage: [u16; 8] = [0; 8];
+let mut words = storage.as_array();
+words[i] = 7;
+words[3u16] += 1;
+let x = words[i] + words[3u16];
+let raw: Ptr = words.as_ptr();
+```
+
+An array view passed to a function uses one argument register. Declare an `Array<T>`
+parameter `mut` only when assigning through its index:
+
+```rust
+fn clear_first(mut words: Array<u16>) { words[0u16] = 0; }
+clear_first(storage.as_array());
+```
+
+Convert a raw pointer with `p.as_u16_array()` or `p.as_i16_array()`. The explicit method
+name supplies the element type without generic-method inference.
+
+### 10.3 Legacy fixed-array methods
 
 `dsl_rt` provides a real Rust extension trait `Slice2` implemented for `[u16; N]`/`[i16; N]`
 (const generics), so method calls resolve cleanly in rust-analyzer; the compiler recognizes
-them as intrinsics:
+them as intrinsics. These methods remain supported for compatibility:
 
 | method | meaning |
 |---|---|
 | `arr.read(i) -> u16` | `arr[i]` (i is any integer expression) |
 | `arr.write(i, v)` | `arr[i] = v` |
 | `arr.as_ptr() -> Ptr` | address of element 0 (array *decays* to a pointer, like C) |
+| `arr.as_array() -> Array<T>` | typed address of element 0 |
 | `arr.len() -> u16` | N as a compile-time constant |
 
 On the host these methods index real Rust arrays — so **the host run keeps Rust's bounds
 check for free**, while the target emits raw unchecked addressing (exactly the C model).
 
-### 10.3 Arrays as parameters
+### 10.4 Arrays as parameters
 
-There are no fat slices (`&[u16]` is two words — not supported). Pass arrays as `Ptr`:
+There are no fat slices (`&[u16]` is two words — not supported). Pass typed data as
+`Array<T>`, or use `Ptr` when the function intentionally operates on raw words:
 
 ```rust
-fn blit(tiles: Ptr, n: u16) { ... }
-blit(TILE.as_ptr(), 8);
+fn blit(tiles: Array<u16>, n: u16) { ... tiles[i] ... }
+blit(TILE.as_array(), 8);
 ```
 
 ## 11. Taking addresses: `addr_of`
@@ -311,9 +344,9 @@ section) which `malloc`/`free` read at run time — no compile-time patching of 
 
 ### 13.5 Host/IDE side
 
-`dsl_rt` keeps the subset programs valid Rust: `Ptr` methods, `Slice2` (const-generic array
-access with bounds checks on the host), `addr_of`, intrinsics. `rcc_std` is a real module
-tree for the same reason.
+`dsl_rt` keeps the subset programs valid Rust: `Ptr` methods, typed `Array<T>` indexing,
+`Slice2` (const-generic fixed-array access), `addr_of`, and other intrinsics. `rcc_std` is
+a real module tree for the same reason.
 
 `rcc-dbg [input.bin] [--port N]` opens an existing binary in the web debugger. With no
 input file (or with `--playground`) it serves a single-file playground: source is compiled

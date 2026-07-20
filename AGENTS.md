@@ -24,7 +24,7 @@
 
 ## rcc 语言（详见 src/frontend/spec.md)
 
-Rust 真子集（合法 rcc 即合法 Rust，全部语义 unsafe)。类型：u16/i16/Ptr（数据指针）/fn 指针/bool（仅条件，不可存储）。数组 [u16;N]/[i16;N](`Slice2` 方法 read/write/as_ptr/len，目标机零边界检查）。const/static(数据段，main 入口隐式 `__data_init`)。`addr_of(&x)`：全局=编译期常量，局部=sp+slot。if/while/for/break/continue/if 表达式/短路 && || !。函数指针（LoadFuncAddr + call_reg)。**不支持**:`*`、`/`、`%`、struct、泛型、闭包、match、引用、宏；遇到即带位置报错。标准库函数直接用名字调用（malloc/free/mem_set/mem_copy/mul_16x4/8/16/vec_*)；编译器按调用图可达性在 main 入口自动插一次 `init_heap`/`init_vec`（参数来自 CompilerOptions)。
+Rust 真子集（合法 rcc 即合法 Rust，全部语义 unsafe)。类型：u16/i16/Ptr（数据指针）/Array<u16|i16>（单字 typed view）/fn 指针/bool（仅条件，不可存储）。数组 [u16;N]/[i16;N] 支持 `as_array()` 后用 `a[i]`/`a[i]=v`，Array 索引仅限 u16/i16（字面量写 `a[3u16]`/`a[-1i16]`，小偏移直接使用访存 i4），Array 可 `as_ptr()`，Ptr 可 `as_u16_array()`/`as_i16_array()`；旧 Slice2 read/write/as_ptr/len 仍支持，目标机均无边界检查。const/static(数据段，main 入口隐式 `__data_init`)。`addr_of(&x)`：全局=编译期常量，局部=sp+slot。if/while/for/break/continue/if 表达式/短路 && || !。函数指针（LoadFuncAddr + call_reg)。**不支持**:`*`、`/`、`%`、struct、泛型（Array 类型参数除外）、闭包、match、引用、宏；遇到即带位置报错。标准库函数直接用名字调用（malloc/free/mem_set/mem_copy/mul_16x4/8/16/vec_*)；编译器按调用图可达性在 main 入口自动插一次 `init_heap`/`init_vec`（参数来自 CompilerOptions)。
 
 ## 常用命令
 

@@ -525,4 +525,9 @@ mod tests {
         assert!(UI.contains("function highlightRust(s)"));
         assert!(UI.contains("${highlightRust(l.text)}"));
     }
+
+    #[test]
+    fn typed_array_views_are_memory_links() {
+        assert!(UI.contains("v.ty === 'Ptr' || v.ty.startsWith('Array<')"));
+    }
 }

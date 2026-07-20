@@ -675,6 +675,8 @@ enum Ty {
     /// unsuffixed integer literal; adopts the type it unifies with
     UntypedInt,
     Ptr,
+    /// Typed, one-word unchecked array view (same target representation as Ptr).
+    ArrayRef(Box<Ty>),
     Bool,
     FnPtr { params: Vec<Ty>, ret: Box<Ty> },
     /// [u16; N] / [i16; N], memory-resident (data section or stack frame)
@@ -692,6 +694,7 @@ impl Ty {
             Ty::I16 => "i16".into(),
             Ty::UntypedInt => "integer literal".into(),
             Ty::Ptr => "Ptr".into(),
+            Ty::ArrayRef(elem) => format!("Array<{}>", elem.display()),
             Ty::Bool => "bool".into(),
             Ty::FnPtr { params, ret } => format!(
                 "fn({}) -> {}",
@@ -715,18 +718,34 @@ fn ty_of(ty: &Type) -> Result<Ty, syn::Error> {
     match ty {
         Type::Path(tp) => {
             if tp.path.segments.len() != 1 {
-                return Err(err(ty, "unsupported type (expected u16/i16/Ptr/fn pointer)"));
+                return Err(err(ty, "unsupported type (expected u16/i16/Ptr/Array<T>/fn pointer)"));
             }
             let seg = &tp.path.segments[0];
+            if seg.ident == "Array" {
+                let syn::PathArguments::AngleBracketed(args) = &seg.arguments else {
+                    return Err(err(ty, "Array needs one element type: Array<u16> or Array<i16>"));
+                };
+                if args.args.len() != 1 {
+                    return Err(err(ty, "Array needs one element type: Array<u16> or Array<i16>"));
+                }
+                let Some(syn::GenericArgument::Type(elem)) = args.args.first() else {
+                    return Err(err(ty, "Array needs one element type: Array<u16> or Array<i16>"));
+                };
+                let elem = ty_of(elem)?;
+                if !matches!(elem, Ty::U16 | Ty::I16) {
+                    return Err(err(ty, "Array element type must be u16 or i16"));
+                }
+                return Ok(Ty::ArrayRef(Box::new(elem)));
+            }
             if !seg.arguments.is_empty() {
-                return Err(err(ty, "generics are not supported"));
+                return Err(err(ty, "generics are only supported for Array<u16/i16>"));
             }
             match seg.ident.to_string().as_str() {
                 "u16" => Ok(Ty::U16),
                 "i16" => Ok(Ty::I16),
                 "Ptr" => Ok(Ty::Ptr),
                 "bool" => Ok(Ty::Bool),
-                _ => Err(err(ty, "type not supported (only u16/i16/Ptr/fn pointer)")),
+                _ => Err(err(ty, "type not supported (only u16/i16/Ptr/Array<T>/fn pointer)")),
             }
         }
         Type::BareFn(bf) => {
@@ -746,9 +765,9 @@ fn ty_of(ty: &Type) -> Result<Ty, syn::Error> {
         }
         Type::Never(_) => Ok(Ty::Unit),
         Type::Paren(p) => ty_of(&p.elem),
-        Type::Array(_) => Err(err(ty, "arrays are not allowed here (declare them in let/static, pass as Ptr)")),
-        Type::Reference(_) => Err(err(ty, "reference types `&T` are not supported (pass arrays as Ptr)")),
-        Type::Slice(_) => Err(err(ty, "slice types are not supported (pass arrays as Ptr)")),
+        Type::Array(_) => Err(err(ty, "owned arrays are not allowed here (pass Array<T> or Ptr)")),
+        Type::Reference(_) => Err(err(ty, "reference types `&T` are not supported (pass Array<T> or Ptr)")),
+        Type::Slice(_) => Err(err(ty, "slice types are not supported (pass Array<T> or Ptr)")),
         _ => Err(err(ty, "unsupported type")),
     }
 }
@@ -1031,6 +1050,10 @@ fn scan_expr(e: &Expr, consts: &HashMap<String, (u16, Ty)>, out: &mut HashMap<St
             }
             Ok(())
         }
+        Expr::Index(x) => {
+            scan_expr(&x.expr, consts, out)?;
+            scan_expr(&x.index, consts, out)
+        }
         Expr::Assign(x) => {
             scan_expr(&x.left, consts, out)?;
             scan_expr(&x.right, consts, out)
@@ -1102,12 +1125,13 @@ fn lower_fn(
         let syn::FnArg::Typed(pt) = arg else {
             unreachable!()
         };
-        let ident = match pt.pat.as_ref() {
+        let (ident, mutable) = match pt.pat.as_ref() {
             Pat::Ident(p) => {
-                if p.mutability.is_some() {
-                    return Err(err(&p.ident, "params are always immutable; use a local copy"));
+                let mutable = p.mutability.is_some();
+                if mutable && !matches!(ty, Ty::ArrayRef(_)) {
+                    return Err(err(&p.ident, "only Array<T> parameters may be declared mut"));
                 }
-                p.ident.to_string()
+                (p.ident.to_string(), mutable)
             }
             _ => return Err(err(&pt.pat, "unsupported parameter pattern")),
         };
@@ -1121,7 +1145,7 @@ fn lower_fn(
                 VarKind::Local { slot }
             }
             Some(ResidentKind::Array) => {
-                return Err(err(&pt.pat, "params cannot be arrays; pass a Ptr instead"))
+                return Err(err(&pt.pat, "owned arrays cannot be parameters; pass Array<T> or Ptr"))
             }
             None => VarKind::Ssa { var: *var },
         };
@@ -1130,7 +1154,7 @@ fn lower_fn(
             VarInfo {
                 kind,
                 ty: ty.clone(),
-                mutable: false,
+                mutable,
             },
             line_of(arg),
         );
@@ -1298,6 +1322,14 @@ fn stmt(l: &mut FnLower, s: &Stmt) -> Result<(), syn::Error> {
 fn stmt_expr(l: &mut FnLower, e: &Expr) -> Result<(), syn::Error> {
     match e {
         Expr::Assign(a) => {
+            if let Expr::Index(index) = a.left.as_ref() {
+                ensure_mutable_array_view(l, &index.expr)?;
+                let (base, off, elem) = array_index_addr(l, index)?;
+                let (v, from) = expr(l, &a.right)?.reg(l, &a.right, "array assignment")?;
+                let (v, _) = coerce(l, v, &from, &elem, &a.right)?;
+                l.b.store_mem(base, off, v);
+                return Ok(());
+            }
             let name = path_ident(&a.left)?;
             let info = l
                 .lookup(&name)
@@ -1320,6 +1352,27 @@ fn stmt_expr(l: &mut FnLower, e: &Expr) -> Result<(), syn::Error> {
             Ok(())
         }
         Expr::AssignOp(a) => {
+            if let Expr::Index(index) = a.left.as_ref() {
+                ensure_mutable_array_view(l, &index.expr)?;
+                let (base, off, elem) = array_index_addr(l, index)?;
+                let cur = l.b.load_mem(base, off);
+                let (rhs, rhs_ty) = expr(l, &a.right)?.reg(l, &a.right, "compound assignment")?;
+                let (rhs, _) = coerce(l, rhs, &rhs_ty, &elem, &a.right)?;
+                let value = match a.op {
+                    SBinOp::AddEq(_) => l.b.bin(BinOp::Add, cur, rhs),
+                    SBinOp::SubEq(_) => l.b.bin(BinOp::Sub, cur, rhs),
+                    SBinOp::BitAndEq(_) => l.b.bin(BinOp::And, cur, rhs),
+                    SBinOp::BitOrEq(_) => l.b.bin(BinOp::Or, cur, rhs),
+                    SBinOp::BitXorEq(_) => l.b.bin(BinOp::Xor, cur, rhs),
+                    SBinOp::ShlEq(_) | SBinOp::ShrEq(_) => {
+                        let amount = shift_amount(l, &a.right)?;
+                        l.b.shift(shift_op(&a.op, &elem), cur, amount)
+                    }
+                    _ => return Err(err(&a.op, "unsupported compound assignment operator")),
+                };
+                l.b.store_mem(base, off, value);
+                return Ok(());
+            }
             let name = path_ident(&a.left)?;
             let info = l
                 .lookup(&name)
@@ -1601,7 +1654,7 @@ fn expr(l: &mut FnLower, e: &Expr) -> Result<Val, syn::Error> {
                 let (kind, ty) = (info.kind.clone(), info.ty.clone());
                 if matches!(ty, Ty::Array(..)) {
                     return Err(err(&p, format!(
-                        "array `{name}` used as a value; use {name}.as_ptr() or {name}.read(i)"
+                        "array `{name}` used as a value; use {name}.as_array(), {name}.as_ptr(), or {name}.read(i)"
                     )));
                 }
                 let v = l.read_var(&kind);
@@ -1706,6 +1759,10 @@ fn expr(l: &mut FnLower, e: &Expr) -> Result<Val, syn::Error> {
         }
         Expr::Call(call) => call_expr(l, call),
         Expr::MethodCall(m) => method_call(l, m),
+        Expr::Index(index) => {
+            let (base, off, elem) = array_index_addr(l, index)?;
+            Ok(Val::V(l.b.load_mem(base, off), elem))
+        }
         Expr::If(_) => {
             // if used as a value: `let x = if c { a } else { b };`
             control_flow_value(l, e)
@@ -1720,6 +1777,60 @@ fn expr(l: &mut FnLower, e: &Expr) -> Result<Val, syn::Error> {
         )),
         _ => Err(err(e, "expression not supported in this subset (see spec)")),
     }
+}
+
+fn array_index_addr(
+    l: &mut FnLower,
+    index: &syn::ExprIndex,
+) -> Result<(VReg, i16, Ty), syn::Error> {
+    let (base, ty) = expr(l, &index.expr)?.reg(l, &index.expr, "array index base")?;
+    let Ty::ArrayRef(elem) = ty else {
+        return Err(err(&index.expr, "indexing requires Array<u16> or Array<i16>"));
+    };
+    if let Expr::Lit(lit) = index.index.as_ref() {
+        if let Lit::Int(value) = &lit.lit {
+            if value.suffix().is_empty() {
+                return Err(err(
+                    &index.index,
+                    "array index literals need an explicit u16 or i16 suffix",
+                ));
+            }
+        }
+    }
+    if let Expr::Unary(unary) = index.index.as_ref() {
+        if let Expr::Lit(lit) = unary.expr.as_ref() {
+            if let Lit::Int(value) = &lit.lit {
+                if value.suffix().is_empty() {
+                    return Err(err(
+                        &index.index,
+                        "array index literals need an explicit u16 or i16 suffix",
+                    ));
+                }
+            }
+        }
+    }
+    if let Some(off) = literal_mem_offset(&index.index)? {
+        return Ok((base, off, *elem));
+    }
+    let (off, off_ty) = expr(l, &index.index)?.reg(l, &index.index, "array index")?;
+    if !matches!(off_ty, Ty::U16 | Ty::I16) {
+        return Err(err(&index.index, "array index must have type u16 or i16"));
+    }
+    Ok((l.b.bin(BinOp::Add, base, off), 0, *elem))
+}
+
+fn ensure_mutable_array_view(l: &FnLower, receiver: &Expr) -> Result<(), syn::Error> {
+    if let Ok(name) = path_ident(receiver) {
+        if let Some(info) = l.lookup(&name) {
+            if !info.mutable {
+                return Err(err(
+                    receiver,
+                    format!("`{name}` is not mutable (declare with `let mut`)"),
+                ));
+            }
+        }
+    }
+    Ok(())
 }
 
 /// if as an expression: `if c { a } else { b }`
@@ -2039,10 +2150,11 @@ fn call_expr(l: &mut FnLower, call: &syn::ExprCall) -> Result<Val, syn::Error> {
     Err(err(&p, format!("undefined function `{name}`")))
 }
 
-/// array methods (Slice2 intrinsics): read/write/as_ptr/len
+/// owned-array methods (Slice2 intrinsics): read/write/as_ptr/as_array/len
 fn array_method(
     l: &mut FnLower,
     base: VReg,
+    elem: &Ty,
     n: usize,
     mutable: bool,
     name: &str,
@@ -2061,6 +2173,12 @@ fn array_method(
                 return Err(err(&m.method, "as_ptr() takes no arguments"));
             }
             Ok(Val::V(base, Ty::Ptr))
+        }
+        "as_array" => {
+            if !m.args.is_empty() {
+                return Err(err(&m.method, "as_array() takes no arguments"));
+            }
+            Ok(Val::V(base, Ty::ArrayRef(Box::new(elem.clone()))))
         }
         "read" => {
             if m.args.len() != 1 {
@@ -2092,29 +2210,41 @@ fn method_call(l: &mut FnLower, m: &syn::ExprMethodCall) -> Result<Val, syn::Err
     // array methods on local arrays / global arrays
     if let Ok(name) = path_ident(&m.receiver) {
         if let Some(info) = l.lookup(&name) {
-            if let Ty::Array(_, n) = &info.ty {
-                let (kind, n, mutable) = (info.kind.clone(), *n, info.mutable);
+            if let Ty::Array(elem, n) = &info.ty {
+                let (kind, elem, n, mutable) =
+                    (info.kind.clone(), elem.as_ref().clone(), *n, info.mutable);
                 let VarKind::Local { slot } = kind else {
                     unreachable!("arrays are always memory-resident")
                 };
                 let base = l.b.addr_of_local(slot);
-                return array_method(l, base, n, mutable, &name, m);
+                return array_method(l, base, &elem, n, mutable, &name, m);
             }
         }
-        if let Some(&(addr, _, n)) = l.globals.arrays.get(&name) {
+        if let Some((addr, elem, n)) = l.globals.arrays.get(&name).cloned() {
             let base = l.b.load_imm(addr);
-            return array_method(l, base, n, true, &name, m);
+            return array_method(l, base, &elem, n, true, &name, m);
         }
     }
 
     let (base, base_ty) = expr(l, &m.receiver)?.reg(l, &m.receiver, "method receiver")?;
+    let method = m.method.to_string();
+    if let Ty::ArrayRef(_) = base_ty {
+        return match method.as_str() {
+            "as_ptr" => {
+                if !m.args.is_empty() {
+                    return Err(err(&m.method, "as_ptr() takes no arguments"));
+                }
+                Ok(Val::V(base, Ty::Ptr))
+            }
+            _ => Err(err(&m.method, format!("unknown Array method `{method}`"))),
+        };
+    }
     if base_ty != Ty::Ptr {
         return Err(err(&m.receiver, format!(
             "methods only exist on Ptr and arrays (got {})",
             base_ty.display()
         )));
     }
-    let method = m.method.to_string();
     match method.as_str() {
         "addr" => {
             if !m.args.is_empty() {
@@ -2148,6 +2278,13 @@ fn method_call(l: &mut FnLower, m: &syn::ExprMethodCall) -> Result<Val, syn::Err
             l.b.store_mem(base2, off, v);
             Ok(Val::V(v, Ty::Unit))
         }
+        "as_u16_array" | "as_i16_array" => {
+            if !m.args.is_empty() {
+                return Err(err(&m.method, format!("{method}() takes no arguments")));
+            }
+            let elem = if method == "as_u16_array" { Ty::U16 } else { Ty::I16 };
+            Ok(Val::V(base, Ty::ArrayRef(Box::new(elem))))
+        }
         _ => Err(err(&m.method, format!("unknown Ptr method `{method}`"))),
     }
 }
@@ -2157,21 +2294,47 @@ fn method_call(l: &mut FnLower, m: &syn::ExprMethodCall) -> Result<Val, syn::Err
 /// base (offset 0 remains).
 fn ptr_with_offset(l: &mut FnLower, base: VReg, off: &Expr) -> Result<(VReg, i16), syn::Error> {
     // literal offset: use the ISA's addressing offset directly
-    if let Expr::Lit(lit) = off {
-        if let Lit::Int(i) = &lit.lit {
-            if i.suffix().is_empty() || i.suffix() == "i16" {
-                let v = lit_int_value(i)? as i64;
-                if (-32768..=32767).contains(&v) {
-                    return Ok((base, v as i16));
-                }
-            }
-        }
+    if let Some(offset) = literal_mem_offset(off)? {
+        return Ok((base, offset));
     }
     let (off_v, off_ty) = expr(l, off)?.reg(l, off, "pointer offset")?;
     if !off_ty.is_int() {
         return Err(err(off, "pointer offset must be an integer"));
     }
     Ok((l.b.bin(BinOp::Add, base, off_v), 0))
+}
+
+fn literal_mem_offset(off: &Expr) -> Result<Option<i16>, syn::Error> {
+    if let Expr::Lit(lit) = off {
+        if let Lit::Int(i) = &lit.lit {
+            if matches!(i.suffix(), "" | "u16" | "i16") {
+                let v = lit_int_value(i)? as i64;
+                let max = if i.suffix() == "u16" {
+                    u16::MAX as i64
+                } else {
+                    i16::MAX as i64
+                };
+                if (0..=max).contains(&v) {
+                    return Ok(Some(v as i16));
+                }
+            }
+        }
+    }
+    if let Expr::Unary(unary) = off {
+        if matches!(unary.op, SUnOp::Neg(_)) {
+            if let Expr::Lit(lit) = unary.expr.as_ref() {
+                if let Lit::Int(i) = &lit.lit {
+                    if i.suffix() == "i16" {
+                        let magnitude = lit_int_value(i)?;
+                        if magnitude <= 32768 {
+                            return Ok(Some((-(magnitude as i32)) as i16));
+                        }
+                    }
+                }
+            }
+        }
+    }
+    Ok(None)
 }
 
 // ---------------------------------------------------------------------------

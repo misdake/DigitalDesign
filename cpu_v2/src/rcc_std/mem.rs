@@ -3,22 +3,20 @@
 use crate::dsl_rt::*;
 
 pub fn mem_set(dst: Ptr, len: u16, value: u16) {
-    let end = dst.addr() + len;
-    let mut p = dst.addr();
-    while p < end {
-        Ptr::from_addr(p).write(0, value);
-        p += 1;
+    let mut data = dst.as_u16_array();
+    let mut i: u16 = 0;
+    while i < len {
+        data[i] = value;
+        i += 1;
     }
 }
 
 pub fn mem_copy(dst: Ptr, src: Ptr, len: u16) {
-    let end = dst.addr() + len;
-    let mut d = dst.addr();
-    let mut s = src.addr();
-    while d < end {
-        let v = Ptr::from_addr(s).read(0);
-        Ptr::from_addr(d).write(0, v);
-        d += 1;
-        s += 1;
+    let mut output = dst.as_u16_array();
+    let input = src.as_u16_array();
+    let mut i: u16 = 0;
+    while i < len {
+        output[i] = input[i];
+        i += 1;
     }
 }
