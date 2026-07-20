@@ -2,16 +2,20 @@
 
 mod common;
 
-use cpu_v2::CompilerOptions;
+use cpu_v2::{CompilerOptions, FunctionTableConfig};
 use cpu_v2::debugger::{DebugSession, VarValue};
 
 fn make_session(src: &str) -> DebugSession {
-    let opts = CompilerOptions::default();
+    make_session_with_options(src, CompilerOptions::default())
+}
+
+fn make_session_with_options(src: &str, opts: CompilerOptions) -> DebugSession {
     let program = cpu_v2::frontend::compile_program(src, &opts, &mut |name| {
         Err(format!("unknown module `{name}`"))
     })
     .expect("parse failed");
     let mut c = cpu_v2::Compiler::new();
+    c.opts = opts;
     c.set_debug(program.debug);
     for f in program.funcs {
         c.add_func(f);
@@ -75,7 +79,11 @@ fn main() {
     halt(d);
 }
 "#;
-    let s = make_session(source);
+    let opts = CompilerOptions {
+        function_table: FunctionTableConfig::All,
+        ..CompilerOptions::default()
+    };
+    let s = make_session_with_options(source, opts);
     assert_eq!(s.debug.function_table, vec![(0, "inc".to_string())]);
     assert!(s
         .debug
@@ -303,7 +311,17 @@ fn test_signed_ops_line_mapping_covers_conditions_and_call_slots() {
         .map(|(addr, _, _)| (*addr, &s.disasm[*addr].text))
         .collect();
     assert!(call.iter().any(|(_, text)| text.starts_with("call_rel")), "{call:?}");
-    assert_eq!(call.iter().filter(|(_, text)| text.as_str() == "r15 = r15").count(), 2, "{call:?}");
+    assert_eq!(
+        call.iter()
+            .filter(|(_, text)| text.starts_with("call_rel"))
+            .count(),
+        1,
+        "{call:?}"
+    );
+    assert!(
+        call.iter().all(|(_, text)| text.as_str() != "r15 = r15"),
+        "a relaxed near call must not retain padding: {call:?}"
+    );
 }
 
 #[test]

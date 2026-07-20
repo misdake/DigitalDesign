@@ -1,16 +1,23 @@
-//! Compiler: drives the new pipeline per function (allocate -> codegen) and
-//! lays out/Links functions via the shared Assembler/Linker.
+//! Compiler: drives the pipeline per function, then hands symbolic machine
+//! objects to the whole-program linker.
 
 use crate::compiler::codegen::compile_function;
 use crate::compiler::debug::{DebugFunc, DebugInfo, VarLoc};
 use crate::compiler::ir::*;
+use crate::compiler::linker::link;
 use crate::compiler::options::CompilerOptions;
 use crate::compiler::passes::optimize;
-use crate::compiler::regalloc::allocate;
-use crate::compiler::{Assembler, FuncDecl, FuncName, Linker};
+use crate::compiler::regalloc::{allocate, Allocation};
+use crate::compiler::FuncName;
 use crate::frontend::FrontendDebug;
 use crate::Instruction;
 use std::collections::{HashMap, HashSet};
+
+struct PreparedFunction {
+    name: FuncName,
+    ir: IrFunc,
+    alloc: Allocation,
+}
 
 fn reachable_functions(funcs: &HashMap<FuncName, IrFunc>, main: FuncName) -> HashSet<FuncName> {
     let mut reachable = HashSet::from([main]);
@@ -19,8 +26,8 @@ fn reachable_functions(funcs: &HashMap<FuncName, IrFunc>, main: FuncName) -> Has
         let function = funcs
             .get(name)
             .unwrap_or_else(|| panic!("unknown function `{name}`"));
-        for block in &function.blocks {
-            for instruction in &block.insts {
+        for block in function.rpo() {
+            for instruction in &function.blocks[block].insts {
                 let target = match instruction {
                     Instr::Call { func, .. } | Instr::LoadFuncAddr { func, .. } => Some(*func),
                     _ => None,
@@ -65,7 +72,6 @@ fn select_function_table(
     funcs: &HashMap<FuncName, IrFunc>,
     reachable: &HashSet<FuncName>,
     config: &crate::FunctionTableConfig,
-    needs_table_base_load: bool,
 ) -> HashMap<FuncName, u8> {
     #[derive(Default)]
     struct Stats {
@@ -76,7 +82,8 @@ fn select_function_table(
     let mut stats: HashMap<FuncName, Stats> = HashMap::new();
     for &caller in reachable {
         let function = &funcs[caller];
-        for (block_id, block) in function.blocks.iter().enumerate() {
+        for block_id in function.rpo() {
+            let block = &function.blocks[block_id];
             let in_cycle = block_is_in_cycle(function, block_id);
             for instruction in &block.insts {
                 if let Instr::Call { func, .. } = instruction {
@@ -107,30 +114,9 @@ fn select_function_table(
 
     let selected: Vec<FuncName> = match config {
         crate::FunctionTableConfig::Disabled => vec![],
-        crate::FunctionTableConfig::Auto => {
-            let mut best_len = 0;
-            let mut best_gain = 0isize;
-            let mut call_weight = 0usize;
-            for (index, (_, weight)) in candidates
-                .iter()
-                .take(crate::FUNCTION_TABLE_CAPACITY)
-                .enumerate()
-            {
-                call_weight += *weight;
-                let entries = index + 1;
-                let gain = (2 * call_weight) as isize
-                    - table_init_cost(entries, needs_table_base_load) as isize;
-                if gain > best_gain {
-                    best_gain = gain;
-                    best_len = entries;
-                }
-            }
-            candidates
-                .into_iter()
-                .take(best_len)
-                .map(|(name, _)| name)
-                .collect()
-        }
+        // Auto is chosen after a baseline whole-program layout, where the
+        // linker knows which individual call sites really need three words.
+        crate::FunctionTableConfig::Auto => vec![],
         crate::FunctionTableConfig::All => {
             assert!(
                 candidates.len() <= crate::FUNCTION_TABLE_CAPACITY,
@@ -164,6 +150,45 @@ fn select_function_table(
         .into_iter()
         .enumerate()
         .map(|(index, name)| (name, index as u8))
+        .collect()
+}
+
+fn select_auto_function_table(
+    far_calls: &[crate::compiler::linker::FarCall],
+    needs_table_base_load: bool,
+) -> HashMap<FuncName, u8> {
+    let mut weights: HashMap<FuncName, usize> = HashMap::new();
+    for call in far_calls {
+        *weights.entry(call.target).or_default() += call.weight;
+    }
+    let mut candidates: Vec<_> = weights.into_iter().collect();
+    candidates.sort_by(|(name_a, weight_a), (name_b, weight_b)| {
+        weight_b.cmp(weight_a).then_with(|| name_a.cmp(name_b))
+    });
+
+    let mut best_len = 0;
+    let mut best_gain = 0isize;
+    let mut call_weight = 0usize;
+    for (index, (_, weight)) in candidates
+        .iter()
+        .take(crate::FUNCTION_TABLE_CAPACITY)
+        .enumerate()
+    {
+        call_weight += *weight;
+        let entries = index + 1;
+        let gain =
+            (2 * call_weight) as isize - table_init_cost(entries, needs_table_base_load) as isize;
+        if gain > best_gain {
+            best_gain = gain;
+            best_len = entries;
+        }
+    }
+
+    candidates
+        .into_iter()
+        .take(best_len)
+        .enumerate()
+        .map(|(index, (name, _))| (name, index as u8))
         .collect()
 }
 
@@ -212,30 +237,8 @@ impl Compiler {
     }
 
     fn finish_impl(self, main: FuncName) -> (Vec<Instruction>, String, Option<DebugInfo>) {
-        let mut asm = Assembler::default();
-        let mut linker = Linker::default();
-        let mut cursor = 0usize;
-        let mut layout: Vec<(FuncName, (usize, usize))> = vec![];
-        let mut all_comments: Vec<(usize, String)> = vec![];
-        let mut fn_debug: Vec<(FuncName, (usize, usize), usize, usize)> = vec![];
-        let mut line_map: Vec<(usize, u32)> = vec![];
-        let mut init_sections = vec![];
-
         let reachable = reachable_functions(&self.funcs, main);
-        let function_table = select_function_table(
-            &self.funcs,
-            &reachable,
-            &self.opts.function_table,
-            self.opts.stack_init != crate::FUNCTION_TABLE_BASE,
-        );
-        if !function_table.is_empty() && self.opts.stack_init > crate::FUNCTION_TABLE_BASE {
-            panic!(
-                "stack_init {:#06x} overlaps function-table memory at {:#06x}",
-                self.opts.stack_init,
-                crate::FUNCTION_TABLE_BASE
-            );
-        }
-
+        let mut prepared = vec![];
         let mut called: HashSet<FuncName> = HashSet::new();
         let mut next = vec![main];
         called.insert(main);
@@ -248,58 +251,104 @@ impl Compiler {
             let mut f = f.clone();
             optimize(&mut f, &self.opts.opt);
             let (allocated_ir, alloc) = allocate(&f, self.opts.opt.coalesce);
-            let stack_init = if name == main {
-                if !function_table.is_empty() && self.opts.stack_init == 0 {
-                    crate::FUNCTION_TABLE_BASE
-                } else {
-                    self.opts.stack_init
-                }
-            } else {
-                0
-            };
-            let emitted = compile_function(
-                &allocated_ir,
-                &alloc,
-                &mut asm,
-                cursor,
-                stack_init,
-                &function_table,
-                name == main,
-            );
-            let end = cursor + emitted.len;
-            fn_debug.push((
-                name,
-                (cursor, end),
-                alloc.frame_size(),
-                alloc.callee_saved.len(),
-            ));
-            line_map.extend(emitted.line_map);
-            init_sections.extend(emitted.init_sections);
-
-            for rel in &emitted.relocations {
-                if called.insert(rel.func_name) {
-                    next.push(rel.func_name);
+            for block in allocated_ir.rpo() {
+                for instruction in &allocated_ir.blocks[block].insts {
+                    let target = match instruction {
+                        Instr::Call { func, .. } | Instr::LoadFuncAddr { func, .. } => Some(*func),
+                        _ => None,
+                    };
+                    if let Some(target) = target {
+                        if called.insert(target) {
+                            next.push(target);
+                        }
+                    }
                 }
             }
-            linker.register_function(
-                (cursor, end),
-                FuncDecl::new(name, &[], &[]),
-                emitted.relocations,
-            );
-            layout.push((name, (cursor, end)));
-            all_comments.extend(emitted.comments);
-            // 1 halt word between functions: disassembly boundary + pc runaway guard
-            cursor = end + 1;
-            asm.set_cursor(cursor);
+            prepared.push(PreparedFunction {
+                name,
+                ir: allocated_ir,
+                alloc,
+            });
         }
 
-        linker.relocate_all(&mut asm);
-        let end = asm.get_cursor();
-        let instructions = asm.slice_ref()[0..end].to_vec();
+        let lower = |function_table: &HashMap<FuncName, u8>| {
+            prepared
+                .iter()
+                .map(|function| {
+                    let stack_init = if function.name == main {
+                        if !function_table.is_empty() && self.opts.stack_init == 0 {
+                            crate::FUNCTION_TABLE_BASE
+                        } else {
+                            self.opts.stack_init
+                        }
+                    } else {
+                        0
+                    };
+                    compile_function(
+                        &function.ir,
+                        &function.alloc,
+                        stack_init,
+                        function_table,
+                        function.name == main,
+                    )
+                })
+                .collect::<Vec<_>>()
+        };
+
+        let mut function_table =
+            select_function_table(&self.funcs, &reachable, &self.opts.function_table);
+        let validate_function_table = |table: &HashMap<FuncName, u8>| {
+            if !table.is_empty() && self.opts.stack_init > crate::FUNCTION_TABLE_BASE {
+                panic!(
+                    "stack_init {:#06x} overlaps function-table memory at {:#06x}",
+                    self.opts.stack_init,
+                    crate::FUNCTION_TABLE_BASE
+                );
+            }
+        };
+        let linked = if matches!(self.opts.function_table, crate::FunctionTableConfig::Auto) {
+            let baseline = link(&lower(&function_table));
+            function_table = select_auto_function_table(
+                &baseline.far_calls,
+                self.opts.stack_init != crate::FUNCTION_TABLE_BASE,
+            );
+            validate_function_table(&function_table);
+            if function_table.is_empty() {
+                baseline
+            } else {
+                link(&lower(&function_table))
+            }
+        } else {
+            validate_function_table(&function_table);
+            link(&lower(&function_table))
+        };
+
+        let instructions = linked.instructions;
+        let layout = linked.layout;
+        let all_comments = linked.comments;
+        let line_map = linked.line_map;
+        let init_sections = linked.init_sections;
+        let calls = linked.calls;
+        let fn_debug: Vec<_> = prepared
+            .iter()
+            .map(|function| {
+                let name = function.name;
+                let range = layout
+                    .iter()
+                    .find(|(function, _)| *function == name)
+                    .map(|(_, range)| *range)
+                    .expect("linked function missing from layout");
+                (
+                    name,
+                    range,
+                    function.alloc.frame_size(),
+                    function.alloc.callee_saved.len(),
+                )
+            })
+            .collect();
 
         // disassembly listing: per function with signature; block roles and
         // call targets annotated as `; comment`
-        let calls = linker.get_all_calls();
         let mut comments: HashMap<usize, Vec<&str>> = HashMap::new();
         for (addr, text) in &all_comments {
             comments.entry(*addr).or_default().push(text.as_str());

@@ -12,43 +12,6 @@ pub const TMP_REG: u8 = 15;
 pub const FUNCTION_TABLE_BASE: u16 = 0xff00;
 pub const FUNCTION_TABLE_CAPACITY: usize = 256;
 
-#[derive(Clone, Debug)]
-pub struct FuncDecl {
-    pub func_name: FuncName,
-    pub param_names: Vec<&'static str>,
-    pub return_value_names: Vec<&'static str>,
-}
-impl FuncDecl {
-    pub fn new(
-        func_name: FuncName,
-        param_names: &[&'static str],
-        return_value_names: &[&'static str],
-    ) -> Self {
-        Self {
-            func_name,
-            param_names: param_names.to_vec(),
-            return_value_names: return_value_names.to_vec(),
-        }
-    }
-}
-
-#[derive(Copy, Clone, Debug)]
-pub enum RelocKind {
-    /// 3 slots: near -> call_rel + 2 nop; far -> load_lo(tmp) + load_hi(tmp) + call_reg(tmp)
-    Call3,
-    /// 1 slot: call_abs through the initialized function-table entry
-    CallAbs { index: u8 },
-    /// 2 slots: load_lo(reg) + load_hi(reg), filling in the absolute function address
-    LoadAddr { reg: u8 },
-}
-
-#[derive(Clone, Debug)]
-pub struct Relocation {
-    pub func_name: FuncName,
-    pub kind: RelocKind,
-    pub slots: Vec<crate::compiler::InstructionSlot>,
-}
-
 pub fn u8_to_hi_lo(v: u8) -> (u8, u8) {
     (v >> 4, v & 0xf)
 }

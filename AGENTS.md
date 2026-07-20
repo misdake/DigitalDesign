@@ -19,7 +19,7 @@
 - 指令/数据存储各 64K;r13=ra(call 系硬件写入）、r14=sp(sp_add/sp_sub/store_sp/load_sp 隐式使用）,**不可分配**。
 - 调用约定（编译器实现）：返回 r0–r1，参数 r2–r7,caller-save r0–r7,callee-save r8–r12（按需保存，非叶函数自动保存 ra),tmp=r15（远 call/分支松弛/scratch 专用，不可分配）。
 - 立即数限制：j_cc ±128（越界由后端分支松弛处理）、addi 仅 ±1..8 且无 0、cmp_i u4/cmp_si i4、load/store_mem 偏移 i4(−8..+7)、store_sp/load_sp/sp_sub/sp_add u8、移位仅立即数 u4。
-- direct call 默认由自动 function table 策略选择：入表函数使用单槽 `call_abs`；未入表函数保留 3 槽，由链接器生成近 `call_rel` 或远 `load_lo`+`load_hi`+`call_reg`。间接调用经 tmp + `call_reg`。表从数据地址 `0xff00` 开始，在 main frame 建立前以 sp 为基址、用 `store_sp` u8 偏移初始化；listing/`.dbg` 将 stack/table/static/runtime 初始化标为 compiler-generated global initialization ranges。
+- direct call 由全程序链接器定点松弛：范围内使用无 padding 的单槽 `call_rel`，范围外使用 `load_lo`+`load_hi`+`call_reg`；自动 function table 只评估松弛后仍为远调用的热点，入表后使用单槽 `call_abs`。间接调用经 tmp + `call_reg`。表从数据地址 `0xff00` 开始，在 main frame 建立前以 sp 为基址、用 `store_sp` u8 偏移初始化；listing/`.dbg` 将 stack/table/static/runtime 初始化标为 compiler-generated global initialization ranges。
 - 函数间保留 1 个 halt 空隙（反汇编分界 + PC 越界兜底）。
 
 ## rcc 语言（详见 src/frontend/spec.md)

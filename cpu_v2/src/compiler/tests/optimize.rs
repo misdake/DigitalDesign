@@ -34,7 +34,7 @@ fn compile_function_table_program(
 }
 
 #[test]
-fn test_auto_function_table_reduces_repeated_calls_to_call_abs() {
+fn test_auto_function_table_does_not_replace_compact_near_calls() {
     let functions = repeated_call_program(4);
     let (without_table, _) =
         compile_function_table_program(&functions, FunctionTableConfig::Disabled);
@@ -44,15 +44,48 @@ fn test_auto_function_table_reduces_repeated_calls_to_call_abs() {
     assert_eq!(
         with_table
             .iter()
+            .filter(|instruction| matches!(instruction, crate::Instruction::call_rel(..)))
+            .count(),
+        4
+    );
+    assert_eq!(with_table.len(), without_table.len());
+    assert!(!listing.contains("function table"), "{listing}");
+    let (state, signal) = crate::simulate(&with_table, 1_000);
+    assert_eq!(signal, Some(4));
+    assert_eq!(state.mem[crate::FUNCTION_TABLE_BASE as usize], 0);
+}
+
+#[test]
+fn test_auto_function_table_selects_profitable_far_calls() {
+    let (mut inc, params) = FuncBuilder::new("far_inc", 1, 1);
+    let value = inc.get(params[0]);
+    let one = inc.load_imm(1);
+    let value = inc.bin(BinOp::Add, value, one);
+    inc.ret(&[value]);
+
+    let (mut main, _) = FuncBuilder::new("main", 0, 0);
+    let mut value = main.load_imm(0);
+    for _ in 0..4 {
+        value = main.call("far_inc", &[value], 1)[0];
+    }
+    let one = main.load_imm(1);
+    for _ in 0..130 {
+        value = main.bin(BinOp::Add, value, one);
+    }
+    main.halt(value);
+
+    let functions = vec![inc.finish(), main.finish()];
+    let (instructions, listing) =
+        compile_function_table_program(&functions, FunctionTableConfig::Auto);
+    assert_eq!(
+        instructions
+            .iter()
             .filter(|instruction| matches!(instruction, crate::Instruction::call_abs(..)))
             .count(),
         4
     );
-    assert!(with_table.len() < without_table.len());
-    assert!(listing.contains("[00] inc"), "{listing}");
-    let (state, signal) = crate::simulate(&with_table, 1_000);
-    assert_eq!(signal, Some(4));
-    assert_ne!(state.mem[crate::FUNCTION_TABLE_BASE as usize], 0);
+    assert!(listing.contains("[00] far_inc"), "{listing}");
+    assert_eq!(crate::simulate(&instructions, 2_000).1, Some(134));
 }
 
 #[test]
@@ -168,7 +201,10 @@ fn test_function_table_restores_an_explicit_stack_base_before_main_frame() {
     assert_eq!(signal, Some(1));
     assert!(state.reg[crate::SP_REG as usize] < 0x9000);
     assert!(state.reg[crate::SP_REG as usize] >= 0x8f00);
-    assert!(listing.contains("temporary sp = 0xff00 for function table"), "{listing}");
+    assert!(
+        listing.contains("temporary sp = 0xff00 for function table"),
+        "{listing}"
+    );
     assert!(listing.contains("sp = 0x9000"), "{listing}");
 }
 

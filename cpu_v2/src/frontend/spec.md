@@ -330,15 +330,17 @@ The compiler can lower selected direct calls to the single-word `call_abs` instr
 At program entry it sets `sp` to `0xff00` before creating the main frame and initializes the
 selected function addresses with `store_sp` offsets `0..255`. This avoids a separate table-base
 register and provides direct access to the full table without base-increment instructions.
-The default `Auto` mode selects repeated direct calls and statically hot calls
-(recursion or calls in loops) when their estimated call-site/runtime saving pays for table
-initialization. `All` selects every directly called reachable function; `Functions` accepts
-an explicit name list. Indirect function-pointer calls still use `call_reg`.
+The default `Auto` mode first performs whole-program call relaxation, then considers only
+direct call sites that remain out of `call_rel` range. Repeated or statically hot far calls
+(recursion or calls in loops) enter the table when their estimated runtime saving pays for
+table initialization. `All` selects every directly called reachable function; `Functions`
+accepts an explicit name list. Indirect function-pointer calls still use `call_reg`.
 
-Direct calls not selected for the table retain a three-word linker slot: a nearby target is
-rewritten to `call_rel` plus padding, while a far target becomes
-`load_lo` + `load_hi` + `call_reg`. This keeps every program linkable even if the table is
-disabled or full.
+Direct calls not selected for the table have variable-width encodings. The linker repeatedly
+lays out all functions and lowers every reachable target to a single `call_rel`; it reruns
+intra-function branch relaxation until both call and branch sizes are stable. Calls that remain
+out of range use `load_lo` + `load_hi` + `call_reg`. Near calls have no reserved padding, so
+returning from `call_rel` immediately executes the next real instruction.
 
 The function table reserves data addresses `0xff00..=0xffff`, so static allocation may not
 enter that range. When a non-empty table is used with the default `stack_init = 0`, the entry
