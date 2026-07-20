@@ -250,7 +250,13 @@ impl Compiler {
                 .unwrap_or_else(|| panic!("unknown function `{name}`"));
             let mut f = f.clone();
             optimize(&mut f, &self.opts.opt);
-            let (allocated_ir, alloc) = allocate(&f, self.opts.opt.coalesce);
+            let (allocated_ir, mut alloc) = allocate(&f, self.opts.opt.coalesce);
+            if name == main {
+                // The entry function never returns to a caller, so its
+                // incoming callee-saved registers and return address do not
+                // need to be preserved. Locals and spills still get a frame.
+                alloc.callee_saved.clear();
+            }
             for block in allocated_ir.rpo() {
                 for instruction in &allocated_ir.blocks[block].insts {
                     let target = match instruction {

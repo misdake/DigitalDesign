@@ -27,8 +27,8 @@ fn test_add_call() {
     c.add_func(add.finish());
     c.add_func(m.finish());
     let (instructions, _) = c.finish("main");
-    // add is a leaf function (no frame); main only saves ra (1 slot)
-    assert_eq!(sp_sub_values(&instructions), vec![1]);
+    // Neither the leaf callee nor the non-returning entry function needs a frame.
+    assert!(sp_sub_values(&instructions).is_empty());
 
     let (_state, signal) = crate::simulate(&instructions, 1000);
     assert_eq!(signal, Some(x + y));

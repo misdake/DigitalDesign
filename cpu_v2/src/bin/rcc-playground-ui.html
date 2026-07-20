@@ -4,11 +4,12 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>rcc playground</title>
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/prismjs@1.30.0/themes/prism-tomorrow.min.css">
 <style>
   * { box-sizing: border-box; }
   html, body { height: 100%; }
-  body { margin: 0; overflow: hidden; font: 13px/1.45 ui-monospace, Consolas, monospace; background: #1e1f24; color: #d8d9dd; }
-  header { height: 48px; display: flex; align-items: center; gap: 8px; padding: 7px 12px; background: #26272e; border-bottom: 1px solid #33363f; }
+  body { margin: 0; overflow: hidden; display: flex; flex-direction: column; font: 13px/1.45 ui-monospace, Consolas, monospace; background: #1e1f24; color: #d8d9dd; }
+  header { flex: 0 0 auto; min-height: 48px; display: flex; align-items: center; gap: 8px; padding: 7px 12px; background: #26272e; border-bottom: 1px solid #33363f; }
   header b { margin-right: 8px; font-size: 15px; color: #f0f1f4; }
   button { background: #3a3d47; color: #e8e9ec; border: 1px solid #4a4e5c; border-radius: 4px; padding: 5px 11px; cursor: pointer; font: inherit; }
   button:hover:not(:disabled) { background: #484c59; }
@@ -23,11 +24,16 @@
   #status { color: #8e96a5; white-space: nowrap; }
   #status.ok { color: #85c98d; }
   #status.error { color: #ff9292; }
-  .view { height: calc(100vh - 48px); }
+  .view { flex: 1 1 auto; min-height: 0; }
   #editorView { display: grid; grid-template-columns: minmax(0, 1fr) 280px; }
-  #editorPane { display: flex; min-width: 0; flex-direction: column; padding: 10px; }
-  #source { flex: 1; width: 100%; resize: none; border: 1px solid #414550; border-radius: 5px; outline: none; padding: 12px 14px; background: #17181c; color: #e3e4e7; tab-size: 4; font: 14px/1.55 ui-monospace, Consolas, monospace; }
-  #source:focus { border-color: #557ba0; box-shadow: 0 0 0 1px #3a5875; }
+  #editorPane { display: flex; min-width: 0; min-height: 0; flex-direction: column; padding: 10px; }
+  #sourceWrap { position: relative; flex: 1 1 auto; min-height: 0; overflow: hidden; border: 1px solid #414550; border-radius: 5px; background: #17181c; }
+  #sourceWrap:focus-within { border-color: #557ba0; box-shadow: 0 0 0 1px #3a5875; }
+  #sourceHighlight, #source { position: absolute; inset: 0; width: 100%; height: 100%; margin: 0; padding: 12px 14px; border: 0; border-radius: 0; tab-size: 4; white-space: pre; font: 14px/1.55 ui-monospace, Consolas, monospace; }
+  #sourceHighlight { z-index: 1; overflow: hidden; pointer-events: none; background: #17181c; text-shadow: none; }
+  #sourceHighlight code { white-space: inherit; font: inherit; text-shadow: none; }
+  #source { z-index: 2; resize: none; overflow: auto; outline: none; background: transparent; color: transparent; caret-color: #f0f1f4; -webkit-text-fill-color: transparent; }
+  #source::selection { background: rgba(74, 112, 151, .65); color: transparent; }
   aside { border-left: 1px solid #33363f; padding: 14px; overflow: auto; background: #222329; }
   aside h3 { margin: 0 0 8px; font-size: 12px; color: #9aa0ad; text-transform: uppercase; letter-spacing: .5px; }
   aside p { color: #aeb2bc; }
@@ -52,7 +58,9 @@
 
 <main class="view" id="editorView">
   <div id="editorPane">
-    <textarea id="source" spellcheck="false" aria-label="rcc source code">fn clamp(x: i16) -> i16 {
+    <div id="sourceWrap">
+      <pre id="sourceHighlight" class="language-rust" aria-hidden="true"><code id="sourceCode" class="language-rust"></code></pre>
+      <textarea id="source" wrap="off" spellcheck="false" aria-label="rcc source code">fn clamp(x: i16) -> i16 {
     if x >= 2 &amp;&amp; x &lt;= 10 {
         x
     } else {
@@ -66,6 +74,7 @@ fn main() {
     halt((a + b) as u16);
 }
 </textarea>
+    </div>
     <pre id="errors"></pre>
   </div>
   <aside>
@@ -82,8 +91,12 @@ fn main() {
   <iframe id="debuggerFrame" title="rcc debugger"></iframe>
 </main>
 
+<script src="https://cdn.jsdelivr.net/npm/prismjs@1.30.0/prism.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/prismjs@1.30.0/components/prism-rust.min.js"></script>
 <script>
 const source = document.getElementById('source');
+const sourceHighlight = document.getElementById('sourceHighlight');
+const sourceCode = document.getElementById('sourceCode');
 const errors = document.getElementById('errors');
 const status = document.getElementById('status');
 const editorView = document.getElementById('editorView');
@@ -104,7 +117,11 @@ const savedOptimize = localStorage.getItem('rcc-playground-optimize');
 if (savedOptimize != null) optimize.checked = savedOptimize !== '0';
 const savedFunctionTable = localStorage.getItem('rcc-playground-function-table');
 if (savedFunctionTable != null) functionTable.value = savedFunctionTable;
-source.addEventListener('input', () => localStorage.setItem('rcc-playground-source', source.value));
+source.addEventListener('input', () => {
+  localStorage.setItem('rcc-playground-source', source.value);
+  highlightSource();
+});
+source.addEventListener('scroll', syncSourceScroll);
 optimize.addEventListener('change', () => {
   localStorage.setItem('rcc-playground-optimize', optimize.checked ? '1' : '0');
 });
@@ -118,6 +135,7 @@ function showEditor() {
   editorTab.classList.add('active');
   debuggerTab.classList.remove('active');
   source.focus();
+  requestAnimationFrame(syncSourceScroll);
 }
 
 function showDebugger() {
@@ -146,6 +164,9 @@ function selectDiagnostic(message) {
   offset += Math.min(targetColumn - 1, lines[targetLine - 1].length);
   source.focus();
   source.setSelectionRange(offset, offset);
+  const lineHeight = parseFloat(getComputedStyle(source).lineHeight);
+  source.scrollTop = Math.max(0, (targetLine - 1) * lineHeight - source.clientHeight / 2);
+  syncSourceScroll();
 }
 
 async function compile(mode) {
@@ -207,6 +228,21 @@ source.addEventListener('keydown', event => {
     compile('switch');
   }
 });
+
+function syncSourceScroll() {
+  sourceHighlight.scrollTop = source.scrollTop;
+  sourceHighlight.scrollLeft = source.scrollLeft;
+}
+
+function highlightSource() {
+  const text = source.value + (source.value.endsWith('\n') ? ' ' : '');
+  if (window.Prism && Prism.languages.rust)
+    sourceCode.innerHTML = Prism.highlight(text, Prism.languages.rust, 'rust');
+  else sourceCode.textContent = text;
+  syncSourceScroll();
+}
+
+highlightSource();
 source.focus();
 </script>
 </body>

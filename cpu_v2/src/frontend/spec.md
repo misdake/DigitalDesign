@@ -226,6 +226,8 @@ its reads/writes go through frame slots (the existing `load_sp`/`store_sp` machi
 The frontend decides residency statically by scanning for `addr_of` uses and array-typed
 `let`s — no escape analysis. The frame layout becomes
 `[callee-save saves][locals/arrays][spill slots]`, all sized at compile time.
+The entry function has no caller and never returns, so it omits callee-save and return-address
+saves; any locals and spills still allocate their normal frame slots.
 
 Struct members (including array members) come with the library phase; nothing in §9–§11
 precludes them (a struct is just an address plus offsets).
@@ -233,7 +235,7 @@ precludes them (a struct is just an address plus offsets).
 ## 12. Out of scope for now
 
 `&x` references, fat slices, struct definitions, `static mut`, heap allocation of arrays,
-multi-dimensional arrays (use `arr[i * W + j]`), `*`, `/`, `%`.
+multi-dimensional arrays (use `arr[i * W + j]`), function inlining/`#[inline]`, `*`, `/`, `%`.
 
 ## 13. The toolchain
 
@@ -352,3 +354,6 @@ with a `global initialization` summary and marks the instruction ranges for stac
 function-table writes, static data, and any heap/vector runtime setup. The same ranges are stored
 in `.dbg`; the generated instructions have no user-source line ownership, while instruction
 stepping and the disassembly panel keep them visible as compiler-generated initialization sections.
+Static data initialization groups non-zero words by 256-word address page, temporarily uses `sp`
+as the page base, and writes each value with `store_sp`'s full u8 offset. After the section it
+restores the main frame's stack pointer before any user or runtime code executes.

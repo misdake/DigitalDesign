@@ -480,4 +480,49 @@ mod tests {
         assert!(UI.contains("tr.pc td.addr::before { content: \"▶\""));
         assert!(!UI.contains("/api/break?addr="));
     }
+
+    #[test]
+    fn double_click_centers_the_selected_source_disassembly() {
+        assert!(UI.contains("function centerDisasmForLine(n)"));
+        assert!(UI.contains(".ondblclick = (e) =>"));
+        assert!(UI.contains("centerDisasmForLine(n);"));
+        assert!(UI.contains("scrollDisasmRow(rows[Math.floor(rows.length / 2)], 'center')"));
+        assert!(UI.contains("if (e.detail > 1) return;"));
+    }
+
+    #[test]
+    fn source_selection_does_not_follow_the_program_counter() {
+        assert!(UI.contains("function render({followPc = false} = {})"));
+        assert!(UI.contains("render({followPc: false});"));
+        assert!(UI.contains("if (followPc && curRow)"));
+        assert!(UI.contains("if (followPc && pcRow)"));
+    }
+
+    #[test]
+    fn disassembly_navigation_stays_left_aligned_and_stack_is_clickable() {
+        assert!(UI.contains("$('midcol').scrollLeft = 0;"));
+        assert!(UI.contains("tr class=\"stack-frame\" data-site="));
+        assert!(UI.contains("tr.stack-frame').forEach"));
+        assert!(UI.contains("flashDisasmRow(target)"));
+    }
+
+    #[test]
+    fn debugger_and_playground_own_the_viewport_without_page_scrolling() {
+        assert!(UI.contains("html, body { height: 100%; overflow: hidden; }"));
+        assert!(PLAYGROUND_UI.contains("overflow: hidden; display: flex; flex-direction: column"));
+        assert!(PLAYGROUND_UI.contains(".view { flex: 1 1 auto; min-height: 0; }"));
+    }
+
+    #[test]
+    fn playground_and_debugger_load_rust_highlighting_from_cdn() {
+        assert!(!PLAYGROUND_UI.contains("CodeMirror"));
+        assert!(PLAYGROUND_UI.contains("prismjs@1.30.0/components/prism-rust.min.js"));
+        assert!(PLAYGROUND_UI.contains("function highlightSource()"));
+        assert!(PLAYGROUND_UI.contains("Prism.highlight(text, Prism.languages.rust, 'rust')"));
+        assert!(PLAYGROUND_UI.contains("body: source.value"));
+        assert!(PLAYGROUND_UI.contains("sourceHighlight.scrollTop = source.scrollTop"));
+        assert!(UI.contains("prismjs@1.30.0/components/prism-rust.min.js"));
+        assert!(UI.contains("function highlightRust(s)"));
+        assert!(UI.contains("${highlightRust(l.text)}"));
+    }
 }

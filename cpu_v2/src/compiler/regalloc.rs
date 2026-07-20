@@ -167,6 +167,7 @@ pub(crate) fn inst_uses(inst: &Instr) -> Vec<VReg> {
         Instr::Bin { lhs, rhs, .. } => vec![*lhs, *rhs],
         Instr::Un { src, .. } | Instr::Shift { src, .. } | Instr::Mov { src, .. } => vec![*src],
         Instr::LoadImm { .. }
+        | Instr::StoreStatic { .. }
         | Instr::DevRecv { .. }
         | Instr::LoadSp { .. }
         | Instr::LoadLocal { .. }
@@ -196,7 +197,7 @@ pub(crate) fn inst_defs(inst: &Instr) -> Vec<VReg> {
         | Instr::LoadLocal { dst, .. }
         | Instr::AddrOfLocal { dst, .. }
         | Instr::LoadSp { dst, .. } => vec![*dst],
-        Instr::StoreMem { .. } | Instr::DevSend { .. } | Instr::StoreSp { .. } | Instr::StoreLocal { .. } => {
+        Instr::StoreMem { .. } | Instr::StoreStatic { .. } | Instr::DevSend { .. } | Instr::StoreSp { .. } | Instr::StoreLocal { .. } => {
             vec![]
         }
         Instr::Call { rets, .. } | Instr::CallPtr { rets, .. } => rets.clone(),
@@ -239,6 +240,7 @@ fn replace_all_uses(f: &mut IrFunc, from: VReg, to: VReg) {
                 | Instr::StoreSp { src, .. }
                 | Instr::StoreLocal { src, .. } => subst(src),
                 Instr::LoadImm { .. }
+                | Instr::StoreStatic { .. }
                 | Instr::DevRecv { .. }
                 | Instr::LoadSp { .. }
                 | Instr::LoadLocal { .. }
@@ -883,6 +885,7 @@ fn rewrite_spills(f: &mut IrFunc, spilled: &[VReg], next_slot: &mut u8) {
                     reload(src, &slot_of, &spilled, f, &mut new_insts, &mut new_lines, line)
                 }
                 Instr::LoadImm { .. }
+                | Instr::StoreStatic { .. }
                 | Instr::DevRecv { .. }
                 | Instr::LoadSp { .. }
                 | Instr::LoadLocal { .. }
@@ -1012,7 +1015,7 @@ fn defs_mut(inst: &mut Instr) -> Vec<&mut VReg> {
         | Instr::LoadLocal { dst, .. }
         | Instr::AddrOfLocal { dst, .. }
         | Instr::LoadSp { dst, .. } => vec![dst],
-        Instr::StoreMem { .. } | Instr::DevSend { .. } | Instr::StoreSp { .. } | Instr::StoreLocal { .. } => {
+        Instr::StoreMem { .. } | Instr::StoreStatic { .. } | Instr::DevSend { .. } | Instr::StoreSp { .. } | Instr::StoreLocal { .. } => {
             vec![]
         }
         Instr::Call { rets, .. } | Instr::CallPtr { rets, .. } => rets.iter_mut().collect(),

@@ -3,10 +3,12 @@
 <head>
 <meta charset="utf-8">
 <title>rcc debugger</title>
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/prismjs@1.30.0/themes/prism-tomorrow.min.css">
 <style>
   * { box-sizing: border-box; }
-  body { margin: 0; font: 13px/1.45 ui-monospace, Consolas, monospace; background: #1e1f24; color: #d8d9dd; }
-  header { display: flex; align-items: center; gap: 8px; padding: 8px 12px; background: #26272e; border-bottom: 1px solid #33363f; position: sticky; top: 0; }
+  html, body { height: 100%; overflow: hidden; }
+  body { margin: 0; display: flex; flex-direction: column; font: 13px/1.45 ui-monospace, Consolas, monospace; background: #1e1f24; color: #d8d9dd; }
+  header { flex: 0 0 auto; display: flex; align-items: center; gap: 8px; padding: 8px 12px; background: #26272e; border-bottom: 1px solid #33363f; }
   header b { font-size: 14px; }
   button { background: #3a3d47; color: #e8e9ec; border: 1px solid #4a4e5c; border-radius: 4px; padding: 4px 10px; cursor: pointer; font: inherit; }
   button:hover { background: #484c59; }
@@ -14,8 +16,8 @@
   button.primary:hover { background: #366b96; }
   .badge { padding: 2px 8px; border-radius: 10px; background: #344; }
   .badge.halt { background: #5a2e2e; color: #ffb4b4; }
-  main { display: grid; grid-template-columns: 40% 32% 28%; grid-template-rows: 1fr 260px; height: calc(100vh - 41px); }
-  section { border-right: 1px solid #33363f; padding: 8px; overflow: auto; }
+  main { flex: 1 1 auto; min-height: 0; display: grid; grid-template-columns: 40% 32% 28%; grid-template-rows: minmax(0, 1fr) 260px; }
+  section { min-height: 0; border-right: 1px solid #33363f; padding: 8px; overflow: auto; }
   section:last-child { border-right: none; }
   #srccol { grid-row: 1 / 3; }
   #midcol { grid-row: 1; position: relative; padding-left: 34px; }
@@ -39,6 +41,8 @@
   tr.pc td.addr { position: relative; }
   tr.pc td.addr::before { content: "▶"; position: absolute; left: -10px; color: #ff5b5b; font-size: 9px; }
   tr.jump-target td { box-shadow: inset 3px 0 #79b879; }
+  tr.stack-frame td { cursor: pointer; }
+  tr.stack-frame:hover td { background: #2c2f38; }
   tr.bp td:first-child::before { content: "● "; color: #ff6b6b; }
   tr.fhead td { color: #8ec7ff; background: #232833; font-weight: bold; border-top: 1px solid #33363f; }
   .addr { color: #7f8896; }
@@ -88,6 +92,8 @@
     <table id="mem"></table>
   </section>
 </main>
+<script src="https://cdn.jsdelivr.net/npm/prismjs@1.30.0/prism.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/prismjs@1.30.0/components/prism-rust.min.js"></script>
 <script>
 const $ = id => document.getElementById(id);
 const hx = (n, w) => '0x' + n.toString(16).padStart(w || 4, '0');
@@ -95,9 +101,9 @@ let state = null;
 let pinnedLine = null;   // source line pinned by clicking its text
 let pinnedFile = null;
 
-async function refresh() {
+async function refresh(followPc = true) {
   state = await (await fetch('/api/state')).json();
-  render();
+  render({followPc});
   renderMem();
 }
 
@@ -107,7 +113,26 @@ function addrsOfLine(n) {
   return new Set(state.src.map.filter(([a, l]) => l === n).map(([a]) => a));
 }
 
-function render() {
+function centerDisasmForLine(n) {
+  const rows = [...addrsOfLine(n)]
+    .map(a => document.querySelector(`#dis tr.dline[data-addr="${a}"]`))
+    .filter(Boolean);
+  if (!rows.length) return;
+  scrollDisasmRow(rows[Math.floor(rows.length / 2)], 'center');
+}
+
+function scrollDisasmRow(row, block = 'center') {
+  row.scrollIntoView({block, inline: 'start'});
+  $('midcol').scrollLeft = 0;
+}
+
+function flashDisasmRow(row) {
+  scrollDisasmRow(row);
+  row.classList.add('jump-target');
+  setTimeout(() => row.classList.remove('jump-target'), 900);
+}
+
+function render({followPc = false} = {}) {
   if (!state.src || (pinnedFile != null && pinnedFile !== state.src.file)) {
     pinnedLine = null;
     pinnedFile = null;
@@ -120,8 +145,12 @@ function render() {
 
   // call stack
   $('stack').innerHTML = ['<tr><td class="muted">(main)</td></tr>']
-    .concat(state.stack.map(f => `<tr><td>→ ${esc(f.func)}</td><td class="addr">${f.site_line ? 'from :' + f.site_line : '(generated)'} ret ${hx(f.ret)}</td></tr>`))
+    .concat(state.stack.map(f => `<tr class="stack-frame" data-site="${f.site}"><td>→ ${esc(f.func)}</td><td class="addr">${f.site_line ? 'from :' + f.site_line : '(generated)'} ret ${hx(f.ret)}</td></tr>`))
     .join('');
+  document.querySelectorAll('tr.stack-frame').forEach(tr => tr.onclick = () => {
+    const target = document.querySelector(`#dis tr.dline[data-addr="${tr.dataset.site}"]`);
+    if (target) flashDisasmRow(target);
+  });
 
   // source view (indentation preserved via CSS white-space:pre)
   const curLine = state.line ? state.line.line : null;
@@ -129,7 +158,7 @@ function render() {
     $('srctitle').textContent = 'source';
     $('src').innerHTML = state.src.lines.map(l => {
       const cls = [l.cur ? 'cur' : '', l.bp ? 'bp' : '', 'sline', pinnedLine === l.n ? 'hl' : ''].join(' ');
-      return `<tr class="${cls}" data-n="${l.n}"><td class="addr">${l.n}</td><td class="stext">${esc(l.text)}</td></tr>`;
+      return `<tr class="${cls}" data-n="${l.n}"><td class="addr">${l.n}</td><td class="stext language-rust">${highlightRust(l.text)}</td></tr>`;
     }).join('');
     document.querySelectorAll('tr.sline').forEach(tr => {
       const n = +tr.dataset.n;
@@ -137,9 +166,10 @@ function render() {
         e.stopPropagation();
         const hasBp = state.src.lines.find(l => l.n === n && l.bp);
         await fetch(`/api/breakline?file=${state.src.file}&line=${n}&on=${hasBp ? 0 : 1}`, {method: 'POST'});
-        refresh();
+        refresh(false);
       };
-      tr.querySelector('.stext').onclick = () => {
+      tr.querySelector('.stext').onclick = (e) => {
+        if (e.detail > 1) return;
         if (pinnedFile === state.src.file && pinnedLine === n) {
           pinnedLine = null;
           pinnedFile = null;
@@ -147,11 +177,18 @@ function render() {
           pinnedLine = n;
           pinnedFile = state.src.file;
         }
-        render();
+        render({followPc: false});
+      };
+      tr.querySelector('.stext').ondblclick = (e) => {
+        e.preventDefault();
+        pinnedLine = n;
+        pinnedFile = state.src.file;
+        render({followPc: false});
+        centerDisasmForLine(n);
       };
     });
     const curRow = document.querySelector('#src tr.cur');
-    if (curRow) curRow.scrollIntoView({block: 'nearest'});
+    if (followPc && curRow) curRow.scrollIntoView({block: 'nearest', inline: 'nearest'});
   } else {
     $('srctitle').textContent = 'source (no line info)';
     $('src').innerHTML = '';
@@ -175,12 +212,10 @@ function render() {
     e.stopPropagation();
     const target = document.querySelector(`#dis tr.dline[data-addr="${cell.parentElement.dataset.target}"]`);
     if (!target) return;
-    target.scrollIntoView({block: 'center'});
-    target.classList.add('jump-target');
-    setTimeout(() => target.classList.remove('jump-target'), 900);
+    flashDisasmRow(target);
   });
   const pcRow = document.querySelector('#dis tr.pc');
-  if (pcRow) pcRow.scrollIntoView({block: 'nearest'});
+  if (followPc && pcRow) scrollDisasmRow(pcRow, 'nearest');
 
   // registers
   let rt = '';
@@ -204,6 +239,11 @@ function varRow(v) {
   return `<tr><td class="vname">${esc(v.name)}</td><td class="vloc">${esc(v.ty)}</td><td>${fmtVal(v)}</td></tr>`;
 }
 function esc(s) { return String(s).replace(/[&<>]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;'}[c])); }
+function highlightRust(s) {
+  if (window.Prism && Prism.languages.rust)
+    return Prism.highlight(String(s), Prism.languages.rust, 'rust');
+  return esc(s);
+}
 function fmtVal(v) {
   const val = v.value;
   if (val == null) return '<i>ssa</i>';
@@ -245,7 +285,6 @@ document.addEventListener('click', e => {
   if (p) {
     $('maddr').value = hx(parseInt(p.dataset.addr));
     renderMem();
-    document.getElementById('memsec').scrollIntoView();
   }
 });
 

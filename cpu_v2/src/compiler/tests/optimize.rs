@@ -34,6 +34,31 @@ fn test_signed_range_check_uses_immediates_and_fallthrough() {
     assert_eq!(crate::simulate(&instructions, 1_000).1, Some(5));
 }
 
+#[test]
+fn test_entry_function_does_not_preserve_callee_saved_registers() {
+    let program = crate::frontend::parse_source(
+        "fn add_one(x: u16) -> u16 { x + 1 } fn main() { let keep = 7; halt(keep + add_one(3)); }",
+    )
+    .unwrap();
+    let mut compiler = Compiler::new();
+    for function in program.funcs {
+        compiler.add_func(function);
+    }
+    let (instructions, listing) = compiler.finish("main");
+    let main = listing
+        .split("main {")
+        .nth(1)
+        .expect("main listing")
+        .split("}\n")
+        .next()
+        .unwrap();
+
+    assert!(!main.contains("mem[r14"), "{main}");
+    assert!(!main.contains("r14 -= "), "{main}");
+    assert!(!main.contains("r14 += "), "{main}");
+    assert_eq!(crate::simulate(&instructions, 1_000).1, Some(11));
+}
+
 fn repeated_call_program(call_count: usize) -> Vec<IrFunc> {
     let (mut inc, params) = FuncBuilder::new("inc", 1, 1);
     let value = inc.get(params[0]);
@@ -228,8 +253,7 @@ fn test_function_table_restores_an_explicit_stack_base_before_main_frame() {
     let (instructions, listing) = compiler.finish("main");
     let (state, signal) = crate::simulate(&instructions, 1_000);
     assert_eq!(signal, Some(1));
-    assert!(state.reg[crate::SP_REG as usize] < 0x9000);
-    assert!(state.reg[crate::SP_REG as usize] >= 0x8f00);
+    assert_eq!(state.reg[crate::SP_REG as usize], 0x9000);
     assert!(
         listing.contains("temporary sp = 0xff00 for function table"),
         "{listing}"

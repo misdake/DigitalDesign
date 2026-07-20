@@ -444,23 +444,7 @@ fn emit_data_init(out: &mut [IrFunc], globals: &Globals) -> Result<(), syn::Erro
     let mut inits = vec![];
     for &(addr, value) in &globals.data_words {
         if value != 0 {
-            inits.push(Instr::LoadImm {
-                dst: main.vreg_count,
-                value: addr,
-            });
-            main.vreg_count += 1;
-            inits.push(Instr::LoadImm {
-                dst: main.vreg_count,
-                value,
-            });
-            main.vreg_count += 1;
-            let base = main.vreg_count - 2;
-            let val = main.vreg_count - 1;
-            inits.push(Instr::StoreMem {
-                base,
-                offset: 0,
-                src: val,
-            });
+            inits.push(Instr::StoreStatic { addr, value });
         }
     }
     if !inits.is_empty() {

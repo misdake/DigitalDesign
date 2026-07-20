@@ -674,7 +674,7 @@ pub(crate) fn remove_trivial_phis(func: &mut IrFunc) -> bool {
                     Instr::Un { src, .. } | Instr::Shift { src, .. } | Instr::Mov { src, .. } => {
                         subst(src)
                     }
-                    Instr::LoadImm { .. } | Instr::DevRecv { .. } | Instr::LoadSp { .. } | Instr::LoadLocal { .. } | Instr::AddrOfLocal { .. } => {}
+                    Instr::LoadImm { .. } | Instr::StoreStatic { .. } | Instr::DevRecv { .. } | Instr::LoadSp { .. } | Instr::LoadLocal { .. } | Instr::AddrOfLocal { .. } => {}
                     Instr::LoadMem { base, .. } => subst(base),
                     Instr::StoreMem { base, src, .. } => {
                         subst(base);

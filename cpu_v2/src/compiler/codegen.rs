@@ -244,6 +244,26 @@ fn start_init(lines: &mut Vec<MachineLine>, name: &str, detail: String) {
     });
 }
 
+fn emit_static_data_init(block: &Block, restore_sp: u16, lines: &mut Vec<MachineLine>) {
+    let mut current_page = None;
+    for inst in &block.insts {
+        let Instr::StoreStatic { addr, value } = inst else {
+            panic!("static data initialization block contains a non-static store");
+        };
+        let page = *addr & 0xff00;
+        if current_page != Some(page) {
+            emit_load_u16(lines, page, REG_SP);
+            current_page = Some(page);
+        }
+        emit_load_u16(lines, *value, REG_TMP);
+        let (hi, lo) = hi_lo(*addr as u8);
+        lines.push(MachineLine::Inst(store_sp(hi, lo, REG_TMP), None));
+    }
+    if current_page != Some(restore_sp) {
+        emit_load_u16(lines, restore_sp, REG_SP);
+    }
+}
+
 /// Lower one function without assigning any absolute instruction addresses.
 pub fn compile_function(
     f: &IrFunc,
@@ -256,6 +276,7 @@ pub fn compile_function(
     let mut lines: Vec<MachineLine> = vec![];
 
     let reg = |v: VReg| alloc.reg[&v];
+    let frame_sp = stack_init.wrapping_sub(alloc.frame_size() as u16);
 
     // call_abs reads mem[0xff00 + index]. store_sp has a full u8 offset, so
     // use sp as the table base and initialize all 256 possible entries without
@@ -373,21 +394,25 @@ pub fn compile_function(
             }
         }
 
-        let calls = CallLowering {
-            caller: f.name,
-            hot_block: block_is_in_cycle(f, b),
-            function_table,
-        };
-        for (inst, ir_line) in block.insts.iter().zip(&block.lines) {
-            emit_inst(
-                inst,
-                *ir_line,
-                &reg,
-                alloc.callee_saved.len() as u8,
-                alloc.local_slots,
-                &calls,
-                &mut lines,
-            );
+        if init_detail.is_some_and(|detail| detail.starts_with("static data:")) {
+            emit_static_data_init(block, frame_sp, &mut lines);
+        } else {
+            let calls = CallLowering {
+                caller: f.name,
+                hot_block: block_is_in_cycle(f, b),
+                function_table,
+            };
+            for (inst, ir_line) in block.insts.iter().zip(&block.lines) {
+                emit_inst(
+                    inst,
+                    *ir_line,
+                    &reg,
+                    alloc.callee_saved.len() as u8,
+                    alloc.local_slots,
+                    &calls,
+                    &mut lines,
+                );
+            }
         }
 
         match &block.term {
@@ -620,6 +645,9 @@ fn emit_inst(
                     lines.push(MachineLine::Inst(store_mem(base_reg, src, off), ir_line));
                 },
             );
+        }
+        Instr::StoreStatic { .. } => {
+            unreachable!("static stores are emitted as a grouped initialization section")
         }
         Instr::Call { func, .. } => {
             // args/results already moved by ABI shims

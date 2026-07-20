@@ -242,6 +242,32 @@ fn main() {
 }
 
 #[test]
+fn test_data_init_uses_sp_across_pages_and_restores_it() {
+    let src = r#"
+static DATA: [u16; 4] = [11, 22, 33, 44];
+fn main() {
+    halt(DATA.read(0) + DATA.read(1) + DATA.read(2) + DATA.read(3));
+}
+"#;
+    let opts = cpu_v2::CompilerOptions {
+        data_base: 0x00fe,
+        stack_init: 0x9000,
+        ..Default::default()
+    };
+    let (state, signal, listing) = compile_program_and_run(src, &opts, 10_000);
+
+    assert_eq!(signal, Some(110));
+    assert_eq!(&state.mem[0x00fe..=0x0101], &[11, 22, 33, 44]);
+    assert_eq!(state.reg[cpu_v2::SP_REG as usize], 0x9000);
+    for offset in [0xfe, 0xff, 0x00, 0x01] {
+        assert!(
+            listing.contains(&format!("mem[r14 + 0x{offset:02x}] = r15")),
+            "{listing}"
+        );
+    }
+}
+
+#[test]
 fn test_static_scalar_read_write() {
     let src = r#"
 static SCORE: u16 = 100;

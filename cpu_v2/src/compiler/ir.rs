@@ -75,6 +75,9 @@ pub enum Instr {
     LoadImm { dst: VReg, value: u16 },
     LoadMem { dst: VReg, base: VReg, offset: i16 },
     StoreMem { base: VReg, offset: i16, src: VReg },
+    /// Compiler-generated static data initialization. Codegen groups these by
+    /// 256-word page and uses sp + u8 offset stores.
+    StoreStatic { addr: u16, value: u16 },
     /// rets are SSA defs (filled by the callee per the calling convention)
     Call { func: FuncName, args: Vec<VReg>, rets: Vec<VReg> },
     /// load the absolute address of a function (relocation slot)
@@ -248,6 +251,7 @@ impl fmt::Display for Instr {
             Instr::LoadImm { dst, value } => write!(f, "v{dst} = imm {value}"),
             Instr::LoadMem { dst, base, offset } => write!(f, "v{dst} = load [v{base} + {offset}]"),
             Instr::StoreMem { base, offset, src } => write!(f, "store [v{base} + {offset}] = v{src}"),
+            Instr::StoreStatic { addr, value } => write!(f, "static[{addr:#06x}] = {value:#06x}"),
             Instr::Call { func, args, rets } => {
                 write!(f, "({}) = call {}({})", fmt_vregs(rets), func, fmt_vregs(args))
             }

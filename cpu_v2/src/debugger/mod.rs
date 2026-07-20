@@ -690,9 +690,10 @@ impl DebugSession {
                     .max_by_key(|(a, _, _)| *a);
                 let (sf, sl) = site.map(|&(_, f, l)| (f, l)).unwrap_or((0, 0));
                 format!(
-                    "{{\"func\":\"{}\",\"ret\":{},\"site_file\":{},\"site_line\":{}}}",
+                    "{{\"func\":\"{}\",\"ret\":{},\"site\":{},\"site_file\":{},\"site_line\":{}}}",
                     esc(&f.func_name),
                     f.return_addr,
+                    site_addr,
                     sf,
                     sl
                 )
