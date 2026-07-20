@@ -87,6 +87,7 @@ pub fn allocate(func: &IrFunc, coalesce: bool) -> (IrFunc, Allocation) {
                 local_slots: f.local_slots,
                 spill_slots,
             };
+            collapse_redundant_phi_trampolines(&mut f, &alloc.reg);
             assert!(
                 alloc.frame_size() <= MAX_FRAME,
                 "function {} needs {} frame slots, max {MAX_FRAME}",
@@ -98,6 +99,63 @@ pub fn allocate(func: &IrFunc, coalesce: bool) -> (IrFunc, Allocation) {
         rewrite_spills(&mut f, &scan.spilled, &mut spill_slots);
     }
     panic!("register allocation for {} did not converge", f.name)
+}
+
+/// After allocation, a split critical edge is unnecessary when every phi
+/// value already occupies its destination register. Remove those empty
+/// trampolines so codegen can use the real successor as a branch target and
+/// fall through normally.
+fn collapse_redundant_phi_trampolines(f: &mut IrFunc, registers: &HashMap<VReg, u8>) {
+    for trampoline in 0..f.blocks.len() {
+        let [source] = f.blocks[trampoline].preds.as_slice() else {
+            continue;
+        };
+        let source = *source;
+        let Some(Terminator::Jmp { target }) = f.blocks[trampoline].term else {
+            continue;
+        };
+        if !f.blocks[trampoline].phis.is_empty() || !f.blocks[trampoline].insts.is_empty() {
+            continue;
+        }
+        let redundant = f.blocks[target].phis.iter().all(|phi| {
+            phi.args
+                .iter()
+                .find(|(pred, _)| *pred == trampoline)
+                .is_some_and(|(_, value)| registers[value] == registers[&phi.dst])
+        });
+        if !redundant || f.blocks[target].phis.is_empty() {
+            continue;
+        }
+        match &mut f.blocks[source].term {
+            Some(Terminator::Jmp { target: edge }) => {
+                if *edge == trampoline {
+                    *edge = target;
+                }
+            }
+            Some(Terminator::Br { if_true, if_false, .. }) => {
+                if *if_true == trampoline {
+                    *if_true = target;
+                }
+                if *if_false == trampoline {
+                    *if_false = target;
+                }
+            }
+            _ => continue,
+        }
+        for pred in &mut f.blocks[target].preds {
+            if *pred == trampoline {
+                *pred = source;
+            }
+        }
+        for phi in &mut f.blocks[target].phis {
+            for (pred, _) in &mut phi.args {
+                if *pred == trampoline {
+                    *pred = source;
+                }
+            }
+        }
+        f.blocks[trampoline].preds.clear();
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -376,7 +434,10 @@ fn split_critical_edges(f: &mut IrFunc) {
         };
         let mut new_term = f.blocks[b].term.clone();
         for target in [if_true, if_false] {
-            if f.blocks[target].preds.len() > 1 {
+            // A critical edge only needs its own block when the successor has
+            // phi moves to perform. Splitting every multi-predecessor target
+            // creates empty jump-only blocks and prevents useful fallthrough.
+            if f.blocks[target].preds.len() > 1 && !f.blocks[target].phis.is_empty() {
                 let tramp = f.blocks.len();
                 f.blocks.push(Block {
                     phis: vec![],

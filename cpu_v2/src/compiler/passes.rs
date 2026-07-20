@@ -3,6 +3,7 @@
 
 use crate::compiler::builder::remove_trivial_phis;
 use crate::compiler::ir::*;
+use crate::isa::Cond;
 use crate::sim::{calc_flags, calc_flags_signed};
 use std::collections::{HashMap, HashSet};
 
@@ -40,6 +41,7 @@ impl Opts {
 }
 
 pub fn optimize(f: &mut IrFunc, opts: &Opts) {
+    let mut hoisted_return_joins = HashSet::new();
     for _ in 0..4 {
         let mut changed = false;
         if opts.const_prop {
@@ -52,6 +54,9 @@ pub fn optimize(f: &mut IrFunc, opts: &Opts) {
             changed |= dce(f);
         }
         changed |= remove_trivial_phis(f);
+        if !opts.is_disabled() {
+            changed |= hoist_constant_return_arm(f, &mut hoisted_return_joins);
+        }
         if !changed {
             break;
         }
@@ -220,6 +225,32 @@ fn const_prop(f: &mut IrFunc) -> bool {
         }
     }
 
+    // Keep encodable constants as immediates at their use sites. Larger
+    // constants stay in vregs so loop-invariant loads remain outside loops;
+    // otherwise codegen would materialize them into REG_TMP at every compare.
+    for block in &mut f.blocks {
+        let Some(Terminator::Br { cmp, .. }) = &mut block.term else {
+            continue;
+        };
+        let CmpRhs::Reg(rhs) = cmp.rhs else {
+            continue;
+        };
+        let Some(value) = konst[rhs as usize] else {
+            continue;
+        };
+        let encodable = if cmp.signed {
+            (-8..=7).contains(&(value as i16))
+        } else {
+            value <= 15
+        };
+        if encodable {
+            cmp.rhs = CmpRhs::Imm(value);
+            changed = true;
+        }
+    }
+
+    changed |= use_unsigned_cmp_after_nonnegative_guard(f, &konst);
+
     // ----- resolve constant branches -----
     for b in 0..f.blocks.len() {
         let (cmp, if_true, if_false) = match &f.blocks[b].term {
@@ -259,6 +290,188 @@ fn const_prop(f: &mut IrFunc) -> bool {
     changed
 }
 
+/// A signed lower-bound guard can make a following small positive comparison
+/// eligible for the unsigned cmp_i instruction. Restrict this to a block with
+/// one predecessor, so the range fact is guaranteed on every path.
+fn use_unsigned_cmp_after_nonnegative_guard(f: &mut IrFunc, konst: &[Option<u16>]) -> bool {
+    let mut rewrites = vec![];
+    for block in 0..f.blocks.len() {
+        let [pred] = f.blocks[block].preds.as_slice() else {
+            continue;
+        };
+        let Some(Terminator::Br {
+            cmp: guard,
+            if_true,
+            if_false,
+        }) = &f.blocks[*pred].term
+        else {
+            continue;
+        };
+        if !guard.signed || if_true == if_false {
+            continue;
+        }
+        let CmpRhs::Imm(raw_bound) = guard.rhs else {
+            continue;
+        };
+        let relation = if *if_true == block {
+            guard.cond
+        } else if *if_false == block {
+            guard.cond.invert()
+        } else {
+            continue;
+        };
+        let bound = raw_bound as i16;
+        let proves_nonnegative = match relation {
+            Cond::GreaterEqual | Cond::Equal => bound >= 0,
+            Cond::Greater => bound >= -1,
+            _ => false,
+        };
+        if !proves_nonnegative {
+            continue;
+        }
+        let Some(Terminator::Br { cmp, .. }) = &f.blocks[block].term else {
+            continue;
+        };
+        let rhs = match cmp.rhs {
+            CmpRhs::Imm(rhs) => rhs,
+            CmpRhs::Reg(rhs) => match konst[rhs as usize] {
+                Some(value) => value,
+                None => continue,
+            },
+        };
+        if cmp.signed && cmp.lhs == guard.lhs && rhs <= 15 && (rhs as i16) >= 0 {
+            rewrites.push((block, rhs));
+        }
+    }
+    for &(block, rhs) in &rewrites {
+        let Some(Terminator::Br { cmp, .. }) = &mut f.blocks[block].term else {
+            unreachable!();
+        };
+        cmp.rhs = CmpRhs::Imm(rhs);
+        cmp.signed = false;
+    }
+    !rewrites.is_empty()
+}
+
+fn compute_dominators(f: &IrFunc, rpo: &[BlockId]) -> Vec<HashSet<BlockId>> {
+    let mut doms: Vec<HashSet<BlockId>> = vec![HashSet::new(); f.blocks.len()];
+    doms[f.entry].insert(f.entry);
+    loop {
+        let mut changed = false;
+        for &block in rpo {
+            if block == f.entry {
+                continue;
+            }
+            let mut intersection: Option<HashSet<BlockId>> = None;
+            for &pred in &f.blocks[block].preds {
+                if doms[pred].is_empty() {
+                    continue;
+                }
+                intersection = Some(match intersection {
+                    None => doms[pred].clone(),
+                    Some(current) => current.intersection(&doms[pred]).copied().collect(),
+                });
+            }
+            let mut next = intersection.unwrap_or_default();
+            next.insert(block);
+            if next != doms[block] {
+                doms[block] = next;
+                changed = true;
+            }
+        }
+        if !changed {
+            return doms;
+        }
+    }
+}
+
+/// Turn a constant arm of a return diamond into a default value established
+/// before the condition. All branches for that arm can then target the common
+/// return block directly, allowing the successful arm to fall through after
+/// overwriting the return register.
+fn hoist_constant_return_arm(f: &mut IrFunc, transformed: &mut HashSet<BlockId>) -> bool {
+    let rpo = f.rpo();
+    let doms = compute_dominators(f, &rpo);
+
+    for join in rpo {
+        // Hoisting both constant arms would make the later default overwrite
+        // the earlier one before the condition executes.
+        if transformed.contains(&join) {
+            continue;
+        }
+        let return_value = match &f.blocks[join].term {
+            Some(Terminator::Ret { values }) if values.len() == 1 => values[0],
+            _ => continue,
+        };
+        if !f.blocks[join].insts.is_empty() || f.blocks[join].phis.len() != 1 {
+            continue;
+        }
+        let phi = &f.blocks[join].phis[0];
+        if phi.dst != return_value {
+            continue;
+        }
+        for &(constant_block, incoming) in &phi.args {
+            let constant = &f.blocks[constant_block];
+            let value = match constant.insts.as_slice() {
+                [Instr::LoadImm { dst, value }] if *dst == incoming => *value,
+                _ => continue,
+            };
+            if !constant.phis.is_empty()
+                || !matches!(constant.term, Some(Terminator::Jmp { target }) if target == join)
+                || constant.preds.is_empty()
+            {
+                continue;
+            }
+            let Some(hoist) = doms[constant_block]
+                .iter()
+                .filter(|&&block| block != constant_block)
+                .max_by_key(|&&block| doms[block].len())
+                .copied()
+            else {
+                continue;
+            };
+            let old_preds = f.blocks[constant_block].preds.clone();
+
+            f.blocks[hoist].insts.push(Instr::LoadImm { dst: incoming, value });
+            // This is scheduled initialization of the result, not execution
+            // of the source-level else arm.
+            let scheduled_line = f.blocks[hoist].term_line.or(f.block_lines[hoist]);
+            f.blocks[hoist].lines.push(scheduled_line);
+
+            for &pred in &old_preds {
+                match &mut f.blocks[pred].term {
+                    Some(Terminator::Jmp { target }) => {
+                        if *target == constant_block {
+                            *target = join;
+                        }
+                    }
+                    Some(Terminator::Br { if_true, if_false, .. }) => {
+                        if *if_true == constant_block {
+                            *if_true = join;
+                        }
+                        if *if_false == constant_block {
+                            *if_false = join;
+                        }
+                    }
+                    _ => {}
+                }
+            }
+            f.blocks[constant_block].insts.clear();
+            f.blocks[constant_block].lines.clear();
+            f.blocks[constant_block].preds.clear();
+
+            f.blocks[join].preds.retain(|&pred| pred != constant_block);
+            f.blocks[join].preds.extend(old_preds.iter().copied());
+            let phi = &mut f.blocks[join].phis[0];
+            phi.args.retain(|&(pred, _)| pred != constant_block);
+            phi.args.extend(old_preds.into_iter().map(|pred| (pred, incoming)));
+            transformed.insert(join);
+            return true;
+        }
+    }
+    false
+}
+
 // ---------------------------------------------------------------------------
 // CSE / GVN (dominator-scoped) + copy propagation
 // ---------------------------------------------------------------------------
@@ -274,35 +487,7 @@ enum Key {
 fn cse(f: &mut IrFunc) -> bool {
     // dominators (simple iterative)
     let rpo = f.rpo();
-    let mut doms: Vec<HashSet<BlockId>> = vec![HashSet::new(); f.blocks.len()];
-    doms[f.entry].insert(f.entry);
-    loop {
-        let mut changed = false;
-        for &b in &rpo {
-            if b == f.entry {
-                continue;
-            }
-            let mut d: Option<HashSet<BlockId>> = None;
-            for &p in &f.blocks[b].preds {
-                if doms[p].is_empty() {
-                    continue; // pred not yet numbered (back edge, loop header)
-                }
-                d = Some(match d {
-                    None => doms[p].clone(),
-                    Some(acc) => acc.intersection(&doms[p]).copied().collect(),
-                });
-            }
-            let mut d = d.unwrap_or_default();
-            d.insert(b);
-            if d != doms[b] {
-                doms[b] = d;
-                changed = true;
-            }
-        }
-        if !changed {
-            break;
-        }
-    }
+    let doms = compute_dominators(f, &rpo);
     // dom tree children (idom = strict dominator with the largest dom set)
     let mut children: Vec<Vec<BlockId>> = vec![vec![]; f.blocks.len()];
     for &b in &rpo {
@@ -602,5 +787,44 @@ mod tests {
         opt(&mut f);
         let text = f.to_string();
         assert!(text.contains("imm 5"), "{text}");
+    }
+
+    #[test]
+    fn test_unencodable_compare_constant_stays_in_a_register() {
+        let (mut b, params) = FuncBuilder::new("f", 1, 1);
+        let x = b.get(params[0]);
+        let limit = b.load_imm(16);
+        let result = b.new_var();
+        let cmp = b.cmp(x, CmpRhs::Reg(limit), Cond::Less);
+        b.if_else(
+            cmp,
+            |b| {
+                let value = b.load_imm(1);
+                b.set(result, value);
+            },
+            |b| {
+                let value = b.load_imm(0);
+                b.set(result, value);
+            },
+        );
+        let value = b.get(result);
+        b.ret(&[value]);
+        let mut f = b.finish();
+        opt(&mut f);
+
+        assert!(f.blocks.iter().any(|block| block
+            .insts
+            .iter()
+            .any(|inst| matches!(inst, Instr::LoadImm { dst, value: 16 } if *dst == limit))));
+        assert!(f.blocks.iter().any(|block| matches!(
+            block.term,
+            Some(Terminator::Br {
+                cmp: Cmp {
+                    rhs: CmpRhs::Reg(rhs),
+                    ..
+                },
+                ..
+            }) if rhs == limit
+        )));
     }
 }

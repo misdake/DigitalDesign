@@ -5,6 +5,35 @@ use super::common::*;
 
 use crate::{BinOp, CmpRhs, Compiler, Cond, FuncBuilder, FunctionTableConfig, IrFunc, Opts};
 
+#[test]
+fn test_signed_range_check_uses_immediates_and_fallthrough() {
+    let program = crate::frontend::parse_source(
+        "fn clamp(x: i16) -> i16 { if x >= 2 && x <= 10 { x } else { 0 } } fn main() { halt((clamp(-3) + clamp(5) + clamp(11)) as u16); }",
+    )
+    .unwrap();
+    let mut compiler = Compiler::new();
+    for function in program.funcs {
+        compiler.add_func(function);
+    }
+    let (instructions, listing) = compiler.finish("main");
+    let clamp = listing
+        .split("fn clamp")
+        .nth(1)
+        .expect("clamp listing")
+        .split("}\n")
+        .next()
+        .unwrap();
+    let instruction_count = clamp.lines().filter(|line| line.contains(':')).count();
+
+    assert_eq!(instruction_count, 7, "{clamp}");
+    assert!(clamp.contains("scmp(r2, i4(0x2))"), "{clamp}");
+    assert!(clamp.contains("ucmp(r2, u4(0xa))"), "{clamp}");
+    assert_eq!(clamp.matches("jmp r13").count(), 1, "{clamp}");
+    assert!(!clamp.contains("jmp pc"), "{clamp}");
+    assert!(!clamp.contains("r15"), "{clamp}");
+    assert_eq!(crate::simulate(&instructions, 1_000).1, Some(5));
+}
+
 fn repeated_call_program(call_count: usize) -> Vec<IrFunc> {
     let (mut inc, params) = FuncBuilder::new("inc", 1, 1);
     let value = inc.get(params[0]);
