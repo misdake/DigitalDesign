@@ -16,7 +16,7 @@ fn make_session(src: &str) -> DebugSession {
     for f in program.funcs {
         c.add_func(f);
     }
-    let (instructions, _lst, debug) = c.finish_with_debug("main");
+    let (instructions, listing, debug) = c.finish_with_debug("main");
 
     // write bin/dbg to a unique temp path (tests run in parallel)
     static NEXT: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
@@ -31,8 +31,25 @@ fn make_session(src: &str) -> DebugSession {
     }
     std::fs::write(&bin, &bytes).unwrap();
     std::fs::write(bin.with_extension("dbg"), debug.render()).unwrap();
+    std::fs::write(bin.with_extension("lst"), listing).unwrap();
     DebugSession::load(&bin).unwrap()
 }
+
+const SIGNED_OPS: &str = r#"fn clamp(x: i16) -> i16 {
+    if x >= 2 && x <= 10 {
+        x
+    } else {
+        0
+    }
+}
+fn main() {
+    let a = clamp(7);
+    let b = clamp(-3);
+    let d = (-8i16) >> 1;
+    let e = d + a + b;
+    halt(e as u16);
+}
+"#;
 
 #[test]
 fn test_step_and_breakpoint() {
@@ -91,14 +108,10 @@ fn main() {
         _ => panic!("global G should be memory-resident"),
     }
 
-    // params of set() resolve to their ABI register value
+    // The first source parameter lives in ABI argument register r2 (not r0).
     let set_f = s.debug.functions.iter().find(|f| f.name == "set").unwrap();
     let p = set_f.locals.iter().find(|v| v.name == "g").unwrap();
-    // after the program ended, r2 keeps the last passed value
-    match s.var_value(p) {
-        VarValue::Reg(x) => assert_eq!(x, 1234),
-        _ => panic!("param g should be a register"),
-    }
+    assert_eq!(p.loc, cpu_v2::VarLoc::Param(2));
 }
 
 #[test]
@@ -205,4 +218,111 @@ fn main() {
         .max_by_key(|(a, _, _)| *a)
         .map(|&(_, f, l)| (f, l));
     assert_eq!(site, Some((0, 6)), "call site should be line 6");
+}
+
+#[test]
+fn test_signed_ops_line_mapping_covers_conditions_and_call_slots() {
+    let s = make_session(SIGNED_OPS);
+    let clamp = s.debug.functions.iter().find(|f| f.name == "clamp").unwrap();
+    let main = s.debug.functions.iter().find(|f| f.name == "main").unwrap();
+
+    let condition: Vec<_> = s
+        .debug
+        .lines
+        .iter()
+        .filter(|(addr, file, line)| {
+            *file == clamp.file && *line == 2 && clamp.addr.0 <= *addr && *addr < clamp.addr.1
+        })
+        .map(|(addr, _, _)| (*addr, &s.disasm[*addr].text))
+        .collect();
+    assert!(
+        condition.iter().any(|(_, text)| text.contains("cmp(")),
+        "condition={condition:?}\nlines={:?}\ndisasm={:?}",
+        s.debug.lines,
+        s.disasm.iter().map(|d| (d.addr, &d.text)).collect::<Vec<_>>()
+    );
+    assert!(
+        condition.iter().filter(|(_, text)| text.starts_with('j')).count() >= 3,
+        "short-circuit branches and their trampoline must all be mapped: {condition:?}"
+    );
+
+    let call: Vec<_> = s
+        .debug
+        .lines
+        .iter()
+        .filter(|(addr, file, line)| {
+            *file == main.file && *line == 10 && main.addr.0 <= *addr && *addr < main.addr.1
+        })
+        .map(|(addr, _, _)| (*addr, &s.disasm[*addr].text))
+        .collect();
+    assert!(call.iter().any(|(_, text)| text.starts_with("call_rel")), "{call:?}");
+    assert_eq!(call.iter().filter(|(_, text)| text.as_str() == "r15 = r15").count(), 2, "{call:?}");
+}
+
+#[test]
+fn test_entering_function_uses_that_function_source_line() {
+    let mut s = make_session(SIGNED_OPS);
+    for _ in 0..100 {
+        if s.current_func().is_some_and(|f| f.name == "clamp") {
+            break;
+        }
+        s.step();
+    }
+    assert_eq!(s.current_func().map(|f| f.name.as_str()), Some("clamp"));
+    assert_eq!(s.current_line(), Some((0, 2)));
+}
+
+#[test]
+fn test_parameter_value_survives_nested_call_register_clobber() {
+    let src = r#"fn clobber(x: u16) -> u16 {
+    x + 1
+}
+fn keep(p: u16) -> u16 {
+    let q = clobber(99);
+    p + q
+}
+fn main() {
+    halt(keep(42));
+}
+"#;
+    let mut s = make_session(src);
+    for _ in 0..100 {
+        if s.current_func().is_some_and(|f| f.name == "clobber") {
+            break;
+        }
+        s.step();
+    }
+    assert_eq!(s.current_func().map(|f| f.name.as_str()), Some("clobber"));
+    s.step_out(100);
+    assert_eq!(s.current_func().map(|f| f.name.as_str()), Some("keep"));
+    assert_ne!(s.sim.state.reg[2], 42, "nested call should have clobbered live r2");
+
+    let keep = s.current_func().unwrap();
+    let p = keep.locals.iter().find(|v| v.name == "p").unwrap();
+    assert_eq!(s.var_value(p), VarValue::Reg(2, 42));
+}
+
+#[test]
+fn test_locals_follow_lexical_scope_and_frame_values() {
+    let src = r#"fn main() {
+    let outer: u16 = 1;
+    if outer == 1 {
+        let mut inner: u16 = 7;
+        addr_of(&inner).write(0, 8);
+    }
+    halt(outer);
+}
+"#;
+    let mut s = make_session(src);
+    assert!(!s.state_json().contains("\"name\":\"inner\""));
+
+    let inner_pc = s.toggle_breakpoint_line(0, 5, true).unwrap();
+    assert_eq!(s.continue_run(100).0, Some(inner_pc));
+    let json = s.state_json();
+    assert!(json.contains("\"name\":\"inner\""), "{json}");
+    assert!(json.contains("\"words\":[7]"), "{json}");
+
+    let halt_pc = s.toggle_breakpoint_line(0, 7, true).unwrap();
+    assert_eq!(s.continue_run(100).0, Some(halt_pc));
+    assert!(!s.state_json().contains("\"name\":\"inner\""));
 }

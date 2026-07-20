@@ -24,6 +24,20 @@ impl Default for Opts {
         }
     }
 }
+impl Opts {
+    pub fn disabled() -> Self {
+        Self {
+            const_prop: false,
+            cse: false,
+            dce: false,
+            coalesce: false,
+        }
+    }
+
+    pub fn is_disabled(&self) -> bool {
+        !self.const_prop && !self.cse && !self.dce && !self.coalesce
+    }
+}
 
 pub fn optimize(f: &mut IrFunc, opts: &Opts) {
     for _ in 0..4 {

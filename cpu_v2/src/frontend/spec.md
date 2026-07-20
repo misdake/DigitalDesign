@@ -275,13 +275,19 @@ Alongside the binary and listing, `rcc` writes `<input>.dbg` for a hypothetical 
 - **files**: index of source files (main file, `mod` files, rcc_std files);
 - **functions**: name, address range, source file, frame size, and every local variable
   with a location: `rN` (ABI register for params), `frame+N` (frame slot — arrays and
-  address-taken locals), `global@0xADDR`, or `ssa` (register/versioned);
+  address-taken locals), `global@0xADDR`, or `ssa` (register/versioned). Local entries
+  also carry an inclusive lexical `scope START..END` line range; parameter values are
+  captured at call entry because the ABI argument registers are caller-save;
 - **globals/consts**: static names with types and data addresses, constants with values;
-- **line table**: `line 0xADDR <file> <line>` per instruction that maps to a source line
-  (compiler-generated instructions have no entry).
+- **line table**: `line 0xADDR <file> <line>` per instruction that maps to a source line.
+  Supporting instructions introduced for a source operation (call slots, branch
+  legalization, ABI moves, and address legalization) retain that operation's line;
+  function prologues and other source-independent instructions have no entry.
 
 The mapping is statement-granular and best-effort through optimization (folded/eliminated
-code simply has no entries).
+code simply has no entries). With all optimization passes disabled, ordinary scalar locals
+are materialized in stable frame slots so their values remain inspectable during their
+lexical lifetime; optimized builds may report such SSA locals as unavailable.
 
 ### 13.4 Library parameters and runtime cells
 
@@ -294,3 +300,12 @@ section) which `malloc`/`free` read at run time — no compile-time patching of 
 `dsl_rt` keeps the subset programs valid Rust: `Ptr` methods, `Slice2` (const-generic array
 access with bounds checks on the host), `addr_of`, intrinsics. `rcc_std` is a real module
 tree for the same reason.
+
+`rcc-dbg [input.bin] [--port N]` opens an existing binary in the web debugger. With no
+input file (or with `--playground`) it serves a single-file playground: source is compiled
+to an in-memory debugger session, then the page can either switch between its editor and
+debugger views or open the debugger in a separate window. Playground recompilation replaces
+the active session without writing temporary `.bin`, `.lst`, or `.dbg` files. External
+`mod` files are intentionally unavailable in this mode; the embedded standard library is
+still included normally. The editor's `Optimize` toggle controls the compiler passes; turning
+it off also enables the debug-friendly scalar-local frame-slot behavior described above.

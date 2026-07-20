@@ -2,7 +2,7 @@
 //! compiled rcc program (binary image + `.dbg` debug info).
 
 use crate::{DebugFunc, DebugInfo, DebugVar, Instruction, SimEnv, VarLoc, decode_binary, parse_debug};
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::fmt::Write as _;
 use std::path::Path;
 
@@ -12,6 +12,9 @@ pub struct DebugSession {
     pub breakpoints: HashSet<usize>,
     pub disasm: Vec<DisasmLine>,
     instructions: Vec<Instruction>,
+    /// In-memory source files, used by the playground. Other files fall back
+    /// to the paths recorded in `DebugInfo`.
+    source_overrides: HashMap<u16, String>,
     /// halt signal once a halt instruction has executed
     pub last_halt: Option<u16>,
     /// shadow call stack, maintained by watching call/ret instructions
@@ -26,6 +29,10 @@ pub struct CallFrame {
     pub return_addr: usize,
     /// function name resolved from the debug ranges
     pub func_name: String,
+    /// ABI argument registers captured at the call boundary. Parameters are
+    /// immutable in rcc, but r2-r7 are caller-save and may be overwritten by
+    /// nested calls, so reading the live register later is not reliable.
+    pub arg_values: [u16; 6],
 }
 
 pub struct DisasmLine {
@@ -35,6 +42,8 @@ pub struct DisasmLine {
     pub target: Option<usize>,
     /// function name at the target, when known
     pub target_name: Option<String>,
+    /// header row: the padding halt before a function, showing its signature
+    pub header: bool,
 }
 
 impl DebugSession {
@@ -49,32 +58,65 @@ impl DebugSession {
             Err(_) => DebugInfo::default(),
         };
 
-        // disassembly: prefer the listing file (has comments), else decode
+        // disassembly: one row per image address. The padding halt between
+        // functions doubles as the next function's header row; instruction
+        // text comes from the listing when available (it has comments).
         let lst_path = bin_path.with_extension("lst");
-        let mut disasm = match std::fs::read_to_string(&lst_path) {
-            Ok(text) => parse_listing(&text),
-            Err(_) => instructions
+        let listing = std::fs::read_to_string(&lst_path).unwrap_or_default();
+        Ok(Self::from_compiled(instructions, listing, debug, HashMap::new()))
+    }
+
+    /// Build a debugger session directly from compiler output. `sources`
+    /// maps debug file indices to source text and avoids temporary artifacts.
+    pub fn from_compiled(
+        instructions: Vec<Instruction>,
+        listing: String,
+        debug: DebugInfo,
+        source_overrides: HashMap<u16, String>,
+    ) -> DebugSession {
+        let lst_text = parse_listing(&listing);
+        let starts: HashMap<usize, &DebugFunc> =
+            debug.functions.iter().map(|f| (f.addr.0, f)).collect();
+        let in_function = |addr: usize| {
+            debug
+                .functions
                 .iter()
-                .enumerate()
-                .map(|(addr, i)| DisasmLine {
-                    addr,
-                    text: i.to_string(),
-                    target: None,
-                    target_name: None,
-                })
-                .collect(),
+                .any(|f| (f.addr.0..f.addr.1).contains(&addr))
         };
+        let mut disasm: Vec<DisasmLine> = Vec::with_capacity(instructions.len());
+        for (addr, inst) in instructions.iter().enumerate() {
+            if let Some(f) = starts.get(&(addr + 1)) {
+                if matches!(inst, Instruction::halt(0)) && !in_function(addr) {
+                    disasm.push(DisasmLine {
+                        addr,
+                        text: signature(f),
+                        target: None,
+                        target_name: None,
+                        header: true,
+                    });
+                    continue;
+                }
+            }
+            disasm.push(DisasmLine {
+                addr,
+                text: lst_text.get(&addr).cloned().unwrap_or_else(|| inst.to_string()),
+                target: None,
+                target_name: None,
+                header: false,
+            });
+        }
         annotate_targets(&mut disasm, &instructions, &debug);
 
-        Ok(DebugSession {
+        DebugSession {
             sim: SimEnv::new(&instructions),
             debug,
             breakpoints: HashSet::new(),
             disasm,
             instructions,
+            source_overrides,
             last_halt: None,
             call_stack: vec![],
-        })
+        }
     }
 
     pub fn reset(&mut self) {
@@ -93,6 +135,8 @@ impl DebugSession {
         use crate::Instruction as I;
         match inst {
             I::call_rel(..) | I::call_abs(..) | I::call_reg(_) => {
+                let arg_values = crate::ARG_REGS
+                    .map(|r| self.sim.state.reg[r as usize]);
                 let func_addr = change.pc_next as usize;
                 let func_name = self
                     .debug
@@ -105,6 +149,7 @@ impl DebugSession {
                     func_addr,
                     return_addr: (pc + 1) as usize,
                     func_name,
+                    arg_values,
                 });
             }
             I::jmp_reg(13) => {
@@ -269,13 +314,22 @@ impl DebugSession {
             .find(|f| (f.addr.0..f.addr.1).contains(&pc))
     }
 
-    /// current source line (file index, line) closest to `pc`: the nearest
-    /// entry at or below pc, else the first entry above it (before the
-    /// function prologue)
+    /// Current source line (file index, line) closest to `pc` within the
+    /// current function. Restricting by address range is essential: several
+    /// functions commonly share a source file, and a prologue has no line
+    /// entry of its own.
     pub fn current_line(&self) -> Option<(u16, u32)> {
         let pc = self.sim.state.pc as usize;
+        let func = self.current_func()?;
+        let entries = self
+            .debug
+            .lines
+            .iter()
+            .filter(|(addr, file, _)| {
+                *file == func.file && (func.addr.0..func.addr.1).contains(addr)
+            });
         let mut best: Option<&(usize, u16, u32)> = None;
-        for entry in &self.debug.lines {
+        for entry in entries {
             if entry.0 <= pc && best.is_none_or(|b| entry.0 >= b.0) {
                 best = Some(entry);
             }
@@ -285,6 +339,9 @@ impl DebugSession {
                 .debug
                 .lines
                 .iter()
+                .filter(|(addr, file, _)| {
+                    *file == func.file && (func.addr.0..func.addr.1).contains(addr)
+                })
                 .filter(|(a, _, _)| *a >= pc)
                 .min_by_key(|(a, _, _)| *a);
         }
@@ -299,9 +356,52 @@ impl DebugSession {
                 let addr = self.sim.state.reg[14].wrapping_add(slot as u16);
                 VarValue::Mem(addr, self.preview(addr, &v.ty))
             }
-            VarLoc::Param(r) => VarValue::Reg(self.sim.state.reg[r as usize]),
+            VarLoc::Param(r) => {
+                let saved = self.current_func().and_then(|func| {
+                    self.call_stack
+                        .last()
+                        .filter(|frame| frame.func_addr == func.addr.0)
+                        .and_then(|frame| {
+                            crate::ARG_REGS
+                                .iter()
+                                .position(|arg_reg| *arg_reg == r)
+                                .map(|i| frame.arg_values[i])
+                        })
+                });
+                VarValue::Reg(r, saved.unwrap_or(self.sim.state.reg[r as usize]))
+            }
             VarLoc::Ssa => VarValue::Unavailable,
         }
+    }
+
+    fn local_is_visible(&self, func: &DebugFunc, v: &DebugVar) -> bool {
+        let in_scope = v.scope.is_none_or(|(start, end)| {
+            self.current_line()
+                .is_some_and(|(_, line)| (start..=end).contains(&line))
+        });
+        if !in_scope || !matches!(v.loc, VarLoc::Frame(_)) {
+            return in_scope;
+        }
+
+        let pc = self.sim.state.pc as usize;
+        let first_source = self
+            .debug
+            .lines
+            .iter()
+            .filter(|(addr, file, _)| {
+                *file == func.file && (func.addr.0..func.addr.1).contains(addr)
+            })
+            .map(|(addr, _, _)| *addr)
+            .min();
+        if first_source.is_none_or(|first| pc < first) {
+            return false;
+        }
+
+        // sp_add has already restored the caller's SP when execution reaches
+        // the return jump, so frame-relative locals no longer have a valid
+        // address at that point.
+        !matches!(self.instructions.get(pc), Some(Instruction::jmp_reg(13)))
+            || !matches!(self.instructions.get(pc.saturating_sub(1)), Some(Instruction::sp_add(..)))
     }
 
     /// read a word, interpreting it by the type string
@@ -326,7 +426,7 @@ impl DebugSession {
 #[derive(Clone, Debug, PartialEq)]
 pub enum VarValue {
     Mem(u16, Vec<u16>),
-    Reg(u16),
+    Reg(u8, u16),
     Unavailable,
 }
 
@@ -334,6 +434,9 @@ pub enum VarValue {
 fn annotate_targets(disasm: &mut [DisasmLine], instructions: &[Instruction], debug: &DebugInfo) {
     use crate::Instruction as I;
     for line in disasm.iter_mut() {
+        if line.header {
+            continue;
+        }
         let addr = line.addr;
         if addr >= instructions.len() {
             continue;
@@ -368,7 +471,10 @@ fn annotate_targets(disasm: &mut [DisasmLine], instructions: &[Instruction], deb
                     else {
                         continue;
                     };
-                    let t = (((hi2 as usize) << 12) | ((lo2 as usize) << 8) | ((hi1 as usize) << 4) | lo1 as usize) as usize;
+                    let t = ((hi2 as usize) << 12)
+                        | ((lo2 as usize) << 8)
+                        | ((hi1 as usize) << 4)
+                        | lo1 as usize;
                     (Some(t), is_call)
                 } else {
                     (None, false)
@@ -391,23 +497,36 @@ fn annotate_targets(disasm: &mut [DisasmLine], instructions: &[Instruction], deb
     }
 }
 
-/// parse the `.lst` listing into disassembly lines
-fn parse_listing(text: &str) -> Vec<DisasmLine> {
-    let mut out = vec![];
+/// parse the `.lst` listing into an address -> text map
+fn parse_listing(text: &str) -> HashMap<usize, String> {
+    let mut out = HashMap::new();
     for line in text.lines() {
         let t = line.trim_start();
         if t.len() >= 5 && t.as_bytes()[4] == b':' {
             if let Ok(addr) = usize::from_str_radix(&t[..4], 16) {
-                out.push(DisasmLine {
-                    addr,
-                    text: t[5..].trim().to_string(),
-                    target: None,
-                    target_name: None,
-                });
+                out.insert(addr, t[5..].trim().to_string());
             }
         }
     }
     out
+}
+
+/// `fn name(x: i16, y: u16)` signature for a disassembly header row
+fn signature(f: &DebugFunc) -> String {
+    let mut params: Vec<&DebugVar> = f
+        .locals
+        .iter()
+        .filter(|v| matches!(v.loc, VarLoc::Param(_)))
+        .collect();
+    params.sort_by_key(|v| match v.loc {
+        VarLoc::Param(r) => r,
+        _ => 0,
+    });
+    let params: Vec<String> = params
+        .iter()
+        .map(|v| format!("{}: {}", v.name, v.ty))
+        .collect();
+    format!("fn {}({})", f.name, params.join(", "))
 }
 
 // ---------------------------------------------------------------------------
@@ -474,6 +593,7 @@ impl DebugSession {
                 let locals: Vec<String> = f
                     .locals
                     .iter()
+                    .filter(|v| self.local_is_visible(f, v))
                     .map(|v| self.var_json(v))
                     .collect();
                 let _ = write!(out, "{}", locals.join(","));
@@ -518,11 +638,23 @@ impl DebugSession {
             .iter()
             .map(|f| {
                 // the call site is the instruction before the return address
+                let site_addr = f.return_addr.saturating_sub(1);
+                let caller = self
+                    .debug
+                    .functions
+                    .iter()
+                    .find(|func| (func.addr.0..func.addr.1).contains(&site_addr));
                 let site = self
                     .debug
                     .lines
                     .iter()
-                    .filter(|(a, _, _)| *a <= f.return_addr.saturating_sub(1))
+                    .filter(|(a, file, _)| {
+                        caller.is_some_and(|func| {
+                            *file == func.file
+                                && (func.addr.0..func.addr.1).contains(a)
+                                && *a <= site_addr
+                        })
+                    })
                     .max_by_key(|(a, _, _)| *a);
                 let (sf, sl) = site.map(|&(_, f, l)| (f, l)).unwrap_or((0, 0));
                 format!(
@@ -585,11 +717,13 @@ impl DebugSession {
                     (Some(t), None) => format!(",\"target\":{}", t),
                     _ => String::new(),
                 };
+                let header = if d.header { ",\"header\":true" } else { "" };
                 format!(
-                    "{{\"addr\":{},\"text\":\"{}\"{}}}",
+                    "{{\"addr\":{},\"text\":\"{}\"{}{}}}",
                     d.addr,
                     esc(&d.text),
-                    target
+                    target,
+                    header
                 )
             })
             .collect();
@@ -605,7 +739,7 @@ impl DebugSession {
                 addr,
                 words.iter().map(|w| w.to_string()).collect::<Vec<_>>().join(",")
             ),
-            VarValue::Reg(x) => format!("{{\"reg\":{x}}}"),
+            VarValue::Reg(reg, word) => format!("{{\"reg\":{reg},\"word\":{word}}}"),
             VarValue::Unavailable => "null".to_string(),
         };
         format!(
@@ -617,6 +751,14 @@ impl DebugSession {
     }
 
     fn source_line(&self, file: u16, line: u32) -> String {
+        if let Some(text) = self.source_overrides.get(&file) {
+            return text
+                .lines()
+                .nth(line as usize - 1)
+                .unwrap_or("")
+                .trim()
+                .to_string();
+        }
         let Some(path) = self.debug.files.get(file as usize) else {
             return String::new();
         };
@@ -628,6 +770,9 @@ impl DebugSession {
 
     /// full lines of a source file (empty when unreadable)
     fn source_lines(&self, file: u16) -> Vec<String> {
+        if let Some(text) = self.source_overrides.get(&file) {
+            return text.lines().map(|line| line.to_string()).collect();
+        }
         let Some(path) = self.debug.files.get(file as usize) else {
             return vec![];
         };

@@ -13,19 +13,30 @@ use std::collections::HashMap;
 enum Line {
     Inst(Instruction, Option<u32>),
     /// conditional branch (j_cc) to a block/label
-    Branch { cond: Cond, target: usize },
+    Branch {
+        cond: Cond,
+        target: usize,
+        line: Option<u32>,
+    },
     /// unconditional jump to a block/label
-    Jump { target: usize },
+    Jump { target: usize, line: Option<u32> },
     /// zero-width address marker (block ids and relaxation targets)
     Label(usize),
     /// zero-width comment attached to the address of the next emitted line
     Comment(String),
     /// far jump: load_lo + load_hi + jmp_reg tmp (3 slots, absolute target)
-    AbsJump { target: usize },
+    AbsJump { target: usize, line: Option<u32> },
     /// call placeholder: 3 reserved slots filled by the linker
-    Call3 { func: crate::compiler::FuncName },
+    Call3 {
+        func: crate::compiler::FuncName,
+        line: Option<u32>,
+    },
     /// load function address: 2 reserved slots filled by the linker
-    LoadAddr2 { func: crate::compiler::FuncName, reg: u8 },
+    LoadAddr2 {
+        func: crate::compiler::FuncName,
+        reg: u8,
+        line: Option<u32>,
+    },
 }
 
 fn line_size(line: &Line) -> usize {
@@ -59,17 +70,18 @@ fn relax(lines: &mut Vec<Line>, func: &str) {
         for i in 0..lines.len() {
             let size = line_size(&lines[i]);
             match &lines[i] {
-                Line::Branch { cond, target } => {
+                Line::Branch { cond, target, line } => {
                     let offset = label_addr[target] as i64 - addr as i64;
                     if !(-128..=127).contains(&offset) || offset == 0 {
                         let (inv, t) = (cond.invert(), *target);
+                        let line = *line;
                         let skip = fresh_label;
                         fresh_label += 1;
                         lines.splice(
                             i..i + 1,
                             [
-                                Line::Branch { cond: inv, target: skip },
-                                Line::AbsJump { target: t },
+                                Line::Branch { cond: inv, target: skip, line },
+                                Line::AbsJump { target: t, line },
                                 Line::Label(skip),
                             ],
                         );
@@ -77,11 +89,12 @@ fn relax(lines: &mut Vec<Line>, func: &str) {
                         break;
                     }
                 }
-                Line::Jump { target } => {
+                Line::Jump { target, line } => {
                     let offset = label_addr[target] as i64 - addr as i64;
                     if !(-128..=127).contains(&offset) || offset == 0 {
                         let t = *target;
-                        lines.splice(i..i + 1, [Line::AbsJump { target: t }]);
+                        let line = *line;
+                        lines.splice(i..i + 1, [Line::AbsJump { target: t, line }]);
                         expanded = true;
                         break;
                     }
@@ -210,7 +223,7 @@ pub fn compile_function(
                 })
                 .collect();
             for (from, to) in parallel_moves(&moves, REG_TMP) {
-                lines.push(Line::Inst(mov(from, to), None));
+                lines.push(Line::Inst(mov(from, to), f.block_lines[b]));
             }
         }
 
@@ -220,13 +233,16 @@ pub fn compile_function(
 
         match &block.term {
             Some(Terminator::Jmp { target }) => {
-                emit_edge_moves(f, b, *target, &reg, &mut lines);
+                emit_edge_moves(f, b, *target, block.term_line, &reg, &mut lines);
                 if layout.get(idx + 1) != Some(target) {
-                    lines.push(Line::Jump { target: *target });
+                    lines.push(Line::Jump {
+                        target: *target,
+                        line: block.term_line,
+                    });
                 }
             }
             Some(Terminator::Br { cmp, if_true, if_false }) => {
-                emit_cmp(cmp, &reg, &mut lines);
+                emit_cmp(cmp, block.term_line, &reg, &mut lines);
                 let next = layout.get(idx + 1);
                 if if_true == if_false && next == Some(if_true) {
                     // both targets are the fallthrough block
@@ -234,29 +250,35 @@ pub fn compile_function(
                     lines.push(Line::Branch {
                         cond: cmp.cond,
                         target: *if_true,
+                        line: block.term_line,
                     });
                 } else if next == Some(if_true) {
                     lines.push(Line::Branch {
                         cond: cmp.cond.invert(),
                         target: *if_false,
+                        line: block.term_line,
                     });
                 } else {
                     lines.push(Line::Branch {
                         cond: cmp.cond,
                         target: *if_true,
+                        line: block.term_line,
                     });
-                    lines.push(Line::Jump { target: *if_false });
+                    lines.push(Line::Jump {
+                        target: *if_false,
+                        line: block.term_line,
+                    });
                 }
             }
             Some(Terminator::Ret { .. }) => {
                 // values are already in r0/r1 via ABI shim movs
                 for (slot, &r) in alloc.callee_saved.iter().enumerate() {
                     let (hi, lo) = hi_lo(slot as u8);
-                    lines.push(Line::Inst(load_sp(hi, lo, r), None));
+                    lines.push(Line::Inst(load_sp(hi, lo, r), block.term_line));
                 }
                 if alloc.frame_size() > 0 {
                     let (hi, lo) = hi_lo(alloc.frame_size() as u8);
-                    lines.push(Line::Inst(sp_add(hi, lo), None));
+                    lines.push(Line::Inst(sp_add(hi, lo), block.term_line));
                 }
                 lines.push(Line::Inst(jmp_reg(REG_RA), block.term_line));
             }
@@ -300,7 +322,14 @@ pub fn compile_function(
                 addr += 1;
                 written += 1;
             }
-            Line::Branch { cond, target } => {
+            Line::Branch {
+                cond,
+                target,
+                line,
+            } => {
+                if let Some(line) = line {
+                    line_map.push((addr, *line));
+                }
                 let (hi, lo) = branch_offset(addr, label_addr[target], f.name);
                 let inst = match cond {
                     Cond::Never => panic!("branch with Cond::Never"),
@@ -316,13 +345,21 @@ pub fn compile_function(
                 addr += 1;
                 written += 1;
             }
-            Line::Jump { target } => {
+            Line::Jump { target, line } => {
+                if let Some(line) = line {
+                    line_map.push((addr, *line));
+                }
                 let (hi, lo) = branch_offset(addr, label_addr[target], f.name);
                 asm.inst_at(jmp(hi, lo), addr);
                 addr += 1;
                 written += 1;
             }
-            Line::AbsJump { target } => {
+            Line::AbsJump { target, line } => {
+                if let Some(line) = line {
+                    for slot in 0..3 {
+                        line_map.push((addr + slot, *line));
+                    }
+                }
                 let t = label_addr[target] as u16;
                 let (hi, lo) = hi_lo(t as u8);
                 asm.inst_at(load_lo(hi, lo, REG_TMP), addr);
@@ -332,7 +369,12 @@ pub fn compile_function(
                 addr += 3;
                 written += 3;
             }
-            Line::Call3 { func } => {
+            Line::Call3 { func, line } => {
+                if let Some(line) = line {
+                    for slot in 0..3 {
+                        line_map.push((addr + slot, *line));
+                    }
+                }
                 relocations.push(Relocation {
                     func_name: func,
                     kind: crate::compiler::RelocKind::Call3,
@@ -346,7 +388,12 @@ pub fn compile_function(
                 addr += 3;
                 written += 3;
             }
-            Line::LoadAddr2 { func, reg } => {
+            Line::LoadAddr2 { func, reg, line } => {
+                if let Some(line) = line {
+                    for slot in 0..2 {
+                        line_map.push((addr + slot, *line));
+                    }
+                }
                 relocations.push(Relocation {
                     func_name: func,
                     kind: crate::compiler::RelocKind::LoadAddr { reg: *reg },
@@ -382,6 +429,7 @@ fn emit_edge_moves(
     f: &IrFunc,
     b: BlockId,
     target: BlockId,
+    line: Option<u32>,
     reg: &dyn Fn(VReg) -> u8,
     lines: &mut Vec<Line>,
 ) {
@@ -402,33 +450,33 @@ fn emit_edge_moves(
         })
         .collect();
     for (from, to) in parallel_moves(&moves, REG_TMP) {
-        lines.push(Line::Inst(mov(from, to), None));
+        lines.push(Line::Inst(mov(from, to), line));
     }
 }
 
-fn emit_cmp(cmp: &Cmp, reg: &dyn Fn(VReg) -> u8, lines: &mut Vec<Line>) {
+fn emit_cmp(cmp: &Cmp, line: Option<u32>, reg: &dyn Fn(VReg) -> u8, lines: &mut Vec<Line>) {
     let lhs = reg(cmp.lhs);
     match (&cmp.rhs, cmp.signed) {
-        (CmpRhs::Reg(r), false) => lines.push(Line::Inst(cmp_r(reg(*r), lhs), None)),
-        (CmpRhs::Reg(r), true) => lines.push(Line::Inst(cmp_s(reg(*r), lhs), None)),
+        (CmpRhs::Reg(r), false) => lines.push(Line::Inst(cmp_r(reg(*r), lhs), line)),
+        (CmpRhs::Reg(r), true) => lines.push(Line::Inst(cmp_s(reg(*r), lhs), line)),
         (CmpRhs::Imm(v), false) if *v <= 15 => {
-            lines.push(Line::Inst(cmp_i(*v as u8, lhs), None));
+            lines.push(Line::Inst(cmp_i(*v as u8, lhs), line));
         }
         (CmpRhs::Imm(v), true) if (-8..=7).contains(&(*v as i16)) => {
-            lines.push(Line::Inst(cmp_si((*v as u8) & 0xf, lhs), None));
+            lines.push(Line::Inst(cmp_si((*v as u8) & 0xf, lhs), line));
         }
         (CmpRhs::Imm(v), signed) => {
             // materialize the immediate, then compare registers
             let (hi, lo) = hi_lo(*v as u8);
-            lines.push(Line::Inst(load_lo(hi, lo, REG_TMP), None));
+            lines.push(Line::Inst(load_lo(hi, lo, REG_TMP), line));
             if *v > 255 {
                 let (hi, lo) = hi_lo((*v >> 8) as u8);
-                lines.push(Line::Inst(load_hi(hi, lo, REG_TMP), None));
+                lines.push(Line::Inst(load_hi(hi, lo, REG_TMP), line));
             }
             if signed {
-                lines.push(Line::Inst(cmp_s(REG_TMP, lhs), None));
+                lines.push(Line::Inst(cmp_s(REG_TMP, lhs), line));
             } else {
-                lines.push(Line::Inst(cmp_r(REG_TMP, lhs), None));
+                lines.push(Line::Inst(cmp_r(REG_TMP, lhs), line));
             }
         }
     }
@@ -489,24 +537,28 @@ fn emit_inst(
         }
         Instr::LoadMem { dst, base, offset } => {
             let dst = reg(*dst);
-            emit_mem(lines, *base, *offset, reg, |lines, base_reg, off| {
+            emit_mem(lines, *base, *offset, ir_line, reg, |lines, base_reg, off| {
                 lines.push(Line::Inst(load_mem(base_reg, off, dst), ir_line));
             });
         }
         Instr::StoreMem { base, offset, src } => {
             let src = reg(*src);
-            emit_mem(lines, *base, *offset, reg, |lines, base_reg, off| {
+            emit_mem(lines, *base, *offset, ir_line, reg, |lines, base_reg, off| {
                 lines.push(Line::Inst(store_mem(base_reg, src, off), ir_line));
             });
         }
         Instr::Call { func, .. } => {
             // args/results already moved by ABI shims; the linker fills 3 slots
             lines.push(Line::Comment(format!("call {func}")));
-            lines.push(Line::Call3 { func });
+            lines.push(Line::Call3 { func, line: ir_line });
         }
         Instr::LoadFuncAddr { dst, func } => {
             lines.push(Line::Comment(format!("&{func}")));
-            lines.push(Line::LoadAddr2 { func, reg: reg(*dst) });
+            lines.push(Line::LoadAddr2 {
+                func,
+                reg: reg(*dst),
+                line: ir_line,
+            });
         }
         Instr::CallPtr { .. } => {
             // addr/args/results already moved by ABI shims (addr is in tmp)
@@ -554,6 +606,7 @@ fn emit_mem(
     lines: &mut Vec<Line>,
     base: VReg,
     offset: i16,
+    line: Option<u32>,
     reg: &dyn Fn(VReg) -> u8,
     mut emit: impl FnMut(&mut Vec<Line>, u8, u8),
 ) {
@@ -562,12 +615,12 @@ fn emit_mem(
     } else {
         // address = base + offset via tmp
         let (hi, lo) = hi_lo(offset as u8);
-        lines.push(Line::Inst(load_lo(hi, lo, REG_TMP), None));
+        lines.push(Line::Inst(load_lo(hi, lo, REG_TMP), line));
         if (offset >> 8) != 0 {
             let (hi, lo) = hi_lo((offset >> 8) as u8);
-            lines.push(Line::Inst(load_hi(hi, lo, REG_TMP), None));
+            lines.push(Line::Inst(load_hi(hi, lo, REG_TMP), line));
         }
-        lines.push(Line::Inst(add(reg(base), REG_TMP, REG_TMP), None));
+        lines.push(Line::Inst(add(reg(base), REG_TMP, REG_TMP), line));
         emit(lines, REG_TMP, 0);
     }
 }

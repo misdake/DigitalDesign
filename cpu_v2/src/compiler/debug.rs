@@ -21,6 +21,9 @@ pub struct DebugVar {
     pub name: String,
     pub ty: String,
     pub loc: VarLoc,
+    /// Inclusive lexical source-line range. Globals and legacy debug files
+    /// have no scope restriction.
+    pub scope: Option<(u32, u32)>,
 }
 
 #[derive(Clone, Debug)]
@@ -45,7 +48,7 @@ pub struct DebugInfo {
 
 impl DebugInfo {
     pub fn render(&self) -> String {
-        let mut out = String::from("# rcc debug info v1\n");
+        let mut out = String::from("# rcc debug info v2\n");
         for (i, f) in self.files.iter().enumerate() {
             let _ = writeln!(out, "file {i} {f}");
         }
@@ -60,7 +63,11 @@ impl DebugInfo {
                 f.name, f.addr.0, f.addr.1, file, f.frame_size
             );
             for v in &f.locals {
-                let _ = writeln!(out, "  {} {} {}", loc_kind(&v.loc), v.name, v.ty);
+                let scope = v
+                    .scope
+                    .map(|(start, end)| format!(" scope {start}..{end}"))
+                    .unwrap_or_default();
+                let _ = writeln!(out, "  {} {} {}{}", loc_kind(&v.loc), v.name, v.ty, scope);
             }
             out.push('\n');
         }
@@ -155,6 +162,7 @@ pub fn parse_debug(text: &str) -> Result<DebugInfo, String> {
                     name,
                     ty,
                     loc: VarLoc::Global(addr),
+                    scope: None,
                 });
             }
             Some("const") => {
@@ -177,13 +185,19 @@ pub fn parse_debug(text: &str) -> Result<DebugInfo, String> {
                 }
                 let loc_s = toks[0];
                 let name = toks[1].to_string();
-                let ty = toks[2..].join(" ");
+                let scope_pos = toks.iter().position(|t| *t == "scope");
+                let ty_end = scope_pos.unwrap_or(toks.len());
+                let ty = toks[2..ty_end].join(" ");
+                let scope = scope_pos
+                    .and_then(|i| toks.get(i + 1))
+                    .and_then(|range| range.split_once(".."))
+                    .and_then(|(start, end)| Some((start.parse().ok()?, end.parse().ok()?)));
                 let loc = parse_loc(loc_s).ok_or_else(err)?;
                 cur_func
                     .as_mut()
                     .ok_or_else(|| format!("line {}: local outside of a func", ln + 1))?
                     .locals
-                    .push(DebugVar { name, ty, loc });
+                    .push(DebugVar { name, ty, loc, scope });
             }
             _ => return Err(err()),
         }

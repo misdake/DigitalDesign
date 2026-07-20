@@ -19,7 +19,8 @@
   section:last-child { border-right: none; }
   #srccol { grid-row: 1 / 3; }
   #midcol { grid-row: 1; position: relative; padding-left: 34px; }
-  #arrowSvg { position: absolute; left: 2px; top: 0; width: 30px; height: 100%; pointer-events: none; }
+  #diswrap { position: relative; }
+  #arrowSvg { position: absolute; left: -32px; top: 0; width: 32px; height: 100%; pointer-events: none; }
   #varcol { grid-column: 3; grid-row: 1 / 3; }
   #memsec { grid-column: 2; grid-row: 2; border-top: 1px solid #33363f; }
   h3 { margin: 4px 0 6px; font-size: 12px; color: #9aa0ad; text-transform: uppercase; letter-spacing: .5px; }
@@ -28,10 +29,11 @@
   td.stext, td.dtext { white-space: pre; }
   tr.dline td, tr.sline td { cursor: pointer; }
   tr.dline:hover td, tr.sline:hover td { background: #2c2f38; }
-  tr.pc td { background: #24425c; }
   tr.cur td { background: #2d4a35; }
   tr.hl td { background: #3d3524; }
+  tr.pc td { background: #24425c; }
   tr.bp td:first-child::before { content: "● "; color: #ff6b6b; }
+  tr.fhead td { color: #8ec7ff; background: #232833; font-weight: bold; border-top: 1px solid #33363f; }
   .addr { color: #7f8896; }
   .regs td:nth-child(odd) { color: #7f8896; width: 30px; }
   .vname { color: #8ec7ff; }
@@ -58,7 +60,7 @@
 </header>
 <main>
   <section id="srccol"><h3 id="srctitle">source</h3><table id="src"></table></section>
-  <section id="midcol"><h3>disassembly</h3><svg id="arrowSvg"></svg><table id="dis"></table></section>
+  <section id="midcol"><h3>disassembly</h3><div id="diswrap"><svg id="arrowSvg"></svg><table id="dis"></table></div></section>
   <section id="varcol">
     <h3>call stack</h3><table id="stack"></table>
     <h3>registers</h3><table class="regs" id="reg"></table>
@@ -84,6 +86,7 @@ const $ = id => document.getElementById(id);
 const hx = (n, w) => '0x' + n.toString(16).padStart(w || 4, '0');
 let state = null;
 let pinnedLine = null;   // source line pinned by clicking its text
+let pinnedFile = null;
 
 async function refresh() {
   state = await (await fetch('/api/state')).json();
@@ -98,6 +101,10 @@ function addrsOfLine(n) {
 }
 
 function render() {
+  if (!state.src || (pinnedFile != null && pinnedFile !== state.src.file)) {
+    pinnedLine = null;
+    pinnedFile = null;
+  }
   $('cycles').textContent = 'cycles: ' + state.cycles;
   $('pc').textContent = 'pc: ' + hx(state.pc);
   const h = $('halt');
@@ -126,7 +133,13 @@ function render() {
         refresh();
       };
       tr.querySelector('.stext').onclick = () => {
-        pinnedLine = (pinnedLine === n) ? null : n;
+        if (pinnedFile === state.src.file && pinnedLine === n) {
+          pinnedLine = null;
+          pinnedFile = null;
+        } else {
+          pinnedLine = n;
+          pinnedFile = state.src.file;
+        }
         render();
       };
     });
@@ -143,6 +156,8 @@ function render() {
   if (pinnedLine != null) addrsOfLine(pinnedLine).forEach(a => hlAddrs.add(a));
   else if (curLine != null) addrsOfLine(curLine).forEach(a => hlAddrs.add(a));
   $('dis').innerHTML = state.disasm.map(d => {
+    if (d.header)
+      return `<tr class="fhead" data-addr="${d.addr}"><td class="addr">${hx(d.addr)}</td><td class="dtext">${esc(d.text)}</td></tr>`;
     const cls = [(d.addr === state.pc) ? 'pc' : '', bps.has(d.addr) ? 'bp' : '', hlAddrs.has(d.addr) ? 'hl' : '', 'dline'].join(' ');
     const t = d.target != null ? ` data-target="${d.target}"` : '';
     const tn = d.tname ? ` data-tname="${esc(d.tname)}"` : '';
@@ -183,15 +198,24 @@ function fmtVal(v) {
   const val = v.value;
   if (val == null) return '<i>ssa</i>';
   if (val.reg != null) {
-    // a Ptr-typed register value links into the memory viewer
-    const inner = `${val.reg} (${hx(val.reg)})`;
-    return v.ty === 'Ptr' ? `<span class="plink" data-addr="${val.reg}">${inner}</span>` : inner;
+    const inner = fmtWord(val.word, v.ty);
+    const value = v.ty === 'Ptr' ? `<span class="plink" data-addr="${val.word}">${inner}</span>` : inner;
+    return `${value} <span class="vloc">@r${val.reg}</span>`;
   }
   if (val.words) {
-    const head = val.words.slice(0, 4).join(', ');
+    if (!v.ty.startsWith('['))
+      return `${fmtWord(val.words[0], v.ty)} <span class="plink" data-addr="${val.addr}">@${hx(val.addr)}</span>`;
+    const head = val.words.slice(0, 4).map(w => fmtWord(w, v.ty.startsWith('[i16;') ? 'i16' : 'u16')).join(', ');
     return `[${head}${val.words.length > 4 ? ', …' : ''}] <span class="plink" data-addr="${val.addr}">@${hx(val.addr)}</span>`;
   }
   return String(val);
+}
+function fmtWord(word, ty) {
+  if (ty === 'i16') {
+    const signed = word >= 0x8000 ? word - 0x10000 : word;
+    return `${signed} (${hx(word)})`;
+  }
+  return `${word} (${hx(word)})`;
 }
 
 async function renderMem() {
@@ -231,14 +255,16 @@ function drawArrows() {
   svg.innerHTML = '';
   const rows = [...document.querySelectorAll('#dis tr.dline')];
   const byAddr = new Map(rows.map(tr => [+tr.dataset.addr, tr]));
+  const wrapRect = $('diswrap').getBoundingClientRect();
+  const midY = tr => { const r = tr.getBoundingClientRect(); return r.top - wrapRect.top + r.height / 2; };
   const NS = 'http://www.w3.org/2000/svg';
   rows.forEach(tr => {
     const t = tr.dataset.target;
     if (t == null) return;
     const to = byAddr.get(+t);
     if (!to) return;
-    const y1 = tr.offsetTop + tr.offsetHeight / 2;
-    const y2 = to.offsetTop + to.offsetHeight / 2;
+    const y1 = midY(tr);
+    const y2 = midY(to);
     const isCall = !!tr.dataset.tname;
     const w = 8 + Math.min(Math.abs(y2 - y1) / 24, 22);
     const color = isCall ? '#6aa06a' : '#5b7a9f';

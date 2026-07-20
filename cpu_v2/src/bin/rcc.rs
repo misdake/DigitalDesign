@@ -41,12 +41,7 @@ fn main() -> ExitCode {
             "-o" => out = Some(PathBuf::from(args.next().unwrap_or_else(|| die("-o needs a value")))),
             "--lst" => lst = Some(PathBuf::from(args.next().unwrap_or_else(|| die("--lst needs a value")))),
             "--no-opt" => {
-                opts.opt = cpu_v2::Opts {
-                    const_prop: false,
-                    cse: false,
-                    dce: false,
-                    coalesce: false,
-                }
+                opts.opt = cpu_v2::Opts::disabled()
             }
             "--stack-init" => opts.stack_init = num("--stack-init"),
             "--data-base" => opts.data_base = num("--data-base"),

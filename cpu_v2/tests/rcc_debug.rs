@@ -38,6 +38,7 @@ fn main() {
     assert!(main.frame_size > 0);
     let buf = main.locals.iter().find(|v| v.name == "buf").unwrap();
     assert!(matches!(buf.loc, cpu_v2::VarLoc::Frame(_)), "{buf:?}");
+    assert_eq!(buf.scope, Some((4, 7)));
     // pc->line table covers some of main's instructions
     let main_lines: Vec<_> = debug.lines.iter().filter(|(addr, _, _)| {
         (main.addr.0..main.addr.1).contains(addr)

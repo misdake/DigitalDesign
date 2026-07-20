@@ -44,7 +44,7 @@ pub fn parse_source(src: &str) -> Result<Program, syn::Error> {
 /// like `parse_source`, with the static data section starting at `data_base`
 pub fn parse_source_with(src: &str, data_base: u16) -> Result<Program, syn::Error> {
     let file = syn::parse_file(src)?;
-    let (funcs, debug) = parse_files(vec![file], data_base, &["<source>".to_string()])?;
+    let (funcs, debug) = parse_files(vec![file], data_base, &["<source>".to_string()], false)?;
     Ok(Program { funcs, debug })
 }
 
@@ -105,7 +105,7 @@ pub fn compile_program_named(
         names.push(name.clone());
         files.push(syn::parse_file(text)?);
     }
-    let (mut funcs, debug) = parse_files(files, opts.data_base, &names)?;
+    let (mut funcs, debug) = parse_files(files, opts.data_base, &names, opts.opt.is_disabled())?;
     auto_init(&mut funcs, opts)?;
     Ok(Program { funcs, debug })
 }
@@ -188,6 +188,7 @@ fn parse_files(
     files: Vec<syn::File>,
     data_base: u16,
     file_names: &[String],
+    materialize_debug_locals: bool,
 ) -> Result<(Vec<IrFunc>, FrontendDebug), syn::Error> {
     let mut fns: Vec<(usize, &syn::ItemFn)> = vec![];
     let mut consts: HashMap<String, (u16, Ty)> = HashMap::new();
@@ -246,7 +247,15 @@ fn parse_files(
         ..FrontendDebug::default()
     };
     for (name, (fi, f)) in names.into_iter().zip(fns) {
-        let (ir, fdbg) = lower_fn(name, f, &sigs, &consts, &globals, fi as u16)?;
+        let (ir, fdbg) = lower_fn(
+            name,
+            f,
+            &sigs,
+            &consts,
+            &globals,
+            fi as u16,
+            materialize_debug_locals,
+        )?;
         out.push(ir);
         debug.funcs.push(fdbg);
     }
@@ -258,6 +267,7 @@ fn parse_files(
             name: name.clone(),
             ty: ty.display(),
             loc: VarLoc::Global(*addr),
+            scope: None,
         });
     }
     for (name, (addr, elem, len)) in &globals.arrays {
@@ -265,6 +275,7 @@ fn parse_files(
             name: name.clone(),
             ty: Ty::Array(Box::new(elem.clone()), *len).display(),
             loc: VarLoc::Global(*addr),
+            scope: None,
         });
     }
     for (name, (v, ty)) in &consts {
@@ -323,6 +334,10 @@ fn intern(s: &str) -> &'static str {
 /// source line of a syntax node (for listing comments)
 fn line_of(t: &impl syn::spanned::Spanned) -> u32 {
     t.span().start().line as u32
+}
+
+fn end_line_of(t: &impl syn::spanned::Spanned) -> u32 {
+    t.span().end().line as u32
 }
 
 fn err(tokens: &impl syn::spanned::Spanned, msg: impl std::fmt::Display) -> syn::Error {
@@ -693,10 +708,15 @@ struct FnLower<'a> {
     globals: &'a Globals,
     residents: HashMap<String, ResidentKind>,
     scopes: Vec<HashMap<String, VarInfo>>,
+    /// Inclusive end line for each lexical scope in `scopes`.
+    scope_ends: Vec<u32>,
     debug_locals: Vec<DebugVar>,
     ret_ty: Ty,
     /// true once the current block has ended (return/halt)
     dead: bool,
+    /// In no-opt builds, scalar locals use stable frame slots so the debugger
+    /// can read them throughout their lexical lifetime.
+    materialize_debug_locals: bool,
 }
 
 /// a lowered expression: a machine value, a boolean condition, or a function item
@@ -732,7 +752,7 @@ impl FnLower<'_> {
     fn lookup(&self, name: &str) -> Option<&VarInfo> {
         self.scopes.iter().rev().find_map(|s| s.get(name))
     }
-    fn declare(&mut self, name: String, info: VarInfo) {
+    fn declare(&mut self, name: String, info: VarInfo, start_line: u32) {
         let loc = match info.kind {
             VarKind::Ssa { .. } => VarLoc::Ssa,
             VarKind::Local { slot } => VarLoc::Frame(slot),
@@ -741,6 +761,7 @@ impl FnLower<'_> {
             name: name.clone(),
             ty: info.ty.display(),
             loc,
+            scope: Some((start_line, *self.scope_ends.last().unwrap())),
         });
         self.scopes.last_mut().unwrap().insert(name, info);
     }
@@ -891,6 +912,7 @@ fn lower_fn(
     consts: &HashMap<String, (u16, Ty)>,
     globals: &Globals,
     file: u16,
+    materialize_debug_locals: bool,
 ) -> Result<(IrFunc, FnDebug), syn::Error> {
     let sig = sigs.get(&f.sig.ident.to_string()).unwrap().clone();
     let n_rets = if sig.ret == Ty::Unit { 0 } else { 1 };
@@ -908,9 +930,11 @@ fn lower_fn(
         globals,
         residents,
         scopes: vec![HashMap::new()],
+        scope_ends: vec![end_line_of(&f.block)],
         debug_locals: vec![],
         ret_ty: sig.ret.clone(),
         dead: false,
+        materialize_debug_locals,
     };
     for (arg, (var, ty)) in f.sig.inputs.iter().zip(param_vars.iter().zip(sig.params.iter())) {
         let syn::FnArg::Typed(pt) = arg else {
@@ -946,13 +970,14 @@ fn lower_fn(
                 ty: ty.clone(),
                 mutable: false,
             },
+            line_of(arg),
         );
     }
     // params occupy the first entries of debug_locals (declaration order);
     // rewrite their locations to ABI registers (frame slot when address-taken)
     for (i, dv) in l.debug_locals.iter_mut().enumerate() {
         if let VarLoc::Ssa = dv.loc {
-            dv.loc = VarLoc::Param(i as u8);
+            dv.loc = VarLoc::Param(crate::ARG_REGS[i]);
         }
     }
     let ret_names: Vec<&'static str> = if sig.ret == Ty::Unit { vec![] } else { vec!["r"] };
@@ -980,6 +1005,9 @@ fn lower_fn(
         if l.dead {
             return Err(err(t, "unreachable code (after return/halt)"));
         }
+        // Unlike ordinary statements, a trailing return expression does not
+        // pass through `stmt`, so establish its source line explicitly.
+        l.b.set_line_hint(line_of(t));
         let (v, from) = expr(&mut l, t)?.reg(&mut l, "tail expression").map_err(|e| syn::Error::new(e.span(), format!("in fn `{name}`: {e}")))?;
         // a diverging tail (halt) terminates the block itself
         if !l.dead {
@@ -1005,6 +1033,7 @@ fn lower_fn(
 
 fn block(l: &mut FnLower, blk: &Block) -> Result<(), syn::Error> {
     l.scopes.push(HashMap::new());
+    l.scope_ends.push(end_line_of(blk));
     for s in &blk.stmts {
         if l.dead {
             return Err(err(s, "unreachable code (after return/halt)"));
@@ -1012,6 +1041,7 @@ fn block(l: &mut FnLower, blk: &Block) -> Result<(), syn::Error> {
         stmt(l, s)?;
     }
     l.scopes.pop();
+    l.scope_ends.pop();
     Ok(())
 }
 
@@ -1047,6 +1077,7 @@ fn stmt(l: &mut FnLower, s: &Stmt) -> Result<(), syn::Error> {
                         ty: annotated.clone().unwrap(),
                         mutable,
                     },
+                    line_of(s),
                 );
                 return Ok(());
             }
@@ -1080,7 +1111,9 @@ fn stmt(l: &mut FnLower, s: &Stmt) -> Result<(), syn::Error> {
                 }
             };
             // a scalar whose address is taken anywhere is memory-resident
-            let kind = if matches!(l.residents.get(&ident), Some(ResidentKind::Scalar)) {
+            let kind = if l.materialize_debug_locals
+                || matches!(l.residents.get(&ident), Some(ResidentKind::Scalar))
+            {
                 let slot = l.b.alloc_local_slots(1);
                 l.b.store_local(slot, v);
                 VarKind::Local { slot }
@@ -1089,7 +1122,7 @@ fn stmt(l: &mut FnLower, s: &Stmt) -> Result<(), syn::Error> {
                 l.b.set(var, v);
                 VarKind::Ssa { var }
             };
-            l.declare(ident, VarInfo { kind, ty, mutable });
+            l.declare(ident, VarInfo { kind, ty, mutable }, line_of(s));
             Ok(())
         }
         Stmt::Expr(e) | Stmt::Semi(e, _) => stmt_expr(l, e),
@@ -1297,6 +1330,7 @@ fn control_flow(l: &mut FnLower, e: &Expr) -> Result<(), syn::Error> {
             };
 
             l.scopes.push(HashMap::new());
+            l.scope_ends.push(end_line_of(&fl.body));
             let ivar = l.b.new_var();
             l.b.set(ivar, from_v);
             l.declare(
@@ -1306,6 +1340,7 @@ fn control_flow(l: &mut FnLower, e: &Expr) -> Result<(), syn::Error> {
                     ty: ty.clone(),
                     mutable: true, // incremented by the loop itself
                 },
+                line_of(fl),
             );
 
             let (header, body_b, exit) = l.b.begin_while();
@@ -1357,6 +1392,7 @@ fn control_flow(l: &mut FnLower, e: &Expr) -> Result<(), syn::Error> {
             }
             l.b.end_while(header, exit);
             l.scopes.pop();
+            l.scope_ends.pop();
             l.dead = false;
             Ok(())
         }
@@ -1557,6 +1593,7 @@ fn control_flow_value(l: &mut FnLower, e: &Expr) -> Result<Val, syn::Error> {
     l.b.end_if_else(join);
 
     let v = l.b.get(r);
+    l.b.set_line_hint(line_of(e));
     Ok(Val::V(v, ty))
 }
 
@@ -1565,7 +1602,10 @@ fn if_expr_branch(l: &mut FnLower, blk: &Block) -> Result<(VReg, Ty), syn::Error
         return Err(err(blk, "if-expression branches must be single expressions"));
     }
     match &blk.stmts[0] {
-        Stmt::Expr(e) | Stmt::Semi(e, _) => expr(l, e)?.reg(l, "if-expression"),
+        Stmt::Expr(e) | Stmt::Semi(e, _) => {
+            l.b.set_line_hint(line_of(e));
+            expr(l, e)?.reg(l, "if-expression")
+        }
         s => Err(err(s, "if-expression branches must be expressions")),
     }
 }
