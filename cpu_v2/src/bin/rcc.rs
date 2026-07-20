@@ -4,7 +4,7 @@
 //! binary image and a disassembly listing.
 
 use cpu_v2::frontend::compile_program_named;
-use cpu_v2::{Compiler, CompilerOptions, Instruction};
+use cpu_v2::{Compiler, CompilerOptions, FunctionTableConfig, Instruction};
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
@@ -15,6 +15,8 @@ usage: rcc <input.rs> [options]
   -o <file>           binary output (default: <input>.bin)
   --lst <file>        disassembly listing (default: <input>.lst)
   --no-opt            disable all optimization passes
+  --function-table <mode>
+                      call_abs table: auto (default), none, all, or name,...
   --stack-init <n>    initial stack pointer for main (0 = simulator default)
   --data-base <n>     static data section base address
   --heap-begin <n>    heap region start
@@ -42,6 +44,10 @@ fn main() -> ExitCode {
             "--lst" => lst = Some(PathBuf::from(args.next().unwrap_or_else(|| die("--lst needs a value")))),
             "--no-opt" => {
                 opts.opt = cpu_v2::Opts::disabled()
+            }
+            "--function-table" => {
+                let value = args.next().unwrap_or_else(|| die("--function-table needs a value"));
+                opts.function_table = parse_function_table(&value);
             }
             "--stack-init" => opts.stack_init = num("--stack-init"),
             "--data-base" => opts.data_base = num("--data-base"),
@@ -131,6 +137,25 @@ fn parse_u16(s: &str) -> Option<u16> {
         u16::from_str_radix(h, 16).ok()
     } else {
         s.parse().ok()
+    }
+}
+
+fn parse_function_table(value: &str) -> FunctionTableConfig {
+    match value {
+        "auto" => FunctionTableConfig::Auto,
+        "none" => FunctionTableConfig::Disabled,
+        "all" => FunctionTableConfig::All,
+        _ => {
+            let names: Vec<String> = value
+                .split(',')
+                .filter(|name| !name.is_empty())
+                .map(str::to_string)
+                .collect();
+            if names.is_empty() {
+                die("--function-table needs auto, none, all, or a comma-separated function list");
+            }
+            FunctionTableConfig::Functions(names)
+        }
     }
 }
 

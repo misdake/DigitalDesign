@@ -27,13 +27,17 @@
   table { border-collapse: collapse; width: 100%; }
   td, th { padding: 1px 6px; text-align: left; }
   td.stext, td.dtext { white-space: pre; }
-  tr.dline td, tr.sline td { cursor: pointer; }
-  tr.dline:hover td, tr.sline:hover td { background: #2c2f38; }
+  tr.sline td { cursor: pointer; }
+  tr.sline:hover td { background: #2c2f38; }
   tr.hl td { background: #3d3524; }
   tr.cur td { background: #2d4a35; }
-  tr.pc td { background: #24425c; }
   tr.call td.dtext { color: #79b879; }
-  tr.call[data-target] td.dtext { text-decoration: underline; text-decoration-style: dotted; }
+  tr.call[data-target] td.dtext { text-decoration: underline; text-decoration-style: dotted; cursor: pointer; }
+  tr.init td { background: rgba(170, 130, 210, .09); color: #b8a5cb; }
+  tr.inithead td { color: #b995dc; background: rgba(170, 130, 210, .16); border-top: 1px solid #604778; font-size: 11px; padding-top: 5px; }
+  tr.pc td { background: #24425c !important; }
+  tr.pc td.addr { position: relative; }
+  tr.pc td.addr::before { content: "▶"; position: absolute; left: -10px; color: #ff5b5b; font-size: 9px; }
   tr.jump-target td { box-shadow: inset 3px 0 #79b879; }
   tr.bp td:first-child::before { content: "● "; color: #ff6b6b; }
   tr.fhead td { color: #8ec7ff; background: #232833; font-weight: bold; border-top: 1px solid #33363f; }
@@ -153,25 +157,20 @@ function render() {
     $('src').innerHTML = '';
   }
 
-  // disassembly: pc row, breakpoint marks, pinned/current-line highlights
-  const bps = new Set(state.breakpoints);
+  // disassembly: pc row and pinned/current-line highlights (breakpoints are source-only)
   const hlAddrs = new Set();
   if (pinnedLine != null) addrsOfLine(pinnedLine).forEach(a => hlAddrs.add(a));
   else if (curLine != null) addrsOfLine(curLine).forEach(a => hlAddrs.add(a));
   $('dis').innerHTML = state.disasm.map(d => {
     if (d.header)
       return `<tr class="fhead" data-addr="${d.addr}"><td class="addr">${hx(d.addr)}</td><td class="dtext">${esc(d.text)}</td></tr>`;
-    const cls = [(d.addr === state.pc) ? 'pc' : '', bps.has(d.addr) ? 'bp' : '', hlAddrs.has(d.addr) ? 'hl' : '', d.call ? 'call' : '', 'dline'].join(' ');
+    const section = d.initStart ? `<tr class="inithead"><td class="addr">${hx(d.addr)}</td><td class="dtext">compiler-generated initialization · ${esc(d.init)}</td></tr>` : '';
+    const cls = [(d.addr === state.pc) ? 'pc' : '', hlAddrs.has(d.addr) ? 'hl' : '', d.call ? 'call' : '', d.init ? 'init' : '', 'dline'].join(' ');
     const t = d.target != null ? ` data-target="${d.target}"` : '';
     const tn = d.tname ? ` data-tname="${esc(d.tname)}"` : '';
-    return `<tr class="${cls}" data-addr="${d.addr}"${t}${tn}><td class="addr">${hx(d.addr)}</td><td class="dtext">${esc(d.text)}</td></tr>`;
+    return section + `<tr class="${cls}" data-addr="${d.addr}"${t}${tn}><td class="addr">${hx(d.addr)}</td><td class="dtext">${esc(d.text)}</td></tr>`;
   }).join('');
   drawArrows();
-  document.querySelectorAll('tr.dline').forEach(tr => tr.onclick = async () => {
-    const a = +tr.dataset.addr;
-    await fetch(`/api/break?addr=${a.toString(16)}&on=${bps.has(a) ? 0 : 1}`, {method: 'POST'});
-    refresh();
-  });
   document.querySelectorAll('tr.dline.call[data-target] .dtext').forEach(cell => cell.onclick = e => {
     e.stopPropagation();
     const target = document.querySelector(`#dis tr.dline[data-addr="${cell.parentElement.dataset.target}"]`);

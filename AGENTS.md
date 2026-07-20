@@ -19,7 +19,7 @@
 - 指令/数据存储各 64K;r13=ra(call 系硬件写入）、r14=sp(sp_add/sp_sub/store_sp/load_sp 隐式使用）,**不可分配**。
 - 调用约定（编译器实现）：返回 r0–r1，参数 r2–r7,caller-save r0–r7,callee-save r8–r12（按需保存，非叶函数自动保存 ra),tmp=r15（远 call/分支松弛/scratch 专用，不可分配）。
 - 立即数限制：j_cc ±128（越界由后端分支松弛处理）、addi 仅 ±1..8 且无 0、cmp_i u4/cmp_si i4、load/store_mem 偏移 i4(−8..+7)、store_sp/load_sp/sp_sub/sp_add u8、移位仅立即数 u4。
-- call:3 槽预留，链接器近 `call_rel`/远 `load_lo`+`load_hi`+`call_reg`；间接调用经 tmp + `call_reg`。**不启用 call_abs**。
+- direct call 默认由自动 function table 策略选择：入表函数使用单槽 `call_abs`；未入表函数保留 3 槽，由链接器生成近 `call_rel` 或远 `load_lo`+`load_hi`+`call_reg`。间接调用经 tmp + `call_reg`。表从数据地址 `0xff00` 开始，在 main frame 建立前以 sp 为基址、用 `store_sp` u8 偏移初始化；listing/`.dbg` 将 stack/table/static/runtime 初始化标为 compiler-generated global initialization ranges。
 - 函数间保留 1 个 halt 空隙（反汇编分界 + PC 越界兜底）。
 
 ## rcc 语言（详见 src/frontend/spec.md)
@@ -40,9 +40,9 @@ set PATH=C:\Users\misdake\.cargo\bin;%PATH%
 
 - 测试/静态检查：`cargo test -p cpu_v2`、`cargo clippy -p cpu_v2 --all-targets`
 - 构建二进制：`cargo build -p cpu_v2 --bins`（产物在 `target/debug/rcc.exe`、`rcc-run.exe`)
-- 编译 rcc 程序：`./target/debug/rcc <input.rs> [-o out.bin] [--lst out.lst] [--no-opt] [--stack-init N] [--data-base N] [--heap-begin N] [--heap-size N] [--vec-cap N]`（数字十进制或 0x 前缀）。`mod name;` 在输入文件旁解析（`<name>.rs`/`<name>.dsl.rs`/`<name>/mod.rs`)。产出三件：`.bin` 二进制镜像（RCC1 头 + u16-LE 指令）、`.lst` 反汇编（函数签名/块角色/调用名/`; line N`)、`.dbg` 调试信息（文件表、函数（地址/帧/变量位置 rN/frame+N/ssa)、全局变量地址、PC→行表，可供假想 debugger 使用）。
+- 编译 rcc 程序：`./target/debug/rcc <input.rs> [-o out.bin] [--lst out.lst] [--no-opt] [--function-table auto|none|all|name,...] [--stack-init N] [--data-base N] [--heap-begin N] [--heap-size N] [--vec-cap N]`（数字十进制或 0x 前缀）。`mod name;` 在输入文件旁解析（`<name>.rs`/`<name>.dsl.rs`/`<name>/mod.rs`)。产出三件：`.bin` 二进制镜像（RCC1 头 + u16-LE 指令）、`.lst` 反汇编（函数签名/块角色/调用名/`; line N`) 、`.dbg` 调试信息（文件表、function table、函数（地址/帧/变量位置 rN/frame+N/ssa)、全局变量地址、PC→行表，可供 debugger 使用）。
 - 运行：`./target/debug/rcc-run <input.bin> [max_cycles]` → 打印 halt 信号与周期数。
-- 调试：`./target/debug/rcc-dbg <input.bin> [--port 8321]` → 打开 http://127.0.0.1:8321：单页 web debugger。**源代码为主**：源码面板（当前行高亮，点行号按源码行设断点，步进/下一行/继续/重置），反汇编面板为辅（PC 高亮，点行设断点），寄存器+flags，内存查看器（地址/sp/heap/data 快捷跳转），globals（名称/类型/地址/值），当前函数的 locals（rN/frame+N 实时取值，ssa 标记不可见），**步进=进入下一行**（可进入被调函数逐行跟）、步过（影子调用栈深度，不进入被调）、步出（返回到调用者）、指令（单指令）、继续、重置；影子调用栈面板（函数名+返回地址）；源码缩进保留；点行文本高亮对应反汇编指令；Ptr 变量点击跳转内存。API：`GET /api/state`、`GET /api/mem?addr=&len=`、`POST /api/cmd?cmd=step|next|over|out|continue|reset`、`POST /api/break?addr=<hex>&on=0|1`、`POST /api/breakline?file=<idx>&line=<n>&on=0|1`。
+- 调试：`./target/debug/rcc-dbg <input.bin> [--port 8321]` → 打开 http://127.0.0.1:8321：单页 web debugger。**源代码为主**：源码面板（当前行高亮，点行号按源码行设断点，步进/下一行/继续/重置），反汇编面板为辅（当前 PC 蓝色最高优先级高亮，左侧红色箭头；不支持反汇编地址断点），寄存器+flags，内存查看器（地址/sp/heap/data 快捷跳转），globals（名称/类型/地址/值），当前函数的 locals（rN/frame+N 实时取值，ssa 标记不可见），**步进=进入下一行**（可进入被调函数逐行跟）、步过（影子调用栈深度，不进入被调）、步出（返回到调用者）、指令（单指令）、继续、重置；影子调用栈面板（函数名+返回地址）；源码缩进保留；点行文本高亮对应反汇编指令；Ptr 变量点击跳转内存。API：`GET /api/state`、`GET /api/mem?addr=&len=`、`POST /api/cmd?cmd=step|next|over|out|continue|reset`、`POST /api/breakline?file=<idx>&line=<n>&on=0|1`。
 - 看反汇编：编译时 `--lst`；或测试 `test -p cpu_v2 compiler::tests::optimize::test_listing_demo -- --nocapture`;`Compiler::finish` 总是返回 `(Vec<Instruction>, String)`（带函数签名/块角色/调用名/`; line N`)。
 
 ## 约定

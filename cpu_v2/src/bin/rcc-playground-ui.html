@@ -18,6 +18,7 @@
   button.tab.active { color: #fff; background: #3a4c61; border-color: #59718d; }
   label.option { display: inline-flex; align-items: center; gap: 5px; color: #bdc1ca; white-space: nowrap; }
   label.option input { accent-color: #4f82ad; }
+  label.option select { background: #1a1b20; color: inherit; border: 1px solid #4a4e5c; border-radius: 4px; padding: 3px 5px; font: inherit; }
   #run { margin-left: auto; }
   #status { color: #8e96a5; white-space: nowrap; }
   #status.ok { color: #85c98d; }
@@ -43,6 +44,7 @@
   <button class="tab active" id="editorTab">Editor</button>
   <button class="tab" id="debuggerTab" disabled>Debugger</button>
   <label class="option"><input type="checkbox" id="optimize" checked> Optimize</label>
+  <label class="option">Calls <select id="functionTable"><option value="auto">auto</option><option value="none">no table</option><option value="all">all</option></select></label>
   <span id="status">Single-file mode</span>
   <button class="primary" id="run">Compile &amp; Debug</button>
   <button id="popup">Open Debugger Window</button>
@@ -71,6 +73,7 @@ fn main() {
     <p>Edit one rcc source file, then compile it directly into an in-memory debugger session.</p>
     <p><code>Ctrl+Enter</code> compiles and switches to the debugger. The Editor tab keeps the source available for another build.</p>
     <p>Disable <code>Optimize</code> to preserve ordinary scalar locals in stable frame slots for debugger inspection.</p>
+    <p><code>Calls</code> controls the <code>call_abs</code> function table. Auto selects repeated or hot call targets only when useful.</p>
     <p><code>mod name;</code> is intentionally unavailable here. The embedded rcc standard library is still linked normally.</p>
   </aside>
 </main>
@@ -91,6 +94,7 @@ const frame = document.getElementById('debuggerFrame');
 const run = document.getElementById('run');
 const popup = document.getElementById('popup');
 const optimize = document.getElementById('optimize');
+const functionTable = document.getElementById('functionTable');
 let compiled = false;
 let compiling = false;
 
@@ -98,9 +102,14 @@ const saved = localStorage.getItem('rcc-playground-source');
 if (saved != null) source.value = saved;
 const savedOptimize = localStorage.getItem('rcc-playground-optimize');
 if (savedOptimize != null) optimize.checked = savedOptimize !== '0';
+const savedFunctionTable = localStorage.getItem('rcc-playground-function-table');
+if (savedFunctionTable != null) functionTable.value = savedFunctionTable;
 source.addEventListener('input', () => localStorage.setItem('rcc-playground-source', source.value));
 optimize.addEventListener('change', () => {
   localStorage.setItem('rcc-playground-optimize', optimize.checked ? '1' : '0');
+});
+functionTable.addEventListener('change', () => {
+  localStorage.setItem('rcc-playground-function-table', functionTable.value);
 });
 
 function showEditor() {
@@ -159,7 +168,8 @@ async function compile(mode) {
   status.className = '';
   try {
     const optimized = optimize.checked;
-    const response = await fetch('/api/compile?opt=' + (optimized ? '1' : '0'), {
+    const tableMode = functionTable.value;
+    const response = await fetch('/api/compile?opt=' + (optimized ? '1' : '0') + '&ft=' + tableMode, {
       method: 'POST',
       headers: {'Content-Type': 'text/plain; charset=utf-8'},
       body: source.value
@@ -168,7 +178,7 @@ async function compile(mode) {
     const state = await response.json();
     compiled = true;
     debuggerTab.disabled = false;
-    status.textContent = `Compiled ${state.disasm.length} instructions (${optimized ? 'optimized' : 'no-opt'})`;
+    status.textContent = `Compiled ${state.disasm.length} instructions (${optimized ? 'optimized' : 'no-opt'}, calls: ${tableMode})`;
     status.className = 'ok';
     const debuggerUrl = '/debugger?build=' + Date.now();
     frame.src = debuggerUrl;

@@ -426,3 +426,16 @@ fn is_even(n: u16) -> u16 {
     }
     assert_eq!(run(src), Some(is_even(10) + (is_odd(7) << 1)));
 }
+
+#[test]
+fn test_cnt1_and_log2_intrinsics() {
+    let src = r#"
+fn bit_info(x: u16) -> u16 {
+    cnt1(x) + log2(x)
+}
+fn main() {
+    halt(bit_info(0x800f));
+}
+"#;
+    assert_eq!(run(src), Some(0x800fu16.count_ones() as u16 + 0x800fu16.ilog2() as u16));
+}

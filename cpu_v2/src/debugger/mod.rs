@@ -46,6 +46,9 @@ pub struct DisasmLine {
     pub target_name: Option<String>,
     /// header row: the padding halt before a function, showing its signature
     pub header: bool,
+    /// compiler-generated initialization section containing this instruction
+    pub init: Option<String>,
+    pub init_start: bool,
 }
 
 impl DebugSession {
@@ -96,6 +99,8 @@ impl DebugSession {
                         target: None,
                         target_name: None,
                         header: true,
+                        init: None,
+                        init_start: false,
                     });
                     continue;
                 }
@@ -107,7 +112,19 @@ impl DebugSession {
                 target: None,
                 target_name: None,
                 header: false,
+                init: None,
+                init_start: false,
             });
+        }
+        for line in &mut disasm {
+            if let Some(section) = debug
+                .init_sections
+                .iter()
+                .find(|section| (section.addr.0..section.addr.1).contains(&line.addr))
+            {
+                line.init = Some(section.detail.clone());
+                line.init_start = line.addr == section.addr.0;
+            }
         }
         annotate_targets(&mut disasm, &instructions, &debug);
 
@@ -445,7 +462,7 @@ fn annotate_targets(disasm: &mut [DisasmLine], instructions: &[Instruction], deb
         if addr >= instructions.len() {
             continue;
         }
-        line.call = matches!(instructions[addr], I::call_rel(..) | I::call_reg(_));
+        line.call = matches!(instructions[addr], I::call_rel(..) | I::call_abs(..) | I::call_reg(_));
         let (target, is_call) = match instructions[addr] {
             I::jg(hi, lo) | I::je(hi, lo) | I::jge(hi, lo) | I::jl(hi, lo) | I::jne(hi, lo)
             | I::jle(hi, lo) | I::jmp(hi, lo) => {
@@ -465,6 +482,16 @@ fn annotate_targets(disasm: &mut [DisasmLine], instructions: &[Instruction], deb
                 } else {
                     (None, false)
                 }
+            }
+            I::call_abs(hi, lo) => {
+                let index = (hi << 4) | lo;
+                let target = debug
+                    .function_table
+                    .iter()
+                    .find(|(entry, _)| *entry == index)
+                    .and_then(|(_, name)| debug.functions.iter().find(|function| function.name == *name))
+                    .map(|function| function.addr.0);
+                (target, true)
             }
             I::jmp_reg(r) | I::call_reg(r) => {
                 // far jump/call: load_lo + load_hi immediately before
@@ -724,13 +751,21 @@ impl DebugSession {
                 };
                 let header = if d.header { ",\"header\":true" } else { "" };
                 let call = if d.call { ",\"call\":true" } else { "" };
+                let init = d
+                    .init
+                    .as_ref()
+                    .map(|detail| format!(",\"init\":\"{}\"", esc(detail)))
+                    .unwrap_or_default();
+                let init_start = if d.init_start { ",\"initStart\":true" } else { "" };
                 format!(
-                    "{{\"addr\":{},\"text\":\"{}\"{}{}{}}}",
+                    "{{\"addr\":{},\"text\":\"{}\"{}{}{}{}{}}}",
                     d.addr,
                     esc(&d.text),
                     target,
                     call,
-                    header
+                    header,
+                    init,
+                    init_start
                 )
             })
             .collect();

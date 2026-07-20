@@ -30,7 +30,11 @@ fn main() {
     halt(SCORE);
 }
 "#;
-    assert_eq!(run(src), Some(22));
+    let (state, signal, listing) =
+        compile_program_and_run(src, &cpu_v2::CompilerOptions::default(), 10_000);
+    assert_eq!(signal, Some(22));
+    assert_eq!(state.mem[1], 11);
+    assert!(listing.contains("global init: static data"), "{listing}");
 }
 
 #[test]

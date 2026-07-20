@@ -150,6 +150,7 @@ fn main() {
     let (_, _, listing) = compile_program_and_run(src, &opts, 4000);
     let n = listing.matches("call init_heap").count();
     assert_eq!(n, 1, "init_heap must be called exactly once:\n{listing}");
+    assert!(listing.contains("global init: runtime heap"), "{listing}");
 
     // not using the library: no init at all
     let src2 = "fn main() { halt(0); }";

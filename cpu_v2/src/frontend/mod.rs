@@ -253,46 +253,76 @@ fn auto_init(out: &mut [IrFunc], opts: &CompilerOptions) -> Result<(), syn::Erro
             "library initialization requires a `fn main`",
         ));
     };
-    let entry = main.entry;
-    let mut pre = vec![];
+    let mut heap_init = vec![];
+    let mut vec_init = vec![];
     let mut next_v = main.vreg_count;
     if heap_used {
-        pre.push(Instr::LoadImm {
+        heap_init.push(Instr::LoadImm {
             dst: next_v,
             value: opts.heap_begin,
         });
         next_v += 1;
-        pre.push(Instr::LoadImm {
+        heap_init.push(Instr::LoadImm {
             dst: next_v,
             value: opts.heap_size,
         });
         next_v += 1;
-        pre.push(Instr::Call {
+        heap_init.push(Instr::Call {
             func: "init_heap",
             args: vec![next_v - 2, next_v - 1],
             rets: vec![],
         });
     }
     if vec_used {
-        pre.push(Instr::LoadImm {
+        vec_init.push(Instr::LoadImm {
             dst: next_v,
             value: opts.vec_init_cap,
         });
         next_v += 1;
-        pre.push(Instr::Call {
+        vec_init.push(Instr::Call {
             func: "init_vec",
             args: vec![next_v - 1],
             rets: vec![],
         });
     }
     main.vreg_count = next_v;
-    let old_insts = std::mem::take(&mut main.blocks[entry].insts);
-    let old_lines = std::mem::take(&mut main.blocks[entry].lines);
-    main.blocks[entry].insts = pre;
-    main.blocks[entry].lines = vec![None; main.blocks[entry].insts.len()];
-    main.blocks[entry].insts.extend(old_insts);
-    main.blocks[entry].lines.extend(old_lines);
+    // Prepend in reverse execution order: heap -> vec -> existing data init.
+    if !vec_init.is_empty() {
+        prepend_init_block(
+            main,
+            vec_init,
+            format!("runtime vector: initial capacity {}", opts.vec_init_cap),
+        );
+    }
+    if !heap_init.is_empty() {
+        prepend_init_block(
+            main,
+            heap_init,
+            format!(
+                "runtime heap: 0x{:04x}..0x{:04x}",
+                opts.heap_begin,
+                opts.heap_begin.wrapping_add(opts.heap_size)
+            ),
+        );
+    }
     Ok(())
+}
+
+fn prepend_init_block(main: &mut IrFunc, insts: Vec<Instr>, detail: String) {
+    let old_entry = main.entry;
+    let new_entry = main.blocks.len();
+    let block = crate::Block {
+        lines: vec![None; insts.len()],
+        insts,
+        term: Some(crate::Terminator::Jmp { target: old_entry }),
+        ..Default::default()
+    };
+    main.blocks.push(block);
+    main.block_notes
+        .push(Some(intern(&format!("global init: {detail}"))));
+    main.block_lines.push(None);
+    main.blocks[old_entry].preds.push(new_entry);
+    main.entry = new_entry;
 }
 
 fn parse_files(
@@ -411,7 +441,6 @@ fn emit_data_init(out: &mut [IrFunc], globals: &Globals) -> Result<(), syn::Erro
             "static data requires a `fn main` to host __data_init",
         ));
     };
-    let entry = main.entry;
     let mut inits = vec![];
     for &(addr, value) in &globals.data_words {
         if value != 0 {
@@ -434,12 +463,23 @@ fn emit_data_init(out: &mut [IrFunc], globals: &Globals) -> Result<(), syn::Erro
             });
         }
     }
-    let old_insts = std::mem::take(&mut main.blocks[entry].insts);
-    let old_lines = std::mem::take(&mut main.blocks[entry].lines);
-    main.blocks[entry].insts = inits;
-    main.blocks[entry].lines = vec![None; main.blocks[entry].insts.len()];
-    main.blocks[entry].insts.extend(old_insts);
-    main.blocks[entry].lines.extend(old_lines);
+    if !inits.is_empty() {
+        let nonzero_words = globals.data_words.iter().filter(|(_, value)| *value != 0).count();
+        let first = globals.data_words.iter().map(|(addr, _)| *addr).min().unwrap();
+        let end = globals
+            .data_words
+            .iter()
+            .map(|(addr, _)| addr.saturating_add(1))
+            .max()
+            .unwrap();
+        prepend_init_block(
+            main,
+            inits,
+            format!(
+                "static data: {nonzero_words} nonzero words in 0x{first:04x}..0x{end:04x}"
+            ),
+        );
+    }
     Ok(())
 }
 
@@ -551,6 +591,28 @@ fn const_eval(e: &Expr, consts: &HashMap<String, (u16, Ty)>) -> Result<u16, syn:
     }
 }
 
+fn reserve_static(
+    g: &mut Globals,
+    words: usize,
+    at: &impl syn::spanned::Spanned,
+) -> Result<u16, syn::Error> {
+    let start = g.next_addr as usize;
+    let end = start
+        .checked_add(words)
+        .ok_or_else(|| err(at, "static data address overflow"))?;
+    if end > crate::FUNCTION_TABLE_BASE as usize {
+        return Err(err(
+            at,
+            format!(
+                "static data reaches reserved function-table memory at {:#06x}",
+                crate::FUNCTION_TABLE_BASE
+            ),
+        ));
+    }
+    g.next_addr = end as u16;
+    Ok(start as u16)
+}
+
 /// `static NAME: Ty = expr;` or `static NAME: [Ty; N] = [..];`
 fn add_static(
     s: &syn::ItemStatic,
@@ -593,8 +655,7 @@ fn add_static(
                     format!("initializer has {} elements, expected {len}", init.len()),
                 ));
             }
-            let addr = g.next_addr;
-            g.next_addr += len as u16;
+            let addr = reserve_static(g, len, &s.ident)?;
             for (i, w) in init.iter().enumerate() {
                 g.data_words.push((addr + i as u16, *w));
             }
@@ -609,8 +670,7 @@ fn add_static(
                 return Err(err(t, "static must be u16/i16 or an array of them"));
             }
             let v = const_eval(&s.expr, consts)?;
-            let addr = g.next_addr;
-            g.next_addr += 1;
+            let addr = reserve_static(g, 1, &s.ident)?;
             g.data_words.push((addr, v));
             if g.scalars.insert(name.clone(), (addr, ty)).is_some() {
                 return Err(err(&s.ident, format!("static `{name}` defined twice")));
@@ -1953,6 +2013,15 @@ fn call_expr(l: &mut FnLower, call: &syn::ExprCall) -> Result<Val, syn::Error> {
         l.b.halt(v);
         l.dead = true;
         return Ok(Val::Never);
+    }
+    if matches!(name.as_str(), "cnt1" | "log2") {
+        if args.len() != 1 {
+            return Err(err(call, format!("{name}(x) takes 1 argument")));
+        }
+        let (v, from) = &args[0];
+        let (v, _) = coerce(l, *v, from, &Ty::U16, &call.args[0])?;
+        let op = if name == "cnt1" { UnOp::Cnt1 } else { UnOp::Log2 };
+        return Ok(Val::V(l.b.un(op, v), Ty::U16));
     }
 
     // direct or indirect call

@@ -2,10 +2,10 @@
 //! Assembler. branch offsets are checked against the ISA's i8 range (±128);
 //! out-of-range branches are a hard error here (branch relaxation is M5).
 
-use crate::isa::*;
-use crate::compiler::{Assembler, InstructionSlot, Relocation};
 use crate::compiler::ir::*;
 use crate::compiler::regalloc::*;
+use crate::compiler::{Assembler, InstructionSlot, Relocation};
+use crate::isa::*;
 use std::collections::HashMap;
 
 /// one emitted line: concrete instruction, unresolved branch, label marker,
@@ -19,16 +19,31 @@ enum Line {
         line: Option<u32>,
     },
     /// unconditional jump to a block/label
-    Jump { target: usize, line: Option<u32> },
+    Jump {
+        target: usize,
+        line: Option<u32>,
+    },
     /// zero-width address marker (block ids and relaxation targets)
     Label(usize),
     /// zero-width comment attached to the address of the next emitted line
     Comment(String),
+    /// compiler-generated initialization range markers
+    SectionStart { name: String, detail: String },
+    SectionEnd,
     /// far jump: load_lo + load_hi + jmp_reg tmp (3 slots, absolute target)
-    AbsJump { target: usize, line: Option<u32> },
+    AbsJump {
+        target: usize,
+        line: Option<u32>,
+    },
     /// call placeholder: 3 reserved slots filled by the linker
     Call3 {
         func: crate::compiler::FuncName,
+        line: Option<u32>,
+    },
+    /// function-table call: 1 slot filled with call_abs by the linker
+    CallAbs1 {
+        func: crate::compiler::FuncName,
+        index: u8,
         line: Option<u32>,
     },
     /// load function address: 2 reserved slots filled by the linker
@@ -41,11 +56,11 @@ enum Line {
 
 fn line_size(line: &Line) -> usize {
     match line {
-        Line::Inst(_, _) | Line::Branch { .. } | Line::Jump { .. } => 1,
+        Line::Inst(_, _) | Line::Branch { .. } | Line::Jump { .. } | Line::CallAbs1 { .. } => 1,
         Line::AbsJump { .. } => 3,
         Line::Call3 { .. } => 3,
         Line::LoadAddr2 { .. } => 2,
-        Line::Label(_) | Line::Comment(_) => 0,
+        Line::Label(_) | Line::Comment(_) | Line::SectionStart { .. } | Line::SectionEnd => 0,
     }
 }
 
@@ -80,7 +95,11 @@ fn relax(lines: &mut Vec<Line>, func: &str) {
                         lines.splice(
                             i..i + 1,
                             [
-                                Line::Branch { cond: inv, target: skip, line },
+                                Line::Branch {
+                                    cond: inv,
+                                    target: skip,
+                                    line,
+                                },
                                 Line::AbsJump { target: t, line },
                                 Line::Label(skip),
                             ],
@@ -118,6 +137,14 @@ pub struct EmittedFunc {
     pub comments: Vec<(usize, String)>,
     /// (absolute address, source line) for the debugger's line table
     pub line_map: Vec<(usize, u32)>,
+    pub init_sections: Vec<InitSection>,
+}
+
+#[derive(Clone, Debug)]
+pub struct InitSection {
+    pub name: String,
+    pub detail: String,
+    pub addr: (usize, usize),
 }
 
 /// parallel move between registers, dst-centric (sources may repeat).
@@ -134,7 +161,11 @@ fn parallel_moves(moves: &[(u8, u8)], tmp: u8) -> Vec<(u8, u8)> {
         while i < pending.len() {
             let (_, t) = pending[i];
             // safe to emit when no other pending move reads t as its source
-            if !pending.iter().enumerate().any(|(j, &(f2, _))| j != i && f2 == t) {
+            if !pending
+                .iter()
+                .enumerate()
+                .any(|(j, &(f2, _))| j != i && f2 == t)
+            {
                 out.push(pending.remove(i));
                 progressed = true;
             } else {
@@ -159,6 +190,22 @@ fn hi_lo(v: u8) -> (u8, u8) {
     (v >> 4, v & 0xf)
 }
 
+fn emit_load_u16(lines: &mut Vec<Line>, value: u16, reg: u8) {
+    let (hi, lo) = hi_lo(value as u8);
+    lines.push(Line::Inst(load_lo(hi, lo, reg), None));
+    if value > 255 {
+        let (hi, lo) = hi_lo((value >> 8) as u8);
+        lines.push(Line::Inst(load_hi(hi, lo, reg), None));
+    }
+}
+
+fn start_init(lines: &mut Vec<Line>, name: &str, detail: String) {
+    lines.push(Line::SectionStart {
+        name: name.to_string(),
+        detail,
+    });
+}
+
 /// compile one function into the assembler at `start_address`
 pub fn compile_function(
     f: &IrFunc,
@@ -166,20 +213,68 @@ pub fn compile_function(
     asm: &mut Assembler,
     start_address: usize,
     stack_init: u16,
+    function_table: &HashMap<crate::compiler::FuncName, u8>,
+    initialize_function_table: bool,
 ) -> EmittedFunc {
     let layout = f.rpo();
     let mut lines: Vec<Line> = vec![];
 
     let reg = |v: VReg| alloc.reg[&v];
 
-    // entry-point stack pointer override (before the prologue)
-    if stack_init != 0 {
-        let (hi, lo) = hi_lo(stack_init as u8);
-        lines.push(Line::Inst(load_lo(hi, lo, REG_SP), None));
-        if stack_init > 255 {
-            let (hi, lo) = hi_lo((stack_init >> 8) as u8);
-            lines.push(Line::Inst(load_hi(hi, lo, REG_SP), None));
+    // call_abs reads mem[0xff00 + index]. store_sp has a full u8 offset, so
+    // use sp as the table base and initialize all 256 possible entries without
+    // incrementing a separate base register every eight stores.
+    if initialize_function_table && !function_table.is_empty() {
+        let base_detail = if stack_init == crate::FUNCTION_TABLE_BASE {
+            format!("sp = {:#06x} (function-table base)", crate::FUNCTION_TABLE_BASE)
+        } else {
+            format!("temporary sp = {:#06x} for function table", crate::FUNCTION_TABLE_BASE)
+        };
+        start_init(&mut lines, "stack", base_detail);
+        emit_load_u16(&mut lines, crate::FUNCTION_TABLE_BASE, REG_SP);
+        lines.push(Line::SectionEnd);
+
+        let mut entries: Vec<_> = function_table
+            .iter()
+            .map(|(&name, &index)| (index, name))
+            .collect();
+        entries.sort_by_key(|&(index, _)| index);
+        start_init(
+            &mut lines,
+            "function-table",
+            format!(
+                "{} entries at {:#06x}..{:#06x}",
+                entries.len(),
+                crate::FUNCTION_TABLE_BASE,
+                crate::FUNCTION_TABLE_BASE as usize + entries.len()
+            ),
+        );
+        for (index, func) in entries {
+            lines.push(Line::Comment(format!(
+                "function table[{index:02x}] = {func} @ mem[{:#06x}]",
+                crate::FUNCTION_TABLE_BASE + index as u16
+            )));
+            lines.push(Line::LoadAddr2 {
+                func,
+                reg: REG_TMP,
+                line: None,
+            });
+            let (hi, lo) = hi_lo(index);
+            lines.push(Line::Inst(store_sp(hi, lo, REG_TMP), None));
         }
+        lines.push(Line::SectionEnd);
+    }
+
+    // Entry-point stack pointer override. When it is also the function-table
+    // base, the preceding table setup has already established it.
+    if stack_init != 0
+        && (!initialize_function_table
+            || function_table.is_empty()
+            || stack_init != crate::FUNCTION_TABLE_BASE)
+    {
+        start_init(&mut lines, "stack", format!("sp = {stack_init:#06x}"));
+        emit_load_u16(&mut lines, stack_init, REG_SP);
+        lines.push(Line::SectionEnd);
     }
 
     // prologue
@@ -194,8 +289,18 @@ pub fn compile_function(
 
     for (idx, &b) in layout.iter().enumerate() {
         lines.push(Line::Label(b));
+        let init_detail = f.block_notes[b]
+            .and_then(|note| note.strip_prefix("global init: "));
+        if let Some(detail) = init_detail {
+            let name = detail
+                .split(':')
+                .next()
+                .unwrap_or("runtime")
+                .replace(' ', "-");
+            start_init(&mut lines, &name, detail.to_string());
+        }
         let mut comment = String::new();
-        if let Some(note) = f.block_notes[b] {
+        if let Some(note) = f.block_notes[b].filter(|_| init_detail.is_none()) {
             comment = note.to_string();
         }
         if let Some(line) = f.block_lines[b] {
@@ -228,7 +333,15 @@ pub fn compile_function(
         }
 
         for (inst, ir_line) in block.insts.iter().zip(&block.lines) {
-            emit_inst(inst, *ir_line, &reg, alloc.callee_saved.len() as u8, alloc.local_slots, &mut lines);
+            emit_inst(
+                inst,
+                *ir_line,
+                &reg,
+                alloc.callee_saved.len() as u8,
+                alloc.local_slots,
+                function_table,
+                &mut lines,
+            );
         }
 
         match &block.term {
@@ -241,7 +354,11 @@ pub fn compile_function(
                     });
                 }
             }
-            Some(Terminator::Br { cmp, if_true, if_false }) => {
+            Some(Terminator::Br {
+                cmp,
+                if_true,
+                if_false,
+            }) => {
                 emit_cmp(cmp, block.term_line, &reg, &mut lines);
                 let next = layout.get(idx + 1);
                 if if_true == if_false && next == Some(if_true) {
@@ -287,6 +404,9 @@ pub fn compile_function(
             }
             None => unreachable!("unterminated reachable block b{b}"),
         }
+        if init_detail.is_some() {
+            lines.push(Line::SectionEnd);
+        }
     }
 
     // expand out-of-range branches, then write everything into the assembler
@@ -308,11 +428,28 @@ pub fn compile_function(
     let mut relocations = vec![];
     let mut comments = vec![];
     let mut line_map = vec![];
+    let mut init_sections = vec![];
+    let mut open_section: Option<(String, String, usize)> = None;
     for line in &lines {
         match line {
             Line::Label(_) => {}
             Line::Comment(text) => {
                 comments.push((addr, text.clone()));
+            }
+            Line::SectionStart { name, detail } => {
+                assert!(open_section.is_none(), "nested initialization sections");
+                comments.push((addr, format!("global init: {detail}")));
+                open_section = Some((name.clone(), detail.clone(), addr));
+            }
+            Line::SectionEnd => {
+                let (name, detail, start) = open_section
+                    .take()
+                    .expect("initialization section end without start");
+                init_sections.push(InitSection {
+                    name,
+                    detail,
+                    addr: (start, addr),
+                });
             }
             Line::Inst(inst, line) => {
                 if let Some(line) = line {
@@ -322,11 +459,7 @@ pub fn compile_function(
                 addr += 1;
                 written += 1;
             }
-            Line::Branch {
-                cond,
-                target,
-                line,
-            } => {
+            Line::Branch { cond, target, line } => {
                 if let Some(line) = line {
                     line_map.push((addr, *line));
                 }
@@ -388,6 +521,18 @@ pub fn compile_function(
                 addr += 3;
                 written += 3;
             }
+            Line::CallAbs1 { func, index, line } => {
+                if let Some(line) = line {
+                    line_map.push((addr, *line));
+                }
+                relocations.push(Relocation {
+                    func_name: func,
+                    kind: crate::compiler::RelocKind::CallAbs { index: *index },
+                    slots: vec![InstructionSlot::new(addr)],
+                });
+                addr += 1;
+                written += 1;
+            }
             Line::LoadAddr2 { func, reg, line } => {
                 if let Some(line) = line {
                     for slot in 0..2 {
@@ -410,6 +555,7 @@ pub fn compile_function(
         len: written,
         comments,
         line_map,
+        init_sections,
     }
 }
 
@@ -488,6 +634,7 @@ fn emit_inst(
     reg: &dyn Fn(VReg) -> u8,
     local_base: u8,
     n_locals: u8,
+    function_table: &HashMap<crate::compiler::FuncName, u8>,
     lines: &mut Vec<Line>,
 ) {
     match inst {
@@ -511,7 +658,12 @@ fn emit_inst(
             };
             lines.push(Line::Inst(f(reg(*src), reg(*dst)), ir_line));
         }
-        Instr::Shift { dst, op, src, amount } => {
+        Instr::Shift {
+            dst,
+            op,
+            src,
+            amount,
+        } => {
             if reg(*dst) != reg(*src) {
                 lines.push(Line::Inst(mov(reg(*src), reg(*dst)), ir_line));
             }
@@ -537,20 +689,45 @@ fn emit_inst(
         }
         Instr::LoadMem { dst, base, offset } => {
             let dst = reg(*dst);
-            emit_mem(lines, *base, *offset, ir_line, reg, |lines, base_reg, off| {
-                lines.push(Line::Inst(load_mem(base_reg, off, dst), ir_line));
-            });
+            emit_mem(
+                lines,
+                *base,
+                *offset,
+                ir_line,
+                reg,
+                |lines, base_reg, off| {
+                    lines.push(Line::Inst(load_mem(base_reg, off, dst), ir_line));
+                },
+            );
         }
         Instr::StoreMem { base, offset, src } => {
             let src = reg(*src);
-            emit_mem(lines, *base, *offset, ir_line, reg, |lines, base_reg, off| {
-                lines.push(Line::Inst(store_mem(base_reg, src, off), ir_line));
-            });
+            emit_mem(
+                lines,
+                *base,
+                *offset,
+                ir_line,
+                reg,
+                |lines, base_reg, off| {
+                    lines.push(Line::Inst(store_mem(base_reg, src, off), ir_line));
+                },
+            );
         }
         Instr::Call { func, .. } => {
-            // args/results already moved by ABI shims; the linker fills 3 slots
+            // args/results already moved by ABI shims
             lines.push(Line::Comment(format!("call {func}")));
-            lines.push(Line::Call3 { func, line: ir_line });
+            if let Some(&index) = function_table.get(func) {
+                lines.push(Line::CallAbs1 {
+                    func,
+                    index,
+                    line: ir_line,
+                });
+            } else {
+                lines.push(Line::Call3 {
+                    func,
+                    line: ir_line,
+                });
+            }
         }
         Instr::LoadFuncAddr { dst, func } => {
             lines.push(Line::Comment(format!("&{func}")));
@@ -564,12 +741,26 @@ fn emit_inst(
             // addr/args/results already moved by ABI shims (addr is in tmp)
             lines.push(Line::Inst(call_reg(REG_TMP), ir_line));
         }
-        Instr::DevRecv { dst, device, channel } => {
-            assert!(*device <= 15 && *channel <= 15, "device/channel out of u4 range");
+        Instr::DevRecv {
+            dst,
+            device,
+            channel,
+        } => {
+            assert!(
+                *device <= 15 && *channel <= 15,
+                "device/channel out of u4 range"
+            );
             lines.push(Line::Inst(dev_recv(*device, *channel, reg(*dst)), ir_line));
         }
-        Instr::DevSend { device, channel, src } => {
-            assert!(*device <= 15 && *channel <= 15, "device/channel out of u4 range");
+        Instr::DevSend {
+            device,
+            channel,
+            src,
+        } => {
+            assert!(
+                *device <= 15 && *channel <= 15,
+                "device/channel out of u4 range"
+            );
             lines.push(Line::Inst(dev_send(*device, *channel, reg(*src)), ir_line));
         }
         Instr::LoadSp { dst, slot } => {

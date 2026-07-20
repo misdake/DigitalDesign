@@ -1,5 +1,7 @@
-use crate::Instruction::{call_reg, call_rel, load_hi, load_lo, mov};
-use crate::{RelocKind, u8_to_hi_lo, Assembler, FuncDecl, FuncName, InstructionSlot, Relocation, TMP_REG};
+use crate::Instruction::{call_abs, call_reg, call_rel, load_hi, load_lo, mov};
+use crate::{
+    u8_to_hi_lo, Assembler, FuncDecl, FuncName, InstructionSlot, RelocKind, Relocation, TMP_REG,
+};
 use std::collections::HashMap;
 
 #[derive(Default)]
@@ -45,6 +47,10 @@ impl Linker {
             let start = target.inst_range.0;
             match rel.kind {
                 RelocKind::Call3 => relocate_call(asm, &rel.slots, start),
+                RelocKind::CallAbs { index } => {
+                    let (hi, lo) = u8_to_hi_lo(index);
+                    asm.inst_at(call_abs(hi, lo), rel.slots[0].addr);
+                }
                 RelocKind::LoadAddr { reg } => {
                     let (hi, lo) = u8_to_hi_lo((start & 0xff) as u8);
                     asm.inst_at(load_lo(hi, lo, reg), rel.slots[0].addr);
@@ -60,14 +66,18 @@ impl Linker {
         let mut map = HashMap::new();
         for func in self.functions.values() {
             for rel in &func.relocations {
-                if !matches!(rel.kind, RelocKind::Call3) {
-                    continue;
-                }
-                let addr = match self.functions.get(&rel.func_name) {
-                    Some(target) if call_rel_offset(rel.slots[0].addr, target.inst_range.0).is_some() => {
-                        rel.slots[0].addr
-                    }
-                    _ => rel.slots[2].addr,
+                let addr = match rel.kind {
+                    RelocKind::CallAbs { .. } => rel.slots[0].addr,
+                    RelocKind::Call3 => match self.functions.get(&rel.func_name) {
+                        Some(target)
+                            if call_rel_offset(rel.slots[0].addr, target.inst_range.0)
+                                .is_some() =>
+                        {
+                            rel.slots[0].addr
+                        }
+                        _ => rel.slots[2].addr,
+                    },
+                    RelocKind::LoadAddr { .. } => continue,
                 };
                 map.insert(addr, rel.func_name);
             }

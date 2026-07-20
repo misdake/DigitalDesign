@@ -589,17 +589,25 @@ fn compute_intervals(f: &IrFunc) -> Vec<Interval> {
 /// coalescing hints: for `mov dst, src` the src's interval ends at the mov,
 /// so giving src the dst's register eliminates the move. same for phi args.
 /// (hint only — the allocator's usual checks still apply.)
-fn compute_affinity(f: &IrFunc) -> HashMap<VReg, VReg> {
-    let mut aff: HashMap<VReg, VReg> = HashMap::new();
+fn compute_affinity(f: &IrFunc) -> HashMap<VReg, Vec<VReg>> {
+    let mut aff: HashMap<VReg, Vec<VReg>> = HashMap::new();
+    let mut pair = |a: VReg, b: VReg| {
+        if !aff.entry(a).or_default().contains(&b) {
+            aff.entry(a).or_default().push(b);
+        }
+        if !aff.entry(b).or_default().contains(&a) {
+            aff.entry(b).or_default().push(a);
+        }
+    };
     for b in &f.blocks {
         for inst in &b.insts {
             if let Instr::Mov { dst, src } = inst {
-                aff.entry(*src).or_insert(*dst);
+                pair(*src, *dst);
             }
         }
         for phi in &b.phis {
             for &(_, v) in &phi.args {
-                aff.entry(v).or_insert(phi.dst);
+                pair(v, phi.dst);
             }
         }
     }
@@ -611,7 +619,11 @@ struct ScanResult {
     spilled: Vec<VReg>,
 }
 
-fn linear_scan(intervals: &[Interval], abi: &AbiInfo, affinity: &HashMap<VReg, VReg>) -> ScanResult {
+fn linear_scan(
+    intervals: &[Interval],
+    abi: &AbiInfo,
+    affinity: &HashMap<VReg, Vec<VReg>>,
+) -> ScanResult {
     // fixed ranges per register (from pinned vregs), known upfront
     let mut fixed_ranges: HashMap<u8, Vec<(u32, u32)>> = HashMap::new();
     for (&v, &r) in &abi.pinned {
@@ -673,12 +685,14 @@ fn linear_scan(intervals: &[Interval], abi: &AbiInfo, affinity: &HashMap<VReg, V
                     .is_some_and(|ranges| ranges.iter().any(|&fr| overlaps(fr, (iv.start, iv.end))))
         };
         // coalescing hint: prefer the affinity target's register
-        let preferred = affinity.get(&v).and_then(|&a| {
-            if let Some(&r) = abi.pinned.get(&a) {
-                Some(r)
-            } else {
-                reg.get(&a).copied()
-            }
+        let preferred = affinity.get(&v).and_then(|neighbors| {
+            neighbors.iter().find_map(|a| {
+                if let Some(&r) = abi.pinned.get(a) {
+                    Some(r)
+                } else {
+                    reg.get(a).copied()
+                }
+            })
         });
         let mut chosen = preferred.filter(|&r| {
             prefs.contains(&r) && free(r)

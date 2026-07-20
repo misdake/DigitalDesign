@@ -65,6 +65,40 @@ fn test_call_disassembly_is_marked_with_a_navigation_target() {
 }
 
 #[test]
+fn test_call_abs_debug_info_restores_navigation_target() {
+    let source = r#"fn inc(x: u16) -> u16 { x + 1 }
+fn main() {
+    let a = inc(0);
+    let b = inc(a);
+    let c = inc(b);
+    let d = inc(c);
+    halt(d);
+}
+"#;
+    let s = make_session(source);
+    assert_eq!(s.debug.function_table, vec![(0, "inc".to_string())]);
+    assert!(s
+        .debug
+        .init_sections
+        .iter()
+        .any(|section| section.name == "function-table"));
+    assert!(s
+        .disasm
+        .iter()
+        .any(|line| line.init_start && line.init.as_deref().is_some_and(|s| s.contains("entries"))));
+    assert!(s.state_json().contains("\"initStart\":true"));
+    let calls: Vec<_> = s
+        .disasm
+        .iter()
+        .filter(|line| line.call && line.target_name.as_deref() == Some("inc"))
+        .collect();
+    assert_eq!(calls.len(), 4);
+    assert!(calls
+        .iter()
+        .all(|line| line.text.starts_with("call_abs") && line.target.is_some()));
+}
+
+#[test]
 fn test_step_and_breakpoint() {
     let src = r#"
 fn main() {

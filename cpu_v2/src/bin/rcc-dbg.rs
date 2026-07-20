@@ -5,7 +5,7 @@
 
 use cpu_v2::debugger::DebugSession;
 use cpu_v2::frontend::compile_program_named;
-use cpu_v2::{Compiler, CompilerOptions};
+use cpu_v2::{Compiler, CompilerOptions, FunctionTableConfig};
 use std::collections::HashMap;
 use std::io::{BufRead, BufReader, Read, Write};
 use std::net::{TcpListener, TcpStream};
@@ -170,12 +170,17 @@ fn route(
             UI.as_bytes().to_vec(),
         ),
         ("POST", "/api/compile") => {
-            let optimize = parse_query(query).get("opt").is_none_or(|value| value != "0");
+            let query = parse_query(query);
+            let optimize = query.get("opt").is_none_or(|value| value != "0");
+            let function_table = match parse_function_table(query.get("ft").map(String::as_str).unwrap_or("auto")) {
+                Ok(config) => config,
+                Err(error) => return ("400 Bad Request", "text/plain; charset=utf-8", error.into_bytes()),
+            };
             let source = match std::str::from_utf8(body) {
                 Ok(source) => source,
                 Err(_) => return ("400 Bad Request", "text/plain; charset=utf-8", b"source is not UTF-8".to_vec()),
             };
-            match compile_source(source, optimize) {
+            match compile_source(source, optimize, function_table) {
                 Ok(compiled) => {
                     let json = compiled.state_json();
                     *session.lock().unwrap() = Some(compiled);
@@ -249,21 +254,6 @@ fn route(
             let json = s.state_json();
             ("200 OK", "application/json", json.into_bytes())
         }
-        ("POST", "/api/break") => {
-            let q = parse_query(query);
-            let mut guard = session.lock().unwrap();
-            let Some(s) = guard.as_mut() else {
-                return no_session();
-            };
-            let addr = q.get("addr").and_then(|v| usize::from_str_radix(v, 16).ok());
-            let on = q.get("on").map(|v| v == "1").unwrap_or(true);
-            match addr {
-                Some(addr) => s.toggle_breakpoint(addr, on),
-                None => return ("400 Bad Request", "text/plain", b"missing addr".to_vec()),
-            }
-            let json = s.state_json();
-            ("200 OK", "application/json", json.into_bytes())
-        }
         _ => ("404 Not Found", "text/plain", b"not found".to_vec()),
     }
 }
@@ -272,12 +262,17 @@ fn no_session() -> (&'static str, &'static str, Vec<u8>) {
     ("409 Conflict", "text/plain", b"compile a program first".to_vec())
 }
 
-fn compile_source(source: &str, optimize: bool) -> Result<DebugSession, String> {
+fn compile_source(
+    source: &str,
+    optimize: bool,
+    function_table: FunctionTableConfig,
+) -> Result<DebugSession, String> {
     std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         let mut opts = CompilerOptions::default();
         if !optimize {
             opts.opt = cpu_v2::Opts::disabled();
         }
+        opts.function_table = function_table;
         let program = compile_program_named("playground.rs", source, &opts, &mut |name| {
             Err(format!(
                 "module `{name}` is unavailable: the playground currently supports one source file"
@@ -316,6 +311,26 @@ fn compile_source(source: &str, optimize: bool) -> Result<DebugSession, String> 
             .or_else(|| payload.downcast_ref::<&str>().map(|message| (*message).to_string()))
             .unwrap_or_else(|| "compiler panicked".to_string())
     })?
+}
+
+fn parse_function_table(value: &str) -> Result<FunctionTableConfig, String> {
+    match value {
+        "auto" => Ok(FunctionTableConfig::Auto),
+        "none" => Ok(FunctionTableConfig::Disabled),
+        "all" => Ok(FunctionTableConfig::All),
+        _ => {
+            let names: Vec<String> = value
+                .split(',')
+                .filter(|name| !name.is_empty())
+                .map(str::to_string)
+                .collect();
+            if names.is_empty() {
+                Err("function table needs auto, none, all, or a comma-separated function list".to_string())
+            } else {
+                Ok(FunctionTableConfig::Functions(names))
+            }
+        }
+    }
 }
 
 fn parse_query(query: &str) -> std::collections::HashMap<String, String> {
@@ -359,7 +374,7 @@ mod tests {
 
     #[test]
     fn playground_rejects_module_files() {
-        let error = match compile_source("mod other; fn main() { halt(0); }", true) {
+        let error = match compile_source("mod other; fn main() { halt(0); }", true, FunctionTableConfig::Auto) {
             Ok(_) => panic!("module unexpectedly compiled"),
             Err(error) => error,
         };
@@ -368,7 +383,7 @@ mod tests {
 
     #[test]
     fn playground_reports_a_missing_main_function() {
-        let error = match compile_source("fn helper() { halt(0); }", true) {
+        let error = match compile_source("fn helper() { halt(0); }", true, FunctionTableConfig::Auto) {
             Ok(_) => panic!("program without main unexpectedly compiled"),
             Err(error) => error,
         };
@@ -386,7 +401,7 @@ mod tests {
             "}\n",
         );
 
-        let optimized = compile_source(source, true).unwrap();
+        let optimized = compile_source(source, true, FunctionTableConfig::Auto).unwrap();
         let optimized_main = optimized
             .debug
             .functions
@@ -426,6 +441,24 @@ mod tests {
     }
 
     #[test]
+    fn playground_configures_the_function_table() {
+        let source = concat!(
+            "fn inc(x: u16) -> u16 { x + 1 }\n",
+            "fn main() {\n",
+            "    let a = inc(0);\n",
+            "    halt(a);\n",
+            "}\n",
+        );
+        let shared: SharedSession = Arc::new(Mutex::new(None));
+        let (status, _, _) = route("POST", "/api/compile?ft=all", source.as_bytes(), &shared, true);
+        assert_eq!(status, "200 OK");
+        assert_eq!(
+            shared.lock().unwrap().as_ref().unwrap().debug.function_table,
+            vec![(0, "inc".to_string())]
+        );
+    }
+
+    #[test]
     fn current_source_line_highlight_overrides_clicked_line() {
         let clicked = UI.find("tr.hl td").expect("missing clicked-line style");
         let current = UI.find("tr.cur td").expect("missing current-line style");
@@ -441,5 +474,10 @@ mod tests {
         assert!(UI.contains("tr.dline.call[data-target] .dtext"));
         assert!(UI.contains("if (tr.classList.contains('call')) return;"));
         assert!(!UI.contains("label.textContent = '→'"));
+        assert!(UI.contains("compiler-generated initialization"));
+        assert!(UI.contains("tr.inithead td"));
+        assert!(UI.contains("tr.pc td { background: #24425c !important; }"));
+        assert!(UI.contains("tr.pc td.addr::before { content: \"▶\""));
+        assert!(!UI.contains("/api/break?addr="));
     }
 }

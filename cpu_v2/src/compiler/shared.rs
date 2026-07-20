@@ -9,6 +9,8 @@ pub type FuncName = &'static str;
 /// temporary register used by the linker for far calls and by codegen for
 /// scratch sequences (never allocated)
 pub const TMP_REG: u8 = 15;
+pub const FUNCTION_TABLE_BASE: u16 = 0xff00;
+pub const FUNCTION_TABLE_CAPACITY: usize = 256;
 
 #[derive(Clone, Debug)]
 pub struct FuncDecl {
@@ -34,6 +36,8 @@ impl FuncDecl {
 pub enum RelocKind {
     /// 3 slots: near -> call_rel + 2 nop; far -> load_lo(tmp) + load_hi(tmp) + call_reg(tmp)
     Call3,
+    /// 1 slot: call_abs through the initialized function-table entry
+    CallAbs { index: u8 },
     /// 2 slots: load_lo(reg) + load_hi(reg), filling in the absolute function address
     LoadAddr { reg: u8 },
 }

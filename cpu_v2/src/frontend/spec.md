@@ -88,6 +88,8 @@ Declared for real in `dsl_rt` (so the IDE sees them); the compiler lowers them d
 |---|---|
 | `halt(x: u16) -> !` | halt the machine with signal x |
 | `assert(cond: bool, sig: u16)` | halt(sig) unless cond holds |
+| `cnt1(x: u16) -> u16` | number of set bits in x |
+| `log2(x: u16) -> u16` | integer base-2 logarithm; x must be nonzero |
 | `dev_recv(dev: u8, ch: u8) -> u16` | read a device (not yet) |
 | `dev_send(dev: u8, ch: u8, v: u16)` | write a device (not yet) |
 
@@ -253,6 +255,7 @@ multi-dimensional arrays (use `arr[i * W + j]`), `*`, `/`, `%`.
 |---|---|---|
 | `opt` | all on | optimization passes (const-prop/cse/dce/coalesce) |
 | `stack_init` | 0 | initial sp of the entry fn (0 = simulator default; frames grow downward) |
+| `function_table` | `Auto` | `Disabled`, automatically profitable/hot direct callees, all direct callees, or an explicit list of function names |
 | `data_base` | 0 | static data section base address |
 | `heap_begin` | 0x1000 | heap region start |
 | `heap_size` | 20 | heap region size in words |
@@ -260,7 +263,8 @@ multi-dimensional arrays (use `arr[i * W + j]`), `*`, `/`, `%`.
 
 ### 13.3 Artifacts
 
-- `rcc <input.rs> [-o out.bin] [--lst out.lst] [--no-opt] [--stack-init N] [--data-base N]
+- `rcc <input.rs> [-o out.bin] [--lst out.lst] [--no-opt]
+  [--function-table auto|none|all|name,...] [--stack-init N] [--data-base N]
   [--heap-begin N] [--heap-size N] [--vec-cap N]` — compiles to a binary image
   (`RCC1` magic + word count + u16-LE words), a disassembly listing with function
   signatures, block roles, call targets, and source line comments (`; line N`), and a
@@ -278,6 +282,9 @@ playground moves the editor caret to the primary diagnostic location after a fai
 Alongside the binary and listing, `rcc` writes `<input>.dbg` for a hypothetical debugger:
 
 - **files**: index of source files (main file, `mod` files, rcc_std files);
+- **function table**: table index and function name for each `call_abs` target;
+- **initialization sections**: address ranges and details for compiler-generated stack,
+  function-table, static-data, heap, and vector initialization code;
 - **functions**: name, address range, source file, frame size, and every local variable
   with a location: `rN` (ABI register for params), `frame+N` (frame slot — arrays and
   address-taken locals), `global@0xADDR`, or `ssa` (register/versioned). Local entries
@@ -314,3 +321,32 @@ the active session without writing temporary `.bin`, `.lst`, or `.dbg` files. Ex
 `mod` files are intentionally unavailable in this mode; the embedded standard library is
 still included normally. The editor's `Optimize` toggle controls the compiler passes; turning
 it off also enables the debug-friendly scalar-local frame-slot behavior described above.
+The playground's `Calls` selector exposes the automatic, disabled, and all-target function
+table modes.
+
+### 13.7 Direct calls and the function table
+
+The compiler can lower selected direct calls to the single-word `call_abs` instruction.
+At program entry it sets `sp` to `0xff00` before creating the main frame and initializes the
+selected function addresses with `store_sp` offsets `0..255`. This avoids a separate table-base
+register and provides direct access to the full table without base-increment instructions.
+The default `Auto` mode selects repeated direct calls and statically hot calls
+(recursion or calls in loops) when their estimated call-site/runtime saving pays for table
+initialization. `All` selects every directly called reachable function; `Functions` accepts
+an explicit name list. Indirect function-pointer calls still use `call_reg`.
+
+Direct calls not selected for the table retain a three-word linker slot: a nearby target is
+rewritten to `call_rel` plus padding, while a far target becomes
+`load_lo` + `load_hi` + `call_reg`. This keeps every program linkable even if the table is
+disabled or full.
+
+The function table reserves data addresses `0xff00..=0xffff`, so static allocation may not
+enter that range. When a non-empty table is used with the default `stack_init = 0`, the entry
+stack pointer is initialized to `0xff00` so downward-growing frames cannot overwrite the
+table. An explicit stack address above `0xff00` is rejected.
+
+Compiler-generated startup code is represented separately from source code. The listing starts
+with a `global initialization` summary and marks the instruction ranges for stack setup,
+function-table writes, static data, and any heap/vector runtime setup. The same ranges are stored
+in `.dbg`; the generated instructions have no user-source line ownership, while instruction
+stepping and the disassembly panel keep them visible as compiler-generated initialization sections.

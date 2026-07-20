@@ -2,6 +2,20 @@
 
 use crate::compiler::Opts;
 
+/// Selection policy for the ISA's 256-entry `call_abs` table at
+/// `0xff00..=0xffff`. The compiler emits a startup initializer for selected
+/// entries, so compiled images remain self-contained.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum FunctionTableConfig {
+    Disabled,
+    /// Select profitable repeated calls plus recursive/loop call targets.
+    Auto,
+    /// Put every directly-called reachable function in the table (up to 256).
+    All,
+    /// Put the named directly-called reachable functions in the table.
+    Functions(Vec<String>),
+}
+
 /// everything a compile can be tuned with; `Compiler::default()` uses these
 #[derive(Clone, Debug)]
 pub struct CompilerOptions {
@@ -19,6 +33,8 @@ pub struct CompilerOptions {
     pub heap_size: u16,
     /// initial capacity used by rcc_std Vec's vec_new
     pub vec_init_cap: u16,
+    /// direct-call function table policy
+    pub function_table: FunctionTableConfig,
 }
 
 impl Default for CompilerOptions {
@@ -30,6 +46,7 @@ impl Default for CompilerOptions {
             heap_begin: 0x1000,
             heap_size: 20,
             vec_init_cap: 4,
+            function_table: FunctionTableConfig::Auto,
         }
     }
 }

@@ -75,6 +75,26 @@ fn test_value_conversion_error_uses_the_expression_location() {
 }
 
 #[test]
+fn test_static_data_cannot_overlap_the_function_table() {
+    let source = "static X: u16 = 1;\nfn main() { halt(X); }\n";
+    let options = cpu_v2::CompilerOptions {
+        data_base: cpu_v2::FUNCTION_TABLE_BASE,
+        ..Default::default()
+    };
+    let error = match cpu_v2::frontend::compile_program_named(
+        "table_overlap.rs",
+        source,
+        &options,
+        &mut |name| Err(format!("unknown module `{name}`")),
+    ) {
+        Ok(_) => panic!("static data in function-table memory unexpectedly compiled"),
+        Err(error) => error,
+    };
+    assert_eq!(error.location().map(|(_, line, _)| line), Some(1));
+    assert!(error.to_string().contains("reserved function-table memory"));
+}
+
+#[test]
 fn test_unsupported_constructs() {
     expect_error("fn f(x: u16) -> u16 { x / 2 }", "not supported");
     expect_error("fn f(x: u16) -> u16 { x * 2 }", "not supported");
@@ -151,6 +171,12 @@ fn test_operator_restrictions() {
     // the ISA has no register-shift: the amount must be a literal in 0..=15
     expect_error("fn f(x: u16, n: u16) -> u16 { x << n }", "shift amount");
     expect_error("fn f(x: u16) -> u16 { x << 16 }", "0..=15");
+}
+
+#[test]
+fn test_bit_intrinsic_errors() {
+    expect_error("fn f() -> u16 { cnt1() }", "takes 1 argument");
+    expect_error("fn f(x: i16) -> u16 { log2(x) }", "expected u16, got i16");
 }
 
 #[test]

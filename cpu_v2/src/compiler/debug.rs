@@ -36,9 +36,20 @@ pub struct DebugFunc {
     pub locals: Vec<DebugVar>,
 }
 
+#[derive(Clone, Debug, PartialEq)]
+pub struct DebugInitSection {
+    pub name: String,
+    pub detail: String,
+    pub addr: (usize, usize),
+}
+
 #[derive(Clone, Debug, Default)]
 pub struct DebugInfo {
     pub files: Vec<String>,
+    /// call_abs table entries as (u8 index, function name)
+    pub function_table: Vec<(u8, String)>,
+    /// compiler-generated startup ranges with no source-code ownership
+    pub init_sections: Vec<DebugInitSection>,
     pub functions: Vec<DebugFunc>,
     pub globals: Vec<DebugVar>,
     pub consts: Vec<(String, String, u16)>,
@@ -55,8 +66,28 @@ impl DebugInfo {
         if !self.files.is_empty() {
             out.push('\n');
         }
+        for (index, name) in &self.function_table {
+            let _ = writeln!(out, "table {index} {name}");
+        }
+        if !self.function_table.is_empty() {
+            out.push('\n');
+        }
+        for section in &self.init_sections {
+            let _ = writeln!(
+                out,
+                "init {} 0x{:04x}..0x{:04x} {}",
+                section.name, section.addr.0, section.addr.1, section.detail
+            );
+        }
+        if !self.init_sections.is_empty() {
+            out.push('\n');
+        }
         for f in &self.functions {
-            let file = self.files.get(f.file as usize).map(|s| s.as_str()).unwrap_or("?");
+            let file = self
+                .files
+                .get(f.file as usize)
+                .map(|s| s.as_str())
+                .unwrap_or("?");
             let _ = writeln!(
                 out,
                 "func {} 0x{:04x}..0x{:04x} {} frame {}",
@@ -72,7 +103,13 @@ impl DebugInfo {
             out.push('\n');
         }
         for v in &self.globals {
-            let _ = writeln!(out, "global {} {} 0x{:04x}", v.name, v.ty, unwrap_global(&v.loc));
+            let _ = writeln!(
+                out,
+                "global {} {} 0x{:04x}",
+                v.name,
+                v.ty,
+                unwrap_global(&v.loc)
+            );
         }
         if !self.globals.is_empty() {
             out.push('\n');
@@ -149,6 +186,17 @@ pub fn parse_debug(text: &str) -> Result<DebugInfo, String> {
                     locals: vec![],
                 });
             }
+            Some("table") => {
+                let index: u8 = parts.next().ok_or_else(err)?.parse().map_err(|_| err())?;
+                let name = parts.next().ok_or_else(err)?.to_string();
+                info.function_table.push((index, name));
+            }
+            Some("init") => {
+                let name = parts.next().ok_or_else(err)?.to_string();
+                let addr = parse_addr_range(parts.next().ok_or_else(err)?).ok_or_else(err)?;
+                let detail = parts.collect::<Vec<_>>().join(" ");
+                info.init_sections.push(DebugInitSection { name, detail, addr });
+            }
             Some("global") => {
                 // type may contain spaces (`[u16; 3]`): take addr from the end
                 let toks: Vec<&str> = line.split_whitespace().collect();
@@ -197,7 +245,12 @@ pub fn parse_debug(text: &str) -> Result<DebugInfo, String> {
                     .as_mut()
                     .ok_or_else(|| format!("line {}: local outside of a func", ln + 1))?
                     .locals
-                    .push(DebugVar { name, ty, loc, scope });
+                    .push(DebugVar {
+                        name,
+                        ty,
+                        loc,
+                        scope,
+                    });
             }
             _ => return Err(err()),
         }
@@ -209,7 +262,8 @@ pub fn parse_debug(text: &str) -> Result<DebugInfo, String> {
 }
 
 fn parse_hex(s: &str) -> Option<u16> {
-    s.strip_prefix("0x").and_then(|h| u16::from_str_radix(h, 16).ok())
+    s.strip_prefix("0x")
+        .and_then(|h| u16::from_str_radix(h, 16).ok())
 }
 
 fn parse_addr_range(s: &str) -> Option<(usize, usize)> {

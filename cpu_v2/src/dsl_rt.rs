@@ -51,6 +51,16 @@ pub fn assert(cond: bool, sig: u16) {
     }
 }
 
+/// number of set bits in a 16-bit word
+pub fn cnt1(x: u16) -> u16 {
+    x.count_ones() as u16
+}
+
+/// integer base-2 logarithm; like the target instruction, zero is invalid
+pub fn log2(x: u16) -> u16 {
+    x.ilog2() as u16
+}
+
 /// receive a word from a device (not available on the host)
 pub fn dev_recv(dev: u8, ch: u8) -> u16 {
     let _ = (dev, ch);
