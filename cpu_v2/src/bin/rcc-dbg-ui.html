@@ -1,5 +1,5 @@
 <!DOCTYPE html>
-<html lang="zh">
+<html lang="en">
 <head>
 <meta charset="utf-8">
 <title>rcc debugger</title>
@@ -59,12 +59,12 @@
 <body>
 <header>
   <b>rcc debugger</b>
-  <button id="bnext" class="primary">步进 (next line)</button>
-  <button id="bover">步过 (over)</button>
-  <button id="bout">步出 (out)</button>
-  <button id="bstep">指令 (instr)</button>
-  <button id="bcont">继续 (continue)</button>
-  <button id="breset">重置 (reset)</button>
+  <button id="bnext" class="primary">Next Line</button>
+  <button id="bover">Step Over</button>
+  <button id="bout">Step Out</button>
+  <button id="bstep">Instruction</button>
+  <button id="bcont">Continue</button>
+  <button id="breset">Reset</button>
   <span class="badge" id="cycles">cycles: 0</span>
   <span class="badge" id="pc">pc: 0000</span>
   <span class="badge halt" id="halt" style="display:none"></span>
@@ -84,7 +84,7 @@
       <h3 style="margin:0">memory</h3>
       addr <input id="maddr" value="0x1000">
       len <input id="mlen" value="128" style="width:50px">
-      <button id="mgo">查看</button>
+      <button id="mgo">View</button>
       <button class="mq" data-a="sp">sp</button>
       <button class="mq" data-a="0x1000">heap</button>
       <button class="mq" data-a="0">data</button>
