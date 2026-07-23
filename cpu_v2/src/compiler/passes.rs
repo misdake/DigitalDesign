@@ -4,7 +4,7 @@
 use crate::compiler::builder::remove_trivial_phis;
 use crate::compiler::ir::*;
 use crate::isa::Cond;
-use crate::sim::{calc_flags, calc_flags_signed};
+use crate::semantics::{calc_flags, calc_flags_signed};
 use std::collections::{HashMap, HashSet};
 
 #[derive(Clone, Debug)]

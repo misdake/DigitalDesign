@@ -29,6 +29,7 @@ pub trait CpuV2Design {
 
         let decoder = Self::Decoder::build(&DecoderInput {
             instruction: inst_memory.instruction,
+            reset: ports.reset,
         });
 
         let register_read = Self::RegisterRead::build(&RegisterReadInput {

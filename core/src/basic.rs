@@ -237,6 +237,9 @@ impl Circuit {
                 .map(|w| self.wires_latencies.get_wire(w))
                 .expect("reg with no input!")
         });
+        self.externals
+            .iter_mut()
+            .for_each(|external| external.clock(&mut self.wires_latencies));
         self.regs
             .iter_mut()
             .for_each(|reg| self.wires_latencies.set_wire(reg.wire_out, reg.temp_value));
@@ -286,6 +289,7 @@ impl Circuit {
 
 pub trait External: Any {
     fn execute(&mut self, circuit: &mut CircuitWires);
+    fn clock(&mut self, _circuit: &mut CircuitWires) {}
     fn as_any(&self) -> &dyn Any;
 }
 impl Wire {

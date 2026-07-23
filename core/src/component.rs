@@ -11,6 +11,7 @@ pub trait CircuitComponent: Any {
 pub trait CircuitComponentEmu<T: CircuitComponent>: Any + Sized {
     fn create(input: &T::Input) -> (Self, T::Output);
     fn execute(&mut self, circuit: &mut CircuitWires, input: &T::Input, output: &T::Output);
+    fn clock(&mut self, _circuit: &mut CircuitWires, _input: &T::Input, _output: &T::Output) {}
 
     fn build(input: &T::Input) -> T::Output {
         let (emu, output) = Self::create(input);
@@ -32,6 +33,10 @@ pub struct EmulatedComponent<T: CircuitComponent, E: CircuitComponentEmu<T>> {
 impl<T: CircuitComponent, E: CircuitComponentEmu<T>> External for EmulatedComponent<T, E> {
     fn execute(&mut self, circuit: &mut CircuitWires) {
         self.emu.execute(circuit, &self.input, &self.output);
+    }
+
+    fn clock(&mut self, circuit: &mut CircuitWires) {
+        self.emu.clock(circuit, &self.input, &self.output);
     }
 
     fn as_any(&self) -> &dyn Any {

@@ -1,4 +1,5 @@
 use crate::isa::*;
+pub use crate::semantics::{calc_flags, calc_flags_signed};
 use digital_design_code::select;
 
 pub struct SimEnv {
@@ -12,25 +13,6 @@ pub struct SimState {
     pub mem: Box<[u16; 65536]>,
     pub pc: u16,
     pub flags: u8,
-}
-
-#[rustfmt::skip]
-pub fn calc_flags(x: u16, y: u16) -> u8 {
-    let mut r = 0;
-    if x > y { r |= FLAGS_GREATER; }
-    if x == y { r |= FLAGS_EQUAL; }
-    if x < y { r |= FLAGS_LESS; }
-    r
-}
-
-#[rustfmt::skip]
-pub fn calc_flags_signed(x: u16, y: u16) -> u8 {
-    let (x, y) = (x as i16, y as i16);
-    let mut r = 0;
-    if x > y { r |= FLAGS_GREATER; }
-    if x == y { r |= FLAGS_EQUAL; }
-    if x < y { r |= FLAGS_LESS; }
-    r
 }
 
 impl Default for SimState {
@@ -170,7 +152,7 @@ impl SimEnv {
 
             Instruction::mov(r1, r0) => changes.reg(r0, reg(r1)),
             Instruction::inv(r1, r0) => changes.reg(r0, !reg(r1)),
-            Instruction::neg(r1, r0) => changes.reg(r0, -(reg(r1) as i16) as u16),
+            Instruction::neg(r1, r0) => changes.reg(r0, (reg(r1) as i16).wrapping_neg() as u16),
             Instruction::cnt1(r1, r0) => changes.reg(r0, reg(r1).count_ones() as u16),
             Instruction::log2(r1, r0) => {
                 let value = reg(r1);
