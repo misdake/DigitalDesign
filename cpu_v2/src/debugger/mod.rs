@@ -1,7 +1,9 @@
 //! interactive debugger session: step/breakpoints/variable inspection over a
 //! compiled rcc program (binary image + `.dbg` debug info).
 
-use crate::{DebugFunc, DebugInfo, DebugVar, Instruction, SimEnv, VarLoc, decode_binary, parse_debug};
+use crate::{
+    decode_binary, parse_debug, DebugFunc, DebugInfo, DebugVar, Instruction, SimEnv, VarLoc,
+};
 use std::collections::{HashMap, HashSet};
 use std::fmt::Write as _;
 use std::path::Path;
@@ -54,8 +56,10 @@ pub struct DisasmLine {
 impl DebugSession {
     /// load a binary image plus its `.dbg` (and `.lst` if present)
     pub fn load(bin_path: &Path) -> Result<DebugSession, String> {
-        let bytes = std::fs::read(bin_path).map_err(|e| format!("cannot read {}: {e}", bin_path.display()))?;
-        let instructions = decode_binary(&bytes).ok_or_else(|| format!("{} is not an rcc binary", bin_path.display()))?;
+        let bytes = std::fs::read(bin_path)
+            .map_err(|e| format!("cannot read {}: {e}", bin_path.display()))?;
+        let instructions = decode_binary(&bytes)
+            .ok_or_else(|| format!("{} is not an rcc binary", bin_path.display()))?;
 
         let dbg_path = bin_path.with_extension("dbg");
         let debug = match std::fs::read_to_string(&dbg_path) {
@@ -68,7 +72,12 @@ impl DebugSession {
         // text comes from the listing when available (it has comments).
         let lst_path = bin_path.with_extension("lst");
         let listing = std::fs::read_to_string(&lst_path).unwrap_or_default();
-        Ok(Self::from_compiled(instructions, listing, debug, HashMap::new()))
+        Ok(Self::from_compiled(
+            instructions,
+            listing,
+            debug,
+            HashMap::new(),
+        ))
     }
 
     /// Build a debugger session directly from compiler output. `sources`
@@ -107,7 +116,10 @@ impl DebugSession {
             }
             disasm.push(DisasmLine {
                 addr,
-                text: lst_text.get(&addr).cloned().unwrap_or_else(|| inst.to_string()),
+                text: lst_text
+                    .get(&addr)
+                    .cloned()
+                    .unwrap_or_else(|| inst.to_string()),
                 call: false,
                 target: None,
                 target_name: None,
@@ -156,8 +168,7 @@ impl DebugSession {
         use crate::Instruction as I;
         match inst {
             I::call_rel(..) | I::call_abs(..) | I::call_reg(_) => {
-                let arg_values = crate::ARG_REGS
-                    .map(|r| self.sim.state.reg[r as usize]);
+                let arg_values = crate::ARG_REGS.map(|r| self.sim.state.reg[r as usize]);
                 let func_addr = change.pc_next as usize;
                 let func_name = self
                     .debug
@@ -342,13 +353,9 @@ impl DebugSession {
     pub fn current_line(&self) -> Option<(u16, u32)> {
         let pc = self.sim.state.pc as usize;
         let func = self.current_func()?;
-        let entries = self
-            .debug
-            .lines
-            .iter()
-            .filter(|(addr, file, _)| {
-                *file == func.file && (func.addr.0..func.addr.1).contains(addr)
-            });
+        let entries = self.debug.lines.iter().filter(|(addr, file, _)| {
+            *file == func.file && (func.addr.0..func.addr.1).contains(addr)
+        });
         let mut best: Option<&(usize, u16, u32)> = None;
         for entry in entries {
             if entry.0 <= pc && best.is_none_or(|b| entry.0 >= b.0) {
@@ -422,7 +429,10 @@ impl DebugSession {
         // the return jump, so frame-relative locals no longer have a valid
         // address at that point.
         !matches!(self.instructions.get(pc), Some(Instruction::jmp_reg(13)))
-            || !matches!(self.instructions.get(pc.saturating_sub(1)), Some(Instruction::sp_add(..)))
+            || !matches!(
+                self.instructions.get(pc.saturating_sub(1)),
+                Some(Instruction::sp_add(..))
+            )
     }
 
     /// read a word, interpreting it by the type string
@@ -462,10 +472,18 @@ fn annotate_targets(disasm: &mut [DisasmLine], instructions: &[Instruction], deb
         if addr >= instructions.len() {
             continue;
         }
-        line.call = matches!(instructions[addr], I::call_rel(..) | I::call_abs(..) | I::call_reg(_));
+        line.call = matches!(
+            instructions[addr],
+            I::call_rel(..) | I::call_abs(..) | I::call_reg(_)
+        );
         let (target, is_call) = match instructions[addr] {
-            I::jg(hi, lo) | I::je(hi, lo) | I::jge(hi, lo) | I::jl(hi, lo) | I::jne(hi, lo)
-            | I::jle(hi, lo) | I::jmp(hi, lo) => {
+            I::jg(hi, lo)
+            | I::je(hi, lo)
+            | I::jge(hi, lo)
+            | I::jl(hi, lo)
+            | I::jne(hi, lo)
+            | I::jle(hi, lo)
+            | I::jmp(hi, lo) => {
                 let off = crate::isa::imm8_as_i16(hi, lo) as i32;
                 let t = addr as i32 + off;
                 if (0..65536).contains(&t) {
@@ -489,7 +507,12 @@ fn annotate_targets(disasm: &mut [DisasmLine], instructions: &[Instruction], deb
                     .function_table
                     .iter()
                     .find(|(entry, _)| *entry == index)
-                    .and_then(|(_, name)| debug.functions.iter().find(|function| function.name == *name))
+                    .and_then(|(_, name)| {
+                        debug
+                            .functions
+                            .iter()
+                            .find(|function| function.name == *name)
+                    })
                     .map(|function| function.addr.0);
                 (target, true)
             }
@@ -605,12 +628,20 @@ impl DebugSession {
         let _ = write!(
             out,
             "\"regs\":[{}],",
-            st.reg.iter().map(|r| r.to_string()).collect::<Vec<_>>().join(",")
+            st.reg
+                .iter()
+                .map(|r| r.to_string())
+                .collect::<Vec<_>>()
+                .join(",")
         );
         let _ = write!(
             out,
             "\"breakpoints\":[{}],",
-            self.breakpoints.iter().map(|b| b.to_string()).collect::<Vec<_>>().join(",")
+            self.breakpoints
+                .iter()
+                .map(|b| b.to_string())
+                .collect::<Vec<_>>()
+                .join(",")
         );
 
         // current function and its locals
@@ -619,7 +650,11 @@ impl DebugSession {
                 let _ = write!(
                     out,
                     "\"func\":{{\"name\":\"{}\",\"addr\":[{},{}],\"frame\":{},\"file\":{},",
-                    esc(&f.name), f.addr.0, f.addr.1, f.frame_size, f.file
+                    esc(&f.name),
+                    f.addr.0,
+                    f.addr.1,
+                    f.frame_size,
+                    f.file
                 );
                 let _ = write!(out, "\"locals\":[");
                 let locals: Vec<String> = f
@@ -637,13 +672,25 @@ impl DebugSession {
         }
 
         // globals and consts
-        let globals: Vec<String> = self.debug.globals.iter().map(|v| self.var_json(v)).collect();
+        let globals: Vec<String> = self
+            .debug
+            .globals
+            .iter()
+            .map(|v| self.var_json(v))
+            .collect();
         let _ = write!(out, "\"globals\":[{}],", globals.join(","));
         let consts: Vec<String> = self
             .debug
             .consts
             .iter()
-            .map(|(n, ty, v)| format!("{{\"name\":\"{}\",\"ty\":{},\"value\":{}}}", esc(n), ty_to_json(ty), v))
+            .map(|(n, ty, v)| {
+                format!(
+                    "{{\"name\":\"{}\",\"ty\":{},\"value\":{}}}",
+                    esc(n),
+                    ty_to_json(ty),
+                    v
+                )
+            })
             .collect();
         let _ = write!(out, "\"consts\":[{}],", consts.join(","));
 
@@ -757,7 +804,11 @@ impl DebugSession {
                     .as_ref()
                     .map(|detail| format!(",\"init\":\"{}\"", esc(detail)))
                     .unwrap_or_default();
-                let init_start = if d.init_start { ",\"initStart\":true" } else { "" };
+                let init_start = if d.init_start {
+                    ",\"initStart\":true"
+                } else {
+                    ""
+                };
                 format!(
                     "{{\"addr\":{},\"text\":\"{}\"{}{}{}{}{}}}",
                     d.addr,
@@ -780,7 +831,11 @@ impl DebugSession {
             VarValue::Mem(addr, words) => format!(
                 "{{\"addr\":{},\"words\":[{}]}}",
                 addr,
-                words.iter().map(|w| w.to_string()).collect::<Vec<_>>().join(",")
+                words
+                    .iter()
+                    .map(|w| w.to_string())
+                    .collect::<Vec<_>>()
+                    .join(",")
             ),
             VarValue::Reg(reg, word) => format!("{{\"reg\":{reg},\"word\":{word}}}"),
             VarValue::Unavailable => "null".to_string(),
@@ -808,7 +863,11 @@ impl DebugSession {
         let Ok(text) = std::fs::read_to_string(path) else {
             return String::new();
         };
-        text.lines().nth(line as usize - 1).unwrap_or("").trim().to_string()
+        text.lines()
+            .nth(line as usize - 1)
+            .unwrap_or("")
+            .trim()
+            .to_string()
     }
 
     /// full lines of a source file (empty when unreadable)

@@ -213,9 +213,7 @@ impl SimEnv {
             Instruction::jmp(hi, lo) => j_cc(&self.state, Always, &mut changes, hi, lo),
             Instruction::cmp_r(r1, r0) => changes.flags(calc_flags(reg(r0), reg(r1))),
             Instruction::cmp_i(u4, r0) => changes.flags(calc_flags(reg(r0), u4 as u16)),
-            Instruction::cmp_s(r1, r0) => {
-                changes.flags(calc_flags_signed(reg(r0), reg(r1)))
-            }
+            Instruction::cmp_s(r1, r0) => changes.flags(calc_flags_signed(reg(r0), reg(r1))),
             Instruction::cmp_si(i4, r0) => {
                 changes.flags(calc_flags_signed(reg(r0), imm_as_i16(i4)))
             }

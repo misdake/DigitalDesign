@@ -35,7 +35,9 @@ fn test_module_semantic_error_keeps_its_source_file() {
         source,
         &cpu_v2::CompilerOptions::default(),
         &mut |name| match name {
-            "helper" => Ok("fn helper() {\n    let x = 1u16 * 2u16;\n    halt(x);\n}\n".to_string()),
+            "helper" => {
+                Ok("fn helper() {\n    let x = 1u16 * 2u16;\n    halt(x);\n}\n".to_string())
+            }
             _ => Err(format!("unknown module `{name}`")),
         },
     ) {
@@ -71,7 +73,10 @@ fn test_value_conversion_error_uses_the_expression_location() {
 
     assert_eq!(error.location().map(|(_, line, _)| line), Some(3));
     let rendered = error.to_string();
-    assert!(rendered.contains("3 |     let invalid = x < 3u16;"), "{rendered}");
+    assert!(
+        rendered.contains("3 |     let invalid = x < 3u16;"),
+        "{rendered}"
+    );
 }
 
 #[test]
@@ -99,7 +104,10 @@ fn test_unsupported_constructs() {
     expect_error("fn f(x: u16) -> u16 { x / 2 }", "not supported");
     expect_error("fn f(x: u16) -> u16 { x * 2 }", "not supported");
     expect_error("fn f(x: u16) -> u16 { x % 2 }", "not supported");
-    expect_error("fn f(x: u16) -> u16 { match x { _ => 0 } }", "not supported");
+    expect_error(
+        "fn f(x: u16) -> u16 { match x { _ => 0 } }",
+        "not supported",
+    );
     expect_error("fn f(x: u16) -> u16 { let g = |y| y; x }", "not supported");
     expect_error("fn f<T>(x: T) -> T { x }", "not supported");
     expect_error("fn f(x: u16) -> u16 { x as u32 }", "not supported");
@@ -110,7 +118,10 @@ fn test_unsupported_constructs() {
     expect_error("fn f(x: u16) { x = 1; }", "not mutable");
     expect_error("fn f(x: u16) -> u16 { return; }", "return");
     expect_error("fn f() { let a: [u16; 3]; }", "initializer");
-    expect_error("fn f() { let mut x: u16 = 1; let p = &x; }", "not supported");
+    expect_error(
+        "fn f() { let mut x: u16 = 1; let p = &x; }",
+        "not supported",
+    );
     expect_error("static mut X: u16 = 0; fn f() {}", "static mut");
     expect_error("fn f(a: [u16; 2]) {}", "array");
 }
@@ -186,7 +197,10 @@ fn test_bool_restrictions() {
     expect_error("fn f(x: u16) { let b: bool = true; }", "bool");
     // a bare u16 is not a condition
     expect_error("fn f(x: u16) { if x { halt(0); } }", "boolean expression");
-    expect_error("fn f(x: u16) { while x { halt(0); } }", "boolean expression");
+    expect_error(
+        "fn f(x: u16) { while x { halt(0); } }",
+        "boolean expression",
+    );
     // a bool cannot be compared with an integer
     expect_error("fn f(x: u16) { if (x < 3u16) == 1 { halt(0); } }", "bool");
 }
@@ -194,10 +208,19 @@ fn test_bool_restrictions() {
 #[test]
 fn test_mixed_and_ptr_comparisons() {
     // u16/i16 never mix without an explicit `as` cast
-    expect_error("fn f(x: u16) { if x < 3i16 { halt(0); } }", "cannot compare");
-    expect_error("fn f(x: i16) { if 1u16 == x { halt(0); } }", "cannot compare");
+    expect_error(
+        "fn f(x: u16) { if x < 3i16 { halt(0); } }",
+        "cannot compare",
+    );
+    expect_error(
+        "fn f(x: i16) { if 1u16 == x { halt(0); } }",
+        "cannot compare",
+    );
     // Ptr only compares with Ptr, never with integers
-    expect_error("fn f(p: Ptr) { if p == 0u16 { halt(0); } }", "cannot compare");
+    expect_error(
+        "fn f(p: Ptr) { if p == 0u16 { halt(0); } }",
+        "cannot compare",
+    );
     expect_error("fn f(p: Ptr) { if p == 0 { halt(0); } }", "cannot compare");
 }
 
@@ -216,7 +239,10 @@ fn test_call_signature_errors() {
     expect_error("fn g(a: u16, b: u16) {} fn f(x: u16) { g(x); }", "takes");
     // wrong argument type
     expect_error("fn g(a: u16) {} fn f(x: i16) { g(x); }", "argument 1");
-    expect_error("fn g(a: u16) {} fn f(p: Ptr) { g(p); }", "expected u16, got Ptr");
+    expect_error(
+        "fn g(a: u16) {} fn f(p: Ptr) { g(p); }",
+        "expected u16, got Ptr",
+    );
 }
 
 #[test]

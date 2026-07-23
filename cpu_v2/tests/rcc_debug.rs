@@ -1,6 +1,5 @@
 //! debug info tests: variables/files/locations and the pc->line table.
 
-
 use cpu_v2::CompilerOptions;
 
 #[test]
@@ -40,9 +39,11 @@ fn main() {
     assert!(matches!(buf.loc, cpu_v2::VarLoc::Frame(_)), "{buf:?}");
     assert_eq!(buf.scope, Some((4, 7)));
     // pc->line table covers some of main's instructions
-    let main_lines: Vec<_> = debug.lines.iter().filter(|(addr, _, _)| {
-        (main.addr.0..main.addr.1).contains(addr)
-    }).collect();
+    let main_lines: Vec<_> = debug
+        .lines
+        .iter()
+        .filter(|(addr, _, _)| (main.addr.0..main.addr.1).contains(addr))
+        .collect();
     assert!(!main_lines.is_empty());
     assert!(main_lines.iter().all(|(_, file, _)| *file == 0));
 }

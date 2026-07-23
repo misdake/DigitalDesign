@@ -81,7 +81,10 @@ fn main() -> ExitCode {
         }
     };
     match input {
-        Some(input) => println!("rcc-dbg: serving {} on http://127.0.0.1:{port}", input.display()),
+        Some(input) => println!(
+            "rcc-dbg: serving {} on http://127.0.0.1:{port}",
+            input.display()
+        ),
         None => println!("rcc-dbg: playground on http://127.0.0.1:{port}"),
     }
 
@@ -121,7 +124,12 @@ fn handle(mut stream: TcpStream, session: SharedSession, playground: bool) -> st
         }
     }
     if content_length > MAX_SOURCE_BYTES {
-        write_response(&mut stream, "413 Payload Too Large", "text/plain", b"source exceeds 1 MiB")?;
+        write_response(
+            &mut stream,
+            "413 Payload Too Large",
+            "text/plain",
+            b"source exceeds 1 MiB",
+        )?;
         return Ok(());
     }
     let mut body = vec![0u8; content_length];
@@ -157,28 +165,39 @@ fn route(
         ("GET", "/") => (
             "200 OK",
             "text/html; charset=utf-8",
-            if playground_home { PLAYGROUND_UI } else { UI }.as_bytes().to_vec(),
+            if playground_home { PLAYGROUND_UI } else { UI }
+                .as_bytes()
+                .to_vec(),
         ),
         ("GET", "/playground") => (
             "200 OK",
             "text/html; charset=utf-8",
             PLAYGROUND_UI.as_bytes().to_vec(),
         ),
-        ("GET", "/debugger") => (
-            "200 OK",
-            "text/html; charset=utf-8",
-            UI.as_bytes().to_vec(),
-        ),
+        ("GET", "/debugger") => ("200 OK", "text/html; charset=utf-8", UI.as_bytes().to_vec()),
         ("POST", "/api/compile") => {
             let query = parse_query(query);
             let optimize = query.get("opt").is_none_or(|value| value != "0");
-            let function_table = match parse_function_table(query.get("ft").map(String::as_str).unwrap_or("auto")) {
-                Ok(config) => config,
-                Err(error) => return ("400 Bad Request", "text/plain; charset=utf-8", error.into_bytes()),
-            };
+            let function_table =
+                match parse_function_table(query.get("ft").map(String::as_str).unwrap_or("auto")) {
+                    Ok(config) => config,
+                    Err(error) => {
+                        return (
+                            "400 Bad Request",
+                            "text/plain; charset=utf-8",
+                            error.into_bytes(),
+                        )
+                    }
+                };
             let source = match std::str::from_utf8(body) {
                 Ok(source) => source,
-                Err(_) => return ("400 Bad Request", "text/plain; charset=utf-8", b"source is not UTF-8".to_vec()),
+                Err(_) => {
+                    return (
+                        "400 Bad Request",
+                        "text/plain; charset=utf-8",
+                        b"source is not UTF-8".to_vec(),
+                    )
+                }
             };
             match compile_source(source, optimize, function_table) {
                 Ok(compiled) => {
@@ -186,7 +205,11 @@ fn route(
                     *session.lock().unwrap() = Some(compiled);
                     ("200 OK", "application/json", json.into_bytes())
                 }
-                Err(error) => ("400 Bad Request", "text/plain; charset=utf-8", error.into_bytes()),
+                Err(error) => (
+                    "400 Bad Request",
+                    "text/plain; charset=utf-8",
+                    error.into_bytes(),
+                ),
             }
         }
         ("GET", "/api/state") => {
@@ -246,10 +269,20 @@ fn route(
             match (file, line) {
                 (Some(file), Some(line)) => {
                     if s.toggle_breakpoint_line(file, line, on).is_none() {
-                        return ("404 Not Found", "text/plain", b"no instruction for that line".to_vec());
+                        return (
+                            "404 Not Found",
+                            "text/plain",
+                            b"no instruction for that line".to_vec(),
+                        );
                     }
                 }
-                _ => return ("400 Bad Request", "text/plain", b"missing file/line".to_vec()),
+                _ => {
+                    return (
+                        "400 Bad Request",
+                        "text/plain",
+                        b"missing file/line".to_vec(),
+                    )
+                }
             }
             let json = s.state_json();
             ("200 OK", "application/json", json.into_bytes())
@@ -259,7 +292,11 @@ fn route(
 }
 
 fn no_session() -> (&'static str, &'static str, Vec<u8>) {
-    ("409 Conflict", "text/plain", b"compile a program first".to_vec())
+    (
+        "409 Conflict",
+        "text/plain",
+        b"compile a program first".to_vec(),
+    )
 }
 
 fn compile_source(
@@ -308,7 +345,11 @@ fn compile_source(
         payload
             .downcast_ref::<String>()
             .cloned()
-            .or_else(|| payload.downcast_ref::<&str>().map(|message| (*message).to_string()))
+            .or_else(|| {
+                payload
+                    .downcast_ref::<&str>()
+                    .map(|message| (*message).to_string())
+            })
             .unwrap_or_else(|| "compiler panicked".to_string())
     })?
 }
@@ -325,7 +366,10 @@ fn parse_function_table(value: &str) -> Result<FunctionTableConfig, String> {
                 .map(str::to_string)
                 .collect();
             if names.is_empty() {
-                Err("function table needs auto, none, all, or a comma-separated function list".to_string())
+                Err(
+                    "function table needs auto, none, all, or a comma-separated function list"
+                        .to_string(),
+                )
             } else {
                 Ok(FunctionTableConfig::Functions(names))
             }
@@ -336,7 +380,10 @@ fn parse_function_table(value: &str) -> Result<FunctionTableConfig, String> {
 fn parse_query(query: &str) -> std::collections::HashMap<String, String> {
     query
         .split('&')
-        .filter_map(|kv| kv.split_once('=').map(|(k, v)| (k.to_string(), v.to_string())))
+        .filter_map(|kv| {
+            kv.split_once('=')
+                .map(|(k, v)| (k.to_string(), v.to_string()))
+        })
         .collect()
 }
 
@@ -374,7 +421,11 @@ mod tests {
 
     #[test]
     fn playground_rejects_module_files() {
-        let error = match compile_source("mod other; fn main() { halt(0); }", true, FunctionTableConfig::Auto) {
+        let error = match compile_source(
+            "mod other; fn main() { halt(0); }",
+            true,
+            FunctionTableConfig::Auto,
+        ) {
             Ok(_) => panic!("module unexpectedly compiled"),
             Err(error) => error,
         };
@@ -383,10 +434,11 @@ mod tests {
 
     #[test]
     fn playground_reports_a_missing_main_function() {
-        let error = match compile_source("fn helper() { halt(0); }", true, FunctionTableConfig::Auto) {
-            Ok(_) => panic!("program without main unexpectedly compiled"),
-            Err(error) => error,
-        };
+        let error =
+            match compile_source("fn helper() { halt(0); }", true, FunctionTableConfig::Auto) {
+                Ok(_) => panic!("program without main unexpectedly compiled"),
+                Err(error) => error,
+            };
         assert!(error.contains("fn main"), "{error}");
     }
 
@@ -408,9 +460,10 @@ mod tests {
             .iter()
             .find(|function| function.name == "main")
             .unwrap();
-        assert!(optimized_main.locals.iter().any(|local| {
-            local.name == "a" && matches!(local.loc, cpu_v2::VarLoc::Ssa)
-        }));
+        assert!(optimized_main
+            .locals
+            .iter()
+            .any(|local| { local.name == "a" && matches!(local.loc, cpu_v2::VarLoc::Ssa) }));
 
         let shared: SharedSession = Arc::new(Mutex::new(None));
         let (status, _, _) = route(
@@ -429,15 +482,29 @@ mod tests {
             .iter()
             .find(|function| function.name == "main")
             .unwrap();
-        let a = main.locals.iter().find(|local| local.name == "a").unwrap().clone();
-        let b = main.locals.iter().find(|local| local.name == "b").unwrap().clone();
+        let a = main
+            .locals
+            .iter()
+            .find(|local| local.name == "a")
+            .unwrap()
+            .clone();
+        let b = main
+            .locals
+            .iter()
+            .find(|local| local.name == "b")
+            .unwrap()
+            .clone();
         assert!(matches!(a.loc, cpu_v2::VarLoc::Frame(_)));
         assert!(matches!(b.loc, cpu_v2::VarLoc::Frame(_)));
 
         assert!(session.toggle_breakpoint_line(0, 5, true).is_some());
         assert_eq!(session.continue_run(1_000).1, None);
-        assert!(matches!(session.var_value(&a), cpu_v2::debugger::VarValue::Mem(_, ref words) if words == &[7]));
-        assert!(matches!(session.var_value(&b), cpu_v2::debugger::VarValue::Mem(_, ref words) if words == &[9]));
+        assert!(
+            matches!(session.var_value(&a), cpu_v2::debugger::VarValue::Mem(_, ref words) if words == &[7])
+        );
+        assert!(
+            matches!(session.var_value(&b), cpu_v2::debugger::VarValue::Mem(_, ref words) if words == &[9])
+        );
     }
 
     #[test]
@@ -450,10 +517,22 @@ mod tests {
             "}\n",
         );
         let shared: SharedSession = Arc::new(Mutex::new(None));
-        let (status, _, _) = route("POST", "/api/compile?ft=all", source.as_bytes(), &shared, true);
+        let (status, _, _) = route(
+            "POST",
+            "/api/compile?ft=all",
+            source.as_bytes(),
+            &shared,
+            true,
+        );
         assert_eq!(status, "200 OK");
         assert_eq!(
-            shared.lock().unwrap().as_ref().unwrap().debug.function_table,
+            shared
+                .lock()
+                .unwrap()
+                .as_ref()
+                .unwrap()
+                .debug
+                .function_table,
             vec![(0, "inc".to_string())]
         );
     }

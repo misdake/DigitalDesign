@@ -263,12 +263,18 @@ fn test_callee_save_across_call() {
     // f uses a frame (callee-save and/or spills), sized by actual need
     let subs = sp_sub_values(&instructions);
     assert!(!subs.is_empty(), "expected a stack frame");
-    assert!(subs.iter().all(|&v| (1..=16).contains(&v)), "frames: {subs:?}");
+    assert!(
+        subs.iter().all(|&v| (1..=16).contains(&v)),
+        "frames: {subs:?}"
+    );
     // epilogues restore sp with the same amount as their prologue
     // (main has no epilogue: it ends with halt)
     let adds = sp_add_values(&instructions);
     assert!(!adds.is_empty(), "expected at least one epilogue");
-    assert!(adds.iter().all(|a| subs.contains(a)), "{adds:?} vs {subs:?}");
+    assert!(
+        adds.iter().all(|a| subs.contains(a)),
+        "{adds:?} vs {subs:?}"
+    );
 
     let a = av;
     let expected: u16 = (a + 1) + (0..10u16).map(|i| a + (i * 7 + 1)).sum::<u16>();

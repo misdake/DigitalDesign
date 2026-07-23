@@ -195,7 +195,8 @@ pub fn parse_debug(text: &str) -> Result<DebugInfo, String> {
                 let name = parts.next().ok_or_else(err)?.to_string();
                 let addr = parse_addr_range(parts.next().ok_or_else(err)?).ok_or_else(err)?;
                 let detail = parts.collect::<Vec<_>>().join(" ");
-                info.init_sections.push(DebugInitSection { name, detail, addr });
+                info.init_sections
+                    .push(DebugInitSection { name, detail, addr });
             }
             Some("global") => {
                 // type may contain spaces (`[u16; 3]`): take addr from the end

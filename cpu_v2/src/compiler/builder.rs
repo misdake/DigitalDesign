@@ -5,9 +5,9 @@
 //! whose value is unknown in a block inserts a phi (lazily, with incomplete
 //! phis for not-yet-sealed blocks such as loop headers).
 
-use crate::isa::Cond;
-use crate::compiler::FuncName;
 use crate::compiler::ir::*;
+use crate::compiler::FuncName;
+use crate::isa::Cond;
 use std::collections::HashMap;
 
 /// a frontend variable handle (DSL-level mutable variable)
@@ -107,12 +107,16 @@ impl FuncBuilder {
     }
 
     fn cur(&self) -> BlockId {
-        self.current.expect("no current block (already terminated?)")
+        self.current
+            .expect("no current block (already terminated?)")
     }
 
     fn push(&mut self, inst: Instr) {
         let b = self.cur();
-        assert!(self.func.blocks[b].term.is_none(), "block b{b} already terminated");
+        assert!(
+            self.func.blocks[b].term.is_none(),
+            "block b{b} already terminated"
+        );
         self.func.blocks[b].insts.push(inst);
         self.func.blocks[b].lines.push(self.line_hint);
     }
@@ -124,7 +128,10 @@ impl FuncBuilder {
 
     fn terminate(&mut self, term: Terminator) {
         let b = self.cur();
-        assert!(self.func.blocks[b].term.is_none(), "block b{b} already terminated");
+        assert!(
+            self.func.blocks[b].term.is_none(),
+            "block b{b} already terminated"
+        );
         self.func.blocks[b].term = Some(term);
         self.func.blocks[b].term_line = self.line_hint;
         self.current = None;
@@ -205,7 +212,12 @@ impl FuncBuilder {
     pub fn shift(&mut self, op: ShiftOp, src: VReg, amount: u8) -> VReg {
         assert!(amount <= 15, "shift amount {amount} does not fit u4");
         let dst = self.fresh_vreg();
-        self.push(Instr::Shift { dst, op, src, amount });
+        self.push(Instr::Shift {
+            dst,
+            op,
+            src,
+            amount,
+        });
         dst
     }
     pub fn mov(&mut self, src: VReg) -> VReg {
@@ -248,11 +260,19 @@ impl FuncBuilder {
     }
     pub fn dev_recv(&mut self, device: u8, channel: u8) -> VReg {
         let dst = self.fresh_vreg();
-        self.push(Instr::DevRecv { dst, device, channel });
+        self.push(Instr::DevRecv {
+            dst,
+            device,
+            channel,
+        });
         dst
     }
     pub fn dev_send(&mut self, device: u8, channel: u8, src: VReg) {
-        self.push(Instr::DevSend { device, channel, src });
+        self.push(Instr::DevSend {
+            device,
+            channel,
+            src,
+        });
     }
 
     // ----- variables (versioned SSA views) -----
@@ -285,7 +305,10 @@ impl FuncBuilder {
             return dst;
         }
         match self.func.blocks[block].preds.as_slice() {
-            [] => panic!("use of undefined variable {var} in function {}", self.func.name),
+            [] => panic!(
+                "use of undefined variable {var} in function {}",
+                self.func.name
+            ),
             [pred] => {
                 let pred = *pred;
                 let v = self.read_var(var, pred);
@@ -340,7 +363,11 @@ impl FuncBuilder {
     /// while loop with the condition evaluated at the loop header.
     /// `cond` runs in the (unsealed) header block, so variables it reads
     /// become loop-carried phis automatically.
-    pub fn while_loop(&mut self, cond: impl FnOnce(&mut Self) -> Cmp, body: impl FnOnce(&mut Self)) {
+    pub fn while_loop(
+        &mut self,
+        cond: impl FnOnce(&mut Self) -> Cmp,
+        body: impl FnOnce(&mut Self),
+    ) {
         self.while_bool(|b| BoolExpr::Cmp(cond(b)), body);
     }
 
@@ -529,7 +556,10 @@ impl FuncBuilder {
     /// (for-loop increment blocks); returns the new block, unsealed
     pub fn begin_continue_block(&mut self) -> BlockId {
         let incr = self.new_block(&[]);
-        self.loops.last_mut().expect("continue block outside of loop").header = incr;
+        self.loops
+            .last_mut()
+            .expect("continue block outside of loop")
+            .header = incr;
         incr
     }
     /// finish a continue block: wire the body's fall-through to it, seal it,
@@ -674,7 +704,12 @@ pub(crate) fn remove_trivial_phis(func: &mut IrFunc) -> bool {
                     Instr::Un { src, .. } | Instr::Shift { src, .. } | Instr::Mov { src, .. } => {
                         subst(src)
                     }
-                    Instr::LoadImm { .. } | Instr::StoreStatic { .. } | Instr::DevRecv { .. } | Instr::LoadSp { .. } | Instr::LoadLocal { .. } | Instr::AddrOfLocal { .. } => {}
+                    Instr::LoadImm { .. }
+                    | Instr::StoreStatic { .. }
+                    | Instr::DevRecv { .. }
+                    | Instr::LoadSp { .. }
+                    | Instr::LoadLocal { .. }
+                    | Instr::AddrOfLocal { .. } => {}
                     Instr::LoadMem { base, .. } => subst(base),
                     Instr::StoreMem { base, src, .. } => {
                         subst(base);

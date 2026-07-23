@@ -36,17 +36,27 @@ fn main() -> ExitCode {
     let mut args = std::env::args().skip(1);
     while let Some(a) = args.next() {
         let mut num = |name: &str| -> u16 {
-            let v = args.next().unwrap_or_else(|| die(&format!("{name} needs a value")));
+            let v = args
+                .next()
+                .unwrap_or_else(|| die(&format!("{name} needs a value")));
             parse_u16(&v).unwrap_or_else(|| die(&format!("invalid number for {name}: {v}")))
         };
         match a.as_str() {
-            "-o" => out = Some(PathBuf::from(args.next().unwrap_or_else(|| die("-o needs a value")))),
-            "--lst" => lst = Some(PathBuf::from(args.next().unwrap_or_else(|| die("--lst needs a value")))),
-            "--no-opt" => {
-                opts.opt = cpu_v2::Opts::disabled()
+            "-o" => {
+                out = Some(PathBuf::from(
+                    args.next().unwrap_or_else(|| die("-o needs a value")),
+                ))
             }
+            "--lst" => {
+                lst = Some(PathBuf::from(
+                    args.next().unwrap_or_else(|| die("--lst needs a value")),
+                ))
+            }
+            "--no-opt" => opts.opt = cpu_v2::Opts::disabled(),
             "--function-table" => {
-                let value = args.next().unwrap_or_else(|| die("--function-table needs a value"));
+                let value = args
+                    .next()
+                    .unwrap_or_else(|| die("--function-table needs a value"));
                 opts.function_table = parse_function_table(&value);
             }
             "--stack-init" => opts.stack_init = num("--stack-init"),
@@ -90,15 +100,11 @@ fn main() -> ExitCode {
         Err(format!("module file not found next to {}", input.display()))
     };
 
-    let program = match compile_program_named(
-        &input.display().to_string(),
-        &src,
-        &opts,
-        &mut loader,
-    ) {
-        Ok(f) => f,
-        Err(e) => die(&format!("{e}")),
-    };
+    let program =
+        match compile_program_named(&input.display().to_string(), &src, &opts, &mut loader) {
+            Ok(f) => f,
+            Err(e) => die(&format!("{e}")),
+        };
     let n_funcs = program.funcs.len();
 
     let mut c = Compiler::new();

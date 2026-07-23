@@ -31,7 +31,10 @@ fn main() -> ExitCode {
     let (state, signal) = simulate_quiet(&instructions, max_cycles);
     match signal {
         Some(sig) => {
-            println!("halt: signal = {sig} (0x{sig:04x}), {} cycles", state.cycles);
+            println!(
+                "halt: signal = {sig} (0x{sig:04x}), {} cycles",
+                state.cycles
+            );
             ExitCode::SUCCESS
         }
         None => {
@@ -40,4 +43,3 @@ fn main() -> ExitCode {
         }
     }
 }
-

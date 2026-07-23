@@ -161,8 +161,20 @@ fn main() {
     halt(a + b + c + d);
 }
 "#;
-    let sign = |x: i16| -> i16 { if x < 0 { -1 } else { 1 } };
-    let cap = |x: u16| -> u16 { if x > 10 { 10 } else { x } };
+    let sign = |x: i16| -> i16 {
+        if x < 0 {
+            -1
+        } else {
+            1
+        }
+    };
+    let cap = |x: u16| -> u16 {
+        if x > 10 {
+            10
+        } else {
+            x
+        }
+    };
     let deep = |a: u16, b: u16, c: u16| -> u16 {
         if a > b {
             if b > c {

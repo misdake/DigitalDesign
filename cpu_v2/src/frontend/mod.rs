@@ -3,10 +3,10 @@
 //!
 //! anything outside the subset is a hard error with a source span.
 
-use crate::{DebugVar, VarLoc};
-use crate::{BoolExpr, CompilerOptions, FuncBuilder, VarId};
-use crate::{BlockId, Cmp, CmpRhs, Instr, IrFunc, BinOp, ShiftOp, UnOp, VReg};
 use crate::isa::Cond;
+use crate::{BinOp, BlockId, Cmp, CmpRhs, Instr, IrFunc, ShiftOp, UnOp, VReg};
+use crate::{BoolExpr, CompilerOptions, FuncBuilder, VarId};
+use crate::{DebugVar, VarLoc};
 use std::collections::{HashMap, HashSet};
 use std::fmt;
 use syn::{BinOp as SBinOp, Block, Expr, Item, ItemFn, Lit, Pat, Stmt, Type, UnOp as SUnOp};
@@ -99,12 +99,19 @@ impl fmt::Display for CompileError {
                 " --> {}:{}:{}",
                 diagnostic.file, diagnostic.line, diagnostic.column
             )?;
-            if let Some(line) = diagnostic.source.lines().nth(diagnostic.line.saturating_sub(1)) {
+            if let Some(line) = diagnostic
+                .source
+                .lines()
+                .nth(diagnostic.line.saturating_sub(1))
+            {
                 let number_width = diagnostic.line.to_string().len();
                 writeln!(f, "{space:>width$} |", space = "", width = number_width)?;
                 writeln!(f, "{} | {}", diagnostic.line, line)?;
                 let caret_width = if diagnostic.end_line == diagnostic.line {
-                    diagnostic.end_column.saturating_sub(diagnostic.column).max(1)
+                    diagnostic
+                        .end_column
+                        .saturating_sub(diagnostic.column)
+                        .max(1)
                 } else {
                     1
                 };
@@ -133,8 +140,8 @@ pub fn parse_source(src: &str) -> Result<Program, CompileError> {
 /// like `parse_source`, with the static data section starting at `data_base`
 pub fn parse_source_with(src: &str, data_base: u16) -> Result<Program, CompileError> {
     let source_name = "<source>";
-    let file = syn::parse_file(src)
-        .map_err(|error| CompileError::from_syn(source_name, src, error))?;
+    let file =
+        syn::parse_file(src).map_err(|error| CompileError::from_syn(source_name, src, error))?;
     let (funcs, debug) = parse_files(vec![file], data_base, &["<source>".to_string()], false)
         .map_err(|(_, error)| CompileError::from_syn(source_name, src, error))?;
     Ok(Program { funcs, debug })
@@ -182,7 +189,10 @@ pub fn compile_program_named(
                     return Err(CompileError::from_syn(
                         &file_name,
                         &text,
-                        err(&m.ident, "inline `mod name { }` is not supported; use `mod name;`"),
+                        err(
+                            &m.ident,
+                            "inline `mod name { }` is not supported; use `mod name;`",
+                        ),
                     ));
                 }
                 let name = m.ident.to_string();
@@ -200,15 +210,18 @@ pub fn compile_program_named(
         }
         i += 1;
     }
-    srcs.extend(STD_SOURCES.iter().map(|(n, t)| (n.to_string(), t.to_string())));
+    srcs.extend(
+        STD_SOURCES
+            .iter()
+            .map(|(n, t)| (n.to_string(), t.to_string())),
+    );
 
     let mut files = vec![];
     let mut names = vec![];
     for (name, text) in &srcs {
         names.push(name.clone());
         files.push(
-            syn::parse_file(text)
-                .map_err(|error| CompileError::from_syn(name, text, error))?,
+            syn::parse_file(text).map_err(|error| CompileError::from_syn(name, text, error))?,
         );
     }
     let (mut funcs, debug) = parse_files(files, opts.data_base, &names, opts.opt.is_disabled())
@@ -344,7 +357,10 @@ fn parse_files(
                     Item::Fn(f) => {
                         for attr in &f.attrs {
                             if !attr.path.is_ident("allow") && !attr.path.is_ident("doc") {
-                                return Err(err(attr, "attributes are not supported (except #[allow])"));
+                                return Err(err(
+                                    attr,
+                                    "attributes are not supported (except #[allow])",
+                                ));
                             }
                         }
                         fns.push((fi, f))
@@ -364,11 +380,18 @@ fn parse_files(
                     Item::Static(s) => add_static(s, &consts, &mut globals)?,
                     Item::Verbatim(_) => { /* attributes on use items land here */ }
                     Item::Mod(_) => { /* already resolved by compile_program */ }
-                    Item::Struct(_) => return Err(err(item, "structs are not supported (see spec §12)")),
+                    Item::Struct(_) => {
+                        return Err(err(item, "structs are not supported (see spec §12)"))
+                    }
                     Item::Trait(_) => return Err(err(item, "traits are not supported")),
                     Item::Impl(_) => return Err(err(item, "impl blocks are not supported")),
                     Item::Macro(_) => return Err(err(item, "macros are not supported")),
-                    _ => return Err(err(item, "item not supported (only fn/use/const/static are allowed)")),
+                    _ => {
+                        return Err(err(
+                            item,
+                            "item not supported (only fn/use/const/static are allowed)",
+                        ))
+                    }
                 }
             }
             Ok(())
@@ -382,7 +405,10 @@ fn parse_files(
         let name = f.sig.ident.to_string();
         let sig = signature(f).map_err(|error| (*fi, error))?;
         if sigs.insert(name.clone(), sig).is_some() {
-            return Err((*fi, err(&f.sig.ident, format!("function `{name}` defined twice"))));
+            return Err((
+                *fi,
+                err(&f.sig.ident, format!("function `{name}` defined twice")),
+            ));
         }
         names.push(intern(&name));
     }
@@ -448,8 +474,17 @@ fn emit_data_init(out: &mut [IrFunc], globals: &Globals) -> Result<(), syn::Erro
         }
     }
     if !inits.is_empty() {
-        let nonzero_words = globals.data_words.iter().filter(|(_, value)| *value != 0).count();
-        let first = globals.data_words.iter().map(|(addr, _)| *addr).min().unwrap();
+        let nonzero_words = globals
+            .data_words
+            .iter()
+            .filter(|(_, value)| *value != 0)
+            .count();
+        let first = globals
+            .data_words
+            .iter()
+            .map(|(addr, _)| *addr)
+            .min()
+            .unwrap();
         let end = globals
             .data_words
             .iter()
@@ -459,9 +494,7 @@ fn emit_data_init(out: &mut [IrFunc], globals: &Globals) -> Result<(), syn::Erro
         prepend_init_block(
             main,
             inits,
-            format!(
-                "static data: {nonzero_words} nonzero words in 0x{first:04x}..0x{end:04x}"
-            ),
+            format!("static data: {nonzero_words} nonzero words in 0x{first:04x}..0x{end:04x}"),
         );
     }
     Ok(())
@@ -500,7 +533,6 @@ fn lit_int_value(i: &syn::LitInt) -> Result<u64, syn::Error> {
     };
     v.map_err(|_| err(i, "invalid integer literal"))
 }
-
 
 // ---------------------------------------------------------------------------
 // constants and globals (data section)
@@ -604,7 +636,10 @@ fn add_static(
     g: &mut Globals,
 ) -> Result<(), syn::Error> {
     if s.mutability.is_some() {
-        return Err(err(s, "static mut is not supported; write via addr_of(&X) (see spec §9.2)"));
+        return Err(err(
+            s,
+            "static mut is not supported; write via addr_of(&X) (see spec §9.2)",
+        ));
     }
     let name = s.ident.to_string();
     match s.ty.as_ref() {
@@ -631,7 +666,12 @@ fn add_static(
                     let v = const_eval(&r.expr, consts)?;
                     vec![v; len]
                 }
-                _ => return Err(err(&s.expr, "array static needs an initializer list or [v; N]")),
+                _ => {
+                    return Err(err(
+                        &s.expr,
+                        "array static needs an initializer list or [v; N]",
+                    ))
+                }
             };
             if init.len() != len {
                 return Err(err(
@@ -678,7 +718,10 @@ enum Ty {
     /// Typed, one-word unchecked array view (same target representation as Ptr).
     ArrayRef(Box<Ty>),
     Bool,
-    FnPtr { params: Vec<Ty>, ret: Box<Ty> },
+    FnPtr {
+        params: Vec<Ty>,
+        ret: Box<Ty>,
+    },
     /// [u16; N] / [i16; N], memory-resident (data section or stack frame)
     Array(Box<Ty>, usize),
     Unit,
@@ -698,7 +741,11 @@ impl Ty {
             Ty::Bool => "bool".into(),
             Ty::FnPtr { params, ret } => format!(
                 "fn({}) -> {}",
-                params.iter().map(|t| t.display()).collect::<Vec<_>>().join(", "),
+                params
+                    .iter()
+                    .map(|t| t.display())
+                    .collect::<Vec<_>>()
+                    .join(", "),
                 ret.display()
             ),
             Ty::Array(elem, n) => format!("[{}; {n}]", elem.display()),
@@ -718,18 +765,30 @@ fn ty_of(ty: &Type) -> Result<Ty, syn::Error> {
     match ty {
         Type::Path(tp) => {
             if tp.path.segments.len() != 1 {
-                return Err(err(ty, "unsupported type (expected u16/i16/Ptr/Array<T>/fn pointer)"));
+                return Err(err(
+                    ty,
+                    "unsupported type (expected u16/i16/Ptr/Array<T>/fn pointer)",
+                ));
             }
             let seg = &tp.path.segments[0];
             if seg.ident == "Array" {
                 let syn::PathArguments::AngleBracketed(args) = &seg.arguments else {
-                    return Err(err(ty, "Array needs one element type: Array<u16> or Array<i16>"));
+                    return Err(err(
+                        ty,
+                        "Array needs one element type: Array<u16> or Array<i16>",
+                    ));
                 };
                 if args.args.len() != 1 {
-                    return Err(err(ty, "Array needs one element type: Array<u16> or Array<i16>"));
+                    return Err(err(
+                        ty,
+                        "Array needs one element type: Array<u16> or Array<i16>",
+                    ));
                 }
                 let Some(syn::GenericArgument::Type(elem)) = args.args.first() else {
-                    return Err(err(ty, "Array needs one element type: Array<u16> or Array<i16>"));
+                    return Err(err(
+                        ty,
+                        "Array needs one element type: Array<u16> or Array<i16>",
+                    ));
                 };
                 let elem = ty_of(elem)?;
                 if !matches!(elem, Ty::U16 | Ty::I16) {
@@ -745,7 +804,10 @@ fn ty_of(ty: &Type) -> Result<Ty, syn::Error> {
                 "i16" => Ok(Ty::I16),
                 "Ptr" => Ok(Ty::Ptr),
                 "bool" => Ok(Ty::Bool),
-                _ => Err(err(ty, "type not supported (only u16/i16/Ptr/Array<T>/fn pointer)")),
+                _ => Err(err(
+                    ty,
+                    "type not supported (only u16/i16/Ptr/Array<T>/fn pointer)",
+                )),
             }
         }
         Type::BareFn(bf) => {
@@ -765,9 +827,18 @@ fn ty_of(ty: &Type) -> Result<Ty, syn::Error> {
         }
         Type::Never(_) => Ok(Ty::Unit),
         Type::Paren(p) => ty_of(&p.elem),
-        Type::Array(_) => Err(err(ty, "owned arrays are not allowed here (pass Array<T> or Ptr)")),
-        Type::Reference(_) => Err(err(ty, "reference types `&T` are not supported (pass Array<T> or Ptr)")),
-        Type::Slice(_) => Err(err(ty, "slice types are not supported (pass Array<T> or Ptr)")),
+        Type::Array(_) => Err(err(
+            ty,
+            "owned arrays are not allowed here (pass Array<T> or Ptr)",
+        )),
+        Type::Reference(_) => Err(err(
+            ty,
+            "reference types `&T` are not supported (pass Array<T> or Ptr)",
+        )),
+        Type::Slice(_) => Err(err(
+            ty,
+            "slice types are not supported (pass Array<T> or Ptr)",
+        )),
         _ => Err(err(ty, "unsupported type")),
     }
 }
@@ -788,7 +859,13 @@ fn ty_of_maybe_array(ty: &Type, consts: &HashMap<String, (u16, Ty)>) -> Result<T
 }
 
 /// initialize a local array in the stack frame
-fn init_array(l: &mut FnLower, slot: u8, elem: &Ty, n: usize, init: &Expr) -> Result<(), syn::Error> {
+fn init_array(
+    l: &mut FnLower,
+    slot: u8,
+    elem: &Ty,
+    n: usize,
+    init: &Expr,
+) -> Result<(), syn::Error> {
     let base = l.b.addr_of_local(slot);
     match init {
         Expr::Repeat(r) => {
@@ -810,7 +887,10 @@ fn init_array(l: &mut FnLower, slot: u8, elem: &Ty, n: usize, init: &Expr) -> Re
             if arr.elems.len() != n {
                 return Err(err(
                     init,
-                    format!("array initializer has {} elements, expected {n}", arr.elems.len()),
+                    format!(
+                        "array initializer has {} elements, expected {n}",
+                        arr.elems.len()
+                    ),
                 ));
             }
             for (i, e) in arr.elems.iter().enumerate() {
@@ -820,7 +900,10 @@ fn init_array(l: &mut FnLower, slot: u8, elem: &Ty, n: usize, init: &Expr) -> Re
             }
             Ok(())
         }
-        _ => Err(err(init, "array initializer must be [v; N] or [e0, e1, ...]")),
+        _ => Err(err(
+            init,
+            "array initializer must be [v; N] or [e0, e1, ...]",
+        )),
     }
 }
 
@@ -829,7 +912,10 @@ fn signature(f: &ItemFn) -> Result<Sig, syn::Error> {
         return Err(err(&f.sig.generics, "generics are not supported"));
     }
     if f.sig.constness.is_some() || f.sig.asyncness.is_some() || f.sig.unsafety.is_some() {
-        return Err(err(&f.sig, "const/async/unsafe functions are not supported"));
+        return Err(err(
+            &f.sig,
+            "const/async/unsafe functions are not supported",
+        ));
     }
     if f.sig.abi.is_some() || f.sig.variadic.is_some() {
         return Err(err(&f.sig, "extern/variadic functions are not supported"));
@@ -846,10 +932,13 @@ fn signature(f: &ItemFn) -> Result<Sig, syn::Error> {
     }
     for (i, ty) in params.iter().enumerate() {
         if *ty == Ty::Bool {
-            return Err(err(&f.sig, format!(
-                "parameter {} is bool: bool only lives in conditions (use u16 0/1)",
-                i + 1
-            )));
+            return Err(err(
+                &f.sig,
+                format!(
+                    "parameter {} is bool: bool only lives in conditions (use u16 0/1)",
+                    i + 1
+                ),
+            ));
         }
     }
     let ret = match &f.sig.output {
@@ -857,7 +946,10 @@ fn signature(f: &ItemFn) -> Result<Sig, syn::Error> {
         syn::ReturnType::Type(_, t) => ty_of(t)?,
     };
     if ret == Ty::Bool {
-        return Err(err(&f.sig, "bool return type is not supported (bool only lives in conditions)"));
+        return Err(err(
+            &f.sig,
+            "bool return type is not supported (bool only lives in conditions)",
+        ));
     }
     Ok(Sig { params, ret })
 }
@@ -917,12 +1009,18 @@ impl Val {
     ) -> Result<(VReg, Ty), syn::Error> {
         match self {
             Val::V(v, ty) => Ok((v, ty)),
-            Val::Bool(_) => Err(err(at, format!(
-                "boolean value used as {what}; bool only lives in conditions (see spec §6)"
-            ))),
-            Val::FnItem(name) => Err(err(at, format!(
+            Val::Bool(_) => Err(err(
+                at,
+                format!(
+                    "boolean value used as {what}; bool only lives in conditions (see spec §6)"
+                ),
+            )),
+            Val::FnItem(name) => Err(err(
+                at,
+                format!(
                 "function `{name}` used as {what}; assign it to a fn pointer variable or call it"
-            ))),
+            ),
+            )),
             Val::Unit => Err(err(at, format!("unit value used as {what}"))),
             Val::Never => Ok((0, Ty::Never)),
         }
@@ -998,7 +1096,11 @@ fn scan_residents(
     }
     Ok(())
 }
-fn scan_stmt(s: &Stmt, consts: &HashMap<String, (u16, Ty)>, out: &mut HashMap<String, ResidentKind>) -> Result<(), syn::Error> {
+fn scan_stmt(
+    s: &Stmt,
+    consts: &HashMap<String, (u16, Ty)>,
+    out: &mut HashMap<String, ResidentKind>,
+) -> Result<(), syn::Error> {
     match s {
         Stmt::Local(local) => {
             if let Pat::Type(pt) = &local.pat {
@@ -1019,7 +1121,11 @@ fn scan_stmt(s: &Stmt, consts: &HashMap<String, (u16, Ty)>, out: &mut HashMap<St
     }
     Ok(())
 }
-fn scan_expr(e: &Expr, consts: &HashMap<String, (u16, Ty)>, out: &mut HashMap<String, ResidentKind>) -> Result<(), syn::Error> {
+fn scan_expr(
+    e: &Expr,
+    consts: &HashMap<String, (u16, Ty)>,
+    out: &mut HashMap<String, ResidentKind>,
+) -> Result<(), syn::Error> {
     match e {
         Expr::Paren(x) => scan_expr(&x.expr, consts, out),
         Expr::Binary(x) => {
@@ -1121,7 +1227,12 @@ fn lower_fn(
         dead: false,
         materialize_debug_locals,
     };
-    for (arg, (var, ty)) in f.sig.inputs.iter().zip(param_vars.iter().zip(sig.params.iter())) {
+    for (arg, (var, ty)) in f
+        .sig
+        .inputs
+        .iter()
+        .zip(param_vars.iter().zip(sig.params.iter()))
+    {
         let syn::FnArg::Typed(pt) = arg else {
             unreachable!()
         };
@@ -1129,7 +1240,10 @@ fn lower_fn(
             Pat::Ident(p) => {
                 let mutable = p.mutability.is_some();
                 if mutable && !matches!(ty, Ty::ArrayRef(_)) {
-                    return Err(err(&p.ident, "only Array<T> parameters may be declared mut"));
+                    return Err(err(
+                        &p.ident,
+                        "only Array<T> parameters may be declared mut",
+                    ));
                 }
                 (p.ident.to_string(), mutable)
             }
@@ -1145,7 +1259,10 @@ fn lower_fn(
                 VarKind::Local { slot }
             }
             Some(ResidentKind::Array) => {
-                return Err(err(&pt.pat, "owned arrays cannot be parameters; pass Array<T> or Ptr"))
+                return Err(err(
+                    &pt.pat,
+                    "owned arrays cannot be parameters; pass Array<T> or Ptr",
+                ))
             }
             None => VarKind::Ssa { var: *var },
         };
@@ -1166,7 +1283,11 @@ fn lower_fn(
             dv.loc = VarLoc::Param(crate::ARG_REGS[i]);
         }
     }
-    let ret_names: Vec<&'static str> = if sig.ret == Ty::Unit { vec![] } else { vec!["r"] };
+    let ret_names: Vec<&'static str> = if sig.ret == Ty::Unit {
+        vec![]
+    } else {
+        vec!["r"]
+    };
     l.b.set_names(&param_names, &ret_names);
     l.b.set_block_line(l.b.entry_block(), line_of(&f.sig.ident));
 
@@ -1246,7 +1367,12 @@ fn stmt(l: &mut FnLower, s: &Stmt) -> Result<(), syn::Error> {
             };
             let (ident, mutable) = match inner_pat {
                 Pat::Ident(p) => (p.ident.to_string(), p.mutability.is_some()),
-                _ => return Err(err(&local.pat, "unsupported pattern (only plain identifiers)")),
+                _ => {
+                    return Err(err(
+                        &local.pat,
+                        "unsupported pattern (only plain identifiers)",
+                    ))
+                }
             };
             let init = local
                 .init
@@ -1270,7 +1396,10 @@ fn stmt(l: &mut FnLower, s: &Stmt) -> Result<(), syn::Error> {
                 return Ok(());
             }
             if matches!(l.residents.get(&ident), Some(ResidentKind::Array)) {
-                return Err(err(&local.pat, "arrays need a type annotation like `let mut buf: [u16; N] = [0; N];`"));
+                return Err(err(
+                    &local.pat,
+                    "arrays need a type annotation like `let mut buf: [u16; N] = [0; N];`",
+                ));
             }
 
             let val = expr(l, &init.1)?;
@@ -1335,7 +1464,10 @@ fn stmt_expr(l: &mut FnLower, e: &Expr) -> Result<(), syn::Error> {
                 .lookup(&name)
                 .ok_or_else(|| err(&a.left, format!("undefined variable `{name}`")))?;
             if !info.mutable {
-                return Err(err(&a.left, format!("`{name}` is not mutable (declare with `let mut`)")));
+                return Err(err(
+                    &a.left,
+                    format!("`{name}` is not mutable (declare with `let mut`)"),
+                ));
             }
             let (kind, ty) = (info.kind.clone(), info.ty.clone());
             let val = expr(l, &a.right)?;
@@ -1378,7 +1510,10 @@ fn stmt_expr(l: &mut FnLower, e: &Expr) -> Result<(), syn::Error> {
                 .lookup(&name)
                 .ok_or_else(|| err(&a.left, format!("undefined variable `{name}`")))?;
             if !info.mutable {
-                return Err(err(&a.left, format!("`{name}` is not mutable (declare with `let mut`)")));
+                return Err(err(
+                    &a.left,
+                    format!("`{name}` is not mutable (declare with `let mut`)"),
+                ));
             }
             let (kind, ty) = (info.kind.clone(), info.ty.clone());
             if !ty.is_int() {
@@ -1410,7 +1545,10 @@ fn stmt_expr(l: &mut FnLower, e: &Expr) -> Result<(), syn::Error> {
             match (&ret_ty, &r.expr) {
                 (Ty::Unit, None) => l.b.ret(&[]),
                 (Ty::Unit, Some(e)) => {
-                    return Err(err(e, "returning a value from a function without return type"))
+                    return Err(err(
+                        e,
+                        "returning a value from a function without return type",
+                    ))
                 }
                 (expected, Some(e)) => {
                     let (v, from) = expr(l, e)?.reg(l, e, "return value")?;
@@ -1418,15 +1556,16 @@ fn stmt_expr(l: &mut FnLower, e: &Expr) -> Result<(), syn::Error> {
                     l.b.ret(&[v]);
                 }
                 (expected, None) => {
-                    return Err(err(r, format!("missing return value (expected {})", expected.display())))
+                    return Err(err(
+                        r,
+                        format!("missing return value (expected {})", expected.display()),
+                    ))
                 }
             }
             l.dead = true;
             Ok(())
         }
-        Expr::If(_) | Expr::While(_) | Expr::Loop(_) | Expr::ForLoop(_) => {
-            control_flow(l, e)
-        }
+        Expr::If(_) | Expr::While(_) | Expr::Loop(_) | Expr::ForLoop(_) => control_flow(l, e),
         Expr::Break(_) => {
             l.b.break_();
             l.dead = true;
@@ -1442,9 +1581,10 @@ fn stmt_expr(l: &mut FnLower, e: &Expr) -> Result<(), syn::Error> {
             let val = expr(l, e)?;
             match val {
                 Val::Unit | Val::V(_, _) | Val::Bool(_) | Val::Never => Ok(()),
-                Val::FnItem(name) => Err(err(e, format!(
-                    "function `{name}` as a statement; did you mean to call it?"
-                ))),
+                Val::FnItem(name) => Err(err(
+                    e,
+                    format!("function `{name}` as a statement; did you mean to call it?"),
+                )),
             }
         }
     }
@@ -1524,10 +1664,9 @@ fn control_flow(l: &mut FnLower, e: &Expr) -> Result<(), syn::Error> {
                         .from
                         .as_deref()
                         .ok_or_else(|| err(&fl.expr, "range needs a start"))?;
-                    let to = r
-                        .to
-                        .as_deref()
-                        .ok_or_else(|| err(&fl.expr, "range needs an end"))?;
+                    let to =
+                        r.to.as_deref()
+                            .ok_or_else(|| err(&fl.expr, "range needs an end"))?;
                     let inclusive = matches!(r.limits, syn::RangeLimits::Closed(_));
                     (from, to, inclusive)
                 }
@@ -1538,11 +1677,14 @@ fn control_flow(l: &mut FnLower, e: &Expr) -> Result<(), syn::Error> {
             let ty = match unify_int(from_ty.clone(), to_ty.clone()) {
                 Some(t) => t,
                 None => {
-                    return Err(err(&fl.expr, format!(
-                        "range type mismatch: {} vs {}",
-                        from_ty.display(),
-                        to_ty.display()
-                    )))
+                    return Err(err(
+                        &fl.expr,
+                        format!(
+                            "range type mismatch: {} vs {}",
+                            from_ty.display(),
+                            to_ty.display()
+                        ),
+                    ))
                 }
             };
 
@@ -1567,7 +1709,11 @@ fn control_flow(l: &mut FnLower, e: &Expr) -> Result<(), syn::Error> {
                     Cmp {
                         lhs: i,
                         rhs: CmpRhs::Reg(to_v),
-                        cond: if inclusive { Cond::LessEqual } else { Cond::Less },
+                        cond: if inclusive {
+                            Cond::LessEqual
+                        } else {
+                            Cond::Less
+                        },
                         signed: ty == Ty::I16,
                     },
                     body_b,
@@ -1632,7 +1778,12 @@ fn expr(l: &mut FnLower, e: &Expr) -> Result<Val, syn::Error> {
                     "" => Ty::UntypedInt,
                     "u16" => Ty::U16,
                     "i16" => Ty::I16,
-                    _ => return Err(err(&lit.lit, format!("unsupported literal suffix `{suffix}`"))),
+                    _ => {
+                        return Err(err(
+                            &lit.lit,
+                            format!("unsupported literal suffix `{suffix}`"),
+                        ))
+                    }
                 };
                 if v > u16::MAX as u64 {
                     return Err(err(&lit.lit, "literal out of 16-bit range"));
@@ -1646,7 +1797,10 @@ fn expr(l: &mut FnLower, e: &Expr) -> Result<Val, syn::Error> {
             })),
             Lit::Str(_) => Err(err(&lit.lit, "string literals are not supported")),
             Lit::Float(_) => Err(err(&lit.lit, "float literals are not supported")),
-            _ => Err(err(&lit.lit, "unsupported literal (only integers and bools)")),
+            _ => Err(err(
+                &lit.lit,
+                "unsupported literal (only integers and bools)",
+            )),
         },
         Expr::Path(p) => {
             let name = path_ident(e)?;
@@ -1691,7 +1845,10 @@ fn expr(l: &mut FnLower, e: &Expr) -> Result<Val, syn::Error> {
                 let val = expr(l, &u.expr)?;
                 match val {
                     Val::V(v, ty) if ty.is_int() => Ok(Val::V(l.b.un(UnOp::Inv, v), ty)),
-                    Val::V(_, ty) => Err(err(&u.op, format!("`!` does not apply to {}", ty.display()))),
+                    Val::V(_, ty) => Err(err(
+                        &u.op,
+                        format!("`!` does not apply to {}", ty.display()),
+                    )),
                     Val::Bool(c) => Ok(Val::Bool(BoolExpr::Not(Box::new(c)))),
                     Val::FnItem(_) => Err(err(&u.op, "`!` does not apply to functions")),
                     Val::Unit => Err(err(&u.op, "`!` does not apply to unit")),
@@ -1785,7 +1942,10 @@ fn array_index_addr(
 ) -> Result<(VReg, i16, Ty), syn::Error> {
     let (base, ty) = expr(l, &index.expr)?.reg(l, &index.expr, "array index base")?;
     let Ty::ArrayRef(elem) = ty else {
-        return Err(err(&index.expr, "indexing requires Array<u16> or Array<i16>"));
+        return Err(err(
+            &index.expr,
+            "indexing requires Array<u16> or Array<i16>",
+        ));
     };
     if let Expr::Lit(lit) = index.index.as_ref() {
         if let Lit::Int(value) = &lit.lit {
@@ -1858,11 +2018,14 @@ fn control_flow_value(l: &mut FnLower, e: &Expr) -> Result<Val, syn::Error> {
     };
     let (ev, et) = if_expr_branch(l, else_blk)?;
     let ty = unify_int(tt.clone(), et.clone()).ok_or_else(|| {
-        err(e, format!(
-            "if-expression branches have different types: {} vs {}",
-            tt.display(),
-            et.display()
-        ))
+        err(
+            e,
+            format!(
+                "if-expression branches have different types: {} vs {}",
+                tt.display(),
+                et.display()
+            ),
+        )
     })?;
     l.b.set(r, ev);
     l.b.end_if_else(join);
@@ -1874,7 +2037,10 @@ fn control_flow_value(l: &mut FnLower, e: &Expr) -> Result<Val, syn::Error> {
 
 fn if_expr_branch(l: &mut FnLower, blk: &Block) -> Result<(VReg, Ty), syn::Error> {
     if blk.stmts.len() != 1 {
-        return Err(err(blk, "if-expression branches must be single expressions"));
+        return Err(err(
+            blk,
+            "if-expression branches must be single expressions",
+        ));
     }
     match &blk.stmts[0] {
         Stmt::Expr(e) | Stmt::Semi(e, _) => {
@@ -1894,7 +2060,10 @@ fn cond(l: &mut FnLower, e: &Expr) -> Result<BoolExpr, syn::Error> {
         Val::Bool(c) => Ok(c),
         Val::V(_, ty) => Err(err(
             e,
-            format!("condition must be a boolean expression, got {} (compare something)", ty.display()),
+            format!(
+                "condition must be a boolean expression, got {} (compare something)",
+                ty.display()
+            ),
         )),
         Val::FnItem(_) => Err(err(e, "function used as a condition")),
         Val::Unit => Err(err(e, "unit used as a condition")),
@@ -1930,7 +2099,11 @@ fn compare(
         SBinOp::Ne(_) => Cond::NotEqual,
         _ => return Err(err(e, "unsupported comparison operator")),
     };
-    if matches!(op, SBinOp::Lt(_) | SBinOp::Le(_) | SBinOp::Gt(_) | SBinOp::Ge(_)) && (lt == Ty::Ptr || rt == Ty::Ptr) {
+    if matches!(
+        op,
+        SBinOp::Lt(_) | SBinOp::Le(_) | SBinOp::Gt(_) | SBinOp::Ge(_)
+    ) && (lt == Ty::Ptr || rt == Ty::Ptr)
+    {
         return Err(err(e, "ordered comparisons on pointers are not supported"));
     }
     Ok(BoolExpr::Cmp(Cmp {
@@ -1982,7 +2155,10 @@ fn cond_lazy(l: &mut FnLower, e: &Expr, t: BlockId, f: BlockId) -> Result<(), sy
                 }
                 Ok(())
             }
-            _ => Err(err(e, "condition must be a boolean expression (compare something)")),
+            _ => Err(err(
+                e,
+                "condition must be a boolean expression (compare something)",
+            )),
         },
         _ => {
             // delegate to the eager checker for a precise error message
@@ -1990,7 +2166,10 @@ fn cond_lazy(l: &mut FnLower, e: &Expr, t: BlockId, f: BlockId) -> Result<(), sy
                 Val::Bool(_) => unreachable!(),
                 Val::V(_, ty) => Err(err(
                     e,
-                    format!("condition must be a boolean expression, got {} (compare something)", ty.display()),
+                    format!(
+                        "condition must be a boolean expression, got {} (compare something)",
+                        ty.display()
+                    ),
                 )),
                 Val::FnItem(_) => Err(err(e, "function used as a condition")),
                 Val::Unit => Err(err(e, "unit used as a condition")),
@@ -2028,7 +2207,12 @@ fn call_expr(l: &mut FnLower, call: &syn::ExprCall) -> Result<Val, syn::Error> {
         return Err(err(&call.func, "unsupported callee"));
     };
     // intrinsic or fn-item path (possibly qualified like Ptr::from_addr)
-    let segs: Vec<String> = p.path.segments.iter().map(|s| s.ident.to_string()).collect();
+    let segs: Vec<String> = p
+        .path
+        .segments
+        .iter()
+        .map(|s| s.ident.to_string())
+        .collect();
     if segs == ["Ptr", "from_addr"] {
         let (v, _) = exactly_args(l, &call.args, call, 1, "Ptr::from_addr")?[0]
             .clone()
@@ -2049,7 +2233,10 @@ fn call_expr(l: &mut FnLower, call: &syn::ExprCall) -> Result<Val, syn::Error> {
                 return Err(err(call, "addr_of(&x) takes 1 argument"));
             }
             let Expr::Reference(r) = &call.args[0] else {
-                return Err(err(&call.args[0], "addr_of expects a reference: addr_of(&x)"));
+                return Err(err(
+                    &call.args[0],
+                    "addr_of expects a reference: addr_of(&x)",
+                ));
             };
             let target = path_ident(&r.expr)?;
             let v = l.addr_of_var(&target, &call.args[0])?;
@@ -2079,25 +2266,23 @@ fn call_expr(l: &mut FnLower, call: &syn::ExprCall) -> Result<Val, syn::Error> {
     let args: Vec<(VReg, Ty)> = call
         .args
         .iter()
-        .map(|a| {
-            match expr(l, a)? {
-                Val::FnItem(fname) => {
-                    let sig = l
-                        .sigs
-                        .get(fname)
-                        .cloned()
-                        .ok_or_else(|| err(a, format!("undefined function `{fname}`")))?;
-                    let v = l.b.load_func_addr(fname);
-                    Ok((
-                        v,
-                        Ty::FnPtr {
-                            params: sig.params,
-                            ret: Box::new(sig.ret),
-                        },
-                    ))
-                }
-                val => val.reg(l, a, "argument"),
+        .map(|a| match expr(l, a)? {
+            Val::FnItem(fname) => {
+                let sig = l
+                    .sigs
+                    .get(fname)
+                    .cloned()
+                    .ok_or_else(|| err(a, format!("undefined function `{fname}`")))?;
+                let v = l.b.load_func_addr(fname);
+                Ok((
+                    v,
+                    Ty::FnPtr {
+                        params: sig.params,
+                        ret: Box::new(sig.ret),
+                    },
+                ))
             }
+            val => val.reg(l, a, "argument"),
         })
         .collect::<Result<_, _>>()?;
     if name.as_str() == "halt" {
@@ -2115,7 +2300,11 @@ fn call_expr(l: &mut FnLower, call: &syn::ExprCall) -> Result<Val, syn::Error> {
         }
         let (v, from) = &args[0];
         let (v, _) = coerce(l, *v, from, &Ty::U16, &call.args[0])?;
-        let op = if name == "cnt1" { UnOp::Cnt1 } else { UnOp::Log2 };
+        let op = if name == "cnt1" {
+            UnOp::Cnt1
+        } else {
+            UnOp::Log2
+        };
         return Ok(Val::V(l.b.un(op, v), Ty::U16));
     }
 
@@ -2189,9 +2378,10 @@ fn array_method(
         }
         "write" => {
             if !mutable {
-                return Err(err(&m.method, format!(
-                    "array `{name}` is not mutable (declare with `let mut`)"
-                )));
+                return Err(err(
+                    &m.method,
+                    format!("array `{name}` is not mutable (declare with `let mut`)"),
+                ));
             }
             if m.args.len() != 2 {
                 return Err(err(&m.method, "write(off, v) takes 2 arguments"));
@@ -2240,10 +2430,13 @@ fn method_call(l: &mut FnLower, m: &syn::ExprMethodCall) -> Result<Val, syn::Err
         };
     }
     if base_ty != Ty::Ptr {
-        return Err(err(&m.receiver, format!(
-            "methods only exist on Ptr and arrays (got {})",
-            base_ty.display()
-        )));
+        return Err(err(
+            &m.receiver,
+            format!(
+                "methods only exist on Ptr and arrays (got {})",
+                base_ty.display()
+            ),
+        ));
     }
     match method.as_str() {
         "addr" => {
@@ -2253,9 +2446,11 @@ fn method_call(l: &mut FnLower, m: &syn::ExprMethodCall) -> Result<Val, syn::Err
             Ok(Val::V(base, Ty::U16))
         }
         "add" => {
-            let (off, off_ty) = exactly_args(l, &m.args, m, 1, "add")?[0]
-                .clone()
-                .reg(l, &m.args[0], "add offset")?;
+            let (off, off_ty) = exactly_args(l, &m.args, m, 1, "add")?[0].clone().reg(
+                l,
+                &m.args[0],
+                "add offset",
+            )?;
             if !off_ty.is_int() {
                 return Err(err(&m.args[0], "pointer offset must be an integer"));
             }
@@ -2282,7 +2477,11 @@ fn method_call(l: &mut FnLower, m: &syn::ExprMethodCall) -> Result<Val, syn::Err
             if !m.args.is_empty() {
                 return Err(err(&m.method, format!("{method}() takes no arguments")));
             }
-            let elem = if method == "as_u16_array" { Ty::U16 } else { Ty::I16 };
+            let elem = if method == "as_u16_array" {
+                Ty::U16
+            } else {
+                Ty::I16
+            };
             Ok(Val::V(base, Ty::ArrayRef(Box::new(elem))))
         }
         _ => Err(err(&m.method, format!("unknown Ptr method `{method}`"))),
@@ -2364,35 +2563,40 @@ fn unify_int(a: Ty, b: Ty) -> Option<Ty> {
 /// implicit conversion at assignment/argument/return positions: only the
 /// same type, or an untyped literal adopting the target type. anything else
 /// needs an explicit `as` cast (see cast()).
-fn coerce(_l: &mut FnLower, v: VReg, from: &Ty, to: &Ty, at: &Expr) -> Result<(VReg, Ty), syn::Error> {
+fn coerce(
+    _l: &mut FnLower,
+    v: VReg,
+    from: &Ty,
+    to: &Ty,
+    at: &Expr,
+) -> Result<(VReg, Ty), syn::Error> {
     if from == to || *from == Ty::Never || (*from == Ty::UntypedInt && to.is_int()) {
         Ok((v, to.clone()))
     } else {
-        Err(err(at, format!(
-            "type mismatch: expected {}, got {} (cast with `as`)",
-            to.display(),
-            from.display()
-        )))
+        Err(err(
+            at,
+            format!(
+                "type mismatch: expected {}, got {} (cast with `as`)",
+                to.display(),
+                from.display()
+            ),
+        ))
     }
 }
 
 fn cast(e: &Expr, v: VReg, from: Ty, to: Ty) -> Result<(VReg, Ty), syn::Error> {
     let ok = matches!(
         (&from, &to),
-        (Ty::U16, Ty::I16)
-            | (Ty::I16, Ty::U16)
-            | (Ty::U16, Ty::Ptr)
-            | (Ty::Ptr, Ty::U16)
+        (Ty::U16, Ty::I16) | (Ty::I16, Ty::U16) | (Ty::U16, Ty::Ptr) | (Ty::Ptr, Ty::U16)
     ) || from == to
         || (from == Ty::UntypedInt && to.is_int());
     if ok {
         Ok((v, to))
     } else {
-        Err(err(e, format!(
-            "cannot cast {} to {}",
-            from.display(),
-            to.display()
-        )))
+        Err(err(
+            e,
+            format!("cannot cast {} to {}", from.display(), to.display()),
+        ))
     }
 }
 
@@ -2426,28 +2630,42 @@ fn exactly_args(
     what: &str,
 ) -> Result<Vec<Val>, syn::Error> {
     if args.len() != n {
-        return Err(err(at, format!("{what} takes {n} arguments, got {}", args.len())));
+        return Err(err(
+            at,
+            format!("{what} takes {n} arguments, got {}", args.len()),
+        ));
     }
     args.iter().map(|a| expr(l, a)).collect()
 }
 
-fn check_call_args(call: &syn::ExprCall, params: &[Ty], args: &[Ty], name: &str) -> Result<(), syn::Error> {
+fn check_call_args(
+    call: &syn::ExprCall,
+    params: &[Ty],
+    args: &[Ty],
+    name: &str,
+) -> Result<(), syn::Error> {
     if params.len() != args.len() {
-        return Err(err(call, format!(
-            "`{name}` takes {} arguments, got {}",
-            params.len(),
-            args.len()
-        )));
+        return Err(err(
+            call,
+            format!(
+                "`{name}` takes {} arguments, got {}",
+                params.len(),
+                args.len()
+            ),
+        ));
     }
     for (i, (p, a)) in params.iter().zip(args).enumerate() {
         let ok = p == a || (*a == Ty::UntypedInt && p.is_int());
         if !ok {
-            return Err(err(call, format!(
-                "argument {} of `{name}`: expected {}, got {}",
-                i + 1,
-                p.display(),
-                a.display()
-            )));
+            return Err(err(
+                call,
+                format!(
+                    "argument {} of `{name}`: expected {}, got {}",
+                    i + 1,
+                    p.display(),
+                    a.display()
+                ),
+            ));
         }
     }
     Ok(())
@@ -2459,14 +2677,26 @@ fn check_fn_sig(
     expected: &Ty,
     at: &impl syn::spanned::Spanned,
 ) -> Result<(), syn::Error> {
-    let sig = l.sigs.get(name).ok_or_else(|| err(at, format!("undefined function `{name}`")))?;
-    let Ty::FnPtr { params, ret } = expected else { unreachable!() };
+    let sig = l
+        .sigs
+        .get(name)
+        .ok_or_else(|| err(at, format!("undefined function `{name}`")))?;
+    let Ty::FnPtr { params, ret } = expected else {
+        unreachable!()
+    };
     if *params != sig.params || **ret != sig.ret {
-        return Err(err(at, format!(
-            "fn pointer type mismatch for `{name}`: expected fn({}) -> {}",
-            params.iter().map(|t| t.display()).collect::<Vec<_>>().join(", "),
-            ret.display()
-        )));
+        return Err(err(
+            at,
+            format!(
+                "fn pointer type mismatch for `{name}`: expected fn({}) -> {}",
+                params
+                    .iter()
+                    .map(|t| t.display())
+                    .collect::<Vec<_>>()
+                    .join(", "),
+                ret.display()
+            ),
+        ));
     }
     Ok(())
 }

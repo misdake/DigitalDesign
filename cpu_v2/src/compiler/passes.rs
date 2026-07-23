@@ -88,7 +88,12 @@ pub(crate) fn subst_uses(f: &mut IrFunc, replace: &HashMap<VReg, VReg>) {
                 Instr::Un { src, .. } | Instr::Shift { src, .. } | Instr::Mov { src, .. } => {
                     subst(src)
                 }
-                Instr::LoadImm { .. } | Instr::StoreStatic { .. } | Instr::DevRecv { .. } | Instr::LoadSp { .. } | Instr::LoadLocal { .. } | Instr::AddrOfLocal { .. } => {}
+                Instr::LoadImm { .. }
+                | Instr::StoreStatic { .. }
+                | Instr::DevRecv { .. }
+                | Instr::LoadSp { .. }
+                | Instr::LoadLocal { .. }
+                | Instr::AddrOfLocal { .. } => {}
                 Instr::LoadMem { base, .. } => subst(base),
                 Instr::StoreMem { base, src, .. } => {
                     subst(base);
@@ -100,7 +105,9 @@ pub(crate) fn subst_uses(f: &mut IrFunc, replace: &HashMap<VReg, VReg>) {
                     subst(addr);
                     args.iter_mut().for_each(&subst);
                 }
-                Instr::DevSend { src, .. } | Instr::StoreSp { src, .. } | Instr::StoreLocal { src, .. } => subst(src),
+                Instr::DevSend { src, .. }
+                | Instr::StoreSp { src, .. }
+                | Instr::StoreLocal { src, .. } => subst(src),
             }
         }
         if let Some(term) = &mut b.term {
@@ -192,7 +199,12 @@ fn const_prop(f: &mut IrFunc) -> bool {
                             }
                         }
                     }
-                    Instr::Shift { dst, op, src, amount } => {
+                    Instr::Shift {
+                        dst,
+                        op,
+                        src,
+                        amount,
+                    } => {
                         if let Some(a) = konst[*src as usize] {
                             learn(&mut konst, *dst, fold_shift(*op, a, *amount), &mut changed);
                         }
@@ -277,7 +289,11 @@ fn const_prop(f: &mut IrFunc) -> bool {
             calc_flags(lhs, rhs)
         };
         let taken = (cmp.cond as u8) & flags != 0;
-        let (target, dead) = if taken { (if_true, if_false) } else { (if_false, if_true) };
+        let (target, dead) = if taken {
+            (if_true, if_false)
+        } else {
+            (if_false, if_true)
+        };
         f.blocks[b].term = Some(Terminator::Jmp { target });
         // remove the dead CFG edge
         f.blocks[dead].preds.retain(|&p| p != b);
@@ -432,7 +448,10 @@ fn hoist_constant_return_arm(f: &mut IrFunc, transformed: &mut HashSet<BlockId>)
             };
             let old_preds = f.blocks[constant_block].preds.clone();
 
-            f.blocks[hoist].insts.push(Instr::LoadImm { dst: incoming, value });
+            f.blocks[hoist].insts.push(Instr::LoadImm {
+                dst: incoming,
+                value,
+            });
             // This is scheduled initialization of the result, not execution
             // of the source-level else arm.
             let scheduled_line = f.blocks[hoist].term_line.or(f.block_lines[hoist]);
@@ -445,7 +464,9 @@ fn hoist_constant_return_arm(f: &mut IrFunc, transformed: &mut HashSet<BlockId>)
                             *target = join;
                         }
                     }
-                    Some(Terminator::Br { if_true, if_false, .. }) => {
+                    Some(Terminator::Br {
+                        if_true, if_false, ..
+                    }) => {
                         if *if_true == constant_block {
                             *if_true = join;
                         }
@@ -464,7 +485,8 @@ fn hoist_constant_return_arm(f: &mut IrFunc, transformed: &mut HashSet<BlockId>)
             f.blocks[join].preds.extend(old_preds.iter().copied());
             let phi = &mut f.blocks[join].phis[0];
             phi.args.retain(|&(pred, _)| pred != constant_block);
-            phi.args.extend(old_preds.into_iter().map(|pred| (pred, incoming)));
+            phi.args
+                .extend(old_preds.into_iter().map(|pred| (pred, incoming)));
             transformed.insert(join);
             return true;
         }
@@ -520,9 +542,12 @@ fn cse(f: &mut IrFunc) -> bool {
                 Some((Key::Bin(*op, a, b), *dst))
             }
             Instr::Un { dst, op, src } => Some((Key::Un(*op, canon(replace, *src)), *dst)),
-            Instr::Shift { dst, op, src, amount } => {
-                Some((Key::Shift(*op, canon(replace, *src), *amount), *dst))
-            }
+            Instr::Shift {
+                dst,
+                op,
+                src,
+                amount,
+            } => Some((Key::Shift(*op, canon(replace, *src), *amount), *dst)),
             Instr::LoadImm { dst, value } => Some((Key::Imm(*value), *dst)),
             _ => None,
         }
@@ -567,7 +592,14 @@ fn cse(f: &mut IrFunc) -> bool {
     }
     {
         let mut scope = HashMap::new();
-        walk(f.entry, f, &children, &mut scope, &mut replace, &mut changed);
+        walk(
+            f.entry,
+            f,
+            &children,
+            &mut scope,
+            &mut replace,
+            &mut changed,
+        );
     }
 
     if changed {
@@ -677,8 +709,8 @@ fn dce(f: &mut IrFunc) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::isa::Cond;
     use crate::compiler::builder::FuncBuilder;
+    use crate::isa::Cond;
 
     fn opt(f: &mut IrFunc) {
         optimize(f, &Opts::default());

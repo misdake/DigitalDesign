@@ -95,7 +95,6 @@ fn addr_offset(from: usize, to: usize) -> (u8, u8, String) {
     (v >> 4, v & 0xf, comment)
 }
 fn cond_to_jmp_inst(cond: Cond) -> fn(Imm4, Imm4) -> Instruction {
-    
     match cond {
         Cond::Never => panic!("never"),
         Cond::Greater => jg,

@@ -107,7 +107,11 @@ fn main() {
 }
 "#;
     fn fib(n: u16) -> u16 {
-        if n < 2 { n } else { fib(n - 1) + fib(n - 2) }
+        if n < 2 {
+            n
+        } else {
+            fib(n - 1) + fib(n - 2)
+        }
     }
     // fib(15) makes ~2000 nested calls; frame setup needs a generous cap
     let (_state, signal) = compile_and_run(src, "main", 500_000);
@@ -188,10 +192,18 @@ fn is_odd(n: u16) -> u16 {
 }
 "#;
     fn is_even(n: u16) -> u16 {
-        if n == 0 { 1 } else { is_odd(n - 1) }
+        if n == 0 {
+            1
+        } else {
+            is_odd(n - 1)
+        }
     }
     fn is_odd(n: u16) -> u16 {
-        if n == 0 { 0 } else { is_even(n - 1) }
+        if n == 0 {
+            0
+        } else {
+            is_even(n - 1)
+        }
     }
     let (_state, signal) = compile_and_run(src, "main", 100_000);
     assert_eq!(signal, Some(is_even(10) + is_odd(7)));

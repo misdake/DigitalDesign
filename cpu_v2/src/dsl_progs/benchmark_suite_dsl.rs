@@ -5,12 +5,9 @@ use crate::dsl_rt::*;
 
 static BASIC_RESULT: u16 = 0;
 static CRC_WORDS: [u16; 12] = [
-    0x1234, 0xabcd, 0x0001, 0xffff, 0x55aa, 0x0f0f,
-    0x8001, 0x2468, 0x1357, 0xbeef, 0xcafe, 0x0102,
+    0x1234, 0xabcd, 0x0001, 0xffff, 0x55aa, 0x0f0f, 0x8001, 0x2468, 0x1357, 0xbeef, 0xcafe, 0x0102,
 ];
-static SORT_DATA: [u16; 16] = [
-    42, 7, 19, 3, 88, 1, 55, 34, 13, 5, 21, 8, 2, 77, 11, 6,
-];
+static SORT_DATA: [u16; 16] = [42, 7, 19, 3, 88, 1, 55, 34, 13, 5, 21, 8, 2, 77, 11, 6];
 
 #[allow(clippy::collapsible_else_if)]
 fn clamp_i16(x: i16, low: i16, high: i16) -> i16 {

@@ -6,7 +6,11 @@ use cpu_v2::{Compiler, SimState};
 
 /// compile an rcc source string and run `main` on the simulator (cycle-capped,
 /// so a runaway program cannot hang the suite)
-pub fn compile_and_run(src: &str, main: &'static str, max_cycles: usize) -> (SimState, Option<u16>) {
+pub fn compile_and_run(
+    src: &str,
+    main: &'static str,
+    max_cycles: usize,
+) -> (SimState, Option<u16>) {
     let program = parse_source(src).expect("parse failed");
     let mut c = Compiler::new();
     for f in program.funcs {

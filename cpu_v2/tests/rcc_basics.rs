@@ -87,7 +87,10 @@ fn main() {
     halt(a + b + c + d + (e as u16));
 }
 "#;
-    assert_eq!(run(src), Some(0xffu16 + 0b1010 + 0o17 + 1_000 + (0x10i16 as u16)));
+    assert_eq!(
+        run(src),
+        Some(0xffu16 + 0b1010 + 0o17 + 1_000 + (0x10i16 as u16))
+    );
 }
 
 #[test]
@@ -440,5 +443,8 @@ fn main() {
     halt(bit_info(0x800f));
 }
 "#;
-    assert_eq!(run(src), Some(0x800fu16.count_ones() as u16 + 0x800fu16.ilog2() as u16));
+    assert_eq!(
+        run(src),
+        Some(0x800fu16.count_ones() as u16 + 0x800fu16.ilog2() as u16)
+    );
 }

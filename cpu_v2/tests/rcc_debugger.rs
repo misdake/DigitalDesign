@@ -2,8 +2,8 @@
 
 mod common;
 
-use cpu_v2::{CompilerOptions, FunctionTableConfig};
 use cpu_v2::debugger::{DebugSession, VarValue};
+use cpu_v2::{CompilerOptions, FunctionTableConfig};
 
 fn make_session(src: &str) -> DebugSession {
     make_session_with_options(src, CompilerOptions::default())
@@ -90,10 +90,12 @@ fn main() {
         .init_sections
         .iter()
         .any(|section| section.name == "function-table"));
-    assert!(s
-        .disasm
-        .iter()
-        .any(|line| line.init_start && line.init.as_deref().is_some_and(|s| s.contains("entries"))));
+    assert!(
+        s.disasm
+            .iter()
+            .any(|line| line.init_start
+                && line.init.as_deref().is_some_and(|s| s.contains("entries")))
+    );
     assert!(s.state_json().contains("\"initStart\":true"));
     let calls: Vec<_> = s
         .disasm
@@ -222,7 +224,10 @@ fn main() {
     // next_line actually enters inc
     let mut s2 = make_session(src);
     s2.next_line(1000);
-    assert!(s2.depth() >= 1 || s2.last_halt.is_some(), "next_line should enter the call (or have run past)");
+    assert!(
+        s2.depth() >= 1 || s2.last_halt.is_some(),
+        "next_line should enter the call (or have run past)"
+    );
 
     // step into inc manually, then step out
     let mut s3 = make_session(src);
@@ -278,7 +283,12 @@ fn main() {
 #[test]
 fn test_signed_ops_line_mapping_covers_conditions_and_call_slots() {
     let s = make_session(SIGNED_OPS);
-    let clamp = s.debug.functions.iter().find(|f| f.name == "clamp").unwrap();
+    let clamp = s
+        .debug
+        .functions
+        .iter()
+        .find(|f| f.name == "clamp")
+        .unwrap();
     let main = s.debug.functions.iter().find(|f| f.name == "main").unwrap();
 
     let condition: Vec<_> = s
@@ -294,10 +304,17 @@ fn test_signed_ops_line_mapping_covers_conditions_and_call_slots() {
         condition.iter().any(|(_, text)| text.contains("cmp(")),
         "condition={condition:?}\nlines={:?}\ndisasm={:?}",
         s.debug.lines,
-        s.disasm.iter().map(|d| (d.addr, &d.text)).collect::<Vec<_>>()
+        s.disasm
+            .iter()
+            .map(|d| (d.addr, &d.text))
+            .collect::<Vec<_>>()
     );
     assert!(
-        condition.iter().filter(|(_, text)| text.starts_with('j')).count() >= 3,
+        condition
+            .iter()
+            .filter(|(_, text)| text.starts_with('j'))
+            .count()
+            >= 3,
         "short-circuit branches and their trampoline must all be mapped: {condition:?}"
     );
 
@@ -310,7 +327,10 @@ fn test_signed_ops_line_mapping_covers_conditions_and_call_slots() {
         })
         .map(|(addr, _, _)| (*addr, &s.disasm[*addr].text))
         .collect();
-    assert!(call.iter().any(|(_, text)| text.starts_with("call_rel")), "{call:?}");
+    assert!(
+        call.iter().any(|(_, text)| text.starts_with("call_rel")),
+        "{call:?}"
+    );
     assert_eq!(
         call.iter()
             .filter(|(_, text)| text.starts_with("call_rel"))
@@ -360,7 +380,10 @@ fn main() {
     assert_eq!(s.current_func().map(|f| f.name.as_str()), Some("clobber"));
     s.step_out(100);
     assert_eq!(s.current_func().map(|f| f.name.as_str()), Some("keep"));
-    assert_ne!(s.sim.state.reg[2], 42, "nested call should have clobbered live r2");
+    assert_ne!(
+        s.sim.state.reg[2], 42,
+        "nested call should have clobbered live r2"
+    );
 
     let keep = s.current_func().unwrap();
     let p = keep.locals.iter().find(|v| v.name == "p").unwrap();

@@ -44,7 +44,9 @@ pub fn malloc(size: u16) -> Ptr {
                 let next_block_ptr = p.add(sz as i16);
                 let flag = next_block_size | FREE_BIT;
                 next_block_ptr.write(0, flag);
-                next_block_ptr.add((next_block_size - 1) as i16).write(0, flag);
+                next_block_ptr
+                    .add((next_block_size - 1) as i16)
+                    .write(0, flag);
             } else {
                 // no room to split: take the whole block
                 sz = block_size;
