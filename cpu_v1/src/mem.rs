@@ -64,7 +64,7 @@ impl CpuComponent for CpuMem {
 
 pub struct CpuMemEmu;
 impl CpuComponentEmu<CpuMem> for CpuMemEmu {
-    fn init_output(i: &CpuMemInput) -> CpuMemOutput {
+    fn create(i: &CpuMemInput) -> (Self, CpuMemOutput) {
         let output = CpuMemOutput {
             mem_out: input_w(),
             mem_next: [0; 256].map(|_| input_w()),
@@ -80,9 +80,9 @@ impl CpuComponentEmu<CpuMem> for CpuMemEmu {
         output
             .mem_page_next
             .set_latency_external(i.reg0.get_max_latency_external() + 1);
-        output
+        (Self, output)
     }
-    fn execute(c: &mut CircuitWires, input: &CpuMemInput, output: &CpuMemOutput) {
+    fn execute(&mut self, c: &mut CircuitWires, input: &CpuMemInput, output: &CpuMemOutput) {
         let mem_page = input.mem_page.get_u8(c);
         let imm = input.imm.get_u8(c);
         let reg0 = input.reg0.get_u8(c);

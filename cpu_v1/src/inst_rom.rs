@@ -24,14 +24,19 @@ impl CpuComponent for CpuInstRom {
 
 pub struct CpuInstRomEmu;
 impl CpuComponentEmu<CpuInstRom> for CpuInstRomEmu {
-    fn init_output(i: &CpuInstInput) -> CpuInstOutput {
+    fn create(i: &CpuInstInput) -> (Self, CpuInstOutput) {
         let output = CpuInstOutput { inst: input_w() };
         output
             .inst
             .set_latency_external(i.pc.get_max_latency_external() + 10); //TODO accurate latency
-        output
+        (Self, output)
     }
-    fn execute(circuits: &mut CircuitWires, input: &CpuInstInput, output: &CpuInstOutput) {
+    fn execute(
+        &mut self,
+        circuits: &mut CircuitWires,
+        input: &CpuInstInput,
+        output: &CpuInstOutput,
+    ) {
         let pc = input.pc.get_u8(circuits);
         let inst = input.inst[pc as usize].get_u8(circuits);
         output.inst.set_u8(circuits, inst);

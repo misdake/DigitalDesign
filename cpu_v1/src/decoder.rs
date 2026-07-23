@@ -223,7 +223,7 @@ impl CpuComponent for CpuDecoder {
 
 pub struct CpuDecoderEmu;
 impl CpuComponentEmu<CpuDecoder> for CpuDecoderEmu {
-    fn init_output(i: &CpuDecoderInput) -> CpuDecoderOutput {
+    fn create(i: &CpuDecoderInput) -> (Self, CpuDecoderOutput) {
         let output = CpuDecoderOutput {
             imm: input_w(),
 
@@ -260,9 +260,14 @@ impl CpuComponentEmu<CpuDecoder> for CpuDecoderEmu {
         output.jmp_op.set_latency_external(latency);
         output.jmp_src_select.set_latency_external(latency);
 
-        output
+        (Self, output)
     }
-    fn execute(c: &mut CircuitWires, input: &CpuDecoderInput, output: &CpuDecoderOutput) {
+    fn execute(
+        &mut self,
+        c: &mut CircuitWires,
+        input: &CpuDecoderInput,
+        output: &CpuDecoderOutput,
+    ) {
         use crate::isa::*;
         let inst = input.inst.get_u8(c);
 

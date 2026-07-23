@@ -1,7 +1,5 @@
-mod component;
-mod emu;
+mod design;
 mod interface;
 
-pub use component::*;
-pub use emu::*;
+pub use design::*;
 pub use interface::*;
