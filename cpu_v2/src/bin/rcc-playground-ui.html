@@ -1,0 +1,249 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>rcc playground</title>
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/prismjs@1.30.0/themes/prism-tomorrow.min.css">
+<style>
+  * { box-sizing: border-box; }
+  html, body { height: 100%; }
+  body { margin: 0; overflow: hidden; display: flex; flex-direction: column; font: 13px/1.45 ui-monospace, Consolas, monospace; background: #1e1f24; color: #d8d9dd; }
+  header { flex: 0 0 auto; min-height: 48px; display: flex; align-items: center; gap: 8px; padding: 7px 12px; background: #26272e; border-bottom: 1px solid #33363f; }
+  header b { margin-right: 8px; font-size: 15px; color: #f0f1f4; }
+  button { background: #3a3d47; color: #e8e9ec; border: 1px solid #4a4e5c; border-radius: 4px; padding: 5px 11px; cursor: pointer; font: inherit; }
+  button:hover:not(:disabled) { background: #484c59; }
+  button:disabled { cursor: default; opacity: .45; }
+  button.primary { background: #2d5a80; border-color: #3d72a0; }
+  button.primary:hover:not(:disabled) { background: #366b96; }
+  button.tab.active { color: #fff; background: #3a4c61; border-color: #59718d; }
+  label.option { display: inline-flex; align-items: center; gap: 5px; color: #bdc1ca; white-space: nowrap; }
+  label.option input { accent-color: #4f82ad; }
+  label.option select { background: #1a1b20; color: inherit; border: 1px solid #4a4e5c; border-radius: 4px; padding: 3px 5px; font: inherit; }
+  #run { margin-left: auto; }
+  #status { color: #8e96a5; white-space: nowrap; }
+  #status.ok { color: #85c98d; }
+  #status.error { color: #ff9292; }
+  .view { flex: 1 1 auto; min-height: 0; }
+  #editorView { display: grid; grid-template-columns: minmax(0, 1fr) 280px; }
+  #editorPane { display: flex; min-width: 0; min-height: 0; flex-direction: column; padding: 10px; }
+  #sourceWrap { position: relative; flex: 1 1 auto; min-height: 0; overflow: hidden; border: 1px solid #414550; border-radius: 5px; background: #17181c; }
+  #sourceWrap:focus-within { border-color: #557ba0; box-shadow: 0 0 0 1px #3a5875; }
+  #sourceHighlight, #source { position: absolute; inset: 0; width: 100%; height: 100%; margin: 0; padding: 12px 14px; border: 0; border-radius: 0; tab-size: 4; white-space: pre; font: 14px/1.55 ui-monospace, Consolas, monospace; }
+  #sourceHighlight { z-index: 1; overflow: hidden; pointer-events: none; background: #17181c; text-shadow: none; }
+  #sourceHighlight code { white-space: inherit; font: inherit; text-shadow: none; }
+  #source { z-index: 2; resize: none; overflow: auto; outline: none; background: transparent; color: transparent; caret-color: #f0f1f4; -webkit-text-fill-color: transparent; }
+  #source::selection { background: rgba(74, 112, 151, .65); color: transparent; }
+  aside { border-left: 1px solid #33363f; padding: 14px; overflow: auto; background: #222329; }
+  aside h3 { margin: 0 0 8px; font-size: 12px; color: #9aa0ad; text-transform: uppercase; letter-spacing: .5px; }
+  aside p { color: #aeb2bc; }
+  aside code { color: #8ec7ff; }
+  #errors { margin: 12px 0 0; padding: 10px; min-height: 40px; max-height: 35vh; overflow: auto; white-space: pre-wrap; border: 1px solid #563a3e; border-radius: 4px; background: #2b2023; color: #ffb0b0; }
+  #errors:empty { display: none; }
+  #debuggerView { display: none; }
+  #debuggerFrame { display: block; width: 100%; height: 100%; border: 0; background: #1e1f24; }
+</style>
+</head>
+<body>
+<header>
+  <b>rcc playground</b>
+  <button class="tab active" id="editorTab">Editor</button>
+  <button class="tab" id="debuggerTab" disabled>Debugger</button>
+  <label class="option"><input type="checkbox" id="optimize" checked> Optimize</label>
+  <label class="option">Calls <select id="functionTable"><option value="auto">auto</option><option value="none">no table</option><option value="all">all</option></select></label>
+  <span id="status">Single-file mode</span>
+  <button class="primary" id="run">Compile &amp; Debug</button>
+  <button id="popup">Open Debugger Window</button>
+</header>
+
+<main class="view" id="editorView">
+  <div id="editorPane">
+    <div id="sourceWrap">
+      <pre id="sourceHighlight" class="language-rust" aria-hidden="true"><code id="sourceCode" class="language-rust"></code></pre>
+      <textarea id="source" wrap="off" spellcheck="false" aria-label="rcc source code">fn clamp(x: i16) -> i16 {
+    if x >= 2 &amp;&amp; x &lt;= 10 {
+        x
+    } else {
+        0
+    }
+}
+
+fn main() {
+    let a = clamp(7);
+    let b = clamp(-3);
+    halt((a + b) as u16);
+}
+</textarea>
+    </div>
+    <pre id="errors"></pre>
+  </div>
+  <aside>
+    <h3>Playground</h3>
+    <p>Edit one rcc source file, then compile it directly into an in-memory debugger session.</p>
+    <p><code>Ctrl+Enter</code> compiles and switches to the debugger. The Editor tab keeps the source available for another build.</p>
+    <p>Disable <code>Optimize</code> to preserve ordinary scalar locals in stable frame slots for debugger inspection.</p>
+    <p><code>Calls</code> controls the <code>call_abs</code> function table. Auto selects repeated or hot call targets only when useful.</p>
+    <p><code>mod name;</code> is intentionally unavailable here. The embedded rcc standard library is still linked normally.</p>
+  </aside>
+</main>
+
+<main class="view" id="debuggerView">
+  <iframe id="debuggerFrame" title="rcc debugger"></iframe>
+</main>
+
+<script src="https://cdn.jsdelivr.net/npm/prismjs@1.30.0/prism.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/prismjs@1.30.0/components/prism-rust.min.js"></script>
+<script>
+const source = document.getElementById('source');
+const sourceHighlight = document.getElementById('sourceHighlight');
+const sourceCode = document.getElementById('sourceCode');
+const errors = document.getElementById('errors');
+const status = document.getElementById('status');
+const editorView = document.getElementById('editorView');
+const debuggerView = document.getElementById('debuggerView');
+const editorTab = document.getElementById('editorTab');
+const debuggerTab = document.getElementById('debuggerTab');
+const frame = document.getElementById('debuggerFrame');
+const run = document.getElementById('run');
+const popup = document.getElementById('popup');
+const optimize = document.getElementById('optimize');
+const functionTable = document.getElementById('functionTable');
+let compiled = false;
+let compiling = false;
+
+const saved = localStorage.getItem('rcc-playground-source');
+if (saved != null) source.value = saved;
+const savedOptimize = localStorage.getItem('rcc-playground-optimize');
+if (savedOptimize != null) optimize.checked = savedOptimize !== '0';
+const savedFunctionTable = localStorage.getItem('rcc-playground-function-table');
+if (savedFunctionTable != null) functionTable.value = savedFunctionTable;
+source.addEventListener('input', () => {
+  localStorage.setItem('rcc-playground-source', source.value);
+  highlightSource();
+});
+source.addEventListener('scroll', syncSourceScroll);
+optimize.addEventListener('change', () => {
+  localStorage.setItem('rcc-playground-optimize', optimize.checked ? '1' : '0');
+});
+functionTable.addEventListener('change', () => {
+  localStorage.setItem('rcc-playground-function-table', functionTable.value);
+});
+
+function showEditor() {
+  editorView.style.display = 'grid';
+  debuggerView.style.display = 'none';
+  editorTab.classList.add('active');
+  debuggerTab.classList.remove('active');
+  source.focus();
+  requestAnimationFrame(syncSourceScroll);
+}
+
+function showDebugger() {
+  if (!compiled) return;
+  editorView.style.display = 'none';
+  debuggerView.style.display = 'block';
+  editorTab.classList.remove('active');
+  debuggerTab.classList.add('active');
+}
+
+function setBusy(busy) {
+  compiling = busy;
+  run.disabled = busy;
+  popup.disabled = busy;
+}
+
+function selectDiagnostic(message) {
+  const location = message.match(/ --> playground\.rs:(\d+):(\d+)/);
+  if (!location) return;
+  const targetLine = Number(location[1]);
+  const targetColumn = Number(location[2]);
+  const lines = source.value.split('\n');
+  if (targetLine < 1 || targetLine > lines.length) return;
+  let offset = 0;
+  for (let line = 1; line < targetLine; line++) offset += lines[line - 1].length + 1;
+  offset += Math.min(targetColumn - 1, lines[targetLine - 1].length);
+  source.focus();
+  source.setSelectionRange(offset, offset);
+  const lineHeight = parseFloat(getComputedStyle(source).lineHeight);
+  source.scrollTop = Math.max(0, (targetLine - 1) * lineHeight - source.clientHeight / 2);
+  syncSourceScroll();
+}
+
+async function compile(mode) {
+  if (compiling) return;
+  let popupWindow = null;
+  if (mode === 'popup') {
+    popupWindow = window.open('', 'rcc-debugger');
+    if (!popupWindow) {
+      errors.textContent = 'The browser blocked the debugger popup. Allow popups for this page and try again.';
+      status.textContent = 'Popup blocked';
+      status.className = 'error';
+      return;
+    }
+    popupWindow.document.body.textContent = 'Compiling…';
+  }
+
+  setBusy(true);
+  errors.textContent = '';
+  status.textContent = 'Compiling…';
+  status.className = '';
+  try {
+    const optimized = optimize.checked;
+    const tableMode = functionTable.value;
+    const response = await fetch('/api/compile?opt=' + (optimized ? '1' : '0') + '&ft=' + tableMode, {
+      method: 'POST',
+      headers: {'Content-Type': 'text/plain; charset=utf-8'},
+      body: source.value
+    });
+    if (!response.ok) throw new Error(await response.text());
+    const state = await response.json();
+    compiled = true;
+    debuggerTab.disabled = false;
+    status.textContent = `Compiled ${state.disasm.length} instructions (${optimized ? 'optimized' : 'no-opt'}, calls: ${tableMode})`;
+    status.className = 'ok';
+    const debuggerUrl = '/debugger?build=' + Date.now();
+    frame.src = debuggerUrl;
+    if (popupWindow) popupWindow.location.replace(debuggerUrl);
+    else showDebugger();
+  } catch (error) {
+    if (popupWindow) popupWindow.close();
+    const message = String(error.message || error);
+    errors.textContent = message;
+    status.textContent = 'Compile failed';
+    status.className = 'error';
+    showEditor();
+    selectDiagnostic(message);
+  } finally {
+    setBusy(false);
+  }
+}
+
+editorTab.onclick = showEditor;
+debuggerTab.onclick = showDebugger;
+run.onclick = () => compile('switch');
+popup.onclick = () => compile('popup');
+source.addEventListener('keydown', event => {
+  if (event.key === 'Enter' && (event.ctrlKey || event.metaKey)) {
+    event.preventDefault();
+    compile('switch');
+  }
+});
+
+function syncSourceScroll() {
+  sourceHighlight.scrollTop = source.scrollTop;
+  sourceHighlight.scrollLeft = source.scrollLeft;
+}
+
+function highlightSource() {
+  const text = source.value + (source.value.endsWith('\n') ? ' ' : '');
+  if (window.Prism && Prism.languages.rust)
+    sourceCode.innerHTML = Prism.highlight(text, Prism.languages.rust, 'rust');
+  else sourceCode.textContent = text;
+  syncSourceScroll();
+}
+
+highlightSource();
+source.focus();
+</script>
+</body>
+</html>

@@ -2,6 +2,5 @@
 
 mod backend;
 mod common;
-mod dsl;
 mod optimize;
 mod property;

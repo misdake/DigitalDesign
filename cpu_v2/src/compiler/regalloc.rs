@@ -30,16 +30,23 @@ pub struct Allocation {
     pub reg: HashMap<VReg, u8>,
     /// callee-save regs actually used; saved/restored at frame slots 0..k
     pub callee_saved: Vec<u8>,
-    /// number of spill frame slots used
+    /// frame-local slots assigned by the frontend (address-taken locals and
+    /// local arrays); they follow the callee-save area
+    pub local_slots: u8,
+    /// number of spill frame slots used (after the local area)
     pub spill_slots: u8,
 }
 impl Allocation {
     pub fn frame_size(&self) -> usize {
-        self.callee_saved.len() + self.spill_slots as usize
+        self.callee_saved.len() + self.local_slots as usize + self.spill_slots as usize
     }
-    /// frame slot index of a spill slot (they follow the callee-save area)
-    pub fn spill_frame_slot(&self, slot: u8) -> u8 {
+    /// frame slot index of a frontend local slot
+    pub fn local_frame_slot(&self, slot: u8) -> u8 {
         self.callee_saved.len() as u8 + slot
+    }
+    /// frame slot index of a spill slot (they follow the local area)
+    pub fn spill_frame_slot(&self, slot: u8) -> u8 {
+        self.callee_saved.len() as u8 + self.local_slots + slot
     }
 }
 
@@ -67,17 +74,20 @@ pub fn allocate(func: &IrFunc, coalesce: bool) -> (IrFunc, Allocation) {
                 .into_iter()
                 .collect();
             // non-leaf functions must also preserve ra (calls clobber r13)
-            if f.blocks
-                .iter()
-                .any(|b| b.insts.iter().any(|i| matches!(i, Instr::Call { .. })))
-            {
+            if f.blocks.iter().any(|b| {
+                b.insts
+                    .iter()
+                    .any(|i| matches!(i, Instr::Call { .. } | Instr::CallPtr { .. }))
+            }) {
                 callee_saved.push(REG_RA);
             }
             let alloc = Allocation {
                 reg: scan.reg,
                 callee_saved,
+                local_slots: f.local_slots,
                 spill_slots,
             };
+            collapse_redundant_phi_trampolines(&mut f, &alloc.reg);
             assert!(
                 alloc.frame_size() <= MAX_FRAME,
                 "function {} needs {} frame slots, max {MAX_FRAME}",
@@ -91,6 +101,65 @@ pub fn allocate(func: &IrFunc, coalesce: bool) -> (IrFunc, Allocation) {
     panic!("register allocation for {} did not converge", f.name)
 }
 
+/// After allocation, a split critical edge is unnecessary when every phi
+/// value already occupies its destination register. Remove those empty
+/// trampolines so codegen can use the real successor as a branch target and
+/// fall through normally.
+fn collapse_redundant_phi_trampolines(f: &mut IrFunc, registers: &HashMap<VReg, u8>) {
+    for trampoline in 0..f.blocks.len() {
+        let [source] = f.blocks[trampoline].preds.as_slice() else {
+            continue;
+        };
+        let source = *source;
+        let Some(Terminator::Jmp { target }) = f.blocks[trampoline].term else {
+            continue;
+        };
+        if !f.blocks[trampoline].phis.is_empty() || !f.blocks[trampoline].insts.is_empty() {
+            continue;
+        }
+        let redundant = f.blocks[target].phis.iter().all(|phi| {
+            phi.args
+                .iter()
+                .find(|(pred, _)| *pred == trampoline)
+                .is_some_and(|(_, value)| registers[value] == registers[&phi.dst])
+        });
+        if !redundant || f.blocks[target].phis.is_empty() {
+            continue;
+        }
+        match &mut f.blocks[source].term {
+            Some(Terminator::Jmp { target: edge }) => {
+                if *edge == trampoline {
+                    *edge = target;
+                }
+            }
+            Some(Terminator::Br {
+                if_true, if_false, ..
+            }) => {
+                if *if_true == trampoline {
+                    *if_true = target;
+                }
+                if *if_false == trampoline {
+                    *if_false = target;
+                }
+            }
+            _ => continue,
+        }
+        for pred in &mut f.blocks[target].preds {
+            if *pred == trampoline {
+                *pred = source;
+            }
+        }
+        for phi in &mut f.blocks[target].phis {
+            for (pred, _) in &mut phi.args {
+                if *pred == trampoline {
+                    *pred = source;
+                }
+            }
+        }
+        f.blocks[trampoline].preds.clear();
+    }
+}
+
 // ---------------------------------------------------------------------------
 // instruction use/def helpers
 // ---------------------------------------------------------------------------
@@ -99,11 +168,24 @@ pub(crate) fn inst_uses(inst: &Instr) -> Vec<VReg> {
     match inst {
         Instr::Bin { lhs, rhs, .. } => vec![*lhs, *rhs],
         Instr::Un { src, .. } | Instr::Shift { src, .. } | Instr::Mov { src, .. } => vec![*src],
-        Instr::LoadImm { .. } | Instr::DevRecv { .. } | Instr::LoadSp { .. } => vec![],
+        Instr::LoadImm { .. }
+        | Instr::StoreStatic { .. }
+        | Instr::DevRecv { .. }
+        | Instr::LoadSp { .. }
+        | Instr::LoadLocal { .. }
+        | Instr::AddrOfLocal { .. }
+        | Instr::LoadFuncAddr { .. } => vec![],
         Instr::LoadMem { base, .. } => vec![*base],
         Instr::StoreMem { base, src, .. } => vec![*base, *src],
         Instr::Call { args, .. } => args.clone(),
-        Instr::DevSend { src, .. } | Instr::StoreSp { src, .. } => vec![*src],
+        Instr::CallPtr { addr, args, .. } => {
+            let mut u = vec![*addr];
+            u.extend_from_slice(args);
+            u
+        }
+        Instr::DevSend { src, .. } | Instr::StoreSp { src, .. } | Instr::StoreLocal { src, .. } => {
+            vec![*src]
+        }
     }
 }
 pub(crate) fn inst_defs(inst: &Instr) -> Vec<VReg> {
@@ -115,9 +197,18 @@ pub(crate) fn inst_defs(inst: &Instr) -> Vec<VReg> {
         | Instr::LoadImm { dst, .. }
         | Instr::LoadMem { dst, .. }
         | Instr::DevRecv { dst, .. }
+        | Instr::LoadFuncAddr { dst, .. }
+        | Instr::LoadLocal { dst, .. }
+        | Instr::AddrOfLocal { dst, .. }
         | Instr::LoadSp { dst, .. } => vec![*dst],
-        Instr::StoreMem { .. } | Instr::DevSend { .. } | Instr::StoreSp { .. } => vec![],
-        Instr::Call { rets, .. } => rets.clone(),
+        Instr::StoreMem { .. }
+        | Instr::StoreStatic { .. }
+        | Instr::DevSend { .. }
+        | Instr::StoreSp { .. }
+        | Instr::StoreLocal { .. } => {
+            vec![]
+        }
+        Instr::Call { rets, .. } | Instr::CallPtr { rets, .. } => rets.clone(),
     }
 }
 fn term_uses(term: &Terminator) -> Vec<VReg> {
@@ -154,14 +245,25 @@ fn replace_all_uses(f: &mut IrFunc, from: VReg, to: VReg) {
                 | Instr::Shift { src, .. }
                 | Instr::Mov { src, .. }
                 | Instr::DevSend { src, .. }
-                | Instr::StoreSp { src, .. } => subst(src),
-                Instr::LoadImm { .. } | Instr::DevRecv { .. } | Instr::LoadSp { .. } => {}
+                | Instr::StoreSp { src, .. }
+                | Instr::StoreLocal { src, .. } => subst(src),
+                Instr::LoadImm { .. }
+                | Instr::StoreStatic { .. }
+                | Instr::DevRecv { .. }
+                | Instr::LoadSp { .. }
+                | Instr::LoadLocal { .. }
+                | Instr::AddrOfLocal { .. } => {}
                 Instr::LoadMem { base, .. } => subst(base),
                 Instr::StoreMem { base, src, .. } => {
                     subst(base);
                     subst(src);
                 }
                 Instr::Call { args, .. } => args.iter_mut().for_each(&subst),
+                Instr::LoadFuncAddr { .. } => {}
+                Instr::CallPtr { addr, args, .. } => {
+                    subst(addr);
+                    args.iter_mut().for_each(&subst);
+                }
             }
         }
         if let Some(term) = &mut b.term {
@@ -204,28 +306,41 @@ fn insert_abi_shims(f: &mut IrFunc) -> AbiInfo {
         f.params.len(),
         ARG_REGS.len()
     );
-    assert!(f.n_rets <= RET_REGS.len(), "function {} has too many return values", f.name);
+    assert!(
+        f.n_rets <= RET_REGS.len(),
+        "function {} has too many return values",
+        f.name
+    );
 
     // params: pin to ARG_REGS; copy to a fresh vreg for all real uses
     let params = f.params.clone();
     for (i, p) in params.iter().enumerate() {
         pinned.insert(*p, ARG_REGS[i]);
         let used = f.blocks.iter().any(|b| {
-            b.phis.iter().any(|phi| phi.args.iter().any(|(_, v)| v == p))
+            b.phis
+                .iter()
+                .any(|phi| phi.args.iter().any(|(_, v)| v == p))
                 || b.insts.iter().any(|inst| inst_uses(inst).contains(p))
                 || b.term.as_ref().is_some_and(|t| term_uses(t).contains(p))
         });
         if used {
             let p2 = fresh(f);
             replace_all_uses(f, *p, p2);
-            f.blocks[f.entry].insts.insert(0, Instr::Mov { dst: p2, src: *p });
+            f.blocks[f.entry]
+                .insts
+                .insert(0, Instr::Mov { dst: p2, src: *p });
+            f.blocks[f.entry].lines.insert(0, None);
         }
     }
 
     // calls and rets
     for b in 0..f.blocks.len() {
         let mut new_insts = Vec::with_capacity(f.blocks[b].insts.len());
+        let mut new_lines = Vec::with_capacity(f.blocks[b].lines.len());
+        let old_lines = std::mem::take(&mut f.blocks[b].lines);
+        let mut old_lines = old_lines.into_iter();
         for inst in std::mem::take(&mut f.blocks[b].insts) {
+            let line = old_lines.next().unwrap_or(None);
             if let Instr::Call { func, args, rets } = inst {
                 assert!(
                     args.len() <= ARG_REGS.len() && rets.len() <= RET_REGS.len(),
@@ -235,7 +350,11 @@ fn insert_abi_shims(f: &mut IrFunc) -> AbiInfo {
                 for (j, a) in args.iter().enumerate() {
                     let alpha = fresh(f);
                     pinned.insert(alpha, ARG_REGS[j]);
-                    new_insts.push(Instr::Mov { dst: alpha, src: *a });
+                    new_insts.push(Instr::Mov {
+                        dst: alpha,
+                        src: *a,
+                    });
+                    new_lines.push(line);
                     pinned_args.push(alpha);
                 }
                 let mut pinned_rets = Vec::with_capacity(rets.len());
@@ -251,22 +370,74 @@ fn insert_abi_shims(f: &mut IrFunc) -> AbiInfo {
                     args: pinned_args,
                     rets: pinned_rets,
                 });
+                new_lines.push(line);
+                let n_movs = result_movs.len();
                 new_insts.extend(result_movs);
+                new_lines.extend(std::iter::repeat(line).take(n_movs));
+            } else if let Instr::CallPtr { addr, args, rets } = inst {
+                assert!(
+                    args.len() <= ARG_REGS.len() && rets.len() <= RET_REGS.len(),
+                    "indirect call exceeds ABI register count"
+                );
+                // the target address goes to tmp (r15): it must survive the
+                // argument parallel move, which only touches r2..r7
+                let alpha_addr = fresh(f);
+                pinned.insert(alpha_addr, REG_TMP);
+                new_insts.push(Instr::Mov {
+                    dst: alpha_addr,
+                    src: addr,
+                });
+                new_lines.push(line);
+                let mut pinned_args = Vec::with_capacity(args.len());
+                for (j, a) in args.iter().enumerate() {
+                    let alpha = fresh(f);
+                    pinned.insert(alpha, ARG_REGS[j]);
+                    new_insts.push(Instr::Mov {
+                        dst: alpha,
+                        src: *a,
+                    });
+                    new_lines.push(line);
+                    pinned_args.push(alpha);
+                }
+                let mut pinned_rets = Vec::with_capacity(rets.len());
+                let mut result_movs = Vec::with_capacity(rets.len());
+                for (k, r) in rets.iter().enumerate() {
+                    let rho = fresh(f);
+                    pinned.insert(rho, RET_REGS[k]);
+                    pinned_rets.push(rho);
+                    result_movs.push(Instr::Mov { dst: *r, src: rho });
+                }
+                new_insts.push(Instr::CallPtr {
+                    addr: alpha_addr,
+                    args: pinned_args,
+                    rets: pinned_rets,
+                });
+                new_lines.push(line);
+                let n_movs = result_movs.len();
+                new_insts.extend(result_movs);
+                new_lines.extend(std::iter::repeat(line).take(n_movs));
             } else {
                 new_insts.push(inst);
+                new_lines.push(line);
             }
         }
+        debug_assert_eq!(new_insts.len(), new_lines.len());
         f.blocks[b].insts = new_insts;
+        f.blocks[b].lines = new_lines;
 
         if let Some(Terminator::Ret { values }) = f.blocks[b].term.clone() {
+            let line = f.blocks[b].term_line;
             let mut pinned_values = Vec::with_capacity(values.len());
             for (k, v) in values.iter().enumerate() {
                 let beta = fresh(f);
                 pinned.insert(beta, RET_REGS[k]);
                 f.blocks[b].insts.push(Instr::Mov { dst: beta, src: *v });
+                f.blocks[b].lines.push(line);
                 pinned_values.push(beta);
             }
-            f.blocks[b].term = Some(Terminator::Ret { values: pinned_values });
+            f.blocks[b].term = Some(Terminator::Ret {
+                values: pinned_values,
+            });
         }
     }
 
@@ -282,21 +453,30 @@ fn insert_abi_shims(f: &mut IrFunc) -> AbiInfo {
 /// single-successor pred.
 fn split_critical_edges(f: &mut IrFunc) {
     for b in 0..f.blocks.len() {
+        let source_line = f.blocks[b].term_line;
         let (if_true, if_false) = match &f.blocks[b].term {
-            Some(Terminator::Br { if_true, if_false, .. }) => (*if_true, *if_false),
+            Some(Terminator::Br {
+                if_true, if_false, ..
+            }) => (*if_true, *if_false),
             _ => continue,
         };
         let mut new_term = f.blocks[b].term.clone();
         for target in [if_true, if_false] {
-            if f.blocks[target].preds.len() > 1 {
+            // A critical edge only needs its own block when the successor has
+            // phi moves to perform. Splitting every multi-predecessor target
+            // creates empty jump-only blocks and prevents useful fallthrough.
+            if f.blocks[target].preds.len() > 1 && !f.blocks[target].phis.is_empty() {
                 let tramp = f.blocks.len();
                 f.blocks.push(Block {
                     phis: vec![],
                     insts: vec![],
+                    lines: vec![],
                     term: Some(Terminator::Jmp { target }),
+                    term_line: source_line,
                     preds: vec![b],
                 });
                 f.block_notes.push(None);
+                f.block_lines.push(None);
                 // rewire the target's preds and phi args
                 for p in &mut f.blocks[target].preds {
                     if *p == b {
@@ -311,7 +491,11 @@ fn split_critical_edges(f: &mut IrFunc) {
                     }
                 }
                 match &mut new_term {
-                    Some(Terminator::Br { if_true: t, if_false: fl, .. }) => {
+                    Some(Terminator::Br {
+                        if_true: t,
+                        if_false: fl,
+                        ..
+                    }) => {
                         if *t == target {
                             *t = tramp;
                         }
@@ -372,7 +556,7 @@ fn compute_intervals(f: &IrFunc) -> Vec<Interval> {
             for u in inst_uses(inst) {
                 end[u as usize] = end[u as usize].max(pos);
             }
-            if let Instr::Call { .. } = inst {
+            if let Instr::Call { .. } | Instr::CallPtr { .. } = inst {
                 calls.push((pos, pos + 1));
             }
             for d in inst_defs(inst) {
@@ -498,17 +682,25 @@ fn compute_intervals(f: &IrFunc) -> Vec<Interval> {
 /// coalescing hints: for `mov dst, src` the src's interval ends at the mov,
 /// so giving src the dst's register eliminates the move. same for phi args.
 /// (hint only — the allocator's usual checks still apply.)
-fn compute_affinity(f: &IrFunc) -> HashMap<VReg, VReg> {
-    let mut aff: HashMap<VReg, VReg> = HashMap::new();
+fn compute_affinity(f: &IrFunc) -> HashMap<VReg, Vec<VReg>> {
+    let mut aff: HashMap<VReg, Vec<VReg>> = HashMap::new();
+    let mut pair = |a: VReg, b: VReg| {
+        if !aff.entry(a).or_default().contains(&b) {
+            aff.entry(a).or_default().push(b);
+        }
+        if !aff.entry(b).or_default().contains(&a) {
+            aff.entry(b).or_default().push(a);
+        }
+    };
     for b in &f.blocks {
         for inst in &b.insts {
             if let Instr::Mov { dst, src } = inst {
-                aff.entry(*src).or_insert(*dst);
+                pair(*src, *dst);
             }
         }
         for phi in &b.phis {
             for &(_, v) in &phi.args {
-                aff.entry(v).or_insert(phi.dst);
+                pair(v, phi.dst);
             }
         }
     }
@@ -520,7 +712,11 @@ struct ScanResult {
     spilled: Vec<VReg>,
 }
 
-fn linear_scan(intervals: &[Interval], abi: &AbiInfo, affinity: &HashMap<VReg, VReg>) -> ScanResult {
+fn linear_scan(
+    intervals: &[Interval],
+    abi: &AbiInfo,
+    affinity: &HashMap<VReg, Vec<VReg>>,
+) -> ScanResult {
     // fixed ranges per register (from pinned vregs), known upfront
     let mut fixed_ranges: HashMap<u8, Vec<(u32, u32)>> = HashMap::new();
     for (&v, &r) in &abi.pinned {
@@ -533,10 +729,7 @@ fn linear_scan(intervals: &[Interval], abi: &AbiInfo, affinity: &HashMap<VReg, V
         let mut sorted = ranges.clone();
         sorted.sort();
         for w in sorted.windows(2) {
-            assert!(
-                w[1].0 > w[0].1,
-                "pinned intervals on r{r} overlap: {w:?}"
-            );
+            assert!(w[1].0 > w[0].1, "pinned intervals on r{r} overlap: {w:?}");
         }
     }
     let overlaps = |a: (u32, u32), b: (u32, u32)| !(a.1 < b.0 || b.1 < a.0);
@@ -582,16 +775,16 @@ fn linear_scan(intervals: &[Interval], abi: &AbiInfo, affinity: &HashMap<VReg, V
                     .is_some_and(|ranges| ranges.iter().any(|&fr| overlaps(fr, (iv.start, iv.end))))
         };
         // coalescing hint: prefer the affinity target's register
-        let preferred = affinity.get(&v).and_then(|&a| {
-            if let Some(&r) = abi.pinned.get(&a) {
-                Some(r)
-            } else {
-                reg.get(&a).copied()
-            }
+        let preferred = affinity.get(&v).and_then(|neighbors| {
+            neighbors.iter().find_map(|a| {
+                if let Some(&r) = abi.pinned.get(a) {
+                    Some(r)
+                } else {
+                    reg.get(a).copied()
+                }
+            })
         });
-        let mut chosen = preferred.filter(|&r| {
-            prefs.contains(&r) && free(r)
-        });
+        let mut chosen = preferred.filter(|&r| prefs.contains(&r) && free(r));
         if chosen.is_none() {
             for &r in prefs {
                 if free(r) {
@@ -702,32 +895,129 @@ fn rewrite_spills(f: &mut IrFunc, spilled: &[VReg], next_slot: &mut u8) {
     for b in 0..f.blocks.len() {
         // instructions
         let mut new_insts = Vec::with_capacity(f.blocks[b].insts.len());
+        let mut new_lines = Vec::with_capacity(f.blocks[b].lines.len());
+        let old_lines = std::mem::take(&mut f.blocks[b].lines);
+        let mut old_lines = old_lines.into_iter();
         for mut inst in std::mem::take(&mut f.blocks[b].insts) {
+            let line = old_lines.next().unwrap_or(None);
             // uses first
             match &mut inst {
                 Instr::Bin { lhs, rhs, .. } => {
-                    reload(lhs, &slot_of, &spilled, f, &mut new_insts);
-                    reload(rhs, &slot_of, &spilled, f, &mut new_insts);
+                    reload(
+                        lhs,
+                        &slot_of,
+                        &spilled,
+                        f,
+                        &mut new_insts,
+                        &mut new_lines,
+                        line,
+                    );
+                    reload(
+                        rhs,
+                        &slot_of,
+                        &spilled,
+                        f,
+                        &mut new_insts,
+                        &mut new_lines,
+                        line,
+                    );
                 }
                 Instr::Un { src, .. } | Instr::Shift { src, .. } | Instr::Mov { src, .. } => {
-                    reload(src, &slot_of, &spilled, f, &mut new_insts)
+                    reload(
+                        src,
+                        &slot_of,
+                        &spilled,
+                        f,
+                        &mut new_insts,
+                        &mut new_lines,
+                        line,
+                    )
                 }
-                Instr::LoadImm { .. } | Instr::DevRecv { .. } | Instr::LoadSp { .. } => {}
-                Instr::LoadMem { base, .. } => reload(base, &slot_of, &spilled, f, &mut new_insts),
+                Instr::LoadImm { .. }
+                | Instr::StoreStatic { .. }
+                | Instr::DevRecv { .. }
+                | Instr::LoadSp { .. }
+                | Instr::LoadLocal { .. }
+                | Instr::AddrOfLocal { .. } => {}
+                Instr::LoadMem { base, .. } => reload(
+                    base,
+                    &slot_of,
+                    &spilled,
+                    f,
+                    &mut new_insts,
+                    &mut new_lines,
+                    line,
+                ),
                 Instr::StoreMem { base, src, .. } => {
-                    reload(base, &slot_of, &spilled, f, &mut new_insts);
-                    reload(src, &slot_of, &spilled, f, &mut new_insts);
+                    reload(
+                        base,
+                        &slot_of,
+                        &spilled,
+                        f,
+                        &mut new_insts,
+                        &mut new_lines,
+                        line,
+                    );
+                    reload(
+                        src,
+                        &slot_of,
+                        &spilled,
+                        f,
+                        &mut new_insts,
+                        &mut new_lines,
+                        line,
+                    );
                 }
                 Instr::Call { args, .. } => {
                     for a in args {
-                        reload(a, &slot_of, &spilled, f, &mut new_insts);
+                        reload(
+                            a,
+                            &slot_of,
+                            &spilled,
+                            f,
+                            &mut new_insts,
+                            &mut new_lines,
+                            line,
+                        );
                     }
                 }
-                Instr::DevSend { src, .. } | Instr::StoreSp { src, .. } => {
-                    reload(src, &slot_of, &spilled, f, &mut new_insts)
+                Instr::LoadFuncAddr { .. } => {}
+                Instr::CallPtr { addr, args, .. } => {
+                    reload(
+                        addr,
+                        &slot_of,
+                        &spilled,
+                        f,
+                        &mut new_insts,
+                        &mut new_lines,
+                        line,
+                    );
+                    for a in args {
+                        reload(
+                            a,
+                            &slot_of,
+                            &spilled,
+                            f,
+                            &mut new_insts,
+                            &mut new_lines,
+                            line,
+                        );
+                    }
                 }
+                Instr::DevSend { src, .. }
+                | Instr::StoreSp { src, .. }
+                | Instr::StoreLocal { src, .. } => reload(
+                    src,
+                    &slot_of,
+                    &spilled,
+                    f,
+                    &mut new_insts,
+                    &mut new_lines,
+                    line,
+                ),
             }
             new_insts.push(inst.clone());
+            new_lines.push(line);
             // defs after
             for d in inst_defs(&inst) {
                 if spilled.contains(&d) {
@@ -743,38 +1033,81 @@ fn rewrite_spills(f: &mut IrFunc, spilled: &[VReg], next_slot: &mut u8) {
                         slot: slot_of[&d],
                         src: t,
                     });
+                    new_lines.push(line);
                 }
             }
         }
+        // Reloads and stores introduced for an instruction retain its line so
+        // source-to-disassembly highlighting covers the complete operation.
+        debug_assert_eq!(new_insts.len(), new_lines.len());
         f.blocks[b].insts = new_insts;
+        f.blocks[b].lines = new_lines;
 
         // terminator uses (take the terminator out to avoid double-borrow of f)
         let mut taken_term = f.blocks[b].term.take();
+        let term_line = f.blocks[b].term_line;
         if let Some(term) = &mut taken_term {
             let mut pre = vec![];
+            let mut pre_lines = vec![];
             match term {
                 Terminator::Jmp { .. } => {}
                 Terminator::Br { cmp, .. } => {
-                    reload(&mut cmp.lhs, &slot_of, &spilled, f, &mut pre);
+                    reload(
+                        &mut cmp.lhs,
+                        &slot_of,
+                        &spilled,
+                        f,
+                        &mut pre,
+                        &mut pre_lines,
+                        term_line,
+                    );
                     if let CmpRhs::Reg(r) = &mut cmp.rhs {
-                        reload(r, &slot_of, &spilled, f, &mut pre);
+                        reload(
+                            r,
+                            &slot_of,
+                            &spilled,
+                            f,
+                            &mut pre,
+                            &mut pre_lines,
+                            term_line,
+                        );
                     }
                 }
                 Terminator::Ret { values } => {
                     for v in values {
-                        reload(v, &slot_of, &spilled, f, &mut pre);
+                        reload(
+                            v,
+                            &slot_of,
+                            &spilled,
+                            f,
+                            &mut pre,
+                            &mut pre_lines,
+                            term_line,
+                        );
                     }
                 }
-                Terminator::Halt { signal } => reload(signal, &slot_of, &spilled, f, &mut pre),
+                Terminator::Halt { signal } => reload(
+                    signal,
+                    &slot_of,
+                    &spilled,
+                    f,
+                    &mut pre,
+                    &mut pre_lines,
+                    term_line,
+                ),
             }
             f.blocks[b].insts.extend(pre);
+            f.blocks[b].lines.extend(pre_lines);
         }
         f.blocks[b].term = taken_term;
     }
 
     // edge appends targeted at pred blocks (from phis of successors)
     for (b, app) in edge_appends {
+        let n = app.len();
         f.blocks[b].insts.extend(app);
+        let line = f.blocks[b].term_line;
+        f.blocks[b].lines.extend(std::iter::repeat(line).take(n));
     }
 }
 
@@ -784,6 +1117,8 @@ fn reload(
     spilled: &HashSet<VReg>,
     f: &mut IrFunc,
     out: &mut Vec<Instr>,
+    lines: &mut Vec<Option<u32>>,
+    line: Option<u32>,
 ) {
     if spilled.contains(v) {
         let t = {
@@ -795,6 +1130,7 @@ fn reload(
             dst: t,
             slot: slot_of[v],
         });
+        lines.push(line);
         *v = t;
     }
 }
@@ -808,8 +1144,17 @@ fn defs_mut(inst: &mut Instr) -> Vec<&mut VReg> {
         | Instr::LoadImm { dst, .. }
         | Instr::LoadMem { dst, .. }
         | Instr::DevRecv { dst, .. }
+        | Instr::LoadFuncAddr { dst, .. }
+        | Instr::LoadLocal { dst, .. }
+        | Instr::AddrOfLocal { dst, .. }
         | Instr::LoadSp { dst, .. } => vec![dst],
-        Instr::StoreMem { .. } | Instr::DevSend { .. } | Instr::StoreSp { .. } => vec![],
-        Instr::Call { rets, .. } => rets.iter_mut().collect(),
+        Instr::StoreMem { .. }
+        | Instr::StoreStatic { .. }
+        | Instr::DevSend { .. }
+        | Instr::StoreSp { .. }
+        | Instr::StoreLocal { .. } => {
+            vec![]
+        }
+        Instr::Call { rets, .. } | Instr::CallPtr { rets, .. } => rets.iter_mut().collect(),
     }
 }

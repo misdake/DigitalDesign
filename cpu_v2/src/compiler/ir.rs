@@ -5,8 +5,8 @@
 //! (`VReg`), produced at most once. Branch conditions are always a single
 //! comparison (`Cmp`) matching the ISA's cmp + j_cc model.
 
-use crate::isa::Cond;
 use crate::compiler::FuncName;
+use crate::isa::Cond;
 use std::fmt;
 
 pub type VReg = u32;
@@ -21,8 +21,7 @@ pub enum BinOp {
     Xor,
 }
 
-#[derive(Copy, Clone, Debug, Eq, PartialEq)]
-#[derive(Hash)]
+#[derive(Copy, Clone, Debug, Eq, PartialEq, Hash)]
 pub enum UnOp {
     Inv,
     Neg,
@@ -68,21 +67,99 @@ impl Eq for Cmp {}
 
 #[derive(Clone, Debug, PartialEq)]
 pub enum Instr {
-    Bin { dst: VReg, op: BinOp, lhs: VReg, rhs: VReg },
-    Un { dst: VReg, op: UnOp, src: VReg },
-    Shift { dst: VReg, op: ShiftOp, src: VReg, amount: u8 },
-    Mov { dst: VReg, src: VReg },
-    LoadImm { dst: VReg, value: u16 },
-    LoadMem { dst: VReg, base: VReg, offset: i16 },
-    StoreMem { base: VReg, offset: i16, src: VReg },
+    Bin {
+        dst: VReg,
+        op: BinOp,
+        lhs: VReg,
+        rhs: VReg,
+    },
+    Un {
+        dst: VReg,
+        op: UnOp,
+        src: VReg,
+    },
+    Shift {
+        dst: VReg,
+        op: ShiftOp,
+        src: VReg,
+        amount: u8,
+    },
+    Mov {
+        dst: VReg,
+        src: VReg,
+    },
+    LoadImm {
+        dst: VReg,
+        value: u16,
+    },
+    LoadMem {
+        dst: VReg,
+        base: VReg,
+        offset: i16,
+    },
+    StoreMem {
+        base: VReg,
+        offset: i16,
+        src: VReg,
+    },
+    /// Compiler-generated static data initialization. Codegen groups these by
+    /// 256-word page and uses sp + u8 offset stores.
+    StoreStatic {
+        addr: u16,
+        value: u16,
+    },
     /// rets are SSA defs (filled by the callee per the calling convention)
-    Call { func: FuncName, args: Vec<VReg>, rets: Vec<VReg> },
-    DevRecv { dst: VReg, device: u8, channel: u8 },
-    DevSend { device: u8, channel: u8, src: VReg },
+    Call {
+        func: FuncName,
+        args: Vec<VReg>,
+        rets: Vec<VReg>,
+    },
+    /// load the absolute address of a function (relocation slot)
+    LoadFuncAddr {
+        dst: VReg,
+        func: FuncName,
+    },
+    /// indirect call through a function pointer (Harvard: distinct from data ptr)
+    CallPtr {
+        addr: VReg,
+        args: Vec<VReg>,
+        rets: Vec<VReg>,
+    },
+    DevRecv {
+        dst: VReg,
+        device: u8,
+        channel: u8,
+    },
+    DevSend {
+        device: u8,
+        channel: u8,
+        src: VReg,
+    },
     /// frame slot access (register allocator spills only; offset is a frame
     /// slot index, resolved to load_sp/store_sp in codegen)
-    LoadSp { dst: VReg, slot: u8 },
-    StoreSp { slot: u8, src: VReg },
+    LoadSp {
+        dst: VReg,
+        slot: u8,
+    },
+    StoreSp {
+        slot: u8,
+        src: VReg,
+    },
+    /// frame-local slot access for address-taken locals and local arrays;
+    /// slots are assigned by the frontend (distinct from spill slots)
+    LoadLocal {
+        dst: VReg,
+        slot: u8,
+    },
+    StoreLocal {
+        slot: u8,
+        src: VReg,
+    },
+    /// dst = sp + slot (address of a frame-local variable)
+    AddrOfLocal {
+        dst: VReg,
+        slot: u8,
+    },
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -93,19 +170,34 @@ pub struct Phi {
 
 #[derive(Clone, Debug, PartialEq)]
 pub enum Terminator {
-    Jmp { target: BlockId },
-    Br { cmp: Cmp, if_true: BlockId, if_false: BlockId },
-    Ret { values: Vec<VReg> },
+    Jmp {
+        target: BlockId,
+    },
+    Br {
+        cmp: Cmp,
+        if_true: BlockId,
+        if_false: BlockId,
+    },
+    Ret {
+        values: Vec<VReg>,
+    },
     /// halt with a signal value (main program exit)
-    Halt { signal: VReg },
+    Halt {
+        signal: VReg,
+    },
 }
 
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct Block {
     pub phis: Vec<Phi>,
     pub insts: Vec<Instr>,
+    /// source line per instruction, parallel to `insts` (debugger line table;
+    /// None = no source line, e.g. compiler-generated)
+    pub lines: Vec<Option<u32>>,
     /// None while the block is still being built (or unreachable)
     pub term: Option<Terminator>,
+    /// source line of the terminator (debuggers map halts/rets/branches too)
+    pub term_line: Option<u32>,
     pub preds: Vec<BlockId>,
 }
 
@@ -123,6 +215,12 @@ pub struct IrFunc {
     pub ret_names: Vec<&'static str>,
     /// per-block role notes for the disassembly listing (loop header, then, ...)
     pub block_notes: Vec<Option<&'static str>>,
+    /// per-block source line numbers for the disassembly listing (best effort)
+    pub block_lines: Vec<Option<u32>>,
+    /// number of frame-local slots assigned by the frontend (address-taken
+    /// locals and local arrays); frame layout puts these after callee saves
+    /// and before spill slots
+    pub local_slots: u8,
 }
 
 impl IrFunc {
@@ -130,7 +228,9 @@ impl IrFunc {
     pub fn successors(&self, b: BlockId) -> Vec<BlockId> {
         match &self.blocks[b].term {
             Some(Terminator::Jmp { target }) => vec![*target],
-            Some(Terminator::Br { if_true, if_false, .. }) => vec![*if_true, *if_false],
+            Some(Terminator::Br {
+                if_true, if_false, ..
+            }) => vec![*if_true, *if_false],
             _ => vec![],
         }
     }
@@ -156,7 +256,10 @@ impl IrFunc {
 }
 
 fn fmt_vregs(v: &[VReg]) -> String {
-    v.iter().map(|r| format!("v{r}")).collect::<Vec<_>>().join(", ")
+    v.iter()
+        .map(|r| format!("v{r}"))
+        .collect::<Vec<_>>()
+        .join(", ")
 }
 
 impl fmt::Display for IrFunc {
@@ -169,7 +272,12 @@ impl fmt::Display for IrFunc {
             self.n_rets
         )?;
         for (i, b) in self.blocks.iter().enumerate() {
-            let preds = b.preds.iter().map(|p| format!("b{p}")).collect::<Vec<_>>().join(", ");
+            let preds = b
+                .preds
+                .iter()
+                .map(|p| format!("b{p}"))
+                .collect::<Vec<_>>()
+                .join(", ");
             writeln!(f, "b{i}: ; preds=[{preds}]")?;
             for phi in &b.phis {
                 let args = phi
@@ -215,7 +323,12 @@ impl fmt::Display for Instr {
                 };
                 write!(f, "v{dst} = {op} v{src}")
             }
-            Instr::Shift { dst, op, src, amount } => {
+            Instr::Shift {
+                dst,
+                op,
+                src,
+                amount,
+            } => {
                 let op = match op {
                     ShiftOp::Lsl => "lsl",
                     ShiftOp::Lsr => "lsr",
@@ -226,14 +339,44 @@ impl fmt::Display for Instr {
             Instr::Mov { dst, src } => write!(f, "v{dst} = mov v{src}"),
             Instr::LoadImm { dst, value } => write!(f, "v{dst} = imm {value}"),
             Instr::LoadMem { dst, base, offset } => write!(f, "v{dst} = load [v{base} + {offset}]"),
-            Instr::StoreMem { base, offset, src } => write!(f, "store [v{base} + {offset}] = v{src}"),
-            Instr::Call { func, args, rets } => {
-                write!(f, "({}) = call {}({})", fmt_vregs(rets), func, fmt_vregs(args))
+            Instr::StoreMem { base, offset, src } => {
+                write!(f, "store [v{base} + {offset}] = v{src}")
             }
-            Instr::DevRecv { dst, device, channel } => write!(f, "v{dst} = dev_recv {device}, {channel}"),
-            Instr::DevSend { device, channel, src } => write!(f, "dev_send {device}, {channel}, v{src}"),
+            Instr::StoreStatic { addr, value } => write!(f, "static[{addr:#06x}] = {value:#06x}"),
+            Instr::Call { func, args, rets } => {
+                write!(
+                    f,
+                    "({}) = call {}({})",
+                    fmt_vregs(rets),
+                    func,
+                    fmt_vregs(args)
+                )
+            }
+            Instr::LoadFuncAddr { dst, func } => write!(f, "v{dst} = &{func}"),
+            Instr::CallPtr { addr, args, rets } => {
+                write!(
+                    f,
+                    "({}) = call_ptr v{}({})",
+                    fmt_vregs(rets),
+                    addr,
+                    fmt_vregs(args)
+                )
+            }
+            Instr::DevRecv {
+                dst,
+                device,
+                channel,
+            } => write!(f, "v{dst} = dev_recv {device}, {channel}"),
+            Instr::DevSend {
+                device,
+                channel,
+                src,
+            } => write!(f, "dev_send {device}, {channel}, v{src}"),
             Instr::LoadSp { dst, slot } => write!(f, "v{dst} = load_sp #{slot}"),
             Instr::StoreSp { slot, src } => write!(f, "store_sp #{slot} = v{src}"),
+            Instr::LoadLocal { dst, slot } => write!(f, "v{dst} = load_local #{slot}"),
+            Instr::StoreLocal { slot, src } => write!(f, "store_local #{slot} = v{src}"),
+            Instr::AddrOfLocal { dst, slot } => write!(f, "v{dst} = &local #{slot}"),
         }
     }
 }
@@ -255,7 +398,11 @@ impl fmt::Display for Terminator {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         match self {
             Terminator::Jmp { target } => write!(f, "jmp b{target}"),
-            Terminator::Br { cmp, if_true, if_false } => {
+            Terminator::Br {
+                cmp,
+                if_true,
+                if_false,
+            } => {
                 let rhs = match &cmp.rhs {
                     CmpRhs::Reg(r) => format!("v{r}"),
                     CmpRhs::Imm(i) => format!("{i}"),

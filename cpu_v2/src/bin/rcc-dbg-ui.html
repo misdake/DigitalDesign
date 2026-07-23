@@ -1,0 +1,345 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>rcc debugger</title>
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/prismjs@1.30.0/themes/prism-tomorrow.min.css">
+<style>
+  * { box-sizing: border-box; }
+  html, body { height: 100%; overflow: hidden; }
+  body { margin: 0; display: flex; flex-direction: column; font: 13px/1.45 ui-monospace, Consolas, monospace; background: #1e1f24; color: #d8d9dd; }
+  header { flex: 0 0 auto; display: flex; align-items: center; gap: 8px; padding: 8px 12px; background: #26272e; border-bottom: 1px solid #33363f; }
+  header b { font-size: 14px; }
+  button { background: #3a3d47; color: #e8e9ec; border: 1px solid #4a4e5c; border-radius: 4px; padding: 4px 10px; cursor: pointer; font: inherit; }
+  button:hover { background: #484c59; }
+  button.primary { background: #2d5a80; border-color: #3d72a0; }
+  button.primary:hover { background: #366b96; }
+  .badge { padding: 2px 8px; border-radius: 10px; background: #344; }
+  .badge.halt { background: #5a2e2e; color: #ffb4b4; }
+  main { flex: 1 1 auto; min-height: 0; display: grid; grid-template-columns: 40% 32% 28%; grid-template-rows: minmax(0, 1fr) 260px; }
+  section { min-height: 0; border-right: 1px solid #33363f; padding: 8px; overflow: auto; }
+  section:last-child { border-right: none; }
+  #srccol { grid-row: 1 / 3; }
+  #midcol { grid-row: 1; position: relative; padding-left: 34px; }
+  #diswrap { position: relative; }
+  #arrowSvg { position: absolute; left: -32px; top: 0; width: 32px; height: 100%; pointer-events: none; }
+  #varcol { grid-column: 3; grid-row: 1 / 3; }
+  #memsec { grid-column: 2; grid-row: 2; border-top: 1px solid #33363f; }
+  h3 { margin: 4px 0 6px; font-size: 12px; color: #9aa0ad; text-transform: uppercase; letter-spacing: .5px; }
+  table { border-collapse: collapse; width: 100%; }
+  td, th { padding: 1px 6px; text-align: left; }
+  td.stext, td.dtext { white-space: pre; }
+  tr.sline td { cursor: pointer; }
+  tr.sline:hover td { background: #2c2f38; }
+  tr.hl td { background: #3d3524; }
+  tr.cur td { background: #2d4a35; }
+  tr.call td.dtext { color: #79b879; }
+  tr.call[data-target] td.dtext { text-decoration: underline; text-decoration-style: dotted; cursor: pointer; }
+  tr.init td { background: rgba(170, 130, 210, .09); color: #b8a5cb; }
+  tr.inithead td { color: #b995dc; background: rgba(170, 130, 210, .16); border-top: 1px solid #604778; font-size: 11px; padding-top: 5px; }
+  tr.pc td { background: #24425c !important; }
+  tr.pc td.addr { position: relative; }
+  tr.pc td.addr::before { content: "▶"; position: absolute; left: -10px; color: #ff5b5b; font-size: 9px; }
+  tr.jump-target td { box-shadow: inset 3px 0 #79b879; }
+  tr.stack-frame td { cursor: pointer; }
+  tr.stack-frame:hover td { background: #2c2f38; }
+  tr.bp td:first-child::before { content: "● "; color: #ff6b6b; }
+  tr.fhead td { color: #8ec7ff; background: #232833; font-weight: bold; border-top: 1px solid #33363f; }
+  .addr { color: #7f8896; }
+  .regs td:nth-child(odd) { color: #7f8896; width: 30px; }
+  .vname { color: #8ec7ff; }
+  .vloc { color: #7f8896; }
+  .plink { color: #8ec7ff; text-decoration: underline; cursor: pointer; }
+  #mem td:nth-child(even) { color: #7f8896; }
+  input[type=text] { background: #1a1b20; color: inherit; border: 1px solid #4a4e5c; border-radius: 4px; padding: 3px 6px; width: 70px; font: inherit; }
+  .row { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; margin-bottom: 6px; }
+  .muted { color: #7f8896; }
+</style>
+</head>
+<body>
+<header>
+  <b>rcc debugger</b>
+  <button id="bnext" class="primary">Next Line</button>
+  <button id="bover">Step Over</button>
+  <button id="bout">Step Out</button>
+  <button id="bstep">Instruction</button>
+  <button id="bcont">Continue</button>
+  <button id="breset">Reset</button>
+  <span class="badge" id="cycles">cycles: 0</span>
+  <span class="badge" id="pc">pc: 0000</span>
+  <span class="badge halt" id="halt" style="display:none"></span>
+</header>
+<main>
+  <section id="srccol"><h3 id="srctitle">source</h3><table id="src"></table></section>
+  <section id="midcol"><h3>disassembly</h3><div id="diswrap"><svg id="arrowSvg"></svg><table id="dis"></table></div></section>
+  <section id="varcol">
+    <h3>call stack</h3><table id="stack"></table>
+    <h3>registers</h3><table class="regs" id="reg"></table>
+    <h3 id="functitle">locals</h3><table id="locals"></table>
+    <h3>globals</h3><table id="globals"></table>
+    <h3>consts</h3><table id="consts"></table>
+  </section>
+  <section id="memsec">
+    <div class="row">
+      <h3 style="margin:0">memory</h3>
+      addr <input id="maddr" value="0x1000">
+      len <input id="mlen" value="128" style="width:50px">
+      <button id="mgo">View</button>
+      <button class="mq" data-a="sp">sp</button>
+      <button class="mq" data-a="0x1000">heap</button>
+      <button class="mq" data-a="0">data</button>
+    </div>
+    <table id="mem"></table>
+  </section>
+</main>
+<script src="https://cdn.jsdelivr.net/npm/prismjs@1.30.0/prism.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/prismjs@1.30.0/components/prism-rust.min.js"></script>
+<script>
+const $ = id => document.getElementById(id);
+const hx = (n, w) => '0x' + n.toString(16).padStart(w || 4, '0');
+let state = null;
+let pinnedLine = null;   // source line pinned by clicking its text
+let pinnedFile = null;
+
+async function refresh(followPc = true) {
+  state = await (await fetch('/api/state')).json();
+  render({followPc});
+  renderMem();
+}
+
+// address set of the disasm instructions mapped to a source line
+function addrsOfLine(n) {
+  if (!state.src || !state.src.map) return new Set();
+  return new Set(state.src.map.filter(([a, l]) => l === n).map(([a]) => a));
+}
+
+function centerDisasmForLine(n) {
+  const rows = [...addrsOfLine(n)]
+    .map(a => document.querySelector(`#dis tr.dline[data-addr="${a}"]`))
+    .filter(Boolean);
+  if (!rows.length) return;
+  scrollDisasmRow(rows[Math.floor(rows.length / 2)], 'center');
+}
+
+function scrollDisasmRow(row, block = 'center') {
+  row.scrollIntoView({block, inline: 'start'});
+  $('midcol').scrollLeft = 0;
+}
+
+function flashDisasmRow(row) {
+  scrollDisasmRow(row);
+  row.classList.add('jump-target');
+  setTimeout(() => row.classList.remove('jump-target'), 900);
+}
+
+function render({followPc = false} = {}) {
+  if (!state.src || (pinnedFile != null && pinnedFile !== state.src.file)) {
+    pinnedLine = null;
+    pinnedFile = null;
+  }
+  $('cycles').textContent = 'cycles: ' + state.cycles;
+  $('pc').textContent = 'pc: ' + hx(state.pc);
+  const h = $('halt');
+  if (state.halted != null) { h.style.display = ''; h.textContent = 'halt: ' + state.halted + ' (' + hx(state.halted) + ')'; }
+  else h.style.display = 'none';
+
+  // call stack
+  $('stack').innerHTML = ['<tr><td class="muted">(main)</td></tr>']
+    .concat(state.stack.map(f => `<tr class="stack-frame" data-site="${f.site}"><td>→ ${esc(f.func)}</td><td class="addr">${f.site_line ? 'from :' + f.site_line : '(generated)'} ret ${hx(f.ret)}</td></tr>`))
+    .join('');
+  document.querySelectorAll('tr.stack-frame').forEach(tr => tr.onclick = () => {
+    const target = document.querySelector(`#dis tr.dline[data-addr="${tr.dataset.site}"]`);
+    if (target) flashDisasmRow(target);
+  });
+
+  // source view (indentation preserved via CSS white-space:pre)
+  const curLine = state.line ? state.line.line : null;
+  if (state.src) {
+    $('srctitle').textContent = 'source';
+    $('src').innerHTML = state.src.lines.map(l => {
+      const cls = [l.cur ? 'cur' : '', l.bp ? 'bp' : '', 'sline', pinnedLine === l.n ? 'hl' : ''].join(' ');
+      return `<tr class="${cls}" data-n="${l.n}"><td class="addr">${l.n}</td><td class="stext language-rust">${highlightRust(l.text)}</td></tr>`;
+    }).join('');
+    document.querySelectorAll('tr.sline').forEach(tr => {
+      const n = +tr.dataset.n;
+      tr.querySelector('.addr').onclick = async (e) => {
+        e.stopPropagation();
+        const hasBp = state.src.lines.find(l => l.n === n && l.bp);
+        await fetch(`/api/breakline?file=${state.src.file}&line=${n}&on=${hasBp ? 0 : 1}`, {method: 'POST'});
+        refresh(false);
+      };
+      tr.querySelector('.stext').onclick = (e) => {
+        if (e.detail > 1) return;
+        if (pinnedFile === state.src.file && pinnedLine === n) {
+          pinnedLine = null;
+          pinnedFile = null;
+        } else {
+          pinnedLine = n;
+          pinnedFile = state.src.file;
+        }
+        render({followPc: false});
+      };
+      tr.querySelector('.stext').ondblclick = (e) => {
+        e.preventDefault();
+        pinnedLine = n;
+        pinnedFile = state.src.file;
+        render({followPc: false});
+        centerDisasmForLine(n);
+      };
+    });
+    const curRow = document.querySelector('#src tr.cur');
+    if (followPc && curRow) curRow.scrollIntoView({block: 'nearest', inline: 'nearest'});
+  } else {
+    $('srctitle').textContent = 'source (no line info)';
+    $('src').innerHTML = '';
+  }
+
+  // disassembly: pc row and pinned/current-line highlights (breakpoints are source-only)
+  const hlAddrs = new Set();
+  if (pinnedLine != null) addrsOfLine(pinnedLine).forEach(a => hlAddrs.add(a));
+  else if (curLine != null) addrsOfLine(curLine).forEach(a => hlAddrs.add(a));
+  $('dis').innerHTML = state.disasm.map(d => {
+    if (d.header)
+      return `<tr class="fhead" data-addr="${d.addr}"><td class="addr">${hx(d.addr)}</td><td class="dtext">${esc(d.text)}</td></tr>`;
+    const section = d.initStart ? `<tr class="inithead"><td class="addr">${hx(d.addr)}</td><td class="dtext">compiler-generated initialization · ${esc(d.init)}</td></tr>` : '';
+    const cls = [(d.addr === state.pc) ? 'pc' : '', hlAddrs.has(d.addr) ? 'hl' : '', d.call ? 'call' : '', d.init ? 'init' : '', 'dline'].join(' ');
+    const t = d.target != null ? ` data-target="${d.target}"` : '';
+    const tn = d.tname ? ` data-tname="${esc(d.tname)}"` : '';
+    return section + `<tr class="${cls}" data-addr="${d.addr}"${t}${tn}><td class="addr">${hx(d.addr)}</td><td class="dtext">${esc(d.text)}</td></tr>`;
+  }).join('');
+  drawArrows();
+  document.querySelectorAll('tr.dline.call[data-target] .dtext').forEach(cell => cell.onclick = e => {
+    e.stopPropagation();
+    const target = document.querySelector(`#dis tr.dline[data-addr="${cell.parentElement.dataset.target}"]`);
+    if (!target) return;
+    flashDisasmRow(target);
+  });
+  const pcRow = document.querySelector('#dis tr.pc');
+  if (followPc && pcRow) scrollDisasmRow(pcRow, 'nearest');
+
+  // registers
+  let rt = '';
+  for (let i = 0; i < 16; i += 2)
+    rt += `<tr><td>r${i}</td><td>${hx(state.regs[i])}</td><td>r${i+1}</td><td>${hx(state.regs[i+1])}</td></tr>`;
+  $('reg').innerHTML = rt + `<tr><td>flags</td><td>${hx(state.flags, 2)}</td></tr>`;
+
+  // locals / globals / consts
+  if (state.func) {
+    $('functitle').textContent = `locals — ${state.func.name} (frame ${state.func.frame})`;
+    $('locals').innerHTML = state.func.locals.map(v => varRow(v)).join('');
+  } else {
+    $('functitle').textContent = 'locals';
+    $('locals').innerHTML = '';
+  }
+  $('globals').innerHTML = state.globals.map(v => varRow(v)).join('');
+  $('consts').innerHTML = state.consts.map(v => `<tr><td class="vname">${esc(v.name)}</td><td class="vloc">${esc(v.ty)}</td><td>${v.value} (${hx(v.value)})</td></tr>`).join('');
+}
+
+function varRow(v) {
+  return `<tr><td class="vname">${esc(v.name)}</td><td class="vloc">${esc(v.ty)}</td><td>${fmtVal(v)}</td></tr>`;
+}
+function esc(s) { return String(s).replace(/[&<>]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;'}[c])); }
+function highlightRust(s) {
+  if (window.Prism && Prism.languages.rust)
+    return Prism.highlight(String(s), Prism.languages.rust, 'rust');
+  return esc(s);
+}
+function fmtVal(v) {
+  const val = v.value;
+  if (val == null) return '<i>ssa</i>';
+  if (val.reg != null) {
+    const inner = fmtWord(val.word, v.ty);
+    const pointerLike = v.ty === 'Ptr' || v.ty.startsWith('Array<');
+    const value = pointerLike ? `<span class="plink" data-addr="${val.word}">${inner}</span>` : inner;
+    return `${value} <span class="vloc">@r${val.reg}</span>`;
+  }
+  if (val.words) {
+    if (!v.ty.startsWith('['))
+      return `${fmtWord(val.words[0], v.ty)} <span class="plink" data-addr="${val.addr}">@${hx(val.addr)}</span>`;
+    const head = val.words.slice(0, 4).map(w => fmtWord(w, v.ty.startsWith('[i16;') ? 'i16' : 'u16')).join(', ');
+    return `[${head}${val.words.length > 4 ? ', …' : ''}] <span class="plink" data-addr="${val.addr}">@${hx(val.addr)}</span>`;
+  }
+  return String(val);
+}
+function fmtWord(word, ty) {
+  if (ty === 'i16') {
+    const signed = word >= 0x8000 ? word - 0x10000 : word;
+    return `${signed} (${hx(word)})`;
+  }
+  return `${word} (${hx(word)})`;
+}
+
+async function renderMem() {
+  const addr = parseInt($('maddr').value.replace('0x', ''), 16) || 0;
+  const len = parseInt($('mlen').value) || 128;
+  const m = await (await fetch(`/api/mem?addr=${addr}&len=${len}`)).json();
+  let rows = '';
+  for (let i = 0; i < m.words.length; i += 8) {
+    const cells = m.words.slice(i, i + 8).map(w => `<td>${hx(w)}</td>`).join('');
+    rows += `<tr><td class="addr">${hx(m.addr + i)}</td>${cells}<td>${m.words.slice(i, i+8).map(w => w ? String.fromCharCode(w >= 32 && w < 127 ? w : 46) : '·').join('')}</td></tr>`;
+  }
+  $('mem').innerHTML = rows;
+}
+
+document.addEventListener('click', e => {
+  const p = e.target.closest('.plink');
+  if (p) {
+    $('maddr').value = hx(parseInt(p.dataset.addr));
+    renderMem();
+  }
+});
+
+$('bstep').onclick = () => fetch('/api/cmd?cmd=step', {method: 'POST'}).then(refresh);
+$('bnext').onclick = () => fetch('/api/cmd?cmd=next', {method: 'POST'}).then(refresh);
+$('bover').onclick = () => fetch('/api/cmd?cmd=over', {method: 'POST'}).then(refresh);
+$('bout').onclick = () => fetch('/api/cmd?cmd=out', {method: 'POST'}).then(refresh);
+$('bcont').onclick = () => fetch('/api/cmd?cmd=continue', {method: 'POST'}).then(refresh);
+$('breset').onclick = () => fetch('/api/cmd?cmd=reset', {method: 'POST'}).then(refresh);
+$('mgo').onclick = renderMem;
+document.querySelectorAll('.mq').forEach(b => b.onclick = () => {
+  $('maddr').value = b.dataset.a === 'sp' ? hx(state.regs[14]) : b.dataset.a;
+  renderMem();
+});
+function drawArrows() {
+  const svg = $('arrowSvg');
+  svg.innerHTML = '';
+  const rows = [...document.querySelectorAll('#dis tr.dline')];
+  const byAddr = new Map(rows.map(tr => [+tr.dataset.addr, tr]));
+  const wrapRect = $('diswrap').getBoundingClientRect();
+  const midY = tr => { const r = tr.getBoundingClientRect(); return r.top - wrapRect.top + r.height / 2; };
+  const NS = 'http://www.w3.org/2000/svg';
+  rows.forEach(tr => {
+    const t = tr.dataset.target;
+    if (t == null) return;
+    // Calls use colored, clickable instruction text instead of an arc.
+    if (tr.classList.contains('call')) return;
+    const to = byAddr.get(+t);
+    if (!to) return;
+    const y1 = midY(tr);
+    const y2 = midY(to);
+    const w = 8 + Math.min(Math.abs(y2 - y1) / 24, 22);
+    const color = '#5b7a9f';
+    // arc from source row to target row, arrowhead at the target
+    const dir = y2 > y1 ? 1 : -1;
+    const path = document.createElementNS(NS, 'path');
+    path.setAttribute('d', `M 26 ${y1} C ${26 - w} ${y1 + 4 * dir}, ${26 - w} ${y2 - 4 * dir}, 24 ${y2}`);
+    path.setAttribute('stroke', color);
+    path.setAttribute('fill', 'none');
+    path.setAttribute('stroke-width', '1.3');
+    path.setAttribute('opacity', '0.85');
+    svg.appendChild(path);
+    const head = document.createElementNS(NS, 'path');
+    head.setAttribute('d', `M 19 ${y2 - 3 * dir} L 26 ${y2} L 19 ${y2 + 3 * dir}`);
+    head.setAttribute('stroke', color);
+    head.setAttribute('fill', 'none');
+    head.setAttribute('stroke-width', '1.3');
+    svg.appendChild(head);
+  });
+  // keep the svg tall enough
+  svg.setAttribute('height', Math.max(svg.parentElement.scrollHeight, 200));
+}
+
+refresh();
+</script>
+</body>
+</html>

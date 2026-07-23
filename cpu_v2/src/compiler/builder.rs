@@ -5,9 +5,9 @@
 //! whose value is unknown in a block inserts a phi (lazily, with incomplete
 //! phis for not-yet-sealed blocks such as loop headers).
 
-use crate::isa::Cond;
-use crate::compiler::FuncName;
 use crate::compiler::ir::*;
+use crate::compiler::FuncName;
+use crate::isa::Cond;
 use std::collections::HashMap;
 
 /// a frontend variable handle (DSL-level mutable variable)
@@ -50,6 +50,8 @@ pub struct FuncBuilder {
     incomplete: HashMap<BlockId, Vec<(VReg, VarId)>>,
     current: Option<BlockId>,
     loops: Vec<LoopCtx>,
+    /// source line recorded for subsequently emitted instructions
+    line_hint: Option<u32>,
 }
 
 impl FuncBuilder {
@@ -65,7 +67,9 @@ impl FuncBuilder {
                 blocks: vec![Block {
                     phis: vec![],
                     insts: vec![],
+                    lines: vec![],
                     term: None,
+                    term_line: None,
                     preds: vec![],
                 }],
                 entry,
@@ -73,12 +77,15 @@ impl FuncBuilder {
                 param_names: vec![],
                 ret_names: vec![],
                 block_notes: vec![None],
+                block_lines: vec![None],
+                local_slots: 0,
             },
             sealed: vec![false],
             var_defs: vec![],
             incomplete: HashMap::new(),
             current: Some(entry),
             loops: vec![],
+            line_hint: None,
         };
         let params = (0..n_params).map(|_| b.new_var()).collect::<Vec<_>>();
         for (i, &var) in params.iter().enumerate() {
@@ -100,19 +107,33 @@ impl FuncBuilder {
     }
 
     fn cur(&self) -> BlockId {
-        self.current.expect("no current block (already terminated?)")
+        self.current
+            .expect("no current block (already terminated?)")
     }
 
     fn push(&mut self, inst: Instr) {
         let b = self.cur();
-        assert!(self.func.blocks[b].term.is_none(), "block b{b} already terminated");
+        assert!(
+            self.func.blocks[b].term.is_none(),
+            "block b{b} already terminated"
+        );
         self.func.blocks[b].insts.push(inst);
+        self.func.blocks[b].lines.push(self.line_hint);
+    }
+
+    /// record this source line for subsequently emitted instructions
+    pub fn set_line_hint(&mut self, line: u32) {
+        self.line_hint = Some(line);
     }
 
     fn terminate(&mut self, term: Terminator) {
         let b = self.cur();
-        assert!(self.func.blocks[b].term.is_none(), "block b{b} already terminated");
+        assert!(
+            self.func.blocks[b].term.is_none(),
+            "block b{b} already terminated"
+        );
         self.func.blocks[b].term = Some(term);
+        self.func.blocks[b].term_line = self.line_hint;
         self.current = None;
     }
 
@@ -121,18 +142,54 @@ impl FuncBuilder {
         self.func.blocks.push(Block {
             phis: vec![],
             insts: vec![],
+            lines: vec![],
             term: None,
+            term_line: None,
             preds: preds.to_vec(),
         });
         self.func.block_notes.push(None);
+        self.func.block_lines.push(None);
         self.sealed.push(false);
         id
+    }
+
+    /// tag a block with a source line (shown in the disassembly listing)
+    pub fn set_block_line(&mut self, b: BlockId, line: u32) {
+        self.func.block_lines[b] = Some(line);
+    }
+
+    /// the entry block id
+    pub fn entry_block(&self) -> BlockId {
+        self.func.entry
     }
 
     /// attach source-level parameter/return names (shown in the listing)
     pub fn set_names(&mut self, params: &[&'static str], rets: &[&'static str]) {
         self.func.param_names = params.to_vec();
         self.func.ret_names = rets.to_vec();
+    }
+
+    /// allocate `n` frame-local slots (address-taken locals / local arrays),
+    /// returning the base slot index
+    pub fn alloc_local_slots(&mut self, n: u8) -> u8 {
+        let base = self.func.local_slots;
+        self.func.local_slots += n;
+        base
+    }
+
+    pub fn load_local(&mut self, slot: u8) -> VReg {
+        let dst = self.fresh_vreg();
+        self.push(Instr::LoadLocal { dst, slot });
+        dst
+    }
+    pub fn store_local(&mut self, slot: u8, src: VReg) {
+        self.push(Instr::StoreLocal { slot, src });
+    }
+    /// dst = sp + slot (address of a frame-local variable)
+    pub fn addr_of_local(&mut self, slot: u8) -> VReg {
+        let dst = self.fresh_vreg();
+        self.push(Instr::AddrOfLocal { dst, slot });
+        dst
     }
 
     // ----- instruction emitters (SSA value producers) -----
@@ -155,7 +212,12 @@ impl FuncBuilder {
     pub fn shift(&mut self, op: ShiftOp, src: VReg, amount: u8) -> VReg {
         assert!(amount <= 15, "shift amount {amount} does not fit u4");
         let dst = self.fresh_vreg();
-        self.push(Instr::Shift { dst, op, src, amount });
+        self.push(Instr::Shift {
+            dst,
+            op,
+            src,
+            amount,
+        });
         dst
     }
     pub fn mov(&mut self, src: VReg) -> VReg {
@@ -180,13 +242,37 @@ impl FuncBuilder {
         });
         rets
     }
+    /// load the address of a function (as a function pointer value)
+    pub fn load_func_addr(&mut self, func: FuncName) -> VReg {
+        let dst = self.fresh_vreg();
+        self.push(Instr::LoadFuncAddr { dst, func });
+        dst
+    }
+    /// indirect call through a function pointer
+    pub fn call_ptr(&mut self, addr: VReg, args: &[VReg], n_rets: usize) -> Vec<VReg> {
+        let rets = (0..n_rets).map(|_| self.fresh_vreg()).collect::<Vec<_>>();
+        self.push(Instr::CallPtr {
+            addr,
+            args: args.to_vec(),
+            rets: rets.clone(),
+        });
+        rets
+    }
     pub fn dev_recv(&mut self, device: u8, channel: u8) -> VReg {
         let dst = self.fresh_vreg();
-        self.push(Instr::DevRecv { dst, device, channel });
+        self.push(Instr::DevRecv {
+            dst,
+            device,
+            channel,
+        });
         dst
     }
     pub fn dev_send(&mut self, device: u8, channel: u8, src: VReg) {
-        self.push(Instr::DevSend { device, channel, src });
+        self.push(Instr::DevSend {
+            device,
+            channel,
+            src,
+        });
     }
 
     // ----- variables (versioned SSA views) -----
@@ -219,7 +305,10 @@ impl FuncBuilder {
             return dst;
         }
         match self.func.blocks[block].preds.as_slice() {
-            [] => panic!("use of undefined variable {var} in function {}", self.func.name),
+            [] => panic!(
+                "use of undefined variable {var} in function {}",
+                self.func.name
+            ),
             [pred] => {
                 let pred = *pred;
                 let v = self.read_var(var, pred);
@@ -274,7 +363,11 @@ impl FuncBuilder {
     /// while loop with the condition evaluated at the loop header.
     /// `cond` runs in the (unsealed) header block, so variables it reads
     /// become loop-carried phis automatically.
-    pub fn while_loop(&mut self, cond: impl FnOnce(&mut Self) -> Cmp, body: impl FnOnce(&mut Self)) {
+    pub fn while_loop(
+        &mut self,
+        cond: impl FnOnce(&mut Self) -> Cmp,
+        body: impl FnOnce(&mut Self),
+    ) {
         self.while_bool(|b| BoolExpr::Cmp(cond(b)), body);
     }
 
@@ -423,6 +516,64 @@ impl FuncBuilder {
         self.current = Some(header);
         (header, body_b, exit)
     }
+
+    /// create an unsealed block with the given preds (raw API for condition
+    /// cascades and custom loop shapes)
+    pub fn raw_block(&mut self, preds: &[BlockId]) -> BlockId {
+        self.new_block(preds)
+    }
+    /// set the current block to `b` and seal it (raw API)
+    pub fn enter_block(&mut self, b: BlockId) {
+        self.current = Some(b);
+        self.seal(b);
+    }
+    /// terminate the current block with a conditional branch, recording preds
+    pub fn br(&mut self, cmp: Cmp, if_true: BlockId, if_false: BlockId) {
+        let cur = self.cur();
+        self.func.blocks[if_true].preds.push(cur);
+        self.func.blocks[if_false].preds.push(cur);
+        self.terminate(Terminator::Br {
+            cmp,
+            if_true,
+            if_false,
+        });
+    }
+    /// terminate the current block with an unconditional jump
+    pub fn jmp(&mut self, target: BlockId) {
+        let cur = self.cur();
+        self.func.blocks[target].preds.push(cur);
+        self.terminate(Terminator::Jmp { target });
+    }
+
+    /// push a loop context and enter the body block (sealing it)
+    pub fn begin_loop_body(&mut self, header: BlockId, body_b: BlockId, exit: BlockId) {
+        self.loops.push(LoopCtx { header, exit });
+        self.current = Some(body_b);
+        self.seal(body_b);
+    }
+
+    /// redirect the innermost loop's continue target to a fresh block
+    /// (for-loop increment blocks); returns the new block, unsealed
+    pub fn begin_continue_block(&mut self) -> BlockId {
+        let incr = self.new_block(&[]);
+        self.loops
+            .last_mut()
+            .expect("continue block outside of loop")
+            .header = incr;
+        incr
+    }
+    /// finish a continue block: wire the body's fall-through to it, seal it,
+    /// and make it the current block (the caller emits the increment there
+    /// and ends with the usual back edge via `end_while`)
+    pub fn end_continue_block(&mut self, incr: BlockId) {
+        if let Some(end) = self.current {
+            self.func.blocks[incr].preds.push(end);
+            self.terminate(Terminator::Jmp { target: incr });
+        }
+        self.seal(incr);
+        self.current = Some(incr);
+    }
+
     /// evaluate at the header: branch on `cond` into body/exit; current = body
     pub fn while_cond(&mut self, cond: BoolExpr, header: BlockId, body_b: BlockId, exit: BlockId) {
         self.lower_cond(cond, body_b, exit);
@@ -553,15 +704,25 @@ pub(crate) fn remove_trivial_phis(func: &mut IrFunc) -> bool {
                     Instr::Un { src, .. } | Instr::Shift { src, .. } | Instr::Mov { src, .. } => {
                         subst(src)
                     }
-                    Instr::LoadImm { .. } | Instr::DevRecv { .. } | Instr::LoadSp { .. } => {}
+                    Instr::LoadImm { .. }
+                    | Instr::StoreStatic { .. }
+                    | Instr::DevRecv { .. }
+                    | Instr::LoadSp { .. }
+                    | Instr::LoadLocal { .. }
+                    | Instr::AddrOfLocal { .. } => {}
                     Instr::LoadMem { base, .. } => subst(base),
                     Instr::StoreMem { base, src, .. } => {
                         subst(base);
                         subst(src);
                     }
                     Instr::Call { args, .. } => args.iter_mut().for_each(&subst),
+                    Instr::LoadFuncAddr { .. } => {}
+                    Instr::CallPtr { addr, args, .. } => {
+                        subst(addr);
+                        args.iter_mut().for_each(&subst);
+                    }
                     Instr::DevSend { src, .. } => subst(src),
-                    Instr::StoreSp { src, .. } => subst(src),
+                    Instr::StoreSp { src, .. } | Instr::StoreLocal { src, .. } => subst(src),
                 }
             }
             if let Some(term) = &mut b.term {

@@ -1,8 +1,7 @@
 //! property tests: random small programs are compiled and simulated, then
 //! compared against an equivalent Rust reference evaluation.
 
-
-use crate::{BoolExpr, CmpRhs, Compiler, Cond, FuncBuilder, Opts, VarId, simulate};
+use crate::{simulate, BoolExpr, CmpRhs, Compiler, Cond, FuncBuilder, Opts, VarId};
 use crate::{BinOp, ShiftOp};
 
 /// deterministic xorshift64 PRNG
@@ -28,15 +27,39 @@ const NVARS: usize = 8;
 
 #[derive(Clone, Debug)]
 enum Op {
-    SetImm { dst: usize, v: u16 },
-    Bin { dst: usize, op: BinOp, a: usize, b: usize },
-    BinImm { dst: usize, op: BinOp, a: usize, imm: u16 },
+    SetImm {
+        dst: usize,
+        v: u16,
+    },
+    Bin {
+        dst: usize,
+        op: BinOp,
+        a: usize,
+        b: usize,
+    },
+    BinImm {
+        dst: usize,
+        op: BinOp,
+        a: usize,
+        imm: u16,
+    },
     /// if vars[lhs] < imm { body }
-    IfLess { lhs: usize, imm: u16, body: Box<Op> },
+    IfLess {
+        lhs: usize,
+        imm: u16,
+        body: Box<Op>,
+    },
     /// for i in 0..times { body } (i is a fresh counter)
-    Repeat { times: u16, body: Box<Op> },
+    Repeat {
+        times: u16,
+        body: Box<Op>,
+    },
     /// dst = combine(a, b) via the generated helper function
-    CallCombine { dst: usize, a: usize, b: usize },
+    CallCombine {
+        dst: usize,
+        a: usize,
+        b: usize,
+    },
 }
 
 fn gen_op(rng: &mut Rng, depth: usize) -> Op {
@@ -171,10 +194,8 @@ fn run_case(seed: u64, n_ops: usize, opts_on: bool) {
         *v = i as u16 * 7 + 3;
     }
     eval(&ops, combine, &mut ref_vars);
-    let expected = ref_vars[0]
-        ^ ref_vars[1].wrapping_shl(1)
-        ^ ref_vars[2].wrapping_shr(1)
-        ^ ref_vars[3];
+    let expected =
+        ref_vars[0] ^ ref_vars[1].wrapping_shl(1) ^ ref_vars[2].wrapping_shr(1) ^ ref_vars[3];
 
     // combine(a, b) helper
     let (mut cf, params) = FuncBuilder::new("combine", 2, 1);
@@ -208,7 +229,7 @@ fn run_case(seed: u64, n_ops: usize, opts_on: bool) {
 
     let mut c = Compiler::new();
     if !opts_on {
-        c.opts = Opts {
+        c.opts.opt = Opts {
             const_prop: false,
             cse: false,
             dce: false,

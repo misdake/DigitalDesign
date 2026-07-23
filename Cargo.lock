@@ -74,6 +74,8 @@ dependencies = [
  "digital-design-code",
  "once_cell",
  "paste",
+ "proc-macro2",
+ "syn 1.0.109",
 ]
 
 [[package]]

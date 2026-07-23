@@ -3,7 +3,263 @@
 
 use super::common::*;
 
-use crate::{BinOp, CmpRhs, Compiler, Cond, FuncBuilder, IrFunc, Opts};
+use crate::{BinOp, CmpRhs, Compiler, Cond, FuncBuilder, FunctionTableConfig, IrFunc, Opts};
+
+#[test]
+fn test_signed_range_check_uses_immediates_and_fallthrough() {
+    let program = crate::frontend::parse_source(
+        "fn clamp(x: i16) -> i16 { if x >= 2 && x <= 10 { x } else { 0 } } fn main() { halt((clamp(-3) + clamp(5) + clamp(11)) as u16); }",
+    )
+    .unwrap();
+    let mut compiler = Compiler::new();
+    for function in program.funcs {
+        compiler.add_func(function);
+    }
+    let (instructions, listing) = compiler.finish("main");
+    let clamp = listing
+        .split("fn clamp")
+        .nth(1)
+        .expect("clamp listing")
+        .split("}\n")
+        .next()
+        .unwrap();
+    let instruction_count = clamp.lines().filter(|line| line.contains(':')).count();
+
+    assert_eq!(instruction_count, 7, "{clamp}");
+    assert!(clamp.contains("scmp(r2, i4(0x2))"), "{clamp}");
+    assert!(clamp.contains("ucmp(r2, u4(0xa))"), "{clamp}");
+    assert_eq!(clamp.matches("jmp r13").count(), 1, "{clamp}");
+    assert!(!clamp.contains("jmp pc"), "{clamp}");
+    assert!(!clamp.contains("r15"), "{clamp}");
+    assert_eq!(crate::simulate(&instructions, 1_000).1, Some(5));
+}
+
+#[test]
+fn test_entry_function_does_not_preserve_callee_saved_registers() {
+    let program = crate::frontend::parse_source(
+        "fn add_one(x: u16) -> u16 { x + 1 } fn main() { let keep = 7; halt(keep + add_one(3)); }",
+    )
+    .unwrap();
+    let mut compiler = Compiler::new();
+    for function in program.funcs {
+        compiler.add_func(function);
+    }
+    let (instructions, listing) = compiler.finish("main");
+    let main = listing
+        .split("main {")
+        .nth(1)
+        .expect("main listing")
+        .split("}\n")
+        .next()
+        .unwrap();
+
+    assert!(!main.contains("mem[r14"), "{main}");
+    assert!(!main.contains("r14 -= "), "{main}");
+    assert!(!main.contains("r14 += "), "{main}");
+    assert_eq!(crate::simulate(&instructions, 1_000).1, Some(11));
+}
+
+fn repeated_call_program(call_count: usize) -> Vec<IrFunc> {
+    let (mut inc, params) = FuncBuilder::new("inc", 1, 1);
+    let value = inc.get(params[0]);
+    let one = inc.load_imm(1);
+    let value = inc.bin(BinOp::Add, value, one);
+    inc.ret(&[value]);
+
+    let (mut main, _) = FuncBuilder::new("main", 0, 0);
+    let mut value = main.load_imm(0);
+    for _ in 0..call_count {
+        value = main.call("inc", &[value], 1)[0];
+    }
+    main.halt(value);
+    vec![inc.finish(), main.finish()]
+}
+
+fn compile_function_table_program(
+    functions: &[IrFunc],
+    config: FunctionTableConfig,
+) -> (Vec<crate::Instruction>, String) {
+    let mut compiler = Compiler::new();
+    compiler.opts.function_table = config;
+    for function in functions {
+        compiler.add_func(function.clone());
+    }
+    compiler.finish("main")
+}
+
+#[test]
+fn test_auto_function_table_does_not_replace_compact_near_calls() {
+    let functions = repeated_call_program(4);
+    let (without_table, _) =
+        compile_function_table_program(&functions, FunctionTableConfig::Disabled);
+    let (with_table, listing) =
+        compile_function_table_program(&functions, FunctionTableConfig::Auto);
+
+    assert_eq!(
+        with_table
+            .iter()
+            .filter(|instruction| matches!(instruction, crate::Instruction::call_rel(..)))
+            .count(),
+        4
+    );
+    assert_eq!(with_table.len(), without_table.len());
+    assert!(!listing.contains("function table"), "{listing}");
+    let (state, signal) = crate::simulate(&with_table, 1_000);
+    assert_eq!(signal, Some(4));
+    assert_eq!(state.mem[crate::FUNCTION_TABLE_BASE as usize], 0);
+}
+
+#[test]
+fn test_auto_function_table_selects_profitable_far_calls() {
+    let (mut inc, params) = FuncBuilder::new("far_inc", 1, 1);
+    let value = inc.get(params[0]);
+    let one = inc.load_imm(1);
+    let value = inc.bin(BinOp::Add, value, one);
+    inc.ret(&[value]);
+
+    let (mut main, _) = FuncBuilder::new("main", 0, 0);
+    let mut value = main.load_imm(0);
+    for _ in 0..4 {
+        value = main.call("far_inc", &[value], 1)[0];
+    }
+    let one = main.load_imm(1);
+    for _ in 0..130 {
+        value = main.bin(BinOp::Add, value, one);
+    }
+    main.halt(value);
+
+    let functions = vec![inc.finish(), main.finish()];
+    let (instructions, listing) =
+        compile_function_table_program(&functions, FunctionTableConfig::Auto);
+    assert_eq!(
+        instructions
+            .iter()
+            .filter(|instruction| matches!(instruction, crate::Instruction::call_abs(..)))
+            .count(),
+        4
+    );
+    assert!(listing.contains("[00] far_inc"), "{listing}");
+    assert_eq!(crate::simulate(&instructions, 2_000).1, Some(134));
+}
+
+#[test]
+fn test_auto_function_table_keeps_one_off_call_out_of_table() {
+    let functions = repeated_call_program(1);
+    let (instructions, listing) =
+        compile_function_table_program(&functions, FunctionTableConfig::Auto);
+    assert!(!instructions
+        .iter()
+        .any(|instruction| matches!(instruction, crate::Instruction::call_abs(..))));
+    assert!(!listing.contains("function table"), "{listing}");
+    assert_eq!(crate::simulate(&instructions, 1_000).1, Some(1));
+}
+
+#[test]
+fn test_all_function_table_forces_single_call_into_table() {
+    let functions = repeated_call_program(1);
+    let (instructions, _) = compile_function_table_program(&functions, FunctionTableConfig::All);
+    assert!(instructions
+        .iter()
+        .any(|instruction| matches!(instruction, crate::Instruction::call_abs(..))));
+    assert_eq!(crate::simulate(&instructions, 1_000).1, Some(1));
+}
+
+#[test]
+fn test_explicit_function_table_selects_only_named_targets() {
+    let mut functions = Vec::new();
+    for name in ["inc_a", "inc_b"] {
+        let (mut function, params) = FuncBuilder::new(name, 1, 1);
+        let value = function.get(params[0]);
+        let one = function.load_imm(1);
+        let value = function.bin(BinOp::Add, value, one);
+        function.ret(&[value]);
+        functions.push(function.finish());
+    }
+
+    let (mut main, _) = FuncBuilder::new("main", 0, 0);
+    let zero = main.load_imm(0);
+    let value = main.call("inc_a", &[zero], 1)[0];
+    let value = main.call("inc_b", &[value], 1)[0];
+    main.halt(value);
+    functions.push(main.finish());
+
+    let (instructions, listing) = compile_function_table_program(
+        &functions,
+        FunctionTableConfig::Functions(vec!["inc_b".to_owned()]),
+    );
+    assert_eq!(
+        instructions
+            .iter()
+            .filter(|instruction| matches!(instruction, crate::Instruction::call_abs(..)))
+            .count(),
+        1
+    );
+    assert!(listing.contains("[00] inc_b"), "{listing}");
+    assert!(!listing.contains("] inc_a"), "{listing}");
+    assert_eq!(crate::simulate(&instructions, 1_000).1, Some(2));
+}
+
+#[test]
+fn test_function_table_initializes_entries_across_eight_word_chunks() {
+    let mut functions = Vec::new();
+    let (mut main, _) = FuncBuilder::new("main", 0, 0);
+    let mut value = main.load_imm(0);
+    for name in [
+        "inc_0", "inc_1", "inc_2", "inc_3", "inc_4", "inc_5", "inc_6", "inc_7", "inc_8",
+    ] {
+        let (mut function, params) = FuncBuilder::new(name, 1, 1);
+        let argument = function.get(params[0]);
+        let one = function.load_imm(1);
+        let result = function.bin(BinOp::Add, argument, one);
+        function.ret(&[result]);
+        functions.push(function.finish());
+        value = main.call(name, &[value], 1)[0];
+    }
+    main.halt(value);
+    functions.push(main.finish());
+
+    let (instructions, listing) =
+        compile_function_table_program(&functions, FunctionTableConfig::All);
+    assert_eq!(
+        instructions
+            .iter()
+            .filter(|instruction| matches!(instruction, crate::Instruction::call_abs(..)))
+            .count(),
+        9
+    );
+    assert!(listing.contains("[08] inc_8"), "{listing}");
+    assert!(listing.contains("global initialization {"), "{listing}");
+    assert!(listing.contains("function-table"), "{listing}");
+    assert!(listing.contains("mem[r14 + 0x08] = r15"), "{listing}");
+    assert!(!instructions
+        .iter()
+        .any(|instruction| matches!(instruction, crate::Instruction::addi(..))));
+    let (state, signal) = crate::simulate(&instructions, 2_000);
+    assert_eq!(signal, Some(9));
+    assert!(state.mem[crate::FUNCTION_TABLE_BASE as usize..][..9]
+        .iter()
+        .all(|address| *address != 0));
+}
+
+#[test]
+fn test_function_table_restores_an_explicit_stack_base_before_main_frame() {
+    let functions = repeated_call_program(1);
+    let mut compiler = Compiler::new();
+    compiler.opts.function_table = FunctionTableConfig::All;
+    compiler.opts.stack_init = 0x9000;
+    for function in functions {
+        compiler.add_func(function);
+    }
+    let (instructions, listing) = compiler.finish("main");
+    let (state, signal) = crate::simulate(&instructions, 1_000);
+    assert_eq!(signal, Some(1));
+    assert_eq!(state.reg[crate::SP_REG as usize], 0x9000);
+    assert!(
+        listing.contains("temporary sp = 0xff00 for function table"),
+        "{listing}"
+    );
+    assert!(listing.contains("sp = 0x9000"), "{listing}");
+}
 
 #[test]
 fn test_branch_relaxation() {
@@ -75,7 +331,7 @@ fn test_optimized_vs_unoptimized() {
     let (_s1, opt_signal) = compile_and_run(vec![build()], "main", 10000);
 
     let mut c = Compiler::new();
-    c.opts = Opts {
+    c.opts.opt = Opts {
         const_prop: false,
         cse: false,
         dce: false,
@@ -95,19 +351,35 @@ fn test_mov_coalescing() {
     // call forwarding should not produce visible mov chains between the
     // arg setup and the call; check via instruction count sanity
     let x = 7u16;
-    let (mut id, params) = FuncBuilder::new("id", 1, 1);
-    let a = id.get(params[0]);
-    id.ret(&[a]);
+    let build = || {
+        let (mut id, params) = FuncBuilder::new("id", 1, 1);
+        let a = id.get(params[0]);
+        id.ret(&[a]);
 
-    let (mut m, _) = FuncBuilder::new("main", 0, 0);
-    let args = imm_seq(&mut m, &[x]);
-    let rets = m.call("id", &args, 1);
-    m.halt(rets[0]);
-
-    let mut c = Compiler::new();
-    c.add_func(id.finish());
-    c.add_func(m.finish());
-    let (instructions, _) = c.finish("main");
+        let (mut m, _) = FuncBuilder::new("main", 0, 0);
+        let args = imm_seq(&mut m, &[x]);
+        let rets = m.call("id", &args, 1);
+        m.halt(rets[0]);
+        vec![id.finish(), m.finish()]
+    };
+    let compile = |coalesce| {
+        let mut compiler = Compiler::new();
+        compiler.opts.opt.coalesce = coalesce;
+        compiler.opts.function_table = FunctionTableConfig::Disabled;
+        for function in build() {
+            compiler.add_func(function);
+        }
+        compiler.finish("main").0
+    };
+    let instructions = compile(true);
+    let without_coalescing = compile(false);
+    let movs = |instructions: &[crate::Instruction]| {
+        instructions
+            .iter()
+            .filter(|instruction| matches!(instruction, crate::Instruction::mov(..)))
+            .count()
+    };
+    assert!(movs(&instructions) < movs(&without_coalescing));
     let (_state, signal) = crate::simulate(&instructions, 1000);
     assert_eq!(signal, Some(x));
 }
