@@ -84,7 +84,7 @@ impl StateChange {
 
     pub fn desc(&self, pc: u16) -> String {
         let mut outputs = vec![];
-        if pc + 1 != self.pc_next {
+        if pc.wrapping_add(1) != self.pc_next {
             outputs.push(format!("pc = {:04x}", self.pc_next));
         }
         if let Some((r, data)) = self.reg {
@@ -141,7 +141,7 @@ impl SimEnv {
         let inst = self.inst[pc as usize];
         let reg = |r: u8| self.state.reg[r as usize];
         let mem = |addr: u16| self.state.mem[addr as usize];
-        let mut changes = StateChange::new(pc + 1);
+        let mut changes = StateChange::new(pc.wrapping_add(1));
 
         fn j_cc(state: &SimState, cond: Cond, changes: &mut StateChange, hi: u8, lo: u8) {
             let jmp = state.flags & (cond as u8) > 0;
@@ -153,6 +153,7 @@ impl SimEnv {
 
         match inst {
             Instruction::halt(r1) => {
+                changes.pc_next(pc);
                 changes.halt(reg(r1));
             }
             Instruction::and(r2, r1, r0) => changes.reg(r0, reg(r2) & reg(r1)),
@@ -171,7 +172,10 @@ impl SimEnv {
             Instruction::inv(r1, r0) => changes.reg(r0, !reg(r1)),
             Instruction::neg(r1, r0) => changes.reg(r0, -(reg(r1) as i16) as u16),
             Instruction::cnt1(r1, r0) => changes.reg(r0, reg(r1).count_ones() as u16),
-            Instruction::log2(r1, r0) => changes.reg(r0, reg(r1).ilog2() as u16),
+            Instruction::log2(r1, r0) => {
+                let value = reg(r1);
+                changes.reg(r0, if value == 0 { 0 } else { value.ilog2() as u16 })
+            }
             Instruction::not0(r1, r0) => changes.reg(r0, select(reg(r1) != 0, 1, 0)),
             Instruction::sp_add(hi, lo) => {
                 changes.reg(SP_REG, reg(SP_REG).wrapping_add(hilo_as_u16(hi, lo)))
@@ -218,16 +222,16 @@ impl SimEnv {
                 changes.flags(calc_flags_signed(reg(r0), imm_as_i16(i4)))
             }
             Instruction::call_rel(hi, lo) => {
-                changes.reg(RA_REG, pc + 1);
+                changes.reg(RA_REG, pc.wrapping_add(1));
                 changes.pc_next(pc.wrapping_add(imm8_as_i16(hi, lo)));
             }
             Instruction::call_abs(hi, lo) => {
-                changes.reg(RA_REG, pc + 1);
+                changes.reg(RA_REG, pc.wrapping_add(1));
                 changes.pc_next(mem(0xff00 + hilo_as_u16(hi, lo)));
             }
             Instruction::jmp_reg(r1) => changes.pc_next(reg(r1)),
             Instruction::call_reg(r1) => {
-                changes.reg(RA_REG, pc + 1);
+                changes.reg(RA_REG, pc.wrapping_add(1));
                 changes.pc_next(reg(r1));
             }
 

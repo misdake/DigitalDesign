@@ -92,7 +92,7 @@ Declared for real in `dsl_rt` (so the IDE sees them); the compiler lowers them d
 | `halt(x: u16) -> !` | halt the machine with signal x |
 | `assert(cond: bool, sig: u16)` | halt(sig) unless cond holds |
 | `cnt1(x: u16) -> u16` | number of set bits in x |
-| `log2(x: u16) -> u16` | integer base-2 logarithm; x must be nonzero |
+| `log2(x: u16) -> u16` | integer base-2 logarithm; returns 0 when x is 0 |
 | `dev_recv(dev: u8, ch: u8) -> u16` | read a device (not yet) |
 | `dev_send(dev: u8, ch: u8, v: u16)` | write a device (not yet) |
 

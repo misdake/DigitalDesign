@@ -108,9 +108,9 @@
   <tr><td class="mn">not0</td><td class="nib op">0</td><td class="nib op">4</td><td class="nib reg">R</td><td class="nib reg">R</td>
     <td class="sem">r{n0} = r{n1}≠0 ? 1 : 0</td><td>n1</td><td>—</td><td>n0</td><td>or-reduce</td><td></td><td></td><td></td><td></td></tr>
   <tr><td class="mn">cnt1</td><td class="nib op">0</td><td class="nib op">5</td><td class="nib reg">R</td><td class="nib reg">R</td>
-    <td class="sem">r{n0} = popcount(r{n1})</td><td>n1</td><td>—</td><td>n0</td><td>popcnt unit</td><td></td><td></td><td></td><td rowspan="2">multi-cycle OK</td></tr>
+    <td class="sem">r{n0} = popcount(r{n1})</td><td>n1</td><td>—</td><td>n0</td><td>popcnt unit</td><td></td><td></td><td></td><td rowspan="2">single-cycle combinational</td></tr>
   <tr><td class="mn">log2</td><td class="nib op">0</td><td class="nib op">6</td><td class="nib reg">R</td><td class="nib reg">R</td>
-    <td class="sem">r{n0} = ilog2(r{n1})</td><td>n1</td><td>—</td><td>n0</td><td>ilog2 unit</td><td></td><td></td><td></td></tr>
+    <td class="sem">r{n0} = r{n1} == 0 ? 0 : ilog2(r{n1})</td><td>n1</td><td>—</td><td>n0</td><td>ilog2 unit</td><td></td><td></td><td></td></tr>
   <tr><td class="mn">lsl</td><td class="nib op">0</td><td class="nib op">8</td><td class="nib imm">u4</td><td class="nib reg">R</td>
     <td class="sem">r{n0} = r{n0} ≪ u4(n1)</td><td>—</td><td>n0</td><td>n0</td><td>shifter</td><td></td><td></td><td></td><td rowspan="3">shift = u4(n1)</td></tr>
   <tr><td class="mn">lsr</td><td class="nib op">0</td><td class="nib op">9</td><td class="nib imm">u4</td><td class="nib reg">R</td>

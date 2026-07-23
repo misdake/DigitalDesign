@@ -100,6 +100,11 @@ pub trait WiresU8 {
     fn get_u8(&self, circuit: &CircuitWires) -> u8;
 }
 
+pub trait WiresU16 {
+    fn set_u16(&self, circuit: &mut CircuitWires, value: u16);
+    fn get_u16(&self, circuit: &CircuitWires) -> u16;
+}
+
 //TODO how?
 // impl<const W: usize> std::fmt::Debug for Wires<W>
 // where
@@ -131,6 +136,23 @@ where
     }
 }
 
+impl<const W: usize> WiresU16 for Wires<W>
+where
+    Assert<{ W <= 16 }>: IsTrue,
+{
+    fn set_u16(&self, circuit: &mut CircuitWires, value: u16) {
+        for i in 0..W {
+            circuit.set_wire(self.wires[i], ((value & (1u16 << i)) != 0).into());
+        }
+    }
+
+    fn get_u16(&self, circuit: &CircuitWires) -> u16 {
+        self.wires.iter().enumerate().fold(0, |value, (i, wire)| {
+            value | ((circuit.get_wire(*wire) as u16) << i)
+        })
+    }
+}
+
 impl<const W: usize> Wires<W>
 where
     Assert<{ W <= 8 }>: IsTrue,
@@ -139,6 +161,19 @@ where
         let mut wires = [Wire(0); W];
         for i in 0..W {
             wires[i] = input_const(((value & (1 << i)) > 0).into());
+        }
+        Wires::<W> { wires }
+    }
+}
+
+impl<const W: usize> Wires<W>
+where
+    Assert<{ W <= 16 }>: IsTrue,
+{
+    pub fn parse_u16(value: u16) -> Wires<W> {
+        let mut wires = [Wire(0); W];
+        for i in 0..W {
+            wires[i] = input_const(((value & (1u16 << i)) != 0).into());
         }
         Wires::<W> { wires }
     }
@@ -157,6 +192,18 @@ impl CircuitWires {
         Assert<{ W <= 8 }>: IsTrue,
     {
         wires.get_u8(self)
+    }
+    pub fn set_wires_u16<const W: usize>(&mut self, wires: Wires<W>, value: u16)
+    where
+        Assert<{ W <= 16 }>: IsTrue,
+    {
+        wires.set_u16(self, value)
+    }
+    pub fn get_wires_u16<const W: usize>(&self, wires: Wires<W>) -> u16
+    where
+        Assert<{ W <= 16 }>: IsTrue,
+    {
+        wires.get_u16(self)
     }
 }
 
@@ -193,4 +240,18 @@ pub fn flipflop_w<const W: usize>(data: Wires<W>, write_enabled: Wire) -> Wires<
     let r = reg_w();
     r.set_in(mux2_w(r.out, data, write_enabled));
     r.out
+}
+
+#[test]
+fn test_wires_u16() {
+    use crate::build_circuit;
+
+    let (mut circuit, (input, constant)) =
+        build_circuit(|| (input_w::<16>(), Wires::<16>::parse_u16(0xa55a)));
+
+    input.set_u16(&mut circuit, 0x5aa5);
+    circuit.execute_gates();
+
+    assert_eq!(input.get_u16(&circuit), 0x5aa5);
+    assert_eq!(constant.get_u16(&circuit), 0xa55a);
 }

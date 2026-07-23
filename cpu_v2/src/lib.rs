@@ -6,6 +6,7 @@ mod dsl_progs;
 mod isa;
 mod sim;
 
+pub mod cpu;
 pub mod debugger;
 pub mod frontend;
 

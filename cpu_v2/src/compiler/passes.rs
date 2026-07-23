@@ -147,9 +147,10 @@ fn fold_un(op: UnOp, a: u16) -> Option<u16> {
         UnOp::Cnt1 => a.count_ones() as u16,
         UnOp::Log2 => {
             if a == 0 {
-                return None; // hardware result undefined for 0
+                0
+            } else {
+                a.ilog2() as u16
             }
-            a.ilog2() as u16
         }
     })
 }
