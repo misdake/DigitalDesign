@@ -1,3 +1,4 @@
+use super::InstructionImage;
 use digital_design_code::{reg, reg_w, Reg, Regs, Wire, Wires};
 
 pub const WORD_WIDTH: usize = 16;
@@ -32,6 +33,13 @@ impl CpuV2State {
 pub struct CpuV2Input {
     pub reset: Wire,
     pub device_read: Wires<WORD_WIDTH>,
+}
+
+#[derive(Clone)]
+pub struct CpuV2BuildInput {
+    pub state: CpuV2State,
+    pub ports: CpuV2Input,
+    pub instruction_image: InstructionImage,
 }
 
 /// External CPU outputs. Memory stays inside the selected CPU design.
