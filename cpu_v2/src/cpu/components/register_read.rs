@@ -1,6 +1,6 @@
 use super::{REGISTER_COUNT, REG_INDEX_WIDTH, WORD_WIDTH};
 use digital_design_code::{
-    input_w, CircuitComponent, CircuitComponentEmu, CircuitWires, Wires, WiresU16, WiresU8,
+    input_w, mux16_w, CircuitComponent, CircuitComponentEmu, CircuitWires, Wires, WiresU16, WiresU8,
 };
 
 #[derive(Clone)]
@@ -22,8 +22,11 @@ impl CircuitComponent for CpuRegisterRead {
     type Input = RegisterReadInput;
     type Output = RegisterReadOutput;
 
-    fn build(_input: &Self::Input) -> Self::Output {
-        todo!("cpu_v2 register read implementation")
+    fn build(input: &Self::Input) -> Self::Output {
+        RegisterReadOutput {
+            source_a: mux16_w(&input.regs, input.source_a),
+            source_b: mux16_w(&input.regs, input.source_b),
+        }
     }
 }
 
@@ -64,5 +67,36 @@ impl CircuitComponentEmu<CpuRegisterRead> for CpuRegisterReadEmu {
         output
             .source_b
             .set_u16(circuit, input.regs[source_b].get_u16(circuit));
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use digital_design_code::{build_circuit, input_w};
+
+    #[test]
+    fn reads_both_register_ports() {
+        let (mut circuit, (regs, source_a, source_b, output)) = build_circuit(|| {
+            let regs = [(); REGISTER_COUNT].map(|_| input_w());
+            let source_a = input_w();
+            let source_b = input_w();
+            let output = CpuRegisterRead::build(&RegisterReadInput {
+                regs,
+                source_a,
+                source_b,
+            });
+            (regs, source_a, source_b, output)
+        });
+
+        for (index, reg) in regs.iter().enumerate() {
+            reg.set_u16(&mut circuit, 0x1000 + index as u16);
+        }
+        source_a.set_u8(&mut circuit, 3);
+        source_b.set_u8(&mut circuit, 14);
+        circuit.execute_gates();
+
+        assert_eq!(output.source_a.get_u16(&circuit), 0x1003);
+        assert_eq!(output.source_b.get_u16(&circuit), 0x100e);
     }
 }

@@ -6,7 +6,8 @@ use crate::isa::{
     hilo_as_u16, imm4_nz, imm8_as_i16, imm_as_i16, Cond, Instruction, RA_REG, SP_REG,
 };
 use digital_design_code::{
-    input as input_wire, input_w, CircuitComponent, CircuitComponentEmu, CircuitWires, Wire, Wires,
+    add_naive, flatten2, flatten3, input as input_wire, input_const, input_w, input_w_const,
+    unflatten2, unflatten3, CircuitComponent, CircuitComponentEmu, CircuitWires, Wire, Wires,
     WiresU16, WiresU8,
 };
 
@@ -44,12 +45,244 @@ pub struct DecoderOutput {
 
 pub struct CpuDecoder;
 
+fn any(values: &[Wire]) -> Wire {
+    values
+        .iter()
+        .copied()
+        .fold(input_const(0), |output, value| output | value)
+}
+
+fn constant_w<const W: usize>(value: u16) -> Wires<W> {
+    Wires {
+        wires: std::array::from_fn(|bit| input_const(((value >> bit) & 1) as u8)),
+    }
+}
+
+fn combine<const W: usize>(cases: &[(Wire, Wires<W>)]) -> Wires<W> {
+    cases
+        .iter()
+        .fold(input_w_const(0), |output, (selected, value)| {
+            output | selected.expand() & *value
+        })
+}
+
+fn combine_constants<const W: usize>(cases: &[(Wire, u16)]) -> Wires<W> {
+    Wires {
+        wires: std::array::from_fn(|bit| {
+            any(&cases
+                .iter()
+                .filter(|(_, value)| value & (1 << bit) != 0)
+                .map(|(selected, _)| *selected)
+                .collect::<Vec<_>>())
+        }),
+    }
+}
+
 impl CircuitComponent for CpuDecoder {
     type Input = DecoderInput;
     type Output = DecoderOutput;
 
-    fn build(_input: &Self::Input) -> Self::Output {
-        todo!("cpu_v2 decoder implementation")
+    fn build(input: &Self::Input) -> Self::Output {
+        let (n0, n1, high) = unflatten3::<4, 4, 8>(input.instruction);
+        let (n2, n3) = unflatten2::<4, 4>(high);
+        let enabled = !input.reset;
+        let op8 = |opcode: u8| enabled & n3.eq_const(opcode >> 4) & n2.eq_const(opcode & 0x0f);
+        let op4 = |opcode: u8| enabled & n3.eq_const(opcode);
+
+        let halt = op8(0x00);
+        let mov = op8(0x01);
+        let inv = op8(0x02);
+        let neg = op8(0x03);
+        let not0 = op8(0x04);
+        let cnt1 = op8(0x05);
+        let log2 = op8(0x06);
+        let lsl = op8(0x08);
+        let lsr = op8(0x09);
+        let asr = op8(0x0a);
+        let sp_add = op8(0x0c);
+        let sp_sub = op8(0x0d);
+
+        let and = op4(0x8);
+        let or = op4(0x9);
+        let xor = op4(0xa);
+        let add = op4(0xb);
+        let sub = op4(0xc);
+        let addi = op4(0xd);
+        let load_hi = op4(0x2);
+        let load_lo = op4(0x3);
+        let store_mem = op4(0x4);
+        let load_mem = op4(0x5);
+        let store_sp = op4(0x6);
+        let load_sp = op4(0x7);
+
+        let pc = op8(0x10);
+        let jg = op8(0x11);
+        let je = op8(0x12);
+        let jge = op8(0x13);
+        let jl = op8(0x14);
+        let jne = op8(0x15);
+        let jle = op8(0x16);
+        let jmp = op8(0x17);
+        let cmp_r = op8(0x18);
+        let cmp_i = op8(0x19);
+        let cmp_s = op8(0x1a);
+        let cmp_si = op8(0x1b);
+        let call_rel = op8(0x1c);
+        let call_abs = op8(0x1d);
+        let jmp_reg = op8(0x1e);
+        let call_reg = op8(0x1f);
+        let dev_recv = op4(0xe);
+        let dev_send = op4(0xf);
+
+        let unary = any(&[halt, mov, inv, neg, not0, cnt1, log2]);
+        let shift = any(&[lsl, lsr, asr]);
+        let binary = any(&[and, or, xor, add, sub]);
+        let stack_adjust = sp_add | sp_sub;
+        let stack_memory = store_sp | load_sp;
+        let compare_register = cmp_r | cmp_s;
+        let compare_immediate = cmp_i | cmp_si;
+        let relative_jump = any(&[jg, je, jge, jl, jne, jle, jmp]);
+        let register_jump = jmp_reg | call_reg;
+
+        let source_a = combine(&[
+            (unary, n1),
+            (shift, n0),
+            (stack_adjust | stack_memory, constant_w(SP_REG as u16)),
+            (binary | addi | store_mem | load_mem, n2),
+            (load_hi, n0),
+            (compare_register | compare_immediate, n0),
+            (register_jump, n1),
+            (dev_send, n0),
+        ]);
+        let source_b = combine(&[(binary | store_mem | compare_register, n1), (store_sp, n0)]);
+        let destination = combine(&[
+            (
+                any(&[
+                    mov, inv, neg, not0, cnt1, log2, lsl, lsr, asr, and, or, xor, add, sub, addi,
+                    load_hi, load_lo, load_mem, load_sp, pc, dev_recv,
+                ]),
+                n0,
+            ),
+            (stack_adjust, constant_w(SP_REG as u16)),
+            (call_rel | call_abs | call_reg, constant_w(RA_REG as u16)),
+        ]);
+
+        let shift_immediate = n1.expand_unsigned::<WORD_WIDTH>();
+        let stack_adjust_immediate = flatten2(n0, n1).expand_unsigned::<WORD_WIDTH>();
+        let stack_sub_immediate =
+            add_naive(!stack_adjust_immediate, constant_w::<WORD_WIDTH>(1)).sum;
+        let stack_memory_immediate = flatten2(n1, n2).expand_unsigned::<WORD_WIDTH>();
+        let addi_base = n1.expand_signed::<WORD_WIDTH>();
+        let addi_increment = (!n1.wires[3]).expand::<WORD_WIDTH>() & constant_w::<WORD_WIDTH>(1);
+        let addi_immediate = add_naive(addi_base, addi_increment).sum;
+        let load_hi_immediate = flatten3(input_w_const::<8>(0), n1, n2);
+        let load_lo_immediate = flatten2(n1, n2).expand_unsigned::<WORD_WIDTH>();
+        let memory_offset = n0.expand_signed::<WORD_WIDTH>();
+        let load_memory_offset = n1.expand_signed::<WORD_WIDTH>();
+        let pc_immediate = n1.expand_signed::<WORD_WIDTH>();
+        let jump_immediate = flatten2(n0, n1).expand_signed::<WORD_WIDTH>();
+        let compare_unsigned_immediate = n1.expand_unsigned::<WORD_WIDTH>();
+        let compare_signed_immediate = n1.expand_signed::<WORD_WIDTH>();
+        let call_abs_immediate = flatten2(flatten2(n0, n1), constant_w::<8>(0xff));
+
+        let immediate = combine(&[
+            (shift, shift_immediate),
+            (sp_add, stack_adjust_immediate),
+            (sp_sub, stack_sub_immediate),
+            (addi, addi_immediate),
+            (load_hi, load_hi_immediate),
+            (load_lo, load_lo_immediate),
+            (store_mem, memory_offset),
+            (load_mem, load_memory_offset),
+            (stack_memory, stack_memory_immediate),
+            (pc, pc_immediate),
+            (relative_jump | call_rel, jump_immediate),
+            (cmp_i, compare_unsigned_immediate),
+            (cmp_si, compare_signed_immediate),
+            (call_abs, call_abs_immediate),
+        ]);
+
+        let execute_operation = combine_constants(&[
+            (mov | jmp_reg, ExecOp::PassA as u16),
+            (inv, ExecOp::Inv as u16),
+            (neg, ExecOp::Neg as u16),
+            (not0, ExecOp::NotZero as u16),
+            (cnt1, ExecOp::CountOnes as u16),
+            (log2, ExecOp::Log2 as u16),
+            (lsl, ExecOp::Lsl as u16),
+            (lsr, ExecOp::Lsr as u16),
+            (asr, ExecOp::Asr as u16),
+            (and, ExecOp::And as u16),
+            (or, ExecOp::Or as u16),
+            (xor, ExecOp::Xor as u16),
+            (add, ExecOp::Add as u16),
+            (sub, ExecOp::Sub as u16),
+            (
+                addi | stack_adjust | store_mem | load_mem | stack_memory,
+                ExecOp::AddImmediate as u16,
+            ),
+            (load_hi, ExecOp::LoadHi as u16),
+            (load_lo, ExecOp::LoadLo as u16),
+            (pc | relative_jump, ExecOp::PcAdd as u16),
+            (cmp_r, ExecOp::CompareUnsigned as u16),
+            (cmp_i, ExecOp::CompareUnsignedImmediate as u16),
+            (cmp_s, ExecOp::CompareSigned as u16),
+            (cmp_si, ExecOp::CompareSignedImmediate as u16),
+            (call_rel, ExecOp::CallRelative as u16),
+            (call_abs, ExecOp::CallAbsolute as u16),
+            (call_reg, ExecOp::CallRegister as u16),
+        ]);
+
+        let register_write_enable = any(&[
+            mov, inv, neg, not0, cnt1, log2, lsl, lsr, asr, sp_add, sp_sub, and, or, xor, add, sub,
+            addi, load_hi, load_lo, load_mem, load_sp, pc, call_rel, call_abs, call_reg, dev_recv,
+        ]);
+        let writeback_source = combine_constants(&[
+            (load_mem | load_sp, WbSrc::Memory as u16),
+            (dev_recv, WbSrc::Device as u16),
+        ]);
+        let flags_write_enable = compare_register | compare_immediate;
+        let memory_read_enable = load_mem | load_sp | call_abs;
+        let memory_write_enable = store_mem | store_sp;
+        let pc_source = combine_constants(&[
+            (
+                relative_jump | call_rel | register_jump,
+                PcSrc::Execute as u16,
+            ),
+            (call_abs, PcSrc::Memory as u16),
+        ]);
+        let condition_mask = combine_constants(&[
+            (jg, Cond::Greater as u16),
+            (je, Cond::Equal as u16),
+            (jge, Cond::GreaterEqual as u16),
+            (jl, Cond::Less as u16),
+            (jne, Cond::NotEqual as u16),
+            (jle, Cond::LessEqual as u16),
+            (
+                jmp | call_rel | call_abs | register_jump,
+                Cond::Always as u16,
+            ),
+        ]);
+
+        DecoderOutput {
+            source_a,
+            source_b,
+            destination,
+            immediate,
+            execute_operation,
+            register_write_enable,
+            writeback_source,
+            flags_write_enable,
+            memory_read_enable,
+            memory_write_enable,
+            pc_source,
+            condition_mask,
+            device_index: combine(&[(dev_recv | dev_send, n2)]),
+            device_channel: combine(&[(dev_recv | dev_send, n1)]),
+            device_read_enable: dev_recv,
+            device_write_enable: dev_send,
+            halt_enable: halt,
+        }
     }
 }
 
@@ -451,5 +684,208 @@ impl CircuitComponentEmu<CpuDecoder> for CpuDecoderEmu {
             control.device_write_enable,
         );
         set_wire(circuit, output.halt_enable, control.halt_enable);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use digital_design_code::{build_circuit, input, input_w, Circuit, CircuitWires};
+
+    #[derive(Debug, Eq, PartialEq)]
+    struct DecoderSnapshot {
+        source_a: u8,
+        source_b: u8,
+        destination: u8,
+        immediate: u16,
+        execute_operation: u8,
+        register_write_enable: bool,
+        writeback_source: u8,
+        flags_write_enable: bool,
+        memory_read_enable: bool,
+        memory_write_enable: bool,
+        pc_source: u8,
+        condition_mask: u8,
+        device_index: u8,
+        device_channel: u8,
+        device_read_enable: bool,
+        device_write_enable: bool,
+        halt_enable: bool,
+    }
+
+    fn snapshot(circuit: &CircuitWires, output: &DecoderOutput) -> DecoderSnapshot {
+        DecoderSnapshot {
+            source_a: output.source_a.get_u8(circuit),
+            source_b: output.source_b.get_u8(circuit),
+            destination: output.destination.get_u8(circuit),
+            immediate: output.immediate.get_u16(circuit),
+            execute_operation: output.execute_operation.get_u8(circuit),
+            register_write_enable: output.register_write_enable.is_one(circuit),
+            writeback_source: output.writeback_source.get_u8(circuit),
+            flags_write_enable: output.flags_write_enable.is_one(circuit),
+            memory_read_enable: output.memory_read_enable.is_one(circuit),
+            memory_write_enable: output.memory_write_enable.is_one(circuit),
+            pc_source: output.pc_source.get_u8(circuit),
+            condition_mask: output.condition_mask.get_u8(circuit),
+            device_index: output.device_index.get_u8(circuit),
+            device_channel: output.device_channel.get_u8(circuit),
+            device_read_enable: output.device_read_enable.is_one(circuit),
+            device_write_enable: output.device_write_enable.is_one(circuit),
+            halt_enable: output.halt_enable.is_one(circuit),
+        }
+    }
+
+    struct DecoderTestEnv {
+        circuit: Circuit,
+        instruction: Wires<WORD_WIDTH>,
+        reset: Wire,
+        gates: DecoderOutput,
+        emu: DecoderOutput,
+    }
+
+    fn create_env() -> DecoderTestEnv {
+        let (circuit, (instruction, reset, gates, emu)) = build_circuit(|| {
+            let instruction = input_w();
+            let reset = input();
+            let input = DecoderInput { instruction, reset };
+            let gates = CpuDecoder::build(&input);
+            let emu = CpuDecoderEmu::build(&input);
+            (instruction, reset, gates, emu)
+        });
+        DecoderTestEnv {
+            circuit,
+            instruction,
+            reset,
+            gates,
+            emu,
+        }
+    }
+
+    fn assert_instructions_match(env: &mut DecoderTestEnv, instructions: &[Instruction]) {
+        for instruction in instructions {
+            env.instruction
+                .set_u16(&mut env.circuit, instruction.encode());
+            env.circuit.simulate();
+            assert_eq!(
+                snapshot(&env.circuit, &env.gates),
+                snapshot(&env.circuit, &env.emu),
+                "{instruction}"
+            );
+        }
+    }
+
+    #[test]
+    fn decodes_register_and_alu_instructions() {
+        use Instruction::*;
+
+        let mut env = create_env();
+        assert_instructions_match(
+            &mut env,
+            &[
+                halt(12),
+                mov(3, 9),
+                inv(4, 8),
+                neg(5, 7),
+                not0(6, 6),
+                cnt1(7, 5),
+                log2(8, 4),
+                lsl(3, 2),
+                lsr(4, 1),
+                asr(15, 0),
+                sp_add(0xa, 0x5),
+                sp_sub(0x1, 0x2),
+                and(1, 2, 3),
+                or(4, 5, 6),
+                xor(7, 8, 9),
+                add(10, 11, 12),
+                sub(12, 11, 10),
+                addi(9, 0xf, 8),
+                load_hi(0xa, 0xb, 7),
+                load_lo(0xc, 0xd, 6),
+            ],
+        );
+    }
+
+    #[test]
+    fn decodes_memory_and_stack_instructions() {
+        use Instruction::*;
+
+        let mut env = create_env();
+        assert_instructions_match(
+            &mut env,
+            &[
+                store_mem(3, 4, 0xf),
+                load_mem(5, 0x7, 6),
+                store_sp(0xa, 0xb, 7),
+                load_sp(0xc, 0xd, 8),
+            ],
+        );
+    }
+
+    #[test]
+    fn decodes_control_call_compare_and_device_instructions() {
+        use Instruction::*;
+
+        let mut env = create_env();
+        assert_instructions_match(
+            &mut env,
+            &[
+                pc(0xf, 3),
+                jg(0x8, 0x1),
+                je(0x0, 0x2),
+                jge(0x7, 0xf),
+                jl(0xf, 0xe),
+                jne(0x1, 0x0),
+                jle(0xe, 0xd),
+                jmp(0x0, 0x4),
+                cmp_r(2, 3),
+                cmp_i(0xf, 4),
+                cmp_s(5, 6),
+                cmp_si(0x8, 7),
+                call_rel(0xf, 0xc),
+                call_abs(0xa, 0xb),
+                jmp_reg(8),
+                call_reg(9),
+                dev_recv(2, 3, 4),
+                dev_send(5, 6, 7),
+            ],
+        );
+    }
+
+    #[test]
+    fn reset_suppresses_all_decoder_controls() {
+        use Instruction::*;
+
+        let mut env = create_env();
+        env.instruction
+            .set_u16(&mut env.circuit, store_mem(3, 4, 5).encode());
+        env.reset.set(&mut env.circuit, 1);
+        env.circuit.simulate();
+        assert_eq!(
+            snapshot(&env.circuit, &env.gates),
+            snapshot(&env.circuit, &env.emu)
+        );
+        assert_eq!(
+            snapshot(&env.circuit, &env.gates),
+            DecoderSnapshot {
+                source_a: 0,
+                source_b: 0,
+                destination: 0,
+                immediate: 0,
+                execute_operation: ExecOp::Idle as u8,
+                register_write_enable: false,
+                writeback_source: WbSrc::Execute as u8,
+                flags_write_enable: false,
+                memory_read_enable: false,
+                memory_write_enable: false,
+                pc_source: PcSrc::Next as u8,
+                condition_mask: 0,
+                device_index: 0,
+                device_channel: 0,
+                device_read_enable: false,
+                device_write_enable: false,
+                halt_enable: false,
+            }
+        );
     }
 }
