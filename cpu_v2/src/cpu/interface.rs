@@ -7,7 +7,7 @@ pub const FLAGS_WIDTH: usize = 3;
 
 /// Clocked architectural state owned by the CPU data path.
 ///
-/// Instruction and data memory are separate components selected by
+/// Instruction and data memory are fixed external-backed components built by
 /// [`CpuV2Design`](super::CpuV2Design), not fields in this register state.
 #[derive(Clone)]
 pub struct CpuV2State {
@@ -42,7 +42,7 @@ pub struct CpuV2BuildInput {
     pub instruction_image: InstructionImage,
 }
 
-/// External CPU outputs. Memory stays inside the selected CPU design.
+/// External CPU outputs. Memory is handled by fixed emulated components.
 #[derive(Clone)]
 pub struct CpuV2Output {
     pub device_index: Wires<4>,
