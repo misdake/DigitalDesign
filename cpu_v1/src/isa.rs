@@ -2,8 +2,8 @@ pub type InstBinaryType = u8;
 
 fn match_op2(binary: InstBinaryType, op4: u8) -> Option<(RegisterIndex, RegisterIndex)> {
     if op4 == binary >> 4 {
-        let reg1 = unsafe { std::mem::transmute((binary & 0b1100) >> 2) };
-        let reg0 = unsafe { std::mem::transmute(binary & 0b0011) };
+        let reg1 = unsafe { std::mem::transmute::<u8, RegisterIndex>((binary & 0b1100) >> 2) };
+        let reg0 = unsafe { std::mem::transmute::<u8, RegisterIndex>(binary & 0b0011) };
         Some((reg1, reg0))
     } else {
         None
@@ -11,7 +11,7 @@ fn match_op2(binary: InstBinaryType, op4: u8) -> Option<(RegisterIndex, Register
 }
 fn match_op1(binary: InstBinaryType, op6: u8) -> Option<RegisterIndex> {
     if op6 == binary >> 2 {
-        let reg0 = unsafe { std::mem::transmute(binary & 0b11) };
+        let reg0 = unsafe { std::mem::transmute::<u8, RegisterIndex>(binary & 0b11) };
         Some(reg0)
     } else {
         None

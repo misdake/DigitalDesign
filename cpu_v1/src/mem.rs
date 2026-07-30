@@ -76,7 +76,8 @@ impl CpuComponentEmu<CpuMem> for CpuMemEmu {
             .set_latency_external(i.imm.get_max_latency_external() + 10);
         output
             .mem_next
-            .map(|mem| mem.set_latency_external(i.reg0.get_max_latency_external() + 1));
+            .into_iter()
+            .for_each(|mem| mem.set_latency_external(i.reg0.get_max_latency_external() + 1));
         output
             .mem_page_next
             .set_latency_external(i.reg0.get_max_latency_external() + 1);

@@ -373,7 +373,7 @@ fn insert_abi_shims(f: &mut IrFunc) -> AbiInfo {
                 new_lines.push(line);
                 let n_movs = result_movs.len();
                 new_insts.extend(result_movs);
-                new_lines.extend(std::iter::repeat(line).take(n_movs));
+                new_lines.extend(std::iter::repeat_n(line, n_movs));
             } else if let Instr::CallPtr { addr, args, rets } = inst {
                 assert!(
                     args.len() <= ARG_REGS.len() && rets.len() <= RET_REGS.len(),
@@ -415,7 +415,7 @@ fn insert_abi_shims(f: &mut IrFunc) -> AbiInfo {
                 new_lines.push(line);
                 let n_movs = result_movs.len();
                 new_insts.extend(result_movs);
-                new_lines.extend(std::iter::repeat(line).take(n_movs));
+                new_lines.extend(std::iter::repeat_n(line, n_movs));
             } else {
                 new_insts.push(inst);
                 new_lines.push(line);
@@ -1107,7 +1107,7 @@ fn rewrite_spills(f: &mut IrFunc, spilled: &[VReg], next_slot: &mut u8) {
         let n = app.len();
         f.blocks[b].insts.extend(app);
         let line = f.blocks[b].term_line;
-        f.blocks[b].lines.extend(std::iter::repeat(line).take(n));
+        f.blocks[b].lines.extend(std::iter::repeat_n(line, n));
     }
 }
 

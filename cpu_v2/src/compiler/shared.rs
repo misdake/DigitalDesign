@@ -64,7 +64,7 @@ pub fn decode_binary(bytes: &[u8]) -> Option<Vec<Instruction>> {
         return None;
     }
     let mut out = Vec::with_capacity(count);
-    for w in rest.chunks_exact(2) {
+    for w in rest.as_chunks::<2>().0 {
         let raw = u16::from_le_bytes([w[0], w[1]]);
         out.push(Instruction::parse(raw));
     }

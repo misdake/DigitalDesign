@@ -86,7 +86,7 @@ impl Device for DeviceGamepad {
                 self.gamepad_state.next_frame();
             }
             DeviceGamepadOpcode::SetButtonQueryMode => {
-                self.button_query_mode = unsafe { std::mem::transmute(reg0) };
+                self.button_query_mode = unsafe { std::mem::transmute::<u8, ButtonQueryMode>(reg0) };
             }
             DeviceGamepadOpcode::QueryButton => {
                 let button: ButtonQueryType = unsafe { std::mem::transmute(reg0) };
