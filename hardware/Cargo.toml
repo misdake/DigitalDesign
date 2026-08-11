@@ -1,0 +1,8 @@
+[package]
+name = "digital-design-hardware"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+digital-design-code = { path = "../core" }
+digital-design-hardware-macros = { path = "../hardware_macros" }
