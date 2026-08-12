@@ -1,6 +1,9 @@
 use super::HardwareTarget;
 use crate::resources::components::{Clock27M, UserButtons, UserLeds};
-use crate::{GowinBackend, GowinDeviceInfo, ResourceAmount, ResourceKind, TargetInventory};
+use crate::{
+    GowinBackend, GowinDeviceInfo, GowinProgrammerCable, ResourceAmount, ResourceKind,
+    TargetInventory,
+};
 use crate::{
     GowinBoardBinding, GowinClockPin, GowinModuleProject, GowinPin, GowinPortDirection,
     GowinProject, Module, ModuleIo,
@@ -130,5 +133,6 @@ impl crate::GowinTarget for TangNano20K {
         part_number: "GW2AR-LV18QN88C8/I7",
         project_device_id: "gw2ar18c-000",
         programmer_device: "GW2AR-18C",
+        programmer_cable: GowinProgrammerCable::UsbDebuggerA,
     };
 }

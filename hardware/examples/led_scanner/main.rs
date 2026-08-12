@@ -180,22 +180,23 @@ mod tests {
 
     #[test]
     fn scanner_bounces_pauses_and_resets_in_emu_and_nand() {
-        let buttons: [u64; 28] = [
-            0, 0, 0, 0, 0, 0, 0, 0, 0, 2, 2, 2, 2, 2, 2, 0, 0, 0, 0, 1, 1, 0, 0, 0, 0, 0, 0, 0,
+        let buttons: [u64; 44] = [
+            0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 2, 2, 2, 2, 2, 2, 0,
+            0, 0, 0, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
         ];
-        let mut model = LedScannerState::<3>::default();
-        let steps = buttons.into_iter().map(|buttons| {
-            advance_scanner(&mut model);
-            model.divider.advance();
-            model.reset_sync = [buttons & 1 != 0, model.reset_sync[0]];
-            model.pause_sync = [buttons & 2 != 0, model.pause_sync[0]];
-            TestStep::new(
-                digital_design_hardware::TangNano20KInputsValue { buttons },
-                TangNano20KOutputsValue {
-                    leds: 1 << model.position,
-                },
-            )
-        });
+        let expected_leds: [u64; 44] = [
+            1, 1, 1, 2, 2, 2, 4, 4, 4, 8, 8, 8, 16, 16, 16, 32, 32, 32, 16, 16, 16, 8, 8, 8, 8, 8,
+            8, 8, 8, 8, 4, 4, 4, 2, 1, 1, 2, 2, 2, 4, 4, 4, 8, 8,
+        ];
+        let steps = buttons
+            .into_iter()
+            .zip(expected_leds)
+            .map(|(buttons, leds)| {
+                TestStep::new(
+                    digital_design_hardware::TangNano20KInputsValue { buttons },
+                    TangNano20KOutputsValue { leds },
+                )
+            });
         ModuleTest::<LedScanner<3>>::new(steps).run_emu_and_nand();
     }
 

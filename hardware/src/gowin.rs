@@ -4,6 +4,7 @@ use crate::{
 };
 use digital_design_code::validate_verilog_identifier;
 use std::collections::BTreeMap;
+use std::ffi::OsString;
 use std::fmt::{Display, Formatter};
 use std::fs;
 use std::marker::PhantomData;
@@ -28,6 +29,25 @@ pub struct GowinDeviceInfo {
     pub part_number: &'static str,
     pub project_device_id: &'static str,
     pub programmer_device: &'static str,
+    pub programmer_cable: GowinProgrammerCable,
+}
+
+/// Programmer CLI cable-driver type. These values are not USB enumeration indexes.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[repr(u8)]
+pub enum GowinProgrammerCable {
+    Gwu2x = 0,
+    Ft2ch = 1,
+    ParallelPort = 2,
+    Digilent = 3,
+    UsbDebuggerA = 4,
+    WinUsb = 5,
+}
+
+impl GowinProgrammerCable {
+    pub const fn index(self) -> u8 {
+        self as u8
+    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -148,8 +168,9 @@ impl<T: GowinTarget> GowinBoardBinding<T> {
                 "board clock frequency must be non-zero".to_string(),
             ));
         }
-        let mut board_ports = std::collections::HashSet::new();
-        let mut bound_logic_ports = std::collections::HashSet::new();
+        let mut board_ports = std::collections::HashSet::from([self.clock_port.clone()]);
+        let mut bound_logic_ports =
+            std::collections::HashSet::from([self.logic_clock_port.clone()]);
         let mut physical_pins =
             std::collections::HashMap::from([(self.clock.pin.location, self.clock_port.clone())]);
         let contract = logic_ports
@@ -180,13 +201,13 @@ impl<T: GowinTarget> GowinBoardBinding<T> {
                     port.board_port
                 )));
             }
-            if !board_ports.insert(&port.board_port) {
+            if !board_ports.insert(port.board_port.clone()) {
                 return Err(GowinError::InvalidBoardBinding(format!(
                     "duplicate board port `{}`",
                     port.board_port
                 )));
             }
-            if !bound_logic_ports.insert(&port.logic_port) {
+            if !bound_logic_ports.insert(port.logic_port.clone()) {
                 return Err(GowinError::InvalidBoardBinding(format!(
                     "duplicate logic port `{}`",
                     port.logic_port
@@ -718,34 +739,31 @@ impl From<GowinError> for GowinCliError {
     }
 }
 
-/// Run the common export/build/volatile-program CLI used by Gowin examples.
-pub fn run_gowin_project_cli<T, M>(
-    project: GowinModuleProject<T, M>,
-    default_output: impl Into<PathBuf>,
-) -> Result<(), GowinCliError>
-where
-    T: GowinTarget,
-    M: Module,
-{
-    let mut output = None;
-    let mut build = false;
-    let mut program = false;
-    let mut gowin_home = None;
-    let mut arguments = std::env::args_os();
-    let executable = arguments
-        .next()
-        .and_then(|value| PathBuf::from(value).file_name().map(|name| name.to_owned()))
-        .unwrap_or_else(|| "gowin-example".into());
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+struct GowinCliOptions {
+    output: Option<PathBuf>,
+    build: bool,
+    program: bool,
+    gowin_home: Option<PathBuf>,
+    cable_index: Option<u8>,
+    help: bool,
+}
+
+fn parse_gowin_cli_args(
+    arguments: impl IntoIterator<Item = OsString>,
+) -> Result<GowinCliOptions, GowinCliError> {
+    let mut options = GowinCliOptions::default();
+    let mut arguments = arguments.into_iter();
 
     while let Some(argument) = arguments.next() {
         match argument.to_str() {
-            Some("--build") => build = true,
+            Some("--build") => options.build = true,
             Some("--program") => {
-                build = true;
-                program = true;
+                options.build = true;
+                options.program = true;
             }
             Some("--gowin-home") => {
-                gowin_home = Some(PathBuf::from(arguments.next().ok_or_else(|| {
+                options.gowin_home = Some(PathBuf::from(arguments.next().ok_or_else(|| {
                     GowinCliError::Argument("`--gowin-home` requires a directory".to_string())
                 })?));
             }
@@ -756,40 +774,90 @@ where
                         "`--gowin-home` requires a directory".to_string(),
                     ));
                 }
-                gowin_home = Some(PathBuf::from(value));
+                options.gowin_home = Some(PathBuf::from(value));
             }
-            Some("--help" | "-h") => {
-                println!(
-                    "Usage: {} [OUTPUT] [--build] [--program] [--gowin-home PATH]\n\n\
-                     --build        Export and run Gowin synthesis/place-and-route\n\
-                     --program      Build, then program volatile FPGA SRAM\n\
-                     --gowin-home   Gowin installation root; overrides GOWIN_HOME and PATH",
-                    executable.to_string_lossy()
-                );
-                return Ok(());
+            Some("--cable-index") => {
+                let value = arguments.next().ok_or_else(|| {
+                    GowinCliError::Argument("`--cable-index` requires a number".to_string())
+                })?;
+                options.cable_index = Some(parse_cable_index(&value)?);
             }
+            Some(value) if value.starts_with("--cable-index=") => {
+                options.cable_index = Some(parse_cable_index(OsString::from(
+                    &value["--cable-index=".len()..],
+                ))?);
+            }
+            Some("--help" | "-h") => options.help = true,
             Some(value) if value.starts_with('-') => {
                 return Err(GowinCliError::Argument(format!(
                     "unknown option `{value}`; use `--help`"
                 )));
             }
-            _ if output.is_some() => {
+            _ if options.output.is_some() => {
                 return Err(GowinCliError::Argument(
                     "only one output directory may be specified".to_string(),
                 ));
             }
-            _ => output = Some(PathBuf::from(argument)),
+            _ => options.output = Some(PathBuf::from(argument)),
         }
     }
+    Ok(options)
+}
 
-    let output = output.unwrap_or_else(|| default_output.into());
-    let generated = project.export(&output)?;
-    println!("Exported Gowin project to {}", output.display());
-    if !build {
+fn parse_cable_index(value: impl AsRef<std::ffi::OsStr>) -> Result<u8, GowinCliError> {
+    let value = value.as_ref().to_str().ok_or_else(|| {
+        GowinCliError::Argument("`--cable-index` must be a number from 0 through 5".to_string())
+    })?;
+    let index = value.parse::<u8>().map_err(|_| {
+        GowinCliError::Argument(format!(
+            "invalid cable index `{value}`; expected a number from 0 through 5"
+        ))
+    })?;
+    if index > GowinProgrammerCable::WinUsb.index() {
+        return Err(GowinCliError::Argument(format!(
+            "invalid cable index `{value}`; expected a number from 0 through 5"
+        )));
+    }
+    Ok(index)
+}
+
+/// Run the common export/build/volatile-program CLI used by Gowin examples.
+pub fn run_gowin_project_cli<T, M>(
+    project: GowinModuleProject<T, M>,
+    default_output: impl Into<PathBuf>,
+) -> Result<(), GowinCliError>
+where
+    T: GowinTarget,
+    M: Module,
+{
+    let mut arguments = std::env::args_os();
+    let executable = arguments
+        .next()
+        .and_then(|value| PathBuf::from(value).file_name().map(|name| name.to_owned()))
+        .unwrap_or_else(|| "gowin-example".into());
+
+    let options = parse_gowin_cli_args(arguments)?;
+    if options.help {
+        println!(
+            "Usage: {} [OUTPUT] [--build] [--program] [--gowin-home PATH] [--cable-index N]\n\n\
+             --build          Export and run Gowin synthesis/place-and-route\n\
+             --program        Build, then program volatile FPGA SRAM\n\
+             --gowin-home     Gowin installation root; overrides GOWIN_HOME and PATH\n\
+             --cable-index    Override the target's Programmer cable-driver type",
+            executable.to_string_lossy()
+        );
         return Ok(());
     }
 
-    let toolchain = gowin_home
+    let output = options.output.unwrap_or_else(|| default_output.into());
+    let generated = project.export(&output)?;
+    println!("Exported Gowin project to {}", output.display());
+    if !options.build {
+        return Ok(());
+    }
+
+    let toolchain = options
+        .gowin_home
         .map(GowinToolchain::from_home)
         .map(Ok)
         .unwrap_or_else(GowinToolchain::discover)?;
@@ -798,9 +866,14 @@ where
     for warning in &result.warnings {
         println!("Gowin warning: {warning}");
     }
-    if program {
+    if options.program {
         println!("Programming volatile FPGA SRAM; the board must be connected.");
-        toolchain.program_sram(&result, 4)?;
+        toolchain.program_sram(
+            &result,
+            options
+                .cable_index
+                .unwrap_or(result.device.programmer_cable.index()),
+        )?;
     }
     Ok(())
 }
@@ -1190,6 +1263,91 @@ mod tests {
                     && message.contains("`clk`")
                     && message.contains("`value`")
         ));
+    }
+
+    #[test]
+    fn board_binding_reserves_clock_port_names() {
+        let contract = [
+            ("clk".to_string(), "input".to_string(), 1),
+            ("value".to_string(), "input".to_string(), 1),
+            ("result".to_string(), "output".to_string(), 1),
+        ];
+        let binding = GowinBoardBinding::<TangNano20K>::new(
+            "board_top",
+            "clk",
+            "clk",
+            TangNano20K::CLOCK_27M,
+        )
+        .bind_port(
+            GowinPortDirection::Input,
+            "clk",
+            "value",
+            [TangNano20K::USER_BUTTONS[0]],
+        )
+        .bind_port(
+            GowinPortDirection::Output,
+            "result",
+            "result",
+            [TangNano20K::USER_LEDS[0]],
+        );
+        assert!(matches!(
+            binding.render("Logic", &contract),
+            Err(GowinError::InvalidBoardBinding(message))
+                if message.contains("duplicate board port `clk`")
+        ));
+
+        let binding = GowinBoardBinding::<TangNano20K>::new(
+            "board_top",
+            "board_clk",
+            "clk",
+            TangNano20K::CLOCK_27M,
+        )
+        .bind_port(
+            GowinPortDirection::Input,
+            "value",
+            "clk",
+            [TangNano20K::USER_BUTTONS[0]],
+        )
+        .bind_port(
+            GowinPortDirection::Output,
+            "result",
+            "result",
+            [TangNano20K::USER_LEDS[0]],
+        );
+        assert!(matches!(
+            binding.render("Logic", &contract),
+            Err(GowinError::InvalidBoardBinding(message))
+                if message.contains("duplicate logic port `clk`")
+        ));
+    }
+
+    #[test]
+    fn common_cli_parses_machine_specific_overrides() {
+        let options = parse_gowin_cli_args([
+            OsString::from("out"),
+            OsString::from("--program"),
+            OsString::from("--gowin-home=C:/Gowin"),
+            OsString::from("--cable-index"),
+            OsString::from("4"),
+        ])
+        .unwrap();
+        assert_eq!(options.output, Some(PathBuf::from("out")));
+        assert!(options.build);
+        assert!(options.program);
+        assert_eq!(options.gowin_home, Some(PathBuf::from("C:/Gowin")));
+        assert_eq!(options.cable_index, Some(4));
+
+        for arguments in [
+            vec![OsString::from("--cable-index")],
+            vec![OsString::from("--cable-index=not-a-number")],
+            vec![OsString::from("--cable-index=6")],
+            vec![OsString::from("first"), OsString::from("second")],
+        ] {
+            assert!(matches!(
+                parse_gowin_cli_args(arguments),
+                Err(GowinCliError::Argument(_))
+            ));
+        }
     }
 
     #[test]

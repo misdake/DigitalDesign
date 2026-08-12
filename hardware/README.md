@@ -297,3 +297,9 @@ cargo run -p digital-design-hardware --example basic_adder -- --build --gowin-ho
 SRAM programming is intentionally an explicit operation and is never run by
 `cargo test`. With a connected board it can be requested with `--program`;
 this first performs a clean export and build, then programs volatile SRAM.
+The Programmer cable index selects a cable-driver type, not a USB enumeration
+position. Each target supplies its normal type automatically (`USB Debugger A`
+for the current Tang targets), so moving to another development machine does
+not require a numeric setting. `--cable-index N` remains available for an
+unusual driver setup. With at most one connected cable of that type, Gowin
+Programmer selects it directly.

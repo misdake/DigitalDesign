@@ -1,5 +1,8 @@
 use super::HardwareTarget;
-use crate::{GowinBackend, GowinDeviceInfo, ResourceAmount, ResourceKind, TargetInventory};
+use crate::{
+    GowinBackend, GowinDeviceInfo, GowinProgrammerCable, ResourceAmount, ResourceKind,
+    TargetInventory,
+};
 
 /// Tang Console fitted with the current C-step, 128-Mbit-flash Mega 138K SOM.
 ///
@@ -41,5 +44,6 @@ impl crate::GowinTarget for TangConsole138KC128M {
         // Verified against Gowin Education 1.9.11.03 device_info.csv.
         project_device_id: "gw5ast138c-007",
         programmer_device: "GW5AST-138C",
+        programmer_cable: GowinProgrammerCable::UsbDebuggerA,
     };
 }
