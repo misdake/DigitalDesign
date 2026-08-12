@@ -8,6 +8,31 @@ use digital_design_code::{CircuitWires, Wire, Wires};
 
 const DEPTH: usize = 1024;
 
+#[derive(Clone, Copy, Debug)]
+enum BsramShape {
+    OneReadWrite,
+    OneReadOneReadWrite,
+    TrueDualPort,
+}
+
+fn verified_block_count<const WIDTH: usize>(shape: BsramShape) -> u64 {
+    // Add a configuration only after its inferred implementation has passed
+    // module simulation, Gowin place-and-route, and the board self-test. This
+    // planning count must match the BSRAM total in the PnR report.
+    match (shape, WIDTH) {
+        (BsramShape::OneReadWrite, 16 | 18)
+        | (BsramShape::OneReadOneReadWrite, 16 | 18)
+        | (BsramShape::TrueDualPort, 16 | 18) => 1,
+        _ => panic!(
+            "no measured BSRAM resource result for shape {shape:?}, depth {DEPTH}, width {WIDTH}"
+        ),
+    }
+}
+
+fn resource_request<const WIDTH: usize>(shape: BsramShape) -> TargetResourceRequest {
+    TargetResourceRequest::new(BsramBlocks::new(verified_block_count::<WIDTH>(shape)))
+}
+
 fn validate_width<const WIDTH: usize>() {
     assert!(
         WIDTH == 16 || WIDTH == 18,
@@ -81,7 +106,7 @@ impl<const WIDTH: usize> Module for Bsram1Rw1024<WIDTH> {
     const USES_MAIN_CLOCK: bool = true;
 
     fn target_resources() -> Vec<TargetResourceRequest> {
-        vec![TargetResourceRequest::new(BsramBlocks::new(1))]
+        vec![resource_request::<WIDTH>(BsramShape::OneReadWrite)]
     }
 
     fn create_emu(_input: &Self::Input, _output: &Self::Output) -> Self::EmuState {
@@ -173,7 +198,7 @@ impl<const WIDTH: usize> Module for Bsram1R1Rw1024<WIDTH> {
     const USES_MAIN_CLOCK: bool = true;
 
     fn target_resources() -> Vec<TargetResourceRequest> {
-        vec![TargetResourceRequest::new(BsramBlocks::new(1))]
+        vec![resource_request::<WIDTH>(BsramShape::OneReadOneReadWrite)]
     }
 
     fn create_emu(_input: &Self::Input, _output: &Self::Output) -> Self::EmuState {
@@ -276,7 +301,7 @@ impl<const WIDTH: usize> Module for BsramTrueDualPort1024<WIDTH> {
     const USES_MAIN_CLOCK: bool = true;
 
     fn target_resources() -> Vec<TargetResourceRequest> {
-        vec![TargetResourceRequest::new(BsramBlocks::new(1))]
+        vec![resource_request::<WIDTH>(BsramShape::TrueDualPort)]
     }
 
     fn create_emu(_input: &Self::Input, _output: &Self::Output) -> Self::EmuState {
@@ -513,6 +538,30 @@ mod tests {
         read_rw_test::<18>().run_emu();
         true_dual_port_test::<16>().run_emu();
         true_dual_port_test::<18>().run_emu();
+    }
+
+    #[test]
+    fn measured_specializations_report_one_block_each() {
+        macro_rules! assert_one_block {
+            ($module:ty) => {
+                assert_eq!(
+                    <$module>::target_resources(),
+                    vec![TargetResourceRequest::new(BsramBlocks::new(1))]
+                );
+            };
+        }
+        assert_one_block!(Bsram1Rw1024<16>);
+        assert_one_block!(Bsram1Rw1024<18>);
+        assert_one_block!(Bsram1R1Rw1024<16>);
+        assert_one_block!(Bsram1R1Rw1024<18>);
+        assert_one_block!(BsramTrueDualPort1024<16>);
+        assert_one_block!(BsramTrueDualPort1024<18>);
+    }
+
+    #[test]
+    #[should_panic(expected = "no measured BSRAM resource result")]
+    fn unmeasured_specialization_fails_during_resource_reporting() {
+        let _ = Bsram1Rw1024::<17>::target_resources();
     }
 
     #[test]

@@ -10,14 +10,15 @@ always @(posedge clk)
     reset_sync <= {reset_sync[0], |buttons};
 wire reset = reset_sync[1];
 
-reg [1:0] phase = 0;
+reg [2:0] phase = 0;
 reg [9:0] address = 0;
 reg [9:0] checked_address = 0;
 reg check_valid = 0;
 reg error_sticky = 0;
 
 wire filling = phase == 0;
-wire reading = phase == 1;
+wire timing_write = phase == 4;
+wire writing = filling || timing_write;
 wire [15:0] sp16_pattern = 16'h5aa5 ^ {6'b0, address};
 wire [17:0] sp18_pattern = 18'h2a55a ^ {8'b0, address};
 wire [15:0] rw16_pattern = 16'hc33c ^ {6'b0, address};
@@ -35,19 +36,19 @@ wire [17:0] tdp18_a_read;
 wire [17:0] tdp18_b_read;
 
 Bsram1Rw1024_WIDTH16 u_Bsram1Rw1024_WIDTH16(
-    .clk(clk), .write_enable(filling), .address(address),
+    .clk(clk), .write_enable(writing), .address(address),
     .write_data(sp16_pattern), .read_data(sp16_read));
 Bsram1Rw1024_WIDTH18 u_Bsram1Rw1024_WIDTH18(
-    .clk(clk), .write_enable(filling), .address(address),
+    .clk(clk), .write_enable(writing), .address(address),
     .write_data(sp18_pattern), .read_data(sp18_read));
 
 wire [9:0] rw_port_address = filling ? address : ~address;
 Bsram1R1Rw1024_WIDTH16 u_Bsram1R1Rw1024_WIDTH16(
-    .clk(clk), .read_address(address), .rw_write_enable(filling),
+    .clk(clk), .read_address(address), .rw_write_enable(writing),
     .rw_address(rw_port_address), .rw_write_data(rw16_pattern),
     .read_data(r16_read), .rw_read_data(rw16_read));
 Bsram1R1Rw1024_WIDTH18 u_Bsram1R1Rw1024_WIDTH18(
-    .clk(clk), .read_address(address), .rw_write_enable(filling),
+    .clk(clk), .read_address(address), .rw_write_enable(writing),
     .rw_address(rw_port_address), .rw_write_data(rw18_pattern),
     .read_data(r18_read), .rw_read_data(rw18_read));
 
@@ -60,15 +61,15 @@ wire [17:0] tdp18_b_pattern = 18'h2864a ^ {8'b0, tdp_b_address};
 
 BsramTrueDualPort1024_WIDTH16 u_BsramTrueDualPort1024_WIDTH16(
     .clk(clk),
-    .a_write_enable(filling), .a_address(tdp_a_address),
+    .a_write_enable(writing), .a_address(tdp_a_address),
     .a_write_data(tdp16_a_pattern), .a_read_data(tdp16_a_read),
-    .b_write_enable(filling), .b_address(tdp_b_address),
+    .b_write_enable(writing), .b_address(tdp_b_address),
     .b_write_data(tdp16_b_pattern), .b_read_data(tdp16_b_read));
 BsramTrueDualPort1024_WIDTH18 u_BsramTrueDualPort1024_WIDTH18(
     .clk(clk),
-    .a_write_enable(filling), .a_address(tdp_a_address),
+    .a_write_enable(writing), .a_address(tdp_a_address),
     .a_write_data(tdp18_a_pattern), .a_read_data(tdp18_a_read),
-    .b_write_enable(filling), .b_address(tdp_b_address),
+    .b_write_enable(writing), .b_address(tdp_b_address),
     .b_write_data(tdp18_b_pattern), .b_read_data(tdp18_b_read));
 
 wire [15:0] checked_sp16 = 16'h5aa5 ^ {6'b0, checked_address};
@@ -100,6 +101,18 @@ wire values_match =
     tdp16_b_read == checked_tdp16_b &&
     tdp18_a_read == checked_tdp18_a &&
     tdp18_b_read == checked_tdp18_b;
+
+wire timing_values_match =
+    sp16_read == (16'h5aa5 ^ 16'd10) &&
+    sp18_read == (18'h2a55a ^ 18'd10) &&
+    r16_read == (16'hc33c ^ 16'd20) &&
+    r18_read == (18'h13cc3 ^ 18'd20) &&
+    rw16_read == (16'hc33c ^ {6'b0, ~10'd10}) &&
+    rw18_read == (18'h13cc3 ^ {8'b0, ~10'd10}) &&
+    tdp16_a_read == (16'h8462 ^ 16'd10) &&
+    tdp16_b_read == (16'h1357 ^ 16'd351) &&
+    tdp18_a_read == (18'h2864a ^ 18'd10) &&
+    tdp18_b_read == (18'h13579 ^ 18'd351);
 
 always @(posedge clk) begin
     if (reset) begin
@@ -133,18 +146,28 @@ always @(posedge clk) begin
                 if (check_valid && !values_match)
                     error_sticky <= 1;
                 check_valid <= 0;
+                address <= 10;
                 phase <= 3;
             end
-            default: phase <= 3;
+            3: begin
+                address <= 20;
+                phase <= 4;
+            end
+            4: phase <= 5;
+            5: begin
+                if (!timing_values_match)
+                    error_sticky <= 1;
+                phase <= 6;
+            end
+            default: phase <= 6;
         endcase
     end
 end
 
-wire done = phase == 3;
+wire done = phase == 6;
 assign leds = error_sticky ? 6'b100000 : (done ? 6'b000001 : 6'b000000);
 
 reg [21:0] report_delay = 0;
-reg [7:0] report_data = 8'h50;
 reg [9:0] uart_frame = 10'h3ff;
 reg [3:0] uart_bit = 0;
 reg [7:0] uart_divider = 0;
@@ -159,7 +182,6 @@ always @(posedge clk) begin
         uart_busy <= 0;
     end else if (!uart_busy) begin
         if (done && report_delay == 22'd2700000) begin
-            report_data <= error_sticky ? 8'h46 : 8'h50;
             uart_frame <= {1'b1, error_sticky ? 8'h46 : 8'h50, 1'b0};
             uart_bit <= 0;
             uart_divider <= 0;

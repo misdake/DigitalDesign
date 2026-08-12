@@ -100,6 +100,14 @@ export always enters through `build_verilog`: a child's `verilog` uses its
 verified hand-written implementation when present and otherwise recursively
 exports the child's NAND implementation.
 
+When a handwritten Verilog module directly instantiates child modules, it
+lists every physical instance through `Module::verilog_dependencies`. The
+exporter emits each concrete child definition once, but applies its target-leaf
+resource claim once per listed instance. Instance names are included in the
+parent's verification hash, so changing that instance list requires another
+successful HDL simulation. Generated structural modules do
+not use this list because calls to `Child::verilog` already record instances.
+
 ## Cycle tests
 
 `ModuleTest` runs identical typed vectors against independent emulated and
@@ -164,8 +172,9 @@ writes to one address are unsupported and panic in emulation. Avoid depending
 on same-address cross-port read/write collision values in portable modules;
 they require a target- and configuration-specific measurement.
 
-Parameterized handwritten HDL lives as complete, readable files below
-`hardware/templates/`. Askama parses those templates at Rust compile time and
+Parameterized handwritten HDL lives as complete, readable files beside its
+Rust implementation (for example, `src/components/bsram/*.v`). Askama parses
+those templates at Rust compile time and
 binds their substitutions to typed Rust template structs. Const-generic Rust
 specializations still render separate concrete Verilog modules; Verilog
 parameters are not introduced. Keep HDL structure in the template and limit
@@ -178,7 +187,9 @@ cargo test -p digital-design-hardware --lib components::bsram::tests::verify_han
 ```
 
 The `bsram` example instantiates all three shapes at both widths and checks all
-1024 addresses. Build and program volatile SRAM with:
+1024 addresses. It also verifies on hardware that read/write outputs hold
+during writes while the independent read-only ports continue updating. Build
+and program volatile SRAM with:
 
 ```text
 cargo run -p digital-design-hardware --example bsram -- --program
@@ -246,6 +257,10 @@ Their physical bit capacities remain target metadata and appear in the report;
 they are not allocatable bit balances. SSRAM remains a divisible FPGA fabric
 resource. Later BSRAM/DSP libraries can add configuration variants whose
 measured block consumption is declared by each concrete implementation.
+Unsupported configurations fail while reporting resources rather than using
+an estimate. The initial six 1024x16/18 BSRAM specializations have each been
+measured as one block; instantiating the same specialization more than once
+repeats that claim even though its Verilog definition is emitted only once.
 The lower-level allocator remains transactional and is poisoned after a failed
 claim. Exported Gowin projects include `resource-report.txt`; synthesis and
 place-and-route remain the final authority.

@@ -318,6 +318,16 @@ pub trait Module: HardwareIdentity + Sized + 'static {
         None
     }
 
+    /// Child module instances instantiated directly by `verilog_source`.
+    ///
+    /// Add one dependency for every physical instance in the handwritten
+    /// source. The exporter uses these declarations to emit child definitions
+    /// and account for each target-leaf resource claim. Generated modules use
+    /// `build_verilog` instead and must leave this empty.
+    fn verilog_dependencies() -> Vec<crate::VerilogDependency> {
+        Vec::new()
+    }
+
     fn verilog(input: &Self::Input) -> Self::Output {
         crate::project::record_instance::<Self>(input)
     }

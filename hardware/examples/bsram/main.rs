@@ -1,9 +1,9 @@
 use digital_design_code::CircuitWires;
 use digital_design_hardware::{
-    run_gowin_project_cli, Bsram1R1Rw1024, Bsram1Rw1024, BsramBlocks, BsramTrueDualPort1024,
-    GowinCliError, GowinModuleProject, Hardware, Module, ModuleIo, ModuleTest, TangNano20K,
+    run_gowin_project_cli, Bsram1R1Rw1024, Bsram1Rw1024, BsramTrueDualPort1024, GowinCliError,
+    GowinModuleProject, Hardware, Module, ModuleIo, ModuleTest, TangNano20K,
     TangNano20KDebugOutputs, TangNano20KDebugOutputsValue, TangNano20KInputs,
-    TangNano20KInputsValue, TargetResourceRequest, TestStep, VerilogVerification,
+    TangNano20KInputsValue, TestStep, VerilogDependency, VerilogVerification,
 };
 
 fn main() -> Result<(), GowinCliError> {
@@ -11,7 +11,7 @@ fn main() -> Result<(), GowinCliError> {
 }
 
 #[derive(Hardware)]
-#[hardware(namespace = "examples/bsram", target_leaf)]
+#[hardware(namespace = "examples/bsram")]
 struct BsramBoardSelfTest;
 
 impl Module for BsramBoardSelfTest {
@@ -20,10 +20,6 @@ impl Module for BsramBoardSelfTest {
     type EmuState = ();
 
     const USES_MAIN_CLOCK: bool = true;
-
-    fn target_resources() -> Vec<TargetResourceRequest> {
-        vec![TargetResourceRequest::new(BsramBlocks::new(6))]
-    }
 
     fn create_emu(_input: &Self::Input, _output: &Self::Output) -> Self::EmuState {}
 
@@ -43,20 +39,18 @@ impl Module for BsramBoardSelfTest {
     }
 
     fn verilog_source() -> Option<String> {
-        let mut source = include_str!("self_test.v").to_string();
-        macro_rules! append {
-            ($module:ty) => {
-                source.push('\n');
-                source.push_str(&<$module as Module>::verilog_source().unwrap());
-            };
-        }
-        append!(Bsram1Rw1024<16>);
-        append!(Bsram1Rw1024<18>);
-        append!(Bsram1R1Rw1024<16>);
-        append!(Bsram1R1Rw1024<18>);
-        append!(BsramTrueDualPort1024<16>);
-        append!(BsramTrueDualPort1024<18>);
-        Some(source)
+        Some(include_str!("self_test.v").to_string())
+    }
+
+    fn verilog_dependencies() -> Vec<VerilogDependency> {
+        vec![
+            VerilogDependency::new::<Bsram1Rw1024<16>>("u_Bsram1Rw1024_WIDTH16"),
+            VerilogDependency::new::<Bsram1Rw1024<18>>("u_Bsram1Rw1024_WIDTH18"),
+            VerilogDependency::new::<Bsram1R1Rw1024<16>>("u_Bsram1R1Rw1024_WIDTH16"),
+            VerilogDependency::new::<Bsram1R1Rw1024<18>>("u_Bsram1R1Rw1024_WIDTH18"),
+            VerilogDependency::new::<BsramTrueDualPort1024<16>>("u_BsramTrueDualPort1024_WIDTH16"),
+            VerilogDependency::new::<BsramTrueDualPort1024<18>>("u_BsramTrueDualPort1024_WIDTH18"),
+        ]
     }
 
     fn verilog_verification() -> Option<VerilogVerification> {
@@ -90,7 +84,6 @@ mod tests {
     #[test]
     fn project_contains_six_bsram_shapes() {
         let verilog = VerilogProject::generate::<BsramBoardSelfTest>().unwrap();
-        let source = verilog.files.values().next().unwrap();
         for module in [
             "Bsram1Rw1024_WIDTH16",
             "Bsram1Rw1024_WIDTH18",
@@ -99,9 +92,23 @@ mod tests {
             "BsramTrueDualPort1024_WIDTH16",
             "BsramTrueDualPort1024_WIDTH18",
         ] {
-            assert!(source.contains(&format!("module {module}(")));
-            assert!(source.contains(&format!("{module} u_{module}")));
+            assert!(verilog
+                .files
+                .values()
+                .any(|source| source.contains(&format!("module {module}("))));
+            assert!(verilog
+                .files
+                .values()
+                .any(|source| source.contains(&format!("{module} u_{module}"))));
         }
+        assert_eq!(verilog.resource_claims.len(), 6);
+        assert!(verilog.resource_claims.iter().all(|claim| {
+            claim.resources
+                == [digital_design_hardware::ResourceAmount::new(
+                    ResourceKind::Bsram18K,
+                    1,
+                )]
+        }));
 
         let project = bsram_gowin_project().generate().unwrap();
         assert_eq!(project.resources.claimed[&ResourceKind::Bsram18K], 6);
