@@ -1,8 +1,4 @@
-use super::{HardwareTarget, Supports};
-use crate::resources::components::{
-    BsramBlocks, Ddr3Bits, DspMultipliers, HdmiOutput, Pll, SpiFlashBits, UserButtons, UserLeds,
-    MIBIT,
-};
+use super::HardwareTarget;
 use crate::{GowinBackend, GowinDeviceInfo, ResourceAmount, ResourceKind, TargetInventory};
 
 /// Tang Console fitted with the current C-step, 128-Mbit-flash Mega 138K SOM.
@@ -25,8 +21,6 @@ impl HardwareTarget for TangConsole138KC128M {
             ResourceAmount::new(ResourceKind::Bsram18K, 340),
             ResourceAmount::new(ResourceKind::Multiplier18x18, 298),
             ResourceAmount::new(ResourceKind::Pll, 12),
-            ResourceAmount::new(ResourceKind::Ddr3Bit, 8_192 * MIBIT),
-            ResourceAmount::new(ResourceKind::SpiFlashBit, 128 * MIBIT),
             // Console dock only: three user-controlled LED channels and two
             // user keys. Power indicators and the reconfiguration key are not
             // application resources.
@@ -34,6 +28,8 @@ impl HardwareTarget for TangConsole138KC128M {
             ResourceAmount::new(ResourceKind::UserButton, 2),
             ResourceAmount::new(ResourceKind::HdmiOutput, 1),
         ])
+        .with_fitted_device(ResourceKind::Ddr3Device, 8_192 * 1_024 * 1_024)
+        .with_fitted_device(ResourceKind::SpiFlashDevice, 128 * 1_024 * 1_024)
     }
 }
 
@@ -47,12 +43,3 @@ impl crate::GowinTarget for TangConsole138KC128M {
         programmer_device: "GW5AST-138C",
     };
 }
-
-impl Supports<Pll> for TangConsole138KC128M {}
-impl Supports<BsramBlocks> for TangConsole138KC128M {}
-impl Supports<DspMultipliers> for TangConsole138KC128M {}
-impl Supports<Ddr3Bits> for TangConsole138KC128M {}
-impl Supports<SpiFlashBits> for TangConsole138KC128M {}
-impl Supports<HdmiOutput> for TangConsole138KC128M {}
-impl<const COUNT: u32> Supports<UserLeds<COUNT>> for TangConsole138KC128M {}
-impl<const COUNT: u32> Supports<UserButtons<COUNT>> for TangConsole138KC128M {}

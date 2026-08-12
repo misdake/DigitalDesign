@@ -1,6 +1,6 @@
 use crate::{
     write_generated_files, HardwareBackend, HardwareTarget, Module, ProjectError, ResourceError,
-    ResourceLease, ResourceReport, Supports, TargetComponent, TargetResources, VerilogProject,
+    ResourceReport, TargetComponent, TargetResourceRequest, TargetResources, VerilogProject,
 };
 use digital_design_code::validate_verilog_identifier;
 use std::collections::BTreeMap;
@@ -67,6 +67,7 @@ pub struct GowinBoardBinding<T: GowinTarget> {
     logic_clock_port: String,
     clock: GowinClockPin,
     ports: Vec<GowinBoundPort>,
+    resources: Vec<TargetResourceRequest>,
     target: PhantomData<T>,
 }
 
@@ -83,6 +84,7 @@ impl<T: GowinTarget> GowinBoardBinding<T> {
             logic_clock_port: logic_clock_port.into(),
             clock,
             ports: Vec::new(),
+            resources: Vec::new(),
             target: PhantomData,
         }
     }
@@ -100,6 +102,11 @@ impl<T: GowinTarget> GowinBoardBinding<T> {
             direction,
             pins: pins.into_iter().collect(),
         });
+        self
+    }
+
+    pub fn require<C: TargetComponent>(mut self, component: C) -> Self {
+        self.resources.push(TargetResourceRequest::new(component));
         self
     }
 
@@ -143,6 +150,8 @@ impl<T: GowinTarget> GowinBoardBinding<T> {
         }
         let mut board_ports = std::collections::HashSet::new();
         let mut bound_logic_ports = std::collections::HashSet::new();
+        let mut physical_pins =
+            std::collections::HashMap::from([(self.clock.pin.location, self.clock_port.clone())]);
         let contract = logic_ports
             .iter()
             .map(|(name, direction, width)| (name.as_str(), (direction.as_str(), *width)))
@@ -182,6 +191,15 @@ impl<T: GowinTarget> GowinBoardBinding<T> {
                     "duplicate logic port `{}`",
                     port.logic_port
                 )));
+            }
+            for (index, pin) in port.pins.iter().enumerate() {
+                let signal = verilog_bit(&port.board_port, port.pins.len(), index);
+                if let Some(previous) = physical_pins.insert(pin.location, signal.clone()) {
+                    return Err(GowinError::InvalidBoardBinding(format!(
+                        "physical pin {} is assigned to both `{previous}` and `{signal}`",
+                        pin.location
+                    )));
+                }
             }
             let expected_direction = match port.direction {
                 GowinPortDirection::Input => "input",
@@ -328,49 +346,41 @@ fn render_pin_constraint(output: &mut String, port: &str, pin: GowinPin) {
 
 pub struct GowinProject<T: GowinTarget> {
     project_name: String,
-    top_module: String,
     project_sources: BTreeMap<PathBuf, String>,
-    resources: TargetResources<T>,
     board_binding: Option<GowinBoardBinding<T>>,
 }
 
-impl<T: GowinTarget> GowinProject<T> {
-    pub fn new(project_name: impl Into<String>, top_module: impl Into<String>) -> Self {
+/// A Gowin project whose target and top-level hardware module are both fixed
+/// in the type system.
+pub struct GowinModuleProject<T: GowinTarget, M: Module> {
+    project: GowinProject<T>,
+    module: PhantomData<M>,
+}
+
+impl<T: GowinTarget, M: Module> GowinModuleProject<T, M> {
+    pub(crate) fn new(project: GowinProject<T>) -> Self {
         Self {
-            project_name: project_name.into(),
-            top_module: top_module.into(),
-            project_sources: BTreeMap::new(),
-            resources: TargetResources::new(),
-            board_binding: None,
+            project,
+            module: PhantomData,
         }
     }
 
-    pub fn resources(&self) -> &TargetResources<T> {
-        &self.resources
+    pub fn generate(&self) -> Result<GeneratedGowinProject, GowinError> {
+        self.project.generate::<M>()
     }
 
-    pub fn resources_mut(&mut self) -> &mut TargetResources<T> {
-        &mut self.resources
+    pub fn export(&self, directory: impl AsRef<Path>) -> Result<GeneratedGowinProject, GowinError> {
+        self.project.export::<M>(directory)
     }
+}
 
-    pub fn take<C>(&mut self, component: C) -> Result<ResourceLease<T, C>, ResourceError>
-    where
-        C: TargetComponent,
-        T: Supports<C>,
-    {
-        self.resources.take(component)
-    }
-
-    pub fn take_named<C>(
-        &mut self,
-        label: impl Into<String>,
-        component: C,
-    ) -> Result<ResourceLease<T, C>, ResourceError>
-    where
-        C: TargetComponent,
-        T: Supports<C>,
-    {
-        self.resources.take_named(label, component)
+impl<T: GowinTarget> GowinProject<T> {
+    pub fn new(project_name: impl Into<String>) -> Self {
+        Self {
+            project_name: project_name.into(),
+            project_sources: BTreeMap::new(),
+            board_binding: None,
+        }
     }
 
     pub fn add_source_file(
@@ -383,7 +393,13 @@ impl<T: GowinTarget> GowinProject<T> {
             path.starts_with("src"),
             "Gowin source files must be placed below src/"
         );
-        self.project_sources.insert(path, content.into());
+        assert!(
+            self.project_sources
+                .insert(path.clone(), content.into())
+                .is_none(),
+            "duplicate Gowin project source path `{}`",
+            path.display()
+        );
         self
     }
 
@@ -393,7 +409,6 @@ impl<T: GowinTarget> GowinProject<T> {
     }
 
     pub fn generate<M: Module>(&self) -> Result<GeneratedGowinProject, GowinError> {
-        self.resources.ensure_valid()?;
         if T::DEVICE.project_device_id.is_empty() {
             return Err(GowinError::UnverifiedDeviceConfiguration {
                 target: T::NAME,
@@ -401,18 +416,46 @@ impl<T: GowinTarget> GowinProject<T> {
             });
         }
         validate_verilog_identifier(&self.project_name).map_err(ProjectError::from)?;
-        validate_verilog_identifier(&self.top_module).map_err(ProjectError::from)?;
         let verilog = VerilogProject::generate::<M>()?;
+        let mut resources = TargetResources::<T>::new();
+        if let Some(binding) = &self.board_binding {
+            for (index, request) in binding.resources.iter().enumerate() {
+                let label = format!("board/{}-{index}", request.component);
+                resources
+                    .claim_module(label.clone(), request)
+                    .unwrap_or_else(|error| {
+                        panic!(
+                        "target resource allocation failed at `{label}` for target `{}`: {error}",
+                        T::NAME
+                    )
+                    });
+            }
+        }
+        for claim in &verilog.resource_claims {
+            let request = TargetResourceRequest {
+                component: claim.component,
+                resources: claim.resources.clone(),
+            };
+            resources
+                .claim_module(claim.instance_path.clone(), &request)
+                .unwrap_or_else(|error| {
+                    panic!(
+                        "target resource allocation failed at module instance `{}` (Rust type `{}`) for target `{}`: {error}",
+                        claim.instance_path,
+                        claim.rust_type,
+                        T::NAME
+                    )
+                });
+        }
         let logic_ports = verilog.top_port_contract()?;
         let mut files = self.project_sources.clone();
+        let top_module = self
+            .board_binding
+            .as_ref()
+            .map(|binding| binding.top_module().to_string())
+            .unwrap_or_else(|| verilog.top_module.clone());
+        validate_verilog_identifier(&top_module).map_err(ProjectError::from)?;
         if let Some(binding) = &self.board_binding {
-            if binding.top_module() != self.top_module {
-                return Err(GowinError::InvalidBoardBinding(format!(
-                    "binding top module `{}` does not match project top module `{}`",
-                    binding.top_module(),
-                    self.top_module
-                )));
-            }
             for (path, content) in binding.render(&verilog.top_module, &logic_ports)? {
                 if files.insert(path.clone(), content).is_some() {
                     return Err(GowinError::DuplicateSourcePath(path));
@@ -432,7 +475,7 @@ impl<T: GowinTarget> GowinProject<T> {
                 return Err(GowinError::DuplicateSourcePath(generated_path));
             }
         }
-        let resource_report = self.resources.report();
+        let resource_report = resources.report();
         files.insert(
             PathBuf::from("resource-report.txt"),
             render_resource_report(T::DEVICE, &resource_report),
@@ -448,16 +491,11 @@ impl<T: GowinTarget> GowinProject<T> {
         );
         files.insert(
             PathBuf::from("build.tcl"),
-            render_build_tcl(
-                T::DEVICE,
-                &self.project_name,
-                &self.top_module,
-                &source_paths,
-            )?,
+            render_build_tcl(T::DEVICE, &self.project_name, &top_module, &source_paths)?,
         );
         Ok(GeneratedGowinProject {
             project_name: self.project_name.clone(),
-            top_module: self.top_module.clone(),
+            top_module,
             logic_top_module: verilog.top_module,
             target_name: T::NAME,
             device: T::DEVICE,
@@ -514,6 +552,12 @@ fn render_resource_report(device: GowinDeviceInfo, report: &ResourceReport) -> S
             "- {kind}: claimed {claimed}, remaining {}, capacity {capacity}\n",
             capacity - claimed
         ));
+    }
+    if !report.fitted_device_capacity_bits.is_empty() {
+        output.push_str("\nFitted device capacities (not divisible allocations):\n");
+        for (&kind, &bits) in &report.fitted_device_capacity_bits {
+            output.push_str(&format!("- {kind}: {bits} bits\n"));
+        }
     }
     output.push_str("\nComponent allocations:\n");
     for allocation in &report.allocations {
@@ -647,14 +691,49 @@ run all\n"
 
 #[derive(Clone, Debug)]
 pub struct GowinToolchain {
-    pub home: PathBuf,
+    gw_sh: PathBuf,
+    programmer_cli: Option<PathBuf>,
 }
 
-impl Default for GowinToolchain {
-    fn default() -> Self {
+impl GowinToolchain {
+    pub fn from_home(home: impl AsRef<Path>) -> Self {
+        let home = home.as_ref();
         Self {
-            home: PathBuf::from(r"D:\DevTools\Gowin\Gowin_V1.9.11.03_Education_x64"),
+            gw_sh: home.join("IDE/bin/gw_sh.exe"),
+            programmer_cli: Some(home.join("Programmer/bin/programmer_cli.exe")),
         }
+    }
+
+    /// Discover Gowin from `GOWIN_HOME` or executables available on `PATH`.
+    /// An explicitly configured but invalid home is preserved so the later
+    /// operation reports the exact missing executable rather than silently
+    /// selecting a different installation.
+    pub fn discover() -> Result<Self, GowinError> {
+        if let Some(home) = std::env::var_os("GOWIN_HOME") {
+            return Ok(Self::from_home(home));
+        }
+
+        let gw_sh = find_executable_on_path("gw_sh.exe")
+            .or_else(|| find_executable_on_path("gw_sh"))
+            .ok_or(GowinError::ToolchainNotConfigured)?;
+        let sibling_programmer = gowin_home_from_gw_sh(&gw_sh)
+            .map(|home| home.join("Programmer/bin/programmer_cli.exe"))
+            .filter(|path| path.is_file());
+        let programmer_cli = sibling_programmer
+            .or_else(|| find_executable_on_path("programmer_cli.exe"))
+            .or_else(|| find_executable_on_path("programmer_cli"));
+        Ok(Self {
+            gw_sh,
+            programmer_cli,
+        })
+    }
+
+    pub fn gw_sh(&self) -> &Path {
+        &self.gw_sh
+    }
+
+    pub fn programmer_cli(&self) -> Option<&Path> {
+        self.programmer_cli.as_deref()
     }
 }
 
@@ -677,9 +756,9 @@ impl GowinToolchain {
     ) -> Result<GowinBuildResult, GowinError> {
         let directory = project_directory.as_ref();
         let project_name = &project.project_name;
-        let executable = self.home.join("IDE/bin/gw_sh.exe");
+        let executable = &self.gw_sh;
         if !executable.is_file() {
-            return Err(GowinError::MissingTool(executable));
+            return Err(GowinError::MissingTool(executable.clone()));
         }
         let build_tcl = fs::canonicalize(directory.join("build.tcl"))?;
         let status = Command::new(executable)
@@ -710,9 +789,12 @@ impl GowinToolchain {
         build: &GowinBuildResult,
         cable_index: u8,
     ) -> Result<ExitStatus, GowinError> {
-        let executable = self.home.join("Programmer/bin/programmer_cli.exe");
+        let executable = self
+            .programmer_cli
+            .as_ref()
+            .ok_or(GowinError::ProgrammerNotConfigured)?;
         if !executable.is_file() {
-            return Err(GowinError::MissingTool(executable));
+            return Err(GowinError::MissingTool(executable.clone()));
         }
         // Gowin Programmer 1.9.11.03 parses a relative --fsFile as if no data
         // file was supplied, despite accepting the same path elsewhere.
@@ -737,6 +819,20 @@ impl GowinToolchain {
         }
         Ok(status)
     }
+}
+
+fn find_executable_on_path(name: &str) -> Option<PathBuf> {
+    std::env::var_os("PATH").and_then(|path| {
+        std::env::split_paths(&path)
+            .map(|directory| directory.join(name))
+            .find(|candidate| candidate.is_file())
+    })
+}
+
+fn gowin_home_from_gw_sh(executable: &Path) -> Option<PathBuf> {
+    let bin = executable.parent()?;
+    let ide = bin.parent()?;
+    ide.parent().map(Path::to_path_buf)
 }
 
 fn collect_warnings(directory: &Path, project_name: &str) -> Result<Vec<String>, GowinError> {
@@ -797,6 +893,8 @@ pub enum GowinError {
     Resource(ResourceError),
     Io(std::io::Error),
     MissingTool(PathBuf),
+    ToolchainNotConfigured,
+    ProgrammerNotConfigured,
     BuildFailed(ExitStatus),
     ProgramFailed(ExitStatus),
     MissingBuildArtifact(PathBuf),
@@ -825,6 +923,12 @@ impl Display for GowinError {
             Self::MissingTool(path) => {
                 write!(formatter, "Gowin tool not found: {}", path.display())
             }
+            Self::ToolchainNotConfigured => formatter.write_str(
+                "Gowin toolchain is not configured; pass `--gowin-home PATH`, set `GOWIN_HOME`, or add `gw_sh` to PATH",
+            ),
+            Self::ProgrammerNotConfigured => formatter.write_str(
+                "Gowin Programmer is not configured; use a Gowin home containing `Programmer/bin/programmer_cli.exe` or add `programmer_cli` to PATH",
+            ),
             Self::BuildFailed(status) => write!(formatter, "Gowin build failed with {status}"),
             Self::ProgramFailed(status) => {
                 write!(formatter, "Gowin SRAM programming failed with {status}")
@@ -886,61 +990,209 @@ impl From<std::io::Error> for GowinError {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::examples::basic_adder::{
-        basic_adder_gowin_project, BasicAdder, BasicAdderTangNano20K,
-    };
     use crate::resources::components::UserLeds;
-    use crate::{GowinTarget, HardwareTarget, ResourceKind, TangConsole138KC128M, TangNano20K};
+    use crate::{
+        GowinTarget, Hardware, HardwareTarget, ModuleIo, ResourceKind, TangConsole138KC128M,
+        TangNano20K,
+    };
+    use digital_design_code::{CircuitWires, Wire};
 
     #[test]
-    fn tang_nano_project_contains_all_required_files() {
-        let project = basic_adder_gowin_project()
-            .generate::<BasicAdderTangNano20K>()
-            .unwrap();
-        assert!(project.files.contains_key(Path::new("build.tcl")));
-        assert!(project.files.contains_key(Path::new("basic_adder.gprj")));
-        assert!(project.files.contains_key(Path::new("resource-report.txt")));
-        assert!(project.files.contains_key(Path::new(
-            "src/generated/examples/basic_adder/basic_adder_board6750000.v"
-        )));
-        assert!(project
-            .files
-            .contains_key(Path::new("src/generated/board_top.v")));
-        assert!(project
-            .files
-            .contains_key(Path::new("src/generated/board.cst")));
-        assert!(project
-            .files
-            .contains_key(Path::new("src/generated/board.sdc")));
-        let wrapper = &project.files[Path::new("src/generated/board_top.v")];
-        assert!(wrapper.contains("input wire [1:0] buttons"));
-        assert!(wrapper.contains("assign leds[0] = ~bound_leds[0]"));
-        assert!(wrapper.contains("BasicAdderBoard6750000 u_logic"));
-        let cst = &project.files[Path::new("src/generated/board.cst")];
-        assert!(cst.contains("IO_LOC \"clk\" 4;"));
-        assert!(cst.contains("IO_LOC \"buttons[0]\" 88;"));
-        assert!(cst.contains("IO_LOC \"leds[5]\" 20;"));
-        let sdc = &project.files[Path::new("src/generated/board.sdc")];
-        assert!(sdc.contains("-period 37.037037"));
-        let tcl = &project.files[Path::new("build.tcl")];
-        assert!(tcl.contains("set_option -top_module tang_nano_20k_top"));
-        assert!(tcl.contains("set_option -verilog_std v2001"));
-        assert!(tcl.contains("add_file [file join $here {src} {generated} {board.sdc}]"));
-        let gprj = &project.files[Path::new("basic_adder.gprj")];
-        assert!(gprj.contains(project.device.part_number));
-        assert!(gprj.contains("src/generated/board.sdc"));
-        assert_eq!(project.target_name, "tang-nano-20k");
-        assert_eq!(project.resources.claimed[&ResourceKind::UserLed], 6);
-        assert_eq!(project.resources.claimed[&ResourceKind::UserButton], 2);
+    fn gowin_home_resolves_both_tool_paths_without_a_machine_default() {
+        let toolchain = GowinToolchain::from_home(Path::new("configured-gowin"));
+        assert_eq!(
+            toolchain.gw_sh(),
+            Path::new("configured-gowin/IDE/bin/gw_sh.exe")
+        );
+        assert_eq!(
+            toolchain.programmer_cli(),
+            Some(Path::new(
+                "configured-gowin/Programmer/bin/programmer_cli.exe"
+            ))
+        );
+        assert_eq!(
+            gowin_home_from_gw_sh(Path::new("configured-gowin/IDE/bin/gw_sh.exe")),
+            Some(PathBuf::from("configured-gowin"))
+        );
     }
 
-    #[test]
-    fn board_binding_rejects_the_wrong_logic_contract() {
-        assert!(matches!(
-            basic_adder_gowin_project().generate::<BasicAdder>(),
-            Err(GowinError::InvalidBoardBinding(message))
-                if message.contains("has no port `buttons`")
-        ));
+    #[derive(Clone, ModuleIo)]
+    struct TestInput {
+        value: Wire,
+    }
+
+    #[derive(Clone, ModuleIo)]
+    struct TestOutput {
+        result: Wire,
+    }
+
+    #[derive(Hardware)]
+    #[hardware(namespace = "tests")]
+    struct TestModule;
+
+    impl Module for TestModule {
+        type Input = TestInput;
+        type Output = TestOutput;
+        type EmuState = ();
+
+        fn create_emu(_input: &Self::Input, _output: &Self::Output) -> Self::EmuState {}
+
+        fn execute_emu(
+            _state: &mut Self::EmuState,
+            circuit: &mut CircuitWires,
+            input: &Self::Input,
+            output: &Self::Output,
+        ) {
+            let value = circuit.get_wire(input.value);
+            circuit.set_wire(output.result, value);
+        }
+
+        fn nand(input: &Self::Input) -> Self::Output {
+            TestOutput {
+                result: input.value,
+            }
+        }
+    }
+
+    #[derive(Hardware)]
+    #[hardware(namespace = "tests", target_leaf)]
+    struct TooManyLeds;
+
+    impl Module for TooManyLeds {
+        type Input = TestInput;
+        type Output = TestOutput;
+        type EmuState = ();
+
+        fn target_resources() -> Vec<TargetResourceRequest> {
+            vec![TargetResourceRequest::new(UserLeds::<7>)]
+        }
+
+        fn create_emu(_input: &Self::Input, _output: &Self::Output) -> Self::EmuState {}
+
+        fn execute_emu(
+            _state: &mut Self::EmuState,
+            _circuit: &mut CircuitWires,
+            _input: &Self::Input,
+            _output: &Self::Output,
+        ) {
+        }
+
+        fn nand(input: &Self::Input) -> Self::Output {
+            TestOutput {
+                result: input.value,
+            }
+        }
+    }
+
+    #[derive(Hardware)]
+    #[hardware(namespace = "tests")]
+    struct InvalidResourceOwner;
+
+    impl Module for InvalidResourceOwner {
+        type Input = TestInput;
+        type Output = TestOutput;
+        type EmuState = ();
+
+        fn target_resources() -> Vec<TargetResourceRequest> {
+            vec![TargetResourceRequest::new(UserLeds::<1>)]
+        }
+
+        fn create_emu(_input: &Self::Input, _output: &Self::Output) -> Self::EmuState {}
+
+        fn execute_emu(
+            _state: &mut Self::EmuState,
+            _circuit: &mut CircuitWires,
+            _input: &Self::Input,
+            _output: &Self::Output,
+        ) {
+        }
+
+        fn build_verilog(input: &Self::Input) -> Self::Output {
+            TestModule::verilog(input)
+        }
+    }
+
+    #[derive(Hardware)]
+    #[hardware(namespace = "tests", target_leaf)]
+    struct InvalidNestedResourceLeaf;
+
+    impl Module for InvalidNestedResourceLeaf {
+        type Input = TestInput;
+        type Output = TestOutput;
+        type EmuState = ();
+
+        fn target_resources() -> Vec<TargetResourceRequest> {
+            vec![TargetResourceRequest::new(UserLeds::<1>)]
+        }
+
+        fn create_emu(_input: &Self::Input, _output: &Self::Output) -> Self::EmuState {}
+
+        fn execute_emu(
+            _state: &mut Self::EmuState,
+            _circuit: &mut CircuitWires,
+            _input: &Self::Input,
+            _output: &Self::Output,
+        ) {
+        }
+
+        fn build_verilog(input: &Self::Input) -> Self::Output {
+            TestModule::verilog(input)
+        }
+    }
+
+    #[derive(Hardware)]
+    #[hardware(namespace = "tests", target_leaf)]
+    struct FourLedLeaf;
+
+    impl Module for FourLedLeaf {
+        type Input = TestInput;
+        type Output = TestOutput;
+        type EmuState = ();
+
+        fn target_resources() -> Vec<TargetResourceRequest> {
+            vec![TargetResourceRequest::new(UserLeds::<4>)]
+        }
+
+        fn create_emu(_input: &Self::Input, _output: &Self::Output) -> Self::EmuState {}
+
+        fn execute_emu(
+            _state: &mut Self::EmuState,
+            _circuit: &mut CircuitWires,
+            _input: &Self::Input,
+            _output: &Self::Output,
+        ) {
+        }
+
+        fn nand(input: &Self::Input) -> Self::Output {
+            TestOutput {
+                result: input.value,
+            }
+        }
+    }
+
+    #[derive(Hardware)]
+    #[hardware(namespace = "tests")]
+    struct TwoResourceLeaves;
+
+    impl Module for TwoResourceLeaves {
+        type Input = TestInput;
+        type Output = TestOutput;
+        type EmuState = ();
+
+        fn create_emu(_input: &Self::Input, _output: &Self::Output) -> Self::EmuState {}
+
+        fn execute_emu(
+            _state: &mut Self::EmuState,
+            _circuit: &mut CircuitWires,
+            _input: &Self::Input,
+            _output: &Self::Output,
+        ) {
+        }
+
+        fn build_verilog(input: &Self::Input) -> Self::Output {
+            let _first = FourLedLeaf::verilog(input);
+            FourLedLeaf::verilog(input)
+        }
     }
 
     #[test]
@@ -949,11 +1201,12 @@ mod tests {
         assert_eq!(inventory.capacity(ResourceKind::Lut4), 138_240);
         assert_eq!(inventory.capacity(ResourceKind::Bsram18K), 340);
         assert_eq!(inventory.capacity(ResourceKind::Multiplier18x18), 298);
+        assert_eq!(inventory.capacity(ResourceKind::Ddr3Device), 1);
+        assert_eq!(inventory.capacity(ResourceKind::SdrSdramDevice), 0);
         assert_eq!(
-            inventory.capacity(ResourceKind::Ddr3Bit),
-            8_192 * 1_024 * 1_024
+            inventory.fitted_device_capacity_bits(ResourceKind::Ddr3Device),
+            Some(8_192 * 1_024 * 1_024)
         );
-        assert_eq!(inventory.capacity(ResourceKind::SdrSdramBit), 0);
         assert_eq!(inventory.capacity(ResourceKind::UserLed), 3);
         assert_eq!(inventory.capacity(ResourceKind::UserButton), 2);
         assert_eq!(
@@ -963,26 +1216,103 @@ mod tests {
     }
 
     #[test]
+    #[should_panic(
+        expected = "component `user-leds` requests 7 user LED, but target `tang-nano-20k` has 6 remaining"
+    )]
     fn generation_stops_after_a_resource_failure() {
-        let mut project = GowinProject::<TangNano20K>::new("failed", "failed_top");
-        let error = project.take(UserLeds::<7>).unwrap_err();
-        let generation = match project.generate::<BasicAdder>() {
-            Ok(_) => panic!("generation continued after a failed allocation"),
-            Err(error) => error,
-        };
-        assert!(matches!(error, ResourceError::CapacityExceeded { .. }));
-        assert!(matches!(
-            generation,
-            GowinError::Resource(ResourceError::AllocatorFailed { .. })
-        ));
+        let project = GowinProject::<TangNano20K>::new("failed");
+        let _ = project.generate::<TooManyLeds>();
     }
 
     #[test]
     fn tang_console_export_uses_verified_ide_identity() {
-        let project = GowinProject::<TangConsole138KC128M>::new("console", "console_top");
-        let generated = project.generate::<BasicAdder>().unwrap();
+        let project = GowinProject::<TangConsole138KC128M>::new("console");
+        let generated = project.generate::<TestModule>().unwrap();
         let gprj = &generated.files[Path::new("console.gprj")];
         assert!(gprj.contains("gw5ast138c-007"));
+    }
+
+    #[test]
+    fn unbound_project_derives_the_gowin_top_from_the_hardware_type() {
+        let generated = GowinProject::<TangNano20K>::new("typed_top")
+            .generate::<TestModule>()
+            .unwrap();
+        assert_eq!(generated.top_module, "TestModule");
+        assert!(
+            generated.files[Path::new("build.tcl")].contains("set_option -top_module TestModule")
+        );
+    }
+
+    #[test]
+    fn board_binding_rejects_duplicate_physical_pins() {
+        let binding = GowinBoardBinding::<TangNano20K>::new(
+            "board_top",
+            "clk",
+            "clk",
+            TangNano20K::CLOCK_27M,
+        )
+        .bind_port(
+            GowinPortDirection::Input,
+            "value",
+            "value",
+            [TangNano20K::CLOCK_27M.pin],
+        )
+        .bind_port(
+            GowinPortDirection::Output,
+            "result",
+            "result",
+            [TangNano20K::USER_LEDS[0]],
+        );
+        let error = binding
+            .render(
+                "Logic",
+                &[
+                    ("clk".to_string(), "input".to_string(), 1),
+                    ("value".to_string(), "input".to_string(), 1),
+                    ("result".to_string(), "output".to_string(), 1),
+                ],
+            )
+            .unwrap_err();
+        assert!(matches!(
+            error,
+            GowinError::InvalidBoardBinding(message)
+                if message.contains("physical pin 4")
+                    && message.contains("`clk`")
+                    && message.contains("`value`")
+        ));
+    }
+
+    #[test]
+    fn resource_requests_are_rejected_on_non_leaf_modules() {
+        let error = GowinProject::<TangNano20K>::new("invalid_owner")
+            .generate::<InvalidResourceOwner>()
+            .unwrap_err();
+        assert!(matches!(
+            error,
+            GowinError::Project(ProjectError::ResourceOwnerNotTargetLeaf(module))
+                if module.ends_with("InvalidResourceOwner")
+        ));
+    }
+
+    #[test]
+    fn target_leaf_marker_cannot_hide_child_modules() {
+        let error = GowinProject::<TangNano20K>::new("invalid_nested_leaf")
+            .generate::<InvalidNestedResourceLeaf>()
+            .unwrap_err();
+        assert!(matches!(
+            error,
+            GowinError::Project(ProjectError::ResourceOwnerHasChildren(module))
+                if module.ends_with("InvalidNestedResourceLeaf")
+        ));
+    }
+
+    #[test]
+    #[should_panic(
+        expected = "component `user-leds` requests 4 user LED, but target `tang-nano-20k` has 2 remaining"
+    )]
+    fn repeated_leaf_instances_each_consume_resources() {
+        let project = GowinProject::<TangNano20K>::new("repeated_resources");
+        let _ = project.generate::<TwoResourceLeaves>();
     }
 
     #[test]

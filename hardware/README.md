@@ -36,12 +36,69 @@ Implement `Module` on one type:
   methods to preserve hierarchy;
 - `verilog_source` may include a complete adjacent Verilog-2001 module. Its
   ANSI port signature is checked against the Rust IO contract;
-- const-generic modules should override `verilog_name` with a stable name that
-  includes every parameter that changes their generated hardware.
+- every module derives `Hardware`; the derive creates its explicit
+  `VerilogIdentity` and includes every const generic automatically. Each
+  concrete Rust specialization becomes one concrete Verilog module and file.
 
 Generated NAND registers use the project main clock. Additional clocks of an
 external hardware block are ordinary input ports; its emulator is responsible
 for detecting and applying those clock edges.
+
+Reusable, target-independent hardware lives under `components` and is also
+re-exported at the crate root. For example,
+`ClockDivider<DIVISOR, WIDTH>` produces a registered one-cycle clock-enable
+pulse and supports emulation, NAND construction, and hierarchical Verilog.
+Its `ClockDividerState` lets a larger module emulator reuse the same cycle
+semantics. It intentionally does not generate a derived clock, so downstream
+logic remains in the project's main clock domain. These small components are
+part of the hardware crate without a feature flag: they add no optional
+runtime or toolchain dependency. The public root re-export also leaves room to
+move their implementation into another crate later without changing designs.
+
+Generic hardware uses a structured identity rather than deriving HDL names
+from Rust source paths:
+
+```rust
+#[derive(Hardware)]
+#[hardware(namespace = "components/timing")]
+pub struct ClockDivider<const DIVISOR: u64, const WIDTH: usize>;
+```
+
+`ClockDivider<3, 2>` therefore exports module
+`ClockDivider_DIVISOR3_WIDTH2` to
+`components/timing/clock_divider/divisor3_width2.v`. Each concrete
+specialization has one definition file. Reusing that type creates additional
+instances but does not duplicate its definition; a different specialization
+gets a different module and file. Type and lifetime generics are rejected by
+the derive and need concrete hardware wrapper types. No Verilog parameters are
+generated. Every generated file starts with comments containing the original
+Rust type and logical Verilog path.
+
+Hierarchical modules can share one structural implementation while choosing
+child implementations explicitly:
+
+```rust
+fn build(
+    input: &Input,
+    divider: fn(&ClockDividerInput) -> ClockDividerOutput,
+) -> Output {
+    let tick = divider(&ClockDividerInput {});
+    // Build the remaining structure using tick.tick.
+}
+
+fn nand(input: &Input) -> Output {
+    build(input, ClockDivider::<DIVISOR, 23>::nand)
+}
+
+fn build_verilog(input: &Input) -> Output {
+    build(input, ClockDivider::<DIVISOR, 23>::verilog)
+}
+```
+
+Host construction may mix `Child::emu` and `Child::nand` deliberately. Hardware
+export always enters through `build_verilog`: a child's `verilog` uses its
+verified hand-written implementation when present and otherwise recursively
+exports the child's NAND implementation.
 
 ## Cycle tests
 
@@ -65,6 +122,28 @@ cycle counts, sticky errors, and first-error context. Larger tests should emit
 framed UART telemetry so a capture can be decoded and replayed as emulator
 conformance vectors.
 
+## Hand-written Verilog verification
+
+Hand-written Verilog uses the same `ModuleTest` steps and expected values as
+emu and NAND. The framework generates the HDL testbench from those vectors, so
+there is no second copy of test data. `TestStep::after_cycles(N)` represents a
+compact run of main-clock edges before sampling, including large dividers.
+Both source and generated testbench text are included in the checked-in
+verification hash. Normal `cargo test` never launches an external HDL tool;
+simulation tests are marked `#[ignore]` and must be requested explicitly:
+
+```text
+cargo test -p digital-design-hardware --all-targets verify_handwritten_verilog_with_iverilog -- --ignored --nocapture
+```
+
+Install Icarus Verilog first, or set `IVERILOG` and `VVP` to the executable
+paths. A successful testbench must print `DIGITAL_DESIGN_PASS`. The helper then
+prints a `ModuleName=fnv1a64:...` line; copy that exact line to the module's
+`.verified` file. Generation rejects missing or stale records without exposing
+the replacement hash; only a successful explicit simulation prints it. The
+manifest is an auditable attestation, not a substitute for the simulation run
+that produced it.
+
 ## Hardware targets and resources
 
 A project selects one complete, purchasable hardware variant as a Rust type.
@@ -73,48 +152,82 @@ fabric capacity, fitted memory, and board-level components:
 
 ```rust
 type Target = TangNano20K;
-let mut project = GowinProject::<Target>::new("counter", "board_top");
+let project = Target::user_io_project::<CounterBoard>("counter");
 ```
 
 There is deliberately no separate FPGA-model type: repeating chip capacities
 for a second board revision is simpler and less ambiguous than merging device,
-package, stepping, memory-fit, and dock identities. A target implements
-`Supports<C>` only for component families it provides; the resource allocator
-checks the requested quantity:
+package, stepping, memory-fit, and dock identities. A target supports a
+component when its inventory contains every lower-level resource required by
+that component. Resource requests belong only to target bindings and leaf
+modules that directly represent physical components:
 
 ```rust
-project.take_named("main-clock", Clock27M)?;
-project.take_named("leds", UserLeds::<6>)?;
-project.take_named("frame-buffers", BsramBlocks::new(4))?;
-project.take_named("geometry", DspMultipliers::new(2))?;
+#[derive(Hardware)]
+#[hardware(namespace = "components/memory", target_leaf)]
+struct FrameBuffers;
+
+impl Module for FrameBuffers {
+    // Other associated items omitted.
+
+    fn target_resources() -> Vec<TargetResourceRequest> {
+        vec![
+            TargetResourceRequest::new(BsramBlocks::new(4)),
+            TargetResourceRequest::new(DspMultipliers::new(2)),
+        ]
+    }
+}
 ```
+
+The explicit `target_leaf` marker is the capability to claim target resources.
+An upper module obtains them only by instantiating the leaf. Export rejects a
+resource-owning module without the marker or with children, and counts
+each actual leaf instance even when its Verilog definition is deduplicated.
+Board clocks, buttons, and LEDs are reserved by the board binding for the same
+reason. Capacity overflow panics during Gowin project generation with the
+target, full instance path, Rust type, component, requested quantity, and
+remaining capacity; generation does not continue.
 
 Every `TargetComponent` returns a list of lower-level `ResourceAmount`
 requirements. A take is transactional across the whole list. BSRAM reserves
 18-Kbit blocks and DSP reserves 18x18 multiplier capacity, which are common to
 the currently modeled Gowin variants. SDR SDRAM and DDR3 remain different
-resource kinds. SDR SDRAM, DDR3, SPI flash, and SSRAM capacities are accounted
-in individual bits using `u64`; `from_mibits()` is only an ergonomic input
-conversion. Later allocators can add width modes, ports, packing, and
-alternative implementations behind this component boundary. Any failed take
-poisons the allocator: later takes and project export fail with the original
-reason, so a capacity error cannot be ignored accidentally. Exported Gowin
-projects include `resource-report.txt`; synthesis and place-and-route remain
-the final authority.
+resource kinds. Fitted SDR SDRAM, DDR3, and SPI flash are indivisible devices:
+a target exposes one complete device, and a second claim exceeds capacity.
+Their physical bit capacities remain target metadata and appear in the report;
+they are not allocatable bit balances. SSRAM remains a divisible FPGA fabric
+resource. Later BSRAM/DSP libraries can add configuration variants whose
+measured block consumption is declared by each concrete implementation.
+The lower-level allocator remains transactional and is poisoned after a failed
+claim. Exported Gowin projects include `resource-report.txt`; synthesis and
+place-and-route remain the final authority.
 
-Resource leases are also required for physical IO binding. Tang Nano 20K
-provides exact clock, button, and active-low LED pin definitions:
+Tang Nano 20K exposes the wires that are stable parts of the board directly as
+typed module IO:
 
 ```rust
-let clock = project.take_named("main-clock", Clock27M)?;
-let buttons = project.take_named("buttons", UserButtons::<2>)?;
-let leds = project.take_named("leds", UserLeds::<6>)?;
-let binding = TangNano20K::bind_user_io(clock, buttons, leds, "buttons", "leds");
-let project = project.with_board_binding(binding);
+impl Module for CounterBoard {
+    type Input = TangNano20KInputs;
+    type Output = TangNano20KOutputs;
+
+    fn nand(input: &Self::Input) -> Self::Output {
+        let count = Counter::nand(&CounterInput {
+            reset: input.buttons.wires[0],
+            enable: input.buttons.wires[1],
+        });
+        TangNano20KOutputs { leds: count.value }
+    }
+}
+
+let project = TangNano20K::user_io_project::<CounterBoard>("counter");
 ```
 
-The binding generates the board wrapper, CST, and SDC files. Export validates
-the bound logic-port names, directions, and widths before invoking Gowin.
+The project factory automatically reserves the clock, buttons, and LEDs and
+generates the board wrapper, CST, and SDC files. The top module type is fixed
+in `GowinModuleProject`, so export cannot substitute a module with different
+IO. Physical port names remain private target implementation details. Board
+bindings reject two logical signals assigned to the same physical pin,
+including collisions with the clock.
 
 `TangConsole138KC128M` models Tang Console fitted with the current C-step,
 128-Mbit-flash Mega 138K SOM. Its Gowin project identity is verified against
@@ -142,12 +255,16 @@ resources. High-speed transceivers, PCIe, USB, and shared/multiplexed dock pins
 are intentionally not modeled yet; adding them requires allocation groups and
 pin-conflict information, not just another counter.
 
+Bidirectional IO is not exported yet. `InOutSignals` defines the internal
+read/write/write-enable contract for a future target IO-buffer leaf; the
+remaining resolution and binding work is recorded in `INOUT.md`.
+
 ## Basic adder Gowin example
 
 Export the Tang Nano 20K example:
 
 ```text
-cargo run -p digital-design-hardware --example export_basic_adder -- target/basic_adder_gowin
+cargo run -p digital-design-hardware --example basic_adder -- target/basic_adder_gowin
 ```
 
 The result contains generated hierarchical HDL, a board wrapper, CST, SDC,
@@ -159,7 +276,22 @@ active-low LEDs. No hand-written board directory is used.
 Build without programming the board:
 
 ```powershell
-cargo run -p digital-design-hardware --example export_basic_adder -- --build
+cargo run -p digital-design-hardware --example basic_adder -- --build
+```
+
+Gowin tool discovery uses an explicit `--gowin-home PATH` first, then the
+`GOWIN_HOME` environment variable, then `gw_sh`/`programmer_cli` on `PATH`.
+For example, the current machine can use:
+
+```powershell
+$env:GOWIN_HOME = 'D:\DevTools\Gowin\Gowin_V1.9.11.03_Education_x64'
+cargo run -p digital-design-hardware --example basic_adder -- --build
+```
+
+Or without changing the environment:
+
+```powershell
+cargo run -p digital-design-hardware --example basic_adder -- --build --gowin-home 'D:\DevTools\Gowin\Gowin_V1.9.11.03_Education_x64'
 ```
 
 SRAM programming is intentionally an explicit operation and is never run by

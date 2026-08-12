@@ -3,7 +3,7 @@
 //! Components declare the lower-level resources they reserve. Allocation is
 //! transactional: either every requirement fits or none of them is applied.
 
-use crate::{HardwareTarget, Supports};
+use crate::{HardwareTarget, TargetResourceRequest};
 use std::collections::{BTreeMap, HashSet};
 use std::fmt::{Display, Formatter};
 use std::marker::PhantomData;
@@ -19,9 +19,9 @@ pub enum ResourceKind {
     BoardClock27M,
     UserLed,
     UserButton,
-    SdrSdramBit,
-    Ddr3Bit,
-    SpiFlashBit,
+    SdrSdramDevice,
+    Ddr3Device,
+    SpiFlashDevice,
     HdmiOutput,
 }
 
@@ -37,9 +37,9 @@ impl Display for ResourceKind {
             Self::BoardClock27M => "27 MHz board clock",
             Self::UserLed => "user LED",
             Self::UserButton => "user button",
-            Self::SdrSdramBit => "SDR SDRAM bit",
-            Self::Ddr3Bit => "DDR3 SDRAM bit",
-            Self::SpiFlashBit => "SPI flash bit",
+            Self::SdrSdramDevice => "SDR SDRAM device",
+            Self::Ddr3Device => "DDR3 SDRAM device",
+            Self::SpiFlashDevice => "SPI flash device",
             Self::HdmiOutput => "HDMI output",
         })
     }
@@ -60,6 +60,7 @@ impl ResourceAmount {
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct TargetInventory {
     capacity: BTreeMap<ResourceKind, u64>,
+    fitted_device_capacity_bits: BTreeMap<ResourceKind, u64>,
 }
 
 impl TargetInventory {
@@ -71,6 +72,15 @@ impl TargetInventory {
 
     pub fn extend(&mut self, capacity: impl IntoIterator<Item = ResourceAmount>) {
         for resource in capacity {
+            assert!(
+                !matches!(
+                    resource.kind,
+                    ResourceKind::SdrSdramDevice
+                        | ResourceKind::Ddr3Device
+                        | ResourceKind::SpiFlashDevice
+                ),
+                "fitted memory devices must be added with `with_fitted_device`"
+            );
             assert!(
                 self.capacity
                     .insert(resource.kind, resource.amount)
@@ -87,6 +97,38 @@ impl TargetInventory {
 
     pub fn capacities(&self) -> &BTreeMap<ResourceKind, u64> {
         &self.capacity
+    }
+
+    /// Add one indivisible fitted memory device and retain its physical size
+    /// as target metadata rather than allocatable capacity.
+    pub fn with_fitted_device(mut self, kind: ResourceKind, capacity_bits: u64) -> Self {
+        assert!(
+            matches!(
+                kind,
+                ResourceKind::SdrSdramDevice
+                    | ResourceKind::Ddr3Device
+                    | ResourceKind::SpiFlashDevice
+            ),
+            "{kind} is not a fitted memory device"
+        );
+        assert!(capacity_bits > 0, "fitted device capacity must be non-zero");
+        assert!(
+            self.capacity.insert(kind, 1).is_none()
+                && self
+                    .fitted_device_capacity_bits
+                    .insert(kind, capacity_bits)
+                    .is_none(),
+            "duplicate fitted device for {kind}"
+        );
+        self
+    }
+
+    pub fn fitted_device_capacity_bits(&self, kind: ResourceKind) -> Option<u64> {
+        self.fitted_device_capacity_bits.get(&kind).copied()
+    }
+
+    pub fn fitted_devices(&self) -> &BTreeMap<ResourceKind, u64> {
+        &self.fitted_device_capacity_bits
     }
 }
 
@@ -121,6 +163,7 @@ pub struct ResourceReport {
     pub target: &'static str,
     pub capacity: BTreeMap<ResourceKind, u64>,
     pub claimed: BTreeMap<ResourceKind, u64>,
+    pub fitted_device_capacity_bits: BTreeMap<ResourceKind, u64>,
     pub allocations: Vec<ResourceAllocation>,
 }
 
@@ -160,7 +203,6 @@ impl<T: HardwareTarget> TargetResources<T> {
     pub fn take<C>(&mut self, component: C) -> Result<ResourceLease<T, C>, ResourceError>
     where
         C: TargetComponent,
-        T: Supports<C>,
     {
         let label = format!("{}-{}", component.component_name(), self.next_id);
         self.take_named(label, component)
@@ -173,7 +215,6 @@ impl<T: HardwareTarget> TargetResources<T> {
     ) -> Result<ResourceLease<T, C>, ResourceError>
     where
         C: TargetComponent,
-        T: Supports<C>,
     {
         if let Some(reason) = &self.failed {
             return Err(ResourceError::AllocatorFailed {
@@ -196,33 +237,70 @@ impl<T: HardwareTarget> TargetResources<T> {
     ) -> Result<ResourceLease<T, C>, ResourceError>
     where
         C: TargetComponent,
-        T: Supports<C>,
     {
+        let id = self.try_claim(
+            label,
+            component.component_name(),
+            component.resource_requirements(),
+        )?;
+        Ok(ResourceLease {
+            id,
+            component,
+            target: PhantomData,
+        })
+    }
+
+    pub(crate) fn claim_module(
+        &mut self,
+        label: String,
+        request: &TargetResourceRequest,
+    ) -> Result<(), ResourceError> {
+        if let Some(reason) = &self.failed {
+            return Err(ResourceError::AllocatorFailed {
+                target: T::NAME,
+                reason: reason.clone(),
+            });
+        }
+        let result = self
+            .try_claim(label, request.component, request.resources.clone())
+            .map(|_| ());
+        if let Err(error) = &result {
+            self.failed = Some(error.to_string());
+        }
+        result
+    }
+
+    fn try_claim(
+        &mut self,
+        label: String,
+        component: &'static str,
+        requirements: Vec<ResourceAmount>,
+    ) -> Result<u64, ResourceError> {
         if self.labels.contains(&label) {
             return Err(ResourceError::DuplicateLabel(label));
         }
 
-        let requirements = normalize_requirements(component.resource_requirements())?;
+        let requirements = normalize_requirements(requirements)?;
         for requirement in &requirements {
             let capacity = self.inventory.capacity(requirement.kind);
             if capacity == 0 {
                 return Err(ResourceError::Unavailable {
                     target: T::NAME,
-                    component: component.component_name(),
+                    component,
                     resource: requirement.kind,
                 });
             }
             let already_claimed = self.claimed.get(&requirement.kind).copied().unwrap_or(0);
             let requested = already_claimed.checked_add(requirement.amount).ok_or(
                 ResourceError::ArithmeticOverflow {
-                    component: component.component_name(),
+                    component,
                     resource: requirement.kind,
                 },
             )?;
             if requested > capacity {
                 return Err(ResourceError::CapacityExceeded {
                     target: T::NAME,
-                    component: component.component_name(),
+                    component,
                     resource: requirement.kind,
                     requested: requirement.amount,
                     remaining: capacity - already_claimed,
@@ -239,14 +317,10 @@ impl<T: HardwareTarget> TargetResources<T> {
         self.allocations.push(ResourceAllocation {
             id,
             label,
-            component: component.component_name(),
+            component,
             resources: requirements,
         });
-        Ok(ResourceLease {
-            id,
-            component,
-            target: PhantomData,
-        })
+        Ok(id)
     }
 
     /// Reject export after any failed allocation, even if its `Result` was
@@ -266,6 +340,7 @@ impl<T: HardwareTarget> TargetResources<T> {
             target: T::NAME,
             capacity: self.inventory.capacities().clone(),
             claimed: self.claimed.clone(),
+            fitted_device_capacity_bits: self.inventory.fitted_devices().clone(),
             allocations: self.allocations.clone(),
         }
     }
@@ -372,8 +447,6 @@ impl std::error::Error for ResourceError {}
 pub mod components {
     use super::{ResourceAmount, ResourceKind, TargetComponent};
 
-    pub const MIBIT: u64 = 1_024 * 1_024;
-
     macro_rules! fixed_component {
         ($name:ident, $display:literal, $kind:ident) => {
             #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
@@ -394,6 +467,9 @@ pub mod components {
     fixed_component!(Pll, "pll", Pll);
     fixed_component!(Clock27M, "clock-27mhz", BoardClock27M);
     fixed_component!(HdmiOutput, "hdmi-output", HdmiOutput);
+    fixed_component!(SdrSdram, "sdr-sdram", SdrSdramDevice);
+    fixed_component!(Ddr3, "ddr3-sdram", Ddr3Device);
+    fixed_component!(SpiFlash, "spi-flash", SpiFlashDevice);
 
     #[derive(Clone, Copy, Debug, Eq, PartialEq)]
     pub struct BsramBlocks {
@@ -440,39 +516,6 @@ pub mod components {
         }
     }
 
-    macro_rules! capacity_component {
-        ($name:ident, $field:ident, $display:literal, $kind:ident) => {
-            #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-            pub struct $name {
-                pub bits: u64,
-            }
-
-            impl $name {
-                pub const fn new(bits: u64) -> Self {
-                    Self { bits }
-                }
-
-                pub const fn from_mibits(mibits: u64) -> Self {
-                    Self::new(mibits * MIBIT)
-                }
-            }
-
-            impl TargetComponent for $name {
-                fn component_name(&self) -> &'static str {
-                    $display
-                }
-
-                fn resource_requirements(&self) -> Vec<ResourceAmount> {
-                    vec![ResourceAmount::new(ResourceKind::$kind, self.bits)]
-                }
-            }
-        };
-    }
-
-    capacity_component!(SdrSdramBits, bits, "sdr-sdram", SdrSdramBit);
-    capacity_component!(Ddr3Bits, bits, "ddr3-sdram", Ddr3Bit);
-    capacity_component!(SpiFlashBits, bits, "spi-flash", SpiFlashBit);
-
     #[derive(Clone, Copy, Debug, Eq, PartialEq)]
     pub struct UserLeds<const COUNT: u32>;
 
@@ -505,7 +548,7 @@ pub mod components {
 
 #[cfg(test)]
 mod tests {
-    use super::components::{BsramBlocks, DspMultipliers, Pll, SdrSdramBits, UserLeds, MIBIT};
+    use super::components::{BsramBlocks, DspMultipliers, Pll, SdrSdram, UserLeds};
     use super::*;
     use crate::TangNano20K;
 
@@ -526,18 +569,26 @@ mod tests {
     }
 
     #[test]
-    fn external_memory_is_accounted_in_individual_bits() {
+    fn fitted_memory_is_an_indivisible_device() {
         let mut resources = TargetResources::<TangNano20K>::new();
-        resources
-            .take_named("small-buffer", SdrSdramBits::new(13))
-            .unwrap();
-        resources
-            .take_named("large-buffer", SdrSdramBits::from_mibits(1))
-            .unwrap();
+        resources.take_named("memory", SdrSdram).unwrap();
+        let error = resources.take_named("second-memory", SdrSdram).unwrap_err();
 
         let report = resources.report();
-        assert_eq!(report.claimed[&ResourceKind::SdrSdramBit], MIBIT + 13);
-        assert_eq!(report.remaining(ResourceKind::SdrSdramBit), 63 * MIBIT - 13);
+        assert_eq!(report.claimed[&ResourceKind::SdrSdramDevice], 1);
+        assert_eq!(report.remaining(ResourceKind::SdrSdramDevice), 0);
+        assert_eq!(
+            report.fitted_device_capacity_bits[&ResourceKind::SdrSdramDevice],
+            64 * 1_024 * 1_024
+        );
+        assert!(matches!(
+            error,
+            ResourceError::CapacityExceeded {
+                resource: ResourceKind::SdrSdramDevice,
+                remaining: 0,
+                ..
+            }
+        ));
     }
 
     #[test]
@@ -557,8 +608,6 @@ mod tests {
                 ]
             }
         }
-
-        impl Supports<OversizedVideo> for TangNano20K {}
 
         let mut resources = TargetResources::<TangNano20K>::new();
         let error = resources.take(OversizedVideo).unwrap_err();

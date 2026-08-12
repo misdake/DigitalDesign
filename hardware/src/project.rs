@@ -1,4 +1,6 @@
-use crate::{IoBinding, Module, ModuleIo};
+use crate::{
+    IoBinding, Module, ModuleIo, ResourceAmount, TargetResourceRequest, VerilogVerification,
+};
 use digital_design_code::{
     build_circuit, render_verilog_module, validate_verilog_identifier, ExportGateReg,
     VerilogConnection, VerilogInstance, VerilogModule, VerilogPort,
@@ -18,6 +20,12 @@ pub enum ProjectError {
     DuplicateModuleName(String),
     DuplicateOutputPath(PathBuf),
     InvalidHandwrittenVerilog(String),
+    InvalidVerificationManifest(String),
+    MissingVerilogVerification(String),
+    MissingVerifiedVerilogHash(String),
+    VerilogVerificationMismatch { module: String, expected: String },
+    ResourceOwnerHasChildren(String),
+    ResourceOwnerNotTargetLeaf(String),
     UnsafeOutputPath(PathBuf),
     UnmanagedFileConflict(PathBuf),
 }
@@ -37,6 +45,30 @@ impl Display for ProjectError {
                 write!(formatter, "multiple modules export to `{}`", path.display())
             }
             Self::InvalidHandwrittenVerilog(message) => formatter.write_str(message),
+            Self::InvalidVerificationManifest(message) => formatter.write_str(message),
+            Self::MissingVerilogVerification(module) => write!(
+                formatter,
+                "hand-written Verilog module `{module}` has no verification recipe"
+            ),
+            Self::MissingVerifiedVerilogHash(module) => write!(
+                formatter,
+                "hand-written Verilog module `{module}` has not been verified; run its explicit Verilog simulation test and copy the record it prints into the verification manifest"
+            ),
+            Self::VerilogVerificationMismatch {
+                module,
+                expected,
+            } => write!(
+                formatter,
+                "hand-written Verilog verification is stale for `{module}`: manifest has `{expected}`; rerun its explicit Verilog simulation test and copy the record it prints"
+            ),
+            Self::ResourceOwnerHasChildren(module) => write!(
+                formatter,
+                "module `{module}` requests target resources but also instantiates child modules; only leaf modules closest to the target may request resources"
+            ),
+            Self::ResourceOwnerNotTargetLeaf(module) => write!(
+                formatter,
+                "module `{module}` requests target resources without `#[hardware(..., target_leaf)]`; upper modules must obtain resources by instantiating target leaves"
+            ),
             Self::UnsafeOutputPath(path) => {
                 write!(
                     formatter,
@@ -72,7 +104,9 @@ struct ModuleDescriptor {
     type_id: TypeId,
     rust_name: &'static str,
     module_name: String,
+    instance_stem: String,
     relative_path: PathBuf,
+    target_resource_leaf: bool,
     build: fn() -> RawModule,
 }
 
@@ -84,12 +118,28 @@ struct RecordedInstance {
 
 struct RawModule {
     descriptor: ModuleDescriptor,
-    source: Option<&'static str>,
+    source: Option<String>,
     content: ExportGateReg,
     inputs: Vec<VerilogPort>,
     outputs: Vec<VerilogPort>,
     instances: Vec<RecordedInstance>,
     base_clocked: bool,
+    resources: Vec<TargetResourceRequest>,
+    verification: Option<VerilogVerification>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ModuleResourceClaim {
+    pub instance_path: String,
+    pub rust_type: &'static str,
+    pub component: &'static str,
+    pub resources: Vec<ResourceAmount>,
+}
+
+#[derive(Clone)]
+struct ModuleSummary {
+    clocked: bool,
+    resources: Vec<ModuleResourceClaim>,
 }
 
 thread_local! {
@@ -128,53 +178,18 @@ impl Drop for RecordingGuard {
     }
 }
 
-fn split_type_name(type_name: &str) -> Vec<&str> {
-    type_name
-        .split('<')
-        .next()
-        .unwrap_or(type_name)
-        .split("::")
-        .collect()
-}
-
 fn descriptor<M: Module>() -> ModuleDescriptor {
     let rust_name = std::any::type_name::<M>();
-    let parts = split_type_name(rust_name);
-    let module_name = M::verilog_name();
-    let default_module_name = parts.last().unwrap();
-    let relative_path = if parts.len() > 2 {
-        let mut path = PathBuf::new();
-        for part in &parts[1..parts.len() - 2] {
-            path.push(part);
-        }
-        let file_stem = if module_name == *default_module_name {
-            parts[parts.len() - 2].to_string()
-        } else {
-            to_snake_case(&module_name)
-        };
-        path.push(format!("{file_stem}.v"));
-        path
-    } else {
-        PathBuf::from(format!("{}.v", to_snake_case(&module_name)))
-    };
+    let identity = M::verilog_identity();
     ModuleDescriptor {
         type_id: TypeId::of::<M>(),
         rust_name,
-        module_name,
-        relative_path,
+        module_name: identity.module_name(),
+        instance_stem: identity.instance_stem(),
+        relative_path: identity.relative_path(),
+        target_resource_leaf: M::TARGET_RESOURCE_LEAF,
         build: build_raw::<M>,
     }
-}
-
-fn to_snake_case(value: &str) -> String {
-    let mut result = String::new();
-    for (index, character) in value.chars().enumerate() {
-        if character.is_ascii_uppercase() && index != 0 {
-            result.push('_');
-        }
-        result.push(character.to_ascii_lowercase());
-    }
-    result
 }
 
 fn ports(bindings: Vec<IoBinding>) -> Vec<VerilogPort> {
@@ -209,6 +224,8 @@ fn build_raw<M: Module>() -> RawModule {
         outputs: ports(output.bindings()),
         instances,
         base_clocked,
+        resources: M::target_resources(),
+        verification: M::verilog_verification(),
     }
 }
 
@@ -223,11 +240,7 @@ pub(crate) fn record_instance<M: Module>(input: &M::Input) -> M::Output {
             )
         });
         let descriptor = descriptor::<M>();
-        let instance_name = format!(
-            "u_{}_{}",
-            to_snake_case(&descriptor.module_name),
-            recorded.len()
-        );
+        let instance_name = format!("u_{}_{}", descriptor.instance_stem, recorded.len());
         let mut bindings = input.bindings();
         bindings.extend(output.bindings());
         recorded.push(RecordedInstance {
@@ -243,6 +256,7 @@ pub(crate) fn record_instance<M: Module>(input: &M::Input) -> M::Output {
 pub struct GeneratedVerilogProject {
     pub top_module: String,
     pub files: BTreeMap<PathBuf, String>,
+    pub resource_claims: Vec<ModuleResourceClaim>,
 }
 
 impl GeneratedVerilogProject {
@@ -270,10 +284,11 @@ impl VerilogProject {
         let root = descriptor::<M>();
         let top_module = root.module_name.clone();
         let mut resolver = Resolver::default();
-        resolver.visit(root)?;
+        let summary = resolver.visit(root)?;
         Ok(GeneratedVerilogProject {
             top_module,
             files: resolver.files,
+            resource_claims: summary.resources,
         })
     }
 
@@ -285,16 +300,16 @@ impl VerilogProject {
 #[derive(Default)]
 struct Resolver {
     visiting: HashSet<TypeId>,
-    completed: HashMap<TypeId, bool>,
+    completed: HashMap<TypeId, ModuleSummary>,
     module_names: HashSet<String>,
     paths: HashSet<PathBuf>,
     files: BTreeMap<PathBuf, String>,
 }
 
 impl Resolver {
-    fn visit(&mut self, descriptor: ModuleDescriptor) -> Result<bool, ProjectError> {
-        if let Some(clocked) = self.completed.get(&descriptor.type_id) {
-            return Ok(*clocked);
+    fn visit(&mut self, descriptor: ModuleDescriptor) -> Result<ModuleSummary, ProjectError> {
+        if let Some(summary) = self.completed.get(&descriptor.type_id) {
+            return Ok(summary.clone());
         }
         if !self.visiting.insert(descriptor.type_id) {
             return Err(ProjectError::DependencyCycle(
@@ -303,10 +318,34 @@ impl Resolver {
         }
 
         let raw = (descriptor.build)();
+        if !raw.resources.is_empty() && !raw.descriptor.target_resource_leaf {
+            return Err(ProjectError::ResourceOwnerNotTargetLeaf(
+                raw.descriptor.rust_name.to_string(),
+            ));
+        }
+        if !raw.resources.is_empty() && !raw.instances.is_empty() {
+            return Err(ProjectError::ResourceOwnerHasChildren(
+                raw.descriptor.rust_name.to_string(),
+            ));
+        }
         let mut child_clocking = HashMap::new();
+        let mut resources = raw
+            .resources
+            .iter()
+            .map(|request| ModuleResourceClaim {
+                instance_path: raw.descriptor.module_name.clone(),
+                rust_type: raw.descriptor.rust_name,
+                component: request.component,
+                resources: request.resources.clone(),
+            })
+            .collect::<Vec<_>>();
         for instance in &raw.instances {
-            let clocked = self.visit(instance.descriptor.clone())?;
-            child_clocking.insert(instance.descriptor.type_id, clocked);
+            let summary = self.visit(instance.descriptor.clone())?;
+            child_clocking.insert(instance.descriptor.type_id, summary.clocked);
+            resources.extend(summary.resources.into_iter().map(|mut claim| {
+                claim.instance_path = format!("{}.{}", instance.instance_name, claim.instance_path);
+                claim
+            }));
         }
         let clocked = raw.base_clocked || child_clocking.values().any(|clocked| *clocked);
 
@@ -321,8 +360,9 @@ impl Resolver {
             ));
         }
 
-        let source = if let Some(source) = raw.source {
+        let source = if let Some(source) = raw.source.as_deref() {
             validate_handwritten(&raw, source, clocked)?;
+            verify_handwritten_attestation(&raw, source)?;
             source.to_string()
         } else {
             let instances = raw
@@ -363,11 +403,127 @@ impl Resolver {
                 &raw.content,
             )?
         };
+        let source = format!(
+            "// Rust type: {}\n// Verilog path: {}\n{}",
+            raw.descriptor.rust_name,
+            raw.descriptor
+                .relative_path
+                .to_string_lossy()
+                .replace('\\', "/"),
+            source
+        );
         self.files.insert(raw.descriptor.relative_path, source);
         self.visiting.remove(&descriptor.type_id);
-        self.completed.insert(descriptor.type_id, clocked);
-        Ok(clocked)
+        let summary = ModuleSummary { clocked, resources };
+        self.completed.insert(descriptor.type_id, summary.clone());
+        Ok(summary)
     }
+}
+
+const VERIFICATION_DOMAIN: &str = "digital-design-verilog-verification-v1";
+
+fn verification_hash(module_name: &str, source: &str, testbench: &str) -> String {
+    let mut hash = 0xcbf29ce484222325u64;
+    for part in [VERIFICATION_DOMAIN, module_name, source, testbench] {
+        for byte in part.as_bytes().iter().copied().chain([0]) {
+            hash ^= u64::from(byte);
+            hash = hash.wrapping_mul(0x100000001b3);
+        }
+    }
+    format!("fnv1a64:{hash:016x}")
+}
+
+fn verification_record(module_name: &str, source: &str, testbench: &str) -> String {
+    format!(
+        "{module_name}={}",
+        verification_hash(module_name, source, testbench)
+    )
+}
+
+fn parse_verification_manifest(manifest: &str) -> Result<HashMap<&str, &str>, ProjectError> {
+    let mut entries = HashMap::new();
+    for (index, line) in manifest.lines().enumerate() {
+        let line = line.trim();
+        if line.is_empty() || line.starts_with('#') {
+            continue;
+        }
+        let Some((module, hash)) = line.split_once('=') else {
+            return Err(ProjectError::InvalidVerificationManifest(format!(
+                "invalid Verilog verification manifest line {}: expected `module=fnv1a64:...`",
+                index + 1
+            )));
+        };
+        if module.is_empty()
+            || hash.len() != "fnv1a64:".len() + 16
+            || !hash.starts_with("fnv1a64:")
+            || !hash["fnv1a64:".len()..]
+                .bytes()
+                .all(|byte| byte.is_ascii_hexdigit())
+        {
+            return Err(ProjectError::InvalidVerificationManifest(format!(
+                "invalid Verilog verification manifest line {}: `{line}`",
+                index + 1
+            )));
+        }
+        if entries.insert(module, hash).is_some() {
+            return Err(ProjectError::InvalidVerificationManifest(format!(
+                "duplicate Verilog verification entry for `{module}`"
+            )));
+        }
+    }
+    Ok(entries)
+}
+
+fn verify_handwritten_attestation(raw: &RawModule, source: &str) -> Result<(), ProjectError> {
+    let module = &raw.descriptor.module_name;
+    let verification = raw
+        .verification
+        .as_ref()
+        .ok_or_else(|| ProjectError::MissingVerilogVerification(module.clone()))?;
+    let actual_hash = verification_hash(module, source, &verification.testbench);
+    let entries = parse_verification_manifest(verification.verified_hashes)?;
+    let Some(expected) = entries.get(module.as_str()) else {
+        return Err(ProjectError::MissingVerifiedVerilogHash(module.clone()));
+    };
+    if *expected != actual_hash {
+        return Err(ProjectError::VerilogVerificationMismatch {
+            module: module.clone(),
+            expected: format!("{module}={expected}"),
+        });
+    }
+    Ok(())
+}
+
+pub(crate) struct HandwrittenVerilogTest {
+    pub module_name: String,
+    pub source: String,
+    pub testbench: String,
+    pub verification_record: String,
+}
+
+pub(crate) fn handwritten_verilog_test<M: Module>() -> Result<HandwrittenVerilogTest, ProjectError>
+{
+    let raw = build_raw::<M>();
+    let source = raw.source.as_deref().ok_or_else(|| {
+        ProjectError::InvalidHandwrittenVerilog(format!(
+            "module `{}` has no hand-written Verilog to simulate",
+            raw.descriptor.module_name
+        ))
+    })?;
+    validate_handwritten(&raw, source, raw.base_clocked)?;
+    let verification = raw.verification.as_ref().ok_or_else(|| {
+        ProjectError::MissingVerilogVerification(raw.descriptor.module_name.clone())
+    })?;
+    Ok(HandwrittenVerilogTest {
+        module_name: raw.descriptor.module_name.clone(),
+        source: source.to_string(),
+        testbench: verification.testbench.clone(),
+        verification_record: verification_record(
+            &raw.descriptor.module_name,
+            source,
+            &verification.testbench,
+        ),
+    })
 }
 
 fn expected_port_tokens(port: &VerilogPort, direction: &str) -> (String, String, usize) {

@@ -1,10 +1,25 @@
-use super::{HardwareTarget, Supports};
-use crate::resources::components::{
-    BsramBlocks, Clock27M, DspMultipliers, HdmiOutput, Pll, SdrSdramBits, SpiFlashBits,
-    UserButtons, UserLeds, MIBIT,
-};
+use super::HardwareTarget;
+use crate::resources::components::{Clock27M, UserButtons, UserLeds};
 use crate::{GowinBackend, GowinDeviceInfo, ResourceAmount, ResourceKind, TargetInventory};
-use crate::{GowinBoardBinding, GowinClockPin, GowinPin, GowinPortDirection, ResourceLease};
+use crate::{
+    GowinBoardBinding, GowinClockPin, GowinModuleProject, GowinPin, GowinPortDirection,
+    GowinProject, Module, ModuleIo,
+};
+use digital_design_code::Wires;
+
+/// Stable application-facing inputs fitted to every Tang Nano 20K board.
+#[derive(Clone, ModuleIo)]
+pub struct TangNano20KInputs {
+    /// Bit 0 is Button1; bit 1 is Button2.
+    pub buttons: Wires<2>,
+}
+
+/// Stable application-facing outputs fitted to every Tang Nano 20K board.
+#[derive(Clone, ModuleIo)]
+pub struct TangNano20KOutputs {
+    /// Logical LED-on values; physical active-low polarity is handled by the target.
+    pub leds: Wires<6>,
+}
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub struct TangNano20K;
@@ -57,28 +72,28 @@ impl TangNano20K {
         }
     }
 
-    /// Bind the standard clock, two buttons, and six LEDs after reserving
-    /// those resources from this target.
-    pub fn bind_user_io(
-        _clock: ResourceLease<Self, Clock27M>,
-        _buttons: ResourceLease<Self, UserButtons<2>>,
-        _leds: ResourceLease<Self, UserLeds<6>>,
-        logic_button_port: impl Into<String>,
-        logic_led_port: impl Into<String>,
-    ) -> GowinBoardBinding<Self> {
+    /// Create a project whose top module directly uses this board's stable IO.
+    /// Resource reservation and physical binding are automatic.
+    pub fn user_io_project<M>(project_name: impl Into<String>) -> GowinModuleProject<Self, M>
+    where
+        M: Module<Input = TangNano20KInputs, Output = TangNano20KOutputs>,
+    {
+        let project = GowinProject::new(project_name);
+        GowinModuleProject::new(project.with_board_binding(Self::user_io_binding()))
+    }
+
+    fn user_io_binding() -> GowinBoardBinding<Self> {
         GowinBoardBinding::new("tang_nano_20k_top", "clk", "clk", Self::CLOCK_27M)
+            .require(Clock27M)
+            .require(UserButtons::<2>)
+            .require(UserLeds::<6>)
             .bind_port(
                 GowinPortDirection::Input,
                 "buttons",
-                logic_button_port,
+                "buttons",
                 Self::USER_BUTTONS,
             )
-            .bind_port(
-                GowinPortDirection::Output,
-                "leds",
-                logic_led_port,
-                Self::USER_LEDS,
-            )
+            .bind_port(GowinPortDirection::Output, "leds", "leds", Self::USER_LEDS)
     }
 }
 
@@ -101,10 +116,10 @@ impl HardwareTarget for TangNano20K {
             ResourceAmount::new(ResourceKind::BoardClock27M, 1),
             ResourceAmount::new(ResourceKind::UserLed, 6),
             ResourceAmount::new(ResourceKind::UserButton, 2),
-            ResourceAmount::new(ResourceKind::SdrSdramBit, 64 * MIBIT),
-            ResourceAmount::new(ResourceKind::SpiFlashBit, 64 * MIBIT),
             ResourceAmount::new(ResourceKind::HdmiOutput, 1),
         ])
+        .with_fitted_device(ResourceKind::SdrSdramDevice, 64 * 1_024 * 1_024)
+        .with_fitted_device(ResourceKind::SpiFlashDevice, 64 * 1_024 * 1_024)
     }
 }
 
@@ -117,13 +132,3 @@ impl crate::GowinTarget for TangNano20K {
         programmer_device: "GW2AR-18C",
     };
 }
-
-impl Supports<Pll> for TangNano20K {}
-impl Supports<BsramBlocks> for TangNano20K {}
-impl Supports<DspMultipliers> for TangNano20K {}
-impl Supports<Clock27M> for TangNano20K {}
-impl Supports<SdrSdramBits> for TangNano20K {}
-impl Supports<SpiFlashBits> for TangNano20K {}
-impl Supports<HdmiOutput> for TangNano20K {}
-impl<const COUNT: u32> Supports<UserLeds<COUNT>> for TangNano20K {}
-impl<const COUNT: u32> Supports<UserButtons<COUNT>> for TangNano20K {}
