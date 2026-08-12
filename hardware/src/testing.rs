@@ -9,7 +9,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 #[derive(Clone, Debug)]
 pub struct TestStep<I, O> {
     pub input: I,
-    pub expected: O,
+    pub expected: Option<O>,
     pub cycles: u64,
 }
 
@@ -17,7 +17,19 @@ impl<I, O> TestStep<I, O> {
     pub fn new(input: I, expected: O) -> Self {
         Self {
             input,
-            expected,
+            expected: Some(expected),
+            cycles: 1,
+        }
+    }
+
+    /// Drive a cycle without checking its output.
+    ///
+    /// This is useful while priming uninitialized physical memories. Later
+    /// checked steps must establish every value on which they rely.
+    pub fn drive(input: I) -> Self {
+        Self {
+            input,
+            expected: None,
             cycles: 1,
         }
     }
@@ -50,10 +62,22 @@ impl<M: Module> ModuleTest<M> {
         assert_eq!(emu.len(), nand.len());
         for (index, ((emu, nand), step)) in emu.iter().zip(&nand).zip(&self.steps).enumerate() {
             assert_eq!(emu, nand, "emu/NAND mismatch at test step {index}");
-            assert_eq!(
-                emu, &step.expected,
-                "unexpected output at test step {index}"
-            );
+            if let Some(expected) = &step.expected {
+                assert_eq!(emu, expected, "unexpected output at test step {index}");
+            }
+        }
+    }
+
+    pub fn run_emu(&self) {
+        for (index, (actual, step)) in self
+            .run_backend(M::emu, false)
+            .iter()
+            .zip(&self.steps)
+            .enumerate()
+        {
+            if let Some(expected) = &step.expected {
+                assert_eq!(actual, expected, "unexpected output at test step {index}");
+            }
         }
     }
 
@@ -147,12 +171,14 @@ impl<M: Module> ModuleTest<M> {
             } else {
                 text.push_str("    #1;\n");
             }
-            for value in M::Output::verilog_values(&step.expected) {
-                validate_verilog_io_value(&value);
-                text.push_str(&format!(
-                    "    if ({} !== {}'d{}) begin $display(\"FAIL: step {} output {}\"); $finish(1); end\n",
-                    value.name, value.width, value.value, index, value.name
-                ));
+            if let Some(expected) = &step.expected {
+                for value in M::Output::verilog_values(expected) {
+                    validate_verilog_io_value(&value);
+                    text.push_str(&format!(
+                        "    if ({} !== {}'d{}) begin $display(\"FAIL: step {} output {}\"); $finish(1); end\n",
+                        value.name, value.width, value.value, index, value.name
+                    ));
+                }
             }
         }
         text.push_str("    $display(\"DIGITAL_DESIGN_PASS\");\n    $finish;\nend\nendmodule\n");

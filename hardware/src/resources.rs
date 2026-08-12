@@ -19,6 +19,7 @@ pub enum ResourceKind {
     BoardClock27M,
     UserLed,
     UserButton,
+    DebugUartTx,
     SdrSdramDevice,
     Ddr3Device,
     SpiFlashDevice,
@@ -37,6 +38,7 @@ impl Display for ResourceKind {
             Self::BoardClock27M => "27 MHz board clock",
             Self::UserLed => "user LED",
             Self::UserButton => "user button",
+            Self::DebugUartTx => "debug UART TX",
             Self::SdrSdramDevice => "SDR SDRAM device",
             Self::Ddr3Device => "DDR3 SDRAM device",
             Self::SpiFlashDevice => "SPI flash device",
@@ -466,6 +468,7 @@ pub mod components {
 
     fixed_component!(Pll, "pll", Pll);
     fixed_component!(Clock27M, "clock-27mhz", BoardClock27M);
+    fixed_component!(DebugUartTx, "debug-uart-tx", DebugUartTx);
     fixed_component!(HdmiOutput, "hdmi-output", HdmiOutput);
     fixed_component!(SdrSdram, "sdr-sdram", SdrSdramDevice);
     fixed_component!(Ddr3, "ddr3-sdram", Ddr3Device);

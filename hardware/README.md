@@ -144,6 +144,47 @@ the replacement hash; only a successful explicit simulation prints it. The
 manifest is an auditable attestation, not a substitute for the simulation run
 that produced it.
 
+### BSRAM leaves
+
+`Bsram1Rw1024<WIDTH>`, `Bsram1R1Rw1024<WIDTH>`, and
+`BsramTrueDualPort1024<WIDTH>` provide the initial 1024-word BSRAM shapes.
+`WIDTH` must be 16 or 18; each concrete specialization claims one 18-Kbit
+BSRAM block. These are target leaves with emulator and verified handwritten
+Verilog implementations. They intentionally have no NAND implementation:
+the FPGA memory primitive is their implementation boundary, and calling
+`nand` fails immediately instead of expanding storage into gates.
+
+All ports use the project clock and have synchronous registered reads. A
+read/write port operates in normal mode: during a write its read output holds
+the previous registered value. Memory contents have no portable power-up
+value, so tests and callers must initialize an address before checking it.
+The emulator uses zero-filled host storage internally but this is not a
+hardware initialization guarantee. In the true-dual-port shape, simultaneous
+writes to one address are unsupported and panic in emulation. Avoid depending
+on same-address cross-port read/write collision values in portable modules;
+they require a target- and configuration-specific measurement.
+
+The explicit module simulation uses the same typed vectors as emulation:
+
+```text
+cargo test -p digital-design-hardware --lib components::bsram::tests::verify_handwritten_verilog_with_iverilog -- --ignored --nocapture
+```
+
+The `bsram` example instantiates all three shapes at both widths and checks all
+1024 addresses. Build and program volatile SRAM with:
+
+```text
+cargo run -p digital-design-hardware --example bsram -- --program
+```
+
+Its debug UART repeatedly sends ASCII `P` after success or `F` after a
+mismatch. Capture raw bytes with the serial receiver, then make the result
+machine-checkable with:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File hardware/examples/bsram/check_capture.ps1 -Path target/bsram_gowin/board_capture.bin
+```
+
 ## Hardware targets and resources
 
 A project selects one complete, purchasable hardware variant as a Rust type.
