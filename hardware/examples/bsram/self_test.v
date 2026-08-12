@@ -20,7 +20,8 @@ wire filling = phase == 0;
 wire timing_write = phase == 4;
 wire writing = filling || timing_write;
 wire [15:0] sp16_pattern = 16'h5aa5 ^ {6'b0, address};
-wire [17:0] sp18_pattern = 18'h2a55a ^ {8'b0, address};
+wire [9:0] sp18_address = address ^ 10'h155;
+wire [17:0] sp18_pattern = 18'h2a55a ^ {8'b0, sp18_address};
 wire [15:0] rw16_pattern = 16'hc33c ^ {6'b0, address};
 wire [17:0] rw18_pattern = 18'h13cc3 ^ {8'b0, address};
 
@@ -35,19 +36,23 @@ wire [15:0] tdp16_b_read;
 wire [17:0] tdp18_a_read;
 wire [17:0] tdp18_b_read;
 
-Bsram1Rw1024_WIDTH16 u_Bsram1Rw1024_WIDTH16(
+Bsram1Rw1024_WIDTH16 u_Bsram1Rw1024_WIDTH16
+    /* synthesis syn_hier = "macro" */ /* synthesis syn_noprune = 1 */ (
     .clk(clk), .write_enable(writing), .address(address),
     .write_data(sp16_pattern), .read_data(sp16_read));
-Bsram1Rw1024_WIDTH18 u_Bsram1Rw1024_WIDTH18(
-    .clk(clk), .write_enable(writing), .address(address),
+Bsram1Rw1024_WIDTH18 u_Bsram1Rw1024_WIDTH18
+    /* synthesis syn_hier = "macro" */ /* synthesis syn_noprune = 1 */ (
+    .clk(clk), .write_enable(writing), .address(sp18_address),
     .write_data(sp18_pattern), .read_data(sp18_read));
 
 wire [9:0] rw_port_address = filling ? address : ~address;
-Bsram1R1Rw1024_WIDTH16 u_Bsram1R1Rw1024_WIDTH16(
+Bsram1R1Rw1024_WIDTH16 u_Bsram1R1Rw1024_WIDTH16
+    /* synthesis syn_hier = "macro" */ /* synthesis syn_noprune = 1 */ (
     .clk(clk), .read_address(address), .rw_write_enable(writing),
     .rw_address(rw_port_address), .rw_write_data(rw16_pattern),
     .read_data(r16_read), .rw_read_data(rw16_read));
-Bsram1R1Rw1024_WIDTH18 u_Bsram1R1Rw1024_WIDTH18(
+Bsram1R1Rw1024_WIDTH18 u_Bsram1R1Rw1024_WIDTH18
+    /* synthesis syn_hier = "macro" */ /* synthesis syn_noprune = 1 */ (
     .clk(clk), .read_address(address), .rw_write_enable(writing),
     .rw_address(rw_port_address), .rw_write_data(rw18_pattern),
     .read_data(r18_read), .rw_read_data(rw18_read));
@@ -59,13 +64,15 @@ wire [15:0] tdp16_b_pattern = 16'h8462 ^ {6'b0, tdp_b_address};
 wire [17:0] tdp18_a_pattern = 18'h13579 ^ {8'b0, tdp_a_address};
 wire [17:0] tdp18_b_pattern = 18'h2864a ^ {8'b0, tdp_b_address};
 
-BsramTrueDualPort1024_WIDTH16 u_BsramTrueDualPort1024_WIDTH16(
+BsramTrueDualPort1024_WIDTH16 u_BsramTrueDualPort1024_WIDTH16
+    /* synthesis syn_hier = "macro" */ /* synthesis syn_noprune = 1 */ (
     .clk(clk),
     .a_write_enable(writing), .a_address(tdp_a_address),
     .a_write_data(tdp16_a_pattern), .a_read_data(tdp16_a_read),
     .b_write_enable(writing), .b_address(tdp_b_address),
     .b_write_data(tdp16_b_pattern), .b_read_data(tdp16_b_read));
-BsramTrueDualPort1024_WIDTH18 u_BsramTrueDualPort1024_WIDTH18(
+BsramTrueDualPort1024_WIDTH18 u_BsramTrueDualPort1024_WIDTH18
+    /* synthesis syn_hier = "macro" */ /* synthesis syn_noprune = 1 */ (
     .clk(clk),
     .a_write_enable(writing), .a_address(tdp_a_address),
     .a_write_data(tdp18_a_pattern), .a_read_data(tdp18_a_read),
@@ -73,7 +80,8 @@ BsramTrueDualPort1024_WIDTH18 u_BsramTrueDualPort1024_WIDTH18(
     .b_write_data(tdp18_b_pattern), .b_read_data(tdp18_b_read));
 
 wire [15:0] checked_sp16 = 16'h5aa5 ^ {6'b0, checked_address};
-wire [17:0] checked_sp18 = 18'h2a55a ^ {8'b0, checked_address};
+wire [9:0] checked_sp18_address = checked_address ^ 10'h155;
+wire [17:0] checked_sp18 = 18'h2a55a ^ {8'b0, checked_sp18_address};
 wire [15:0] checked_r16 = 16'hc33c ^ {6'b0, checked_address};
 wire [17:0] checked_r18 = 18'h13cc3 ^ {8'b0, checked_address};
 wire [9:0] checked_rw_address = ~checked_address;
@@ -104,7 +112,7 @@ wire values_match =
 
 wire timing_values_match =
     sp16_read == (16'h5aa5 ^ 16'd10) &&
-    sp18_read == (18'h2a55a ^ 18'd10) &&
+    sp18_read == (18'h2a55a ^ (18'd10 ^ 18'h155)) &&
     r16_read == (16'hc33c ^ 16'd20) &&
     r18_read == (18'h13cc3 ^ 18'd20) &&
     rw16_read == (16'hc33c ^ {6'b0, ~10'd10}) &&
@@ -171,7 +179,25 @@ reg [21:0] report_delay = 0;
 reg [9:0] uart_frame = 10'h3ff;
 reg [3:0] uart_bit = 0;
 reg [7:0] uart_divider = 0;
+reg [2:0] report_byte_index = 0;
 reg uart_busy = 0;
+
+function [7:0] report_byte;
+    input [2:0] index;
+    input failed;
+    begin
+        case (index)
+            0: report_byte = 8'h44;
+            1: report_byte = 8'h44;
+            2: report_byte = 8'h48;
+            3: report_byte = 8'h54;
+            4: report_byte = 8'h01;
+            5: report_byte = 8'h01;
+            6: report_byte = failed ? 8'h01 : 8'h00;
+            default: report_byte = failed ? 8'h1d : 8'h1c;
+        endcase
+    end
+endfunction
 
 always @(posedge clk) begin
     if (reset) begin
@@ -179,12 +205,14 @@ always @(posedge clk) begin
         uart_frame <= 10'h3ff;
         uart_bit <= 0;
         uart_divider <= 0;
+        report_byte_index <= 0;
         uart_busy <= 0;
     end else if (!uart_busy) begin
         if (done && report_delay == 22'd2700000) begin
-            uart_frame <= {1'b1, error_sticky ? 8'h46 : 8'h50, 1'b0};
+            uart_frame <= {1'b1, report_byte(0, error_sticky), 1'b0};
             uart_bit <= 0;
             uart_divider <= 0;
+            report_byte_index <= 0;
             uart_busy <= 1;
             report_delay <= 0;
         end else if (done) begin
@@ -192,10 +220,21 @@ always @(posedge clk) begin
         end
     end else if (uart_divider == 8'd233) begin
         uart_divider <= 0;
-        if (uart_bit == 9)
-            uart_busy <= 0;
-        else
+        if (uart_bit == 9) begin
+            if (report_byte_index == 7) begin
+                uart_busy <= 0;
+            end else begin
+                report_byte_index <= report_byte_index + 1'b1;
+                uart_frame <= {
+                    1'b1,
+                    report_byte(report_byte_index + 1'b1, error_sticky),
+                    1'b0
+                };
+                uart_bit <= 0;
+            end
+        end else begin
             uart_bit <= uart_bit + 1'b1;
+        end
     end else begin
         uart_divider <= uart_divider + 1'b1;
     end

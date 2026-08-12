@@ -254,6 +254,7 @@ pub trait Module: HardwareIdentity + Sized + 'static {
     type EmuState: 'static;
 
     const USES_MAIN_CLOCK: bool = false;
+    const EMU_AVAILABLE: bool = true;
 
     /// Resources used by this module itself, excluding child modules.
     ///
@@ -282,6 +283,11 @@ pub trait Module: HardwareIdentity + Sized + 'static {
     }
 
     fn emu(input: &Self::Input) -> Self::Output {
+        assert!(
+            Self::EMU_AVAILABLE,
+            "emulator implementation is not available for module `{}`",
+            std::any::type_name::<Self>()
+        );
         let output = Self::Output::allocate();
         let state = Self::create_emu(input, &output);
         external(ModuleExternal::<Self> {

@@ -1,9 +1,9 @@
 use digital_design_code::CircuitWires;
 use digital_design_hardware::{
     run_gowin_project_cli, Bsram1R1Rw1024, Bsram1Rw1024, BsramTrueDualPort1024, GowinCliError,
-    GowinModuleProject, Hardware, Module, ModuleIo, ModuleTest, TangNano20K,
-    TangNano20KDebugOutputs, TangNano20KDebugOutputsValue, TangNano20KInputs,
-    TangNano20KInputsValue, TestStep, VerilogDependency, VerilogVerification,
+    GowinModuleProject, Hardware, Module, ModuleTest, TangNano20K, TangNano20KDebugOutputs,
+    TangNano20KDebugOutputsValue, TangNano20KInputs, TangNano20KInputsValue, TestStep,
+    VerilogDependency, VerilogVerification,
 };
 
 fn main() -> Result<(), GowinCliError> {
@@ -20,22 +20,20 @@ impl Module for BsramBoardSelfTest {
     type EmuState = ();
 
     const USES_MAIN_CLOCK: bool = true;
+    const EMU_AVAILABLE: bool = false;
 
-    fn create_emu(_input: &Self::Input, _output: &Self::Output) -> Self::EmuState {}
+    fn create_emu(_input: &Self::Input, _output: &Self::Output) -> Self::EmuState {
+        panic!("BsramBoardSelfTest is a Verilog-only hardware test harness")
+    }
 
     fn execute_emu(
         _state: &mut Self::EmuState,
         circuit: &mut CircuitWires,
         _input: &Self::Input,
-        output: &Self::Output,
+        _output: &Self::Output,
     ) {
-        output.drive(
-            circuit,
-            &TangNano20KDebugOutputsValue {
-                leds: 0,
-                uart_tx: true,
-            },
-        );
+        let _ = circuit;
+        panic!("BsramBoardSelfTest is a Verilog-only hardware test harness")
     }
 
     fn verilog_source() -> Option<String> {
@@ -113,6 +111,12 @@ mod tests {
         let project = bsram_gowin_project().generate().unwrap();
         assert_eq!(project.resources.claimed[&ResourceKind::Bsram18K], 6);
         assert_eq!(project.resources.claimed[&ResourceKind::DebugUartTx], 1);
+    }
+
+    #[test]
+    #[should_panic(expected = "emulator implementation is not available")]
+    fn verilog_only_board_harness_rejects_emu_execution() {
+        board_test().run_emu();
     }
 
     #[test]

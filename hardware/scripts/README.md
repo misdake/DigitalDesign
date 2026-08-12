@@ -5,17 +5,19 @@ and board examples. Example-specific RTL and test vectors remain under
 `hardware/examples/`; reusable capture, decode, build, and reporting tools
 belong here.
 
-`check_uart_status.ps1` validates a raw UART capture by requiring repeated
-success bytes and rejecting any failure byte. It defaults to ASCII `P`/`F`,
-but another hardware self-test can select different byte values:
+`check_uart_status.ps1` validates a raw UART capture containing repeated
+eight-byte status frames. A frame contains the `DDHT` magic, protocol version,
+test ID, result, and XOR checksum. The checker rejects stale captures, frames
+for another test, bad checksums, and any reported failure:
 
 ```powershell
 powershell -ExecutionPolicy Bypass -File hardware/scripts/check_uart_status.ps1 `
     -Path target/example/capture.bin `
-    -SuccessByte 0x50 -FailureByte 0x46 -MinimumSuccessBytes 3
+    -TestId 0x01 -MinimumSuccessFrames 2
 ```
 
-This byte-status protocol is intentionally small. Tests that need error
-addresses, observed values, or replayable vectors should use a framed protocol
-and add a corresponding general decoder here rather than growing a private
-script inside one example.
+Status `0` is success and every other status is failure. Tests that need error
+addresses, observed values, or replayable vectors should introduce a new
+protocol version and extend the shared decoder rather than growing a private
+script inside one example. Set `-MaximumAgeSeconds 0` only when deliberately
+inspecting an archived capture.

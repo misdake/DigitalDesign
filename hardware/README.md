@@ -40,6 +40,11 @@ Implement `Module` on one type:
   `VerilogIdentity` and includes every const generic automatically. Each
   concrete Rust specialization becomes one concrete Verilog module and file.
 
+A Verilog-only board test harness sets `EMU_AVAILABLE` to false. Calling its
+`emu` entry point then fails immediately; it must not provide placeholder
+outputs that pretend to model the hardware test. Reusable hardware modules
+continue to provide a real emulator.
+
 Generated NAND registers use the project main clock. Additional clocks of an
 external hardware block are ordinary input ports; its emulator is responsible
 for detecting and applying those clock edges.
@@ -195,12 +200,12 @@ and program volatile SRAM with:
 cargo run -p digital-design-hardware --example bsram -- --program
 ```
 
-Its debug UART repeatedly sends ASCII `P` after success or `F` after a
-mismatch. Capture raw bytes with the serial receiver, then use the shared
-development script to make the result machine-checkable:
+Its debug UART repeatedly sends checksummed `DDHT` status frames with BSRAM
+test ID `0x01`. Capture raw bytes with the serial receiver, then use the shared
+development script to verify the identity, freshness, checksum, and result:
 
 ```powershell
-powershell -ExecutionPolicy Bypass -File hardware/scripts/check_uart_status.ps1 -Path target/bsram_gowin/board_capture.bin
+powershell -ExecutionPolicy Bypass -File hardware/scripts/check_uart_status.ps1 -Path target/bsram_gowin/board_capture.bin -TestId 0x01
 ```
 
 ## Hardware targets and resources
@@ -263,7 +268,14 @@ measured as one block; instantiating the same specialization more than once
 repeats that claim even though its Verilog definition is emitted only once.
 The lower-level allocator remains transactional and is poisoned after a failed
 claim. Exported Gowin projects include `resource-report.txt`; synthesis and
-place-and-route remain the final authority.
+place-and-route remain the final authority. After synthesis, the build audits
+Gowin's hierarchical resource report: every actual BSRAM must be inside the
+instance hierarchy of a target-leaf wrapper, and its use may not exceed that
+wrapper's measured claim. A wrapper optimized away still reserves its planning
+capacity, but cannot hide BSRAM inferred elsewhere. PnR totals provide a second
+check before programming. PLL and DSP claims fail closed while no measured
+per-instance report mapping exists; each future configuration must add that
+mapping before it can be enabled.
 
 Tang Nano 20K exposes the wires that are stable parts of the board directly as
 typed module IO:

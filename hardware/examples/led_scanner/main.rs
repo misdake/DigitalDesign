@@ -184,19 +184,61 @@ mod tests {
             0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 2, 2, 2, 2, 2, 2, 0,
             0, 0, 0, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
         ];
-        let expected_leds: [u64; 44] = [
-            1, 1, 1, 2, 2, 2, 4, 4, 4, 8, 8, 8, 16, 16, 16, 32, 32, 32, 16, 16, 16, 8, 8, 8, 8, 8,
-            8, 8, 8, 8, 4, 4, 4, 2, 1, 1, 2, 2, 2, 4, 4, 4, 8, 8,
-        ];
-        let steps = buttons
-            .into_iter()
-            .zip(expected_leds)
-            .map(|(buttons, leds)| {
-                TestStep::new(
-                    digital_design_hardware::TangNano20KInputsValue { buttons },
-                    TangNano20KOutputsValue { leds },
-                )
-            });
+        struct ReferenceScanner {
+            reset_sync: [bool; 2],
+            pause_sync: [bool; 2],
+            divider_counter: u8,
+            tick: bool,
+            position: u8,
+            reverse: bool,
+        }
+
+        impl ReferenceScanner {
+            fn cycle(&mut self, buttons: u64) -> u64 {
+                if self.reset_sync[1] {
+                    self.position = 0;
+                    self.reverse = false;
+                } else if self.tick && !self.pause_sync[1] {
+                    match (self.reverse, self.position) {
+                        (false, 5) => {
+                            self.position = 4;
+                            self.reverse = true;
+                        }
+                        (true, 0) => {
+                            self.position = 1;
+                            self.reverse = false;
+                        }
+                        (false, _) => self.position += 1,
+                        (true, _) => self.position -= 1,
+                    }
+                }
+                self.tick = self.divider_counter == 2;
+                self.divider_counter = if self.tick {
+                    0
+                } else {
+                    self.divider_counter + 1
+                };
+                self.reset_sync = [buttons & 1 != 0, self.reset_sync[0]];
+                self.pause_sync = [buttons & 2 != 0, self.pause_sync[0]];
+                1 << self.position
+            }
+        }
+
+        let mut reference = ReferenceScanner {
+            reset_sync: [false; 2],
+            pause_sync: [false; 2],
+            divider_counter: 0,
+            tick: false,
+            position: 0,
+            reverse: false,
+        };
+        let steps = buttons.into_iter().map(|buttons| {
+            let leds = reference.cycle(buttons);
+            TestStep::new(
+                digital_design_hardware::TangNano20KInputsValue { buttons },
+                TangNano20KOutputsValue { leds },
+            )
+        });
         ModuleTest::<LedScanner<3>>::new(steps).run_emu_and_nand();
     }
 
