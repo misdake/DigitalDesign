@@ -3,6 +3,7 @@ use crate::{
     Hardware, HardwareIdentity, Module, ModuleIo, ModuleTest, TargetResourceRequest, TestStep,
     VerilogVerification,
 };
+use askama::Template;
 use digital_design_code::{CircuitWires, Wire, Wires};
 
 const DEPTH: usize = 1024;
@@ -28,11 +29,25 @@ fn address<const WIDTH: usize>(value: u64) -> usize {
     usize::try_from(value).expect("10-bit BSRAM address did not fit usize")
 }
 
-fn memory_source(module_name: &str, ports: &str, bodies: &str, width: usize) -> String {
-    format!(
-        "module {module_name}(\n    input wire clk,\n{ports}\n);\n\nreg [{high}:0] memory [0:1023];\n\n{bodies}\nendmodule\n",
-        high = width - 1,
-    )
+#[derive(Template)]
+#[template(path = "components/bsram/1rw_1024.v", escape = "none")]
+struct OneReadWriteTemplate<'a> {
+    module_name: &'a str,
+    high_bit: usize,
+}
+
+#[derive(Template)]
+#[template(path = "components/bsram/1r1rw_1024.v", escape = "none")]
+struct OneReadOneReadWriteTemplate<'a> {
+    module_name: &'a str,
+    high_bit: usize,
+}
+
+#[derive(Template)]
+#[template(path = "components/bsram/true_dual_port_1024.v", escape = "none")]
+struct TrueDualPortTemplate<'a> {
+    module_name: &'a str,
+    high_bit: usize,
 }
 
 /// One synchronous normal-mode read/write port backed by one 18-Kbit BSRAM.
@@ -109,17 +124,15 @@ impl<const WIDTH: usize> Module for Bsram1Rw1024<WIDTH> {
 
     fn verilog_source() -> Option<String> {
         validate_width::<WIDTH>();
-        let module = Self::verilog_identity().module_name();
-        Some(memory_source(
-            &module,
-            &format!(
-                "    input wire write_enable,\n    input wire [9:0] address,\n    input wire [{}:0] write_data,\n    output reg [{}:0] read_data",
-                WIDTH - 1,
-                WIDTH - 1
-            ),
-            "always @(posedge clk) begin\n    if (write_enable)\n        memory[address] <= write_data;\n    else\n        read_data <= memory[address];\nend",
-            WIDTH,
-        ))
+        let module_name = Self::verilog_identity().module_name();
+        Some(
+            OneReadWriteTemplate {
+                module_name: &module_name,
+                high_bit: WIDTH - 1,
+            }
+            .render()
+            .expect("static BSRAM Verilog template must render"),
+        )
     }
 
     fn verilog_verification() -> Option<VerilogVerification> {
@@ -207,18 +220,15 @@ impl<const WIDTH: usize> Module for Bsram1R1Rw1024<WIDTH> {
 
     fn verilog_source() -> Option<String> {
         validate_width::<WIDTH>();
-        let module = Self::verilog_identity().module_name();
-        Some(memory_source(
-            &module,
-            &format!(
-                "    input wire [9:0] read_address,\n    input wire rw_write_enable,\n    input wire [9:0] rw_address,\n    input wire [{}:0] rw_write_data,\n    output reg [{}:0] read_data,\n    output reg [{}:0] rw_read_data",
-                WIDTH - 1,
-                WIDTH - 1,
-                WIDTH - 1
-            ),
-            "always @(posedge clk) begin\n    read_data <= memory[read_address];\nend\n\nalways @(posedge clk) begin\n    if (rw_write_enable)\n        memory[rw_address] <= rw_write_data;\n    else\n        rw_read_data <= memory[rw_address];\nend",
-            WIDTH,
-        ))
+        let module_name = Self::verilog_identity().module_name();
+        Some(
+            OneReadOneReadWriteTemplate {
+                module_name: &module_name,
+                high_bit: WIDTH - 1,
+            }
+            .render()
+            .expect("static BSRAM Verilog template must render"),
+        )
     }
 
     fn verilog_verification() -> Option<VerilogVerification> {
@@ -325,19 +335,15 @@ impl<const WIDTH: usize> Module for BsramTrueDualPort1024<WIDTH> {
 
     fn verilog_source() -> Option<String> {
         validate_width::<WIDTH>();
-        let module = Self::verilog_identity().module_name();
-        Some(memory_source(
-            &module,
-            &format!(
-                "    input wire a_write_enable,\n    input wire [9:0] a_address,\n    input wire [{}:0] a_write_data,\n    output reg [{}:0] a_read_data,\n    input wire b_write_enable,\n    input wire [9:0] b_address,\n    input wire [{}:0] b_write_data,\n    output reg [{}:0] b_read_data",
-                WIDTH - 1,
-                WIDTH - 1,
-                WIDTH - 1,
-                WIDTH - 1
-            ),
-            "always @(posedge clk) begin\n    if (a_write_enable)\n        memory[a_address] <= a_write_data;\n    else\n        a_read_data <= memory[a_address];\nend\n\nalways @(posedge clk) begin\n    if (b_write_enable)\n        memory[b_address] <= b_write_data;\n    else\n        b_read_data <= memory[b_address];\nend",
-            WIDTH,
-        ))
+        let module_name = Self::verilog_identity().module_name();
+        Some(
+            TrueDualPortTemplate {
+                module_name: &module_name,
+                high_bit: WIDTH - 1,
+            }
+            .render()
+            .expect("static BSRAM Verilog template must render"),
+        )
     }
 
     fn verilog_verification() -> Option<VerilogVerification> {

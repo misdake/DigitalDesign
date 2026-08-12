@@ -164,6 +164,13 @@ writes to one address are unsupported and panic in emulation. Avoid depending
 on same-address cross-port read/write collision values in portable modules;
 they require a target- and configuration-specific measurement.
 
+Parameterized handwritten HDL lives as complete, readable files below
+`hardware/templates/`. Askama parses those templates at Rust compile time and
+binds their substitutions to typed Rust template structs. Const-generic Rust
+specializations still render separate concrete Verilog modules; Verilog
+parameters are not introduced. Keep HDL structure in the template and limit
+Rust rendering code to values such as the concrete module name and bus width.
+
 The explicit module simulation uses the same typed vectors as emulation:
 
 ```text
@@ -178,11 +185,11 @@ cargo run -p digital-design-hardware --example bsram -- --program
 ```
 
 Its debug UART repeatedly sends ASCII `P` after success or `F` after a
-mismatch. Capture raw bytes with the serial receiver, then make the result
-machine-checkable with:
+mismatch. Capture raw bytes with the serial receiver, then use the shared
+development script to make the result machine-checkable:
 
 ```powershell
-powershell -ExecutionPolicy Bypass -File hardware/examples/bsram/check_capture.ps1 -Path target/bsram_gowin/board_capture.bin
+powershell -ExecutionPolicy Bypass -File hardware/scripts/check_uart_status.ps1 -Path target/bsram_gowin/board_capture.bin
 ```
 
 ## Hardware targets and resources

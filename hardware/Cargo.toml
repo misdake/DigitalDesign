@@ -4,5 +4,6 @@ version = "0.1.0"
 edition = "2021"
 
 [dependencies]
+askama = { version = "0.14", default-features = false, features = ["derive", "std"] }
 digital-design-code = { path = "../core" }
 digital-design-hardware-macros = { path = "../hardware_macros" }
