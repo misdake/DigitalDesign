@@ -972,8 +972,8 @@ mod file_tests {
     }
 
     #[test]
-    fn export_refuses_to_replace_an_unmanaged_file() {
-        let directory = temporary_directory("conflict");
+    fn export_never_overwrites_unmanaged_or_outside_files() {
+        let directory = temporary_directory("safety");
         fs::create_dir_all(&directory).unwrap();
         fs::write(directory.join("module.v"), "user source").unwrap();
         let files = BTreeMap::from([(PathBuf::from("module.v"), "generated".to_string())]);
@@ -986,13 +986,6 @@ mod file_tests {
         );
 
         fs::remove_file(directory.join("module.v")).unwrap();
-        fs::remove_dir(directory).unwrap();
-    }
-
-    #[test]
-    fn export_rejects_unsafe_paths_from_a_tampered_manifest() {
-        let directory = temporary_directory("unsafe-manifest");
-        fs::create_dir_all(&directory).unwrap();
         fs::write(
             directory.join(".digital-design-generated"),
             "../outside.v\n",

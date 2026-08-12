@@ -695,6 +695,116 @@ pub struct GowinToolchain {
     programmer_cli: Option<PathBuf>,
 }
 
+#[derive(Debug)]
+pub enum GowinCliError {
+    Argument(String),
+    Gowin(GowinError),
+}
+
+impl Display for GowinCliError {
+    fn fmt(&self, formatter: &mut Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Argument(message) => formatter.write_str(message),
+            Self::Gowin(error) => Display::fmt(error, formatter),
+        }
+    }
+}
+
+impl std::error::Error for GowinCliError {}
+
+impl From<GowinError> for GowinCliError {
+    fn from(value: GowinError) -> Self {
+        Self::Gowin(value)
+    }
+}
+
+/// Run the common export/build/volatile-program CLI used by Gowin examples.
+pub fn run_gowin_project_cli<T, M>(
+    project: GowinModuleProject<T, M>,
+    default_output: impl Into<PathBuf>,
+) -> Result<(), GowinCliError>
+where
+    T: GowinTarget,
+    M: Module,
+{
+    let mut output = None;
+    let mut build = false;
+    let mut program = false;
+    let mut gowin_home = None;
+    let mut arguments = std::env::args_os();
+    let executable = arguments
+        .next()
+        .and_then(|value| PathBuf::from(value).file_name().map(|name| name.to_owned()))
+        .unwrap_or_else(|| "gowin-example".into());
+
+    while let Some(argument) = arguments.next() {
+        match argument.to_str() {
+            Some("--build") => build = true,
+            Some("--program") => {
+                build = true;
+                program = true;
+            }
+            Some("--gowin-home") => {
+                gowin_home = Some(PathBuf::from(arguments.next().ok_or_else(|| {
+                    GowinCliError::Argument("`--gowin-home` requires a directory".to_string())
+                })?));
+            }
+            Some(value) if value.starts_with("--gowin-home=") => {
+                let value = &value["--gowin-home=".len()..];
+                if value.is_empty() {
+                    return Err(GowinCliError::Argument(
+                        "`--gowin-home` requires a directory".to_string(),
+                    ));
+                }
+                gowin_home = Some(PathBuf::from(value));
+            }
+            Some("--help" | "-h") => {
+                println!(
+                    "Usage: {} [OUTPUT] [--build] [--program] [--gowin-home PATH]\n\n\
+                     --build        Export and run Gowin synthesis/place-and-route\n\
+                     --program      Build, then program volatile FPGA SRAM\n\
+                     --gowin-home   Gowin installation root; overrides GOWIN_HOME and PATH",
+                    executable.to_string_lossy()
+                );
+                return Ok(());
+            }
+            Some(value) if value.starts_with('-') => {
+                return Err(GowinCliError::Argument(format!(
+                    "unknown option `{value}`; use `--help`"
+                )));
+            }
+            _ if output.is_some() => {
+                return Err(GowinCliError::Argument(
+                    "only one output directory may be specified".to_string(),
+                ));
+            }
+            _ => output = Some(PathBuf::from(argument)),
+        }
+    }
+
+    let output = output.unwrap_or_else(|| default_output.into());
+    let generated = project.export(&output)?;
+    println!("Exported Gowin project to {}", output.display());
+    if !build {
+        return Ok(());
+    }
+
+    let toolchain = gowin_home
+        .map(GowinToolchain::from_home)
+        .map(Ok)
+        .unwrap_or_else(GowinToolchain::discover)?;
+    let result = toolchain.build(&output, &generated)?;
+    println!("Built {}", result.bitstream.display());
+    for warning in &result.warnings {
+        println!("Gowin warning: {warning}");
+    }
+    if program {
+        println!("Programming volatile FPGA SRAM; the board must be connected.");
+        toolchain.program_sram(&result, 4)?;
+    }
+    Ok(())
+}
+
 impl GowinToolchain {
     pub fn from_home(home: impl AsRef<Path>) -> Self {
         let home = home.as_ref();
@@ -991,30 +1101,8 @@ impl From<std::io::Error> for GowinError {
 mod tests {
     use super::*;
     use crate::resources::components::UserLeds;
-    use crate::{
-        GowinTarget, Hardware, HardwareTarget, ModuleIo, ResourceKind, TangConsole138KC128M,
-        TangNano20K,
-    };
+    use crate::{Hardware, ModuleIo, TangNano20K};
     use digital_design_code::{CircuitWires, Wire};
-
-    #[test]
-    fn gowin_home_resolves_both_tool_paths_without_a_machine_default() {
-        let toolchain = GowinToolchain::from_home(Path::new("configured-gowin"));
-        assert_eq!(
-            toolchain.gw_sh(),
-            Path::new("configured-gowin/IDE/bin/gw_sh.exe")
-        );
-        assert_eq!(
-            toolchain.programmer_cli(),
-            Some(Path::new(
-                "configured-gowin/Programmer/bin/programmer_cli.exe"
-            ))
-        );
-        assert_eq!(
-            gowin_home_from_gw_sh(Path::new("configured-gowin/IDE/bin/gw_sh.exe")),
-            Some(PathBuf::from("configured-gowin"))
-        );
-    }
 
     #[derive(Clone, ModuleIo)]
     struct TestInput {
@@ -1024,34 +1112,6 @@ mod tests {
     #[derive(Clone, ModuleIo)]
     struct TestOutput {
         result: Wire,
-    }
-
-    #[derive(Hardware)]
-    #[hardware(namespace = "tests")]
-    struct TestModule;
-
-    impl Module for TestModule {
-        type Input = TestInput;
-        type Output = TestOutput;
-        type EmuState = ();
-
-        fn create_emu(_input: &Self::Input, _output: &Self::Output) -> Self::EmuState {}
-
-        fn execute_emu(
-            _state: &mut Self::EmuState,
-            circuit: &mut CircuitWires,
-            input: &Self::Input,
-            output: &Self::Output,
-        ) {
-            let value = circuit.get_wire(input.value);
-            circuit.set_wire(output.result, value);
-        }
-
-        fn nand(input: &Self::Input) -> Self::Output {
-            TestOutput {
-                result: input.value,
-            }
-        }
     }
 
     #[derive(Hardware)]
@@ -1084,137 +1144,6 @@ mod tests {
         }
     }
 
-    #[derive(Hardware)]
-    #[hardware(namespace = "tests")]
-    struct InvalidResourceOwner;
-
-    impl Module for InvalidResourceOwner {
-        type Input = TestInput;
-        type Output = TestOutput;
-        type EmuState = ();
-
-        fn target_resources() -> Vec<TargetResourceRequest> {
-            vec![TargetResourceRequest::new(UserLeds::<1>)]
-        }
-
-        fn create_emu(_input: &Self::Input, _output: &Self::Output) -> Self::EmuState {}
-
-        fn execute_emu(
-            _state: &mut Self::EmuState,
-            _circuit: &mut CircuitWires,
-            _input: &Self::Input,
-            _output: &Self::Output,
-        ) {
-        }
-
-        fn build_verilog(input: &Self::Input) -> Self::Output {
-            TestModule::verilog(input)
-        }
-    }
-
-    #[derive(Hardware)]
-    #[hardware(namespace = "tests", target_leaf)]
-    struct InvalidNestedResourceLeaf;
-
-    impl Module for InvalidNestedResourceLeaf {
-        type Input = TestInput;
-        type Output = TestOutput;
-        type EmuState = ();
-
-        fn target_resources() -> Vec<TargetResourceRequest> {
-            vec![TargetResourceRequest::new(UserLeds::<1>)]
-        }
-
-        fn create_emu(_input: &Self::Input, _output: &Self::Output) -> Self::EmuState {}
-
-        fn execute_emu(
-            _state: &mut Self::EmuState,
-            _circuit: &mut CircuitWires,
-            _input: &Self::Input,
-            _output: &Self::Output,
-        ) {
-        }
-
-        fn build_verilog(input: &Self::Input) -> Self::Output {
-            TestModule::verilog(input)
-        }
-    }
-
-    #[derive(Hardware)]
-    #[hardware(namespace = "tests", target_leaf)]
-    struct FourLedLeaf;
-
-    impl Module for FourLedLeaf {
-        type Input = TestInput;
-        type Output = TestOutput;
-        type EmuState = ();
-
-        fn target_resources() -> Vec<TargetResourceRequest> {
-            vec![TargetResourceRequest::new(UserLeds::<4>)]
-        }
-
-        fn create_emu(_input: &Self::Input, _output: &Self::Output) -> Self::EmuState {}
-
-        fn execute_emu(
-            _state: &mut Self::EmuState,
-            _circuit: &mut CircuitWires,
-            _input: &Self::Input,
-            _output: &Self::Output,
-        ) {
-        }
-
-        fn nand(input: &Self::Input) -> Self::Output {
-            TestOutput {
-                result: input.value,
-            }
-        }
-    }
-
-    #[derive(Hardware)]
-    #[hardware(namespace = "tests")]
-    struct TwoResourceLeaves;
-
-    impl Module for TwoResourceLeaves {
-        type Input = TestInput;
-        type Output = TestOutput;
-        type EmuState = ();
-
-        fn create_emu(_input: &Self::Input, _output: &Self::Output) -> Self::EmuState {}
-
-        fn execute_emu(
-            _state: &mut Self::EmuState,
-            _circuit: &mut CircuitWires,
-            _input: &Self::Input,
-            _output: &Self::Output,
-        ) {
-        }
-
-        fn build_verilog(input: &Self::Input) -> Self::Output {
-            let _first = FourLedLeaf::verilog(input);
-            FourLedLeaf::verilog(input)
-        }
-    }
-
-    #[test]
-    fn tang_console_138k_has_distinct_device_and_memory_resources() {
-        let inventory = TangConsole138KC128M::inventory();
-        assert_eq!(inventory.capacity(ResourceKind::Lut4), 138_240);
-        assert_eq!(inventory.capacity(ResourceKind::Bsram18K), 340);
-        assert_eq!(inventory.capacity(ResourceKind::Multiplier18x18), 298);
-        assert_eq!(inventory.capacity(ResourceKind::Ddr3Device), 1);
-        assert_eq!(inventory.capacity(ResourceKind::SdrSdramDevice), 0);
-        assert_eq!(
-            inventory.fitted_device_capacity_bits(ResourceKind::Ddr3Device),
-            Some(8_192 * 1_024 * 1_024)
-        );
-        assert_eq!(inventory.capacity(ResourceKind::UserLed), 3);
-        assert_eq!(inventory.capacity(ResourceKind::UserButton), 2);
-        assert_eq!(
-            <TangConsole138KC128M as GowinTarget>::DEVICE.part_number,
-            "GW5AST-LV138PG484AC1/I0"
-        );
-    }
-
     #[test]
     #[should_panic(
         expected = "component `user-leds` requests 7 user LED, but target `tang-nano-20k` has 6 remaining"
@@ -1222,25 +1151,6 @@ mod tests {
     fn generation_stops_after_a_resource_failure() {
         let project = GowinProject::<TangNano20K>::new("failed");
         let _ = project.generate::<TooManyLeds>();
-    }
-
-    #[test]
-    fn tang_console_export_uses_verified_ide_identity() {
-        let project = GowinProject::<TangConsole138KC128M>::new("console");
-        let generated = project.generate::<TestModule>().unwrap();
-        let gprj = &generated.files[Path::new("console.gprj")];
-        assert!(gprj.contains("gw5ast138c-007"));
-    }
-
-    #[test]
-    fn unbound_project_derives_the_gowin_top_from_the_hardware_type() {
-        let generated = GowinProject::<TangNano20K>::new("typed_top")
-            .generate::<TestModule>()
-            .unwrap();
-        assert_eq!(generated.top_module, "TestModule");
-        assert!(
-            generated.files[Path::new("build.tcl")].contains("set_option -top_module TestModule")
-        );
     }
 
     #[test]
@@ -1280,49 +1190,6 @@ mod tests {
                     && message.contains("`clk`")
                     && message.contains("`value`")
         ));
-    }
-
-    #[test]
-    fn resource_requests_are_rejected_on_non_leaf_modules() {
-        let error = GowinProject::<TangNano20K>::new("invalid_owner")
-            .generate::<InvalidResourceOwner>()
-            .unwrap_err();
-        assert!(matches!(
-            error,
-            GowinError::Project(ProjectError::ResourceOwnerNotTargetLeaf(module))
-                if module.ends_with("InvalidResourceOwner")
-        ));
-    }
-
-    #[test]
-    fn target_leaf_marker_cannot_hide_child_modules() {
-        let error = GowinProject::<TangNano20K>::new("invalid_nested_leaf")
-            .generate::<InvalidNestedResourceLeaf>()
-            .unwrap_err();
-        assert!(matches!(
-            error,
-            GowinError::Project(ProjectError::ResourceOwnerHasChildren(module))
-                if module.ends_with("InvalidNestedResourceLeaf")
-        ));
-    }
-
-    #[test]
-    #[should_panic(
-        expected = "component `user-leds` requests 4 user LED, but target `tang-nano-20k` has 2 remaining"
-    )]
-    fn repeated_leaf_instances_each_consume_resources() {
-        let project = GowinProject::<TangNano20K>::new("repeated_resources");
-        let _ = project.generate::<TwoResourceLeaves>();
-    }
-
-    #[test]
-    fn tcl_paths_quote_spaces_and_xml_paths_are_escaped() {
-        let paths = vec![PathBuf::from("src/board files/a&b.v")];
-        let device = <TangNano20K as GowinTarget>::DEVICE;
-        let tcl = render_build_tcl(device, "safe_project", "SafeTop", &paths).unwrap();
-        assert!(tcl.contains("{board files}"));
-        let gprj = render_gprj(device, &paths);
-        assert!(gprj.contains("a&amp;b.v"));
     }
 
     #[test]

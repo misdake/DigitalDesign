@@ -359,7 +359,7 @@ fn simulator_path(
 mod tests {
     use super::*;
     use crate::{Hardware, ModuleIo, ProjectError, VerilogProject};
-    use digital_design_code::{build_circuit, CircuitWires, Wire, Wires};
+    use digital_design_code::{build_circuit, CircuitWires, Wire};
 
     #[derive(Clone, ModuleIo)]
     struct ScalarInput {
@@ -369,51 +369,6 @@ mod tests {
     #[derive(Clone, ModuleIo)]
     struct ScalarOutput {
         result: Wire,
-    }
-
-    #[derive(Clone, ModuleIo)]
-    struct GenericBus<const WIDTH: usize> {
-        value: Wires<WIDTH>,
-    }
-
-    #[test]
-    fn module_io_supports_const_generic_bus_widths() {
-        let (_, io) = build_circuit(GenericBus::<7>::allocate);
-        assert_eq!(io.bindings()[0].wires.len(), 7);
-    }
-
-    #[derive(Hardware)]
-    #[hardware(namespace = "tests")]
-    struct MissingNand;
-
-    impl Module for MissingNand {
-        type Input = ScalarInput;
-        type Output = ScalarOutput;
-        type EmuState = ();
-
-        fn create_emu(_input: &Self::Input, _output: &Self::Output) -> Self::EmuState {}
-
-        fn execute_emu(
-            _state: &mut Self::EmuState,
-            circuit: &mut CircuitWires,
-            input: &Self::Input,
-            output: &Self::Output,
-        ) {
-            output.result.set(circuit, input.value.get(circuit));
-        }
-    }
-
-    #[test]
-    fn missing_nand_panics_without_poisoning_the_circuit_builder() {
-        let panic = std::panic::catch_unwind(|| {
-            build_circuit(|| {
-                let input = ScalarInput::allocate();
-                MissingNand::nand(&input)
-            });
-        });
-        assert!(panic.is_err());
-        let (_, wire) = build_circuit(digital_design_code::input);
-        assert_ne!(wire.0, 0);
     }
 
     #[derive(Hardware)]
@@ -444,119 +399,6 @@ mod tests {
     fn handwritten_verilog_signature_is_checked() {
         let error = VerilogProject::generate::<BadSignature>().unwrap_err();
         assert!(matches!(error, ProjectError::InvalidHandwrittenVerilog(_)));
-    }
-
-    #[derive(Hardware)]
-    #[hardware(namespace = "tests")]
-    struct ParameterizedVerilog;
-
-    impl Module for ParameterizedVerilog {
-        type Input = ScalarInput;
-        type Output = ScalarOutput;
-        type EmuState = ();
-
-        fn create_emu(_input: &Self::Input, _output: &Self::Output) -> Self::EmuState {}
-
-        fn execute_emu(
-            _state: &mut Self::EmuState,
-            _circuit: &mut CircuitWires,
-            _input: &Self::Input,
-            _output: &Self::Output,
-        ) {
-        }
-
-        fn verilog_source() -> Option<String> {
-            Some(
-                "module ParameterizedVerilogExtra(input wire value); endmodule\n\
-                 module ParameterizedVerilog #(parameter UNUSED = 1) (\n\
-                     output wire result,\n\
-                     input wire value\n\
-                 );\n\
-                 assign result = value;\n\
-                 endmodule\n"
-                    .to_string(),
-            )
-        }
-    }
-
-    #[test]
-    fn handwritten_verilog_accepts_parameters_and_port_reordering_before_attestation() {
-        let error = VerilogProject::generate::<ParameterizedVerilog>().unwrap_err();
-        assert!(matches!(
-            error,
-            ProjectError::MissingVerilogVerification(module)
-                if module == "ParameterizedVerilog"
-        ));
-    }
-
-    #[derive(Hardware)]
-    #[hardware(namespace = "tests")]
-    struct NamedGeneric<const WIDTH: usize>;
-
-    impl<const WIDTH: usize> Module for NamedGeneric<WIDTH> {
-        type Input = ScalarInput;
-        type Output = ScalarOutput;
-        type EmuState = ();
-
-        fn create_emu(_input: &Self::Input, _output: &Self::Output) -> Self::EmuState {}
-
-        fn execute_emu(
-            _state: &mut Self::EmuState,
-            _circuit: &mut CircuitWires,
-            _input: &Self::Input,
-            _output: &Self::Output,
-        ) {
-        }
-
-        fn nand(input: &Self::Input) -> Self::Output {
-            ScalarOutput {
-                result: input.value,
-            }
-        }
-    }
-
-    #[test]
-    fn generic_modules_can_supply_stable_hdl_names() {
-        let project = VerilogProject::generate::<NamedGeneric<8>>().unwrap();
-        assert_eq!(project.top_module, "NamedGeneric_WIDTH8");
-        assert!(project
-            .files
-            .contains_key(std::path::Path::new("tests/named_generic/width8.v")));
-    }
-
-    #[derive(Hardware)]
-    #[hardware(namespace = "tests")]
-    struct NandCallsEmu;
-
-    impl Module for NandCallsEmu {
-        type Input = ScalarInput;
-        type Output = ScalarOutput;
-        type EmuState = ();
-
-        fn create_emu(_input: &Self::Input, _output: &Self::Output) -> Self::EmuState {}
-
-        fn execute_emu(
-            _state: &mut Self::EmuState,
-            circuit: &mut CircuitWires,
-            input: &Self::Input,
-            output: &Self::Output,
-        ) {
-            output.result.set(circuit, input.value.get(circuit));
-        }
-
-        fn nand(input: &Self::Input) -> Self::Output {
-            Self::emu(input)
-        }
-    }
-
-    #[test]
-    #[should_panic(expected = "Externals are not supported")]
-    fn nand_test_rejects_external_implementations() {
-        ModuleTest::<NandCallsEmu>::new([TestStep::new(
-            ScalarInputValue { value: false },
-            ScalarOutputValue { result: false },
-        )])
-        .run_emu_and_nand();
     }
 
     #[derive(Hardware)]

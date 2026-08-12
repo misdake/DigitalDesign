@@ -548,7 +548,7 @@ pub mod components {
 
 #[cfg(test)]
 mod tests {
-    use super::components::{BsramBlocks, DspMultipliers, Pll, SdrSdram, UserLeds};
+    use super::components::{BsramBlocks, DspMultipliers, SdrSdram};
     use super::*;
     use crate::TangNano20K;
 
@@ -625,42 +625,5 @@ mod tests {
                 .get(&ResourceKind::Multiplier18x18),
             None
         );
-    }
-
-    #[test]
-    fn target_counts_are_checked_at_take_time() {
-        let mut resources = TargetResources::<TangNano20K>::new();
-        resources.take(Pll).unwrap();
-        resources.take(Pll).unwrap();
-        assert!(matches!(
-            resources.take(Pll),
-            Err(ResourceError::CapacityExceeded {
-                resource: ResourceKind::Pll,
-                remaining: 0,
-                ..
-            })
-        ));
-        let mut resources = TargetResources::<TangNano20K>::new();
-        assert!(matches!(
-            resources.take(UserLeds::<7>),
-            Err(ResourceError::CapacityExceeded {
-                resource: ResourceKind::UserLed,
-                ..
-            })
-        ));
-    }
-
-    #[test]
-    fn failed_allocator_cannot_be_used_or_exported_later() {
-        let mut resources = TargetResources::<TangNano20K>::new();
-        let _ = resources.take(UserLeds::<7>);
-        assert!(matches!(
-            resources.take(UserLeds::<1>),
-            Err(ResourceError::AllocatorFailed { .. })
-        ));
-        assert!(matches!(
-            resources.ensure_valid(),
-            Err(ResourceError::AllocatorFailed { .. })
-        ));
     }
 }

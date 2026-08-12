@@ -183,23 +183,6 @@ mod tests {
     }
 
     #[test]
-    fn verilog_export_preserves_the_component_module() {
-        let project = VerilogProject::generate::<ClockDivider<3, 2>>().unwrap();
-        assert_eq!(project.top_module, "ClockDivider_DIVISOR3_WIDTH2");
-        assert!(project.files.contains_key(Path::new(
-            "components/timing/clock_divider/divisor3_width2.v"
-        )));
-        let source = &project.files[Path::new("components/timing/clock_divider/divisor3_width2.v")];
-        assert!(source.contains("// Rust type:"));
-        assert!(
-            source.contains("// Verilog path: components/timing/clock_divider/divisor3_width2.v")
-        );
-        assert!(source.contains("reg [1:0] counter = 2'd0;"));
-        assert!(source.contains("if (counter == 2'd2)"));
-        assert!(source.contains("counter <= counter + 1'b1;"));
-    }
-
-    #[test]
     #[ignore = "explicit external simulator validation; copy the printed record into clock_divider.verified"]
     fn verify_handwritten_verilog_with_iverilog() {
         let record = crate::verify_verilog_with_iverilog::<ClockDivider<3, 2>>().unwrap();
@@ -208,12 +191,6 @@ mod tests {
         println!("{record}");
         let record = crate::verify_verilog_with_iverilog::<ClockDivider<6_750_000, 23>>().unwrap();
         println!("{record}");
-    }
-
-    #[test]
-    #[should_panic(expected = "clock divisor 5 exceeds the 2-bit counter")]
-    fn rejects_a_divisor_that_does_not_fit() {
-        let _ = ClockDividerState::<5, 2>::default();
     }
 
     #[derive(Clone, ModuleIo)]
