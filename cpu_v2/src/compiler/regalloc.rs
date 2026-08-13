@@ -23,6 +23,49 @@ pub const CALLER_SAVED: [u8; 8] = [0, 1, 2, 3, 4, 5, 6, 7];
 pub const CALLEE_SAVED: [u8; 5] = [8, 9, 10, 11, 12];
 pub const MAX_FRAME: usize = 255;
 
+/// Register roles used by ABI shim insertion and linear scan.
+///
+/// Keeping this explicit lets the old v2.6 backend and G16 share the IR and
+/// allocator while reserving different architectural registers.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct RegisterConvention {
+    pub return_registers: &'static [u8],
+    pub argument_registers: &'static [u8],
+    pub allocatable_registers: &'static [u8],
+    pub caller_saved: &'static [u8],
+    pub callee_saved: &'static [u8],
+    pub link_register: u8,
+    pub stack_register: u8,
+    pub temporary_register: u8,
+    pub maximum_frame_words: usize,
+}
+
+pub const V26_REGISTER_CONVENTION: RegisterConvention = RegisterConvention {
+    return_registers: &RET_REGS,
+    argument_registers: &ARG_REGS,
+    allocatable_registers: &[0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12],
+    caller_saved: &CALLER_SAVED,
+    callee_saved: &CALLEE_SAVED,
+    link_register: REG_RA,
+    stack_register: REG_SP,
+    temporary_register: REG_TMP,
+    maximum_frame_words: MAX_FRAME,
+};
+
+/// G16 reserves r12 as compiler scratch, r13 as stack pointer, r14 as link,
+/// and r15 as the global/MMIO base. The latter three match the candidate ABI.
+pub const G16_REGISTER_CONVENTION: RegisterConvention = RegisterConvention {
+    return_registers: &[0, 1],
+    argument_registers: &[2, 3, 4, 5, 6, 7],
+    allocatable_registers: &[0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11],
+    caller_saved: &[0, 1, 2, 3, 4, 5, 6, 7],
+    callee_saved: &[8, 9, 10, 11],
+    link_register: 14,
+    stack_register: 13,
+    temporary_register: 12,
+    maximum_frame_words: 255,
+};
+
 /// result of register allocation for one function
 pub struct Allocation {
     /// final register for every vreg (spilled vregs have been rewritten to
@@ -51,8 +94,17 @@ impl Allocation {
 }
 
 pub fn allocate(func: &IrFunc, coalesce: bool) -> (IrFunc, Allocation) {
+    allocate_with_convention(func, coalesce, V26_REGISTER_CONVENTION)
+}
+
+pub fn allocate_with_convention(
+    func: &IrFunc,
+    coalesce: bool,
+    convention: RegisterConvention,
+) -> (IrFunc, Allocation) {
+    validate_convention(convention);
     let mut f = func.clone();
-    let abi = insert_abi_shims(&mut f);
+    let abi = insert_abi_shims(&mut f, convention);
     split_critical_edges(&mut f);
 
     let mut spill_slots = 0u8;
@@ -63,12 +115,12 @@ pub fn allocate(func: &IrFunc, coalesce: bool) -> (IrFunc, Allocation) {
         } else {
             HashMap::new()
         };
-        let scan = linear_scan(&intervals, &abi, &affinity);
+        let scan = linear_scan(&intervals, &abi, &affinity, convention);
         if scan.spilled.is_empty() {
             let mut callee_saved: Vec<u8> = scan
                 .reg
                 .values()
-                .filter(|r| CALLEE_SAVED.contains(r))
+                .filter(|r| convention.callee_saved.contains(r))
                 .copied()
                 .collect::<BTreeSet<_>>()
                 .into_iter()
@@ -79,7 +131,7 @@ pub fn allocate(func: &IrFunc, coalesce: bool) -> (IrFunc, Allocation) {
                     .iter()
                     .any(|i| matches!(i, Instr::Call { .. } | Instr::CallPtr { .. }))
             }) {
-                callee_saved.push(REG_RA);
+                callee_saved.push(convention.link_register);
             }
             let alloc = Allocation {
                 reg: scan.reg,
@@ -89,16 +141,63 @@ pub fn allocate(func: &IrFunc, coalesce: bool) -> (IrFunc, Allocation) {
             };
             collapse_redundant_phi_trampolines(&mut f, &alloc.reg);
             assert!(
-                alloc.frame_size() <= MAX_FRAME,
-                "function {} needs {} frame slots, max {MAX_FRAME}",
+                alloc.frame_size() <= convention.maximum_frame_words,
+                "function {} needs {} frame slots, max {}",
                 f.name,
-                alloc.frame_size()
+                alloc.frame_size(),
+                convention.maximum_frame_words
             );
             return (f, alloc);
         }
         rewrite_spills(&mut f, &scan.spilled, &mut spill_slots);
     }
     panic!("register allocation for {} did not converge", f.name)
+}
+
+fn validate_convention(convention: RegisterConvention) {
+    let mut roles = HashSet::new();
+    for &register in convention.allocatable_registers {
+        assert!(
+            register < 16,
+            "allocatable register r{register} is outside GPR range"
+        );
+        assert!(
+            roles.insert(register),
+            "duplicate allocatable register r{register}"
+        );
+    }
+    for (name, registers) in [
+        ("return", convention.return_registers),
+        ("argument", convention.argument_registers),
+        ("caller-saved", convention.caller_saved),
+        ("callee-saved", convention.callee_saved),
+    ] {
+        for &register in registers {
+            assert!(
+                convention.allocatable_registers.contains(&register),
+                "{name} register r{register} is not allocatable"
+            );
+        }
+    }
+    for &register in convention.caller_saved {
+        assert!(
+            !convention.callee_saved.contains(&register),
+            "r{register} is both caller- and callee-saved"
+        );
+    }
+    let reserved = [
+        convention.link_register,
+        convention.stack_register,
+        convention.temporary_register,
+    ];
+    assert!(reserved.iter().all(|register| *register < 16));
+    assert_eq!(reserved.iter().copied().collect::<HashSet<_>>().len(), 3);
+    for register in reserved {
+        assert!(
+            !convention.allocatable_registers.contains(&register),
+            "reserved register r{register} is also allocatable"
+        );
+    }
 }
 
 /// After allocation, a split critical edge is unnecessary when every phi
@@ -291,7 +390,7 @@ struct AbiInfo {
     pinned: HashMap<VReg, u8>,
 }
 
-fn insert_abi_shims(f: &mut IrFunc) -> AbiInfo {
+fn insert_abi_shims(f: &mut IrFunc, convention: RegisterConvention) -> AbiInfo {
     let mut pinned = HashMap::new();
     let fresh = |f: &mut IrFunc| {
         let v = f.vreg_count;
@@ -300,14 +399,14 @@ fn insert_abi_shims(f: &mut IrFunc) -> AbiInfo {
     };
 
     assert!(
-        f.params.len() <= ARG_REGS.len(),
+        f.params.len() <= convention.argument_registers.len(),
         "function {} has {} params, max {}",
         f.name,
         f.params.len(),
-        ARG_REGS.len()
+        convention.argument_registers.len()
     );
     assert!(
-        f.n_rets <= RET_REGS.len(),
+        f.n_rets <= convention.return_registers.len(),
         "function {} has too many return values",
         f.name
     );
@@ -315,7 +414,7 @@ fn insert_abi_shims(f: &mut IrFunc) -> AbiInfo {
     // params: pin to ARG_REGS; copy to a fresh vreg for all real uses
     let params = f.params.clone();
     for (i, p) in params.iter().enumerate() {
-        pinned.insert(*p, ARG_REGS[i]);
+        pinned.insert(*p, convention.argument_registers[i]);
         let used = f.blocks.iter().any(|b| {
             b.phis
                 .iter()
@@ -343,13 +442,14 @@ fn insert_abi_shims(f: &mut IrFunc) -> AbiInfo {
             let line = old_lines.next().unwrap_or(None);
             if let Instr::Call { func, args, rets } = inst {
                 assert!(
-                    args.len() <= ARG_REGS.len() && rets.len() <= RET_REGS.len(),
+                    args.len() <= convention.argument_registers.len()
+                        && rets.len() <= convention.return_registers.len(),
                     "call {func} exceeds ABI register count"
                 );
                 let mut pinned_args = Vec::with_capacity(args.len());
                 for (j, a) in args.iter().enumerate() {
                     let alpha = fresh(f);
-                    pinned.insert(alpha, ARG_REGS[j]);
+                    pinned.insert(alpha, convention.argument_registers[j]);
                     new_insts.push(Instr::Mov {
                         dst: alpha,
                         src: *a,
@@ -361,7 +461,7 @@ fn insert_abi_shims(f: &mut IrFunc) -> AbiInfo {
                 let mut result_movs = Vec::with_capacity(rets.len());
                 for (k, r) in rets.iter().enumerate() {
                     let rho = fresh(f);
-                    pinned.insert(rho, RET_REGS[k]);
+                    pinned.insert(rho, convention.return_registers[k]);
                     pinned_rets.push(rho);
                     result_movs.push(Instr::Mov { dst: *r, src: rho });
                 }
@@ -376,13 +476,14 @@ fn insert_abi_shims(f: &mut IrFunc) -> AbiInfo {
                 new_lines.extend(std::iter::repeat_n(line, n_movs));
             } else if let Instr::CallPtr { addr, args, rets } = inst {
                 assert!(
-                    args.len() <= ARG_REGS.len() && rets.len() <= RET_REGS.len(),
+                    args.len() <= convention.argument_registers.len()
+                        && rets.len() <= convention.return_registers.len(),
                     "indirect call exceeds ABI register count"
                 );
-                // the target address goes to tmp (r15): it must survive the
-                // argument parallel move, which only touches r2..r7
+                // The target address goes to the backend's temporary register;
+                // it must survive the argument parallel move.
                 let alpha_addr = fresh(f);
-                pinned.insert(alpha_addr, REG_TMP);
+                pinned.insert(alpha_addr, convention.temporary_register);
                 new_insts.push(Instr::Mov {
                     dst: alpha_addr,
                     src: addr,
@@ -391,7 +492,7 @@ fn insert_abi_shims(f: &mut IrFunc) -> AbiInfo {
                 let mut pinned_args = Vec::with_capacity(args.len());
                 for (j, a) in args.iter().enumerate() {
                     let alpha = fresh(f);
-                    pinned.insert(alpha, ARG_REGS[j]);
+                    pinned.insert(alpha, convention.argument_registers[j]);
                     new_insts.push(Instr::Mov {
                         dst: alpha,
                         src: *a,
@@ -403,7 +504,7 @@ fn insert_abi_shims(f: &mut IrFunc) -> AbiInfo {
                 let mut result_movs = Vec::with_capacity(rets.len());
                 for (k, r) in rets.iter().enumerate() {
                     let rho = fresh(f);
-                    pinned.insert(rho, RET_REGS[k]);
+                    pinned.insert(rho, convention.return_registers[k]);
                     pinned_rets.push(rho);
                     result_movs.push(Instr::Mov { dst: *r, src: rho });
                 }
@@ -430,7 +531,7 @@ fn insert_abi_shims(f: &mut IrFunc) -> AbiInfo {
             let mut pinned_values = Vec::with_capacity(values.len());
             for (k, v) in values.iter().enumerate() {
                 let beta = fresh(f);
-                pinned.insert(beta, RET_REGS[k]);
+                pinned.insert(beta, convention.return_registers[k]);
                 f.blocks[b].insts.push(Instr::Mov { dst: beta, src: *v });
                 f.blocks[b].lines.push(line);
                 pinned_values.push(beta);
@@ -716,6 +817,7 @@ fn linear_scan(
     intervals: &[Interval],
     abi: &AbiInfo,
     affinity: &HashMap<VReg, Vec<VReg>>,
+    convention: RegisterConvention,
 ) -> ScanResult {
     // fixed ranges per register (from pinned vregs), known upfront
     let mut fixed_ranges: HashMap<u8, Vec<(u32, u32)>> = HashMap::new();
@@ -764,9 +866,9 @@ fn linear_scan(
         }
 
         let prefs: &[u8] = if iv.crosses_call {
-            &CALLEE_SAVED
+            convention.callee_saved
         } else {
-            &[0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12]
+            convention.allocatable_registers
         };
         let free = |r: u8| {
             !active.iter().any(|&(_, _, ar)| ar == r)

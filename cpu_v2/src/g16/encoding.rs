@@ -1,11 +1,16 @@
-//! Encoding helpers for G16 revision 0.2.
+//! Encoding helpers for G16 revision 0.3.
 
 pub type Word = u16;
 pub type Register = u8;
 
+pub const ISA_REVISION: (u8, u8) = (0, 3);
+
 pub const LINK_REGISTER: Register = 14;
 pub const STACK_REGISTER: Register = 13;
 pub const GLOBAL_REGISTER: Register = 15;
+pub const DEFAULT_DATA_BASE: Word = 0x4000;
+pub const MMIO_BASE: Word = 0xff00;
+pub const DEFAULT_STACK_TOP: Word = MMIO_BASE;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 #[repr(u16)]
@@ -34,6 +39,7 @@ pub enum ImmediateOp {
     Multiply = 8,
     CompareEqual = 9,
     CompareLessThanSigned = 10,
+    CompareLessThanUnsigned = 11,
     LoadSigned = 14,
     LoadUnsigned = 15,
 }
@@ -158,6 +164,20 @@ pub fn leading_zeros(dst: Register, src: Register) -> Word {
     control(7, dst, src)
 }
 
+/// Replaces `dst` with the signed comparison `dst < rhs` as 0 or 1.
+pub fn set_less_than_signed(dst: Register, rhs: Register) -> Word {
+    control(9, dst, rhs)
+}
+
+/// Replaces `dst` with the unsigned comparison `dst < rhs` as 0 or 1.
+pub fn set_less_than_unsigned(dst: Register, rhs: Register) -> Word {
+    control(10, dst, rhs)
+}
+
+pub fn population_count(dst: Register, src: Register) -> Word {
+    control(11, dst, src)
+}
+
 pub const fn halt() -> Word {
     0xe800
 }
@@ -196,7 +216,7 @@ pub(crate) fn sign_extend(value: Word, bits: u32) -> Word {
 pub(crate) fn is_prefix_consumer(instruction: Word) -> bool {
     match instruction >> 12 {
         0x8 | 0x9 | 0xc => true,
-        0xa => matches!((instruction >> 8) & 0xf, 0..=4 | 8..=10 | 14..=15),
+        0xa => matches!((instruction >> 8) & 0xf, 0..=4 | 8..=11 | 14..=15),
         0xb => ((instruction >> 8) & 0xf) <= 7,
         _ => false,
     }
@@ -214,6 +234,9 @@ mod tests {
         assert_eq!(branch(BranchCondition::NonZero, 2, -3), 0xb12d);
         assert_eq!(jump(Some(LINK_REGISTER), -2), 0xcefe);
         assert_eq!(load_immediate16(3, 0xabcd), [0xfabc, 0xaf3d]);
+        assert_eq!(set_less_than_signed(3, 4), 0xe934);
+        assert_eq!(set_less_than_unsigned(3, 4), 0xea34);
+        assert_eq!(population_count(3, 4), 0xeb34);
         assert_eq!(halt(), 0xe800);
     }
 

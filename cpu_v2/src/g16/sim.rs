@@ -214,6 +214,7 @@ impl Machine {
             8 => old.wrapping_mul(signed),
             9 => Word::from(old == signed),
             10 => Word::from((old as i16) < (signed as i16)),
+            11 => Word::from(old < unsigned),
             14 if prefix.is_some() => unsigned,
             14 => sign_extend(instruction & 15, 4),
             15 => unsigned,
@@ -278,6 +279,20 @@ impl Machine {
                 self.registers[usize::from(dst)] =
                     self.registers[usize::from(src)].leading_zeros() as Word
             }
+            9 => {
+                self.registers[usize::from(dst)] = Word::from(
+                    (self.registers[usize::from(dst)] as i16)
+                        < (self.registers[usize::from(src)] as i16),
+                )
+            }
+            10 => {
+                self.registers[usize::from(dst)] =
+                    Word::from(self.registers[usize::from(dst)] < self.registers[usize::from(src)])
+            }
+            11 => {
+                self.registers[usize::from(dst)] =
+                    self.registers[usize::from(src)].count_ones() as Word
+            }
             8 if dst == 0 && src == 0 => {
                 self.halted = true;
                 return Ok(StepOutcome::Halted {
@@ -325,8 +340,8 @@ fn immediate4(instruction: Word, prefix: Option<Prefix>, signed: bool) -> Word {
 mod tests {
     use super::*;
     use crate::g16::{
-        alu, branch, halt, immediate_signed, load, load_immediate16, store, AluOp, BranchCondition,
-        ImmediateOp,
+        alu, branch, halt, immediate_signed, load, load_immediate16, population_count,
+        set_less_than_signed, set_less_than_unsigned, store, AluOp, BranchCondition, ImmediateOp,
     };
 
     #[test]
@@ -399,5 +414,27 @@ mod tests {
                 instruction: 0xd000
             })
         );
+    }
+
+    #[test]
+    fn revision_three_comparisons_cover_overflow_edges() {
+        let mut program = vec![];
+        program.extend(load_immediate16(1, 0x8000));
+        program.extend(load_immediate16(2, 0x7fff));
+        program.extend([
+            crate::g16::move_register(3, 1),
+            set_less_than_signed(3, 2),
+            crate::g16::move_register(4, 1),
+            set_less_than_unsigned(4, 2),
+            population_count(5, 1),
+            halt(),
+        ]);
+        let mut machine = Machine::default();
+        machine.load_program(0, &program).unwrap();
+        machine.run(20).unwrap();
+
+        assert_eq!(machine.register(3), Some(1));
+        assert_eq!(machine.register(4), Some(0));
+        assert_eq!(machine.register(5), Some(1));
     }
 }
