@@ -5,6 +5,10 @@ v2.6. The exploratory `design_model/CPU_ISA.md` revision 0.2 supplied the base
 encoding. This repository owns later revisions so builds never depend on a
 machine-local project.
 
+The self-contained visual reference is [`isa.html`](isa.html). It documents
+the complete encoding alongside the compiler ABI, unified memory map, cache
+organization, and the explicitly separated current FPGA implementation status.
+
 ## Architectural boundary
 
 - Instructions and data share one 16-bit word-addressed, 65,536-word space.
