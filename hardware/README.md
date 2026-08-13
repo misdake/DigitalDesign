@@ -386,8 +386,11 @@ per-leaf hierarchy audit. DSP uses aggregate physical usage because synthesis
 may merge, fuse, or move operators across module boundaries. Normal projects
 require actual DSP usage to stay within the total measured leaf requests;
 characterization projects may additionally assert exact primitive shapes.
-Unknown DSP modes and unaudited PLL claims fail closed. The complete rationale
-and extension rules are recorded in [RESOURCE_MODEL.md](RESOURCE_MODEL.md).
+Unknown DSP modes fail closed; PLLs use the same aggregate actual-versus-claim
+rule. The complete rationale and extension rules are recorded in
+[RESOURCE_MODEL.md](RESOURCE_MODEL.md). Tang Nano 20K fitted SDRAM clocking,
+installed-IP dependencies, and validation are recorded in
+[SDRAM.md](SDRAM.md).
 
 Tang Nano 20K exposes the wires that are stable parts of the board directly as
 typed module IO:
