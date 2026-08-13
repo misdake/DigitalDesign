@@ -177,6 +177,39 @@ writes to one address are unsupported and panic in emulation. Avoid depending
 on same-address cross-port read/write collision values in portable modules;
 they require a target- and configuration-specific measurement.
 
+`InitializedBsram1Rw1024<WIDTH, Image>` is the writable one-port variant with
+configuration-time contents. `Image` supplies one compile-time array shared by
+emulation and Verilog generation:
+
+```rust
+use digital_design_hardware::{
+    BsramInitialization, InitializedBsram1Rw1024, BSRAM_1024_DEPTH,
+};
+
+const fn boot_words() -> [u64; BSRAM_1024_DEPTH] {
+    let mut words = [0; BSRAM_1024_DEPTH];
+    words[0] = 0x1234;
+    words
+}
+
+struct BootImage;
+
+impl BsramInitialization<16> for BootImage {
+    const WORDS: [u64; BSRAM_1024_DEPTH] = boot_words();
+}
+
+type BootRam = InitializedBsram1Rw1024<16, BootImage>;
+```
+
+The complete image is part of the concrete module identity, so equal
+specializations are emitted once while different images remain different
+modules. Gowin embeds the words in the volatile configuration bitstream; they
+are present when the configured design starts and may subsequently be
+overwritten normally. No runtime fill loop or external memory file is required.
+The current initialized API covers the one-port read/write shape; initialized
+multi-port variants should be added only with their collision and inference
+behavior tested explicitly.
+
 Parameterized handwritten HDL lives as complete, readable files beside its
 Rust implementation (for example, `src/components/bsram/*.v`). Askama parses
 those templates at Rust compile time and
@@ -191,10 +224,12 @@ The explicit module simulation uses the same typed vectors as emulation:
 cargo test -p digital-design-hardware --lib components::bsram::tests::verify_handwritten_verilog_with_iverilog -- --ignored --nocapture
 ```
 
-The `bsram` example instantiates all three shapes at both widths and checks all
-1024 addresses. It also verifies on hardware that read/write outputs hold
-during writes while the independent read-only ports continue updating. Build
-and program volatile SRAM with:
+The `bsram` example instantiates all three shapes at both widths plus an
+initialized writable RAM, and checks all 1024 addresses. Before writing that
+RAM it validates every configured word, then confirms a write replaces the
+selected word. It also verifies on hardware that read/write outputs hold during
+writes while the independent read-only ports continue updating. Build and
+program volatile SRAM with:
 
 ```text
 cargo run -p digital-design-hardware --example bsram -- --program

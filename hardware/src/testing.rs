@@ -277,13 +277,13 @@ impl From<std::io::Error> for VerilogSimulationError {
     }
 }
 
-/// Explicitly compile and run a module's hand-written Verilog testbench.
+/// Explicitly compile and run a module's Verilog source testbench.
 ///
 /// This is intentionally not called by ordinary test helpers. After success,
 /// copy the returned `module=hash` line into that module's verification
 /// manifest. Verilog export will reject missing or stale records.
 pub fn verify_verilog_with_iverilog<M: Module>() -> Result<String, VerilogSimulationError> {
-    let test = crate::project::handwritten_verilog_test::<M>()?;
+    let test = crate::project::explicit_verilog_source_test::<M>()?;
     let nonce = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .unwrap_or_default()

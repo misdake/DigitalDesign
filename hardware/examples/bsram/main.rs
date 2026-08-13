@@ -1,9 +1,10 @@
 use digital_design_code::CircuitWires;
 use digital_design_hardware::{
-    run_gowin_project_cli, Bsram1R1Rw1024, Bsram1Rw1024, BsramTrueDualPort1024, GowinCliError,
-    GowinModuleProject, Hardware, Module, ModuleTest, TangNano20K, TangNano20KDebugOutputs,
-    TangNano20KDebugOutputsValue, TangNano20KInputs, TangNano20KInputsValue, TestStep,
-    VerilogDependency, VerilogVerification,
+    run_gowin_project_cli, Bsram1R1Rw1024, Bsram1Rw1024, BsramInitialization,
+    BsramTrueDualPort1024, GowinCliError, GowinModuleProject, Hardware, InitializedBsram1Rw1024,
+    Module, ModuleTest, TangNano20K, TangNano20KDebugOutputs, TangNano20KDebugOutputsValue,
+    TangNano20KInputs, TangNano20KInputsValue, TestStep, VerilogDependency, VerilogVerification,
+    BSRAM_1024_DEPTH,
 };
 
 fn main() -> Result<(), GowinCliError> {
@@ -13,6 +14,24 @@ fn main() -> Result<(), GowinCliError> {
 #[derive(Hardware)]
 #[hardware(namespace = "examples/bsram")]
 struct BsramBoardSelfTest;
+
+struct BoardInitImage;
+
+const fn board_init_image() -> [u64; BSRAM_1024_DEPTH] {
+    let mut words = [0; BSRAM_1024_DEPTH];
+    let mut address = 0;
+    while address < words.len() {
+        words[address] = (((address as u64) << 6) | ((address as u64) >> 4)) ^ 0xa55a;
+        address += 1;
+    }
+    words
+}
+
+impl BsramInitialization<16> for BoardInitImage {
+    const WORDS: [u64; BSRAM_1024_DEPTH] = board_init_image();
+}
+
+type InitializedBoardBsram = InitializedBsram1Rw1024<16, BoardInitImage>;
 
 impl Module for BsramBoardSelfTest {
     type Input = TangNano20KInputs;
@@ -48,6 +67,7 @@ impl Module for BsramBoardSelfTest {
             VerilogDependency::new::<Bsram1R1Rw1024<18>>("u_Bsram1R1Rw1024_WIDTH18"),
             VerilogDependency::new::<BsramTrueDualPort1024<16>>("u_BsramTrueDualPort1024_WIDTH16"),
             VerilogDependency::new::<BsramTrueDualPort1024<18>>("u_BsramTrueDualPort1024_WIDTH18"),
+            VerilogDependency::new::<InitializedBoardBsram>("u_initialized_bsram"),
         ]
     }
 
@@ -80,7 +100,7 @@ mod tests {
     use digital_design_hardware::{ResourceKind, VerilogProject};
 
     #[test]
-    fn project_contains_six_bsram_shapes() {
+    fn project_contains_bsram_shapes_and_initialized_memory() {
         let verilog = VerilogProject::generate::<BsramBoardSelfTest>().unwrap();
         for module in [
             "Bsram1Rw1024_WIDTH16",
@@ -99,7 +119,12 @@ mod tests {
                 .values()
                 .any(|source| source.contains(&format!("{module} u_{module}"))));
         }
-        assert_eq!(verilog.resource_claims.len(), 6);
+        assert!(verilog.files.values().any(|source| source
+            .contains("module InitializedBsram1Rw1024_WIDTH16_INITsh734a946f000166cf(")));
+        assert!(verilog.files.values().any(|source| source.contains(
+            "InitializedBsram1Rw1024_WIDTH16_INITsh734a946f000166cf u_initialized_bsram"
+        )));
+        assert_eq!(verilog.resource_claims.len(), 7);
         assert!(verilog.resource_claims.iter().all(|claim| {
             claim.resources
                 == [digital_design_hardware::ResourceAmount::new(
@@ -109,7 +134,7 @@ mod tests {
         }));
 
         let project = bsram_gowin_project().generate().unwrap();
-        assert_eq!(project.resources.claimed[&ResourceKind::Bsram18K], 6);
+        assert_eq!(project.resources.claimed[&ResourceKind::Bsram18K], 7);
         assert_eq!(project.resources.claimed[&ResourceKind::DebugUartTx], 1);
     }
 

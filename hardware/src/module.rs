@@ -317,6 +317,16 @@ pub trait Module: HardwareIdentity + Sized + 'static {
         None
     }
 
+    /// Return Verilog generated deterministically from Rust-side data.
+    ///
+    /// Unlike hand-written HDL, this source does not require a copied
+    /// per-specialization verification hash. The generator itself must have
+    /// representative explicit simulator tests. A module must implement at
+    /// most one of `verilog_source` and `generated_verilog_source`.
+    fn generated_verilog_source() -> Option<String> {
+        None
+    }
+
     /// Explicit simulation recipe and previously successful source hash for
     /// a hand-written Verilog implementation. Ordinary Rust tests do not run
     /// the external simulator; export only checks this stored attestation.

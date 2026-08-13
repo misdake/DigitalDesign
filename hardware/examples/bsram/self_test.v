@@ -35,6 +35,7 @@ wire [15:0] tdp16_a_read;
 wire [15:0] tdp16_b_read;
 wire [17:0] tdp18_a_read;
 wire [17:0] tdp18_b_read;
+wire [15:0] initialized_read;
 
 Bsram1Rw1024_WIDTH16 u_Bsram1Rw1024_WIDTH16
     /* synthesis syn_hier = "macro" */ /* synthesis syn_noprune = 1 */ (
@@ -79,6 +80,18 @@ BsramTrueDualPort1024_WIDTH18 u_BsramTrueDualPort1024_WIDTH18
     .b_write_enable(writing), .b_address(tdp_b_address),
     .b_write_data(tdp18_b_pattern), .b_read_data(tdp18_b_read));
 
+wire initialized_write = phase == 4;
+InitializedBsram1Rw1024_WIDTH16_INITsh734a946f000166cf u_initialized_bsram
+    /* synthesis syn_hier = "macro" */ (
+    .clk(clk), .write_enable(initialized_write), .address(address),
+    .write_data(16'h6d3b), .read_data(initialized_read));
+
+reg initialized_check_valid = 0;
+reg [9:0] initialized_checked_address = 0;
+wire [15:0] initialized_checked_value =
+    {initialized_checked_address, 6'b0} ^
+    {10'b0, initialized_checked_address[9:4]} ^ 16'ha55a;
+
 wire [15:0] checked_sp16 = 16'h5aa5 ^ {6'b0, checked_address};
 wire [9:0] checked_sp18_address = checked_address ^ 10'h155;
 wire [17:0] checked_sp18 = 18'h2a55a ^ {8'b0, checked_sp18_address};
@@ -120,7 +133,8 @@ wire timing_values_match =
     tdp16_a_read == (16'h8462 ^ 16'd10) &&
     tdp16_b_read == (16'h1357 ^ 16'd351) &&
     tdp18_a_read == (18'h2864a ^ 18'd10) &&
-    tdp18_b_read == (18'h13579 ^ 18'd351);
+    tdp18_b_read == (18'h13579 ^ 18'd351) &&
+    initialized_read == ((16'd10 << 6) ^ 16'ha55a);
 
 always @(posedge clk) begin
     if (reset) begin
@@ -128,10 +142,17 @@ always @(posedge clk) begin
         address <= 0;
         checked_address <= 0;
         check_valid <= 0;
+        initialized_check_valid <= 0;
+        initialized_checked_address <= 0;
         error_sticky <= 0;
     end else begin
         case (phase)
             0: begin
+                if (initialized_check_valid &&
+                    initialized_read != initialized_checked_value)
+                    error_sticky <= 1;
+                initialized_checked_address <= address;
+                initialized_check_valid <= 1;
                 if (address == 10'd1023) begin
                     phase <= 1;
                     address <= 0;
@@ -141,6 +162,10 @@ always @(posedge clk) begin
                 end
             end
             1: begin
+                if (initialized_check_valid &&
+                    initialized_read != initialized_checked_value)
+                    error_sticky <= 1;
+                initialized_check_valid <= 0;
                 if (check_valid && !values_match)
                     error_sticky <= 1;
                 checked_address <= address;
@@ -167,12 +192,17 @@ always @(posedge clk) begin
                     error_sticky <= 1;
                 phase <= 6;
             end
-            default: phase <= 6;
+            6: begin
+                if (initialized_read != 16'h6d3b)
+                    error_sticky <= 1;
+                phase <= 7;
+            end
+            default: phase <= 7;
         endcase
     end
 end
 
-wire done = phase == 6;
+wire done = phase == 7;
 assign leds = error_sticky ? 6'b100000 : (done ? 6'b000001 : 6'b000000);
 
 reg [21:0] report_delay = 0;

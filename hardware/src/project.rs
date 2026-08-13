@@ -129,6 +129,7 @@ struct RecordedInstance {
 struct RawModule {
     descriptor: ModuleDescriptor,
     source: Option<String>,
+    generated_source: bool,
     content: ExportGateReg,
     inputs: Vec<VerilogPort>,
     outputs: Vec<VerilogPort>,
@@ -233,7 +234,15 @@ fn ports(bindings: Vec<IoBinding>) -> Vec<VerilogPort> {
 fn build_raw<M: Module>() -> RawModule {
     let recording = RecordingGuard::start();
 
-    let source = M::verilog_source();
+    let handwritten_source = M::verilog_source();
+    let generated_source = M::generated_verilog_source();
+    assert!(
+        handwritten_source.is_none() || generated_source.is_none(),
+        "module `{}` provides both handwritten and generated Verilog source",
+        std::any::type_name::<M>()
+    );
+    let source_is_generated = generated_source.is_some();
+    let source = handwritten_source.or(generated_source);
     let (circuit, (input, output)) = build_circuit(|| {
         let input = M::Input::allocate();
         let output = if source.is_some() {
@@ -250,6 +259,7 @@ fn build_raw<M: Module>() -> RawModule {
     RawModule {
         descriptor: descriptor::<M>(),
         source,
+        generated_source: source_is_generated,
         content,
         inputs: ports(input.bindings()),
         outputs: ports(output.bindings()),
@@ -416,8 +426,10 @@ impl Resolver {
         }
 
         let source = if let Some(source) = raw.source.as_deref() {
-            validate_handwritten(&raw, source, clocked)?;
-            verify_handwritten_attestation(&raw, source)?;
+            validate_explicit_verilog_source(&raw, source, clocked)?;
+            if !raw.generated_source {
+                verify_handwritten_attestation(&raw, source)?;
+            }
             source.to_string()
         } else {
             let instances = raw
@@ -570,23 +582,23 @@ fn verify_handwritten_attestation(raw: &RawModule, source: &str) -> Result<(), P
     Ok(())
 }
 
-pub(crate) struct HandwrittenVerilogTest {
+pub(crate) struct ExplicitVerilogSourceTest {
     pub module_name: String,
     pub source: String,
     pub testbench: String,
     pub verification_record: String,
 }
 
-pub(crate) fn handwritten_verilog_test<M: Module>() -> Result<HandwrittenVerilogTest, ProjectError>
-{
+pub(crate) fn explicit_verilog_source_test<M: Module>(
+) -> Result<ExplicitVerilogSourceTest, ProjectError> {
     let raw = build_raw::<M>();
     let source = raw.source.as_deref().ok_or_else(|| {
         ProjectError::InvalidHandwrittenVerilog(format!(
-            "module `{}` has no hand-written Verilog to simulate",
+            "module `{}` has no explicit Verilog source to simulate",
             raw.descriptor.module_name
         ))
     })?;
-    validate_handwritten(&raw, source, raw.base_clocked)?;
+    validate_explicit_verilog_source(&raw, source, raw.base_clocked)?;
     let verification = raw.verification.as_ref().ok_or_else(|| {
         ProjectError::MissingVerilogVerification(raw.descriptor.module_name.clone())
     })?;
@@ -599,7 +611,7 @@ pub(crate) fn handwritten_verilog_test<M: Module>() -> Result<HandwrittenVerilog
         simulation_source.push('\n');
     }
     simulation_source.push_str(source);
-    Ok(HandwrittenVerilogTest {
+    Ok(ExplicitVerilogSourceTest {
         module_name: raw.descriptor.module_name.clone(),
         source: simulation_source,
         testbench: verification.testbench.clone(),
@@ -847,7 +859,11 @@ fn parse_port_width(range: &str) -> Result<usize, ProjectError> {
     Ok(high.abs_diff(low) + 1)
 }
 
-fn validate_handwritten(raw: &RawModule, source: &str, clocked: bool) -> Result<(), ProjectError> {
+fn validate_explicit_verilog_source(
+    raw: &RawModule,
+    source: &str,
+    clocked: bool,
+) -> Result<(), ProjectError> {
     let mut expected = raw
         .inputs
         .iter()

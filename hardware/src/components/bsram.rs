@@ -1,12 +1,16 @@
 use crate::resources::components::BsramBlocks;
 use crate::{
     Hardware, HardwareIdentity, Module, ModuleIo, ModuleTest, TargetResourceRequest, TestStep,
-    VerilogVerification,
+    VerilogIdentity, VerilogVerification,
 };
 use askama::Template;
 use digital_design_code::{CircuitWires, Wire, Wires};
+use std::marker::PhantomData;
 
-const DEPTH: usize = 1024;
+/// Number of words in the initial BSRAM component family.
+pub const BSRAM_1024_DEPTH: usize = 1024;
+
+const DEPTH: usize = BSRAM_1024_DEPTH;
 
 #[derive(Clone, Copy, Debug)]
 enum BsramShape {
@@ -59,6 +63,166 @@ fn address<const WIDTH: usize>(value: u64) -> usize {
 struct OneReadWriteTemplate<'a> {
     module_name: &'a str,
     high_bit: usize,
+}
+
+#[derive(Template)]
+#[template(path = "components/bsram/initialized_1rw_1024.v", escape = "none")]
+struct InitializedOneReadWriteTemplate<'a> {
+    module_name: &'a str,
+    high_bit: usize,
+    words: &'a [InitializedVerilogWord],
+}
+
+struct InitializedVerilogWord {
+    address: usize,
+    literal: String,
+}
+
+/// Compile-time contents for an initialized BSRAM specialization.
+///
+/// The same array initializes the host emulator and generates every word
+/// embedded in the FPGA configuration.
+pub trait BsramInitialization<const WIDTH: usize>: 'static {
+    const WORDS: [u64; BSRAM_1024_DEPTH];
+}
+
+fn initialized_words<I, const WIDTH: usize>() -> Box<[u64; DEPTH]>
+where
+    I: BsramInitialization<WIDTH>,
+{
+    validate_width::<WIDTH>();
+    let words = Box::new(I::WORDS);
+    for (address, &value) in words.iter().enumerate() {
+        assert!(
+            value <= word_mask::<WIDTH>(),
+            "BSRAM initial word at address {address} ({value:#x}) does not fit width {WIDTH}"
+        );
+    }
+    words
+}
+
+fn initialization_hash<I, const WIDTH: usize>() -> u64
+where
+    I: BsramInitialization<WIDTH>,
+{
+    let words = initialized_words::<I, WIDTH>();
+    let mut hash = 0xcbf29ce484222325u64;
+    for byte in b"digital-design-bsram-init-v1"
+        .iter()
+        .copied()
+        .chain([0])
+        .chain(WIDTH.to_le_bytes())
+        .chain(words.iter().flat_map(|word| word.to_le_bytes()))
+    {
+        hash ^= u64::from(byte);
+        hash = hash.wrapping_mul(0x100000001b3);
+    }
+    hash
+}
+
+fn initialized_verilog_words<I, const WIDTH: usize>() -> Vec<InitializedVerilogWord>
+where
+    I: BsramInitialization<WIDTH>,
+{
+    initialized_words::<I, WIDTH>()
+        .iter()
+        .copied()
+        .enumerate()
+        .map(|(address, value)| InitializedVerilogWord {
+            address,
+            literal: format!("{WIDTH}'h{value:x}"),
+        })
+        .collect()
+}
+
+/// One synchronous read/write BSRAM whose contents are loaded by FPGA
+/// configuration before the user clock starts operating the design.
+pub struct InitializedBsram1Rw1024<const WIDTH: usize, I>(PhantomData<I>);
+
+impl<const WIDTH: usize, I> HardwareIdentity for InitializedBsram1Rw1024<WIDTH, I>
+where
+    I: BsramInitialization<WIDTH>,
+{
+    const TARGET_RESOURCE_LEAF: bool = true;
+
+    fn verilog_identity() -> VerilogIdentity {
+        VerilogIdentity::new("InitializedBsram1Rw1024")
+            .namespace(["components", "memory", "bsram"])
+            .constant("WIDTH", WIDTH)
+            .symbol(
+                "INIT",
+                format!("h{:016x}", initialization_hash::<I, WIDTH>()),
+            )
+    }
+}
+
+impl<const WIDTH: usize, I> Module for InitializedBsram1Rw1024<WIDTH, I>
+where
+    I: BsramInitialization<WIDTH>,
+{
+    type Input = Bsram1Rw1024Input<WIDTH>;
+    type Output = Bsram1Rw1024Output<WIDTH>;
+    type EmuState = Bsram1Rw1024State;
+
+    const USES_MAIN_CLOCK: bool = true;
+
+    fn target_resources() -> Vec<TargetResourceRequest> {
+        vec![resource_request::<WIDTH>(BsramShape::OneReadWrite)]
+    }
+
+    fn create_emu(_input: &Self::Input, _output: &Self::Output) -> Self::EmuState {
+        Bsram1Rw1024State {
+            memory: initialized_words::<I, WIDTH>(),
+            read_data: 0,
+        }
+    }
+
+    fn execute_emu(
+        state: &mut Self::EmuState,
+        circuit: &mut CircuitWires,
+        _input: &Self::Input,
+        output: &Self::Output,
+    ) {
+        output.drive(
+            circuit,
+            &Bsram1Rw1024OutputValue {
+                read_data: state.read_data,
+            },
+        );
+    }
+
+    fn clock_emu(
+        state: &mut Self::EmuState,
+        circuit: &mut CircuitWires,
+        input: &Self::Input,
+        _output: &Self::Output,
+    ) {
+        let input = input.sample(circuit);
+        let address = address::<WIDTH>(input.address);
+        if input.write_enable {
+            state.memory[address] = word::<WIDTH>(input.write_data);
+        } else {
+            state.read_data = state.memory[address];
+        }
+    }
+
+    fn generated_verilog_source() -> Option<String> {
+        let module_name = Self::verilog_identity().module_name();
+        let words = initialized_verilog_words::<I, WIDTH>();
+        Some(
+            InitializedOneReadWriteTemplate {
+                module_name: &module_name,
+                high_bit: WIDTH - 1,
+                words: &words,
+            }
+            .render()
+            .expect("initialized BSRAM Verilog template must render"),
+        )
+    }
+
+    fn verilog_verification() -> Option<VerilogVerification> {
+        Some(initialized_single_port_test::<I, WIDTH>().verilog_verification(""))
+    }
 }
 
 #[derive(Template)]
@@ -412,6 +576,54 @@ fn single_port_test<const WIDTH: usize>() -> ModuleTest<Bsram1Rw1024<WIDTH>> {
     ])
 }
 
+fn initialized_single_port_test<I, const WIDTH: usize>(
+) -> ModuleTest<InitializedBsram1Rw1024<WIDTH, I>>
+where
+    I: BsramInitialization<WIDTH>,
+{
+    let first_address = 0;
+    let second_address = 733;
+    let first = I::WORDS[first_address];
+    let second = I::WORDS[second_address];
+    let replacement = word::<WIDTH>(0x2_6d3b);
+    ModuleTest::new([
+        TestStep::new(
+            Bsram1Rw1024InputValue {
+                write_enable: false,
+                address: first_address as u64,
+                write_data: 0,
+            },
+            Bsram1Rw1024OutputValue { read_data: first },
+        ),
+        TestStep::new(
+            Bsram1Rw1024InputValue {
+                write_enable: false,
+                address: second_address as u64,
+                write_data: 0,
+            },
+            Bsram1Rw1024OutputValue { read_data: second },
+        ),
+        TestStep::new(
+            Bsram1Rw1024InputValue {
+                write_enable: true,
+                address: second_address as u64,
+                write_data: replacement,
+            },
+            Bsram1Rw1024OutputValue { read_data: second },
+        ),
+        TestStep::new(
+            Bsram1Rw1024InputValue {
+                write_enable: false,
+                address: second_address as u64,
+                write_data: 0,
+            },
+            Bsram1Rw1024OutputValue {
+                read_data: replacement,
+            },
+        ),
+    ])
+}
+
 fn read_rw_test<const WIDTH: usize>() -> ModuleTest<Bsram1R1Rw1024<WIDTH>> {
     let first = word::<WIDTH>(0x2_5aa5);
     let second = word::<WIDTH>(0x1_c33c);
@@ -530,6 +742,22 @@ fn true_dual_port_test<const WIDTH: usize>() -> ModuleTest<BsramTrueDualPort1024
 mod tests {
     use super::*;
 
+    struct TestImage;
+
+    const fn test_image() -> [u64; DEPTH] {
+        let mut words = [0; DEPTH];
+        let mut address = 0;
+        while address < DEPTH {
+            words[address] = (((address as u64) << 6) | ((address as u64) >> 4)) ^ 0xa55a;
+            address += 1;
+        }
+        words
+    }
+
+    impl BsramInitialization<16> for TestImage {
+        const WORDS: [u64; DEPTH] = test_image();
+    }
+
     #[test]
     fn all_modes_and_widths_match_the_emu_contract() {
         single_port_test::<16>().run_emu();
@@ -556,6 +784,33 @@ mod tests {
         assert_one_block!(Bsram1R1Rw1024<18>);
         assert_one_block!(BsramTrueDualPort1024<16>);
         assert_one_block!(BsramTrueDualPort1024<18>);
+        assert_one_block!(InitializedBsram1Rw1024<16, TestImage>);
+    }
+
+    #[test]
+    fn initialized_memory_emu_starts_with_the_declared_image() {
+        initialized_single_port_test::<TestImage, 16>().run_emu();
+    }
+
+    #[test]
+    fn initialized_memory_identity_depends_on_contents() {
+        struct OtherImage;
+        impl BsramInitialization<16> for OtherImage {
+            const WORDS: [u64; DEPTH] = {
+                let mut words = [0; DEPTH];
+                let mut address = 0;
+                while address < DEPTH {
+                    words[address] = address as u64;
+                    address += 1;
+                }
+                words
+            };
+        }
+
+        assert_ne!(
+            InitializedBsram1Rw1024::<16, TestImage>::verilog_identity(),
+            InitializedBsram1Rw1024::<16, OtherImage>::verilog_identity()
+        );
     }
 
     #[test]
@@ -581,5 +836,15 @@ mod tests {
         verify!(Bsram1R1Rw1024<18>);
         verify!(BsramTrueDualPort1024<16>);
         verify!(BsramTrueDualPort1024<18>);
+    }
+
+    #[test]
+    #[ignore = "explicit external simulator validation of initialized writable BSRAM"]
+    fn verify_initialized_verilog_with_iverilog() {
+        println!(
+            "{}",
+            crate::verify_verilog_with_iverilog::<InitializedBsram1Rw1024<16, TestImage>>()
+                .unwrap()
+        );
     }
 }
