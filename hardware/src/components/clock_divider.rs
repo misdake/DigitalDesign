@@ -1,4 +1,5 @@
 use crate::{Hardware, Module, ModuleIo, ModuleTest, TestStep};
+use askama::Template;
 use digital_design_code::{
     add_naive, input_const, input_w_const, mux2_w, reg, reg_w, CircuitWires, Wire, Wires,
 };
@@ -49,6 +50,15 @@ impl<const DIVISOR: u64, const WIDTH: usize> ClockDividerState<DIVISOR, WIDTH> {
 #[hardware(namespace = "components/timing")]
 pub struct ClockDivider<const DIVISOR: u64, const WIDTH: usize>;
 
+#[derive(Template)]
+#[template(path = "components/clock_divider/clock_divider.v", escape = "none")]
+struct ClockDividerTemplate<'a> {
+    module_name: &'a str,
+    width: usize,
+    high_bit: usize,
+    terminal: u64,
+}
+
 impl<const DIVISOR: u64, const WIDTH: usize> Module for ClockDivider<DIVISOR, WIDTH> {
     type Input = ClockDividerInput;
     type Output = ClockDividerOutput;
@@ -90,14 +100,19 @@ impl<const DIVISOR: u64, const WIDTH: usize> Module for ClockDivider<DIVISOR, WI
         ClockDividerOutput { tick: tick.out() }
     }
 
-    fn verilog_source() -> Option<String> {
+    fn generated_verilog_source() -> Option<String> {
         validate::<DIVISOR, WIDTH>();
         let module_name = <Self as crate::HardwareIdentity>::verilog_identity().module_name();
-        Some(format!(
-            "module {module_name}(\n    input wire clk,\n    output wire tick\n);\n\nreg [{high}:0] counter = {WIDTH}'d0;\nreg tick_reg = 1'b0;\n\nalways @(posedge clk) begin\n    if (counter == {WIDTH}'d{terminal}) begin\n        counter <= {WIDTH}'d0;\n        tick_reg <= 1'b1;\n    end else begin\n        counter <= counter + 1'b1;\n        tick_reg <= 1'b0;\n    end\nend\n\nassign tick = tick_reg;\n\nendmodule\n",
-            high = WIDTH - 1,
-            terminal = DIVISOR - 1,
-        ))
+        Some(
+            ClockDividerTemplate {
+                module_name: &module_name,
+                width: WIDTH,
+                high_bit: WIDTH - 1,
+                terminal: DIVISOR - 1,
+            }
+            .render()
+            .expect("clock divider Verilog template must render"),
+        )
     }
 
     fn verilog_testbench() -> Option<String> {
@@ -181,7 +196,7 @@ mod tests {
 
     #[test]
     #[ignore = "explicit external simulator validation"]
-    fn verify_handwritten_verilog_with_iverilog() {
+    fn verify_verilog_with_iverilog() {
         crate::verify_verilog_with_iverilog::<ClockDivider<3, 2>>().unwrap();
         crate::verify_verilog_with_iverilog::<ClockDivider<5, 3>>().unwrap();
     }
