@@ -3,8 +3,7 @@ use digital_design_hardware::{
     run_gowin_project_cli, Bsram1R1Rw1024, Bsram1Rw1024, BsramImage, BsramTrueDualPort1024,
     GowinCliError, GowinModuleProject, Hardware, Module, ModuleTest, TangNano20K,
     TangNano20KDebugOutputs, TangNano20KDebugOutputsValue, TangNano20KInputs,
-    TangNano20KInputsValue, TestStep, VerilogDependency, VerilogVerification, ZeroBsramImage,
-    BSRAM_1024_DEPTH,
+    TangNano20KInputsValue, TestStep, VerilogDependency, ZeroBsramImage, BSRAM_1024_DEPTH,
 };
 
 fn main() -> Result<(), GowinCliError> {
@@ -77,8 +76,8 @@ impl Module for BsramBoardSelfTest {
         ]
     }
 
-    fn verilog_verification() -> Option<VerilogVerification> {
-        Some(board_test().verilog_verification(include_str!("self_test.verified")))
+    fn verilog_testbench() -> Option<String> {
+        Some(board_test().verilog_testbench())
     }
 }
 
@@ -173,10 +172,8 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "explicit external simulator validation; copy the printed record into self_test.verified"]
+    #[ignore = "explicit external simulator validation"]
     fn verify_handwritten_verilog_with_iverilog() {
-        let record =
-            digital_design_hardware::verify_verilog_with_iverilog::<BsramBoardSelfTest>().unwrap();
-        println!("{record}");
+        digital_design_hardware::verify_verilog_with_iverilog::<BsramBoardSelfTest>().unwrap();
     }
 }

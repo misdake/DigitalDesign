@@ -2,7 +2,7 @@ use digital_design_code::{add_naive, input_w_const, mux2_w, reg_w, CircuitWires,
 use digital_design_hardware::{
     run_gowin_project_cli, ClockDivider, ClockDividerInput, ClockDividerOutput, ClockDividerState,
     GowinCliError, GowinModuleProject, Hardware, Module, ModuleIo, ModuleTest, TangNano20K,
-    TangNano20KInputs, TangNano20KOutputs, TangNano20KOutputsValue, TestStep, VerilogVerification,
+    TangNano20KInputs, TangNano20KOutputs, TangNano20KOutputsValue, TestStep,
 };
 
 fn main() -> Result<(), GowinCliError> {
@@ -60,8 +60,8 @@ impl Module for Increment6 {
         Some(include_str!("increment.v").to_string())
     }
 
-    fn verilog_verification() -> Option<VerilogVerification> {
-        Some(increment_test().verilog_verification(include_str!("increment.verified")))
+    fn verilog_testbench() -> Option<String> {
+        Some(increment_test().verilog_testbench())
     }
 }
 
@@ -266,10 +266,9 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "explicit external simulator validation; copy the printed record into increment.verified"]
+    #[ignore = "explicit external simulator validation"]
     fn verify_handwritten_verilog_with_iverilog() {
-        let record = digital_design_hardware::verify_verilog_with_iverilog::<Increment6>().unwrap();
-        println!("{record}");
+        digital_design_hardware::verify_verilog_with_iverilog::<Increment6>().unwrap();
     }
 
     #[test]

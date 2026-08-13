@@ -1,4 +1,4 @@
-use crate::{Hardware, Module, ModuleIo, ModuleTest, TestStep, VerilogVerification};
+use crate::{Hardware, Module, ModuleIo, ModuleTest, TestStep};
 use digital_design_code::{
     add_naive, input_const, input_w_const, mux2_w, reg, reg_w, CircuitWires, Wire, Wires,
 };
@@ -100,11 +100,8 @@ impl<const DIVISOR: u64, const WIDTH: usize> Module for ClockDivider<DIVISOR, WI
         ))
     }
 
-    fn verilog_verification() -> Option<VerilogVerification> {
-        Some(
-            divider_test::<DIVISOR, WIDTH>()
-                .verilog_verification(include_str!("clock_divider.verified")),
-        )
+    fn verilog_testbench() -> Option<String> {
+        Some(divider_test::<DIVISOR, WIDTH>().verilog_testbench())
     }
 }
 
@@ -183,14 +180,11 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "explicit external simulator validation; copy the printed record into clock_divider.verified"]
+    #[ignore = "explicit external simulator validation"]
     fn verify_handwritten_verilog_with_iverilog() {
-        let record = crate::verify_verilog_with_iverilog::<ClockDivider<3, 2>>().unwrap();
-        println!("{record}");
-        let record = crate::verify_verilog_with_iverilog::<ClockDivider<5, 3>>().unwrap();
-        println!("{record}");
-        let record = crate::verify_verilog_with_iverilog::<ClockDivider<6_750_000, 23>>().unwrap();
-        println!("{record}");
+        crate::verify_verilog_with_iverilog::<ClockDivider<3, 2>>().unwrap();
+        crate::verify_verilog_with_iverilog::<ClockDivider<5, 3>>().unwrap();
+        crate::verify_verilog_with_iverilog::<ClockDivider<6_750_000, 23>>().unwrap();
     }
 
     #[derive(Clone, ModuleIo)]

@@ -135,27 +135,30 @@ cycle counts, sticky errors, and first-error context. Larger tests should emit
 framed UART telemetry so a capture can be decoded and replayed as emulator
 conformance vectors.
 
-## Hand-written Verilog verification
+## Explicit Verilog simulation
 
 Hand-written Verilog uses the same `ModuleTest` steps and expected values as
 emu and NAND. The framework generates the HDL testbench from those vectors, so
 there is no second copy of test data. `TestStep::after_cycles(N)` represents a
 compact run of main-clock edges before sampling, including large dividers.
-Both source and generated testbench text are included in the checked-in
-verification hash. Normal `cargo test` never launches an external HDL tool;
-simulation tests are marked `#[ignore]` and must be requested explicitly:
+Normal `cargo test` never launches an external HDL tool; simulation tests are
+marked `#[ignore]` and must be requested explicitly. For example:
 
 ```text
-cargo test -p digital-design-hardware --all-targets verify_handwritten_verilog_with_iverilog -- --ignored --nocapture
+cargo test -p digital-design-hardware --lib components::bsram::tests::verify_verilog_with_iverilog -- --ignored
 ```
 
 Install Icarus Verilog first, or set `IVERILOG` and `VVP` to the executable
 paths. A successful testbench must print `DIGITAL_DESIGN_PASS`. The helper then
-prints a `ModuleName=fnv1a64:...` line; copy that exact line to the module's
-`.verified` file. Generation rejects missing or stale records without exposing
-the replacement hash; only a successful explicit simulation prints it. The
-manifest is an auditable attestation, not a substitute for the simulation run
-that produced it.
+returns success. There is deliberately no checked-in source hash or export-time
+attestation: explicit HDL simulation and hardware validation remain available
+without making every Verilog edit participate in a manifest workflow.
+
+Every module that supplies `verilog_source` or `generated_verilog_source` must
+also supply a `verilog_testbench`; export rejects explicit HDL without one.
+Modules exported mechanically from `nand` need no separate Verilog testbench:
+their module tests should instead run the same vectors against emulation and
+NAND, while project-level export and synthesis tests cover the serializer.
 
 ### BSRAM leaves
 

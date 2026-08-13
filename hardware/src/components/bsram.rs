@@ -1,7 +1,7 @@
 use crate::resources::components::BsramBlocks;
 use crate::{
     HardwareIdentity, Module, ModuleIo, ModuleTest, TargetResourceRequest, TestStep,
-    VerilogIdentity, VerilogVerification,
+    VerilogIdentity,
 };
 use askama::Template;
 use digital_design_code::{CircuitWires, Wire, Wires};
@@ -251,8 +251,8 @@ where
         )
     }
 
-    fn verilog_verification() -> Option<VerilogVerification> {
-        Some(single_port_test::<I, WIDTH>().verilog_verification(""))
+    fn verilog_testbench() -> Option<String> {
+        Some(single_port_test::<I, WIDTH>().verilog_testbench())
     }
 }
 
@@ -362,8 +362,8 @@ where
         )
     }
 
-    fn verilog_verification() -> Option<VerilogVerification> {
-        Some(read_rw_test::<I, WIDTH>().verilog_verification(""))
+    fn verilog_testbench() -> Option<String> {
+        Some(read_rw_test::<I, WIDTH>().verilog_testbench())
     }
 }
 
@@ -492,8 +492,8 @@ where
         )
     }
 
-    fn verilog_verification() -> Option<VerilogVerification> {
-        Some(true_dual_port_test::<I, WIDTH>().verilog_verification(""))
+    fn verilog_testbench() -> Option<String> {
+        Some(true_dual_port_test::<I, WIDTH>().verilog_testbench())
     }
 }
 
@@ -773,10 +773,7 @@ mod tests {
     fn verify_verilog_with_iverilog() {
         macro_rules! verify {
             ($module:ty) => {
-                println!(
-                    "{}",
-                    crate::verify_verilog_with_iverilog::<$module>().unwrap()
-                );
+                crate::verify_verilog_with_iverilog::<$module>().unwrap();
             };
         }
         verify!(Bsram1Rw1024<16, TestImage>);

@@ -233,12 +233,6 @@ pub struct TargetResourceRequest {
     pub resources: Vec<ResourceAmount>,
 }
 
-#[derive(Clone, Debug)]
-pub struct VerilogVerification {
-    pub testbench: String,
-    pub verified_hashes: &'static str,
-}
-
 impl TargetResourceRequest {
     pub fn new<C: TargetComponent>(component: C) -> Self {
         Self {
@@ -319,18 +313,15 @@ pub trait Module: HardwareIdentity + Sized + 'static {
 
     /// Return Verilog generated deterministically from Rust-side data.
     ///
-    /// Unlike hand-written HDL, this source does not require a copied
-    /// per-specialization verification hash. The generator itself must have
-    /// representative explicit simulator tests. A module must implement at
-    /// most one of `verilog_source` and `generated_verilog_source`.
+    /// A module must implement at most one of `verilog_source` and
+    /// `generated_verilog_source`.
     fn generated_verilog_source() -> Option<String> {
         None
     }
 
-    /// Explicit simulation recipe and previously successful source hash for
-    /// a hand-written Verilog implementation. Ordinary Rust tests do not run
-    /// the external simulator; export only checks this stored attestation.
-    fn verilog_verification() -> Option<VerilogVerification> {
+    /// Testbench used by the explicit external Verilog simulator test.
+    /// Ordinary Rust tests and project export do not run this test.
+    fn verilog_testbench() -> Option<String> {
         None
     }
 

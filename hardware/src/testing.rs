@@ -109,16 +109,6 @@ impl<M: Module> ModuleTest<M> {
             .collect()
     }
 
-    pub fn verilog_verification(
-        &self,
-        verified_hashes: &'static str,
-    ) -> crate::VerilogVerification {
-        crate::VerilogVerification {
-            testbench: self.verilog_testbench(),
-            verified_hashes,
-        }
-    }
-
     pub fn verilog_testbench(&self) -> String {
         let module_name = M::verilog_identity().module_name();
         let (_, (input, output)) = build_circuit(|| (M::Input::allocate(), M::Output::allocate()));
@@ -279,10 +269,8 @@ impl From<std::io::Error> for VerilogSimulationError {
 
 /// Explicitly compile and run a module's Verilog source testbench.
 ///
-/// This is intentionally not called by ordinary test helpers. After success,
-/// copy the returned `module=hash` line into that module's verification
-/// manifest. Verilog export will reject missing or stale records.
-pub fn verify_verilog_with_iverilog<M: Module>() -> Result<String, VerilogSimulationError> {
+/// This is intentionally not called by ordinary test helpers.
+pub fn verify_verilog_with_iverilog<M: Module>() -> Result<(), VerilogSimulationError> {
     let test = crate::project::explicit_verilog_source_test::<M>()?;
     let nonce = SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -354,7 +342,7 @@ pub fn verify_verilog_with_iverilog<M: Module>() -> Result<String, VerilogSimula
     }
 
     fs::remove_dir_all(&directory)?;
-    Ok(test.verification_record)
+    Ok(())
 }
 
 fn simulator_path(
@@ -425,6 +413,39 @@ mod tests {
     fn handwritten_verilog_signature_is_checked() {
         let error = VerilogProject::generate::<BadSignature>().unwrap_err();
         assert!(matches!(error, ProjectError::InvalidHandwrittenVerilog(_)));
+    }
+
+    #[derive(Hardware)]
+    #[hardware(namespace = "tests")]
+    struct UntestedVerilog;
+
+    impl Module for UntestedVerilog {
+        type Input = ScalarInput;
+        type Output = ScalarOutput;
+        type EmuState = ();
+
+        fn create_emu(_input: &Self::Input, _output: &Self::Output) -> Self::EmuState {}
+
+        fn execute_emu(
+            _state: &mut Self::EmuState,
+            _circuit: &mut CircuitWires,
+            _input: &Self::Input,
+            _output: &Self::Output,
+        ) {
+        }
+
+        fn verilog_source() -> Option<String> {
+            Some(
+                "module UntestedVerilog(input wire value, output wire result); assign result = value; endmodule"
+                    .to_string(),
+            )
+        }
+    }
+
+    #[test]
+    fn explicit_verilog_requires_a_testbench() {
+        let error = VerilogProject::generate::<UntestedVerilog>().unwrap_err();
+        assert!(matches!(error, ProjectError::MissingVerilogTestbench(_)));
     }
 
     #[derive(Hardware)]
