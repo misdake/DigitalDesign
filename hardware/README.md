@@ -284,13 +284,14 @@ any external in its NAND branch.
 
 ### DSP leaves
 
-The initial inferred DSP family contains `DspMulS18`, `DspMulAddS18`, and
-`DspMacS18`. They implement registered signed 18x18 multiplication,
-multiplication plus a signed 36-bit addend, and a 54-bit wrapping accumulator.
-All three are target leaves with a cycle-accurate host emulator and adjacent
-Askama-rendered Verilog, but no NAND implementation. Call `Type::hardware` from
-compositional logic to select the emulator locally and the inferred Verilog
-module during export.
+The signed 18-bit DSP family contains `DspMulS18`, `DspMulAddS18`,
+`DspMacS18`, `DspMulSumS18`, `DspMulDifferenceS18`, `DspPreAddMulS18`, and
+`DspPreSubMulS18`. The extended operations calculate `(a*b)+(c*d)`,
+`(a*b)-(c*d)`, `(a+b)*c`, and `(a-b)*c`; each pre-add or pre-subtract wraps to
+signed 18 bits before multiplication. All are target leaves with a
+cycle-accurate host emulator and adjacent Askama-rendered Verilog, but no NAND
+implementation. Call `Type::hardware` from compositional logic to select the
+emulator locally and the DSP Verilog module during export.
 
 The pipeline matches the validated Gowin RTL: operands are registered on one
 rising edge and affect the result on the following edge. `DspMacS18` has an
@@ -300,12 +301,18 @@ clocks and at the next clock, matching observable HDL behavior.
 On GW2AR-18, `DspMulS18` infers one `MULT18X18` and reserves one 18x18
 multiplier lane. `DspMulAddS18` and `DspMacS18` each infer one
 `MULTADDALU18X18`; each occupies a complete DSP macro and reserves two lanes.
-The `dsp` example's three instances therefore reserve 5 of the Tang Nano 20K's
-48 multiplier lanes, and PnR reports 2.5 of its 24 DSP macros. The post-build
-audit reads both the PnR mode totals and synthesis hierarchy, so DSP inferred
+Each multiply-sum/difference uses one explicit `MULTADDALU18X18` and reserves
+two lanes. Each pre-add/subtract multiply uses one explicit `PADD18` feeding
+one `MULT18X18` and reserves one lane. Explicit Gowin primitives are used for
+these four shapes because the equivalent generic RTL did not reliably infer
+the wide DSP ALU in isolation; their templates retain an Icarus behavioral
+branch for portable simulation. The `dsp` example's seven instances reserve 11
+of the Tang Nano 20K's 48 multiplier lanes, and PnR reports 5.5 of its 24 DSP
+macros. The post-build audit reads `PADD18`, `MULT18X18`,
+`MULTADDALU18X18`, and `ALU54D` mode totals and synthesis hierarchy, so DSP
 outside a declared target leaf or above its measured claim fails the build.
-Mixed pre-adder/wide-ALU packing still requires PnR validation; new shapes must
-record their measured lane cost instead of estimating from operand width.
+New shapes must record their measured lane cost instead of estimating from
+operand width.
 
 Run host tests and build the non-programmed Gowin project with:
 
@@ -374,13 +381,13 @@ measured as one block; instantiating the same specialization more than once
 repeats that claim even though its Verilog definition is emitted only once.
 The lower-level allocator remains transactional and is poisoned after a failed
 claim. Exported Gowin projects include `resource-report.txt`; synthesis and
-place-and-route remain the final authority. After synthesis, the build audits
-Gowin's hierarchical resource report: every actual BSRAM or supported DSP mode
-must be inside the instance hierarchy of a target-leaf wrapper, and its use may
-not exceed that wrapper's measured claim. A wrapper optimized away still
-reserves its planning capacity, but cannot hide resources inferred elsewhere.
-PnR totals provide a second check before programming. PLL claims continue to
-fail closed while no measured per-instance report mapping exists.
+place-and-route remain the final authority. BSRAM currently retains a strict
+per-leaf hierarchy audit. DSP uses aggregate physical usage because synthesis
+may merge, fuse, or move operators across module boundaries. Normal projects
+require actual DSP usage to stay within the total measured leaf requests;
+characterization projects may additionally assert exact primitive shapes.
+Unknown DSP modes and unaudited PLL claims fail closed. The complete rationale
+and extension rules are recorded in [RESOURCE_MODEL.md](RESOURCE_MODEL.md).
 
 Tang Nano 20K exposes the wires that are stable parts of the board directly as
 typed module IO:

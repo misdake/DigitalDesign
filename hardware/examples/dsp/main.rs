@@ -1,7 +1,8 @@
 use digital_design_code::CircuitWires;
 use digital_design_hardware::{
-    run_gowin_project_cli, DspMacS18, DspMulAddS18, DspMulS18, GowinCliError, GowinModuleProject,
-    Hardware, Module, ModuleTest, TangNano20K, TangNano20KDebugOutputs,
+    run_gowin_project_cli, DspMacS18, DspMulAddS18, DspMulDifferenceS18, DspMulS18, DspMulSumS18,
+    DspPreAddMulS18, DspPreSubMulS18, GowinCliError, GowinDspMode, GowinModuleProject, Hardware,
+    Module, ModuleTest, ResourceCountExpectation, TangNano20K, TangNano20KDebugOutputs,
     TangNano20KDebugOutputsValue, TangNano20KInputs, TangNano20KInputsValue, TestStep,
     VerilogDependency,
 };
@@ -40,6 +41,10 @@ impl Module for DspBoardSelfTest {
             VerilogDependency::new::<DspMulS18>("u_mul"),
             VerilogDependency::new::<DspMulAddS18>("u_mul_add"),
             VerilogDependency::new::<DspMacS18>("u_mac"),
+            VerilogDependency::new::<DspMulSumS18>("u_mul_sum"),
+            VerilogDependency::new::<DspMulDifferenceS18>("u_mul_difference"),
+            VerilogDependency::new::<DspPreAddMulS18>("u_pre_add_mul"),
+            VerilogDependency::new::<DspPreSubMulS18>("u_pre_sub_mul"),
         ]
     }
 
@@ -61,6 +66,13 @@ fn board_test() -> ModuleTest<DspBoardSelfTest> {
 
 fn dsp_gowin_project() -> GowinModuleProject<TangNano20K, DspBoardSelfTest> {
     TangNano20K::debug_uart_project::<DspBoardSelfTest>("dsp_self_test")
+        .expect_dsp_mode(GowinDspMode::Padd18, ResourceCountExpectation::Exact(2))
+        .expect_dsp_mode(GowinDspMode::Mult18x18, ResourceCountExpectation::Exact(3))
+        .expect_dsp_mode(
+            GowinDspMode::MultAddAlu18x18,
+            ResourceCountExpectation::Exact(4),
+        )
+        .expect_dsp_mode(GowinDspMode::Alu54d, ResourceCountExpectation::Exact(0))
 }
 
 #[cfg(test)]
@@ -75,6 +87,19 @@ mod tests {
             (DspMulS18::verilog_identity().module_name(), "u_mul"),
             (DspMulAddS18::verilog_identity().module_name(), "u_mul_add"),
             (DspMacS18::verilog_identity().module_name(), "u_mac"),
+            (DspMulSumS18::verilog_identity().module_name(), "u_mul_sum"),
+            (
+                DspMulDifferenceS18::verilog_identity().module_name(),
+                "u_mul_difference",
+            ),
+            (
+                DspPreAddMulS18::verilog_identity().module_name(),
+                "u_pre_add_mul",
+            ),
+            (
+                DspPreSubMulS18::verilog_identity().module_name(),
+                "u_pre_sub_mul",
+            ),
         ] {
             assert!(verilog
                 .files
@@ -85,10 +110,13 @@ mod tests {
                 .values()
                 .any(|source| source.contains(&format!("{module} {instance}"))));
         }
-        assert_eq!(verilog.resource_claims.len(), 3);
+        assert_eq!(verilog.resource_claims.len(), 7);
 
         let project = dsp_gowin_project().generate().unwrap();
-        assert_eq!(project.resources.claimed[&ResourceKind::Multiplier18x18], 5);
+        assert_eq!(
+            project.resources.claimed[&ResourceKind::Multiplier18x18],
+            11
+        );
         assert_eq!(project.resources.claimed[&ResourceKind::DebugUartTx], 1);
     }
 
