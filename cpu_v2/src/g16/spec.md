@@ -80,3 +80,9 @@ simpler. The target SDRAM adapter converts a line refill into one Controller HS
 write. Associativity and write-back are policy changes behind the same CPU and
 line-transaction interfaces, to be justified by measured miss traffic rather
 than copied from the exploratory model.
+
+The first arbiter permits one accepted Controller HS operation. A due refresh
+has priority before accepting new client work, data-cache traffic wins an idle
+tie with instruction traffic, and accepted work runs atomically to completion.
+At 54 MHz the initial refresh threshold is 600 project cycles (about 11.1 us),
+matching the board-characterized SDRAM self-test with conservative margin.
