@@ -27,3 +27,4 @@ Assigned test IDs:
 | ID | Test |
 | ---: | --- |
 | `0x03` | Tang Nano 20K fitted SDRAM burst/refresh self-test |
+| `0x04` | G16 compiled-program CPU/BSRAM execution self-test |

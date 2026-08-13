@@ -7,3 +7,6 @@ edition = "2021"
 askama = { version = "0.14", default-features = false, features = ["config", "derive", "std"] }
 digital-design-code = { path = "../core" }
 digital-design-hardware-macros = { path = "../hardware_macros" }
+
+[dev-dependencies]
+cpu_v2 = { path = "../cpu_v2" }
