@@ -7,9 +7,12 @@ module {{ module_name }}(
 );
 
 reg [{{ high_bit }}:0] memory [0:1023];
+integer init_address;
 
 initial begin
-{% for word in words %}    memory[{{ word.address }}] = {{ word.literal }};
+    for (init_address = 0; init_address < 1024; init_address = init_address + 1)
+        memory[init_address] = {{ image.default_literal }};
+{% for word in image.overrides %}    memory[{{ word.address }}] = {{ word.literal }};
 {% endfor %}end
 
 always @(posedge clk) begin

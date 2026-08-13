@@ -213,6 +213,11 @@ remain different modules. Gowin embeds the words in the volatile configuration
 bitstream; they are present when the configured design starts and may
 subsequently be overwritten normally. No runtime fill loop or external memory
 file is required. All three port shapes use the same image mechanism.
+Generated Verilog uses the image's most frequent word as a loop-filled default
+and emits individual assignments only for exceptions. An all-zero or constant
+image therefore stays short, and sparse images grow with their exceptional
+addresses rather than with all 1024 words. An image whose words are all
+different still necessarily carries all of that data in the exported project.
 
 Parameterized HDL templates live as complete, readable files beside their
 Rust implementation (for example, `src/components/bsram/*.v`). Askama parses

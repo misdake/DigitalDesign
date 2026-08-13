@@ -7,6 +7,7 @@ use crate::{
 };
 use askama::Template;
 use digital_design_code::{CircuitWires, Wire, Wires};
+use std::collections::BTreeMap;
 use std::marker::PhantomData;
 
 /// Number of words in the initial BSRAM component family.
@@ -65,18 +66,25 @@ fn address<const WIDTH: usize>(value: u64) -> usize {
 struct OneReadWriteTemplate<'a> {
     module_name: &'a str,
     high_bit: usize,
-    words: &'a [VerilogWord],
+    image: &'a VerilogImage,
 }
 
-struct VerilogWord {
+struct VerilogOverride {
     address: usize,
     literal: String,
+}
+
+struct VerilogImage {
+    default_literal: String,
+    overrides: Vec<VerilogOverride>,
 }
 
 /// Compile-time power-up contents for a BSRAM specialization.
 ///
 /// The same array initializes the host emulator and generates every word
-/// embedded in the FPGA configuration.
+/// embedded in the FPGA configuration. Generated Verilog fills the memory with
+/// the most frequent word and emits assignments only for differing addresses,
+/// keeping zero-filled, constant, and sparse images compact.
 pub trait BsramImage<const WIDTH: usize>: 'static {
     const WORDS: [u64; BSRAM_1024_DEPTH];
 }
@@ -122,19 +130,39 @@ where
     hash
 }
 
-fn verilog_words<I, const WIDTH: usize>() -> Vec<VerilogWord>
+fn verilog_image<I, const WIDTH: usize>() -> VerilogImage
 where
     I: BsramImage<WIDTH>,
 {
-    image_words::<I, WIDTH>()
+    let words = image_words::<I, WIDTH>();
+    let mut counts = BTreeMap::<u64, usize>::new();
+    for &value in words.iter() {
+        *counts.entry(value).or_default() += 1;
+    }
+    // BTreeMap iteration plus a strict comparison makes equal-frequency ties
+    // deterministic by selecting the smallest value.
+    let mut default_value = 0;
+    let mut default_count = 0;
+    for (&value, &count) in &counts {
+        if count > default_count {
+            default_value = value;
+            default_count = count;
+        }
+    }
+    let overrides = words
         .iter()
         .copied()
         .enumerate()
-        .map(|(address, value)| VerilogWord {
+        .filter(|(_, value)| *value != default_value)
+        .map(|(address, value)| VerilogOverride {
             address,
             literal: format!("{WIDTH}'h{value:x}"),
         })
-        .collect()
+        .collect();
+    VerilogImage {
+        default_literal: format!("{WIDTH}'h{default_value:x}"),
+        overrides,
+    }
 }
 
 #[derive(Template)]
@@ -142,7 +170,7 @@ where
 struct OneReadOneReadWriteTemplate<'a> {
     module_name: &'a str,
     high_bit: usize,
-    words: &'a [VerilogWord],
+    image: &'a VerilogImage,
 }
 
 #[derive(Template)]
@@ -150,7 +178,7 @@ struct OneReadOneReadWriteTemplate<'a> {
 struct TrueDualPortTemplate<'a> {
     module_name: &'a str,
     high_bit: usize,
-    words: &'a [VerilogWord],
+    image: &'a VerilogImage,
 }
 
 /// One synchronous normal-mode read/write port backed by one 18-Kbit BSRAM.
@@ -241,12 +269,12 @@ where
 
     fn generated_verilog_source() -> Option<String> {
         let module_name = Self::verilog_identity().module_name();
-        let words = verilog_words::<I, WIDTH>();
+        let image = verilog_image::<I, WIDTH>();
         Some(
             OneReadWriteTemplate {
                 module_name: &module_name,
                 high_bit: WIDTH - 1,
-                words: &words,
+                image: &image,
             }
             .render()
             .expect("BSRAM Verilog template must render"),
@@ -352,12 +380,12 @@ where
 
     fn generated_verilog_source() -> Option<String> {
         let module_name = Self::verilog_identity().module_name();
-        let words = verilog_words::<I, WIDTH>();
+        let image = verilog_image::<I, WIDTH>();
         Some(
             OneReadOneReadWriteTemplate {
                 module_name: &module_name,
                 high_bit: WIDTH - 1,
-                words: &words,
+                image: &image,
             }
             .render()
             .expect("BSRAM Verilog template must render"),
@@ -482,12 +510,12 @@ where
 
     fn generated_verilog_source() -> Option<String> {
         let module_name = Self::verilog_identity().module_name();
-        let words = verilog_words::<I, WIDTH>();
+        let image = verilog_image::<I, WIDTH>();
         Some(
             TrueDualPortTemplate {
                 module_name: &module_name,
                 high_bit: WIDTH - 1,
-                words: &words,
+                image: &image,
             }
             .render()
             .expect("BSRAM Verilog template must render"),
@@ -762,6 +790,29 @@ mod tests {
             Bsram1Rw1024::<16, TestImage>::verilog_identity(),
             Bsram1Rw1024::<16, OtherImage>::verilog_identity()
         );
+    }
+
+    #[test]
+    fn repeated_image_values_use_a_compact_default_and_overrides() {
+        struct SparseImage;
+        impl BsramImage<16> for SparseImage {
+            const WORDS: [u64; DEPTH] = {
+                let mut words = [0x55aa; DEPTH];
+                words[17] = 0x1234;
+                words[901] = 0xabcd;
+                words
+            };
+        }
+
+        let zero = Bsram1Rw1024::<16, ZeroBsramImage>::generated_verilog_source().unwrap();
+        assert!(zero.contains("memory[init_address] = 16'h0;"));
+        assert_eq!(zero.matches(" = 16'h").count(), 1);
+
+        let sparse = Bsram1Rw1024::<16, SparseImage>::generated_verilog_source().unwrap();
+        assert!(sparse.contains("memory[init_address] = 16'h55aa;"));
+        assert!(sparse.contains("memory[17] = 16'h1234;"));
+        assert!(sparse.contains("memory[901] = 16'habcd;"));
+        assert_eq!(sparse.matches(" = 16'h").count(), 3);
     }
 
     #[test]
