@@ -108,10 +108,8 @@ exports the child's NAND implementation.
 When a handwritten Verilog module directly instantiates child modules, it
 lists every physical instance through `Module::verilog_dependencies`. The
 exporter emits each concrete child definition once, but applies its target-leaf
-resource claim once per listed instance. Instance names are included in the
-parent's verification hash, so changing that instance list requires another
-successful HDL simulation. Generated structural modules do
-not use this list because calls to `Child::verilog` already record instances.
+resource claim once per listed instance. Generated structural modules do not
+use this list because calls to `Child::verilog` already record instances.
 
 ## Cycle tests
 
@@ -284,6 +282,38 @@ cargo run -p digital-design-hardware --example bsram_masked
 vectors. The existing `run_emu_and_nand` remains the stricter choice and rejects
 any external in its NAND branch.
 
+### DSP leaves
+
+The initial inferred DSP family contains `DspMulS18`, `DspMulAddS18`, and
+`DspMacS18`. They implement registered signed 18x18 multiplication,
+multiplication plus a signed 36-bit addend, and a 54-bit wrapping accumulator.
+All three are target leaves with a cycle-accurate host emulator and adjacent
+Askama-rendered Verilog, but no NAND implementation. Call `Type::hardware` from
+compositional logic to select the emulator locally and the inferred Verilog
+module during export.
+
+The pipeline matches the validated Gowin RTL: operands are registered on one
+rising edge and affect the result on the following edge. `DspMacS18` has an
+active-low asynchronous reset. Its emulator applies reset both between test
+clocks and at the next clock, matching observable HDL behavior.
+
+On GW2AR-18, `DspMulS18` infers one `MULT18X18` and reserves one 18x18
+multiplier lane. `DspMulAddS18` and `DspMacS18` each infer one
+`MULTADDALU18X18`; each occupies a complete DSP macro and reserves two lanes.
+The `dsp` example's three instances therefore reserve 5 of the Tang Nano 20K's
+48 multiplier lanes, and PnR reports 2.5 of its 24 DSP macros. The post-build
+audit reads both the PnR mode totals and synthesis hierarchy, so DSP inferred
+outside a declared target leaf or above its measured claim fails the build.
+Mixed pre-adder/wide-ALU packing still requires PnR validation; new shapes must
+record their measured lane cost instead of estimating from operand width.
+
+Run host tests and build the non-programmed Gowin project with:
+
+```text
+cargo test -p digital-design-hardware components::dsp
+cargo run -p digital-design-hardware --example dsp -- --build
+```
+
 ## Hardware targets and resources
 
 A project selects one complete, purchasable hardware variant as a Rust type.
@@ -345,13 +375,12 @@ repeats that claim even though its Verilog definition is emitted only once.
 The lower-level allocator remains transactional and is poisoned after a failed
 claim. Exported Gowin projects include `resource-report.txt`; synthesis and
 place-and-route remain the final authority. After synthesis, the build audits
-Gowin's hierarchical resource report: every actual BSRAM must be inside the
-instance hierarchy of a target-leaf wrapper, and its use may not exceed that
-wrapper's measured claim. A wrapper optimized away still reserves its planning
-capacity, but cannot hide BSRAM inferred elsewhere. PnR totals provide a second
-check before programming. PLL and DSP claims fail closed while no measured
-per-instance report mapping exists; each future configuration must add that
-mapping before it can be enabled.
+Gowin's hierarchical resource report: every actual BSRAM or supported DSP mode
+must be inside the instance hierarchy of a target-leaf wrapper, and its use may
+not exceed that wrapper's measured claim. A wrapper optimized away still
+reserves its planning capacity, but cannot hide resources inferred elsewhere.
+PnR totals provide a second check before programming. PLL claims continue to
+fail closed while no measured per-instance report mapping exists.
 
 Tang Nano 20K exposes the wires that are stable parts of the board directly as
 typed module IO:

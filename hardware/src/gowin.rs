@@ -1132,33 +1132,17 @@ fn audit_physical_resources(
         .get(&ResourceKind::Multiplier18x18)
         .copied()
         .unwrap_or(0);
-    if claimed_multipliers != 0 {
-        return Err(GowinError::PhysicalResourceAuditUnsupported {
-            report: hierarchy_report.to_path_buf(),
+    let actual_multipliers = dsp_multiplier_lane_usage(&text)
+        .ok_or_else(|| GowinError::PhysicalResourceReportUnrecognized(report.to_path_buf()))?;
+    if actual_multipliers > claimed_multipliers {
+        return Err(GowinError::PhysicalResourceMismatch {
+            report: report.to_path_buf(),
             resource: ResourceKind::Multiplier18x18,
             claimed: claimed_multipliers,
+            actual: actual_multipliers,
         });
     }
-    if let Some(actual) = resource_usage_fraction(&text, "DSP") {
-        if actual != 0 {
-            return Err(GowinError::PhysicalResourceMismatch {
-                report: report.to_path_buf(),
-                resource: ResourceKind::Multiplier18x18,
-                claimed: 0,
-                actual,
-            });
-        }
-    } else {
-        let physical_dsp_modes = resource_mode_total(&text, "DSP").unwrap_or(0);
-        if physical_dsp_modes != 0 {
-            return Err(GowinError::PhysicalResourceMismatch {
-                report: report.to_path_buf(),
-                resource: ResourceKind::Multiplier18x18,
-                claimed: 0,
-                actual: physical_dsp_modes,
-            });
-        }
-    }
+    audit_dsp_ownership(hierarchy_report, planned)?;
     Ok(())
 }
 
@@ -1169,12 +1153,36 @@ fn audit_bsram_ownership(report: &Path, planned: &ResourceReport) -> Result<(), 
     let text = fs::read_to_string(report)?;
     let actual = hierarchy_resource_usage(&text, "Bsram")
         .ok_or_else(|| GowinError::PhysicalResourceReportUnrecognized(report.to_path_buf()))?;
+    audit_resource_ownership(report, planned, ResourceKind::Bsram18K, actual)
+}
+
+fn audit_dsp_ownership(report: &Path, planned: &ResourceReport) -> Result<(), GowinError> {
+    if !report.is_file() {
+        return Err(GowinError::MissingBuildArtifact(report.to_path_buf()));
+    }
+    let text = fs::read_to_string(report)?;
+    let mut actual = hierarchy_resource_usage(&text, "MULT18X18")
+        .ok_or_else(|| GowinError::PhysicalResourceReportUnrecognized(report.to_path_buf()))?;
+    for (path, amount) in hierarchy_resource_usage(&text, "MULTADDALU18X18")
+        .ok_or_else(|| GowinError::PhysicalResourceReportUnrecognized(report.to_path_buf()))?
+    {
+        *actual.entry(path).or_default() += amount * 2;
+    }
+    audit_resource_ownership(report, planned, ResourceKind::Multiplier18x18, actual)
+}
+
+fn audit_resource_ownership(
+    report: &Path,
+    planned: &ResourceReport,
+    resource_kind: ResourceKind,
+    actual: BTreeMap<String, u64>,
+) -> Result<(), GowinError> {
     let mut claimed = BTreeMap::<String, u64>::new();
     for allocation in &planned.allocations {
         let amount = allocation
             .resources
             .iter()
-            .filter(|resource| resource.kind == ResourceKind::Bsram18K)
+            .filter(|resource| resource.kind == resource_kind)
             .map(|resource| resource.amount)
             .sum::<u64>();
         if amount == 0 {
@@ -1205,7 +1213,7 @@ fn audit_bsram_ownership(report: &Path, planned: &ResourceReport) -> Result<(), 
             return Err(GowinError::PhysicalResourceInstanceMismatch {
                 report: report.to_path_buf(),
                 instance: actual_path,
-                resource: ResourceKind::Bsram18K,
+                resource: resource_kind,
                 claimed: 0,
                 actual: amount,
             });
@@ -1218,7 +1226,7 @@ fn audit_bsram_ownership(report: &Path, planned: &ResourceReport) -> Result<(), 
             return Err(GowinError::PhysicalResourceInstanceMismatch {
                 report: report.to_path_buf(),
                 instance,
-                resource: ResourceKind::Bsram18K,
+                resource: resource_kind,
                 claimed: maximum,
                 actual,
             });
@@ -1300,6 +1308,39 @@ fn resource_mode_total(report: &str, label: &str) -> Option<u64> {
         total = total.checked_add(value)?;
     }
     Some(total)
+}
+
+fn resource_mode_usage(report: &str, label: &str, mode: &str) -> Option<u64> {
+    let mut lines = report.lines();
+    lines.find(|line| {
+        line.split_once('|')
+            .is_some_and(|(name, _)| name.trim() == label)
+    })?;
+    for line in lines {
+        let (name, usage) = line.split_once('|')?;
+        let name = name.trim();
+        if !name.starts_with("--") {
+            break;
+        }
+        if name.trim_start_matches('-').trim() == mode {
+            return usage
+                .split_whitespace()
+                .next()
+                .and_then(|value| value.parse().ok());
+        }
+    }
+    Some(0)
+}
+
+fn dsp_multiplier_lane_usage(report: &str) -> Option<u64> {
+    let plain = resource_mode_usage(report, "DSP", "MULT18X18")?;
+    let wide_alu = resource_mode_usage(report, "DSP", "MULTADDALU18X18")?;
+    let known_primitives = plain.checked_add(wide_alu)?;
+    let all_primitives = resource_mode_total(report, "DSP")?;
+    if all_primitives != known_primitives {
+        return None;
+    }
+    plain.checked_add(wide_alu.checked_mul(2)?)
 }
 
 #[derive(Debug)]
@@ -1674,7 +1715,19 @@ mod tests {
         assert_eq!(resource_mode_total(report, "BSRAM"), Some(6));
         assert_eq!(resource_usage_fraction(report, "DSP"), None);
         assert_eq!(resource_mode_total(report, "DSP"), Some(32));
+        assert_eq!(resource_mode_usage(report, "DSP", "MULT18X18"), Some(10));
+        assert_eq!(
+            resource_mode_usage(report, "DSP", "MULTADDALU18X18"),
+            Some(10)
+        );
+        assert_eq!(dsp_multiplier_lane_usage(report), None);
         assert_eq!(resource_usage_fraction(report, "PLL"), Some(1));
+
+        let supported_dsp = "DSP | 2.5/24 | 11%\n\
+    --MULT18X18 | 1\n\
+    --MULTADDALU18X18 | 2\n\
+  PLL | 0/2 | 0%\n";
+        assert_eq!(dsp_multiplier_lane_usage(supported_dsp), Some(5));
     }
 
     #[test]
@@ -1746,6 +1799,54 @@ mod tests {
                 actual: 1,
                 ..
             }) if instance == "u_logic/raw_user_memory"
+        ));
+        fs::remove_file(report).unwrap();
+        fs::remove_dir(directory).unwrap();
+    }
+
+    #[test]
+    fn physical_resource_audit_weights_and_owns_dsp_modes() {
+        use crate::resources::components::DspMultipliers;
+
+        let directory = std::env::temp_dir().join(format!(
+            "digital-design-dsp-resource-ownership-{}",
+            std::process::id()
+        ));
+        fs::create_dir_all(&directory).unwrap();
+        let report = directory.join("syn_rsc.xml");
+        fs::write(
+            &report,
+            "<Module name=\"top\">\n\
+             <SubModule name=\"u_logic\">\n\
+             <SubModule name=\"u_mul\" MULT18X18=\"1\"/>\n\
+             <SubModule name=\"u_madd\" MULTADDALU18X18=\"1\"/>\n\
+             </SubModule>\n\
+             </Module>\n",
+        )
+        .unwrap();
+        let mut resources = TargetResources::<TangNano20K>::new();
+        resources
+            .claim_module(
+                "u_mul.DspMulS18".to_string(),
+                &TargetResourceRequest::new(DspMultipliers::new(1)),
+            )
+            .unwrap();
+        resources
+            .claim_module(
+                "u_madd.DspMulAddS18".to_string(),
+                &TargetResourceRequest::new(DspMultipliers::new(2)),
+            )
+            .unwrap();
+        audit_dsp_ownership(&report, &resources.report()).unwrap();
+
+        let empty = TargetResources::<TangNano20K>::new().report();
+        assert!(matches!(
+            audit_dsp_ownership(&report, &empty),
+            Err(GowinError::PhysicalResourceInstanceMismatch {
+                resource: ResourceKind::Multiplier18x18,
+                claimed: 0,
+                ..
+            })
         ));
         fs::remove_file(report).unwrap();
         fs::remove_dir(directory).unwrap();
