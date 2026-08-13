@@ -59,11 +59,30 @@ impl<M: Module> ModuleTest<M> {
     pub fn run_emu_and_nand(&self) {
         let emu = self.run_backend(M::emu, false);
         let nand = self.run_backend(M::nand, true);
-        assert_eq!(emu.len(), nand.len());
-        for (index, ((emu, nand), step)) in emu.iter().zip(&nand).zip(&self.steps).enumerate() {
-            assert_eq!(emu, nand, "emu/NAND mismatch at test step {index}");
+        self.compare_backends(&emu, &nand, "emu/NAND");
+    }
+
+    /// Compare whole-module emulation with a local NAND implementation that
+    /// may deliberately contain emulated external leaves such as FPGA BSRAM.
+    ///
+    /// Use `run_emu_and_nand` when the NAND side must be fully gate-exportable.
+    pub fn run_emu_and_mixed_nand(&self) {
+        let emu = self.run_backend(M::emu, false);
+        let mixed = self.run_backend(M::nand, false);
+        self.compare_backends(&emu, &mixed, "emu/mixed-NAND");
+    }
+
+    fn compare_backends(
+        &self,
+        left: &[<M::Output as ModuleIo>::Value],
+        right: &[<M::Output as ModuleIo>::Value],
+        label: &str,
+    ) {
+        assert_eq!(left.len(), right.len());
+        for (index, ((left, right), step)) in left.iter().zip(right).zip(&self.steps).enumerate() {
+            assert_eq!(left, right, "{label} mismatch at test step {index}");
             if let Some(expected) = &step.expected {
-                assert_eq!(emu, expected, "unexpected output at test step {index}");
+                assert_eq!(left, expected, "unexpected output at test step {index}");
             }
         }
     }

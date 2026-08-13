@@ -252,6 +252,38 @@ development script to verify the identity, freshness, checksum, and result:
 powershell -ExecutionPolicy Bypass -File hardware/scripts/check_uart_status.ps1 -Path target/bsram_gowin/board_capture.bin -TestId 0x01
 ```
 
+The smaller `bsram_masked` example shows how ordinary NAND logic uses BSRAM in
+both backends with one call to `Memory::hardware`. Local construction makes the
+BSRAM a host external while the surrounding data-path remains gates. During
+Verilog hierarchy recording the same call automatically becomes an HDL
+instance, so FPGA export emits one target leaf and one BSRAM resource claim.
+The upper module contains only one circuit implementation in `nand`: its
+default `build_verilog` reuses that structure, and its compositional `emu`
+delegates to it. The BSRAM model is therefore not duplicated in the upper
+module:
+
+```rust
+fn emu(input: &Self::Input) -> Self::Output {
+    Self::nand(input)
+}
+
+fn nand(input: &Self::Input) -> Self::Output {
+    Memory::hardware(&Bsram1Rw1024Input {
+        write_enable: input.write_enable,
+        address: input.address,
+        write_data: input.write_data ^ constant_wires::<16>(DATA_MASK),
+    })
+}
+```
+
+```text
+cargo run -p digital-design-hardware --example bsram_masked
+```
+
+`ModuleTest::run_emu_and_mixed_nand` runs both entry points and checks the typed
+vectors. The existing `run_emu_and_nand` remains the stricter choice and rejects
+any external in its NAND branch.
+
 ## Hardware targets and resources
 
 A project selects one complete, purchasable hardware variant as a Rust type.
