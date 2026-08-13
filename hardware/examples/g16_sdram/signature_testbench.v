@@ -16,9 +16,11 @@ wire [3:0] sdram_write_mask;
 wire [31:0] sdram_write_data;
 wire [7:0] sdram_burst_length;
 
-reg [31:0] line [0:7];
+reg [31:0] code_line [0:7];
+reg [31:0] data_line [0:7];
 reg writing = 0;
 reg reading = 0;
+reg read_is_data = 0;
 integer write_beat = 0;
 integer read_beat = 0;
 integer read_delay = 0;
@@ -50,11 +52,19 @@ always @(posedge clk) begin
         sdram_command_ack <= 1;
 
     if (sdram_command_valid && sdram_command == 3'b100) begin
-        line[0] <= sdram_write_data;
-        write_beat <= 1;
-        writing <= 1;
+        if (sdram_burst_length == 0) begin
+            if (!sdram_write_mask[0]) data_line[0][7:0] <= sdram_write_data[7:0];
+            if (!sdram_write_mask[1]) data_line[0][15:8] <= sdram_write_data[15:8];
+            if (!sdram_write_mask[2]) data_line[0][23:16] <= sdram_write_data[23:16];
+            if (!sdram_write_mask[3]) data_line[0][31:24] <= sdram_write_data[31:24];
+            sdram_command_ack <= 1;
+        end else begin
+            code_line[0] <= sdram_write_data;
+            write_beat <= 1;
+            writing <= 1;
+        end
     end else if (writing) begin
-        line[write_beat] <= sdram_write_data;
+        code_line[write_beat] <= sdram_write_data;
         if (write_beat == 7) begin
             writing <= 0;
             sdram_command_ack <= 1;
@@ -65,13 +75,17 @@ always @(posedge clk) begin
     if (sdram_command_valid && sdram_command == 3'b101) begin
         read_delay <= 3;
         read_beat <= 0;
+        read_is_data <= sdram_address != 0;
     end else if (read_delay != 0) begin
         if (read_delay == 1)
             reading <= 1;
         read_delay <= read_delay - 1;
     end else if (reading) begin
         sdram_read_valid <= 1;
-        sdram_read_data <= line[read_beat];
+        if (read_is_data)
+            sdram_read_data <= data_line[read_beat];
+        else
+            sdram_read_data <= code_line[read_beat];
         if (read_beat == 6)
             sdram_command_ack <= 1;
         if (read_beat == 7)
@@ -82,6 +96,10 @@ always @(posedge clk) begin
 end
 
 initial begin
+    for (cycle = 0; cycle < 8; cycle = cycle + 1) begin
+        code_line[cycle] = 0;
+        data_line[cycle] = 0;
+    end
     repeat (4) @(posedge clk);
     sdram_init_done = 1;
     for (cycle = 0; cycle < 1000 && leds != 6'b000001; cycle = cycle + 1)

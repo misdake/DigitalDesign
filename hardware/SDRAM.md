@@ -55,11 +55,14 @@ then reads and compares every word. It reports through the shared `DDHT` UART
 status protocol with test ID `0x03`.
 
 `hardware/examples/g16_sdram` copies a compiler-produced G16 boot line from a
-physical BSRAM ROM into SDRAM, refills a separate writable BSRAM instruction
-cache using `sdram_read_valid`, and executes the program only from that cache.
-It reports test ID `0x05`. The characterization project uses two BSRAM blocks
-(one pROM and one SDPB), one rPLL, and the fitted SDRAM; its 54-MHz domain has
-zero setup/hold violations and a reported Fmax of 62.281 MHz.
+physical BSRAM ROM into SDRAM, refills a writable BSRAM instruction cache using
+`sdram_read_valid`, and executes the program only from that cache. The program
+then writes a word through a separate BSRAM data cache with the Controller HS
+byte mask, misses on a read, refills the complete line, and verifies the loaded
+value. It reports test ID `0x05`. The project uses three BSRAM blocks (one pROM
+and two SDPB), one rPLL, and the fitted SDRAM; after pipelining the store-hit
+path, its 54-MHz domain has zero setup/hold violations and a reported Fmax of
+58.968 MHz.
 
 The first Gowin 1.9.11.03 board run at 54 MHz completed with:
 

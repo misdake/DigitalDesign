@@ -594,6 +594,7 @@ pub struct GowinProject<T: GowinTarget> {
     project_sources: BTreeMap<PathBuf, String>,
     board_binding: Option<GowinBoardBinding<T>>,
     dsp_expectations: BTreeMap<GowinDspMode, ResourceCountExpectation>,
+    bsram_expectation: Option<ResourceCountExpectation>,
 }
 
 /// A DSP implementation mode reported by Gowin place-and-route.
@@ -684,6 +685,15 @@ impl<T: GowinTarget, M: Module> GowinModuleProject<T, M> {
         self.project = self.project.expect_dsp_mode(mode, expectation);
         self
     }
+
+    /// Require an aggregate physical BSRAM count after place-and-route.
+    /// Characterization projects use this to catch inferred memories that
+    /// were optimized into LUTs. Normal projects need only the default rule
+    /// that actual use may not exceed target-leaf claims.
+    pub fn expect_bsram_blocks(mut self, expectation: ResourceCountExpectation) -> Self {
+        self.project = self.project.expect_bsram_blocks(expectation);
+        self
+    }
 }
 
 impl<T: GowinTarget> GowinProject<T> {
@@ -693,6 +703,7 @@ impl<T: GowinTarget> GowinProject<T> {
             project_sources: BTreeMap::new(),
             board_binding: None,
             dsp_expectations: BTreeMap::new(),
+            bsram_expectation: None,
         }
     }
 
@@ -731,6 +742,14 @@ impl<T: GowinTarget> GowinProject<T> {
             self.dsp_expectations.insert(mode, expectation).is_none(),
             "duplicate Gowin DSP expectation for {}",
             mode.report_name()
+        );
+        self
+    }
+
+    pub fn expect_bsram_blocks(mut self, expectation: ResourceCountExpectation) -> Self {
+        assert!(
+            self.bsram_expectation.replace(expectation).is_none(),
+            "duplicate Gowin BSRAM expectation"
         );
         self
     }
@@ -844,6 +863,7 @@ impl<T: GowinTarget> GowinProject<T> {
             device: T::DEVICE,
             resources: resource_report,
             dsp_expectations: self.dsp_expectations.clone(),
+            bsram_expectation: self.bsram_expectation,
             files,
         })
     }
@@ -867,6 +887,7 @@ pub struct GeneratedGowinProject {
     pub device: GowinDeviceInfo,
     pub resources: ResourceReport,
     dsp_expectations: BTreeMap<GowinDspMode, ResourceCountExpectation>,
+    bsram_expectation: Option<ResourceCountExpectation>,
     pub files: BTreeMap<PathBuf, String>,
 }
 
@@ -1360,6 +1381,7 @@ impl GowinToolchain {
             &result.synthesis_resource_report,
             &project.resources,
             &project.dsp_expectations,
+            project.bsram_expectation,
         )?;
         Ok(result)
     }
@@ -1472,6 +1494,7 @@ fn audit_physical_resources(
     hierarchy_report: &Path,
     planned: &ResourceReport,
     dsp_expectations: &BTreeMap<GowinDspMode, ResourceCountExpectation>,
+    bsram_expectation: Option<ResourceCountExpectation>,
 ) -> Result<(), GowinError> {
     if !report.is_file() {
         return Err(GowinError::MissingBuildArtifact(report.to_path_buf()));
@@ -1499,6 +1522,19 @@ fn audit_physical_resources(
                 report: report.to_path_buf(),
                 resource: kind,
                 claimed,
+                actual,
+            });
+        }
+    }
+
+    if let Some(expectation) = bsram_expectation {
+        let actual = resource_usage_fraction(&text, "BSRAM")
+            .or_else(|| resource_mode_total(&text, "BSRAM"))
+            .ok_or_else(|| GowinError::PhysicalResourceReportUnrecognized(report.to_path_buf()))?;
+        if !expectation.accepts(actual) {
+            return Err(GowinError::PhysicalBsramExpectationMismatch {
+                report: report.to_path_buf(),
+                expectation,
                 actual,
             });
         }
@@ -1769,6 +1805,11 @@ pub enum GowinError {
         expectation: ResourceCountExpectation,
         actual: u64,
     },
+    PhysicalBsramExpectationMismatch {
+        report: PathBuf,
+        expectation: ResourceCountExpectation,
+        actual: u64,
+    },
     PhysicalResourceInstanceMismatch {
         report: PathBuf,
         instance: String,
@@ -1852,6 +1893,15 @@ impl Display for GowinError {
                 "Gowin DSP characterization failed for {}: mode {} expected {expectation}, but place-and-route reported {actual}",
                 report.display(),
                 mode.report_name()
+            ),
+            Self::PhysicalBsramExpectationMismatch {
+                report,
+                expectation,
+                actual,
+            } => write!(
+                formatter,
+                "Gowin BSRAM characterization failed for {}: expected {expectation}, but place-and-route reported {actual}",
+                report.display()
             ),
             Self::PhysicalResourceInstanceMismatch {
                 report,
@@ -2148,7 +2198,7 @@ mod tests {
         .unwrap();
         let planned = TargetResources::<TangNano20K>::new().report();
         assert!(matches!(
-            audit_physical_resources(&report, &hierarchy_report, &planned, &BTreeMap::new()),
+            audit_physical_resources(&report, &hierarchy_report, &planned, &BTreeMap::new(), None,),
             Err(GowinError::PhysicalResourceMismatch {
                 resource: ResourceKind::Bsram18K,
                 claimed: 0,
