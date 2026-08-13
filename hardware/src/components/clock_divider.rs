@@ -184,7 +184,14 @@ mod tests {
     fn verify_handwritten_verilog_with_iverilog() {
         crate::verify_verilog_with_iverilog::<ClockDivider<3, 2>>().unwrap();
         crate::verify_verilog_with_iverilog::<ClockDivider<5, 3>>().unwrap();
-        crate::verify_verilog_with_iverilog::<ClockDivider<6_750_000, 23>>().unwrap();
+    }
+
+    #[test]
+    fn large_specialization_exports_without_long_simulation() {
+        let project = VerilogProject::generate::<ClockDivider<6_750_000, 23>>().unwrap();
+        let source =
+            &project.files[Path::new("components/timing/clock_divider/divisor6750000_width23.v")];
+        assert!(source.contains("counter == 23'd6749999"));
     }
 
     #[derive(Clone, ModuleIo)]

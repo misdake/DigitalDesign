@@ -159,6 +159,9 @@ also supply a `verilog_testbench`; export rejects explicit HDL without one.
 Modules exported mechanically from `nand` need no separate Verilog testbench:
 their module tests should instead run the same vectors against emulation and
 NAND, while project-level export and synthesis tests cover the serializer.
+Parameterized HDL should simulate small representative specializations. Large
+real-world constants are covered by source/export assertions instead of
+advancing millions of simulator cycles unless their timing behavior differs.
 
 ### BSRAM leaves
 
