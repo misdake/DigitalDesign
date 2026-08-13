@@ -3,6 +3,7 @@ module tb;
 reg clk = 0;
 reg [1:0] buttons = 0;
 reg [31:0] sdram_read_data = 0;
+reg sdram_read_valid = 0;
 reg sdram_init_done = 0;
 reg sdram_command_ack = 0;
 wire [5:0] leds;
@@ -18,6 +19,7 @@ wire [7:0] sdram_burst_length;
 SdramBoardSelfTest dut (
     .clk(clk), .buttons(buttons),
     .sdram_read_data(sdram_read_data),
+    .sdram_read_valid(sdram_read_valid),
     .sdram_init_done(sdram_init_done),
     .sdram_command_ack(sdram_command_ack),
     .leds(leds), .uart_tx(uart_tx),

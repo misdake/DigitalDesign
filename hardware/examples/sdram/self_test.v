@@ -2,6 +2,7 @@ module SdramBoardSelfTest (
     input wire clk,
     input wire [1:0] buttons,
     input wire [31:0] sdram_read_data,
+    input wire sdram_read_valid,
     input wire sdram_init_done,
     input wire sdram_command_ack,
     output wire [5:0] leds,
@@ -44,8 +45,6 @@ reg [3:0] state = ST_INIT;
 reg [1:0] refresh_return = RETURN_WRITE;
 reg [5:0] line_index = 0;
 reg [2:0] word_index = 0;
-reg [4:0] read_search = 0;
-reg read_started = 0;
 reg read_ack_seen = 0;
 reg [11:0] refresh_counter = 0;
 reg [18:0] hold_counter = 0;
@@ -236,42 +235,39 @@ always @(posedge clk) begin
                 sdram_write_mask <= 0;
                 sdram_command_valid <= 1'b1;
                 word_index <= 0;
-                read_search <= 0;
-                read_started <= 0;
                 read_ack_seen <= 0;
+                timeout_counter <= 0;
                 state <= ST_READ_DATA;
             end
 
             ST_READ_DATA: begin
-                read_search <= read_search + 1'b1;
                 if (sdram_command_ack)
                     read_ack_seen <= 1'b1;
-                if (!read_started) begin
-                    if (sdram_read_data == word_pattern(line_address(line_index), 0)) begin
-                        read_started <= 1'b1;
-                        word_index <= 1;
-                    end else if (read_search == 5'd12) begin
-                        fail_test(4'h5);
-                    end
-                end else if (sdram_read_data !=
-                             word_pattern(line_address(line_index), word_index)) begin
-                    fail_test(4'h6);
-                end else if (word_index == 3'd7) begin
-                    if (!(read_ack_seen || sdram_command_ack)) begin
-                        fail_test(4'h7);
-                    end else if (line_index == 6'd63) begin
-                        state <= ST_PASS;
-                    end else begin
-                        line_index <= line_index + 1'b1;
-                        if (refresh_counter >= 12'd600) begin
-                            refresh_return <= RETURN_READ;
-                            state <= ST_REFRESH_REQ;
+                if (sdram_read_valid) begin
+                    if (sdram_read_data !=
+                        word_pattern(line_address(line_index), word_index)) begin
+                        fail_test(4'h6);
+                    end else if (word_index == 3'd7) begin
+                        if (!(read_ack_seen || sdram_command_ack)) begin
+                            fail_test(4'h7);
+                        end else if (line_index == 6'd63) begin
+                            state <= ST_PASS;
                         end else begin
-                            state <= ST_ACT_R_REQ;
+                            line_index <= line_index + 1'b1;
+                            if (refresh_counter >= 12'd600) begin
+                                refresh_return <= RETURN_READ;
+                                state <= ST_REFRESH_REQ;
+                            end else begin
+                                state <= ST_ACT_R_REQ;
+                            end
                         end
+                    end else begin
+                        word_index <= word_index + 1'b1;
                     end
+                end else if (timeout_counter == 20'hf_ffff) begin
+                    fail_test(4'h5);
                 end else begin
-                    word_index <= word_index + 1'b1;
+                    timeout_counter <= timeout_counter + 1'b1;
                 end
             end
 

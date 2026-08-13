@@ -4,6 +4,7 @@ wire sdram_pll_locked;
 reg [1:0] sdram_reset_sync = 2'b00;
 
 wire [31:0] sdram_read_data;
+wire sdram_read_valid;
 wire sdram_init_done;
 wire sdram_command_ack;
 wire sdram_command_valid;
@@ -13,6 +14,21 @@ wire [20:0] sdram_address;
 wire [3:0] sdram_write_mask;
 wire [31:0] sdram_write_data;
 wire [7:0] sdram_burst_length;
+
+// Controller HS has no read-valid output. For the QN88 configuration below,
+// physical characterization at 54 MHz found eight read beats on phases 3..10
+// after the READ command pulse; cmd_ack is phase 9. Keep this target-specific
+// timing out of cache and application modules.
+reg [3:0] sdram_read_phase = 0;
+always @(posedge logic_clk) begin
+    if (sdram_command_valid && sdram_command == 3'b101)
+        sdram_read_phase <= 1;
+    else if (sdram_read_phase != 0 && sdram_read_phase < 11)
+        sdram_read_phase <= sdram_read_phase + 1'b1;
+    else
+        sdram_read_phase <= 0;
+end
+assign sdram_read_valid = sdram_read_phase >= 3 && sdram_read_phase <= 10;
 
 TangNano20KSdramPll54M u_sdram_pll (
     .clkin(clk),

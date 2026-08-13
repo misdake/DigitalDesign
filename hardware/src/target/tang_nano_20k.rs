@@ -40,6 +40,9 @@ pub struct TangNano20KDebugOutputs {
 pub struct TangNano20KSdramInputs {
     pub buttons: Wires<2>,
     pub sdram_read_data: Wires<32>,
+    /// High for each valid read beat produced by this board's fitted
+    /// Controller HS configuration.
+    pub sdram_read_valid: digital_design_code::Wire,
     pub sdram_init_done: digital_design_code::Wire,
     pub sdram_command_ack: digital_design_code::Wire,
 }
@@ -213,6 +216,12 @@ impl TangNano20K {
                 GowinPortDirection::Input,
                 32,
                 "sdram_read_data",
+            ))
+            .connect_logic(GowinLogicConnection::new(
+                "sdram_read_valid",
+                GowinPortDirection::Input,
+                1,
+                "sdram_read_valid",
             ))
             .connect_logic(GowinLogicConnection::new(
                 "sdram_init_done",
