@@ -63,3 +63,20 @@ Program loading is a separate concern from cache operation: SDRAM has no
 bitstream initialization. The first board milestone may copy a linked image
 from initialized BSRAM before releasing the CPU. A UART loader can replace that
 bootstrap later without changing the ISA or cache protocol.
+
+## First data-cache policy
+
+The first processor uses split 2-KiB instruction and data caches. Each is
+direct-mapped with 64 sets and 32 bytes (16 CPU words) per line. Each cache's
+1,024 data words map exactly to one characterized 1024x16 BSRAM leaf, for two
+data blocks total. Tags and valid bits are small enough for logic registers
+initially. One arbiter shares the SDRAM transaction port; instruction misses
+may not starve refresh or an already accepted data transaction.
+
+Reads allocate a complete line. Stores are write-through; write misses do not
+allocate. This avoids dirty eviction and makes early correctness/debugging much
+simpler. The target SDRAM adapter converts a line refill into one Controller HS
+8-beat 32-bit burst, and converts a 16-bit store into a one-beat 32-bit masked
+write. Associativity and write-back are policy changes behind the same CPU and
+line-transaction interfaces, to be justified by measured miss traffic rather
+than copied from the exploratory model.
