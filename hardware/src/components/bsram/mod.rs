@@ -1,3 +1,5 @@
+//! Gowin-inferred block SRAM components and their initialization images.
+
 use crate::resources::components::BsramBlocks;
 use crate::{
     HardwareIdentity, Module, ModuleIo, ModuleTest, TargetResourceRequest, TestStep,

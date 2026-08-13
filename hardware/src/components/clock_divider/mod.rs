@@ -1,3 +1,5 @@
+//! Registered clock-enable divider component.
+
 use crate::{Hardware, Module, ModuleIo, ModuleTest, TestStep};
 use askama::Template;
 use digital_design_code::{
