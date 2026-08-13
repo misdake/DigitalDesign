@@ -159,31 +159,30 @@ that produced it.
 
 ### BSRAM leaves
 
-`Bsram1Rw1024<WIDTH>`, `Bsram1R1Rw1024<WIDTH>`, and
-`BsramTrueDualPort1024<WIDTH>` provide the initial 1024-word BSRAM shapes.
+`Bsram1Rw1024<WIDTH, Image>`, `Bsram1R1Rw1024<WIDTH, Image>`, and
+`BsramTrueDualPort1024<WIDTH, Image>` provide the initial 1024-word BSRAM shapes.
 `WIDTH` must be 16 or 18; each concrete specialization claims one 18-Kbit
-BSRAM block. These are target leaves with emulator and verified handwritten
-Verilog implementations. They intentionally have no NAND implementation:
+BSRAM block. These are target leaves with emulator and generated, explicitly
+simulator-tested Verilog implementations. They intentionally have no NAND
+implementation:
 the FPGA memory primitive is their implementation boundary, and calling
 `nand` fails immediately instead of expanding storage into gates.
 
 All ports use the project clock and have synchronous registered reads. A
 read/write port operates in normal mode: during a write its read output holds
-the previous registered value. Memory contents have no portable power-up
-value, so tests and callers must initialize an address before checking it.
-The emulator uses zero-filled host storage internally but this is not a
-hardware initialization guarantee. In the true-dual-port shape, simultaneous
+the previous registered value. Every BSRAM requires an explicit `Image`; there
+is no uninitialized variant, so emulation and FPGA startup have the same
+contents. In the true-dual-port shape, simultaneous
 writes to one address are unsupported and panic in emulation. Avoid depending
 on same-address cross-port read/write collision values in portable modules;
 they require a target- and configuration-specific measurement.
 
-`InitializedBsram1Rw1024<WIDTH, Image>` is the writable one-port variant with
-configuration-time contents. `Image` supplies one compile-time array shared by
-emulation and Verilog generation:
+`Image` supplies one compile-time array shared by emulation and Verilog
+generation:
 
 ```rust
 use digital_design_hardware::{
-    BsramInitialization, InitializedBsram1Rw1024, BSRAM_1024_DEPTH,
+    Bsram1Rw1024, BsramImage, BSRAM_1024_DEPTH,
 };
 
 const fn boot_words() -> [u64; BSRAM_1024_DEPTH] {
@@ -194,23 +193,22 @@ const fn boot_words() -> [u64; BSRAM_1024_DEPTH] {
 
 struct BootImage;
 
-impl BsramInitialization<16> for BootImage {
+impl BsramImage<16> for BootImage {
     const WORDS: [u64; BSRAM_1024_DEPTH] = boot_words();
 }
 
-type BootRam = InitializedBsram1Rw1024<16, BootImage>;
+type BootRam = Bsram1Rw1024<16, BootImage>;
 ```
 
-The complete image is part of the concrete module identity, so equal
-specializations are emitted once while different images remain different
-modules. Gowin embeds the words in the volatile configuration bitstream; they
-are present when the configured design starts and may subsequently be
-overwritten normally. No runtime fill loop or external memory file is required.
-The current initialized API covers the one-port read/write shape; initialized
-multi-port variants should be added only with their collision and inference
-behavior tested explicitly.
+Use `ZeroBsramImage` when all-zero startup is wanted; it remains an explicit
+choice at the call site. The complete image is part of the concrete module
+identity, so equal specializations are emitted once while different images
+remain different modules. Gowin embeds the words in the volatile configuration
+bitstream; they are present when the configured design starts and may
+subsequently be overwritten normally. No runtime fill loop or external memory
+file is required. All three port shapes use the same image mechanism.
 
-Parameterized handwritten HDL lives as complete, readable files beside its
+Parameterized HDL templates live as complete, readable files beside their
 Rust implementation (for example, `src/components/bsram/*.v`). Askama parses
 those templates at Rust compile time and
 binds their substitutions to typed Rust template structs. Const-generic Rust
@@ -221,13 +219,13 @@ Rust rendering code to values such as the concrete module name and bus width.
 The explicit module simulation uses the same typed vectors as emulation:
 
 ```text
-cargo test -p digital-design-hardware --lib components::bsram::tests::verify_handwritten_verilog_with_iverilog -- --ignored --nocapture
+cargo test -p digital-design-hardware --lib components::bsram::tests::verify_verilog_with_iverilog -- --ignored --nocapture
 ```
 
-The `bsram` example instantiates all three shapes at both widths plus an
-initialized writable RAM, and checks all 1024 addresses. Before writing that
-RAM it validates every configured word, then confirms a write replaces the
-selected word. It also verifies on hardware that read/write outputs hold during
+The `bsram` example instantiates all three shapes at both widths with zero
+images plus a writable RAM with a patterned image, and checks all 1024 startup
+words before writing anything. It then confirms a write replaces the selected
+patterned word. It also verifies on hardware that read/write outputs hold during
 writes while the independent read-only ports continue updating. Build and
 program volatile SRAM with:
 

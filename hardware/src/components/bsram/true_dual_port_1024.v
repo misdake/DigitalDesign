@@ -12,6 +12,10 @@ module {{ module_name }}(
 
 reg [{{ high_bit }}:0] memory [0:1023];
 
+initial begin
+{% for word in words %}    memory[{{ word.address }}] = {{ word.literal }};
+{% endfor %}end
+
 always @(posedge clk) begin
     if (a_write_enable)
         memory[a_address] <= a_write_data;

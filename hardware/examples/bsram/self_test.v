@@ -10,14 +10,14 @@ always @(posedge clk)
     reset_sync <= {reset_sync[0], |buttons};
 wire reset = reset_sync[1];
 
-reg [2:0] phase = 0;
+reg [3:0] phase = 0;
 reg [9:0] address = 0;
 reg [9:0] checked_address = 0;
 reg check_valid = 0;
 reg error_sticky = 0;
 
-wire filling = phase == 0;
-wire timing_write = phase == 4;
+wire filling = phase == 1;
+wire timing_write = phase == 5;
 wire writing = filling || timing_write;
 wire [15:0] sp16_pattern = 16'h5aa5 ^ {6'b0, address};
 wire [9:0] sp18_address = address ^ 10'h155;
@@ -35,24 +35,24 @@ wire [15:0] tdp16_a_read;
 wire [15:0] tdp16_b_read;
 wire [17:0] tdp18_a_read;
 wire [17:0] tdp18_b_read;
-wire [15:0] initialized_read;
+wire [15:0] pattern_read;
 
-Bsram1Rw1024_WIDTH16 u_Bsram1Rw1024_WIDTH16
+Bsram1Rw1024_WIDTH16_IMAGEshef93a2247cd076cf u_Bsram1Rw1024_WIDTH16
     /* synthesis syn_hier = "macro" */ /* synthesis syn_noprune = 1 */ (
     .clk(clk), .write_enable(writing), .address(address),
     .write_data(sp16_pattern), .read_data(sp16_read));
-Bsram1Rw1024_WIDTH18 u_Bsram1Rw1024_WIDTH18
+Bsram1Rw1024_WIDTH18_IMAGEsh5e9c74206890e28d u_Bsram1Rw1024_WIDTH18
     /* synthesis syn_hier = "macro" */ /* synthesis syn_noprune = 1 */ (
     .clk(clk), .write_enable(writing), .address(sp18_address),
     .write_data(sp18_pattern), .read_data(sp18_read));
 
 wire [9:0] rw_port_address = filling ? address : ~address;
-Bsram1R1Rw1024_WIDTH16 u_Bsram1R1Rw1024_WIDTH16
+Bsram1R1Rw1024_WIDTH16_IMAGEshef93a2247cd076cf u_Bsram1R1Rw1024_WIDTH16
     /* synthesis syn_hier = "macro" */ /* synthesis syn_noprune = 1 */ (
     .clk(clk), .read_address(address), .rw_write_enable(writing),
     .rw_address(rw_port_address), .rw_write_data(rw16_pattern),
     .read_data(r16_read), .rw_read_data(rw16_read));
-Bsram1R1Rw1024_WIDTH18 u_Bsram1R1Rw1024_WIDTH18
+Bsram1R1Rw1024_WIDTH18_IMAGEsh5e9c74206890e28d u_Bsram1R1Rw1024_WIDTH18
     /* synthesis syn_hier = "macro" */ /* synthesis syn_noprune = 1 */ (
     .clk(clk), .read_address(address), .rw_write_enable(writing),
     .rw_address(rw_port_address), .rw_write_data(rw18_pattern),
@@ -65,14 +65,14 @@ wire [15:0] tdp16_b_pattern = 16'h8462 ^ {6'b0, tdp_b_address};
 wire [17:0] tdp18_a_pattern = 18'h13579 ^ {8'b0, tdp_a_address};
 wire [17:0] tdp18_b_pattern = 18'h2864a ^ {8'b0, tdp_b_address};
 
-BsramTrueDualPort1024_WIDTH16 u_BsramTrueDualPort1024_WIDTH16
+BsramTrueDualPort1024_WIDTH16_IMAGEshef93a2247cd076cf u_BsramTrueDualPort1024_WIDTH16
     /* synthesis syn_hier = "macro" */ /* synthesis syn_noprune = 1 */ (
     .clk(clk),
     .a_write_enable(writing), .a_address(tdp_a_address),
     .a_write_data(tdp16_a_pattern), .a_read_data(tdp16_a_read),
     .b_write_enable(writing), .b_address(tdp_b_address),
     .b_write_data(tdp16_b_pattern), .b_read_data(tdp16_b_read));
-BsramTrueDualPort1024_WIDTH18 u_BsramTrueDualPort1024_WIDTH18
+BsramTrueDualPort1024_WIDTH18_IMAGEsh5e9c74206890e28d u_BsramTrueDualPort1024_WIDTH18
     /* synthesis syn_hier = "macro" */ /* synthesis syn_noprune = 1 */ (
     .clk(clk),
     .a_write_enable(writing), .a_address(tdp_a_address),
@@ -80,17 +80,24 @@ BsramTrueDualPort1024_WIDTH18 u_BsramTrueDualPort1024_WIDTH18
     .b_write_enable(writing), .b_address(tdp_b_address),
     .b_write_data(tdp18_b_pattern), .b_read_data(tdp18_b_read));
 
-wire initialized_write = phase == 4;
-InitializedBsram1Rw1024_WIDTH16_INITsh734a946f000166cf u_initialized_bsram
+wire pattern_write = phase == 5;
+Bsram1Rw1024_WIDTH16_IMAGEsh734a946f000166cf u_pattern_bsram
     /* synthesis syn_hier = "macro" */ (
-    .clk(clk), .write_enable(initialized_write), .address(address),
-    .write_data(16'h6d3b), .read_data(initialized_read));
+    .clk(clk), .write_enable(pattern_write), .address(address),
+    .write_data(16'h6d3b), .read_data(pattern_read));
 
-reg initialized_check_valid = 0;
-reg [9:0] initialized_checked_address = 0;
-wire [15:0] initialized_checked_value =
-    {initialized_checked_address, 6'b0} ^
-    {10'b0, initialized_checked_address[9:4]} ^ 16'ha55a;
+reg pattern_check_valid = 0;
+reg [9:0] pattern_checked_address = 0;
+wire [15:0] pattern_checked_value =
+    {pattern_checked_address, 6'b0} ^
+    {10'b0, pattern_checked_address[9:4]} ^ 16'ha55a;
+
+wire zero_image_values_match =
+    sp16_read == 0 && sp18_read == 0 &&
+    r16_read == 0 && rw16_read == 0 &&
+    r18_read == 0 && rw18_read == 0 &&
+    tdp16_a_read == 0 && tdp16_b_read == 0 &&
+    tdp18_a_read == 0 && tdp18_b_read == 0;
 
 wire [15:0] checked_sp16 = 16'h5aa5 ^ {6'b0, checked_address};
 wire [9:0] checked_sp18_address = checked_address ^ 10'h155;
@@ -134,7 +141,7 @@ wire timing_values_match =
     tdp16_b_read == (16'h1357 ^ 16'd351) &&
     tdp18_a_read == (18'h2864a ^ 18'd10) &&
     tdp18_b_read == (18'h13579 ^ 18'd351) &&
-    initialized_read == ((16'd10 << 6) ^ 16'ha55a);
+    pattern_read == ((16'd10 << 6) ^ 16'ha55a);
 
 always @(posedge clk) begin
     if (reset) begin
@@ -142,67 +149,77 @@ always @(posedge clk) begin
         address <= 0;
         checked_address <= 0;
         check_valid <= 0;
-        initialized_check_valid <= 0;
-        initialized_checked_address <= 0;
+        pattern_check_valid <= 0;
+        pattern_checked_address <= 0;
         error_sticky <= 0;
     end else begin
         case (phase)
             0: begin
-                if (initialized_check_valid &&
-                    initialized_read != initialized_checked_value)
+                if (pattern_check_valid &&
+                    (pattern_read != pattern_checked_value ||
+                     !zero_image_values_match))
                     error_sticky <= 1;
-                initialized_checked_address <= address;
-                initialized_check_valid <= 1;
+                pattern_checked_address <= address;
+                pattern_check_valid <= 1;
                 if (address == 10'd1023) begin
                     phase <= 1;
+                    address <= 0;
+                end else begin
+                    address <= address + 1'b1;
+                end
+            end
+            1: begin
+                if (pattern_check_valid &&
+                    (pattern_read != pattern_checked_value ||
+                     !zero_image_values_match))
+                    error_sticky <= 1;
+                pattern_check_valid <= 0;
+                if (address == 10'd1023) begin
+                    phase <= 2;
                     address <= 0;
                     check_valid <= 0;
                 end else begin
                     address <= address + 1'b1;
                 end
             end
-            1: begin
-                if (initialized_check_valid &&
-                    initialized_read != initialized_checked_value)
-                    error_sticky <= 1;
-                initialized_check_valid <= 0;
+            2: begin
                 if (check_valid && !values_match)
                     error_sticky <= 1;
                 checked_address <= address;
                 check_valid <= 1;
                 if (address == 10'd1023)
-                    phase <= 2;
+                    phase <= 3;
                 else
                     address <= address + 1'b1;
             end
-            2: begin
+            3: begin
                 if (check_valid && !values_match)
                     error_sticky <= 1;
                 check_valid <= 0;
                 address <= 10;
-                phase <= 3;
-            end
-            3: begin
-                address <= 20;
                 phase <= 4;
             end
-            4: phase <= 5;
-            5: begin
-                if (!timing_values_match)
-                    error_sticky <= 1;
-                phase <= 6;
+            4: begin
+                address <= 20;
+                phase <= 5;
             end
+            5: phase <= 6;
             6: begin
-                if (initialized_read != 16'h6d3b)
+                if (!timing_values_match)
                     error_sticky <= 1;
                 phase <= 7;
             end
-            default: phase <= 7;
+            7: begin
+                if (pattern_read != 16'h6d3b)
+                    error_sticky <= 1;
+                phase <= 8;
+            end
+            default: phase <= 8;
         endcase
     end
 end
 
-wire done = phase == 7;
+wire done = phase == 8;
 assign leds = error_sticky ? 6'b100000 : (done ? 6'b000001 : 6'b000000);
 
 reg [21:0] report_delay = 0;

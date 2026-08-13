@@ -1,7 +1,0 @@
-# Generated only after explicit Icarus simulation succeeds.
-Bsram1Rw1024_WIDTH16=fnv1a64:fdbd7c24bc9cf2af
-Bsram1Rw1024_WIDTH18=fnv1a64:9c213596f47f0420
-Bsram1R1Rw1024_WIDTH16=fnv1a64:f062d89200452b1f
-Bsram1R1Rw1024_WIDTH18=fnv1a64:4ddf2cecb68b7092
-BsramTrueDualPort1024_WIDTH16=fnv1a64:484f1226dadf9dd7
-BsramTrueDualPort1024_WIDTH18=fnv1a64:ec90ac3e07682745

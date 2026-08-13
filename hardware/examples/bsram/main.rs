@@ -1,9 +1,9 @@
 use digital_design_code::CircuitWires;
 use digital_design_hardware::{
-    run_gowin_project_cli, Bsram1R1Rw1024, Bsram1Rw1024, BsramInitialization,
-    BsramTrueDualPort1024, GowinCliError, GowinModuleProject, Hardware, InitializedBsram1Rw1024,
-    Module, ModuleTest, TangNano20K, TangNano20KDebugOutputs, TangNano20KDebugOutputsValue,
-    TangNano20KInputs, TangNano20KInputsValue, TestStep, VerilogDependency, VerilogVerification,
+    run_gowin_project_cli, Bsram1R1Rw1024, Bsram1Rw1024, BsramImage, BsramTrueDualPort1024,
+    GowinCliError, GowinModuleProject, Hardware, Module, ModuleTest, TangNano20K,
+    TangNano20KDebugOutputs, TangNano20KDebugOutputsValue, TangNano20KInputs,
+    TangNano20KInputsValue, TestStep, VerilogDependency, VerilogVerification, ZeroBsramImage,
     BSRAM_1024_DEPTH,
 };
 
@@ -15,7 +15,7 @@ fn main() -> Result<(), GowinCliError> {
 #[hardware(namespace = "examples/bsram")]
 struct BsramBoardSelfTest;
 
-struct BoardInitImage;
+struct BoardImage;
 
 const fn board_init_image() -> [u64; BSRAM_1024_DEPTH] {
     let mut words = [0; BSRAM_1024_DEPTH];
@@ -27,11 +27,17 @@ const fn board_init_image() -> [u64; BSRAM_1024_DEPTH] {
     words
 }
 
-impl BsramInitialization<16> for BoardInitImage {
+impl BsramImage<16> for BoardImage {
     const WORDS: [u64; BSRAM_1024_DEPTH] = board_init_image();
 }
 
-type InitializedBoardBsram = InitializedBsram1Rw1024<16, BoardInitImage>;
+type Sp16 = Bsram1Rw1024<16, ZeroBsramImage>;
+type Sp18 = Bsram1Rw1024<18, ZeroBsramImage>;
+type OneReadRw16 = Bsram1R1Rw1024<16, ZeroBsramImage>;
+type OneReadRw18 = Bsram1R1Rw1024<18, ZeroBsramImage>;
+type TrueDualPort16 = BsramTrueDualPort1024<16, ZeroBsramImage>;
+type TrueDualPort18 = BsramTrueDualPort1024<18, ZeroBsramImage>;
+type PatternSp16 = Bsram1Rw1024<16, BoardImage>;
 
 impl Module for BsramBoardSelfTest {
     type Input = TangNano20KInputs;
@@ -61,13 +67,13 @@ impl Module for BsramBoardSelfTest {
 
     fn verilog_dependencies() -> Vec<VerilogDependency> {
         vec![
-            VerilogDependency::new::<Bsram1Rw1024<16>>("u_Bsram1Rw1024_WIDTH16"),
-            VerilogDependency::new::<Bsram1Rw1024<18>>("u_Bsram1Rw1024_WIDTH18"),
-            VerilogDependency::new::<Bsram1R1Rw1024<16>>("u_Bsram1R1Rw1024_WIDTH16"),
-            VerilogDependency::new::<Bsram1R1Rw1024<18>>("u_Bsram1R1Rw1024_WIDTH18"),
-            VerilogDependency::new::<BsramTrueDualPort1024<16>>("u_BsramTrueDualPort1024_WIDTH16"),
-            VerilogDependency::new::<BsramTrueDualPort1024<18>>("u_BsramTrueDualPort1024_WIDTH18"),
-            VerilogDependency::new::<InitializedBoardBsram>("u_initialized_bsram"),
+            VerilogDependency::new::<Sp16>("u_Bsram1Rw1024_WIDTH16"),
+            VerilogDependency::new::<Sp18>("u_Bsram1Rw1024_WIDTH18"),
+            VerilogDependency::new::<OneReadRw16>("u_Bsram1R1Rw1024_WIDTH16"),
+            VerilogDependency::new::<OneReadRw18>("u_Bsram1R1Rw1024_WIDTH18"),
+            VerilogDependency::new::<TrueDualPort16>("u_BsramTrueDualPort1024_WIDTH16"),
+            VerilogDependency::new::<TrueDualPort18>("u_BsramTrueDualPort1024_WIDTH18"),
+            VerilogDependency::new::<PatternSp16>("u_pattern_bsram"),
         ]
     }
 
@@ -86,7 +92,7 @@ fn board_test() -> ModuleTest<BsramBoardSelfTest> {
                 uart_tx: true,
             },
         )
-        .after_cycles(2_100),
+        .after_cycles(3_200),
     ])
 }
 
@@ -97,18 +103,36 @@ fn bsram_gowin_project() -> GowinModuleProject<TangNano20K, BsramBoardSelfTest> 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use digital_design_hardware::{ResourceKind, VerilogProject};
+    use digital_design_hardware::{HardwareIdentity, ResourceKind, VerilogProject};
 
     #[test]
-    fn project_contains_bsram_shapes_and_initialized_memory() {
+    fn project_contains_bsram_shapes_and_images() {
         let verilog = VerilogProject::generate::<BsramBoardSelfTest>().unwrap();
-        for module in [
-            "Bsram1Rw1024_WIDTH16",
-            "Bsram1Rw1024_WIDTH18",
-            "Bsram1R1Rw1024_WIDTH16",
-            "Bsram1R1Rw1024_WIDTH18",
-            "BsramTrueDualPort1024_WIDTH16",
-            "BsramTrueDualPort1024_WIDTH18",
+        for (module, instance) in [
+            (
+                Sp16::verilog_identity().module_name(),
+                "u_Bsram1Rw1024_WIDTH16",
+            ),
+            (
+                Sp18::verilog_identity().module_name(),
+                "u_Bsram1Rw1024_WIDTH18",
+            ),
+            (
+                OneReadRw16::verilog_identity().module_name(),
+                "u_Bsram1R1Rw1024_WIDTH16",
+            ),
+            (
+                OneReadRw18::verilog_identity().module_name(),
+                "u_Bsram1R1Rw1024_WIDTH18",
+            ),
+            (
+                TrueDualPort16::verilog_identity().module_name(),
+                "u_BsramTrueDualPort1024_WIDTH16",
+            ),
+            (
+                TrueDualPort18::verilog_identity().module_name(),
+                "u_BsramTrueDualPort1024_WIDTH18",
+            ),
         ] {
             assert!(verilog
                 .files
@@ -117,13 +141,17 @@ mod tests {
             assert!(verilog
                 .files
                 .values()
-                .any(|source| source.contains(&format!("{module} u_{module}"))));
+                .any(|source| source.contains(&format!("{module} {instance}"))));
         }
-        assert!(verilog.files.values().any(|source| source
-            .contains("module InitializedBsram1Rw1024_WIDTH16_INITsh734a946f000166cf(")));
-        assert!(verilog.files.values().any(|source| source.contains(
-            "InitializedBsram1Rw1024_WIDTH16_INITsh734a946f000166cf u_initialized_bsram"
-        )));
+        let pattern_module = PatternSp16::verilog_identity().module_name();
+        assert!(verilog
+            .files
+            .values()
+            .any(|source| source.contains(&format!("module {pattern_module}("))));
+        assert!(verilog
+            .files
+            .values()
+            .any(|source| source.contains(&format!("{pattern_module} u_pattern_bsram"))));
         assert_eq!(verilog.resource_claims.len(), 7);
         assert!(verilog.resource_claims.iter().all(|claim| {
             claim.resources
