@@ -161,6 +161,13 @@ Parameterized HDL should simulate small representative specializations. Large
 real-world constants are covered by source/export assertions instead of
 advancing millions of simulator cycles unless their timing behavior differs.
 
+Verilog expression widths do not grow to fit a result. In particular, shifting
+an `N`-bit index left still produces an `N`-bit value and can silently wrap an
+array address. Widen an index explicitly with concatenation or an explicitly
+sized intermediate before arithmetic that needs another address bit. Tests for
+line or burst logic must cross the half-way boundary so this class of truncation
+cannot pass by checking only the first beats.
+
 ### BSRAM leaves
 
 `Bsram1Rw1024<WIDTH, Image>`, `Bsram1R1Rw1024<WIDTH, Image>`, and

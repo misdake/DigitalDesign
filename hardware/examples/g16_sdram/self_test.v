@@ -51,6 +51,7 @@ localparam [4:0] ST_DATA_READ_DATA = 27;
 localparam [4:0] ST_FILL_DATA_CACHE = 28;
 localparam [4:0] ST_COMPLETE_LOAD = 29;
 localparam [4:0] ST_DCACHE_STORE_CHECK = 30;
+localparam [4:0] ST_VERIFY_ICACHE = 31;
 
 reg [4:0] state = ST_INIT;
 reg [3:0] boot_index = 0;
@@ -59,11 +60,19 @@ reg [9:0] boot_address = 0;
 wire [15:0] boot_read_data;
 wire [15:0] unused_boot_rw_data;
 reg [15:0] line_words [0:15];
-reg [31:0] read_beats [0:7];
+reg [31:0] read_beat_0 = 0;
+reg [31:0] read_beat_1 = 0;
+reg [31:0] read_beat_2 = 0;
+reg [31:0] read_beat_3 = 0;
+reg [31:0] read_beat_4 = 0;
+reg [31:0] read_beat_5 = 0;
+reg [31:0] read_beat_6 = 0;
+reg [31:0] read_beat_7 = 0;
 reg [2:0] beat_index = 0;
 reg read_ack_seen = 0;
 reg [3:0] fill_word = 0;
 reg [19:0] timeout_counter = 0;
+reg [23:0] integration_watchdog = 0;
 reg [7:0] error_code = 0;
 reg [1:0] button_meta = 0;
 reg [1:0] button_sync = 0;
@@ -146,6 +155,51 @@ function [15:0] immediate4;
     end
 endfunction
 
+function [31:0] buffered_beat;
+    input [2:0] index;
+    begin
+        case (index)
+            0: buffered_beat = read_beat_0;
+            1: buffered_beat = read_beat_1;
+            2: buffered_beat = read_beat_2;
+            3: buffered_beat = read_beat_3;
+            4: buffered_beat = read_beat_4;
+            5: buffered_beat = read_beat_5;
+            6: buffered_beat = read_beat_6;
+            default: buffered_beat = read_beat_7;
+        endcase
+    end
+endfunction
+
+function [15:0] buffered_word;
+    input [3:0] index;
+    reg [31:0] beat;
+    begin
+        beat = buffered_beat(index[3:1]);
+        if (index[0])
+            buffered_word = beat[31:16];
+        else
+            buffered_word = beat[15:0];
+    end
+endfunction
+
+task capture_read_beat;
+    input [2:0] index;
+    input [31:0] value;
+    begin
+        case (index)
+            0: read_beat_0 <= value;
+            1: read_beat_1 <= value;
+            2: read_beat_2 <= value;
+            3: read_beat_3 <= value;
+            4: read_beat_4 <= value;
+            5: read_beat_5 <= value;
+            6: read_beat_6 <= value;
+            default: read_beat_7 <= value;
+        endcase
+    end
+endtask
+
 wire [3:0] opcode = instruction[15:12];
 wire [3:0] field_d = instruction[11:8];
 wire [3:0] field_a = instruction[7:4];
@@ -172,6 +226,7 @@ always @(posedge clk) begin
         boot_page <= 0;
         timeout_counter <= 0;
         error_code <= 0;
+        integration_watchdog <= 0;
         halted <= 0;
         faulted <= 0;
     end else begin
@@ -247,8 +302,8 @@ always @(posedge clk) begin
                 end else begin
                     beat_index <= beat_index + 1'b1;
                     sdram_write_data <= {
-                        line_words[((beat_index + 1'b1) << 1) + 1'b1],
-                        line_words[(beat_index + 1'b1) << 1]
+                        line_words[{(beat_index + 1'b1), 1'b1}],
+                        line_words[{(beat_index + 1'b1), 1'b0}]
                     };
                 end
             end
@@ -297,8 +352,17 @@ always @(posedge clk) begin
                 if (sdram_command_ack)
                     read_ack_seen <= 1;
                 if (sdram_read_valid) begin
-                    read_beats[beat_index] <= sdram_read_data;
-                    if (beat_index == 7) begin
+                    if (sdram_read_data !=
+                        {line_words[{beat_index, 1'b1}],
+                         line_words[{beat_index, 1'b0}]}) begin
+                        error_code <= 8'h50 | {5'b0, beat_index};
+                        state <= ST_ERROR;
+                    end else begin
+                        capture_read_beat(beat_index, sdram_read_data);
+                    end
+                    if (sdram_read_data ==
+                        {line_words[{beat_index, 1'b1}],
+                         line_words[{beat_index, 1'b0}]} && beat_index == 7) begin
                         if (!(read_ack_seen || sdram_command_ack)) begin
                             error_code <= 8'h14;
                             state <= ST_ERROR;
@@ -318,14 +382,33 @@ always @(posedge clk) begin
             ST_FILL_CACHE: begin
                 cache_write_enable <= 1;
                 cache_rw_address <= {6'b0, fill_word};
-                if (fill_word[0])
-                    cache_write_data <= read_beats[fill_word[3:1]][31:16];
-                else
-                    cache_write_data <= read_beats[fill_word[3:1]][15:0];
+                cache_write_data <= buffered_word(fill_word);
                 if (fill_word == 15)
-                    state <= ST_CPU_INIT;
+                    begin
+                        boot_index <= 0;
+                        fetch_phase <= 0;
+                        fetch_address <= 0;
+                        state <= ST_VERIFY_ICACHE;
+                    end
                 else
                     fill_word <= fill_word + 1'b1;
+            end
+
+            ST_VERIFY_ICACHE: begin
+                if (fetch_phase == 0) begin
+                    fetch_address <= {6'b0, boot_index};
+                    fetch_phase <= 1;
+                end else if (fetch_phase == 1) begin
+                    fetch_phase <= 2;
+                end else if (instruction != line_words[boot_index]) begin
+                    error_code <= 8'h60 | {4'b0, boot_index};
+                    state <= ST_ERROR;
+                end else if (boot_index == 15) begin
+                    state <= ST_CPU_INIT;
+                end else begin
+                    boot_index <= boot_index + 1'b1;
+                    fetch_phase <= 0;
+                end
             end
 
             ST_CPU_INIT: begin
@@ -544,7 +627,7 @@ always @(posedge clk) begin
                 if (sdram_command_ack)
                     read_ack_seen <= 1;
                 if (sdram_read_valid) begin
-                    read_beats[beat_index] <= sdram_read_data;
+                    capture_read_beat(beat_index, sdram_read_data);
                     if (beat_index == 7) begin
                         if (!(read_ack_seen || sdram_command_ack)) begin
                             error_code <= 8'h34;
@@ -565,10 +648,7 @@ always @(posedge clk) begin
             ST_FILL_DATA_CACHE: begin
                 data_cache_write_enable <= 1;
                 data_cache_rw_address <= {memory_address[9:4], data_fill_word};
-                if (data_fill_word[0])
-                    data_cache_write_data <= read_beats[data_fill_word[3:1]][31:16];
-                else
-                    data_cache_write_data <= read_beats[data_fill_word[3:1]][15:0];
+                data_cache_write_data <= buffered_word(data_fill_word);
                 if (data_fill_word == 15) begin
                     data_cache_tags[memory_address[9:4]] <= memory_address[15:10];
                     data_cache_valid[memory_address[9:4]] <= 1;
@@ -578,12 +658,7 @@ always @(posedge clk) begin
             end
 
             ST_COMPLETE_LOAD: begin
-                if (memory_address[0])
-                    registers[load_destination] <=
-                        read_beats[memory_address[3:1]][31:16];
-                else
-                    registers[load_destination] <=
-                        read_beats[memory_address[3:1]][15:0];
+                registers[load_destination] <= buffered_word(memory_address[3:0]);
                 state <= ST_CPU;
             end
 
@@ -594,6 +669,15 @@ always @(posedge clk) begin
                 state <= ST_ERROR;
             end
         endcase
+
+        if (state != ST_DONE && state != ST_ERROR) begin
+            if (integration_watchdog == 24'hff_ffff) begin
+                error_code <= 8'h80 | {1'b0, pc[6:0]};
+                state <= ST_ERROR;
+            end else begin
+                integration_watchdog <= integration_watchdog + 1'b1;
+            end
+        end
     end
 end
 

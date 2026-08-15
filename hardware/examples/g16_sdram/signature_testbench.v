@@ -107,8 +107,16 @@ initial begin
     #1;
     if (sdram_burst_length !== 8'd7)
         $fatal(1, "G16 SDRAM harness selected the wrong burst length");
-    if (leds !== 6'b000001)
+    if (leds !== 6'b000001) begin
+        $display(
+            "state=%0d error=0x%02x pc=0x%04x boot=%0d beat=%0d fill=%0d instruction=0x%04x expected=0x%04x",
+            dut.state, dut.error_code, dut.pc, dut.boot_index,
+            dut.beat_index, dut.fill_word, dut.instruction,
+            dut.line_words[dut.boot_index]
+        );
         $fatal(1, "G16 did not execute successfully from the refilled cache");
+    end
+    $display("DIGITAL_DESIGN_PASS");
     $finish;
 end
 endmodule
