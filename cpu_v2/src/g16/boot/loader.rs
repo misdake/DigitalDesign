@@ -4,7 +4,8 @@ use std::fmt;
 
 use super::{
     BootDescriptor, BootEntry, BootImageError, BootManifest, BootTarget, SectionKind,
-    SectionRecord, BOOT_MANIFEST_HEADER_SIZE, BOOT_SECTION_RECORD_SIZE, SECTION_EXECUTE,
+    SectionRecord, BOOT_DESCRIPTOR_SIZE, BOOT_MANIFEST_HEADER_SIZE, BOOT_SECTION_RECORD_SIZE,
+    SECTION_EXECUTE, STAGE1_HANDOFF_OFFSET, STAGE1_HANDOFF_SIZE_BYTES,
 };
 use crate::g16::{
     jump_segment, load_immediate16, write_data_segment, Machine, PhysicalWordAddress,
@@ -227,6 +228,10 @@ pub enum LoaderError {
         data_segment: Word,
         stack_offset: Word,
     },
+    InvalidStage1Handoff {
+        expected: PhysicalWordAddress,
+        found: PhysicalWordAddress,
+    },
     ProgramLoad(ProgramLoadError),
 }
 
@@ -276,6 +281,12 @@ impl fmt::Display for LoaderError {
             } => write!(
                 f,
                 "{stage} initial stack {data_segment:04x}:{stack_offset:04x} is outside usable physical data memory"
+            ),
+            Self::InvalidStage1Handoff { expected, found } => write!(
+                f,
+                "Stage1 handoff destination is {:#010x}; expected {:#010x} from its data segment",
+                found.get(),
+                expected.get()
             ),
             Self::ProgramLoad(error) => write!(
                 f,
@@ -347,6 +358,14 @@ pub fn run_stage0(
             expected_crc32: descriptor.stage1_crc32,
         },
     )?;
+    let encoded_descriptor = descriptor.encode();
+    let descriptor_words: [u16; BOOT_DESCRIPTOR_SIZE / 2] = std::array::from_fn(|index| {
+        u16::from_le_bytes([
+            encoded_descriptor[index * 2],
+            encoded_descriptor[index * 2 + 1],
+        ])
+    });
+    memory.load_physical(descriptor.stage1_handoff_destination, &descriptor_words)?;
     Ok(Stage0Handoff { descriptor })
 }
 
@@ -412,6 +431,25 @@ fn validate_stage0_descriptor(
             expected: expected_target,
             found: descriptor.target,
         });
+    }
+    let expected_handoff = PhysicalWordAddress::from_segment_offset(
+        descriptor.stage1_entry.data_segment,
+        STAGE1_HANDOFF_OFFSET,
+    );
+    if descriptor.stage1_handoff_destination != expected_handoff {
+        return Err(LoaderError::InvalidStage1Handoff {
+            expected: expected_handoff,
+            found: descriptor.stage1_handoff_destination,
+        });
+    }
+    let handoff_end = u64::from(descriptor.stage1_handoff_destination.get())
+        + u64::from(STAGE1_HANDOFF_SIZE_BYTES.div_ceil(2));
+    if handoff_end > memory.physical_memory_words() as u64 {
+        return Err(LoaderError::Dma(DmaError::PhysicalMemoryExceeded {
+            destination: descriptor.stage1_handoff_destination,
+            memory_bytes: STAGE1_HANDOFF_SIZE_BYTES,
+            available_words: memory.physical_memory_words(),
+        }));
     }
     if descriptor.package_size_bytes as usize > flash.len() {
         return Err(LoaderError::PackageLargerThanFlash {
@@ -778,6 +816,11 @@ mod tests {
         assert_eq!(
             memory.physical_memory(PhysicalWordAddress::new(0x0001_012f)),
             0
+        );
+        let encoded_descriptor = stage0.descriptor.encode();
+        assert_eq!(
+            memory.physical_memory(stage0.descriptor.stage1_handoff_destination),
+            u16::from_le_bytes([encoded_descriptor[0], encoded_descriptor[1]])
         );
 
         memory

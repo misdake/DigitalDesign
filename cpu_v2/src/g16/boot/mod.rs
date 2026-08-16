@@ -2,21 +2,25 @@
 
 mod loader;
 mod manifest;
+mod mmio;
 
 pub use loader::*;
 pub use manifest::*;
+pub use mmio::*;
 
 use std::collections::HashSet;
 use std::fmt;
 
 use super::{PhysicalWordAddress, Word, MMIO_BASE, TANG_NANO_20K_SDRAM_WORDS};
 
-pub const BOOT_FORMAT_VERSION: u16 = 1;
+pub const BOOT_FORMAT_VERSION: u16 = 2;
 pub const BOOT_DESCRIPTOR_SIZE: usize = 64;
 pub const BOOT_MANIFEST_HEADER_SIZE: usize = 48;
 pub const BOOT_SECTION_RECORD_SIZE: usize = 32;
 pub const BOOT_DATA_ALIGNMENT: u32 = 256;
 pub const TANG_NANO_20K_CONFIGURATION_RESERVE_BYTES: u32 = 1 << 20;
+pub const STAGE1_HANDOFF_OFFSET: Word = 0x0100;
+pub const STAGE1_HANDOFF_SIZE_BYTES: u32 = BOOT_DESCRIPTOR_SIZE as u32;
 
 const BOOT_MAGIC: &[u8; 8] = b"G16BOOT\0";
 const MANIFEST_MAGIC: &[u8; 8] = b"G16SECT\0";
@@ -125,6 +129,8 @@ pub struct BootDescriptor {
     pub manifest_flash_offset: u32,
     pub manifest_size_bytes: u32,
     pub stage1_crc32: u32,
+    /// Physical SDRAM address where Stage0 mirrors this complete descriptor.
+    pub stage1_handoff_destination: PhysicalWordAddress,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -174,6 +180,7 @@ impl BootImage {
              package: {:#010x} bytes\n\
              target Flash placement: {:#010x}..{:#010x}\n\
              stage1: flash+{:#010x} -> word {:#010x}, {:#x}/{:#x} bytes, entry {:04x}:{:04x}\n\
+             stage1 handoff descriptor: word {:#010x}, {:#x} bytes\n\
              application entry: {:04x}:{:04x}, dseg={:04x}, sp={:04x}\n\
              sections:\n",
             self.descriptor.target,
@@ -186,6 +193,8 @@ impl BootImage {
             self.descriptor.stage1_memory_size_bytes,
             self.descriptor.stage1_entry.code_segment,
             self.descriptor.stage1_entry.offset,
+            self.descriptor.stage1_handoff_destination.get(),
+            STAGE1_HANDOFF_SIZE_BYTES,
             self.manifest.application_entry.code_segment,
             self.manifest.application_entry.offset,
             self.manifest.application_entry.data_segment,
@@ -481,6 +490,10 @@ pub fn build_boot_image(spec: BootImageSpec) -> Result<BootImage, BootImageError
         manifest_flash_offset: BOOT_DESCRIPTOR_SIZE as u32,
         manifest_size_bytes: u32_len(&manifest_bytes, "manifest size")?,
         stage1_crc32: stage1.crc32,
+        stage1_handoff_destination: PhysicalWordAddress::from_segment_offset(
+            spec.stage1_entry.data_segment,
+            STAGE1_HANDOFF_OFFSET,
+        ),
     };
 
     let mut bytes = vec![0xff; package_size as usize];
@@ -520,6 +533,7 @@ impl BootDescriptor {
         put_u32(&mut bytes, 48, self.manifest_size_bytes);
         put_u32(&mut bytes, 52, self.stage1_crc32);
         put_u32(&mut bytes, 56, 0);
+        put_u32(&mut bytes, 60, self.stage1_handoff_destination.get());
         let checksum = crc32(&bytes);
         put_u32(&mut bytes, 56, checksum);
         bytes
@@ -554,6 +568,7 @@ impl BootDescriptor {
             manifest_flash_offset: get_u32(bytes, 44),
             manifest_size_bytes: get_u32(bytes, 48),
             stage1_crc32: get_u32(bytes, 52),
+            stage1_handoff_destination: PhysicalWordAddress::new(get_u32(bytes, 60)),
         })
     }
 }
@@ -685,7 +700,21 @@ fn validate_entries(spec: &BootImageSpec) -> Result<(), BootImageError> {
 fn validate_sections(spec: &BootImageSpec) -> Result<(), BootImageError> {
     let mut names = HashSet::new();
     let capacity_bytes = u64::from(spec.target.physical_memory_words()) * 2;
-    let mut ranges = Vec::with_capacity(spec.sections.len());
+    let mut ranges = Vec::with_capacity(spec.sections.len() + 1);
+    let handoff = PhysicalWordAddress::from_segment_offset(
+        spec.stage1_entry.data_segment,
+        STAGE1_HANDOFF_OFFSET,
+    );
+    let handoff_start = handoff.byte_address();
+    let handoff_end = handoff_start + u64::from(STAGE1_HANDOFF_SIZE_BYTES);
+    if handoff_end > capacity_bytes {
+        return Err(BootImageError::PhysicalMemoryExceeded {
+            section: "<stage1-handoff>".to_string(),
+            end_byte: handoff_end,
+            capacity_bytes,
+        });
+    }
+    ranges.push((handoff_start, handoff_end, "<stage1-handoff>".to_string()));
     for section in &spec.sections {
         if section.name.is_empty() {
             return Err(BootImageError::EmptySectionName);

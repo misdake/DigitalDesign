@@ -106,6 +106,17 @@ the initial data segment and stack pointer, and enters Stage1 with `JSEG`.
 Stage1 understands the extensible section table and loads the application.
 
 Cache tags and all cache-to-SDRAM requests contain physical word addresses.
+
+## Boot DMA device registers
+
+Device 2 occupies offsets `0xff20..0xff2f` in the fixed MMIO page. Stage1
+programs an absolute 24-bit Flash byte address, a 22-bit physical SDRAM word
+destination, file and in-memory byte sizes, and the expected CRC32 through
+literal-channel `dev_send` calls. Writing `1` to channel 0 starts one command;
+channel 1 reports idle (`0`), busy (`1`), done (`2`), or error (`0x8000`).
+Channels 12 through 15 expose the actual CRC, error code, and low completed-word
+count for diagnostics. The DMA zero-fills `memory_size - file_size`, so BSS does
+not require a second device command.
 Consequently equal offsets in different segments never alias in a cache. DMA
 writes require explicit invalidation before CPU execution or reads; changing a
 segment alone does not invalidate correctly tagged lines.
