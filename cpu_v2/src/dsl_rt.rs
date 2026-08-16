@@ -111,13 +111,13 @@ pub fn log2(x: u16) -> u16 {
     }
 }
 
-/// receive a word from a device (not available on the host)
+/// Receive a word from a device register (not available on the Rust host).
 pub fn dev_recv(dev: u8, ch: u8) -> u16 {
     let _ = (dev, ch);
     unimplemented!("devices are not available on the host")
 }
 
-/// send a word to a device (not available on the host)
+/// Send a word to a device register (not available on the Rust host).
 pub fn dev_send(dev: u8, ch: u8, v: u16) {
     let _ = (dev, ch, v);
     unimplemented!("devices are not available on the host")

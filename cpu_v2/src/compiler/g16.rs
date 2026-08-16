@@ -907,6 +907,19 @@ mod tests {
     }
 
     #[test]
+    fn device_intrinsics_address_the_fixed_mmio_page() {
+        let source = r#"
+            fn main() {
+                dev_send(2, 3, 0x1234);
+                halt(dev_recv(2, 3));
+            }
+        "#;
+        let (signal, machine) = run_with_options(source, CompilerOptions::g16());
+        assert_eq!(signal, 0x1234);
+        assert_eq!(machine.memory(0xff23), 0x1234);
+    }
+
+    #[test]
     fn non_overlapping_static_data_initializes_unified_memory() {
         let source = "static VALUE: u16 = 77; fn main() { halt(VALUE); }";
         let options = CompilerOptions {

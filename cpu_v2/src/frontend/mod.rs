@@ -2255,8 +2255,24 @@ fn call_expr(l: &mut FnLower, call: &syn::ExprCall) -> Result<Val, syn::Error> {
             l.b.end_if(join);
             return Ok(Val::Unit);
         }
-        "dev_recv" | "dev_send" => {
-            return Err(err(call, "dev_* intrinsics are not supported yet"));
+        "dev_recv" => {
+            if call.args.len() != 2 {
+                return Err(err(call, "dev_recv(dev, ch) takes 2 arguments"));
+            }
+            let device = literal_u8(&call.args[0], "device")?;
+            let channel = literal_u8(&call.args[1], "channel")?;
+            return Ok(Val::V(l.b.dev_recv(device, channel), Ty::U16));
+        }
+        "dev_send" => {
+            if call.args.len() != 3 {
+                return Err(err(call, "dev_send(dev, ch, value) takes 3 arguments"));
+            }
+            let device = literal_u8(&call.args[0], "device")?;
+            let channel = literal_u8(&call.args[1], "channel")?;
+            let (value, from) = expr(l, &call.args[2])?.reg(l, &call.args[2], "device value")?;
+            let (value, _) = coerce(l, value, &from, &Ty::U16, &call.args[2])?;
+            l.b.dev_send(device, channel, value);
+            return Ok(Val::Unit);
         }
         _ => {}
     }
@@ -2337,6 +2353,20 @@ fn call_expr(l: &mut FnLower, call: &syn::ExprCall) -> Result<Val, syn::Error> {
         });
     }
     Err(err(&p, format!("undefined function `{name}`")))
+}
+
+fn literal_u8(expression: &Expr, name: &str) -> Result<u8, syn::Error> {
+    let Expr::Lit(literal) = expression else {
+        return Err(err(expression, format!("{name} must be a u8 literal")));
+    };
+    let Lit::Int(integer) = &literal.lit else {
+        return Err(err(expression, format!("{name} must be a u8 literal")));
+    };
+    if !matches!(integer.suffix(), "" | "u8" | "u16") {
+        return Err(err(expression, format!("{name} must be a u8 literal")));
+    }
+    u8::try_from(lit_int_value(integer)?)
+        .map_err(|_| err(expression, format!("{name} must be from 0 through 255")))
 }
 
 /// owned-array methods (Slice2 intrinsics): read/write/as_ptr/as_array/len
