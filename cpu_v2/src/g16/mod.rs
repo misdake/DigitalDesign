@@ -6,6 +6,7 @@
 //! The normative migration notes and local encoding changes are in `spec.md`.
 
 mod address;
+pub mod boot;
 mod cache;
 mod encoding;
 mod sdram;
