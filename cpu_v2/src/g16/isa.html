@@ -345,6 +345,7 @@
       <li>The fitted 8-MiB Tang Nano 20K SDRAM uses 22 physical word-address bits. Larger architectural addresses fault instead of aliasing.</li>
       <li><code>r15</code> normally holds <code>0xff00</code>; this top MMIO offset page always selects fixed system space in segment zero.</li>
       <li><code>CompilerOptions::g16()</code> selects data base <code>0x4000</code>, heap base <code>0x8000</code>, stack top <code>0xff00</code>, and disables the legacy v2.6 function table.</li>
+      <li>The G16 compiler's optional <code>code_base</code> relocates all linked code offsets and function pointers without padding the emitted section bytes.</li>
     </ul>
     <h3>Cache geometry</h3>
     <table>

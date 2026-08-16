@@ -87,8 +87,9 @@ switching and far calls are outside the compiler contract.
 
 The compiler continues to emit 16-bit offsets. Its linked code must fit one
 64K-word code window, and static data, heap, and stack must fit one 64K-word
-data window. The offline packer chooses their physical segments and records
-them in the boot image.
+data window. `CompilerOptions::code_base` (CLI `--g16 --code-base`) relocates
+the linked code offsets without adding padding to the output file. The offline
+packer places those bytes at the matching physical segment and offset.
 
 ## Memory and boot direction
 

@@ -27,6 +27,8 @@ pub struct CompilerOptions {
     pub stack_init: u16,
     /// data section base address for static data (spec §9)
     pub data_base: u16,
+    /// linked code offset inside a G16 code segment; ignored by v2.6
+    pub code_base: u16,
     /// heap region start (used by the rcc_std heap library and its auto-init)
     pub heap_begin: u16,
     /// heap region size in words
@@ -43,6 +45,7 @@ impl Default for CompilerOptions {
             opt: Opts::default(),
             stack_init: 0,
             data_base: 0,
+            code_base: 0,
             heap_begin: 0x1000,
             heap_size: 20,
             vec_init_cap: 4,

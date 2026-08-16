@@ -12,12 +12,14 @@ const HELP: &str = "\
 rcc: the rcc compiler artifact
 
 usage: rcc <input.rs> [options]
+  --g16               compile with the G16 backend and emit raw u16-LE words
   -o <file>           binary output (default: <input>.bin)
   --lst <file>        disassembly listing (default: <input>.lst)
   --no-opt            disable all optimization passes
   --function-table <mode>
                       call_abs table: auto (default), none, all, or name,...
   --stack-init <n>    initial stack pointer for main (0 = simulator default)
+  --code-base <n>     G16 linked code offset inside its segment
   --data-base <n>     static data section base address
   --heap-begin <n>    heap region start
   --heap-size <n>     heap region size in words
@@ -28,12 +30,18 @@ numbers are decimal or 0x-prefixed hex.
 <name>.dsl.rs / <name>/mod.rs); the rcc_std library is embedded.";
 
 fn main() -> ExitCode {
-    let mut opts = CompilerOptions::default();
+    let raw_args = std::env::args().skip(1).collect::<Vec<_>>();
+    let g16 = raw_args.iter().any(|argument| argument == "--g16");
+    let mut opts = if g16 {
+        CompilerOptions::g16()
+    } else {
+        CompilerOptions::default()
+    };
     let mut input: Option<PathBuf> = None;
     let mut out: Option<PathBuf> = None;
     let mut lst: Option<PathBuf> = None;
 
-    let mut args = std::env::args().skip(1);
+    let mut args = raw_args.into_iter();
     while let Some(a) = args.next() {
         let mut num = |name: &str| -> u16 {
             let v = args
@@ -53,13 +61,23 @@ fn main() -> ExitCode {
                 ))
             }
             "--no-opt" => opts.opt = cpu_v2::Opts::disabled(),
+            "--g16" => {}
             "--function-table" => {
+                if g16 {
+                    die("--function-table is not supported by the G16 backend");
+                }
                 let value = args
                     .next()
                     .unwrap_or_else(|| die("--function-table needs a value"));
                 opts.function_table = parse_function_table(&value);
             }
             "--stack-init" => opts.stack_init = num("--stack-init"),
+            "--code-base" => {
+                if !g16 {
+                    die("--code-base requires --g16");
+                }
+                opts.code_base = num("--code-base");
+            }
             "--data-base" => opts.data_base = num("--data-base"),
             "--heap-begin" => opts.heap_begin = num("--heap-begin"),
             "--heap-size" => opts.heap_size = num("--heap-size"),
@@ -81,7 +99,7 @@ fn main() -> ExitCode {
     let Some(input) = input else {
         die("no input file (see --help)");
     };
-    let out = out.unwrap_or_else(|| input.with_extension("bin"));
+    let out = out.unwrap_or_else(|| input.with_extension(if g16 { "g16bin" } else { "bin" }));
     let lst = lst.unwrap_or_else(|| input.with_extension("lst"));
 
     let src = std::fs::read_to_string(&input)
@@ -113,23 +131,36 @@ fn main() -> ExitCode {
     for f in program.funcs {
         c.add_func(f);
     }
-    let (instructions, listing, debug) = c.finish_with_debug("main");
-
-    std::fs::write(&out, encode_binary(&instructions))
-        .unwrap_or_else(|e| die(&format!("cannot write {}: {e}", out.display())));
-    std::fs::write(&lst, &listing)
-        .unwrap_or_else(|e| die(&format!("cannot write {}: {e}", lst.display())));
-    let dbg_path = out.with_extension("dbg");
-    std::fs::write(&dbg_path, debug.render())
-        .unwrap_or_else(|e| die(&format!("cannot write {}: {e}", dbg_path.display())));
-
-    println!(
-        "compiled {} functions, {} instructions -> {} (+ {})",
-        n_funcs,
-        instructions.len(),
-        out.display(),
-        lst.display()
-    );
+    if g16 {
+        let program = c.finish_g16("main");
+        std::fs::write(&out, encode_g16_words(&program.words))
+            .unwrap_or_else(|e| die(&format!("cannot write {}: {e}", out.display())));
+        std::fs::write(&lst, &program.listing)
+            .unwrap_or_else(|e| die(&format!("cannot write {}: {e}", lst.display())));
+        println!(
+            "compiled {} functions, {} G16 words -> {} (+ {})",
+            n_funcs,
+            program.words.len(),
+            out.display(),
+            lst.display()
+        );
+    } else {
+        let (instructions, listing, debug) = c.finish_with_debug("main");
+        std::fs::write(&out, encode_binary(&instructions))
+            .unwrap_or_else(|e| die(&format!("cannot write {}: {e}", out.display())));
+        std::fs::write(&lst, &listing)
+            .unwrap_or_else(|e| die(&format!("cannot write {}: {e}", lst.display())));
+        let dbg_path = out.with_extension("dbg");
+        std::fs::write(&dbg_path, debug.render())
+            .unwrap_or_else(|e| die(&format!("cannot write {}: {e}", dbg_path.display())));
+        println!(
+            "compiled {} functions, {} instructions -> {} (+ {})",
+            n_funcs,
+            instructions.len(),
+            out.display(),
+            lst.display()
+        );
+    }
     ExitCode::SUCCESS
 }
 
@@ -174,4 +205,21 @@ fn encode_binary(instructions: &[Instruction]) -> Vec<u8> {
         out.extend_from_slice(&w.encode().to_le_bytes());
     }
     out
+}
+
+fn encode_g16_words(words: &[u16]) -> Vec<u8> {
+    words.iter().flat_map(|word| word.to_le_bytes()).collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn g16_output_is_headerless_little_endian_words_for_the_boot_packer() {
+        assert_eq!(
+            encode_g16_words(&[0x1234, 0xabcd]),
+            [0x34, 0x12, 0xcd, 0xab]
+        );
+    }
 }
