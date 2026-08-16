@@ -397,7 +397,8 @@ Unknown DSP modes fail closed; PLLs use the same aggregate actual-versus-claim
 rule. The complete rationale and extension rules are recorded in
 [RESOURCE_MODEL.md](RESOURCE_MODEL.md). Tang Nano 20K fitted SDRAM clocking,
 installed-IP dependencies, and validation are recorded in
-[SDRAM.md](SDRAM.md).
+[SDRAM.md](SDRAM.md). Runtime access to the board configuration Flash is
+recorded in [SPI_FLASH.md](SPI_FLASH.md).
 
 Tang Nano 20K exposes the wires that are stable parts of the board directly as
 typed module IO:
