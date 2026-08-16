@@ -8,6 +8,7 @@ const HELP: &str = "\
 g16-pack: build a versioned G16 Flash payload
 
 usage: g16-pack <manifest.g16manifest> [-o image.g16boot] [--map image.map]
+                [--configuration-bin design.bin] [--flash-image complete.bin]
 
 manifest format:
   format 1
@@ -20,7 +21,8 @@ manifest format:
 
 Numbers are decimal or 0x-prefixed hexadecimal. File paths are relative to the
 manifest and may not contain whitespace. The output contains package-relative
-Flash offsets; placement into a board Flash is a separate checked step.";
+Flash offsets. Supplying a Gowin-converted configuration binary also produces
+a checked complete Flash image with the package at the target payload base.";
 
 fn main() -> ExitCode {
     match run(std::env::args().skip(1)) {
@@ -36,6 +38,8 @@ fn run(args: impl Iterator<Item = String>) -> Result<(), String> {
     let mut input = None;
     let mut output = None;
     let mut map = None;
+    let mut configuration = None;
+    let mut flash_image = None;
     let mut args = args;
     while let Some(argument) = args.next() {
         match argument.as_str() {
@@ -45,6 +49,10 @@ fn run(args: impl Iterator<Item = String>) -> Result<(), String> {
             }
             "-o" => output = Some(next_path(&mut args, "-o")?),
             "--map" => map = Some(next_path(&mut args, "--map")?),
+            "--configuration-bin" => {
+                configuration = Some(next_path(&mut args, "--configuration-bin")?)
+            }
+            "--flash-image" => flash_image = Some(next_path(&mut args, "--flash-image")?),
             value if value.starts_with('-') => return Err(format!("unknown option `{value}`")),
             value if input.is_none() => input = Some(PathBuf::from(value)),
             value => return Err(format!("unexpected second input `{value}`")),
@@ -64,6 +72,28 @@ fn run(args: impl Iterator<Item = String>) -> Result<(), String> {
         .map_err(|source| format!("cannot write {}: {source}", output.display()))?;
     std::fs::write(&map, image.map())
         .map_err(|source| format!("cannot write {}: {source}", map.display()))?;
+    if flash_image.is_some() && configuration.is_none() {
+        return Err("--flash-image requires --configuration-bin".into());
+    }
+    if let Some(configuration) = configuration {
+        let configuration_bytes = std::fs::read(&configuration).map_err(|source| {
+            format!(
+                "cannot read configuration {}: {source}",
+                configuration.display()
+            )
+        })?;
+        let placed = image
+            .place_after_configuration(&configuration_bytes)
+            .map_err(|error| error.to_string())?;
+        let flash_image = flash_image.unwrap_or_else(|| output.with_extension("flash.bin"));
+        std::fs::write(&flash_image, placed.bytes)
+            .map_err(|source| format!("cannot write {}: {source}", flash_image.display()))?;
+        println!(
+            "placed package at Flash {:#010x} -> {}",
+            placed.payload_offset,
+            flash_image.display()
+        );
+    }
     println!(
         "packed {} sections, {} bytes -> {} (+ {})",
         image.sections.len(),

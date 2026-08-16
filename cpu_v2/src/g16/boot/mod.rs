@@ -16,6 +16,7 @@ pub const BOOT_DESCRIPTOR_SIZE: usize = 64;
 pub const BOOT_MANIFEST_HEADER_SIZE: usize = 48;
 pub const BOOT_SECTION_RECORD_SIZE: usize = 32;
 pub const BOOT_DATA_ALIGNMENT: u32 = 256;
+pub const TANG_NANO_20K_CONFIGURATION_RESERVE_BYTES: u32 = 1 << 20;
 
 const BOOT_MAGIC: &[u8; 8] = b"G16BOOT\0";
 const MANIFEST_MAGIC: &[u8; 8] = b"G16SECT\0";
@@ -41,6 +42,16 @@ impl BootTarget {
         match self {
             Self::TangNano20K => 8 * 1024 * 1024,
         }
+    }
+
+    pub const fn payload_flash_offset(self) -> u32 {
+        match self {
+            Self::TangNano20K => TANG_NANO_20K_CONFIGURATION_RESERVE_BYTES,
+        }
+    }
+
+    pub const fn payload_capacity_bytes(self) -> u32 {
+        self.flash_bytes() - self.payload_flash_offset()
     }
 
     fn from_raw(value: u32) -> Result<Self, BootImageError> {
@@ -149,17 +160,26 @@ pub struct BootImage {
     pub sections: Vec<PackedSection>,
 }
 
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct TargetFlashImage {
+    pub bytes: Vec<u8>,
+    pub payload_offset: u32,
+}
+
 impl BootImage {
     pub fn map(&self) -> String {
         let mut text = format!(
             "G16 boot image v{BOOT_FORMAT_VERSION}\n\
              target: {:?}\n\
              package: {:#010x} bytes\n\
+             target Flash placement: {:#010x}..{:#010x}\n\
              stage1: flash+{:#010x} -> word {:#010x}, {:#x}/{:#x} bytes, entry {:04x}:{:04x}\n\
              application entry: {:04x}:{:04x}, dseg={:04x}, sp={:04x}\n\
              sections:\n",
             self.descriptor.target,
             self.descriptor.package_size_bytes,
+            self.descriptor.target.payload_flash_offset(),
+            self.descriptor.target.payload_flash_offset() + self.descriptor.package_size_bytes,
             self.descriptor.stage1_flash_offset,
             self.descriptor.stage1_destination.get(),
             self.descriptor.stage1_file_size_bytes,
@@ -187,6 +207,33 @@ impl BootImage {
             ));
         }
         text
+    }
+
+    pub fn place_after_configuration(
+        &self,
+        configuration: &[u8],
+    ) -> Result<TargetFlashImage, BootImageError> {
+        let reserve = self.descriptor.target.payload_flash_offset();
+        if configuration.len() > reserve as usize {
+            return Err(BootImageError::ConfigurationTooLarge {
+                bytes: configuration.len(),
+                reserved: reserve,
+            });
+        }
+        let total = reserve as usize + self.bytes.len();
+        if total > self.descriptor.target.flash_bytes() as usize {
+            return Err(BootImageError::PackageTooLarge {
+                bytes: self.bytes.len() as u64,
+                capacity: self.descriptor.target.payload_capacity_bytes(),
+            });
+        }
+        let mut bytes = vec![0xff; total];
+        bytes[..configuration.len()].copy_from_slice(configuration);
+        bytes[reserve as usize..].copy_from_slice(&self.bytes);
+        Ok(TargetFlashImage {
+            bytes,
+            payload_offset: reserve,
+        })
     }
 }
 
@@ -238,6 +285,10 @@ pub enum BootImageError {
     PackageTooLarge {
         bytes: u64,
         capacity: u32,
+    },
+    ConfigurationTooLarge {
+        bytes: usize,
+        reserved: u32,
     },
     IntegerOverflow(&'static str),
     Truncated(&'static str),
@@ -319,6 +370,10 @@ impl fmt::Display for BootImageError {
                 f,
                 "boot package uses {bytes:#x} bytes, beyond target Flash capacity {capacity:#x}"
             ),
+            Self::ConfigurationTooLarge { bytes, reserved } => write!(
+                f,
+                "FPGA configuration uses {bytes:#x} bytes, beyond the reserved {reserved:#x}-byte Flash region"
+            ),
             Self::IntegerOverflow(field) => write!(f, "boot image field `{field}` exceeds u32"),
             Self::Truncated(part) => write!(f, "truncated boot {part}"),
             Self::InvalidMagic(part) => write!(f, "invalid boot {part} magic"),
@@ -377,10 +432,10 @@ pub fn build_boot_image(spec: BootImageSpec) -> Result<BootImage, BootImageError
         }
     }
     let package_size = cursor;
-    if u64::from(package_size) > u64::from(spec.target.flash_bytes()) {
+    if u64::from(package_size) > u64::from(spec.target.payload_capacity_bytes()) {
         return Err(BootImageError::PackageTooLarge {
             bytes: u64::from(package_size),
-            capacity: spec.target.flash_bytes(),
+            capacity: spec.target.payload_capacity_bytes(),
         });
     }
 
@@ -939,5 +994,18 @@ mod tests {
                 address: 0x0003_0300,
             })
         );
+    }
+
+    #[test]
+    fn complete_flash_image_preserves_the_reserved_configuration_region() {
+        let image = build_boot_image(example_spec()).unwrap();
+        let configuration = vec![0x5a; 577_178];
+        let placed = image.place_after_configuration(&configuration).unwrap();
+        assert_eq!(placed.payload_offset, 0x0010_0000);
+        assert_eq!(&placed.bytes[..configuration.len()], &configuration);
+        assert!(placed.bytes[configuration.len()..0x0010_0000]
+            .iter()
+            .all(|byte| *byte == 0xff));
+        assert_eq!(&placed.bytes[0x0010_0000..], &image.bytes);
     }
 }
