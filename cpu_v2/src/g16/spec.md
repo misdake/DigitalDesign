@@ -11,20 +11,31 @@ organization, and the explicitly separated current FPGA implementation status.
 
 ## Architectural boundary
 
-- Instructions and data share one 16-bit word-addressed, 65,536-word space.
+- Instructions and data use 16-bit word offsets within boot-selected code and
+  data segments. A physical word address is the direct concatenation
+  `{segment[15:0], offset[15:0]}`; segment arithmetic is never added to the
+  offset and offset wrap never advances a segment.
 - There are sixteen writable 16-bit GPRs and no architectural flags.
 - `r0..r1` return values, `r2..r7` arguments, `r8..r11` callee-saved values,
   `r12` compiler scratch, `r13` stack pointer, `r14` link, and `r15` the
   global/MMIO base.
-- The initial FPGA implementation exposes a 128-KiB CPU-visible SDRAM window.
-  Mapping the complete fitted SDRAM is deferred until software needs it.
+- `CSEG` supplies the high physical bits for instruction fetch. `DSEG` supplies
+  them for ordinary loads and stores, including stack accesses. The fixed MMIO
+  offset page `0xff00..0xffff` always selects system space in segment zero.
+- Reset establishes `CSEG = 0`, `DSEG = 0`, and `PC = 0`. Normal applications
+  do not change either segment. Stage0 writes `DSEG` immediately before an
+  atomic segmented jump establishes the application `CSEG` and entry offset.
+- The initial Tang Nano 20K implementation fits 8 MiB of SDRAM: 23 byte-address
+  bits, 22 16-bit-word-address bits, and 21 32-bit controller-beat bits. Any
+  architectural physical address outside that fitted range faults instead of
+  being truncated or aliased.
 - `IMMHI12` and an eligible adjacent consumer form one precise two-word
   operation. A consumer fault reports the prefix address and retires neither
   word. A non-consumer expires and separately retires a pending prefix.
 - `HALT` carries no result field. Host tests observe `r0`; board programs write
   their result to UART/MMIO before halting.
 
-The baseline unified-memory map is:
+The baseline offset map inside the selected data segment is:
 
 | Range | Initial use |
 | --- | --- |
@@ -32,7 +43,7 @@ The baseline unified-memory map is:
 | `0x4000..` | static data |
 | `0x8000..` | heap baseline |
 | below `0xff00` | stack, growing downward |
-| `0xff00..0xffff` | MMIO page addressed through `r15` |
+| `0xff00..0xffff` | fixed MMIO page in segment zero, addressed through `r15` |
 
 `CompilerOptions::g16()` selects these boundaries. The old v2.6 convention of
 using a zero stack pointer to wrap to `0xffff` is rejected because that address
@@ -56,6 +67,29 @@ FPU space. Equality still uses `CMPEQI` for immediates or `XOR` plus `BZ/BNZ`
 for registers. `POPCNT` preserves the existing rcc `cnt1` intrinsic without a
 large software sequence.
 
+## Revision 0.4
+
+Revision 0.4 makes the complete fitted SDRAM addressable without widening
+ordinary pointers or changing compiler-generated load/store instructions.
+
+| Encoding | Name | Operation |
+| --- | --- | --- |
+| `E C rd sr` | `MFSR` | read `CSEG` (`sr=0`) or `DSEG` (`sr=1`) |
+| `E D 1 rs` | `MTSR DSEG` | set the boot-time data segment from `rs` |
+| `E E seg target` | `JSEG` | atomically set `CSEG = r[seg]`, `PC = r[target]` |
+| `E F ..` | reserved | invalid instruction |
+
+Directly writing `CSEG` is deliberately impossible because fetching a
+sequential instruction after such a write would be pipeline-dependent.
+`JSEG` is the only segmented transfer in the initial ABI. Functions and
+function pointers remain near and within one code segment; dynamic data-bank
+switching and far calls are outside the compiler contract.
+
+The compiler continues to emit 16-bit offsets. Its linked code must fit one
+64K-word code window, and static data, heap, and stack must fit one 64K-word
+data window. The offline packer chooses their physical segments and records
+them in the boot image.
+
 ## Memory and boot direction
 
 The first implementation keeps the CPU, cache controller, SDRAM scheduler, and
@@ -64,9 +98,16 @@ tags, and a small initialized boot path; SDRAM is main memory. A clock-enable
 does not relax timing and is not used as a substitute for pipelining.
 
 Program loading is a separate concern from cache operation: SDRAM has no
-bitstream initialization. The first board milestone may copy a linked image
-from initialized BSRAM before releasing the CPU. A UART loader can replace that
-bootstrap later without changing the ISA or cache protocol.
+bitstream initialization. Immutable Stage0 code starts from initialized
+BSRAM/instruction-cache state in segment zero, copies and verifies Stage1 from
+SPI Flash into SDRAM, invalidates the affected physical cache lines, writes
+the initial data segment and stack pointer, and enters Stage1 with `JSEG`.
+Stage1 understands the extensible section table and loads the application.
+
+Cache tags and all cache-to-SDRAM requests contain physical word addresses.
+Consequently equal offsets in different segments never alias in a cache. DMA
+writes require explicit invalidation before CPU execution or reads; changing a
+segment alone does not invalidate correctly tagged lines.
 
 ## First data-cache policy
 

@@ -3,7 +3,7 @@
 pub type Word = u16;
 pub type Register = u8;
 
-pub const ISA_REVISION: (u8, u8) = (0, 3);
+pub const ISA_REVISION: (u8, u8) = (0, 4);
 
 pub const LINK_REGISTER: Register = 14;
 pub const STACK_REGISTER: Register = 13;
@@ -55,6 +55,13 @@ pub enum BranchCondition {
     NonPositive = 5,
     Odd = 6,
     Even = 7,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[repr(u16)]
+pub enum SpecialRegister {
+    CodeSegment = 0,
+    DataSegment = 1,
 }
 
 impl BranchCondition {
@@ -178,6 +185,23 @@ pub fn population_count(dst: Register, src: Register) -> Word {
     control(11, dst, src)
 }
 
+pub fn read_special(dst: Register, special: SpecialRegister) -> Word {
+    control(12, dst, special as Register)
+}
+
+/// Writes a boot-time configurable special register.
+///
+/// CSEG deliberately cannot be written this way: changing the fetch segment
+/// and the program counter must be one architectural operation.
+pub fn write_data_segment(src: Register) -> Word {
+    control(13, SpecialRegister::DataSegment as Register, src)
+}
+
+/// Atomically selects the code segment and the offset of the next instruction.
+pub fn jump_segment(segment: Register, target: Register) -> Word {
+    control(14, segment, target)
+}
+
 pub const fn halt() -> Word {
     0xe800
 }
@@ -237,6 +261,9 @@ mod tests {
         assert_eq!(set_less_than_signed(3, 4), 0xe934);
         assert_eq!(set_less_than_unsigned(3, 4), 0xea34);
         assert_eq!(population_count(3, 4), 0xeb34);
+        assert_eq!(read_special(3, SpecialRegister::CodeSegment), 0xec30);
+        assert_eq!(write_data_segment(4), 0xed14);
+        assert_eq!(jump_segment(3, 4), 0xee34);
         assert_eq!(halt(), 0xe800);
     }
 

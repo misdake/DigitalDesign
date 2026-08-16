@@ -4,7 +4,7 @@
 //! model deliberately stops at 32-byte line transactions so Gowin Controller
 //! HS command timing remains in the target-specific SDRAM adapter.
 
-use super::Word;
+use super::{PhysicalWordAddress, Word};
 
 pub const CACHE_LINE_WORDS: usize = 16;
 pub const CACHE_LINE_BYTES: usize = CACHE_LINE_WORDS * size_of::<Word>();
@@ -13,8 +13,13 @@ pub const CACHE_CAPACITY_BYTES: usize = CACHE_SETS * CACHE_LINE_BYTES;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum CpuMemoryRequest {
-    Read { address: Word },
-    Write { address: Word, value: Word },
+    Read {
+        address: PhysicalWordAddress,
+    },
+    Write {
+        address: PhysicalWordAddress,
+        value: Word,
+    },
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -26,12 +31,12 @@ pub enum CpuMemoryResponse {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum MainMemoryRequest {
     ReadLine {
-        line_address: Word,
+        line_address: PhysicalWordAddress,
     },
     /// A write-through half-word. The SDRAM adapter performs a one-beat
     /// 32-bit write with the appropriate two byte-mask bits disabled.
     WriteWord {
-        address: Word,
+        address: PhysicalWordAddress,
         value: Word,
     },
 }
@@ -50,8 +55,13 @@ pub enum CacheError {
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum Pending {
-    ReadMiss { address: Word },
-    WriteThrough { address: Word, hit: bool },
+    ReadMiss {
+        address: PhysicalWordAddress,
+    },
+    WriteThrough {
+        address: PhysicalWordAddress,
+        hit: bool,
+    },
 }
 
 /// A 2-KiB direct-mapped, write-through, no-write-allocate cache.
@@ -62,7 +72,7 @@ enum Pending {
 /// CPU transaction interface if measurements later justify more BSRAM blocks.
 pub struct DataCache {
     words: Box<[[Word; CACHE_LINE_WORDS]; CACHE_SETS]>,
-    tags: [u16; CACHE_SETS],
+    tags: [u32; CACHE_SETS],
     valid: [bool; CACHE_SETS],
     pending: Option<Pending>,
 }
@@ -84,6 +94,25 @@ impl Default for DataCache {
 }
 
 impl DataCache {
+    pub fn invalidate_all(&mut self) -> Result<(), CacheError> {
+        if self.pending.is_some() {
+            return Err(CacheError::Busy);
+        }
+        self.valid.fill(false);
+        Ok(())
+    }
+
+    pub fn invalidate_line(&mut self, address: PhysicalWordAddress) -> Result<(), CacheError> {
+        if self.pending.is_some() {
+            return Err(CacheError::Busy);
+        }
+        let decoded = decode(address);
+        if self.valid[decoded.set] && self.tags[decoded.set] == decoded.tag {
+            self.valid[decoded.set] = false;
+        }
+        Ok(())
+    }
+
     pub fn request(&mut self, request: CpuMemoryRequest) -> Result<CacheAction, CacheError> {
         if self.pending.is_some() {
             return Err(CacheError::Busy);
@@ -103,7 +132,7 @@ impl DataCache {
                 self.pending = Some(Pending::ReadMiss { address });
                 Ok(CacheAction::MainMemoryRequest(
                     MainMemoryRequest::ReadLine {
-                        line_address: address & !((CACHE_LINE_WORDS as Word) - 1),
+                        line_address: address.line_base(CACHE_LINE_WORDS as u32),
                     },
                 ))
             }
@@ -159,16 +188,17 @@ pub enum CacheAction {
 struct DecodedAddress {
     set: usize,
     word: usize,
-    tag: u16,
+    tag: u32,
 }
 
-fn decode(address: Word) -> DecodedAddress {
-    let word = usize::from(address) & (CACHE_LINE_WORDS - 1);
-    let line = usize::from(address) / CACHE_LINE_WORDS;
+fn decode(address: PhysicalWordAddress) -> DecodedAddress {
+    let word_address = address.get() as usize;
+    let word = word_address & (CACHE_LINE_WORDS - 1);
+    let line = word_address / CACHE_LINE_WORDS;
     DecodedAddress {
         set: line & (CACHE_SETS - 1),
         word,
-        tag: (line / CACHE_SETS) as u16,
+        tag: (line / CACHE_SETS) as u32,
     }
 }
 
@@ -190,15 +220,17 @@ mod tests {
     fn miss_refill_and_subsequent_line_hits_are_explicit() {
         let mut cache = DataCache::default();
         assert_eq!(
-            cache.request(CpuMemoryRequest::Read { address: 0x1237 }),
+            cache.request(CpuMemoryRequest::Read {
+                address: PhysicalWordAddress::new(0x1237)
+            }),
             Ok(CacheAction::MainMemoryRequest(
                 MainMemoryRequest::ReadLine {
-                    line_address: 0x1230
+                    line_address: PhysicalWordAddress::new(0x1230)
                 }
             ))
         );
         assert_eq!(
-            cache.request(CpuMemoryRequest::Read { address: 0 }),
+            cache.request(CpuMemoryRequest::Read { address: 0.into() }),
             Err(CacheError::Busy)
         );
         assert_eq!(
@@ -206,7 +238,9 @@ mod tests {
             Ok(CpuMemoryResponse::Read { value: 107 })
         );
         assert_eq!(
-            cache.request(CpuMemoryRequest::Read { address: 0x123f }),
+            cache.request(CpuMemoryRequest::Read {
+                address: PhysicalWordAddress::new(0x123f)
+            }),
             Ok(CacheAction::CpuResponse(CpuMemoryResponse::Read {
                 value: 115
             }))
@@ -217,12 +251,12 @@ mod tests {
     fn conflicting_line_replaces_the_direct_mapped_set() {
         let mut cache = DataCache::default();
         cache
-            .request(CpuMemoryRequest::Read { address: 0 })
+            .request(CpuMemoryRequest::Read { address: 0.into() })
             .unwrap();
         cache
             .complete(MainMemoryResponse::ReadLine { words: line(10) })
             .unwrap();
-        let conflict = (CACHE_SETS * CACHE_LINE_WORDS) as Word;
+        let conflict = PhysicalWordAddress::new((CACHE_SETS * CACHE_LINE_WORDS) as u32);
         cache
             .request(CpuMemoryRequest::Read { address: conflict })
             .unwrap();
@@ -230,7 +264,7 @@ mod tests {
             .complete(MainMemoryResponse::ReadLine { words: line(20) })
             .unwrap();
         assert!(matches!(
-            cache.request(CpuMemoryRequest::Read { address: 0 }),
+            cache.request(CpuMemoryRequest::Read { address: 0.into() }),
             Ok(CacheAction::MainMemoryRequest(_))
         ));
     }
@@ -240,12 +274,12 @@ mod tests {
         let mut cache = DataCache::default();
         assert_eq!(
             cache.request(CpuMemoryRequest::Write {
-                address: 9,
+                address: 9.into(),
                 value: 0xabcd
             }),
             Ok(CacheAction::MainMemoryRequest(
                 MainMemoryRequest::WriteWord {
-                    address: 9,
+                    address: 9.into(),
                     value: 0xabcd
                 }
             ))
@@ -255,7 +289,7 @@ mod tests {
             Ok(CpuMemoryResponse::WriteComplete)
         );
         assert!(matches!(
-            cache.request(CpuMemoryRequest::Read { address: 9 }),
+            cache.request(CpuMemoryRequest::Read { address: 9.into() }),
             Ok(CacheAction::MainMemoryRequest(_))
         ));
     }
@@ -264,7 +298,7 @@ mod tests {
     fn wrong_completion_does_not_discard_the_outstanding_request() {
         let mut cache = DataCache::default();
         cache
-            .request(CpuMemoryRequest::Read { address: 0 })
+            .request(CpuMemoryRequest::Read { address: 0.into() })
             .unwrap();
         assert_eq!(
             cache.complete(MainMemoryResponse::WriteComplete),
@@ -274,5 +308,50 @@ mod tests {
             cache.complete(MainMemoryResponse::ReadLine { words: line(1) }),
             Ok(CpuMemoryResponse::Read { value: 1 })
         );
+    }
+
+    #[test]
+    fn equal_offsets_in_different_segments_have_distinct_tags() {
+        let mut cache = DataCache::default();
+        let first = PhysicalWordAddress::from_segment_offset(1, 0x1234);
+        let second = PhysicalWordAddress::from_segment_offset(2, 0x1234);
+
+        cache
+            .request(CpuMemoryRequest::Read { address: first })
+            .unwrap();
+        cache
+            .complete(MainMemoryResponse::ReadLine { words: line(10) })
+            .unwrap();
+
+        assert_eq!(
+            cache.request(CpuMemoryRequest::Read { address: second }),
+            Ok(CacheAction::MainMemoryRequest(
+                MainMemoryRequest::ReadLine {
+                    line_address: second.line_base(CACHE_LINE_WORDS as u32),
+                }
+            ))
+        );
+    }
+
+    #[test]
+    fn dma_can_invalidate_only_the_physical_line_it_replaced() {
+        let mut cache = DataCache::default();
+        let address = PhysicalWordAddress::from_segment_offset(3, 0x2012);
+        cache.request(CpuMemoryRequest::Read { address }).unwrap();
+        cache
+            .complete(MainMemoryResponse::ReadLine { words: line(30) })
+            .unwrap();
+        assert_eq!(
+            cache.request(CpuMemoryRequest::Read { address }),
+            Ok(CacheAction::CpuResponse(CpuMemoryResponse::Read {
+                value: 32
+            }))
+        );
+
+        cache.invalidate_line(address).unwrap();
+        assert!(matches!(
+            cache.request(CpuMemoryRequest::Read { address }),
+            Ok(CacheAction::MainMemoryRequest(_))
+        ));
     }
 }

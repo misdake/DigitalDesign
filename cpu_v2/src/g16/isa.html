@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>G16 ISA v0.3 — Encoding, ABI, Memory, and Hardware</title>
+<title>G16 ISA v0.4 — Encoding, ABI, Memory, and Hardware</title>
 <style>
   :root {
     --bg: #f7f9fc; --paper: #ffffff; --ink: #172033; --dim: #5d687c;
@@ -82,15 +82,15 @@
 <body><main>
 
 <section class="hero">
-  <h1>G16 ISA v0.3</h1>
+  <h1>G16 ISA v0.4</h1>
   <p class="subtitle">Instruction encoding, architectural behavior, compiler ABI, unified memory map, and current FPGA organization.</p>
   <div class="badges">
     <span class="badge">16-bit fixed instruction words</span>
     <span class="badge">16 × 16-bit GPRs</span>
-    <span class="badge">16-bit word addresses</span>
-    <span class="badge">Unified 128 KiB CPU space</span>
+    <span class="badge">16-bit word offsets</span>
+    <span class="badge">Segmented physical SDRAM</span>
     <span class="badge">No architectural flags</span>
-    <span class="badge">Revision 0.3</span>
+    <span class="badge">Revision 0.4</span>
   </div>
   <ol class="toc">
     <li><a href="#overview">Architectural overview</a></li>
@@ -109,7 +109,7 @@
 <h2 id="overview">1. Architectural overview</h2>
 <div class="cards">
   <div class="card"><b>16</b><span>general-purpose, writable 16-bit registers</span></div>
-  <div class="card"><b>65,536</b><span>word addresses shared by code, data, stack, and MMIO</span></div>
+  <div class="card"><b>65,536</b><span>word offsets in each boot-selected segment</span></div>
   <div class="card"><b>1 or 2</b><span>physical words per retired operation; two when IMMHI12 is consumed</span></div>
   <div class="card"><b>0 flags</b><span>branches test a register directly; comparisons produce 0 or 1</span></div>
 </div>
@@ -119,6 +119,8 @@
     <ul>
       <li>All arithmetic wraps modulo 2<sup>16</sup>.</li>
       <li>Memory is word-addressed; one address selects one 16-bit word.</li>
+      <li>A physical address directly concatenates a 16-bit segment and a 16-bit offset.</li>
+      <li>Reset starts with CSEG = DSEG = PC = 0; applications normally keep their boot-selected segments fixed.</li>
       <li>The PC normally advances before instruction semantics, so relative control flow is based on the following word.</li>
       <li>All registers are architecturally writable. ABI reservations are compiler conventions, not hardwired registers.</li>
       <li><code>HALT</code> has no encoded signal register; the architectural halt signal is <code>r0</code>.</li>
@@ -130,7 +132,7 @@
       <li>Small decoding surface: the high nibble selects the major operation.</li>
       <li>No condition-code dependency between comparison and branch.</li>
       <li>Short immediates stay compact; <code>IMMHI12</code> extends only explicitly listed consumers.</li>
-      <li>One address space simplifies the compiler while split caches preserve FPGA throughput.</li>
+      <li>Near 16-bit pointers simplify the compiler while physical cache tags expose all fitted SDRAM.</li>
       <li>Opcode <code>0xD</code> remains reserved for a future FPU family.</li>
     </ul>
   </div>
@@ -142,7 +144,7 @@
   <defs><marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse"><path d="M 0 0 L 10 5 L 0 10 z" fill="#64748b"/></marker></defs>
   <rect class="box-blue" x="30" y="92" width="230" height="236" rx="12"/>
   <text class="svg-title" x="145" y="120" text-anchor="middle">G16 core</text>
-  <rect class="box" x="55" y="140" width="180" height="42" rx="6"/><text class="svg-text" x="145" y="166" text-anchor="middle">PC + prefix state</text>
+  <rect class="box" x="55" y="140" width="180" height="42" rx="6"/><text class="svg-text" x="145" y="159" text-anchor="middle">PC + prefix state</text><text class="svg-mono" x="145" y="175" text-anchor="middle">CSEG / DSEG</text>
   <rect class="box" x="55" y="194" width="180" height="42" rx="6"/><text class="svg-text" x="145" y="220" text-anchor="middle">16 × 16-bit register file</text>
   <rect class="box" x="55" y="248" width="82" height="54" rx="6"/><text class="svg-text" x="96" y="271" text-anchor="middle">ALU</text><text class="svg-mono" x="96" y="288" text-anchor="middle">add/logic/shift</text>
   <rect class="box" x="153" y="248" width="82" height="54" rx="6"/><text class="svg-text" x="194" y="271" text-anchor="middle">control</text><text class="svg-mono" x="194" y="288" text-anchor="middle">branch/call</text>
@@ -299,7 +301,10 @@
   <tr><td class="mono">9</td><td class="mn">SLT rd, rs</td><td class="mono">E 9 rd rs</td><td class="sem">rd = signed(rd) &lt; signed(rs); added in v0.3</td></tr>
   <tr><td class="mono">A</td><td class="mn">SLTU rd, rs</td><td class="mono">E A rd rs</td><td class="sem">rd = unsigned(rd) &lt; unsigned(rs); added in v0.3</td></tr>
   <tr><td class="mono">B</td><td class="mn">POPCNT rd, rs</td><td class="mono">E B rd rs</td><td class="sem">rd = population_count(rs); added in v0.3</td></tr>
-  <tr><td class="mono reserved">C..F</td><td class="reserved">reserved</td><td class="mono">E fn rd rs</td><td>Invalid instruction.</td></tr>
+  <tr><td class="mono">C</td><td class="mn">MFSR rd, sr</td><td class="mono">E C rd sr</td><td class="sem">Read CSEG (sr=0) or DSEG (sr=1).</td></tr>
+  <tr><td class="mono">D</td><td class="mn">MTSR DSEG, rs</td><td class="mono">E D 1 rs</td><td class="sem">Set the boot-time data segment. Other special-register selectors are invalid.</td></tr>
+  <tr><td class="mono">E</td><td class="mn">JSEG seg, target</td><td class="mono">E E seg target</td><td class="sem">Atomically set CSEG = r[seg] and PC = r[target].</td></tr>
+  <tr><td class="mono reserved">F</td><td class="reserved">reserved</td><td class="mono">E F rd rs</td><td>Invalid instruction.</td></tr>
 </table>
 
 <h2 id="prefix">6. IMMHI12 and wide operations</h2>
@@ -317,7 +322,8 @@
 </div>
 <div class="notice"><b>Precise prefix rule:</b> a non-consumer expires the pending prefix and retires it separately. A second prefix also retires and replaces the first. If a prefixed consumer faults, the reported address is the prefix address and neither word retires.</div>
 
-<h2 id="memory">7. Unified memory map and cache policy</h2>
+<h2 id="memory">7. Segmented memory map and cache policy</h2>
+<div class="notice"><b>Physical address rule:</b> <code>physical_word = {segment[15:0], offset[15:0]}</code>. There is no segment addition and a wrapping offset never carries into the segment. The Tang Nano 20K implements physical word addresses <code>0x00000000..0x003fffff</code>.</div>
 <div class="grid">
   <div class="panel">
     <svg viewBox="0 0 580 460" role="img" aria-label="G16 unified address-space map">
@@ -334,9 +340,10 @@
   <div class="panel">
     <h3>Address-space contract</h3>
     <ul>
-      <li>The CPU-visible range is exactly 65,536 words = 128 KiB.</li>
-      <li>The Tang Nano 20K contains more physical SDRAM; bank switching or a wider physical-address mechanism is intentionally deferred.</li>
-      <li><code>r15</code> normally holds <code>0xff00</code>, so device/channel MMIO is emitted as a normal load/store with a small offset.</li>
+      <li>Ordinary CPU pointers cover one 65,536-word = 128-KiB segment.</li>
+      <li>Instruction fetch uses <code>{CSEG, PC}</code>; ordinary data and stack accesses use <code>{DSEG, offset}</code>.</li>
+      <li>The fitted 8-MiB Tang Nano 20K SDRAM uses 22 physical word-address bits. Larger architectural addresses fault instead of aliasing.</li>
+      <li><code>r15</code> normally holds <code>0xff00</code>; this top MMIO offset page always selects fixed system space in segment zero.</li>
       <li><code>CompilerOptions::g16()</code> selects data base <code>0x4000</code>, heap base <code>0x8000</code>, stack top <code>0xff00</code>, and disables the legacy v2.6 function table.</li>
     </ul>
     <h3>Cache geometry</h3>
@@ -413,6 +420,7 @@
   <tr><th>Condition</th><th>Result</th><th>Fault PC</th><th>Retirement</th></tr>
   <tr><td>Reserved or malformed integer encoding</td><td><code>InvalidInstruction</code></td><td>instruction address, or prefix address for an eligible consumer</td><td>faulting operation does not retire</td></tr>
   <tr><td>Opcode D</td><td><code>UnsupportedFpu</code></td><td>instruction address</td><td>does not retire</td></tr>
+  <tr><td>Fetch or data address outside fitted physical memory</td><td><code>PhysicalAddressOutOfRange</code></td><td>faulting instruction offset</td><td>does not retire</td></tr>
   <tr><td>Valid prefixed consumer</td><td>executes one wide operation</td><td>—</td><td>retires two words together</td></tr>
   <tr><td>Pending prefix followed by non-consumer</td><td>prefix expires; next instruction executes normally</td><td>—</td><td>prefix and instruction retire separately</td></tr>
   <tr><td>HALT after already halted</td><td>returns the same <code>r0</code> signal</td><td>—</td><td>no additional execution</td></tr>
@@ -421,10 +429,10 @@
 <h2 id="status">10. Implementation status</h2>
 <table>
   <tr><th>Layer</th><th>Status</th><th>What is implemented now</th><th>Important remaining work</th></tr>
-  <tr><td>Encoding helpers</td><td><span class="status done">complete v0.3</span></td><td>Constructors and stable reference encodings for all defined integer operations.</td><td>Update only through a deliberate ISA revision.</td></tr>
-  <tr><td>Architectural simulator</td><td><span class="status done">complete v0.3</span></td><td>All integer families, prefix precision, unified memory, halt, invalid instruction, and reserved-FPU fault.</td><td>MMIO device model and any future FPU semantics.</td></tr>
+  <tr><td>Encoding helpers</td><td><span class="status done">complete v0.4</span></td><td>Constructors and stable reference encodings for integer and segment-control operations.</td><td>Update only through a deliberate ISA revision.</td></tr>
+  <tr><td>Architectural simulator</td><td><span class="status done">complete v0.4</span></td><td>Integer families, segment concatenation, fitted-memory faults, prefix precision, halt, and reserved-FPU fault.</td><td>MMIO device model and any future FPU semantics.</td></tr>
   <tr><td>Compiler backend</td><td><span class="status done">usable</span></td><td>G16 ABI, register allocation, calls, stack frames, memory operations, comparisons, static initialization, and fixed-width symbolic linking.</td><td>Optional size relaxation and production loader integration.</td></tr>
-  <tr><td>Host cache/scheduler models</td><td><span class="status done">policy baseline</span></td><td>Split direct-mapped caches, refill/write-through rules, address/lane mapping, refresh-aware single-operation arbitration.</td><td>Connect the complete models to reusable RTL boundaries.</td></tr>
+  <tr><td>Host cache/scheduler models</td><td><span class="status done">policy baseline</span></td><td>Physical cache tags, explicit invalidation, refill/write-through rules, full SDRAM address/lane mapping, and refresh-aware arbitration.</td><td>Connect the complete models to reusable RTL boundaries.</td></tr>
   <tr><td>Tang Nano 20K RTL</td><td><span class="status partial">integration prototype</span></td><td>54-MHz SDRAM, measured read-valid adapter, boot pROM → SDRAM → I-cache, separate D-cache masked store and line refill, UART result.</td><td>Full instruction decoder, arbitrary I-cache misses, shared scheduler/refresh in RTL, MMIO, interrupts if adopted, and broader board programs.</td></tr>
   <tr><td>Physical validation</td><td><span class="status partial">partially complete</span></td><td>SDRAM, BSRAM, DSP, and the earlier G16 BSRAM execution path passed board tests. The complete split-cache harness passes Icarus Verilog simulation and closes timing at 54 MHz with three exact BSRAM blocks.</td><td>Program and capture the final split-cache UART test after the Windows programmer device is available.</td></tr>
 </table>
