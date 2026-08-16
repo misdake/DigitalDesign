@@ -10,6 +10,9 @@ use crate::{
 };
 use digital_design_code::Wires;
 
+mod sdram_word_port;
+pub use sdram_word_port::*;
+
 /// Stable application-facing inputs fitted to every Tang Nano 20K board.
 #[derive(Clone, ModuleIo)]
 pub struct TangNano20KInputs {
