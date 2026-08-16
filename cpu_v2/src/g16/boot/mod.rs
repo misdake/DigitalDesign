@@ -1,7 +1,9 @@
 //! Versioned G16 boot container shared by the host packer and both loaders.
 
+mod loader;
 mod manifest;
 
+pub use loader::*;
 pub use manifest::*;
 
 use std::collections::HashSet;
@@ -209,6 +211,7 @@ pub enum BootImageError {
     },
     ZeroSectionContainsData(String),
     EmptyLoadSection(String),
+    EmptyMemorySection(String),
     PhysicalRangeOverflow(String),
     PhysicalMemoryExceeded {
         section: String,
@@ -226,6 +229,10 @@ pub enum BootImageError {
     StackInMmio {
         stage: &'static str,
         offset: Word,
+    },
+    StackOutsidePhysicalMemory {
+        stage: &'static str,
+        address: PhysicalWordAddress,
     },
     TooManySections(usize),
     PackageTooLarge {
@@ -275,6 +282,9 @@ impl fmt::Display for BootImageError {
                 write!(f, "zero section `{name}` unexpectedly contains file data")
             }
             Self::EmptyLoadSection(name) => write!(f, "load section `{name}` is empty"),
+            Self::EmptyMemorySection(name) => {
+                write!(f, "section `{name}` has an empty memory extent")
+            }
             Self::PhysicalRangeOverflow(name) => {
                 write!(f, "section `{name}` physical byte range overflows")
             }
@@ -295,7 +305,12 @@ impl fmt::Display for BootImageError {
             ),
             Self::StackInMmio { stage, offset } => write!(
                 f,
-                "{stage} stack offset {offset:#06x} enters the fixed MMIO page"
+                "{stage} stack offset {offset:#06x} is zero or enters the fixed MMIO page"
+            ),
+            Self::StackOutsidePhysicalMemory { stage, address } => write!(
+                f,
+                "{stage} initial stack word {:#010x} is outside fitted physical memory",
+                address.get()
             ),
             Self::TooManySections(count) => {
                 write!(f, "boot image has {count} sections; the format permits 65535")
@@ -592,10 +607,20 @@ fn validate_entries(spec: &BootImageSpec) -> Result<(), BootImageError> {
         ("stage1", spec.stage1_entry),
         ("application", spec.application_entry),
     ] {
-        if entry.stack_offset > MMIO_BASE {
+        if entry.stack_offset == 0 || entry.stack_offset > MMIO_BASE {
             return Err(BootImageError::StackInMmio {
                 stage,
                 offset: entry.stack_offset,
+            });
+        }
+        let first_stack_word = PhysicalWordAddress::from_segment_offset(
+            entry.data_segment,
+            entry.stack_offset.wrapping_sub(1),
+        );
+        if first_stack_word.get() >= spec.target.physical_memory_words() {
+            return Err(BootImageError::StackOutsidePhysicalMemory {
+                stage,
+                address: first_stack_word,
             });
         }
     }
@@ -633,6 +658,9 @@ fn validate_sections(spec: &BootImageSpec) -> Result<(), BootImageError> {
                 file_bytes: section.data.len(),
                 memory_bytes: section.memory_size_bytes,
             });
+        }
+        if section.memory_size_bytes == 0 {
+            return Err(BootImageError::EmptyMemorySection(section.name.clone()));
         }
         match section.kind {
             SectionKind::Load if section.data.is_empty() => {

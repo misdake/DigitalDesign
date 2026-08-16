@@ -122,6 +122,10 @@ impl Machine {
         self.memory[address.get() as usize]
     }
 
+    pub fn physical_memory_words(&self) -> usize {
+        self.memory.len()
+    }
+
     pub fn pc(&self) -> Word {
         self.pc
     }
