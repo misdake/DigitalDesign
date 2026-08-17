@@ -27,6 +27,13 @@ pub const DMA_STATUS_BUSY: u16 = 1;
 pub const DMA_STATUS_DONE: u16 = 2;
 pub const DMA_STATUS_ERROR: u16 = 0x8000;
 
+pub const DMA_ERROR_FILE_LARGER_THAN_MEMORY: u16 = 1;
+pub const DMA_ERROR_FLASH_RANGE: u16 = 2;
+pub const DMA_ERROR_MEMORY_RANGE: u16 = 3;
+pub const DMA_ERROR_FLASH_IO: u16 = 4;
+pub const DMA_ERROR_MEMORY_IO: u16 = 5;
+pub const DMA_ERROR_CRC_MISMATCH: u16 = 6;
+
 /// A host-side view of the writable DMA register bank.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct BootDmaRegisters {

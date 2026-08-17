@@ -117,6 +117,9 @@ channel 1 reports idle (`0`), busy (`1`), done (`2`), or error (`0x8000`).
 Channels 12 through 15 expose the actual CRC, error code, and low completed-word
 count for diagnostics. The DMA zero-fills `memory_size - file_size`, so BSS does
 not require a second device command.
+Error codes are stable: `1` means file size exceeds memory size, `2` means the
+Flash extent is invalid, `3` means the physical-memory extent is invalid, `4`
+and `5` are Flash and SDRAM transport failures, and `6` is a CRC32 mismatch.
 Consequently equal offsets in different segments never alias in a cache. DMA
 writes require explicit invalidation before CPU execution or reads; changing a
 segment alone does not invalidate correctly tagged lines.
