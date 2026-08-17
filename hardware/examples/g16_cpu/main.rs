@@ -1,8 +1,8 @@
 use digital_design_code::CircuitWires;
 use digital_design_hardware::{
-    run_gowin_project_cli, Bsram1R1Rw1024, BsramImage, GowinCliError, GowinModuleProject, Hardware,
-    HardwareIdentity, Module, TangNano20K, TangNano20KDebugOutputs, TangNano20KInputs,
-    VerilogDependency, BSRAM_1024_DEPTH,
+    run_gowin_project_cli, Bsram1R1Rw1024, BsramImage, G16Core, GowinCliError, GowinDspMode,
+    GowinModuleProject, Hardware, HardwareIdentity, Module, ResourceCountExpectation, TangNano20K,
+    TangNano20KDebugOutputs, TangNano20KInputs, VerilogDependency, BSRAM_1024_DEPTH,
 };
 
 fn main() -> Result<(), GowinCliError> {
@@ -62,14 +62,21 @@ impl Module for G16CpuBoardTest {
     }
 
     fn verilog_source() -> Option<String> {
-        Some(include_str!("self_test.v").replace(
-            "__PROGRAM_MEMORY__",
-            &ProgramMemory::verilog_identity().module_name(),
-        ))
+        Some(
+            include_str!("self_test.v")
+                .replace(
+                    "__PROGRAM_MEMORY__",
+                    &ProgramMemory::verilog_identity().module_name(),
+                )
+                .replace("__G16_CORE__", &G16Core::verilog_identity().module_name()),
+        )
     }
 
     fn verilog_dependencies() -> Vec<VerilogDependency> {
-        vec![VerilogDependency::new::<ProgramMemory>("u_program")]
+        vec![
+            VerilogDependency::new::<ProgramMemory>("u_program"),
+            VerilogDependency::new::<G16Core>("u_core"),
+        ]
     }
 
     fn verilog_testbench() -> Option<String> {
@@ -79,6 +86,7 @@ impl Module for G16CpuBoardTest {
 
 fn gowin_project() -> GowinModuleProject<TangNano20K, G16CpuBoardTest> {
     TangNano20K::debug_uart_project::<G16CpuBoardTest>("g16_cpu_self_test")
+        .expect_dsp_mode(GowinDspMode::Mult18x18, ResourceCountExpectation::Exact(1))
 }
 
 #[cfg(test)]
@@ -114,9 +122,9 @@ mod tests {
     }
 
     #[test]
-    fn project_contains_one_characterized_program_bsram() {
+    fn project_contains_program_bsram_and_reusable_core() {
         let verilog = VerilogProject::generate::<G16CpuBoardTest>().unwrap();
-        assert_eq!(verilog.resource_claims.len(), 1);
+        assert_eq!(verilog.resource_claims.len(), 2);
         assert!(verilog
             .files
             .values()
@@ -126,6 +134,7 @@ mod tests {
             ))));
         let project = gowin_project().generate().unwrap();
         assert_eq!(project.resources.claimed[&ResourceKind::Bsram18K], 1);
+        assert_eq!(project.resources.claimed[&ResourceKind::Multiplier18x18], 1);
     }
 
     #[test]
