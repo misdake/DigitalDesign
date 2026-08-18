@@ -63,8 +63,9 @@ value. It reports test ID `0x05`. The project uses three BSRAM blocks (one pROM
 and two SDPB), one rPLL, and the fitted SDRAM; after pipelining the store-hit
 path, its 54-MHz domain has zero setup/hold violations and a reported Fmax of
 59.636 MHz. The complete boot, refill, execution, write-through, and data-refill
-path passes its explicit Icarus Verilog simulation. A repeat `0x05` UART capture
-of this corrected burst-indexing build remains the final board check.
+path passes its explicit Icarus Verilog simulation, and a repeated `0x05`
+UART success capture confirms the corrected burst-indexing build on the
+board.
 
 The first Gowin 1.9.11.03 board run at 54 MHz completed with:
 

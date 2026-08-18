@@ -86,10 +86,10 @@ function [7:0] report_byte;
             2: report_byte = 8'h48;
             3: report_byte = 8'h54;
             4: report_byte = 8'h01;
-            5: report_byte = 8'h05;
+            5: report_byte = 8'h06;
             6: report_byte = status;
             default: report_byte = 8'h44 ^ 8'h44 ^ 8'h48 ^ 8'h54 ^
-                                   8'h01 ^ 8'h05 ^ status;
+                                   8'h01 ^ 8'h06 ^ status;
         endcase
     end
 endfunction

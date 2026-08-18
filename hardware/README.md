@@ -250,10 +250,11 @@ cargo run -p digital-design-hardware --example bsram -- --program
 ```
 
 Its debug UART repeatedly sends checksummed `DDHT` status frames with BSRAM
-test ID `0x01`. Capture raw bytes with the serial receiver, then use the shared
-development script to verify the identity, freshness, checksum, and result:
+test ID `0x01`. Capture raw bytes with the serial receiver script, then use
+the shared checker to verify the identity, freshness, checksum, and result:
 
 ```powershell
+powershell -ExecutionPolicy Bypass -File hardware/scripts/capture_uart.ps1 -Port COM8 -Out target/bsram_gowin/board_capture.bin
 powershell -ExecutionPolicy Bypass -File hardware/scripts/check_uart_status.ps1 -Path target/bsram_gowin/board_capture.bin -TestId 0x01
 ```
 
