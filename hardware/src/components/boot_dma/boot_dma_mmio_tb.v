@@ -10,7 +10,6 @@ reg dma_busy = 0;
 reg dma_done = 0;
 reg dma_error = 0;
 reg [7:0] dma_error_code = 0;
-reg [31:0] dma_actual_crc32 = 0;
 reg [31:0] dma_completed_words = 0;
 wire [15:0] device_read_data;
 wire dma_start;
@@ -18,7 +17,6 @@ wire [23:0] flash_offset;
 wire [21:0] destination;
 wire [31:0] file_size_bytes;
 wire [31:0] memory_size_bytes;
-wire [31:0] expected_crc32;
 
 BootDmaMmio dut(.*);
 always #5 clk = ~clk;
@@ -51,14 +49,14 @@ initial begin
     if (dma_start) $finish(1);
 
     dma_error = 1;
-    dma_error_code = 6;
+    dma_error_code = 3;
     device_read_enable = 1;
     device_channel = 1;
     #1;
     if (device_read_data !== 16'h8000) $finish(1);
     device_channel = 14;
     #1;
-    if (device_read_data !== 6) $finish(1);
+    if (device_read_data !== 3) $finish(1);
     device_index = 3;
     #1;
     if (device_read_data !== 0) $finish(1);

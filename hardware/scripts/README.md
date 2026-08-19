@@ -20,7 +20,9 @@ All DDHT projects transmit 8N1 at 115200 baud (27 MHz designs use divider
 `check_uart_status.ps1` validates a raw UART capture containing repeated
 eight-byte status frames. A frame contains the `DDHT` magic, protocol version,
 test ID, result, and XOR checksum. The checker rejects stale captures, frames
-for another test, bad checksums, and any reported failure:
+for another test, and any reported failure. Because a raw serial capture can
+drop a byte on the host side, torn frames are tolerated up to one percent of
+the success count (at least one); beyond that the capture is rejected:
 
 ```powershell
 powershell -ExecutionPolicy Bypass -File hardware/scripts/check_uart_status.ps1 `

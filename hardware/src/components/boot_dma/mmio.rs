@@ -17,7 +17,6 @@ pub struct BootDmaMmioInput {
     pub dma_done: Wire,
     pub dma_error: Wire,
     pub dma_error_code: Wires<8>,
-    pub dma_actual_crc32: Wires<32>,
     pub dma_completed_words: Wires<32>,
 }
 
@@ -29,7 +28,6 @@ pub struct BootDmaMmioOutput {
     pub destination: Wires<22>,
     pub file_size_bytes: Wires<32>,
     pub memory_size_bytes: Wires<32>,
-    pub expected_crc32: Wires<32>,
 }
 
 pub struct BootDmaMmio;
@@ -49,7 +47,6 @@ pub struct BootDmaMmioState {
     destination: u32,
     file_size_bytes: u32,
     memory_size_bytes: u32,
-    expected_crc32: u32,
 }
 
 impl Module for BootDmaMmio {
@@ -86,10 +83,6 @@ impl Module for BootDmaMmio {
                 7 => (state.file_size_bytes >> 16) as u16,
                 8 => state.memory_size_bytes as u16,
                 9 => (state.memory_size_bytes >> 16) as u16,
-                10 => state.expected_crc32 as u16,
-                11 => (state.expected_crc32 >> 16) as u16,
-                12 => input.dma_actual_crc32 as u16,
-                13 => (input.dma_actual_crc32 >> 16) as u16,
                 14 => input.dma_error_code as u16,
                 15 => input.dma_completed_words as u16,
                 _ => 0,
@@ -106,7 +99,6 @@ impl Module for BootDmaMmio {
                 destination: u64::from(state.destination & 0x003f_ffff),
                 file_size_bytes: u64::from(state.file_size_bytes),
                 memory_size_bytes: u64::from(state.memory_size_bytes),
-                expected_crc32: u64::from(state.expected_crc32),
             },
         );
     }
@@ -128,7 +120,7 @@ impl Module for BootDmaMmio {
         }
         let value = input.device_write_data as u16;
         match input.device_channel as u8 {
-            0 if value == 1 => state.start = true,
+            0 if value == 1 || value == 2 => state.start = true,
             2 => state.flash_offset = (state.flash_offset & 0xffff_0000) | u32::from(value),
             3 => {
                 state.flash_offset =
@@ -150,11 +142,6 @@ impl Module for BootDmaMmio {
             9 => {
                 state.memory_size_bytes =
                     (state.memory_size_bytes & 0x0000_ffff) | (u32::from(value) << 16)
-            }
-            10 => state.expected_crc32 = (state.expected_crc32 & 0xffff_0000) | u32::from(value),
-            11 => {
-                state.expected_crc32 =
-                    (state.expected_crc32 & 0x0000_ffff) | (u32::from(value) << 16)
             }
             _ => {}
         }
@@ -196,7 +183,6 @@ mod tests {
                 dma_done: false,
                 dma_error: false,
                 dma_error_code: 0,
-                dma_actual_crc32: 0,
                 dma_completed_words: 0,
             },
         );
@@ -245,13 +231,12 @@ mod tests {
                 dma_busy: false,
                 dma_done: false,
                 dma_error: true,
-                dma_error_code: 6,
-                dma_actual_crc32: 0x89ab_cdef,
+                dma_error_code: 3,
                 dma_completed_words: 0x1234_5678,
             },
         );
         circuit.execute_gates();
-        assert_eq!(output.sample(&circuit).device_read_data, 6);
+        assert_eq!(output.sample(&circuit).device_read_data, 3);
         drive(&mut circuit, &input, 1, true, false, 0);
         input.drive(
             &mut circuit,
@@ -265,8 +250,7 @@ mod tests {
                 dma_busy: false,
                 dma_done: false,
                 dma_error: true,
-                dma_error_code: 6,
-                dma_actual_crc32: 0,
+                dma_error_code: 3,
                 dma_completed_words: 0,
             },
         );

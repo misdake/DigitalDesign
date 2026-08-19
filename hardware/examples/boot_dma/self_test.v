@@ -25,7 +25,6 @@ wire busy;
 wire done;
 wire error;
 wire [7:0] error_code;
-wire [31:0] actual_crc32;
 wire [31:0] completed_words;
 
 __TANG_NANO_20K_BOOT_DMA__ u_dma (
@@ -36,7 +35,6 @@ __TANG_NANO_20K_BOOT_DMA__ u_dma (
     .destination(22'h100007),
     .file_size_bytes(32'd3),
     .memory_size_bytes(32'd6),
-    .expected_crc32(32'hffffff00),
     .flash_miso(flash_miso),
     .sdram_read_data(sdram_read_data),
     .sdram_read_valid(sdram_read_valid),
@@ -46,7 +44,6 @@ __TANG_NANO_20K_BOOT_DMA__ u_dma (
     .done(done),
     .error(error),
     .error_code(error_code),
-    .actual_crc32(actual_crc32),
     .completed_words(completed_words),
     .flash_clk(flash_clk),
     .flash_cs_n(flash_cs_n),
@@ -70,7 +67,7 @@ always @(posedge clk) begin
     end
 end
 
-wire success = done && !error && actual_crc32 == 32'hffffff00 && completed_words == 3;
+wire success = done && !error && completed_words == 3;
 assign leds = error ? {error_code[0], error_code[1], error_code[2], error_code[3], 2'b00} :
               success ? 6'b111111 :
               busy ? 6'b000010 : 6'b000001;
