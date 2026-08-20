@@ -45,6 +45,7 @@ Assigned test IDs:
 | `0x04` | G16 compiled-program CPU/BSRAM execution self-test |
 | `0x05` | G16 boot BSRAM to SDRAM to instruction-cache execution self-test |
 | `0x06` | Boot DMA flash-to-SDRAM engine self-test |
+| `0x07` | G16 two-stage flash boot |
 
 The `sdram_word_port` example predates this protocol and still sends a
 private `SDWP` frame; it is not validated by `check_uart_status.ps1`.

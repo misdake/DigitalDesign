@@ -1,9 +1,11 @@
 //! Versioned G16 boot container shared by the host packer and both loaders.
 
+mod devices;
 mod loader;
 mod manifest;
 mod mmio;
 
+pub use devices::*;
 pub use loader::*;
 pub use manifest::*;
 pub use mmio::*;

@@ -123,6 +123,19 @@ pub fn dev_send(dev: u8, ch: u8, v: u16) {
     unimplemented!("devices are not available on the host")
 }
 
+/// Write the DSEG special register (G16-only; not available on the Rust host).
+pub fn mtsr_dseg(v: u16) {
+    let _ = v;
+    unimplemented!("segment registers are not available on the host")
+}
+
+/// Atomically switch CSEG to `cseg` and jump to `target` (G16-only; not
+/// available on the Rust host). Never returns.
+pub fn jseg(cseg: u16, target: u16) -> ! {
+    let _ = (cseg, target);
+    unimplemented!("segment registers are not available on the host")
+}
+
 /// take the address of a variable (compiler intrinsic; globals become
 /// compile-time constants, locals become sp+slot at run time)
 pub fn addr_of<T>(_r: &T) -> Ptr {

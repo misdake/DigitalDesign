@@ -135,6 +135,15 @@ pub enum Instr {
         channel: u8,
         src: VReg,
     },
+    /// G16-only: write the DSEG special register (MTSR DSEG)
+    MtsrDseg {
+        src: VReg,
+    },
+    /// G16-only: atomically switch CSEG and jump (JSEG); never returns
+    Jseg {
+        cseg: VReg,
+        target: VReg,
+    },
     /// frame slot access (register allocator spills only; offset is a frame
     /// slot index, resolved to load_sp/store_sp in codegen)
     LoadSp {
@@ -372,6 +381,8 @@ impl fmt::Display for Instr {
                 channel,
                 src,
             } => write!(f, "dev_send {device}, {channel}, v{src}"),
+            Instr::MtsrDseg { src } => write!(f, "mtsr_dseg v{src}"),
+            Instr::Jseg { cseg, target } => write!(f, "jseg v{cseg}, v{target}"),
             Instr::LoadSp { dst, slot } => write!(f, "v{dst} = load_sp #{slot}"),
             Instr::StoreSp { slot, src } => write!(f, "store_sp #{slot} = v{src}"),
             Instr::LoadLocal { dst, slot } => write!(f, "v{dst} = load_local #{slot}"),

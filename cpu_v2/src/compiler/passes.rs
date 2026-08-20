@@ -106,8 +106,13 @@ pub(crate) fn subst_uses(f: &mut IrFunc, replace: &HashMap<VReg, VReg>) {
                     args.iter_mut().for_each(&subst);
                 }
                 Instr::DevSend { src, .. }
+                | Instr::MtsrDseg { src }
                 | Instr::StoreSp { src, .. }
                 | Instr::StoreLocal { src, .. } => subst(src),
+                Instr::Jseg { cseg, target } => {
+                    subst(cseg);
+                    subst(target);
+                }
             }
         }
         if let Some(term) = &mut b.term {
@@ -642,6 +647,8 @@ fn dce(f: &mut IrFunc) -> bool {
                         | Instr::CallPtr { .. }
                         | Instr::DevSend { .. }
                         | Instr::DevRecv { .. }
+                        | Instr::MtsrDseg { .. }
+                        | Instr::Jseg { .. }
                 );
                 let defs = crate::compiler::regalloc::inst_defs(inst);
                 if root || defs.iter().any(|d| useful.contains(d)) {

@@ -356,6 +356,13 @@ fn lower_instruction(
             REG_GLOBAL,
             i16::from(*device) * 16 + i16::from(*channel),
         ),
+        Instr::MtsrDseg { src } => {
+            lines.push(Line::Word(g16::write_data_segment(register(*src))))
+        }
+        Instr::Jseg { cseg, target } => lines.push(Line::Word(g16::jump_segment(
+            register(*cseg),
+            register(*target),
+        ))),
         Instr::LoadSp { dst, slot } => emit_load(
             lines,
             register(*dst),
@@ -917,6 +924,75 @@ mod tests {
         let (signal, machine) = run_with_options(source, CompilerOptions::g16());
         assert_eq!(signal, 0x1234);
         assert_eq!(machine.memory(0xff23), 0x1234);
+    }
+
+    #[test]
+    fn segment_intrinsics_switch_data_and_code_segments() {
+        let source = r#"
+            fn main() {
+                mtsr_dseg(1);
+                let mut a = Ptr::from_addr(0x0010).as_u16_array();
+                a[0u16] = 0x1234;
+                jseg(2, 0x0020);
+            }
+        "#;
+        let program = compile(source, CompilerOptions::g16());
+        let mut machine = g16::Machine::default();
+        machine
+            .load_program(program.code_base, &program.words)
+            .unwrap();
+        let mut app = g16::load_immediate16(0, 0x77).to_vec();
+        app.push(g16::halt());
+        machine.load_segment(2, 0x0020, &app).unwrap();
+        assert!(matches!(
+            machine.run(1_000),
+            Ok(g16::RunOutcome::Halted { signal: 0x77, .. })
+        ));
+        assert_eq!(machine.code_segment(), 2);
+        assert_eq!(machine.data_segment(), 1);
+        assert_eq!(
+            machine.physical_memory(g16::PhysicalWordAddress::new(0x0001_0010)),
+            0x1234
+        );
+    }
+
+    #[test]
+    fn segment_switch_mirror_loop_copies_across_data_segments() {
+        let source = r#"
+            fn main() {
+                let desc = Ptr::from_addr(0x1000).as_u16_array();
+                let mut handoff = Ptr::from_addr(0x0100).as_u16_array();
+                let hseg: u16 = 2;
+                let mut i: u16 = 0;
+                while i < 32 {
+                    let w = desc[i];
+                    mtsr_dseg(hseg);
+                    handoff[i] = w;
+                    mtsr_dseg(0);
+                    i = i + 1;
+                }
+                halt(0);
+            }
+        "#;
+        let program = compile(source, CompilerOptions::g16());
+        let mut machine = g16::Machine::default();
+        machine
+            .load_program(program.code_base, &program.words)
+            .unwrap();
+        let source_words: [u16; 32] = std::array::from_fn(|i| 0x100 + i as u16);
+        machine.load_program(0x1000, &source_words).unwrap();
+        match machine.run(100_000) {
+            Ok(g16::RunOutcome::Halted { .. }) => {}
+            other => panic!("mirror loop failed: {other:?}"),
+        }
+        for (i, &w) in source_words.iter().enumerate() {
+            assert_eq!(
+                machine.physical_memory(g16::PhysicalWordAddress::new(0x0002_0100 + i as u32)),
+                w,
+                "word {i}"
+            );
+        }
+        assert_eq!(machine.data_segment(), 0);
     }
 
     #[test]

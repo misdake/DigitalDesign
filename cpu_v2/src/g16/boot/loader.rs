@@ -133,7 +133,7 @@ impl FlashToDramDma {
         Ok(())
     }
 
-    pub fn tick(&mut self, flash: &[u8], memory: &mut Machine, dram_ready: bool) -> DmaStatus {
+    pub fn tick(&mut self, flash: &[u8], memory: &mut [Word], dram_ready: bool) -> DmaStatus {
         let Some(mut active) = self.active else {
             return self.status();
         };
@@ -150,10 +150,9 @@ impl FlashToDramDma {
             }
         }
         let address = PhysicalWordAddress::new(active.command.destination.get() + active.next_word);
-        let value = u16::from_le_bytes(bytes);
-        memory
-            .load_physical(address, &[value])
-            .expect("DMA range was validated before the transfer started");
+        // The DMA range was validated against the memory size before the
+        // transfer started.
+        memory[address.get() as usize] = u16::from_le_bytes(bytes);
         active.next_word += 1;
 
         let memory_words = active.command.memory_size_bytes.div_ceil(2);
@@ -514,7 +513,7 @@ fn run_dma(flash: &[u8], memory: &mut Machine, command: DmaCommand) -> Result<()
     let mut dma = FlashToDramDma::default();
     dma.start(command, flash.len(), memory.physical_memory_words())?;
     loop {
-        match dma.tick(flash, memory, true) {
+        match dma.tick(flash, memory.physical_memory_mut(), true) {
             DmaStatus::Busy => {}
             DmaStatus::Done => return Ok(()),
             DmaStatus::Error(error) => return Err(error.into()),
@@ -891,13 +890,13 @@ mod tests {
             memory.physical_memory_words(),
         )
         .unwrap();
-        assert_eq!(dma.tick(&flash, &mut memory, false), DmaStatus::Busy);
+        assert_eq!(dma.tick(&flash, memory.physical_memory_mut(), false), DmaStatus::Busy);
         assert_eq!(memory.physical_memory(5.into()), 0);
-        assert_eq!(dma.tick(&flash, &mut memory, true), DmaStatus::Busy);
+        assert_eq!(dma.tick(&flash, memory.physical_memory_mut(), true), DmaStatus::Busy);
         assert_eq!(memory.physical_memory(5.into()), 0x2211);
-        assert_eq!(dma.tick(&flash, &mut memory, true), DmaStatus::Busy);
+        assert_eq!(dma.tick(&flash, memory.physical_memory_mut(), true), DmaStatus::Busy);
         assert_eq!(memory.physical_memory(6.into()), 0x0033);
-        assert_eq!(dma.tick(&flash, &mut memory, true), DmaStatus::Done);
+        assert_eq!(dma.tick(&flash, memory.physical_memory_mut(), true), DmaStatus::Done);
         assert_eq!(memory.physical_memory(7.into()), 0);
     }
 
