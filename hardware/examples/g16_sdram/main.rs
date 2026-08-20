@@ -1,8 +1,9 @@
 use digital_design_code::CircuitWires;
 use digital_design_hardware::{
-    run_gowin_project_cli, Bsram1R1Rw1024, BsramImage, GowinCliError, GowinModuleProject, Hardware,
+    run_gowin_project_cli, BootDmaMmio, Bsram1R1Rw1024, BsramImage, G16Core, G16DirectMappedCache,
+    G16MemoryArbiter, G16MmioBridge, GowinCliError, GowinDspMode, GowinModuleProject, Hardware,
     HardwareIdentity, Module, ResourceCountExpectation, TangNano20K, TangNano20KSdramInputs,
-    TangNano20KSdramOutputs, VerilogDependency, ZeroBsramImage, BSRAM_1024_DEPTH,
+    TangNano20KSdramOutputs, TangNano20KSdramWordPort, VerilogDependency, BSRAM_1024_DEPTH,
 };
 
 fn main() -> Result<(), GowinCliError> {
@@ -36,8 +37,6 @@ impl BsramImage<16> for BootImage {
 }
 
 type BootMemory = Bsram1R1Rw1024<16, BootImage>;
-type InstructionCacheMemory = Bsram1R1Rw1024<16, ZeroBsramImage>;
-type DataCacheMemory = Bsram1R1Rw1024<16, ZeroBsramImage>;
 
 #[derive(Hardware)]
 #[hardware(namespace = "examples/g16_sdram")]
@@ -67,13 +66,26 @@ impl Module for G16SdramBoardTest {
                     "__BOOT_MEMORY__",
                     &BootMemory::verilog_identity().module_name(),
                 )
+                .replace("__G16_CORE__", &G16Core::verilog_identity().module_name())
                 .replace(
-                    "__INSTRUCTION_CACHE__",
-                    &InstructionCacheMemory::verilog_identity().module_name(),
+                    "__CACHE__",
+                    &G16DirectMappedCache::verilog_identity().module_name(),
                 )
                 .replace(
-                    "__DATA_CACHE__",
-                    &DataCacheMemory::verilog_identity().module_name(),
+                    "__ARBITER__",
+                    &G16MemoryArbiter::verilog_identity().module_name(),
+                )
+                .replace(
+                    "__MMIO_BRIDGE__",
+                    &G16MmioBridge::verilog_identity().module_name(),
+                )
+                .replace(
+                    "__BOOT_DMA_MMIO__",
+                    &BootDmaMmio::verilog_identity().module_name(),
+                )
+                .replace(
+                    "__SDRAM_WORD_PORT__",
+                    &TangNano20KSdramWordPort::verilog_identity().module_name(),
                 ),
         )
     }
@@ -81,8 +93,13 @@ impl Module for G16SdramBoardTest {
     fn verilog_dependencies() -> Vec<VerilogDependency> {
         vec![
             VerilogDependency::new::<BootMemory>("u_boot"),
-            VerilogDependency::new::<InstructionCacheMemory>("u_instruction_cache"),
-            VerilogDependency::new::<DataCacheMemory>("u_data_cache"),
+            VerilogDependency::new::<G16Core>("u_core"),
+            VerilogDependency::new::<G16DirectMappedCache>("u_instruction_cache"),
+            VerilogDependency::new::<G16DirectMappedCache>("u_data_cache"),
+            VerilogDependency::new::<G16MemoryArbiter>("u_memory_arbiter"),
+            VerilogDependency::new::<G16MmioBridge>("u_mmio_bridge"),
+            VerilogDependency::new::<BootDmaMmio>("u_boot_dma_mmio"),
+            VerilogDependency::new::<TangNano20KSdramWordPort>("u_sdram_word_port"),
         ]
     }
 
@@ -94,6 +111,7 @@ impl Module for G16SdramBoardTest {
 fn gowin_project() -> GowinModuleProject<TangNano20K, G16SdramBoardTest> {
     TangNano20K::sdram_debug_uart_project::<G16SdramBoardTest>("g16_sdram_self_test")
         .expect_bsram_blocks(ResourceCountExpectation::Exact(3))
+        .expect_dsp_mode(GowinDspMode::Mult18x18, ResourceCountExpectation::Exact(1))
 }
 
 #[cfg(test)]
@@ -131,11 +149,13 @@ mod tests {
     #[test]
     fn project_contains_boot_and_split_cache_bsram() {
         let verilog = VerilogProject::generate::<G16SdramBoardTest>().unwrap();
-        assert_eq!(verilog.resource_claims.len(), 3);
+        assert_eq!(verilog.resource_claims.len(), 6);
         let project = gowin_project().generate().unwrap();
         assert_eq!(project.resources.claimed[&ResourceKind::Bsram18K], 3);
+        assert_eq!(project.resources.claimed[&ResourceKind::SsramBit], 1_536);
         assert_eq!(project.resources.claimed[&ResourceKind::SdrSdramDevice], 1);
         assert_eq!(project.resources.claimed[&ResourceKind::Pll], 1);
+        assert_eq!(project.resources.claimed[&ResourceKind::Multiplier18x18], 1);
     }
 
     #[test]

@@ -16,32 +16,12 @@ wire [3:0] sdram_write_mask;
 wire [31:0] sdram_write_data;
 wire [7:0] sdram_burst_length;
 
-reg [31:0] code_line [0:7];
-reg [31:0] data_line [0:7];
-reg writing = 0;
-reg reading = 0;
-reg read_is_data = 0;
-integer write_beat = 0;
-integer read_beat = 0;
+reg [15:0] memory [0:65535];
 integer read_delay = 0;
+reg [20:0] pending_read_address = 0;
 integer cycle;
 
-G16SdramBoardTest dut (
-    .clk(clk), .buttons(buttons),
-    .sdram_read_data(sdram_read_data),
-    .sdram_read_valid(sdram_read_valid),
-    .sdram_init_done(sdram_init_done),
-    .sdram_command_ack(sdram_command_ack),
-    .leds(leds), .uart_tx(uart_tx),
-    .sdram_command_valid(sdram_command_valid),
-    .sdram_command(sdram_command),
-    .sdram_precharge(sdram_precharge),
-    .sdram_address(sdram_address),
-    .sdram_write_mask(sdram_write_mask),
-    .sdram_write_data(sdram_write_data),
-    .sdram_burst_length(sdram_burst_length)
-);
-
+G16SdramBoardTest dut (.*);
 always #5 clk = ~clk;
 
 always @(posedge clk) begin
@@ -52,70 +32,49 @@ always @(posedge clk) begin
         sdram_command_ack <= 1;
 
     if (sdram_command_valid && sdram_command == 3'b100) begin
-        if (sdram_burst_length == 0) begin
-            if (!sdram_write_mask[0]) data_line[0][7:0] <= sdram_write_data[7:0];
-            if (!sdram_write_mask[1]) data_line[0][15:8] <= sdram_write_data[15:8];
-            if (!sdram_write_mask[2]) data_line[0][23:16] <= sdram_write_data[23:16];
-            if (!sdram_write_mask[3]) data_line[0][31:24] <= sdram_write_data[31:24];
-            sdram_command_ack <= 1;
-        end else begin
-            code_line[0] <= sdram_write_data;
-            write_beat <= 1;
-            writing <= 1;
-        end
-    end else if (writing) begin
-        code_line[write_beat] <= sdram_write_data;
-        if (write_beat == 7) begin
-            writing <= 0;
-            sdram_command_ack <= 1;
-        end else
-            write_beat <= write_beat + 1;
+        if (!sdram_write_mask[0]) memory[{sdram_address, 1'b0}][7:0] <= sdram_write_data[7:0];
+        if (!sdram_write_mask[1]) memory[{sdram_address, 1'b0}][15:8] <= sdram_write_data[15:8];
+        if (!sdram_write_mask[2]) memory[{sdram_address, 1'b1}][7:0] <= sdram_write_data[23:16];
+        if (!sdram_write_mask[3]) memory[{sdram_address, 1'b1}][15:8] <= sdram_write_data[31:24];
+        sdram_command_ack <= 1;
     end
 
     if (sdram_command_valid && sdram_command == 3'b101) begin
-        read_delay <= 3;
-        read_beat <= 0;
-        read_is_data <= sdram_address != 0;
+        pending_read_address <= sdram_address;
+        read_delay <= 2;
     end else if (read_delay != 0) begin
-        if (read_delay == 1)
-            reading <= 1;
         read_delay <= read_delay - 1;
-    end else if (reading) begin
-        sdram_read_valid <= 1;
-        if (read_is_data)
-            sdram_read_data <= data_line[read_beat];
-        else
-            sdram_read_data <= code_line[read_beat];
-        if (read_beat == 6)
+        if (read_delay == 1) begin
+            sdram_read_data <= {
+                memory[{pending_read_address, 1'b1}],
+                memory[{pending_read_address, 1'b0}]
+            };
+            sdram_read_valid <= 1;
             sdram_command_ack <= 1;
-        if (read_beat == 7)
-            reading <= 0;
-        else
-            read_beat <= read_beat + 1;
+        end
     end
 end
 
 initial begin
-    for (cycle = 0; cycle < 8; cycle = cycle + 1) begin
-        code_line[cycle] = 0;
-        data_line[cycle] = 0;
-    end
-    repeat (4) @(posedge clk);
+    for (cycle = 0; cycle < 65536; cycle = cycle + 1)
+        memory[cycle] = 0;
+    repeat (10) @(posedge clk);
     sdram_init_done = 1;
-    for (cycle = 0; cycle < 1000 && leds != 6'b000001; cycle = cycle + 1)
+    for (cycle = 0; cycle < 5000 && leds != 6'b000001; cycle = cycle + 1)
         @(posedge clk);
     #1;
-    if (sdram_burst_length !== 8'd7)
-        $fatal(1, "G16 SDRAM harness selected the wrong burst length");
     if (leds !== 6'b000001) begin
         $display(
-            "state=%0d error=0x%02x pc=0x%04x boot=%0d beat=%0d fill=%0d instruction=0x%04x expected=0x%04x",
-            dut.state, dut.error_code, dut.pc, dut.boot_index,
-            dut.beat_index, dut.fill_word, dut.instruction,
-            dut.line_words[dut.boot_index]
+            "pc=0x%04x cseg=0x%04x dseg=0x%04x fault=%0d code=%0d fault_pc=0x%04x signal=0x%04x retired=%0d",
+            dut.pc, dut.code_segment, dut.data_segment, dut.faulted,
+            dut.fault_code, dut.fault_pc, dut.halt_signal, dut.retired_words
         );
-        $fatal(1, "G16 did not execute successfully from the refilled cache");
+        $fatal(1, "G16 did not execute through the reusable SDRAM hierarchy");
     end
+    if (memory[16'h4000] !== 16'h1234)
+        $fatal(1, "write-through data did not reach SDRAM");
+    if (sdram_burst_length !== 0)
+        $fatal(1, "first reusable cache revision must use word transactions");
     $display("DIGITAL_DESIGN_PASS");
     $finish;
 end
