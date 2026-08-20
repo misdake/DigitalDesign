@@ -1181,11 +1181,17 @@ impl From<GowinError> for GowinCliError {
     }
 }
 
+/// Byte address used by `--program-flash`: the G16 boot package base, right
+/// above the 1-MiB FPGA configuration reserve
+/// (cpu_v2/src/g16/boot/FLASH_LAYOUT.md).
+const G16_PACKAGE_FLASH_BASE: u32 = 0x0010_0000;
+
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 struct GowinCliOptions {
     output: Option<PathBuf>,
     build: bool,
     program: bool,
+    program_flash: Option<PathBuf>,
     gowin_home: Option<PathBuf>,
     cable_index: Option<u8>,
     help: bool,
@@ -1228,6 +1234,23 @@ fn parse_gowin_cli_args(
                 options.cable_index = Some(parse_cable_index(OsString::from(
                     &value["--cable-index=".len()..],
                 ))?);
+            }
+            Some("--program-flash") => {
+                let value = arguments.next().ok_or_else(|| {
+                    GowinCliError::Argument(
+                        "`--program-flash` requires a binary file".to_string(),
+                    )
+                })?;
+                options.program_flash = Some(PathBuf::from(value));
+            }
+            Some(value) if value.starts_with("--program-flash=") => {
+                let value = &value["--program-flash=".len()..];
+                if value.is_empty() {
+                    return Err(GowinCliError::Argument(
+                        "`--program-flash` requires a binary file".to_string(),
+                    ));
+                }
+                options.program_flash = Some(PathBuf::from(value));
             }
             Some("--help" | "-h") => options.help = true,
             Some(value) if value.starts_with('-') => {
@@ -1281,9 +1304,11 @@ where
     let options = parse_gowin_cli_args(arguments)?;
     if options.help {
         println!(
-            "Usage: {} [OUTPUT] [--build] [--program] [--gowin-home PATH] [--cable-index N]\n\n\
+            "Usage: {} [OUTPUT] [--build] [--program] [--program-flash FILE] [--gowin-home PATH] [--cable-index N]\n\n\
              --build          Export and run Gowin synthesis/place-and-route\n\
              --program        Build, then program volatile FPGA SRAM\n\
+             --program-flash  Program FILE to external SPI flash at the G16 package base;\n\
+             \x20                 can run without --build\n\
              --gowin-home     Gowin installation root; overrides GOWIN_HOME and PATH\n\
              --cable-index    Override the target's Programmer cable-driver type",
             executable.to_string_lossy()
@@ -1294,7 +1319,7 @@ where
     let output = options.output.unwrap_or_else(|| default_output.into());
     let generated = project.export(&output)?;
     println!("Exported Gowin project to {}", output.display());
-    if !options.build {
+    if !options.build && options.program_flash.is_none() {
         return Ok(());
     }
 
@@ -1303,18 +1328,40 @@ where
         .map(GowinToolchain::from_home)
         .map(Ok)
         .unwrap_or_else(GowinToolchain::discover)?;
-    let result = toolchain.build(&output, &generated)?;
-    println!("Built {}", result.bitstream.display());
-    for warning in &result.warnings {
-        println!("Gowin warning: {warning}");
+    if options.build {
+        let result = toolchain.build(&output, &generated)?;
+        println!("Built {}", result.bitstream.display());
+        for warning in &result.warnings {
+            println!("Gowin warning: {warning}");
+        }
+        if options.program {
+            println!("Programming volatile FPGA SRAM; the board must be connected.");
+            toolchain.program_sram(
+                &result,
+                options
+                    .cable_index
+                    .unwrap_or(result.device.programmer_cable.index()),
+            )?;
+        }
     }
-    if options.program {
-        println!("Programming volatile FPGA SRAM; the board must be connected.");
-        toolchain.program_sram(
-            &result,
+    if let Some(binary) = &options.program_flash {
+        let capacity_bits = T::inventory()
+            .fitted_device_capacity_bits(ResourceKind::SpiFlashDevice)
+            .ok_or_else(|| {
+                GowinCliError::Argument(format!(
+                    "target {} has no fitted SPI flash device",
+                    T::NAME
+                ))
+            })?;
+        println!("Programming external SPI flash; the board must be connected.");
+        toolchain.program_external_flash_binary(
+            generated.device,
+            binary,
+            G16_PACKAGE_FLASH_BASE,
+            u32::try_from(capacity_bits / 8).expect("fitted flash capacity fits u32 bytes"),
             options
                 .cable_index
-                .unwrap_or(result.device.programmer_cable.index()),
+                .unwrap_or(generated.device.programmer_cable.index()),
         )?;
     }
     Ok(())
@@ -2242,10 +2289,23 @@ mod tests {
         assert_eq!(options.gowin_home, Some(PathBuf::from("C:/Gowin")));
         assert_eq!(options.cable_index, Some(4));
 
+        let options = parse_gowin_cli_args([
+            OsString::from("--program-flash"),
+            OsString::from("image.g16boot"),
+        ])
+        .unwrap();
+        assert!(!options.build);
+        assert_eq!(
+            options.program_flash,
+            Some(PathBuf::from("image.g16boot"))
+        );
+
         for arguments in [
             vec![OsString::from("--cable-index")],
             vec![OsString::from("--cable-index=not-a-number")],
             vec![OsString::from("--cable-index=6")],
+            vec![OsString::from("--program-flash")],
+            vec![OsString::from("--program-flash=")],
             vec![OsString::from("first"), OsString::from("second")],
         ] {
             assert!(matches!(
