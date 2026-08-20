@@ -1637,6 +1637,25 @@ fn audit_physical_resources(
         }
     }
 
+    let claimed_ssram = planned
+        .claimed
+        .get(&ResourceKind::SsramBit)
+        .copied()
+        .unwrap_or(0);
+    // The PnR report counts SSRAM in RAM16 primitives, each holding 16x4 = 64
+    // bits, while source-level claims are in bits.
+    let actual_ssram = resource_mode_usage(&text, "Logic", "SSRAM(RAM16)")
+        .unwrap_or(0)
+        .saturating_mul(64);
+    if actual_ssram > claimed_ssram {
+        return Err(GowinError::PhysicalResourceMismatch {
+            report: report.to_path_buf(),
+            resource: ResourceKind::SsramBit,
+            claimed: claimed_ssram,
+            actual: actual_ssram,
+        });
+    }
+
     if let Some(expectation) = bsram_expectation {
         let actual = resource_usage_fraction(&text, "BSRAM")
             .or_else(|| resource_mode_total(&text, "BSRAM"))
@@ -2297,6 +2316,15 @@ mod tests {
         assert_eq!(dsp_multiplier_lane_usage(report), Some(30));
         assert_eq!(resource_usage_fraction(report, "PLL"), Some(1));
 
+        let with_ssram = "3. Resource Usage Summary\n\
+  Logic | 5094/20736 | 25%\n\
+    --LUT,ALU,ROM16 | 4950(4791 LUT, 159 ALU, 0 ROM16) | -\n\
+    --SSRAM(RAM16) | 24 | -\n";
+        assert_eq!(
+            resource_mode_usage(with_ssram, "Logic", "SSRAM(RAM16)"),
+            Some(24)
+        );
+
         let supported_dsp = "DSP | 2.5/24 | 11%\n\
     --MULT18X18 | 1\n\
     --MULTADDALU18X18 | 2\n\
@@ -2336,6 +2364,36 @@ mod tests {
                 resource: ResourceKind::Bsram18K,
                 claimed: 0,
                 actual: 1,
+                ..
+            })
+        ));
+        fs::remove_file(report).unwrap();
+        fs::remove_file(hierarchy_report).unwrap();
+        fs::remove_dir(directory).unwrap();
+    }
+
+    #[test]
+    fn physical_resource_audit_rejects_unclaimed_ssram() {
+        let directory = std::env::temp_dir().join(format!(
+            "digital-design-ssram-audit-{}",
+            std::process::id()
+        ));
+        fs::create_dir_all(&directory).unwrap();
+        let report = directory.join("pnr.rpt.txt");
+        let hierarchy_report = directory.join("syn_rsc.xml");
+        fs::write(
+            &report,
+            "3. Resource Usage Summary\n  Logic | 100/20736 | 1%\n    --SSRAM(RAM16) | 1 | -\n",
+        )
+        .unwrap();
+        fs::write(&hierarchy_report, "<Module name=\"top\"/>\n").unwrap();
+        let planned = TargetResources::<TangNano20K>::new().report();
+        assert!(matches!(
+            audit_physical_resources(&report, &hierarchy_report, &planned, &BTreeMap::new(), None,),
+            Err(GowinError::PhysicalResourceMismatch {
+                resource: ResourceKind::SsramBit,
+                claimed: 0,
+                actual: 64,
                 ..
             })
         ));

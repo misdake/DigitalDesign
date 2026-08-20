@@ -152,16 +152,21 @@ of bytes 0 through 8. The host reference loaders expose the same mapping as
 The first processor uses split 2-KiB instruction and data caches. Each is
 direct-mapped with 64 sets and 32 bytes (16 CPU words) per line. Each cache's
 1,024 data words map exactly to one characterized 1024x16 BSRAM leaf, for two
-data blocks total. Tags and valid bits are small enough for logic registers
-initially. One arbiter shares the SDRAM transaction port; instruction misses
-may not starve refresh or an already accepted data transaction.
+data blocks total. Its 64 physical 12-bit tags map through a characterized
+SSRAM leaf to 12 RAM16 primitives (768 physical SSRAM bits); resettable valid
+bits remain ordinary registers. One arbiter shares the SDRAM transaction port;
+instruction misses may not starve refresh or an already accepted data
+transaction.
 
 Reads allocate a complete line. Stores are write-through; write misses do not
 allocate. This avoids dirty eviction and makes early correctness/debugging much
-simpler. The target SDRAM adapter converts a line refill into one Controller HS
-8-beat 32-bit burst, and converts a 16-bit store into a one-beat 32-bit masked
-write. Associativity and write-back are policy changes behind the same CPU and
-line-transaction interfaces, to be justified by measured miss traffic rather
+simpler. The first reusable RTL revision deliberately refills a line through
+16 serialized physical-word transactions and converts a 16-bit store into a
+one-beat 32-bit masked write. This keeps the cache, DMA, and CPU on one already
+characterized word-port contract. Replacing the refill sequencer with one
+Controller HS 8-beat burst is a contained throughput optimization after the
+complete boot path is stable. Associativity and write-back are policy changes
+behind the same CPU interface, to be justified by measured miss traffic rather
 than copied from the exploratory model.
 
 The first arbiter permits one accepted Controller HS operation. A due refresh

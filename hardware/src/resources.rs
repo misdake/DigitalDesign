@@ -496,6 +496,27 @@ pub mod components {
     }
 
     #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+    pub struct SsramBits {
+        pub bits: u64,
+    }
+
+    impl SsramBits {
+        pub const fn new(bits: u64) -> Self {
+            Self { bits }
+        }
+    }
+
+    impl TargetComponent for SsramBits {
+        fn component_name(&self) -> &'static str {
+            "ssram"
+        }
+
+        fn resource_requirements(&self) -> Vec<ResourceAmount> {
+            vec![ResourceAmount::new(ResourceKind::SsramBit, self.bits)]
+        }
+    }
+
+    #[derive(Clone, Copy, Debug, Eq, PartialEq)]
     pub struct DspMultipliers {
         pub multipliers: u64,
     }
