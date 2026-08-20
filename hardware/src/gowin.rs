@@ -1528,6 +1528,14 @@ impl GowinToolchain {
             return Err(GowinError::MissingTool(executable.clone()));
         }
         let binary = fs::canonicalize(binary.as_ref())?;
+        // Gowin Programmer sniffs the flash file format by extension and
+        // rejects anything but a plain .bin with "Flsh format error".
+        if binary.extension().and_then(|ext| ext.to_str()) != Some("bin") {
+            return Err(GowinError::InvalidExternalFlashWrite(format!(
+                "Gowin Programmer only accepts a raw .bin file; got `{}`",
+                binary.display()
+            )));
+        }
         let file_bytes = fs::metadata(&binary)?.len();
         validate_external_flash_write(
             start_address,

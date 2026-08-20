@@ -3,7 +3,7 @@
 #   rcc cpu_v2/src/dsl_progs/stage1_dsl.rs --g16 --code-base 0x100 --stack-init 0xf000 -o target/g16_boot/stage1.g16bin
 #   rcc cpu_v2/src/dsl_progs/boot_demo_dsl.rs --g16 --code-base 0x200 --stack-init 0xe000 -o target/g16_boot/boot_demo.g16bin
 #   printf '\xef\xbe\x55' > target/g16_boot/data.bin
-#   g16-pack hardware/examples/g16_boot/boot.g16manifest -o target/g16_boot/g16_boot.g16boot
+#   g16-pack hardware/examples/g16_boot/boot.g16manifest -o target/g16_boot/g16_boot.bin
 format 1
 target tang-nano-20k
 stage1-section stage1

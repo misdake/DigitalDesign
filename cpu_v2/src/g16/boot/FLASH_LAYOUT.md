@@ -40,4 +40,5 @@ bulk erase is never part of the normal workflow. Writing is enabled only after
 the generated file, target ID, start address, capacity, and sector extent have
 all passed host-side checks. Every Gowin example exposes this through
 `--program-flash FILE`, which validates the range against the target's fitted
-flash capacity and writes at the package base.
+flash capacity and writes at the package base. The programmer sniffs the file
+format by extension, so the binary must be named `*.bin`.
