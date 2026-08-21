@@ -145,7 +145,10 @@ transport failure, `4` = entry/handoff invalid, `5` = internal/timeout) and
 then repeatedly emits a 10-byte UART frame on channel 3: ASCII `G16B`, stage,
 category, error code, detail low byte, detail high byte, and the XOR checksum
 of bytes 0 through 8. The host reference loaders expose the same mapping as
-`LoaderError::boot_report` for the on-hardware stages to mirror.
+`LoaderError::boot_report` for the on-hardware stages to mirror. A
+successfully started application instead writes channel 2 with `0b11_0000`:
+both stage bits set never occurs in a failure pattern, so the LED word alone
+distinguishes success, Stage0 failure, and Stage1 failure.
 
 ## First data-cache policy
 

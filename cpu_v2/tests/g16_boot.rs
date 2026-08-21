@@ -192,7 +192,9 @@ fn stage0_stage1_and_application_boot_from_flash() {
     // Both stages invalidate both caches before their segment switch.
     assert_eq!(sysctl.icache_invalidations, 2);
     assert_eq!(sysctl.dcache_invalidations, 2);
-    assert_eq!(sysctl.led, None);
+    // The demo application lights the success LED pattern (0b11_0000);
+    // failure patterns ({stage, category}) never have both high bits set.
+    assert_eq!(sysctl.led, Some(0b11_0000));
 
     // The machine reached the application segments.
     assert_eq!(machine.code_segment(), 3);

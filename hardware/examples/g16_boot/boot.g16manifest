@@ -11,6 +11,6 @@ stage1-entry 0x0001 0x0100 0x0002 0xf000
 application-entry 0x0003 0x0200 0x0004 0xe000
 
 load stage1      0x00010100 rx 32 1268 ../../../target/g16_boot/stage1.g16bin
-load application 0x00030200 rx 32 112 ../../../target/g16_boot/boot_demo.g16bin
+load application 0x00030200 rx 32 118 ../../../target/g16_boot/boot_demo.g16bin
 load data        0x00040000 rw 32 8 ../../../target/g16_boot/data.bin
 zero bss         0x00040100 rw 32 64

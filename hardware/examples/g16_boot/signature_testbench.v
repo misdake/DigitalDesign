@@ -196,8 +196,8 @@ initial begin
     // Phase 1: the intact package boots Stage0 -> Stage1 -> application.
     wait (ddht_frame_seen);
     @(posedge clk);
-    if (leds !== 6'b000000)
-        $fatal(1, "successful boot must leave the LEDs dark, got %b", leds);
+    if (leds !== 6'b110000)
+        $fatal(1, "successful boot must light the success pattern 6'b110000, got %b", leds);
     if (dut.code_segment !== 16'd3 || dut.data_segment !== 16'd4)
         $fatal(1, "application segments not reached: cseg=0x%04x dseg=0x%04x",
             dut.code_segment, dut.data_segment);
