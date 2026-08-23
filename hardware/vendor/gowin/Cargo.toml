@@ -1,0 +1,10 @@
+[package]
+name = "digital-design-hardware-gowin"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+digital-design-hardware = { path = "../../core" }
+digital-design-circuit = { path = "../../../circuit" }
+digital-design-hardware-common = { path = "../../common" }
+askama = { version = "0.14", default-features = false, features = ["config", "derive", "std"] }

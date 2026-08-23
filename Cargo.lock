@@ -99,6 +99,15 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "baf1de4339761588bc0619e3cbc0120ee582ebb74b53b4efbf79117bd2da40fd"
 
 [[package]]
+name = "compiler-tools"
+version = "0.1.0"
+dependencies = [
+ "cpu-v2",
+ "cpu-v3",
+ "rcc",
+]
+
+[[package]]
 name = "cpu-macro"
 version = "0.1.0"
 dependencies = [
@@ -108,25 +117,67 @@ dependencies = [
 ]
 
 [[package]]
-name = "cpu_v1"
+name = "cpu-v1"
 version = "0.1.0"
 dependencies = [
- "digital-design-code",
+ "digital-design-circuit",
+ "paste",
+]
+
+[[package]]
+name = "cpu-v1-sim"
+version = "0.1.0"
+dependencies = [
+ "cpu-v1",
+ "digital-design-circuit",
  "minifb",
  "paste",
 ]
 
 [[package]]
-name = "cpu_v2"
+name = "cpu-v2"
 version = "0.1.0"
 dependencies = [
  "arrayvec",
  "cpu-macro",
- "digital-design-code",
+ "digital-design-circuit",
  "once_cell",
  "paste",
  "proc-macro2",
+ "rcc",
  "syn 1.0.109",
+]
+
+[[package]]
+name = "cpu-v2-sim"
+version = "0.1.0"
+dependencies = [
+ "cpu-v2",
+ "rcc",
+]
+
+[[package]]
+name = "cpu-v3"
+version = "0.1.0"
+dependencies = [
+ "digital-design-circuit",
+ "digital-design-hardware",
+ "digital-design-hardware-gowin",
+ "digital-design-ip-common",
+ "rcc",
+]
+
+[[package]]
+name = "cpu-v3-tang-nano-20k"
+version = "0.1.0"
+dependencies = [
+ "askama",
+ "cpu-v3",
+ "digital-design-circuit",
+ "digital-design-hardware",
+ "digital-design-hardware-gowin",
+ "digital-design-ip-common",
+ "rcc",
 ]
 
 [[package]]
@@ -136,7 +187,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "b365fabc795046672053e29c954733ec3b05e4be654ab130fe8f1f94d7051f35"
 
 [[package]]
-name = "digital-design-code"
+name = "digital-design-circuit"
 version = "0.1.0"
 
 [[package]]
@@ -144,9 +195,27 @@ name = "digital-design-hardware"
 version = "0.1.0"
 dependencies = [
  "askama",
- "cpu_v2",
- "digital-design-code",
+ "digital-design-circuit",
  "digital-design-hardware-macros",
+]
+
+[[package]]
+name = "digital-design-hardware-common"
+version = "0.1.0"
+dependencies = [
+ "askama",
+ "digital-design-circuit",
+ "digital-design-hardware",
+]
+
+[[package]]
+name = "digital-design-hardware-gowin"
+version = "0.1.0"
+dependencies = [
+ "askama",
+ "digital-design-circuit",
+ "digital-design-hardware",
+ "digital-design-hardware-common",
 ]
 
 [[package]]
@@ -157,6 +226,10 @@ dependencies = [
  "quote",
  "syn 1.0.109",
 ]
+
+[[package]]
+name = "digital-design-ip-common"
+version = "0.1.0"
 
 [[package]]
 name = "dlib"
@@ -492,6 +565,15 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "b800beb9b6e7d2df1fe337c9e3d04e3af22a124460fb4c30fcc22c9117cefb41"
 dependencies = [
  "cty",
+]
+
+[[package]]
+name = "rcc"
+version = "0.1.0"
+dependencies = [
+ "once_cell",
+ "proc-macro2",
+ "syn 1.0.109",
 ]
 
 [[package]]

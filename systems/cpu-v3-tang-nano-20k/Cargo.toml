@@ -1,0 +1,17 @@
+[package]
+name = "cpu-v3-tang-nano-20k"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+cpu-v3 = { path = "../../ip/cpu-v3" }
+rcc = { path = "../../compiler/rcc" }
+digital-design-ip-common = { path = "../../ip/common" }
+digital-design-circuit = { path = "../../circuit" }
+digital-design-hardware = { path = "../../hardware/core" }
+digital-design-hardware-gowin = { path = "../../hardware/vendor/gowin" }
+askama = { version = "0.14", default-features = false, features = ["config", "derive", "std"] }
+
+[build-dependencies]
+cpu-v3 = { path = "../../ip/cpu-v3" }
+rcc = { path = "../../compiler/rcc" }

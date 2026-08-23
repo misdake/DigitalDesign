@@ -1,0 +1,9 @@
+[package]
+name = "digital-design-hardware"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+askama = { version = "0.14", default-features = false, features = ["config", "derive", "std"] }
+digital-design-circuit = { path = "../../circuit" }
+digital-design-hardware-macros = { path = "../macros" }

@@ -1,54 +1,49 @@
-# DigitalDesign-code Project Guide
+# DigitalDesign project guide
 
-Multi-crate workspace: `core` (`digital_design_code`, circuit component library), `cpu_macro` (`define_isa!` macro), `cpu_v1` (legacy CPU), and `cpu_v2` (current mainline and the focus of this file).
+Read `ARCHITECTURE.md` before moving code across crates. The dependency direction is
+`circuit -> hardware -> ip/compiler -> systems`; arrows mean “may be depended on by”.
 
-## cpu_v2 Structure (`src/`)
+## Workspace map
 
-- `isa.rs` / `isa.html` — ISA v2.6 definitions (`cpu_macro` generates encoding, decoding, and `Display`); **do not modify**.
-- `sim.rs` — instruction-set simulator (`eval` → `StateChange` → `commit`).
-- `compiler/` — compilation pipeline: SSA/CFG IR (builder) → passes (constant propagation/CSE/DCE) → linear-scan register allocation → code generation (branch relaxation) → assembler/linker.
-- `frontend/` — rcc frontend (syn parsing → subset validation → AST-to-IR lowering), plus `spec.md` (rcc language specification, kept in sync with the implementation).
-- `rcc_std/` — standard library (heap/mem/mul/vec, self-hosted in rcc; automatically linked into every program, with unused functions removed by the linker).
-- `dsl_rt.rs` — host-side implementations of rcc built-ins (`Ptr`/`Slice2`/`addr_of`/`halt`/`assert`) that keep rcc programs valid Rust readable by rust-analyzer and rustc.
-- `dsl_progs/` — rcc example programs (named `*_dsl.rs`).
-- `bin/rcc.rs`, `bin/rcc-run.rs` — CLI artifacts.
-- `tests/` (`cpu_v2/tests/`) — integration tests: `common` (helpers), `rcc_basics`, `rcc_control`, `rcc_calls`, `rcc_memory`, `rcc_errors`, `rcc_std`, and `rcc_ported`.
+- `circuit` (`digital-design-circuit`): circuit graph, simulation, and Verilog rendering.
+- `hardware/core`: hardware description, projects, resources, and test framework.
+- `hardware/common`: vendor-independent FPGA shell modules.
+- `hardware/vendor/gowin`: Gowin toolchain, primitives, reports, and targets.
+- `ip/common`: physical word addresses, memory protocol, layouts, and device channels.
+- `ip/cpu-v1`, `ip/cpu-v2`, `ip/cpu-v3`: processor IP and target RCC backends.
+- `compiler/rcc`: Rust-subset frontend, IR, optimization, and register allocation machinery.
+- `compiler/tools`: the multi-target `rcc` command.
+- `systems/cpu-v1-sim`, `systems/cpu-v2-sim`, `systems/cpu-v3-tang-nano-20k`: final systems,
+  system-only tools, applications, and firmware.
 
-## ISA v2.6 Quick Reference (16 Registers, Harvard Architecture)
+CPU V2 `src/isa.rs` and `src/isa.html` define ISA v2.6 and must not be modified by structural work.
+CPU V2 target code is in `src/rcc_backend`; CPU V3 has its own independent `rcc_backend`.
+`compiler/rcc` must not import either CPU crate.
 
-- Instruction and data memory are each 64K. `r13 = ra` (written by call instructions) and `r14 = sp` (used implicitly by `sp_add`/`sp_sub`/`store_sp`/`load_sp`) are **not allocatable**.
-- Compiler calling convention: returns in r0–r1, arguments in r2–r7, caller-saved r0–r7, callee-saved r8–r12 (saved as needed, with `ra` saved automatically by non-leaf functions), and `tmp = r15` (reserved for far calls, branch relaxation, and scratch use; not allocatable).
-- Immediate limits: `j_cc` ±128 (out-of-range jumps are handled by backend branch relaxation), `addi` only ±1..8 with no zero, `cmp_i` u4 / `cmp_si` i4, `load_mem`/`store_mem` offset i4 (−8..+7), `store_sp`/`load_sp`/`sp_sub`/`sp_add` u8, and shifts only by u4 immediates.
-- Direct calls undergo fixed-point whole-program linker relaxation: in-range calls use an unpadded single-slot `call_rel`; out-of-range calls use `load_lo` + `load_hi` + `call_reg`. The automatic function table considers only hot call targets that remain far after relaxation; table entries use a single-slot `call_abs`. Indirect calls use `tmp` + `call_reg`. The table starts at data address `0xff00` and is initialized before the `main` frame is established, using `sp` as the base with u8-offset `store_sp` instructions. Listings and `.dbg` files mark stack/table/static/runtime initialization as compiler-generated global initialization ranges.
-- Functions are separated by one `halt` slot for disassembly boundaries and out-of-range PC fallback.
+## RCC and boot commands
 
-## rcc Language (See `src/frontend/spec.md`)
-
-rcc is a strict Rust subset: valid rcc is valid Rust, and all semantics are unsafe. Types include `u16`, `i16`, `Ptr` (data pointer), `Array<u16|i16>` (single-word typed view), function pointers, and `bool` (conditions only; not storable). Arrays `[u16; N]` / `[i16; N]` support `as_array()` followed by `a[i]` / `a[i] = v`. `Array` indices are limited to `u16` or `i16` (write literals as `a[3u16]` / `a[-1i16]`; small offsets use i4 memory operations directly). `Array` supports `as_ptr()`, while `Ptr` supports `as_u16_array()` / `as_i16_array()`. Legacy `Slice2` operations `read`/`write`/`as_ptr`/`len` remain supported. The target performs no bounds checking. `const` and `static` live in the data segment, with an implicit `__data_init` at the `main` entry. For `addr_of(&x)`, globals become compile-time constants and locals become `sp + slot`. Supported control flow includes `if`, `while`, `for`, `break`, `continue`, `if` expressions, and short-circuit `&&`, `||`, and `!`. Function pointers use `LoadFuncAddr` + `call_reg`. **Unsupported:** `*`, `/`, `%`, structs, generics (except the `Array` type parameter), closures, `match`, references, and macros; each produces a positioned diagnostic. Standard-library functions are called directly by name (`malloc`, `free`, `mem_set`, `mem_copy`, `mul_16x4`/`8`/`16`, `vec_*`). Based on call-graph reachability, the compiler inserts one `init_heap` / `init_vec` call at the `main` entry, with arguments from `CompilerOptions`.
-
-## Common Commands
-
-Local builds must initialize the MSVC environment and put Cargo first on `PATH`; otherwise, GNU `link` from Git Bash shadows MSVC `link.exe`. Build-environment initialization is documented here (equivalent to the obsolete `run_tests.bat`):
-
-```bat
-:: Contents of build_env.bat (run line by line in cmd.exe, or save and invoke as a .bat file)
-call "C:\Program Files (x86)\Microsoft Visual Studio\2019\BuildTools\VC\Auxiliary\Build\vcvars64.bat" >nul 2>&1
-set PATH=C:\Users\misdake\.cargo\bin;%PATH%
+```text
+cargo run -p compiler-tools --bin rcc -- input.rs --target cpu-v2
+cargo run -p compiler-tools --bin rcc -- input.rs --target cpu-v3 --code-base 0x200
+cargo run -p cpu-v2-sim --bin rcc-run -- input.bin 1000000
+cargo run -p cpu-v2-sim --bin rcc-dbg -- input.bin
+cargo run -p cpu-v3-tang-nano-20k --bin cpu-v3-pack -- manifest
 ```
 
-After initialization, Cargo commands work normally:
+The CPU V3 system build script generates Stage0, Stage1, the demo application, and boot image data
+from `systems/cpu-v3-tang-nano-20k/rcc` into Cargo `OUT_DIR`. Never check in a second hand-maintained
+instruction or Flash byte array.
 
-- Tests/static checks: `cargo test -p cpu_v2`, `cargo clippy -p cpu_v2 --all-targets`.
-- Build binaries: `cargo build -p cpu_v2 --bins` (outputs: `target/debug/rcc.exe`, `rcc-run.exe`).
-- Compile an rcc program: `./target/debug/rcc <input.rs> [-o out.bin] [--lst out.lst] [--no-opt] [--function-table auto|none|all|name,...] [--stack-init N] [--data-base N] [--heap-begin N] [--heap-size N] [--vec-cap N]` (numbers may be decimal or `0x`-prefixed). `mod name;` is resolved beside the input file as `<name>.rs`, `<name>.dsl.rs`, or `<name>/mod.rs`. Compilation produces three artifacts: a `.bin` binary image (RCC1 header + u16-LE instructions), a `.lst` disassembly (function signatures, block roles, call names, and `; line N`), and `.dbg` debug information (file table, function table, functions with address/frame/variable locations as `rN`/`frame+N`/`ssa`, global variable addresses, and the PC-to-line map used by the debugger). Add `--g16 [--code-base N]` to select the G16 backend; it emits headerless little-endian 16-bit words (default `.g16bin`) plus a listing, ready for `g16-pack <manifest.g16manifest>` (the manifest is hand-authored; no tool generates it).
-- Run: `./target/debug/rcc-run <input.bin> [max_cycles]` → prints the halt signal and cycle count.
-- Debug: `./target/debug/rcc-dbg <input.bin> [--port 8321]` → opens the single-page web debugger at http://127.0.0.1:8321. It is **source-first**: the source pane highlights the current line and allows source-line breakpoints by clicking line numbers; controls include next line, step over, step out, single instruction, continue, and reset. The secondary disassembly pane gives the current PC the highest-priority blue highlight with a red arrow on the left; disassembly-address breakpoints are unsupported. Additional panes show registers and flags, memory with address/sp/heap/data shortcuts, globals (name/type/address/value), live locals for the current function (`rN`/`frame+N`, with `ssa` entries hidden), and the shadow call stack (function name + return address). **Next line enters the next source line**, including line-by-line entry into callees; step over uses shadow-call-stack depth to avoid entering callees; step out returns to the caller. Source indentation is preserved; clicking source-line text highlights its corresponding disassembly instructions; clicking a `Ptr` variable jumps to memory. API: `GET /api/state`, `GET /api/mem?addr=&len=`, `POST /api/cmd?cmd=step|next|over|out|continue|reset`, and `POST /api/breakline?file=<idx>&line=<n>&on=0|1`.
-- View disassembly: compile with `--lst`, or run `test -p cpu_v2 compiler::tests::optimize::test_listing_demo -- --nocapture`. `Compiler::finish` always returns `(Vec<Instruction>, String)` containing function signatures, block roles, call names, and `; line N`.
+## Validation
 
-## Conventions
+Use the nightly toolchain selected by `rust-toolchain.toml`. On Windows, initialize an MSVC x64
+developer environment and ensure Cargo precedes Git Bash tools on `PATH`.
 
-- Every test must pass a maximum cycle count to `simulate` to prevent infinite-loop hangs. Prefer computing expected values with equivalent Rust code at the test site instead of using magic numbers.
-- Project files must use English only, including code, comments, specifications, and commits.
-- The `docs/` directory no longer exists. Its original redesign drafts are obsolete; this file and `src/frontend/spec.md` describe the current state, and build commands are documented here.
-- The user decides when changes are committed unless they explicitly request a commit.
-- Test layout: keep pipeline unit tests in the relevant files under `src/compiler/`; put language, library, and integration tests in categorized files under `cpu_v2/tests/`.
+```text
+cargo test --workspace
+cargo clippy --workspace --all-targets
+powershell -ExecutionPolicy Bypass -File scripts/check-layering.ps1
+```
+
+Every simulator test must supply a maximum cycle/step count. Keep project files, comments, and
+documentation in English. Do not commit unless the user explicitly asks for a commit.

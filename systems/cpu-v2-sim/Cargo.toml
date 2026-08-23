@@ -1,0 +1,9 @@
+[package]
+name = "cpu-v2-sim"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+cpu-v2 = { path = "../../ip/cpu-v2" }
+rcc = { path = "../../compiler/rcc" }
+

@@ -1,0 +1,336 @@
+use cpu_v3_tang_nano_20k::{
+    run_gowin_project_cli, BootDmaEngine, BootDmaMmio, Bsram1R1Rw1024, BsramImage,
+    ErasedSpiFlashImage, G16Core, G16DirectMappedCache, G16MemoryArbiter, G16MmioBridge,
+    GowinCliError, GowinDspMode, GowinModuleProject, Hardware, HardwareIdentity, Module,
+    ResourceCountExpectation, SpiFlashReader, SystemControlDevice, TangNano20K,
+    TangNano20KBootInputs, TangNano20KBootOutputs, TangNano20KSdramWordPort, VerilogDependency,
+    BSRAM_1024_DEPTH,
+};
+use digital_design_circuit::CircuitWires;
+
+fn main() -> Result<(), GowinCliError> {
+    run_gowin_project_cli(gowin_project(), "target/g16_boot_gowin")
+}
+
+include!(concat!(env!("OUT_DIR"), "/boot_images.rs"));
+
+struct BootImage;
+
+const fn boot_image() -> [u64; BSRAM_1024_DEPTH] {
+    let mut words = [0; BSRAM_1024_DEPTH];
+    let mut index = 0;
+    while index < words.len() {
+        words[index] = (((index as u64) * 0x9e37) ^ 0x5aa5) & 0xffff;
+        index += 1;
+    }
+    index = 0;
+    while index < STAGE0_PROGRAM.len() {
+        words[index] = STAGE0_PROGRAM[index] as u64;
+        index += 1;
+    }
+    words
+}
+
+impl BsramImage<16> for BootImage {
+    const WORDS: [u64; BSRAM_1024_DEPTH] = boot_image();
+}
+
+type BootMemory = Bsram1R1Rw1024<16, BootImage>;
+type FittedFlashReader = SpiFlashReader<ErasedSpiFlashImage, 8_388_608, 2>;
+type SystemControl = SystemControlDevice<469>;
+
+#[derive(Hardware)]
+#[hardware(namespace = "examples/g16_boot")]
+struct G16BootSelfTest;
+
+impl Module for G16BootSelfTest {
+    type Input = TangNano20KBootInputs;
+    type Output = TangNano20KBootOutputs;
+    type EmuState = ();
+
+    const USES_MAIN_CLOCK: bool = true;
+    const EMU_AVAILABLE: bool = false;
+
+    fn execute_emu(
+        _state: &mut Self::EmuState,
+        _circuit: &mut CircuitWires,
+        _input: &Self::Input,
+        _output: &Self::Output,
+    ) {
+        panic!("G16BootSelfTest is a Verilog-only hardware integration test")
+    }
+
+    fn verilog_source() -> Option<String> {
+        Some(
+            include_str!("self_test.v")
+                .replace(
+                    "__BOOT_MEMORY__",
+                    &BootMemory::verilog_identity().module_name(),
+                )
+                .replace("__G16_CORE__", &G16Core::verilog_identity().module_name())
+                .replace(
+                    "__CACHE__",
+                    &G16DirectMappedCache::verilog_identity().module_name(),
+                )
+                .replace(
+                    "__ARBITER__",
+                    &G16MemoryArbiter::verilog_identity().module_name(),
+                )
+                .replace(
+                    "__MMIO_BRIDGE__",
+                    &G16MmioBridge::verilog_identity().module_name(),
+                )
+                .replace(
+                    "__SYSTEM_CONTROL__",
+                    &SystemControl::verilog_identity().module_name(),
+                )
+                .replace(
+                    "__BOOT_DMA_MMIO__",
+                    &BootDmaMmio::verilog_identity().module_name(),
+                )
+                .replace(
+                    "__BOOT_DMA_ENGINE__",
+                    &BootDmaEngine::verilog_identity().module_name(),
+                )
+                .replace(
+                    "__FLASH_READER__",
+                    &FittedFlashReader::verilog_identity().module_name(),
+                )
+                .replace(
+                    "__SDRAM_WORD_PORT__",
+                    &TangNano20KSdramWordPort::verilog_identity().module_name(),
+                ),
+        )
+    }
+
+    fn verilog_dependencies() -> Vec<VerilogDependency> {
+        vec![
+            VerilogDependency::new::<BootMemory>("u_boot"),
+            VerilogDependency::new::<G16Core>("u_core"),
+            VerilogDependency::new::<G16DirectMappedCache>("u_instruction_cache"),
+            VerilogDependency::new::<G16DirectMappedCache>("u_data_cache"),
+            VerilogDependency::new::<G16MemoryArbiter>("u_memory_arbiter"),
+            VerilogDependency::new::<G16MmioBridge>("u_mmio_bridge"),
+            VerilogDependency::new::<SystemControl>("u_sysctl"),
+            VerilogDependency::new::<BootDmaMmio>("u_boot_dma_mmio"),
+            VerilogDependency::new::<BootDmaEngine>("u_boot_dma_engine"),
+            VerilogDependency::new::<FittedFlashReader>("u_flash"),
+            VerilogDependency::new::<TangNano20KSdramWordPort>("u_sdram_word_port"),
+        ]
+    }
+
+    fn verilog_testbench() -> Option<String> {
+        let mut flash_init = String::new();
+        for (index, byte) in FLASH_PACKAGE.iter().enumerate() {
+            flash_init.push_str(&format!("        flash_image[{index}] = 8'h{byte:02x};\n"));
+        }
+        Some(
+            include_str!("signature_testbench.v")
+                .replace("__FLASH_PACKAGE_SIZE__", &FLASH_PACKAGE.len().to_string())
+                .replace("__FLASH_PACKAGE_INIT__", &flash_init),
+        )
+    }
+}
+
+fn gowin_project() -> GowinModuleProject<TangNano20K, G16BootSelfTest> {
+    TangNano20K::boot_memory_project::<G16BootSelfTest>("g16_boot_self_test")
+        .expect_bsram_blocks(ResourceCountExpectation::Exact(3))
+        .expect_dsp_mode(GowinDspMode::Mult18x18, ResourceCountExpectation::Exact(1))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use cpu_v3::rcc_backend::{self, CompilerOptions, CpuV3Program};
+    use cpu_v3::PhysicalWordAddress;
+    use cpu_v3_tang_nano_20k::boot::{
+        build_boot_image, BootEntry, BootImageSpec, BootTarget, InputSection, SectionKind,
+        SECTION_EXECUTE, SECTION_READ, SECTION_WRITE,
+    };
+    use cpu_v3_tang_nano_20k::{ResourceKind, VerilogProject};
+    use rcc::frontend::compile_program_named;
+
+    fn compile_cpu_v3(file: &str, options: &CompilerOptions) -> CpuV3Program {
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("rcc")
+            .join(file);
+        let source = std::fs::read_to_string(&path).expect("read rcc source");
+        let program =
+            compile_program_named(&path.display().to_string(), &source, options, &mut |name| {
+                Err(format!("unknown module `{name}`"))
+            })
+            .expect("rcc compile failed");
+        rcc_backend::compile(program, options, "main")
+    }
+
+    fn words_bytes(words: &[u16]) -> Vec<u8> {
+        words.iter().flat_map(|word| word.to_le_bytes()).collect()
+    }
+
+    fn section(
+        name: &str,
+        destination: u32,
+        data: Vec<u8>,
+        memory_size_bytes: u32,
+        flags: u16,
+    ) -> InputSection {
+        InputSection {
+            name: name.into(),
+            kind: SectionKind::Load,
+            flags,
+            destination: PhysicalWordAddress::new(destination),
+            data,
+            memory_size_bytes,
+            alignment_bytes: 32,
+        }
+    }
+
+    /// Packs Stage1 and the demo application into the Flash boot package,
+    /// mirroring the section layout of the `cpu_v2` `g16_boot` test.
+    fn boot_package() -> Vec<u8> {
+        let stage1 = compile_cpu_v3(
+            "stage1.rs",
+            &CompilerOptions {
+                code_base: 0x0100,
+                stack_init: 0xf000,
+                ..CompilerOptions::default()
+            },
+        );
+        let application = compile_cpu_v3(
+            "boot-demo.rs",
+            &CompilerOptions {
+                code_base: 0x0200,
+                stack_init: 0xe000,
+                ..CompilerOptions::default()
+            },
+        );
+        let stage1_bytes = words_bytes(&stage1.words);
+        let application_bytes = words_bytes(&application.words);
+        build_boot_image(BootImageSpec {
+            target: BootTarget::TangNano20K,
+            stage1_section: "stage1".into(),
+            stage1_entry: BootEntry {
+                code_segment: 1,
+                offset: 0x0100,
+                data_segment: 2,
+                stack_offset: 0xf000,
+            },
+            application_entry: BootEntry {
+                code_segment: 3,
+                offset: 0x0200,
+                data_segment: 4,
+                stack_offset: 0xe000,
+            },
+            sections: vec![
+                InputSection {
+                    name: "stage1".into(),
+                    kind: SectionKind::Load,
+                    flags: SECTION_READ | SECTION_EXECUTE,
+                    destination: PhysicalWordAddress::new(0x0001_0100),
+                    memory_size_bytes: stage1_bytes.len() as u32,
+                    data: stage1_bytes,
+                    alignment_bytes: 32,
+                },
+                InputSection {
+                    name: "application".into(),
+                    kind: SectionKind::Load,
+                    flags: SECTION_READ | SECTION_EXECUTE,
+                    destination: PhysicalWordAddress::new(0x0003_0200),
+                    memory_size_bytes: application_bytes.len() as u32,
+                    data: application_bytes,
+                    alignment_bytes: 32,
+                },
+                section(
+                    "data",
+                    0x0004_0000,
+                    vec![0xef, 0xbe, 0x55],
+                    8,
+                    SECTION_READ | SECTION_WRITE,
+                ),
+                InputSection {
+                    name: "bss".into(),
+                    kind: SectionKind::Zero,
+                    flags: SECTION_READ | SECTION_WRITE,
+                    destination: PhysicalWordAddress::new(0x0004_0100),
+                    data: vec![],
+                    memory_size_bytes: 64,
+                    alignment_bytes: 32,
+                },
+            ],
+        })
+        .expect("boot image builds")
+        .bytes
+    }
+
+    fn format_words(words: &[u16]) -> String {
+        let items = words
+            .iter()
+            .map(|word| format!("0x{word:04x}"))
+            .collect::<Vec<_>>();
+        format!("&[{}]", items.join(", "))
+    }
+
+    fn format_bytes(bytes: &[u8]) -> String {
+        let items = bytes
+            .iter()
+            .map(|byte| format!("0x{byte:02x}"))
+            .collect::<Vec<_>>();
+        format!("&[{}]", items.join(", "))
+    }
+
+    #[test]
+    fn stage0_image_is_the_current_compiler_output() {
+        let compiled = compile_cpu_v3("stage0.rs", &CompilerOptions::default()).words;
+        assert!(
+            compiled.len() < BSRAM_1024_DEPTH,
+            "stage0 uses {} words; the boot window holds {BSRAM_1024_DEPTH}",
+            compiled.len()
+        );
+        assert_eq!(
+            compiled.len(),
+            STAGE0_PROGRAM.len(),
+            "stage0 changed; new STAGE0_PROGRAM = {}",
+            format_words(&compiled)
+        );
+        if compiled != STAGE0_PROGRAM {
+            panic!(
+                "stage0 changed; new STAGE0_PROGRAM = {}",
+                format_words(&compiled)
+            );
+        }
+        assert_eq!(
+            BootImage::WORDS[..compiled.len()],
+            compiled.iter().copied().map(u64::from).collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn flash_package_is_the_current_compiler_output() {
+        let package = boot_package();
+        if package != FLASH_PACKAGE {
+            panic!(
+                "boot package changed; new FLASH_PACKAGE = {}",
+                format_bytes(&package)
+            );
+        }
+    }
+
+    #[test]
+    fn project_contains_boot_caches_flash_reader_and_sdram() {
+        let verilog = VerilogProject::generate::<G16BootSelfTest>().unwrap();
+        assert_eq!(verilog.resource_claims.len(), 7);
+        let project = gowin_project().generate().unwrap();
+        assert_eq!(project.resources.claimed[&ResourceKind::Bsram18K], 3);
+        assert_eq!(project.resources.claimed[&ResourceKind::SsramBit], 1_536);
+        assert_eq!(project.resources.claimed[&ResourceKind::SdrSdramDevice], 1);
+        assert_eq!(project.resources.claimed[&ResourceKind::SpiFlashDevice], 1);
+        assert_eq!(project.resources.claimed[&ResourceKind::Pll], 1);
+        assert_eq!(project.resources.claimed[&ResourceKind::Multiplier18x18], 1);
+    }
+
+    #[test]
+    #[ignore = "explicit external simulator validation"]
+    fn two_stage_flash_boot_executes_in_verilog() {
+        digital_design_hardware::verify_verilog_with_iverilog::<G16BootSelfTest>().unwrap();
+    }
+}

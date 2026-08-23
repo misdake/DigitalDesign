@@ -1,11 +1,20 @@
 [workspace]
 members = [
-    "core",
-    "hardware",
-    "hardware_macros",
-    "cpu_v1",
-    "cpu_v2",
-    "cpu_macro",
+    "circuit",
+    "hardware/core",
+    "hardware/common",
+    "hardware/vendor/gowin",
+    "hardware/macros",
+    "ip/cpu-v1",
+    "ip/common",
+    "systems/cpu-v1-sim",
+    "ip/cpu-v2",
+    "ip/cpu-v3",
+    "systems/cpu-v3-tang-nano-20k",
+    "systems/cpu-v2-sim",
+    "compiler/isa-macros",
+    "compiler/rcc",
+    "compiler/tools",
 ]
 
 # https://doc.rust-lang.org/nightly/cargo/reference/features.html#feature-resolver-version-2
