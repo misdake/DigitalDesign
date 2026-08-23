@@ -188,8 +188,114 @@ pub struct DeviceChannel {
     pub channel: u8,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct DeviceAllocation {
+    pub name: &'static str,
+    pub device: u8,
+    pub channels: &'static [u8],
+}
+
 pub trait SystemDeviceLayout {
-    const CHANNELS: &'static [(&'static str, DeviceChannel)];
+    const DEVICE_ADDRESS_BITS: u8;
+    const CHANNEL_ADDRESS_BITS: u8;
+    const ALLOCATIONS: &'static [DeviceAllocation];
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum DeviceLayoutError {
+    InvalidDeviceAddressBits(u8),
+    InvalidChannelAddressBits(u8),
+    EmptyAllocation(&'static str),
+    DeviceOutsideCapacity {
+        allocation: &'static str,
+        device: u8,
+    },
+    ChannelOutsideCapacity {
+        allocation: &'static str,
+        channel: u8,
+    },
+    DuplicateChannel {
+        first: &'static str,
+        second: &'static str,
+        channel: DeviceChannel,
+    },
+}
+
+impl fmt::Display for DeviceLayoutError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::InvalidDeviceAddressBits(bits) => {
+                write!(f, "device address width {bits} is not in 1..=8")
+            }
+            Self::InvalidChannelAddressBits(bits) => {
+                write!(f, "device channel width {bits} is not in 1..=8")
+            }
+            Self::EmptyAllocation(name) => write!(f, "device allocation `{name}` has no channels"),
+            Self::DeviceOutsideCapacity { allocation, device } => write!(
+                f,
+                "device allocation `{allocation}` uses device {device}, outside the configured address width"
+            ),
+            Self::ChannelOutsideCapacity { allocation, channel } => write!(
+                f,
+                "device allocation `{allocation}` uses channel {channel}, outside the configured address width"
+            ),
+            Self::DuplicateChannel { first, second, channel } => write!(
+                f,
+                "device allocations `{first}` and `{second}` both use device {} channel {}",
+                channel.device, channel.channel
+            ),
+        }
+    }
+}
+
+impl std::error::Error for DeviceLayoutError {}
+
+pub fn validate_device_layout<L: SystemDeviceLayout>() -> Result<(), DeviceLayoutError> {
+    if !(1..=8).contains(&L::DEVICE_ADDRESS_BITS) {
+        return Err(DeviceLayoutError::InvalidDeviceAddressBits(
+            L::DEVICE_ADDRESS_BITS,
+        ));
+    }
+    if !(1..=8).contains(&L::CHANNEL_ADDRESS_BITS) {
+        return Err(DeviceLayoutError::InvalidChannelAddressBits(
+            L::CHANNEL_ADDRESS_BITS,
+        ));
+    }
+
+    let device_capacity = 1u16 << L::DEVICE_ADDRESS_BITS;
+    let channel_capacity = 1u16 << L::CHANNEL_ADDRESS_BITS;
+    let mut occupied = std::collections::BTreeMap::new();
+    for allocation in L::ALLOCATIONS {
+        if allocation.channels.is_empty() {
+            return Err(DeviceLayoutError::EmptyAllocation(allocation.name));
+        }
+        if u16::from(allocation.device) >= device_capacity {
+            return Err(DeviceLayoutError::DeviceOutsideCapacity {
+                allocation: allocation.name,
+                device: allocation.device,
+            });
+        }
+        for &channel in allocation.channels {
+            if u16::from(channel) >= channel_capacity {
+                return Err(DeviceLayoutError::ChannelOutsideCapacity {
+                    allocation: allocation.name,
+                    channel,
+                });
+            }
+            let address = DeviceChannel {
+                device: allocation.device,
+                channel,
+            };
+            if let Some(first) = occupied.insert((allocation.device, channel), allocation.name) {
+                return Err(DeviceLayoutError::DuplicateChannel {
+                    first,
+                    second: allocation.name,
+                    channel: address,
+                });
+            }
+        }
+    }
+    Ok(())
 }
 
 #[cfg(test)]
@@ -221,5 +327,49 @@ mod tests {
             ];
         }
         assert_eq!(validate_memory_layout::<Layout>(), Ok(()));
+    }
+
+    #[test]
+    fn device_allocations_validate_widths_and_collisions() {
+        struct Valid;
+        impl SystemDeviceLayout for Valid {
+            const DEVICE_ADDRESS_BITS: u8 = 4;
+            const CHANNEL_ADDRESS_BITS: u8 = 4;
+            const ALLOCATIONS: &'static [DeviceAllocation] = &[
+                DeviceAllocation {
+                    name: "control",
+                    device: 0,
+                    channels: &[0, 1],
+                },
+                DeviceAllocation {
+                    name: "dma",
+                    device: 2,
+                    channels: &[0, 1, 14, 15],
+                },
+            ];
+        }
+        validate_device_layout::<Valid>().unwrap();
+
+        struct Overlap;
+        impl SystemDeviceLayout for Overlap {
+            const DEVICE_ADDRESS_BITS: u8 = 4;
+            const CHANNEL_ADDRESS_BITS: u8 = 4;
+            const ALLOCATIONS: &'static [DeviceAllocation] = &[
+                DeviceAllocation {
+                    name: "first",
+                    device: 3,
+                    channels: &[7],
+                },
+                DeviceAllocation {
+                    name: "second",
+                    device: 3,
+                    channels: &[7],
+                },
+            ];
+        }
+        assert!(matches!(
+            validate_device_layout::<Overlap>(),
+            Err(DeviceLayoutError::DuplicateChannel { .. })
+        ));
     }
 }

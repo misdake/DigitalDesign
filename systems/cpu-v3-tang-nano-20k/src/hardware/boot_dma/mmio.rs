@@ -3,7 +3,7 @@
 use crate::{HardwareIdentity, Module, ModuleIo, VerilogIdentity};
 use digital_design_circuit::{CircuitWires, Wire, Wires};
 
-const DMA_DEVICE: u8 = 2;
+const DMA_DEVICE: u8 = crate::boot::BOOT_DMA_DEVICE;
 
 #[derive(Clone, ModuleIo)]
 pub struct BootDmaMmioInput {

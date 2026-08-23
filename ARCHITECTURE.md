@@ -13,7 +13,7 @@ ip/
   common/                        physical-memory and device-channel contracts
   cpu-v1/                        reusable CPU V1 processor IP
   cpu-v2/                        CPU V2 ISA, model, and RCC backend
-  cpu-v3/                        CPU V3 ISA, model, cache/RTL, and RCC backend
+  cpu-v3/                        CPU V3 ISA, model, Gowin-bound cache/RTL, and RCC backend
 compiler/
   rcc/                           frontend, target-independent IR and passes
   isa-macros/                    ISA definition macros

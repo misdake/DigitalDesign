@@ -4,8 +4,11 @@ pub mod boot;
 pub mod hardware;
 mod layout;
 
-pub use cpu_v3::*;
-pub use digital_design_hardware::*;
-pub use digital_design_hardware_gowin::*;
+// System internals share the lower-layer types through this crate root. New
+// examples should still import each lower layer explicitly so ownership stays
+// visible at composition sites.
+pub(crate) use cpu_v3::*;
+pub(crate) use digital_design_hardware::*;
+pub(crate) use digital_design_hardware_gowin::*;
 pub use hardware::*;
 pub use layout::*;

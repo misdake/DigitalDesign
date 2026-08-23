@@ -1181,17 +1181,12 @@ impl From<GowinError> for GowinCliError {
     }
 }
 
-/// Byte address used by `--program-flash`: the CpuV3 boot package base, right
-/// above the 1-MiB FPGA configuration reserve
-/// (`systems/cpu-v3-tang-nano-20k/src/boot/FLASH_LAYOUT.md`).
-const CPU_V3_PACKAGE_FLASH_BASE: u32 = 0x0010_0000;
-
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 struct GowinCliOptions {
     output: Option<PathBuf>,
     build: bool,
     program: bool,
-    program_flash: Option<PathBuf>,
+    program_flash: Option<(u32, PathBuf)>,
     gowin_home: Option<PathBuf>,
     cable_index: Option<u8>,
     help: bool,
@@ -1236,19 +1231,17 @@ fn parse_gowin_cli_args(
                 ))?);
             }
             Some("--program-flash") => {
-                let value = arguments.next().ok_or_else(|| {
-                    GowinCliError::Argument("`--program-flash` requires a binary file".to_string())
+                let offset = arguments.next().ok_or_else(|| {
+                    GowinCliError::Argument(
+                        "`--program-flash` requires an offset and a binary file".to_string(),
+                    )
                 })?;
-                options.program_flash = Some(PathBuf::from(value));
-            }
-            Some(value) if value.starts_with("--program-flash=") => {
-                let value = &value["--program-flash=".len()..];
-                if value.is_empty() {
-                    return Err(GowinCliError::Argument(
-                        "`--program-flash` requires a binary file".to_string(),
-                    ));
-                }
-                options.program_flash = Some(PathBuf::from(value));
+                let binary = arguments.next().ok_or_else(|| {
+                    GowinCliError::Argument(
+                        "`--program-flash` requires an offset and a binary file".to_string(),
+                    )
+                })?;
+                options.program_flash = Some((parse_flash_offset(&offset)?, PathBuf::from(binary)));
             }
             Some("--help" | "-h") => options.help = true,
             Some(value) if value.starts_with('-') => {
@@ -1284,6 +1277,22 @@ fn parse_cable_index(value: impl AsRef<std::ffi::OsStr>) -> Result<u8, GowinCliE
     Ok(index)
 }
 
+fn parse_flash_offset(value: impl AsRef<std::ffi::OsStr>) -> Result<u32, GowinCliError> {
+    let value = value.as_ref().to_str().ok_or_else(|| {
+        GowinCliError::Argument("Flash offset must be a byte address".to_string())
+    })?;
+    let parsed = value
+        .strip_prefix("0x")
+        .or_else(|| value.strip_prefix("0X"))
+        .map(|hex| u32::from_str_radix(hex, 16))
+        .unwrap_or_else(|| value.parse::<u32>());
+    parsed.map_err(|_| {
+        GowinCliError::Argument(format!(
+            "invalid Flash offset `{value}`; expected a decimal or 0x-prefixed byte address"
+        ))
+    })
+}
+
 /// Run the common export/build/volatile-program CLI used by Gowin examples.
 pub fn run_gowin_project_cli<T, M>(
     project: GowinModuleProject<T, M>,
@@ -1302,10 +1311,10 @@ where
     let options = parse_gowin_cli_args(arguments)?;
     if options.help {
         println!(
-            "Usage: {} [OUTPUT] [--build] [--program] [--program-flash FILE] [--gowin-home PATH] [--cable-index N]\n\n\
+            "Usage: {} [OUTPUT] [--build] [--program] [--program-flash OFFSET FILE] [--gowin-home PATH] [--cable-index N]\n\n\
              --build          Export and run Gowin synthesis/place-and-route\n\
              --program        Build, then program volatile FPGA SRAM\n\
-             --program-flash  Program FILE to external SPI flash at the CpuV3 package base;\n\
+             --program-flash  Program FILE to external SPI flash at byte OFFSET;\n\
              \x20                 can run without --build\n\
              --gowin-home     Gowin installation root; overrides GOWIN_HOME and PATH\n\
              --cable-index    Override the target's Programmer cable-driver type",
@@ -1342,7 +1351,7 @@ where
             )?;
         }
     }
-    if let Some(binary) = &options.program_flash {
+    if let Some((offset, binary)) = &options.program_flash {
         let capacity_bits = T::inventory()
             .fitted_device_capacity_bits(ResourceKind::SpiFlashDevice)
             .ok_or_else(|| {
@@ -1355,7 +1364,7 @@ where
         toolchain.program_external_flash_binary(
             generated.device,
             binary,
-            CPU_V3_PACKAGE_FLASH_BASE,
+            *offset,
             u32::try_from(capacity_bits / 8).expect("fitted flash capacity fits u32 bytes"),
             options
                 .cable_index
@@ -2297,13 +2306,14 @@ mod tests {
 
         let options = parse_gowin_cli_args([
             OsString::from("--program-flash"),
+            OsString::from("0x100000"),
             OsString::from("image.cpu-v3-boot"),
         ])
         .unwrap();
         assert!(!options.build);
         assert_eq!(
             options.program_flash,
-            Some(PathBuf::from("image.cpu-v3-boot"))
+            Some((0x10_0000, PathBuf::from("image.cpu-v3-boot")))
         );
 
         for arguments in [
@@ -2311,7 +2321,11 @@ mod tests {
             vec![OsString::from("--cable-index=not-a-number")],
             vec![OsString::from("--cable-index=6")],
             vec![OsString::from("--program-flash")],
-            vec![OsString::from("--program-flash=")],
+            vec![
+                OsString::from("--program-flash"),
+                OsString::from("not-an-offset"),
+                OsString::from("image.bin"),
+            ],
             vec![OsString::from("first"), OsString::from("second")],
         ] {
             assert!(matches!(

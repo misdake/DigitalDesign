@@ -1,4 +1,5 @@
-//! Three-client arbiter for the CpuV3 physical SDRAM word port.
+//! Machine-owned arbiter between CpuV3 instruction/data traffic, boot DMA,
+//! and the Tang Nano 20K physical SDRAM word port.
 
 use digital_design_circuit::{input_const, mux2, mux2_w, reg_w, CircuitWires, Wire, Wires};
 use digital_design_hardware::{HardwareIdentity, Module, ModuleIo, VerilogIdentity};
@@ -59,7 +60,7 @@ impl HardwareIdentity for CpuV3MemoryArbiter {
     const TARGET_RESOURCE_LEAF: bool = false;
 
     fn verilog_identity() -> VerilogIdentity {
-        VerilogIdentity::new("CpuV3MemoryArbiter").namespace(["components", "cpu", "cpu_v3"])
+        VerilogIdentity::new("CpuV3MemoryArbiter").namespace(["systems", "cpu_v3_tang_nano_20k"])
     }
 }
 

@@ -19,13 +19,12 @@ use crate::{Hardware, HardwareIdentity, Module, ModuleIo};
 use askama::Template;
 use digital_design_circuit::{CircuitWires, Wire, Wires};
 
+pub use crate::boot::SYSCTL_INVALIDATE_DCACHE as SYSTEM_CONTROL_CHANNEL_DCACHE_INVALIDATE;
+pub use crate::boot::SYSCTL_INVALIDATE_ICACHE as SYSTEM_CONTROL_CHANNEL_ICACHE_INVALIDATE;
+pub use crate::boot::SYSCTL_LED as SYSTEM_CONTROL_CHANNEL_LEDS;
+pub use crate::boot::SYSCTL_UART as SYSTEM_CONTROL_CHANNEL_UART;
 /// Device index of the system control device behind the CpuV3 MMIO bridge.
-pub const SYSTEM_CONTROL_DEVICE: u8 = 0;
-
-pub const SYSTEM_CONTROL_CHANNEL_ICACHE_INVALIDATE: u8 = 0;
-pub const SYSTEM_CONTROL_CHANNEL_DCACHE_INVALIDATE: u8 = 1;
-pub const SYSTEM_CONTROL_CHANNEL_LEDS: u8 = 2;
-pub const SYSTEM_CONTROL_CHANNEL_UART: u8 = 3;
+pub use crate::boot::SYSTEM_CONTROL_DEVICE;
 
 #[derive(Clone, ModuleIo)]
 pub struct SystemControlDeviceInput {

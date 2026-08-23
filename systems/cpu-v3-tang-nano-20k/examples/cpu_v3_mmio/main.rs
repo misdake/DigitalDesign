@@ -1,10 +1,12 @@
-use cpu_v3_tang_nano_20k::{
-    run_gowin_project_cli, Bsram1R1Rw1024, BsramImage, CpuV3Core, CpuV3MmioBridge, GowinCliError,
-    GowinDspMode, GowinModuleProject, Hardware, HardwareIdentity, Module, ResourceCountExpectation,
-    SystemControlDevice, TangNano20K, TangNano20KDebugOutputs, TangNano20KInputs,
-    VerilogDependency, BSRAM_1024_DEPTH,
-};
+use cpu_v3::{CpuV3Core, CpuV3MmioBridge};
+use cpu_v3_tang_nano_20k::SystemControlDevice;
 use digital_design_circuit::CircuitWires;
+use digital_design_hardware::{Hardware, HardwareIdentity, Module, VerilogDependency};
+use digital_design_hardware_gowin::{
+    run_gowin_project_cli, Bsram1R1Rw1024, BsramImage, GowinCliError, GowinDspMode,
+    GowinModuleProject, ResourceCountExpectation, TangNano20K, TangNano20KDebugOutputs,
+    TangNano20KInputs, BSRAM_1024_DEPTH,
+};
 
 fn main() -> Result<(), GowinCliError> {
     run_gowin_project_cli(gowin_project(), "target/cpu_v3_mmio_gowin")
@@ -110,7 +112,7 @@ fn gowin_project() -> GowinModuleProject<TangNano20K, CpuV3MmioBoardTest> {
 mod tests {
     use super::*;
     use cpu_v3::rcc_backend::{self, CompilerOptions};
-    use cpu_v3_tang_nano_20k::{ResourceKind, VerilogProject};
+    use digital_design_hardware::{ResourceKind, VerilogProject};
     use rcc::frontend::parse_source_with;
 
     /// Alive LED pattern, then the DDHT test ID `0x09` frame forever, all

@@ -1,12 +1,12 @@
-use cpu_v3_tang_nano_20k::{
-    run_gowin_project_cli, BootDmaEngine, BootDmaMmio, Bsram1R1Rw1024, BsramImage, CpuV3Core,
-    CpuV3DirectMappedCache, CpuV3MemoryArbiter, CpuV3MmioBridge, ErasedSpiFlashImage,
-    GowinCliError, GowinDspMode, GowinModuleProject, Hardware, HardwareIdentity, Module,
-    ResourceCountExpectation, SpiFlashReader, SystemControlDevice, TangNano20K,
-    TangNano20KBootInputs, TangNano20KBootOutputs, TangNano20KSdramWordPort, VerilogDependency,
-    BSRAM_1024_DEPTH,
-};
+use cpu_v3::{CpuV3Core, CpuV3DirectMappedCache, CpuV3MmioBridge};
+use cpu_v3_tang_nano_20k::{BootDmaEngine, BootDmaMmio, CpuV3MemoryArbiter, SystemControlDevice};
 use digital_design_circuit::CircuitWires;
+use digital_design_hardware::{Hardware, HardwareIdentity, Module, VerilogDependency};
+use digital_design_hardware_gowin::{
+    run_gowin_project_cli, Bsram1R1Rw1024, BsramImage, ErasedSpiFlashImage, GowinCliError,
+    GowinDspMode, GowinModuleProject, ResourceCountExpectation, SpiFlashReader, TangNano20K,
+    TangNano20KBootInputs, TangNano20KBootOutputs, TangNano20KSdramWordPort, BSRAM_1024_DEPTH,
+};
 
 fn main() -> Result<(), GowinCliError> {
     run_gowin_project_cli(gowin_project(), "target/cpu_v3_boot_gowin")
@@ -150,7 +150,7 @@ mod tests {
         build_boot_image, BootEntry, BootImageSpec, BootTarget, InputSection, SectionKind,
         SECTION_EXECUTE, SECTION_READ, SECTION_WRITE,
     };
-    use cpu_v3_tang_nano_20k::{ResourceKind, VerilogProject};
+    use digital_design_hardware::{ResourceKind, VerilogProject};
     use rcc::frontend::compile_program_named;
 
     fn compile_cpu_v3(file: &str, options: &CompilerOptions) -> CpuV3Program {

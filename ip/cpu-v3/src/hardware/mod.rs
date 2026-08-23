@@ -3,9 +3,6 @@
 mod mmio;
 pub use mmio::*;
 
-mod memory_arbiter;
-pub use memory_arbiter::*;
-
 mod cache;
 pub use cache::*;
 

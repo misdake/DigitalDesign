@@ -1,8 +1,10 @@
-use cpu_v3_tang_nano_20k::{
-    run_gowin_project_cli, GowinCliError, Hardware, HardwareIdentity, Module, TangNano20K,
-    TangNano20KBootDma, TangNano20KBootInputs, TangNano20KBootOutputs, VerilogDependency,
-};
+use cpu_v3_tang_nano_20k::TangNano20KBootDma;
 use digital_design_circuit::CircuitWires;
+use digital_design_hardware::{Hardware, HardwareIdentity, Module, VerilogDependency};
+use digital_design_hardware_gowin::{
+    run_gowin_project_cli, GowinCliError, TangNano20K, TangNano20KBootInputs,
+    TangNano20KBootOutputs,
+};
 
 fn main() -> Result<(), GowinCliError> {
     run_gowin_project_cli(
@@ -51,7 +53,7 @@ impl Module for BootDmaSelfTest {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use cpu_v3_tang_nano_20k::{ResourceKind, VerilogProject};
+    use digital_design_hardware::{ResourceKind, VerilogProject};
 
     #[test]
     fn project_claims_each_fitted_memory_once() {

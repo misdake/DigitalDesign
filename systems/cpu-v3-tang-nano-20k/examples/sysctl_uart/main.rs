@@ -1,8 +1,9 @@
-use cpu_v3_tang_nano_20k::{
-    run_gowin_project_cli, GowinCliError, Hardware, Module, SystemControlDevice, TangNano20K,
-    TangNano20KDebugOutputs, TangNano20KInputs, VerilogDependency,
-};
+use cpu_v3_tang_nano_20k::SystemControlDevice;
 use digital_design_circuit::CircuitWires;
+use digital_design_hardware::{Hardware, Module, VerilogDependency};
+use digital_design_hardware_gowin::{
+    run_gowin_project_cli, GowinCliError, TangNano20K, TangNano20KDebugOutputs, TangNano20KInputs,
+};
 
 fn main() -> Result<(), GowinCliError> {
     run_gowin_project_cli(gowin_project(), "target/sysctl_uart_gowin")
@@ -47,7 +48,8 @@ impl Module for SysctlUartProbe {
     }
 }
 
-fn gowin_project() -> cpu_v3_tang_nano_20k::GowinModuleProject<TangNano20K, SysctlUartProbe> {
+fn gowin_project() -> digital_design_hardware_gowin::GowinModuleProject<TangNano20K, SysctlUartProbe>
+{
     TangNano20K::debug_uart_project::<SysctlUartProbe>("sysctl_uart_probe")
 }
 
