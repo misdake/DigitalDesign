@@ -5,7 +5,7 @@ reg [5:0] address = 0;
 reg [11:0] write_data = 0;
 wire [11:0] read_data;
 
-G16CacheTagRam dut(.*);
+CpuV3CacheTagRam dut(.*);
 always #5 clk = ~clk;
 
 initial begin

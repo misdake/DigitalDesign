@@ -1,10 +1,10 @@
-//! Three-client arbiter for the G16 physical SDRAM word port.
+//! Three-client arbiter for the CpuV3 physical SDRAM word port.
 
 use digital_design_circuit::{input_const, mux2, mux2_w, reg_w, CircuitWires, Wire, Wires};
 use digital_design_hardware::{HardwareIdentity, Module, ModuleIo, VerilogIdentity};
 
 #[derive(Clone, ModuleIo)]
-pub struct G16MemoryArbiterInput {
+pub struct CpuV3MemoryArbiterInput {
     pub reset: Wire,
 
     pub instruction_request_valid: Wire,
@@ -30,7 +30,7 @@ pub struct G16MemoryArbiterInput {
 }
 
 #[derive(Clone, ModuleIo)]
-pub struct G16MemoryArbiterOutput {
+pub struct CpuV3MemoryArbiterOutput {
     pub instruction_request_ready: Wire,
     pub instruction_response_valid: Wire,
     pub instruction_read_data: Wires<16>,
@@ -53,13 +53,13 @@ pub struct G16MemoryArbiterOutput {
     pub memory_response_ready: Wire,
 }
 
-pub struct G16MemoryArbiter;
+pub struct CpuV3MemoryArbiter;
 
-impl HardwareIdentity for G16MemoryArbiter {
+impl HardwareIdentity for CpuV3MemoryArbiter {
     const TARGET_RESOURCE_LEAF: bool = false;
 
     fn verilog_identity() -> VerilogIdentity {
-        VerilogIdentity::new("G16MemoryArbiter").namespace(["components", "cpu", "g16"])
+        VerilogIdentity::new("CpuV3MemoryArbiter").namespace(["components", "cpu", "cpu_v3"])
     }
 }
 
@@ -73,19 +73,19 @@ enum Owner {
 }
 
 #[derive(Default)]
-pub struct G16MemoryArbiterState {
+pub struct CpuV3MemoryArbiterState {
     owner: Owner,
 }
 
-impl Module for G16MemoryArbiter {
-    type Input = G16MemoryArbiterInput;
-    type Output = G16MemoryArbiterOutput;
-    type EmuState = G16MemoryArbiterState;
+impl Module for CpuV3MemoryArbiter {
+    type Input = CpuV3MemoryArbiterInput;
+    type Output = CpuV3MemoryArbiterOutput;
+    type EmuState = CpuV3MemoryArbiterState;
 
     const USES_MAIN_CLOCK: bool = true;
 
     fn create_emu(_input: &Self::Input, _output: &Self::Output) -> Self::EmuState {
-        G16MemoryArbiterState::default()
+        CpuV3MemoryArbiterState::default()
     }
 
     fn execute_emu(
@@ -100,7 +100,7 @@ impl Module for G16MemoryArbiter {
         let response_active = state.owner != Owner::None && input.memory_response_valid;
         output.drive(
             circuit,
-            &G16MemoryArbiterOutputValue {
+            &CpuV3MemoryArbiterOutputValue {
                 instruction_request_ready: request_active
                     && selected == Owner::Instruction
                     && input.memory_request_ready,
@@ -215,7 +215,7 @@ impl Module for G16MemoryArbiter {
         let next_owner = mux2_w(next_owner, const_wires(OWNER_NONE), release);
         owner.set_in(mux2_w(next_owner, const_wires(OWNER_NONE), input.reset));
 
-        G16MemoryArbiterOutput {
+        CpuV3MemoryArbiterOutput {
             instruction_request_ready: accepted & selected_instruction,
             instruction_response_valid,
             instruction_read_data: input.memory_read_data,
@@ -277,7 +277,7 @@ fn mux4<const WIDTH: usize>(values: [Wires<WIDTH>; 4], select: Wires<2>) -> Wire
     mux2_w(low, high, select.wires[1])
 }
 
-fn select(input: &G16MemoryArbiterInputValue) -> Owner {
+fn select(input: &CpuV3MemoryArbiterInputValue) -> Owner {
     if input.dma_request_valid {
         Owner::Dma
     } else if input.data_request_valid {
@@ -289,7 +289,7 @@ fn select(input: &G16MemoryArbiterInputValue) -> Owner {
     }
 }
 
-fn response_ready(owner: Owner, input: &G16MemoryArbiterInputValue) -> bool {
+fn response_ready(owner: Owner, input: &CpuV3MemoryArbiterInputValue) -> bool {
     match owner {
         Owner::Instruction => input.instruction_response_ready,
         Owner::Data => input.data_response_ready,
@@ -303,8 +303,8 @@ mod tests {
     use super::*;
     use digital_design_hardware::{ModuleTest, TestStep, VerilogProject};
 
-    fn idle() -> G16MemoryArbiterInputValue {
-        G16MemoryArbiterInputValue {
+    fn idle() -> CpuV3MemoryArbiterInputValue {
+        CpuV3MemoryArbiterInputValue {
             reset: false,
             instruction_request_valid: false,
             instruction_address: 0,
@@ -327,8 +327,8 @@ mod tests {
     }
 
     /// Raise client requests with recognizable per-client payloads.
-    fn requests(instruction: bool, data: bool, dma: bool) -> G16MemoryArbiterInputValue {
-        G16MemoryArbiterInputValue {
+    fn requests(instruction: bool, data: bool, dma: bool) -> CpuV3MemoryArbiterInputValue {
+        CpuV3MemoryArbiterInputValue {
             instruction_request_valid: instruction,
             instruction_address: 0x111,
             data_request_valid: data,
@@ -345,9 +345,9 @@ mod tests {
     }
 
     /// Output baseline: no handshake activity, read data broadcast through.
-    fn quiescent(read_data: u16) -> G16MemoryArbiterOutputValue {
+    fn quiescent(read_data: u16) -> CpuV3MemoryArbiterOutputValue {
         let read_data = u64::from(read_data);
-        G16MemoryArbiterOutputValue {
+        CpuV3MemoryArbiterOutputValue {
             instruction_request_ready: false,
             instruction_response_valid: false,
             instruction_read_data: read_data,
@@ -370,10 +370,10 @@ mod tests {
 
     #[test]
     fn emu_and_nand_grant_dma_then_data_then_instruction_atomically() {
-        ModuleTest::<G16MemoryArbiter>::new(vec![
+        ModuleTest::<CpuV3MemoryArbiter>::new(vec![
             // Synchronous reset clears the owner.
             TestStep::new(
-                G16MemoryArbiterInputValue {
+                CpuV3MemoryArbiterInputValue {
                     reset: true,
                     ..idle()
                 },
@@ -383,7 +383,7 @@ mod tests {
             // but no owner is captured while the memory is not ready.
             TestStep::new(
                 requests(true, true, true),
-                G16MemoryArbiterOutputValue {
+                CpuV3MemoryArbiterOutputValue {
                     memory_request_valid: true,
                     memory_write: true,
                     memory_address: 0x333,
@@ -393,11 +393,11 @@ mod tests {
             ),
             // Memory ready: the DMA request is accepted at this clock edge.
             TestStep::new(
-                G16MemoryArbiterInputValue {
+                CpuV3MemoryArbiterInputValue {
                     memory_request_ready: true,
                     ..requests(true, true, true)
                 },
-                G16MemoryArbiterOutputValue {
+                CpuV3MemoryArbiterOutputValue {
                     memory_write: true,
                     memory_address: 0x333,
                     memory_write_data: 0xaaaa,
@@ -408,12 +408,12 @@ mod tests {
             // signals still combinationally forward the highest-priority
             // requester while `memory_request_valid` is low.
             TestStep::new(
-                G16MemoryArbiterInputValue {
+                CpuV3MemoryArbiterInputValue {
                     memory_request_ready: true,
                     memory_response_valid: true,
                     ..requests(true, true, false)
                 },
-                G16MemoryArbiterOutputValue {
+                CpuV3MemoryArbiterOutputValue {
                     dma_response_valid: true,
                     memory_write: true,
                     memory_address: 0x222,
@@ -424,13 +424,13 @@ mod tests {
             // Completing the DMA response releases the port; the data client
             // is granted immediately afterwards.
             TestStep::new(
-                G16MemoryArbiterInputValue {
+                CpuV3MemoryArbiterInputValue {
                     memory_request_ready: true,
                     memory_response_valid: true,
                     dma_response_ready: true,
                     ..requests(true, true, false)
                 },
-                G16MemoryArbiterOutputValue {
+                CpuV3MemoryArbiterOutputValue {
                     data_request_ready: true,
                     memory_request_valid: true,
                     memory_write: true,
@@ -441,11 +441,11 @@ mod tests {
             ),
             // The data request is accepted at this clock edge.
             TestStep::new(
-                G16MemoryArbiterInputValue {
+                CpuV3MemoryArbiterInputValue {
                     memory_request_ready: true,
                     ..requests(true, true, false)
                 },
-                G16MemoryArbiterOutputValue {
+                CpuV3MemoryArbiterOutputValue {
                     memory_write: true,
                     memory_address: 0x222,
                     memory_write_data: 0xdddd,
@@ -455,13 +455,13 @@ mod tests {
             // The data response is routed only to the data client, including
             // the error flag, until it is consumed.
             TestStep::new(
-                G16MemoryArbiterInputValue {
+                CpuV3MemoryArbiterInputValue {
                     memory_request_ready: true,
                     memory_response_valid: true,
                     memory_error: true,
                     ..requests(true, true, false)
                 },
-                G16MemoryArbiterOutputValue {
+                CpuV3MemoryArbiterOutputValue {
                     data_response_valid: true,
                     data_error: true,
                     memory_write: true,
@@ -473,14 +473,14 @@ mod tests {
             // Consuming the data response releases the port to the
             // instruction client (the data client drops its request).
             TestStep::new(
-                G16MemoryArbiterInputValue {
+                CpuV3MemoryArbiterInputValue {
                     memory_request_ready: true,
                     memory_response_valid: true,
                     memory_error: true,
                     data_response_ready: true,
                     ..requests(true, false, false)
                 },
-                G16MemoryArbiterOutputValue {
+                CpuV3MemoryArbiterOutputValue {
                     instruction_request_ready: true,
                     memory_request_valid: true,
                     memory_address: 0x111,
@@ -490,13 +490,13 @@ mod tests {
             // The instruction request is accepted; its response is routed
             // back with `memory_response_ready` forwarded to the memory.
             TestStep::new(
-                G16MemoryArbiterInputValue {
+                CpuV3MemoryArbiterInputValue {
                     memory_request_ready: true,
                     memory_response_valid: true,
                     instruction_response_ready: true,
                     ..requests(true, false, false)
                 },
-                G16MemoryArbiterOutputValue {
+                CpuV3MemoryArbiterOutputValue {
                     instruction_response_valid: true,
                     memory_address: 0x111,
                     memory_response_ready: true,
@@ -505,7 +505,7 @@ mod tests {
             ),
             // Consuming the instruction response returns the port to idle.
             TestStep::new(
-                G16MemoryArbiterInputValue {
+                CpuV3MemoryArbiterInputValue {
                     memory_response_valid: true,
                     instruction_response_ready: true,
                     memory_read_data: 0xbeef,
@@ -519,9 +519,9 @@ mod tests {
 
     #[test]
     fn emu_and_nand_reset_releases_the_owner_mid_transaction() {
-        ModuleTest::<G16MemoryArbiter>::new(vec![
+        ModuleTest::<CpuV3MemoryArbiter>::new(vec![
             TestStep::new(
-                G16MemoryArbiterInputValue {
+                CpuV3MemoryArbiterInputValue {
                     reset: true,
                     ..idle()
                 },
@@ -529,11 +529,11 @@ mod tests {
             ),
             // The instruction request is accepted at this clock edge.
             TestStep::new(
-                G16MemoryArbiterInputValue {
+                CpuV3MemoryArbiterInputValue {
                     memory_request_ready: true,
                     ..requests(true, false, false)
                 },
-                G16MemoryArbiterOutputValue {
+                CpuV3MemoryArbiterOutputValue {
                     memory_address: 0x111,
                     ..quiescent(0xbeef)
                 },
@@ -541,11 +541,11 @@ mod tests {
             // Reset mid-transaction drops the owner; the still-raised request
             // is forwarded again without being accepted.
             TestStep::new(
-                G16MemoryArbiterInputValue {
+                CpuV3MemoryArbiterInputValue {
                     reset: true,
                     ..requests(true, false, false)
                 },
-                G16MemoryArbiterOutputValue {
+                CpuV3MemoryArbiterOutputValue {
                     memory_request_valid: true,
                     memory_address: 0x111,
                     ..quiescent(0xbeef)
@@ -553,11 +553,11 @@ mod tests {
             ),
             // After reset the retried request is accepted normally.
             TestStep::new(
-                G16MemoryArbiterInputValue {
+                CpuV3MemoryArbiterInputValue {
                     memory_request_ready: true,
                     ..requests(true, false, false)
                 },
-                G16MemoryArbiterOutputValue {
+                CpuV3MemoryArbiterOutputValue {
                     memory_address: 0x111,
                     ..quiescent(0xbeef)
                 },
@@ -568,7 +568,7 @@ mod tests {
 
     #[test]
     fn export_has_no_target_resource_claims() {
-        assert!(VerilogProject::generate::<G16MemoryArbiter>()
+        assert!(VerilogProject::generate::<CpuV3MemoryArbiter>()
             .unwrap()
             .resource_claims
             .is_empty());

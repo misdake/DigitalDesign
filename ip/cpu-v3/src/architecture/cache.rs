@@ -1,4 +1,4 @@
-//! Transaction model for the first G16 BSRAM data cache.
+//! Transaction model for the first CpuV3 BSRAM data cache.
 //!
 //! The FPGA implementation uses the same geometry and state transitions. This
 //! model deliberately stops at 32-byte line transactions so Gowin Controller

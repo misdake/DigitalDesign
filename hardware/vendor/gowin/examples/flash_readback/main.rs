@@ -9,8 +9,8 @@ fn main() -> Result<(), GowinCliError> {
     run_gowin_project_cli(gowin_project(), "target/flash_readback_gowin")
 }
 
-/// Board probe reading back the G16 boot package magic at Flash 0x100000.
-/// LEDs 1..4 mirror per-byte matches against `G16B`, LED 5 is done, LED 6 is
+/// Board probe reading back the CpuV3 boot package magic at Flash 0x100000.
+/// LEDs 1..4 mirror per-byte matches against `CPU3`, LED 5 is done, LED 6 is
 /// error.
 #[derive(Hardware)]
 #[hardware(namespace = "examples/flash_readback")]

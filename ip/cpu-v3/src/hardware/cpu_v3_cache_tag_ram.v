@@ -1,4 +1,4 @@
-module G16CacheTagRam (
+module CpuV3CacheTagRam (
     input wire clk,
     input wire write_enable,
     input wire [5:0] address,

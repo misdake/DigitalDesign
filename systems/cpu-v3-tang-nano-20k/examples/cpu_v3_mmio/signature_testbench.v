@@ -1,11 +1,11 @@
-// Testbench for G16MmioBoardTest: runs the compiled MMIO diagnostic on the
+// Testbench for CpuV3MmioBoardTest: runs the compiled MMIO diagnostic on the
 // core and expects the DDHT test ID 0x09 frame plus the alive LED pattern.
 module tb;
 reg clk = 0;
 wire [5:0] leds;
 wire uart_tx;
 
-G16MmioBoardTest dut (
+CpuV3MmioBoardTest dut (
     .clk(clk),
     .buttons(2'b00),
     .leds(leds),

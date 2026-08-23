@@ -1,6 +1,6 @@
-// Flash readback probe: reads the first bytes of the G16 boot package at
+// Flash readback probe: reads the first bytes of the CPU V3 boot package at
 // 0x100000 through the fitted SPI flash reader and shows per-byte magic
-// matches on the LEDs. LEDs 1..6 = bytes 0..5 match "G16BOOT\0"; all six lit
+// matches on the LEDs. LEDs 1..6 = bytes 0..5 match "CPU3BOOT"; all six lit
 // means the package write landed.
 module FlashReadbackProbe (
     input wire clk,
@@ -47,11 +47,11 @@ function [7:0] expected_byte;
     input [2:0] index;
     begin
         case (index)
-            0: expected_byte = 8'h47; // G
-            1: expected_byte = 8'h31; // 1
-            2: expected_byte = 8'h36; // 6
-            3: expected_byte = 8'h42; // B
-            4: expected_byte = 8'h4f; // O
+            0: expected_byte = 8'h43; // C
+            1: expected_byte = 8'h50; // P
+            2: expected_byte = 8'h55; // U
+            3: expected_byte = 8'h33; // 3
+            4: expected_byte = 8'h42; // B
             5: expected_byte = 8'h4f; // O
             default: expected_byte = 8'h00;
         endcase

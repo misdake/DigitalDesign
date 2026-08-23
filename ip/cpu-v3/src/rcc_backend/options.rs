@@ -1,6 +1,6 @@
 use rcc::{Opts, RccConfig};
 
-/// CPU V3 target and ABI options.
+/// CpuV3 target and ABI options.
 #[derive(Clone, Debug)]
 pub struct CompilerOptions {
     pub opt: Opts,

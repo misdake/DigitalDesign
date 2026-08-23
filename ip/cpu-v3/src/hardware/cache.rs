@@ -1,4 +1,4 @@
-//! First G16 physical-address cache: direct-mapped and write-through.
+//! First CpuV3 physical-address cache: direct-mapped and write-through.
 
 use digital_design_circuit::{CircuitWires, Wire, Wires};
 use digital_design_hardware::{
@@ -7,54 +7,55 @@ use digital_design_hardware::{
 };
 use digital_design_hardware_gowin::{Bsram1R1Rw1024, ZeroBsramImage};
 
-pub const G16_CACHE_WORDS: usize = 1024;
-pub const G16_CACHE_LINE_WORDS: usize = 16;
-pub const G16_CACHE_SETS: usize = G16_CACHE_WORDS / G16_CACHE_LINE_WORDS;
+pub const CPU_V3_CACHE_WORDS: usize = 1024;
+pub const CPU_V3_CACHE_LINE_WORDS: usize = 16;
+pub const CPU_V3_CACHE_SETS: usize = CPU_V3_CACHE_WORDS / CPU_V3_CACHE_LINE_WORDS;
 
 type CacheData = Bsram1R1Rw1024<16, ZeroBsramImage>;
 
-const G16_CACHE_TAG_BITS: usize = 12;
-const G16_CACHE_TAG_RAM16S: usize = G16_CACHE_SETS.div_ceil(16) * G16_CACHE_TAG_BITS.div_ceil(4);
-const G16_CACHE_TAG_PHYSICAL_BITS: usize = G16_CACHE_TAG_RAM16S * 64;
+const CPU_V3_CACHE_TAG_BITS: usize = 12;
+const CPU_V3_CACHE_TAG_RAM16S: usize =
+    CPU_V3_CACHE_SETS.div_ceil(16) * CPU_V3_CACHE_TAG_BITS.div_ceil(4);
+const CPU_V3_CACHE_TAG_PHYSICAL_BITS: usize = CPU_V3_CACHE_TAG_RAM16S * 64;
 
 #[derive(Clone, ModuleIo)]
-pub struct G16CacheTagRamInput {
+pub struct CpuV3CacheTagRamInput {
     pub write_enable: Wire,
     pub address: Wires<6>,
     pub write_data: Wires<12>,
 }
 
 #[derive(Clone, ModuleIo)]
-pub struct G16CacheTagRamOutput {
+pub struct CpuV3CacheTagRamOutput {
     pub read_data: Wires<12>,
 }
 
 /// Characterized synchronous-write, asynchronous-read tag SSRAM.
-pub struct G16CacheTagRam;
+pub struct CpuV3CacheTagRam;
 
-impl HardwareIdentity for G16CacheTagRam {
+impl HardwareIdentity for CpuV3CacheTagRam {
     const TARGET_RESOURCE_LEAF: bool = true;
 
     fn verilog_identity() -> VerilogIdentity {
-        VerilogIdentity::new("G16CacheTagRam").namespace(["components", "cpu", "g16"])
+        VerilogIdentity::new("CpuV3CacheTagRam").namespace(["components", "cpu", "cpu_v3"])
     }
 }
 
-impl Module for G16CacheTagRam {
-    type Input = G16CacheTagRamInput;
-    type Output = G16CacheTagRamOutput;
-    type EmuState = [u16; G16_CACHE_SETS];
+impl Module for CpuV3CacheTagRam {
+    type Input = CpuV3CacheTagRamInput;
+    type Output = CpuV3CacheTagRamOutput;
+    type EmuState = [u16; CPU_V3_CACHE_SETS];
 
     const USES_MAIN_CLOCK: bool = true;
 
     fn target_resources() -> Vec<TargetResourceRequest> {
         vec![TargetResourceRequest::new(SsramBits::new(
-            G16_CACHE_TAG_PHYSICAL_BITS as u64,
+            CPU_V3_CACHE_TAG_PHYSICAL_BITS as u64,
         ))]
     }
 
     fn create_emu(_input: &Self::Input, _output: &Self::Output) -> Self::EmuState {
-        [0; G16_CACHE_SETS]
+        [0; CPU_V3_CACHE_SETS]
     }
 
     fn execute_emu(
@@ -66,7 +67,7 @@ impl Module for G16CacheTagRam {
         let input = input.sample(circuit);
         output.drive(
             circuit,
-            &G16CacheTagRamOutputValue {
+            &CpuV3CacheTagRamOutputValue {
                 read_data: u64::from(state[input.address as usize]),
             },
         );
@@ -85,16 +86,16 @@ impl Module for G16CacheTagRam {
     }
 
     fn verilog_source() -> Option<String> {
-        Some(include_str!("g16_cache_tag_ram.v").to_string())
+        Some(include_str!("cpu_v3_cache_tag_ram.v").to_string())
     }
 
     fn verilog_testbench() -> Option<String> {
-        Some(include_str!("g16_cache_tag_ram_tb.v").to_string())
+        Some(include_str!("cpu_v3_cache_tag_ram_tb.v").to_string())
     }
 }
 
 #[derive(Clone, ModuleIo)]
-pub struct G16DirectMappedCacheInput {
+pub struct CpuV3DirectMappedCacheInput {
     pub reset: Wire,
     pub invalidate_all: Wire,
     pub snoop_write_valid: Wire,
@@ -111,7 +112,7 @@ pub struct G16DirectMappedCacheInput {
 }
 
 #[derive(Clone, ModuleIo)]
-pub struct G16DirectMappedCacheOutput {
+pub struct CpuV3DirectMappedCacheOutput {
     pub cpu_request_ready: Wire,
     pub cpu_response_valid: Wire,
     pub cpu_read_data: Wires<16>,
@@ -123,13 +124,13 @@ pub struct G16DirectMappedCacheOutput {
     pub memory_response_ready: Wire,
 }
 
-pub struct G16DirectMappedCache;
+pub struct CpuV3DirectMappedCache;
 
-impl HardwareIdentity for G16DirectMappedCache {
+impl HardwareIdentity for CpuV3DirectMappedCache {
     const TARGET_RESOURCE_LEAF: bool = false;
 
     fn verilog_identity() -> VerilogIdentity {
-        VerilogIdentity::new("G16DirectMappedCache").namespace(["components", "cpu", "g16"])
+        VerilogIdentity::new("CpuV3DirectMappedCache").namespace(["components", "cpu", "cpu_v3"])
     }
 }
 
@@ -150,10 +151,10 @@ struct Pending {
     write_data: u16,
 }
 
-pub struct G16DirectMappedCacheState {
-    data: Box<[u16; G16_CACHE_WORDS]>,
-    tags: [u16; G16_CACHE_SETS],
-    valid: [bool; G16_CACHE_SETS],
+pub struct CpuV3DirectMappedCacheState {
+    data: Box<[u16; CPU_V3_CACHE_WORDS]>,
+    tags: [u16; CPU_V3_CACHE_SETS],
+    valid: [bool; CPU_V3_CACHE_SETS],
     phase: Phase,
     pending: Pending,
     fill_word: u8,
@@ -161,12 +162,12 @@ pub struct G16DirectMappedCacheState {
     response_error: bool,
 }
 
-impl Default for G16DirectMappedCacheState {
+impl Default for CpuV3DirectMappedCacheState {
     fn default() -> Self {
         Self {
-            data: Box::new([0; G16_CACHE_WORDS]),
-            tags: [0; G16_CACHE_SETS],
-            valid: [false; G16_CACHE_SETS],
+            data: Box::new([0; CPU_V3_CACHE_WORDS]),
+            tags: [0; CPU_V3_CACHE_SETS],
+            valid: [false; CPU_V3_CACHE_SETS],
             phase: Phase::Idle,
             pending: Pending::default(),
             fill_word: 0,
@@ -176,15 +177,15 @@ impl Default for G16DirectMappedCacheState {
     }
 }
 
-impl Module for G16DirectMappedCache {
-    type Input = G16DirectMappedCacheInput;
-    type Output = G16DirectMappedCacheOutput;
-    type EmuState = G16DirectMappedCacheState;
+impl Module for CpuV3DirectMappedCache {
+    type Input = CpuV3DirectMappedCacheInput;
+    type Output = CpuV3DirectMappedCacheOutput;
+    type EmuState = CpuV3DirectMappedCacheState;
 
     const USES_MAIN_CLOCK: bool = true;
 
     fn create_emu(_input: &Self::Input, _output: &Self::Output) -> Self::EmuState {
-        G16DirectMappedCacheState::default()
+        CpuV3DirectMappedCacheState::default()
     }
 
     fn execute_emu(
@@ -196,7 +197,7 @@ impl Module for G16DirectMappedCache {
         let refilling = state.phase == Phase::MemoryRequest && !state.pending.write;
         output.drive(
             circuit,
-            &G16DirectMappedCacheOutputValue {
+            &CpuV3DirectMappedCacheOutputValue {
                 cpu_request_ready: state.phase == Phase::Idle,
                 cpu_response_valid: state.phase == Phase::CpuResponse,
                 cpu_read_data: u64::from(state.response_data),
@@ -222,7 +223,7 @@ impl Module for G16DirectMappedCache {
     ) {
         let input = input.sample(circuit);
         if input.reset {
-            *state = G16DirectMappedCacheState::default();
+            *state = CpuV3DirectMappedCacheState::default();
             return;
         }
 
@@ -247,11 +248,11 @@ impl Module for G16DirectMappedCache {
                 let hit = state.valid[set] && state.tags[set] == tag;
                 if state.pending.write {
                     if hit {
-                        state.data[set * G16_CACHE_LINE_WORDS + word] = state.pending.write_data;
+                        state.data[set * CPU_V3_CACHE_LINE_WORDS + word] = state.pending.write_data;
                     }
                     state.phase = Phase::MemoryRequest;
                 } else if hit {
-                    state.response_data = state.data[set * G16_CACHE_LINE_WORDS + word];
+                    state.response_data = state.data[set * CPU_V3_CACHE_LINE_WORDS + word];
                     state.phase = Phase::CpuResponse;
                 } else {
                     state.fill_word = 0;
@@ -272,12 +273,12 @@ impl Module for G16DirectMappedCache {
                 } else {
                     let (set, tag, requested_word) = decode(state.pending.address);
                     let fill_word = usize::from(state.fill_word);
-                    state.data[set * G16_CACHE_LINE_WORDS + fill_word] =
+                    state.data[set * CPU_V3_CACHE_LINE_WORDS + fill_word] =
                         input.memory_read_data as u16;
                     if fill_word == requested_word {
                         state.response_data = input.memory_read_data as u16;
                     }
-                    if fill_word + 1 == G16_CACHE_LINE_WORDS {
+                    if fill_word + 1 == CPU_V3_CACHE_LINE_WORDS {
                         state.tags[set] = tag;
                         state.valid[set] = true;
                         state.phase = Phase::CpuResponse;
@@ -302,14 +303,14 @@ impl Module for G16DirectMappedCache {
 
     fn verilog_source() -> Option<String> {
         Some(
-            include_str!("g16_direct_mapped_cache.v")
+            include_str!("cpu_v3_direct_mapped_cache.v")
                 .replace(
                     "__CACHE_DATA__",
                     &CacheData::verilog_identity().module_name(),
                 )
                 .replace(
                     "__CACHE_TAGS__",
-                    &G16CacheTagRam::verilog_identity().module_name(),
+                    &CpuV3CacheTagRam::verilog_identity().module_name(),
                 ),
         )
     }
@@ -317,22 +318,22 @@ impl Module for G16DirectMappedCache {
     fn verilog_dependencies() -> Vec<VerilogDependency> {
         vec![
             VerilogDependency::new::<CacheData>("u_data"),
-            VerilogDependency::new::<G16CacheTagRam>("u_tags"),
+            VerilogDependency::new::<CpuV3CacheTagRam>("u_tags"),
         ]
     }
 
     fn verilog_testbench() -> Option<String> {
-        Some(include_str!("g16_direct_mapped_cache_tb.v").to_string())
+        Some(include_str!("cpu_v3_direct_mapped_cache_tb.v").to_string())
     }
 }
 
 const fn line_base(address: u32) -> u32 {
-    address & !((G16_CACHE_LINE_WORDS as u32) - 1)
+    address & !((CPU_V3_CACHE_LINE_WORDS as u32) - 1)
 }
 
 const fn decode(address: u32) -> (usize, u16, usize) {
-    let word = (address as usize) & (G16_CACHE_LINE_WORDS - 1);
-    let set = ((address as usize) >> 4) & (G16_CACHE_SETS - 1);
+    let word = (address as usize) & (CPU_V3_CACHE_LINE_WORDS - 1);
+    let set = ((address as usize) >> 4) & (CPU_V3_CACHE_SETS - 1);
     let tag = ((address >> 10) & 0x0fff) as u16;
     (set, tag, word)
 }
@@ -346,7 +347,7 @@ mod tests {
 
     fn drive(
         circuit: &mut Circuit,
-        input: &G16DirectMappedCacheInput,
+        input: &CpuV3DirectMappedCacheInput,
         cpu_request: Option<(bool, u32, u16)>,
         cpu_response_ready: bool,
         memory_response: Option<(u16, bool)>,
@@ -355,7 +356,7 @@ mod tests {
         let (cpu_write, cpu_address, cpu_write_data) = cpu_request.unwrap_or_default();
         input.drive(
             circuit,
-            &G16DirectMappedCacheInputValue {
+            &CpuV3DirectMappedCacheInputValue {
                 reset: false,
                 invalidate_all: false,
                 snoop_write_valid: snoop_write.is_some(),
@@ -375,8 +376,8 @@ mod tests {
 
     fn transact(
         circuit: &mut Circuit,
-        input: &G16DirectMappedCacheInput,
-        output: &G16DirectMappedCacheOutput,
+        input: &CpuV3DirectMappedCacheInput,
+        output: &CpuV3DirectMappedCacheOutput,
         memory: &mut HashMap<u32, u16>,
         write: bool,
         address: u32,
@@ -423,8 +424,8 @@ mod tests {
     #[test]
     fn miss_hit_write_through_conflict_and_dma_snoop_follow_physical_tags() {
         let (mut circuit, (input, output)) = build_circuit(|| {
-            let input = G16DirectMappedCacheInput::allocate();
-            let output = G16DirectMappedCache::emu(&input);
+            let input = CpuV3DirectMappedCacheInput::allocate();
+            let output = CpuV3DirectMappedCache::emu(&input);
             (input, output)
         });
         let mut memory = HashMap::new();
@@ -480,8 +481,8 @@ mod tests {
     #[test]
     fn address_beyond_fitted_physical_memory_faults_without_downstream_io() {
         let (mut circuit, (input, output)) = build_circuit(|| {
-            let input = G16DirectMappedCacheInput::allocate();
-            let output = G16DirectMappedCache::emu(&input);
+            let input = CpuV3DirectMappedCacheInput::allocate();
+            let output = CpuV3DirectMappedCache::emu(&input);
             (input, output)
         });
         let mut memory = HashMap::new();
@@ -501,7 +502,7 @@ mod tests {
 
     #[test]
     fn export_claims_data_bsram_and_characterized_tag_ssram_leaves() {
-        let project = VerilogProject::generate::<G16DirectMappedCache>().unwrap();
+        let project = VerilogProject::generate::<CpuV3DirectMappedCache>().unwrap();
         assert_eq!(project.resource_claims.len(), 2);
         assert_eq!(
             project.resource_claims[0].resources,
@@ -511,14 +512,14 @@ mod tests {
             project.resource_claims[1].resources,
             [ResourceAmount::new(
                 ResourceKind::SsramBit,
-                G16_CACHE_TAG_PHYSICAL_BITS as u64,
+                CPU_V3_CACHE_TAG_PHYSICAL_BITS as u64,
             )]
         );
     }
 
     #[test]
-    #[ignore = "explicit external simulation of the G16 direct-mapped cache"]
+    #[ignore = "explicit external simulation of the CpuV3 direct-mapped cache"]
     fn verify_verilog_with_iverilog() {
-        digital_design_hardware::verify_verilog_with_iverilog::<G16DirectMappedCache>().unwrap();
+        digital_design_hardware::verify_verilog_with_iverilog::<CpuV3DirectMappedCache>().unwrap();
     }
 }

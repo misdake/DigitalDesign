@@ -1,13 +1,14 @@
 use cpu_v3_tang_nano_20k::{
-    run_gowin_project_cli, BootDmaMmio, Bsram1R1Rw1024, BsramImage, G16Core, G16DirectMappedCache,
-    G16MemoryArbiter, G16MmioBridge, GowinCliError, GowinDspMode, GowinModuleProject, Hardware,
-    HardwareIdentity, Module, ResourceCountExpectation, TangNano20K, TangNano20KSdramInputs,
-    TangNano20KSdramOutputs, TangNano20KSdramWordPort, VerilogDependency, BSRAM_1024_DEPTH,
+    run_gowin_project_cli, BootDmaMmio, Bsram1R1Rw1024, BsramImage, CpuV3Core,
+    CpuV3DirectMappedCache, CpuV3MemoryArbiter, CpuV3MmioBridge, GowinCliError, GowinDspMode,
+    GowinModuleProject, Hardware, HardwareIdentity, Module, ResourceCountExpectation, TangNano20K,
+    TangNano20KSdramInputs, TangNano20KSdramOutputs, TangNano20KSdramWordPort, VerilogDependency,
+    BSRAM_1024_DEPTH,
 };
 use digital_design_circuit::CircuitWires;
 
 fn main() -> Result<(), GowinCliError> {
-    run_gowin_project_cli(gowin_project(), "target/g16_sdram_gowin")
+    run_gowin_project_cli(gowin_project(), "target/cpu_v3_sdram_gowin")
 }
 
 const PROGRAM: [u16; 14] = [
@@ -39,10 +40,10 @@ impl BsramImage<16> for BootImage {
 type BootMemory = Bsram1R1Rw1024<16, BootImage>;
 
 #[derive(Hardware)]
-#[hardware(namespace = "examples/g16_sdram")]
-struct G16SdramBoardTest;
+#[hardware(namespace = "examples/cpu_v3_sdram")]
+struct CpuV3SdramBoardTest;
 
-impl Module for G16SdramBoardTest {
+impl Module for CpuV3SdramBoardTest {
     type Input = TangNano20KSdramInputs;
     type Output = TangNano20KSdramOutputs;
     type EmuState = ();
@@ -56,7 +57,7 @@ impl Module for G16SdramBoardTest {
         _input: &Self::Input,
         _output: &Self::Output,
     ) {
-        panic!("G16SdramBoardTest is a Verilog-only hardware integration test")
+        panic!("CpuV3SdramBoardTest is a Verilog-only hardware integration test")
     }
 
     fn verilog_source() -> Option<String> {
@@ -66,18 +67,21 @@ impl Module for G16SdramBoardTest {
                     "__BOOT_MEMORY__",
                     &BootMemory::verilog_identity().module_name(),
                 )
-                .replace("__G16_CORE__", &G16Core::verilog_identity().module_name())
+                .replace(
+                    "__CPU_V3_CORE__",
+                    &CpuV3Core::verilog_identity().module_name(),
+                )
                 .replace(
                     "__CACHE__",
-                    &G16DirectMappedCache::verilog_identity().module_name(),
+                    &CpuV3DirectMappedCache::verilog_identity().module_name(),
                 )
                 .replace(
                     "__ARBITER__",
-                    &G16MemoryArbiter::verilog_identity().module_name(),
+                    &CpuV3MemoryArbiter::verilog_identity().module_name(),
                 )
                 .replace(
                     "__MMIO_BRIDGE__",
-                    &G16MmioBridge::verilog_identity().module_name(),
+                    &CpuV3MmioBridge::verilog_identity().module_name(),
                 )
                 .replace(
                     "__BOOT_DMA_MMIO__",
@@ -93,11 +97,11 @@ impl Module for G16SdramBoardTest {
     fn verilog_dependencies() -> Vec<VerilogDependency> {
         vec![
             VerilogDependency::new::<BootMemory>("u_boot"),
-            VerilogDependency::new::<G16Core>("u_core"),
-            VerilogDependency::new::<G16DirectMappedCache>("u_instruction_cache"),
-            VerilogDependency::new::<G16DirectMappedCache>("u_data_cache"),
-            VerilogDependency::new::<G16MemoryArbiter>("u_memory_arbiter"),
-            VerilogDependency::new::<G16MmioBridge>("u_mmio_bridge"),
+            VerilogDependency::new::<CpuV3Core>("u_core"),
+            VerilogDependency::new::<CpuV3DirectMappedCache>("u_instruction_cache"),
+            VerilogDependency::new::<CpuV3DirectMappedCache>("u_data_cache"),
+            VerilogDependency::new::<CpuV3MemoryArbiter>("u_memory_arbiter"),
+            VerilogDependency::new::<CpuV3MmioBridge>("u_mmio_bridge"),
             VerilogDependency::new::<BootDmaMmio>("u_boot_dma_mmio"),
             VerilogDependency::new::<TangNano20KSdramWordPort>("u_sdram_word_port"),
         ]
@@ -108,8 +112,8 @@ impl Module for G16SdramBoardTest {
     }
 }
 
-fn gowin_project() -> GowinModuleProject<TangNano20K, G16SdramBoardTest> {
-    TangNano20K::sdram_debug_uart_project::<G16SdramBoardTest>("g16_sdram_self_test")
+fn gowin_project() -> GowinModuleProject<TangNano20K, CpuV3SdramBoardTest> {
+    TangNano20K::sdram_debug_uart_project::<CpuV3SdramBoardTest>("cpu_v3_sdram_self_test")
         .expect_bsram_blocks(ResourceCountExpectation::Exact(3))
         .expect_dsp_mode(GowinDspMode::Mult18x18, ResourceCountExpectation::Exact(1))
 }
@@ -131,7 +135,7 @@ mod tests {
     "#;
 
     #[test]
-    fn boot_line_is_the_current_g16_compiler_output() {
+    fn boot_line_is_the_current_cpu_v3_compiler_output() {
         let options = CompilerOptions::default();
         let frontend = parse_source_with(SOURCE, options.data_base).unwrap();
         let compiled = rcc_backend::compile(frontend, &options, "main").words;
@@ -144,7 +148,7 @@ mod tests {
 
     #[test]
     fn project_contains_boot_and_split_cache_bsram() {
-        let verilog = VerilogProject::generate::<G16SdramBoardTest>().unwrap();
+        let verilog = VerilogProject::generate::<CpuV3SdramBoardTest>().unwrap();
         assert_eq!(verilog.resource_claims.len(), 6);
         let project = gowin_project().generate().unwrap();
         assert_eq!(project.resources.claimed[&ResourceKind::Bsram18K], 3);
@@ -157,6 +161,6 @@ mod tests {
     #[test]
     #[ignore = "explicit external simulator validation"]
     fn boot_sdram_refill_and_cpu_execute_in_verilog() {
-        digital_design_hardware::verify_verilog_with_iverilog::<G16SdramBoardTest>().unwrap();
+        digital_design_hardware::verify_verilog_with_iverilog::<CpuV3SdramBoardTest>().unwrap();
     }
 }

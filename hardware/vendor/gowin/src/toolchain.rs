@@ -1181,10 +1181,10 @@ impl From<GowinError> for GowinCliError {
     }
 }
 
-/// Byte address used by `--program-flash`: the G16 boot package base, right
+/// Byte address used by `--program-flash`: the CpuV3 boot package base, right
 /// above the 1-MiB FPGA configuration reserve
 /// (`systems/cpu-v3-tang-nano-20k/src/boot/FLASH_LAYOUT.md`).
-const G16_PACKAGE_FLASH_BASE: u32 = 0x0010_0000;
+const CPU_V3_PACKAGE_FLASH_BASE: u32 = 0x0010_0000;
 
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 struct GowinCliOptions {
@@ -1305,7 +1305,7 @@ where
             "Usage: {} [OUTPUT] [--build] [--program] [--program-flash FILE] [--gowin-home PATH] [--cable-index N]\n\n\
              --build          Export and run Gowin synthesis/place-and-route\n\
              --program        Build, then program volatile FPGA SRAM\n\
-             --program-flash  Program FILE to external SPI flash at the G16 package base;\n\
+             --program-flash  Program FILE to external SPI flash at the CpuV3 package base;\n\
              \x20                 can run without --build\n\
              --gowin-home     Gowin installation root; overrides GOWIN_HOME and PATH\n\
              --cable-index    Override the target's Programmer cable-driver type",
@@ -1355,7 +1355,7 @@ where
         toolchain.program_external_flash_binary(
             generated.device,
             binary,
-            G16_PACKAGE_FLASH_BASE,
+            CPU_V3_PACKAGE_FLASH_BASE,
             u32::try_from(capacity_bits / 8).expect("fitted flash capacity fits u32 bytes"),
             options
                 .cable_index
@@ -2284,7 +2284,7 @@ mod tests {
         let options = parse_gowin_cli_args([
             OsString::from("out"),
             OsString::from("--program"),
-            OsString::from("--gowin-home=C:/Gowin"),
+            OsString::from("--gowin-home=test/Gowin"),
             OsString::from("--cable-index"),
             OsString::from("4"),
         ])
@@ -2292,16 +2292,19 @@ mod tests {
         assert_eq!(options.output, Some(PathBuf::from("out")));
         assert!(options.build);
         assert!(options.program);
-        assert_eq!(options.gowin_home, Some(PathBuf::from("C:/Gowin")));
+        assert_eq!(options.gowin_home, Some(PathBuf::from("test/Gowin")));
         assert_eq!(options.cable_index, Some(4));
 
         let options = parse_gowin_cli_args([
             OsString::from("--program-flash"),
-            OsString::from("image.g16boot"),
+            OsString::from("image.cpu-v3-boot"),
         ])
         .unwrap();
         assert!(!options.build);
-        assert_eq!(options.program_flash, Some(PathBuf::from("image.g16boot")));
+        assert_eq!(
+            options.program_flash,
+            Some(PathBuf::from("image.cpu-v3-boot"))
+        );
 
         for arguments in [
             vec![OsString::from("--cable-index")],

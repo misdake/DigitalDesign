@@ -1,4 +1,4 @@
-//! Pure address/lane mapping between G16 words and Tang Nano 20K SDRAM beats.
+//! Pure address/lane mapping between CpuV3 words and Tang Nano 20K SDRAM beats.
 
 use super::{PhysicalWordAddress, Word, CACHE_LINE_WORDS};
 
@@ -40,7 +40,7 @@ pub struct MaskedWriteBeat {
 pub fn word_address(address: PhysicalWordAddress) -> ControllerAddress {
     assert!(
         address.get() < TANG_NANO_20K_SDRAM_WORDS,
-        "G16 physical word address {:#010x} exceeds Tang Nano 20K SDRAM range 0x00000000..={:#010x}",
+        "CpuV3 physical word address {:#010x} exceeds Tang Nano 20K SDRAM range 0x00000000..={:#010x}",
         address.get(),
         TANG_NANO_20K_SDRAM_WORDS - 1,
     );

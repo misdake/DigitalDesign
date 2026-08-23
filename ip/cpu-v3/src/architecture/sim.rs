@@ -1,4 +1,4 @@
-//! Small architectural interpreter used as the G16 correctness oracle.
+//! Small architectural interpreter used as the CpuV3 correctness oracle.
 
 use super::encoding::{is_prefix_consumer, sign_extend, SpecialRegister, Word};
 use super::{PhysicalWordAddress, MMIO_BASE};
@@ -83,11 +83,11 @@ impl Machine {
     pub fn with_physical_memory_words(words: usize) -> Self {
         assert!(
             words > 0,
-            "G16 physical memory must contain at least one word"
+            "CpuV3 physical memory must contain at least one word"
         );
         assert!(
             words <= (u32::MAX as usize) + 1,
-            "G16 physical memory exceeds the architectural word address space"
+            "CpuV3 physical memory exceeds the architectural word address space"
         );
         Self {
             registers: [0; 16],
@@ -168,7 +168,7 @@ impl Machine {
     pub fn attach_device(&mut self, device: u8, handler: Box<dyn Device>) {
         assert!(
             device < 16,
-            "G16 device index {device} exceeds the MMIO page"
+            "CpuV3 device index {device} exceeds the MMIO page"
         );
         self.devices[usize::from(device)] = Some(handler);
     }

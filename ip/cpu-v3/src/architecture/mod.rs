@@ -1,4 +1,4 @@
-//! Executable specification for the next-generation G16 instruction set.
+//! Executable specification for the next-generation CpuV3 instruction set.
 //!
 //! This module intentionally lives beside the v2.6 implementation while the
 //! compiler and hardware are migrated. It is self-contained: no source or

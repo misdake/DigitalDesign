@@ -245,7 +245,7 @@ impl Display for VerilogSimulationError {
             Self::Project(error) => Display::fmt(error, formatter),
             Self::Io(error) if error.kind() == std::io::ErrorKind::NotFound => write!(
                 formatter,
-                "Verilog simulator tool was not found ({error}); install Icarus Verilog or set IVERILOG and VVP"
+                "Verilog simulator tool was not found ({error}); install Icarus Verilog or set IVERILOG_EXE and VVP_EXE"
             ),
             Self::Io(error) => Display::fmt(error, formatter),
             Self::ToolFailed {
@@ -307,8 +307,8 @@ pub fn verify_verilog_with_iverilog<M: Module>() -> Result<(), VerilogSimulation
     fs::write(&module_path, &test.source)?;
     fs::write(&testbench_path, &test.testbench)?;
 
-    let iverilog = std::env::var_os("IVERILOG").unwrap_or_else(|| "iverilog".into());
-    let vvp = std::env::var_os("VVP").unwrap_or_else(|| "vvp".into());
+    let iverilog = std::env::var_os("IVERILOG_EXE").unwrap_or_else(|| "iverilog".into());
+    let vvp = std::env::var_os("VVP_EXE").unwrap_or_else(|| "vvp".into());
     let tool_path = simulator_path(&iverilog, &vvp)?;
     let mut compile_command = Command::new(&iverilog);
     compile_command

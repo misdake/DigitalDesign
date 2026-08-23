@@ -146,8 +146,8 @@ marked `#[ignore]` and must be requested explicitly. For example:
 cargo test -p digital-design-hardware --lib components::bsram::tests::verify_verilog_with_iverilog -- --ignored
 ```
 
-Install Icarus Verilog first, or set `IVERILOG` and `VVP` to the executable
-paths. A successful testbench must print `DIGITAL_DESIGN_PASS`. The helper then
+Install Icarus Verilog first, or set `IVERILOG_EXE` and `VVP_EXE` to the
+executable paths. A successful testbench must print `DIGITAL_DESIGN_PASS`. The helper then
 returns success. There is deliberately no checked-in source hash or export-time
 attestation: explicit HDL simulation and hardware validation remain available
 without making every Verilog edit participate in a manifest workflow.
@@ -254,8 +254,8 @@ test ID `0x01`. Capture raw bytes with the serial receiver script, then use
 the shared checker to verify the identity, freshness, checksum, and result:
 
 ```powershell
-powershell -ExecutionPolicy Bypass -File hardware/scripts/capture_uart.ps1 -Port COM8 -Out target/bsram_gowin/board_capture.bin
-powershell -ExecutionPolicy Bypass -File hardware/scripts/check_uart_status.ps1 -Path target/bsram_gowin/board_capture.bin -TestId 0x01
+powershell -ExecutionPolicy Bypass -File hardware/vendor/gowin/scripts/capture_uart.ps1 -Port COM8 -Out target/bsram_gowin/board_capture.bin
+powershell -ExecutionPolicy Bypass -File hardware/vendor/gowin/scripts/check_uart_status.ps1 -Path target/bsram_gowin/board_capture.bin -TestId 0x01
 ```
 
 The smaller `bsram_masked` example shows how ordinary NAND logic uses BSRAM in
@@ -484,14 +484,14 @@ Gowin tool discovery uses an explicit `--gowin-home PATH` first, then the
 For example, the current machine can use:
 
 ```powershell
-$env:GOWIN_HOME = 'D:\DevTools\Gowin\Gowin_V1.9.11.03_Education_x64'
+$env:GOWIN_HOME = '<gowin-installation-directory>'
 cargo run -p digital-design-hardware --example basic_adder -- --build
 ```
 
 Or without changing the environment:
 
 ```powershell
-cargo run -p digital-design-hardware --example basic_adder -- --build --gowin-home 'D:\DevTools\Gowin\Gowin_V1.9.11.03_Education_x64'
+cargo run -p digital-design-hardware --example basic_adder -- --build --gowin-home $env:GOWIN_HOME
 ```
 
 SRAM programming is intentionally an explicit operation and is never run by

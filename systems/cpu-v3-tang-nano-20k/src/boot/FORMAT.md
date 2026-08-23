@@ -1,4 +1,4 @@
-# G16 boot image format version 3
+# CPU V3 boot image format version 3
 
 All multibyte integers are little-endian. Flash offsets are byte offsets from
 the beginning of the package. SDRAM destinations are physical 16-bit-word
@@ -26,7 +26,7 @@ the FPGA configuration region has been characterized.
 
 | Offset | Size | Field |
 | ---: | ---: | --- |
-| 0 | 8 | ASCII `G16BOOT\0` |
+| 0 | 8 | ASCII `CPU3BOOT` |
 | 8 | 2 | format version |
 | 10 | 2 | descriptor size |
 | 12 | 4 | target identifier |
@@ -59,7 +59,7 @@ loadable section.
 
 | Offset | Size | Field |
 | ---: | ---: | --- |
-| 0 | 8 | ASCII `G16SECT\0` |
+| 0 | 8 | ASCII `CPU3SECT` |
 | 8 | 2 | format version |
 | 10 | 2 | manifest header size |
 | 12 | 2 | section record size |
@@ -97,7 +97,7 @@ section, not merely in its zero-filled tail.
 
 ## Host input manifest
 
-`g16-pack` deliberately uses a small dependency-free line format so packaging
+`cpu-v3-pack` deliberately uses a small dependency-free line format so packaging
 continues to work offline. `#` starts a comment. Numbers are decimal or
 `0x`-prefixed hexadecimal. Paths are relative to the manifest.
 

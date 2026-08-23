@@ -1,4 +1,4 @@
-//! Versioned G16 boot container shared by the host packer and both loaders.
+//! Versioned CpuV3 boot container shared by the host packer and both loaders.
 
 mod devices;
 mod loader;
@@ -24,8 +24,8 @@ pub const TANG_NANO_20K_CONFIGURATION_RESERVE_BYTES: u32 = 1 << 20;
 pub const STAGE1_HANDOFF_OFFSET: Word = 0x0100;
 pub const STAGE1_HANDOFF_SIZE_BYTES: u32 = BOOT_DESCRIPTOR_SIZE as u32;
 
-const BOOT_MAGIC: &[u8; 8] = b"G16BOOT\0";
-const MANIFEST_MAGIC: &[u8; 8] = b"G16SECT\0";
+const BOOT_MAGIC: &[u8; 8] = b"CPU3BOOT";
+const MANIFEST_MAGIC: &[u8; 8] = b"CPU3SECT";
 
 pub const SECTION_READ: u16 = 1 << 0;
 pub const SECTION_WRITE: u16 = 1 << 1;
@@ -175,7 +175,7 @@ pub struct TargetFlashImage {
 impl BootImage {
     pub fn map(&self) -> String {
         let mut text = format!(
-            "G16 boot image v{BOOT_FORMAT_VERSION}\n\
+            "CpuV3 boot image v{BOOT_FORMAT_VERSION}\n\
              target: {:?}\n\
              package: {:#010x} bytes\n\
              target Flash placement: {:#010x}..{:#010x}\n\

@@ -1,4 +1,4 @@
-module G16DirectMappedCache (
+module CpuV3DirectMappedCache (
     input wire clk,
     input wire reset,
     input wire invalidate_all,

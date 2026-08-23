@@ -1,4 +1,4 @@
-# G16 migration specification
+# CPU V3 migration specification
 
 This directory is the executable source of truth for the ISA replacing cpu_v2
 v2.6. The exploratory `design_model/CPU_ISA.md` revision 0.2 supplied the base
@@ -47,7 +47,7 @@ The baseline offset map inside the selected data segment is:
 
 `CompilerOptions::default()` selects these boundaries. The old v2.6 convention of
 using a zero stack pointer to wrap to `0xffff` is rejected because that address
-is MMIO under G16.
+is MMIO under CpuV3.
 
 ## Revision 0.3
 
@@ -142,7 +142,7 @@ On failure a boot stage writes channel 2 with `{stage[1:0], category[3:0]}` in
 the low six bits (stage `01` = Stage0, `10` = Stage1; category `1` =
 descriptor/format invalid, `2` = manifest/section invalid, `3` = DMA
 transport failure, `4` = entry/handoff invalid, `5` = internal/timeout) and
-then repeatedly emits a 10-byte UART frame on channel 3: ASCII `G16B`, stage,
+then repeatedly emits a 10-byte UART frame on channel 3: ASCII `CV3B`, stage,
 category, error code, detail low byte, detail high byte, and the XOR checksum
 of bytes 0 through 8. The host reference loaders expose the same mapping as
 `LoaderError::boot_report` for the on-hardware stages to mirror. A

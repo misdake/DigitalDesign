@@ -1,16 +1,16 @@
-# G16 two-stage flash boot package for the g16_boot example.
+# CPU V3 two-stage flash boot package for the cpu_v3_boot example.
 # Section files are compiler outputs; regenerate with:
 #   rcc systems/cpu-v3-tang-nano-20k/rcc/stage1.rs --target cpu-v3 --code-base 0x100 --stack-init 0xf000 -o target/cpu-v3-boot/stage1.v3bin
 #   rcc systems/cpu-v3-tang-nano-20k/rcc/boot-demo.rs --target cpu-v3 --code-base 0x200 --stack-init 0xe000 -o target/cpu-v3-boot/boot-demo.v3bin
-#   printf '\xef\xbe\x55' > target/g16_boot/data.bin
-#   g16-pack hardware/examples/g16_boot/boot.g16manifest -o target/g16_boot/g16_boot.bin
+#   printf '\xef\xbe\x55' > target/cpu-v3-boot/data.bin
+#   cpu-v3-pack systems/cpu-v3-tang-nano-20k/examples/cpu_v3_boot/boot.cpu-v3-manifest -o target/cpu-v3-boot/cpu-v3-boot.bin
 format 1
 target tang-nano-20k
 stage1-section stage1
 stage1-entry 0x0001 0x0100 0x0002 0xf000
 application-entry 0x0003 0x0200 0x0004 0xe000
 
-load stage1      0x00010100 rx 32 1268 ../../../target/g16_boot/stage1.g16bin
-load application 0x00030200 rx 32 118 ../../../target/g16_boot/boot_demo.g16bin
-load data        0x00040000 rw 32 8 ../../../target/g16_boot/data.bin
+load stage1      0x00010100 rx 32 1268 ../../../target/cpu-v3-boot/stage1.v3bin
+load application 0x00030200 rx 32 118 ../../../target/cpu-v3-boot/boot-demo.v3bin
+load data        0x00040000 rw 32 8 ../../../target/cpu-v3-boot/data.bin
 zero bss         0x00040100 rw 32 64

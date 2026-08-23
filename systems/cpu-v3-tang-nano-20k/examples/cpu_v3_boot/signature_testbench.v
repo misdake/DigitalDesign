@@ -2,9 +2,8 @@
 // Signature testbench for the two-stage flash boot. Phase 1 preloads the
 // Flash model with the packed boot package and expects the demo application
 // to emit the DDHT 0x07 success frame through the system control UART.
-// Phase 2 corrupts the descriptor magic, resets the board, and expects the
-// Stage0 boot error report: LED {stage 1, category 1} plus repeating G16B
-// UART frames.
+// Phase 2 corrupts the descriptor magic and expects the Stage0 boot error.
+// Phase 3 corrupts the manifest magic and expects the Stage1 boot error.
 module tb;
 reg clk = 0;
 reg [1:0] buttons = 0;
@@ -26,7 +25,7 @@ wire [3:0] sdram_write_mask;
 wire [31:0] sdram_write_data;
 wire [7:0] sdram_burst_length;
 
-G16BootSelfTest dut(.*);
+CpuV3BootSelfTest dut(.*);
 always #5 clk = ~clk;
 
 // SDRAM model: 16-bit words, two words per 32-bit controller word. The boot
@@ -80,7 +79,7 @@ integer flash_command_bits = 0;
 reg [23:0] flash_byte_address = 0;
 integer flash_data_bit = 0;
 reg [7:0] flash_current_byte = 0;
-reg corrupt_magic = 0;
+reg [1:0] corrupt_metadata = 0;
 integer flash_init_index;
 
 initial begin
@@ -111,7 +110,9 @@ always @(negedge flash_clk) begin
                 flash_current_byte = flash_image[flash_byte_address - FLASH_BASE];
             else
                 flash_current_byte = 8'hff;
-            if (corrupt_magic && flash_byte_address == FLASH_BASE)
+            if (corrupt_metadata == 1 && flash_byte_address == FLASH_BASE)
+                flash_current_byte = flash_current_byte ^ 8'h01;
+            if (corrupt_metadata == 2 && flash_byte_address == FLASH_BASE + 64)
                 flash_current_byte = flash_current_byte ^ 8'h01;
             flash_byte_address = flash_byte_address + 1;
         end
@@ -129,7 +130,8 @@ reg [7:0] uart_shift = 0;
 reg uart_receiving = 0;
 reg [7:0] uart_history [0:9];
 reg ddht_frame_seen = 0;
-reg g16b_frame_seen = 0;
+reg stage0_error_frame_seen = 0;
+reg stage1_error_frame_seen = 0;
 
 always @(posedge clk) begin
     if (!uart_receiving) begin
@@ -162,10 +164,10 @@ always @(posedge clk) begin
                      uart_history[5] ^ uart_history[6] ^ uart_history[7] ^
                      uart_history[8] ^ uart_history[9]) == 0)
                     ddht_frame_seen = 1;
-                // Boot error frame: magic G16B, stage 1, category 1, code 1,
+                // Boot error frame: magic CV3B, stage 1, category 1, code 1,
                 // detail 0, XOR checksum of bytes 0..8.
-                if (uart_history[0] == 8'h47 && uart_history[1] == 8'h31 &&
-                    uart_history[2] == 8'h36 && uart_history[3] == 8'h42 &&
+                if (uart_history[0] == 8'h43 && uart_history[1] == 8'h56 &&
+                    uart_history[2] == 8'h33 && uart_history[3] == 8'h42 &&
                     uart_history[4] == 8'h01 && uart_history[5] == 8'h01 &&
                     uart_history[6] == 8'h01 && uart_history[7] == 8'h00 &&
                     uart_history[8] == 8'h00 &&
@@ -173,7 +175,19 @@ always @(posedge clk) begin
                      uart_history[3] ^ uart_history[4] ^ uart_history[5] ^
                      uart_history[6] ^ uart_history[7] ^ uart_history[8] ^
                      uart_history[9]) == 0)
-                    g16b_frame_seen = 1;
+                    stage0_error_frame_seen = 1;
+                // Stage1 manifest error: stage 2, category 2, code 6,
+                // detail 0, followed by the legacy wire checksum.
+                if (uart_history[0] == 8'h43 && uart_history[1] == 8'h56 &&
+                    uart_history[2] == 8'h33 && uart_history[3] == 8'h42 &&
+                    uart_history[4] == 8'h02 && uart_history[5] == 8'h02 &&
+                    uart_history[6] == 8'h06 && uart_history[7] == 8'h00 &&
+                    uart_history[8] == 8'h00 &&
+                    (uart_history[0] ^ uart_history[1] ^ uart_history[2] ^
+                     uart_history[3] ^ uart_history[4] ^ uart_history[5] ^
+                     uart_history[6] ^ uart_history[7] ^ uart_history[8] ^
+                     uart_history[9]) == 0)
+                    stage1_error_frame_seen = 1;
             end
         end else begin
             uart_shift[uart_bit] <= uart_tx;
@@ -211,22 +225,35 @@ initial begin
 
     // Phase 2: corrupt the descriptor magic, reset through the button input,
     // and expect the Stage0 boot error report.
-    corrupt_magic = 1;
+    corrupt_metadata = 1;
     buttons = 2'b01;
     repeat (8) @(posedge clk);
     buttons = 2'b00;
-    wait (g16b_frame_seen);
+    wait (stage0_error_frame_seen);
     @(posedge clk);
     if (leds !== 6'b010001)
         $fatal(1, "stage0 descriptor failure must light LEDs 6'b010001, got %b", leds);
     if (dut.code_segment !== 16'd0)
         $fatal(1, "failed boot must stay in the boot segment, cseg=0x%04x", dut.code_segment);
+
+    // Phase 3: allow Stage0 to run, corrupt the manifest magic, and prove
+    // Stage1 reports the failure without entering the application.
+    corrupt_metadata = 2;
+    buttons = 2'b01;
+    repeat (8) @(posedge clk);
+    buttons = 2'b00;
+    wait (stage1_error_frame_seen);
+    @(posedge clk);
+    if (leds !== 6'b100010)
+        $fatal(1, "stage1 manifest failure must light LEDs 6'b100010, got %b", leds);
+    if (dut.code_segment !== 16'd1)
+        $fatal(1, "stage1 failure must stay in segment 1, cseg=0x%04x", dut.code_segment);
     $display("DIGITAL_DESIGN_PASS");
     $finish;
 end
 
 initial begin
-    repeat (4000000) @(posedge clk);
+    repeat (6000000) @(posedge clk);
     $display("FAIL: timeout (cseg=0x%04x dseg=0x%04x pc=0x%04x leds=%b retired=%0d)",
         dut.code_segment, dut.data_segment, dut.pc, leds, dut.retired_words);
     $finish(1);

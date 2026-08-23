@@ -1,4 +1,4 @@
-//! Dependency-free input manifest for the `g16-pack` host tool.
+//! Dependency-free input manifest for the `cpu-v3-pack` host tool.
 
 use std::fmt;
 use std::path::{Path, PathBuf};

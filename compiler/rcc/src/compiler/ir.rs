@@ -161,11 +161,11 @@ pub enum Instr {
         channel: u8,
         src: VReg,
     },
-    /// G16-only: write the DSEG special register (MTSR DSEG)
+    /// CpuV3-only: write the DSEG special register (MTSR DSEG)
     MtsrDseg {
         src: VReg,
     },
-    /// G16-only: atomically switch CSEG and jump (JSEG); never returns
+    /// CpuV3-only: atomically switch CSEG and jump (JSEG); never returns
     Jseg {
         cseg: VReg,
         target: VReg,

@@ -1,12 +1,12 @@
-//! Stage0 of the CPU V3 two-stage flash boot. Compiled for `--target cpu-v3 --code-base 0`
+//! Stage0 of the CpuV3 two-stage flash boot. Compiled for `--target cpu-v3 --code-base 0`
 //! into the 0x400-word BSRAM boot window (reset state: CSEG=0, DSEG=0, PC=0).
 //!
-//! Mirrors the host reference `g16::boot::loader::run_stage0`: DMA the 64-byte
+//! Mirrors the host reference `cpu_v3::boot::loader::run_stage0`: DMA the 64-byte
 //! boot descriptor from flash byte 0x100000 into the reserved scratch range
 //! (physical word 0x40), validate it, DMA Stage1 into SDRAM, mirror the
 //! descriptor to the Stage1 handoff address, invalidate both caches, and enter
 //! Stage1 with MTSR DSEG + JSEG. Every failure reports through the boot error
-//! ABI: the `{stage, category}` LED word followed by repeating 10-byte `G16B`
+//! ABI: the `{stage, category}` LED word followed by repeating 10-byte `CV3B`
 //! UART frames (see `BootErrorReport`).
 
 use crate::dsl_rt::*;
@@ -16,7 +16,7 @@ use crate::dsl_rt::*;
 // the high DMA halfword carries the base.
 const FLASH_BASE_HI: u16 = 0x0010;
 
-// Boot error ABI codes for Stage0 (g16/boot/loader.rs `boot_report`).
+// Boot error ABI codes for Stage0 (cpu_v3/boot/loader.rs `boot_report`).
 const CATEGORY_DESCRIPTOR: u16 = 1;
 const CATEGORY_DMA: u16 = 3;
 const CATEGORY_ENTRY: u16 = 4;
@@ -87,15 +87,15 @@ fn uart_byte(b: u16) {
 }
 
 /// Reports a boot failure: LED `{stage, category}` on device 0 channel 2,
-/// then the 10-byte `G16B` frame retransmitted forever.
+/// then the 10-byte `CV3B` frame retransmitted forever.
 #[allow(clippy::eq_op)] // `while 1 == 1` is the rcc spelling of an endless loop
 fn boot_fail(stage: u16, category: u16, code: u16, detail: u16) {
     dev_send(0, 2, (stage << 4) | category);
-    let checksum = 0x47 ^ 0x31 ^ 0x36 ^ 0x42 ^ stage ^ category ^ code ^ (detail & 0xff) ^ (detail >> 8);
+    let checksum = 0x43 ^ 0x56 ^ 0x33 ^ 0x42 ^ stage ^ category ^ code ^ (detail & 0xff) ^ (detail >> 8);
     while 1 == 1 {
-        uart_byte(0x47); // 'G'
-        uart_byte(0x31); // '1'
-        uart_byte(0x36); // '6'
+        uart_byte(0x43); // 'C'
+        uart_byte(0x56); // 'V'
+        uart_byte(0x33); // '3'
         uart_byte(0x42); // 'B'
         uart_byte(stage);
         uart_byte(category);
@@ -120,8 +120,8 @@ fn u32_above(a_hi: u16, a_lo: u16, b_hi: u16, b_lo: u16) -> u16 {
 /// Validates the scratch descriptor, mirroring `validate_stage0_descriptor`.
 fn validate_descriptor() {
     let desc = Ptr::from_addr(0x40).as_u16_array();
-    // magic "G16BOOT\0" (little-endian words)
-    if desc[0u16] != 0x3147 || desc[1u16] != 0x4236 || desc[2u16] != 0x4f4f || desc[3u16] != 0x0054 {
+    // magic "CPU3BOOT" (little-endian words)
+    if desc[0u16] != 0x5043 || desc[1u16] != 0x3355 || desc[2u16] != 0x4f42 || desc[3u16] != 0x544f {
         boot_fail(1, CATEGORY_DESCRIPTOR, 1, 0);
     }
     if desc[DW_VERSION] != 3 || desc[DW_SIZE] != 64 {

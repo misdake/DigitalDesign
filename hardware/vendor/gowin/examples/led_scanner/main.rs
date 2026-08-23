@@ -175,7 +175,7 @@ fn wires_all_zero<const WIDTH: usize>(wires: Wires<WIDTH>) -> Wire {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use digital_design_hardware_gowin::{ModuleTest, TestStep};
+    use digital_design_hardware_gowin::{ModuleTest, TangNano20KInputsValue, TestStep};
     use std::path::Path;
 
     #[test]
@@ -235,7 +235,7 @@ mod tests {
         let steps = buttons.into_iter().map(|buttons| {
             let leds = reference.cycle(buttons);
             TestStep::new(
-                digital_design_hardware::TangNano20KInputsValue { buttons },
+                TangNano20KInputsValue { buttons },
                 TangNano20KOutputsValue { leds },
             )
         });

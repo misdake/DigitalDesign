@@ -21,7 +21,7 @@ integer read_delay = 0;
 reg [20:0] pending_read_address = 0;
 integer cycle;
 
-G16SdramBoardTest dut (.*);
+CpuV3SdramBoardTest dut (.*);
 always #5 clk = ~clk;
 
 always @(posedge clk) begin
@@ -69,7 +69,7 @@ initial begin
             dut.pc, dut.code_segment, dut.data_segment, dut.faulted,
             dut.fault_code, dut.fault_pc, dut.halt_signal, dut.retired_words
         );
-        $fatal(1, "G16 did not execute through the reusable SDRAM hierarchy");
+        $fatal(1, "CPU V3 did not execute through the reusable SDRAM hierarchy");
     end
     if (memory[16'h4000] !== 16'h1234)
         $fatal(1, "write-through data did not reach SDRAM");

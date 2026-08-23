@@ -1,4 +1,4 @@
-module G16CpuBoardTest(
+module CpuV3CpuBoardTest(
     input wire clk,
     input wire [1:0] buttons,
     output wire [5:0] leds,
@@ -57,7 +57,7 @@ wire [15:0] code_segment;
 wire [15:0] data_segment;
 wire [31:0] retired_words;
 
-__G16_CORE__ u_core(
+__CPU_V3_CORE__ u_core(
     .clk(clk),
     .reset(core_reset),
     .instruction_request_ready(1'b1),

@@ -45,5 +45,8 @@ cargo clippy --workspace --all-targets
 powershell -ExecutionPolicy Bypass -File scripts/check-layering.ps1
 ```
 
+External Verilog tests use `IVERILOG_EXE` and `VVP_EXE` when set, otherwise
+they resolve `iverilog` and `vvp` through `PATH`.
+
 Every simulator test must supply a maximum cycle/step count. Keep project files, comments, and
 documentation in English. Do not commit unless the user explicitly asks for a commit.

@@ -1,4 +1,4 @@
-//! Host models of the boot devices for the `g16::sim::Machine` device bus:
+//! Host models of the boot devices for the `cpu_v3::sim::Machine` device bus:
 //! the device-2 boot DMA engine and the device-0 system-control block.
 
 use super::loader::{DmaCommand, DmaError, DmaStatus, FlashToDramDma};

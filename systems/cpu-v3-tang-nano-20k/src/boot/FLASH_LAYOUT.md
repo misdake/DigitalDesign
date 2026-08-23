@@ -6,12 +6,12 @@ material lists a different vendor. Software therefore binds this concrete
 Tang Nano 20K variant to 8 MiB rather than inferring capacity from a generic
 board name.
 
-The first 1 MiB is reserved for FPGA configuration. The G16 package begins at
+The first 1 MiB is reserved for FPGA configuration. The CPU V3 package begins at
 byte `0x100000` and may occupy at most 7 MiB:
 
 ```text
 0x000000 .. 0x0fffff  FPGA configuration and erased padding
-0x100000 .. 0x7fffff  relocatable G16 boot package
+0x100000 .. 0x7fffff  relocatable CPU V3 boot package
 ```
 
 The 1-MiB boundary is conservative and sector-aligned. Gowin UG290 gives 886
@@ -27,7 +27,7 @@ References:
 - <https://www.gowinsemi.com/upload/database_doc/370/document/5f8e61665e9e2.pdf>
   (SUG502, external Flash start address)
 
-`g16-pack --configuration-bin design.bin --flash-image complete.bin` rejects a
+`cpu-v3-pack --configuration-bin design.bin --flash-image complete.bin` rejects a
 configuration larger than the reserve, fills the unused gap with `0xff`, and
 places the validated package at `0x100000`. Package-internal Flash offsets stay
 relative to that base so Stage0 needs only one fixed package-base constant.

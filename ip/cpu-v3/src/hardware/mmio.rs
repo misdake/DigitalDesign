@@ -1,13 +1,13 @@
-//! Adapter between the G16 physical data port and its fixed MMIO device page.
+//! Adapter between the CpuV3 physical data port and its fixed MMIO device page.
 
 use digital_design_circuit::{input_const, mux2, mux2_w, reg, reg_w, CircuitWires, Wire, Wires};
 use digital_design_hardware::{HardwareIdentity, Module, ModuleIo, VerilogIdentity};
 
-pub const G16_MMIO_BASE: u32 = 0x0000_ff00;
-pub const G16_MMIO_END: u32 = 0x0000_ffff;
+pub const CPU_V3_MMIO_BASE: u32 = 0x0000_ff00;
+pub const CPU_V3_MMIO_END: u32 = 0x0000_ffff;
 
 #[derive(Clone, ModuleIo)]
-pub struct G16MmioBridgeInput {
+pub struct CpuV3MmioBridgeInput {
     pub reset: Wire,
     pub cpu_request_valid: Wire,
     pub cpu_write: Wire,
@@ -18,7 +18,7 @@ pub struct G16MmioBridgeInput {
 }
 
 #[derive(Clone, ModuleIo)]
-pub struct G16MmioBridgeOutput {
+pub struct CpuV3MmioBridgeOutput {
     pub cpu_request_ready: Wire,
     pub cpu_response_valid: Wire,
     pub cpu_read_data: Wires<16>,
@@ -30,32 +30,32 @@ pub struct G16MmioBridgeOutput {
     pub device_write_data: Wires<16>,
 }
 
-pub struct G16MmioBridge;
+pub struct CpuV3MmioBridge;
 
-impl HardwareIdentity for G16MmioBridge {
+impl HardwareIdentity for CpuV3MmioBridge {
     const TARGET_RESOURCE_LEAF: bool = false;
 
     fn verilog_identity() -> VerilogIdentity {
-        VerilogIdentity::new("G16MmioBridge").namespace(["components", "cpu", "g16"])
+        VerilogIdentity::new("CpuV3MmioBridge").namespace(["components", "cpu", "cpu_v3"])
     }
 }
 
 #[derive(Default)]
-pub struct G16MmioBridgeState {
+pub struct CpuV3MmioBridgeState {
     response_valid: bool,
     read_data: u16,
     error: bool,
 }
 
-impl Module for G16MmioBridge {
-    type Input = G16MmioBridgeInput;
-    type Output = G16MmioBridgeOutput;
-    type EmuState = G16MmioBridgeState;
+impl Module for CpuV3MmioBridge {
+    type Input = CpuV3MmioBridgeInput;
+    type Output = CpuV3MmioBridgeOutput;
+    type EmuState = CpuV3MmioBridgeState;
 
     const USES_MAIN_CLOCK: bool = true;
 
     fn create_emu(_input: &Self::Input, _output: &Self::Output) -> Self::EmuState {
-        G16MmioBridgeState::default()
+        CpuV3MmioBridgeState::default()
     }
 
     fn execute_emu(
@@ -70,7 +70,7 @@ impl Module for G16MmioBridge {
             request_ready && input.cpu_request_valid && is_mmio_address(input.cpu_address as u32);
         output.drive(
             circuit,
-            &G16MmioBridgeOutputValue {
+            &CpuV3MmioBridgeOutputValue {
                 cpu_request_ready: request_ready,
                 cpu_response_valid: state.response_valid,
                 cpu_read_data: u64::from(state.read_data),
@@ -92,7 +92,7 @@ impl Module for G16MmioBridge {
     ) {
         let input = input.sample(circuit);
         if input.reset {
-            *state = G16MmioBridgeState::default();
+            *state = CpuV3MmioBridgeState::default();
             return;
         }
         if state.response_valid {
@@ -144,7 +144,7 @@ impl Module for G16MmioBridge {
             input.reset,
         ));
 
-        G16MmioBridgeOutput {
+        CpuV3MmioBridgeOutput {
             cpu_request_ready: request_ready,
             cpu_response_valid: response_valid.out(),
             cpu_read_data: read_data.out,
@@ -184,7 +184,7 @@ fn set_clear_next(current: Wire, set: Wire, clear: Wire) -> Wire {
 }
 
 const fn is_mmio_address(address: u32) -> bool {
-    address >= G16_MMIO_BASE && address <= G16_MMIO_END
+    address >= CPU_V3_MMIO_BASE && address <= CPU_V3_MMIO_END
 }
 
 #[cfg(test)]
@@ -192,8 +192,8 @@ mod tests {
     use super::*;
     use digital_design_hardware::{ModuleTest, TestStep, VerilogProject};
 
-    fn idle() -> G16MmioBridgeInputValue {
-        G16MmioBridgeInputValue {
+    fn idle() -> CpuV3MmioBridgeInputValue {
+        CpuV3MmioBridgeInputValue {
             reset: false,
             cpu_request_valid: false,
             cpu_write: false,
@@ -209,8 +209,8 @@ mod tests {
         write: bool,
         response_ready: bool,
         device_read_data: u16,
-    ) -> G16MmioBridgeInputValue {
-        G16MmioBridgeInputValue {
+    ) -> CpuV3MmioBridgeInputValue {
+        CpuV3MmioBridgeInputValue {
             cpu_request_valid: true,
             cpu_write: write,
             cpu_address: u64::from(address),
@@ -232,8 +232,8 @@ mod tests {
         read_enable: bool,
         write_enable: bool,
         write_data: u16,
-    ) -> G16MmioBridgeOutputValue {
-        G16MmioBridgeOutputValue {
+    ) -> CpuV3MmioBridgeOutputValue {
+        CpuV3MmioBridgeOutputValue {
             cpu_request_ready: request_ready,
             cpu_response_valid: response_valid,
             cpu_read_data: u64::from(read_data),
@@ -248,10 +248,10 @@ mod tests {
 
     #[test]
     fn emu_and_nand_decode_hold_and_reset_the_response_channel() {
-        ModuleTest::<G16MmioBridge>::new(vec![
+        ModuleTest::<CpuV3MmioBridge>::new(vec![
             // Synchronous reset clears the response registers.
             TestStep::new(
-                G16MmioBridgeInputValue {
+                CpuV3MmioBridgeInputValue {
                     reset: true,
                     ..idle()
                 },
@@ -297,7 +297,7 @@ mod tests {
             // Reset mid-transaction clears the registers; the combinational
             // device enables do not depend on reset.
             TestStep::new(
-                G16MmioBridgeInputValue {
+                CpuV3MmioBridgeInputValue {
                     reset: true,
                     ..request(0x0000_ff2e, false, false, 0x5555)
                 },
@@ -314,7 +314,7 @@ mod tests {
 
     #[test]
     fn export_has_no_target_resource_claims() {
-        assert!(VerilogProject::generate::<G16MmioBridge>()
+        assert!(VerilogProject::generate::<CpuV3MmioBridge>()
             .unwrap()
             .resource_claims
             .is_empty());

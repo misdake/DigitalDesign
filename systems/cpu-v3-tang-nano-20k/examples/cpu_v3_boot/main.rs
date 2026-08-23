@@ -1,6 +1,6 @@
 use cpu_v3_tang_nano_20k::{
-    run_gowin_project_cli, BootDmaEngine, BootDmaMmio, Bsram1R1Rw1024, BsramImage,
-    ErasedSpiFlashImage, G16Core, G16DirectMappedCache, G16MemoryArbiter, G16MmioBridge,
+    run_gowin_project_cli, BootDmaEngine, BootDmaMmio, Bsram1R1Rw1024, BsramImage, CpuV3Core,
+    CpuV3DirectMappedCache, CpuV3MemoryArbiter, CpuV3MmioBridge, ErasedSpiFlashImage,
     GowinCliError, GowinDspMode, GowinModuleProject, Hardware, HardwareIdentity, Module,
     ResourceCountExpectation, SpiFlashReader, SystemControlDevice, TangNano20K,
     TangNano20KBootInputs, TangNano20KBootOutputs, TangNano20KSdramWordPort, VerilogDependency,
@@ -9,7 +9,7 @@ use cpu_v3_tang_nano_20k::{
 use digital_design_circuit::CircuitWires;
 
 fn main() -> Result<(), GowinCliError> {
-    run_gowin_project_cli(gowin_project(), "target/g16_boot_gowin")
+    run_gowin_project_cli(gowin_project(), "target/cpu_v3_boot_gowin")
 }
 
 include!(concat!(env!("OUT_DIR"), "/boot_images.rs"));
@@ -40,10 +40,10 @@ type FittedFlashReader = SpiFlashReader<ErasedSpiFlashImage, 8_388_608, 2>;
 type SystemControl = SystemControlDevice<469>;
 
 #[derive(Hardware)]
-#[hardware(namespace = "examples/g16_boot")]
-struct G16BootSelfTest;
+#[hardware(namespace = "examples/cpu_v3_boot")]
+struct CpuV3BootSelfTest;
 
-impl Module for G16BootSelfTest {
+impl Module for CpuV3BootSelfTest {
     type Input = TangNano20KBootInputs;
     type Output = TangNano20KBootOutputs;
     type EmuState = ();
@@ -57,7 +57,7 @@ impl Module for G16BootSelfTest {
         _input: &Self::Input,
         _output: &Self::Output,
     ) {
-        panic!("G16BootSelfTest is a Verilog-only hardware integration test")
+        panic!("CpuV3BootSelfTest is a Verilog-only hardware integration test")
     }
 
     fn verilog_source() -> Option<String> {
@@ -67,18 +67,21 @@ impl Module for G16BootSelfTest {
                     "__BOOT_MEMORY__",
                     &BootMemory::verilog_identity().module_name(),
                 )
-                .replace("__G16_CORE__", &G16Core::verilog_identity().module_name())
+                .replace(
+                    "__CPU_V3_CORE__",
+                    &CpuV3Core::verilog_identity().module_name(),
+                )
                 .replace(
                     "__CACHE__",
-                    &G16DirectMappedCache::verilog_identity().module_name(),
+                    &CpuV3DirectMappedCache::verilog_identity().module_name(),
                 )
                 .replace(
                     "__ARBITER__",
-                    &G16MemoryArbiter::verilog_identity().module_name(),
+                    &CpuV3MemoryArbiter::verilog_identity().module_name(),
                 )
                 .replace(
                     "__MMIO_BRIDGE__",
-                    &G16MmioBridge::verilog_identity().module_name(),
+                    &CpuV3MmioBridge::verilog_identity().module_name(),
                 )
                 .replace(
                     "__SYSTEM_CONTROL__",
@@ -106,11 +109,11 @@ impl Module for G16BootSelfTest {
     fn verilog_dependencies() -> Vec<VerilogDependency> {
         vec![
             VerilogDependency::new::<BootMemory>("u_boot"),
-            VerilogDependency::new::<G16Core>("u_core"),
-            VerilogDependency::new::<G16DirectMappedCache>("u_instruction_cache"),
-            VerilogDependency::new::<G16DirectMappedCache>("u_data_cache"),
-            VerilogDependency::new::<G16MemoryArbiter>("u_memory_arbiter"),
-            VerilogDependency::new::<G16MmioBridge>("u_mmio_bridge"),
+            VerilogDependency::new::<CpuV3Core>("u_core"),
+            VerilogDependency::new::<CpuV3DirectMappedCache>("u_instruction_cache"),
+            VerilogDependency::new::<CpuV3DirectMappedCache>("u_data_cache"),
+            VerilogDependency::new::<CpuV3MemoryArbiter>("u_memory_arbiter"),
+            VerilogDependency::new::<CpuV3MmioBridge>("u_mmio_bridge"),
             VerilogDependency::new::<SystemControl>("u_sysctl"),
             VerilogDependency::new::<BootDmaMmio>("u_boot_dma_mmio"),
             VerilogDependency::new::<BootDmaEngine>("u_boot_dma_engine"),
@@ -132,8 +135,8 @@ impl Module for G16BootSelfTest {
     }
 }
 
-fn gowin_project() -> GowinModuleProject<TangNano20K, G16BootSelfTest> {
-    TangNano20K::boot_memory_project::<G16BootSelfTest>("g16_boot_self_test")
+fn gowin_project() -> GowinModuleProject<TangNano20K, CpuV3BootSelfTest> {
+    TangNano20K::boot_memory_project::<CpuV3BootSelfTest>("cpu_v3_boot_self_test")
         .expect_bsram_blocks(ResourceCountExpectation::Exact(3))
         .expect_dsp_mode(GowinDspMode::Mult18x18, ResourceCountExpectation::Exact(1))
 }
@@ -186,7 +189,7 @@ mod tests {
     }
 
     /// Packs Stage1 and the demo application into the Flash boot package,
-    /// mirroring the section layout of the `cpu_v2` `g16_boot` test.
+    /// mirroring the section layout of the `cpu_v2` `cpu_v3_boot` test.
     fn boot_package() -> Vec<u8> {
         let stage1 = compile_cpu_v3(
             "stage1.rs",
@@ -317,7 +320,7 @@ mod tests {
 
     #[test]
     fn project_contains_boot_caches_flash_reader_and_sdram() {
-        let verilog = VerilogProject::generate::<G16BootSelfTest>().unwrap();
+        let verilog = VerilogProject::generate::<CpuV3BootSelfTest>().unwrap();
         assert_eq!(verilog.resource_claims.len(), 7);
         let project = gowin_project().generate().unwrap();
         assert_eq!(project.resources.claimed[&ResourceKind::Bsram18K], 3);
@@ -331,6 +334,6 @@ mod tests {
     #[test]
     #[ignore = "explicit external simulator validation"]
     fn two_stage_flash_boot_executes_in_verilog() {
-        digital_design_hardware::verify_verilog_with_iverilog::<G16BootSelfTest>().unwrap();
+        digital_design_hardware::verify_verilog_with_iverilog::<CpuV3BootSelfTest>().unwrap();
     }
 }

@@ -1,6 +1,6 @@
-//! G16 device-0 system control: cache invalidate pulses, LEDs, and UART TX.
+//! CpuV3 device-0 system control: cache invalidate pulses, LEDs, and UART TX.
 //!
-//! The device sits behind the G16 MMIO bridge as device index 0 and answers
+//! The device sits behind the CpuV3 MMIO bridge as device index 0 and answers
 //! the standard device register-bank interface (`device_index` /
 //! `device_channel` / enables / write data / read data):
 //!
@@ -19,7 +19,7 @@ use crate::{Hardware, HardwareIdentity, Module, ModuleIo};
 use askama::Template;
 use digital_design_circuit::{CircuitWires, Wire, Wires};
 
-/// Device index of the system control device behind the G16 MMIO bridge.
+/// Device index of the system control device behind the CpuV3 MMIO bridge.
 pub const SYSTEM_CONTROL_DEVICE: u8 = 0;
 
 pub const SYSTEM_CONTROL_CHANNEL_ICACHE_INVALIDATE: u8 = 0;

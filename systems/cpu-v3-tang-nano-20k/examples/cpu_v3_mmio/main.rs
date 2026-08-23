@@ -1,5 +1,5 @@
 use cpu_v3_tang_nano_20k::{
-    run_gowin_project_cli, Bsram1R1Rw1024, BsramImage, G16Core, G16MmioBridge, GowinCliError,
+    run_gowin_project_cli, Bsram1R1Rw1024, BsramImage, CpuV3Core, CpuV3MmioBridge, GowinCliError,
     GowinDspMode, GowinModuleProject, Hardware, HardwareIdentity, Module, ResourceCountExpectation,
     SystemControlDevice, TangNano20K, TangNano20KDebugOutputs, TangNano20KInputs,
     VerilogDependency, BSRAM_1024_DEPTH,
@@ -7,10 +7,10 @@ use cpu_v3_tang_nano_20k::{
 use digital_design_circuit::CircuitWires;
 
 fn main() -> Result<(), GowinCliError> {
-    run_gowin_project_cli(gowin_project(), "target/g16_mmio_gowin")
+    run_gowin_project_cli(gowin_project(), "target/cpu_v3_mmio_gowin")
 }
 
-/// MMIO diagnostic compiled from the `SOURCE` below for CPU V3 at code base 0;
+/// MMIO diagnostic compiled from the `SOURCE` below for CpuV3 at code base 0;
 /// kept in sync by `program_is_the_current_compiler_output`.
 const PROGRAM: [u16; 93] = [
     0xfff0, 0xafd0, 0xfff0, 0xaff0, 0xf001, 0xaf05, 0x90f2, 0xaf01, 0x81f3, 0x3110, 0xaf20, 0xe1c1,
@@ -28,7 +28,7 @@ struct ProgramImage;
 const fn program_image() -> [u64; BSRAM_1024_DEPTH] {
     let mut words = [0; BSRAM_1024_DEPTH];
     let mut index = 0;
-    // Keep the complete boot memory materialized as BSRAM (see g16_cpu).
+    // Keep the complete boot memory materialized as BSRAM (see cpu_v3_cpu).
     while index < words.len() {
         words[index] = (((index as u64) * 0x9e37) ^ 0x5aa5) & 0xffff;
         index += 1;
@@ -49,10 +49,10 @@ type ProgramMemory = Bsram1R1Rw1024<16, ProgramImage>;
 type SystemControl = SystemControlDevice<234>;
 
 #[derive(Hardware)]
-#[hardware(namespace = "examples/g16_mmio")]
-struct G16MmioBoardTest;
+#[hardware(namespace = "examples/cpu_v3_mmio")]
+struct CpuV3MmioBoardTest;
 
-impl Module for G16MmioBoardTest {
+impl Module for CpuV3MmioBoardTest {
     type Input = TangNano20KInputs;
     type Output = TangNano20KDebugOutputs;
     type EmuState = ();
@@ -66,7 +66,7 @@ impl Module for G16MmioBoardTest {
         _input: &Self::Input,
         _output: &Self::Output,
     ) {
-        panic!("G16MmioBoardTest is a Verilog-only hardware test harness")
+        panic!("CpuV3MmioBoardTest is a Verilog-only hardware test harness")
     }
 
     fn verilog_source() -> Option<String> {
@@ -76,10 +76,13 @@ impl Module for G16MmioBoardTest {
                     "__PROGRAM_MEMORY__",
                     &ProgramMemory::verilog_identity().module_name(),
                 )
-                .replace("__G16_CORE__", &G16Core::verilog_identity().module_name())
+                .replace(
+                    "__CPU_V3_CORE__",
+                    &CpuV3Core::verilog_identity().module_name(),
+                )
                 .replace(
                     "__MMIO_BRIDGE__",
-                    &G16MmioBridge::verilog_identity().module_name(),
+                    &CpuV3MmioBridge::verilog_identity().module_name(),
                 ),
         )
     }
@@ -87,8 +90,8 @@ impl Module for G16MmioBoardTest {
     fn verilog_dependencies() -> Vec<VerilogDependency> {
         vec![
             VerilogDependency::new::<ProgramMemory>("u_program"),
-            VerilogDependency::new::<G16Core>("u_core"),
-            VerilogDependency::new::<G16MmioBridge>("u_mmio_bridge"),
+            VerilogDependency::new::<CpuV3Core>("u_core"),
+            VerilogDependency::new::<CpuV3MmioBridge>("u_mmio_bridge"),
             VerilogDependency::new::<SystemControl>("u_sysctl"),
         ]
     }
@@ -98,8 +101,8 @@ impl Module for G16MmioBoardTest {
     }
 }
 
-fn gowin_project() -> GowinModuleProject<TangNano20K, G16MmioBoardTest> {
-    TangNano20K::debug_uart_project::<G16MmioBoardTest>("g16_mmio_self_test")
+fn gowin_project() -> GowinModuleProject<TangNano20K, CpuV3MmioBoardTest> {
+    TangNano20K::debug_uart_project::<CpuV3MmioBoardTest>("cpu_v3_mmio_self_test")
         .expect_dsp_mode(GowinDspMode::Mult18x18, ResourceCountExpectation::Exact(1))
 }
 
@@ -166,7 +169,7 @@ mod tests {
 
     #[test]
     fn project_contains_program_memory_core_bridge_and_sysctl() {
-        let verilog = VerilogProject::generate::<G16MmioBoardTest>().unwrap();
+        let verilog = VerilogProject::generate::<CpuV3MmioBoardTest>().unwrap();
         assert_eq!(verilog.resource_claims.len(), 2);
         let project = gowin_project().generate().unwrap();
         assert_eq!(project.resources.claimed[&ResourceKind::Bsram18K], 1);
@@ -176,6 +179,6 @@ mod tests {
     #[test]
     #[ignore = "explicit external simulator validation"]
     fn mmio_diagnostic_executes_in_verilog() {
-        digital_design_hardware::verify_verilog_with_iverilog::<G16MmioBoardTest>().unwrap();
+        digital_design_hardware::verify_verilog_with_iverilog::<CpuV3MmioBoardTest>().unwrap();
     }
 }

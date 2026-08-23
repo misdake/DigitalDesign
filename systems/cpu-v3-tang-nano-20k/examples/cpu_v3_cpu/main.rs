@@ -1,12 +1,12 @@
 use cpu_v3_tang_nano_20k::{
-    run_gowin_project_cli, Bsram1R1Rw1024, BsramImage, G16Core, GowinCliError, GowinDspMode,
+    run_gowin_project_cli, Bsram1R1Rw1024, BsramImage, CpuV3Core, GowinCliError, GowinDspMode,
     GowinModuleProject, Hardware, HardwareIdentity, Module, ResourceCountExpectation, TangNano20K,
     TangNano20KDebugOutputs, TangNano20KInputs, VerilogDependency, BSRAM_1024_DEPTH,
 };
 use digital_design_circuit::CircuitWires;
 
 fn main() -> Result<(), GowinCliError> {
-    run_gowin_project_cli(gowin_project(), "target/g16_cpu_gowin")
+    run_gowin_project_cli(gowin_project(), "target/cpu_v3_cpu_gowin")
 }
 
 const PROGRAM: [u16; 17] = [
@@ -41,10 +41,10 @@ impl BsramImage<16> for ProgramImage {
 type ProgramMemory = Bsram1R1Rw1024<16, ProgramImage>;
 
 #[derive(Hardware)]
-#[hardware(namespace = "examples/g16_cpu")]
-struct G16CpuBoardTest;
+#[hardware(namespace = "examples/cpu_v3_cpu")]
+struct CpuV3CpuBoardTest;
 
-impl Module for G16CpuBoardTest {
+impl Module for CpuV3CpuBoardTest {
     type Input = TangNano20KInputs;
     type Output = TangNano20KDebugOutputs;
     type EmuState = ();
@@ -58,7 +58,7 @@ impl Module for G16CpuBoardTest {
         _input: &Self::Input,
         _output: &Self::Output,
     ) {
-        panic!("G16CpuBoardTest is a Verilog-only hardware test harness")
+        panic!("CpuV3CpuBoardTest is a Verilog-only hardware test harness")
     }
 
     fn verilog_source() -> Option<String> {
@@ -68,14 +68,17 @@ impl Module for G16CpuBoardTest {
                     "__PROGRAM_MEMORY__",
                     &ProgramMemory::verilog_identity().module_name(),
                 )
-                .replace("__G16_CORE__", &G16Core::verilog_identity().module_name()),
+                .replace(
+                    "__CPU_V3_CORE__",
+                    &CpuV3Core::verilog_identity().module_name(),
+                ),
         )
     }
 
     fn verilog_dependencies() -> Vec<VerilogDependency> {
         vec![
             VerilogDependency::new::<ProgramMemory>("u_program"),
-            VerilogDependency::new::<G16Core>("u_core"),
+            VerilogDependency::new::<CpuV3Core>("u_core"),
         ]
     }
 
@@ -84,8 +87,8 @@ impl Module for G16CpuBoardTest {
     }
 }
 
-fn gowin_project() -> GowinModuleProject<TangNano20K, G16CpuBoardTest> {
-    TangNano20K::debug_uart_project::<G16CpuBoardTest>("g16_cpu_self_test")
+fn gowin_project() -> GowinModuleProject<TangNano20K, CpuV3CpuBoardTest> {
+    TangNano20K::debug_uart_project::<CpuV3CpuBoardTest>("cpu_v3_cpu_self_test")
         .expect_dsp_mode(GowinDspMode::Mult18x18, ResourceCountExpectation::Exact(1))
 }
 
@@ -106,7 +109,7 @@ mod tests {
     "#;
 
     #[test]
-    fn boot_image_is_the_current_g16_compiler_output() {
+    fn boot_image_is_the_current_cpu_v3_compiler_output() {
         let options = CompilerOptions::default();
         let frontend = parse_source_with(SOURCE, options.data_base).unwrap();
         let compiled = rcc_backend::compile(frontend, &options, "main").words;
@@ -119,7 +122,7 @@ mod tests {
 
     #[test]
     fn project_contains_program_bsram_and_reusable_core() {
-        let verilog = VerilogProject::generate::<G16CpuBoardTest>().unwrap();
+        let verilog = VerilogProject::generate::<CpuV3CpuBoardTest>().unwrap();
         assert_eq!(verilog.resource_claims.len(), 2);
         assert!(verilog
             .files
@@ -136,6 +139,6 @@ mod tests {
     #[test]
     #[ignore = "explicit external simulator validation"]
     fn compiled_program_executes_in_verilog() {
-        digital_design_hardware::verify_verilog_with_iverilog::<G16CpuBoardTest>().unwrap();
+        digital_design_hardware::verify_verilog_with_iverilog::<CpuV3CpuBoardTest>().unwrap();
     }
 }

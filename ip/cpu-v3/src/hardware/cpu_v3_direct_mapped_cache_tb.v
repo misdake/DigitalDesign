@@ -23,7 +23,7 @@ wire [21:0] memory_address;
 wire [15:0] memory_write_data;
 wire memory_response_ready;
 
-G16DirectMappedCache dut(.*);
+CpuV3DirectMappedCache dut(.*);
 always #5 clk = ~clk;
 
 integer memory_requests = 0;

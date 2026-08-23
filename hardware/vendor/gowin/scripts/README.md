@@ -1,8 +1,8 @@
 # Hardware development scripts
 
 This directory contains host-side tools shared by multiple hardware modules
-and board examples. Example-specific RTL and test vectors remain under
-`hardware/examples/`; reusable capture, decode, build, and reporting tools
+and board examples. Example-specific RTL and test vectors remain beside their
+owning crate's examples; reusable capture, decode, build, and reporting tools
 belong here.
 
 `capture_uart.ps1` records raw bytes from the board's debug UART (the Tang
@@ -10,7 +10,7 @@ Nano 20K exposes it as a USB serial port through the onboard debugger) into a
 capture file:
 
 ```powershell
-powershell -ExecutionPolicy Bypass -File hardware/scripts/capture_uart.ps1 `
+powershell -ExecutionPolicy Bypass -File hardware/vendor/gowin/scripts/capture_uart.ps1 `
     -Port COM8 -Out target/example/capture.bin
 ```
 
@@ -25,7 +25,7 @@ drop a byte on the host side, torn frames are tolerated up to one percent of
 the success count (at least one); beyond that the capture is rejected:
 
 ```powershell
-powershell -ExecutionPolicy Bypass -File hardware/scripts/check_uart_status.ps1 `
+powershell -ExecutionPolicy Bypass -File hardware/vendor/gowin/scripts/check_uart_status.ps1 `
     -Path target/example/capture.bin `
     -TestId 0x01 -MinimumSuccessFrames 2
 ```
@@ -42,12 +42,12 @@ Assigned test IDs:
 | ---: | --- |
 | `0x01` | Tang Nano 20K BSRAM shapes self-test |
 | `0x03` | Tang Nano 20K fitted SDRAM burst/refresh self-test |
-| `0x04` | G16 compiled-program CPU/BSRAM execution self-test |
-| `0x05` | G16 boot BSRAM to SDRAM to instruction-cache execution self-test |
+| `0x04` | CPU V3 compiled-program CPU/BSRAM execution self-test |
+| `0x05` | CPU V3 boot BSRAM to SDRAM to instruction-cache execution self-test |
 | `0x06` | Boot DMA flash-to-SDRAM engine self-test |
-| `0x07` | G16 two-stage flash boot (application reached) |
+| `0x07` | CPU V3 two-stage flash boot (application reached) |
 | `0x08` | System control device UART characterization (sysctl_uart) |
-| `0x09` | G16 CPU MMIO path characterization (g16_mmio) |
+| `0x09` | CPU V3 CPU MMIO path characterization (cpu_v3_mmio) |
 
 The `sdram_word_port` example predates this protocol and still sends a
 private `SDWP` frame; it is not validated by `check_uart_status.ps1`.

@@ -119,13 +119,13 @@ fn main() {
 
     assert_eq!(
         fnv1a64(&word_bytes(&stage0)),
-        2_345_674_743_461_901_135,
-        "Stage0 bytes changed from the pre-refactor baseline"
+        6_245_176_589_688_159_720,
+        "Stage0 bytes changed from the CPU V3 boot-format baseline"
     );
     assert_eq!(
         fnv1a64(&package),
-        18_060_917_702_449_987_793,
-        "Flash package bytes changed from the pre-refactor baseline"
+        17_919_558_294_178_096_904,
+        "Flash package bytes changed from the CPU V3 boot-format baseline"
     );
 
     let mut generated = String::new();

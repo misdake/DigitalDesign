@@ -1,4 +1,4 @@
-//! G16 lowering and fixed-width symbolic linking.
+//! CpuV3 lowering and fixed-width symbolic linking.
 //!
 //! Control-flow references always use the two-word wide form in this first
 //! backend. This keeps layout deterministic while the ISA and hardware settle;
@@ -8,7 +8,7 @@ mod options;
 
 pub use options::CompilerOptions;
 
-use crate as g16;
+use crate as cpu_v3;
 use crate::{AluOp, BranchCondition, ImmediateOp, Word};
 use rcc::*;
 use std::collections::{HashMap, HashSet};
@@ -73,7 +73,7 @@ struct LoweredFunction {
     static_addresses: Vec<u16>,
 }
 
-/// Compile target-independent RCC IR for the CPU V3 ABI and ISA.
+/// Compile target-independent RCC IR for the CpuV3 ABI and ISA.
 pub fn compile(
     program: rcc::frontend::Program,
     options: &CompilerOptions,
@@ -93,9 +93,9 @@ fn compile_ir(
     main: FuncName,
 ) -> CpuV3Program {
     assert!(
-        options.stack_init != 0 && options.stack_init <= g16::MMIO_BASE,
-        "G16 stack_init must be in 0x0001..={:#06x}; zero wraps into the MMIO page",
-        g16::MMIO_BASE
+        options.stack_init != 0 && options.stack_init <= cpu_v3::MMIO_BASE,
+        "CpuV3 stack_init must be in 0x0001..={:#06x}; zero wraps into the MMIO page",
+        cpu_v3::MMIO_BASE
     );
     let reachable = reachable_functions(&functions, main);
     let mut order = vec![main];
@@ -165,7 +165,7 @@ fn lower_function(
         if stack_init != 0 {
             emit_load_immediate(&mut lines, REG_SP, stack_init);
         }
-        emit_load_immediate(&mut lines, REG_GLOBAL, g16::MMIO_BASE);
+        emit_load_immediate(&mut lines, REG_GLOBAL, cpu_v3::MMIO_BASE);
     }
     if allocation.frame_size() != 0 {
         emit_immediate(
@@ -273,14 +273,14 @@ fn lower_function(
                         true,
                     );
                 }
-                lines.push(Line::Word(g16::jump_register(REG_LINK)));
+                lines.push(Line::Word(cpu_v3::jump_register(REG_LINK)));
             }
             Terminator::Halt { signal } => {
                 let signal = register(*signal);
                 if signal != 0 {
-                    lines.push(Line::Word(g16::move_register(0, signal)));
+                    lines.push(Line::Word(cpu_v3::move_register(0, signal)));
                 }
-                lines.push(Line::Word(g16::halt()));
+                lines.push(Line::Word(cpu_v3::halt()));
             }
         }
     }
@@ -308,7 +308,7 @@ fn lower_instruction(
                 BinOp::Or => AluOp::Or,
                 BinOp::Xor => AluOp::Xor,
             };
-            lines.push(Line::Word(g16::alu(
+            lines.push(Line::Word(cpu_v3::alu(
                 operation,
                 register(*dst),
                 register(*lhs),
@@ -325,20 +325,22 @@ fn lower_instruction(
             let dst = register(*dst);
             let src = register(*src);
             if dst != src {
-                lines.push(Line::Word(g16::move_register(dst, src)));
+                lines.push(Line::Word(cpu_v3::move_register(dst, src)));
             }
             let operation = match op {
                 ShiftOp::Lsl => ImmediateOp::ShiftLeft,
                 ShiftOp::Lsr => ImmediateOp::ShiftRightLogical,
                 ShiftOp::Asr => ImmediateOp::ShiftRightArithmetic,
             };
-            lines.push(Line::Word(g16::immediate_unsigned(operation, dst, *amount)));
+            lines.push(Line::Word(cpu_v3::immediate_unsigned(
+                operation, dst, *amount,
+            )));
         }
         Instr::Mov { dst, src } => {
             let dst = register(*dst);
             let src = register(*src);
             if dst != src {
-                lines.push(Line::Word(g16::move_register(dst, src)));
+                lines.push(Line::Word(cpu_v3::move_register(dst, src)));
             }
         }
         Instr::LoadImm { dst, value } => emit_load_immediate(lines, register(*dst), *value),
@@ -353,16 +355,16 @@ fn lower_instruction(
             emit_load_immediate(lines, REG_GLOBAL, *addr);
             emit_load_immediate(lines, REG_TMP, *value);
             emit_store(lines, REG_TMP, REG_GLOBAL, 0);
-            emit_load_immediate(lines, REG_GLOBAL, g16::MMIO_BASE);
+            emit_load_immediate(lines, REG_GLOBAL, cpu_v3::MMIO_BASE);
         }
         Instr::Call { func, .. } => lines.push(Line::Call(func)),
         Instr::LoadFuncAddr { dst, func } => lines.push(Line::LoadFunctionAddress {
             function: func,
             dst: register(*dst),
         }),
-        Instr::CallPtr { .. } => {
-            lines.push(Line::Word(g16::jump_and_link_register(REG_LINK, REG_TMP)))
-        }
+        Instr::CallPtr { .. } => lines.push(Line::Word(cpu_v3::jump_and_link_register(
+            REG_LINK, REG_TMP,
+        ))),
         Instr::DevRecv {
             dst,
             device,
@@ -383,8 +385,10 @@ fn lower_instruction(
             REG_GLOBAL,
             i16::from(*device) * 16 + i16::from(*channel),
         ),
-        Instr::MtsrDseg { src } => lines.push(Line::Word(g16::write_data_segment(register(*src)))),
-        Instr::Jseg { cseg, target } => lines.push(Line::Word(g16::jump_segment(
+        Instr::MtsrDseg { src } => {
+            lines.push(Line::Word(cpu_v3::write_data_segment(register(*src))))
+        }
+        Instr::Jseg { cseg, target } => lines.push(Line::Word(cpu_v3::jump_segment(
             register(*cseg),
             register(*target),
         ))),
@@ -414,7 +418,7 @@ fn lower_instruction(
         ),
         Instr::AddrOfLocal { dst, slot } => {
             let dst = register(*dst);
-            lines.push(Line::Word(g16::move_register(dst, REG_SP)));
+            lines.push(Line::Word(cpu_v3::move_register(dst, REG_SP)));
             emit_immediate(
                 lines,
                 ImmediateOp::Add,
@@ -428,14 +432,14 @@ fn lower_instruction(
 
 fn lower_unary(dst: u8, operation: UnOp, src: u8, lines: &mut Vec<Line>) {
     match operation {
-        UnOp::Inv => lines.push(Line::Word(g16::not(dst, src))),
-        UnOp::Neg => lines.push(Line::Word(g16::negate(dst, src))),
-        UnOp::Cnt1 => lines.push(Line::Word(g16::population_count(dst, src))),
+        UnOp::Inv => lines.push(Line::Word(cpu_v3::not(dst, src))),
+        UnOp::Neg => lines.push(Line::Word(cpu_v3::negate(dst, src))),
+        UnOp::Cnt1 => lines.push(Line::Word(cpu_v3::population_count(dst, src))),
         UnOp::Log2 => {
             // log2(0) is defined by rcc as zero.
-            lines.push(Line::Word(g16::leading_zeros(dst, src)));
+            lines.push(Line::Word(cpu_v3::leading_zeros(dst, src)));
             emit_load_immediate(lines, REG_TMP, 15);
-            lines.push(Line::Word(g16::alu(AluOp::Sub, dst, REG_TMP, dst)));
+            lines.push(Line::Word(cpu_v3::alu(AluOp::Sub, dst, REG_TMP, dst)));
             let done = usize::MAX - lines.len();
             lines.push(Line::Branch {
                 condition: BranchCondition::NonZero,
@@ -447,14 +451,14 @@ fn lower_unary(dst: u8, operation: UnOp, src: u8, lines: &mut Vec<Line>) {
         }
         UnOp::Not0 => {
             if dst != src {
-                lines.push(Line::Word(g16::move_register(dst, src)));
+                lines.push(Line::Word(cpu_v3::move_register(dst, src)));
             }
-            lines.push(Line::Word(g16::immediate_signed(
+            lines.push(Line::Word(cpu_v3::immediate_signed(
                 ImmediateOp::CompareEqual,
                 dst,
                 0,
             )));
-            lines.push(Line::Word(g16::immediate_unsigned(
+            lines.push(Line::Word(cpu_v3::immediate_unsigned(
                 ImmediateOp::Xor,
                 dst,
                 1,
@@ -491,7 +495,7 @@ fn lower_register_comparison(
     lines: &mut Vec<Line>,
 ) -> (BranchCondition, u8) {
     if matches!(condition, CompareOp::Equal | CompareOp::NotEqual) {
-        lines.push(Line::Word(g16::alu(AluOp::Xor, REG_TMP, lhs, rhs)));
+        lines.push(Line::Word(cpu_v3::alu(AluOp::Xor, REG_TMP, lhs, rhs)));
         return (
             if matches!(condition, CompareOp::Equal) {
                 BranchCondition::Zero
@@ -509,11 +513,11 @@ fn lower_register_comparison(
         CompareOp::Always => return (BranchCondition::Even, REG_TMP),
         CompareOp::Never | CompareOp::Equal | CompareOp::NotEqual => unreachable!(),
     };
-    lines.push(Line::Word(g16::move_register(REG_TMP, left)));
+    lines.push(Line::Word(cpu_v3::move_register(REG_TMP, left)));
     lines.push(Line::Word(if signed {
-        g16::set_less_than_signed(REG_TMP, right)
+        cpu_v3::set_less_than_signed(REG_TMP, right)
     } else {
-        g16::set_less_than_unsigned(REG_TMP, right)
+        cpu_v3::set_less_than_unsigned(REG_TMP, right)
     }));
     (
         if invert {
@@ -533,7 +537,7 @@ fn lower_immediate_comparison(
     lines: &mut Vec<Line>,
 ) -> (BranchCondition, u8) {
     if matches!(condition, CompareOp::Equal | CompareOp::NotEqual) {
-        lines.push(Line::Word(g16::move_register(REG_TMP, lhs)));
+        lines.push(Line::Word(cpu_v3::move_register(REG_TMP, lhs)));
         emit_immediate(lines, ImmediateOp::CompareEqual, REG_TMP, rhs, true);
         return (
             if matches!(condition, CompareOp::Equal) {
@@ -547,7 +551,7 @@ fn lower_immediate_comparison(
 
     let direct = matches!(condition, CompareOp::Less | CompareOp::GreaterEqual);
     if direct {
-        lines.push(Line::Word(g16::move_register(REG_TMP, lhs)));
+        lines.push(Line::Word(cpu_v3::move_register(REG_TMP, lhs)));
         emit_immediate(
             lines,
             if signed {
@@ -562,9 +566,9 @@ fn lower_immediate_comparison(
     } else {
         emit_load_immediate(lines, REG_TMP, rhs);
         lines.push(Line::Word(if signed {
-            g16::set_less_than_signed(REG_TMP, lhs)
+            cpu_v3::set_less_than_signed(REG_TMP, lhs)
         } else {
-            g16::set_less_than_unsigned(REG_TMP, lhs)
+            cpu_v3::set_less_than_unsigned(REG_TMP, lhs)
         }));
     }
     let invert = matches!(condition, CompareOp::GreaterEqual | CompareOp::LessEqual);
@@ -620,10 +624,10 @@ fn emit_parallel_moves(lines: &mut Vec<Line>, moves: &[(u8, u8)]) {
             .then_some(index)
         }) {
             let (from, to) = pending.remove(index);
-            lines.push(Line::Word(g16::move_register(to, from)));
+            lines.push(Line::Word(cpu_v3::move_register(to, from)));
         } else {
             let target = pending[0].1;
-            lines.push(Line::Word(g16::move_register(REG_TMP, target)));
+            lines.push(Line::Word(cpu_v3::move_register(REG_TMP, target)));
             for (from, _) in &mut pending {
                 if *from == target {
                     *from = REG_TMP;
@@ -635,19 +639,19 @@ fn emit_parallel_moves(lines: &mut Vec<Line>, moves: &[(u8, u8)]) {
 
 fn emit_load_immediate(lines: &mut Vec<Line>, dst: u8, value: u16) {
     if value <= 15 {
-        lines.push(Line::Word(g16::immediate_unsigned(
+        lines.push(Line::Word(cpu_v3::immediate_unsigned(
             ImmediateOp::LoadUnsigned,
             dst,
             value as u8,
         )));
     } else if value >= 0xfff8 {
-        lines.push(Line::Word(g16::immediate_signed(
+        lines.push(Line::Word(cpu_v3::immediate_signed(
             ImmediateOp::LoadSigned,
             dst,
             value as i16,
         )));
     } else {
-        lines.extend(g16::load_immediate16(dst, value).map(Line::Word));
+        lines.extend(cpu_v3::load_immediate16(dst, value).map(Line::Word));
     }
 }
 
@@ -659,36 +663,36 @@ fn emit_immediate(
     signed_short: bool,
 ) {
     if signed_short && (-8..=7).contains(&(value as i16)) {
-        lines.push(Line::Word(g16::immediate_signed(
+        lines.push(Line::Word(cpu_v3::immediate_signed(
             operation,
             dst,
             value as i16,
         )));
     } else if !signed_short && value <= 15 {
-        lines.push(Line::Word(g16::immediate_unsigned(
+        lines.push(Line::Word(cpu_v3::immediate_unsigned(
             operation,
             dst,
             value as u8,
         )));
     } else {
         let consumer = 0xa000 | ((operation as u16) << 8) | (u16::from(dst) << 4);
-        lines.extend(g16::prefixed(consumer, value).map(Line::Word));
+        lines.extend(cpu_v3::prefixed(consumer, value).map(Line::Word));
     }
 }
 
 fn emit_load(lines: &mut Vec<Line>, dst: u8, base: u8, offset: i16) {
     if (-8..=7).contains(&offset) {
-        lines.push(Line::Word(g16::load(dst, base, offset)));
+        lines.push(Line::Word(cpu_v3::load(dst, base, offset)));
     } else {
-        lines.extend(g16::prefixed(g16::load(dst, base, 0), offset as u16).map(Line::Word));
+        lines.extend(cpu_v3::prefixed(cpu_v3::load(dst, base, 0), offset as u16).map(Line::Word));
     }
 }
 
 fn emit_store(lines: &mut Vec<Line>, src: u8, base: u8, offset: i16) {
     if (-8..=7).contains(&offset) {
-        lines.push(Line::Word(g16::store(src, base, offset)));
+        lines.push(Line::Word(cpu_v3::store(src, base, offset)));
     } else {
-        lines.extend(g16::prefixed(g16::store(src, base, 0), offset as u16).map(Line::Word));
+        lines.extend(cpu_v3::prefixed(cpu_v3::store(src, base, 0), offset as u16).map(Line::Word));
     }
 }
 
@@ -702,26 +706,26 @@ fn link(functions: Vec<LoweredFunction>, options: &CompilerOptions) -> CpuV3Prog
     }
     assert!(
         cursor <= 1 << 16,
-        "G16 program at code_base {:#06x} exceeds the 64K code-segment window",
+        "CpuV3 program at code_base {:#06x} exceeds the 64K code-segment window",
         options.code_base
     );
     assert!(
         cursor <= usize::from(options.data_base),
-        "G16 unified-memory image uses {cursor} code words and crosses data_base {:#06x}",
+        "CpuV3 unified-memory image uses {cursor} code words and crosses data_base {:#06x}",
         options.data_base
     );
     assert!(
         cursor <= usize::from(options.stack_init),
-        "G16 unified-memory image uses {cursor} code words and crosses stack_init {:#06x}",
+        "CpuV3 unified-memory image uses {cursor} code words and crosses stack_init {:#06x}",
         options.stack_init
     );
     let heap_end = options
         .heap_begin
         .checked_add(options.heap_size)
-        .expect("G16 heap range wraps the address space");
+        .expect("CpuV3 heap range wraps the address space");
     assert!(
         heap_end <= options.stack_init,
-        "G16 heap {:#06x}..{heap_end:#06x} overlaps the stack/MMIO boundary {:#06x}",
+        "CpuV3 heap {:#06x}..{heap_end:#06x} overlaps the stack/MMIO boundary {:#06x}",
         options.heap_begin,
         options.stack_init
     );
@@ -736,7 +740,7 @@ fn link(functions: Vec<LoweredFunction>, options: &CompilerOptions) -> CpuV3Prog
         .find(|address| usize::from(*address) < cursor)
     {
         panic!(
-            "G16 unified-memory image uses {cursor} code words but static data starts at {address:#06x}; select a non-overlapping data_base"
+            "CpuV3 unified-memory image uses {cursor} code words but static data starts at {address:#06x}; select a non-overlapping data_base"
         );
     }
     if let Some(address) = static_addresses
@@ -745,7 +749,7 @@ fn link(functions: Vec<LoweredFunction>, options: &CompilerOptions) -> CpuV3Prog
         .find(|address| *address >= options.heap_begin)
     {
         panic!(
-            "G16 static data reaches {address:#06x}, overlapping heap_begin {:#06x}",
+            "CpuV3 static data reaches {address:#06x}, overlapping heap_begin {:#06x}",
             options.heap_begin
         );
     }
@@ -761,7 +765,7 @@ fn link(functions: Vec<LoweredFunction>, options: &CompilerOptions) -> CpuV3Prog
             if let Line::Label(label) = line {
                 assert!(
                     labels.insert(*label, address).is_none(),
-                    "duplicate G16 label"
+                    "duplicate CpuV3 label"
                 );
             } else {
                 address += line.size();
@@ -790,14 +794,14 @@ fn link(functions: Vec<LoweredFunction>, options: &CompilerOptions) -> CpuV3Prog
                     words.extend(wide_jump(Some(REG_LINK), offset));
                 }
                 Line::LoadFunctionAddress { function, dst } => {
-                    words.extend(g16::load_immediate16(
+                    words.extend(cpu_v3::load_immediate16(
                         *dst,
                         function_addresses[function] as u16,
                     ));
                 }
             }
         }
-        words.push(g16::halt());
+        words.push(cpu_v3::halt());
         for (offset, word) in words[local_start..].iter().enumerate() {
             listing.push_str(&format!("  {:04x}: {:04x}\n", start + offset, word));
         }
@@ -814,14 +818,14 @@ fn relative_offset(from: usize, to: usize) -> i16 {
 }
 
 fn wide_branch(condition: BranchCondition, test: u8, offset: i16) -> [Word; 2] {
-    g16::prefixed(g16::branch(condition, test, 0), offset as u16)
+    cpu_v3::prefixed(cpu_v3::branch(condition, test, 0), offset as u16)
 }
 
 fn wide_jump(link: Option<u8>, offset: i16) -> [Word; 2] {
     let bits = offset as u16;
     let link = link.unwrap_or(15);
     [
-        g16::immediate_high12((bits >> 8) & 0xff),
+        cpu_v3::immediate_high12((bits >> 8) & 0xff),
         0xc000 | (u16::from(link) << 8) | (bits & 0xff),
     ]
 }
@@ -840,20 +844,20 @@ mod tests {
         run_with_options(source, CompilerOptions::default()).0
     }
 
-    fn run_with_options(source: &str, options: CompilerOptions) -> (u16, g16::Machine) {
+    fn run_with_options(source: &str, options: CompilerOptions) -> (u16, cpu_v3::Machine) {
         let program = compile(source, options);
-        let mut machine = g16::Machine::default();
+        let mut machine = cpu_v3::Machine::default();
         machine
             .load_program(program.code_base, &program.words)
             .unwrap();
         if program.code_base != 0 {
-            let mut bootstrap = g16::load_immediate16(REG_TMP, program.code_base).to_vec();
-            bootstrap.push(g16::jump_register(REG_TMP));
+            let mut bootstrap = cpu_v3::load_immediate16(REG_TMP, program.code_base).to_vec();
+            bootstrap.push(cpu_v3::jump_register(REG_TMP));
             machine.load_program(0, &bootstrap).unwrap();
         }
         let signal = match machine.run(10_000).unwrap() {
-            g16::RunOutcome::Halted { signal, .. } => signal,
-            outcome => panic!("G16 program did not halt: {outcome:?}"),
+            cpu_v3::RunOutcome::Halted { signal, .. } => signal,
+            outcome => panic!("CpuV3 program did not halt: {outcome:?}"),
         };
         (signal, machine)
     }
@@ -874,7 +878,7 @@ mod tests {
     }
 
     #[test]
-    fn direct_and_indirect_calls_follow_the_g16_abi() {
+    fn direct_and_indirect_calls_follow_the_cpu_v3_abi() {
         let source = r#"
             fn add(a: u16, b: u16) -> u16 { a + b }
             fn main() {
@@ -957,21 +961,21 @@ mod tests {
             }
         "#;
         let program = compile(source, CompilerOptions::default());
-        let mut machine = g16::Machine::default();
+        let mut machine = cpu_v3::Machine::default();
         machine
             .load_program(program.code_base, &program.words)
             .unwrap();
-        let mut app = g16::load_immediate16(0, 0x77).to_vec();
-        app.push(g16::halt());
+        let mut app = cpu_v3::load_immediate16(0, 0x77).to_vec();
+        app.push(cpu_v3::halt());
         machine.load_segment(2, 0x0020, &app).unwrap();
         assert!(matches!(
             machine.run(1_000),
-            Ok(g16::RunOutcome::Halted { signal: 0x77, .. })
+            Ok(cpu_v3::RunOutcome::Halted { signal: 0x77, .. })
         ));
         assert_eq!(machine.code_segment(), 2);
         assert_eq!(machine.data_segment(), 1);
         assert_eq!(
-            machine.physical_memory(g16::PhysicalWordAddress::new(0x0001_0010)),
+            machine.physical_memory(cpu_v3::PhysicalWordAddress::new(0x0001_0010)),
             0x1234
         );
     }
@@ -995,19 +999,19 @@ mod tests {
             }
         "#;
         let program = compile(source, CompilerOptions::default());
-        let mut machine = g16::Machine::default();
+        let mut machine = cpu_v3::Machine::default();
         machine
             .load_program(program.code_base, &program.words)
             .unwrap();
         let source_words: [u16; 32] = std::array::from_fn(|i| 0x100 + i as u16);
         machine.load_program(0x1000, &source_words).unwrap();
         match machine.run(100_000) {
-            Ok(g16::RunOutcome::Halted { .. }) => {}
+            Ok(cpu_v3::RunOutcome::Halted { .. }) => {}
             other => panic!("mirror loop failed: {other:?}"),
         }
         for (i, &w) in source_words.iter().enumerate() {
             assert_eq!(
-                machine.physical_memory(g16::PhysicalWordAddress::new(0x0002_0100 + i as u32)),
+                machine.physical_memory(cpu_v3::PhysicalWordAddress::new(0x0002_0100 + i as u32)),
                 w,
                 "word {i}"
             );
@@ -1035,17 +1039,17 @@ mod tests {
             ..CompilerOptions::default()
         };
         let result = std::panic::catch_unwind(|| compile(source, options));
-        let error = result.expect_err("overlapping G16 code and static data must fail");
+        let error = result.expect_err("overlapping CpuV3 code and static data must fail");
         let message = error
             .downcast_ref::<String>()
             .map(String::as_str)
             .or_else(|| error.downcast_ref::<&str>().copied())
             .unwrap_or("");
-        assert!(message.contains("G16 unified-memory image"), "{message}");
+        assert!(message.contains("CpuV3 unified-memory image"), "{message}");
     }
 
     #[test]
-    fn legacy_wrapping_stack_configuration_is_rejected_for_g16() {
+    fn legacy_wrapping_stack_configuration_is_rejected_for_cpu_v3() {
         let result = std::panic::catch_unwind(|| {
             compile(
                 "fn main() { halt(0); }",
@@ -1055,7 +1059,7 @@ mod tests {
                 },
             )
         });
-        let error = result.expect_err("G16 must reject a stack that wraps into MMIO");
+        let error = result.expect_err("CpuV3 must reject a stack that wraps into MMIO");
         let message = error
             .downcast_ref::<String>()
             .map(String::as_str)

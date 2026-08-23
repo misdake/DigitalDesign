@@ -1,8 +1,8 @@
-// Board characterization for the CPU MMIO path: G16Core + G16MmioBridge +
+// Board characterization for the CPU MMIO path: CpuV3Core + CpuV3MmioBridge +
 // SystemControlDevice, nothing else. The compiled program runs from the BSRAM
 // boot memory and drives device 0 through dev_send/dev_recv; every non-MMIO
 // data access faults at the bridge.
-module G16MmioBoardTest(
+module CpuV3MmioBoardTest(
     input wire clk,
     input wire [1:0] buttons,
     output wire [5:0] leds,
@@ -102,7 +102,7 @@ wire [15:0] code_segment;
 wire [15:0] data_segment;
 wire [31:0] retired_words;
 
-__G16_CORE__ u_core(
+__CPU_V3_CORE__ u_core(
     .clk(clk),
     .reset(core_reset),
     .instruction_request_ready(1'b1),

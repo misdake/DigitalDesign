@@ -274,12 +274,12 @@ impl FuncBuilder {
         });
     }
 
-    /// G16-only: write the DSEG special register from `src`
+    /// CpuV3-only: write the DSEG special register from `src`
     pub fn mtsr_dseg(&mut self, src: VReg) {
         self.push(Instr::MtsrDseg { src });
     }
 
-    /// G16-only: atomically switch CSEG to `cseg` and jump to `target`;
+    /// CpuV3-only: atomically switch CSEG to `cseg` and jump to `target`;
     /// the caller terminates the block because control never returns
     pub fn jseg(&mut self, cseg: VReg, target: VReg) {
         self.push(Instr::Jseg { cseg, target });

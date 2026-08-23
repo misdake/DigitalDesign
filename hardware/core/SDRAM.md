@@ -49,14 +49,14 @@ known first word in returned data.
 
 ## Validation baseline
 
-`hardware/examples/sdram` exercises 64 aligned 32-byte bursts distributed over
+`hardware/vendor/gowin/examples/sdram` exercises 64 aligned 32-byte bursts distributed over
 all four banks and multiple rows, holds the data while issuing refresh commands,
 then reads and compares every word. It reports through the shared `DDHT` UART
 status protocol with test ID `0x03`.
 
-`hardware/examples/g16_sdram` wires the reusable G16 machine together: a
-`G16Core`, split `G16DirectMappedCache` instances, a `G16MemoryArbiter`, a
-`G16MmioBridge`, and the SDRAM word port. A compiler-produced program starts
+`systems/cpu-v3-tang-nano-20k/examples/cpu_v3_sdram` wires the reusable CPU V3 machine together: a
+`CpuV3Core`, split `CpuV3DirectMappedCache` instances, a `CpuV3MemoryArbiter`, a
+`CpuV3MmioBridge`, and the SDRAM word port. A compiler-produced program starts
 from an initialized BSRAM ROM below word `0x400`, copies a boot line into
 SDRAM, and executes from the instruction cache; it then writes through the
 data cache with the Controller HS byte mask, misses on a read, refills the

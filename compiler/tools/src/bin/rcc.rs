@@ -20,7 +20,7 @@ usage: rcc <input.rs> [options]
   --function-table <mode>
                       call_abs table: auto (default), none, all, or name,...
   --stack-init <n>    initial stack pointer for main (0 = simulator default)
-  --code-base <n>     CPU V3 linked code offset inside its segment
+  --code-base <n>     CpuV3 linked code offset inside its segment
   --data-base <n>     static data section base address
   --heap-begin <n>    heap region start
   --heap-size <n>     heap region size in words
@@ -163,7 +163,7 @@ fn main() -> ExitCode {
         std::fs::write(&lst, &program.listing)
             .unwrap_or_else(|e| die(&format!("cannot write {}: {e}", lst.display())));
         println!(
-            "compiled {} functions, {} G16 words -> {} (+ {})",
+            "compiled {} functions, {} CpuV3 words -> {} (+ {})",
             n_funcs,
             program.words.len(),
             out.display(),
@@ -268,7 +268,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn g16_output_is_headerless_little_endian_words_for_the_boot_packer() {
+    fn cpu_v3_output_is_headerless_little_endian_words_for_the_boot_packer() {
         assert_eq!(
             encode_cpu_v3_words(&[0x1234, 0xabcd]),
             [0x34, 0x12, 0xcd, 0xab]

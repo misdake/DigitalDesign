@@ -4,7 +4,7 @@ reg [1:0] buttons = 0;
 wire [5:0] leds;
 wire uart_tx;
 
-G16CpuBoardTest dut(
+CpuV3CpuBoardTest dut(
     .clk(clk),
     .buttons(buttons),
     .leds(leds),
@@ -21,7 +21,7 @@ initial begin
             dut.pc, dut.halted, dut.faulted, dut.fault_code,
             dut.halt_signal, dut.retired_words
         );
-        $fatal(1, "G16 program did not pass");
+        $fatal(1, "CPU V3 program did not pass");
     end
     $display("DIGITAL_DESIGN_PASS");
     $finish;

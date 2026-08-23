@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>G16 ISA v0.4 — Encoding, ABI, Memory, and Hardware</title>
+<title>CPU V3 ISA v0.4 — Encoding, ABI, Memory, and Hardware</title>
 <style>
   :root {
     --bg: #f7f9fc; --paper: #ffffff; --ink: #172033; --dim: #5d687c;
@@ -82,7 +82,7 @@
 <body><main>
 
 <section class="hero">
-  <h1>G16 ISA v0.4</h1>
+  <h1>CPU V3 ISA v0.4</h1>
   <p class="subtitle">Instruction encoding, architectural behavior, compiler ABI, unified memory map, and current FPGA organization.</p>
   <div class="badges">
     <span class="badge">16-bit fixed instruction words</span>
@@ -140,10 +140,10 @@
 
 <h2 id="hardware">2. Hardware organization</h2>
 <div class="panel">
-<svg viewBox="0 0 1120 420" role="img" aria-label="G16 hardware block diagram">
+<svg viewBox="0 0 1120 420" role="img" aria-label="CPU V3 hardware block diagram">
   <defs><marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse"><path d="M 0 0 L 10 5 L 0 10 z" fill="#64748b"/></marker></defs>
   <rect class="box-blue" x="30" y="92" width="230" height="236" rx="12"/>
-  <text class="svg-title" x="145" y="120" text-anchor="middle">G16 core</text>
+  <text class="svg-title" x="145" y="120" text-anchor="middle">CPU V3 core</text>
   <rect class="box" x="55" y="140" width="180" height="42" rx="6"/><text class="svg-text" x="145" y="159" text-anchor="middle">PC + prefix state</text><text class="svg-mono" x="145" y="175" text-anchor="middle">CSEG / DSEG</text>
   <rect class="box" x="55" y="194" width="180" height="42" rx="6"/><text class="svg-text" x="145" y="220" text-anchor="middle">16 × 16-bit register file</text>
   <rect class="box" x="55" y="248" width="82" height="54" rx="6"/><text class="svg-text" x="96" y="271" text-anchor="middle">ALU</text><text class="svg-mono" x="96" y="288" text-anchor="middle">add/logic/shift</text>
@@ -326,7 +326,7 @@
 <div class="notice"><b>Physical address rule:</b> <code>physical_word = {segment[15:0], offset[15:0]}</code>. There is no segment addition and a wrapping offset never carries into the segment. The Tang Nano 20K implements physical word addresses <code>0x00000000..0x003fffff</code>.</div>
 <div class="grid">
   <div class="panel">
-    <svg viewBox="0 0 580 460" role="img" aria-label="G16 unified address-space map">
+    <svg viewBox="0 0 580 460" role="img" aria-label="CPU V3 unified address-space map">
       <rect class="box-blue" x="115" y="35" width="280" height="95" rx="8"/><text class="svg-title" x="255" y="66" text-anchor="middle">0x0000 — linked code</text><text class="svg-text" x="255" y="91" text-anchor="middle">grows upward</text><text class="svg-mono" x="255" y="113" text-anchor="middle">instruction and literal words</text>
       <rect class="box-green" x="115" y="130" width="280" height="85" rx="8"/><text class="svg-title" x="255" y="163" text-anchor="middle">0x4000 — static data</text><text class="svg-text" x="255" y="189" text-anchor="middle">compiler default data base</text>
       <rect class="box-amber" x="115" y="215" width="280" height="90" rx="8"/><text class="svg-title" x="255" y="250" text-anchor="middle">0x8000 — heap baseline</text><text class="svg-text" x="255" y="276" text-anchor="middle">rcc_std allocator region</text>
@@ -345,7 +345,7 @@
       <li>The fitted 8-MiB Tang Nano 20K SDRAM uses 22 physical word-address bits. Larger architectural addresses fault instead of aliasing.</li>
       <li><code>r15</code> normally holds <code>0xff00</code>; this top MMIO offset page always selects fixed system space in segment zero.</li>
       <li><code>CompilerOptions::default()</code> selects data base <code>0x4000</code>, heap base <code>0x8000</code>, and stack top <code>0xff00</code>. CPU V3 has no v2.6 function table.</li>
-      <li>The G16 compiler's optional <code>code_base</code> relocates all linked code offsets and function pointers without padding the emitted section bytes.</li>
+      <li>The CPU V3 compiler's optional <code>code_base</code> relocates all linked code offsets and function pointers without padding the emitted section bytes.</li>
     </ul>
     <h3>Cache geometry</h3>
     <table>
@@ -389,7 +389,7 @@
 <div class="grid">
   <div class="panel">
     <h3>Call sequence</h3>
-    <svg viewBox="0 0 580 285" role="img" aria-label="G16 ABI call flow">
+    <svg viewBox="0 0 580 285" role="img" aria-label="CPU V3 ABI call flow">
       <defs><marker id="arrow3" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse"><path d="M 0 0 L 10 5 L 0 10 z" fill="#64748b"/></marker></defs>
       <rect class="box-blue" x="25" y="25" width="150" height="60" rx="8"/><text class="svg-title" x="100" y="50" text-anchor="middle">Caller</text><text class="svg-mono" x="100" y="70" text-anchor="middle">args → r2..r7</text>
       <rect class="box-amber" x="215" y="25" width="150" height="60" rx="8"/><text class="svg-title" x="290" y="50" text-anchor="middle">Call</text><text class="svg-mono" x="290" y="70" text-anchor="middle">r14 = return PC</text>
@@ -432,12 +432,12 @@
   <tr><th>Layer</th><th>Status</th><th>What is implemented now</th><th>Important remaining work</th></tr>
   <tr><td>Encoding helpers</td><td><span class="status done">complete v0.4</span></td><td>Constructors and stable reference encodings for integer and segment-control operations.</td><td>Update only through a deliberate ISA revision.</td></tr>
   <tr><td>Architectural simulator</td><td><span class="status done">complete v0.4</span></td><td>Integer families, segment concatenation, fitted-memory faults, prefix precision, halt, and reserved-FPU fault.</td><td>MMIO device model and any future FPU semantics.</td></tr>
-  <tr><td>Compiler backend</td><td><span class="status done">usable</span></td><td>G16 ABI, register allocation, calls, stack frames, memory operations, comparisons, static initialization, and fixed-width symbolic linking.</td><td>Optional size relaxation and production loader integration.</td></tr>
+  <tr><td>Compiler backend</td><td><span class="status done">usable</span></td><td>CPU V3 ABI, register allocation, calls, stack frames, memory operations, comparisons, static initialization, and fixed-width symbolic linking.</td><td>Optional size relaxation and production loader integration.</td></tr>
   <tr><td>Host cache/scheduler models</td><td><span class="status done">policy baseline</span></td><td>Physical cache tags, explicit invalidation, refill/write-through rules, full SDRAM address/lane mapping, and refresh-aware arbitration.</td><td>Connect the complete models to reusable RTL boundaries.</td></tr>
   <tr><td>Tang Nano 20K RTL</td><td><span class="status partial">integration prototype</span></td><td>54-MHz SDRAM, measured read-valid adapter, boot pROM → SDRAM → I-cache, separate D-cache masked store and line refill, UART result.</td><td>Full instruction decoder, arbitrary I-cache misses, shared scheduler/refresh in RTL, MMIO, interrupts if adopted, and broader board programs.</td></tr>
-  <tr><td>Physical validation</td><td><span class="status partial">partially complete</span></td><td>SDRAM, BSRAM, DSP, and the earlier G16 BSRAM execution path passed board tests. The complete split-cache harness passes Icarus Verilog simulation and closes timing at 54 MHz with three exact BSRAM blocks.</td><td>Program and capture the final split-cache UART test after the Windows programmer device is available.</td></tr>
+  <tr><td>Physical validation</td><td><span class="status partial">partially complete</span></td><td>SDRAM, BSRAM, DSP, and the earlier CPU V3 BSRAM execution path passed board tests. The complete split-cache harness passes Icarus Verilog simulation and closes timing at 54 MHz with three exact BSRAM blocks.</td><td>Program and capture the final split-cache UART test after the Windows programmer device is available.</td></tr>
 </table>
-<div class="notice"><b>Source-of-truth rule:</b> executable behavior lives in <code>encoding.rs</code> and <code>sim.rs</code>; compiler convention lives in <code>compiler/g16.rs</code> and <code>regalloc.rs</code>; cache and SDRAM policy lives in <code>g16/cache.rs</code> and <code>g16/sdram.rs</code>. This page is the human-readable companion and must be updated with those files.</div>
+<div class="notice"><b>Source-of-truth rule:</b> executable behavior lives in <code>encoding.rs</code> and <code>sim.rs</code>; compiler convention lives in <code>compiler/cpu_v3.rs</code> and <code>regalloc.rs</code>; cache and SDRAM policy lives in <code>cpu_v3/cache.rs</code> and <code>cpu_v3/sdram.rs</code>. This page is the human-readable companion and must be updated with those files.</div>
 
 </main></body>
 </html>

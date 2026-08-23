@@ -324,11 +324,11 @@ impl BootErrorReport {
         u16::from(self.stage) << 4 | u16::from(self.category)
     }
 
-    /// The repeating UART frame: ASCII `G16B`, stage, category, code, detail
+    /// The repeating UART frame: ASCII `CV3B`, stage, category, code, detail
     /// low, detail high, and the XOR checksum of bytes 0 through 8.
     pub fn uart_frame(self) -> [u8; 10] {
         let mut frame = [0; 10];
-        frame[..4].copy_from_slice(b"G16B");
+        frame[..4].copy_from_slice(b"CV3B");
         frame[4] = self.stage;
         frame[5] = self.category;
         frame[6] = self.code;
@@ -920,7 +920,7 @@ mod tests {
         // Stage0 read the descriptor through DMA into the scratch range.
         assert_eq!(
             memory.physical_memory(PhysicalWordAddress::new(STAGE0_DESCRIPTOR_SCRATCH_WORD)),
-            u16::from_le_bytes(*b"G1")
+            u16::from_le_bytes(*b"CP")
         );
         assert_eq!(
             memory.physical_memory(PhysicalWordAddress::new(0x0001_0100)),
@@ -1020,13 +1020,13 @@ mod tests {
         assert_eq!(report.led(), 0x13);
 
         let frame = report.uart_frame();
-        assert_eq!(&frame[..4], b"G16B");
+        assert_eq!(&frame[..4], b"CV3B");
         assert_eq!(frame[9], frame[..9].iter().fold(0, |acc, byte| acc ^ byte));
 
         let writes = report.device_writes();
         assert_eq!(writes[0], (SYSCTL_LED, 0x13));
         assert_eq!(writes.len(), 1 + 10);
-        assert_eq!(writes[1], (SYSCTL_UART, u16::from(b'G')));
+        assert_eq!(writes[1], (SYSCTL_UART, u16::from(b'C')));
 
         let stack_error = LoaderError::InvalidInitialStack {
             stage: "application",

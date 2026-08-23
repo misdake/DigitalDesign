@@ -1,4 +1,4 @@
-//! Encoding helpers for G16 revision 0.3.
+//! Encoding helpers for CpuV3 revision 0.3.
 
 pub type Word = u16;
 pub type Register = u8;
@@ -80,14 +80,17 @@ impl BranchCondition {
 }
 
 fn register(value: Register) -> Word {
-    assert!(value < 16, "G16 register index {value} is outside r0..r15");
+    assert!(
+        value < 16,
+        "CpuV3 register index {value} is outside r0..r15"
+    );
     Word::from(value)
 }
 
 fn signed4(value: i16) -> Word {
     assert!(
         (-8..=7).contains(&value),
-        "G16 signed 4-bit immediate {value} is outside -8..7"
+        "CpuV3 signed 4-bit immediate {value} is outside -8..7"
     );
     (value as Word) & 0xf
 }
@@ -95,7 +98,7 @@ fn signed4(value: i16) -> Word {
 fn unsigned4(value: u8) -> Word {
     assert!(
         value < 16,
-        "G16 unsigned 4-bit immediate {value} exceeds 15"
+        "CpuV3 unsigned 4-bit immediate {value} exceeds 15"
     );
     Word::from(value)
 }
@@ -127,7 +130,7 @@ pub fn branch(condition: BranchCondition, test: Register, offset: i16) -> Word {
 pub fn jump(link: Option<Register>, offset: i16) -> Word {
     assert!(
         (-128..=127).contains(&offset),
-        "G16 short jump offset {offset} is outside -128..127"
+        "CpuV3 short jump offset {offset} is outside -128..127"
     );
     let link = link.map_or(15, |value| {
         assert!(
@@ -211,7 +214,7 @@ pub const fn nop() -> Word {
 }
 
 pub fn immediate_high12(high: u16) -> Word {
-    assert!(high <= 0x0fff, "G16 immediate high part exceeds 12 bits");
+    assert!(high <= 0x0fff, "CpuV3 immediate high part exceeds 12 bits");
     0xf000 | high
 }
 

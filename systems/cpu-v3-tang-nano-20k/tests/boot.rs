@@ -1,6 +1,6 @@
-//! End-to-end G16 two-stage boot: the real rcc Stage0/Stage1/demo programs
-//! are compiled with the G16 backend, packed into a boot image with the
-//! `g16-pack` builder, and executed on the `g16::sim::Machine` oracle from
+//! End-to-end CpuV3 two-stage boot: the real rcc Stage0/Stage1/demo programs
+//! are compiled with the CpuV3 backend, packed into a boot image with the
+//! `cpu-v3-pack` builder, and executed on the `cpu_v3::sim::Machine` oracle from
 //! reset (CSEG=0, PC=0). Device models attached to the machine's MMIO bus
 //! stand in for the boot DMA engine (device 2) and the system-control block
 //! (device 0), with the flash image backing the DMA model.
@@ -222,7 +222,7 @@ fn stage0_stage1_and_application_boot_from_flash() {
 fn a_corrupt_descriptor_magic_reports_stage0_category1() {
     let (mut flash, stage0) = boot_setup();
     let base = BootTarget::TangNano20K.payload_flash_offset() as usize;
-    flash[base] ^= 1; // break the "G16BOOT\0" magic
+    flash[base] ^= 1; // break the "CPU3BOOT" magic
     let machine = run_boot(flash, &stage0, 100_000);
 
     let report = BootErrorReport {
@@ -236,7 +236,7 @@ fn a_corrupt_descriptor_magic_reports_stage0_category1() {
     let frame = report.uart_frame();
     assert!(
         sysctl.uart.len() >= frame.len() * 2,
-        "expected repeating G16B frames, got {:02x?}",
+        "expected repeating CV3B frames, got {:02x?}",
         sysctl.uart
     );
     assert_eq!(sysctl.uart[..10], frame);
@@ -244,4 +244,33 @@ fn a_corrupt_descriptor_magic_reports_stage0_category1() {
 
     // Stage0 never left the boot segment.
     assert_eq!(machine.code_segment(), 0);
+}
+
+#[test]
+fn a_corrupt_manifest_magic_reports_stage1_category2() {
+    let (mut flash, stage0) = boot_setup();
+    let base = BootTarget::TangNano20K.payload_flash_offset() as usize;
+    flash[base + 64] ^= 1; // break the "CPU3SECT" magic
+    let machine = run_boot(flash, &stage0, 200_000);
+
+    let report = BootErrorReport {
+        stage: 2,
+        category: 2,
+        code: 6,
+        detail: 0,
+    };
+    let sysctl = machine.device::<SystemControlDevice>(0).unwrap();
+    assert_eq!(sysctl.led, Some(report.led()));
+    let frame = report.uart_frame();
+    assert!(
+        sysctl.uart.len() >= frame.len() * 2,
+        "expected repeating boot-error frames, got {:02x?}",
+        sysctl.uart
+    );
+    assert_eq!(sysctl.uart[..10], frame);
+    assert_eq!(sysctl.uart[10..20], frame);
+
+    // Stage0 handed off successfully, but Stage1 rejected its manifest before
+    // entering the application segment.
+    assert_eq!(machine.code_segment(), 1);
 }

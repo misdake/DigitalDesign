@@ -1,9 +1,9 @@
-//! Stage1 of the G16 two-stage flash boot. Loaded into SDRAM by Stage0 and
+//! Stage1 of the CpuV3 two-stage flash boot. Loaded into SDRAM by Stage0 and
 //! entered with CSEG/DSEG/SP from the boot descriptor; the mirrored 64-byte
 //! descriptor sits at offset 0x0100 of its data segment (the Stage0-to-Stage1
 //! handoff).
 //!
-//! Mirrors the host reference `g16::boot::loader::run_stage1`: DMA the
+//! Mirrors the host reference `cpu_v3::boot::loader::run_stage1`: DMA the
 //! manifest into the own static buffer, validate it, DMA every section except
 //! the Stage1 self-section (Load copies file bytes and zero-fills the tail;
 //! Zero sections carry no file data), invalidate both caches, and enter the
@@ -17,7 +17,7 @@ use crate::dsl_rt::*;
 /// __data_init code; the DMA fills the buffer before it is read.
 static MANIFEST: [u16; 192] = [0; 192];
 
-// Boot error ABI categories for Stage1 (g16/boot/loader.rs `boot_report`).
+// Boot error ABI categories for Stage1 (cpu_v3/boot/loader.rs `boot_report`).
 // Codes: 1 package size mismatch, 3 invalid section, 5 manifest larger than
 // the static buffer, 6 manifest header malformed (the last two are specific
 // to this on-hardware Stage1; the host reference decodes from a flash slice
@@ -83,15 +83,15 @@ fn uart_byte(b: u16) {
 }
 
 /// Reports a boot failure: LED `{stage, category}` on device 0 channel 2,
-/// then the 10-byte `G16B` frame retransmitted forever.
+/// then the 10-byte `CV3B` frame retransmitted forever.
 #[allow(clippy::eq_op)] // `while 1 == 1` is the rcc spelling of an endless loop
 fn boot_fail(stage: u16, category: u16, code: u16, detail: u16) {
     dev_send(0, 2, (stage << 4) | category);
-    let checksum = 0x47 ^ 0x31 ^ 0x36 ^ 0x42 ^ stage ^ category ^ code ^ (detail & 0xff) ^ (detail >> 8);
+    let checksum = 0x43 ^ 0x56 ^ 0x33 ^ 0x42 ^ stage ^ category ^ code ^ (detail & 0xff) ^ (detail >> 8);
     while 1 == 1 {
-        uart_byte(0x47); // 'G'
-        uart_byte(0x31); // '1'
-        uart_byte(0x36); // '6'
+        uart_byte(0x43); // 'C'
+        uart_byte(0x56); // 'V'
+        uart_byte(0x33); // '3'
         uart_byte(0x42); // 'B'
         uart_byte(stage);
         uart_byte(category);
@@ -126,8 +126,8 @@ fn main() {
     }
 
     let m = MANIFEST.as_array();
-    // magic "G16SECT\0" (little-endian words), format version, fixed sizes
-    if m[0u16] != 0x3147 || m[1u16] != 0x5336 || m[2u16] != 0x4345 || m[3u16] != 0x0054 {
+    // magic "CPU3SECT" (little-endian words), format version, fixed sizes
+    if m[0u16] != 0x5043 || m[1u16] != 0x3355 || m[2u16] != 0x4553 || m[3u16] != 0x5443 {
         boot_fail(2, CATEGORY_MANIFEST, 6, 0);
     }
     if m[MW_VERSION] != 3 || m[MW_HEADER_SIZE] != 48 || m[MW_RECORD_SIZE] != 32 {

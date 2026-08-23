@@ -27,7 +27,7 @@ wire [15:0] code_segment;
 wire [15:0] data_segment;
 wire [31:0] retired_words;
 
-G16Core dut(.*);
+CpuV3Core dut(.*);
 always #5 clk = ~clk;
 
 reg [15:0] memory [0:65535];

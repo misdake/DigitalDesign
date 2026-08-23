@@ -1,13 +1,13 @@
-//! Builds a validated G16 boot package from an offline section manifest.
+//! Builds a validated CpuV3 boot package from an offline section manifest.
 
 use cpu_v3_tang_nano_20k::boot::{build_boot_image, PackManifest};
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
 const HELP: &str = "\
-g16-pack: build a versioned G16 Flash payload
+cpu-v3-pack: build a versioned CpuV3 Flash payload
 
-usage: g16-pack <manifest.g16manifest> [-o image.g16boot] [--map image.map]
+usage: cpu-v3-pack <manifest.cpu-v3-manifest> [-o image.cpu-v3-boot] [--map image.map]
                 [--configuration-bin design.bin] [--flash-image complete.bin]
 
 manifest format:
@@ -28,7 +28,7 @@ fn main() -> ExitCode {
     match run(std::env::args().skip(1)) {
         Ok(()) => ExitCode::SUCCESS,
         Err(message) => {
-            eprintln!("g16-pack: error: {message}");
+            eprintln!("cpu-v3-pack: error: {message}");
             ExitCode::FAILURE
         }
     }
@@ -60,7 +60,7 @@ fn run(args: impl Iterator<Item = String>) -> Result<(), String> {
     }
 
     let input = input.ok_or_else(|| "missing manifest input; see --help".to_owned())?;
-    let output = output.unwrap_or_else(|| input.with_extension("g16boot"));
+    let output = output.unwrap_or_else(|| input.with_extension("cpu-v3-boot"));
     let map = map.unwrap_or_else(|| output.with_extension("map"));
     let text = std::fs::read_to_string(&input)
         .map_err(|source| format!("cannot read {}: {source}", input.display()))?;

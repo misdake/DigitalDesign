@@ -22,7 +22,7 @@ FlashReadbackProbe dut (
 
 always #5 clk = ~clk;
 
-// SPI flash read model (same shape as the g16_boot harness): 03h command and
+// SPI flash read model (same shape as the cpu_v3_boot harness): 03h command and
 // a 24-bit address, then stream bytes from the image, 0xff beyond it.
 localparam [23:0] FLASH_BASE = 24'h100000;
 reg [7:0] flash_image [0:7];
@@ -34,14 +34,14 @@ reg [7:0] flash_current_byte = 0;
 
 integer flash_init_index;
 initial begin
-    flash_image[0] = 8'h47; // G
-    flash_image[1] = 8'h31; // 1
-    flash_image[2] = 8'h36; // 6
-    flash_image[3] = 8'h42; // B
-    flash_image[4] = 8'h4f; // O
+    flash_image[0] = 8'h43; // C
+    flash_image[1] = 8'h50; // P
+    flash_image[2] = 8'h55; // U
+    flash_image[3] = 8'h33; // 3
+    flash_image[4] = 8'h42; // B
     flash_image[5] = 8'h4f; // O
-    flash_image[6] = 8'h54; // T
-    flash_image[7] = 8'h00;
+    flash_image[6] = 8'h4f; // O
+    flash_image[7] = 8'h54; // T
 end
 
 always @(posedge flash_cs_n) begin

@@ -1,4 +1,4 @@
-module G16SdramBoardTest (
+module CpuV3SdramBoardTest (
     input wire clk,
     input wire [1:0] buttons,
     input wire [31:0] sdram_read_data,
@@ -231,7 +231,7 @@ wire [15:0] code_segment;
 wire [15:0] data_segment;
 wire [31:0] retired_words;
 
-__G16_CORE__ u_core (
+__CPU_V3_CORE__ u_core (
     .clk(clk),
     .reset(reset),
     .instruction_request_ready(instruction_request_ready),

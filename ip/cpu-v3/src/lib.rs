@@ -1,4 +1,4 @@
-//! CPU V3 processor IP: ISA, executable model, cache models, and RCC backend.
+//! CpuV3 processor IP: ISA, executable model, cache models, and RCC backend.
 
 mod architecture;
 mod hardware;

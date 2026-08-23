@@ -1,4 +1,4 @@
-module G16Core (
+module CpuV3Core (
     input wire clk,
     input wire reset,
     input wire instruction_request_ready,

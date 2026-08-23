@@ -95,8 +95,8 @@ Declared for real in `dsl_rt` (so the IDE sees them); the compiler lowers them d
 | `log2(x: u16) -> u16` | integer base-2 logarithm; returns 0 when x is 0 |
 | `dev_recv(dev: u8, ch: u8) -> u16` | read a device register; device and channel are literal IDs |
 | `dev_send(dev: u8, ch: u8, v: u16)` | write a device register; device and channel are literal IDs |
-| `mtsr_dseg(v: u16)` | G16-only: write the DSEG special register (MTSR DSEG) |
-| `jseg(cseg: u16, target: u16) -> !` | G16-only: atomically switch CSEG to `cseg` and jump to `target` (JSEG); never returns |
+| `mtsr_dseg(v: u16)` | CPU V3-only: write the DSEG special register (MTSR DSEG) |
+| `jseg(cseg: u16, target: u16) -> !` | CPU V3-only: atomically switch CSEG to `cseg` and jump to `target` (JSEG); never returns |
 
 ## 6. Design decisions
 

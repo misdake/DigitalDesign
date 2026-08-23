@@ -1,4 +1,4 @@
-//! G16 device-2 register bank for [`super::BootDmaEngine`].
+//! CpuV3 device-2 register bank for [`super::BootDmaEngine`].
 
 use crate::{HardwareIdentity, Module, ModuleIo, VerilogIdentity};
 use digital_design_circuit::{CircuitWires, Wire, Wires};

@@ -1,4 +1,4 @@
-//! Reusable G16 revision 0.4 processor core with external physical-memory ports.
+//! Reusable CpuV3 revision 0.4 processor core with external physical-memory ports.
 
 mod mmio;
 pub use mmio::*;
@@ -15,13 +15,13 @@ use digital_design_hardware::{
 };
 use digital_design_hardware_gowin::DspMulS18;
 
-pub const G16_FAULT_INVALID_INSTRUCTION: u8 = 1;
-pub const G16_FAULT_UNSUPPORTED_FPU: u8 = 2;
-pub const G16_FAULT_INSTRUCTION_MEMORY: u8 = 3;
-pub const G16_FAULT_DATA_MEMORY: u8 = 4;
+pub const CPU_V3_FAULT_INVALID_INSTRUCTION: u8 = 1;
+pub const CPU_V3_FAULT_UNSUPPORTED_FPU: u8 = 2;
+pub const CPU_V3_FAULT_INSTRUCTION_MEMORY: u8 = 3;
+pub const CPU_V3_FAULT_DATA_MEMORY: u8 = 4;
 
 #[derive(Clone, ModuleIo)]
-pub struct G16CoreInput {
+pub struct CpuV3CoreInput {
     pub reset: Wire,
     pub instruction_request_ready: Wire,
     pub instruction_response_valid: Wire,
@@ -34,7 +34,7 @@ pub struct G16CoreInput {
 }
 
 #[derive(Clone, ModuleIo)]
-pub struct G16CoreOutput {
+pub struct CpuV3CoreOutput {
     pub instruction_request_valid: Wire,
     pub instruction_address: Wires<32>,
     pub instruction_response_ready: Wire,
@@ -54,13 +54,13 @@ pub struct G16CoreOutput {
     pub retired_words: Wires<32>,
 }
 
-pub struct G16Core;
+pub struct CpuV3Core;
 
-impl HardwareIdentity for G16Core {
+impl HardwareIdentity for CpuV3Core {
     const TARGET_RESOURCE_LEAF: bool = false;
 
     fn verilog_identity() -> VerilogIdentity {
-        VerilogIdentity::new("G16Core").namespace(["components", "cpu", "g16"])
+        VerilogIdentity::new("CpuV3Core").namespace(["components", "cpu", "cpu_v3"])
     }
 }
 
@@ -93,7 +93,7 @@ struct PendingData {
     fault_pc: u16,
 }
 
-pub struct G16CoreState {
+pub struct CpuV3CoreState {
     registers: [u16; 16],
     pc: u16,
     code_segment: u16,
@@ -111,7 +111,7 @@ pub struct G16CoreState {
     fault_pc: u16,
 }
 
-impl Default for G16CoreState {
+impl Default for CpuV3CoreState {
     fn default() -> Self {
         Self {
             registers: [0; 16],
@@ -133,7 +133,7 @@ impl Default for G16CoreState {
     }
 }
 
-impl G16CoreState {
+impl CpuV3CoreState {
     fn fault(&mut self, code: u8, pc: u16) {
         self.fault_code = code;
         self.fault_pc = pc;
@@ -233,7 +233,7 @@ impl G16CoreState {
                     6 => value & 1 != 0,
                     7 => value & 1 == 0,
                     _ => {
-                        self.fault(G16_FAULT_INVALID_INSTRUCTION, fault_pc);
+                        self.fault(CPU_V3_FAULT_INVALID_INSTRUCTION, fault_pc);
                         return;
                     }
                 };
@@ -254,9 +254,9 @@ impl G16CoreState {
                 self.pc = self.pc.wrapping_add(offset);
                 self.retire(retire_words);
             }
-            13 => self.fault(G16_FAULT_UNSUPPORTED_FPU, fault_pc),
+            13 => self.fault(CPU_V3_FAULT_UNSUPPORTED_FPU, fault_pc),
             14 => self.execute_control(instruction, retire_words, fault_pc),
-            _ => self.fault(G16_FAULT_INVALID_INSTRUCTION, fault_pc),
+            _ => self.fault(CPU_V3_FAULT_INVALID_INSTRUCTION, fault_pc),
         }
     }
 
@@ -299,7 +299,7 @@ impl G16CoreState {
             14 => sign_extend(instruction & 15, 4),
             15 => unsigned,
             _ => {
-                self.fault(G16_FAULT_INVALID_INSTRUCTION, fault_pc);
+                self.fault(CPU_V3_FAULT_INVALID_INSTRUCTION, fault_pc);
                 return;
             }
         };
@@ -353,7 +353,7 @@ impl G16CoreState {
                     0 => self.code_segment,
                     1 => self.data_segment,
                     _ => {
-                        self.fault(G16_FAULT_INVALID_INSTRUCTION, fault_pc);
+                        self.fault(CPU_V3_FAULT_INVALID_INSTRUCTION, fault_pc);
                         return;
                     }
                 }
@@ -364,7 +364,7 @@ impl G16CoreState {
                 self.pc = self.registers[usize::from(src)];
             }
             _ => {
-                self.fault(G16_FAULT_INVALID_INSTRUCTION, fault_pc);
+                self.fault(CPU_V3_FAULT_INVALID_INSTRUCTION, fault_pc);
                 return;
             }
         }
@@ -372,15 +372,15 @@ impl G16CoreState {
     }
 }
 
-impl Module for G16Core {
-    type Input = G16CoreInput;
-    type Output = G16CoreOutput;
-    type EmuState = G16CoreState;
+impl Module for CpuV3Core {
+    type Input = CpuV3CoreInput;
+    type Output = CpuV3CoreOutput;
+    type EmuState = CpuV3CoreState;
 
     const USES_MAIN_CLOCK: bool = true;
 
     fn create_emu(_input: &Self::Input, _output: &Self::Output) -> Self::EmuState {
-        G16CoreState::default()
+        CpuV3CoreState::default()
     }
 
     fn execute_emu(
@@ -392,7 +392,7 @@ impl Module for G16Core {
         let pending = state.pending_data;
         output.drive(
             circuit,
-            &G16CoreOutputValue {
+            &CpuV3CoreOutputValue {
                 instruction_request_valid: state.phase == Phase::FetchRequest,
                 instruction_address: u64::from(physical_address(state.code_segment, state.pc)),
                 instruction_response_ready: state.phase == Phase::FetchResponse,
@@ -422,7 +422,7 @@ impl Module for G16Core {
     ) {
         let input = input.sample(circuit);
         if input.reset {
-            *state = G16CoreState::default();
+            *state = CpuV3CoreState::default();
             return;
         }
         match state.phase {
@@ -431,7 +431,7 @@ impl Module for G16Core {
             }
             Phase::FetchResponse if input.instruction_response_valid => {
                 if input.instruction_error {
-                    state.fault(G16_FAULT_INSTRUCTION_MEMORY, state.pc);
+                    state.fault(CPU_V3_FAULT_INSTRUCTION_MEMORY, state.pc);
                 } else {
                     state.instruction = input.instruction_data as u16;
                     state.instruction_pc = state.pc;
@@ -446,7 +446,7 @@ impl Module for G16Core {
             Phase::DataResponse if input.data_response_valid => {
                 let pending = state.pending_data;
                 if input.data_error {
-                    state.fault(G16_FAULT_DATA_MEMORY, pending.fault_pc);
+                    state.fault(CPU_V3_FAULT_DATA_MEMORY, pending.fault_pc);
                 } else {
                     if !pending.write {
                         state.registers[usize::from(pending.destination)] =
@@ -465,7 +465,7 @@ impl Module for G16Core {
     }
 
     fn verilog_source() -> Option<String> {
-        Some(include_str!("g16_core.v").replace(
+        Some(include_str!("cpu_v3_core.v").replace(
             "__DSP_MULTIPLIER__",
             &DspMulS18::verilog_identity().module_name(),
         ))
@@ -476,7 +476,7 @@ impl Module for G16Core {
     }
 
     fn verilog_testbench() -> Option<String> {
-        Some(include_str!("g16_core_tb.v").to_string())
+        Some(include_str!("cpu_v3_core_tb.v").to_string())
     }
 }
 
@@ -518,7 +518,7 @@ fn is_prefix_consumer(instruction: u16) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate as g16;
+    use crate as cpu_v3;
     use crate::rcc_backend::{self, CompilerOptions};
     use crate::{AluOp, BranchCondition, ImmediateOp, Machine, RunOutcome, SpecialRegister};
     use digital_design_circuit::{build_circuit, Circuit};
@@ -535,13 +535,13 @@ mod tests {
 
     fn drive(
         circuit: &mut Circuit,
-        input: &G16CoreInput,
+        input: &CpuV3CoreInput,
         instruction_response: Option<u16>,
         data_response: Option<u16>,
     ) {
         input.drive(
             circuit,
-            &G16CoreInputValue {
+            &CpuV3CoreInputValue {
                 reset: false,
                 instruction_request_ready: true,
                 instruction_response_valid: instruction_response.is_some(),
@@ -557,8 +557,8 @@ mod tests {
 
     fn run_core(mut memory: HashMap<u32, u16>, maximum_cycles: usize) -> CoreRun {
         let (mut circuit, (input, output)) = build_circuit(|| {
-            let input = G16CoreInput::allocate();
-            let output = G16Core::emu(&input);
+            let input = CpuV3CoreInput::allocate();
+            let output = CpuV3Core::emu(&input);
             (input, output)
         });
         let mut instruction_response = None;
@@ -570,7 +570,7 @@ mod tests {
             let value = output.sample(&circuit);
             if value.fault {
                 panic!(
-                    "G16 core faulted with code {} at {:#06x}",
+                    "CpuV3 core faulted with code {} at {:#06x}",
                     value.fault_code, value.fault_pc
                 );
             }
@@ -610,7 +610,7 @@ mod tests {
             instruction_response = next_instruction_response;
             data_response = next_data_response;
         }
-        panic!("G16 core exceeded {maximum_cycles} cycles")
+        panic!("CpuV3 core exceeded {maximum_cycles} cycles")
     }
 
     fn load(memory: &mut HashMap<u32, u16>, base: u32, words: &[u16]) {
@@ -664,16 +664,16 @@ mod tests {
     #[test]
     fn emulator_matches_segmented_fetch_data_and_special_register_semantics() {
         let mut boot = Vec::new();
-        boot.extend(g16::load_immediate16(1, 1));
-        boot.extend(g16::load_immediate16(2, 0x20));
-        boot.extend(g16::load_immediate16(3, 2));
-        boot.extend([g16::write_data_segment(3), g16::jump_segment(1, 2)]);
+        boot.extend(cpu_v3::load_immediate16(1, 1));
+        boot.extend(cpu_v3::load_immediate16(2, 0x20));
+        boot.extend(cpu_v3::load_immediate16(3, 2));
+        boot.extend([cpu_v3::write_data_segment(3), cpu_v3::jump_segment(1, 2)]);
         let mut application = vec![
-            g16::read_special(4, SpecialRegister::CodeSegment),
-            g16::read_special(5, SpecialRegister::DataSegment),
+            cpu_v3::read_special(4, SpecialRegister::CodeSegment),
+            cpu_v3::read_special(5, SpecialRegister::DataSegment),
         ];
-        application.extend(g16::load_immediate16(6, 0x1234));
-        application.extend([g16::load(0, 6, 0), g16::halt()]);
+        application.extend(cpu_v3::load_immediate16(6, 0x1234));
+        application.extend([cpu_v3::load(0, 6, 0), cpu_v3::halt()]);
 
         let mut memory = HashMap::new();
         load(&mut memory, 0, &boot);
@@ -687,24 +687,24 @@ mod tests {
     #[test]
     fn emulator_matches_oracle_for_reserved_prefix_and_comparison_edges() {
         let mut program = Vec::new();
-        program.extend(g16::load_immediate16(1, 0x8000));
-        program.extend(g16::load_immediate16(2, 0x7fff));
-        program.extend(g16::load_immediate16(6, 3));
-        program.extend(g16::load_immediate16(7, 5));
+        program.extend(cpu_v3::load_immediate16(1, 0x8000));
+        program.extend(cpu_v3::load_immediate16(2, 0x7fff));
+        program.extend(cpu_v3::load_immediate16(6, 3));
+        program.extend(cpu_v3::load_immediate16(7, 5));
         program.extend([
-            g16::alu(AluOp::Mul, 8, 6, 7),
-            g16::move_register(3, 1),
-            g16::set_less_than_signed(3, 2),
-            g16::move_register(4, 1),
-            g16::set_less_than_unsigned(4, 2),
-            g16::population_count(5, 1),
-            g16::immediate_unsigned(ImmediateOp::ShiftRightLogical, 1, 15),
-            g16::alu(AluOp::Add, 0, 3, 4),
-            g16::alu(AluOp::Add, 0, 0, 5),
-            g16::alu(AluOp::Add, 0, 0, 8),
-            g16::branch(BranchCondition::NonZero, 0, 1),
-            g16::immediate_unsigned(ImmediateOp::LoadUnsigned, 0, 0),
-            g16::halt(),
+            cpu_v3::alu(AluOp::Mul, 8, 6, 7),
+            cpu_v3::move_register(3, 1),
+            cpu_v3::set_less_than_signed(3, 2),
+            cpu_v3::move_register(4, 1),
+            cpu_v3::set_less_than_unsigned(4, 2),
+            cpu_v3::population_count(5, 1),
+            cpu_v3::immediate_unsigned(ImmediateOp::ShiftRightLogical, 1, 15),
+            cpu_v3::alu(AluOp::Add, 0, 3, 4),
+            cpu_v3::alu(AluOp::Add, 0, 0, 5),
+            cpu_v3::alu(AluOp::Add, 0, 0, 8),
+            cpu_v3::branch(BranchCondition::NonZero, 0, 1),
+            cpu_v3::immediate_unsigned(ImmediateOp::LoadUnsigned, 0, 0),
+            cpu_v3::halt(),
         ]);
         let mut oracle = Machine::default();
         oracle.load_program(0, &program).unwrap();
@@ -720,7 +720,7 @@ mod tests {
 
     #[test]
     fn export_accounts_for_one_characterized_multiplier_leaf() {
-        let project = VerilogProject::generate::<G16Core>().unwrap();
+        let project = VerilogProject::generate::<CpuV3Core>().unwrap();
         assert_eq!(project.resource_claims.len(), 1);
         assert_eq!(
             project.resource_claims[0].resources,
@@ -729,8 +729,8 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "explicit external simulation of the reusable G16 core"]
+    #[ignore = "explicit external simulation of the reusable CpuV3 core"]
     fn verify_verilog_with_iverilog() {
-        digital_design_hardware::verify_verilog_with_iverilog::<G16Core>().unwrap();
+        digital_design_hardware::verify_verilog_with_iverilog::<CpuV3Core>().unwrap();
     }
 }
