@@ -7,19 +7,23 @@ param(
 $ErrorActionPreference = "Stop"
 $p = New-Object System.IO.Ports.SerialPort $Port, $Baud, ([System.IO.Ports.Parity]::None), 8, ([System.IO.Ports.StopBits]::One)
 $p.ReadTimeout = 500
-$p.Open()
 $ms = New-Object System.IO.MemoryStream
 $buf = New-Object byte[] 4096
 $deadline = (Get-Date).AddSeconds($Seconds)
 try {
+    $p.Open()
     while ((Get-Date) -lt $deadline) {
-        try {
-            $n = $p.Read($buf, 0, $buf.Length)
-            if ($n -gt 0) { $ms.Write($buf, 0, $n) }
-        } catch [System.TimeoutException] { }
+        $available = $p.BytesToRead
+        if ($available -le 0) {
+            Start-Sleep -Milliseconds 10
+            continue
+        }
+        $n = $p.Read($buf, 0, [Math]::Min($buf.Length, $available))
+        if ($n -gt 0) { $ms.Write($buf, 0, $n) }
     }
 } finally {
-    $p.Close()
+    if ($p.IsOpen) { $p.Close() }
+    $p.Dispose()
 }
 $outPath = $Out
 if (-not [System.IO.Path]::IsPathRooted($outPath)) {
