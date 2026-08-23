@@ -8,9 +8,10 @@ use std::collections::BTreeMap;
 use std::ffi::OsString;
 use std::fmt::{Display, Formatter};
 use std::fs;
+use std::io::Write;
 use std::marker::PhantomData;
 use std::path::{Path, PathBuf};
-use std::process::{Command, ExitStatus};
+use std::process::{Command, ExitStatus, Output};
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub struct GowinBackend;
@@ -1493,21 +1494,23 @@ impl GowinToolchain {
         } else {
             std::env::current_dir()?.join(&build.bitstream)
         };
-        let status = Command::new(executable)
-            .args([
-                "--device",
-                build.device.programmer_device,
-                "--operation_index",
-                "2",
-                "--fsFile",
-            ])
-            .arg(bitstream)
-            .args(["--cable-index", &cable_index.to_string()])
-            .status()?;
-        if !status.success() {
-            return Err(GowinError::ProgramFailed(status));
+        let output = run_programmer(
+            Command::new(executable)
+                .args([
+                    "--device",
+                    build.device.programmer_device,
+                    "--operation_index",
+                    "2",
+                    "--fsFile",
+                ])
+                .arg(bitstream)
+                .args(["--cable-index", &cable_index.to_string()]),
+        )?;
+        if !output.status.success() {
+            return Err(GowinError::ProgramFailed(output.status));
         }
-        Ok(status)
+        reject_reported_programmer_failure("SRAM programming", &output)?;
+        Ok(output.status)
     }
 
     /// Program and verify a raw binary into a sector-aligned external-Flash
@@ -1551,23 +1554,57 @@ impl GowinToolchain {
             ERASE_SECTOR_BYTES,
         )?;
 
-        let status = Command::new(executable)
-            .args([
-                "--device",
-                device.programmer_device,
-                "--operation_index",
-                "32",
-                "--mcuFile",
-            ])
-            .arg(binary)
-            .args(["--spiaddr", &format!("{start_address:#08x}")])
-            .args(["--cable-index", &cable_index.to_string()])
-            .status()?;
-        if !status.success() {
-            return Err(GowinError::ExternalFlashProgramFailed(status));
+        let output = run_programmer(
+            Command::new(executable)
+                .args([
+                    "--device",
+                    device.programmer_device,
+                    "--operation_index",
+                    "32",
+                    "--mcuFile",
+                ])
+                .arg(binary)
+                .args(["--spiaddr", &format!("{start_address:#08x}")])
+                .args(["--cable-index", &cable_index.to_string()]),
+        )?;
+        if !output.status.success() {
+            return Err(GowinError::ExternalFlashProgramFailed(output.status));
         }
-        Ok(status)
+        reject_reported_programmer_failure("external-Flash programming", &output)?;
+        Ok(output.status)
     }
+}
+
+fn run_programmer(command: &mut Command) -> Result<Output, std::io::Error> {
+    let output = command.output()?;
+    std::io::stdout().write_all(&output.stdout)?;
+    std::io::stderr().write_all(&output.stderr)?;
+    Ok(output)
+}
+
+fn reject_reported_programmer_failure(
+    operation: &'static str,
+    output: &Output,
+) -> Result<(), GowinError> {
+    if let Some(diagnostic) = programmer_failure_diagnostic(&output.stdout, &output.stderr) {
+        return Err(GowinError::ProgrammerReportedFailure {
+            operation,
+            diagnostic,
+        });
+    }
+    Ok(())
+}
+
+fn programmer_failure_diagnostic(stdout: &[u8], stderr: &[u8]) -> Option<String> {
+    String::from_utf8_lossy(stdout)
+        .lines()
+        .chain(String::from_utf8_lossy(stderr).lines())
+        .map(str::trim)
+        .find(|line| {
+            let lower = line.to_ascii_lowercase();
+            lower.starts_with("error:") || lower.contains(" failed!")
+        })
+        .map(str::to_owned)
 }
 
 fn validate_external_flash_write(
@@ -1969,6 +2006,10 @@ pub enum GowinError {
     BuildFailed(ExitStatus),
     ProgramFailed(ExitStatus),
     ExternalFlashProgramFailed(ExitStatus),
+    ProgrammerReportedFailure {
+        operation: &'static str,
+        diagnostic: String,
+    },
     MissingBuildArtifact(PathBuf),
     UnsafeProjectPath(PathBuf),
     DuplicateSourcePath(PathBuf),
@@ -2034,6 +2075,13 @@ impl Display for GowinError {
             Self::ExternalFlashProgramFailed(status) => {
                 write!(formatter, "Gowin external-Flash programming failed with {status}")
             }
+            Self::ProgrammerReportedFailure {
+                operation,
+                diagnostic,
+            } => write!(
+                formatter,
+                "Gowin Programmer reported a failure during {operation}: {diagnostic}"
+            ),
             Self::MissingBuildArtifact(path) => {
                 write!(formatter, "Gowin did not produce {}", path.display())
             }
@@ -2348,6 +2396,21 @@ mod tests {
                 .to_string();
             assert!(error.contains(message), "unexpected error: {error}");
         }
+    }
+
+    #[test]
+    fn programmer_textual_failures_override_a_success_exit_status() {
+        assert_eq!(
+            programmer_failure_diagnostic(
+                b"Programming... 100%\nError: SPI Verify failed!\nFinished.\n",
+                b"",
+            ),
+            Some("Error: SPI Verify failed!".to_string())
+        );
+        assert_eq!(
+            programmer_failure_diagnostic(b"Programming... 100%\nFinished.\n", b""),
+            None
+        );
     }
 
     #[test]

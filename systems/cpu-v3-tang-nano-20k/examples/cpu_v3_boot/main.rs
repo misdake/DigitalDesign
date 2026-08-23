@@ -319,6 +319,53 @@ mod tests {
     }
 
     #[test]
+    fn example_manifest_tracks_current_compiler_outputs() {
+        let stage1 = compile_cpu_v3(
+            "stage1.rs",
+            &CompilerOptions {
+                code_base: 0x0100,
+                stack_init: 0xf000,
+                ..CompilerOptions::default()
+            },
+        );
+        let application = compile_cpu_v3(
+            "boot-demo.rs",
+            &CompilerOptions {
+                code_base: 0x0200,
+                stack_init: 0xe000,
+                ..CompilerOptions::default()
+            },
+        );
+        let manifest =
+            cpu_v3_tang_nano_20k::boot::PackManifest::parse(include_str!("boot.cpu-v3-manifest"))
+                .unwrap();
+        let stage1_section = manifest
+            .sections
+            .iter()
+            .find(|section| section.name == "stage1")
+            .unwrap();
+        let application_section = manifest
+            .sections
+            .iter()
+            .find(|section| section.name == "application")
+            .unwrap();
+        assert_eq!(
+            stage1_section.memory_size_bytes,
+            stage1.words.len() as u32 * 2
+        );
+        assert_eq!(
+            application_section.memory_size_bytes,
+            application.words.len() as u32 * 2
+        );
+        assert_eq!(
+            stage1_section.source.as_deref(),
+            Some(std::path::Path::new(
+                "../../../../target/cpu-v3-boot/stage1.v3bin"
+            ))
+        );
+    }
+
+    #[test]
     fn project_contains_boot_caches_flash_reader_and_sdram() {
         let verilog = VerilogProject::generate::<CpuV3BootSelfTest>().unwrap();
         assert_eq!(verilog.resource_claims.len(), 7);
