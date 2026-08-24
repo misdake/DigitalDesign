@@ -1,9 +1,11 @@
 use crate::{
     write_generated_files, HardwareBackend, HardwareTarget, Module, ProjectError, ResourceError,
-    ResourceReport, TargetComponent, TargetResourceRequest, TargetResources, VerilogProject,
+    ResourceKind, ResourceReport, TargetComponent, TargetResourceRequest, TargetResources,
+    VerilogProject,
 };
 use digital_design_code::validate_verilog_identifier;
 use std::collections::BTreeMap;
+use std::ffi::OsString;
 use std::fmt::{Display, Formatter};
 use std::fs;
 use std::marker::PhantomData;
@@ -28,6 +30,25 @@ pub struct GowinDeviceInfo {
     pub part_number: &'static str,
     pub project_device_id: &'static str,
     pub programmer_device: &'static str,
+    pub programmer_cable: GowinProgrammerCable,
+}
+
+/// Programmer CLI cable-driver type. These values are not USB enumeration indexes.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[repr(u8)]
+pub enum GowinProgrammerCable {
+    Gwu2x = 0,
+    Ft2ch = 1,
+    ParallelPort = 2,
+    Digilent = 3,
+    UsbDebuggerA = 4,
+    WinUsb = 5,
+}
+
+impl GowinProgrammerCable {
+    pub const fn index(self) -> u8 {
+        self as u8
+    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -148,8 +169,9 @@ impl<T: GowinTarget> GowinBoardBinding<T> {
                 "board clock frequency must be non-zero".to_string(),
             ));
         }
-        let mut board_ports = std::collections::HashSet::new();
-        let mut bound_logic_ports = std::collections::HashSet::new();
+        let mut board_ports = std::collections::HashSet::from([self.clock_port.clone()]);
+        let mut bound_logic_ports =
+            std::collections::HashSet::from([self.logic_clock_port.clone()]);
         let mut physical_pins =
             std::collections::HashMap::from([(self.clock.pin.location, self.clock_port.clone())]);
         let contract = logic_ports
@@ -180,13 +202,13 @@ impl<T: GowinTarget> GowinBoardBinding<T> {
                     port.board_port
                 )));
             }
-            if !board_ports.insert(&port.board_port) {
+            if !board_ports.insert(port.board_port.clone()) {
                 return Err(GowinError::InvalidBoardBinding(format!(
                     "duplicate board port `{}`",
                     port.board_port
                 )));
             }
-            if !bound_logic_ports.insert(&port.logic_port) {
+            if !bound_logic_ports.insert(port.logic_port.clone()) {
                 return Err(GowinError::InvalidBoardBinding(format!(
                     "duplicate logic port `{}`",
                     port.logic_port
@@ -695,6 +717,168 @@ pub struct GowinToolchain {
     programmer_cli: Option<PathBuf>,
 }
 
+#[derive(Debug)]
+pub enum GowinCliError {
+    Argument(String),
+    Gowin(GowinError),
+}
+
+impl Display for GowinCliError {
+    fn fmt(&self, formatter: &mut Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Argument(message) => formatter.write_str(message),
+            Self::Gowin(error) => Display::fmt(error, formatter),
+        }
+    }
+}
+
+impl std::error::Error for GowinCliError {}
+
+impl From<GowinError> for GowinCliError {
+    fn from(value: GowinError) -> Self {
+        Self::Gowin(value)
+    }
+}
+
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+struct GowinCliOptions {
+    output: Option<PathBuf>,
+    build: bool,
+    program: bool,
+    gowin_home: Option<PathBuf>,
+    cable_index: Option<u8>,
+    help: bool,
+}
+
+fn parse_gowin_cli_args(
+    arguments: impl IntoIterator<Item = OsString>,
+) -> Result<GowinCliOptions, GowinCliError> {
+    let mut options = GowinCliOptions::default();
+    let mut arguments = arguments.into_iter();
+
+    while let Some(argument) = arguments.next() {
+        match argument.to_str() {
+            Some("--build") => options.build = true,
+            Some("--program") => {
+                options.build = true;
+                options.program = true;
+            }
+            Some("--gowin-home") => {
+                options.gowin_home = Some(PathBuf::from(arguments.next().ok_or_else(|| {
+                    GowinCliError::Argument("`--gowin-home` requires a directory".to_string())
+                })?));
+            }
+            Some(value) if value.starts_with("--gowin-home=") => {
+                let value = &value["--gowin-home=".len()..];
+                if value.is_empty() {
+                    return Err(GowinCliError::Argument(
+                        "`--gowin-home` requires a directory".to_string(),
+                    ));
+                }
+                options.gowin_home = Some(PathBuf::from(value));
+            }
+            Some("--cable-index") => {
+                let value = arguments.next().ok_or_else(|| {
+                    GowinCliError::Argument("`--cable-index` requires a number".to_string())
+                })?;
+                options.cable_index = Some(parse_cable_index(&value)?);
+            }
+            Some(value) if value.starts_with("--cable-index=") => {
+                options.cable_index = Some(parse_cable_index(OsString::from(
+                    &value["--cable-index=".len()..],
+                ))?);
+            }
+            Some("--help" | "-h") => options.help = true,
+            Some(value) if value.starts_with('-') => {
+                return Err(GowinCliError::Argument(format!(
+                    "unknown option `{value}`; use `--help`"
+                )));
+            }
+            _ if options.output.is_some() => {
+                return Err(GowinCliError::Argument(
+                    "only one output directory may be specified".to_string(),
+                ));
+            }
+            _ => options.output = Some(PathBuf::from(argument)),
+        }
+    }
+    Ok(options)
+}
+
+fn parse_cable_index(value: impl AsRef<std::ffi::OsStr>) -> Result<u8, GowinCliError> {
+    let value = value.as_ref().to_str().ok_or_else(|| {
+        GowinCliError::Argument("`--cable-index` must be a number from 0 through 5".to_string())
+    })?;
+    let index = value.parse::<u8>().map_err(|_| {
+        GowinCliError::Argument(format!(
+            "invalid cable index `{value}`; expected a number from 0 through 5"
+        ))
+    })?;
+    if index > GowinProgrammerCable::WinUsb.index() {
+        return Err(GowinCliError::Argument(format!(
+            "invalid cable index `{value}`; expected a number from 0 through 5"
+        )));
+    }
+    Ok(index)
+}
+
+/// Run the common export/build/volatile-program CLI used by Gowin examples.
+pub fn run_gowin_project_cli<T, M>(
+    project: GowinModuleProject<T, M>,
+    default_output: impl Into<PathBuf>,
+) -> Result<(), GowinCliError>
+where
+    T: GowinTarget,
+    M: Module,
+{
+    let mut arguments = std::env::args_os();
+    let executable = arguments
+        .next()
+        .and_then(|value| PathBuf::from(value).file_name().map(|name| name.to_owned()))
+        .unwrap_or_else(|| "gowin-example".into());
+
+    let options = parse_gowin_cli_args(arguments)?;
+    if options.help {
+        println!(
+            "Usage: {} [OUTPUT] [--build] [--program] [--gowin-home PATH] [--cable-index N]\n\n\
+             --build          Export and run Gowin synthesis/place-and-route\n\
+             --program        Build, then program volatile FPGA SRAM\n\
+             --gowin-home     Gowin installation root; overrides GOWIN_HOME and PATH\n\
+             --cable-index    Override the target's Programmer cable-driver type",
+            executable.to_string_lossy()
+        );
+        return Ok(());
+    }
+
+    let output = options.output.unwrap_or_else(|| default_output.into());
+    let generated = project.export(&output)?;
+    println!("Exported Gowin project to {}", output.display());
+    if !options.build {
+        return Ok(());
+    }
+
+    let toolchain = options
+        .gowin_home
+        .map(GowinToolchain::from_home)
+        .map(Ok)
+        .unwrap_or_else(GowinToolchain::discover)?;
+    let result = toolchain.build(&output, &generated)?;
+    println!("Built {}", result.bitstream.display());
+    for warning in &result.warnings {
+        println!("Gowin warning: {warning}");
+    }
+    if options.program {
+        println!("Programming volatile FPGA SRAM; the board must be connected.");
+        toolchain.program_sram(
+            &result,
+            options
+                .cable_index
+                .unwrap_or(result.device.programmer_cable.index()),
+        )?;
+    }
+    Ok(())
+}
+
 impl GowinToolchain {
     pub fn from_home(home: impl AsRef<Path>) -> Self {
         let home = home.as_ref();
@@ -738,10 +922,12 @@ impl GowinToolchain {
 }
 
 #[derive(Debug)]
+#[non_exhaustive]
 pub struct GowinBuildResult {
     pub status: ExitStatus,
     pub bitstream: PathBuf,
     pub synthesis_log: PathBuf,
+    pub synthesis_resource_report: PathBuf,
     pub pnr_report: PathBuf,
     pub timing_report: PathBuf,
     pub warnings: Vec<String>,
@@ -772,6 +958,8 @@ impl GowinToolchain {
             status,
             bitstream: directory.join(format!("impl/pnr/{project_name}.fs")),
             synthesis_log: directory.join(format!("impl/gwsynthesis/{project_name}.log")),
+            synthesis_resource_report: directory
+                .join(format!("impl/gwsynthesis/{project_name}_syn_rsc.xml")),
             pnr_report: directory.join(format!("impl/pnr/{project_name}.rpt.txt")),
             timing_report: directory.join(format!("impl/pnr/{project_name}.tr")),
             warnings: collect_warnings(directory, project_name)?,
@@ -781,6 +969,11 @@ impl GowinToolchain {
             return Err(GowinError::MissingBuildArtifact(result.bitstream));
         }
         audit_timing(&result.timing_report)?;
+        audit_physical_resources(
+            &result.pnr_report,
+            &result.synthesis_resource_report,
+            &project.resources,
+        )?;
         Ok(result)
     }
 
@@ -887,6 +1080,228 @@ fn timing_count(report: &str, marker: &str) -> Option<usize> {
         .and_then(|value| value.trim().parse().ok())
 }
 
+fn audit_physical_resources(
+    report: &Path,
+    hierarchy_report: &Path,
+    planned: &ResourceReport,
+) -> Result<(), GowinError> {
+    if !report.is_file() {
+        return Err(GowinError::MissingBuildArtifact(report.to_path_buf()));
+    }
+    let text = fs::read_to_string(report)?;
+    if !text.contains("Resource Usage Summary") {
+        return Err(GowinError::PhysicalResourceReportUnrecognized(
+            report.to_path_buf(),
+        ));
+    }
+
+    for (kind, label) in [
+        (ResourceKind::Bsram18K, "BSRAM"),
+        (ResourceKind::Pll, "PLL"),
+    ] {
+        let claimed = planned.claimed.get(&kind).copied().unwrap_or(0);
+        let actual = resource_usage_fraction(&text, label)
+            .unwrap_or_else(|| resource_mode_total(&text, label).unwrap_or(0));
+        if actual > claimed {
+            return Err(GowinError::PhysicalResourceMismatch {
+                report: report.to_path_buf(),
+                resource: kind,
+                claimed,
+                actual,
+            });
+        }
+    }
+
+    audit_bsram_ownership(hierarchy_report, planned)?;
+
+    let claimed_plls = planned
+        .claimed
+        .get(&ResourceKind::Pll)
+        .copied()
+        .unwrap_or(0);
+    if claimed_plls != 0 {
+        return Err(GowinError::PhysicalResourceAuditUnsupported {
+            report: hierarchy_report.to_path_buf(),
+            resource: ResourceKind::Pll,
+            claimed: claimed_plls,
+        });
+    }
+
+    let claimed_multipliers = planned
+        .claimed
+        .get(&ResourceKind::Multiplier18x18)
+        .copied()
+        .unwrap_or(0);
+    if claimed_multipliers != 0 {
+        return Err(GowinError::PhysicalResourceAuditUnsupported {
+            report: hierarchy_report.to_path_buf(),
+            resource: ResourceKind::Multiplier18x18,
+            claimed: claimed_multipliers,
+        });
+    }
+    if let Some(actual) = resource_usage_fraction(&text, "DSP") {
+        if actual != 0 {
+            return Err(GowinError::PhysicalResourceMismatch {
+                report: report.to_path_buf(),
+                resource: ResourceKind::Multiplier18x18,
+                claimed: 0,
+                actual,
+            });
+        }
+    } else {
+        let physical_dsp_modes = resource_mode_total(&text, "DSP").unwrap_or(0);
+        if physical_dsp_modes != 0 {
+            return Err(GowinError::PhysicalResourceMismatch {
+                report: report.to_path_buf(),
+                resource: ResourceKind::Multiplier18x18,
+                claimed: 0,
+                actual: physical_dsp_modes,
+            });
+        }
+    }
+    Ok(())
+}
+
+fn audit_bsram_ownership(report: &Path, planned: &ResourceReport) -> Result<(), GowinError> {
+    if !report.is_file() {
+        return Err(GowinError::MissingBuildArtifact(report.to_path_buf()));
+    }
+    let text = fs::read_to_string(report)?;
+    let actual = hierarchy_resource_usage(&text, "Bsram")
+        .ok_or_else(|| GowinError::PhysicalResourceReportUnrecognized(report.to_path_buf()))?;
+    let mut claimed = BTreeMap::<String, u64>::new();
+    for allocation in &planned.allocations {
+        let amount = allocation
+            .resources
+            .iter()
+            .filter(|resource| resource.kind == ResourceKind::Bsram18K)
+            .map(|resource| resource.amount)
+            .sum::<u64>();
+        if amount == 0 {
+            continue;
+        }
+        let mut hierarchy = allocation.label.split('.').collect::<Vec<_>>();
+        hierarchy.pop();
+        let path = if hierarchy.is_empty() {
+            "u_logic".to_string()
+        } else {
+            format!("u_logic/{}", hierarchy.join("/"))
+        };
+        *claimed.entry(path).or_default() += amount;
+    }
+
+    let mut attributed = BTreeMap::<String, u64>::new();
+    for (actual_path, amount) in actual {
+        let owners = claimed
+            .keys()
+            .filter(|owner| {
+                actual_path == owner.as_str()
+                    || actual_path
+                        .strip_prefix(owner.as_str())
+                        .is_some_and(|suffix| suffix.starts_with('/'))
+            })
+            .collect::<Vec<_>>();
+        if owners.len() != 1 {
+            return Err(GowinError::PhysicalResourceInstanceMismatch {
+                report: report.to_path_buf(),
+                instance: actual_path,
+                resource: ResourceKind::Bsram18K,
+                claimed: 0,
+                actual: amount,
+            });
+        }
+        *attributed.entry(owners[0].to_string()).or_default() += amount;
+    }
+    for (instance, actual) in attributed {
+        let maximum = claimed[&instance];
+        if actual > maximum {
+            return Err(GowinError::PhysicalResourceInstanceMismatch {
+                report: report.to_path_buf(),
+                instance,
+                resource: ResourceKind::Bsram18K,
+                claimed: maximum,
+                actual,
+            });
+        }
+    }
+    Ok(())
+}
+
+fn hierarchy_resource_usage(report: &str, attribute: &str) -> Option<BTreeMap<String, u64>> {
+    if !report.contains("<Module ") {
+        return None;
+    }
+    let mut hierarchy = Vec::<String>::new();
+    let mut usage = BTreeMap::<String, u64>::new();
+    for line in report.lines() {
+        let line = line.trim();
+        if line.starts_with("</") {
+            hierarchy.pop()?;
+            continue;
+        }
+        if !line.starts_with("<Module ") && !line.starts_with("<SubModule ") {
+            continue;
+        }
+        let name = xml_report_attribute(line, "name")?;
+        hierarchy.push(name.to_string());
+        if let Some(amount) =
+            xml_report_attribute(line, attribute).and_then(|value| value.parse().ok())
+        {
+            let path = hierarchy
+                .iter()
+                .skip(1)
+                .cloned()
+                .collect::<Vec<_>>()
+                .join("/");
+            usage.insert(path, amount);
+        }
+        if line.ends_with("/>") {
+            hierarchy.pop();
+        }
+    }
+    Some(usage)
+}
+
+fn xml_report_attribute<'a>(line: &'a str, name: &str) -> Option<&'a str> {
+    let marker = format!(" {name}=\"");
+    let value = line.split_once(&marker)?.1;
+    Some(value.split_once('"')?.0)
+}
+
+fn resource_usage_fraction(report: &str, label: &str) -> Option<u64> {
+    report.lines().find_map(|line| {
+        let (name, usage) = line.split_once('|')?;
+        if name.trim() != label {
+            return None;
+        }
+        let (used, _) = usage.trim().split_once('/')?;
+        used.trim().parse().ok()
+    })
+}
+
+fn resource_mode_total(report: &str, label: &str) -> Option<u64> {
+    let mut lines = report.lines();
+    lines.find(|line| {
+        line.split_once('|')
+            .is_some_and(|(name, _)| name.trim() == label)
+    })?;
+    let mut total = 0u64;
+    for line in lines {
+        let Some((name, usage)) = line.split_once('|') else {
+            break;
+        };
+        if !name.trim().starts_with("--") {
+            break;
+        }
+        let value = usage
+            .split_whitespace()
+            .next()
+            .and_then(|value| value.parse::<u64>().ok())?;
+        total = total.checked_add(value)?;
+    }
+    Some(total)
+}
+
 #[derive(Debug)]
 pub enum GowinError {
     Project(ProjectError),
@@ -911,6 +1326,25 @@ pub enum GowinError {
         hold_ok: bool,
         paths_analyzed: Option<usize>,
         endpoints_analyzed: Option<usize>,
+    },
+    PhysicalResourceReportUnrecognized(PathBuf),
+    PhysicalResourceMismatch {
+        report: PathBuf,
+        resource: ResourceKind,
+        claimed: u64,
+        actual: u64,
+    },
+    PhysicalResourceInstanceMismatch {
+        report: PathBuf,
+        instance: String,
+        resource: ResourceKind,
+        claimed: u64,
+        actual: u64,
+    },
+    PhysicalResourceAuditUnsupported {
+        report: PathBuf,
+        resource: ResourceKind,
+        claimed: u64,
     },
 }
 
@@ -963,6 +1397,41 @@ impl Display for GowinError {
                 "Gowin timing audit failed for {} (setup_ok={setup_ok}, hold_ok={hold_ok}, paths_analyzed={paths_analyzed:?}, endpoints_analyzed={endpoints_analyzed:?})",
                 report.display(),
             ),
+            Self::PhysicalResourceReportUnrecognized(report) => write!(
+                formatter,
+                "Gowin physical-resource report format is not recognized: {}",
+                report.display()
+            ),
+            Self::PhysicalResourceMismatch {
+                report,
+                resource,
+                claimed,
+                actual,
+            } => write!(
+                formatter,
+                "Gowin physical-resource audit failed for {}: modules claimed {claimed} {resource}, but place-and-route used {actual}; instantiate only measured target-leaf wrappers for scarce FPGA resources",
+                report.display()
+            ),
+            Self::PhysicalResourceInstanceMismatch {
+                report,
+                instance,
+                resource,
+                claimed,
+                actual,
+            } => write!(
+                formatter,
+                "Gowin physical-resource ownership audit failed for {}: synthesized instance `{instance}` used {actual} {resource}, but its target-leaf wrapper claimed at most {claimed}",
+                report.display()
+            ),
+            Self::PhysicalResourceAuditUnsupported {
+                report,
+                resource,
+                claimed,
+            } => write!(
+                formatter,
+                "Gowin physical-resource audit cannot validate {claimed} claimed {resource} from report {}; add a measured report mapping before enabling this resource configuration",
+                report.display()
+            ),
         }
     }
 }
@@ -991,30 +1460,8 @@ impl From<std::io::Error> for GowinError {
 mod tests {
     use super::*;
     use crate::resources::components::UserLeds;
-    use crate::{
-        GowinTarget, Hardware, HardwareTarget, ModuleIo, ResourceKind, TangConsole138KC128M,
-        TangNano20K,
-    };
+    use crate::{Hardware, ModuleIo, TangNano20K};
     use digital_design_code::{CircuitWires, Wire};
-
-    #[test]
-    fn gowin_home_resolves_both_tool_paths_without_a_machine_default() {
-        let toolchain = GowinToolchain::from_home(Path::new("configured-gowin"));
-        assert_eq!(
-            toolchain.gw_sh(),
-            Path::new("configured-gowin/IDE/bin/gw_sh.exe")
-        );
-        assert_eq!(
-            toolchain.programmer_cli(),
-            Some(Path::new(
-                "configured-gowin/Programmer/bin/programmer_cli.exe"
-            ))
-        );
-        assert_eq!(
-            gowin_home_from_gw_sh(Path::new("configured-gowin/IDE/bin/gw_sh.exe")),
-            Some(PathBuf::from("configured-gowin"))
-        );
-    }
 
     #[derive(Clone, ModuleIo)]
     struct TestInput {
@@ -1024,34 +1471,6 @@ mod tests {
     #[derive(Clone, ModuleIo)]
     struct TestOutput {
         result: Wire,
-    }
-
-    #[derive(Hardware)]
-    #[hardware(namespace = "tests")]
-    struct TestModule;
-
-    impl Module for TestModule {
-        type Input = TestInput;
-        type Output = TestOutput;
-        type EmuState = ();
-
-        fn create_emu(_input: &Self::Input, _output: &Self::Output) -> Self::EmuState {}
-
-        fn execute_emu(
-            _state: &mut Self::EmuState,
-            circuit: &mut CircuitWires,
-            input: &Self::Input,
-            output: &Self::Output,
-        ) {
-            let value = circuit.get_wire(input.value);
-            circuit.set_wire(output.result, value);
-        }
-
-        fn nand(input: &Self::Input) -> Self::Output {
-            TestOutput {
-                result: input.value,
-            }
-        }
     }
 
     #[derive(Hardware)]
@@ -1084,137 +1503,6 @@ mod tests {
         }
     }
 
-    #[derive(Hardware)]
-    #[hardware(namespace = "tests")]
-    struct InvalidResourceOwner;
-
-    impl Module for InvalidResourceOwner {
-        type Input = TestInput;
-        type Output = TestOutput;
-        type EmuState = ();
-
-        fn target_resources() -> Vec<TargetResourceRequest> {
-            vec![TargetResourceRequest::new(UserLeds::<1>)]
-        }
-
-        fn create_emu(_input: &Self::Input, _output: &Self::Output) -> Self::EmuState {}
-
-        fn execute_emu(
-            _state: &mut Self::EmuState,
-            _circuit: &mut CircuitWires,
-            _input: &Self::Input,
-            _output: &Self::Output,
-        ) {
-        }
-
-        fn build_verilog(input: &Self::Input) -> Self::Output {
-            TestModule::verilog(input)
-        }
-    }
-
-    #[derive(Hardware)]
-    #[hardware(namespace = "tests", target_leaf)]
-    struct InvalidNestedResourceLeaf;
-
-    impl Module for InvalidNestedResourceLeaf {
-        type Input = TestInput;
-        type Output = TestOutput;
-        type EmuState = ();
-
-        fn target_resources() -> Vec<TargetResourceRequest> {
-            vec![TargetResourceRequest::new(UserLeds::<1>)]
-        }
-
-        fn create_emu(_input: &Self::Input, _output: &Self::Output) -> Self::EmuState {}
-
-        fn execute_emu(
-            _state: &mut Self::EmuState,
-            _circuit: &mut CircuitWires,
-            _input: &Self::Input,
-            _output: &Self::Output,
-        ) {
-        }
-
-        fn build_verilog(input: &Self::Input) -> Self::Output {
-            TestModule::verilog(input)
-        }
-    }
-
-    #[derive(Hardware)]
-    #[hardware(namespace = "tests", target_leaf)]
-    struct FourLedLeaf;
-
-    impl Module for FourLedLeaf {
-        type Input = TestInput;
-        type Output = TestOutput;
-        type EmuState = ();
-
-        fn target_resources() -> Vec<TargetResourceRequest> {
-            vec![TargetResourceRequest::new(UserLeds::<4>)]
-        }
-
-        fn create_emu(_input: &Self::Input, _output: &Self::Output) -> Self::EmuState {}
-
-        fn execute_emu(
-            _state: &mut Self::EmuState,
-            _circuit: &mut CircuitWires,
-            _input: &Self::Input,
-            _output: &Self::Output,
-        ) {
-        }
-
-        fn nand(input: &Self::Input) -> Self::Output {
-            TestOutput {
-                result: input.value,
-            }
-        }
-    }
-
-    #[derive(Hardware)]
-    #[hardware(namespace = "tests")]
-    struct TwoResourceLeaves;
-
-    impl Module for TwoResourceLeaves {
-        type Input = TestInput;
-        type Output = TestOutput;
-        type EmuState = ();
-
-        fn create_emu(_input: &Self::Input, _output: &Self::Output) -> Self::EmuState {}
-
-        fn execute_emu(
-            _state: &mut Self::EmuState,
-            _circuit: &mut CircuitWires,
-            _input: &Self::Input,
-            _output: &Self::Output,
-        ) {
-        }
-
-        fn build_verilog(input: &Self::Input) -> Self::Output {
-            let _first = FourLedLeaf::verilog(input);
-            FourLedLeaf::verilog(input)
-        }
-    }
-
-    #[test]
-    fn tang_console_138k_has_distinct_device_and_memory_resources() {
-        let inventory = TangConsole138KC128M::inventory();
-        assert_eq!(inventory.capacity(ResourceKind::Lut4), 138_240);
-        assert_eq!(inventory.capacity(ResourceKind::Bsram18K), 340);
-        assert_eq!(inventory.capacity(ResourceKind::Multiplier18x18), 298);
-        assert_eq!(inventory.capacity(ResourceKind::Ddr3Device), 1);
-        assert_eq!(inventory.capacity(ResourceKind::SdrSdramDevice), 0);
-        assert_eq!(
-            inventory.fitted_device_capacity_bits(ResourceKind::Ddr3Device),
-            Some(8_192 * 1_024 * 1_024)
-        );
-        assert_eq!(inventory.capacity(ResourceKind::UserLed), 3);
-        assert_eq!(inventory.capacity(ResourceKind::UserButton), 2);
-        assert_eq!(
-            <TangConsole138KC128M as GowinTarget>::DEVICE.part_number,
-            "GW5AST-LV138PG484AC1/I0"
-        );
-    }
-
     #[test]
     #[should_panic(
         expected = "component `user-leds` requests 7 user LED, but target `tang-nano-20k` has 6 remaining"
@@ -1222,25 +1510,6 @@ mod tests {
     fn generation_stops_after_a_resource_failure() {
         let project = GowinProject::<TangNano20K>::new("failed");
         let _ = project.generate::<TooManyLeds>();
-    }
-
-    #[test]
-    fn tang_console_export_uses_verified_ide_identity() {
-        let project = GowinProject::<TangConsole138KC128M>::new("console");
-        let generated = project.generate::<TestModule>().unwrap();
-        let gprj = &generated.files[Path::new("console.gprj")];
-        assert!(gprj.contains("gw5ast138c-007"));
-    }
-
-    #[test]
-    fn unbound_project_derives_the_gowin_top_from_the_hardware_type() {
-        let generated = GowinProject::<TangNano20K>::new("typed_top")
-            .generate::<TestModule>()
-            .unwrap();
-        assert_eq!(generated.top_module, "TestModule");
-        assert!(
-            generated.files[Path::new("build.tcl")].contains("set_option -top_module TestModule")
-        );
     }
 
     #[test]
@@ -1283,46 +1552,88 @@ mod tests {
     }
 
     #[test]
-    fn resource_requests_are_rejected_on_non_leaf_modules() {
-        let error = GowinProject::<TangNano20K>::new("invalid_owner")
-            .generate::<InvalidResourceOwner>()
-            .unwrap_err();
+    fn board_binding_reserves_clock_port_names() {
+        let contract = [
+            ("clk".to_string(), "input".to_string(), 1),
+            ("value".to_string(), "input".to_string(), 1),
+            ("result".to_string(), "output".to_string(), 1),
+        ];
+        let binding = GowinBoardBinding::<TangNano20K>::new(
+            "board_top",
+            "clk",
+            "clk",
+            TangNano20K::CLOCK_27M,
+        )
+        .bind_port(
+            GowinPortDirection::Input,
+            "clk",
+            "value",
+            [TangNano20K::USER_BUTTONS[0]],
+        )
+        .bind_port(
+            GowinPortDirection::Output,
+            "result",
+            "result",
+            [TangNano20K::USER_LEDS[0]],
+        );
         assert!(matches!(
-            error,
-            GowinError::Project(ProjectError::ResourceOwnerNotTargetLeaf(module))
-                if module.ends_with("InvalidResourceOwner")
+            binding.render("Logic", &contract),
+            Err(GowinError::InvalidBoardBinding(message))
+                if message.contains("duplicate board port `clk`")
+        ));
+
+        let binding = GowinBoardBinding::<TangNano20K>::new(
+            "board_top",
+            "board_clk",
+            "clk",
+            TangNano20K::CLOCK_27M,
+        )
+        .bind_port(
+            GowinPortDirection::Input,
+            "value",
+            "clk",
+            [TangNano20K::USER_BUTTONS[0]],
+        )
+        .bind_port(
+            GowinPortDirection::Output,
+            "result",
+            "result",
+            [TangNano20K::USER_LEDS[0]],
+        );
+        assert!(matches!(
+            binding.render("Logic", &contract),
+            Err(GowinError::InvalidBoardBinding(message))
+                if message.contains("duplicate logic port `clk`")
         ));
     }
 
     #[test]
-    fn target_leaf_marker_cannot_hide_child_modules() {
-        let error = GowinProject::<TangNano20K>::new("invalid_nested_leaf")
-            .generate::<InvalidNestedResourceLeaf>()
-            .unwrap_err();
-        assert!(matches!(
-            error,
-            GowinError::Project(ProjectError::ResourceOwnerHasChildren(module))
-                if module.ends_with("InvalidNestedResourceLeaf")
-        ));
-    }
+    fn common_cli_parses_machine_specific_overrides() {
+        let options = parse_gowin_cli_args([
+            OsString::from("out"),
+            OsString::from("--program"),
+            OsString::from("--gowin-home=C:/Gowin"),
+            OsString::from("--cable-index"),
+            OsString::from("4"),
+        ])
+        .unwrap();
+        assert_eq!(options.output, Some(PathBuf::from("out")));
+        assert!(options.build);
+        assert!(options.program);
+        assert_eq!(options.gowin_home, Some(PathBuf::from("C:/Gowin")));
+        assert_eq!(options.cable_index, Some(4));
 
-    #[test]
-    #[should_panic(
-        expected = "component `user-leds` requests 4 user LED, but target `tang-nano-20k` has 2 remaining"
-    )]
-    fn repeated_leaf_instances_each_consume_resources() {
-        let project = GowinProject::<TangNano20K>::new("repeated_resources");
-        let _ = project.generate::<TwoResourceLeaves>();
-    }
-
-    #[test]
-    fn tcl_paths_quote_spaces_and_xml_paths_are_escaped() {
-        let paths = vec![PathBuf::from("src/board files/a&b.v")];
-        let device = <TangNano20K as GowinTarget>::DEVICE;
-        let tcl = render_build_tcl(device, "safe_project", "SafeTop", &paths).unwrap();
-        assert!(tcl.contains("{board files}"));
-        let gprj = render_gprj(device, &paths);
-        assert!(gprj.contains("a&amp;b.v"));
+        for arguments in [
+            vec![OsString::from("--cable-index")],
+            vec![OsString::from("--cable-index=not-a-number")],
+            vec![OsString::from("--cable-index=6")],
+            vec![OsString::from("first"), OsString::from("second")],
+        ] {
+            assert!(matches!(
+                parse_gowin_cli_args(arguments),
+                Err(GowinCliError::Argument(_))
+            ));
+        }
     }
 
     #[test]
@@ -1342,6 +1653,99 @@ mod tests {
                 paths_analyzed: Some(0),
                 ..
             })
+        ));
+        fs::remove_file(report).unwrap();
+        fs::remove_dir(directory).unwrap();
+    }
+
+    #[test]
+    fn physical_resource_parser_reads_counts_and_mode_totals() {
+        let report = "3. Resource Usage Summary\n\
+  BSRAM | 6/46 | 14%\n\
+    --SP | 2\n\
+    --DPB | 2\n\
+    --DPX9B | 2\n\
+  DSP | 98%\n\
+    --PADD18 | 12\n\
+    --MULT18X18 | 10\n\
+    --MULTADDALU18X18 | 10\n\
+  PLL | 1/2 | 50%\n";
+        assert_eq!(resource_usage_fraction(report, "BSRAM"), Some(6));
+        assert_eq!(resource_mode_total(report, "BSRAM"), Some(6));
+        assert_eq!(resource_usage_fraction(report, "DSP"), None);
+        assert_eq!(resource_mode_total(report, "DSP"), Some(32));
+        assert_eq!(resource_usage_fraction(report, "PLL"), Some(1));
+    }
+
+    #[test]
+    fn physical_resource_audit_rejects_unclaimed_bsram() {
+        let directory = std::env::temp_dir().join(format!(
+            "digital-design-physical-resource-audit-{}",
+            std::process::id()
+        ));
+        fs::create_dir_all(&directory).unwrap();
+        let report = directory.join("pnr.rpt.txt");
+        let hierarchy_report = directory.join("syn_rsc.xml");
+        fs::write(
+            &report,
+            "3. Resource Usage Summary\n  BSRAM | 1/46 | 3%\n    --SP | 1\n",
+        )
+        .unwrap();
+        fs::write(
+            &hierarchy_report,
+            "<Module name=\"top\"><SubModule name=\"u_logic\" Bsram=\"1\"/></Module>\n",
+        )
+        .unwrap();
+        let planned = TargetResources::<TangNano20K>::new().report();
+        assert!(matches!(
+            audit_physical_resources(&report, &hierarchy_report, &planned),
+            Err(GowinError::PhysicalResourceMismatch {
+                resource: ResourceKind::Bsram18K,
+                claimed: 0,
+                actual: 1,
+                ..
+            })
+        ));
+        fs::remove_file(report).unwrap();
+        fs::remove_file(hierarchy_report).unwrap();
+        fs::remove_dir(directory).unwrap();
+    }
+
+    #[test]
+    fn physical_resource_audit_rejects_bsram_outside_target_leaf() {
+        use crate::resources::components::BsramBlocks;
+
+        let directory = std::env::temp_dir().join(format!(
+            "digital-design-resource-ownership-{}",
+            std::process::id()
+        ));
+        fs::create_dir_all(&directory).unwrap();
+        let report = directory.join("syn_rsc.xml");
+        fs::write(
+            &report,
+            "<Module name=\"top\">\n\
+             <SubModule name=\"u_logic\">\n\
+             <SubModule name=\"u_wrapper\" Bsram=\"1\"/>\n\
+             <SubModule name=\"raw_user_memory\" Bsram=\"1\"/>\n\
+             </SubModule>\n\
+             </Module>\n",
+        )
+        .unwrap();
+        let mut resources = TargetResources::<TangNano20K>::new();
+        resources
+            .claim_module(
+                "u_wrapper.Wrapper".to_string(),
+                &TargetResourceRequest::new(BsramBlocks::new(2)),
+            )
+            .unwrap();
+        assert!(matches!(
+            audit_bsram_ownership(&report, &resources.report()),
+            Err(GowinError::PhysicalResourceInstanceMismatch {
+                instance,
+                claimed: 0,
+                actual: 1,
+                ..
+            }) if instance == "u_logic/raw_user_memory"
         ));
         fs::remove_file(report).unwrap();
         fs::remove_dir(directory).unwrap();

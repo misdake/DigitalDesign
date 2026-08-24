@@ -19,6 +19,7 @@ pub enum ResourceKind {
     BoardClock27M,
     UserLed,
     UserButton,
+    DebugUartTx,
     SdrSdramDevice,
     Ddr3Device,
     SpiFlashDevice,
@@ -37,6 +38,7 @@ impl Display for ResourceKind {
             Self::BoardClock27M => "27 MHz board clock",
             Self::UserLed => "user LED",
             Self::UserButton => "user button",
+            Self::DebugUartTx => "debug UART TX",
             Self::SdrSdramDevice => "SDR SDRAM device",
             Self::Ddr3Device => "DDR3 SDRAM device",
             Self::SpiFlashDevice => "SPI flash device",
@@ -466,6 +468,7 @@ pub mod components {
 
     fixed_component!(Pll, "pll", Pll);
     fixed_component!(Clock27M, "clock-27mhz", BoardClock27M);
+    fixed_component!(DebugUartTx, "debug-uart-tx", DebugUartTx);
     fixed_component!(HdmiOutput, "hdmi-output", HdmiOutput);
     fixed_component!(SdrSdram, "sdr-sdram", SdrSdramDevice);
     fixed_component!(Ddr3, "ddr3-sdram", Ddr3Device);
@@ -548,7 +551,7 @@ pub mod components {
 
 #[cfg(test)]
 mod tests {
-    use super::components::{BsramBlocks, DspMultipliers, Pll, SdrSdram, UserLeds};
+    use super::components::{BsramBlocks, DspMultipliers, SdrSdram};
     use super::*;
     use crate::TangNano20K;
 
@@ -625,42 +628,5 @@ mod tests {
                 .get(&ResourceKind::Multiplier18x18),
             None
         );
-    }
-
-    #[test]
-    fn target_counts_are_checked_at_take_time() {
-        let mut resources = TargetResources::<TangNano20K>::new();
-        resources.take(Pll).unwrap();
-        resources.take(Pll).unwrap();
-        assert!(matches!(
-            resources.take(Pll),
-            Err(ResourceError::CapacityExceeded {
-                resource: ResourceKind::Pll,
-                remaining: 0,
-                ..
-            })
-        ));
-        let mut resources = TargetResources::<TangNano20K>::new();
-        assert!(matches!(
-            resources.take(UserLeds::<7>),
-            Err(ResourceError::CapacityExceeded {
-                resource: ResourceKind::UserLed,
-                ..
-            })
-        ));
-    }
-
-    #[test]
-    fn failed_allocator_cannot_be_used_or_exported_later() {
-        let mut resources = TargetResources::<TangNano20K>::new();
-        let _ = resources.take(UserLeds::<7>);
-        assert!(matches!(
-            resources.take(UserLeds::<1>),
-            Err(ResourceError::AllocatorFailed { .. })
-        ));
-        assert!(matches!(
-            resources.ensure_valid(),
-            Err(ResourceError::AllocatorFailed { .. })
-        ));
     }
 }

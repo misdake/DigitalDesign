@@ -40,6 +40,11 @@ Implement `Module` on one type:
   `VerilogIdentity` and includes every const generic automatically. Each
   concrete Rust specialization becomes one concrete Verilog module and file.
 
+A Verilog-only board test harness sets `EMU_AVAILABLE` to false. Calling its
+`emu` entry point then fails immediately; it must not provide placeholder
+outputs that pretend to model the hardware test. Reusable hardware modules
+continue to provide a real emulator.
+
 Generated NAND registers use the project main clock. Additional clocks of an
 external hardware block are ordinary input ports; its emulator is responsible
 for detecting and applying those clock edges.
@@ -100,6 +105,14 @@ export always enters through `build_verilog`: a child's `verilog` uses its
 verified hand-written implementation when present and otherwise recursively
 exports the child's NAND implementation.
 
+When a handwritten Verilog module directly instantiates child modules, it
+lists every physical instance through `Module::verilog_dependencies`. The
+exporter emits each concrete child definition once, but applies its target-leaf
+resource claim once per listed instance. Instance names are included in the
+parent's verification hash, so changing that instance list requires another
+successful HDL simulation. Generated structural modules do
+not use this list because calls to `Child::verilog` already record instances.
+
 ## Cycle tests
 
 `ModuleTest` runs identical typed vectors against independent emulated and
@@ -122,27 +135,122 @@ cycle counts, sticky errors, and first-error context. Larger tests should emit
 framed UART telemetry so a capture can be decoded and replayed as emulator
 conformance vectors.
 
-## Hand-written Verilog verification
+## Explicit Verilog simulation
 
 Hand-written Verilog uses the same `ModuleTest` steps and expected values as
 emu and NAND. The framework generates the HDL testbench from those vectors, so
 there is no second copy of test data. `TestStep::after_cycles(N)` represents a
 compact run of main-clock edges before sampling, including large dividers.
-Both source and generated testbench text are included in the checked-in
-verification hash. Normal `cargo test` never launches an external HDL tool;
-simulation tests are marked `#[ignore]` and must be requested explicitly:
+Normal `cargo test` never launches an external HDL tool; simulation tests are
+marked `#[ignore]` and must be requested explicitly. For example:
 
 ```text
-cargo test -p digital-design-hardware --all-targets verify_handwritten_verilog_with_iverilog -- --ignored --nocapture
+cargo test -p digital-design-hardware --lib components::bsram::tests::verify_verilog_with_iverilog -- --ignored
 ```
 
 Install Icarus Verilog first, or set `IVERILOG` and `VVP` to the executable
 paths. A successful testbench must print `DIGITAL_DESIGN_PASS`. The helper then
-prints a `ModuleName=fnv1a64:...` line; copy that exact line to the module's
-`.verified` file. Generation rejects missing or stale records without exposing
-the replacement hash; only a successful explicit simulation prints it. The
-manifest is an auditable attestation, not a substitute for the simulation run
-that produced it.
+returns success. There is deliberately no checked-in source hash or export-time
+attestation: explicit HDL simulation and hardware validation remain available
+without making every Verilog edit participate in a manifest workflow.
+
+Every module that supplies `verilog_source` or `generated_verilog_source` must
+also supply a `verilog_testbench`; export rejects explicit HDL without one.
+Modules exported mechanically from `nand` need no separate Verilog testbench:
+their module tests should instead run the same vectors against emulation and
+NAND, while project-level export and synthesis tests cover the serializer.
+Parameterized HDL should simulate small representative specializations. Large
+real-world constants are covered by source/export assertions instead of
+advancing millions of simulator cycles unless their timing behavior differs.
+
+### BSRAM leaves
+
+`Bsram1Rw1024<WIDTH, Image>`, `Bsram1R1Rw1024<WIDTH, Image>`, and
+`BsramTrueDualPort1024<WIDTH, Image>` provide the initial 1024-word BSRAM shapes.
+`WIDTH` must be 16 or 18; each concrete specialization claims one 18-Kbit
+BSRAM block. These are target leaves with emulator and generated, explicitly
+simulator-tested Verilog implementations. They intentionally have no NAND
+implementation:
+the FPGA memory primitive is their implementation boundary, and calling
+`nand` fails immediately instead of expanding storage into gates.
+
+All ports use the project clock and have synchronous registered reads. A
+read/write port operates in normal mode: during a write its read output holds
+the previous registered value. Every BSRAM requires an explicit `Image`; there
+is no uninitialized variant, so emulation and FPGA startup have the same
+contents. In the true-dual-port shape, simultaneous
+writes to one address are unsupported and panic in emulation. Avoid depending
+on same-address cross-port read/write collision values in portable modules;
+they require a target- and configuration-specific measurement.
+
+`Image` supplies one compile-time array shared by emulation and Verilog
+generation:
+
+```rust
+use digital_design_hardware::{
+    Bsram1Rw1024, BsramImage, BSRAM_1024_DEPTH,
+};
+
+const fn boot_words() -> [u64; BSRAM_1024_DEPTH] {
+    let mut words = [0; BSRAM_1024_DEPTH];
+    words[0] = 0x1234;
+    words
+}
+
+struct BootImage;
+
+impl BsramImage<16> for BootImage {
+    const WORDS: [u64; BSRAM_1024_DEPTH] = boot_words();
+}
+
+type BootRam = Bsram1Rw1024<16, BootImage>;
+```
+
+Use `ZeroBsramImage` when all-zero startup is wanted; it remains an explicit
+choice at the call site. The complete image is part of the concrete module
+identity, so equal specializations are emitted once while different images
+remain different modules. Gowin embeds the words in the volatile configuration
+bitstream; they are present when the configured design starts and may
+subsequently be overwritten normally. No runtime fill loop or external memory
+file is required. All three port shapes use the same image mechanism.
+Generated Verilog uses the image's most frequent word as a loop-filled default
+and emits individual assignments only for exceptions. An all-zero or constant
+image therefore stays short, and sparse images grow with their exceptional
+addresses rather than with all 1024 words. An image whose words are all
+different still necessarily carries all of that data in the exported project.
+
+Parameterized HDL templates live as complete, readable files beside their
+Rust implementation (for example, `src/components/bsram/*.v`). Askama parses
+those templates at Rust compile time and
+binds their substitutions to typed Rust template structs. Const-generic Rust
+specializations still render separate concrete Verilog modules; Verilog
+parameters are not introduced. Keep HDL structure in the template and limit
+Rust rendering code to values such as the concrete module name and bus width.
+
+The explicit module simulation uses the same typed vectors as emulation:
+
+```text
+cargo test -p digital-design-hardware --lib components::bsram::tests::verify_verilog_with_iverilog -- --ignored --nocapture
+```
+
+The `bsram` example instantiates all three shapes at both widths with zero
+images plus a writable RAM with a patterned image, and checks all 1024 startup
+words before writing anything. It then confirms a write replaces the selected
+patterned word. It also verifies on hardware that read/write outputs hold during
+writes while the independent read-only ports continue updating. Build and
+program volatile SRAM with:
+
+```text
+cargo run -p digital-design-hardware --example bsram -- --program
+```
+
+Its debug UART repeatedly sends checksummed `DDHT` status frames with BSRAM
+test ID `0x01`. Capture raw bytes with the serial receiver, then use the shared
+development script to verify the identity, freshness, checksum, and result:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File hardware/scripts/check_uart_status.ps1 -Path target/bsram_gowin/board_capture.bin -TestId 0x01
+```
 
 ## Hardware targets and resources
 
@@ -198,9 +306,20 @@ Their physical bit capacities remain target metadata and appear in the report;
 they are not allocatable bit balances. SSRAM remains a divisible FPGA fabric
 resource. Later BSRAM/DSP libraries can add configuration variants whose
 measured block consumption is declared by each concrete implementation.
+Unsupported configurations fail while reporting resources rather than using
+an estimate. The initial six 1024x16/18 BSRAM specializations have each been
+measured as one block; instantiating the same specialization more than once
+repeats that claim even though its Verilog definition is emitted only once.
 The lower-level allocator remains transactional and is poisoned after a failed
 claim. Exported Gowin projects include `resource-report.txt`; synthesis and
-place-and-route remain the final authority.
+place-and-route remain the final authority. After synthesis, the build audits
+Gowin's hierarchical resource report: every actual BSRAM must be inside the
+instance hierarchy of a target-leaf wrapper, and its use may not exceed that
+wrapper's measured claim. A wrapper optimized away still reserves its planning
+capacity, but cannot hide BSRAM inferred elsewhere. PnR totals provide a second
+check before programming. PLL and DSP claims fail closed while no measured
+per-instance report mapping exists; each future configuration must add that
+mapping before it can be enabled.
 
 Tang Nano 20K exposes the wires that are stable parts of the board directly as
 typed module IO:
@@ -297,3 +416,9 @@ cargo run -p digital-design-hardware --example basic_adder -- --build --gowin-ho
 SRAM programming is intentionally an explicit operation and is never run by
 `cargo test`. With a connected board it can be requested with `--program`;
 this first performs a clean export and build, then programs volatile SRAM.
+The Programmer cable index selects a cable-driver type, not a USB enumeration
+position. Each target supplies its normal type automatically (`USB Debugger A`
+for the current Tang targets), so moving to another development machine does
+not require a numeric setting. `--cable-index N` remains available for an
+unusual driver setup. With at most one connected cable of that type, Gowin
+Programmer selects it directly.

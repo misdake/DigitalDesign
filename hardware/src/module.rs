@@ -233,12 +233,6 @@ pub struct TargetResourceRequest {
     pub resources: Vec<ResourceAmount>,
 }
 
-#[derive(Clone, Debug)]
-pub struct VerilogVerification {
-    pub testbench: String,
-    pub verified_hashes: &'static str,
-}
-
 impl TargetResourceRequest {
     pub fn new<C: TargetComponent>(component: C) -> Self {
         Self {
@@ -254,6 +248,7 @@ pub trait Module: HardwareIdentity + Sized + 'static {
     type EmuState: 'static;
 
     const USES_MAIN_CLOCK: bool = false;
+    const EMU_AVAILABLE: bool = true;
 
     /// Resources used by this module itself, excluding child modules.
     ///
@@ -282,6 +277,11 @@ pub trait Module: HardwareIdentity + Sized + 'static {
     }
 
     fn emu(input: &Self::Input) -> Self::Output {
+        assert!(
+            Self::EMU_AVAILABLE,
+            "emulator implementation is not available for module `{}`",
+            std::any::type_name::<Self>()
+        );
         let output = Self::Output::allocate();
         let state = Self::create_emu(input, &output);
         external(ModuleExternal::<Self> {
@@ -311,11 +311,28 @@ pub trait Module: HardwareIdentity + Sized + 'static {
         None
     }
 
-    /// Explicit simulation recipe and previously successful source hash for
-    /// a hand-written Verilog implementation. Ordinary Rust tests do not run
-    /// the external simulator; export only checks this stored attestation.
-    fn verilog_verification() -> Option<VerilogVerification> {
+    /// Return Verilog generated deterministically from Rust-side data.
+    ///
+    /// A module must implement at most one of `verilog_source` and
+    /// `generated_verilog_source`.
+    fn generated_verilog_source() -> Option<String> {
         None
+    }
+
+    /// Testbench used by the explicit external Verilog simulator test.
+    /// Ordinary Rust tests and project export do not run this test.
+    fn verilog_testbench() -> Option<String> {
+        None
+    }
+
+    /// Child module instances instantiated directly by `verilog_source`.
+    ///
+    /// Add one dependency for every physical instance in the handwritten
+    /// source. The exporter uses these declarations to emit child definitions
+    /// and account for each target-leaf resource claim. Generated modules use
+    /// `build_verilog` instead and must leave this empty.
+    fn verilog_dependencies() -> Vec<crate::VerilogDependency> {
+        Vec::new()
     }
 
     fn verilog(input: &Self::Input) -> Self::Output {

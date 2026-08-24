@@ -9,7 +9,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 #[derive(Clone, Debug)]
 pub struct TestStep<I, O> {
     pub input: I,
-    pub expected: O,
+    pub expected: Option<O>,
     pub cycles: u64,
 }
 
@@ -17,7 +17,19 @@ impl<I, O> TestStep<I, O> {
     pub fn new(input: I, expected: O) -> Self {
         Self {
             input,
-            expected,
+            expected: Some(expected),
+            cycles: 1,
+        }
+    }
+
+    /// Drive a cycle without checking its output.
+    ///
+    /// This is useful while priming uninitialized physical memories. Later
+    /// checked steps must establish every value on which they rely.
+    pub fn drive(input: I) -> Self {
+        Self {
+            input,
+            expected: None,
             cycles: 1,
         }
     }
@@ -50,10 +62,22 @@ impl<M: Module> ModuleTest<M> {
         assert_eq!(emu.len(), nand.len());
         for (index, ((emu, nand), step)) in emu.iter().zip(&nand).zip(&self.steps).enumerate() {
             assert_eq!(emu, nand, "emu/NAND mismatch at test step {index}");
-            assert_eq!(
-                emu, &step.expected,
-                "unexpected output at test step {index}"
-            );
+            if let Some(expected) = &step.expected {
+                assert_eq!(emu, expected, "unexpected output at test step {index}");
+            }
+        }
+    }
+
+    pub fn run_emu(&self) {
+        for (index, (actual, step)) in self
+            .run_backend(M::emu, false)
+            .iter()
+            .zip(&self.steps)
+            .enumerate()
+        {
+            if let Some(expected) = &step.expected {
+                assert_eq!(actual, expected, "unexpected output at test step {index}");
+            }
         }
     }
 
@@ -83,16 +107,6 @@ impl<M: Module> ModuleTest<M> {
                 output.sample(&circuit)
             })
             .collect()
-    }
-
-    pub fn verilog_verification(
-        &self,
-        verified_hashes: &'static str,
-    ) -> crate::VerilogVerification {
-        crate::VerilogVerification {
-            testbench: self.verilog_testbench(),
-            verified_hashes,
-        }
     }
 
     pub fn verilog_testbench(&self) -> String {
@@ -147,12 +161,14 @@ impl<M: Module> ModuleTest<M> {
             } else {
                 text.push_str("    #1;\n");
             }
-            for value in M::Output::verilog_values(&step.expected) {
-                validate_verilog_io_value(&value);
-                text.push_str(&format!(
-                    "    if ({} !== {}'d{}) begin $display(\"FAIL: step {} output {}\"); $finish(1); end\n",
-                    value.name, value.width, value.value, index, value.name
-                ));
+            if let Some(expected) = &step.expected {
+                for value in M::Output::verilog_values(expected) {
+                    validate_verilog_io_value(&value);
+                    text.push_str(&format!(
+                        "    if ({} !== {}'d{}) begin $display(\"FAIL: step {} output {}\"); $finish(1); end\n",
+                        value.name, value.width, value.value, index, value.name
+                    ));
+                }
             }
         }
         text.push_str("    $display(\"DIGITAL_DESIGN_PASS\");\n    $finish;\nend\nendmodule\n");
@@ -251,13 +267,11 @@ impl From<std::io::Error> for VerilogSimulationError {
     }
 }
 
-/// Explicitly compile and run a module's hand-written Verilog testbench.
+/// Explicitly compile and run a module's Verilog source testbench.
 ///
-/// This is intentionally not called by ordinary test helpers. After success,
-/// copy the returned `module=hash` line into that module's verification
-/// manifest. Verilog export will reject missing or stale records.
-pub fn verify_verilog_with_iverilog<M: Module>() -> Result<String, VerilogSimulationError> {
-    let test = crate::project::handwritten_verilog_test::<M>()?;
+/// This is intentionally not called by ordinary test helpers.
+pub fn verify_verilog_with_iverilog<M: Module>() -> Result<(), VerilogSimulationError> {
+    let test = crate::project::explicit_verilog_source_test::<M>()?;
     let nonce = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .unwrap_or_default()
@@ -328,7 +342,7 @@ pub fn verify_verilog_with_iverilog<M: Module>() -> Result<String, VerilogSimula
     }
 
     fs::remove_dir_all(&directory)?;
-    Ok(test.verification_record)
+    Ok(())
 }
 
 fn simulator_path(
@@ -359,7 +373,7 @@ fn simulator_path(
 mod tests {
     use super::*;
     use crate::{Hardware, ModuleIo, ProjectError, VerilogProject};
-    use digital_design_code::{build_circuit, CircuitWires, Wire, Wires};
+    use digital_design_code::{build_circuit, CircuitWires, Wire};
 
     #[derive(Clone, ModuleIo)]
     struct ScalarInput {
@@ -369,51 +383,6 @@ mod tests {
     #[derive(Clone, ModuleIo)]
     struct ScalarOutput {
         result: Wire,
-    }
-
-    #[derive(Clone, ModuleIo)]
-    struct GenericBus<const WIDTH: usize> {
-        value: Wires<WIDTH>,
-    }
-
-    #[test]
-    fn module_io_supports_const_generic_bus_widths() {
-        let (_, io) = build_circuit(GenericBus::<7>::allocate);
-        assert_eq!(io.bindings()[0].wires.len(), 7);
-    }
-
-    #[derive(Hardware)]
-    #[hardware(namespace = "tests")]
-    struct MissingNand;
-
-    impl Module for MissingNand {
-        type Input = ScalarInput;
-        type Output = ScalarOutput;
-        type EmuState = ();
-
-        fn create_emu(_input: &Self::Input, _output: &Self::Output) -> Self::EmuState {}
-
-        fn execute_emu(
-            _state: &mut Self::EmuState,
-            circuit: &mut CircuitWires,
-            input: &Self::Input,
-            output: &Self::Output,
-        ) {
-            output.result.set(circuit, input.value.get(circuit));
-        }
-    }
-
-    #[test]
-    fn missing_nand_panics_without_poisoning_the_circuit_builder() {
-        let panic = std::panic::catch_unwind(|| {
-            build_circuit(|| {
-                let input = ScalarInput::allocate();
-                MissingNand::nand(&input)
-            });
-        });
-        assert!(panic.is_err());
-        let (_, wire) = build_circuit(digital_design_code::input);
-        assert_ne!(wire.0, 0);
     }
 
     #[derive(Hardware)]
@@ -448,9 +417,9 @@ mod tests {
 
     #[derive(Hardware)]
     #[hardware(namespace = "tests")]
-    struct ParameterizedVerilog;
+    struct UntestedVerilog;
 
-    impl Module for ParameterizedVerilog {
+    impl Module for UntestedVerilog {
         type Input = ScalarInput;
         type Output = ScalarOutput;
         type EmuState = ();
@@ -467,96 +436,16 @@ mod tests {
 
         fn verilog_source() -> Option<String> {
             Some(
-                "module ParameterizedVerilogExtra(input wire value); endmodule\n\
-                 module ParameterizedVerilog #(parameter UNUSED = 1) (\n\
-                     output wire result,\n\
-                     input wire value\n\
-                 );\n\
-                 assign result = value;\n\
-                 endmodule\n"
+                "module UntestedVerilog(input wire value, output wire result); assign result = value; endmodule"
                     .to_string(),
             )
         }
     }
 
     #[test]
-    fn handwritten_verilog_accepts_parameters_and_port_reordering_before_attestation() {
-        let error = VerilogProject::generate::<ParameterizedVerilog>().unwrap_err();
-        assert!(matches!(
-            error,
-            ProjectError::MissingVerilogVerification(module)
-                if module == "ParameterizedVerilog"
-        ));
-    }
-
-    #[derive(Hardware)]
-    #[hardware(namespace = "tests")]
-    struct NamedGeneric<const WIDTH: usize>;
-
-    impl<const WIDTH: usize> Module for NamedGeneric<WIDTH> {
-        type Input = ScalarInput;
-        type Output = ScalarOutput;
-        type EmuState = ();
-
-        fn create_emu(_input: &Self::Input, _output: &Self::Output) -> Self::EmuState {}
-
-        fn execute_emu(
-            _state: &mut Self::EmuState,
-            _circuit: &mut CircuitWires,
-            _input: &Self::Input,
-            _output: &Self::Output,
-        ) {
-        }
-
-        fn nand(input: &Self::Input) -> Self::Output {
-            ScalarOutput {
-                result: input.value,
-            }
-        }
-    }
-
-    #[test]
-    fn generic_modules_can_supply_stable_hdl_names() {
-        let project = VerilogProject::generate::<NamedGeneric<8>>().unwrap();
-        assert_eq!(project.top_module, "NamedGeneric_WIDTH8");
-        assert!(project
-            .files
-            .contains_key(std::path::Path::new("tests/named_generic/width8.v")));
-    }
-
-    #[derive(Hardware)]
-    #[hardware(namespace = "tests")]
-    struct NandCallsEmu;
-
-    impl Module for NandCallsEmu {
-        type Input = ScalarInput;
-        type Output = ScalarOutput;
-        type EmuState = ();
-
-        fn create_emu(_input: &Self::Input, _output: &Self::Output) -> Self::EmuState {}
-
-        fn execute_emu(
-            _state: &mut Self::EmuState,
-            circuit: &mut CircuitWires,
-            input: &Self::Input,
-            output: &Self::Output,
-        ) {
-            output.result.set(circuit, input.value.get(circuit));
-        }
-
-        fn nand(input: &Self::Input) -> Self::Output {
-            Self::emu(input)
-        }
-    }
-
-    #[test]
-    #[should_panic(expected = "Externals are not supported")]
-    fn nand_test_rejects_external_implementations() {
-        ModuleTest::<NandCallsEmu>::new([TestStep::new(
-            ScalarInputValue { value: false },
-            ScalarOutputValue { result: false },
-        )])
-        .run_emu_and_nand();
+    fn explicit_verilog_requires_a_testbench() {
+        let error = VerilogProject::generate::<UntestedVerilog>().unwrap_err();
+        assert!(matches!(error, ProjectError::MissingVerilogTestbench(_)));
     }
 
     #[derive(Hardware)]

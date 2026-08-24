@@ -1,6 +1,4 @@
-use crate::{
-    IoBinding, Module, ModuleIo, ResourceAmount, TargetResourceRequest, VerilogVerification,
-};
+use crate::{IoBinding, Module, ModuleIo, ResourceAmount, TargetResourceRequest};
 use digital_design_code::{
     build_circuit, render_verilog_module, validate_verilog_identifier, ExportGateReg,
     VerilogConnection, VerilogInstance, VerilogModule, VerilogPort,
@@ -20,12 +18,11 @@ pub enum ProjectError {
     DuplicateModuleName(String),
     DuplicateOutputPath(PathBuf),
     InvalidHandwrittenVerilog(String),
-    InvalidVerificationManifest(String),
-    MissingVerilogVerification(String),
-    MissingVerifiedVerilogHash(String),
-    VerilogVerificationMismatch { module: String, expected: String },
+    MissingVerilogTestbench(String),
     ResourceOwnerHasChildren(String),
     ResourceOwnerNotTargetLeaf(String),
+    VerilogDependenciesRequireHandwrittenSource(String),
+    DuplicateVerilogDependencyInstance { module: String, instance: String },
     UnsafeOutputPath(PathBuf),
     UnmanagedFileConflict(PathBuf),
 }
@@ -45,21 +42,9 @@ impl Display for ProjectError {
                 write!(formatter, "multiple modules export to `{}`", path.display())
             }
             Self::InvalidHandwrittenVerilog(message) => formatter.write_str(message),
-            Self::InvalidVerificationManifest(message) => formatter.write_str(message),
-            Self::MissingVerilogVerification(module) => write!(
+            Self::MissingVerilogTestbench(module) => write!(
                 formatter,
-                "hand-written Verilog module `{module}` has no verification recipe"
-            ),
-            Self::MissingVerifiedVerilogHash(module) => write!(
-                formatter,
-                "hand-written Verilog module `{module}` has not been verified; run its explicit Verilog simulation test and copy the record it prints into the verification manifest"
-            ),
-            Self::VerilogVerificationMismatch {
-                module,
-                expected,
-            } => write!(
-                formatter,
-                "hand-written Verilog verification is stale for `{module}`: manifest has `{expected}`; rerun its explicit Verilog simulation test and copy the record it prints"
+                "Verilog module `{module}` has no explicit simulation testbench"
             ),
             Self::ResourceOwnerHasChildren(module) => write!(
                 formatter,
@@ -68,6 +53,14 @@ impl Display for ProjectError {
             Self::ResourceOwnerNotTargetLeaf(module) => write!(
                 formatter,
                 "module `{module}` requests target resources without `#[hardware(..., target_leaf)]`; upper modules must obtain resources by instantiating target leaves"
+            ),
+            Self::VerilogDependenciesRequireHandwrittenSource(module) => write!(
+                formatter,
+                "module `{module}` declares handwritten Verilog dependencies but has no `verilog_source`"
+            ),
+            Self::DuplicateVerilogDependencyInstance { module, instance } => write!(
+                formatter,
+                "module `{module}` declares duplicate Verilog dependency instance `{instance}`"
             ),
             Self::UnsafeOutputPath(path) => {
                 write!(
@@ -123,9 +116,30 @@ struct RawModule {
     inputs: Vec<VerilogPort>,
     outputs: Vec<VerilogPort>,
     instances: Vec<RecordedInstance>,
+    dependencies: Vec<VerilogDependency>,
     base_clocked: bool,
     resources: Vec<TargetResourceRequest>,
-    verification: Option<VerilogVerification>,
+    testbench: Option<String>,
+}
+
+/// A physical child instance written directly in a module's handwritten HDL.
+#[derive(Clone)]
+pub struct VerilogDependency {
+    descriptor: ModuleDescriptor,
+    instance_name: String,
+}
+
+impl VerilogDependency {
+    pub fn new<M: Module>(instance_name: impl Into<String>) -> Self {
+        let instance_name = instance_name.into();
+        validate_verilog_identifier(&instance_name).unwrap_or_else(|error| {
+            panic!("invalid handwritten Verilog dependency instance `{instance_name}`: {error}")
+        });
+        Self {
+            descriptor: descriptor::<M>(),
+            instance_name,
+        }
+    }
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -202,7 +216,14 @@ fn ports(bindings: Vec<IoBinding>) -> Vec<VerilogPort> {
 fn build_raw<M: Module>() -> RawModule {
     let recording = RecordingGuard::start();
 
-    let source = M::verilog_source();
+    let handwritten_source = M::verilog_source();
+    let generated_source = M::generated_verilog_source();
+    assert!(
+        handwritten_source.is_none() || generated_source.is_none(),
+        "module `{}` provides both handwritten and generated Verilog source",
+        std::any::type_name::<M>()
+    );
+    let source = handwritten_source.or(generated_source);
     let (circuit, (input, output)) = build_circuit(|| {
         let input = M::Input::allocate();
         let output = if source.is_some() {
@@ -223,9 +244,10 @@ fn build_raw<M: Module>() -> RawModule {
         inputs: ports(input.bindings()),
         outputs: ports(output.bindings()),
         instances,
+        dependencies: M::verilog_dependencies(),
         base_clocked,
         resources: M::target_resources(),
-        verification: M::verilog_verification(),
+        testbench: M::verilog_testbench(),
     }
 }
 
@@ -318,12 +340,27 @@ impl Resolver {
         }
 
         let raw = (descriptor.build)();
+        if raw.source.is_none() && !raw.dependencies.is_empty() {
+            return Err(ProjectError::VerilogDependenciesRequireHandwrittenSource(
+                raw.descriptor.rust_name.to_string(),
+            ));
+        }
+        let mut dependency_names = HashSet::new();
+        for dependency in &raw.dependencies {
+            if !dependency_names.insert(dependency.instance_name.clone()) {
+                return Err(ProjectError::DuplicateVerilogDependencyInstance {
+                    module: raw.descriptor.rust_name.to_string(),
+                    instance: dependency.instance_name.clone(),
+                });
+            }
+        }
         if !raw.resources.is_empty() && !raw.descriptor.target_resource_leaf {
             return Err(ProjectError::ResourceOwnerNotTargetLeaf(
                 raw.descriptor.rust_name.to_string(),
             ));
         }
-        if !raw.resources.is_empty() && !raw.instances.is_empty() {
+        if !raw.resources.is_empty() && (!raw.instances.is_empty() || !raw.dependencies.is_empty())
+        {
             return Err(ProjectError::ResourceOwnerHasChildren(
                 raw.descriptor.rust_name.to_string(),
             ));
@@ -347,6 +384,14 @@ impl Resolver {
                 claim
             }));
         }
+        for dependency in &raw.dependencies {
+            let summary = self.visit(dependency.descriptor.clone())?;
+            resources.extend(summary.resources.into_iter().map(|mut claim| {
+                claim.instance_path =
+                    format!("{}.{}", dependency.instance_name, claim.instance_path);
+                claim
+            }));
+        }
         let clocked = raw.base_clocked || child_clocking.values().any(|clocked| *clocked);
 
         if !self.module_names.insert(raw.descriptor.module_name.clone()) {
@@ -361,8 +406,12 @@ impl Resolver {
         }
 
         let source = if let Some(source) = raw.source.as_deref() {
-            validate_handwritten(&raw, source, clocked)?;
-            verify_handwritten_attestation(&raw, source)?;
+            validate_explicit_verilog_source(&raw, source, clocked)?;
+            if raw.testbench.is_none() {
+                return Err(ProjectError::MissingVerilogTestbench(
+                    raw.descriptor.module_name.clone(),
+                ));
+            }
             source.to_string()
         } else {
             let instances = raw
@@ -420,109 +469,39 @@ impl Resolver {
     }
 }
 
-const VERIFICATION_DOMAIN: &str = "digital-design-verilog-verification-v1";
-
-fn verification_hash(module_name: &str, source: &str, testbench: &str) -> String {
-    let mut hash = 0xcbf29ce484222325u64;
-    for part in [VERIFICATION_DOMAIN, module_name, source, testbench] {
-        for byte in part.as_bytes().iter().copied().chain([0]) {
-            hash ^= u64::from(byte);
-            hash = hash.wrapping_mul(0x100000001b3);
-        }
-    }
-    format!("fnv1a64:{hash:016x}")
-}
-
-fn verification_record(module_name: &str, source: &str, testbench: &str) -> String {
-    format!(
-        "{module_name}={}",
-        verification_hash(module_name, source, testbench)
-    )
-}
-
-fn parse_verification_manifest(manifest: &str) -> Result<HashMap<&str, &str>, ProjectError> {
-    let mut entries = HashMap::new();
-    for (index, line) in manifest.lines().enumerate() {
-        let line = line.trim();
-        if line.is_empty() || line.starts_with('#') {
-            continue;
-        }
-        let Some((module, hash)) = line.split_once('=') else {
-            return Err(ProjectError::InvalidVerificationManifest(format!(
-                "invalid Verilog verification manifest line {}: expected `module=fnv1a64:...`",
-                index + 1
-            )));
-        };
-        if module.is_empty()
-            || hash.len() != "fnv1a64:".len() + 16
-            || !hash.starts_with("fnv1a64:")
-            || !hash["fnv1a64:".len()..]
-                .bytes()
-                .all(|byte| byte.is_ascii_hexdigit())
-        {
-            return Err(ProjectError::InvalidVerificationManifest(format!(
-                "invalid Verilog verification manifest line {}: `{line}`",
-                index + 1
-            )));
-        }
-        if entries.insert(module, hash).is_some() {
-            return Err(ProjectError::InvalidVerificationManifest(format!(
-                "duplicate Verilog verification entry for `{module}`"
-            )));
-        }
-    }
-    Ok(entries)
-}
-
-fn verify_handwritten_attestation(raw: &RawModule, source: &str) -> Result<(), ProjectError> {
-    let module = &raw.descriptor.module_name;
-    let verification = raw
-        .verification
-        .as_ref()
-        .ok_or_else(|| ProjectError::MissingVerilogVerification(module.clone()))?;
-    let actual_hash = verification_hash(module, source, &verification.testbench);
-    let entries = parse_verification_manifest(verification.verified_hashes)?;
-    let Some(expected) = entries.get(module.as_str()) else {
-        return Err(ProjectError::MissingVerifiedVerilogHash(module.clone()));
-    };
-    if *expected != actual_hash {
-        return Err(ProjectError::VerilogVerificationMismatch {
-            module: module.clone(),
-            expected: format!("{module}={expected}"),
-        });
-    }
-    Ok(())
-}
-
-pub(crate) struct HandwrittenVerilogTest {
+pub(crate) struct ExplicitVerilogSourceTest {
     pub module_name: String,
     pub source: String,
     pub testbench: String,
-    pub verification_record: String,
 }
 
-pub(crate) fn handwritten_verilog_test<M: Module>() -> Result<HandwrittenVerilogTest, ProjectError>
-{
+pub(crate) fn explicit_verilog_source_test<M: Module>(
+) -> Result<ExplicitVerilogSourceTest, ProjectError> {
     let raw = build_raw::<M>();
     let source = raw.source.as_deref().ok_or_else(|| {
         ProjectError::InvalidHandwrittenVerilog(format!(
-            "module `{}` has no hand-written Verilog to simulate",
+            "module `{}` has no explicit Verilog source to simulate",
             raw.descriptor.module_name
         ))
     })?;
-    validate_handwritten(&raw, source, raw.base_clocked)?;
-    let verification = raw.verification.as_ref().ok_or_else(|| {
-        ProjectError::MissingVerilogVerification(raw.descriptor.module_name.clone())
-    })?;
-    Ok(HandwrittenVerilogTest {
+    validate_explicit_verilog_source(&raw, source, raw.base_clocked)?;
+    let testbench = raw
+        .testbench
+        .as_ref()
+        .ok_or_else(|| ProjectError::MissingVerilogTestbench(raw.descriptor.module_name.clone()))?;
+    let mut resolver = Resolver::default();
+    for dependency in &raw.dependencies {
+        resolver.visit(dependency.descriptor.clone())?;
+    }
+    let mut simulation_source = resolver.files.into_values().collect::<Vec<_>>().join("\n");
+    if !simulation_source.is_empty() {
+        simulation_source.push('\n');
+    }
+    simulation_source.push_str(source);
+    Ok(ExplicitVerilogSourceTest {
         module_name: raw.descriptor.module_name.clone(),
-        source: source.to_string(),
-        testbench: verification.testbench.clone(),
-        verification_record: verification_record(
-            &raw.descriptor.module_name,
-            source,
-            &verification.testbench,
-        ),
+        source: simulation_source,
+        testbench: testbench.clone(),
     })
 }
 
@@ -761,7 +740,11 @@ fn parse_port_width(range: &str) -> Result<usize, ProjectError> {
     Ok(high.abs_diff(low) + 1)
 }
 
-fn validate_handwritten(raw: &RawModule, source: &str, clocked: bool) -> Result<(), ProjectError> {
+fn validate_explicit_verilog_source(
+    raw: &RawModule,
+    source: &str,
+    clocked: bool,
+) -> Result<(), ProjectError> {
     let mut expected = raw
         .inputs
         .iter()
@@ -958,7 +941,101 @@ fn create_transaction_directory(directory: &Path, label: &str) -> Result<PathBuf
 #[cfg(test)]
 mod file_tests {
     use super::*;
+    use crate::resources::components::BsramBlocks;
+    use crate::{Hardware, ModuleIo, ModuleTest, ResourceKind, TestStep};
+    use digital_design_code::{CircuitWires, Wire};
     use std::time::{SystemTime, UNIX_EPOCH};
+
+    #[derive(Clone, ModuleIo)]
+    struct DependencyInput {
+        value: Wire,
+    }
+
+    #[derive(Clone, ModuleIo)]
+    struct DependencyOutput {
+        result: Wire,
+    }
+
+    #[derive(Hardware)]
+    #[hardware(namespace = "tests/dependencies", target_leaf)]
+    struct ResourceDependency;
+
+    impl Module for ResourceDependency {
+        type Input = DependencyInput;
+        type Output = DependencyOutput;
+        type EmuState = ();
+
+        fn target_resources() -> Vec<TargetResourceRequest> {
+            vec![TargetResourceRequest::new(BsramBlocks::new(1))]
+        }
+
+        fn create_emu(_input: &Self::Input, _output: &Self::Output) -> Self::EmuState {}
+
+        fn execute_emu(
+            _state: &mut Self::EmuState,
+            _circuit: &mut CircuitWires,
+            _input: &Self::Input,
+            _output: &Self::Output,
+        ) {
+        }
+
+        fn nand(input: &Self::Input) -> Self::Output {
+            DependencyOutput {
+                result: input.value,
+            }
+        }
+    }
+
+    #[derive(Hardware)]
+    #[hardware(namespace = "tests/dependencies")]
+    struct RepeatedHandwrittenDependencies;
+
+    impl RepeatedHandwrittenDependencies {
+        const SOURCE: &'static str = "module RepeatedHandwrittenDependencies(\n    input wire value,\n    output wire result\n);\nwire middle;\nResourceDependency u_first(.value(value), .result(middle));\nResourceDependency u_second(.value(middle), .result(result));\nendmodule\n";
+    }
+
+    impl Module for RepeatedHandwrittenDependencies {
+        type Input = DependencyInput;
+        type Output = DependencyOutput;
+        type EmuState = ();
+
+        fn create_emu(_input: &Self::Input, _output: &Self::Output) -> Self::EmuState {}
+
+        fn execute_emu(
+            _state: &mut Self::EmuState,
+            _circuit: &mut CircuitWires,
+            _input: &Self::Input,
+            _output: &Self::Output,
+        ) {
+        }
+
+        fn verilog_source() -> Option<String> {
+            Some(Self::SOURCE.to_string())
+        }
+
+        fn verilog_testbench() -> Option<String> {
+            Some(
+                ModuleTest::<Self>::new([
+                    TestStep::new(
+                        DependencyInputValue { value: false },
+                        DependencyOutputValue { result: false },
+                    ),
+                    TestStep::new(
+                        DependencyInputValue { value: true },
+                        DependencyOutputValue { result: true },
+                    ),
+                ])
+                .verilog_testbench(),
+            )
+        }
+
+        fn verilog_dependencies() -> Vec<VerilogDependency> {
+            vec![
+                VerilogDependency::new::<ResourceDependency>("u_first"),
+                VerilogDependency::new::<ResourceDependency>("u_second"),
+            ]
+        }
+    }
 
     fn temporary_directory(name: &str) -> PathBuf {
         let nonce = SystemTime::now()
@@ -972,8 +1049,8 @@ mod file_tests {
     }
 
     #[test]
-    fn export_refuses_to_replace_an_unmanaged_file() {
-        let directory = temporary_directory("conflict");
+    fn export_never_overwrites_unmanaged_or_outside_files() {
+        let directory = temporary_directory("safety");
         fs::create_dir_all(&directory).unwrap();
         fs::write(directory.join("module.v"), "user source").unwrap();
         let files = BTreeMap::from([(PathBuf::from("module.v"), "generated".to_string())]);
@@ -986,13 +1063,6 @@ mod file_tests {
         );
 
         fs::remove_file(directory.join("module.v")).unwrap();
-        fs::remove_dir(directory).unwrap();
-    }
-
-    #[test]
-    fn export_rejects_unsafe_paths_from_a_tampered_manifest() {
-        let directory = temporary_directory("unsafe-manifest");
-        fs::create_dir_all(&directory).unwrap();
         fs::write(
             directory.join(".digital-design-generated"),
             "../outside.v\n",
@@ -1004,5 +1074,24 @@ mod file_tests {
 
         fs::remove_file(directory.join(".digital-design-generated")).unwrap();
         fs::remove_dir(directory).unwrap();
+    }
+
+    #[test]
+    fn repeated_handwritten_dependency_counts_each_instance_once() {
+        let project = VerilogProject::generate::<RepeatedHandwrittenDependencies>().unwrap();
+        assert_eq!(project.files.len(), 2);
+        assert_eq!(project.resource_claims.len(), 2);
+        assert_eq!(
+            project
+                .resource_claims
+                .iter()
+                .map(|claim| claim.instance_path.as_str())
+                .collect::<Vec<_>>(),
+            ["u_first.ResourceDependency", "u_second.ResourceDependency"]
+        );
+        assert!(project
+            .resource_claims
+            .iter()
+            .all(|claim| { claim.resources == [ResourceAmount::new(ResourceKind::Bsram18K, 1)] }));
     }
 }

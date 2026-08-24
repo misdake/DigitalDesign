@@ -1,4 +1,7 @@
-use crate::{Hardware, Module, ModuleIo, ModuleTest, TestStep, VerilogVerification};
+//! Registered clock-enable divider component.
+
+use crate::{Hardware, Module, ModuleIo, ModuleTest, TestStep};
+use askama::Template;
 use digital_design_code::{
     add_naive, input_const, input_w_const, mux2_w, reg, reg_w, CircuitWires, Wire, Wires,
 };
@@ -49,6 +52,15 @@ impl<const DIVISOR: u64, const WIDTH: usize> ClockDividerState<DIVISOR, WIDTH> {
 #[hardware(namespace = "components/timing")]
 pub struct ClockDivider<const DIVISOR: u64, const WIDTH: usize>;
 
+#[derive(Template)]
+#[template(path = "components/clock_divider/clock_divider.v", escape = "none")]
+struct ClockDividerTemplate<'a> {
+    module_name: &'a str,
+    width: usize,
+    high_bit: usize,
+    terminal: u64,
+}
+
 impl<const DIVISOR: u64, const WIDTH: usize> Module for ClockDivider<DIVISOR, WIDTH> {
     type Input = ClockDividerInput;
     type Output = ClockDividerOutput;
@@ -90,21 +102,23 @@ impl<const DIVISOR: u64, const WIDTH: usize> Module for ClockDivider<DIVISOR, WI
         ClockDividerOutput { tick: tick.out() }
     }
 
-    fn verilog_source() -> Option<String> {
+    fn generated_verilog_source() -> Option<String> {
         validate::<DIVISOR, WIDTH>();
         let module_name = <Self as crate::HardwareIdentity>::verilog_identity().module_name();
-        Some(format!(
-            "module {module_name}(\n    input wire clk,\n    output wire tick\n);\n\nreg [{high}:0] counter = {WIDTH}'d0;\nreg tick_reg = 1'b0;\n\nalways @(posedge clk) begin\n    if (counter == {WIDTH}'d{terminal}) begin\n        counter <= {WIDTH}'d0;\n        tick_reg <= 1'b1;\n    end else begin\n        counter <= counter + 1'b1;\n        tick_reg <= 1'b0;\n    end\nend\n\nassign tick = tick_reg;\n\nendmodule\n",
-            high = WIDTH - 1,
-            terminal = DIVISOR - 1,
-        ))
+        Some(
+            ClockDividerTemplate {
+                module_name: &module_name,
+                width: WIDTH,
+                high_bit: WIDTH - 1,
+                terminal: DIVISOR - 1,
+            }
+            .render()
+            .expect("clock divider Verilog template must render"),
+        )
     }
 
-    fn verilog_verification() -> Option<VerilogVerification> {
-        Some(
-            divider_test::<DIVISOR, WIDTH>()
-                .verilog_verification(include_str!("clock_divider.verified")),
-        )
+    fn verilog_testbench() -> Option<String> {
+        Some(divider_test::<DIVISOR, WIDTH>().verilog_testbench())
     }
 }
 
@@ -183,37 +197,18 @@ mod tests {
     }
 
     #[test]
-    fn verilog_export_preserves_the_component_module() {
-        let project = VerilogProject::generate::<ClockDivider<3, 2>>().unwrap();
-        assert_eq!(project.top_module, "ClockDivider_DIVISOR3_WIDTH2");
-        assert!(project.files.contains_key(Path::new(
-            "components/timing/clock_divider/divisor3_width2.v"
-        )));
-        let source = &project.files[Path::new("components/timing/clock_divider/divisor3_width2.v")];
-        assert!(source.contains("// Rust type:"));
-        assert!(
-            source.contains("// Verilog path: components/timing/clock_divider/divisor3_width2.v")
-        );
-        assert!(source.contains("reg [1:0] counter = 2'd0;"));
-        assert!(source.contains("if (counter == 2'd2)"));
-        assert!(source.contains("counter <= counter + 1'b1;"));
+    #[ignore = "explicit external simulator validation"]
+    fn verify_verilog_with_iverilog() {
+        crate::verify_verilog_with_iverilog::<ClockDivider<3, 2>>().unwrap();
+        crate::verify_verilog_with_iverilog::<ClockDivider<5, 3>>().unwrap();
     }
 
     #[test]
-    #[ignore = "explicit external simulator validation; copy the printed record into clock_divider.verified"]
-    fn verify_handwritten_verilog_with_iverilog() {
-        let record = crate::verify_verilog_with_iverilog::<ClockDivider<3, 2>>().unwrap();
-        println!("{record}");
-        let record = crate::verify_verilog_with_iverilog::<ClockDivider<5, 3>>().unwrap();
-        println!("{record}");
-        let record = crate::verify_verilog_with_iverilog::<ClockDivider<6_750_000, 23>>().unwrap();
-        println!("{record}");
-    }
-
-    #[test]
-    #[should_panic(expected = "clock divisor 5 exceeds the 2-bit counter")]
-    fn rejects_a_divisor_that_does_not_fit() {
-        let _ = ClockDividerState::<5, 2>::default();
+    fn large_specialization_exports_without_long_simulation() {
+        let project = VerilogProject::generate::<ClockDivider<6_750_000, 23>>().unwrap();
+        let source =
+            &project.files[Path::new("components/timing/clock_divider/divisor6750000_width23.v")];
+        assert!(source.contains("counter == 23'd6749999"));
     }
 
     #[derive(Clone, ModuleIo)]

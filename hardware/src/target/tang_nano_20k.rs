@@ -1,6 +1,9 @@
 use super::HardwareTarget;
-use crate::resources::components::{Clock27M, UserButtons, UserLeds};
-use crate::{GowinBackend, GowinDeviceInfo, ResourceAmount, ResourceKind, TargetInventory};
+use crate::resources::components::{Clock27M, DebugUartTx, UserButtons, UserLeds};
+use crate::{
+    GowinBackend, GowinDeviceInfo, GowinProgrammerCable, ResourceAmount, ResourceKind,
+    TargetInventory,
+};
 use crate::{
     GowinBoardBinding, GowinClockPin, GowinModuleProject, GowinPin, GowinPortDirection,
     GowinProject, Module, ModuleIo,
@@ -19,6 +22,14 @@ pub struct TangNano20KInputs {
 pub struct TangNano20KOutputs {
     /// Logical LED-on values; physical active-low polarity is handled by the target.
     pub leds: Wires<6>,
+}
+
+/// Board outputs used by automated tests that report through the onboard
+/// debugger's UART bridge.
+#[derive(Clone, ModuleIo)]
+pub struct TangNano20KDebugOutputs {
+    pub leds: Wires<6>,
+    pub uart_tx: digital_design_code::Wire,
 }
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
@@ -62,6 +73,14 @@ impl TangNano20K {
         Self::active_low_led(20),
     ];
 
+    pub const DEBUG_UART_TX: GowinPin = GowinPin {
+        location: 69,
+        io_type: "LVCMOS33",
+        pull_mode: None,
+        drive: Some(8),
+        active_low: false,
+    };
+
     const fn active_low_led(location: u16) -> GowinPin {
         GowinPin {
             location,
@@ -80,6 +99,19 @@ impl TangNano20K {
     {
         let project = GowinProject::new(project_name);
         GowinModuleProject::new(project.with_board_binding(Self::user_io_binding()))
+    }
+
+    pub fn debug_uart_project<M>(project_name: impl Into<String>) -> GowinModuleProject<Self, M>
+    where
+        M: Module<Input = TangNano20KInputs, Output = TangNano20KDebugOutputs>,
+    {
+        let binding = Self::user_io_binding().require(DebugUartTx).bind_port(
+            GowinPortDirection::Output,
+            "uart_tx",
+            "uart_tx",
+            [Self::DEBUG_UART_TX],
+        );
+        GowinModuleProject::new(GowinProject::new(project_name).with_board_binding(binding))
     }
 
     fn user_io_binding() -> GowinBoardBinding<Self> {
@@ -116,6 +148,7 @@ impl HardwareTarget for TangNano20K {
             ResourceAmount::new(ResourceKind::BoardClock27M, 1),
             ResourceAmount::new(ResourceKind::UserLed, 6),
             ResourceAmount::new(ResourceKind::UserButton, 2),
+            ResourceAmount::new(ResourceKind::DebugUartTx, 1),
             ResourceAmount::new(ResourceKind::HdmiOutput, 1),
         ])
         .with_fitted_device(ResourceKind::SdrSdramDevice, 64 * 1_024 * 1_024)
@@ -130,5 +163,6 @@ impl crate::GowinTarget for TangNano20K {
         part_number: "GW2AR-LV18QN88C8/I7",
         project_device_id: "gw2ar18c-000",
         programmer_device: "GW2AR-18C",
+        programmer_cable: GowinProgrammerCable::UsbDebuggerA,
     };
 }
