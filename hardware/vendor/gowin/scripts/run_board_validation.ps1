@@ -8,6 +8,7 @@ param(
 
     [string]$Port,
     [switch]$WriteBootFlash,
+    [switch]$WriteCompleteFlash,
     [int]$CaptureSeconds = 8,
     [int]$PortWaitSeconds = 15,
     [int]$MinimumSuccessFrames = 2
@@ -20,6 +21,7 @@ $currentStage = "argument validation"
 $failure = $null
 $capturePath = $null
 $bootPackagePath = $null
+$completeFlashPath = $null
 
 function Get-ProfileConfiguration {
     param([string]$Name)
@@ -142,6 +144,15 @@ if ($CaptureSeconds -le 0 -or $PortWaitSeconds -lt 0 -or $MinimumSuccessFrames -
 if ($WriteBootFlash -and $Profile -ne "cpu-v3-boot") {
     throw "-WriteBootFlash is valid only for the cpu-v3-boot profile"
 }
+if ($WriteCompleteFlash -and $Profile -ne "cpu-v3-boot") {
+    throw "-WriteCompleteFlash is valid only for the cpu-v3-boot profile"
+}
+if ($WriteCompleteFlash -and $Mode -ne "Program" -and $Mode -ne "Full") {
+    throw "-WriteCompleteFlash requires -Mode Program or -Mode Full"
+}
+if ($WriteBootFlash -and $WriteCompleteFlash) {
+    throw "-WriteBootFlash and -WriteCompleteFlash are mutually exclusive"
+}
 if ($WriteBootFlash -and $Mode -ne "Program" -and $Mode -ne "Full") {
     throw "-WriteBootFlash requires -Mode Program or -Mode Full"
 }
@@ -174,16 +185,48 @@ try {
         )
     }
 
-    if ($WriteBootFlash) {
+    if ($WriteBootFlash -or $WriteCompleteFlash) {
         $bootAssetsDirectory = Join-Path $repoRoot "target/cpu-v3-boot"
         $bootPackagePath = Join-Path $bootAssetsDirectory "cpu-v3-boot.bin"
         Invoke-CargoStage "materialize generated boot package" @(
             "run", "-p", "cpu-v3-tang-nano-20k", "--bin", "cpu-v3-boot-assets",
             "--", $bootAssetsDirectory
         )
-        Invoke-CargoStage "program external boot Flash once" @(
+        if ($WriteBootFlash) {
+            Invoke-CargoStage "program external boot Flash once" @(
+                "run", "-p", $configuration.Package, "--example", $configuration.Example,
+                "--", "--program-flash", "0x100000", $bootPackagePath
+            )
+        }
+    }
+
+    if ($WriteCompleteFlash) {
+        $artifactDirectory = Join-Path $repoRoot $configuration.Output
+        $artifactManifestPath = Join-Path $artifactDirectory "gowin-build.manifest"
+        $artifactManifest = Read-KeyValueFile $artifactManifestPath
+        $bitstreamPath = Join-Path $artifactDirectory $artifactManifest["bitstream_path"]
+        $configurationBinPath = [System.IO.Path]::ChangeExtension($bitstreamPath, ".bin")
+        if (-not (Test-Path -LiteralPath $configurationBinPath)) {
+            throw "Gowin configuration binary is missing beside the audited bitstream: $configurationBinPath"
+        }
+
+        $packManifestPath = Join-Path $repoRoot "systems/cpu-v3-tang-nano-20k/examples/cpu_v3_boot/boot.cpu-v3-manifest"
+        $repackedPackagePath = Join-Path $runDirectory "cpu-v3-boot.repacked.bin"
+        $repackedMapPath = Join-Path $runDirectory "cpu-v3-boot.repacked.map"
+        $completeFlashPath = Join-Path $runDirectory "cpu-v3-complete-flash.bin"
+        Invoke-CargoStage "build complete power-on Flash image" @(
+            "run", "-p", "cpu-v3-tang-nano-20k", "--bin", "cpu-v3-pack", "--",
+            $packManifestPath, "-o", $repackedPackagePath, "--map", $repackedMapPath,
+            "--configuration-bin", $configurationBinPath, "--flash-image", $completeFlashPath
+        )
+        $generatedPackageHash = (Get-FileHash -Algorithm SHA256 -LiteralPath $bootPackagePath).Hash
+        $repackedPackageHash = (Get-FileHash -Algorithm SHA256 -LiteralPath $repackedPackagePath).Hash
+        if ($generatedPackageHash -ne $repackedPackageHash) {
+            throw "independently repacked boot package does not match the generated package"
+        }
+        Invoke-CargoStage "program complete power-on Flash image once" @(
             "run", "-p", $configuration.Package, "--example", $configuration.Example,
-            "--", "--program-flash", "0x100000", $bootPackagePath
+            "--", "--program-flash", "0x000000", $completeFlashPath
         )
     }
 
@@ -273,6 +316,7 @@ finally {
         failure = $failure
         artifact_audited = $completedStages.Contains("audit existing bitstream")
         boot_flash_programmed = $completedStages.Contains("program external boot Flash once")
+        complete_flash_programmed = $completedStages.Contains("program complete power-on Flash image once")
         sram_programmed = $completedStages.Contains("program audited SRAM bitstream once")
         uart_validated = $completedStages.Contains("validate DDHT status") -or
             $completedStages.Contains("validate complete Flash readback") -or
@@ -289,6 +333,9 @@ finally {
         artifact = $artifact
         boot_package_sha256 = if ($bootPackagePath -and (Test-Path -LiteralPath $bootPackagePath)) {
             (Get-FileHash -Algorithm SHA256 -LiteralPath $bootPackagePath).Hash.ToLowerInvariant()
+        } else { $null }
+        complete_flash_sha256 = if ($completeFlashPath -and (Test-Path -LiteralPath $completeFlashPath)) {
+            (Get-FileHash -Algorithm SHA256 -LiteralPath $completeFlashPath).Hash.ToLowerInvariant()
         } else { $null }
         uart_capture_sha256 = if (Test-Path -LiteralPath $capturePath) {
             (Get-FileHash -Algorithm SHA256 -LiteralPath $capturePath).Hash.ToLowerInvariant()

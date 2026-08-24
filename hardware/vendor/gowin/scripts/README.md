@@ -26,7 +26,7 @@ read-only artifact checks, observation, and hardware mutation:
 | --- | --- |
 | `Audit` | Validate the existing manifest, generated sources, bitstream, timing, and resources. No hardware access. |
 | `Observe` | Wait a bounded time for an already-running board's VCP, capture UART, and validate its protocol. No programming. |
-| `Program` | Audit, optionally write the boot package, then program the audited SRAM bitstream exactly once. |
+| `Program` | Audit, optionally write either the boot package or a complete power-on Flash image, then program the audited SRAM bitstream exactly once. |
 | `Full` | Perform `Program`, then bounded VCP wait, capture, and protocol validation. |
 
 Supported profiles are `board-health`, `cpu-v3-cpu`, `cpu-v3-sdram`,
@@ -48,6 +48,10 @@ powershell -ExecutionPolicy Bypass -File hardware/vendor/gowin/scripts/run_board
 # Explicit complete boot run. Flash and SRAM are each programmed at most once.
 powershell -ExecutionPolicy Bypass -File hardware/vendor/gowin/scripts/run_board_validation.ps1 `
     -Profile cpu-v3-boot -Mode Full -Port COM8 -WriteBootFlash
+
+# Persist both FPGA configuration and the boot package for cold power-on.
+powershell -ExecutionPolicy Bypass -File hardware/vendor/gowin/scripts/run_board_validation.ps1 `
+    -Profile cpu-v3-boot -Mode Full -Port COM8 -WriteCompleteFlash
 
 # Independently reconstruct and compare the generated package without writing Flash.
 powershell -ExecutionPolicy Bypass -File hardware/vendor/gowin/scripts/run_board_validation.ps1 `
