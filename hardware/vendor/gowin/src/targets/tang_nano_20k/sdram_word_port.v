@@ -39,6 +39,7 @@ localparam [3:0] ST_RESPONSE = 6;
 localparam [3:0] ST_REFRESH_REQUEST = 7;
 localparam [3:0] ST_REFRESH_WAIT = 8;
 localparam [3:0] ST_ERROR = 9;
+localparam [3:0] ST_RECOVERY = 10;
 
 reg [3:0] state = ST_WAIT_INIT;
 reg pending_write = 1'b0;
@@ -48,6 +49,7 @@ reg read_ack_seen = 1'b0;
 reg read_data_seen = 1'b0;
 reg [9:0] refresh_count = 10'b0;
 reg [19:0] timeout_count = 20'b0;
+reg [2:0] recovery_count = 0;
 
 wire refresh_due = refresh_count >= REFRESH_INTERVAL;
 assign request_ready = state == ST_IDLE && controller_init_done && !refresh_due;
@@ -156,10 +158,23 @@ always @(posedge clk) begin
             ST_RESPONSE: begin
                 if (response_ready) begin
                     response_valid <= 1'b0;
-                    state <= refresh_due ? ST_REFRESH_REQUEST : ST_IDLE;
+                    recovery_count <= 0;
+                    state <= ST_RECOVERY;
                 end else if (refresh_due) begin
                     state <= ST_REFRESH_REQUEST;
                 end
+            end
+
+            // Controller HS acknowledges a masked WRITE before the fitted
+            // SDRAM's auto-precharge/write-recovery interval has fully
+            // elapsed. Keep the port closed for four 54 MHz cycles so a
+            // following halfword update to the same 32-bit location is not
+            // lost. Apply the same guard after reads for a uniform contract.
+            ST_RECOVERY: begin
+                if (recovery_count == 3)
+                    state <= refresh_due ? ST_REFRESH_REQUEST : ST_IDLE;
+                else
+                    recovery_count <= recovery_count + 1'b1;
             end
 
             ST_REFRESH_REQUEST: begin

@@ -30,7 +30,7 @@ read-only artifact checks, observation, and hardware mutation:
 | `Full` | Perform `Program`, then bounded VCP wait, capture, and protocol validation. |
 
 Supported profiles are `board-health`, `cpu-v3-cpu`, `cpu-v3-sdram`,
-`cpu-v3-boot`, the read-only `cpu-v3-flash-readback` probe, and the
+`cpu-v3-boot-dma`, `cpu-v3-boot`, the read-only `cpu-v3-flash-readback` probe, and the
 non-destructive `cpu-v3-flash-diagnostics` status/WEL probe. Every attempted
 run writes `target/board-validation/<profile>/<UTC>/evidence.json`,
 including failure stage, source/bitstream fingerprints, SHA-256 hashes, commit and dirty state.
@@ -117,6 +117,17 @@ three status registers, and SR1 before/after a volatile `WREN`/`WRDI` sequence.
 The checker rejects unstable snapshots, a wrong fitted-device ID, a
 write-enable latch that does not toggle, or active BP/CMP array protection. It
 never issues a program or erase command.
+
+`cpu-v3-boot-dma` is a non-programming consumer of the current boot package.
+It copies the 64-byte descriptor at Flash `0x100000` to SDRAM word `0x40` and
+checks that all 32 writes complete and the write-side prefix is `CPU3BOOT`.
+Run `cpu-v3-boot` in `Full` mode with `-WriteBootFlash` first when the fitted
+Flash does not already contain the current package. Failure status `0x02` means a write-side magic
+mismatch, `0x03` a DMA completed-word mismatch, `0x04` an SDRAM accepted-write
+count mismatch, and `0x11..0x15` the corresponding boot-DMA engine error.
+Readback status `0x20..0x23` identifies the first mismatching magic word;
+`0x41` specifically means word 1 repeated word 0, while `0x42..0x44` classify
+zero, erased, and byte-swapped word-1 values.
 
 Assigned test IDs:
 

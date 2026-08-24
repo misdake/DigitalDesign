@@ -1,6 +1,6 @@
 param(
     [Parameter(Mandatory = $true)]
-    [ValidateSet("board-health", "cpu-v3-cpu", "cpu-v3-sdram", "cpu-v3-boot", "cpu-v3-flash-readback", "cpu-v3-flash-diagnostics")]
+    [ValidateSet("board-health", "cpu-v3-cpu", "cpu-v3-sdram", "cpu-v3-boot-dma", "cpu-v3-boot", "cpu-v3-flash-readback", "cpu-v3-flash-diagnostics")]
     [string]$Profile,
 
     [ValidateSet("Audit", "Observe", "Program", "Full")]
@@ -47,6 +47,14 @@ function Get-ProfileConfiguration {
                 Example = "cpu_v3_sdram"
                 Output = "target/cpu_v3_sdram_gowin"
                 TestId = 0x05
+            }
+        }
+        "cpu-v3-boot-dma" {
+            return @{
+                Package = "cpu-v3-tang-nano-20k"
+                Example = "boot_dma"
+                Output = "target/boot_dma_gowin"
+                TestId = 0x06
             }
         }
         "cpu-v3-boot" {
