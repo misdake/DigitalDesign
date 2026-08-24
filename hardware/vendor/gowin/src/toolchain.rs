@@ -35,6 +35,25 @@ pub struct GowinDeviceInfo {
     pub project_device_id: &'static str,
     pub programmer_device: &'static str,
     pub programmer_cable: GowinProgrammerCable,
+    pub external_flash_access: GowinExternalFlashAccess,
+}
+
+/// Programmer algorithm used for raw external-Flash payloads.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum GowinExternalFlashAccess {
+    Direct,
+    GaoBridge,
+    FiveA,
+}
+
+impl GowinExternalFlashAccess {
+    const fn c_bin_erase_program_verify_operation(self) -> &'static str {
+        match self {
+            Self::Direct => "32",
+            Self::GaoBridge => "39",
+            Self::FiveA => "56",
+        }
+    }
 }
 
 /// Programmer CLI cable-driver type. These values are not USB enumeration indexes.
@@ -1597,10 +1616,11 @@ impl GowinToolchain {
     /// Program and verify a raw binary into a sector-aligned external-Flash
     /// range without bulk-erasing the device.
     ///
-    /// Gowin calls the data input for operation 32 an "MCU file" even when it
-    /// contains an ordinary application payload. The caller supplies the
-    /// concrete fitted-device capacity because it belongs to the board target,
-    /// not to the generic Programmer installation.
+    /// Gowin calls the data input for the C-bin operations an "MCU file" even
+    /// when it contains an ordinary application payload. The target selects
+    /// direct, GAO-Bridge, or 5A access. The caller supplies the concrete
+    /// fitted-device capacity because it belongs to the board target, not to
+    /// the generic Programmer installation.
     pub fn program_external_flash_binary(
         &self,
         device: GowinDeviceInfo,
@@ -1641,7 +1661,9 @@ impl GowinToolchain {
                     "--device",
                     device.programmer_device,
                     "--operation_index",
-                    "32",
+                    device
+                        .external_flash_access
+                        .c_bin_erase_program_verify_operation(),
                     "--mcuFile",
                 ])
                 .arg(binary)
@@ -2561,6 +2583,22 @@ mod tests {
                 .to_string();
             assert!(error.contains(message), "unexpected error: {error}");
         }
+    }
+
+    #[test]
+    fn external_flash_access_selects_the_target_specific_c_bin_operation() {
+        assert_eq!(
+            GowinExternalFlashAccess::Direct.c_bin_erase_program_verify_operation(),
+            "32"
+        );
+        assert_eq!(
+            GowinExternalFlashAccess::GaoBridge.c_bin_erase_program_verify_operation(),
+            "39"
+        );
+        assert_eq!(
+            GowinExternalFlashAccess::FiveA.c_bin_erase_program_verify_operation(),
+            "56"
+        );
     }
 
     #[test]

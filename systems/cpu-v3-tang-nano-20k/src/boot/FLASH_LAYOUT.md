@@ -53,8 +53,9 @@ places the validated package at `0x100000`. Package-internal Flash offsets stay
 relative to that base so Stage0 needs only one fixed package-base constant.
 
 For development, the FPGA may still be programmed only to volatile SRAM while
-the package is written separately at `0x100000`. Programmer operation 32
-(`exFlash C Bin Erase,Program,Verify`) accepts a raw binary through the
+the package is written separately at `0x100000`. This GW2AR target uses
+Programmer operation 39 (`exFlash C Bin Erase,Program,Verify thru GAO-Bridge`),
+as recommended for Arora software binaries. It accepts a raw binary through the
 misleadingly named `--mcuFile` option plus `--spiaddr`;
 bulk erase is never part of the normal workflow. Writing is enabled only after
 the generated file, target ID, start address, capacity, and sector extent have

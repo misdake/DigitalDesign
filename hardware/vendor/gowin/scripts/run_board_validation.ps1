@@ -1,6 +1,6 @@
 param(
     [Parameter(Mandatory = $true)]
-    [ValidateSet("board-health", "cpu-v3-cpu", "cpu-v3-sdram", "cpu-v3-boot", "cpu-v3-flash-readback")]
+    [ValidateSet("board-health", "cpu-v3-cpu", "cpu-v3-sdram", "cpu-v3-boot", "cpu-v3-flash-readback", "cpu-v3-flash-diagnostics")]
     [string]$Profile,
 
     [ValidateSet("Audit", "Observe", "Program", "Full")]
@@ -62,6 +62,14 @@ function Get-ProfileConfiguration {
                 Package = "cpu-v3-tang-nano-20k"
                 Example = "boot_flash_readback"
                 Output = "target/cpu_v3_boot_flash_readback_gowin"
+                TestId = $null
+            }
+        }
+        "cpu-v3-flash-diagnostics" {
+            return @{
+                Package = "cpu-v3-tang-nano-20k"
+                Example = "boot_flash_diagnostics"
+                Output = "target/cpu_v3_boot_flash_diagnostics_gowin"
                 TestId = $null
             }
         }
@@ -192,6 +200,13 @@ try {
                 "-RecoveredPath", $recoveredPath,
                 "-ResultPath", $uartStatusPath
             )
+        } elseif ($Profile -eq "cpu-v3-flash-diagnostics") {
+            Invoke-Stage "validate Flash diagnostics" "powershell" @(
+                "-ExecutionPolicy", "Bypass", "-File", (Join-Path $PSScriptRoot "check_flash_diagnostics.ps1"),
+                "-CapturePath", $capturePath,
+                "-MinimumCopies", $MinimumSuccessFrames,
+                "-ResultPath", $uartStatusPath
+            )
         } else {
             Invoke-Stage "validate DDHT status" "powershell" @(
                 "-ExecutionPolicy", "Bypass", "-File", (Join-Path $PSScriptRoot "check_uart_status.ps1"),
@@ -252,12 +267,17 @@ finally {
         boot_flash_programmed = $completedStages.Contains("program external boot Flash once")
         sram_programmed = $completedStages.Contains("program audited SRAM bitstream once")
         uart_validated = $completedStages.Contains("validate DDHT status") -or
-            $completedStages.Contains("validate complete Flash readback")
+            $completedStages.Contains("validate complete Flash readback") -or
+            $completedStages.Contains("validate Flash diagnostics")
         port = if ($Port) { $Port } else { $null }
         expected_test_id = if ($null -ne $configuration.TestId) {
             "0x$($configuration.TestId.ToString('x2'))"
         } else { $null }
-        expected_uart_protocol = if ($Profile -eq "cpu-v3-flash-readback") { "FBR1" } else { "DDHT/CV3B" }
+        expected_uart_protocol = if ($Profile -eq "cpu-v3-flash-readback") {
+            "FBR1"
+        } elseif ($Profile -eq "cpu-v3-flash-diagnostics") {
+            "FDS1"
+        } else { "DDHT/CV3B" }
         artifact = $artifact
         boot_package_sha256 = if ($bootPackagePath -and (Test-Path -LiteralPath $bootPackagePath)) {
             (Get-FileHash -Algorithm SHA256 -LiteralPath $bootPackagePath).Hash.ToLowerInvariant()

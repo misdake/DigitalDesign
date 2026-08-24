@@ -30,7 +30,8 @@ read-only artifact checks, observation, and hardware mutation:
 | `Full` | Perform `Program`, then bounded VCP wait, capture, and protocol validation. |
 
 Supported profiles are `board-health`, `cpu-v3-cpu`, `cpu-v3-sdram`,
-`cpu-v3-boot`, and the read-only `cpu-v3-flash-readback` probe. Every attempted
+`cpu-v3-boot`, the read-only `cpu-v3-flash-readback` probe, and the
+non-destructive `cpu-v3-flash-diagnostics` status/WEL probe. Every attempted
 run writes `target/board-validation/<profile>/<UTC>/evidence.json`,
 including failure stage, source/bitstream fingerprints, SHA-256 hashes, commit and dirty state.
 The runner never resets USB and never retries programming after a failure.
@@ -52,6 +53,10 @@ powershell -ExecutionPolicy Bypass -File hardware/vendor/gowin/scripts/run_board
 powershell -ExecutionPolicy Bypass -File hardware/vendor/gowin/scripts/run_board_validation.ps1 `
     -Profile cpu-v3-flash-readback -Mode Full -Port COM8 `
     -CaptureSeconds 6 -MinimumSuccessFrames 2
+
+# Inspect JEDEC ID, protection bits, and the volatile write-enable latch.
+powershell -ExecutionPolicy Bypass -File hardware/vendor/gowin/scripts/run_board_validation.ps1 `
+    -Profile cpu-v3-flash-diagnostics -Mode Full -Port COM8
 ```
 
 The runner captures through `capture_bl616_uart.ps1`. It enters the onboard
@@ -106,6 +111,12 @@ offset to be observed consistently at least twice, reconstructs the complete
 package, compares every byte, and records both SHA-256 fingerprints and the
 first mismatching physical Flash address. The probe only issues SPI command
 `03h`; it has no erase or program path.
+
+`cpu-v3-flash-diagnostics` emits repeated `FDS1` snapshots with the JEDEC ID,
+three status registers, and SR1 before/after a volatile `WREN`/`WRDI` sequence.
+The checker rejects unstable snapshots, a wrong fitted-device ID, a
+write-enable latch that does not toggle, or active BP/CMP array protection. It
+never issues a program or erase command.
 
 Assigned test IDs:
 
