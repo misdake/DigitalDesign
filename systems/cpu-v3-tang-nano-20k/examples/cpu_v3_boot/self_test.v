@@ -147,11 +147,31 @@ wire device_write_enable;
 wire [15:0] device_write_data;
 wire [15:0] device_read_data;
 wire [15:0] sysctl_read_data;
+wire [15:0] boot_select_read_data;
 wire [15:0] dma_mmio_read_data;
 wire [5:0] software_leds;
 
 // Unselected devices read back zero, so the bridge sees the OR of all buses.
-assign device_read_data = sysctl_read_data | dma_mmio_read_data;
+assign device_read_data = sysctl_read_data | boot_select_read_data | dma_mmio_read_data;
+
+// Buttons are reset inputs, so their live value is 00 by the time Stage1 can
+// run. Synchronize and remember only the two valid one-hot selections while a
+// button is held; 00 retains the last selection and 11 is deliberately ignored.
+reg [1:0] buttons_meta = 0;
+reg [1:0] buttons_synchronized = 0;
+reg [1:0] boot_select = 0;
+always @(posedge clk) begin
+    buttons_meta <= buttons;
+    buttons_synchronized <= buttons_meta;
+    case (buttons_synchronized)
+        2'b01, 2'b10: boot_select <= buttons_synchronized;
+        default: boot_select <= boot_select;
+    endcase
+end
+assign boot_select_read_data =
+    device_read_enable && device_index == 4'd1 && device_channel == 4'd0
+        ? {14'b0, boot_select}
+        : 16'b0;
 
 __MMIO_BRIDGE__ u_mmio_bridge (
     .clk(clk),

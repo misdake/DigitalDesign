@@ -3,12 +3,12 @@
 
 use super::loader::{DmaCommand, DmaError, DmaStatus, FlashToDramDma};
 use super::mmio::{
-    DMA_COMMAND, DMA_COMMAND_START, DMA_COMPLETED_WORDS_LOW, DMA_DESTINATION_HIGH,
-    DMA_DESTINATION_LOW, DMA_ERROR, DMA_ERROR_FILE_LARGER_THAN_MEMORY, DMA_ERROR_FLASH_RANGE,
-    DMA_ERROR_MEMORY_RANGE, DMA_FILE_SIZE_HIGH, DMA_FILE_SIZE_LOW, DMA_FLASH_OFFSET_HIGH,
-    DMA_FLASH_OFFSET_LOW, DMA_MEMORY_SIZE_HIGH, DMA_MEMORY_SIZE_LOW, DMA_STATUS, DMA_STATUS_BUSY,
-    DMA_STATUS_DONE, DMA_STATUS_ERROR, DMA_STATUS_IDLE, SYSCTL_INVALIDATE_DCACHE,
-    SYSCTL_INVALIDATE_ICACHE, SYSCTL_LED, SYSCTL_UART,
+    BOOT_SELECT_VALUE, DMA_COMMAND, DMA_COMMAND_START, DMA_COMPLETED_WORDS_LOW,
+    DMA_DESTINATION_HIGH, DMA_DESTINATION_LOW, DMA_ERROR, DMA_ERROR_FILE_LARGER_THAN_MEMORY,
+    DMA_ERROR_FLASH_RANGE, DMA_ERROR_MEMORY_RANGE, DMA_FILE_SIZE_HIGH, DMA_FILE_SIZE_LOW,
+    DMA_FLASH_OFFSET_HIGH, DMA_FLASH_OFFSET_LOW, DMA_MEMORY_SIZE_HIGH, DMA_MEMORY_SIZE_LOW,
+    DMA_STATUS, DMA_STATUS_BUSY, DMA_STATUS_DONE, DMA_STATUS_ERROR, DMA_STATUS_IDLE,
+    SYSCTL_INVALIDATE_DCACHE, SYSCTL_INVALIDATE_ICACHE, SYSCTL_LED, SYSCTL_UART,
 };
 use crate::{Device, PhysicalWordAddress, Word};
 
@@ -156,6 +156,36 @@ impl Device for SystemControlDevice {
             _ => {}
         }
     }
+
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
+    }
+}
+
+/// Device-1 model of the reset-time boot-selection latch.
+#[derive(Default)]
+pub struct BootSelectDevice {
+    selection: Word,
+}
+
+impl BootSelectDevice {
+    pub fn new(selection: Word) -> Self {
+        Self {
+            selection: selection & 0b11,
+        }
+    }
+}
+
+impl Device for BootSelectDevice {
+    fn read(&mut self, _memory: &mut [Word], channel: u8) -> Word {
+        if channel == BOOT_SELECT_VALUE {
+            self.selection
+        } else {
+            0
+        }
+    }
+
+    fn write(&mut self, _memory: &mut [Word], _channel: u8, _value: Word) {}
 
     fn as_any(&self) -> &dyn std::any::Any {
         self

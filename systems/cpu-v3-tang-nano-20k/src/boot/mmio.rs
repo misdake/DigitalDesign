@@ -15,6 +15,11 @@ pub const SYSCTL_LED: u8 = 2;
 /// the transmitter is busy.
 pub const SYSCTL_UART: u8 = 3;
 
+/// Boot-selection strap device. The fitted system latches a stable one-hot
+/// button value during reset and exposes it to Stage1 after button release.
+pub const BOOT_SELECT_DEVICE: u8 = 1;
+pub const BOOT_SELECT_VALUE: u8 = 0;
+
 /// Device-register page selected by `dev_recv(2, channel)` and
 /// `dev_send(2, channel, value)`.
 pub const BOOT_DMA_DEVICE: u8 = 2;

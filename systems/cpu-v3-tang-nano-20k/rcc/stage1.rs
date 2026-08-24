@@ -145,6 +145,10 @@ fn main() {
         boot_fail(2, CATEGORY_MANIFEST, 1, 0);
     }
 
+    // Read the reset-time choice before loading application sections. Button
+    // 10 selects application segment 5; button 01 and default 00 select the
+    // primary application segment 3.
+    let selection = dev_recv(1, 0) & 3;
     let mut i: u16 = 0;
     while i < count {
         // section record i: 16 words at MW_RECORDS + i * 16
@@ -184,7 +188,25 @@ fn main() {
             0
         };
 
-        if is_self == 0 {
+        let is_primary_application = if kind == 1 && (flags & 4) != 0 && d_hi == 3 {
+            1
+        } else {
+            0
+        };
+        let is_alternate_application = if kind == 1 && (flags & 4) != 0 && d_hi == 5 {
+            1
+        } else {
+            0
+        };
+        let mut skip_unselected: u16 = 0;
+        if selection == 2 && is_primary_application == 1 {
+            skip_unselected = 1;
+        }
+        if selection != 2 && is_alternate_application == 1 {
+            skip_unselected = 1;
+        }
+
+        if is_self == 0 && skip_unselected == 0 {
             // Load: copy file bytes; Zero: file size 0 zero-fills the extent.
             let file_lo2 = if kind == 2 { 0 } else { file_lo };
             let file_hi2 = if kind == 2 { 0 } else { file_hi };
@@ -210,9 +232,17 @@ fn main() {
     // every handoff field is read into registers before MTSR, because the
     // manifest buffer lives in the Stage1 data segment. The application
     // initializes its own stack pointer from its compiled-in `--stack-init`.
-    let dseg = m[MW_APP_DSEG];
-    let cseg = m[MW_APP_CSEG];
-    let entry = m[MW_APP_ENTRY];
+    let mut dseg = m[MW_APP_DSEG];
+    let mut cseg = m[MW_APP_CSEG];
+    let mut entry = m[MW_APP_ENTRY];
+    // Button 10 selects the second application fitted at 0005:0200 with its
+    // independent stack/data segment 0006. Button 01 and the power-on default
+    // 00 use the manifest's primary application entry.
+    if selection == 2 {
+        dseg = 6;
+        cseg = 5;
+        entry = 0x0200;
+    }
     dev_send(0, 0, 0);
     dev_send(0, 1, 0);
     mtsr_dseg(dseg);

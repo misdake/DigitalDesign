@@ -8,8 +8,9 @@
 use cpu_v3::rcc_backend::{self, CompilerOptions, CpuV3Program};
 use cpu_v3::{Machine, PhysicalWordAddress};
 use cpu_v3_tang_nano_20k::boot::{
-    build_boot_image, BootDmaDevice, BootEntry, BootErrorReport, BootImageSpec, BootTarget,
-    InputSection, SectionKind, SystemControlDevice, SECTION_EXECUTE, SECTION_READ, SECTION_WRITE,
+    build_boot_image, BootDmaDevice, BootEntry, BootErrorReport, BootImageSpec, BootSelectDevice,
+    BootTarget, InputSection, SectionKind, SystemControlDevice, SECTION_EXECUTE, SECTION_READ,
+    SECTION_WRITE,
 };
 
 fn compile_cpu_v3(file: &str, opts: &CompilerOptions) -> CpuV3Program {
@@ -49,7 +50,7 @@ fn section(
     }
 }
 
-/// Compiles the three boot programs and packs them into the flash image.
+/// Compiles both boot stages and both applications into the flash image.
 /// Returns the flash bytes and the Stage0 image (linked at code base 0).
 fn boot_setup() -> (Vec<u8>, CpuV3Program) {
     let stage0 = compile_cpu_v3("stage0.rs", &CompilerOptions::default());
@@ -69,6 +70,14 @@ fn boot_setup() -> (Vec<u8>, CpuV3Program) {
             ..CompilerOptions::default()
         },
     );
+    let alternate_application = compile_cpu_v3(
+        "boot-alt.rs",
+        &CompilerOptions {
+            code_base: 0x0200,
+            stack_init: 0xe000,
+            ..CompilerOptions::default()
+        },
+    );
     // Stage0 must fit the BSRAM boot window (physical instruction words
     // 0x0000..0x03ff).
     assert!(
@@ -79,6 +88,7 @@ fn boot_setup() -> (Vec<u8>, CpuV3Program) {
 
     let stage1_bytes = words_bytes(&stage1.words);
     let application_bytes = words_bytes(&application.words);
+    let alternate_application_bytes = words_bytes(&alternate_application.words);
     let image = build_boot_image(BootImageSpec {
         target: BootTarget::TangNano20K,
         stage1_section: "stage1".into(),
@@ -113,6 +123,15 @@ fn boot_setup() -> (Vec<u8>, CpuV3Program) {
                 data: application_bytes,
                 alignment_bytes: 32,
             },
+            InputSection {
+                name: "application-alt".into(),
+                kind: SectionKind::Load,
+                flags: SECTION_READ | SECTION_EXECUTE,
+                destination: PhysicalWordAddress::new(0x0005_0200),
+                memory_size_bytes: alternate_application_bytes.len() as u32,
+                data: alternate_application_bytes,
+                alignment_bytes: 32,
+            },
             section(
                 "data",
                 0x0004_0000,
@@ -143,12 +162,24 @@ fn boot_setup() -> (Vec<u8>, CpuV3Program) {
 /// Runs the packed image from reset with the device models attached, bounded
 /// by `max_steps`. The BSS range is dirtied first so the test proves the
 /// Zero section DMA actually clears it.
-fn run_boot(flash: Vec<u8>, stage0: &CpuV3Program, max_steps: usize) -> Machine {
+fn run_boot(
+    flash: Vec<u8>,
+    stage0: &CpuV3Program,
+    boot_selection: u16,
+    max_steps: usize,
+) -> Machine {
     let mut machine = Machine::default();
     machine
         .load_physical(PhysicalWordAddress::new(0x0004_0100), &[0xffff; 32])
         .unwrap();
+    machine
+        .load_physical(PhysicalWordAddress::new(0x0003_0200), &[0xdead])
+        .unwrap();
+    machine
+        .load_physical(PhysicalWordAddress::new(0x0005_0200), &[0xdead])
+        .unwrap();
     machine.attach_device(0, Box::<SystemControlDevice>::default());
+    machine.attach_device(1, Box::new(BootSelectDevice::new(boot_selection)));
     machine.attach_device(
         2,
         Box::new(BootDmaDevice::new(flash, machine.physical_memory_words())),
@@ -170,9 +201,9 @@ fn ddht_frame() -> [u8; 8] {
 }
 
 #[test]
-fn stage0_stage1_and_application_boot_from_flash() {
+fn button_01_boots_the_primary_application_from_flash() {
     let (flash, stage0) = boot_setup();
-    let machine = run_boot(flash, &stage0, 500_000);
+    let machine = run_boot(flash, &stage0, 0b01, 500_000);
 
     // The demo application repeats the DDHT 0x07 success frame forever.
     let sysctl = machine.device::<SystemControlDevice>(0).unwrap();
@@ -187,13 +218,22 @@ fn stage0_stage1_and_application_boot_from_flash() {
     // Both stages invalidate both caches before their segment switch.
     assert_eq!(sysctl.icache_invalidations, 2);
     assert_eq!(sysctl.dcache_invalidations, 2);
-    // The demo application lights the success LED pattern (0b11_0000);
-    // failure patterns ({stage, category}) never have both high bits set.
-    assert_eq!(sysctl.led, Some(0b11_0000));
+    // The demo starts its six-LED bounce at the rightmost logical LED. The
+    // bounded model run observes this first position before the visual delay.
+    assert_eq!(sysctl.led, Some(0b00_0001));
 
     // The machine reached the application segments.
     assert_eq!(machine.code_segment(), 3);
     assert_eq!(machine.data_segment(), 4);
+    assert_ne!(
+        machine.physical_memory(PhysicalWordAddress::new(0x0003_0200)),
+        0xdead
+    );
+    assert_eq!(
+        machine.physical_memory(PhysicalWordAddress::new(0x0005_0200)),
+        0xdead,
+        "the unselected alternate application must not be DMA-loaded"
+    );
     // The application prologue set the stack to its --stack-init (0xe000)
     // minus its small frame.
     let sp = machine.register(13).unwrap();
@@ -219,11 +259,37 @@ fn stage0_stage1_and_application_boot_from_flash() {
 }
 
 #[test]
+fn button_10_boots_the_alternate_application_from_flash() {
+    let (flash, stage0) = boot_setup();
+    let machine = run_boot(flash, &stage0, 0b10, 500_000);
+
+    let sysctl = machine.device::<SystemControlDevice>(0).unwrap();
+    let frame = ddht_frame();
+    assert!(sysctl.uart.len() >= frame.len() * 2);
+    assert_eq!(sysctl.uart[..8], frame);
+    assert_eq!(sysctl.uart[8..16], frame);
+    assert_eq!(sysctl.led, Some(0b01_0101));
+    assert_eq!(machine.code_segment(), 5);
+    assert_eq!(machine.data_segment(), 6);
+    assert_eq!(
+        machine.physical_memory(PhysicalWordAddress::new(0x0003_0200)),
+        0xdead,
+        "the unselected primary application must not be DMA-loaded"
+    );
+    assert_ne!(
+        machine.physical_memory(PhysicalWordAddress::new(0x0005_0200)),
+        0xdead
+    );
+    assert_eq!(sysctl.icache_invalidations, 2);
+    assert_eq!(sysctl.dcache_invalidations, 2);
+}
+
+#[test]
 fn a_corrupt_descriptor_magic_reports_stage0_category1() {
     let (mut flash, stage0) = boot_setup();
     let base = BootTarget::TangNano20K.payload_flash_offset() as usize;
     flash[base] ^= 1; // break the "CPU3BOOT" magic
-    let machine = run_boot(flash, &stage0, 100_000);
+    let machine = run_boot(flash, &stage0, 0, 100_000);
 
     let report = BootErrorReport {
         stage: 1,
@@ -251,7 +317,7 @@ fn a_corrupt_manifest_magic_reports_stage1_category2() {
     let (mut flash, stage0) = boot_setup();
     let base = BootTarget::TangNano20K.payload_flash_offset() as usize;
     flash[base + 64] ^= 1; // break the "CPU3SECT" magic
-    let machine = run_boot(flash, &stage0, 200_000);
+    let machine = run_boot(flash, &stage0, 0, 200_000);
 
     let report = BootErrorReport {
         stage: 2,

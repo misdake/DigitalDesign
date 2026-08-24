@@ -72,9 +72,9 @@ while device and complete-program tests stay with the system.
 
 Directory migration must not change ISA encodings, compiler listings, boot bytes, generated
 Verilog identities, resource claims, or simulator results. The CPU V3 system build script compiles
-Stage0, Stage1, and the boot demo from their real RCC sources and writes generated arrays only to
+Stage0, Stage1, and both boot demos from their real RCC sources and writes generated arrays only to
 Cargo `OUT_DIR`; no checked-in byte array is maintained in parallel.
-The build retains pre-refactor FNV-1a baselines for the 590-word Stage0 image and the 1,795-byte
+The build retains FNV-1a baselines for the 590-word Stage0 image and the 2,563-byte
 Flash package, so generation remains single-source without weakening byte-for-byte compatibility.
 
 ## Board bring-up and diagnostics

@@ -9,7 +9,8 @@ stage1-section stage1
 stage1-entry 0x0001 0x0100 0x0002 0xf000
 application-entry 0x0003 0x0200 0x0004 0xe000
 
-load stage1      0x00010100 rx 32 1270 ../../../../target/cpu-v3-boot/stage1.v3bin
-load application 0x00030200 rx 32 118 ../../../../target/cpu-v3-boot/boot-demo.v3bin
+load stage1         0x00010100 rx 32 1456 ../../../../target/cpu-v3-boot/stage1.v3bin
+load application    0x00030200 rx 32 232 ../../../../target/cpu-v3-boot/boot-demo.v3bin
+load application-alt 0x00050200 rx 32 198 ../../../../target/cpu-v3-boot/boot-alt.v3bin
 load data        0x00040000 rw 32 8 ../../../../target/cpu-v3-boot/data.bin
 zero bss         0x00040100 rw 32 64
