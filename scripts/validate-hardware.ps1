@@ -106,11 +106,20 @@ function Invoke-GowinAudit {
     )
 }
 
+function Invoke-BoardArtifactAudit {
+    param([string]$Profile)
+    Invoke-ValidationStep -Name "$Profile board artifact audit" -Executable "powershell" -Arguments @(
+        "-NoProfile", "-ExecutionPolicy", "Bypass", "-File",
+        (Join-Path $repoRoot "hardware/vendor/gowin/scripts/run_board_validation.ps1"),
+        "-Profile", $Profile, "-Mode", "Audit"
+    )
+}
+
 function Invoke-AuditValidation {
-    Invoke-GowinAudit "digital-design-hardware-gowin" "board_health"
-    Invoke-GowinAudit "cpu-v3-tang-nano-20k" "cpu_v3_cpu"
-    Invoke-GowinAudit "cpu-v3-tang-nano-20k" "cpu_v3_sdram"
-    Invoke-GowinAudit "cpu-v3-tang-nano-20k" "cpu_v3_boot"
+    Invoke-BoardArtifactAudit "board-health"
+    Invoke-BoardArtifactAudit "cpu-v3-cpu"
+    Invoke-BoardArtifactAudit "cpu-v3-sdram"
+    Invoke-BoardArtifactAudit "cpu-v3-boot"
 }
 
 function Invoke-PnrValidation {

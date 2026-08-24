@@ -19,6 +19,35 @@ builds and audits the board-health, CPU, CPU/SDRAM, and complete boot artifacts.
 programs a device. Each successful mode writes a small evidence record below
 `target/hardware-validation` containing the commit, dirty-worktree flag, and completed steps.
 
+Board interaction uses `run_board_validation.ps1`, which deliberately separates
+read-only artifact checks, observation, and hardware mutation:
+
+| Mode | Actions |
+| --- | --- |
+| `Audit` | Validate the existing manifest, generated sources, bitstream, timing, and resources. No hardware access. |
+| `Observe` | Wait a bounded time for an already-running board's VCP, capture UART, and validate DDHT. No programming. |
+| `Program` | Audit, optionally write the boot package, then program the audited SRAM bitstream exactly once. |
+| `Full` | Perform `Program`, then bounded VCP wait, capture, and DDHT validation. |
+
+Supported profiles are `board-health`, `cpu-v3-cpu`, `cpu-v3-sdram`, and
+`cpu-v3-boot`. Every attempted run writes `target/board-validation/<profile>/<UTC>/evidence.json`,
+including failure stage, source/bitstream fingerprints, SHA-256 hashes, commit and dirty state.
+The runner never resets USB and never retries programming after a failure.
+
+```powershell
+# Safe offline check; this is the default mode.
+powershell -ExecutionPolicy Bypass -File hardware/vendor/gowin/scripts/run_board_validation.ps1 `
+    -Profile cpu-v3-boot -Mode Audit
+
+# Observe an image that is already running, without touching FPGA or Flash.
+powershell -ExecutionPolicy Bypass -File hardware/vendor/gowin/scripts/run_board_validation.ps1 `
+    -Profile board-health -Mode Observe -Port COM8
+
+# Explicit complete boot run. Flash and SRAM are each programmed at most once.
+powershell -ExecutionPolicy Bypass -File hardware/vendor/gowin/scripts/run_board_validation.ps1 `
+    -Profile cpu-v3-boot -Mode Full -Port COM8 -WriteBootFlash
+```
+
 `capture_uart.ps1` records raw bytes from the board's debug UART (the Tang
 Nano 20K exposes it as a USB serial port through the onboard debugger) into a
 capture file:
@@ -66,8 +95,8 @@ Assigned test IDs:
 
 ## Stable board bring-up
 
-Build once, then program the audited image without rerunning synthesis or
-place-and-route:
+Build once, then use the runner above or these lower-level commands to program
+the audited image without rerunning synthesis or place-and-route:
 
 ```powershell
 cargo run -p digital-design-hardware-gowin --example board_health -- --build

@@ -52,6 +52,10 @@ Use `scripts/validate-hardware.ps1 -Mode quick|iverilog|audit|pnr|all` for repea
 validation. `audit` validates existing artifacts without rebuilding; `pnr` builds and audits them.
 Neither mode invokes the programmer.
 
+Use `hardware/vendor/gowin/scripts/run_board_validation.ps1` for board work. Its default
+`Audit` mode is offline; `Observe` never programs; `Program` and `Full` perform each requested
+hardware write once and never reset USB or retry programming automatically.
+
 External Verilog tests use `IVERILOG_EXE` and `VVP_EXE` when set, otherwise
 they resolve `iverilog` and `vvp` through `PATH`.
 
