@@ -108,10 +108,8 @@ exports the child's NAND implementation.
 When a handwritten Verilog module directly instantiates child modules, it
 lists every physical instance through `Module::verilog_dependencies`. The
 exporter emits each concrete child definition once, but applies its target-leaf
-resource claim once per listed instance. Instance names are included in the
-parent's verification hash, so changing that instance list requires another
-successful HDL simulation. Generated structural modules do
-not use this list because calls to `Child::verilog` already record instances.
+resource claim once per listed instance. Generated structural modules do not
+use this list because calls to `Child::verilog` already record instances.
 
 ## Cycle tests
 
@@ -252,6 +250,77 @@ development script to verify the identity, freshness, checksum, and result:
 powershell -ExecutionPolicy Bypass -File hardware/scripts/check_uart_status.ps1 -Path target/bsram_gowin/board_capture.bin -TestId 0x01
 ```
 
+The smaller `bsram_masked` example shows how ordinary NAND logic uses BSRAM in
+both backends with one call to `Memory::hardware`. Local construction makes the
+BSRAM a host external while the surrounding data-path remains gates. During
+Verilog hierarchy recording the same call automatically becomes an HDL
+instance, so FPGA export emits one target leaf and one BSRAM resource claim.
+The upper module contains only one circuit implementation in `nand`: its
+default `build_verilog` reuses that structure, and its compositional `emu`
+delegates to it. The BSRAM model is therefore not duplicated in the upper
+module:
+
+```rust
+fn emu(input: &Self::Input) -> Self::Output {
+    Self::nand(input)
+}
+
+fn nand(input: &Self::Input) -> Self::Output {
+    Memory::hardware(&Bsram1Rw1024Input {
+        write_enable: input.write_enable,
+        address: input.address,
+        write_data: input.write_data ^ constant_wires::<16>(DATA_MASK),
+    })
+}
+```
+
+```text
+cargo run -p digital-design-hardware --example bsram_masked
+```
+
+`ModuleTest::run_emu_and_mixed_nand` runs both entry points and checks the typed
+vectors. The existing `run_emu_and_nand` remains the stricter choice and rejects
+any external in its NAND branch.
+
+### DSP leaves
+
+The signed 18-bit DSP family contains `DspMulS18`, `DspMulAddS18`,
+`DspMacS18`, `DspMulSumS18`, `DspMulDifferenceS18`, `DspPreAddMulS18`, and
+`DspPreSubMulS18`. The extended operations calculate `(a*b)+(c*d)`,
+`(a*b)-(c*d)`, `(a+b)*c`, and `(a-b)*c`; each pre-add or pre-subtract wraps to
+signed 18 bits before multiplication. All are target leaves with a
+cycle-accurate host emulator and adjacent Askama-rendered Verilog, but no NAND
+implementation. Call `Type::hardware` from compositional logic to select the
+emulator locally and the DSP Verilog module during export.
+
+The pipeline matches the validated Gowin RTL: operands are registered on one
+rising edge and affect the result on the following edge. `DspMacS18` has an
+active-low asynchronous reset. Its emulator applies reset both between test
+clocks and at the next clock, matching observable HDL behavior.
+
+On GW2AR-18, `DspMulS18` infers one `MULT18X18` and reserves one 18x18
+multiplier lane. `DspMulAddS18` and `DspMacS18` each infer one
+`MULTADDALU18X18`; each occupies a complete DSP macro and reserves two lanes.
+Each multiply-sum/difference uses one explicit `MULTADDALU18X18` and reserves
+two lanes. Each pre-add/subtract multiply uses one explicit `PADD18` feeding
+one `MULT18X18` and reserves one lane. Explicit Gowin primitives are used for
+these four shapes because the equivalent generic RTL did not reliably infer
+the wide DSP ALU in isolation; their templates retain an Icarus behavioral
+branch for portable simulation. The `dsp` example's seven instances reserve 11
+of the Tang Nano 20K's 48 multiplier lanes, and PnR reports 5.5 of its 24 DSP
+macros. The post-build audit reads `PADD18`, `MULT18X18`,
+`MULTADDALU18X18`, and `ALU54D` mode totals and synthesis hierarchy, so DSP
+outside a declared target leaf or above its measured claim fails the build.
+New shapes must record their measured lane cost instead of estimating from
+operand width.
+
+Run host tests and build the non-programmed Gowin project with:
+
+```text
+cargo test -p digital-design-hardware components::dsp
+cargo run -p digital-design-hardware --example dsp -- --build
+```
+
 ## Hardware targets and resources
 
 A project selects one complete, purchasable hardware variant as a Rust type.
@@ -312,14 +381,13 @@ measured as one block; instantiating the same specialization more than once
 repeats that claim even though its Verilog definition is emitted only once.
 The lower-level allocator remains transactional and is poisoned after a failed
 claim. Exported Gowin projects include `resource-report.txt`; synthesis and
-place-and-route remain the final authority. After synthesis, the build audits
-Gowin's hierarchical resource report: every actual BSRAM must be inside the
-instance hierarchy of a target-leaf wrapper, and its use may not exceed that
-wrapper's measured claim. A wrapper optimized away still reserves its planning
-capacity, but cannot hide BSRAM inferred elsewhere. PnR totals provide a second
-check before programming. PLL and DSP claims fail closed while no measured
-per-instance report mapping exists; each future configuration must add that
-mapping before it can be enabled.
+place-and-route remain the final authority. BSRAM currently retains a strict
+per-leaf hierarchy audit. DSP uses aggregate physical usage because synthesis
+may merge, fuse, or move operators across module boundaries. Normal projects
+require actual DSP usage to stay within the total measured leaf requests;
+characterization projects may additionally assert exact primitive shapes.
+Unknown DSP modes and unaudited PLL claims fail closed. The complete rationale
+and extension rules are recorded in [RESOURCE_MODEL.md](RESOURCE_MODEL.md).
 
 Tang Nano 20K exposes the wires that are stable parts of the board directly as
 typed module IO:

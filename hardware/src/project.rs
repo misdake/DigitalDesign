@@ -192,6 +192,10 @@ impl Drop for RecordingGuard {
     }
 }
 
+pub(crate) fn recording_verilog_hierarchy() -> bool {
+    RECORDED_INSTANCES.with(|instances| instances.borrow().is_some())
+}
+
 fn descriptor<M: Module>() -> ModuleDescriptor {
     let rust_name = std::any::type_name::<M>();
     let identity = M::verilog_identity();

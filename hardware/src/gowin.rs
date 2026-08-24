@@ -370,6 +370,60 @@ pub struct GowinProject<T: GowinTarget> {
     project_name: String,
     project_sources: BTreeMap<PathBuf, String>,
     board_binding: Option<GowinBoardBinding<T>>,
+    dsp_expectations: BTreeMap<GowinDspMode, ResourceCountExpectation>,
+}
+
+/// A DSP implementation mode reported by Gowin place-and-route.
+///
+/// These names describe physical implementation shapes, not the logical
+/// resources requested by target-leaf modules.
+#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
+pub enum GowinDspMode {
+    Padd18,
+    Mult18x18,
+    MultAddAlu18x18,
+    Alu54d,
+}
+
+impl GowinDspMode {
+    const fn report_name(self) -> &'static str {
+        match self {
+            Self::Padd18 => "PADD18",
+            Self::Mult18x18 => "MULT18X18",
+            Self::MultAddAlu18x18 => "MULTADDALU18X18",
+            Self::Alu54d => "ALU54D",
+        }
+    }
+}
+
+/// An optional characterization assertion over a physical resource count.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ResourceCountExpectation {
+    Exact(u64),
+    AtMost(u64),
+    Between { minimum: u64, maximum: u64 },
+}
+
+impl ResourceCountExpectation {
+    fn accepts(self, actual: u64) -> bool {
+        match self {
+            Self::Exact(expected) => actual == expected,
+            Self::AtMost(maximum) => actual <= maximum,
+            Self::Between { minimum, maximum } => (minimum..=maximum).contains(&actual),
+        }
+    }
+}
+
+impl Display for ResourceCountExpectation {
+    fn fmt(&self, formatter: &mut Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Exact(value) => write!(formatter, "exactly {value}"),
+            Self::AtMost(value) => write!(formatter, "at most {value}"),
+            Self::Between { minimum, maximum } => {
+                write!(formatter, "between {minimum} and {maximum}")
+            }
+        }
+    }
 }
 
 /// A Gowin project whose target and top-level hardware module are both fixed
@@ -394,6 +448,19 @@ impl<T: GowinTarget, M: Module> GowinModuleProject<T, M> {
     pub fn export(&self, directory: impl AsRef<Path>) -> Result<GeneratedGowinProject, GowinError> {
         self.project.export::<M>(directory)
     }
+
+    /// Require a physical DSP implementation shape after place-and-route.
+    ///
+    /// This is intended for characterization projects. Normal projects should
+    /// rely on the aggregate actual-versus-requested resource audit.
+    pub fn expect_dsp_mode(
+        mut self,
+        mode: GowinDspMode,
+        expectation: ResourceCountExpectation,
+    ) -> Self {
+        self.project = self.project.expect_dsp_mode(mode, expectation);
+        self
+    }
 }
 
 impl<T: GowinTarget> GowinProject<T> {
@@ -402,6 +469,7 @@ impl<T: GowinTarget> GowinProject<T> {
             project_name: project_name.into(),
             project_sources: BTreeMap::new(),
             board_binding: None,
+            dsp_expectations: BTreeMap::new(),
         }
     }
 
@@ -427,6 +495,20 @@ impl<T: GowinTarget> GowinProject<T> {
 
     pub fn with_board_binding(mut self, binding: GowinBoardBinding<T>) -> Self {
         self.board_binding = Some(binding);
+        self
+    }
+
+    /// Require a physical DSP implementation shape after place-and-route.
+    pub fn expect_dsp_mode(
+        mut self,
+        mode: GowinDspMode,
+        expectation: ResourceCountExpectation,
+    ) -> Self {
+        assert!(
+            self.dsp_expectations.insert(mode, expectation).is_none(),
+            "duplicate Gowin DSP expectation for {}",
+            mode.report_name()
+        );
         self
     }
 
@@ -522,6 +604,7 @@ impl<T: GowinTarget> GowinProject<T> {
             target_name: T::NAME,
             device: T::DEVICE,
             resources: resource_report,
+            dsp_expectations: self.dsp_expectations.clone(),
             files,
         })
     }
@@ -544,6 +627,7 @@ pub struct GeneratedGowinProject {
     pub target_name: &'static str,
     pub device: GowinDeviceInfo,
     pub resources: ResourceReport,
+    dsp_expectations: BTreeMap<GowinDspMode, ResourceCountExpectation>,
     pub files: BTreeMap<PathBuf, String>,
 }
 
@@ -973,6 +1057,7 @@ impl GowinToolchain {
             &result.pnr_report,
             &result.synthesis_resource_report,
             &project.resources,
+            &project.dsp_expectations,
         )?;
         Ok(result)
     }
@@ -1084,6 +1169,7 @@ fn audit_physical_resources(
     report: &Path,
     hierarchy_report: &Path,
     planned: &ResourceReport,
+    dsp_expectations: &BTreeMap<GowinDspMode, ResourceCountExpectation>,
 ) -> Result<(), GowinError> {
     if !report.is_file() {
         return Err(GowinError::MissingBuildArtifact(report.to_path_buf()));
@@ -1132,30 +1218,25 @@ fn audit_physical_resources(
         .get(&ResourceKind::Multiplier18x18)
         .copied()
         .unwrap_or(0);
-    if claimed_multipliers != 0 {
-        return Err(GowinError::PhysicalResourceAuditUnsupported {
-            report: hierarchy_report.to_path_buf(),
+    let actual_multipliers = dsp_multiplier_lane_usage(&text)
+        .ok_or_else(|| GowinError::PhysicalResourceReportUnrecognized(report.to_path_buf()))?;
+    if actual_multipliers > claimed_multipliers {
+        return Err(GowinError::PhysicalResourceMismatch {
+            report: report.to_path_buf(),
             resource: ResourceKind::Multiplier18x18,
             claimed: claimed_multipliers,
+            actual: actual_multipliers,
         });
     }
-    if let Some(actual) = resource_usage_fraction(&text, "DSP") {
-        if actual != 0 {
-            return Err(GowinError::PhysicalResourceMismatch {
+    for (&mode, &expectation) in dsp_expectations {
+        let actual = resource_mode_usage(&text, "DSP", mode.report_name())
+            .ok_or_else(|| GowinError::PhysicalResourceReportUnrecognized(report.to_path_buf()))?;
+        if !expectation.accepts(actual) {
+            return Err(GowinError::PhysicalResourceExpectationMismatch {
                 report: report.to_path_buf(),
-                resource: ResourceKind::Multiplier18x18,
-                claimed: 0,
+                mode,
+                expectation,
                 actual,
-            });
-        }
-    } else {
-        let physical_dsp_modes = resource_mode_total(&text, "DSP").unwrap_or(0);
-        if physical_dsp_modes != 0 {
-            return Err(GowinError::PhysicalResourceMismatch {
-                report: report.to_path_buf(),
-                resource: ResourceKind::Multiplier18x18,
-                claimed: 0,
-                actual: physical_dsp_modes,
             });
         }
     }
@@ -1169,12 +1250,21 @@ fn audit_bsram_ownership(report: &Path, planned: &ResourceReport) -> Result<(), 
     let text = fs::read_to_string(report)?;
     let actual = hierarchy_resource_usage(&text, "Bsram")
         .ok_or_else(|| GowinError::PhysicalResourceReportUnrecognized(report.to_path_buf()))?;
+    audit_resource_ownership(report, planned, ResourceKind::Bsram18K, actual)
+}
+
+fn audit_resource_ownership(
+    report: &Path,
+    planned: &ResourceReport,
+    resource_kind: ResourceKind,
+    actual: BTreeMap<String, u64>,
+) -> Result<(), GowinError> {
     let mut claimed = BTreeMap::<String, u64>::new();
     for allocation in &planned.allocations {
         let amount = allocation
             .resources
             .iter()
-            .filter(|resource| resource.kind == ResourceKind::Bsram18K)
+            .filter(|resource| resource.kind == resource_kind)
             .map(|resource| resource.amount)
             .sum::<u64>();
         if amount == 0 {
@@ -1205,7 +1295,7 @@ fn audit_bsram_ownership(report: &Path, planned: &ResourceReport) -> Result<(), 
             return Err(GowinError::PhysicalResourceInstanceMismatch {
                 report: report.to_path_buf(),
                 instance: actual_path,
-                resource: ResourceKind::Bsram18K,
+                resource: resource_kind,
                 claimed: 0,
                 actual: amount,
             });
@@ -1218,7 +1308,7 @@ fn audit_bsram_ownership(report: &Path, planned: &ResourceReport) -> Result<(), 
             return Err(GowinError::PhysicalResourceInstanceMismatch {
                 report: report.to_path_buf(),
                 instance,
-                resource: ResourceKind::Bsram18K,
+                resource: resource_kind,
                 claimed: maximum,
                 actual,
             });
@@ -1302,6 +1392,46 @@ fn resource_mode_total(report: &str, label: &str) -> Option<u64> {
     Some(total)
 }
 
+fn resource_mode_usage(report: &str, label: &str, mode: &str) -> Option<u64> {
+    let mut lines = report.lines();
+    lines.find(|line| {
+        line.split_once('|')
+            .is_some_and(|(name, _)| name.trim() == label)
+    })?;
+    for line in lines {
+        let Some((name, usage)) = line.split_once('|') else {
+            break;
+        };
+        let name = name.trim();
+        if !name.starts_with("--") {
+            break;
+        }
+        if name.trim_start_matches('-').trim() == mode {
+            return usage
+                .split_whitespace()
+                .next()
+                .and_then(|value| value.parse().ok());
+        }
+    }
+    Some(0)
+}
+
+fn dsp_multiplier_lane_usage(report: &str) -> Option<u64> {
+    let plain = resource_mode_usage(report, "DSP", "MULT18X18")?;
+    let multiply_add = resource_mode_usage(report, "DSP", "MULTADDALU18X18")?;
+    let pre_add = resource_mode_usage(report, "DSP", "PADD18")?;
+    let alu = resource_mode_usage(report, "DSP", "ALU54D")?;
+    let known_primitives = plain
+        .checked_add(multiply_add)?
+        .checked_add(pre_add)?
+        .checked_add(alu)?;
+    let all_primitives = resource_mode_total(report, "DSP")?;
+    if all_primitives != known_primitives {
+        return None;
+    }
+    plain.checked_add(multiply_add.checked_mul(2)?)
+}
+
 #[derive(Debug)]
 pub enum GowinError {
     Project(ProjectError),
@@ -1332,6 +1462,12 @@ pub enum GowinError {
         report: PathBuf,
         resource: ResourceKind,
         claimed: u64,
+        actual: u64,
+    },
+    PhysicalResourceExpectationMismatch {
+        report: PathBuf,
+        mode: GowinDspMode,
+        expectation: ResourceCountExpectation,
         actual: u64,
     },
     PhysicalResourceInstanceMismatch {
@@ -1411,6 +1547,17 @@ impl Display for GowinError {
                 formatter,
                 "Gowin physical-resource audit failed for {}: modules claimed {claimed} {resource}, but place-and-route used {actual}; instantiate only measured target-leaf wrappers for scarce FPGA resources",
                 report.display()
+            ),
+            Self::PhysicalResourceExpectationMismatch {
+                report,
+                mode,
+                expectation,
+                actual,
+            } => write!(
+                formatter,
+                "Gowin DSP characterization failed for {}: mode {} expected {expectation}, but place-and-route reported {actual}",
+                report.display(),
+                mode.report_name()
             ),
             Self::PhysicalResourceInstanceMismatch {
                 report,
@@ -1674,7 +1821,19 @@ mod tests {
         assert_eq!(resource_mode_total(report, "BSRAM"), Some(6));
         assert_eq!(resource_usage_fraction(report, "DSP"), None);
         assert_eq!(resource_mode_total(report, "DSP"), Some(32));
+        assert_eq!(resource_mode_usage(report, "DSP", "MULT18X18"), Some(10));
+        assert_eq!(
+            resource_mode_usage(report, "DSP", "MULTADDALU18X18"),
+            Some(10)
+        );
+        assert_eq!(dsp_multiplier_lane_usage(report), Some(30));
         assert_eq!(resource_usage_fraction(report, "PLL"), Some(1));
+
+        let supported_dsp = "DSP | 2.5/24 | 11%\n\
+    --MULT18X18 | 1\n\
+    --MULTADDALU18X18 | 2\n\
+  PLL | 0/2 | 0%\n";
+        assert_eq!(dsp_multiplier_lane_usage(supported_dsp), Some(5));
     }
 
     #[test]
@@ -1698,7 +1857,7 @@ mod tests {
         .unwrap();
         let planned = TargetResources::<TangNano20K>::new().report();
         assert!(matches!(
-            audit_physical_resources(&report, &hierarchy_report, &planned),
+            audit_physical_resources(&report, &hierarchy_report, &planned, &BTreeMap::new()),
             Err(GowinError::PhysicalResourceMismatch {
                 resource: ResourceKind::Bsram18K,
                 claimed: 0,
@@ -1749,5 +1908,23 @@ mod tests {
         ));
         fs::remove_file(report).unwrap();
         fs::remove_dir(directory).unwrap();
+    }
+
+    #[test]
+    fn physical_resource_expectations_accept_exact_bounds_and_ranges() {
+        assert!(ResourceCountExpectation::Exact(2).accepts(2));
+        assert!(!ResourceCountExpectation::Exact(2).accepts(1));
+        assert!(ResourceCountExpectation::AtMost(2).accepts(0));
+        assert!(!ResourceCountExpectation::AtMost(2).accepts(3));
+        assert!(ResourceCountExpectation::Between {
+            minimum: 2,
+            maximum: 4,
+        }
+        .accepts(3));
+        assert!(!ResourceCountExpectation::Between {
+            minimum: 2,
+            maximum: 4,
+        }
+        .accepts(5));
     }
 }

@@ -259,14 +259,26 @@ pub trait Module: HardwareIdentity + Sized + 'static {
         Vec::new()
     }
 
-    fn create_emu(input: &Self::Input, output: &Self::Output) -> Self::EmuState;
+    /// Create state for the default external-backed `emu` implementation.
+    /// Compositional modules that override `emu` do not need this hook.
+    fn create_emu(_input: &Self::Input, _output: &Self::Output) -> Self::EmuState {
+        panic!(
+            "emulator state construction is not implemented for module `{}`",
+            std::any::type_name::<Self>()
+        )
+    }
 
     fn execute_emu(
-        state: &mut Self::EmuState,
-        circuit: &mut CircuitWires,
-        input: &Self::Input,
-        output: &Self::Output,
-    );
+        _state: &mut Self::EmuState,
+        _circuit: &mut CircuitWires,
+        _input: &Self::Input,
+        _output: &Self::Output,
+    ) {
+        panic!(
+            "emulator execution is not implemented for module `{}`",
+            std::any::type_name::<Self>()
+        )
+    }
 
     fn clock_emu(
         _state: &mut Self::EmuState,
@@ -276,6 +288,11 @@ pub trait Module: HardwareIdentity + Sized + 'static {
     ) {
     }
 
+    /// Build the local emulator backend.
+    ///
+    /// The default wraps `create_emu`/`execute_emu` as one external. Override
+    /// this method for a compositional emulator that calls child modules such
+    /// as target-leaf `Module::hardware`.
     fn emu(input: &Self::Input) -> Self::Output {
         assert!(
             Self::EMU_AVAILABLE,
@@ -299,8 +316,30 @@ pub trait Module: HardwareIdentity + Sized + 'static {
         )
     }
 
+    /// Instantiate a target hardware leaf in backend-independent user logic.
+    ///
+    /// Local circuit construction uses the leaf emulator as an external.
+    /// During Verilog hierarchy recording the same call records a concrete HDL
+    /// instance instead. This is restricted to target leaves so ordinary
+    /// hierarchical modules still choose `emu`, `nand`, or `verilog`
+    /// explicitly.
+    fn hardware(input: &Self::Input) -> Self::Output {
+        assert!(
+            Self::TARGET_RESOURCE_LEAF,
+            "`{}::hardware` is only available for target hardware leaves",
+            std::any::type_name::<Self>()
+        );
+        if crate::project::recording_verilog_hierarchy() {
+            Self::verilog(input)
+        } else {
+            Self::emu(input)
+        }
+    }
+
     /// Build the generated Verilog body. The default converts `nand`.
-    /// Hierarchical modules override this and call child `Module::verilog`.
+    /// Hierarchical modules override this when their Verilog structure differs
+    /// from `nand`. Calls to target-leaf `Module::hardware` dispatch
+    /// automatically, so they normally need no override.
     fn build_verilog(input: &Self::Input) -> Self::Output {
         Self::nand(input)
     }
