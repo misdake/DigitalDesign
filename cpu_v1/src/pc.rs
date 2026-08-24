@@ -17,14 +17,14 @@ pub struct CpuPcOutput {
 
 pub struct CpuPcEmu;
 impl CpuComponentEmu<CpuPc> for CpuPcEmu {
-    fn init_output(i: &CpuPcInput) -> CpuPcOutput {
+    fn create(i: &CpuPcInput) -> (Self, CpuPcOutput) {
         let output = CpuPcOutput { next_pc: input_w() };
         output
             .next_pc
             .set_latency_external(i.curr_pc.get_max_latency_external() + 30);
-        output
+        (Self, output)
     }
-    fn execute(c: &mut CircuitWires, input: &CpuPcInput, output: &CpuPcOutput) {
+    fn execute(&mut self, c: &mut CircuitWires, input: &CpuPcInput, output: &CpuPcOutput) {
         assert_eq!(
             1,
             input.jmp_long_enable.get(c) + input.pc_offset_enable.get(c)

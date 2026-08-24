@@ -6,6 +6,7 @@
 #![allow(clippy::manual_range_contains)]
 
 mod basic;
+mod component;
 mod component_lib;
 mod export;
 mod external;
@@ -13,6 +14,7 @@ mod reg;
 mod wires;
 
 pub use basic::*;
+pub use component::*;
 pub use component_lib::*;
 pub use export::*;
 pub use external::*;

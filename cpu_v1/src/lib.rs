@@ -34,11 +34,12 @@ use assembler::*;
 mod programs;
 
 extern crate digital_design_code;
-use digital_design_code::{build_circuit, Circuit, CircuitWires};
-pub(crate) use digital_design_code::{external, reg, reg_w, External, Reg, Regs, Wires};
-use std::any::Any;
+use digital_design_code::{build_circuit, Circuit};
+pub(crate) use digital_design_code::{
+    reg, reg_w, CircuitComponent as CpuComponent, CircuitComponentEmu as CpuComponentEmu,
+    EmulatedComponent as CpuComponentEmuContext, Reg, Regs, Wires,
+};
 use std::cell::RefCell;
-use std::marker::PhantomData;
 use std::rc::Rc;
 
 #[allow(unused)]
@@ -334,45 +335,4 @@ fn cpu_v1_build_mix(inst_rom: [Instruction; 256]) -> (Circuit, CpuV1State, CpuV1
     });
     println!("cpu_v1_build_mix {:?}", circuit.get_statistics());
     (circuit, state1, internal1)
-}
-
-pub trait CpuComponent: Any {
-    type Input: Clone;
-    type Output: Clone;
-    fn build(input: &Self::Input) -> Self::Output;
-}
-
-pub trait CpuComponentEmu<T: CpuComponent>: Sized + Any {
-    fn init_output(input: &T::Input) -> T::Output;
-    fn execute(circuits: &mut CircuitWires, input: &T::Input, output: &T::Output);
-    fn build(input: &T::Input) -> T::Output {
-        let output = Self::init_output(input);
-        let ctx: CpuComponentEmuContext<T, Self> = CpuComponentEmuContext {
-            _phantom: Default::default(),
-            input: input.clone(),
-            output: output.clone(),
-        };
-        external(ctx);
-        output
-    }
-}
-struct CpuComponentEmuContext<T: CpuComponent, E: CpuComponentEmu<T>> {
-    _phantom: PhantomData<E>,
-    input: T::Input,
-    output: T::Output,
-}
-impl<T: CpuComponent, E: CpuComponentEmu<T>> External for CpuComponentEmuContext<T, E> {
-    fn execute(&mut self, circuit: &mut CircuitWires) {
-        E::execute(circuit, &self.input, &self.output);
-    }
-    fn as_any(&self) -> &dyn Any {
-        self
-    }
-}
-impl<T: CpuComponent, E: CpuComponentEmu<T>> CpuComponent for CpuComponentEmuContext<T, E> {
-    type Input = T::Input;
-    type Output = T::Output;
-    fn build(input: &Self::Input) -> Self::Output {
-        E::build(input)
-    }
 }

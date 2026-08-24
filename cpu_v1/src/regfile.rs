@@ -204,7 +204,7 @@ fn test_reg() {
 
     let testcases = shuffled_list(1 << 9, 0.123);
     for i in testcases {
-        let reg0 = ((i >> 0) % (1 << 2)) as u8;
+        let reg0 = (i % (1 << 2)) as u8;
         let reg1 = ((i >> 2) % (1 << 2)) as u8;
         let write = (i >> 4) % (1 << 1) > 0;
         let src = if (i >> 5) % (1 << 1) > 0 {

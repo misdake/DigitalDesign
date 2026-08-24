@@ -69,12 +69,12 @@ impl Assembler {
                     .function_names
                     .get(&i)
                     .map(|func_name| format!(" <-- fn {func_name}"))
-                    .unwrap_or_else(|| "".to_string());
+                    .unwrap_or_default();
                 let comment = self
                     .comments
                     .get(&i)
                     .map(|comment| format!(" {comment}"))
-                    .unwrap_or_else(|| "".to_string());
+                    .unwrap_or_default();
 
                 format!("{addr}{inst:22}{func}{comment}")
             })
@@ -149,22 +149,22 @@ impl Assembler {
         self.cursor = cursor;
     }
 
-    pub fn reg0(&mut self) -> Reg0 {
+    pub fn reg0(&mut self) -> Reg0<'_> {
         Reg0 { assembler: self }
     }
-    pub fn reg1(&mut self) -> Reg {
+    pub fn reg1(&mut self) -> Reg<'_> {
         Reg {
             assembler: self,
             reg_addr: Reg1,
         }
     }
-    pub fn reg2(&mut self) -> Reg {
+    pub fn reg2(&mut self) -> Reg<'_> {
         Reg {
             assembler: self,
             reg_addr: Reg2,
         }
     }
-    pub fn reg3(&mut self) -> Reg {
+    pub fn reg3(&mut self) -> Reg<'_> {
         Reg {
             assembler: self,
             reg_addr: Reg3,

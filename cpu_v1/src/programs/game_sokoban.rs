@@ -187,11 +187,11 @@ fn test_frame_sync() {
     asm.func_decl("game_play", INST_ADDR_GAME_PLAY);
     asm.func_decl("render", INST_ADDR_RENDER);
 
-    asm.func_impl("init", |asm| init(asm));
-    asm.func_impl("game_loop", |asm| game_loop(asm));
-    asm.func_impl("game_win", |asm| game_win(asm));
-    asm.func_impl("game_play", |asm| game_play(asm));
-    asm.func_impl("render", |asm| render(asm));
+    asm.func_impl("init", init);
+    asm.func_impl("game_loop", game_loop);
+    asm.func_impl("game_win", game_win);
+    asm.func_impl("game_play", game_play);
+    asm.func_impl("render", render);
 
     println!("asm:\n{}\n", asm.to_pretty_string());
 

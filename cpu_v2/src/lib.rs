@@ -4,8 +4,10 @@
 mod compiler;
 mod dsl_progs;
 mod isa;
+mod semantics;
 mod sim;
 
+pub mod cpu;
 pub mod debugger;
 pub mod frontend;
 

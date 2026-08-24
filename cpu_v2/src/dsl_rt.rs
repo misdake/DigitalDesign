@@ -102,9 +102,13 @@ pub fn cnt1(x: u16) -> u16 {
     x.count_ones() as u16
 }
 
-/// integer base-2 logarithm; like the target instruction, zero is invalid
+/// integer base-2 logarithm; returns zero for an input of zero
 pub fn log2(x: u16) -> u16 {
-    x.ilog2() as u16
+    if x == 0 {
+        0
+    } else {
+        x.ilog2() as u16
+    }
 }
 
 /// receive a word from a device (not available on the host)

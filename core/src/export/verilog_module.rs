@@ -1,6 +1,8 @@
 use crate::export::{ExportModuleInterface, Exporter};
 use crate::ExportGateReg;
 
+// only constructed by the tests in this file; kept as library API
+#[allow(dead_code)]
 pub struct VerilogModuleExporter {}
 
 impl Exporter for VerilogModuleExporter {

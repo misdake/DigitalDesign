@@ -34,20 +34,23 @@ impl CpuComponent for CpuBus {
 
 pub struct CpuBusEmu;
 impl CpuComponentEmu<CpuBus> for CpuBusEmu {
-    fn init_output(i: &CpuBusInput) -> CpuBusOutput {
+    fn create(i: &CpuBusInput) -> (Self, CpuBusOutput) {
         let bus_out = input_w();
         let bus_addr0_next = input_w();
         let bus_addr1_next = input_w();
         bus_out.set_latency_external(i.reg0_data.get_max_latency_external() + 2);
         bus_addr0_next.set_latency_external(i.reg0_data.get_max_latency_external() + 2);
         bus_addr1_next.set_latency_external(i.reg0_data.get_max_latency_external() + 2);
-        CpuBusOutput {
-            bus_out,
-            bus_addr0_next,
-            bus_addr1_next,
-        }
+        (
+            Self,
+            CpuBusOutput {
+                bus_out,
+                bus_addr0_next,
+                bus_addr1_next,
+            },
+        )
     }
-    fn execute(c: &mut CircuitWires, input: &CpuBusInput, output: &CpuBusOutput) {
+    fn execute(&mut self, c: &mut CircuitWires, input: &CpuBusInput, output: &CpuBusOutput) {
         let bus_addr0_write = input.bus_addr0_write.get(c) > 0;
         let bus_addr1_write = input.bus_addr1_write.get(c) > 0;
         let bus_addr0_src = select(bus_addr0_write, input.reg0_data, input.bus_addr0);

@@ -4,7 +4,7 @@
 use crate::compiler::builder::remove_trivial_phis;
 use crate::compiler::ir::*;
 use crate::isa::Cond;
-use crate::sim::{calc_flags, calc_flags_signed};
+use crate::semantics::{calc_flags, calc_flags_signed};
 use std::collections::{HashMap, HashSet};
 
 #[derive(Clone, Debug)]
@@ -147,9 +147,10 @@ fn fold_un(op: UnOp, a: u16) -> Option<u16> {
         UnOp::Cnt1 => a.count_ones() as u16,
         UnOp::Log2 => {
             if a == 0 {
-                return None; // hardware result undefined for 0
+                0
+            } else {
+                a.ilog2() as u16
             }
-            a.ilog2() as u16
         }
     })
 }
