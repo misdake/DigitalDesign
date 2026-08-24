@@ -2,8 +2,8 @@
 
 ## Board boot progress
 
-The complete boot system passively exposes early progress on the six logical
-LEDs until boot software writes the system-control LED channel:
+The complete boot system passively exposes the current boot phase on the six
+logical LEDs. Phase changes are shown immediately without display delays:
 
 | Logical LEDs | Phase |
 | --- | --- |
@@ -16,7 +16,8 @@ LEDs until boot software writes the system-control LED channel:
 | `100001` | sticky DMA or CPU fault |
 
 The target wrapper performs any physical active-low conversion. The first
-software LED write permanently takes ownership until reset. These patterns are
+software LED write immediately and permanently takes ownership until reset, so
+firmware can report either success or a detailed error code. These patterns are
 progress evidence only; only the application's UART frame and system-level
 checks establish a successful boot.
 

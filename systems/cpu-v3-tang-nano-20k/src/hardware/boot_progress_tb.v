@@ -34,15 +34,16 @@ initial begin
     expect_phase(2, 6'b000100);
     dma_busy = 1;
     expect_phase(3, 6'b001000);
-    dma_busy = 0; code_segment = 1;
+    code_segment = 1;
     expect_phase(4, 6'b010000);
+    dma_busy = 0;
     code_segment = 3;
     expect_phase(5, 6'b100000);
 
     software_led_write = 1;
     @(posedge clk); #1;
     if (diagnostic_active !== 0)
-        $fatal(1, "software LED handoff was not retained");
+        $fatal(1, "software LED handoff was not immediate");
     software_led_write = 0;
     dma_error = 1;
     @(posedge clk); #1;
