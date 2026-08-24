@@ -1,9 +1,8 @@
 # CPU V3 two-stage flash boot package for the cpu_v3_boot example.
-# Section files are compiler outputs; regenerate with:
-#   rcc systems/cpu-v3-tang-nano-20k/rcc/stage1.rs --target cpu-v3 --code-base 0x100 --stack-init 0xf000 -o target/cpu-v3-boot/stage1.v3bin --lst target/cpu-v3-boot/stage1.lst
-#   rcc systems/cpu-v3-tang-nano-20k/rcc/boot-demo.rs --target cpu-v3 --code-base 0x200 --stack-init 0xe000 -o target/cpu-v3-boot/boot-demo.v3bin --lst target/cpu-v3-boot/boot-demo.lst
-#   printf '\xef\xbe\x55' > target/cpu-v3-boot/data.bin
-#   cpu-v3-pack systems/cpu-v3-tang-nano-20k/examples/cpu_v3_boot/boot.cpu-v3-manifest -o target/cpu-v3-boot/cpu-v3-boot.bin
+# Section files are the exact compiler outputs consumed by the system build.
+# Materialize and independently repack them with:
+#   cargo run -p cpu-v3-tang-nano-20k --bin cpu-v3-boot-assets
+#   cargo run -p cpu-v3-tang-nano-20k --bin cpu-v3-pack -- systems/cpu-v3-tang-nano-20k/examples/cpu_v3_boot/boot.cpu-v3-manifest -o target/cpu-v3-boot/cpu-v3-boot.repacked.bin
 format 1
 target tang-nano-20k
 stage1-section stage1

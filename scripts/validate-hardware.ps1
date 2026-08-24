@@ -29,6 +29,37 @@ function Invoke-Cargo {
     Invoke-ValidationStep -Name $Name -Executable "cargo" -Arguments $Arguments
 }
 
+function Invoke-BootArtifactValidation {
+    $bootDirectory = Join-Path $repoRoot "target/cpu-v3-boot"
+    $manifest = Join-Path $repoRoot "systems/cpu-v3-tang-nano-20k/examples/cpu_v3_boot/boot.cpu-v3-manifest"
+    $generatedPackage = Join-Path $bootDirectory "cpu-v3-boot.bin"
+    $repackedPackage = Join-Path $bootDirectory "cpu-v3-boot.repacked.bin"
+    $repackedMap = Join-Path $bootDirectory "cpu-v3-boot.repacked.map"
+
+    Invoke-Cargo "materialize generated CPU V3 boot assets" @(
+        "run", "-p", "cpu-v3-tang-nano-20k", "--bin", "cpu-v3-boot-assets", "--", $bootDirectory
+    )
+    Invoke-Cargo "repack CPU V3 boot manifest" @(
+        "run", "-p", "cpu-v3-tang-nano-20k", "--bin", "cpu-v3-pack", "--",
+        $manifest, "-o", $repackedPackage, "--map", $repackedMap
+    )
+
+    Write-Host ""
+    Write-Host "== boot package byte-for-byte comparison =="
+    $generated = [System.IO.File]::ReadAllBytes($generatedPackage)
+    $repacked = [System.IO.File]::ReadAllBytes($repackedPackage)
+    if ($generated.Length -ne $repacked.Length) {
+        throw "repacked boot package has $($repacked.Length) bytes; generated package has $($generated.Length)"
+    }
+    for ($index = 0; $index -lt $generated.Length; $index++) {
+        if ($generated[$index] -ne $repacked[$index]) {
+            throw "repacked boot package differs at byte $index"
+        }
+    }
+    Write-Host "Boot package is reproducible ($($generated.Length) identical bytes)."
+    $completedSteps.Add("boot package byte-for-byte comparison")
+}
+
 function Invoke-QuickValidation {
     Invoke-Cargo "workspace tests" @("test", "--workspace")
     Invoke-Cargo "strict workspace clippy" @(
@@ -36,6 +67,7 @@ function Invoke-QuickValidation {
     )
     Invoke-ValidationStep -Name "layering constraints" -Executable (Join-Path $repoRoot "scripts/check-layering.ps1")
     Invoke-ValidationStep -Name "source hygiene constraints" -Executable (Join-Path $repoRoot "scripts/check-source-hygiene.ps1")
+    Invoke-BootArtifactValidation
 }
 
 function Invoke-IverilogValidation {

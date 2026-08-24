@@ -28,11 +28,13 @@ cargo run -p compiler-tools --bin rcc -- input.rs --target cpu-v3 --code-base 0x
 cargo run -p cpu-v2-sim --bin rcc-run -- input.bin 1000000
 cargo run -p cpu-v2-sim --bin rcc-dbg -- input.bin
 cargo run -p cpu-v3-tang-nano-20k --bin cpu-v3-pack -- manifest
+cargo run -p cpu-v3-tang-nano-20k --bin cpu-v3-boot-assets
 ```
 
 The CPU V3 system build script generates Stage0, Stage1, the demo application, and boot image data
-from `systems/cpu-v3-tang-nano-20k/rcc` into Cargo `OUT_DIR`. Never check in a second hand-maintained
-instruction or Flash byte array.
+from `systems/cpu-v3-tang-nano-20k/rcc` into Cargo `OUT_DIR`. Use `cpu-v3-boot-assets` to materialize
+those exact files for packing or programming. Never check in a second hand-maintained instruction
+or Flash byte array.
 
 ## Validation
 
