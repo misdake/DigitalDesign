@@ -73,4 +73,10 @@ mod tests {
         assert!(project.files[std::path::Path::new("build.tcl")]
             .contains("{ipcore} {SDRC_HS} {data} {sdrc_hs_top.vp}"));
     }
+
+    #[test]
+    #[ignore = "explicit external simulator validation"]
+    fn verify_board_harness_with_iverilog() {
+        digital_design_hardware::verify_verilog_with_iverilog::<SdramBoardSelfTest>().unwrap();
+    }
 }

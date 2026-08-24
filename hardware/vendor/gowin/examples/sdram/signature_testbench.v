@@ -41,6 +41,7 @@ initial begin
         $display("SDRAM harness signature/default check failed");
         $fatal(1);
     end
+    $display("DIGITAL_DESIGN_PASS");
     $finish;
 end
 endmodule

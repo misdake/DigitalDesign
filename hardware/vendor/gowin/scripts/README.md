@@ -5,6 +5,20 @@ and board examples. Example-specific RTL and test vectors remain beside their
 owning crate's examples; reusable capture, decode, build, and reporting tools
 belong here.
 
+Repository-wide offline validation is orchestrated by `scripts/validate-hardware.ps1`:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File scripts/validate-hardware.ps1 -Mode quick
+powershell -ExecutionPolicy Bypass -File scripts/validate-hardware.ps1 -Mode iverilog
+powershell -ExecutionPolicy Bypass -File scripts/validate-hardware.ps1 -Mode audit
+powershell -ExecutionPolicy Bypass -File scripts/validate-hardware.ps1 -Mode pnr
+```
+
+`audit` checks those four existing artifacts against current sources without rebuilding. `pnr`
+builds and audits the board-health, CPU, CPU/SDRAM, and complete boot artifacts. Neither mode
+programs a device. Each successful mode writes a small evidence record below
+`target/hardware-validation` containing the commit, dirty-worktree flag, and completed steps.
+
 `capture_uart.ps1` records raw bytes from the board's debug UART (the Tang
 Nano 20K exposes it as a USB serial port through the onboard debugger) into a
 capture file:

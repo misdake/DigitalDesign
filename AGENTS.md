@@ -43,7 +43,12 @@ developer environment and ensure Cargo precedes Git Bash tools on `PATH`.
 cargo test --workspace
 cargo clippy --workspace --all-targets
 powershell -ExecutionPolicy Bypass -File scripts/check-layering.ps1
+powershell -ExecutionPolicy Bypass -File scripts/check-source-hygiene.ps1
 ```
+
+Use `scripts/validate-hardware.ps1 -Mode quick|iverilog|audit|pnr|all` for repeatable hardware
+validation. `audit` validates existing artifacts without rebuilding; `pnr` builds and audits them.
+Neither mode invokes the programmer.
 
 External Verilog tests use `IVERILOG_EXE` and `VVP_EXE` when set, otherwise
 they resolve `iverilog` and `vvp` through `PATH`.
