@@ -1,8 +1,9 @@
-// Flash readback probe: reads the first bytes of the CPU V3 boot package at
-// 0x100000 through the fitted SPI flash reader and shows per-byte magic
-// matches on the LEDs. LEDs 1..6 = bytes 0..5 match "CPU3BOOT"; all six lit
-// means the package write landed.
-module FlashReadbackProbe (
+// Read-only Flash readback probe. Each byte is sent as an eight-byte UART
+// record: "FBR1", offset_lo, offset_hi, data, xor_checksum. The complete
+// package is repeated so a host can require multiple matching observations.
+module FlashReadbackProbe #(
+    parameter integer READ_LENGTH = __FLASH_PACKAGE_SIZE__
+) (
     input wire clk,
     input wire [1:0] buttons,
     input wire flash_miso,
@@ -31,13 +32,14 @@ wire data_valid;
 wire [7:0] data;
 wire done;
 wire error;
+reg uart_busy = 0;
 
 __FLASH_READER__ u_flash (
     .clk(clk),
     .start(start),
     .address(24'h100000),
-    .length(24'd8),
-    .data_ready(1'b1),
+    .length(READ_LENGTH[23:0]),
+    .data_ready(!uart_busy),
     .flash_miso(flash_miso),
     .ready(flash_ready),
     .data_valid(data_valid),
@@ -49,55 +51,103 @@ __FLASH_READER__ u_flash (
     .flash_mosi(flash_mosi)
 );
 
-function [7:0] expected_byte;
+function [7:0] record_byte;
     input [2:0] index;
+    input [15:0] record_offset;
+    input [7:0] record_data;
     begin
         case (index)
-            0: expected_byte = 8'h43; // C
-            1: expected_byte = 8'h50; // P
-            2: expected_byte = 8'h55; // U
-            3: expected_byte = 8'h33; // 3
-            4: expected_byte = 8'h42; // B
-            5: expected_byte = 8'h4f; // O
-            default: expected_byte = 8'h00;
+            0: record_byte = 8'h46; // F
+            1: record_byte = 8'h42; // B
+            2: record_byte = 8'h52; // R
+            3: record_byte = 8'h31; // 1
+            4: record_byte = record_offset[7:0];
+            5: record_byte = record_offset[15:8];
+            6: record_byte = record_data;
+            default: record_byte = 8'h67 ^ record_offset[7:0]
+                ^ record_offset[15:8] ^ record_data;
         endcase
     end
 endfunction
 
-reg [5:0] matches = 0;
-reg [2:0] byte_index = 0;
 reg started = 0;
-reg seen_done = 0;
+reg [15:0] stream_offset = 0;
+reg [19:0] repeat_delay = 0;
+reg completion_toggle = 0;
 reg seen_error = 0;
+
+reg [15:0] record_offset = 0;
+reg [7:0] record_data = 0;
+reg [2:0] uart_byte = 0;
+reg [9:0] uart_frame = 10'h3ff;
+reg [3:0] uart_bit = 0;
+reg [7:0] uart_divider = 0;
 
 always @(posedge clk) begin
     if (reset) begin
         start <= 0;
-        matches <= 0;
-        byte_index <= 0;
         started <= 0;
-        seen_done <= 0;
+        stream_offset <= 0;
+        repeat_delay <= 0;
+        completion_toggle <= 0;
         seen_error <= 0;
+        record_offset <= 0;
+        record_data <= 0;
+        uart_byte <= 0;
+        uart_frame <= 10'h3ff;
+        uart_bit <= 0;
+        uart_divider <= 0;
+        uart_busy <= 0;
     end else begin
-        if (!started && flash_ready) begin
+        start <= 0;
+        if (!started && flash_ready && repeat_delay == 20'd999999) begin
             start <= 1;
             started <= 1;
-        end else begin
-            start <= 0;
+            stream_offset <= 0;
+            repeat_delay <= 0;
+        end else if (!started) begin
+            repeat_delay <= repeat_delay + 1'b1;
         end
-        if (data_valid) begin
-            if (byte_index < 6 && data == expected_byte(byte_index))
-                matches[byte_index] <= 1;
-            byte_index <= byte_index + 1'b1;
+
+        if (data_valid && !uart_busy) begin
+            record_offset <= stream_offset;
+            record_data <= data;
+            stream_offset <= stream_offset + 1'b1;
+            uart_byte <= 0;
+            uart_frame <= {1'b1, record_byte(0, stream_offset, data), 1'b0};
+            uart_bit <= 0;
+            uart_divider <= 0;
+            uart_busy <= 1;
+        end else if (uart_busy && uart_divider == 8'd233) begin
+            uart_divider <= 0;
+            if (uart_bit == 9) begin
+                if (uart_byte == 7) begin
+                    uart_busy <= 0;
+                end else begin
+                    uart_byte <= uart_byte + 1'b1;
+                    uart_frame <= {1'b1,
+                        record_byte(uart_byte + 1'b1, record_offset, record_data), 1'b0};
+                    uart_bit <= 0;
+                end
+            end else begin
+                uart_bit <= uart_bit + 1'b1;
+            end
+        end else if (uart_busy) begin
+            uart_divider <= uart_divider + 1'b1;
         end
-        if (done)
-            seen_done <= 1;
+
+        if (done) begin
+            started <= 0;
+            repeat_delay <= 0;
+            completion_toggle <= !completion_toggle;
+        end
         if (error)
             seen_error <= 1;
     end
 end
 
-assign leds = {seen_error, seen_done, matches[3], matches[2], matches[1], matches[0]};
-assign uart_tx = 1'b1;
+assign leds = {seen_error, completion_toggle, uart_busy, started,
+    stream_offset[9], stream_offset[8]};
+assign uart_tx = uart_busy ? uart_frame[uart_bit] : 1'b1;
 
 endmodule

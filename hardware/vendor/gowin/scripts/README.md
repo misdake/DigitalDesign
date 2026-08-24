@@ -15,7 +15,7 @@ powershell -ExecutionPolicy Bypass -File scripts/validate-hardware.ps1 -Mode pnr
 ```
 
 `audit` checks those four existing artifacts against current sources without rebuilding. `pnr`
-builds and audits the board-health, CPU, CPU/SDRAM, and complete boot artifacts. Neither mode
+builds and audits the board-health, CPU, CPU/SDRAM, complete boot, and Flash-readback artifacts. Neither mode
 programs a device. Each successful mode writes a small evidence record below
 `target/hardware-validation` containing the commit, dirty-worktree flag, and completed steps.
 
@@ -25,12 +25,13 @@ read-only artifact checks, observation, and hardware mutation:
 | Mode | Actions |
 | --- | --- |
 | `Audit` | Validate the existing manifest, generated sources, bitstream, timing, and resources. No hardware access. |
-| `Observe` | Wait a bounded time for an already-running board's VCP, capture UART, and validate DDHT. No programming. |
+| `Observe` | Wait a bounded time for an already-running board's VCP, capture UART, and validate its protocol. No programming. |
 | `Program` | Audit, optionally write the boot package, then program the audited SRAM bitstream exactly once. |
-| `Full` | Perform `Program`, then bounded VCP wait, capture, and DDHT validation. |
+| `Full` | Perform `Program`, then bounded VCP wait, capture, and protocol validation. |
 
-Supported profiles are `board-health`, `cpu-v3-cpu`, `cpu-v3-sdram`, and
-`cpu-v3-boot`. Every attempted run writes `target/board-validation/<profile>/<UTC>/evidence.json`,
+Supported profiles are `board-health`, `cpu-v3-cpu`, `cpu-v3-sdram`,
+`cpu-v3-boot`, and the read-only `cpu-v3-flash-readback` probe. Every attempted
+run writes `target/board-validation/<profile>/<UTC>/evidence.json`,
 including failure stage, source/bitstream fingerprints, SHA-256 hashes, commit and dirty state.
 The runner never resets USB and never retries programming after a failure.
 
@@ -46,7 +47,19 @@ powershell -ExecutionPolicy Bypass -File hardware/vendor/gowin/scripts/run_board
 # Explicit complete boot run. Flash and SRAM are each programmed at most once.
 powershell -ExecutionPolicy Bypass -File hardware/vendor/gowin/scripts/run_board_validation.ps1 `
     -Profile cpu-v3-boot -Mode Full -Port COM8 -WriteBootFlash
+
+# Independently reconstruct and compare the generated package without writing Flash.
+powershell -ExecutionPolicy Bypass -File hardware/vendor/gowin/scripts/run_board_validation.ps1 `
+    -Profile cpu-v3-flash-readback -Mode Full -Port COM8 `
+    -CaptureSeconds 6 -MinimumSuccessFrames 2
 ```
+
+The runner captures through `capture_bl616_uart.ps1`. It enters the onboard
+BL616 console with the documented timed escape, selects `uart`, and keeps that
+same serial session open while capturing. Reopening the VCP after `choose uart`
+is not equivalent on every BL616 firmware revision. At the end it returns to
+the quiet BL616 console before closing the handle; it never resets or
+re-enumerates USB.
 
 `capture_uart.ps1` records raw bytes from the board's debug UART (the Tang
 Nano 20K exposes it as a USB serial port through the onboard debugger) into a
@@ -86,6 +99,13 @@ additional error addresses, observed values, or replayable vectors should
 introduce a new protocol version and extend the shared decoder rather than
 growing a private script inside one example. Set `-MaximumAgeSeconds 0` only
 when deliberately inspecting an archived capture.
+
+`cpu-v3-flash-readback` repeatedly emits `FBR1` records containing one Flash
+byte, its 16-bit package offset, and an XOR checksum. Its checker requires every
+offset to be observed consistently at least twice, reconstructs the complete
+package, compares every byte, and records both SHA-256 fingerprints and the
+first mismatching physical Flash address. The probe only issues SPI command
+`03h`; it has no erase or program path.
 
 Assigned test IDs:
 

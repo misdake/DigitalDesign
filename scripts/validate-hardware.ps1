@@ -65,6 +65,10 @@ function Invoke-QuickValidation {
         "-NoProfile", "-ExecutionPolicy", "Bypass", "-File",
         (Join-Path $repoRoot "hardware/vendor/gowin/scripts/test_uart_status.ps1")
     )
+    Invoke-ValidationStep -Name "Flash readback decoder self-test" -Executable "powershell" -Arguments @(
+        "-NoProfile", "-ExecutionPolicy", "Bypass", "-File",
+        (Join-Path $repoRoot "hardware/vendor/gowin/scripts/test_flash_readback.ps1")
+    )
     Invoke-Cargo "workspace tests" @("test", "--workspace")
     Invoke-Cargo "strict workspace clippy" @(
         "clippy", "--workspace", "--all-targets", "--", "-D", "warnings"
@@ -124,6 +128,7 @@ function Invoke-AuditValidation {
     Invoke-BoardArtifactAudit "cpu-v3-cpu"
     Invoke-BoardArtifactAudit "cpu-v3-sdram"
     Invoke-BoardArtifactAudit "cpu-v3-boot"
+    Invoke-BoardArtifactAudit "cpu-v3-flash-readback"
 }
 
 function Invoke-PnrValidation {
@@ -131,6 +136,7 @@ function Invoke-PnrValidation {
     Invoke-GowinBuild "cpu-v3-tang-nano-20k" "cpu_v3_cpu"
     Invoke-GowinBuild "cpu-v3-tang-nano-20k" "cpu_v3_sdram"
     Invoke-GowinBuild "cpu-v3-tang-nano-20k" "cpu_v3_boot"
+    Invoke-GowinBuild "cpu-v3-tang-nano-20k" "boot_flash_readback"
 }
 
 Push-Location $repoRoot
