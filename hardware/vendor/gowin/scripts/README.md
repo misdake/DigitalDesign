@@ -48,6 +48,35 @@ Assigned test IDs:
 | `0x07` | CPU V3 two-stage flash boot (application reached) |
 | `0x08` | System control device UART characterization (sysctl_uart) |
 | `0x09` | CPU V3 CPU MMIO path characterization (cpu_v3_mmio) |
+| `0x0a` | Tang Nano 20K board clock/button/UART transport health probe |
+
+## Stable board bring-up
+
+Build once, then program the audited image without rerunning synthesis or
+place-and-route:
+
+```powershell
+cargo run -p digital-design-hardware-gowin --example board_health -- --build
+cargo run -p digital-design-hardware-gowin --example board_health -- --check-existing
+cargo run -p digital-design-hardware-gowin --example board_health -- --program-existing
+powershell -ExecutionPolicy Bypass -File hardware/vendor/gowin/scripts/capture_uart.ps1 `
+    -Port COM8 -Out target/board_health_gowin/capture.bin
+powershell -ExecutionPolicy Bypass -File hardware/vendor/gowin/scripts/check_uart_status.ps1 `
+    -Path target/board_health_gowin/capture.bin -TestId 0x0a -MinimumSuccessFrames 2
+```
+
+`--build` writes `gowin-build.manifest` beside the generated project. The
+`--program-existing` path rejects a changed generated source set, target,
+device, bitstream length, or bitstream fingerprint, then reruns timing and
+physical-resource audits before invoking Programmer. This keeps a USB retry
+from silently changing the FPGA implementation under test.
+
+The board-health probe is the required first gate for higher-level hardware
+tests. Its LEDs are: LED1 heartbeat, LED2/LED3 synchronized button levels,
+LED4 completed-frame toggle, LED5 UART busy, and LED6 fabric-alive. A high
+button is also returned as the DDHT status byte, so reset inputs remain
+observable instead of silencing the probe. Do not interpret CPU, memory, or
+boot results unless this probe first passes with the same physical setup.
 
 The `sdram_word_port` example predates this protocol and still sends a
 private `SDWP` frame; it is not validated by `check_uart_status.ps1`.

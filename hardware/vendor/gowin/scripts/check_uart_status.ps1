@@ -33,6 +33,13 @@ $successCount = 0
 $failureCount = 0
 $wrongTestCount = 0
 $badChecksumCount = 0
+$magicCount = 0
+$failureStatuses = @{}
+
+if ($bytes.Length -eq 0) {
+    Write-Error "UART capture contains zero bytes. Treat this as a host/VCP/physical transport failure; do not infer a DUT failure."
+    exit 1
+}
 
 for ($offset = 0; $offset -le $bytes.Length - 8; $offset++) {
     if ($bytes[$offset] -ne 0x44 -or
@@ -42,6 +49,7 @@ for ($offset = 0; $offset -le $bytes.Length - 8; $offset++) {
         $bytes[$offset + 4] -ne 0x01) {
         continue
     }
+    $magicCount++
 
     [byte]$checksum = 0
     for ($index = 0; $index -lt 7; $index++) {
@@ -63,6 +71,13 @@ for ($offset = 0; $offset -le $bytes.Length - 8; $offset++) {
         $successCount++
     } else {
         $failureCount++
+        $status = $bytes[$offset + 6]
+        $key = "0x$($status.ToString('x2'))"
+        if ($failureStatuses.ContainsKey($key)) {
+            $failureStatuses[$key]++
+        } else {
+            $failureStatuses[$key] = 1
+        }
     }
     $offset += 7
 }
@@ -71,7 +86,11 @@ if ($badChecksumCount -ne 0) {
     # A raw serial capture can drop a byte on the host side; a torn frame is
     # indistinguishable from DUT corruption only in isolation. Tolerate a
     # small number of transport errors while keeping failure frames fatal.
-    $tolerated = [Math]::Max(1, [Math]::Floor($successCount * 0.01))
+    $tolerated = if ($successCount -gt 0) {
+        [Math]::Max(1, [Math]::Floor($successCount * 0.01))
+    } else {
+        0
+    }
     if ($badChecksumCount -gt $tolerated) {
         Write-Error "UART capture contains $badChecksumCount status frame(s) with a bad checksum (tolerance is $tolerated for $successCount success frame(s))."
         exit 1
@@ -85,12 +104,20 @@ if ($wrongTestCount -ne 0) {
 }
 
 if ($failureCount -ne 0) {
-    Write-Error "UART test 0x$($TestId.ToString('x2')) reported $failureCount failure frame(s)."
+    $summary = ($failureStatuses.GetEnumerator() | Sort-Object Name | ForEach-Object {
+        "$($_.Name):$($_.Value)"
+    }) -join ", "
+    Write-Error "UART test 0x$($TestId.ToString('x2')) reported $failureCount failure frame(s) ($summary)."
     exit 1
 }
 
 if ($successCount -lt $MinimumSuccessFrames) {
-    Write-Error "UART test 0x$($TestId.ToString('x2')) produced only $successCount valid success frame(s); expected at least $MinimumSuccessFrames."
+    if ($magicCount -eq 0) {
+        $preview = ($bytes | Select-Object -First 32 | ForEach-Object { $_.ToString('x2') }) -join " "
+        Write-Error "UART captured $($bytes.Length) byte(s), but none begin a DDHT v1 frame. First bytes: $preview. Treat this as framing/baud/physical corruption, not a DUT result."
+    } else {
+        Write-Error "UART test 0x$($TestId.ToString('x2')) produced only $successCount valid success frame(s) from $magicCount DDHT candidate(s); expected at least $MinimumSuccessFrames."
+    }
     exit 1
 }
 

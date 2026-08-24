@@ -29,5 +29,9 @@ $outPath = $Out
 if (-not [System.IO.Path]::IsPathRooted($outPath)) {
     $outPath = Join-Path (Get-Location) $outPath
 }
+$parent = [System.IO.Path]::GetDirectoryName($outPath)
+if ($parent) {
+    [System.IO.Directory]::CreateDirectory($parent) | Out-Null
+}
 [System.IO.File]::WriteAllBytes($outPath, $ms.ToArray())
 Write-Output ("captured {0} bytes -> {1}" -f $ms.Length, $outPath)

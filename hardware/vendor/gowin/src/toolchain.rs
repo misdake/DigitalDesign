@@ -13,6 +13,9 @@ use std::marker::PhantomData;
 use std::path::{Path, PathBuf};
 use std::process::{Command, ExitStatus, Output};
 
+#[path = "toolchain/build_manifest.rs"]
+mod build_manifest;
+
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub struct GowinBackend;
 
@@ -1187,6 +1190,8 @@ struct GowinCliOptions {
     output: Option<PathBuf>,
     build: bool,
     program: bool,
+    check_existing: bool,
+    program_existing: bool,
     program_flash: Option<(u32, PathBuf)>,
     gowin_home: Option<PathBuf>,
     cable_index: Option<u8>,
@@ -1206,6 +1211,8 @@ fn parse_gowin_cli_args(
                 options.build = true;
                 options.program = true;
             }
+            Some("--program-existing") => options.program_existing = true,
+            Some("--check-existing") => options.check_existing = true,
             Some("--gowin-home") => {
                 options.gowin_home = Some(PathBuf::from(arguments.next().ok_or_else(|| {
                     GowinCliError::Argument("`--gowin-home` requires a directory".to_string())
@@ -1257,6 +1264,16 @@ fn parse_gowin_cli_args(
             }
             _ => options.output = Some(PathBuf::from(argument)),
         }
+    }
+    if options.program_existing && options.build {
+        return Err(GowinCliError::Argument(
+            "`--program-existing` cannot be combined with `--build` or `--program`".to_string(),
+        ));
+    }
+    if options.check_existing && (options.build || options.program_existing) {
+        return Err(GowinCliError::Argument(
+            "`--check-existing` cannot be combined with a build or program operation".to_string(),
+        ));
     }
     Ok(options)
 }
@@ -1312,9 +1329,12 @@ where
     let options = parse_gowin_cli_args(arguments)?;
     if options.help {
         println!(
-            "Usage: {} [OUTPUT] [--build] [--program] [--program-flash OFFSET FILE] [--gowin-home PATH] [--cable-index N]\n\n\
+            "Usage: {} [OUTPUT] [--build] [--program] [--check-existing] [--program-existing] [--program-flash OFFSET FILE] [--gowin-home PATH] [--cable-index N]\n\n\
              --build          Export and run Gowin synthesis/place-and-route\n\
              --program        Build, then program volatile FPGA SRAM\n\
+             --check-existing  Validate the existing build manifest, reports, and bitstream\n\
+             --program-existing  Program the previously audited bitstream without rebuilding;\n\
+             \x20                 rejects stale sources, target metadata, or bitstream bytes\n\
              --program-flash  Program FILE to external SPI flash at byte OFFSET;\n\
              \x20                 can run without --build\n\
              --gowin-home     Gowin installation root; overrides GOWIN_HOME and PATH\n\
@@ -1327,7 +1347,11 @@ where
     let output = options.output.unwrap_or_else(|| default_output.into());
     let generated = project.export(&output)?;
     println!("Exported Gowin project to {}", output.display());
-    if !options.build && options.program_flash.is_none() {
+    if !options.build
+        && !options.check_existing
+        && !options.program_existing
+        && options.program_flash.is_none()
+    {
         return Ok(());
     }
 
@@ -1351,6 +1375,27 @@ where
                     .unwrap_or(result.device.programmer_cable.index()),
             )?;
         }
+    }
+    if options.check_existing {
+        let bitstream = toolchain.validate_existing_build(&output, &generated)?;
+        println!(
+            "Existing Gowin build is current and audited: {}",
+            bitstream.display()
+        );
+    }
+    if options.program_existing {
+        let bitstream = toolchain.validate_existing_build(&output, &generated)?;
+        println!(
+            "Programming audited existing FPGA SRAM image {}",
+            bitstream.display()
+        );
+        toolchain.program_sram_bitstream(
+            generated.device,
+            &bitstream,
+            options
+                .cable_index
+                .unwrap_or(generated.device.programmer_cable.index()),
+        )?;
     }
     if let Some((offset, binary)) = &options.program_flash {
         let capacity_bits = T::inventory()
@@ -1472,12 +1517,47 @@ impl GowinToolchain {
             &project.dsp_expectations,
             project.bsram_expectation,
         )?;
+        build_manifest::write(directory, project, &result.bitstream)?;
         Ok(result)
+    }
+
+    pub fn validate_existing_build(
+        &self,
+        project_directory: impl AsRef<Path>,
+        project: &GeneratedGowinProject,
+    ) -> Result<PathBuf, GowinError> {
+        let directory = project_directory.as_ref();
+        let bitstream = build_manifest::validate(directory, project)?;
+
+        let synthesis_resource_report = directory.join(format!(
+            "impl/gwsynthesis/{}_syn_rsc.xml",
+            project.project_name
+        ));
+        let pnr_report = directory.join(format!("impl/pnr/{}.rpt.txt", project.project_name));
+        let timing_report = directory.join(format!("impl/pnr/{}.tr", project.project_name));
+        audit_timing(&timing_report)?;
+        audit_physical_resources(
+            &pnr_report,
+            &synthesis_resource_report,
+            &project.resources,
+            &project.dsp_expectations,
+            project.bsram_expectation,
+        )?;
+        Ok(bitstream)
     }
 
     pub fn program_sram(
         &self,
         build: &GowinBuildResult,
+        cable_index: u8,
+    ) -> Result<ExitStatus, GowinError> {
+        self.program_sram_bitstream(build.device, &build.bitstream, cable_index)
+    }
+
+    pub fn program_sram_bitstream(
+        &self,
+        device: GowinDeviceInfo,
+        bitstream: impl AsRef<Path>,
         cable_index: u8,
     ) -> Result<ExitStatus, GowinError> {
         let executable = self
@@ -1489,16 +1569,17 @@ impl GowinToolchain {
         }
         // Gowin Programmer 1.9.11.03 parses a relative --fsFile as if no data
         // file was supplied, despite accepting the same path elsewhere.
-        let bitstream = if build.bitstream.is_absolute() {
-            build.bitstream.clone()
+        let bitstream = bitstream.as_ref();
+        let bitstream = if bitstream.is_absolute() {
+            bitstream.to_path_buf()
         } else {
-            std::env::current_dir()?.join(&build.bitstream)
+            std::env::current_dir()?.join(bitstream)
         };
         let output = run_programmer(
             Command::new(executable)
                 .args([
                     "--device",
-                    build.device.programmer_device,
+                    device.programmer_device,
                     "--operation_index",
                     "2",
                     "--fsFile",
@@ -2014,6 +2095,7 @@ pub enum GowinError {
     UnsafeProjectPath(PathBuf),
     DuplicateSourcePath(PathBuf),
     InvalidBoardBinding(String),
+    InvalidBuildManifest(String),
     InvalidExternalFlashWrite(String),
     UnverifiedDeviceConfiguration {
         target: &'static str,
@@ -2093,6 +2175,9 @@ impl Display for GowinError {
             }
             Self::InvalidBoardBinding(message) => {
                 write!(formatter, "invalid Gowin board binding: {message}")
+            }
+            Self::InvalidBuildManifest(message) => {
+                write!(formatter, "invalid Gowin build manifest: {message}")
             }
             Self::InvalidExternalFlashWrite(message) => {
                 write!(formatter, "invalid external-Flash write: {message}")
@@ -2232,6 +2317,32 @@ mod tests {
         }
     }
 
+    #[derive(Hardware)]
+    #[hardware(namespace = "tests")]
+    struct ManifestLogic;
+
+    impl Module for ManifestLogic {
+        type Input = TestInput;
+        type Output = TestOutput;
+        type EmuState = ();
+
+        fn create_emu(_input: &Self::Input, _output: &Self::Output) -> Self::EmuState {}
+
+        fn execute_emu(
+            _state: &mut Self::EmuState,
+            _circuit: &mut CircuitWires,
+            _input: &Self::Input,
+            _output: &Self::Output,
+        ) {
+        }
+
+        fn nand(input: &Self::Input) -> Self::Output {
+            TestOutput {
+                result: input.value,
+            }
+        }
+    }
+
     #[test]
     #[should_panic(
         expected = "component `user-leds` requests 7 user LED, but target `tang-nano-20k` has 6 remaining"
@@ -2352,6 +2463,15 @@ mod tests {
         assert_eq!(options.gowin_home, Some(PathBuf::from("test/Gowin")));
         assert_eq!(options.cable_index, Some(4));
 
+        let options = parse_gowin_cli_args([OsString::from("--program-existing")]).unwrap();
+        assert!(options.program_existing);
+        assert!(!options.build);
+        assert!(!options.program);
+
+        let options = parse_gowin_cli_args([OsString::from("--check-existing")]).unwrap();
+        assert!(options.check_existing);
+        assert!(!options.program_existing);
+
         let options = parse_gowin_cli_args([
             OsString::from("--program-flash"),
             OsString::from("0x100000"),
@@ -2375,12 +2495,57 @@ mod tests {
                 OsString::from("image.bin"),
             ],
             vec![OsString::from("first"), OsString::from("second")],
+            vec![
+                OsString::from("--program-existing"),
+                OsString::from("--build"),
+            ],
+            vec![
+                OsString::from("--program-existing"),
+                OsString::from("--program"),
+            ],
+            vec![
+                OsString::from("--check-existing"),
+                OsString::from("--build"),
+            ],
+            vec![
+                OsString::from("--check-existing"),
+                OsString::from("--program-existing"),
+            ],
         ] {
             assert!(matches!(
                 parse_gowin_cli_args(arguments),
                 Err(GowinCliError::Argument(_))
             ));
         }
+    }
+
+    #[test]
+    fn build_manifest_fingerprints_generated_sources_and_bitstream() {
+        let project = GowinProject::<TangNano20K>::new("manifest_test")
+            .generate::<ManifestLogic>()
+            .unwrap();
+        let manifest =
+            build_manifest::render(&project, Path::new("impl/pnr/manifest_test.fs"), 3, 0x1234);
+        let fields = build_manifest::parse(&manifest).unwrap();
+        assert_eq!(fields["format"], "1");
+        assert_eq!(fields["target"], TangNano20K::NAME);
+        assert_eq!(fields["bitstream_bytes"], "3");
+        assert_eq!(
+            fields["source_fingerprint"],
+            format!("{:016x}", build_manifest::source_fingerprint(&project))
+        );
+
+        let mut changed = project.clone();
+        changed.files.insert(
+            PathBuf::from("src/generated/extra.v"),
+            "module extra; endmodule\n".into(),
+        );
+        assert_ne!(
+            build_manifest::source_fingerprint(&project),
+            build_manifest::source_fingerprint(&changed)
+        );
+        assert!(build_manifest::parse("format=1\nformat=1\n").is_err());
+        assert!(build_manifest::parse("not-a-field\n").is_err());
     }
 
     #[test]
