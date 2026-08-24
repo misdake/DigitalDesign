@@ -75,6 +75,15 @@ cargo run -p cpu-v3-tang-nano-20k --example cpu_v3_boot -- `
 cargo run -p cpu-v3-tang-nano-20k --example cpu_v3_boot -- --program-existing
 ```
 
+For a stand-alone cold boot, write one validated image containing both the
+FPGA configuration and the boot package, then load the audited SRAM image for
+immediate validation:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File hardware/vendor/gowin/scripts/run_board_validation.ps1 `
+    -Profile cpu-v3-boot -Mode Full -Port COM8 -WriteCompleteFlash
+```
+
 `cpu-v3-boot-assets` does not compile a parallel copy of the firmware. It exports
 the Stage0, Stage1, application, data, package, and map files produced by the
 package build script in `OUT_DIR`, together with their sizes and fingerprints.

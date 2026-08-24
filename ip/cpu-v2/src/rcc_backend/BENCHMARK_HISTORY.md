@@ -38,8 +38,9 @@ initialization would not be profitable.
 Reproduce the latest committed result with:
 
 ```text
-target/debug/rcc ip/cpu-v2/src/dsl_progs/benchmark_suite_dsl.rs --target cpu-v2 \
+cargo run -p compiler-tools --bin rcc -- \
+  ip/cpu-v2/src/dsl_progs/benchmark_suite_dsl.rs --target cpu-v2 \
   -o benchmark.bin --lst benchmark.lst
-target/debug/rcc-run benchmark.bin 20000
-cargo test -p cpu_v2 --test rcc_benchmarks
+cargo run -p cpu-v2-sim --bin rcc-run -- benchmark.bin 20000
+cargo test -p cpu-v2 --test rcc_benchmarks
 ```

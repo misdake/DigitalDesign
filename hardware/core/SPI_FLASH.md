@@ -40,7 +40,7 @@ MO/61, and MI/62 and adds `set_option -use_mspi_as_gpio 1` to the generated
 Gowin build. The example is intentionally one source file:
 
 ```text
-cargo run -p digital-design-hardware --example spi_flash_reader -- --build
+cargo run -p digital-design-hardware-gowin --example spi_flash_reader -- --build
 ```
 
 The `11_spi_flash_read` hardware characterization project in the validation

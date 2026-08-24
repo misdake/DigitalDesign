@@ -150,6 +150,7 @@ pub(crate) struct GowinBoardExtension {
     logic_clock_signal: Option<String>,
     source_files: BTreeMap<PathBuf, String>,
     installed_ide_files: Vec<GowinInstalledIdeFile>,
+    sdc_constraints: Vec<String>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -194,6 +195,11 @@ impl GowinBoardExtension {
             "duplicate Gowin board-extension source `{}`",
             path.display()
         );
+        self
+    }
+
+    pub(crate) fn add_sdc_constraint(mut self, constraint: impl Into<String>) -> Self {
+        self.sdc_constraints.push(constraint.into());
         self
     }
 
@@ -593,12 +599,21 @@ impl<T: GowinTarget> GowinBoardBinding<T> {
 
     fn render_sdc(&self) -> String {
         let period = 1_000_000_000.0 / self.clock.frequency_hz as f64;
-        format!(
+        let mut output = format!(
             "create_clock -name {} -period {period:.6} -waveform {{0 {:.6}}} [get_ports {{{}}}]\n",
             self.clock_port,
             period / 2.0,
             self.clock_port
-        )
+        );
+        if let Some(extension) = &self.extension {
+            for constraint in &extension.sdc_constraints {
+                output.push_str(constraint);
+                if !constraint.ends_with('\n') {
+                    output.push('\n');
+                }
+            }
+        }
+        output
     }
 
     fn installed_ide_files(&self) -> &[GowinInstalledIdeFile] {
@@ -626,7 +641,13 @@ fn verilog_bit(name: &str, width: usize, index: usize) -> String {
 
 fn render_pin_constraint(output: &mut String, port: &str, pin: GowinPin) {
     output.push_str(&format!("IO_LOC \"{port}\" {};\n", pin.location));
-    output.push_str(&format!("IO_PORT \"{port}\" IO_TYPE={}", pin.io_type));
+    if pin.io_type.is_empty() && pin.pull_mode.is_none() && pin.drive.is_none() {
+        return;
+    }
+    output.push_str(&format!("IO_PORT \"{port}\""));
+    if !pin.io_type.is_empty() {
+        output.push_str(&format!(" IO_TYPE={}", pin.io_type));
+    }
     if let Some(pull_mode) = pin.pull_mode {
         output.push_str(&format!(" PULL_MODE={pull_mode}"));
     }

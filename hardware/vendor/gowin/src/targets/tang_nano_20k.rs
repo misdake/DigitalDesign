@@ -1,5 +1,7 @@
 use super::HardwareTarget;
-use crate::resources::components::{Clock27M, DebugUartTx, Pll, SdrSdram, UserButtons, UserLeds};
+use crate::resources::components::{
+    Clock27M, DebugUartTx, HdmiOutput, Pll, SdrSdram, UserButtons, UserLeds,
+};
 use crate::{
     GowinBackend, GowinBoardExtension, GowinDeviceInfo, GowinLogicConnection, GowinProgrammerCable,
     GowinTopPort, GowinTopPortDirection, ResourceAmount, ResourceKind, TargetInventory,
@@ -33,6 +35,26 @@ pub struct TangNano20KOutputs {
 pub struct TangNano20KDebugOutputs {
     pub leds: Wires<6>,
     pub uart_tx: digital_design_circuit::Wire,
+}
+
+/// Tang Nano 20K user controls for a design that owns the onboard HDMI port.
+#[derive(Clone, ModuleIo)]
+pub struct TangNano20KHdmiInputs {
+    pub buttons: Wires<2>,
+}
+
+/// Logical status LEDs plus the four physical HDMI differential pairs.
+///
+/// The design instantiates Gowin differential output buffers, so both sides
+/// of every pair are explicit module outputs and their electrical mode comes
+/// from the primitive rather than an ordinary single-ended pin constraint.
+#[derive(Clone, ModuleIo)]
+pub struct TangNano20KHdmiOutputs {
+    pub leds: Wires<6>,
+    pub tmds_clk_p: digital_design_circuit::Wire,
+    pub tmds_clk_n: digital_design_circuit::Wire,
+    pub tmds_data_p: Wires<3>,
+    pub tmds_data_n: Wires<3>,
 }
 
 /// Board signals for logic that instantiates the fitted SPI Flash reader.
@@ -163,6 +185,21 @@ impl TangNano20K {
         active_low: false,
     };
 
+    /// HDMI pairs in clock, blue, green, red order. An empty `io_type` leaves
+    /// the electrical standard to the fitted `ELVDS_OBUF` primitive.
+    pub const HDMI_CLK_P: GowinPin = Self::differential_pin(33);
+    pub const HDMI_CLK_N: GowinPin = Self::differential_pin(34);
+    pub const HDMI_DATA_P: [GowinPin; 3] = [
+        Self::differential_pin(35),
+        Self::differential_pin(37),
+        Self::differential_pin(39),
+    ];
+    pub const HDMI_DATA_N: [GowinPin; 3] = [
+        Self::differential_pin(36),
+        Self::differential_pin(38),
+        Self::differential_pin(40),
+    ];
+
     pub const SPI_FLASH_CLK: GowinPin = GowinPin {
         location: 59,
         io_type: "LVCMOS33",
@@ -205,6 +242,16 @@ impl TangNano20K {
         }
     }
 
+    const fn differential_pin(location: u16) -> GowinPin {
+        GowinPin {
+            location,
+            io_type: "",
+            pull_mode: None,
+            drive: None,
+            active_low: false,
+        }
+    }
+
     /// Create a project whose top module directly uses this board's stable IO.
     /// Resource reservation and physical binding are automatic.
     pub fn user_io_project<M>(project_name: impl Into<String>) -> GowinModuleProject<Self, M>
@@ -225,6 +272,57 @@ impl TangNano20K {
             "uart_tx",
             [Self::DEBUG_UART_TX],
         );
+        GowinModuleProject::new(GowinProject::new(project_name).with_board_binding(binding))
+    }
+
+    /// Create a 27 MHz project that exclusively owns the onboard HDMI port.
+    /// The application is responsible for the video PLL, TMDS coding,
+    /// serialization, and fitted differential output buffers.
+    pub fn hdmi_project<M>(project_name: impl Into<String>) -> GowinModuleProject<Self, M>
+    where
+        M: Module<Input = TangNano20KHdmiInputs, Output = TangNano20KHdmiOutputs>,
+    {
+        let binding =
+            GowinBoardBinding::new("tang_nano_20k_hdmi_top", "clk", "clk", Self::CLOCK_27M)
+                .require(Clock27M)
+                .require(UserButtons::<2>)
+                .require(UserLeds::<6>)
+                .require(Pll)
+                .require(HdmiOutput)
+                .bind_port(
+                    GowinPortDirection::Input,
+                    "buttons",
+                    "buttons",
+                    Self::USER_BUTTONS,
+                )
+                .bind_port(GowinPortDirection::Output, "leds", "leds", Self::USER_LEDS)
+                .bind_port(
+                    GowinPortDirection::Output,
+                    "tmds_clk_p",
+                    "tmds_clk_p",
+                    [Self::HDMI_CLK_P],
+                )
+                .bind_port(
+                    GowinPortDirection::Output,
+                    "tmds_clk_n",
+                    "tmds_clk_n",
+                    [Self::HDMI_CLK_N],
+                )
+                .bind_port(
+                    GowinPortDirection::Output,
+                    "tmds_data_p",
+                    "tmds_data_p",
+                    Self::HDMI_DATA_P,
+                )
+        .bind_port(
+            GowinPortDirection::Output,
+            "tmds_data_n",
+            "tmds_data_n",
+            Self::HDMI_DATA_N,
+        )
+        .with_extension(GowinBoardExtension::new("").add_sdc_constraint(
+            "create_clock -name pixel_clk -period 13.468013 -waveform {0 6.734007} [get_pins {u_logic/u_pixel_divider/CLKOUT}]",
+        ));
         GowinModuleProject::new(GowinProject::new(project_name).with_board_binding(binding))
     }
 
@@ -676,6 +774,64 @@ mod tests {
             ("flash_cs_n", 60),
             ("flash_mosi", 61),
             ("flash_miso", 62),
+        ] {
+            assert!(constraints.contains(&format!("IO_LOC \"{signal}\" {pin};")));
+        }
+    }
+
+    struct HdmiBoard;
+
+    impl HardwareIdentity for HdmiBoard {
+        const TARGET_RESOURCE_LEAF: bool = false;
+
+        fn verilog_identity() -> VerilogIdentity {
+            VerilogIdentity::new("HdmiBoard").namespace(["tests", "target"])
+        }
+    }
+
+    impl Module for HdmiBoard {
+        type Input = TangNano20KHdmiInputs;
+        type Output = TangNano20KHdmiOutputs;
+        type EmuState = ();
+
+        const USES_MAIN_CLOCK: bool = true;
+
+        fn build_verilog(input: &Self::Input) -> Self::Output {
+            let low = input.buttons.wires[0];
+            let high = input.buttons.wires[1];
+            Self::Output {
+                leds: Wires {
+                    wires: [low, low, low, high, high, high],
+                },
+                tmds_clk_p: low,
+                tmds_clk_n: high,
+                tmds_data_p: Wires {
+                    wires: [low, low, low],
+                },
+                tmds_data_n: Wires {
+                    wires: [high, high, high],
+                },
+            }
+        }
+    }
+
+    #[test]
+    fn hdmi_project_claims_one_port_and_binds_all_four_pairs() {
+        let project = TangNano20K::hdmi_project::<HdmiBoard>("hdmi_board")
+            .generate()
+            .unwrap();
+        assert_eq!(project.resources.claimed[&ResourceKind::HdmiOutput], 1);
+        assert_eq!(project.resources.claimed[&ResourceKind::Pll], 1);
+        let constraints = &project.files[std::path::Path::new("src/generated/board.cst")];
+        for (signal, pin) in [
+            ("tmds_clk_p", 33),
+            ("tmds_clk_n", 34),
+            ("tmds_data_p[0]", 35),
+            ("tmds_data_n[0]", 36),
+            ("tmds_data_p[1]", 37),
+            ("tmds_data_n[1]", 38),
+            ("tmds_data_p[2]", 39),
+            ("tmds_data_n[2]", 40),
         ] {
             assert!(constraints.contains(&format!("IO_LOC \"{signal}\" {pin};")));
         }
