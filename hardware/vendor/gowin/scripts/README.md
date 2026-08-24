@@ -60,12 +60,15 @@ powershell -ExecutionPolicy Bypass -File hardware/vendor/gowin/scripts/capture_u
 All DDHT projects transmit 8N1 at 115200 baud (27 MHz designs use divider
 233, 54 MHz designs use 468); pass `-Baud` only for nonstandard captures.
 
-`check_uart_status.ps1` validates a raw UART capture containing repeated
-eight-byte status frames. A frame contains the `DDHT` magic, protocol version,
-test ID, result, and XOR checksum. The checker rejects stale captures, frames
+`check_uart_status.ps1` validates raw UART captures containing repeated
+eight-byte DDHT status frames. It also decodes the CPU V3 boot ABI's ten-byte
+`CV3B` frames into Stage0/Stage1, descriptor/manifest/DMA/entry/internal
+category, code, and 16-bit detail. A valid boot-error frame always takes
+precedence over apparent DDHT success and is reported as a DUT failure rather
+than framing or baud corruption. The checker rejects stale captures, frames
 for another test, and any reported failure. Because a raw serial capture can
-drop a byte on the host side, torn frames are tolerated up to one percent of
-the success count (at least one); beyond that the capture is rejected:
+drop a byte on the host side, torn DDHT frames are tolerated up to one percent
+of the success count (at least one); beyond that the capture is rejected:
 
 ```powershell
 powershell -ExecutionPolicy Bypass -File hardware/vendor/gowin/scripts/check_uart_status.ps1 `
@@ -73,11 +76,16 @@ powershell -ExecutionPolicy Bypass -File hardware/vendor/gowin/scripts/check_uar
     -TestId 0x01 -MinimumSuccessFrames 2
 ```
 
-Status `0` is success and every other status is failure. Tests that need error
-addresses, observed values, or replayable vectors should introduce a new
-protocol version and extend the shared decoder rather than growing a private
-script inside one example. Set `-MaximumAgeSeconds 0` only when deliberately
-inspecting an archived capture.
+Pass `-ResultPath target/example/uart-status.json` to retain the decoded counts,
+reason, and structured boot errors even when validation exits unsuccessfully.
+The board-validation runner always does this and embeds the result into its
+evidence record.
+
+DDHT status `0` is success and every other status is failure. Tests that need
+additional error addresses, observed values, or replayable vectors should
+introduce a new protocol version and extend the shared decoder rather than
+growing a private script inside one example. Set `-MaximumAgeSeconds 0` only
+when deliberately inspecting an archived capture.
 
 Assigned test IDs:
 

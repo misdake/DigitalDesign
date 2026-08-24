@@ -54,7 +54,8 @@ Neither mode invokes the programmer.
 
 Use `hardware/vendor/gowin/scripts/run_board_validation.ps1` for board work. Its default
 `Audit` mode is offline; `Observe` never programs; `Program` and `Full` perform each requested
-hardware write once and never reset USB or retry programming automatically.
+hardware write once and never reset USB or retry programming automatically. UART validation
+recognizes both DDHT status and structured CPU V3 `CV3B` boot-error frames.
 
 External Verilog tests use `IVERILOG_EXE` and `VVP_EXE` when set, otherwise
 they resolve `iverilog` and `vvp` through `PATH`.

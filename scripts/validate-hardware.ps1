@@ -61,6 +61,10 @@ function Invoke-BootArtifactValidation {
 }
 
 function Invoke-QuickValidation {
+    Invoke-ValidationStep -Name "UART status decoder self-test" -Executable "powershell" -Arguments @(
+        "-NoProfile", "-ExecutionPolicy", "Bypass", "-File",
+        (Join-Path $repoRoot "hardware/vendor/gowin/scripts/test_uart_status.ps1")
+    )
     Invoke-Cargo "workspace tests" @("test", "--workspace")
     Invoke-Cargo "strict workspace clippy" @(
         "clippy", "--workspace", "--all-targets", "--", "-D", "warnings"

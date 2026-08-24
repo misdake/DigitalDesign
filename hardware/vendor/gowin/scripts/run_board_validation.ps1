@@ -128,6 +128,7 @@ $runId = $startedAt.ToString("yyyyMMddTHHmmssfffZ")
 $runDirectory = Join-Path $repoRoot "target/board-validation/$Profile/$runId"
 New-Item -ItemType Directory -Force -Path $runDirectory | Out-Null
 $capturePath = Join-Path $runDirectory "uart.bin"
+$uartStatusPath = Join-Path $runDirectory "uart-status.json"
 
 Push-Location $repoRoot
 try {
@@ -168,12 +169,18 @@ try {
             "-ExecutionPolicy", "Bypass", "-File", (Join-Path $PSScriptRoot "check_uart_status.ps1"),
             "-Path", $capturePath, "-TestId", $configuration.TestId,
             "-MinimumSuccessFrames", $MinimumSuccessFrames,
-            "-MaximumAgeSeconds", ($CaptureSeconds + 30)
+            "-MaximumAgeSeconds", ($CaptureSeconds + 30),
+            "-ResultPath", $uartStatusPath
         )
     }
 }
 catch {
-    $failure = $_.Exception.Message
+    if ($currentStage -eq "validate DDHT status" -and (Test-Path -LiteralPath $uartStatusPath)) {
+        $decodedStatus = Get-Content -LiteralPath $uartStatusPath -Raw | ConvertFrom-Json
+        $failure = $decodedStatus.message
+    } else {
+        $failure = $_.Exception.Message
+    }
 }
 finally {
     Pop-Location
@@ -223,6 +230,9 @@ finally {
         } else { $null }
         uart_capture_sha256 = if (Test-Path -LiteralPath $capturePath) {
             (Get-FileHash -Algorithm SHA256 -LiteralPath $capturePath).Hash.ToLowerInvariant()
+        } else { $null }
+        uart_status = if (Test-Path -LiteralPath $uartStatusPath) {
+            Get-Content -LiteralPath $uartStatusPath -Raw | ConvertFrom-Json
         } else { $null }
     }
     $evidencePath = Join-Path $runDirectory "evidence.json"
