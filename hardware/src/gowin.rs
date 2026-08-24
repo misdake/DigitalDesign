@@ -219,6 +219,7 @@ pub struct GowinBoardBinding<T: GowinTarget> {
     clock: GowinClockPin,
     ports: Vec<GowinBoundPort>,
     resources: Vec<TargetResourceRequest>,
+    process_options: BTreeMap<String, String>,
     extension: Option<GowinBoardExtension>,
     target: PhantomData<T>,
 }
@@ -237,6 +238,7 @@ impl<T: GowinTarget> GowinBoardBinding<T> {
             clock,
             ports: Vec::new(),
             resources: Vec::new(),
+            process_options: BTreeMap::new(),
             extension: None,
             target: PhantomData,
         }
@@ -260,6 +262,28 @@ impl<T: GowinTarget> GowinBoardBinding<T> {
 
     pub fn require<C: TargetComponent>(mut self, component: C) -> Self {
         self.resources.push(TargetResourceRequest::new(component));
+        self
+    }
+
+    pub(crate) fn with_process_option(
+        mut self,
+        option: impl Into<String>,
+        value: impl Into<String>,
+    ) -> Self {
+        let option = option.into();
+        assert!(
+            option.starts_with('-')
+                && option[1..]
+                    .chars()
+                    .all(|character| character == '_' || character.is_ascii_alphanumeric()),
+            "invalid Gowin process option `{option}`"
+        );
+        assert!(
+            self.process_options
+                .insert(option.clone(), value.into())
+                .is_none(),
+            "duplicate Gowin process option `{option}`"
+        );
         self
     }
 
@@ -853,6 +877,9 @@ impl<T: GowinTarget> GowinProject<T> {
                 &top_module,
                 &source_paths,
                 installed_ide_files,
+                self.board_binding
+                    .as_ref()
+                    .map_or(&BTreeMap::new(), |binding| &binding.process_options),
             )?,
         );
         Ok(GeneratedGowinProject {
@@ -1036,6 +1063,7 @@ fn render_build_tcl(
     top_module: &str,
     paths: &[PathBuf],
     installed_ide_files: &[GowinInstalledIdeFile],
+    process_options: &BTreeMap<String, String>,
 ) -> Result<String, GowinError> {
     validate_verilog_identifier(project_name).map_err(ProjectError::from)?;
     validate_verilog_identifier(top_module).map_err(ProjectError::from)?;
@@ -1095,6 +1123,11 @@ add_file [file join $installed_stage_{index} {{{staged_name}}}]"
         })
         .collect::<Vec<_>>()
         .join("\n");
+    let process_options = process_options
+        .iter()
+        .map(|(option, value)| format!("set_option {option} {value}"))
+        .collect::<Vec<_>>()
+        .join("\n");
     let GowinDeviceInfo {
         device_name,
         device_version,
@@ -1114,6 +1147,7 @@ set_option -output_base_name {project_name}\n\
 set_option -verilog_std v2001\n\
 set_option -print_all_synthesis_warning 1\n\
 set_option -gen_text_timing_rpt 1\n\
+{process_options}\n\
 run all\n"
     ))
 }

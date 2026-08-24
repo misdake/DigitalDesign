@@ -19,6 +19,7 @@ const REG_GLOBAL: u8 = 15;
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct G16Program {
+    pub code_base: Word,
     pub words: Vec<Word>,
     pub listing: String,
 }
@@ -661,12 +662,17 @@ fn emit_store(lines: &mut Vec<Line>, src: u8, base: u8, offset: i16) {
 
 fn link(functions: Vec<LoweredFunction>, options: &CompilerOptions) -> G16Program {
     let mut function_addresses = HashMap::new();
-    let mut cursor = 0usize;
+    let code_base = usize::from(options.code_base);
+    let mut cursor = code_base;
     for function in &functions {
         function_addresses.insert(function.name, cursor);
         cursor += function.lines.iter().map(Line::size).sum::<usize>() + 1;
     }
-    assert!(cursor <= 1 << 16, "G16 program exceeds 64K unified words");
+    assert!(
+        cursor <= 1 << 16,
+        "G16 program at code_base {:#06x} exceeds the 64K code-segment window",
+        options.code_base
+    );
     assert!(
         cursor <= usize::from(options.data_base),
         "G16 unified-memory image uses {cursor} code words and crosses data_base {:#06x}",
@@ -712,10 +718,11 @@ fn link(functions: Vec<LoweredFunction>, options: &CompilerOptions) -> G16Progra
         );
     }
 
-    let mut words = Vec::with_capacity(cursor);
+    let mut words = Vec::with_capacity(cursor - code_base);
     let mut listing = String::new();
     for function in &functions {
-        let start = words.len();
+        let local_start = words.len();
+        let start = code_base + local_start;
         let mut labels = HashMap::new();
         let mut address = start;
         for line in &function.lines {
@@ -738,15 +745,16 @@ fn link(functions: Vec<LoweredFunction>, options: &CompilerOptions) -> G16Progra
                     test,
                     target,
                 } => {
-                    let offset = relative_offset(words.len() + 2, labels[target]);
+                    let offset = relative_offset(code_base + words.len() + 2, labels[target]);
                     words.extend(wide_branch(*condition, *test, offset));
                 }
                 Line::Jump(target) => {
-                    let offset = relative_offset(words.len() + 2, labels[target]);
+                    let offset = relative_offset(code_base + words.len() + 2, labels[target]);
                     words.extend(wide_jump(None, offset));
                 }
                 Line::Call(function) => {
-                    let offset = relative_offset(words.len() + 2, function_addresses[function]);
+                    let offset =
+                        relative_offset(code_base + words.len() + 2, function_addresses[function]);
                     words.extend(wide_jump(Some(REG_LINK), offset));
                 }
                 Line::LoadFunctionAddress { function, dst } => {
@@ -758,11 +766,15 @@ fn link(functions: Vec<LoweredFunction>, options: &CompilerOptions) -> G16Progra
             }
         }
         words.push(g16::halt());
-        for (offset, word) in words[start..].iter().enumerate() {
+        for (offset, word) in words[local_start..].iter().enumerate() {
             listing.push_str(&format!("  {:04x}: {:04x}\n", start + offset, word));
         }
     }
-    G16Program { words, listing }
+    G16Program {
+        code_base: options.code_base,
+        words,
+        listing,
+    }
 }
 
 fn relative_offset(from: usize, to: usize) -> i16 {
@@ -804,7 +816,14 @@ mod tests {
     fn run_with_options(source: &str, options: CompilerOptions) -> (u16, g16::Machine) {
         let program = compile(source, options);
         let mut machine = g16::Machine::default();
-        machine.load_program(0, &program.words).unwrap();
+        machine
+            .load_program(program.code_base, &program.words)
+            .unwrap();
+        if program.code_base != 0 {
+            let mut bootstrap = g16::load_immediate16(REG_TMP, program.code_base).to_vec();
+            bootstrap.push(g16::jump_register(REG_TMP));
+            machine.load_program(0, &bootstrap).unwrap();
+        }
         let signal = match machine.run(10_000).unwrap() {
             g16::RunOutcome::Halted { signal, .. } => signal,
             outcome => panic!("G16 program did not halt: {outcome:?}"),
@@ -837,6 +856,25 @@ mod tests {
             }
         "#;
         assert_eq!(run(source), 45);
+    }
+
+    #[test]
+    fn nonzero_code_base_relocates_entry_and_function_addresses() {
+        let source = r#"
+            fn add(a: u16, b: u16) -> u16 { a + b }
+            fn main() {
+                let f: fn(u16, u16) -> u16 = add;
+                halt(f(20, 22));
+            }
+        "#;
+        let options = CompilerOptions {
+            code_base: 0x0200,
+            ..CompilerOptions::g16()
+        };
+        let program = compile(source, options.clone());
+        assert_eq!(program.code_base, 0x0200);
+        assert!(program.listing.contains("main @ 0x0200"));
+        assert_eq!(run_with_options(source, options).0, 42);
     }
 
     #[test]

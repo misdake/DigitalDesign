@@ -1,13 +1,16 @@
 //! Small architectural interpreter used as the G16 correctness oracle.
 
-use super::encoding::{is_prefix_consumer, sign_extend, Word};
+use super::encoding::{is_prefix_consumer, sign_extend, SpecialRegister, Word};
+use super::{PhysicalWordAddress, MMIO_BASE};
 
-pub const MEMORY_WORDS: usize = 1 << 16;
+/// Fitted 8-MiB SDRAM on the initial Tang Nano 20K target.
+pub const DEFAULT_PHYSICAL_MEMORY_WORDS: usize = 1 << 22;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum FaultKind {
     InvalidInstruction,
     UnsupportedFpu,
+    PhysicalAddressOutOfRange { address: PhysicalWordAddress },
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -31,8 +34,10 @@ struct Prefix {
 
 pub struct Machine {
     registers: [Word; 16],
-    memory: Box<[Word; MEMORY_WORDS]>,
+    memory: Box<[Word]>,
     pc: Word,
+    code_segment: Word,
+    data_segment: Word,
     prefix: Option<Prefix>,
     retired_words: u64,
     halted: bool,
@@ -40,10 +45,26 @@ pub struct Machine {
 
 impl Default for Machine {
     fn default() -> Self {
+        Self::with_physical_memory_words(DEFAULT_PHYSICAL_MEMORY_WORDS)
+    }
+}
+
+impl Machine {
+    pub fn with_physical_memory_words(words: usize) -> Self {
+        assert!(
+            words > 0,
+            "G16 physical memory must contain at least one word"
+        );
+        assert!(
+            words <= (u32::MAX as usize) + 1,
+            "G16 physical memory exceeds the architectural word address space"
+        );
         Self {
             registers: [0; 16],
-            memory: Box::new([0; MEMORY_WORDS]),
+            memory: vec![0; words].into_boxed_slice(),
             pc: 0,
+            code_segment: 0,
+            data_segment: 0,
             prefix: None,
             retired_words: 0,
             halted: false,
@@ -53,10 +74,30 @@ impl Default for Machine {
 
 impl Machine {
     pub fn load_program(&mut self, base: Word, words: &[Word]) -> Result<(), ProgramLoadError> {
-        let start = usize::from(base);
+        self.load_physical(PhysicalWordAddress::from(base), words)
+    }
+
+    pub fn load_segment(
+        &mut self,
+        segment: Word,
+        offset: Word,
+        words: &[Word],
+    ) -> Result<(), ProgramLoadError> {
+        self.load_physical(
+            PhysicalWordAddress::from_segment_offset(segment, offset),
+            words,
+        )
+    }
+
+    pub fn load_physical(
+        &mut self,
+        base: PhysicalWordAddress,
+        words: &[Word],
+    ) -> Result<(), ProgramLoadError> {
+        let start = base.get() as usize;
         let end = start
             .checked_add(words.len())
-            .filter(|end| *end <= MEMORY_WORDS)
+            .filter(|end| *end <= self.memory.len())
             .ok_or(ProgramLoadError {
                 base,
                 words: words.len(),
@@ -74,11 +115,27 @@ impl Machine {
     }
 
     pub fn memory(&self, address: Word) -> Word {
-        self.memory[usize::from(address)]
+        self.physical_memory(address.into())
+    }
+
+    pub fn physical_memory(&self, address: PhysicalWordAddress) -> Word {
+        self.memory[address.get() as usize]
+    }
+
+    pub fn physical_memory_words(&self) -> usize {
+        self.memory.len()
     }
 
     pub fn pc(&self) -> Word {
         self.pc
+    }
+
+    pub fn code_segment(&self) -> Word {
+        self.code_segment
+    }
+
+    pub fn data_segment(&self) -> Word {
+        self.data_segment
     }
 
     pub fn retired_words(&self) -> u64 {
@@ -104,7 +161,12 @@ impl Machine {
         }
 
         let address = self.pc;
-        let instruction = self.memory[usize::from(address)];
+        let fetch_address = PhysicalWordAddress::from_segment_offset(self.code_segment, address);
+        let instruction = self.read_physical(fetch_address).map_err(|kind| Fault {
+            kind,
+            address,
+            instruction: 0,
+        })?;
         self.pc = self.pc.wrapping_add(1);
         let opcode = instruction >> 12;
 
@@ -184,7 +246,8 @@ impl Machine {
         let dst = field(instruction, 8);
         let base = self.registers[usize::from(field(instruction, 4))];
         let address = base.wrapping_add(immediate4(instruction, prefix, true));
-        self.registers[usize::from(dst)] = self.memory[usize::from(address)];
+        let physical = self.data_address(address);
+        self.registers[usize::from(dst)] = self.read_physical(physical)?;
         Ok(StepOutcome::Running)
     }
 
@@ -192,7 +255,8 @@ impl Machine {
         let src = field(instruction, 8);
         let base = self.registers[usize::from(field(instruction, 4))];
         let address = base.wrapping_add(immediate4(instruction, prefix, true));
-        self.memory[usize::from(address)] = self.registers[usize::from(src)];
+        let physical = self.data_address(address);
+        self.write_physical(physical, self.registers[usize::from(src)])?;
         Ok(StepOutcome::Running)
     }
 
@@ -293,6 +357,20 @@ impl Machine {
                 self.registers[usize::from(dst)] =
                     self.registers[usize::from(src)].count_ones() as Word
             }
+            12 => {
+                self.registers[usize::from(dst)] = match src {
+                    value if value == SpecialRegister::CodeSegment as u8 => self.code_segment,
+                    value if value == SpecialRegister::DataSegment as u8 => self.data_segment,
+                    _ => return Err(FaultKind::InvalidInstruction),
+                }
+            }
+            13 if dst == SpecialRegister::DataSegment as u8 => {
+                self.data_segment = self.registers[usize::from(src)];
+            }
+            14 => {
+                self.code_segment = self.registers[usize::from(dst)];
+                self.pc = self.registers[usize::from(src)];
+            }
             8 if dst == 0 && src == 0 => {
                 self.halted = true;
                 return Ok(StepOutcome::Halted {
@@ -303,13 +381,44 @@ impl Machine {
         }
         Ok(StepOutcome::Running)
     }
+
+    fn data_address(&self, offset: Word) -> PhysicalWordAddress {
+        // The top offset page is a fixed system/MMIO window. Keeping it in
+        // segment zero preserves the existing r15-based ABI when DSEG changes.
+        let segment = if offset >= MMIO_BASE {
+            0
+        } else {
+            self.data_segment
+        };
+        PhysicalWordAddress::from_segment_offset(segment, offset)
+    }
+
+    fn read_physical(&self, address: PhysicalWordAddress) -> Result<Word, FaultKind> {
+        self.memory
+            .get(address.get() as usize)
+            .copied()
+            .ok_or(FaultKind::PhysicalAddressOutOfRange { address })
+    }
+
+    fn write_physical(
+        &mut self,
+        address: PhysicalWordAddress,
+        value: Word,
+    ) -> Result<(), FaultKind> {
+        let word = self
+            .memory
+            .get_mut(address.get() as usize)
+            .ok_or(FaultKind::PhysicalAddressOutOfRange { address })?;
+        *word = value;
+        Ok(())
+    }
 }
 
 type ExecuteResult = Result<StepOutcome, FaultKind>;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct ProgramLoadError {
-    pub base: Word,
+    pub base: PhysicalWordAddress,
     pub words: usize,
 }
 
@@ -340,8 +449,9 @@ fn immediate4(instruction: Word, prefix: Option<Prefix>, signed: bool) -> Word {
 mod tests {
     use super::*;
     use crate::g16::{
-        alu, branch, halt, immediate_signed, load, load_immediate16, population_count,
-        set_less_than_signed, set_less_than_unsigned, store, AluOp, BranchCondition, ImmediateOp,
+        alu, branch, halt, immediate_signed, jump_segment, load, load_immediate16,
+        population_count, read_special, set_less_than_signed, set_less_than_unsigned, store,
+        write_data_segment, AluOp, BranchCondition, ImmediateOp, SpecialRegister,
     };
 
     #[test]
@@ -436,5 +546,77 @@ mod tests {
         assert_eq!(machine.register(3), Some(1));
         assert_eq!(machine.register(4), Some(0));
         assert_eq!(machine.register(5), Some(1));
+    }
+
+    #[test]
+    fn boot_code_establishes_fixed_segments_and_enters_an_application() {
+        let mut boot = vec![];
+        boot.extend(load_immediate16(1, 1));
+        boot.extend(load_immediate16(2, 0x0020));
+        boot.extend(load_immediate16(3, 2));
+        boot.extend([write_data_segment(3), jump_segment(1, 2)]);
+
+        let mut application = vec![
+            read_special(4, SpecialRegister::CodeSegment),
+            read_special(5, SpecialRegister::DataSegment),
+        ];
+        application.extend(load_immediate16(6, 0x1234));
+        application.extend([load(0, 6, 0), halt()]);
+
+        let mut machine = Machine::default();
+        machine.load_program(0, &boot).unwrap();
+        machine.load_segment(1, 0x0020, &application).unwrap();
+        machine.load_segment(2, 0x1234, &[0xbeef]).unwrap();
+
+        assert_eq!(
+            machine.run(32).unwrap(),
+            RunOutcome::Halted {
+                steps: 14,
+                signal: 0xbeef,
+            }
+        );
+        assert_eq!(machine.code_segment(), 1);
+        assert_eq!(machine.data_segment(), 2);
+        assert_eq!(machine.register(4), Some(1));
+        assert_eq!(machine.register(5), Some(2));
+    }
+
+    #[test]
+    fn fitted_memory_rejects_an_unimplemented_segment() {
+        let mut program = vec![];
+        program.extend(load_immediate16(1, 1));
+        program.extend([write_data_segment(1), load(0, 0, 0)]);
+
+        let mut machine = Machine::with_physical_memory_words(1 << 16);
+        machine.load_program(0, &program).unwrap();
+        assert_eq!(
+            machine.run(8),
+            Err(Fault {
+                kind: FaultKind::PhysicalAddressOutOfRange {
+                    address: PhysicalWordAddress::new(0x0001_0000),
+                },
+                address: 3,
+                instruction: load(0, 0, 0),
+            })
+        );
+    }
+
+    #[test]
+    fn mmio_page_does_not_move_with_the_data_segment() {
+        let mut program = vec![];
+        program.extend(load_immediate16(1, 3));
+        program.extend(load_immediate16(2, MMIO_BASE));
+        program.extend([write_data_segment(1), load(0, 2, 0), halt()]);
+
+        let mut machine = Machine::default();
+        machine.load_program(0, &program).unwrap();
+        machine.load_program(MMIO_BASE, &[0x55aa]).unwrap();
+        assert_eq!(
+            machine.run(16).unwrap(),
+            RunOutcome::Halted {
+                steps: 7,
+                signal: 0x55aa,
+            }
+        );
     }
 }

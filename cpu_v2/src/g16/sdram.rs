@@ -1,12 +1,14 @@
 //! Pure address/lane mapping between G16 words and Tang Nano 20K SDRAM beats.
 
-use super::{Word, CACHE_LINE_WORDS};
+use super::{PhysicalWordAddress, Word, CACHE_LINE_WORDS};
 
 pub const SDRAM_DATA_BITS: usize = 32;
 pub const SDRAM_BURST_BEATS: usize = 8;
 pub const SDRAM_BANK_BITS: usize = 2;
 pub const SDRAM_ROW_BITS: usize = 11;
 pub const SDRAM_COLUMN_BITS: usize = 8;
+pub const TANG_NANO_20K_SDRAM_WORD_BITS: u32 = 22;
+pub const TANG_NANO_20K_SDRAM_WORDS: u32 = 1 << TANG_NANO_20K_SDRAM_WORD_BITS;
 /// 600 cycles at 54 MHz is about 11.1 us, leaving margin below the SDRAM's
 /// distributed refresh deadline used by the characterized board test.
 pub const REFRESH_INTERVAL_CYCLES: u16 = 600;
@@ -35,8 +37,14 @@ pub struct MaskedWriteBeat {
 }
 
 /// Maps the initial 128-KiB CPU window to the bottom of the fitted SDRAM.
-pub const fn word_address(address: Word) -> ControllerAddress {
-    let beat = (address as u32) >> 1;
+pub fn word_address(address: PhysicalWordAddress) -> ControllerAddress {
+    assert!(
+        address.get() < TANG_NANO_20K_SDRAM_WORDS,
+        "G16 physical word address {:#010x} exceeds Tang Nano 20K SDRAM range 0x00000000..={:#010x}",
+        address.get(),
+        TANG_NANO_20K_SDRAM_WORDS - 1,
+    );
+    let beat = address.get() >> 1;
     ControllerAddress {
         bank: ((beat >> (SDRAM_ROW_BITS + SDRAM_COLUMN_BITS)) & 0x3) as u8,
         row: ((beat >> SDRAM_COLUMN_BITS) & 0x7ff) as u16,
@@ -44,12 +52,12 @@ pub const fn word_address(address: Word) -> ControllerAddress {
     }
 }
 
-pub const fn line_address(address: Word) -> ControllerAddress {
-    word_address(address & !((CACHE_LINE_WORDS as Word) - 1))
+pub fn line_address(address: PhysicalWordAddress) -> ControllerAddress {
+    word_address(address.line_base(CACHE_LINE_WORDS as u32))
 }
 
-pub const fn masked_word_write(address: Word, value: Word) -> MaskedWriteBeat {
-    if address & 1 == 0 {
+pub fn masked_word_write(address: PhysicalWordAddress, value: Word) -> MaskedWriteBeat {
+    if address.get() & 1 == 0 {
         MaskedWriteBeat {
             address: word_address(address),
             data: value as u32,
@@ -182,28 +190,45 @@ mod tests {
     #[test]
     fn cache_line_is_exactly_one_controller_burst() {
         assert_eq!(CACHE_LINE_WORDS, SDRAM_BURST_BEATS * 2);
-        assert_eq!(line_address(0x123f).column, 0x18);
-        assert_eq!(line_address(0x123f), line_address(0x1230));
+        assert_eq!(line_address(PhysicalWordAddress::new(0x123f)).column, 0x18);
+        assert_eq!(
+            line_address(PhysicalWordAddress::new(0x123f)),
+            line_address(PhysicalWordAddress::new(0x1230))
+        );
     }
 
     #[test]
     fn halfword_stores_select_the_little_endian_byte_lanes() {
         assert_eq!(
-            masked_word_write(0x20, 0xabcd),
+            masked_word_write(PhysicalWordAddress::new(0x20), 0xabcd),
             MaskedWriteBeat {
-                address: word_address(0x20),
+                address: word_address(PhysicalWordAddress::new(0x20)),
                 data: 0x0000_abcd,
                 mask: 0b1100,
             }
         );
         assert_eq!(
-            masked_word_write(0x21, 0x1234),
+            masked_word_write(PhysicalWordAddress::new(0x21), 0x1234),
             MaskedWriteBeat {
-                address: word_address(0x20),
+                address: word_address(PhysicalWordAddress::new(0x20)),
                 data: 0x1234_0000,
                 mask: 0b0011,
             }
         );
+    }
+
+    #[test]
+    fn upper_physical_segment_bits_reach_sdram_bank_and_row_bits() {
+        let last = word_address(PhysicalWordAddress::new(TANG_NANO_20K_SDRAM_WORDS - 1));
+        assert_eq!(last.bank, 3);
+        assert_eq!(last.row, 0x7ff);
+        assert_eq!(last.column, 0xff);
+    }
+
+    #[test]
+    #[should_panic(expected = "exceeds Tang Nano 20K SDRAM range")]
+    fn mapping_rejects_an_address_beyond_fitted_sdram() {
+        let _ = word_address(PhysicalWordAddress::new(TANG_NANO_20K_SDRAM_WORDS));
     }
 
     #[test]
@@ -218,7 +243,9 @@ mod tests {
         scheduler
             .enqueue(
                 MemoryClient::Instruction,
-                super::super::MainMemoryRequest::ReadLine { line_address: 0 },
+                super::super::MainMemoryRequest::ReadLine {
+                    line_address: 0.into(),
+                },
             )
             .unwrap();
         for _ in 0..REFRESH_INTERVAL_CYCLES {
@@ -241,7 +268,9 @@ mod tests {
     #[test]
     fn data_wins_an_idle_tie_and_accepted_work_is_not_preempted() {
         let mut scheduler = MemoryScheduler::default();
-        let read = super::super::MainMemoryRequest::ReadLine { line_address: 0 };
+        let read = super::super::MainMemoryRequest::ReadLine {
+            line_address: 0.into(),
+        };
         scheduler.enqueue(MemoryClient::Instruction, read).unwrap();
         scheduler.enqueue(MemoryClient::Data, read).unwrap();
         assert!(matches!(

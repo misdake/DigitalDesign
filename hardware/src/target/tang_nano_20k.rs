@@ -32,6 +32,24 @@ pub struct TangNano20KDebugOutputs {
     pub uart_tx: digital_design_code::Wire,
 }
 
+/// Board signals for logic that instantiates the fitted SPI Flash reader.
+#[derive(Clone, ModuleIo)]
+pub struct TangNano20KFlashInputs {
+    pub buttons: Wires<2>,
+    /// Physical configuration-Flash IO1/DO signal.
+    pub flash_miso: digital_design_code::Wire,
+}
+
+/// Normal debug outputs plus the fitted configuration-Flash SPI signals.
+#[derive(Clone, ModuleIo)]
+pub struct TangNano20KFlashOutputs {
+    pub leds: Wires<6>,
+    pub uart_tx: digital_design_code::Wire,
+    pub flash_clk: digital_design_code::Wire,
+    pub flash_cs_n: digital_design_code::Wire,
+    pub flash_mosi: digital_design_code::Wire,
+}
+
 /// Inputs supplied to logic in a Tang Nano 20K project using the fitted SDRAM.
 ///
 /// The project main clock and Controller HS both run at 54 MHz. The physical
@@ -114,6 +132,38 @@ impl TangNano20K {
         active_low: false,
     };
 
+    pub const SPI_FLASH_CLK: GowinPin = GowinPin {
+        location: 59,
+        io_type: "LVCMOS33",
+        pull_mode: None,
+        drive: Some(8),
+        active_low: false,
+    };
+
+    pub const SPI_FLASH_CS_N: GowinPin = GowinPin {
+        location: 60,
+        io_type: "LVCMOS33",
+        pull_mode: Some("UP"),
+        drive: Some(8),
+        active_low: false,
+    };
+
+    pub const SPI_FLASH_MOSI: GowinPin = GowinPin {
+        location: 61,
+        io_type: "LVCMOS33",
+        pull_mode: None,
+        drive: Some(8),
+        active_low: false,
+    };
+
+    pub const SPI_FLASH_MISO: GowinPin = GowinPin {
+        location: 62,
+        io_type: "LVCMOS33",
+        pull_mode: Some("UP"),
+        drive: None,
+        active_low: false,
+    };
+
     const fn active_low_led(location: u16) -> GowinPin {
         GowinPin {
             location,
@@ -144,6 +194,65 @@ impl TangNano20K {
             "uart_tx",
             [Self::DEBUG_UART_TX],
         );
+        GowinModuleProject::new(GowinProject::new(project_name).with_board_binding(binding))
+    }
+
+    /// Create a 27 MHz project that exposes the fitted configuration Flash to
+    /// a `SpiFlashReader::hardware` instance in the application module.
+    ///
+    /// This binding enables the GW2AR MSPI configuration pins as regular user
+    /// IO. The reader module, rather than this binding, claims the indivisible
+    /// `SpiFlashDevice` target resource.
+    pub fn flash_debug_uart_project<M>(
+        project_name: impl Into<String>,
+    ) -> GowinModuleProject<Self, M>
+    where
+        M: Module<Input = TangNano20KFlashInputs, Output = TangNano20KFlashOutputs>,
+    {
+        let binding =
+            GowinBoardBinding::new("tang_nano_20k_flash_top", "clk", "clk", Self::CLOCK_27M)
+                .require(Clock27M)
+                .require(UserButtons::<2>)
+                .require(UserLeds::<6>)
+                .require(DebugUartTx)
+                .bind_port(
+                    GowinPortDirection::Input,
+                    "buttons",
+                    "buttons",
+                    Self::USER_BUTTONS,
+                )
+                .bind_port(GowinPortDirection::Output, "leds", "leds", Self::USER_LEDS)
+                .bind_port(
+                    GowinPortDirection::Output,
+                    "uart_tx",
+                    "uart_tx",
+                    [Self::DEBUG_UART_TX],
+                )
+                .bind_port(
+                    GowinPortDirection::Output,
+                    "flash_clk",
+                    "flash_clk",
+                    [Self::SPI_FLASH_CLK],
+                )
+                .bind_port(
+                    GowinPortDirection::Output,
+                    "flash_cs_n",
+                    "flash_cs_n",
+                    [Self::SPI_FLASH_CS_N],
+                )
+                .bind_port(
+                    GowinPortDirection::Output,
+                    "flash_mosi",
+                    "flash_mosi",
+                    [Self::SPI_FLASH_MOSI],
+                )
+                .bind_port(
+                    GowinPortDirection::Input,
+                    "flash_miso",
+                    "flash_miso",
+                    [Self::SPI_FLASH_MISO],
+                )
+                .with_process_option("-use_mspi_as_gpio", "1");
         GowinModuleProject::new(GowinProject::new(project_name).with_board_binding(binding))
     }
 
@@ -366,4 +475,72 @@ impl crate::GowinTarget for TangNano20K {
         programmer_device: "GW2AR-18C",
         programmer_cable: GowinProgrammerCable::UsbDebuggerA,
     };
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::{
+        ErasedSpiFlashImage, HardwareIdentity, ResourceKind, SpiFlashReader, SpiFlashReaderInput,
+        VerilogIdentity,
+    };
+    use digital_design_code::{input_const, input_w_const};
+
+    struct FlashBoard;
+
+    impl HardwareIdentity for FlashBoard {
+        const TARGET_RESOURCE_LEAF: bool = false;
+
+        fn verilog_identity() -> VerilogIdentity {
+            VerilogIdentity::new("FlashBoard").namespace(["tests", "target"])
+        }
+    }
+
+    impl Module for FlashBoard {
+        type Input = TangNano20KFlashInputs;
+        type Output = TangNano20KFlashOutputs;
+        type EmuState = ();
+
+        const USES_MAIN_CLOCK: bool = true;
+
+        fn build_verilog(input: &Self::Input) -> Self::Output {
+            let mut length = input_w_const::<24>(0);
+            length.wires[0] = input_const(1);
+            let flash = SpiFlashReader::<ErasedSpiFlashImage>::hardware(&SpiFlashReaderInput {
+                start: input.buttons.wires[0],
+                address: input_w_const(0),
+                length,
+                data_ready: input_const(1),
+                flash_miso: input.flash_miso,
+            });
+            Self::Output {
+                leds: Wires {
+                    wires: flash.data.wires[..6].try_into().unwrap(),
+                },
+                uart_tx: input_const(1),
+                flash_clk: flash.flash_clk,
+                flash_cs_n: flash.flash_cs_n,
+                flash_mosi: flash.flash_mosi,
+            }
+        }
+    }
+
+    #[test]
+    fn flash_project_binds_mspi_and_claims_one_fitted_device() {
+        let project = TangNano20K::flash_debug_uart_project::<FlashBoard>("flash_board")
+            .generate()
+            .unwrap();
+        assert_eq!(project.resources.claimed[&ResourceKind::SpiFlashDevice], 1);
+        assert!(project.files[std::path::Path::new("build.tcl")]
+            .contains("set_option -use_mspi_as_gpio 1"));
+        let constraints = &project.files[std::path::Path::new("src/generated/board.cst")];
+        for (signal, pin) in [
+            ("flash_clk", 59),
+            ("flash_cs_n", 60),
+            ("flash_mosi", 61),
+            ("flash_miso", 62),
+        ] {
+            assert!(constraints.contains(&format!("IO_LOC \"{signal}\" {pin};")));
+        }
+    }
 }

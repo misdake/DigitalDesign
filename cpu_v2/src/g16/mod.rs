@@ -5,11 +5,14 @@
 //! runtime dependency on the exploratory `design_model` project is required.
 //! The normative migration notes and local encoding changes are in `spec.md`.
 
+mod address;
+pub mod boot;
 mod cache;
 mod encoding;
 mod sdram;
 mod sim;
 
+pub use address::*;
 pub use cache::*;
 pub use encoding::*;
 pub use sdram::*;
