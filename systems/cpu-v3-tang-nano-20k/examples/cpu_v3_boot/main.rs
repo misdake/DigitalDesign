@@ -1,5 +1,7 @@
 use cpu_v3::{CpuV3Core, CpuV3DirectMappedCache, CpuV3MmioBridge};
-use cpu_v3_tang_nano_20k::{BootDmaEngine, BootDmaMmio, CpuV3MemoryArbiter, SystemControlDevice};
+use cpu_v3_tang_nano_20k::{
+    BootDmaEngine, BootDmaMmio, BootProgressMonitor, CpuV3MemoryArbiter, SystemControlDevice,
+};
 use digital_design_circuit::CircuitWires;
 use digital_design_hardware::{Hardware, HardwareIdentity, Module, VerilogDependency};
 use digital_design_hardware_common::ResetController;
@@ -108,6 +110,10 @@ impl Module for CpuV3BootSelfTest {
                 .replace(
                     "__RESET_CONTROLLER__",
                     &BoardReset::verilog_identity().module_name(),
+                )
+                .replace(
+                    "__BOOT_PROGRESS_MONITOR__",
+                    &BootProgressMonitor::verilog_identity().module_name(),
                 ),
         )
     }
@@ -126,6 +132,7 @@ impl Module for CpuV3BootSelfTest {
             VerilogDependency::new::<FittedFlashReader>("u_flash"),
             VerilogDependency::new::<TangNano20KSdramWordPort>("u_sdram_word_port"),
             VerilogDependency::new::<BoardReset>("u_reset"),
+            VerilogDependency::new::<BootProgressMonitor>("u_boot_progress"),
         ]
     }
 

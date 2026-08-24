@@ -1,5 +1,25 @@
 # Tang Nano 20K external Flash layout
 
+## Board boot progress
+
+The complete boot system passively exposes early progress on the six logical
+LEDs until boot software writes the system-control LED channel:
+
+| Logical LEDs | Phase |
+| --- | --- |
+| `000001` | reset held |
+| `000010` | waiting for SDRAM initialization |
+| `000100` | Stage0 executing |
+| `001000` | boot DMA active |
+| `010000` | Stage1 executing |
+| `100000` | application segment entered before its first LED write |
+| `100001` | sticky DMA or CPU fault |
+
+The target wrapper performs any physical active-low conversion. The first
+software LED write permanently takes ownership until reset. These patterns are
+progress evidence only; only the application's UART frame and system-level
+checks establish a successful boot.
+
 The current board's runtime SFDP probe reports an 8-MiB device. Its JEDEC ID is
 `EF 40 17`; this is a Winbond-family 64-Mbit part even though some board
 material lists a different vendor. Software therefore binds this concrete

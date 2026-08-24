@@ -132,6 +132,22 @@ reg [7:0] uart_history [0:9];
 reg ddht_frame_seen = 0;
 reg stage0_error_frame_seen = 0;
 reg stage1_error_frame_seen = 0;
+reg wait_sdram_phase_seen = 0;
+reg stage0_phase_seen = 0;
+reg dma_phase_seen = 0;
+reg stage1_phase_seen = 0;
+reg application_phase_seen = 0;
+
+always @(posedge clk) begin
+    case (dut.boot_phase)
+        1: wait_sdram_phase_seen <= 1;
+        2: stage0_phase_seen <= 1;
+        3: dma_phase_seen <= 1;
+        4: stage1_phase_seen <= 1;
+        5: application_phase_seen <= 1;
+        default: begin end
+    endcase
+end
 
 always @(posedge clk) begin
     if (!uart_receiving) begin
@@ -204,7 +220,7 @@ initial begin
     // Dirty the BSS range so the zero-fill DMA is actually observable.
     for (cycle = 0; cycle < 32; cycle = cycle + 1)
         memory[20'h40100 + cycle] = 16'hffff;
-    repeat (10) @(posedge clk);
+    repeat (16) @(posedge clk);
     sdram_init_done = 1;
 
     // Phase 1: the intact package boots Stage0 -> Stage1 -> application.
@@ -222,6 +238,13 @@ initial begin
         $fatal(1, "bss section was not zero-filled");
     if (sdram_burst_length !== 0)
         $fatal(1, "first reusable cache revision must use word transactions");
+    if (!wait_sdram_phase_seen || !stage0_phase_seen || !dma_phase_seen ||
+        !stage1_phase_seen || !application_phase_seen)
+        $fatal(1, "boot observer missed phases: wait=%0d s0=%0d dma=%0d s1=%0d app=%0d",
+            wait_sdram_phase_seen, stage0_phase_seen, dma_phase_seen,
+            stage1_phase_seen, application_phase_seen);
+    if (dut.diagnostic_active !== 0)
+        $fatal(1, "application LED write did not take ownership from diagnostics");
 
     // Phase 2: corrupt the descriptor magic, reset through the button input,
     // and expect the Stage0 boot error report.

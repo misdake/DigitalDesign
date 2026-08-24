@@ -148,6 +148,7 @@ wire [15:0] device_write_data;
 wire [15:0] device_read_data;
 wire [15:0] sysctl_read_data;
 wire [15:0] dma_mmio_read_data;
+wire [5:0] software_leds;
 
 // Unselected devices read back zero, so the bridge sees the OR of all buses.
 assign device_read_data = sysctl_read_data | dma_mmio_read_data;
@@ -184,7 +185,7 @@ __SYSTEM_CONTROL__ u_sysctl (
     .device_read_data(sysctl_read_data),
     .icache_invalidate(sysctl_icache_invalidate),
     .dcache_invalidate(sysctl_dcache_invalidate),
-    .leds(leds),
+    .leds(software_leds),
     .uart_tx(uart_tx)
 );
 
@@ -375,6 +376,31 @@ __CPU_V3_CORE__ u_core (
     .data_segment(data_segment),
     .retired_words(retired_words)
 );
+
+wire diagnostic_active;
+wire [5:0] diagnostic_leds;
+wire [2:0] boot_phase;
+wire boot_error_sticky;
+wire software_led_write = device_write_enable && device_index == 0 && device_channel == 2;
+
+// This observer never controls boot. It only makes pre-software progress
+// visible, then permanently hands the LEDs to the first software LED write.
+__BOOT_PROGRESS_MONITOR__ u_boot_progress (
+    .clk(clk),
+    .reset(reset),
+    .sdram_ready(sdram_init_done),
+    .dma_busy(dma_busy),
+    .dma_error(dma_error),
+    .cpu_fault(faulted),
+    .code_segment(code_segment),
+    .software_led_write(software_led_write),
+    .diagnostic_active(diagnostic_active),
+    .diagnostic_leds(diagnostic_leds),
+    .phase(boot_phase),
+    .error_sticky(boot_error_sticky)
+);
+
+assign leds = diagnostic_active ? diagnostic_leds : software_leds;
 
 wire memory_request_valid;
 wire memory_write;
