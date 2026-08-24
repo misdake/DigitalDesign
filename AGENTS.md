@@ -28,11 +28,13 @@ cargo run -p compiler-tools --bin rcc -- input.rs --target cpu-v3 --code-base 0x
 cargo run -p cpu-v2-sim --bin rcc-run -- input.bin 1000000
 cargo run -p cpu-v2-sim --bin rcc-dbg -- input.bin
 cargo run -p cpu-v3-tang-nano-20k --bin cpu-v3-pack -- manifest
+cargo run -p cpu-v3-tang-nano-20k --bin cpu-v3-boot-assets
 ```
 
 The CPU V3 system build script generates Stage0, Stage1, the demo application, and boot image data
-from `systems/cpu-v3-tang-nano-20k/rcc` into Cargo `OUT_DIR`. Never check in a second hand-maintained
-instruction or Flash byte array.
+from `systems/cpu-v3-tang-nano-20k/rcc` into Cargo `OUT_DIR`. Use `cpu-v3-boot-assets` to materialize
+those exact files for packing or programming. Never check in a second hand-maintained instruction
+or Flash byte array.
 
 ## Validation
 
@@ -43,7 +45,17 @@ developer environment and ensure Cargo precedes Git Bash tools on `PATH`.
 cargo test --workspace
 cargo clippy --workspace --all-targets
 powershell -ExecutionPolicy Bypass -File scripts/check-layering.ps1
+powershell -ExecutionPolicy Bypass -File scripts/check-source-hygiene.ps1
 ```
+
+Use `scripts/validate-hardware.ps1 -Mode quick|iverilog|audit|pnr|all` for repeatable hardware
+validation. `audit` validates existing artifacts without rebuilding; `pnr` builds and audits them.
+Neither mode invokes the programmer.
+
+Use `hardware/vendor/gowin/scripts/run_board_validation.ps1` for board work. Its default
+`Audit` mode is offline; `Observe` never programs; `Program` and `Full` perform each requested
+hardware write once and never reset USB or retry programming automatically. UART validation
+recognizes both DDHT status and structured CPU V3 `CV3B` boot-error frames.
 
 External Verilog tests use `IVERILOG_EXE` and `VVP_EXE` when set, otherwise
 they resolve `iverilog` and `vvp` through `PATH`.

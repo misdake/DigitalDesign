@@ -24,6 +24,7 @@ initial begin
     #1;
     if (sdram_burst_length !== 8'd0 || uart_tx !== 1'b1 || leds !== 6'b0)
         $fatal(1, "SDRAM word-port harness defaults failed");
+    $display("DIGITAL_DESIGN_PASS");
     $finish;
 end
 endmodule

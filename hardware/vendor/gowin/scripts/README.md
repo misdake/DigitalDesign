@@ -5,6 +5,49 @@ and board examples. Example-specific RTL and test vectors remain beside their
 owning crate's examples; reusable capture, decode, build, and reporting tools
 belong here.
 
+Repository-wide offline validation is orchestrated by `scripts/validate-hardware.ps1`:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File scripts/validate-hardware.ps1 -Mode quick
+powershell -ExecutionPolicy Bypass -File scripts/validate-hardware.ps1 -Mode iverilog
+powershell -ExecutionPolicy Bypass -File scripts/validate-hardware.ps1 -Mode audit
+powershell -ExecutionPolicy Bypass -File scripts/validate-hardware.ps1 -Mode pnr
+```
+
+`audit` checks those four existing artifacts against current sources without rebuilding. `pnr`
+builds and audits the board-health, CPU, CPU/SDRAM, and complete boot artifacts. Neither mode
+programs a device. Each successful mode writes a small evidence record below
+`target/hardware-validation` containing the commit, dirty-worktree flag, and completed steps.
+
+Board interaction uses `run_board_validation.ps1`, which deliberately separates
+read-only artifact checks, observation, and hardware mutation:
+
+| Mode | Actions |
+| --- | --- |
+| `Audit` | Validate the existing manifest, generated sources, bitstream, timing, and resources. No hardware access. |
+| `Observe` | Wait a bounded time for an already-running board's VCP, capture UART, and validate DDHT. No programming. |
+| `Program` | Audit, optionally write the boot package, then program the audited SRAM bitstream exactly once. |
+| `Full` | Perform `Program`, then bounded VCP wait, capture, and DDHT validation. |
+
+Supported profiles are `board-health`, `cpu-v3-cpu`, `cpu-v3-sdram`, and
+`cpu-v3-boot`. Every attempted run writes `target/board-validation/<profile>/<UTC>/evidence.json`,
+including failure stage, source/bitstream fingerprints, SHA-256 hashes, commit and dirty state.
+The runner never resets USB and never retries programming after a failure.
+
+```powershell
+# Safe offline check; this is the default mode.
+powershell -ExecutionPolicy Bypass -File hardware/vendor/gowin/scripts/run_board_validation.ps1 `
+    -Profile cpu-v3-boot -Mode Audit
+
+# Observe an image that is already running, without touching FPGA or Flash.
+powershell -ExecutionPolicy Bypass -File hardware/vendor/gowin/scripts/run_board_validation.ps1 `
+    -Profile board-health -Mode Observe -Port COM8
+
+# Explicit complete boot run. Flash and SRAM are each programmed at most once.
+powershell -ExecutionPolicy Bypass -File hardware/vendor/gowin/scripts/run_board_validation.ps1 `
+    -Profile cpu-v3-boot -Mode Full -Port COM8 -WriteBootFlash
+```
+
 `capture_uart.ps1` records raw bytes from the board's debug UART (the Tang
 Nano 20K exposes it as a USB serial port through the onboard debugger) into a
 capture file:
@@ -17,12 +60,15 @@ powershell -ExecutionPolicy Bypass -File hardware/vendor/gowin/scripts/capture_u
 All DDHT projects transmit 8N1 at 115200 baud (27 MHz designs use divider
 233, 54 MHz designs use 468); pass `-Baud` only for nonstandard captures.
 
-`check_uart_status.ps1` validates a raw UART capture containing repeated
-eight-byte status frames. A frame contains the `DDHT` magic, protocol version,
-test ID, result, and XOR checksum. The checker rejects stale captures, frames
+`check_uart_status.ps1` validates raw UART captures containing repeated
+eight-byte DDHT status frames. It also decodes the CPU V3 boot ABI's ten-byte
+`CV3B` frames into Stage0/Stage1, descriptor/manifest/DMA/entry/internal
+category, code, and 16-bit detail. A valid boot-error frame always takes
+precedence over apparent DDHT success and is reported as a DUT failure rather
+than framing or baud corruption. The checker rejects stale captures, frames
 for another test, and any reported failure. Because a raw serial capture can
-drop a byte on the host side, torn frames are tolerated up to one percent of
-the success count (at least one); beyond that the capture is rejected:
+drop a byte on the host side, torn DDHT frames are tolerated up to one percent
+of the success count (at least one); beyond that the capture is rejected:
 
 ```powershell
 powershell -ExecutionPolicy Bypass -File hardware/vendor/gowin/scripts/check_uart_status.ps1 `
@@ -30,11 +76,16 @@ powershell -ExecutionPolicy Bypass -File hardware/vendor/gowin/scripts/check_uar
     -TestId 0x01 -MinimumSuccessFrames 2
 ```
 
-Status `0` is success and every other status is failure. Tests that need error
-addresses, observed values, or replayable vectors should introduce a new
-protocol version and extend the shared decoder rather than growing a private
-script inside one example. Set `-MaximumAgeSeconds 0` only when deliberately
-inspecting an archived capture.
+Pass `-ResultPath target/example/uart-status.json` to retain the decoded counts,
+reason, and structured boot errors even when validation exits unsuccessfully.
+The board-validation runner always does this and embeds the result into its
+evidence record.
+
+DDHT status `0` is success and every other status is failure. Tests that need
+additional error addresses, observed values, or replayable vectors should
+introduce a new protocol version and extend the shared decoder rather than
+growing a private script inside one example. Set `-MaximumAgeSeconds 0` only
+when deliberately inspecting an archived capture.
 
 Assigned test IDs:
 
@@ -52,8 +103,8 @@ Assigned test IDs:
 
 ## Stable board bring-up
 
-Build once, then program the audited image without rerunning synthesis or
-place-and-route:
+Build once, then use the runner above or these lower-level commands to program
+the audited image without rerunning synthesis or place-and-route:
 
 ```powershell
 cargo run -p digital-design-hardware-gowin --example board_health -- --build

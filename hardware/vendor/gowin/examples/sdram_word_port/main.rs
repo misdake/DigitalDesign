@@ -65,4 +65,10 @@ mod tests {
         assert_eq!(project.resources.claimed[&ResourceKind::SdrSdramDevice], 1);
         assert_eq!(project.resources.claimed[&ResourceKind::Pll], 1);
     }
+
+    #[test]
+    #[ignore = "explicit external simulator validation"]
+    fn verify_board_harness_with_iverilog() {
+        digital_design_hardware::verify_verilog_with_iverilog::<SdramWordPortSelfTest>().unwrap();
+    }
 }

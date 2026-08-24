@@ -62,3 +62,19 @@ all passed host-side checks. The Gowin project CLI exposes this as
 `--program-flash 0x100000 FILE`, which validates the explicit byte offset and
 range against the target's fitted flash capacity. The programmer sniffs the
 file format by extension, so the binary must be named `*.bin`.
+
+Materialize the exact package already generated from the system's RCC sources,
+then write it separately from the audited FPGA image:
+
+```powershell
+cargo run -p cpu-v3-tang-nano-20k --bin cpu-v3-boot-assets
+cargo run -p cpu-v3-tang-nano-20k --example cpu_v3_boot -- `
+    --program-flash 0x100000 target/cpu-v3-boot/cpu-v3-boot.bin
+cargo run -p cpu-v3-tang-nano-20k --example cpu_v3_boot -- --program-existing
+```
+
+`cpu-v3-boot-assets` does not compile a parallel copy of the firmware. It exports
+the Stage0, Stage1, application, data, package, and map files produced by the
+package build script in `OUT_DIR`, together with their sizes and fingerprints.
+The repository `quick` validation independently repacks the exported section
+files through `cpu-v3-pack` and requires byte-for-byte equality with that package.

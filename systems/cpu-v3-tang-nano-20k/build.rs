@@ -34,6 +34,11 @@ fn fnv1a64(bytes: &[u8]) -> u64 {
     })
 }
 
+fn write_artifact(output: &Path, name: &str, bytes: &[u8]) {
+    std::fs::write(output.join(name), bytes)
+        .unwrap_or_else(|error| panic!("write generated boot artifact {name}: {error}"));
+}
+
 fn main() {
     let root = PathBuf::from(std::env::var_os("CARGO_MANIFEST_DIR").unwrap());
     let sources = root.join("rcc");
@@ -58,9 +63,11 @@ fn main() {
             ..CompilerOptions::default()
         },
     );
-    let stage1 = word_bytes(&stage1);
-    let application = word_bytes(&application);
-    let package = build_boot_image(BootImageSpec {
+    let stage0_bytes = word_bytes(&stage0);
+    let stage1_bytes = word_bytes(&stage1);
+    let application_bytes = word_bytes(&application);
+    let data = [0xef, 0xbe, 0x55];
+    let image = build_boot_image(BootImageSpec {
         target: BootTarget::TangNano20K,
         stage1_section: "stage1".into(),
         stage1_entry: BootEntry {
@@ -81,8 +88,8 @@ fn main() {
                 kind: SectionKind::Load,
                 flags: SECTION_READ | SECTION_EXECUTE,
                 destination: PhysicalWordAddress::new(0x0001_0100),
-                memory_size_bytes: stage1.len() as u32,
-                data: stage1,
+                memory_size_bytes: stage1_bytes.len() as u32,
+                data: stage1_bytes.clone(),
                 alignment_bytes: 32,
             },
             InputSection {
@@ -90,8 +97,8 @@ fn main() {
                 kind: SectionKind::Load,
                 flags: SECTION_READ | SECTION_EXECUTE,
                 destination: PhysicalWordAddress::new(0x0003_0200),
-                memory_size_bytes: application.len() as u32,
-                data: application,
+                memory_size_bytes: application_bytes.len() as u32,
+                data: application_bytes.clone(),
                 alignment_bytes: 32,
             },
             InputSection {
@@ -99,7 +106,7 @@ fn main() {
                 kind: SectionKind::Load,
                 flags: SECTION_READ | SECTION_WRITE,
                 destination: PhysicalWordAddress::new(0x0004_0000),
-                data: vec![0xef, 0xbe, 0x55],
+                data: data.to_vec(),
                 memory_size_bytes: 8,
                 alignment_bytes: 32,
             },
@@ -114,23 +121,35 @@ fn main() {
             },
         ],
     })
-    .expect("build boot image")
-    .bytes;
+    .expect("build boot image");
+    let package = &image.bytes;
 
     assert_eq!(
-        fnv1a64(&word_bytes(&stage0)),
+        fnv1a64(&stage0_bytes),
         6_245_176_589_688_159_720,
         "Stage0 bytes changed from the CPU V3 boot-format baseline"
     );
     assert_eq!(
-        fnv1a64(&package),
+        fnv1a64(package),
         17_919_558_294_178_096_904,
         "Flash package bytes changed from the CPU V3 boot-format baseline"
     );
 
+    let output = PathBuf::from(std::env::var_os("OUT_DIR").unwrap());
+    write_artifact(&output, "stage0.v3bin", &stage0_bytes);
+    write_artifact(&output, "stage1.v3bin", &stage1_bytes);
+    write_artifact(&output, "boot-demo.v3bin", &application_bytes);
+    write_artifact(&output, "data.bin", &data);
+    write_artifact(&output, "cpu-v3-boot.bin", package);
+    write_artifact(&output, "cpu-v3-boot.map", image.map().as_bytes());
+
     let mut generated = String::new();
     writeln!(generated, "const STAGE0_PROGRAM: &[u16] = &{:?};", stage0).unwrap();
-    writeln!(generated, "const FLASH_PACKAGE: &[u8] = &{:?};", package).unwrap();
-    let output = PathBuf::from(std::env::var_os("OUT_DIR").unwrap()).join("boot_images.rs");
-    std::fs::write(output, generated).expect("write generated boot images");
+    writeln!(
+        generated,
+        "const FLASH_PACKAGE: &[u8] = include_bytes!(concat!(env!(\"OUT_DIR\"), \"/cpu-v3-boot.bin\"));"
+    )
+    .unwrap();
+    std::fs::write(output.join("boot_images.rs"), generated)
+        .expect("write generated boot image bindings");
 }

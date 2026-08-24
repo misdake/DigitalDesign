@@ -41,6 +41,10 @@ Dependencies point upward through this document: a later layer may use an earlie
 reverse. In particular, `compiler/rcc` cannot depend on a CPU and `hardware/core` cannot depend on
 a processor or a system.
 
+`scripts/check-layering.ps1` derives these layers from workspace manifest paths, so future
+`ip/gpu-*`, `ip/audio-*`, vendor targets, and systems are covered without maintaining a crate-name
+allowlist. A final system may compose any lower layer but may not depend on another final system.
+
 ## Physical memory and devices
 
 CPU V2/V3 systems use physical addresses only. CPU V3 forms a 32-bit word address by concatenating
