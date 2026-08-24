@@ -1,6 +1,6 @@
 param(
     [Parameter(Mandatory = $true)]
-    [ValidateSet("board-health", "cpu-v3-cpu", "cpu-v3-sdram", "cpu-v3-boot")]
+    [ValidateSet("board-health", "cpu-v3-cpu", "cpu-v3-sdram", "cpu-v3-boot-dma", "cpu-v3-boot", "cpu-v3-flash-readback", "cpu-v3-flash-diagnostics")]
     [string]$Profile,
 
     [ValidateSet("Audit", "Observe", "Program", "Full")]
@@ -49,12 +49,36 @@ function Get-ProfileConfiguration {
                 TestId = 0x05
             }
         }
+        "cpu-v3-boot-dma" {
+            return @{
+                Package = "cpu-v3-tang-nano-20k"
+                Example = "boot_dma"
+                Output = "target/boot_dma_gowin"
+                TestId = 0x06
+            }
+        }
         "cpu-v3-boot" {
             return @{
                 Package = "cpu-v3-tang-nano-20k"
                 Example = "cpu_v3_boot"
                 Output = "target/cpu_v3_boot_gowin"
                 TestId = 0x07
+            }
+        }
+        "cpu-v3-flash-readback" {
+            return @{
+                Package = "cpu-v3-tang-nano-20k"
+                Example = "boot_flash_readback"
+                Output = "target/cpu_v3_boot_flash_readback_gowin"
+                TestId = $null
+            }
+        }
+        "cpu-v3-flash-diagnostics" {
+            return @{
+                Package = "cpu-v3-tang-nano-20k"
+                Example = "boot_flash_diagnostics"
+                Output = "target/cpu_v3_boot_flash_diagnostics_gowin"
+                TestId = $null
             }
         }
     }
@@ -128,7 +152,9 @@ $runId = $startedAt.ToString("yyyyMMddTHHmmssfffZ")
 $runDirectory = Join-Path $repoRoot "target/board-validation/$Profile/$runId"
 New-Item -ItemType Directory -Force -Path $runDirectory | Out-Null
 $capturePath = Join-Path $runDirectory "uart.bin"
+$handshakePath = "$capturePath.handshake.bin"
 $uartStatusPath = Join-Path $runDirectory "uart-status.json"
+$recoveredPath = Join-Path $runDirectory "flash-readback.bin"
 
 Push-Location $repoRoot
 try {
@@ -136,6 +162,15 @@ try {
         Invoke-CargoStage "audit existing bitstream" @(
             "run", "-p", $configuration.Package, "--example", $configuration.Example,
             "--", "--check-existing"
+        )
+    }
+
+    if ($Profile -eq "cpu-v3-flash-readback") {
+        $bootAssetsDirectory = Join-Path $repoRoot "target/cpu-v3-boot"
+        $bootPackagePath = Join-Path $bootAssetsDirectory "cpu-v3-boot.bin"
+        Invoke-CargoStage "materialize generated boot package" @(
+            "run", "-p", "cpu-v3-tang-nano-20k", "--bin", "cpu-v3-boot-assets",
+            "--", $bootAssetsDirectory
         )
     }
 
@@ -161,21 +196,39 @@ try {
 
     if ($Mode -eq "Observe" -or $Mode -eq "Full") {
         Wait-SerialPort -Name $Port -TimeoutSeconds $PortWaitSeconds
-        Invoke-Stage "capture UART" "powershell" @(
-            "-ExecutionPolicy", "Bypass", "-File", (Join-Path $PSScriptRoot "capture_uart.ps1"),
+        Invoke-Stage "capture UART in confirmed BL616 session" "powershell" @(
+            "-ExecutionPolicy", "Bypass", "-File", (Join-Path $PSScriptRoot "capture_bl616_uart.ps1"),
             "-Port", $Port, "-Seconds", $CaptureSeconds, "-Out", $capturePath
         )
-        Invoke-Stage "validate DDHT status" "powershell" @(
-            "-ExecutionPolicy", "Bypass", "-File", (Join-Path $PSScriptRoot "check_uart_status.ps1"),
-            "-Path", $capturePath, "-TestId", $configuration.TestId,
-            "-MinimumSuccessFrames", $MinimumSuccessFrames,
-            "-MaximumAgeSeconds", ($CaptureSeconds + 30),
-            "-ResultPath", $uartStatusPath
-        )
+        if ($Profile -eq "cpu-v3-flash-readback") {
+            Invoke-Stage "validate complete Flash readback" "powershell" @(
+                "-ExecutionPolicy", "Bypass", "-File", (Join-Path $PSScriptRoot "check_flash_readback.ps1"),
+                "-CapturePath", $capturePath, "-ExpectedPath", $bootPackagePath,
+                "-MinimumCopies", $MinimumSuccessFrames,
+                "-RecoveredPath", $recoveredPath,
+                "-ResultPath", $uartStatusPath
+            )
+        } elseif ($Profile -eq "cpu-v3-flash-diagnostics") {
+            Invoke-Stage "validate Flash diagnostics" "powershell" @(
+                "-ExecutionPolicy", "Bypass", "-File", (Join-Path $PSScriptRoot "check_flash_diagnostics.ps1"),
+                "-CapturePath", $capturePath,
+                "-MinimumCopies", $MinimumSuccessFrames,
+                "-ResultPath", $uartStatusPath
+            )
+        } else {
+            Invoke-Stage "validate DDHT status" "powershell" @(
+                "-ExecutionPolicy", "Bypass", "-File", (Join-Path $PSScriptRoot "check_uart_status.ps1"),
+                "-Path", $capturePath, "-TestId", $configuration.TestId,
+                "-MinimumSuccessFrames", $MinimumSuccessFrames,
+                "-MaximumAgeSeconds", ($CaptureSeconds + 30),
+                "-ResultPath", $uartStatusPath
+            )
+        }
     }
 }
 catch {
-    if ($currentStage -eq "validate DDHT status" -and (Test-Path -LiteralPath $uartStatusPath)) {
+    if (($currentStage -eq "validate DDHT status" -or $currentStage -eq "validate complete Flash readback") -and
+        (Test-Path -LiteralPath $uartStatusPath)) {
         $decodedStatus = Get-Content -LiteralPath $uartStatusPath -Raw | ConvertFrom-Json
         $failure = $decodedStatus.message
     } else {
@@ -221,15 +274,27 @@ finally {
         artifact_audited = $completedStages.Contains("audit existing bitstream")
         boot_flash_programmed = $completedStages.Contains("program external boot Flash once")
         sram_programmed = $completedStages.Contains("program audited SRAM bitstream once")
-        uart_validated = $completedStages.Contains("validate DDHT status")
+        uart_validated = $completedStages.Contains("validate DDHT status") -or
+            $completedStages.Contains("validate complete Flash readback") -or
+            $completedStages.Contains("validate Flash diagnostics")
         port = if ($Port) { $Port } else { $null }
-        expected_test_id = "0x$($configuration.TestId.ToString('x2'))"
+        expected_test_id = if ($null -ne $configuration.TestId) {
+            "0x$($configuration.TestId.ToString('x2'))"
+        } else { $null }
+        expected_uart_protocol = if ($Profile -eq "cpu-v3-flash-readback") {
+            "FBR1"
+        } elseif ($Profile -eq "cpu-v3-flash-diagnostics") {
+            "FDS1"
+        } else { "DDHT/CV3B" }
         artifact = $artifact
         boot_package_sha256 = if ($bootPackagePath -and (Test-Path -LiteralPath $bootPackagePath)) {
             (Get-FileHash -Algorithm SHA256 -LiteralPath $bootPackagePath).Hash.ToLowerInvariant()
         } else { $null }
         uart_capture_sha256 = if (Test-Path -LiteralPath $capturePath) {
             (Get-FileHash -Algorithm SHA256 -LiteralPath $capturePath).Hash.ToLowerInvariant()
+        } else { $null }
+        bl616_handshake_sha256 = if (Test-Path -LiteralPath $handshakePath) {
+            (Get-FileHash -Algorithm SHA256 -LiteralPath $handshakePath).Hash.ToLowerInvariant()
         } else { $null }
         uart_status = if (Test-Path -LiteralPath $uartStatusPath) {
             Get-Content -LiteralPath $uartStatusPath -Raw | ConvertFrom-Json

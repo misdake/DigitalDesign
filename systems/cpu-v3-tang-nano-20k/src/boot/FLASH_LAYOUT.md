@@ -2,8 +2,8 @@
 
 ## Board boot progress
 
-The complete boot system passively exposes early progress on the six logical
-LEDs until boot software writes the system-control LED channel:
+The complete boot system passively exposes the current boot phase on the six
+logical LEDs. Phase changes are shown immediately without display delays:
 
 | Logical LEDs | Phase |
 | --- | --- |
@@ -16,7 +16,8 @@ LEDs until boot software writes the system-control LED channel:
 | `100001` | sticky DMA or CPU fault |
 
 The target wrapper performs any physical active-low conversion. The first
-software LED write permanently takes ownership until reset. These patterns are
+software LED write immediately and permanently takes ownership until reset, so
+firmware can report either success or a detailed error code. These patterns are
 progress evidence only; only the application's UART frame and system-level
 checks establish a successful boot.
 
@@ -53,8 +54,9 @@ places the validated package at `0x100000`. Package-internal Flash offsets stay
 relative to that base so Stage0 needs only one fixed package-base constant.
 
 For development, the FPGA may still be programmed only to volatile SRAM while
-the package is written separately at `0x100000`. Programmer operation 32
-(`exFlash C Bin Erase,Program,Verify`) accepts a raw binary through the
+the package is written separately at `0x100000`. This GW2AR target uses
+Programmer operation 39 (`exFlash C Bin Erase,Program,Verify thru GAO-Bridge`),
+as recommended for Arora software binaries. It accepts a raw binary through the
 misleadingly named `--mcuFile` option plus `--spiaddr`;
 bulk erase is never part of the normal workflow. Writing is enabled only after
 the generated file, target ID, start address, capacity, and sector extent have

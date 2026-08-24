@@ -1,10 +1,10 @@
-use cpu_v3_tang_nano_20k::TangNano20KBootDma;
+use cpu_v3_tang_nano_20k::BootDmaEngine;
 use digital_design_circuit::CircuitWires;
 use digital_design_hardware::{Hardware, HardwareIdentity, Module, VerilogDependency};
 use digital_design_hardware_common::DiagnosticReporter;
 use digital_design_hardware_gowin::{
-    run_gowin_project_cli, GowinCliError, TangNano20K, TangNano20KBootInputs,
-    TangNano20KBootOutputs,
+    run_gowin_project_cli, ErasedSpiFlashImage, GowinCliError, SpiFlashReader, TangNano20K,
+    TangNano20KBootInputs, TangNano20KBootOutputs, TangNano20KSdramWordPort,
 };
 
 fn main() -> Result<(), GowinCliError> {
@@ -19,6 +19,7 @@ fn main() -> Result<(), GowinCliError> {
 struct BootDmaSelfTest;
 
 type BootDmaReporter = DiagnosticReporter<0x06, 469, 1, 1>;
+type FittedFlashReader = SpiFlashReader<ErasedSpiFlashImage, 8_388_608, 2>;
 
 impl Module for BootDmaSelfTest {
     type Input = TangNano20KBootInputs;
@@ -41,8 +42,16 @@ impl Module for BootDmaSelfTest {
         Some(
             include_str!("self_test.v")
                 .replace(
-                    "__TANG_NANO_20K_BOOT_DMA__",
-                    &TangNano20KBootDma::verilog_identity().module_name(),
+                    "__BOOT_DMA_ENGINE__",
+                    &BootDmaEngine::verilog_identity().module_name(),
+                )
+                .replace(
+                    "__FLASH_READER__",
+                    &FittedFlashReader::verilog_identity().module_name(),
+                )
+                .replace(
+                    "__SDRAM_WORD_PORT__",
+                    &TangNano20KSdramWordPort::verilog_identity().module_name(),
                 )
                 .replace(
                     "__DIAGNOSTIC_REPORTER__",
@@ -53,7 +62,9 @@ impl Module for BootDmaSelfTest {
 
     fn verilog_dependencies() -> Vec<VerilogDependency> {
         vec![
-            VerilogDependency::new::<TangNano20KBootDma>("u_dma"),
+            VerilogDependency::new::<BootDmaEngine>("u_dma"),
+            VerilogDependency::new::<FittedFlashReader>("u_flash"),
+            VerilogDependency::new::<TangNano20KSdramWordPort>("u_memory"),
             VerilogDependency::new::<BootDmaReporter>("u_reporter"),
         ]
     }

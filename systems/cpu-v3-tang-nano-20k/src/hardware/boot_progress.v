@@ -35,7 +35,7 @@ always @* begin
         phase = 3'd7;
     else if (!sdram_ready)
         phase = 3'd1;
-    else if (dma_busy)
+    else if (code_segment == 0 && dma_busy)
         phase = 3'd3;
     else if (code_segment == 0)
         phase = 3'd2;

@@ -74,7 +74,7 @@ always @(posedge clk) begin
             ST_WRITE_0: if (request_ready) begin
                 request_valid <= 1;
                 request_write <= 1;
-                request_address <= 22'h000007;
+                request_address <= 22'h000006;
                 request_write_data <= 16'h1234;
                 state <= ST_WRITE_0_WAIT;
             end
@@ -85,7 +85,7 @@ always @(posedge clk) begin
             ST_WRITE_1: if (request_ready) begin
                 request_valid <= 1;
                 request_write <= 1;
-                request_address <= 22'h100007;
+                request_address <= 22'h000007;
                 request_write_data <= 16'habcd;
                 state <= ST_WRITE_1_WAIT;
             end
@@ -96,7 +96,7 @@ always @(posedge clk) begin
             ST_READ_0: if (request_ready) begin
                 request_valid <= 1;
                 request_write <= 0;
-                request_address <= 22'h000007;
+                request_address <= 22'h000006;
                 state <= ST_READ_0_WAIT;
             end
             ST_READ_0_WAIT: if (response_valid) begin
@@ -106,7 +106,7 @@ always @(posedge clk) begin
             ST_READ_1: if (request_ready) begin
                 request_valid <= 1;
                 request_write <= 0;
-                request_address <= 22'h100007;
+                request_address <= 22'h000007;
                 state <= ST_READ_1_WAIT;
             end
             ST_READ_1_WAIT: if (response_valid) begin

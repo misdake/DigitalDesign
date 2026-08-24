@@ -549,6 +549,7 @@ impl crate::GowinTarget for TangNano20K {
         project_device_id: "gw2ar18c-000",
         programmer_device: "GW2AR-18C",
         programmer_cable: GowinProgrammerCable::UsbDebuggerA,
+        external_flash_access: crate::GowinExternalFlashAccess::GaoBridge,
     };
 }
 

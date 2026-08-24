@@ -45,5 +45,6 @@ impl crate::GowinTarget for TangConsole138KC128M {
         project_device_id: "gw5ast138c-007",
         programmer_device: "GW5AST-138C",
         programmer_cable: GowinProgrammerCable::UsbDebuggerA,
+        external_flash_access: crate::GowinExternalFlashAccess::FiveA,
     };
 }

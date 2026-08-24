@@ -25,9 +25,10 @@ pub struct BootProgressMonitorInput {
 
 #[derive(Clone, ModuleIo)]
 pub struct BootProgressMonitorOutput {
-    /// True until software has deliberately taken ownership of the LEDs.
+    /// True until software deliberately takes ownership of the LEDs.
     pub diagnostic_active: Wire,
     pub diagnostic_leds: Wires<6>,
+    /// The phase currently observed, with no artificial display delay.
     pub phase: Wires<3>,
     pub error_sticky: Wire,
 }
@@ -67,25 +68,17 @@ impl BootProgressMonitorState {
             BOOT_PHASE_RESET
         } else if self.error_sticky || dma_error || cpu_fault {
             BOOT_PHASE_ERROR
-        } else if !sdram_ready {
-            BOOT_PHASE_WAIT_SDRAM
-        } else if dma_busy {
-            BOOT_PHASE_DMA
-        } else if code_segment == 0 {
-            BOOT_PHASE_STAGE0
-        } else if code_segment == 1 {
-            BOOT_PHASE_STAGE1
         } else {
-            BOOT_PHASE_APPLICATION
+            observed_phase(sdram_ready, dma_busy, code_segment)
         }
     }
 }
 
-/// Observes boot progress without controlling the processor, DMA, or memory.
+/// Reports the current boot state without controlling or delaying boot.
 ///
-/// The monitor drives a diagnostic LED pattern only until software performs
-/// its first system-control LED write. It never generates success and cannot
-/// make a failed boot appear complete.
+/// DMA is shown as its own phase while Stage0 is loading Stage1. DMA performed
+/// by Stage1 remains a Stage1 activity, so the semantic phase does not regress.
+/// The first software LED write takes ownership immediately and until reset.
 #[derive(Hardware)]
 #[hardware(namespace = "systems/cpu_v3_tang_nano_20k/diagnostics")]
 pub struct BootProgressMonitor;
@@ -151,6 +144,20 @@ impl Module for BootProgressMonitor {
     }
 }
 
+fn observed_phase(sdram_ready: bool, dma_busy: bool, code_segment: u16) -> u8 {
+    if !sdram_ready {
+        BOOT_PHASE_WAIT_SDRAM
+    } else if code_segment == 0 && dma_busy {
+        BOOT_PHASE_DMA
+    } else if code_segment == 0 {
+        BOOT_PHASE_STAGE0
+    } else if code_segment == 1 {
+        BOOT_PHASE_STAGE1
+    } else {
+        BOOT_PHASE_APPLICATION
+    }
+}
+
 fn phase_leds(phase: u8) -> u8 {
     match phase {
         BOOT_PHASE_RESET => 0b00_0001,
@@ -168,14 +175,19 @@ mod tests {
     use super::*;
 
     #[test]
-    fn state_tracks_errors_and_irrevocably_hands_leds_to_software() {
-        let mut state = BootProgressMonitorState::default();
+    fn phase_follows_the_current_boot_state_without_delay() {
+        let state = BootProgressMonitorState::default();
         assert_eq!(state.phase(false, false, false, false, false, 0), 1);
         assert_eq!(state.phase(false, true, false, false, false, 0), 2);
         assert_eq!(state.phase(false, true, true, false, false, 0), 3);
         assert_eq!(state.phase(false, true, false, false, false, 1), 4);
+        assert_eq!(state.phase(false, true, true, false, false, 1), 4);
         assert_eq!(state.phase(false, true, false, false, false, 3), 5);
+    }
 
+    #[test]
+    fn errors_are_sticky_and_software_handoff_is_immediate() {
+        let mut state = BootProgressMonitorState::default();
         state.advance(false, true, false, false);
         assert!(state.software_leds_seen);
         state.advance(false, false, true, false);
