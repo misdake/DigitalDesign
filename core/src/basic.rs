@@ -9,7 +9,7 @@ use std::sync::Mutex;
 pub type WireValue = u8;
 pub type LatencyValue = u16;
 
-#[derive(Copy, Clone)]
+#[derive(Copy, Clone, Debug, Eq, PartialEq, Hash)]
 pub struct Wire(pub usize);
 
 #[derive(Copy, Clone)]
@@ -96,11 +96,21 @@ static mut CIRCUIT_LOCK: Mutex<()> = Mutex::new(());
 static mut CIRCUIT: Option<Circuit> = None;
 pub fn build_circuit<R>(f: impl FnOnce() -> R) -> (Circuit, R) {
     unsafe {
-        let _lock = CIRCUIT_LOCK.lock().unwrap();
+        let lock = CIRCUIT_LOCK
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         CIRCUIT = Some(Circuit::new());
-        let r = f();
-        let new_circuit = CIRCUIT.take().unwrap();
-        (new_circuit, r)
+        match std::panic::catch_unwind(std::panic::AssertUnwindSafe(f)) {
+            Ok(result) => {
+                let new_circuit = CIRCUIT.take().unwrap();
+                (new_circuit, result)
+            }
+            Err(payload) => {
+                CIRCUIT.take();
+                drop(lock);
+                std::panic::resume_unwind(payload)
+            }
+        }
     }
 }
 fn circuit_mut() -> &'static mut Circuit {

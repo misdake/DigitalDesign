@@ -89,6 +89,23 @@ name = "digital-design-code"
 version = "0.1.0"
 
 [[package]]
+name = "digital-design-hardware"
+version = "0.1.0"
+dependencies = [
+ "digital-design-code",
+ "digital-design-hardware-macros",
+]
+
+[[package]]
+name = "digital-design-hardware-macros"
+version = "0.1.0"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn 1.0.109",
+]
+
+[[package]]
 name = "dlib"
 version = "0.5.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"

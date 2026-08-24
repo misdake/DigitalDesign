@@ -1,6 +1,8 @@
 [workspace]
 members = [
     "core",
+    "hardware",
+    "hardware_macros",
     "cpu_v1",
     "cpu_v2",
     "cpu_macro",
