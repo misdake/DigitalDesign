@@ -1,0 +1,10 @@
+[package]
+name = "compiler-tools"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+rcc = { path = "../rcc" }
+cpu-v2 = { path = "../../ip/cpu-v2" }
+cpu-v3 = { path = "../../ip/cpu-v3" }
+

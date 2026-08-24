@@ -1,0 +1,11 @@
+[package]
+name = "cpu-v3"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+rcc = { path = "../../compiler/rcc" }
+digital-design-ip-common = { path = "../common" }
+digital-design-circuit = { path = "../../circuit" }
+digital-design-hardware = { path = "../../hardware/core" }
+digital-design-hardware-gowin = { path = "../../hardware/vendor/gowin" }

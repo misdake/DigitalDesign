@@ -1,0 +1,8 @@
+[package]
+name = "cpu-v1"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+digital-design-circuit = { path = "../../circuit" }
+paste = "1.0.11"
