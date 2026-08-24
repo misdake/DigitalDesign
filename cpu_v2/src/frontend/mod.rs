@@ -2310,6 +2310,30 @@ fn call_expr(l: &mut FnLower, call: &syn::ExprCall) -> Result<Val, syn::Error> {
         l.dead = true;
         return Ok(Val::Never);
     }
+    if name.as_str() == "mtsr_dseg" {
+        if args.len() != 1 {
+            return Err(err(call, "mtsr_dseg(v) takes 1 argument"));
+        }
+        let (v, from) = &args[0];
+        let (v, _) = coerce(l, *v, from, &Ty::U16, &call.args[0])?;
+        l.b.mtsr_dseg(v);
+        return Ok(Val::Unit);
+    }
+    if name.as_str() == "jseg" {
+        if args.len() != 2 {
+            return Err(err(call, "jseg(cseg, target) takes 2 arguments"));
+        }
+        let (cseg, from) = &args[0];
+        let (cseg, _) = coerce(l, *cseg, from, &Ty::U16, &call.args[0])?;
+        let (target, from) = &args[1];
+        let (target, _) = coerce(l, *target, from, &Ty::U16, &call.args[1])?;
+        l.b.jseg(cseg, target);
+        // control never returns; terminate the block with an unreachable halt
+        let zero = l.b.load_imm(0);
+        l.b.halt(zero);
+        l.dead = true;
+        return Ok(Val::Never);
+    }
     if matches!(name.as_str(), "cnt1" | "log2") {
         if args.len() != 1 {
             return Err(err(call, format!("{name}(x) takes 1 argument")));

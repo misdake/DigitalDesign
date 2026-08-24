@@ -282,9 +282,13 @@ pub(crate) fn inst_uses(inst: &Instr) -> Vec<VReg> {
             u.extend_from_slice(args);
             u
         }
-        Instr::DevSend { src, .. } | Instr::StoreSp { src, .. } | Instr::StoreLocal { src, .. } => {
+        Instr::DevSend { src, .. }
+        | Instr::MtsrDseg { src }
+        | Instr::StoreSp { src, .. }
+        | Instr::StoreLocal { src, .. } => {
             vec![*src]
         }
+        Instr::Jseg { cseg, target } => vec![*cseg, *target],
     }
 }
 pub(crate) fn inst_defs(inst: &Instr) -> Vec<VReg> {
@@ -303,6 +307,8 @@ pub(crate) fn inst_defs(inst: &Instr) -> Vec<VReg> {
         Instr::StoreMem { .. }
         | Instr::StoreStatic { .. }
         | Instr::DevSend { .. }
+        | Instr::MtsrDseg { .. }
+        | Instr::Jseg { .. }
         | Instr::StoreSp { .. }
         | Instr::StoreLocal { .. } => {
             vec![]
@@ -344,8 +350,13 @@ fn replace_all_uses(f: &mut IrFunc, from: VReg, to: VReg) {
                 | Instr::Shift { src, .. }
                 | Instr::Mov { src, .. }
                 | Instr::DevSend { src, .. }
+                | Instr::MtsrDseg { src }
                 | Instr::StoreSp { src, .. }
                 | Instr::StoreLocal { src, .. } => subst(src),
+                Instr::Jseg { cseg, target } => {
+                    subst(cseg);
+                    subst(target);
+                }
                 Instr::LoadImm { .. }
                 | Instr::StoreStatic { .. }
                 | Instr::DevRecv { .. }
@@ -1107,6 +1118,7 @@ fn rewrite_spills(f: &mut IrFunc, spilled: &[VReg], next_slot: &mut u8) {
                     }
                 }
                 Instr::DevSend { src, .. }
+                | Instr::MtsrDseg { src }
                 | Instr::StoreSp { src, .. }
                 | Instr::StoreLocal { src, .. } => reload(
                     src,
@@ -1117,6 +1129,26 @@ fn rewrite_spills(f: &mut IrFunc, spilled: &[VReg], next_slot: &mut u8) {
                     &mut new_lines,
                     line,
                 ),
+                Instr::Jseg { cseg, target } => {
+                    reload(
+                        cseg,
+                        &slot_of,
+                        &spilled,
+                        f,
+                        &mut new_insts,
+                        &mut new_lines,
+                        line,
+                    );
+                    reload(
+                        target,
+                        &slot_of,
+                        &spilled,
+                        f,
+                        &mut new_insts,
+                        &mut new_lines,
+                        line,
+                    );
+                }
             }
             new_insts.push(inst.clone());
             new_lines.push(line);
@@ -1253,6 +1285,8 @@ fn defs_mut(inst: &mut Instr) -> Vec<&mut VReg> {
         Instr::StoreMem { .. }
         | Instr::StoreStatic { .. }
         | Instr::DevSend { .. }
+        | Instr::MtsrDseg { .. }
+        | Instr::Jseg { .. }
         | Instr::StoreSp { .. }
         | Instr::StoreLocal { .. } => {
             vec![]

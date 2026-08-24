@@ -5,12 +5,19 @@ use std::fmt;
 use super::{
     BootDescriptor, BootEntry, BootImageError, BootManifest, BootTarget, SectionKind,
     SectionRecord, BOOT_DESCRIPTOR_SIZE, BOOT_MANIFEST_HEADER_SIZE, BOOT_SECTION_RECORD_SIZE,
-    SECTION_EXECUTE, STAGE1_HANDOFF_OFFSET, STAGE1_HANDOFF_SIZE_BYTES,
+    DMA_ERROR_FILE_LARGER_THAN_MEMORY, DMA_ERROR_FLASH_RANGE, DMA_ERROR_MEMORY_RANGE,
+    SECTION_EXECUTE, STAGE1_HANDOFF_OFFSET, STAGE1_HANDOFF_SIZE_BYTES, SYSCTL_INVALIDATE_DCACHE,
+    SYSCTL_INVALIDATE_ICACHE, SYSCTL_LED, SYSCTL_UART,
 };
 use crate::g16::{
-    jump_segment, load_immediate16, write_data_segment, Machine, PhysicalWordAddress,
-    ProgramLoadError, Word, MMIO_BASE,
+    jump_segment, load_immediate16, store, write_data_segment, Machine, PhysicalWordAddress,
+    ProgramLoadError, Word, GLOBAL_REGISTER, MMIO_BASE,
 };
+
+/// Reserved physical scratch word address where Stage0 DMAs the 64-byte boot
+/// descriptor (32 words) before validating it. The packer reserves this range
+/// against every section.
+pub const STAGE0_DESCRIPTOR_SCRATCH_WORD: u32 = 0x0000_0040;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct DmaCommand {
@@ -18,7 +25,6 @@ pub struct DmaCommand {
     pub destination: PhysicalWordAddress,
     pub file_size_bytes: u32,
     pub memory_size_bytes: u32,
-    pub expected_crc32: u32,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -37,10 +43,6 @@ pub enum DmaError {
         destination: PhysicalWordAddress,
         memory_bytes: u32,
         available_words: usize,
-    },
-    CrcMismatch {
-        expected: u32,
-        actual: u32,
     },
 }
 
@@ -72,10 +74,6 @@ impl fmt::Display for DmaError {
                 "DMA SDRAM range at word {:#010x} for {memory_bytes:#x} bytes exceeds {available_words:#x} physical words",
                 destination.get()
             ),
-            Self::CrcMismatch { expected, actual } => write!(
-                f,
-                "DMA CRC mismatch: expected {expected:08x}, calculated {actual:08x}"
-            ),
         }
     }
 }
@@ -94,7 +92,6 @@ pub enum DmaStatus {
 struct ActiveDma {
     command: DmaCommand,
     next_word: u32,
-    crc: u32,
 }
 
 /// Transaction-level model of the boot copy engine.
@@ -129,7 +126,6 @@ impl FlashToDramDma {
         self.active = Some(ActiveDma {
             command,
             next_word: 0,
-            crc: !0,
         });
         if command.memory_size_bytes == 0 {
             self.finish();
@@ -137,7 +133,7 @@ impl FlashToDramDma {
         Ok(())
     }
 
-    pub fn tick(&mut self, flash: &[u8], memory: &mut Machine, dram_ready: bool) -> DmaStatus {
+    pub fn tick(&mut self, flash: &[u8], memory: &mut [Word], dram_ready: bool) -> DmaStatus {
         let Some(mut active) = self.active else {
             return self.status();
         };
@@ -150,30 +146,19 @@ impl FlashToDramDma {
         for lane in 0..2u32 {
             let index = byte_index + lane;
             if index < active.command.file_size_bytes {
-                let byte = flash[(active.command.flash_offset + index) as usize];
-                bytes[lane as usize] = byte;
-                active.crc = crc32_update(active.crc, byte);
+                bytes[lane as usize] = flash[(active.command.flash_offset + index) as usize];
             }
         }
         let address = PhysicalWordAddress::new(active.command.destination.get() + active.next_word);
-        let value = u16::from_le_bytes(bytes);
-        memory
-            .load_physical(address, &[value])
-            .expect("DMA range was validated before the transfer started");
+        // The DMA range was validated against the memory size before the
+        // transfer started.
+        memory[address.get() as usize] = u16::from_le_bytes(bytes);
         active.next_word += 1;
 
         let memory_words = active.command.memory_size_bytes.div_ceil(2);
         if active.next_word == memory_words {
-            let actual = !active.crc;
             self.active = None;
-            if actual == active.command.expected_crc32 {
-                self.status = Some(DmaStatus::Done);
-            } else {
-                self.status = Some(DmaStatus::Error(DmaError::CrcMismatch {
-                    expected: active.command.expected_crc32,
-                    actual,
-                }));
-            }
+            self.status = Some(DmaStatus::Done);
         } else {
             self.active = Some(active);
         }
@@ -181,16 +166,8 @@ impl FlashToDramDma {
     }
 
     fn finish(&mut self) {
-        let active = self.active.take().unwrap();
-        let actual = !active.crc;
-        self.status = Some(if actual == active.command.expected_crc32 {
-            DmaStatus::Done
-        } else {
-            DmaStatus::Error(DmaError::CrcMismatch {
-                expected: active.command.expected_crc32,
-                actual,
-            })
-        });
+        self.active = None;
+        self.status = Some(DmaStatus::Done);
     }
 }
 
@@ -317,6 +294,111 @@ impl From<ProgramLoadError> for LoaderError {
     }
 }
 
+/// Boot stage identifiers for the error reporting ABI.
+pub const BOOT_ERROR_STAGE0: u8 = 1;
+pub const BOOT_ERROR_STAGE1: u8 = 2;
+
+/// Boot failure categories for the error reporting ABI.
+pub const BOOT_ERROR_DESCRIPTOR: u8 = 1;
+pub const BOOT_ERROR_MANIFEST: u8 = 2;
+pub const BOOT_ERROR_DMA: u8 = 3;
+pub const BOOT_ERROR_ENTRY: u8 = 4;
+pub const BOOT_ERROR_INTERNAL: u8 = 5;
+
+/// One failure under the boot error reporting ABI: `{stage, category}` on the
+/// LEDs and a repeating 10-byte UART frame with the detail.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct BootErrorReport {
+    /// `BOOT_ERROR_STAGE0` or `BOOT_ERROR_STAGE1`.
+    pub stage: u8,
+    pub category: u8,
+    /// Stable per-variant code within the category.
+    pub code: u8,
+    /// Variant detail; DMA failures carry the DMA error register value.
+    pub detail: u16,
+}
+
+impl BootErrorReport {
+    /// LED value `{stage[1:0], category[3:0]}` written to `SYSCTL_LED`.
+    pub fn led(self) -> u16 {
+        u16::from(self.stage) << 4 | u16::from(self.category)
+    }
+
+    /// The repeating UART frame: ASCII `G16B`, stage, category, code, detail
+    /// low, detail high, and the XOR checksum of bytes 0 through 8.
+    pub fn uart_frame(self) -> [u8; 10] {
+        let mut frame = [0; 10];
+        frame[..4].copy_from_slice(b"G16B");
+        frame[4] = self.stage;
+        frame[5] = self.category;
+        frame[6] = self.code;
+        frame[7..9].copy_from_slice(&self.detail.to_le_bytes());
+        frame[9] = frame[..9].iter().fold(0, |checksum, byte| checksum ^ byte);
+        frame
+    }
+
+    /// Device-0 `(channel, value)` writes mirroring this report: the LED word
+    /// first, then one UART byte per write. Software polls the `SYSCTL_UART`
+    /// busy flag between bytes and re-emits the frame in a loop.
+    pub fn device_writes(self) -> Vec<(u8, u16)> {
+        let mut writes = vec![(SYSCTL_LED, self.led())];
+        writes.extend(
+            self.uart_frame()
+                .into_iter()
+                .map(|byte| (SYSCTL_UART, u16::from(byte))),
+        );
+        writes
+    }
+}
+
+impl LoaderError {
+    /// Maps a reference-loader failure onto the boot error reporting ABI.
+    ///
+    /// The stage is the one whose validation failed in the reference flow.
+    /// Variants shared between stages default to Stage0; an on-hardware
+    /// Stage1 substitutes `BOOT_ERROR_STAGE1` for its own DMA and
+    /// entry-validation failures.
+    pub fn boot_report(&self) -> BootErrorReport {
+        let (stage, category, code) = match self {
+            Self::Format(_) => (BOOT_ERROR_STAGE0, BOOT_ERROR_DESCRIPTOR, 1),
+            Self::TargetMismatch { .. } => (BOOT_ERROR_STAGE0, BOOT_ERROR_DESCRIPTOR, 2),
+            Self::PackageLargerThanFlash { .. } => (BOOT_ERROR_STAGE0, BOOT_ERROR_DESCRIPTOR, 3),
+            Self::ExtentOutsidePackage(_) => (BOOT_ERROR_STAGE0, BOOT_ERROR_DESCRIPTOR, 4),
+            Self::ManifestPackageSizeMismatch { .. } => (BOOT_ERROR_STAGE1, BOOT_ERROR_MANIFEST, 1),
+            Self::Stage1RecordMismatch => (BOOT_ERROR_STAGE1, BOOT_ERROR_MANIFEST, 2),
+            Self::InvalidSection { .. } => (BOOT_ERROR_STAGE1, BOOT_ERROR_MANIFEST, 3),
+            Self::OverlappingSections { .. } => (BOOT_ERROR_STAGE1, BOOT_ERROR_MANIFEST, 4),
+            Self::Dma(_) => (BOOT_ERROR_STAGE0, BOOT_ERROR_DMA, 1),
+            Self::InvalidInitialStack { stage, .. } => (
+                match *stage {
+                    "application" => BOOT_ERROR_STAGE1,
+                    _ => BOOT_ERROR_STAGE0,
+                },
+                BOOT_ERROR_ENTRY,
+                1,
+            ),
+            Self::EntryOutsideExecutableSection { .. } => (BOOT_ERROR_STAGE0, BOOT_ERROR_ENTRY, 2),
+            Self::InvalidStage1Handoff { .. } => (BOOT_ERROR_STAGE0, BOOT_ERROR_ENTRY, 3),
+            Self::ProgramLoad(_) => (BOOT_ERROR_STAGE0, BOOT_ERROR_INTERNAL, 1),
+        };
+        BootErrorReport {
+            stage,
+            category,
+            code,
+            detail: dma_error_detail(self),
+        }
+    }
+}
+
+fn dma_error_detail(error: &LoaderError) -> u16 {
+    match error {
+        LoaderError::Dma(DmaError::FileLargerThanMemory { .. }) => DMA_ERROR_FILE_LARGER_THAN_MEMORY,
+        LoaderError::Dma(DmaError::FlashRangeExceeded { .. }) => DMA_ERROR_FLASH_RANGE,
+        LoaderError::Dma(DmaError::PhysicalMemoryExceeded { .. }) => DMA_ERROR_MEMORY_RANGE,
+        _ => 0,
+    }
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct Stage0Handoff {
     pub descriptor: BootDescriptor,
@@ -329,13 +411,24 @@ pub struct ApplicationHandoff {
 
 impl ApplicationHandoff {
     /// Canonical final sequence used by Stage1 after its last memory access.
+    ///
+    /// DMA-filled memory may alias stale cache lines, so both caches are
+    /// invalidated through system-control device 0 before the segment switch
+    /// (harmless at cold boot, when every valid bit is clear). `r15` holds
+    /// the MMIO base `0xff00` under the ABI, so both channels are in i4 store
+    /// range and the stored value is irrelevant.
     pub fn instructions(self) -> Vec<Word> {
         let mut words = vec![];
         words.extend(load_immediate16(1, self.entry.data_segment));
         words.extend(load_immediate16(13, self.entry.stack_offset));
         words.extend(load_immediate16(2, self.entry.code_segment));
         words.extend(load_immediate16(3, self.entry.offset));
-        words.extend([write_data_segment(1), jump_segment(2, 3)]);
+        words.extend([
+            store(0, GLOBAL_REGISTER, i16::from(SYSCTL_INVALIDATE_ICACHE)),
+            store(0, GLOBAL_REGISTER, i16::from(SYSCTL_INVALIDATE_DCACHE)),
+            write_data_segment(1),
+            jump_segment(2, 3),
+        ]);
         words
     }
 }
@@ -345,7 +438,27 @@ pub fn run_stage0(
     memory: &mut Machine,
     expected_target: BootTarget,
 ) -> Result<Stage0Handoff, LoaderError> {
-    let descriptor = BootDescriptor::decode(flash)?;
+    // Real hardware has no direct Flash read path: Stage0 DMAs the fixed
+    // 64-byte descriptor into the reserved scratch range and validates the
+    // SDRAM copy.
+    run_dma(
+        flash,
+        memory,
+        DmaCommand {
+            flash_offset: 0,
+            destination: PhysicalWordAddress::new(STAGE0_DESCRIPTOR_SCRATCH_WORD),
+            file_size_bytes: BOOT_DESCRIPTOR_SIZE as u32,
+            memory_size_bytes: BOOT_DESCRIPTOR_SIZE as u32,
+        },
+    )?;
+    let descriptor_words: [Word; BOOT_DESCRIPTOR_SIZE / 2] = std::array::from_fn(|index| {
+        memory.physical_memory(PhysicalWordAddress::new(
+            STAGE0_DESCRIPTOR_SCRATCH_WORD + index as u32,
+        ))
+    });
+    let descriptor_bytes: [u8; BOOT_DESCRIPTOR_SIZE] =
+        std::array::from_fn(|index| descriptor_words[index / 2].to_le_bytes()[index % 2]);
+    let descriptor = BootDescriptor::decode(&descriptor_bytes)?;
     validate_stage0_descriptor(&descriptor, flash, memory, expected_target)?;
     run_dma(
         flash,
@@ -355,20 +468,19 @@ pub fn run_stage0(
             destination: descriptor.stage1_destination,
             file_size_bytes: descriptor.stage1_file_size_bytes,
             memory_size_bytes: descriptor.stage1_memory_size_bytes,
-            expected_crc32: descriptor.stage1_crc32,
         },
     )?;
-    let encoded_descriptor = descriptor.encode();
-    let descriptor_words: [u16; BOOT_DESCRIPTOR_SIZE / 2] = std::array::from_fn(|index| {
-        u16::from_le_bytes([
-            encoded_descriptor[index * 2],
-            encoded_descriptor[index * 2 + 1],
-        ])
-    });
+    // Mirror the descriptor into the Stage1 handoff range, now a plain
+    // memory-to-memory copy of the scratch words.
     memory.load_physical(descriptor.stage1_handoff_destination, &descriptor_words)?;
     Ok(Stage0Handoff { descriptor })
 }
 
+/// Runs the reference Stage1 flow on top of a completed Stage0 handoff.
+///
+/// The manifest is decoded directly from the Flash slice as a host
+/// convenience; on hardware Stage1 DMAs the manifest into its own static
+/// buffer first and parses that copy.
 pub fn run_stage1(
     flash: &[u8],
     memory: &mut Machine,
@@ -401,7 +513,7 @@ fn run_dma(flash: &[u8], memory: &mut Machine, command: DmaCommand) -> Result<()
     let mut dma = FlashToDramDma::default();
     dma.start(command, flash.len(), memory.physical_memory_words())?;
     loop {
-        match dma.tick(flash, memory, true) {
+        match dma.tick(flash, memory.physical_memory_mut(), true) {
             DmaStatus::Busy => {}
             DmaStatus::Done => return Ok(()),
             DmaStatus::Error(error) => return Err(error.into()),
@@ -416,7 +528,6 @@ fn command_for_section(section: SectionRecord) -> DmaCommand {
         destination: section.destination,
         file_size_bytes: section.file_size_bytes,
         memory_size_bytes: section.memory_size_bytes,
-        expected_crc32: section.crc32,
     }
 }
 
@@ -475,7 +586,6 @@ fn validate_stage0_descriptor(
             destination: descriptor.stage1_destination,
             file_size_bytes: descriptor.stage1_file_size_bytes,
             memory_size_bytes: descriptor.stage1_memory_size_bytes,
-            expected_crc32: descriptor.stage1_crc32,
         },
         descriptor.package_size_bytes as usize,
         memory.physical_memory_words(),
@@ -541,11 +651,7 @@ fn validate_manifest(
                     reason: "load section has no file data",
                 })
             }
-            SectionKind::Zero
-                if section.file_size_bytes != 0
-                    || section.flash_offset != 0
-                    || section.crc32 != 0 =>
-            {
+            SectionKind::Zero if section.file_size_bytes != 0 || section.flash_offset != 0 => {
                 return Err(LoaderError::InvalidSection {
                     index,
                     reason: "zero section contains file metadata",
@@ -605,7 +711,6 @@ fn matches_stage1(section: &SectionRecord, descriptor: &BootDescriptor) -> bool 
         && section.destination == descriptor.stage1_destination
         && section.file_size_bytes == descriptor.stage1_file_size_bytes
         && section.memory_size_bytes == descriptor.stage1_memory_size_bytes
-        && section.crc32 == descriptor.stage1_crc32
 }
 
 fn validate_initial_stack(
@@ -685,19 +790,11 @@ fn extent_end(
         .ok_or(LoaderError::ExtentOutsidePackage(name))
 }
 
-fn crc32_update(mut crc: u32, byte: u8) -> u32 {
-    crc ^= u32::from(byte);
-    for _ in 0..8 {
-        crc = (crc >> 1) ^ (0xedb8_8320 & (0u32.wrapping_sub(crc & 1)));
-    }
-    crc
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::g16::boot::{
-        build_boot_image, crc32, BootImageSpec, InputSection, SECTION_READ, SECTION_WRITE,
+        build_boot_image, BootImageSpec, InputSection, SECTION_READ, SECTION_WRITE,
     };
     use crate::g16::{halt, load};
 
@@ -788,19 +885,18 @@ mod tests {
                 destination: PhysicalWordAddress::new(5),
                 file_size_bytes: 3,
                 memory_size_bytes: 6,
-                expected_crc32: crc32(&flash),
             },
             flash.len(),
             memory.physical_memory_words(),
         )
         .unwrap();
-        assert_eq!(dma.tick(&flash, &mut memory, false), DmaStatus::Busy);
+        assert_eq!(dma.tick(&flash, memory.physical_memory_mut(), false), DmaStatus::Busy);
         assert_eq!(memory.physical_memory(5.into()), 0);
-        assert_eq!(dma.tick(&flash, &mut memory, true), DmaStatus::Busy);
+        assert_eq!(dma.tick(&flash, memory.physical_memory_mut(), true), DmaStatus::Busy);
         assert_eq!(memory.physical_memory(5.into()), 0x2211);
-        assert_eq!(dma.tick(&flash, &mut memory, true), DmaStatus::Busy);
+        assert_eq!(dma.tick(&flash, memory.physical_memory_mut(), true), DmaStatus::Busy);
         assert_eq!(memory.physical_memory(6.into()), 0x0033);
-        assert_eq!(dma.tick(&flash, &mut memory, true), DmaStatus::Done);
+        assert_eq!(dma.tick(&flash, memory.physical_memory_mut(), true), DmaStatus::Done);
         assert_eq!(memory.physical_memory(7.into()), 0);
     }
 
@@ -809,6 +905,11 @@ mod tests {
         let flash = image();
         let mut memory = Machine::default();
         let stage0 = run_stage0(&flash, &mut memory, BootTarget::TangNano20K).unwrap();
+        // Stage0 read the descriptor through DMA into the scratch range.
+        assert_eq!(
+            memory.physical_memory(PhysicalWordAddress::new(STAGE0_DESCRIPTOR_SCRATCH_WORD)),
+            u16::from_le_bytes(*b"G1")
+        );
         assert_eq!(
             memory.physical_memory(PhysicalWordAddress::new(0x0001_0100)),
             0xaaaa
@@ -854,15 +955,73 @@ mod tests {
     }
 
     #[test]
-    fn corrupted_stage1_is_rejected_after_copy() {
+    fn handoff_invalidates_both_caches_before_the_segment_switch() {
+        let handoff = ApplicationHandoff {
+            entry: BootEntry {
+                code_segment: 3,
+                offset: 0x0200,
+                data_segment: 4,
+                stack_offset: 0xe000,
+            },
+        };
+        let words = handoff.instructions();
+        assert_eq!(words[words.len() - 4..], [
+            store(0, GLOBAL_REGISTER, 0),
+            store(0, GLOBAL_REGISTER, 1),
+            write_data_segment(1),
+            jump_segment(2, 3),
+        ]);
+    }
+
+    #[test]
+    fn a_descriptor_with_bad_magic_is_rejected_before_any_stage1_dma() {
         let mut flash = image();
-        let descriptor = BootDescriptor::decode(&flash).unwrap();
-        flash[descriptor.stage1_flash_offset as usize] ^= 1;
-        let error =
-            run_stage0(&flash, &mut Machine::default(), BootTarget::TangNano20K).unwrap_err();
+        flash[0] ^= 1;
+        let mut memory = Machine::default();
+        let error = run_stage0(&flash, &mut memory, BootTarget::TangNano20K).unwrap_err();
         assert!(matches!(
             error,
-            LoaderError::Dma(DmaError::CrcMismatch { .. })
+            LoaderError::Format(BootImageError::InvalidMagic("descriptor"))
         ));
+        assert_eq!(
+            memory.physical_memory(PhysicalWordAddress::new(0x0001_0100)),
+            0
+        );
+    }
+
+    #[test]
+    fn loader_errors_map_onto_the_boot_error_reporting_abi() {
+        let error = LoaderError::Dma(DmaError::FlashRangeExceeded {
+            offset: 0,
+            bytes: 1,
+            available: 0,
+        });
+        let report = error.boot_report();
+        assert_eq!(
+            (report.stage, report.category, report.code),
+            (BOOT_ERROR_STAGE0, BOOT_ERROR_DMA, 1)
+        );
+        assert_eq!(report.detail, DMA_ERROR_FLASH_RANGE);
+        assert_eq!(report.led(), 0x13);
+
+        let frame = report.uart_frame();
+        assert_eq!(&frame[..4], b"G16B");
+        assert_eq!(frame[9], frame[..9].iter().fold(0, |acc, byte| acc ^ byte));
+
+        let writes = report.device_writes();
+        assert_eq!(writes[0], (SYSCTL_LED, 0x13));
+        assert_eq!(writes.len(), 1 + 10);
+        assert_eq!(writes[1], (SYSCTL_UART, u16::from(b'G')));
+
+        let stack_error = LoaderError::InvalidInitialStack {
+            stage: "application",
+            data_segment: 4,
+            stack_offset: 0,
+        };
+        assert_eq!(
+            stack_error.boot_report().stage,
+            BOOT_ERROR_STAGE1,
+            "application stack validation belongs to Stage1"
+        );
     }
 }

@@ -6,10 +6,9 @@ reg [23:0] flash_offset = 24'h100;
 reg [21:0] destination = 22'h100007;
 reg [31:0] file_size_bytes = 3;
 reg [31:0] memory_size_bytes = 6;
-reg [31:0] expected_crc32 = 32'hfac73763;
 reg flash_ready = 1;
-reg flash_data_valid = 0;
-reg [7:0] flash_data = 0;
+wire flash_data_valid;
+wire [7:0] flash_data;
 reg flash_done = 0;
 reg flash_error = 0;
 reg memory_request_ready = 1;
@@ -19,7 +18,6 @@ wire busy;
 wire done;
 wire error;
 wire [7:0] error_code;
-wire [31:0] actual_crc32;
 wire [31:0] completed_words;
 wire flash_start;
 wire [23:0] flash_address;
@@ -38,14 +36,15 @@ reg [7:0] source [0:2];
 integer source_index = 0;
 integer write_index = 0;
 
+// Hold each byte until the engine actually consumes it; the engine drops
+// flash_data_ready while it performs the memory write for each word.
+assign flash_data_valid = source_index < 3;
+assign flash_data = source[source_index];
+
 always @(posedge clk) begin
-    flash_data_valid <= 0;
     memory_response_valid <= 0;
-    if (flash_data_ready && source_index < 3) begin
-        flash_data <= source[source_index];
-        flash_data_valid <= 1;
+    if (flash_data_ready && flash_data_valid)
         source_index <= source_index + 1;
-    end
     if (memory_request_valid) begin
         case (write_index)
             0: if (memory_address !== 22'h100007 || memory_write_data !== 16'h2211) $finish(1);
@@ -64,12 +63,12 @@ initial begin
     source[1] = 8'h22;
     source[2] = 8'h33;
     repeat (2) @(posedge clk);
-    start = 1;
+    start <= 1;
     @(posedge clk);
-    start = 0;
+    start <= 0;
     wait (done || error);
     #1;
-    if (error || actual_crc32 !== 32'hfac73763 || completed_words !== 3 || write_index !== 3)
+    if (error || completed_words !== 3 || write_index !== 3)
         $finish(1);
     $display("DIGITAL_DESIGN_PASS");
     $finish;

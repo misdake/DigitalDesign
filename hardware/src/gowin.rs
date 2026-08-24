@@ -1181,11 +1181,17 @@ impl From<GowinError> for GowinCliError {
     }
 }
 
+/// Byte address used by `--program-flash`: the G16 boot package base, right
+/// above the 1-MiB FPGA configuration reserve
+/// (cpu_v2/src/g16/boot/FLASH_LAYOUT.md).
+const G16_PACKAGE_FLASH_BASE: u32 = 0x0010_0000;
+
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 struct GowinCliOptions {
     output: Option<PathBuf>,
     build: bool,
     program: bool,
+    program_flash: Option<PathBuf>,
     gowin_home: Option<PathBuf>,
     cable_index: Option<u8>,
     help: bool,
@@ -1228,6 +1234,23 @@ fn parse_gowin_cli_args(
                 options.cable_index = Some(parse_cable_index(OsString::from(
                     &value["--cable-index=".len()..],
                 ))?);
+            }
+            Some("--program-flash") => {
+                let value = arguments.next().ok_or_else(|| {
+                    GowinCliError::Argument(
+                        "`--program-flash` requires a binary file".to_string(),
+                    )
+                })?;
+                options.program_flash = Some(PathBuf::from(value));
+            }
+            Some(value) if value.starts_with("--program-flash=") => {
+                let value = &value["--program-flash=".len()..];
+                if value.is_empty() {
+                    return Err(GowinCliError::Argument(
+                        "`--program-flash` requires a binary file".to_string(),
+                    ));
+                }
+                options.program_flash = Some(PathBuf::from(value));
             }
             Some("--help" | "-h") => options.help = true,
             Some(value) if value.starts_with('-') => {
@@ -1281,9 +1304,11 @@ where
     let options = parse_gowin_cli_args(arguments)?;
     if options.help {
         println!(
-            "Usage: {} [OUTPUT] [--build] [--program] [--gowin-home PATH] [--cable-index N]\n\n\
+            "Usage: {} [OUTPUT] [--build] [--program] [--program-flash FILE] [--gowin-home PATH] [--cable-index N]\n\n\
              --build          Export and run Gowin synthesis/place-and-route\n\
              --program        Build, then program volatile FPGA SRAM\n\
+             --program-flash  Program FILE to external SPI flash at the G16 package base;\n\
+             \x20                 can run without --build\n\
              --gowin-home     Gowin installation root; overrides GOWIN_HOME and PATH\n\
              --cable-index    Override the target's Programmer cable-driver type",
             executable.to_string_lossy()
@@ -1294,7 +1319,7 @@ where
     let output = options.output.unwrap_or_else(|| default_output.into());
     let generated = project.export(&output)?;
     println!("Exported Gowin project to {}", output.display());
-    if !options.build {
+    if !options.build && options.program_flash.is_none() {
         return Ok(());
     }
 
@@ -1303,18 +1328,40 @@ where
         .map(GowinToolchain::from_home)
         .map(Ok)
         .unwrap_or_else(GowinToolchain::discover)?;
-    let result = toolchain.build(&output, &generated)?;
-    println!("Built {}", result.bitstream.display());
-    for warning in &result.warnings {
-        println!("Gowin warning: {warning}");
+    if options.build {
+        let result = toolchain.build(&output, &generated)?;
+        println!("Built {}", result.bitstream.display());
+        for warning in &result.warnings {
+            println!("Gowin warning: {warning}");
+        }
+        if options.program {
+            println!("Programming volatile FPGA SRAM; the board must be connected.");
+            toolchain.program_sram(
+                &result,
+                options
+                    .cable_index
+                    .unwrap_or(result.device.programmer_cable.index()),
+            )?;
+        }
     }
-    if options.program {
-        println!("Programming volatile FPGA SRAM; the board must be connected.");
-        toolchain.program_sram(
-            &result,
+    if let Some(binary) = &options.program_flash {
+        let capacity_bits = T::inventory()
+            .fitted_device_capacity_bits(ResourceKind::SpiFlashDevice)
+            .ok_or_else(|| {
+                GowinCliError::Argument(format!(
+                    "target {} has no fitted SPI flash device",
+                    T::NAME
+                ))
+            })?;
+        println!("Programming external SPI flash; the board must be connected.");
+        toolchain.program_external_flash_binary(
+            generated.device,
+            binary,
+            G16_PACKAGE_FLASH_BASE,
+            u32::try_from(capacity_bits / 8).expect("fitted flash capacity fits u32 bytes"),
             options
                 .cable_index
-                .unwrap_or(result.device.programmer_cable.index()),
+                .unwrap_or(generated.device.programmer_cable.index()),
         )?;
     }
     Ok(())
@@ -1481,6 +1528,14 @@ impl GowinToolchain {
             return Err(GowinError::MissingTool(executable.clone()));
         }
         let binary = fs::canonicalize(binary.as_ref())?;
+        // Gowin Programmer sniffs the flash file format by extension and
+        // rejects anything but a plain .bin with "Flsh format error".
+        if binary.extension().and_then(|ext| ext.to_str()) != Some("bin") {
+            return Err(GowinError::InvalidExternalFlashWrite(format!(
+                "Gowin Programmer only accepts a raw .bin file; got `{}`",
+                binary.display()
+            )));
+        }
         let file_bytes = fs::metadata(&binary)?.len();
         validate_external_flash_write(
             start_address,
@@ -1635,6 +1690,25 @@ fn audit_physical_resources(
                 actual,
             });
         }
+    }
+
+    let claimed_ssram = planned
+        .claimed
+        .get(&ResourceKind::SsramBit)
+        .copied()
+        .unwrap_or(0);
+    // The PnR report counts SSRAM in RAM16 primitives, each holding 16x4 = 64
+    // bits, while source-level claims are in bits.
+    let actual_ssram = resource_mode_usage(&text, "Logic", "SSRAM(RAM16)")
+        .unwrap_or(0)
+        .saturating_mul(64);
+    if actual_ssram > claimed_ssram {
+        return Err(GowinError::PhysicalResourceMismatch {
+            report: report.to_path_buf(),
+            resource: ResourceKind::SsramBit,
+            claimed: claimed_ssram,
+            actual: actual_ssram,
+        });
     }
 
     if let Some(expectation) = bsram_expectation {
@@ -2223,10 +2297,23 @@ mod tests {
         assert_eq!(options.gowin_home, Some(PathBuf::from("C:/Gowin")));
         assert_eq!(options.cable_index, Some(4));
 
+        let options = parse_gowin_cli_args([
+            OsString::from("--program-flash"),
+            OsString::from("image.g16boot"),
+        ])
+        .unwrap();
+        assert!(!options.build);
+        assert_eq!(
+            options.program_flash,
+            Some(PathBuf::from("image.g16boot"))
+        );
+
         for arguments in [
             vec![OsString::from("--cable-index")],
             vec![OsString::from("--cable-index=not-a-number")],
             vec![OsString::from("--cable-index=6")],
+            vec![OsString::from("--program-flash")],
+            vec![OsString::from("--program-flash=")],
             vec![OsString::from("first"), OsString::from("second")],
         ] {
             assert!(matches!(
@@ -2297,6 +2384,15 @@ mod tests {
         assert_eq!(dsp_multiplier_lane_usage(report), Some(30));
         assert_eq!(resource_usage_fraction(report, "PLL"), Some(1));
 
+        let with_ssram = "3. Resource Usage Summary\n\
+  Logic | 5094/20736 | 25%\n\
+    --LUT,ALU,ROM16 | 4950(4791 LUT, 159 ALU, 0 ROM16) | -\n\
+    --SSRAM(RAM16) | 24 | -\n";
+        assert_eq!(
+            resource_mode_usage(with_ssram, "Logic", "SSRAM(RAM16)"),
+            Some(24)
+        );
+
         let supported_dsp = "DSP | 2.5/24 | 11%\n\
     --MULT18X18 | 1\n\
     --MULTADDALU18X18 | 2\n\
@@ -2336,6 +2432,36 @@ mod tests {
                 resource: ResourceKind::Bsram18K,
                 claimed: 0,
                 actual: 1,
+                ..
+            })
+        ));
+        fs::remove_file(report).unwrap();
+        fs::remove_file(hierarchy_report).unwrap();
+        fs::remove_dir(directory).unwrap();
+    }
+
+    #[test]
+    fn physical_resource_audit_rejects_unclaimed_ssram() {
+        let directory = std::env::temp_dir().join(format!(
+            "digital-design-ssram-audit-{}",
+            std::process::id()
+        ));
+        fs::create_dir_all(&directory).unwrap();
+        let report = directory.join("pnr.rpt.txt");
+        let hierarchy_report = directory.join("syn_rsc.xml");
+        fs::write(
+            &report,
+            "3. Resource Usage Summary\n  Logic | 100/20736 | 1%\n    --SSRAM(RAM16) | 1 | -\n",
+        )
+        .unwrap();
+        fs::write(&hierarchy_report, "<Module name=\"top\"/>\n").unwrap();
+        let planned = TargetResources::<TangNano20K>::new().report();
+        assert!(matches!(
+            audit_physical_resources(&report, &hierarchy_report, &planned, &BTreeMap::new(), None,),
+            Err(GowinError::PhysicalResourceMismatch {
+                resource: ResourceKind::SsramBit,
+                claimed: 0,
+                actual: 64,
                 ..
             })
         ));

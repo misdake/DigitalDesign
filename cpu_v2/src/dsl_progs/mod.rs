@@ -7,6 +7,12 @@ mod arrays_dsl;
 #[allow(dead_code)]
 mod benchmark_suite_dsl;
 #[allow(dead_code)]
+mod boot_demo_dsl;
+#[allow(dead_code)]
 mod fnptr_dsl;
+#[allow(dead_code)]
+mod stage0_dsl;
+#[allow(dead_code)]
+mod stage1_dsl;
 #[allow(dead_code)]
 mod sum_dsl;

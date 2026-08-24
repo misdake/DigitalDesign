@@ -1,4 +1,4 @@
-# G16 boot image format version 2
+# G16 boot image format version 3
 
 All multibyte integers are little-endian. Flash offsets are byte offsets from
 the beginning of the package. SDRAM destinations are physical 16-bit-word
@@ -13,7 +13,7 @@ records, so later section features do not force a Stage0 replacement.
 | Region | Placement |
 | --- | --- |
 | Boot descriptor | byte `0`, exactly 64 bytes |
-| Manifest header | byte `64`, exactly 48 bytes in version 2 |
+| Manifest header | byte `64`, exactly 48 bytes in version 3 |
 | Section records | immediately after the manifest header, 32 bytes each |
 | Loaded section data | 256-byte-aligned; Stage1 is placed first |
 | Unused padding | `0xff` |
@@ -41,16 +41,19 @@ the FPGA configuration region has been characterized.
 | 42 | 2 | Stage1 initial stack offset |
 | 44 | 4 | manifest Flash offset |
 | 48 | 4 | manifest size |
-| 52 | 4 | CRC-32 of Stage1 file bytes |
-| 56 | 4 | descriptor CRC-32, calculated with this field zero |
+| 52 | 4 | reserved zero (Stage1 CRC-32 before version 3) |
+| 56 | 4 | reserved zero (descriptor CRC-32 before version 3) |
 | 60 | 4 | physical word destination for the mirrored Stage0-to-Stage1 descriptor |
 
-Stage0 validates the magic, version, descriptor checksum, target, every Flash
-and SDRAM extent, and the Stage1 entry before starting DMA. It validates the
-Stage1 CRC after copying, mirrors the descriptor into 64 bytes beginning at
-offset `0x0100` of the Stage1 data segment, invalidates the physical
-instruction-cache range, sets `DSEG` and the stack pointer, then executes
-`JSEG`. The packer reserves that handoff range against every loadable section.
+Real hardware has no direct Flash read path, so Stage0 DMAs the 64 descriptor
+bytes from Flash offset `0` into the reserved physical scratch range at word
+`0x40` and validates the SDRAM copy: magic, version, target, every Flash and
+SDRAM extent, and the Stage1 entry. It then DMAs Stage1 to its destination,
+mirrors the 64 descriptor bytes from the scratch range into offset `0x0100`
+of the Stage1 data segment, invalidates both caches through system-control
+device 0, sets `DSEG` and the stack pointer, and executes `JSEG`. The packer
+reserves both the scratch range and that handoff range against every
+loadable section.
 
 ## Manifest header
 
@@ -68,8 +71,8 @@ instruction-cache range, sets `DSEG` and the stack pointer, then executes
 | 26 | 2 | application initial stack offset |
 | 28 | 4 | section table offset from manifest start |
 | 32 | 4 | section table size |
-| 36 | 4 | section-table CRC-32 |
-| 40 | 4 | complete manifest CRC-32, calculated with this field zero |
+| 36 | 4 | reserved zero (section-table CRC-32 before version 3) |
+| 40 | 4 | reserved zero (manifest CRC-32 before version 3) |
 | 44 | 4 | reserved zero |
 
 ## Section record
@@ -83,7 +86,7 @@ instruction-cache range, sets `DSEG` and the stack pointer, then executes
 | 12 | 4 | file byte size; zero for `Zero` |
 | 16 | 4 | occupied memory byte size |
 | 20 | 4 | required destination alignment in bytes |
-| 24 | 4 | file CRC-32; zero for `Zero` |
+| 24 | 4 | reserved zero (file CRC-32 before version 3) |
 | 28 | 4 | reserved zero |
 
 `Load` copies its file bytes and zero-fills `memory_size - file_size`. If the
@@ -91,10 +94,6 @@ file size is odd, the high byte of the final SDRAM word is zero. `Zero` writes
 zero over the complete memory extent. Physical memory extents may not overlap.
 An entry point must lie in the file-backed portion of an executable `Load`
 section, not merely in its zero-filled tail.
-
-CRC-32 is the reflected IEEE polynomial `0xedb88320`, initialized and finalized
-with all bits set. The standard ASCII check string `123456789` produces
-`0xcbf43926`.
 
 ## Host input manifest
 

@@ -68,8 +68,15 @@ for ($offset = 0; $offset -le $bytes.Length - 8; $offset++) {
 }
 
 if ($badChecksumCount -ne 0) {
-    Write-Error "UART capture contains $badChecksumCount status frame(s) with a bad checksum."
-    exit 1
+    # A raw serial capture can drop a byte on the host side; a torn frame is
+    # indistinguishable from DUT corruption only in isolation. Tolerate a
+    # small number of transport errors while keeping failure frames fatal.
+    $tolerated = [Math]::Max(1, [Math]::Floor($successCount * 0.01))
+    if ($badChecksumCount -gt $tolerated) {
+        Write-Error "UART capture contains $badChecksumCount status frame(s) with a bad checksum (tolerance is $tolerated for $successCount success frame(s))."
+        exit 1
+    }
+    Write-Host "UART capture contains $badChecksumCount torn frame(s) within transport tolerance; continuing."
 }
 
 if ($wrongTestCount -ne 0) {

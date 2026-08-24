@@ -54,18 +54,22 @@ all four banks and multiple rows, holds the data while issuing refresh commands,
 then reads and compares every word. It reports through the shared `DDHT` UART
 status protocol with test ID `0x03`.
 
-`hardware/examples/g16_sdram` copies a compiler-produced G16 boot line from a
-physical BSRAM ROM into SDRAM, refills a writable BSRAM instruction cache using
-`sdram_read_valid`, and executes the program only from that cache. The program
-then writes a word through a separate BSRAM data cache with the Controller HS
-byte mask, misses on a read, refills the complete line, and verifies the loaded
-value. It reports test ID `0x05`. The project uses three BSRAM blocks (one pROM
-and two SDPB), one rPLL, and the fitted SDRAM; after pipelining the store-hit
-path, its 54-MHz domain has zero setup/hold violations and a reported Fmax of
-59.636 MHz. The complete boot, refill, execution, write-through, and data-refill
-path passes its explicit Icarus Verilog simulation, and a repeated `0x05`
-UART success capture confirms the corrected burst-indexing build on the
-board.
+`hardware/examples/g16_sdram` wires the reusable G16 machine together: a
+`G16Core`, split `G16DirectMappedCache` instances, a `G16MemoryArbiter`, a
+`G16MmioBridge`, and the SDRAM word port. A compiler-produced program starts
+from an initialized BSRAM ROM below word `0x400`, copies a boot line into
+SDRAM, and executes from the instruction cache; it then writes through the
+data cache with the Controller HS byte mask, misses on a read, refills the
+complete line, and verifies the loaded value. It reports test ID `0x05`. The
+project uses three BSRAM blocks (one pROM boot ROM and two SDPB cache data
+memories), 24 SSRAM RAM16 primitives for the two 12-bit cache tag arrays, one
+MULT18X18, one rPLL, and the fitted SDRAM; its 54-MHz domain has zero
+setup/hold violations and a reported Fmax of 57.282 MHz. The complete boot,
+refill, execution, write-through, and data-refill path passes its explicit
+Icarus Verilog simulation, and a repeated `0x05` UART success capture
+confirms the build on the board. The caches' `invalidate_all` and snoop
+ports are tied off until the system-control device and Stage0 land; the boot
+DMA engine ports are likewise not yet connected in this example.
 
 The first Gowin 1.9.11.03 board run at 54 MHz completed with:
 

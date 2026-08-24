@@ -1,4 +1,19 @@
-//! Stable CPU register contract for the boot Flash-to-memory DMA engine.
+//! Stable CPU register contract for the boot Flash-to-memory DMA engine and
+//! the system-control device.
+
+/// System-control device selected by `dev_recv(0, channel)` and
+/// `dev_send(0, channel, value)`.
+pub const SYSTEM_CONTROL_DEVICE: u8 = 0;
+
+/// Writing any value pulses a full instruction-cache invalidation.
+pub const SYSCTL_INVALIDATE_ICACHE: u8 = 0;
+/// Writing any value pulses a full data-cache invalidation.
+pub const SYSCTL_INVALIDATE_DCACHE: u8 = 1;
+/// The low six written bits drive the board LEDs.
+pub const SYSCTL_LED: u8 = 2;
+/// Writes queue one UART transmit byte (8N1); reads report bit 0 set while
+/// the transmitter is busy.
+pub const SYSCTL_UART: u8 = 3;
 
 /// Device-register page selected by `dev_recv(2, channel)` and
 /// `dev_send(2, channel, value)`.
@@ -14,10 +29,8 @@ pub const DMA_FILE_SIZE_LOW: u8 = 6;
 pub const DMA_FILE_SIZE_HIGH: u8 = 7;
 pub const DMA_MEMORY_SIZE_LOW: u8 = 8;
 pub const DMA_MEMORY_SIZE_HIGH: u8 = 9;
-pub const DMA_EXPECTED_CRC_LOW: u8 = 10;
-pub const DMA_EXPECTED_CRC_HIGH: u8 = 11;
-pub const DMA_ACTUAL_CRC_LOW: u8 = 12;
-pub const DMA_ACTUAL_CRC_HIGH: u8 = 13;
+// Channels 10 through 13 held the CRC32 registers before format version 3
+// and are now free.
 pub const DMA_ERROR: u8 = 14;
 pub const DMA_COMPLETED_WORDS_LOW: u8 = 15;
 
@@ -32,7 +45,6 @@ pub const DMA_ERROR_FLASH_RANGE: u16 = 2;
 pub const DMA_ERROR_MEMORY_RANGE: u16 = 3;
 pub const DMA_ERROR_FLASH_IO: u16 = 4;
 pub const DMA_ERROR_MEMORY_IO: u16 = 5;
-pub const DMA_ERROR_CRC_MISMATCH: u16 = 6;
 
 /// A host-side view of the writable DMA register bank.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -42,7 +54,6 @@ pub struct BootDmaRegisters {
     pub destination: super::super::PhysicalWordAddress,
     pub file_size_bytes: u32,
     pub memory_size_bytes: u32,
-    pub expected_crc32: u32,
 }
 
 impl BootDmaRegisters {
@@ -56,8 +67,6 @@ impl BootDmaRegisters {
             DMA_FILE_SIZE_HIGH => Some((self.file_size_bytes >> 16) as u16),
             DMA_MEMORY_SIZE_LOW => Some(self.memory_size_bytes as u16),
             DMA_MEMORY_SIZE_HIGH => Some((self.memory_size_bytes >> 16) as u16),
-            DMA_EXPECTED_CRC_LOW => Some(self.expected_crc32 as u16),
-            DMA_EXPECTED_CRC_HIGH => Some((self.expected_crc32 >> 16) as u16),
             _ => None,
         }
     }
@@ -69,20 +78,17 @@ mod tests {
     use crate::g16::PhysicalWordAddress;
 
     #[test]
-    fn register_words_preserve_flash_memory_and_crc_fields() {
+    fn register_words_preserve_flash_and_memory_fields() {
         let registers = BootDmaRegisters {
             flash_offset: 0x007a_bcde,
             destination: PhysicalWordAddress::new(0x0032_4567),
             file_size_bytes: 0x0001_ffff,
             memory_size_bytes: 0x0002_0000,
-            expected_crc32: 0x89ab_cdef,
         };
         assert_eq!(registers.channel_value(DMA_FLASH_OFFSET_LOW), Some(0xbcde));
         assert_eq!(registers.channel_value(DMA_FLASH_OFFSET_HIGH), Some(0x007a));
         assert_eq!(registers.channel_value(DMA_DESTINATION_LOW), Some(0x4567));
         assert_eq!(registers.channel_value(DMA_DESTINATION_HIGH), Some(0x0032));
-        assert_eq!(registers.channel_value(DMA_EXPECTED_CRC_LOW), Some(0xcdef));
-        assert_eq!(registers.channel_value(DMA_EXPECTED_CRC_HIGH), Some(0x89ab));
         assert_eq!(registers.channel_value(DMA_STATUS), None);
     }
 }

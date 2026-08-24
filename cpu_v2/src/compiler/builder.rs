@@ -275,6 +275,17 @@ impl FuncBuilder {
         });
     }
 
+    /// G16-only: write the DSEG special register from `src`
+    pub fn mtsr_dseg(&mut self, src: VReg) {
+        self.push(Instr::MtsrDseg { src });
+    }
+
+    /// G16-only: atomically switch CSEG to `cseg` and jump to `target`;
+    /// the caller terminates the block because control never returns
+    pub fn jseg(&mut self, cseg: VReg, target: VReg) {
+        self.push(Instr::Jseg { cseg, target });
+    }
+
     // ----- variables (versioned SSA views) -----
 
     /// assign `value` to `var` in the current block
@@ -722,6 +733,11 @@ pub(crate) fn remove_trivial_phis(func: &mut IrFunc) -> bool {
                         args.iter_mut().for_each(&subst);
                     }
                     Instr::DevSend { src, .. } => subst(src),
+                    Instr::MtsrDseg { src } => subst(src),
+                    Instr::Jseg { cseg, target } => {
+                        subst(cseg);
+                        subst(target);
+                    }
                     Instr::StoreSp { src, .. } | Instr::StoreLocal { src, .. } => subst(src),
                 }
             }

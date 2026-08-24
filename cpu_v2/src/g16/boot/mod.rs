@@ -1,9 +1,11 @@
 //! Versioned G16 boot container shared by the host packer and both loaders.
 
+mod devices;
 mod loader;
 mod manifest;
 mod mmio;
 
+pub use devices::*;
 pub use loader::*;
 pub use manifest::*;
 pub use mmio::*;
@@ -13,7 +15,7 @@ use std::fmt;
 
 use super::{PhysicalWordAddress, Word, MMIO_BASE, TANG_NANO_20K_SDRAM_WORDS};
 
-pub const BOOT_FORMAT_VERSION: u16 = 2;
+pub const BOOT_FORMAT_VERSION: u16 = 3;
 pub const BOOT_DESCRIPTOR_SIZE: usize = 64;
 pub const BOOT_MANIFEST_HEADER_SIZE: usize = 48;
 pub const BOOT_SECTION_RECORD_SIZE: usize = 32;
@@ -128,7 +130,6 @@ pub struct BootDescriptor {
     pub stage1_entry: BootEntry,
     pub manifest_flash_offset: u32,
     pub manifest_size_bytes: u32,
-    pub stage1_crc32: u32,
     /// Physical SDRAM address where Stage0 mirrors this complete descriptor.
     pub stage1_handoff_destination: PhysicalWordAddress,
 }
@@ -142,7 +143,6 @@ pub struct SectionRecord {
     pub file_size_bytes: u32,
     pub memory_size_bytes: u32,
     pub alignment_bytes: u32,
-    pub crc32: u32,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -203,7 +203,7 @@ impl BootImage {
         for section in &self.sections {
             let record = section.record;
             text.push_str(&format!(
-                "  {:<20} {:?} flags={:#05x} flash+{:#010x} -> word {:#010x} file={:#x} memory={:#x} align={} crc={:08x}\n",
+                "  {:<20} {:?} flags={:#05x} flash+{:#010x} -> word {:#010x} file={:#x} memory={:#x} align={}\n",
                 section.name,
                 record.kind,
                 record.flags,
@@ -212,7 +212,6 @@ impl BootImage {
                 record.file_size_bytes,
                 record.memory_size_bytes,
                 record.alignment_bytes,
-                record.crc32,
             ));
         }
         text
@@ -308,7 +307,6 @@ pub enum BootImageError {
     },
     UnsupportedTarget(u32),
     InvalidSectionKind(u16),
-    InvalidChecksum(&'static str),
     InvalidFormat(&'static str),
 }
 
@@ -394,7 +392,6 @@ impl fmt::Display for BootImageError {
                 write!(f, "unsupported boot target identifier {target:#010x}")
             }
             Self::InvalidSectionKind(kind) => write!(f, "invalid boot section kind {kind}"),
-            Self::InvalidChecksum(part) => write!(f, "invalid boot {part} checksum"),
             Self::InvalidFormat(message) => write!(f, "invalid boot image: {message}"),
         }
     }
@@ -460,11 +457,6 @@ pub fn build_boot_image(spec: BootImageSpec) -> Result<BootImage, BootImageError
                 file_size_bytes: u32_len(&section.data, "section file size")?,
                 memory_size_bytes: section.memory_size_bytes,
                 alignment_bytes: section.alignment_bytes,
-                crc32: if section.kind == SectionKind::Load {
-                    crc32(&section.data)
-                } else {
-                    0
-                },
             },
         });
     }
@@ -489,7 +481,6 @@ pub fn build_boot_image(spec: BootImageSpec) -> Result<BootImage, BootImageError
         stage1_entry: spec.stage1_entry,
         manifest_flash_offset: BOOT_DESCRIPTOR_SIZE as u32,
         manifest_size_bytes: u32_len(&manifest_bytes, "manifest size")?,
-        stage1_crc32: stage1.crc32,
         stage1_handoff_destination: PhysicalWordAddress::from_segment_offset(
             spec.stage1_entry.data_segment,
             STAGE1_HANDOFF_OFFSET,
@@ -531,11 +522,11 @@ impl BootDescriptor {
         put_entry(&mut bytes, 36, self.stage1_entry);
         put_u32(&mut bytes, 44, self.manifest_flash_offset);
         put_u32(&mut bytes, 48, self.manifest_size_bytes);
-        put_u32(&mut bytes, 52, self.stage1_crc32);
+        // Offsets 52 and 56 held CRC32 fields before format version 3 and are
+        // now reserved zero.
+        put_u32(&mut bytes, 52, 0);
         put_u32(&mut bytes, 56, 0);
         put_u32(&mut bytes, 60, self.stage1_handoff_destination.get());
-        let checksum = crc32(&bytes);
-        put_u32(&mut bytes, 56, checksum);
         bytes
     }
 
@@ -550,13 +541,8 @@ impl BootDescriptor {
         if get_u16(bytes, 10) != BOOT_DESCRIPTOR_SIZE as u16 {
             return Err(BootImageError::InvalidFormat("descriptor size mismatch"));
         }
-        let expected = get_u32(bytes, 56);
-        let mut checked = [0; BOOT_DESCRIPTOR_SIZE];
-        checked.copy_from_slice(bytes);
-        put_u32(&mut checked, 56, 0);
-        if crc32(&checked) != expected {
-            return Err(BootImageError::InvalidChecksum("descriptor"));
-        }
+        // Offsets 52 and 56 are reserved zero since format version 3 and are
+        // not interpreted.
         Ok(Self {
             target: BootTarget::from_raw(get_u32(bytes, 12))?,
             package_size_bytes: get_u32(bytes, 16),
@@ -567,7 +553,6 @@ impl BootDescriptor {
             stage1_entry: get_entry(bytes, 36),
             manifest_flash_offset: get_u32(bytes, 44),
             manifest_size_bytes: get_u32(bytes, 48),
-            stage1_crc32: get_u32(bytes, 52),
             stage1_handoff_destination: PhysicalWordAddress::new(get_u32(bytes, 60)),
         })
     }
@@ -592,6 +577,10 @@ impl BootManifest {
         put_entry(&mut bytes, 20, self.application_entry);
         put_u32(&mut bytes, 28, BOOT_MANIFEST_HEADER_SIZE as u32);
         put_u32(&mut bytes, 32, records_size as u32);
+        // Offsets 36 and 40 held CRC32 fields before format version 3 and are
+        // now reserved zero.
+        put_u32(&mut bytes, 36, 0);
+        put_u32(&mut bytes, 40, 0);
 
         for (index, section) in self.sections.iter().copied().enumerate() {
             let start = BOOT_MANIFEST_HEADER_SIZE + index * BOOT_SECTION_RECORD_SIZE;
@@ -602,13 +591,10 @@ impl BootManifest {
             put_u32(&mut bytes, start + 12, section.file_size_bytes);
             put_u32(&mut bytes, start + 16, section.memory_size_bytes);
             put_u32(&mut bytes, start + 20, section.alignment_bytes);
-            put_u32(&mut bytes, start + 24, section.crc32);
+            // Record offset 24 held the file CRC32 before format version 3
+            // and is now reserved zero.
+            put_u32(&mut bytes, start + 24, 0);
         }
-        let records_checksum = crc32(&bytes[BOOT_MANIFEST_HEADER_SIZE..]);
-        put_u32(&mut bytes, 36, records_checksum);
-        put_u32(&mut bytes, 40, 0);
-        let checksum = crc32(&bytes);
-        put_u32(&mut bytes, 40, checksum);
         Ok(bytes)
     }
 
@@ -641,14 +627,8 @@ impl BootManifest {
         let complete = bytes
             .get(..records_offset + records_size)
             .ok_or(BootImageError::Truncated("section table"))?;
-        if crc32(&complete[records_offset..]) != get_u32(header, 36) {
-            return Err(BootImageError::InvalidChecksum("section table"));
-        }
-        let mut checked = complete.to_vec();
-        put_u32(&mut checked, 40, 0);
-        if crc32(&checked) != get_u32(header, 40) {
-            return Err(BootImageError::InvalidChecksum("manifest"));
-        }
+        // Header offsets 36 and 40 and record offset 24 are reserved zero
+        // since format version 3 and are not interpreted.
 
         let mut sections = Vec::with_capacity(count);
         for index in 0..count {
@@ -661,7 +641,6 @@ impl BootManifest {
                 file_size_bytes: get_u32(complete, start + 12),
                 memory_size_bytes: get_u32(complete, start + 16),
                 alignment_bytes: get_u32(complete, start + 20),
-                crc32: get_u32(complete, start + 24),
             });
         }
         Ok(Self {
@@ -715,6 +694,20 @@ fn validate_sections(spec: &BootImageSpec) -> Result<(), BootImageError> {
         });
     }
     ranges.push((handoff_start, handoff_end, "<stage1-handoff>".to_string()));
+    let scratch_start = u64::from(STAGE0_DESCRIPTOR_SCRATCH_WORD) * 2;
+    let scratch_end = scratch_start + BOOT_DESCRIPTOR_SIZE as u64;
+    if scratch_end > capacity_bytes {
+        return Err(BootImageError::PhysicalMemoryExceeded {
+            section: "<stage0-descriptor-scratch>".to_string(),
+            end_byte: scratch_end,
+            capacity_bytes,
+        });
+    }
+    ranges.push((
+        scratch_start,
+        scratch_end,
+        "<stage0-descriptor-scratch>".to_string(),
+    ));
     for section in &spec.sections {
         if section.name.is_empty() {
             return Err(BootImageError::EmptySectionName);
@@ -871,17 +864,6 @@ fn get_u32(bytes: &[u8], offset: usize) -> u32 {
     u32::from_le_bytes(bytes[offset..offset + 4].try_into().unwrap())
 }
 
-pub fn crc32(bytes: &[u8]) -> u32 {
-    let mut crc = !0u32;
-    for &byte in bytes {
-        crc ^= u32::from(byte);
-        for _ in 0..8 {
-            crc = (crc >> 1) ^ (0xedb8_8320 & (0u32.wrapping_sub(crc & 1)));
-        }
-    }
-    !crc
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -948,11 +930,6 @@ mod tests {
     }
 
     #[test]
-    fn crc_matches_the_standard_check_value() {
-        assert_eq!(crc32(b"123456789"), 0xcbf4_3926);
-    }
-
-    #[test]
     fn package_round_trips_descriptor_manifest_and_section_data() {
         let image = build_boot_image(example_spec()).unwrap();
         assert_eq!(
@@ -983,13 +960,51 @@ mod tests {
     }
 
     #[test]
-    fn descriptor_corruption_is_detected_before_offsets_are_trusted() {
+    fn reserved_zero_fields_stay_zero_and_are_ignored_on_decode() {
+        let mut image = build_boot_image(example_spec()).unwrap();
+        assert_eq!(&image.bytes[52..60], &[0; 8]);
+        assert_eq!(&image.bytes[64 + 36..64 + 44], &[0; 8]);
+        let record_crc_offset = 64 + BOOT_MANIFEST_HEADER_SIZE + 24;
+        assert_eq!(&image.bytes[record_crc_offset..record_crc_offset + 4], &[0; 4]);
+
+        // Decoding tolerates garbage in the reserved fields.
+        image.bytes[52] = 0xff;
+        image.bytes[56] = 0xff;
+        image.bytes[64 + 36] = 0xff;
+        image.bytes[64 + 40] = 0xff;
+        image.bytes[record_crc_offset] = 0xff;
+        assert_eq!(
+            BootDescriptor::decode(&image.bytes).unwrap(),
+            image.descriptor
+        );
+        let manifest_start = image.descriptor.manifest_flash_offset as usize;
+        let manifest_end = manifest_start + image.descriptor.manifest_size_bytes as usize;
+        assert_eq!(
+            BootManifest::decode(&image.bytes[manifest_start..manifest_end]).unwrap(),
+            image.manifest
+        );
+    }
+
+    #[test]
+    fn descriptor_magic_is_checked_before_offsets_are_trusted() {
         let mut image = build_boot_image(example_spec()).unwrap().bytes;
-        image[24] ^= 1;
+        image[0] ^= 1;
         assert_eq!(
             BootDescriptor::decode(&image),
-            Err(BootImageError::InvalidChecksum("descriptor"))
+            Err(BootImageError::InvalidMagic("descriptor"))
         );
+    }
+
+    #[test]
+    fn descriptor_scratch_range_is_reserved_against_all_sections() {
+        let mut spec = example_spec();
+        spec.sections[2].destination =
+            PhysicalWordAddress::new(STAGE0_DESCRIPTOR_SCRATCH_WORD - 16);
+        assert!(matches!(
+            build_boot_image(spec),
+            Err(BootImageError::OverlappingSections { first, second })
+                if first == "bss" && second == "<stage0-descriptor-scratch>"
+        ));
     }
 
     #[test]

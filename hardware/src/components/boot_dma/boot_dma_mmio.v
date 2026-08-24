@@ -10,15 +10,13 @@ module BootDmaMmio (
     input wire dma_done,
     input wire dma_error,
     input wire [7:0] dma_error_code,
-    input wire [31:0] dma_actual_crc32,
     input wire [31:0] dma_completed_words,
     output reg [15:0] device_read_data,
     output reg dma_start = 0,
     output reg [23:0] flash_offset = 0,
     output reg [21:0] destination = 0,
     output reg [31:0] file_size_bytes = 0,
-    output reg [31:0] memory_size_bytes = 0,
-    output reg [31:0] expected_crc32 = 0
+    output reg [31:0] memory_size_bytes = 0
 );
 
 always @* begin
@@ -36,10 +34,6 @@ always @* begin
             7: device_read_data = file_size_bytes[31:16];
             8: device_read_data = memory_size_bytes[15:0];
             9: device_read_data = memory_size_bytes[31:16];
-            10: device_read_data = expected_crc32[15:0];
-            11: device_read_data = expected_crc32[31:16];
-            12: device_read_data = dma_actual_crc32[15:0];
-            13: device_read_data = dma_actual_crc32[31:16];
             14: device_read_data = {8'b0, dma_error_code};
             15: device_read_data = dma_completed_words[15:0];
             default: device_read_data = 0;
@@ -54,10 +48,10 @@ always @(posedge clk) begin
         destination <= 0;
         file_size_bytes <= 0;
         memory_size_bytes <= 0;
-        expected_crc32 <= 0;
     end else if (device_write_enable && device_index == 4'd2) begin
         case (device_channel)
-            0: if (device_write_data == 1) dma_start <= 1;
+            0: if (device_write_data == 1 || device_write_data == 2)
+                dma_start <= 1;
             2: flash_offset[15:0] <= device_write_data;
             3: flash_offset[23:16] <= device_write_data[7:0];
             4: destination[15:0] <= device_write_data;
@@ -66,8 +60,6 @@ always @(posedge clk) begin
             7: file_size_bytes[31:16] <= device_write_data;
             8: memory_size_bytes[15:0] <= device_write_data;
             9: memory_size_bytes[31:16] <= device_write_data;
-            10: expected_crc32[15:0] <= device_write_data;
-            11: expected_crc32[31:16] <= device_write_data;
             default: begin end
         endcase
     end

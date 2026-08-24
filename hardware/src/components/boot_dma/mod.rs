@@ -12,7 +12,6 @@ pub const BOOT_DMA_ERROR_FLASH_RANGE: u8 = 2;
 pub const BOOT_DMA_ERROR_MEMORY_RANGE: u8 = 3;
 pub const BOOT_DMA_ERROR_FLASH_IO: u8 = 4;
 pub const BOOT_DMA_ERROR_MEMORY_IO: u8 = 5;
-pub const BOOT_DMA_ERROR_CRC_MISMATCH: u8 = 6;
 
 /// One DMA command plus the two downstream ready/valid response channels.
 #[derive(Clone, ModuleIo)]
@@ -23,7 +22,6 @@ pub struct BootDmaEngineInput {
     pub destination: Wires<22>,
     pub file_size_bytes: Wires<32>,
     pub memory_size_bytes: Wires<32>,
-    pub expected_crc32: Wires<32>,
     pub flash_ready: Wire,
     pub flash_data_valid: Wire,
     pub flash_data: Wires<8>,
@@ -40,7 +38,6 @@ pub struct BootDmaEngineOutput {
     pub done: Wire,
     pub error: Wire,
     pub error_code: Wires<8>,
-    pub actual_crc32: Wires<32>,
     pub completed_words: Wires<32>,
     pub flash_start: Wire,
     pub flash_address: Wires<24>,
@@ -86,9 +83,6 @@ pub struct BootDmaEngineState {
     destination: u32,
     file_size_bytes: u32,
     memory_words: u32,
-    expected_crc32: u32,
-    crc: u32,
-    actual_crc32: u32,
     byte_index: u32,
     word_index: u32,
     low_byte: u8,
@@ -105,9 +99,6 @@ impl Default for BootDmaEngineState {
             destination: 0,
             file_size_bytes: 0,
             memory_words: 0,
-            expected_crc32: 0,
-            crc: u32::MAX,
-            actual_crc32: 0,
             byte_index: 0,
             word_index: 0,
             low_byte: 0,
@@ -121,18 +112,11 @@ impl BootDmaEngineState {
     fn fail(&mut self, error_code: u8) {
         self.status = Status::Error;
         self.error_code = error_code;
-        self.actual_crc32 = !self.crc;
     }
 
     fn finish(&mut self) {
-        self.actual_crc32 = !self.crc;
-        if self.actual_crc32 == self.expected_crc32 {
-            self.status = Status::Done;
-            self.error_code = BOOT_DMA_ERROR_NONE;
-        } else {
-            self.status = Status::Error;
-            self.error_code = BOOT_DMA_ERROR_CRC_MISMATCH;
-        }
+        self.status = Status::Done;
+        self.error_code = BOOT_DMA_ERROR_NONE;
     }
 }
 
@@ -161,7 +145,6 @@ impl Module for BootDmaEngine {
                 done: state.status == Status::Done,
                 error: state.status == Status::Error,
                 error_code: u64::from(state.error_code),
-                actual_crc32: u64::from(state.actual_crc32),
                 completed_words: u64::from(state.word_index),
                 flash_start: busy && state.phase == Phase::WaitFlash,
                 flash_address: u64::from(state.flash_offset),
@@ -208,7 +191,6 @@ impl Module for BootDmaEngine {
                     destination: input.destination as u32,
                     file_size_bytes: file_size,
                     memory_words,
-                    expected_crc32: input.expected_crc32 as u32,
                     ..BootDmaEngineState::default()
                 };
                 if file_size > memory_size {
@@ -243,7 +225,6 @@ impl Module for BootDmaEngine {
                 if state.byte_index < state.file_size_bytes {
                     if input.flash_data_valid {
                         let byte = input.flash_data as u8;
-                        state.crc = crc32_update(state.crc, byte);
                         if state.byte_index & 1 == 0 {
                             state.low_byte = byte;
                             state.byte_index += 1;
@@ -289,14 +270,6 @@ impl Module for BootDmaEngine {
     }
 }
 
-fn crc32_update(mut crc: u32, byte: u8) -> u32 {
-    crc ^= u32::from(byte);
-    for _ in 0..8 {
-        crc = (crc >> 1) ^ (0xedb8_8320 & 0u32.wrapping_sub(crc & 1));
-    }
-    crc
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -320,7 +293,6 @@ mod tests {
                 destination: 0x10_0007,
                 file_size_bytes: 3,
                 memory_size_bytes: 6,
-                expected_crc32: 0xfac7_3763,
                 flash_ready: true,
                 flash_data_valid,
                 flash_data: u64::from(flash_data),
@@ -379,7 +351,6 @@ mod tests {
         );
         let result = output.sample(&circuit);
         assert!(result.done && !result.error);
-        assert_eq!(result.actual_crc32, 0xfac7_3763);
         assert_eq!(result.completed_words, 3);
     }
 
@@ -399,7 +370,6 @@ mod tests {
                 destination: 0,
                 file_size_bytes: 3,
                 memory_size_bytes: 2,
-                expected_crc32: 0,
                 flash_ready: true,
                 flash_data_valid: false,
                 flash_data: 0,

@@ -20,7 +20,9 @@ All DDHT projects transmit 8N1 at 115200 baud (27 MHz designs use divider
 `check_uart_status.ps1` validates a raw UART capture containing repeated
 eight-byte status frames. A frame contains the `DDHT` magic, protocol version,
 test ID, result, and XOR checksum. The checker rejects stale captures, frames
-for another test, bad checksums, and any reported failure:
+for another test, and any reported failure. Because a raw serial capture can
+drop a byte on the host side, torn frames are tolerated up to one percent of
+the success count (at least one); beyond that the capture is rejected:
 
 ```powershell
 powershell -ExecutionPolicy Bypass -File hardware/scripts/check_uart_status.ps1 `
@@ -43,6 +45,9 @@ Assigned test IDs:
 | `0x04` | G16 compiled-program CPU/BSRAM execution self-test |
 | `0x05` | G16 boot BSRAM to SDRAM to instruction-cache execution self-test |
 | `0x06` | Boot DMA flash-to-SDRAM engine self-test |
+| `0x07` | G16 two-stage flash boot (application reached) |
+| `0x08` | System control device UART characterization (sysctl_uart) |
+| `0x09` | G16 CPU MMIO path characterization (g16_mmio) |
 
 The `sdram_word_port` example predates this protocol and still sends a
 private `SDWP` frame; it is not validated by `check_uart_status.ps1`.

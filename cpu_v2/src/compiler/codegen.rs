@@ -711,6 +711,9 @@ fn emit_inst(
                 ir_line,
             ));
         }
+        Instr::MtsrDseg { .. } | Instr::Jseg { .. } => {
+            panic!("mtsr_dseg/jseg are G16-only intrinsics; the v2.6 ISA has no segment registers")
+        }
         Instr::LoadSp { dst, slot } => {
             let (hi, lo) = hi_lo(local_base + n_locals + *slot);
             lines.push(MachineLine::Inst(load_sp(hi, lo, reg(*dst)), ir_line));

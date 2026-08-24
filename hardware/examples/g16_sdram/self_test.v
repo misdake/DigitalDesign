@@ -7,99 +7,42 @@ module G16SdramBoardTest (
     input wire sdram_command_ack,
     output wire [5:0] leds,
     output wire uart_tx,
-    output reg sdram_command_valid,
-    output reg [2:0] sdram_command,
-    output reg sdram_precharge,
-    output reg [20:0] sdram_address,
-    output reg [3:0] sdram_write_mask,
-    output reg [31:0] sdram_write_data,
-    output reg [7:0] sdram_burst_length
+    output wire sdram_command_valid,
+    output wire [2:0] sdram_command,
+    output wire sdram_precharge,
+    output wire [20:0] sdram_address,
+    output wire [3:0] sdram_write_mask,
+    output wire [31:0] sdram_write_data,
+    output wire [7:0] sdram_burst_length
 );
 
-localparam [2:0] CMD_ACTIVE = 3'b011;
-localparam [2:0] CMD_WRITE  = 3'b100;
-localparam [2:0] CMD_READ   = 3'b101;
+reg [2:0] startup_reset = 3'd7;
+reg [1:0] button_sync = 0;
+always @(posedge clk) begin
+    if (startup_reset != 0)
+        startup_reset <= startup_reset - 1'b1;
+    button_sync <= {button_sync[0], |buttons};
+end
+wire reset = startup_reset != 0 || button_sync[1];
 
-localparam [4:0] ST_INIT          = 0;
-localparam [4:0] ST_BOOT_ADDRESS  = 1;
-localparam [4:0] ST_BOOT_WAIT     = 2;
-localparam [4:0] ST_BOOT_CAPTURE  = 3;
-localparam [4:0] ST_ACT_WRITE     = 4;
-localparam [4:0] ST_ACT_WRITE_ACK = 5;
-localparam [4:0] ST_WRITE         = 6;
-localparam [4:0] ST_WRITE_DATA    = 7;
-localparam [4:0] ST_WRITE_ACK     = 8;
-localparam [4:0] ST_ACT_READ      = 9;
-localparam [4:0] ST_ACT_READ_ACK  = 10;
-localparam [4:0] ST_READ          = 11;
-localparam [4:0] ST_READ_DATA     = 12;
-localparam [4:0] ST_FILL_CACHE    = 13;
-localparam [4:0] ST_CPU_INIT      = 14;
-localparam [4:0] ST_CPU           = 15;
-localparam [4:0] ST_DONE          = 16;
-localparam [4:0] ST_ERROR         = 17;
-localparam [4:0] ST_DCACHE_WAIT_1 = 18;
-localparam [4:0] ST_DCACHE_WAIT_2 = 19;
-localparam [4:0] ST_DATA_ACT_W    = 20;
-localparam [4:0] ST_DATA_ACT_W_ACK = 21;
-localparam [4:0] ST_DATA_WRITE    = 22;
-localparam [4:0] ST_DATA_WRITE_ACK = 23;
-localparam [4:0] ST_DATA_ACT_R    = 24;
-localparam [4:0] ST_DATA_ACT_R_ACK = 25;
-localparam [4:0] ST_DATA_READ     = 26;
-localparam [4:0] ST_DATA_READ_DATA = 27;
-localparam [4:0] ST_FILL_DATA_CACHE = 28;
-localparam [4:0] ST_COMPLETE_LOAD = 29;
-localparam [4:0] ST_DCACHE_STORE_CHECK = 30;
-localparam [4:0] ST_VERIFY_ICACHE = 31;
+wire instruction_request_valid;
+wire [31:0] instruction_address;
+wire instruction_response_ready;
+wire instruction_response_valid;
+wire [15:0] instruction_data;
+wire instruction_error;
 
-reg [4:0] state = ST_INIT;
-reg [3:0] boot_index = 0;
-reg [5:0] boot_page = 0;
-reg [9:0] boot_address = 0;
+wire boot_selected = instruction_address[31:10] == 0;
 wire [15:0] boot_read_data;
 wire [15:0] unused_boot_rw_data;
-reg [15:0] line_words [0:15];
-reg [31:0] read_beat_0 = 0;
-reg [31:0] read_beat_1 = 0;
-reg [31:0] read_beat_2 = 0;
-reg [31:0] read_beat_3 = 0;
-reg [31:0] read_beat_4 = 0;
-reg [31:0] read_beat_5 = 0;
-reg [31:0] read_beat_6 = 0;
-reg [31:0] read_beat_7 = 0;
-reg [2:0] beat_index = 0;
-reg read_ack_seen = 0;
-reg [3:0] fill_word = 0;
-reg [19:0] timeout_counter = 0;
-reg [23:0] integration_watchdog = 0;
-reg [7:0] error_code = 0;
-reg [1:0] button_meta = 0;
-reg [1:0] button_sync = 0;
-
-reg cache_write_enable = 0;
-reg [9:0] cache_rw_address = 0;
-reg [15:0] cache_write_data = 0;
-wire [15:0] unused_cache_rw_data;
-reg [9:0] fetch_address = 0;
-wire [15:0] instruction;
-
-reg data_cache_write_enable = 0;
-reg [9:0] data_cache_rw_address = 0;
-reg [15:0] data_cache_write_data = 0;
-reg [9:0] data_cache_read_address = 0;
-wire [15:0] data_cache_read_data;
-wire [15:0] unused_data_cache_rw_data;
-reg [5:0] data_cache_tags [0:63];
-reg [63:0] data_cache_valid = 0;
-reg [15:0] memory_address = 0;
-reg [15:0] memory_write_data = 0;
-reg [3:0] load_destination = 0;
-reg [3:0] data_fill_word = 0;
+reg boot_pending = 0;
+reg boot_response_valid = 0;
+wire boot_request_ready = !boot_pending && !boot_response_valid;
+wire boot_accept = instruction_request_valid && boot_selected && boot_request_ready;
 
 __BOOT_MEMORY__ u_boot (
     .clk(clk),
-    .read_address(boot_address),
+    .read_address(instruction_address[9:0]),
     .rw_write_enable(1'b0),
     .rw_address(10'b0),
     .rw_write_data(16'b0),
@@ -107,584 +50,295 @@ __BOOT_MEMORY__ u_boot (
     .rw_read_data(unused_boot_rw_data)
 );
 
-__INSTRUCTION_CACHE__ u_instruction_cache (
-    .clk(clk),
-    .read_address(fetch_address),
-    .rw_write_enable(cache_write_enable),
-    .rw_address(cache_rw_address),
-    .rw_write_data(cache_write_data),
-    .read_data(instruction),
-    .rw_read_data(unused_cache_rw_data)
-);
-
-__DATA_CACHE__ u_data_cache (
-    .clk(clk),
-    .read_address(data_cache_read_address),
-    .rw_write_enable(data_cache_write_enable),
-    .rw_address(data_cache_rw_address),
-    .rw_write_data(data_cache_write_data),
-    .read_data(data_cache_read_data),
-    .rw_read_data(unused_data_cache_rw_data)
-);
-
-reg [15:0] registers [0:15];
-reg [15:0] pc = 0;
-reg [1:0] fetch_phase = 0;
-reg prefix_valid = 0;
-reg [11:0] prefix_high = 0;
-reg halted = 0;
-reg faulted = 0;
-integer register_index;
-integer cache_index;
-
-function [15:0] sign_extend4;
-    input [3:0] value;
-    sign_extend4 = {{12{value[3]}}, value};
-endfunction
-
-function [15:0] immediate4;
-    input [15:0] inst;
-    input signed_value;
-    begin
-        if (prefix_valid)
-            immediate4 = {prefix_high, inst[3:0]};
-        else if (signed_value)
-            immediate4 = sign_extend4(inst[3:0]);
-        else
-            immediate4 = {12'b0, inst[3:0]};
-    end
-endfunction
-
-function [31:0] buffered_beat;
-    input [2:0] index;
-    begin
-        case (index)
-            0: buffered_beat = read_beat_0;
-            1: buffered_beat = read_beat_1;
-            2: buffered_beat = read_beat_2;
-            3: buffered_beat = read_beat_3;
-            4: buffered_beat = read_beat_4;
-            5: buffered_beat = read_beat_5;
-            6: buffered_beat = read_beat_6;
-            default: buffered_beat = read_beat_7;
-        endcase
-    end
-endfunction
-
-function [15:0] buffered_word;
-    input [3:0] index;
-    reg [31:0] beat;
-    begin
-        beat = buffered_beat(index[3:1]);
-        if (index[0])
-            buffered_word = beat[31:16];
-        else
-            buffered_word = beat[15:0];
-    end
-endfunction
-
-task capture_read_beat;
-    input [2:0] index;
-    input [31:0] value;
-    begin
-        case (index)
-            0: read_beat_0 <= value;
-            1: read_beat_1 <= value;
-            2: read_beat_2 <= value;
-            3: read_beat_3 <= value;
-            4: read_beat_4 <= value;
-            5: read_beat_5 <= value;
-            6: read_beat_6 <= value;
-            default: read_beat_7 <= value;
-        endcase
-    end
-endtask
-
-wire [3:0] opcode = instruction[15:12];
-wire [3:0] field_d = instruction[11:8];
-wire [3:0] field_a = instruction[7:4];
-wire [3:0] field_b = instruction[3:0];
-wire [15:0] effective_address = registers[field_a] +
-                                immediate4(instruction, 1'b1);
-wire is_consumer = opcode == 4'h8 || opcode == 4'h9 || opcode == 4'hb ||
-                   opcode == 4'hc ||
-                   (opcode == 4'ha &&
-                    ((field_d <= 4'h4) ||
-                     (field_d >= 4'h8 && field_d <= 4'hb) ||
-                     field_d >= 4'he));
-
 always @(posedge clk) begin
-    button_meta <= buttons;
-    button_sync <= button_meta;
-    sdram_command_valid <= 0;
-    cache_write_enable <= 0;
-    data_cache_write_enable <= 0;
-
-    if (button_sync[1]) begin
-        state <= ST_INIT;
-        boot_index <= 0;
-        boot_page <= 0;
-        timeout_counter <= 0;
-        error_code <= 0;
-        integration_watchdog <= 0;
-        halted <= 0;
-        faulted <= 0;
-    end else begin
-        case (state)
-            ST_INIT: begin
-                sdram_command <= 3'b111;
-                sdram_precharge <= 0;
-                sdram_address <= 0;
-                sdram_write_mask <= 0;
-                sdram_write_data <= 0;
-                sdram_burst_length <= 7;
-                boot_index <= 0;
-                // Button 1 is a diagnostic page selector. Its reachable
-                // 6-bit value also keeps the complete boot image implemented
-                // by the declared 1024-word BSRAM leaf.
-                if (button_sync[0])
-                    boot_page <= boot_page + 1'b1;
-                else if (sdram_init_done)
-                    state <= ST_BOOT_ADDRESS;
-            end
-
-            ST_BOOT_ADDRESS: begin
-                boot_address <= {boot_page, boot_index};
-                state <= ST_BOOT_WAIT;
-            end
-
-            ST_BOOT_WAIT: state <= ST_BOOT_CAPTURE;
-
-            ST_BOOT_CAPTURE: begin
-                line_words[boot_index] <= boot_read_data;
-                if (boot_index == 15)
-                    state <= ST_ACT_WRITE;
-                else begin
-                    boot_index <= boot_index + 1'b1;
-                    state <= ST_BOOT_ADDRESS;
-                end
-            end
-
-            ST_ACT_WRITE: begin
-                sdram_command <= CMD_ACTIVE;
-                sdram_precharge <= 0;
-                sdram_address <= 0;
-                sdram_command_valid <= 1;
-                timeout_counter <= 0;
-                state <= ST_ACT_WRITE_ACK;
-            end
-
-            ST_ACT_WRITE_ACK: begin
-                if (sdram_command_ack)
-                    state <= ST_WRITE;
-                else if (timeout_counter == 20'hf_ffff) begin
-                    error_code <= 8'h11;
-                    state <= ST_ERROR;
-                end else
-                    timeout_counter <= timeout_counter + 1'b1;
-            end
-
-            ST_WRITE: begin
-                sdram_command <= CMD_WRITE;
-                sdram_precharge <= 1;
-                sdram_address <= 0;
-                sdram_write_mask <= 0;
-                sdram_write_data <= {line_words[1], line_words[0]};
-                sdram_command_valid <= 1;
-                beat_index <= 0;
-                state <= ST_WRITE_DATA;
-            end
-
-            ST_WRITE_DATA: begin
-                if (beat_index == 7) begin
-                    timeout_counter <= 0;
-                    state <= ST_WRITE_ACK;
-                end else begin
-                    beat_index <= beat_index + 1'b1;
-                    sdram_write_data <= {
-                        line_words[{(beat_index + 1'b1), 1'b1}],
-                        line_words[{(beat_index + 1'b1), 1'b0}]
-                    };
-                end
-            end
-
-            ST_WRITE_ACK: begin
-                if (sdram_command_ack)
-                    state <= ST_ACT_READ;
-                else if (timeout_counter == 20'hf_ffff) begin
-                    error_code <= 8'h12;
-                    state <= ST_ERROR;
-                end else
-                    timeout_counter <= timeout_counter + 1'b1;
-            end
-
-            ST_ACT_READ: begin
-                sdram_command <= CMD_ACTIVE;
-                sdram_precharge <= 0;
-                sdram_address <= 0;
-                sdram_command_valid <= 1;
-                timeout_counter <= 0;
-                state <= ST_ACT_READ_ACK;
-            end
-
-            ST_ACT_READ_ACK: begin
-                if (sdram_command_ack)
-                    state <= ST_READ;
-                else if (timeout_counter == 20'hf_ffff) begin
-                    error_code <= 8'h13;
-                    state <= ST_ERROR;
-                end else
-                    timeout_counter <= timeout_counter + 1'b1;
-            end
-
-            ST_READ: begin
-                sdram_command <= CMD_READ;
-                sdram_precharge <= 1;
-                sdram_address <= 0;
-                sdram_command_valid <= 1;
-                beat_index <= 0;
-                read_ack_seen <= 0;
-                timeout_counter <= 0;
-                state <= ST_READ_DATA;
-            end
-
-            ST_READ_DATA: begin
-                if (sdram_command_ack)
-                    read_ack_seen <= 1;
-                if (sdram_read_valid) begin
-                    if (sdram_read_data !=
-                        {line_words[{beat_index, 1'b1}],
-                         line_words[{beat_index, 1'b0}]}) begin
-                        error_code <= 8'h50 | {5'b0, beat_index};
-                        state <= ST_ERROR;
-                    end else begin
-                        capture_read_beat(beat_index, sdram_read_data);
-                    end
-                    if (sdram_read_data ==
-                        {line_words[{beat_index, 1'b1}],
-                         line_words[{beat_index, 1'b0}]} && beat_index == 7) begin
-                        if (!(read_ack_seen || sdram_command_ack)) begin
-                            error_code <= 8'h14;
-                            state <= ST_ERROR;
-                        end else begin
-                            fill_word <= 0;
-                            state <= ST_FILL_CACHE;
-                        end
-                    end else
-                        beat_index <= beat_index + 1'b1;
-                end else if (timeout_counter == 20'hf_ffff) begin
-                    error_code <= 8'h15;
-                    state <= ST_ERROR;
-                end else
-                    timeout_counter <= timeout_counter + 1'b1;
-            end
-
-            ST_FILL_CACHE: begin
-                cache_write_enable <= 1;
-                cache_rw_address <= {6'b0, fill_word};
-                cache_write_data <= buffered_word(fill_word);
-                if (fill_word == 15)
-                    begin
-                        boot_index <= 0;
-                        fetch_phase <= 0;
-                        fetch_address <= 0;
-                        state <= ST_VERIFY_ICACHE;
-                    end
-                else
-                    fill_word <= fill_word + 1'b1;
-            end
-
-            ST_VERIFY_ICACHE: begin
-                if (fetch_phase == 0) begin
-                    fetch_address <= {6'b0, boot_index};
-                    fetch_phase <= 1;
-                end else if (fetch_phase == 1) begin
-                    fetch_phase <= 2;
-                end else if (instruction != line_words[boot_index]) begin
-                    error_code <= 8'h60 | {4'b0, boot_index};
-                    state <= ST_ERROR;
-                end else if (boot_index == 15) begin
-                    state <= ST_CPU_INIT;
-                end else begin
-                    boot_index <= boot_index + 1'b1;
-                    fetch_phase <= 0;
-                end
-            end
-
-            ST_CPU_INIT: begin
-                pc <= 0;
-                fetch_address <= 0;
-                fetch_phase <= 0;
-                prefix_valid <= 0;
-                halted <= 0;
-                faulted <= 0;
-                for (register_index = 0; register_index < 16;
-                     register_index = register_index + 1)
-                    registers[register_index] <= 0;
-                for (cache_index = 0; cache_index < 64;
-                     cache_index = cache_index + 1)
-                    data_cache_tags[cache_index] <= 0;
-                data_cache_valid <= 0;
-                state <= ST_CPU;
-            end
-
-            ST_CPU: begin
-                if (halted) begin
-                    if (registers[0] == 16'h1235)
-                        state <= ST_DONE;
-                    else begin
-                        error_code <= 8'h21;
-                        state <= ST_ERROR;
-                    end
-                end else if (faulted) begin
-                    error_code <= 8'h22;
-                    state <= ST_ERROR;
-                end else if (fetch_phase == 0) begin
-                    fetch_address <= pc[9:0];
-                    fetch_phase <= 1;
-                end else if (fetch_phase == 1) begin
-                    fetch_phase <= 2;
-                end else begin
-                    fetch_phase <= 0;
-                    pc <= pc + 1'b1;
-                    if (opcode == 4'hf) begin
-                        prefix_high <= instruction[11:0];
-                        prefix_valid <= 1;
-                    end else begin
-                        if (prefix_valid && !is_consumer)
-                            prefix_valid <= 0;
-                        case (opcode)
-                            4'h0: registers[field_d] <=
-                                registers[field_a] + registers[field_b];
-                            4'h1: registers[field_d] <=
-                                registers[field_a] - registers[field_b];
-                            4'h8: begin
-                                memory_address <= effective_address;
-                                load_destination <= field_d;
-                                data_cache_read_address <= effective_address[9:0];
-                                prefix_valid <= 0;
-                                state <= ST_DCACHE_WAIT_1;
-                            end
-                            4'h9: begin
-                                memory_address <= effective_address;
-                                memory_write_data <= registers[field_d];
-                                prefix_valid <= 0;
-                                state <= ST_DCACHE_STORE_CHECK;
-                            end
-                            4'ha: begin
-                                case (field_d)
-                                    4'h0: registers[field_a] <= registers[field_a] +
-                                        immediate4(instruction, 1'b1);
-                                    4'h9: registers[field_a] <= registers[field_a] ==
-                                        immediate4(instruction, 1'b1);
-                                    4'he: registers[field_a] <= prefix_valid ?
-                                        immediate4(instruction, 1'b0) :
-                                        sign_extend4(field_b);
-                                    4'hf: registers[field_a] <=
-                                        immediate4(instruction, 1'b0);
-                                    default: faulted <= 1;
-                                endcase
-                                prefix_valid <= 0;
-                            end
-                            4'hb: begin
-                                case (field_d)
-                                    4'h0: if (registers[field_a] == 0)
-                                        pc <= pc + 1'b1 +
-                                              immediate4(instruction, 1'b1);
-                                    4'h1: if (registers[field_a] != 0)
-                                        pc <= pc + 1'b1 +
-                                              immediate4(instruction, 1'b1);
-                                    default: faulted <= 1;
-                                endcase
-                                prefix_valid <= 0;
-                            end
-                            4'hc: begin
-                                if (field_d != 4'hf)
-                                    registers[field_d] <= pc + 1'b1;
-                                if (prefix_valid)
-                                    pc <= pc + 1'b1 +
-                                          {prefix_high[7:0], instruction[7:0]};
-                                else
-                                    pc <= pc + 1'b1 +
-                                          {{8{instruction[7]}}, instruction[7:0]};
-                                prefix_valid <= 0;
-                            end
-                            4'he: begin
-                                case (field_d)
-                                    4'h1: registers[field_a] <= registers[field_b];
-                                    4'h8: if (field_a == 0 && field_b == 0)
-                                        halted <= 1;
-                                    default: faulted <= 1;
-                                endcase
-                            end
-                            default: faulted <= 1;
-                        endcase
-                    end
-                end
-            end
-
-            ST_DCACHE_WAIT_1: state <= ST_DCACHE_WAIT_2;
-
-            ST_DCACHE_WAIT_2: begin
-                if (data_cache_valid[memory_address[9:4]] &&
-                    data_cache_tags[memory_address[9:4]] == memory_address[15:10]) begin
-                    registers[load_destination] <= data_cache_read_data;
-                    state <= ST_CPU;
-                end else begin
-                    state <= ST_DATA_ACT_R;
-                end
-            end
-
-            ST_DCACHE_STORE_CHECK: begin
-                if (data_cache_valid[memory_address[9:4]] &&
-                    data_cache_tags[memory_address[9:4]] == memory_address[15:10]) begin
-                    data_cache_write_enable <= 1;
-                    data_cache_rw_address <= memory_address[9:0];
-                    data_cache_write_data <= memory_write_data;
-                end
-                state <= ST_DATA_ACT_W;
-            end
-
-            ST_DATA_ACT_W: begin
-                sdram_command <= CMD_ACTIVE;
-                sdram_precharge <= 0;
-                sdram_address <= {6'b0, memory_address[15:1]};
-                sdram_command_valid <= 1;
-                timeout_counter <= 0;
-                state <= ST_DATA_ACT_W_ACK;
-            end
-
-            ST_DATA_ACT_W_ACK: begin
-                if (sdram_command_ack)
-                    state <= ST_DATA_WRITE;
-                else if (timeout_counter == 20'hf_ffff) begin
-                    error_code <= 8'h31;
-                    state <= ST_ERROR;
-                end else
-                    timeout_counter <= timeout_counter + 1'b1;
-            end
-
-            ST_DATA_WRITE: begin
-                sdram_command <= CMD_WRITE;
-                sdram_precharge <= 1;
-                sdram_address <= {6'b0, memory_address[15:1]};
-                sdram_burst_length <= 0;
-                if (memory_address[0]) begin
-                    sdram_write_mask <= 4'b0011;
-                    sdram_write_data <= {memory_write_data, 16'b0};
-                end else begin
-                    sdram_write_mask <= 4'b1100;
-                    sdram_write_data <= {16'b0, memory_write_data};
-                end
-                sdram_command_valid <= 1;
-                timeout_counter <= 0;
-                state <= ST_DATA_WRITE_ACK;
-            end
-
-            ST_DATA_WRITE_ACK: begin
-                if (sdram_command_ack) begin
-                    sdram_burst_length <= 7;
-                    state <= ST_CPU;
-                end else if (timeout_counter == 20'hf_ffff) begin
-                    error_code <= 8'h32;
-                    state <= ST_ERROR;
-                end else
-                    timeout_counter <= timeout_counter + 1'b1;
-            end
-
-            ST_DATA_ACT_R: begin
-                sdram_command <= CMD_ACTIVE;
-                sdram_precharge <= 0;
-                sdram_address <= {6'b0, memory_address[15:4], 3'b000};
-                sdram_command_valid <= 1;
-                timeout_counter <= 0;
-                state <= ST_DATA_ACT_R_ACK;
-            end
-
-            ST_DATA_ACT_R_ACK: begin
-                if (sdram_command_ack)
-                    state <= ST_DATA_READ;
-                else if (timeout_counter == 20'hf_ffff) begin
-                    error_code <= 8'h33;
-                    state <= ST_ERROR;
-                end else
-                    timeout_counter <= timeout_counter + 1'b1;
-            end
-
-            ST_DATA_READ: begin
-                sdram_command <= CMD_READ;
-                sdram_precharge <= 1;
-                sdram_address <= {6'b0, memory_address[15:4], 3'b000};
-                sdram_burst_length <= 7;
-                sdram_command_valid <= 1;
-                beat_index <= 0;
-                read_ack_seen <= 0;
-                timeout_counter <= 0;
-                state <= ST_DATA_READ_DATA;
-            end
-
-            ST_DATA_READ_DATA: begin
-                if (sdram_command_ack)
-                    read_ack_seen <= 1;
-                if (sdram_read_valid) begin
-                    capture_read_beat(beat_index, sdram_read_data);
-                    if (beat_index == 7) begin
-                        if (!(read_ack_seen || sdram_command_ack)) begin
-                            error_code <= 8'h34;
-                            state <= ST_ERROR;
-                        end else begin
-                            data_fill_word <= 0;
-                            state <= ST_FILL_DATA_CACHE;
-                        end
-                    end else
-                        beat_index <= beat_index + 1'b1;
-                end else if (timeout_counter == 20'hf_ffff) begin
-                    error_code <= 8'h35;
-                    state <= ST_ERROR;
-                end else
-                    timeout_counter <= timeout_counter + 1'b1;
-            end
-
-            ST_FILL_DATA_CACHE: begin
-                data_cache_write_enable <= 1;
-                data_cache_rw_address <= {memory_address[9:4], data_fill_word};
-                data_cache_write_data <= buffered_word(data_fill_word);
-                if (data_fill_word == 15) begin
-                    data_cache_tags[memory_address[9:4]] <= memory_address[15:10];
-                    data_cache_valid[memory_address[9:4]] <= 1;
-                    state <= ST_COMPLETE_LOAD;
-                end else
-                    data_fill_word <= data_fill_word + 1'b1;
-            end
-
-            ST_COMPLETE_LOAD: begin
-                registers[load_destination] <= buffered_word(memory_address[3:0]);
-                state <= ST_CPU;
-            end
-
-            ST_DONE: state <= ST_DONE;
-            ST_ERROR: state <= ST_ERROR;
-            default: begin
-                error_code <= 8'hff;
-                state <= ST_ERROR;
-            end
-        endcase
-
-        if (state != ST_DONE && state != ST_ERROR) begin
-            if (integration_watchdog == 24'hff_ffff) begin
-                error_code <= 8'h80 | {1'b0, pc[6:0]};
-                state <= ST_ERROR;
-            end else begin
-                integration_watchdog <= integration_watchdog + 1'b1;
-            end
-        end
+    if (reset) begin
+        boot_pending <= 0;
+        boot_response_valid <= 0;
+    end else if (boot_response_valid) begin
+        if (instruction_response_ready)
+            boot_response_valid <= 0;
+    end else if (boot_pending) begin
+        boot_pending <= 0;
+        boot_response_valid <= 1;
+    end else if (boot_accept) begin
+        boot_pending <= 1;
     end
 end
 
-assign leds = state == ST_DONE ? 6'b000001 :
-              state == ST_ERROR ? 6'b100001 : 6'b001100;
+wire icache_cpu_request_ready;
+wire icache_cpu_response_valid;
+wire [15:0] icache_cpu_read_data;
+wire icache_cpu_error;
+wire icache_memory_request_valid;
+wire icache_memory_request_ready;
+wire [21:0] icache_memory_address;
+wire icache_memory_response_valid;
+wire [15:0] icache_memory_read_data;
+wire icache_memory_error;
+wire icache_memory_response_ready;
 
-wire test_done = state == ST_DONE || state == ST_ERROR;
+__CACHE__ u_instruction_cache (
+    .clk(clk),
+    .reset(reset),
+    .invalidate_all(1'b0),
+    .snoop_write_valid(1'b0),
+    .snoop_write_address(22'b0),
+    .cpu_request_valid(instruction_request_valid && !boot_selected),
+    .cpu_write(1'b0),
+    .cpu_address(instruction_address),
+    .cpu_write_data(16'b0),
+    .cpu_response_ready(instruction_response_ready && !boot_selected),
+    .memory_request_ready(icache_memory_request_ready),
+    .memory_response_valid(icache_memory_response_valid),
+    .memory_read_data(icache_memory_read_data),
+    .memory_error(icache_memory_error),
+    .cpu_request_ready(icache_cpu_request_ready),
+    .cpu_response_valid(icache_cpu_response_valid),
+    .cpu_read_data(icache_cpu_read_data),
+    .cpu_error(icache_cpu_error),
+    .memory_request_valid(icache_memory_request_valid),
+    .memory_write(),
+    .memory_address(icache_memory_address),
+    .memory_write_data(),
+    .memory_response_ready(icache_memory_response_ready)
+);
+
+assign instruction_response_valid = boot_selected ? boot_response_valid : icache_cpu_response_valid;
+assign instruction_data = boot_selected ? boot_read_data : icache_cpu_read_data;
+assign instruction_error = boot_selected ? 1'b0 : icache_cpu_error;
+wire instruction_request_ready = boot_selected ? boot_request_ready : icache_cpu_request_ready;
+
+wire core_data_request_valid;
+wire core_data_write;
+wire [31:0] core_data_address;
+wire [15:0] core_data_write_data;
+wire core_data_response_ready;
+wire core_data_request_ready;
+wire core_data_response_valid;
+wire [15:0] core_data_read_data;
+wire core_data_error;
+
+wire mmio_selected = core_data_address[31:16] == 0 && core_data_address[15:8] == 8'hff;
+wire mmio_cpu_request_ready;
+wire mmio_cpu_response_valid;
+wire [15:0] mmio_cpu_read_data;
+wire mmio_cpu_error;
+wire [3:0] device_index;
+wire [3:0] device_channel;
+wire device_read_enable;
+wire device_write_enable;
+wire [15:0] device_write_data;
+wire [15:0] device_read_data;
+
+__MMIO_BRIDGE__ u_mmio_bridge (
+    .clk(clk),
+    .reset(reset),
+    .cpu_request_valid(core_data_request_valid && mmio_selected),
+    .cpu_write(core_data_write),
+    .cpu_address(core_data_address),
+    .cpu_write_data(core_data_write_data),
+    .cpu_response_ready(core_data_response_ready && mmio_selected),
+    .device_read_data(device_read_data),
+    .cpu_request_ready(mmio_cpu_request_ready),
+    .cpu_response_valid(mmio_cpu_response_valid),
+    .cpu_read_data(mmio_cpu_read_data),
+    .cpu_error(mmio_cpu_error),
+    .device_index(device_index),
+    .device_channel(device_channel),
+    .device_read_enable(device_read_enable),
+    .device_write_enable(device_write_enable),
+    .device_write_data(device_write_data)
+);
+
+wire unused_dma_start;
+wire [23:0] unused_flash_offset;
+wire [21:0] unused_destination;
+wire [31:0] unused_file_size_bytes;
+wire [31:0] unused_memory_size_bytes;
+__BOOT_DMA_MMIO__ u_boot_dma_mmio (
+    .clk(clk),
+    .reset(reset),
+    .device_index(device_index),
+    .device_channel(device_channel),
+    .device_read_enable(device_read_enable),
+    .device_write_enable(device_write_enable),
+    .device_write_data(device_write_data),
+    .dma_busy(1'b0),
+    .dma_done(1'b0),
+    .dma_error(1'b0),
+    .dma_error_code(8'b0),
+    .dma_completed_words(32'b0),
+    .device_read_data(device_read_data),
+    .dma_start(unused_dma_start),
+    .flash_offset(unused_flash_offset),
+    .destination(unused_destination),
+    .file_size_bytes(unused_file_size_bytes),
+    .memory_size_bytes(unused_memory_size_bytes)
+);
+
+wire dcache_cpu_request_ready;
+wire dcache_cpu_response_valid;
+wire [15:0] dcache_cpu_read_data;
+wire dcache_cpu_error;
+wire dcache_memory_request_valid;
+wire dcache_memory_write;
+wire [21:0] dcache_memory_address;
+wire [15:0] dcache_memory_write_data;
+wire dcache_memory_request_ready;
+wire dcache_memory_response_valid;
+wire [15:0] dcache_memory_read_data;
+wire dcache_memory_error;
+wire dcache_memory_response_ready;
+
+__CACHE__ u_data_cache (
+    .clk(clk),
+    .reset(reset),
+    .invalidate_all(1'b0),
+    .snoop_write_valid(1'b0),
+    .snoop_write_address(22'b0),
+    .cpu_request_valid(core_data_request_valid && !mmio_selected),
+    .cpu_write(core_data_write),
+    .cpu_address(core_data_address),
+    .cpu_write_data(core_data_write_data),
+    .cpu_response_ready(core_data_response_ready && !mmio_selected),
+    .memory_request_ready(dcache_memory_request_ready),
+    .memory_response_valid(dcache_memory_response_valid),
+    .memory_read_data(dcache_memory_read_data),
+    .memory_error(dcache_memory_error),
+    .cpu_request_ready(dcache_cpu_request_ready),
+    .cpu_response_valid(dcache_cpu_response_valid),
+    .cpu_read_data(dcache_cpu_read_data),
+    .cpu_error(dcache_cpu_error),
+    .memory_request_valid(dcache_memory_request_valid),
+    .memory_write(dcache_memory_write),
+    .memory_address(dcache_memory_address),
+    .memory_write_data(dcache_memory_write_data),
+    .memory_response_ready(dcache_memory_response_ready)
+);
+
+assign core_data_request_ready = mmio_selected ? mmio_cpu_request_ready : dcache_cpu_request_ready;
+assign core_data_response_valid = mmio_selected ? mmio_cpu_response_valid : dcache_cpu_response_valid;
+assign core_data_read_data = mmio_selected ? mmio_cpu_read_data : dcache_cpu_read_data;
+assign core_data_error = mmio_selected ? mmio_cpu_error : dcache_cpu_error;
+
+wire halted;
+wire [15:0] halt_signal;
+wire faulted;
+wire [7:0] fault_code;
+wire [15:0] fault_pc;
+wire [15:0] pc;
+wire [15:0] code_segment;
+wire [15:0] data_segment;
+wire [31:0] retired_words;
+
+__G16_CORE__ u_core (
+    .clk(clk),
+    .reset(reset),
+    .instruction_request_ready(instruction_request_ready),
+    .instruction_response_valid(instruction_response_valid),
+    .instruction_data(instruction_data),
+    .instruction_error(instruction_error),
+    .data_request_ready(core_data_request_ready),
+    .data_response_valid(core_data_response_valid),
+    .data_read_data(core_data_read_data),
+    .data_error(core_data_error),
+    .instruction_request_valid(instruction_request_valid),
+    .instruction_address(instruction_address),
+    .instruction_response_ready(instruction_response_ready),
+    .data_request_valid(core_data_request_valid),
+    .data_write(core_data_write),
+    .data_address(core_data_address),
+    .data_write_data(core_data_write_data),
+    .data_response_ready(core_data_response_ready),
+    .halted(halted),
+    .halt_signal(halt_signal),
+    .fault(faulted),
+    .fault_code(fault_code),
+    .fault_pc(fault_pc),
+    .pc(pc),
+    .code_segment(code_segment),
+    .data_segment(data_segment),
+    .retired_words(retired_words)
+);
+
+wire memory_request_valid;
+wire memory_write;
+wire [21:0] memory_address;
+wire [15:0] memory_write_data;
+wire memory_request_ready;
+wire memory_response_valid;
+wire [15:0] memory_read_data;
+wire memory_error;
+wire memory_response_ready;
+
+__ARBITER__ u_memory_arbiter (
+    .clk(clk),
+    .reset(reset),
+    .instruction_request_valid(icache_memory_request_valid),
+    .instruction_address(icache_memory_address),
+    .instruction_response_ready(icache_memory_response_ready),
+    .data_request_valid(dcache_memory_request_valid),
+    .data_write(dcache_memory_write),
+    .data_address(dcache_memory_address),
+    .data_write_data(dcache_memory_write_data),
+    .data_response_ready(dcache_memory_response_ready),
+    .dma_request_valid(1'b0),
+    .dma_write(1'b1),
+    .dma_address(22'b0),
+    .dma_write_data(16'b0),
+    .dma_response_ready(1'b1),
+    .memory_request_ready(memory_request_ready),
+    .memory_response_valid(memory_response_valid),
+    .memory_read_data(memory_read_data),
+    .memory_error(memory_error),
+    .instruction_request_ready(icache_memory_request_ready),
+    .instruction_response_valid(icache_memory_response_valid),
+    .instruction_read_data(icache_memory_read_data),
+    .instruction_error(icache_memory_error),
+    .data_request_ready(dcache_memory_request_ready),
+    .data_response_valid(dcache_memory_response_valid),
+    .data_read_data(dcache_memory_read_data),
+    .data_error(dcache_memory_error),
+    .dma_request_ready(),
+    .dma_response_valid(),
+    .dma_read_data(),
+    .dma_error(),
+    .memory_request_valid(memory_request_valid),
+    .memory_write(memory_write),
+    .memory_address(memory_address),
+    .memory_write_data(memory_write_data),
+    .memory_response_ready(memory_response_ready)
+);
+
+__SDRAM_WORD_PORT__ u_sdram_word_port (
+    .clk(clk),
+    .reset(reset),
+    .request_valid(memory_request_valid),
+    .write(memory_write),
+    .address(memory_address),
+    .write_data(memory_write_data),
+    .response_ready(memory_response_ready),
+    .controller_read_data(sdram_read_data),
+    .controller_read_valid(sdram_read_valid),
+    .controller_init_done(sdram_init_done),
+    .controller_command_ack(sdram_command_ack),
+    .request_ready(memory_request_ready),
+    .response_valid(memory_response_valid),
+    .read_data(memory_read_data),
+    .error(memory_error),
+    .controller_command_valid(sdram_command_valid),
+    .controller_command(sdram_command),
+    .controller_precharge(sdram_precharge),
+    .controller_address(sdram_address),
+    .controller_write_mask(sdram_write_mask),
+    .controller_write_data(sdram_write_data),
+    .controller_burst_length(sdram_burst_length)
+);
+
+wire passed = halted && halt_signal == 16'h1235;
+assign leds = passed ? 6'b000001 : (faulted || halted ? 6'b100001 : 6'b001100);
+
+wire test_done = halted || faulted;
 reg [24:0] report_delay = 0;
 reg [9:0] uart_frame = 10'h3ff;
 reg [3:0] uart_bit = 0;
@@ -696,7 +350,7 @@ function [7:0] report_byte;
     input [3:0] index;
     reg [7:0] status;
     begin
-        status = state == ST_DONE ? 8'h00 : error_code;
+        status = passed ? 8'h00 : (faulted ? 8'h02 : 8'h01);
         case (index)
             0: report_byte = 8'h44;
             1: report_byte = 8'h44;
@@ -719,7 +373,7 @@ always @(posedge clk) begin
         report_byte_index <= 0;
         uart_busy <= 0;
     end else if (!uart_busy) begin
-        if (report_delay == 25'd27_000_000) begin
+        if (report_delay == 25'd13_500_000) begin
             uart_frame <= {1'b1, report_byte(0), 1'b0};
             uart_bit <= 0;
             uart_divider <= 0;

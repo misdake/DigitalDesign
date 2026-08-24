@@ -100,7 +100,7 @@ does not relax timing and is not used as a substitute for pipelining.
 
 Program loading is a separate concern from cache operation: SDRAM has no
 bitstream initialization. Immutable Stage0 code starts from initialized
-BSRAM/instruction-cache state in segment zero, copies and verifies Stage1 from
+BSRAM/instruction-cache state in segment zero, copies Stage1 from
 SPI Flash into SDRAM, invalidates the affected physical cache lines, writes
 the initial data segment and stack pointer, and enters Stage1 with `JSEG`.
 Stage1 understands the extensible section table and loads the application.
@@ -111,34 +111,65 @@ Cache tags and all cache-to-SDRAM requests contain physical word addresses.
 
 Device 2 occupies offsets `0xff20..0xff2f` in the fixed MMIO page. Stage1
 programs an absolute 24-bit Flash byte address, a 22-bit physical SDRAM word
-destination, file and in-memory byte sizes, and the expected CRC32 through
-literal-channel `dev_send` calls. Writing `1` to channel 0 starts one command;
-channel 1 reports idle (`0`), busy (`1`), done (`2`), or error (`0x8000`).
-Channels 12 through 15 expose the actual CRC, error code, and low completed-word
-count for diagnostics. The DMA zero-fills `memory_size - file_size`, so BSS does
+destination, and file and in-memory byte sizes through literal-channel
+`dev_send` calls. Writing `1` to channel 0 starts one command; channel 1
+reports idle (`0`), busy (`1`), done (`2`), or error (`0x8000`). Channels 10
+through 13 held the CRC32 registers before format version 3 and are free.
+Channels 14 and 15 expose the error code and low completed-word count for
+diagnostics. The DMA zero-fills `memory_size - file_size`, so BSS does
 not require a second device command.
 Error codes are stable: `1` means file size exceeds memory size, `2` means the
-Flash extent is invalid, `3` means the physical-memory extent is invalid, `4`
-and `5` are Flash and SDRAM transport failures, and `6` is a CRC32 mismatch.
+Flash extent is invalid, `3` means the physical-memory extent is invalid, and
+`4` and `5` are Flash and SDRAM transport failures.
 Consequently equal offsets in different segments never alias in a cache. DMA
 writes require explicit invalidation before CPU execution or reads; changing a
 segment alone does not invalidate correctly tagged lines.
+
+## System control device and boot error reporting
+
+Device 0 occupies offsets `0xff00..0xff0f` in the fixed MMIO page, addressed
+through `r15` with the channel as a literal offset. Writing any value to
+channel 0 invalidates the whole instruction cache, and to channel 1 the whole
+data cache. Channel 2 drives the six board LEDs from the low six written
+bits. Channel 3 accepts one UART transmit byte per write (8N1) and reports
+bit 0 set on reads while the transmitter is busy.
+
+After DMA loads and before `JSEG` the boot code must invalidate both caches
+through channels 0 and 1. This is harmless at cold boot, when every valid bit
+is already clear.
+
+On failure a boot stage writes channel 2 with `{stage[1:0], category[3:0]}` in
+the low six bits (stage `01` = Stage0, `10` = Stage1; category `1` =
+descriptor/format invalid, `2` = manifest/section invalid, `3` = DMA
+transport failure, `4` = entry/handoff invalid, `5` = internal/timeout) and
+then repeatedly emits a 10-byte UART frame on channel 3: ASCII `G16B`, stage,
+category, error code, detail low byte, detail high byte, and the XOR checksum
+of bytes 0 through 8. The host reference loaders expose the same mapping as
+`LoaderError::boot_report` for the on-hardware stages to mirror. A
+successfully started application instead writes channel 2 with `0b11_0000`:
+both stage bits set never occurs in a failure pattern, so the LED word alone
+distinguishes success, Stage0 failure, and Stage1 failure.
 
 ## First data-cache policy
 
 The first processor uses split 2-KiB instruction and data caches. Each is
 direct-mapped with 64 sets and 32 bytes (16 CPU words) per line. Each cache's
 1,024 data words map exactly to one characterized 1024x16 BSRAM leaf, for two
-data blocks total. Tags and valid bits are small enough for logic registers
-initially. One arbiter shares the SDRAM transaction port; instruction misses
-may not starve refresh or an already accepted data transaction.
+data blocks total. Its 64 physical 12-bit tags map through a characterized
+SSRAM leaf to 12 RAM16 primitives (768 physical SSRAM bits); resettable valid
+bits remain ordinary registers. One arbiter shares the SDRAM transaction port;
+instruction misses may not starve refresh or an already accepted data
+transaction.
 
 Reads allocate a complete line. Stores are write-through; write misses do not
 allocate. This avoids dirty eviction and makes early correctness/debugging much
-simpler. The target SDRAM adapter converts a line refill into one Controller HS
-8-beat 32-bit burst, and converts a 16-bit store into a one-beat 32-bit masked
-write. Associativity and write-back are policy changes behind the same CPU and
-line-transaction interfaces, to be justified by measured miss traffic rather
+simpler. The first reusable RTL revision deliberately refills a line through
+16 serialized physical-word transactions and converts a 16-bit store into a
+one-beat 32-bit masked write. This keeps the cache, DMA, and CPU on one already
+characterized word-port contract. Replacing the refill sequencer with one
+Controller HS 8-beat burst is a contained throughput optimization after the
+complete boot path is stable. Associativity and write-back are policy changes
+behind the same CPU interface, to be justified by measured miss traffic rather
 than copied from the exploratory model.
 
 The first arbiter permits one accepted Controller HS operation. A due refresh

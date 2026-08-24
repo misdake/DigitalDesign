@@ -1,5 +1,14 @@
 //! Reusable G16 revision 0.4 processor core with external physical-memory ports.
 
+mod mmio;
+pub use mmio::*;
+
+mod memory_arbiter;
+pub use memory_arbiter::*;
+
+mod cache;
+pub use cache::*;
+
 use crate::{DspMulS18, HardwareIdentity, Module, ModuleIo, VerilogDependency, VerilogIdentity};
 use digital_design_code::{CircuitWires, Wire, Wires};
 

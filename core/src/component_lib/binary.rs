@@ -159,7 +159,7 @@ pub fn mux2_w<const W: usize>(a: Wires<W>, b: Wires<W>, select: Wire) -> Wires<W
 }
 pub fn mux4_w<const W: usize>(v: &[Wires<W>], select: Wires<2>) -> Wires<W> {
     let ab = mux2_w(v[0], v[1], select.wires[0]);
-    let cd = mux2_w(v[2], v[3], select.wires[1]);
+    let cd = mux2_w(v[2], v[3], select.wires[0]);
     mux2_w(ab, cd, select.wires[1])
 }
 pub fn mux8_w<const W: usize>(v: &[Wires<W>], select: Wires<3>) -> Wires<W> {
@@ -326,4 +326,44 @@ fn test_expand_signed() {
     assert_eq!(0b00000101, circuit.get_wires_u8(b));
     circuit.set_wires_u8(a, 9);
     assert_eq!(0b11111001, circuit.get_wires_u8(b));
+}
+
+#[test]
+fn test_mux4_w_selects_each_input() {
+    use crate::{build_circuit, input_w};
+
+    let (mut circuit, (select, out)) = build_circuit(|| {
+        let select = input_w::<2>();
+        let values = [
+            Wires::<4>::parse_u8(0x3),
+            Wires::<4>::parse_u8(0x5),
+            Wires::<4>::parse_u8(0x9),
+            Wires::<4>::parse_u8(0xc),
+        ];
+        (select, mux4_w(&values, select))
+    });
+
+    for (i, expected) in [0x3, 0x5, 0x9, 0xc].iter().enumerate() {
+        circuit.set_wires_u8(select, i as u8);
+        circuit.simulate();
+        assert_eq!(*expected, circuit.get_wires_u8(out), "select = {i}");
+    }
+}
+
+#[test]
+fn test_mux8_w_selects_each_input() {
+    use crate::{build_circuit, input_w};
+
+    let (mut circuit, (select, out)) = build_circuit(|| {
+        let select = input_w::<3>();
+        let values: [Wires<4>; 8] =
+            std::array::from_fn(|i| Wires::<4>::parse_u8(i as u8 + 1));
+        (select, mux8_w(&values, select))
+    });
+
+    for i in 0..8u8 {
+        circuit.set_wires_u8(select, i);
+        circuit.simulate();
+        assert_eq!(i + 1, circuit.get_wires_u8(out), "select = {i}");
+    }
 }

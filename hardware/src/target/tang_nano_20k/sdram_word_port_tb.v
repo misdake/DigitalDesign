@@ -1,4 +1,4 @@
-module testbench;
+module tb;
 reg clk = 0;
 always #1 clk = ~clk;
 
@@ -80,7 +80,7 @@ initial begin
     while (!response_valid) @(posedge clk);
     if (read_data !== 16'h1234) $fatal(1, "lower lane read failed");
     if (error) $fatal(1, "unexpected adapter error");
-    $display("PASS");
+    $display("DIGITAL_DESIGN_PASS");
     $finish;
 end
 endmodule

@@ -32,9 +32,34 @@ struct Prefix {
     high: Word,
 }
 
+/// A device attached to the fixed MMIO page. Device `d` owns the sixteen
+/// words at `MMIO_BASE + d * 16`; loads and stores to those words are routed
+/// to the device instead of memory. `memory` is the complete physical memory,
+/// so DMA-style devices can move data.
+pub trait Device {
+    fn read(&mut self, memory: &mut [Word], channel: u8) -> Word;
+    fn write(&mut self, memory: &mut [Word], channel: u8, value: Word);
+    /// Downcast support for test assertions on attached models.
+    fn as_any(&self) -> &dyn std::any::Any;
+}
+
+/// Maps a physical address onto its MMIO `(device, channel)` pair, if any.
+fn device_channel(address: PhysicalWordAddress) -> Option<(usize, u8)> {
+    let raw = address.get();
+    (u32::from(MMIO_BASE)..(u32::from(MMIO_BASE) + 256))
+        .contains(&raw)
+        .then(|| (((raw - u32::from(MMIO_BASE)) >> 4) as usize, (raw & 15) as u8))
+}
+
 pub struct Machine {
     registers: [Word; 16],
     memory: Box<[Word]>,
+    devices: [Option<Box<dyn Device>>; 16],
+    /// Optional BSRAM boot-window image: instruction fetches from the lowest
+    /// physical words read this image instead of main memory, matching the
+    /// hardware split between the boot BSRAM (instruction side) and SDRAM
+    /// (data side). Without it, memory is fully unified.
+    boot_window: Option<Box<[Word]>>,
     pc: Word,
     code_segment: Word,
     data_segment: Word,
@@ -62,6 +87,8 @@ impl Machine {
         Self {
             registers: [0; 16],
             memory: vec![0; words].into_boxed_slice(),
+            devices: std::array::from_fn(|_| None),
+            boot_window: None,
             pc: 0,
             code_segment: 0,
             data_segment: 0,
@@ -126,6 +153,32 @@ impl Machine {
         self.memory.len()
     }
 
+    /// Mutable view of the physical memory, for DMA-style host models.
+    pub fn physical_memory_mut(&mut self) -> &mut [Word] {
+        &mut self.memory
+    }
+
+    /// Attaches a device to the fixed MMIO page; loads and stores to the
+    /// device's sixteen words are routed to it instead of memory.
+    pub fn attach_device(&mut self, device: u8, handler: Box<dyn Device>) {
+        assert!(device < 16, "G16 device index {device} exceeds the MMIO page");
+        self.devices[usize::from(device)] = Some(handler);
+    }
+
+    /// Accesses an attached device model, e.g. for test assertions.
+    pub fn device<T: 'static>(&self, device: u8) -> Option<&T> {
+        self.devices
+            .get(usize::from(device))?
+            .as_ref()?
+            .as_any()
+            .downcast_ref()
+    }
+
+    /// Installs the BSRAM boot-window image (see the `boot_window` field).
+    pub fn set_boot_window(&mut self, words: &[Word]) {
+        self.boot_window = Some(words.to_vec().into_boxed_slice());
+    }
+
     pub fn pc(&self) -> Word {
         self.pc
     }
@@ -162,7 +215,13 @@ impl Machine {
 
         let address = self.pc;
         let fetch_address = PhysicalWordAddress::from_segment_offset(self.code_segment, address);
-        let instruction = self.read_physical(fetch_address).map_err(|kind| Fault {
+        let instruction = match &self.boot_window {
+            Some(window) if (fetch_address.get() as usize) < window.len() => {
+                Ok(window[fetch_address.get() as usize])
+            }
+            _ => self.read_physical(fetch_address),
+        }
+        .map_err(|kind| Fault {
             kind,
             address,
             instruction: 0,
@@ -247,7 +306,7 @@ impl Machine {
         let base = self.registers[usize::from(field(instruction, 4))];
         let address = base.wrapping_add(immediate4(instruction, prefix, true));
         let physical = self.data_address(address);
-        self.registers[usize::from(dst)] = self.read_physical(physical)?;
+        self.registers[usize::from(dst)] = self.read_data(physical)?;
         Ok(StepOutcome::Running)
     }
 
@@ -256,7 +315,7 @@ impl Machine {
         let base = self.registers[usize::from(field(instruction, 4))];
         let address = base.wrapping_add(immediate4(instruction, prefix, true));
         let physical = self.data_address(address);
-        self.write_physical(physical, self.registers[usize::from(src)])?;
+        self.write_data(physical, self.registers[usize::from(src)])?;
         Ok(StepOutcome::Running)
     }
 
@@ -391,6 +450,25 @@ impl Machine {
             self.data_segment
         };
         PhysicalWordAddress::from_segment_offset(segment, offset)
+    }
+
+    fn read_data(&mut self, address: PhysicalWordAddress) -> Result<Word, FaultKind> {
+        if let Some((device, channel)) = device_channel(address) {
+            if let Some(handler) = self.devices[device].as_mut() {
+                return Ok(handler.read(&mut self.memory, channel));
+            }
+        }
+        self.read_physical(address)
+    }
+
+    fn write_data(&mut self, address: PhysicalWordAddress, value: Word) -> Result<(), FaultKind> {
+        if let Some((device, channel)) = device_channel(address) {
+            if let Some(handler) = self.devices[device].as_mut() {
+                handler.write(&mut self.memory, channel, value);
+                return Ok(());
+            }
+        }
+        self.write_physical(address, value)
     }
 
     fn read_physical(&self, address: PhysicalWordAddress) -> Result<Word, FaultKind> {
