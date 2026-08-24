@@ -50,3 +50,19 @@ impl Default for CompilerOptions {
         }
     }
 }
+
+impl CompilerOptions {
+    /// Safe baseline for G16's unified address space.
+    ///
+    /// Code grows upward from zero, static data begins at 0x4000, and the
+    /// downward-growing stack stops below the 0xff00 MMIO page.
+    pub fn g16() -> Self {
+        Self {
+            stack_init: crate::g16::DEFAULT_STACK_TOP,
+            data_base: crate::g16::DEFAULT_DATA_BASE,
+            heap_begin: 0x8000,
+            function_table: FunctionTableConfig::Disabled,
+            ..Self::default()
+        }
+    }
+}

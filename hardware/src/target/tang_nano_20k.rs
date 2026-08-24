@@ -1,8 +1,8 @@
 use super::HardwareTarget;
-use crate::resources::components::{Clock27M, DebugUartTx, UserButtons, UserLeds};
+use crate::resources::components::{Clock27M, DebugUartTx, Pll, SdrSdram, UserButtons, UserLeds};
 use crate::{
-    GowinBackend, GowinDeviceInfo, GowinProgrammerCable, ResourceAmount, ResourceKind,
-    TargetInventory,
+    GowinBackend, GowinBoardExtension, GowinDeviceInfo, GowinLogicConnection, GowinProgrammerCable,
+    GowinTopPort, GowinTopPortDirection, ResourceAmount, ResourceKind, TargetInventory,
 };
 use crate::{
     GowinBoardBinding, GowinClockPin, GowinModuleProject, GowinPin, GowinPortDirection,
@@ -30,6 +30,39 @@ pub struct TangNano20KOutputs {
 pub struct TangNano20KDebugOutputs {
     pub leds: Wires<6>,
     pub uart_tx: digital_design_code::Wire,
+}
+
+/// Inputs supplied to logic in a Tang Nano 20K project using the fitted SDRAM.
+///
+/// The project main clock and Controller HS both run at 54 MHz. The physical
+/// SDRAM clock is a private 180-degree PLL output and is not exposed here.
+#[derive(Clone, ModuleIo)]
+pub struct TangNano20KSdramInputs {
+    pub buttons: Wires<2>,
+    pub sdram_read_data: Wires<32>,
+    /// High for each valid read beat produced by this board's fitted
+    /// Controller HS configuration.
+    pub sdram_read_valid: digital_design_code::Wire,
+    pub sdram_init_done: digital_design_code::Wire,
+    pub sdram_command_ack: digital_design_code::Wire,
+}
+
+/// Raw Controller HS command interface plus normal board debug outputs.
+///
+/// Applications normally place a cache-line transaction controller above this
+/// interface. Refresh remains explicit at this boundary so that the shared
+/// scheduler can account for refresh stalls.
+#[derive(Clone, ModuleIo)]
+pub struct TangNano20KSdramOutputs {
+    pub leds: Wires<6>,
+    pub uart_tx: digital_design_code::Wire,
+    pub sdram_command_valid: digital_design_code::Wire,
+    pub sdram_command: Wires<3>,
+    pub sdram_precharge: digital_design_code::Wire,
+    pub sdram_address: Wires<21>,
+    pub sdram_write_mask: Wires<4>,
+    pub sdram_write_data: Wires<32>,
+    pub sdram_burst_length: Wires<8>,
 }
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
@@ -111,6 +144,174 @@ impl TangNano20K {
             "uart_tx",
             [Self::DEBUG_UART_TX],
         );
+        GowinModuleProject::new(GowinProject::new(project_name).with_board_binding(binding))
+    }
+
+    /// Create a single-clock 54 MHz project with the fitted 64-Mibit SDRAM.
+    ///
+    /// The board wrapper owns the PLL and Gowin Controller HS instance. User
+    /// logic, command scheduling, caches, and the controller use the same
+    /// 54 MHz clock. Only the SDRAM physical clock uses the PLL's 180-degree
+    /// output.
+    pub fn sdram_debug_uart_project<M>(
+        project_name: impl Into<String>,
+    ) -> GowinModuleProject<Self, M>
+    where
+        M: Module<Input = TangNano20KSdramInputs, Output = TangNano20KSdramOutputs>,
+    {
+        let extension = GowinBoardExtension::new(include_str!("tang_nano_20k/sdram/service_54m.v"))
+            .with_logic_clock("logic_clk")
+            .add_top_port(GowinTopPort::new(
+                "O_sdram_clk",
+                GowinTopPortDirection::Output,
+                1,
+            ))
+            .add_top_port(GowinTopPort::new(
+                "O_sdram_cke",
+                GowinTopPortDirection::Output,
+                1,
+            ))
+            .add_top_port(GowinTopPort::new(
+                "O_sdram_cs_n",
+                GowinTopPortDirection::Output,
+                1,
+            ))
+            .add_top_port(GowinTopPort::new(
+                "O_sdram_cas_n",
+                GowinTopPortDirection::Output,
+                1,
+            ))
+            .add_top_port(GowinTopPort::new(
+                "O_sdram_ras_n",
+                GowinTopPortDirection::Output,
+                1,
+            ))
+            .add_top_port(GowinTopPort::new(
+                "O_sdram_wen_n",
+                GowinTopPortDirection::Output,
+                1,
+            ))
+            .add_top_port(GowinTopPort::new(
+                "O_sdram_dqm",
+                GowinTopPortDirection::Output,
+                4,
+            ))
+            .add_top_port(GowinTopPort::new(
+                "O_sdram_addr",
+                GowinTopPortDirection::Output,
+                11,
+            ))
+            .add_top_port(GowinTopPort::new(
+                "O_sdram_ba",
+                GowinTopPortDirection::Output,
+                2,
+            ))
+            .add_top_port(GowinTopPort::new(
+                "IO_sdram_dq",
+                GowinTopPortDirection::InOut,
+                32,
+            ))
+            .connect_logic(GowinLogicConnection::new(
+                "sdram_read_data",
+                GowinPortDirection::Input,
+                32,
+                "sdram_read_data",
+            ))
+            .connect_logic(GowinLogicConnection::new(
+                "sdram_read_valid",
+                GowinPortDirection::Input,
+                1,
+                "sdram_read_valid",
+            ))
+            .connect_logic(GowinLogicConnection::new(
+                "sdram_init_done",
+                GowinPortDirection::Input,
+                1,
+                "sdram_init_done",
+            ))
+            .connect_logic(GowinLogicConnection::new(
+                "sdram_command_ack",
+                GowinPortDirection::Input,
+                1,
+                "sdram_command_ack",
+            ))
+            .connect_logic(GowinLogicConnection::new(
+                "sdram_command_valid",
+                GowinPortDirection::Output,
+                1,
+                "sdram_command_valid",
+            ))
+            .connect_logic(GowinLogicConnection::new(
+                "sdram_command",
+                GowinPortDirection::Output,
+                3,
+                "sdram_command",
+            ))
+            .connect_logic(GowinLogicConnection::new(
+                "sdram_precharge",
+                GowinPortDirection::Output,
+                1,
+                "sdram_precharge",
+            ))
+            .connect_logic(GowinLogicConnection::new(
+                "sdram_address",
+                GowinPortDirection::Output,
+                21,
+                "sdram_address",
+            ))
+            .connect_logic(GowinLogicConnection::new(
+                "sdram_write_mask",
+                GowinPortDirection::Output,
+                4,
+                "sdram_write_mask",
+            ))
+            .connect_logic(GowinLogicConnection::new(
+                "sdram_write_data",
+                GowinPortDirection::Output,
+                32,
+                "sdram_write_data",
+            ))
+            .connect_logic(GowinLogicConnection::new(
+                "sdram_burst_length",
+                GowinPortDirection::Output,
+                8,
+                "sdram_burst_length",
+            ))
+            .add_source_file(
+                "src/generated/target/tang_nano_20k/sdram/controller_qn88.v",
+                include_str!("tang_nano_20k/sdram/controller_qn88.v"),
+            )
+            .add_source_file(
+                "src/generated/target/tang_nano_20k/sdram/sdrc_hs_defines.v",
+                include_str!("tang_nano_20k/sdram/sdrc_hs_defines.v"),
+            )
+            .add_source_file(
+                "src/generated/target/tang_nano_20k/sdram/sdrc_hs_name.v",
+                include_str!("tang_nano_20k/sdram/sdrc_hs_name.v"),
+            )
+            .add_source_file(
+                "src/generated/target/tang_nano_20k/sdram/pll_54m.v",
+                include_str!("tang_nano_20k/sdram/pll_54m.v"),
+            )
+            .require_installed_ide_file(
+                "ipcore/SDRC_HS/data/sdrc_hs_top.vp",
+                [
+                    "src/generated/target/tang_nano_20k/sdram/sdrc_hs_defines.v".into(),
+                    "src/generated/target/tang_nano_20k/sdram/sdrc_hs_name.v".into(),
+                ],
+            );
+
+        let binding = Self::user_io_binding()
+            .require(DebugUartTx)
+            .require(Pll)
+            .require(SdrSdram)
+            .bind_port(
+                GowinPortDirection::Output,
+                "uart_tx",
+                "uart_tx",
+                [Self::DEBUG_UART_TX],
+            )
+            .with_extension(extension);
         GowinModuleProject::new(GowinProject::new(project_name).with_board_binding(binding))
     }
 

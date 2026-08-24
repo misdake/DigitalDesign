@@ -1,0 +1,434 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>G16 ISA v0.3 — Encoding, ABI, Memory, and Hardware</title>
+<style>
+  :root {
+    --bg: #f7f9fc; --paper: #ffffff; --ink: #172033; --dim: #5d687c;
+    --line: #d9e0ea; --blue: #2563eb; --blue-bg: #eaf2ff;
+    --green: #16845b; --green-bg: #e7f7ef; --amber: #a05a00;
+    --amber-bg: #fff4d6; --red: #b42318; --red-bg: #ffebe9;
+    --purple: #7248b9; --purple-bg: #f2ebff; --slate-bg: #eef2f7;
+  }
+  * { box-sizing: border-box; }
+  html { scroll-behavior: smooth; }
+  body {
+    margin: 0; padding: 28px; background: var(--bg); color: var(--ink);
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    line-height: 1.5;
+  }
+  main { max-width: 1320px; margin: auto; }
+  h1 { margin: 0 0 6px; font-size: 28px; letter-spacing: -0.02em; }
+  h2 { margin: 42px 0 14px; padding-left: 10px; border-left: 4px solid var(--blue); font-size: 20px; }
+  h3 { margin: 24px 0 10px; font-size: 16px; }
+  p, li { font-size: 14px; }
+  a { color: var(--blue); }
+  code, .mono { font-family: "Cascadia Code", Consolas, monospace; }
+  code { background: var(--slate-bg); border-radius: 4px; padding: 1px 5px; }
+  .hero, .panel { background: var(--paper); border: 1px solid var(--line); border-radius: 12px; }
+  .hero { padding: 22px 24px; box-shadow: 0 3px 16px rgba(30, 55, 90, 0.06); }
+  .subtitle { color: var(--dim); margin: 0; }
+  .badges { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 16px; }
+  .badge { border-radius: 999px; padding: 5px 10px; font-size: 12px; font-weight: 650; background: var(--blue-bg); color: #174ea6; }
+  .toc { columns: 2; margin: 16px 0 0; padding-left: 22px; }
+  .toc li { break-inside: avoid; margin: 3px 0; }
+  .grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 14px; }
+  .cards { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 12px; margin: 16px 0; }
+  .card { background: var(--paper); border: 1px solid var(--line); border-radius: 10px; padding: 14px; }
+  .card b { display: block; color: var(--blue); font-size: 20px; margin-bottom: 3px; }
+  .card span { color: var(--dim); font-size: 12px; }
+  .panel { padding: 16px; overflow-x: auto; }
+  .caption { color: var(--dim); font-size: 12px; margin: 8px 0 0; }
+  table { border-collapse: collapse; width: 100%; margin: 12px 0; background: var(--paper); font-size: 12.5px; }
+  th, td { border: 1px solid var(--line); padding: 6px 8px; text-align: left; vertical-align: top; }
+  th { background: var(--slate-bg); white-space: nowrap; }
+  .center { text-align: center; }
+  .mn { font-family: "Cascadia Code", Consolas, monospace; font-weight: 700; white-space: nowrap; }
+  .sem { font-family: "Cascadia Code", Consolas, monospace; font-size: 12px; }
+  .op { background: var(--blue-bg); color: #174ea6; }
+  .reg { background: var(--green-bg); color: #116342; }
+  .imm { background: var(--amber-bg); color: #784300; }
+  .reserved { background: #fafbfc; color: #9aa4b2; }
+  .memory { background: var(--red-bg); color: #8e2018; }
+  .control { background: var(--green-bg); color: #116342; }
+  .extended { background: var(--purple-bg); color: #573394; }
+  .notice { border-left: 4px solid var(--amber); background: var(--amber-bg); padding: 10px 12px; margin: 14px 0; font-size: 13px; }
+  .status { display: inline-block; border-radius: 4px; padding: 2px 6px; font-size: 11px; font-weight: 700; }
+  .done { background: var(--green-bg); color: var(--green); }
+  .partial { background: var(--amber-bg); color: var(--amber); }
+  .future { background: var(--slate-bg); color: var(--dim); }
+  .bitrow { display: grid; grid-template-columns: repeat(16, 1fr); min-width: 720px; margin: 8px 0; }
+  .bit { border: 1px solid var(--line); border-right: 0; padding: 7px 2px; text-align: center; font: 12px "Cascadia Code", Consolas, monospace; }
+  .bit:last-child { border-right: 1px solid var(--line); }
+  .bit-label { font-size: 10px; color: var(--dim); }
+  svg { width: 100%; min-width: 780px; height: auto; }
+  .box { fill: #fff; stroke: #aeb9c8; stroke-width: 1.5; }
+  .box-blue { fill: #eaf2ff; stroke: #5a8dee; stroke-width: 1.5; }
+  .box-green { fill: #e7f7ef; stroke: #47a982; stroke-width: 1.5; }
+  .box-amber { fill: #fff4d6; stroke: #d59a3a; stroke-width: 1.5; }
+  .box-red { fill: #ffebe9; stroke: #df746c; stroke-width: 1.5; }
+  .svg-title { font: 700 15px "Segoe UI", sans-serif; fill: #172033; }
+  .svg-text { font: 12px "Segoe UI", sans-serif; fill: #354159; }
+  .svg-mono { font: 11px "Cascadia Code", Consolas, monospace; fill: #354159; }
+  .arrow { stroke: #64748b; stroke-width: 1.8; fill: none; marker-end: url(#arrow); }
+  @media (max-width: 850px) {
+    body { padding: 14px; } .grid, .cards { grid-template-columns: 1fr; } .toc { columns: 1; }
+  }
+  @media print { body { background: #fff; padding: 0; } .hero, .panel, .card { box-shadow: none; } }
+</style>
+</head>
+<body><main>
+
+<section class="hero">
+  <h1>G16 ISA v0.3</h1>
+  <p class="subtitle">Instruction encoding, architectural behavior, compiler ABI, unified memory map, and current FPGA organization.</p>
+  <div class="badges">
+    <span class="badge">16-bit fixed instruction words</span>
+    <span class="badge">16 × 16-bit GPRs</span>
+    <span class="badge">16-bit word addresses</span>
+    <span class="badge">Unified 128 KiB CPU space</span>
+    <span class="badge">No architectural flags</span>
+    <span class="badge">Revision 0.3</span>
+  </div>
+  <ol class="toc">
+    <li><a href="#overview">Architectural overview</a></li>
+    <li><a href="#hardware">Hardware organization</a></li>
+    <li><a href="#encoding">Encoding rules</a></li>
+    <li><a href="#opmap">Opcode map</a></li>
+    <li><a href="#instructions">Instruction reference</a></li>
+    <li><a href="#prefix">IMMHI12 and wide operations</a></li>
+    <li><a href="#memory">Memory map and caches</a></li>
+    <li><a href="#abi">Compiler ABI</a></li>
+    <li><a href="#faults">Fault and retirement behavior</a></li>
+    <li><a href="#status">Implementation status</a></li>
+  </ol>
+</section>
+
+<h2 id="overview">1. Architectural overview</h2>
+<div class="cards">
+  <div class="card"><b>16</b><span>general-purpose, writable 16-bit registers</span></div>
+  <div class="card"><b>65,536</b><span>word addresses shared by code, data, stack, and MMIO</span></div>
+  <div class="card"><b>1 or 2</b><span>physical words per retired operation; two when IMMHI12 is consumed</span></div>
+  <div class="card"><b>0 flags</b><span>branches test a register directly; comparisons produce 0 or 1</span></div>
+</div>
+<div class="grid">
+  <div class="panel">
+    <h3>Core rules</h3>
+    <ul>
+      <li>All arithmetic wraps modulo 2<sup>16</sup>.</li>
+      <li>Memory is word-addressed; one address selects one 16-bit word.</li>
+      <li>The PC normally advances before instruction semantics, so relative control flow is based on the following word.</li>
+      <li>All registers are architecturally writable. ABI reservations are compiler conventions, not hardwired registers.</li>
+      <li><code>HALT</code> has no encoded signal register; the architectural halt signal is <code>r0</code>.</li>
+    </ul>
+  </div>
+  <div class="panel">
+    <h3>Design intent</h3>
+    <ul>
+      <li>Small decoding surface: the high nibble selects the major operation.</li>
+      <li>No condition-code dependency between comparison and branch.</li>
+      <li>Short immediates stay compact; <code>IMMHI12</code> extends only explicitly listed consumers.</li>
+      <li>One address space simplifies the compiler while split caches preserve FPGA throughput.</li>
+      <li>Opcode <code>0xD</code> remains reserved for a future FPU family.</li>
+    </ul>
+  </div>
+</div>
+
+<h2 id="hardware">2. Hardware organization</h2>
+<div class="panel">
+<svg viewBox="0 0 1120 420" role="img" aria-label="G16 hardware block diagram">
+  <defs><marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse"><path d="M 0 0 L 10 5 L 0 10 z" fill="#64748b"/></marker></defs>
+  <rect class="box-blue" x="30" y="92" width="230" height="236" rx="12"/>
+  <text class="svg-title" x="145" y="120" text-anchor="middle">G16 core</text>
+  <rect class="box" x="55" y="140" width="180" height="42" rx="6"/><text class="svg-text" x="145" y="166" text-anchor="middle">PC + prefix state</text>
+  <rect class="box" x="55" y="194" width="180" height="42" rx="6"/><text class="svg-text" x="145" y="220" text-anchor="middle">16 × 16-bit register file</text>
+  <rect class="box" x="55" y="248" width="82" height="54" rx="6"/><text class="svg-text" x="96" y="271" text-anchor="middle">ALU</text><text class="svg-mono" x="96" y="288" text-anchor="middle">add/logic/shift</text>
+  <rect class="box" x="153" y="248" width="82" height="54" rx="6"/><text class="svg-text" x="194" y="271" text-anchor="middle">control</text><text class="svg-mono" x="194" y="288" text-anchor="middle">branch/call</text>
+
+  <rect class="box-green" x="340" y="40" width="220" height="130" rx="12"/>
+  <text class="svg-title" x="450" y="69" text-anchor="middle">Instruction cache</text>
+  <text class="svg-text" x="450" y="94" text-anchor="middle">2 KiB direct-mapped</text>
+  <text class="svg-mono" x="450" y="116" text-anchor="middle">64 sets × 16 words</text>
+  <text class="svg-text" x="450" y="141" text-anchor="middle">one 1024×16 BSRAM data leaf</text>
+
+  <rect class="box-green" x="340" y="250" width="220" height="130" rx="12"/>
+  <text class="svg-title" x="450" y="279" text-anchor="middle">Data cache</text>
+  <text class="svg-text" x="450" y="304" text-anchor="middle">2 KiB direct-mapped</text>
+  <text class="svg-mono" x="450" y="326" text-anchor="middle">write-through / no-write-allocate</text>
+  <text class="svg-text" x="450" y="351" text-anchor="middle">one 1024×16 BSRAM data leaf</text>
+
+  <rect class="box-amber" x="650" y="115" width="200" height="190" rx="12"/>
+  <text class="svg-title" x="750" y="145" text-anchor="middle">Memory scheduler</text>
+  <text class="svg-text" x="750" y="174" text-anchor="middle">one outstanding operation</text>
+  <text class="svg-text" x="750" y="198" text-anchor="middle">refresh before new traffic</text>
+  <text class="svg-text" x="750" y="222" text-anchor="middle">data wins an idle tie</text>
+  <text class="svg-text" x="750" y="246" text-anchor="middle">accepted work is atomic</text>
+  <text class="svg-mono" x="750" y="275" text-anchor="middle">32-byte line transactions</text>
+
+  <rect class="box-red" x="930" y="92" width="160" height="236" rx="12"/>
+  <text class="svg-title" x="1010" y="122" text-anchor="middle">Tang Nano 20K</text>
+  <text class="svg-title" x="1010" y="145" text-anchor="middle">SDRAM target</text>
+  <rect class="box" x="950" y="169" width="120" height="56" rx="6"/><text class="svg-text" x="1010" y="193" text-anchor="middle">Controller HS</text><text class="svg-mono" x="1010" y="211" text-anchor="middle">32-bit @ 54 MHz</text>
+  <rect class="box" x="950" y="242" width="120" height="58" rx="6"/><text class="svg-text" x="1010" y="266" text-anchor="middle">64-Mibit fitted</text><text class="svg-text" x="1010" y="284" text-anchor="middle">SDR SDRAM</text>
+
+  <path class="arrow" d="M260 154 L340 105"/><text class="svg-mono" x="292" y="113">fetch</text>
+  <path class="arrow" d="M340 135 L260 188"/>
+  <path class="arrow" d="M260 275 L340 304"/><text class="svg-mono" x="286" y="306">load/store</text>
+  <path class="arrow" d="M560 105 L650 168"/><path class="arrow" d="M560 315 L650 252"/>
+  <path class="arrow" d="M850 210 L930 210"/><path class="arrow" d="M930 235 L850 235"/>
+  <text class="svg-mono" x="890" y="197" text-anchor="middle">8 × 32-bit</text>
+</svg>
+<p class="caption">Normative target organization. The host cache and scheduler models implement these policies. The current board RTL validates the highlighted physical path but is not yet a reusable, complete core; see implementation status.</p>
+</div>
+
+<h2 id="encoding">3. Encoding rules</h2>
+<p>Every physical instruction is one 16-bit word shown as four hexadecimal nibbles <code>[n3 n2 n1 n0]</code>. Bit 15 is the most significant bit.</p>
+<div class="panel">
+  <div class="bitrow">
+    <div class="bit op">15<br><span class="bit-label">n3[3]</span></div><div class="bit op">14<br><span class="bit-label">n3[2]</span></div><div class="bit op">13<br><span class="bit-label">n3[1]</span></div><div class="bit op">12<br><span class="bit-label">n3[0]</span></div>
+    <div class="bit reg">11<br><span class="bit-label">n2[3]</span></div><div class="bit reg">10<br><span class="bit-label">n2[2]</span></div><div class="bit reg">9<br><span class="bit-label">n2[1]</span></div><div class="bit reg">8<br><span class="bit-label">n2[0]</span></div>
+    <div class="bit reg">7<br><span class="bit-label">n1[3]</span></div><div class="bit reg">6<br><span class="bit-label">n1[2]</span></div><div class="bit reg">5<br><span class="bit-label">n1[1]</span></div><div class="bit reg">4<br><span class="bit-label">n1[0]</span></div>
+    <div class="bit imm">3<br><span class="bit-label">n0[3]</span></div><div class="bit imm">2<br><span class="bit-label">n0[2]</span></div><div class="bit imm">1<br><span class="bit-label">n0[1]</span></div><div class="bit imm">0<br><span class="bit-label">n0[0]</span></div>
+  </div>
+  <p class="caption">Colors are contextual: the major opcode is always <span class="op">blue</span>; later fields may be registers, sub-operations, or immediate bits.</p>
+</div>
+<table>
+  <tr><th>Form</th><th>Layout</th><th>Meaning</th></tr>
+  <tr><td class="mn">RRR</td><td class="sem">opcode[15:12] · rd[11:8] · ra[7:4] · rb[3:0]</td><td>Three-register ALU operation.</td></tr>
+  <tr><td class="mn">MEM</td><td class="sem">opcode · rd/rs · base · imm4</td><td>Word load/store at <code>r[base] + immediate</code>.</td></tr>
+  <tr><td class="mn">IMM</td><td class="sem">A · function · rd · imm4</td><td>In-place immediate operation on <code>rd</code>.</td></tr>
+  <tr><td class="mn">BR</td><td class="sem">B · condition · test · imm4</td><td>Conditional PC-relative branch.</td></tr>
+  <tr><td class="mn">J</td><td class="sem">C · link · imm8</td><td>PC-relative jump; link <code>15</code> means no link.</td></tr>
+  <tr><td class="mn">EXT</td><td class="sem">E · function · rd · rs</td><td>Unary, register control, comparison, and halt operations.</td></tr>
+  <tr><td class="mn">IMMHI12</td><td class="sem">F · high12</td><td>Prefix state for the immediately following eligible consumer.</td></tr>
+</table>
+
+<h2 id="opmap">4. Major opcode map</h2>
+<table>
+  <tr><th class="center">n3</th><th>Family</th><th>Form</th><th>Summary</th></tr>
+  <tr><td class="center op mono">0..7</td><td class="op">Register ALU</td><td class="mono">op rd ra rb</td><td>Add, subtract, multiply, logic, and register-count shifts.</td></tr>
+  <tr><td class="center memory mono">8</td><td class="memory">LOAD</td><td class="mono">8 rd base imm4</td><td>Read one 16-bit word.</td></tr>
+  <tr><td class="center memory mono">9</td><td class="memory">STORE</td><td class="mono">9 rs base imm4</td><td>Write one 16-bit word.</td></tr>
+  <tr><td class="center imm mono">A</td><td class="imm">Immediate</td><td class="mono">A fn rd imm4</td><td>Arithmetic, logic, shift, compare, and load-immediate.</td></tr>
+  <tr><td class="center control mono">B</td><td class="control">Branch</td><td class="mono">B cond test imm4</td><td>Eight direct register predicates; no flags register.</td></tr>
+  <tr><td class="center control mono">C</td><td class="control">Jump</td><td class="mono">C link imm8</td><td>Relative jump with optional link register.</td></tr>
+  <tr><td class="center reserved mono">D</td><td class="reserved">Reserved FPU</td><td class="mono">D ...</td><td>Currently raises <code>UnsupportedFpu</code>.</td></tr>
+  <tr><td class="center extended mono">E</td><td class="extended">Extended/control</td><td class="mono">E fn rd rs</td><td>Move, unary, register jumps, comparisons, bit operations, halt.</td></tr>
+  <tr><td class="center imm mono">F</td><td class="imm">IMMHI12</td><td class="mono">F high12</td><td>Creates a pending wide immediate.</td></tr>
+</table>
+
+<h2 id="instructions">5. Instruction reference</h2>
+<h3>5.1 Register ALU — opcodes 0 through 7</h3>
+<table>
+  <tr><th>Mnemonic</th><th>Encoding</th><th>Semantics</th><th>Signedness / notes</th></tr>
+  <tr><td class="mn">ADD rd, ra, rb</td><td class="mono">0 rd ra rb</td><td class="sem">rd = ra + rb</td><td>Wrapping.</td></tr>
+  <tr><td class="mn">SUB rd, ra, rb</td><td class="mono">1 rd ra rb</td><td class="sem">rd = ra - rb</td><td>Wrapping.</td></tr>
+  <tr><td class="mn">MUL rd, ra, rb</td><td class="mono">2 rd ra rb</td><td class="sem">rd = low16(ra × rb)</td><td>Low 16 bits; bit pattern is independent of signed interpretation.</td></tr>
+  <tr><td class="mn">AND rd, ra, rb</td><td class="mono">3 rd ra rb</td><td class="sem">rd = ra &amp; rb</td><td>Bitwise.</td></tr>
+  <tr><td class="mn">OR rd, ra, rb</td><td class="mono">4 rd ra rb</td><td class="sem">rd = ra | rb</td><td>Bitwise.</td></tr>
+  <tr><td class="mn">XOR rd, ra, rb</td><td class="mono">5 rd ra rb</td><td class="sem">rd = ra ^ rb</td><td>Bitwise.</td></tr>
+  <tr><td class="mn">SHL rd, ra, rb</td><td class="mono">6 rd ra rb</td><td class="sem">rd = ra &lt;&lt; (rb &amp; 15)</td><td>Logical left.</td></tr>
+  <tr><td class="mn">ASR rd, ra, rb</td><td class="mono">7 rd ra rb</td><td class="sem">rd = signed(ra) &gt;&gt; (rb &amp; 15)</td><td>Arithmetic right.</td></tr>
+</table>
+
+<h3>5.2 Memory — opcodes 8 and 9</h3>
+<table>
+  <tr><th>Mnemonic</th><th>Encoding</th><th>Semantics</th><th>Prefix</th></tr>
+  <tr><td class="mn">LOAD rd, [base + off]</td><td class="mono">8 rd base imm4</td><td class="sem">rd = memory[base + sext4(imm4)]</td><td>With IMMHI12, <code>off = {high12, imm4}</code>.</td></tr>
+  <tr><td class="mn">STORE rs, [base + off]</td><td class="mono">9 rs base imm4</td><td class="sem">memory[base + sext4(imm4)] = rs</td><td>With IMMHI12, <code>off = {high12, imm4}</code>.</td></tr>
+</table>
+<p class="caption">Address arithmetic wraps at 16 bits. MMIO behavior is selected by the final address, not by a distinct instruction family.</p>
+
+<h3>5.3 Immediate — opcode A</h3>
+<table>
+  <tr><th>n2</th><th>Mnemonic</th><th>Semantics</th><th>Immediate and prefix behavior</th></tr>
+  <tr><td class="mono">0</td><td class="mn">ADDI rd, imm</td><td class="sem">rd = rd + imm</td><td>Signed i4; prefix accepts a 16-bit bit pattern.</td></tr>
+  <tr><td class="mono">1</td><td class="mn">SUBI rd, imm</td><td class="sem">rd = rd - imm</td><td>Signed i4; prefix eligible.</td></tr>
+  <tr><td class="mono">2</td><td class="mn">ANDI rd, imm</td><td class="sem">rd = rd &amp; imm</td><td>Unsigned u4; prefix eligible.</td></tr>
+  <tr><td class="mono">3</td><td class="mn">ORI rd, imm</td><td class="sem">rd = rd | imm</td><td>Unsigned u4; prefix eligible.</td></tr>
+  <tr><td class="mono">4</td><td class="mn">XORI rd, imm</td><td class="sem">rd = rd ^ imm</td><td>Unsigned u4; prefix eligible.</td></tr>
+  <tr><td class="mono">5</td><td class="mn">SHLI rd, u4</td><td class="sem">rd = rd &lt;&lt; u4</td><td>Never consumes a prefix.</td></tr>
+  <tr><td class="mono">6</td><td class="mn">SHRI rd, u4</td><td class="sem">rd = rd &gt;&gt; u4</td><td>Logical; never consumes a prefix.</td></tr>
+  <tr><td class="mono">7</td><td class="mn">ASRI rd, u4</td><td class="sem">rd = signed(rd) &gt;&gt; u4</td><td>Arithmetic; never consumes a prefix.</td></tr>
+  <tr><td class="mono">8</td><td class="mn">MULI rd, imm</td><td class="sem">rd = low16(rd × imm)</td><td>Signed i4; prefix eligible.</td></tr>
+  <tr><td class="mono">9</td><td class="mn">CMPEQI rd, imm</td><td class="sem">rd = (rd == imm) ? 1 : 0</td><td>Signed i4; prefix eligible.</td></tr>
+  <tr><td class="mono">A</td><td class="mn">SLTI rd, imm</td><td class="sem">rd = (signed(rd) &lt; signed(imm)) ? 1 : 0</td><td>Signed i4; prefix eligible.</td></tr>
+  <tr><td class="mono">B</td><td class="mn">SLTUI rd, imm</td><td class="sem">rd = (unsigned(rd) &lt; unsigned(imm)) ? 1 : 0</td><td>Unsigned u4; prefix eligible; added in v0.3.</td></tr>
+  <tr><td class="mono reserved">C,D</td><td class="reserved">reserved</td><td>Invalid instruction</td><td>Does not consume a prefix.</td></tr>
+  <tr><td class="mono">E</td><td class="mn">LDI rd, i4</td><td class="sem">rd = sext4(i4)</td><td>With prefix, loads the complete 16-bit bit pattern.</td></tr>
+  <tr><td class="mono">F</td><td class="mn">LDUI rd, u4</td><td class="sem">rd = zext4(u4)</td><td>With prefix, loads the complete 16-bit bit pattern.</td></tr>
+</table>
+
+<h3>5.4 Conditional branch — opcode B</h3>
+<table>
+  <tr><th>n2</th><th>Mnemonic</th><th>Taken when</th><th>Target</th></tr>
+  <tr><td class="mono">0</td><td class="mn">BZ test, off</td><td><code>test == 0</code></td><td rowspan="8" class="sem">PC_after + off</td></tr>
+  <tr><td class="mono">1</td><td class="mn">BNZ test, off</td><td><code>test != 0</code></td></tr>
+  <tr><td class="mono">2</td><td class="mn">BN test, off</td><td><code>signed(test) &lt; 0</code></td></tr>
+  <tr><td class="mono">3</td><td class="mn">BNN test, off</td><td><code>signed(test) &gt;= 0</code></td></tr>
+  <tr><td class="mono">4</td><td class="mn">BP test, off</td><td><code>signed(test) &gt; 0</code></td></tr>
+  <tr><td class="mono">5</td><td class="mn">BNP test, off</td><td><code>signed(test) &lt;= 0</code></td></tr>
+  <tr><td class="mono">6</td><td class="mn">BODD test, off</td><td><code>test[0] == 1</code></td></tr>
+  <tr><td class="mono">7</td><td class="mn">BEVEN test, off</td><td><code>test[0] == 0</code></td></tr>
+  <tr><td class="mono reserved">8..F</td><td class="reserved">reserved</td><td>Invalid instruction</td><td>—</td></tr>
+</table>
+<p class="caption">The short offset is signed i4. An adjacent prefix supplies the full 16-bit relative offset.</p>
+
+<h3>5.5 Relative jump — opcode C</h3>
+<table>
+  <tr><th>Mnemonic</th><th>Encoding</th><th>Semantics</th><th>Notes</th></tr>
+  <tr><td class="mn">JREL off</td><td class="mono">C F imm8</td><td class="sem">PC = PC_after + sext8(imm8)</td><td><code>link=15</code> suppresses link write.</td></tr>
+  <tr><td class="mn">JALREL link, off</td><td class="mono">C link imm8</td><td class="sem">link = PC_after; PC = PC_after + sext8(imm8)</td><td><code>link</code> is r0..r14.</td></tr>
+</table>
+<p>With <code>IMMHI12</code>, opcode C consumes only the low eight prefix bits as the high byte: <code>off16 = {prefix[7:0], imm8}</code>. Compiler-generated wide jumps use the canonical prefix and a 16-bit wrapping relative offset.</p>
+
+<h3>5.6 Extended/control — opcode E</h3>
+<table>
+  <tr><th>n2</th><th>Mnemonic</th><th>Encoding</th><th>Semantics / constraints</th></tr>
+  <tr><td class="mono reserved">0</td><td class="reserved">reserved</td><td class="mono">E 0 rd rs</td><td>Invalid instruction.</td></tr>
+  <tr><td class="mono">1</td><td class="mn">MOV rd, rs</td><td class="mono">E 1 rd rs</td><td class="sem">rd = rs; NOP = E100</td></tr>
+  <tr><td class="mono">2</td><td class="mn">NOT rd, rs</td><td class="mono">E 2 rd rs</td><td class="sem">rd = ~rs</td></tr>
+  <tr><td class="mono">3</td><td class="mn">NEG rd, rs</td><td class="mono">E 3 rd rs</td><td class="sem">rd = 0 - rs</td></tr>
+  <tr><td class="mono">4</td><td class="mn">JREG rs</td><td class="mono">E 4 0 rs</td><td class="sem">PC = rs; rd must be 0</td></tr>
+  <tr><td class="mono">5</td><td class="mn">JALR link, target</td><td class="mono">E 5 link target</td><td class="sem">tmp = target; link = PC_after; PC = tmp</td></tr>
+  <tr><td class="mono">6</td><td class="mn">SEXTB rd, rs</td><td class="mono">E 6 rd rs</td><td class="sem">rd = sext8(rs[7:0])</td></tr>
+  <tr><td class="mono">7</td><td class="mn">CLZ rd, rs</td><td class="mono">E 7 rd rs</td><td class="sem">rd = count_leading_zeros(rs)</td></tr>
+  <tr><td class="mono">8</td><td class="mn">HALT</td><td class="mono">E 8 0 0</td><td>Stops execution; signal is <code>r0</code>. Both fields must be zero.</td></tr>
+  <tr><td class="mono">9</td><td class="mn">SLT rd, rs</td><td class="mono">E 9 rd rs</td><td class="sem">rd = signed(rd) &lt; signed(rs); added in v0.3</td></tr>
+  <tr><td class="mono">A</td><td class="mn">SLTU rd, rs</td><td class="mono">E A rd rs</td><td class="sem">rd = unsigned(rd) &lt; unsigned(rs); added in v0.3</td></tr>
+  <tr><td class="mono">B</td><td class="mn">POPCNT rd, rs</td><td class="mono">E B rd rs</td><td class="sem">rd = population_count(rs); added in v0.3</td></tr>
+  <tr><td class="mono reserved">C..F</td><td class="reserved">reserved</td><td class="mono">E fn rd rs</td><td>Invalid instruction.</td></tr>
+</table>
+
+<h2 id="prefix">6. IMMHI12 and wide operations</h2>
+<div class="grid">
+  <div class="panel">
+    <h3>Canonical 16-bit immediate</h3>
+    <p class="mono">F abc &nbsp;&nbsp; AF 3 d</p>
+    <p><code>IMMHI12 0xabc</code> followed by <code>LDUI r3, 0xd</code> loads <code>r3 = 0xabcd</code>. The pair is one precise architectural operation and retires two physical words together.</p>
+  </div>
+  <div class="panel">
+    <h3>Closed consumer set</h3>
+    <p><code>LOAD</code>, <code>STORE</code>, immediate functions 0..4, 8..B, E..F, all valid branches, and relative jumps consume a pending prefix.</p>
+    <p>Shift-immediate, extended/control, register ALU, reserved encodings, and another prefix do not consume it.</p>
+  </div>
+</div>
+<div class="notice"><b>Precise prefix rule:</b> a non-consumer expires the pending prefix and retires it separately. A second prefix also retires and replaces the first. If a prefixed consumer faults, the reported address is the prefix address and neither word retires.</div>
+
+<h2 id="memory">7. Unified memory map and cache policy</h2>
+<div class="grid">
+  <div class="panel">
+    <svg viewBox="0 0 580 460" role="img" aria-label="G16 unified address-space map">
+      <rect class="box-blue" x="115" y="35" width="280" height="95" rx="8"/><text class="svg-title" x="255" y="66" text-anchor="middle">0x0000 — linked code</text><text class="svg-text" x="255" y="91" text-anchor="middle">grows upward</text><text class="svg-mono" x="255" y="113" text-anchor="middle">instruction and literal words</text>
+      <rect class="box-green" x="115" y="130" width="280" height="85" rx="8"/><text class="svg-title" x="255" y="163" text-anchor="middle">0x4000 — static data</text><text class="svg-text" x="255" y="189" text-anchor="middle">compiler default data base</text>
+      <rect class="box-amber" x="115" y="215" width="280" height="90" rx="8"/><text class="svg-title" x="255" y="250" text-anchor="middle">0x8000 — heap baseline</text><text class="svg-text" x="255" y="276" text-anchor="middle">rcc_std allocator region</text>
+      <rect class="box" x="115" y="305" width="280" height="85" rx="8"/><text class="svg-title" x="255" y="337" text-anchor="middle">stack</text><text class="svg-text" x="255" y="362" text-anchor="middle">starts at 0xff00, grows downward</text>
+      <rect class="box-red" x="115" y="390" width="280" height="55" rx="8"/><text class="svg-title" x="255" y="423" text-anchor="middle">0xff00..0xffff — MMIO</text>
+      <text class="svg-mono" x="70" y="48">0000</text><text class="svg-mono" x="70" y="143">4000</text><text class="svg-mono" x="70" y="228">8000</text><text class="svg-mono" x="70" y="403">ff00</text><text class="svg-mono" x="70" y="447">ffff</text>
+      <path class="arrow" d="M430 80 L430 185"/><text class="svg-text" x="445" y="137">up</text>
+      <path class="arrow" d="M430 372 L430 320"/><text class="svg-text" x="445" y="350">down</text>
+    </svg>
+  </div>
+  <div class="panel">
+    <h3>Address-space contract</h3>
+    <ul>
+      <li>The CPU-visible range is exactly 65,536 words = 128 KiB.</li>
+      <li>The Tang Nano 20K contains more physical SDRAM; bank switching or a wider physical-address mechanism is intentionally deferred.</li>
+      <li><code>r15</code> normally holds <code>0xff00</code>, so device/channel MMIO is emitted as a normal load/store with a small offset.</li>
+      <li><code>CompilerOptions::g16()</code> selects data base <code>0x4000</code>, heap base <code>0x8000</code>, stack top <code>0xff00</code>, and disables the legacy v2.6 function table.</li>
+    </ul>
+    <h3>Cache geometry</h3>
+    <table>
+      <tr><th></th><th>I-cache</th><th>D-cache</th></tr>
+      <tr><td>Capacity</td><td>2 KiB</td><td>2 KiB</td></tr>
+      <tr><td>Mapping</td><td colspan="2">direct-mapped, 64 sets</td></tr>
+      <tr><td>Line</td><td colspan="2">16 × 16-bit words = 32 bytes</td></tr>
+      <tr><td>Data storage</td><td colspan="2">one 1024×16 BSRAM leaf each</td></tr>
+      <tr><td>Stores</td><td>—</td><td>write-through, no-write-allocate</td></tr>
+    </table>
+  </div>
+</div>
+<div class="panel">
+  <svg viewBox="0 0 1100 220" role="img" aria-label="Cache line to SDRAM beat mapping">
+    <defs><marker id="arrow2" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse"><path d="M 0 0 L 10 5 L 0 10 z" fill="#64748b"/></marker></defs>
+    <text class="svg-title" x="30" y="34">One CPU cache line</text>
+    <g transform="translate(30 54)">
+      <rect class="box-green" x="0" y="0" width="62" height="44"/><rect class="box-green" x="62" y="0" width="62" height="44"/><rect class="box-green" x="124" y="0" width="62" height="44"/><rect class="box-green" x="186" y="0" width="62" height="44"/>
+      <rect class="box-green" x="248" y="0" width="62" height="44"/><rect class="box-green" x="310" y="0" width="62" height="44"/><rect class="box-green" x="372" y="0" width="62" height="44"/><rect class="box-green" x="434" y="0" width="62" height="44"/>
+      <rect class="box-green" x="496" y="0" width="62" height="44"/><rect class="box-green" x="558" y="0" width="62" height="44"/><rect class="box-green" x="620" y="0" width="62" height="44"/><rect class="box-green" x="682" y="0" width="62" height="44"/>
+      <rect class="box-green" x="744" y="0" width="62" height="44"/><rect class="box-green" x="806" y="0" width="62" height="44"/><rect class="box-green" x="868" y="0" width="62" height="44"/><rect class="box-green" x="930" y="0" width="62" height="44"/>
+      <text class="svg-mono" x="31" y="27" text-anchor="middle">w0</text><text class="svg-mono" x="93" y="27" text-anchor="middle">w1</text><text class="svg-mono" x="155" y="27" text-anchor="middle">w2</text><text class="svg-mono" x="217" y="27" text-anchor="middle">w3</text><text class="svg-mono" x="961" y="27" text-anchor="middle">w15</text>
+    </g>
+    <path d="M60 122 L60 150 L1022 150 L1022 122" stroke="#64748b" fill="none"/>
+    <text class="svg-text" x="540" y="174" text-anchor="middle">8 consecutive 32-bit Controller HS beats: {w1,w0}, {w3,w2}, … {w15,w14}</text>
+    <text class="svg-text" x="540" y="201" text-anchor="middle">A single-word store becomes one masked 32-bit beat; mask bit 1 disables its byte lane.</text>
+  </svg>
+</div>
+
+<h2 id="abi">8. Compiler ABI</h2>
+<table>
+  <tr><th>Register</th><th>ABI role</th><th>Preservation</th><th>Compiler use</th></tr>
+  <tr><td class="mono">r0..r1</td><td>return values 0 and 1</td><td>caller-saved</td><td>Also general allocation and the first result registers.</td></tr>
+  <tr><td class="mono">r2..r7</td><td>arguments 0 through 5</td><td>caller-saved</td><td>Also general allocation after ABI shims.</td></tr>
+  <tr><td class="mono">r8..r11</td><td>long-lived values</td><td>callee-saved</td><td>Saved only when actually allocated by the function.</td></tr>
+  <tr><td class="mono">r12</td><td>compiler scratch / indirect-call target</td><td>reserved, caller-clobbered</td><td>Not allocatable; used for wide lowering and function pointers.</td></tr>
+  <tr><td class="mono">r13</td><td>stack pointer</td><td>callee restores</td><td>Frame grows downward; initialized to <code>0xff00</code>.</td></tr>
+  <tr><td class="mono">r14</td><td>link register</td><td>saved by non-leaf functions</td><td>Direct and indirect calls write the return PC here.</td></tr>
+  <tr><td class="mono">r15</td><td>global/MMIO base</td><td>reserved</td><td>Normally <code>0xff00</code>; not allocatable.</td></tr>
+</table>
+<div class="grid">
+  <div class="panel">
+    <h3>Call sequence</h3>
+    <svg viewBox="0 0 580 285" role="img" aria-label="G16 ABI call flow">
+      <defs><marker id="arrow3" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse"><path d="M 0 0 L 10 5 L 0 10 z" fill="#64748b"/></marker></defs>
+      <rect class="box-blue" x="25" y="25" width="150" height="60" rx="8"/><text class="svg-title" x="100" y="50" text-anchor="middle">Caller</text><text class="svg-mono" x="100" y="70" text-anchor="middle">args → r2..r7</text>
+      <rect class="box-amber" x="215" y="25" width="150" height="60" rx="8"/><text class="svg-title" x="290" y="50" text-anchor="middle">Call</text><text class="svg-mono" x="290" y="70" text-anchor="middle">r14 = return PC</text>
+      <rect class="box-green" x="405" y="25" width="150" height="60" rx="8"/><text class="svg-title" x="480" y="50" text-anchor="middle">Callee</text><text class="svg-mono" x="480" y="70" text-anchor="middle">SP -= frame</text>
+      <path class="arrow" d="M175 55 L215 55"/><path class="arrow" d="M365 55 L405 55"/>
+      <rect class="box" x="405" y="115" width="150" height="60" rx="8"/><text class="svg-text" x="480" y="140" text-anchor="middle">save used r8..r11</text><text class="svg-text" x="480" y="160" text-anchor="middle">save r14 if non-leaf</text>
+      <path class="arrow" d="M480 85 L480 115"/>
+      <rect class="box" x="215" y="205" width="150" height="60" rx="8"/><text class="svg-text" x="290" y="230" text-anchor="middle">restore frame</text><text class="svg-mono" x="290" y="250" text-anchor="middle">JREG r14</text>
+      <path class="arrow" d="M480 175 L365 224"/>
+      <rect class="box-blue" x="25" y="205" width="150" height="60" rx="8"/><text class="svg-text" x="100" y="230" text-anchor="middle">results in r0..r1</text><text class="svg-text" x="100" y="250" text-anchor="middle">caller resumes</text>
+      <path class="arrow" d="M215 235 L175 235"/>
+    </svg>
+  </div>
+  <div class="panel">
+    <h3>Frame layout after allocation</h3>
+    <table>
+      <tr><th>Offset from current SP</th><th>Contents</th></tr>
+      <tr><td class="mono">0 .. saved-1</td><td>Actually used callee-saved registers; a non-leaf function includes r14.</td></tr>
+      <tr><td class="mono">saved .. saved+locals-1</td><td>Addressable local words and local arrays.</td></tr>
+      <tr><td class="mono">saved+locals .. frame-1</td><td>Linear-scan spill slots.</td></tr>
+    </table>
+    <p>The prologue subtracts the complete frame size from r13, then stores saved registers. The epilogue reloads them, adds the frame size, and jumps through r14.</p>
+    <p>Direct calls currently use deterministic two-word wide relative linking. Indirect calls place the target in r12 and execute <code>JALR r14, r12</code>.</p>
+  </div>
+</div>
+
+<h2 id="faults">9. Fault and retirement behavior</h2>
+<table>
+  <tr><th>Condition</th><th>Result</th><th>Fault PC</th><th>Retirement</th></tr>
+  <tr><td>Reserved or malformed integer encoding</td><td><code>InvalidInstruction</code></td><td>instruction address, or prefix address for an eligible consumer</td><td>faulting operation does not retire</td></tr>
+  <tr><td>Opcode D</td><td><code>UnsupportedFpu</code></td><td>instruction address</td><td>does not retire</td></tr>
+  <tr><td>Valid prefixed consumer</td><td>executes one wide operation</td><td>—</td><td>retires two words together</td></tr>
+  <tr><td>Pending prefix followed by non-consumer</td><td>prefix expires; next instruction executes normally</td><td>—</td><td>prefix and instruction retire separately</td></tr>
+  <tr><td>HALT after already halted</td><td>returns the same <code>r0</code> signal</td><td>—</td><td>no additional execution</td></tr>
+</table>
+
+<h2 id="status">10. Implementation status</h2>
+<table>
+  <tr><th>Layer</th><th>Status</th><th>What is implemented now</th><th>Important remaining work</th></tr>
+  <tr><td>Encoding helpers</td><td><span class="status done">complete v0.3</span></td><td>Constructors and stable reference encodings for all defined integer operations.</td><td>Update only through a deliberate ISA revision.</td></tr>
+  <tr><td>Architectural simulator</td><td><span class="status done">complete v0.3</span></td><td>All integer families, prefix precision, unified memory, halt, invalid instruction, and reserved-FPU fault.</td><td>MMIO device model and any future FPU semantics.</td></tr>
+  <tr><td>Compiler backend</td><td><span class="status done">usable</span></td><td>G16 ABI, register allocation, calls, stack frames, memory operations, comparisons, static initialization, and fixed-width symbolic linking.</td><td>Optional size relaxation and production loader integration.</td></tr>
+  <tr><td>Host cache/scheduler models</td><td><span class="status done">policy baseline</span></td><td>Split direct-mapped caches, refill/write-through rules, address/lane mapping, refresh-aware single-operation arbitration.</td><td>Connect the complete models to reusable RTL boundaries.</td></tr>
+  <tr><td>Tang Nano 20K RTL</td><td><span class="status partial">integration prototype</span></td><td>54-MHz SDRAM, measured read-valid adapter, boot pROM → SDRAM → I-cache, separate D-cache masked store and line refill, UART result.</td><td>Full instruction decoder, arbitrary I-cache misses, shared scheduler/refresh in RTL, MMIO, interrupts if adopted, and broader board programs.</td></tr>
+  <tr><td>Physical validation</td><td><span class="status partial">partially complete</span></td><td>SDRAM, BSRAM, DSP, and the earlier G16 BSRAM execution path passed board tests. The complete split-cache harness passes Icarus Verilog simulation and closes timing at 54 MHz with three exact BSRAM blocks.</td><td>Program and capture the final split-cache UART test after the Windows programmer device is available.</td></tr>
+</table>
+<div class="notice"><b>Source-of-truth rule:</b> executable behavior lives in <code>encoding.rs</code> and <code>sim.rs</code>; compiler convention lives in <code>compiler/g16.rs</code> and <code>regalloc.rs</code>; cache and SDRAM policy lives in <code>g16/cache.rs</code> and <code>g16/sdram.rs</code>. This page is the human-readable companion and must be updated with those files.</div>
+
+</main></body>
+</html>

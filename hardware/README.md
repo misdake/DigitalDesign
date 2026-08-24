@@ -161,6 +161,13 @@ Parameterized HDL should simulate small representative specializations. Large
 real-world constants are covered by source/export assertions instead of
 advancing millions of simulator cycles unless their timing behavior differs.
 
+Verilog expression widths do not grow to fit a result. In particular, shifting
+an `N`-bit index left still produces an `N`-bit value and can silently wrap an
+array address. Widen an index explicitly with concatenation or an explicitly
+sized intermediate before arithmetic that needs another address bit. Tests for
+line or burst logic must cross the half-way boundary so this class of truncation
+cannot pass by checking only the first beats.
+
 ### BSRAM leaves
 
 `Bsram1Rw1024<WIDTH, Image>`, `Bsram1R1Rw1024<WIDTH, Image>`, and
@@ -386,8 +393,11 @@ per-leaf hierarchy audit. DSP uses aggregate physical usage because synthesis
 may merge, fuse, or move operators across module boundaries. Normal projects
 require actual DSP usage to stay within the total measured leaf requests;
 characterization projects may additionally assert exact primitive shapes.
-Unknown DSP modes and unaudited PLL claims fail closed. The complete rationale
-and extension rules are recorded in [RESOURCE_MODEL.md](RESOURCE_MODEL.md).
+Unknown DSP modes fail closed; PLLs use the same aggregate actual-versus-claim
+rule. The complete rationale and extension rules are recorded in
+[RESOURCE_MODEL.md](RESOURCE_MODEL.md). Tang Nano 20K fitted SDRAM clocking,
+installed-IP dependencies, and validation are recorded in
+[SDRAM.md](SDRAM.md).
 
 Tang Nano 20K exposes the wires that are stable parts of the board directly as
 typed module IO:

@@ -230,6 +230,12 @@ impl Compiler {
         (instructions, listing)
     }
 
+    /// Compile through the G16 backend while the v2.6 backend remains the
+    /// default for existing tools. Both paths share frontend IR and passes.
+    pub fn finish_g16(self, main: FuncName) -> crate::compiler::g16::G16Program {
+        crate::compiler::g16::compile_program(self.funcs, &self.opts, main)
+    }
+
     /// like `finish`, and also produces debugger info when `set_debug` was called
     pub fn finish_with_debug(self, main: FuncName) -> (Vec<Instruction>, String, DebugInfo) {
         let (instructions, listing, debug) = self.finish_impl(main);

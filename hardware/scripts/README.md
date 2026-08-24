@@ -21,3 +21,11 @@ addresses, observed values, or replayable vectors should introduce a new
 protocol version and extend the shared decoder rather than growing a private
 script inside one example. Set `-MaximumAgeSeconds 0` only when deliberately
 inspecting an archived capture.
+
+Assigned test IDs:
+
+| ID | Test |
+| ---: | --- |
+| `0x03` | Tang Nano 20K fitted SDRAM burst/refresh self-test |
+| `0x04` | G16 compiled-program CPU/BSRAM execution self-test |
+| `0x05` | G16 boot BSRAM to SDRAM to instruction-cache execution self-test |

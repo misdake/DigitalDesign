@@ -58,6 +58,136 @@ pub enum GowinPortDirection {
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum GowinTopPortDirection {
+    Output,
+    InOut,
+}
+
+impl GowinTopPortDirection {
+    const fn verilog(self) -> &'static str {
+        match self {
+            Self::Output => "output",
+            Self::InOut => "inout",
+        }
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct GowinTopPort {
+    name: String,
+    direction: GowinTopPortDirection,
+    width: usize,
+}
+
+impl GowinTopPort {
+    pub(crate) fn new(
+        name: impl Into<String>,
+        direction: GowinTopPortDirection,
+        width: usize,
+    ) -> Self {
+        assert!(width > 0, "Gowin top-level port width must be non-zero");
+        Self {
+            name: name.into(),
+            direction,
+            width,
+        }
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct GowinLogicConnection {
+    logic_port: String,
+    direction: GowinPortDirection,
+    width: usize,
+    signal: String,
+}
+
+impl GowinLogicConnection {
+    pub(crate) fn new(
+        logic_port: impl Into<String>,
+        direction: GowinPortDirection,
+        width: usize,
+        signal: impl Into<String>,
+    ) -> Self {
+        assert!(width > 0, "Gowin logic connection width must be non-zero");
+        Self {
+            logic_port: logic_port.into(),
+            direction,
+            width,
+            signal: signal.into(),
+        }
+    }
+}
+
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub(crate) struct GowinBoardExtension {
+    top_ports: Vec<GowinTopPort>,
+    logic_connections: Vec<GowinLogicConnection>,
+    wrapper_source: String,
+    logic_clock_signal: Option<String>,
+    source_files: BTreeMap<PathBuf, String>,
+    installed_ide_files: Vec<GowinInstalledIdeFile>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct GowinInstalledIdeFile {
+    path: PathBuf,
+    adjacent_project_files: Vec<PathBuf>,
+}
+
+impl GowinBoardExtension {
+    pub(crate) fn new(wrapper_source: impl Into<String>) -> Self {
+        Self {
+            wrapper_source: wrapper_source.into(),
+            ..Self::default()
+        }
+    }
+
+    pub(crate) fn with_logic_clock(mut self, signal: impl Into<String>) -> Self {
+        self.logic_clock_signal = Some(signal.into());
+        self
+    }
+
+    pub(crate) fn add_top_port(mut self, port: GowinTopPort) -> Self {
+        self.top_ports.push(port);
+        self
+    }
+
+    pub(crate) fn connect_logic(mut self, connection: GowinLogicConnection) -> Self {
+        self.logic_connections.push(connection);
+        self
+    }
+
+    pub(crate) fn add_source_file(
+        mut self,
+        relative_path: impl Into<PathBuf>,
+        source: impl Into<String>,
+    ) -> Self {
+        let path = relative_path.into();
+        assert!(
+            self.source_files
+                .insert(path.clone(), source.into())
+                .is_none(),
+            "duplicate Gowin board-extension source `{}`",
+            path.display()
+        );
+        self
+    }
+
+    pub(crate) fn require_installed_ide_file(
+        mut self,
+        path: impl Into<PathBuf>,
+        adjacent_project_files: impl IntoIterator<Item = PathBuf>,
+    ) -> Self {
+        self.installed_ide_files.push(GowinInstalledIdeFile {
+            path: path.into(),
+            adjacent_project_files: adjacent_project_files.into_iter().collect(),
+        });
+        self
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct GowinPin {
     pub location: u16,
     pub io_type: &'static str,
@@ -89,6 +219,7 @@ pub struct GowinBoardBinding<T: GowinTarget> {
     clock: GowinClockPin,
     ports: Vec<GowinBoundPort>,
     resources: Vec<TargetResourceRequest>,
+    extension: Option<GowinBoardExtension>,
     target: PhantomData<T>,
 }
 
@@ -106,6 +237,7 @@ impl<T: GowinTarget> GowinBoardBinding<T> {
             clock,
             ports: Vec::new(),
             resources: Vec::new(),
+            extension: None,
             target: PhantomData,
         }
     }
@@ -131,6 +263,15 @@ impl<T: GowinTarget> GowinBoardBinding<T> {
         self
     }
 
+    pub(crate) fn with_extension(mut self, extension: GowinBoardExtension) -> Self {
+        assert!(
+            self.extension.is_none(),
+            "Gowin board extension already set"
+        );
+        self.extension = Some(extension);
+        self
+    }
+
     pub fn top_module(&self) -> &str {
         &self.top_module
     }
@@ -141,14 +282,22 @@ impl<T: GowinTarget> GowinBoardBinding<T> {
         logic_ports: &[(String, String, usize)],
     ) -> Result<BTreeMap<PathBuf, String>, GowinError> {
         self.validate(logic_top, logic_ports)?;
-        Ok(BTreeMap::from([
+        let mut files = BTreeMap::from([
             (
                 PathBuf::from("src/generated/board_top.v"),
                 self.render_wrapper(logic_top),
             ),
             (PathBuf::from("src/generated/board.cst"), self.render_cst()),
             (PathBuf::from("src/generated/board.sdc"), self.render_sdc()),
-        ]))
+        ]);
+        if let Some(extension) = &self.extension {
+            for (path, source) in &extension.source_files {
+                if files.insert(path.clone(), source.clone()).is_some() {
+                    return Err(GowinError::DuplicateSourcePath(path.clone()));
+                }
+            }
+        }
+        Ok(files)
     }
 
     fn validate(
@@ -245,6 +394,46 @@ impl<T: GowinTarget> GowinBoardBinding<T> {
                 }
             }
         }
+        if let Some(extension) = &self.extension {
+            for top_port in &extension.top_ports {
+                validate_verilog_identifier(&top_port.name).map_err(ProjectError::from)?;
+                if !board_ports.insert(top_port.name.clone()) {
+                    return Err(GowinError::InvalidBoardBinding(format!(
+                        "duplicate board port `{}`",
+                        top_port.name
+                    )));
+                }
+            }
+            for connection in &extension.logic_connections {
+                validate_verilog_identifier(&connection.logic_port).map_err(ProjectError::from)?;
+                if !bound_logic_ports.insert(connection.logic_port.clone()) {
+                    return Err(GowinError::InvalidBoardBinding(format!(
+                        "duplicate logic port binding `{}`",
+                        connection.logic_port
+                    )));
+                }
+                let expected_direction = match connection.direction {
+                    GowinPortDirection::Input => "input",
+                    GowinPortDirection::Output => "output",
+                };
+                match contract.get(connection.logic_port.as_str()) {
+                    Some(&(direction, width))
+                        if direction == expected_direction && width == connection.width => {}
+                    Some(&(direction, width)) => {
+                        return Err(GowinError::InvalidBoardBinding(format!(
+                            "logic port `{}` must be {expected_direction} width {}, found {direction} width {width}",
+                            connection.logic_port, connection.width
+                        )));
+                    }
+                    None => {
+                        return Err(GowinError::InvalidBoardBinding(format!(
+                            "logic module `{logic_top}` has no port `{}`",
+                            connection.logic_port
+                        )));
+                    }
+                }
+            }
+        }
         for (name, _, _) in logic_ports {
             if name != &self.logic_clock_port && !bound_logic_ports.contains(name) {
                 return Err(GowinError::InvalidBoardBinding(format!(
@@ -266,6 +455,16 @@ impl<T: GowinTarget> GowinBoardBinding<T> {
             let width = verilog_width(port.pins.len());
             format!("    {direction} wire {width}{}", port.board_port)
         }));
+        if let Some(extension) = &self.extension {
+            declarations.extend(extension.top_ports.iter().map(|port| {
+                format!(
+                    "    {} wire {}{}",
+                    port.direction.verilog(),
+                    verilog_width(port.width),
+                    port.name
+                )
+            }));
+        }
         output.push_str(&declarations.join(",\n"));
         output.push_str("\n);\n\n");
 
@@ -294,10 +493,23 @@ impl<T: GowinTarget> GowinBoardBinding<T> {
             }
         }
 
+        if let Some(extension) = &self.extension {
+            output.push('\n');
+            output.push_str(&extension.wrapper_source);
+            if !extension.wrapper_source.ends_with('\n') {
+                output.push('\n');
+            }
+        }
+
         output.push_str(&format!("\n{logic_top} u_logic(\n"));
+        let logic_clock_signal = self
+            .extension
+            .as_ref()
+            .and_then(|extension| extension.logic_clock_signal.as_deref())
+            .unwrap_or(&self.clock_port);
         let mut connections = vec![format!(
             "    .{}({})",
-            self.logic_clock_port, self.clock_port
+            self.logic_clock_port, logic_clock_signal
         )];
         connections.extend(self.ports.iter().map(|port| {
             let signal = if port.pins.iter().any(|pin| pin.active_low) {
@@ -307,6 +519,11 @@ impl<T: GowinTarget> GowinBoardBinding<T> {
             };
             format!("    .{}({signal})", port.logic_port)
         }));
+        if let Some(extension) = &self.extension {
+            connections.extend(extension.logic_connections.iter().map(|connection| {
+                format!("    .{}({})", connection.logic_port, connection.signal)
+            }));
+        }
         output.push_str(&connections.join(",\n"));
         output.push_str("\n);\n\nendmodule\n");
         output
@@ -335,6 +552,12 @@ impl<T: GowinTarget> GowinBoardBinding<T> {
             period / 2.0,
             self.clock_port
         )
+    }
+
+    fn installed_ide_files(&self) -> &[GowinInstalledIdeFile] {
+        self.extension
+            .as_ref()
+            .map_or(&[], |extension| extension.installed_ide_files.as_slice())
     }
 }
 
@@ -371,6 +594,7 @@ pub struct GowinProject<T: GowinTarget> {
     project_sources: BTreeMap<PathBuf, String>,
     board_binding: Option<GowinBoardBinding<T>>,
     dsp_expectations: BTreeMap<GowinDspMode, ResourceCountExpectation>,
+    bsram_expectation: Option<ResourceCountExpectation>,
 }
 
 /// A DSP implementation mode reported by Gowin place-and-route.
@@ -461,6 +685,15 @@ impl<T: GowinTarget, M: Module> GowinModuleProject<T, M> {
         self.project = self.project.expect_dsp_mode(mode, expectation);
         self
     }
+
+    /// Require an aggregate physical BSRAM count after place-and-route.
+    /// Characterization projects use this to catch inferred memories that
+    /// were optimized into LUTs. Normal projects need only the default rule
+    /// that actual use may not exceed target-leaf claims.
+    pub fn expect_bsram_blocks(mut self, expectation: ResourceCountExpectation) -> Self {
+        self.project = self.project.expect_bsram_blocks(expectation);
+        self
+    }
 }
 
 impl<T: GowinTarget> GowinProject<T> {
@@ -470,6 +703,7 @@ impl<T: GowinTarget> GowinProject<T> {
             project_sources: BTreeMap::new(),
             board_binding: None,
             dsp_expectations: BTreeMap::new(),
+            bsram_expectation: None,
         }
     }
 
@@ -508,6 +742,14 @@ impl<T: GowinTarget> GowinProject<T> {
             self.dsp_expectations.insert(mode, expectation).is_none(),
             "duplicate Gowin DSP expectation for {}",
             mode.report_name()
+        );
+        self
+    }
+
+    pub fn expect_bsram_blocks(mut self, expectation: ResourceCountExpectation) -> Self {
+        assert!(
+            self.bsram_expectation.replace(expectation).is_none(),
+            "duplicate Gowin BSRAM expectation"
         );
         self
     }
@@ -569,6 +811,16 @@ impl<T: GowinTarget> GowinProject<T> {
         for path in files.keys() {
             validate_project_path(path)?;
         }
+        let installed_ide_files = self
+            .board_binding
+            .as_ref()
+            .map_or(&[][..], GowinBoardBinding::installed_ide_files);
+        for installed in installed_ide_files {
+            validate_installed_ide_path(&installed.path)?;
+            for path in &installed.adjacent_project_files {
+                validate_project_path(path)?;
+            }
+        }
         for (path, content) in &verilog.files {
             let generated_path = Path::new("src/generated").join(path);
             validate_project_path(&generated_path)?;
@@ -595,7 +847,13 @@ impl<T: GowinTarget> GowinProject<T> {
         );
         files.insert(
             PathBuf::from("build.tcl"),
-            render_build_tcl(T::DEVICE, &self.project_name, &top_module, &source_paths)?,
+            render_build_tcl(
+                T::DEVICE,
+                &self.project_name,
+                &top_module,
+                &source_paths,
+                installed_ide_files,
+            )?,
         );
         Ok(GeneratedGowinProject {
             project_name: self.project_name.clone(),
@@ -605,6 +863,7 @@ impl<T: GowinTarget> GowinProject<T> {
             device: T::DEVICE,
             resources: resource_report,
             dsp_expectations: self.dsp_expectations.clone(),
+            bsram_expectation: self.bsram_expectation,
             files,
         })
     }
@@ -628,6 +887,7 @@ pub struct GeneratedGowinProject {
     pub device: GowinDeviceInfo,
     pub resources: ResourceReport,
     dsp_expectations: BTreeMap<GowinDspMode, ResourceCountExpectation>,
+    bsram_expectation: Option<ResourceCountExpectation>,
     pub files: BTreeMap<PathBuf, String>,
 }
 
@@ -695,8 +955,21 @@ fn xml_attribute(value: &str) -> String {
 }
 
 fn validate_project_path(path: &Path) -> Result<(), GowinError> {
+    if !path.starts_with("src") {
+        return Err(GowinError::UnsafeProjectPath(path.to_path_buf()));
+    }
+    validate_safe_relative_path(path)
+}
+
+fn validate_installed_ide_path(path: &Path) -> Result<(), GowinError> {
+    if !path.starts_with("ipcore") {
+        return Err(GowinError::UnsafeProjectPath(path.to_path_buf()));
+    }
+    validate_safe_relative_path(path)
+}
+
+fn validate_safe_relative_path(path: &Path) -> Result<(), GowinError> {
     if path.is_absolute()
-        || !path.starts_with("src")
         || path.components().any(|component| {
             matches!(
                 component,
@@ -762,16 +1035,64 @@ fn render_build_tcl(
     project_name: &str,
     top_module: &str,
     paths: &[PathBuf],
+    installed_ide_files: &[GowinInstalledIdeFile],
 ) -> Result<String, GowinError> {
     validate_verilog_identifier(project_name).map_err(ProjectError::from)?;
     validate_verilog_identifier(top_module).map_err(ProjectError::from)?;
     for path in paths {
         validate_project_path(path)?;
     }
+    for installed in installed_ide_files {
+        validate_installed_ide_path(&installed.path)?;
+        for path in &installed.adjacent_project_files {
+            validate_project_path(path)?;
+        }
+    }
     let files = paths
         .iter()
         .filter(|path| file_type(path).is_some())
         .map(|path| tcl_add_file(path))
+        .collect::<Vec<_>>()
+        .join("\n");
+    let installed_files = installed_ide_files
+        .iter()
+        .enumerate()
+        .map(|(index, installed)| {
+            let components = installed
+                .path
+                .iter()
+                .map(|component| format!("{{{}}}", component.to_string_lossy()))
+                .collect::<Vec<_>>()
+                .join(" ");
+            let staged_name = installed
+                .path
+                .file_name()
+                .expect("validated installed IDE path has a file name")
+                .to_string_lossy();
+            let adjacent = installed
+                .adjacent_project_files
+                .iter()
+                .map(|path| {
+                    let source = path
+                        .iter()
+                        .map(|component| format!("{{{}}}", component.to_string_lossy()))
+                        .collect::<Vec<_>>()
+                        .join(" ");
+                    format!("file copy -force [file join $here {source}] $installed_stage_{index}")
+                })
+                .collect::<Vec<_>>()
+                .join("\n");
+            format!(
+                "set installed_file_{index} [file join $gowin_ide {components}]\n\
+if {{![file isfile $installed_file_{index}]}} {{ error \"Required Gowin IDE file not found: $installed_file_{index}\" }}\n\
+set installed_stage_{index} [file join $here impl installed {index}]\n\
+file delete -force $installed_stage_{index}\n\
+file mkdir $installed_stage_{index}\n\
+file copy -force $installed_file_{index} [file join $installed_stage_{index} {{{staged_name}}}]\n\
+{adjacent}\n\
+add_file [file join $installed_stage_{index} {{{staged_name}}}]"
+            )
+        })
         .collect::<Vec<_>>()
         .join("\n");
     let GowinDeviceInfo {
@@ -782,9 +1103,11 @@ fn render_build_tcl(
     } = device;
     Ok(format!(
         "set here [file normalize [file dirname [info script]]]\n\
+set gowin_ide [file normalize [file join [file dirname [info nameofexecutable]] ..]]\n\
 cd $here\n\
 set_device -name {device_name} -device_version {device_version} {part_number}\n\
 {files}\n\
+{installed_files}\n\
 set_option -synthesis_tool gowinsynthesis\n\
 set_option -top_module {top_module}\n\
 set_option -output_base_name {project_name}\n\
@@ -1058,6 +1381,7 @@ impl GowinToolchain {
             &result.synthesis_resource_report,
             &project.resources,
             &project.dsp_expectations,
+            project.bsram_expectation,
         )?;
         Ok(result)
     }
@@ -1170,6 +1494,7 @@ fn audit_physical_resources(
     hierarchy_report: &Path,
     planned: &ResourceReport,
     dsp_expectations: &BTreeMap<GowinDspMode, ResourceCountExpectation>,
+    bsram_expectation: Option<ResourceCountExpectation>,
 ) -> Result<(), GowinError> {
     if !report.is_file() {
         return Err(GowinError::MissingBuildArtifact(report.to_path_buf()));
@@ -1181,13 +1506,17 @@ fn audit_physical_resources(
         ));
     }
 
-    for (kind, label) in [
-        (ResourceKind::Bsram18K, "BSRAM"),
-        (ResourceKind::Pll, "PLL"),
+    for (kind, labels) in [
+        (ResourceKind::Bsram18K, &["BSRAM"][..]),
+        (ResourceKind::Pll, &["PLL", "rPLL"][..]),
     ] {
         let claimed = planned.claimed.get(&kind).copied().unwrap_or(0);
-        let actual = resource_usage_fraction(&text, label)
-            .unwrap_or_else(|| resource_mode_total(&text, label).unwrap_or(0));
+        let actual = labels
+            .iter()
+            .find_map(|label| {
+                resource_usage_fraction(&text, label).or_else(|| resource_mode_total(&text, label))
+            })
+            .unwrap_or(0);
         if actual > claimed {
             return Err(GowinError::PhysicalResourceMismatch {
                 report: report.to_path_buf(),
@@ -1198,20 +1527,20 @@ fn audit_physical_resources(
         }
     }
 
-    audit_bsram_ownership(hierarchy_report, planned)?;
-
-    let claimed_plls = planned
-        .claimed
-        .get(&ResourceKind::Pll)
-        .copied()
-        .unwrap_or(0);
-    if claimed_plls != 0 {
-        return Err(GowinError::PhysicalResourceAuditUnsupported {
-            report: hierarchy_report.to_path_buf(),
-            resource: ResourceKind::Pll,
-            claimed: claimed_plls,
-        });
+    if let Some(expectation) = bsram_expectation {
+        let actual = resource_usage_fraction(&text, "BSRAM")
+            .or_else(|| resource_mode_total(&text, "BSRAM"))
+            .ok_or_else(|| GowinError::PhysicalResourceReportUnrecognized(report.to_path_buf()))?;
+        if !expectation.accepts(actual) {
+            return Err(GowinError::PhysicalBsramExpectationMismatch {
+                report: report.to_path_buf(),
+                expectation,
+                actual,
+            });
+        }
     }
+
+    audit_bsram_ownership(hierarchy_report, planned)?;
 
     let claimed_multipliers = planned
         .claimed
@@ -1417,6 +1746,12 @@ fn resource_mode_usage(report: &str, label: &str, mode: &str) -> Option<u64> {
 }
 
 fn dsp_multiplier_lane_usage(report: &str) -> Option<u64> {
+    if !report.lines().any(|line| {
+        line.split_once('|')
+            .is_some_and(|(name, _)| name.trim() == "DSP")
+    }) {
+        return Some(0);
+    }
     let plain = resource_mode_usage(report, "DSP", "MULT18X18")?;
     let multiply_add = resource_mode_usage(report, "DSP", "MULTADDALU18X18")?;
     let pre_add = resource_mode_usage(report, "DSP", "PADD18")?;
@@ -1470,17 +1805,17 @@ pub enum GowinError {
         expectation: ResourceCountExpectation,
         actual: u64,
     },
+    PhysicalBsramExpectationMismatch {
+        report: PathBuf,
+        expectation: ResourceCountExpectation,
+        actual: u64,
+    },
     PhysicalResourceInstanceMismatch {
         report: PathBuf,
         instance: String,
         resource: ResourceKind,
         claimed: u64,
         actual: u64,
-    },
-    PhysicalResourceAuditUnsupported {
-        report: PathBuf,
-        resource: ResourceKind,
-        claimed: u64,
     },
 }
 
@@ -1559,6 +1894,15 @@ impl Display for GowinError {
                 report.display(),
                 mode.report_name()
             ),
+            Self::PhysicalBsramExpectationMismatch {
+                report,
+                expectation,
+                actual,
+            } => write!(
+                formatter,
+                "Gowin BSRAM characterization failed for {}: expected {expectation}, but place-and-route reported {actual}",
+                report.display()
+            ),
             Self::PhysicalResourceInstanceMismatch {
                 report,
                 instance,
@@ -1568,15 +1912,6 @@ impl Display for GowinError {
             } => write!(
                 formatter,
                 "Gowin physical-resource ownership audit failed for {}: synthesized instance `{instance}` used {actual} {resource}, but its target-leaf wrapper claimed at most {claimed}",
-                report.display()
-            ),
-            Self::PhysicalResourceAuditUnsupported {
-                report,
-                resource,
-                claimed,
-            } => write!(
-                formatter,
-                "Gowin physical-resource audit cannot validate {claimed} claimed {resource} from report {}; add a measured report mapping before enabling this resource configuration",
                 report.display()
             ),
         }
@@ -1834,6 +2169,12 @@ mod tests {
     --MULTADDALU18X18 | 2\n\
   PLL | 0/2 | 0%\n";
         assert_eq!(dsp_multiplier_lane_usage(supported_dsp), Some(5));
+
+        let sdram_only = "3. Resource Usage Summary\n\
+  BSRAM | 0/46 | 0%\n\
+  rPLL | 1/2 | 50%\n";
+        assert_eq!(resource_usage_fraction(sdram_only, "rPLL"), Some(1));
+        assert_eq!(dsp_multiplier_lane_usage(sdram_only), Some(0));
     }
 
     #[test]
@@ -1857,7 +2198,7 @@ mod tests {
         .unwrap();
         let planned = TargetResources::<TangNano20K>::new().report();
         assert!(matches!(
-            audit_physical_resources(&report, &hierarchy_report, &planned, &BTreeMap::new()),
+            audit_physical_resources(&report, &hierarchy_report, &planned, &BTreeMap::new(), None,),
             Err(GowinError::PhysicalResourceMismatch {
                 resource: ResourceKind::Bsram18K,
                 claimed: 0,

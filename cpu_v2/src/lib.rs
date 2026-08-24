@@ -10,6 +10,7 @@ mod sim;
 pub mod cpu;
 pub mod debugger;
 pub mod frontend;
+pub mod g16;
 
 pub mod dsl_rt;
 pub mod rcc_std;
