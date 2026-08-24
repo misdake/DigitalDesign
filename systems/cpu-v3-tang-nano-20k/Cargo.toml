@@ -9,6 +9,7 @@ rcc = { path = "../../compiler/rcc" }
 digital-design-ip-common = { path = "../../ip/common" }
 digital-design-circuit = { path = "../../circuit" }
 digital-design-hardware = { path = "../../hardware/core" }
+digital-design-hardware-common = { path = "../../hardware/common" }
 digital-design-hardware-gowin = { path = "../../hardware/vendor/gowin" }
 askama = { version = "0.14", default-features = false, features = ["config", "derive", "std"] }
 

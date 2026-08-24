@@ -222,71 +222,15 @@ end
 wire done = phase == 8;
 assign leds = error_sticky ? 6'b100000 : (done ? 6'b000001 : 6'b000000);
 
-reg [21:0] report_delay = 0;
-reg [9:0] uart_frame = 10'h3ff;
-reg [3:0] uart_bit = 0;
-reg [7:0] uart_divider = 0;
-reg [2:0] report_byte_index = 0;
-reg uart_busy = 0;
-
-function [7:0] report_byte;
-    input [2:0] index;
-    input failed;
-    begin
-        case (index)
-            0: report_byte = 8'h44;
-            1: report_byte = 8'h44;
-            2: report_byte = 8'h48;
-            3: report_byte = 8'h54;
-            4: report_byte = 8'h01;
-            5: report_byte = 8'h01;
-            6: report_byte = failed ? 8'h01 : 8'h00;
-            default: report_byte = failed ? 8'h1d : 8'h1c;
-        endcase
-    end
-endfunction
-
-always @(posedge clk) begin
-    if (reset) begin
-        report_delay <= 0;
-        uart_frame <= 10'h3ff;
-        uart_bit <= 0;
-        uart_divider <= 0;
-        report_byte_index <= 0;
-        uart_busy <= 0;
-    end else if (!uart_busy) begin
-        if (done && report_delay == 22'd2700000) begin
-            uart_frame <= {1'b1, report_byte(0, error_sticky), 1'b0};
-            uart_bit <= 0;
-            uart_divider <= 0;
-            report_byte_index <= 0;
-            uart_busy <= 1;
-            report_delay <= 0;
-        end else if (done) begin
-            report_delay <= report_delay + 1'b1;
-        end
-    end else if (uart_divider == 8'd233) begin
-        uart_divider <= 0;
-        if (uart_bit == 9) begin
-            if (report_byte_index == 7) begin
-                uart_busy <= 0;
-            end else begin
-                report_byte_index <= report_byte_index + 1'b1;
-                uart_frame <= {
-                    1'b1,
-                    report_byte(report_byte_index + 1'b1, error_sticky),
-                    1'b0
-                };
-                uart_bit <= 0;
-            end
-        end else begin
-            uart_bit <= uart_bit + 1'b1;
-        end
-    end else begin
-        uart_divider <= uart_divider + 1'b1;
-    end
-end
-
-assign uart_tx = uart_busy ? uart_frame[uart_bit] : 1'b1;
+wire uart_busy;
+wire frame_toggle;
+__DIAGNOSTIC_REPORTER__ u_reporter(
+    .clk(clk),
+    .report_enable(done),
+    .status(error_sticky ? 8'h01 : 8'h00),
+    .uart_tx(uart_tx),
+    .uart_busy(uart_busy),
+    .frame_toggle(frame_toggle)
+);
 
 endmodule

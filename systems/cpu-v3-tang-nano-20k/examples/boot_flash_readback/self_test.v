@@ -13,11 +13,17 @@ module FlashReadbackProbe (
     output wire flash_mosi
 );
 
-reg [3:0] startup_reset = 4'd15;
-always @(posedge clk)
-    if (startup_reset != 0)
-        startup_reset <= startup_reset - 1'b1;
-wire reset = startup_reset != 0;
+wire reset;
+wire clock_ready_synchronized;
+wire external_reset_seen;
+__RESET_CONTROLLER__ u_reset(
+    .clk(clk),
+    .external_reset(|buttons),
+    .clock_ready(1'b1),
+    .reset(reset),
+    .clock_ready_synchronized(clock_ready_synchronized),
+    .external_reset_seen(external_reset_seen)
+);
 
 reg start = 0;
 wire flash_ready;

@@ -1,8 +1,11 @@
 use digital_design_circuit::CircuitWires;
 use digital_design_hardware_gowin::{
-    run_gowin_project_cli, GowinCliError, GowinModuleProject, Hardware, Module, TangNano20K,
-    TangNano20KDebugOutputs, TangNano20KInputs,
+    run_gowin_project_cli, DiagnosticReporter, GowinCliError, GowinModuleProject, Hardware,
+    HardwareIdentity, Module, TangNano20K, TangNano20KDebugOutputs, TangNano20KInputs,
+    VerilogDependency,
 };
+
+type HealthReporter = DiagnosticReporter<0x0a, 234, 1_000_000, 5_000_000>;
 
 fn main() -> Result<(), GowinCliError> {
     run_gowin_project_cli(gowin_project(), "target/board_health_gowin")
@@ -33,7 +36,14 @@ impl Module for BoardHealthProbe {
     }
 
     fn verilog_source() -> Option<String> {
-        Some(include_str!("self_test.v").to_string())
+        Some(include_str!("self_test.v").replace(
+            "__DIAGNOSTIC_REPORTER__",
+            &HealthReporter::verilog_identity().module_name(),
+        ))
+    }
+
+    fn verilog_dependencies() -> Vec<VerilogDependency> {
+        vec![VerilogDependency::new::<HealthReporter>("u_reporter")]
     }
 
     fn verilog_testbench() -> Option<String> {
@@ -54,6 +64,13 @@ mod tests {
     fn project_is_a_resource_free_board_transport_probe() {
         let verilog = VerilogProject::generate::<BoardHealthProbe>().unwrap();
         assert!(verilog.resource_claims.is_empty());
+        assert!(verilog
+            .files
+            .values()
+            .any(|source| source.contains(&format!(
+                "{} u_reporter",
+                HealthReporter::verilog_identity().module_name()
+            ))));
         let project = gowin_project().generate().unwrap();
         for kind in [
             ResourceKind::Bsram18K,

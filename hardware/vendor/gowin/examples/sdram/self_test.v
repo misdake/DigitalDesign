@@ -283,68 +283,16 @@ assign leds = state == ST_PASS ? 6'b000001 :
               6'b001100;
 
 wire test_done = state == ST_PASS || state == ST_ERROR;
-reg [24:0] report_delay = 0;
-reg [9:0] uart_frame = 10'h3ff;
-reg [3:0] uart_bit = 0;
-reg [8:0] uart_divider = 0;
-reg [3:0] report_byte_index = 0;
-reg uart_busy = 0;
-
-function [7:0] report_byte;
-    input [3:0] index;
-    reg [7:0] status;
-    begin
-        status = state == ST_PASS ? 8'h00 : {4'h0, error_code};
-        case (index)
-            0: report_byte = 8'h44; // D
-            1: report_byte = 8'h44; // D
-            2: report_byte = 8'h48; // H
-            3: report_byte = 8'h54; // T
-            4: report_byte = 8'h01;
-            5: report_byte = 8'h03; // SDRAM self-test
-            6: report_byte = status;
-            default: report_byte = 8'h1e ^ status;
-        endcase
-    end
-endfunction
-
-always @(posedge clk) begin
-    if (!test_done) begin
-        report_delay <= 0;
-        uart_frame <= 10'h3ff;
-        uart_bit <= 0;
-        uart_divider <= 0;
-        report_byte_index <= 0;
-        uart_busy <= 0;
-    end else if (!uart_busy) begin
-        if (report_delay == 25'd27_000_000) begin
-            uart_frame <= {1'b1, report_byte(0), 1'b0};
-            uart_bit <= 0;
-            uart_divider <= 0;
-            report_byte_index <= 0;
-            uart_busy <= 1;
-            report_delay <= 0;
-        end else begin
-            report_delay <= report_delay + 1'b1;
-        end
-    end else if (uart_divider == 9'd468) begin
-        uart_divider <= 0;
-        if (uart_bit == 9) begin
-            if (report_byte_index == 7) begin
-                uart_busy <= 0;
-            end else begin
-                report_byte_index <= report_byte_index + 1'b1;
-                uart_frame <= {1'b1, report_byte(report_byte_index + 1'b1), 1'b0};
-                uart_bit <= 0;
-            end
-        end else begin
-            uart_bit <= uart_bit + 1'b1;
-        end
-    end else begin
-        uart_divider <= uart_divider + 1'b1;
-    end
-end
-
-assign uart_tx = uart_busy ? uart_frame[uart_bit] : 1'b1;
+wire [7:0] report_status = state == ST_PASS ? 8'h00 : {4'h0, error_code};
+wire uart_busy;
+wire frame_toggle;
+__DIAGNOSTIC_REPORTER__ u_reporter(
+    .clk(clk),
+    .report_enable(test_done),
+    .status(report_status),
+    .uart_tx(uart_tx),
+    .uart_busy(uart_busy),
+    .frame_toggle(frame_toggle)
+);
 
 endmodule

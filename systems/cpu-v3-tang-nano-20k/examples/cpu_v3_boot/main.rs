@@ -2,6 +2,7 @@ use cpu_v3::{CpuV3Core, CpuV3DirectMappedCache, CpuV3MmioBridge};
 use cpu_v3_tang_nano_20k::{BootDmaEngine, BootDmaMmio, CpuV3MemoryArbiter, SystemControlDevice};
 use digital_design_circuit::CircuitWires;
 use digital_design_hardware::{Hardware, HardwareIdentity, Module, VerilogDependency};
+use digital_design_hardware_common::ResetController;
 use digital_design_hardware_gowin::{
     run_gowin_project_cli, Bsram1R1Rw1024, BsramImage, ErasedSpiFlashImage, GowinCliError,
     GowinDspMode, GowinModuleProject, ResourceCountExpectation, SpiFlashReader, TangNano20K,
@@ -38,6 +39,7 @@ impl BsramImage<16> for BootImage {
 type BootMemory = Bsram1R1Rw1024<16, BootImage>;
 type FittedFlashReader = SpiFlashReader<ErasedSpiFlashImage, 8_388_608, 2>;
 type SystemControl = SystemControlDevice<469>;
+type BoardReset = ResetController<8>;
 
 #[derive(Hardware)]
 #[hardware(namespace = "examples/cpu_v3_boot")]
@@ -102,6 +104,10 @@ impl Module for CpuV3BootSelfTest {
                 .replace(
                     "__SDRAM_WORD_PORT__",
                     &TangNano20KSdramWordPort::verilog_identity().module_name(),
+                )
+                .replace(
+                    "__RESET_CONTROLLER__",
+                    &BoardReset::verilog_identity().module_name(),
                 ),
         )
     }
@@ -119,6 +125,7 @@ impl Module for CpuV3BootSelfTest {
             VerilogDependency::new::<BootDmaEngine>("u_boot_dma_engine"),
             VerilogDependency::new::<FittedFlashReader>("u_flash"),
             VerilogDependency::new::<TangNano20KSdramWordPort>("u_sdram_word_port"),
+            VerilogDependency::new::<BoardReset>("u_reset"),
         ]
     }
 

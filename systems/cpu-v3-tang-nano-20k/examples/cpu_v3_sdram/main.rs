@@ -2,6 +2,7 @@ use cpu_v3::{CpuV3Core, CpuV3DirectMappedCache, CpuV3MmioBridge};
 use cpu_v3_tang_nano_20k::{BootDmaMmio, CpuV3MemoryArbiter};
 use digital_design_circuit::CircuitWires;
 use digital_design_hardware::{Hardware, HardwareIdentity, Module, VerilogDependency};
+use digital_design_hardware_common::{DiagnosticReporter, ResetController};
 use digital_design_hardware_gowin::{
     run_gowin_project_cli, Bsram1R1Rw1024, BsramImage, GowinCliError, GowinDspMode,
     GowinModuleProject, ResourceCountExpectation, TangNano20K, TangNano20KSdramInputs,
@@ -39,6 +40,8 @@ impl BsramImage<16> for BootImage {
 }
 
 type BootMemory = Bsram1R1Rw1024<16, BootImage>;
+type BoardReset = ResetController<8>;
+type SdramCpuReporter = DiagnosticReporter<0x05, 469, 13_500_000, 13_500_000>;
 
 #[derive(Hardware)]
 #[hardware(namespace = "examples/cpu_v3_sdram")]
@@ -91,6 +94,14 @@ impl Module for CpuV3SdramBoardTest {
                 .replace(
                     "__SDRAM_WORD_PORT__",
                     &TangNano20KSdramWordPort::verilog_identity().module_name(),
+                )
+                .replace(
+                    "__RESET_CONTROLLER__",
+                    &BoardReset::verilog_identity().module_name(),
+                )
+                .replace(
+                    "__DIAGNOSTIC_REPORTER__",
+                    &SdramCpuReporter::verilog_identity().module_name(),
                 ),
         )
     }
@@ -105,6 +116,8 @@ impl Module for CpuV3SdramBoardTest {
             VerilogDependency::new::<CpuV3MmioBridge>("u_mmio_bridge"),
             VerilogDependency::new::<BootDmaMmio>("u_boot_dma_mmio"),
             VerilogDependency::new::<TangNano20KSdramWordPort>("u_sdram_word_port"),
+            VerilogDependency::new::<BoardReset>("u_reset"),
+            VerilogDependency::new::<SdramCpuReporter>("u_reporter"),
         ]
     }
 

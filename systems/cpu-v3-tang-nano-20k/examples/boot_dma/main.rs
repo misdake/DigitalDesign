@@ -1,6 +1,7 @@
 use cpu_v3_tang_nano_20k::TangNano20KBootDma;
 use digital_design_circuit::CircuitWires;
 use digital_design_hardware::{Hardware, HardwareIdentity, Module, VerilogDependency};
+use digital_design_hardware_common::DiagnosticReporter;
 use digital_design_hardware_gowin::{
     run_gowin_project_cli, GowinCliError, TangNano20K, TangNano20KBootInputs,
     TangNano20KBootOutputs,
@@ -16,6 +17,8 @@ fn main() -> Result<(), GowinCliError> {
 #[derive(Hardware)]
 #[hardware(namespace = "examples/boot_dma")]
 struct BootDmaSelfTest;
+
+type BootDmaReporter = DiagnosticReporter<0x06, 469, 1, 1>;
 
 impl Module for BootDmaSelfTest {
     type Input = TangNano20KBootInputs;
@@ -35,14 +38,24 @@ impl Module for BootDmaSelfTest {
     }
 
     fn verilog_source() -> Option<String> {
-        Some(include_str!("self_test.v").replace(
-            "__TANG_NANO_20K_BOOT_DMA__",
-            &TangNano20KBootDma::verilog_identity().module_name(),
-        ))
+        Some(
+            include_str!("self_test.v")
+                .replace(
+                    "__TANG_NANO_20K_BOOT_DMA__",
+                    &TangNano20KBootDma::verilog_identity().module_name(),
+                )
+                .replace(
+                    "__DIAGNOSTIC_REPORTER__",
+                    &BootDmaReporter::verilog_identity().module_name(),
+                ),
+        )
     }
 
     fn verilog_dependencies() -> Vec<VerilogDependency> {
-        vec![VerilogDependency::new::<TangNano20KBootDma>("u_dma")]
+        vec![
+            VerilogDependency::new::<TangNano20KBootDma>("u_dma"),
+            VerilogDependency::new::<BootDmaReporter>("u_reporter"),
+        ]
     }
 
     fn verilog_testbench() -> Option<String> {

@@ -2,6 +2,7 @@ use cpu_v3::{CpuV3Core, CpuV3MmioBridge};
 use cpu_v3_tang_nano_20k::SystemControlDevice;
 use digital_design_circuit::CircuitWires;
 use digital_design_hardware::{Hardware, HardwareIdentity, Module, VerilogDependency};
+use digital_design_hardware_common::ResetController;
 use digital_design_hardware_gowin::{
     run_gowin_project_cli, Bsram1R1Rw1024, BsramImage, GowinCliError, GowinDspMode,
     GowinModuleProject, ResourceCountExpectation, TangNano20K, TangNano20KDebugOutputs,
@@ -49,6 +50,7 @@ impl BsramImage<16> for ProgramImage {
 
 type ProgramMemory = Bsram1R1Rw1024<16, ProgramImage>;
 type SystemControl = SystemControlDevice<234>;
+type BoardReset = ResetController<8>;
 
 #[derive(Hardware)]
 #[hardware(namespace = "examples/cpu_v3_mmio")]
@@ -85,6 +87,10 @@ impl Module for CpuV3MmioBoardTest {
                 .replace(
                     "__MMIO_BRIDGE__",
                     &CpuV3MmioBridge::verilog_identity().module_name(),
+                )
+                .replace(
+                    "__RESET_CONTROLLER__",
+                    &BoardReset::verilog_identity().module_name(),
                 ),
         )
     }
@@ -95,6 +101,7 @@ impl Module for CpuV3MmioBoardTest {
             VerilogDependency::new::<CpuV3Core>("u_core"),
             VerilogDependency::new::<CpuV3MmioBridge>("u_mmio_bridge"),
             VerilogDependency::new::<SystemControl>("u_sysctl"),
+            VerilogDependency::new::<BoardReset>("u_reset"),
         ]
     }
 

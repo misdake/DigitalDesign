@@ -43,7 +43,7 @@ initial begin
     // is observable as a deterministic status instead of silencing the probe.
     buttons = 2'b01;
     repeat (4) @(posedge clk);
-    dut.gap_counter = 32'd5_000_000;
+    dut.u_reporter.delay_counter = 23'd4_999_999;
     for (i = 0; i < 8; i = i + 1)
         read_byte(received[i]);
     if (received[6] !== 8'h01 || received[7] !== 8'h16) begin

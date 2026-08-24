@@ -1,8 +1,11 @@
 use digital_design_circuit::CircuitWires;
 use digital_design_hardware_gowin::{
-    run_gowin_project_cli, GowinCliError, GowinModuleProject, Hardware, Module, TangNano20K,
-    TangNano20KSdramInputs, TangNano20KSdramOutputs,
+    run_gowin_project_cli, DiagnosticReporter, GowinCliError, GowinModuleProject, Hardware,
+    HardwareIdentity, Module, TangNano20K, TangNano20KSdramInputs, TangNano20KSdramOutputs,
+    VerilogDependency,
 };
+
+type SdramReporter = DiagnosticReporter<0x03, 469, 27_000_000, 27_000_000>;
 
 fn main() -> Result<(), GowinCliError> {
     run_gowin_project_cli(sdram_gowin_project(), "target/sdram_gowin")
@@ -30,7 +33,14 @@ impl Module for SdramBoardSelfTest {
     }
 
     fn verilog_source() -> Option<String> {
-        Some(include_str!("self_test.v").to_string())
+        Some(include_str!("self_test.v").replace(
+            "__DIAGNOSTIC_REPORTER__",
+            &SdramReporter::verilog_identity().module_name(),
+        ))
+    }
+
+    fn verilog_dependencies() -> Vec<VerilogDependency> {
+        vec![VerilogDependency::new::<SdramReporter>("u_reporter")]
     }
 
     fn verilog_testbench() -> Option<String> {
