@@ -5,6 +5,12 @@ pub use digital_design_hardware::*;
 mod clock_divider;
 pub use clock_divider::*;
 
+mod diagnostic_reporter;
+pub use diagnostic_reporter::*;
+
+mod reset_controller;
+pub use reset_controller::*;
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum ResetPolarity {
     ActiveHigh,

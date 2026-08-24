@@ -175,6 +175,7 @@ dependencies = [
  "cpu-v3",
  "digital-design-circuit",
  "digital-design-hardware",
+ "digital-design-hardware-common",
  "digital-design-hardware-gowin",
  "digital-design-ip-common",
  "rcc",

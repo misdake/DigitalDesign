@@ -72,57 +72,14 @@ assign leds = error ? {error_code[0], error_code[1], error_code[2], error_code[3
               success ? 6'b111111 :
               busy ? 6'b000010 : 6'b000001;
 
-function [7:0] report_byte;
-    input [2:0] index;
-    reg [7:0] status;
-    begin
-        status = success ? 8'h00 : 8'h01;
-        case (index)
-            0: report_byte = 8'h44;
-            1: report_byte = 8'h44;
-            2: report_byte = 8'h48;
-            3: report_byte = 8'h54;
-            4: report_byte = 8'h01;
-            5: report_byte = 8'h06;
-            6: report_byte = status;
-            default: report_byte = 8'h44 ^ 8'h44 ^ 8'h48 ^ 8'h54 ^
-                                   8'h01 ^ 8'h06 ^ status;
-        endcase
-    end
-endfunction
-
-reg [9:0] uart_frame = 10'h3ff;
-reg [3:0] uart_bit = 0;
-reg [8:0] uart_divider = 0;
-reg [2:0] uart_byte_index = 0;
-reg uart_busy = 0;
-
-always @(posedge clk) begin
-    if (!uart_busy) begin
-        if (done || error) begin
-            uart_frame <= {1'b1, report_byte(0), 1'b0};
-            uart_bit <= 0;
-            uart_divider <= 0;
-            uart_byte_index <= 0;
-            uart_busy <= 1;
-        end
-    end else if (uart_divider == 9'd468) begin
-        uart_divider <= 0;
-        if (uart_bit == 9) begin
-            if (uart_byte_index == 7) begin
-                uart_busy <= 0;
-            end else begin
-                uart_byte_index <= uart_byte_index + 1'b1;
-                uart_frame <= {1'b1, report_byte(uart_byte_index + 1'b1), 1'b0};
-                uart_bit <= 0;
-            end
-        end else begin
-            uart_bit <= uart_bit + 1'b1;
-        end
-    end else begin
-        uart_divider <= uart_divider + 1'b1;
-    end
-end
-
-assign uart_tx = uart_busy ? uart_frame[uart_bit] : 1'b1;
+wire uart_busy;
+wire frame_toggle;
+__DIAGNOSTIC_REPORTER__ u_reporter(
+    .clk(clk),
+    .report_enable(done || error),
+    .status(success ? 8'h00 : 8'h01),
+    .uart_tx(uart_tx),
+    .uart_busy(uart_busy),
+    .frame_toggle(frame_toggle)
+);
 endmodule

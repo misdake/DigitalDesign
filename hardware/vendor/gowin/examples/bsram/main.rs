@@ -1,9 +1,10 @@
 use digital_design_circuit::CircuitWires;
 use digital_design_hardware_gowin::{
     run_gowin_project_cli, Bsram1R1Rw1024, Bsram1Rw1024, BsramImage, BsramTrueDualPort1024,
-    GowinCliError, GowinModuleProject, Hardware, Module, ModuleTest, TangNano20K,
-    TangNano20KDebugOutputs, TangNano20KDebugOutputsValue, TangNano20KInputs,
-    TangNano20KInputsValue, TestStep, VerilogDependency, ZeroBsramImage, BSRAM_1024_DEPTH,
+    DiagnosticReporter, GowinCliError, GowinModuleProject, Hardware, HardwareIdentity, Module,
+    ModuleTest, TangNano20K, TangNano20KDebugOutputs, TangNano20KDebugOutputsValue,
+    TangNano20KInputs, TangNano20KInputsValue, TestStep, VerilogDependency, ZeroBsramImage,
+    BSRAM_1024_DEPTH,
 };
 
 fn main() -> Result<(), GowinCliError> {
@@ -37,6 +38,7 @@ type OneReadRw18 = Bsram1R1Rw1024<18, ZeroBsramImage>;
 type TrueDualPort16 = BsramTrueDualPort1024<16, ZeroBsramImage>;
 type TrueDualPort18 = BsramTrueDualPort1024<18, ZeroBsramImage>;
 type PatternSp16 = Bsram1Rw1024<16, BoardImage>;
+type BsramReporter = DiagnosticReporter<0x01, 234, 2_700_000, 2_700_000>;
 
 impl Module for BsramBoardSelfTest {
     type Input = TangNano20KInputs;
@@ -61,7 +63,10 @@ impl Module for BsramBoardSelfTest {
     }
 
     fn verilog_source() -> Option<String> {
-        Some(include_str!("self_test.v").to_string())
+        Some(include_str!("self_test.v").replace(
+            "__DIAGNOSTIC_REPORTER__",
+            &BsramReporter::verilog_identity().module_name(),
+        ))
     }
 
     fn verilog_dependencies() -> Vec<VerilogDependency> {
@@ -73,6 +78,7 @@ impl Module for BsramBoardSelfTest {
             VerilogDependency::new::<TrueDualPort16>("u_BsramTrueDualPort1024_WIDTH16"),
             VerilogDependency::new::<TrueDualPort18>("u_BsramTrueDualPort1024_WIDTH18"),
             VerilogDependency::new::<PatternSp16>("u_pattern_bsram"),
+            VerilogDependency::new::<BsramReporter>("u_reporter"),
         ]
     }
 

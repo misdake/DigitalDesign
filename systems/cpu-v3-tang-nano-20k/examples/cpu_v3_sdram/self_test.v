@@ -16,14 +16,17 @@ module CpuV3SdramBoardTest (
     output wire [7:0] sdram_burst_length
 );
 
-reg [2:0] startup_reset = 3'd7;
-reg [1:0] button_sync = 0;
-always @(posedge clk) begin
-    if (startup_reset != 0)
-        startup_reset <= startup_reset - 1'b1;
-    button_sync <= {button_sync[0], |buttons};
-end
-wire reset = startup_reset != 0 || button_sync[1];
+wire reset;
+wire clock_ready_synchronized;
+wire external_reset_seen;
+__RESET_CONTROLLER__ u_reset(
+    .clk(clk),
+    .external_reset(|buttons),
+    .clock_ready(1'b1),
+    .reset(reset),
+    .clock_ready_synchronized(clock_ready_synchronized),
+    .external_reset_seen(external_reset_seen)
+);
 
 wire instruction_request_valid;
 wire [31:0] instruction_address;
@@ -339,65 +342,16 @@ wire passed = halted && halt_signal == 16'h1235;
 assign leds = passed ? 6'b000001 : (faulted || halted ? 6'b100001 : 6'b001100);
 
 wire test_done = halted || faulted;
-reg [24:0] report_delay = 0;
-reg [9:0] uart_frame = 10'h3ff;
-reg [3:0] uart_bit = 0;
-reg [8:0] uart_divider = 0;
-reg [3:0] report_byte_index = 0;
-reg uart_busy = 0;
-
-function [7:0] report_byte;
-    input [3:0] index;
-    reg [7:0] status;
-    begin
-        status = passed ? 8'h00 : (faulted ? 8'h02 : 8'h01);
-        case (index)
-            0: report_byte = 8'h44;
-            1: report_byte = 8'h44;
-            2: report_byte = 8'h48;
-            3: report_byte = 8'h54;
-            4: report_byte = 8'h01;
-            5: report_byte = 8'h05;
-            6: report_byte = status;
-            default: report_byte = 8'h18 ^ status;
-        endcase
-    end
-endfunction
-
-always @(posedge clk) begin
-    if (!test_done) begin
-        report_delay <= 0;
-        uart_frame <= 10'h3ff;
-        uart_bit <= 0;
-        uart_divider <= 0;
-        report_byte_index <= 0;
-        uart_busy <= 0;
-    end else if (!uart_busy) begin
-        if (report_delay == 25'd13_500_000) begin
-            uart_frame <= {1'b1, report_byte(0), 1'b0};
-            uart_bit <= 0;
-            uart_divider <= 0;
-            report_byte_index <= 0;
-            uart_busy <= 1;
-            report_delay <= 0;
-        end else
-            report_delay <= report_delay + 1'b1;
-    end else if (uart_divider == 9'd468) begin
-        uart_divider <= 0;
-        if (uart_bit == 9) begin
-            if (report_byte_index == 7)
-                uart_busy <= 0;
-            else begin
-                report_byte_index <= report_byte_index + 1'b1;
-                uart_frame <= {1'b1, report_byte(report_byte_index + 1'b1), 1'b0};
-                uart_bit <= 0;
-            end
-        end else
-            uart_bit <= uart_bit + 1'b1;
-    end else
-        uart_divider <= uart_divider + 1'b1;
-end
-
-assign uart_tx = uart_busy ? uart_frame[uart_bit] : 1'b1;
+wire [7:0] report_status = passed ? 8'h00 : (faulted ? 8'h02 : 8'h01);
+wire uart_busy;
+wire frame_toggle;
+__DIAGNOSTIC_REPORTER__ u_reporter(
+    .clk(clk),
+    .report_enable(test_done),
+    .status(report_status),
+    .uart_tx(uart_tx),
+    .uart_busy(uart_busy),
+    .frame_toggle(frame_toggle)
+);
 
 endmodule

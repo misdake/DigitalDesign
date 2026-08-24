@@ -1,7 +1,10 @@
 use cpu_v3::{CpuV3Core, CpuV3DirectMappedCache, CpuV3MmioBridge};
-use cpu_v3_tang_nano_20k::{BootDmaEngine, BootDmaMmio, CpuV3MemoryArbiter, SystemControlDevice};
+use cpu_v3_tang_nano_20k::{
+    BootDmaEngine, BootDmaMmio, BootProgressMonitor, CpuV3MemoryArbiter, SystemControlDevice,
+};
 use digital_design_circuit::CircuitWires;
 use digital_design_hardware::{Hardware, HardwareIdentity, Module, VerilogDependency};
+use digital_design_hardware_common::ResetController;
 use digital_design_hardware_gowin::{
     run_gowin_project_cli, Bsram1R1Rw1024, BsramImage, ErasedSpiFlashImage, GowinCliError,
     GowinDspMode, GowinModuleProject, ResourceCountExpectation, SpiFlashReader, TangNano20K,
@@ -38,6 +41,7 @@ impl BsramImage<16> for BootImage {
 type BootMemory = Bsram1R1Rw1024<16, BootImage>;
 type FittedFlashReader = SpiFlashReader<ErasedSpiFlashImage, 8_388_608, 2>;
 type SystemControl = SystemControlDevice<469>;
+type BoardReset = ResetController<8>;
 
 #[derive(Hardware)]
 #[hardware(namespace = "examples/cpu_v3_boot")]
@@ -102,6 +106,14 @@ impl Module for CpuV3BootSelfTest {
                 .replace(
                     "__SDRAM_WORD_PORT__",
                     &TangNano20KSdramWordPort::verilog_identity().module_name(),
+                )
+                .replace(
+                    "__RESET_CONTROLLER__",
+                    &BoardReset::verilog_identity().module_name(),
+                )
+                .replace(
+                    "__BOOT_PROGRESS_MONITOR__",
+                    &BootProgressMonitor::verilog_identity().module_name(),
                 ),
         )
     }
@@ -119,6 +131,8 @@ impl Module for CpuV3BootSelfTest {
             VerilogDependency::new::<BootDmaEngine>("u_boot_dma_engine"),
             VerilogDependency::new::<FittedFlashReader>("u_flash"),
             VerilogDependency::new::<TangNano20KSdramWordPort>("u_sdram_word_port"),
+            VerilogDependency::new::<BoardReset>("u_reset"),
+            VerilogDependency::new::<BootProgressMonitor>("u_boot_progress"),
         ]
     }
 
@@ -316,6 +330,53 @@ mod tests {
                 format_bytes(&package)
             );
         }
+    }
+
+    #[test]
+    fn example_manifest_tracks_current_compiler_outputs() {
+        let stage1 = compile_cpu_v3(
+            "stage1.rs",
+            &CompilerOptions {
+                code_base: 0x0100,
+                stack_init: 0xf000,
+                ..CompilerOptions::default()
+            },
+        );
+        let application = compile_cpu_v3(
+            "boot-demo.rs",
+            &CompilerOptions {
+                code_base: 0x0200,
+                stack_init: 0xe000,
+                ..CompilerOptions::default()
+            },
+        );
+        let manifest =
+            cpu_v3_tang_nano_20k::boot::PackManifest::parse(include_str!("boot.cpu-v3-manifest"))
+                .unwrap();
+        let stage1_section = manifest
+            .sections
+            .iter()
+            .find(|section| section.name == "stage1")
+            .unwrap();
+        let application_section = manifest
+            .sections
+            .iter()
+            .find(|section| section.name == "application")
+            .unwrap();
+        assert_eq!(
+            stage1_section.memory_size_bytes,
+            stage1.words.len() as u32 * 2
+        );
+        assert_eq!(
+            application_section.memory_size_bytes,
+            application.words.len() as u32 * 2
+        );
+        assert_eq!(
+            stage1_section.source.as_deref(),
+            Some(std::path::Path::new(
+                "../../../../target/cpu-v3-boot/stage1.v3bin"
+            ))
+        );
     }
 
     #[test]

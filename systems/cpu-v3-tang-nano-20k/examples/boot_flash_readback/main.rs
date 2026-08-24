@@ -1,4 +1,5 @@
 use digital_design_circuit::CircuitWires;
+use digital_design_hardware_common::ResetController;
 use digital_design_hardware_gowin::{
     run_gowin_project_cli, ErasedSpiFlashImage, GowinCliError, GowinModuleProject, Hardware,
     HardwareIdentity, Module, SpiFlashReader, TangNano20K, TangNano20KFlashInputs,
@@ -17,6 +18,7 @@ fn main() -> Result<(), GowinCliError> {
 struct FlashReadbackProbe;
 
 type FittedFlashReader = SpiFlashReader<ErasedSpiFlashImage, 8_388_608, 2>;
+type BoardReset = ResetController<16>;
 
 impl Module for FlashReadbackProbe {
     type Input = TangNano20KFlashInputs;
@@ -36,14 +38,24 @@ impl Module for FlashReadbackProbe {
     }
 
     fn verilog_source() -> Option<String> {
-        Some(include_str!("self_test.v").replace(
-            "__FLASH_READER__",
-            &FittedFlashReader::verilog_identity().module_name(),
-        ))
+        Some(
+            include_str!("self_test.v")
+                .replace(
+                    "__FLASH_READER__",
+                    &FittedFlashReader::verilog_identity().module_name(),
+                )
+                .replace(
+                    "__RESET_CONTROLLER__",
+                    &BoardReset::verilog_identity().module_name(),
+                ),
+        )
     }
 
     fn verilog_dependencies() -> Vec<VerilogDependency> {
-        vec![VerilogDependency::new::<FittedFlashReader>("u_flash")]
+        vec![
+            VerilogDependency::new::<FittedFlashReader>("u_flash"),
+            VerilogDependency::new::<BoardReset>("u_reset"),
+        ]
     }
 
     fn verilog_testbench() -> Option<String> {

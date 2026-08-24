@@ -1,6 +1,7 @@
 use cpu_v3::CpuV3Core;
 use digital_design_circuit::CircuitWires;
 use digital_design_hardware::{Hardware, HardwareIdentity, Module, VerilogDependency};
+use digital_design_hardware_common::{DiagnosticReporter, ResetController};
 use digital_design_hardware_gowin::{
     run_gowin_project_cli, Bsram1R1Rw1024, BsramImage, GowinCliError, GowinDspMode,
     GowinModuleProject, ResourceCountExpectation, TangNano20K, TangNano20KDebugOutputs,
@@ -41,6 +42,8 @@ impl BsramImage<16> for ProgramImage {
 }
 
 type ProgramMemory = Bsram1R1Rw1024<16, ProgramImage>;
+type BoardReset = ResetController<8>;
+type CpuReporter = DiagnosticReporter<0x04, 234, 13_500_000, 13_500_000>;
 
 #[derive(Hardware)]
 #[hardware(namespace = "examples/cpu_v3_cpu")]
@@ -73,6 +76,14 @@ impl Module for CpuV3CpuBoardTest {
                 .replace(
                     "__CPU_V3_CORE__",
                     &CpuV3Core::verilog_identity().module_name(),
+                )
+                .replace(
+                    "__RESET_CONTROLLER__",
+                    &BoardReset::verilog_identity().module_name(),
+                )
+                .replace(
+                    "__DIAGNOSTIC_REPORTER__",
+                    &CpuReporter::verilog_identity().module_name(),
                 ),
         )
     }
@@ -81,6 +92,8 @@ impl Module for CpuV3CpuBoardTest {
         vec![
             VerilogDependency::new::<ProgramMemory>("u_program"),
             VerilogDependency::new::<CpuV3Core>("u_core"),
+            VerilogDependency::new::<BoardReset>("u_reset"),
+            VerilogDependency::new::<CpuReporter>("u_reporter"),
         ]
     }
 

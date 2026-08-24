@@ -9,14 +9,17 @@ module CpuV3MmioBoardTest(
     output wire uart_tx
 );
 
-reg [2:0] startup_reset = 3'd7;
-reg [1:0] button_sync = 0;
-always @(posedge clk) begin
-    if (startup_reset != 0)
-        startup_reset <= startup_reset - 1'b1;
-    button_sync <= {button_sync[0], |buttons};
-end
-wire core_reset = startup_reset != 0 || button_sync[1];
+wire core_reset;
+wire clock_ready_synchronized;
+wire external_reset_seen;
+__RESET_CONTROLLER__ u_reset(
+    .clk(clk),
+    .external_reset(|buttons),
+    .clock_ready(1'b1),
+    .reset(core_reset),
+    .clock_ready_synchronized(clock_ready_synchronized),
+    .external_reset_seen(external_reset_seen)
+);
 
 wire instruction_request_valid;
 wire [31:0] instruction_address;

@@ -72,3 +72,21 @@ Stage0, Stage1, and the boot demo from their real RCC sources and writes generat
 Cargo `OUT_DIR`; no checked-in byte array is maintained in parallel.
 The build retains pre-refactor FNV-1a baselines for the 590-word Stage0 image and the 1,795-byte
 Flash package, so generation remains single-source without weakening byte-for-byte compatibility.
+
+## Board bring-up and diagnostics
+
+Reusable board control belongs in `hardware/common`, not in processor or memory test harnesses.
+`ResetController` synchronizes an external reset and clock-ready indication, then holds reset for a
+specialization-defined number of complete clock cycles. A system chooses that interval; an IP only
+receives the resulting active-high reset.
+
+`DiagnosticReporter` owns serialization of the eight-byte DDHT v1 status frame. A test harness
+provides only `report_enable` and an atomically sampled status byte. This keeps the UART protocol
+out of CPU, SDRAM, BSRAM, DMA, and future GPU/audio self-tests. A protocol transmitter remains
+inside a harness when its bytes are themselves the behavior under test, such as the system-control
+UART and the SDRAM word-port `SDWP` signature.
+
+The vendor-level `board_health` probe is the first hardware gate. It deliberately avoids CPU,
+memory, PLL, Flash, and system-control dependencies. Higher-level hardware evidence is meaningful
+only after the exact built artifact passes manifest validation and this transport probe produces a
+valid frame.
