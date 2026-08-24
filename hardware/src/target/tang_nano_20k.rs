@@ -10,6 +10,11 @@ use crate::{
 };
 use digital_design_code::Wires;
 
+mod boot_dma;
+mod sdram_word_port;
+pub use boot_dma::*;
+pub use sdram_word_port::*;
+
 /// Stable application-facing inputs fitted to every Tang Nano 20K board.
 #[derive(Clone, ModuleIo)]
 pub struct TangNano20KInputs {
@@ -74,6 +79,34 @@ pub struct TangNano20KSdramInputs {
 pub struct TangNano20KSdramOutputs {
     pub leds: Wires<6>,
     pub uart_tx: digital_design_code::Wire,
+    pub sdram_command_valid: digital_design_code::Wire,
+    pub sdram_command: Wires<3>,
+    pub sdram_precharge: digital_design_code::Wire,
+    pub sdram_address: Wires<21>,
+    pub sdram_write_mask: Wires<4>,
+    pub sdram_write_data: Wires<32>,
+    pub sdram_burst_length: Wires<8>,
+}
+
+/// Board inputs for boot logic that needs both fitted memories concurrently.
+#[derive(Clone, ModuleIo)]
+pub struct TangNano20KBootInputs {
+    pub buttons: Wires<2>,
+    pub flash_miso: digital_design_code::Wire,
+    pub sdram_read_data: Wires<32>,
+    pub sdram_read_valid: digital_design_code::Wire,
+    pub sdram_init_done: digital_design_code::Wire,
+    pub sdram_command_ack: digital_design_code::Wire,
+}
+
+/// Raw Flash-read and Controller HS ports exposed to Tang Nano 20K boot logic.
+#[derive(Clone, ModuleIo)]
+pub struct TangNano20KBootOutputs {
+    pub leds: Wires<6>,
+    pub uart_tx: digital_design_code::Wire,
+    pub flash_clk: digital_design_code::Wire,
+    pub flash_cs_n: digital_design_code::Wire,
+    pub flash_mosi: digital_design_code::Wire,
     pub sdram_command_valid: digital_design_code::Wire,
     pub sdram_command: Wires<3>,
     pub sdram_precharge: digital_design_code::Wire,
@@ -262,12 +295,7 @@ impl TangNano20K {
     /// logic, command scheduling, caches, and the controller use the same
     /// 54 MHz clock. Only the SDRAM physical clock uses the PLL's 180-degree
     /// output.
-    pub fn sdram_debug_uart_project<M>(
-        project_name: impl Into<String>,
-    ) -> GowinModuleProject<Self, M>
-    where
-        M: Module<Input = TangNano20KSdramInputs, Output = TangNano20KSdramOutputs>,
-    {
+    fn sdram_debug_uart_binding() -> GowinBoardBinding<Self> {
         let extension = GowinBoardExtension::new(include_str!("tang_nano_20k/sdram/service_54m.v"))
             .with_logic_clock("logic_clk")
             .add_top_port(GowinTopPort::new(
@@ -410,7 +438,7 @@ impl TangNano20K {
                 ],
             );
 
-        let binding = Self::user_io_binding()
+        Self::user_io_binding()
             .require(DebugUartTx)
             .require(Pll)
             .require(SdrSdram)
@@ -420,7 +448,56 @@ impl TangNano20K {
                 "uart_tx",
                 [Self::DEBUG_UART_TX],
             )
-            .with_extension(extension);
+            .with_extension(extension)
+    }
+
+    pub fn sdram_debug_uart_project<M>(
+        project_name: impl Into<String>,
+    ) -> GowinModuleProject<Self, M>
+    where
+        M: Module<Input = TangNano20KSdramInputs, Output = TangNano20KSdramOutputs>,
+    {
+        GowinModuleProject::new(
+            GowinProject::new(project_name).with_board_binding(Self::sdram_debug_uart_binding()),
+        )
+    }
+
+    /// Create a single-clock 54 MHz boot project with simultaneous access to
+    /// the fitted SPI Flash and SDRAM devices.
+    ///
+    /// The Flash reader leaf owns the indivisible Flash resource. SDRAM and
+    /// its PLL/controller are owned here at the lowest target-specific board
+    /// boundary. Higher-level Stage0 and Stage1 logic claims neither device.
+    pub fn boot_memory_project<M>(project_name: impl Into<String>) -> GowinModuleProject<Self, M>
+    where
+        M: Module<Input = TangNano20KBootInputs, Output = TangNano20KBootOutputs>,
+    {
+        let binding = Self::sdram_debug_uart_binding()
+            .bind_port(
+                GowinPortDirection::Output,
+                "flash_clk",
+                "flash_clk",
+                [Self::SPI_FLASH_CLK],
+            )
+            .bind_port(
+                GowinPortDirection::Output,
+                "flash_cs_n",
+                "flash_cs_n",
+                [Self::SPI_FLASH_CS_N],
+            )
+            .bind_port(
+                GowinPortDirection::Output,
+                "flash_mosi",
+                "flash_mosi",
+                [Self::SPI_FLASH_MOSI],
+            )
+            .bind_port(
+                GowinPortDirection::Input,
+                "flash_miso",
+                "flash_miso",
+                [Self::SPI_FLASH_MISO],
+            )
+            .with_process_option("-use_mspi_as_gpio", "1");
         GowinModuleProject::new(GowinProject::new(project_name).with_board_binding(binding))
     }
 
@@ -525,6 +602,48 @@ mod tests {
         }
     }
 
+    struct BootBoard;
+
+    impl HardwareIdentity for BootBoard {
+        const TARGET_RESOURCE_LEAF: bool = false;
+
+        fn verilog_identity() -> VerilogIdentity {
+            VerilogIdentity::new("BootBoard").namespace(["tests", "target"])
+        }
+    }
+
+    impl Module for BootBoard {
+        type Input = TangNano20KBootInputs;
+        type Output = TangNano20KBootOutputs;
+        type EmuState = ();
+
+        const USES_MAIN_CLOCK: bool = true;
+
+        fn build_verilog(input: &Self::Input) -> Self::Output {
+            let flash = SpiFlashReader::<ErasedSpiFlashImage>::hardware(&SpiFlashReaderInput {
+                start: input.buttons.wires[0],
+                address: input_w_const(0),
+                length: input_w_const(1),
+                data_ready: input_const(1),
+                flash_miso: input.flash_miso,
+            });
+            Self::Output {
+                leds: input_w_const(0),
+                uart_tx: input_const(1),
+                flash_clk: flash.flash_clk,
+                flash_cs_n: flash.flash_cs_n,
+                flash_mosi: flash.flash_mosi,
+                sdram_command_valid: input_const(0),
+                sdram_command: input_w_const(0),
+                sdram_precharge: input_const(0),
+                sdram_address: input_w_const(0),
+                sdram_write_mask: input_w_const(0),
+                sdram_write_data: input_w_const(0),
+                sdram_burst_length: input_w_const(0),
+            }
+        }
+    }
+
     #[test]
     fn flash_project_binds_mspi_and_claims_one_fitted_device() {
         let project = TangNano20K::flash_debug_uart_project::<FlashBoard>("flash_board")
@@ -533,6 +652,25 @@ mod tests {
         assert_eq!(project.resources.claimed[&ResourceKind::SpiFlashDevice], 1);
         assert!(project.files[std::path::Path::new("build.tcl")]
             .contains("set_option -use_mspi_as_gpio 1"));
+        let constraints = &project.files[std::path::Path::new("src/generated/board.cst")];
+        for (signal, pin) in [
+            ("flash_clk", 59),
+            ("flash_cs_n", 60),
+            ("flash_mosi", 61),
+            ("flash_miso", 62),
+        ] {
+            assert!(constraints.contains(&format!("IO_LOC \"{signal}\" {pin};")));
+        }
+    }
+
+    #[test]
+    fn boot_project_binds_both_fitted_memories_once() {
+        let project = TangNano20K::boot_memory_project::<BootBoard>("boot_board")
+            .generate()
+            .unwrap();
+        assert_eq!(project.resources.claimed[&ResourceKind::SpiFlashDevice], 1);
+        assert_eq!(project.resources.claimed[&ResourceKind::SdrSdramDevice], 1);
+        assert_eq!(project.resources.claimed[&ResourceKind::Pll], 1);
         let constraints = &project.files[std::path::Path::new("src/generated/board.cst")];
         for (signal, pin) in [
             ("flash_clk", 59),

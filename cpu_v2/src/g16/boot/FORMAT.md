@@ -1,4 +1,4 @@
-# G16 boot image format version 1
+# G16 boot image format version 2
 
 All multibyte integers are little-endian. Flash offsets are byte offsets from
 the beginning of the package. SDRAM destinations are physical 16-bit-word
@@ -13,7 +13,7 @@ records, so later section features do not force a Stage0 replacement.
 | Region | Placement |
 | --- | --- |
 | Boot descriptor | byte `0`, exactly 64 bytes |
-| Manifest header | byte `64`, exactly 48 bytes in version 1 |
+| Manifest header | byte `64`, exactly 48 bytes in version 2 |
 | Section records | immediately after the manifest header, 32 bytes each |
 | Loaded section data | 256-byte-aligned; Stage1 is placed first |
 | Unused padding | `0xff` |
@@ -43,12 +43,14 @@ the FPGA configuration region has been characterized.
 | 48 | 4 | manifest size |
 | 52 | 4 | CRC-32 of Stage1 file bytes |
 | 56 | 4 | descriptor CRC-32, calculated with this field zero |
-| 60 | 4 | reserved zero |
+| 60 | 4 | physical word destination for the mirrored Stage0-to-Stage1 descriptor |
 
 Stage0 validates the magic, version, descriptor checksum, target, every Flash
 and SDRAM extent, and the Stage1 entry before starting DMA. It validates the
-Stage1 CRC after copying, invalidates the physical instruction-cache range,
-sets `DSEG` and the stack pointer, then executes `JSEG`.
+Stage1 CRC after copying, mirrors the descriptor into 64 bytes beginning at
+offset `0x0100` of the Stage1 data segment, invalidates the physical
+instruction-cache range, sets `DSEG` and the stack pointer, then executes
+`JSEG`. The packer reserves that handoff range against every loadable section.
 
 ## Manifest header
 
@@ -116,4 +118,5 @@ zero bss    0x00048000 rw 32 8192
 The columns after a `load` name are physical destination word, flags,
 destination alignment, occupied memory bytes, and source file. A `zero` line
 omits the source file. Section names and file paths may not contain whitespace
-in format 1.
+in host-manifest format 1. This text format has its own version independent of
+the binary boot-image version.

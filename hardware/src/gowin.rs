@@ -1455,6 +1455,82 @@ impl GowinToolchain {
         }
         Ok(status)
     }
+
+    /// Program and verify a raw binary into a sector-aligned external-Flash
+    /// range without bulk-erasing the device.
+    ///
+    /// Gowin calls the data input for operation 32 an "MCU file" even when it
+    /// contains an ordinary application payload. The caller supplies the
+    /// concrete fitted-device capacity because it belongs to the board target,
+    /// not to the generic Programmer installation.
+    pub fn program_external_flash_binary(
+        &self,
+        device: GowinDeviceInfo,
+        binary: impl AsRef<Path>,
+        start_address: u32,
+        capacity_bytes: u32,
+        cable_index: u8,
+    ) -> Result<ExitStatus, GowinError> {
+        const ERASE_SECTOR_BYTES: u32 = 4096;
+
+        let executable = self
+            .programmer_cli
+            .as_ref()
+            .ok_or(GowinError::ProgrammerNotConfigured)?;
+        if !executable.is_file() {
+            return Err(GowinError::MissingTool(executable.clone()));
+        }
+        let binary = fs::canonicalize(binary.as_ref())?;
+        let file_bytes = fs::metadata(&binary)?.len();
+        validate_external_flash_write(
+            start_address,
+            file_bytes,
+            capacity_bytes,
+            ERASE_SECTOR_BYTES,
+        )?;
+
+        let status = Command::new(executable)
+            .args([
+                "--device",
+                device.programmer_device,
+                "--operation_index",
+                "32",
+                "--mcuFile",
+            ])
+            .arg(binary)
+            .args(["--spiaddr", &format!("{start_address:#08x}")])
+            .args(["--cable-index", &cable_index.to_string()])
+            .status()?;
+        if !status.success() {
+            return Err(GowinError::ExternalFlashProgramFailed(status));
+        }
+        Ok(status)
+    }
+}
+
+fn validate_external_flash_write(
+    start_address: u32,
+    file_bytes: u64,
+    capacity_bytes: u32,
+    erase_sector_bytes: u32,
+) -> Result<(), GowinError> {
+    if file_bytes == 0 {
+        return Err(GowinError::InvalidExternalFlashWrite(
+            "binary is empty".to_string(),
+        ));
+    }
+    if !start_address.is_multiple_of(erase_sector_bytes) {
+        return Err(GowinError::InvalidExternalFlashWrite(format!(
+            "start address {start_address:#08x} is not aligned to a {erase_sector_bytes:#x}-byte erase sector"
+        )));
+    }
+    let end = u64::from(start_address) + file_bytes;
+    if end > u64::from(capacity_bytes) {
+        return Err(GowinError::InvalidExternalFlashWrite(format!(
+            "range {start_address:#08x}..{end:#08x} exceeds fitted Flash capacity {capacity_bytes:#08x}"
+        )));
+    }
+    Ok(())
 }
 
 fn find_executable_on_path(name: &str) -> Option<PathBuf> {
@@ -1811,10 +1887,12 @@ pub enum GowinError {
     ProgrammerNotConfigured,
     BuildFailed(ExitStatus),
     ProgramFailed(ExitStatus),
+    ExternalFlashProgramFailed(ExitStatus),
     MissingBuildArtifact(PathBuf),
     UnsafeProjectPath(PathBuf),
     DuplicateSourcePath(PathBuf),
     InvalidBoardBinding(String),
+    InvalidExternalFlashWrite(String),
     UnverifiedDeviceConfiguration {
         target: &'static str,
         part_number: &'static str,
@@ -1872,6 +1950,9 @@ impl Display for GowinError {
             Self::ProgramFailed(status) => {
                 write!(formatter, "Gowin SRAM programming failed with {status}")
             }
+            Self::ExternalFlashProgramFailed(status) => {
+                write!(formatter, "Gowin external-Flash programming failed with {status}")
+            }
             Self::MissingBuildArtifact(path) => {
                 write!(formatter, "Gowin did not produce {}", path.display())
             }
@@ -1883,6 +1964,9 @@ impl Display for GowinError {
             }
             Self::InvalidBoardBinding(message) => {
                 write!(formatter, "invalid Gowin board binding: {message}")
+            }
+            Self::InvalidExternalFlashWrite(message) => {
+                write!(formatter, "invalid external-Flash write: {message}")
             }
             Self::UnverifiedDeviceConfiguration {
                 target,
@@ -2149,6 +2233,21 @@ mod tests {
                 parse_gowin_cli_args(arguments),
                 Err(GowinCliError::Argument(_))
             ));
+        }
+    }
+
+    #[test]
+    fn external_flash_write_requires_a_bounded_sector_aligned_range() {
+        assert!(validate_external_flash_write(0x10_0000, 560, 0x80_0000, 4096).is_ok());
+        for (start, bytes, message) in [
+            (0x10_0001, 560, "not aligned"),
+            (0x10_0000, 0, "empty"),
+            (0x7f_f000, 8192, "exceeds fitted Flash capacity"),
+        ] {
+            let error = validate_external_flash_write(start, bytes, 0x80_0000, 4096)
+                .unwrap_err()
+                .to_string();
+            assert!(error.contains(message), "unexpected error: {error}");
         }
     }
 
