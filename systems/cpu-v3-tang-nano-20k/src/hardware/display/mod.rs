@@ -1,5 +1,13 @@
 //! Small, gate-exportable helpers used by the multi-clock display RTL.
 
+mod hdmi;
+mod line_buffer;
+mod sdram;
+
+pub use hdmi::*;
+pub use line_buffer::*;
+pub use sdram::*;
+
 use digital_design_circuit::{input_const, CircuitWires, Wire, Wires};
 use digital_design_hardware::{Hardware, Module, ModuleIo};
 
