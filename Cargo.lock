@@ -178,6 +178,7 @@ dependencies = [
  "digital-design-hardware-common",
  "digital-design-hardware-gowin",
  "digital-design-ip-common",
+ "minifb",
  "rcc",
 ]
 

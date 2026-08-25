@@ -12,6 +12,10 @@ digital-design-hardware = { path = "../../hardware/core" }
 digital-design-hardware-common = { path = "../../hardware/common" }
 digital-design-hardware-gowin = { path = "../../hardware/vendor/gowin" }
 askama = { version = "0.14", default-features = false, features = ["config", "derive", "std"] }
+minifb = { version = "0.24", optional = true }
+
+[features]
+display-window = ["dep:minifb"]
 
 [build-dependencies]
 cpu-v3 = { path = "../../ip/cpu-v3" }

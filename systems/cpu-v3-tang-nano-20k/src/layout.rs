@@ -3,6 +3,17 @@ use digital_design_ip_common::{
     SystemMemoryLayout,
 };
 
+pub const FRAMEBUFFER_WIDTH: u32 = 320;
+pub const FRAMEBUFFER_HEIGHT: u32 = 240;
+pub const FRAMEBUFFER_STRIDE_WORDS: u32 = FRAMEBUFFER_WIDTH;
+pub const FRAMEBUFFER_WORDS: u32 = FRAMEBUFFER_STRIDE_WORDS * FRAMEBUFFER_HEIGHT;
+pub const FRAMEBUFFER_BASE_WORD: u32 = 0x0020_0100;
+pub const FRAMEBUFFER_END_WORD: u32 = FRAMEBUFFER_BASE_WORD + FRAMEBUFFER_WORDS;
+pub const FRAMEBUFFER_FIRST_SEGMENT: u16 = 0x0020;
+pub const FRAMEBUFFER_FIRST_OFFSET: u16 = 0x0100;
+pub const FRAMEBUFFER_SECOND_SEGMENT: u16 = 0x0021;
+pub const FRAMEBUFFER_ROWS_IN_FIRST_SEGMENT: u16 = 204;
+
 pub struct TangNano20kMemoryLayout;
 
 impl SystemMemoryLayout for TangNano20kMemoryLayout {
@@ -27,9 +38,21 @@ impl SystemMemoryLayout for TangNano20kMemoryLayout {
             kind: MemoryRegionKind::Reserved,
         },
         MemoryRegion {
-            name: "main-high",
+            name: "main-high-before-framebuffer",
             base: PhysicalWordAddress::new(0x1_0000),
-            words: (1 << 22) - 0x1_0000,
+            words: FRAMEBUFFER_BASE_WORD - 0x1_0000,
+            kind: MemoryRegionKind::Main,
+        },
+        MemoryRegion {
+            name: "framebuffer",
+            base: PhysicalWordAddress::new(FRAMEBUFFER_BASE_WORD),
+            words: FRAMEBUFFER_WORDS,
+            kind: MemoryRegionKind::Shared,
+        },
+        MemoryRegion {
+            name: "main-high-after-framebuffer",
+            base: PhysicalWordAddress::new(FRAMEBUFFER_END_WORD),
+            words: (1 << 22) - FRAMEBUFFER_END_WORD,
             kind: MemoryRegionKind::Main,
         },
     ];
@@ -150,6 +173,23 @@ mod tests {
         validate_device_layout::<TangNano20kDeviceLayout>().unwrap();
         assert!(SdramWordAddress::try_from(PhysicalWordAddress::new((1 << 22) - 1)).is_ok());
         assert!(SdramWordAddress::try_from(PhysicalWordAddress::new(1 << 22)).is_err());
+    }
+
+    #[test]
+    fn framebuffer_is_reserved_and_crosses_segments_on_a_row_boundary() {
+        let framebuffer = TangNano20kMemoryLayout::REGIONS
+            .iter()
+            .find(|region| region.name == "framebuffer")
+            .unwrap();
+        assert_eq!(framebuffer.base.get(), FRAMEBUFFER_BASE_WORD);
+        assert_eq!(framebuffer.words, 320 * 240);
+        assert_eq!(framebuffer.kind, MemoryRegionKind::Shared);
+        assert_eq!(FRAMEBUFFER_END_WORD - 1, 0x0021_2cff);
+        assert_eq!(
+            u32::from(FRAMEBUFFER_FIRST_OFFSET)
+                + u32::from(FRAMEBUFFER_ROWS_IN_FIRST_SEGMENT) * FRAMEBUFFER_STRIDE_WORDS,
+            0x1_0000
+        );
     }
 
     #[test]

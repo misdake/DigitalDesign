@@ -42,7 +42,13 @@ fn write_artifact(output: &Path, name: &str, bytes: &[u8]) {
 fn main() {
     let root = PathBuf::from(std::env::var_os("CARGO_MANIFEST_DIR").unwrap());
     let sources = root.join("rcc");
-    for name in ["stage0.rs", "stage1.rs", "boot-demo.rs", "boot-alt.rs"] {
+    for name in [
+        "stage0.rs",
+        "stage1.rs",
+        "boot-demo.rs",
+        "boot-alt.rs",
+        "display-demo.rs",
+    ] {
         println!("cargo:rerun-if-changed={}", sources.join(name).display());
     }
 
@@ -68,6 +74,14 @@ fn main() {
         &CompilerOptions {
             code_base: 0x0200,
             stack_init: 0xe000,
+            ..CompilerOptions::default()
+        },
+    );
+    let display_demo = compile(
+        &sources.join("display-demo.rs"),
+        &CompilerOptions {
+            code_base: 0,
+            stack_init: 0xf000,
             ..CompilerOptions::default()
         },
     );
@@ -158,6 +172,7 @@ fn main() {
     write_artifact(&output, "stage1.v3bin", &stage1_bytes);
     write_artifact(&output, "boot-demo.v3bin", &application_bytes);
     write_artifact(&output, "boot-alt.v3bin", &alternate_application_bytes);
+    write_artifact(&output, "display-demo.v3bin", &word_bytes(&display_demo));
     write_artifact(&output, "data.bin", &data);
     write_artifact(&output, "cpu-v3-boot.bin", package);
     write_artifact(&output, "cpu-v3-boot.map", image.map().as_bytes());
@@ -171,4 +186,12 @@ fn main() {
     .unwrap();
     std::fs::write(output.join("boot_images.rs"), generated)
         .expect("write generated boot image bindings");
+    std::fs::write(
+        output.join("display_image.rs"),
+        format!(
+            "const DISPLAY_DEMO_PROGRAM: &[u16] = &{:?};\n",
+            display_demo
+        ),
+    )
+    .expect("write generated display demo binding");
 }
