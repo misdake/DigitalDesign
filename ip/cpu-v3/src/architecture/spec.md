@@ -101,8 +101,9 @@ does not relax timing and is not used as a substitute for pipelining.
 Program loading is a separate concern from cache operation: SDRAM has no
 bitstream initialization. Immutable Stage0 code starts from initialized
 BSRAM/instruction-cache state in segment zero, copies Stage1 from
-SPI Flash into SDRAM, invalidates the affected physical cache lines, writes
-the initial data segment and stack pointer, and enters Stage1 with `JSEG`.
+SPI Flash into SDRAM, invalidates both caches entirely, writes the Stage1
+data segment, and enters Stage1 with `JSEG`. Stage0 does not write a stack
+pointer: each stage initializes its own from its compiled-in `--stack-init`.
 Stage1 understands the extensible section table and loads the application.
 
 Cache tags and all cache-to-SDRAM requests contain physical word addresses.
@@ -145,10 +146,23 @@ transport failure, `4` = entry/handoff invalid, `5` = internal/timeout) and
 then repeatedly emits a 10-byte UART frame on channel 3: ASCII `CV3B`, stage,
 category, error code, detail low byte, detail high byte, and the XOR checksum
 of bytes 0 through 8. The host reference loaders expose the same mapping as
-`LoaderError::boot_report` for the on-hardware stages to mirror. A
-successfully started application instead writes channel 2 with `0b11_0000`:
-both stage bits set never occurs in a failure pattern, so the LED word alone
-distinguishes success, Stage0 failure, and Stage1 failure.
+`LoaderError::boot_report` for the on-hardware stages to mirror.
+
+The LED word has no success encoding. Independently of software, the fitted
+system drives a passive boot-progress display on the same LEDs (reset held,
+SDRAM initialization, Stage0, DMA, Stage1, application entry, sticky fault);
+the first software write to channel 2 takes ownership permanently until
+reset. All of these patterns are progress evidence only: only the
+application's UART frame and system-level checks establish a successful boot
+(see `systems/cpu-v3-tang-nano-20k/src/boot/FLASH_LAYOUT.md`).
+
+## Boot-select strap device
+
+Device 1 occupies offsets `0xff10..0xff1f` in the fixed MMIO page. The fitted
+system latches a stable one-hot button value during reset and exposes it
+after button release; channel 0 reads it. Stage1 reads the low two bits to
+choose the application: button `10` selects the alternate application
+section, while button `01` and the default `00` select the primary one.
 
 ## First data-cache policy
 
@@ -172,8 +186,12 @@ complete boot path is stable. Associativity and write-back are policy changes
 behind the same CPU interface, to be justified by measured miss traffic rather
 than copied from the exploratory model.
 
-The first arbiter permits one accepted Controller HS operation. A due refresh
-has priority before accepting new client work, data-cache traffic wins an idle
-tie with instruction traffic, and accepted work runs atomically to completion.
-At 54 MHz the initial refresh threshold is 600 project cycles (about 11.1 us),
-matching the board-characterized SDRAM self-test with conservative margin.
+The first arbiter permits one accepted Controller HS operation. In the host
+scheduler model a due refresh has priority before accepting new client work,
+data-cache traffic wins an idle tie with instruction traffic, and accepted
+work runs atomically to completion. At 54 MHz the initial refresh threshold
+is 600 project cycles (about 11.1 us), matching the board-characterized SDRAM
+self-test with conservative margin. The fitted board system adds the boot DMA
+engine as a third client of the same arbiter, with fixed priority DMA, then
+data, then instruction; there refresh is handled inside the Controller HS
+word-port adapter rather than by the arbiter itself.

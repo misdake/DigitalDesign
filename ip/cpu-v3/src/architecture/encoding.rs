@@ -1,4 +1,4 @@
-//! Encoding helpers for CpuV3 revision 0.3.
+//! Encoding helpers for CpuV3 revision 0.4.
 
 pub type Word = u16;
 pub type Register = u8;
