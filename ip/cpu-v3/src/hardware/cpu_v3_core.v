@@ -42,6 +42,12 @@ localparam [7:0] FAULT_UNSUPPORTED_FPU = 2;
 localparam [7:0] FAULT_INSTRUCTION_MEMORY = 3;
 localparam [7:0] FAULT_DATA_MEMORY = 4;
 
+// Pending test result encoding, set by CMP-class instructions and consumed
+// by conditional branches.
+localparam [1:0] TEST_LESS = 0;
+localparam [1:0] TEST_EQUAL = 1;
+localparam [1:0] TEST_GREATER = 2;
+
 reg [3:0] state = ST_FETCH_REQUEST;
 reg [15:0] registers [0:15];
 reg [15:0] pc_register = 0;
@@ -50,6 +56,8 @@ reg [15:0] data_segment_register = 0;
 reg prefix_valid = 0;
 reg [11:0] prefix_high = 0;
 reg [15:0] prefix_address = 0;
+reg pending_test_valid = 0;
+reg [1:0] pending_test_result = 0;
 reg [15:0] instruction = 0;
 reg [15:0] instruction_pc = 0;
 
@@ -70,12 +78,11 @@ wire [3:0] opcode = instruction[15:12];
 wire [3:0] field_d = instruction[11:8];
 wire [3:0] field_a = instruction[7:4];
 wire [3:0] field_b = instruction[3:0];
-wire prefix_consumer = opcode == 4'h8 || opcode == 4'h9 || opcode == 4'hc ||
+wire prefix_consumer = opcode == 4'h8 || opcode == 4'h9 ||
                        (opcode == 4'ha &&
-                        (field_d <= 4'h4 ||
-                         (field_d >= 4'h8 && field_d <= 4'hb) ||
-                         field_d >= 4'he)) ||
-                       (opcode == 4'hb && field_d <= 4'h7);
+                        !(field_d >= 4'h5 && field_d <= 4'h7)) ||
+                       (opcode == 4'hb &&
+                        (field_d <= 4'h5 || field_d == 4'h8 || field_d == 4'h9));
 wire [1:0] success_retire_words = prefix_valid ? 2 : 1;
 wire [15:0] current_fault_pc =
     prefix_valid && prefix_consumer ? prefix_address : instruction_pc;
@@ -179,6 +186,8 @@ always @(posedge clk) begin
         code_segment_register <= 0;
         data_segment_register <= 0;
         prefix_valid <= 0;
+        pending_test_valid <= 0;
+        pending_test_result <= 0;
         retired_words <= 0;
         fault_code <= 0;
         fault_pc <= 0;
@@ -216,6 +225,9 @@ always @(posedge clk) begin
                     if (prefix_valid && !prefix_consumer)
                         retired_words <= retired_words + 1'b1;
                     prefix_valid <= 0;
+                    // Every retired non-prefix instruction expires the pending
+                    // test; CMP-class instructions below set it again.
+                    pending_test_valid <= 0;
                     case (opcode)
                         4'h0: begin
                             registers[field_d] <= registers[field_a] + registers[field_b];
@@ -290,6 +302,22 @@ always @(posedge clk) begin
                                 4'h9: registers[field_a] <= left_value == immediate_value;
                                 4'ha: registers[field_a] <= $signed(left_value) < $signed(immediate_value);
                                 4'hb: registers[field_a] <= left_value < immediate_unsigned(instruction);
+                                // CMPSI/CMPUI set the pending test result and
+                                // write no register.
+                                4'hc: begin
+                                    pending_test_valid <= 1;
+                                    pending_test_result <=
+                                        left_value == immediate_value ? TEST_EQUAL :
+                                        $signed(left_value) < $signed(immediate_value) ? TEST_LESS :
+                                        TEST_GREATER;
+                                end
+                                4'hd: begin
+                                    pending_test_valid <= 1;
+                                    pending_test_result <=
+                                        left_value == immediate_unsigned(instruction) ? TEST_EQUAL :
+                                        left_value < immediate_unsigned(instruction) ? TEST_LESS :
+                                        TEST_GREATER;
+                                end
                                 4'he: registers[field_a] <= prefix_valid ?
                                     immediate_unsigned(instruction) : sign_extend4(instruction[3:0]);
                                 4'hf: registers[field_a] <= immediate_unsigned(instruction);
@@ -299,47 +327,67 @@ always @(posedge clk) begin
                                     state <= ST_FAULT;
                                 end
                             endcase
-                            if (field_d != 4'h8 &&
-                                (field_d <= 4'h7 ||
-                                 (field_d >= 4'h9 && field_d <= 4'hb) ||
-                                 field_d >= 4'he)) begin
+                            if (field_d != 4'h8) begin
                                 retired_words <= retired_words + success_retire_words;
                                 state <= ST_FETCH_REQUEST;
                             end
                         end
                         4'hb: begin
-                            branch_taken = 0;
-                            case (field_d)
-                                0: branch_taken = registers[field_a] == 0;
-                                1: branch_taken = registers[field_a] != 0;
-                                2: branch_taken = $signed(registers[field_a]) < 0;
-                                3: branch_taken = $signed(registers[field_a]) >= 0;
-                                4: branch_taken = $signed(registers[field_a]) > 0;
-                                5: branch_taken = $signed(registers[field_a]) <= 0;
-                                6: branch_taken = registers[field_a][0];
-                                7: branch_taken = !registers[field_a][0];
-                                default: begin
-                                    fault_code <= FAULT_INVALID_INSTRUCTION;
-                                    fault_pc <= current_fault_pc;
-                                    state <= ST_FAULT;
-                                end
-                            endcase
-                            if (field_d <= 7) begin
-                                if (branch_taken)
-                                    pc_register <= pc_register + immediate_signed(instruction);
-                                retired_words <= retired_words + success_retire_words;
-                                state <= ST_FETCH_REQUEST;
-                            end
-                        end
-                        4'hc: begin
                             jump_offset = prefix_valid ?
                                 {prefix_high[7:0], instruction[7:0]} :
                                 sign_extend8(instruction[7:0]);
-                            if (field_d != 15)
-                                registers[field_d] <= pc_register;
-                            pc_register <= pc_register + jump_offset;
-                            retired_words <= retired_words + success_retire_words;
-                            state <= ST_FETCH_REQUEST;
+                            if (field_d <= 4'h5) begin
+                                // Conditional branches consume the pending
+                                // test result left by a CMP-class instruction.
+                                if (!pending_test_valid) begin
+                                    fault_code <= FAULT_INVALID_INSTRUCTION;
+                                    fault_pc <= current_fault_pc;
+                                    state <= ST_FAULT;
+                                end else begin
+                                    case (field_d)
+                                        0: branch_taken = pending_test_result == TEST_EQUAL;
+                                        1: branch_taken = pending_test_result != TEST_EQUAL;
+                                        2: branch_taken = pending_test_result == TEST_LESS;
+                                        3: branch_taken = pending_test_result != TEST_LESS;
+                                        4: branch_taken = pending_test_result == TEST_GREATER;
+                                        default: branch_taken = pending_test_result != TEST_GREATER;
+                                    endcase
+                                    if (branch_taken)
+                                        pc_register <= pc_register + jump_offset;
+                                    retired_words <= retired_words + success_retire_words;
+                                    state <= ST_FETCH_REQUEST;
+                                end
+                            end else if (field_d == 4'h8) begin
+                                // JREL: unconditional relative jump, no link.
+                                pc_register <= pc_register + jump_offset;
+                                retired_words <= retired_words + success_retire_words;
+                                state <= ST_FETCH_REQUEST;
+                            end else if (field_d == 4'h9) begin
+                                // JALREL: link the fall-through address into r14.
+                                registers[4'he] <= pc_register;
+                                pc_register <= pc_register + jump_offset;
+                                retired_words <= retired_words + success_retire_words;
+                                state <= ST_FETCH_REQUEST;
+                            end else begin
+                                fault_code <= FAULT_INVALID_INSTRUCTION;
+                                fault_pc <= current_fault_pc;
+                                state <= ST_FAULT;
+                            end
+                        end
+                        4'hc: begin
+                            // DEVRECV/DEVSEND: like load/store, but the
+                            // address is the fixed MMIO physical word
+                            // 0xff00 + device*16 + channel, with no DSEG
+                            // translation.
+                            pending_write <= field_d[3];
+                            pending_address <= {16'h0000, 8'hff, 1'b0, field_d[2:0], field_a};
+                            pending_write_data <= registers[field_b];
+                            pending_destination <= field_b;
+                            // Device instructions never consume a prefix; any
+                            // pending prefix was retired separately above.
+                            pending_retire_words <= 1;
+                            pending_fault_pc <= current_fault_pc;
+                            state <= ST_DATA_REQUEST;
                         end
                         4'hd: begin
                             fault_code <= FAULT_UNSUPPORTED_FPU;
@@ -348,6 +396,17 @@ always @(posedge clk) begin
                         end
                         4'he: begin
                             case (field_d)
+                                // CMPS: pending test = signed ordering of
+                                // r[rd] and r[rs]; no register is written.
+                                0: begin
+                                    pending_test_valid <= 1;
+                                    pending_test_result <=
+                                        registers[field_a] == registers[field_b] ? TEST_EQUAL :
+                                        $signed(registers[field_a]) < $signed(registers[field_b]) ? TEST_LESS :
+                                        TEST_GREATER;
+                                    retired_words <= retired_words + success_retire_words;
+                                    state <= ST_FETCH_REQUEST;
+                                end
                                 1: begin
                                     registers[field_a] <= registers[field_b];
                                     retired_words <= retired_words + success_retire_words;
@@ -372,12 +431,18 @@ always @(posedge clk) begin
                                     fault_pc <= current_fault_pc;
                                     state <= ST_FAULT;
                                 end
-                                5: begin
+                                // JALR: the link field is architecturally
+                                // fixed to r14.
+                                5: if (field_a == 4'he) begin
                                     jump_target = registers[field_b];
-                                    registers[field_a] <= pc_register;
+                                    registers[4'he] <= pc_register;
                                     pc_register <= jump_target;
                                     retired_words <= retired_words + success_retire_words;
                                     state <= ST_FETCH_REQUEST;
+                                end else begin
+                                    fault_code <= FAULT_INVALID_INSTRUCTION;
+                                    fault_pc <= current_fault_pc;
+                                    state <= ST_FAULT;
                                 end
                                 6: begin
                                     registers[field_a] <= {{8{registers[field_b][7]}}, registers[field_b][7:0]};
@@ -441,6 +506,17 @@ always @(posedge clk) begin
                                 14: begin
                                     code_segment_register <= registers[field_a];
                                     pc_register <= registers[field_b];
+                                    retired_words <= retired_words + success_retire_words;
+                                    state <= ST_FETCH_REQUEST;
+                                end
+                                // CMPU: pending test = unsigned ordering of
+                                // r[rd] and r[rs]; no register is written.
+                                15: begin
+                                    pending_test_valid <= 1;
+                                    pending_test_result <=
+                                        registers[field_a] == registers[field_b] ? TEST_EQUAL :
+                                        registers[field_a] < registers[field_b] ? TEST_LESS :
+                                        TEST_GREATER;
                                     retired_words <= retired_words + success_retire_words;
                                     state <= ST_FETCH_REQUEST;
                                 end

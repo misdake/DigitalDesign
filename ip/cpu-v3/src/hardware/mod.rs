@@ -1,4 +1,4 @@
-//! Reusable CpuV3 revision 0.4 processor core with external physical-memory ports.
+//! Reusable CpuV3 revision 0.5 processor core with external physical-memory ports.
 
 mod mmio;
 pub use mmio::*;
