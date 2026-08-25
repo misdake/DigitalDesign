@@ -6,12 +6,12 @@ use super::{
     BootDescriptor, BootEntry, BootImageError, BootManifest, BootTarget, SectionKind,
     SectionRecord, BOOT_DESCRIPTOR_SIZE, BOOT_MANIFEST_HEADER_SIZE, BOOT_SECTION_RECORD_SIZE,
     DMA_ERROR_FILE_LARGER_THAN_MEMORY, DMA_ERROR_FLASH_RANGE, DMA_ERROR_MEMORY_RANGE,
-    SECTION_EXECUTE, STAGE1_HANDOFF_OFFSET, STAGE1_HANDOFF_SIZE_BYTES, SYSCTL_INVALIDATE_DCACHE,
-    SYSCTL_INVALIDATE_ICACHE, SYSCTL_LED, SYSCTL_UART,
+    SECTION_EXECUTE, STAGE1_HANDOFF_OFFSET, STAGE1_HANDOFF_SIZE_BYTES, SYSTEM_CONTROL_DEVICE,
+    SYSCTL_INVALIDATE_DCACHE, SYSCTL_INVALIDATE_ICACHE, SYSCTL_LED, SYSCTL_UART,
 };
 use crate::{
-    jump_segment, load_immediate16, store, write_data_segment, Machine, PhysicalWordAddress,
-    ProgramLoadError, Word, GLOBAL_REGISTER, MMIO_BASE,
+    device_send, jump_segment, load_immediate16, write_data_segment, Machine,
+    PhysicalWordAddress, ProgramLoadError, Word, MMIO_BASE,
 };
 
 /// Reserved physical scratch word address where Stage0 DMAs the 64-byte boot
@@ -416,9 +416,9 @@ impl ApplicationHandoff {
     ///
     /// DMA-filled memory may alias stale cache lines, so both caches are
     /// invalidated through system-control device 0 before the segment switch
-    /// (harmless at cold boot, when every valid bit is clear). `r15` holds
-    /// the MMIO base `0xff00` under the ABI, so both channels are in i4 store
-    /// range and the stored value is irrelevant.
+    /// (harmless at cold boot, when every valid bit is clear). Under ISA v0.5
+    /// each invalidation is a single device send; the sent value is
+    /// irrelevant, so r0 serves as the source.
     pub fn instructions(self) -> Vec<Word> {
         let mut words = vec![];
         words.extend(load_immediate16(1, self.entry.data_segment));
@@ -426,8 +426,8 @@ impl ApplicationHandoff {
         words.extend(load_immediate16(2, self.entry.code_segment));
         words.extend(load_immediate16(3, self.entry.offset));
         words.extend([
-            store(0, GLOBAL_REGISTER, i16::from(SYSCTL_INVALIDATE_ICACHE)),
-            store(0, GLOBAL_REGISTER, i16::from(SYSCTL_INVALIDATE_DCACHE)),
+            device_send(0, SYSTEM_CONTROL_DEVICE, SYSCTL_INVALIDATE_ICACHE),
+            device_send(0, SYSTEM_CONTROL_DEVICE, SYSCTL_INVALIDATE_DCACHE),
             write_data_segment(1),
             jump_segment(2, 3),
         ]);
@@ -980,8 +980,8 @@ mod tests {
         assert_eq!(
             words[words.len() - 4..],
             [
-                store(0, GLOBAL_REGISTER, 0),
-                store(0, GLOBAL_REGISTER, 1),
+                device_send(0, SYSTEM_CONTROL_DEVICE, SYSCTL_INVALIDATE_ICACHE),
+                device_send(0, SYSTEM_CONTROL_DEVICE, SYSCTL_INVALIDATE_DCACHE),
                 write_data_segment(1),
                 jump_segment(2, 3),
             ]
