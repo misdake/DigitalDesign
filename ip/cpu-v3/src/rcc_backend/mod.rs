@@ -9,20 +9,19 @@ mod options;
 pub use options::CompilerOptions;
 
 use crate as cpu_v3;
-use crate::{AluOp, BranchCondition, ImmediateOp, Word};
+use crate::{AluOp, ImmediateOp, TestCondition, Word};
 use rcc::*;
 use std::collections::{HashMap, HashSet};
 
 const REG_TMP: u8 = 12;
 const REG_SP: u8 = 13;
 const REG_LINK: u8 = 14;
-const REG_GLOBAL: u8 = 15;
 
 const CPU_V3_REGISTER_CONVENTION: rcc::RegisterConvention = rcc::RegisterConvention {
     return_registers: &[0, 1],
     argument_registers: &[2, 3, 4, 5, 6, 7],
-    allocatable_registers: &[0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11],
-    caller_saved: &[0, 1, 2, 3, 4, 5, 6, 7],
+    allocatable_registers: &[0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 15],
+    caller_saved: &[0, 1, 2, 3, 4, 5, 6, 7, 15],
     callee_saved: &[8, 9, 10, 11],
     link_register: REG_LINK,
     stack_register: REG_SP,
@@ -42,8 +41,7 @@ enum Line {
     Word(Word),
     Label(usize),
     Branch {
-        condition: BranchCondition,
-        test: u8,
+        condition: TestCondition,
         target: usize,
     },
     Jump(usize),
@@ -161,11 +159,8 @@ fn lower_function(
     let mut static_addresses = vec![];
     let register = |vreg: VReg| allocation.reg[&vreg];
 
-    if is_main {
-        if stack_init != 0 {
-            emit_load_immediate(&mut lines, REG_SP, stack_init);
-        }
-        emit_load_immediate(&mut lines, REG_GLOBAL, cpu_v3::MMIO_BASE);
+    if is_main && stack_init != 0 {
+        emit_load_immediate(&mut lines, REG_SP, stack_init);
     }
     if allocation.frame_size() != 0 {
         emit_immediate(
@@ -237,23 +232,20 @@ fn lower_function(
                 } else {
                     // Critical edges were split by allocation, so neither
                     // conditional successor needs edge-local phi moves here.
-                    let (condition, test) = lower_comparison(cmp, &register, &mut lines);
+                    let condition = lower_comparison(cmp, &register, &mut lines);
                     if next == Some(*if_false) {
                         lines.push(Line::Branch {
                             condition,
-                            test,
                             target: *if_true,
                         });
                     } else if next == Some(*if_true) {
                         lines.push(Line::Branch {
                             condition: condition.invert(),
-                            test,
                             target: *if_false,
                         });
                     } else {
                         lines.push(Line::Branch {
                             condition,
-                            test,
                             target: *if_true,
                         });
                         lines.push(Line::Jump(*if_false));
@@ -352,39 +344,42 @@ fn lower_instruction(
         }
         Instr::StoreStatic { addr, value } => {
             static_addresses.push(*addr);
-            emit_load_immediate(lines, REG_GLOBAL, *addr);
-            emit_load_immediate(lines, REG_TMP, *value);
-            emit_store(lines, REG_TMP, REG_GLOBAL, 0);
-            emit_load_immediate(lines, REG_GLOBAL, cpu_v3::MMIO_BASE);
+            // __data_init runs at main entry, where the link register is
+            // still dead; borrow it as the second scratch next to REG_TMP.
+            emit_load_immediate(lines, REG_TMP, *addr);
+            emit_load_immediate(lines, REG_LINK, *value);
+            emit_store(lines, REG_LINK, REG_TMP, 0);
         }
         Instr::Call { func, .. } => lines.push(Line::Call(func)),
         Instr::LoadFuncAddr { dst, func } => lines.push(Line::LoadFunctionAddress {
             function: func,
             dst: register(*dst),
         }),
-        Instr::CallPtr { .. } => lines.push(Line::Word(cpu_v3::jump_and_link_register(
-            REG_LINK, REG_TMP,
-        ))),
+        Instr::CallPtr { .. } => lines.push(Line::Word(cpu_v3::jump_and_link_register(REG_TMP))),
         Instr::DevRecv {
             dst,
             device,
             channel,
-        } => emit_load(
-            lines,
-            register(*dst),
-            REG_GLOBAL,
-            i16::from(*device) * 16 + i16::from(*channel),
-        ),
+        } => {
+            check_device(*device);
+            lines.push(Line::Word(cpu_v3::device_receive(
+                register(*dst),
+                *device,
+                *channel,
+            )));
+        }
         Instr::DevSend {
             device,
             channel,
             src,
-        } => emit_store(
-            lines,
-            register(*src),
-            REG_GLOBAL,
-            i16::from(*device) * 16 + i16::from(*channel),
-        ),
+        } => {
+            check_device(*device);
+            lines.push(Line::Word(cpu_v3::device_send(
+                register(*src),
+                *device,
+                *channel,
+            )));
+        }
         Instr::MtsrDseg { src } => {
             lines.push(Line::Word(cpu_v3::write_data_segment(register(*src))))
         }
@@ -441,9 +436,9 @@ fn lower_unary(dst: u8, operation: UnOp, src: u8, lines: &mut Vec<Line>) {
             emit_load_immediate(lines, REG_TMP, 15);
             lines.push(Line::Word(cpu_v3::alu(AluOp::Sub, dst, REG_TMP, dst)));
             let done = usize::MAX - lines.len();
+            emit_test_nonzero(lines, src);
             lines.push(Line::Branch {
-                condition: BranchCondition::NonZero,
-                test: src,
+                condition: TestCondition::NotEqual,
                 target: done,
             });
             emit_load_immediate(lines, dst, 0);
@@ -467,119 +462,72 @@ fn lower_unary(dst: u8, operation: UnOp, src: u8, lines: &mut Vec<Line>) {
     }
 }
 
+fn check_device(device: u8) {
+    assert!(
+        device < 8,
+        "CpuV3 device index {device} exceeds the ISA v0.5 limit of 8 devices"
+    );
+}
+
+/// Emits the generic "test a value against zero" comparison used when a
+/// branch tests a plain value rather than a comparison outcome.
+fn emit_test_nonzero(lines: &mut Vec<Line>, test: u8) {
+    lines.push(Line::Word(cpu_v3::immediate_signed(
+        ImmediateOp::CompareSigned,
+        test,
+        0,
+    )));
+}
+
+/// Lowers a branch comparison directly to a CMP-class instruction feeding a
+/// conditional branch; no 0/1 value is materialized. Returns the condition
+/// that branches when `cmp` holds.
 fn lower_comparison(
     comparison: &Cmp,
     register: &dyn Fn(VReg) -> u8,
     lines: &mut Vec<Line>,
-) -> (BranchCondition, u8) {
+) -> TestCondition {
     let lhs = register(comparison.lhs);
-    match comparison.rhs {
-        CmpRhs::Reg(rhs) => lower_register_comparison(
-            comparison.cond,
-            comparison.signed,
-            lhs,
-            register(rhs),
-            lines,
-        ),
-        CmpRhs::Imm(rhs) => {
-            lower_immediate_comparison(comparison.cond, comparison.signed, lhs, rhs, lines)
+    let condition = match comparison.cond {
+        CompareOp::Equal => TestCondition::Equal,
+        CompareOp::NotEqual => TestCondition::NotEqual,
+        CompareOp::Less => TestCondition::LessThan,
+        CompareOp::GreaterEqual => TestCondition::GreaterOrEqual,
+        CompareOp::Greater => TestCondition::GreaterThan,
+        CompareOp::LessEqual => TestCondition::LessOrEqual,
+        // A value always compares Equal to itself, so these degenerate
+        // conditions do not depend on the compared values at all.
+        CompareOp::Always => {
+            lines.push(Line::Word(cpu_v3::compare_signed(lhs, lhs)));
+            return TestCondition::Equal;
         }
-    }
-}
-
-fn lower_register_comparison(
-    condition: CompareOp,
-    signed: bool,
-    lhs: u8,
-    rhs: u8,
-    lines: &mut Vec<Line>,
-) -> (BranchCondition, u8) {
-    if matches!(condition, CompareOp::Equal | CompareOp::NotEqual) {
-        lines.push(Line::Word(cpu_v3::alu(AluOp::Xor, REG_TMP, lhs, rhs)));
-        return (
-            if matches!(condition, CompareOp::Equal) {
-                BranchCondition::Zero
-            } else {
-                BranchCondition::NonZero
-            },
-            REG_TMP,
-        );
-    }
-    let (left, right, invert) = match condition {
-        CompareOp::Less => (lhs, rhs, false),
-        CompareOp::GreaterEqual => (lhs, rhs, true),
-        CompareOp::Greater => (rhs, lhs, false),
-        CompareOp::LessEqual => (rhs, lhs, true),
-        CompareOp::Always => return (BranchCondition::Even, REG_TMP),
-        CompareOp::Never | CompareOp::Equal | CompareOp::NotEqual => unreachable!(),
+        CompareOp::Never => {
+            lines.push(Line::Word(cpu_v3::compare_signed(lhs, lhs)));
+            return TestCondition::NotEqual;
+        }
     };
-    lines.push(Line::Word(cpu_v3::move_register(REG_TMP, left)));
-    lines.push(Line::Word(if signed {
-        cpu_v3::set_less_than_signed(REG_TMP, right)
-    } else {
-        cpu_v3::set_less_than_unsigned(REG_TMP, right)
-    }));
-    (
-        if invert {
-            BranchCondition::Zero
-        } else {
-            BranchCondition::NonZero
-        },
-        REG_TMP,
-    )
-}
-
-fn lower_immediate_comparison(
-    condition: CompareOp,
-    signed: bool,
-    lhs: u8,
-    rhs: u16,
-    lines: &mut Vec<Line>,
-) -> (BranchCondition, u8) {
-    if matches!(condition, CompareOp::Equal | CompareOp::NotEqual) {
-        lines.push(Line::Word(cpu_v3::move_register(REG_TMP, lhs)));
-        emit_immediate(lines, ImmediateOp::CompareEqual, REG_TMP, rhs, true);
-        return (
-            if matches!(condition, CompareOp::Equal) {
-                BranchCondition::NonZero
+    match comparison.rhs {
+        CmpRhs::Reg(rhs) => {
+            let rhs = register(rhs);
+            lines.push(Line::Word(if comparison.signed {
+                cpu_v3::compare_signed(lhs, rhs)
             } else {
-                BranchCondition::Zero
-            },
-            REG_TMP,
-        );
-    }
-
-    let direct = matches!(condition, CompareOp::Less | CompareOp::GreaterEqual);
-    if direct {
-        lines.push(Line::Word(cpu_v3::move_register(REG_TMP, lhs)));
-        emit_immediate(
+                cpu_v3::compare_unsigned(lhs, rhs)
+            }));
+        }
+        CmpRhs::Imm(rhs) => emit_immediate(
             lines,
-            if signed {
-                ImmediateOp::CompareLessThanSigned
+            if comparison.signed {
+                ImmediateOp::CompareSigned
             } else {
-                ImmediateOp::CompareLessThanUnsigned
+                ImmediateOp::CompareUnsigned
             },
-            REG_TMP,
+            lhs,
             rhs,
-            signed,
-        );
-    } else {
-        emit_load_immediate(lines, REG_TMP, rhs);
-        lines.push(Line::Word(if signed {
-            cpu_v3::set_less_than_signed(REG_TMP, lhs)
-        } else {
-            cpu_v3::set_less_than_unsigned(REG_TMP, lhs)
-        }));
+            comparison.signed,
+        ),
     }
-    let invert = matches!(condition, CompareOp::GreaterEqual | CompareOp::LessEqual);
-    (
-        if invert {
-            BranchCondition::Zero
-        } else {
-            BranchCondition::NonZero
-        },
-        REG_TMP,
-    )
+    condition
 }
 
 fn emit_edge_moves(
@@ -776,22 +724,18 @@ fn link(functions: Vec<LoweredFunction>, options: &CompilerOptions) -> CpuV3Prog
             match line {
                 Line::Word(word) => words.push(*word),
                 Line::Label(_) => continue,
-                Line::Branch {
-                    condition,
-                    test,
-                    target,
-                } => {
+                Line::Branch { condition, target } => {
                     let offset = relative_offset(code_base + words.len() + 2, labels[target]);
-                    words.extend(wide_branch(*condition, *test, offset));
+                    words.extend(wide_branch(*condition, offset));
                 }
                 Line::Jump(target) => {
                     let offset = relative_offset(code_base + words.len() + 2, labels[target]);
-                    words.extend(wide_jump(None, offset));
+                    words.extend(wide_jump(offset));
                 }
                 Line::Call(function) => {
                     let offset =
                         relative_offset(code_base + words.len() + 2, function_addresses[function]);
-                    words.extend(wide_jump(Some(REG_LINK), offset));
+                    words.extend(wide_call(offset));
                 }
                 Line::LoadFunctionAddress { function, dst } => {
                     words.extend(cpu_v3::load_immediate16(
@@ -817,17 +761,16 @@ fn relative_offset(from: usize, to: usize) -> i16 {
     (to as u16).wrapping_sub(from as u16) as i16
 }
 
-fn wide_branch(condition: BranchCondition, test: u8, offset: i16) -> [Word; 2] {
-    cpu_v3::prefixed(cpu_v3::branch(condition, test, 0), offset as u16)
+fn wide_branch(condition: TestCondition, offset: i16) -> [Word; 2] {
+    cpu_v3::prefixed_branch(cpu_v3::branch(condition, 0), offset as u16)
 }
 
-fn wide_jump(link: Option<u8>, offset: i16) -> [Word; 2] {
-    let bits = offset as u16;
-    let link = link.unwrap_or(15);
-    [
-        cpu_v3::immediate_high12((bits >> 8) & 0xff),
-        0xc000 | (u16::from(link) << 8) | (bits & 0xff),
-    ]
+fn wide_jump(offset: i16) -> [Word; 2] {
+    cpu_v3::prefixed_branch(cpu_v3::jump_relative(0), offset as u16)
+}
+
+fn wide_call(offset: i16) -> [Word; 2] {
+    cpu_v3::prefixed_branch(cpu_v3::jump_and_link_relative(0), offset as u16)
 }
 
 #[cfg(test)]
@@ -1046,6 +989,23 @@ mod tests {
             .or_else(|| error.downcast_ref::<&str>().copied())
             .unwrap_or("");
         assert!(message.contains("CpuV3 unified-memory image"), "{message}");
+    }
+
+    #[test]
+    fn device_indices_above_seven_are_rejected() {
+        let result = std::panic::catch_unwind(|| {
+            compile(
+                "fn main() { dev_send(8, 0, 0); halt(0); }",
+                CompilerOptions::default(),
+            )
+        });
+        let error = result.expect_err("CpuV3 v0.5 supports only eight devices");
+        let message = error
+            .downcast_ref::<String>()
+            .map(String::as_str)
+            .or_else(|| error.downcast_ref::<&str>().copied())
+            .unwrap_or("");
+        assert!(message.contains("device index 8"), "{message}");
     }
 
     #[test]

@@ -1,7 +1,8 @@
 //! Small architectural interpreter used as the CpuV3 correctness oracle.
 
-use super::encoding::{is_prefix_consumer, sign_extend, SpecialRegister, Word};
+use super::encoding::{is_prefix_consumer, sign_extend, SpecialRegister, Word, LINK_REGISTER};
 use super::{PhysicalWordAddress, MMIO_BASE};
+use std::cmp::Ordering;
 
 /// Fitted 8-MiB SDRAM on the initial Tang Nano 20K target.
 pub const DEFAULT_PHYSICAL_MEMORY_WORDS: usize = 1 << 22;
@@ -69,6 +70,10 @@ pub struct Machine {
     code_segment: Word,
     data_segment: Word,
     prefix: Option<Prefix>,
+    /// Transient result of the last CMP-class instruction, consumed by the
+    /// next conditional branch and expired by any other retired
+    /// non-prefix instruction (prefixes are transparent to it).
+    pending_test: Option<Ordering>,
     retired_words: u64,
     halted: bool,
 }
@@ -98,6 +103,7 @@ impl Machine {
             code_segment: 0,
             data_segment: 0,
             prefix: None,
+            pending_test: None,
             retired_words: 0,
             halted: false,
         }
@@ -250,6 +256,10 @@ impl Machine {
 
         let consumes_prefix = is_prefix_consumer(instruction);
         let prefix = self.prefix.take();
+        // Every retired non-prefix instruction expires the pending test;
+        // CMP-class instructions set it again below and conditional
+        // branches consume the taken value.
+        let pending = self.pending_test.take();
         let retire_words = if prefix.is_some() && consumes_prefix {
             2
         } else {
@@ -269,8 +279,8 @@ impl Machine {
             0x8 => self.execute_load(instruction, prefix),
             0x9 => self.execute_store(instruction, prefix),
             0xa => self.execute_immediate(instruction, prefix),
-            0xb => self.execute_branch(instruction, prefix),
-            0xc => self.execute_jump(instruction, prefix),
+            0xb => self.execute_branch(instruction, prefix, pending),
+            0xc => self.execute_device(instruction),
             0xd => Err(FaultKind::UnsupportedFpu),
             0xe => self.execute_control(instruction),
             _ => unreachable!(),
@@ -333,6 +343,18 @@ impl Machine {
         let old = self.registers[usize::from(dst)];
         let signed = immediate4(instruction, prefix, true);
         let unsigned = immediate4(instruction, prefix, false);
+        match function {
+            // CMPSI/CMPUI set the pending test result and write no register.
+            12 => {
+                self.pending_test = Some((old as i16).cmp(&(signed as i16)));
+                return Ok(StepOutcome::Running);
+            }
+            13 => {
+                self.pending_test = Some(old.cmp(&unsigned));
+                return Ok(StepOutcome::Running);
+            }
+            _ => {}
+        }
         let result = match function {
             0 => old.wrapping_add(signed),
             1 => old.wrapping_sub(signed),
@@ -355,36 +377,59 @@ impl Machine {
         Ok(StepOutcome::Running)
     }
 
-    fn execute_branch(&mut self, instruction: Word, prefix: Option<Prefix>) -> ExecuteResult {
+    fn execute_branch(
+        &mut self,
+        instruction: Word,
+        prefix: Option<Prefix>,
+        pending: Option<Ordering>,
+    ) -> ExecuteResult {
         let condition = field(instruction, 8);
-        let value = self.registers[usize::from(field(instruction, 4))];
-        let taken = match condition {
-            0 => value == 0,
-            1 => value != 0,
-            2 => (value as i16) < 0,
-            3 => (value as i16) >= 0,
-            4 => (value as i16) > 0,
-            5 => (value as i16) <= 0,
-            6 => value & 1 != 0,
-            7 => value & 1 == 0,
-            _ => return Err(FaultKind::InvalidInstruction),
-        };
-        if taken {
-            self.pc = self.pc.wrapping_add(immediate4(instruction, prefix, true));
-        }
-        Ok(StepOutcome::Running)
-    }
-
-    fn execute_jump(&mut self, instruction: Word, prefix: Option<Prefix>) -> ExecuteResult {
-        let link = field(instruction, 8);
         let offset = prefix.map_or_else(
             || sign_extend(instruction & 0xff, 8),
             |prefix| ((prefix.high & 0xff) << 8) | (instruction & 0xff),
         );
-        if link != 15 {
-            self.registers[usize::from(link)] = self.pc;
+        match condition {
+            // Conditional branches consume the pending test result, whether
+            // or not the branch is taken.
+            0..=5 => {
+                let test = pending.ok_or(FaultKind::InvalidInstruction)?;
+                let taken = match condition {
+                    0 => test == Ordering::Equal,
+                    1 => test != Ordering::Equal,
+                    2 => test == Ordering::Less,
+                    3 => test != Ordering::Less,
+                    4 => test == Ordering::Greater,
+                    5 => test != Ordering::Greater,
+                    _ => unreachable!(),
+                };
+                if taken {
+                    self.pc = self.pc.wrapping_add(offset);
+                }
+            }
+            // JREL: unconditional relative jump, no link.
+            8 => self.pc = self.pc.wrapping_add(offset),
+            // JALREL: link the fall-through address into r14, then jump.
+            9 => {
+                let next = self.pc;
+                self.pc = next.wrapping_add(offset);
+                self.registers[usize::from(LINK_REGISTER)] = next;
+            }
+            _ => return Err(FaultKind::InvalidInstruction),
         }
-        self.pc = self.pc.wrapping_add(offset);
+        Ok(StepOutcome::Running)
+    }
+
+    fn execute_device(&mut self, instruction: Word) -> ExecuteResult {
+        let device = u32::from(field(instruction, 8)) & 7;
+        let channel = u32::from(field(instruction, 4));
+        let register = usize::from(field(instruction, 0));
+        let address = PhysicalWordAddress::new(u32::from(MMIO_BASE) + device * 16 + channel);
+        if instruction & 0x800 != 0 {
+            let value = self.registers[register];
+            self.write_data(address, value)?;
+        } else {
+            self.registers[register] = self.read_data(address)?;
+        }
         Ok(StepOutcome::Running)
     }
 
@@ -393,11 +438,17 @@ impl Machine {
         let dst = field(instruction, 4);
         let src = field(instruction, 0);
         match function {
+            0 => {
+                self.pending_test = Some(
+                    (self.registers[usize::from(dst)] as i16)
+                        .cmp(&(self.registers[usize::from(src)] as i16)),
+                )
+            }
             1 => self.registers[usize::from(dst)] = self.registers[usize::from(src)],
             2 => self.registers[usize::from(dst)] = !self.registers[usize::from(src)],
             3 => self.registers[usize::from(dst)] = self.registers[usize::from(src)].wrapping_neg(),
             4 if dst == 0 => self.pc = self.registers[usize::from(src)],
-            5 => {
+            5 if dst == LINK_REGISTER => {
                 let target = self.registers[usize::from(src)];
                 self.registers[usize::from(dst)] = self.pc;
                 self.pc = target;
@@ -437,6 +488,11 @@ impl Machine {
             14 => {
                 self.code_segment = self.registers[usize::from(dst)];
                 self.pc = self.registers[usize::from(src)];
+            }
+            15 => {
+                self.pending_test = Some(
+                    self.registers[usize::from(dst)].cmp(&self.registers[usize::from(src)]),
+                )
             }
             8 if dst == 0 && src == 0 => {
                 self.halted = true;
@@ -535,9 +591,12 @@ fn immediate4(instruction: Word, prefix: Option<Prefix>, signed: bool) -> Word {
 mod tests {
     use super::*;
     use crate::{
-        alu, branch, halt, immediate_signed, jump_segment, load, load_immediate16,
-        population_count, read_special, set_less_than_signed, set_less_than_unsigned, store,
-        write_data_segment, AluOp, BranchCondition, ImmediateOp, SpecialRegister,
+        alu, branch, compare_signed, compare_unsigned, device_receive, device_send, halt,
+        immediate_high12, immediate_signed, immediate_unsigned, jump_and_link_register,
+        jump_and_link_relative, jump_relative, jump_segment, load, load_immediate16, nop,
+        population_count, prefixed, prefixed_branch, read_special, set_less_than_signed,
+        set_less_than_unsigned, store, write_data_segment, AluOp, ImmediateOp, SpecialRegister,
+        TestCondition,
     };
 
     #[test]
@@ -549,7 +608,8 @@ mod tests {
         program.extend([
             alu(AluOp::Add, 0, 0, 1),
             immediate_signed(ImmediateOp::Add, 1, -1),
-            branch(BranchCondition::NonZero, 1, -3),
+            immediate_signed(ImmediateOp::CompareSigned, 1, 0),
+            branch(TestCondition::NotEqual, -4),
             store(0, 2, 0),
             load(3, 2, 0),
             halt(),
@@ -560,13 +620,13 @@ mod tests {
         assert_eq!(
             machine.run(100).unwrap(),
             RunOutcome::Halted {
-                steps: 24,
+                steps: 29,
                 signal: 15
             }
         );
         assert_eq!(machine.register(3), Some(15));
         assert_eq!(machine.memory(0x4000), 15);
-        assert_eq!(machine.retired_words(), 24);
+        assert_eq!(machine.retired_words(), 29);
     }
 
     #[test]
@@ -704,5 +764,390 @@ mod tests {
                 signal: 0x55aa,
             }
         );
+    }
+
+    #[test]
+    fn all_six_predicates_test_the_pending_ordering() {
+        for (condition, taken) in [
+            (TestCondition::Equal, false),
+            (TestCondition::NotEqual, true),
+            (TestCondition::LessThan, true),
+            (TestCondition::GreaterOrEqual, false),
+            (TestCondition::GreaterThan, false),
+            (TestCondition::LessOrEqual, true),
+        ] {
+            // r1 = 3, r2 = 5: the signed pending ordering is Less.
+            let mut program = vec![];
+            program.extend(load_immediate16(1, 3));
+            program.extend(load_immediate16(2, 5));
+            program.extend([
+                compare_signed(1, 2),
+                branch(condition, 1),
+                immediate_unsigned(ImmediateOp::LoadUnsigned, 0, 9),
+                halt(),
+            ]);
+            let mut machine = Machine::default();
+            machine.load_program(0, &program).unwrap();
+            let expected = if taken { 0 } else { 9 };
+            assert_eq!(
+                machine.run(16).unwrap(),
+                RunOutcome::Halted {
+                    steps: if taken { 7 } else { 8 },
+                    signal: expected,
+                },
+                "condition {condition:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn branch_offset_is_a_signed_byte_relative_to_the_next_word() {
+        assert_eq!(branch(TestCondition::Equal, -128), 0xb080);
+        assert_eq!(branch(TestCondition::Equal, 127), 0xb07f);
+
+        // r1 = 0 -> pending Equal; the taken branch skips two words.
+        let mut program = vec![];
+        program.extend(load_immediate16(1, 0));
+        program.extend([
+            compare_signed(1, 1),
+            branch(TestCondition::Equal, 2),
+            immediate_unsigned(ImmediateOp::LoadUnsigned, 0, 1),
+            immediate_unsigned(ImmediateOp::LoadUnsigned, 0, 2),
+            halt(),
+        ]);
+        let mut machine = Machine::default();
+        machine.load_program(0, &program).unwrap();
+        assert_eq!(
+            machine.run(16).unwrap(),
+            RunOutcome::Halted {
+                steps: 5,
+                signal: 0,
+            }
+        );
+    }
+
+    #[test]
+    fn prefixed_branch_forms_a_wide_offset_and_retires_two_words() {
+        let mut program = vec![immediate_signed(ImmediateOp::CompareSigned, 0, 0)];
+        program.extend(prefixed_branch(branch(TestCondition::Equal, 0), 0x0103));
+        assert_eq!(program[1], immediate_high12(0x01));
+        assert_eq!(program[2], 0xb003);
+        let filler = immediate_unsigned(ImmediateOp::LoadUnsigned, 1, 1);
+        program.extend(std::iter::repeat_n(filler, 0x103));
+        program.extend([immediate_unsigned(ImmediateOp::LoadUnsigned, 1, 2), halt()]);
+
+        let mut machine = Machine::default();
+        machine.load_program(0, &program).unwrap();
+        assert_eq!(
+            machine.run(0x200).unwrap(),
+            RunOutcome::Halted {
+                steps: 5,
+                signal: 0,
+            }
+        );
+        // The branch target executed exactly once; the filler did not run.
+        assert_eq!(machine.register(1), Some(2));
+        assert_eq!(machine.retired_words(), 5);
+    }
+
+    #[test]
+    fn conditional_branch_without_a_pending_test_faults() {
+        let mut machine = Machine::default();
+        machine
+            .load_program(0, &[branch(TestCondition::Equal, 0)])
+            .unwrap();
+        assert_eq!(
+            machine.step(),
+            Err(Fault {
+                kind: FaultKind::InvalidInstruction,
+                address: 0,
+                instruction: 0xb000,
+            })
+        );
+    }
+
+    #[test]
+    fn stale_branch_fault_reports_the_prefix_address_and_retires_nothing() {
+        let mut machine = Machine::default();
+        let words = prefixed_branch(branch(TestCondition::NotEqual, 0), 0);
+        machine.load_program(0, &words).unwrap();
+        assert_eq!(machine.step(), Ok(StepOutcome::Running));
+        assert_eq!(
+            machine.step(),
+            Err(Fault {
+                kind: FaultKind::InvalidInstruction,
+                address: 0,
+                instruction: words[1],
+            })
+        );
+        assert_eq!(machine.retired_words(), 0);
+    }
+
+    #[test]
+    fn reserved_branch_conditions_fault() {
+        for condition in [0x6, 0x7, 0xa, 0xf] {
+            let mut machine = Machine::default();
+            machine
+                .load_program(0, &[0xb000 | (condition << 8)])
+                .unwrap();
+            assert_eq!(
+                machine.step(),
+                Err(Fault {
+                    kind: FaultKind::InvalidInstruction,
+                    address: 0,
+                    instruction: 0xb000 | (condition << 8),
+                }),
+                "condition {condition:#x}"
+            );
+        }
+    }
+
+    #[test]
+    fn prefixes_are_transparent_to_the_pending_test() {
+        // CMP; IMMHI12; BR: the prefix sits between producer and consumer.
+        let mut machine = Machine::default();
+        machine
+            .load_program(
+                0,
+                &[
+                    immediate_signed(ImmediateOp::CompareSigned, 0, 0),
+                    immediate_high12(0),
+                    branch(TestCondition::Equal, 1),
+                    immediate_unsigned(ImmediateOp::LoadUnsigned, 0, 9),
+                    halt(),
+                ],
+            )
+            .unwrap();
+        assert_eq!(
+            machine.run(8).unwrap(),
+            RunOutcome::Halted {
+                steps: 4,
+                signal: 0,
+            }
+        );
+        assert_eq!(machine.retired_words(), 4);
+    }
+
+    #[test]
+    fn unconditional_jumps_expire_the_pending_test() {
+        let mut machine = Machine::default();
+        machine
+            .load_program(
+                0,
+                &[
+                    immediate_signed(ImmediateOp::CompareSigned, 0, 0),
+                    jump_relative(2),
+                    nop(),
+                    nop(),
+                    branch(TestCondition::Equal, 0),
+                ],
+            )
+            .unwrap();
+        assert_eq!(machine.step(), Ok(StepOutcome::Running));
+        assert_eq!(machine.step(), Ok(StepOutcome::Running));
+        assert_eq!(machine.pc(), 4);
+        assert_eq!(
+            machine.step(),
+            Err(Fault {
+                kind: FaultKind::InvalidInstruction,
+                address: 4,
+                instruction: 0xb000,
+            })
+        );
+    }
+
+    #[test]
+    fn jump_and_link_relative_links_the_fall_through_address() {
+        let mut machine = Machine::default();
+        machine
+            .load_program(0, &[jump_and_link_relative(2), nop(), nop(), halt()])
+            .unwrap();
+        assert_eq!(
+            machine.run(4).unwrap(),
+            RunOutcome::Halted {
+                steps: 2,
+                signal: 0,
+            }
+        );
+        assert_eq!(machine.register(LINK_REGISTER), Some(1));
+        assert_eq!(machine.retired_words(), 2);
+    }
+
+    #[test]
+    fn jump_and_link_register_requires_the_fixed_link_register() {
+        let mut machine = Machine::default();
+        machine.load_program(0, &[0xe5d1]).unwrap();
+        assert_eq!(
+            machine.step(),
+            Err(Fault {
+                kind: FaultKind::InvalidInstruction,
+                address: 0,
+                instruction: 0xe5d1,
+            })
+        );
+
+        let mut machine = Machine::default();
+        machine
+            .load_program(
+                0,
+                &[
+                    immediate_unsigned(ImmediateOp::LoadUnsigned, 2, 3),
+                    jump_and_link_register(2),
+                    halt(),
+                    halt(),
+                ],
+            )
+            .unwrap();
+        assert_eq!(
+            machine.run(4).unwrap(),
+            RunOutcome::Halted {
+                steps: 3,
+                signal: 0,
+            }
+        );
+        assert_eq!(machine.register(LINK_REGISTER), Some(2));
+    }
+
+    #[test]
+    fn compare_instructions_respect_signedness_at_the_sign_boundary() {
+        // r1 = 0x7fff (signed 32767), r2 = 0x8000 (signed -32768, unsigned 32768).
+        let mut program = vec![];
+        program.extend(load_immediate16(1, 0x7fff));
+        program.extend(load_immediate16(2, 0x8000));
+        // r3: signed register compare -> Greater.
+        program.extend([
+            immediate_unsigned(ImmediateOp::LoadUnsigned, 3, 1),
+            compare_signed(1, 2),
+            branch(TestCondition::GreaterThan, 1),
+            immediate_unsigned(ImmediateOp::LoadUnsigned, 3, 0),
+        ]);
+        // r4: unsigned register compare -> Less.
+        program.extend([
+            immediate_unsigned(ImmediateOp::LoadUnsigned, 4, 1),
+            compare_unsigned(1, 2),
+            branch(TestCondition::LessThan, 1),
+            immediate_unsigned(ImmediateOp::LoadUnsigned, 4, 0),
+        ]);
+        // r5: signed immediate compare against the 16-bit pattern 0x8000
+        // (i16 -32768) -> Greater.
+        program.push(immediate_unsigned(ImmediateOp::LoadUnsigned, 5, 1));
+        program.extend(prefixed(
+            0xa000 | ((ImmediateOp::CompareSigned as Word) << 8) | 0x10,
+            0x8000,
+        ));
+        program.extend([
+            branch(TestCondition::GreaterThan, 1),
+            immediate_unsigned(ImmediateOp::LoadUnsigned, 5, 0),
+        ]);
+        // r6: unsigned immediate compare against 0x8000 -> Less.
+        program.push(immediate_unsigned(ImmediateOp::LoadUnsigned, 6, 1));
+        program.extend(prefixed(
+            0xa000 | ((ImmediateOp::CompareUnsigned as Word) << 8) | 0x10,
+            0x8000,
+        ));
+        program.extend([
+            branch(TestCondition::LessThan, 1),
+            immediate_unsigned(ImmediateOp::LoadUnsigned, 6, 0),
+        ]);
+        // r7/r8: unprefixed immediate compares sign-extend the nibble.
+        program.extend([immediate_signed(ImmediateOp::LoadSigned, 1, -1)]);
+        program.extend([
+            immediate_unsigned(ImmediateOp::LoadUnsigned, 7, 1),
+            immediate_signed(ImmediateOp::CompareSigned, 1, 0),
+            branch(TestCondition::LessThan, 1),
+            immediate_unsigned(ImmediateOp::LoadUnsigned, 7, 0),
+        ]);
+        program.extend([
+            immediate_unsigned(ImmediateOp::LoadUnsigned, 8, 1),
+            immediate_unsigned(ImmediateOp::CompareUnsigned, 1, 0),
+            branch(TestCondition::GreaterThan, 1),
+            immediate_unsigned(ImmediateOp::LoadUnsigned, 8, 0),
+        ]);
+        program.push(halt());
+
+        let mut machine = Machine::default();
+        machine.load_program(0, &program).unwrap();
+        assert!(matches!(
+            machine.run(100).unwrap(),
+            RunOutcome::Halted { .. }
+        ));
+        for (register, name) in [
+            (3, "CMPS"),
+            (4, "CMPU"),
+            (5, "CMPSI wide"),
+            (6, "CMPUI wide"),
+            (7, "CMPSI"),
+            (8, "CMPUI"),
+        ] {
+            assert_eq!(machine.register(register), Some(1), "{name}");
+        }
+        // CMP-class instructions write no register: r1/r2 keep their values.
+        assert_eq!(machine.register(2), Some(0x8000));
+    }
+
+    struct EchoDevice {
+        channels: [Word; 16],
+    }
+
+    impl Device for EchoDevice {
+        fn read(&mut self, _memory: &mut [Word], channel: u8) -> Word {
+            self.channels[usize::from(channel)]
+        }
+
+        fn write(&mut self, _memory: &mut [Word], channel: u8, value: Word) {
+            self.channels[usize::from(channel)] = value;
+        }
+
+        fn as_any(&self) -> &dyn std::any::Any {
+            self
+        }
+    }
+
+    fn device_round_trip_program() -> Vec<Word> {
+        let mut program = vec![];
+        program.extend(load_immediate16(1, 0x1234));
+        program.extend([
+            device_send(1, 2, 3),
+            device_receive(0, 2, 3),
+            halt(),
+        ]);
+        program
+    }
+
+    #[test]
+    fn device_instructions_route_to_an_attached_device() {
+        let mut machine = Machine::default();
+        machine.load_program(0, &device_round_trip_program()).unwrap();
+        machine.attach_device(
+            2,
+            Box::new(EchoDevice {
+                channels: [0; 16],
+            }),
+        );
+        assert_eq!(
+            machine.run(16).unwrap(),
+            RunOutcome::Halted {
+                steps: 5,
+                signal: 0x1234,
+            }
+        );
+        let device: &EchoDevice = machine.device(2).unwrap();
+        assert_eq!(device.channels[3], 0x1234);
+        // The device intercepted the access; the MMIO memory word is untouched.
+        assert_eq!(machine.memory(0xff23), 0);
+    }
+
+    #[test]
+    fn device_instructions_fall_back_to_plain_memory_without_a_device() {
+        let mut machine = Machine::default();
+        machine.load_program(0, &device_round_trip_program()).unwrap();
+        assert_eq!(
+            machine.run(16).unwrap(),
+            RunOutcome::Halted {
+                steps: 5,
+                signal: 0x1234,
+            }
+        );
+        assert_eq!(machine.memory(0xff23), 0x1234);
     }
 }

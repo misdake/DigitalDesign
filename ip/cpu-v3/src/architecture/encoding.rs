@@ -1,13 +1,12 @@
-//! Encoding helpers for CpuV3 revision 0.4.
+//! Encoding helpers for CpuV3 revision 0.5.
 
 pub type Word = u16;
 pub type Register = u8;
 
-pub const ISA_REVISION: (u8, u8) = (0, 4);
+pub const ISA_REVISION: (u8, u8) = (0, 5);
 
 pub const LINK_REGISTER: Register = 14;
 pub const STACK_REGISTER: Register = 13;
-pub const GLOBAL_REGISTER: Register = 15;
 pub const DEFAULT_DATA_BASE: Word = 0x4000;
 pub const MMIO_BASE: Word = 0xff00;
 pub const DEFAULT_STACK_TOP: Word = MMIO_BASE;
@@ -40,21 +39,24 @@ pub enum ImmediateOp {
     CompareEqual = 9,
     CompareLessThanSigned = 10,
     CompareLessThanUnsigned = 11,
+    CompareSigned = 12,
+    CompareUnsigned = 13,
     LoadSigned = 14,
     LoadUnsigned = 15,
 }
 
+/// Predicates tested against the pending test result left by a CMP-class
+/// instruction. Conditions 6 and 7 are reserved; 8 and 9 encode the
+/// unconditional relative jumps (without and with link).
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 #[repr(u16)]
-pub enum BranchCondition {
-    Zero = 0,
-    NonZero = 1,
-    Negative = 2,
-    NonNegative = 3,
-    Positive = 4,
-    NonPositive = 5,
-    Odd = 6,
-    Even = 7,
+pub enum TestCondition {
+    Equal = 0,
+    NotEqual = 1,
+    LessThan = 2,
+    GreaterOrEqual = 3,
+    GreaterThan = 4,
+    LessOrEqual = 5,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -64,17 +66,15 @@ pub enum SpecialRegister {
     DataSegment = 1,
 }
 
-impl BranchCondition {
+impl TestCondition {
     pub const fn invert(self) -> Self {
         match self {
-            Self::Zero => Self::NonZero,
-            Self::NonZero => Self::Zero,
-            Self::Negative => Self::NonNegative,
-            Self::NonNegative => Self::Negative,
-            Self::Positive => Self::NonPositive,
-            Self::NonPositive => Self::Positive,
-            Self::Odd => Self::Even,
-            Self::Even => Self::Odd,
+            Self::Equal => Self::NotEqual,
+            Self::NotEqual => Self::Equal,
+            Self::LessThan => Self::GreaterOrEqual,
+            Self::GreaterOrEqual => Self::LessThan,
+            Self::GreaterThan => Self::LessOrEqual,
+            Self::LessOrEqual => Self::GreaterThan,
         }
     }
 }
@@ -103,6 +103,14 @@ fn unsigned4(value: u8) -> Word {
     Word::from(value)
 }
 
+fn signed8(value: i16) -> Word {
+    assert!(
+        (-128..=127).contains(&value),
+        "CpuV3 signed 8-bit offset {value} is outside -128..127"
+    );
+    (value as Word) & 0xff
+}
+
 pub fn alu(op: AluOp, dst: Register, lhs: Register, rhs: Register) -> Word {
     ((op as Word) << 12) | (register(dst) << 8) | (register(lhs) << 4) | register(rhs)
 }
@@ -123,23 +131,35 @@ pub fn immediate_unsigned(op: ImmediateOp, dst: Register, value: u8) -> Word {
     0xa000 | ((op as Word) << 8) | (register(dst) << 4) | unsigned4(value)
 }
 
-pub fn branch(condition: BranchCondition, test: Register, offset: i16) -> Word {
-    0xb000 | ((condition as Word) << 8) | (register(test) << 4) | signed4(offset)
+/// Conditional branch on the pending test result, with a signed 8-bit
+/// offset relative to the already-incremented program counter.
+pub fn branch(condition: TestCondition, offset: i16) -> Word {
+    0xb000 | ((condition as Word) << 8) | signed8(offset)
 }
 
-pub fn jump(link: Option<Register>, offset: i16) -> Word {
-    assert!(
-        (-128..=127).contains(&offset),
-        "CpuV3 short jump offset {offset} is outside -128..127"
-    );
-    let link = link.map_or(15, |value| {
-        assert!(
-            value < 15,
-            "r15 in the link field encodes a jump without link"
-        );
-        value
-    });
-    0xc000 | (register(link) << 8) | Word::from(offset as u8)
+/// Unconditional relative jump (condition 8), no link.
+pub fn jump_relative(offset: i16) -> Word {
+    0xb800 | signed8(offset)
+}
+
+/// Unconditional relative jump with link (condition 9): r14 receives the
+/// address of the next word before the jump.
+pub fn jump_and_link_relative(offset: i16) -> Word {
+    0xb900 | signed8(offset)
+}
+
+/// Reads device `device` channel `channel` into `dst`.
+pub fn device_receive(dst: Register, device: u8, channel: u8) -> Word {
+    assert!(device < 8, "CpuV3 device index {device} exceeds 7");
+    assert!(channel < 16, "CpuV3 device channel {channel} exceeds 15");
+    0xc000 | (Word::from(device) << 8) | (Word::from(channel) << 4) | register(dst)
+}
+
+/// Writes `src` to device `device` channel `channel`.
+pub fn device_send(src: Register, device: u8, channel: u8) -> Word {
+    assert!(device < 8, "CpuV3 device index {device} exceeds 7");
+    assert!(channel < 16, "CpuV3 device channel {channel} exceeds 15");
+    0xc800 | (Word::from(device) << 8) | (Word::from(channel) << 4) | register(src)
 }
 
 fn control(function: Word, dst: Register, src: Register) -> Word {
@@ -162,8 +182,10 @@ pub fn jump_register(target: Register) -> Word {
     control(4, 0, target)
 }
 
-pub fn jump_and_link_register(link: Register, target: Register) -> Word {
-    control(5, link, target)
+/// Indirect jump with link: the link register is architecturally fixed to
+/// r14, so only the target register is encoded.
+pub fn jump_and_link_register(target: Register) -> Word {
+    control(5, LINK_REGISTER, target)
 }
 
 pub fn sign_extend_byte(dst: Register, src: Register) -> Word {
@@ -186,6 +208,18 @@ pub fn set_less_than_unsigned(dst: Register, rhs: Register) -> Word {
 
 pub fn population_count(dst: Register, src: Register) -> Word {
     control(11, dst, src)
+}
+
+/// Sets the pending test result to the signed ordering of `rd` and `rs`;
+/// no register is written.
+pub fn compare_signed(rd: Register, rs: Register) -> Word {
+    control(0, rd, rs)
+}
+
+/// Sets the pending test result to the unsigned ordering of `rd` and `rs`;
+/// no register is written.
+pub fn compare_unsigned(rd: Register, rs: Register) -> Word {
+    control(15, rd, rs)
 }
 
 pub fn read_special(dst: Register, special: SpecialRegister) -> Word {
@@ -235,6 +269,16 @@ pub fn prefixed(consumer: Word, value: Word) -> [Word; 2] {
     ]
 }
 
+/// Adds a prefix to a B-family consumer (branch or relative jump). Unlike
+/// `prefixed`, the wide offset is `{prefix[7:0], imm8}`: the prefix supplies
+/// the high byte and the consumer's immediate byte the low byte.
+pub fn prefixed_branch(consumer: Word, offset: u16) -> [Word; 2] {
+    [
+        immediate_high12(offset >> 8),
+        consumer | (offset & 0xff),
+    ]
+}
+
 pub(crate) fn sign_extend(value: Word, bits: u32) -> Word {
     let shift = Word::BITS - bits;
     (((value << shift) as i16) >> shift) as Word
@@ -242,9 +286,9 @@ pub(crate) fn sign_extend(value: Word, bits: u32) -> Word {
 
 pub(crate) fn is_prefix_consumer(instruction: Word) -> bool {
     match instruction >> 12 {
-        0x8 | 0x9 | 0xc => true,
-        0xa => matches!((instruction >> 8) & 0xf, 0..=4 | 8..=11 | 14..=15),
-        0xb => ((instruction >> 8) & 0xf) <= 7,
+        0x8 | 0x9 => true,
+        0xa => !matches!((instruction >> 8) & 0xf, 5..=7),
+        0xb => matches!((instruction >> 8) & 0xf, 0..=5 | 8 | 9),
         _ => false,
     }
 }
@@ -258,9 +302,14 @@ mod tests {
         assert_eq!(alu(AluOp::Add, 3, 1, 2), 0x0312);
         assert_eq!(load(3, 4, -1), 0x834f);
         assert_eq!(store(3, 4, 7), 0x9347);
-        assert_eq!(branch(BranchCondition::NonZero, 2, -3), 0xb12d);
-        assert_eq!(jump(Some(LINK_REGISTER), -2), 0xcefe);
+        assert_eq!(branch(TestCondition::NotEqual, -3), 0xb1fd);
+        assert_eq!(jump_relative(-2), 0xb8fe);
+        assert_eq!(jump_and_link_relative(-2), 0xb9fe);
+        assert_eq!(device_receive(3, 2, 1), 0xc213);
+        assert_eq!(device_send(3, 2, 1), 0xca13);
         assert_eq!(load_immediate16(3, 0xabcd), [0xfabc, 0xaf3d]);
+        assert_eq!(compare_signed(3, 4), 0xe034);
+        assert_eq!(compare_unsigned(3, 4), 0xef34);
         assert_eq!(set_less_than_signed(3, 4), 0xe934);
         assert_eq!(set_less_than_unsigned(3, 4), 0xea34);
         assert_eq!(population_count(3, 4), 0xeb34);
@@ -271,15 +320,37 @@ mod tests {
     }
 
     #[test]
+    fn prefixed_branch_uses_the_prefix_low_byte_as_offset_high_byte() {
+        assert_eq!(
+            prefixed_branch(branch(TestCondition::Equal, 0), 0x1234),
+            [0xf012, 0xb034]
+        );
+        assert_eq!(prefixed_branch(jump_and_link_relative(0), 0xfffe), [0xf0ff, 0xb9fe]);
+    }
+
+    #[test]
     fn prefix_consumers_are_an_explicit_closed_set() {
         assert!(is_prefix_consumer(load(0, 0, 0)));
         assert!(is_prefix_consumer(immediate_signed(ImmediateOp::Add, 0, 0)));
-        assert!(is_prefix_consumer(jump(None, 0)));
+        assert!(is_prefix_consumer(immediate_signed(
+            ImmediateOp::CompareSigned,
+            0,
+            0
+        )));
+        assert!(is_prefix_consumer(branch(TestCondition::Equal, 0)));
+        assert!(is_prefix_consumer(jump_relative(0)));
+        assert!(is_prefix_consumer(jump_and_link_relative(0)));
         assert!(!is_prefix_consumer(immediate_unsigned(
             ImmediateOp::ShiftLeft,
             0,
             0
         )));
+        // Reserved branch conditions do not consume a prefix.
+        assert!(!is_prefix_consumer(0xb600));
+        assert!(!is_prefix_consumer(0xbf00));
+        // Device instructions have no immediate and never consume a prefix.
+        assert!(!is_prefix_consumer(device_receive(0, 0, 0)));
+        assert!(!is_prefix_consumer(device_send(0, 0, 0)));
         assert!(!is_prefix_consumer(move_register(0, 0)));
     }
 }
