@@ -15,10 +15,15 @@ organization, and the explicitly separated current FPGA implementation status.
   data segments. A physical word address is the direct concatenation
   `{segment[15:0], offset[15:0]}`; segment arithmetic is never added to the
   offset and offset wrap never advances a segment.
-- There are sixteen writable 16-bit GPRs and no architectural flags.
+- There are sixteen writable 16-bit GPRs and no persistent architectural flags.
+  The only cross-instruction execution state besides the `IMMHI12` prefix is the
+  transient pending test result: a three-way ordering (Less/Equal/Greater) set
+  only by CMP-class instructions, consumed by the next conditional branch, and
+  expired by any other retired non-prefix instruction. Prefixes are transparent
+  to it, reset leaves none, and a conditional branch without one faults.
 - `r0..r1` return values, `r2..r7` arguments, `r8..r11` callee-saved values,
-  `r12` compiler scratch, `r13` stack pointer, `r14` link, and `r15` the
-  global/MMIO base.
+  `r12` compiler scratch, `r13` stack pointer, and `r14` the architecturally
+  fixed link register. `r15` is an ordinary allocatable register.
 - `CSEG` supplies the high physical bits for instruction fetch. `DSEG` supplies
   them for ordinary loads and stores, including stack accesses. The fixed MMIO
   offset page `0xff00..0xffff` always selects system space in segment zero.
@@ -43,7 +48,7 @@ The baseline offset map inside the selected data segment is:
 | `0x4000..` | static data |
 | `0x8000..` | heap baseline |
 | below `0xff00` | stack, growing downward |
-| `0xff00..0xffff` | fixed MMIO page in segment zero, addressed through `r15` |
+| `0xff00..0xffff` | fixed MMIO page in segment zero, reached by device instructions (devices 0..7) or ordinary loads/stores |
 
 `CompilerOptions::default()` selects these boundaries. The old v2.6 convention of
 using a zero stack pointer to wrap to `0xffff` is rejected because that address
@@ -91,6 +96,57 @@ data window. `CompilerOptions::code_base` (CLI `--target cpu-v3 --code-base`) re
 the linked code offsets without adding padding to the output file. The offline
 packer places those bytes at the matching physical segment and offset.
 
+## Revision 0.5
+
+Revision 0.5 replaces the test-register branches with a transient pending test
+result, moves relative jumps into the B family, turns opcode C into device
+instructions, and frees `r15` for general allocation.
+
+| Encoding | Name | Operation |
+| --- | --- | --- |
+| `B cond imm8` | `BEQ/BNE/BLT/BGE/BGT/BLE` | branch on the pending test result (cond 0..5) |
+| `B 8 imm8` | `JREL` | unconditional relative jump, no link |
+| `B 9 imm8` | `JALREL` | unconditional relative jump; link fixed to `r14` |
+| `C {0,dev} ch rd` | `DEVRECV` | `rd = device[dev].read(ch)` at `0xff00 + dev*16 + ch` |
+| `C {1,dev} ch rs` | `DEVSEND` | `device[dev].write(ch, rs)` at `0xff00 + dev*16 + ch` |
+| `E 0 rd rs` | `CMPS` | pending = signed ordering of `rd` vs `rs`; writes no register |
+| `E F rd rs` | `CMPU` | pending = unsigned ordering of `rd` vs `rs`; writes no register |
+| `A C rd imm4` | `CMPSI` | pending = signed ordering vs immediate (sext4, prefix eligible) |
+| `A D rd imm4` | `CMPIU` | pending = unsigned ordering vs immediate (zext4, prefix eligible) |
+
+Motivation and rules:
+
+- The pending test result keeps the "no architectural flags" spirit as an
+  `IMMHI12`-style transient rather than a persistent flag: only CMP-class
+  instructions set it, only conditional branches consume it, any other retired
+  non-prefix instruction expires it, and prefixes are transparent to it. A
+  conditional branch with no pending result faults `InvalidInstruction`
+  (reported at the prefix address when prefixed), which turns a forgotten or
+  misplaced compare into an immediate failure instead of a data-dependent
+  branch on a stale register. `CMPSI r, 0` covers the old branch-on-value uses.
+- B-family conditions now take a signed 8-bit offset (±128 words) instead of a
+  test register plus imm4. The old `B cond test imm4` conditions
+  (`BZ/BNZ/BN/BNN/BP/BNP/BODD/BEVEN`) are removed, and conditions 6, 7, and
+  A..F are reserved as `InvalidInstruction`. The prefixed wide-offset rule
+  `off16 = {prefix[7:0], imm8}` generalizes from the old C family to all
+  B-family consumers.
+- The old opcode-C `JREL`/`JALREL` are removed; the jumps live at B-family
+  conditions 8 and 9. The link register is architecturally fixed to `r14`:
+  `JALREL` has no link field, and `JALR` (`E 5`) faults unless its link field
+  encodes 14.
+- Opcode C becomes single-word device instructions over devices 0..7, channels
+  0..15, addressed inside the fixed segment-zero MMIO page without `DSEG`.
+  Device instructions carry no immediate and never consume a prefix. This
+  replaces the v0.4 software convention of an `r15` base plus `LOAD`/`STORE`;
+  devices 8..15 remain reachable through ordinary loads and stores at a
+  materialized base. The `dev_send`/`dev_recv` compiler intrinsics now lower
+  to one instruction each.
+- With no reserved MMIO base register left, `r15` joins the allocatable and
+  caller-saved sets; the prologue no longer initializes it.
+- The prefix-consumer set is closed: `LOAD`/`STORE`, all A-family functions
+  except the shifts (fn 5..=7), and B-family conditions 0..5, 8, and 9. The
+  C-family device instructions do not consume a prefix.
+
 ## Memory and boot direction
 
 The first implementation keeps the CPU, cache controller, SDRAM scheduler, and
@@ -129,7 +185,8 @@ segment alone does not invalidate correctly tagged lines.
 ## System control device and boot error reporting
 
 Device 0 occupies offsets `0xff00..0xff0f` in the fixed MMIO page, addressed
-through `r15` with the channel as a literal offset. Writing any value to
+with device instructions (`DEVRECV`/`DEVSEND` on device 0) or with ordinary
+loads and stores using the channel as a literal offset. Writing any value to
 channel 0 invalidates the whole instruction cache, and to channel 1 the whole
 data cache. Channel 2 drives the six board LEDs from the low six written
 bits. Channel 3 accepts one UART transmit byte per write (8N1) and reports
