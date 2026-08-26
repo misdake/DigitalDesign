@@ -207,23 +207,23 @@ pub fn set_less_than_unsigned(dst: Register, rhs: Register) -> Word {
 }
 
 pub fn population_count(dst: Register, src: Register) -> Word {
-    control(11, dst, src)
+    control(0, dst, src)
 }
 
 /// Sets the pending test result to the signed ordering of `rd` and `rs`;
 /// no register is written.
 pub fn compare_signed(rd: Register, rs: Register) -> Word {
-    control(0, rd, rs)
+    control(11, rd, rs)
 }
 
 /// Sets the pending test result to the unsigned ordering of `rd` and `rs`;
 /// no register is written.
 pub fn compare_unsigned(rd: Register, rs: Register) -> Word {
-    control(15, rd, rs)
+    control(12, rd, rs)
 }
 
 pub fn read_special(dst: Register, special: SpecialRegister) -> Word {
-    control(12, dst, special as Register)
+    control(13, dst, special as Register)
 }
 
 /// Writes a boot-time configurable special register.
@@ -231,12 +231,12 @@ pub fn read_special(dst: Register, special: SpecialRegister) -> Word {
 /// CSEG deliberately cannot be written this way: changing the fetch segment
 /// and the program counter must be one architectural operation.
 pub fn write_data_segment(src: Register) -> Word {
-    control(13, SpecialRegister::DataSegment as Register, src)
+    control(14, SpecialRegister::DataSegment as Register, src)
 }
 
 /// Atomically selects the code segment and the offset of the next instruction.
 pub fn jump_segment(segment: Register, target: Register) -> Word {
-    control(14, segment, target)
+    control(15, segment, target)
 }
 
 pub const fn halt() -> Word {
@@ -308,14 +308,14 @@ mod tests {
         assert_eq!(device_receive(3, 2, 1), 0xc213);
         assert_eq!(device_send(3, 2, 1), 0xca13);
         assert_eq!(load_immediate16(3, 0xabcd), [0xfabc, 0xaf3d]);
-        assert_eq!(compare_signed(3, 4), 0xe034);
-        assert_eq!(compare_unsigned(3, 4), 0xef34);
+        assert_eq!(compare_signed(3, 4), 0xeb34);
+        assert_eq!(compare_unsigned(3, 4), 0xec34);
         assert_eq!(set_less_than_signed(3, 4), 0xe934);
         assert_eq!(set_less_than_unsigned(3, 4), 0xea34);
-        assert_eq!(population_count(3, 4), 0xeb34);
-        assert_eq!(read_special(3, SpecialRegister::CodeSegment), 0xec30);
-        assert_eq!(write_data_segment(4), 0xed14);
-        assert_eq!(jump_segment(3, 4), 0xee34);
+        assert_eq!(population_count(3, 4), 0xe034);
+        assert_eq!(read_special(3, SpecialRegister::CodeSegment), 0xed30);
+        assert_eq!(write_data_segment(4), 0xee14);
+        assert_eq!(jump_segment(3, 4), 0xef34);
         assert_eq!(halt(), 0xe800);
     }
 

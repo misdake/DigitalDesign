@@ -260,7 +260,7 @@
   <tr><td class="mono">A</td><td class="mn">SLTI rd, imm</td><td class="sem">rd = (signed(rd) &lt; signed(imm)) ? 1 : 0</td><td>Signed i4; prefix eligible.</td></tr>
   <tr><td class="mono">B</td><td class="mn">SLTUI rd, imm</td><td class="sem">rd = (unsigned(rd) &lt; unsigned(imm)) ? 1 : 0</td><td>Unsigned u4; prefix eligible; added in v0.3.</td></tr>
   <tr><td class="mono">C</td><td class="mn">CMPSI rd, imm</td><td class="sem">pending = signed ordering of rd vs imm</td><td>Signed i4 without a prefix; prefix eligible for the full 16-bit pattern. Writes no register; added in v0.5.</td></tr>
-  <tr><td class="mono">D</td><td class="mn">CMPIU rd, imm</td><td class="sem">pending = unsigned ordering of rd vs imm</td><td>Unsigned u4 without a prefix; prefix eligible for the full 16-bit pattern. Writes no register; added in v0.5.</td></tr>
+  <tr><td class="mono">D</td><td class="mn">CMPUI rd, imm</td><td class="sem">pending = unsigned ordering of rd vs imm</td><td>Unsigned u4 without a prefix; prefix eligible for the full 16-bit pattern. Writes no register; added in v0.5.</td></tr>
   <tr><td class="mono">E</td><td class="mn">LDI rd, i4</td><td class="sem">rd = sext4(i4)</td><td>With prefix, loads the complete 16-bit bit pattern.</td></tr>
   <tr><td class="mono">F</td><td class="mn">LDUI rd, u4</td><td class="sem">rd = zext4(u4)</td><td>With prefix, loads the complete 16-bit bit pattern.</td></tr>
 </table>
@@ -280,7 +280,7 @@
   <tr><td class="mono reserved">A..F</td><td class="reserved">reserved</td><td>Invalid instruction</td><td>—</td></tr>
 </table>
 <p class="caption">The offset is signed i8 relative to the already-incremented PC (±128 words). With <code>IMMHI12</code> the offset widens to <code>off16 = {prefix[7:0], imm8}</code>: the prefix supplies the high byte and the instruction's immediate byte the low byte.</p>
-<p>Conditions 0..5 test the <b>pending test result</b>, a transient three-way ordering (Less/Equal/Greater) set only by the CMP-class instructions <code>CMPS</code>, <code>CMPU</code>, <code>CMPSI</code>, and <code>CMPIU</code>. A conditional branch consumes the pending result whether or not it is taken; any other retired non-prefix instruction expires it, and <code>IMMHI12</code> is transparent to it. A conditional branch with no pending result faults <code>InvalidInstruction</code> — reported at the prefix address when prefixed. Reset leaves no pending result.</p>
+<p>Conditions 0..5 test the <b>pending test result</b>, a transient three-way ordering (Less/Equal/Greater) set only by the CMP-class instructions <code>CMPS</code>, <code>CMPU</code>, <code>CMPSI</code>, and <code>CMPUI</code>. A conditional branch consumes the pending result whether or not it is taken; any other retired non-prefix instruction expires it, and <code>IMMHI12</code> is transparent to it. A conditional branch with no pending result faults <code>InvalidInstruction</code> — reported at the prefix address when prefixed. Reset leaves no pending result.</p>
 <p><code>JALREL</code> has no link field: the link register is architecturally fixed to <code>r14</code>, which receives the fall-through address before the jump. Compiler-generated wide control flow uses the canonical prefix with a 16-bit wrapping relative offset.</p>
 
 <h3>5.5 Device access — opcode C</h3>
@@ -294,7 +294,7 @@
 <h3>5.6 Extended/control — opcode E</h3>
 <table>
   <tr><th>n2</th><th>Mnemonic</th><th>Encoding</th><th>Semantics / constraints</th></tr>
-  <tr><td class="mono">0</td><td class="mn">CMPS rd, rs</td><td class="mono">E 0 rd rs</td><td class="sem">pending = signed ordering of rd vs rs; writes no register; added in v0.5</td></tr>
+  <tr><td class="mono">0</td><td class="mn">POPCNT rd, rs</td><td class="mono">E 0 rd rs</td><td class="sem">rd = population_count(rs); added in v0.3 at E B, moved in v0.5</td></tr>
   <tr><td class="mono">1</td><td class="mn">MOV rd, rs</td><td class="mono">E 1 rd rs</td><td class="sem">rd = rs; NOP = E100</td></tr>
   <tr><td class="mono">2</td><td class="mn">NOT rd, rs</td><td class="mono">E 2 rd rs</td><td class="sem">rd = ~rs</td></tr>
   <tr><td class="mono">3</td><td class="mn">NEG rd, rs</td><td class="mono">E 3 rd rs</td><td class="sem">rd = 0 - rs</td></tr>
@@ -305,11 +305,11 @@
   <tr><td class="mono">8</td><td class="mn">HALT</td><td class="mono">E 8 0 0</td><td>Stops execution; signal is <code>r0</code>. Both fields must be zero.</td></tr>
   <tr><td class="mono">9</td><td class="mn">SLT rd, rs</td><td class="mono">E 9 rd rs</td><td class="sem">rd = signed(rd) &lt; signed(rs); added in v0.3</td></tr>
   <tr><td class="mono">A</td><td class="mn">SLTU rd, rs</td><td class="mono">E A rd rs</td><td class="sem">rd = unsigned(rd) &lt; unsigned(rs); added in v0.3</td></tr>
-  <tr><td class="mono">B</td><td class="mn">POPCNT rd, rs</td><td class="mono">E B rd rs</td><td class="sem">rd = population_count(rs); added in v0.3</td></tr>
-  <tr><td class="mono">C</td><td class="mn">MFSR rd, sr</td><td class="mono">E C rd sr</td><td class="sem">Read CSEG (sr=0) or DSEG (sr=1).</td></tr>
-  <tr><td class="mono">D</td><td class="mn">MTSR DSEG, rs</td><td class="mono">E D 1 rs</td><td class="sem">Set the boot-time data segment. Other special-register selectors are invalid.</td></tr>
-  <tr><td class="mono">E</td><td class="mn">JSEG seg, target</td><td class="mono">E E seg target</td><td class="sem">Atomically set CSEG = r[seg] and PC = r[target].</td></tr>
-  <tr><td class="mono">F</td><td class="mn">CMPU rd, rs</td><td class="mono">E F rd rs</td><td class="sem">pending = unsigned ordering of rd vs rs; writes no register; added in v0.5</td></tr>
+  <tr><td class="mono">B</td><td class="mn">CMPS rd, rs</td><td class="mono">E B rd rs</td><td class="sem">pending = signed ordering of rd vs rs; writes no register; added in v0.5</td></tr>
+  <tr><td class="mono">C</td><td class="mn">CMPU rd, rs</td><td class="mono">E C rd rs</td><td class="sem">pending = unsigned ordering of rd vs rs; writes no register; added in v0.5</td></tr>
+  <tr><td class="mono">D</td><td class="mn">MFSR rd, sr</td><td class="mono">E D rd sr</td><td class="sem">Read CSEG (sr=0) or DSEG (sr=1).</td></tr>
+  <tr><td class="mono">E</td><td class="mn">MTSR DSEG, rs</td><td class="mono">E E 1 rs</td><td class="sem">Set the boot-time data segment. Other special-register selectors are invalid.</td></tr>
+  <tr><td class="mono">F</td><td class="mn">JSEG seg, target</td><td class="mono">E F seg target</td><td class="sem">Atomically set CSEG = r[seg] and PC = r[target].</td></tr>
 </table>
 
 <h2 id="prefix">6. IMMHI12 and wide operations</h2>

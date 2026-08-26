@@ -109,10 +109,10 @@ instructions, and frees `r15` for general allocation.
 | `B 9 imm8` | `JALREL` | unconditional relative jump; link fixed to `r14` |
 | `C {0,dev} ch rd` | `DEVRECV` | `rd = device[dev].read(ch)` at `0xff00 + dev*16 + ch` |
 | `C {1,dev} ch rs` | `DEVSEND` | `device[dev].write(ch, rs)` at `0xff00 + dev*16 + ch` |
-| `E 0 rd rs` | `CMPS` | pending = signed ordering of `rd` vs `rs`; writes no register |
-| `E F rd rs` | `CMPU` | pending = unsigned ordering of `rd` vs `rs`; writes no register |
+| `E B rd rs` | `CMPS` | pending = signed ordering of `rd` vs `rs`; writes no register |
+| `E C rd rs` | `CMPU` | pending = unsigned ordering of `rd` vs `rs`; writes no register |
 | `A C rd imm4` | `CMPSI` | pending = signed ordering vs immediate (sext4, prefix eligible) |
-| `A D rd imm4` | `CMPIU` | pending = unsigned ordering vs immediate (zext4, prefix eligible) |
+| `A D rd imm4` | `CMPUI` | pending = unsigned ordering vs immediate (zext4, prefix eligible) |
 
 Motivation and rules:
 
@@ -146,6 +146,11 @@ Motivation and rules:
 - The prefix-consumer set is closed: `LOAD`/`STORE`, all A-family functions
   except the shifts (fn 5..=7), and B-family conditions 0..5, 8, and 9. The
   C-family device instructions do not consume a prefix.
+- The E family is rearranged so the four comparisons sit together:
+  `SLT`/`SLTU` keep 9/A, `CMPS`/`CMPU` take B/C, `POPCNT` moves B→0,
+  `MFSR`/`MTSR`/`JSEG` move C/D/E→D/E/F. All sixteen E slots are now
+  occupied. The A family is unchanged; the unsigned immediate compare is
+  spelled `CMPUI` to match `CMPSI`.
 
 ## Memory and boot direction
 

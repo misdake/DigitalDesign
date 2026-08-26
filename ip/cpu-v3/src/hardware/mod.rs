@@ -357,10 +357,8 @@ impl CpuV3CoreState {
         let src = field(instruction, 0);
         match function {
             0 => {
-                self.pending_test = Some(
-                    (self.registers[usize::from(dst)] as i16)
-                        .cmp(&(self.registers[usize::from(src)] as i16)),
-                )
+                self.registers[usize::from(dst)] =
+                    self.registers[usize::from(src)].count_ones() as u16
             }
             1 => self.registers[usize::from(dst)] = self.registers[usize::from(src)],
             2 => self.registers[usize::from(dst)] = !self.registers[usize::from(src)],
@@ -396,10 +394,16 @@ impl CpuV3CoreState {
                     u16::from(self.registers[usize::from(dst)] < self.registers[usize::from(src)])
             }
             11 => {
-                self.registers[usize::from(dst)] =
-                    self.registers[usize::from(src)].count_ones() as u16
+                self.pending_test = Some(
+                    (self.registers[usize::from(dst)] as i16)
+                        .cmp(&(self.registers[usize::from(src)] as i16)),
+                )
             }
             12 => {
+                self.pending_test =
+                    Some(self.registers[usize::from(dst)].cmp(&self.registers[usize::from(src)]))
+            }
+            13 => {
                 self.registers[usize::from(dst)] = match src {
                     0 => self.code_segment,
                     1 => self.data_segment,
@@ -409,14 +413,10 @@ impl CpuV3CoreState {
                     }
                 }
             }
-            13 if dst == 1 => self.data_segment = self.registers[usize::from(src)],
-            14 => {
+            14 if dst == 1 => self.data_segment = self.registers[usize::from(src)],
+            15 => {
                 self.code_segment = self.registers[usize::from(dst)];
                 self.pc = self.registers[usize::from(src)];
-            }
-            15 => {
-                self.pending_test =
-                    Some(self.registers[usize::from(dst)].cmp(&self.registers[usize::from(src)]))
             }
             _ => {
                 self.fault(CPU_V3_FAULT_INVALID_INSTRUCTION, fault_pc);

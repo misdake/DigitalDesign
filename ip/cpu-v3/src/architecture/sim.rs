@@ -439,10 +439,8 @@ impl Machine {
         let src = field(instruction, 0);
         match function {
             0 => {
-                self.pending_test = Some(
-                    (self.registers[usize::from(dst)] as i16)
-                        .cmp(&(self.registers[usize::from(src)] as i16)),
-                )
+                self.registers[usize::from(dst)] =
+                    self.registers[usize::from(src)].count_ones() as Word
             }
             1 => self.registers[usize::from(dst)] = self.registers[usize::from(src)],
             2 => self.registers[usize::from(dst)] = !self.registers[usize::from(src)],
@@ -472,27 +470,29 @@ impl Machine {
                     Word::from(self.registers[usize::from(dst)] < self.registers[usize::from(src)])
             }
             11 => {
-                self.registers[usize::from(dst)] =
-                    self.registers[usize::from(src)].count_ones() as Word
+                self.pending_test = Some(
+                    (self.registers[usize::from(dst)] as i16)
+                        .cmp(&(self.registers[usize::from(src)] as i16)),
+                )
             }
             12 => {
+                self.pending_test = Some(
+                    self.registers[usize::from(dst)].cmp(&self.registers[usize::from(src)]),
+                )
+            }
+            13 => {
                 self.registers[usize::from(dst)] = match src {
                     value if value == SpecialRegister::CodeSegment as u8 => self.code_segment,
                     value if value == SpecialRegister::DataSegment as u8 => self.data_segment,
                     _ => return Err(FaultKind::InvalidInstruction),
                 }
             }
-            13 if dst == SpecialRegister::DataSegment as u8 => {
+            14 if dst == SpecialRegister::DataSegment as u8 => {
                 self.data_segment = self.registers[usize::from(src)];
             }
-            14 => {
+            15 => {
                 self.code_segment = self.registers[usize::from(dst)];
                 self.pc = self.registers[usize::from(src)];
-            }
-            15 => {
-                self.pending_test = Some(
-                    self.registers[usize::from(dst)].cmp(&self.registers[usize::from(src)]),
-                )
             }
             8 if dst == 0 && src == 0 => {
                 self.halted = true;

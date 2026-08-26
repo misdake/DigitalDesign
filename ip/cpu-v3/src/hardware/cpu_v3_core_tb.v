@@ -133,7 +133,7 @@ initial begin
         memory[1] = 16'haf13; // LDU r1, 3
         memory[2] = 16'hf000; // IMMHI12 0
         memory[3] = 16'haf25; // LDU r2, 5
-        memory[4] = 16'he012; // CMPS r1, r2 -> Less
+        memory[4] = 16'heb12; // CMPS r1, r2 -> Less
         memory[5] = 16'hb001 | (cond << 8); // B cond, +1
         memory[6] = 16'haf09; // LDU r0, 9 (not-taken marker)
         memory[7] = 16'he800; // HALT
@@ -207,11 +207,11 @@ initial begin
     memory[2] = 16'hf800; // IMMHI12 0x800
     memory[3] = 16'haf20; // LDU r2, 0 -> r2 = 0x8000
     memory[4] = 16'haf31; // LDU r3, 1
-    memory[5] = 16'he012; // CMPS r1, r2: 32767 > -32768 -> Greater
+    memory[5] = 16'heb12; // CMPS r1, r2: 32767 > -32768 -> Greater
     memory[6] = 16'hb401; // BGT +1
     memory[7] = 16'haf30; // LDU r3, 0
     memory[8] = 16'haf41; // LDU r4, 1
-    memory[9] = 16'hef12; // CMPU r1, r2: 0x7fff < 0x8000 -> Less
+    memory[9] = 16'hec12; // CMPU r1, r2: 0x7fff < 0x8000 -> Less
     memory[10] = 16'hb201; // BLT +1
     memory[11] = 16'haf40; // LDU r4, 0
     memory[12] = 16'haf51; // LDU r5, 1

@@ -396,14 +396,8 @@ always @(posedge clk) begin
                         end
                         4'he: begin
                             case (field_d)
-                                // CMPS: pending test = signed ordering of
-                                // r[rd] and r[rs]; no register is written.
                                 0: begin
-                                    pending_test_valid <= 1;
-                                    pending_test_result <=
-                                        registers[field_a] == registers[field_b] ? TEST_EQUAL :
-                                        $signed(registers[field_a]) < $signed(registers[field_b]) ? TEST_LESS :
-                                        TEST_GREATER;
+                                    registers[field_a] <= population_count(registers[field_b]);
                                     retired_words <= retired_words + success_retire_words;
                                     state <= ST_FETCH_REQUEST;
                                 end
@@ -472,12 +466,29 @@ always @(posedge clk) begin
                                     retired_words <= retired_words + success_retire_words;
                                     state <= ST_FETCH_REQUEST;
                                 end
+                                // CMPS: pending test = signed ordering of
+                                // r[rd] and r[rs]; no register is written.
                                 11: begin
-                                    registers[field_a] <= population_count(registers[field_b]);
+                                    pending_test_valid <= 1;
+                                    pending_test_result <=
+                                        registers[field_a] == registers[field_b] ? TEST_EQUAL :
+                                        $signed(registers[field_a]) < $signed(registers[field_b]) ? TEST_LESS :
+                                        TEST_GREATER;
                                     retired_words <= retired_words + success_retire_words;
                                     state <= ST_FETCH_REQUEST;
                                 end
+                                // CMPU: pending test = unsigned ordering of
+                                // r[rd] and r[rs]; no register is written.
                                 12: begin
+                                    pending_test_valid <= 1;
+                                    pending_test_result <=
+                                        registers[field_a] == registers[field_b] ? TEST_EQUAL :
+                                        registers[field_a] < registers[field_b] ? TEST_LESS :
+                                        TEST_GREATER;
+                                    retired_words <= retired_words + success_retire_words;
+                                    state <= ST_FETCH_REQUEST;
+                                end
+                                13: begin
                                     if (field_b == 0)
                                         registers[field_a] <= code_segment_register;
                                     else if (field_b == 1)
@@ -492,7 +503,7 @@ always @(posedge clk) begin
                                         state <= ST_FETCH_REQUEST;
                                     end
                                 end
-                                13: begin
+                                14: begin
                                     if (field_a == 1) begin
                                         data_segment_register <= registers[field_b];
                                         retired_words <= retired_words + success_retire_words;
@@ -503,20 +514,9 @@ always @(posedge clk) begin
                                         state <= ST_FAULT;
                                     end
                                 end
-                                14: begin
+                                15: begin
                                     code_segment_register <= registers[field_a];
                                     pc_register <= registers[field_b];
-                                    retired_words <= retired_words + success_retire_words;
-                                    state <= ST_FETCH_REQUEST;
-                                end
-                                // CMPU: pending test = unsigned ordering of
-                                // r[rd] and r[rs]; no register is written.
-                                15: begin
-                                    pending_test_valid <= 1;
-                                    pending_test_result <=
-                                        registers[field_a] == registers[field_b] ? TEST_EQUAL :
-                                        registers[field_a] < registers[field_b] ? TEST_LESS :
-                                        TEST_GREATER;
                                     retired_words <= retired_words + success_retire_words;
                                     state <= ST_FETCH_REQUEST;
                                 end
