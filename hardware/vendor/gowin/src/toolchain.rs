@@ -16,6 +16,22 @@ use std::process::{Command, ExitStatus, Output};
 #[path = "toolchain/build_manifest.rs"]
 mod build_manifest;
 
+/// Canonicalize like [`fs::canonicalize`] but strip the Windows verbatim
+/// (`\\?\`) prefix: the Gowin Tcl console and Programmer cannot open such
+/// paths, and the repository never needs the extended-length form.
+fn canonicalize_for_gowin(path: impl AsRef<Path>) -> std::io::Result<PathBuf> {
+    let canonical = fs::canonicalize(path)?;
+    let text = canonical.to_string_lossy();
+    let stripped = text
+        .strip_prefix(r"\\?\UNC\")
+        .map(|rest| format!(r"\\{rest}"))
+        .or_else(|| text.strip_prefix(r"\\?\").map(str::to_owned));
+    Ok(match stripped {
+        Some(stripped) => PathBuf::from(stripped),
+        None => canonical,
+    })
+}
+
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub struct GowinBackend;
 
@@ -1527,7 +1543,7 @@ impl GowinToolchain {
         if !executable.is_file() {
             return Err(GowinError::MissingTool(executable.clone()));
         }
-        let build_tcl = fs::canonicalize(directory.join("build.tcl"))?;
+        let build_tcl = canonicalize_for_gowin(directory.join("build.tcl"))?;
         let status = Command::new(executable)
             .arg(&build_tcl)
             .current_dir(directory)
@@ -1659,7 +1675,7 @@ impl GowinToolchain {
         if !executable.is_file() {
             return Err(GowinError::MissingTool(executable.clone()));
         }
-        let binary = fs::canonicalize(binary.as_ref())?;
+        let binary = canonicalize_for_gowin(binary.as_ref())?;
         // Gowin Programmer sniffs the flash file format by extension and
         // rejects anything but a plain .bin with "Flsh format error".
         if binary.extension().and_then(|ext| ext.to_str()) != Some("bin") {
