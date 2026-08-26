@@ -16,30 +16,38 @@ __RESET__ u_reset(.clk(clk),.external_reset(|buttons),.clock_ready(sdram_init_do
  .reset(reset),.clock_ready_synchronized(unused_ready),.external_reset_seen(unused_external));
 
 wire ireq,iresp_ready; wire [31:0] iaddr; wire [15:0] idata;
-wire boot_ready=!boot_pending&&!iresp_valid; reg boot_pending=0; reg iresp_valid=0;
-wire [15:0] boot_data,unused_boot;
-__BOOT_MEMORY__ u_boot(.clk(clk),.read_address(iaddr[9:0]),.rw_write_enable(1'b0),
- .rw_address(10'b0),.rw_write_data(16'b0),.read_data(boot_data),.rw_read_data(unused_boot));
-always @(posedge clk) begin
- if(reset) begin boot_pending<=0; iresp_valid<=0; end
- else if(iresp_valid&&iresp_ready) iresp_valid<=0;
- else if(boot_pending) begin boot_pending<=0; iresp_valid<=1; end
- else if(ireq&&boot_ready) boot_pending<=1;
-end
-assign idata=boot_data;
+wire ireq_ready,iresp_valid,ierror;
+wire im_req,im_ready,im_resp,im_resp_ready,im_error;
+wire [21:0] im_addr; wire [15:0] im_rdata;
+__ICACHE__ u_icache(.clk(clk),.reset(reset),.invalidate_all(1'b0),.snoop_write_valid(1'b0),.snoop_write_address(22'b0),
+ .cpu_request_valid(ireq),.cpu_write(1'b0),.cpu_address(iaddr),.cpu_write_data(16'b0),.cpu_response_ready(iresp_ready),
+ .memory_request_ready(im_ready),.memory_response_valid(im_resp),.memory_read_data(im_rdata),.memory_error(im_error),
+ .cpu_request_ready(ireq_ready),.cpu_response_valid(iresp_valid),.cpu_read_data(idata),.cpu_error(ierror),
+ .memory_request_valid(im_req),.memory_write(),.memory_address(im_addr),.memory_write_data(),.memory_response_ready(im_resp_ready));
 
 wire dreq,dwrite,dresp_ready,dreq_ready,dresp_valid; wire [31:0] daddr;
 wire [15:0] dwdata,drdata; wire derror;
-wire cm_req,cm_write,cm_ready,cm_resp,cm_resp_ready,cm_error; wire [21:0] cm_addr; wire [15:0] cm_wdata,cm_rdata;
-__CACHE__ u_dcache(.clk(clk),.reset(reset),.invalidate_all(1'b0),.snoop_write_valid(1'b0),.snoop_write_address(22'b0),
+wire dm_req,dm_write,dm_ready,dm_resp,dm_resp_ready,dm_error; wire [21:0] dm_addr; wire [15:0] dm_wdata,dm_rdata;
+__DCACHE__ u_dcache(.clk(clk),.reset(reset),.invalidate_all(1'b0),.snoop_write_valid(1'b0),.snoop_write_address(22'b0),
  .cpu_request_valid(dreq),.cpu_write(dwrite),.cpu_address(daddr),.cpu_write_data(dwdata),.cpu_response_ready(dresp_ready),
- .memory_request_ready(cm_ready),.memory_response_valid(cm_resp),.memory_read_data(cm_rdata),.memory_error(cm_error),
+ .memory_request_ready(dm_ready),.memory_response_valid(dm_resp),.memory_read_data(dm_rdata),.memory_error(dm_error),
  .cpu_request_ready(dreq_ready),.cpu_response_valid(dresp_valid),.cpu_read_data(drdata),.cpu_error(derror),
+ .memory_request_valid(dm_req),.memory_write(dm_write),.memory_address(dm_addr),.memory_write_data(dm_wdata),.memory_response_ready(dm_resp_ready));
+
+wire cm_req,cm_write,cm_ready,cm_resp,cm_resp_ready,cm_error; wire [21:0] cm_addr; wire [15:0] cm_wdata,cm_rdata;
+__ARBITER__ u_memory_arbiter(.clk(clk),.reset(reset),
+ .instruction_request_valid(im_req),.instruction_address(im_addr),.instruction_response_ready(im_resp_ready),
+ .data_request_valid(dm_req),.data_write(dm_write),.data_address(dm_addr),.data_write_data(dm_wdata),.data_response_ready(dm_resp_ready),
+ .dma_request_valid(1'b0),.dma_write(1'b0),.dma_address(22'b0),.dma_write_data(16'b0),.dma_response_ready(1'b0),
+ .memory_request_ready(cm_ready),.memory_response_valid(cm_resp),.memory_read_data(cm_rdata),.memory_error(cm_error),
+ .instruction_request_ready(im_ready),.instruction_response_valid(im_resp),.instruction_read_data(im_rdata),.instruction_error(im_error),
+ .data_request_ready(dm_ready),.data_response_valid(dm_resp),.data_read_data(dm_rdata),.data_error(dm_error),
+ .dma_request_ready(),.dma_response_valid(),.dma_read_data(),.dma_error(),
  .memory_request_valid(cm_req),.memory_write(cm_write),.memory_address(cm_addr),.memory_write_data(cm_wdata),.memory_response_ready(cm_resp_ready));
 
 wire halted,faulted; wire [15:0] halt_signal,fault_pc; wire [7:0] fault_code;
-__CPU__ u_cpu(.clk(clk),.reset(reset),.instruction_request_ready(boot_ready),.instruction_response_valid(iresp_valid),
- .instruction_data(idata),.instruction_error(1'b0),.data_request_ready(dreq_ready),.data_response_valid(dresp_valid),
+__CPU__ u_cpu(.clk(clk),.reset(reset),.instruction_request_ready(ireq_ready),.instruction_response_valid(iresp_valid),
+ .instruction_data(idata),.instruction_error(ierror),.data_request_ready(dreq_ready),.data_response_valid(dresp_valid),
  .data_read_data(drdata),.data_error(derror),.instruction_request_valid(ireq),.instruction_address(iaddr),
  .instruction_response_ready(iresp_ready),.data_request_valid(dreq),.data_write(dwrite),.data_address(daddr),
  .data_write_data(dwdata),.data_response_ready(dresp_ready),.halted(halted),.halt_signal(halt_signal),

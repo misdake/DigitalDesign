@@ -37,7 +37,7 @@ reg [15:0] pending_write_data = 0;
 reg [3:0] fill_word = 0;
 reg [15:0] response_data = 0;
 reg response_error = 0;
-reg [63:0] valid = 0;
+reg [63:0] valid = __INITIAL_VALID__;
 
 wire cpu_address_valid = cpu_address[31:22] == 0;
 
@@ -93,7 +93,7 @@ assign memory_response_ready = state == ST_MEMORY_RESPONSE;
 always @(posedge clk) begin
     if (reset) begin
         state <= ST_IDLE;
-        valid <= 0;
+        valid <= __INITIAL_VALID__;
         response_error <= 0;
     end else begin
         case (state)

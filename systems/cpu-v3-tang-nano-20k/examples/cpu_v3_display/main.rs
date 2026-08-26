@@ -1,12 +1,12 @@
-use cpu_v3::{CpuV3Core, CpuV3DirectMappedCache};
-use cpu_v3_tang_nano_20k::{DisplaySdramPort, FramebufferHdmi};
+use cpu_v3::{CpuV3CacheImage, CpuV3Core, CpuV3DirectMappedCache, CpuV3DirectMappedCacheWithImage};
+use cpu_v3_tang_nano_20k::{CpuV3MemoryArbiter, DisplaySdramPort, FramebufferHdmi};
 use digital_design_circuit::CircuitWires;
 use digital_design_hardware::{Hardware, HardwareIdentity, Module, VerilogDependency};
 use digital_design_hardware_common::ResetController;
 use digital_design_hardware_gowin::{
-    run_gowin_project_cli, Bsram1R1Rw1024, BsramImage, GowinCliError, GowinDspMode,
-    GowinModuleProject, ResourceCountExpectation, TangNano20K, TangNano20KSdramHdmiInputs,
-    TangNano20KSdramHdmiOutputs, BSRAM_1024_DEPTH,
+    run_gowin_project_cli, BsramImage, GowinCliError, GowinDspMode, GowinModuleProject,
+    ResourceCountExpectation, TangNano20K, TangNano20KSdramHdmiInputs, TangNano20KSdramHdmiOutputs,
+    BSRAM_1024_DEPTH,
 };
 
 include!(concat!(env!("OUT_DIR"), "/display_image.rs"));
@@ -15,7 +15,7 @@ fn main() -> Result<(), GowinCliError> {
     run_gowin_project_cli(project(), "target/cpu_v3_display_gowin")
 }
 
-struct DisplayBootImage;
+struct DisplayInstructionImage;
 const fn boot_words() -> [u64; BSRAM_1024_DEPTH] {
     let mut words = [0; BSRAM_1024_DEPTH];
     let mut i = 0;
@@ -25,10 +25,20 @@ const fn boot_words() -> [u64; BSRAM_1024_DEPTH] {
     }
     words
 }
-impl BsramImage<16> for DisplayBootImage {
+impl BsramImage<16> for DisplayInstructionImage {
     const WORDS: [u64; BSRAM_1024_DEPTH] = boot_words();
 }
-type BootMemory = Bsram1R1Rw1024<16, DisplayBootImage>;
+impl CpuV3CacheImage for DisplayInstructionImage {
+    const INITIAL_VALID: u64 = {
+        let lines = DISPLAY_DEMO_PROGRAM.len().div_ceil(16);
+        if lines >= 64 {
+            u64::MAX
+        } else {
+            (1u64 << lines) - 1
+        }
+    };
+}
+type InstructionCache = CpuV3DirectMappedCacheWithImage<DisplayInstructionImage>;
 type BoardReset = ResetController<8>;
 
 #[derive(Hardware)]
@@ -54,14 +64,18 @@ impl Module for CpuV3Display {
     fn verilog_source() -> Option<String> {
         Some(
             include_str!("system.v")
-                .replace(
-                    "__BOOT_MEMORY__",
-                    &BootMemory::verilog_identity().module_name(),
-                )
                 .replace("__CPU__", &CpuV3Core::verilog_identity().module_name())
                 .replace(
-                    "__CACHE__",
+                    "__ICACHE__",
+                    &InstructionCache::verilog_identity().module_name(),
+                )
+                .replace(
+                    "__DCACHE__",
                     &CpuV3DirectMappedCache::verilog_identity().module_name(),
+                )
+                .replace(
+                    "__ARBITER__",
+                    &CpuV3MemoryArbiter::verilog_identity().module_name(),
                 )
                 .replace(
                     "__SDRAM__",
@@ -77,9 +91,10 @@ impl Module for CpuV3Display {
 
     fn verilog_dependencies() -> Vec<VerilogDependency> {
         vec![
-            VerilogDependency::new::<BootMemory>("u_boot"),
             VerilogDependency::new::<CpuV3Core>("u_cpu"),
+            VerilogDependency::new::<InstructionCache>("u_icache"),
             VerilogDependency::new::<CpuV3DirectMappedCache>("u_dcache"),
+            VerilogDependency::new::<CpuV3MemoryArbiter>("u_memory_arbiter"),
             VerilogDependency::new::<DisplaySdramPort>("u_sdram"),
             VerilogDependency::new::<FramebufferHdmi>("u_display"),
             VerilogDependency::new::<BoardReset>("u_reset"),
