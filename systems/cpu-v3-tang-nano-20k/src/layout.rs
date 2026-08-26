@@ -52,6 +52,11 @@ impl SystemDeviceLayout for TangNano20kDeviceLayout {
             ],
         },
         DeviceAllocation {
+            name: "boot-select",
+            device: crate::boot::BOOT_SELECT_DEVICE,
+            channels: &[crate::boot::BOOT_SELECT_VALUE],
+        },
+        DeviceAllocation {
             name: "boot-dma",
             device: crate::boot::BOOT_DMA_DEVICE,
             channels: &[

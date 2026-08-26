@@ -42,7 +42,7 @@ fn write_artifact(output: &Path, name: &str, bytes: &[u8]) {
 fn main() {
     let root = PathBuf::from(std::env::var_os("CARGO_MANIFEST_DIR").unwrap());
     let sources = root.join("rcc");
-    for name in ["stage0.rs", "stage1.rs", "boot-demo.rs"] {
+    for name in ["stage0.rs", "stage1.rs", "boot-demo.rs", "boot-alt.rs"] {
         println!("cargo:rerun-if-changed={}", sources.join(name).display());
     }
 
@@ -63,9 +63,18 @@ fn main() {
             ..CompilerOptions::default()
         },
     );
+    let alternate_application = compile(
+        &sources.join("boot-alt.rs"),
+        &CompilerOptions {
+            code_base: 0x0200,
+            stack_init: 0xe000,
+            ..CompilerOptions::default()
+        },
+    );
     let stage0_bytes = word_bytes(&stage0);
     let stage1_bytes = word_bytes(&stage1);
     let application_bytes = word_bytes(&application);
+    let alternate_application_bytes = word_bytes(&alternate_application);
     let data = [0xef, 0xbe, 0x55];
     let image = build_boot_image(BootImageSpec {
         target: BootTarget::TangNano20K,
@@ -102,6 +111,15 @@ fn main() {
                 alignment_bytes: 32,
             },
             InputSection {
+                name: "application-alt".into(),
+                kind: SectionKind::Load,
+                flags: SECTION_READ | SECTION_EXECUTE,
+                destination: PhysicalWordAddress::new(0x0005_0200),
+                memory_size_bytes: alternate_application_bytes.len() as u32,
+                data: alternate_application_bytes.clone(),
+                alignment_bytes: 32,
+            },
+            InputSection {
                 name: "data".into(),
                 kind: SectionKind::Load,
                 flags: SECTION_READ | SECTION_WRITE,
@@ -131,7 +149,7 @@ fn main() {
     );
     assert_eq!(
         fnv1a64(package),
-        17_919_558_294_178_096_904,
+        2_659_626_873_012_885_578,
         "Flash package bytes changed from the CPU V3 boot-format baseline"
     );
 
@@ -139,6 +157,7 @@ fn main() {
     write_artifact(&output, "stage0.v3bin", &stage0_bytes);
     write_artifact(&output, "stage1.v3bin", &stage1_bytes);
     write_artifact(&output, "boot-demo.v3bin", &application_bytes);
+    write_artifact(&output, "boot-alt.v3bin", &alternate_application_bytes);
     write_artifact(&output, "data.bin", &data);
     write_artifact(&output, "cpu-v3-boot.bin", package);
     write_artifact(&output, "cpu-v3-boot.map", image.map().as_bytes());

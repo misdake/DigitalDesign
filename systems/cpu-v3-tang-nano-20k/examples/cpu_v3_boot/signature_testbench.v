@@ -1,9 +1,8 @@
 `timescale 1ns/1ps
 // Signature testbench for the two-stage flash boot. Phase 1 preloads the
-// Flash model with the packed boot package and expects the demo application
-// to emit the DDHT 0x07 success frame through the system control UART.
-// Phase 2 corrupts the descriptor magic and expects the Stage0 boot error.
-// Phase 3 corrupts the manifest magic and expects the Stage1 boot error.
+// Flash model with the packed boot package and verifies the default/01 primary
+// application followed by the button-10 alternate application. Later phases
+// corrupt the descriptor and manifest metadata and check both boot stages.
 module tb;
 reg clk = 0;
 reg [1:0] buttons = 0;
@@ -226,8 +225,8 @@ initial begin
     // Phase 1: the intact package boots Stage0 -> Stage1 -> application.
     wait (ddht_frame_seen);
     @(posedge clk);
-    if (leds !== 6'b110000)
-        $fatal(1, "successful boot must light the success pattern 6'b110000, got %b", leds);
+    if (leds !== 6'b000001)
+        $fatal(1, "primary boot must start at logical LED 000001, got %b", leds);
     if (dut.code_segment !== 16'd3 || dut.data_segment !== 16'd4)
         $fatal(1, "application segments not reached: cseg=0x%04x dseg=0x%04x",
             dut.code_segment, dut.data_segment);
@@ -246,7 +245,22 @@ initial begin
     if (dut.diagnostic_active !== 0)
         $fatal(1, "application LED write did not take ownership from diagnostics");
 
-    // Phase 2: corrupt the descriptor magic, reset through the button input,
+    // Phase 2: holding button 10 resets the CPU and latches alternate boot.
+    // The live pins are 00 after release, so reaching CSEG/DSEG 5/6 proves the
+    // reset-time selection survived into Stage1.
+    ddht_frame_seen = 0;
+    buttons = 2'b10;
+    repeat (8) @(posedge clk);
+    buttons = 2'b00;
+    wait (ddht_frame_seen);
+    @(posedge clk);
+    if (leds !== 6'b010101)
+        $fatal(1, "alternate boot must start at logical LEDs 010101, got %b", leds);
+    if (dut.code_segment !== 16'd5 || dut.data_segment !== 16'd6)
+        $fatal(1, "alternate application segments not reached: cseg=0x%04x dseg=0x%04x",
+            dut.code_segment, dut.data_segment);
+
+    // Phase 3: corrupt the descriptor magic, reset through button 01,
     // and expect the Stage0 boot error report.
     corrupt_metadata = 1;
     buttons = 2'b01;
@@ -259,7 +273,7 @@ initial begin
     if (dut.code_segment !== 16'd0)
         $fatal(1, "failed boot must stay in the boot segment, cseg=0x%04x", dut.code_segment);
 
-    // Phase 3: allow Stage0 to run, corrupt the manifest magic, and prove
+    // Phase 4: allow Stage0 to run, corrupt the manifest magic, and prove
     // Stage1 reports the failure without entering the application.
     corrupt_metadata = 2;
     buttons = 2'b01;
@@ -276,7 +290,7 @@ initial begin
 end
 
 initial begin
-    repeat (6000000) @(posedge clk);
+    repeat (8000000) @(posedge clk);
     $display("FAIL: timeout (cseg=0x%04x dseg=0x%04x pc=0x%04x leds=%b retired=%0d)",
         dut.code_segment, dut.data_segment, dut.pc, leds, dut.retired_words);
     $finish(1);
