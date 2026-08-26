@@ -143,7 +143,7 @@ Normal `cargo test` never launches an external HDL tool; simulation tests are
 marked `#[ignore]` and must be requested explicitly. For example:
 
 ```text
-cargo test -p digital-design-hardware --lib components::bsram::tests::verify_verilog_with_iverilog -- --ignored
+cargo test -p digital-design-hardware-gowin --lib primitives::bsram::tests::verify_verilog_with_iverilog -- --ignored
 ```
 
 Install Icarus Verilog first, or set `IVERILOG_EXE` and `VVP_EXE` to the
@@ -235,7 +235,7 @@ Rust rendering code to values such as the concrete module name and bus width.
 The explicit module simulation uses the same typed vectors as emulation:
 
 ```text
-cargo test -p digital-design-hardware --lib components::bsram::tests::verify_verilog_with_iverilog -- --ignored --nocapture
+cargo test -p digital-design-hardware-gowin --lib primitives::bsram::tests::verify_verilog_with_iverilog -- --ignored --nocapture
 ```
 
 The `bsram` example instantiates all three shapes at both widths with zero
@@ -246,7 +246,7 @@ writes while the independent read-only ports continue updating. Build and
 program volatile SRAM with:
 
 ```text
-cargo run -p digital-design-hardware --example bsram -- --program
+cargo run -p digital-design-hardware-gowin --example bsram -- --program
 ```
 
 Its debug UART repeatedly sends checksummed `DDHT` status frames with BSRAM
@@ -254,7 +254,7 @@ test ID `0x01`. Capture raw bytes with the serial receiver script, then use
 the shared checker to verify the identity, freshness, checksum, and result:
 
 ```powershell
-powershell -ExecutionPolicy Bypass -File hardware/vendor/gowin/scripts/capture_uart.ps1 -Port COM8 -Out target/bsram_gowin/board_capture.bin
+powershell -ExecutionPolicy Bypass -File hardware/vendor/gowin/scripts/capture_bl616_uart.ps1 -Port COM8 -Out target/bsram_gowin/board_capture.bin
 powershell -ExecutionPolicy Bypass -File hardware/vendor/gowin/scripts/check_uart_status.ps1 -Path target/bsram_gowin/board_capture.bin -TestId 0x01
 ```
 
@@ -283,7 +283,7 @@ fn nand(input: &Self::Input) -> Self::Output {
 ```
 
 ```text
-cargo run -p digital-design-hardware --example bsram_masked
+cargo run -p digital-design-hardware-gowin --example bsram_masked
 ```
 
 `ModuleTest::run_emu_and_mixed_nand` runs both entry points and checks the typed
@@ -325,8 +325,8 @@ operand width.
 Run host tests and build the non-programmed Gowin project with:
 
 ```text
-cargo test -p digital-design-hardware components::dsp
-cargo run -p digital-design-hardware --example dsp -- --build
+cargo test -p digital-design-hardware-gowin primitives::dsp
+cargo run -p digital-design-hardware-gowin --example dsp -- --build
 ```
 
 ## Hardware targets and resources
@@ -464,7 +464,7 @@ remaining resolution and binding work is recorded in `INOUT.md`.
 Export the Tang Nano 20K example:
 
 ```text
-cargo run -p digital-design-hardware --example basic_adder -- target/basic_adder_gowin
+cargo run -p digital-design-hardware-gowin --example basic_adder -- target/basic_adder_gowin
 ```
 
 The result contains generated hierarchical HDL, a board wrapper, CST, SDC,
@@ -476,7 +476,7 @@ active-low LEDs. No hand-written board directory is used.
 Build without programming the board:
 
 ```powershell
-cargo run -p digital-design-hardware --example basic_adder -- --build
+cargo run -p digital-design-hardware-gowin --example basic_adder -- --build
 ```
 
 Gowin tool discovery uses an explicit `--gowin-home PATH` first, then the
@@ -485,13 +485,13 @@ For example, the current machine can use:
 
 ```powershell
 $env:GOWIN_HOME = '<gowin-installation-directory>'
-cargo run -p digital-design-hardware --example basic_adder -- --build
+cargo run -p digital-design-hardware-gowin --example basic_adder -- --build
 ```
 
 Or without changing the environment:
 
 ```powershell
-cargo run -p digital-design-hardware --example basic_adder -- --build --gowin-home $env:GOWIN_HOME
+cargo run -p digital-design-hardware-gowin --example basic_adder -- --build --gowin-home $env:GOWIN_HOME
 ```
 
 SRAM programming is intentionally an explicit operation and is never run by

@@ -70,15 +70,6 @@ is not equivalent on every BL616 firmware revision. At the end it returns to
 the quiet BL616 console before closing the handle; it never resets or
 re-enumerates USB.
 
-`capture_uart.ps1` records raw bytes from the board's debug UART (the Tang
-Nano 20K exposes it as a USB serial port through the onboard debugger) into a
-capture file:
-
-```powershell
-powershell -ExecutionPolicy Bypass -File hardware/vendor/gowin/scripts/capture_uart.ps1 `
-    -Port COM8 -Out target/example/capture.bin
-```
-
 All DDHT projects transmit 8N1 at 115200 baud (27 MHz designs use divider
 233, 54 MHz designs use 468); pass `-Baud` only for nonstandard captures.
 
@@ -156,7 +147,7 @@ the audited image without rerunning synthesis or place-and-route:
 cargo run -p digital-design-hardware-gowin --example board_health -- --build
 cargo run -p digital-design-hardware-gowin --example board_health -- --check-existing
 cargo run -p digital-design-hardware-gowin --example board_health -- --program-existing
-powershell -ExecutionPolicy Bypass -File hardware/vendor/gowin/scripts/capture_uart.ps1 `
+powershell -ExecutionPolicy Bypass -File hardware/vendor/gowin/scripts/capture_bl616_uart.ps1 `
     -Port COM8 -Out target/board_health_gowin/capture.bin
 powershell -ExecutionPolicy Bypass -File hardware/vendor/gowin/scripts/check_uart_status.ps1 `
     -Path target/board_health_gowin/capture.bin -TestId 0x0a -MinimumSuccessFrames 2
@@ -177,3 +168,22 @@ boot results unless this probe first passes with the same physical setup.
 
 The `sdram_word_port` example predates this protocol and still sends a
 private `SDWP` frame; it is not validated by `check_uart_status.ps1`.
+
+## HDMI physical-link bring-up
+
+`hdmi_color_bars` is the stand-alone Tang Nano 20K HDMI gate. It generates
+1280x720p60 video with an auditable TMDS encoder, four Gowin `OSER10`
+serializers, and four fitted differential output buffers. It does not use the
+CPU, SDRAM, SPI Flash, or the debug UART:
+
+```powershell
+cargo test -p digital-design-hardware-gowin --example hdmi_color_bars `
+    timing_and_tmds_control_codes_decode_in_iverilog -- --ignored --nocapture
+cargo run -p digital-design-hardware-gowin --example hdmi_color_bars -- --build
+cargo run -p digital-design-hardware-gowin --example hdmi_color_bars -- --check-existing
+cargo run -p digital-design-hardware-gowin --example hdmi_color_bars -- --program-existing
+```
+
+The last command writes only volatile FPGA SRAM. Button1 overlays a 32-pixel
+white grid and Button2 selects a horizontal grayscale ramp. The six LEDs show
+the synchronized buttons, frame heartbeat, video-reset release, and PLL lock.
