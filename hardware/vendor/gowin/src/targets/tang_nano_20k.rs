@@ -595,6 +595,18 @@ impl TangNano20K {
                 )
                 .add_sdc_constraint(
                     "create_clock -name pixel_clk -period 13.468013 -waveform {0 6.734007} [get_pins {u_video_pll/d/CLKOUT}]",
+                )
+                // The 54 MHz SDRAM/logic domain and the 74.25 MHz pixel domain
+                // only meet through double-flop synchronizers (slot publish /
+                // release handshake, pixel-domain reset release) and the
+                // dual-clock line buffer, so the crossings must not be timed
+                // as synchronous paths. The PLL-derived 54 MHz clock gets an
+                // explicit generated-clock name so the group can reference it.
+                .add_sdc_constraint(
+                    "create_generated_clock -name sdram_clk -source [get_ports {clk}] -multiply_by 2 [get_pins {u_sdram_pll/rpll_inst/CLKOUT}]",
+                )
+                .add_sdc_constraint(
+                    "set_clock_groups -asynchronous -group [get_clocks {pixel_clk}] -group [get_clocks {sdram_clk}]",
                 );
         }
 

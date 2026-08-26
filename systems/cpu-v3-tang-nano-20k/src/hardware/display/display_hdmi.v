@@ -57,6 +57,11 @@ always @(posedge clk) begin
                     burst_index<=0;
                     fill_slot <= fill_slot==2 ? 0 : fill_slot+1'b1;
                     if (fill_y==239) begin fill_y<=0; row_address<=FB_BASE; end
+                    // Rows 0..202 end at physical 0x20FEBF; the 0xFF00 offset
+                    // page is the fixed MMIO window, so the framebuffer
+                    // continues in segment 0x21 and row 203 starts at
+                    // physical 0x210000.
+                    else if (fill_y==202) begin fill_y<=fill_y+1'b1; row_address<=22'h210000; end
                     else begin fill_y<=fill_y+1'b1; row_address<=row_address+22'd320; end
                 end else burst_index<=burst_index+1'b1;
             end else beat_index<=beat_index+1'b1;
@@ -65,6 +70,13 @@ always @(posedge clk) begin
 end
 
 reg [2:0] publish_meta=0, publish_sync=0;
+// The board reset and the video PLL lock live outside the pixel domain.
+// Synchronize their release into pixel_clock before any pixel-domain logic
+// consumes them; the synchronizer input is an intended asynchronous crossing.
+reg [2:0] pixel_reset_sync=0;
+always @(posedge pixel_clock)
+    pixel_reset_sync <= {pixel_reset_sync[1:0], ~(reset | ~video_locked)};
+wire pixel_reset = ~pixel_reset_sync[2];
 reg [1:0] display_slot=0;
 reg [1:0] vertical_repeat=0;
 reg started=0, underflow_sticky=0;
@@ -82,14 +94,25 @@ wire [9:0] scaled_x = active_x-160;
 wire [8:0] source_x = scaled_x / 3;
 wire line_ready = publish_sync[display_slot] != released[display_slot];
 wire visible_request = started && framebuffer_x && line_ready;
-reg visible_pipe=0, lane_pipe=0, hsync_pipe=0, vsync_pipe=0;
+reg visible_pipe=0, visible_pipe2=0, visible_pipe3=0;
+reg lane_pipe=0, lane_pipe2=0;
+reg hsync_pipe=0, hsync_pipe2=0, hsync_pipe3=0;
+reg vsync_pipe=0, vsync_pipe2=0, vsync_pipe3=0;
+reg [15:0] pixel565_pipe=0;
+// The lane select uses the twice-delayed lane so it matches the line buffer's
+// two-cycle address-to-data latency.
+wire [15:0] pixel565 = lane_pipe2 ? line_read_data[31:16] : line_read_data[15:0];
 
 always @(posedge pixel_clock) begin
     publish_meta<=published; publish_sync<=publish_meta;
-    if (reset || !video_locked) begin
+    if (pixel_reset) begin
         h_count<=0; v_count<=0; released<=0; display_slot<=0;
         vertical_repeat<=0; started<=0; underflow_sticky<=0;
-        visible_pipe<=0; lane_pipe<=0; hsync_pipe<=0; vsync_pipe<=0;
+        visible_pipe<=0; visible_pipe2<=0; visible_pipe3<=0;
+        lane_pipe<=0; lane_pipe2<=0;
+        hsync_pipe<=0; hsync_pipe2<=0; hsync_pipe3<=0;
+        vsync_pipe<=0; vsync_pipe2<=0; vsync_pipe3<=0;
+        pixel565_pipe<=0;
     end else begin
         if (h_count==1649) begin
             h_count<=0;
@@ -100,8 +123,15 @@ always @(posedge pixel_clock) begin
         end else h_count<=h_count+1'b1;
         if (framebuffer_x)
             line_read_address <= display_slot*9'd160 + source_x[8:1];
-        visible_pipe<=visible_request; lane_pipe<=source_x[0];
-        hsync_pipe<=hsync; vsync_pipe<=vsync;
+        // Pipeline alignment: the line buffer data for a position arrives two
+        // pixel clocks late (address register, then synchronous RAM read), so
+        // the lane select and the visible/sync strobes are delayed to match,
+        // and the registered pixel word adds a third stage for the encoders.
+        lane_pipe<=source_x[0]; lane_pipe2<=lane_pipe;
+        visible_pipe<=visible_request; visible_pipe2<=visible_pipe; visible_pipe3<=visible_pipe2;
+        hsync_pipe<=hsync; hsync_pipe2<=hsync_pipe; hsync_pipe3<=hsync_pipe2;
+        vsync_pipe<=vsync; vsync_pipe2<=vsync_pipe; vsync_pipe3<=vsync_pipe2;
+        pixel565_pipe<=pixel565;
         if (started && h_count==1539 && v_count>=25 && v_count<745) begin
             if (vertical_repeat==2) begin
                 vertical_repeat<=0;
@@ -114,16 +144,19 @@ always @(posedge pixel_clock) begin
     end
 end
 assign underflow = underflow_sticky | memory_error_sticky;
-wire [15:0] pixel565 = lane_pipe ? line_read_data[31:16] : line_read_data[15:0];
+// Register the pixel word before the RGB565 expansion and the TMDS encode:
+// the line-buffer read, lane mux, color expansion, and transition-minimized
+// encode do not meet the pixel clock as one combinational path. All video
+// signals receive the same three-stage delay.
 wire [7:0] red,green,blue;
-__RGB565__ u_rgb(.pixel(pixel565),.visible(visible_pipe),.red(red),.green(green),.blue(blue));
+__RGB565__ u_rgb(.pixel(pixel565_pipe),.visible(visible_pipe3),.red(red),.green(green),.blue(blue));
 
 wire [9:0] blue_symbol,green_symbol,red_symbol;
-HdmiTmdsEncoder u_blue(.clk(pixel_clock),.reset(!video_locked),.de(visible_pipe),
- .control({vsync_pipe,hsync_pipe}),.data(blue),.symbol(blue_symbol));
-HdmiTmdsEncoder u_green(.clk(pixel_clock),.reset(!video_locked),.de(visible_pipe),
+HdmiTmdsEncoder u_blue(.clk(pixel_clock),.reset(pixel_reset),.de(visible_pipe3),
+ .control({vsync_pipe3,hsync_pipe3}),.data(blue),.symbol(blue_symbol));
+HdmiTmdsEncoder u_green(.clk(pixel_clock),.reset(pixel_reset),.de(visible_pipe3),
  .control(2'b00),.data(green),.symbol(green_symbol));
-HdmiTmdsEncoder u_red(.clk(pixel_clock),.reset(!video_locked),.de(visible_pipe),
+HdmiTmdsEncoder u_red(.clk(pixel_clock),.reset(pixel_reset),.de(visible_pipe3),
  .control(2'b00),.data(red),.symbol(red_symbol));
 wire [3:0] serialized;
 `ifdef __ICARUS__

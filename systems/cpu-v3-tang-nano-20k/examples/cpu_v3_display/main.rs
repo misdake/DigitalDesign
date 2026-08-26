@@ -115,6 +115,7 @@ fn project() -> GowinModuleProject<TangNano20K, CpuV3Display> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use cpu_v3_tang_nano_20k::framebuffer_word;
     use digital_design_hardware::{ResourceKind, VerilogProject};
 
     #[test]
@@ -145,7 +146,7 @@ mod tests {
             0
         );
         assert_ne!(
-            machine.physical_memory(PhysicalWordAddress::new(0x0021_2cff)),
+            machine.physical_memory(PhysicalWordAddress::new(framebuffer_word(319, 239))),
             0,
             "the final row in the second framebuffer segment was not initialized"
         );
@@ -153,6 +154,32 @@ mod tests {
             machine.data_segment(),
             0,
             "DSEG must be restored after every pixel store"
+        );
+    }
+
+    #[test]
+    fn framebuffer_is_completely_written() {
+        use cpu_v3::{Machine, RunOutcome};
+        use digital_design_ip_common::PhysicalWordAddress;
+
+        let mut machine = Machine::default();
+        machine.load_program(0, DISPLAY_DEMO_PROGRAM).unwrap();
+        assert!(matches!(
+            machine.run(5_000_000).unwrap(),
+            RunOutcome::StepLimit { .. }
+        ));
+        let mut unwritten = Vec::new();
+        for y in 0..240u32 {
+            for x in 0..320u32 {
+                let address = framebuffer_word(x, y);
+                if machine.physical_memory(PhysicalWordAddress::new(address)) == 0 {
+                    unwritten.push((y, x));
+                }
+            }
+        }
+        assert!(
+            unwritten.is_empty(),
+            "unwritten framebuffer pixels: {unwritten:?}"
         );
     }
 
