@@ -1,4 +1,4 @@
-//! Reusable CpuV3 revision 0.4 processor core with external physical-memory ports.
+//! Reusable CpuV3 revision 0.5 processor core with external physical-memory ports.
 
 mod mmio;
 pub use mmio::*;
@@ -11,6 +11,7 @@ use digital_design_hardware::{
     HardwareIdentity, Module, ModuleIo, VerilogDependency, VerilogIdentity,
 };
 use digital_design_hardware_gowin::DspMulS18;
+use std::cmp::Ordering;
 
 pub const CPU_V3_FAULT_INVALID_INSTRUCTION: u8 = 1;
 pub const CPU_V3_FAULT_UNSUPPORTED_FPU: u8 = 2;
@@ -96,6 +97,10 @@ pub struct CpuV3CoreState {
     code_segment: u16,
     data_segment: u16,
     prefix: Option<Prefix>,
+    /// Transient result of the last CMP-class instruction; mirrors the
+    /// architectural `Machine::pending_test` (consumed by conditional
+    /// branches, expired by any other retired non-prefix instruction).
+    pending_test: Option<Ordering>,
     phase: Phase,
     instruction: u16,
     instruction_pc: u16,
@@ -116,6 +121,7 @@ impl Default for CpuV3CoreState {
             code_segment: 0,
             data_segment: 0,
             prefix: None,
+            pending_test: None,
             phase: Phase::FetchRequest,
             instruction: 0,
             instruction_pc: 0,
@@ -159,6 +165,10 @@ impl CpuV3CoreState {
 
         let prefix = self.prefix.take();
         let consumes_prefix = is_prefix_consumer(instruction);
+        // Every retired non-prefix instruction expires the pending test;
+        // CMP-class instructions set it again below and conditional
+        // branches consume the taken value.
+        let pending = self.pending_test.take();
         if prefix.is_some() && !consumes_prefix {
             self.retired_words = self.retired_words.wrapping_add(1);
         }
@@ -219,37 +229,60 @@ impl CpuV3CoreState {
             10 => self.execute_immediate(instruction, prefix, retire_words, fault_pc),
             11 => {
                 let condition = dst;
-                let value = self.registers[usize::from(lhs)];
-                let taken = match condition {
-                    0 => value == 0,
-                    1 => value != 0,
-                    2 => (value as i16) < 0,
-                    3 => (value as i16) >= 0,
-                    4 => (value as i16) > 0,
-                    5 => (value as i16) <= 0,
-                    6 => value & 1 != 0,
-                    7 => value & 1 == 0,
-                    _ => {
-                        self.fault(CPU_V3_FAULT_INVALID_INSTRUCTION, fault_pc);
-                        return;
-                    }
-                };
-                if taken {
-                    self.pc = self.pc.wrapping_add(immediate4(instruction, prefix, true));
-                }
-                self.retire(retire_words);
-            }
-            12 => {
-                let link = dst;
                 let offset = prefix.map_or_else(
                     || sign_extend(instruction & 0xff, 8),
                     |value| ((value.high & 0xff) << 8) | (instruction & 0xff),
                 );
-                if link != 15 {
-                    self.registers[usize::from(link)] = self.pc;
+                match condition {
+                    // Conditional branches consume the pending test result.
+                    0..=5 => {
+                        let Some(test) = pending else {
+                            self.fault(CPU_V3_FAULT_INVALID_INSTRUCTION, fault_pc);
+                            return;
+                        };
+                        let taken = match condition {
+                            0 => test == Ordering::Equal,
+                            1 => test != Ordering::Equal,
+                            2 => test == Ordering::Less,
+                            3 => test != Ordering::Less,
+                            4 => test == Ordering::Greater,
+                            5 => test != Ordering::Greater,
+                            _ => unreachable!(),
+                        };
+                        if taken {
+                            self.pc = self.pc.wrapping_add(offset);
+                        }
+                    }
+                    // JREL: unconditional relative jump, no link.
+                    8 => self.pc = self.pc.wrapping_add(offset),
+                    // JALREL: link the fall-through address into r14.
+                    9 => {
+                        let next = self.pc;
+                        self.pc = next.wrapping_add(offset);
+                        self.registers[14] = next;
+                    }
+                    _ => {
+                        self.fault(CPU_V3_FAULT_INVALID_INSTRUCTION, fault_pc);
+                        return;
+                    }
                 }
-                self.pc = self.pc.wrapping_add(offset);
                 self.retire(retire_words);
+            }
+            12 => {
+                // DEVRECV/DEVSEND: like load/store, but the address is the
+                // fixed MMIO physical word 0xff00 + device*16 + channel,
+                // with no DSEG translation.
+                let device = u32::from(dst & 7);
+                let channel = u32::from(lhs);
+                self.pending_data = PendingData {
+                    write: dst & 8 != 0,
+                    address: 0xff00 + (device << 4) + channel,
+                    write_data: self.registers[usize::from(rhs)],
+                    destination: rhs,
+                    retire_words,
+                    fault_pc,
+                };
+                self.phase = Phase::DataRequest;
             }
             13 => self.fault(CPU_V3_FAULT_UNSUPPORTED_FPU, fault_pc),
             14 => self.execute_control(instruction, retire_words, fault_pc),
@@ -280,6 +313,20 @@ impl CpuV3CoreState {
             self.begin_multiply(dst, old, signed, retire_words);
             return;
         }
+        match function {
+            // CMPSI/CMPUI set the pending test result and write no register.
+            12 => {
+                self.pending_test = Some((old as i16).cmp(&(signed as i16)));
+                self.retire(retire_words);
+                return;
+            }
+            13 => {
+                self.pending_test = Some(old.cmp(&unsigned));
+                self.retire(retire_words);
+                return;
+            }
+            _ => {}
+        }
         let result = match function {
             0 => old.wrapping_add(signed),
             1 => old.wrapping_sub(signed),
@@ -309,11 +356,16 @@ impl CpuV3CoreState {
         let dst = field(instruction, 4);
         let src = field(instruction, 0);
         match function {
+            0 => {
+                self.registers[usize::from(dst)] =
+                    self.registers[usize::from(src)].count_ones() as u16
+            }
             1 => self.registers[usize::from(dst)] = self.registers[usize::from(src)],
             2 => self.registers[usize::from(dst)] = !self.registers[usize::from(src)],
             3 => self.registers[usize::from(dst)] = self.registers[usize::from(src)].wrapping_neg(),
             4 if dst == 0 => self.pc = self.registers[usize::from(src)],
-            5 => {
+            // JALR: the link field is architecturally fixed to r14.
+            5 if dst == 14 => {
                 let target = self.registers[usize::from(src)];
                 self.registers[usize::from(dst)] = self.pc;
                 self.pc = target;
@@ -342,10 +394,16 @@ impl CpuV3CoreState {
                     u16::from(self.registers[usize::from(dst)] < self.registers[usize::from(src)])
             }
             11 => {
-                self.registers[usize::from(dst)] =
-                    self.registers[usize::from(src)].count_ones() as u16
+                self.pending_test = Some(
+                    (self.registers[usize::from(dst)] as i16)
+                        .cmp(&(self.registers[usize::from(src)] as i16)),
+                )
             }
             12 => {
+                self.pending_test =
+                    Some(self.registers[usize::from(dst)].cmp(&self.registers[usize::from(src)]))
+            }
+            13 => {
                 self.registers[usize::from(dst)] = match src {
                     0 => self.code_segment,
                     1 => self.data_segment,
@@ -355,8 +413,8 @@ impl CpuV3CoreState {
                     }
                 }
             }
-            13 if dst == 1 => self.data_segment = self.registers[usize::from(src)],
-            14 => {
+            14 if dst == 1 => self.data_segment = self.registers[usize::from(src)],
+            15 => {
                 self.code_segment = self.registers[usize::from(dst)];
                 self.pc = self.registers[usize::from(src)];
             }
@@ -505,9 +563,9 @@ fn immediate4(instruction: u16, prefix: Option<Prefix>, signed: bool) -> u16 {
 
 fn is_prefix_consumer(instruction: u16) -> bool {
     match instruction >> 12 {
-        8 | 9 | 12 => true,
-        10 => matches!((instruction >> 8) & 15, 0..=4 | 8..=11 | 14..=15),
-        11 => ((instruction >> 8) & 15) <= 7,
+        8 | 9 => true,
+        10 => !matches!((instruction >> 8) & 15, 5..=7),
+        11 => matches!((instruction >> 8) & 15, 0..=5 | 8 | 9),
         _ => false,
     }
 }
@@ -517,7 +575,7 @@ mod tests {
     use super::*;
     use crate as cpu_v3;
     use crate::rcc_backend::{self, CompilerOptions};
-    use crate::{AluOp, BranchCondition, ImmediateOp, Machine, RunOutcome, SpecialRegister};
+    use crate::{AluOp, ImmediateOp, Machine, RunOutcome, SpecialRegister, TestCondition};
     use digital_design_circuit::{build_circuit, Circuit};
     use digital_design_hardware::{ResourceAmount, ResourceKind, VerilogProject};
     use rcc::frontend::compile_program;
@@ -699,7 +757,8 @@ mod tests {
             cpu_v3::alu(AluOp::Add, 0, 3, 4),
             cpu_v3::alu(AluOp::Add, 0, 0, 5),
             cpu_v3::alu(AluOp::Add, 0, 0, 8),
-            cpu_v3::branch(BranchCondition::NonZero, 0, 1),
+            cpu_v3::immediate_signed(ImmediateOp::CompareSigned, 0, 0),
+            cpu_v3::branch(TestCondition::NotEqual, 1),
             cpu_v3::immediate_unsigned(ImmediateOp::LoadUnsigned, 0, 0),
             cpu_v3::halt(),
         ]);
@@ -711,6 +770,30 @@ mod tests {
         let mut memory = HashMap::new();
         load(&mut memory, 0, &program);
         let core = run_core(memory, 2_000);
+        assert_eq!(core.halt_signal, signal);
+        assert_eq!(core.retired_words as u64, oracle.retired_words());
+    }
+
+    #[test]
+    fn emulator_matches_oracle_for_device_instructions_on_the_mmio_page() {
+        let mut program = Vec::new();
+        program.extend(cpu_v3::load_immediate16(1, 0x1234));
+        program.extend([
+            cpu_v3::device_send(1, 2, 3),
+            cpu_v3::device_receive(0, 2, 3),
+            cpu_v3::halt(),
+        ]);
+        let mut oracle = Machine::default();
+        oracle.load_program(0, &program).unwrap();
+        let RunOutcome::Halted { signal, .. } = oracle.run(1_000).unwrap() else {
+            panic!("oracle did not halt")
+        };
+        // No device is attached on either side: both fall back to the plain
+        // memory word at 0xff00 + 2*16 + 3.
+        assert_eq!(signal, 0x1234);
+        let mut memory = HashMap::new();
+        load(&mut memory, 0, &program);
+        let core = run_core(memory, 1_000);
         assert_eq!(core.halt_signal, signal);
         assert_eq!(core.retired_words as u64, oracle.retired_words());
     }

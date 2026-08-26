@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>CPU V3 ISA v0.4 — Encoding, ABI, Memory, and Hardware</title>
+<title>CPU V3 ISA v0.5 — Encoding, ABI, Memory, and Hardware</title>
 <style>
   :root {
     --bg: #f7f9fc; --paper: #ffffff; --ink: #172033; --dim: #5d687c;
@@ -82,15 +82,15 @@
 <body><main>
 
 <section class="hero">
-  <h1>CPU V3 ISA v0.4</h1>
+  <h1>CPU V3 ISA v0.5</h1>
   <p class="subtitle">Instruction encoding, architectural behavior, compiler ABI, unified memory map, and current FPGA organization.</p>
   <div class="badges">
     <span class="badge">16-bit fixed instruction words</span>
     <span class="badge">16 × 16-bit GPRs</span>
     <span class="badge">16-bit word offsets</span>
     <span class="badge">Segmented physical SDRAM</span>
-    <span class="badge">No architectural flags</span>
-    <span class="badge">Revision 0.4</span>
+    <span class="badge">Transient pending test, no persistent flags</span>
+    <span class="badge">Revision 0.5</span>
   </div>
   <ol class="toc">
     <li><a href="#overview">Architectural overview</a></li>
@@ -111,7 +111,7 @@
   <div class="card"><b>16</b><span>general-purpose, writable 16-bit registers</span></div>
   <div class="card"><b>65,536</b><span>word offsets in each boot-selected segment</span></div>
   <div class="card"><b>1 or 2</b><span>physical words per retired operation; two when IMMHI12 is consumed</span></div>
-  <div class="card"><b>0 flags</b><span>branches test a register directly; comparisons produce 0 or 1</span></div>
+  <div class="card"><b>CMP → B</b><span>a transient pending test result links a compare to its consuming branch; there are no persistent flags</span></div>
 </div>
 <div class="grid">
   <div class="panel">
@@ -123,6 +123,7 @@
       <li>Reset starts with CSEG = DSEG = PC = 0; applications normally keep their boot-selected segments fixed.</li>
       <li>The PC normally advances before instruction semantics, so relative control flow is based on the following word.</li>
       <li>All registers are architecturally writable. ABI reservations are compiler conventions, not hardwired registers.</li>
+      <li>CMP-class instructions leave a transient pending test result (Less/Equal/Greater). Only a conditional branch consumes it; any other retired non-prefix instruction expires it, and <code>IMMHI12</code> is transparent to it. Reset leaves no pending result.</li>
       <li><code>HALT</code> has no encoded signal register; the architectural halt signal is <code>r0</code>.</li>
     </ul>
   </div>
@@ -130,7 +131,7 @@
     <h3>Design intent</h3>
     <ul>
       <li>Small decoding surface: the high nibble selects the major operation.</li>
-      <li>No condition-code dependency between comparison and branch.</li>
+      <li>A single transient pending test result, not persistent flags, carries a comparison outcome to its consuming branch.</li>
       <li>Short immediates stay compact; <code>IMMHI12</code> extends only explicitly listed consumers.</li>
       <li>Near 16-bit pointers simplify the compiler while physical cache tags expose all fitted SDRAM.</li>
       <li>Opcode <code>0xD</code> remains reserved for a future FPU family.</li>
@@ -182,7 +183,7 @@
   <path class="arrow" d="M850 210 L930 210"/><path class="arrow" d="M930 235 L850 235"/>
   <text class="svg-mono" x="890" y="197" text-anchor="middle">8 × 32-bit</text>
 </svg>
-<p class="caption">Normative target organization. The host cache and scheduler models implement these policies, and the reusable CpuV3 RTL core executes the complete v0.4 integer ISA; see implementation status.</p>
+<p class="caption">Normative target organization. The host cache and scheduler models implement these policies, and the reusable CpuV3 RTL core executes the complete v0.5 integer ISA; see implementation status.</p>
 </div>
 
 <h2 id="encoding">3. Encoding rules</h2>
@@ -201,8 +202,8 @@
   <tr><td class="mn">RRR</td><td class="sem">opcode[15:12] · rd[11:8] · ra[7:4] · rb[3:0]</td><td>Three-register ALU operation.</td></tr>
   <tr><td class="mn">MEM</td><td class="sem">opcode · rd/rs · base · imm4</td><td>Word load/store at <code>r[base] + immediate</code>.</td></tr>
   <tr><td class="mn">IMM</td><td class="sem">A · function · rd · imm4</td><td>In-place immediate operation on <code>rd</code>.</td></tr>
-  <tr><td class="mn">BR</td><td class="sem">B · condition · test · imm4</td><td>Conditional PC-relative branch.</td></tr>
-  <tr><td class="mn">J</td><td class="sem">C · link · imm8</td><td>PC-relative jump; link <code>15</code> means no link.</td></tr>
+  <tr><td class="mn">BR</td><td class="sem">B · condition · imm8</td><td>Conditional branch on the pending test result, or unconditional relative jump.</td></tr>
+  <tr><td class="mn">DEV</td><td class="sem">C · dir/dev[2:0] · channel · reg</td><td>Device channel receive/send in the fixed MMIO page.</td></tr>
   <tr><td class="mn">EXT</td><td class="sem">E · function · rd · rs</td><td>Unary, register control, comparison, and halt operations.</td></tr>
   <tr><td class="mn">IMMHI12</td><td class="sem">F · high12</td><td>Prefix state for the immediately following eligible consumer.</td></tr>
 </table>
@@ -214,8 +215,8 @@
   <tr><td class="center memory mono">8</td><td class="memory">LOAD</td><td class="mono">8 rd base imm4</td><td>Read one 16-bit word.</td></tr>
   <tr><td class="center memory mono">9</td><td class="memory">STORE</td><td class="mono">9 rs base imm4</td><td>Write one 16-bit word.</td></tr>
   <tr><td class="center imm mono">A</td><td class="imm">Immediate</td><td class="mono">A fn rd imm4</td><td>Arithmetic, logic, shift, compare, and load-immediate.</td></tr>
-  <tr><td class="center control mono">B</td><td class="control">Branch</td><td class="mono">B cond test imm4</td><td>Eight direct register predicates; no flags register.</td></tr>
-  <tr><td class="center control mono">C</td><td class="control">Jump</td><td class="mono">C link imm8</td><td>Relative jump with optional link register.</td></tr>
+  <tr><td class="center control mono">B</td><td class="control">Branch / jump</td><td class="mono">B cond imm8</td><td>Six predicates on the pending test result plus relative jumps.</td></tr>
+  <tr><td class="center control mono">C</td><td class="control">Device</td><td class="mono">C dir/dev ch reg</td><td>Device channel receive/send at a fixed MMIO address.</td></tr>
   <tr><td class="center reserved mono">D</td><td class="reserved">Reserved FPU</td><td class="mono">D ...</td><td>Currently raises <code>UnsupportedFpu</code>.</td></tr>
   <tr><td class="center extended mono">E</td><td class="extended">Extended/control</td><td class="mono">E fn rd rs</td><td>Move, unary, register jumps, comparisons, bit operations, halt.</td></tr>
   <tr><td class="center imm mono">F</td><td class="imm">IMMHI12</td><td class="mono">F high12</td><td>Creates a pending wide immediate.</td></tr>
@@ -258,53 +259,57 @@
   <tr><td class="mono">9</td><td class="mn">CMPEQI rd, imm</td><td class="sem">rd = (rd == imm) ? 1 : 0</td><td>Signed i4; prefix eligible.</td></tr>
   <tr><td class="mono">A</td><td class="mn">SLTI rd, imm</td><td class="sem">rd = (signed(rd) &lt; signed(imm)) ? 1 : 0</td><td>Signed i4; prefix eligible.</td></tr>
   <tr><td class="mono">B</td><td class="mn">SLTUI rd, imm</td><td class="sem">rd = (unsigned(rd) &lt; unsigned(imm)) ? 1 : 0</td><td>Unsigned u4; prefix eligible; added in v0.3.</td></tr>
-  <tr><td class="mono reserved">C,D</td><td class="reserved">reserved</td><td>Invalid instruction</td><td>Does not consume a prefix.</td></tr>
+  <tr><td class="mono">C</td><td class="mn">CMPSI rd, imm</td><td class="sem">pending = signed ordering of rd vs imm</td><td>Signed i4 without a prefix; prefix eligible for the full 16-bit pattern. Writes no register; added in v0.5.</td></tr>
+  <tr><td class="mono">D</td><td class="mn">CMPUI rd, imm</td><td class="sem">pending = unsigned ordering of rd vs imm</td><td>Unsigned u4 without a prefix; prefix eligible for the full 16-bit pattern. Writes no register; added in v0.5.</td></tr>
   <tr><td class="mono">E</td><td class="mn">LDI rd, i4</td><td class="sem">rd = sext4(i4)</td><td>With prefix, loads the complete 16-bit bit pattern.</td></tr>
   <tr><td class="mono">F</td><td class="mn">LDUI rd, u4</td><td class="sem">rd = zext4(u4)</td><td>With prefix, loads the complete 16-bit bit pattern.</td></tr>
 </table>
 
-<h3>5.4 Conditional branch — opcode B</h3>
+<h3>5.4 Branch and relative jump — opcode B</h3>
 <table>
   <tr><th>n2</th><th>Mnemonic</th><th>Taken when</th><th>Target</th></tr>
-  <tr><td class="mono">0</td><td class="mn">BZ test, off</td><td><code>test == 0</code></td><td rowspan="8" class="sem">PC_after + off</td></tr>
-  <tr><td class="mono">1</td><td class="mn">BNZ test, off</td><td><code>test != 0</code></td></tr>
-  <tr><td class="mono">2</td><td class="mn">BN test, off</td><td><code>signed(test) &lt; 0</code></td></tr>
-  <tr><td class="mono">3</td><td class="mn">BNN test, off</td><td><code>signed(test) &gt;= 0</code></td></tr>
-  <tr><td class="mono">4</td><td class="mn">BP test, off</td><td><code>signed(test) &gt; 0</code></td></tr>
-  <tr><td class="mono">5</td><td class="mn">BNP test, off</td><td><code>signed(test) &lt;= 0</code></td></tr>
-  <tr><td class="mono">6</td><td class="mn">BODD test, off</td><td><code>test[0] == 1</code></td></tr>
-  <tr><td class="mono">7</td><td class="mn">BEVEN test, off</td><td><code>test[0] == 0</code></td></tr>
-  <tr><td class="mono reserved">8..F</td><td class="reserved">reserved</td><td>Invalid instruction</td><td>—</td></tr>
+  <tr><td class="mono">0</td><td class="mn">BEQ off</td><td>pending == Equal</td><td rowspan="6" class="sem">PC_after + off</td></tr>
+  <tr><td class="mono">1</td><td class="mn">BNE off</td><td>pending != Equal</td></tr>
+  <tr><td class="mono">2</td><td class="mn">BLT off</td><td>pending == Less</td></tr>
+  <tr><td class="mono">3</td><td class="mn">BGE off</td><td>pending != Less</td></tr>
+  <tr><td class="mono">4</td><td class="mn">BGT off</td><td>pending == Greater</td></tr>
+  <tr><td class="mono">5</td><td class="mn">BLE off</td><td>pending != Greater</td></tr>
+  <tr><td class="mono reserved">6,7</td><td class="reserved">reserved</td><td>Invalid instruction</td><td>—</td></tr>
+  <tr><td class="mono">8</td><td class="mn">JREL off</td><td>unconditional</td><td class="sem">PC = PC_after + off</td></tr>
+  <tr><td class="mono">9</td><td class="mn">JALREL off</td><td>unconditional; <code>r14 = PC_after</code></td><td class="sem">PC = PC_after + off</td></tr>
+  <tr><td class="mono reserved">A..F</td><td class="reserved">reserved</td><td>Invalid instruction</td><td>—</td></tr>
 </table>
-<p class="caption">The short offset is signed i4. An adjacent prefix supplies the full 16-bit relative offset.</p>
+<p class="caption">The offset is signed i8 relative to the already-incremented PC (±128 words). With <code>IMMHI12</code> the offset widens to <code>off16 = {prefix[7:0], imm8}</code>: the prefix supplies the high byte and the instruction's immediate byte the low byte.</p>
+<p>Conditions 0..5 test the <b>pending test result</b>, a transient three-way ordering (Less/Equal/Greater) set only by the CMP-class instructions <code>CMPS</code>, <code>CMPU</code>, <code>CMPSI</code>, and <code>CMPUI</code>. A conditional branch consumes the pending result whether or not it is taken; any other retired non-prefix instruction expires it, and <code>IMMHI12</code> is transparent to it. A conditional branch with no pending result faults <code>InvalidInstruction</code> — reported at the prefix address when prefixed. Reset leaves no pending result.</p>
+<p><code>JALREL</code> has no link field: the link register is architecturally fixed to <code>r14</code>, which receives the fall-through address before the jump. Compiler-generated wide control flow uses the canonical prefix with a 16-bit wrapping relative offset.</p>
 
-<h3>5.5 Relative jump — opcode C</h3>
+<h3>5.5 Device access — opcode C</h3>
 <table>
   <tr><th>Mnemonic</th><th>Encoding</th><th>Semantics</th><th>Notes</th></tr>
-  <tr><td class="mn">JREL off</td><td class="mono">C F imm8</td><td class="sem">PC = PC_after + sext8(imm8)</td><td><code>link=15</code> suppresses link write.</td></tr>
-  <tr><td class="mn">JALREL link, off</td><td class="mono">C link imm8</td><td class="sem">link = PC_after; PC = PC_after + sext8(imm8)</td><td><code>link</code> is r0..r14.</td></tr>
+  <tr><td class="mn">DEVRECV rd, dev, ch</td><td class="mono">C {0,dev[2:0]} ch rd</td><td class="sem">rd = device[dev].read(ch)</td><td>dir bit 11 = 0.</td></tr>
+  <tr><td class="mn">DEVSEND rs, dev, ch</td><td class="mono">C {1,dev[2:0]} ch rs</td><td class="sem">device[dev].write(ch, rs)</td><td>dir bit 11 = 1.</td></tr>
 </table>
-<p>With <code>IMMHI12</code>, opcode C consumes only the low eight prefix bits as the high byte: <code>off16 = {prefix[7:0], imm8}</code>. Compiler-generated wide jumps use the canonical prefix and a 16-bit wrapping relative offset.</p>
+<p>The physical word address is <code>0xff00 + dev × 16 + ch</code>, inside the fixed segment-zero MMIO page; it never passes through <code>DSEG</code>. The encoding covers devices 0..7, each with channels 0..15; devices 8..15 remain reachable with ordinary <code>LOAD</code>/<code>STORE</code> at a materialized base. Device instructions carry no immediate and never consume an <code>IMMHI12</code> prefix. This single-word form replaces the v0.4 software convention of an <code>r15</code> base register plus <code>LOAD</code>/<code>STORE</code>.</p>
 
 <h3>5.6 Extended/control — opcode E</h3>
 <table>
   <tr><th>n2</th><th>Mnemonic</th><th>Encoding</th><th>Semantics / constraints</th></tr>
-  <tr><td class="mono reserved">0</td><td class="reserved">reserved</td><td class="mono">E 0 rd rs</td><td>Invalid instruction.</td></tr>
+  <tr><td class="mono">0</td><td class="mn">POPCNT rd, rs</td><td class="mono">E 0 rd rs</td><td class="sem">rd = population_count(rs); added in v0.3 at E B, moved in v0.5</td></tr>
   <tr><td class="mono">1</td><td class="mn">MOV rd, rs</td><td class="mono">E 1 rd rs</td><td class="sem">rd = rs; NOP = E100</td></tr>
   <tr><td class="mono">2</td><td class="mn">NOT rd, rs</td><td class="mono">E 2 rd rs</td><td class="sem">rd = ~rs</td></tr>
   <tr><td class="mono">3</td><td class="mn">NEG rd, rs</td><td class="mono">E 3 rd rs</td><td class="sem">rd = 0 - rs</td></tr>
   <tr><td class="mono">4</td><td class="mn">JREG rs</td><td class="mono">E 4 0 rs</td><td class="sem">PC = rs; rd must be 0</td></tr>
-  <tr><td class="mono">5</td><td class="mn">JALR link, target</td><td class="mono">E 5 link target</td><td class="sem">tmp = target; link = PC_after; PC = tmp</td></tr>
+  <tr><td class="mono">5</td><td class="mn">JALR target</td><td class="mono">E 5 E target</td><td class="sem">tmp = target; r14 = PC_after; PC = tmp. The link field must encode 14; any other value is InvalidInstruction.</td></tr>
   <tr><td class="mono">6</td><td class="mn">SEXTB rd, rs</td><td class="mono">E 6 rd rs</td><td class="sem">rd = sext8(rs[7:0])</td></tr>
   <tr><td class="mono">7</td><td class="mn">CLZ rd, rs</td><td class="mono">E 7 rd rs</td><td class="sem">rd = count_leading_zeros(rs)</td></tr>
   <tr><td class="mono">8</td><td class="mn">HALT</td><td class="mono">E 8 0 0</td><td>Stops execution; signal is <code>r0</code>. Both fields must be zero.</td></tr>
   <tr><td class="mono">9</td><td class="mn">SLT rd, rs</td><td class="mono">E 9 rd rs</td><td class="sem">rd = signed(rd) &lt; signed(rs); added in v0.3</td></tr>
   <tr><td class="mono">A</td><td class="mn">SLTU rd, rs</td><td class="mono">E A rd rs</td><td class="sem">rd = unsigned(rd) &lt; unsigned(rs); added in v0.3</td></tr>
-  <tr><td class="mono">B</td><td class="mn">POPCNT rd, rs</td><td class="mono">E B rd rs</td><td class="sem">rd = population_count(rs); added in v0.3</td></tr>
-  <tr><td class="mono">C</td><td class="mn">MFSR rd, sr</td><td class="mono">E C rd sr</td><td class="sem">Read CSEG (sr=0) or DSEG (sr=1).</td></tr>
-  <tr><td class="mono">D</td><td class="mn">MTSR DSEG, rs</td><td class="mono">E D 1 rs</td><td class="sem">Set the boot-time data segment. Other special-register selectors are invalid.</td></tr>
-  <tr><td class="mono">E</td><td class="mn">JSEG seg, target</td><td class="mono">E E seg target</td><td class="sem">Atomically set CSEG = r[seg] and PC = r[target].</td></tr>
-  <tr><td class="mono reserved">F</td><td class="reserved">reserved</td><td class="mono">E F rd rs</td><td>Invalid instruction.</td></tr>
+  <tr><td class="mono">B</td><td class="mn">CMPS rd, rs</td><td class="mono">E B rd rs</td><td class="sem">pending = signed ordering of rd vs rs; writes no register; added in v0.5</td></tr>
+  <tr><td class="mono">C</td><td class="mn">CMPU rd, rs</td><td class="mono">E C rd rs</td><td class="sem">pending = unsigned ordering of rd vs rs; writes no register; added in v0.5</td></tr>
+  <tr><td class="mono">D</td><td class="mn">MFSR rd, sr</td><td class="mono">E D rd sr</td><td class="sem">Read CSEG (sr=0) or DSEG (sr=1).</td></tr>
+  <tr><td class="mono">E</td><td class="mn">MTSR DSEG, rs</td><td class="mono">E E 1 rs</td><td class="sem">Set the boot-time data segment. Other special-register selectors are invalid.</td></tr>
+  <tr><td class="mono">F</td><td class="mn">JSEG seg, target</td><td class="mono">E F seg target</td><td class="sem">Atomically set CSEG = r[seg] and PC = r[target].</td></tr>
 </table>
 
 <h2 id="prefix">6. IMMHI12 and wide operations</h2>
@@ -316,8 +321,9 @@
   </div>
   <div class="panel">
     <h3>Closed consumer set</h3>
-    <p><code>LOAD</code>, <code>STORE</code>, immediate functions 0..4, 8..B, E..F, all valid branches, and relative jumps consume a pending prefix.</p>
-    <p>Shift-immediate, extended/control, register ALU, reserved encodings, and another prefix do not consume it.</p>
+    <p><code>LOAD</code>, <code>STORE</code>, immediate functions 0..4 and 8..F, and branch/jump conditions 0..5, 8, and 9 consume a pending prefix.</p>
+    <p>Shift-immediates, extended/control, register ALU, device instructions, reserved encodings, and another prefix do not consume it.</p>
+    <p>A prefix is transparent to the pending test result: an <code>IMMHI12</code> sitting between a CMP-class producer and its consuming branch neither sets nor expires the test.</p>
   </div>
 </div>
 <div class="notice"><b>Precise prefix rule:</b> a non-consumer expires the pending prefix and retires it separately. A second prefix also retires and replaces the first. If a prefixed consumer faults, the reported address is the prefix address and neither word retires.</div>
@@ -343,7 +349,7 @@
       <li>Ordinary CPU pointers cover one 65,536-word = 128-KiB segment.</li>
       <li>Instruction fetch uses <code>{CSEG, PC}</code>; ordinary data and stack accesses use <code>{DSEG, offset}</code>.</li>
       <li>The fitted 8-MiB Tang Nano 20K SDRAM uses 22 physical word-address bits. Larger architectural addresses fault instead of aliasing.</li>
-      <li><code>r15</code> normally holds <code>0xff00</code>; this top MMIO offset page always selects fixed system space in segment zero.</li>
+      <li>The top MMIO offset page always selects fixed system space in segment zero, regardless of <code>DSEG</code>. Device instructions address devices 0..7 within it directly; devices 8..15 remain reachable through ordinary loads and stores at a materialized base.</li>
       <li><code>CompilerOptions::default()</code> selects data base <code>0x4000</code>, heap base <code>0x8000</code>, and stack top <code>0xff00</code>. CPU V3 has no v2.6 function table.</li>
       <li>The CPU V3 compiler's optional <code>code_base</code> relocates all linked code offsets and function pointers without padding the emitted section bytes.</li>
     </ul>
@@ -383,8 +389,8 @@
   <tr><td class="mono">r8..r11</td><td>long-lived values</td><td>callee-saved</td><td>Saved only when actually allocated by the function.</td></tr>
   <tr><td class="mono">r12</td><td>compiler scratch / indirect-call target</td><td>reserved, caller-clobbered</td><td>Not allocatable; used for wide lowering and function pointers.</td></tr>
   <tr><td class="mono">r13</td><td>stack pointer</td><td>callee restores</td><td>Frame grows downward; initialized to <code>0xff00</code>.</td></tr>
-  <tr><td class="mono">r14</td><td>link register</td><td>saved by non-leaf functions</td><td>Direct and indirect calls write the return PC here.</td></tr>
-  <tr><td class="mono">r15</td><td>global/MMIO base</td><td>reserved</td><td>Normally <code>0xff00</code>; not allocatable.</td></tr>
+  <tr><td class="mono">r14</td><td>link register</td><td>saved by non-leaf functions</td><td>Direct and indirect calls write the return PC here; the architecture fixes the link register to r14 (<code>JALREL</code> has no link field, <code>JALR</code> requires link = 14).</td></tr>
+  <tr><td class="mono">r15</td><td>general allocation</td><td>caller-saved</td><td>Ordinary allocatable register since v0.5; previously the reserved global/MMIO base. Device instructions replaced that convention.</td></tr>
 </table>
 <div class="grid">
   <div class="panel">
@@ -420,6 +426,7 @@
 <table>
   <tr><th>Condition</th><th>Result</th><th>Fault PC</th><th>Retirement</th></tr>
   <tr><td>Reserved or malformed integer encoding</td><td><code>InvalidInstruction</code></td><td>instruction address, or prefix address for an eligible consumer</td><td>faulting operation does not retire</td></tr>
+  <tr><td>Conditional branch (B conditions 0..5) with no pending test result</td><td><code>InvalidInstruction</code></td><td>instruction address, or prefix address when prefixed</td><td>faulting operation does not retire</td></tr>
   <tr><td>Opcode D</td><td><code>UnsupportedFpu</code></td><td>instruction address</td><td>does not retire</td></tr>
   <tr><td>Fetch or data address outside fitted physical memory</td><td><code>PhysicalAddressOutOfRange</code></td><td>faulting instruction offset</td><td>does not retire</td></tr>
   <tr><td>Valid prefixed consumer</td><td>executes one wide operation</td><td>—</td><td>retires two words together</td></tr>
@@ -430,12 +437,12 @@
 <h2 id="status">10. Implementation status</h2>
 <table>
   <tr><th>Layer</th><th>Status</th><th>What is implemented now</th><th>Important remaining work</th></tr>
-  <tr><td>Encoding helpers</td><td><span class="status done">complete v0.4</span></td><td>Constructors and stable reference encodings for integer and segment-control operations.</td><td>Update only through a deliberate ISA revision.</td></tr>
-  <tr><td>Architectural simulator</td><td><span class="status done">complete v0.4</span></td><td>Integer families, segment concatenation, fitted-memory faults, prefix precision, halt, and reserved-FPU fault.</td><td>MMIO device model and any future FPU semantics.</td></tr>
-  <tr><td>Compiler backend</td><td><span class="status done">usable</span></td><td>CPU V3 ABI, register allocation, calls, stack frames, memory operations, comparisons, static initialization, and fixed-width symbolic linking.</td><td>Optional size relaxation.</td></tr>
+  <tr><td>Encoding helpers</td><td><span class="status done">complete v0.5</span></td><td>Constructors and stable reference encodings for integer, device, and segment-control operations.</td><td>Update only through a deliberate ISA revision.</td></tr>
+  <tr><td>Architectural simulator</td><td><span class="status done">complete v0.5</span></td><td>Integer families, pending test result, device channel routing, segment concatenation, fitted-memory faults, prefix precision, halt, and reserved-FPU fault.</td><td>Any future FPU semantics.</td></tr>
+  <tr><td>Compiler backend</td><td><span class="status done">usable v0.5</span></td><td>CPU V3 ABI, register allocation, calls, stack frames, memory operations, compare/branch lowering, single-instruction device intrinsics, static initialization, and fixed-width symbolic linking.</td><td>Optional size relaxation.</td></tr>
   <tr><td>Host cache/scheduler models</td><td><span class="status done">policy baseline</span></td><td>Physical cache tags, explicit invalidation, refill/write-through rules, full SDRAM address/lane mapping, and refresh-aware arbitration.</td><td>Associativity or write-back policy changes only with measured miss traffic.</td></tr>
-  <tr><td>Tang Nano 20K RTL</td><td><span class="status done">complete v0.4 core</span></td><td>Reusable CpuV3Core executing the complete v0.4 integer ISA (full decoder, IMMHI12 prefix, segment registers, precise faults), split I/D caches, MMIO bridge with the system-control, boot-select, and boot-DMA devices, and a three-client memory arbiter (DMA &gt; data &gt; instruction) over the Controller HS word port.</td><td>Interrupts if adopted, and broader board programs.</td></tr>
-  <tr><td>Physical validation</td><td><span class="status done">boot path passed</span></td><td>SDRAM, BSRAM, DSP, and the complete split-cache boot system passed board validation. The <code>cpu-v3-boot</code> profile programmed the audited SRAM bitstream and captured a passing UART result (DDHT test 0x07: 46 success frames, no failures).</td><td>Capture a stand-alone cold boot from a complete Flash image (<code>WriteCompleteFlash</code>), plus broader board programs.</td></tr>
+  <tr><td>Tang Nano 20K RTL</td><td><span class="status done">complete v0.5 core</span></td><td>Reusable CpuV3Core executing the complete v0.5 integer ISA (pending test result, B-family predicates and embedded jumps, single-word device instructions, segment registers, precise faults), split I/D caches, MMIO bridge with the system-control, boot-select, and boot-DMA devices, and a three-client memory arbiter (DMA &gt; data &gt; instruction) over the Controller HS word port. Verified against the Icarus testbench.</td><td>interrupts if adopted, and broader board programs.</td></tr>
+  <tr><td>Physical validation</td><td><span class="status done">boot path passed (v0.5)</span></td><td>SDRAM, BSRAM, DSP, and the complete split-cache boot system passed board validation. The v0.5 design passed the <code>cpu-v3-boot</code> Full profile: the v0.5 boot package was written to external Flash, the audited SRAM bitstream programmed, and UART captured a passing result (DDHT test 0x07: 52 success frames, no failures, no CV3B boot errors). The complete power-on Flash image (FPGA configuration + boot package) was packed, cross-checked against an independent repack, and programmed with programmer verify, and a power-cycled cold boot from that Flash image was observed passing purely in Observe mode (50 success frames).</td><td>Broader board programs.</td></tr>
 </table>
 <div class="notice"><b>Source-of-truth rule:</b> executable behavior lives in <code>architecture/encoding.rs</code> and <code>architecture/sim.rs</code>; compiler convention lives in <code>rcc_backend/mod.rs</code> and <code>compiler/rcc/src/compiler/regalloc.rs</code>; cache and SDRAM policy lives in <code>architecture/cache.rs</code> and <code>architecture/sdram.rs</code>. This page is the human-readable companion and must be updated with those files.</div>
 
