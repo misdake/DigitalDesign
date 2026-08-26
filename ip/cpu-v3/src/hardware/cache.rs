@@ -5,13 +5,26 @@ use digital_design_hardware::{
     resources::components::SsramBits, HardwareIdentity, Module, ModuleIo, TargetResourceRequest,
     VerilogDependency, VerilogIdentity,
 };
+use digital_design_hardware_gowin::BsramImage;
 use digital_design_hardware_gowin::{Bsram1R1Rw1024, ZeroBsramImage};
+use std::marker::PhantomData;
 
 pub const CPU_V3_CACHE_WORDS: usize = 1024;
 pub const CPU_V3_CACHE_LINE_WORDS: usize = 16;
 pub const CPU_V3_CACHE_SETS: usize = CPU_V3_CACHE_WORDS / CPU_V3_CACHE_LINE_WORDS;
 
-type CacheData = Bsram1R1Rw1024<16, ZeroBsramImage>;
+type CacheData<I> = Bsram1R1Rw1024<16, I>;
+
+/// Power-up contents for a normal writable cache. Initial lines describe
+/// physical segment zero; later misses replace them through the ordinary
+/// refill path.
+pub trait CpuV3CacheImage: BsramImage<16> {
+    const INITIAL_VALID: u64;
+}
+
+impl CpuV3CacheImage for ZeroBsramImage {
+    const INITIAL_VALID: u64 = 0;
+}
 
 const CPU_V3_CACHE_TAG_BITS: usize = 12;
 const CPU_V3_CACHE_TAG_RAM16S: usize =
@@ -124,13 +137,23 @@ pub struct CpuV3DirectMappedCacheOutput {
     pub memory_response_ready: Wire,
 }
 
-pub struct CpuV3DirectMappedCache;
+pub struct CpuV3DirectMappedCacheWithImage<I>(PhantomData<I>);
+pub type CpuV3DirectMappedCache = CpuV3DirectMappedCacheWithImage<ZeroBsramImage>;
 
-impl HardwareIdentity for CpuV3DirectMappedCache {
+impl<I: CpuV3CacheImage> HardwareIdentity for CpuV3DirectMappedCacheWithImage<I> {
     const TARGET_RESOURCE_LEAF: bool = false;
 
     fn verilog_identity() -> VerilogIdentity {
-        VerilogIdentity::new("CpuV3DirectMappedCache").namespace(["components", "cpu", "cpu_v3"])
+        VerilogIdentity::new("CpuV3DirectMappedCache")
+            .namespace(["components", "cpu", "cpu_v3"])
+            .symbol(
+                "IMAGE",
+                format!(
+                    "{}_v{:016x}",
+                    CacheData::<I>::verilog_identity().module_name(),
+                    I::INITIAL_VALID
+                ),
+            )
     }
 }
 
@@ -177,7 +200,20 @@ impl Default for CpuV3DirectMappedCacheState {
     }
 }
 
-impl Module for CpuV3DirectMappedCache {
+impl CpuV3DirectMappedCacheState {
+    fn initialized<I: CpuV3CacheImage>() -> Self {
+        let mut state = Self::default();
+        for (target, source) in state.data.iter_mut().zip(I::WORDS) {
+            *target = source as u16;
+        }
+        for set in 0..CPU_V3_CACHE_SETS {
+            state.valid[set] = I::INITIAL_VALID & (1u64 << set) != 0;
+        }
+        state
+    }
+}
+
+impl<I: CpuV3CacheImage> Module for CpuV3DirectMappedCacheWithImage<I> {
     type Input = CpuV3DirectMappedCacheInput;
     type Output = CpuV3DirectMappedCacheOutput;
     type EmuState = CpuV3DirectMappedCacheState;
@@ -185,7 +221,7 @@ impl Module for CpuV3DirectMappedCache {
     const USES_MAIN_CLOCK: bool = true;
 
     fn create_emu(_input: &Self::Input, _output: &Self::Output) -> Self::EmuState {
-        CpuV3DirectMappedCacheState::default()
+        CpuV3DirectMappedCacheState::initialized::<I>()
     }
 
     fn execute_emu(
@@ -223,7 +259,7 @@ impl Module for CpuV3DirectMappedCache {
     ) {
         let input = input.sample(circuit);
         if input.reset {
-            *state = CpuV3DirectMappedCacheState::default();
+            *state = CpuV3DirectMappedCacheState::initialized::<I>();
             return;
         }
 
@@ -302,11 +338,20 @@ impl Module for CpuV3DirectMappedCache {
     }
 
     fn verilog_source() -> Option<String> {
+        let module_name = Self::verilog_identity().module_name();
         Some(
             include_str!("cpu_v3_direct_mapped_cache.v")
                 .replace(
+                    "module CpuV3DirectMappedCache (",
+                    &format!("module {module_name} ("),
+                )
+                .replace(
+                    "__INITIAL_VALID__",
+                    &format!("64'h{:016x}", I::INITIAL_VALID),
+                )
+                .replace(
                     "__CACHE_DATA__",
-                    &CacheData::verilog_identity().module_name(),
+                    &CacheData::<I>::verilog_identity().module_name(),
                 )
                 .replace(
                     "__CACHE_TAGS__",
@@ -317,13 +362,16 @@ impl Module for CpuV3DirectMappedCache {
 
     fn verilog_dependencies() -> Vec<VerilogDependency> {
         vec![
-            VerilogDependency::new::<CacheData>("u_data"),
+            VerilogDependency::new::<CacheData<I>>("u_data"),
             VerilogDependency::new::<CpuV3CacheTagRam>("u_tags"),
         ]
     }
 
     fn verilog_testbench() -> Option<String> {
-        Some(include_str!("cpu_v3_direct_mapped_cache_tb.v").to_string())
+        Some(include_str!("cpu_v3_direct_mapped_cache_tb.v").replace(
+            "CpuV3DirectMappedCache dut",
+            &format!("{} dut", Self::verilog_identity().module_name()),
+        ))
     }
 }
 

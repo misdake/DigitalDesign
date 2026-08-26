@@ -1,6 +1,7 @@
 //! Tang Nano 20K system integration for CpuV3.
 
 pub mod boot;
+pub mod display;
 pub mod hardware;
 mod layout;
 

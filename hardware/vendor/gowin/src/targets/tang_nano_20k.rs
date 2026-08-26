@@ -108,6 +108,36 @@ pub struct TangNano20KSdramOutputs {
     pub sdram_burst_length: Wires<8>,
 }
 
+/// SDRAM controller signals plus the independent clocks used by 720p HDMI.
+#[derive(Clone, ModuleIo)]
+pub struct TangNano20KSdramHdmiInputs {
+    pub buttons: Wires<2>,
+    pub sdram_read_data: Wires<32>,
+    pub sdram_read_valid: digital_design_circuit::Wire,
+    pub sdram_init_done: digital_design_circuit::Wire,
+    pub sdram_command_ack: digital_design_circuit::Wire,
+    pub pixel_clock: digital_design_circuit::Wire,
+    pub serial_clock: digital_design_circuit::Wire,
+    pub video_locked: digital_design_circuit::Wire,
+}
+
+#[derive(Clone, ModuleIo)]
+pub struct TangNano20KSdramHdmiOutputs {
+    pub leds: Wires<6>,
+    pub uart_tx: digital_design_circuit::Wire,
+    pub sdram_command_valid: digital_design_circuit::Wire,
+    pub sdram_command: Wires<3>,
+    pub sdram_precharge: digital_design_circuit::Wire,
+    pub sdram_address: Wires<21>,
+    pub sdram_write_mask: Wires<4>,
+    pub sdram_write_data: Wires<32>,
+    pub sdram_burst_length: Wires<8>,
+    pub tmds_clk_p: digital_design_circuit::Wire,
+    pub tmds_clk_n: digital_design_circuit::Wire,
+    pub tmds_data_p: Wires<3>,
+    pub tmds_data_n: Wires<3>,
+}
+
 /// Board inputs for boot logic that needs both fitted memories concurrently.
 #[derive(Clone, ModuleIo)]
 pub struct TangNano20KBootInputs {
@@ -391,8 +421,13 @@ impl TangNano20K {
     /// logic, command scheduling, caches, and the controller use the same
     /// 54 MHz clock. Only the SDRAM physical clock uses the PLL's 180-degree
     /// output.
-    fn sdram_debug_uart_binding() -> GowinBoardBinding<Self> {
-        let extension = GowinBoardExtension::new(include_str!("tang_nano_20k/sdram/service_54m.v"))
+    fn sdram_debug_uart_binding_with_video(video: bool) -> GowinBoardBinding<Self> {
+        let wrapper = if video {
+            include_str!("tang_nano_20k/sdram/service_54m_hdmi.v")
+        } else {
+            include_str!("tang_nano_20k/sdram/service_54m.v")
+        };
+        let mut extension = GowinBoardExtension::new(wrapper)
             .with_logic_clock("logic_clk")
             .add_top_port(GowinTopPort::new(
                 "O_sdram_clk",
@@ -534,7 +569,36 @@ impl TangNano20K {
                 ],
             );
 
-        Self::user_io_binding()
+        if video {
+            extension = extension
+                .connect_logic(GowinLogicConnection::new(
+                    "pixel_clock",
+                    GowinPortDirection::Input,
+                    1,
+                    "video_pixel_clock",
+                ))
+                .connect_logic(GowinLogicConnection::new(
+                    "serial_clock",
+                    GowinPortDirection::Input,
+                    1,
+                    "video_serial_clock",
+                ))
+                .connect_logic(GowinLogicConnection::new(
+                    "video_locked",
+                    GowinPortDirection::Input,
+                    1,
+                    "video_locked",
+                ))
+                .add_source_file(
+                    "src/generated/target/tang_nano_20k/sdram/video_pll_720p.v",
+                    include_str!("tang_nano_20k/sdram/video_pll_720p.v"),
+                )
+                .add_sdc_constraint(
+                    "create_clock -name pixel_clk -period 13.468013 -waveform {0 6.734007} [get_pins {u_video_pll/d/CLKOUT}]",
+                );
+        }
+
+        let mut binding = Self::user_io_binding()
             .require(DebugUartTx)
             .require(Pll)
             .require(SdrSdram)
@@ -543,8 +607,41 @@ impl TangNano20K {
                 "uart_tx",
                 "uart_tx",
                 [Self::DEBUG_UART_TX],
-            )
-            .with_extension(extension)
+            );
+        if video {
+            binding = binding
+                .require(Pll)
+                .require(HdmiOutput)
+                .bind_port(
+                    GowinPortDirection::Output,
+                    "tmds_clk_p",
+                    "tmds_clk_p",
+                    [Self::HDMI_CLK_P],
+                )
+                .bind_port(
+                    GowinPortDirection::Output,
+                    "tmds_clk_n",
+                    "tmds_clk_n",
+                    [Self::HDMI_CLK_N],
+                )
+                .bind_port(
+                    GowinPortDirection::Output,
+                    "tmds_data_p",
+                    "tmds_data_p",
+                    Self::HDMI_DATA_P,
+                )
+                .bind_port(
+                    GowinPortDirection::Output,
+                    "tmds_data_n",
+                    "tmds_data_n",
+                    Self::HDMI_DATA_N,
+                );
+        }
+        binding.with_extension(extension)
+    }
+
+    fn sdram_debug_uart_binding() -> GowinBoardBinding<Self> {
+        Self::sdram_debug_uart_binding_with_video(false)
     }
 
     pub fn sdram_debug_uart_project<M>(
@@ -555,6 +652,18 @@ impl TangNano20K {
     {
         GowinModuleProject::new(
             GowinProject::new(project_name).with_board_binding(Self::sdram_debug_uart_binding()),
+        )
+    }
+
+    pub fn sdram_hdmi_debug_uart_project<M>(
+        project_name: impl Into<String>,
+    ) -> GowinModuleProject<Self, M>
+    where
+        M: Module<Input = TangNano20KSdramHdmiInputs, Output = TangNano20KSdramHdmiOutputs>,
+    {
+        GowinModuleProject::new(
+            GowinProject::new(project_name)
+                .with_board_binding(Self::sdram_debug_uart_binding_with_video(true)),
         )
     }
 
