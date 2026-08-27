@@ -1,19 +1,19 @@
 //! Versioned CpuV3 boot container shared by the host packer and both loaders.
 
+mod device_abi;
 mod devices;
 mod loader;
 mod manifest;
-mod mmio;
 
+pub use device_abi::*;
 pub use devices::*;
 pub use loader::*;
 pub use manifest::*;
-pub use mmio::*;
 
 use std::collections::HashSet;
 use std::fmt;
 
-use super::{PhysicalWordAddress, Word, MMIO_BASE, TANG_NANO_20K_SDRAM_WORDS};
+use super::{PhysicalWordAddress, Word, TANG_NANO_20K_SDRAM_WORDS};
 
 pub const BOOT_FORMAT_VERSION: u16 = 3;
 pub const BOOT_DESCRIPTOR_SIZE: usize = 64;
@@ -281,10 +281,6 @@ pub enum BootImageError {
         stage: &'static str,
         address: u32,
     },
-    StackInMmio {
-        stage: &'static str,
-        offset: Word,
-    },
     StackOutsidePhysicalMemory {
         stage: &'static str,
         address: PhysicalWordAddress,
@@ -360,10 +356,6 @@ impl fmt::Display for BootImageError {
             Self::EntryOutsideExecutableSection { stage, address } => write!(
                 f,
                 "{stage} physical entry word {address:#010x} is not inside an executable load section"
-            ),
-            Self::StackInMmio { stage, offset } => write!(
-                f,
-                "{stage} stack offset {offset:#06x} is zero or enters the fixed MMIO page"
             ),
             Self::StackOutsidePhysicalMemory { stage, address } => write!(
                 f,
@@ -656,12 +648,6 @@ fn validate_entries(spec: &BootImageSpec) -> Result<(), BootImageError> {
         ("stage1", spec.stage1_entry),
         ("application", spec.application_entry),
     ] {
-        if entry.stack_offset == 0 || entry.stack_offset > MMIO_BASE {
-            return Err(BootImageError::StackInMmio {
-                stage,
-                offset: entry.stack_offset,
-            });
-        }
         let first_stack_word = PhysicalWordAddress::from_segment_offset(
             entry.data_segment,
             entry.stack_offset.wrapping_sub(1),

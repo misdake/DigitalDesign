@@ -121,44 +121,19 @@ wire core_data_response_valid;
 wire [15:0] core_data_read_data;
 wire core_data_error;
 
-wire mmio_selected = core_data_address[31:16] == 0 && core_data_address[15:8] == 8'hff;
-wire mmio_cpu_request_ready;
-wire mmio_cpu_response_valid;
-wire [15:0] mmio_cpu_read_data;
-wire mmio_cpu_error;
-wire [3:0] device_index;
+wire [2:0] device_index;
 wire [3:0] device_channel;
 wire device_read_enable;
 wire device_write_enable;
 wire [15:0] device_write_data;
 wire [15:0] device_read_data;
 
-__MMIO_BRIDGE__ u_mmio_bridge (
-    .clk(clk),
-    .reset(reset),
-    .cpu_request_valid(core_data_request_valid && mmio_selected),
-    .cpu_write(core_data_write),
-    .cpu_address(core_data_address),
-    .cpu_write_data(core_data_write_data),
-    .cpu_response_ready(core_data_response_ready && mmio_selected),
-    .device_read_data(device_read_data),
-    .cpu_request_ready(mmio_cpu_request_ready),
-    .cpu_response_valid(mmio_cpu_response_valid),
-    .cpu_read_data(mmio_cpu_read_data),
-    .cpu_error(mmio_cpu_error),
-    .device_index(device_index),
-    .device_channel(device_channel),
-    .device_read_enable(device_read_enable),
-    .device_write_enable(device_write_enable),
-    .device_write_data(device_write_data)
-);
-
 wire unused_dma_start;
 wire [23:0] unused_flash_offset;
 wire [21:0] unused_destination;
 wire [31:0] unused_file_size_bytes;
 wire [31:0] unused_memory_size_bytes;
-__BOOT_DMA_MMIO__ u_boot_dma_mmio (
+__BOOT_DMA_DEVICE__ u_boot_dma_device (
     .clk(clk),
     .reset(reset),
     .device_index(device_index),
@@ -199,11 +174,11 @@ __CACHE__ u_data_cache (
     .invalidate_all(1'b0),
     .snoop_write_valid(1'b0),
     .snoop_write_address(22'b0),
-    .cpu_request_valid(core_data_request_valid && !mmio_selected),
+    .cpu_request_valid(core_data_request_valid),
     .cpu_write(core_data_write),
     .cpu_address(core_data_address),
     .cpu_write_data(core_data_write_data),
-    .cpu_response_ready(core_data_response_ready && !mmio_selected),
+    .cpu_response_ready(core_data_response_ready),
     .memory_request_ready(dcache_memory_request_ready),
     .memory_response_valid(dcache_memory_response_valid),
     .memory_read_data(dcache_memory_read_data),
@@ -219,10 +194,10 @@ __CACHE__ u_data_cache (
     .memory_response_ready(dcache_memory_response_ready)
 );
 
-assign core_data_request_ready = mmio_selected ? mmio_cpu_request_ready : dcache_cpu_request_ready;
-assign core_data_response_valid = mmio_selected ? mmio_cpu_response_valid : dcache_cpu_response_valid;
-assign core_data_read_data = mmio_selected ? mmio_cpu_read_data : dcache_cpu_read_data;
-assign core_data_error = mmio_selected ? mmio_cpu_error : dcache_cpu_error;
+assign core_data_request_ready = dcache_cpu_request_ready;
+assign core_data_response_valid = dcache_cpu_response_valid;
+assign core_data_read_data = dcache_cpu_read_data;
+assign core_data_error = dcache_cpu_error;
 
 wire halted;
 wire [15:0] halt_signal;
@@ -245,6 +220,7 @@ __CPU_V3_CORE__ u_core (
     .data_response_valid(core_data_response_valid),
     .data_read_data(core_data_read_data),
     .data_error(core_data_error),
+    .device_read_data(device_read_data),
     .instruction_request_valid(instruction_request_valid),
     .instruction_address(instruction_address),
     .instruction_response_ready(instruction_response_ready),
@@ -253,6 +229,11 @@ __CPU_V3_CORE__ u_core (
     .data_address(core_data_address),
     .data_write_data(core_data_write_data),
     .data_response_ready(core_data_response_ready),
+    .device_index(device_index),
+    .device_channel(device_channel),
+    .device_read_enable(device_read_enable),
+    .device_write_enable(device_write_enable),
+    .device_write_data(device_write_data),
     .halted(halted),
     .halt_signal(halt_signal),
     .fault(faulted),

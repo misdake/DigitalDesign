@@ -1,7 +1,7 @@
 //! Small architectural interpreter used as the CpuV3 correctness oracle.
 
 use super::encoding::{is_prefix_consumer, sign_extend, SpecialRegister, Word, LINK_REGISTER};
-use super::{PhysicalWordAddress, MMIO_BASE};
+use super::PhysicalWordAddress;
 use std::cmp::Ordering;
 
 /// Fitted 8-MiB SDRAM on the initial Tang Nano 20K target.
@@ -33,10 +33,8 @@ struct Prefix {
     high: Word,
 }
 
-/// A device attached to the fixed MMIO page. Device `d` owns the sixteen
-/// words at `MMIO_BASE + d * 16`; loads and stores to those words are routed
-/// to the device instead of memory. `memory` is the complete physical memory,
-/// so DMA-style devices can move data.
+/// A device reached exclusively through DEVRECV and DEVSEND. `memory` is the
+/// complete physical memory, so DMA-style devices can move data.
 pub trait Device {
     fn read(&mut self, memory: &mut [Word], channel: u8) -> Word;
     fn write(&mut self, memory: &mut [Word], channel: u8, value: Word);
@@ -44,23 +42,10 @@ pub trait Device {
     fn as_any(&self) -> &dyn std::any::Any;
 }
 
-/// Maps a physical address onto its MMIO `(device, channel)` pair, if any.
-fn device_channel(address: PhysicalWordAddress) -> Option<(usize, u8)> {
-    let raw = address.get();
-    (u32::from(MMIO_BASE)..(u32::from(MMIO_BASE) + 256))
-        .contains(&raw)
-        .then(|| {
-            (
-                ((raw - u32::from(MMIO_BASE)) >> 4) as usize,
-                (raw & 15) as u8,
-            )
-        })
-}
-
 pub struct Machine {
     registers: [Word; 16],
     memory: Box<[Word]>,
-    devices: [Option<Box<dyn Device>>; 16],
+    devices: [Option<Box<dyn Device>>; 8],
     /// Optional BSRAM boot-window image: instruction fetches from the lowest
     /// physical words read this image instead of main memory, matching the
     /// hardware split between the boot BSRAM (instruction side) and SDRAM
@@ -169,13 +154,9 @@ impl Machine {
         &mut self.memory
     }
 
-    /// Attaches a device to the fixed MMIO page; loads and stores to the
-    /// device's sixteen words are routed to it instead of memory.
+    /// Attaches a device to one of the eight architectural DEV slots.
     pub fn attach_device(&mut self, device: u8, handler: Box<dyn Device>) {
-        assert!(
-            device < 16,
-            "CpuV3 device index {device} exceeds the MMIO page"
-        );
+        assert!(device < 8, "CpuV3 device index {device} exceeds 3 bits");
         self.devices[usize::from(device)] = Some(handler);
     }
 
@@ -420,15 +401,18 @@ impl Machine {
     }
 
     fn execute_device(&mut self, instruction: Word) -> ExecuteResult {
-        let device = u32::from(field(instruction, 8)) & 7;
-        let channel = u32::from(field(instruction, 4));
+        let device = usize::from(field(instruction, 8) & 7);
+        let channel = field(instruction, 4);
         let register = usize::from(field(instruction, 0));
-        let address = PhysicalWordAddress::new(u32::from(MMIO_BASE) + device * 16 + channel);
         if instruction & 0x800 != 0 {
             let value = self.registers[register];
-            self.write_data(address, value)?;
+            if let Some(handler) = self.devices[device].as_mut() {
+                handler.write(&mut self.memory, channel, value);
+            }
         } else {
-            self.registers[register] = self.read_data(address)?;
+            self.registers[register] = self.devices[device]
+                .as_mut()
+                .map_or(0, |handler| handler.read(&mut self.memory, channel));
         }
         Ok(StepOutcome::Running)
     }
@@ -476,9 +460,8 @@ impl Machine {
                 )
             }
             12 => {
-                self.pending_test = Some(
-                    self.registers[usize::from(dst)].cmp(&self.registers[usize::from(src)]),
-                )
+                self.pending_test =
+                    Some(self.registers[usize::from(dst)].cmp(&self.registers[usize::from(src)]))
             }
             13 => {
                 self.registers[usize::from(dst)] = match src {
@@ -506,32 +489,14 @@ impl Machine {
     }
 
     fn data_address(&self, offset: Word) -> PhysicalWordAddress {
-        // The top offset page is a fixed system/MMIO window. Keeping it in
-        // segment zero preserves the existing r15-based ABI when DSEG changes.
-        let segment = if offset >= MMIO_BASE {
-            0
-        } else {
-            self.data_segment
-        };
-        PhysicalWordAddress::from_segment_offset(segment, offset)
+        PhysicalWordAddress::from_segment_offset(self.data_segment, offset)
     }
 
     fn read_data(&mut self, address: PhysicalWordAddress) -> Result<Word, FaultKind> {
-        if let Some((device, channel)) = device_channel(address) {
-            if let Some(handler) = self.devices[device].as_mut() {
-                return Ok(handler.read(&mut self.memory, channel));
-            }
-        }
         self.read_physical(address)
     }
 
     fn write_data(&mut self, address: PhysicalWordAddress, value: Word) -> Result<(), FaultKind> {
-        if let Some((device, channel)) = device_channel(address) {
-            if let Some(handler) = self.devices[device].as_mut() {
-                handler.write(&mut self.memory, channel, value);
-                return Ok(());
-            }
-        }
         self.write_physical(address, value)
     }
 
@@ -748,22 +713,29 @@ mod tests {
     }
 
     #[test]
-    fn mmio_page_does_not_move_with_the_data_segment() {
+    fn high_offsets_are_ordinary_memory_in_the_selected_data_segment() {
         let mut program = vec![];
         program.extend(load_immediate16(1, 3));
-        program.extend(load_immediate16(2, MMIO_BASE));
-        program.extend([write_data_segment(1), load(0, 2, 0), halt()]);
+        program.extend(load_immediate16(2, 0xff00));
+        program.extend(load_immediate16(3, 0x55aa));
+        program.extend([write_data_segment(1), store(3, 2, 0), load(0, 2, 0), halt()]);
 
         let mut machine = Machine::default();
         machine.load_program(0, &program).unwrap();
-        machine.load_program(MMIO_BASE, &[0x55aa]).unwrap();
+        machine.attach_device(0, Box::new(EchoDevice { channels: [0; 16] }));
         assert_eq!(
-            machine.run(16).unwrap(),
+            machine.run(24).unwrap(),
             RunOutcome::Halted {
-                steps: 7,
-                signal: 0x55aa,
+                steps: 10,
+                signal: 0x55aa
             }
         );
+        assert_eq!(
+            machine.physical_memory(PhysicalWordAddress::new(0x0003_ff00)),
+            0x55aa
+        );
+        assert_eq!(machine.memory(0xff00), 0);
+        assert_eq!(machine.device::<EchoDevice>(0).unwrap().channels[0], 0);
     }
 
     #[test]
@@ -1106,24 +1078,17 @@ mod tests {
     fn device_round_trip_program() -> Vec<Word> {
         let mut program = vec![];
         program.extend(load_immediate16(1, 0x1234));
-        program.extend([
-            device_send(1, 2, 3),
-            device_receive(0, 2, 3),
-            halt(),
-        ]);
+        program.extend([device_send(1, 2, 3), device_receive(0, 2, 3), halt()]);
         program
     }
 
     #[test]
     fn device_instructions_route_to_an_attached_device() {
         let mut machine = Machine::default();
-        machine.load_program(0, &device_round_trip_program()).unwrap();
-        machine.attach_device(
-            2,
-            Box::new(EchoDevice {
-                channels: [0; 16],
-            }),
-        );
+        machine
+            .load_program(0, &device_round_trip_program())
+            .unwrap();
+        machine.attach_device(2, Box::new(EchoDevice { channels: [0; 16] }));
         assert_eq!(
             machine.run(16).unwrap(),
             RunOutcome::Halted {
@@ -1133,21 +1098,23 @@ mod tests {
         );
         let device: &EchoDevice = machine.device(2).unwrap();
         assert_eq!(device.channels[3], 0x1234);
-        // The device intercepted the access; the MMIO memory word is untouched.
+        // Device traffic never aliases an ordinary physical memory word.
         assert_eq!(machine.memory(0xff23), 0);
     }
 
     #[test]
-    fn device_instructions_fall_back_to_plain_memory_without_a_device() {
+    fn unconnected_device_reads_zero_and_writes_are_ignored() {
         let mut machine = Machine::default();
-        machine.load_program(0, &device_round_trip_program()).unwrap();
+        machine
+            .load_program(0, &device_round_trip_program())
+            .unwrap();
         assert_eq!(
             machine.run(16).unwrap(),
             RunOutcome::Halted {
                 steps: 5,
-                signal: 0x1234,
+                signal: 0,
             }
         );
-        assert_eq!(machine.memory(0xff23), 0x1234);
+        assert_eq!(machine.memory(0xff23), 0);
     }
 }

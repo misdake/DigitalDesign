@@ -49,7 +49,7 @@ fn main() {
         "boot-alt.rs",
         "cpu-self-test.rs",
         "display-demo.rs",
-        "mmio-diagnostic.rs",
+        "device-diagnostic.rs",
         "sdram-self-test.rs",
     ] {
         println!("cargo:rerun-if-changed={}", sources.join(name).display());
@@ -96,8 +96,8 @@ fn main() {
             ..CompilerOptions::default()
         },
     );
-    let mmio_diagnostic = compile(
-        &sources.join("mmio-diagnostic.rs"),
+    let device_diagnostic = compile(
+        &sources.join("device-diagnostic.rs"),
         &CompilerOptions::default(),
     );
     let sdram_self_test = compile(
@@ -177,7 +177,7 @@ fn main() {
 
     assert_eq!(
         fnv1a64(&stage0_bytes),
-        12_700_990_772_538_292_489,
+        2_781_264_331_194_212_956,
         "Stage0 bytes changed from the CPU V3 boot-format baseline"
     );
     assert_eq!(
@@ -195,8 +195,8 @@ fn main() {
     write_artifact(&output, "display-demo.v3bin", &word_bytes(&display_demo));
     write_artifact(
         &output,
-        "mmio-diagnostic.v3bin",
-        &word_bytes(&mmio_diagnostic),
+        "device-diagnostic.v3bin",
+        &word_bytes(&device_diagnostic),
     );
     write_artifact(
         &output,
@@ -225,13 +225,13 @@ fn main() {
     )
     .expect("write generated CPU self-test binding");
     std::fs::write(
-        output.join("mmio_diagnostic_image.rs"),
+        output.join("device_diagnostic_image.rs"),
         format!(
-            "const MMIO_DIAGNOSTIC_PROGRAM: &[u16] = &{:?};\n",
-            mmio_diagnostic
+            "const DEVICE_DIAGNOSTIC_PROGRAM: &[u16] = &{:?};\n",
+            device_diagnostic
         ),
     )
-    .expect("write generated MMIO diagnostic binding");
+    .expect("write generated device diagnostic binding");
     std::fs::write(
         output.join("sdram_self_test_image.rs"),
         format!(

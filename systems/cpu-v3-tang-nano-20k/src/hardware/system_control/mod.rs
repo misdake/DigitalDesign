@@ -1,6 +1,6 @@
 //! CpuV3 device-0 system control: cache invalidate pulses, LEDs, and UART TX.
 //!
-//! The device sits behind the CpuV3 MMIO bridge as device index 0 and answers
+//! The device connects to the CpuV3 device port as device index 0 and answers
 //! the standard device register-bank interface (`device_index` /
 //! `device_channel` / enables / write data / read data):
 //!
@@ -23,13 +23,13 @@ pub use crate::boot::SYSCTL_INVALIDATE_DCACHE as SYSTEM_CONTROL_CHANNEL_DCACHE_I
 pub use crate::boot::SYSCTL_INVALIDATE_ICACHE as SYSTEM_CONTROL_CHANNEL_ICACHE_INVALIDATE;
 pub use crate::boot::SYSCTL_LED as SYSTEM_CONTROL_CHANNEL_LEDS;
 pub use crate::boot::SYSCTL_UART as SYSTEM_CONTROL_CHANNEL_UART;
-/// Device index of the system control device behind the CpuV3 MMIO bridge.
+/// Device index of the system control device on the CpuV3 device port.
 pub use crate::boot::SYSTEM_CONTROL_DEVICE;
 
 #[derive(Clone, ModuleIo)]
 pub struct SystemControlDeviceInput {
     pub reset: Wire,
-    pub device_index: Wires<4>,
+    pub device_index: Wires<3>,
     pub device_channel: Wires<4>,
     pub device_read_enable: Wire,
     pub device_write_enable: Wire,

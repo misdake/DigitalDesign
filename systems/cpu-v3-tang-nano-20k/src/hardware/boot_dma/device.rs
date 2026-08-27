@@ -6,9 +6,9 @@ use digital_design_circuit::{CircuitWires, Wire, Wires};
 const DMA_DEVICE: u8 = crate::boot::BOOT_DMA_DEVICE;
 
 #[derive(Clone, ModuleIo)]
-pub struct BootDmaMmioInput {
+pub struct BootDmaDeviceInput {
     pub reset: Wire,
-    pub device_index: Wires<4>,
+    pub device_index: Wires<3>,
     pub device_channel: Wires<4>,
     pub device_read_enable: Wire,
     pub device_write_enable: Wire,
@@ -21,7 +21,7 @@ pub struct BootDmaMmioInput {
 }
 
 #[derive(Clone, ModuleIo)]
-pub struct BootDmaMmioOutput {
+pub struct BootDmaDeviceOutput {
     pub device_read_data: Wires<16>,
     pub dma_start: Wire,
     pub flash_offset: Wires<24>,
@@ -30,18 +30,18 @@ pub struct BootDmaMmioOutput {
     pub memory_size_bytes: Wires<32>,
 }
 
-pub struct BootDmaMmio;
+pub struct BootDmaDevice;
 
-impl HardwareIdentity for BootDmaMmio {
+impl HardwareIdentity for BootDmaDevice {
     const TARGET_RESOURCE_LEAF: bool = false;
 
     fn verilog_identity() -> VerilogIdentity {
-        VerilogIdentity::new("BootDmaMmio").namespace(["components", "boot"])
+        VerilogIdentity::new("BootDmaDevice").namespace(["components", "boot"])
     }
 }
 
 #[derive(Default)]
-pub struct BootDmaMmioState {
+pub struct BootDmaDeviceState {
     start: bool,
     flash_offset: u32,
     destination: u32,
@@ -49,15 +49,15 @@ pub struct BootDmaMmioState {
     memory_size_bytes: u32,
 }
 
-impl Module for BootDmaMmio {
-    type Input = BootDmaMmioInput;
-    type Output = BootDmaMmioOutput;
-    type EmuState = BootDmaMmioState;
+impl Module for BootDmaDevice {
+    type Input = BootDmaDeviceInput;
+    type Output = BootDmaDeviceOutput;
+    type EmuState = BootDmaDeviceState;
 
     const USES_MAIN_CLOCK: bool = true;
 
     fn create_emu(_input: &Self::Input, _output: &Self::Output) -> Self::EmuState {
-        BootDmaMmioState::default()
+        BootDmaDeviceState::default()
     }
 
     fn execute_emu(
@@ -92,7 +92,7 @@ impl Module for BootDmaMmio {
         };
         output.drive(
             circuit,
-            &BootDmaMmioOutputValue {
+            &BootDmaDeviceOutputValue {
                 device_read_data: u64::from(read_data),
                 dma_start: state.start,
                 flash_offset: u64::from(state.flash_offset & 0x00ff_ffff),
@@ -111,7 +111,7 @@ impl Module for BootDmaMmio {
     ) {
         let input = input.sample(circuit);
         if input.reset {
-            *state = BootDmaMmioState::default();
+            *state = BootDmaDeviceState::default();
             return;
         }
         state.start = false;
@@ -148,11 +148,11 @@ impl Module for BootDmaMmio {
     }
 
     fn verilog_source() -> Option<String> {
-        Some(include_str!("boot_dma_mmio.v").to_string())
+        Some(include_str!("boot_dma_device.v").to_string())
     }
 
     fn verilog_testbench() -> Option<String> {
-        Some(include_str!("boot_dma_mmio_tb.v").to_string())
+        Some(include_str!("boot_dma_device_tb.v").to_string())
     }
 }
 
@@ -164,7 +164,7 @@ mod tests {
 
     fn drive(
         circuit: &mut Circuit,
-        input: &BootDmaMmioInput,
+        input: &BootDmaDeviceInput,
         channel: u64,
         read: bool,
         write: bool,
@@ -172,7 +172,7 @@ mod tests {
     ) {
         input.drive(
             circuit,
-            &BootDmaMmioInputValue {
+            &BootDmaDeviceInputValue {
                 reset: false,
                 device_index: 2,
                 device_channel: channel,
@@ -191,8 +191,8 @@ mod tests {
     #[test]
     fn emulator_latches_wide_fields_and_pulses_start() {
         let (mut circuit, (input, output)) = build_circuit(|| {
-            let input = BootDmaMmioInput::allocate();
-            let output = BootDmaMmio::emu(&input);
+            let input = BootDmaDeviceInput::allocate();
+            let output = BootDmaDevice::emu(&input);
             (input, output)
         });
         for (channel, value) in [(2, 0xbcde), (3, 0x007a), (4, 0x4567), (5, 0x0032)] {
@@ -215,13 +215,13 @@ mod tests {
     #[test]
     fn emulator_exposes_status_and_diagnostics_only_on_device_two_reads() {
         let (mut circuit, (input, output)) = build_circuit(|| {
-            let input = BootDmaMmioInput::allocate();
-            let output = BootDmaMmio::emu(&input);
+            let input = BootDmaDeviceInput::allocate();
+            let output = BootDmaDevice::emu(&input);
             (input, output)
         });
         input.drive(
             &mut circuit,
-            &BootDmaMmioInputValue {
+            &BootDmaDeviceInputValue {
                 reset: false,
                 device_index: 2,
                 device_channel: 14,
@@ -240,7 +240,7 @@ mod tests {
         drive(&mut circuit, &input, 1, true, false, 0);
         input.drive(
             &mut circuit,
-            &BootDmaMmioInputValue {
+            &BootDmaDeviceInputValue {
                 reset: false,
                 device_index: 2,
                 device_channel: 1,
@@ -264,7 +264,7 @@ mod tests {
         assert_eq!(1, crate::boot::DMA_STATUS);
         assert_eq!(14, crate::boot::DMA_ERROR);
         assert_eq!(15, crate::boot::DMA_COMPLETED_WORDS_LOW);
-        assert!(VerilogProject::generate::<BootDmaMmio>()
+        assert!(VerilogProject::generate::<BootDmaDevice>()
             .unwrap()
             .resource_claims
             .is_empty());

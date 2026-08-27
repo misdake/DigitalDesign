@@ -1,5 +1,5 @@
 // Board characterization harness for the system-control device: no CPU and no
-// MMIO bridge. An FSM drives the device register interface directly — one LED
+// CPU core. An FSM drives the device register interface directly — one LED
 // pattern write on channel 2, then the DDHT status frame for test ID 0x08
 // repeated on channel 3 with gaps between frames. The LED pins mirror probe
 // internals ({busy, 2'b01, state}) instead of the channel-2 register so a
@@ -105,7 +105,7 @@ assign leds = {device_read_data[0], 2'b01, state};
 SystemControlDevice_CLOCKS_PER_BIT234 u_sysctl (
     .clk(clk),
     .reset(1'b0),
-    .device_index(4'd0),
+    .device_index(3'd0),
     .device_channel(device_channel),
     .device_read_enable(device_read_enable),
     .device_write_enable(device_write_enable),

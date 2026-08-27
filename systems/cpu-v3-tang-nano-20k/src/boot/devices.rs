@@ -1,8 +1,7 @@
 //! Host models of the boot devices for the `cpu_v3::sim::Machine` device bus:
 //! the device-2 boot DMA engine and the device-0 system-control block.
 
-use super::loader::{DmaCommand, DmaError, DmaStatus, FlashToDramDma};
-use super::mmio::{
+use super::device_abi::{
     BOOT_SELECT_VALUE, DMA_COMMAND, DMA_COMMAND_START, DMA_COMPLETED_WORDS_LOW,
     DMA_DESTINATION_HIGH, DMA_DESTINATION_LOW, DMA_ERROR, DMA_ERROR_FILE_LARGER_THAN_MEMORY,
     DMA_ERROR_FLASH_RANGE, DMA_ERROR_MEMORY_RANGE, DMA_FILE_SIZE_HIGH, DMA_FILE_SIZE_LOW,
@@ -10,6 +9,7 @@ use super::mmio::{
     DMA_STATUS, DMA_STATUS_BUSY, DMA_STATUS_DONE, DMA_STATUS_ERROR, DMA_STATUS_IDLE,
     SYSCTL_INVALIDATE_DCACHE, SYSCTL_INVALIDATE_ICACHE, SYSCTL_LED, SYSCTL_UART,
 };
+use super::loader::{DmaCommand, DmaError, DmaStatus, FlashToDramDma};
 use crate::{Device, PhysicalWordAddress, Word};
 
 fn dma_error_code(error: &DmaError) -> Word {

@@ -9,6 +9,7 @@ reg data_request_ready = 1;
 reg data_response_valid = 0;
 reg [15:0] data_read_data = 0;
 reg data_error = 0;
+wire [15:0] device_read_data;
 wire instruction_request_valid;
 wire [31:0] instruction_address;
 wire instruction_response_ready;
@@ -17,6 +18,11 @@ wire data_write;
 wire [31:0] data_address;
 wire [15:0] data_write_data;
 wire data_response_ready;
+wire [2:0] device_index;
+wire [3:0] device_channel;
+wire device_read_enable;
+wire device_write_enable;
+wire [15:0] device_write_data;
 wire halted;
 wire [15:0] halt_signal;
 wire fault;
@@ -31,13 +37,13 @@ CpuV3Core dut(.*);
 always #5 clk = ~clk;
 
 reg [15:0] memory [0:65535];
+reg [15:0] devices [0:127];
+assign device_read_data = devices[{device_index, device_channel}];
 integer index;
 integer errors = 0;
 integer scenario = 0;
 integer cond;
-
-// When armed, every data access must target the device word 0xff23.
-reg check_device_address = 0;
+reg check_high_data_address = 0;
 
 always @(posedge clk) begin
     instruction_response_valid <= instruction_request_valid;
@@ -45,8 +51,12 @@ always @(posedge clk) begin
         instruction_data <= memory[instruction_address[15:0]];
     data_response_valid <= data_request_valid;
     if (data_request_valid) begin
-        if (check_device_address && data_address !== 32'h0000_ff23) begin
-            $display("FAIL: scenario %0d device access address %h", scenario, data_address);
+        if (scenario == 14) begin
+            $display("FAIL: scenario 14 DEV instruction used the data port");
+            errors = errors + 1;
+        end
+        if (check_high_data_address && data_address !== 32'h0003_ff00) begin
+            $display("FAIL: scenario %0d high-offset data address %h", scenario, data_address);
             errors = errors + 1;
         end
         if (data_write)
@@ -54,12 +64,16 @@ always @(posedge clk) begin
         else
             data_read_data <= memory[data_address[15:0]];
     end
+    if (device_write_enable)
+        devices[{device_index, device_channel}] <= device_write_data;
 end
 
 task clear_memory;
     begin
         for (index = 0; index < 65536; index = index + 1)
             memory[index] = 0;
+        for (index = 0; index < 128; index = index + 1)
+            devices[index] = 0;
     end
 endtask
 
@@ -243,8 +257,7 @@ initial begin
         errors = errors + 1;
     end
 
-    // Scenario 14: DEVSEND/DEVRECV address and data phases on device 2,
-    // channel 3 (physical word 0xff23).
+    // Scenario 14: single-cycle DEVSEND/DEVRECV on device 2, channel 3.
     clear_memory;
     memory[0] = 16'hf123; // IMMHI12 0x123
     memory[1] = 16'haf14; // LDU r1, 4 -> r1 = 0x1234
@@ -252,36 +265,51 @@ initial begin
     memory[3] = 16'hc230; // DEVRECV r0, dev 2, ch 3
     memory[4] = 16'he800; // HALT
     scenario = 14;
-    check_device_address = 1;
     expect_halt(16'h1234, 100);
-    check_device_address = 0;
-    if (memory[16'hff23] !== 16'h1234) begin
-        $display("FAIL: scenario 14 device write data %h", memory[16'hff23]);
+    if (devices[7'h23] !== 16'h1234) begin
+        $display("FAIL: scenario 14 device write data %h", devices[7'h23]);
         errors = errors + 1;
     end
 
-    // Scenario 15: device instructions do not consume a prefix, so a data
-    // error on DEVRECV reports the instruction address (1), not the prefix
-    // address (0).
+    // Scenario 15: offsets 0xff00..0xffff retain DSEG like every other load/store.
     clear_memory;
     memory[0] = 16'hf000; // IMMHI12 0
-    memory[1] = 16'hc232; // DEVRECV r2, dev 2, ch 3 -> data error
+    memory[1] = 16'haf13; // LDU r1, 3
+    memory[2] = 16'hee11; // MTSR DSEG, r1
+    memory[3] = 16'hfff0; // IMMHI12 0xfff
+    memory[4] = 16'haf20; // LDU r2, 0 -> 0xff00
+    memory[5] = 16'hf55a; // IMMHI12 0x55a
+    memory[6] = 16'haf3a; // LDU r3, 0xa -> 0x55aa
+    memory[7] = 16'h9320; // STORE r3, [r2]
+    memory[8] = 16'h8020; // LOAD r0, [r2]
+    memory[9] = 16'he800; // HALT
     scenario = 15;
-    data_error = 1;
-    expect_fault(8'd4, 16'd1, 100);
-    data_error = 0;
-    if (retired_words !== 1) begin
-        $display("FAIL: scenario 15 retired %0d words, expected 1", retired_words);
+    check_high_data_address = 1;
+    expect_halt(16'h55aa, 150);
+    check_high_data_address = 0;
+
+    // Scenario 16: device instructions do not consume a prefix; both physical
+    // words retire and the device read still uses the dedicated port.
+    clear_memory;
+    memory[0] = 16'hf000; // IMMHI12 0
+    memory[1] = 16'hc232; // DEVRECV r2, dev 2, ch 3
+    memory[2] = 16'he102; // MOV r0, r2
+    memory[3] = 16'he800; // HALT
+    devices[7'h23] = 16'h4567;
+    scenario = 16;
+    expect_halt(16'h4567, 100);
+    if (retired_words !== 4) begin
+        $display("FAIL: scenario 16 retired %0d words, expected 4", retired_words);
         errors = errors + 1;
     end
 
-    // Scenario 16: an ordinary retired instruction expires the pending test.
+    // Scenario 17: an ordinary retired instruction expires the pending test.
     clear_memory;
     memory[0] = 16'haf10; // LDU r1, 0
     memory[1] = 16'hac10; // CMPSI r1, 0 -> Equal
     memory[2] = 16'he111; // MOV r1, r1 (expires the pending test)
     memory[3] = 16'hb000; // BEQ +0 -> fault: no pending test
-    scenario = 16;
+    scenario = 17;
     expect_fault(8'd1, 16'd3, 100);
 
     if (errors != 0) begin

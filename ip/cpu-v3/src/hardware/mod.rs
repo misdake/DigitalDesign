@@ -1,7 +1,4 @@
-//! Reusable CpuV3 revision 0.5 processor core with external physical-memory ports.
-
-mod mmio;
-pub use mmio::*;
+//! Reusable CpuV3 revision 0.6 processor core with physical-memory and device ports.
 
 mod cache;
 pub use cache::*;
@@ -29,6 +26,7 @@ pub struct CpuV3CoreInput {
     pub data_response_valid: Wire,
     pub data_read_data: Wires<16>,
     pub data_error: Wire,
+    pub device_read_data: Wires<16>,
 }
 
 #[derive(Clone, ModuleIo)]
@@ -41,6 +39,11 @@ pub struct CpuV3CoreOutput {
     pub data_address: Wires<32>,
     pub data_write_data: Wires<16>,
     pub data_response_ready: Wire,
+    pub device_index: Wires<3>,
+    pub device_channel: Wires<4>,
+    pub device_read_enable: Wire,
+    pub device_write_enable: Wire,
+    pub device_write_data: Wires<16>,
     pub halted: Wire,
     pub halt_signal: Wires<16>,
     pub fault: Wire,
@@ -148,7 +151,7 @@ impl CpuV3CoreState {
         self.phase = Phase::FetchRequest;
     }
 
-    fn execute(&mut self) {
+    fn execute(&mut self, device_read_data: u16) {
         let instruction = self.instruction;
         let opcode = instruction >> 12;
         if opcode == 0xf {
@@ -211,14 +214,9 @@ impl CpuV3CoreState {
             8 | 9 => {
                 let offset = immediate4(instruction, prefix, true);
                 let logical = self.registers[usize::from(lhs)].wrapping_add(offset);
-                let segment = if logical >= 0xff00 {
-                    0
-                } else {
-                    self.data_segment
-                };
                 self.pending_data = PendingData {
                     write: opcode == 9,
-                    address: physical_address(segment, logical),
+                    address: physical_address(self.data_segment, logical),
                     write_data: self.registers[usize::from(dst)],
                     destination: dst,
                     retire_words,
@@ -269,20 +267,10 @@ impl CpuV3CoreState {
                 self.retire(retire_words);
             }
             12 => {
-                // DEVRECV/DEVSEND: like load/store, but the address is the
-                // fixed MMIO physical word 0xff00 + device*16 + channel,
-                // with no DSEG translation.
-                let device = u32::from(dst & 7);
-                let channel = u32::from(lhs);
-                self.pending_data = PendingData {
-                    write: dst & 8 != 0,
-                    address: 0xff00 + (device << 4) + channel,
-                    write_data: self.registers[usize::from(rhs)],
-                    destination: rhs,
-                    retire_words,
-                    fault_pc,
-                };
-                self.phase = Phase::DataRequest;
+                if dst & 8 == 0 {
+                    self.registers[usize::from(rhs)] = device_read_data;
+                }
+                self.retire(retire_words);
             }
             13 => self.fault(CPU_V3_FAULT_UNSUPPORTED_FPU, fault_pc),
             14 => self.execute_control(instruction, retire_words, fault_pc),
@@ -445,6 +433,9 @@ impl Module for CpuV3Core {
         output: &Self::Output,
     ) {
         let pending = state.pending_data;
+        let device_instruction = state.phase == Phase::Execute && state.instruction >> 12 == 0xc;
+        let device_field = field(state.instruction, 8);
+        let device_register = field(state.instruction, 0);
         output.drive(
             circuit,
             &CpuV3CoreOutputValue {
@@ -456,6 +447,11 @@ impl Module for CpuV3Core {
                 data_address: u64::from(pending.address),
                 data_write_data: u64::from(pending.write_data),
                 data_response_ready: state.phase == Phase::DataResponse,
+                device_index: u64::from(device_field & 7),
+                device_channel: u64::from(field(state.instruction, 4)),
+                device_read_enable: device_instruction && device_field & 8 == 0,
+                device_write_enable: device_instruction && device_field & 8 != 0,
+                device_write_data: u64::from(state.registers[usize::from(device_register)]),
                 halted: state.phase == Phase::Halted,
                 halt_signal: u64::from(state.registers[0]),
                 fault: state.phase == Phase::Fault,
@@ -494,7 +490,7 @@ impl Module for CpuV3Core {
                     state.phase = Phase::Execute;
                 }
             }
-            Phase::Execute => state.execute(),
+            Phase::Execute => state.execute(input.device_read_data as u16),
             Phase::DataRequest if input.data_request_ready => {
                 state.phase = Phase::DataResponse;
             }
@@ -593,6 +589,7 @@ mod tests {
         input: &CpuV3CoreInput,
         instruction_response: Option<u16>,
         data_response: Option<u16>,
+        device_read_data: u16,
     ) {
         input.drive(
             circuit,
@@ -606,6 +603,7 @@ mod tests {
                 data_response_valid: data_response.is_some(),
                 data_read_data: u64::from(data_response.unwrap_or(0)),
                 data_error: false,
+                device_read_data: u64::from(device_read_data),
             },
         );
     }
@@ -618,7 +616,8 @@ mod tests {
         });
         let mut instruction_response = None;
         let mut data_response = None;
-        drive(&mut circuit, &input, None, None);
+        drive(&mut circuit, &input, None, None, 0);
+        let mut devices = [0u16; 128];
 
         for _ in 0..maximum_cycles {
             circuit.execute_gates();
@@ -655,11 +654,17 @@ mod tests {
             } else {
                 None
             };
+            let device_address =
+                ((value.device_index as usize) << 4) | value.device_channel as usize;
+            if value.device_write_enable {
+                devices[device_address] = value.device_write_data as u16;
+            }
             drive(
                 &mut circuit,
                 &input,
                 instruction_response.take(),
                 data_response.take(),
+                devices[device_address],
             );
             circuit.clock_tick();
             instruction_response = next_instruction_response;
@@ -775,7 +780,7 @@ mod tests {
     }
 
     #[test]
-    fn emulator_matches_oracle_for_device_instructions_on_the_mmio_page() {
+    fn emulator_matches_oracle_for_dedicated_device_instructions() {
         let mut program = Vec::new();
         program.extend(cpu_v3::load_immediate16(1, 0x1234));
         program.extend([
@@ -785,11 +790,22 @@ mod tests {
         ]);
         let mut oracle = Machine::default();
         oracle.load_program(0, &program).unwrap();
+        struct EchoDevice([u16; 16]);
+        impl cpu_v3::Device for EchoDevice {
+            fn read(&mut self, _memory: &mut [u16], channel: u8) -> u16 {
+                self.0[usize::from(channel)]
+            }
+            fn write(&mut self, _memory: &mut [u16], channel: u8, value: u16) {
+                self.0[usize::from(channel)] = value;
+            }
+            fn as_any(&self) -> &dyn std::any::Any {
+                self
+            }
+        }
+        oracle.attach_device(2, Box::new(EchoDevice([0; 16])));
         let RunOutcome::Halted { signal, .. } = oracle.run(1_000).unwrap() else {
             panic!("oracle did not halt")
         };
-        // No device is attached on either side: both fall back to the plain
-        // memory word at 0xff00 + 2*16 + 3.
         assert_eq!(signal, 0x1234);
         let mut memory = HashMap::new();
         load(&mut memory, 0, &program);

@@ -57,11 +57,6 @@ always @(posedge clk) begin
                     burst_index<=0;
                     fill_slot <= fill_slot==2 ? 0 : fill_slot+1'b1;
                     if (fill_y==239) begin fill_y<=0; row_address<=FB_BASE; end
-                    // Rows 0..202 end at physical 0x20FEBF; the 0xFF00 offset
-                    // page is the fixed MMIO window, so the framebuffer
-                    // continues in segment 0x21 and row 203 starts at
-                    // physical 0x210000.
-                    else if (fill_y==202) begin fill_y<=fill_y+1'b1; row_address<=22'h210000; end
                     else begin fill_y<=fill_y+1'b1; row_address<=row_address+22'd320; end
                 end else burst_index<=burst_index+1'b1;
             end else beat_index<=beat_index+1'b1;

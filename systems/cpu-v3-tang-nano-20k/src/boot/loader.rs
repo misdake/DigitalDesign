@@ -6,12 +6,12 @@ use super::{
     BootDescriptor, BootEntry, BootImageError, BootManifest, BootTarget, SectionKind,
     SectionRecord, BOOT_DESCRIPTOR_SIZE, BOOT_MANIFEST_HEADER_SIZE, BOOT_SECTION_RECORD_SIZE,
     DMA_ERROR_FILE_LARGER_THAN_MEMORY, DMA_ERROR_FLASH_RANGE, DMA_ERROR_MEMORY_RANGE,
-    SECTION_EXECUTE, STAGE1_HANDOFF_OFFSET, STAGE1_HANDOFF_SIZE_BYTES, SYSTEM_CONTROL_DEVICE,
-    SYSCTL_INVALIDATE_DCACHE, SYSCTL_INVALIDATE_ICACHE, SYSCTL_LED, SYSCTL_UART,
+    SECTION_EXECUTE, STAGE1_HANDOFF_OFFSET, STAGE1_HANDOFF_SIZE_BYTES, SYSCTL_INVALIDATE_DCACHE,
+    SYSCTL_INVALIDATE_ICACHE, SYSCTL_LED, SYSCTL_UART, SYSTEM_CONTROL_DEVICE,
 };
 use crate::{
-    device_send, jump_segment, load_immediate16, write_data_segment, Machine,
-    PhysicalWordAddress, ProgramLoadError, Word, MMIO_BASE,
+    device_send, jump_segment, load_immediate16, write_data_segment, Machine, PhysicalWordAddress,
+    ProgramLoadError, Word,
 };
 
 /// Reserved physical scratch word address where Stage0 DMAs the 64-byte boot
@@ -416,7 +416,7 @@ impl ApplicationHandoff {
     ///
     /// DMA-filled memory may alias stale cache lines, so both caches are
     /// invalidated through system-control device 0 before the segment switch
-    /// (harmless at cold boot, when every valid bit is clear). Under ISA v0.5
+    /// (harmless at cold boot, when every valid bit is clear). Under ISA v0.6
     /// each invalidation is a single device send; the sent value is
     /// irrelevant, so r0 serves as the source.
     pub fn instructions(self) -> Vec<Word> {
@@ -720,15 +720,10 @@ fn validate_initial_stack(
     entry: BootEntry,
     physical_memory_words: usize,
 ) -> Result<(), LoaderError> {
-    if entry.stack_offset == 0 || entry.stack_offset > MMIO_BASE {
-        return Err(LoaderError::InvalidInitialStack {
-            stage,
-            data_segment: entry.data_segment,
-            stack_offset: entry.stack_offset,
-        });
-    }
-    let first_word =
-        PhysicalWordAddress::from_segment_offset(entry.data_segment, entry.stack_offset - 1);
+    let first_word = PhysicalWordAddress::from_segment_offset(
+        entry.data_segment,
+        entry.stack_offset.wrapping_sub(1),
+    );
     if first_word.get() as usize >= physical_memory_words {
         return Err(LoaderError::InvalidInitialStack {
             stage,
@@ -1037,6 +1032,20 @@ mod tests {
             stack_error.boot_report().stage,
             BOOT_ERROR_STAGE1,
             "application stack validation belongs to Stage1"
+        );
+    }
+
+    #[test]
+    fn zero_stack_offset_denotes_the_top_of_a_fitted_segment() {
+        let entry = BootEntry {
+            code_segment: 0,
+            offset: 0,
+            data_segment: 0x003f,
+            stack_offset: 0,
+        };
+        assert_eq!(
+            validate_initial_stack("application", entry, 1 << 22),
+            Ok(())
         );
     }
 }

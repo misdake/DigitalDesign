@@ -1,6 +1,6 @@
-use cpu_v3::{CpuV3Core, CpuV3DirectMappedCache, CpuV3MmioBridge};
+use cpu_v3::{CpuV3Core, CpuV3DirectMappedCache};
 use cpu_v3_tang_nano_20k::{
-    BootDmaEngine, BootDmaMmio, BootProgressMonitor, CpuV3MemoryArbiter, SystemControlDevice,
+    BootDmaDevice, BootDmaEngine, BootProgressMonitor, CpuV3MemoryArbiter, SystemControlDevice,
 };
 use digital_design_circuit::CircuitWires;
 use digital_design_hardware::{Hardware, HardwareIdentity, Module, VerilogDependency};
@@ -84,16 +84,12 @@ impl Module for CpuV3BootSelfTest {
                     &CpuV3MemoryArbiter::verilog_identity().module_name(),
                 )
                 .replace(
-                    "__MMIO_BRIDGE__",
-                    &CpuV3MmioBridge::verilog_identity().module_name(),
-                )
-                .replace(
                     "__SYSTEM_CONTROL__",
                     &SystemControl::verilog_identity().module_name(),
                 )
                 .replace(
-                    "__BOOT_DMA_MMIO__",
-                    &BootDmaMmio::verilog_identity().module_name(),
+                    "__BOOT_DMA_DEVICE__",
+                    &BootDmaDevice::verilog_identity().module_name(),
                 )
                 .replace(
                     "__BOOT_DMA_ENGINE__",
@@ -125,9 +121,8 @@ impl Module for CpuV3BootSelfTest {
             VerilogDependency::new::<CpuV3DirectMappedCache>("u_instruction_cache"),
             VerilogDependency::new::<CpuV3DirectMappedCache>("u_data_cache"),
             VerilogDependency::new::<CpuV3MemoryArbiter>("u_memory_arbiter"),
-            VerilogDependency::new::<CpuV3MmioBridge>("u_mmio_bridge"),
             VerilogDependency::new::<SystemControl>("u_sysctl"),
-            VerilogDependency::new::<BootDmaMmio>("u_boot_dma_mmio"),
+            VerilogDependency::new::<BootDmaDevice>("u_boot_dma_device"),
             VerilogDependency::new::<BootDmaEngine>("u_boot_dma_engine"),
             VerilogDependency::new::<FittedFlashReader>("u_flash"),
             VerilogDependency::new::<TangNano20KSdramWordPort>("u_sdram_word_port"),
