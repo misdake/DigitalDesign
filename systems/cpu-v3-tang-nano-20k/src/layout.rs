@@ -7,12 +7,19 @@ pub const FRAMEBUFFER_WIDTH: u32 = 320;
 pub const FRAMEBUFFER_HEIGHT: u32 = 240;
 pub const FRAMEBUFFER_STRIDE_WORDS: u32 = FRAMEBUFFER_WIDTH;
 pub const FRAMEBUFFER_WORDS: u32 = FRAMEBUFFER_STRIDE_WORDS * FRAMEBUFFER_HEIGHT;
-pub const FRAMEBUFFER_BASE_WORD: u32 = 0x0020_0100;
-pub const FRAMEBUFFER_END_WORD: u32 = FRAMEBUFFER_BASE_WORD + FRAMEBUFFER_WORDS;
+pub const FRAMEBUFFER_A_BASE_WORD: u32 = 0x0020_0100;
+pub const FRAMEBUFFER_B_BASE_WORD: u32 = FRAMEBUFFER_A_BASE_WORD + FRAMEBUFFER_WORDS;
+pub const FRAMEBUFFER_BASE_WORD: u32 = FRAMEBUFFER_A_BASE_WORD;
+pub const FRAMEBUFFER_END_WORD: u32 = FRAMEBUFFER_B_BASE_WORD + FRAMEBUFFER_WORDS;
 
-/// Physical word address of framebuffer pixel `(x, y)` in the linear RGB565 image.
+/// Physical word address of pixel `(x, y)` relative to an explicit framebuffer base.
+pub const fn framebuffer_word_at(base: u32, x: u32, y: u32) -> u32 {
+    base + y * FRAMEBUFFER_STRIDE_WORDS + x
+}
+
+/// Physical word address of pixel `(x, y)` in the default framebuffer A.
 pub const fn framebuffer_word(x: u32, y: u32) -> u32 {
-    FRAMEBUFFER_BASE_WORD + y * FRAMEBUFFER_STRIDE_WORDS + x
+    framebuffer_word_at(FRAMEBUFFER_A_BASE_WORD, x, y)
 }
 
 pub struct TangNano20kMemoryLayout;
@@ -35,7 +42,7 @@ impl SystemMemoryLayout for TangNano20kMemoryLayout {
         MemoryRegion {
             name: "framebuffer",
             base: PhysicalWordAddress::new(FRAMEBUFFER_BASE_WORD),
-            words: FRAMEBUFFER_WORDS,
+            words: FRAMEBUFFER_WORDS * 2,
             kind: MemoryRegionKind::Shared,
         },
         MemoryRegion {
@@ -181,12 +188,18 @@ mod tests {
             .find(|region| region.name == "framebuffer")
             .unwrap();
         assert_eq!(framebuffer.base.get(), FRAMEBUFFER_BASE_WORD);
-        assert_eq!(framebuffer.words, FRAMEBUFFER_WORDS);
+        assert_eq!(framebuffer.words, FRAMEBUFFER_WORDS * 2);
         assert_eq!(framebuffer.kind, MemoryRegionKind::Shared);
         assert_eq!(framebuffer_word(0, 203), 0x0020_fec0);
         assert_eq!(framebuffer_word(319, 203), 0x0020_ffff);
         assert_eq!(framebuffer_word(0, 204), 0x0021_0000);
-        assert_eq!(framebuffer_word(319, 239), FRAMEBUFFER_END_WORD - 1);
+        assert_eq!(framebuffer_word(319, 239), FRAMEBUFFER_B_BASE_WORD - 1);
+        assert_eq!(FRAMEBUFFER_B_BASE_WORD, 0x0021_2d00);
+        assert_eq!(FRAMEBUFFER_END_WORD, 0x0022_5900);
+        assert_eq!(
+            framebuffer_word_at(FRAMEBUFFER_B_BASE_WORD, 319, 239),
+            FRAMEBUFFER_END_WORD - 1
+        );
     }
 
     #[test]
