@@ -9,22 +9,11 @@ use digital_design_hardware_gowin::{
     TangNano20KInputs, BSRAM_1024_DEPTH,
 };
 
+include!(concat!(env!("OUT_DIR"), "/mmio_diagnostic_image.rs"));
+
 fn main() -> Result<(), GowinCliError> {
     run_gowin_project_cli(gowin_project(), "target/cpu_v3_mmio_gowin")
 }
-
-/// MMIO diagnostic compiled from the `SOURCE` below for CpuV3 at code base 0;
-/// kept in sync by `program_is_the_current_compiler_output`.
-const PROGRAM: [u16; 93] = [
-    0xfff0, 0xafd0, 0xfff0, 0xaff0, 0xf001, 0xaf05, 0x90f2, 0xaf01, 0x81f3, 0x3110, 0xaf20, 0xe1c1,
-    0xa9c0, 0xf004, 0xb0cb, 0xf004, 0xaf14, 0x91f3, 0x83f3, 0x3330, 0xe1c3, 0xa9c0, 0xf004, 0xb0c0,
-    0x91f3, 0x83f3, 0x3330, 0xe1c3, 0xa9c0, 0xf003, 0xb0c7, 0xf004, 0xaf38, 0x93f3, 0x83f3, 0x3330,
-    0xe1c3, 0xa9c0, 0xf002, 0xb0cc, 0xf005, 0xaf34, 0x93f3, 0x83f3, 0x3330, 0xe1c3, 0xa9c0, 0xf002,
-    0xb0c1, 0x90f3, 0x83f3, 0x3330, 0xe1c3, 0xa9c0, 0xf001, 0xb0c8, 0xaf39, 0x93f3, 0x83f3, 0x3330,
-    0xe1c3, 0xa9c0, 0xf000, 0xb0ce, 0x92f3, 0x83f3, 0x3330, 0xe1c3, 0xa9c0, 0xf000, 0xb0c5, 0xf001,
-    0xaf34, 0x93f3, 0xf0ff, 0xcfbb, 0xf0ff, 0xcff3, 0xf0ff, 0xcfea, 0xf0ff, 0xcfe0, 0xf0ff, 0xcfd7,
-    0xf0ff, 0xcfcc, 0xf0ff, 0xcfc1, 0xf0ff, 0xcfb8, 0xf0ff, 0xcfac, 0xe800,
-];
 
 struct ProgramImage;
 
@@ -37,8 +26,8 @@ const fn program_image() -> [u64; BSRAM_1024_DEPTH] {
         index += 1;
     }
     index = 0;
-    while index < PROGRAM.len() {
-        words[index] = PROGRAM[index] as u64;
+    while index < MMIO_DIAGNOSTIC_PROGRAM.len() {
+        words[index] = MMIO_DIAGNOSTIC_PROGRAM[index] as u64;
         index += 1;
     }
     words
@@ -118,61 +107,22 @@ fn gowin_project() -> GowinModuleProject<TangNano20K, CpuV3MmioBoardTest> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use cpu_v3::rcc_backend::{self, CompilerOptions};
     use digital_design_hardware::{ResourceKind, VerilogProject};
-    use rcc::frontend::parse_source_with;
-
-    /// Alive LED pattern, then the DDHT test ID `0x09` frame forever, all
-    /// through device 0. Leaf and register-only: every non-MMIO data access
-    /// faults at the bridge.
-    const SOURCE: &str = r#"
-        fn main() {
-            dev_send(0, 2, 0b010101);
-            while 1 == 1 {
-                while dev_recv(0, 3) & 1 != 0 { }
-                dev_send(0, 3, 0x44);
-                while dev_recv(0, 3) & 1 != 0 { }
-                dev_send(0, 3, 0x44);
-                while dev_recv(0, 3) & 1 != 0 { }
-                dev_send(0, 3, 0x48);
-                while dev_recv(0, 3) & 1 != 0 { }
-                dev_send(0, 3, 0x54);
-                while dev_recv(0, 3) & 1 != 0 { }
-                dev_send(0, 3, 0x01);
-                while dev_recv(0, 3) & 1 != 0 { }
-                dev_send(0, 3, 0x09);
-                while dev_recv(0, 3) & 1 != 0 { }
-                dev_send(0, 3, 0x00);
-                while dev_recv(0, 3) & 1 != 0 { }
-                dev_send(0, 3, 0x14);
-            }
-        }
-    "#;
-
-    fn compile() -> Vec<u16> {
-        let options = CompilerOptions::default();
-        let frontend = parse_source_with(SOURCE, options.data_base).unwrap();
-        rcc_backend::compile(frontend, &options, "main").words
-    }
 
     #[test]
-    fn program_is_the_current_compiler_output() {
-        let compiled = compile();
+    fn generated_program_fits_the_boot_memory() {
         assert!(
-            compiled.len() < BSRAM_1024_DEPTH,
+            MMIO_DIAGNOSTIC_PROGRAM.len() < BSRAM_1024_DEPTH,
             "program uses {} words; the boot memory holds {BSRAM_1024_DEPTH}",
-            compiled.len()
+            MMIO_DIAGNOSTIC_PROGRAM.len()
         );
-        if compiled != PROGRAM {
-            let items = compiled
-                .iter()
-                .map(|word| format!("0x{word:04x}"))
-                .collect::<Vec<_>>();
-            panic!("program changed; new PROGRAM = &[{}]", items.join(", "));
-        }
         assert_eq!(
-            ProgramImage::WORDS[..compiled.len()],
-            compiled.iter().copied().map(u64::from).collect::<Vec<_>>()
+            ProgramImage::WORDS[..MMIO_DIAGNOSTIC_PROGRAM.len()],
+            MMIO_DIAGNOSTIC_PROGRAM
+                .iter()
+                .copied()
+                .map(u64::from)
+                .collect::<Vec<_>>()
         );
     }
 

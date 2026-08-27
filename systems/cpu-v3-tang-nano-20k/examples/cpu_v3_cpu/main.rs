@@ -8,14 +8,11 @@ use digital_design_hardware_gowin::{
     TangNano20KInputs, BSRAM_1024_DEPTH,
 };
 
+include!(concat!(env!("OUT_DIR"), "/cpu_self_test_image.rs"));
+
 fn main() -> Result<(), GowinCliError> {
     run_gowin_project_cli(gowin_project(), "target/cpu_v3_cpu_gowin")
 }
-
-const PROGRAM: [u16; 17] = [
-    0xfff0, 0xafd0, 0xfff0, 0xaff0, 0xaf00, 0xaf15, 0xe1c1, 0xa9c0, 0xf000, 0xb0c1, 0xe800, 0x0001,
-    0xaf21, 0x1112, 0xf0ff, 0xcff6, 0xe800,
-];
 
 struct ProgramImage;
 
@@ -30,8 +27,8 @@ const fn program_image() -> [u64; BSRAM_1024_DEPTH] {
         index += 1;
     }
     index = 0;
-    while index < PROGRAM.len() {
-        words[index] = PROGRAM[index] as u64;
+    while index < CPU_SELF_TEST_PROGRAM.len() {
+        words[index] = CPU_SELF_TEST_PROGRAM[index] as u64;
         index += 1;
     }
     words
@@ -110,28 +107,24 @@ fn gowin_project() -> GowinModuleProject<TangNano20K, CpuV3CpuBoardTest> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use cpu_v3::rcc_backend::{self, CompilerOptions};
+    use cpu_v3::{Machine, RunOutcome};
     use digital_design_hardware::{ResourceKind, VerilogProject};
-    use rcc::frontend::parse_source_with;
-
-    const SOURCE: &str = r#"
-        fn main() {
-            let mut sum: u16 = 0;
-            let mut i: u16 = 5;
-            while i != 0 { sum = sum + i; i = i - 1; }
-            halt(sum);
-        }
-    "#;
 
     #[test]
-    fn boot_image_is_the_current_cpu_v3_compiler_output() {
-        let options = CompilerOptions::default();
-        let frontend = parse_source_with(SOURCE, options.data_base).unwrap();
-        let compiled = rcc_backend::compile(frontend, &options, "main").words;
-        assert_eq!(compiled, PROGRAM);
+    fn generated_boot_image_executes_in_the_cpu_v3_oracle() {
+        let mut machine = Machine::default();
+        machine.load_program(0, CPU_SELF_TEST_PROGRAM).unwrap();
+        assert!(matches!(
+            machine.run(1_000).unwrap(),
+            RunOutcome::Halted { signal: 15, .. }
+        ));
         assert_eq!(
-            ProgramImage::WORDS[..compiled.len()],
-            compiled.iter().copied().map(u64::from).collect::<Vec<_>>()
+            ProgramImage::WORDS[..CPU_SELF_TEST_PROGRAM.len()],
+            CPU_SELF_TEST_PROGRAM
+                .iter()
+                .copied()
+                .map(u64::from)
+                .collect::<Vec<_>>()
         );
     }
 
