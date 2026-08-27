@@ -5,11 +5,8 @@ use crate::dsl_rt::*;
 
 const WIDTH: u16 = 320;
 const HEIGHT: u16 = 240;
-// Rows 0..202 fill segment 0x20 offsets 0x0100..0xFEBF; offsets 0xFF00 and
-// above are the fixed MMIO page and can never hold framebuffer data, so row
-// 203 already starts the second segment. The display fill side skips the
-// unreachable physical range 0x20FEC0..0x20FFFF the same way.
-const FIRST_ROWS: u16 = 203;
+// Rows 0..203 exactly fill segment 0x20 offsets 0x0100..0xFFFF.
+const FIRST_ROWS: u16 = 204;
 
 fn background(x: u16, y: u16) -> u16 {
     if x & 31 == 0 || y & 31 == 0 {

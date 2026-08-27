@@ -8,28 +8,11 @@ pub const FRAMEBUFFER_HEIGHT: u32 = 240;
 pub const FRAMEBUFFER_STRIDE_WORDS: u32 = FRAMEBUFFER_WIDTH;
 pub const FRAMEBUFFER_WORDS: u32 = FRAMEBUFFER_STRIDE_WORDS * FRAMEBUFFER_HEIGHT;
 pub const FRAMEBUFFER_BASE_WORD: u32 = 0x0020_0100;
-pub const FRAMEBUFFER_SECOND_BASE_WORD: u32 = 0x0021_0000;
-pub const FRAMEBUFFER_FIRST_SEGMENT: u16 = 0x0020;
-pub const FRAMEBUFFER_FIRST_OFFSET: u16 = 0x0100;
-pub const FRAMEBUFFER_SECOND_SEGMENT: u16 = 0x0021;
-/// Offsets 0xFF00..0xFFFF of any segment select the fixed MMIO page in
-/// segment zero, so the first segment holds only 203 rows (up to offset
-/// 0xFEBF); the framebuffer continues at physical 0x210000. The display fill
-/// side skips the unreachable physical hole 0x20FEC0..0x20FFFF the same way.
-pub const FRAMEBUFFER_ROWS_IN_FIRST_SEGMENT: u16 = 203;
-pub const FRAMEBUFFER_END_WORD: u32 = FRAMEBUFFER_SECOND_BASE_WORD
-    + (FRAMEBUFFER_HEIGHT - FRAMEBUFFER_ROWS_IN_FIRST_SEGMENT as u32) * FRAMEBUFFER_STRIDE_WORDS;
+pub const FRAMEBUFFER_END_WORD: u32 = FRAMEBUFFER_BASE_WORD + FRAMEBUFFER_WORDS;
 
-/// Physical word address of framebuffer pixel `(x, y)`, following the
-/// two-segment layout that avoids the MMIO page.
+/// Physical word address of framebuffer pixel `(x, y)` in the linear RGB565 image.
 pub const fn framebuffer_word(x: u32, y: u32) -> u32 {
-    if y < FRAMEBUFFER_ROWS_IN_FIRST_SEGMENT as u32 {
-        FRAMEBUFFER_BASE_WORD + y * FRAMEBUFFER_STRIDE_WORDS + x
-    } else {
-        FRAMEBUFFER_SECOND_BASE_WORD
-            + (y - FRAMEBUFFER_ROWS_IN_FIRST_SEGMENT as u32) * FRAMEBUFFER_STRIDE_WORDS
-            + x
-    }
+    FRAMEBUFFER_BASE_WORD + y * FRAMEBUFFER_STRIDE_WORDS + x
 }
 
 pub struct TangNano20kMemoryLayout;
@@ -52,24 +35,7 @@ impl SystemMemoryLayout for TangNano20kMemoryLayout {
         MemoryRegion {
             name: "framebuffer",
             base: PhysicalWordAddress::new(FRAMEBUFFER_BASE_WORD),
-            words: FRAMEBUFFER_ROWS_IN_FIRST_SEGMENT as u32 * FRAMEBUFFER_STRIDE_WORDS,
-            kind: MemoryRegionKind::Shared,
-        },
-        MemoryRegion {
-            name: "framebuffer-mmio-hole",
-            base: PhysicalWordAddress::new(
-                FRAMEBUFFER_BASE_WORD
-                    + FRAMEBUFFER_ROWS_IN_FIRST_SEGMENT as u32 * FRAMEBUFFER_STRIDE_WORDS,
-            ),
-            words: FRAMEBUFFER_SECOND_BASE_WORD
-                - (FRAMEBUFFER_BASE_WORD
-                    + FRAMEBUFFER_ROWS_IN_FIRST_SEGMENT as u32 * FRAMEBUFFER_STRIDE_WORDS),
-            kind: MemoryRegionKind::Reserved,
-        },
-        MemoryRegion {
-            name: "framebuffer-high",
-            base: PhysicalWordAddress::new(FRAMEBUFFER_SECOND_BASE_WORD),
-            words: FRAMEBUFFER_END_WORD - FRAMEBUFFER_SECOND_BASE_WORD,
+            words: FRAMEBUFFER_WORDS,
             kind: MemoryRegionKind::Shared,
         },
         MemoryRegion {
@@ -199,29 +165,18 @@ mod tests {
     }
 
     #[test]
-    fn framebuffer_is_reserved_and_crosses_segments_below_the_mmio_page() {
+    fn framebuffer_is_one_contiguous_physical_region() {
         let framebuffer = TangNano20kMemoryLayout::REGIONS
             .iter()
             .find(|region| region.name == "framebuffer")
             .unwrap();
         assert_eq!(framebuffer.base.get(), FRAMEBUFFER_BASE_WORD);
-        assert_eq!(
-            framebuffer.words,
-            FRAMEBUFFER_ROWS_IN_FIRST_SEGMENT as u32 * FRAMEBUFFER_STRIDE_WORDS
-        );
+        assert_eq!(framebuffer.words, FRAMEBUFFER_WORDS);
         assert_eq!(framebuffer.kind, MemoryRegionKind::Shared);
-        // The first segment ends just below the MMIO page offset 0xFF00.
-        assert_eq!(
-            u32::from(FRAMEBUFFER_FIRST_OFFSET)
-                + u32::from(FRAMEBUFFER_ROWS_IN_FIRST_SEGMENT) * FRAMEBUFFER_STRIDE_WORDS,
-            0xfec0
-        );
-        // The two parts still hold every pixel, and the last pixel sits at
-        // the end of the second segment part.
-        let total = framebuffer.words + (FRAMEBUFFER_END_WORD - FRAMEBUFFER_SECOND_BASE_WORD);
-        assert_eq!(total, FRAMEBUFFER_WORDS);
+        assert_eq!(framebuffer_word(0, 203), 0x0020_fec0);
+        assert_eq!(framebuffer_word(319, 203), 0x0020_ffff);
+        assert_eq!(framebuffer_word(0, 204), 0x0021_0000);
         assert_eq!(framebuffer_word(319, 239), FRAMEBUFFER_END_WORD - 1);
-        assert_eq!(framebuffer_word(0, 203), FRAMEBUFFER_SECOND_BASE_WORD);
     }
 
     #[test]
