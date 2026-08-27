@@ -22,7 +22,8 @@ reg [1:0] fill_slot=0;
 reg [7:0] fill_y=0;
 reg [21:0] active_base=FB_BASE;
 reg [21:0] row_address=FB_BASE;
-reg [31:0] next_base=32'h00200100;
+reg [31:0] shadow_base=32'h00200100;
+reg [21:0] pending_base=FB_BASE;
 reg next_low_written=0, next_high_written=0;
 reg next_pending=0, invalid_address=0;
 reg frame_complete=0;
@@ -62,42 +63,14 @@ always @(posedge clk) begin
     underflow_sync <= underflow_meta;
     if (reset) begin
         published<=0; fill_slot<=0; fill_y<=0; active_base<=FB_BASE; row_address<=FB_BASE;
-        next_base<=32'h00200100; next_low_written<=0; next_high_written<=0;
+        shadow_base<=32'h00200100; pending_base<=FB_BASE;
+        next_low_written<=0; next_high_written<=0;
         next_pending<=0; invalid_address<=0; frame_complete<=0;
         frame_index<=0; frame_meta<=0; frame_sync<=0; frame_seen<=0;
         underflow_meta<=0; underflow_sync<=0;
         burst_index<=0; beat_index<=0; burst_active<=0; memory_error_sticky<=0;
     end else begin
         if (memory_error) memory_error_sticky<=1;
-        if (device_write_enable && device_index==DISPLAY_DEVICE && !next_pending) begin
-            if (device_channel==4'd1) begin
-                next_base[15:0]<=device_write_data;
-                next_low_written<=1;
-                invalid_address<=0;
-                if (next_high_written) begin
-                    if (next_base[31:22]==0 &&
-                        device_write_data[3:0]==0 &&
-                        {next_base[31:16],device_write_data}<=LAST_VALID_FB_BASE) begin
-                        next_pending<=1;
-                    end else begin
-                        next_low_written<=0; next_high_written<=0; invalid_address<=1;
-                    end
-                end
-            end else if (device_channel==4'd2) begin
-                next_base[31:16]<=device_write_data;
-                next_high_written<=1;
-                invalid_address<=0;
-                if (next_low_written) begin
-                    if (device_write_data[15:6]==0 &&
-                        next_base[3:0]==0 &&
-                        {device_write_data,next_base[15:0]}<=LAST_VALID_FB_BASE) begin
-                        next_pending<=1;
-                    end else begin
-                        next_low_written<=0; next_high_written<=0; invalid_address<=1;
-                    end
-                end
-            end
-        end
         if (frame_sync != frame_seen) begin
             frame_seen<=frame_sync;
             frame_index<=frame_index+1'b1;
@@ -105,10 +78,36 @@ always @(posedge clk) begin
                 fill_y<=0;
                 frame_complete<=0;
                 if (next_pending) begin
-                    active_base<=next_base[21:0];
-                    row_address<=next_base[21:0];
-                    next_pending<=0; next_low_written<=0; next_high_written<=0;
+                    active_base<=pending_base;
+                    row_address<=pending_base;
+                    next_pending<=0;
                 end else row_address<=active_base;
+            end
+        end
+        // Process device writes after the frame event so a NEXT_SWAP arriving
+        // on the same clock edge remains pending for the following frame. The
+        // active frame still receives the previously submitted address.
+        if (device_write_enable && device_index==DISPLAY_DEVICE) begin
+            if (device_channel==4'd1) begin
+                shadow_base[15:0]<=device_write_data;
+                next_low_written<=1;
+                invalid_address<=0;
+            end else if (device_channel==4'd2) begin
+                shadow_base[31:16]<=device_write_data;
+                next_high_written<=1;
+                invalid_address<=0;
+            end else if (device_channel==4'd3 && device_write_data==16'd1 &&
+                         next_low_written && next_high_written) begin
+                next_low_written<=0;
+                next_high_written<=0;
+                if (shadow_base[31:22]==0 && shadow_base[3:0]==0 &&
+                    shadow_base<=LAST_VALID_FB_BASE) begin
+                    pending_base<=shadow_base[21:0];
+                    next_pending<=1;
+                    invalid_address<=0;
+                end else begin
+                    invalid_address<=1;
+                end
             end
         end
         if (memory_request_valid && memory_request_ready) begin

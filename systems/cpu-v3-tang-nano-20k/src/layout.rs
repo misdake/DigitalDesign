@@ -100,7 +100,7 @@ impl SystemDeviceLayout for TangNano20kDeviceLayout {
                 crate::DISPLAY_FRAME_INDEX,
                 crate::DISPLAY_FRAMEBUFFER_LOW,
                 crate::DISPLAY_FRAMEBUFFER_HIGH,
-                crate::DISPLAY_STATUS,
+                crate::DISPLAY_CONTROL,
             ],
         },
     ];
