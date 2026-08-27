@@ -86,7 +86,11 @@ always @(posedge clk) begin
             controller_command <= pending_write ? CMD_WRITE : CMD_READ;
             controller_precharge <= 1; controller_address <= pending_address[21:1];
             controller_burst_length <= owner_display ? 8'd7 : 8'd0;
-            controller_write_mask <= pending_address[0] ? 4'b0011 : 4'b1100;
+            // DQM is a write byte mask; driving a stale or half-word mask
+            // during a read can suppress the corresponding read byte lanes on
+            // the physical SDRAM. Reads must keep all lanes enabled.
+            controller_write_mask <= pending_write ?
+                (pending_address[0] ? 4'b0011 : 4'b1100) : 4'b0000;
             controller_write_data <= pending_address[0] ?
                 {pending_write_data,16'b0} : {16'b0,pending_write_data};
             controller_command_valid <= 1; beat <= 0; read_ack_seen <= 0;

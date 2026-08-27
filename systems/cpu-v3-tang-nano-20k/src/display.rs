@@ -1,8 +1,6 @@
 //! Host-side reference model for the fixed first-generation framebuffer.
 
-use crate::{
-    rgb565_to_rgb888, Machine, PhysicalWordAddress, FRAMEBUFFER_BASE_WORD, FRAMEBUFFER_WIDTH,
-};
+use crate::{framebuffer_word, rgb565_to_rgb888, Machine, PhysicalWordAddress, FRAMEBUFFER_WIDTH};
 
 pub const HDMI_WIDTH: usize = 1280;
 pub const HDMI_HEIGHT: usize = 720;
@@ -21,8 +19,7 @@ pub fn render_frame(machine: &Machine) -> Vec<u32> {
         let source_y = output_y / DISPLAY_SCALE;
         for output_x in DISPLAY_SIDE_BORDER..(HDMI_WIDTH - DISPLAY_SIDE_BORDER) {
             let source_x = (output_x - DISPLAY_SIDE_BORDER) / DISPLAY_SCALE;
-            let address =
-                FRAMEBUFFER_BASE_WORD + (source_y as u32) * FRAMEBUFFER_WIDTH + source_x as u32;
+            let address = framebuffer_word(source_x as u32, source_y as u32);
             let pixel = machine.physical_memory(PhysicalWordAddress::new(address));
             let (red, green, blue) = rgb565_to_rgb888(pixel, true);
             frame[output_y * HDMI_WIDTH + output_x] =
