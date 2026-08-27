@@ -86,6 +86,16 @@ impl SystemDeviceLayout for TangNano20kDeviceLayout {
                 crate::boot::DMA_COMPLETED_WORDS_LOW,
             ],
         },
+        DeviceAllocation {
+            name: "display",
+            device: crate::DISPLAY_DEVICE,
+            channels: &[
+                crate::DISPLAY_FRAME_INDEX,
+                crate::DISPLAY_FRAMEBUFFER_LOW,
+                crate::DISPLAY_FRAMEBUFFER_HIGH,
+                crate::DISPLAY_STATUS,
+            ],
+        },
     ];
 }
 

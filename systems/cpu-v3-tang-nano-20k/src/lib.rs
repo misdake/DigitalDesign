@@ -2,6 +2,7 @@
 
 pub mod boot;
 pub mod display;
+mod display_device;
 pub mod hardware;
 mod layout;
 
@@ -11,5 +12,6 @@ mod layout;
 pub(crate) use cpu_v3::*;
 pub(crate) use digital_design_hardware::*;
 pub(crate) use digital_design_hardware_gowin::*;
+pub use display_device::*;
 pub use hardware::*;
 pub use layout::*;
