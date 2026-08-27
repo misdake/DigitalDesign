@@ -9,14 +9,11 @@ use digital_design_hardware_gowin::{
     TangNano20KSdramOutputs, TangNano20KSdramWordPort, BSRAM_1024_DEPTH,
 };
 
+include!(concat!(env!("OUT_DIR"), "/sdram_self_test_image.rs"));
+
 fn main() -> Result<(), GowinCliError> {
     run_gowin_project_cli(gowin_project(), "target/cpu_v3_sdram_gowin")
 }
-
-const PROGRAM: [u16; 14] = [
-    0xfff0, 0xafd0, 0xfff0, 0xaff0, 0xf400, 0xaf00, 0xf123, 0xaf14, 0x9100, 0x8000, 0xaf11, 0x0001,
-    0xe800, 0xe800,
-];
 
 struct BootImage;
 
@@ -28,8 +25,8 @@ const fn boot_image() -> [u64; BSRAM_1024_DEPTH] {
         index += 1;
     }
     index = 0;
-    while index < PROGRAM.len() {
-        words[index] = PROGRAM[index] as u64;
+    while index < SDRAM_SELF_TEST_PROGRAM.len() {
+        words[index] = SDRAM_SELF_TEST_PROGRAM[index] as u64;
         index += 1;
     }
     words
@@ -135,28 +132,24 @@ fn gowin_project() -> GowinModuleProject<TangNano20K, CpuV3SdramBoardTest> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use cpu_v3::rcc_backend::{self, CompilerOptions};
+    use cpu_v3::{Machine, RunOutcome};
     use digital_design_hardware::{ResourceKind, VerilogProject};
-    use rcc::frontend::parse_source_with;
-
-    const SOURCE: &str = r#"
-        static VALUE: u16 = 0;
-        fn main() {
-            let mut words = addr_of(&VALUE).as_u16_array();
-            words[0u16] = 0x1234;
-            halt(words[0u16] + 1);
-        }
-    "#;
 
     #[test]
-    fn boot_line_is_the_current_cpu_v3_compiler_output() {
-        let options = CompilerOptions::default();
-        let frontend = parse_source_with(SOURCE, options.data_base).unwrap();
-        let compiled = rcc_backend::compile(frontend, &options, "main").words;
-        assert_eq!(compiled, PROGRAM);
+    fn generated_boot_line_executes_in_the_cpu_v3_oracle() {
+        let mut machine = Machine::default();
+        machine.load_program(0, SDRAM_SELF_TEST_PROGRAM).unwrap();
+        assert!(matches!(
+            machine.run(1_000).unwrap(),
+            RunOutcome::Halted { signal: 0x1235, .. }
+        ));
         assert_eq!(
-            BootImage::WORDS[..compiled.len()],
-            compiled.iter().copied().map(u64::from).collect::<Vec<_>>()
+            BootImage::WORDS[..SDRAM_SELF_TEST_PROGRAM.len()],
+            SDRAM_SELF_TEST_PROGRAM
+                .iter()
+                .copied()
+                .map(u64::from)
+                .collect::<Vec<_>>()
         );
     }
 

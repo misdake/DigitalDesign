@@ -47,7 +47,10 @@ fn main() {
         "stage1.rs",
         "boot-demo.rs",
         "boot-alt.rs",
+        "cpu-self-test.rs",
         "display-demo.rs",
+        "mmio-diagnostic.rs",
+        "sdram-self-test.rs",
     ] {
         println!("cargo:rerun-if-changed={}", sources.join(name).display());
     }
@@ -84,6 +87,22 @@ fn main() {
             stack_init: 0xf000,
             ..CompilerOptions::default()
         },
+    );
+    let cpu_self_test = compile(
+        &sources.join("cpu-self-test.rs"),
+        &CompilerOptions {
+            code_base: 0,
+            stack_init: 0xf000,
+            ..CompilerOptions::default()
+        },
+    );
+    let mmio_diagnostic = compile(
+        &sources.join("mmio-diagnostic.rs"),
+        &CompilerOptions::default(),
+    );
+    let sdram_self_test = compile(
+        &sources.join("sdram-self-test.rs"),
+        &CompilerOptions::default(),
     );
     let stage0_bytes = word_bytes(&stage0);
     let stage1_bytes = word_bytes(&stage1);
@@ -172,7 +191,18 @@ fn main() {
     write_artifact(&output, "stage1.v3bin", &stage1_bytes);
     write_artifact(&output, "boot-demo.v3bin", &application_bytes);
     write_artifact(&output, "boot-alt.v3bin", &alternate_application_bytes);
+    write_artifact(&output, "cpu-self-test.v3bin", &word_bytes(&cpu_self_test));
     write_artifact(&output, "display-demo.v3bin", &word_bytes(&display_demo));
+    write_artifact(
+        &output,
+        "mmio-diagnostic.v3bin",
+        &word_bytes(&mmio_diagnostic),
+    );
+    write_artifact(
+        &output,
+        "sdram-self-test.v3bin",
+        &word_bytes(&sdram_self_test),
+    );
     write_artifact(&output, "data.bin", &data);
     write_artifact(&output, "cpu-v3-boot.bin", package);
     write_artifact(&output, "cpu-v3-boot.map", image.map().as_bytes());
@@ -186,6 +216,30 @@ fn main() {
     .unwrap();
     std::fs::write(output.join("boot_images.rs"), generated)
         .expect("write generated boot image bindings");
+    std::fs::write(
+        output.join("cpu_self_test_image.rs"),
+        format!(
+            "const CPU_SELF_TEST_PROGRAM: &[u16] = &{:?};\n",
+            cpu_self_test
+        ),
+    )
+    .expect("write generated CPU self-test binding");
+    std::fs::write(
+        output.join("mmio_diagnostic_image.rs"),
+        format!(
+            "const MMIO_DIAGNOSTIC_PROGRAM: &[u16] = &{:?};\n",
+            mmio_diagnostic
+        ),
+    )
+    .expect("write generated MMIO diagnostic binding");
+    std::fs::write(
+        output.join("sdram_self_test_image.rs"),
+        format!(
+            "const SDRAM_SELF_TEST_PROGRAM: &[u16] = &{:?};\n",
+            sdram_self_test
+        ),
+    )
+    .expect("write generated SDRAM self-test binding");
     std::fs::write(
         output.join("display_image.rs"),
         format!(
