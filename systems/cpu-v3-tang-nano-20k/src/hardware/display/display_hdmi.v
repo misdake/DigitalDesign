@@ -15,6 +15,7 @@ module FramebufferHdmi(
 localparam [21:0] FB_BASE=22'h200100;
 localparam [2:0] DISPLAY_DEVICE=3'd3;
 localparam [31:0] LAST_VALID_FB_BASE=32'h003ed400;
+localparam [15:0] BORDER_COLOR=16'h1082;
 reg [2:0] published=0;
 reg [2:0] released=0;
 reg [2:0] release_meta=0, release_sync=0;
@@ -152,8 +153,12 @@ wire [9:0] scaled_x = active_x-160;
 // these fixed-width divisions to ordinary logic.
 wire [8:0] source_x = scaled_x / 3;
 wire line_ready = publish_sync[display_slot] != released[display_slot];
-wire visible_request = started && framebuffer_x && line_ready;
+wire visible_request = started && active;
+wire framebuffer_request = started && framebuffer_x;
+wire framebuffer_ready_request = framebuffer_request && line_ready;
 reg visible_pipe=0, visible_pipe2=0, visible_pipe3=0;
+reg framebuffer_pipe=0, framebuffer_pipe2=0, framebuffer_pipe3=0;
+reg framebuffer_ready_pipe=0, framebuffer_ready_pipe2=0;
 reg lane_pipe=0, lane_pipe2=0;
 reg hsync_pipe=0, hsync_pipe2=0, hsync_pipe3=0;
 reg vsync_pipe=0, vsync_pipe2=0, vsync_pipe3=0;
@@ -168,6 +173,8 @@ always @(posedge pixel_clock) begin
         h_count<=0; v_count<=0; released<=0; display_slot<=0; frame_toggle<=0;
         vertical_repeat<=0; started<=0; underflow_sticky<=0;
         visible_pipe<=0; visible_pipe2<=0; visible_pipe3<=0;
+        framebuffer_pipe<=0; framebuffer_pipe2<=0; framebuffer_pipe3<=0;
+        framebuffer_ready_pipe<=0; framebuffer_ready_pipe2<=0;
         lane_pipe<=0; lane_pipe2<=0;
         hsync_pipe<=0; hsync_pipe2<=0; hsync_pipe3<=0;
         vsync_pipe<=0; vsync_pipe2<=0; vsync_pipe3<=0;
@@ -189,9 +196,15 @@ always @(posedge pixel_clock) begin
         // and the registered pixel word adds a third stage for the encoders.
         lane_pipe<=source_x[0]; lane_pipe2<=lane_pipe;
         visible_pipe<=visible_request; visible_pipe2<=visible_pipe; visible_pipe3<=visible_pipe2;
+        framebuffer_pipe<=framebuffer_request;
+        framebuffer_pipe2<=framebuffer_pipe;
+        framebuffer_pipe3<=framebuffer_pipe2;
+        framebuffer_ready_pipe<=framebuffer_ready_request;
+        framebuffer_ready_pipe2<=framebuffer_ready_pipe;
         hsync_pipe<=hsync; hsync_pipe2<=hsync_pipe; hsync_pipe3<=hsync_pipe2;
         vsync_pipe<=vsync; vsync_pipe2<=vsync_pipe; vsync_pipe3<=vsync_pipe2;
-        pixel565_pipe<=pixel565;
+        pixel565_pipe<=framebuffer_pipe2 ?
+            (framebuffer_ready_pipe2 ? pixel565 : 16'h0000) : BORDER_COLOR;
         if (started && h_count==1539 && v_count>=25 && v_count<745) begin
             if (vertical_repeat==2) begin
                 vertical_repeat<=0;

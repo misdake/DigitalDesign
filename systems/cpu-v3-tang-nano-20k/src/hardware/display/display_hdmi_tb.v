@@ -11,13 +11,14 @@ wire [21:0] memory_address; wire [2:0] tmds_data_p,tmds_data_n;
 wire [15:0] device_read_data;
 FramebufferHdmi dut(.*);
 integer beat=0,requests=0,cycles=0,bursts=0;
-integer col=0,bad=0,sampled=0;
+integer col=0,bad=0,sampled=0,border_sampled=0,de_col=0,de_runs=0;
 integer old_frame=0;
 reg [15:0] wa;
 reg [15:0] base=0;
-reg vis_d=0;
+reg vis_d=0,fb_vis_d=0;
 reg saw_second_base=0;
 wire vis = dut.visible_pipe3;
+wire fb_vis = dut.framebuffer_pipe3 && vis;
 
 task device_write;
  input [3:0] channel; input [15:0] value;
@@ -120,6 +121,8 @@ initial begin
  if(tmds_clk_n!==~tmds_clk_p || tmds_data_n!==~tmds_data_p) $fatal(1,"bad differential outputs");
  if(bad>0) $fatal(1,"pixel mismatches: %0d of %0d sampled",bad,sampled);
  if(sampled<100000) $fatal(1,"too few visible pixels sampled: %0d",sampled);
+ if(border_sampled<100000) $fatal(1,"too few border pixels sampled: %0d",border_sampled);
+ if(de_runs<100) $fatal(1,"too few complete active-video lines: %0d",de_runs);
  $display("DIGITAL_DESIGN_PASS"); $finish;
 end
 // Pixel-accuracy monitor: every visible pixel carries its source x
@@ -129,14 +132,26 @@ end
 // deliberately unsynchronized), so only the relative alignment is checked.
 always @(posedge pixel_clock) begin
  vis_d <= vis;
- if (vis && !vis_d) begin col=0; base=dut.pixel565_pipe; end
- if (vis) begin
+ fb_vis_d <= fb_vis;
+ if (vis && !vis_d) de_col=0;
+ if (vis) de_col=de_col+1;
+ if (!vis && vis_d) begin
+  if (de_col!=1280) $fatal(1,"active-video width was %0d instead of 1280",de_col);
+  de_runs=de_runs+1;
+ end
+ if (fb_vis && !fb_vis_d) begin col=0; base=dut.pixel565_pipe; end
+ if (fb_vis) begin
   sampled=sampled+1;
   if (dut.pixel565_pipe !== base + col/3) begin
    if (bad<10) $display("pixel mismatch at column %0d: got %h want %h", col, dut.pixel565_pipe, base + col/3);
    bad=bad+1;
   end
   col=col+1;
+ end
+ if (vis && !fb_vis) begin
+  border_sampled=border_sampled+1;
+  if (dut.pixel565_pipe!==16'h1082)
+   $fatal(1,"border pixel was %h instead of dark gray",dut.pixel565_pipe);
  end
 end
 endmodule
