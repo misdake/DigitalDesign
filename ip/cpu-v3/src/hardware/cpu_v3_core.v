@@ -9,6 +9,7 @@ module CpuV3Core (
     input wire data_response_valid,
     input wire [15:0] data_read_data,
     input wire data_error,
+    input wire [15:0] device_read_data,
     output wire instruction_request_valid,
     output wire [31:0] instruction_address,
     output wire instruction_response_ready,
@@ -17,6 +18,11 @@ module CpuV3Core (
     output wire [31:0] data_address,
     output wire [15:0] data_write_data,
     output wire data_response_ready,
+    output wire [2:0] device_index,
+    output wire [3:0] device_channel,
+    output wire device_read_enable,
+    output wire device_write_enable,
+    output wire [15:0] device_write_data,
     output wire halted,
     output wire [15:0] halt_signal,
     output wire fault,
@@ -163,6 +169,11 @@ assign data_write = pending_write;
 assign data_address = pending_address;
 assign data_write_data = pending_write_data;
 assign data_response_ready = state == ST_DATA_RESPONSE;
+assign device_index = field_d[2:0];
+assign device_channel = field_a;
+assign device_read_enable = state == ST_EXECUTE && opcode == 4'hc && !field_d[3];
+assign device_write_enable = state == ST_EXECUTE && opcode == 4'hc && field_d[3];
+assign device_write_data = registers[field_b];
 assign halted = state == ST_HALTED;
 assign halt_signal = registers[0];
 assign fault = state == ST_FAULT;
@@ -272,10 +283,7 @@ always @(posedge clk) begin
                         4'h8, 4'h9: begin
                             logical_address = registers[field_a] + immediate_signed(instruction);
                             pending_write <= opcode == 4'h9;
-                            pending_address <= {
-                                logical_address >= 16'hff00 ? 16'b0 : data_segment_register,
-                                logical_address
-                            };
+                            pending_address <= {data_segment_register, logical_address};
                             pending_write_data <= registers[field_d];
                             pending_destination <= field_d;
                             pending_retire_words <= success_retire_words;
@@ -375,19 +383,10 @@ always @(posedge clk) begin
                             end
                         end
                         4'hc: begin
-                            // DEVRECV/DEVSEND: like load/store, but the
-                            // address is the fixed MMIO physical word
-                            // 0xff00 + device*16 + channel, with no DSEG
-                            // translation.
-                            pending_write <= field_d[3];
-                            pending_address <= {16'h0000, 8'hff, 1'b0, field_d[2:0], field_a};
-                            pending_write_data <= registers[field_b];
-                            pending_destination <= field_b;
-                            // Device instructions never consume a prefix; any
-                            // pending prefix was retired separately above.
-                            pending_retire_words <= 1;
-                            pending_fault_pc <= current_fault_pc;
-                            state <= ST_DATA_REQUEST;
+                            if (!field_d[3])
+                                registers[field_b] <= device_read_data;
+                            retired_words <= retired_words + success_retire_words;
+                            state <= ST_FETCH_REQUEST;
                         end
                         4'hd: begin
                             fault_code <= FAULT_UNSUPPORTED_FPU;

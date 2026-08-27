@@ -25,8 +25,8 @@ organization, and the explicitly separated current FPGA implementation status.
   `r12` compiler scratch, `r13` stack pointer, and `r14` the architecturally
   fixed link register. `r15` is an ordinary allocatable register.
 - `CSEG` supplies the high physical bits for instruction fetch. `DSEG` supplies
-  them for ordinary loads and stores, including stack accesses. The fixed MMIO
-  offset page `0xff00..0xffff` always selects system space in segment zero.
+  them for every ordinary load and store, including stack accesses and offsets
+  `0xff00..0xffff`.
 - Reset establishes `CSEG = 0`, `DSEG = 0`, and `PC = 0`. Normal applications
   do not change either segment. Stage0 writes `DSEG` immediately before an
   atomic segmented jump establishes the application `CSEG` and entry offset.
@@ -38,7 +38,7 @@ organization, and the explicitly separated current FPGA implementation status.
   operation. A consumer fault reports the prefix address and retires neither
   word. A non-consumer expires and separately retires a pending prefix.
 - `HALT` carries no result field. Host tests observe `r0`; board programs write
-  their result to UART/MMIO before halting.
+  their result to the system-control UART device before halting.
 
 The baseline offset map inside the selected data segment is:
 
@@ -47,12 +47,11 @@ The baseline offset map inside the selected data segment is:
 | `0x0000..` | linked code, growing upward |
 | `0x4000..` | static data |
 | `0x8000..` | heap baseline |
-| below `0xff00` | stack, growing downward |
-| `0xff00..0xffff` | fixed MMIO page in segment zero, reached by device instructions (devices 0..7) or ordinary loads/stores |
+| below `0x10000` | stack, growing downward from the exclusive segment top |
 
-`CompilerOptions::default()` selects these boundaries. The old v2.6 convention of
-using a zero stack pointer to wrap to `0xffff` is rejected because that address
-is MMIO under CpuV3.
+`CompilerOptions::default()` selects these boundaries. A zero initial stack
+pointer denotes the exclusive segment top `0x10000`; the first allocation
+therefore wraps naturally into offset `0xffff`.
 
 ## Revision 0.3
 
@@ -107,8 +106,8 @@ instructions, and frees `r15` for general allocation.
 | `B cond imm8` | `BEQ/BNE/BLT/BGE/BGT/BLE` | branch on the pending test result (cond 0..5) |
 | `B 8 imm8` | `JREL` | unconditional relative jump, no link |
 | `B 9 imm8` | `JALREL` | unconditional relative jump; link fixed to `r14` |
-| `C {0,dev} ch rd` | `DEVRECV` | `rd = device[dev].read(ch)` at `0xff00 + dev*16 + ch` |
-| `C {1,dev} ch rs` | `DEVSEND` | `device[dev].write(ch, rs)` at `0xff00 + dev*16 + ch` |
+| `C {0,dev} ch rd` | `DEVRECV` | `rd = device[dev].read(ch)` |
+| `C {1,dev} ch rs` | `DEVSEND` | `device[dev].write(ch, rs)` |
 | `E B rd rs` | `CMPS` | pending = signed ordering of `rd` vs `rs`; writes no register |
 | `E C rd rs` | `CMPU` | pending = unsigned ordering of `rd` vs `rs`; writes no register |
 | `A C rd imm4` | `CMPSI` | pending = signed ordering vs immediate (sext4, prefix eligible) |
@@ -134,14 +133,11 @@ Motivation and rules:
   conditions 8 and 9. The link register is architecturally fixed to `r14`:
   `JALREL` has no link field, and `JALR` (`E 5`) faults unless its link field
   encodes 14.
-- Opcode C becomes single-word device instructions over devices 0..7, channels
-  0..15, addressed inside the fixed segment-zero MMIO page without `DSEG`.
-  Device instructions carry no immediate and never consume a prefix. This
-  replaces the v0.4 software convention of an `r15` base plus `LOAD`/`STORE`;
-  devices 8..15 remain reachable through ordinary loads and stores at a
-  materialized base. The `dev_send`/`dev_recv` compiler intrinsics now lower
-  to one instruction each.
-- With no reserved MMIO base register left, `r15` joins the allocatable and
+- Opcode C becomes single-word device instructions over devices 0..7 and
+  channels 0..15. Device instructions carry no immediate and never consume a
+  prefix. The `dev_send`/`dev_recv` compiler intrinsics lower to one instruction
+  each.
+- With no reserved device base register left, `r15` joins the allocatable and
   caller-saved sets; the prologue no longer initializes it.
 - The prefix-consumer set is closed: `LOAD`/`STORE`, all A-family functions
   except the shifts (fn 5..=7), and B-family conditions 0..5, 8, and 9. The
@@ -151,6 +147,20 @@ Motivation and rules:
   `MFSR`/`MTSR`/`JSEG` move C/D/E→D/E/F. All sixteen E slots are now
   occupied. The A family is unchanged; the unsigned immediate compare is
   spelled `CMPUI` to match `CMPSI`.
+
+## Revision 0.6
+
+Revision 0.6 removes address-mapped device access. `LOAD` and `STORE` always
+form `{DSEG, offset}` and the complete 16-bit offset range is ordinary memory.
+Only `DEVRECV` and `DEVSEND` can access a device. The core exposes their decoded
+3-bit device index, 4-bit channel, direction, and 16-bit data on a dedicated
+single-cycle port; reads are combinational and writes pulse for one execute
+cycle. An unconnected device reads as zero and ignores writes. The three-bit
+encoding permanently limits the architectural device space to eight devices.
+
+With the high offset page restored to memory, `SP = 0` again denotes the
+exclusive `0x10000` top of a 64K-word data segment. This is the default compiler
+and boot ABI stack value.
 
 ## Memory and boot direction
 
@@ -171,8 +181,7 @@ Cache tags and all cache-to-SDRAM requests contain physical word addresses.
 
 ## Boot DMA device registers
 
-Device 2 occupies offsets `0xff20..0xff2f` in the fixed MMIO page. Stage1
-programs an absolute 24-bit Flash byte address, a 22-bit physical SDRAM word
+Device 2 exposes channels 0..15. Stage1 programs an absolute 24-bit Flash byte address, a 22-bit physical SDRAM word
 destination, and file and in-memory byte sizes through literal-channel
 `dev_send` calls. Writing `1` to channel 0 starts one command; channel 1
 reports idle (`0`), busy (`1`), done (`2`), or error (`0x8000`). Channels 10
@@ -189,9 +198,7 @@ segment alone does not invalidate correctly tagged lines.
 
 ## System control device and boot error reporting
 
-Device 0 occupies offsets `0xff00..0xff0f` in the fixed MMIO page, addressed
-with device instructions (`DEVRECV`/`DEVSEND` on device 0) or with ordinary
-loads and stores using the channel as a literal offset. Writing any value to
+Device 0 is addressed only with `DEVRECV`/`DEVSEND`. Writing any value to
 channel 0 invalidates the whole instruction cache, and to channel 1 the whole
 data cache. Channel 2 drives the six board LEDs from the low six written
 bits. Channel 3 accepts one UART transmit byte per write (8N1) and reports
@@ -220,8 +227,8 @@ application's UART frame and system-level checks establish a successful boot
 
 ## Boot-select strap device
 
-Device 1 occupies offsets `0xff10..0xff1f` in the fixed MMIO page. The fitted
-system latches a stable one-hot button value during reset and exposes it
+Device 1 exposes the boot-select channels. The fitted system latches a stable
+one-hot button value during reset and exposes it
 after button release; channel 0 reads it. Stage1 reads the low two bits to
 choose the application: button `10` selects the alternate application
 section, while button `01` and the default `00` select the primary one.

@@ -167,10 +167,9 @@ fn validate_descriptor() {
     if u32_above(end_b_hi, end_b_lo, entry_b_hi, entry_b_lo) == 0 {
         boot_fail(1, CATEGORY_ENTRY, 2, 0);
     }
-    // Stage1 initial stack: nonzero, below the MMIO page, inside the fitted
+    // Stage1 initial stack: inside the fitted
     // 4M-word SDRAM (segments 0x00..0x3f)
-    let sp = desc[DW_S1_STACK];
-    if sp == 0 || sp > 0xff00 || desc[DW_S1_DSEG] > 0x3f {
+    if desc[DW_S1_DSEG] > 0x3f {
         boot_fail(1, CATEGORY_ENTRY, 1, 0);
     }
 }

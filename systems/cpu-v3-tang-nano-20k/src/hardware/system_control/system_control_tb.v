@@ -1,7 +1,7 @@
 module tb;
 reg clk = 0;
 reg reset = 0;
-reg [3:0] device_index = 0;
+reg [2:0] device_index = 0;
 reg [3:0] device_channel = 0;
 reg device_read_enable = 0;
 reg device_write_enable = 0;

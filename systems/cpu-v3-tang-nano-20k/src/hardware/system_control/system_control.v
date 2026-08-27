@@ -1,7 +1,7 @@
 module {{ module_name }} (
     input wire clk,
     input wire reset,
-    input wire [3:0] device_index,
+    input wire [2:0] device_index,
     input wire [3:0] device_channel,
     input wire device_read_enable,
     input wire device_write_enable,
@@ -24,7 +24,7 @@ reg [15:0] uart_divider = 0;
 
 always @* begin
     device_read_data = 0;
-    if (device_read_enable && device_index == 4'd0) begin
+    if (device_read_enable && device_index == 3'd0) begin
         case (device_channel)
             3: device_read_data = {15'b0, uart_busy};
             default: device_read_data = 0;
@@ -56,7 +56,7 @@ always @(posedge clk) begin
                 uart_divider <= uart_divider + 1'b1;
             end
         end
-        if (device_write_enable && device_index == 4'd0) begin
+        if (device_write_enable && device_index == 3'd0) begin
             case (device_channel)
                 0: icache_invalidate <= 1;
                 1: dcache_invalidate <= 1;

@@ -1,7 +1,7 @@
 //! Streaming boot copy engine between a byte-oriented Flash reader and physical memory.
 
-mod mmio;
-pub use mmio::*;
+mod device;
+pub use device::*;
 
 use crate::{HardwareIdentity, Module, ModuleIo, VerilogIdentity};
 use digital_design_circuit::{CircuitWires, Wire, Wires};

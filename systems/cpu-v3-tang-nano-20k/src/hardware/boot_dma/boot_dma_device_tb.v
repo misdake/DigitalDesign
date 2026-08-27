@@ -1,7 +1,7 @@
 module tb;
 reg clk = 0;
 reg reset = 0;
-reg [3:0] device_index = 2;
+reg [2:0] device_index = 2;
 reg [3:0] device_channel = 0;
 reg device_read_enable = 0;
 reg device_write_enable = 0;
@@ -18,7 +18,7 @@ wire [21:0] destination;
 wire [31:0] file_size_bytes;
 wire [31:0] memory_size_bytes;
 
-BootDmaMmio dut(.*);
+BootDmaDevice dut(.*);
 always #5 clk = ~clk;
 
 task write_channel;

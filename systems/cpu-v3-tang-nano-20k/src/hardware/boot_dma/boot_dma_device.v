@@ -1,7 +1,7 @@
-module BootDmaMmio (
+module BootDmaDevice (
     input wire clk,
     input wire reset,
-    input wire [3:0] device_index,
+    input wire [2:0] device_index,
     input wire [3:0] device_channel,
     input wire device_read_enable,
     input wire device_write_enable,
@@ -21,7 +21,7 @@ module BootDmaMmio (
 
 always @* begin
     device_read_data = 0;
-    if (device_read_enable && device_index == 4'd2) begin
+    if (device_read_enable && device_index == 3'd2) begin
         case (device_channel)
             1: device_read_data = dma_error ? 16'h8000 :
                                   dma_done ? 16'd2 :
@@ -48,7 +48,7 @@ always @(posedge clk) begin
         destination <= 0;
         file_size_bytes <= 0;
         memory_size_bytes <= 0;
-    end else if (device_write_enable && device_index == 4'd2) begin
+    end else if (device_write_enable && device_index == 3'd2) begin
         case (device_channel)
             0: if (device_write_data == 1 || device_write_data == 2)
                 dma_start <= 1;

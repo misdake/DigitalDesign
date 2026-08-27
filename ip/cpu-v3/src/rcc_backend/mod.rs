@@ -90,11 +90,6 @@ fn compile_ir(
     options: &CompilerOptions,
     main: FuncName,
 ) -> CpuV3Program {
-    assert!(
-        options.stack_init != 0 && options.stack_init <= cpu_v3::MMIO_BASE,
-        "CpuV3 stack_init must be in 0x0001..={:#06x}; zero wraps into the MMIO page",
-        cpu_v3::MMIO_BASE
-    );
     let reachable = reachable_functions(&functions, main);
     let mut order = vec![main];
     let mut rest = reachable
@@ -465,7 +460,7 @@ fn lower_unary(dst: u8, operation: UnOp, src: u8, lines: &mut Vec<Line>) {
 fn check_device(device: u8) {
     assert!(
         device < 8,
-        "CpuV3 device index {device} exceeds the ISA v0.5 limit of 8 devices"
+        "CpuV3 device index {device} exceeds the ISA v0.6 limit of 8 devices"
     );
 }
 
@@ -662,20 +657,23 @@ fn link(functions: Vec<LoweredFunction>, options: &CompilerOptions) -> CpuV3Prog
         "CpuV3 unified-memory image uses {cursor} code words and crosses data_base {:#06x}",
         options.data_base
     );
+    let stack_limit = if options.stack_init == 0 {
+        1 << 16
+    } else {
+        usize::from(options.stack_init)
+    };
     assert!(
-        cursor <= usize::from(options.stack_init),
-        "CpuV3 unified-memory image uses {cursor} code words and crosses stack_init {:#06x}",
-        options.stack_init
+        cursor <= stack_limit,
+        "CpuV3 unified-memory image uses {cursor} code words and crosses stack top {stack_limit:#07x}"
     );
     let heap_end = options
         .heap_begin
         .checked_add(options.heap_size)
         .expect("CpuV3 heap range wraps the address space");
     assert!(
-        heap_end <= options.stack_init,
-        "CpuV3 heap {:#06x}..{heap_end:#06x} overlaps the stack/MMIO boundary {:#06x}",
-        options.heap_begin,
-        options.stack_init
+        usize::from(heap_end) <= stack_limit,
+        "CpuV3 heap {:#06x}..{heap_end:#06x} overlaps the stack top {stack_limit:#07x}",
+        options.heap_begin
     );
 
     let static_addresses = functions
@@ -881,16 +879,36 @@ mod tests {
     }
 
     #[test]
-    fn device_intrinsics_address_the_fixed_mmio_page() {
+    fn device_intrinsics_use_the_dedicated_device_path() {
         let source = r#"
             fn main() {
                 dev_send(2, 3, 0x1234);
                 halt(dev_recv(2, 3));
             }
         "#;
-        let (signal, machine) = run_with_options(source, CompilerOptions::default());
+        struct EchoDevice([u16; 16]);
+        impl cpu_v3::Device for EchoDevice {
+            fn read(&mut self, _memory: &mut [u16], channel: u8) -> u16 {
+                self.0[usize::from(channel)]
+            }
+            fn write(&mut self, _memory: &mut [u16], channel: u8, value: u16) {
+                self.0[usize::from(channel)] = value;
+            }
+            fn as_any(&self) -> &dyn std::any::Any {
+                self
+            }
+        }
+        let program = compile(source, CompilerOptions::default());
+        let mut machine = cpu_v3::Machine::default();
+        machine.load_program(0, &program.words).unwrap();
+        machine.attach_device(2, Box::new(EchoDevice([0; 16])));
+        let signal = match machine.run(10_000).unwrap() {
+            cpu_v3::RunOutcome::Halted { signal, .. } => signal,
+            outcome => panic!("CpuV3 program did not halt: {outcome:?}"),
+        };
         assert_eq!(signal, 0x1234);
-        assert_eq!(machine.memory(0xff23), 0x1234);
+        assert_eq!(machine.memory(0xff23), 0);
+        assert_eq!(machine.device::<EchoDevice>(2).unwrap().0[3], 0x1234);
     }
 
     #[test]
@@ -999,7 +1017,7 @@ mod tests {
                 CompilerOptions::default(),
             )
         });
-        let error = result.expect_err("CpuV3 v0.5 supports only eight devices");
+        let error = result.expect_err("CpuV3 v0.6 supports only eight devices");
         let message = error
             .downcast_ref::<String>()
             .map(String::as_str)
@@ -1009,25 +1027,14 @@ mod tests {
     }
 
     #[test]
-    fn legacy_wrapping_stack_configuration_is_rejected_for_cpu_v3() {
-        let result = std::panic::catch_unwind(|| {
-            compile(
-                "fn main() { halt(0); }",
-                CompilerOptions {
-                    stack_init: 0,
-                    ..CompilerOptions::default()
-                },
-            )
-        });
-        let error = result.expect_err("CpuV3 must reject a stack that wraps into MMIO");
-        let message = error
-            .downcast_ref::<String>()
-            .map(String::as_str)
-            .or_else(|| error.downcast_ref::<&str>().copied())
-            .unwrap_or("");
-        assert!(
-            message.contains("zero wraps into the MMIO page"),
-            "{message}"
-        );
+    fn zero_stack_pointer_denotes_the_top_of_the_segment() {
+        let source = r#"
+            fn main() {
+                let words: [u16; 2] = [0x1234, 0x4321];
+                let view = words.as_array();
+                halt(view[0u16] + view[1u16]);
+            }
+        "#;
+        assert_eq!(run(source), 0x5555);
     }
 }

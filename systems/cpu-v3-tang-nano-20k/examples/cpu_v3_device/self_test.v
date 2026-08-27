@@ -1,8 +1,6 @@
-// Board characterization for the CPU MMIO path: CpuV3Core + CpuV3MmioBridge +
-// SystemControlDevice, nothing else. The compiled program runs from the BSRAM
-// boot memory and drives device 0 through dev_send/dev_recv; every non-MMIO
-// data access faults at the bridge.
-module CpuV3MmioBoardTest(
+// Board characterization for the CPU device path: CpuV3Core directly drives
+// SystemControlDevice. The compiled program runs from the BSRAM boot memory.
+module CpuV3DeviceBoardTest(
     input wire clk,
     input wire [1:0] buttons,
     output wire [5:0] leds,
@@ -48,37 +46,16 @@ wire data_write;
 wire [31:0] data_address;
 wire [15:0] data_write_data;
 wire data_response_ready;
-wire data_request_ready;
-wire data_response_valid;
-wire [15:0] data_read_data;
-wire data_error;
+reg data_response_valid = 0;
+always @(posedge clk)
+    data_response_valid <= data_request_valid;
 
-wire [3:0] device_index;
+wire [2:0] device_index;
 wire [3:0] device_channel;
 wire device_read_enable;
 wire device_write_enable;
 wire [15:0] device_write_data;
 wire [15:0] device_read_data;
-
-__MMIO_BRIDGE__ u_mmio_bridge (
-    .clk(clk),
-    .reset(core_reset),
-    .cpu_request_valid(data_request_valid),
-    .cpu_write(data_write),
-    .cpu_address(data_address),
-    .cpu_write_data(data_write_data),
-    .cpu_response_ready(data_response_ready),
-    .device_read_data(device_read_data),
-    .cpu_request_ready(data_request_ready),
-    .cpu_response_valid(data_response_valid),
-    .cpu_read_data(data_read_data),
-    .cpu_error(data_error),
-    .device_index(device_index),
-    .device_channel(device_channel),
-    .device_read_enable(device_read_enable),
-    .device_write_enable(device_write_enable),
-    .device_write_data(device_write_data)
-);
 
 SystemControlDevice_CLOCKS_PER_BIT234 u_sysctl (
     .clk(clk),
@@ -112,10 +89,11 @@ __CPU_V3_CORE__ u_core(
     .instruction_response_valid(instruction_response_valid),
     .instruction_data(instruction_data),
     .instruction_error(instruction_error),
-    .data_request_ready(data_request_ready),
+    .data_request_ready(1'b1),
     .data_response_valid(data_response_valid),
-    .data_read_data(data_read_data),
-    .data_error(data_error),
+    .data_read_data(16'b0),
+    .data_error(data_response_valid),
+    .device_read_data(device_read_data),
     .instruction_request_valid(instruction_request_valid),
     .instruction_address(instruction_address),
     .instruction_response_ready(),
@@ -124,6 +102,11 @@ __CPU_V3_CORE__ u_core(
     .data_address(data_address),
     .data_write_data(data_write_data),
     .data_response_ready(data_response_ready),
+    .device_index(device_index),
+    .device_channel(device_channel),
+    .device_read_enable(device_read_enable),
+    .device_write_enable(device_write_enable),
+    .device_write_data(device_write_data),
     .halted(halted),
     .halt_signal(halt_signal),
     .fault(faulted),

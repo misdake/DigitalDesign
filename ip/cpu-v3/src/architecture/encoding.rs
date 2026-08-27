@@ -1,15 +1,15 @@
-//! Encoding helpers for CpuV3 revision 0.5.
+//! Encoding helpers for CpuV3 revision 0.6.
 
 pub type Word = u16;
 pub type Register = u8;
 
-pub const ISA_REVISION: (u8, u8) = (0, 5);
+pub const ISA_REVISION: (u8, u8) = (0, 6);
 
 pub const LINK_REGISTER: Register = 14;
 pub const STACK_REGISTER: Register = 13;
 pub const DEFAULT_DATA_BASE: Word = 0x4000;
-pub const MMIO_BASE: Word = 0xff00;
-pub const DEFAULT_STACK_TOP: Word = MMIO_BASE;
+/// A zero stack pointer denotes the exclusive top of the 16-bit stack segment.
+pub const DEFAULT_STACK_TOP: Word = 0;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 #[repr(u16)]
@@ -273,10 +273,7 @@ pub fn prefixed(consumer: Word, value: Word) -> [Word; 2] {
 /// `prefixed`, the wide offset is `{prefix[7:0], imm8}`: the prefix supplies
 /// the high byte and the consumer's immediate byte the low byte.
 pub fn prefixed_branch(consumer: Word, offset: u16) -> [Word; 2] {
-    [
-        immediate_high12(offset >> 8),
-        consumer | (offset & 0xff),
-    ]
+    [immediate_high12(offset >> 8), consumer | (offset & 0xff)]
 }
 
 pub(crate) fn sign_extend(value: Word, bits: u32) -> Word {
@@ -325,7 +322,10 @@ mod tests {
             prefixed_branch(branch(TestCondition::Equal, 0), 0x1234),
             [0xf012, 0xb034]
         );
-        assert_eq!(prefixed_branch(jump_and_link_relative(0), 0xfffe), [0xf0ff, 0xb9fe]);
+        assert_eq!(
+            prefixed_branch(jump_and_link_relative(0), 0xfffe),
+            [0xf0ff, 0xb9fe]
+        );
     }
 
     #[test]

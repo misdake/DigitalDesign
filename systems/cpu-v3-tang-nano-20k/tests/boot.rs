@@ -1,7 +1,7 @@
 //! End-to-end CpuV3 two-stage boot: the real rcc Stage0/Stage1/demo programs
 //! are compiled with the CpuV3 backend, packed into a boot image with the
 //! `cpu-v3-pack` builder, and executed on the `cpu_v3::sim::Machine` oracle from
-//! reset (CSEG=0, PC=0). Device models attached to the machine's MMIO bus
+//! reset (CSEG=0, PC=0). Device models attached to the machine's device bus
 //! stand in for the boot DMA engine (device 2) and the system-control block
 //! (device 0), with the flash image backing the DMA model.
 

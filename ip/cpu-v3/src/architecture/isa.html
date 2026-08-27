@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>CPU V3 ISA v0.5 — Encoding, ABI, Memory, and Hardware</title>
+<title>CPU V3 ISA v0.6 — Encoding, ABI, Memory, and Hardware</title>
 <style>
   :root {
     --bg: #f7f9fc; --paper: #ffffff; --ink: #172033; --dim: #5d687c;
@@ -82,7 +82,7 @@
 <body><main>
 
 <section class="hero">
-  <h1>CPU V3 ISA v0.5</h1>
+  <h1>CPU V3 ISA v0.6</h1>
   <p class="subtitle">Instruction encoding, architectural behavior, compiler ABI, unified memory map, and current FPGA organization.</p>
   <div class="badges">
     <span class="badge">16-bit fixed instruction words</span>
@@ -90,7 +90,7 @@
     <span class="badge">16-bit word offsets</span>
     <span class="badge">Segmented physical SDRAM</span>
     <span class="badge">Transient pending test, no persistent flags</span>
-    <span class="badge">Revision 0.5</span>
+    <span class="badge">Revision 0.6</span>
   </div>
   <ol class="toc">
     <li><a href="#overview">Architectural overview</a></li>
@@ -183,7 +183,7 @@
   <path class="arrow" d="M850 210 L930 210"/><path class="arrow" d="M930 235 L850 235"/>
   <text class="svg-mono" x="890" y="197" text-anchor="middle">8 × 32-bit</text>
 </svg>
-<p class="caption">Normative target organization. The host cache and scheduler models implement these policies, and the reusable CpuV3 RTL core executes the complete v0.5 integer ISA; see implementation status.</p>
+<p class="caption">Normative target organization. The host cache and scheduler models implement these policies, and the reusable CpuV3 RTL core executes the complete v0.6 integer ISA; see implementation status.</p>
 </div>
 
 <h2 id="encoding">3. Encoding rules</h2>
@@ -203,7 +203,7 @@
   <tr><td class="mn">MEM</td><td class="sem">opcode · rd/rs · base · imm4</td><td>Word load/store at <code>r[base] + immediate</code>.</td></tr>
   <tr><td class="mn">IMM</td><td class="sem">A · function · rd · imm4</td><td>In-place immediate operation on <code>rd</code>.</td></tr>
   <tr><td class="mn">BR</td><td class="sem">B · condition · imm8</td><td>Conditional branch on the pending test result, or unconditional relative jump.</td></tr>
-  <tr><td class="mn">DEV</td><td class="sem">C · dir/dev[2:0] · channel · reg</td><td>Device channel receive/send in the fixed MMIO page.</td></tr>
+  <tr><td class="mn">DEV</td><td class="sem">C · dir/dev[2:0] · channel · reg</td><td>Device channel receive/send on the dedicated device port.</td></tr>
   <tr><td class="mn">EXT</td><td class="sem">E · function · rd · rs</td><td>Unary, register control, comparison, and halt operations.</td></tr>
   <tr><td class="mn">IMMHI12</td><td class="sem">F · high12</td><td>Prefix state for the immediately following eligible consumer.</td></tr>
 </table>
@@ -216,7 +216,7 @@
   <tr><td class="center memory mono">9</td><td class="memory">STORE</td><td class="mono">9 rs base imm4</td><td>Write one 16-bit word.</td></tr>
   <tr><td class="center imm mono">A</td><td class="imm">Immediate</td><td class="mono">A fn rd imm4</td><td>Arithmetic, logic, shift, compare, and load-immediate.</td></tr>
   <tr><td class="center control mono">B</td><td class="control">Branch / jump</td><td class="mono">B cond imm8</td><td>Six predicates on the pending test result plus relative jumps.</td></tr>
-  <tr><td class="center control mono">C</td><td class="control">Device</td><td class="mono">C dir/dev ch reg</td><td>Device channel receive/send at a fixed MMIO address.</td></tr>
+  <tr><td class="center control mono">C</td><td class="control">Device</td><td class="mono">C dir/dev ch reg</td><td>Single-cycle device channel receive/send.</td></tr>
   <tr><td class="center reserved mono">D</td><td class="reserved">Reserved FPU</td><td class="mono">D ...</td><td>Currently raises <code>UnsupportedFpu</code>.</td></tr>
   <tr><td class="center extended mono">E</td><td class="extended">Extended/control</td><td class="mono">E fn rd rs</td><td>Move, unary, register jumps, comparisons, bit operations, halt.</td></tr>
   <tr><td class="center imm mono">F</td><td class="imm">IMMHI12</td><td class="mono">F high12</td><td>Creates a pending wide immediate.</td></tr>
@@ -242,7 +242,7 @@
   <tr><td class="mn">LOAD rd, [base + off]</td><td class="mono">8 rd base imm4</td><td class="sem">rd = memory[base + sext4(imm4)]</td><td>With IMMHI12, <code>off = {high12, imm4}</code>.</td></tr>
   <tr><td class="mn">STORE rs, [base + off]</td><td class="mono">9 rs base imm4</td><td class="sem">memory[base + sext4(imm4)] = rs</td><td>With IMMHI12, <code>off = {high12, imm4}</code>.</td></tr>
 </table>
-<p class="caption">Address arithmetic wraps at 16 bits. MMIO behavior is selected by the final address, not by a distinct instruction family.</p>
+<p class="caption">Address arithmetic wraps at 16 bits. Every final offset is ordinary memory in <code>DSEG</code>.</p>
 
 <h3>5.3 Immediate — opcode A</h3>
 <table>
@@ -289,7 +289,7 @@
   <tr><td class="mn">DEVRECV rd, dev, ch</td><td class="mono">C {0,dev[2:0]} ch rd</td><td class="sem">rd = device[dev].read(ch)</td><td>dir bit 11 = 0.</td></tr>
   <tr><td class="mn">DEVSEND rs, dev, ch</td><td class="mono">C {1,dev[2:0]} ch rs</td><td class="sem">device[dev].write(ch, rs)</td><td>dir bit 11 = 1.</td></tr>
 </table>
-<p>The physical word address is <code>0xff00 + dev × 16 + ch</code>, inside the fixed segment-zero MMIO page; it never passes through <code>DSEG</code>. The encoding covers devices 0..7, each with channels 0..15; devices 8..15 remain reachable with ordinary <code>LOAD</code>/<code>STORE</code> at a materialized base. Device instructions carry no immediate and never consume an <code>IMMHI12</code> prefix. This single-word form replaces the v0.4 software convention of an <code>r15</code> base register plus <code>LOAD</code>/<code>STORE</code>.</p>
+<p>The encoding covers devices 0..7, each with channels 0..15. Device access is independent of memory and <code>DSEG</code>: only <code>DEVRECV</code>/<code>DEVSEND</code> reach devices, while <code>LOAD</code>/<code>STORE</code> always reach memory. Reads sample combinational device data, writes pulse for one execute cycle, and an unconnected device reads zero and ignores writes. Device instructions carry no immediate and never consume an <code>IMMHI12</code> prefix.</p>
 
 <h3>5.6 Extended/control — opcode E</h3>
 <table>
@@ -336,9 +336,8 @@
       <rect class="box-blue" x="115" y="35" width="280" height="95" rx="8"/><text class="svg-title" x="255" y="66" text-anchor="middle">0x0000 — linked code</text><text class="svg-text" x="255" y="91" text-anchor="middle">grows upward</text><text class="svg-mono" x="255" y="113" text-anchor="middle">instruction and literal words</text>
       <rect class="box-green" x="115" y="130" width="280" height="85" rx="8"/><text class="svg-title" x="255" y="163" text-anchor="middle">0x4000 — static data</text><text class="svg-text" x="255" y="189" text-anchor="middle">compiler default data base</text>
       <rect class="box-amber" x="115" y="215" width="280" height="90" rx="8"/><text class="svg-title" x="255" y="250" text-anchor="middle">0x8000 — heap baseline</text><text class="svg-text" x="255" y="276" text-anchor="middle">rcc_std allocator region</text>
-      <rect class="box" x="115" y="305" width="280" height="85" rx="8"/><text class="svg-title" x="255" y="337" text-anchor="middle">stack</text><text class="svg-text" x="255" y="362" text-anchor="middle">starts at 0xff00, grows downward</text>
-      <rect class="box-red" x="115" y="390" width="280" height="55" rx="8"/><text class="svg-title" x="255" y="423" text-anchor="middle">0xff00..0xffff — MMIO</text>
-      <text class="svg-mono" x="70" y="48">0000</text><text class="svg-mono" x="70" y="143">4000</text><text class="svg-mono" x="70" y="228">8000</text><text class="svg-mono" x="70" y="403">ff00</text><text class="svg-mono" x="70" y="447">ffff</text>
+      <rect class="box" x="115" y="305" width="280" height="140" rx="8"/><text class="svg-title" x="255" y="350" text-anchor="middle">stack / ordinary memory</text><text class="svg-text" x="255" y="378" text-anchor="middle">SP = 0 denotes 0x10000</text><text class="svg-text" x="255" y="406" text-anchor="middle">grows downward through 0xffff</text>
+      <text class="svg-mono" x="70" y="48">0000</text><text class="svg-mono" x="70" y="143">4000</text><text class="svg-mono" x="70" y="228">8000</text><text class="svg-mono" x="70" y="447">ffff</text>
       <path class="arrow" d="M430 80 L430 185"/><text class="svg-text" x="445" y="137">up</text>
       <path class="arrow" d="M430 372 L430 320"/><text class="svg-text" x="445" y="350">down</text>
     </svg>
@@ -349,8 +348,8 @@
       <li>Ordinary CPU pointers cover one 65,536-word = 128-KiB segment.</li>
       <li>Instruction fetch uses <code>{CSEG, PC}</code>; ordinary data and stack accesses use <code>{DSEG, offset}</code>.</li>
       <li>The fitted 8-MiB Tang Nano 20K SDRAM uses 22 physical word-address bits. Larger architectural addresses fault instead of aliasing.</li>
-      <li>The top MMIO offset page always selects fixed system space in segment zero, regardless of <code>DSEG</code>. Device instructions address devices 0..7 within it directly; devices 8..15 remain reachable through ordinary loads and stores at a materialized base.</li>
-      <li><code>CompilerOptions::default()</code> selects data base <code>0x4000</code>, heap base <code>0x8000</code>, and stack top <code>0xff00</code>. CPU V3 has no v2.6 function table.</li>
+      <li>All offsets, including <code>0xff00..0xffff</code>, select ordinary memory in <code>DSEG</code>. Devices 0..7 are accessible only through the dedicated device instructions.</li>
+      <li><code>CompilerOptions::default()</code> selects data base <code>0x4000</code>, heap base <code>0x8000</code>, and stack top <code>0x10000</code>, encoded as SP = 0. CPU V3 has no v2.6 function table.</li>
       <li>The CPU V3 compiler's optional <code>code_base</code> relocates all linked code offsets and function pointers without padding the emitted section bytes.</li>
     </ul>
     <h3>Cache geometry</h3>
@@ -388,9 +387,9 @@
   <tr><td class="mono">r2..r7</td><td>arguments 0 through 5</td><td>caller-saved</td><td>Also general allocation after ABI shims.</td></tr>
   <tr><td class="mono">r8..r11</td><td>long-lived values</td><td>callee-saved</td><td>Saved only when actually allocated by the function.</td></tr>
   <tr><td class="mono">r12</td><td>compiler scratch / indirect-call target</td><td>reserved, caller-clobbered</td><td>Not allocatable; used for wide lowering and function pointers.</td></tr>
-  <tr><td class="mono">r13</td><td>stack pointer</td><td>callee restores</td><td>Frame grows downward; initialized to <code>0xff00</code>.</td></tr>
+  <tr><td class="mono">r13</td><td>stack pointer</td><td>callee restores</td><td>Frame grows downward; reset value 0 denotes the exclusive <code>0x10000</code> segment top.</td></tr>
   <tr><td class="mono">r14</td><td>link register</td><td>saved by non-leaf functions</td><td>Direct and indirect calls write the return PC here; the architecture fixes the link register to r14 (<code>JALREL</code> has no link field, <code>JALR</code> requires link = 14).</td></tr>
-  <tr><td class="mono">r15</td><td>general allocation</td><td>caller-saved</td><td>Ordinary allocatable register since v0.5; previously the reserved global/MMIO base. Device instructions replaced that convention.</td></tr>
+  <tr><td class="mono">r15</td><td>general allocation</td><td>caller-saved</td><td>Ordinary allocatable register since v0.5; device instructions replaced the former reserved device-base convention.</td></tr>
 </table>
 <div class="grid">
   <div class="panel">
@@ -437,12 +436,12 @@
 <h2 id="status">10. Implementation status</h2>
 <table>
   <tr><th>Layer</th><th>Status</th><th>What is implemented now</th><th>Important remaining work</th></tr>
-  <tr><td>Encoding helpers</td><td><span class="status done">complete v0.5</span></td><td>Constructors and stable reference encodings for integer, device, and segment-control operations.</td><td>Update only through a deliberate ISA revision.</td></tr>
-  <tr><td>Architectural simulator</td><td><span class="status done">complete v0.5</span></td><td>Integer families, pending test result, device channel routing, segment concatenation, fitted-memory faults, prefix precision, halt, and reserved-FPU fault.</td><td>Any future FPU semantics.</td></tr>
-  <tr><td>Compiler backend</td><td><span class="status done">usable v0.5</span></td><td>CPU V3 ABI, register allocation, calls, stack frames, memory operations, compare/branch lowering, single-instruction device intrinsics, static initialization, and fixed-width symbolic linking.</td><td>Optional size relaxation.</td></tr>
+  <tr><td>Encoding helpers</td><td><span class="status done">complete v0.6</span></td><td>Constructors and stable reference encodings for integer, device, and segment-control operations.</td><td>Update only through a deliberate ISA revision.</td></tr>
+  <tr><td>Architectural simulator</td><td><span class="status done">complete v0.6</span></td><td>Integer families, pending test result, dedicated device routing, segment concatenation across the complete offset range, fitted-memory faults, prefix precision, halt, and reserved-FPU fault.</td><td>Any future FPU semantics.</td></tr>
+  <tr><td>Compiler backend</td><td><span class="status done">usable v0.6</span></td><td>CPU V3 ABI with SP = 0 as the segment top, register allocation, calls, stack frames, memory operations, compare/branch lowering, single-instruction device intrinsics, static initialization, and fixed-width symbolic linking.</td><td>Optional size relaxation.</td></tr>
   <tr><td>Host cache/scheduler models</td><td><span class="status done">policy baseline</span></td><td>Physical cache tags, explicit invalidation, refill/write-through rules, full SDRAM address/lane mapping, and refresh-aware arbitration.</td><td>Associativity or write-back policy changes only with measured miss traffic.</td></tr>
-  <tr><td>Tang Nano 20K RTL</td><td><span class="status done">complete v0.5 core</span></td><td>Reusable CpuV3Core executing the complete v0.5 integer ISA (pending test result, B-family predicates and embedded jumps, single-word device instructions, segment registers, precise faults), split I/D caches, MMIO bridge with the system-control, boot-select, and boot-DMA devices, and a three-client memory arbiter (DMA &gt; data &gt; instruction) over the Controller HS word port. Verified against the Icarus testbench.</td><td>interrupts if adopted, and broader board programs.</td></tr>
-  <tr><td>Physical validation</td><td><span class="status done">boot path passed (v0.5)</span></td><td>SDRAM, BSRAM, DSP, and the complete split-cache boot system passed board validation. The v0.5 design passed the <code>cpu-v3-boot</code> Full profile: the v0.5 boot package was written to external Flash, the audited SRAM bitstream programmed, and UART captured a passing result (DDHT test 0x07: 52 success frames, no failures, no CV3B boot errors). The complete power-on Flash image (FPGA configuration + boot package) was packed, cross-checked against an independent repack, and programmed with programmer verify, and a power-cycled cold boot from that Flash image was observed passing purely in Observe mode (50 success frames).</td><td>Broader board programs.</td></tr>
+  <tr><td>Tang Nano 20K RTL</td><td><span class="status done">complete v0.6 core</span></td><td>Reusable CpuV3Core executing the complete v0.6 integer ISA, split I/D caches, a direct single-cycle device port connected to system-control, boot-select, and boot-DMA, and a three-client memory arbiter (DMA &gt; data &gt; instruction) over the Controller HS word port.</td><td>Physical v0.6 revalidation and interrupts if adopted.</td></tr>
+  <tr><td>Physical validation</td><td><span class="status done">v0.5 evidence retained</span></td><td>The previous v0.5 boot path passed full board validation, complete Flash programming, and cold-boot observation.</td><td>Repeat boot and display board validation for v0.6 before recording new physical evidence.</td></tr>
 </table>
 <div class="notice"><b>Source-of-truth rule:</b> executable behavior lives in <code>architecture/encoding.rs</code> and <code>architecture/sim.rs</code>; compiler convention lives in <code>rcc_backend/mod.rs</code> and <code>compiler/rcc/src/compiler/regalloc.rs</code>; cache and SDRAM policy lives in <code>architecture/cache.rs</code> and <code>architecture/sdram.rs</code>. This page is the human-readable companion and must be updated with those files.</div>
 

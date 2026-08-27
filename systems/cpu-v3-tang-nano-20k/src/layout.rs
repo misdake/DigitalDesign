@@ -44,21 +44,9 @@ impl SystemMemoryLayout for TangNano20kMemoryLayout {
             kind: MemoryRegionKind::Boot,
         },
         MemoryRegion {
-            name: "main-low",
+            name: "main-before-framebuffer",
             base: PhysicalWordAddress::new(0x100),
-            words: 0xfe00,
-            kind: MemoryRegionKind::Main,
-        },
-        MemoryRegion {
-            name: "mmio",
-            base: PhysicalWordAddress::new(0xff00),
-            words: 0x100,
-            kind: MemoryRegionKind::Reserved,
-        },
-        MemoryRegion {
-            name: "main-high-before-framebuffer",
-            base: PhysicalWordAddress::new(0x1_0000),
-            words: FRAMEBUFFER_BASE_WORD - 0x1_0000,
+            words: FRAMEBUFFER_BASE_WORD - 0x100,
             kind: MemoryRegionKind::Main,
         },
         MemoryRegion {
@@ -96,7 +84,7 @@ impl SystemMemoryLayout for TangNano20kMemoryLayout {
 pub struct TangNano20kDeviceLayout;
 
 impl SystemDeviceLayout for TangNano20kDeviceLayout {
-    const DEVICE_ADDRESS_BITS: u8 = 4;
+    const DEVICE_ADDRESS_BITS: u8 = 3;
     const CHANNEL_ADDRESS_BITS: u8 = 4;
     const ALLOCATIONS: &'static [DeviceAllocation] = &[
         DeviceAllocation {

@@ -135,7 +135,7 @@ Assigned test IDs:
 | `0x06` | Boot DMA flash-to-SDRAM engine self-test |
 | `0x07` | CPU V3 two-stage flash boot (application reached) |
 | `0x08` | System control device UART characterization (sysctl_uart) |
-| `0x09` | CPU V3 CPU MMIO path characterization (cpu_v3_mmio) |
+| `0x09` | CPU V3 dedicated device path characterization (`cpu_v3_device`) |
 | `0x0a` | Tang Nano 20K board clock/button/UART transport health probe |
 
 ## Stable board bring-up

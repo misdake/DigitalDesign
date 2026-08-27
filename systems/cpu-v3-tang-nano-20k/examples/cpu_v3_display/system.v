@@ -48,9 +48,10 @@ __ARBITER__ u_memory_arbiter(.clk(clk),.reset(reset),
 wire halted,faulted; wire [15:0] halt_signal,fault_pc; wire [7:0] fault_code;
 __CPU__ u_cpu(.clk(clk),.reset(reset),.instruction_request_ready(ireq_ready),.instruction_response_valid(iresp_valid),
  .instruction_data(idata),.instruction_error(ierror),.data_request_ready(dreq_ready),.data_response_valid(dresp_valid),
- .data_read_data(drdata),.data_error(derror),.instruction_request_valid(ireq),.instruction_address(iaddr),
+ .data_read_data(drdata),.data_error(derror),.device_read_data(16'b0),.instruction_request_valid(ireq),.instruction_address(iaddr),
  .instruction_response_ready(iresp_ready),.data_request_valid(dreq),.data_write(dwrite),.data_address(daddr),
- .data_write_data(dwdata),.data_response_ready(dresp_ready),.halted(halted),.halt_signal(halt_signal),
+ .data_write_data(dwdata),.data_response_ready(dresp_ready),.device_index(),.device_channel(),
+ .device_read_enable(),.device_write_enable(),.device_write_data(),.halted(halted),.halt_signal(halt_signal),
  .fault(faulted),.fault_code(fault_code),.fault_pc(fault_pc),.pc(),.code_segment(),.data_segment(),.retired_words());
 
 wire display_req,display_urgent,display_ready,display_valid,display_last,display_mem_error;
