@@ -3,18 +3,35 @@ module FramebufferHdmi(
     input wire pixel_clock, input wire serial_clock, input wire video_locked,
     input wire memory_request_ready, input wire memory_data_valid,
     input wire [31:0] memory_read_data, input wire memory_last, input wire memory_error,
+    input wire [2:0] device_index, input wire [3:0] device_channel,
+    input wire device_read_enable, input wire device_write_enable,
+    input wire [15:0] device_write_data,
     output wire memory_request_valid, output wire memory_urgent,
     output wire [21:0] memory_address, output wire underflow,
+    output reg [15:0] device_read_data,
     output wire tmds_clk_p, output wire tmds_clk_n,
     output wire [2:0] tmds_data_p, output wire [2:0] tmds_data_n
 );
 localparam [21:0] FB_BASE=22'h200100;
+localparam [2:0] DISPLAY_DEVICE=3'd3;
+localparam [31:0] LAST_VALID_FB_BASE=32'h003ed400;
+localparam [15:0] BORDER_COLOR=16'h1082;
 reg [2:0] published=0;
 reg [2:0] released=0;
 reg [2:0] release_meta=0, release_sync=0;
 reg [1:0] fill_slot=0;
 reg [7:0] fill_y=0;
+reg [21:0] active_base=FB_BASE;
 reg [21:0] row_address=FB_BASE;
+reg [31:0] shadow_base=32'h00200100;
+reg [21:0] pending_base=FB_BASE;
+reg next_low_written=0, next_high_written=0;
+reg next_pending=0, invalid_address=0;
+reg frame_complete=0;
+reg [15:0] frame_index=0;
+reg frame_meta=0, frame_sync=0, frame_seen=0;
+reg frame_toggle=0;
+reg underflow_sticky=0, underflow_meta=0, underflow_sync=0;
 reg [4:0] burst_index=0;
 reg [2:0] beat_index=0;
 reg burst_active=0;
@@ -25,7 +42,7 @@ wire [1:0] ready_count =
     (published[1] != release_sync[1]) +
     (published[2] != release_sync[2]);
 assign memory_urgent = ready_count <= 1;
-assign memory_request_valid = fill_slot_free && !burst_active && !memory_error_sticky;
+assign memory_request_valid = fill_slot_free && !burst_active && !frame_complete && !memory_error_sticky;
 assign memory_address = row_address + {13'b0,burst_index,4'b0};
 
 wire line_write = burst_active && memory_data_valid;
@@ -41,11 +58,59 @@ __LINE_BUFFER__ u_line_buffer(
 always @(posedge clk) begin
     release_meta <= released;
     release_sync <= release_meta;
+    frame_meta <= frame_toggle;
+    frame_sync <= frame_meta;
+    underflow_meta <= underflow_sticky;
+    underflow_sync <= underflow_meta;
     if (reset) begin
-        published<=0; fill_slot<=0; fill_y<=0; row_address<=FB_BASE;
+        published<=0; fill_slot<=0; fill_y<=0; active_base<=FB_BASE; row_address<=FB_BASE;
+        shadow_base<=32'h00200100; pending_base<=FB_BASE;
+        next_low_written<=0; next_high_written<=0;
+        next_pending<=0; invalid_address<=0; frame_complete<=0;
+        frame_index<=0; frame_meta<=0; frame_sync<=0; frame_seen<=0;
+        underflow_meta<=0; underflow_sync<=0;
         burst_index<=0; beat_index<=0; burst_active<=0; memory_error_sticky<=0;
     end else begin
         if (memory_error) memory_error_sticky<=1;
+        if (frame_sync != frame_seen) begin
+            frame_seen<=frame_sync;
+            frame_index<=frame_index+1'b1;
+            if (frame_complete) begin
+                fill_y<=0;
+                frame_complete<=0;
+                if (next_pending) begin
+                    active_base<=pending_base;
+                    row_address<=pending_base;
+                    next_pending<=0;
+                end else row_address<=active_base;
+            end
+        end
+        // Process device writes after the frame event so a NEXT_SWAP arriving
+        // on the same clock edge remains pending for the following frame. The
+        // active frame still receives the previously submitted address.
+        if (device_write_enable && device_index==DISPLAY_DEVICE) begin
+            if (device_channel==4'd1) begin
+                shadow_base[15:0]<=device_write_data;
+                next_low_written<=1;
+                invalid_address<=0;
+            end else if (device_channel==4'd2) begin
+                shadow_base[31:16]<=device_write_data;
+                next_high_written<=1;
+                invalid_address<=0;
+            end else if (device_channel==4'd3 && device_write_data==16'd1 &&
+                         next_low_written && next_high_written) begin
+                next_low_written<=0;
+                next_high_written<=0;
+                if (shadow_base[31:22]==0 && shadow_base[3:0]==0 &&
+                    shadow_base<=LAST_VALID_FB_BASE) begin
+                    pending_base<=shadow_base[21:0];
+                    next_pending<=1;
+                    invalid_address<=0;
+                end else begin
+                    invalid_address<=1;
+                end
+            end
+        end
         if (memory_request_valid && memory_request_ready) begin
             burst_active<=1; beat_index<=0;
         end
@@ -56,7 +121,7 @@ always @(posedge clk) begin
                     published[fill_slot] <= ~published[fill_slot];
                     burst_index<=0;
                     fill_slot <= fill_slot==2 ? 0 : fill_slot+1'b1;
-                    if (fill_y==239) begin fill_y<=0; row_address<=FB_BASE; end
+                    if (fill_y==239) begin frame_complete<=1; end
                     else begin fill_y<=fill_y+1'b1; row_address<=row_address+22'd320; end
                 end else burst_index<=burst_index+1'b1;
             end else beat_index<=beat_index+1'b1;
@@ -74,7 +139,7 @@ always @(posedge pixel_clock)
 wire pixel_reset = ~pixel_reset_sync[2];
 reg [1:0] display_slot=0;
 reg [1:0] vertical_repeat=0;
-reg started=0, underflow_sticky=0;
+reg started=0;
 reg [10:0] h_count=0;
 reg [9:0] v_count=0;
 wire hsync = h_count < 40;
@@ -88,8 +153,12 @@ wire [9:0] scaled_x = active_x-160;
 // these fixed-width divisions to ordinary logic.
 wire [8:0] source_x = scaled_x / 3;
 wire line_ready = publish_sync[display_slot] != released[display_slot];
-wire visible_request = started && framebuffer_x && line_ready;
+wire visible_request = started && active;
+wire framebuffer_request = started && framebuffer_x;
+wire framebuffer_ready_request = framebuffer_request && line_ready;
 reg visible_pipe=0, visible_pipe2=0, visible_pipe3=0;
+reg framebuffer_pipe=0, framebuffer_pipe2=0, framebuffer_pipe3=0;
+reg framebuffer_ready_pipe=0, framebuffer_ready_pipe2=0;
 reg lane_pipe=0, lane_pipe2=0;
 reg hsync_pipe=0, hsync_pipe2=0, hsync_pipe3=0;
 reg vsync_pipe=0, vsync_pipe2=0, vsync_pipe3=0;
@@ -101,9 +170,11 @@ wire [15:0] pixel565 = lane_pipe2 ? line_read_data[31:16] : line_read_data[15:0]
 always @(posedge pixel_clock) begin
     publish_meta<=published; publish_sync<=publish_meta;
     if (pixel_reset) begin
-        h_count<=0; v_count<=0; released<=0; display_slot<=0;
+        h_count<=0; v_count<=0; released<=0; display_slot<=0; frame_toggle<=0;
         vertical_repeat<=0; started<=0; underflow_sticky<=0;
         visible_pipe<=0; visible_pipe2<=0; visible_pipe3<=0;
+        framebuffer_pipe<=0; framebuffer_pipe2<=0; framebuffer_pipe3<=0;
+        framebuffer_ready_pipe<=0; framebuffer_ready_pipe2<=0;
         lane_pipe<=0; lane_pipe2<=0;
         hsync_pipe<=0; hsync_pipe2<=0; hsync_pipe3<=0;
         vsync_pipe<=0; vsync_pipe2<=0; vsync_pipe3<=0;
@@ -111,6 +182,7 @@ always @(posedge pixel_clock) begin
     end else begin
         if (h_count==1649) begin
             h_count<=0;
+            if (v_count==744) frame_toggle<=~frame_toggle;
             if (v_count==749) begin
                 v_count<=0;
                 if (!started && publish_sync!=released) started<=1;
@@ -124,9 +196,15 @@ always @(posedge pixel_clock) begin
         // and the registered pixel word adds a third stage for the encoders.
         lane_pipe<=source_x[0]; lane_pipe2<=lane_pipe;
         visible_pipe<=visible_request; visible_pipe2<=visible_pipe; visible_pipe3<=visible_pipe2;
+        framebuffer_pipe<=framebuffer_request;
+        framebuffer_pipe2<=framebuffer_pipe;
+        framebuffer_pipe3<=framebuffer_pipe2;
+        framebuffer_ready_pipe<=framebuffer_ready_request;
+        framebuffer_ready_pipe2<=framebuffer_ready_pipe;
         hsync_pipe<=hsync; hsync_pipe2<=hsync_pipe; hsync_pipe3<=hsync_pipe2;
         vsync_pipe<=vsync; vsync_pipe2<=vsync_pipe; vsync_pipe3<=vsync_pipe2;
-        pixel565_pipe<=pixel565;
+        pixel565_pipe<=framebuffer_pipe2 ?
+            (framebuffer_ready_pipe2 ? pixel565 : 16'h0000) : BORDER_COLOR;
         if (started && h_count==1539 && v_count>=25 && v_count<745) begin
             if (vertical_repeat==2) begin
                 vertical_repeat<=0;
@@ -136,6 +214,19 @@ always @(posedge pixel_clock) begin
                 end else underflow_sticky<=1;
             end else vertical_repeat<=vertical_repeat+1'b1;
         end
+    end
+end
+always @* begin
+    device_read_data=0;
+    if (device_read_enable && device_index==DISPLAY_DEVICE) begin
+        case (device_channel)
+            0: device_read_data=frame_index;
+            1: device_read_data=active_base[15:0];
+            2: device_read_data={10'b0,active_base[21:16]};
+            3: device_read_data={11'b0,memory_error_sticky,underflow_sync,
+                invalid_address,(next_low_written ^ next_high_written),next_pending};
+            default: device_read_data=0;
+        endcase
     end
 end
 assign underflow = underflow_sticky | memory_error_sticky;

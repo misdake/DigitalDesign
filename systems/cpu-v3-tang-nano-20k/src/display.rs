@@ -1,6 +1,9 @@
-//! Host-side reference model for the fixed first-generation framebuffer.
+//! Host-side reference model for framebuffer scanout and line buffering.
 
-use crate::{framebuffer_word, rgb565_to_rgb888, Machine, PhysicalWordAddress, FRAMEBUFFER_WIDTH};
+use crate::{
+    framebuffer_word_at, rgb565_to_rgb888, Machine, PhysicalWordAddress, FRAMEBUFFER_A_BASE_WORD,
+    FRAMEBUFFER_WIDTH,
+};
 
 pub const HDMI_WIDTH: usize = 1280;
 pub const HDMI_HEIGHT: usize = 720;
@@ -14,12 +17,16 @@ pub const DISPLAY_BURSTS_PER_LINE: usize = DISPLAY_LINE_WORDS / DISPLAY_BURST_PI
 pub const MEMORY_CYCLES_PER_SOURCE_LINE: usize = 3_600;
 
 pub fn render_frame(machine: &Machine) -> Vec<u32> {
+    render_frame_at(machine, FRAMEBUFFER_A_BASE_WORD)
+}
+
+pub fn render_frame_at(machine: &Machine, framebuffer_base: u32) -> Vec<u32> {
     let mut frame = vec![0; HDMI_WIDTH * HDMI_HEIGHT];
     for output_y in 0..HDMI_HEIGHT {
         let source_y = output_y / DISPLAY_SCALE;
         for output_x in DISPLAY_SIDE_BORDER..(HDMI_WIDTH - DISPLAY_SIDE_BORDER) {
             let source_x = (output_x - DISPLAY_SIDE_BORDER) / DISPLAY_SCALE;
-            let address = framebuffer_word(source_x as u32, source_y as u32);
+            let address = framebuffer_word_at(framebuffer_base, source_x as u32, source_y as u32);
             let pixel = machine.physical_memory(PhysicalWordAddress::new(address));
             let (red, green, blue) = rgb565_to_rgb888(pixel, true);
             frame[output_y * HDMI_WIDTH + output_x] =

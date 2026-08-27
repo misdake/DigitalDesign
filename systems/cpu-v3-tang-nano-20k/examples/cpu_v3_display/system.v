@@ -46,12 +46,14 @@ __ARBITER__ u_memory_arbiter(.clk(clk),.reset(reset),
  .memory_request_valid(cm_req),.memory_write(cm_write),.memory_address(cm_addr),.memory_write_data(cm_wdata),.memory_response_ready(cm_resp_ready));
 
 wire halted,faulted; wire [15:0] halt_signal,fault_pc; wire [7:0] fault_code;
+wire [2:0] device_index; wire [3:0] device_channel;
+wire device_read_enable,device_write_enable; wire [15:0] device_write_data,device_read_data;
 __CPU__ u_cpu(.clk(clk),.reset(reset),.instruction_request_ready(ireq_ready),.instruction_response_valid(iresp_valid),
  .instruction_data(idata),.instruction_error(ierror),.data_request_ready(dreq_ready),.data_response_valid(dresp_valid),
- .data_read_data(drdata),.data_error(derror),.device_read_data(16'b0),.instruction_request_valid(ireq),.instruction_address(iaddr),
+ .data_read_data(drdata),.data_error(derror),.device_read_data(device_read_data),.instruction_request_valid(ireq),.instruction_address(iaddr),
  .instruction_response_ready(iresp_ready),.data_request_valid(dreq),.data_write(dwrite),.data_address(daddr),
- .data_write_data(dwdata),.data_response_ready(dresp_ready),.device_index(),.device_channel(),
- .device_read_enable(),.device_write_enable(),.device_write_data(),.halted(halted),.halt_signal(halt_signal),
+ .data_write_data(dwdata),.data_response_ready(dresp_ready),.device_index(device_index),.device_channel(device_channel),
+ .device_read_enable(device_read_enable),.device_write_enable(device_write_enable),.device_write_data(device_write_data),.halted(halted),.halt_signal(halt_signal),
  .fault(faulted),.fault_code(fault_code),.fault_pc(fault_pc),.pc(),.code_segment(),.data_segment(),.retired_words());
 
 wire display_req,display_urgent,display_ready,display_valid,display_last,display_mem_error;
@@ -68,7 +70,9 @@ __SDRAM__ u_sdram(.clk(clk),.reset(reset),.cpu_request_valid(cm_req),.cpu_write(
 __DISPLAY__ u_display(.clk(clk),.reset(reset),.pixel_clock(pixel_clock),.serial_clock(serial_clock),.video_locked(video_locked),
  .memory_request_ready(display_ready),.memory_data_valid(display_valid),.memory_read_data(display_data),
  .memory_last(display_last),.memory_error(display_mem_error),.memory_request_valid(display_req),
- .memory_urgent(display_urgent),.memory_address(display_addr),.underflow(underflow),
+ .memory_urgent(display_urgent),.memory_address(display_addr),.underflow(underflow),.device_index(device_index),
+ .device_channel(device_channel),.device_read_enable(device_read_enable),.device_write_enable(device_write_enable),
+ .device_write_data(device_write_data),.device_read_data(device_read_data),
  .tmds_clk_p(tmds_clk_p),.tmds_clk_n(tmds_clk_n),.tmds_data_p(tmds_data_p),.tmds_data_n(tmds_data_n));
 assign leds={faulted,underflow,video_locked,sdram_init_done,cm_req,display_req};
 assign uart_tx=1'b1;

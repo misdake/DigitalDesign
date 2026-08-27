@@ -1,7 +1,8 @@
 use cpu_v3::Machine;
-use cpu_v3_tang_nano_20k::display::{render_frame, write_ppm};
+use cpu_v3_tang_nano_20k::display::{render_frame_at, write_ppm};
 #[cfg(feature = "display-window")]
 use cpu_v3_tang_nano_20k::display::{HDMI_HEIGHT, HDMI_WIDTH};
+use cpu_v3_tang_nano_20k::{DisplayDevice, DISPLAY_DEVICE};
 use std::path::PathBuf;
 
 include!(concat!(env!("OUT_DIR"), "/display_image.rs"));
@@ -54,6 +55,7 @@ fn main() -> Result<(), String> {
     machine
         .load_program(0, DISPLAY_DEMO_PROGRAM)
         .map_err(|error| format!("cannot load display demo: {error:?}"))?;
+    machine.attach_device(DISPLAY_DEVICE, Box::<DisplayDevice>::default());
 
     #[cfg(feature = "display-window")]
     let mut window = options.window.then(|| {
@@ -81,7 +83,11 @@ fn main() -> Result<(), String> {
                 .map_err(|error| format!("CPU fault after {executed} steps: {error:?}"))?;
             executed += 1;
         }
-        pixels = render_frame(&machine);
+        let display = machine
+            .device::<DisplayDevice>(DISPLAY_DEVICE)
+            .expect("display device is attached");
+        display.advance_frame();
+        pixels = render_frame_at(&machine, display.active_base());
         #[cfg(feature = "display-window")]
         if let Some(window) = window.as_mut() {
             if !window.is_open() {

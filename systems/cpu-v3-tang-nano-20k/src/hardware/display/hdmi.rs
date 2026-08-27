@@ -15,6 +15,11 @@ pub struct FramebufferHdmiInput {
     pub memory_read_data: Wires<32>,
     pub memory_last: Wire,
     pub memory_error: Wire,
+    pub device_index: Wires<3>,
+    pub device_channel: Wires<4>,
+    pub device_read_enable: Wire,
+    pub device_write_enable: Wire,
+    pub device_write_data: Wires<16>,
 }
 
 #[derive(Clone, ModuleIo)]
@@ -23,6 +28,7 @@ pub struct FramebufferHdmiOutput {
     pub memory_urgent: Wire,
     pub memory_address: Wires<22>,
     pub underflow: Wire,
+    pub device_read_data: Wires<16>,
     pub tmds_clk_p: Wire,
     pub tmds_clk_n: Wire,
     pub tmds_data_p: Wires<3>,

@@ -7,15 +7,25 @@ wire [2:0] sdram_command,tmds_data_p,tmds_data_n; wire [20:0] sdram_address;
 wire [3:0] sdram_write_mask; wire [31:0] sdram_write_data; wire [7:0] sdram_burst_length;
 CpuV3Display dut(.*);
 integer phase=0,reads=0,writes=0,cycles;
+integer read_base=0,read_last=0;
+reg [31:0] memory [0:2097151];
 always @(posedge clk) begin
  sdram_command_ack<=0; sdram_read_valid<=0;
  if(sdram_command_valid&&sdram_command==3'b011) sdram_command_ack<=1;
- if(sdram_command_valid&&sdram_command==3'b100) begin sdram_command_ack<=1; writes<=writes+1; end
- if(sdram_command_valid&&sdram_command==3'b101) begin phase<=1; reads<=reads+1; end
+ if(sdram_command_valid&&sdram_command==3'b100) begin
+  sdram_command_ack<=1; writes<=writes+1;
+  if(!sdram_write_mask[0]) memory[sdram_address][7:0]<=sdram_write_data[7:0];
+  if(!sdram_write_mask[1]) memory[sdram_address][15:8]<=sdram_write_data[15:8];
+  if(!sdram_write_mask[2]) memory[sdram_address][23:16]<=sdram_write_data[23:16];
+  if(!sdram_write_mask[3]) memory[sdram_address][31:24]<=sdram_write_data[31:24];
+ end
+ if(sdram_command_valid&&sdram_command==3'b101) begin
+  phase<=1; read_base<=sdram_address; read_last<=sdram_burst_length; reads<=reads+1;
+ end
  else if(phase!=0) begin
-  sdram_read_valid<=1; sdram_read_data<={16'hf800,16'h07e0};
-  if(phase==7) sdram_command_ack<=1;
-  if(phase==8) phase<=0; else phase<=phase+1;
+  sdram_read_valid<=1; sdram_read_data<=memory[read_base+phase-1];
+  if(phase==1) sdram_command_ack<=1;
+  if(phase-1==read_last) phase<=0; else phase<=phase+1;
  end
  if(sdram_command_valid&&sdram_command==3'b001) sdram_command_ack<=1;
 end
@@ -23,7 +33,7 @@ initial begin
  repeat(5) @(posedge clk); sdram_init_done=1;
  for(cycles=0;cycles<100000;cycles=cycles+1) @(posedge clk);
  if(reads==0 || writes==0) $fatal(1,"missing concurrent traffic reads=%0d writes=%0d",reads,writes);
- if(leds[5]) $fatal(1,"CPU faulted");
+ if(leds[5]) $fatal(1,"CPU faulted code=%0d pc=%h data_address=%h",dut.fault_code,dut.fault_pc,dut.daddr);
  $display("DIGITAL_DESIGN_PASS"); $finish;
 end
 endmodule

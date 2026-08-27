@@ -115,7 +115,10 @@ fn project() -> GowinModuleProject<TangNano20K, CpuV3Display> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use cpu_v3_tang_nano_20k::framebuffer_word;
+    use cpu_v3_tang_nano_20k::{
+        framebuffer_word, framebuffer_word_at, DisplayDevice, DISPLAY_DEVICE,
+        FRAMEBUFFER_A_BASE_WORD, FRAMEBUFFER_B_BASE_WORD,
+    };
     use digital_design_hardware::{ResourceKind, VerilogProject};
 
     #[test]
@@ -130,7 +133,7 @@ mod tests {
     }
 
     #[test]
-    fn animation_program_initializes_both_framebuffer_segments() {
+    fn animation_program_initializes_both_framebuffers() {
         use cpu_v3::{Machine, RunOutcome};
         use digital_design_ip_common::PhysicalWordAddress;
 
@@ -138,7 +141,7 @@ mod tests {
         let mut machine = Machine::default();
         machine.load_program(0, DISPLAY_DEMO_PROGRAM).unwrap();
         assert!(matches!(
-            machine.run(5_000_000).unwrap(),
+            machine.run(12_000_000).unwrap(),
             RunOutcome::StepLimit { .. }
         ));
         assert_ne!(
@@ -148,7 +151,16 @@ mod tests {
         assert_ne!(
             machine.physical_memory(PhysicalWordAddress::new(framebuffer_word(319, 239))),
             0,
-            "the final row in the second framebuffer segment was not initialized"
+            "the final row in framebuffer A was not initialized"
+        );
+        assert_ne!(
+            machine.physical_memory(PhysicalWordAddress::new(framebuffer_word_at(
+                FRAMEBUFFER_B_BASE_WORD,
+                319,
+                239
+            ))),
+            0,
+            "the final row in framebuffer B was not initialized"
         );
         assert_eq!(
             machine.data_segment(),
@@ -165,22 +177,54 @@ mod tests {
         let mut machine = Machine::default();
         machine.load_program(0, DISPLAY_DEMO_PROGRAM).unwrap();
         assert!(matches!(
-            machine.run(5_000_000).unwrap(),
+            machine.run(12_000_000).unwrap(),
             RunOutcome::StepLimit { .. }
         ));
         let mut unwritten = Vec::new();
-        for y in 0..240u32 {
-            for x in 0..320u32 {
-                let address = framebuffer_word(x, y);
-                if machine.physical_memory(PhysicalWordAddress::new(address)) == 0 {
-                    unwritten.push((y, x));
+        let mut unwritten_count = 0usize;
+        for base in [FRAMEBUFFER_A_BASE_WORD, FRAMEBUFFER_B_BASE_WORD] {
+            for y in 0..240u32 {
+                for x in 0..320u32 {
+                    let address = framebuffer_word_at(base, x, y);
+                    if machine.physical_memory(PhysicalWordAddress::new(address)) == 0 {
+                        unwritten_count += 1;
+                        if unwritten.len() < 16 {
+                            unwritten.push((base, y, x));
+                        }
+                    }
                 }
             }
         }
         assert!(
-            unwritten.is_empty(),
-            "unwritten framebuffer pixels: {unwritten:?}"
+            unwritten_count == 0,
+            "{unwritten_count} unwritten framebuffer pixels; first: {unwritten:?}"
         );
+    }
+
+    #[test]
+    fn animation_publishes_alternating_back_buffers_on_host_vblank() {
+        use cpu_v3::{Machine, RunOutcome};
+
+        let mut machine = Machine::default();
+        machine.load_program(0, DISPLAY_DEMO_PROGRAM).unwrap();
+        machine.attach_device(DISPLAY_DEVICE, Box::<DisplayDevice>::default());
+        assert!(matches!(
+            machine.run(12_000_000).unwrap(),
+            RunOutcome::StepLimit { .. }
+        ));
+        let display = machine.device::<DisplayDevice>(DISPLAY_DEVICE).unwrap();
+        assert!(display.swap_pending());
+        display.advance_frame();
+        assert_eq!(display.active_base(), FRAMEBUFFER_B_BASE_WORD);
+
+        assert!(matches!(
+            machine.run(1_000_000).unwrap(),
+            RunOutcome::StepLimit { .. }
+        ));
+        let display = machine.device::<DisplayDevice>(DISPLAY_DEVICE).unwrap();
+        assert!(display.swap_pending());
+        display.advance_frame();
+        assert_eq!(display.active_base(), FRAMEBUFFER_A_BASE_WORD);
     }
 
     #[test]
