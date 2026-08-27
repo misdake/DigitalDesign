@@ -167,9 +167,11 @@ mod tests {
             .join("rcc")
             .join(file);
         let source = std::fs::read_to_string(&path).expect("read rcc source");
+        let source_dir = path.parent().expect("rcc source directory");
         let program =
             compile_program_named(&path.display().to_string(), &source, options, &mut |name| {
-                Err(format!("unknown module `{name}`"))
+                std::fs::read_to_string(source_dir.join(format!("{name}.rs")))
+                    .map_err(|error| format!("read module `{name}`: {error}"))
             })
             .expect("rcc compile failed");
         rcc_backend::compile(program, options, "main")

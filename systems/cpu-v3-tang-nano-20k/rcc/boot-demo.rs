@@ -5,12 +5,13 @@
 //! success, XOR checksum of bytes 0..6) through the device 0 UART. Never halts.
 
 use crate::dsl_rt::*;
+mod device_abi;
 
 /// Transmits one byte through the device 0 UART (channel 3), polling the
 /// busy bit first.
 fn uart_byte(b: u16) {
-    while dev_recv(0, 3) & 1 != 0 { }
-    dev_send(0, 3, b);
+    while dev_recv(SYSTEM_CONTROL_DEVICE, SYSCTL_UART_STATUS) & 1 != 0 { }
+    dev_send(SYSTEM_CONTROL_DEVICE, SYSCTL_UART_TX_DATA, b);
 }
 
 /// Transmits one successful CpuV3 boot status frame.
@@ -43,7 +44,7 @@ fn main() {
     let mut led: u16 = 0b00_0001;
     let mut moving_left: u16 = 1;
     while 1 == 1 {
-        dev_send(0, 2, led);
+        dev_send(SYSTEM_CONTROL_DEVICE, SYSCTL_LED, led);
         // Keep two adjacent frames at every position so bounded host and model
         // validation does not depend on the deliberately long visual delay.
         uart_success();

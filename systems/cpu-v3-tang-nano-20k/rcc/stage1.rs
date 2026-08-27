@@ -11,6 +11,7 @@
 //! ABI with stage code 2 (see `BootErrorReport`).
 
 use crate::dsl_rt::*;
+mod device_abi;
 
 /// Manifest buffer: 192 words = 384 bytes, holding the 48-byte header plus
 /// up to ten 32-byte section records. Zero-initialized statics emit no
@@ -64,13 +65,13 @@ const MW_RECORDS: u16 = 24;
 /// Waits for the current DMA transfer; returns 0 on completion or the DMA
 /// error code. Device 2 channels: 0 command, 1 status, 14 error.
 fn dma_wait() -> u16 {
-    let mut status = dev_recv(2, 1);
-    while status == 1 {
+    let mut status = dev_recv(BOOT_DMA_DEVICE, DMA_STATUS);
+    while status == DMA_STATUS_BUSY {
         // busy
-        status = dev_recv(2, 1);
+        status = dev_recv(BOOT_DMA_DEVICE, DMA_STATUS);
     }
-    if status == 0x8000 {
-        return dev_recv(2, 14);
+    if status == DMA_STATUS_ERROR {
+        return dev_recv(BOOT_DMA_DEVICE, DMA_ERROR);
     }
     0
 }
@@ -78,15 +79,15 @@ fn dma_wait() -> u16 {
 /// Transmits one byte through the device 0 UART (channel 3), polling the
 /// busy bit first.
 fn uart_byte(b: u16) {
-    while dev_recv(0, 3) & 1 != 0 { }
-    dev_send(0, 3, b);
+    while dev_recv(SYSTEM_CONTROL_DEVICE, SYSCTL_UART_STATUS) & 1 != 0 { }
+    dev_send(SYSTEM_CONTROL_DEVICE, SYSCTL_UART_TX_DATA, b);
 }
 
 /// Reports a boot failure: LED `{stage, category}` on device 0 channel 2,
 /// then the 10-byte `CV3B` frame retransmitted forever.
 #[allow(clippy::eq_op)] // `while 1 == 1` is the rcc spelling of an endless loop
 fn boot_fail(stage: u16, category: u16, code: u16, detail: u16) {
-    dev_send(0, 2, (stage << 4) | category);
+    dev_send(SYSTEM_CONTROL_DEVICE, SYSCTL_LED, (stage << 4) | category);
     let checksum = 0x43 ^ 0x56 ^ 0x33 ^ 0x42 ^ stage ^ category ^ code ^ (detail & 0xff) ^ (detail >> 8);
     while 1 == 1 {
         uart_byte(0x43); // 'C'
@@ -111,15 +112,15 @@ fn main() {
     }
 
     // DMA the manifest into the own static buffer.
-    dev_send(2, 2, desc[DW_MANIFEST_LO]);
-    dev_send(2, 3, desc[DW_MANIFEST_HI] + FLASH_BASE_HI);
-    dev_send(2, 4, addr_of(&MANIFEST).addr());
-    dev_send(2, 5, desc[DW_S1_DSEG]);
-    dev_send(2, 6, size_lo);
-    dev_send(2, 7, size_hi);
-    dev_send(2, 8, size_lo);
-    dev_send(2, 9, size_hi);
-    dev_send(2, 0, 1);
+    dev_send(BOOT_DMA_DEVICE, DMA_FLASH_OFFSET_LOW, desc[DW_MANIFEST_LO]);
+    dev_send(BOOT_DMA_DEVICE, DMA_FLASH_OFFSET_HIGH, desc[DW_MANIFEST_HI] + FLASH_BASE_HI);
+    dev_send(BOOT_DMA_DEVICE, DMA_DESTINATION_LOW, addr_of(&MANIFEST).addr());
+    dev_send(BOOT_DMA_DEVICE, DMA_DESTINATION_HIGH, desc[DW_S1_DSEG]);
+    dev_send(BOOT_DMA_DEVICE, DMA_FILE_SIZE_LOW, size_lo);
+    dev_send(BOOT_DMA_DEVICE, DMA_FILE_SIZE_HIGH, size_hi);
+    dev_send(BOOT_DMA_DEVICE, DMA_MEMORY_SIZE_LOW, size_lo);
+    dev_send(BOOT_DMA_DEVICE, DMA_MEMORY_SIZE_HIGH, size_hi);
+    dev_send(BOOT_DMA_DEVICE, DMA_COMMAND, DMA_COMMAND_START);
     let err = dma_wait();
     if err != 0 {
         boot_fail(2, CATEGORY_DMA, 1, err);
@@ -148,7 +149,7 @@ fn main() {
     // Read the reset-time choice before loading application sections. Button
     // 10 selects application segment 5; button 01 and default 00 select the
     // primary application segment 3.
-    let selection = dev_recv(1, 0) & 3;
+    let selection = dev_recv(BOOT_SELECT_DEVICE, BOOT_SELECT_VALUE) & 3;
     let mut i: u16 = 0;
     while i < count {
         // section record i: 16 words at MW_RECORDS + i * 16
@@ -210,15 +211,15 @@ fn main() {
             // Load: copy file bytes; Zero: file size 0 zero-fills the extent.
             let file_lo2 = if kind == 2 { 0 } else { file_lo };
             let file_hi2 = if kind == 2 { 0 } else { file_hi };
-            dev_send(2, 2, f_lo);
-            dev_send(2, 3, f_hi + FLASH_BASE_HI);
-            dev_send(2, 4, d_lo);
-            dev_send(2, 5, d_hi);
-            dev_send(2, 6, file_lo2);
-            dev_send(2, 7, file_hi2);
-            dev_send(2, 8, mem_lo);
-            dev_send(2, 9, mem_hi);
-            dev_send(2, 0, 1);
+            dev_send(BOOT_DMA_DEVICE, DMA_FLASH_OFFSET_LOW, f_lo);
+            dev_send(BOOT_DMA_DEVICE, DMA_FLASH_OFFSET_HIGH, f_hi + FLASH_BASE_HI);
+            dev_send(BOOT_DMA_DEVICE, DMA_DESTINATION_LOW, d_lo);
+            dev_send(BOOT_DMA_DEVICE, DMA_DESTINATION_HIGH, d_hi);
+            dev_send(BOOT_DMA_DEVICE, DMA_FILE_SIZE_LOW, file_lo2);
+            dev_send(BOOT_DMA_DEVICE, DMA_FILE_SIZE_HIGH, file_hi2);
+            dev_send(BOOT_DMA_DEVICE, DMA_MEMORY_SIZE_LOW, mem_lo);
+            dev_send(BOOT_DMA_DEVICE, DMA_MEMORY_SIZE_HIGH, mem_hi);
+            dev_send(BOOT_DMA_DEVICE, DMA_COMMAND, DMA_COMMAND_START);
             let err = dma_wait();
             if err != 0 {
                 boot_fail(2, CATEGORY_DMA, 1, err);
@@ -243,8 +244,8 @@ fn main() {
         cseg = 5;
         entry = 0x0200;
     }
-    dev_send(0, 0, 0);
-    dev_send(0, 1, 0);
+    dev_send(SYSTEM_CONTROL_DEVICE, SYSCTL_INVALIDATE_ICACHE, 0);
+    dev_send(SYSTEM_CONTROL_DEVICE, SYSCTL_INVALIDATE_DCACHE, 0);
     mtsr_dseg(dseg);
     jseg(cseg, entry);
 }

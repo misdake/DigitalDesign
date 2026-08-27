@@ -881,9 +881,11 @@ mod tests {
     #[test]
     fn device_intrinsics_use_the_dedicated_device_path() {
         let source = r#"
+            const ECHO_DEVICE: u16 = 1 + 1;
+            const ECHO_CHANNEL: u16 = 1 + 2;
             fn main() {
-                dev_send(2, 3, 0x1234);
-                halt(dev_recv(2, 3));
+                dev_send(ECHO_DEVICE, ECHO_CHANNEL, 0x1234);
+                halt(dev_recv(ECHO_DEVICE, ECHO_CHANNEL));
             }
         "#;
         struct EchoDevice([u16; 16]);
@@ -1013,7 +1015,7 @@ mod tests {
     fn device_indices_above_seven_are_rejected() {
         let result = std::panic::catch_unwind(|| {
             compile(
-                "fn main() { dev_send(8, 0, 0); halt(0); }",
+                "const INVALID_DEVICE: u16 = 8;\nconst TEST_CHANNEL: u16 = 0;\nfn main() { dev_send(INVALID_DEVICE, TEST_CHANNEL, 0); halt(0); }",
                 CompilerOptions::default(),
             )
         });

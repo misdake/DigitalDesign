@@ -10,6 +10,7 @@
 //! UART frames (see `BootErrorReport`).
 
 use crate::dsl_rt::*;
+mod device_abi;
 
 // Flash byte address of the boot package is 0x0010_0000 (behind the FPGA
 // configuration reserve); descriptor offsets are package-relative, so only
@@ -50,47 +51,47 @@ const DW_HANDOFF_HI: u16 = 31;
 /// Waits for the current DMA transfer; returns 0 on completion or the DMA
 /// error code. Device 2 channels: 0 command, 1 status, 14 error.
 fn dma_wait() -> u16 {
-    let mut status = dev_recv(2, 1);
-    while status == 1 {
+    let mut status = dev_recv(BOOT_DMA_DEVICE, DMA_STATUS);
+    while status == DMA_STATUS_BUSY {
         // busy
-        status = dev_recv(2, 1);
+        status = dev_recv(BOOT_DMA_DEVICE, DMA_STATUS);
     }
-    if status == 0x8000 {
-        return dev_recv(2, 14);
+    if status == DMA_STATUS_ERROR {
+        return dev_recv(BOOT_DMA_DEVICE, DMA_ERROR);
     }
     0
 }
 
 /// Programs the DMA flash/destination addresses (device 2, channels 2..=5).
 fn dma_set_addrs(flash_hi: u16, flash_lo: u16, dest_hi: u16, dest_lo: u16) {
-    dev_send(2, 2, flash_lo);
-    dev_send(2, 3, flash_hi);
-    dev_send(2, 4, dest_lo);
-    dev_send(2, 5, dest_hi);
+    dev_send(BOOT_DMA_DEVICE, DMA_FLASH_OFFSET_LOW, flash_lo);
+    dev_send(BOOT_DMA_DEVICE, DMA_FLASH_OFFSET_HIGH, flash_hi);
+    dev_send(BOOT_DMA_DEVICE, DMA_DESTINATION_LOW, dest_lo);
+    dev_send(BOOT_DMA_DEVICE, DMA_DESTINATION_HIGH, dest_hi);
 }
 
 /// Programs the DMA file/memory sizes and starts the transfer (device 2,
 /// channels 6..=9 and 0). The engine zero-fills `memory_size - file_size`.
 fn dma_start(file_hi: u16, file_lo: u16, mem_hi: u16, mem_lo: u16) {
-    dev_send(2, 6, file_lo);
-    dev_send(2, 7, file_hi);
-    dev_send(2, 8, mem_lo);
-    dev_send(2, 9, mem_hi);
-    dev_send(2, 0, 1);
+    dev_send(BOOT_DMA_DEVICE, DMA_FILE_SIZE_LOW, file_lo);
+    dev_send(BOOT_DMA_DEVICE, DMA_FILE_SIZE_HIGH, file_hi);
+    dev_send(BOOT_DMA_DEVICE, DMA_MEMORY_SIZE_LOW, mem_lo);
+    dev_send(BOOT_DMA_DEVICE, DMA_MEMORY_SIZE_HIGH, mem_hi);
+    dev_send(BOOT_DMA_DEVICE, DMA_COMMAND, DMA_COMMAND_START);
 }
 
 /// Transmits one byte through the device 0 UART (channel 3), polling the
 /// busy bit first.
 fn uart_byte(b: u16) {
-    while dev_recv(0, 3) & 1 != 0 { }
-    dev_send(0, 3, b);
+    while dev_recv(SYSTEM_CONTROL_DEVICE, SYSCTL_UART_STATUS) & 1 != 0 { }
+    dev_send(SYSTEM_CONTROL_DEVICE, SYSCTL_UART_TX_DATA, b);
 }
 
 /// Reports a boot failure: LED `{stage, category}` on device 0 channel 2,
 /// then the 10-byte `CV3B` frame retransmitted forever.
 #[allow(clippy::eq_op)] // `while 1 == 1` is the rcc spelling of an endless loop
 fn boot_fail(stage: u16, category: u16, code: u16, detail: u16) {
-    dev_send(0, 2, (stage << 4) | category);
+    dev_send(SYSTEM_CONTROL_DEVICE, SYSCTL_LED, (stage << 4) | category);
     let checksum = 0x43 ^ 0x56 ^ 0x33 ^ 0x42 ^ stage ^ category ^ code ^ (detail & 0xff) ^ (detail >> 8);
     while 1 == 1 {
         uart_byte(0x43); // 'C'
@@ -227,8 +228,8 @@ fn main() {
     let dseg = desc[DW_S1_DSEG];
     let cseg = desc[DW_S1_CSEG];
     let entry = desc[DW_S1_ENTRY];
-    dev_send(0, 0, 0);
-    dev_send(0, 1, 0);
+    dev_send(SYSTEM_CONTROL_DEVICE, SYSCTL_INVALIDATE_ICACHE, 0);
+    dev_send(SYSTEM_CONTROL_DEVICE, SYSCTL_INVALIDATE_DCACHE, 0);
     mtsr_dseg(dseg);
     jseg(cseg, entry);
 }

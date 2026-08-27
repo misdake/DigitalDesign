@@ -1,8 +1,8 @@
 //! Stable CPU register contract for the boot Flash-to-memory DMA engine and
 //! the system-control device.
 
-/// System-control device selected by `dev_recv(0, channel)` and
-/// `dev_send(0, channel, value)`.
+/// System-control device selected by `dev_recv(SYSTEM_CONTROL_DEVICE, channel)`
+/// and `dev_send(SYSTEM_CONTROL_DEVICE, channel, value)`.
 pub const SYSTEM_CONTROL_DEVICE: u8 = 0;
 
 /// Writing any value pulses a full instruction-cache invalidation.
@@ -20,8 +20,8 @@ pub const SYSCTL_UART: u8 = 3;
 pub const BOOT_SELECT_DEVICE: u8 = 1;
 pub const BOOT_SELECT_VALUE: u8 = 0;
 
-/// Device-register page selected by `dev_recv(2, channel)` and
-/// `dev_send(2, channel, value)`.
+/// Boot DMA device selected by `dev_recv(BOOT_DMA_DEVICE, channel)` and
+/// `dev_send(BOOT_DMA_DEVICE, channel, value)`.
 pub const BOOT_DMA_DEVICE: u8 = 2;
 
 pub const DMA_COMMAND: u8 = 0;

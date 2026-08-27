@@ -16,9 +16,11 @@ use std::path::{Path, PathBuf};
 
 fn compile(path: &Path, options: &CompilerOptions) -> Vec<u16> {
     let source = std::fs::read_to_string(path).expect("read RCC boot source");
+    let source_dir = path.parent().expect("RCC source directory");
     let program =
         compile_program_named(&path.display().to_string(), &source, options, &mut |name| {
-            Err(format!("unknown module `{name}`"))
+            std::fs::read_to_string(source_dir.join(format!("{name}.rs")))
+                .map_err(|error| format!("read module `{name}`: {error}"))
         })
         .expect("compile RCC boot source");
     rcc_backend::compile(program, options, "main").words
@@ -51,6 +53,7 @@ fn main() {
         "display-demo.rs",
         "device-diagnostic.rs",
         "sdram-self-test.rs",
+        "device_abi.rs",
     ] {
         println!("cargo:rerun-if-changed={}", sources.join(name).display());
     }
