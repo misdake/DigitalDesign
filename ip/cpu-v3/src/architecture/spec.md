@@ -162,6 +162,35 @@ With the high offset page restored to memory, `SP = 0` again denotes the
 exclusive `0x10000` top of a 64K-word data segment. This is the default compiler
 and boot ABI stack value.
 
+## Revision 0.7
+
+Revision 0.7 assigns the complete `D fn a b` family to the blocking fix16 FPU.
+It adds sixteen four-lane F registers, each lane holding signed Q8.8 data, and
+a signed saturating 40-bit accumulator. FPU instructions complete and retire
+before the next instruction is fetched. They never consume `IMMHI12`.
+
+| fn | Name | Operation |
+| --- | --- | --- |
+| 0/1 | `FLOAD`/`FSTORE` | raw fix16 bridge between a GPR and lane x |
+| 2/3 | `FIMPORT4`/`FEXPORT4` | four aligned words at `{DSEG, rb}` |
+| 4..7 | `FMOV`/`FPACK4`/`FUNPACK4`/`FTRANSPOSE4` | register reorganization |
+| 8..A | `FADD`/`FSUB`/`FMUL` | saturating component arithmetic |
+| B/C | `FDOT4ACC`/`FACCSTORE` | wide accumulation and rounded lane writeback |
+| D | `FCMP` | signed lane-x ordering for the pending test |
+| E | `FUNARY` | reciprocal, reciprocal sqrt, sin/cos, and simple unary operations |
+| F | `FMULS` | vector multiplied by `Fb.x` |
+
+All narrowing uses round-to-nearest with ties to even followed by signed Q8.8
+saturation. `FRCP(0)` and `FRSQRT(x)` for `x <= 0` raise FPU-domain fault code
+2 without modifying FPU state. Four-word transfers require `rb & 3 == 0`; a
+misaligned transfer faults before issuing memory traffic. The first cache port
+remains one word wide, so the core performs four ordinary ready/valid transfers.
+
+The three continuation bits are derived combinationally from the current four
+lane values and are only an execution hint. They are not architectural state
+and are neither spilled nor restored. All F registers are caller-saved. The
+software ABI requires ACC to be zero at every function entry, call, and return.
+
 ## Memory and boot direction
 
 The first implementation keeps the CPU, cache controller, SDRAM scheduler, and

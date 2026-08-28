@@ -7,6 +7,7 @@
 
 mod cache;
 mod encoding;
+mod fpu;
 mod sdram;
 mod sim;
 
@@ -14,5 +15,6 @@ pub use digital_design_ip_common::PhysicalWordAddress;
 
 pub use cache::*;
 pub use encoding::*;
+pub use fpu::*;
 pub use sdram::*;
 pub use sim::*;

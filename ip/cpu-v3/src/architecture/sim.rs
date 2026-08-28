@@ -1,7 +1,12 @@
 //! Small architectural interpreter used as the CpuV3 correctness oracle.
 
 use super::encoding::{is_prefix_consumer, sign_extend, SpecialRegister, Word, LINK_REGISTER};
-use super::PhysicalWordAddress;
+use super::{
+    acc_saturate, fix16_abs, fix16_add, fix16_ceil, fix16_compare, fix16_floor, fix16_from_acc,
+    fix16_mul, fix16_neg, fix16_reciprocal, fix16_reciprocal_sqrt, fix16_round, fix16_saturate01,
+    fix16_sign, fix16_sin_cos, fix16_sub, FpuDomainError, FpuUnaryOp, FpuVector,
+    PhysicalWordAddress,
+};
 use std::cmp::Ordering;
 
 /// Fitted 8-MiB SDRAM on the initial Tang Nano 20K target.
@@ -10,7 +15,8 @@ pub const DEFAULT_PHYSICAL_MEMORY_WORDS: usize = 1 << 22;
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum FaultKind {
     InvalidInstruction,
-    UnsupportedFpu,
+    FpuDomain(FpuDomainError),
+    MisalignedFpuVectorAddress { offset: Word },
     PhysicalAddressOutOfRange { address: PhysicalWordAddress },
 }
 
@@ -44,6 +50,8 @@ pub trait Device {
 
 pub struct Machine {
     registers: [Word; 16],
+    fpu_registers: [FpuVector; 16],
+    fpu_accumulator: i64,
     memory: Box<[Word]>,
     devices: [Option<Box<dyn Device>>; 8],
     /// Optional BSRAM boot-window image: instruction fetches from the lowest
@@ -81,6 +89,8 @@ impl Machine {
         );
         Self {
             registers: [0; 16],
+            fpu_registers: [[0; 4]; 16],
+            fpu_accumulator: 0,
             memory: vec![0; words].into_boxed_slice(),
             devices: std::array::from_fn(|_| None),
             boot_window: None,
@@ -135,6 +145,18 @@ impl Machine {
 
     pub fn register(&self, index: u8) -> Option<Word> {
         self.registers.get(usize::from(index)).copied()
+    }
+
+    pub fn fpu_registers(&self) -> &[FpuVector; 16] {
+        &self.fpu_registers
+    }
+
+    pub fn fpu_register(&self, index: u8) -> Option<FpuVector> {
+        self.fpu_registers.get(usize::from(index)).copied()
+    }
+
+    pub fn fpu_accumulator(&self) -> i64 {
+        self.fpu_accumulator
     }
 
     pub fn memory(&self, address: Word) -> Word {
@@ -262,7 +284,7 @@ impl Machine {
             0xa => self.execute_immediate(instruction, prefix),
             0xb => self.execute_branch(instruction, prefix, pending),
             0xc => self.execute_device(instruction),
-            0xd => Err(FaultKind::UnsupportedFpu),
+            0xd => self.execute_fpu(instruction),
             0xe => self.execute_control(instruction),
             _ => unreachable!(),
         };
@@ -415,6 +437,152 @@ impl Machine {
                 .map_or(0, |handler| handler.read(&mut self.memory, channel));
         }
         Ok(StepOutcome::Running)
+    }
+
+    fn execute_fpu(&mut self, instruction: Word) -> ExecuteResult {
+        let function = field(instruction, 8);
+        let a = usize::from(field(instruction, 4));
+        let b = usize::from(field(instruction, 0));
+        match function {
+            0 => self.fpu_registers[a] = [self.registers[b] as i16, 0, 0, 0],
+            1 => self.registers[a] = self.fpu_registers[b][0] as Word,
+            2 => {
+                let offset = self.registers[b];
+                if offset & 3 != 0 {
+                    return Err(FaultKind::MisalignedFpuVectorAddress { offset });
+                }
+                let mut value = [0; 4];
+                for (lane, slot) in value.iter_mut().enumerate() {
+                    *slot = self.read_data(self.data_address(offset.wrapping_add(lane as Word)))?
+                        as i16;
+                }
+                self.fpu_registers[a] = value;
+            }
+            3 => {
+                let offset = self.registers[b];
+                if offset & 3 != 0 {
+                    return Err(FaultKind::MisalignedFpuVectorAddress { offset });
+                }
+                let value = self.fpu_registers[a];
+                for (lane, word) in value.into_iter().enumerate() {
+                    self.write_data(
+                        self.data_address(offset.wrapping_add(lane as Word)),
+                        word as Word,
+                    )?;
+                }
+            }
+            4 => self.fpu_registers[a] = self.fpu_registers[b],
+            5 => {
+                if b > 12 {
+                    return Err(FaultKind::InvalidInstruction);
+                }
+                let source = self.fpu_registers;
+                self.fpu_registers[a] = std::array::from_fn(|lane| source[b + lane][0]);
+            }
+            6 => {
+                if a > 12 {
+                    return Err(FaultKind::InvalidInstruction);
+                }
+                let source = self.fpu_registers[b];
+                for (lane, value) in source.into_iter().enumerate() {
+                    self.fpu_registers[a + lane] = [value, 0, 0, 0];
+                }
+            }
+            7 => {
+                if a > 12 || b != 0 {
+                    return Err(FaultKind::InvalidInstruction);
+                }
+                let source: [FpuVector; 4] = self.fpu_registers[a..a + 4]
+                    .try_into()
+                    .expect("validated four-register matrix");
+                self.fpu_registers[a] = [source[0][0], source[1][0], source[2][0], source[3][0]];
+                self.fpu_registers[a + 1] =
+                    [source[0][1], source[1][1], source[2][1], source[3][1]];
+                self.fpu_registers[a + 2] =
+                    [source[0][2], source[1][2], source[2][2], source[3][2]];
+                self.fpu_registers[a + 3] =
+                    [source[0][3], source[1][3], source[2][3], source[3][3]];
+            }
+            8..=10 | 15 => {
+                let left = self.fpu_registers[a];
+                let right = self.fpu_registers[b];
+                self.fpu_registers[a] = std::array::from_fn(|lane| match function {
+                    8 => fix16_add(left[lane], right[lane]),
+                    9 => fix16_sub(left[lane], right[lane]),
+                    10 => fix16_mul(left[lane], right[lane]),
+                    15 => fix16_mul(left[lane], right[0]),
+                    _ => unreachable!(),
+                });
+            }
+            11 => {
+                let left = self.fpu_registers[a];
+                let right = self.fpu_registers[b];
+                for lane in 0..4 {
+                    self.fpu_accumulator = acc_saturate(
+                        i128::from(self.fpu_accumulator)
+                            + i128::from(left[lane]) * i128::from(right[lane]),
+                    );
+                }
+            }
+            12 => {
+                if b > 3 {
+                    return Err(FaultKind::InvalidInstruction);
+                }
+                self.fpu_registers[a][b] = fix16_from_acc(self.fpu_accumulator);
+                self.fpu_accumulator = 0;
+            }
+            13 => {
+                self.pending_test = Some(fix16_compare(
+                    self.fpu_registers[a][0],
+                    self.fpu_registers[b][0],
+                ));
+            }
+            14 => self.execute_fpu_unary(a, b)?,
+            _ => unreachable!(),
+        }
+        Ok(StepOutcome::Running)
+    }
+
+    fn execute_fpu_unary(&mut self, register: usize, operation: usize) -> Result<(), FaultKind> {
+        let source = self.fpu_registers[register];
+        match operation {
+            value if value == FpuUnaryOp::Reciprocal as usize => {
+                self.fpu_registers[register][0] =
+                    fix16_reciprocal(source[0]).map_err(FaultKind::FpuDomain)?;
+            }
+            value if value == FpuUnaryOp::ReciprocalSqrt as usize => {
+                self.fpu_registers[register][0] =
+                    fix16_reciprocal_sqrt(source[0]).map_err(FaultKind::FpuDomain)?;
+            }
+            value if value == FpuUnaryOp::SinCos as usize => {
+                let (sin, cos) = fix16_sin_cos(source[0]);
+                self.fpu_registers[register] = [sin, cos, 0, 0];
+            }
+            value if value == FpuUnaryOp::Abs as usize => {
+                self.fpu_registers[register] = source.map(fix16_abs)
+            }
+            value if value == FpuUnaryOp::Neg as usize => {
+                self.fpu_registers[register] = source.map(fix16_neg)
+            }
+            value if value == FpuUnaryOp::Floor as usize => {
+                self.fpu_registers[register] = source.map(fix16_floor)
+            }
+            value if value == FpuUnaryOp::Ceil as usize => {
+                self.fpu_registers[register] = source.map(fix16_ceil)
+            }
+            value if value == FpuUnaryOp::Round as usize => {
+                self.fpu_registers[register] = source.map(fix16_round)
+            }
+            value if value == FpuUnaryOp::Saturate01 as usize => {
+                self.fpu_registers[register] = source.map(fix16_saturate01)
+            }
+            value if value == FpuUnaryOp::Sign as usize => {
+                self.fpu_registers[register] = source.map(fix16_sign)
+            }
+            value if value == FpuUnaryOp::Zero as usize => self.fpu_registers[register] = [0; 4],
+            _ => return Err(FaultKind::InvalidInstruction),
+        }
+        Ok(())
     }
 
     fn execute_control(&mut self, instruction: Word) -> ExecuteResult {
@@ -624,16 +792,78 @@ mod tests {
     }
 
     #[test]
-    fn fpu_opcode_has_a_distinct_fault() {
+    fn fpu_domain_fault_is_precise() {
         let mut machine = Machine::default();
-        machine.load_program(0, &[0xd000]).unwrap();
+        machine
+            .load_program(
+                0,
+                &[
+                    crate::fpu(crate::FpuOp::Load, 0, 0),
+                    crate::fpu_unary(0, crate::FpuUnaryOp::Reciprocal),
+                ],
+            )
+            .unwrap();
+        assert_eq!(machine.step(), Ok(StepOutcome::Running));
         assert_eq!(
             machine.step(),
             Err(Fault {
-                kind: FaultKind::UnsupportedFpu,
-                address: 0,
-                instruction: 0xd000
+                kind: FaultKind::FpuDomain(FpuDomainError::ReciprocalZero),
+                address: 1,
+                instruction: crate::fpu_unary(0, crate::FpuUnaryOp::Reciprocal)
             })
+        );
+        assert_eq!(machine.fpu_register(0), Some([0; 4]));
+    }
+
+    #[test]
+    fn fpu_vector_memory_dot_and_acc_writeback_follow_fix16_semantics() {
+        let mut program = vec![];
+        program.extend(load_immediate16(1, 0x0100));
+        program.extend(load_immediate16(2, 0x0104));
+        program.extend([
+            crate::fpu(crate::FpuOp::Import4, 0, 1),
+            crate::fpu(crate::FpuOp::Move, 1, 0),
+            crate::fpu(crate::FpuOp::Dot4Acc, 0, 1),
+            crate::fpu(crate::FpuOp::AccStore, 2, 0),
+            crate::fpu(crate::FpuOp::Export4, 2, 2),
+            halt(),
+        ]);
+        let mut machine = Machine::default();
+        machine.load_program(0, &program).unwrap();
+        machine
+            .load_program(0x0100, &[256, 512, (-256_i16) as u16, 128])
+            .unwrap();
+        machine.run(32).unwrap();
+
+        assert_eq!(machine.fpu_register(0), Some([256, 512, -256, 128]));
+        assert_eq!(machine.fpu_register(2), Some([1600, 0, 0, 0]));
+        assert_eq!(machine.fpu_accumulator(), 0);
+        assert_eq!(machine.memory(0x0104), 1600);
+        assert_eq!(machine.memory(0x0105), 0);
+    }
+
+    #[test]
+    fn fpu_compare_sets_the_existing_pending_test() {
+        let mut program = vec![];
+        program.extend(load_immediate16(0, (-256_i16) as u16));
+        program.extend(load_immediate16(1, 256));
+        program.extend([
+            crate::fpu(crate::FpuOp::Load, 0, 0),
+            crate::fpu(crate::FpuOp::Load, 1, 1),
+            crate::fpu(crate::FpuOp::Compare, 0, 1),
+            branch(TestCondition::LessThan, 1),
+            halt(),
+            crate::move_register(0, 1),
+            halt(),
+        ]);
+        let mut machine = Machine::default();
+        machine.load_program(0, &program).unwrap();
+        assert_eq!(
+            machine.run(32).unwrap(),
+            RunOutcome::Halted {
+                steps: 10,
+                signal: 256
+            }
         );
     }
 
