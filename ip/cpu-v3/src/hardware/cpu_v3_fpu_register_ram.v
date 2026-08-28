@@ -10,9 +10,9 @@ module CpuV3FpuRegisterRam (
 );
 
 // Sixteen four-lane fix16 vectors in distributed RAM: one synchronous write
-// port and two asynchronous read ports, so FPU execution reads operands
-// combinationally without a staging pass.
-reg [15:0] words [0:63];
+// port and two asynchronous read ports. The explicit style prevents registered
+// issue addresses in the parent from silently remapping this leaf to BSRAM.
+(* syn_ramstyle = "distributed_ram" *) reg [15:0] words [0:63];
 integer initial_word;
 initial begin
     for (initial_word = 0; initial_word < 64; initial_word = initial_word + 1)

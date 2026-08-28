@@ -181,6 +181,7 @@ enum Phase {
     MultiplyWait,
     MultiplyCommit,
     FpuExecute,
+    FpuUnaryDispatch,
     FpuWriteLanes,
     FpuGatherRead,
     FpuGatherWrite,
@@ -196,6 +197,7 @@ enum Phase {
     FpuRomLookup,
     FpuRomWait,
     FpuRomCommit,
+    FpuRomWrite,
     FpuCommit,
     ResetClear,
     Halted,
@@ -666,21 +668,10 @@ impl CpuV3CoreState {
                 self.phase = Phase::FpuCommit;
             }
             14 => match b {
-                0 => {
-                    if self.fpu_registers[a][0] == 0 {
-                        self.fault(CPU_V3_FAULT_FPU_DOMAIN, self.fpu_fault_pc);
-                        return;
-                    }
+                0 | 1 => {
+                    self.fpu_operand_a = self.fpu_registers[a][0];
                     self.fpu_rom_step = 0;
-                    self.phase = Phase::FpuRomNormalize;
-                }
-                1 => {
-                    if self.fpu_registers[a][0] <= 0 {
-                        self.fault(CPU_V3_FAULT_FPU_DOMAIN, self.fpu_fault_pc);
-                        return;
-                    }
-                    self.fpu_rom_step = 0;
-                    self.phase = Phase::FpuRomNormalize;
+                    self.phase = Phase::FpuUnaryDispatch;
                 }
                 2 => {
                     self.fpu_rom_step = 0;
@@ -919,6 +910,16 @@ impl Module for CpuV3Core {
                     state.fpu_step += 1;
                 }
             }
+            Phase::FpuUnaryDispatch => {
+                let unary = field(state.instruction, 0);
+                let domain_error = unary == 0 && state.fpu_operand_a == 0
+                    || unary == 1 && state.fpu_operand_a <= 0;
+                if domain_error {
+                    state.fault(CPU_V3_FAULT_FPU_DOMAIN, state.fpu_fault_pc);
+                } else {
+                    state.phase = Phase::FpuRomNormalize;
+                }
+            }
             Phase::FpuGatherRead => {
                 // Pack4 buffers its four lane-x sources so overlapping
                 // source and destination ranges stay snapshot-clean.
@@ -1039,18 +1040,15 @@ impl Module for CpuV3Core {
             Phase::FpuRomLookup => state.phase = Phase::FpuRomWait,
             Phase::FpuRomWait => state.phase = Phase::FpuRomCommit,
             Phase::FpuRomCommit => {
-                let destination = usize::from(field(state.instruction, 4));
-                let operand = state.fpu_registers[destination][0];
+                let operand = state.fpu_operand_a;
                 match field(state.instruction, 0) {
                     0 => {
-                        state.fpu_registers[destination][0] =
-                            fix16_reciprocal(operand).expect("domain checked");
-                        state.phase = Phase::FpuCommit;
+                        state.fpu_result = fix16_reciprocal(operand).expect("domain checked");
+                        state.phase = Phase::FpuRomWrite;
                     }
                     1 => {
-                        state.fpu_registers[destination][0] =
-                            fix16_reciprocal_sqrt(operand).expect("domain checked");
-                        state.phase = Phase::FpuCommit;
+                        state.fpu_result = fix16_reciprocal_sqrt(operand).expect("domain checked");
+                        state.phase = Phase::FpuRomWrite;
                     }
                     2 if state.fpu_rom_step == 0 => {
                         let (sin, cos) = fix16_sin_cos(operand);
@@ -1067,6 +1065,11 @@ impl Module for CpuV3Core {
                     }
                     _ => unreachable!("only complex unary operations use the FPU ROM"),
                 }
+            }
+            Phase::FpuRomWrite => {
+                let destination = usize::from(field(state.instruction, 4));
+                state.fpu_registers[destination][0] = state.fpu_result;
+                state.phase = Phase::FpuCommit;
             }
             Phase::FpuCommit => state.retire(state.fpu_retire_words),
             Phase::ResetClear => {
@@ -1457,7 +1460,7 @@ mod tests {
     }
 
     #[test]
-    fn fpu_lane_pipelines_have_exact_blocking_latency() {
+    fn fpu_pipelines_have_exact_blocking_latency() {
         fn program(operation: u16) -> Vec<u16> {
             let mut words = vec![];
             words.extend(crate::load_immediate16(0, 256));
@@ -1475,6 +1478,7 @@ mod tests {
         let baseline = program(crate::move_register(15, 15));
         let add = program(crate::fpu(crate::FpuOp::Add, 0, 1));
         let multiply = program(crate::fpu(crate::FpuOp::Mul, 0, 1));
+        let reciprocal = program(crate::fpu_unary(0, crate::FpuUnaryOp::Reciprocal));
         let run = |words: &[u16]| {
             let mut memory = HashMap::new();
             load(&mut memory, 0, words);
@@ -1483,11 +1487,14 @@ mod tests {
         let baseline = run(&baseline);
         let add = run(&add);
         let multiply = run(&multiply);
+        let reciprocal = run(&reciprocal);
 
         assert_eq!(add.cycles - baseline.cycles, 6);
         assert_eq!(multiply.cycles - baseline.cycles, 7);
+        assert_eq!(reciprocal.cycles - baseline.cycles, 9);
         assert_eq!(add.halt_signal, 768);
         assert_eq!(multiply.halt_signal, 512);
+        assert_eq!(reciprocal.halt_signal, 256);
     }
 
     #[test]

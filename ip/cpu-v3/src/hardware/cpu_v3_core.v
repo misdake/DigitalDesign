@@ -60,6 +60,8 @@ localparam [4:0] ST_RESET_CLEAR = 22;
 localparam [4:0] ST_FPU_SCATTER_READ = 24;
 localparam [4:0] ST_FPU_ROM_LOOKUP = 25;
 localparam [4:0] ST_FPU_MULTIPLY_PIPELINE = 26;
+localparam [4:0] ST_FPU_UNARY_DISPATCH = 27;
+localparam [4:0] ST_FPU_ROM_WRITE = 28;
 
 localparam [7:0] FAULT_INVALID_INSTRUCTION = 1;
 localparam [7:0] FAULT_FPU_DOMAIN = 2;
@@ -99,8 +101,9 @@ wire signed [17:0] multiplier_right;
 wire signed [35:0] multiplier_product;
 
 // The sixteen four-lane F registers live in a dual-asynchronous-read SSRAM
-// (64 x 16 bits): operands are read combinationally in the execution states
-// while one synchronous write port serializes write-back.
+// (64 x 16 bits). Registered issue addresses select the current operands while
+// each execution phase schedules the following lane; one synchronous write
+// port serializes write-back.
 wire [15:0] fpu_rf_read_a_data;
 wire [15:0] fpu_rf_read_b_data;
 reg [5:0] fpu_rf_read_a_address;
@@ -123,6 +126,7 @@ reg [9:0] fpu_rom_address = 0;
 wire [15:0] fpu_rom_read_data;
 reg signed [5:0] fpu_rom_exponent = 0;
 reg [7:0] fpu_rom_index = 0;
+reg [16:0] fpu_normalized = 0;
 reg fpu_rom_negative = 0;
 reg [9:0] fpu_sine_phase = 0;
 reg fpu_sine_endpoint = 0;
@@ -420,9 +424,7 @@ wire fpu_alu_writeback =
 wire fpu_move_writeback =
     state == ST_FPU_WRITE_LANES && fpu_write_source == FPU_WRITE_MOVE;
 wire [1:0] fpu_write_lane = fpu_step[1:0];
-wire [1:0] fpu_read_lane =
-    (fpu_alu_writeback || fpu_move_writeback) && fpu_step < 3 ?
-    fpu_step[1:0] + 1'b1 : fpu_step[1:0];
+
 
 // Single-lane add/sub operands for the serialized vector ALU.
 wire signed [16:0] fpu_lane_sum =
@@ -482,32 +484,6 @@ always @* begin
 end
 wire [3:0] fpu_transpose_row_i = field_a + {2'b00, fpu_pair_i};
 wire [3:0] fpu_transpose_row_j = field_a + {2'b00, fpu_pair_j};
-wire [3:0] fpu_gather_vector = field_b + {2'b00, fpu_step[1:0]};
-
-// Operand A read port: vector lane by default, overridden for the gather
-// column, transpose swaps, and export streaming.
-always @* begin
-    case (state)
-        ST_FPU_GATHER_READ:
-            fpu_rf_read_a_address = {fpu_gather_vector, 2'b00};
-        ST_FPU_TRANSPOSE:
-            fpu_rf_read_a_address = {fpu_transpose_row_i, fpu_pair_j};
-        ST_DATA_RESPONSE:
-            fpu_rf_read_a_address = {field_a, fpu_memory_lane + 2'b01};
-        default:
-            fpu_rf_read_a_address = {field_a, fpu_read_lane};
-    endcase
-end
-
-// Operand B read port: vector lane by default, overridden for transpose
-// swaps.
-always @* begin
-    if (state == ST_FPU_TRANSPOSE)
-        fpu_rf_read_b_address = {fpu_transpose_row_j, fpu_pair_i};
-    else
-        fpu_rf_read_b_address = {field_b, fpu_read_lane};
-end
-
 wire immediate_multiply = opcode == 4'ha && field_d == 4'h8;
 wire [15:0] multiply_left_word = registers[field_a];
 wire [15:0] multiply_right_word =
@@ -593,6 +569,8 @@ always @(posedge clk) begin
         fpu_accumulator <= 0;
         fpu_memory_active <= 0;
         fpu_memory_lane <= 0;
+        fpu_rf_read_a_address <= 0;
+        fpu_rf_read_b_address <= 0;
         fpu_mul_valid <= 0;
         fpu_mul_tag_0 <= 0;
         fpu_mul_tag_1 <= 0;
@@ -790,6 +768,8 @@ always @(posedge clk) begin
                             fpu_retire_words <= success_retire_words;
                             fpu_fault_pc <= current_fault_pc;
                             fpu_step <= 0;
+                            fpu_rf_read_a_address <= {field_a, 2'b00};
+                            fpu_rf_read_b_address <= {field_b, 2'b00};
                             state <= ST_FPU_EXECUTE;
                         end
                         4'he: begin
@@ -960,6 +940,9 @@ always @(posedge clk) begin
                                 state <= ST_FETCH_REQUEST;
                             end
                         end else begin
+                            if (pending_write && fpu_memory_lane < 2)
+                                fpu_rf_read_a_address <=
+                                    {field_a, fpu_memory_lane + 2'd2};
                             fpu_memory_lane <= fpu_memory_lane + 1'b1;
                             pending_address <= pending_address + 1'b1;
                             pending_write_data <= fpu_rf_read_a_data;
@@ -1002,6 +985,8 @@ always @(posedge clk) begin
                             pending_write <= field_d == 3;
                             pending_address <= {data_segment_register, registers[field_b]};
                             pending_write_data <= fpu_rf_read_a_data;
+                            if (field_d == 3)
+                                fpu_rf_read_a_address <= {field_a, 2'b01};
                             pending_destination <= field_a;
                             pending_retire_words <= fpu_retire_words;
                             pending_fault_pc <= fpu_fault_pc;
@@ -1011,11 +996,13 @@ always @(posedge clk) begin
                     4: begin
                         fpu_write_source <= FPU_WRITE_MOVE;
                         fpu_result <= fpu_rf_read_b_data;
+                        fpu_rf_read_b_address <= {field_b, 2'b01};
                         fpu_step <= 0;
                         state <= ST_FPU_WRITE_LANES;
                     end
                     5: begin
                         if (field_b <= 12) begin
+                            fpu_rf_read_a_address <= {field_b, 2'b00};
                             fpu_step <= 0;
                             state <= ST_FPU_GATHER_READ;
                         end else begin
@@ -1036,6 +1023,8 @@ always @(posedge clk) begin
                     end
                     7: begin
                         if (field_a <= 12 && field_b == 0) begin
+                            fpu_rf_read_a_address <= {field_a, 2'b01};
+                            fpu_rf_read_b_address <= {field_a + 1'b1, 2'b00};
                             fpu_step <= 0;
                             state <= ST_FPU_TRANSPOSE;
                         end else begin
@@ -1048,6 +1037,8 @@ always @(posedge clk) begin
                         fpu_write_source <= FPU_WRITE_ALU;
                         fpu_operand_a <= fpu_rf_read_a_data;
                         fpu_operand_b <= fpu_rf_read_b_data;
+                        fpu_rf_read_a_address <= {field_a, 2'b01};
+                        fpu_rf_read_b_address <= {field_b, 2'b01};
                         fpu_step <= 0;
                         state <= ST_FPU_WRITE_LANES;
                     end
@@ -1055,6 +1046,8 @@ always @(posedge clk) begin
                         // Latch the broadcast scalar: earlier lane commits
                         // may overwrite Fb.x when Fa and Fb alias.
                         fpu_scalar <= fpu_rf_read_b_data;
+                        fpu_rf_read_a_address <= {field_a, 2'b01};
+                        fpu_rf_read_b_address <= {field_b, 2'b01};
                         fpu_step <= 1;
                         fpu_mul_valid <= 2'b01;
                         fpu_mul_tag_0 <= 0;
@@ -1084,26 +1077,12 @@ always @(posedge clk) begin
                     14: begin
                         case (field_b)
                             0: begin
-                                if (fpu_rf_read_a_data == 0) begin
-                                    fault_code <= FAULT_FPU_DOMAIN;
-                                    fault_pc <= fpu_fault_pc;
-                                    state <= ST_FAULT;
-                                end else begin
-                                    fpu_operand_a <= fpu_rf_read_a_data;
-                                    fpu_rom_negative <= fpu_rf_read_a_data[15];
-                                    state <= ST_FPU_ROM_NORMALIZE;
-                                end
+                                fpu_operand_a <= fpu_rf_read_a_data;
+                                state <= ST_FPU_UNARY_DISPATCH;
                             end
                             1: begin
-                                if ($signed(fpu_rf_read_a_data) <= 0) begin
-                                    fault_code <= FAULT_FPU_DOMAIN;
-                                    fault_pc <= fpu_fault_pc;
-                                    state <= ST_FAULT;
-                                end else begin
-                                    fpu_operand_a <= fpu_rf_read_a_data;
-                                    fpu_rom_negative <= 0;
-                                    state <= ST_FPU_ROM_NORMALIZE;
-                                end
+                                fpu_operand_a <= fpu_rf_read_a_data;
+                                state <= ST_FPU_UNARY_DISPATCH;
                             end
                             2: begin
                                 fpu_rom_step <= 0;
@@ -1114,6 +1093,8 @@ always @(posedge clk) begin
                                 fpu_write_source <= FPU_WRITE_ALU;
                                 fpu_operand_a <= fpu_rf_read_a_data;
                                 fpu_operand_b <= fpu_rf_read_b_data;
+                                fpu_rf_read_a_address <= {field_a, 2'b01};
+                                fpu_rf_read_b_address <= {field_b, 2'b01};
                                 fpu_step <= 0;
                                 state <= ST_FPU_WRITE_LANES;
                             end
@@ -1131,6 +1112,18 @@ always @(posedge clk) begin
                     end
                 endcase
             end
+            ST_FPU_UNARY_DISPATCH: begin
+                if ((field_b == 0 && fpu_operand_a == 0) ||
+                    (field_b == 1 && $signed(fpu_operand_a) <= 0)) begin
+                    fault_code <= FAULT_FPU_DOMAIN;
+                    fault_pc <= fpu_fault_pc;
+                    state <= ST_FAULT;
+                end else begin
+                    fpu_rom_negative <= field_b == 0 && fpu_operand_a[15];
+                    fpu_rom_exponent <= fpu_unary_exponent;
+                    state <= ST_FPU_ROM_NORMALIZE;
+                end
+            end
             ST_FPU_WRITE_LANES: begin
                 if (fpu_alu_writeback && fpu_step < 3) begin
                     fpu_operand_a <= fpu_rf_read_a_data;
@@ -1138,6 +1131,10 @@ always @(posedge clk) begin
                 end
                 if (fpu_move_writeback && fpu_step < 3)
                     fpu_result <= fpu_rf_read_b_data;
+                if ((fpu_alu_writeback || fpu_move_writeback) && fpu_step < 2) begin
+                    fpu_rf_read_a_address <= {field_a, fpu_step[1:0] + 2'd2};
+                    fpu_rf_read_b_address <= {field_b, fpu_step[1:0] + 2'd2};
+                end
                 fpu_rf_write_enable <= 1'b1;
                 fpu_rf_write_address <= {field_a, fpu_write_lane};
                 fpu_rf_write_data <= fpu_move_writeback ?
@@ -1156,6 +1153,10 @@ always @(posedge clk) begin
                 fpu_mul_tag_1 <= fpu_mul_tag_0;
                 if (fpu_step < 4) begin
                     fpu_mul_tag_0 <= fpu_step[1:0];
+                    if (fpu_step < 3) begin
+                        fpu_rf_read_a_address <= {field_a, fpu_step[1:0] + 1'b1};
+                        fpu_rf_read_b_address <= {field_b, fpu_step[1:0] + 1'b1};
+                    end
                     fpu_step <= fpu_step + 1'b1;
                 end
                 if (fpu_mul_valid[1]) begin
@@ -1178,6 +1179,9 @@ always @(posedge clk) begin
                 // Pack4 buffers its four lane-x sources so overlapping
                 // source and destination ranges stay snapshot-clean.
                 fpu_memory_value[fpu_step[1:0]] <= fpu_rf_read_a_data;
+                if (fpu_step < 3)
+                    fpu_rf_read_a_address <=
+                        {field_b + {2'b00, fpu_step[1:0]} + 1'b1, 2'b00};
                 if (fpu_step == 3) begin
                     fpu_step <= 0;
                     state <= ST_FPU_GATHER_WRITE;
@@ -1200,6 +1204,8 @@ always @(posedge clk) begin
                 // Unpack4 buffers the source vector so a destination range
                 // overlapping Fb stays snapshot-clean.
                 fpu_memory_value[fpu_step[1:0]] <= fpu_rf_read_b_data;
+                if (fpu_step < 3)
+                    fpu_rf_read_b_address <= {field_b, fpu_step[1:0] + 1'b1};
                 if (fpu_step == 3) begin
                     fpu_step <= 0;
                     state <= ST_FPU_SCATTER;
@@ -1235,6 +1241,28 @@ always @(posedge clk) begin
                     fpu_rf_write_enable <= 1'b1;
                     fpu_rf_write_address <= {fpu_transpose_row_j, fpu_pair_i};
                     fpu_rf_write_data <= fpu_swap_data;
+                    case (fpu_step[4:2])
+                        0: begin
+                            fpu_rf_read_a_address <= {field_a, 2'd2};
+                            fpu_rf_read_b_address <= {field_a + 2'd2, 2'd0};
+                        end
+                        1: begin
+                            fpu_rf_read_a_address <= {field_a, 2'd3};
+                            fpu_rf_read_b_address <= {field_a + 2'd3, 2'd0};
+                        end
+                        2: begin
+                            fpu_rf_read_a_address <= {field_a + 1'b1, 2'd2};
+                            fpu_rf_read_b_address <= {field_a + 2'd2, 2'd1};
+                        end
+                        3: begin
+                            fpu_rf_read_a_address <= {field_a + 1'b1, 2'd3};
+                            fpu_rf_read_b_address <= {field_a + 2'd3, 2'd1};
+                        end
+                        4: begin
+                            fpu_rf_read_a_address <= {field_a + 2'd2, 2'd3};
+                            fpu_rf_read_b_address <= {field_a + 2'd3, 2'd2};
+                        end
+                    endcase
                 end
                 if (fpu_step == 22) begin
                     fpu_step <= 0;
@@ -1254,16 +1282,16 @@ always @(posedge clk) begin
                 state <= ST_FPU_ROM_LOOKUP;
             end
             ST_FPU_ROM_NORMALIZE: begin
-                // Priority-encode the operand registered in ST_FPU_EXECUTE.
-                fpu_rom_exponent <= fpu_unary_exponent;
+                // Register the barrel-shifter output before endpoint handling
+                // so normalization and exponent adjustment are separate hops.
+                fpu_normalized <= fpu_variable_shifted;
                 state <= ST_FPU_ROM_ADDRESS;
             end
             ST_FPU_ROM_ADDRESS: begin
-                // Barrel-shift the mantissa with the registered exponent.
                 fpu_rom_index <=
-                    fpu_variable_shifted == 17'd512 ? 8'd0 : fpu_variable_shifted[7:0];
+                    fpu_normalized == 17'd512 ? 8'd0 : fpu_normalized[7:0];
                 fpu_rom_exponent <= fpu_rom_exponent +
-                    (fpu_variable_shifted == 17'd512 ? 6'sd1 : 6'sd0);
+                    (fpu_normalized == 17'd512 ? 6'sd1 : 6'sd0);
                 state <= ST_FPU_ROM_LOOKUP;
             end
             ST_FPU_ROM_LOOKUP: begin
@@ -1284,10 +1312,8 @@ always @(posedge clk) begin
             ST_FPU_ROM_WAIT: state <= ST_FPU_ROM_COMMIT;
             ST_FPU_ROM_COMMIT: begin
                 if (field_b <= 1) begin
-                    fpu_rf_write_enable <= 1'b1;
-                    fpu_rf_write_address <= {field_a, 2'b00};
-                    fpu_rf_write_data <= fpu_rom_scaled;
-                    state <= ST_FPU_COMMIT;
+                    fpu_result <= fpu_rom_scaled;
+                    state <= ST_FPU_ROM_WRITE;
                 end else if (!fpu_rom_step) begin
                     fpu_rom_first <= fpu_rom_negative ?
                         -(fpu_sine_endpoint ? 16'sd256 : $signed(fpu_rom_read_data)) :
@@ -1304,6 +1330,12 @@ always @(posedge clk) begin
                     fpu_step <= 0;
                     state <= ST_FPU_WRITE_LANES;
                 end
+            end
+            ST_FPU_ROM_WRITE: begin
+                fpu_rf_write_enable <= 1'b1;
+                fpu_rf_write_address <= {field_a, 2'b00};
+                fpu_rf_write_data <= fpu_result;
+                state <= ST_FPU_COMMIT;
             end
             ST_RESET_CLEAR: begin
                 // Reset walks the register file back to zero, one word per
