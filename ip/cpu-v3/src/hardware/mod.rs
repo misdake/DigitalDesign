@@ -5,11 +5,10 @@ pub use cache::*;
 
 use digital_design_circuit::{CircuitWires, Wire, Wires};
 use digital_design_hardware::{
-    HardwareIdentity, Module, ModuleIo, VerilogDependency, VerilogIdentity,
+    resources::components::SsramBits, HardwareIdentity, Module, ModuleIo, TargetResourceRequest,
+    VerilogDependency, VerilogIdentity,
 };
-use digital_design_hardware_gowin::{
-    Bsram1R1Rw1024, Bsram1Rw1024, BsramImage, DspMulS18, ZeroBsramImage,
-};
+use digital_design_hardware_gowin::{Bsram1Rw1024, BsramImage, DspMulS18};
 use std::cmp::Ordering;
 
 use crate::{
@@ -73,12 +72,96 @@ impl BsramImage<16> for FpuRomImage {
 
 type FpuRom = Bsram1Rw1024<16, FpuRomImage>;
 
-/// The register file shares the all-zero BSRAM image with the cache data
-/// RAM, so both instantiate the same generated module. Power-on state
-/// matches the emulator's reset state, and the RTL reset walks the file
-/// back to zero. Only the read port and the write side of the RW port are
-/// used, so the file occupies a single SDPB block.
-type FpuRegisterFile = Bsram1R1Rw1024<16, ZeroBsramImage>;
+/// SSRAM physical bits for the FPU register file: 64 words x 16 bits with
+/// two asynchronous read ports, which Gowin builds from two RAM16X4 copies
+/// (32 cells), plus the eight RAM16 cells that Gowin additionally infers for
+/// the scalar register file and FPU transfer buffer inside the handwritten
+/// core. The SSRAM audit only rejects usage above the claim, so covering the
+/// incidental inference here keeps the build robust to mapper drift.
+const CPU_V3_FPU_REGISTER_RAM16S: usize = 2 * 4 * 4 + 8;
+const CPU_V3_FPU_REGISTER_PHYSICAL_BITS: usize = CPU_V3_FPU_REGISTER_RAM16S * 64;
+
+#[derive(Clone, ModuleIo)]
+pub struct CpuV3FpuRegisterRamInput {
+    pub write_enable: Wire,
+    pub write_address: Wires<6>,
+    pub write_data: Wires<16>,
+    pub read_a_address: Wires<6>,
+    pub read_b_address: Wires<6>,
+}
+
+#[derive(Clone, ModuleIo)]
+pub struct CpuV3FpuRegisterRamOutput {
+    pub read_a_data: Wires<16>,
+    pub read_b_data: Wires<16>,
+}
+
+/// Synchronous-write, dual-asynchronous-read SSRAM holding the sixteen
+/// four-lane F registers. Combinationally readable operands let FPU
+/// instructions execute without a staging pass.
+pub struct CpuV3FpuRegisterRam;
+
+impl HardwareIdentity for CpuV3FpuRegisterRam {
+    const TARGET_RESOURCE_LEAF: bool = true;
+
+    fn verilog_identity() -> VerilogIdentity {
+        VerilogIdentity::new("CpuV3FpuRegisterRam").namespace(["components", "cpu", "cpu_v3"])
+    }
+}
+
+impl Module for CpuV3FpuRegisterRam {
+    type Input = CpuV3FpuRegisterRamInput;
+    type Output = CpuV3FpuRegisterRamOutput;
+    type EmuState = [u16; 64];
+
+    const USES_MAIN_CLOCK: bool = true;
+
+    fn target_resources() -> Vec<TargetResourceRequest> {
+        vec![TargetResourceRequest::new(SsramBits::new(
+            CPU_V3_FPU_REGISTER_PHYSICAL_BITS as u64,
+        ))]
+    }
+
+    fn create_emu(_input: &Self::Input, _output: &Self::Output) -> Self::EmuState {
+        [0; 64]
+    }
+
+    fn execute_emu(
+        state: &mut Self::EmuState,
+        circuit: &mut CircuitWires,
+        input: &Self::Input,
+        output: &Self::Output,
+    ) {
+        let input = input.sample(circuit);
+        output.drive(
+            circuit,
+            &CpuV3FpuRegisterRamOutputValue {
+                read_a_data: u64::from(state[input.read_a_address as usize]),
+                read_b_data: u64::from(state[input.read_b_address as usize]),
+            },
+        );
+    }
+
+    fn clock_emu(
+        state: &mut Self::EmuState,
+        circuit: &mut CircuitWires,
+        input: &Self::Input,
+        _output: &Self::Output,
+    ) {
+        let input = input.sample(circuit);
+        if input.write_enable {
+            state[input.write_address as usize] = input.write_data as u16;
+        }
+    }
+
+    fn verilog_source() -> Option<String> {
+        Some(include_str!("cpu_v3_fpu_register_ram.v").to_string())
+    }
+
+    fn verilog_testbench() -> Option<String> {
+        Some(include_str!("cpu_v3_fpu_register_ram_tb.v").to_string())
+    }
+}
 
 impl HardwareIdentity for CpuV3Core {
     const TARGET_RESOURCE_LEAF: bool = false;
@@ -97,16 +180,19 @@ enum Phase {
     DataResponse,
     MultiplyWait,
     MultiplyCommit,
-    FpuLoad,
     FpuExecute,
     FpuWriteLanes,
     FpuGatherRead,
     FpuGatherWrite,
+    FpuScatterRead,
     FpuScatter,
     FpuTranspose,
     FpuMultiplyWait,
+    FpuMultiplySettle,
     FpuMultiplyCommit,
+    FpuRomNormalize,
     FpuRomAddress,
+    FpuRomLookup,
     FpuRomWait,
     FpuRomCommit,
     FpuCommit,
@@ -160,8 +246,6 @@ pub struct CpuV3CoreState {
     multiply_destination: u8,
     multiply_result: u16,
     multiply_retire_words: u8,
-    fpu_left: FpuVector,
-    fpu_right: FpuVector,
     fpu_step: u8,
     fpu_write_source: FpuWriteSource,
     fpu_accumulator: i64,
@@ -173,6 +257,10 @@ pub struct CpuV3CoreState {
     fpu_rom_first: Fix16Raw,
     fpu_rom_second: Fix16Raw,
     fpu_swap_data: Fix16Raw,
+    fpu_swap_data_b: Fix16Raw,
+    fpu_operand_a: Fix16Raw,
+    fpu_operand_b: Fix16Raw,
+    fpu_result: Fix16Raw,
     fpu_clear_index: u8,
     fpu_retire_words: u8,
     fpu_fault_pc: u16,
@@ -198,8 +286,6 @@ impl Default for CpuV3CoreState {
             multiply_destination: 0,
             multiply_result: 0,
             multiply_retire_words: 0,
-            fpu_left: [0; 4],
-            fpu_right: [0; 4],
             fpu_step: 0,
             fpu_write_source: FpuWriteSource::Alu,
             fpu_accumulator: 0,
@@ -211,6 +297,10 @@ impl Default for CpuV3CoreState {
             fpu_rom_first: 0,
             fpu_rom_second: 0,
             fpu_swap_data: 0,
+            fpu_swap_data_b: 0,
+            fpu_operand_a: 0,
+            fpu_operand_b: 0,
+            fpu_result: 0,
             fpu_clear_index: 0,
             fpu_retire_words: 0,
             fpu_fault_pc: 0,
@@ -358,7 +448,7 @@ impl CpuV3CoreState {
                 self.fpu_retire_words = retire_words;
                 self.fpu_fault_pc = fault_pc;
                 self.fpu_step = 0;
-                self.phase = Phase::FpuLoad;
+                self.phase = Phase::FpuExecute;
             }
             14 => self.execute_control(instruction, retire_words, fault_pc),
             _ => self.fault(CPU_V3_FAULT_INVALID_INSTRUCTION, fault_pc),
@@ -512,7 +602,7 @@ impl CpuV3CoreState {
                 self.begin_fpu_write_lanes();
             }
             1 => {
-                self.registers[a] = self.fpu_right[0] as u16;
+                self.registers[a] = self.fpu_registers[b][0] as u16;
                 self.phase = Phase::FpuCommit;
             }
             2 | 3 => {
@@ -526,7 +616,7 @@ impl CpuV3CoreState {
                 self.pending_data = PendingData {
                     write: function == 3,
                     address: physical_address(self.data_segment, offset),
-                    write_data: self.fpu_left[0] as u16,
+                    write_data: self.fpu_registers[a][0] as u16,
                     destination: a as u8,
                     retire_words: self.fpu_retire_words,
                     fault_pc: self.fpu_fault_pc,
@@ -543,7 +633,7 @@ impl CpuV3CoreState {
             }
             6 if a <= 12 => {
                 self.fpu_step = 0;
-                self.phase = Phase::FpuScatter;
+                self.phase = Phase::FpuScatterRead;
             }
             7 if a <= 12 && b == 0 => {
                 self.fpu_step = 0;
@@ -554,6 +644,9 @@ impl CpuV3CoreState {
                 self.begin_fpu_write_lanes();
             }
             10 | 11 | 15 => {
+                // Latch the broadcast scalar: earlier lane commits may
+                // overwrite Fb.x when Fa and Fb alias.
+                self.fpu_scalar = self.fpu_registers[b][0] as u16;
                 self.fpu_step = 0;
                 self.phase = Phase::FpuMultiplyWait;
             }
@@ -563,25 +656,25 @@ impl CpuV3CoreState {
                 self.phase = Phase::FpuCommit;
             }
             13 => {
-                self.pending_test = Some(self.fpu_left[0].cmp(&self.fpu_right[0]));
+                self.pending_test = Some(self.fpu_registers[a][0].cmp(&self.fpu_registers[b][0]));
                 self.phase = Phase::FpuCommit;
             }
             14 => match b {
                 0 => {
-                    if self.fpu_left[0] == 0 {
+                    if self.fpu_registers[a][0] == 0 {
                         self.fault(CPU_V3_FAULT_FPU_DOMAIN, self.fpu_fault_pc);
                         return;
                     }
                     self.fpu_rom_step = 0;
-                    self.phase = Phase::FpuRomAddress;
+                    self.phase = Phase::FpuRomNormalize;
                 }
                 1 => {
-                    if self.fpu_left[0] <= 0 {
+                    if self.fpu_registers[a][0] <= 0 {
                         self.fault(CPU_V3_FAULT_FPU_DOMAIN, self.fpu_fault_pc);
                         return;
                     }
                     self.fpu_rom_step = 0;
-                    self.phase = Phase::FpuRomAddress;
+                    self.phase = Phase::FpuRomNormalize;
                 }
                 2 => {
                     self.fpu_rom_step = 0;
@@ -665,7 +758,7 @@ impl Module for CpuV3Core {
         let input = input.sample(circuit);
         if input.reset {
             *state = CpuV3CoreState::default();
-            // The RTL reset walks the BSRAM register file back to zero over
+            // The RTL reset walks the FPU register file back to zero over
             // 64 cycles; mirror that instead of clearing it in one step.
             state.phase = Phase::ResetClear;
             return;
@@ -712,8 +805,10 @@ impl Module for CpuV3Core {
                     } else {
                         state.fpu_memory_lane += 1;
                         state.pending_data.address = pending.address.wrapping_add(1);
-                        state.pending_data.write_data =
-                            state.fpu_left[usize::from(state.fpu_memory_lane)] as u16;
+                        state.pending_data.write_data = state.fpu_registers
+                            [usize::from(field(state.instruction, 4))]
+                            [usize::from(state.fpu_memory_lane)]
+                            as u16;
                         state.phase = Phase::DataRequest;
                     }
                 } else {
@@ -729,66 +824,70 @@ impl Module for CpuV3Core {
                 state.registers[usize::from(state.multiply_destination)] = state.multiply_result;
                 state.retire(state.multiply_retire_words);
             }
-            Phase::FpuLoad => {
-                // Mirror the RTL operand staging: one lane per cycle through
-                // the register file's single read port (four left lanes,
-                // then four right lanes), read data lagging one cycle.
-                let a = usize::from(field(state.instruction, 4));
-                let b = usize::from(field(state.instruction, 0));
-                if state.fpu_step > 0 {
-                    let index = usize::from(state.fpu_step - 1);
-                    if index < 4 {
-                        state.fpu_left[index] = state.fpu_registers[a][index];
-                    } else {
-                        state.fpu_right[index - 4] = state.fpu_registers[b][index - 4];
-                    }
-                }
-                if state.fpu_step == 8 {
-                    state.fpu_step = 0;
-                    state.phase = Phase::FpuExecute;
-                } else {
-                    state.fpu_step += 1;
-                }
-            }
             Phase::FpuExecute => state.execute_fpu_base(),
             Phase::FpuWriteLanes => {
-                let lane = usize::from(state.fpu_step & 3);
                 let a = usize::from(field(state.instruction, 4));
+                let b = usize::from(field(state.instruction, 0));
                 let function = field(state.instruction, 8);
                 let unary = usize::from(field(state.instruction, 0));
-                let left = state.fpu_left[lane];
-                let value = match state.fpu_write_source {
-                    FpuWriteSource::Alu => match function {
-                        8 => fix16_add(left, state.fpu_right[lane]),
-                        9 => fix16_sub(left, state.fpu_right[lane]),
-                        _ => match unary {
-                            3 => fix16_abs(left),
-                            4 => fix16_neg(left),
-                            5 => fix16_floor(left),
-                            6 => fix16_ceil(left),
-                            7 => fix16_round(left),
-                            8 => fix16_saturate01(left),
-                            9 => fix16_sign(left),
+                // Mirror the RTL: ALU and move lanes alternate an
+                // operand-capture cycle with a compute-and-write cycle;
+                // other sources stream one lane per cycle.
+                let staged = matches!(
+                    state.fpu_write_source,
+                    FpuWriteSource::Alu | FpuWriteSource::Move
+                );
+                let lane = usize::from(if staged {
+                    (state.fpu_step >> 1) & 3
+                } else {
+                    state.fpu_step & 3
+                });
+                let capture = staged && state.fpu_step & 1 == 0;
+                if state.fpu_write_source == FpuWriteSource::Alu && capture {
+                    // Operand reads are asynchronous; a lane written earlier
+                    // this instruction is never re-read.
+                    state.fpu_operand_a = state.fpu_registers[a][lane];
+                    state.fpu_operand_b = state.fpu_registers[b][lane];
+                }
+                if state.fpu_write_source == FpuWriteSource::Move && capture {
+                    state.fpu_result = state.fpu_registers[b][lane];
+                }
+                if !capture {
+                    let left = state.fpu_operand_a;
+                    let value = match state.fpu_write_source {
+                        FpuWriteSource::Alu => match function {
+                            8 => fix16_add(left, state.fpu_operand_b),
+                            9 => fix16_sub(left, state.fpu_operand_b),
+                            _ => match unary {
+                                3 => fix16_abs(left),
+                                4 => fix16_neg(left),
+                                5 => fix16_floor(left),
+                                6 => fix16_ceil(left),
+                                7 => fix16_round(left),
+                                8 => fix16_saturate01(left),
+                                9 => fix16_sign(left),
+                                _ => 0,
+                            },
+                        },
+                        FpuWriteSource::Move => state.fpu_result,
+                        FpuWriteSource::Scalar => {
+                            if lane == 0 {
+                                state.fpu_scalar as i16
+                            } else {
+                                0
+                            }
+                        }
+                        FpuWriteSource::Memory => state.fpu_memory_value[lane],
+                        FpuWriteSource::Trig => match lane {
+                            0 => state.fpu_rom_first,
+                            1 => state.fpu_rom_second,
                             _ => 0,
                         },
-                    },
-                    FpuWriteSource::Scalar => {
-                        if lane == 0 {
-                            state.fpu_scalar as i16
-                        } else {
-                            0
-                        }
-                    }
-                    FpuWriteSource::Move => state.fpu_right[lane],
-                    FpuWriteSource::Memory => state.fpu_memory_value[lane],
-                    FpuWriteSource::Trig => match lane {
-                        0 => state.fpu_rom_first,
-                        1 => state.fpu_rom_second,
-                        _ => 0,
-                    },
-                };
-                state.fpu_registers[a][lane] = value;
-                if state.fpu_step == 3 {
+                    };
+                    state.fpu_registers[a][lane] = value;
+                }
+                let last = if staged { 7 } else { 3 };
+                if state.fpu_step == last {
                     state.fpu_step = 0;
                     state.phase = Phase::FpuCommit;
                 } else {
@@ -796,15 +895,12 @@ impl Module for CpuV3Core {
                 }
             }
             Phase::FpuGatherRead => {
-                // Pack4 buffers its four lane-x sources in fpu_left so
-                // overlapping source and destination ranges stay
-                // snapshot-clean, exactly like the RTL.
+                // Pack4 buffers its four lane-x sources so overlapping
+                // source and destination ranges stay snapshot-clean.
                 let b = usize::from(field(state.instruction, 0));
-                if state.fpu_step > 0 {
-                    let lane = usize::from(state.fpu_step - 1);
-                    state.fpu_left[lane] = state.fpu_registers[b + lane][0];
-                }
-                if state.fpu_step == 4 {
+                let lane = usize::from(state.fpu_step);
+                state.fpu_memory_value[lane] = state.fpu_registers[b + lane][0];
+                if state.fpu_step == 3 {
                     state.fpu_step = 0;
                     state.phase = Phase::FpuGatherWrite;
                 } else {
@@ -814,10 +910,23 @@ impl Module for CpuV3Core {
             Phase::FpuGatherWrite => {
                 let a = usize::from(field(state.instruction, 4));
                 state.fpu_registers[a][usize::from(state.fpu_step)] =
-                    state.fpu_left[usize::from(state.fpu_step)];
+                    state.fpu_memory_value[usize::from(state.fpu_step)];
                 if state.fpu_step == 3 {
                     state.fpu_step = 0;
                     state.phase = Phase::FpuCommit;
+                } else {
+                    state.fpu_step += 1;
+                }
+            }
+            Phase::FpuScatterRead => {
+                // Unpack4 buffers the source vector so a destination range
+                // overlapping Fb stays snapshot-clean.
+                let b = usize::from(field(state.instruction, 0));
+                state.fpu_memory_value[usize::from(state.fpu_step)] =
+                    state.fpu_registers[b][usize::from(state.fpu_step)];
+                if state.fpu_step == 3 {
+                    state.fpu_step = 0;
+                    state.phase = Phase::FpuScatter;
                 } else {
                     state.fpu_step += 1;
                 }
@@ -827,7 +936,7 @@ impl Module for CpuV3Core {
                 let vector = a + usize::from(state.fpu_step >> 2);
                 let lane = usize::from(state.fpu_step & 3);
                 state.fpu_registers[vector][lane] = if lane == 0 {
-                    state.fpu_right[usize::from(state.fpu_step >> 2)]
+                    state.fpu_memory_value[usize::from(state.fpu_step >> 2)]
                 } else {
                     0
                 };
@@ -839,35 +948,42 @@ impl Module for CpuV3Core {
                 }
             }
             Phase::FpuTranspose => {
-                // In-place 4x4 transpose as six element swaps, four cycles
-                // each: read A, read B, write A<-B, write B<-A.
-                const PAIRS: [(usize, usize); 6] =
-                    [(0, 1), (0, 2), (0, 3), (1, 2), (1, 3), (2, 3)];
+                // In-place 4x4 transpose as six element swaps, three cycles
+                // each: latch both reads, write A<-B, write B<-A.
+                const PAIRS: [(usize, usize); 6] = [(0, 1), (0, 2), (0, 3), (1, 2), (1, 3), (2, 3)];
                 let a = usize::from(field(state.instruction, 4));
                 let (i, j) = PAIRS[usize::from(state.fpu_step >> 2)];
                 match state.fpu_step & 3 {
-                    1 => state.fpu_swap_data = state.fpu_registers[a + i][j],
-                    2 => state.fpu_registers[a + i][j] = state.fpu_registers[a + j][i],
-                    3 => state.fpu_registers[a + j][i] = state.fpu_swap_data,
-                    _ => {}
+                    0 => {
+                        state.fpu_swap_data = state.fpu_registers[a + i][j];
+                        state.fpu_swap_data_b = state.fpu_registers[a + j][i];
+                    }
+                    1 => state.fpu_registers[a + i][j] = state.fpu_swap_data_b,
+                    _ => state.fpu_registers[a + j][i] = state.fpu_swap_data,
                 }
-                if state.fpu_step == 23 {
+                if state.fpu_step == 22 {
                     state.fpu_step = 0;
                     state.phase = Phase::FpuCommit;
+                } else if state.fpu_step & 3 == 2 {
+                    state.fpu_step = (state.fpu_step & !3) + 4;
                 } else {
                     state.fpu_step += 1;
                 }
             }
-            Phase::FpuMultiplyWait => state.phase = Phase::FpuMultiplyCommit,
+            Phase::FpuMultiplyWait => state.phase = Phase::FpuMultiplySettle,
+            Phase::FpuMultiplySettle => state.phase = Phase::FpuMultiplyCommit,
             Phase::FpuMultiplyCommit => {
                 let function = field(state.instruction, 8);
                 if function == 14 && field(state.instruction, 0) == 2 {
-                    state.phase = Phase::FpuRomAddress;
+                    state.phase = Phase::FpuRomLookup;
                 } else if function == 11 {
+                    let a = usize::from(field(state.instruction, 4));
+                    let b = usize::from(field(state.instruction, 0));
                     let lane = usize::from(state.fpu_step & 3);
                     state.fpu_accumulator = acc_saturate(
                         i128::from(state.fpu_accumulator)
-                            + i128::from(state.fpu_left[lane]) * i128::from(state.fpu_right[lane]),
+                            + i128::from(state.fpu_registers[a][lane])
+                                * i128::from(state.fpu_registers[b][lane]),
                     );
                     if state.fpu_step == 3 {
                         state.fpu_step = 0;
@@ -877,12 +993,15 @@ impl Module for CpuV3Core {
                         state.phase = Phase::FpuMultiplyWait;
                     }
                 } else {
-                    let destination = usize::from(field(state.instruction, 4));
+                    let a = usize::from(field(state.instruction, 4));
+                    let b = usize::from(field(state.instruction, 0));
                     let lane = usize::from(state.fpu_step & 3);
-                    state.fpu_registers[destination][lane] = fix16_mul(
-                        state.fpu_left[lane],
-                        state.fpu_right[if function == 15 { 0 } else { lane }],
-                    );
+                    let right = if function == 15 {
+                        state.fpu_scalar as i16
+                    } else {
+                        state.fpu_registers[b][lane]
+                    };
+                    state.fpu_registers[a][lane] = fix16_mul(state.fpu_registers[a][lane], right);
                     if state.fpu_step == 3 {
                         state.fpu_step = 0;
                         state.phase = Phase::FpuCommit;
@@ -892,27 +1011,30 @@ impl Module for CpuV3Core {
                     }
                 }
             }
-            Phase::FpuRomAddress => state.phase = Phase::FpuRomWait,
+            Phase::FpuRomNormalize => state.phase = Phase::FpuRomAddress,
+            Phase::FpuRomAddress => state.phase = Phase::FpuRomLookup,
+            Phase::FpuRomLookup => state.phase = Phase::FpuRomWait,
             Phase::FpuRomWait => state.phase = Phase::FpuRomCommit,
             Phase::FpuRomCommit => {
                 let destination = usize::from(field(state.instruction, 4));
+                let operand = state.fpu_registers[destination][0];
                 match field(state.instruction, 0) {
                     0 => {
                         state.fpu_registers[destination][0] =
-                            fix16_reciprocal(state.fpu_left[0]).expect("domain checked");
+                            fix16_reciprocal(operand).expect("domain checked");
                         state.phase = Phase::FpuCommit;
                     }
                     1 => {
                         state.fpu_registers[destination][0] =
-                            fix16_reciprocal_sqrt(state.fpu_left[0]).expect("domain checked");
+                            fix16_reciprocal_sqrt(operand).expect("domain checked");
                         state.phase = Phase::FpuCommit;
                     }
                     2 if state.fpu_rom_step == 0 => {
-                        let (sin, cos) = fix16_sin_cos(state.fpu_left[0]);
+                        let (sin, cos) = fix16_sin_cos(operand);
                         state.fpu_rom_first = sin;
                         state.fpu_rom_second = cos;
                         state.fpu_rom_step = 1;
-                        state.phase = Phase::FpuRomAddress;
+                        state.phase = Phase::FpuRomLookup;
                     }
                     2 => {
                         state.fpu_rom_step = 0;
@@ -950,8 +1072,8 @@ impl Module for CpuV3Core {
                 )
                 .replace("__FPU_ROM__", &FpuRom::verilog_identity().module_name())
                 .replace(
-                    "__FPU_REGISTER_FILE__",
-                    &FpuRegisterFile::verilog_identity().module_name(),
+                    "__FPU_REGISTER_RAM__",
+                    &CpuV3FpuRegisterRam::verilog_identity().module_name(),
                 ),
         )
     }
@@ -961,7 +1083,7 @@ impl Module for CpuV3Core {
             VerilogDependency::new::<DspMulS18>("u_multiplier"),
             VerilogDependency::new::<DspMulS18>("u_fpu_multiplier"),
             VerilogDependency::new::<FpuRom>("u_fpu_rom"),
-            VerilogDependency::new::<FpuRegisterFile>("u_fpu_register_file"),
+            VerilogDependency::new::<CpuV3FpuRegisterRam>("u_fpu_register_ram"),
         ]
     }
 
@@ -1021,6 +1143,7 @@ mod tests {
         retired_words: u32,
         code_segment: u16,
         data_segment: u16,
+        memory: HashMap<u32, u16>,
     }
 
     fn drive(
@@ -1073,6 +1196,7 @@ mod tests {
                     retired_words: value.retired_words as u32,
                     code_segment: value.code_segment as u16,
                     data_segment: value.data_segment as u16,
+                    memory,
                 };
             }
 
@@ -1267,16 +1391,17 @@ mod tests {
                 .count(),
             2
         );
-        assert_eq!(
-            project
-                .resource_claims
-                .iter()
-                .filter(|claim| {
-                    claim.resources == [ResourceAmount::new(ResourceKind::Bsram18K, 1)]
-                })
-                .count(),
-            2
-        );
+        assert!(project
+            .resource_claims
+            .iter()
+            .any(|claim| { claim.resources == [ResourceAmount::new(ResourceKind::Bsram18K, 1)] }));
+        assert!(project.resource_claims.iter().any(|claim| {
+            claim.resources
+                == [ResourceAmount::new(
+                    ResourceKind::SsramBit,
+                    CPU_V3_FPU_REGISTER_PHYSICAL_BITS as u64,
+                )]
+        }));
     }
 
     #[test]
@@ -1303,6 +1428,89 @@ mod tests {
         load(&mut memory, 0, &program);
         let core = run_core(memory, 200);
         assert_eq!(core.halt_signal, signal);
+        assert_eq!(core.retired_words as u64, oracle.retired_words());
+    }
+
+    #[test]
+    fn emulator_matches_oracle_for_fix16_register_file_hazards() {
+        let mut program = vec![];
+        for (register, value) in [(0, 1), (1, 2), (2, 3), (3, 4)] {
+            program.extend(crate::load_immediate16(register, value));
+            program.push(crate::fpu(crate::FpuOp::Load, register, register));
+        }
+        program.extend([
+            crate::fpu(crate::FpuOp::Pack4, 1, 0),
+            crate::fpu(crate::FpuOp::Unpack4, 0, 1),
+        ]);
+        for (fpr, gpr, address) in [
+            (4, 1, 0x0100),
+            (5, 2, 0x0104),
+            (6, 3, 0x0108),
+            (7, 4, 0x010c),
+            (8, 5, 0x0110),
+            (9, 6, 0x0114),
+        ] {
+            program.extend(crate::load_immediate16(gpr, address));
+            program.push(crate::fpu(crate::FpuOp::Import4, fpr, gpr));
+        }
+        program.extend([
+            crate::fpu(crate::FpuOp::Transpose4, 4, 0),
+            crate::fpu(crate::FpuOp::Move, 10, 8),
+            crate::fpu(crate::FpuOp::Mul, 10, 9),
+        ]);
+        for (fpr, gpr, address) in [
+            (0, 7, 0x0120),
+            (4, 8, 0x0124),
+            (8, 9, 0x0128),
+            (10, 10, 0x012c),
+        ] {
+            program.extend(crate::load_immediate16(gpr, address));
+            program.push(crate::fpu(crate::FpuOp::Export4, fpr, gpr));
+        }
+        program.extend([
+            crate::fpu(crate::FpuOp::Compare, 10, 8),
+            crate::branch(crate::TestCondition::GreaterThan, 1),
+            crate::immediate_unsigned(crate::ImmediateOp::LoadUnsigned, 0, 9),
+            crate::halt(),
+        ]);
+
+        let mut oracle = Machine::default();
+        oracle.load_program(0, &program).unwrap();
+        for (index, value) in (1_u16..=16).enumerate() {
+            oracle.physical_memory_mut()[0x0100 + index] = value;
+        }
+        for (index, value) in [256_u16, 512, (-256_i16) as u16, 128]
+            .into_iter()
+            .chain([512_u16, 128, (-512_i16) as u16, 512])
+            .enumerate()
+        {
+            oracle.physical_memory_mut()[0x0110 + index] = value;
+        }
+        let RunOutcome::Halted { signal, .. } = oracle.run(1_000).unwrap() else {
+            panic!("oracle did not halt")
+        };
+
+        let mut memory = HashMap::new();
+        load(&mut memory, 0, &program);
+        for (index, value) in (1_u16..=16).enumerate() {
+            memory.insert(0x0100 + index as u32, value);
+        }
+        for (index, value) in [256_u16, 512, (-256_i16) as u16, 128]
+            .into_iter()
+            .chain([512_u16, 128, (-512_i16) as u16, 512])
+            .enumerate()
+        {
+            memory.insert(0x0110 + index as u32, value);
+        }
+        let core = run_core(memory, 2_000);
+        assert_eq!(core.halt_signal, signal);
+        for address in 0x0120..0x0130 {
+            assert_eq!(
+                core.memory.get(&address).copied().unwrap_or(0),
+                oracle.memory(address as u16),
+                "exported FPR mismatch at {address:#06x}"
+            );
+        }
         assert_eq!(core.retired_words as u64, oracle.retired_words());
     }
 
@@ -1382,5 +1590,11 @@ mod tests {
     #[ignore = "explicit external simulation of the reusable CpuV3 core"]
     fn verify_verilog_with_iverilog() {
         digital_design_hardware::verify_verilog_with_iverilog::<CpuV3Core>().unwrap();
+    }
+
+    #[test]
+    #[ignore = "explicit external simulation of the FPU register file"]
+    fn verify_fpu_register_ram_with_iverilog() {
+        digital_design_hardware::verify_verilog_with_iverilog::<CpuV3FpuRegisterRam>().unwrap();
     }
 }

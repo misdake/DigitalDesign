@@ -410,11 +410,11 @@ initial begin
         scenario = 21 + cond;
         expect_fault(8'd4, 16'd5, 200);
         fail_data_beat = -1;
-        if (dut.u_fpu_register_file.memory[0] !== 16'h1234 || dut.u_fpu_register_file.memory[1] !== 0 ||
-            dut.u_fpu_register_file.memory[2] !== 0 || dut.u_fpu_register_file.memory[3] !== 0) begin
+        if (dut.u_fpu_register_ram.words[0] !== 16'h1234 || dut.u_fpu_register_ram.words[1] !== 0 ||
+            dut.u_fpu_register_ram.words[2] !== 0 || dut.u_fpu_register_ram.words[3] !== 0) begin
             $display("FAIL: scenario %0d import modified f0: %h %h %h %h", scenario,
-                     dut.u_fpu_register_file.memory[0], dut.u_fpu_register_file.memory[1],
-                     dut.u_fpu_register_file.memory[2], dut.u_fpu_register_file.memory[3]);
+                     dut.u_fpu_register_ram.words[0], dut.u_fpu_register_ram.words[1],
+                     dut.u_fpu_register_ram.words[2], dut.u_fpu_register_ram.words[3]);
             errors = errors + 1;
         end
     end
@@ -455,9 +455,9 @@ initial begin
     memory[1] = 16'hde00; // FRCP f0 -> domain fault
     scenario = 30;
     expect_fault(8'd2, 16'd1, 150);
-    if (dut.u_fpu_register_file.memory[0] !== 0 || retired_words !== 1) begin
+    if (dut.u_fpu_register_ram.words[0] !== 0 || retired_words !== 1) begin
         $display("FAIL: scenario 30 changed f0 or retirement: f0=%h retired=%0d",
-                 dut.u_fpu_register_file.memory[0], retired_words);
+                 dut.u_fpu_register_ram.words[0], retired_words);
         errors = errors + 1;
     end
 
@@ -469,8 +469,8 @@ initial begin
     memory[3] = 16'hde01; // FRSQRT f0 -> domain fault
     scenario = 31;
     expect_fault(8'd2, 16'd3, 150);
-    if (dut.u_fpu_register_file.memory[0] !== 16'hffff) begin
-        $display("FAIL: scenario 31 changed f0: %h", dut.u_fpu_register_file.memory[0]);
+    if (dut.u_fpu_register_ram.words[0] !== 16'hffff) begin
+        $display("FAIL: scenario 31 changed f0: %h", dut.u_fpu_register_ram.words[0]);
         errors = errors + 1;
     end
 
@@ -485,6 +485,105 @@ initial begin
     memory[5] = 16'he800; // HALT
     scenario = 32;
     expect_halt(16'd64, 150);
+
+    // Scenario 33: overlapping PACK4 and UNPACK4 both observe a complete
+    // source snapshot despite their writes aliasing later source registers.
+    clear_memory;
+    memory[0] = 16'haf01; // LDU r0, 1
+    memory[1] = 16'haf12; // LDU r1, 2
+    memory[2] = 16'haf23; // LDU r2, 3
+    memory[3] = 16'haf34; // LDU r3, 4
+    memory[4] = 16'hd000; // FLOAD f0, r0
+    memory[5] = 16'hd011; // FLOAD f1, r1
+    memory[6] = 16'hd022; // FLOAD f2, r2
+    memory[7] = 16'hd033; // FLOAD f3, r3
+    memory[8] = 16'hd510; // FPACK4 f1, f0..f3 (overlaps f1)
+    memory[9] = 16'hd601; // FUNPACK4 f0..f3, f1 (overlaps f1)
+    memory[10] = 16'he800; // HALT
+    scenario = 33;
+    expect_halt(16'd1, 350);
+    if (dut.u_fpu_register_ram.words[0] !== 16'd1 ||
+        dut.u_fpu_register_ram.words[4] !== 16'd2 ||
+        dut.u_fpu_register_ram.words[8] !== 16'd3 ||
+        dut.u_fpu_register_ram.words[12] !== 16'd4) begin
+        $display("FAIL: scenario 33 overlap results %h %h %h %h",
+                 dut.u_fpu_register_ram.words[0], dut.u_fpu_register_ram.words[4],
+                 dut.u_fpu_register_ram.words[8], dut.u_fpu_register_ram.words[12]);
+        errors = errors + 1;
+    end
+    for (index = 0; index < 4; index = index + 1) begin
+        if (dut.u_fpu_register_ram.words[index * 4 + 1] !== 0 ||
+            dut.u_fpu_register_ram.words[index * 4 + 2] !== 0 ||
+            dut.u_fpu_register_ram.words[index * 4 + 3] !== 0) begin
+            $display("FAIL: scenario 33 unpack did not clear f%0d.yzw", index);
+            errors = errors + 1;
+        end
+    end
+
+    // Scenario 34: the in-place transpose commits all six swaps, including
+    // the final delayed SSRAM write, without corrupting adjacent elements.
+    clear_memory;
+    memory[0] = 16'hf010; // IMMHI12 0x010
+    memory[1] = 16'haf10; // LDU r1, 0 -> 0x0100
+    memory[2] = 16'hf010;
+    memory[3] = 16'haf24; // LDU r2, 4 -> 0x0104
+    memory[4] = 16'hf010;
+    memory[5] = 16'haf38; // LDU r3, 8 -> 0x0108
+    memory[6] = 16'hf010;
+    memory[7] = 16'haf4c; // LDU r4, 12 -> 0x010c
+    memory[8] = 16'hd241; // FIMPORT4 f4, [r1]
+    memory[9] = 16'hd252; // FIMPORT4 f5, [r2]
+    memory[10] = 16'hd263; // FIMPORT4 f6, [r3]
+    memory[11] = 16'hd274; // FIMPORT4 f7, [r4]
+    memory[12] = 16'hd740; // FTRANSPOSE4 f4..f7
+    memory[13] = 16'he800; // HALT
+    for (index = 0; index < 16; index = index + 1)
+        memory[16'h0100 + index] = index + 1;
+    scenario = 34;
+    expect_halt(16'd0, 500);
+    for (index = 0; index < 16; index = index + 1) begin
+        if (dut.u_fpu_register_ram.words[16 + index] !==
+            1 + (index % 4) * 4 + index / 4) begin
+            $display("FAIL: scenario 34 transpose word %0d = %h", index,
+                     dut.u_fpu_register_ram.words[16 + index]);
+            errors = errors + 1;
+        end
+    end
+
+    // Scenario 35: FMOV, vector FMUL, and FCMP exercise both asynchronous
+    // read ports and branch on the resulting scalar comparison.
+    clear_memory;
+    memory[0] = 16'hf010;
+    memory[1] = 16'haf10; // r1 = 0x0100
+    memory[2] = 16'hf010;
+    memory[3] = 16'haf24; // r2 = 0x0104
+    memory[4] = 16'hd201; // FIMPORT4 f0, [r1]
+    memory[5] = 16'hd212; // FIMPORT4 f1, [r2]
+    memory[6] = 16'hd420; // FMOV f2, f0
+    memory[7] = 16'hda21; // FMUL f2, f1
+    memory[8] = 16'hdd20; // FCMP f2.x, f0.x -> Greater
+    memory[9] = 16'hb401; // BGT +1
+    memory[10] = 16'haf09; // skipped failure marker
+    memory[11] = 16'he800; // HALT
+    memory[16'h0100] = 16'd256;
+    memory[16'h0101] = 16'd512;
+    memory[16'h0102] = -16'sd256;
+    memory[16'h0103] = 16'd128;
+    memory[16'h0104] = 16'd512;
+    memory[16'h0105] = 16'd128;
+    memory[16'h0106] = -16'sd512;
+    memory[16'h0107] = 16'd512;
+    scenario = 35;
+    expect_halt(16'd0, 350);
+    if (dut.u_fpu_register_ram.words[8] !== 16'd512 ||
+        dut.u_fpu_register_ram.words[9] !== 16'd256 ||
+        dut.u_fpu_register_ram.words[10] !== 16'd512 ||
+        dut.u_fpu_register_ram.words[11] !== 16'd256) begin
+        $display("FAIL: scenario 35 FMOV/FMUL results %h %h %h %h",
+                 dut.u_fpu_register_ram.words[8], dut.u_fpu_register_ram.words[9],
+                 dut.u_fpu_register_ram.words[10], dut.u_fpu_register_ram.words[11]);
+        errors = errors + 1;
+    end
 
     // Scenarios 25..28: export keeps writes confirmed before a later beat
     // faults, while the failing and unissued beats retain their old values.

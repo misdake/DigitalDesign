@@ -126,7 +126,7 @@ mod tests {
         let verilog = VerilogProject::generate::<CpuV3DeviceBoardTest>().unwrap();
         assert_eq!(verilog.resource_claims.len(), 5);
         let project = gowin_project().generate().unwrap();
-        assert_eq!(project.resources.claimed[&ResourceKind::Bsram18K], 3);
+        assert_eq!(project.resources.claimed[&ResourceKind::Bsram18K], 2);
         assert_eq!(project.resources.claimed[&ResourceKind::Multiplier18x18], 2);
     }
 

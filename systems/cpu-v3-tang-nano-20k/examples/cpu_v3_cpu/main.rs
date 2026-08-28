@@ -140,7 +140,7 @@ mod tests {
                 ProgramMemory::verilog_identity().module_name()
             ))));
         let project = gowin_project().generate().unwrap();
-        assert_eq!(project.resources.claimed[&ResourceKind::Bsram18K], 3);
+        assert_eq!(project.resources.claimed[&ResourceKind::Bsram18K], 2);
         assert_eq!(project.resources.claimed[&ResourceKind::Multiplier18x18], 2);
     }
 
