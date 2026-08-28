@@ -1,0 +1,90 @@
+@startuml
+title CPU V3 revision 0.7 hardware structure
+
+skinparam componentStyle rectangle
+skinparam shadowing false
+skinparam defaultTextAlignment center
+
+package "Fitted CPU V3 system (optional around the reusable core)" {
+  component "Instruction cache\n2 KiB, direct mapped\n64 sets x 16 words\nwrite-through data RAM shape" as ICache
+  component "Data cache\n2 KiB, direct mapped\n64 sets x 16 words\nwrite-through, no-write-allocate" as DCache
+  component "Memory arbiter\nsingle outstanding owner" as Arbiter
+  component "SDRAM word/line adapter\n22-bit fitted physical word address" as SDRAM
+  component "Devices 0..7\n16 channels each" as Devices
+  component "DMA / display\noptional system masters" as Masters
+}
+
+rectangle "CpuV3Core: blocking, in-order, one instruction in flight" as Core {
+  component "Fetch / execute FSM\nrequest -> response -> execute\nprecise single retirement" as FSM
+  storage "Instruction state\nPC 16, CSEG 16, DSEG 16\nIMMHI12 prefix\npending comparison" as ControlState
+  storage "GPR file\n16 x 16-bit\ncombinational read\nsynchronous write" as GPR
+  component "Integer lane\n16-bit ALU, shifts, compare\nCLZ / popcount" as IntAlu
+  component "Integer multiplier\nregistered signed 18 x 18 DSP\n2-stage primitive" as IntDsp
+
+  package "Blocking fix16 FPU" {
+    storage "FPR file\n16 x (4 x signed Q8.8)\n64 x 16-bit RAM16\n2 async read + 1 sync write" as FPR
+    component "Serialized vector lane\n17-bit saturated add/sub\nABS/NEG/FLOOR/CEIL/ROUND\nSAT01/SIGN and lane moves" as LaneAlu
+    component "FPU multiplier\nregistered signed 18 x 18 DSP\n1 lane, 2-stage primitive\nnearest-even writeback" as FpuDsp
+    database "Shared unary ROM\n1024 x 16-bit BSRAM\n256 sin + 256 rcp + 512 rsqrt" as Rom
+    component "Unary normalize / scale\npriority encoder\nshared 17-bit round shifter" as Unary
+    storage "ACC\nsigned 40-bit\nper-product saturation" as Acc
+    storage "Transfer / snapshot state\n4 x 16-bit buffer\ntranspose swap registers" as Transfer
+    component "FPU phase controller\nblocking until commit or fault\nfixed four-lane execution today" as FpuFsm
+  }
+}
+
+ICache --> FSM : instruction ready/valid
+FSM --> ICache : 32-bit {CSEG, PC}
+DCache --> FSM : data response
+FSM --> DCache : 32-bit {DSEG, offset}\n16-bit narrow requests
+FSM <--> Devices : dedicated device port
+ICache --> Arbiter
+DCache --> Arbiter
+Masters --> Arbiter
+Arbiter --> SDRAM
+Masters ..> ICache : invalidate / snoop
+Masters ..> DCache : invalidate / snoop
+
+FSM <--> ControlState
+FSM <--> GPR
+GPR --> IntAlu
+IntAlu --> GPR
+GPR --> IntDsp
+IntDsp --> GPR
+FSM --> FpuFsm : opcode D dispatch
+FpuFsm --> FSM : one precise retire / fault
+GPR --> FpuFsm : scalar and address
+FpuFsm --> GPR : FSTORE
+FPR --> LaneAlu : one lane from each read port
+LaneAlu --> FPR : registered serial write
+FPR --> FpuDsp
+FpuDsp --> FPR
+FpuDsp --> Acc
+Acc --> FPR : FACCSTORE
+FPR --> Unary
+Unary --> Rom : 10-bit address
+Rom --> Unary : synchronous table word
+Unary --> FPR
+FPR <--> Transfer
+Transfer <--> DCache : four sequential beats
+
+note right of FpuFsm
+Current issue policy:
+* no CPU/FPU overlap
+* no cross-instruction pipeline
+* add/move/simple unary: capture then write per lane
+* multiply/dot: wait, settle, commit per lane
+* continuation k early-exit is not implemented
+end note
+
+note bottom of Core
+Core target-leaf resources:
+* integer multiplier: 1 MULT18X18 lane
+* FPU multiplier: 1 MULT18X18 lane
+* FPU unary table: 1 x 1024x16 BSRAM
+* FPR leaf claim: 40 RAM16 cells
+  (32 for two read copies + 8 characterized incidental cells)
+The system composes these claims with cache, boot, display, and board resources.
+end note
+
+@enduml
