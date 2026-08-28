@@ -44,12 +44,19 @@ integer errors = 0;
 integer scenario = 0;
 integer cond;
 reg check_high_data_address = 0;
+integer data_beat = 0;
+integer fail_data_beat = -1;
+reg pending_tb_data_write = 0;
+reg [31:0] pending_tb_data_address = 0;
+reg [15:0] pending_tb_data_write_data = 0;
 
 always @(posedge clk) begin
     instruction_response_valid <= instruction_request_valid;
     if (instruction_request_valid)
         instruction_data <= memory[instruction_address[15:0]];
     data_response_valid <= data_request_valid;
+    if (data_response_valid && pending_tb_data_write && !data_error)
+        memory[pending_tb_data_address[15:0]] <= pending_tb_data_write_data;
     if (data_request_valid) begin
         if (scenario == 14) begin
             $display("FAIL: scenario 14 DEV instruction used the data port");
@@ -59,11 +66,15 @@ always @(posedge clk) begin
             $display("FAIL: scenario %0d high-offset data address %h", scenario, data_address);
             errors = errors + 1;
         end
-        if (data_write)
-            memory[data_address[15:0]] <= data_write_data;
-        else
+        pending_tb_data_write <= data_write;
+        pending_tb_data_address <= data_address;
+        pending_tb_data_write_data <= data_write_data;
+        data_error <= data_beat == fail_data_beat;
+        data_beat <= data_beat + 1;
+        if (!data_write)
             data_read_data <= memory[data_address[15:0]];
-    end
+    end else
+        data_error <= 0;
     if (device_write_enable)
         devices[{device_index, device_channel}] <= device_write_data;
 end
@@ -82,6 +93,10 @@ task run_core;
     integer cycles;
     begin
         reset = 1;
+        instruction_response_valid = 0;
+        data_response_valid = 0;
+        data_error = 0;
+        pending_tb_data_write = 0;
         repeat (3) @(posedge clk);
         #1 reset = 0;
         cycles = 0;
@@ -344,6 +359,165 @@ initial begin
     memory[7] = 16'he800; // HALT
     scenario = 19;
     expect_halt(16'h7fff, 150);
+
+    // Scenario 20: two atomic four-word imports feed the 40-bit accumulator;
+    // ACCSTORE rounds lane x, clears ACC, and export emits four narrow writes.
+    clear_memory;
+    memory[0] = 16'hf010; // IMMHI12 0x010
+    memory[1] = 16'haf10; // LDU r1, 0 -> 0x0100
+    memory[2] = 16'hf010; // IMMHI12 0x010
+    memory[3] = 16'haf24; // LDU r2, 4 -> 0x0104
+    memory[4] = 16'hd201; // FIMPORT4 f0, [r1]
+    memory[5] = 16'hd212; // FIMPORT4 f1, [r2]
+    memory[6] = 16'hdb01; // FDOT4ACC f0, f1
+    memory[7] = 16'hdc00; // FACCSTORE f0.x
+    memory[8] = 16'hd302; // FEXPORT4 f0, [r2]
+    memory[9] = 16'hd100; // FSTORE r0, f0
+    memory[10] = 16'he800; // HALT
+    memory[16'h0100] = 16'd256;
+    memory[16'h0101] = 16'd512;
+    memory[16'h0102] = 16'd768;
+    memory[16'h0103] = 16'd1024;
+    memory[16'h0104] = 16'd256;
+    memory[16'h0105] = 16'd256;
+    memory[16'h0106] = 16'd256;
+    memory[16'h0107] = 16'd256;
+    scenario = 20;
+    expect_halt(16'd2560, 400);
+    if (memory[16'h0104] !== 16'd2560 || memory[16'h0105] !== 16'd512 ||
+        memory[16'h0106] !== 16'd768 || memory[16'h0107] !== 16'd1024) begin
+        $display("FAIL: scenario 20 exported %h %h %h %h",
+                 memory[16'h0104], memory[16'h0105], memory[16'h0106], memory[16'h0107]);
+        errors = errors + 1;
+    end
+
+    // Scenarios 21..24: an error on any import beat leaves the destination
+    // FPR unchanged and retires no part of the FIMPORT4 instruction.
+    for (cond = 0; cond < 4; cond = cond + 1) begin
+        clear_memory;
+        memory[0] = 16'hf010; // IMMHI12 0x010
+        memory[1] = 16'haf10; // LDU r1, 0 -> 0x0100
+        memory[2] = 16'hf123; // IMMHI12 0x123
+        memory[3] = 16'haf04; // LDU r0, 4 -> 0x1234
+        memory[4] = 16'hd000; // FLOAD f0, r0
+        memory[5] = 16'hd201; // FIMPORT4 f0, [r1]
+        memory[16'h0100] = 16'ha001;
+        memory[16'h0101] = 16'ha002;
+        memory[16'h0102] = 16'ha003;
+        memory[16'h0103] = 16'ha004;
+        data_beat = 0;
+        fail_data_beat = cond;
+        scenario = 21 + cond;
+        expect_fault(8'd4, 16'd5, 200);
+        fail_data_beat = -1;
+        if (dut.u_fpu_register_file.memory[0] !== 16'h1234 || dut.u_fpu_register_file.memory[1] !== 0 ||
+            dut.u_fpu_register_file.memory[2] !== 0 || dut.u_fpu_register_file.memory[3] !== 0) begin
+            $display("FAIL: scenario %0d import modified f0: %h %h %h %h", scenario,
+                     dut.u_fpu_register_file.memory[0], dut.u_fpu_register_file.memory[1],
+                     dut.u_fpu_register_file.memory[2], dut.u_fpu_register_file.memory[3]);
+            errors = errors + 1;
+        end
+    end
+
+    // Scenario 29: RCP, RSQRT, and both SINCOS ROM reads share one synchronous
+    // lookup memory and preserve their specified fixed-point values.
+    clear_memory;
+    memory[0] = 16'hf020; // IMMHI12 0x020
+    memory[1] = 16'haf50; // LDU r5, 0 -> 0x0200
+    memory[2] = 16'hf020; // IMMHI12 0x020
+    memory[3] = 16'haf00; // LDU r0, 0 -> fix16 2.0
+    memory[4] = 16'hd000; // FLOAD f0, r0
+    memory[5] = 16'hde00; // FRCP f0 -> fix16 0.5
+    memory[6] = 16'hd100; // FSTORE r0, f0
+    memory[7] = 16'h9050; // STORE r0, [r5]
+    memory[8] = 16'hf040; // IMMHI12 0x040
+    memory[9] = 16'haf10; // LDU r1, 0 -> fix16 4.0
+    memory[10] = 16'hd011; // FLOAD f1, r1
+    memory[11] = 16'hde11; // FRSQRT f1 -> fix16 0.5
+    memory[12] = 16'hd111; // FSTORE r1, f1
+    memory[13] = 16'h9151; // STORE r1, [r5+1]
+    memory[14] = 16'hde2a; // FZERO f2
+    memory[15] = 16'hde22; // FSINCOS f2 -> (0, 1)
+    memory[16] = 16'hd632; // FUNPACK4 f3..f6, f2
+    memory[17] = 16'hd104; // FSTORE r0, f4 (cosine)
+    memory[18] = 16'he800; // HALT
+    scenario = 29;
+    expect_halt(16'd256, 400);
+    if (memory[16'h0200] !== 16'd128 || memory[16'h0201] !== 16'd128) begin
+        $display("FAIL: scenario 29 RCP/RSQRT values %h %h",
+                 memory[16'h0200], memory[16'h0201]);
+        errors = errors + 1;
+    end
+
+    // Scenario 30: reciprocal zero faults atomically before a ROM lookup.
+    clear_memory;
+    memory[0] = 16'hd000; // FLOAD f0, r0 (zero)
+    memory[1] = 16'hde00; // FRCP f0 -> domain fault
+    scenario = 30;
+    expect_fault(8'd2, 16'd1, 150);
+    if (dut.u_fpu_register_file.memory[0] !== 0 || retired_words !== 1) begin
+        $display("FAIL: scenario 30 changed f0 or retirement: f0=%h retired=%0d",
+                 dut.u_fpu_register_file.memory[0], retired_words);
+        errors = errors + 1;
+    end
+
+    // Scenario 31: reciprocal sqrt rejects negative input without modifying f0.
+    clear_memory;
+    memory[0] = 16'hffff; // IMMHI12 0xfff
+    memory[1] = 16'haf0f; // LDU r0, 0xf -> -1 raw
+    memory[2] = 16'hd000; // FLOAD f0, r0
+    memory[3] = 16'hde01; // FRSQRT f0 -> domain fault
+    scenario = 31;
+    expect_fault(8'd2, 16'd3, 150);
+    if (dut.u_fpu_register_file.memory[0] !== 16'hffff) begin
+        $display("FAIL: scenario 31 changed f0: %h", dut.u_fpu_register_file.memory[0]);
+        errors = errors + 1;
+    end
+
+    // Scenario 32: normalization rounding from 511.5 to 512 increments the
+    // exponent and wraps the ROM mantissa index to zero.
+    clear_memory;
+    memory[0] = 16'hf03f; // IMMHI12 0x03f
+    memory[1] = 16'haf0f; // LDU r0, 0xf -> raw 1023
+    memory[2] = 16'hd000; // FLOAD f0, r0
+    memory[3] = 16'hde00; // FRCP f0 -> raw 64
+    memory[4] = 16'hd100; // FSTORE r0, f0
+    memory[5] = 16'he800; // HALT
+    scenario = 32;
+    expect_halt(16'd64, 150);
+
+    // Scenarios 25..28: export keeps writes confirmed before a later beat
+    // faults, while the failing and unissued beats retain their old values.
+    for (cond = 0; cond < 4; cond = cond + 1) begin
+        clear_memory;
+        memory[0] = 16'hf010; // IMMHI12 0x010
+        memory[1] = 16'haf10; // LDU r1, 0 -> 0x0100
+        memory[2] = 16'hf010; // IMMHI12 0x010
+        memory[3] = 16'haf24; // LDU r2, 4 -> 0x0104
+        memory[4] = 16'hd201; // FIMPORT4 f0, [r1]
+        memory[5] = 16'hd302; // FEXPORT4 f0, [r2]
+        memory[16'h0100] = 16'ha001;
+        memory[16'h0101] = 16'ha002;
+        memory[16'h0102] = 16'ha003;
+        memory[16'h0103] = 16'ha004;
+        memory[16'h0104] = 16'he001;
+        memory[16'h0105] = 16'he002;
+        memory[16'h0106] = 16'he003;
+        memory[16'h0107] = 16'he004;
+        data_beat = 0;
+        fail_data_beat = 4 + cond;
+        scenario = 25 + cond;
+        expect_fault(8'd4, 16'd5, 300);
+        fail_data_beat = -1;
+        for (index = 0; index < 4; index = index + 1) begin
+            if (memory[16'h0104 + index] !==
+                (index < cond ? 16'ha001 + index : 16'he001 + index)) begin
+                $display("FAIL: scenario %0d export lane %0d = %h", scenario,
+                         index, memory[16'h0104 + index]);
+                errors = errors + 1;
+            end
+        end
+    end
 
     if (errors != 0) begin
         $display("FAIL: %0d error(s)", errors);

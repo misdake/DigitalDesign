@@ -2,6 +2,10 @@
 
 use std::cmp::Ordering;
 
+#[path = "fpu_rom_data.rs"]
+mod fpu_rom_data;
+pub use fpu_rom_data::FPU_ROM_WORDS;
+
 pub type Fix16Raw = i16;
 pub type FpuVector = [Fix16Raw; 4];
 
@@ -72,19 +76,33 @@ pub fn fix16_reciprocal(value: Fix16Raw) -> Result<Fix16Raw, FpuDomainError> {
     if value == 0 {
         return Err(FpuDomainError::ReciprocalZero);
     }
-    Ok(quantize_f64(1.0 / (f64::from(value) / 256.0)))
+    let (index, exponent) = normalize_magnitude(value.unsigned_abs());
+    Ok(scale_q15(
+        FPU_ROM_WORDS[256 + index] as u16,
+        exponent,
+        value < 0,
+    ))
 }
 
 pub fn fix16_reciprocal_sqrt(value: Fix16Raw) -> Result<Fix16Raw, FpuDomainError> {
     if value <= 0 {
         return Err(FpuDomainError::ReciprocalSqrtNonPositive);
     }
-    Ok(quantize_f64(1.0 / (f64::from(value) / 256.0).sqrt()))
+    let (index, exponent) = normalize_magnitude(value as u16);
+    let odd_exponent = exponent.rem_euclid(2) != 0;
+    let table = if odd_exponent { 768 } else { 512 };
+    Ok(scale_q15(
+        FPU_ROM_WORDS[table + index] as u16,
+        exponent.div_euclid(2),
+        false,
+    ))
 }
 
 pub fn fix16_sin_cos(value: Fix16Raw) -> (Fix16Raw, Fix16Raw) {
-    let radians = f64::from(value) / 256.0;
-    (quantize_f64(radians.sin()), quantize_f64(radians.cos()))
+    // 41722 / 65536 approximates 2/pi. The low ten bits are a complete
+    // modulo-2pi reduction into 1024 phase steps.
+    let phase = round_shift_ties_even(i64::from(value) * 41_722, 16).rem_euclid(1024) as u16;
+    (quarter_sine(phase), quarter_sine((phase + 256) & 1023))
 }
 
 pub fn fix16_abs(value: Fix16Raw) -> Fix16Raw {
@@ -137,6 +155,7 @@ pub fn continuation_mask(value: FpuVector) -> u8 {
         | u8::from(value[3] != 0)
 }
 
+#[cfg(test)]
 fn quantize_f64(value: f64) -> Fix16Raw {
     let scaled = (value * 256.0).round_ties_even();
     if scaled <= f64::from(i16::MIN) {
@@ -145,6 +164,55 @@ fn quantize_f64(value: f64) -> Fix16Raw {
         i16::MAX
     } else {
         scaled as i16
+    }
+}
+
+fn normalize_magnitude(magnitude: u16) -> (usize, i32) {
+    debug_assert!(magnitude != 0);
+    let leading = magnitude.leading_zeros() as i32;
+    let mut exponent = 7 - leading;
+    let mut normalized = if exponent > 0 {
+        round_shift_ties_even(i64::from(magnitude), exponent as u32) as u16
+    } else if exponent == 0 {
+        magnitude
+    } else {
+        magnitude << (-exponent as u32)
+    };
+    if normalized == 512 {
+        normalized = 256;
+        exponent += 1;
+    }
+    debug_assert!((256..512).contains(&normalized));
+    (usize::from(normalized - 256), exponent)
+}
+
+fn scale_q15(value: u16, exponent: i32, negative: bool) -> Fix16Raw {
+    let shift = 7 + exponent;
+    let magnitude = if shift > 0 {
+        round_shift_ties_even(i64::from(value), shift as u32)
+    } else {
+        i64::from(value) << (-shift as u32)
+    };
+    fix16_saturate(if negative { -magnitude } else { magnitude })
+}
+
+fn quarter_sine(phase: u16) -> Fix16Raw {
+    let quadrant = phase >> 8;
+    let offset = usize::from(phase & 255);
+    let rising = || FPU_ROM_WORDS[offset] as i16;
+    let falling = || {
+        if offset == 0 {
+            FIX16_ONE
+        } else {
+            FPU_ROM_WORDS[256 - offset] as i16
+        }
+    };
+    match quadrant {
+        0 => rising(),
+        1 => falling(),
+        2 => -rising(),
+        3 => -falling(),
+        _ => unreachable!(),
     }
 }
 
@@ -194,5 +262,35 @@ mod tests {
         assert_eq!(continuation_mask([1, 2, 0, 0]), 0b100);
         assert_eq!(continuation_mask([1, 0, 3, 0]), 0b110);
         assert_eq!(continuation_mask([0, 0, 0, 4]), 0b111);
+    }
+
+    #[test]
+    fn shared_rom_error_is_bounded_over_the_complete_fix16_domain() {
+        let mut reciprocal_error = 0_i32;
+        let mut rsqrt_error = 0_i32;
+        let mut sin_cos_error = 0_i32;
+        for raw in i16::MIN..=i16::MAX {
+            if raw != 0 {
+                let ideal = quantize_f64(1.0 / (f64::from(raw) / 256.0));
+                reciprocal_error = reciprocal_error
+                    .max((i32::from(fix16_reciprocal(raw).unwrap()) - i32::from(ideal)).abs());
+            }
+            if raw > 0 {
+                let ideal = quantize_f64(1.0 / (f64::from(raw) / 256.0).sqrt());
+                rsqrt_error = rsqrt_error
+                    .max((i32::from(fix16_reciprocal_sqrt(raw).unwrap()) - i32::from(ideal)).abs());
+            }
+            let radians = f64::from(raw) / 256.0;
+            let (sin, cos) = fix16_sin_cos(raw);
+            sin_cos_error = sin_cos_error
+                .max((i32::from(sin) - i32::from(quantize_f64(radians.sin()))).abs())
+                .max((i32::from(cos) - i32::from(quantize_f64(radians.cos()))).abs());
+        }
+        eprintln!(
+            "complete-domain FPU ROM maximum raw errors: rcp={reciprocal_error}, rsqrt={rsqrt_error}, sincos={sin_cos_error}"
+        );
+        assert!(reciprocal_error <= 2);
+        assert!(rsqrt_error <= 2);
+        assert!(sin_cos_error <= 2);
     }
 }
