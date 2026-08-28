@@ -12,9 +12,9 @@ use digital_design_hardware_gowin::{Bsram1Rw1024, BsramImage, DspMulS18};
 use std::cmp::Ordering;
 
 use crate::{
-    acc_saturate, fix16_abs, fix16_add, fix16_ceil, fix16_floor, fix16_from_acc, fix16_mul,
-    fix16_neg, fix16_reciprocal, fix16_reciprocal_sqrt, fix16_round, fix16_saturate01, fix16_sign,
-    fix16_sin_cos, fix16_sub, Fix16Raw, FpuVector,
+    acc_saturate, fix16_abs, fix16_add, fix16_ceil, fix16_floor, fix16_from_acc, fix16_neg,
+    fix16_reciprocal, fix16_reciprocal_sqrt, fix16_round, fix16_saturate, fix16_saturate01,
+    fix16_sign, fix16_sin_cos, fix16_sub, round_shift_ties_even, Fix16Raw, FpuVector,
 };
 
 pub const CPU_V3_FAULT_INVALID_INSTRUCTION: u8 = 1;
@@ -190,6 +190,7 @@ enum Phase {
     FpuMultiplyWait,
     FpuMultiplySettle,
     FpuMultiplyCommit,
+    FpuMultiplyPipeline,
     FpuRomNormalize,
     FpuRomAddress,
     FpuRomLookup,
@@ -261,6 +262,9 @@ pub struct CpuV3CoreState {
     fpu_operand_a: Fix16Raw,
     fpu_operand_b: Fix16Raw,
     fpu_result: Fix16Raw,
+    fpu_mul_valid: u8,
+    fpu_mul_tags: [u8; 2],
+    fpu_mul_products: [i64; 2],
     fpu_clear_index: u8,
     fpu_retire_words: u8,
     fpu_fault_pc: u16,
@@ -301,6 +305,9 @@ impl Default for CpuV3CoreState {
             fpu_operand_a: 0,
             fpu_operand_b: 0,
             fpu_result: 0,
+            fpu_mul_valid: 0,
+            fpu_mul_tags: [0; 2],
+            fpu_mul_products: [0; 2],
             fpu_clear_index: 0,
             fpu_retire_words: 0,
             fpu_fault_pc: 0,
@@ -647,8 +654,7 @@ impl CpuV3CoreState {
                 // Latch the broadcast scalar: earlier lane commits may
                 // overwrite Fb.x when Fa and Fb alias.
                 self.fpu_scalar = self.fpu_registers[b][0] as u16;
-                self.fpu_step = 0;
-                self.phase = Phase::FpuMultiplyWait;
+                self.begin_fpu_multiply_pipeline();
             }
             12 if b <= 3 => {
                 self.fpu_registers[a][b] = fix16_from_acc(self.fpu_accumulator);
@@ -695,7 +701,37 @@ impl CpuV3CoreState {
 
     fn begin_fpu_write_lanes(&mut self) {
         self.fpu_step = 0;
+        let a = usize::from(field(self.instruction, 4));
+        let b = usize::from(field(self.instruction, 0));
+        match self.fpu_write_source {
+            FpuWriteSource::Alu => {
+                self.fpu_operand_a = self.fpu_registers[a][0];
+                self.fpu_operand_b = self.fpu_registers[b][0];
+            }
+            FpuWriteSource::Move => self.fpu_result = self.fpu_registers[b][0],
+            _ => {}
+        }
         self.phase = Phase::FpuWriteLanes;
+    }
+
+    fn fpu_product(&self, lane: usize) -> i64 {
+        let function = field(self.instruction, 8);
+        let a = usize::from(field(self.instruction, 4));
+        let b = usize::from(field(self.instruction, 0));
+        let right = if function == 15 {
+            self.fpu_scalar as i16
+        } else {
+            self.fpu_registers[b][lane]
+        };
+        i64::from(self.fpu_registers[a][lane]) * i64::from(right)
+    }
+
+    fn begin_fpu_multiply_pipeline(&mut self) {
+        self.fpu_step = 1;
+        self.fpu_mul_valid = 0b01;
+        self.fpu_mul_tags[0] = 0;
+        self.fpu_mul_products[0] = self.fpu_product(0);
+        self.phase = Phase::FpuMultiplyPipeline;
     }
 }
 
@@ -830,64 +866,53 @@ impl Module for CpuV3Core {
                 let b = usize::from(field(state.instruction, 0));
                 let function = field(state.instruction, 8);
                 let unary = usize::from(field(state.instruction, 0));
-                // Mirror the RTL: ALU and move lanes alternate an
-                // operand-capture cycle with a compute-and-write cycle;
-                // other sources stream one lane per cycle.
                 let staged = matches!(
                     state.fpu_write_source,
                     FpuWriteSource::Alu | FpuWriteSource::Move
                 );
-                let lane = usize::from(if staged {
-                    (state.fpu_step >> 1) & 3
-                } else {
-                    state.fpu_step & 3
-                });
-                let capture = staged && state.fpu_step & 1 == 0;
-                if state.fpu_write_source == FpuWriteSource::Alu && capture {
-                    // Operand reads are asynchronous; a lane written earlier
-                    // this instruction is never re-read.
-                    state.fpu_operand_a = state.fpu_registers[a][lane];
-                    state.fpu_operand_b = state.fpu_registers[b][lane];
-                }
-                if state.fpu_write_source == FpuWriteSource::Move && capture {
-                    state.fpu_result = state.fpu_registers[b][lane];
-                }
-                if !capture {
-                    let left = state.fpu_operand_a;
-                    let value = match state.fpu_write_source {
-                        FpuWriteSource::Alu => match function {
-                            8 => fix16_add(left, state.fpu_operand_b),
-                            9 => fix16_sub(left, state.fpu_operand_b),
-                            _ => match unary {
-                                3 => fix16_abs(left),
-                                4 => fix16_neg(left),
-                                5 => fix16_floor(left),
-                                6 => fix16_ceil(left),
-                                7 => fix16_round(left),
-                                8 => fix16_saturate01(left),
-                                9 => fix16_sign(left),
-                                _ => 0,
-                            },
-                        },
-                        FpuWriteSource::Move => state.fpu_result,
-                        FpuWriteSource::Scalar => {
-                            if lane == 0 {
-                                state.fpu_scalar as i16
-                            } else {
-                                0
-                            }
-                        }
-                        FpuWriteSource::Memory => state.fpu_memory_value[lane],
-                        FpuWriteSource::Trig => match lane {
-                            0 => state.fpu_rom_first,
-                            1 => state.fpu_rom_second,
+                let lane = usize::from(state.fpu_step & 3);
+                let left = state.fpu_operand_a;
+                let value = match state.fpu_write_source {
+                    FpuWriteSource::Alu => match function {
+                        8 => fix16_add(left, state.fpu_operand_b),
+                        9 => fix16_sub(left, state.fpu_operand_b),
+                        _ => match unary {
+                            3 => fix16_abs(left),
+                            4 => fix16_neg(left),
+                            5 => fix16_floor(left),
+                            6 => fix16_ceil(left),
+                            7 => fix16_round(left),
+                            8 => fix16_saturate01(left),
+                            9 => fix16_sign(left),
                             _ => 0,
                         },
-                    };
-                    state.fpu_registers[a][lane] = value;
+                    },
+                    FpuWriteSource::Move => state.fpu_result,
+                    FpuWriteSource::Scalar => {
+                        if lane == 0 {
+                            state.fpu_scalar as i16
+                        } else {
+                            0
+                        }
+                    }
+                    FpuWriteSource::Memory => state.fpu_memory_value[lane],
+                    FpuWriteSource::Trig => match lane {
+                        0 => state.fpu_rom_first,
+                        1 => state.fpu_rom_second,
+                        _ => 0,
+                    },
+                };
+                state.fpu_registers[a][lane] = value;
+                if staged && state.fpu_step < 3 {
+                    let next = lane + 1;
+                    if state.fpu_write_source == FpuWriteSource::Alu {
+                        state.fpu_operand_a = state.fpu_registers[a][next];
+                        state.fpu_operand_b = state.fpu_registers[b][next];
+                    } else {
+                        state.fpu_result = state.fpu_registers[b][next];
+                    }
                 }
-                let last = if staged { 7 } else { 3 };
-                if state.fpu_step == last {
+                if state.fpu_step == 3 {
                     state.fpu_step = 0;
                     state.phase = Phase::FpuCommit;
                 } else {
@@ -973,42 +998,40 @@ impl Module for CpuV3Core {
             Phase::FpuMultiplyWait => state.phase = Phase::FpuMultiplySettle,
             Phase::FpuMultiplySettle => state.phase = Phase::FpuMultiplyCommit,
             Phase::FpuMultiplyCommit => {
+                debug_assert_eq!(field(state.instruction, 8), 14);
+                debug_assert_eq!(field(state.instruction, 0), 2);
+                state.phase = Phase::FpuRomLookup;
+            }
+            Phase::FpuMultiplyPipeline => {
+                let issue = state.fpu_step < 4;
+                let issue_lane = usize::from(state.fpu_step & 3);
+                let consume = state.fpu_mul_valid & 0b10 != 0;
+                let consume_lane = usize::from(state.fpu_mul_tags[1]);
+                let product = state.fpu_mul_products[1];
                 let function = field(state.instruction, 8);
-                if function == 14 && field(state.instruction, 0) == 2 {
-                    state.phase = Phase::FpuRomLookup;
-                } else if function == 11 {
-                    let a = usize::from(field(state.instruction, 4));
-                    let b = usize::from(field(state.instruction, 0));
-                    let lane = usize::from(state.fpu_step & 3);
-                    state.fpu_accumulator = acc_saturate(
-                        i128::from(state.fpu_accumulator)
-                            + i128::from(state.fpu_registers[a][lane])
-                                * i128::from(state.fpu_registers[b][lane]),
-                    );
-                    if state.fpu_step == 3 {
-                        state.fpu_step = 0;
-                        state.phase = Phase::FpuCommit;
+                if consume {
+                    if function == 11 {
+                        state.fpu_accumulator =
+                            acc_saturate(i128::from(state.fpu_accumulator) + i128::from(product));
                     } else {
-                        state.fpu_step += 1;
-                        state.phase = Phase::FpuMultiplyWait;
+                        let a = usize::from(field(state.instruction, 4));
+                        state.fpu_registers[a][consume_lane] = fix16_saturate(
+                            round_shift_ties_even(product, crate::FIX16_FRACTION_BITS),
+                        );
                     }
-                } else {
-                    let a = usize::from(field(state.instruction, 4));
-                    let b = usize::from(field(state.instruction, 0));
-                    let lane = usize::from(state.fpu_step & 3);
-                    let right = if function == 15 {
-                        state.fpu_scalar as i16
-                    } else {
-                        state.fpu_registers[b][lane]
-                    };
-                    state.fpu_registers[a][lane] = fix16_mul(state.fpu_registers[a][lane], right);
-                    if state.fpu_step == 3 {
-                        state.fpu_step = 0;
-                        state.phase = Phase::FpuCommit;
-                    } else {
-                        state.fpu_step += 1;
-                        state.phase = Phase::FpuMultiplyWait;
-                    }
+                }
+                state.fpu_mul_valid = ((state.fpu_mul_valid & 1) << 1) | u8::from(issue);
+                state.fpu_mul_tags[1] = state.fpu_mul_tags[0];
+                state.fpu_mul_products[1] = state.fpu_mul_products[0];
+                if issue {
+                    state.fpu_mul_tags[0] = state.fpu_step;
+                    state.fpu_mul_products[0] = state.fpu_product(issue_lane);
+                    state.fpu_step += 1;
+                }
+                if consume && consume_lane == 3 {
+                    state.fpu_step = 0;
+                    state.fpu_mul_valid = 0;
+                    state.phase = Phase::FpuCommit;
                 }
             }
             Phase::FpuRomNormalize => state.phase = Phase::FpuRomAddress,
@@ -1139,6 +1162,7 @@ mod tests {
     use std::collections::HashMap;
 
     struct CoreRun {
+        cycles: usize,
         halt_signal: u16,
         retired_words: u32,
         code_segment: u16,
@@ -1181,7 +1205,7 @@ mod tests {
         drive(&mut circuit, &input, None, None, 0);
         let mut devices = [0u16; 128];
 
-        for _ in 0..maximum_cycles {
+        for cycle in 0..maximum_cycles {
             circuit.execute_gates();
             let value = output.sample(&circuit);
             if value.fault {
@@ -1192,6 +1216,7 @@ mod tests {
             }
             if value.halted {
                 return CoreRun {
+                    cycles: cycle,
                     halt_signal: value.halt_signal as u16,
                     retired_words: value.retired_words as u32,
                     code_segment: value.code_segment as u16,
@@ -1429,6 +1454,40 @@ mod tests {
         let core = run_core(memory, 200);
         assert_eq!(core.halt_signal, signal);
         assert_eq!(core.retired_words as u64, oracle.retired_words());
+    }
+
+    #[test]
+    fn fpu_lane_pipelines_have_exact_blocking_latency() {
+        fn program(operation: u16) -> Vec<u16> {
+            let mut words = vec![];
+            words.extend(crate::load_immediate16(0, 256));
+            words.extend(crate::load_immediate16(1, 512));
+            words.extend([
+                crate::fpu(crate::FpuOp::Load, 0, 0),
+                crate::fpu(crate::FpuOp::Load, 1, 1),
+                operation,
+                crate::fpu(crate::FpuOp::Store, 0, 0),
+                crate::halt(),
+            ]);
+            words
+        }
+
+        let baseline = program(crate::move_register(15, 15));
+        let add = program(crate::fpu(crate::FpuOp::Add, 0, 1));
+        let multiply = program(crate::fpu(crate::FpuOp::Mul, 0, 1));
+        let run = |words: &[u16]| {
+            let mut memory = HashMap::new();
+            load(&mut memory, 0, words);
+            run_core(memory, 200)
+        };
+        let baseline = run(&baseline);
+        let add = run(&add);
+        let multiply = run(&multiply);
+
+        assert_eq!(add.cycles - baseline.cycles, 6);
+        assert_eq!(multiply.cycles - baseline.cycles, 7);
+        assert_eq!(add.halt_signal, 768);
+        assert_eq!(multiply.halt_signal, 512);
     }
 
     #[test]

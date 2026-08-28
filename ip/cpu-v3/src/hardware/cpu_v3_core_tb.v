@@ -42,6 +42,7 @@ assign device_read_data = devices[{device_index, device_channel}];
 integer index;
 integer errors = 0;
 integer scenario = 0;
+integer last_run_cycles = 0;
 integer cond;
 reg check_high_data_address = 0;
 integer data_beat = 0;
@@ -105,6 +106,7 @@ task run_core;
             #1;
             cycles = cycles + 1;
         end
+        last_run_cycles = cycles;
         if (!halted && !fault) begin
             $display("FAIL: scenario %0d exceeded %0d cycles", scenario, max_cycles);
             errors = errors + 1;
@@ -575,6 +577,10 @@ initial begin
     memory[16'h0107] = 16'd512;
     scenario = 35;
     expect_halt(16'd0, 350);
+    if (last_run_cycles != 140) begin
+        $display("FAIL: scenario 35 cycles %0d, expected 140", last_run_cycles);
+        errors = errors + 1;
+    end
     if (dut.u_fpu_register_ram.words[8] !== 16'd512 ||
         dut.u_fpu_register_ram.words[9] !== 16'd256 ||
         dut.u_fpu_register_ram.words[10] !== 16'd512 ||
@@ -582,6 +588,34 @@ initial begin
         $display("FAIL: scenario 35 FMOV/FMUL results %h %h %h %h",
                  dut.u_fpu_register_ram.words[8], dut.u_fpu_register_ram.words[9],
                  dut.u_fpu_register_ram.words[10], dut.u_fpu_register_ram.words[11]);
+        errors = errors + 1;
+    end
+
+    // Scenario 36: FMULS snapshots the broadcast x lane before an aliased
+    // destination starts overwriting the same vector.
+    clear_memory;
+    memory[0] = 16'hf010;
+    memory[1] = 16'haf10; // r1 = 0x0100
+    memory[2] = 16'hd201; // FIMPORT4 f0, [r1]
+    memory[3] = 16'hdf00; // FMULS f0, f0.x
+    memory[4] = 16'he800; // HALT
+    memory[16'h0100] = 16'd512;
+    memory[16'h0101] = 16'd256;
+    memory[16'h0102] = -16'sd256;
+    memory[16'h0103] = 16'd128;
+    scenario = 36;
+    expect_halt(16'd0, 200);
+    if (last_run_cycles != 100) begin
+        $display("FAIL: scenario 36 cycles %0d, expected 100", last_run_cycles);
+        errors = errors + 1;
+    end
+    if (dut.u_fpu_register_ram.words[0] !== 16'd1024 ||
+        dut.u_fpu_register_ram.words[1] !== 16'd512 ||
+        dut.u_fpu_register_ram.words[2] !== -16'sd512 ||
+        dut.u_fpu_register_ram.words[3] !== 16'd256) begin
+        $display("FAIL: scenario 36 FMULS alias results %h %h %h %h",
+                 dut.u_fpu_register_ram.words[0], dut.u_fpu_register_ram.words[1],
+                 dut.u_fpu_register_ram.words[2], dut.u_fpu_register_ram.words[3]);
         errors = errors + 1;
     end
 

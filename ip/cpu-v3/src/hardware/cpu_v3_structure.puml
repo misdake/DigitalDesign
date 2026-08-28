@@ -72,8 +72,8 @@ note right of FpuFsm
 Current issue policy:
 * no CPU/FPU overlap
 * no cross-instruction pipeline
-* add/move/simple unary: capture then write per lane
-* multiply/dot: wait, settle, commit per lane
+* add/move/simple unary: one overlapped lane per cycle
+* multiply/dot: one tagged DSP issue/result per cycle after fill
 * continuation k early-exit is not implemented
 end note
 

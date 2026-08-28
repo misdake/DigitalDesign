@@ -59,6 +59,7 @@ localparam [4:0] ST_FPU_COMMIT = 21;
 localparam [4:0] ST_RESET_CLEAR = 22;
 localparam [4:0] ST_FPU_SCATTER_READ = 24;
 localparam [4:0] ST_FPU_ROM_LOOKUP = 25;
+localparam [4:0] ST_FPU_MULTIPLY_PIPELINE = 26;
 
 localparam [7:0] FAULT_INVALID_INSTRUCTION = 1;
 localparam [7:0] FAULT_FPU_DOMAIN = 2;
@@ -133,6 +134,9 @@ reg signed [15:0] fpu_swap_data_b = 0;
 reg signed [15:0] fpu_operand_a = 0;
 reg signed [15:0] fpu_operand_b = 0;
 reg [15:0] fpu_result = 0;
+reg [1:0] fpu_mul_valid = 0;
+reg [1:0] fpu_mul_tag_0 = 0;
+reg [1:0] fpu_mul_tag_1 = 0;
 reg [1:0] fpu_retire_words = 0;
 reg [15:0] fpu_fault_pc = 0;
 reg [5:0] fpu_clear_index = 0;
@@ -152,7 +156,9 @@ wire signed [17:0] fpu_multiplier_left =
     {{2{fpu_rf_read_a_data[15]}}, fpu_rf_read_a_data};
 wire signed [17:0] fpu_multiplier_right =
     fpu_sine_operation ? 18'sd41722 :
-    (field_d == 4'hf ? {{2{fpu_scalar[15]}}, fpu_scalar} :
+    (field_d == 4'hf ?
+     (state == ST_FPU_EXECUTE ? {{2{fpu_rf_read_b_data[15]}}, fpu_rf_read_b_data} :
+      {{2{fpu_scalar[15]}}, fpu_scalar}) :
      {{2{fpu_rf_read_b_data[15]}}, fpu_rf_read_b_data});
 wire signed [35:0] fpu_multiplier_product;
 wire prefix_consumer = opcode == 4'h8 || opcode == 4'h9 ||
@@ -406,15 +412,17 @@ wire [15:0] fpu_rom_scaled = fpu_rom_negative ?
     (fpu_variable_shifted >= 17'd32768 ? 16'h8000 : -fpu_variable_shifted[15:0]) :
     (fpu_variable_shifted > 17'd32767 ? 16'h7fff : fpu_variable_shifted[15:0]);
 
-// ALU and move lanes alternate an operand-capture cycle with a
-// compute-and-write cycle, so the asynchronous read, the ALU, and the write
-// port each occupy their own register-to-register hop.
+// ALU and move lanes capture lane zero in ST_FPU_EXECUTE. Each following
+// cycle writes that registered lane while the asynchronous ports select the
+// next lane, keeping the SSRAM read and ALU/writeback paths separated.
 wire fpu_alu_writeback =
     state == ST_FPU_WRITE_LANES && fpu_write_source == FPU_WRITE_ALU;
 wire fpu_move_writeback =
     state == ST_FPU_WRITE_LANES && fpu_write_source == FPU_WRITE_MOVE;
-wire [1:0] fpu_lane_index = fpu_alu_writeback || fpu_move_writeback ?
-    fpu_step[2:1] : fpu_step[1:0];
+wire [1:0] fpu_write_lane = fpu_step[1:0];
+wire [1:0] fpu_read_lane =
+    (fpu_alu_writeback || fpu_move_writeback) && fpu_step < 3 ?
+    fpu_step[1:0] + 1'b1 : fpu_step[1:0];
 
 // Single-lane add/sub operands for the serialized vector ALU.
 wire signed [16:0] fpu_lane_sum =
@@ -487,7 +495,7 @@ always @* begin
         ST_DATA_RESPONSE:
             fpu_rf_read_a_address = {field_a, fpu_memory_lane + 2'b01};
         default:
-            fpu_rf_read_a_address = {field_a, fpu_lane_index};
+            fpu_rf_read_a_address = {field_a, fpu_read_lane};
     endcase
 end
 
@@ -497,7 +505,7 @@ always @* begin
     if (state == ST_FPU_TRANSPOSE)
         fpu_rf_read_b_address = {fpu_transpose_row_j, fpu_pair_i};
     else
-        fpu_rf_read_b_address = {field_b, fpu_lane_index};
+        fpu_rf_read_b_address = {field_b, fpu_read_lane};
 end
 
 wire immediate_multiply = opcode == 4'ha && field_d == 4'h8;
@@ -585,6 +593,9 @@ always @(posedge clk) begin
         fpu_accumulator <= 0;
         fpu_memory_active <= 0;
         fpu_memory_lane <= 0;
+        fpu_mul_valid <= 0;
+        fpu_mul_tag_0 <= 0;
+        fpu_mul_tag_1 <= 0;
         retired_words <= 0;
         fault_code <= 0;
         fault_pc <= 0;
@@ -999,6 +1010,7 @@ always @(posedge clk) begin
                     end
                     4: begin
                         fpu_write_source <= FPU_WRITE_MOVE;
+                        fpu_result <= fpu_rf_read_b_data;
                         fpu_step <= 0;
                         state <= ST_FPU_WRITE_LANES;
                     end
@@ -1034,6 +1046,8 @@ always @(posedge clk) begin
                     end
                     8, 9: begin
                         fpu_write_source <= FPU_WRITE_ALU;
+                        fpu_operand_a <= fpu_rf_read_a_data;
+                        fpu_operand_b <= fpu_rf_read_b_data;
                         fpu_step <= 0;
                         state <= ST_FPU_WRITE_LANES;
                     end
@@ -1041,8 +1055,10 @@ always @(posedge clk) begin
                         // Latch the broadcast scalar: earlier lane commits
                         // may overwrite Fb.x when Fa and Fb alias.
                         fpu_scalar <= fpu_rf_read_b_data;
-                        fpu_step <= 0;
-                        state <= ST_FPU_MULTIPLY_WAIT;
+                        fpu_step <= 1;
+                        fpu_mul_valid <= 2'b01;
+                        fpu_mul_tag_0 <= 0;
+                        state <= ST_FPU_MULTIPLY_PIPELINE;
                     end
                     12: begin
                         if (field_b <= 3) begin
@@ -1096,6 +1112,8 @@ always @(posedge clk) begin
                             end
                             3, 4, 5, 6, 7, 8, 9, 10: begin
                                 fpu_write_source <= FPU_WRITE_ALU;
+                                fpu_operand_a <= fpu_rf_read_a_data;
+                                fpu_operand_b <= fpu_rf_read_b_data;
                                 fpu_step <= 0;
                                 state <= ST_FPU_WRITE_LANES;
                             end
@@ -1114,23 +1132,46 @@ always @(posedge clk) begin
                 endcase
             end
             ST_FPU_WRITE_LANES: begin
-                if (fpu_alu_writeback && !fpu_step[0]) begin
+                if (fpu_alu_writeback && fpu_step < 3) begin
                     fpu_operand_a <= fpu_rf_read_a_data;
                     fpu_operand_b <= fpu_rf_read_b_data;
                 end
-                if (fpu_move_writeback && !fpu_step[0])
+                if (fpu_move_writeback && fpu_step < 3)
                     fpu_result <= fpu_rf_read_b_data;
-                if (!fpu_alu_writeback && !fpu_move_writeback || fpu_step[0]) begin
-                    fpu_rf_write_enable <= 1'b1;
-                    fpu_rf_write_address <= {field_a, fpu_lane_index};
-                    fpu_rf_write_data <= fpu_move_writeback ?
-                        fpu_result : fpu_write_lanes_data;
-                end
-                if (fpu_step == ((fpu_alu_writeback || fpu_move_writeback) ? 7 : 3)) begin
+                fpu_rf_write_enable <= 1'b1;
+                fpu_rf_write_address <= {field_a, fpu_write_lane};
+                fpu_rf_write_data <= fpu_move_writeback ?
+                    fpu_result : fpu_write_lanes_data;
+                if (fpu_step == 3) begin
                     fpu_step <= 0;
                     state <= ST_FPU_COMMIT;
                 end else begin
                     fpu_step <= fpu_step + 1'b1;
+                end
+            end
+            ST_FPU_MULTIPLY_PIPELINE: begin
+                // The DSP has two registered stages. Tags follow its products
+                // so one lane can be issued every cycle and committed in order.
+                fpu_mul_valid <= {fpu_mul_valid[0], fpu_step < 4};
+                fpu_mul_tag_1 <= fpu_mul_tag_0;
+                if (fpu_step < 4) begin
+                    fpu_mul_tag_0 <= fpu_step[1:0];
+                    fpu_step <= fpu_step + 1'b1;
+                end
+                if (fpu_mul_valid[1]) begin
+                    if (field_d == 11) begin
+                        fpu_accumulator <=
+                            fpu_accumulate_product(fpu_accumulator, fpu_multiplier_product);
+                    end else begin
+                        fpu_rf_write_enable <= 1'b1;
+                        fpu_rf_write_address <= {field_a, fpu_mul_tag_1};
+                        fpu_rf_write_data <= fix16_from_product(fpu_multiplier_product);
+                    end
+                    if (fpu_mul_tag_1 == 3) begin
+                        fpu_step <= 0;
+                        fpu_mul_valid <= 0;
+                        state <= ST_FPU_COMMIT;
+                    end
                 end
             end
             ST_FPU_GATHER_READ: begin
@@ -1204,36 +1245,13 @@ always @(posedge clk) begin
                     fpu_step <= fpu_step + 1'b1;
                 end
             end
-            // DspMulS18 has two cycles of latency; each lane waits twice so
-            // the committed product matches the current lane.
+            // SINCOS keeps the non-streaming DSP path because it issues one
+            // range-reduction multiply followed by two ROM reads.
             ST_FPU_MULTIPLY_WAIT: state <= ST_FPU_MULTIPLY_SETTLE;
             ST_FPU_MULTIPLY_SETTLE: state <= ST_FPU_MULTIPLY_COMMIT;
             ST_FPU_MULTIPLY_COMMIT: begin
-                if (fpu_sine_operation) begin
-                    fpu_sine_phase <= fpu_phase_from_product(fpu_multiplier_product);
-                    state <= ST_FPU_ROM_LOOKUP;
-                end else if (field_d == 11) begin
-                    fpu_accumulator <= fpu_accumulate_product(fpu_accumulator, fpu_multiplier_product);
-                    if (fpu_step == 3) begin
-                        fpu_step <= 0;
-                        state <= ST_FPU_COMMIT;
-                    end else begin
-                        fpu_step <= fpu_step + 1'b1;
-                        state <= ST_FPU_MULTIPLY_WAIT;
-                    end
-                end else begin
-                    // Vector and broadcast multiplies write one lane per pass.
-                    fpu_rf_write_enable <= 1'b1;
-                    fpu_rf_write_address <= {field_a, fpu_step[1:0]};
-                    fpu_rf_write_data <= fix16_from_product(fpu_multiplier_product);
-                    if (fpu_step == 3) begin
-                        fpu_step <= 0;
-                        state <= ST_FPU_COMMIT;
-                    end else begin
-                        fpu_step <= fpu_step + 1'b1;
-                        state <= ST_FPU_MULTIPLY_WAIT;
-                    end
-                end
+                fpu_sine_phase <= fpu_phase_from_product(fpu_multiplier_product);
+                state <= ST_FPU_ROM_LOOKUP;
             end
             ST_FPU_ROM_NORMALIZE: begin
                 // Priority-encode the operand registered in ST_FPU_EXECUTE.
