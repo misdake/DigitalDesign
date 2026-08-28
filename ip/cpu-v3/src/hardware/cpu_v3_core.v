@@ -42,9 +42,13 @@ localparam [3:0] ST_MULTIPLY_WAIT = 5;
 localparam [3:0] ST_MULTIPLY_COMMIT = 6;
 localparam [3:0] ST_HALTED = 7;
 localparam [3:0] ST_FAULT = 8;
+localparam [3:0] ST_FPU_EXECUTE = 9;
+localparam [3:0] ST_FPU_MULTIPLY_WAIT = 10;
+localparam [3:0] ST_FPU_MULTIPLY_COMMIT = 11;
+localparam [3:0] ST_FPU_COMMIT = 12;
 
 localparam [7:0] FAULT_INVALID_INSTRUCTION = 1;
-localparam [7:0] FAULT_UNSUPPORTED_FPU = 2;
+localparam [7:0] FAULT_FPU_DOMAIN = 2;
 localparam [7:0] FAULT_INSTRUCTION_MEMORY = 3;
 localparam [7:0] FAULT_DATA_MEMORY = 4;
 
@@ -80,10 +84,23 @@ wire signed [17:0] multiplier_left;
 wire signed [17:0] multiplier_right;
 wire signed [35:0] multiplier_product;
 
+reg signed [15:0] fpu_registers [0:63];
+reg signed [15:0] fpu_left [0:3];
+reg signed [15:0] fpu_right [0:3];
+reg [1:0] fpu_lane = 0;
+reg [1:0] fpu_retire_words = 0;
+reg [15:0] fpu_fault_pc = 0;
+
 wire [3:0] opcode = instruction[15:12];
 wire [3:0] field_d = instruction[11:8];
 wire [3:0] field_a = instruction[7:4];
 wire [3:0] field_b = instruction[3:0];
+wire signed [17:0] fpu_multiplier_left = {{2{fpu_left[fpu_lane][15]}}, fpu_left[fpu_lane]};
+wire signed [15:0] fpu_multiplier_right_word =
+    field_d == 4'hf ? fpu_right[0] : fpu_right[fpu_lane];
+wire signed [17:0] fpu_multiplier_right =
+    {{2{fpu_multiplier_right_word[15]}}, fpu_multiplier_right_word};
+wire signed [35:0] fpu_multiplier_product;
 wire prefix_consumer = opcode == 4'h8 || opcode == 4'h9 ||
                        (opcode == 4'ha &&
                         !(field_d >= 4'h5 && field_d <= 4'h7)) ||
@@ -145,6 +162,39 @@ function [15:0] population_count;
     end
 endfunction
 
+function [15:0] fix16_saturate17;
+    input signed [16:0] value;
+    begin
+        if (value > 17'sd32767)
+            fix16_saturate17 = 16'h7fff;
+        else if (value < -17'sd32768)
+            fix16_saturate17 = 16'h8000;
+        else
+            fix16_saturate17 = value[15:0];
+    end
+endfunction
+
+function [15:0] fix16_from_product;
+    input signed [35:0] value;
+    reg [35:0] magnitude;
+    reg [27:0] quotient;
+    reg signed [28:0] rounded;
+    begin
+        magnitude = value[35] ? -value : value;
+        quotient = magnitude[35:8];
+        if (magnitude[7:0] > 8'h80 ||
+            (magnitude[7:0] == 8'h80 && quotient[0]))
+            quotient = quotient + 1'b1;
+        rounded = value[35] ? -$signed({1'b0, quotient}) : $signed({1'b0, quotient});
+        if (rounded > 29'sd32767)
+            fix16_from_product = 16'h7fff;
+        else if (rounded < -29'sd32768)
+            fix16_from_product = 16'h8000;
+        else
+            fix16_from_product = rounded[15:0];
+    end
+endfunction
+
 wire immediate_multiply = opcode == 4'ha && field_d == 4'h8;
 wire [15:0] multiply_left_word = registers[field_a];
 wire [15:0] multiply_right_word =
@@ -159,6 +209,13 @@ __DSP_MULTIPLIER__ u_multiplier (
     .a(multiplier_left),
     .b(multiplier_right),
     .product(multiplier_product)
+);
+
+__FPU_DSP_MULTIPLIER__ u_fpu_multiplier (
+    .clk(clk),
+    .a(fpu_multiplier_left),
+    .b(fpu_multiplier_right),
+    .product(fpu_multiplier_product)
 );
 
 assign instruction_request_valid = state == ST_FETCH_REQUEST;
@@ -182,6 +239,8 @@ assign code_segment = code_segment_register;
 assign data_segment = data_segment_register;
 
 integer register_index;
+integer fpu_register_index;
+integer fpu_lane_index;
 reg [15:0] left_value;
 reg [15:0] right_value;
 reg [15:0] immediate_value;
@@ -204,6 +263,8 @@ always @(posedge clk) begin
         fault_pc <= 0;
         for (register_index = 0; register_index < 16; register_index = register_index + 1)
             registers[register_index] <= 0;
+        for (fpu_register_index = 0; fpu_register_index < 64; fpu_register_index = fpu_register_index + 1)
+            fpu_registers[fpu_register_index] <= 0;
     end else begin
         case (state)
             ST_FETCH_REQUEST: begin
@@ -389,9 +450,17 @@ always @(posedge clk) begin
                             state <= ST_FETCH_REQUEST;
                         end
                         4'hd: begin
-                            fault_code <= FAULT_UNSUPPORTED_FPU;
-                            fault_pc <= current_fault_pc;
-                            state <= ST_FAULT;
+                            fpu_left[0] <= fpu_registers[{field_a, 2'b00}];
+                            fpu_left[1] <= fpu_registers[{field_a, 2'b00} + 1'b1];
+                            fpu_left[2] <= fpu_registers[{field_a, 2'b00} + 2'd2];
+                            fpu_left[3] <= fpu_registers[{field_a, 2'b00} + 2'd3];
+                            fpu_right[0] <= fpu_registers[{field_b, 2'b00}];
+                            fpu_right[1] <= fpu_registers[{field_b, 2'b00} + 1'b1];
+                            fpu_right[2] <= fpu_registers[{field_b, 2'b00} + 2'd2];
+                            fpu_right[3] <= fpu_registers[{field_b, 2'b00} + 2'd3];
+                            fpu_retire_words <= success_retire_words;
+                            fpu_fault_pc <= current_fault_pc;
+                            state <= ST_FPU_EXECUTE;
                         end
                         4'he: begin
                             case (field_d)
@@ -556,6 +625,107 @@ always @(posedge clk) begin
             ST_MULTIPLY_COMMIT: begin
                 registers[multiply_destination] <= multiplier_product[15:0];
                 retired_words <= retired_words + multiply_retire_words;
+                state <= ST_FETCH_REQUEST;
+            end
+            ST_FPU_EXECUTE: begin
+                case (field_d)
+                    0: begin
+                        fpu_registers[{field_a, 2'b00}] <= registers[field_b];
+                        fpu_registers[{field_a, 2'b00} + 1'b1] <= 0;
+                        fpu_registers[{field_a, 2'b00} + 2'd2] <= 0;
+                        fpu_registers[{field_a, 2'b00} + 2'd3] <= 0;
+                        state <= ST_FPU_COMMIT;
+                    end
+                    1: begin
+                        registers[field_a] <= fpu_registers[{field_b, 2'b00}];
+                        state <= ST_FPU_COMMIT;
+                    end
+                    4: begin
+                        for (fpu_lane_index = 0; fpu_lane_index < 4; fpu_lane_index = fpu_lane_index + 1)
+                            fpu_registers[({field_a, 2'b00}) + fpu_lane_index] <=
+                                fpu_registers[({field_b, 2'b00}) + fpu_lane_index];
+                        state <= ST_FPU_COMMIT;
+                    end
+                    5: begin
+                        if (field_b <= 12) begin
+                            for (fpu_lane_index = 0; fpu_lane_index < 4; fpu_lane_index = fpu_lane_index + 1)
+                                fpu_registers[({field_a, 2'b00}) + fpu_lane_index] <=
+                                    fpu_registers[((field_b + fpu_lane_index) << 2)];
+                            state <= ST_FPU_COMMIT;
+                        end else begin
+                            fault_code <= FAULT_INVALID_INSTRUCTION;
+                            fault_pc <= fpu_fault_pc;
+                            state <= ST_FAULT;
+                        end
+                    end
+                    6: begin
+                        if (field_a <= 12) begin
+                            for (fpu_register_index = 0; fpu_register_index < 4; fpu_register_index = fpu_register_index + 1) begin
+                                fpu_registers[((field_a + fpu_register_index) << 2)] <= fpu_right[fpu_register_index];
+                                fpu_registers[((field_a + fpu_register_index) << 2) + 1] <= 0;
+                                fpu_registers[((field_a + fpu_register_index) << 2) + 2] <= 0;
+                                fpu_registers[((field_a + fpu_register_index) << 2) + 3] <= 0;
+                            end
+                            state <= ST_FPU_COMMIT;
+                        end else begin
+                            fault_code <= FAULT_INVALID_INSTRUCTION;
+                            fault_pc <= fpu_fault_pc;
+                            state <= ST_FAULT;
+                        end
+                    end
+                    7: begin
+                        if (field_a <= 12 && field_b == 0) begin
+                            for (fpu_register_index = 0; fpu_register_index < 4; fpu_register_index = fpu_register_index + 1)
+                                for (fpu_lane_index = 0; fpu_lane_index < 4; fpu_lane_index = fpu_lane_index + 1)
+                                    fpu_registers[((field_a + fpu_register_index) << 2) + fpu_lane_index] <=
+                                        fpu_registers[((field_a + fpu_lane_index) << 2) + fpu_register_index];
+                            state <= ST_FPU_COMMIT;
+                        end else begin
+                            fault_code <= FAULT_INVALID_INSTRUCTION;
+                            fault_pc <= fpu_fault_pc;
+                            state <= ST_FAULT;
+                        end
+                    end
+                    8: begin
+                        for (fpu_lane_index = 0; fpu_lane_index < 4; fpu_lane_index = fpu_lane_index + 1)
+                            fpu_registers[({field_a, 2'b00}) + fpu_lane_index] <=
+                                fix16_saturate17(
+                                    $signed({fpu_left[fpu_lane_index][15], fpu_left[fpu_lane_index]}) +
+                                    $signed({fpu_right[fpu_lane_index][15], fpu_right[fpu_lane_index]}));
+                        state <= ST_FPU_COMMIT;
+                    end
+                    9: begin
+                        for (fpu_lane_index = 0; fpu_lane_index < 4; fpu_lane_index = fpu_lane_index + 1)
+                            fpu_registers[({field_a, 2'b00}) + fpu_lane_index] <=
+                                fix16_saturate17(
+                                    $signed({fpu_left[fpu_lane_index][15], fpu_left[fpu_lane_index]}) -
+                                    $signed({fpu_right[fpu_lane_index][15], fpu_right[fpu_lane_index]}));
+                        state <= ST_FPU_COMMIT;
+                    end
+                    10, 15: begin
+                        fpu_lane <= 0;
+                        state <= ST_FPU_MULTIPLY_WAIT;
+                    end
+                    default: begin
+                        fault_code <= FAULT_INVALID_INSTRUCTION;
+                        fault_pc <= fpu_fault_pc;
+                        state <= ST_FAULT;
+                    end
+                endcase
+            end
+            ST_FPU_MULTIPLY_WAIT: state <= ST_FPU_MULTIPLY_COMMIT;
+            ST_FPU_MULTIPLY_COMMIT: begin
+                fpu_registers[{field_a, 2'b00} + fpu_lane] <=
+                    fix16_from_product(fpu_multiplier_product);
+                if (fpu_lane == 3)
+                    state <= ST_FPU_COMMIT;
+                else begin
+                    fpu_lane <= fpu_lane + 1'b1;
+                    state <= ST_FPU_MULTIPLY_WAIT;
+                end
+            end
+            ST_FPU_COMMIT: begin
+                retired_words <= retired_words + fpu_retire_words;
                 state <= ST_FETCH_REQUEST;
             end
             default: state <= state;

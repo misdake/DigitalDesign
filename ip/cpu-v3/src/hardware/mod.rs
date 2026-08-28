@@ -1,4 +1,4 @@
-//! Reusable CpuV3 revision 0.6 processor core with physical-memory and device ports.
+//! Reusable CpuV3 revision 0.7 processor core with physical-memory and device ports.
 
 mod cache;
 pub use cache::*;
@@ -10,8 +10,10 @@ use digital_design_hardware::{
 use digital_design_hardware_gowin::DspMulS18;
 use std::cmp::Ordering;
 
+use crate::{fix16_add, fix16_mul, fix16_sub, FpuVector};
+
 pub const CPU_V3_FAULT_INVALID_INSTRUCTION: u8 = 1;
-pub const CPU_V3_FAULT_UNSUPPORTED_FPU: u8 = 2;
+pub const CPU_V3_FAULT_FPU_DOMAIN: u8 = 2;
 pub const CPU_V3_FAULT_INSTRUCTION_MEMORY: u8 = 3;
 pub const CPU_V3_FAULT_DATA_MEMORY: u8 = 4;
 
@@ -74,6 +76,10 @@ enum Phase {
     DataResponse,
     MultiplyWait,
     MultiplyCommit,
+    FpuExecute,
+    FpuMultiplyWait,
+    FpuMultiplyCommit,
+    FpuCommit,
     Halted,
     Fault,
 }
@@ -96,6 +102,7 @@ struct PendingData {
 
 pub struct CpuV3CoreState {
     registers: [u16; 16],
+    fpu_registers: [FpuVector; 16],
     pc: u16,
     code_segment: u16,
     data_segment: u16,
@@ -111,6 +118,11 @@ pub struct CpuV3CoreState {
     multiply_destination: u8,
     multiply_result: u16,
     multiply_retire_words: u8,
+    fpu_left: FpuVector,
+    fpu_right: FpuVector,
+    fpu_lane: u8,
+    fpu_retire_words: u8,
+    fpu_fault_pc: u16,
     retired_words: u32,
     fault_code: u8,
     fault_pc: u16,
@@ -120,6 +132,7 @@ impl Default for CpuV3CoreState {
     fn default() -> Self {
         Self {
             registers: [0; 16],
+            fpu_registers: [[0; 4]; 16],
             pc: 0,
             code_segment: 0,
             data_segment: 0,
@@ -132,6 +145,11 @@ impl Default for CpuV3CoreState {
             multiply_destination: 0,
             multiply_result: 0,
             multiply_retire_words: 0,
+            fpu_left: [0; 4],
+            fpu_right: [0; 4],
+            fpu_lane: 0,
+            fpu_retire_words: 0,
+            fpu_fault_pc: 0,
             retired_words: 0,
             fault_code: 0,
             fault_pc: 0,
@@ -272,7 +290,13 @@ impl CpuV3CoreState {
                 }
                 self.retire(retire_words);
             }
-            13 => self.fault(CPU_V3_FAULT_UNSUPPORTED_FPU, fault_pc),
+            13 => {
+                self.fpu_left = self.fpu_registers[usize::from(lhs)];
+                self.fpu_right = self.fpu_registers[usize::from(rhs)];
+                self.fpu_retire_words = retire_words;
+                self.fpu_fault_pc = fault_pc;
+                self.phase = Phase::FpuExecute;
+            }
             14 => self.execute_control(instruction, retire_words, fault_pc),
             _ => self.fault(CPU_V3_FAULT_INVALID_INSTRUCTION, fault_pc),
         }
@@ -413,6 +437,57 @@ impl CpuV3CoreState {
         }
         self.retire(retire_words);
     }
+
+    fn execute_fpu_base(&mut self) {
+        let function = field(self.instruction, 8);
+        let a = usize::from(field(self.instruction, 4));
+        let b = usize::from(field(self.instruction, 0));
+        match function {
+            0 => self.fpu_registers[a] = [self.registers[b] as i16, 0, 0, 0],
+            1 => self.registers[a] = self.fpu_registers[b][0] as u16,
+            4 => self.fpu_registers[a] = self.fpu_registers[b],
+            5 if b <= 12 => {
+                let source = self.fpu_registers;
+                self.fpu_registers[a] = std::array::from_fn(|lane| source[b + lane][0]);
+            }
+            6 if a <= 12 => {
+                let source = self.fpu_registers[b];
+                for (lane, value) in source.into_iter().enumerate() {
+                    self.fpu_registers[a + lane] = [value, 0, 0, 0];
+                }
+            }
+            7 if a <= 12 && b == 0 => {
+                let source: [FpuVector; 4] = self.fpu_registers[a..a + 4]
+                    .try_into()
+                    .expect("validated four-register matrix");
+                self.fpu_registers[a] = [source[0][0], source[1][0], source[2][0], source[3][0]];
+                self.fpu_registers[a + 1] =
+                    [source[0][1], source[1][1], source[2][1], source[3][1]];
+                self.fpu_registers[a + 2] =
+                    [source[0][2], source[1][2], source[2][2], source[3][2]];
+                self.fpu_registers[a + 3] =
+                    [source[0][3], source[1][3], source[2][3], source[3][3]];
+            }
+            8 => {
+                self.fpu_registers[a] =
+                    std::array::from_fn(|lane| fix16_add(self.fpu_left[lane], self.fpu_right[lane]))
+            }
+            9 => {
+                self.fpu_registers[a] =
+                    std::array::from_fn(|lane| fix16_sub(self.fpu_left[lane], self.fpu_right[lane]))
+            }
+            10 | 15 => {
+                self.fpu_lane = 0;
+                self.phase = Phase::FpuMultiplyWait;
+                return;
+            }
+            _ => {
+                self.fault(CPU_V3_FAULT_INVALID_INSTRUCTION, self.fpu_fault_pc);
+                return;
+            }
+        }
+        self.phase = Phase::FpuCommit;
+    }
 }
 
 impl Module for CpuV3Core {
@@ -511,19 +586,47 @@ impl Module for CpuV3Core {
                 state.registers[usize::from(state.multiply_destination)] = state.multiply_result;
                 state.retire(state.multiply_retire_words);
             }
+            Phase::FpuExecute => state.execute_fpu_base(),
+            Phase::FpuMultiplyWait => state.phase = Phase::FpuMultiplyCommit,
+            Phase::FpuMultiplyCommit => {
+                let destination = usize::from(field(state.instruction, 4));
+                let lane = usize::from(state.fpu_lane);
+                let scalar = field(state.instruction, 8) == 15;
+                state.fpu_registers[destination][lane] = fix16_mul(
+                    state.fpu_left[lane],
+                    state.fpu_right[if scalar { 0 } else { lane }],
+                );
+                if state.fpu_lane == 3 {
+                    state.phase = Phase::FpuCommit;
+                } else {
+                    state.fpu_lane += 1;
+                    state.phase = Phase::FpuMultiplyWait;
+                }
+            }
+            Phase::FpuCommit => state.retire(state.fpu_retire_words),
             _ => {}
         }
     }
 
     fn verilog_source() -> Option<String> {
-        Some(include_str!("cpu_v3_core.v").replace(
-            "__DSP_MULTIPLIER__",
-            &DspMulS18::verilog_identity().module_name(),
-        ))
+        Some(
+            include_str!("cpu_v3_core.v")
+                .replace(
+                    "__DSP_MULTIPLIER__",
+                    &DspMulS18::verilog_identity().module_name(),
+                )
+                .replace(
+                    "__FPU_DSP_MULTIPLIER__",
+                    &DspMulS18::verilog_identity().module_name(),
+                ),
+        )
     }
 
     fn verilog_dependencies() -> Vec<VerilogDependency> {
-        vec![VerilogDependency::new::<DspMulS18>("u_multiplier")]
+        vec![
+            VerilogDependency::new::<DspMulS18>("u_multiplier"),
+            VerilogDependency::new::<DspMulS18>("u_fpu_multiplier"),
+        ]
     }
 
     fn verilog_testbench() -> Option<String> {
@@ -815,13 +918,39 @@ mod tests {
     }
 
     #[test]
-    fn export_accounts_for_one_characterized_multiplier_leaf() {
+    fn export_accounts_for_integer_and_fpu_multiplier_leaves() {
         let project = VerilogProject::generate::<CpuV3Core>().unwrap();
-        assert_eq!(project.resource_claims.len(), 1);
-        assert_eq!(
-            project.resource_claims[0].resources,
-            [ResourceAmount::new(ResourceKind::Multiplier18x18, 1)]
-        );
+        assert_eq!(project.resource_claims.len(), 2);
+        assert!(project.resource_claims.iter().all(|claim| {
+            claim.resources == [ResourceAmount::new(ResourceKind::Multiplier18x18, 1)]
+        }));
+    }
+
+    #[test]
+    fn emulator_matches_oracle_for_fix16_vector_datapath() {
+        let mut program = vec![];
+        program.extend(crate::load_immediate16(0, 384));
+        program.extend(crate::load_immediate16(1, 512));
+        program.extend([
+            crate::fpu(crate::FpuOp::Load, 0, 0),
+            crate::fpu(crate::FpuOp::Load, 1, 1),
+            crate::fpu(crate::FpuOp::Add, 0, 1),
+            crate::fpu(crate::FpuOp::MulScalar, 0, 1),
+            crate::fpu(crate::FpuOp::Store, 0, 0),
+            crate::halt(),
+        ]);
+        let mut oracle = Machine::default();
+        oracle.load_program(0, &program).unwrap();
+        let RunOutcome::Halted { signal, .. } = oracle.run(100).unwrap() else {
+            panic!("oracle did not halt")
+        };
+        assert_eq!(signal, 1792);
+
+        let mut memory = HashMap::new();
+        load(&mut memory, 0, &program);
+        let core = run_core(memory, 200);
+        assert_eq!(core.halt_signal, signal);
+        assert_eq!(core.retired_words as u64, oracle.retired_words());
     }
 
     #[test]

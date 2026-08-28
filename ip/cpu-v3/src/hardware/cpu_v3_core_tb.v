@@ -312,6 +312,39 @@ initial begin
     scenario = 17;
     expect_fault(8'd1, 16'd3, 100);
 
+    // Scenario 18: the dedicated FPU multiplier executes a blocking vector
+    // operation and the instruction retires exactly once.
+    clear_memory;
+    memory[0] = 16'hf018; // IMMHI12 0x018
+    memory[1] = 16'haf00; // LDU r0, 0 -> 384 (fix16 1.5)
+    memory[2] = 16'hf020; // IMMHI12 0x020
+    memory[3] = 16'haf10; // LDU r1, 0 -> 512 (fix16 2.0)
+    memory[4] = 16'hd000; // FLOAD f0, r0
+    memory[5] = 16'hd011; // FLOAD f1, r1
+    memory[6] = 16'hd801; // FADD f0, f1 -> fix16 3.5
+    memory[7] = 16'hdf01; // FMULS f0, f1 -> fix16 7.0
+    memory[8] = 16'hd100; // FSTORE r0, f0
+    memory[9] = 16'he800; // HALT
+    scenario = 18;
+    expect_halt(16'd1792, 200);
+    if (retired_words !== 10) begin
+        $display("FAIL: scenario 18 retired %0d words, expected 10", retired_words);
+        errors = errors + 1;
+    end
+
+    // Scenario 19: addition widens before saturation at the positive limit.
+    clear_memory;
+    memory[0] = 16'hf7ff; // IMMHI12 0x7ff
+    memory[1] = 16'haf0f; // LDU r0, 0xf -> 0x7fff
+    memory[2] = 16'haf11; // LDU r1, 1
+    memory[3] = 16'hd000; // FLOAD f0, r0
+    memory[4] = 16'hd011; // FLOAD f1, r1
+    memory[5] = 16'hd801; // FADD f0, f1 -> saturated 0x7fff
+    memory[6] = 16'hd100; // FSTORE r0, f0
+    memory[7] = 16'he800; // HALT
+    scenario = 19;
+    expect_halt(16'h7fff, 150);
+
     if (errors != 0) begin
         $display("FAIL: %0d error(s)", errors);
         $finish(1);
