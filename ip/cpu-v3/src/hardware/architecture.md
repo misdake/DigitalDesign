@@ -117,6 +117,16 @@ At 60 MHz the old state/address/SSRAM/domain path is absent. The remaining
 worst paths are the registered unary normalization/scale path or ordinary
 integer decode/writeback, depending on placement. No DSP path is critical.
 
+A follow-up change registers the unary magnitude in the domain-check phase, so
+the shared variable shifter only ever reads registered inputs (the magnitude,
+or the ROM output register). With that boundary the display system meets a
+64.75 MHz logic-clock constraint (slack +0.313 ns, reported Fmax 66.091 MHz);
+65 MHz fails with a single endpoint (Fmax 64.940 MHz, reproducible). The
+remaining critical cone is the ROM commit phase itself (input mux, barrel
+shifter, saturation into the result register), with the integer
+register-to-register writeback path close behind at roughly a 66-68 MHz
+equivalent delay.
+
 ## Implemented lane pipeline
 
 The add/move/simple-unary loop overlaps these independent operations:
@@ -182,10 +192,12 @@ the four-lane schedule and adds no `k` metadata or architectural state.
    FPU instruction. Gather, transpose, export, and lane pipelines schedule the
    following address while consuming the current asynchronous data, removing
    the state mux in front of RAM16 without adding latency.
-2. Domain decisions now use a latched unary operand and capture the exponent in
-   that phase. The following phase registers the normalized mantissa before
-   endpoint/exponent adjustment. Together these boundaries add only one cycle
-   to RCP/RSQRT while removing both observed long combinational cones.
+2. Domain decisions now use a latched unary operand; that phase captures the
+   exponent and the absolute magnitude, so the shared variable shifter only
+   ever reads registered inputs. The following phase registers the normalized
+   mantissa before endpoint/exponent adjustment. Together these boundaries add
+   only one cycle to RCP/RSQRT while removing both observed long combinational
+   cones.
 3. The ROM scale result is now registered between the shared barrel shifter and
    FPR write-data. This adds the second RCP/RSQRT cycle and does not change
    numerical behavior.

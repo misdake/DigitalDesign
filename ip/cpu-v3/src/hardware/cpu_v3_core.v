@@ -399,7 +399,11 @@ wire [15:0] fpu_unary_magnitude =
 wire signed [5:0] fpu_unary_exponent = fpu_normalize_exponent(fpu_unary_magnitude);
 
 // The ROM normalize (ST_FPU_ROM_NORMALIZE) and scale (ST_FPU_ROM_COMMIT) paths
-// share the single variable shifter; both feed it unsigned 16-bit values.
+// share the single variable shifter. Both shifter inputs are registered in
+// earlier phases (the unary magnitude in ST_FPU_UNARY_DISPATCH) or come
+// straight from the ROM output register, so no combinational cone crosses
+// from the latched unary operand into the scale result.
+reg [15:0] fpu_magnitude = 0;
 reg [15:0] fpu_variable_input;
 reg signed [4:0] fpu_variable_amount;
 always @* begin
@@ -407,7 +411,7 @@ always @* begin
         fpu_variable_input = fpu_rom_read_data;
         fpu_variable_amount = 5'sd7 + fpu_rom_exponent[4:0];
     end else begin
-        fpu_variable_input = fpu_unary_magnitude;
+        fpu_variable_input = fpu_magnitude;
         fpu_variable_amount = fpu_rom_exponent[4:0];
     end
 end
@@ -1120,6 +1124,7 @@ always @(posedge clk) begin
                     state <= ST_FAULT;
                 end else begin
                     fpu_rom_negative <= field_b == 0 && fpu_operand_a[15];
+                    fpu_magnitude <= fpu_unary_magnitude;
                     fpu_rom_exponent <= fpu_unary_exponent;
                     state <= ST_FPU_ROM_NORMALIZE;
                 end
