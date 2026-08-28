@@ -707,14 +707,21 @@ impl GowinDspMode {
 /// An optional characterization assertion over a physical resource count.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum ResourceCountExpectation {
+    /// Match the aggregate amount claimed by the generated module hierarchy.
+    /// This keeps system projects independent of child-module resource totals.
+    Claimed,
     Exact(u64),
     AtMost(u64),
-    Between { minimum: u64, maximum: u64 },
+    Between {
+        minimum: u64,
+        maximum: u64,
+    },
 }
 
 impl ResourceCountExpectation {
-    fn accepts(self, actual: u64) -> bool {
+    fn accepts(self, actual: u64, claimed: u64) -> bool {
         match self {
+            Self::Claimed => actual == claimed,
             Self::Exact(expected) => actual == expected,
             Self::AtMost(maximum) => actual <= maximum,
             Self::Between { minimum, maximum } => (minimum..=maximum).contains(&actual),
@@ -725,6 +732,7 @@ impl ResourceCountExpectation {
 impl Display for ResourceCountExpectation {
     fn fmt(&self, formatter: &mut Formatter<'_>) -> std::fmt::Result {
         match self {
+            Self::Claimed => write!(formatter, "exactly the composed module claim"),
             Self::Exact(value) => write!(formatter, "exactly {value}"),
             Self::AtMost(value) => write!(formatter, "at most {value}"),
             Self::Between { minimum, maximum } => {
@@ -1896,10 +1904,15 @@ fn audit_physical_resources(
     }
 
     if let Some(expectation) = bsram_expectation {
+        let claimed = planned
+            .claimed
+            .get(&ResourceKind::Bsram18K)
+            .copied()
+            .unwrap_or(0);
         let actual = resource_usage_fraction(&text, "BSRAM")
             .or_else(|| resource_mode_total(&text, "BSRAM"))
             .ok_or_else(|| GowinError::PhysicalResourceReportUnrecognized(report.to_path_buf()))?;
-        if !expectation.accepts(actual) {
+        if !expectation.accepts(actual, claimed) {
             return Err(GowinError::PhysicalBsramExpectationMismatch {
                 report: report.to_path_buf(),
                 expectation,
@@ -1928,7 +1941,7 @@ fn audit_physical_resources(
     for (&mode, &expectation) in dsp_expectations {
         let actual = resource_mode_usage(&text, "DSP", mode.report_name())
             .ok_or_else(|| GowinError::PhysicalResourceReportUnrecognized(report.to_path_buf()))?;
-        if !expectation.accepts(actual) {
+        if !expectation.accepts(actual, claimed_multipliers) {
             return Err(GowinError::PhysicalResourceExpectationMismatch {
                 report: report.to_path_buf(),
                 mode,
@@ -2825,19 +2838,21 @@ mod tests {
 
     #[test]
     fn physical_resource_expectations_accept_exact_bounds_and_ranges() {
-        assert!(ResourceCountExpectation::Exact(2).accepts(2));
-        assert!(!ResourceCountExpectation::Exact(2).accepts(1));
-        assert!(ResourceCountExpectation::AtMost(2).accepts(0));
-        assert!(!ResourceCountExpectation::AtMost(2).accepts(3));
+        assert!(ResourceCountExpectation::Claimed.accepts(2, 2));
+        assert!(!ResourceCountExpectation::Claimed.accepts(1, 2));
+        assert!(ResourceCountExpectation::Exact(2).accepts(2, 0));
+        assert!(!ResourceCountExpectation::Exact(2).accepts(1, 0));
+        assert!(ResourceCountExpectation::AtMost(2).accepts(0, 0));
+        assert!(!ResourceCountExpectation::AtMost(2).accepts(3, 0));
         assert!(ResourceCountExpectation::Between {
             minimum: 2,
             maximum: 4,
         }
-        .accepts(3));
+        .accepts(3, 0));
         assert!(!ResourceCountExpectation::Between {
             minimum: 2,
             maximum: 4,
         }
-        .accepts(5));
+        .accepts(5, 0));
     }
 }

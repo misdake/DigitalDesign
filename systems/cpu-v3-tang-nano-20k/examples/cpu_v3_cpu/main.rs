@@ -101,14 +101,14 @@ impl Module for CpuV3CpuBoardTest {
 
 fn gowin_project() -> GowinModuleProject<TangNano20K, CpuV3CpuBoardTest> {
     TangNano20K::debug_uart_project::<CpuV3CpuBoardTest>("cpu_v3_cpu_self_test")
-        .expect_dsp_mode(GowinDspMode::Mult18x18, ResourceCountExpectation::Exact(2))
+        .expect_dsp_mode(GowinDspMode::Mult18x18, ResourceCountExpectation::Claimed)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use cpu_v3::{Machine, RunOutcome};
-    use digital_design_hardware::{ResourceKind, VerilogProject};
+    use digital_design_hardware::VerilogProject;
 
     #[test]
     fn generated_boot_image_executes_in_the_cpu_v3_oracle() {
@@ -131,7 +131,6 @@ mod tests {
     #[test]
     fn project_contains_program_bsram_and_reusable_core() {
         let verilog = VerilogProject::generate::<CpuV3CpuBoardTest>().unwrap();
-        assert_eq!(verilog.resource_claims.len(), 5);
         assert!(verilog
             .files
             .values()
@@ -139,9 +138,7 @@ mod tests {
                 "{} u_program",
                 ProgramMemory::verilog_identity().module_name()
             ))));
-        let project = gowin_project().generate().unwrap();
-        assert_eq!(project.resources.claimed[&ResourceKind::Bsram18K], 3);
-        assert_eq!(project.resources.claimed[&ResourceKind::Multiplier18x18], 2);
+        gowin_project().generate().unwrap();
     }
 
     #[test]
