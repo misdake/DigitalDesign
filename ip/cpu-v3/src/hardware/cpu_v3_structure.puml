@@ -22,13 +22,13 @@ rectangle "CpuV3Core: blocking, in-order, one instruction in flight" as Core {
   component "Integer multiplier\nregistered signed 18 x 18 DSP\n2-stage primitive" as IntDsp
 
   package "Blocking fix16 FPU" {
-    storage "FPR file\n16 x (4 x signed Q8.8)\n64 x 16-bit RAM16\n2 async read + 1 sync write" as FPR
-    component "Serialized vector lane\n17-bit saturated add/sub\nABS/NEG/FLOOR/CEIL/ROUND\nSAT01/SIGN and lane moves" as LaneAlu
+    storage "FPR file\n16 x (4 x signed Q8.8)\n16 x 64-bit RAM16 vectors\n2 registered-address 64-bit async reads\n1 sync write, per-lane enables" as FPR
+    component "Serialized vector lane\n17-bit saturated add/sub\nABS/NEG/FLOOR/CEIL/ROUND\nSAT01/SIGN" as LaneAlu
     component "FPU multiplier\nregistered signed 18 x 18 DSP\n1 lane, 2-stage primitive\nnearest-even writeback" as FpuDsp
     database "Shared unary ROM\n1024 x 16-bit BSRAM\n256 sin + 256 rcp + 512 rsqrt" as Rom
-    component "Unary normalize / scale\npriority encoder\nshared 17-bit round shifter" as Unary
+    component "Unary normalize / scale\nlatched domain + exponent\nregistered normalized mantissa\nshared 17-bit round shifter\nregistered scale result" as Unary
     storage "ACC\nsigned 40-bit\nper-product saturation" as Acc
-    storage "Transfer / snapshot state\n4 x 16-bit buffer\ntranspose swap registers" as Transfer
+    storage "Transfer / snapshot state\n4 x 16-bit import/gather buffer\n64-bit export/scatter snapshot\n4 x 64-bit transpose rows" as Transfer
     component "FPU phase controller\nblocking until commit or fault\nfixed four-lane execution today" as FpuFsm
   }
 }
@@ -72,8 +72,9 @@ note right of FpuFsm
 Current issue policy:
 * no CPU/FPU overlap
 * no cross-instruction pipeline
-* add/move/simple unary: capture then write per lane
-* multiply/dot: wait, settle, commit per lane
+* add/sub/simple unary: one overlapped lane per cycle
+* load/move/pack/unpack/transpose: one wide vector per cycle
+* multiply/dot: one tagged DSP issue/result per cycle after fill
 * continuation k early-exit is not implemented
 end note
 

@@ -42,6 +42,7 @@ assign device_read_data = devices[{device_index, device_channel}];
 integer index;
 integer errors = 0;
 integer scenario = 0;
+integer last_run_cycles = 0;
 integer cond;
 reg check_high_data_address = 0;
 integer data_beat = 0;
@@ -49,6 +50,14 @@ integer fail_data_beat = -1;
 reg pending_tb_data_write = 0;
 reg [31:0] pending_tb_data_address = 0;
 reg [15:0] pending_tb_data_write_data = 0;
+
+// The FPR stores sixteen 64-bit vectors; lane l of vector v occupies bits
+// [16l, 16l+15] of words[v].
+function [15:0] fpr_word;
+    input [3:0] vector;
+    input [1:0] lane;
+    fpr_word = dut.u_fpu_register_ram.words[vector] >> (lane * 16);
+endfunction
 
 always @(posedge clk) begin
     instruction_response_valid <= instruction_request_valid;
@@ -105,6 +114,7 @@ task run_core;
             #1;
             cycles = cycles + 1;
         end
+        last_run_cycles = cycles;
         if (!halted && !fault) begin
             $display("FAIL: scenario %0d exceeded %0d cycles", scenario, max_cycles);
             errors = errors + 1;
@@ -410,11 +420,11 @@ initial begin
         scenario = 21 + cond;
         expect_fault(8'd4, 16'd5, 200);
         fail_data_beat = -1;
-        if (dut.u_fpu_register_ram.words[0] !== 16'h1234 || dut.u_fpu_register_ram.words[1] !== 0 ||
-            dut.u_fpu_register_ram.words[2] !== 0 || dut.u_fpu_register_ram.words[3] !== 0) begin
+        if (fpr_word(0, 0) !== 16'h1234 || fpr_word(0, 1) !== 0 ||
+            fpr_word(0, 2) !== 0 || fpr_word(0, 3) !== 0) begin
             $display("FAIL: scenario %0d import modified f0: %h %h %h %h", scenario,
-                     dut.u_fpu_register_ram.words[0], dut.u_fpu_register_ram.words[1],
-                     dut.u_fpu_register_ram.words[2], dut.u_fpu_register_ram.words[3]);
+                     fpr_word(0, 0), fpr_word(0, 1),
+                     fpr_word(0, 2), fpr_word(0, 3));
             errors = errors + 1;
         end
     end
@@ -502,26 +512,26 @@ initial begin
     memory[10] = 16'he800; // HALT
     scenario = 33;
     expect_halt(16'd1, 350);
-    if (dut.u_fpu_register_ram.words[0] !== 16'd1 ||
-        dut.u_fpu_register_ram.words[4] !== 16'd2 ||
-        dut.u_fpu_register_ram.words[8] !== 16'd3 ||
-        dut.u_fpu_register_ram.words[12] !== 16'd4) begin
+    if (fpr_word(0, 0) !== 16'd1 ||
+        fpr_word(1, 0) !== 16'd2 ||
+        fpr_word(2, 0) !== 16'd3 ||
+        fpr_word(3, 0) !== 16'd4) begin
         $display("FAIL: scenario 33 overlap results %h %h %h %h",
-                 dut.u_fpu_register_ram.words[0], dut.u_fpu_register_ram.words[4],
-                 dut.u_fpu_register_ram.words[8], dut.u_fpu_register_ram.words[12]);
+                 fpr_word(0, 0), fpr_word(1, 0),
+                 fpr_word(2, 0), fpr_word(3, 0));
         errors = errors + 1;
     end
     for (index = 0; index < 4; index = index + 1) begin
-        if (dut.u_fpu_register_ram.words[index * 4 + 1] !== 0 ||
-            dut.u_fpu_register_ram.words[index * 4 + 2] !== 0 ||
-            dut.u_fpu_register_ram.words[index * 4 + 3] !== 0) begin
+        if (fpr_word(index, 1) !== 0 ||
+            fpr_word(index, 2) !== 0 ||
+            fpr_word(index, 3) !== 0) begin
             $display("FAIL: scenario 33 unpack did not clear f%0d.yzw", index);
             errors = errors + 1;
         end
     end
 
-    // Scenario 34: the in-place transpose commits all six swaps, including
-    // the final delayed SSRAM write, without corrupting adjacent elements.
+    // Scenario 34: the in-place transpose snapshots all four rows and rewrites
+    // them as wide vectors without corrupting adjacent elements.
     clear_memory;
     memory[0] = 16'hf010; // IMMHI12 0x010
     memory[1] = 16'haf10; // LDU r1, 0 -> 0x0100
@@ -542,10 +552,10 @@ initial begin
     scenario = 34;
     expect_halt(16'd0, 500);
     for (index = 0; index < 16; index = index + 1) begin
-        if (dut.u_fpu_register_ram.words[16 + index] !==
+        if (fpr_word(4 + index / 4, index % 4) !==
             1 + (index % 4) * 4 + index / 4) begin
             $display("FAIL: scenario 34 transpose word %0d = %h", index,
-                     dut.u_fpu_register_ram.words[16 + index]);
+                     fpr_word(4 + index / 4, index % 4));
             errors = errors + 1;
         end
     end
@@ -575,13 +585,45 @@ initial begin
     memory[16'h0107] = 16'd512;
     scenario = 35;
     expect_halt(16'd0, 350);
-    if (dut.u_fpu_register_ram.words[8] !== 16'd512 ||
-        dut.u_fpu_register_ram.words[9] !== 16'd256 ||
-        dut.u_fpu_register_ram.words[10] !== 16'd512 ||
-        dut.u_fpu_register_ram.words[11] !== 16'd256) begin
+    if (last_run_cycles != 80) begin
+        $display("FAIL: scenario 35 cycles %0d, expected 80", last_run_cycles);
+        errors = errors + 1;
+    end
+    if (fpr_word(2, 0) !== 16'd512 ||
+        fpr_word(2, 1) !== 16'd256 ||
+        fpr_word(2, 2) !== 16'd512 ||
+        fpr_word(2, 3) !== 16'd256) begin
         $display("FAIL: scenario 35 FMOV/FMUL results %h %h %h %h",
-                 dut.u_fpu_register_ram.words[8], dut.u_fpu_register_ram.words[9],
-                 dut.u_fpu_register_ram.words[10], dut.u_fpu_register_ram.words[11]);
+                 fpr_word(2, 0), fpr_word(2, 1),
+                 fpr_word(2, 2), fpr_word(2, 3));
+        errors = errors + 1;
+    end
+
+    // Scenario 36: FMULS snapshots the broadcast x lane before an aliased
+    // destination starts overwriting the same vector.
+    clear_memory;
+    memory[0] = 16'hf010;
+    memory[1] = 16'haf10; // r1 = 0x0100
+    memory[2] = 16'hd201; // FIMPORT4 f0, [r1]
+    memory[3] = 16'hdf00; // FMULS f0, f0.x
+    memory[4] = 16'he800; // HALT
+    memory[16'h0100] = 16'd512;
+    memory[16'h0101] = 16'd256;
+    memory[16'h0102] = -16'sd256;
+    memory[16'h0103] = 16'd128;
+    scenario = 36;
+    expect_halt(16'd0, 200);
+    if (last_run_cycles != 48) begin
+        $display("FAIL: scenario 36 cycles %0d, expected 48", last_run_cycles);
+        errors = errors + 1;
+    end
+    if (fpr_word(0, 0) !== 16'd1024 ||
+        fpr_word(0, 1) !== 16'd512 ||
+        fpr_word(0, 2) !== -16'sd512 ||
+        fpr_word(0, 3) !== 16'd256) begin
+        $display("FAIL: scenario 36 FMULS alias results %h %h %h %h",
+                 fpr_word(0, 0), fpr_word(0, 1),
+                 fpr_word(0, 2), fpr_word(0, 3));
         errors = errors + 1;
     end
 
