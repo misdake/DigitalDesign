@@ -3,10 +3,11 @@
 //! success frame as the primary boot demo. Never halts.
 
 use crate::dsl_rt::*;
+mod device_abi;
 
 fn uart_byte(b: u16) {
-    while dev_recv(0, 3) & 1 != 0 { }
-    dev_send(0, 3, b);
+    while dev_recv(SYSTEM_CONTROL_DEVICE, SYSCTL_UART_STATUS) & 1 != 0 { }
+    dev_send(SYSTEM_CONTROL_DEVICE, SYSCTL_UART_TX_DATA, b);
 }
 
 fn uart_success() {
@@ -35,7 +36,7 @@ fn visible_delay() {
 fn main() {
     let mut pattern: u16 = 0b01_0101;
     while 1 == 1 {
-        dev_send(0, 2, pattern);
+        dev_send(SYSTEM_CONTROL_DEVICE, SYSCTL_LED, pattern);
         uart_success();
         uart_success();
         visible_delay();

@@ -2,6 +2,7 @@
 //! completed back buffer at vertical blanking.
 
 use crate::dsl_rt::*;
+mod device_abi;
 
 const WIDTH: u16 = 320;
 const HEIGHT: u16 = 240;
@@ -9,7 +10,6 @@ const FB_A_SEGMENT: u16 = 0x20;
 const FB_A_OFFSET: u16 = 0x0100;
 const FB_B_SEGMENT: u16 = 0x21;
 const FB_B_OFFSET: u16 = 0x2d00;
-const NEXT_SWAP: u16 = 1;
 
 fn background(x: u16, y: u16) -> u16 {
     if x & 31 == 0 || y & 31 == 0 {
@@ -82,16 +82,16 @@ fn paint_square(base_segment: u16, base_offset: u16, left: u16, color: u16, rest
 }
 
 fn select_next_framebuffer(segment: u16, offset: u16) {
-    dev_send(3, 1, offset);
-    dev_send(3, 2, segment);
-    dev_send(3, 3, NEXT_SWAP);
+    dev_send(DISPLAY_DEVICE, DISPLAY_STAGE_FRAMEBUFFER_LOW, offset);
+    dev_send(DISPLAY_DEVICE, DISPLAY_STAGE_FRAMEBUFFER_HIGH, segment);
+    dev_send(DISPLAY_DEVICE, DISPLAY_SWAP_COMMAND, DISPLAY_NEXT_SWAP);
 }
 
 fn wait_next_frame() {
-    let frame = dev_recv(3, 0);
+    let frame = dev_recv(DISPLAY_DEVICE, DISPLAY_FRAME_INDEX);
     let mut current = frame;
     while current == frame {
-        current = dev_recv(3, 0);
+        current = dev_recv(DISPLAY_DEVICE, DISPLAY_FRAME_INDEX);
     }
 }
 

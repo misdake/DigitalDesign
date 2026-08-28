@@ -18,11 +18,15 @@ fn compile_cpu_v3(file: &str, opts: &CompilerOptions) -> CpuV3Program {
         .join("rcc")
         .join(file);
     let src = std::fs::read_to_string(&path).expect("read rcc source");
+    let source_dir = path.parent().expect("rcc source directory");
     let program = rcc::frontend::compile_program_named(
         &path.display().to_string(),
         &src,
         opts,
-        &mut |name| Err(format!("unknown module `{name}`")),
+        &mut |name| {
+            std::fs::read_to_string(source_dir.join(format!("{name}.rs")))
+                .map_err(|error| format!("read module `{name}`: {error}"))
+        },
     )
     .expect("rcc compile failed");
     rcc_backend::compile(program, opts, "main")

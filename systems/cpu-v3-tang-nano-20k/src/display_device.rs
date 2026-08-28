@@ -3,8 +3,8 @@
 use crate::{Device, Word, FRAMEBUFFER_A_BASE_WORD, FRAMEBUFFER_WORDS};
 use std::cell::Cell;
 
-/// Display controller device selected by `dev_recv(3, channel)` and
-/// `dev_send(3, channel, value)`.
+/// Display controller selected by `dev_recv(DISPLAY_DEVICE, channel)` and
+/// `dev_send(DISPLAY_DEVICE, channel, value)`.
 pub const DISPLAY_DEVICE: u8 = 3;
 
 /// Read-only frame index. It increments once when active scanout enters
