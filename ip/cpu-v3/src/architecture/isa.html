@@ -90,7 +90,7 @@
     <span class="badge">16-bit word offsets</span>
     <span class="badge">Segmented physical SDRAM</span>
     <span class="badge">Transient pending test, no persistent flags</span>
-    <span class="badge">Revision 0.6</span>
+    <span class="badge">Revision 0.7</span>
   </div>
   <ol class="toc">
     <li><a href="#overview">Architectural overview</a></li>
@@ -134,7 +134,7 @@
       <li>A single transient pending test result, not persistent flags, carries a comparison outcome to its consuming branch.</li>
       <li>Short immediates stay compact; <code>IMMHI12</code> extends only explicitly listed consumers.</li>
       <li>Near 16-bit pointers simplify the compiler while physical cache tags expose all fitted SDRAM.</li>
-      <li>Opcode <code>0xD</code> remains reserved for a future FPU family.</li>
+      <li>Opcode <code>0xD</code> is the blocking four-lane signed fix16 FPU family.</li>
     </ul>
   </div>
 </div>
@@ -217,7 +217,7 @@
   <tr><td class="center imm mono">A</td><td class="imm">Immediate</td><td class="mono">A fn rd imm4</td><td>Arithmetic, logic, shift, compare, and load-immediate.</td></tr>
   <tr><td class="center control mono">B</td><td class="control">Branch / jump</td><td class="mono">B cond imm8</td><td>Six predicates on the pending test result plus relative jumps.</td></tr>
   <tr><td class="center control mono">C</td><td class="control">Device</td><td class="mono">C dir/dev ch reg</td><td>Single-cycle device channel receive/send.</td></tr>
-  <tr><td class="center reserved mono">D</td><td class="reserved">Reserved FPU</td><td class="mono">D ...</td><td>Currently raises <code>UnsupportedFpu</code>.</td></tr>
+  <tr><td class="center extended mono">D</td><td class="extended">fix16 FPU</td><td class="mono">D fn a b</td><td>Blocking vector, matrix, accumulator, memory, compare, and unary operations.</td></tr>
   <tr><td class="center extended mono">E</td><td class="extended">Extended/control</td><td class="mono">E fn rd rs</td><td>Move, unary, register jumps, comparisons, bit operations, halt.</td></tr>
   <tr><td class="center imm mono">F</td><td class="imm">IMMHI12</td><td class="mono">F high12</td><td>Creates a pending wide immediate.</td></tr>
 </table>
@@ -421,12 +421,29 @@
   </div>
 </div>
 
+<h3>5.7 fix16 FPU &mdash; opcode D</h3>
+<p>Each F register contains four signed Q8.8 lanes. FPU operations are blocking,
+do not consume IMMHI12, and retire only after their final writeback or memory
+response. Narrowing rounds to nearest with ties to even and then saturates.</p>
+<table>
+  <tr><th>fn</th><th>Mnemonic</th><th>Summary</th></tr>
+  <tr><td class="mono">0/1</td><td class="mn">FLOAD / FSTORE</td><td>Raw GPR bridge through lane x; FLOAD clears y/z/w.</td></tr>
+  <tr><td class="mono">2/3</td><td class="mn">FIMPORT4 / FEXPORT4</td><td>Four aligned words at DSEG:r[b], transferred through four word requests.</td></tr>
+  <tr><td class="mono">4..7</td><td class="mn">FMOV / FPACK4 / FUNPACK4 / FTRANSPOSE4</td><td>Snapshot-defined F-register reorganization.</td></tr>
+  <tr><td class="mono">8..A</td><td class="mn">FADD / FSUB / FMUL</td><td>Destructive component arithmetic.</td></tr>
+  <tr><td class="mono">B/C</td><td class="mn">FDOT4ACC / FACCSTORE</td><td>Signed 40-bit saturating accumulation and rounded lane writeback.</td></tr>
+  <tr><td class="mono">D</td><td class="mn">FCMP</td><td>Signed lane-x ordering written to the transient pending test.</td></tr>
+  <tr><td class="mono">E</td><td class="mn">FUNARY</td><td>RCP, RSQRT, SINCOS, ABS, NEG, FLOOR, CEIL, ROUND, SAT01, SIGN, or ZERO.</td></tr>
+  <tr><td class="mono">F</td><td class="mn">FMULS</td><td>Multiply every lane of Fa by Fb.x.</td></tr>
+</table>
+
 <h2 id="faults">9. Fault and retirement behavior</h2>
 <table>
   <tr><th>Condition</th><th>Result</th><th>Fault PC</th><th>Retirement</th></tr>
   <tr><td>Reserved or malformed integer encoding</td><td><code>InvalidInstruction</code></td><td>instruction address, or prefix address for an eligible consumer</td><td>faulting operation does not retire</td></tr>
   <tr><td>Conditional branch (B conditions 0..5) with no pending test result</td><td><code>InvalidInstruction</code></td><td>instruction address, or prefix address when prefixed</td><td>faulting operation does not retire</td></tr>
-  <tr><td>Opcode D</td><td><code>UnsupportedFpu</code></td><td>instruction address</td><td>does not retire</td></tr>
+  <tr><td>FRCP zero or FRSQRT nonpositive domain</td><td><code>FpuDomain</code> (code 2)</td><td>instruction address</td><td>does not retire and does not modify FPU state</td></tr>
+  <tr><td>Misaligned FIMPORT4/FEXPORT4</td><td>data-memory fault</td><td>instruction address</td><td>does not issue memory traffic or retire</td></tr>
   <tr><td>Fetch or data address outside fitted physical memory</td><td><code>PhysicalAddressOutOfRange</code></td><td>faulting instruction offset</td><td>does not retire</td></tr>
   <tr><td>Valid prefixed consumer</td><td>executes one wide operation</td><td>—</td><td>retires two words together</td></tr>
   <tr><td>Pending prefix followed by non-consumer</td><td>prefix expires; next instruction executes normally</td><td>—</td><td>prefix and instruction retire separately</td></tr>
@@ -436,8 +453,8 @@
 <h2 id="status">10. Implementation status</h2>
 <table>
   <tr><th>Layer</th><th>Status</th><th>What is implemented now</th><th>Important remaining work</th></tr>
-  <tr><td>Encoding helpers</td><td><span class="status done">complete v0.6</span></td><td>Constructors and stable reference encodings for integer, device, and segment-control operations.</td><td>Update only through a deliberate ISA revision.</td></tr>
-  <tr><td>Architectural simulator</td><td><span class="status done">complete v0.6</span></td><td>Integer families, pending test result, dedicated device routing, segment concatenation across the complete offset range, fitted-memory faults, prefix precision, halt, and reserved-FPU fault.</td><td>Any future FPU semantics.</td></tr>
+  <tr><td>Encoding helpers</td><td><span class="status done">complete v0.7</span></td><td>Constructors and stable reference encodings for integer, device, segment-control, and fix16 FPU operations.</td><td>Update only through a deliberate ISA revision.</td></tr>
+  <tr><td>Architectural simulator</td><td><span class="status done">complete v0.7</span></td><td>Integer v0.6 plus bit-exact F registers, vector memory, saturating arithmetic, 40-bit ACC, comparisons, and unary math.</td><td>Keep differential parity with the multicycle RTL.</td></tr>
   <tr><td>Compiler backend</td><td><span class="status done">usable v0.6</span></td><td>CPU V3 ABI with SP = 0 as the segment top, register allocation, calls, stack frames, memory operations, compare/branch lowering, single-instruction device intrinsics, static initialization, and fixed-width symbolic linking.</td><td>Optional size relaxation.</td></tr>
   <tr><td>Host cache/scheduler models</td><td><span class="status done">policy baseline</span></td><td>Physical cache tags, explicit invalidation, refill/write-through rules, full SDRAM address/lane mapping, and refresh-aware arbitration.</td><td>Associativity or write-back policy changes only with measured miss traffic.</td></tr>
   <tr><td>Tang Nano 20K RTL</td><td><span class="status done">complete v0.6 core</span></td><td>Reusable CpuV3Core executing the complete v0.6 integer ISA, split I/D caches, a direct single-cycle device port connected to system-control, boot-select, and boot-DMA, and a three-client memory arbiter (DMA &gt; data &gt; instruction) over the Controller HS word port.</td><td>Physical v0.6 revalidation and interrupts if adopted.</td></tr>

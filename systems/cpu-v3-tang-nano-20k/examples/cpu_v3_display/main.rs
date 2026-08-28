@@ -109,7 +109,7 @@ impl Module for CpuV3Display {
 fn project() -> GowinModuleProject<TangNano20K, CpuV3Display> {
     TangNano20K::sdram_hdmi_debug_uart_project::<CpuV3Display>("cpu_v3_display")
         .expect_bsram_blocks(ResourceCountExpectation::Exact(3))
-        .expect_dsp_mode(GowinDspMode::Mult18x18, ResourceCountExpectation::Exact(1))
+        .expect_dsp_mode(GowinDspMode::Mult18x18, ResourceCountExpectation::Exact(2))
 }
 
 #[cfg(test)]
@@ -129,7 +129,7 @@ mod tests {
         assert_eq!(project.resources.claimed[&ResourceKind::Pll], 2);
         assert_eq!(project.resources.claimed[&ResourceKind::SdrSdramDevice], 1);
         assert_eq!(project.resources.claimed[&ResourceKind::HdmiOutput], 1);
-        assert_eq!(project.resources.claimed[&ResourceKind::Bsram18K], 3);
+        assert_eq!(project.resources.claimed[&ResourceKind::Bsram18K], 5);
     }
 
     #[test]

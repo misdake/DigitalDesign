@@ -96,7 +96,7 @@ impl Module for CpuV3DeviceBoardTest {
 
 fn gowin_project() -> GowinModuleProject<TangNano20K, CpuV3DeviceBoardTest> {
     TangNano20K::debug_uart_project::<CpuV3DeviceBoardTest>("cpu_v3_device_self_test")
-        .expect_dsp_mode(GowinDspMode::Mult18x18, ResourceCountExpectation::Exact(1))
+        .expect_dsp_mode(GowinDspMode::Mult18x18, ResourceCountExpectation::Exact(2))
 }
 
 #[cfg(test)]
@@ -124,10 +124,10 @@ mod tests {
     #[test]
     fn project_contains_program_memory_core_and_sysctl() {
         let verilog = VerilogProject::generate::<CpuV3DeviceBoardTest>().unwrap();
-        assert_eq!(verilog.resource_claims.len(), 2);
+        assert_eq!(verilog.resource_claims.len(), 5);
         let project = gowin_project().generate().unwrap();
-        assert_eq!(project.resources.claimed[&ResourceKind::Bsram18K], 1);
-        assert_eq!(project.resources.claimed[&ResourceKind::Multiplier18x18], 1);
+        assert_eq!(project.resources.claimed[&ResourceKind::Bsram18K], 3);
+        assert_eq!(project.resources.claimed[&ResourceKind::Multiplier18x18], 2);
     }
 
     #[test]

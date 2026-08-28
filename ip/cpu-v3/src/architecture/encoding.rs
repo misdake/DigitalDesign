@@ -1,9 +1,9 @@
-//! Encoding helpers for CpuV3 revision 0.6.
+//! Encoding helpers for CpuV3 revision 0.7.
 
 pub type Word = u16;
 pub type Register = u8;
 
-pub const ISA_REVISION: (u8, u8) = (0, 6);
+pub const ISA_REVISION: (u8, u8) = (0, 7);
 
 pub const LINK_REGISTER: Register = 14;
 pub const STACK_REGISTER: Register = 13;
@@ -66,6 +66,43 @@ pub enum SpecialRegister {
     DataSegment = 1,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[repr(u16)]
+pub enum FpuOp {
+    Load = 0,
+    Store = 1,
+    Import4 = 2,
+    Export4 = 3,
+    Move = 4,
+    Pack4 = 5,
+    Unpack4 = 6,
+    Transpose4 = 7,
+    Add = 8,
+    Sub = 9,
+    Mul = 10,
+    Dot4Acc = 11,
+    AccStore = 12,
+    Compare = 13,
+    Unary = 14,
+    MulScalar = 15,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[repr(u8)]
+pub enum FpuUnaryOp {
+    Reciprocal = 0,
+    ReciprocalSqrt = 1,
+    SinCos = 2,
+    Abs = 3,
+    Neg = 4,
+    Floor = 5,
+    Ceil = 6,
+    Round = 7,
+    Saturate01 = 8,
+    Sign = 9,
+    Zero = 10,
+}
+
 impl TestCondition {
     pub const fn invert(self) -> Self {
         match self {
@@ -85,6 +122,14 @@ fn register(value: Register) -> Word {
         "CpuV3 register index {value} is outside r0..r15"
     );
     Word::from(value)
+}
+
+pub fn fpu(op: FpuOp, a: Register, b: Register) -> Word {
+    0xd000 | ((op as Word) << 8) | (register(a) << 4) | register(b)
+}
+
+pub fn fpu_unary(dst: Register, op: FpuUnaryOp) -> Word {
+    fpu(FpuOp::Unary, dst, op as Register)
 }
 
 fn signed4(value: i16) -> Word {
@@ -313,6 +358,8 @@ mod tests {
         assert_eq!(read_special(3, SpecialRegister::CodeSegment), 0xed30);
         assert_eq!(write_data_segment(4), 0xee14);
         assert_eq!(jump_segment(3, 4), 0xef34);
+        assert_eq!(fpu(FpuOp::Mul, 3, 4), 0xda34);
+        assert_eq!(fpu_unary(3, FpuUnaryOp::ReciprocalSqrt), 0xde31);
         assert_eq!(halt(), 0xe800);
     }
 
