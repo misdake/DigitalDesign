@@ -27,13 +27,13 @@ cycles for instruction or data memory.
 | Control state | 16-bit PC, CSEG, DSEG, one IMMHI12 prefix, one transient three-way comparison | One instruction decoded; no speculative state |
 | Integer ALU | 16-bit add/sub/logic/shift/compare plus CLZ and popcount | One non-multiply integer result |
 | Integer multiplier | One registered signed 18 x 18 `MULT18X18` lane | Accepts an input each cycle, but the blocking core uses one operation at a time |
-| FPR file | 16 registers x 4 signed Q8.8 lanes; 64 x 16-bit, two registered-address asynchronous reads and one synchronous write | Consume two issued lane reads and schedule the next addresses; commit one lane write |
-| FPU lane ALU | One 17-bit saturating add/sub or one simple unary/move lane | Captures lane zero at dispatch, then writes one registered result and captures the next lane every cycle |
+| FPR file | 16 registers x 4 signed Q8.8 lanes; 16 x 64-bit vectors, two registered-address asynchronous reads and one synchronous write with per-lane write enables | Read two whole vectors; commit one lane or one whole vector per cycle |
+| FPU lane ALU | One 17-bit saturating add/sub or one simple unary lane fed from the wide reads | Captures lane zero at dispatch, then writes one registered result and captures the next lane every cycle |
 | FPU multiplier | One registered signed 18 x 18 `MULT18X18` lane | Primitive initiation interval is one cycle and latency is two cycles; four lane tags stream through a two-entry valid pipeline |
 | FPU ROM | One synchronous 1024 x 16-bit BSRAM: 256 sine, 256 reciprocal, 512 reciprocal-square-root words | One lookup address and one registered result per cycle |
 | Unary front/back end | One priority encoder, one registered 17-bit normalized mantissa, and one shared rounded variable shifter | Domain/exponent, normalization, index adjustment, and result scaling use separate short phases |
 | ACC | Signed saturating 40-bit accumulator | One in-order product accumulation per cycle while the DOT pipeline drains |
-| Transfer buffer | Four 16-bit words plus two transpose swap registers | Makes imports and overlapping rearrangements snapshot-clean |
+| Transfer buffer | Four 16-bit import/gather words, one 64-bit export/scatter snapshot, and four 64-bit transpose row registers | Makes imports and overlapping rearrangements snapshot-clean |
 
 The optional fitted system places separate 2 KiB instruction and data caches
 around the core. Each cache is direct mapped with 64 sets and 16 words per line.
@@ -57,17 +57,18 @@ latencies assume every request and response phase advances immediately.
 | Operations | FPU phases | Execute-to-retire cycles | Current work per phase |
 |---|---:|---:|---|
 | `FSTORE`, `FACCSTORE`, `FCMP` | 2 | 3 | Execute operation, then commit/retire; for `FACCSTORE`, the synchronous FPR write lands on the retirement edge |
-| `FLOAD` | 6 | 7 | Dispatch, then four serial lane writes (`x`, zero `yzw`), then commit |
-| `FMOV`, `FADD`, `FSUB` | 6 | 7 | Capture lane zero at dispatch; four overlapped result-write/next-lane-capture phases; commit |
+| `FLOAD` | 2 | 3 | One wide vector write (`x`, zero `yzw`) at dispatch, then commit |
+| `FMOV` | 2 | 3 | One wide vector copy at dispatch, then commit |
+| `FADD`, `FSUB` | 6 | 7 | Capture lane zero at dispatch; four overlapped result-write/next-lane-capture phases; commit |
 | `FABS`, `FNEG`, `FFLOOR`, `FCEIL`, `FROUND`, `FSAT01`, `FSIGN`, `FZERO` | 6 | 7 | Same one-lane-per-cycle schedule as vector add |
-| `FMUL`, `FMULS`, `FDOT4ACC` | 7 | 8 | Issue four consecutive tagged DSP inputs, drain the two-cycle DSP pipeline in order, then commit |
-| `FPACK4` | 10 | 11 | Dispatch, four snapshot reads, four writes, commit |
-| `FUNPACK4` | 22 | 23 | Dispatch, four snapshot reads, sixteen lane writes/clears, commit |
-| `FTRANSPOSE4` | 20 | 21 | Dispatch, six swaps x three phases, commit |
+| `FMUL`, `FMULS`, `FDOT4ACC` | 7 | 8 | Issue four consecutive tagged DSP inputs off the wide reads, drain the two-cycle DSP pipeline in order, then commit |
+| `FPACK4` | 5 | 6 | Dispatch latches the first lane-x, two dual-port snapshot reads, one wide write, commit |
+| `FUNPACK4` | 6 | 7 | Dispatch snapshots the source vector, four wide writes, commit |
+| `FTRANSPOSE4` | 8 | 9 | Dispatch latches row zero, two dual-port row reads, four wide transposed writes, commit |
 | `FRCP`, `FRSQRT` | 9 | 10 | Dispatch, registered domain/exponent, registered normalization, address, ROM lookup/wait, registered scale, write, commit |
-| `FSINCOS` | 15 | 16 | Dispatch, angle multiply triplet, two ROM lookup triplets, four result writes, commit |
-| `FIMPORT4`, minimum | 14 | 15 | Dispatch, four request/response pairs, four atomic destination writes, commit |
-| `FEXPORT4`, minimum | 9 | 10 | Dispatch and four request/response pairs; the final response retires directly |
+| `FSINCOS` | 12 | 13 | Dispatch, angle multiply triplet, two ROM lookup triplets, one wide result write, commit |
+| `FIMPORT4`, minimum | 10 | 11 | Dispatch, four request/response pairs, one wide destination write, commit |
+| `FEXPORT4`, minimum | 9 | 10 | Dispatch snapshots the source vector and streams four request/response pairs; the final response retires directly |
 
 ## Pre-pipeline 54 MHz timing baseline
 
@@ -129,18 +130,19 @@ equivalent delay.
 
 ## Implemented lane pipeline
 
-The add/move/simple-unary loop overlaps these independent operations:
+The add/simple-unary loop overlaps these independent operations:
 
-1. Capture operands for lane `n` from the asynchronous FPR ports.
+1. Capture operands for lane `n` from the wide asynchronous FPR reads (both
+   read addresses stay parked on Fa/Fb for the whole instruction).
 2. In the same cycle, compute and schedule the FPR write for lane `n - 1` from
    the registered operands.
 3. Let the synchronous RAM commit the previously scheduled write at the edge.
 
 Lane zero is captured in `FpuExecute`, then four compute/write phases overlap
 the remaining captures. This reduces the complete FPU portion of a four-lane
-add/move/simple unary from ten to six cycles without adding an ALU
-combinational path. Destination/source aliasing is safe because adjacent lanes
-have different RAM addresses.
+add or simple unary from ten to six cycles without adding an ALU combinational
+path. Destination/source aliasing is safe because per-lane write enables update
+only the lane just computed while later lanes are still being read.
 
 `DspMulS18` has initiation interval one and two-cycle latency. A two-entry
 valid/tag shift register accepts one lane every cycle and associates each
@@ -151,8 +153,40 @@ snapshots its scalar before issuing lane zero, preserving `Fa == Fb` behavior.
 
 | FPU operation | Before pipelining | Current FPU phases |
 |---|---:|---:|
-| add/sub/move/simple unary | 10 | 6 |
+| add/sub/simple unary | 10 | 6 |
 | multiply/multiply-scalar/dot | 14 | 7 |
+
+## Wide vector register file
+
+The FPR reorganized from 64 lane words to sixteen 64-bit vectors with per-lane
+write enables. Both asynchronous read ports return a whole vec4, so pure
+data-movement instructions no longer serialize lanes through the single ALU
+port schedule: `FMOV`/`FLOAD` commit one wide write at dispatch, `FPACK4`
+reads two source vectors per cycle through both ports, `FUNPACK4` and
+`FTRANSPOSE4` snapshot their sources and then commit one wide write per
+destination row, `FSINCOS` lands both ROM results in one write, and `FIMPORT4`
+commits its assembled buffer with one wide write after the fourth beat.
+
+| FPU operation | Lane-serial phases | Current FPU phases |
+|---|---:|---:|
+| load/move | 6 | 2 |
+| pack4 | 10 | 5 |
+| unpack4 | 22 | 6 |
+| transpose4 | 20 | 8 |
+| sincos | 15 | 12 |
+| import4 (minimum) | 14 | 10 |
+
+The lane ALU, the multiply pipeline, and the ROM sequences keep their serial
+schedules: their phases are compute- or ROM-bound, not port-bound. Per-lane
+write enables preserve the in-place aliasing guarantees of the serial lane
+loop.
+
+The wide buses cost routing slack around the scalar register file: the display
+system's logic-clock characterization boundary moved from 64.75 MHz to 63 MHz
+(63 passes with +0.074 ns slack; 63.5 fails on three integer writeback
+endpoints). The 60 MHz operating constraint still passes comfortably, so the
+trade is cycle-count savings on data movement for characterization headroom
+that the fitted 54 MHz clock never uses.
 
 These counts retain blocking instruction retirement. They improve
 intra-instruction lane throughput; they do not allow another CPU or FPU
@@ -189,9 +223,9 @@ the four-lane schedule and adds no `k` metadata or architectural state.
 ### Timing implementation
 
 1. FPR read addresses are now registered when generic `Execute` dispatches an
-   FPU instruction. Gather, transpose, export, and lane pipelines schedule the
-   following address while consuming the current asynchronous data, removing
-   the state mux in front of RAM16 without adding latency.
+   FPU instruction. The wide asynchronous reads then keep the whole vector
+   available for the entire operation, so no per-lane address scheduling or
+   state mux ever sits in front of RAM16.
 2. Domain decisions now use a latched unary operand; that phase captures the
    exponent and the absolute magnitude, so the shared variable shifter only
    ever reads registered inputs. The following phase registers the normalized
