@@ -34,7 +34,7 @@ reg [15:0] request_write_data = 0;
 reg response_ready = 0;
 wire request_ready;
 wire response_valid;
-wire [15:0] response_read_data;
+wire [31:0] response_read_data;
 wire memory_error;
 
 __SDRAM_WORD_PORT__ u_memory (
@@ -42,6 +42,7 @@ __SDRAM_WORD_PORT__ u_memory (
     .reset(buttons[1]),
     .request_valid(request_valid),
     .write(request_write),
+    .read_line(1'b0),
     .address(request_address),
     .write_data(request_write_data),
     .response_ready(response_ready),
@@ -52,6 +53,7 @@ __SDRAM_WORD_PORT__ u_memory (
     .request_ready(request_ready),
     .response_valid(response_valid),
     .read_data(response_read_data),
+    .response_last(),
     .error(memory_error),
     .controller_command_valid(sdram_command_valid),
     .controller_command(sdram_command),

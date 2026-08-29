@@ -38,16 +38,17 @@ cycles for instruction or data memory.
 The optional fitted system places separate 2 KiB instruction and data caches
 around the core. Each cache is direct mapped with 64 sets and 16 words per line.
 Stores are write-through and do not allocate on a miss. A read miss issues one
-aligned line request; the system arbiter owns the SDRAM word port for the whole
-line, streams eight ordered 32-bit beats (the low half of beat `n` is word
-`2*n`) into the cache's private 256-bit refill buffer, and releases the port
-once the final beat is accepted. The cache then drains sixteen words into its
-data BSRAM on its own and commits tag and valid state only after a complete
-error-free line, so an error or invalidate can never expose a partially
-installed line. The boot DMA keeps single-word transactions. Only full-cache
-invalidation exists; there is no per-line snoop interface. The
-system-control I-cache invalidation pulse is registered for one cycle so the
-compiler's adjacent invalidate-and-JSEG handoff resolves deterministically.
+aligned line request; the system arbiter forwards it as one SDRAM burst
+command, holds the port while the adapter streams eight ordered 32-bit beats
+(the low half of beat `n` is word `2*n`) into the cache's private 256-bit
+refill buffer, and releases the port once the final beat is accepted. The
+cache then drains sixteen words into its data BSRAM on its own and commits tag
+and valid state only after a complete error-free line, so an error or
+invalidate can never expose a partially installed line. The boot DMA keeps
+single-word transactions. Only full-cache invalidation exists; there is no
+per-line snoop interface. The system-control I-cache invalidation pulse is
+registered for one cycle so the compiler's adjacent invalidate-and-JSEG
+handoff resolves deterministically.
 
 ## Integer instruction latency
 

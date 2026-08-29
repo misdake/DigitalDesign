@@ -8,8 +8,8 @@ skinparam defaultTextAlignment center
 package "Fitted CPU V3 system (optional around the reusable core)" {
   component "Instruction cache\n2 KiB, direct mapped\n64 sets x 16 words\nwrite-through data RAM shape\n256-bit private refill buffer" as ICache
   component "Data cache\n2 KiB, direct mapped\n64 sets x 16 words\nwrite-through, no-write-allocate\n256-bit private refill buffer" as DCache
-  component "Memory arbiter\none line or word owner at a time\n8 x 32-bit beats to caches" as Arbiter
-  component "SDRAM word/line adapter\n22-bit fitted physical word address" as SDRAM
+  component "Memory arbiter\none line or word owner at a time\nforwards one burst command per line" as Arbiter
+  component "SDRAM word/line adapter\n8 x 32-bit real burst per line" as SDRAM
   component "Devices 0..7\n16 channels each" as Devices
   component "DMA / display\noptional system masters" as Masters
 }

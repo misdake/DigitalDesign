@@ -9,6 +9,7 @@ pub struct DisplaySdramPortInput {
     pub reset: Wire,
     pub cpu_request_valid: Wire,
     pub cpu_write: Wire,
+    pub cpu_read_line: Wire,
     pub cpu_address: Wires<22>,
     pub cpu_write_data: Wires<16>,
     pub cpu_response_ready: Wire,
@@ -25,7 +26,8 @@ pub struct DisplaySdramPortInput {
 pub struct DisplaySdramPortOutput {
     pub cpu_request_ready: Wire,
     pub cpu_response_valid: Wire,
-    pub cpu_read_data: Wires<16>,
+    pub cpu_read_data: Wires<32>,
+    pub cpu_response_last: Wire,
     pub cpu_error: Wire,
     pub display_request_ready: Wire,
     pub display_data_valid: Wire,

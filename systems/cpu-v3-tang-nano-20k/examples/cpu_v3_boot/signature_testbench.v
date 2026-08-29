@@ -31,7 +31,10 @@ always #5 clk = ~clk;
 // sections stay below physical word 0x50000, so 19 index bits suffice.
 reg [15:0] memory [0:524287];
 integer read_delay = 0;
+integer read_beats = 0;
 reg [20:0] pending_read_address = 0;
+reg word_read_seen = 0;
+reg line_burst_seen = 0;
 integer cycle;
 
 always @(posedge clk) begin
@@ -50,19 +53,25 @@ always @(posedge clk) begin
         sdram_command_ack <= 1;
     end
 
+    // One READ command returns burst_length+1 ordered 32-bit beats.
     if (sdram_command_valid && sdram_command == 3'b101) begin
+        if (sdram_burst_length == 0) word_read_seen <= 1;
+        else if (sdram_burst_length == 7) line_burst_seen <= 1;
+        else $fatal(1, "unexpected burst length %0d", sdram_burst_length);
         pending_read_address <= sdram_address;
         read_delay <= 2;
+        read_beats <= sdram_burst_length + 1;
+        sdram_command_ack <= 1;
     end else if (read_delay != 0) begin
         read_delay <= read_delay - 1;
-        if (read_delay == 1) begin
-            sdram_read_data <= {
-                memory[{pending_read_address[17:0], 1'b1}],
-                memory[{pending_read_address[17:0], 1'b0}]
-            };
-            sdram_read_valid <= 1;
-            sdram_command_ack <= 1;
-        end
+    end else if (read_beats != 0) begin
+        sdram_read_data <= {
+            memory[{pending_read_address[17:0], 1'b1}],
+            memory[{pending_read_address[17:0], 1'b0}]
+        };
+        sdram_read_valid <= 1;
+        pending_read_address <= pending_read_address + 1;
+        read_beats <= read_beats - 1;
     end
 end
 
@@ -235,8 +244,10 @@ initial begin
             memory[20'h40000], memory[20'h40001]);
     if (memory[20'h40100] !== 16'h0000 || memory[20'h4011f] !== 16'h0000)
         $fatal(1, "bss section was not zero-filled");
-    if (sdram_burst_length !== 0)
-        $fatal(1, "first reusable cache revision must use word transactions");
+    if (word_read_seen)
+        $fatal(1, "a word read reached the SDRAM adapter; line refills must burst");
+    if (!line_burst_seen)
+        $fatal(1, "no line burst reached the SDRAM adapter");
     if (!wait_sdram_phase_seen || !stage0_phase_seen || !dma_phase_seen ||
         !stage1_phase_seen || !application_phase_seen)
         $fatal(1, "boot observer missed phases: wait=%0d s0=%0d dma=%0d s1=%0d app=%0d",
