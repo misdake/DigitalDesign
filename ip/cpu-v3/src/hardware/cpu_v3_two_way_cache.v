@@ -1,4 +1,4 @@
-module CpuV3DirectMappedCache (
+module CpuV3TwoWayCache (
     input wire clk,
     input wire reset,
     input wire invalidate_all,

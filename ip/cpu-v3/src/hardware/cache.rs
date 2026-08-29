@@ -75,7 +75,7 @@ impl<I: CpuV3CacheImage> HardwareIdentity for CpuV3ParitySplitCacheData<I> {
     const TARGET_RESOURCE_LEAF: bool = true;
 
     fn verilog_identity() -> VerilogIdentity {
-        VerilogIdentity::new("CpuV3ParitySplitCacheData")
+        VerilogIdentity::new("CpuV3WayInterleavedCacheData")
             .namespace(["components", "cpu", "cpu_v3"])
             .symbol("IMAGE", format!("h{:016x}", cache_data_image_hash::<I>()))
     }
@@ -99,7 +99,7 @@ impl<I: CpuV3CacheImage> Module for CpuV3ParitySplitCacheData<I> {
         _input: &Self::Input,
         _output: &Self::Output,
     ) {
-        panic!("parity-split cache data BSRAM is Verilog-only")
+        panic!("way-interleaved cache data BSRAM is Verilog-only")
     }
 
     fn verilog_source() -> Option<String> {
@@ -170,10 +170,12 @@ endmodule
     }
 
     fn verilog_testbench() -> Option<String> {
-        Some(include_str!("cpu_v3_parity_split_cache_data_tb.v").replace(
-            "CpuV3ParitySplitCacheData dut",
-            &format!("{} dut", Self::verilog_identity().module_name()),
-        ))
+        Some(
+            include_str!("cpu_v3_way_interleaved_cache_data_tb.v").replace(
+                "CpuV3WayInterleavedCacheData dut",
+                &format!("{} dut", Self::verilog_identity().module_name()),
+            ),
+        )
     }
 }
 
@@ -307,7 +309,7 @@ impl<I: CpuV3CacheImage> HardwareIdentity for CpuV3DirectMappedCacheWithImage<I>
     const TARGET_RESOURCE_LEAF: bool = false;
 
     fn verilog_identity() -> VerilogIdentity {
-        VerilogIdentity::new("CpuV3DirectMappedCache")
+        VerilogIdentity::new("CpuV3TwoWayCache")
             .namespace(["components", "cpu", "cpu_v3"])
             .symbol(
                 "IMAGE",
@@ -544,9 +546,9 @@ impl<I: CpuV3CacheImage> Module for CpuV3DirectMappedCacheWithImage<I> {
     fn verilog_source() -> Option<String> {
         let module_name = Self::verilog_identity().module_name();
         Some(
-            include_str!("cpu_v3_direct_mapped_cache.v")
+            include_str!("cpu_v3_two_way_cache.v")
                 .replace(
-                    "module CpuV3DirectMappedCache (",
+                    "module CpuV3TwoWayCache (",
                     &format!("module {module_name} ("),
                 )
                 .replace(
@@ -572,8 +574,8 @@ impl<I: CpuV3CacheImage> Module for CpuV3DirectMappedCacheWithImage<I> {
     }
 
     fn verilog_testbench() -> Option<String> {
-        Some(include_str!("cpu_v3_direct_mapped_cache_tb.v").replace(
-            "CpuV3DirectMappedCache dut",
+        Some(include_str!("cpu_v3_two_way_cache_tb.v").replace(
+            "CpuV3TwoWayCache dut",
             &format!("{} dut", Self::verilog_identity().module_name()),
         ))
     }
@@ -774,8 +776,8 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "explicit external simulation of the parity-split cache data banks"]
-    fn verify_parity_split_cache_data_with_iverilog() {
+    #[ignore = "explicit external simulation of the way-interleaved cache data banks"]
+    fn verify_way_interleaved_cache_data_with_iverilog() {
         digital_design_hardware::verify_verilog_with_iverilog::<
             CpuV3ParitySplitCacheData<ZeroBsramImage>,
         >()

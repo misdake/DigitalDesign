@@ -11,7 +11,7 @@ wire [15:0] bank_0_read_data;
 wire [15:0] bank_1_read_data;
 integer cycles = 0;
 
-CpuV3ParitySplitCacheData dut(.*);
+CpuV3WayInterleavedCacheData dut(.*);
 always #5 clk = ~clk;
 
 always @(posedge clk) begin

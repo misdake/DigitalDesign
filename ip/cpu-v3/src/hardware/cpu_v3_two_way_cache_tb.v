@@ -21,7 +21,7 @@ wire [21:0] memory_address;
 wire [15:0] memory_write_data;
 wire memory_response_ready;
 
-CpuV3DirectMappedCache dut(.*);
+CpuV3TwoWayCache dut(.*);
 always #5 clk = ~clk;
 
 // Line-serving memory model: one read request returns eight ordered 32-bit
