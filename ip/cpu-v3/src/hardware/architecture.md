@@ -89,9 +89,11 @@ above and provide the baseline for the required post-change timing audit:
 
 | System | Constraint | Actual Fmax | Worst setup slack | Worst-path class |
 |---|---:|---:|---:|---|
-| `cpu_v3_boot` | 54 MHz | 54.815 MHz | +0.275 ns | FPU state/address/SSRAM-read/next-state |
-| `cpu_v3_sdram` | 54 MHz | 56.166 MHz | +0.714 ns | FPU state/address/SSRAM-read/next-state |
-| `cpu_v3_display` | 54 MHz | 55.248 MHz | +0.418 ns | FPU state/address/SSRAM-read/next-state |
+| `cpu_v3_system` (full system) | 54 MHz | 54.815 MHz | +0.275 ns | FPU state/address/SSRAM-read/next-state |
+
+The former `cpu_v3_sdram` and `cpu_v3_display` harnesses were folded into
+`cpu_v3_system` when the CPU V3 systems were consolidated; this row is the
+surviving full-system measurement.
 
 The first critical path is not a DSP path. It runs from an FSM state bit through
 prefix/state decode, the FPR read-address mux, a RAM16 asynchronous read, FPU
@@ -116,15 +118,13 @@ a different physical clock.
 
 | System | Normal 54 MHz Fmax | 60 MHz constrained Fmax | 60 MHz setup violations |
 |---|---:|---:|---:|
-| `cpu_v3_boot` | 57.217 MHz | 62.878 MHz | 0 |
-| `cpu_v3_sdram` | 57.303 MHz | 60.241 MHz | 0 |
-| `cpu_v3_display` | 57.661 MHz | 61.228 MHz | 0 |
+| `cpu_v3_system` (full system) | 57.217 MHz | 62.878 MHz | 0 |
 
-All three constrained builds retain two `MULT18X18` cells and the SSRAM FPR
-implementation. The FPR source carries an explicit `distributed_ram` synthesis
-attribute so registered issue addresses cannot silently remap it into two
-additional BSRAMs. The boot, SDRAM, and display reports each contain 56 RAM16
-cells for the composed system and pass the existing resource audit.
+The consolidated full-system build retains two `MULT18X18` cells and the SSRAM
+FPR implementation. The FPR source carries an explicit `distributed_ram`
+synthesis attribute so registered issue addresses cannot silently remap it into
+two additional BSRAMs. The boot report contains 56 RAM16 cells for the composed
+system and passes the existing resource audit.
 
 At 60 MHz the old state/address/SSRAM/domain path is absent. The remaining
 worst paths are the registered unary normalization/scale path or ordinary

@@ -1,9 +1,11 @@
-// Board harness for the complete CPU V3 two-stage flash boot: the Stage0 BSRAM
-// boot ROM loads Stage1 from SPI Flash through the boot DMA engine, Stage1
-// loads the demo application, and the application reports through the
-// device-0 system control UART. Reporting is entirely the software's job;
-// the harness only wires devices, caches, and memories together.
-module CpuV3BootSelfTest (
+// Full CPU V3 system board harness. Stage0 BSRAM boot ROM loads Stage1 from
+// SPI Flash through the boot DMA engine, Stage1 loads the application, and the
+// application reports through the device-0 system control UART. The 320x240
+// RGB565 framebuffer scanout is written to SDRAM by the CPU and scanned out
+// through the shared DisplaySdramPort and the 720p HDMI datapath. Reporting is
+// entirely the software's job; the harness only wires devices, caches,
+// memories, and the display together.
+module CpuV3System (
     input wire clk,
     input wire [1:0] buttons,
     input wire flash_miso,
@@ -11,6 +13,9 @@ module CpuV3BootSelfTest (
     input wire sdram_read_valid,
     input wire sdram_init_done,
     input wire sdram_command_ack,
+    input wire pixel_clock,
+    input wire serial_clock,
+    input wire video_locked,
     output wire [5:0] leds,
     output wire uart_tx,
     output wire flash_clk,
@@ -22,7 +27,11 @@ module CpuV3BootSelfTest (
     output wire [20:0] sdram_address,
     output wire [3:0] sdram_write_mask,
     output wire [31:0] sdram_write_data,
-    output wire [7:0] sdram_burst_length
+    output wire [7:0] sdram_burst_length,
+    output wire tmds_clk_p,
+    output wire tmds_clk_n,
+    output wire [2:0] tmds_data_p,
+    output wire [2:0] tmds_data_n
 );
 
 wire reset;
@@ -142,10 +151,12 @@ wire [15:0] device_read_data;
 wire [15:0] sysctl_read_data;
 wire [15:0] boot_select_read_data;
 wire [15:0] dma_device_read_data;
+wire [15:0] display_read_data;
 wire [5:0] software_leds;
 
 // Unselected devices read back zero, so the core sees the OR of all buses.
-assign device_read_data = sysctl_read_data | boot_select_read_data | dma_device_read_data;
+assign device_read_data =
+    sysctl_read_data | boot_select_read_data | dma_device_read_data | display_read_data;
 
 // Buttons are reset inputs, so their live value is 00 by the time Stage1 can
 // run. Synchronize and remember only the two valid one-hot selections while a
@@ -452,24 +463,42 @@ __ARBITER__ u_memory_arbiter (
     .memory_response_ready(memory_response_ready)
 );
 
-__SDRAM_WORD_PORT__ u_sdram_word_port (
+// Display scanout client of the shared SDRAM port.
+wire display_memory_request_valid;
+wire display_memory_urgent;
+wire [21:0] display_memory_address;
+wire display_memory_request_ready;
+wire display_memory_data_valid;
+wire [31:0] display_memory_read_data;
+wire display_memory_last;
+wire display_memory_error;
+
+__DISPLAY_SDRAM_PORT__ u_sdram_word_port (
     .clk(clk),
     .reset(reset),
-    .request_valid(memory_request_valid),
-    .write(memory_write),
-    .read_line(memory_read_line),
-    .address(memory_address),
-    .write_data(memory_write_data),
-    .response_ready(memory_response_ready),
+    .cpu_request_valid(memory_request_valid),
+    .cpu_write(memory_write),
+    .cpu_read_line(memory_read_line),
+    .cpu_address(memory_address),
+    .cpu_write_data(memory_write_data),
+    .cpu_response_ready(memory_response_ready),
+    .display_request_valid(display_memory_request_valid),
+    .display_urgent(display_memory_urgent),
+    .display_address(display_memory_address),
     .controller_read_data(sdram_read_data),
     .controller_read_valid(sdram_read_valid),
     .controller_init_done(sdram_init_done),
     .controller_command_ack(sdram_command_ack),
-    .request_ready(memory_request_ready),
-    .response_valid(memory_response_valid),
-    .read_data(memory_read_data),
-    .response_last(memory_response_last),
-    .error(memory_error),
+    .cpu_request_ready(memory_request_ready),
+    .cpu_response_valid(memory_response_valid),
+    .cpu_read_data(memory_read_data),
+    .cpu_response_last(memory_response_last),
+    .cpu_error(memory_error),
+    .display_request_ready(display_memory_request_ready),
+    .display_data_valid(display_memory_data_valid),
+    .display_read_data(display_memory_read_data),
+    .display_last(display_memory_last),
+    .display_error(display_memory_error),
     .controller_command_valid(sdram_command_valid),
     .controller_command(sdram_command),
     .controller_precharge(sdram_precharge),
@@ -477,6 +506,33 @@ __SDRAM_WORD_PORT__ u_sdram_word_port (
     .controller_write_mask(sdram_write_mask),
     .controller_write_data(sdram_write_data),
     .controller_burst_length(sdram_burst_length)
+);
+
+// Device 3: framebuffer scanout and 720p TMDS output.
+__FRAMEBUFFER_HDMI__ u_display (
+    .clk(clk),
+    .reset(reset),
+    .pixel_clock(pixel_clock),
+    .serial_clock(serial_clock),
+    .video_locked(video_locked),
+    .memory_request_ready(display_memory_request_ready),
+    .memory_data_valid(display_memory_data_valid),
+    .memory_read_data(display_memory_read_data),
+    .memory_last(display_memory_last),
+    .memory_error(display_memory_error),
+    .device_index(device_index),
+    .device_channel(device_channel),
+    .device_read_enable(device_read_enable),
+    .device_write_enable(device_write_enable),
+    .device_write_data(device_write_data),
+    .memory_request_valid(display_memory_request_valid),
+    .memory_urgent(display_memory_urgent),
+    .memory_address(display_memory_address),
+    .device_read_data(display_read_data),
+    .tmds_clk_p(tmds_clk_p),
+    .tmds_clk_n(tmds_clk_n),
+    .tmds_data_p(tmds_data_p),
+    .tmds_data_n(tmds_data_n)
 );
 
 endmodule

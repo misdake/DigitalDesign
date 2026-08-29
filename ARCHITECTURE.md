@@ -21,7 +21,8 @@ compiler/
 systems/
   cpu-v1-sim/                    CPU V1 memory, devices, display, and programs
   cpu-v2-sim/                    CPU V2 runner and debugger
-  cpu-v3-tang-nano-20k/          fitted FPGA system and boot chain
+  cpu-v3-tang-nano-20k/          fitted full FPGA system (two-stage flash boot,
+                                 CPU, SDRAM, flash, and display/HDMI) and boot chain
 ```
 
 ## Ownership rules

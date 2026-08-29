@@ -166,6 +166,42 @@ pub struct TangNano20KBootOutputs {
     pub sdram_burst_length: Wires<8>,
 }
 
+/// Board inputs for the full CPU V3 system that owns both fitted memories
+/// and the onboard HDMI port concurrently.
+#[derive(Clone, ModuleIo)]
+pub struct TangNano20KBootHdmiInputs {
+    pub buttons: Wires<2>,
+    pub flash_miso: digital_design_circuit::Wire,
+    pub sdram_read_data: Wires<32>,
+    pub sdram_read_valid: digital_design_circuit::Wire,
+    pub sdram_init_done: digital_design_circuit::Wire,
+    pub sdram_command_ack: digital_design_circuit::Wire,
+    pub pixel_clock: digital_design_circuit::Wire,
+    pub serial_clock: digital_design_circuit::Wire,
+    pub video_locked: digital_design_circuit::Wire,
+}
+
+/// Raw Flash-read, Controller HS, and HDMI ports for the full CPU V3 system.
+#[derive(Clone, ModuleIo)]
+pub struct TangNano20KBootHdmiOutputs {
+    pub leds: Wires<6>,
+    pub uart_tx: digital_design_circuit::Wire,
+    pub flash_clk: digital_design_circuit::Wire,
+    pub flash_cs_n: digital_design_circuit::Wire,
+    pub flash_mosi: digital_design_circuit::Wire,
+    pub sdram_command_valid: digital_design_circuit::Wire,
+    pub sdram_command: Wires<3>,
+    pub sdram_precharge: digital_design_circuit::Wire,
+    pub sdram_address: Wires<21>,
+    pub sdram_write_mask: Wires<4>,
+    pub sdram_write_data: Wires<32>,
+    pub sdram_burst_length: Wires<8>,
+    pub tmds_clk_p: digital_design_circuit::Wire,
+    pub tmds_clk_n: digital_design_circuit::Wire,
+    pub tmds_data_p: Wires<3>,
+    pub tmds_data_n: Wires<3>,
+}
+
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub struct TangNano20K;
 
@@ -690,6 +726,45 @@ impl TangNano20K {
         M: Module<Input = TangNano20KBootInputs, Output = TangNano20KBootOutputs>,
     {
         let binding = Self::sdram_debug_uart_binding()
+            .bind_port(
+                GowinPortDirection::Output,
+                "flash_clk",
+                "flash_clk",
+                [Self::SPI_FLASH_CLK],
+            )
+            .bind_port(
+                GowinPortDirection::Output,
+                "flash_cs_n",
+                "flash_cs_n",
+                [Self::SPI_FLASH_CS_N],
+            )
+            .bind_port(
+                GowinPortDirection::Output,
+                "flash_mosi",
+                "flash_mosi",
+                [Self::SPI_FLASH_MOSI],
+            )
+            .bind_port(
+                GowinPortDirection::Input,
+                "flash_miso",
+                "flash_miso",
+                [Self::SPI_FLASH_MISO],
+            )
+            .with_process_option("-use_mspi_as_gpio", "1");
+        GowinModuleProject::new(GowinProject::new(project_name).with_board_binding(binding))
+    }
+
+    /// Create a multi-clock project that simultaneously owns the fitted SPI
+    /// Flash, the 64-Mibit SDRAM, and the onboard 720p HDMI port.
+    ///
+    /// This is the full CPU V3 system surface: the board wrapper owns the SDRAM
+    /// PLL/Controller HS and the video PLL, while the Flash reader leaf owns the
+    /// SPI Flash device. Higher-level logic claims none of these devices.
+    pub fn boot_hdmi_memory_project<M>(project_name: impl Into<String>) -> GowinModuleProject<Self, M>
+    where
+        M: Module<Input = TangNano20KBootHdmiInputs, Output = TangNano20KBootHdmiOutputs>,
+    {
+        let binding = Self::sdram_debug_uart_binding_with_video(true)
             .bind_port(
                 GowinPortDirection::Output,
                 "flash_clk",

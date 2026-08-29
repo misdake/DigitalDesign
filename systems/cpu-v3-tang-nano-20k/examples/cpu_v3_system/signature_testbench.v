@@ -23,9 +23,18 @@ wire [20:0] sdram_address;
 wire [3:0] sdram_write_mask;
 wire [31:0] sdram_write_data;
 wire [7:0] sdram_burst_length;
+reg pixel_clock = 0;
+reg serial_clock = 0;
+reg video_locked = 1;
+wire tmds_clk_p;
+wire tmds_clk_n;
+wire [2:0] tmds_data_p;
+wire [2:0] tmds_data_n;
 
-CpuV3BootSelfTest dut(.*);
+CpuV3System dut(.*);
 always #5 clk = ~clk;
+always #2 pixel_clock = ~pixel_clock;
+always #1 serial_clock = ~serial_clock;
 
 // SDRAM model: 16-bit words, two words per 32-bit controller word. The boot
 // sections stay below physical word 0x50000, so 19 index bits suffice.

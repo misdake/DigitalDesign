@@ -1,6 +1,6 @@
 param(
     [Parameter(Mandatory = $true)]
-    [ValidateSet("board-health", "cpu-v3-cpu", "cpu-v3-sdram", "cpu-v3-boot-dma", "cpu-v3-boot", "cpu-v3-flash-readback", "cpu-v3-flash-diagnostics")]
+    [ValidateSet("board-health", "cpu-v3-system")]
     [string]$Profile,
 
     [ValidateSet("Audit", "Observe", "Program", "Full")]
@@ -35,52 +35,12 @@ function Get-ProfileConfiguration {
                 TestId = 0x0a
             }
         }
-        "cpu-v3-cpu" {
+        "cpu-v3-system" {
             return @{
                 Package = "cpu-v3-tang-nano-20k"
-                Example = "cpu_v3_cpu"
-                Output = "target/cpu_v3_cpu_gowin"
-                TestId = 0x04
-            }
-        }
-        "cpu-v3-sdram" {
-            return @{
-                Package = "cpu-v3-tang-nano-20k"
-                Example = "cpu_v3_sdram"
-                Output = "target/cpu_v3_sdram_gowin"
-                TestId = 0x05
-            }
-        }
-        "cpu-v3-boot-dma" {
-            return @{
-                Package = "cpu-v3-tang-nano-20k"
-                Example = "boot_dma"
-                Output = "target/boot_dma_gowin"
-                TestId = 0x06
-            }
-        }
-        "cpu-v3-boot" {
-            return @{
-                Package = "cpu-v3-tang-nano-20k"
-                Example = "cpu_v3_boot"
-                Output = "target/cpu_v3_boot_gowin"
+                Example = "cpu_v3_system"
+                Output = "target/cpu_v3_system_gowin"
                 TestId = 0x07
-            }
-        }
-        "cpu-v3-flash-readback" {
-            return @{
-                Package = "cpu-v3-tang-nano-20k"
-                Example = "boot_flash_readback"
-                Output = "target/cpu_v3_boot_flash_readback_gowin"
-                TestId = $null
-            }
-        }
-        "cpu-v3-flash-diagnostics" {
-            return @{
-                Package = "cpu-v3-tang-nano-20k"
-                Example = "boot_flash_diagnostics"
-                Output = "target/cpu_v3_boot_flash_diagnostics_gowin"
-                TestId = $null
             }
         }
     }
@@ -141,11 +101,11 @@ if (($Mode -eq "Observe" -or $Mode -eq "Full") -and [string]::IsNullOrWhiteSpace
 if ($CaptureSeconds -le 0 -or $PortWaitSeconds -lt 0 -or $MinimumSuccessFrames -le 0) {
     throw "capture duration and minimum frame count must be positive; port wait cannot be negative"
 }
-if ($WriteBootFlash -and $Profile -ne "cpu-v3-boot") {
-    throw "-WriteBootFlash is valid only for the cpu-v3-boot profile"
+if ($WriteBootFlash -and $Profile -ne "cpu-v3-system") {
+    throw "-WriteBootFlash is valid only for the cpu-v3-system profile"
 }
-if ($WriteCompleteFlash -and $Profile -ne "cpu-v3-boot") {
-    throw "-WriteCompleteFlash is valid only for the cpu-v3-boot profile"
+if ($WriteCompleteFlash -and $Profile -ne "cpu-v3-system") {
+    throw "-WriteCompleteFlash is valid only for the cpu-v3-system profile"
 }
 if ($WriteCompleteFlash -and $Mode -ne "Program" -and $Mode -ne "Full") {
     throw "-WriteCompleteFlash requires -Mode Program or -Mode Full"
@@ -176,15 +136,6 @@ try {
         )
     }
 
-    if ($Profile -eq "cpu-v3-flash-readback") {
-        $bootAssetsDirectory = Join-Path $repoRoot "target/cpu-v3-boot"
-        $bootPackagePath = Join-Path $bootAssetsDirectory "cpu-v3-boot.bin"
-        Invoke-CargoStage "materialize generated boot package" @(
-            "run", "-p", "cpu-v3-tang-nano-20k", "--bin", "cpu-v3-boot-assets",
-            "--", $bootAssetsDirectory
-        )
-    }
-
     if ($WriteBootFlash -or $WriteCompleteFlash) {
         $bootAssetsDirectory = Join-Path $repoRoot "target/cpu-v3-boot"
         $bootPackagePath = Join-Path $bootAssetsDirectory "cpu-v3-boot.bin"
@@ -210,7 +161,7 @@ try {
             throw "Gowin configuration binary is missing beside the audited bitstream: $configurationBinPath"
         }
 
-        $packManifestPath = Join-Path $repoRoot "systems/cpu-v3-tang-nano-20k/examples/cpu_v3_boot/boot.cpu-v3-manifest"
+        $packManifestPath = Join-Path $repoRoot "systems/cpu-v3-tang-nano-20k/examples/cpu_v3_system/boot.cpu-v3-manifest"
         $repackedPackagePath = Join-Path $runDirectory "cpu-v3-boot.repacked.bin"
         $repackedMapPath = Join-Path $runDirectory "cpu-v3-boot.repacked.map"
         $completeFlashPath = Join-Path $runDirectory "cpu-v3-complete-flash.bin"
@@ -243,34 +194,17 @@ try {
             "-ExecutionPolicy", "Bypass", "-File", (Join-Path $PSScriptRoot "capture_bl616_uart.ps1"),
             "-Port", $Port, "-Seconds", $CaptureSeconds, "-Out", $capturePath
         )
-        if ($Profile -eq "cpu-v3-flash-readback") {
-            Invoke-Stage "validate complete Flash readback" "powershell" @(
-                "-ExecutionPolicy", "Bypass", "-File", (Join-Path $PSScriptRoot "check_flash_readback.ps1"),
-                "-CapturePath", $capturePath, "-ExpectedPath", $bootPackagePath,
-                "-MinimumCopies", $MinimumSuccessFrames,
-                "-RecoveredPath", $recoveredPath,
-                "-ResultPath", $uartStatusPath
-            )
-        } elseif ($Profile -eq "cpu-v3-flash-diagnostics") {
-            Invoke-Stage "validate Flash diagnostics" "powershell" @(
-                "-ExecutionPolicy", "Bypass", "-File", (Join-Path $PSScriptRoot "check_flash_diagnostics.ps1"),
-                "-CapturePath", $capturePath,
-                "-MinimumCopies", $MinimumSuccessFrames,
-                "-ResultPath", $uartStatusPath
-            )
-        } else {
-            Invoke-Stage "validate DDHT status" "powershell" @(
-                "-ExecutionPolicy", "Bypass", "-File", (Join-Path $PSScriptRoot "check_uart_status.ps1"),
-                "-Path", $capturePath, "-TestId", $configuration.TestId,
-                "-MinimumSuccessFrames", $MinimumSuccessFrames,
-                "-MaximumAgeSeconds", ($CaptureSeconds + 30),
-                "-ResultPath", $uartStatusPath
-            )
-        }
+        Invoke-Stage "validate DDHT status" "powershell" @(
+            "-ExecutionPolicy", "Bypass", "-File", (Join-Path $PSScriptRoot "check_uart_status.ps1"),
+            "-Path", $capturePath, "-TestId", $configuration.TestId,
+            "-MinimumSuccessFrames", $MinimumSuccessFrames,
+            "-MaximumAgeSeconds", ($CaptureSeconds + 30),
+            "-ResultPath", $uartStatusPath
+        )
     }
 }
 catch {
-    if (($currentStage -eq "validate DDHT status" -or $currentStage -eq "validate complete Flash readback") -and
+    if ($currentStage -eq "validate DDHT status" -and
         (Test-Path -LiteralPath $uartStatusPath)) {
         $decodedStatus = Get-Content -LiteralPath $uartStatusPath -Raw | ConvertFrom-Json
         $failure = $decodedStatus.message
@@ -318,18 +252,12 @@ finally {
         boot_flash_programmed = $completedStages.Contains("program external boot Flash once")
         complete_flash_programmed = $completedStages.Contains("program complete power-on Flash image once")
         sram_programmed = $completedStages.Contains("program audited SRAM bitstream once")
-        uart_validated = $completedStages.Contains("validate DDHT status") -or
-            $completedStages.Contains("validate complete Flash readback") -or
-            $completedStages.Contains("validate Flash diagnostics")
+        uart_validated = $completedStages.Contains("validate DDHT status")
         port = if ($Port) { $Port } else { $null }
         expected_test_id = if ($null -ne $configuration.TestId) {
             "0x$($configuration.TestId.ToString('x2'))"
         } else { $null }
-        expected_uart_protocol = if ($Profile -eq "cpu-v3-flash-readback") {
-            "FBR1"
-        } elseif ($Profile -eq "cpu-v3-flash-diagnostics") {
-            "FDS1"
-        } else { "DDHT/CV3B" }
+        expected_uart_protocol = "DDHT/CV3B"
         artifact = $artifact
         boot_package_sha256 = if ($bootPackagePath -and (Test-Path -LiteralPath $bootPackagePath)) {
             (Get-FileHash -Algorithm SHA256 -LiteralPath $bootPackagePath).Hash.ToLowerInvariant()

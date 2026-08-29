@@ -31,7 +31,7 @@ function Invoke-Cargo {
 
 function Invoke-BootArtifactValidation {
     $bootDirectory = Join-Path $repoRoot "target/cpu-v3-boot"
-    $manifest = Join-Path $repoRoot "systems/cpu-v3-tang-nano-20k/examples/cpu_v3_boot/boot.cpu-v3-manifest"
+    $manifest = Join-Path $repoRoot "systems/cpu-v3-tang-nano-20k/examples/cpu_v3_system/boot.cpu-v3-manifest"
     $generatedPackage = Join-Path $bootDirectory "cpu-v3-boot.bin"
     $repackedPackage = Join-Path $bootDirectory "cpu-v3-boot.repacked.bin"
     $repackedMap = Join-Path $bootDirectory "cpu-v3-boot.repacked.map"
@@ -125,18 +125,12 @@ function Invoke-BoardArtifactAudit {
 
 function Invoke-AuditValidation {
     Invoke-BoardArtifactAudit "board-health"
-    Invoke-BoardArtifactAudit "cpu-v3-cpu"
-    Invoke-BoardArtifactAudit "cpu-v3-sdram"
-    Invoke-BoardArtifactAudit "cpu-v3-boot"
-    Invoke-BoardArtifactAudit "cpu-v3-flash-readback"
+    Invoke-BoardArtifactAudit "cpu-v3-system"
 }
 
 function Invoke-PnrValidation {
     Invoke-GowinBuild "digital-design-hardware-gowin" "board_health"
-    Invoke-GowinBuild "cpu-v3-tang-nano-20k" "cpu_v3_cpu"
-    Invoke-GowinBuild "cpu-v3-tang-nano-20k" "cpu_v3_sdram"
-    Invoke-GowinBuild "cpu-v3-tang-nano-20k" "cpu_v3_boot"
-    Invoke-GowinBuild "cpu-v3-tang-nano-20k" "boot_flash_readback"
+    Invoke-GowinBuild "cpu-v3-tang-nano-20k" "cpu_v3_system"
 }
 
 Push-Location $repoRoot

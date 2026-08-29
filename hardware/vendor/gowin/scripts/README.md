@@ -29,17 +29,16 @@ read-only artifact checks, observation, and hardware mutation:
 | `Program` | Audit, optionally write either the boot package or a complete power-on Flash image, then program the audited SRAM bitstream exactly once. |
 | `Full` | Perform `Program`, then bounded VCP wait, capture, and protocol validation. |
 
-Supported profiles are `board-health`, `cpu-v3-cpu`, `cpu-v3-sdram`,
-`cpu-v3-boot-dma`, `cpu-v3-boot`, the read-only `cpu-v3-flash-readback` probe, and the
-non-destructive `cpu-v3-flash-diagnostics` status/WEL probe. Every attempted
-run writes `target/board-validation/<profile>/<UTC>/evidence.json`,
+Supported profiles are the FPGA-alive `board-health` probe and the full CPU V3
+`cpu-v3-system` system (two-stage flash boot plus the SDRAM and HDMI datapaths).
+Every attempted run writes `target/board-validation/<profile>/<UTC>/evidence.json`,
 including failure stage, source/bitstream fingerprints, SHA-256 hashes, commit and dirty state.
 The runner never resets USB and never retries programming after a failure.
 
 ```powershell
 # Safe offline check; this is the default mode.
 powershell -ExecutionPolicy Bypass -File hardware/vendor/gowin/scripts/run_board_validation.ps1 `
-    -Profile cpu-v3-boot -Mode Audit
+    -Profile cpu-v3-system -Mode Audit
 
 # Observe an image that is already running, without touching FPGA or Flash.
 powershell -ExecutionPolicy Bypass -File hardware/vendor/gowin/scripts/run_board_validation.ps1 `
@@ -47,20 +46,11 @@ powershell -ExecutionPolicy Bypass -File hardware/vendor/gowin/scripts/run_board
 
 # Explicit complete boot run. Flash and SRAM are each programmed at most once.
 powershell -ExecutionPolicy Bypass -File hardware/vendor/gowin/scripts/run_board_validation.ps1 `
-    -Profile cpu-v3-boot -Mode Full -Port COM8 -WriteBootFlash
+    -Profile cpu-v3-system -Mode Full -Port COM8 -WriteBootFlash
 
 # Persist both FPGA configuration and the boot package for cold power-on.
 powershell -ExecutionPolicy Bypass -File hardware/vendor/gowin/scripts/run_board_validation.ps1 `
-    -Profile cpu-v3-boot -Mode Full -Port COM8 -WriteCompleteFlash
-
-# Independently reconstruct and compare the generated package without writing Flash.
-powershell -ExecutionPolicy Bypass -File hardware/vendor/gowin/scripts/run_board_validation.ps1 `
-    -Profile cpu-v3-flash-readback -Mode Full -Port COM8 `
-    -CaptureSeconds 6 -MinimumSuccessFrames 2
-
-# Inspect JEDEC ID, protection bits, and the volatile write-enable latch.
-powershell -ExecutionPolicy Bypass -File hardware/vendor/gowin/scripts/run_board_validation.ps1 `
-    -Profile cpu-v3-flash-diagnostics -Mode Full -Port COM8
+    -Profile cpu-v3-system -Mode Full -Port COM8 -WriteCompleteFlash
 ```
 
 The runner captures through `capture_bl616_uart.ps1`. It enters the onboard
@@ -100,43 +90,23 @@ introduce a new protocol version and extend the shared decoder rather than
 growing a private script inside one example. Set `-MaximumAgeSeconds 0` only
 when deliberately inspecting an archived capture.
 
-`cpu-v3-flash-readback` repeatedly emits `FBR1` records containing one Flash
-byte, its 16-bit package offset, and an XOR checksum. Its checker requires every
-offset to be observed consistently at least twice, reconstructs the complete
-package, compares every byte, and records both SHA-256 fingerprints and the
-first mismatching physical Flash address. The probe only issues SPI command
-`03h`; it has no erase or program path.
-
-`cpu-v3-flash-diagnostics` emits repeated `FDS1` snapshots with the JEDEC ID,
-three status registers, and SR1 before/after a volatile `WREN`/`WRDI` sequence.
-The checker rejects unstable snapshots, a wrong fitted-device ID, a
-write-enable latch that does not toggle, or active BP/CMP array protection. It
-never issues a program or erase command.
-
-`cpu-v3-boot-dma` is a non-programming consumer of the current boot package.
-It copies the 64-byte descriptor at Flash `0x100000` to SDRAM word `0x40` and
-checks that all 32 writes complete and the write-side prefix is `CPU3BOOT`.
-Run `cpu-v3-boot` in `Full` mode with `-WriteBootFlash` first when the fitted
-Flash does not already contain the current package. Failure status `0x02` means a write-side magic
-mismatch, `0x03` a DMA completed-word mismatch, `0x04` an SDRAM accepted-write
-count mismatch, and `0x11..0x15` the corresponding boot-DMA engine error.
-Readback status `0x20..0x23` identifies the first mismatching magic word;
-`0x41` specifically means word 1 repeated word 0, while `0x42..0x44` classify
-zero, erased, and byte-swapped word-1 values.
-
+The former `cpu-v3-flash-readback`, `cpu-v3-flash-diagnostics`, and
+`cpu-v3-boot-dma` probes were consolidated into the full system and are no
+longer separate builds; the boot package is now exercised through the
+`cpu-v3-system` profile's Flash-writing paths.
 Assigned test IDs:
 
 | ID | Test |
 | ---: | --- |
 | `0x01` | Tang Nano 20K BSRAM shapes self-test |
 | `0x03` | Tang Nano 20K fitted SDRAM burst/refresh self-test |
-| `0x04` | CPU V3 compiled-program CPU/BSRAM execution self-test |
-| `0x05` | CPU V3 boot BSRAM to SDRAM to instruction-cache execution self-test |
-| `0x06` | Boot DMA flash-to-SDRAM engine self-test |
-| `0x07` | CPU V3 two-stage flash boot (application reached) |
-| `0x08` | System control device UART characterization (sysctl_uart) |
-| `0x09` | CPU V3 dedicated device path characterization (`cpu_v3_device`) |
+| `0x07` | CPU V3 full system two-stage flash boot (application reached) |
 | `0x0a` | Tang Nano 20K board clock/button/UART transport health probe |
+
+The former CPU V3 CPU-execution (`0x04`), SDRAM (`0x05`), boot-DMA (`0x06`),
+system-control-UART (`0x08`), device-path (`0x09`), and the read-only/diagnostic
+Flash probes were consolidated into the full `cpu-v3-system` system and are no
+longer separate builds.
 
 ## Stable board bring-up
 
