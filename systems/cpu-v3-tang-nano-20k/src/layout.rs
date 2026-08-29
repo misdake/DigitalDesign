@@ -64,10 +64,12 @@ impl SystemDeviceLayout for TangNano20kDeviceLayout {
             name: "system-control",
             device: crate::boot::SYSTEM_CONTROL_DEVICE,
             channels: &[
-                crate::boot::SYSCTL_INVALIDATE_ICACHE,
-                crate::boot::SYSCTL_INVALIDATE_DCACHE,
+                crate::boot::ICACHE_INVALIDATE_ALL_DELAYED,
+                crate::boot::D_INVALIDATE_ALL,
                 crate::boot::SYSCTL_LED,
                 crate::boot::SYSCTL_UART,
+                crate::boot::D_CLEAN_ALL,
+                crate::boot::CACHE_MAINTENANCE_STATUS,
             ],
         },
         DeviceAllocation {
@@ -134,12 +136,15 @@ pub enum SharedBufferOwner {
 }
 
 impl SharedBufferOwner {
-    pub fn start_accelerator(&mut self, cpu_stores_complete: bool) -> Result<(), &'static str> {
+    pub fn start_accelerator(
+        &mut self,
+        cpu_writes_visible_in_dram: bool,
+    ) -> Result<(), &'static str> {
         if *self != Self::Cpu {
             return Err("buffer is not owned by the CPU");
         }
-        if !cpu_stores_complete {
-            return Err("CPU stores must complete before accelerator handoff");
+        if !cpu_writes_visible_in_dram {
+            return Err("CPU writes must be visible in DRAM before accelerator handoff");
         }
         *self = Self::AcceleratorRunning;
         Ok(())
@@ -147,13 +152,13 @@ impl SharedBufferOwner {
 
     pub fn accelerator_complete(
         &mut self,
-        accelerator_writes_complete: bool,
+        accelerator_writes_visible_in_dram: bool,
     ) -> Result<(), &'static str> {
         if *self != Self::AcceleratorRunning {
             return Err("accelerator is not running");
         }
-        if !accelerator_writes_complete {
-            return Err("accelerator completion must drain memory writes");
+        if !accelerator_writes_visible_in_dram {
+            return Err("accelerator completion must make every write visible in DRAM");
         }
         *self = Self::AcceleratorCompleteNeedsInvalidate;
         Ok(())
@@ -203,7 +208,7 @@ mod tests {
     }
 
     #[test]
-    fn accelerator_handoff_requires_completions_and_cpu_cache_invalidation() {
+    fn accelerator_handoff_requires_dram_visibility_and_cpu_cache_invalidation() {
         let mut owner = SharedBufferOwner::Cpu;
         assert!(owner.start_accelerator(false).is_err());
         owner.start_accelerator(true).unwrap();

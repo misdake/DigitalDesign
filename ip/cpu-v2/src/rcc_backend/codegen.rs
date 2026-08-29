@@ -486,6 +486,9 @@ pub fn compile_function(
             Some(Terminator::Halt { signal }) => {
                 lines.push(MachineLine::Inst(halt(reg(*signal)), block.term_line));
             }
+            Some(Terminator::IcacheInvalidateDelayedAndJump { .. }) => {
+                panic!("cache maintenance handoff is a CpuV3-only intrinsic")
+            }
             None => unreachable!("unterminated reachable block b{b}"),
         }
         if init_detail.is_some() {
@@ -724,7 +727,7 @@ fn emit_inst(
                 ir_line,
             ));
         }
-        Instr::MtsrDseg { .. } | Instr::Jseg { .. } => {
+        Instr::MtsrDseg { .. } | Instr::Jseg { .. } | Instr::DcacheInvalidateAll => {
             panic!(
                 "mtsr_dseg/jseg are CpuV3-only intrinsics; the v2.6 ISA has no segment registers"
             )

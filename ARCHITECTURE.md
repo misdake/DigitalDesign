@@ -54,8 +54,9 @@ CPU V2/V3 systems use physical addresses only. CPU V3 forms a 32-bit word addres
 device-channel allocation.
 
 `dev_send`/`dev_recv` are the control plane. Shared physical memory is the CPU/GPU/DMA data plane.
-The CPU cache is write-through. CPU-to-GPU ownership transfer waits for completed stores; GPU
-completion drains its writes; CPU ownership resumes only after the system-control device completes
+The CPU cache is write-through. CPU-to-GPU ownership transfer waits until CPU writes are visible in
+DRAM (or, under future write-back caching, until a full clean completes); GPU completion makes all
+of its writes visible in DRAM; CPU ownership resumes only after the system-control device completes
 a D-cache invalidation. There is no MMU, snooping, burst protocol, transaction ID, or multiple
 outstanding request support yet.
 

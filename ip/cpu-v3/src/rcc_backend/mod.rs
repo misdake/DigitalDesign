@@ -10,6 +10,7 @@ pub use options::CompilerOptions;
 
 use crate as cpu_v3;
 use crate::{AluOp, ImmediateOp, TestCondition, Word};
+use crate::{CACHE_MAINTENANCE_DEVICE, D_INVALIDATE_ALL, ICACHE_INVALIDATE_ALL_DELAYED};
 use rcc::*;
 use std::collections::{HashMap, HashSet};
 
@@ -269,6 +270,16 @@ fn lower_function(
                 }
                 lines.push(Line::Word(cpu_v3::halt()));
             }
+            Terminator::IcacheInvalidateDelayedAndJump { cseg, target } => {
+                let cseg = register(*cseg);
+                let target = register(*target);
+                lines.push(Line::Word(cpu_v3::device_send(
+                    cseg,
+                    CACHE_MAINTENANCE_DEVICE,
+                    ICACHE_INVALIDATE_ALL_DELAYED,
+                )));
+                lines.push(Line::Word(cpu_v3::jump_segment(cseg, target)));
+            }
         }
     }
 
@@ -375,6 +386,11 @@ fn lower_instruction(
                 *channel,
             )));
         }
+        Instr::DcacheInvalidateAll => lines.push(Line::Word(cpu_v3::device_send(
+            REG_TMP,
+            CACHE_MAINTENANCE_DEVICE,
+            D_INVALIDATE_ALL,
+        ))),
         Instr::MtsrDseg { src } => {
             lines.push(Line::Word(cpu_v3::write_data_segment(register(*src))))
         }
@@ -941,6 +957,27 @@ mod tests {
             machine.physical_memory(cpu_v3::PhysicalWordAddress::new(0x0001_0010)),
             0x1234
         );
+    }
+
+    #[test]
+    fn cache_handoff_is_one_terminal_ir_operation_and_two_adjacent_words() {
+        let source = r#"
+            fn main() {
+                dcache_invalidate_all();
+                let cseg: u16 = 2;
+                let target: u16 = 0x0020;
+                icache_invalidate_delayed_and_jump(cseg, target);
+            }
+        "#;
+        let program = compile(source, CompilerOptions::default());
+        assert_eq!(program.words.last(), Some(&cpu_v3::halt()));
+        let tail = &program.words[program.words.len() - 3..program.words.len() - 1];
+        assert_eq!(tail[0] & 0xfff0, 0xc800);
+        assert_eq!(tail[1] & 0xff00, 0xef00);
+        assert_eq!(tail[0] & 0x000f, (tail[1] >> 4) & 0x000f);
+        assert!(program.words[..program.words.len() - 3]
+            .iter()
+            .any(|word| word & 0xfff0 == 0xc810));
     }
 
     #[test]

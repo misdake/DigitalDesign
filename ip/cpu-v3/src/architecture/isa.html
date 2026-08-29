@@ -361,6 +361,13 @@
       <tr><td>Data storage</td><td colspan="2">one 1024×16 BSRAM leaf each</td></tr>
       <tr><td>Stores</td><td>—</td><td>write-through, no-write-allocate</td></tr>
     </table>
+    <h3>Global maintenance contract</h3>
+    <ul>
+      <li>There is no per-line invalidate or DMA write-snoop interface. Software transfers ownership only after CPU writes are visible in DRAM, and reacquires it only after device writes are visible followed by complete D-cache invalidation.</li>
+      <li><code>D_INVALIDATE_ALL</code> clears all valid bits while D-cache is write-through; the same ABI becomes blocking clean-plus-invalidate when write-back is implemented.</li>
+      <li>The compiler lowers <code>icache_invalidate_delayed_and_jump</code> as adjacent <code>ICACHE_INVALIDATE_ALL_DELAYED; JSEG</code> words so no spill, helper, or ordinary instruction can separate the final handoff.</li>
+      <li><code>D_CLEAN_ALL</code> and final maintenance status are reserved, not implemented before dirty cache state exists.</li>
+    </ul>
   </div>
 </div>
 <div class="panel">

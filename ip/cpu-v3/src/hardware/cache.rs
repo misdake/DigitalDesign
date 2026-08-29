@@ -111,8 +111,6 @@ impl Module for CpuV3CacheTagRam {
 pub struct CpuV3DirectMappedCacheInput {
     pub reset: Wire,
     pub invalidate_all: Wire,
-    pub snoop_write_valid: Wire,
-    pub snoop_write_address: Wires<22>,
     pub cpu_request_valid: Wire,
     pub cpu_write: Wire,
     pub cpu_address: Wires<32>,
@@ -330,10 +328,6 @@ impl<I: CpuV3CacheImage> Module for CpuV3DirectMappedCacheWithImage<I> {
 
         if input.invalidate_all {
             state.valid.fill(false);
-        } else if input.snoop_write_valid {
-            let address = input.snoop_write_address as u32;
-            let (set, _, _) = decode(address);
-            state.valid[set] = false;
         }
     }
 
@@ -399,16 +393,14 @@ mod tests {
         cpu_request: Option<(bool, u32, u16)>,
         cpu_response_ready: bool,
         memory_response: Option<(u16, bool)>,
-        snoop_write: Option<u32>,
+        invalidate_all: bool,
     ) {
         let (cpu_write, cpu_address, cpu_write_data) = cpu_request.unwrap_or_default();
         input.drive(
             circuit,
             &CpuV3DirectMappedCacheInputValue {
                 reset: false,
-                invalidate_all: false,
-                snoop_write_valid: snoop_write.is_some(),
-                snoop_write_address: u64::from(snoop_write.unwrap_or(0)),
+                invalidate_all,
                 cpu_request_valid: cpu_request.is_some(),
                 cpu_write,
                 cpu_address: u64::from(cpu_address),
@@ -441,7 +433,7 @@ mod tests {
                 cpu_request,
                 false,
                 memory_response.take(),
-                None,
+                false,
             );
             circuit.execute_gates();
             let value = output.sample(circuit);
@@ -460,7 +452,7 @@ mod tests {
             }
             if value.cpu_response_valid {
                 let result = (value.cpu_read_data as u16, value.cpu_error, memory_requests);
-                drive(circuit, input, None, true, memory_response.take(), None);
+                drive(circuit, input, None, true, memory_response.take(), false);
                 circuit.clock_tick();
                 return result;
             }
@@ -470,7 +462,7 @@ mod tests {
     }
 
     #[test]
-    fn miss_hit_write_through_conflict_and_dma_snoop_follow_physical_tags() {
+    fn miss_hit_write_through_conflict_and_full_invalidate_follow_physical_tags() {
         let (mut circuit, (input, output)) = build_circuit(|| {
             let input = CpuV3DirectMappedCacheInput::allocate();
             let output = CpuV3DirectMappedCache::emu(&input);
@@ -506,7 +498,7 @@ mod tests {
             (0x4567, false, 0)
         );
 
-        drive(&mut circuit, &input, None, false, None, Some(0x123));
+        drive(&mut circuit, &input, None, false, None, true);
         circuit.clock_tick();
         assert_eq!(
             transact(&mut circuit, &input, &output, &mut memory, false, 0x123, 0),

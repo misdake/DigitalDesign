@@ -2,8 +2,6 @@ module CpuV3DirectMappedCache (
     input wire clk,
     input wire reset,
     input wire invalidate_all,
-    input wire snoop_write_valid,
-    input wire [21:0] snoop_write_address,
     input wire cpu_request_valid,
     input wire cpu_write,
     input wire [31:0] cpu_address,
@@ -155,8 +153,6 @@ always @(posedge clk) begin
 
         if (invalidate_all)
             valid <= 0;
-        else if (snoop_write_valid)
-            valid[snoop_write_address[9:4]] <= 0;
     end
 end
 

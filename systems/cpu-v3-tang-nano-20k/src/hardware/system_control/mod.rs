@@ -19,8 +19,8 @@ use crate::{Hardware, HardwareIdentity, Module, ModuleIo};
 use askama::Template;
 use digital_design_circuit::{CircuitWires, Wire, Wires};
 
-pub use crate::boot::SYSCTL_INVALIDATE_DCACHE as SYSTEM_CONTROL_CHANNEL_DCACHE_INVALIDATE;
-pub use crate::boot::SYSCTL_INVALIDATE_ICACHE as SYSTEM_CONTROL_CHANNEL_ICACHE_INVALIDATE;
+pub use crate::boot::D_INVALIDATE_ALL as SYSTEM_CONTROL_CHANNEL_D_INVALIDATE_ALL;
+pub use crate::boot::ICACHE_INVALIDATE_ALL_DELAYED as SYSTEM_CONTROL_CHANNEL_ICACHE_INVALIDATE_ALL_DELAYED;
 pub use crate::boot::SYSCTL_LED as SYSTEM_CONTROL_CHANNEL_LEDS;
 pub use crate::boot::SYSCTL_UART as SYSTEM_CONTROL_CHANNEL_UART;
 /// Device index of the system control device on the CpuV3 device port.
@@ -175,8 +175,8 @@ impl<const CLOCKS_PER_BIT: u16> Module for SystemControlDevice<CLOCKS_PER_BIT> {
         }
         let value = input.device_write_data as u16;
         match input.device_channel as u8 {
-            SYSTEM_CONTROL_CHANNEL_ICACHE_INVALIDATE => state.icache_invalidate = true,
-            SYSTEM_CONTROL_CHANNEL_DCACHE_INVALIDATE => state.dcache_invalidate = true,
+            SYSTEM_CONTROL_CHANNEL_ICACHE_INVALIDATE_ALL_DELAYED => state.icache_invalidate = true,
+            SYSTEM_CONTROL_CHANNEL_D_INVALIDATE_ALL => state.dcache_invalidate = true,
             SYSTEM_CONTROL_CHANNEL_LEDS => state.leds = (value & 0x3f) as u8,
             // A write while busy is dropped; software polls the busy flag.
             SYSTEM_CONTROL_CHANNEL_UART if !was_busy => {

@@ -39,6 +39,9 @@ The optional fitted system places separate 2 KiB instruction and data caches
 around the core. Each cache is direct mapped with 64 sets and 16 words per line.
 Stores are write-through and do not allocate on a miss. The caches, DMA, and
 display share a single-outstanding SDRAM path through a system-owned arbiter.
+Only full-cache invalidation exists; there is no per-line snoop interface. The
+system-control I-cache invalidation pulse is registered for one cycle so the
+compiler's adjacent invalidate-and-JSEG handoff resolves deterministically.
 
 ## Integer instruction latency
 

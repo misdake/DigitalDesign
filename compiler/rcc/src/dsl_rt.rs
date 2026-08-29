@@ -123,6 +123,19 @@ pub fn dev_send(dev: u8, ch: u8, v: u16) {
     unimplemented!("devices are not available on the host")
 }
 
+/// Invalidate the complete data cache (CpuV3-only; not available on the Rust
+/// host). This is a compiler memory and control barrier.
+pub fn dcache_invalidate_all() {
+    unimplemented!("cache maintenance is not available on the host")
+}
+
+/// Invalidate the complete instruction cache on the registered delayed path,
+/// then immediately switch CSEG and jump (CpuV3-only). Never returns.
+pub fn icache_invalidate_delayed_and_jump(cseg: u16, target: u16) -> ! {
+    let _ = (cseg, target);
+    unimplemented!("cache maintenance is not available on the host")
+}
+
 /// Write the DSEG special register (CpuV3-only; not available on the Rust host).
 pub fn mtsr_dseg(v: u16) {
     let _ = v;

@@ -6,8 +6,8 @@ use super::{
     BootDescriptor, BootEntry, BootImageError, BootManifest, BootTarget, SectionKind,
     SectionRecord, BOOT_DESCRIPTOR_SIZE, BOOT_MANIFEST_HEADER_SIZE, BOOT_SECTION_RECORD_SIZE,
     DMA_ERROR_FILE_LARGER_THAN_MEMORY, DMA_ERROR_FLASH_RANGE, DMA_ERROR_MEMORY_RANGE,
-    SECTION_EXECUTE, STAGE1_HANDOFF_OFFSET, STAGE1_HANDOFF_SIZE_BYTES, SYSCTL_INVALIDATE_DCACHE,
-    SYSCTL_INVALIDATE_ICACHE, SYSCTL_LED, SYSCTL_UART, SYSTEM_CONTROL_DEVICE,
+    D_INVALIDATE_ALL, ICACHE_INVALIDATE_ALL_DELAYED, SECTION_EXECUTE, STAGE1_HANDOFF_OFFSET,
+    STAGE1_HANDOFF_SIZE_BYTES, SYSCTL_LED, SYSCTL_UART, SYSTEM_CONTROL_DEVICE,
 };
 use crate::{
     device_send, jump_segment, load_immediate16, write_data_segment, Machine, PhysicalWordAddress,
@@ -414,21 +414,19 @@ pub struct ApplicationHandoff {
 impl ApplicationHandoff {
     /// Canonical final sequence used by Stage1 after its last memory access.
     ///
-    /// DMA-filled memory may alias stale cache lines, so both caches are
-    /// invalidated through system-control device 0 before the segment switch
-    /// (harmless at cold boot, when every valid bit is clear). Under ISA v0.6
-    /// each invalidation is a single device send; the sent value is
-    /// irrelevant, so r0 serves as the source.
+    /// DMA-filled memory may alias stale cache lines. Invalidate D-cache before
+    /// preparing the new execution context, then emit the registered delayed
+    /// I-cache invalidation immediately before JSEG. The sent values are
+    /// irrelevant; the final pair reuses the CSEG register as its payload.
     pub fn instructions(self) -> Vec<Word> {
-        let mut words = vec![];
+        let mut words = vec![device_send(0, SYSTEM_CONTROL_DEVICE, D_INVALIDATE_ALL)];
         words.extend(load_immediate16(1, self.entry.data_segment));
         words.extend(load_immediate16(13, self.entry.stack_offset));
         words.extend(load_immediate16(2, self.entry.code_segment));
         words.extend(load_immediate16(3, self.entry.offset));
         words.extend([
-            device_send(0, SYSTEM_CONTROL_DEVICE, SYSCTL_INVALIDATE_ICACHE),
-            device_send(0, SYSTEM_CONTROL_DEVICE, SYSCTL_INVALIDATE_DCACHE),
             write_data_segment(1),
+            device_send(2, SYSTEM_CONTROL_DEVICE, ICACHE_INVALIDATE_ALL_DELAYED),
             jump_segment(2, 3),
         ]);
         words
@@ -962,7 +960,7 @@ mod tests {
     }
 
     #[test]
-    fn handoff_invalidates_both_caches_before_the_segment_switch() {
+    fn handoff_invalidates_data_before_setup_and_keeps_icache_adjacent_to_jump() {
         let handoff = ApplicationHandoff {
             entry: BootEntry {
                 code_segment: 3,
@@ -973,13 +971,16 @@ mod tests {
         };
         let words = handoff.instructions();
         assert_eq!(
-            words[words.len() - 4..],
+            words[words.len() - 3..],
             [
-                device_send(0, SYSTEM_CONTROL_DEVICE, SYSCTL_INVALIDATE_ICACHE),
-                device_send(0, SYSTEM_CONTROL_DEVICE, SYSCTL_INVALIDATE_DCACHE),
                 write_data_segment(1),
+                device_send(2, SYSTEM_CONTROL_DEVICE, ICACHE_INVALIDATE_ALL_DELAYED),
                 jump_segment(2, 3),
             ]
+        );
+        assert_eq!(
+            words[0],
+            device_send(0, SYSTEM_CONTROL_DEVICE, D_INVALIDATE_ALL)
         );
     }
 

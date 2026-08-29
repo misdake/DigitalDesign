@@ -201,8 +201,9 @@ does not relax timing and is not used as a substitute for pipelining.
 Program loading is a separate concern from cache operation: SDRAM has no
 bitstream initialization. Immutable Stage0 code starts from initialized
 BSRAM/instruction-cache state in segment zero, copies Stage1 from
-SPI Flash into SDRAM, invalidates both caches entirely, writes the Stage1
-data segment, and enters Stage1 with `JSEG`. Stage0 does not write a stack
+SPI Flash into SDRAM, invalidates the complete D-cache, writes the Stage1
+data segment, and enters Stage1 with the adjacent
+`ICACHE_INVALIDATE_ALL_DELAYED; JSEG` handoff. Stage0 does not write a stack
 pointer: each stage initializes its own from its compiled-in `--stack-init`.
 Stage1 understands the extensible section table and loads the application.
 
@@ -227,15 +228,20 @@ segment alone does not invalidate correctly tagged lines.
 
 ## System control device and boot error reporting
 
-Device 0 is addressed only with `DEVRECV`/`DEVSEND`. Writing any value to
-channel 0 invalidates the whole instruction cache, and to channel 1 the whole
-data cache. Channel 2 drives the six board LEDs from the low six written
+Device 0 is addressed only with `DEVRECV`/`DEVSEND`. Channel 0 is
+`ICACHE_INVALIDATE_ALL_DELAYED`: a write produces the registered one-cycle-
+delayed whole-I-cache invalidation pulse. Channel 1 is `D_INVALIDATE_ALL`:
+while D-cache is write-through it cheaply clears every valid bit; under future
+write-back caching the same operation is blocking clean-plus-invalidate.
+Channel 4 reserves `D_CLEAN_ALL`, and channel 5 reserves final maintenance
+status; neither is implemented before dirty state exists. Channel 2 drives the six board LEDs from the low six written
 bits. Channel 3 accepts one UART transmit byte per write (8N1) and reports
 bit 0 set on reads while the transmitter is busy.
 
-After DMA loads and before `JSEG` the boot code must invalidate both caches
-through channels 0 and 1. This is harmless at cold boot, when every valid bit
-is already clear.
+After DMA loads, boot code invokes the semantic D-cache invalidation barrier,
+prepares DSEG and the final registers, then invokes the non-returning semantic
+I-cache-invalidate-and-jump intrinsic. The compiler lowers that terminal IR
+operation to adjacent `DEVSEND channel 0; JSEG` words with nothing between.
 
 On failure a boot stage writes channel 2 with `{stage[1:0], category[3:0]}` in
 the low six bits (stage `01` = Stage0, `10` = Stage1; category `1` =

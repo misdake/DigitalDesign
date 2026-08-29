@@ -2,8 +2,6 @@ module tb;
 reg clk = 0;
 reg reset = 1;
 reg invalidate_all = 0;
-reg snoop_write_valid = 0;
-reg [21:0] snoop_write_address = 0;
 reg cpu_request_valid = 0;
 reg cpu_write = 0;
 reg [31:0] cpu_address = 0;
@@ -63,13 +61,12 @@ initial begin
     read_word(32'h0000_012e, 16'h812e);
     if (memory_requests != 16)
         $fatal(1, "line hit reached memory");
-    snoop_write_address <= 22'h123;
-    snoop_write_valid <= 1;
+    invalidate_all <= 1;
     @(posedge clk);
-    snoop_write_valid <= 0;
+    invalidate_all <= 0;
     read_word(32'h0000_0123, 16'h8123);
     if (memory_requests != 32)
-        $fatal(1, "DMA snoop did not invalidate the line");
+        $fatal(1, "full invalidate did not invalidate the line");
     $display("DIGITAL_DESIGN_PASS");
     $finish;
 end

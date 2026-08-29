@@ -180,12 +180,12 @@ fn main() {
 
     assert_eq!(
         fnv1a64(&stage0_bytes),
-        2_781_264_331_194_212_956,
+        9_961_965_128_697_149_504,
         "Stage0 bytes changed from the CPU V3 boot-format baseline"
     );
     assert_eq!(
         fnv1a64(package),
-        13_875_194_008_803_525_579,
+        11_374_111_168_546_388_443,
         "Flash package bytes changed from the CPU V3 boot-format baseline"
     );
 

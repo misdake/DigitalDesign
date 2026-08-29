@@ -228,6 +228,7 @@ pub(crate) fn inst_uses(inst: &Instr) -> Vec<VReg> {
         Instr::LoadImm { .. }
         | Instr::StoreStatic { .. }
         | Instr::DevRecv { .. }
+        | Instr::DcacheInvalidateAll
         | Instr::LoadSp { .. }
         | Instr::LoadLocal { .. }
         | Instr::AddrOfLocal { .. }
@@ -265,6 +266,7 @@ pub(crate) fn inst_defs(inst: &Instr) -> Vec<VReg> {
         Instr::StoreMem { .. }
         | Instr::StoreStatic { .. }
         | Instr::DevSend { .. }
+        | Instr::DcacheInvalidateAll
         | Instr::MtsrDseg { .. }
         | Instr::Jseg { .. }
         | Instr::StoreSp { .. }
@@ -283,6 +285,7 @@ fn term_uses(term: &Terminator) -> Vec<VReg> {
         },
         Terminator::Ret { values } => values.clone(),
         Terminator::Halt { signal } => vec![*signal],
+        Terminator::IcacheInvalidateDelayedAndJump { cseg, target } => vec![*cseg, *target],
     }
 }
 
@@ -318,6 +321,7 @@ fn replace_all_uses(f: &mut IrFunc, from: VReg, to: VReg) {
                 Instr::LoadImm { .. }
                 | Instr::StoreStatic { .. }
                 | Instr::DevRecv { .. }
+                | Instr::DcacheInvalidateAll
                 | Instr::LoadSp { .. }
                 | Instr::LoadLocal { .. }
                 | Instr::AddrOfLocal { .. } => {}
@@ -345,6 +349,10 @@ fn replace_all_uses(f: &mut IrFunc, from: VReg, to: VReg) {
                 }
                 Terminator::Ret { values } => values.iter_mut().for_each(&subst),
                 Terminator::Halt { signal } => subst(signal),
+                Terminator::IcacheInvalidateDelayedAndJump { cseg, target } => {
+                    subst(cseg);
+                    subst(target);
+                }
             }
         }
     }
@@ -1007,6 +1015,7 @@ fn rewrite_spills(f: &mut IrFunc, spilled: &[VReg], next_slot: &mut u8) {
                 Instr::LoadImm { .. }
                 | Instr::StoreStatic { .. }
                 | Instr::DevRecv { .. }
+                | Instr::DcacheInvalidateAll
                 | Instr::LoadSp { .. }
                 | Instr::LoadLocal { .. }
                 | Instr::AddrOfLocal { .. } => {}
@@ -1187,6 +1196,26 @@ fn rewrite_spills(f: &mut IrFunc, spilled: &[VReg], next_slot: &mut u8) {
                     &mut pre_lines,
                     term_line,
                 ),
+                Terminator::IcacheInvalidateDelayedAndJump { cseg, target } => {
+                    reload(
+                        cseg,
+                        &slot_of,
+                        &spilled,
+                        f,
+                        &mut pre,
+                        &mut pre_lines,
+                        term_line,
+                    );
+                    reload(
+                        target,
+                        &slot_of,
+                        &spilled,
+                        f,
+                        &mut pre,
+                        &mut pre_lines,
+                        term_line,
+                    );
+                }
             }
             f.blocks[b].insts.extend(pre);
             f.blocks[b].lines.extend(pre_lines);
@@ -1243,6 +1272,7 @@ fn defs_mut(inst: &mut Instr) -> Vec<&mut VReg> {
         Instr::StoreMem { .. }
         | Instr::StoreStatic { .. }
         | Instr::DevSend { .. }
+        | Instr::DcacheInvalidateAll
         | Instr::MtsrDseg { .. }
         | Instr::Jseg { .. }
         | Instr::StoreSp { .. }

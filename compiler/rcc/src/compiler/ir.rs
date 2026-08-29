@@ -161,6 +161,10 @@ pub enum Instr {
         channel: u8,
         src: VReg,
     },
+    /// CpuV3-only: invalidate the complete write-through data cache. This is
+    /// a compiler memory barrier and becomes blocking clean-plus-invalidate
+    /// when the target implements write-back data caching.
+    DcacheInvalidateAll,
     /// CpuV3-only: write the DSEG special register (MTSR DSEG)
     MtsrDseg {
         src: VReg,
@@ -219,6 +223,12 @@ pub enum Terminator {
     /// halt with a signal value (main program exit)
     Halt {
         signal: VReg,
+    },
+    /// CpuV3-only terminal handoff. Codegen must emit the delayed complete
+    /// instruction-cache invalidate command immediately followed by JSEG.
+    IcacheInvalidateDelayedAndJump {
+        cseg: VReg,
+        target: VReg,
     },
 }
 
@@ -407,6 +417,7 @@ impl fmt::Display for Instr {
                 channel,
                 src,
             } => write!(f, "dev_send {device}, {channel}, v{src}"),
+            Instr::DcacheInvalidateAll => write!(f, "dcache_invalidate_all"),
             Instr::MtsrDseg { src } => write!(f, "mtsr_dseg v{src}"),
             Instr::Jseg { cseg, target } => write!(f, "jseg v{cseg}, v{target}"),
             Instr::LoadSp { dst, slot } => write!(f, "v{dst} = load_sp #{slot}"),
@@ -458,6 +469,9 @@ impl fmt::Display for Terminator {
             }
             Terminator::Ret { values } => write!(f, "ret [{}]", fmt_vregs(values)),
             Terminator::Halt { signal } => write!(f, "halt v{signal}"),
+            Terminator::IcacheInvalidateDelayedAndJump { cseg, target } => {
+                write!(f, "icache_invalidate_delayed_and_jump v{cseg}, v{target}")
+            }
         }
     }
 }

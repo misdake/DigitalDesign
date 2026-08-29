@@ -7,7 +7,7 @@ use super::device_abi::{
     DMA_ERROR_FLASH_RANGE, DMA_ERROR_MEMORY_RANGE, DMA_FILE_SIZE_HIGH, DMA_FILE_SIZE_LOW,
     DMA_FLASH_OFFSET_HIGH, DMA_FLASH_OFFSET_LOW, DMA_MEMORY_SIZE_HIGH, DMA_MEMORY_SIZE_LOW,
     DMA_STATUS, DMA_STATUS_BUSY, DMA_STATUS_DONE, DMA_STATUS_ERROR, DMA_STATUS_IDLE,
-    SYSCTL_INVALIDATE_DCACHE, SYSCTL_INVALIDATE_ICACHE, SYSCTL_LED, SYSCTL_UART,
+    D_INVALIDATE_ALL, ICACHE_INVALIDATE_ALL_DELAYED, SYSCTL_LED, SYSCTL_UART,
 };
 use super::loader::{DmaCommand, DmaError, DmaStatus, FlashToDramDma};
 use crate::{Device, PhysicalWordAddress, Word};
@@ -149,8 +149,8 @@ impl Device for SystemControlDevice {
 
     fn write(&mut self, _memory: &mut [Word], channel: u8, value: Word) {
         match channel {
-            SYSCTL_INVALIDATE_ICACHE => self.icache_invalidations += 1,
-            SYSCTL_INVALIDATE_DCACHE => self.dcache_invalidations += 1,
+            ICACHE_INVALIDATE_ALL_DELAYED => self.icache_invalidations += 1,
+            D_INVALIDATE_ALL => self.dcache_invalidations += 1,
             SYSCTL_LED => self.led = Some(value),
             SYSCTL_UART => self.uart.push(value as u8),
             _ => {}

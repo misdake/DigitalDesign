@@ -102,17 +102,6 @@ impl DataCache {
         Ok(())
     }
 
-    pub fn invalidate_line(&mut self, address: PhysicalWordAddress) -> Result<(), CacheError> {
-        if self.pending.is_some() {
-            return Err(CacheError::Busy);
-        }
-        let decoded = decode(address);
-        if self.valid[decoded.set] && self.tags[decoded.set] == decoded.tag {
-            self.valid[decoded.set] = false;
-        }
-        Ok(())
-    }
-
     pub fn request(&mut self, request: CpuMemoryRequest) -> Result<CacheAction, CacheError> {
         if self.pending.is_some() {
             return Err(CacheError::Busy);
@@ -334,7 +323,7 @@ mod tests {
     }
 
     #[test]
-    fn dma_can_invalidate_only_the_physical_line_it_replaced() {
+    fn full_invalidate_discards_every_resident_line() {
         let mut cache = DataCache::default();
         let address = PhysicalWordAddress::from_segment_offset(3, 0x2012);
         cache.request(CpuMemoryRequest::Read { address }).unwrap();
@@ -348,7 +337,7 @@ mod tests {
             }))
         );
 
-        cache.invalidate_line(address).unwrap();
+        cache.invalidate_all().unwrap();
         assert!(matches!(
             cache.request(CpuMemoryRequest::Read { address }),
             Ok(CacheAction::MainMemoryRequest(_))

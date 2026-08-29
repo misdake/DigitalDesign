@@ -3,12 +3,12 @@
 
 /// System-control device selected by `dev_recv(SYSTEM_CONTROL_DEVICE, channel)`
 /// and `dev_send(SYSTEM_CONTROL_DEVICE, channel, value)`.
-pub const SYSTEM_CONTROL_DEVICE: u8 = 0;
+pub const SYSTEM_CONTROL_DEVICE: u8 = cpu_v3::CACHE_MAINTENANCE_DEVICE;
 
-/// Writing any value pulses a full instruction-cache invalidation.
-pub const SYSCTL_INVALIDATE_ICACHE: u8 = 0;
-/// Writing any value pulses a full data-cache invalidation.
-pub const SYSCTL_INVALIDATE_DCACHE: u8 = 1;
+pub use cpu_v3::{
+    CACHE_MAINTENANCE_STATUS, CACHE_MAINTENANCE_STATUS_ERROR, CACHE_MAINTENANCE_STATUS_SUCCESS,
+    D_CLEAN_ALL, D_INVALIDATE_ALL, ICACHE_INVALIDATE_ALL_DELAYED,
+};
 /// The low six written bits drive the board LEDs.
 pub const SYSCTL_LED: u8 = 2;
 /// Writes queue one UART transmit byte (8N1); reads report bit 0 set while
