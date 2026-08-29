@@ -47,7 +47,7 @@ endfunction
 
 always @(posedge clk) begin
     cycles <= cycles + 1;
-    if (dut.state == 3'd6)
+    if (dut.state == 4'd7)
         drain_cycles <= drain_cycles + 1;
     if (cycles > 20000)
         $fatal(1, "testbench cycle limit exceeded");
@@ -180,6 +180,19 @@ initial begin
     read_word(32'h0000_0523, 16'h8523);
     if (line_requests != 4 || beats_served != 27)
         $fatal(1, "errored line must not have been installed");
+    read_word(32'h0000_0123, 16'h8123);
+    if (line_requests != 4)
+        $fatal(1, "second same-set line did not use the invalid way");
+
+    read_word(32'h0000_0923, 16'h8923);
+    if (line_requests != 5 || beats_served != 35)
+        $fatal(1, "third same-set line did not refill");
+    read_word(32'h0000_0523, 16'h8523);
+    if (line_requests != 5)
+        $fatal(1, "deterministic replacement evicted the wrong way");
+    read_word(32'h0000_0123, 16'h8123);
+    if (line_requests != 6 || beats_served != 43)
+        $fatal(1, "deterministic victim was not replaced");
 
     $display("DIGITAL_DESIGN_PASS");
     $finish;
