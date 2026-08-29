@@ -2,7 +2,7 @@
 //!
 //! A read miss issues one aligned line request and captures the eight ordered
 //! 32-bit response beats in a private 256-bit refill buffer. The cache then
-//! drains eight 32-bit beats from the buffer into parity-split data BSRAMs
+//! drains eight 32-bit beats from the buffer into parity/way-interleaved data BSRAMs
 //! and commits tag and valid state only after a complete error-free line, so
 //! an error or invalidate can never expose a partially installed line. Writes
 //! remain single write-through word transactions.
@@ -24,11 +24,15 @@ pub const CPU_V3_CACHE_LINE_WORDS: usize = 16;
 pub const CPU_V3_CACHE_LINE_BEATS: usize = CPU_V3_CACHE_LINE_WORDS / 2;
 pub const CPU_V3_CACHE_SETS: usize = CPU_V3_CACHE_WORDS_PER_WAY / CPU_V3_CACHE_LINE_WORDS;
 
-const fn parity_image<I: CpuV3CacheImage, const ODD: bool>() -> [u64; CPU_V3_CACHE_WORDS_PER_WAY] {
+/// Bank `b` contains words where `way XOR word_parity == b`. The initialized
+/// image occupies way zero, so its even words land in bank zero and its odd
+/// words land in bank one; the upper half reserved for way one starts clear.
+const fn interleaved_bank_image<I: CpuV3CacheImage, const BANK: bool>(
+) -> [u64; CPU_V3_CACHE_WORDS_PER_WAY] {
     let mut words = [0; CPU_V3_CACHE_WORDS_PER_WAY];
     let mut address = 0;
     while address < CPU_V3_CACHE_WORDS_PER_WAY / 2 {
-        words[address] = I::WORDS[2 * address + ODD as usize];
+        words[address] = I::WORDS[2 * address + BANK as usize];
         address += 1;
     }
     words
@@ -36,7 +40,7 @@ const fn parity_image<I: CpuV3CacheImage, const ODD: bool>() -> [u64; CPU_V3_CAC
 
 fn cache_data_image_hash<I: CpuV3CacheImage>() -> u64 {
     let mut hash = 0xcbf29ce484222325u64;
-    for byte in b"cpu-v3-parity-split-cache-data-v1"
+    for byte in b"cpu-v3-parity-way-interleaved-cache-data-v2"
         .iter()
         .copied()
         .chain([0])
@@ -50,18 +54,19 @@ fn cache_data_image_hash<I: CpuV3CacheImage>() -> u64 {
 
 #[derive(Clone, ModuleIo)]
 struct CpuV3ParitySplitCacheDataInput {
-    read_address: Wires<10>,
-    even_write_enable: Wire,
-    odd_write_enable: Wire,
+    bank_0_read_address: Wires<10>,
+    bank_1_read_address: Wires<10>,
+    bank_0_write_enable: Wire,
+    bank_1_write_enable: Wire,
     write_address: Wires<10>,
-    even_write_data: Wires<16>,
-    odd_write_data: Wires<16>,
+    bank_0_write_data: Wires<16>,
+    bank_1_write_data: Wires<16>,
 }
 
 #[derive(Clone, ModuleIo)]
 struct CpuV3ParitySplitCacheDataOutput {
-    even_read_data: Wires<16>,
-    odd_read_data: Wires<16>,
+    bank_0_read_data: Wires<16>,
+    bank_1_read_data: Wires<16>,
 }
 
 struct CpuV3ParitySplitCacheData<I>(PhantomData<I>);
@@ -99,25 +104,25 @@ impl<I: CpuV3CacheImage> Module for CpuV3ParitySplitCacheData<I> {
 
     fn verilog_source() -> Option<String> {
         let module_name = Self::verilog_identity().module_name();
-        let even = parity_image::<I, false>();
-        let odd = parity_image::<I, true>();
+        let bank_0 = interleaved_bank_image::<I, false>();
+        let bank_1 = interleaved_bank_image::<I, true>();
         let mut overrides = String::new();
         for address in 0..CPU_V3_CACHE_WORDS_PER_WAY {
-            assert!(even[address] <= u64::from(u16::MAX));
-            assert!(odd[address] <= u64::from(u16::MAX));
-            if even[address] != 0 {
+            assert!(bank_0[address] <= u64::from(u16::MAX));
+            assert!(bank_1[address] <= u64::from(u16::MAX));
+            if bank_0[address] != 0 {
                 writeln!(
                     overrides,
-                    "    even_memory[10'd{address}] = 16'h{:04x};",
-                    even[address]
+                    "    bank_0_memory[10'd{address}] = 16'h{:04x};",
+                    bank_0[address]
                 )
                 .unwrap();
             }
-            if odd[address] != 0 {
+            if bank_1[address] != 0 {
                 writeln!(
                     overrides,
-                    "    odd_memory[10'd{address}] = 16'h{:04x};",
-                    odd[address]
+                    "    bank_1_memory[10'd{address}] = 16'h{:04x};",
+                    bank_1[address]
                 )
                 .unwrap();
             }
@@ -125,37 +130,38 @@ impl<I: CpuV3CacheImage> Module for CpuV3ParitySplitCacheData<I> {
         Some(format!(
             r#"module {module_name}(
     input wire clk,
-    input wire [9:0] read_address,
-    input wire even_write_enable,
-    input wire odd_write_enable,
+    input wire [9:0] bank_0_read_address,
+    input wire [9:0] bank_1_read_address,
+    input wire bank_0_write_enable,
+    input wire bank_1_write_enable,
     input wire [9:0] write_address,
-    input wire [15:0] even_write_data,
-    input wire [15:0] odd_write_data,
-    output reg [15:0] even_read_data,
-    output reg [15:0] odd_read_data
+    input wire [15:0] bank_0_write_data,
+    input wire [15:0] bank_1_write_data,
+    output reg [15:0] bank_0_read_data,
+    output reg [15:0] bank_1_read_data
 );
 
-reg [15:0] even_memory [0:1023];
-reg [15:0] odd_memory [0:1023];
+reg [15:0] bank_0_memory [0:1023];
+reg [15:0] bank_1_memory [0:1023];
 integer init_address;
 
 initial begin
     for (init_address = 0; init_address < 1024; init_address = init_address + 1) begin
-        even_memory[init_address] = 16'h0000;
-        odd_memory[init_address] = 16'h0000;
+        bank_0_memory[init_address] = 16'h0000;
+        bank_1_memory[init_address] = 16'h0000;
     end
 {overrides}end
 
 always @(posedge clk) begin
-    even_read_data <= even_memory[read_address];
-    if (even_write_enable)
-        even_memory[write_address] <= even_write_data;
+    bank_0_read_data <= bank_0_memory[bank_0_read_address];
+    if (bank_0_write_enable)
+        bank_0_memory[write_address] <= bank_0_write_data;
 end
 
 always @(posedge clk) begin
-    odd_read_data <= odd_memory[read_address];
-    if (odd_write_enable)
-        odd_memory[write_address] <= odd_write_data;
+    bank_1_read_data <= bank_1_memory[bank_1_read_address];
+    if (bank_1_write_enable)
+        bank_1_memory[write_address] <= bank_1_write_data;
 end
 
 endmodule
@@ -319,7 +325,6 @@ enum Phase {
     #[default]
     Idle,
     Check,
-    HitRead,
     WordRequest,
     WordResponse,
     LineRequest,
@@ -466,8 +471,8 @@ impl<I: CpuV3CacheImage> Module for CpuV3DirectMappedCacheWithImage<I> {
                     }
                     state.phase = Phase::WordRequest;
                 } else if let Some(way) = hit_way {
-                    state.pending_way = way;
-                    state.phase = Phase::HitRead;
+                    state.response_data = state.data[data_index(way, set, word)];
+                    state.phase = Phase::CpuResponse;
                 } else {
                     state.pending_way = (0..CPU_V3_CACHE_WAYS)
                         .find(|way| !state.valid[*way][set])
@@ -475,11 +480,6 @@ impl<I: CpuV3CacheImage> Module for CpuV3DirectMappedCacheWithImage<I> {
                     state.refill_beat = 0;
                     state.phase = Phase::LineRequest;
                 }
-            }
-            Phase::HitRead => {
-                let (set, _, word) = decode(state.pending.address);
-                state.response_data = state.data[data_index(state.pending_way, set, word)];
-                state.phase = Phase::CpuResponse;
             }
             Phase::WordRequest if input.memory_request_ready => {
                 state.phase = Phase::WordResponse;
@@ -752,27 +752,25 @@ mod tests {
     }
 
     #[test]
-    fn cache_image_is_split_by_word_parity_and_initializes_only_way_zero() {
+    fn cache_image_is_interleaved_by_way_xor_parity_and_initializes_only_way_zero() {
         for address in 0..CPU_V3_CACHE_WORDS_PER_WAY / 2 {
             assert_eq!(
-                parity_image::<InterleavedImage, false>()[address],
+                interleaved_bank_image::<InterleavedImage, false>()[address],
                 (2 * address) as u64
             );
             assert_eq!(
-                parity_image::<InterleavedImage, true>()[address],
+                interleaved_bank_image::<InterleavedImage, true>()[address],
                 (2 * address + 1) as u64
             );
         }
-        assert!(
-            parity_image::<InterleavedImage, false>()[CPU_V3_CACHE_WORDS_PER_WAY / 2..]
-                .iter()
-                .all(|word| *word == 0)
-        );
-        assert!(
-            parity_image::<InterleavedImage, true>()[CPU_V3_CACHE_WORDS_PER_WAY / 2..]
-                .iter()
-                .all(|word| *word == 0)
-        );
+        assert!(interleaved_bank_image::<InterleavedImage, false>()
+            [CPU_V3_CACHE_WORDS_PER_WAY / 2..]
+            .iter()
+            .all(|word| *word == 0));
+        assert!(interleaved_bank_image::<InterleavedImage, true>()
+            [CPU_V3_CACHE_WORDS_PER_WAY / 2..]
+            .iter()
+            .all(|word| *word == 0));
     }
 
     #[test]

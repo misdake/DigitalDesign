@@ -1,13 +1,14 @@
 module tb;
 reg clk = 0;
-reg [9:0] read_address = 0;
-reg even_write_enable = 0;
-reg odd_write_enable = 0;
+reg [9:0] bank_0_read_address = 0;
+reg [9:0] bank_1_read_address = 0;
+reg bank_0_write_enable = 0;
+reg bank_1_write_enable = 0;
 reg [9:0] write_address = 0;
-reg [15:0] even_write_data = 0;
-reg [15:0] odd_write_data = 0;
-wire [15:0] even_read_data;
-wire [15:0] odd_read_data;
+reg [15:0] bank_0_write_data = 0;
+reg [15:0] bank_1_write_data = 0;
+wire [15:0] bank_0_read_data;
+wire [15:0] bank_1_read_data;
 integer cycles = 0;
 
 CpuV3ParitySplitCacheData dut(.*);
@@ -20,57 +21,53 @@ always @(posedge clk) begin
 end
 
 initial begin
+    // way 0: bank 0 holds the even word and bank 1 the odd word.
     @(posedge clk);
     write_address <= {1'b0, 9'd37};
-    even_write_data <= 16'h1357;
-    odd_write_data <= 16'h2468;
-    even_write_enable <= 1;
-    odd_write_enable <= 1;
+    bank_0_write_data <= 16'h1357;
+    bank_1_write_data <= 16'h2468;
+    bank_0_write_enable <= 1;
+    bank_1_write_enable <= 1;
     @(posedge clk);
-    even_write_enable <= 0;
-    odd_write_enable <= 0;
-    read_address <= {1'b0, 9'd37};
-    @(posedge clk);
-    #1;
-    if (even_read_data != 16'h1357 || odd_read_data != 16'h2468)
-        $fatal(1, "parity banks did not preserve simultaneous independent writes");
+    bank_0_write_enable <= 0;
+    bank_1_write_enable <= 0;
 
-    odd_write_data <= 16'habcd;
-    odd_write_enable <= 1;
-    @(posedge clk);
-    odd_write_enable <= 0;
-    @(posedge clk);
-    #1;
-    if (even_read_data != 16'h1357 || odd_read_data != 16'habcd)
-        $fatal(1, "odd-only write modified the even bank");
-
-    even_write_data <= 16'hef01;
-    even_write_enable <= 1;
-    @(posedge clk);
-    even_write_enable <= 0;
-    @(posedge clk);
-    #1;
-    if (even_read_data != 16'hef01 || odd_read_data != 16'habcd)
-        $fatal(1, "even-only write modified the odd bank");
-
+    // way 1 reverses parity between the banks.
     write_address <= {1'b1, 9'd37};
-    even_write_data <= 16'h5678;
-    odd_write_data <= 16'h9abc;
-    even_write_enable <= 1;
-    odd_write_enable <= 1;
+    bank_0_write_data <= 16'h9abc;
+    bank_1_write_data <= 16'h5678;
+    bank_0_write_enable <= 1;
+    bank_1_write_enable <= 1;
     @(posedge clk);
-    even_write_enable <= 0;
-    odd_write_enable <= 0;
-    read_address <= {1'b1, 9'd37};
-    @(posedge clk);
-    #1;
-    if (even_read_data != 16'h5678 || odd_read_data != 16'h9abc)
-        $fatal(1, "selected way read did not return way 1 contents");
-    read_address <= {1'b0, 9'd37};
+    bank_0_write_enable <= 0;
+    bank_1_write_enable <= 0;
+
+    // An even-word lookup reads way 0 from bank 0 and way 1 from bank 1.
+    bank_0_read_address <= {1'b0, 9'd37};
+    bank_1_read_address <= {1'b1, 9'd37};
     @(posedge clk);
     #1;
-    if (even_read_data != 16'hef01 || odd_read_data != 16'habcd)
-        $fatal(1, "way 1 write corrupted way 0 contents");
+    if (bank_0_read_data != 16'h1357 || bank_1_read_data != 16'h5678)
+        $fatal(1, "even lookup did not return both ways in one cycle");
+
+    // An odd-word lookup reverses the two read addresses.
+    bank_0_read_address <= {1'b1, 9'd37};
+    bank_1_read_address <= {1'b0, 9'd37};
+    @(posedge clk);
+    #1;
+    if (bank_0_read_data != 16'h9abc || bank_1_read_data != 16'h2468)
+        $fatal(1, "odd lookup did not return both ways in one cycle");
+
+    // A hit write touches only its selected bank.
+    write_address <= {1'b1, 9'd37};
+    bank_0_write_data <= 16'hef01;
+    bank_0_write_enable <= 1;
+    @(posedge clk);
+    bank_0_write_enable <= 0;
+    @(posedge clk);
+    #1;
+    if (bank_0_read_data != 16'hef01 || bank_1_read_data != 16'h2468)
+        $fatal(1, "single-bank write corrupted the other bank");
 
     $display("DIGITAL_DESIGN_PASS");
     $finish;

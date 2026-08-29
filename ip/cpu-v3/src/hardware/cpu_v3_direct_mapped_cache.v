@@ -33,7 +33,6 @@ module CpuV3DirectMappedCache (
 
 localparam [3:0] ST_IDLE = 0;
 localparam [3:0] ST_CHECK = 1;
-localparam [3:0] ST_HIT_READ = 2;
 localparam [3:0] ST_WORD_REQUEST = 3;
 localparam [3:0] ST_WORD_RESPONSE = 4;
 localparam [3:0] ST_LINE_REQUEST = 5;
@@ -86,27 +85,47 @@ __CACHE_TAGS__ u_tags (
 wire [31:0] drain_data = refill_buffer[drain_beat];
 wire drain_write = state == ST_LINE_DRAIN;
 wire hit_write = state == ST_CHECK && pending_write && pending_hit;
-wire even_cache_write_enable = drain_write || (hit_write && !pending_word[0]);
-wire odd_cache_write_enable = drain_write || (hit_write && pending_word[0]);
+// Interleave ways and word parity across the two BSRAMs:
+//     bank = way XOR word_parity
+// A lookup can therefore read both candidate ways at once, while a refill
+// still writes its even and odd halfwords into different banks in one cycle.
+wire hit_write_bank = hit_way ^ pending_word[0];
+wire bank_0_cache_write_enable = drain_write || (hit_write && !hit_write_bank);
+wire bank_1_cache_write_enable = drain_write || (hit_write && hit_write_bank);
 wire [9:0] cache_write_address = drain_write ?
     {pending_way, pending_set, drain_beat} : {hit_way, pending_set, pending_word[3:1]};
-wire [15:0] even_cache_write_data = drain_write ? drain_data[15:0] : pending_write_data;
-wire [15:0] odd_cache_write_data = drain_write ? drain_data[31:16] : pending_write_data;
-wire [9:0] cache_read_address = {hit_way, pending_set, pending_word[3:1]};
-wire [15:0] even_cache_read_data;
-wire [15:0] odd_cache_read_data;
-wire [15:0] cache_read_data = pending_word[0] ? odd_cache_read_data : even_cache_read_data;
+wire [15:0] bank_0_cache_write_data = drain_write ?
+    (pending_way ? drain_data[31:16] : drain_data[15:0]) : pending_write_data;
+wire [15:0] bank_1_cache_write_data = drain_write ?
+    (pending_way ? drain_data[15:0] : drain_data[31:16]) : pending_write_data;
+// Start both candidate-way reads on the request-acceptance edge. The data is
+// therefore registered and ready when ST_CHECK resolves the parallel tags.
+wire [31:0] cache_lookup_address = state == ST_IDLE ? cpu_address : pending_address;
+wire [5:0] cache_lookup_set = cache_lookup_address[9:4];
+wire [3:0] cache_lookup_word = cache_lookup_address[3:0];
+wire [9:0] bank_0_cache_read_address =
+    {cache_lookup_word[0], cache_lookup_set, cache_lookup_word[3:1]};
+wire [9:0] bank_1_cache_read_address =
+    {!cache_lookup_word[0], cache_lookup_set, cache_lookup_word[3:1]};
+wire [15:0] bank_0_cache_read_data;
+wire [15:0] bank_1_cache_read_data;
+wire [15:0] way_0_cache_read_data =
+    pending_word[0] ? bank_1_cache_read_data : bank_0_cache_read_data;
+wire [15:0] way_1_cache_read_data =
+    pending_word[0] ? bank_0_cache_read_data : bank_1_cache_read_data;
+wire [15:0] cache_read_data = hit_way ? way_1_cache_read_data : way_0_cache_read_data;
 
 __CACHE_DATA_BANKS__ u_data_banks (
     .clk(clk),
-    .read_address(cache_read_address),
-    .even_write_enable(even_cache_write_enable),
-    .odd_write_enable(odd_cache_write_enable),
+    .bank_0_read_address(bank_0_cache_read_address),
+    .bank_1_read_address(bank_1_cache_read_address),
+    .bank_0_write_enable(bank_0_cache_write_enable),
+    .bank_1_write_enable(bank_1_cache_write_enable),
     .write_address(cache_write_address),
-    .even_write_data(even_cache_write_data),
-    .odd_write_data(odd_cache_write_data),
-    .even_read_data(even_cache_read_data),
-    .odd_read_data(odd_cache_read_data)
+    .bank_0_write_data(bank_0_cache_write_data),
+    .bank_1_write_data(bank_1_cache_write_data),
+    .bank_0_read_data(bank_0_cache_read_data),
+    .bank_1_read_data(bank_1_cache_read_data)
 );
 
 assign cpu_request_ready = state == ST_IDLE;
@@ -147,17 +166,13 @@ always @(posedge clk) begin
                 if (pending_write) begin
                     state <= ST_WORD_REQUEST;
                 end else if (pending_hit) begin
-                    state <= ST_HIT_READ;
+                    response_data <= cache_read_data;
+                    state <= ST_CPU_RESPONSE;
                 end else begin
                     pending_way <= selected_victim;
                     refill_beat <= 0;
                     state <= ST_LINE_REQUEST;
                 end
-            end
-
-            ST_HIT_READ: begin
-                response_data <= cache_read_data;
-                state <= ST_CPU_RESPONSE;
             end
 
             ST_WORD_REQUEST: if (memory_request_ready)

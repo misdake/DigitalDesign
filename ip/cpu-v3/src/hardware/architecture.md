@@ -37,14 +37,16 @@ cycles for instruction or data memory.
 
 The optional fitted system places separate 4 KiB instruction and data caches
 around the core. Each cache is two-way set-associative with 64 sets and 16 words per line.
-Both ways share two one-read, one-write BSRAMs split by word parity. Parallel tag
-comparison selects one way before the even and odd banks perform their data read.
+Both ways share two one-read, one-write BSRAMs interleaved by
+`bank = way XOR word_parity`. A lookup gives each bank a different way address,
+so the synchronous data read returns both candidate ways while the parallel tag
+comparison runs; the hit way selects the corresponding registered bank result.
 Stores are write-through and do not allocate on a miss. A read miss issues one
 aligned line request; the system arbiter forwards it as one SDRAM burst
 command, holds the port while the adapter streams eight ordered 32-bit beats
 (the low half of beat `n` is word `2*n`) into the cache's private 256-bit
 refill buffer, and releases the port once the final beat is accepted. The
-cache then drains eight beats into the selected way of its even/odd data BSRAM banks and commits tag
+cache then drains eight beats into the selected way of its two interleaved data BSRAM banks and commits tag
 and valid state only after a complete error-free line, so an error or
 invalidate can never expose a partially installed line. The boot DMA keeps
 single-word transactions. Only full-cache invalidation exists; there is no

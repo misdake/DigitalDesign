@@ -104,6 +104,34 @@ task read_word;
     end
 endtask
 
+task read_hit_word;
+    input [31:0] address;
+    input [15:0] expected;
+    integer response_cycles;
+    begin
+        while (!cpu_request_ready) @(posedge clk);
+        cpu_address <= address;
+        cpu_write <= 0;
+        cpu_request_valid <= 1;
+        @(posedge clk);
+        #1;
+        cpu_request_valid <= 0;
+        response_cycles = 0;
+        while (!cpu_response_valid) begin
+            @(posedge clk);
+            #1;
+            response_cycles = response_cycles + 1;
+        end
+        if (response_cycles != 1)
+            $fatal(1, "cache hit response took %0d cycles instead of one", response_cycles);
+        if (cpu_error || cpu_read_data != expected)
+            $fatal(1, "cache hit failed at %h: %h", address, cpu_read_data);
+        cpu_response_ready <= 1;
+        @(posedge clk);
+        cpu_response_ready <= 0;
+    end
+endtask
+
 task read_word_expect_error;
     input [31:0] address;
     begin
@@ -151,8 +179,8 @@ initial begin
         $fatal(1, "miss did not refill exactly one line as eight beats");
     if (drain_cycles != 8)
         $fatal(1, "parity-split cache did not drain the line in eight cycles");
-    read_word(32'h0000_012e, 16'h812e);
-    read_word(32'h0000_012f, 16'h812f);
+    read_hit_word(32'h0000_012e, 16'h812e);
+    read_hit_word(32'h0000_012f, 16'h812f);
     if (line_requests != 1)
         $fatal(1, "line hit reached memory");
 
