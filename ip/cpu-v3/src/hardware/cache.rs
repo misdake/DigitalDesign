@@ -1,4 +1,11 @@
 //! First CpuV3 physical-address cache: direct-mapped and write-through.
+//!
+//! A read miss issues one aligned line request and captures the eight ordered
+//! 32-bit response beats in a private 256-bit refill buffer. The cache then
+//! drains sixteen 16-bit words from the buffer into its data BSRAM on its own
+//! and commits tag and valid state only after a complete error-free line, so
+//! an error or invalidate can never expose a partially installed line. Writes
+//! remain single write-through word transactions.
 
 use digital_design_circuit::{CircuitWires, Wire, Wires};
 use digital_design_hardware::{
@@ -11,6 +18,7 @@ use std::marker::PhantomData;
 
 pub const CPU_V3_CACHE_WORDS: usize = 1024;
 pub const CPU_V3_CACHE_LINE_WORDS: usize = 16;
+pub const CPU_V3_CACHE_LINE_BEATS: usize = CPU_V3_CACHE_LINE_WORDS / 2;
 pub const CPU_V3_CACHE_SETS: usize = CPU_V3_CACHE_WORDS / CPU_V3_CACHE_LINE_WORDS;
 
 type CacheData<I> = Bsram1R1Rw1024<16, I>;
@@ -118,7 +126,7 @@ pub struct CpuV3DirectMappedCacheInput {
     pub cpu_response_ready: Wire,
     pub memory_request_ready: Wire,
     pub memory_response_valid: Wire,
-    pub memory_read_data: Wires<16>,
+    pub memory_read_data: Wires<32>,
     pub memory_error: Wire,
 }
 
@@ -160,8 +168,11 @@ enum Phase {
     #[default]
     Idle,
     Check,
-    MemoryRequest,
-    MemoryResponse,
+    WordRequest,
+    WordResponse,
+    LineRequest,
+    LineReceive,
+    LineDrain,
     CpuResponse,
 }
 
@@ -178,7 +189,9 @@ pub struct CpuV3DirectMappedCacheState {
     valid: [bool; CPU_V3_CACHE_SETS],
     phase: Phase,
     pending: Pending,
-    fill_word: u8,
+    refill_buffer: [u32; CPU_V3_CACHE_LINE_BEATS],
+    refill_beat: u8,
+    drain_word: u8,
     response_data: u16,
     response_error: bool,
 }
@@ -191,7 +204,9 @@ impl Default for CpuV3DirectMappedCacheState {
             valid: [false; CPU_V3_CACHE_SETS],
             phase: Phase::Idle,
             pending: Pending::default(),
-            fill_word: 0,
+            refill_buffer: [0; CPU_V3_CACHE_LINE_BEATS],
+            refill_beat: 0,
+            drain_word: 0,
             response_data: 0,
             response_error: false,
         }
@@ -228,7 +243,6 @@ impl<I: CpuV3CacheImage> Module for CpuV3DirectMappedCacheWithImage<I> {
         _input: &Self::Input,
         output: &Self::Output,
     ) {
-        let refilling = state.phase == Phase::MemoryRequest && !state.pending.write;
         output.drive(
             circuit,
             &CpuV3DirectMappedCacheOutputValue {
@@ -236,15 +250,21 @@ impl<I: CpuV3CacheImage> Module for CpuV3DirectMappedCacheWithImage<I> {
                 cpu_response_valid: state.phase == Phase::CpuResponse,
                 cpu_read_data: u64::from(state.response_data),
                 cpu_error: state.phase == Phase::CpuResponse && state.response_error,
-                memory_request_valid: state.phase == Phase::MemoryRequest,
+                memory_request_valid: matches!(
+                    state.phase,
+                    Phase::WordRequest | Phase::LineRequest
+                ),
                 memory_write: state.pending.write,
-                memory_address: u64::from(if refilling {
-                    line_base(state.pending.address) | u32::from(state.fill_word)
-                } else {
+                memory_address: u64::from(if state.pending.write {
                     state.pending.address & 0x003f_ffff
+                } else {
+                    line_base(state.pending.address)
                 }),
                 memory_write_data: u64::from(state.pending.write_data),
-                memory_response_ready: state.phase == Phase::MemoryResponse,
+                memory_response_ready: matches!(
+                    state.phase,
+                    Phase::WordResponse | Phase::LineReceive
+                ),
             },
         );
     }
@@ -284,42 +304,62 @@ impl<I: CpuV3CacheImage> Module for CpuV3DirectMappedCacheWithImage<I> {
                     if hit {
                         state.data[set * CPU_V3_CACHE_LINE_WORDS + word] = state.pending.write_data;
                     }
-                    state.phase = Phase::MemoryRequest;
+                    state.phase = Phase::WordRequest;
                 } else if hit {
                     state.response_data = state.data[set * CPU_V3_CACHE_LINE_WORDS + word];
                     state.phase = Phase::CpuResponse;
                 } else {
-                    state.fill_word = 0;
-                    state.phase = Phase::MemoryRequest;
+                    state.refill_beat = 0;
+                    state.phase = Phase::LineRequest;
                 }
             }
-            Phase::MemoryRequest if input.memory_request_ready => {
-                state.phase = Phase::MemoryResponse;
+            Phase::WordRequest if input.memory_request_ready => {
+                state.phase = Phase::WordResponse;
             }
-            Phase::MemoryResponse if input.memory_response_valid => {
+            Phase::WordResponse if input.memory_response_valid => {
+                state.response_data = 0;
+                state.response_error = input.memory_error;
+                state.phase = Phase::CpuResponse;
+            }
+            Phase::LineRequest if input.memory_request_ready => {
+                state.refill_beat = 0;
+                state.phase = Phase::LineReceive;
+            }
+            Phase::LineReceive if input.memory_response_valid => {
                 if input.memory_error {
                     state.response_data = 0;
                     state.response_error = true;
                     state.phase = Phase::CpuResponse;
-                } else if state.pending.write {
-                    state.response_data = 0;
+                } else {
+                    state.refill_buffer[usize::from(state.refill_beat)] =
+                        input.memory_read_data as u32;
+                    if state.refill_beat as usize + 1 == CPU_V3_CACHE_LINE_BEATS {
+                        state.drain_word = 0;
+                        state.phase = Phase::LineDrain;
+                    } else {
+                        state.refill_beat += 1;
+                    }
+                }
+            }
+            Phase::LineDrain => {
+                let (set, tag, requested_word) = decode(state.pending.address);
+                let drain = usize::from(state.drain_word);
+                let beat = state.refill_buffer[drain / 2];
+                let value = if drain % 2 == 0 {
+                    beat as u16
+                } else {
+                    (beat >> 16) as u16
+                };
+                state.data[set * CPU_V3_CACHE_LINE_WORDS + drain] = value;
+                if drain == requested_word {
+                    state.response_data = value;
+                }
+                if drain + 1 == CPU_V3_CACHE_LINE_WORDS {
+                    state.tags[set] = tag;
+                    state.valid[set] = true;
                     state.phase = Phase::CpuResponse;
                 } else {
-                    let (set, tag, requested_word) = decode(state.pending.address);
-                    let fill_word = usize::from(state.fill_word);
-                    state.data[set * CPU_V3_CACHE_LINE_WORDS + fill_word] =
-                        input.memory_read_data as u16;
-                    if fill_word == requested_word {
-                        state.response_data = input.memory_read_data as u16;
-                    }
-                    if fill_word + 1 == CPU_V3_CACHE_LINE_WORDS {
-                        state.tags[set] = tag;
-                        state.valid[set] = true;
-                        state.phase = Phase::CpuResponse;
-                    } else {
-                        state.fill_word += 1;
-                        state.phase = Phase::MemoryRequest;
-                    }
+                    state.drain_word += 1;
                 }
             }
             Phase::CpuResponse if input.cpu_response_ready => state.phase = Phase::Idle,
@@ -370,7 +410,7 @@ impl<I: CpuV3CacheImage> Module for CpuV3DirectMappedCacheWithImage<I> {
 }
 
 const fn line_base(address: u32) -> u32 {
-    address & !((CPU_V3_CACHE_LINE_WORDS as u32) - 1)
+    address & !((CPU_V3_CACHE_LINE_WORDS as u32) - 1) & 0x003f_ffff
 }
 
 const fn decode(address: u32) -> (usize, u16, usize) {
@@ -385,14 +425,55 @@ mod tests {
     use super::*;
     use digital_design_circuit::{build_circuit, Circuit};
     use digital_design_hardware::{ResourceAmount, ResourceKind, VerilogProject};
-    use std::collections::HashMap;
+    use std::collections::{HashMap, VecDeque};
+
+    /// A line-serving memory model behind the cache port: a read request
+    /// returns eight ordered 32-bit beats (low half = even word), a write
+    /// request returns one completion beat.
+    struct MemoryModel {
+        words: HashMap<u32, u16>,
+        beats: VecDeque<(u32, bool)>,
+        requests: usize,
+        /// Beat index within a line response that carries an error instead.
+        error_on_beat: Option<usize>,
+    }
+
+    impl MemoryModel {
+        fn new() -> Self {
+            Self {
+                words: HashMap::new(),
+                beats: VecDeque::new(),
+                requests: 0,
+                error_on_beat: None,
+            }
+        }
+
+        fn accept(&mut self, write: bool, address: u32, write_data: u16) {
+            self.requests += 1;
+            if write {
+                self.words.insert(address, write_data);
+                self.beats.push_back((0, false));
+            } else {
+                for beat in 0..CPU_V3_CACHE_LINE_BEATS as u32 {
+                    let low = self.word(address + 2 * beat);
+                    let high = self.word(address + 2 * beat + 1);
+                    let error = self.error_on_beat == Some(beat as usize);
+                    self.beats.push_back((u32::from(low) | u32::from(high) << 16, error));
+                }
+            }
+        }
+
+        fn word(&self, address: u32) -> u16 {
+            self.words.get(&address).copied().unwrap_or(0)
+        }
+    }
 
     fn drive(
         circuit: &mut Circuit,
         input: &CpuV3DirectMappedCacheInput,
         cpu_request: Option<(bool, u32, u16)>,
         cpu_response_ready: bool,
-        memory_response: Option<(u16, bool)>,
+        memory_response: Option<(u32, bool)>,
         invalidate_all: bool,
     ) {
         let (cpu_write, cpu_address, cpu_write_data) = cpu_request.unwrap_or_default();
@@ -418,21 +499,20 @@ mod tests {
         circuit: &mut Circuit,
         input: &CpuV3DirectMappedCacheInput,
         output: &CpuV3DirectMappedCacheOutput,
-        memory: &mut HashMap<u32, u16>,
+        memory: &mut MemoryModel,
         write: bool,
         address: u32,
         write_data: u16,
     ) -> (u16, bool, usize) {
+        let requests_before = memory.requests;
         let mut cpu_request = Some((write, address, write_data));
-        let mut memory_response = None;
-        let mut memory_requests = 0;
         for _ in 0..300 {
             drive(
                 circuit,
                 input,
                 cpu_request,
                 false,
-                memory_response.take(),
+                memory.beats.pop_front(),
                 false,
             );
             circuit.execute_gates();
@@ -441,18 +521,22 @@ mod tests {
                 cpu_request = None;
             }
             if value.memory_request_valid {
-                memory_requests += 1;
-                let memory_address = value.memory_address as u32;
-                memory_response = Some(if value.memory_write {
-                    memory.insert(memory_address, value.memory_write_data as u16);
-                    (0, false)
-                } else {
-                    (memory.get(&memory_address).copied().unwrap_or(0), false)
-                });
+                memory.accept(
+                    value.memory_write,
+                    value.memory_address as u32,
+                    value.memory_write_data as u16,
+                );
             }
             if value.cpu_response_valid {
-                let result = (value.cpu_read_data as u16, value.cpu_error, memory_requests);
-                drive(circuit, input, None, true, memory_response.take(), false);
+                let result = (
+                    value.cpu_read_data as u16,
+                    value.cpu_error,
+                    memory.requests - requests_before,
+                );
+                // An error-terminated line response drops the model's
+                // unsent beats, exactly like the arbiter drops them.
+                memory.beats.clear();
+                drive(circuit, input, None, true, None, false);
                 circuit.clock_tick();
                 return result;
             }
@@ -461,25 +545,49 @@ mod tests {
         panic!("cache transaction did not complete")
     }
 
-    #[test]
-    fn miss_hit_write_through_conflict_and_full_invalidate_follow_physical_tags() {
-        let (mut circuit, (input, output)) = build_circuit(|| {
+    fn fixture() -> (
+        Circuit,
+        CpuV3DirectMappedCacheInput,
+        CpuV3DirectMappedCacheOutput,
+    ) {
+        let (circuit, (input, output)) = build_circuit(|| {
             let input = CpuV3DirectMappedCacheInput::allocate();
             let output = CpuV3DirectMappedCache::emu(&input);
             (input, output)
         });
-        let mut memory = HashMap::new();
+        (circuit, input, output)
+    }
+
+    #[test]
+    fn miss_refills_one_line_through_eight_beats_and_hits_afterwards() {
+        let (mut circuit, input, output) = fixture();
+        let mut memory = MemoryModel::new();
         for address in 0x120..0x130 {
-            memory.insert(address, (0x8000 | address) as u16);
+            memory.words.insert(address, (0x8000 | address) as u16);
         }
         assert_eq!(
             transact(&mut circuit, &input, &output, &mut memory, false, 0x123, 0),
-            (0x8123, false, 16)
+            (0x8123, false, 1)
         );
+        // Even and odd words come from the low and high beat halves.
         assert_eq!(
             transact(&mut circuit, &input, &output, &mut memory, false, 0x12e, 0),
             (0x812e, false, 0)
         );
+        assert_eq!(
+            transact(&mut circuit, &input, &output, &mut memory, false, 0x12f, 0),
+            (0x812f, false, 0)
+        );
+    }
+
+    #[test]
+    fn write_through_conflict_and_full_invalidate_follow_physical_tags() {
+        let (mut circuit, input, output) = fixture();
+        let mut memory = MemoryModel::new();
+        for address in 0x120..0x130 {
+            memory.words.insert(address, (0x8000 | address) as u16);
+        }
+        transact(&mut circuit, &input, &output, &mut memory, false, 0x123, 0);
         assert_eq!(
             transact(
                 &mut circuit,
@@ -492,7 +600,7 @@ mod tests {
             ),
             (0, false, 1)
         );
-        assert_eq!(memory[&0x123], 0x4567);
+        assert_eq!(memory.words[&0x123], 0x4567);
         assert_eq!(
             transact(&mut circuit, &input, &output, &mut memory, false, 0x123, 0),
             (0x4567, false, 0)
@@ -502,30 +610,47 @@ mod tests {
         circuit.clock_tick();
         assert_eq!(
             transact(&mut circuit, &input, &output, &mut memory, false, 0x123, 0),
-            (0x4567, false, 16)
+            (0x4567, false, 1)
         );
 
         for address in 0x520..0x530 {
-            memory.insert(address, (0x2000 | address) as u16);
+            memory.words.insert(address, (0x2000 | address) as u16);
         }
         assert_eq!(
             transact(&mut circuit, &input, &output, &mut memory, false, 0x523, 0),
-            (0x2523, false, 16)
+            (0x2523, false, 1)
         );
         assert_eq!(
             transact(&mut circuit, &input, &output, &mut memory, false, 0x123, 0),
-            (0x4567, false, 16)
+            (0x4567, false, 1)
+        );
+    }
+
+    #[test]
+    fn refill_error_aborts_without_installing_a_partial_line() {
+        let (mut circuit, input, output) = fixture();
+        let mut memory = MemoryModel::new();
+        for address in 0x120..0x130 {
+            memory.words.insert(address, (0x8000 | address) as u16);
+        }
+        memory.error_on_beat = Some(3);
+        assert_eq!(
+            transact(&mut circuit, &input, &output, &mut memory, false, 0x123, 0),
+            (0, true, 1)
+        );
+        // The failed line never became valid: the next read misses again and
+        // the memory observes one more line request.
+        memory.error_on_beat = None;
+        assert_eq!(
+            transact(&mut circuit, &input, &output, &mut memory, false, 0x123, 0),
+            (0x8123, false, 1)
         );
     }
 
     #[test]
     fn address_beyond_fitted_physical_memory_faults_without_downstream_io() {
-        let (mut circuit, (input, output)) = build_circuit(|| {
-            let input = CpuV3DirectMappedCacheInput::allocate();
-            let output = CpuV3DirectMappedCache::emu(&input);
-            (input, output)
-        });
-        let mut memory = HashMap::new();
+        let (mut circuit, input, output) = fixture();
+        let mut memory = MemoryModel::new();
         assert_eq!(
             transact(
                 &mut circuit,

@@ -18,7 +18,7 @@ __RESET__ u_reset(.clk(clk),.external_reset(|buttons),.clock_ready(sdram_init_do
 wire ireq,iresp_ready; wire [31:0] iaddr; wire [15:0] idata;
 wire ireq_ready,iresp_valid,ierror;
 wire im_req,im_ready,im_resp,im_resp_ready,im_error;
-wire [21:0] im_addr; wire [15:0] im_rdata;
+wire [21:0] im_addr; wire [31:0] im_rdata;
 __ICACHE__ u_icache(.clk(clk),.reset(reset),.invalidate_all(1'b0),
  .cpu_request_valid(ireq),.cpu_write(1'b0),.cpu_address(iaddr),.cpu_write_data(16'b0),.cpu_response_ready(iresp_ready),
  .memory_request_ready(im_ready),.memory_response_valid(im_resp),.memory_read_data(im_rdata),.memory_error(im_error),
@@ -27,7 +27,7 @@ __ICACHE__ u_icache(.clk(clk),.reset(reset),.invalidate_all(1'b0),
 
 wire dreq,dwrite,dresp_ready,dreq_ready,dresp_valid; wire [31:0] daddr;
 wire [15:0] dwdata,drdata; wire derror;
-wire dm_req,dm_write,dm_ready,dm_resp,dm_resp_ready,dm_error; wire [21:0] dm_addr; wire [15:0] dm_wdata,dm_rdata;
+wire dm_req,dm_write,dm_ready,dm_resp,dm_resp_ready,dm_error; wire [21:0] dm_addr; wire [15:0] dm_wdata; wire [31:0] dm_rdata;
 __DCACHE__ u_dcache(.clk(clk),.reset(reset),.invalidate_all(1'b0),
  .cpu_request_valid(dreq),.cpu_write(dwrite),.cpu_address(daddr),.cpu_write_data(dwdata),.cpu_response_ready(dresp_ready),
  .memory_request_ready(dm_ready),.memory_response_valid(dm_resp),.memory_read_data(dm_rdata),.memory_error(dm_error),

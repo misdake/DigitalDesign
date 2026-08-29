@@ -32,7 +32,27 @@ Updated: 2026-08-29
   Gowin PnR plus artifact audit passed. CPU V3 SDRAM and boot builds each still use four BSRAM blocks
   (2 SDPB + 2 pROM); at the 54 MHz constraint their reported Fmax is 55.958 MHz and 55.435 MHz with
   zero setup/hold TNS. No board programming was performed.
-- Stages 1-11: not started.
+- Stage 1: complete (2026-08-29). Each cache now issues one aligned line request per read miss;
+  the arbiter owns the SDRAM word port for the whole line, pairs sixteen word reads into eight
+  ordered 32-bit beats (the low half of beat n is word 2*n) delivered into the cache's private
+  flip-flop 256-bit refill buffer, and releases the port once the final beat is accepted; the
+  cache then drains sixteen words into its data BSRAM privately and commits tag/valid only after
+  a complete error-free line, so an error or invalidate can never expose a partially installed
+  line. An error beat terminates the line response early and the arbiter recovers for the next
+  request. Writes and the boot DMA stay single-word transactions; the SDRAM adapter still issues
+  sixteen word reads per line (the real burst is Stage 2). The refill buffer carries an explicit
+  `syn_ramstyle = "registers"` attribute after Gowin first inferred it as SSRAM. Fixed the stale
+  stage1 manifest memory size (1346 -> 1332 bytes) left over from Stage 0 and the outdated
+  "invalidate / snoop" labels in the structure diagram. Acceptance passed: cache and arbiter
+  emu/NAND tests cover line streaming, beat pairing, backpressure, error termination, priority,
+  and reset; the cache Icarus testbench verifies eight-beat refill, hits, write-through,
+  invalidate, and error recovery; the full two-stage flash boot, display, and SDRAM system
+  Icarus tests passed; workspace tests, strict workspace Clippy, layering, source hygiene, and
+  the boot package byte-for-byte check passed; full Gowin PnR plus artifact audit passed. BSRAM
+  use is unchanged at four blocks per system (2 SDPB + 2 pROM) with 56 RAM16 cells; at the 54 MHz
+  constraint the boot and SDRAM builds report Fmax 57.127 MHz and 62.440 MHz. Board validation
+  was intentionally skipped: no physical evidence is required for this stage.
+- Stages 2-11: not started.
 
 ## Ordered major tasks
 
