@@ -45,7 +45,7 @@ reg pending_write = 0;
 reg [31:0] pending_address = 0;
 reg [15:0] pending_write_data = 0;
 reg [2:0] refill_beat = 0;
-reg [3:0] drain_word = 0;
+reg [2:0] drain_beat = 0;
 // The refill buffer is plain flip-flops, not inferred RAM: it is the future
 // CPU/DRAM clock-domain crossing structure and must stay a register array.
 (* syn_ramstyle = "registers" *) reg [31:0] refill_buffer [0:7];
@@ -60,7 +60,7 @@ wire [11:0] pending_tag = pending_address[21:10];
 wire [3:0] pending_word = pending_address[3:0];
 wire [11:0] tag_read_data;
 wire pending_hit = valid[pending_set] && tag_read_data == pending_tag;
-wire drain_last = drain_word == 15;
+wire drain_last = drain_beat == 7;
 wire tag_write_enable = state == ST_LINE_DRAIN && drain_last;
 
 __CACHE_TAGS__ u_tags (
@@ -71,27 +71,32 @@ __CACHE_TAGS__ u_tags (
     .read_data(tag_read_data)
 );
 
-wire [31:0] drain_beat = refill_buffer[drain_word[3:1]];
-wire [15:0] drain_data = drain_word[0] ? drain_beat[31:16] : drain_beat[15:0];
+wire [31:0] drain_data = refill_buffer[drain_beat];
 wire drain_write = state == ST_LINE_DRAIN;
 wire hit_write = state == ST_CHECK && pending_write && pending_hit;
-wire cache_write_enable = drain_write || hit_write;
+wire even_cache_write_enable = drain_write || (hit_write && !pending_word[0]);
+wire odd_cache_write_enable = drain_write || (hit_write && pending_word[0]);
 wire [9:0] cache_write_address = drain_write ?
-    {pending_set, drain_word} : pending_address[9:0];
-wire [15:0] cache_write_data = drain_write ? drain_data : pending_write_data;
+    {1'b0, pending_set, drain_beat} : {1'b0, pending_set, pending_word[3:1]};
+wire [15:0] even_cache_write_data = drain_write ? drain_data[15:0] : pending_write_data;
+wire [15:0] odd_cache_write_data = drain_write ? drain_data[31:16] : pending_write_data;
 wire [9:0] cache_read_address = state == ST_IDLE ?
-    cpu_address[9:0] : pending_address[9:0];
-wire [15:0] cache_read_data;
-wire [15:0] unused_cache_rw_data;
+    {1'b0, cpu_address[9:4], cpu_address[3:1]} :
+    {1'b0, pending_set, pending_word[3:1]};
+wire [15:0] even_cache_read_data;
+wire [15:0] odd_cache_read_data;
+wire [15:0] cache_read_data = pending_word[0] ? odd_cache_read_data : even_cache_read_data;
 
-__CACHE_DATA__ u_data (
+__CACHE_DATA_BANKS__ u_data_banks (
     .clk(clk),
     .read_address(cache_read_address),
-    .rw_write_enable(cache_write_enable),
-    .rw_address(cache_write_address),
-    .rw_write_data(cache_write_data),
-    .read_data(cache_read_data),
-    .rw_read_data(unused_cache_rw_data)
+    .even_write_enable(even_cache_write_enable),
+    .odd_write_enable(odd_cache_write_enable),
+    .write_address(cache_write_address),
+    .even_write_data(even_cache_write_data),
+    .odd_write_data(odd_cache_write_data),
+    .even_read_data(even_cache_read_data),
+    .odd_read_data(odd_cache_read_data)
 );
 
 assign cpu_request_ready = state == ST_IDLE;
@@ -160,7 +165,7 @@ always @(posedge clk) begin
                 end else begin
                     refill_buffer[refill_beat] <= memory_read_data;
                     if (refill_beat == 7) begin
-                        drain_word <= 0;
+                        drain_beat <= 0;
                         state <= ST_LINE_DRAIN;
                     end else begin
                         refill_beat <= refill_beat + 1'b1;
@@ -169,13 +174,13 @@ always @(posedge clk) begin
             end
 
             ST_LINE_DRAIN: begin
-                if (drain_word == pending_word)
-                    response_data <= drain_data;
+                if (drain_beat == pending_word[3:1])
+                    response_data <= pending_word[0] ? drain_data[31:16] : drain_data[15:0];
                 if (drain_last) begin
                     valid[pending_set] <= 1;
                     state <= ST_CPU_RESPONSE;
                 end else begin
-                    drain_word <= drain_word + 1'b1;
+                    drain_beat <= drain_beat + 1'b1;
                 end
             end
 

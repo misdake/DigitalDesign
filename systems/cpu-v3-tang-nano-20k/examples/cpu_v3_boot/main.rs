@@ -419,6 +419,7 @@ mod tests {
         assert_eq!(project.resources.claimed[&ResourceKind::SdrSdramDevice], 1);
         assert_eq!(project.resources.claimed[&ResourceKind::SpiFlashDevice], 1);
         assert_eq!(project.resources.claimed[&ResourceKind::Pll], 1);
+        assert_eq!(project.resources.claimed[&ResourceKind::Bsram18K], 6);
     }
 
     #[test]

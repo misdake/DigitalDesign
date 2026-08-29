@@ -19,62 +19,16 @@ Updated: 2026-08-29
 
 ## Current implementation progress
 
-- Stage 0: complete (2026-08-29). Removed the cache snoop ports, tied-zero wiring, architecture
-  `invalidate_line` API, and per-line tests. Frozen the semantic global-maintenance ABI and DRAM-
-  visibility ownership terminology; `D_CLEAN_ALL` and final status remain reserved and unimplemented
-  until dirty state exists. Added semantic RCC cache APIs, represented the delayed I-cache invalidate
-  plus JSEG as one terminal compiler IR operation, and updated both boot handoffs to perform
-  `D_INVALIDATE_ALL`, prepare DSEG/registers, then emit adjacent
-  `ICACHE_INVALIDATE_ALL_DELAYED; JSEG` words. Updated the generated Stage0/Flash baselines.
-  Acceptance passed: forbidden-interface repository search was empty; workspace tests and strict
-  workspace Clippy passed; layering, source-hygiene, and diff checks passed; cache and system-control
-  Icarus tests passed; Stage0/Stage1 compiled-image adjacency and end-to-end boot tests passed; full
-  Gowin PnR plus artifact audit passed. CPU V3 SDRAM and boot builds each still use four BSRAM blocks
-  (2 SDPB + 2 pROM); at the 54 MHz constraint their reported Fmax is 55.958 MHz and 55.435 MHz with
-  zero setup/hold TNS. No board programming was performed.
-- Stage 1: complete (2026-08-29). Each cache now issues one aligned line request per read miss;
-  the arbiter owns the SDRAM word port for the whole line, pairs sixteen word reads into eight
-  ordered 32-bit beats (the low half of beat n is word 2*n) delivered into the cache's private
-  flip-flop 256-bit refill buffer, and releases the port once the final beat is accepted; the
-  cache then drains sixteen words into its data BSRAM privately and commits tag/valid only after
-  a complete error-free line, so an error or invalidate can never expose a partially installed
-  line. An error beat terminates the line response early and the arbiter recovers for the next
-  request. Writes and the boot DMA stay single-word transactions; the SDRAM adapter still issues
-  sixteen word reads per line (the real burst is Stage 2). The refill buffer carries an explicit
-  `syn_ramstyle = "registers"` attribute after Gowin first inferred it as SSRAM. Fixed the stale
-  stage1 manifest memory size (1346 -> 1332 bytes) left over from Stage 0 and the outdated
-  "invalidate / snoop" labels in the structure diagram. Acceptance passed: cache and arbiter
-  emu/NAND tests cover line streaming, beat pairing, backpressure, error termination, priority,
-  and reset; the cache Icarus testbench verifies eight-beat refill, hits, write-through,
-  invalidate, and error recovery; the full two-stage flash boot, display, and SDRAM system
-  Icarus tests passed; workspace tests, strict workspace Clippy, layering, source hygiene, and
-  the boot package byte-for-byte check passed; full Gowin PnR plus artifact audit passed. BSRAM
-  use is unchanged at four blocks per system (2 SDPB + 2 pROM) with 56 RAM16 cells; at the 54 MHz
-  constraint the boot and SDRAM builds report Fmax 57.127 MHz and 62.440 MHz. Board validation
-  was intentionally skipped: no physical evidence is required for this stage.
-- Stage 2: complete (2026-08-29). One aligned cache-line miss now produces exactly one SDRAM
-  command sequence: the arbiter forwards a single line request and the adapter issues one
-  ACTIVE + READ with burst length 7, streaming eight ordered 32-bit beats (with `last` and
-  `error`) straight through the arbiter into the cache's refill buffer. The arbiter reverted to
-  combinational request forwarding with ownership held from accept until the accepted beat
-  carrying `last` (or any error beat); the Stage 1 word-pairing sequencer is gone. The word port
-  (`TangNano20KSdramWordPort`) gained a `read_line` request flag, a 32-bit read bus, and
-  `response_last`; word writes and word reads keep their held response. The display SDRAM
-  adapter's CPU port gained the same line-burst path. Burst beats cannot be backpressured by the
-  fitted Controller HS, so line beats are documented and tested as un-stallable stream beats; a
-  due refresh never interrupts a burst (it waits for the transaction boundary). The system
-  testbench SDRAM models now serve `burst_length + 1` beats and fatally reject any word read
-  reaching the adapter. Acceptance passed: cache, arbiter (emu/NAND), word-port, and
-  display-port tests cover the burst shape, beat ordering, `last`, write completion, priority,
-  backpressure, and error release; the cache Icarus testbench still proves no partial line is
-  installed on error; the two-stage flash boot, SDRAM, and display system Icarus tests passed
-  (the boot test also asserts that no word read and at least one line burst reach the adapter);
-  workspace tests, strict Clippy, layering, source hygiene, and the boot package byte-for-byte
-  check passed; full Gowin PnR plus artifact audit passed. BSRAM use is unchanged at four blocks
-  per system (2 SDPB + 2 pROM) with 56 RAM16 cells; at the 54 MHz constraint the boot and SDRAM
-  builds report Fmax 55.327 MHz and 56.090 MHz. Board validation was intentionally skipped: no
-  physical evidence is required for this stage.
-- Stages 3-11: not started.
+| Stage | State | Result | Boot / SDRAM PnR at 54 MHz |
+| --- | --- | --- | --- |
+| 0 | Complete, 2026-08-29 | Removed per-line snoop/invalidate; froze global maintenance and boot-handoff semantics. | 4 BSRAM; 55.435 / 55.958 MHz |
+| 1 | Complete, 2026-08-29 | Added private 256-bit refill buffers and complete-line commit. | 4 BSRAM; 57.127 / 62.440 MHz |
+| 2 | Complete, 2026-08-29 | Replaced serialized reads with one real `8 x 32-bit` SDRAM burst. | 4 BSRAM; 55.327 / 56.090 MHz |
+| 3 | Complete, 2026-08-29 | Split each cache into even/odd BSRAM banks; initialization contents are split by word parity and refill drain is eight cycles. | 6 BSRAM; 54.492 / 54.261 MHz |
+| 4-11 | Not started | See the ordered tasks and detailed stage sections below. | - |
+
+Every completed stage passed its targeted RTL/system tests, workspace quality gates, Gowin PnR,
+and strict artifact resource audit. Board programming was not required and was not performed.
 
 ## Ordered major tasks
 
