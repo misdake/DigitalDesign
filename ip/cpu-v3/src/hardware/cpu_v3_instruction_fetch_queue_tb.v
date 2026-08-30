@@ -16,6 +16,9 @@ wire core_error;
 wire memory_request_valid;
 wire [31:0] memory_address;
 wire memory_response_ready;
+wire prefetch_request_valid;
+wire [31:0] prefetch_address;
+wire prefetch_cancel;
 
 CpuV3InstructionFetchQueue dut(.*);
 always #5 clk = ~clk;
@@ -24,6 +27,9 @@ integer cycles = 0;
 integer accepts = 0;
 integer previous_accept_cycle = -1;
 integer consecutive_accepts = 0;
+integer prefetch_candidates = 0;
+integer prefetch_cancels = 0;
+reg [31:0] last_prefetch_address = 0;
 
 function [15:0] word_pattern;
     input [31:0] address;
@@ -42,6 +48,12 @@ always @(posedge clk) begin
             consecutive_accepts <= consecutive_accepts + 1;
         previous_accept_cycle <= cycles;
     end
+    if (prefetch_request_valid) begin
+        prefetch_candidates <= prefetch_candidates + 1;
+        last_prefetch_address <= prefetch_address;
+    end
+    if (prefetch_cancel)
+        prefetch_cancels <= prefetch_cancels + 1;
 end
 
 always @(negedge clk) begin
@@ -66,6 +78,28 @@ task consume;
     end
 endtask
 
+task consume_redirect_fast;
+    input [31:0] address;
+    integer redirect_cycle;
+    begin
+        core_address <= address;
+        core_request_valid <= 1;
+        #1;
+        if (!memory_request_valid || memory_address != address)
+            $fatal(1, "redirect did not issue its target lookup immediately");
+        redirect_cycle = cycles;
+        while (!core_request_ready) @(negedge clk);
+        if (cycles - redirect_cycle > 2)
+            $fatal(1, "redirect response bypass took %0d cycles", cycles - redirect_cycle);
+        if (!core_response_valid || core_error || core_read_data != word_pattern(address))
+            $fatal(1, "fast redirect returned stale/wrong word at %h: %h", address,
+                   core_read_data);
+        @(posedge clk);
+        #1;
+        core_request_valid <= 0;
+    end
+endtask
+
 initial begin
     repeat (2) @(posedge clk);
     reset <= 0;
@@ -77,7 +111,7 @@ initial begin
         $fatal(1, "fetch queue did not issue consecutive memory lookups");
 
     // Redirect while old sequential words can still be queued or outstanding.
-    consume(32'h0002_2000);
+    consume_redirect_fast(32'h0002_2000);
     consume(32'h0002_2001);
 
     // Invalidation toggles the epoch; old responses must be drained, not used.
@@ -116,6 +150,12 @@ initial begin
     @(posedge clk);
     #1;
     core_request_valid <= 0;
+
+    consume(32'h0005_500a);
+    if (prefetch_candidates != 1 || last_prefetch_address != 32'h0005_5010)
+        $fatal(1, "real word-10 progress did not nominate the next line");
+    if (prefetch_cancels == 0)
+        $fatal(1, "redirects did not cancel obsolete prefetch work");
 
     $display("DIGITAL_DESIGN_PASS");
     $finish;

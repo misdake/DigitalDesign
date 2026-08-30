@@ -275,9 +275,12 @@ impl Module for CpuV3CacheTagRam {
 }
 
 #[derive(Clone, ModuleIo)]
-pub struct CpuV3DirectMappedCacheInput {
+pub struct CpuV3TwoWayCacheInput {
     pub reset: Wire,
     pub invalidate_all: Wire,
+    pub prefetch_request_valid: Wire,
+    pub prefetch_address: Wires<32>,
+    pub prefetch_cancel: Wire,
     pub cpu_request_valid: Wire,
     pub cpu_write: Wire,
     pub cpu_address: Wires<32>,
@@ -290,7 +293,7 @@ pub struct CpuV3DirectMappedCacheInput {
 }
 
 #[derive(Clone, ModuleIo)]
-pub struct CpuV3DirectMappedCacheOutput {
+pub struct CpuV3TwoWayCacheOutput {
     pub cpu_request_ready: Wire,
     pub cpu_response_valid: Wire,
     pub cpu_read_data: Wires<16>,
@@ -300,12 +303,16 @@ pub struct CpuV3DirectMappedCacheOutput {
     pub memory_address: Wires<22>,
     pub memory_write_data: Wires<16>,
     pub memory_response_ready: Wire,
+    pub prefetch_issued: Wires<32>,
+    pub prefetch_useful: Wires<32>,
+    pub prefetch_useless: Wires<32>,
+    pub prefetch_dropped: Wires<32>,
 }
 
-pub struct CpuV3DirectMappedCacheWithImage<I>(PhantomData<I>);
-pub type CpuV3DirectMappedCache = CpuV3DirectMappedCacheWithImage<ZeroBsramImage>;
+pub struct CpuV3TwoWayCacheWithImage<I>(PhantomData<I>);
+pub type CpuV3TwoWayCache = CpuV3TwoWayCacheWithImage<ZeroBsramImage>;
 
-impl<I: CpuV3CacheImage> HardwareIdentity for CpuV3DirectMappedCacheWithImage<I> {
+impl<I: CpuV3CacheImage> HardwareIdentity for CpuV3TwoWayCacheWithImage<I> {
     const TARGET_RESOURCE_LEAF: bool = false;
 
     fn verilog_identity() -> VerilogIdentity {
@@ -322,61 +329,81 @@ impl<I: CpuV3CacheImage> HardwareIdentity for CpuV3DirectMappedCacheWithImage<I>
     }
 }
 
-#[derive(Clone, Copy, Default, Eq, PartialEq)]
-enum Phase {
+#[derive(Clone, Copy, Default, Eq, PartialEq, Debug)]
+enum State {
     #[default]
     Idle,
-    Check,
     WordRequest,
     WordResponse,
     LineRequest,
     LineReceive,
     LineDrain,
-    CpuResponse,
 }
 
 #[derive(Clone, Copy, Default)]
 struct Pending {
+    is_prefetch: bool,
     write: bool,
     address: u32,
     write_data: u16,
 }
 
-pub struct CpuV3DirectMappedCacheState {
+#[derive(Clone)]
+pub struct CpuV3TwoWayCacheState {
     data: Box<[u16; CPU_V3_CACHE_WORDS]>,
     tags: [[u16; CPU_V3_CACHE_SETS]; CPU_V3_CACHE_WAYS],
     valid: [[bool; CPU_V3_CACHE_SETS]; CPU_V3_CACHE_WAYS],
+    prefetched: [[bool; CPU_V3_CACHE_SETS]; CPU_V3_CACHE_WAYS],
     victim: [usize; CPU_V3_CACHE_SETS],
     pending_way: usize,
-    phase: Phase,
+    state: State,
+    lookup_valid: bool,
     pending: Pending,
     refill_buffer: [u32; CPU_V3_CACHE_LINE_BEATS],
     refill_beat: u8,
     drain_beat: u8,
     response_data: u16,
     response_error: bool,
+    response_valid: bool,
+    prefetch_pending: Option<u32>,
+    refill_discard: bool,
+    prefetch_armed: bool,
+    prefetch_issued: u32,
+    prefetch_useful: u32,
+    prefetch_useless: u32,
+    prefetch_dropped: u32,
 }
 
-impl Default for CpuV3DirectMappedCacheState {
+impl Default for CpuV3TwoWayCacheState {
     fn default() -> Self {
         Self {
             data: Box::new([0; CPU_V3_CACHE_WORDS]),
             tags: [[0; CPU_V3_CACHE_SETS]; CPU_V3_CACHE_WAYS],
             valid: [[false; CPU_V3_CACHE_SETS]; CPU_V3_CACHE_WAYS],
+            prefetched: [[false; CPU_V3_CACHE_SETS]; CPU_V3_CACHE_WAYS],
             victim: [0; CPU_V3_CACHE_SETS],
             pending_way: 0,
-            phase: Phase::Idle,
+            state: State::Idle,
+            lookup_valid: false,
             pending: Pending::default(),
             refill_buffer: [0; CPU_V3_CACHE_LINE_BEATS],
             refill_beat: 0,
             drain_beat: 0,
             response_data: 0,
             response_error: false,
+            response_valid: false,
+            prefetch_pending: None,
+            refill_discard: false,
+            prefetch_armed: false,
+            prefetch_issued: 0,
+            prefetch_useful: 0,
+            prefetch_useless: 0,
+            prefetch_dropped: 0,
         }
     }
 }
 
-impl CpuV3DirectMappedCacheState {
+impl CpuV3TwoWayCacheState {
     fn initialized<I: CpuV3CacheImage>() -> Self {
         let mut state = Self::default();
         for (target, source) in state.data[..CPU_V3_CACHE_WORDS_PER_WAY]
@@ -392,34 +419,49 @@ impl CpuV3DirectMappedCacheState {
     }
 }
 
-impl<I: CpuV3CacheImage> Module for CpuV3DirectMappedCacheWithImage<I> {
-    type Input = CpuV3DirectMappedCacheInput;
-    type Output = CpuV3DirectMappedCacheOutput;
-    type EmuState = CpuV3DirectMappedCacheState;
+impl<I: CpuV3CacheImage> Module for CpuV3TwoWayCacheWithImage<I> {
+    type Input = CpuV3TwoWayCacheInput;
+    type Output = CpuV3TwoWayCacheOutput;
+    type EmuState = CpuV3TwoWayCacheState;
 
     const USES_MAIN_CLOCK: bool = true;
 
     fn create_emu(_input: &Self::Input, _output: &Self::Output) -> Self::EmuState {
-        CpuV3DirectMappedCacheState::initialized::<I>()
+        CpuV3TwoWayCacheState::initialized::<I>()
     }
 
     fn execute_emu(
         state: &mut Self::EmuState,
         circuit: &mut CircuitWires,
-        _input: &Self::Input,
+        input: &Self::Input,
         output: &Self::Output,
     ) {
+        let input = input.sample(circuit);
+        let (set, tag, _) = decode(state.pending.address);
+        let pending_address_valid = state.pending.address >> 22 == 0;
+        let way_0_hit = state.valid[0][set] && state.tags[0][set] == tag;
+        let way_1_hit = state.valid[1][set] && state.tags[1][set] == tag;
+        let pending_hit = way_0_hit || way_1_hit;
+        let lookup_read_hit =
+            state.lookup_valid && pending_address_valid && !state.pending.write && pending_hit;
+        let response_space = !state.response_valid || input.cpu_response_ready;
+        let steal =
+            state.state == State::LineRequest && state.pending.is_prefetch && !state.prefetch_armed;
+        let cpu_request_ready = !input.invalidate_all
+            && ((state.state == State::Idle
+                && (!state.lookup_valid
+                    || (state.pending.is_prefetch || lookup_read_hit) && response_space))
+                || steal);
         output.drive(
             circuit,
-            &CpuV3DirectMappedCacheOutputValue {
-                cpu_request_ready: state.phase == Phase::Idle,
-                cpu_response_valid: state.phase == Phase::CpuResponse,
+            &CpuV3TwoWayCacheOutputValue {
+                cpu_request_ready,
+                cpu_response_valid: state.response_valid,
                 cpu_read_data: u64::from(state.response_data),
-                cpu_error: state.phase == Phase::CpuResponse && state.response_error,
-                memory_request_valid: matches!(
-                    state.phase,
-                    Phase::WordRequest | Phase::LineRequest
-                ),
+                cpu_error: state.response_valid && state.response_error,
+                memory_request_valid: state.state == State::WordRequest
+                    || (state.state == State::LineRequest
+                        && (!state.pending.is_prefetch || state.prefetch_armed)),
                 memory_write: state.pending.write,
                 memory_address: u64::from(if state.pending.write {
                     state.pending.address & 0x003f_ffff
@@ -428,9 +470,13 @@ impl<I: CpuV3CacheImage> Module for CpuV3DirectMappedCacheWithImage<I> {
                 }),
                 memory_write_data: u64::from(state.pending.write_data),
                 memory_response_ready: matches!(
-                    state.phase,
-                    Phase::WordResponse | Phase::LineReceive
+                    state.state,
+                    State::WordResponse | State::LineReceive
                 ),
+                prefetch_issued: u64::from(state.prefetch_issued),
+                prefetch_useful: u64::from(state.prefetch_useful),
+                prefetch_useless: u64::from(state.prefetch_useless),
+                prefetch_dropped: u64::from(state.prefetch_dropped),
             },
         );
     }
@@ -443,104 +489,318 @@ impl<I: CpuV3CacheImage> Module for CpuV3DirectMappedCacheWithImage<I> {
     ) {
         let input = input.sample(circuit);
         if input.reset {
-            *state = CpuV3DirectMappedCacheState::initialized::<I>();
+            *state = CpuV3TwoWayCacheState::initialized::<I>();
             return;
         }
 
-        match state.phase {
-            Phase::Idle if input.cpu_request_valid => {
-                state.pending = Pending {
-                    write: input.cpu_write,
-                    address: input.cpu_address as u32,
-                    write_data: input.cpu_write_data as u16,
-                };
-                state.response_error = false;
-                if input.cpu_address >> 22 != 0 {
-                    state.response_data = 0;
-                    state.response_error = true;
-                    state.phase = Phase::CpuResponse;
-                } else {
-                    state.phase = Phase::Check;
-                }
+        // Combinational values evaluated against the current (pre-edge) state.
+        let (set, tag, word) = decode(state.pending.address);
+        let pending_address_valid = state.pending.address >> 22 == 0;
+        let way_0_hit = state.valid[0][set] && state.tags[0][set] == tag;
+        let way_1_hit = state.valid[1][set] && state.tags[1][set] == tag;
+        let pending_hit = way_0_hit || way_1_hit;
+        let hit_way = if way_0_hit { 0 } else { 1 };
+        let selected_victim = if !state.valid[0][set] {
+            0
+        } else if !state.valid[1][set] {
+            1
+        } else {
+            state.victim[set]
+        };
+        let drain_last = state.drain_beat as usize + 1 == CPU_V3_CACHE_LINE_BEATS;
+        let response_space = !state.response_valid || input.cpu_response_ready;
+        let hit_write = state.state == State::Idle
+            && state.lookup_valid
+            && state.pending.write
+            && pending_hit
+            && response_space
+            && !input.invalidate_all;
+        let lookup_read_hit =
+            state.lookup_valid && pending_address_valid && !state.pending.write && pending_hit;
+        let cancel_prefetch = input.prefetch_cancel || input.invalidate_all;
+        let prefetch_refill_cancelled = state.pending.is_prefetch && input.prefetch_cancel;
+        let steal =
+            state.state == State::LineRequest && state.pending.is_prefetch && !state.prefetch_armed;
+        let cpu_request_ready = !input.invalidate_all
+            && ((state.state == State::Idle
+                && (!state.lookup_valid
+                    || (state.pending.is_prefetch || lookup_read_hit) && response_space))
+                || steal);
+        let accept_cpu_request = input.cpu_request_valid && cpu_request_ready;
+        let accept_prefetch = state.state == State::Idle
+            && !input.invalidate_all
+            && !cancel_prefetch
+            && !state.lookup_valid
+            && !state.response_valid
+            && state.prefetch_pending.is_some()
+            && !input.cpu_request_valid;
+
+        let mut next = state.clone();
+
+        if state.response_valid && input.cpu_response_ready {
+            next.response_valid = false;
+        }
+
+        if !cancel_prefetch && input.prefetch_request_valid {
+            let address = input.prefetch_address as u32;
+            if state
+                .prefetch_pending
+                .is_some_and(|pending| pending != address)
+            {
+                next.prefetch_dropped = next.prefetch_dropped.wrapping_add(1);
             }
-            Phase::Check => {
-                let (set, tag, word) = decode(state.pending.address);
-                let hit_way = (0..CPU_V3_CACHE_WAYS)
-                    .find(|way| state.valid[*way][set] && state.tags[*way][set] == tag);
-                if state.pending.write {
-                    if let Some(way) = hit_way {
-                        state.data[data_index(way, set, word)] = state.pending.write_data;
-                    }
-                    state.phase = Phase::WordRequest;
-                } else if let Some(way) = hit_way {
-                    state.response_data = state.data[data_index(way, set, word)];
-                    state.phase = Phase::CpuResponse;
-                } else {
-                    state.pending_way = (0..CPU_V3_CACHE_WAYS)
-                        .find(|way| !state.valid[*way][set])
-                        .unwrap_or(state.victim[set]);
-                    state.refill_beat = 0;
-                    state.phase = Phase::LineRequest;
-                }
-            }
-            Phase::WordRequest if input.memory_request_ready => {
-                state.phase = Phase::WordResponse;
-            }
-            Phase::WordResponse if input.memory_response_valid => {
-                state.response_data = 0;
-                state.response_error = input.memory_error;
-                state.phase = Phase::CpuResponse;
-            }
-            Phase::LineRequest if input.memory_request_ready => {
-                state.refill_beat = 0;
-                state.phase = Phase::LineReceive;
-            }
-            Phase::LineReceive if input.memory_response_valid => {
-                if input.memory_error {
-                    state.response_data = 0;
-                    state.response_error = true;
-                    state.phase = Phase::CpuResponse;
-                } else {
-                    state.refill_buffer[usize::from(state.refill_beat)] =
-                        input.memory_read_data as u32;
-                    if state.refill_beat as usize + 1 == CPU_V3_CACHE_LINE_BEATS {
-                        state.drain_beat = 0;
-                        state.phase = Phase::LineDrain;
+            next.prefetch_pending = Some(address);
+        }
+
+        match state.state {
+            State::Idle => {
+                if state.lookup_valid
+                    && (state.pending.is_prefetch || response_space)
+                    && !(cancel_prefetch && state.pending.is_prefetch)
+                {
+                    if !pending_address_valid {
+                        if state.pending.is_prefetch {
+                            next.prefetch_dropped = next.prefetch_dropped.wrapping_add(1);
+                        } else {
+                            next.response_data = 0;
+                            next.response_error = true;
+                            next.response_valid = true;
+                        }
+                        next.lookup_valid = false;
+                        if state.pending.is_prefetch {
+                            next.pending.is_prefetch = false;
+                        }
+                    } else if state.pending.write {
+                        next.lookup_valid = false;
+                        next.state = State::WordRequest;
+                    } else if pending_hit {
+                        if !state.pending.is_prefetch {
+                            next.response_data = state.data[data_index(hit_way, set, word)];
+                            next.response_error = false;
+                            next.response_valid = true;
+                            if hit_way == 1 && state.prefetched[1][set] {
+                                next.prefetched[1][set] = false;
+                                next.prefetch_useful = next.prefetch_useful.wrapping_add(1);
+                            } else if hit_way == 0 && state.prefetched[0][set] {
+                                next.prefetched[0][set] = false;
+                                next.prefetch_useful = next.prefetch_useful.wrapping_add(1);
+                            }
+                        }
+                        next.lookup_valid = false;
+                        if state.pending.is_prefetch {
+                            next.pending.is_prefetch = false;
+                        }
                     } else {
-                        state.refill_beat += 1;
+                        next.lookup_valid = false;
+                        if state.pending.is_prefetch && accept_cpu_request {
+                            next.pending.is_prefetch = false;
+                            next.prefetch_dropped = next.prefetch_dropped.wrapping_add(1);
+                        } else {
+                            next.pending_way = selected_victim;
+                            next.refill_beat = 0;
+                            next.refill_discard = input.invalidate_all;
+                            next.prefetch_armed = false;
+                            next.state = State::LineRequest;
+                        }
                     }
                 }
             }
-            Phase::LineDrain => {
-                let (set, tag, requested_word) = decode(state.pending.address);
+            State::WordRequest => {
+                if input.memory_request_ready {
+                    next.state = State::WordResponse;
+                }
+            }
+            State::WordResponse => {
+                if input.memory_response_valid {
+                    next.response_data = 0;
+                    next.response_error = input.memory_error;
+                    next.response_valid = true;
+                    next.state = State::Idle;
+                }
+            }
+            State::LineRequest => {
+                if state.pending.is_prefetch && !state.prefetch_armed {
+                    if input.cpu_request_valid || cancel_prefetch {
+                        if input.cpu_request_valid && !cancel_prefetch {
+                            next.prefetch_dropped = next.prefetch_dropped.wrapping_add(1);
+                        }
+                        next.pending.is_prefetch = false;
+                        next.prefetch_armed = false;
+                        next.refill_discard = false;
+                        next.state = State::Idle;
+                    } else {
+                        next.prefetch_armed = true;
+                    }
+                } else if input.memory_request_ready {
+                    next.refill_beat = 0;
+                    if state.pending.is_prefetch {
+                        next.prefetch_issued = next.prefetch_issued.wrapping_add(1);
+                    }
+                    next.prefetch_armed = false;
+                    next.state = State::LineReceive;
+                }
+            }
+            State::LineReceive => {
+                if input.memory_response_valid {
+                    if input.memory_error {
+                        if state.pending.is_prefetch {
+                            if !state.refill_discard {
+                                next.prefetch_dropped = next.prefetch_dropped.wrapping_add(1);
+                            }
+                            next.pending.is_prefetch = false;
+                        } else {
+                            next.response_data = 0;
+                            next.response_error = true;
+                            next.response_valid = true;
+                        }
+                        next.state = State::Idle;
+                    } else {
+                        next.refill_buffer[usize::from(state.refill_beat)] =
+                            input.memory_read_data as u32;
+                        if state.refill_beat as usize + 1 == CPU_V3_CACHE_LINE_BEATS {
+                            next.drain_beat = 0;
+                            next.state = State::LineDrain;
+                        } else {
+                            next.refill_beat += 1;
+                        }
+                    }
+                }
+            }
+            State::LineDrain => {
                 let drain = usize::from(state.drain_beat);
                 let beat = state.refill_buffer[drain];
                 let even_word = 2 * drain;
-                state.data[data_index(state.pending_way, set, even_word)] = beat as u16;
-                state.data[data_index(state.pending_way, set, even_word + 1)] = (beat >> 16) as u16;
-                if drain == requested_word / 2 {
-                    state.response_data = if requested_word % 2 == 0 {
+                let drain_write =
+                    !state.refill_discard && !input.invalidate_all && !prefetch_refill_cancelled;
+                if drain_write {
+                    next.data[data_index(state.pending_way, set, even_word)] = beat as u16;
+                    next.data[data_index(state.pending_way, set, even_word + 1)] =
+                        (beat >> 16) as u16;
+                }
+                if drain == word / 2 {
+                    next.response_data = if word % 2 == 0 {
                         beat as u16
                     } else {
                         (beat >> 16) as u16
                     };
                 }
-                if drain + 1 == CPU_V3_CACHE_LINE_BEATS {
-                    state.tags[state.pending_way][set] = tag;
-                    state.valid[state.pending_way][set] = true;
-                    state.victim[set] = 1 - state.pending_way;
-                    state.phase = Phase::CpuResponse;
+                if drain_last {
+                    if !state.refill_discard && !input.invalidate_all && !prefetch_refill_cancelled
+                    {
+                        if state.pending_way == 1 {
+                            if state.prefetched[1][set] {
+                                next.prefetch_useless = next.prefetch_useless.wrapping_add(1);
+                            }
+                            next.valid[1][set] = true;
+                            next.prefetched[1][set] = state.pending.is_prefetch;
+                        } else {
+                            if state.prefetched[0][set] {
+                                next.prefetch_useless = next.prefetch_useless.wrapping_add(1);
+                            }
+                            next.valid[0][set] = true;
+                            next.prefetched[0][set] = state.pending.is_prefetch;
+                        }
+                        next.tags[state.pending_way][set] = tag;
+                        next.victim[set] = 1 - state.pending_way;
+                    }
+                    if !state.pending.is_prefetch {
+                        next.response_error = false;
+                        next.response_valid = true;
+                    }
+                    next.pending.is_prefetch = false;
+                    next.state = State::Idle;
                 } else {
-                    state.drain_beat += 1;
+                    next.drain_beat += 1;
                 }
             }
-            Phase::CpuResponse if input.cpu_response_ready => state.phase = Phase::Idle,
-            _ => {}
+        }
+
+        if hit_write {
+            next.data[data_index(hit_way, set, word)] = state.pending.write_data;
+        }
+
+        if accept_prefetch {
+            next.pending = Pending {
+                is_prefetch: true,
+                write: false,
+                address: state.prefetch_pending.unwrap(),
+                write_data: 0,
+            };
+            next.refill_discard = false;
+            next.lookup_valid = true;
+            next.prefetch_pending = None;
+        }
+
+        if accept_cpu_request {
+            next.pending = Pending {
+                is_prefetch: false,
+                write: input.cpu_write,
+                address: input.cpu_address as u32,
+                write_data: input.cpu_write_data as u16,
+            };
+            next.response_error = false;
+            next.refill_discard = false;
+            next.lookup_valid = true;
+        }
+
+        if cancel_prefetch {
+            let counting = state.prefetch_pending.is_some()
+                || (state.pending.is_prefetch
+                    && ((state.state == State::Idle && state.lookup_valid)
+                        || (state.state == State::LineRequest && !state.prefetch_armed)
+                        || ((state.state == State::LineReceive
+                            || state.state == State::LineDrain
+                            || (state.state == State::LineRequest && state.prefetch_armed))
+                            && !state.refill_discard)));
+            if counting {
+                next.prefetch_dropped = next.prefetch_dropped.wrapping_add(1);
+            }
+            next.prefetch_pending = None;
+            if state.pending.is_prefetch
+                && state.state == State::Idle
+                && state.lookup_valid
+                && !accept_cpu_request
+            {
+                next.lookup_valid = false;
+                next.pending.is_prefetch = false;
+            }
+            if state.pending.is_prefetch
+                && state.state == State::LineRequest
+                && !state.prefetch_armed
+            {
+                next.state = State::Idle;
+                next.pending.is_prefetch = false;
+                next.prefetch_armed = false;
+                next.refill_discard = false;
+            } else if state.pending.is_prefetch
+                && (state.state == State::LineReceive
+                    || state.state == State::LineDrain
+                    || (state.state == State::LineRequest && state.prefetch_armed))
+            {
+                next.refill_discard = true;
+            }
         }
 
         if input.invalidate_all {
-            state.valid.fill([false; CPU_V3_CACHE_SETS]);
+            next.prefetch_useless = next.prefetch_useless.wrapping_add(
+                state
+                    .prefetched
+                    .iter()
+                    .flatten()
+                    .filter(|prefetched| **prefetched)
+                    .count() as u32,
+            );
+            next.valid = [[false; CPU_V3_CACHE_SETS]; CPU_V3_CACHE_WAYS];
+            next.prefetched = [[false; CPU_V3_CACHE_SETS]; CPU_V3_CACHE_WAYS];
+            if state.state == State::LineRequest
+                || state.state == State::LineReceive
+                || state.state == State::LineDrain
+            {
+                next.refill_discard = true;
+            }
         }
+
+        *state = next;
     }
 
     fn verilog_source() -> Option<String> {
@@ -665,7 +925,7 @@ mod tests {
 
     fn drive(
         circuit: &mut Circuit,
-        input: &CpuV3DirectMappedCacheInput,
+        input: &CpuV3TwoWayCacheInput,
         cpu_request: Option<(bool, u32, u16)>,
         cpu_response_ready: bool,
         memory_response: Option<(u32, bool)>,
@@ -674,9 +934,12 @@ mod tests {
         let (cpu_write, cpu_address, cpu_write_data) = cpu_request.unwrap_or_default();
         input.drive(
             circuit,
-            &CpuV3DirectMappedCacheInputValue {
+            &CpuV3TwoWayCacheInputValue {
                 reset: false,
                 invalidate_all,
+                prefetch_request_valid: false,
+                prefetch_address: 0,
+                prefetch_cancel: false,
                 cpu_request_valid: cpu_request.is_some(),
                 cpu_write,
                 cpu_address: u64::from(cpu_address),
@@ -692,8 +955,8 @@ mod tests {
 
     fn transact(
         circuit: &mut Circuit,
-        input: &CpuV3DirectMappedCacheInput,
-        output: &CpuV3DirectMappedCacheOutput,
+        input: &CpuV3TwoWayCacheInput,
+        output: &CpuV3TwoWayCacheOutput,
         memory: &mut MemoryModel,
         write: bool,
         address: u32,
@@ -740,14 +1003,10 @@ mod tests {
         panic!("cache transaction did not complete")
     }
 
-    fn fixture() -> (
-        Circuit,
-        CpuV3DirectMappedCacheInput,
-        CpuV3DirectMappedCacheOutput,
-    ) {
+    fn fixture() -> (Circuit, CpuV3TwoWayCacheInput, CpuV3TwoWayCacheOutput) {
         let (circuit, (input, output)) = build_circuit(|| {
-            let input = CpuV3DirectMappedCacheInput::allocate();
-            let output = CpuV3DirectMappedCache::emu(&input);
+            let input = CpuV3TwoWayCacheInput::allocate();
+            let output = CpuV3TwoWayCache::emu(&input);
             (input, output)
         });
         (circuit, input, output)
@@ -908,7 +1167,7 @@ mod tests {
 
     #[test]
     fn export_claims_two_data_bsram_and_characterized_tag_ssram_leaves() {
-        let project = VerilogProject::generate::<CpuV3DirectMappedCache>().unwrap();
+        let project = VerilogProject::generate::<CpuV3TwoWayCache>().unwrap();
         assert_eq!(project.resource_claims.len(), 2);
         assert_eq!(
             project.resource_claims[0].resources,
@@ -926,6 +1185,706 @@ mod tests {
     #[test]
     #[ignore = "explicit external simulation of the CpuV3 two-way cache"]
     fn verify_verilog_with_iverilog() {
-        digital_design_hardware::verify_verilog_with_iverilog::<CpuV3DirectMappedCache>().unwrap();
+        digital_design_hardware::verify_verilog_with_iverilog::<CpuV3TwoWayCache>().unwrap();
+    }
+
+    // ---- emulator vs RTL co-simulation ----
+
+    #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+    struct CycleOut {
+        cpu_request_ready: bool,
+        cpu_response_valid: bool,
+        cpu_read_data: u16,
+        cpu_error: bool,
+        memory_request_valid: bool,
+        memory_write: bool,
+        memory_address: u32,
+        memory_response_ready: bool,
+    }
+
+    #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+    struct CycleIn {
+        invalidate_all: bool,
+        prefetch_request_valid: bool,
+        prefetch_address: u32,
+        prefetch_cancel: bool,
+        cpu_request_valid: bool,
+        cpu_write: bool,
+        cpu_address: u32,
+        cpu_write_data: u16,
+        cpu_response_ready: bool,
+        memory_response_valid: bool,
+        memory_read_data: u32,
+        memory_error: bool,
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn cosim_step(
+        circuit: &mut Circuit,
+        input: &CpuV3TwoWayCacheInput,
+        output: &CpuV3TwoWayCacheOutput,
+        memory: &mut MemoryModel,
+        cpu_request: Option<(bool, u32, u16)>,
+        cpu_response_ready: bool,
+        prefetch: Option<u32>,
+        prefetch_cancel: bool,
+        invalidate_all: bool,
+        trace: &mut Vec<(CycleIn, CycleOut)>,
+    ) -> CycleOut {
+        let memory_response = memory.beats.pop_front();
+        let (cpu_write, cpu_address, cpu_write_data) = cpu_request.unwrap_or((false, 0, 0));
+        input.drive(
+            circuit,
+            &CpuV3TwoWayCacheInputValue {
+                reset: false,
+                invalidate_all,
+                prefetch_request_valid: prefetch.is_some(),
+                prefetch_address: u64::from(prefetch.unwrap_or(0)),
+                prefetch_cancel,
+                cpu_request_valid: cpu_request.is_some(),
+                cpu_write,
+                cpu_address: u64::from(cpu_address),
+                cpu_write_data: u64::from(cpu_write_data),
+                cpu_response_ready,
+                memory_request_ready: true,
+                memory_response_valid: memory_response.is_some(),
+                memory_read_data: u64::from(memory_response.unwrap_or_default().0),
+                memory_error: memory_response.unwrap_or_default().1,
+            },
+        );
+        circuit.execute_gates();
+        let value = output.sample(circuit);
+        if value.memory_request_valid {
+            memory.accept(
+                value.memory_write,
+                value.memory_address as u32,
+                value.memory_write_data as u16,
+            );
+        }
+        let out = CycleOut {
+            cpu_request_ready: value.cpu_request_ready,
+            cpu_response_valid: value.cpu_response_valid,
+            cpu_read_data: value.cpu_read_data as u16,
+            cpu_error: value.cpu_error,
+            memory_request_valid: value.memory_request_valid,
+            memory_write: value.memory_write,
+            memory_address: value.memory_address as u32,
+            memory_response_ready: value.memory_response_ready,
+        };
+        let cin = CycleIn {
+            invalidate_all,
+            prefetch_request_valid: prefetch.is_some(),
+            prefetch_address: prefetch.unwrap_or(0),
+            prefetch_cancel,
+            cpu_request_valid: cpu_request.is_some(),
+            cpu_write,
+            cpu_address,
+            cpu_write_data,
+            cpu_response_ready,
+            memory_response_valid: memory_response.is_some(),
+            memory_read_data: memory_response.unwrap_or_default().0,
+            memory_error: memory_response.unwrap_or_default().1,
+        };
+        trace.push((cin, out));
+        circuit.clock_tick();
+        out
+    }
+
+    fn cosim_read(
+        circuit: &mut Circuit,
+        input: &CpuV3TwoWayCacheInput,
+        output: &CpuV3TwoWayCacheOutput,
+        memory: &mut MemoryModel,
+        address: u32,
+        trace: &mut Vec<(CycleIn, CycleOut)>,
+    ) -> u16 {
+        let mut request = Some((false, address, 0));
+        while request.is_some() {
+            let out = cosim_step(
+                circuit, input, output, memory, request, false, None, false, false, trace,
+            );
+            if out.cpu_request_ready {
+                request = None;
+            }
+        }
+        loop {
+            let out = cosim_step(
+                circuit, input, output, memory, None, false, None, false, false, trace,
+            );
+            if out.cpu_response_valid {
+                let data = out.cpu_read_data;
+                cosim_step(
+                    circuit, input, output, memory, None, true, None, false, false, trace,
+                );
+                return data;
+            }
+        }
+    }
+
+    fn cosim_write(
+        circuit: &mut Circuit,
+        input: &CpuV3TwoWayCacheInput,
+        output: &CpuV3TwoWayCacheOutput,
+        memory: &mut MemoryModel,
+        address: u32,
+        write_data: u16,
+        trace: &mut Vec<(CycleIn, CycleOut)>,
+    ) {
+        let mut request = Some((true, address, write_data));
+        while request.is_some() {
+            let out = cosim_step(
+                circuit, input, output, memory, request, false, None, false, false, trace,
+            );
+            if out.cpu_request_ready {
+                request = None;
+            }
+        }
+        loop {
+            let out = cosim_step(
+                circuit, input, output, memory, None, false, None, false, false, trace,
+            );
+            if out.cpu_response_valid {
+                cosim_step(
+                    circuit, input, output, memory, None, true, None, false, false, trace,
+                );
+                return;
+            }
+        }
+    }
+
+    fn run_emu_trace() -> Vec<(CycleIn, CycleOut)> {
+        let (mut circuit, input, output) = fixture();
+        let mut memory = MemoryModel::new();
+        for address in 0x120..0x130 {
+            memory
+                .words
+                .insert(address, (0x8000 | (address & 0xff)) as u16);
+        }
+        for address in 0x1520..0x1530 {
+            memory
+                .words
+                .insert(address, (0x9000 | (address & 0xff)) as u16);
+        }
+        let mut trace = Vec::new();
+
+        // Cold miss refills line 0x120, then a hit.
+        assert_eq!(
+            cosim_read(
+                &mut circuit,
+                &input,
+                &output,
+                &mut memory,
+                0x123,
+                &mut trace
+            ),
+            0x8023
+        );
+        assert_eq!(
+            cosim_read(
+                &mut circuit,
+                &input,
+                &output,
+                &mut memory,
+                0x124,
+                &mut trace
+            ),
+            0x8024
+        );
+
+        // Write-through, then a hit returns the written value.
+        cosim_write(
+            &mut circuit,
+            &input,
+            &output,
+            &mut memory,
+            0x123,
+            0x4567,
+            &mut trace,
+        );
+        assert_eq!(
+            cosim_read(
+                &mut circuit,
+                &input,
+                &output,
+                &mut memory,
+                0x123,
+                &mut trace
+            ),
+            0x4567
+        );
+
+        // Back-to-back reads exercise the pipelined hit path: the second
+        // request is accepted in the same cycle the first lookup resolves.
+        cosim_step(
+            &mut circuit,
+            &input,
+            &output,
+            &mut memory,
+            Some((false, 0x123, 0)),
+            false,
+            None,
+            false,
+            false,
+            &mut trace,
+        );
+        cosim_step(
+            &mut circuit,
+            &input,
+            &output,
+            &mut memory,
+            Some((false, 0x124, 0)),
+            false,
+            None,
+            false,
+            false,
+            &mut trace,
+        );
+        for _ in 0..8 {
+            let out = cosim_step(
+                &mut circuit,
+                &input,
+                &output,
+                &mut memory,
+                None,
+                false,
+                None,
+                false,
+                false,
+                &mut trace,
+            );
+            if out.cpu_response_valid {
+                cosim_step(
+                    &mut circuit,
+                    &input,
+                    &output,
+                    &mut memory,
+                    None,
+                    true,
+                    None,
+                    false,
+                    false,
+                    &mut trace,
+                );
+            }
+        }
+
+        // Nominate a next-line prefetch; idle cycles let it issue and drain.
+        cosim_step(
+            &mut circuit,
+            &input,
+            &output,
+            &mut memory,
+            None,
+            false,
+            Some(0x1520),
+            false,
+            false,
+            &mut trace,
+        );
+        for _ in 0..40 {
+            cosim_step(
+                &mut circuit,
+                &input,
+                &output,
+                &mut memory,
+                None,
+                false,
+                None,
+                false,
+                false,
+                &mut trace,
+            );
+        }
+        // The prefetched line is present, so the demand read hits it.
+        assert_eq!(
+            cosim_read(
+                &mut circuit,
+                &input,
+                &output,
+                &mut memory,
+                0x1523,
+                &mut trace
+            ),
+            0x9023
+        );
+
+        // A redirect may cancel a prefetch lookup in the same cycle that a
+        // demand replaces it. The accepted demand must remain live.
+        for address in 0x2520..0x2530 {
+            memory
+                .words
+                .insert(address, (0xa000 | (address & 0xff)) as u16);
+        }
+        cosim_step(
+            &mut circuit,
+            &input,
+            &output,
+            &mut memory,
+            None,
+            false,
+            Some(0x2120),
+            false,
+            false,
+            &mut trace,
+        );
+        cosim_step(
+            &mut circuit,
+            &input,
+            &output,
+            &mut memory,
+            None,
+            false,
+            None,
+            false,
+            false,
+            &mut trace,
+        );
+        let out = cosim_step(
+            &mut circuit,
+            &input,
+            &output,
+            &mut memory,
+            Some((false, 0x2523, 0)),
+            false,
+            None,
+            true,
+            false,
+            &mut trace,
+        );
+        assert!(
+            out.cpu_request_ready,
+            "cancel must not reject the replacing demand"
+        );
+        let mut replaced_data = None;
+        for _ in 0..40 {
+            let out = cosim_step(
+                &mut circuit,
+                &input,
+                &output,
+                &mut memory,
+                None,
+                false,
+                None,
+                false,
+                false,
+                &mut trace,
+            );
+            if out.cpu_response_valid {
+                replaced_data = Some(out.cpu_read_data);
+                cosim_step(
+                    &mut circuit,
+                    &input,
+                    &output,
+                    &mut memory,
+                    None,
+                    true,
+                    None,
+                    false,
+                    false,
+                    &mut trace,
+                );
+                break;
+            }
+        }
+        assert_eq!(replaced_data, Some(0xa023));
+
+        // A prefetch cancellation during a demand refill drain must not turn
+        // the completed demand line into a subsequent miss.
+        for address in 0x2920..0x2930 {
+            memory
+                .words
+                .insert(address, (0xb000 | (address & 0xff)) as u16);
+        }
+        let requests_before = memory.requests;
+        let out = cosim_step(
+            &mut circuit,
+            &input,
+            &output,
+            &mut memory,
+            Some((false, 0x2923, 0)),
+            false,
+            None,
+            false,
+            false,
+            &mut trace,
+        );
+        assert!(out.cpu_request_ready);
+        cosim_step(
+            &mut circuit,
+            &input,
+            &output,
+            &mut memory,
+            None,
+            false,
+            None,
+            false,
+            false,
+            &mut trace,
+        );
+        cosim_step(
+            &mut circuit,
+            &input,
+            &output,
+            &mut memory,
+            None,
+            false,
+            None,
+            false,
+            false,
+            &mut trace,
+        );
+        for _ in 0..8 {
+            cosim_step(
+                &mut circuit,
+                &input,
+                &output,
+                &mut memory,
+                None,
+                false,
+                None,
+                false,
+                false,
+                &mut trace,
+            );
+        }
+        cosim_step(
+            &mut circuit,
+            &input,
+            &output,
+            &mut memory,
+            None,
+            false,
+            None,
+            true,
+            false,
+            &mut trace,
+        );
+        let mut demand_data = None;
+        for _ in 0..16 {
+            let out = cosim_step(
+                &mut circuit,
+                &input,
+                &output,
+                &mut memory,
+                None,
+                false,
+                None,
+                false,
+                false,
+                &mut trace,
+            );
+            if out.cpu_response_valid {
+                demand_data = Some(out.cpu_read_data);
+                cosim_step(
+                    &mut circuit,
+                    &input,
+                    &output,
+                    &mut memory,
+                    None,
+                    true,
+                    None,
+                    false,
+                    false,
+                    &mut trace,
+                );
+                break;
+            }
+        }
+        assert_eq!(demand_data, Some(0xb023));
+        assert_eq!(
+            cosim_read(
+                &mut circuit,
+                &input,
+                &output,
+                &mut memory,
+                0x2924,
+                &mut trace
+            ),
+            0xb024
+        );
+        assert_eq!(
+            memory.requests,
+            requests_before + 1,
+            "demand line was not installed while canceling prefetch"
+        );
+
+        // Invalidate clears the cache; the next read misses again.
+        cosim_step(
+            &mut circuit,
+            &input,
+            &output,
+            &mut memory,
+            None,
+            false,
+            None,
+            false,
+            true,
+            &mut trace,
+        );
+        cosim_step(
+            &mut circuit,
+            &input,
+            &output,
+            &mut memory,
+            None,
+            false,
+            None,
+            false,
+            false,
+            &mut trace,
+        );
+        assert_eq!(
+            cosim_read(
+                &mut circuit,
+                &input,
+                &output,
+                &mut memory,
+                0x123,
+                &mut trace
+            ),
+            0x4567
+        );
+
+        trace
+    }
+
+    fn generate_cosim_tb(trace: &[(CycleIn, CycleOut)], module_name: &str) -> String {
+        let mut t = format!(
+            "module tb;\n\
+             reg clk = 0;\n\
+             reg reset, invalidate_all, prefetch_request_valid, prefetch_cancel;\n\
+             reg [31:0] prefetch_address;\n\
+             reg cpu_request_valid, cpu_write, cpu_response_ready;\n\
+             reg [31:0] cpu_address;\n\
+             reg [15:0] cpu_write_data;\n\
+             reg memory_request_ready, memory_response_valid, memory_error;\n\
+             reg [31:0] memory_read_data;\n\
+             wire cpu_request_ready, cpu_response_valid, cpu_error;\n\
+             wire [15:0] cpu_read_data;\n\
+             wire memory_request_valid, memory_write, memory_response_ready;\n\
+             wire [21:0] memory_address;\n\
+             wire [15:0] memory_write_data;\n\
+             wire [31:0] prefetch_issued, prefetch_useful, prefetch_useless, prefetch_dropped;\n\n\
+             {module_name} dut(.*);\n\n\
+             always #5 clk = ~clk;\n\n\
+             initial begin\n\
+                 reset = 1; invalidate_all = 0; prefetch_request_valid = 0; prefetch_address = 0;\n\
+                 prefetch_cancel = 0; cpu_request_valid = 0; cpu_write = 0; cpu_address = 0;\n\
+                 cpu_write_data = 0; cpu_response_ready = 0; memory_request_ready = 1;\n\
+                 memory_response_valid = 0; memory_read_data = 0; memory_error = 0;\n\
+                 repeat (2) @(posedge clk);\n\
+                 reset = 0;\n\
+                 @(posedge clk);\n\
+                 @(negedge clk);\n",
+        );
+        for (i, (cin, _)) in trace.iter().enumerate() {
+            t.push_str(&format!(
+                "    // cycle {i}\n\
+                 cpu_request_valid = 1'b{crv}; cpu_write = 1'b{cw}; cpu_address = 32'h{ca:08x}; cpu_write_data = 16'h{cwd:04x};\n\
+                 cpu_response_ready = 1'b{crr}; invalidate_all = 1'b{inv}; prefetch_request_valid = 1'b{prv}; prefetch_address = 32'h{pa:08x}; prefetch_cancel = 1'b{pc};\n\
+                 memory_response_valid = 1'b{mrv}; memory_read_data = 32'h{mrd:08x}; memory_error = 1'b{me};\n\
+                 #1;\n\
+                 $display(\"OUT %0d %0d %0d %0d %0d %0d %0d %0d %0d\", {i}, cpu_request_ready, cpu_response_valid, cpu_read_data, cpu_error, memory_request_valid, memory_write, memory_address, memory_response_ready);\n\
+                 @(posedge clk);\n\
+                 @(negedge clk);\n",
+                crv = u8::from(cin.cpu_request_valid),
+                cw = u8::from(cin.cpu_write),
+                ca = cin.cpu_address,
+                cwd = cin.cpu_write_data,
+                crr = u8::from(cin.cpu_response_ready),
+                inv = u8::from(cin.invalidate_all),
+                prv = u8::from(cin.prefetch_request_valid),
+                pa = cin.prefetch_address,
+                pc = u8::from(cin.prefetch_cancel),
+                mrv = u8::from(cin.memory_response_valid),
+                mrd = cin.memory_read_data,
+                me = u8::from(cin.memory_error),
+            ));
+        }
+        t.push_str(&format!(
+            "    $display(\"TRACE_END\");\n    $finish;\nend\n\n\
+             initial begin\n    repeat ({}) @(posedge clk);\n    $display(\"TIMEOUT\");\n    $finish(1);\nend\nendmodule\n",
+            trace.len() * 5 + 500
+        ));
+        t
+    }
+
+    fn cache_cosim_sources() -> String {
+        let mut s = String::new();
+        s.push_str(&CpuV3ParitySplitCacheData::<ZeroBsramImage>::verilog_source().unwrap());
+        s.push('\n');
+        s.push_str(&CpuV3CacheTagRam::verilog_source().unwrap());
+        s.push('\n');
+        s.push_str(&CpuV3TwoWayCache::verilog_source().unwrap());
+        s
+    }
+
+    fn run_iverilog_cosim(sources: &str, tb: &str) -> Vec<CycleOut> {
+        let directory = std::env::temp_dir().join(format!("cache-cosim-{}", std::process::id()));
+        std::fs::create_dir_all(&directory).unwrap();
+        std::fs::write(directory.join("modules.v"), sources).unwrap();
+        std::fs::write(directory.join("tb.v"), tb).unwrap();
+        let iverilog = std::env::var_os("IVERILOG_EXE").unwrap_or_else(|| "iverilog".into());
+        let vvp = std::env::var_os("VVP_EXE").unwrap_or_else(|| "vvp".into());
+        let output_path = directory.join("sim.vvp");
+        let compile = std::process::Command::new(&iverilog)
+            .current_dir(&directory)
+            .args(["-g2005", "-s", "tb", "-o"])
+            .arg(&output_path)
+            .arg(directory.join("modules.v"))
+            .arg(directory.join("tb.v"))
+            .output()
+            .unwrap();
+        assert!(
+            compile.status.success(),
+            "iverilog compile failed:\n{}",
+            String::from_utf8_lossy(&compile.stderr)
+        );
+        let simulation = std::process::Command::new(&vvp)
+            .current_dir(&directory)
+            .arg(&output_path)
+            .output()
+            .unwrap();
+        assert!(
+            simulation.status.success(),
+            "vvp failed:\n{}",
+            String::from_utf8_lossy(&simulation.stderr)
+        );
+        let stdout = String::from_utf8_lossy(&simulation.stdout);
+        let mut outputs = Vec::new();
+        for line in stdout.lines() {
+            let line = line.trim();
+            if let Some(rest) = line.strip_prefix("OUT ") {
+                let fields: Vec<&str> = rest.split_whitespace().collect();
+                assert_eq!(fields.len(), 9, "unexpected OUT line: {line}");
+                outputs.push(CycleOut {
+                    cpu_request_ready: fields[1] == "1",
+                    cpu_response_valid: fields[2] == "1",
+                    cpu_read_data: fields[3].parse().unwrap(),
+                    cpu_error: fields[4] == "1",
+                    memory_request_valid: fields[5] == "1",
+                    memory_write: fields[6] == "1",
+                    memory_address: fields[7].parse().unwrap(),
+                    memory_response_ready: fields[8] == "1",
+                });
+            } else if line == "TRACE_END" {
+                break;
+            }
+        }
+        std::fs::remove_dir_all(&directory).ok();
+        outputs
+    }
+
+    #[test]
+    #[ignore = "explicit emulator-vs-Icarus co-simulation of the two-way cache"]
+    fn emu_matches_rtl_verilog() {
+        let trace = run_emu_trace();
+        let module_name = CpuV3TwoWayCache::verilog_identity().module_name();
+        let tb = generate_cosim_tb(&trace, &module_name);
+        let rtl = run_iverilog_cosim(&cache_cosim_sources(), &tb);
+        assert_eq!(rtl.len(), trace.len(), "cycle count mismatch");
+        for (i, ((_, expected), actual)) in trace.iter().zip(&rtl).enumerate() {
+            assert_eq!(*actual, *expected, "emu/RTL output mismatch at cycle {i}");
+        }
     }
 }

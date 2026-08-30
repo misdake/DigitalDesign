@@ -294,19 +294,29 @@ pub trait Module: HardwareIdentity + Sized + 'static {
     /// this method for a compositional emulator that calls child modules such
     /// as target-leaf `Module::hardware`.
     fn emu(input: &Self::Input) -> Self::Output {
+        let output = Self::Output::allocate();
+        Self::emu_connect(input, &output);
+        output
+    }
+
+    /// Build the emulator external over an already-allocated input/output pair.
+    ///
+    /// Unlike `emu`, this does not allocate the output, so a composition site
+    /// can first allocate every child's wires, connect them (including the
+    /// bidirectional ready/valid handshakes), and then create every emulator in
+    /// a second pass.
+    fn emu_connect(input: &Self::Input, output: &Self::Output) {
         assert!(
             Self::EMU_AVAILABLE,
             "emulator implementation is not available for module `{}`",
             std::any::type_name::<Self>()
         );
-        let output = Self::Output::allocate();
-        let state = Self::create_emu(input, &output);
+        let state = Self::create_emu(input, output);
         external(ModuleExternal::<Self> {
             input: input.clone(),
             output: output.clone(),
             state,
         });
-        output
     }
 
     fn nand(_input: &Self::Input) -> Self::Output {

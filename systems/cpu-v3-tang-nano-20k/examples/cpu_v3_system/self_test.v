@@ -61,6 +61,9 @@ wire instruction_response_valid;
 wire [15:0] instruction_data;
 wire instruction_error;
 wire instruction_request_ready;
+wire instruction_prefetch_request_valid;
+wire [31:0] instruction_prefetch_address;
+wire instruction_prefetch_cancel;
 wire sysctl_icache_invalidate;
 wire sysctl_dcache_invalidate;
 wire halted;
@@ -83,7 +86,10 @@ __FETCH_QUEUE__ u_instruction_fetch_queue (
     .core_error(core_instruction_error),
     .memory_request_valid(instruction_request_valid),
     .memory_address(instruction_address),
-    .memory_response_ready(instruction_response_ready)
+    .memory_response_ready(instruction_response_ready),
+    .prefetch_request_valid(instruction_prefetch_request_valid),
+    .prefetch_address(instruction_prefetch_address),
+    .prefetch_cancel(instruction_prefetch_cancel)
 );
 
 // Boot window: physical instruction words 0x0000..0x03ff fetch the Stage0
@@ -152,6 +158,11 @@ __CACHE__ u_instruction_cache (
     .clk(clk),
     .reset(reset),
     .invalidate_all(sysctl_icache_invalidate),
+    // Stage0 executes from boot BSRAM, not SDRAM-backed I-cache.
+    .prefetch_request_valid(instruction_prefetch_request_valid &&
+                            instruction_prefetch_address[31:10] != 0),
+    .prefetch_address(instruction_prefetch_address),
+    .prefetch_cancel(instruction_prefetch_cancel),
     .cpu_request_valid(instruction_request_valid && !boot_selected &&
                        instruction_source_allowed),
     .cpu_write(1'b0),
@@ -385,6 +396,9 @@ __CACHE__ u_data_cache (
     .clk(clk),
     .reset(reset),
     .invalidate_all(sysctl_dcache_invalidate),
+    .prefetch_request_valid(1'b0),
+    .prefetch_address(32'b0),
+    .prefetch_cancel(1'b0),
     .cpu_request_valid(core_data_request_valid),
     .cpu_write(core_data_write),
     .cpu_address(core_data_address),
