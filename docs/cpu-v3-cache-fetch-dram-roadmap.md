@@ -19,18 +19,25 @@ Updated: 2026-08-30
 
 ## Current implementation progress
 
-| Stage | State | Result | Boot / SDRAM PnR at 54 MHz |
+| Stage | State | Result | PnR evidence at 54 MHz |
 | --- | --- | --- | --- |
 | 0 | Complete, 2026-08-29 | Removed per-line snoop/invalidate; froze global maintenance and boot-handoff semantics. | 4 BSRAM; 55.435 / 55.958 MHz |
 | 1 | Complete, 2026-08-29 | Added private 256-bit refill buffers and complete-line commit. | 4 BSRAM; 57.127 / 62.440 MHz |
 | 2 | Complete, 2026-08-29 | Replaced serialized reads with one real `8 x 32-bit` SDRAM burst. | 4 BSRAM; 55.327 / 56.090 MHz |
 | 3 | Complete, 2026-08-29 | Split each cache into even/odd BSRAM banks; initialization contents are split by word parity and refill drain is eight cycles. | 6 BSRAM; 54.492 / 54.261 MHz |
 | 4 | Complete, 2026-08-29 | Converted both caches to two ways with invalid-way-first deterministic victim replacement. The tag comparison now precedes the data-bank read, so a hit costs one more registered cycle until Stage 5 pipelines it. | 6 BSRAM; 61.425 / 56.530 MHz |
-| System consolidation | Complete, 2026-08-30 | Folded the separate CPU V3 boot, SDRAM, and display systems into one fitted `cpu_v3_system`. This changed the full-system baseline to 7 BSRAM before the Stage 5 fetch pipeline work. | 7 BSRAM; 57.345 MHz |
-| 5 | Complete, 2026-08-30 | Pipelined resident cache reads for one accepted lookup per cycle and added a four-entry, epoch-tagged instruction fetch queue. Sequential ALU throughput now approaches two cycles per instruction. | 7 BSRAM; 61.842 MHz |
-| 6 | Complete, 2026-08-30 | Added demand-progress-triggered, low-priority next-line I-cache prefetch with redirect cancellation, discardable in-flight refills, simulation counters, and demand-safe cancellation races. | 7 BSRAM; 54.538 MHz |
-| 7 | Complete, 2026-08-30 | Added cycle-profiled emulator benchmarks and a redirect fast path. Immediate target issue plus empty-queue response fall-through reduced hot control-transfer fetch waits from four cycles to two. | 7 BSRAM; 57.293 MHz |
+| System consolidation | Complete, 2026-08-30 | Folded the separate CPU V3 boot, SDRAM, and display systems into one fitted `cpu_v3_system`. This changed the full-system baseline to 7 BSRAM before the Stage 5 fetch pipeline work. | Full system: 9,740 Logic; 7 BSRAM; 57.345 MHz |
+| 5 | Complete, 2026-08-30 | Pipelined resident cache reads for one accepted lookup per cycle and added a four-entry, epoch-tagged instruction fetch queue. Sequential ALU throughput now approaches two cycles per instruction. | Full system: 9,974 Logic; 7 BSRAM; 61.842 MHz |
+| 6 | Complete, 2026-08-30 | Added demand-progress-triggered, low-priority next-line I-cache prefetch with redirect cancellation, discardable in-flight refills, simulation counters, and demand-safe cancellation races. | Full system: 10,129 Logic; 7 BSRAM; 54.538 MHz |
+| 7 | Complete, 2026-08-30 | Added cycle-profiled emulator benchmarks, a redirect fast path, and an explicit dual-read RAM16 scalar register file. Hot control-transfer fetch waits fell from four cycles to two; the RAM16 register file cut 2,178 LUTs. | Full system: 8,046 Logic; 7 BSRAM; 57.549 MHz |
 | 8-12 | Not started | See the ordered tasks and detailed stage sections below. | - |
+
+Starting with System consolidation, PnR evidence is always taken from the complete `cpu_v3_system`
+containing the CPU, boot path, SDRAM controller, and display path. Every subsequent completed stage
+must record the Gowin PnR report's total `Logic` count alongside BSRAM use and Fmax. `Logic` is the
+vendor report's aggregate logic-unit metric, not merely its LUT subtotal. The consolidation and Stage
+5 counts above were reproduced from full-system builds at commits `3f62078` and `df4774a`; Stage 6
+and Stage 7 use their corresponding full-system milestone builds.
 
 ## Ordered major tasks
 
@@ -59,6 +66,9 @@ scope after that policy cleanup. Do not combine all tasks into one change.
 - The first refill revision keeps the current direct-mapped, single-BSRAM cache geometry.
 - The refill buffer is the future CPU/DRAM clock-domain boundary, but its first synchronous implementation is not itself a CDC solution.
 - Two-way associativity, two-BSRAM banking, fetch pipelining, next-line prefetch, and write-back are separate milestones.
+- The sixteen scalar registers are an explicit `CpuV3GprRam` module: synchronous-write,
+  dual-asynchronous-read distributed RAM. Its synchronous write port commits one cycle after the
+  retire; the Rust emulator models that delay exactly, and the two-cycle Execute spacing hides it.
 
 ## Stage 0: remove dead coherence machinery and freeze the final contract
 
@@ -290,8 +300,9 @@ Next-line prefetch reduces DRAM misses. It does not replace Stage 5 and does not
 
 Stage 6 validation used emulator/RTL cycle-by-cycle co-simulation, the complete Icarus hardware suite,
 the two-stage boot testbench, and a full Gowin rebuild plus current-artifact audit. The fitted system
-used 7 BSRAM, 80 RAM16 leaves, 8,936 LUTs, 713 ALUs, and 3,656 logic flip-flops. It closed the 54 MHz
-SDRAM/CPU clock at 54.538 MHz with zero setup and hold violations. On the checksum-protected 2,048-word
+used 10,129 Logic units: 7 BSRAM, 80 RAM16 leaves, 8,936 LUTs, 713 ALUs, and 3,656 logic flip-flops.
+The 54 MHz SDRAM/CPU clock closed at 54.538 MHz with zero setup and hold violations. On the
+checksum-protected 2,048-word
 recursive quicksort, one prefetch was issued and useful, none was useless, and 20,208 candidates were
 dropped because demand traffic or cache state had priority. The benchmark still took 2,652,077 cycles,
 and its redirect trace exposed the separate control-flow recovery bottleneck addressed by Stage 7.
@@ -307,12 +318,15 @@ and its redirect trace exposed the separate control-flow recovery bottleneck add
   backpressured, enqueue the response normally instead of dropping it.
 - Preserve the existing bounded metadata FIFO behavior when an old-path response and redirect happen
   together. Do not add branch prediction or architectural delay slots in this stage.
+- Promote the sixteen scalar registers from inferred cells to an explicit dual-asynchronous-read
+  `CpuV3GprRam` distributed-RAM module, and model its one-cycle synchronous write commit in the Rust
+  emulator.
 
 Stage 7 validation used emulator/RTL cycle-by-cycle co-simulation, bounded Verilog regressions for
 redirect issue, fall-through, backpressure, and stale epochs, the complete Icarus hardware suite, the
 two-stage boot testbench, and a full Gowin rebuild plus current-artifact audit. The fitted system used
-7 BSRAM, 80 RAM16 leaves, 8,927 LUTs, 747 ALUs, and 3,658 logic flip-flops. It closed the 54 MHz
-SDRAM/CPU clock at 57.293 MHz with zero setup and hold violations.
+8,046 Logic units: 7 BSRAM, 88 RAM16 leaves, 6,749 LUTs, 769 ALUs, and 3,422 logic flip-flops. The
+54 MHz SDRAM/CPU clock closed at 57.549 MHz with zero setup and hold violations.
 
 The checksum-protected quicksort retired 708,531 words in 2,467,577 cycles (3.483 cycles per retired
 word), saving 184,500 cycles, or 6.96%, from the Stage 6 baseline. Of 92,249 redirects, 92,244 hot
@@ -321,6 +335,16 @@ The trace attributed 35.09% of all cycles to the data request/response path and 
 Its D-cache observed 152,482 loads, 44,457 write-through stores, and only 315 line refills, making
 write-through store latency the next dominant optimization target. The full quicksort test runs in
 release mode and is explicitly ignored by ordinary debug test runs.
+
+The scalar register file was promoted from inferred cells to an explicit `CpuV3GprRam` module
+(synchronous-write, dual-asynchronous-read distributed RAM), cutting 2,178 LUTs and 236 logic
+flip-flops while adding eight RAM16 leaves and raising Fmax from 57.293 to 57.549 MHz. The FPU
+register-file SSRAM claim dropped its `+8` inferred-cell fudge in favor of a precise split. The GPR
+RAM's synchronous write port commits one cycle after the retire; the Rust emulator stages a
+`gpr_write_enable`/`gpr_write_address`/`gpr_write_data` request and applies it at the start of the
+next clock, matching the RTL exactly. The `sequential_alu_stream_reaches_two_cycle_throughput`
+regression confirms the two-cycle-per-instruction target is unchanged, and a bounded
+`verify_gpr_ram_with_iverilog` test covers the register file directly.
 
 ## Stage 8: D-cache write-back and global maintenance engine
 

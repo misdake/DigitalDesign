@@ -74,13 +74,97 @@ impl BsramImage<16> for FpuRomImage {
 
 type FpuRom = Bsram1Rw1024<16, FpuRomImage>;
 
+/// SSRAM physical bits for the scalar register file: 16 words x 16 bits with
+/// two asynchronous read ports, which Gowin builds from two copies of four
+/// RAM16X4 cells.
+const CPU_V3_GPR_RAM16S: usize = 2 * 4;
+const CPU_V3_GPR_PHYSICAL_BITS: usize = CPU_V3_GPR_RAM16S * 64;
+
+#[derive(Clone, ModuleIo)]
+pub struct CpuV3GprRamInput {
+    pub write_enable: Wire,
+    pub write_address: Wires<4>,
+    pub write_data: Wires<16>,
+    pub read_a_address: Wires<4>,
+    pub read_b_address: Wires<4>,
+}
+
+#[derive(Clone, ModuleIo)]
+pub struct CpuV3GprRamOutput {
+    pub read_a_data: Wires<16>,
+    pub read_b_data: Wires<16>,
+}
+
+/// Synchronous-write, dual-asynchronous-read distributed RAM holding the
+/// sixteen scalar registers.
+pub struct CpuV3GprRam;
+
+impl HardwareIdentity for CpuV3GprRam {
+    const TARGET_RESOURCE_LEAF: bool = true;
+
+    fn verilog_identity() -> VerilogIdentity {
+        VerilogIdentity::new("CpuV3GprRam").namespace(["components", "cpu", "cpu_v3"])
+    }
+}
+
+impl Module for CpuV3GprRam {
+    type Input = CpuV3GprRamInput;
+    type Output = CpuV3GprRamOutput;
+    type EmuState = [u16; 16];
+
+    const USES_MAIN_CLOCK: bool = true;
+
+    fn target_resources() -> Vec<TargetResourceRequest> {
+        vec![TargetResourceRequest::new(SsramBits::new(
+            CPU_V3_GPR_PHYSICAL_BITS as u64,
+        ))]
+    }
+
+    fn create_emu(_input: &Self::Input, _output: &Self::Output) -> Self::EmuState {
+        [0; 16]
+    }
+
+    fn execute_emu(
+        state: &mut Self::EmuState,
+        circuit: &mut CircuitWires,
+        input: &Self::Input,
+        output: &Self::Output,
+    ) {
+        let input = input.sample(circuit);
+        output.drive(
+            circuit,
+            &CpuV3GprRamOutputValue {
+                read_a_data: u64::from(state[input.read_a_address as usize]),
+                read_b_data: u64::from(state[input.read_b_address as usize]),
+            },
+        );
+    }
+
+    fn clock_emu(
+        state: &mut Self::EmuState,
+        circuit: &mut CircuitWires,
+        input: &Self::Input,
+        _output: &Self::Output,
+    ) {
+        let input = input.sample(circuit);
+        if input.write_enable {
+            state[input.write_address as usize] = input.write_data as u16;
+        }
+    }
+
+    fn verilog_source() -> Option<String> {
+        Some(include_str!("cpu_v3_gpr_ram.v").to_string())
+    }
+
+    fn verilog_testbench() -> Option<String> {
+        Some(include_str!("cpu_v3_gpr_ram_tb.v").to_string())
+    }
+}
+
 /// SSRAM physical bits for the FPU register file: 16 vectors x 64 bits with
 /// two asynchronous read ports, which Gowin builds from two RAM16X4 copies
-/// (32 cells), plus the eight RAM16 cells that Gowin additionally infers for
-/// the scalar register file and FPU transfer buffer inside the handwritten
-/// core. The SSRAM audit only rejects usage above the claim, so covering the
-/// incidental inference here keeps the build robust to mapper drift.
-const CPU_V3_FPU_REGISTER_RAM16S: usize = 2 * 4 * 4 + 8;
+/// (32 cells).
+const CPU_V3_FPU_REGISTER_RAM16S: usize = 2 * 4 * 4;
 const CPU_V3_FPU_REGISTER_PHYSICAL_BITS: usize = CPU_V3_FPU_REGISTER_RAM16S * 64;
 
 #[derive(Clone, ModuleIo)]
@@ -234,6 +318,9 @@ struct PendingData {
 
 pub struct CpuV3CoreState {
     registers: [u16; 16],
+    gpr_write_enable: bool,
+    gpr_write_address: u8,
+    gpr_write_data: u16,
     fpu_registers: [FpuVector; 16],
     pc: u16,
     code_segment: u16,
@@ -278,6 +365,9 @@ impl Default for CpuV3CoreState {
     fn default() -> Self {
         Self {
             registers: [0; 16],
+            gpr_write_enable: false,
+            gpr_write_address: 0,
+            gpr_write_data: 0,
             fpu_registers: [[0; 4]; 16],
             pc: 0,
             code_segment: 0,
@@ -329,6 +419,15 @@ impl CpuV3CoreState {
         self.phase = Phase::FetchRequest;
     }
 
+    /// Stages a write to the synchronous-write GPR RAM. The value lands one
+    /// cycle later, matching the RTL's `gpr_write_enable` register + GPR RAM
+    /// synchronous write port.
+    fn write_gpr(&mut self, destination: u8, value: u16) {
+        self.gpr_write_enable = true;
+        self.gpr_write_address = destination;
+        self.gpr_write_data = value;
+    }
+
     fn execute(&mut self, device_read_data: u16) {
         let instruction = self.instruction;
         let opcode = instruction >> 12;
@@ -371,7 +470,7 @@ impl CpuV3CoreState {
             0..=7 if opcode != 2 => {
                 let left = self.registers[usize::from(lhs)];
                 let right = self.registers[usize::from(rhs)];
-                self.registers[usize::from(dst)] = match opcode {
+                self.write_gpr(dst, match opcode {
                     0 => left.wrapping_add(right),
                     1 => left.wrapping_sub(right),
                     3 => left & right,
@@ -380,7 +479,7 @@ impl CpuV3CoreState {
                     6 => left.wrapping_shl(u32::from(right & 15)),
                     7 => ((left as i16) >> u32::from(right & 15)) as u16,
                     _ => unreachable!(),
-                };
+                });
                 self.retire(retire_words);
             }
             2 => self.begin_multiply(
@@ -435,7 +534,7 @@ impl CpuV3CoreState {
                     9 => {
                         let next = self.pc;
                         self.pc = next.wrapping_add(offset);
-                        self.registers[14] = next;
+                        self.write_gpr(14, next);
                     }
                     _ => {
                         self.fault(CPU_V3_FAULT_INVALID_INSTRUCTION, fault_pc);
@@ -446,7 +545,7 @@ impl CpuV3CoreState {
             }
             12 => {
                 if dst & 8 == 0 {
-                    self.registers[usize::from(rhs)] = device_read_data;
+                    self.write_gpr(rhs, device_read_data);
                 }
                 self.retire(retire_words);
             }
@@ -518,7 +617,7 @@ impl CpuV3CoreState {
                 return;
             }
         };
-        self.registers[usize::from(dst)] = result;
+        self.write_gpr(dst, result);
         self.retire(retire_words);
     }
 
@@ -528,26 +627,32 @@ impl CpuV3CoreState {
         let src = field(instruction, 0);
         match function {
             0 => {
-                self.registers[usize::from(dst)] =
-                    self.registers[usize::from(src)].count_ones() as u16
+                self.write_gpr(
+                    dst,
+                    self.registers[usize::from(src)].count_ones() as u16,
+                )
             }
-            1 => self.registers[usize::from(dst)] = self.registers[usize::from(src)],
-            2 => self.registers[usize::from(dst)] = !self.registers[usize::from(src)],
-            3 => self.registers[usize::from(dst)] = self.registers[usize::from(src)].wrapping_neg(),
+            1 => self.write_gpr(dst, self.registers[usize::from(src)]),
+            2 => self.write_gpr(dst, !self.registers[usize::from(src)]),
+            3 => self.write_gpr(dst, self.registers[usize::from(src)].wrapping_neg()),
             4 if dst == 0 => self.pc = self.registers[usize::from(src)],
             // JALR: the link field is architecturally fixed to r14.
             5 if dst == 14 => {
                 let target = self.registers[usize::from(src)];
-                self.registers[usize::from(dst)] = self.pc;
+                self.write_gpr(dst, self.pc);
                 self.pc = target;
             }
             6 => {
-                self.registers[usize::from(dst)] =
-                    sign_extend(self.registers[usize::from(src)] & 0xff, 8)
+                self.write_gpr(
+                    dst,
+                    sign_extend(self.registers[usize::from(src)] & 0xff, 8),
+                )
             }
             7 => {
-                self.registers[usize::from(dst)] =
-                    self.registers[usize::from(src)].leading_zeros() as u16
+                self.write_gpr(
+                    dst,
+                    self.registers[usize::from(src)].leading_zeros() as u16,
+                )
             }
             8 if dst == 0 && src == 0 => {
                 self.retired_words = self.retired_words.wrapping_add(u32::from(retire_words));
@@ -555,14 +660,19 @@ impl CpuV3CoreState {
                 return;
             }
             9 => {
-                self.registers[usize::from(dst)] = u16::from(
-                    (self.registers[usize::from(dst)] as i16)
-                        < (self.registers[usize::from(src)] as i16),
+                self.write_gpr(
+                    dst,
+                    u16::from(
+                        (self.registers[usize::from(dst)] as i16)
+                            < (self.registers[usize::from(src)] as i16),
+                    ),
                 )
             }
             10 => {
-                self.registers[usize::from(dst)] =
-                    u16::from(self.registers[usize::from(dst)] < self.registers[usize::from(src)])
+                self.write_gpr(
+                    dst,
+                    u16::from(self.registers[usize::from(dst)] < self.registers[usize::from(src)]),
+                )
             }
             11 => {
                 self.pending_test = Some(
@@ -575,14 +685,15 @@ impl CpuV3CoreState {
                     Some(self.registers[usize::from(dst)].cmp(&self.registers[usize::from(src)]))
             }
             13 => {
-                self.registers[usize::from(dst)] = match src {
+                let value = match src {
                     0 => self.code_segment,
                     1 => self.data_segment,
                     _ => {
                         self.fault(CPU_V3_FAULT_INVALID_INSTRUCTION, fault_pc);
                         return;
                     }
-                }
+                };
+                self.write_gpr(dst, value);
             }
             14 if dst == 1 => self.data_segment = self.registers[usize::from(src)],
             15 => {
@@ -608,7 +719,7 @@ impl CpuV3CoreState {
                 self.phase = Phase::FpuCommit;
             }
             1 => {
-                self.registers[a] = self.fpu_registers[b][0] as u16;
+                self.write_gpr(a as u8, self.fpu_registers[b][0] as u16);
                 self.phase = Phase::FpuCommit;
             }
             2 | 3 => {
@@ -788,6 +899,13 @@ impl Module for CpuV3Core {
             state.phase = Phase::ResetClear;
             return;
         }
+        // Land the previous cycle's staged GPR write. The RTL registers the
+        // write request at retirement and its synchronous GPR RAM commits one
+        // cycle later, during the following fetch cycle.
+        if state.gpr_write_enable {
+            state.registers[usize::from(state.gpr_write_address)] = state.gpr_write_data;
+            state.gpr_write_enable = false;
+        }
         match state.phase {
             Phase::FetchRequest if input.instruction_request_ready => {
                 if input.instruction_response_valid {
@@ -853,15 +971,14 @@ impl Module for CpuV3Core {
                     }
                 } else {
                     if !pending.write {
-                        state.registers[usize::from(pending.destination)] =
-                            input.data_read_data as u16;
+                        state.write_gpr(pending.destination, input.data_read_data as u16);
                     }
                     state.retire(pending.retire_words);
                 }
             }
             Phase::MultiplyWait => state.phase = Phase::MultiplyCommit,
             Phase::MultiplyCommit => {
-                state.registers[usize::from(state.multiply_destination)] = state.multiply_result;
+                state.write_gpr(state.multiply_destination, state.multiply_result);
                 state.retire(state.multiply_retire_words);
             }
             Phase::FpuExecute => state.execute_fpu_base(),
@@ -1056,6 +1173,7 @@ impl Module for CpuV3Core {
             Phase::ResetClear => {
                 let index = usize::from(state.fpu_clear_index);
                 state.fpu_registers[index] = [0; 4];
+                state.write_gpr(state.fpu_clear_index, 0);
                 if state.fpu_clear_index == 15 {
                     state.phase = Phase::FetchRequest;
                 } else {
@@ -1081,6 +1199,10 @@ impl Module for CpuV3Core {
                 .replace(
                     "__FPU_REGISTER_RAM__",
                     &CpuV3FpuRegisterRam::verilog_identity().module_name(),
+                )
+                .replace(
+                    "__GPR_RAM__",
+                    &CpuV3GprRam::verilog_identity().module_name(),
                 ),
         )
     }
@@ -1091,6 +1213,7 @@ impl Module for CpuV3Core {
             VerilogDependency::new::<DspMulS18>("u_fpu_multiplier"),
             VerilogDependency::new::<FpuRom>("u_fpu_rom"),
             VerilogDependency::new::<CpuV3FpuRegisterRam>("u_fpu_register_ram"),
+            VerilogDependency::new::<CpuV3GprRam>("u_gpr_ram"),
         ]
     }
 
@@ -1389,7 +1512,7 @@ mod tests {
     #[test]
     fn export_accounts_for_integer_and_fpu_multiplier_leaves() {
         let project = VerilogProject::generate::<CpuV3Core>().unwrap();
-        assert_eq!(project.resource_claims.len(), 4);
+        assert_eq!(project.resource_claims.len(), 5);
         assert_eq!(
             project
                 .resource_claims
@@ -1409,6 +1532,13 @@ mod tests {
                 == [ResourceAmount::new(
                     ResourceKind::SsramBit,
                     CPU_V3_FPU_REGISTER_PHYSICAL_BITS as u64,
+                )]
+        }));
+        assert!(project.resource_claims.iter().any(|claim| {
+            claim.resources
+                == [ResourceAmount::new(
+                    ResourceKind::SsramBit,
+                    CPU_V3_GPR_PHYSICAL_BITS as u64,
                 )]
         }));
     }
@@ -1660,5 +1790,11 @@ mod tests {
     #[ignore = "explicit external simulation of the FPU register file"]
     fn verify_fpu_register_ram_with_iverilog() {
         digital_design_hardware::verify_verilog_with_iverilog::<CpuV3FpuRegisterRam>().unwrap();
+    }
+
+    #[test]
+    #[ignore = "explicit external simulation of the scalar register file"]
+    fn verify_gpr_ram_with_iverilog() {
+        digital_design_hardware::verify_verilog_with_iverilog::<CpuV3GprRam>().unwrap();
     }
 }

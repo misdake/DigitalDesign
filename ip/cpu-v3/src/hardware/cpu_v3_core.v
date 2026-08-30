@@ -74,7 +74,6 @@ localparam [1:0] TEST_EQUAL = 1;
 localparam [1:0] TEST_GREATER = 2;
 
 reg [4:0] state = ST_FETCH_REQUEST;
-reg [15:0] registers [0:15];
 reg [15:0] pc_register = 0;
 reg [15:0] code_segment_register = 0;
 reg [15:0] data_segment_register = 0;
@@ -92,6 +91,15 @@ reg [15:0] pending_write_data = 0;
 reg [3:0] pending_destination = 0;
 reg [1:0] pending_retire_words = 0;
 reg [15:0] pending_fault_pc = 0;
+
+// The scalar register file has two asynchronous read ports and one
+// synchronous write port. The FSM registers a write request at retirement;
+// it lands during the following fetch cycle, before the next Execute cycle.
+wire [15:0] gpr_read_a_data;
+wire [15:0] gpr_read_b_data;
+reg gpr_write_enable = 0;
+reg [3:0] gpr_write_address = 0;
+reg [15:0] gpr_write_data = 0;
 
 reg [3:0] multiply_destination = 0;
 reg [1:0] multiply_retire_words = 0;
@@ -154,6 +162,9 @@ wire [3:0] opcode = instruction[15:12];
 wire [3:0] field_d = instruction[11:8];
 wire [3:0] field_a = instruction[7:4];
 wire [3:0] field_b = instruction[3:0];
+wire [3:0] gpr_read_a_address = state == ST_HALTED ? 4'd0 : field_a;
+wire [3:0] gpr_read_b_address =
+    state == ST_EXECUTE && (opcode == 4'h8 || opcode == 4'h9) ? field_d : field_b;
 wire fpu_sine_operation = field_d == 4'he && field_b == 4'h2;
 // DSP lane operands index the wide asynchronous reads directly; the FSM parks
 // both read addresses on Fa/Fb for the whole operation, so fpu_step selects
@@ -471,13 +482,24 @@ wire [15:0] fpu_transpose_lane_1 = fpu_row_1[fpu_transpose_write_index*16 +: 16]
 wire [15:0] fpu_transpose_lane_2 = fpu_row_2[fpu_transpose_write_index*16 +: 16];
 wire [15:0] fpu_transpose_lane_3 = fpu_row_3[fpu_transpose_write_index*16 +: 16];
 wire immediate_multiply = opcode == 4'ha && field_d == 4'h8;
-wire [15:0] multiply_left_word = registers[field_a];
+wire [15:0] multiply_left_word = gpr_read_a_data;
 wire [15:0] multiply_right_word =
-    immediate_multiply ? immediate_signed(instruction) : registers[field_b];
+    immediate_multiply ? immediate_signed(instruction) : gpr_read_b_data;
 assign multiplier_left = {2'b0, multiply_left_word};
 assign multiplier_right = immediate_multiply ?
     {{2{multiply_right_word[15]}}, multiply_right_word} :
     {2'b0, multiply_right_word};
+
+__GPR_RAM__ u_gpr_ram (
+    .clk(clk),
+    .write_enable(gpr_write_enable),
+    .write_address(gpr_write_address),
+    .write_data(gpr_write_data),
+    .read_a_address(gpr_read_a_address),
+    .read_b_address(gpr_read_b_address),
+    .read_a_data(gpr_read_a_data),
+    .read_b_data(gpr_read_b_data)
+);
 
 __DSP_MULTIPLIER__ u_multiplier (
     .clk(clk),
@@ -528,15 +550,14 @@ assign device_index = field_d[2:0];
 assign device_channel = field_a;
 assign device_read_enable = state == ST_EXECUTE && opcode == 4'hc && !field_d[3];
 assign device_write_enable = state == ST_EXECUTE && opcode == 4'hc && field_d[3];
-assign device_write_data = registers[field_b];
+assign device_write_data = gpr_read_b_data;
 assign halted = state == ST_HALTED;
-assign halt_signal = registers[0];
+assign halt_signal = gpr_read_a_data;
 assign fault = state == ST_FAULT;
 assign pc = pc_register;
 assign code_segment = code_segment_register;
 assign data_segment = data_segment_register;
 
-integer register_index;
 reg [15:0] left_value;
 reg [15:0] right_value;
 reg [15:0] immediate_value;
@@ -547,6 +568,7 @@ reg [15:0] jump_target;
 
 always @(posedge clk) begin
     if (reset) begin
+        gpr_write_enable <= 0;
         fpu_rf_write_enable <= 1'b0;
         state <= ST_RESET_CLEAR;
         fpu_clear_index <= 0;
@@ -567,9 +589,8 @@ always @(posedge clk) begin
         retired_words <= 0;
         fault_code <= 0;
         fault_pc <= 0;
-        for (register_index = 0; register_index < 16; register_index = register_index + 1)
-            registers[register_index] <= 0;
     end else begin
+        gpr_write_enable <= 0;
         fpu_rf_write_enable <= 1'b0;
         case (state)
             ST_FETCH_REQUEST: begin
@@ -621,12 +642,16 @@ always @(posedge clk) begin
                     pending_test_valid <= 0;
                     case (opcode)
                         4'h0: begin
-                            registers[field_d] <= registers[field_a] + registers[field_b];
+                            gpr_write_enable <= 1;
+                            gpr_write_address <= field_d;
+                            gpr_write_data <= gpr_read_a_data + gpr_read_b_data;
                             retired_words <= retired_words + success_retire_words;
                             state <= ST_FETCH_REQUEST;
                         end
                         4'h1: begin
-                            registers[field_d] <= registers[field_a] - registers[field_b];
+                            gpr_write_enable <= 1;
+                            gpr_write_address <= field_d;
+                            gpr_write_data <= gpr_read_a_data - gpr_read_b_data;
                             retired_words <= retired_words + success_retire_words;
                             state <= ST_FETCH_REQUEST;
                         end
@@ -636,60 +661,70 @@ always @(posedge clk) begin
                             state <= ST_MULTIPLY_WAIT;
                         end
                         4'h3: begin
-                            registers[field_d] <= registers[field_a] & registers[field_b];
+                            gpr_write_enable <= 1;
+                            gpr_write_address <= field_d;
+                            gpr_write_data <= gpr_read_a_data & gpr_read_b_data;
                             retired_words <= retired_words + success_retire_words;
                             state <= ST_FETCH_REQUEST;
                         end
                         4'h4: begin
-                            registers[field_d] <= registers[field_a] | registers[field_b];
+                            gpr_write_enable <= 1;
+                            gpr_write_address <= field_d;
+                            gpr_write_data <= gpr_read_a_data | gpr_read_b_data;
                             retired_words <= retired_words + success_retire_words;
                             state <= ST_FETCH_REQUEST;
                         end
                         4'h5: begin
-                            registers[field_d] <= registers[field_a] ^ registers[field_b];
+                            gpr_write_enable <= 1;
+                            gpr_write_address <= field_d;
+                            gpr_write_data <= gpr_read_a_data ^ gpr_read_b_data;
                             retired_words <= retired_words + success_retire_words;
                             state <= ST_FETCH_REQUEST;
                         end
                         4'h6: begin
-                            registers[field_d] <= registers[field_a] << registers[field_b][3:0];
+                            gpr_write_enable <= 1;
+                            gpr_write_address <= field_d;
+                            gpr_write_data <= gpr_read_a_data << gpr_read_b_data[3:0];
                             retired_words <= retired_words + success_retire_words;
                             state <= ST_FETCH_REQUEST;
                         end
                         4'h7: begin
-                            registers[field_d] <= $signed(registers[field_a]) >>> registers[field_b][3:0];
+                            gpr_write_enable <= 1;
+                            gpr_write_address <= field_d;
+                            gpr_write_data <= $signed(gpr_read_a_data) >>> gpr_read_b_data[3:0];
                             retired_words <= retired_words + success_retire_words;
                             state <= ST_FETCH_REQUEST;
                         end
                         4'h8, 4'h9: begin
-                            logical_address = registers[field_a] + immediate_signed(instruction);
+                            logical_address = gpr_read_a_data + immediate_signed(instruction);
                             pending_write <= opcode == 4'h9;
                             pending_address <= {data_segment_register, logical_address};
-                            pending_write_data <= registers[field_d];
+                            pending_write_data <= gpr_read_b_data;
                             pending_destination <= field_d;
                             pending_retire_words <= success_retire_words;
                             pending_fault_pc <= current_fault_pc;
                             state <= ST_DATA_REQUEST;
                         end
                         4'ha: begin
-                            left_value = registers[field_a];
+                            left_value = gpr_read_a_data;
                             immediate_value = immediate_signed(instruction);
                             case (field_d)
-                                4'h0: registers[field_a] <= left_value + immediate_value;
-                                4'h1: registers[field_a] <= left_value - immediate_value;
-                                4'h2: registers[field_a] <= left_value & immediate_unsigned(instruction);
-                                4'h3: registers[field_a] <= left_value | immediate_unsigned(instruction);
-                                4'h4: registers[field_a] <= left_value ^ immediate_unsigned(instruction);
-                                4'h5: registers[field_a] <= left_value << instruction[3:0];
-                                4'h6: registers[field_a] <= left_value >> instruction[3:0];
-                                4'h7: registers[field_a] <= $signed(left_value) >>> instruction[3:0];
+                                4'h0: gpr_write_data <= left_value + immediate_value;
+                                4'h1: gpr_write_data <= left_value - immediate_value;
+                                4'h2: gpr_write_data <= left_value & immediate_unsigned(instruction);
+                                4'h3: gpr_write_data <= left_value | immediate_unsigned(instruction);
+                                4'h4: gpr_write_data <= left_value ^ immediate_unsigned(instruction);
+                                4'h5: gpr_write_data <= left_value << instruction[3:0];
+                                4'h6: gpr_write_data <= left_value >> instruction[3:0];
+                                4'h7: gpr_write_data <= $signed(left_value) >>> instruction[3:0];
                                 4'h8: begin
                                     multiply_destination <= field_a;
                                     multiply_retire_words <= success_retire_words;
                                     state <= ST_MULTIPLY_WAIT;
                                 end
-                                4'h9: registers[field_a] <= left_value == immediate_value;
-                                4'ha: registers[field_a] <= $signed(left_value) < $signed(immediate_value);
-                                4'hb: registers[field_a] <= left_value < immediate_unsigned(instruction);
+                                4'h9: gpr_write_data <= left_value == immediate_value;
+                                4'ha: gpr_write_data <= $signed(left_value) < $signed(immediate_value);
+                                4'hb: gpr_write_data <= left_value < immediate_unsigned(instruction);
                                 // CMPSI/CMPUI set the pending test result and
                                 // write no register.
                                 4'hc: begin
@@ -706,9 +741,9 @@ always @(posedge clk) begin
                                         left_value < immediate_unsigned(instruction) ? TEST_LESS :
                                         TEST_GREATER;
                                 end
-                                4'he: registers[field_a] <= prefix_valid ?
+                                4'he: gpr_write_data <= prefix_valid ?
                                     immediate_unsigned(instruction) : sign_extend4(instruction[3:0]);
-                                4'hf: registers[field_a] <= immediate_unsigned(instruction);
+                                4'hf: gpr_write_data <= immediate_unsigned(instruction);
                                 default: begin
                                     fault_code <= FAULT_INVALID_INSTRUCTION;
                                     fault_pc <= current_fault_pc;
@@ -716,6 +751,10 @@ always @(posedge clk) begin
                                 end
                             endcase
                             if (field_d != 4'h8) begin
+                                if (field_d <= 4'hb || field_d >= 4'he) begin
+                                    gpr_write_enable <= 1;
+                                    gpr_write_address <= field_a;
+                                end
                                 retired_words <= retired_words + success_retire_words;
                                 state <= ST_FETCH_REQUEST;
                             end
@@ -752,7 +791,9 @@ always @(posedge clk) begin
                                 state <= ST_FETCH_REQUEST;
                             end else if (field_d == 4'h9) begin
                                 // JALREL: link the fall-through address into r14.
-                                registers[4'he] <= pc_register;
+                                gpr_write_enable <= 1;
+                                gpr_write_address <= 4'he;
+                                gpr_write_data <= pc_register;
                                 pc_register <= pc_register + jump_offset;
                                 retired_words <= retired_words + success_retire_words;
                                 state <= ST_FETCH_REQUEST;
@@ -763,8 +804,11 @@ always @(posedge clk) begin
                             end
                         end
                         4'hc: begin
-                            if (!field_d[3])
-                                registers[field_b] <= device_read_data;
+                            if (!field_d[3]) begin
+                                gpr_write_enable <= 1;
+                                gpr_write_address <= field_b;
+                                gpr_write_data <= device_read_data;
+                            end
                             retired_words <= retired_words + success_retire_words;
                             state <= ST_FETCH_REQUEST;
                         end
@@ -779,27 +823,35 @@ always @(posedge clk) begin
                         4'he: begin
                             case (field_d)
                                 0: begin
-                                    registers[field_a] <= population_count(registers[field_b]);
+                                    gpr_write_enable <= 1;
+                                    gpr_write_address <= field_a;
+                                    gpr_write_data <= population_count(gpr_read_b_data);
                                     retired_words <= retired_words + success_retire_words;
                                     state <= ST_FETCH_REQUEST;
                                 end
                                 1: begin
-                                    registers[field_a] <= registers[field_b];
+                                    gpr_write_enable <= 1;
+                                    gpr_write_address <= field_a;
+                                    gpr_write_data <= gpr_read_b_data;
                                     retired_words <= retired_words + success_retire_words;
                                     state <= ST_FETCH_REQUEST;
                                 end
                                 2: begin
-                                    registers[field_a] <= ~registers[field_b];
+                                    gpr_write_enable <= 1;
+                                    gpr_write_address <= field_a;
+                                    gpr_write_data <= ~gpr_read_b_data;
                                     retired_words <= retired_words + success_retire_words;
                                     state <= ST_FETCH_REQUEST;
                                 end
                                 3: begin
-                                    registers[field_a] <= -registers[field_b];
+                                    gpr_write_enable <= 1;
+                                    gpr_write_address <= field_a;
+                                    gpr_write_data <= -gpr_read_b_data;
                                     retired_words <= retired_words + success_retire_words;
                                     state <= ST_FETCH_REQUEST;
                                 end
                                 4: if (field_a == 0) begin
-                                    pc_register <= registers[field_b];
+                                    pc_register <= gpr_read_b_data;
                                     retired_words <= retired_words + success_retire_words;
                                     state <= ST_FETCH_REQUEST;
                                 end else begin
@@ -810,8 +862,10 @@ always @(posedge clk) begin
                                 // JALR: the link field is architecturally
                                 // fixed to r14.
                                 5: if (field_a == 4'he) begin
-                                    jump_target = registers[field_b];
-                                    registers[4'he] <= pc_register;
+                                    jump_target = gpr_read_b_data;
+                                    gpr_write_enable <= 1;
+                                    gpr_write_address <= 4'he;
+                                    gpr_write_data <= pc_register;
                                     pc_register <= jump_target;
                                     retired_words <= retired_words + success_retire_words;
                                     state <= ST_FETCH_REQUEST;
@@ -821,12 +875,16 @@ always @(posedge clk) begin
                                     state <= ST_FAULT;
                                 end
                                 6: begin
-                                    registers[field_a] <= {{8{registers[field_b][7]}}, registers[field_b][7:0]};
+                                    gpr_write_enable <= 1;
+                                    gpr_write_address <= field_a;
+                                    gpr_write_data <= {{8{gpr_read_b_data[7]}}, gpr_read_b_data[7:0]};
                                     retired_words <= retired_words + success_retire_words;
                                     state <= ST_FETCH_REQUEST;
                                 end
                                 7: begin
-                                    registers[field_a] <= count_leading_zeros(registers[field_b]);
+                                    gpr_write_enable <= 1;
+                                    gpr_write_address <= field_a;
+                                    gpr_write_data <= count_leading_zeros(gpr_read_b_data);
                                     retired_words <= retired_words + success_retire_words;
                                     state <= ST_FETCH_REQUEST;
                                 end
@@ -839,12 +897,16 @@ always @(posedge clk) begin
                                     state <= ST_FAULT;
                                 end
                                 9: begin
-                                    registers[field_a] <= $signed(registers[field_a]) < $signed(registers[field_b]);
+                                    gpr_write_enable <= 1;
+                                    gpr_write_address <= field_a;
+                                    gpr_write_data <= $signed(gpr_read_a_data) < $signed(gpr_read_b_data);
                                     retired_words <= retired_words + success_retire_words;
                                     state <= ST_FETCH_REQUEST;
                                 end
                                 10: begin
-                                    registers[field_a] <= registers[field_a] < registers[field_b];
+                                    gpr_write_enable <= 1;
+                                    gpr_write_address <= field_a;
+                                    gpr_write_data <= gpr_read_a_data < gpr_read_b_data;
                                     retired_words <= retired_words + success_retire_words;
                                     state <= ST_FETCH_REQUEST;
                                 end
@@ -853,8 +915,8 @@ always @(posedge clk) begin
                                 11: begin
                                     pending_test_valid <= 1;
                                     pending_test_result <=
-                                        registers[field_a] == registers[field_b] ? TEST_EQUAL :
-                                        $signed(registers[field_a]) < $signed(registers[field_b]) ? TEST_LESS :
+                                        gpr_read_a_data == gpr_read_b_data ? TEST_EQUAL :
+                                        $signed(gpr_read_a_data) < $signed(gpr_read_b_data) ? TEST_LESS :
                                         TEST_GREATER;
                                     retired_words <= retired_words + success_retire_words;
                                     state <= ST_FETCH_REQUEST;
@@ -864,17 +926,22 @@ always @(posedge clk) begin
                                 12: begin
                                     pending_test_valid <= 1;
                                     pending_test_result <=
-                                        registers[field_a] == registers[field_b] ? TEST_EQUAL :
-                                        registers[field_a] < registers[field_b] ? TEST_LESS :
+                                        gpr_read_a_data == gpr_read_b_data ? TEST_EQUAL :
+                                        gpr_read_a_data < gpr_read_b_data ? TEST_LESS :
                                         TEST_GREATER;
                                     retired_words <= retired_words + success_retire_words;
                                     state <= ST_FETCH_REQUEST;
                                 end
                                 13: begin
-                                    if (field_b == 0)
-                                        registers[field_a] <= code_segment_register;
-                                    else if (field_b == 1)
-                                        registers[field_a] <= data_segment_register;
+                                    if (field_b == 0) begin
+                                        gpr_write_enable <= 1;
+                                        gpr_write_address <= field_a;
+                                        gpr_write_data <= code_segment_register;
+                                    end else if (field_b == 1) begin
+                                        gpr_write_enable <= 1;
+                                        gpr_write_address <= field_a;
+                                        gpr_write_data <= data_segment_register;
+                                    end
                                     else begin
                                         fault_code <= FAULT_INVALID_INSTRUCTION;
                                         fault_pc <= current_fault_pc;
@@ -887,7 +954,7 @@ always @(posedge clk) begin
                                 end
                                 14: begin
                                     if (field_a == 1) begin
-                                        data_segment_register <= registers[field_b];
+                                        data_segment_register <= gpr_read_b_data;
                                         retired_words <= retired_words + success_retire_words;
                                         state <= ST_FETCH_REQUEST;
                                     end else begin
@@ -897,8 +964,8 @@ always @(posedge clk) begin
                                     end
                                 end
                                 15: begin
-                                    code_segment_register <= registers[field_a];
-                                    pc_register <= registers[field_b];
+                                    code_segment_register <= gpr_read_a_data;
+                                    pc_register <= gpr_read_b_data;
                                     retired_words <= retired_words + success_retire_words;
                                     state <= ST_FETCH_REQUEST;
                                 end
@@ -957,8 +1024,11 @@ always @(posedge clk) begin
                             state <= ST_DATA_REQUEST;
                         end
                     end else begin
-                        if (!pending_write)
-                            registers[pending_destination] <= data_read_data;
+                        if (!pending_write) begin
+                            gpr_write_enable <= 1;
+                            gpr_write_address <= pending_destination;
+                            gpr_write_data <= data_read_data;
+                        end
                         retired_words <= retired_words + pending_retire_words;
                         state <= ST_FETCH_REQUEST;
                     end
@@ -966,7 +1036,9 @@ always @(posedge clk) begin
             end
             ST_MULTIPLY_WAIT: state <= ST_MULTIPLY_COMMIT;
             ST_MULTIPLY_COMMIT: begin
-                registers[multiply_destination] <= multiplier_product[15:0];
+                gpr_write_enable <= 1;
+                gpr_write_address <= multiply_destination;
+                gpr_write_data <= multiplier_product[15:0];
                 retired_words <= retired_words + multiply_retire_words;
                 state <= ST_FETCH_REQUEST;
             end
@@ -976,15 +1048,17 @@ always @(posedge clk) begin
                         // FLOAD: one wide write, lane zero plus cleared lanes.
                         fpu_rf_write_enable <= 4'b1111;
                         fpu_rf_write_address <= field_a;
-                        fpu_rf_write_data <= {48'd0, registers[field_b]};
+                        fpu_rf_write_data <= {48'd0, gpr_read_b_data};
                         state <= ST_FPU_COMMIT;
                     end
                     1: begin
-                        registers[field_a] <= fpu_rf_read_b_data[15:0];
+                        gpr_write_enable <= 1;
+                        gpr_write_address <= field_a;
+                        gpr_write_data <= fpu_rf_read_b_data[15:0];
                         state <= ST_FPU_COMMIT;
                     end
                     2, 3: begin
-                        if (registers[field_b][1:0] != 0) begin
+                        if (gpr_read_b_data[1:0] != 0) begin
                             fault_code <= FAULT_DATA_MEMORY;
                             fault_pc <= fpu_fault_pc;
                             state <= ST_FAULT;
@@ -992,7 +1066,7 @@ always @(posedge clk) begin
                             fpu_memory_active <= 1;
                             fpu_memory_lane <= 0;
                             pending_write <= field_d == 3;
-                            pending_address <= {data_segment_register, registers[field_b]};
+                            pending_address <= {data_segment_register, gpr_read_b_data};
                             pending_write_data <= fpu_rf_read_a_data[15:0];
                             fpu_vector_buffer <= fpu_rf_read_a_data;
                             pending_destination <= field_a;
@@ -1303,8 +1377,11 @@ always @(posedge clk) begin
                 state <= ST_FPU_COMMIT;
             end
             ST_RESET_CLEAR: begin
-                // Reset walks the register file back to zero, one vector per
-                // cycle through the wide write port.
+                // Reset walks both register files back to zero, one scalar
+                // word and one vector per cycle through their write ports.
+                gpr_write_enable <= 1;
+                gpr_write_address <= fpu_clear_index[3:0];
+                gpr_write_data <= 0;
                 fpu_rf_write_enable <= 4'b1111;
                 fpu_rf_write_address <= fpu_clear_index[3:0];
                 fpu_rf_write_data <= 64'd0;
