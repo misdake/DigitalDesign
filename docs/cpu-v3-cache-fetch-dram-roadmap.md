@@ -30,7 +30,8 @@ Updated: 2026-08-30
 | 5 | Complete, 2026-08-30 | Pipelined resident cache reads for one accepted lookup per cycle and added a four-entry, epoch-tagged instruction fetch queue. Sequential ALU throughput now approaches two cycles per instruction. | Full system: 9,974 Logic; 7 BSRAM; 61.842 MHz |
 | 6 | Complete, 2026-08-30 | Added demand-progress-triggered, low-priority next-line I-cache prefetch with redirect cancellation, discardable in-flight refills, simulation counters, and demand-safe cancellation races. | Full system: 10,129 Logic; 7 BSRAM; 54.538 MHz |
 | 7 | Complete, 2026-08-30 | Added cycle-profiled emulator benchmarks, a redirect fast path, and an explicit dual-read RAM16 scalar register file. Hot control-transfer fetch waits fell from four cycles to two; the RAM16 register file cut 2,178 LUTs. | Full system: 8,046 Logic; 7 BSRAM; 57.549 MHz |
-| 8-12 | Not started | See the ordered tasks and detailed stage sections below. | - |
+| 8 | Complete, 2026-08-30 | Split the production I/D caches, added write-allocate D-cache stores, dirty eviction, eight-beat SDRAM line writes, and blocking full-cache clean/invalidate with CPU hold and final status. | Full system: 9,548 Logic; 7 BSRAM; 54.918 MHz |
+| 9-12 | Not started | See the ordered tasks and detailed stage sections below. | - |
 
 Starting with System consolidation, PnR evidence is always taken from the complete `cpu_v3_system`
 containing the CPU, boot path, SDRAM controller, and display path. Every subsequent completed stage
@@ -393,6 +394,47 @@ The intrinsic is a full compiler memory barrier: prior stores cannot move after 
 subsequent cached accesses cannot move before hold is released. Do not expose a raw asynchronous start
 API in the first revision. The write-back engine releases DRAM arbitration between bounded line bursts
 so unrelated mandatory memory clients are not starved.
+
+### Implementation decisions (2026-08-30)
+
+- Split the I-cache and D-cache into separate modules. The I-cache becomes read-only: it drops the
+  CPU-side write port, the write-through store path, and the `cpu_write`/`cpu_write_data` inputs. The
+  D-cache gains write-back, dirty eviction, and the maintenance engine.
+- Dirty state lives in a separate 128-bit SSRAM (two 64-bit words, one bit per way per set), not in the
+  tag RAM. The maintenance scan uses a find-first-set / priority encoder over the dirty word, so the
+  next dirty line is located in one cycle instead of scanning one set per cycle.
+- Write-back and maintenance reuse the private 256-bit line buffer: the dirty/victim line is read from
+  the data BSRAM into the buffer, streamed to DRAM as an eight-beat write burst, then the buffer is
+  reused to receive the incoming line.
+- Generalize the arbiter-to-SDRAM `memory_read_line` signal into `memory_line` (a line-transaction
+  flag): `memory_write=0 && memory_line=1` is a line read, `memory_write=1 && memory_line=1` is a line
+  write, and `memory_line=0` is a word transaction. The SDRAM adapter burst length becomes
+  `(display || pending_line) ? 7 : 0`, and its write-data path streams eight 32-bit beats for a line
+  write.
+- The core stays a blocking execute machine: a write-back store hit completes in about two cycles
+  (accept plus lookup), while a store miss read-allocates the full line first; `cpu_request_ready`
+  drops exactly while the D-cache is busy (refill, eviction write-back, or maintenance). A posted-store
+  write buffer is a separate follow-up, not part of this stage.
+- CPU-issued `dcache_invalidate_all()` / `dcache_clean_all()` drive the same maintenance engine: the
+  system-control device registers the command, starts the engine, asserts `CACHE_MAINTENANCE_HOLD`, and
+  releases it with `CACHE_MAINTENANCE_STATUS` on completion. The I-cache invalidate stays single-cycle.
+
+### Implementation result (2026-08-30)
+
+Stage 8 is complete in the fitted `cpu_v3_system`. The production instruction-cache boundary is
+read-only and ties off the proven internal cache engine's unreachable store inputs. The independent
+D-cache implements write-allocate, dirty-victim write-back, and find-first-dirty global maintenance.
+The arbiter and SDRAM adapter carry 32-bit line-write beats; DMA word writes remain in the low half.
+The adapter captures all eight cache beats before issuing the SDRAM command, presents beat zero when
+the command is acknowledged, then advances beats one through seven on consecutive controller cycles.
+
+Focused RTL tests cover the read-only I-cache boundary, D-cache allocation/store/dirty eviction,
+clean/invalidate semantics, line arbitration, and SDRAM word/read/write transactions. The full-system
+RTL regression boots Stage0, Stage1, and both applications. Gowin PnR for the complete system reports
+9,548 Logic, seven BSRAM blocks, and 54.918 MHz at the 54 MHz constraint. This passes with only
+0.918 MHz margin and is narrow timing closure, not a robust frequency margin. Offline artifact audit
+passes; physical board programming and observation of the controller's burst-write sampling remain
+separate hardware validation.
 
 ## Stage 9: integrate software ownership into GPU, DMA, and display APIs
 

@@ -20,8 +20,9 @@ wire [15:0] cpu_read_data;
 wire cpu_error;
 wire memory_request_valid;
 wire memory_write;
+wire memory_line;
 wire [21:0] memory_address;
-wire [15:0] memory_write_data;
+wire [31:0] memory_write_data;
 wire memory_response_ready;
 wire [31:0] prefetch_issued;
 wire [31:0] prefetch_useful;
@@ -45,7 +46,7 @@ reg [21:0] line_base_r = 0;
 reg write_response_pending = 0;
 reg inject_error = 0;
 reg [21:0] last_write_address = 0;
-reg [15:0] last_write_data = 0;
+reg [31:0] last_write_data = 0;
 
 wire [3:0] beat_index = 4'd8 - beats_remaining;
 

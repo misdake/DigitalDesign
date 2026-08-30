@@ -1,6 +1,7 @@
 module CpuV3Core (
     input wire clk,
     input wire reset,
+    input wire hold,
     input wire instruction_request_ready,
     input wire instruction_response_valid,
     input wire [15:0] instruction_data,
@@ -534,22 +535,22 @@ __FPU_REGISTER_RAM__ u_fpu_register_ram (
     .read_b_data(fpu_rf_read_b_data)
 );
 
-assign instruction_request_valid = state == ST_FETCH_REQUEST;
+assign instruction_request_valid = !hold && state == ST_FETCH_REQUEST;
 assign instruction_address = {code_segment_register, pc_register};
 // A queued instruction may be returned in the same cycle that its request is
 // accepted. The legacy split request/response path remains valid for slower
 // instruction memories.
-assign instruction_response_ready = state == ST_FETCH_REQUEST ||
-                                    state == ST_FETCH_RESPONSE;
-assign data_request_valid = state == ST_DATA_REQUEST;
+assign instruction_response_ready = !hold && (state == ST_FETCH_REQUEST ||
+                                    state == ST_FETCH_RESPONSE);
+assign data_request_valid = !hold && state == ST_DATA_REQUEST;
 assign data_write = pending_write;
 assign data_address = pending_address;
 assign data_write_data = pending_write_data;
-assign data_response_ready = state == ST_DATA_RESPONSE;
+assign data_response_ready = !hold && state == ST_DATA_RESPONSE;
 assign device_index = field_d[2:0];
 assign device_channel = field_a;
-assign device_read_enable = state == ST_EXECUTE && opcode == 4'hc && !field_d[3];
-assign device_write_enable = state == ST_EXECUTE && opcode == 4'hc && field_d[3];
+assign device_read_enable = !hold && state == ST_EXECUTE && opcode == 4'hc && !field_d[3];
+assign device_write_enable = !hold && state == ST_EXECUTE && opcode == 4'hc && field_d[3];
 assign device_write_data = gpr_read_b_data;
 assign halted = state == ST_HALTED;
 assign halt_signal = gpr_read_a_data;
@@ -589,7 +590,7 @@ always @(posedge clk) begin
         retired_words <= 0;
         fault_code <= 0;
         fault_pc <= 0;
-    end else begin
+    end else if (!hold) begin
         gpr_write_enable <= 0;
         fpu_rf_write_enable <= 1'b0;
         case (state)

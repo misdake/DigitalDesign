@@ -44,6 +44,10 @@ integer read_beats = 0;
 reg [20:0] pending_read_address = 0;
 reg word_read_seen = 0;
 reg line_burst_seen = 0;
+integer write_beats = 0;
+reg [20:0] pending_write_address = 0;
+reg write_command_pending = 0;
+reg [7:0] pending_write_length = 0;
 integer cycle;
 
 always @(posedge clk) begin
@@ -55,11 +59,27 @@ always @(posedge clk) begin
         sdram_command_ack <= 1;
 
     if (sdram_command_valid && sdram_command == 3'b100) begin
-        if (!sdram_write_mask[0]) memory[{sdram_address[17:0], 1'b0}][7:0] <= sdram_write_data[7:0];
-        if (!sdram_write_mask[1]) memory[{sdram_address[17:0], 1'b0}][15:8] <= sdram_write_data[15:8];
-        if (!sdram_write_mask[2]) memory[{sdram_address[17:0], 1'b1}][7:0] <= sdram_write_data[23:16];
-        if (!sdram_write_mask[3]) memory[{sdram_address[17:0], 1'b1}][15:8] <= sdram_write_data[31:24];
         sdram_command_ack <= 1;
+        write_command_pending <= 1;
+        pending_write_address <= sdram_address;
+        pending_write_length <= sdram_burst_length;
+        if (sdram_burst_length != 0 && sdram_burst_length != 7)
+            $fatal(1, "unexpected write burst length %0d", sdram_burst_length);
+    end else if (write_command_pending) begin
+        if (!sdram_write_mask[0]) memory[{pending_write_address[17:0], 1'b0}][7:0] <= sdram_write_data[7:0];
+        if (!sdram_write_mask[1]) memory[{pending_write_address[17:0], 1'b0}][15:8] <= sdram_write_data[15:8];
+        if (!sdram_write_mask[2]) memory[{pending_write_address[17:0], 1'b1}][7:0] <= sdram_write_data[23:16];
+        if (!sdram_write_mask[3]) memory[{pending_write_address[17:0], 1'b1}][15:8] <= sdram_write_data[31:24];
+        write_command_pending <= 0;
+        if (pending_write_length == 7) begin
+            pending_write_address <= pending_write_address + 1'b1;
+            write_beats <= 7;
+        end
+    end else if (write_beats != 0) begin
+        memory[{pending_write_address[17:0], 1'b0}] <= sdram_write_data[15:0];
+        memory[{pending_write_address[17:0], 1'b1}] <= sdram_write_data[31:16];
+        pending_write_address <= pending_write_address + 1'b1;
+        write_beats <= write_beats - 1;
     end
 
     // One READ command returns burst_length+1 ordered 32-bit beats.

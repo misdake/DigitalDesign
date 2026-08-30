@@ -27,6 +27,7 @@ pub const CPU_V3_FAULT_DATA_MEMORY: u8 = 4;
 #[derive(Clone, ModuleIo)]
 pub struct CpuV3CoreInput {
     pub reset: Wire,
+    pub hold: Wire,
     pub instruction_request_ready: Wire,
     pub instruction_response_valid: Wire,
     pub instruction_data: Wires<16>,
@@ -470,16 +471,19 @@ impl CpuV3CoreState {
             0..=7 if opcode != 2 => {
                 let left = self.registers[usize::from(lhs)];
                 let right = self.registers[usize::from(rhs)];
-                self.write_gpr(dst, match opcode {
-                    0 => left.wrapping_add(right),
-                    1 => left.wrapping_sub(right),
-                    3 => left & right,
-                    4 => left | right,
-                    5 => left ^ right,
-                    6 => left.wrapping_shl(u32::from(right & 15)),
-                    7 => ((left as i16) >> u32::from(right & 15)) as u16,
-                    _ => unreachable!(),
-                });
+                self.write_gpr(
+                    dst,
+                    match opcode {
+                        0 => left.wrapping_add(right),
+                        1 => left.wrapping_sub(right),
+                        3 => left & right,
+                        4 => left | right,
+                        5 => left ^ right,
+                        6 => left.wrapping_shl(u32::from(right & 15)),
+                        7 => ((left as i16) >> u32::from(right & 15)) as u16,
+                        _ => unreachable!(),
+                    },
+                );
                 self.retire(retire_words);
             }
             2 => self.begin_multiply(
@@ -626,12 +630,7 @@ impl CpuV3CoreState {
         let dst = field(instruction, 4);
         let src = field(instruction, 0);
         match function {
-            0 => {
-                self.write_gpr(
-                    dst,
-                    self.registers[usize::from(src)].count_ones() as u16,
-                )
-            }
+            0 => self.write_gpr(dst, self.registers[usize::from(src)].count_ones() as u16),
             1 => self.write_gpr(dst, self.registers[usize::from(src)]),
             2 => self.write_gpr(dst, !self.registers[usize::from(src)]),
             3 => self.write_gpr(dst, self.registers[usize::from(src)].wrapping_neg()),
@@ -642,38 +641,24 @@ impl CpuV3CoreState {
                 self.write_gpr(dst, self.pc);
                 self.pc = target;
             }
-            6 => {
-                self.write_gpr(
-                    dst,
-                    sign_extend(self.registers[usize::from(src)] & 0xff, 8),
-                )
-            }
-            7 => {
-                self.write_gpr(
-                    dst,
-                    self.registers[usize::from(src)].leading_zeros() as u16,
-                )
-            }
+            6 => self.write_gpr(dst, sign_extend(self.registers[usize::from(src)] & 0xff, 8)),
+            7 => self.write_gpr(dst, self.registers[usize::from(src)].leading_zeros() as u16),
             8 if dst == 0 && src == 0 => {
                 self.retired_words = self.retired_words.wrapping_add(u32::from(retire_words));
                 self.phase = Phase::Halted;
                 return;
             }
-            9 => {
-                self.write_gpr(
-                    dst,
-                    u16::from(
-                        (self.registers[usize::from(dst)] as i16)
-                            < (self.registers[usize::from(src)] as i16),
-                    ),
-                )
-            }
-            10 => {
-                self.write_gpr(
-                    dst,
-                    u16::from(self.registers[usize::from(dst)] < self.registers[usize::from(src)]),
-                )
-            }
+            9 => self.write_gpr(
+                dst,
+                u16::from(
+                    (self.registers[usize::from(dst)] as i16)
+                        < (self.registers[usize::from(src)] as i16),
+                ),
+            ),
+            10 => self.write_gpr(
+                dst,
+                u16::from(self.registers[usize::from(dst)] < self.registers[usize::from(src)]),
+            ),
             11 => {
                 self.pending_test = Some(
                     (self.registers[usize::from(dst)] as i16)
@@ -846,9 +831,10 @@ impl Module for CpuV3Core {
     fn execute_emu(
         state: &mut Self::EmuState,
         circuit: &mut CircuitWires,
-        _input: &Self::Input,
+        input: &Self::Input,
         output: &Self::Output,
     ) {
+        let input = input.sample(circuit);
         let pending = state.pending_data;
         let device_instruction = state.phase == Phase::Execute && state.instruction >> 12 == 0xc;
         let device_field = field(state.instruction, 8);
@@ -856,21 +842,19 @@ impl Module for CpuV3Core {
         output.drive(
             circuit,
             &CpuV3CoreOutputValue {
-                instruction_request_valid: state.phase == Phase::FetchRequest,
+                instruction_request_valid: !input.hold && state.phase == Phase::FetchRequest,
                 instruction_address: u64::from(physical_address(state.code_segment, state.pc)),
-                instruction_response_ready: matches!(
-                    state.phase,
-                    Phase::FetchRequest | Phase::FetchResponse
-                ),
-                data_request_valid: state.phase == Phase::DataRequest,
+                instruction_response_ready: !input.hold
+                    && matches!(state.phase, Phase::FetchRequest | Phase::FetchResponse),
+                data_request_valid: !input.hold && state.phase == Phase::DataRequest,
                 data_write: pending.write,
                 data_address: u64::from(pending.address),
                 data_write_data: u64::from(pending.write_data),
-                data_response_ready: state.phase == Phase::DataResponse,
+                data_response_ready: !input.hold && state.phase == Phase::DataResponse,
                 device_index: u64::from(device_field & 7),
                 device_channel: u64::from(field(state.instruction, 4)),
-                device_read_enable: device_instruction && device_field & 8 == 0,
-                device_write_enable: device_instruction && device_field & 8 != 0,
+                device_read_enable: !input.hold && device_instruction && device_field & 8 == 0,
+                device_write_enable: !input.hold && device_instruction && device_field & 8 != 0,
                 device_write_data: u64::from(state.registers[usize::from(device_register)]),
                 halted: state.phase == Phase::Halted,
                 halt_signal: u64::from(state.registers[0]),
@@ -897,6 +881,9 @@ impl Module for CpuV3Core {
             // The RTL reset walks the FPU register file back to zero over
             // 64 cycles; mirror that instead of clearing it in one step.
             state.phase = Phase::ResetClear;
+            return;
+        }
+        if input.hold {
             return;
         }
         // Land the previous cycle's staged GPR write. The RTL registers the
@@ -1288,6 +1275,7 @@ mod tests {
             circuit,
             &CpuV3CoreInputValue {
                 reset: false,
+                hold: false,
                 instruction_request_ready: true,
                 instruction_response_valid: instruction_response.is_some(),
                 instruction_data: u64::from(instruction_response.unwrap_or(0)),

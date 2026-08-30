@@ -8,9 +8,10 @@
 //! hardware.
 
 use cpu_v3::{
-    CpuV3Core, CpuV3CoreInput, CpuV3CoreOutput, CpuV3InstructionFetchQueue,
-    CpuV3InstructionFetchQueueInput, CpuV3InstructionFetchQueueOutput, CpuV3TwoWayCache,
-    CpuV3TwoWayCacheInput, CpuV3TwoWayCacheOutput,
+    CpuV3Core, CpuV3CoreInput, CpuV3CoreOutput, CpuV3DataCache, CpuV3DataCacheInput,
+    CpuV3DataCacheOutput, CpuV3InstructionFetchQueue, CpuV3InstructionFetchQueueInput,
+    CpuV3InstructionFetchQueueOutput, CpuV3TwoWayCache, CpuV3TwoWayCacheInput,
+    CpuV3TwoWayCacheOutput,
 };
 use cpu_v3_tang_nano_20k::{CpuV3MemoryArbiter, CpuV3MemoryArbiterInput, CpuV3MemoryArbiterOutput};
 use digital_design_circuit::{build_circuit, Circuit, Wire, Wires};
@@ -24,6 +25,7 @@ const SDRAM_WORDS: usize = 0x10000;
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 enum SdramState {
     Idle,
+    WriteCapture,
     ActiveReq,
     ActiveWait,
     OpReq,
@@ -44,7 +46,8 @@ struct SdramModel {
     pending_write: bool,
     pending_line: bool,
     pending_address: usize,
-    pending_write_data: u16,
+    pending_write_data: u32,
+    line_write_buffer: [u32; 8],
     beat: u8,
     read_delay: u8,
     response_valid: bool,
@@ -63,6 +66,7 @@ impl SdramModel {
             pending_line: false,
             pending_address: 0,
             pending_write_data: 0,
+            line_write_buffer: [0; 8],
             beat: 0,
             read_delay: 0,
             response_valid: false,
@@ -82,7 +86,7 @@ impl SdramModel {
         write: bool,
         line: bool,
         address: u32,
-        write_data: u16,
+        write_data: u32,
     ) {
         // Evaluate the refresh condition against the pre-edge counter, exactly
         // like `display_sdram.v` (refresh_due = refresh_count >= 600). The
@@ -101,7 +105,21 @@ impl SdramModel {
                     self.pending_line = line;
                     self.pending_address = address as usize;
                     self.pending_write_data = write_data;
+                    if write && line {
+                        self.line_write_buffer[0] = write_data;
+                        self.beat = 1;
+                        self.state = SdramState::WriteCapture;
+                    } else {
+                        self.state = SdramState::ActiveReq;
+                    }
+                }
+            }
+            SdramState::WriteCapture => {
+                self.line_write_buffer[self.beat as usize] = write_data;
+                if self.beat == 7 {
                     self.state = SdramState::ActiveReq;
+                } else {
+                    self.beat += 1;
                 }
             }
             SdramState::ActiveReq => self.state = SdramState::ActiveWait,
@@ -117,7 +135,14 @@ impl SdramModel {
             }
             SdramState::OpWait => {
                 if self.pending_write {
-                    self.memory[self.pending_address] = self.pending_write_data;
+                    if self.pending_line {
+                        for (beat, data) in self.line_write_buffer.iter().copied().enumerate() {
+                            self.memory[self.pending_address + 2 * beat] = data as u16;
+                            self.memory[self.pending_address + 2 * beat + 1] = (data >> 16) as u16;
+                        }
+                    } else {
+                        self.memory[self.pending_address] = self.pending_write_data as u16;
+                    }
                     self.response_valid = true;
                     self.response_data = 0;
                     self.response_last = true;
@@ -187,7 +212,7 @@ pub struct BenchResult {
     pub redirect_max_wait_cycles: u32,
     pub redirect_wait_histogram: [u32; 32],
     pub opcode_retired: [u32; 16],
-    pub sdram_state_cycles: [u64; 9],
+    pub sdram_state_cycles: [u64; 10],
 }
 
 struct TraceRecorder {
@@ -349,6 +374,7 @@ impl TraceRecorder {
             "recovery",
             "refresh_req",
             "refresh_wait",
+            "write_capture",
         ];
         for (state, cycles) in result.sdram_state_cycles.iter().enumerate() {
             writeln!(writer, "sdram_{}_cycles={cycles}", state_names[state]).unwrap();
@@ -375,6 +401,7 @@ fn sdram_state_index(state: SdramState) -> usize {
         SdramState::Recovery => 6,
         SdramState::RefreshReq => 7,
         SdramState::RefreshWait => 8,
+        SdramState::WriteCapture => 9,
     }
 }
 
@@ -414,8 +441,8 @@ pub fn run_benchmark_profiled(
         let mut icache_input = CpuV3TwoWayCacheInput::allocate();
         let icache_output = CpuV3TwoWayCacheOutput::allocate();
 
-        let mut dcache_input = CpuV3TwoWayCacheInput::allocate();
-        let dcache_output = CpuV3TwoWayCacheOutput::allocate();
+        let mut dcache_input = CpuV3DataCacheInput::allocate();
+        let dcache_output = CpuV3DataCacheOutput::allocate();
 
         let mut arbiter_input = CpuV3MemoryArbiterInput::allocate();
         let arbiter_output = CpuV3MemoryArbiterOutput::allocate();
@@ -464,6 +491,7 @@ pub fn run_benchmark_profiled(
         // D-cache <-> arbiter
         arbiter_input.data_request_valid = dcache_output.memory_request_valid;
         arbiter_input.data_write = dcache_output.memory_write;
+        arbiter_input.data_line = dcache_output.memory_line;
         arbiter_input.data_address = dcache_output.memory_address;
         arbiter_input.data_write_data = dcache_output.memory_write_data;
         arbiter_input.data_response_ready = dcache_output.memory_response_ready;
@@ -478,7 +506,7 @@ pub fn run_benchmark_profiled(
         CpuV3Core::emu_connect(&core_input, &core_output);
         CpuV3InstructionFetchQueue::emu_connect(&fetch_input, &fetch_output);
         CpuV3TwoWayCache::emu_connect(&icache_input, &icache_output);
-        CpuV3TwoWayCache::emu_connect(&dcache_input, &dcache_output);
+        CpuV3DataCache::emu_connect(&dcache_input, &dcache_output);
         CpuV3MemoryArbiter::emu_connect(&arbiter_input, &arbiter_output);
 
         (
@@ -528,13 +556,15 @@ pub fn run_benchmark_profiled(
     let mut redirect_max_wait_cycles = 0u32;
     let mut redirect_wait_histogram = [0u32; 32];
     let mut opcode_retired = [0u32; 16];
-    let mut sdram_state_cycles = [0u64; 9];
+    let mut sdram_state_cycles = [0u64; 10];
 
     // Constant external inputs (device reads zero, DMA idle, no flush/invalidate).
     set_bits(core_input.device_read_data, 0, &mut circuit);
+    set_bit(core_input.hold, false, &mut circuit);
     set_bit(fetch_input.flush, false, &mut circuit);
     set_bit(icache_input.invalidate_all, false, &mut circuit);
     set_bit(dcache_input.invalidate_all, false, &mut circuit);
+    set_bit(dcache_input.clean_all, false, &mut circuit);
     set_bit(arbiter_input.dma_request_valid, false, &mut circuit);
     set_bit(arbiter_input.dma_write, false, &mut circuit);
     set_bit(arbiter_input.dma_response_ready, false, &mut circuit);
@@ -637,7 +667,7 @@ pub fn run_benchmark_profiled(
 
         if arb.memory_request_valid && sdram.request_ready() {
             if dcache.memory_request_valid {
-                if arb.memory_read_line {
+                if arb.memory_line {
                     dcache_line_requests = dcache_line_requests.wrapping_add(1);
                 } else {
                     dcache_word_requests = dcache_word_requests.wrapping_add(1);
@@ -655,9 +685,9 @@ pub fn run_benchmark_profiled(
         sdram.clock(
             arb.memory_request_valid,
             arb.memory_write,
-            arb.memory_read_line,
+            arb.memory_line,
             arb.memory_address as u32,
-            arb.memory_write_data as u16,
+            arb.memory_write_data as u32,
         );
 
         if core.fault {
@@ -894,14 +924,14 @@ fn main() {
     }
 
     #[test]
-    fn data_probe_separates_write_through_stores_from_line_refills() {
+    fn data_probe_write_allocates_and_keeps_store_hits_off_sdram() {
         let words = compile(DATA_SOURCE);
         let trace_directory = trace_directory("data");
         let result = run_benchmark_profiled(&words, 1_000_000, Some(&trace_directory));
         assert_eq!(result.halt_signal, 1);
-        assert!(result.dcache_word_requests >= 128);
+        assert_eq!(result.dcache_word_requests, 0);
         assert!(result.dcache_line_requests >= 8);
-        assert_eq!(result.data_requests, result.dcache_word_requests + 128);
+        assert_eq!(result.data_requests, 256);
     }
 
     #[test]

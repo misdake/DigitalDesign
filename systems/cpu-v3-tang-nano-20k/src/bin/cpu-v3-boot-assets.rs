@@ -116,7 +116,7 @@ mod tests {
             .unwrap()
             .1;
         assert_eq!(package.len(), 2_563);
-        assert_eq!(fnv1a64(package), 11_374_111_168_546_388_443);
+        assert_eq!(fnv1a64(package), 2_916_494_193_676_194_166);
         assert!(asset_manifest().contains("asset=stage0.v3bin"));
         assert!(asset_manifest().contains("asset=cpu-v3-boot.map"));
     }

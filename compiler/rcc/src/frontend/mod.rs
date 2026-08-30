@@ -2251,7 +2251,15 @@ fn call_expr(l: &mut FnLower, call: &syn::ExprCall) -> Result<Val, syn::Error> {
             return Err(err(call, "dcache_invalidate_all() takes no arguments"));
         }
         l.b.dcache_invalidate_all();
-        return Ok(Val::Unit);
+        return Ok(Val::V(l.b.dev_recv(0, 5), Ty::U16));
+    }
+    if name.as_str() == "dcache_clean_all" {
+        if !args.is_empty() {
+            return Err(err(call, "dcache_clean_all() takes no arguments"));
+        }
+        let zero = l.b.load_imm(0);
+        l.b.dev_send(0, 4, zero);
+        return Ok(Val::V(l.b.dev_recv(0, 5), Ty::U16));
     }
     if name.as_str() == "icache_invalidate_delayed_and_jump" {
         if args.len() != 2 {
