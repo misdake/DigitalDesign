@@ -514,7 +514,11 @@ __FPU_REGISTER_RAM__ u_fpu_register_ram (
 
 assign instruction_request_valid = state == ST_FETCH_REQUEST;
 assign instruction_address = {code_segment_register, pc_register};
-assign instruction_response_ready = state == ST_FETCH_RESPONSE;
+// A queued instruction may be returned in the same cycle that its request is
+// accepted. The legacy split request/response path remains valid for slower
+// instruction memories.
+assign instruction_response_ready = state == ST_FETCH_REQUEST ||
+                                    state == ST_FETCH_RESPONSE;
 assign data_request_valid = state == ST_DATA_REQUEST;
 assign data_write = pending_write;
 assign data_address = pending_address;
@@ -569,8 +573,22 @@ always @(posedge clk) begin
         fpu_rf_write_enable <= 1'b0;
         case (state)
             ST_FETCH_REQUEST: begin
-                if (instruction_request_ready)
-                    state <= ST_FETCH_RESPONSE;
+                if (instruction_request_ready) begin
+                    if (instruction_response_valid) begin
+                        if (instruction_error) begin
+                            fault_code <= FAULT_INSTRUCTION_MEMORY;
+                            fault_pc <= pc_register;
+                            state <= ST_FAULT;
+                        end else begin
+                            instruction <= instruction_data;
+                            instruction_pc <= pc_register;
+                            pc_register <= pc_register + 1'b1;
+                            state <= ST_EXECUTE;
+                        end
+                    end else begin
+                        state <= ST_FETCH_RESPONSE;
+                    end
+                end
             end
             ST_FETCH_RESPONSE: begin
                 if (instruction_response_valid) begin

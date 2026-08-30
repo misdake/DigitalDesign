@@ -46,12 +46,45 @@ __RESET_CONTROLLER__ u_reset(
     .external_reset_seen(external_reset_seen)
 );
 
+wire core_instruction_request_valid;
+wire [31:0] core_instruction_address;
+wire core_instruction_response_ready;
+wire core_instruction_request_ready;
+wire core_instruction_response_valid;
+wire [15:0] core_instruction_data;
+wire core_instruction_error;
+
 wire instruction_request_valid;
 wire [31:0] instruction_address;
 wire instruction_response_ready;
 wire instruction_response_valid;
 wire [15:0] instruction_data;
 wire instruction_error;
+wire instruction_request_ready;
+wire sysctl_icache_invalidate;
+wire sysctl_dcache_invalidate;
+wire halted;
+wire faulted;
+
+__FETCH_QUEUE__ u_instruction_fetch_queue (
+    .clk(clk),
+    .reset(reset),
+    .flush(sysctl_icache_invalidate || halted || faulted),
+    .core_request_valid(core_instruction_request_valid),
+    .core_address(core_instruction_address),
+    .core_response_ready(core_instruction_response_ready),
+    .memory_request_ready(instruction_request_ready),
+    .memory_response_valid(instruction_response_valid),
+    .memory_read_data(instruction_data),
+    .memory_error(instruction_error),
+    .core_request_ready(core_instruction_request_ready),
+    .core_response_valid(core_instruction_response_valid),
+    .core_read_data(core_instruction_data),
+    .core_error(core_instruction_error),
+    .memory_request_valid(instruction_request_valid),
+    .memory_address(instruction_address),
+    .memory_response_ready(instruction_response_ready)
+);
 
 // Boot window: physical instruction words 0x0000..0x03ff fetch the Stage0
 // BSRAM image while every data access reaches SDRAM through the data cache.
@@ -60,12 +93,25 @@ wire [15:0] boot_read_data;
 wire [15:0] unused_boot_rw_data;
 reg boot_pending = 0;
 reg boot_response_valid = 0;
+reg [9:0] boot_read_address = 0;
 wire boot_request_ready = !boot_pending && !boot_response_valid;
-wire boot_accept = instruction_request_valid && boot_selected && boot_request_ready;
+reg instruction_source_active = 0;
+reg instruction_source_boot = 0;
+reg [2:0] instruction_source_count = 0;
+wire icache_cpu_request_ready;
+wire instruction_source_allowed = !instruction_source_active ||
+                                  instruction_source_boot == boot_selected;
+wire selected_instruction_request_ready = boot_selected ?
+    boot_request_ready : icache_cpu_request_ready;
+assign instruction_request_ready = instruction_source_allowed &&
+                                   selected_instruction_request_ready;
+wire instruction_request_fire = instruction_request_valid &&
+                                instruction_request_ready;
+wire boot_accept = instruction_request_fire && boot_selected;
 
 __BOOT_MEMORY__ u_boot (
     .clk(clk),
-    .read_address(instruction_address[9:0]),
+    .read_address(boot_accept ? instruction_address[9:0] : boot_read_address),
     .rw_write_enable(1'b0),
     .rw_address(10'b0),
     .rw_write_data(16'b0),
@@ -77,18 +123,20 @@ always @(posedge clk) begin
     if (reset) begin
         boot_pending <= 0;
         boot_response_valid <= 0;
+        boot_read_address <= 0;
     end else if (boot_response_valid) begin
-        if (instruction_response_ready)
+        if (instruction_response_ready && instruction_source_active &&
+            instruction_source_boot)
             boot_response_valid <= 0;
     end else if (boot_pending) begin
         boot_pending <= 0;
         boot_response_valid <= 1;
     end else if (boot_accept) begin
+        boot_read_address <= instruction_address[9:0];
         boot_pending <= 1;
     end
 end
 
-wire icache_cpu_request_ready;
 wire icache_cpu_response_valid;
 wire [15:0] icache_cpu_read_data;
 wire icache_cpu_error;
@@ -100,18 +148,17 @@ wire [31:0] icache_memory_read_data;
 wire icache_memory_error;
 wire icache_memory_response_ready;
 
-wire sysctl_icache_invalidate;
-wire sysctl_dcache_invalidate;
-
 __CACHE__ u_instruction_cache (
     .clk(clk),
     .reset(reset),
     .invalidate_all(sysctl_icache_invalidate),
-    .cpu_request_valid(instruction_request_valid && !boot_selected),
+    .cpu_request_valid(instruction_request_valid && !boot_selected &&
+                       instruction_source_allowed),
     .cpu_write(1'b0),
     .cpu_address(instruction_address),
     .cpu_write_data(16'b0),
-    .cpu_response_ready(instruction_response_ready && !boot_selected),
+    .cpu_response_ready(instruction_response_ready && instruction_source_active &&
+                        !instruction_source_boot),
     .memory_request_ready(icache_memory_request_ready),
     .memory_response_valid(icache_memory_response_valid),
     .memory_read_data(icache_memory_read_data),
@@ -127,10 +174,34 @@ __CACHE__ u_instruction_cache (
     .memory_response_ready(icache_memory_response_ready)
 );
 
-assign instruction_response_valid = boot_selected ? boot_response_valid : icache_cpu_response_valid;
-assign instruction_data = boot_selected ? boot_read_data : icache_cpu_read_data;
-assign instruction_error = boot_selected ? 1'b0 : icache_cpu_error;
-wire instruction_request_ready = boot_selected ? boot_request_ready : icache_cpu_request_ready;
+assign instruction_response_valid = instruction_source_active &&
+    (instruction_source_boot ? boot_response_valid : icache_cpu_response_valid);
+assign instruction_data = instruction_source_boot ? boot_read_data : icache_cpu_read_data;
+assign instruction_error = instruction_source_boot ? 1'b0 : icache_cpu_error;
+wire instruction_response_fire = instruction_response_valid &&
+                                 instruction_response_ready;
+
+always @(posedge clk) begin
+    if (reset) begin
+        instruction_source_active <= 0;
+        instruction_source_boot <= 0;
+        instruction_source_count <= 0;
+    end else begin
+        if (instruction_request_fire && !instruction_source_active) begin
+            instruction_source_active <= 1;
+            instruction_source_boot <= boot_selected;
+        end
+        case ({instruction_request_fire, instruction_response_fire})
+            2'b10: instruction_source_count <= instruction_source_count + 1'b1;
+            2'b01: begin
+                instruction_source_count <= instruction_source_count - 1'b1;
+                if (instruction_source_count == 1)
+                    instruction_source_active <= 0;
+            end
+            default: instruction_source_count <= instruction_source_count;
+        endcase
+    end
+end
 
 wire core_data_request_valid;
 wire core_data_write;
@@ -339,9 +410,7 @@ assign core_data_response_valid = dcache_cpu_response_valid;
 assign core_data_read_data = dcache_cpu_read_data;
 assign core_data_error = dcache_cpu_error;
 
-wire halted;
 wire [15:0] halt_signal;
-wire faulted;
 wire [7:0] fault_code;
 wire [15:0] fault_pc;
 wire [15:0] pc;
@@ -352,18 +421,18 @@ wire [31:0] retired_words;
 __CPU_V3_CORE__ u_core (
     .clk(clk),
     .reset(reset),
-    .instruction_request_ready(instruction_request_ready),
-    .instruction_response_valid(instruction_response_valid),
-    .instruction_data(instruction_data),
-    .instruction_error(instruction_error),
+    .instruction_request_ready(core_instruction_request_ready),
+    .instruction_response_valid(core_instruction_response_valid),
+    .instruction_data(core_instruction_data),
+    .instruction_error(core_instruction_error),
     .data_request_ready(core_data_request_ready),
     .data_response_valid(core_data_response_valid),
     .data_read_data(core_data_read_data),
     .data_error(core_data_error),
     .device_read_data(device_read_data),
-    .instruction_request_valid(instruction_request_valid),
-    .instruction_address(instruction_address),
-    .instruction_response_ready(instruction_response_ready),
+    .instruction_request_valid(core_instruction_request_valid),
+    .instruction_address(core_instruction_address),
+    .instruction_response_ready(core_instruction_response_ready),
     .data_request_valid(core_data_request_valid),
     .data_write(core_data_write),
     .data_address(core_data_address),

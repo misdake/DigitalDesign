@@ -32,15 +32,14 @@ module CpuV3TwoWayCache (
 // line.
 
 localparam [3:0] ST_IDLE = 0;
-localparam [3:0] ST_CHECK = 1;
 localparam [3:0] ST_WORD_REQUEST = 3;
 localparam [3:0] ST_WORD_RESPONSE = 4;
 localparam [3:0] ST_LINE_REQUEST = 5;
 localparam [3:0] ST_LINE_RECEIVE = 6;
 localparam [3:0] ST_LINE_DRAIN = 7;
-localparam [3:0] ST_CPU_RESPONSE = 8;
 
 reg [3:0] state = ST_IDLE;
+reg lookup_valid = 0;
 reg pending_write = 0;
 reg [31:0] pending_address = 0;
 reg [15:0] pending_write_data = 0;
@@ -52,11 +51,13 @@ reg pending_way = 0;
 (* syn_ramstyle = "registers" *) reg [31:0] refill_buffer [0:7];
 reg [15:0] response_data = 0;
 reg response_error = 0;
+reg response_valid = 0;
+reg refill_discard = 0;
 reg [63:0] way_0_valid = __INITIAL_VALID__;
 reg [63:0] way_1_valid = 0;
 reg [63:0] victim = 0;
 
-wire cpu_address_valid = cpu_address[31:22] == 0;
+wire pending_address_valid = pending_address[31:22] == 0;
 
 wire [5:0] pending_set = pending_address[9:4];
 wire [11:0] pending_tag = pending_address[21:10];
@@ -70,7 +71,8 @@ wire hit_way = !way_0_hit && way_1_hit;
 wire selected_victim = !way_0_valid[pending_set] ? 1'b0 :
                        !way_1_valid[pending_set] ? 1'b1 : victim[pending_set];
 wire drain_last = drain_beat == 7;
-wire tag_write_enable = state == ST_LINE_DRAIN && drain_last;
+wire tag_write_enable = state == ST_LINE_DRAIN && drain_last &&
+                        !refill_discard && !invalidate_all;
 
 __CACHE_TAGS__ u_tags (
     .clk(clk),
@@ -83,8 +85,10 @@ __CACHE_TAGS__ u_tags (
 );
 
 wire [31:0] drain_data = refill_buffer[drain_beat];
-wire drain_write = state == ST_LINE_DRAIN;
-wire hit_write = state == ST_CHECK && pending_write && pending_hit;
+wire drain_write = state == ST_LINE_DRAIN && !refill_discard && !invalidate_all;
+wire response_space = !response_valid || cpu_response_ready;
+wire hit_write = state == ST_IDLE && lookup_valid && pending_write && pending_hit &&
+                 response_space && !invalidate_all;
 // Interleave ways and word parity across the two BSRAMs:
 //     bank = way XOR word_parity
 // A lookup can therefore read both candidate ways at once, while a refill
@@ -98,9 +102,15 @@ wire [15:0] bank_0_cache_write_data = drain_write ?
     (pending_way ? drain_data[31:16] : drain_data[15:0]) : pending_write_data;
 wire [15:0] bank_1_cache_write_data = drain_write ?
     (pending_way ? drain_data[15:0] : drain_data[31:16]) : pending_write_data;
-// Start both candidate-way reads on the request-acceptance edge. The data is
-// therefore registered and ready when ST_CHECK resolves the parallel tags.
-wire [31:0] cache_lookup_address = state == ST_IDLE ? cpu_address : pending_address;
+// Start both candidate-way reads on the request-acceptance edge. The data and
+// parallel tag comparison are therefore ready when the lookup resolves on the
+// following cycle.
+wire lookup_read_hit = lookup_valid && pending_address_valid &&
+                       !pending_write && pending_hit;
+assign cpu_request_ready = state == ST_IDLE && !invalidate_all &&
+                           (!lookup_valid || (lookup_read_hit && response_space));
+wire accept_cpu_request = cpu_request_valid && cpu_request_ready;
+wire [31:0] cache_lookup_address = accept_cpu_request ? cpu_address : pending_address;
 wire [5:0] cache_lookup_set = cache_lookup_address[9:4];
 wire [3:0] cache_lookup_word = cache_lookup_address[3:0];
 wire [9:0] bank_0_cache_read_address =
@@ -128,10 +138,9 @@ __CACHE_DATA_BANKS__ u_data_banks (
     .bank_1_read_data(bank_1_cache_read_data)
 );
 
-assign cpu_request_ready = state == ST_IDLE;
-assign cpu_response_valid = state == ST_CPU_RESPONSE;
+assign cpu_response_valid = response_valid;
 assign cpu_read_data = response_data;
-assign cpu_error = state == ST_CPU_RESPONSE && response_error;
+assign cpu_error = response_valid && response_error;
 assign memory_request_valid = state == ST_WORD_REQUEST || state == ST_LINE_REQUEST;
 assign memory_write = pending_write;
 assign memory_address = pending_write ? pending_address[21:0] :
@@ -142,36 +151,49 @@ assign memory_response_ready = state == ST_WORD_RESPONSE || state == ST_LINE_REC
 always @(posedge clk) begin
     if (reset) begin
         state <= ST_IDLE;
+        lookup_valid <= 0;
         way_0_valid <= __INITIAL_VALID__;
         way_1_valid <= 0;
         victim <= 0;
         response_error <= 0;
+        response_valid <= 0;
+        refill_discard <= 0;
     end else begin
+        if (response_valid && cpu_response_ready)
+            response_valid <= 0;
         case (state)
-            ST_IDLE: if (cpu_request_valid) begin
-                pending_write <= cpu_write;
-                pending_address <= cpu_address;
-                pending_write_data <= cpu_write_data;
-                response_error <= 0;
-                if (!cpu_address_valid) begin
-                    response_data <= 0;
-                    response_error <= 1;
-                    state <= ST_CPU_RESPONSE;
-                end else begin
-                    state <= ST_CHECK;
+            ST_IDLE: begin
+                if (lookup_valid && response_space) begin
+                    if (!pending_address_valid) begin
+                        response_data <= 0;
+                        response_error <= 1;
+                        response_valid <= 1;
+                        lookup_valid <= 0;
+                    end else if (pending_write) begin
+                        lookup_valid <= 0;
+                        state <= ST_WORD_REQUEST;
+                    end else if (pending_hit) begin
+                        response_data <= cache_read_data;
+                        response_error <= 0;
+                        response_valid <= 1;
+                        lookup_valid <= 0;
+                    end else begin
+                        lookup_valid <= 0;
+                        pending_way <= selected_victim;
+                        refill_beat <= 0;
+                        // An invalidate coincident with miss detection belongs
+                        // to the old fetch epoch. Complete its protocol
+                        // response, but never install the returned line.
+                        refill_discard <= invalidate_all;
+                        state <= ST_LINE_REQUEST;
+                    end
                 end
-            end
-
-            ST_CHECK: begin
-                if (pending_write) begin
-                    state <= ST_WORD_REQUEST;
-                end else if (pending_hit) begin
-                    response_data <= cache_read_data;
-                    state <= ST_CPU_RESPONSE;
-                end else begin
-                    pending_way <= selected_victim;
-                    refill_beat <= 0;
-                    state <= ST_LINE_REQUEST;
+                if (accept_cpu_request) begin
+                    pending_write <= cpu_write;
+                    pending_address <= cpu_address;
+                    pending_write_data <= cpu_write_data;
+                    response_error <= 0;
+                    lookup_valid <= 1;
                 end
             end
 
@@ -181,7 +203,8 @@ always @(posedge clk) begin
             ST_WORD_RESPONSE: if (memory_response_valid) begin
                 response_data <= 0;
                 response_error <= memory_error;
-                state <= ST_CPU_RESPONSE;
+                response_valid <= 1;
+                state <= ST_IDLE;
             end
 
             ST_LINE_REQUEST: if (memory_request_ready) begin
@@ -193,7 +216,8 @@ always @(posedge clk) begin
                 if (memory_error) begin
                     response_data <= 0;
                     response_error <= 1;
-                    state <= ST_CPU_RESPONSE;
+                    response_valid <= 1;
+                    state <= ST_IDLE;
                 end else begin
                     refill_buffer[refill_beat] <= memory_read_data;
                     if (refill_beat == 7) begin
@@ -209,19 +233,20 @@ always @(posedge clk) begin
                 if (drain_beat == pending_word[3:1])
                     response_data <= pending_word[0] ? drain_data[31:16] : drain_data[15:0];
                 if (drain_last) begin
-                    if (pending_way)
-                        way_1_valid[pending_set] <= 1;
-                    else
-                        way_0_valid[pending_set] <= 1;
-                    victim[pending_set] <= !pending_way;
-                    state <= ST_CPU_RESPONSE;
+                    if (!refill_discard && !invalidate_all) begin
+                        if (pending_way)
+                            way_1_valid[pending_set] <= 1;
+                        else
+                            way_0_valid[pending_set] <= 1;
+                        victim[pending_set] <= !pending_way;
+                    end
+                    response_error <= 0;
+                    response_valid <= 1;
+                    state <= ST_IDLE;
                 end else begin
                     drain_beat <= drain_beat + 1'b1;
                 end
             end
-
-            ST_CPU_RESPONSE: if (cpu_response_ready)
-                state <= ST_IDLE;
 
             default: state <= ST_IDLE;
         endcase
@@ -229,6 +254,9 @@ always @(posedge clk) begin
         if (invalidate_all) begin
             way_0_valid <= 0;
             way_1_valid <= 0;
+            if (state == ST_LINE_REQUEST || state == ST_LINE_RECEIVE ||
+                state == ST_LINE_DRAIN)
+                refill_discard <= 1;
         end
     end
 end

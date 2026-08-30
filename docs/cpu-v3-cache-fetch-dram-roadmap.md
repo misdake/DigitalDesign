@@ -26,33 +26,9 @@ Updated: 2026-08-30
 | 2 | Complete, 2026-08-29 | Replaced serialized reads with one real `8 x 32-bit` SDRAM burst. | 4 BSRAM; 55.327 / 56.090 MHz |
 | 3 | Complete, 2026-08-29 | Split each cache into even/odd BSRAM banks; initialization contents are split by word parity and refill drain is eight cycles. | 6 BSRAM; 54.492 / 54.261 MHz |
 | 4 | Complete, 2026-08-29 | Converted both caches to two ways with invalid-way-first deterministic victim replacement. The tag comparison now precedes the data-bank read, so a hit costs one more registered cycle until Stage 5 pipelines it. | 6 BSRAM; 61.425 / 56.530 MHz |
-| 5 | In progress, 2026-08-30 | Reorganized both cache data stores as `bank = way XOR word_parity`, returning both ways together and removing the Stage 4-only `HIT_READ` cycle. Consecutive lookup issue and the fetch queue are still pending. | Merged full system: 7 BSRAM; 57.345 MHz |
+| System consolidation | Complete, 2026-08-30 | Folded the separate CPU V3 boot, SDRAM, and display systems into one fitted `cpu_v3_system`. This changed the full-system baseline to 7 BSRAM before the Stage 5 fetch pipeline work. | 7 BSRAM; 57.345 MHz |
+| 5 | Complete, 2026-08-30 | Pipelined resident cache reads for one accepted lookup per cycle and added a four-entry, epoch-tagged instruction fetch queue. Sequential ALU throughput now approaches two cycles per instruction. | 7 BSRAM; 61.842 MHz |
 | 6-11 | Not started | See the ordered tasks and detailed stage sections below. | - |
-
-Every completed stage passed its targeted RTL/system tests, workspace quality gates, Gowin PnR,
-and strict artifact resource audit. Board programming was not required and was not performed.
-
-Stage 4 validation record: workspace `cargo test` and `cargo clippy`, all four external Icarus cache
-and RAM testbenches with explicit cycle limits, `validate-hardware.ps1 -Mode quick`, then `-Mode pnr`
-with a strict artifact audit on all five Gowin projects. BSRAM use stayed at 6 (4 SDPB + 2 pROM);
-only the tag valid/victim registers grew. No check was skipped.
-
-Stage 5 preparation record: the data banks remain two `1024 x 16` SDPBs per cache, but words now
-map to `bank = way XOR word_parity`. A lookup reads addresses `{parity,set,pair}` and
-`{!parity,set,pair}`, returning both ways in one synchronous BSRAM cycle. The request-acceptance
-edge starts that read, so `ST_CHECK` can select and register the hit data directly without the
-Stage 4-only `ST_HIT_READ`; a refill still writes its even and odd halfwords into separate banks in
-one cycle. Rust model/cache tests, the bounded bank
-and complete-cache Icarus tests, workspace tests/clippy, layering/source-hygiene, hardware quick,
-and full-system PnR/audit passed. The merged full system uses 5 SDPB + 2 pROM and reports
-57.345 MHz for the 54 MHz SDRAM/CPU clock, with zero setup and hold violations. No board
-programming was required or performed.
-
-Standalone resource probes in `D:\fpga\test\_resources` also compare this arrangement against two
-true-dual-port parity banks. Both fit in two BSRAMs and meet 54 MHz: the interleaved version maps as
-2 SDPB (19 logic, 11 registers, 528.760 MHz micro-project Fmax), while the dual-port version maps as
-2 DPB (44 logic, 10 registers, 484.761 MHz micro-project Fmax). These small-project Fmax values
-characterize the memory wrappers only and are not full-system frequency claims.
 
 ## Ordered major tasks
 
@@ -250,7 +226,7 @@ Do not claim that two 50 MHz 16-bit banks directly absorb the full output of a 1
 
 This stage removes fixed hit latency. It is distinct from line prefetch.
 
-Current hit timing for a simple ALU instruction is:
+Stage 4 hit timing for a simple ALU instruction was:
 
 ```text
 cycle 1: FETCH_REQUEST
@@ -259,7 +235,9 @@ cycle 3: registered cache response and instruction latch
 cycle 4: EXECUTE and retire
 ```
 
-Current simple-instruction throughput is therefore one instruction per four cycles when every access hits.
+That implementation retired one simple instruction per four cycles when every access hit. The
+completed Stage 5 frontend removes the fixed per-word request/response bubble while retaining the
+blocking execute machine.
 
 Target organization:
 
