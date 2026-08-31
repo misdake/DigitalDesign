@@ -12,7 +12,7 @@ module CpuV3TwoWayCache (
     input wire cpu_response_ready,
     input wire memory_request_ready,
     input wire memory_response_valid,
-    input wire [31:0] memory_read_data,
+    input wire [63:0] memory_read_data,
     input wire memory_error,
     output wire cpu_request_ready,
     output wire cpu_response_valid,
@@ -22,7 +22,7 @@ module CpuV3TwoWayCache (
     output wire memory_write,
     output wire memory_line,
     output wire [21:0] memory_address,
-    output wire [31:0] memory_write_data,
+    output wire [63:0] memory_write_data,
     output wire memory_response_ready,
     output wire [31:0] prefetch_issued,
     output wire [31:0] prefetch_useful,
@@ -30,9 +30,9 @@ module CpuV3TwoWayCache (
     output wire [31:0] prefetch_dropped
 );
 
-// A read miss issues one aligned line request and receives exactly eight
-// ordered 32-bit beats; beat n carries word 2*n in its low half and word
-// 2*n+1 in its high half. A write issues one word request and receives one
+// A read miss issues one aligned line request and receives exactly four
+// ordered 64-bit beats; beat n carries words 4*n through 4*n+3. A write
+// issues one word request and receives one
 // completion response. An error beat terminates a line response early; no
 // further beats follow it. The line commits to the data BSRAM and tag RAM
 // only after a complete error-free line has landed in the private refill
@@ -199,7 +199,7 @@ assign memory_write = pending_write;
 assign memory_line = !pending_write;
 assign memory_address = pending_write ? pending_address[21:0] :
                         {pending_address[21:4], 4'b0};
-assign memory_write_data = {16'b0, pending_write_data};
+assign memory_write_data = {48'b0, pending_write_data};
 assign memory_response_ready = state == ST_WORD_RESPONSE || state == ST_LINE_RECEIVE;
 
 always @(posedge clk) begin
@@ -328,8 +328,9 @@ always @(posedge clk) begin
                     end
                     state <= ST_IDLE;
                 end else begin
-                    refill_buffer[refill_beat] <= memory_read_data;
-                    if (refill_beat == 7) begin
+                    refill_buffer[{refill_beat[1:0],1'b0}] <= memory_read_data[31:0];
+                    refill_buffer[{refill_beat[1:0],1'b0} + 1'b1] <= memory_read_data[63:32];
+                    if (refill_beat == 3) begin
                         drain_beat <= 0;
                         state <= ST_LINE_DRAIN;
                     end else begin

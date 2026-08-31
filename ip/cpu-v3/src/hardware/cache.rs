@@ -1,7 +1,7 @@
 //! CpuV3 two-way physical-address cache hardware.
 //!
-//! A read miss issues one aligned line request and captures the eight ordered
-//! 32-bit response beats in a private 256-bit refill buffer. The cache then
+//! A read miss issues one aligned line request and captures the four ordered
+//! 64-bit response beats in a private 256-bit refill buffer. The cache then
 //! drains eight 32-bit beats from the buffer into parity/way-interleaved data BSRAMs
 //! and commits tag and valid state only after a complete error-free line, so
 //! an error or invalidate can never expose a partially installed line. The
@@ -24,6 +24,7 @@ pub const CPU_V3_CACHE_WORDS_PER_WAY: usize = 1024;
 pub const CPU_V3_CACHE_WORDS: usize = CPU_V3_CACHE_WAYS * CPU_V3_CACHE_WORDS_PER_WAY;
 pub const CPU_V3_CACHE_LINE_WORDS: usize = 16;
 pub const CPU_V3_CACHE_LINE_BEATS: usize = CPU_V3_CACHE_LINE_WORDS / 2;
+pub const CPU_V3_CACHE_MEMORY_BEATS: usize = CPU_V3_CACHE_LINE_WORDS / 4;
 pub const CPU_V3_CACHE_SETS: usize = CPU_V3_CACHE_WORDS_PER_WAY / CPU_V3_CACHE_LINE_WORDS;
 
 /// Bank `b` contains words where `way XOR word_parity == b`. The initialized
@@ -290,7 +291,7 @@ pub struct CpuV3TwoWayCacheInput {
     pub cpu_response_ready: Wire,
     pub memory_request_ready: Wire,
     pub memory_response_valid: Wire,
-    pub memory_read_data: Wires<32>,
+    pub memory_read_data: Wires<64>,
     pub memory_error: Wire,
 }
 
@@ -304,7 +305,7 @@ pub struct CpuV3TwoWayCacheOutput {
     pub memory_write: Wire,
     pub memory_line: Wire,
     pub memory_address: Wires<22>,
-    pub memory_write_data: Wires<32>,
+    pub memory_write_data: Wires<64>,
     pub memory_response_ready: Wire,
     pub prefetch_issued: Wires<32>,
     pub prefetch_useful: Wires<32>,
@@ -327,7 +328,7 @@ pub struct CpuV3InstructionCacheInput {
     pub cpu_response_ready: Wire,
     pub memory_request_ready: Wire,
     pub memory_response_valid: Wire,
-    pub memory_read_data: Wires<32>,
+    pub memory_read_data: Wires<64>,
     pub memory_error: Wire,
 }
 
@@ -736,9 +737,10 @@ impl<I: CpuV3CacheImage> Module for CpuV3TwoWayCacheWithImage<I> {
                         }
                         next.state = State::Idle;
                     } else {
-                        next.refill_buffer[usize::from(state.refill_beat)] =
-                            input.memory_read_data as u32;
-                        if state.refill_beat as usize + 1 == CPU_V3_CACHE_LINE_BEATS {
+                        let buffer = 2 * usize::from(state.refill_beat);
+                        next.refill_buffer[buffer] = input.memory_read_data as u32;
+                        next.refill_buffer[buffer + 1] = (input.memory_read_data >> 32) as u32;
+                        if state.refill_beat as usize + 1 == CPU_V3_CACHE_MEMORY_BEATS {
                             next.drain_beat = 0;
                             next.state = State::LineDrain;
                         } else {
@@ -934,7 +936,7 @@ pub struct CpuV3DataCacheInput {
     pub cpu_response_ready: Wire,
     pub memory_request_ready: Wire,
     pub memory_response_valid: Wire,
-    pub memory_read_data: Wires<32>,
+    pub memory_read_data: Wires<64>,
     pub memory_error: Wire,
 }
 
@@ -948,7 +950,7 @@ pub struct CpuV3DataCacheOutput {
     pub memory_write: Wire,
     pub memory_line: Wire,
     pub memory_address: Wires<22>,
-    pub memory_write_data: Wires<32>,
+    pub memory_write_data: Wires<64>,
     pub memory_response_ready: Wire,
     pub maintenance_busy: Wire,
     pub maintenance_done: Wire,
@@ -1154,11 +1156,14 @@ impl Module for CpuV3DataCache {
                 line_address,
                 words,
             }) => {
-                let index = state.beat.min(CPU_V3_CACHE_LINE_BEATS - 1) * 2;
+                let index = state.beat.min(CPU_V3_CACHE_MEMORY_BEATS - 1) * 4;
                 (
                     true,
                     line_address.get(),
-                    u32::from(words[index]) | (u32::from(words[index + 1]) << 16),
+                    u64::from(words[index])
+                        | (u64::from(words[index + 1]) << 16)
+                        | (u64::from(words[index + 2]) << 32)
+                        | (u64::from(words[index + 3]) << 48),
                 )
             }
             Some(crate::MainMemoryRequest::WriteWord { .. }) => {
@@ -1181,7 +1186,7 @@ impl Module for CpuV3DataCache {
                 memory_write: write,
                 memory_line: state.request.is_some(),
                 memory_address: u64::from(address),
-                memory_write_data: u64::from(write_data),
+                memory_write_data: write_data,
                 memory_response_ready: matches!(
                     state.phase,
                     DataMemoryPhase::ReadReceive | DataMemoryPhase::WriteResponse
@@ -1279,7 +1284,7 @@ impl Module for CpuV3DataCache {
             }
             DataMemoryPhase::Request => {}
             DataMemoryPhase::WriteStream => {
-                if state.beat == CPU_V3_CACHE_LINE_BEATS - 1 {
+                if state.beat == CPU_V3_CACHE_MEMORY_BEATS - 1 {
                     state.phase = DataMemoryPhase::WriteResponse;
                 } else {
                     state.beat += 1;
@@ -1297,9 +1302,11 @@ impl Module for CpuV3DataCache {
                 if input.memory_error {
                     state.fail_transaction();
                 } else {
-                    state.words[2 * state.beat] = input.memory_read_data as u16;
-                    state.words[2 * state.beat + 1] = (input.memory_read_data >> 16) as u16;
-                    if state.beat == CPU_V3_CACHE_LINE_BEATS - 1 {
+                    state.words[4 * state.beat] = input.memory_read_data as u16;
+                    state.words[4 * state.beat + 1] = (input.memory_read_data >> 16) as u16;
+                    state.words[4 * state.beat + 2] = (input.memory_read_data >> 32) as u16;
+                    state.words[4 * state.beat + 3] = (input.memory_read_data >> 48) as u16;
+                    if state.beat == CPU_V3_CACHE_MEMORY_BEATS - 1 {
                         let action = state
                             .cache
                             .complete(crate::MainMemoryResponse::ReadLine { words: state.words })
@@ -1386,11 +1393,11 @@ mod tests {
     }
 
     /// A line-serving memory model behind the cache port: a read request
-    /// returns eight ordered 32-bit beats (low half = even word), a write
+    /// returns four ordered 64-bit beats, a write
     /// request returns one completion beat.
     struct MemoryModel {
         words: HashMap<u32, u16>,
-        beats: VecDeque<(u32, bool)>,
+        beats: VecDeque<(u64, bool)>,
         requests: usize,
         /// Beat index within a line response that carries an error instead.
         error_on_beat: Option<usize>,
@@ -1412,12 +1419,19 @@ mod tests {
                 self.words.insert(address, write_data);
                 self.beats.push_back((0, false));
             } else {
-                for beat in 0..CPU_V3_CACHE_LINE_BEATS as u32 {
-                    let low = self.word(address + 2 * beat);
-                    let high = self.word(address + 2 * beat + 1);
+                for beat in 0..CPU_V3_CACHE_MEMORY_BEATS as u32 {
+                    let word_0 = self.word(address + 4 * beat);
+                    let word_1 = self.word(address + 4 * beat + 1);
+                    let word_2 = self.word(address + 4 * beat + 2);
+                    let word_3 = self.word(address + 4 * beat + 3);
                     let error = self.error_on_beat == Some(beat as usize);
-                    self.beats
-                        .push_back((u32::from(low) | u32::from(high) << 16, error));
+                    self.beats.push_back((
+                        u64::from(word_0)
+                            | u64::from(word_1) << 16
+                            | u64::from(word_2) << 32
+                            | u64::from(word_3) << 48,
+                        error,
+                    ));
                 }
             }
         }
@@ -1432,7 +1446,7 @@ mod tests {
         input: &CpuV3TwoWayCacheInput,
         cpu_request: Option<(bool, u32, u16)>,
         cpu_response_ready: bool,
-        memory_response: Option<(u32, bool)>,
+        memory_response: Option<(u64, bool)>,
         invalidate_all: bool,
     ) {
         let (cpu_write, cpu_address, cpu_write_data) = cpu_request.unwrap_or_default();
@@ -1451,7 +1465,7 @@ mod tests {
                 cpu_response_ready,
                 memory_request_ready: true,
                 memory_response_valid: memory_response.is_some(),
-                memory_read_data: u64::from(memory_response.unwrap_or_default().0),
+                memory_read_data: memory_response.unwrap_or_default().0,
                 memory_error: memory_response.unwrap_or_default().1,
             },
         );
@@ -1548,7 +1562,7 @@ mod tests {
     }
 
     #[test]
-    fn miss_refills_one_line_through_eight_beats_and_hits_afterwards() {
+    fn miss_refills_one_line_through_four_beats_and_hits_afterwards() {
         let (mut circuit, input, output) = fixture();
         let mut memory = MemoryModel::new();
         for address in 0x120..0x130 {
@@ -1746,7 +1760,7 @@ mod tests {
         cpu_write_data: u16,
         cpu_response_ready: bool,
         memory_response_valid: bool,
-        memory_read_data: u32,
+        memory_read_data: u64,
         memory_error: bool,
     }
 
@@ -1780,7 +1794,7 @@ mod tests {
                 cpu_response_ready,
                 memory_request_ready: true,
                 memory_response_valid: memory_response.is_some(),
-                memory_read_data: u64::from(memory_response.unwrap_or_default().0),
+                memory_read_data: memory_response.unwrap_or_default().0,
                 memory_error: memory_response.unwrap_or_default().1,
             },
         );
@@ -2290,12 +2304,12 @@ mod tests {
              reg [31:0] cpu_address;\n\
              reg [15:0] cpu_write_data;\n\
              reg memory_request_ready, memory_response_valid, memory_error;\n\
-             reg [31:0] memory_read_data;\n\
+             reg [63:0] memory_read_data;\n\
              wire cpu_request_ready, cpu_response_valid, cpu_error;\n\
              wire [15:0] cpu_read_data;\n\
-             wire memory_request_valid, memory_write, memory_response_ready;\n\
+             wire memory_request_valid, memory_write, memory_line, memory_response_ready;\n\
              wire [21:0] memory_address;\n\
-             wire [15:0] memory_write_data;\n\
+             wire [63:0] memory_write_data;\n\
              wire [31:0] prefetch_issued, prefetch_useful, prefetch_useless, prefetch_dropped;\n\n\
              {module_name} dut(.*);\n\n\
              always #5 clk = ~clk;\n\n\
@@ -2314,7 +2328,7 @@ mod tests {
                 "    // cycle {i}\n\
                  cpu_request_valid = 1'b{crv}; cpu_write = 1'b{cw}; cpu_address = 32'h{ca:08x}; cpu_write_data = 16'h{cwd:04x};\n\
                  cpu_response_ready = 1'b{crr}; invalidate_all = 1'b{inv}; prefetch_request_valid = 1'b{prv}; prefetch_address = 32'h{pa:08x}; prefetch_cancel = 1'b{pc};\n\
-                 memory_response_valid = 1'b{mrv}; memory_read_data = 32'h{mrd:08x}; memory_error = 1'b{me};\n\
+                 memory_response_valid = 1'b{mrv}; memory_read_data = 64'h{mrd:016x}; memory_error = 1'b{me};\n\
                  #1;\n\
                  $display(\"OUT %0d %0d %0d %0d %0d %0d %0d %0d %0d\", {i}, cpu_request_ready, cpu_response_valid, cpu_read_data, cpu_error, memory_request_valid, memory_write, memory_address, memory_response_ready);\n\
                  @(posedge clk);\n\

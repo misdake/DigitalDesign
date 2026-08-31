@@ -5,7 +5,7 @@ module CpuV3InstructionCache (
     input wire cpu_request_valid, input wire [31:0] cpu_address,
     input wire cpu_response_ready,
     input wire memory_request_ready, input wire memory_response_valid,
-    input wire [31:0] memory_read_data, input wire memory_error,
+    input wire [63:0] memory_read_data, input wire memory_error,
     output wire cpu_request_ready, output wire cpu_response_valid,
     output wire [15:0] cpu_read_data, output wire cpu_error,
     output wire memory_request_valid, output wire [21:0] memory_address,

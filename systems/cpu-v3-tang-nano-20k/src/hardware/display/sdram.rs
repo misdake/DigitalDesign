@@ -11,22 +11,23 @@ pub struct DisplaySdramPortInput {
     pub cpu_write: Wire,
     pub cpu_line: Wire,
     pub cpu_address: Wires<22>,
-    pub cpu_write_data: Wires<32>,
+    pub cpu_write_data: Wires<64>,
     pub cpu_response_ready: Wire,
     pub display_request_valid: Wire,
     pub display_urgent: Wire,
     pub display_address: Wires<22>,
-    pub controller_read_data: Wires<32>,
+    pub controller_read_data: Wires<64>,
     pub controller_read_valid: Wire,
     pub controller_init_done: Wire,
     pub controller_command_ack: Wire,
+    pub controller_write_data_ready: Wire,
 }
 
 #[derive(Clone, ModuleIo)]
 pub struct DisplaySdramPortOutput {
     pub cpu_request_ready: Wire,
     pub cpu_response_valid: Wire,
-    pub cpu_read_data: Wires<32>,
+    pub cpu_read_data: Wires<64>,
     pub cpu_response_last: Wire,
     pub cpu_error: Wire,
     pub display_request_ready: Wire,
@@ -39,7 +40,8 @@ pub struct DisplaySdramPortOutput {
     pub controller_precharge: Wire,
     pub controller_address: Wires<21>,
     pub controller_write_mask: Wires<4>,
-    pub controller_write_data: Wires<32>,
+    pub controller_write_data: Wires<64>,
+    pub controller_write_data_valid: Wire,
     pub controller_burst_length: Wires<8>,
 }
 

@@ -1,9 +1,8 @@
 //! Machine-owned arbiter between CpuV3 instruction/data traffic, boot DMA,
 //! and the Tang Nano 20K physical SDRAM line/word port.
 //!
-//! Cache clients speak line transactions: one aligned request transfers eight
-//! ordered 32-bit beats (beat n carries word 2*n in its low half and word
-//! 2*n+1 in its high half). The arbiter forwards one request to
+//! Cache clients speak line transactions: one aligned request transfers four
+//! ordered 64-bit beats (beat n carries words 4*n through 4*n+3). The arbiter forwards one request to
 //! the SDRAM adapter, holds ownership while the adapter streams the real
 //! burst, and releases the owner on the accepted beat carrying
 //! `memory_response_last` (or any error beat), so a waiting client can start
@@ -25,7 +24,7 @@ pub struct CpuV3MemoryArbiterInput {
     pub data_write: Wire,
     pub data_line: Wire,
     pub data_address: Wires<22>,
-    pub data_write_data: Wires<32>,
+    pub data_write_data: Wires<64>,
     pub data_response_ready: Wire,
 
     pub dma_request_valid: Wire,
@@ -36,7 +35,7 @@ pub struct CpuV3MemoryArbiterInput {
 
     pub memory_request_ready: Wire,
     pub memory_response_valid: Wire,
-    pub memory_read_data: Wires<32>,
+    pub memory_read_data: Wires<64>,
     pub memory_response_last: Wire,
     pub memory_error: Wire,
 }
@@ -45,12 +44,12 @@ pub struct CpuV3MemoryArbiterInput {
 pub struct CpuV3MemoryArbiterOutput {
     pub instruction_request_ready: Wire,
     pub instruction_response_valid: Wire,
-    pub instruction_read_data: Wires<32>,
+    pub instruction_read_data: Wires<64>,
     pub instruction_error: Wire,
 
     pub data_request_ready: Wire,
     pub data_response_valid: Wire,
-    pub data_read_data: Wires<32>,
+    pub data_read_data: Wires<64>,
     pub data_error: Wire,
 
     pub dma_request_ready: Wire,
@@ -62,7 +61,7 @@ pub struct CpuV3MemoryArbiterOutput {
     pub memory_write: Wire,
     pub memory_line: Wire,
     pub memory_address: Wires<22>,
-    pub memory_write_data: Wires<32>,
+    pub memory_write_data: Wires<64>,
     pub memory_response_ready: Wire,
 }
 
@@ -427,7 +426,10 @@ mod tests {
     }
 
     fn beat_data(n: u64) -> u64 {
-        ((0x2001 + 2 * n) << 16) | (0x2000 + 2 * n)
+        ((0x2003 + 4 * n) << 48)
+            | ((0x2002 + 4 * n) << 32)
+            | ((0x2001 + 4 * n) << 16)
+            | (0x2000 + 4 * n)
     }
 
     /// Forward one instruction beat through to the client.
@@ -480,7 +482,7 @@ mod tests {
             },
             z(),
         ));
-        for n in 0..7 {
+        for n in 0..3 {
             instruction_beat(steps, n, false);
         }
         // The last beat is first presented without the client ready, proving
@@ -488,17 +490,17 @@ mod tests {
         steps.push(TestStep::new(
             CpuV3MemoryArbiterInputValue {
                 memory_response_valid: true,
-                memory_read_data: beat_data(7),
+                memory_read_data: beat_data(3),
                 memory_response_last: true,
                 ..idle()
             },
             CpuV3MemoryArbiterOutputValue {
                 instruction_response_valid: true,
-                instruction_read_data: beat_data(7),
+                instruction_read_data: beat_data(3),
                 ..z()
             },
         ));
-        instruction_beat(steps, 7, true);
+        instruction_beat(steps, 3, true);
     }
 
     #[test]

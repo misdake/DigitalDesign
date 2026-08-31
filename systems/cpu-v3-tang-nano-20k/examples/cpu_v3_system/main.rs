@@ -9,7 +9,7 @@ use digital_design_hardware_common::ResetController;
 use digital_design_hardware_gowin::{
     run_gowin_project_cli, Bsram1R1Rw1024, BsramImage, ErasedSpiFlashImage, GowinCliError,
     GowinDspMode, GowinModuleProject, ResourceCountExpectation, SpiFlashReader, TangNano20K,
-    TangNano20KBootHdmiInputs, TangNano20KBootHdmiOutputs, BSRAM_1024_DEPTH,
+    TangNano20KBootHdmiWideInputs, TangNano20KBootHdmiWideOutputs, BSRAM_1024_DEPTH,
 };
 
 fn main() -> Result<(), GowinCliError> {
@@ -49,8 +49,8 @@ type BoardReset = ResetController<8>;
 struct CpuV3System;
 
 impl Module for CpuV3System {
-    type Input = TangNano20KBootHdmiInputs;
-    type Output = TangNano20KBootHdmiOutputs;
+    type Input = TangNano20KBootHdmiWideInputs;
+    type Output = TangNano20KBootHdmiWideOutputs;
     type EmuState = ();
 
     const USES_MAIN_CLOCK: bool = true;

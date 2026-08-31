@@ -202,6 +202,43 @@ pub struct TangNano20KBootHdmiOutputs {
     pub tmds_data_n: Wires<3>,
 }
 
+/// CPU V3 full-system board inputs after the fixed 32-to-64-bit SDRAM gearbox.
+#[derive(Clone, ModuleIo)]
+pub struct TangNano20KBootHdmiWideInputs {
+    pub buttons: Wires<2>,
+    pub flash_miso: digital_design_circuit::Wire,
+    pub sdram_read_data: Wires<64>,
+    pub sdram_read_valid: digital_design_circuit::Wire,
+    pub sdram_init_done: digital_design_circuit::Wire,
+    pub sdram_command_ack: digital_design_circuit::Wire,
+    pub sdram_write_data_ready: digital_design_circuit::Wire,
+    pub pixel_clock: digital_design_circuit::Wire,
+    pub serial_clock: digital_design_circuit::Wire,
+    pub video_locked: digital_design_circuit::Wire,
+}
+
+/// CPU V3 full-system outputs driving the fixed 64-to-32-bit SDRAM gearbox.
+#[derive(Clone, ModuleIo)]
+pub struct TangNano20KBootHdmiWideOutputs {
+    pub leds: Wires<6>,
+    pub uart_tx: digital_design_circuit::Wire,
+    pub flash_clk: digital_design_circuit::Wire,
+    pub flash_cs_n: digital_design_circuit::Wire,
+    pub flash_mosi: digital_design_circuit::Wire,
+    pub sdram_command_valid: digital_design_circuit::Wire,
+    pub sdram_command: Wires<3>,
+    pub sdram_precharge: digital_design_circuit::Wire,
+    pub sdram_address: Wires<21>,
+    pub sdram_write_mask: Wires<4>,
+    pub sdram_write_data: Wires<64>,
+    pub sdram_write_data_valid: digital_design_circuit::Wire,
+    pub sdram_burst_length: Wires<8>,
+    pub tmds_clk_p: digital_design_circuit::Wire,
+    pub tmds_clk_n: digital_design_circuit::Wire,
+    pub tmds_data_p: Wires<3>,
+    pub tmds_data_n: Wires<3>,
+}
+
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub struct TangNano20K;
 
@@ -457,8 +494,10 @@ impl TangNano20K {
     /// logic, command scheduling, caches, and the controller use the same
     /// 54 MHz clock. Only the SDRAM physical clock uses the PLL's 180-degree
     /// output.
-    fn sdram_debug_uart_binding_with_video(video: bool) -> GowinBoardBinding<Self> {
-        let wrapper = if video {
+    fn sdram_debug_uart_binding_with_video(video: bool, wide_2x: bool) -> GowinBoardBinding<Self> {
+        let wrapper = if wide_2x {
+            include_str!("tang_nano_20k/sdram/service_108m_54m_hdmi.v")
+        } else if video {
             include_str!("tang_nano_20k/sdram/service_54m_hdmi.v")
         } else {
             include_str!("tang_nano_20k/sdram/service_54m.v")
@@ -518,7 +557,7 @@ impl TangNano20K {
             .connect_logic(GowinLogicConnection::new(
                 "sdram_read_data",
                 GowinPortDirection::Input,
-                32,
+                if wide_2x { 64 } else { 32 },
                 "sdram_read_data",
             ))
             .connect_logic(GowinLogicConnection::new(
@@ -572,7 +611,7 @@ impl TangNano20K {
             .connect_logic(GowinLogicConnection::new(
                 "sdram_write_data",
                 GowinPortDirection::Output,
-                32,
+                if wide_2x { 64 } else { 32 },
                 "sdram_write_data",
             ))
             .connect_logic(GowinLogicConnection::new(
@@ -604,6 +643,32 @@ impl TangNano20K {
                     "src/generated/target/tang_nano_20k/sdram/sdrc_hs_name.v".into(),
                 ],
             );
+
+        if wide_2x {
+            extension = extension
+                .connect_logic(GowinLogicConnection::new(
+                    "sdram_write_data_ready",
+                    GowinPortDirection::Input,
+                    1,
+                    "sdram_write_data_ready",
+                ))
+                .connect_logic(GowinLogicConnection::new(
+                    "sdram_write_data_valid",
+                    GowinPortDirection::Output,
+                    1,
+                    "sdram_write_data_valid",
+                ))
+                .add_source_file(
+                    "src/generated/target/tang_nano_20k/sdram/pll_108m_54m.v",
+                    include_str!("tang_nano_20k/sdram/pll_108m_54m.v"),
+                )
+                .add_sdc_constraint(
+                    "create_generated_clock -name controller_clk -source [get_ports {clk}] -multiply_by 4 [get_pins {u_sdram_pll/rpll_inst/CLKOUT}]",
+                )
+                .add_sdc_constraint(
+                    "create_generated_clock -name cpu_clk -source [get_pins {u_sdram_pll/rpll_inst/CLKOUT}] -divide_by 2 [get_pins {u_sdram_pll/rpll_inst/CLKOUTD}]",
+                );
+        }
 
         if video {
             extension = extension
@@ -638,11 +703,17 @@ impl TangNano20K {
                 // dual-clock line buffer, so the crossings must not be timed
                 // as synchronous paths. The PLL-derived 54 MHz clock gets an
                 // explicit generated-clock name so the group can reference it.
+                .add_sdc_constraint(if wide_2x {
+                    "create_generated_clock -name sdram_clk -source [get_ports {clk}] -multiply_by 4 [get_pins {u_sdram_pll/rpll_inst/CLKOUTP}]"
+                } else {
+                    "create_generated_clock -name sdram_clk -source [get_ports {clk}] -multiply_by 2 [get_pins {u_sdram_pll/rpll_inst/CLKOUT}]"
+                })
                 .add_sdc_constraint(
-                    "create_generated_clock -name sdram_clk -source [get_ports {clk}] -multiply_by 2 [get_pins {u_sdram_pll/rpll_inst/CLKOUT}]",
-                )
-                .add_sdc_constraint(
-                    "set_clock_groups -asynchronous -group [get_clocks {pixel_clk}] -group [get_clocks {sdram_clk}]",
+                    if wide_2x {
+                        "set_clock_groups -asynchronous -group [get_clocks {pixel_clk}] -group [get_clocks {cpu_clk controller_clk sdram_clk}]"
+                    } else {
+                        "set_clock_groups -asynchronous -group [get_clocks {pixel_clk}] -group [get_clocks {sdram_clk}]"
+                    },
                 );
         }
 
@@ -689,7 +760,7 @@ impl TangNano20K {
     }
 
     fn sdram_debug_uart_binding() -> GowinBoardBinding<Self> {
-        Self::sdram_debug_uart_binding_with_video(false)
+        Self::sdram_debug_uart_binding_with_video(false, false)
     }
 
     pub fn sdram_debug_uart_project<M>(
@@ -711,7 +782,7 @@ impl TangNano20K {
     {
         GowinModuleProject::new(
             GowinProject::new(project_name)
-                .with_board_binding(Self::sdram_debug_uart_binding_with_video(true)),
+                .with_board_binding(Self::sdram_debug_uart_binding_with_video(true, false)),
         )
     }
 
@@ -760,11 +831,13 @@ impl TangNano20K {
     /// This is the full CPU V3 system surface: the board wrapper owns the SDRAM
     /// PLL/Controller HS and the video PLL, while the Flash reader leaf owns the
     /// SPI Flash device. Higher-level logic claims none of these devices.
-    pub fn boot_hdmi_memory_project<M>(project_name: impl Into<String>) -> GowinModuleProject<Self, M>
+    pub fn boot_hdmi_memory_project<M>(
+        project_name: impl Into<String>,
+    ) -> GowinModuleProject<Self, M>
     where
-        M: Module<Input = TangNano20KBootHdmiInputs, Output = TangNano20KBootHdmiOutputs>,
+        M: Module<Input = TangNano20KBootHdmiWideInputs, Output = TangNano20KBootHdmiWideOutputs>,
     {
-        let binding = Self::sdram_debug_uart_binding_with_video(true)
+        let binding = Self::sdram_debug_uart_binding_with_video(true, true)
             .bind_port(
                 GowinPortDirection::Output,
                 "flash_clk",
