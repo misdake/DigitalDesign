@@ -34,17 +34,15 @@ module CpuV3TwoWayCache (
 // ordered 64-bit beats; beat n carries words 4*n through 4*n+3. A write
 // issues one word request and receives one
 // completion response. An error beat terminates a line response early; no
-// further beats follow it. The line commits to the data BSRAM and tag RAM
-// only after a complete error-free line has landed in the private refill
-// buffer, so an error or invalidate can never expose a partially installed
-// line.
+// further beats follow it. Each line beat writes four words directly through
+// the two ports of each parity bank. The victim remains invalid until the
+// final error-free beat commits its tag.
 
 localparam [3:0] ST_IDLE = 0;
 localparam [3:0] ST_WORD_REQUEST = 3;
 localparam [3:0] ST_WORD_RESPONSE = 4;
 localparam [3:0] ST_LINE_REQUEST = 5;
 localparam [3:0] ST_LINE_RECEIVE = 6;
-localparam [3:0] ST_LINE_DRAIN = 7;
 
 reg [3:0] state = ST_IDLE;
 reg lookup_valid = 0;
@@ -53,11 +51,8 @@ reg pending_write = 0;
 reg [31:0] pending_address = 0;
 reg [15:0] pending_write_data = 0;
 reg [2:0] refill_beat = 0;
-reg [2:0] drain_beat = 0;
 reg pending_way = 0;
-// The refill buffer is plain flip-flops, not inferred RAM: it is the future
-// CPU/DRAM clock-domain crossing structure and must stay a register array.
-(* syn_ramstyle = "registers" *) reg [31:0] refill_buffer [0:7];
+reg [15:0] refill_response_data = 0;
 reg [15:0] response_data = 0;
 reg response_error = 0;
 reg response_valid = 0;
@@ -109,11 +104,12 @@ wire pending_hit = way_0_hit || way_1_hit;
 wire hit_way = !way_0_hit && way_1_hit;
 wire selected_victim = !way_0_valid[pending_set] ? 1'b0 :
                        !way_1_valid[pending_set] ? 1'b1 : victim[pending_set];
-wire drain_last = drain_beat == 7;
 wire prefetch_refill_cancelled = pending_is_prefetch && prefetch_cancel;
-wire tag_write_enable = state == ST_LINE_DRAIN && drain_last &&
+wire refill_commit = state == ST_LINE_RECEIVE && memory_response_valid &&
+                        !memory_error && refill_beat == 3 &&
                         !refill_discard && !invalidate_all &&
                         !prefetch_refill_cancelled;
+wire tag_write_enable = refill_commit;
 
 __CACHE_TAGS__ u_tags (
     .clk(clk),
@@ -125,25 +121,11 @@ __CACHE_TAGS__ u_tags (
     .way_1_read_data(way_1_tag_read_data)
 );
 
-wire [31:0] drain_data = refill_buffer[drain_beat];
-wire drain_write = state == ST_LINE_DRAIN && !refill_discard &&
-                   !invalidate_all && !prefetch_refill_cancelled;
 wire response_space = !response_valid || cpu_response_ready;
 wire hit_write = state == ST_IDLE && lookup_valid && pending_write && pending_hit &&
                  response_space && !invalidate_all;
-// Interleave ways and word parity across the two BSRAMs:
-//     bank = way XOR word_parity
-// A lookup can therefore read both candidate ways at once, while a refill
-// still writes its even and odd halfwords into different banks in one cycle.
-wire hit_write_bank = hit_way ^ pending_word[0];
-wire bank_0_cache_write_enable = drain_write || (hit_write && !hit_write_bank);
-wire bank_1_cache_write_enable = drain_write || (hit_write && hit_write_bank);
-wire [9:0] cache_write_address = drain_write ?
-    {pending_way, pending_set, drain_beat} : {hit_way, pending_set, pending_word[3:1]};
-wire [15:0] bank_0_cache_write_data = drain_write ?
-    (pending_way ? drain_data[31:16] : drain_data[15:0]) : pending_write_data;
-wire [15:0] bank_1_cache_write_data = drain_write ?
-    (pending_way ? drain_data[15:0] : drain_data[31:16]) : pending_write_data;
+wire refill_write = state == ST_LINE_RECEIVE && memory_response_valid && !memory_error &&
+                    !refill_discard && !invalidate_all && !prefetch_refill_cancelled;
 // Start both candidate-way reads on the request-acceptance edge. The data and
 // parallel tag comparison are therefore ready when the lookup resolves on the
 // following cycle.
@@ -165,29 +147,39 @@ wire [31:0] cache_lookup_address = accept_cpu_request ? cpu_address :
                                    pending_address;
 wire [5:0] cache_lookup_set = cache_lookup_address[9:4];
 wire [3:0] cache_lookup_word = cache_lookup_address[3:0];
-wire [9:0] bank_0_cache_read_address =
-    {cache_lookup_word[0], cache_lookup_set, cache_lookup_word[3:1]};
-wire [9:0] bank_1_cache_read_address =
-    {!cache_lookup_word[0], cache_lookup_set, cache_lookup_word[3:1]};
-wire [15:0] bank_0_cache_read_data;
-wire [15:0] bank_1_cache_read_data;
-wire [15:0] way_0_cache_read_data =
-    pending_word[0] ? bank_1_cache_read_data : bank_0_cache_read_data;
-wire [15:0] way_1_cache_read_data =
-    pending_word[0] ? bank_0_cache_read_data : bank_1_cache_read_data;
+wire [9:0] lookup_way_0_address = {1'b0, cache_lookup_set, cache_lookup_word[3:1]};
+wire [9:0] lookup_way_1_address = {1'b1, cache_lookup_set, cache_lookup_word[3:1]};
+wire [9:0] refill_address_a = {pending_way, pending_set, refill_beat[1:0], 1'b0};
+wire [9:0] refill_address_b = {pending_way, pending_set, refill_beat[1:0], 1'b1};
+wire [9:0] hit_write_address = {hit_way, pending_set, pending_word[3:1]};
+wire [15:0] bank_0_a_read_data, bank_0_b_read_data;
+wire [15:0] bank_1_a_read_data, bank_1_b_read_data;
+wire [15:0] way_0_cache_read_data = pending_word[0] ?
+    bank_1_a_read_data : bank_0_a_read_data;
+wire [15:0] way_1_cache_read_data = pending_word[0] ?
+    bank_1_b_read_data : bank_0_b_read_data;
 wire [15:0] cache_read_data = hit_way ? way_1_cache_read_data : way_0_cache_read_data;
 
 __CACHE_DATA_BANKS__ u_data_banks (
     .clk(clk),
-    .bank_0_read_address(bank_0_cache_read_address),
-    .bank_1_read_address(bank_1_cache_read_address),
-    .bank_0_write_enable(bank_0_cache_write_enable),
-    .bank_1_write_enable(bank_1_cache_write_enable),
-    .write_address(cache_write_address),
-    .bank_0_write_data(bank_0_cache_write_data),
-    .bank_1_write_data(bank_1_cache_write_data),
-    .bank_0_read_data(bank_0_cache_read_data),
-    .bank_1_read_data(bank_1_cache_read_data)
+    .bank_0_a_write_enable(refill_write || (hit_write && !pending_word[0])),
+    .bank_0_a_address(refill_write ? refill_address_a :
+        (hit_write && !pending_word[0] ? hit_write_address : lookup_way_0_address)),
+    .bank_0_a_write_data(refill_write ? memory_read_data[15:0] : pending_write_data),
+    .bank_0_a_read_data(bank_0_a_read_data),
+    .bank_0_b_write_enable(refill_write),
+    .bank_0_b_address(refill_write ? refill_address_b : lookup_way_1_address),
+    .bank_0_b_write_data(memory_read_data[47:32]),
+    .bank_0_b_read_data(bank_0_b_read_data),
+    .bank_1_a_write_enable(refill_write || (hit_write && pending_word[0])),
+    .bank_1_a_address(refill_write ? refill_address_a :
+        (hit_write && pending_word[0] ? hit_write_address : lookup_way_0_address)),
+    .bank_1_a_write_data(refill_write ? memory_read_data[31:16] : pending_write_data),
+    .bank_1_a_read_data(bank_1_a_read_data),
+    .bank_1_b_write_enable(refill_write),
+    .bank_1_b_address(refill_write ? refill_address_b : lookup_way_1_address),
+    .bank_1_b_write_data(memory_read_data[63:48]),
+    .bank_1_b_read_data(bank_1_b_read_data)
 );
 
 assign cpu_response_valid = response_valid;
@@ -307,6 +299,8 @@ always @(posedge clk) begin
                         prefetch_armed <= 1;
                     end
                 end else if (memory_request_ready) begin
+                    if (pending_way) way_1_valid[pending_set] <= 0;
+                    else way_0_valid[pending_set] <= 0;
                     refill_beat <= 0;
                     if (pending_is_prefetch)
                         prefetch_issued_count <= prefetch_issued_count + 1'b1;
@@ -328,21 +322,14 @@ always @(posedge clk) begin
                     end
                     state <= ST_IDLE;
                 end else begin
-                    refill_buffer[{refill_beat[1:0],1'b0}] <= memory_read_data[31:0];
-                    refill_buffer[{refill_beat[1:0],1'b0} + 1'b1] <= memory_read_data[63:32];
+                    if (refill_beat == pending_word[3:2])
+                        case (pending_word[1:0])
+                            0: refill_response_data <= memory_read_data[15:0];
+                            1: refill_response_data <= memory_read_data[31:16];
+                            2: refill_response_data <= memory_read_data[47:32];
+                            default: refill_response_data <= memory_read_data[63:48];
+                        endcase
                     if (refill_beat == 3) begin
-                        drain_beat <= 0;
-                        state <= ST_LINE_DRAIN;
-                    end else begin
-                        refill_beat <= refill_beat + 1'b1;
-                    end
-                end
-            end
-
-            ST_LINE_DRAIN: begin
-                if (drain_beat == pending_word[3:1])
-                    response_data <= pending_word[0] ? drain_data[31:16] : drain_data[15:0];
-                if (drain_last) begin
                     if (!refill_discard && !invalidate_all &&
                         !prefetch_refill_cancelled) begin
                         if (pending_way) begin
@@ -359,13 +346,17 @@ always @(posedge clk) begin
                         victim[pending_set] <= !pending_way;
                     end
                     if (!pending_is_prefetch) begin
+                        response_data <= pending_word[3:2] == 3 ?
+                            (pending_word[1:0] == 0 ? memory_read_data[15:0] :
+                             pending_word[1:0] == 1 ? memory_read_data[31:16] :
+                             pending_word[1:0] == 2 ? memory_read_data[47:32] : memory_read_data[63:48]) :
+                            refill_response_data;
                         response_error <= 0;
                         response_valid <= 1;
                     end
                     pending_is_prefetch <= 0;
                     state <= ST_IDLE;
-                end else begin
-                    drain_beat <= drain_beat + 1'b1;
+                    end else refill_beat <= refill_beat + 1'b1;
                 end
             end
 
@@ -396,7 +387,7 @@ always @(posedge clk) begin
                 (pending_is_prefetch &&
                  ((state == ST_IDLE && lookup_valid) ||
                   (state == ST_LINE_REQUEST && !prefetch_armed) ||
-                  ((state == ST_LINE_RECEIVE || state == ST_LINE_DRAIN ||
+                  ((state == ST_LINE_RECEIVE ||
                     (state == ST_LINE_REQUEST && prefetch_armed)) &&
                    !refill_discard))))
                 prefetch_dropped_count <= prefetch_dropped_count + 1'b1;
@@ -412,7 +403,7 @@ always @(posedge clk) begin
                 prefetch_armed <= 0;
                 refill_discard <= 0;
             end else if (pending_is_prefetch &&
-                         (state == ST_LINE_RECEIVE || state == ST_LINE_DRAIN ||
+                         (state == ST_LINE_RECEIVE ||
                           (state == ST_LINE_REQUEST && prefetch_armed))) begin
                 refill_discard <= 1;
             end
@@ -425,8 +416,7 @@ always @(posedge clk) begin
             way_1_valid <= 0;
             way_0_prefetched <= 0;
             way_1_prefetched <= 0;
-            if (state == ST_LINE_REQUEST || state == ST_LINE_RECEIVE ||
-                state == ST_LINE_DRAIN)
+            if (state == ST_LINE_REQUEST || state == ST_LINE_RECEIVE)
                 refill_discard <= 1;
         end
     end

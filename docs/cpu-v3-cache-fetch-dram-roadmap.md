@@ -31,8 +31,8 @@ Updated: 2026-08-31
 | 6 | Complete, 2026-08-30 | Added demand-progress-triggered, low-priority next-line I-cache prefetch with redirect cancellation, discardable in-flight refills, simulation counters, and demand-safe cancellation races. | Full system: 10,129 Logic; 7 BSRAM; 54.538 MHz |
 | 7 | Complete, 2026-08-30 | Added cycle-profiled emulator benchmarks, a redirect fast path, and an explicit dual-read RAM16 scalar register file. Hot control-transfer fetch waits fell from four cycles to two; the RAM16 register file cut 2,178 LUTs. | Full system: 8,046 Logic; 7 BSRAM; 57.549 MHz |
 | 8 | Complete, 2026-08-30 | Split the production I/D caches, added write-allocate D-cache stores, dirty eviction, eight-beat SDRAM line writes, and blocking full-cache clean/invalidate with CPU hold and final status. | Full system: 9,548 Logic; 7 BSRAM; 54.918 MHz |
-| 9 | Complete, 2026-08-31 | Doubled the physical SDRAM/controller clock to 108 MHz and exposed a four-beat 64-bit line interface to the otherwise unchanged 54 MHz CPU side. | Full system: 10,345 Logic; 7 BSRAM; CPU 54.965 MHz; Controller HS 171.327 MHz |
-| 10 | Not started | Convert the cache data BSRAMs to true dual port and remove the private line buffers. | - |
+| 9 | Complete, 2026-08-31 | Added an exact related-clock 54/108 MHz gearbox. Cache/arbiter line traffic is 4 x 64-bit at 54 MHz; the Controller HS and SDRAM side remains 8 x 32-bit at 108 MHz. | Full system: 10,345 Logic; 7 BSRAM; CPU 54.965 MHz; controller 171.327 MHz |
+| 10 | Complete, 2026-08-31 | Replaced XOR/way-interleaved cache storage with two parity-split DPBs per cache. Refill and D-cache write-back now transfer directly as 4 x 64-bit beats without private 256-bit cache buffers. | Full system: 9,977 Logic; 4 DPB + 1 SDPB + 2 pROM; CPU 54.692 MHz; controller 184.536 MHz; pixel 80.543 MHz; TNS 0 |
 
 Starting with System consolidation, PnR evidence is always taken from the complete `cpu_v3_system`
 containing the CPU, boot path, SDRAM controller, and display path. Every subsequent completed stage
@@ -52,8 +52,8 @@ and Stage 7 use their corresponding full-system milestone builds.
 6. Add low-priority next-line I-cache prefetch, reusing the 256-bit refill path.
 7. Profile representative workloads and shorten control-flow redirect recovery without branch prediction.
 8. Change D-cache to write-back and implement dirty eviction plus global clean/invalidate maintenance in the same change.
-9. Run DRAM at exactly twice the CPU frequency through a related-clock 2:1 gearbox, widening the CPU-side line interface to 64 bits while leaving cache storage and buffers unchanged.
-10. Convert both caches to true-dual-port parity banks, transfer refill/write-back data directly at 64 bits per cycle, and remove their private 256-bit line buffers.
+9. Run DRAM at exactly twice the CPU frequency through a related-clock 2:1 gearbox while keeping the rest of the system at 54 MHz.
+10. Convert each cache's two data BSRAMs to true-dual-port parity banks and transfer cache lines directly as four 64-bit beats.
 
 Task 0 should happen before Tasks 1 and 2. Tasks 1 and 2 remain the next performance implementation
 scope after that policy cleanup. Do not combine all tasks into one change.
@@ -61,11 +61,10 @@ scope after that policy cleanup. Do not combine all tasks into one change.
 ## Architectural decisions
 
 - A cache line remains public and fixed at 16 physical 16-bit words, or 32 bytes.
-- One cache-side DRAM line transfer is four ordered 64-bit beats; the physical controller consumes
-  eight ordered 32-bit beats at exactly twice the clock frequency.
-- I-cache and D-cache each own a private eight-entry 32-bit refill buffer.
+- The cache/arbiter view of one line is four ordered 64-bit beats at 54 MHz; the physical controller view is eight ordered 32-bit beats at 108 MHz.
+- I-cache and D-cache contain no private complete-line refill or write-back buffer.
 - The first refill revision keeps the current direct-mapped, single-BSRAM cache geometry.
-- The refill buffer is the future CPU/DRAM clock-domain boundary, but its first synchronous implementation is not itself a CDC solution.
+- CPU and controller clocks are exact related PLL outputs. The fixed 2:1 board gearbox is the width and clock boundary; it is not an arbitrary-ratio asynchronous FIFO.
 - Two-way associativity, two-BSRAM banking, fetch pipelining, next-line prefetch, and write-back are separate milestones.
 - The sixteen scalar registers are an explicit `CpuV3GprRam` module: synchronous-write,
   dual-asynchronous-read distributed RAM. Its synchronous write port commits one cycle after the
@@ -444,7 +443,7 @@ clock. These clocks remain a timed related group; only the independent HDMI pixe
 as asynchronous.
 
 - CPU cache and memory-arbiter line ports are 64-bit at 54 MHz. One 256-bit line is four ordered
-  beats; the existing eight-entry 32-bit cache buffers and parity/XOR-split BSRAM organization do not
+  beats; the existing eight-entry 32-bit cache buffers and parity-split BSRAM organization do not
   change.
 - Controller HS and physical SDRAM remain 32-bit at 108 MHz. The board boundary pairs two read beats
   into one 64-bit CPU beat and splits one staged 64-bit write beat into two physical beats.
@@ -473,9 +472,9 @@ The display scheduler captures four 64-bit controller beats, then releases SDRAM
 the normal recovery interval while the local buffer independently emits eight 32-bit display words.
 An RTL test verifies that a CPU transaction is accepted before that display drain completes.
 
-Full-system PnR closes CPU 54 MHz at 54.965 MHz, Controller HS 108 MHz at 171.327 MHz, and the
-74.25 MHz pixel clock at 83.119 MHz. Every reported setup/hold TNS is zero. The system uses 10,345
-Logic and seven BSRAM blocks. CPU closure is accepted but narrow. Physical board confirmation of the
+Stage 9's independent full-system PnR closes CPU 54 MHz at 54.965 MHz, Controller HS 108 MHz at
+171.327 MHz, and the 74.25 MHz pixel clock at 83.119 MHz. It uses 10,345 Logic and seven BSRAM
+blocks; every reported setup/hold TNS is zero. CPU closure remains narrow. Physical board confirmation of the
 vendor controller's read-valid phase and burst-write sampling is still outstanding.
 
 ## Stage 10: dual-port cache BSRAMs and direct 64-bit line transfer
@@ -509,6 +508,25 @@ Acceptance:
 - Replacement, dirty eviction, clean/invalidate, refill-error, and same-set way-selection tests pass.
 - Full-system PnR still closes CPU 54 MHz and Controller HS 108 MHz; BSRAM packing and mode reports
   confirm the intended true-dual-port configuration.
+
+### Implementation result (2026-08-31)
+
+Each cache now owns one target leaf containing two inferred 1024 x 16 true-dual-port memories.
+Bank 0 stores even words and bank 1 stores odd words; way is a normal address bit. Lookup reads both
+ways through the two ports of the selected parity bank. Refill writes all four 16-bit ports directly
+from each 64-bit beat. D-cache write-back uses one synchronous prime/capture boundary for beat zero,
+then streams all four 64-bit beats without assembling a complete line in registers.
+
+The I-cache emulator was updated to the same direct four-beat timing and passes cycle-for-cycle
+Icarus comparison. Focused I-cache, D-cache, replacement, refill-error, dirty eviction,
+clean/invalidate, and display/SDRAM simulations pass with bounded testbenches. Workspace quick
+validation, strict Clippy, layering, source hygiene, boot regeneration, and byte-for-byte boot
+repacking all pass.
+
+The combined Stage 9/10 PnR reports 9,977 Logic (8,766 LUTs, 683 ALUs, 88 SSRAM cells), 4 DPB,
+1 SDPB, 2 pROM, and 2 MULT18X18. The two I-cache DPBs and two D-cache DPBs are each attributed as
+one two-block cache data leaf, so synthesis may legally pack/merge bank hierarchy without defeating
+the exact two-BSRAM-per-cache resource audit.
 
 ## Risk-scaled validation
 

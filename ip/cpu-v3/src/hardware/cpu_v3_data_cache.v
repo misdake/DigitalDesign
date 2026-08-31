@@ -28,7 +28,7 @@ module CpuV3DataCache (
 );
 
 localparam [3:0] ST_IDLE=0, ST_LOOKUP=1, ST_LINE_REQUEST=2,
-    ST_LINE_RECEIVE=3, ST_LINE_DRAIN=4, ST_WB_PRIME=5,
+    ST_LINE_RECEIVE=3, ST_WB_PRIME=5,
     ST_WB_CAPTURE=6, ST_WB_REQUEST=7, ST_WB_STREAM=8,
     ST_WB_RESPONSE=9;
 
@@ -38,7 +38,6 @@ reg [31:0] pending_address = 0;
 reg [15:0] pending_write_data = 0;
 reg pending_way = 0;
 reg [2:0] refill_beat = 0;
-reg [2:0] drain_beat = 0;
 reg [2:0] wb_beat = 0;
 reg wb_way = 0;
 reg [5:0] wb_set = 0;
@@ -52,7 +51,8 @@ reg response_valid = 0;
 reg [63:0] way_0_valid = 0;
 reg [63:0] way_1_valid = 0;
 reg [63:0] victim = 0;
-(* syn_ramstyle = "registers" *) reg [31:0] line_buffer [0:7];
+reg [15:0] refill_response_data = 0;
+reg [63:0] wb_first_data = 0;
 
 wire [5:0] pending_set = pending_address[9:4];
 wire [11:0] pending_tag = pending_address[21:10];
@@ -69,70 +69,69 @@ wire hit_way = !way_0_hit && way_1_hit;
 wire selected_victim = !way_0_valid[pending_set] ? 1'b0 :
                        !way_1_valid[pending_set] ? 1'b1 : victim[pending_set];
 
-wire tag_write_enable = state == ST_LINE_DRAIN && drain_beat == 7;
+wire refill_commit = state == ST_LINE_RECEIVE && memory_response_valid &&
+    !memory_error && refill_beat == 3;
+wire tag_write_enable = refill_commit;
 __CACHE_TAGS__ u_tags (
     .clk(clk), .write_enable(tag_write_enable), .write_way(pending_way),
     .address(tag_read_set), .write_data(pending_tag),
     .way_0_read_data(way_0_tag), .way_1_read_data(way_1_tag)
 );
 
-wire capture_mode = state == ST_WB_PRIME || state == ST_WB_CAPTURE;
-wire [2:0] capture_read_beat = state == ST_WB_PRIME ? 3'd0 :
-    (wb_beat == 7 ? 3'd7 : wb_beat + 1'b1);
-wire [5:0] data_read_set = capture_mode ? wb_set :
+wire writeback_read_mode = state == ST_WB_PRIME || state == ST_WB_CAPTURE ||
+    state == ST_WB_REQUEST || state == ST_WB_STREAM;
+wire [1:0] writeback_read_beat = state == ST_WB_PRIME || state == ST_WB_CAPTURE ? 2'd0 :
+    state == ST_WB_REQUEST ? 2'd1 : wb_beat[1:0] + 2'd1;
+wire [5:0] data_read_set = writeback_read_mode ? wb_set :
     (state == ST_IDLE && cpu_request_valid ? cpu_address[9:4] : pending_set);
-wire [3:0] data_read_word = capture_mode ? {capture_read_beat,1'b0} :
-    (state == ST_IDLE && cpu_request_valid ? cpu_address[3:0] : pending_word);
-wire data_read_way = capture_mode ? wb_way : 1'b0;
-wire [9:0] bank_0_read_address = capture_mode ?
-    {data_read_way, data_read_set, capture_read_beat} :
-    {data_read_word[0], data_read_set, data_read_word[3:1]};
-wire [9:0] bank_1_read_address = capture_mode ?
-    {data_read_way, data_read_set, capture_read_beat} :
-    {!data_read_word[0], data_read_set, data_read_word[3:1]};
-wire [15:0] bank_0_read_data;
-wire [15:0] bank_1_read_data;
-wire [15:0] way_0_read_data = pending_word[0] ? bank_1_read_data : bank_0_read_data;
-wire [15:0] way_1_read_data = pending_word[0] ? bank_0_read_data : bank_1_read_data;
+wire [3:0] data_read_word = state == ST_IDLE && cpu_request_valid ?
+    cpu_address[3:0] : pending_word;
+wire [9:0] lookup_way_0_address = {1'b0, data_read_set, data_read_word[3:1]};
+wire [9:0] lookup_way_1_address = {1'b1, data_read_set, data_read_word[3:1]};
+wire [9:0] wb_read_address_a = {wb_way, wb_set, writeback_read_beat, 1'b0};
+wire [9:0] wb_read_address_b = {wb_way, wb_set, writeback_read_beat, 1'b1};
+wire [15:0] bank_0_a_read_data, bank_0_b_read_data;
+wire [15:0] bank_1_a_read_data, bank_1_b_read_data;
+wire [15:0] way_0_read_data = pending_word[0] ? bank_1_a_read_data : bank_0_a_read_data;
+wire [15:0] way_1_read_data = pending_word[0] ? bank_1_b_read_data : bank_0_b_read_data;
 wire [15:0] hit_read_data = hit_way ? way_1_read_data : way_0_read_data;
-wire [31:0] wb_read_data = wb_way ?
-    {bank_0_read_data, bank_1_read_data} :
-    {bank_1_read_data, bank_0_read_data};
+wire [63:0] wb_read_data = {bank_1_b_read_data, bank_0_b_read_data,
+                            bank_1_a_read_data, bank_0_a_read_data};
 
-wire [31:0] refill_data = line_buffer[drain_beat];
-wire [31:0] installed_data = pending_write && drain_beat == pending_word[3:1] ?
-    (pending_word[0] ? {pending_write_data, refill_data[15:0]} :
-                       {refill_data[31:16], pending_write_data}) : refill_data;
 wire hit_store = state == ST_LOOKUP && pending_write && pending_hit;
-wire hit_store_bank = hit_way ^ pending_word[0];
-wire drain_write = state == ST_LINE_DRAIN;
-wire bank_0_write_enable = drain_write || (hit_store && !hit_store_bank);
-wire bank_1_write_enable = drain_write || (hit_store && hit_store_bank);
-wire [9:0] bank_write_address = drain_write ?
-    {pending_way, pending_set, drain_beat} :
-    {hit_way, pending_set, pending_word[3:1]};
-wire [15:0] bank_0_write_data = drain_write ?
-    (pending_way ? installed_data[31:16] : installed_data[15:0]) : pending_write_data;
-wire [15:0] bank_1_write_data = drain_write ?
-    (pending_way ? installed_data[15:0] : installed_data[31:16]) : pending_write_data;
+wire refill_write = state == ST_LINE_RECEIVE && memory_response_valid && !memory_error;
+wire [9:0] refill_address_a = {pending_way, pending_set, refill_beat[1:0], 1'b0};
+wire [9:0] refill_address_b = {pending_way, pending_set, refill_beat[1:0], 1'b1};
+wire [9:0] hit_store_address = {hit_way, pending_set, pending_word[3:1]};
+wire [15:0] refill_word_0 = pending_write && pending_word[3:2] == refill_beat && pending_word[1:0] == 0 ? pending_write_data : memory_read_data[15:0];
+wire [15:0] refill_word_1 = pending_write && pending_word[3:2] == refill_beat && pending_word[1:0] == 1 ? pending_write_data : memory_read_data[31:16];
+wire [15:0] refill_word_2 = pending_write && pending_word[3:2] == refill_beat && pending_word[1:0] == 2 ? pending_write_data : memory_read_data[47:32];
+wire [15:0] refill_word_3 = pending_write && pending_word[3:2] == refill_beat && pending_word[1:0] == 3 ? pending_write_data : memory_read_data[63:48];
 
 __CACHE_DATA_BANKS__ u_data_banks (
     .clk(clk),
-    .bank_0_read_address(bank_0_read_address),
-    .bank_1_read_address(bank_1_read_address),
-    .bank_0_write_enable(bank_0_write_enable),
-    .bank_1_write_enable(bank_1_write_enable),
-    .write_address(bank_write_address),
-    .bank_0_write_data(bank_0_write_data),
-    .bank_1_write_data(bank_1_write_data),
-    .bank_0_read_data(bank_0_read_data),
-    .bank_1_read_data(bank_1_read_data)
+    .bank_0_a_write_enable(refill_write || (hit_store && !pending_word[0])),
+    .bank_0_a_address(refill_write ? refill_address_a : writeback_read_mode ? wb_read_address_a :
+        (hit_store && !pending_word[0] ? hit_store_address : lookup_way_0_address)),
+    .bank_0_a_write_data(refill_write ? refill_word_0 : pending_write_data),
+    .bank_0_a_read_data(bank_0_a_read_data),
+    .bank_0_b_write_enable(refill_write),
+    .bank_0_b_address(refill_write ? refill_address_b : writeback_read_mode ? wb_read_address_b : lookup_way_1_address),
+    .bank_0_b_write_data(refill_word_2), .bank_0_b_read_data(bank_0_b_read_data),
+    .bank_1_a_write_enable(refill_write || (hit_store && pending_word[0])),
+    .bank_1_a_address(refill_write ? refill_address_a : writeback_read_mode ? wb_read_address_a :
+        (hit_store && pending_word[0] ? hit_store_address : lookup_way_0_address)),
+    .bank_1_a_write_data(refill_write ? refill_word_1 : pending_write_data),
+    .bank_1_a_read_data(bank_1_a_read_data),
+    .bank_1_b_write_enable(refill_write),
+    .bank_1_b_address(refill_write ? refill_address_b : writeback_read_mode ? wb_read_address_b : lookup_way_1_address),
+    .bank_1_b_write_data(refill_word_3), .bank_1_b_read_data(bank_1_b_read_data)
 );
 
 wire [63:0] way_0_dirty;
 wire [63:0] way_1_dirty;
 wire dirty_write_hit = state == ST_LOOKUP && pending_write && pending_hit;
-wire dirty_write_install = state == ST_LINE_DRAIN && drain_beat == 7;
+wire dirty_write_install = refill_commit;
 wire dirty_write_back = state == ST_WB_RESPONSE && memory_response_valid && !memory_error;
 wire dirty_write_enable = dirty_write_hit || dirty_write_install || dirty_write_back;
 wire dirty_write_way = dirty_write_hit ? hit_way :
@@ -181,10 +180,9 @@ assign cpu_error = response_valid && response_error;
 assign memory_request_valid = state == ST_LINE_REQUEST || state == ST_WB_REQUEST;
 assign memory_write = state == ST_WB_REQUEST || state == ST_WB_STREAM ||
     state == ST_WB_RESPONSE;
-assign memory_line = state != ST_IDLE && state != ST_LOOKUP && state != ST_LINE_DRAIN;
+assign memory_line = state != ST_IDLE && state != ST_LOOKUP;
 assign memory_address = memory_write ? wb_address : {pending_address[21:4],4'b0};
-assign memory_write_data = {line_buffer[{wb_beat[1:0],1'b0} + 1'b1],
-                            line_buffer[{wb_beat[1:0],1'b0}]};
+assign memory_write_data = state == ST_WB_REQUEST ? wb_first_data : wb_read_data;
 assign memory_response_ready = state == ST_LINE_RECEIVE || state == ST_WB_RESPONSE;
 assign maintenance_busy = maintenance_active;
 
@@ -250,6 +248,8 @@ always @(posedge clk) begin
                         wb_beat <= 0;
                         state <= ST_WB_PRIME;
                     end else begin
+                        if (selected_victim) way_1_valid[pending_set] <= 0;
+                        else way_0_valid[pending_set] <= 0;
                         refill_beat <= 0;
                         state <= ST_LINE_REQUEST;
                     end
@@ -261,11 +261,8 @@ always @(posedge clk) begin
                 state <= ST_WB_CAPTURE;
             end
             ST_WB_CAPTURE: begin
-                line_buffer[wb_beat] <= wb_read_data;
-                if (wb_beat == 7) begin
-                    wb_beat <= 0;
-                    state <= ST_WB_REQUEST;
-                end else wb_beat <= wb_beat + 1'b1;
+                wb_first_data <= wb_read_data;
+                state <= ST_WB_REQUEST;
             end
             ST_WB_REQUEST: if (memory_request_ready) begin
                 wb_beat <= 1;
@@ -307,6 +304,8 @@ always @(posedge clk) begin
                             state <= ST_IDLE;
                         end
                     end else begin
+                        if (pending_way) way_1_valid[pending_set] <= 0;
+                        else way_0_valid[pending_set] <= 0;
                         refill_beat <= 0;
                         state <= ST_LINE_REQUEST;
                     end
@@ -325,26 +324,28 @@ always @(posedge clk) begin
                     response_valid <= 1;
                     state <= ST_IDLE;
                 end else begin
-                    line_buffer[{refill_beat[1:0],1'b0}] <= memory_read_data[31:0];
-                    line_buffer[{refill_beat[1:0],1'b0} + 1'b1] <= memory_read_data[63:32];
+                    if (refill_beat == pending_word[3:2])
+                        case (pending_word[1:0])
+                            0: refill_response_data <= memory_read_data[15:0];
+                            1: refill_response_data <= memory_read_data[31:16];
+                            2: refill_response_data <= memory_read_data[47:32];
+                            default: refill_response_data <= memory_read_data[63:48];
+                        endcase
                     if (refill_beat == 3) begin
-                        drain_beat <= 0;
-                        state <= ST_LINE_DRAIN;
-                    end else refill_beat <= refill_beat + 1'b1;
-                end
-            end
-            ST_LINE_DRAIN: begin
-                if (drain_beat == pending_word[3:1])
-                    response_data <= pending_write ? 16'b0 :
-                        (pending_word[0] ? refill_data[31:16] : refill_data[15:0]);
-                if (drain_beat == 7) begin
                     if (pending_way) way_1_valid[pending_set] <= 1;
                     else way_0_valid[pending_set] <= 1;
                     victim[pending_set] <= !pending_way;
+                    response_data <= pending_write ? 16'b0 :
+                        (pending_word[3:2] == 3 ?
+                            (pending_word[1:0] == 0 ? memory_read_data[15:0] :
+                             pending_word[1:0] == 1 ? memory_read_data[31:16] :
+                             pending_word[1:0] == 2 ? memory_read_data[47:32] : memory_read_data[63:48]) :
+                            refill_response_data);
                     response_error <= 0;
                     response_valid <= 1;
                     state <= ST_IDLE;
-                end else drain_beat <= drain_beat + 1'b1;
+                    end else refill_beat <= refill_beat + 1'b1;
+                end
             end
             default: state <= ST_IDLE;
         endcase
