@@ -25,8 +25,18 @@ function Invoke-ValidationStep {
 }
 
 function Invoke-Cargo {
-    param([string]$Name, [string[]]$Arguments)
-    Invoke-ValidationStep -Name $Name -Executable "cargo" -Arguments $Arguments
+    param(
+        [Parameter(Mandatory = $true)][string]$Name,
+        [Parameter(Mandatory = $true)][string]$Subcommand,
+        [string[]]$Arguments = @()
+    )
+    Write-Host ""
+    Write-Host "== $Name =="
+    & (Join-Path $repoRoot "scripts/run-cargo.ps1") -Subcommand $Subcommand -Label $Name -CargoArgs $Arguments
+    if ($LASTEXITCODE -ne 0) {
+        throw "$Name failed with exit code $LASTEXITCODE"
+    }
+    $completedSteps.Add($Name)
 }
 
 function Invoke-BootArtifactValidation {
@@ -36,11 +46,11 @@ function Invoke-BootArtifactValidation {
     $repackedPackage = Join-Path $bootDirectory "cpu-v3-boot.repacked.bin"
     $repackedMap = Join-Path $bootDirectory "cpu-v3-boot.repacked.map"
 
-    Invoke-Cargo "materialize generated CPU V3 boot assets" @(
-        "run", "-p", "cpu-v3-tang-nano-20k", "--bin", "cpu-v3-boot-assets", "--", $bootDirectory
+    Invoke-Cargo "materialize generated CPU V3 boot assets" "run" @(
+        "-p", "cpu-v3-tang-nano-20k", "--bin", "cpu-v3-boot-assets", "--", $bootDirectory
     )
-    Invoke-Cargo "repack CPU V3 boot manifest" @(
-        "run", "-p", "cpu-v3-tang-nano-20k", "--bin", "cpu-v3-pack", "--",
+    Invoke-Cargo "repack CPU V3 boot manifest" "run" @(
+        "-p", "cpu-v3-tang-nano-20k", "--bin", "cpu-v3-pack", "--",
         $manifest, "-o", $repackedPackage, "--map", $repackedMap
     )
 
@@ -69,9 +79,9 @@ function Invoke-QuickValidation {
         "-NoProfile", "-ExecutionPolicy", "Bypass", "-File",
         (Join-Path $repoRoot "hardware/vendor/gowin/scripts/test_flash_readback.ps1")
     )
-    Invoke-Cargo "workspace tests" @("test", "--workspace")
-    Invoke-Cargo "strict workspace clippy" @(
-        "clippy", "--workspace", "--all-targets", "--", "-D", "warnings"
+    Invoke-Cargo "workspace tests" "test" @("--workspace")
+    Invoke-Cargo "strict workspace clippy" "clippy" @(
+        "--workspace", "--all-targets", "--", "-D", "warnings"
     )
     Invoke-ValidationStep -Name "layering constraints" -Executable (Join-Path $repoRoot "scripts/check-layering.ps1")
     Invoke-ValidationStep -Name "source hygiene constraints" -Executable (Join-Path $repoRoot "scripts/check-source-hygiene.ps1")
@@ -79,38 +89,38 @@ function Invoke-QuickValidation {
 }
 
 function Invoke-IverilogValidation {
-    Invoke-Cargo "common hardware Icarus" @(
-        "test", "-p", "digital-design-hardware-common", "--", "--ignored", "--nocapture"
+    Invoke-Cargo "common hardware Icarus" "test" @(
+        "-p", "digital-design-hardware-common", "--", "--ignored", "--nocapture"
     )
-    Invoke-Cargo "Gowin primitive Icarus" @(
-        "test", "-p", "digital-design-hardware-gowin", "--lib", "--", "--ignored", "--nocapture"
+    Invoke-Cargo "Gowin primitive Icarus" "test" @(
+        "-p", "digital-design-hardware-gowin", "--lib", "--", "--ignored", "--nocapture"
     )
-    Invoke-Cargo "Gowin example Icarus" @(
-        "test", "-p", "digital-design-hardware-gowin", "--examples", "--", "--ignored", "--nocapture"
+    Invoke-Cargo "Gowin example Icarus" "test" @(
+        "-p", "digital-design-hardware-gowin", "--examples", "--", "--ignored", "--nocapture"
     )
-    Invoke-Cargo "CPU V3 RTL Icarus" @(
-        "test", "-p", "cpu-v3", "--", "--ignored", "--nocapture"
+    Invoke-Cargo "CPU V3 RTL Icarus" "test" @(
+        "-p", "cpu-v3", "--", "--ignored", "--nocapture"
     )
-    Invoke-Cargo "CPU V3 system RTL Icarus" @(
-        "test", "-p", "cpu-v3-tang-nano-20k", "--lib", "--", "--ignored", "--nocapture"
+    Invoke-Cargo "CPU V3 system RTL Icarus" "test" @(
+        "-p", "cpu-v3-tang-nano-20k", "--lib", "--", "--ignored", "--nocapture"
     )
-    Invoke-Cargo "CPU V3 system example Icarus" @(
-        "test", "-p", "cpu-v3-tang-nano-20k", "--examples", "--", "--ignored", "--nocapture"
+    Invoke-Cargo "CPU V3 system example Icarus" "test" @(
+        "-p", "cpu-v3-tang-nano-20k", "--examples", "--", "--ignored", "--nocapture"
     )
 }
 
 function Invoke-GowinBuild {
     param([string]$Package, [string]$Example)
-    Invoke-Cargo "$Example Gowin build" @(
-        "run", "-p", $Package, "--example", $Example, "--", "--build"
+    Invoke-Cargo "$Example Gowin build" "run" @(
+        "-p", $Package, "--example", $Example, "--", "--build"
     )
     Invoke-GowinAudit $Package $Example
 }
 
 function Invoke-GowinAudit {
     param([string]$Package, [string]$Example)
-    Invoke-Cargo "$Example artifact audit" @(
-        "run", "-p", $Package, "--example", $Example, "--", "--check-existing"
+    Invoke-Cargo "$Example artifact audit" "run" @(
+        "-p", $Package, "--example", $Example, "--", "--check-existing"
     )
 }
 

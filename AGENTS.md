@@ -60,5 +60,23 @@ recognizes both DDHT status and structured CPU V3 `CV3B` boot-error frames.
 External Verilog tests use `IVERILOG_EXE` and `VVP_EXE` when set, otherwise
 they resolve `iverilog` and `vvp` through `PATH`.
 
+## Cargo output summarization
+
+Run cargo through `scripts/run-cargo.ps1` instead of invoking `cargo` directly when the raw
+output would be large. It tees the full log to `target/cargo-summaries/<label>.log`, prints a
+compact summary (exit code, warning/error counts, per-`test` pass/fail totals and failure list,
+or a bounded tail for `run`), and writes `target/cargo-summaries/<label>.json`.
+
+```powershell
+& scripts/run-cargo.ps1 -Subcommand test -Label "workspace tests" -CargoArgs @("--workspace")
+& scripts/run-cargo.ps1 -Subcommand clippy -Label "strict clippy" -CargoArgs @("--workspace", "--all-targets", "--", "-D", "warnings")
+& scripts/run-cargo.ps1 -Subcommand run -Label "board build" -CargoArgs @("-p", "digital-design-hardware-gowin", "--example", "board_health", "--", "--build")
+```
+
+`-CargoArgs` is a `string[]`; pass it in-process with `&` and splatting. Do not use
+`ValueFromRemainingArguments` or `powershell -File`, both of which swallow `-p`/`-D`-style flags.
+`validate-hardware.ps1` and `run_board_validation.ps1` already route every cargo call through it;
+extend the same pattern for any new cargo step.
+
 Every simulator test must supply a maximum cycle/step count. Keep project files, comments, and
 documentation in English. Do not commit unless the user explicitly asks for a commit.

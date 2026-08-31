@@ -65,8 +65,20 @@ function Invoke-Stage {
 }
 
 function Invoke-CargoStage {
-    param([string]$Name, [string[]]$Arguments)
-    Invoke-Stage -Name $Name -Executable "cargo" -Arguments $Arguments
+    param(
+        [Parameter(Mandatory = $true)][string]$Name,
+        [Parameter(Mandatory = $true)][string]$Subcommand,
+        [string[]]$Arguments = @()
+    )
+
+    $script:currentStage = $Name
+    Write-Host ""
+    Write-Host "== $Name =="
+    & (Join-Path $repoRoot "scripts/run-cargo.ps1") -Subcommand $Subcommand -Label $Name -CargoArgs $Arguments
+    if ($LASTEXITCODE -ne 0) {
+        throw "$Name failed with exit code $LASTEXITCODE"
+    }
+    $script:completedStages.Add($Name)
 }
 
 function Wait-SerialPort {
@@ -130,8 +142,8 @@ $recoveredPath = Join-Path $runDirectory "flash-readback.bin"
 Push-Location $repoRoot
 try {
     if ($Mode -ne "Observe") {
-        Invoke-CargoStage "audit existing bitstream" @(
-            "run", "-p", $configuration.Package, "--example", $configuration.Example,
+        Invoke-CargoStage "audit existing bitstream" "run" @(
+            "-p", $configuration.Package, "--example", $configuration.Example,
             "--", "--check-existing"
         )
     }
@@ -139,13 +151,13 @@ try {
     if ($WriteBootFlash -or $WriteCompleteFlash) {
         $bootAssetsDirectory = Join-Path $repoRoot "target/cpu-v3-boot"
         $bootPackagePath = Join-Path $bootAssetsDirectory "cpu-v3-boot.bin"
-        Invoke-CargoStage "materialize generated boot package" @(
-            "run", "-p", "cpu-v3-tang-nano-20k", "--bin", "cpu-v3-boot-assets",
+        Invoke-CargoStage "materialize generated boot package" "run" @(
+            "-p", "cpu-v3-tang-nano-20k", "--bin", "cpu-v3-boot-assets",
             "--", $bootAssetsDirectory
         )
         if ($WriteBootFlash) {
-            Invoke-CargoStage "program external boot Flash once" @(
-                "run", "-p", $configuration.Package, "--example", $configuration.Example,
+            Invoke-CargoStage "program external boot Flash once" "run" @(
+                "-p", $configuration.Package, "--example", $configuration.Example,
                 "--", "--program-flash", "0x100000", $bootPackagePath
             )
         }
@@ -165,8 +177,8 @@ try {
         $repackedPackagePath = Join-Path $runDirectory "cpu-v3-boot.repacked.bin"
         $repackedMapPath = Join-Path $runDirectory "cpu-v3-boot.repacked.map"
         $completeFlashPath = Join-Path $runDirectory "cpu-v3-complete-flash.bin"
-        Invoke-CargoStage "build complete power-on Flash image" @(
-            "run", "-p", "cpu-v3-tang-nano-20k", "--bin", "cpu-v3-pack", "--",
+        Invoke-CargoStage "build complete power-on Flash image" "run" @(
+            "-p", "cpu-v3-tang-nano-20k", "--bin", "cpu-v3-pack", "--",
             $packManifestPath, "-o", $repackedPackagePath, "--map", $repackedMapPath,
             "--configuration-bin", $configurationBinPath, "--flash-image", $completeFlashPath
         )
@@ -175,15 +187,15 @@ try {
         if ($generatedPackageHash -ne $repackedPackageHash) {
             throw "independently repacked boot package does not match the generated package"
         }
-        Invoke-CargoStage "program complete power-on Flash image once" @(
-            "run", "-p", $configuration.Package, "--example", $configuration.Example,
+        Invoke-CargoStage "program complete power-on Flash image once" "run" @(
+            "-p", $configuration.Package, "--example", $configuration.Example,
             "--", "--program-flash", "0x000000", $completeFlashPath
         )
     }
 
     if ($Mode -eq "Program" -or $Mode -eq "Full") {
-        Invoke-CargoStage "program audited SRAM bitstream once" @(
-            "run", "-p", $configuration.Package, "--example", $configuration.Example,
+        Invoke-CargoStage "program audited SRAM bitstream once" "run" @(
+            "-p", $configuration.Package, "--example", $configuration.Example,
             "--", "--program-existing"
         )
     }
