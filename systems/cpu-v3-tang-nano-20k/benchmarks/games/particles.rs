@@ -16,7 +16,7 @@ fn main() {
         i = i + 1;
     }
     let mut frame: u16 = 0;
-    while frame < 240 {
+    while frame < 30 {
         i = 0;
         while i < N {
             x[i] = x[i] + vx[i]; y[i] = y[i] + vy[i];
@@ -26,5 +26,21 @@ fn main() {
         }
         frame = frame + 1;
     }
-    if x[17u16] < 320 && y[93u16] < 240 { halt(1); } else { halt(0); }
+    let mut sum_x: u16 = 0;
+    let mut sum_y: u16 = 0;
+    let mut xor_x: u16 = 0;
+    let mut xor_y: u16 = 0;
+    i = 0;
+    while i < N {
+        sum_x = sum_x + x[i];
+        sum_y = sum_y + y[i];
+        xor_x = xor_x ^ x[i];
+        xor_y = xor_y ^ y[i];
+        i = i + 1;
+    }
+    if sum_x == 45120 && sum_y == 30000 && xor_x == 64 && xor_y == 112 {
+        halt(1);
+    } else {
+        halt(0);
+    }
 }
