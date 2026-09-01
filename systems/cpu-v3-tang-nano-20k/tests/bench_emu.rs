@@ -2,7 +2,7 @@
 //!
 //! Wires the core, I-cache, D-cache and the memory
 //! arbiter through their Rust emulators, and drives them against a cycle-faithful
-//! model of the Tang Nano 20K SDRAM word port (ACTIVE / READ / WRITE /
+//! model of the Tang Nano 20K SDRAM word port (ACTIVE / READ 8-beat / WRITE /
 //! RECOVERY / periodic refresh). It reports the total cycle count and the
 //! cache and control-flow probes, so a workload can be profiled without
 //! Icarus or hardware.
@@ -42,12 +42,14 @@ struct SdramModel {
     state: SdramState,
     refresh_count: u16,
     pending_write: bool,
+    pending_line: bool,
     pending_address: usize,
     pending_write_data: u16,
     beat: u8,
     read_delay: u8,
     response_valid: bool,
-    response_data: u16,
+    response_data: u32,
+    response_last: bool,
     recovery_count: u8,
 }
 
@@ -58,12 +60,14 @@ impl SdramModel {
             state: SdramState::Idle,
             refresh_count: 0,
             pending_write: false,
+            pending_line: false,
             pending_address: 0,
             pending_write_data: 0,
             beat: 0,
             read_delay: 0,
             response_valid: false,
             response_data: 0,
+            response_last: false,
             recovery_count: 0,
         }
     }
@@ -72,7 +76,14 @@ impl SdramModel {
         self.state == SdramState::Idle && self.refresh_count < 600
     }
 
-    fn clock(&mut self, request_valid: bool, write: bool, address: u32, write_data: u16) {
+    fn clock(
+        &mut self,
+        request_valid: bool,
+        write: bool,
+        line: bool,
+        address: u32,
+        write_data: u16,
+    ) {
         // Evaluate the refresh condition against the pre-edge counter, exactly
         // like `display_sdram.v` (refresh_due = refresh_count >= 600). The
         // counter is incremented afterwards and stops at 600, so a request
@@ -87,6 +98,7 @@ impl SdramModel {
                     self.state = SdramState::RefreshReq;
                 } else if request_valid {
                     self.pending_write = write;
+                    self.pending_line = line;
                     self.pending_address = address as usize;
                     self.pending_write_data = write_data;
                     self.state = SdramState::ActiveReq;
@@ -108,14 +120,22 @@ impl SdramModel {
                     self.memory[self.pending_address] = self.pending_write_data;
                     self.response_valid = true;
                     self.response_data = 0;
+                    self.response_last = true;
                     self.state = SdramState::CpuResponse;
                 } else if self.read_delay != 0 {
                     self.read_delay -= 1;
                 } else {
-                    self.response_data = self.memory[self.pending_address];
+                    let low = self.memory[self.pending_address + 2 * self.beat as usize];
+                    let high = self.memory[self.pending_address + 2 * self.beat as usize + 1];
+                    self.response_data = u32::from(low) | u32::from(high) << 16;
                     self.response_valid = true;
-                    self.recovery_count = 0;
-                    self.state = SdramState::Recovery;
+                    self.response_last = self.beat == 7;
+                    if self.beat == 7 {
+                        self.recovery_count = 0;
+                        self.state = SdramState::Recovery;
+                    } else {
+                        self.beat += 1;
+                    }
                 }
             }
             SdramState::CpuResponse => {
@@ -607,7 +627,12 @@ pub fn run_benchmark_profiled_with_prefetch(
         );
         set_bits(
             arbiter_input.memory_read_data,
-            u32::from(sdram.response_data),
+            sdram.response_data,
+            &mut circuit,
+        );
+        set_bit(
+            arbiter_input.memory_response_last,
+            sdram.response_last,
             &mut circuit,
         );
 
@@ -697,7 +722,7 @@ pub fn run_benchmark_profiled_with_prefetch(
 
         if arb.memory_request_valid && sdram.request_ready() {
             if dcache.memory_request_valid {
-                if !arb.memory_write && (arb.memory_address & 0xf) == 0 {
+                if arb.memory_read_line {
                     dcache_line_requests = dcache_line_requests.wrapping_add(1);
                     dcache_refills = dcache_refills.wrapping_add(1);
                     if pending_data_op.map_or(false, |op| op.is_write) {
@@ -708,7 +733,7 @@ pub fn run_benchmark_profiled_with_prefetch(
                 } else {
                     dcache_word_requests = dcache_word_requests.wrapping_add(1);
                 }
-            } else if icache.memory_request_valid && (arb.memory_address & 0xf) == 0 {
+            } else if icache.memory_request_valid {
                 icache_line_requests = icache_line_requests.wrapping_add(1);
             }
         }
@@ -721,6 +746,7 @@ pub fn run_benchmark_profiled_with_prefetch(
         sdram.clock(
             arb.memory_request_valid,
             arb.memory_write,
+            arb.memory_read_line,
             arb.memory_address as u32,
             arb.memory_write_data as u16,
         );

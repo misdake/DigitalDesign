@@ -1,14 +1,15 @@
 //! Machine-owned arbiter between CpuV3 instruction/data traffic, boot DMA,
-//! and the Tang Nano 20K physical SDRAM word port.
+//! and the Tang Nano 20K physical SDRAM line/word port.
 //!
 //! Cache clients speak line transactions: one aligned line read request is
 //! answered by exactly eight ordered 32-bit beats (beat n carries word 2*n in
 //! its low half and word 2*n+1 in its high half), while a data-cache store is
-//! one write-through word transaction. The arbiter owns the downstream word
-//! port for the whole line and releases it once the final beat is accepted,
-//! so a waiting client can start while the served cache privately drains its
-//! refill buffer. An error beat terminates a line response early. The DMA
-//! client keeps single 16-bit word transactions.
+//! one write-through word transaction. The arbiter forwards one request to
+//! the SDRAM adapter, holds ownership while the adapter streams the real
+//! burst, and releases the owner on the accepted beat carrying
+//! `memory_response_last` (or any error beat), so a waiting client can start
+//! while the served cache privately drains its refill buffer. The DMA client
+//! keeps single 16-bit word transactions.
 
 use digital_design_circuit::{input_const, mux2, mux2_w, reg_w, CircuitWires, Wire, Wires};
 use digital_design_hardware::{HardwareIdentity, Module, ModuleIo, VerilogIdentity};
@@ -35,7 +36,8 @@ pub struct CpuV3MemoryArbiterInput {
 
     pub memory_request_ready: Wire,
     pub memory_response_valid: Wire,
-    pub memory_read_data: Wires<16>,
+    pub memory_read_data: Wires<32>,
+    pub memory_response_last: Wire,
     pub memory_error: Wire,
 }
 
@@ -58,6 +60,7 @@ pub struct CpuV3MemoryArbiterOutput {
 
     pub memory_request_valid: Wire,
     pub memory_write: Wire,
+    pub memory_read_line: Wire,
     pub memory_address: Wires<22>,
     pub memory_write_data: Wires<16>,
     pub memory_response_ready: Wire,
@@ -82,32 +85,9 @@ enum Owner {
     Dma,
 }
 
-#[derive(Clone, Copy, Default, Eq, PartialEq)]
-enum Phase {
-    /// Issuing one downstream word request for the pending beat.
-    #[default]
-    Request,
-    /// Awaiting the downstream word response.
-    Respond,
-    /// Presenting one assembled beat (or the write/error completion) to the
-    /// owning client.
-    Present,
-}
-
-const LINE_BEATS: u8 = 8;
-
 #[derive(Default)]
 pub struct CpuV3MemoryArbiterState {
     owner: Owner,
-    pending_write: bool,
-    pending_address: u32,
-    pending_write_data: u16,
-    phase: Phase,
-    beat: u8,
-    half: bool,
-    beat_lo: u16,
-    beat_hi: u16,
-    present_error: bool,
 }
 
 impl Module for CpuV3MemoryArbiter {
@@ -129,61 +109,69 @@ impl Module for CpuV3MemoryArbiter {
     ) {
         let input = input.sample(circuit);
         let selected = select(&input);
-        let active = state.owner != Owner::None;
-        let present = active && state.phase == Phase::Present;
-        let present_data = present && !state.pending_write && !state.present_error;
-        let beat_data = (u64::from(state.beat_hi) << 16) | u64::from(state.beat_lo);
+        let requesting = state.owner == Owner::None && selected != Owner::None;
+        let accepted = requesting && input.memory_request_ready;
+        let selected_line_read = selected == Owner::Instruction
+            || (selected == Owner::Data && !input.data_write);
+        let instruction_responding = state.owner == Owner::Instruction
+            && input.memory_response_valid;
+        let data_responding = state.owner == Owner::Data && input.memory_response_valid;
+        let dma_responding = state.owner == Owner::Dma && input.memory_response_valid;
         output.drive(
             circuit,
             &CpuV3MemoryArbiterOutputValue {
-                instruction_request_ready: state.owner == Owner::None
-                    && selected == Owner::Instruction,
-                instruction_response_valid: present && state.owner == Owner::Instruction,
-                instruction_read_data: if present_data && state.owner == Owner::Instruction {
-                    beat_data
+                instruction_request_ready: accepted && selected == Owner::Instruction,
+                instruction_response_valid: instruction_responding,
+                instruction_read_data: if instruction_responding {
+                    input.memory_read_data
                 } else {
                     0
                 },
-                instruction_error: present
-                    && state.owner == Owner::Instruction
-                    && state.present_error,
-                data_request_ready: state.owner == Owner::None && selected == Owner::Data,
-                data_response_valid: present && state.owner == Owner::Data,
-                data_read_data: if present_data && state.owner == Owner::Data {
-                    beat_data
+                instruction_error: instruction_responding && input.memory_error,
+                data_request_ready: accepted && selected == Owner::Data,
+                data_response_valid: data_responding,
+                data_read_data: if data_responding {
+                    input.memory_read_data
                 } else {
                     0
                 },
-                data_error: present && state.owner == Owner::Data && state.present_error,
-                dma_request_ready: state.owner == Owner::None && selected == Owner::Dma,
-                dma_response_valid: present && state.owner == Owner::Dma,
-                dma_read_data: if present_data && state.owner == Owner::Dma {
-                    u64::from(state.beat_lo)
+                data_error: data_responding && input.memory_error,
+                dma_request_ready: accepted && selected == Owner::Dma,
+                dma_response_valid: dma_responding,
+                dma_read_data: if dma_responding {
+                    input.memory_read_data & 0xffff
                 } else {
                     0
                 },
-                dma_error: present && state.owner == Owner::Dma && state.present_error,
-                memory_request_valid: active && state.phase == Phase::Request,
-                memory_write: active
-                    && state.phase == Phase::Request
-                    && state.pending_write,
-                memory_address: u64::from(
-                    if !active || state.phase != Phase::Request {
-                        0
-                    } else if state.pending_write {
-                        state.pending_address
-                    } else {
-                        (state.pending_address & !0xf)
-                            | (u32::from(state.beat) << 1)
-                            | u32::from(state.half)
+                dma_error: dma_responding && input.memory_error,
+                memory_request_valid: requesting,
+                memory_write: requesting
+                    && match selected {
+                        Owner::Instruction | Owner::None => false,
+                        Owner::Data => input.data_write,
+                        Owner::Dma => input.dma_write,
                     },
-                ),
-                memory_write_data: if active && state.phase == Phase::Request {
-                    u64::from(state.pending_write_data)
+                memory_read_line: requesting && selected_line_read,
+                memory_address: if requesting {
+                    match selected {
+                        Owner::Instruction => input.instruction_address,
+                        Owner::Data => input.data_address,
+                        Owner::Dma => input.dma_address,
+                        Owner::None => 0,
+                    }
                 } else {
                     0
                 },
-                memory_response_ready: active && state.phase == Phase::Respond,
+                memory_write_data: if requesting {
+                    match selected {
+                        Owner::Data => input.data_write_data,
+                        Owner::Dma => input.dma_write_data,
+                        Owner::Instruction | Owner::None => 0,
+                    }
+                } else {
+                    0
+                },
+                memory_response_ready: response_ready(state.owner, &input),
             },
         );
     }
@@ -201,83 +189,20 @@ impl Module for CpuV3MemoryArbiter {
         }
         if state.owner == Owner::None {
             let selected = select(&input);
-            if selected != Owner::None {
+            if selected != Owner::None && input.memory_request_ready {
                 state.owner = selected;
-                state.pending_write = match selected {
-                    Owner::Data => input.data_write,
-                    Owner::Dma => input.dma_write,
-                    _ => false,
-                };
-                state.pending_address = match selected {
-                    Owner::Instruction => input.instruction_address as u32,
-                    Owner::Data => input.data_address as u32,
-                    Owner::Dma => input.dma_address as u32,
-                    Owner::None => 0,
-                };
-                state.pending_write_data = match selected {
-                    Owner::Data => input.data_write_data as u16,
-                    Owner::Dma => input.dma_write_data as u16,
-                    _ => 0,
-                };
-                state.phase = Phase::Request;
-                state.beat = 0;
-                state.half = false;
-                state.present_error = false;
             }
-            return;
-        }
-        match state.phase {
-            Phase::Request => {
-                if input.memory_request_ready {
-                    state.phase = Phase::Respond;
-                }
-            }
-            Phase::Respond => {
-                if input.memory_response_valid {
-                    if input.memory_error {
-                        state.present_error = true;
-                        state.phase = Phase::Present;
-                    } else if state.pending_write {
-                        state.phase = Phase::Present;
-                    } else if !state.half {
-                        state.beat_lo = input.memory_read_data as u16;
-                        state.half = true;
-                        state.phase = Phase::Request;
-                    } else {
-                        state.beat_hi = input.memory_read_data as u16;
-                        state.phase = Phase::Present;
-                    }
-                }
-            }
-            Phase::Present => {
-                if response_ready(state.owner, &input) {
-                    if state.present_error
-                        || state.pending_write
-                        || state.beat + 1 == LINE_BEATS
-                    {
-                        state.owner = Owner::None;
-                    } else {
-                        state.beat += 1;
-                        state.half = false;
-                        state.phase = Phase::Request;
-                    }
-                }
-            }
+        } else if input.memory_response_valid
+            && response_ready(state.owner, &input)
+            && (input.memory_response_last || input.memory_error)
+        {
+            state.owner = Owner::None;
         }
     }
 
     fn nand(input: &Self::Input) -> Self::Output {
         let zero = input_const(0);
         let owner = reg_w::<2>();
-        let pending_write = reg_w::<1>();
-        let pending_address = reg_w::<22>();
-        let pending_write_data = reg_w::<16>();
-        let phase = reg_w::<2>();
-        let beat = reg_w::<3>();
-        let half = reg_w::<1>();
-        let beat_lo = reg_w::<16>();
-        let beat_hi = reg_w::<16>();
-        let present_error = reg_w::<1>();
 
         // Combinational fixed-priority grant: DMA > data > instruction.
         let selected: Wires<2> = mux2_w(
@@ -295,9 +220,10 @@ impl Module for CpuV3MemoryArbiter {
         );
 
         let owner_none = owner.out.all_0();
-        let active = !owner_none;
         let selected_any = selected.wires[0] | selected.wires[1];
-        let accept = owner_none & selected_any;
+        let requesting = owner_none & selected_any;
+        let accepted = requesting & input.memory_request_ready;
+
         let selected_instruction = selected.eq_const(OWNER_INSTRUCTION);
         let selected_data = selected.eq_const(OWNER_DATA);
         let selected_dma = selected.eq_const(OWNER_DMA);
@@ -305,155 +231,81 @@ impl Module for CpuV3MemoryArbiter {
         let owner_data = owner.out.eq_const(OWNER_DATA);
         let owner_dma = owner.out.eq_const(OWNER_DMA);
 
-        let phase_request = phase.out.eq_const(PHASE_REQUEST);
-        let phase_respond = phase.out.eq_const(PHASE_RESPOND);
-        let phase_present = phase.out.eq_const(PHASE_PRESENT);
-        let write = pending_write.out.wires[0];
-        let half_bit = half.out.wires[0];
-        let beat_last = beat.out.wires[0] & beat.out.wires[1] & beat.out.wires[2];
-
-        let client_ready = (owner_instruction & input.instruction_response_ready)
+        let memory_response_ready = (owner_instruction & input.instruction_response_ready)
             | (owner_data & input.data_response_ready)
             | (owner_dma & input.dma_response_ready);
-        let request_done = active & phase_request & input.memory_request_ready;
-        let respond_done = active & phase_respond & input.memory_response_valid;
-        let respond_present = input.memory_error | write | half_bit;
-        let present_done = active & phase_present & client_ready;
-        let transaction_done = present_done & (present_error.out.wires[0] | write | beat_last);
 
-        // Owner: capture on accept, release once the final beat (or the
-        // write/error completion) is consumed.
-        let next_owner = mux2_w(owner.out, selected, accept);
-        let next_owner = mux2_w(next_owner, const_wires(OWNER_NONE), transaction_done);
+        // Synchronous reset; otherwise capture the accepted owner and release
+        // it once the last (or an error) beat is consumed.
+        let release = !owner_none
+            & input.memory_response_valid
+            & memory_response_ready
+            & (input.memory_response_last | input.memory_error);
+        let next_owner = mux2_w(owner.out, selected, accepted);
+        let next_owner = mux2_w(next_owner, const_wires(OWNER_NONE), release);
         owner.set_in(mux2_w(next_owner, const_wires(OWNER_NONE), input.reset));
 
-        let capture_low = respond_done & !input.memory_error & !write & !half_bit;
-        let capture_high = respond_done & !input.memory_error & !write & half_bit;
+        let instruction_responding = owner_instruction & input.memory_response_valid;
+        let data_responding = owner_data & input.memory_response_valid;
+        let dma_responding = owner_dma & input.memory_response_valid;
+        let selected_line_read =
+            selected_instruction | (selected_data & !input.data_write);
+        let read_data_lo = Wires {
+            wires: std::array::from_fn(|bit| input.memory_read_data.wires[bit]),
+        };
 
-        phase.set_in({
-            let next = mux2_w(phase.out, const_wires(PHASE_RESPOND), request_done);
-            let next = mux2_w(
-                next,
-                mux2_w(const_wires(PHASE_REQUEST), const_wires(PHASE_PRESENT), respond_present),
-                respond_done,
-            );
-            let next = mux2_w(next, const_wires(PHASE_REQUEST), present_done);
-            mux2_w(next, const_wires(PHASE_REQUEST), accept)
-        });
-
-        beat.set_in({
-            let b = beat.out.wires;
-            let carry = b[0] & b[1];
-            let incremented = Wires {
-                wires: [
-                    !b[0],
-                    (b[1] | b[0]) & !(b[1] & b[0]),
-                    (b[2] | carry) & !(b[2] & carry),
-                ],
-            };
-            let next = mux2_w(beat.out, incremented, present_done & !transaction_done);
-            mux2_w(next, const_wires(0), accept)
-        });
-
-        half.set_in({
-            let next = mux2_w(half.out, const_wires(1), capture_low);
-            mux2_w(next, const_wires(0), present_done | accept)
-        });
-
-        beat_lo.set_in(mux2_w(beat_lo.out, input.memory_read_data, capture_low));
-        beat_hi.set_in(mux2_w(beat_hi.out, input.memory_read_data, capture_high));
-        present_error.set_in({
-            let next = mux2_w(present_error.out, const_wires(1), respond_done & input.memory_error);
-            mux2_w(next, const_wires(0), accept)
-        });
-
-        pending_write.set_in(mux2_w(
-            pending_write.out,
-            Wires {
-                wires: [mux2(
+        CpuV3MemoryArbiterOutput {
+            instruction_request_ready: accepted & selected_instruction,
+            instruction_response_valid: instruction_responding,
+            instruction_read_data: mux2_w(
+                const_wires(0),
+                input.memory_read_data,
+                instruction_responding,
+            ),
+            instruction_error: instruction_responding & input.memory_error,
+            data_request_ready: accepted & selected_data,
+            data_response_valid: data_responding,
+            data_read_data: mux2_w(const_wires(0), input.memory_read_data, data_responding),
+            data_error: data_responding & input.memory_error,
+            dma_request_ready: accepted & selected_dma,
+            dma_response_valid: dma_responding,
+            dma_read_data: mux2_w(const_wires(0), read_data_lo, dma_responding),
+            dma_error: dma_responding & input.memory_error,
+            memory_request_valid: requesting,
+            memory_write: requesting
+                & mux2(
                     mux2(zero, input.data_write, selected_data),
                     input.dma_write,
                     selected_dma,
-                )],
-            },
-            accept,
-        ));
-        pending_address.set_in(mux2_w(
-            pending_address.out,
-            mux4(
-                [
-                    const_wires(0),
-                    input.instruction_address,
-                    input.data_address,
-                    input.dma_address,
-                ],
-                selected,
-            ),
-            accept,
-        ));
-        pending_write_data.set_in(mux2_w(
-            pending_write_data.out,
-            mux4(
-                [
-                    const_wires(0),
-                    const_wires(0),
-                    input.data_write_data,
-                    input.dma_write_data,
-                ],
-                selected,
-            ),
-            accept,
-        ));
-
-        let line_address = Wires {
-            wires: std::array::from_fn(|bit| match bit {
-                0 => half_bit,
-                1..=3 => beat.out.wires[bit - 1],
-                _ => pending_address.out.wires[bit],
-            }),
-        };
-        let read_data32 = Wires {
-            wires: std::array::from_fn(|bit| {
-                if bit < 16 {
-                    beat_lo.out.wires[bit]
-                } else {
-                    beat_hi.out.wires[bit - 16]
-                }
-            }),
-        };
-
-        let instruction_present = active & phase_present & owner_instruction;
-        let data_present = active & phase_present & owner_data;
-        let dma_present = active & phase_present & owner_dma;
-        let present_data = phase_present & !write & !present_error.out.wires[0];
-        let request_phase = active & phase_request;
-
-        CpuV3MemoryArbiterOutput {
-            instruction_request_ready: accept & selected_instruction,
-            instruction_response_valid: instruction_present,
-            instruction_read_data: mux2_w(
-                const_wires(0),
-                read_data32,
-                instruction_present & present_data,
-            ),
-            instruction_error: instruction_present & present_error.out.wires[0],
-            data_request_ready: accept & selected_data,
-            data_response_valid: data_present,
-            data_read_data: mux2_w(const_wires(0), read_data32, data_present & present_data),
-            data_error: data_present & present_error.out.wires[0],
-            dma_request_ready: accept & selected_dma,
-            dma_response_valid: dma_present,
-            dma_read_data: mux2_w(const_wires(0), beat_lo.out, dma_present & present_data),
-            dma_error: dma_present & present_error.out.wires[0],
-            memory_request_valid: request_phase,
-            memory_write: request_phase & write,
+                ),
+            memory_read_line: requesting & selected_line_read,
             memory_address: mux2_w(
                 const_wires(0),
-                mux2_w(line_address, pending_address.out, write),
-                request_phase,
+                mux4(
+                    [
+                        const_wires(0),
+                        input.instruction_address,
+                        input.data_address,
+                        input.dma_address,
+                    ],
+                    selected,
+                ),
+                requesting,
             ),
-            memory_write_data: mux2_w(const_wires(0), pending_write_data.out, request_phase),
-            memory_response_ready: active & phase_respond,
+            memory_write_data: mux2_w(
+                const_wires(0),
+                mux4(
+                    [
+                        const_wires(0),
+                        const_wires(0),
+                        input.data_write_data,
+                        input.dma_write_data,
+                    ],
+                    selected,
+                ),
+                requesting,
+            ),
+            memory_response_ready,
         }
     }
 }
@@ -462,10 +314,6 @@ const OWNER_NONE: u8 = 0;
 const OWNER_INSTRUCTION: u8 = 1;
 const OWNER_DATA: u8 = 2;
 const OWNER_DMA: u8 = 3;
-
-const PHASE_REQUEST: u8 = 0;
-const PHASE_RESPOND: u8 = 1;
-const PHASE_PRESENT: u8 = 2;
 
 fn const_wires<const WIDTH: usize>(value: u8) -> Wires<WIDTH> {
     Wires {
@@ -529,6 +377,7 @@ mod tests {
             memory_request_ready: false,
             memory_response_valid: false,
             memory_read_data: 0,
+            memory_response_last: false,
             memory_error: false,
         }
     }
@@ -549,6 +398,7 @@ mod tests {
             dma_error: false,
             memory_request_valid: false,
             memory_write: false,
+            memory_read_line: false,
             memory_address: 0,
             memory_write_data: 0,
             memory_response_ready: false,
@@ -565,88 +415,37 @@ mod tests {
         )
     }
 
-    fn beat_words(n: u64) -> (u64, u64) {
-        (0x2000 + 2 * n, 0x2001 + 2 * n)
-    }
-
     fn beat_data(n: u64) -> u64 {
-        let (lo, hi) = beat_words(n);
-        hi << 16 | lo
+        ((0x2001 + 2 * n) << 16) | (0x2000 + 2 * n)
     }
 
-    /// Present and complete beat `n` of the in-flight instruction line read
-    /// against an always-ready memory. The final beat releases the arbiter.
-    fn instruction_beat_steps(steps: &mut Vec<Step>, base: u64, n: u64) {
-        let (lo, hi) = beat_words(n);
-        // Low word accepted; the arbiter waits for its response.
-        steps.push(TestStep::new(
-            CpuV3MemoryArbiterInputValue {
-                memory_request_ready: true,
-                ..idle()
-            },
-            CpuV3MemoryArbiterOutputValue {
-                memory_response_ready: true,
-                ..z()
-            },
-        ));
-        // Low word captured; the high word request is presented.
+    /// Forward one instruction beat through to the client.
+    fn instruction_beat(steps: &mut Vec<Step>, n: u64, last: bool) {
         steps.push(TestStep::new(
             CpuV3MemoryArbiterInputValue {
                 memory_response_valid: true,
-                memory_read_data: lo,
-                ..idle()
-            },
-            CpuV3MemoryArbiterOutputValue {
-                memory_request_valid: true,
-                memory_address: base + 2 * n + 1,
-                ..z()
-            },
-        ));
-        // High word accepted.
-        steps.push(TestStep::new(
-            CpuV3MemoryArbiterInputValue {
-                memory_request_ready: true,
-                ..idle()
-            },
-            CpuV3MemoryArbiterOutputValue {
-                memory_response_ready: true,
-                ..z()
-            },
-        ));
-        // High word captured; the assembled 32-bit beat is presented.
-        steps.push(TestStep::new(
-            CpuV3MemoryArbiterInputValue {
-                memory_response_valid: true,
-                memory_read_data: hi,
-                ..idle()
-            },
-            CpuV3MemoryArbiterOutputValue {
-                instruction_response_valid: true,
-                instruction_read_data: beat_data(n),
-                ..z()
-            },
-        ));
-        // The client consumes the beat; the next word request (or release)
-        // follows.
-        steps.push(TestStep::new(
-            CpuV3MemoryArbiterInputValue {
+                memory_read_data: beat_data(n),
+                memory_response_last: last,
                 instruction_response_ready: true,
                 ..idle()
             },
-            if n == 7 {
+            if last {
+                // The release edge returns the arbiter to idle.
                 z()
             } else {
                 CpuV3MemoryArbiterOutputValue {
-                    memory_request_valid: true,
-                    memory_address: base + 2 * (n + 1),
+                    instruction_response_valid: true,
+                    instruction_read_data: beat_data(n),
+                    memory_response_ready: true,
                     ..z()
                 }
             },
         ));
     }
 
-    /// Accept one instruction line request and stream the whole line.
+    /// Present a request, accept it, and stream a whole instruction line.
     fn instruction_line_steps(steps: &mut Vec<Step>, base: u64) {
+        // The request is forwarded combinationally while the port is busy.
         steps.push(TestStep::new(
             CpuV3MemoryArbiterInputValue {
                 instruction_request_valid: true,
@@ -655,20 +454,47 @@ mod tests {
             },
             CpuV3MemoryArbiterOutputValue {
                 memory_request_valid: true,
+                memory_read_line: true,
                 memory_address: base,
                 ..z()
             },
         ));
-        for n in 0..8 {
-            instruction_beat_steps(steps, base, n);
+        // The port accepts it; the arbiter captures the owner.
+        steps.push(TestStep::new(
+            CpuV3MemoryArbiterInputValue {
+                instruction_request_valid: true,
+                instruction_address: base,
+                memory_request_ready: true,
+                ..idle()
+            },
+            z(),
+        ));
+        for n in 0..7 {
+            instruction_beat(steps, n, false);
         }
+        // The last beat is first presented without the client ready, proving
+        // the response holds, then consumed, releasing the owner.
+        steps.push(TestStep::new(
+            CpuV3MemoryArbiterInputValue {
+                memory_response_valid: true,
+                memory_read_data: beat_data(7),
+                memory_response_last: true,
+                ..idle()
+            },
+            CpuV3MemoryArbiterOutputValue {
+                instruction_response_valid: true,
+                instruction_read_data: beat_data(7),
+                ..z()
+            },
+        ));
+        instruction_beat(steps, 7, true);
     }
 
     #[test]
     fn emu_and_nand_stream_one_line_per_instruction_request() {
         let mut steps = vec![reset_step()];
         instruction_line_steps(&mut steps, 0x120);
-        // A follow-up request is arbitrated normally after the release.
+        // A follow-up request is forwarded as soon as the owner is released.
         steps.push(TestStep::new(
             CpuV3MemoryArbiterInputValue {
                 instruction_request_valid: true,
@@ -677,6 +503,7 @@ mod tests {
             },
             CpuV3MemoryArbiterOutputValue {
                 memory_request_valid: true,
+                memory_read_line: true,
                 memory_address: 0x2a0,
                 ..z()
             },
@@ -706,17 +533,19 @@ mod tests {
         ));
         steps.push(TestStep::new(
             CpuV3MemoryArbiterInputValue {
+                data_request_valid: true,
+                data_write: true,
+                data_address: 0x222,
+                data_write_data: 0xdddd,
                 memory_request_ready: true,
                 ..idle()
             },
-            CpuV3MemoryArbiterOutputValue {
-                memory_response_ready: true,
-                ..z()
-            },
+            z(),
         ));
         steps.push(TestStep::new(
             CpuV3MemoryArbiterInputValue {
                 memory_response_valid: true,
+                memory_response_last: true,
                 ..idle()
             },
             CpuV3MemoryArbiterOutputValue {
@@ -726,6 +555,8 @@ mod tests {
         ));
         steps.push(TestStep::new(
             CpuV3MemoryArbiterInputValue {
+                memory_response_valid: true,
+                memory_response_last: true,
                 data_response_ready: true,
                 ..idle()
             },
@@ -750,26 +581,33 @@ mod tests {
         ));
         steps.push(TestStep::new(
             CpuV3MemoryArbiterInputValue {
+                dma_request_valid: true,
+                dma_write: true,
+                dma_address: 0x333,
+                dma_write_data: 0xaaaa,
                 memory_request_ready: true,
                 ..idle()
             },
+            z(),
+        ));
+        steps.push(TestStep::new(
+            CpuV3MemoryArbiterInputValue {
+                memory_response_valid: true,
+                memory_response_last: true,
+                memory_read_data: 0xbeef,
+                ..idle()
+            },
             CpuV3MemoryArbiterOutputValue {
-                memory_response_ready: true,
+                dma_response_valid: true,
+                dma_read_data: 0xbeef,
                 ..z()
             },
         ));
         steps.push(TestStep::new(
             CpuV3MemoryArbiterInputValue {
                 memory_response_valid: true,
-                ..idle()
-            },
-            CpuV3MemoryArbiterOutputValue {
-                dma_response_valid: true,
-                ..z()
-            },
-        ));
-        steps.push(TestStep::new(
-            CpuV3MemoryArbiterInputValue {
+                memory_response_last: true,
+                memory_read_data: 0xbeef,
                 dma_response_ready: true,
                 ..idle()
             },
@@ -781,10 +619,9 @@ mod tests {
     #[test]
     fn emu_and_nand_grant_dma_then_data_then_instruction() {
         let mut steps = vec![reset_step()];
-        // All three clients request together; DMA wins.
         let contending = || CpuV3MemoryArbiterInputValue {
             instruction_request_valid: true,
-            instruction_address: 0x111,
+            instruction_address: 0x110,
             data_request_valid: true,
             data_write: true,
             data_address: 0x222,
@@ -795,6 +632,7 @@ mod tests {
             dma_write_data: 0xaaaa,
             ..idle()
         };
+        // All three clients request together; DMA wins the forwarded request.
         steps.push(TestStep::new(
             contending(),
             CpuV3MemoryArbiterOutputValue {
@@ -810,14 +648,12 @@ mod tests {
                 memory_request_ready: true,
                 ..contending()
             },
-            CpuV3MemoryArbiterOutputValue {
-                memory_response_ready: true,
-                ..z()
-            },
+            z(),
         ));
         steps.push(TestStep::new(
             CpuV3MemoryArbiterInputValue {
                 memory_response_valid: true,
+                memory_response_last: true,
                 ..contending()
             },
             CpuV3MemoryArbiterOutputValue {
@@ -825,23 +661,13 @@ mod tests {
                 ..z()
             },
         ));
-        // Consuming the DMA response releases the port; the completed DMA
-        // request drops and the waiting data client is granted
-        // combinationally.
+        // Consuming the DMA response releases the port; the waiting data
+        // client is forwarded combinationally.
         steps.push(TestStep::new(
             CpuV3MemoryArbiterInputValue {
-                dma_request_valid: false,
+                memory_response_valid: true,
+                memory_response_last: true,
                 dma_response_ready: true,
-                ..contending()
-            },
-            CpuV3MemoryArbiterOutputValue {
-                data_request_ready: true,
-                ..z()
-            },
-        ));
-        // The data request is captured at this edge.
-        steps.push(TestStep::new(
-            CpuV3MemoryArbiterInputValue {
                 dma_request_valid: false,
                 ..contending()
             },
@@ -853,21 +679,20 @@ mod tests {
                 ..z()
             },
         ));
+        // The data request is accepted at this edge.
         steps.push(TestStep::new(
             CpuV3MemoryArbiterInputValue {
                 dma_request_valid: false,
                 memory_request_ready: true,
                 ..contending()
             },
-            CpuV3MemoryArbiterOutputValue {
-                memory_response_ready: true,
-                ..z()
-            },
+            z(),
         ));
         steps.push(TestStep::new(
             CpuV3MemoryArbiterInputValue {
                 dma_request_valid: false,
                 memory_response_valid: true,
+                memory_response_last: true,
                 ..contending()
             },
             CpuV3MemoryArbiterOutputValue {
@@ -879,207 +704,72 @@ mod tests {
             CpuV3MemoryArbiterInputValue {
                 dma_request_valid: false,
                 data_request_valid: false,
+                memory_response_valid: true,
+                memory_response_last: true,
                 data_response_ready: true,
                 ..contending()
             },
             CpuV3MemoryArbiterOutputValue {
-                instruction_request_ready: true,
-                ..z()
-            },
-        ));
-        // The instruction line request is captured and streamed.
-        steps.push(TestStep::new(
-            CpuV3MemoryArbiterInputValue {
-                instruction_request_valid: true,
-                instruction_address: 0x110,
-                ..idle()
-            },
-            CpuV3MemoryArbiterOutputValue {
                 memory_request_valid: true,
+                memory_read_line: true,
                 memory_address: 0x110,
                 ..z()
             },
         ));
-        for n in 0..8 {
-            instruction_beat_steps(&mut steps, 0x110, n);
-        }
+        // The instruction line request is accepted and two beats stream.
+        steps.push(TestStep::new(
+            CpuV3MemoryArbiterInputValue {
+                instruction_request_valid: true,
+                instruction_address: 0x110,
+                memory_request_ready: true,
+                ..idle()
+            },
+            z(),
+        ));
+        instruction_beat(&mut steps, 0, false);
+        instruction_beat(&mut steps, 1, false);
         ModuleTest::<CpuV3MemoryArbiter>::new(steps).run_emu_and_nand();
     }
 
     #[test]
-    fn emu_and_nand_hold_requests_and_beats_under_backpressure() {
+    fn emu_and_nand_release_on_an_error_beat_without_last() {
         let mut steps = vec![reset_step()];
         steps.push(TestStep::new(
             CpuV3MemoryArbiterInputValue {
                 instruction_request_valid: true,
                 instruction_address: 0x120,
-                ..idle()
-            },
-            CpuV3MemoryArbiterOutputValue {
-                memory_request_valid: true,
-                memory_address: 0x120,
-                ..z()
-            },
-        ));
-        // The downstream port stalls the first word request; the request
-        // stays asserted with a stable address.
-        steps.push(
-            TestStep::new(
-                idle(),
-                CpuV3MemoryArbiterOutputValue {
-                    memory_request_valid: true,
-                    memory_address: 0x120,
-                    ..z()
-                },
-            )
-            .after_cycles(2),
-        );
-        // Beat zero completes.
-        let (lo, hi) = beat_words(0);
-        steps.push(TestStep::new(
-            CpuV3MemoryArbiterInputValue {
                 memory_request_ready: true,
                 ..idle()
             },
-            CpuV3MemoryArbiterOutputValue {
-                memory_response_ready: true,
-                ..z()
-            },
+            z(),
         ));
+        instruction_beat(&mut steps, 0, false);
+        // An error beat is presented with its error flag.
         steps.push(TestStep::new(
             CpuV3MemoryArbiterInputValue {
                 memory_response_valid: true,
-                memory_read_data: lo,
-                ..idle()
-            },
-            CpuV3MemoryArbiterOutputValue {
-                memory_request_valid: true,
-                memory_address: 0x121,
-                ..z()
-            },
-        ));
-        steps.push(TestStep::new(
-            CpuV3MemoryArbiterInputValue {
-                memory_request_ready: true,
-                ..idle()
-            },
-            CpuV3MemoryArbiterOutputValue {
-                memory_response_ready: true,
-                ..z()
-            },
-        ));
-        steps.push(TestStep::new(
-            CpuV3MemoryArbiterInputValue {
-                memory_response_valid: true,
-                memory_read_data: hi,
-                ..idle()
-            },
-            CpuV3MemoryArbiterOutputValue {
-                instruction_response_valid: true,
-                instruction_read_data: beat_data(0),
-                ..z()
-            },
-        ));
-        // The client stalls the presented beat; the data stays stable.
-        steps.push(
-            TestStep::new(
-                idle(),
-                CpuV3MemoryArbiterOutputValue {
-                    instruction_response_valid: true,
-                    instruction_read_data: beat_data(0),
-                    ..z()
-                },
-            )
-            .after_cycles(2),
-        );
-        steps.push(TestStep::new(
-            CpuV3MemoryArbiterInputValue {
-                instruction_response_ready: true,
-                ..idle()
-            },
-            CpuV3MemoryArbiterOutputValue {
-                memory_request_valid: true,
-                memory_address: 0x122,
-                ..z()
-            },
-        ));
-        for n in 1..8 {
-            instruction_beat_steps(&mut steps, 0x120, n);
-        }
-        ModuleTest::<CpuV3MemoryArbiter>::new(steps).run_emu_and_nand();
-    }
-
-    #[test]
-    fn emu_and_nand_terminate_the_line_on_a_memory_error() {
-        let mut steps = vec![reset_step()];
-        steps.push(TestStep::new(
-            CpuV3MemoryArbiterInputValue {
-                instruction_request_valid: true,
-                instruction_address: 0x120,
-                ..idle()
-            },
-            CpuV3MemoryArbiterOutputValue {
-                memory_request_valid: true,
-                memory_address: 0x120,
-                ..z()
-            },
-        ));
-        instruction_beat_steps(&mut steps, 0x120, 0);
-        // Beat one's high word response arrives with an error: the arbiter
-        // presents one error beat and terminates the line early.
-        let (lo, _) = beat_words(1);
-        steps.push(TestStep::new(
-            CpuV3MemoryArbiterInputValue {
-                memory_request_ready: true,
-                ..idle()
-            },
-            CpuV3MemoryArbiterOutputValue {
-                memory_response_ready: true,
-                ..z()
-            },
-        ));
-        steps.push(TestStep::new(
-            CpuV3MemoryArbiterInputValue {
-                memory_response_valid: true,
-                memory_read_data: lo,
-                ..idle()
-            },
-            CpuV3MemoryArbiterOutputValue {
-                memory_request_valid: true,
-                memory_address: 0x123,
-                ..z()
-            },
-        ));
-        steps.push(TestStep::new(
-            CpuV3MemoryArbiterInputValue {
-                memory_request_ready: true,
-                ..idle()
-            },
-            CpuV3MemoryArbiterOutputValue {
-                memory_response_ready: true,
-                ..z()
-            },
-        ));
-        steps.push(TestStep::new(
-            CpuV3MemoryArbiterInputValue {
-                memory_response_valid: true,
+                memory_read_data: beat_data(1),
                 memory_error: true,
                 ..idle()
             },
             CpuV3MemoryArbiterOutputValue {
                 instruction_response_valid: true,
+                instruction_read_data: beat_data(1),
                 instruction_error: true,
                 ..z()
             },
         ));
+        // Consuming the error beat releases the owner even without last.
         steps.push(TestStep::new(
             CpuV3MemoryArbiterInputValue {
+                memory_response_valid: true,
+                memory_read_data: beat_data(1),
+                memory_error: true,
                 instruction_response_ready: true,
                 ..idle()
             },
             z(),
         ));
-        // The arbiter recovers and serves the next request.
         steps.push(TestStep::new(
             CpuV3MemoryArbiterInputValue {
                 instruction_request_valid: true,
@@ -1088,6 +778,7 @@ mod tests {
             },
             CpuV3MemoryArbiterOutputValue {
                 memory_request_valid: true,
+                memory_read_line: true,
                 memory_address: 0x2a0,
                 ..z()
             },
@@ -1102,28 +793,14 @@ mod tests {
             CpuV3MemoryArbiterInputValue {
                 instruction_request_valid: true,
                 instruction_address: 0x120,
-                ..idle()
-            },
-            CpuV3MemoryArbiterOutputValue {
-                memory_request_valid: true,
-                memory_address: 0x120,
-                ..z()
-            },
-        ));
-        steps.push(TestStep::new(
-            CpuV3MemoryArbiterInputValue {
                 memory_request_ready: true,
                 ..idle()
             },
-            CpuV3MemoryArbiterOutputValue {
-                memory_response_ready: true,
-                ..z()
-            },
+            z(),
         ));
-        // Reset mid-transaction drops the owner and all downstream activity.
+        instruction_beat(&mut steps, 0, false);
         steps.push(reset_step());
         steps.push(TestStep::new(idle(), z()));
-        // A fresh request is served normally afterwards.
         steps.push(TestStep::new(
             CpuV3MemoryArbiterInputValue {
                 instruction_request_valid: true,
@@ -1132,6 +809,7 @@ mod tests {
             },
             CpuV3MemoryArbiterOutputValue {
                 memory_request_valid: true,
+                memory_read_line: true,
                 memory_address: 0x2a0,
                 ..z()
             },

@@ -52,7 +52,29 @@ Updated: 2026-08-29
   use is unchanged at four blocks per system (2 SDPB + 2 pROM) with 56 RAM16 cells; at the 54 MHz
   constraint the boot and SDRAM builds report Fmax 57.127 MHz and 62.440 MHz. Board validation
   was intentionally skipped: no physical evidence is required for this stage.
-- Stages 2-11: not started.
+- Stage 2: complete (2026-08-29). One aligned cache-line miss now produces exactly one SDRAM
+  command sequence: the arbiter forwards a single line request and the adapter issues one
+  ACTIVE + READ with burst length 7, streaming eight ordered 32-bit beats (with `last` and
+  `error`) straight through the arbiter into the cache's refill buffer. The arbiter reverted to
+  combinational request forwarding with ownership held from accept until the accepted beat
+  carrying `last` (or any error beat); the Stage 1 word-pairing sequencer is gone. The word port
+  (`TangNano20KSdramWordPort`) gained a `read_line` request flag, a 32-bit read bus, and
+  `response_last`; word writes and word reads keep their held response. The display SDRAM
+  adapter's CPU port gained the same line-burst path. Burst beats cannot be backpressured by the
+  fitted Controller HS, so line beats are documented and tested as un-stallable stream beats; a
+  due refresh never interrupts a burst (it waits for the transaction boundary). The system
+  testbench SDRAM models now serve `burst_length + 1` beats and fatally reject any word read
+  reaching the adapter. Acceptance passed: cache, arbiter (emu/NAND), word-port, and
+  display-port tests cover the burst shape, beat ordering, `last`, write completion, priority,
+  backpressure, and error release; the cache Icarus testbench still proves no partial line is
+  installed on error; the two-stage flash boot, SDRAM, and display system Icarus tests passed
+  (the boot test also asserts that no word read and at least one line burst reach the adapter);
+  workspace tests, strict Clippy, layering, source hygiene, and the boot package byte-for-byte
+  check passed; full Gowin PnR plus artifact audit passed. BSRAM use is unchanged at four blocks
+  per system (2 SDPB + 2 pROM) with 56 RAM16 cells; at the 54 MHz constraint the boot and SDRAM
+  builds report Fmax 55.327 MHz and 56.090 MHz. Board validation was intentionally skipped: no
+  physical evidence is required for this stage.
+- Stages 3-11: not started.
 
 ## Ordered major tasks
 

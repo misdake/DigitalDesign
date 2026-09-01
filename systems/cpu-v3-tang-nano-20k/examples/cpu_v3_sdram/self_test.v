@@ -243,11 +243,13 @@ __CPU_V3_CORE__ u_core (
 
 wire memory_request_valid;
 wire memory_write;
+wire memory_read_line;
 wire [21:0] memory_address;
 wire [15:0] memory_write_data;
 wire memory_request_ready;
 wire memory_response_valid;
-wire [15:0] memory_read_data;
+wire [31:0] memory_read_data;
+wire memory_response_last;
 wire memory_error;
 wire memory_response_ready;
 
@@ -270,6 +272,7 @@ __ARBITER__ u_memory_arbiter (
     .memory_request_ready(memory_request_ready),
     .memory_response_valid(memory_response_valid),
     .memory_read_data(memory_read_data),
+    .memory_response_last(memory_response_last),
     .memory_error(memory_error),
     .instruction_request_ready(icache_memory_request_ready),
     .instruction_response_valid(icache_memory_response_valid),
@@ -285,6 +288,7 @@ __ARBITER__ u_memory_arbiter (
     .dma_error(),
     .memory_request_valid(memory_request_valid),
     .memory_write(memory_write),
+    .memory_read_line(memory_read_line),
     .memory_address(memory_address),
     .memory_write_data(memory_write_data),
     .memory_response_ready(memory_response_ready)
@@ -295,6 +299,7 @@ __SDRAM_WORD_PORT__ u_sdram_word_port (
     .reset(reset),
     .request_valid(memory_request_valid),
     .write(memory_write),
+    .read_line(memory_read_line),
     .address(memory_address),
     .write_data(memory_write_data),
     .response_ready(memory_response_ready),
@@ -305,6 +310,7 @@ __SDRAM_WORD_PORT__ u_sdram_word_port (
     .request_ready(memory_request_ready),
     .response_valid(memory_response_valid),
     .read_data(memory_read_data),
+    .response_last(memory_response_last),
     .error(memory_error),
     .controller_command_valid(sdram_command_valid),
     .controller_command(sdram_command),

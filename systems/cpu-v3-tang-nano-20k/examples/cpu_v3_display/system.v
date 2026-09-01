@@ -34,16 +34,16 @@ __DCACHE__ u_dcache(.clk(clk),.reset(reset),.invalidate_all(1'b0),
  .cpu_request_ready(dreq_ready),.cpu_response_valid(dresp_valid),.cpu_read_data(drdata),.cpu_error(derror),
  .memory_request_valid(dm_req),.memory_write(dm_write),.memory_address(dm_addr),.memory_write_data(dm_wdata),.memory_response_ready(dm_resp_ready));
 
-wire cm_req,cm_write,cm_ready,cm_resp,cm_resp_ready,cm_error; wire [21:0] cm_addr; wire [15:0] cm_wdata,cm_rdata;
+wire cm_req,cm_write,cm_read_line,cm_ready,cm_resp,cm_last,cm_resp_ready,cm_error; wire [21:0] cm_addr; wire [15:0] cm_wdata; wire [31:0] cm_rdata;
 __ARBITER__ u_memory_arbiter(.clk(clk),.reset(reset),
  .instruction_request_valid(im_req),.instruction_address(im_addr),.instruction_response_ready(im_resp_ready),
  .data_request_valid(dm_req),.data_write(dm_write),.data_address(dm_addr),.data_write_data(dm_wdata),.data_response_ready(dm_resp_ready),
  .dma_request_valid(1'b0),.dma_write(1'b0),.dma_address(22'b0),.dma_write_data(16'b0),.dma_response_ready(1'b0),
- .memory_request_ready(cm_ready),.memory_response_valid(cm_resp),.memory_read_data(cm_rdata),.memory_error(cm_error),
+ .memory_request_ready(cm_ready),.memory_response_valid(cm_resp),.memory_read_data(cm_rdata),.memory_response_last(cm_last),.memory_error(cm_error),
  .instruction_request_ready(im_ready),.instruction_response_valid(im_resp),.instruction_read_data(im_rdata),.instruction_error(im_error),
  .data_request_ready(dm_ready),.data_response_valid(dm_resp),.data_read_data(dm_rdata),.data_error(dm_error),
  .dma_request_ready(),.dma_response_valid(),.dma_read_data(),.dma_error(),
- .memory_request_valid(cm_req),.memory_write(cm_write),.memory_address(cm_addr),.memory_write_data(cm_wdata),.memory_response_ready(cm_resp_ready));
+ .memory_request_valid(cm_req),.memory_write(cm_write),.memory_read_line(cm_read_line),.memory_address(cm_addr),.memory_write_data(cm_wdata),.memory_response_ready(cm_resp_ready));
 
 wire halted,faulted; wire [15:0] halt_signal,fault_pc; wire [7:0] fault_code;
 wire [2:0] device_index; wire [3:0] device_channel;
@@ -58,11 +58,11 @@ __CPU__ u_cpu(.clk(clk),.reset(reset),.instruction_request_ready(ireq_ready),.in
 
 wire display_req,display_urgent,display_ready,display_valid,display_last,display_mem_error;
 wire [21:0] display_addr; wire [31:0] display_data; wire underflow;
-__SDRAM__ u_sdram(.clk(clk),.reset(reset),.cpu_request_valid(cm_req),.cpu_write(cm_write),.cpu_address(cm_addr),
+__SDRAM__ u_sdram(.clk(clk),.reset(reset),.cpu_request_valid(cm_req),.cpu_write(cm_write),.cpu_read_line(cm_read_line),.cpu_address(cm_addr),
  .cpu_write_data(cm_wdata),.cpu_response_ready(cm_resp_ready),.display_request_valid(display_req),
  .display_urgent(display_urgent),.display_address(display_addr),.controller_read_data(sdram_read_data),
  .controller_read_valid(sdram_read_valid),.controller_init_done(sdram_init_done),.controller_command_ack(sdram_command_ack),
- .cpu_request_ready(cm_ready),.cpu_response_valid(cm_resp),.cpu_read_data(cm_rdata),.cpu_error(cm_error),
+ .cpu_request_ready(cm_ready),.cpu_response_valid(cm_resp),.cpu_read_data(cm_rdata),.cpu_response_last(cm_last),.cpu_error(cm_error),
  .display_request_ready(display_ready),.display_data_valid(display_valid),.display_read_data(display_data),
  .display_last(display_last),.display_error(display_mem_error),.controller_command_valid(sdram_command_valid),
  .controller_command(sdram_command),.controller_precharge(sdram_precharge),.controller_address(sdram_address),
