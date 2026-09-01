@@ -1,8 +1,8 @@
-# CPU V3 cache, fetch, and DRAM roadmap
+# CPU V3 optimization roadmap
 
 Status: active handoff plan for future conversations
-Repository: `D:\github\DigitalDesign-code`
-Updated: 2026-08-31
+Repository: `..`
+Updated: 2026-09-01
 
 ## Milestone workflow and document lifecycle
 
@@ -31,15 +31,17 @@ Updated: 2026-08-31
 | 6 | Complete, 2026-08-30 | Added demand-progress-triggered, low-priority next-line I-cache prefetch with redirect cancellation, discardable in-flight refills, simulation counters, and demand-safe cancellation races. | Full system: 10,129 Logic; 7 BSRAM; 54.538 MHz |
 | 7 | Complete, 2026-08-30 | Added cycle-profiled emulator benchmarks, a redirect fast path, and an explicit dual-read RAM16 scalar register file. Hot control-transfer fetch waits fell from four cycles to two; the RAM16 register file cut 2,178 LUTs. | Full system: 8,046 Logic; 7 BSRAM; 57.549 MHz |
 | 8 | Complete, 2026-08-30 | Split the production I/D caches, added write-allocate D-cache stores, dirty eviction, eight-beat SDRAM line writes, and blocking full-cache clean/invalidate with CPU hold and final status. | Full system: 9,548 Logic; 7 BSRAM; 54.918 MHz |
-| 9 | Complete, 2026-08-31 | Added an exact related-clock 54/108 MHz gearbox. Cache/arbiter line traffic is 4 x 64-bit at 54 MHz; the Controller HS and SDRAM side remains 8 x 32-bit at 108 MHz. | Full system: 10,345 Logic; 7 BSRAM; CPU 54.965 MHz; controller 171.327 MHz |
-| 10 | Complete, 2026-08-31 | Replaced XOR/way-interleaved cache storage with two parity-split DPBs per cache. Refill and D-cache write-back now transfer directly as 4 x 64-bit beats without private 256-bit cache buffers. | Full system: 9,977 Logic; 4 DPB + 1 SDPB + 2 pROM; CPU 54.692 MHz; controller 184.536 MHz; pixel 80.543 MHz; TNS 0 |
+| 9 | Complete, 2026-08-31 | Added an exact related-clock 54/108 MHz gearbox. Cache/arbiter line traffic is 4 x 64-bit at 54 MHz; the Controller HS and SDRAM side remains 8 x 32-bit at 108 MHz. | Full system: 10,345 Logic; 7 BSRAM; CPU 54.965 MHz |
+| 10 | Complete, 2026-08-31 | Replaced XOR/way-interleaved cache storage with two parity-split DPBs per cache. Refill and D-cache write-back now transfer directly as 4 x 64-bit beats without private 256-bit cache buffers. | Full system: 9,977 Logic; 4 DPB + 1 SDPB + 2 pROM; CPU 54.692 MHz |
+| 11 | Complete, 2026-09-01 | Added a one-entry asynchronous store. A scalar store retires immediately and its data-port request/response runs in the background, overlapping ALU and other non-memory instructions; later memory operations wait on the single store buffer. | Full system: 10,025 Logic; 4 DPB + 1 SDPB + 2 pROM; CPU 56.51 MHz |
 
 Starting with System consolidation, PnR evidence is always taken from the complete `cpu_v3_system`
 containing the CPU, boot path, SDRAM controller, and display path. Every subsequent completed stage
 must record the Gowin PnR report's total `Logic` count alongside BSRAM use and Fmax. `Logic` is the
 vendor report's aggregate logic-unit metric, not merely its LUT subtotal. The consolidation and Stage
 5 counts above were reproduced from full-system builds at commits `3f62078` and `df4774a`; Stage 6
-and Stage 7 use their corresponding full-system milestone builds.
+and Stage 7 use their corresponding full-system milestone builds. Stage 11 changed only the CPU store
+path, and its full-system build closes the 54 MHz CPU clock at 56.51 MHz.
 
 ## Ordered major tasks
 
@@ -54,6 +56,7 @@ and Stage 7 use their corresponding full-system milestone builds.
 8. Change D-cache to write-back and implement dirty eviction plus global clean/invalidate maintenance in the same change.
 9. Run DRAM at exactly twice the CPU frequency through a related-clock 2:1 gearbox while keeping the rest of the system at 54 MHz.
 10. Convert each cache's two data BSRAMs to true-dual-port parity banks and transfer cache lines directly as four 64-bit beats.
+11. Let one scalar store complete asynchronously in the background while non-memory instructions continue to execute.
 
 Task 0 should happen before Tasks 1 and 2. Tasks 1 and 2 remain the next performance implementation
 scope after that policy cleanup. Do not combine all tasks into one change.
@@ -472,10 +475,10 @@ The display scheduler captures four 64-bit controller beats, then releases SDRAM
 the normal recovery interval while the local buffer independently emits eight 32-bit display words.
 An RTL test verifies that a CPU transaction is accepted before that display drain completes.
 
-Stage 9's independent full-system PnR closes CPU 54 MHz at 54.965 MHz, Controller HS 108 MHz at
-171.327 MHz, and the 74.25 MHz pixel clock at 83.119 MHz. It uses 10,345 Logic and seven BSRAM
-blocks; every reported setup/hold TNS is zero. CPU closure remains narrow. Physical board confirmation of the
-vendor controller's read-valid phase and burst-write sampling is still outstanding.
+Stage 9's independent full-system PnR closes the 54 MHz CPU clock at 54.965 MHz. It uses 10,345 Logic
+and seven BSRAM blocks; every reported setup/hold TNS is zero. CPU closure remains narrow. Physical
+board confirmation of the vendor controller's read-valid phase and burst-write sampling is still
+outstanding.
 
 ## Stage 10: dual-port cache BSRAMs and direct 64-bit line transfer
 
@@ -527,6 +530,74 @@ The combined Stage 9/10 PnR reports 9,977 Logic (8,766 LUTs, 683 ALUs, 88 SSRAM 
 1 SDPB, 2 pROM, and 2 MULT18X18. The two I-cache DPBs and two D-cache DPBs are each attributed as
 one two-block cache data leaf, so synthesis may legally pack/merge bank hierarchy without defeating
 the exact two-BSRAM-per-cache resource audit.
+
+## Stage 11: one-entry asynchronous store
+
+Write-back stores and direct 64-bit line transfer still forced every scalar store to wait for its
+data-port handshake before the core could fetch again. A store sat on the critical path, stalling the
+whole blocking execute machine even though nothing yet read the stored value. Stage 11 lets one scalar
+store finish in the background.
+
+Design:
+
+- Add a single-entry store buffer: `async_store_valid`, `async_store_issued`, `async_store_address`,
+  `async_store_data`, and `async_store_fault_pc`, plus a new `ST_ASYNC_STORE_WAIT` core-FSM state.
+  The emulator mirrors it as `AsyncStore` and the `Phase::AsyncStoreWait` enum variant.
+- A store instruction (`opcode 0x9`) that finds the buffer empty retires immediately and returns to
+  fetch. The buffered store owns the data port: `data_request_valid`, `data_write`, `data_address`,
+  `data_write_data`, and `data_response_ready` all follow the outstanding store while it is in flight,
+  in place of the normal pending-data path.
+- Non-memory instructions (ALU, FPU, branches) continue to execute and retire while the store request
+  is outstanding, hiding store memory latency behind useful work. The store no longer blocks its own
+  instruction.
+- Any later memory operation blocks: a second store, a load, or an FPU memory access waits in
+  `ST_ASYNC_STORE_WAIT` until the single buffer drains, then it either enqueues a new store or advances
+  to a normal data request. Memory ordering stays strict: at most one store is outstanding.
+- `halted` is not asserted until the last buffered store is globally observed (`state == ST_HALTED &&
+  !async_store_valid`), so a program that stores a result cannot expose its halt before the store
+  commits.
+- A store that gets an error response records `FAULT_DATA_MEMORY` with the buffered fault PC and the
+  core transitions to fault only after the store response is accepted.
+
+### Implementation decision (2026-09-01)
+
+The core adds the buffer only when a store is retired and reuses the existing pending-data path to
+hold a blocked store so it can become the next async store once the current one drains. The Verilog and
+the Rust emulator share the same nonblocking timing: a freshly enqueued store cannot issue on the same
+edge that created it, and a waiter observes completion one cycle after the response handshake. The
+benchmark profiler now counts the fetch and data interfaces independently; the previous else-if chain
+silently dropped every overlapped store.
+
+### Validation (2026-09-01)
+
+- Scenario 37 in `cpu_v3_core_tb.v` delays the data response, overlaps an `ADD` with a `STORE`, and
+  checks that the ALU ran while the store was outstanding, that exactly two data requests occur, and
+  that the final memory word holds the stored value.
+- The bounded emulator test
+  `emulator_async_store_overlaps_alu_and_blocks_next_memory_operation` asserts the store retires to
+  fetch immediately, the overlapped ALU retires, and the following load parks in `AsyncStoreWait`.
+- `data_probe_counts_overlapped_scalar_requests_and_latency` asserts that data requests equal the
+  retired load-plus-store count rather than the earlier word-transaction proxy.
+
+### Stage 11 results (commit `6789380`) against Stage 10 (`76d5bef`)
+
+The 13-program suite is unchanged. Workloads that issue no store are bit-identical. Memory-heavy
+workloads improve:
+
+| Workload | Stage 10 cycles | Stage 11 cycles | Change |
+| --- | ---: | ---: | ---: |
+| int-short-memory | 3,415 | 3,214 | -5.9% |
+| int-medium-memory | 75,038 | 70,750 | -5.7% |
+| streaming-mix | 894,623 | 842,341 | -5.8% |
+| quicksort-4096 | 5,217,959 | 4,989,362 | -4.4% |
+
+The data-path cycles still dominate the memory-heavy cases: streaming-mix attributes 24.5% of its
+cycles to the data request/response path and quicksort-4096 32.0%. A single store buffer is a partial
+fix: it hides store latency only until a later memory operation needs the data port, so a deeper
+store pipeline or a small write-combining buffer is the natural follow-up.
+
+The Stage 11 full-system PnR reports 10,025 Logic, 4 DPB + 1 SDPB + 2 pROM, and closes the 54 MHz CPU
+clock at 56.51 MHz.
 
 ## Risk-scaled validation
 
