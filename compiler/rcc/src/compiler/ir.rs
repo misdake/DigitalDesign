@@ -161,9 +161,8 @@ pub enum Instr {
         channel: u8,
         src: VReg,
     },
-    /// CpuV3-only: invalidate the complete write-through data cache. This is
-    /// a compiler memory barrier and becomes blocking clean-plus-invalidate
-    /// when the target implements write-back data caching.
+    /// CpuV3-only: blocking clean-plus-invalidate of the complete write-back
+    /// data cache. This is a compiler memory and control barrier.
     DcacheInvalidateAll,
     /// CpuV3-only: write the DSEG special register (MTSR DSEG)
     MtsrDseg {

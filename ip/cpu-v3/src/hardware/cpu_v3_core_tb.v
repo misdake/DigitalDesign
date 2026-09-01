@@ -1,6 +1,7 @@
 module tb;
 reg clk = 0;
 reg reset = 1;
+reg hold = 0;
 reg instruction_request_ready = 1;
 reg instruction_response_valid = 0;
 reg [15:0] instruction_data = 0;

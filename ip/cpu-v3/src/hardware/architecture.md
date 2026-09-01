@@ -50,17 +50,21 @@ so the synchronous data read returns both candidate ways while the parallel tag
 comparison runs; the hit way selects the corresponding registered bank result.
 While that resident read resolves, the next lookup may start, allowing one
 ordered hit request and response per cycle when there is no miss, invalidate,
-write, or response backpressure.
-Stores are write-through and do not allocate on a miss. A read miss issues one
+write, or response backpressure. The instruction cache exposes only reads. The
+data cache is write-back: stores allocate on a miss and set a dirty bit in a
+separate SSRAM; replacing a dirty victim first writes its complete line.
+A read or write-allocate miss issues one
 aligned line request; the system arbiter forwards it as one SDRAM burst
 command, holds the port while the adapter streams eight ordered 32-bit beats
 (the low half of beat `n` is word `2*n`) into the cache's private 256-bit
 refill buffer, and releases the port once the final beat is accepted. The
 cache then drains eight beats into the selected way of its two interleaved data BSRAM banks and commits tag
 and valid state only after a complete error-free line, so an error or
-invalidate can never expose a partially installed line. The boot DMA keeps
-single-word transactions. Only full-cache invalidation exists; there is no
-per-line snoop interface. The system-control I-cache invalidation pulse is
+invalidate can never expose a partially installed line. Dirty eviction and
+maintenance write one line as eight ordered 32-bit beats. The boot DMA keeps
+single-word transactions. Full D-cache clean and clean-plus-invalidate scan
+dirty state while the CPU is held; there is no per-line snoop interface. The
+system-control I-cache invalidation pulse is
 registered for one cycle so the compiler's adjacent invalidate-and-JSEG
 handoff resolves deterministically.
 

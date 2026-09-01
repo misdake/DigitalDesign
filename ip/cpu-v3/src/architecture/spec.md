@@ -231,10 +231,10 @@ segment alone does not invalidate correctly tagged lines.
 Device 0 is addressed only with `DEVRECV`/`DEVSEND`. Channel 0 is
 `ICACHE_INVALIDATE_ALL_DELAYED`: a write produces the registered one-cycle-
 delayed whole-I-cache invalidation pulse. Channel 1 is `D_INVALIDATE_ALL`:
-while D-cache is write-through it cheaply clears every valid bit; under future
-write-back caching the same operation is blocking clean-plus-invalidate.
-Channel 4 reserves `D_CLEAN_ALL`, and channel 5 reserves final maintenance
-status; neither is implemented before dirty state exists. Channel 2 drives the six board LEDs from the low six written
+it starts blocking clean-plus-invalidate on the write-back D-cache. Channel 4
+starts blocking `D_CLEAN_ALL`, and channel 5 returns final maintenance status.
+The system controller holds the CPU from command acceptance until the D-cache
+reports success or error. Channel 2 drives the six board LEDs from the low six written
 bits. Channel 3 accepts one UART transmit byte per write (8N1) and reports
 bit 0 set on reads while the transmitter is busy.
 
@@ -286,13 +286,15 @@ the deterministic per-set victim is replaced. One arbiter shares the SDRAM trans
 instruction misses may not starve refresh or an already accepted data
 transaction.
 
-Reads allocate a complete line. Stores are write-through; write misses do not
-allocate. This avoids dirty eviction and makes early correctness/debugging much
-simpler. A read miss issues one Controller HS burst and captures eight ordered
+The I-cache is read-only. D-cache reads and stores allocate a complete line;
+stores set a per-way/set dirty bit in a separate 128-bit SSRAM. Replacing a dirty
+victim writes its complete line before refill. A miss issues one Controller HS burst and captures eight ordered
 32-bit beats in a private refill buffer. Both halves of one buffered beat drain
 into the even and odd BSRAM banks in the same cycle, so a complete line installs
-in eight cycles. A 16-bit store remains one 32-bit masked SDRAM write.
-Write-back remains a later policy change behind the same CPU interface.
+in eight cycles. Dirty eviction and maintenance stream eight ordered 32-bit
+write beats. Full clean preserves valid lines after successful write-back;
+full invalidate writes dirty lines and then clears all valid state. Both are
+blocking operations driven by the system controller's CPU hold.
 
 The fitted instruction path adds a four-entry register-based fetch queue between
 the core and the boot-memory/I-cache responders. Fetched and outstanding words

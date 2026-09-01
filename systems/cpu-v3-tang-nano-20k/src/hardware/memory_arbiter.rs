@@ -1,10 +1,9 @@
 //! Machine-owned arbiter between CpuV3 instruction/data traffic, boot DMA,
 //! and the Tang Nano 20K physical SDRAM line/word port.
 //!
-//! Cache clients speak line transactions: one aligned line read request is
-//! answered by exactly eight ordered 32-bit beats (beat n carries word 2*n in
-//! its low half and word 2*n+1 in its high half), while a data-cache store is
-//! one write-through word transaction. The arbiter forwards one request to
+//! Cache clients speak line transactions: one aligned request transfers eight
+//! ordered 32-bit beats (beat n carries word 2*n in its low half and word
+//! 2*n+1 in its high half). The arbiter forwards one request to
 //! the SDRAM adapter, holds ownership while the adapter streams the real
 //! burst, and releases the owner on the accepted beat carrying
 //! `memory_response_last` (or any error beat), so a waiting client can start
@@ -24,8 +23,9 @@ pub struct CpuV3MemoryArbiterInput {
 
     pub data_request_valid: Wire,
     pub data_write: Wire,
+    pub data_line: Wire,
     pub data_address: Wires<22>,
-    pub data_write_data: Wires<16>,
+    pub data_write_data: Wires<32>,
     pub data_response_ready: Wire,
 
     pub dma_request_valid: Wire,
@@ -60,9 +60,9 @@ pub struct CpuV3MemoryArbiterOutput {
 
     pub memory_request_valid: Wire,
     pub memory_write: Wire,
-    pub memory_read_line: Wire,
+    pub memory_line: Wire,
     pub memory_address: Wires<22>,
-    pub memory_write_data: Wires<16>,
+    pub memory_write_data: Wires<32>,
     pub memory_response_ready: Wire,
 }
 
@@ -111,8 +111,8 @@ impl Module for CpuV3MemoryArbiter {
         let selected = select(&input);
         let requesting = state.owner == Owner::None && selected != Owner::None;
         let accepted = requesting && input.memory_request_ready;
-        let selected_line_read =
-            selected == Owner::Instruction || (selected == Owner::Data && !input.data_write);
+        let selected_line =
+            selected == Owner::Instruction || (selected == Owner::Data && input.data_line);
         let instruction_responding =
             state.owner == Owner::Instruction && input.memory_response_valid;
         let data_responding = state.owner == Owner::Data && input.memory_response_valid;
@@ -151,7 +151,7 @@ impl Module for CpuV3MemoryArbiter {
                         Owner::Data => input.data_write,
                         Owner::Dma => input.dma_write,
                     },
-                memory_read_line: requesting && selected_line_read,
+                memory_line: requesting && selected_line,
                 memory_address: if requesting {
                     match selected {
                         Owner::Instruction => input.instruction_address,
@@ -168,6 +168,8 @@ impl Module for CpuV3MemoryArbiter {
                         Owner::Dma => input.dma_write_data,
                         Owner::Instruction | Owner::None => 0,
                     }
+                } else if state.owner == Owner::Data && input.data_line {
+                    input.data_write_data
                 } else {
                     0
                 },
@@ -248,9 +250,18 @@ impl Module for CpuV3MemoryArbiter {
         let instruction_responding = owner_instruction & input.memory_response_valid;
         let data_responding = owner_data & input.memory_response_valid;
         let dma_responding = owner_dma & input.memory_response_valid;
-        let selected_line_read = selected_instruction | (selected_data & !input.data_write);
+        let selected_line = selected_instruction | (selected_data & input.data_line);
         let read_data_lo = Wires {
             wires: std::array::from_fn(|bit| input.memory_read_data.wires[bit]),
+        };
+        let dma_write_data = Wires {
+            wires: std::array::from_fn(|bit| {
+                if bit < 16 {
+                    input.dma_write_data.wires[bit]
+                } else {
+                    zero
+                }
+            }),
         };
 
         CpuV3MemoryArbiterOutput {
@@ -277,7 +288,7 @@ impl Module for CpuV3MemoryArbiter {
                     input.dma_write,
                     selected_dma,
                 ),
-            memory_read_line: requesting & selected_line_read,
+            memory_line: requesting & selected_line,
             memory_address: mux2_w(
                 const_wires(0),
                 mux4(
@@ -293,14 +304,14 @@ impl Module for CpuV3MemoryArbiter {
             ),
             memory_write_data: mux2_w(
                 const_wires(0),
-                mux4(
-                    [
-                        const_wires(0),
-                        const_wires(0),
-                        input.data_write_data,
-                        input.dma_write_data,
-                    ],
-                    selected,
+                input.data_write_data,
+                owner_data & input.data_line,
+            ) | mux2_w(
+                const_wires(0),
+                mux2_w(
+                    mux2_w(const_wires(0), input.data_write_data, selected_data),
+                    dma_write_data,
+                    selected_dma,
                 ),
                 requesting,
             ),
@@ -365,6 +376,7 @@ mod tests {
             instruction_response_ready: false,
             data_request_valid: false,
             data_write: false,
+            data_line: false,
             data_address: 0,
             data_write_data: 0,
             data_response_ready: false,
@@ -397,7 +409,7 @@ mod tests {
             dma_error: false,
             memory_request_valid: false,
             memory_write: false,
-            memory_read_line: false,
+            memory_line: false,
             memory_address: 0,
             memory_write_data: 0,
             memory_response_ready: false,
@@ -453,7 +465,7 @@ mod tests {
             },
             CpuV3MemoryArbiterOutputValue {
                 memory_request_valid: true,
-                memory_read_line: true,
+                memory_line: true,
                 memory_address: base,
                 ..z()
             },
@@ -502,7 +514,7 @@ mod tests {
             },
             CpuV3MemoryArbiterOutputValue {
                 memory_request_valid: true,
-                memory_read_line: true,
+                memory_line: true,
                 memory_address: 0x2a0,
                 ..z()
             },
@@ -513,7 +525,7 @@ mod tests {
     #[test]
     fn emu_and_nand_forward_data_and_dma_word_writes() {
         let mut steps = vec![reset_step()];
-        // Data write-through word transaction.
+        // Data single-word transaction.
         steps.push(TestStep::new(
             CpuV3MemoryArbiterInputValue {
                 data_request_valid: true,
@@ -710,7 +722,7 @@ mod tests {
             },
             CpuV3MemoryArbiterOutputValue {
                 memory_request_valid: true,
-                memory_read_line: true,
+                memory_line: true,
                 memory_address: 0x110,
                 ..z()
             },
@@ -777,7 +789,7 @@ mod tests {
             },
             CpuV3MemoryArbiterOutputValue {
                 memory_request_valid: true,
-                memory_read_line: true,
+                memory_line: true,
                 memory_address: 0x2a0,
                 ..z()
             },
@@ -808,7 +820,7 @@ mod tests {
             },
             CpuV3MemoryArbiterOutputValue {
                 memory_request_valid: true,
-                memory_read_line: true,
+                memory_line: true,
                 memory_address: 0x2a0,
                 ..z()
             },

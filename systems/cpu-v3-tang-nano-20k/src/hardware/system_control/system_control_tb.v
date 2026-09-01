@@ -6,9 +6,13 @@ reg [3:0] device_channel = 0;
 reg device_read_enable = 0;
 reg device_write_enable = 0;
 reg [15:0] device_write_data = 0;
+reg dcache_maintenance_done = 0;
+reg dcache_maintenance_error = 0;
 wire [15:0] device_read_data;
 wire icache_invalidate;
 wire dcache_invalidate;
+wire dcache_clean;
+wire cache_maintenance_hold;
 wire [5:0] leds;
 wire uart_tx;
 
@@ -79,9 +83,23 @@ initial begin
     write_channel(0, 1, 16'd0);
     if (dcache_invalidate !== 1'b1 || icache_invalidate !== 1'b0)
         fail("channel 1 must pulse dcache_invalidate");
+    if (!cache_maintenance_hold) fail("invalidate must hold the CPU");
     @(posedge clk);
     #1;
     if (dcache_invalidate !== 1'b0) fail("dcache_invalidate must last one clock");
+    dcache_maintenance_done = 1;
+    @(posedge clk); #1; dcache_maintenance_done = 0;
+    if (cache_maintenance_hold) fail("successful maintenance must release hold");
+
+    write_channel(0, 4, 16'd0);
+    if (!dcache_clean || !cache_maintenance_hold) fail("channel 4 must start clean and hold");
+    dcache_maintenance_done = 1; dcache_maintenance_error = 1;
+    @(posedge clk); #1;
+    dcache_maintenance_done = 0; dcache_maintenance_error = 0;
+    if (cache_maintenance_hold) fail("failed maintenance must release hold");
+    device_index=0; device_channel=5; device_read_enable=1; #1;
+    if(device_read_data!==16'h8000) fail("maintenance error status missing");
+    device_read_enable=0;
 
     // Writes to another device index are ignored.
     write_channel(2, 0, 16'd1);

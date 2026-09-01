@@ -66,6 +66,11 @@ wire [31:0] instruction_prefetch_address;
 wire instruction_prefetch_cancel;
 wire sysctl_icache_invalidate;
 wire sysctl_dcache_invalidate;
+wire sysctl_dcache_clean;
+wire sysctl_cache_maintenance_hold;
+wire dcache_maintenance_busy;
+wire dcache_maintenance_done;
+wire dcache_maintenance_error;
 wire halted;
 wire faulted;
 
@@ -165,9 +170,7 @@ __CACHE__ u_instruction_cache (
     .prefetch_cancel(instruction_prefetch_cancel),
     .cpu_request_valid(instruction_request_valid && !boot_selected &&
                        instruction_source_allowed),
-    .cpu_write(1'b0),
     .cpu_address(instruction_address),
-    .cpu_write_data(16'b0),
     .cpu_response_ready(instruction_response_ready && instruction_source_active &&
                         !instruction_source_boot),
     .memory_request_ready(icache_memory_request_ready),
@@ -179,9 +182,7 @@ __CACHE__ u_instruction_cache (
     .cpu_read_data(icache_cpu_read_data),
     .cpu_error(icache_cpu_error),
     .memory_request_valid(icache_memory_request_valid),
-    .memory_write(),
     .memory_address(icache_memory_address),
-    .memory_write_data(),
     .memory_response_ready(icache_memory_response_ready)
 );
 
@@ -268,9 +269,13 @@ __SYSTEM_CONTROL__ u_sysctl (
     .device_read_enable(device_read_enable),
     .device_write_enable(device_write_enable),
     .device_write_data(device_write_data),
+    .dcache_maintenance_done(dcache_maintenance_done),
+    .dcache_maintenance_error(dcache_maintenance_error),
     .device_read_data(sysctl_read_data),
     .icache_invalidate(sysctl_icache_invalidate),
     .dcache_invalidate(sysctl_dcache_invalidate),
+    .dcache_clean(sysctl_dcache_clean),
+    .cache_maintenance_hold(sysctl_cache_maintenance_hold),
     .leds(software_leds),
     .uart_tx(uart_tx)
 );
@@ -385,20 +390,19 @@ wire dcache_cpu_error;
 wire dcache_memory_request_valid;
 wire dcache_memory_write;
 wire [21:0] dcache_memory_address;
-wire [15:0] dcache_memory_write_data;
+wire [31:0] dcache_memory_write_data;
+wire dcache_memory_line;
 wire dcache_memory_request_ready;
 wire dcache_memory_response_valid;
 wire [31:0] dcache_memory_read_data;
 wire dcache_memory_error;
 wire dcache_memory_response_ready;
 
-__CACHE__ u_data_cache (
+__DATA_CACHE__ u_data_cache (
     .clk(clk),
     .reset(reset),
+    .clean_all(sysctl_dcache_clean),
     .invalidate_all(sysctl_dcache_invalidate),
-    .prefetch_request_valid(1'b0),
-    .prefetch_address(32'b0),
-    .prefetch_cancel(1'b0),
     .cpu_request_valid(core_data_request_valid),
     .cpu_write(core_data_write),
     .cpu_address(core_data_address),
@@ -414,9 +418,13 @@ __CACHE__ u_data_cache (
     .cpu_error(dcache_cpu_error),
     .memory_request_valid(dcache_memory_request_valid),
     .memory_write(dcache_memory_write),
+    .memory_line(dcache_memory_line),
     .memory_address(dcache_memory_address),
     .memory_write_data(dcache_memory_write_data),
-    .memory_response_ready(dcache_memory_response_ready)
+    .memory_response_ready(dcache_memory_response_ready),
+    .maintenance_busy(dcache_maintenance_busy),
+    .maintenance_done(dcache_maintenance_done),
+    .maintenance_error(dcache_maintenance_error)
 );
 
 assign core_data_request_ready = dcache_cpu_request_ready;
@@ -435,6 +443,7 @@ wire [31:0] retired_words;
 __CPU_V3_CORE__ u_core (
     .clk(clk),
     .reset(reset),
+    .hold(sysctl_cache_maintenance_hold),
     .instruction_request_ready(core_instruction_request_ready),
     .instruction_response_valid(core_instruction_response_valid),
     .instruction_data(core_instruction_data),
@@ -495,9 +504,9 @@ assign leds = diagnostic_active ? diagnostic_leds : software_leds;
 
 wire memory_request_valid;
 wire memory_write;
-wire memory_read_line;
+wire memory_line;
 wire [21:0] memory_address;
-wire [15:0] memory_write_data;
+wire [31:0] memory_write_data;
 wire memory_request_ready;
 wire memory_response_valid;
 wire [31:0] memory_read_data;
@@ -513,6 +522,7 @@ __ARBITER__ u_memory_arbiter (
     .instruction_response_ready(icache_memory_response_ready),
     .data_request_valid(dcache_memory_request_valid),
     .data_write(dcache_memory_write),
+    .data_line(dcache_memory_line),
     .data_address(dcache_memory_address),
     .data_write_data(dcache_memory_write_data),
     .data_response_ready(dcache_memory_response_ready),
@@ -540,7 +550,7 @@ __ARBITER__ u_memory_arbiter (
     .dma_error(dma_memory_error),
     .memory_request_valid(memory_request_valid),
     .memory_write(memory_write),
-    .memory_read_line(memory_read_line),
+    .memory_line(memory_line),
     .memory_address(memory_address),
     .memory_write_data(memory_write_data),
     .memory_response_ready(memory_response_ready)
@@ -561,7 +571,7 @@ __DISPLAY_SDRAM_PORT__ u_sdram_word_port (
     .reset(reset),
     .cpu_request_valid(memory_request_valid),
     .cpu_write(memory_write),
-    .cpu_read_line(memory_read_line),
+    .cpu_line(memory_line),
     .cpu_address(memory_address),
     .cpu_write_data(memory_write_data),
     .cpu_response_ready(memory_response_ready),

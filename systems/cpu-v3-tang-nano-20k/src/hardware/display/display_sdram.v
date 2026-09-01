@@ -1,7 +1,7 @@
 module DisplaySdramPort (
     input wire clk, input wire reset,
-    input wire cpu_request_valid, input wire cpu_write, input wire cpu_read_line,
-    input wire [21:0] cpu_address, input wire [15:0] cpu_write_data,
+    input wire cpu_request_valid, input wire cpu_write, input wire cpu_line,
+    input wire [21:0] cpu_address, input wire [31:0] cpu_write_data,
     input wire cpu_response_ready,
     input wire display_request_valid, input wire display_urgent,
     input wire [21:0] display_address,
@@ -24,12 +24,14 @@ module DisplaySdramPort (
 localparam CMD_REFRESH=3'b001, CMD_ACTIVE=3'b011, CMD_WRITE=3'b100, CMD_READ=3'b101;
 localparam ST_WAIT=0, ST_IDLE=1, ST_ACTIVE_REQ=2, ST_ACTIVE_WAIT=3,
            ST_OP_REQ=4, ST_OP_WAIT=5, ST_CPU_RESPONSE=6,
-           ST_RECOVERY=7, ST_REFRESH_REQ=8, ST_REFRESH_WAIT=9, ST_ERROR=10;
+           ST_RECOVERY=7, ST_REFRESH_REQ=8, ST_REFRESH_WAIT=9, ST_ERROR=10,
+           ST_WRITE_CAPTURE=11;
 localparam [19:0] TIMEOUT=20'hfffff;
 reg [3:0] state = ST_WAIT;
 reg owner_display = 0, pending_write = 0, pending_line = 0, prefer_display = 1;
 reg [21:0] pending_address = 0;
-reg [15:0] pending_write_data = 0;
+reg [31:0] pending_write_data = 0;
+(* syn_ramstyle = "registers" *) reg [31:0] line_write_buffer [0:7];
 reg [2:0] beat = 0;
 reg read_ack_seen = 0;
 reg [9:0] refresh_count = 0;
@@ -64,12 +66,25 @@ always @(posedge clk) begin
             else if (display_grant || cpu_grant) begin
                 owner_display <= display_grant;
                 pending_write <= cpu_grant && cpu_write;
-                pending_line <= cpu_grant && !cpu_write && cpu_read_line;
+                pending_line <= cpu_grant && cpu_line;
                 pending_address <= display_grant ? display_address : cpu_address;
                 pending_write_data <= cpu_write_data;
+                if (cpu_grant && cpu_write && cpu_line) begin
+                    line_write_buffer[0] <= cpu_write_data;
+                    beat <= 1;
+                end
                 prefer_display <= next_prefer_display;
-                state <= ST_ACTIVE_REQ;
+                state <= cpu_grant && cpu_write && cpu_line ?
+                    ST_WRITE_CAPTURE : ST_ACTIVE_REQ;
             end
+        end
+        // A cache-line write is an unstallable eight-beat stream beginning on
+        // the request-acceptance edge. Capture it before opening the SDRAM row
+        // so controller latency cannot create a write-data race.
+        ST_WRITE_CAPTURE: begin
+            line_write_buffer[beat] <= cpu_write_data;
+            if (beat == 7) state <= ST_ACTIVE_REQ;
+            else beat <= beat + 1'b1;
         end
         ST_ACTIVE_REQ: begin
             controller_command <= CMD_ACTIVE; controller_precharge <= 0;
@@ -87,20 +102,38 @@ always @(posedge clk) begin
         ST_OP_REQ: begin
             controller_command <= pending_write ? CMD_WRITE : CMD_READ;
             controller_precharge <= 1; controller_address <= pending_address[21:1];
-            controller_burst_length <= !pending_write && (owner_display || pending_line) ? 8'd7 : 8'd0;
+            controller_burst_length <= (owner_display || pending_line) ? 8'd7 : 8'd0;
             // DQM is a write byte mask; driving a stale or half-word mask
             // during a read can suppress the corresponding read byte lanes on
             // the physical SDRAM. Reads must keep all lanes enabled.
-            controller_write_mask <= pending_write ?
+            controller_write_mask <= pending_write && !pending_line ?
                 (pending_address[0] ? 4'b0011 : 4'b1100) : 4'b0000;
-            controller_write_data <= pending_address[0] ?
-                {pending_write_data,16'b0} : {16'b0,pending_write_data};
+            controller_write_data <= pending_line && pending_write ?
+                line_write_buffer[0] :
+                (pending_address[0] ?
+                    {pending_write_data[15:0],16'b0} :
+                    {16'b0,pending_write_data[15:0]});
             controller_command_valid <= 1; beat <= 0; read_ack_seen <= 0;
             timeout_count <= 0; state <= ST_OP_WAIT;
         end
         ST_OP_WAIT: begin
             if (controller_command_ack) read_ack_seen <= 1;
-            if (pending_write && controller_command_ack) begin
+            if (pending_write && pending_line && controller_command_ack) begin
+                // SDRAM Controller HS exposes no per-beat ready. Beat zero is
+                // stable when the write command is acknowledged; the next
+                // seven beats follow on consecutive clocks.
+                beat <= 1;
+                controller_write_data <= line_write_buffer[1];
+            end else if (pending_write && pending_line && beat != 0) begin
+                if (beat == 7) begin
+                    cpu_read_data <= 0; cpu_response_last <= 1;
+                    cpu_response_valid <= 1; state <= ST_CPU_RESPONSE;
+                    beat <= 0;
+                end else begin
+                    beat <= beat + 1'b1;
+                    controller_write_data <= line_write_buffer[beat + 1'b1];
+                end
+            end else if (pending_write && controller_command_ack) begin
                 cpu_read_data <= 0; cpu_response_last <= 1;
                 cpu_response_valid <= 1; state <= ST_CPU_RESPONSE;
             end else if (!pending_write && owner_display && controller_read_valid) begin

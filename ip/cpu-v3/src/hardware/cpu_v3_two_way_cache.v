@@ -20,8 +20,9 @@ module CpuV3TwoWayCache (
     output wire cpu_error,
     output wire memory_request_valid,
     output wire memory_write,
+    output wire memory_line,
     output wire [21:0] memory_address,
-    output wire [15:0] memory_write_data,
+    output wire [31:0] memory_write_data,
     output wire memory_response_ready,
     output wire [31:0] prefetch_issued,
     output wire [31:0] prefetch_useful,
@@ -195,9 +196,10 @@ assign cpu_error = response_valid && response_error;
 assign memory_request_valid = state == ST_WORD_REQUEST ||
     (state == ST_LINE_REQUEST && (!pending_is_prefetch || prefetch_armed));
 assign memory_write = pending_write;
+assign memory_line = !pending_write;
 assign memory_address = pending_write ? pending_address[21:0] :
                         {pending_address[21:4], 4'b0};
-assign memory_write_data = pending_write_data;
+assign memory_write_data = {16'b0, pending_write_data};
 assign memory_response_ready = state == ST_WORD_RESPONSE || state == ST_LINE_RECEIVE;
 
 always @(posedge clk) begin

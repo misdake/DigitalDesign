@@ -1,11 +1,13 @@
-//! CpuV3 two-way physical-address cache with write-through stores.
+//! CpuV3 two-way physical-address cache hardware.
 //!
 //! A read miss issues one aligned line request and captures the eight ordered
 //! 32-bit response beats in a private 256-bit refill buffer. The cache then
 //! drains eight 32-bit beats from the buffer into parity/way-interleaved data BSRAMs
 //! and commits tag and valid state only after a complete error-free line, so
-//! an error or invalidate can never expose a partially installed line. Writes
-//! remain single write-through word transactions.
+//! an error or invalidate can never expose a partially installed line. The
+//! production I-cache exposes a read-only boundary around this refill/prefetch
+//! engine; the independent D-cache implements write-allocate, dirty eviction,
+//! and blocking global clean/invalidate.
 
 use digital_design_circuit::{CircuitWires, Wire, Wires};
 use digital_design_hardware::{
@@ -300,8 +302,9 @@ pub struct CpuV3TwoWayCacheOutput {
     pub cpu_error: Wire,
     pub memory_request_valid: Wire,
     pub memory_write: Wire,
+    pub memory_line: Wire,
     pub memory_address: Wires<22>,
-    pub memory_write_data: Wires<16>,
+    pub memory_write_data: Wires<32>,
     pub memory_response_ready: Wire,
     pub prefetch_issued: Wires<32>,
     pub prefetch_useful: Wires<32>,
@@ -311,6 +314,83 @@ pub struct CpuV3TwoWayCacheOutput {
 
 pub struct CpuV3TwoWayCacheWithImage<I>(PhantomData<I>);
 pub type CpuV3TwoWayCache = CpuV3TwoWayCacheWithImage<ZeroBsramImage>;
+
+#[derive(Clone, ModuleIo)]
+pub struct CpuV3InstructionCacheInput {
+    pub reset: Wire,
+    pub invalidate_all: Wire,
+    pub prefetch_request_valid: Wire,
+    pub prefetch_address: Wires<32>,
+    pub prefetch_cancel: Wire,
+    pub cpu_request_valid: Wire,
+    pub cpu_address: Wires<32>,
+    pub cpu_response_ready: Wire,
+    pub memory_request_ready: Wire,
+    pub memory_response_valid: Wire,
+    pub memory_read_data: Wires<32>,
+    pub memory_error: Wire,
+}
+
+#[derive(Clone, ModuleIo)]
+pub struct CpuV3InstructionCacheOutput {
+    pub cpu_request_ready: Wire,
+    pub cpu_response_valid: Wire,
+    pub cpu_read_data: Wires<16>,
+    pub cpu_error: Wire,
+    pub memory_request_valid: Wire,
+    pub memory_address: Wires<22>,
+    pub memory_response_ready: Wire,
+    pub prefetch_issued: Wires<32>,
+    pub prefetch_useful: Wires<32>,
+    pub prefetch_useless: Wires<32>,
+    pub prefetch_dropped: Wires<32>,
+}
+
+/// Production read-only I-cache boundary. The proven refill/prefetch engine is
+/// retained underneath, with its legacy store pins tied off so synthesis
+/// removes the unreachable write-through path.
+pub struct CpuV3InstructionCache;
+
+impl HardwareIdentity for CpuV3InstructionCache {
+    const TARGET_RESOURCE_LEAF: bool = false;
+
+    fn verilog_identity() -> VerilogIdentity {
+        VerilogIdentity::new("CpuV3InstructionCache").namespace(["components", "cpu", "cpu_v3"])
+    }
+}
+
+impl Module for CpuV3InstructionCache {
+    type Input = CpuV3InstructionCacheInput;
+    type Output = CpuV3InstructionCacheOutput;
+    type EmuState = ();
+
+    const USES_MAIN_CLOCK: bool = true;
+    const EMU_AVAILABLE: bool = false;
+
+    fn execute_emu(
+        _state: &mut Self::EmuState,
+        _circuit: &mut CircuitWires,
+        _input: &Self::Input,
+        _output: &Self::Output,
+    ) {
+        panic!("the production I-cache wrapper is Verilog-only")
+    }
+
+    fn verilog_source() -> Option<String> {
+        Some(include_str!("cpu_v3_instruction_cache.v").replace(
+            "__CACHE__",
+            &CpuV3TwoWayCache::verilog_identity().module_name(),
+        ))
+    }
+
+    fn verilog_dependencies() -> Vec<VerilogDependency> {
+        vec![VerilogDependency::new::<CpuV3TwoWayCache>("u_cache")]
+    }
+
+    fn verilog_testbench() -> Option<String> {
+        Some(include_str!("cpu_v3_instruction_cache_tb.v").to_string())
+    }
+}
 
 impl<I: CpuV3CacheImage> HardwareIdentity for CpuV3TwoWayCacheWithImage<I> {
     const TARGET_RESOURCE_LEAF: bool = false;
@@ -463,6 +543,7 @@ impl<I: CpuV3CacheImage> Module for CpuV3TwoWayCacheWithImage<I> {
                     || (state.state == State::LineRequest
                         && (!state.pending.is_prefetch || state.prefetch_armed)),
                 memory_write: state.pending.write,
+                memory_line: !state.pending.write,
                 memory_address: u64::from(if state.pending.write {
                     state.pending.address & 0x003f_ffff
                 } else {
@@ -841,6 +922,474 @@ impl<I: CpuV3CacheImage> Module for CpuV3TwoWayCacheWithImage<I> {
     }
 }
 
+#[derive(Clone, ModuleIo)]
+pub struct CpuV3DataCacheInput {
+    pub reset: Wire,
+    pub clean_all: Wire,
+    pub invalidate_all: Wire,
+    pub cpu_request_valid: Wire,
+    pub cpu_write: Wire,
+    pub cpu_address: Wires<32>,
+    pub cpu_write_data: Wires<16>,
+    pub cpu_response_ready: Wire,
+    pub memory_request_ready: Wire,
+    pub memory_response_valid: Wire,
+    pub memory_read_data: Wires<32>,
+    pub memory_error: Wire,
+}
+
+#[derive(Clone, ModuleIo)]
+pub struct CpuV3DataCacheOutput {
+    pub cpu_request_ready: Wire,
+    pub cpu_response_valid: Wire,
+    pub cpu_read_data: Wires<16>,
+    pub cpu_error: Wire,
+    pub memory_request_valid: Wire,
+    pub memory_write: Wire,
+    pub memory_line: Wire,
+    pub memory_address: Wires<22>,
+    pub memory_write_data: Wires<32>,
+    pub memory_response_ready: Wire,
+    pub maintenance_busy: Wire,
+    pub maintenance_done: Wire,
+    pub maintenance_error: Wire,
+}
+
+pub struct CpuV3DataCache;
+
+#[derive(Clone, ModuleIo)]
+struct CpuV3DataCacheDirtyRamInput {
+    write_enable: Wire,
+    write_way: Wire,
+    write_set: Wires<6>,
+    write_value: Wire,
+    clear_all: Wire,
+}
+
+#[derive(Clone, ModuleIo)]
+struct CpuV3DataCacheDirtyRamOutput {
+    way_0: Wires<64>,
+    way_1: Wires<64>,
+}
+
+struct CpuV3DataCacheDirtyRam;
+
+impl HardwareIdentity for CpuV3DataCacheDirtyRam {
+    const TARGET_RESOURCE_LEAF: bool = true;
+
+    fn verilog_identity() -> VerilogIdentity {
+        VerilogIdentity::new("CpuV3DataCacheDirtyRam").namespace(["components", "cpu", "cpu_v3"])
+    }
+}
+
+impl Module for CpuV3DataCacheDirtyRam {
+    type Input = CpuV3DataCacheDirtyRamInput;
+    type Output = CpuV3DataCacheDirtyRamOutput;
+    type EmuState = ();
+
+    const USES_MAIN_CLOCK: bool = true;
+    const EMU_AVAILABLE: bool = false;
+
+    fn target_resources() -> Vec<TargetResourceRequest> {
+        vec![TargetResourceRequest::new(SsramBits::new(128))]
+    }
+
+    fn execute_emu(
+        _state: &mut Self::EmuState,
+        _circuit: &mut CircuitWires,
+        _input: &Self::Input,
+        _output: &Self::Output,
+    ) {
+        panic!("data-cache dirty SSRAM is Verilog-only")
+    }
+
+    fn verilog_source() -> Option<String> {
+        Some(include_str!("cpu_v3_data_cache_dirty_ram.v").to_string())
+    }
+
+    fn verilog_testbench() -> Option<String> {
+        Some(include_str!("cpu_v3_data_cache_dirty_ram_tb.v").to_string())
+    }
+}
+
+impl HardwareIdentity for CpuV3DataCache {
+    const TARGET_RESOURCE_LEAF: bool = false;
+
+    fn verilog_identity() -> VerilogIdentity {
+        VerilogIdentity::new("CpuV3DataCache").namespace(["components", "cpu", "cpu_v3"])
+    }
+}
+
+#[derive(Clone, Copy, Default, Eq, PartialEq)]
+enum DataMemoryPhase {
+    #[default]
+    Idle,
+    Lookup,
+    WritebackPrime,
+    WritebackCapture,
+    Request,
+    ReadReceive,
+    ReadDrain,
+    WriteStream,
+    WriteResponse,
+}
+
+pub struct CpuV3DataCacheState {
+    cache: crate::DataCache,
+    pending_cpu_request: Option<crate::CpuMemoryRequest>,
+    request: Option<crate::MainMemoryRequest>,
+    phase: DataMemoryPhase,
+    words: [u16; CPU_V3_CACHE_LINE_WORDS],
+    beat: usize,
+    response_data: u16,
+    response_valid: bool,
+    response_error: bool,
+    maintenance_active: bool,
+    maintenance_done: bool,
+    maintenance_error: bool,
+}
+
+impl Default for CpuV3DataCacheState {
+    fn default() -> Self {
+        Self {
+            cache: crate::DataCache::default(),
+            pending_cpu_request: None,
+            request: None,
+            phase: DataMemoryPhase::Idle,
+            words: [0; CPU_V3_CACHE_LINE_WORDS],
+            beat: 0,
+            response_data: 0,
+            response_valid: false,
+            response_error: false,
+            maintenance_active: false,
+            maintenance_done: false,
+            maintenance_error: false,
+        }
+    }
+}
+
+impl CpuV3DataCacheState {
+    fn start_request(&mut self, request: crate::MainMemoryRequest) {
+        let write_line = matches!(request, crate::MainMemoryRequest::WriteLine { .. });
+        self.request = Some(request);
+        self.phase = if write_line {
+            DataMemoryPhase::WritebackPrime
+        } else {
+            DataMemoryPhase::Request
+        };
+        self.beat = 0;
+    }
+
+    fn apply_action(&mut self, action: crate::CacheAction) {
+        match action {
+            crate::CacheAction::CpuResponse(response) => {
+                self.response_data = match response {
+                    crate::CpuMemoryResponse::Read { value } => value,
+                    crate::CpuMemoryResponse::WriteComplete => 0,
+                };
+                self.response_error = false;
+                self.response_valid = true;
+                self.request = None;
+                self.phase = DataMemoryPhase::Idle;
+            }
+            crate::CacheAction::MainMemoryRequest(request) => self.start_request(request),
+        }
+    }
+
+    fn fail_transaction(&mut self) {
+        // After a physical-memory error no cache line is allowed to remain
+        // architecturally visible: the controller may have accepted an
+        // unknown prefix of a burst.
+        self.cache = crate::DataCache::default();
+        self.pending_cpu_request = None;
+        self.request = None;
+        self.phase = DataMemoryPhase::Idle;
+        if self.maintenance_active {
+            self.maintenance_active = false;
+            self.maintenance_done = true;
+            self.maintenance_error = true;
+        } else {
+            self.response_data = 0;
+            self.response_error = true;
+            self.response_valid = true;
+        }
+    }
+
+    fn complete_write(&mut self) {
+        if self.maintenance_active {
+            match self
+                .cache
+                .continue_maintenance(crate::MainMemoryResponse::WriteComplete)
+                .expect("maintenance completion must match a line write")
+            {
+                Some(request) => self.start_request(request),
+                None => {
+                    self.request = None;
+                    self.phase = DataMemoryPhase::Idle;
+                    self.maintenance_active = false;
+                    self.maintenance_done = true;
+                }
+            }
+        } else {
+            let action = self
+                .cache
+                .complete(crate::MainMemoryResponse::WriteComplete)
+                .expect("data-cache completion must match a line write");
+            self.apply_action(action);
+        }
+    }
+}
+
+impl Module for CpuV3DataCache {
+    type Input = CpuV3DataCacheInput;
+    type Output = CpuV3DataCacheOutput;
+    type EmuState = CpuV3DataCacheState;
+
+    const USES_MAIN_CLOCK: bool = true;
+
+    fn create_emu(_input: &Self::Input, _output: &Self::Output) -> Self::EmuState {
+        CpuV3DataCacheState::default()
+    }
+
+    fn execute_emu(
+        state: &mut Self::EmuState,
+        circuit: &mut CircuitWires,
+        input: &Self::Input,
+        output: &Self::Output,
+    ) {
+        let input = input.sample(circuit);
+        let (write, address, write_data) = match state.request {
+            Some(crate::MainMemoryRequest::ReadLine { line_address }) => {
+                (false, line_address.get(), 0)
+            }
+            Some(crate::MainMemoryRequest::WriteLine {
+                line_address,
+                words,
+            }) => {
+                let index = state.beat.min(CPU_V3_CACHE_LINE_BEATS - 1) * 2;
+                (
+                    true,
+                    line_address.get(),
+                    u32::from(words[index]) | (u32::from(words[index + 1]) << 16),
+                )
+            }
+            Some(crate::MainMemoryRequest::WriteWord { .. }) => {
+                unreachable!("the write-back cache never emits word writes")
+            }
+            None => (false, 0, 0),
+        };
+        output.drive(
+            circuit,
+            &CpuV3DataCacheOutputValue {
+                cpu_request_ready: state.phase == DataMemoryPhase::Idle
+                    && !state.response_valid
+                    && !state.maintenance_active
+                    && !input.clean_all
+                    && !input.invalidate_all,
+                cpu_response_valid: state.response_valid,
+                cpu_read_data: u64::from(state.response_data),
+                cpu_error: state.response_valid && state.response_error,
+                memory_request_valid: state.phase == DataMemoryPhase::Request,
+                memory_write: write,
+                memory_line: state.request.is_some(),
+                memory_address: u64::from(address),
+                memory_write_data: u64::from(write_data),
+                memory_response_ready: matches!(
+                    state.phase,
+                    DataMemoryPhase::ReadReceive | DataMemoryPhase::WriteResponse
+                ),
+                maintenance_busy: state.maintenance_active,
+                maintenance_done: state.maintenance_done,
+                maintenance_error: state.maintenance_error,
+            },
+        );
+    }
+
+    fn clock_emu(
+        state: &mut Self::EmuState,
+        circuit: &mut CircuitWires,
+        input: &Self::Input,
+        _output: &Self::Output,
+    ) {
+        let input = input.sample(circuit);
+        if input.reset {
+            *state = CpuV3DataCacheState::default();
+            return;
+        }
+        state.maintenance_done = false;
+        if state.response_valid && input.cpu_response_ready {
+            state.response_valid = false;
+        }
+
+        if state.phase == DataMemoryPhase::Idle
+            && !state.response_valid
+            && !state.maintenance_active
+            && (input.clean_all || input.invalidate_all)
+        {
+            state.maintenance_active = true;
+            state.maintenance_error = false;
+            let command = if input.invalidate_all {
+                crate::MaintenanceCommand::Invalidate
+            } else {
+                crate::MaintenanceCommand::Clean
+            };
+            match state
+                .cache
+                .begin_maintenance(command)
+                .expect("idle data cache must accept maintenance")
+            {
+                Some(request) => state.start_request(request),
+                None => {
+                    state.maintenance_active = false;
+                    state.maintenance_done = true;
+                }
+            }
+            return;
+        }
+
+        if state.phase == DataMemoryPhase::Idle
+            && !state.response_valid
+            && !state.maintenance_active
+            && input.cpu_request_valid
+        {
+            let address = crate::PhysicalWordAddress::new(input.cpu_address as u32);
+            state.pending_cpu_request = Some(if input.cpu_write {
+                crate::CpuMemoryRequest::Write {
+                    address,
+                    value: input.cpu_write_data as u16,
+                }
+            } else {
+                crate::CpuMemoryRequest::Read { address }
+            });
+            state.phase = DataMemoryPhase::Lookup;
+            return;
+        }
+
+        if state.phase == DataMemoryPhase::Lookup {
+            if let Some(request) = state.pending_cpu_request.take() {
+                let address = match request {
+                    crate::CpuMemoryRequest::Read { address }
+                    | crate::CpuMemoryRequest::Write { address, .. } => address,
+                };
+                if address.get() >> 22 != 0 {
+                    state.response_error = true;
+                    state.response_data = 0;
+                    state.response_valid = true;
+                    state.phase = DataMemoryPhase::Idle;
+                } else {
+                    let action = state
+                        .cache
+                        .request(request)
+                        .expect("idle data cache must accept a CPU request");
+                    state.apply_action(action);
+                }
+            }
+            return;
+        }
+
+        match state.phase {
+            DataMemoryPhase::Idle => {}
+            DataMemoryPhase::Lookup => unreachable!(),
+            DataMemoryPhase::WritebackPrime => {
+                state.beat = 0;
+                state.phase = DataMemoryPhase::WritebackCapture;
+            }
+            DataMemoryPhase::WritebackCapture => {
+                if state.beat == CPU_V3_CACHE_LINE_BEATS - 1 {
+                    state.beat = 0;
+                    state.phase = DataMemoryPhase::Request;
+                } else {
+                    state.beat += 1;
+                }
+            }
+            DataMemoryPhase::Request if input.memory_request_ready => {
+                state.beat = 0;
+                state.phase = if matches!(
+                    state.request,
+                    Some(crate::MainMemoryRequest::WriteLine { .. })
+                ) {
+                    state.beat = 1;
+                    DataMemoryPhase::WriteStream
+                } else {
+                    DataMemoryPhase::ReadReceive
+                };
+            }
+            DataMemoryPhase::Request => {}
+            DataMemoryPhase::WriteStream => {
+                if state.beat == CPU_V3_CACHE_LINE_BEATS - 1 {
+                    state.phase = DataMemoryPhase::WriteResponse;
+                } else {
+                    state.beat += 1;
+                }
+            }
+            DataMemoryPhase::WriteResponse if input.memory_response_valid => {
+                if input.memory_error {
+                    state.fail_transaction();
+                } else {
+                    state.complete_write();
+                }
+            }
+            DataMemoryPhase::WriteResponse => {}
+            DataMemoryPhase::ReadReceive if input.memory_response_valid => {
+                if input.memory_error {
+                    state.fail_transaction();
+                } else {
+                    state.words[2 * state.beat] = input.memory_read_data as u16;
+                    state.words[2 * state.beat + 1] = (input.memory_read_data >> 16) as u16;
+                    if state.beat == CPU_V3_CACHE_LINE_BEATS - 1 {
+                        state.beat = 0;
+                        state.phase = DataMemoryPhase::ReadDrain;
+                    } else {
+                        state.beat += 1;
+                    }
+                }
+            }
+            DataMemoryPhase::ReadReceive => {}
+            DataMemoryPhase::ReadDrain => {
+                if state.beat == CPU_V3_CACHE_LINE_BEATS - 1 {
+                    let action = state
+                        .cache
+                        .complete(crate::MainMemoryResponse::ReadLine { words: state.words })
+                        .expect("data-cache completion must match a line read");
+                    state.apply_action(action);
+                } else {
+                    state.beat += 1;
+                }
+            }
+        }
+    }
+
+    fn verilog_source() -> Option<String> {
+        Some(
+            include_str!("cpu_v3_data_cache.v")
+                .replace(
+                    "__CACHE_DATA_BANKS__",
+                    &CpuV3ParitySplitCacheData::<ZeroBsramImage>::verilog_identity().module_name(),
+                )
+                .replace(
+                    "__CACHE_TAGS__",
+                    &CpuV3CacheTagRam::verilog_identity().module_name(),
+                )
+                .replace(
+                    "__DIRTY_RAM__",
+                    &CpuV3DataCacheDirtyRam::verilog_identity().module_name(),
+                ),
+        )
+    }
+
+    fn verilog_dependencies() -> Vec<VerilogDependency> {
+        vec![
+            VerilogDependency::new::<CpuV3ParitySplitCacheData<ZeroBsramImage>>("u_data_banks"),
+            VerilogDependency::new::<CpuV3CacheTagRam>("u_tags"),
+            VerilogDependency::new::<CpuV3DataCacheDirtyRam>("u_dirty"),
+        ]
+    }
+
+    fn verilog_testbench() -> Option<String> {
+        Some(include_str!("cpu_v3_data_cache_tb.v").to_string())
+    }
+}
+
 const fn line_base(address: u32) -> u32 {
     address & !((CPU_V3_CACHE_LINE_WORDS as u32) - 1) & 0x003f_ffff
 }
@@ -1186,6 +1735,34 @@ mod tests {
     #[ignore = "explicit external simulation of the CpuV3 two-way cache"]
     fn verify_verilog_with_iverilog() {
         digital_design_hardware::verify_verilog_with_iverilog::<CpuV3TwoWayCache>().unwrap();
+    }
+
+    #[test]
+    fn data_cache_exports_two_data_bsrams_tag_ssram_and_dirty_ssram() {
+        let project = VerilogProject::generate::<CpuV3DataCache>().unwrap();
+        let resources: Vec<_> = project
+            .resource_claims
+            .iter()
+            .flat_map(|claim| claim.resources.iter().copied())
+            .collect();
+        assert!(resources.contains(&ResourceAmount::new(ResourceKind::Bsram18K, 2)));
+        assert!(resources.contains(&ResourceAmount::new(
+            ResourceKind::SsramBit,
+            CPU_V3_CACHE_TAG_PHYSICAL_BITS as u64,
+        )));
+        assert!(resources.contains(&ResourceAmount::new(ResourceKind::SsramBit, 128)));
+    }
+
+    #[test]
+    #[ignore = "explicit external simulation of the write-back data cache"]
+    fn verify_data_cache_with_iverilog() {
+        digital_design_hardware::verify_verilog_with_iverilog::<CpuV3DataCache>().unwrap();
+    }
+
+    #[test]
+    #[ignore = "explicit external simulation of the read-only instruction cache"]
+    fn verify_instruction_cache_with_iverilog() {
+        digital_design_hardware::verify_verilog_with_iverilog::<CpuV3InstructionCache>().unwrap();
     }
 
     // ---- emulator vs RTL co-simulation ----
@@ -1761,7 +2338,7 @@ mod tests {
              reg [31:0] memory_read_data;\n\
              wire cpu_request_ready, cpu_response_valid, cpu_error;\n\
              wire [15:0] cpu_read_data;\n\
-             wire memory_request_valid, memory_write, memory_response_ready;\n\
+             wire memory_request_valid, memory_write, memory_line, memory_response_ready;\n\
              wire [21:0] memory_address;\n\
              wire [15:0] memory_write_data;\n\
              wire [31:0] prefetch_issued, prefetch_useful, prefetch_useless, prefetch_dropped;\n\n\
