@@ -62,6 +62,7 @@ localparam [4:0] ST_FPU_ROM_LOOKUP = 25;
 localparam [4:0] ST_FPU_MULTIPLY_PIPELINE = 26;
 localparam [4:0] ST_FPU_UNARY_DISPATCH = 27;
 localparam [4:0] ST_FPU_ROM_WRITE = 28;
+localparam [4:0] ST_ASYNC_STORE_WAIT = 24;
 
 localparam [7:0] FAULT_INVALID_INSTRUCTION = 1;
 localparam [7:0] FAULT_FPU_DOMAIN = 2;
@@ -92,6 +93,15 @@ reg [15:0] pending_write_data = 0;
 reg [3:0] pending_destination = 0;
 reg [1:0] pending_retire_words = 0;
 reg [15:0] pending_fault_pc = 0;
+
+// One scalar store may continue in the background. Its request and response
+// own the data port until completion; later memory operations wait while
+// non-memory instructions continue to execute.
+reg async_store_valid = 0;
+reg async_store_issued = 0;
+reg [31:0] async_store_address = 0;
+reg [15:0] async_store_data = 0;
+reg [15:0] async_store_fault_pc = 0;
 
 // The scalar register file has two asynchronous read ports and one
 // synchronous write port. The FSM registers a write request at retirement;
@@ -542,17 +552,20 @@ assign instruction_address = {code_segment_register, pc_register};
 // instruction memories.
 assign instruction_response_ready = !hold && (state == ST_FETCH_REQUEST ||
                                     state == ST_FETCH_RESPONSE);
-assign data_request_valid = !hold && state == ST_DATA_REQUEST;
-assign data_write = pending_write;
-assign data_address = pending_address;
-assign data_write_data = pending_write_data;
-assign data_response_ready = !hold && state == ST_DATA_RESPONSE;
+assign data_request_valid = !hold && ((async_store_valid && !async_store_issued) ||
+                            state == ST_DATA_REQUEST);
+assign data_write = async_store_valid ? 1'b1 : pending_write;
+assign data_address = async_store_valid ? async_store_address : pending_address;
+assign data_write_data = async_store_valid ? async_store_data : pending_write_data;
+assign data_response_ready = !hold && ((async_store_valid && async_store_issued) ||
+                             state == ST_DATA_RESPONSE);
 assign device_index = field_d[2:0];
 assign device_channel = field_a;
 assign device_read_enable = !hold && state == ST_EXECUTE && opcode == 4'hc && !field_d[3];
 assign device_write_enable = !hold && state == ST_EXECUTE && opcode == 4'hc && field_d[3];
 assign device_write_data = gpr_read_b_data;
-assign halted = state == ST_HALTED;
+// Do not expose HALT until the last buffered store is globally observed.
+assign halted = state == ST_HALTED && !async_store_valid;
 assign halt_signal = gpr_read_a_data;
 assign fault = state == ST_FAULT;
 assign pc = pc_register;
@@ -590,9 +603,25 @@ always @(posedge clk) begin
         retired_words <= 0;
         fault_code <= 0;
         fault_pc <= 0;
+        async_store_valid <= 0;
+        async_store_issued <= 0;
     end else if (!hold) begin
         gpr_write_enable <= 0;
         fpu_rf_write_enable <= 1'b0;
+        if (async_store_valid && async_store_issued &&
+            data_response_valid && data_error) begin
+            async_store_valid <= 0;
+            async_store_issued <= 0;
+            fault_code <= FAULT_DATA_MEMORY;
+            fault_pc <= async_store_fault_pc;
+            state <= ST_FAULT;
+        end else begin
+        if (async_store_valid && !async_store_issued && data_request_ready)
+            async_store_issued <= 1;
+        if (async_store_valid && async_store_issued && data_response_valid) begin
+            async_store_valid <= 0;
+            async_store_issued <= 0;
+        end
         case (state)
             ST_FETCH_REQUEST: begin
                 if (instruction_request_ready) begin
@@ -698,13 +727,24 @@ always @(posedge clk) begin
                         end
                         4'h8, 4'h9: begin
                             logical_address = gpr_read_a_data + immediate_signed(instruction);
-                            pending_write <= opcode == 4'h9;
-                            pending_address <= {data_segment_register, logical_address};
-                            pending_write_data <= gpr_read_b_data;
-                            pending_destination <= field_d;
-                            pending_retire_words <= success_retire_words;
-                            pending_fault_pc <= current_fault_pc;
-                            state <= ST_DATA_REQUEST;
+                            if (opcode == 4'h9 && !async_store_valid) begin
+                                async_store_valid <= 1;
+                                async_store_issued <= 0;
+                                async_store_address <= {data_segment_register, logical_address};
+                                async_store_data <= gpr_read_b_data;
+                                async_store_fault_pc <= current_fault_pc;
+                                retired_words <= retired_words + success_retire_words;
+                                state <= ST_FETCH_REQUEST;
+                            end else begin
+                                pending_write <= opcode == 4'h9;
+                                pending_address <= {data_segment_register, logical_address};
+                                pending_write_data <= gpr_read_b_data;
+                                pending_destination <= field_d;
+                                pending_retire_words <= success_retire_words;
+                                pending_fault_pc <= current_fault_pc;
+                                state <= async_store_valid ? ST_ASYNC_STORE_WAIT :
+                                         ST_DATA_REQUEST;
+                            end
                         end
                         4'ha: begin
                             left_value = gpr_read_a_data;
@@ -989,6 +1029,21 @@ always @(posedge clk) begin
                 if (data_request_ready)
                     state <= ST_DATA_RESPONSE;
             end
+            ST_ASYNC_STORE_WAIT: begin
+                if (!async_store_valid) begin
+                    if (pending_write && !fpu_memory_active) begin
+                        async_store_valid <= 1;
+                        async_store_issued <= 0;
+                        async_store_address <= pending_address;
+                        async_store_data <= pending_write_data;
+                        async_store_fault_pc <= pending_fault_pc;
+                        retired_words <= retired_words + pending_retire_words;
+                        state <= ST_FETCH_REQUEST;
+                    end else begin
+                        state <= ST_DATA_REQUEST;
+                    end
+                end
+            end
             ST_DATA_RESPONSE: begin
                 if (data_response_valid) begin
                     if (data_error) begin
@@ -1073,7 +1128,8 @@ always @(posedge clk) begin
                             pending_destination <= field_a;
                             pending_retire_words <= fpu_retire_words;
                             pending_fault_pc <= fpu_fault_pc;
-                            state <= ST_DATA_REQUEST;
+                            state <= async_store_valid ? ST_ASYNC_STORE_WAIT :
+                                     ST_DATA_REQUEST;
                         end
                     end
                     4: begin
@@ -1397,6 +1453,7 @@ always @(posedge clk) begin
             end
             default: state <= state;
         endcase
+        end
     end
 end
 endmodule
