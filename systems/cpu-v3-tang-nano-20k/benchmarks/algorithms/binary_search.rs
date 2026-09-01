@@ -27,5 +27,5 @@ fn main() {
         checksum = checksum ^ found;
         i = i + 1;
     }
-    if checksum != 0xffff { halt(1); } else { halt(0); }
+    if checksum == 512 { halt(1); } else { halt(0); }
 }

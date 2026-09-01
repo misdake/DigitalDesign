@@ -13,7 +13,7 @@ fn main() {
     let mut player: u16 = 41;
     let mut score: u16 = 0;
     let mut frame: u16 = 0;
-    while frame < 180 {
+    while frame < 30 {
         let direction = frame & 3;
         let mut candidate = player;
         if direction == 0 { candidate = player + 1; }
@@ -28,5 +28,5 @@ fn main() {
         }
         frame = frame + 1;
     }
-    if player != 0 && score != 0 { halt(1); } else { halt(0); }
+    if player == 74 && score == 60494 { halt(1); } else { halt(0); }
 }

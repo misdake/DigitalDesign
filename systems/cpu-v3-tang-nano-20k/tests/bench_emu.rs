@@ -207,6 +207,7 @@ pub struct BenchResult {
     pub program_words: usize,
     pub cycles: usize,
     pub halt_signal: u16,
+    pub retired_instructions: u32,
     pub retired_words: u32,
     pub prefetch_issued: u32,
     pub prefetch_useful: u32,
@@ -217,14 +218,18 @@ pub struct BenchResult {
     pub data_request_cycles: usize,
     pub data_response_cycles: usize,
     pub instruction_fetches: u32,
+    pub icache_demand_requests: u32,
     pub data_requests: u32,
     pub icache_line_requests: u32,
+    pub icache_demand_refills: u32,
     pub dcache_line_requests: u32,
     pub dcache_refills: u32,
     pub dcache_load_refills: u32,
     pub dcache_store_refills: u32,
     pub dcache_writebacks: u32,
     pub dcache_word_requests: u32,
+    pub flush_cycles: u32,
+    pub flush_writebacks: u32,
     pub refreshes: u32,
     pub redirect_count: u32,
     pub redirect_wait_cycles: u64,
@@ -291,7 +296,19 @@ impl TraceRecorder {
         let mut writer = BufWriter::new(File::create(directory.join("summary.txt")).unwrap());
         writeln!(writer, "program_words={}", result.program_words).unwrap();
         writeln!(writer, "cycles={}", result.cycles).unwrap();
+        writeln!(
+            writer,
+            "retired_instructions={}",
+            result.retired_instructions
+        )
+        .unwrap();
         writeln!(writer, "retired_words={}", result.retired_words).unwrap();
+        writeln!(
+            writer,
+            "cycles_per_instruction={:.6}",
+            result.cycles as f64 / f64::from(result.retired_instructions)
+        )
+        .unwrap();
         writeln!(
             writer,
             "cycles_per_retired_word={:.6}",
@@ -321,11 +338,23 @@ impl TraceRecorder {
         )
         .unwrap();
         writeln!(writer, "instruction_fetches={}", result.instruction_fetches).unwrap();
+        writeln!(
+            writer,
+            "icache_demand_requests={}",
+            result.icache_demand_requests
+        )
+        .unwrap();
         writeln!(writer, "data_requests={}", result.data_requests).unwrap();
         writeln!(
             writer,
             "icache_line_requests={}",
             result.icache_line_requests
+        )
+        .unwrap();
+        writeln!(
+            writer,
+            "icache_demand_refills={}",
+            result.icache_demand_refills
         )
         .unwrap();
         writeln!(
@@ -349,6 +378,8 @@ impl TraceRecorder {
             result.dcache_word_requests
         )
         .unwrap();
+        writeln!(writer, "flush_cycles={}", result.flush_cycles).unwrap();
+        writeln!(writer, "flush_writebacks={}", result.flush_writebacks).unwrap();
         writeln!(writer, "refreshes={}", result.refreshes).unwrap();
         writeln!(writer, "redirect_count={}", result.redirect_count).unwrap();
         writeln!(
@@ -383,6 +414,43 @@ impl TraceRecorder {
         writeln!(writer, "prefetch_useful={}", result.prefetch_useful).unwrap();
         writeln!(writer, "prefetch_useless={}", result.prefetch_useless).unwrap();
         writeln!(writer, "prefetch_dropped={}", result.prefetch_dropped).unwrap();
+        writeln!(
+            writer,
+            "icache_demand_hit_percent={:.6}",
+            if result.icache_demand_requests == 0 {
+                0.0
+            } else {
+                100.0
+                    * f64::from(
+                        result
+                            .icache_demand_requests
+                            .saturating_sub(result.icache_demand_refills),
+                    )
+                    / f64::from(result.icache_demand_requests)
+            }
+        )
+        .unwrap();
+        writeln!(
+            writer,
+            "prefetch_precision_percent={:.6}",
+            if result.prefetch_issued == 0 {
+                0.0
+            } else {
+                100.0 * f64::from(result.prefetch_useful) / f64::from(result.prefetch_issued)
+            }
+        )
+        .unwrap();
+        writeln!(
+            writer,
+            "prefetch_coverage_percent={:.6}",
+            if result.icache_demand_refills + result.prefetch_useful == 0 {
+                0.0
+            } else {
+                100.0 * f64::from(result.prefetch_useful)
+                    / f64::from(result.icache_demand_refills + result.prefetch_useful)
+            }
+        )
+        .unwrap();
         let loads = result.opcode_retired[8];
         let stores = result.opcode_retired[9];
         writeln!(writer, "loads={loads}").unwrap();
@@ -646,6 +714,7 @@ pub fn run_benchmark_profiled_with_prefetch(
     let mut sdram = SdramModel::new(memory);
     let mut trace = TraceRecorder::new(trace_directory);
     let mut previous_retired = 0u32;
+    let mut retired_instructions = 0u32;
     let mut last_fetched = None;
     let mut pending_redirect = None;
     let mut fetch_wait_cycles = 0usize;
@@ -656,6 +725,7 @@ pub fn run_benchmark_profiled_with_prefetch(
     let mut store_latency_cycles = 0u64;
     let mut pending_data_op: Option<PendingDataOp> = None;
     let mut instruction_fetches = 0u32;
+    let mut icache_demand_requests = 0u32;
     let mut data_requests = 0u32;
     let mut icache_line_requests = 0u32;
     let mut dcache_line_requests = 0u32;
@@ -664,6 +734,7 @@ pub fn run_benchmark_profiled_with_prefetch(
     let mut dcache_store_refills = 0u32;
     let mut dcache_writebacks = 0u32;
     let mut dcache_word_requests = 0u32;
+    let mut flush_writebacks = 0u32;
     let mut refreshes = 0u32;
     let mut redirect_count = 0u32;
     let mut redirect_wait_cycles = 0u64;
@@ -671,6 +742,9 @@ pub fn run_benchmark_profiled_with_prefetch(
     let mut redirect_wait_histogram = [0u32; 32];
     let mut opcode_retired = [0u32; 16];
     let mut sdram_state_cycles = [0u64; 11];
+    let mut halt_at = None;
+    let mut halt_signal = 0u16;
+    let mut flush_request = false;
 
     // Constant external inputs (device reads zero, DMA idle, no flush/invalidate).
     set_bits(core_input.device_read_data, 0, &mut circuit);
@@ -689,13 +763,17 @@ pub fn run_benchmark_profiled_with_prefetch(
     set_bits(disabled_prefetch_address, 0, &mut circuit);
     set_bit(disabled_prefetch_cancel, false, &mut circuit);
 
-    for cycle in 0..maximum_cycles {
+    for cycle in 0..maximum_cycles + 100_000 {
+        if halt_at.is_none() && cycle >= maximum_cycles {
+            panic!("benchmark exceeded {maximum_cycles} cycles");
+        }
         let reset = cycle < 2;
         set_bit(core_input.reset, reset, &mut circuit);
         set_bit(fetch_input.reset, reset, &mut circuit);
         set_bit(icache_input.reset, reset, &mut circuit);
         set_bit(dcache_input.reset, reset, &mut circuit);
         set_bit(arbiter_input.reset, reset, &mut circuit);
+        set_bit(dcache_input.clean_all, flush_request, &mut circuit);
 
         set_bit(
             arbiter_input.memory_request_ready,
@@ -735,9 +813,10 @@ pub fn run_benchmark_profiled_with_prefetch(
 
         sdram_state_cycles[sdram_state_index(sdram.state)] += 1;
 
-        if !reset {
+        if !reset && halt_at.is_none() {
             let retired = core.retired_words as u32;
             if retired != previous_retired {
+                retired_instructions = retired_instructions.wrapping_add(1);
                 if let Some((origin, instruction)) = last_fetched {
                     opcode_retired[usize::from(instruction >> 12)] =
                         opcode_retired[usize::from(instruction >> 12)].wrapping_add(1);
@@ -751,6 +830,9 @@ pub fn run_benchmark_profiled_with_prefetch(
             }
 
             let mut interface_active = false;
+            if fetch.memory_request_valid && icache.cpu_request_ready {
+                icache_demand_requests = icache_demand_requests.wrapping_add(1);
+            }
             if core.instruction_request_valid {
                 interface_active = true;
                 if fetch.core_request_ready {
@@ -810,24 +892,28 @@ pub fn run_benchmark_profiled_with_prefetch(
         }
 
         if arb.memory_request_valid && sdram.request_ready() {
-            if dcache.memory_request_valid {
-                if arb.memory_line {
-                    dcache_line_requests = dcache_line_requests.wrapping_add(1);
-                    if arb.memory_write {
-                        dcache_writebacks = dcache_writebacks.wrapping_add(1);
-                    } else {
-                        dcache_refills = dcache_refills.wrapping_add(1);
-                        if pending_data_op.map_or(false, |op| op.is_write) {
-                            dcache_store_refills = dcache_store_refills.wrapping_add(1);
+            if halt_at.is_none() {
+                if dcache.memory_request_valid {
+                    if arb.memory_line {
+                        dcache_line_requests = dcache_line_requests.wrapping_add(1);
+                        if arb.memory_write {
+                            dcache_writebacks = dcache_writebacks.wrapping_add(1);
                         } else {
-                            dcache_load_refills = dcache_load_refills.wrapping_add(1);
+                            dcache_refills = dcache_refills.wrapping_add(1);
+                            if pending_data_op.is_some_and(|op| op.is_write) {
+                                dcache_store_refills = dcache_store_refills.wrapping_add(1);
+                            } else {
+                                dcache_load_refills = dcache_load_refills.wrapping_add(1);
+                            }
                         }
+                    } else {
+                        dcache_word_requests = dcache_word_requests.wrapping_add(1);
                     }
-                } else {
-                    dcache_word_requests = dcache_word_requests.wrapping_add(1);
+                } else if icache.memory_request_valid {
+                    icache_line_requests = icache_line_requests.wrapping_add(1);
                 }
-            } else if icache.memory_request_valid {
-                icache_line_requests = icache_line_requests.wrapping_add(1);
+            } else if dcache.memory_request_valid && arb.memory_line && arb.memory_write {
+                flush_writebacks = flush_writebacks.wrapping_add(1);
             }
         }
         if sdram.state == SdramState::RefreshWait {
@@ -835,6 +921,7 @@ pub fn run_benchmark_profiled_with_prefetch(
         }
 
         circuit.clock_tick();
+        flush_request = false;
 
         sdram.clock(
             arb.memory_request_valid,
@@ -851,44 +938,60 @@ pub fn run_benchmark_profiled_with_prefetch(
             );
         }
 
-        if core.halted {
-            let result = BenchResult {
-                program_words: words.len(),
-                cycles: cycle + 1,
-                halt_signal: core.halt_signal as u16,
-                retired_words: core.retired_words as u32,
-                prefetch_issued: icache.prefetch_issued as u32,
-                prefetch_useful: icache.prefetch_useful as u32,
-                prefetch_useless: icache.prefetch_useless as u32,
-                prefetch_dropped: icache.prefetch_dropped as u32,
-                fetch_wait_cycles,
-                execute_cycles,
-                data_request_cycles,
-                data_response_cycles,
-                instruction_fetches,
-                data_requests,
-                icache_line_requests,
-                dcache_line_requests,
-                dcache_refills,
-                dcache_load_refills,
-                dcache_store_refills,
-                dcache_writebacks,
-                dcache_word_requests,
-                refreshes,
-                redirect_count,
-                redirect_wait_cycles,
-                redirect_max_wait_cycles,
-                redirect_wait_histogram,
-                load_latency_cycles,
-                store_latency_cycles,
-                opcode_retired,
-                sdram_state_cycles,
-            };
-            trace.summary(trace_directory, &result);
-            return result;
+        if halt_at.is_none() && core.halted {
+            halt_at = Some(cycle + 1);
+            halt_signal = core.halt_signal as u16;
+            flush_request = true;
+        } else if let Some(main_cycles) = halt_at {
+            if dcache.maintenance_error {
+                panic!("D-cache flush failed after benchmark completion");
+            }
+            if dcache.maintenance_done {
+                let icache_demand_refills =
+                    icache_line_requests.saturating_sub(icache.prefetch_issued as u32);
+                let result = BenchResult {
+                    program_words: words.len(),
+                    cycles: main_cycles,
+                    halt_signal,
+                    retired_instructions,
+                    retired_words: core.retired_words as u32,
+                    prefetch_issued: icache.prefetch_issued as u32,
+                    prefetch_useful: icache.prefetch_useful as u32,
+                    prefetch_useless: icache.prefetch_useless as u32,
+                    prefetch_dropped: icache.prefetch_dropped as u32,
+                    fetch_wait_cycles,
+                    execute_cycles,
+                    data_request_cycles,
+                    data_response_cycles,
+                    instruction_fetches,
+                    icache_demand_requests,
+                    data_requests,
+                    icache_line_requests,
+                    icache_demand_refills,
+                    dcache_line_requests,
+                    dcache_refills,
+                    dcache_load_refills,
+                    dcache_store_refills,
+                    dcache_writebacks,
+                    dcache_word_requests,
+                    flush_cycles: u32::try_from(cycle + 1 - main_cycles).unwrap(),
+                    flush_writebacks,
+                    refreshes,
+                    redirect_count,
+                    redirect_wait_cycles,
+                    redirect_max_wait_cycles,
+                    redirect_wait_histogram,
+                    load_latency_cycles,
+                    store_latency_cycles,
+                    opcode_retired,
+                    sdram_state_cycles,
+                };
+                trace.summary(trace_directory, &result);
+                return result;
+            }
         }
     }
-    panic!("benchmark exceeded {maximum_cycles} cycles");
+    panic!("D-cache flush exceeded 100000 cycles");
 }
 
 #[cfg(test)]

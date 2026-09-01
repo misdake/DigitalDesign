@@ -32,5 +32,10 @@ fn main() {
         }
         row = row + 1;
     }
-    if c[0u16] == 1496 && c[255u16] == 1496 { halt(1); } else { halt(0); }
+    i = 0;
+    while i < 256 {
+        if c[i] != 1496 { halt(0); }
+        i = i + 1;
+    }
+    halt(1);
 }

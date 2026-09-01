@@ -6,7 +6,7 @@ fn main() {
     let mut pixels = FRAMEBUFFER.as_array();
     let mut frame: u16 = 0;
     let mut checksum: u16 = 0;
-    while frame < 60 {
+    while frame < 10 {
         let mut sprite: u16 = 0;
         while sprite < 64 {
             let base = ((sprite << 6) - (sprite << 2) - sprite
@@ -23,5 +23,17 @@ fn main() {
         }
         frame = frame + 1;
     }
-    if checksum != 0 { halt(1); } else { halt(0); }
+    let mut framebuffer_sum: u16 = 0;
+    let mut framebuffer_xor: u16 = 0;
+    let mut address: u16 = 0;
+    while address < 4096 {
+        framebuffer_sum = framebuffer_sum + pixels[address];
+        framebuffer_xor = framebuffer_xor ^ pixels[address];
+        address = address + 1;
+    }
+    if checksum == 45056 && framebuffer_sum == 12980 && framebuffer_xor == 4074 {
+        halt(1);
+    } else {
+        halt(0);
+    }
 }
