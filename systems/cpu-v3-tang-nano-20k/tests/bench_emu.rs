@@ -2,7 +2,7 @@
 //!
 //! Wires the core, instruction fetch queue, I-cache, D-cache and the memory
 //! arbiter through their Rust emulators, and drives them against a cycle-faithful
-//! model of the Tang Nano 20K SDRAM word port (ACTIVE / READ 8-beat / WRITE /
+//! model of the Tang Nano 20K SDRAM word port (ACTIVE / READ 4x64 / WRITE /
 //! RECOVERY / periodic refresh). It reports the total cycle count and the
 //! cache and control-flow probes, so a workload can be profiled without
 //! Icarus or hardware.
@@ -26,6 +26,7 @@ const SDRAM_WORDS: usize = 0x10000;
 enum SdramState {
     Idle,
     WriteCapture,
+    WriteStage,
     ActiveReq,
     ActiveWait,
     OpReq,
@@ -37,7 +38,7 @@ enum SdramState {
 }
 
 /// Cycle-faithful model of `display_sdram.v` for the CPU port only. Refresh is
-/// due every 600 clocks; a line read costs ACTIVE + READ + eight beats + three
+/// due every 600 clocks; a line read costs ACTIVE + READ + four 64-bit beats + three
 /// recovery clocks.
 struct SdramModel {
     memory: Vec<u16>,
@@ -46,12 +47,12 @@ struct SdramModel {
     pending_write: bool,
     pending_line: bool,
     pending_address: usize,
-    pending_write_data: u32,
-    line_write_buffer: [u32; 8],
+    pending_write_data: u64,
+    line_write_buffer: [u64; 4],
     beat: u8,
     read_delay: u8,
     response_valid: bool,
-    response_data: u32,
+    response_data: u64,
     response_last: bool,
     recovery_count: u8,
 }
@@ -66,7 +67,7 @@ impl SdramModel {
             pending_line: false,
             pending_address: 0,
             pending_write_data: 0,
-            line_write_buffer: [0; 8],
+            line_write_buffer: [0; 4],
             beat: 0,
             read_delay: 0,
             response_valid: false,
@@ -86,7 +87,7 @@ impl SdramModel {
         write: bool,
         line: bool,
         address: u32,
-        write_data: u32,
+        write_data: u64,
     ) {
         // Evaluate the refresh condition against the pre-edge counter, exactly
         // like `display_sdram.v` (refresh_due = refresh_count >= 600). The
@@ -116,7 +117,16 @@ impl SdramModel {
             }
             SdramState::WriteCapture => {
                 self.line_write_buffer[self.beat as usize] = write_data;
-                if self.beat == 7 {
+                if self.beat == 3 {
+                    self.beat = 0;
+                    self.state = SdramState::WriteStage;
+                } else {
+                    self.beat += 1;
+                }
+            }
+            SdramState::WriteStage => {
+                if self.beat == 3 {
+                    self.beat = 0;
                     self.state = SdramState::ActiveReq;
                 } else {
                     self.beat += 1;
@@ -137,8 +147,10 @@ impl SdramModel {
                 if self.pending_write {
                     if self.pending_line {
                         for (beat, data) in self.line_write_buffer.iter().copied().enumerate() {
-                            self.memory[self.pending_address + 2 * beat] = data as u16;
-                            self.memory[self.pending_address + 2 * beat + 1] = (data >> 16) as u16;
+                            self.memory[self.pending_address + 4 * beat] = data as u16;
+                            self.memory[self.pending_address + 4 * beat + 1] = (data >> 16) as u16;
+                            self.memory[self.pending_address + 4 * beat + 2] = (data >> 32) as u16;
+                            self.memory[self.pending_address + 4 * beat + 3] = (data >> 48) as u16;
                         }
                     } else {
                         self.memory[self.pending_address] = self.pending_write_data as u16;
@@ -150,12 +162,14 @@ impl SdramModel {
                 } else if self.read_delay != 0 {
                     self.read_delay -= 1;
                 } else {
-                    let low = self.memory[self.pending_address + 2 * self.beat as usize];
-                    let high = self.memory[self.pending_address + 2 * self.beat as usize + 1];
-                    self.response_data = u32::from(low) | u32::from(high) << 16;
+                    let address = self.pending_address + 4 * self.beat as usize;
+                    self.response_data = u64::from(self.memory[address])
+                        | u64::from(self.memory[address + 1]) << 16
+                        | u64::from(self.memory[address + 2]) << 32
+                        | u64::from(self.memory[address + 3]) << 48;
                     self.response_valid = true;
-                    self.response_last = self.beat == 7;
-                    if self.beat == 7 {
+                    self.response_last = self.beat == 3;
+                    if self.beat == 3 {
                         self.recovery_count = 0;
                         self.state = SdramState::Recovery;
                     } else {
@@ -219,7 +233,7 @@ pub struct BenchResult {
     pub load_latency_cycles: u64,
     pub store_latency_cycles: u64,
     pub opcode_retired: [u32; 16],
-    pub sdram_state_cycles: [u64; 10],
+    pub sdram_state_cycles: [u64; 11],
 }
 
 #[derive(Clone, Copy)]
@@ -447,6 +461,7 @@ impl TraceRecorder {
             "refresh_req",
             "refresh_wait",
             "write_capture",
+            "write_stage",
         ];
         for (state, cycles) in result.sdram_state_cycles.iter().enumerate() {
             writeln!(writer, "sdram_{}_cycles={cycles}", state_names[state]).unwrap();
@@ -474,6 +489,7 @@ fn sdram_state_index(state: SdramState) -> usize {
         SdramState::RefreshReq => 7,
         SdramState::RefreshWait => 8,
         SdramState::WriteCapture => 9,
+        SdramState::WriteStage => 10,
     }
 }
 
@@ -481,7 +497,7 @@ fn set_bit(wire: Wire, value: bool, circuit: &mut Circuit) {
     wire.set(circuit, u8::from(value));
 }
 
-fn set_bits<const N: usize>(wires: Wires<N>, value: u32, circuit: &mut Circuit) {
+fn set_bits<const N: usize>(wires: Wires<N>, value: u64, circuit: &mut Circuit) {
     for i in 0..N {
         wires.wires[i].set(circuit, ((value >> i) & 1) as u8);
     }
@@ -654,7 +670,7 @@ pub fn run_benchmark_profiled_with_prefetch(
     let mut redirect_max_wait_cycles = 0u32;
     let mut redirect_wait_histogram = [0u32; 32];
     let mut opcode_retired = [0u32; 16];
-    let mut sdram_state_cycles = [0u64; 10];
+    let mut sdram_state_cycles = [0u64; 11];
 
     // Constant external inputs (device reads zero, DMA idle, no flush/invalidate).
     set_bits(core_input.device_read_data, 0, &mut circuit);
@@ -815,7 +831,7 @@ pub fn run_benchmark_profiled_with_prefetch(
             arb.memory_write,
             arb.memory_line,
             arb.memory_address as u32,
-            arb.memory_write_data as u32,
+            arb.memory_write_data,
         );
 
         if core.fault {

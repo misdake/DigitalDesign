@@ -9,10 +9,11 @@ module CpuV3System (
     input wire clk,
     input wire [1:0] buttons,
     input wire flash_miso,
-    input wire [31:0] sdram_read_data,
+    input wire [63:0] sdram_read_data,
     input wire sdram_read_valid,
     input wire sdram_init_done,
     input wire sdram_command_ack,
+    input wire sdram_write_data_ready,
     input wire pixel_clock,
     input wire serial_clock,
     input wire video_locked,
@@ -26,7 +27,8 @@ module CpuV3System (
     output wire sdram_precharge,
     output wire [20:0] sdram_address,
     output wire [3:0] sdram_write_mask,
-    output wire [31:0] sdram_write_data,
+    output wire [63:0] sdram_write_data,
+    output wire sdram_write_data_valid,
     output wire [7:0] sdram_burst_length,
     output wire tmds_clk_p,
     output wire tmds_clk_n,
@@ -155,7 +157,7 @@ wire icache_memory_request_valid;
 wire icache_memory_request_ready;
 wire [21:0] icache_memory_address;
 wire icache_memory_response_valid;
-wire [31:0] icache_memory_read_data;
+wire [63:0] icache_memory_read_data;
 wire icache_memory_error;
 wire icache_memory_response_ready;
 
@@ -390,11 +392,11 @@ wire dcache_cpu_error;
 wire dcache_memory_request_valid;
 wire dcache_memory_write;
 wire [21:0] dcache_memory_address;
-wire [31:0] dcache_memory_write_data;
+wire [63:0] dcache_memory_write_data;
 wire dcache_memory_line;
 wire dcache_memory_request_ready;
 wire dcache_memory_response_valid;
-wire [31:0] dcache_memory_read_data;
+wire [63:0] dcache_memory_read_data;
 wire dcache_memory_error;
 wire dcache_memory_response_ready;
 
@@ -506,10 +508,10 @@ wire memory_request_valid;
 wire memory_write;
 wire memory_line;
 wire [21:0] memory_address;
-wire [31:0] memory_write_data;
+wire [63:0] memory_write_data;
 wire memory_request_ready;
 wire memory_response_valid;
-wire [31:0] memory_read_data;
+wire [63:0] memory_read_data;
 wire memory_response_last;
 wire memory_error;
 wire memory_response_ready;
@@ -582,6 +584,7 @@ __DISPLAY_SDRAM_PORT__ u_sdram_word_port (
     .controller_read_valid(sdram_read_valid),
     .controller_init_done(sdram_init_done),
     .controller_command_ack(sdram_command_ack),
+    .controller_write_data_ready(sdram_write_data_ready),
     .cpu_request_ready(memory_request_ready),
     .cpu_response_valid(memory_response_valid),
     .cpu_read_data(memory_read_data),
@@ -598,6 +601,7 @@ __DISPLAY_SDRAM_PORT__ u_sdram_word_port (
     .controller_address(sdram_address),
     .controller_write_mask(sdram_write_mask),
     .controller_write_data(sdram_write_data),
+    .controller_write_data_valid(sdram_write_data_valid),
     .controller_burst_length(sdram_burst_length)
 );
 

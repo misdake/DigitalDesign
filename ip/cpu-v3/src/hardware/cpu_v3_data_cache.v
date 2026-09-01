@@ -10,7 +10,7 @@ module CpuV3DataCache (
     input wire cpu_response_ready,
     input wire memory_request_ready,
     input wire memory_response_valid,
-    input wire [31:0] memory_read_data,
+    input wire [63:0] memory_read_data,
     input wire memory_error,
     output wire cpu_request_ready,
     output wire cpu_response_valid,
@@ -20,7 +20,7 @@ module CpuV3DataCache (
     output wire memory_write,
     output wire memory_line,
     output wire [21:0] memory_address,
-    output wire [31:0] memory_write_data,
+    output wire [63:0] memory_write_data,
     output wire memory_response_ready,
     output wire maintenance_busy,
     output reg maintenance_done = 0,
@@ -183,7 +183,8 @@ assign memory_write = state == ST_WB_REQUEST || state == ST_WB_STREAM ||
     state == ST_WB_RESPONSE;
 assign memory_line = state != ST_IDLE && state != ST_LOOKUP && state != ST_LINE_DRAIN;
 assign memory_address = memory_write ? wb_address : {pending_address[21:4],4'b0};
-assign memory_write_data = line_buffer[wb_beat];
+assign memory_write_data = {line_buffer[{wb_beat[1:0],1'b0} + 1'b1],
+                            line_buffer[{wb_beat[1:0],1'b0}]};
 assign memory_response_ready = state == ST_LINE_RECEIVE || state == ST_WB_RESPONSE;
 assign maintenance_busy = maintenance_active;
 
@@ -271,7 +272,7 @@ always @(posedge clk) begin
                 state <= ST_WB_STREAM;
             end
             ST_WB_STREAM: begin
-                if (wb_beat == 7)
+                if (wb_beat == 3)
                     state <= ST_WB_RESPONSE;
                 else wb_beat <= wb_beat + 1'b1;
             end
@@ -324,8 +325,9 @@ always @(posedge clk) begin
                     response_valid <= 1;
                     state <= ST_IDLE;
                 end else begin
-                    line_buffer[refill_beat] <= memory_read_data;
-                    if (refill_beat == 7) begin
+                    line_buffer[{refill_beat[1:0],1'b0}] <= memory_read_data[31:0];
+                    line_buffer[{refill_beat[1:0],1'b0} + 1'b1] <= memory_read_data[63:32];
+                    if (refill_beat == 3) begin
                         drain_beat <= 0;
                         state <= ST_LINE_DRAIN;
                     end else refill_beat <= refill_beat + 1'b1;

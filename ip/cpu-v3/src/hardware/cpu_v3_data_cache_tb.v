@@ -3,11 +3,11 @@ reg clk=0, reset=1, clean_all=0, invalidate_all=0;
 reg cpu_request_valid=0, cpu_write=0, cpu_response_ready=0;
 reg [31:0] cpu_address=0; reg [15:0] cpu_write_data=0;
 reg memory_request_ready=1, memory_response_valid=0, memory_error=0;
-reg [31:0] memory_read_data=0;
+reg [63:0] memory_read_data=0;
 wire cpu_request_ready, cpu_response_valid, cpu_error;
 wire [15:0] cpu_read_data;
 wire memory_request_valid, memory_write, memory_line, memory_response_ready;
-wire [21:0] memory_address; wire [31:0] memory_write_data;
+wire [21:0] memory_address; wire [63:0] memory_write_data;
 wire maintenance_busy, maintenance_done, maintenance_error;
 CpuV3DataCache dut(.*);
 always #5 clk=~clk;
@@ -17,8 +17,8 @@ integer i, cycles=0, line_reads=0, line_writes=0;
 reg [3:0] read_remaining=0, write_remaining=0;
 reg [21:0] transfer_base=0;
 reg write_response_pending=0;
-wire [3:0] read_index = 8-read_remaining;
-wire [3:0] write_index = 8-write_remaining;
+wire [3:0] read_index = 4-read_remaining;
+wire [3:0] write_index = 4-write_remaining;
 
 always @(posedge clk) begin
   cycles <= cycles+1;
@@ -28,16 +28,20 @@ always @(posedge clk) begin
   memory_response_valid <= 0; memory_error <= 0;
   if(read_remaining!=0) begin
     memory_response_valid <= 1;
-    memory_read_data <= {memory[transfer_base+2*read_index+1],
-                         memory[transfer_base+2*read_index]};
+    memory_read_data <= {memory[transfer_base+4*read_index+3],
+                         memory[transfer_base+4*read_index+2],
+                         memory[transfer_base+4*read_index+1],
+                         memory[transfer_base+4*read_index]};
     read_remaining <= read_remaining-1;
   end else if(write_response_pending) begin
     memory_response_valid <= 1;
     write_response_pending <= 0;
   end
   if(write_remaining!=0) begin
-    memory[transfer_base+2*write_index] <= memory_write_data[15:0];
-    memory[transfer_base+2*write_index+1] <= memory_write_data[31:16];
+    memory[transfer_base+4*write_index] <= memory_write_data[15:0];
+    memory[transfer_base+4*write_index+1] <= memory_write_data[31:16];
+    memory[transfer_base+4*write_index+2] <= memory_write_data[47:32];
+    memory[transfer_base+4*write_index+3] <= memory_write_data[63:48];
     if(write_remaining==1) write_response_pending <= 1;
     write_remaining <= write_remaining-1;
   end
@@ -48,10 +52,12 @@ always @(posedge clk) begin
       line_writes <= line_writes+1;
       memory[memory_address] <= memory_write_data[15:0];
       memory[memory_address+1] <= memory_write_data[31:16];
-      write_remaining <= 7;
+      memory[memory_address+2] <= memory_write_data[47:32];
+      memory[memory_address+3] <= memory_write_data[63:48];
+      write_remaining <= 3;
     end else begin
       line_reads <= line_reads+1;
-      read_remaining <= 8;
+      read_remaining <= 4;
     end
   end
 end

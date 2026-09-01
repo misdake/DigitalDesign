@@ -55,13 +55,15 @@ data cache is write-back: stores allocate on a miss and set a dirty bit in a
 separate SSRAM; replacing a dirty victim first writes its complete line.
 A read or write-allocate miss issues one
 aligned line request; the system arbiter forwards it as one SDRAM burst
-command, holds the port while the adapter streams eight ordered 32-bit beats
-(the low half of beat `n` is word `2*n`) into the cache's private 256-bit
+command. The cache-side port streams four ordered 64-bit beats at 54 MHz
+(beat `n` contains words `4*n` through `4*n+3`) into the private 256-bit
 refill buffer, and releases the port once the final beat is accepted. The
 cache then drains eight beats into the selected way of its two interleaved data BSRAM banks and commits tag
 and valid state only after a complete error-free line, so an error or
 invalidate can never expose a partially installed line. Dirty eviction and
-maintenance write one line as eight ordered 32-bit beats. The boot DMA keeps
+maintenance write one line as four ordered 64-bit beats. At the board boundary,
+one exact-related 108 MHz controller clock pairs or splits these into eight
+physical 32-bit SDRAM beats. The boot DMA keeps
 single-word transactions. Full D-cache clean and clean-plus-invalidate scan
 dirty state while the CPU is held; there is no per-line snoop interface. The
 system-control I-cache invalidation pulse is

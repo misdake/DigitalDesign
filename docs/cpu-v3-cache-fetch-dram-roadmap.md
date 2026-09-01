@@ -2,7 +2,7 @@
 
 Status: active handoff plan for future conversations
 Repository: `D:\github\DigitalDesign-code`
-Updated: 2026-08-30
+Updated: 2026-08-31
 
 ## Milestone workflow and document lifecycle
 
@@ -31,7 +31,8 @@ Updated: 2026-08-30
 | 6 | Complete, 2026-08-30 | Added demand-progress-triggered, low-priority next-line I-cache prefetch with redirect cancellation, discardable in-flight refills, simulation counters, and demand-safe cancellation races. | Full system: 10,129 Logic; 7 BSRAM; 54.538 MHz |
 | 7 | Complete, 2026-08-30 | Added cycle-profiled emulator benchmarks, a redirect fast path, and an explicit dual-read RAM16 scalar register file. Hot control-transfer fetch waits fell from four cycles to two; the RAM16 register file cut 2,178 LUTs. | Full system: 8,046 Logic; 7 BSRAM; 57.549 MHz |
 | 8 | Complete, 2026-08-30 | Split the production I/D caches, added write-allocate D-cache stores, dirty eviction, eight-beat SDRAM line writes, and blocking full-cache clean/invalidate with CPU hold and final status. | Full system: 9,548 Logic; 7 BSRAM; 54.918 MHz |
-| 9-12 | Not started | See the ordered tasks and detailed stage sections below. | - |
+| 9 | Complete, 2026-08-31 | Doubled the physical SDRAM/controller clock to 108 MHz and exposed a four-beat 64-bit line interface to the otherwise unchanged 54 MHz CPU side. | Full system: 10,345 Logic; 7 BSRAM; CPU 54.965 MHz; Controller HS 171.327 MHz |
+| 10 | Not started | Convert the cache data BSRAMs to true dual port and remove the private line buffers. | - |
 
 Starting with System consolidation, PnR evidence is always taken from the complete `cpu_v3_system`
 containing the CPU, boot path, SDRAM controller, and display path. Every subsequent completed stage
@@ -51,10 +52,8 @@ and Stage 7 use their corresponding full-system milestone builds.
 6. Add low-priority next-line I-cache prefetch, reusing the 256-bit refill path.
 7. Profile representative workloads and shorten control-flow redirect recovery without branch prediction.
 8. Change D-cache to write-back and implement dirty eviction plus global clean/invalidate maintenance in the same change.
-9. Integrate the already-frozen software ownership contract into DMA, and display APIs without changing the cache core again.
-10. Run DRAM at twice the CPU frequency through an explicit asynchronous FIFO or equivalent CDC boundary.
-11. (After GPU implementation) Complete GPU integration and final memory arbitration.
-12. Close full-system timing at no less than CPU 50 MHz and DRAM 100 MHz, then run concurrent hardware stress tests.
+9. Run DRAM at exactly twice the CPU frequency through a related-clock 2:1 gearbox, widening the CPU-side line interface to 64 bits while leaving cache storage and buffers unchanged.
+10. Convert both caches to true-dual-port parity banks, transfer refill/write-back data directly at 64 bits per cycle, and remove their private 256-bit line buffers.
 
 Task 0 should happen before Tasks 1 and 2. Tasks 1 and 2 remain the next performance implementation
 scope after that policy cleanup. Do not combine all tasks into one change.
@@ -62,7 +61,8 @@ scope after that policy cleanup. Do not combine all tasks into one change.
 ## Architectural decisions
 
 - A cache line remains public and fixed at 16 physical 16-bit words, or 32 bytes.
-- One DRAM line transfer is eight ordered 32-bit beats.
+- One cache-side DRAM line transfer is four ordered 64-bit beats; the physical controller consumes
+  eight ordered 32-bit beats at exactly twice the clock frequency.
 - I-cache and D-cache each own a private eight-entry 32-bit refill buffer.
 - The first refill revision keeps the current direct-mapped, single-BSRAM cache geometry.
 - The refill buffer is the future CPU/DRAM clock-domain boundary, but its first synchronous implementation is not itself a CDC solution.
@@ -436,90 +436,79 @@ RTL regression boots Stage0, Stage1, and both applications. Gowin PnR for the co
 passes; physical board programming and observation of the controller's burst-write sampling remain
 separate hardware validation.
 
-## Stage 9: integrate software ownership into GPU, DMA, and display APIs
+## Stage 9: DRAM at twice CPU frequency
 
-The coherence model frozen in Stage 0 is deliberately non-coherent hardware plus explicit software
-ownership. Stage 9 connects consumers to the Stage 8 global commands; it does not add or redesign
-cache-core maintenance. Do not add range maintenance, per-line clean commands, automatic clean-after-
-write, or GPU/DMA write snoops. I-cache invalidation remains single-cycle because I-cache lines are
-never dirty.
+Implementation decision (2026-08-31): use exact related clocks, not an arbitrary-ratio asynchronous
+FIFO. One PLL produces a 108 MHz Controller HS clock and its exact divide-by-two 54 MHz CPU/cache
+clock. These clocks remain a timed related group; only the independent HDMI pixel domain is grouped
+as asynchronous.
 
-The graphics, DMA, boot, and display helpers call the blocking intrinsic. A GPU command, DMA command,
-segment handoff, or display swap cannot execute until required D-cache maintenance has released the
-CPU. No caller implements its own polling loop.
+- CPU cache and memory-arbiter line ports are 64-bit at 54 MHz. One 256-bit line is four ordered
+  beats; the existing eight-entry 32-bit cache buffers and parity/XOR-split BSRAM organization do not
+  change.
+- Controller HS and physical SDRAM remain 32-bit at 108 MHz. The board boundary pairs two read beats
+  into one 64-bit CPU beat and splits one staged 64-bit write beat into two physical beats.
+- A line write is staged completely in the 54 MHz domain before its SDRAM command is issued. The
+  stable four-entry buffer is then consumed by the 108 MHz side; no changing 256-bit array is sampled
+  across the boundary.
+- Read pairs and command acknowledgements cross on tokens published at the controller-clock falling
+  edge, leaving half a 108 MHz cycle before a related CPU-clock sampling edge. This is a fixed 2:1
+  gearbox, not a general-purpose CDC FIFO.
+- CPU/DMA word transactions continue to use the low 16 bits. Display remains an eight-beat 32-bit
+  consumer; the shared adapter drains a completed four-entry 64-bit display buffer as eight words.
 
-### One-cycle delayed I-cache invalidation and the final jump
+Acceptance additionally requires PnR timing at CPU 54 MHz / controller 108 MHz and physical board
+validation of Controller HS read-valid phase and burst-write sampling. Simulation and PnR alone do
+not prove those two vendor-controller timing details.
 
-Preserve a registered one-cycle delay from the maintenance `DEVSEND` execute cycle to the actual
-I-cache valid-bit clear and fetch-queue flush. The current system-control pulse already has this
-registered shape; the fetch-pipeline revision must make it an explicit tested contract.
+### Implementation result (2026-08-31)
 
-The boot handoff sequence is:
+The fitted system now derives related 108 MHz Controller HS and 54 MHz CPU/cache clocks from one
+PLL. A board-level 2:1 gearbox holds commands, pairs two 32-bit controller reads into each 64-bit
+CPU beat, and splits staged 64-bit line writes into two controller beats. CPU, caches, arbiter,
+display scheduler, boot DMA, and system control remain in the 54 MHz domain. The HDMI pixel clock
+remains independent and is the only domain grouped asynchronous to the CPU/controller clock group.
 
-```text
-D_INVALIDATE_ALL             dirty data is written back; wait until complete
-ICACHE_INVALIDATE_ALL_DELAYED  arm the registered one-cycle-delayed invalidate pulse
-final segment-switch jump    resolves while invalidate/queue flush takes effect
-```
+The display scheduler captures four 64-bit controller beats, then releases SDRAM ownership after
+the normal recovery interval while the local buffer independently emits eight 32-bit display words.
+An RTL test verifies that a CPU transaction is accepted before that display drain completes.
 
-If a jump redirect and I-cache invalidation occur in the same cycle, the redirect target wins as the
-new fetch PC, the fetch epoch advances, every old queued word is discarded, and any old outstanding
-lookup or refill response is ignored. The compiler/backend must keep the invalidate and final jump
-adjacent and must not schedule an ordinary instruction between them.
+Full-system PnR closes CPU 54 MHz at 54.965 MHz, Controller HS 108 MHz at 171.327 MHz, and the
+74.25 MHz pixel clock at 83.119 MHz. Every reported setup/hold TNS is zero. The system uses 10,345
+Logic and seven BSRAM blocks. CPU closure is accepted but narrow. Physical board confirmation of the
+vendor controller's read-valid phase and burst-write sampling is still outstanding.
 
-Stage0 performs this sequence before entering Stage1. Stage1 performs it before entering the
-application. This is required once D-cache is write-back: raw D-cache invalidation at a boot boundary
-would otherwise lose dirty handoff data.
+## Stage 10: dual-port cache BSRAMs and direct 64-bit line transfer
 
-### CPU, GPU, DMA, and display ownership contract
+Replace each cache's two 1R1W parity/XOR-organized BSRAMs with two true-dual-port BSRAMs. Both ports
+of a block always use the same mode in a cycle: either both read or both write. The cache never asks a
+block to read and write in the same cycle.
 
-```text
-CPU owns region
-  -> CPU finishes writes
-  -> D_CLEAN_ALL completes
-  -> GPU/DMA/display owns region; CPU must not read or write it
-  -> device commits all DRAM writes before reporting completion or accepting swap
-  -> D_INVALIDATE_ALL completes before CPU reads a device-written region
-  -> CPU owns region again
-```
-
-- GPU submission consumes or freezes the CPU-side buffer handle until the GPU completion is observed.
-- A push-style graphics API should make CPU mutation unavailable after submission; a DMA copy into a
-  GPU-exclusive region is an alternative when ownership cannot be transferred directly.
-- GPU completion is visible only after its final DRAM write has completed, never merely after command
-  execution has started.
-- For CPU-rendered framebuffer tests, complete `D_CLEAN_ALL` before swap and do not modify that buffer
-  until display ownership ends. The test-only API may enforce this manually.
-- Display is a DRAM reader and does not snoop CPU cache writes. Double-buffer ownership and clean-before-
-  swap provide its consistency.
-- Software violations of ownership are programming errors; hardware is not required to repair them.
+- Remove the `bank = way XOR word_parity` mapping. Use `bank = word_index[0]`: bank 0 holds the eight
+  even words of every line and bank 1 holds the eight odd words. Way is an ordinary address bit.
+- Lookup mode uses the two ports of the selected parity bank to read the same word from way 0 and way
+  1 concurrently. Tag comparison selects the returned way; no XOR reconstruction remains.
+- Refill mode writes one 64-bit memory beat directly through all four 16-bit ports: bank 0 receives
+  words 0/2 and bank 1 receives words 1/3 of that beat. Four cycles install the 256-bit line.
+- D-cache write-back mode reads four words of the selected victim per cycle through all four ports and
+  presents the resulting 64-bit beat directly to the memory interface. A synchronous-read prime phase
+  is allowed before the request; thereafter four ordered beats stream without a private line buffer.
+- Remove the I-cache refill buffer and D-cache refill/write-back buffer. Partial refills remain hidden
+  by clearing/reserving the victim valid bit before the first direct write and committing tag/valid
+  only after the fourth error-free beat. If 54 MHz timing requires it, add one explicit register at a
+  named BSRAM-output or 64-bit memory-interface boundary rather than restoring a 256-bit line buffer.
+- Store hits switch the selected BSRAM to write mode for that cycle. The cache pipeline must ensure no
+  lookup read is required in the same cycle.
 
 Acceptance:
 
-- No cache maintenance ABI accepts an address or range.
-- No external write causes automatic per-line cache invalidation.
-- D-cache clean writes each dirty line exactly once and clears dirty only after DRAM completion.
-- D-cache invalidate never loses dirty data and leaves every way invalid after completion.
-- Stage0-to-Stage1 and Stage1-to-application handoffs preserve dirty data and fetch only new-epoch code.
-- A GPU completion cannot precede the last accepted DRAM write response.
-- CPU-to-GPU, GPU-to-CPU, and CPU-to-display ownership tests fail if maintenance or completion ordering is omitted.
-
-## Stage 10: DRAM at twice CPU frequency
-
-- Keep CPU/cache logic in the CPU clock domain and SDRAM command/data logic in the DRAM clock domain.
-- Convert the synchronous refill buffer boundary into a proper asynchronous FIFO, mailbox, or equivalent proven CDC structure.
-- Synchronize control tokens; never sample a shared 256-bit register array directly across domains.
-- Carry line identity, beat order, `last`, and error state across the boundary.
-- Analyze FIFO depth against refresh stalls, display/GPU service, and the 2:1 producer/consumer rate.
-- First characterize CPU 50 MHz and DRAM 100 MHz before treating those clocks as accepted system targets.
-
-## Stage 11 and 12: GPU integration and final closure
-
-- Complete the final CPU, display, and GPU arbitration policy before frequency sign-off.
-- Run full PnR after GPU integration; earlier 50/100 MHz results are characterization only.
-- Final minimum target: CPU 50 MHz and DRAM 100 MHz.
-- Stress concurrent I-cache refill, D-cache refill and write-back, GPU traffic, display deadlines, and SDRAM refresh.
-- Capture durable board evidence in addition to simulation and PnR reports.
+- I-cache and D-cache still use exactly two 18-Kbit BSRAM blocks each.
+- Every line is split evenly across the two blocks, with no way-dependent XOR mapping.
+- Refill and write-back sustain one 64-bit beat per CPU cycle after any documented prime stage.
+- No cache contains a private 256-bit refill or write-back register array.
+- Replacement, dirty eviction, clean/invalidate, refill-error, and same-set way-selection tests pass.
+- Full-system PnR still closes CPU 54 MHz and Controller HS 108 MHz; BSRAM packing and mode reports
+  confirm the intended true-dual-port configuration.
 
 ## Risk-scaled validation
 

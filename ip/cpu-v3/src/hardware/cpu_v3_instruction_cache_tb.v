@@ -2,7 +2,7 @@ module tb;
 reg clk=0,reset=1,invalidate_all=0,prefetch_request_valid=0,prefetch_cancel=0;
 reg [31:0] prefetch_address=0,cpu_address=0;
 reg cpu_request_valid=0,cpu_response_ready=0,memory_request_ready=1;
-reg memory_response_valid=0,memory_error=0; reg [31:0] memory_read_data=0;
+reg memory_response_valid=0,memory_error=0; reg [63:0] memory_read_data=0;
 wire cpu_request_ready,cpu_response_valid,cpu_error,memory_request_valid,memory_response_ready;
 wire [15:0] cpu_read_data; wire [21:0] memory_address;
 wire [31:0] prefetch_issued,prefetch_useful,prefetch_useless,prefetch_dropped;
@@ -16,8 +16,8 @@ initial begin
   @(posedge clk); @(negedge clk); cpu_request_valid=0;
   while(!memory_request_valid) @(posedge clk);
   @(posedge clk);
-  for(beat=0;beat<8;beat=beat+1) begin
-    @(negedge clk); memory_read_data=32'h90019000+beat*32'h00020002;
+  for(beat=0;beat<4;beat=beat+1) begin
+    @(negedge clk); memory_read_data=64'h9003900290019000+beat*64'h0004000400040004;
     memory_response_valid=1; @(posedge clk);
   end
   @(negedge clk); memory_response_valid=0;
