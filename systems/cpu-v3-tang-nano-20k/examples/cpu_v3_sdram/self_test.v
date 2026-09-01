@@ -76,7 +76,7 @@ wire icache_memory_request_valid;
 wire icache_memory_request_ready;
 wire [21:0] icache_memory_address;
 wire icache_memory_response_valid;
-wire [15:0] icache_memory_read_data;
+wire [31:0] icache_memory_read_data;
 wire icache_memory_error;
 wire icache_memory_response_ready;
 
@@ -162,7 +162,7 @@ wire [21:0] dcache_memory_address;
 wire [15:0] dcache_memory_write_data;
 wire dcache_memory_request_ready;
 wire dcache_memory_response_valid;
-wire [15:0] dcache_memory_read_data;
+wire [31:0] dcache_memory_read_data;
 wire dcache_memory_error;
 wire dcache_memory_response_ready;
 

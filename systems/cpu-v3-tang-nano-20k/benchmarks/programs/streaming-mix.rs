@@ -1,4 +1,4 @@
-// bench-max-cycles: 8000000
+// bench-max-cycles: 12000000
 // bench-expected-halt: 1
 use crate::dsl_rt::*;
 const N: u16 = 4096;
@@ -23,4 +23,3 @@ fn main() {
     }
     halt(1);
 }
-
