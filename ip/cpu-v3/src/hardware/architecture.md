@@ -44,26 +44,22 @@ wait cycles only when the queue does not already contain the requested word.
 
 The optional fitted system places separate 4 KiB instruction and data caches
 around the core. Each cache is two-way set-associative with 64 sets and 16 words per line.
-Both ways share two one-read, one-write BSRAMs interleaved by
-`bank = way XOR word_parity`. A lookup gives each bank a different way address,
-so the synchronous data read returns both candidate ways while the parallel tag
-comparison runs; the hit way selects the corresponding registered bank result.
+Two true-dual-port BSRAMs split every line strictly by word parity. During lookup,
+the two ports of the selected parity bank read the same word from way 0 and way 1;
+the parallel tag comparison selects the corresponding registered bank result.
 While that resident read resolves, the next lookup may start, allowing one
 ordered hit request and response per cycle when there is no miss, invalidate,
 write, or response backpressure. The instruction cache exposes only reads. The
 data cache is write-back: stores allocate on a miss and set a dirty bit in a
 separate SSRAM; replacing a dirty victim first writes its complete line.
-A read or write-allocate miss issues one
-aligned line request; the system arbiter forwards it as one SDRAM burst
-command. The cache-side port streams four ordered 64-bit beats at 54 MHz
-(beat `n` contains words `4*n` through `4*n+3`) into the private 256-bit
-refill buffer, and releases the port once the final beat is accepted. The
-cache then drains eight beats into the selected way of its two interleaved data BSRAM banks and commits tag
-and valid state only after a complete error-free line, so an error or
-invalidate can never expose a partially installed line. Dirty eviction and
-maintenance write one line as four ordered 64-bit beats. At the board boundary,
-one exact-related 108 MHz controller clock pairs or splits these into eight
-physical 32-bit SDRAM beats. The boot DMA keeps
+A read or write-allocate miss issues one aligned line request; the system arbiter
+streams four ordered 64-bit beats at 54 MHz. Each beat writes four words directly
+through the four BSRAM ports, and tag/valid state commits only on the fourth
+error-free beat. The victim is invalid throughout refill, so an error or invalidate
+cannot expose a partial line. Dirty eviction primes the synchronous DPB outputs,
+then streams four ordered 64-bit beats without a private line buffer. The board
+gearbox pairs/splits those logical beats against the 32-bit SDRAM controller at
+the related 108 MHz clock. The boot DMA keeps
 single-word transactions. Full D-cache clean and clean-plus-invalidate scan
 dirty state while the CPU is held; there is no per-line snoop interface. The
 system-control I-cache invalidation pulse is

@@ -33,7 +33,7 @@ CpuV3TwoWayCache dut(.*);
 always #5 clk = ~clk;
 
 // Line-serving memory model: one read request returns four ordered 64-bit
-// beats (low half = even word), one write request returns one completion.
+// beats, one write request returns one completion.
 integer line_requests = 0;
 integer write_requests = 0;
 integer beats_served = 0;
@@ -242,8 +242,8 @@ initial begin
     read_word(32'h0000_0123, 16'h8123);
     if (line_requests != 1 || beats_served != 4)
         $fatal(1, "miss did not refill exactly one line as four beats");
-    if (drain_cycles != 8)
-        $fatal(1, "parity-split cache did not drain the line in eight cycles");
+    if (drain_cycles != 0)
+        $fatal(1, "direct dual-port refill unexpectedly entered a drain phase");
     read_hit_burst(32'h0000_0128);
     read_hit_word(32'h0000_012e, 16'h812e);
     read_hit_word(32'h0000_012f, 16'h812f);
@@ -305,7 +305,7 @@ initial begin
     if (line_requests != line_requests_before_invalidate + 2)
         $fatal(1, "invalidate during refill exposed a stale installed line");
 
-    // A real next-line candidate fills through the ordinary line buffer. Its
+    // A real next-line candidate fills directly into the two data banks. Its
     // first demand use must hit and move the issued prefetch to useful.
     prefetch_line_requests_before = line_requests;
     nominate_prefetch(32'h0000_1120);
@@ -376,13 +376,13 @@ initial begin
     #1;
     cpu_response_ready <= 0;
 
-    // Cancel only speculative work. A cancel pulse during demand drain must
+    // Cancel only speculative work. A cancel pulse during demand refill must
     // not suppress the demand line's data and tag installation.
     prefetch_line_requests_before = line_requests;
     fork
         read_word(32'h0000_2d23, 16'h8d23);
         begin
-            wait (dut.state == 4'd7);
+            wait (dut.state == 4'd6);
             prefetch_cancel <= 1;
             @(posedge clk);
             #1;

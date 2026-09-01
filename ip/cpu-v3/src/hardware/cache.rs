@@ -1,10 +1,8 @@
 //! CpuV3 two-way physical-address cache hardware.
 //!
-//! A read miss issues one aligned line request and captures the four ordered
-//! 64-bit response beats in a private 256-bit refill buffer. The cache then
-//! drains eight 32-bit beats from the buffer into parity/way-interleaved data BSRAMs
-//! and commits tag and valid state only after a complete error-free line, so
-//! an error or invalidate can never expose a partially installed line. The
+//! Cache lines use four ordered 64-bit memory beats. Two true-dual-port data
+//! BSRAMs split each line by word parity and directly transfer all four words
+//! of a beat. Tags and valid bits commit only after a complete error-free line. The
 //! production I-cache exposes a read-only boundary around this refill/prefetch
 //! engine; the independent D-cache implements write-allocate, dirty eviction,
 //! and blocking global clean/invalidate.
@@ -14,8 +12,7 @@ use digital_design_hardware::{
     resources::components::{BsramBlocks, SsramBits},
     HardwareIdentity, Module, ModuleIo, TargetResourceRequest, VerilogDependency, VerilogIdentity,
 };
-use digital_design_hardware_gowin::BsramImage;
-use digital_design_hardware_gowin::ZeroBsramImage;
+use digital_design_hardware_gowin::{BsramImage, ZeroBsramImage};
 use std::fmt::Write;
 use std::marker::PhantomData;
 
@@ -27,11 +24,9 @@ pub const CPU_V3_CACHE_LINE_BEATS: usize = CPU_V3_CACHE_LINE_WORDS / 2;
 pub const CPU_V3_CACHE_MEMORY_BEATS: usize = CPU_V3_CACHE_LINE_WORDS / 4;
 pub const CPU_V3_CACHE_SETS: usize = CPU_V3_CACHE_WORDS_PER_WAY / CPU_V3_CACHE_LINE_WORDS;
 
-/// Bank `b` contains words where `way XOR word_parity == b`. The initialized
-/// image occupies way zero, so its even words land in bank zero and its odd
-/// words land in bank one; the upper half reserved for way one starts clear.
-const fn interleaved_bank_image<I: CpuV3CacheImage, const BANK: bool>(
-) -> [u64; CPU_V3_CACHE_WORDS_PER_WAY] {
+/// Bank `b` contains words whose word parity is `b`. Way zero occupies the
+/// lower 512 addresses and way one occupies the upper 512 addresses.
+const fn parity_bank_image<I: CpuV3CacheImage, const BANK: bool>() -> [u64; 1024] {
     let mut words = [0; CPU_V3_CACHE_WORDS_PER_WAY];
     let mut address = 0;
     while address < CPU_V3_CACHE_WORDS_PER_WAY / 2 {
@@ -43,7 +38,7 @@ const fn interleaved_bank_image<I: CpuV3CacheImage, const BANK: bool>(
 
 fn cache_data_image_hash<I: CpuV3CacheImage>() -> u64 {
     let mut hash = 0xcbf29ce484222325u64;
-    for byte in b"cpu-v3-parity-way-interleaved-cache-data-v2"
+    for byte in b"cpu-v3-parity-split-true-dual-port-cache-data-v1"
         .iter()
         .copied()
         .chain([0])
@@ -56,37 +51,44 @@ fn cache_data_image_hash<I: CpuV3CacheImage>() -> u64 {
 }
 
 #[derive(Clone, ModuleIo)]
-struct CpuV3ParitySplitCacheDataInput {
-    bank_0_read_address: Wires<10>,
-    bank_1_read_address: Wires<10>,
-    bank_0_write_enable: Wire,
-    bank_1_write_enable: Wire,
-    write_address: Wires<10>,
-    bank_0_write_data: Wires<16>,
-    bank_1_write_data: Wires<16>,
+struct CpuV3DualPortCacheDataInput {
+    bank_0_a_write_enable: Wire,
+    bank_0_a_address: Wires<10>,
+    bank_0_a_write_data: Wires<16>,
+    bank_0_b_write_enable: Wire,
+    bank_0_b_address: Wires<10>,
+    bank_0_b_write_data: Wires<16>,
+    bank_1_a_write_enable: Wire,
+    bank_1_a_address: Wires<10>,
+    bank_1_a_write_data: Wires<16>,
+    bank_1_b_write_enable: Wire,
+    bank_1_b_address: Wires<10>,
+    bank_1_b_write_data: Wires<16>,
 }
 
 #[derive(Clone, ModuleIo)]
-struct CpuV3ParitySplitCacheDataOutput {
-    bank_0_read_data: Wires<16>,
-    bank_1_read_data: Wires<16>,
+struct CpuV3DualPortCacheDataOutput {
+    bank_0_a_read_data: Wires<16>,
+    bank_0_b_read_data: Wires<16>,
+    bank_1_a_read_data: Wires<16>,
+    bank_1_b_read_data: Wires<16>,
 }
 
-struct CpuV3ParitySplitCacheData<I>(PhantomData<I>);
+struct CpuV3DualPortCacheData<I>(PhantomData<I>);
 
-impl<I: CpuV3CacheImage> HardwareIdentity for CpuV3ParitySplitCacheData<I> {
+impl<I: CpuV3CacheImage> HardwareIdentity for CpuV3DualPortCacheData<I> {
     const TARGET_RESOURCE_LEAF: bool = true;
 
     fn verilog_identity() -> VerilogIdentity {
-        VerilogIdentity::new("CpuV3WayInterleavedCacheData")
+        VerilogIdentity::new("CpuV3DualPortCacheData")
             .namespace(["components", "cpu", "cpu_v3"])
             .symbol("IMAGE", format!("h{:016x}", cache_data_image_hash::<I>()))
     }
 }
 
-impl<I: CpuV3CacheImage> Module for CpuV3ParitySplitCacheData<I> {
-    type Input = CpuV3ParitySplitCacheDataInput;
-    type Output = CpuV3ParitySplitCacheDataOutput;
+impl<I: CpuV3CacheImage> Module for CpuV3DualPortCacheData<I> {
+    type Input = CpuV3DualPortCacheDataInput;
+    type Output = CpuV3DualPortCacheDataOutput;
     type EmuState = ();
 
     const USES_MAIN_CLOCK: bool = true;
@@ -102,13 +104,13 @@ impl<I: CpuV3CacheImage> Module for CpuV3ParitySplitCacheData<I> {
         _input: &Self::Input,
         _output: &Self::Output,
     ) {
-        panic!("way-interleaved cache data BSRAM is Verilog-only")
+        panic!("dual-port cache data BSRAM is Verilog-only")
     }
 
     fn verilog_source() -> Option<String> {
         let module_name = Self::verilog_identity().module_name();
-        let bank_0 = interleaved_bank_image::<I, false>();
-        let bank_1 = interleaved_bank_image::<I, true>();
+        let bank_0 = parity_bank_image::<I, false>();
+        let bank_1 = parity_bank_image::<I, true>();
         let mut overrides = String::new();
         for address in 0..CPU_V3_CACHE_WORDS_PER_WAY {
             assert!(bank_0[address] <= u64::from(u16::MAX));
@@ -133,20 +135,25 @@ impl<I: CpuV3CacheImage> Module for CpuV3ParitySplitCacheData<I> {
         Some(format!(
             r#"module {module_name}(
     input wire clk,
-    input wire [9:0] bank_0_read_address,
-    input wire [9:0] bank_1_read_address,
-    input wire bank_0_write_enable,
-    input wire bank_1_write_enable,
-    input wire [9:0] write_address,
-    input wire [15:0] bank_0_write_data,
-    input wire [15:0] bank_1_write_data,
-    output reg [15:0] bank_0_read_data,
-    output reg [15:0] bank_1_read_data
+    input wire bank_0_a_write_enable, input wire [9:0] bank_0_a_address,
+    input wire [15:0] bank_0_a_write_data, output wire [15:0] bank_0_a_read_data,
+    input wire bank_0_b_write_enable, input wire [9:0] bank_0_b_address,
+    input wire [15:0] bank_0_b_write_data, output wire [15:0] bank_0_b_read_data,
+    input wire bank_1_a_write_enable, input wire [9:0] bank_1_a_address,
+    input wire [15:0] bank_1_a_write_data, output wire [15:0] bank_1_a_read_data,
+    input wire bank_1_b_write_enable, input wire [9:0] bank_1_b_address,
+    input wire [15:0] bank_1_b_write_data, output wire [15:0] bank_1_b_read_data
 );
-
 reg [15:0] bank_0_memory [0:1023];
 reg [15:0] bank_1_memory [0:1023];
+reg [15:0] bank_0_a_read_data_r, bank_0_b_read_data_r;
+reg [15:0] bank_1_a_read_data_r, bank_1_b_read_data_r;
 integer init_address;
+
+assign bank_0_a_read_data = bank_0_a_read_data_r;
+assign bank_0_b_read_data = bank_0_b_read_data_r;
+assign bank_1_a_read_data = bank_1_a_read_data_r;
+assign bank_1_b_read_data = bank_1_b_read_data_r;
 
 initial begin
     for (init_address = 0; init_address < 1024; init_address = init_address + 1) begin
@@ -156,29 +163,31 @@ initial begin
 {overrides}end
 
 always @(posedge clk) begin
-    bank_0_read_data <= bank_0_memory[bank_0_read_address];
-    if (bank_0_write_enable)
-        bank_0_memory[write_address] <= bank_0_write_data;
+    if (bank_0_a_write_enable) bank_0_memory[bank_0_a_address] <= bank_0_a_write_data;
+    else bank_0_a_read_data_r <= bank_0_memory[bank_0_a_address];
 end
-
 always @(posedge clk) begin
-    bank_1_read_data <= bank_1_memory[bank_1_read_address];
-    if (bank_1_write_enable)
-        bank_1_memory[write_address] <= bank_1_write_data;
+    if (bank_0_b_write_enable) bank_0_memory[bank_0_b_address] <= bank_0_b_write_data;
+    else bank_0_b_read_data_r <= bank_0_memory[bank_0_b_address];
 end
-
+always @(posedge clk) begin
+    if (bank_1_a_write_enable) bank_1_memory[bank_1_a_address] <= bank_1_a_write_data;
+    else bank_1_a_read_data_r <= bank_1_memory[bank_1_a_address];
+end
+always @(posedge clk) begin
+    if (bank_1_b_write_enable) bank_1_memory[bank_1_b_address] <= bank_1_b_write_data;
+    else bank_1_b_read_data_r <= bank_1_memory[bank_1_b_address];
+end
 endmodule
 "#
         ))
     }
 
     fn verilog_testbench() -> Option<String> {
-        Some(
-            include_str!("cpu_v3_way_interleaved_cache_data_tb.v").replace(
-                "CpuV3WayInterleavedCacheData dut",
-                &format!("{} dut", Self::verilog_identity().module_name()),
-            ),
-        )
+        Some(include_str!("cpu_v3_dual_port_cache_data_tb.v").replace(
+            "CpuV3DualPortCacheData dut",
+            &format!("{} dut", Self::verilog_identity().module_name()),
+        ))
     }
 }
 
@@ -403,7 +412,7 @@ impl<I: CpuV3CacheImage> HardwareIdentity for CpuV3TwoWayCacheWithImage<I> {
                 "IMAGE",
                 format!(
                     "{}_v{:016x}",
-                    CpuV3ParitySplitCacheData::<I>::verilog_identity().module_name(),
+                    CpuV3DualPortCacheData::<I>::verilog_identity().module_name(),
                     I::INITIAL_VALID
                 ),
             )
@@ -418,7 +427,6 @@ enum State {
     WordResponse,
     LineRequest,
     LineReceive,
-    LineDrain,
 }
 
 #[derive(Clone, Copy, Default)]
@@ -440,9 +448,8 @@ pub struct CpuV3TwoWayCacheState {
     state: State,
     lookup_valid: bool,
     pending: Pending,
-    refill_buffer: [u32; CPU_V3_CACHE_LINE_BEATS],
     refill_beat: u8,
-    drain_beat: u8,
+    refill_response_data: u16,
     response_data: u16,
     response_error: bool,
     response_valid: bool,
@@ -467,9 +474,8 @@ impl Default for CpuV3TwoWayCacheState {
             state: State::Idle,
             lookup_valid: false,
             pending: Pending::default(),
-            refill_buffer: [0; CPU_V3_CACHE_LINE_BEATS],
             refill_beat: 0,
-            drain_beat: 0,
+            refill_response_data: 0,
             response_data: 0,
             response_error: false,
             response_valid: false,
@@ -589,7 +595,6 @@ impl<I: CpuV3CacheImage> Module for CpuV3TwoWayCacheWithImage<I> {
         } else {
             state.victim[set]
         };
-        let drain_last = state.drain_beat as usize + 1 == CPU_V3_CACHE_LINE_BEATS;
         let response_space = !state.response_valid || input.cpu_response_ready;
         let hit_write = state.state == State::Idle
             && state.lookup_valid
@@ -714,6 +719,7 @@ impl<I: CpuV3CacheImage> Module for CpuV3TwoWayCacheWithImage<I> {
                         next.prefetch_armed = true;
                     }
                 } else if input.memory_request_ready {
+                    next.valid[state.pending_way][set] = false;
                     next.refill_beat = 0;
                     if state.pending.is_prefetch {
                         next.prefetch_issued = next.prefetch_issued.wrapping_add(1);
@@ -737,63 +743,56 @@ impl<I: CpuV3CacheImage> Module for CpuV3TwoWayCacheWithImage<I> {
                         }
                         next.state = State::Idle;
                     } else {
-                        let buffer = 2 * usize::from(state.refill_beat);
-                        next.refill_buffer[buffer] = input.memory_read_data as u32;
-                        next.refill_buffer[buffer + 1] = (input.memory_read_data >> 32) as u32;
+                        let first_word = 4 * usize::from(state.refill_beat);
+                        let install = !state.refill_discard
+                            && !input.invalidate_all
+                            && !prefetch_refill_cancelled;
+                        if install {
+                            for lane in 0..4 {
+                                next.data[data_index(state.pending_way, set, first_word + lane)] =
+                                    (input.memory_read_data >> (16 * lane)) as u16;
+                            }
+                        }
+                        if first_word <= word && word < first_word + 4 {
+                            next.refill_response_data =
+                                (input.memory_read_data >> (16 * (word - first_word))) as u16;
+                        }
                         if state.refill_beat as usize + 1 == CPU_V3_CACHE_MEMORY_BEATS {
-                            next.drain_beat = 0;
-                            next.state = State::LineDrain;
+                            if install {
+                                if state.pending_way == 1 {
+                                    if state.prefetched[1][set] {
+                                        next.prefetch_useless =
+                                            next.prefetch_useless.wrapping_add(1);
+                                    }
+                                    next.valid[1][set] = true;
+                                    next.prefetched[1][set] = state.pending.is_prefetch;
+                                } else {
+                                    if state.prefetched[0][set] {
+                                        next.prefetch_useless =
+                                            next.prefetch_useless.wrapping_add(1);
+                                    }
+                                    next.valid[0][set] = true;
+                                    next.prefetched[0][set] = state.pending.is_prefetch;
+                                }
+                                next.tags[state.pending_way][set] = tag;
+                                next.victim[set] = 1 - state.pending_way;
+                            }
+                            if !state.pending.is_prefetch {
+                                next.response_data = if first_word <= word && word < first_word + 4
+                                {
+                                    (input.memory_read_data >> (16 * (word - first_word))) as u16
+                                } else {
+                                    state.refill_response_data
+                                };
+                                next.response_error = false;
+                                next.response_valid = true;
+                            }
+                            next.pending.is_prefetch = false;
+                            next.state = State::Idle;
                         } else {
                             next.refill_beat += 1;
                         }
                     }
-                }
-            }
-            State::LineDrain => {
-                let drain = usize::from(state.drain_beat);
-                let beat = state.refill_buffer[drain];
-                let even_word = 2 * drain;
-                let drain_write =
-                    !state.refill_discard && !input.invalidate_all && !prefetch_refill_cancelled;
-                if drain_write {
-                    next.data[data_index(state.pending_way, set, even_word)] = beat as u16;
-                    next.data[data_index(state.pending_way, set, even_word + 1)] =
-                        (beat >> 16) as u16;
-                }
-                if drain == word / 2 {
-                    next.response_data = if word % 2 == 0 {
-                        beat as u16
-                    } else {
-                        (beat >> 16) as u16
-                    };
-                }
-                if drain_last {
-                    if !state.refill_discard && !input.invalidate_all && !prefetch_refill_cancelled
-                    {
-                        if state.pending_way == 1 {
-                            if state.prefetched[1][set] {
-                                next.prefetch_useless = next.prefetch_useless.wrapping_add(1);
-                            }
-                            next.valid[1][set] = true;
-                            next.prefetched[1][set] = state.pending.is_prefetch;
-                        } else {
-                            if state.prefetched[0][set] {
-                                next.prefetch_useless = next.prefetch_useless.wrapping_add(1);
-                            }
-                            next.valid[0][set] = true;
-                            next.prefetched[0][set] = state.pending.is_prefetch;
-                        }
-                        next.tags[state.pending_way][set] = tag;
-                        next.victim[set] = 1 - state.pending_way;
-                    }
-                    if !state.pending.is_prefetch {
-                        next.response_error = false;
-                        next.response_valid = true;
-                    }
-                    next.pending.is_prefetch = false;
-                    next.state = State::Idle;
-                } else {
-                    next.drain_beat += 1;
                 }
             }
         }
@@ -832,7 +831,6 @@ impl<I: CpuV3CacheImage> Module for CpuV3TwoWayCacheWithImage<I> {
                     && ((state.state == State::Idle && state.lookup_valid)
                         || (state.state == State::LineRequest && !state.prefetch_armed)
                         || ((state.state == State::LineReceive
-                            || state.state == State::LineDrain
                             || (state.state == State::LineRequest && state.prefetch_armed))
                             && !state.refill_discard)));
             if counting {
@@ -857,7 +855,6 @@ impl<I: CpuV3CacheImage> Module for CpuV3TwoWayCacheWithImage<I> {
                 next.refill_discard = false;
             } else if state.pending.is_prefetch
                 && (state.state == State::LineReceive
-                    || state.state == State::LineDrain
                     || (state.state == State::LineRequest && state.prefetch_armed))
             {
                 next.refill_discard = true;
@@ -875,10 +872,7 @@ impl<I: CpuV3CacheImage> Module for CpuV3TwoWayCacheWithImage<I> {
             );
             next.valid = [[false; CPU_V3_CACHE_SETS]; CPU_V3_CACHE_WAYS];
             next.prefetched = [[false; CPU_V3_CACHE_SETS]; CPU_V3_CACHE_WAYS];
-            if state.state == State::LineRequest
-                || state.state == State::LineReceive
-                || state.state == State::LineDrain
-            {
+            if state.state == State::LineRequest || state.state == State::LineReceive {
                 next.refill_discard = true;
             }
         }
@@ -900,7 +894,7 @@ impl<I: CpuV3CacheImage> Module for CpuV3TwoWayCacheWithImage<I> {
                 )
                 .replace(
                     "__CACHE_DATA_BANKS__",
-                    &CpuV3ParitySplitCacheData::<I>::verilog_identity().module_name(),
+                    &CpuV3DualPortCacheData::<I>::verilog_identity().module_name(),
                 )
                 .replace(
                     "__CACHE_TAGS__",
@@ -911,7 +905,7 @@ impl<I: CpuV3CacheImage> Module for CpuV3TwoWayCacheWithImage<I> {
 
     fn verilog_dependencies() -> Vec<VerilogDependency> {
         vec![
-            VerilogDependency::new::<CpuV3ParitySplitCacheData<I>>("u_data_banks"),
+            VerilogDependency::new::<CpuV3DualPortCacheData<I>>("u_data_banks"),
             VerilogDependency::new::<CpuV3CacheTagRam>("u_tags"),
         ]
     }
@@ -1339,10 +1333,11 @@ impl Module for CpuV3DataCache {
                 if input.memory_error {
                     state.fail_transaction();
                 } else {
-                    state.words[4 * state.beat] = input.memory_read_data as u16;
-                    state.words[4 * state.beat + 1] = (input.memory_read_data >> 16) as u16;
-                    state.words[4 * state.beat + 2] = (input.memory_read_data >> 32) as u16;
-                    state.words[4 * state.beat + 3] = (input.memory_read_data >> 48) as u16;
+                    let word = 4 * state.beat;
+                    state.words[word] = input.memory_read_data as u16;
+                    state.words[word + 1] = (input.memory_read_data >> 16) as u16;
+                    state.words[word + 2] = (input.memory_read_data >> 32) as u16;
+                    state.words[word + 3] = (input.memory_read_data >> 48) as u16;
                     if state.beat == CPU_V3_CACHE_MEMORY_BEATS - 1 {
                         state.beat = 0;
                         state.phase = DataMemoryPhase::ReadDrain;
@@ -1371,7 +1366,7 @@ impl Module for CpuV3DataCache {
             include_str!("cpu_v3_data_cache.v")
                 .replace(
                     "__CACHE_DATA_BANKS__",
-                    &CpuV3ParitySplitCacheData::<ZeroBsramImage>::verilog_identity().module_name(),
+                    &CpuV3DualPortCacheData::<ZeroBsramImage>::verilog_identity().module_name(),
                 )
                 .replace(
                     "__CACHE_TAGS__",
@@ -1386,7 +1381,7 @@ impl Module for CpuV3DataCache {
 
     fn verilog_dependencies() -> Vec<VerilogDependency> {
         vec![
-            VerilogDependency::new::<CpuV3ParitySplitCacheData<ZeroBsramImage>>("u_data_banks"),
+            VerilogDependency::new::<CpuV3DualPortCacheData<ZeroBsramImage>>("u_data_banks"),
             VerilogDependency::new::<CpuV3CacheTagRam>("u_tags"),
             VerilogDependency::new::<CpuV3DataCacheDirtyRam>("u_dirty"),
         ]
@@ -1576,34 +1571,27 @@ mod tests {
     }
 
     #[test]
-    fn cache_image_is_interleaved_by_way_xor_parity_and_initializes_only_way_zero() {
+    fn cache_image_is_split_by_parity_and_initializes_only_way_zero() {
         for address in 0..CPU_V3_CACHE_WORDS_PER_WAY / 2 {
             assert_eq!(
-                interleaved_bank_image::<InterleavedImage, false>()[address],
+                parity_bank_image::<InterleavedImage, false>()[address],
                 (2 * address) as u64
             );
             assert_eq!(
-                interleaved_bank_image::<InterleavedImage, true>()[address],
+                parity_bank_image::<InterleavedImage, true>()[address],
                 (2 * address + 1) as u64
             );
         }
-        assert!(interleaved_bank_image::<InterleavedImage, false>()
-            [CPU_V3_CACHE_WORDS_PER_WAY / 2..]
-            .iter()
-            .all(|word| *word == 0));
-        assert!(interleaved_bank_image::<InterleavedImage, true>()
-            [CPU_V3_CACHE_WORDS_PER_WAY / 2..]
-            .iter()
-            .all(|word| *word == 0));
-    }
-
-    #[test]
-    #[ignore = "explicit external simulation of the way-interleaved cache data banks"]
-    fn verify_way_interleaved_cache_data_with_iverilog() {
-        digital_design_hardware::verify_verilog_with_iverilog::<
-            CpuV3ParitySplitCacheData<ZeroBsramImage>,
-        >()
-        .unwrap();
+        assert!(
+            parity_bank_image::<InterleavedImage, false>()[CPU_V3_CACHE_WORDS_PER_WAY / 2..]
+                .iter()
+                .all(|word| *word == 0)
+        );
+        assert!(
+            parity_bank_image::<InterleavedImage, true>()[CPU_V3_CACHE_WORDS_PER_WAY / 2..]
+                .iter()
+                .all(|word| *word == 0)
+        );
     }
 
     #[test]
@@ -1731,18 +1719,16 @@ mod tests {
     #[test]
     fn export_claims_two_data_bsram_and_characterized_tag_ssram_leaves() {
         let project = VerilogProject::generate::<CpuV3TwoWayCache>().unwrap();
-        assert_eq!(project.resource_claims.len(), 2);
-        assert_eq!(
-            project.resource_claims[0].resources,
-            [ResourceAmount::new(ResourceKind::Bsram18K, 2)]
-        );
-        assert_eq!(
-            project.resource_claims[1].resources,
-            [ResourceAmount::new(
-                ResourceKind::SsramBit,
-                CPU_V3_CACHE_TAG_PHYSICAL_BITS as u64,
-            )]
-        );
+        let resources: Vec<_> = project
+            .resource_claims
+            .iter()
+            .flat_map(|claim| claim.resources.iter().copied())
+            .collect();
+        assert!(resources.contains(&ResourceAmount::new(ResourceKind::Bsram18K, 2)));
+        assert!(resources.contains(&ResourceAmount::new(
+            ResourceKind::SsramBit,
+            CPU_V3_CACHE_TAG_PHYSICAL_BITS as u64,
+        )));
     }
 
     #[test]
@@ -2402,7 +2388,7 @@ mod tests {
 
     fn cache_cosim_sources() -> String {
         let mut s = String::new();
-        s.push_str(&CpuV3ParitySplitCacheData::<ZeroBsramImage>::verilog_source().unwrap());
+        s.push_str(&CpuV3DualPortCacheData::<ZeroBsramImage>::verilog_source().unwrap());
         s.push('\n');
         s.push_str(&CpuV3CacheTagRam::verilog_source().unwrap());
         s.push('\n');

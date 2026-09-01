@@ -7,8 +7,8 @@ skinparam defaultTextAlignment center
 
 package "Fitted CPU V3 system (optional around the reusable core)" {
   component "Instruction fetch queue\n4 fetched/outstanding words\nphysical address + epoch metadata" as FetchQueue
-  component "Instruction cache\n4 KiB, 2 ways x 64 sets x 16 words\n2 parity/way-interleaved BSRAMs\n256-bit private refill buffer" as ICache
-  component "Data cache\n4 KiB, 2 ways x 64 sets x 16 words\n2 parity/way-interleaved BSRAMs\nwrite-back, write-allocate\n256-bit private line buffer" as DCache
+  component "Instruction cache\n4 KiB, 2 ways x 64 sets x 16 words\n2 parity-split true-dual-port BSRAMs\n4 x 64-bit direct refill beats" as ICache
+  component "Data cache\n4 KiB, 2 ways x 64 sets x 16 words\n2 parity-split true-dual-port BSRAMs\nwrite-back + direct 64-bit line I/O" as DCache
   component "Memory arbiter\none line or word owner at a time\nforwards one burst command per line" as Arbiter
   component "Related-clock SDRAM gearbox\n4 x 64-bit at 54 MHz\n8 x 32-bit at 108 MHz" as SDRAM
   component "Devices 0..7\n16 channels each" as Devices
