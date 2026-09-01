@@ -1,8 +1,8 @@
-# CPU V3 two-stage flash boot package for the cpu_v3_boot example.
+# CPU V3 two-stage flash boot package for the cpu_v3_system example.
 # Section files are the exact compiler outputs consumed by the system build.
 # Materialize and independently repack them with:
 #   cargo run -p cpu-v3-tang-nano-20k --bin cpu-v3-boot-assets
-#   cargo run -p cpu-v3-tang-nano-20k --bin cpu-v3-pack -- systems/cpu-v3-tang-nano-20k/examples/cpu_v3_boot/boot.cpu-v3-manifest -o target/cpu-v3-boot/cpu-v3-boot.repacked.bin
+#   cargo run -p cpu-v3-tang-nano-20k --bin cpu-v3-pack -- systems/cpu-v3-tang-nano-20k/examples/cpu_v3_system/boot.cpu-v3-manifest -o target/cpu-v3-boot/cpu-v3-boot.repacked.bin
 format 1
 target tang-nano-20k
 stage1-section stage1

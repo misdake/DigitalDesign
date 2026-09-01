@@ -54,22 +54,24 @@ all four banks and multiple rows, holds the data while issuing refresh commands,
 then reads and compares every word. It reports through the shared `DDHT` UART
 status protocol with test ID `0x03`.
 
-`systems/cpu-v3-tang-nano-20k/examples/cpu_v3_sdram` wires the reusable CPU V3 machine together: a
-`CpuV3Core`, split two-way cache instances, a `CpuV3MemoryArbiter`, a
-dedicated device port with a `BootDmaDevice`, and the SDRAM word port. A compiler-produced program starts
-from an initialized BSRAM ROM below word `0x400`, copies a boot line into
-SDRAM, and executes from the instruction cache; it then writes through the
-data cache with the Controller HS byte mask, misses on a read, refills the
-complete line, and verifies the loaded value. It reports test ID `0x05`. The
-project uses three BSRAM blocks (one pROM boot ROM and two SDPB cache data
-memories), 24 SSRAM RAM16 primitives for the two 12-bit cache tag arrays, one
-MULT18X18, one rPLL, and the fitted SDRAM; its 54-MHz domain has zero
-setup/hold violations and a reported Fmax of 57.282 MHz. The complete boot,
-refill, execution, write-through, and data-refill path passes its explicit
-Icarus Verilog simulation, and a repeated `0x05` UART success capture
-confirms the build on the board. The caches' `invalidate_all` and snoop
-ports are tied off until the system-control device and Stage0 land; the boot
-DMA engine ports are likewise not yet connected in this example.
+`systems/cpu-v3-tang-nano-20k/examples/cpu_v3_system` wires the full CPU V3
+system (the consolidated `cpu_v3_sdram`-style memory path plus the two-stage
+flash boot): a `CpuV3Core`, split two-way cache instances, a
+`CpuV3MemoryArbiter`, a `BootDmaDevice` and `BootDmaEngine`, and the shared
+`DisplaySdramPort`. Stage0 in a BSRAM boot ROM below word `0x400` DMAs Stage1
+from SPI Flash into SDRAM, Stage1 loads the application, and the application
+writes through the data cache with the Controller HS byte mask, misses on a
+read, refills the complete line, and verifies the loaded value. It reports test
+ID `0x07`. The project uses BSRAM blocks (boot ROM, cache data, and the display
+line buffer), SSRAM RAM16 primitives for the cache tag arrays, MULT18X18, one
+rPLL for SDRAM, one for video, and the fitted SDRAM. The complete boot, refill,
+execution, write-through, and data-refill path passes its explicit Icarus
+Verilog simulation, and a repeated `0x07` UART success capture confirms the
+build on the board.
+
+The former `cpu_v3_sdram` example (test ID `0x05`, three BSRAM blocks, a
+reported Fmax of 57.282 MHz) was folded into `cpu_v3_system` during the
+consolidation and is no longer a separate build.
 
 The first Gowin 1.9.11.03 board run at 54 MHz completed with:
 

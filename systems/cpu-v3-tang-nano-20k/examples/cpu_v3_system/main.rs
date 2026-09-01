@@ -1,6 +1,7 @@
-use cpu_v3::{CpuV3Core, CpuV3DirectMappedCache};
+use cpu_v3::{CpuV3Core, CpuV3DirectMappedCache, CpuV3InstructionFetchQueue};
 use cpu_v3_tang_nano_20k::{
-    BootDmaDevice, BootDmaEngine, BootProgressMonitor, CpuV3MemoryArbiter, SystemControlDevice,
+    BootDmaDevice, BootDmaEngine, BootProgressMonitor, CpuV3MemoryArbiter, DisplaySdramPort,
+    FramebufferHdmi, SystemControlDevice,
 };
 use digital_design_circuit::CircuitWires;
 use digital_design_hardware::{Hardware, HardwareIdentity, Module, VerilogDependency};
@@ -8,11 +9,11 @@ use digital_design_hardware_common::ResetController;
 use digital_design_hardware_gowin::{
     run_gowin_project_cli, Bsram1R1Rw1024, BsramImage, ErasedSpiFlashImage, GowinCliError,
     GowinDspMode, GowinModuleProject, ResourceCountExpectation, SpiFlashReader, TangNano20K,
-    TangNano20KBootInputs, TangNano20KBootOutputs, TangNano20KSdramWordPort, BSRAM_1024_DEPTH,
+    TangNano20KBootHdmiInputs, TangNano20KBootHdmiOutputs, BSRAM_1024_DEPTH,
 };
 
 fn main() -> Result<(), GowinCliError> {
-    run_gowin_project_cli(gowin_project(), "target/cpu_v3_boot_gowin")
+    run_gowin_project_cli(gowin_project(), "target/cpu_v3_system_gowin")
 }
 
 include!(concat!(env!("OUT_DIR"), "/boot_images.rs"));
@@ -44,12 +45,12 @@ type SystemControl = SystemControlDevice<469>;
 type BoardReset = ResetController<8>;
 
 #[derive(Hardware)]
-#[hardware(namespace = "examples/cpu_v3_boot")]
-struct CpuV3BootSelfTest;
+#[hardware(namespace = "examples/cpu_v3_system")]
+struct CpuV3System;
 
-impl Module for CpuV3BootSelfTest {
-    type Input = TangNano20KBootInputs;
-    type Output = TangNano20KBootOutputs;
+impl Module for CpuV3System {
+    type Input = TangNano20KBootHdmiInputs;
+    type Output = TangNano20KBootHdmiOutputs;
     type EmuState = ();
 
     const USES_MAIN_CLOCK: bool = true;
@@ -61,7 +62,7 @@ impl Module for CpuV3BootSelfTest {
         _input: &Self::Input,
         _output: &Self::Output,
     ) {
-        panic!("CpuV3BootSelfTest is a Verilog-only hardware integration test")
+        panic!("CpuV3System is a Verilog-only hardware integration test")
     }
 
     fn verilog_source() -> Option<String> {
@@ -74,6 +75,10 @@ impl Module for CpuV3BootSelfTest {
                 .replace(
                     "__CPU_V3_CORE__",
                     &CpuV3Core::verilog_identity().module_name(),
+                )
+                .replace(
+                    "__FETCH_QUEUE__",
+                    &CpuV3InstructionFetchQueue::verilog_identity().module_name(),
                 )
                 .replace(
                     "__CACHE__",
@@ -100,8 +105,12 @@ impl Module for CpuV3BootSelfTest {
                     &FittedFlashReader::verilog_identity().module_name(),
                 )
                 .replace(
-                    "__SDRAM_WORD_PORT__",
-                    &TangNano20KSdramWordPort::verilog_identity().module_name(),
+                    "__DISPLAY_SDRAM_PORT__",
+                    &DisplaySdramPort::verilog_identity().module_name(),
+                )
+                .replace(
+                    "__FRAMEBUFFER_HDMI__",
+                    &FramebufferHdmi::verilog_identity().module_name(),
                 )
                 .replace(
                     "__RESET_CONTROLLER__",
@@ -118,6 +127,7 @@ impl Module for CpuV3BootSelfTest {
         vec![
             VerilogDependency::new::<BootMemory>("u_boot"),
             VerilogDependency::new::<CpuV3Core>("u_core"),
+            VerilogDependency::new::<CpuV3InstructionFetchQueue>("u_instruction_fetch_queue"),
             VerilogDependency::new::<CpuV3DirectMappedCache>("u_instruction_cache"),
             VerilogDependency::new::<CpuV3DirectMappedCache>("u_data_cache"),
             VerilogDependency::new::<CpuV3MemoryArbiter>("u_memory_arbiter"),
@@ -125,7 +135,8 @@ impl Module for CpuV3BootSelfTest {
             VerilogDependency::new::<BootDmaDevice>("u_boot_dma_device"),
             VerilogDependency::new::<BootDmaEngine>("u_boot_dma_engine"),
             VerilogDependency::new::<FittedFlashReader>("u_flash"),
-            VerilogDependency::new::<TangNano20KSdramWordPort>("u_sdram_word_port"),
+            VerilogDependency::new::<DisplaySdramPort>("u_sdram_word_port"),
+            VerilogDependency::new::<FramebufferHdmi>("u_display"),
             VerilogDependency::new::<BoardReset>("u_reset"),
             VerilogDependency::new::<BootProgressMonitor>("u_boot_progress"),
         ]
@@ -144,8 +155,8 @@ impl Module for CpuV3BootSelfTest {
     }
 }
 
-fn gowin_project() -> GowinModuleProject<TangNano20K, CpuV3BootSelfTest> {
-    TangNano20K::boot_memory_project::<CpuV3BootSelfTest>("cpu_v3_boot_self_test")
+fn gowin_project() -> GowinModuleProject<TangNano20K, CpuV3System> {
+    TangNano20K::boot_hdmi_memory_project::<CpuV3System>("cpu_v3_system")
         .expect_bsram_blocks(ResourceCountExpectation::Claimed)
         .expect_dsp_mode(GowinDspMode::Mult18x18, ResourceCountExpectation::Claimed)
 }
@@ -412,19 +423,20 @@ mod tests {
     }
 
     #[test]
-    fn project_contains_boot_caches_flash_reader_and_sdram() {
-        let verilog = VerilogProject::generate::<CpuV3BootSelfTest>().unwrap();
+    fn project_contains_full_system_memory_flash_and_display() {
+        let verilog = VerilogProject::generate::<CpuV3System>().unwrap();
         assert!(!verilog.resource_claims.is_empty());
         let project = gowin_project().generate().unwrap();
         assert_eq!(project.resources.claimed[&ResourceKind::SdrSdramDevice], 1);
         assert_eq!(project.resources.claimed[&ResourceKind::SpiFlashDevice], 1);
-        assert_eq!(project.resources.claimed[&ResourceKind::Pll], 1);
-        assert_eq!(project.resources.claimed[&ResourceKind::Bsram18K], 6);
+        assert_eq!(project.resources.claimed[&ResourceKind::Pll], 2);
+        assert_eq!(project.resources.claimed[&ResourceKind::HdmiOutput], 1);
+        assert_eq!(project.resources.claimed[&ResourceKind::Bsram18K], 7);
     }
 
     #[test]
     #[ignore = "explicit external simulator validation"]
     fn two_stage_flash_boot_executes_in_verilog() {
-        digital_design_hardware::verify_verilog_with_iverilog::<CpuV3BootSelfTest>().unwrap();
+        digital_design_hardware::verify_verilog_with_iverilog::<CpuV3System>().unwrap();
     }
 }

@@ -272,11 +272,14 @@ section, while button `01` and the default `00` select the primary one.
 
 The first processor uses split 4-KiB instruction and data caches. Each is
 two-way set-associative with 64 sets and 32 bytes (16 CPU words) per line. Each
-cache's 2,048 data words are parity-split across two characterized 1024x16 BSRAM
-leaves: one stores every even word and one stores every odd word, while the way
-selects the upper address bit inside both banks. Each bank remains one-read,
-one-write; both tags are compared first, then the selected way is read from both
-parity banks. The two 64-entry physical tag arrays map through a characterized
+cache's 2,048 data words are interleaved across two characterized 1024x16 BSRAM
+leaves using `bank = way XOR word_parity`, while the way selects the upper
+address bit inside each bank. Each bank remains one-read, one-write. A lookup
+reads way zero from one bank and way one from the other while both tags are
+compared, then selects the matching registered bank result. Resident reads are
+pipelined: while one lookup resolves, the next may start, for one ordered hit
+request and response per cycle when there is no conflict or backpressure. The two 64-entry
+physical tag arrays map through a characterized
 SSRAM leaf to 24 RAM16 primitives (1,536 physical SSRAM bits). Resettable valid
 and next-victim bits remain ordinary registers. Invalid ways are filled before
 the deterministic per-set victim is replaced. One arbiter shares the SDRAM transaction port;
@@ -290,6 +293,15 @@ simpler. A read miss issues one Controller HS burst and captures eight ordered
 into the even and odd BSRAM banks in the same cycle, so a complete line installs
 in eight cycles. A 16-bit store remains one 32-bit masked SDRAM write.
 Write-back remains a later policy change behind the same CPU interface.
+
+The fitted instruction path adds a four-entry register-based fetch queue between
+the core and the boot-memory/I-cache responders. Fetched and outstanding words
+share the four-entry reservation limit. Each downstream request records its
+physical address and an epoch bit; a redirect or global I-cache invalidate clears
+the visible queue and causes late old-epoch responses to be drained without
+becoming architectural. Sequential issue wraps the 16-bit PC without carrying
+into `CSEG`. The blocking core still retires at most one instruction per cycle
+and performs no cross-instruction execute pipelining.
 
 The first arbiter permits one accepted Controller HS operation. In the host
 scheduler model a due refresh has priority before accepting new client work,

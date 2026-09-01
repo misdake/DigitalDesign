@@ -13,11 +13,15 @@ and retirement exactly once. A fault updates neither retirement nor a partially
 computed FPU destination; the documented four-beat store exception still keeps
 memory writes acknowledged before a later beat faults.
 
-With a one-cycle ready/valid responder, every instruction first visits
-`FetchRequest`, `FetchResponse`, and `Execute`. The tables below count core
-execute cycles from the `Execute` cycle through the retirement cycle. Add two
-cycles for an ideal non-cached instruction fetch. Add arbitrary ready/valid wait
-cycles for instruction or data memory.
+The fitted system places a four-entry instruction fetch queue in front of the
+core. It reserves fetched and outstanding words, issues consecutive physical
+addresses, and tags each downstream request with an epoch. A branch, `JALR`,
+code-segment change, fault, reset, or I-cache invalidate discards queued and late
+old-epoch words. When the requested word is already queued, the core accepts it
+directly in `FetchRequest` and executes it on the following cycle. The legacy
+`FetchResponse` phase remains available for a slower responder. The tables below
+count core execute cycles from the `Execute` cycle through retirement; add fetch
+wait cycles only when the queue does not already contain the requested word.
 
 ## Core storage and execution resources
 
@@ -37,14 +41,19 @@ cycles for instruction or data memory.
 
 The optional fitted system places separate 4 KiB instruction and data caches
 around the core. Each cache is two-way set-associative with 64 sets and 16 words per line.
-Both ways share two one-read, one-write BSRAMs split by word parity. Parallel tag
-comparison selects one way before the even and odd banks perform their data read.
+Both ways share two one-read, one-write BSRAMs interleaved by
+`bank = way XOR word_parity`. A lookup gives each bank a different way address,
+so the synchronous data read returns both candidate ways while the parallel tag
+comparison runs; the hit way selects the corresponding registered bank result.
+While that resident read resolves, the next lookup may start, allowing one
+ordered hit request and response per cycle when there is no miss, invalidate,
+write, or response backpressure.
 Stores are write-through and do not allocate on a miss. A read miss issues one
 aligned line request; the system arbiter forwards it as one SDRAM burst
 command, holds the port while the adapter streams eight ordered 32-bit beats
 (the low half of beat `n` is word `2*n`) into the cache's private 256-bit
 refill buffer, and releases the port once the final beat is accepted. The
-cache then drains eight beats into the selected way of its even/odd data BSRAM banks and commits tag
+cache then drains eight beats into the selected way of its two interleaved data BSRAM banks and commits tag
 and valid state only after a complete error-free line, so an error or
 invalidate can never expose a partially installed line. The boot DMA keeps
 single-word transactions. Only full-cache invalidation exists; there is no
@@ -89,9 +98,11 @@ above and provide the baseline for the required post-change timing audit:
 
 | System | Constraint | Actual Fmax | Worst setup slack | Worst-path class |
 |---|---:|---:|---:|---|
-| `cpu_v3_boot` | 54 MHz | 54.815 MHz | +0.275 ns | FPU state/address/SSRAM-read/next-state |
-| `cpu_v3_sdram` | 54 MHz | 56.166 MHz | +0.714 ns | FPU state/address/SSRAM-read/next-state |
-| `cpu_v3_display` | 54 MHz | 55.248 MHz | +0.418 ns | FPU state/address/SSRAM-read/next-state |
+| `cpu_v3_system` (full system) | 54 MHz | 54.815 MHz | +0.275 ns | FPU state/address/SSRAM-read/next-state |
+
+The former `cpu_v3_sdram` and `cpu_v3_display` harnesses were folded into
+`cpu_v3_system` when the CPU V3 systems were consolidated; this row is the
+surviving full-system measurement.
 
 The first critical path is not a DSP path. It runs from an FSM state bit through
 prefix/state decode, the FPR read-address mux, a RAM16 asynchronous read, FPU
@@ -116,15 +127,13 @@ a different physical clock.
 
 | System | Normal 54 MHz Fmax | 60 MHz constrained Fmax | 60 MHz setup violations |
 |---|---:|---:|---:|
-| `cpu_v3_boot` | 57.217 MHz | 62.878 MHz | 0 |
-| `cpu_v3_sdram` | 57.303 MHz | 60.241 MHz | 0 |
-| `cpu_v3_display` | 57.661 MHz | 61.228 MHz | 0 |
+| `cpu_v3_system` (full system) | 57.217 MHz | 62.878 MHz | 0 |
 
-All three constrained builds retain two `MULT18X18` cells and the SSRAM FPR
-implementation. The FPR source carries an explicit `distributed_ram` synthesis
-attribute so registered issue addresses cannot silently remap it into two
-additional BSRAMs. The boot, SDRAM, and display reports each contain 56 RAM16
-cells for the composed system and pass the existing resource audit.
+The consolidated full-system build retains two `MULT18X18` cells and the SSRAM
+FPR implementation. The FPR source carries an explicit `distributed_ram`
+synthesis attribute so registered issue addresses cannot silently remap it into
+two additional BSRAMs. The boot report contains 56 RAM16 cells for the composed
+system and passes the existing resource audit.
 
 At 60 MHz the old state/address/SSRAM/domain path is absent. The remaining
 worst paths are the registered unary normalization/scale path or ordinary

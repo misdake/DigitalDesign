@@ -2,7 +2,7 @@
 
 Status: active handoff plan for future conversations
 Repository: `D:\github\DigitalDesign-code`
-Updated: 2026-08-29
+Updated: 2026-08-30
 
 ## Milestone workflow and document lifecycle
 
@@ -26,15 +26,9 @@ Updated: 2026-08-29
 | 2 | Complete, 2026-08-29 | Replaced serialized reads with one real `8 x 32-bit` SDRAM burst. | 4 BSRAM; 55.327 / 56.090 MHz |
 | 3 | Complete, 2026-08-29 | Split each cache into even/odd BSRAM banks; initialization contents are split by word parity and refill drain is eight cycles. | 6 BSRAM; 54.492 / 54.261 MHz |
 | 4 | Complete, 2026-08-29 | Converted both caches to two ways with invalid-way-first deterministic victim replacement. The tag comparison now precedes the data-bank read, so a hit costs one more registered cycle until Stage 5 pipelines it. | 6 BSRAM; 61.425 / 56.530 MHz |
-| 5-11 | Not started | See the ordered tasks and detailed stage sections below. | - |
-
-Every completed stage passed its targeted RTL/system tests, workspace quality gates, Gowin PnR,
-and strict artifact resource audit. Board programming was not required and was not performed.
-
-Stage 4 validation record: workspace `cargo test` and `cargo clippy`, all four external Icarus cache
-and RAM testbenches with explicit cycle limits, `validate-hardware.ps1 -Mode quick`, then `-Mode pnr`
-with a strict artifact audit on all five Gowin projects. BSRAM use stayed at 6 (4 SDPB + 2 pROM);
-only the tag valid/victim registers grew. No check was skipped.
+| System consolidation | Complete, 2026-08-30 | Folded the separate CPU V3 boot, SDRAM, and display systems into one fitted `cpu_v3_system`. This changed the full-system baseline to 7 BSRAM before the Stage 5 fetch pipeline work. | 7 BSRAM; 57.345 MHz |
+| 5 | Complete, 2026-08-30 | Pipelined resident cache reads for one accepted lookup per cycle and added a four-entry, epoch-tagged instruction fetch queue. Sequential ALU throughput now approaches two cycles per instruction. | 7 BSRAM; 61.842 MHz |
+| 6-11 | Not started | See the ordered tasks and detailed stage sections below. | - |
 
 ## Ordered major tasks
 
@@ -232,7 +226,7 @@ Do not claim that two 50 MHz 16-bit banks directly absorb the full output of a 1
 
 This stage removes fixed hit latency. It is distinct from line prefetch.
 
-Current hit timing for a simple ALU instruction is:
+Stage 4 hit timing for a simple ALU instruction was:
 
 ```text
 cycle 1: FETCH_REQUEST
@@ -241,7 +235,9 @@ cycle 3: registered cache response and instruction latch
 cycle 4: EXECUTE and retire
 ```
 
-Current simple-instruction throughput is therefore one instruction per four cycles when every access hits.
+That implementation retired one simple instruction per four cycles when every access hit. The
+completed Stage 5 frontend removes the fixed per-word request/response bubble while retaining the
+blocking execute machine.
 
 Target organization:
 

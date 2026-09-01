@@ -21,7 +21,7 @@ wire [21:0] memory_address;
 wire [15:0] memory_write_data;
 wire memory_response_ready;
 
-CpuV3DirectMappedCache dut(.*);
+CpuV3TwoWayCache dut(.*);
 always #5 clk = ~clk;
 
 // Line-serving memory model: one read request returns eight ordered 32-bit
@@ -31,6 +31,7 @@ integer write_requests = 0;
 integer beats_served = 0;
 integer drain_cycles = 0;
 integer cycles = 0;
+integer line_requests_before_invalidate = 0;
 reg [3:0] beats_remaining = 0;
 reg [21:0] line_base_r = 0;
 reg write_response_pending = 0;
@@ -104,6 +105,76 @@ task read_word;
     end
 endtask
 
+task read_hit_word;
+    input [31:0] address;
+    input [15:0] expected;
+    integer response_cycles;
+    begin
+        while (!cpu_request_ready) @(posedge clk);
+        cpu_address <= address;
+        cpu_write <= 0;
+        cpu_request_valid <= 1;
+        @(posedge clk);
+        #1;
+        cpu_request_valid <= 0;
+        response_cycles = 0;
+        while (!cpu_response_valid) begin
+            @(posedge clk);
+            #1;
+            response_cycles = response_cycles + 1;
+        end
+        if (response_cycles != 1)
+            $fatal(1, "cache hit response took %0d cycles instead of one", response_cycles);
+        if (cpu_error || cpu_read_data != expected)
+            $fatal(1, "cache hit failed at %h: %h", address, cpu_read_data);
+        cpu_response_ready <= 1;
+        @(posedge clk);
+        cpu_response_ready <= 0;
+    end
+endtask
+
+task read_hit_burst;
+    input [31:0] base_address;
+    integer issued;
+    integer received;
+    begin
+        issued = 0;
+        received = 0;
+        cpu_write <= 0;
+        cpu_response_ready <= 1;
+        fork
+            begin
+                while (issued < 4) begin
+                    @(negedge clk);
+                    if (!cpu_request_ready)
+                        $fatal(1, "cache did not accept consecutive hit lookup %0d", issued);
+                    cpu_address <= base_address + issued;
+                    cpu_request_valid <= 1;
+                    issued = issued + 1;
+                end
+                @(negedge clk);
+                cpu_request_valid <= 0;
+            end
+            begin
+                while (received < 4) begin
+                    @(posedge clk);
+                    #1;
+                    if (cpu_response_valid) begin
+                        if (cpu_error || cpu_read_data !=
+                            word_pattern((base_address + received) & 12'hfff))
+                            $fatal(1, "pipelined hit response %0d was wrong: %h",
+                                   received, cpu_read_data);
+                        received = received + 1;
+                    end
+                end
+            end
+        join
+        @(posedge clk);
+        #1;
+        cpu_response_ready <= 0;
+    end
+endtask
+
 task read_word_expect_error;
     input [31:0] address;
     begin
@@ -151,8 +222,9 @@ initial begin
         $fatal(1, "miss did not refill exactly one line as eight beats");
     if (drain_cycles != 8)
         $fatal(1, "parity-split cache did not drain the line in eight cycles");
-    read_word(32'h0000_012e, 16'h812e);
-    read_word(32'h0000_012f, 16'h812f);
+    read_hit_burst(32'h0000_0128);
+    read_hit_word(32'h0000_012e, 16'h812e);
+    read_hit_word(32'h0000_012f, 16'h812f);
     if (line_requests != 1)
         $fatal(1, "line hit reached memory");
 
@@ -193,6 +265,23 @@ initial begin
     read_word(32'h0000_0123, 16'h8123);
     if (line_requests != 6 || beats_served != 43)
         $fatal(1, "deterministic victim was not replaced");
+
+    // An invalidate racing an outstanding refill may return its old-epoch
+    // response, but it must not install that line as a subsequent hit.
+    line_requests_before_invalidate = line_requests;
+    fork
+        read_word(32'h0000_0d23, 16'h8d23);
+        begin
+            wait (dut.state == 4'd6);
+            invalidate_all <= 1;
+            @(posedge clk);
+            #1;
+            invalidate_all <= 0;
+        end
+    join
+    read_word(32'h0000_0d23, 16'h8d23);
+    if (line_requests != line_requests_before_invalidate + 2)
+        $fatal(1, "invalidate during refill exposed a stale installed line");
 
     $display("DIGITAL_DESIGN_PASS");
     $finish;

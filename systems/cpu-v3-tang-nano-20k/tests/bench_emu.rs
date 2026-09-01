@@ -1,6 +1,6 @@
 //! Cycle-accurate full-system emulator for CpuV3 performance benchmarks.
 //!
-//! Wires the core, I-cache, D-cache and the memory
+//! Wires the core, instruction fetch queue, I-cache, D-cache and the memory
 //! arbiter through their Rust emulators, and drives them against a cycle-faithful
 //! model of the Tang Nano 20K SDRAM word port (ACTIVE / READ 8-beat / WRITE /
 //! RECOVERY / periodic refresh). It reports the total cycle count and the
@@ -10,7 +10,8 @@
 use cpu_v3::{
     alu, fpu, fpu_unary, halt, jump_relative, load_immediate16, nop, AluOp, CpuV3Core,
     CpuV3CoreInput, CpuV3CoreOutput, CpuV3DirectMappedCache, CpuV3DirectMappedCacheInput,
-    CpuV3DirectMappedCacheOutput, FpuOp, FpuUnaryOp,
+    CpuV3DirectMappedCacheOutput, CpuV3InstructionFetchQueue, CpuV3InstructionFetchQueueInput,
+    CpuV3InstructionFetchQueueOutput, FpuOp, FpuUnaryOp,
 };
 use cpu_v3_tang_nano_20k::{CpuV3MemoryArbiter, CpuV3MemoryArbiterInput, CpuV3MemoryArbiterOutput};
 use digital_design_circuit::{build_circuit, Circuit, Wire, Wires};
@@ -489,6 +490,9 @@ pub fn run_benchmark_profiled_with_prefetch(
         let mut core_input = CpuV3CoreInput::allocate();
         let core_output = CpuV3CoreOutput::allocate();
 
+        let mut fetch_input = CpuV3InstructionFetchQueueInput::allocate();
+        let fetch_output = CpuV3InstructionFetchQueueOutput::allocate();
+
         let mut icache_input = CpuV3DirectMappedCacheInput::allocate();
         let icache_output = CpuV3DirectMappedCacheOutput::allocate();
 
@@ -498,14 +502,23 @@ pub fn run_benchmark_profiled_with_prefetch(
         let mut arbiter_input = CpuV3MemoryArbiterInput::allocate();
         let arbiter_output = CpuV3MemoryArbiterOutput::allocate();
 
-        // Core <-> I-cache. Stage 4 predates the pipelined fetch queue.
-        icache_input.cpu_request_valid = core_output.instruction_request_valid;
-        icache_input.cpu_address = core_output.instruction_address;
-        icache_input.cpu_response_ready = core_output.instruction_response_ready;
-        core_input.instruction_request_ready = icache_output.cpu_request_ready;
-        core_input.instruction_response_valid = icache_output.cpu_response_valid;
-        core_input.instruction_data = icache_output.cpu_read_data;
-        core_input.instruction_error = icache_output.cpu_error;
+        // core <-> fetch queue
+        fetch_input.core_request_valid = core_output.instruction_request_valid;
+        fetch_input.core_address = core_output.instruction_address;
+        fetch_input.core_response_ready = core_output.instruction_response_ready;
+        core_input.instruction_request_ready = fetch_output.core_request_ready;
+        core_input.instruction_response_valid = fetch_output.core_response_valid;
+        core_input.instruction_data = fetch_output.core_read_data;
+        core_input.instruction_error = fetch_output.core_error;
+
+        // fetch queue -> I-cache
+        icache_input.cpu_request_valid = fetch_output.memory_request_valid;
+        icache_input.cpu_address = fetch_output.memory_address;
+        icache_input.cpu_response_ready = fetch_output.memory_response_ready;
+        fetch_input.memory_request_ready = icache_output.cpu_request_ready;
+        fetch_input.memory_response_valid = icache_output.cpu_response_valid;
+        fetch_input.memory_read_data = icache_output.cpu_read_data;
+        fetch_input.memory_error = icache_output.cpu_error;
 
         // core <-> D-cache
         dcache_input.cpu_request_valid = core_output.data_request_valid;
@@ -541,6 +554,7 @@ pub fn run_benchmark_profiled_with_prefetch(
         // Create the emulator externals after every wire is connected. The
         // order matches the combinational dependency (core, caches, arbiter).
         CpuV3Core::emu_connect(&core_input, &core_output);
+        CpuV3InstructionFetchQueue::emu_connect(&fetch_input, &fetch_output);
         CpuV3DirectMappedCache::emu_connect(&icache_input, &icache_output);
         CpuV3DirectMappedCache::emu_connect(&dcache_input, &dcache_output);
         CpuV3MemoryArbiter::emu_connect(&arbiter_input, &arbiter_output);
@@ -548,24 +562,28 @@ pub fn run_benchmark_profiled_with_prefetch(
         (
             core_input,
             core_output,
+            fetch_input,
             icache_input,
             dcache_input,
             arbiter_input,
             arbiter_output,
             icache_output,
             dcache_output,
+            fetch_output,
         )
     });
 
     let (
         core_input,
         core_output,
+        fetch_input,
         icache_input,
         dcache_input,
         arbiter_input,
         arbiter_output,
         icache_output,
         dcache_output,
+        fetch_output,
     ) = handles;
 
     let mut sdram = SdramModel::new(memory);
@@ -599,6 +617,7 @@ pub fn run_benchmark_profiled_with_prefetch(
 
     // Constant external inputs (device reads zero, DMA idle, no flush/invalidate).
     set_bits(core_input.device_read_data, 0, &mut circuit);
+    set_bit(fetch_input.flush, false, &mut circuit);
     set_bit(icache_input.invalidate_all, false, &mut circuit);
     set_bit(dcache_input.invalidate_all, false, &mut circuit);
     set_bit(arbiter_input.dma_request_valid, false, &mut circuit);
@@ -611,6 +630,7 @@ pub fn run_benchmark_profiled_with_prefetch(
     for cycle in 0..maximum_cycles {
         let reset = cycle < 2;
         set_bit(core_input.reset, reset, &mut circuit);
+        set_bit(fetch_input.reset, reset, &mut circuit);
         set_bit(icache_input.reset, reset, &mut circuit);
         set_bit(dcache_input.reset, reset, &mut circuit);
         set_bit(arbiter_input.reset, reset, &mut circuit);
@@ -649,6 +669,7 @@ pub fn run_benchmark_profiled_with_prefetch(
         let arb = arbiter_output.sample(&circuit);
         let icache = icache_output.sample(&circuit);
         let dcache = dcache_output.sample(&circuit);
+        let fetch = fetch_output.sample(&circuit);
 
         sdram_state_cycles[sdram_state_index(sdram.state)] += 1;
 
@@ -668,14 +689,10 @@ pub fn run_benchmark_profiled_with_prefetch(
             }
 
             if core.instruction_request_valid {
-                // Stage 4 has an explicit request phase before the cache
-                // response phase; no instruction is available on acceptance.
-                fetch_wait_cycles += 1;
-            } else if core.instruction_response_ready {
-                if icache.cpu_response_valid {
+                if fetch.core_request_ready {
                     instruction_fetches = instruction_fetches.wrapping_add(1);
                     let address = physical_pc(core.code_segment as u16, core.pc as u16);
-                    last_fetched = Some((address, icache.cpu_read_data as u16));
+                    last_fetched = Some((address, fetch.core_read_data as u16));
                     if let Some((origin, target, instruction, retired_cycle)) =
                         pending_redirect.take()
                     {

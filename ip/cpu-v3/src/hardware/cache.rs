@@ -2,7 +2,7 @@
 //!
 //! A read miss issues one aligned line request and captures the eight ordered
 //! 32-bit response beats in a private 256-bit refill buffer. The cache then
-//! drains eight 32-bit beats from the buffer into parity-split data BSRAMs
+//! drains eight 32-bit beats from the buffer into parity/way-interleaved data BSRAMs
 //! and commits tag and valid state only after a complete error-free line, so
 //! an error or invalidate can never expose a partially installed line. Writes
 //! remain single write-through word transactions.
@@ -24,11 +24,15 @@ pub const CPU_V3_CACHE_LINE_WORDS: usize = 16;
 pub const CPU_V3_CACHE_LINE_BEATS: usize = CPU_V3_CACHE_LINE_WORDS / 2;
 pub const CPU_V3_CACHE_SETS: usize = CPU_V3_CACHE_WORDS_PER_WAY / CPU_V3_CACHE_LINE_WORDS;
 
-const fn parity_image<I: CpuV3CacheImage, const ODD: bool>() -> [u64; CPU_V3_CACHE_WORDS_PER_WAY] {
+/// Bank `b` contains words where `way XOR word_parity == b`. The initialized
+/// image occupies way zero, so its even words land in bank zero and its odd
+/// words land in bank one; the upper half reserved for way one starts clear.
+const fn interleaved_bank_image<I: CpuV3CacheImage, const BANK: bool>(
+) -> [u64; CPU_V3_CACHE_WORDS_PER_WAY] {
     let mut words = [0; CPU_V3_CACHE_WORDS_PER_WAY];
     let mut address = 0;
     while address < CPU_V3_CACHE_WORDS_PER_WAY / 2 {
-        words[address] = I::WORDS[2 * address + ODD as usize];
+        words[address] = I::WORDS[2 * address + BANK as usize];
         address += 1;
     }
     words
@@ -36,7 +40,7 @@ const fn parity_image<I: CpuV3CacheImage, const ODD: bool>() -> [u64; CPU_V3_CAC
 
 fn cache_data_image_hash<I: CpuV3CacheImage>() -> u64 {
     let mut hash = 0xcbf29ce484222325u64;
-    for byte in b"cpu-v3-parity-split-cache-data-v1"
+    for byte in b"cpu-v3-parity-way-interleaved-cache-data-v2"
         .iter()
         .copied()
         .chain([0])
@@ -50,18 +54,19 @@ fn cache_data_image_hash<I: CpuV3CacheImage>() -> u64 {
 
 #[derive(Clone, ModuleIo)]
 struct CpuV3ParitySplitCacheDataInput {
-    read_address: Wires<10>,
-    even_write_enable: Wire,
-    odd_write_enable: Wire,
+    bank_0_read_address: Wires<10>,
+    bank_1_read_address: Wires<10>,
+    bank_0_write_enable: Wire,
+    bank_1_write_enable: Wire,
     write_address: Wires<10>,
-    even_write_data: Wires<16>,
-    odd_write_data: Wires<16>,
+    bank_0_write_data: Wires<16>,
+    bank_1_write_data: Wires<16>,
 }
 
 #[derive(Clone, ModuleIo)]
 struct CpuV3ParitySplitCacheDataOutput {
-    even_read_data: Wires<16>,
-    odd_read_data: Wires<16>,
+    bank_0_read_data: Wires<16>,
+    bank_1_read_data: Wires<16>,
 }
 
 struct CpuV3ParitySplitCacheData<I>(PhantomData<I>);
@@ -70,7 +75,7 @@ impl<I: CpuV3CacheImage> HardwareIdentity for CpuV3ParitySplitCacheData<I> {
     const TARGET_RESOURCE_LEAF: bool = true;
 
     fn verilog_identity() -> VerilogIdentity {
-        VerilogIdentity::new("CpuV3ParitySplitCacheData")
+        VerilogIdentity::new("CpuV3WayInterleavedCacheData")
             .namespace(["components", "cpu", "cpu_v3"])
             .symbol("IMAGE", format!("h{:016x}", cache_data_image_hash::<I>()))
     }
@@ -94,30 +99,30 @@ impl<I: CpuV3CacheImage> Module for CpuV3ParitySplitCacheData<I> {
         _input: &Self::Input,
         _output: &Self::Output,
     ) {
-        panic!("parity-split cache data BSRAM is Verilog-only")
+        panic!("way-interleaved cache data BSRAM is Verilog-only")
     }
 
     fn verilog_source() -> Option<String> {
         let module_name = Self::verilog_identity().module_name();
-        let even = parity_image::<I, false>();
-        let odd = parity_image::<I, true>();
+        let bank_0 = interleaved_bank_image::<I, false>();
+        let bank_1 = interleaved_bank_image::<I, true>();
         let mut overrides = String::new();
         for address in 0..CPU_V3_CACHE_WORDS_PER_WAY {
-            assert!(even[address] <= u64::from(u16::MAX));
-            assert!(odd[address] <= u64::from(u16::MAX));
-            if even[address] != 0 {
+            assert!(bank_0[address] <= u64::from(u16::MAX));
+            assert!(bank_1[address] <= u64::from(u16::MAX));
+            if bank_0[address] != 0 {
                 writeln!(
                     overrides,
-                    "    even_memory[10'd{address}] = 16'h{:04x};",
-                    even[address]
+                    "    bank_0_memory[10'd{address}] = 16'h{:04x};",
+                    bank_0[address]
                 )
                 .unwrap();
             }
-            if odd[address] != 0 {
+            if bank_1[address] != 0 {
                 writeln!(
                     overrides,
-                    "    odd_memory[10'd{address}] = 16'h{:04x};",
-                    odd[address]
+                    "    bank_1_memory[10'd{address}] = 16'h{:04x};",
+                    bank_1[address]
                 )
                 .unwrap();
             }
@@ -125,37 +130,38 @@ impl<I: CpuV3CacheImage> Module for CpuV3ParitySplitCacheData<I> {
         Some(format!(
             r#"module {module_name}(
     input wire clk,
-    input wire [9:0] read_address,
-    input wire even_write_enable,
-    input wire odd_write_enable,
+    input wire [9:0] bank_0_read_address,
+    input wire [9:0] bank_1_read_address,
+    input wire bank_0_write_enable,
+    input wire bank_1_write_enable,
     input wire [9:0] write_address,
-    input wire [15:0] even_write_data,
-    input wire [15:0] odd_write_data,
-    output reg [15:0] even_read_data,
-    output reg [15:0] odd_read_data
+    input wire [15:0] bank_0_write_data,
+    input wire [15:0] bank_1_write_data,
+    output reg [15:0] bank_0_read_data,
+    output reg [15:0] bank_1_read_data
 );
 
-reg [15:0] even_memory [0:1023];
-reg [15:0] odd_memory [0:1023];
+reg [15:0] bank_0_memory [0:1023];
+reg [15:0] bank_1_memory [0:1023];
 integer init_address;
 
 initial begin
     for (init_address = 0; init_address < 1024; init_address = init_address + 1) begin
-        even_memory[init_address] = 16'h0000;
-        odd_memory[init_address] = 16'h0000;
+        bank_0_memory[init_address] = 16'h0000;
+        bank_1_memory[init_address] = 16'h0000;
     end
 {overrides}end
 
 always @(posedge clk) begin
-    even_read_data <= even_memory[read_address];
-    if (even_write_enable)
-        even_memory[write_address] <= even_write_data;
+    bank_0_read_data <= bank_0_memory[bank_0_read_address];
+    if (bank_0_write_enable)
+        bank_0_memory[write_address] <= bank_0_write_data;
 end
 
 always @(posedge clk) begin
-    odd_read_data <= odd_memory[read_address];
-    if (odd_write_enable)
-        odd_memory[write_address] <= odd_write_data;
+    bank_1_read_data <= bank_1_memory[bank_1_read_address];
+    if (bank_1_write_enable)
+        bank_1_memory[write_address] <= bank_1_write_data;
 end
 
 endmodule
@@ -164,10 +170,12 @@ endmodule
     }
 
     fn verilog_testbench() -> Option<String> {
-        Some(include_str!("cpu_v3_parity_split_cache_data_tb.v").replace(
-            "CpuV3ParitySplitCacheData dut",
-            &format!("{} dut", Self::verilog_identity().module_name()),
-        ))
+        Some(
+            include_str!("cpu_v3_way_interleaved_cache_data_tb.v").replace(
+                "CpuV3WayInterleavedCacheData dut",
+                &format!("{} dut", Self::verilog_identity().module_name()),
+            ),
+        )
     }
 }
 
@@ -301,7 +309,7 @@ impl<I: CpuV3CacheImage> HardwareIdentity for CpuV3DirectMappedCacheWithImage<I>
     const TARGET_RESOURCE_LEAF: bool = false;
 
     fn verilog_identity() -> VerilogIdentity {
-        VerilogIdentity::new("CpuV3DirectMappedCache")
+        VerilogIdentity::new("CpuV3TwoWayCache")
             .namespace(["components", "cpu", "cpu_v3"])
             .symbol(
                 "IMAGE",
@@ -314,18 +322,15 @@ impl<I: CpuV3CacheImage> HardwareIdentity for CpuV3DirectMappedCacheWithImage<I>
     }
 }
 
-#[derive(Clone, Copy, Default, Eq, PartialEq)]
-enum Phase {
+#[derive(Clone, Copy, Default, Eq, PartialEq, Debug)]
+enum State {
     #[default]
     Idle,
-    Check,
-    HitRead,
     WordRequest,
     WordResponse,
     LineRequest,
     LineReceive,
     LineDrain,
-    CpuResponse,
 }
 
 #[derive(Clone, Copy, Default)]
@@ -335,19 +340,23 @@ struct Pending {
     write_data: u16,
 }
 
+#[derive(Clone)]
 pub struct CpuV3DirectMappedCacheState {
     data: Box<[u16; CPU_V3_CACHE_WORDS]>,
     tags: [[u16; CPU_V3_CACHE_SETS]; CPU_V3_CACHE_WAYS],
     valid: [[bool; CPU_V3_CACHE_SETS]; CPU_V3_CACHE_WAYS],
     victim: [usize; CPU_V3_CACHE_SETS],
     pending_way: usize,
-    phase: Phase,
+    state: State,
+    lookup_valid: bool,
     pending: Pending,
     refill_buffer: [u32; CPU_V3_CACHE_LINE_BEATS],
     refill_beat: u8,
     drain_beat: u8,
     response_data: u16,
     response_error: bool,
+    response_valid: bool,
+    refill_discard: bool,
 }
 
 impl Default for CpuV3DirectMappedCacheState {
@@ -358,13 +367,16 @@ impl Default for CpuV3DirectMappedCacheState {
             valid: [[false; CPU_V3_CACHE_SETS]; CPU_V3_CACHE_WAYS],
             victim: [0; CPU_V3_CACHE_SETS],
             pending_way: 0,
-            phase: Phase::Idle,
+            state: State::Idle,
+            lookup_valid: false,
             pending: Pending::default(),
             refill_buffer: [0; CPU_V3_CACHE_LINE_BEATS],
             refill_beat: 0,
             drain_beat: 0,
             response_data: 0,
             response_error: false,
+            response_valid: false,
+            refill_discard: false,
         }
     }
 }
@@ -399,19 +411,31 @@ impl<I: CpuV3CacheImage> Module for CpuV3DirectMappedCacheWithImage<I> {
     fn execute_emu(
         state: &mut Self::EmuState,
         circuit: &mut CircuitWires,
-        _input: &Self::Input,
+        input: &Self::Input,
         output: &Self::Output,
     ) {
+        let input = input.sample(circuit);
+        let (set, tag, _) = decode(state.pending.address);
+        let pending_address_valid = state.pending.address >> 22 == 0;
+        let way_0_hit = state.valid[0][set] && state.tags[0][set] == tag;
+        let way_1_hit = state.valid[1][set] && state.tags[1][set] == tag;
+        let pending_hit = way_0_hit || way_1_hit;
+        let lookup_read_hit =
+            state.lookup_valid && pending_address_valid && !state.pending.write && pending_hit;
+        let response_space = !state.response_valid || input.cpu_response_ready;
+        let cpu_request_ready = !input.invalidate_all
+            && state.state == State::Idle
+            && (!state.lookup_valid || lookup_read_hit && response_space);
         output.drive(
             circuit,
             &CpuV3DirectMappedCacheOutputValue {
-                cpu_request_ready: state.phase == Phase::Idle,
-                cpu_response_valid: state.phase == Phase::CpuResponse,
+                cpu_request_ready,
+                cpu_response_valid: state.response_valid,
                 cpu_read_data: u64::from(state.response_data),
-                cpu_error: state.phase == Phase::CpuResponse && state.response_error,
+                cpu_error: state.response_valid && state.response_error,
                 memory_request_valid: matches!(
-                    state.phase,
-                    Phase::WordRequest | Phase::LineRequest
+                    state.state,
+                    State::WordRequest | State::LineRequest
                 ),
                 memory_write: state.pending.write,
                 memory_address: u64::from(if state.pending.write {
@@ -421,8 +445,8 @@ impl<I: CpuV3CacheImage> Module for CpuV3DirectMappedCacheWithImage<I> {
                 }),
                 memory_write_data: u64::from(state.pending.write_data),
                 memory_response_ready: matches!(
-                    state.phase,
-                    Phase::WordResponse | Phase::LineReceive
+                    state.state,
+                    State::WordResponse | State::LineReceive
                 ),
             },
         );
@@ -440,113 +464,166 @@ impl<I: CpuV3CacheImage> Module for CpuV3DirectMappedCacheWithImage<I> {
             return;
         }
 
-        match state.phase {
-            Phase::Idle if input.cpu_request_valid => {
-                state.pending = Pending {
-                    write: input.cpu_write,
-                    address: input.cpu_address as u32,
-                    write_data: input.cpu_write_data as u16,
-                };
-                state.response_error = false;
-                if input.cpu_address >> 22 != 0 {
-                    state.response_data = 0;
-                    state.response_error = true;
-                    state.phase = Phase::CpuResponse;
-                } else {
-                    state.phase = Phase::Check;
-                }
-            }
-            Phase::Check => {
-                let (set, tag, word) = decode(state.pending.address);
-                let hit_way = (0..CPU_V3_CACHE_WAYS)
-                    .find(|way| state.valid[*way][set] && state.tags[*way][set] == tag);
-                if state.pending.write {
-                    if let Some(way) = hit_way {
-                        state.data[data_index(way, set, word)] = state.pending.write_data;
-                    }
-                    state.phase = Phase::WordRequest;
-                } else if let Some(way) = hit_way {
-                    state.pending_way = way;
-                    state.phase = Phase::HitRead;
-                } else {
-                    state.pending_way = (0..CPU_V3_CACHE_WAYS)
-                        .find(|way| !state.valid[*way][set])
-                        .unwrap_or(state.victim[set]);
-                    state.refill_beat = 0;
-                    state.phase = Phase::LineRequest;
-                }
-            }
-            Phase::HitRead => {
-                let (set, _, word) = decode(state.pending.address);
-                state.response_data = state.data[data_index(state.pending_way, set, word)];
-                state.phase = Phase::CpuResponse;
-            }
-            Phase::WordRequest if input.memory_request_ready => {
-                state.phase = Phase::WordResponse;
-            }
-            Phase::WordResponse if input.memory_response_valid => {
-                state.response_data = 0;
-                state.response_error = input.memory_error;
-                state.phase = Phase::CpuResponse;
-            }
-            Phase::LineRequest if input.memory_request_ready => {
-                state.refill_beat = 0;
-                state.phase = Phase::LineReceive;
-            }
-            Phase::LineReceive if input.memory_response_valid => {
-                if input.memory_error {
-                    state.response_data = 0;
-                    state.response_error = true;
-                    state.phase = Phase::CpuResponse;
-                } else {
-                    state.refill_buffer[usize::from(state.refill_beat)] =
-                        input.memory_read_data as u32;
-                    if state.refill_beat as usize + 1 == CPU_V3_CACHE_LINE_BEATS {
-                        state.drain_beat = 0;
-                        state.phase = Phase::LineDrain;
+        let (set, tag, word) = decode(state.pending.address);
+        let pending_address_valid = state.pending.address >> 22 == 0;
+        let way_0_hit = state.valid[0][set] && state.tags[0][set] == tag;
+        let way_1_hit = state.valid[1][set] && state.tags[1][set] == tag;
+        let pending_hit = way_0_hit || way_1_hit;
+        let hit_way = if way_0_hit { 0 } else { 1 };
+        let selected_victim = if !state.valid[0][set] {
+            0
+        } else if !state.valid[1][set] {
+            1
+        } else {
+            state.victim[set]
+        };
+        let response_space = !state.response_valid || input.cpu_response_ready;
+        let lookup_read_hit =
+            state.lookup_valid && pending_address_valid && !state.pending.write && pending_hit;
+        let cpu_request_ready = !input.invalidate_all
+            && state.state == State::Idle
+            && (!state.lookup_valid || lookup_read_hit && response_space);
+        let accept_cpu_request = input.cpu_request_valid && cpu_request_ready;
+        let hit_write = state.state == State::Idle
+            && state.lookup_valid
+            && state.pending.write
+            && pending_hit
+            && response_space
+            && !input.invalidate_all;
+
+        let mut next = state.clone();
+        if state.response_valid && input.cpu_response_ready {
+            next.response_valid = false;
+        }
+
+        match state.state {
+            State::Idle => {
+                if state.lookup_valid && response_space {
+                    if !pending_address_valid {
+                        next.response_data = 0;
+                        next.response_error = true;
+                        next.response_valid = true;
+                        next.lookup_valid = false;
+                    } else if state.pending.write {
+                        next.lookup_valid = false;
+                        next.state = State::WordRequest;
+                    } else if pending_hit {
+                        next.response_data = state.data[data_index(hit_way, set, word)];
+                        next.response_error = false;
+                        next.response_valid = true;
+                        next.lookup_valid = false;
                     } else {
-                        state.refill_beat += 1;
+                        next.lookup_valid = false;
+                        next.pending_way = selected_victim;
+                        next.refill_beat = 0;
+                        next.refill_discard = input.invalidate_all;
+                        next.state = State::LineRequest;
                     }
                 }
             }
-            Phase::LineDrain => {
-                let (set, tag, requested_word) = decode(state.pending.address);
+            State::WordRequest => {
+                if input.memory_request_ready {
+                    next.state = State::WordResponse;
+                }
+            }
+            State::WordResponse => {
+                if input.memory_response_valid {
+                    next.response_data = 0;
+                    next.response_error = input.memory_error;
+                    next.response_valid = true;
+                    next.state = State::Idle;
+                }
+            }
+            State::LineRequest => {
+                if input.memory_request_ready {
+                    next.refill_beat = 0;
+                    next.state = State::LineReceive;
+                }
+            }
+            State::LineReceive => {
+                if input.memory_response_valid {
+                    if input.memory_error {
+                        next.response_data = 0;
+                        next.response_error = true;
+                        next.response_valid = true;
+                        next.state = State::Idle;
+                    } else {
+                        next.refill_buffer[usize::from(state.refill_beat)] =
+                            input.memory_read_data as u32;
+                        if state.refill_beat as usize + 1 == CPU_V3_CACHE_LINE_BEATS {
+                            next.drain_beat = 0;
+                            next.state = State::LineDrain;
+                        } else {
+                            next.refill_beat += 1;
+                        }
+                    }
+                }
+            }
+            State::LineDrain => {
                 let drain = usize::from(state.drain_beat);
                 let beat = state.refill_buffer[drain];
                 let even_word = 2 * drain;
-                state.data[data_index(state.pending_way, set, even_word)] = beat as u16;
-                state.data[data_index(state.pending_way, set, even_word + 1)] = (beat >> 16) as u16;
-                if drain == requested_word / 2 {
-                    state.response_data = if requested_word % 2 == 0 {
+                if !state.refill_discard && !input.invalidate_all {
+                    next.data[data_index(state.pending_way, set, even_word)] = beat as u16;
+                    next.data[data_index(state.pending_way, set, even_word + 1)] =
+                        (beat >> 16) as u16;
+                }
+                if drain == word / 2 {
+                    next.response_data = if word % 2 == 0 {
                         beat as u16
                     } else {
                         (beat >> 16) as u16
                     };
                 }
                 if drain + 1 == CPU_V3_CACHE_LINE_BEATS {
-                    state.tags[state.pending_way][set] = tag;
-                    state.valid[state.pending_way][set] = true;
-                    state.victim[set] = 1 - state.pending_way;
-                    state.phase = Phase::CpuResponse;
+                    if !state.refill_discard && !input.invalidate_all {
+                        next.tags[state.pending_way][set] = tag;
+                        next.valid[state.pending_way][set] = true;
+                        next.victim[set] = 1 - state.pending_way;
+                    }
+                    next.response_error = false;
+                    next.response_valid = true;
+                    next.state = State::Idle;
                 } else {
-                    state.drain_beat += 1;
+                    next.drain_beat += 1;
                 }
             }
-            Phase::CpuResponse if input.cpu_response_ready => state.phase = Phase::Idle,
-            _ => {}
+        }
+
+        if hit_write {
+            next.data[data_index(hit_way, set, word)] = state.pending.write_data;
+        }
+
+        if accept_cpu_request {
+            next.pending = Pending {
+                write: input.cpu_write,
+                address: input.cpu_address as u32,
+                write_data: input.cpu_write_data as u16,
+            };
+            next.response_error = false;
+            next.refill_discard = false;
+            next.lookup_valid = true;
         }
 
         if input.invalidate_all {
-            state.valid.fill([false; CPU_V3_CACHE_SETS]);
+            next.valid = [[false; CPU_V3_CACHE_SETS]; CPU_V3_CACHE_WAYS];
+            if state.state == State::LineRequest
+                || state.state == State::LineReceive
+                || state.state == State::LineDrain
+            {
+                next.refill_discard = true;
+            }
         }
+
+        *state = next;
     }
 
     fn verilog_source() -> Option<String> {
         let module_name = Self::verilog_identity().module_name();
         Some(
-            include_str!("cpu_v3_direct_mapped_cache.v")
+            include_str!("cpu_v3_two_way_cache.v")
                 .replace(
-                    "module CpuV3DirectMappedCache (",
+                    "module CpuV3TwoWayCache (",
                     &format!("module {module_name} ("),
                 )
                 .replace(
@@ -572,8 +649,8 @@ impl<I: CpuV3CacheImage> Module for CpuV3DirectMappedCacheWithImage<I> {
     }
 
     fn verilog_testbench() -> Option<String> {
-        Some(include_str!("cpu_v3_direct_mapped_cache_tb.v").replace(
-            "CpuV3DirectMappedCache dut",
+        Some(include_str!("cpu_v3_two_way_cache_tb.v").replace(
+            "CpuV3TwoWayCache dut",
             &format!("{} dut", Self::verilog_identity().module_name()),
         ))
     }
@@ -752,32 +829,30 @@ mod tests {
     }
 
     #[test]
-    fn cache_image_is_split_by_word_parity_and_initializes_only_way_zero() {
+    fn cache_image_is_interleaved_by_way_xor_parity_and_initializes_only_way_zero() {
         for address in 0..CPU_V3_CACHE_WORDS_PER_WAY / 2 {
             assert_eq!(
-                parity_image::<InterleavedImage, false>()[address],
+                interleaved_bank_image::<InterleavedImage, false>()[address],
                 (2 * address) as u64
             );
             assert_eq!(
-                parity_image::<InterleavedImage, true>()[address],
+                interleaved_bank_image::<InterleavedImage, true>()[address],
                 (2 * address + 1) as u64
             );
         }
-        assert!(
-            parity_image::<InterleavedImage, false>()[CPU_V3_CACHE_WORDS_PER_WAY / 2..]
-                .iter()
-                .all(|word| *word == 0)
-        );
-        assert!(
-            parity_image::<InterleavedImage, true>()[CPU_V3_CACHE_WORDS_PER_WAY / 2..]
-                .iter()
-                .all(|word| *word == 0)
-        );
+        assert!(interleaved_bank_image::<InterleavedImage, false>()
+            [CPU_V3_CACHE_WORDS_PER_WAY / 2..]
+            .iter()
+            .all(|word| *word == 0));
+        assert!(interleaved_bank_image::<InterleavedImage, true>()
+            [CPU_V3_CACHE_WORDS_PER_WAY / 2..]
+            .iter()
+            .all(|word| *word == 0));
     }
 
     #[test]
-    #[ignore = "explicit external simulation of the parity-split cache data banks"]
-    fn verify_parity_split_cache_data_with_iverilog() {
+    #[ignore = "explicit external simulation of the way-interleaved cache data banks"]
+    fn verify_way_interleaved_cache_data_with_iverilog() {
         digital_design_hardware::verify_verilog_with_iverilog::<
             CpuV3ParitySplitCacheData<ZeroBsramImage>,
         >()

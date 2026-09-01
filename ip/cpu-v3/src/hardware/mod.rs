@@ -1,7 +1,9 @@
 //! Reusable CpuV3 revision 0.7 processor core with physical-memory and device ports.
 
 mod cache;
+mod fetch;
 pub use cache::*;
+pub use fetch::*;
 
 use digital_design_circuit::{CircuitWires, Wire, Wires};
 use digital_design_hardware::{
@@ -745,7 +747,10 @@ impl Module for CpuV3Core {
             &CpuV3CoreOutputValue {
                 instruction_request_valid: state.phase == Phase::FetchRequest,
                 instruction_address: u64::from(physical_address(state.code_segment, state.pc)),
-                instruction_response_ready: state.phase == Phase::FetchResponse,
+                instruction_response_ready: matches!(
+                    state.phase,
+                    Phase::FetchRequest | Phase::FetchResponse
+                ),
                 data_request_valid: state.phase == Phase::DataRequest,
                 data_write: pending.write,
                 data_address: u64::from(pending.address),
@@ -785,7 +790,18 @@ impl Module for CpuV3Core {
         }
         match state.phase {
             Phase::FetchRequest if input.instruction_request_ready => {
-                state.phase = Phase::FetchResponse;
+                if input.instruction_response_valid {
+                    if input.instruction_error {
+                        state.fault(CPU_V3_FAULT_INSTRUCTION_MEMORY, state.pc);
+                    } else {
+                        state.instruction = input.instruction_data as u16;
+                        state.instruction_pc = state.pc;
+                        state.pc = state.pc.wrapping_add(1);
+                        state.phase = Phase::Execute;
+                    }
+                } else {
+                    state.phase = Phase::FetchResponse;
+                }
             }
             Phase::FetchResponse if input.instruction_response_valid => {
                 if input.instruction_error {

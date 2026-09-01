@@ -78,7 +78,7 @@ pub struct DataCache {
     pending: Option<Pending>,
 }
 
-/// The instruction side uses the same two-way, parity-split BSRAM geometry. The first
+/// The instruction side uses the same two-way, parity/way-interleaved BSRAM geometry. The first
 /// processor has split instruction and data instances, with an arbiter sharing
 /// one SDRAM line-transaction port.
 pub type InstructionCache = DataCache;

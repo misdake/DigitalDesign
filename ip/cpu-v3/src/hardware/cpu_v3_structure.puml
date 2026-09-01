@@ -6,8 +6,9 @@ skinparam shadowing false
 skinparam defaultTextAlignment center
 
 package "Fitted CPU V3 system (optional around the reusable core)" {
-  component "Instruction cache\n2 KiB, direct mapped\n64 sets x 16 words\nwrite-through data RAM shape\n256-bit private refill buffer" as ICache
-  component "Data cache\n2 KiB, direct mapped\n64 sets x 16 words\nwrite-through, no-write-allocate\n256-bit private refill buffer" as DCache
+  component "Instruction fetch queue\n4 fetched/outstanding words\nphysical address + epoch metadata" as FetchQueue
+  component "Instruction cache\n4 KiB, 2 ways x 64 sets x 16 words\n2 parity/way-interleaved BSRAMs\n256-bit private refill buffer" as ICache
+  component "Data cache\n4 KiB, 2 ways x 64 sets x 16 words\n2 parity/way-interleaved BSRAMs\nwrite-through, no-write-allocate\n256-bit private refill buffer" as DCache
   component "Memory arbiter\none line or word owner at a time\nforwards one burst command per line" as Arbiter
   component "SDRAM word/line adapter\n8 x 32-bit real burst per line" as SDRAM
   component "Devices 0..7\n16 channels each" as Devices
@@ -33,8 +34,10 @@ rectangle "CpuV3Core: blocking, in-order, one instruction in flight" as Core {
   }
 }
 
-ICache --> FSM : instruction ready/valid
-FSM --> ICache : 32-bit {CSEG, PC}
+ICache --> FetchQueue : pipelined response
+FetchQueue --> ICache : sequential physical lookup
+FetchQueue --> FSM : queued instruction
+FSM --> FetchQueue : 32-bit {CSEG, PC}
 DCache --> FSM : data response
 FSM --> DCache : 32-bit {DSEG, offset}\n16-bit narrow requests
 FSM <--> Devices : dedicated device port

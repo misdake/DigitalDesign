@@ -70,9 +70,9 @@ then write it separately from the audited FPGA image:
 
 ```powershell
 cargo run -p cpu-v3-tang-nano-20k --bin cpu-v3-boot-assets
-cargo run -p cpu-v3-tang-nano-20k --example cpu_v3_boot -- `
+cargo run -p cpu-v3-tang-nano-20k --example cpu_v3_system -- `
     --program-flash 0x100000 target/cpu-v3-boot/cpu-v3-boot.bin
-cargo run -p cpu-v3-tang-nano-20k --example cpu_v3_boot -- --program-existing
+cargo run -p cpu-v3-tang-nano-20k --example cpu_v3_system -- --program-existing
 ```
 
 For a stand-alone cold boot, write one validated image containing both the
@@ -81,7 +81,7 @@ immediate validation:
 
 ```powershell
 powershell -ExecutionPolicy Bypass -File hardware/vendor/gowin/scripts/run_board_validation.ps1 `
-    -Profile cpu-v3-boot -Mode Full -Port COM8 -WriteCompleteFlash
+    -Profile cpu-v3-system -Mode Full -Port COM8 -WriteCompleteFlash
 ```
 
 `cpu-v3-boot-assets` does not compile a parallel copy of the firmware. It exports

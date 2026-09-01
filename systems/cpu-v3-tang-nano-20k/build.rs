@@ -49,10 +49,7 @@ fn main() {
         "stage1.rs",
         "boot-demo.rs",
         "boot-alt.rs",
-        "cpu-self-test.rs",
         "display-demo.rs",
-        "device-diagnostic.rs",
-        "sdram-self-test.rs",
         "device_abi.rs",
     ] {
         println!("cargo:rerun-if-changed={}", sources.join(name).display());
@@ -90,22 +87,6 @@ fn main() {
             stack_init: 0xf000,
             ..CompilerOptions::default()
         },
-    );
-    let cpu_self_test = compile(
-        &sources.join("cpu-self-test.rs"),
-        &CompilerOptions {
-            code_base: 0,
-            stack_init: 0xf000,
-            ..CompilerOptions::default()
-        },
-    );
-    let device_diagnostic = compile(
-        &sources.join("device-diagnostic.rs"),
-        &CompilerOptions::default(),
-    );
-    let sdram_self_test = compile(
-        &sources.join("sdram-self-test.rs"),
-        &CompilerOptions::default(),
     );
     let stage0_bytes = word_bytes(&stage0);
     let stage1_bytes = word_bytes(&stage1);
@@ -194,18 +175,7 @@ fn main() {
     write_artifact(&output, "stage1.v3bin", &stage1_bytes);
     write_artifact(&output, "boot-demo.v3bin", &application_bytes);
     write_artifact(&output, "boot-alt.v3bin", &alternate_application_bytes);
-    write_artifact(&output, "cpu-self-test.v3bin", &word_bytes(&cpu_self_test));
     write_artifact(&output, "display-demo.v3bin", &word_bytes(&display_demo));
-    write_artifact(
-        &output,
-        "device-diagnostic.v3bin",
-        &word_bytes(&device_diagnostic),
-    );
-    write_artifact(
-        &output,
-        "sdram-self-test.v3bin",
-        &word_bytes(&sdram_self_test),
-    );
     write_artifact(&output, "data.bin", &data);
     write_artifact(&output, "cpu-v3-boot.bin", package);
     write_artifact(&output, "cpu-v3-boot.map", image.map().as_bytes());
@@ -219,36 +189,12 @@ fn main() {
     .unwrap();
     std::fs::write(output.join("boot_images.rs"), generated)
         .expect("write generated boot image bindings");
-    std::fs::write(
-        output.join("cpu_self_test_image.rs"),
-        format!(
-            "const CPU_SELF_TEST_PROGRAM: &[u16] = &{:?};\n",
-            cpu_self_test
-        ),
-    )
-    .expect("write generated CPU self-test binding");
-    std::fs::write(
-        output.join("device_diagnostic_image.rs"),
-        format!(
-            "const DEVICE_DIAGNOSTIC_PROGRAM: &[u16] = &{:?};\n",
-            device_diagnostic
-        ),
-    )
-    .expect("write generated device diagnostic binding");
-    std::fs::write(
-        output.join("sdram_self_test_image.rs"),
-        format!(
-            "const SDRAM_SELF_TEST_PROGRAM: &[u16] = &{:?};\n",
-            sdram_self_test
-        ),
-    )
-    .expect("write generated SDRAM self-test binding");
+
+    // The display simulator includes this generated module even when a test
+    // target does not build a static display demo image.
     std::fs::write(
         output.join("display_image.rs"),
-        format!(
-            "const DISPLAY_DEMO_PROGRAM: &[u16] = &{:?};\n",
-            display_demo
-        ),
+        b"pub const DISPLAY_DEMO_PROGRAM: &[u16] = &[];\n",
     )
-    .expect("write generated display demo binding");
+    .expect("write display image placeholder");
 }
