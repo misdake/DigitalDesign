@@ -78,6 +78,28 @@ task consume;
     end
 endtask
 
+task consume_redirect_fast;
+    input [31:0] address;
+    integer redirect_cycle;
+    begin
+        core_address <= address;
+        core_request_valid <= 1;
+        #1;
+        if (!memory_request_valid || memory_address != address)
+            $fatal(1, "redirect did not issue its target lookup immediately");
+        redirect_cycle = cycles;
+        while (!core_request_ready) @(negedge clk);
+        if (cycles - redirect_cycle > 2)
+            $fatal(1, "redirect response bypass took %0d cycles", cycles - redirect_cycle);
+        if (!core_response_valid || core_error || core_read_data != word_pattern(address))
+            $fatal(1, "fast redirect returned stale/wrong word at %h: %h", address,
+                   core_read_data);
+        @(posedge clk);
+        #1;
+        core_request_valid <= 0;
+    end
+endtask
+
 initial begin
     repeat (2) @(posedge clk);
     reset <= 0;
@@ -89,7 +111,7 @@ initial begin
         $fatal(1, "fetch queue did not issue consecutive memory lookups");
 
     // Redirect while old sequential words can still be queued or outstanding.
-    consume(32'h0002_2000);
+    consume_redirect_fast(32'h0002_2000);
     consume(32'h0002_2001);
 
     // Invalidation toggles the epoch; old responses must be drained, not used.

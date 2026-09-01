@@ -51,10 +51,17 @@ wire restart = core_request_valid &&
                (!core_address_matches || (queue_count != 0 && !queue_head_matches));
 wire response_is_current = metadata_count != 0 &&
                            metadata_epoch[metadata_head] == epoch;
+wire response_bypass = core_request_valid && core_address_matches &&
+                       queue_count == 0 && memory_response_valid &&
+                       response_is_current &&
+                       metadata_address[metadata_head] == core_address &&
+                       !flush && !restart;
 wire core_response_valid_internal = core_request_valid && core_address_matches &&
-                                    queue_head_matches;
+                                    (queue_head_matches || response_bypass);
 wire core_pop = core_request_valid && core_response_ready &&
                 core_response_valid_internal;
+wire queue_pop = core_pop && !response_bypass;
+wire bypass_pop = core_pop && response_bypass;
 
 // Only architecturally consumed progress can nominate the next line. Word 10
 // accounts for the four-word fetch lead: words 11..15 can already be reserved
@@ -67,21 +74,23 @@ assign prefetch_cancel = flush || restart;
 
 assign core_response_valid = core_response_valid_internal;
 assign core_request_ready = core_response_valid && core_response_ready;
-assign core_read_data = queue_data[queue_head];
-assign core_error = queue_error[queue_head];
+assign core_read_data = response_bypass ? memory_read_data : queue_data[queue_head];
+assign core_error = response_bypass ? memory_error : queue_error[queue_head];
 
 wire [3:0] reserved_words = queue_count + metadata_count;
 assign memory_response_ready = metadata_count != 0 &&
     (!response_is_current || queue_count < QUEUE_DEPTH || core_pop);
 wire memory_response_fire = memory_response_valid && memory_response_ready;
-assign memory_request_valid = stream_valid && !flush && !restart &&
-                              reserved_words < QUEUE_DEPTH;
-assign memory_address = next_memory_address;
+wire redirect_slot_available = metadata_count < QUEUE_DEPTH || memory_response_fire;
+assign memory_request_valid = !flush &&
+    ((restart && redirect_slot_available) ||
+     (!restart && stream_valid && reserved_words < QUEUE_DEPTH));
+assign memory_address = restart ? core_address : next_memory_address;
 wire memory_request_fire = memory_request_valid && memory_request_ready;
 wire enqueue_response = memory_response_fire && response_is_current &&
-                        !flush && !restart;
-wire [31:0] issue_address = next_memory_address;
-wire issue_epoch = epoch;
+                        !flush && !restart && !bypass_pop;
+wire [31:0] issue_address = restart ? core_address : next_memory_address;
+wire issue_epoch = restart ? !epoch : epoch;
 
 wire [31:0] next_issue_address =
     {issue_address[31:16], issue_address[15:0] + 1'b1};
@@ -109,13 +118,15 @@ always @(posedge clk) begin
             if (core_request_valid) begin
                 stream_valid <= 1;
                 expected_core_address <= core_address;
-                next_memory_address <= core_address;
+                next_memory_address <= memory_request_fire ?
+                    next_issue_address : core_address;
             end else begin
                 stream_valid <= 0;
             end
         end else begin
             if (core_pop) begin
-                queue_head <= queue_head + 1'b1;
+                if (queue_pop)
+                    queue_head <= queue_head + 1'b1;
                 expected_core_address <= next_expected_address;
             end
             if (enqueue_response) begin
@@ -124,7 +135,7 @@ always @(posedge clk) begin
                 queue_address[queue_tail] <= metadata_address[metadata_head];
                 queue_tail <= queue_tail + 1'b1;
             end
-            case ({enqueue_response, core_pop})
+            case ({enqueue_response, queue_pop})
                 2'b10: queue_count <= queue_count + 1'b1;
                 2'b01: queue_count <= queue_count - 1'b1;
                 default: queue_count <= queue_count;

@@ -19,7 +19,10 @@ addresses, and tags each downstream request with an epoch. A branch, `JALR`,
 code-segment change, fault, reset, or I-cache invalidate discards queued and late
 old-epoch words. When the requested word is already queued, the core accepts it
 directly in `FetchRequest` and executes it on the following cycle. The legacy
-`FetchResponse` phase remains available for a slower responder. The tables below
+`FetchResponse` phase remains available for a slower responder. A redirect can
+issue the target lookup in its restart cycle, and a matching response can fall
+through an empty queue directly to a ready core. If the core is backpressured,
+the same response is enqueued instead of being lost. The tables below
 count core execute cycles from the `Execute` cycle through retirement; add fetch
 wait cycles only when the queue does not already contain the requested word.
 

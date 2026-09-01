@@ -300,7 +300,11 @@ share the four-entry reservation limit. Each downstream request records its
 physical address and an epoch bit; a redirect or global I-cache invalidate clears
 the visible queue and causes late old-epoch responses to be drained without
 becoming architectural. Sequential issue wraps the 16-bit PC without carrying
-into `CSEG`. The blocking core still retires at most one instruction per cycle
+into `CSEG`. A redirect issues its target lookup in the restart cycle when a
+metadata slot is available. If the visible queue is empty and the matching
+current-epoch response arrives while the core is ready, the response falls
+through directly instead of spending another cycle in the queue; backpressure
+still stores it normally. The blocking core still retires at most one instruction per cycle
 and performs no cross-instruction execute pipelining.
 
 The first arbiter permits one accepted Controller HS operation. In the host

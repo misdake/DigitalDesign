@@ -87,14 +87,27 @@ impl Module for CpuV3InstructionFetchQueue {
             && (!core_address_matches || (state.queue_count != 0 && !queue_head_matches));
         let response_is_current = state.metadata_count != 0
             && state.metadata_epoch[usize::from(state.metadata_head)] == state.epoch;
-        let core_response_valid =
-            input.core_request_valid && core_address_matches && queue_head_matches;
+        let response_bypass = input.core_request_valid
+            && core_address_matches
+            && state.queue_count == 0
+            && input.memory_response_valid
+            && response_is_current
+            && state.metadata_address[usize::from(state.metadata_head)] == core_address
+            && !input.flush
+            && !restart;
+        let core_response_valid = input.core_request_valid
+            && core_address_matches
+            && (queue_head_matches || response_bypass);
         let core_pop = input.core_request_valid && input.core_response_ready && core_response_valid;
         let reserved_words = state.queue_count + state.metadata_count;
         let memory_response_ready = state.metadata_count != 0
             && (!response_is_current || state.queue_count < QUEUE_DEPTH as u8 || core_pop);
-        let memory_request_valid =
-            state.stream_valid && !input.flush && !restart && reserved_words < QUEUE_DEPTH as u8;
+        let memory_response_fire = input.memory_response_valid && memory_response_ready;
+        let redirect_slot_available =
+            state.metadata_count < QUEUE_DEPTH as u8 || memory_response_fire;
+        let memory_request_valid = !input.flush
+            && ((restart && redirect_slot_available)
+                || (!restart && state.stream_valid && reserved_words < QUEUE_DEPTH as u8));
 
         let prefetch_address =
             (core_address & 0xffff_0000) | ((((core_address >> 4) & 0x0fff) + 1) & 0x0fff) << 4;
@@ -103,10 +116,22 @@ impl Module for CpuV3InstructionFetchQueue {
             &CpuV3InstructionFetchQueueOutputValue {
                 core_request_ready: core_response_valid && input.core_response_ready,
                 core_response_valid,
-                core_read_data: u64::from(state.queue_data[usize::from(state.queue_head)]),
-                core_error: state.queue_error[usize::from(state.queue_head)],
+                core_read_data: u64::from(if response_bypass {
+                    input.memory_read_data as u16
+                } else {
+                    state.queue_data[usize::from(state.queue_head)]
+                }),
+                core_error: if response_bypass {
+                    input.memory_error
+                } else {
+                    state.queue_error[usize::from(state.queue_head)]
+                },
                 memory_request_valid,
-                memory_address: u64::from(state.next_memory_address),
+                memory_address: u64::from(if restart {
+                    core_address
+                } else {
+                    state.next_memory_address
+                }),
                 memory_response_ready,
                 prefetch_request_valid: core_pop && core_address & 0xf == 10,
                 prefetch_address: u64::from(prefetch_address),
@@ -131,26 +156,44 @@ impl Module for CpuV3InstructionFetchQueue {
             && (!core_address_matches || (state.queue_count != 0 && !queue_head_matches));
         let response_is_current = state.metadata_count != 0
             && state.metadata_epoch[usize::from(state.metadata_head)] == state.epoch;
-        let core_response_valid =
-            input.core_request_valid && core_address_matches && queue_head_matches;
+        let response_bypass = input.core_request_valid
+            && core_address_matches
+            && state.queue_count == 0
+            && input.memory_response_valid
+            && response_is_current
+            && state.metadata_address[usize::from(state.metadata_head)] == core_address
+            && !input.flush
+            && !restart;
+        let core_response_valid = input.core_request_valid
+            && core_address_matches
+            && (queue_head_matches || response_bypass);
         let core_pop = input.core_request_valid && input.core_response_ready && core_response_valid;
+        let queue_pop = core_pop && !response_bypass;
+        let bypass_pop = core_pop && response_bypass;
         let reserved_words = state.queue_count + state.metadata_count;
         let memory_response_ready = state.metadata_count != 0
             && (!response_is_current || state.queue_count < QUEUE_DEPTH as u8 || core_pop);
         let memory_response_fire = input.memory_response_valid && memory_response_ready;
-        let memory_request_valid =
-            state.stream_valid && !input.flush && !restart && reserved_words < QUEUE_DEPTH as u8;
+        let redirect_slot_available =
+            state.metadata_count < QUEUE_DEPTH as u8 || memory_response_fire;
+        let memory_request_valid = !input.flush
+            && ((restart && redirect_slot_available)
+                || (!restart && state.stream_valid && reserved_words < QUEUE_DEPTH as u8));
         let memory_request_fire = memory_request_valid && input.memory_request_ready;
         let enqueue_response =
-            memory_response_fire && response_is_current && !input.flush && !restart;
+            memory_response_fire && response_is_current && !input.flush && !restart && !bypass_pop;
 
         if input.reset {
             *state = CpuV3InstructionFetchQueueState::default();
             return;
         }
 
-        let issue_address = state.next_memory_address;
-        let issue_epoch = state.epoch;
+        let issue_address = if restart {
+            core_address
+        } else {
+            state.next_memory_address
+        };
+        let issue_epoch = if restart { !state.epoch } else { state.epoch };
         let next_issue_address = (issue_address & 0xffff_0000) | ((issue_address + 1) & 0xffff);
         let next_expected_address = (state.expected_core_address & 0xffff_0000)
             | ((state.expected_core_address + 1) & 0xffff);
@@ -162,13 +205,19 @@ impl Module for CpuV3InstructionFetchQueue {
             if input.core_request_valid {
                 state.stream_valid = true;
                 state.expected_core_address = core_address;
-                state.next_memory_address = core_address;
+                state.next_memory_address = if memory_request_fire {
+                    next_issue_address
+                } else {
+                    core_address
+                };
             } else {
                 state.stream_valid = false;
             }
         } else {
             if core_pop {
-                state.queue_head = (state.queue_head + 1) & (QUEUE_DEPTH as u8 - 1);
+                if queue_pop {
+                    state.queue_head = (state.queue_head + 1) & (QUEUE_DEPTH as u8 - 1);
+                }
                 state.expected_core_address = next_expected_address;
             }
             if enqueue_response {
@@ -178,7 +227,7 @@ impl Module for CpuV3InstructionFetchQueue {
                     state.metadata_address[usize::from(state.metadata_head)];
                 state.queue_tail = (state.queue_tail + 1) & (QUEUE_DEPTH as u8 - 1);
             }
-            match (enqueue_response, core_pop) {
+            match (enqueue_response, queue_pop) {
                 (true, false) => state.queue_count += 1,
                 (false, true) => state.queue_count -= 1,
                 _ => {}
