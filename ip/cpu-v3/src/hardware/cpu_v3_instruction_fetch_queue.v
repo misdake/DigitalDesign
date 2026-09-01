@@ -15,7 +15,10 @@ module CpuV3InstructionFetchQueue (
     output wire core_error,
     output wire memory_request_valid,
     output wire [31:0] memory_address,
-    output wire memory_response_ready
+    output wire memory_response_ready,
+    output wire prefetch_request_valid,
+    output wire [31:0] prefetch_address,
+    output wire prefetch_cancel
 );
 
 localparam [2:0] QUEUE_DEPTH = 4;
@@ -46,31 +49,42 @@ wire queue_head_matches = queue_count != 0 &&
                           queue_address[queue_head] == core_address;
 wire restart = core_request_valid &&
                (!core_address_matches || (queue_count != 0 && !queue_head_matches));
+wire response_is_current = metadata_count != 0 &&
+                           metadata_epoch[metadata_head] == epoch;
+wire core_response_valid_internal = core_request_valid && core_address_matches &&
+                                    queue_head_matches;
 wire core_pop = core_request_valid && core_response_ready &&
-                core_address_matches && queue_head_matches;
+                core_response_valid_internal;
 
-assign core_response_valid = core_request_valid &&
-                             core_address_matches && queue_head_matches;
+// Only architecturally consumed progress can nominate the next line. Word 10
+// accounts for the four-word fetch lead: words 11..15 can already be reserved
+// while the low-priority candidate starts, without recursively triggering from
+// speculative responses.
+assign prefetch_request_valid = core_pop && core_address[3:0] == 4'd10;
+assign prefetch_address = {core_address[31:16],
+                           core_address[15:4] + 1'b1, 4'b0};
+assign prefetch_cancel = flush || restart;
+
+assign core_response_valid = core_response_valid_internal;
 assign core_request_ready = core_response_valid && core_response_ready;
 assign core_read_data = queue_data[queue_head];
 assign core_error = queue_error[queue_head];
 
 wire [3:0] reserved_words = queue_count + metadata_count;
+assign memory_response_ready = metadata_count != 0 &&
+    (!response_is_current || queue_count < QUEUE_DEPTH || core_pop);
+wire memory_response_fire = memory_response_valid && memory_response_ready;
 assign memory_request_valid = stream_valid && !flush && !restart &&
                               reserved_words < QUEUE_DEPTH;
 assign memory_address = next_memory_address;
 wire memory_request_fire = memory_request_valid && memory_request_ready;
-
-wire response_is_current = metadata_count != 0 &&
-                           metadata_epoch[metadata_head] == epoch;
-assign memory_response_ready = metadata_count != 0 &&
-    (!response_is_current || queue_count < QUEUE_DEPTH || core_pop);
-wire memory_response_fire = memory_response_valid && memory_response_ready;
 wire enqueue_response = memory_response_fire && response_is_current &&
                         !flush && !restart;
+wire [31:0] issue_address = next_memory_address;
+wire issue_epoch = epoch;
 
 wire [31:0] next_issue_address =
-    {next_memory_address[31:16], next_memory_address[15:0] + 1'b1};
+    {issue_address[31:16], issue_address[15:0] + 1'b1};
 wire [31:0] next_expected_address =
     {expected_core_address[31:16], expected_core_address[15:0] + 1'b1};
 
@@ -120,8 +134,8 @@ always @(posedge clk) begin
         end
 
         if (memory_request_fire) begin
-            metadata_epoch[metadata_tail] <= epoch;
-            metadata_address[metadata_tail] <= next_memory_address;
+            metadata_epoch[metadata_tail] <= issue_epoch;
+            metadata_address[metadata_tail] <= issue_address;
             metadata_tail <= metadata_tail + 1'b1;
         end
         if (memory_response_fire)

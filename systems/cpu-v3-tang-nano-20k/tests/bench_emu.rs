@@ -9,9 +9,9 @@
 
 use cpu_v3::{
     alu, fpu, fpu_unary, halt, jump_relative, load_immediate16, nop, AluOp, CpuV3Core,
-    CpuV3CoreInput, CpuV3CoreOutput, CpuV3DirectMappedCache, CpuV3DirectMappedCacheInput,
-    CpuV3DirectMappedCacheOutput, CpuV3InstructionFetchQueue, CpuV3InstructionFetchQueueInput,
-    CpuV3InstructionFetchQueueOutput, FpuOp, FpuUnaryOp,
+    CpuV3CoreInput, CpuV3CoreOutput, CpuV3InstructionFetchQueue, CpuV3InstructionFetchQueueInput,
+    CpuV3InstructionFetchQueueOutput, CpuV3TwoWayCache, CpuV3TwoWayCacheInput,
+    CpuV3TwoWayCacheOutput, FpuOp, FpuUnaryOp,
 };
 use cpu_v3_tang_nano_20k::{CpuV3MemoryArbiter, CpuV3MemoryArbiterInput, CpuV3MemoryArbiterOutput};
 use digital_design_circuit::{build_circuit, Circuit, Wire, Wires};
@@ -479,7 +479,7 @@ pub fn run_benchmark_profiled_with_prefetch(
     words: &[u16],
     maximum_cycles: usize,
     trace_directory: Option<&Path>,
-    _prefetch_enabled: bool,
+    prefetch_enabled: bool,
 ) -> BenchResult {
     let mut memory = vec![0u16; SDRAM_WORDS];
     for (offset, word) in words.iter().copied().enumerate() {
@@ -493,11 +493,14 @@ pub fn run_benchmark_profiled_with_prefetch(
         let mut fetch_input = CpuV3InstructionFetchQueueInput::allocate();
         let fetch_output = CpuV3InstructionFetchQueueOutput::allocate();
 
-        let mut icache_input = CpuV3DirectMappedCacheInput::allocate();
-        let icache_output = CpuV3DirectMappedCacheOutput::allocate();
+        let mut icache_input = CpuV3TwoWayCacheInput::allocate();
+        let icache_output = CpuV3TwoWayCacheOutput::allocate();
+        let disabled_prefetch_valid = icache_input.prefetch_request_valid;
+        let disabled_prefetch_address = icache_input.prefetch_address;
+        let disabled_prefetch_cancel = icache_input.prefetch_cancel;
 
-        let mut dcache_input = CpuV3DirectMappedCacheInput::allocate();
-        let dcache_output = CpuV3DirectMappedCacheOutput::allocate();
+        let mut dcache_input = CpuV3TwoWayCacheInput::allocate();
+        let dcache_output = CpuV3TwoWayCacheOutput::allocate();
 
         let mut arbiter_input = CpuV3MemoryArbiterInput::allocate();
         let arbiter_output = CpuV3MemoryArbiterOutput::allocate();
@@ -515,6 +518,11 @@ pub fn run_benchmark_profiled_with_prefetch(
         icache_input.cpu_request_valid = fetch_output.memory_request_valid;
         icache_input.cpu_address = fetch_output.memory_address;
         icache_input.cpu_response_ready = fetch_output.memory_response_ready;
+        if prefetch_enabled {
+            icache_input.prefetch_request_valid = fetch_output.prefetch_request_valid;
+            icache_input.prefetch_address = fetch_output.prefetch_address;
+            icache_input.prefetch_cancel = fetch_output.prefetch_cancel;
+        }
         fetch_input.memory_request_ready = icache_output.cpu_request_ready;
         fetch_input.memory_response_valid = icache_output.cpu_response_valid;
         fetch_input.memory_read_data = icache_output.cpu_read_data;
@@ -555,8 +563,8 @@ pub fn run_benchmark_profiled_with_prefetch(
         // order matches the combinational dependency (core, caches, arbiter).
         CpuV3Core::emu_connect(&core_input, &core_output);
         CpuV3InstructionFetchQueue::emu_connect(&fetch_input, &fetch_output);
-        CpuV3DirectMappedCache::emu_connect(&icache_input, &icache_output);
-        CpuV3DirectMappedCache::emu_connect(&dcache_input, &dcache_output);
+        CpuV3TwoWayCache::emu_connect(&icache_input, &icache_output);
+        CpuV3TwoWayCache::emu_connect(&dcache_input, &dcache_output);
         CpuV3MemoryArbiter::emu_connect(&arbiter_input, &arbiter_output);
 
         (
@@ -570,6 +578,9 @@ pub fn run_benchmark_profiled_with_prefetch(
             icache_output,
             dcache_output,
             fetch_output,
+            disabled_prefetch_valid,
+            disabled_prefetch_address,
+            disabled_prefetch_cancel,
         )
     });
 
@@ -584,6 +595,9 @@ pub fn run_benchmark_profiled_with_prefetch(
         icache_output,
         dcache_output,
         fetch_output,
+        disabled_prefetch_valid,
+        disabled_prefetch_address,
+        disabled_prefetch_cancel,
     ) = handles;
 
     let mut sdram = SdramModel::new(memory);
@@ -626,6 +640,9 @@ pub fn run_benchmark_profiled_with_prefetch(
     set_bits(arbiter_input.dma_address, 0, &mut circuit);
     set_bits(arbiter_input.dma_write_data, 0, &mut circuit);
     set_bit(arbiter_input.memory_error, false, &mut circuit);
+    set_bit(disabled_prefetch_valid, false, &mut circuit);
+    set_bits(disabled_prefetch_address, 0, &mut circuit);
+    set_bit(disabled_prefetch_cancel, false, &mut circuit);
 
     for cycle in 0..maximum_cycles {
         let reset = cycle < 2;
@@ -781,10 +798,10 @@ pub fn run_benchmark_profiled_with_prefetch(
                 cycles: cycle + 1,
                 halt_signal: core.halt_signal as u16,
                 retired_words: core.retired_words as u32,
-                prefetch_issued: 0,
-                prefetch_useful: 0,
-                prefetch_useless: 0,
-                prefetch_dropped: 0,
+                prefetch_issued: icache.prefetch_issued as u32,
+                prefetch_useful: icache.prefetch_useful as u32,
+                prefetch_useless: icache.prefetch_useless as u32,
+                prefetch_dropped: icache.prefetch_dropped as u32,
                 fetch_wait_cycles,
                 execute_cycles,
                 data_request_cycles,

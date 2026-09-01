@@ -16,6 +16,9 @@ wire core_error;
 wire memory_request_valid;
 wire [31:0] memory_address;
 wire memory_response_ready;
+wire prefetch_request_valid;
+wire [31:0] prefetch_address;
+wire prefetch_cancel;
 
 CpuV3InstructionFetchQueue dut(.*);
 always #5 clk = ~clk;
@@ -24,6 +27,9 @@ integer cycles = 0;
 integer accepts = 0;
 integer previous_accept_cycle = -1;
 integer consecutive_accepts = 0;
+integer prefetch_candidates = 0;
+integer prefetch_cancels = 0;
+reg [31:0] last_prefetch_address = 0;
 
 function [15:0] word_pattern;
     input [31:0] address;
@@ -42,6 +48,12 @@ always @(posedge clk) begin
             consecutive_accepts <= consecutive_accepts + 1;
         previous_accept_cycle <= cycles;
     end
+    if (prefetch_request_valid) begin
+        prefetch_candidates <= prefetch_candidates + 1;
+        last_prefetch_address <= prefetch_address;
+    end
+    if (prefetch_cancel)
+        prefetch_cancels <= prefetch_cancels + 1;
 end
 
 always @(negedge clk) begin
@@ -116,6 +128,12 @@ initial begin
     @(posedge clk);
     #1;
     core_request_valid <= 0;
+
+    consume(32'h0005_500a);
+    if (prefetch_candidates != 1 || last_prefetch_address != 32'h0005_5010)
+        $fatal(1, "real word-10 progress did not nominate the next line");
+    if (prefetch_cancels == 0)
+        $fatal(1, "redirects did not cancel obsolete prefetch work");
 
     $display("DIGITAL_DESIGN_PASS");
     $finish;

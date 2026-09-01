@@ -2,6 +2,9 @@ module tb;
 reg clk = 0;
 reg reset = 1;
 reg invalidate_all = 0;
+reg prefetch_request_valid = 0;
+reg [31:0] prefetch_address = 0;
+reg prefetch_cancel = 0;
 reg cpu_request_valid = 0;
 reg cpu_write = 0;
 reg [31:0] cpu_address = 0;
@@ -20,6 +23,10 @@ wire memory_write;
 wire [21:0] memory_address;
 wire [15:0] memory_write_data;
 wire memory_response_ready;
+wire [31:0] prefetch_issued;
+wire [31:0] prefetch_useful;
+wire [31:0] prefetch_useless;
+wire [31:0] prefetch_dropped;
 
 CpuV3TwoWayCache dut(.*);
 always #5 clk = ~clk;
@@ -32,6 +39,7 @@ integer beats_served = 0;
 integer drain_cycles = 0;
 integer cycles = 0;
 integer line_requests_before_invalidate = 0;
+integer prefetch_line_requests_before = 0;
 reg [3:0] beats_remaining = 0;
 reg [21:0] line_base_r = 0;
 reg write_response_pending = 0;
@@ -213,6 +221,17 @@ task write_word;
     end
 endtask
 
+task nominate_prefetch;
+    input [31:0] address;
+    begin
+        @(negedge clk);
+        prefetch_address <= address;
+        prefetch_request_valid <= 1;
+        @(negedge clk);
+        prefetch_request_valid <= 0;
+    end
+endtask
+
 initial begin
     repeat (2) @(posedge clk);
     reset <= 0;
@@ -282,6 +301,121 @@ initial begin
     read_word(32'h0000_0d23, 16'h8d23);
     if (line_requests != line_requests_before_invalidate + 2)
         $fatal(1, "invalidate during refill exposed a stale installed line");
+
+    // A real next-line candidate fills through the ordinary line buffer. Its
+    // first demand use must hit and move the issued prefetch to useful.
+    prefetch_line_requests_before = line_requests;
+    nominate_prefetch(32'h0000_1120);
+    wait (dut.prefetch_issued_count == 1);
+    wait (dut.state == 0 && !dut.lookup_valid);
+    if (line_requests != prefetch_line_requests_before + 1)
+        $fatal(1, "prefetch did not issue exactly one line request");
+    read_word(32'h0000_1123, 16'h8123);
+    if (line_requests != prefetch_line_requests_before + 1 ||
+        dut.prefetch_useful_count != 1)
+        $fatal(1, "first demand access did not consume the prefetched line");
+
+    // A demand arriving before the prefetch reaches the arbiter cancels it
+    // and takes the cache lookup port immediately.
+    prefetch_line_requests_before = line_requests;
+    memory_request_ready <= 0;
+    nominate_prefetch(32'h0000_1520);
+    wait (dut.state == 5);
+    @(negedge clk);
+    cpu_address <= 32'h0000_1923;
+    cpu_write <= 0;
+    cpu_request_valid <= 1;
+    #1;
+    if (!cpu_request_ready || memory_request_valid)
+        $fatal(1, "demand did not cancel an unissued prefetch");
+    @(posedge clk);
+    #1;
+    cpu_request_valid <= 0;
+    memory_request_ready <= 1;
+    while (!cpu_response_valid) @(posedge clk);
+    if (cpu_error || cpu_read_data != 16'h8923)
+        $fatal(1, "demand replacing an unissued prefetch returned wrong data");
+    cpu_response_ready <= 1;
+    @(posedge clk);
+    #1;
+    cpu_response_ready <= 0;
+    if (line_requests != prefetch_line_requests_before + 1 ||
+        dut.prefetch_dropped_count != 1)
+        $fatal(1, "unissued prefetch was not dropped before demand");
+    read_word(32'h0000_1523, 16'h8523);
+    if (line_requests != prefetch_line_requests_before + 2)
+        $fatal(1, "canceled unissued prefetch unexpectedly installed a line");
+
+    // A redirect can cancel a prefetch lookup while a demand replaces it.
+    // The demand handshake must survive the cancellation cleanup.
+    nominate_prefetch(32'h0000_2520);
+    @(posedge clk);
+    #1;
+    if (dut.state != 0 || !dut.lookup_valid || !dut.pending_is_prefetch)
+        $fatal(1, "prefetch did not reach the lookup cancellation race");
+    @(negedge clk);
+    prefetch_cancel <= 1;
+    cpu_address <= 32'h0000_2923;
+    cpu_write <= 0;
+    cpu_request_valid <= 1;
+    #1;
+    if (!cpu_request_ready)
+        $fatal(1, "replacement demand was not accepted with prefetch cancel");
+    @(posedge clk);
+    #1;
+    prefetch_cancel <= 0;
+    cpu_request_valid <= 0;
+    while (!cpu_response_valid) @(posedge clk);
+    if (cpu_error || cpu_read_data != 16'h8923)
+        $fatal(1, "prefetch cancellation lost the accepted replacement demand");
+    cpu_response_ready <= 1;
+    @(posedge clk);
+    #1;
+    cpu_response_ready <= 0;
+
+    // Cancel only speculative work. A cancel pulse during demand drain must
+    // not suppress the demand line's data and tag installation.
+    prefetch_line_requests_before = line_requests;
+    fork
+        read_word(32'h0000_2d23, 16'h8d23);
+        begin
+            wait (dut.state == 4'd7);
+            prefetch_cancel <= 1;
+            @(posedge clk);
+            #1;
+            prefetch_cancel <= 0;
+        end
+    join
+    read_word(32'h0000_2d24, 16'h8d24);
+    if (line_requests != prefetch_line_requests_before + 1)
+        $fatal(1, "prefetch cancel prevented demand refill installation");
+
+    // Once accepted, the SDRAM burst is unavoidable. Redirect cancellation
+    // drains it but prevents installation, so the later demand misses again.
+    prefetch_line_requests_before = line_requests;
+    nominate_prefetch(32'h0000_1d20);
+    wait (dut.state == 6);
+    prefetch_cancel <= 1;
+    @(posedge clk);
+    #1;
+    prefetch_cancel <= 0;
+    wait (dut.state == 0);
+    read_word(32'h0000_1d23, 16'h8d23);
+    if (line_requests != prefetch_line_requests_before + 2 ||
+        dut.prefetch_issued_count != 2 || dut.prefetch_dropped_count != 3)
+        $fatal(1, "canceled in-flight prefetch was installed or counted incorrectly");
+
+    // An installed line that reaches invalidation without a demand hit is
+    // useless, and invalidation clears its prefetched marker.
+    nominate_prefetch(32'h0000_2120);
+    wait (dut.prefetch_issued_count == 3);
+    wait (dut.state == 0 && !dut.lookup_valid);
+    invalidate_all <= 1;
+    @(posedge clk);
+    #1;
+    invalidate_all <= 0;
+    if (dut.prefetch_useless_count != 1)
+        $fatal(1, "unused prefetched line was not counted at invalidate");
 
     $display("DIGITAL_DESIGN_PASS");
     $finish;
