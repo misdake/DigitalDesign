@@ -10,6 +10,7 @@ These CSV files were generated from the same 13-program directory in
 | 8 | `68b5f88` | 13 |
 | 9 | `cf6aef6` | 13 |
 | 10 | `76d5bef` | 13 |
+| 11 | `9632ff6` | 13 |
 
 `streaming-mix.rs` uses set-shifted bases (`0`, `4112`, and `8240`) rather
 than three exactly conflicting 4096-word bases.

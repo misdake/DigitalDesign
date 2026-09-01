@@ -750,7 +750,9 @@ pub fn run_benchmark_profiled_with_prefetch(
                 previous_retired = retired;
             }
 
+            let mut interface_active = false;
             if core.instruction_request_valid {
+                interface_active = true;
                 if fetch.core_request_ready {
                     instruction_fetches = instruction_fetches.wrapping_add(1);
                     let address = physical_pc(core.code_segment as u16, core.pc as u16);
@@ -770,7 +772,12 @@ pub fn run_benchmark_profiled_with_prefetch(
                 } else {
                     fetch_wait_cycles += 1;
                 }
-            } else if core.data_request_valid {
+            }
+            // Stage 11 may issue its buffered store while fetching the next
+            // instruction. Count the independent interfaces independently;
+            // an else-if chain silently drops every overlapped store.
+            if core.data_request_valid {
+                interface_active = true;
                 data_request_cycles += 1;
                 if dcache.cpu_request_ready {
                     data_requests = data_requests.wrapping_add(1);
@@ -779,9 +786,12 @@ pub fn run_benchmark_profiled_with_prefetch(
                         accept_cycle: cycle,
                     });
                 }
-            } else if core.data_response_ready {
+            }
+            if core.data_response_ready {
+                interface_active = true;
                 data_response_cycles += 1;
-            } else if !core.halted && !core.fault {
+            }
+            if !interface_active && !core.halted && !core.fault {
                 execute_cycles += 1;
             }
 
@@ -968,14 +978,15 @@ fn main() {
     }
 
     #[test]
-    fn data_probe_separates_write_through_stores_from_line_refills() {
+    fn data_probe_counts_overlapped_scalar_requests_and_latency() {
         let words = compile(DATA_SOURCE);
         let trace_directory = trace_directory("data");
         let result = run_benchmark_profiled(&words, 1_000_000, Some(&trace_directory));
         assert_eq!(result.halt_signal, 1);
-        assert!(result.dcache_word_requests >= 128);
         assert!(result.dcache_line_requests >= 8);
-        assert_eq!(result.data_requests, result.dcache_word_requests + 128);
+        let scalar_requests = result.opcode_retired[8] + result.opcode_retired[9];
+        assert_eq!(result.data_requests, scalar_requests);
+        assert!(result.store_latency_cycles > 0);
     }
 
     #[test]
