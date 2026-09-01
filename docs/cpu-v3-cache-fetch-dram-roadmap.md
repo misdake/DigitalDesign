@@ -25,10 +25,16 @@ Updated: 2026-08-29
 | 1 | Complete, 2026-08-29 | Added private 256-bit refill buffers and complete-line commit. | 4 BSRAM; 57.127 / 62.440 MHz |
 | 2 | Complete, 2026-08-29 | Replaced serialized reads with one real `8 x 32-bit` SDRAM burst. | 4 BSRAM; 55.327 / 56.090 MHz |
 | 3 | Complete, 2026-08-29 | Split each cache into even/odd BSRAM banks; initialization contents are split by word parity and refill drain is eight cycles. | 6 BSRAM; 54.492 / 54.261 MHz |
-| 4-11 | Not started | See the ordered tasks and detailed stage sections below. | - |
+| 4 | Complete, 2026-08-29 | Converted both caches to two ways with invalid-way-first deterministic victim replacement. The tag comparison now precedes the data-bank read, so a hit costs one more registered cycle until Stage 5 pipelines it. | 6 BSRAM; 61.425 / 56.530 MHz |
+| 5-11 | Not started | See the ordered tasks and detailed stage sections below. | - |
 
 Every completed stage passed its targeted RTL/system tests, workspace quality gates, Gowin PnR,
 and strict artifact resource audit. Board programming was not required and was not performed.
+
+Stage 4 validation record: workspace `cargo test` and `cargo clippy`, all four external Icarus cache
+and RAM testbenches with explicit cycle limits, `validate-hardware.ps1 -Mode quick`, then `-Mode pnr`
+with a strict artifact audit on all five Gowin projects. BSRAM use stayed at 6 (4 SDPB + 2 pROM);
+only the tag valid/victim registers grew. No check was skipped.
 
 ## Ordered major tasks
 
@@ -217,6 +223,7 @@ Do not claim that two 50 MHz 16-bit banks directly absorb the full output of a 1
 - Keep 64 sets and 16 words per line; capacity becomes 4 KiB per cache.
 - Read both ways for the selected parity bank and compare both tags.
 - Define one victim bit per set or another deterministic low-cost replacement rule.
+- Use the victim bit as the next replacement way; after a successful refill it points to the other way. Hits do not update it.
 - Prefer invalid ways before evicting a valid way.
 - For D-cache write-back, dirty state is a later stage, not part of the first two-way conversion.
 - Validate same-set alternating lines, invalid-way preference, replacement, invalidate, and refill failure.

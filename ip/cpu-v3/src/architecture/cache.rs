@@ -9,7 +9,8 @@ use super::{PhysicalWordAddress, Word};
 pub const CACHE_LINE_WORDS: usize = 16;
 pub const CACHE_LINE_BYTES: usize = CACHE_LINE_WORDS * size_of::<Word>();
 pub const CACHE_SETS: usize = 64;
-pub const CACHE_CAPACITY_BYTES: usize = CACHE_SETS * CACHE_LINE_BYTES;
+pub const CACHE_WAYS: usize = 2;
+pub const CACHE_CAPACITY_BYTES: usize = CACHE_WAYS * CACHE_SETS * CACHE_LINE_BYTES;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum CpuMemoryRequest {
@@ -57,6 +58,7 @@ pub enum CacheError {
 enum Pending {
     ReadMiss {
         address: PhysicalWordAddress,
+        way: usize,
     },
     WriteThrough {
         address: PhysicalWordAddress,
@@ -64,20 +66,19 @@ enum Pending {
     },
 }
 
-/// A 2-KiB direct-mapped, write-through, no-write-allocate cache.
+/// A 4-KiB two-way, write-through, no-write-allocate cache.
 ///
-/// Direct mapping is intentional for the first RTL. The 1,024 cached words are
-/// split across even and odd 1024x16 BSRAM leaves so both halves of a 32-bit
-/// refill beat can be installed together. The upper half of each physical bank
-/// is reserved for a later second way.
+/// Each way has 64 sets of sixteen words. Even and odd words are held in two
+/// 1024x16 BSRAM leaves so both halves of a 32-bit refill beat install together.
 pub struct DataCache {
-    words: Box<[[Word; CACHE_LINE_WORDS]; CACHE_SETS]>,
-    tags: [u32; CACHE_SETS],
-    valid: [bool; CACHE_SETS],
+    words: Box<[[[Word; CACHE_LINE_WORDS]; CACHE_SETS]; CACHE_WAYS]>,
+    tags: [[u32; CACHE_SETS]; CACHE_WAYS],
+    valid: [[bool; CACHE_SETS]; CACHE_WAYS],
+    victim: [usize; CACHE_SETS],
     pending: Option<Pending>,
 }
 
-/// The instruction side uses the same parity-split two-BSRAM geometry. The first
+/// The instruction side uses the same two-way, parity-split BSRAM geometry. The first
 /// processor has split instruction and data instances, with an arbiter sharing
 /// one SDRAM line-transaction port.
 pub type InstructionCache = DataCache;
@@ -85,9 +86,10 @@ pub type InstructionCache = DataCache;
 impl Default for DataCache {
     fn default() -> Self {
         Self {
-            words: Box::new([[0; CACHE_LINE_WORDS]; CACHE_SETS]),
-            tags: [0; CACHE_SETS],
-            valid: [false; CACHE_SETS],
+            words: Box::new([[[0; CACHE_LINE_WORDS]; CACHE_SETS]; CACHE_WAYS]),
+            tags: [[0; CACHE_SETS]; CACHE_WAYS],
+            valid: [[false; CACHE_SETS]; CACHE_WAYS],
+            victim: [0; CACHE_SETS],
             pending: None,
         }
     }
@@ -98,7 +100,7 @@ impl DataCache {
         if self.pending.is_some() {
             return Err(CacheError::Busy);
         }
-        self.valid.fill(false);
+        self.valid.fill([false; CACHE_SETS]);
         Ok(())
     }
 
@@ -110,15 +112,20 @@ impl DataCache {
             CpuMemoryRequest::Read { address } | CpuMemoryRequest::Write { address, .. } => address,
         };
         let decoded = decode(address);
-        let hit = self.valid[decoded.set] && self.tags[decoded.set] == decoded.tag;
+        let hit_way = (0..CACHE_WAYS).find(|way| {
+            self.valid[*way][decoded.set] && self.tags[*way][decoded.set] == decoded.tag
+        });
         match request {
-            CpuMemoryRequest::Read { .. } if hit => {
+            CpuMemoryRequest::Read { .. } if hit_way.is_some() => {
                 Ok(CacheAction::CpuResponse(CpuMemoryResponse::Read {
-                    value: self.words[decoded.set][decoded.word],
+                    value: self.words[hit_way.unwrap()][decoded.set][decoded.word],
                 }))
             }
             CpuMemoryRequest::Read { address } => {
-                self.pending = Some(Pending::ReadMiss { address });
+                let way = (0..CACHE_WAYS)
+                    .find(|way| !self.valid[*way][decoded.set])
+                    .unwrap_or(self.victim[decoded.set]);
+                self.pending = Some(Pending::ReadMiss { address, way });
                 Ok(CacheAction::MainMemoryRequest(
                     MainMemoryRequest::ReadLine {
                         line_address: address.line_base(CACHE_LINE_WORDS as u32),
@@ -126,10 +133,13 @@ impl DataCache {
                 ))
             }
             CpuMemoryRequest::Write { address, value } => {
-                if hit {
-                    self.words[decoded.set][decoded.word] = value;
+                if let Some(way) = hit_way {
+                    self.words[way][decoded.set][decoded.word] = value;
                 }
-                self.pending = Some(Pending::WriteThrough { address, hit });
+                self.pending = Some(Pending::WriteThrough {
+                    address,
+                    hit: hit_way.is_some(),
+                });
                 Ok(CacheAction::MainMemoryRequest(
                     MainMemoryRequest::WriteWord { address, value },
                 ))
@@ -143,12 +153,13 @@ impl DataCache {
     ) -> Result<CpuMemoryResponse, CacheError> {
         let pending = self.pending.ok_or(CacheError::UnexpectedMemoryResponse)?;
         match (pending, response) {
-            (Pending::ReadMiss { address }, MainMemoryResponse::ReadLine { words }) => {
+            (Pending::ReadMiss { address, way }, MainMemoryResponse::ReadLine { words }) => {
                 self.pending = None;
                 let decoded = decode(address);
-                self.words[decoded.set] = words;
-                self.tags[decoded.set] = decoded.tag;
-                self.valid[decoded.set] = true;
+                self.words[way][decoded.set] = words;
+                self.tags[way][decoded.set] = decoded.tag;
+                self.valid[way][decoded.set] = true;
+                self.victim[decoded.set] = 1 - way;
                 Ok(CpuMemoryResponse::Read {
                     value: words[decoded.word],
                 })
@@ -157,8 +168,10 @@ impl DataCache {
                 self.pending = None;
                 debug_assert_eq!(
                     hit,
-                    self.valid[decode(address).set]
-                        && self.tags[decode(address).set] == decode(address).tag
+                    (0..CACHE_WAYS).any(|way| {
+                        self.valid[way][decode(address).set]
+                            && self.tags[way][decode(address).set] == decode(address).tag
+                    })
                 );
                 Ok(CpuMemoryResponse::WriteComplete)
             }
@@ -200,10 +213,10 @@ mod tests {
     }
 
     #[test]
-    fn geometry_fits_two_half_used_1024x16_bsram_data_leaves() {
-        assert_eq!(CACHE_CAPACITY_BYTES, 2_048);
-        assert_eq!(CACHE_SETS * CACHE_LINE_WORDS, 1_024);
-        assert_eq!(CACHE_SETS * (CACHE_LINE_WORDS / 2), 512);
+    fn geometry_fits_two_fully_used_1024x16_bsram_data_leaves() {
+        assert_eq!(CACHE_CAPACITY_BYTES, 4_096);
+        assert_eq!(CACHE_WAYS * CACHE_SETS * CACHE_LINE_WORDS, 2_048);
+        assert_eq!(CACHE_WAYS * CACHE_SETS * (CACHE_LINE_WORDS / 2), 1_024);
     }
 
     #[test]
@@ -238,23 +251,46 @@ mod tests {
     }
 
     #[test]
-    fn conflicting_line_replaces_the_direct_mapped_set() {
+    fn same_set_uses_invalid_ways_then_replaces_deterministically() {
         let mut cache = DataCache::default();
+        let stride = (CACHE_SETS * CACHE_LINE_WORDS) as u32;
+        let addresses = [
+            0.into(),
+            PhysicalWordAddress::new(stride),
+            PhysicalWordAddress::new(2 * stride),
+        ];
+        for (address, base) in addresses[..2].iter().copied().zip([10, 20]) {
+            cache.request(CpuMemoryRequest::Read { address }).unwrap();
+            cache
+                .complete(MainMemoryResponse::ReadLine { words: line(base) })
+                .unwrap();
+        }
+        for (address, value) in addresses[..2].iter().copied().zip([10, 20]) {
+            assert_eq!(
+                cache.request(CpuMemoryRequest::Read { address }),
+                Ok(CacheAction::CpuResponse(CpuMemoryResponse::Read { value }))
+            );
+        }
         cache
-            .request(CpuMemoryRequest::Read { address: 0.into() })
+            .request(CpuMemoryRequest::Read {
+                address: addresses[2],
+            })
             .unwrap();
         cache
-            .complete(MainMemoryResponse::ReadLine { words: line(10) })
+            .complete(MainMemoryResponse::ReadLine { words: line(30) })
             .unwrap();
-        let conflict = PhysicalWordAddress::new((CACHE_SETS * CACHE_LINE_WORDS) as u32);
-        cache
-            .request(CpuMemoryRequest::Read { address: conflict })
-            .unwrap();
-        cache
-            .complete(MainMemoryResponse::ReadLine { words: line(20) })
-            .unwrap();
+        assert_eq!(
+            cache.request(CpuMemoryRequest::Read {
+                address: addresses[1]
+            }),
+            Ok(CacheAction::CpuResponse(CpuMemoryResponse::Read {
+                value: 20
+            }))
+        );
         assert!(matches!(
-            cache.request(CpuMemoryRequest::Read { address: 0.into() }),
+            cache.request(CpuMemoryRequest::Read {
+                address: addresses[0]
+            }),
             Ok(CacheAction::MainMemoryRequest(_))
         ));
     }

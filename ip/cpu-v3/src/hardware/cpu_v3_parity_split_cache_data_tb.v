@@ -21,7 +21,7 @@ end
 
 initial begin
     @(posedge clk);
-    write_address <= 10'd37;
+    write_address <= {1'b0, 9'd37};
     even_write_data <= 16'h1357;
     odd_write_data <= 16'h2468;
     even_write_enable <= 1;
@@ -29,7 +29,7 @@ initial begin
     @(posedge clk);
     even_write_enable <= 0;
     odd_write_enable <= 0;
-    read_address <= 10'd37;
+    read_address <= {1'b0, 9'd37};
     @(posedge clk);
     #1;
     if (even_read_data != 16'h1357 || odd_read_data != 16'h2468)
@@ -52,6 +52,25 @@ initial begin
     #1;
     if (even_read_data != 16'hef01 || odd_read_data != 16'habcd)
         $fatal(1, "even-only write modified the odd bank");
+
+    write_address <= {1'b1, 9'd37};
+    even_write_data <= 16'h5678;
+    odd_write_data <= 16'h9abc;
+    even_write_enable <= 1;
+    odd_write_enable <= 1;
+    @(posedge clk);
+    even_write_enable <= 0;
+    odd_write_enable <= 0;
+    read_address <= {1'b1, 9'd37};
+    @(posedge clk);
+    #1;
+    if (even_read_data != 16'h5678 || odd_read_data != 16'h9abc)
+        $fatal(1, "selected way read did not return way 1 contents");
+    read_address <= {1'b0, 9'd37};
+    @(posedge clk);
+    #1;
+    if (even_read_data != 16'hef01 || odd_read_data != 16'habcd)
+        $fatal(1, "way 1 write corrupted way 0 contents");
 
     $display("DIGITAL_DESIGN_PASS");
     $finish;

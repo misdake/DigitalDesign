@@ -1,4 +1,4 @@
-//! First CpuV3 physical-address cache: direct-mapped and write-through.
+//! CpuV3 two-way physical-address cache with write-through stores.
 //!
 //! A read miss issues one aligned line request and captures the eight ordered
 //! 32-bit response beats in a private 256-bit refill buffer. The cache then
@@ -17,15 +17,17 @@ use digital_design_hardware_gowin::ZeroBsramImage;
 use std::fmt::Write;
 use std::marker::PhantomData;
 
-pub const CPU_V3_CACHE_WORDS: usize = 1024;
+pub const CPU_V3_CACHE_WAYS: usize = 2;
+pub const CPU_V3_CACHE_WORDS_PER_WAY: usize = 1024;
+pub const CPU_V3_CACHE_WORDS: usize = CPU_V3_CACHE_WAYS * CPU_V3_CACHE_WORDS_PER_WAY;
 pub const CPU_V3_CACHE_LINE_WORDS: usize = 16;
 pub const CPU_V3_CACHE_LINE_BEATS: usize = CPU_V3_CACHE_LINE_WORDS / 2;
-pub const CPU_V3_CACHE_SETS: usize = CPU_V3_CACHE_WORDS / CPU_V3_CACHE_LINE_WORDS;
+pub const CPU_V3_CACHE_SETS: usize = CPU_V3_CACHE_WORDS_PER_WAY / CPU_V3_CACHE_LINE_WORDS;
 
-const fn parity_image<I: CpuV3CacheImage, const ODD: bool>() -> [u64; CPU_V3_CACHE_WORDS] {
-    let mut words = [0; CPU_V3_CACHE_WORDS];
+const fn parity_image<I: CpuV3CacheImage, const ODD: bool>() -> [u64; CPU_V3_CACHE_WORDS_PER_WAY] {
+    let mut words = [0; CPU_V3_CACHE_WORDS_PER_WAY];
     let mut address = 0;
-    while address < CPU_V3_CACHE_WORDS / 2 {
+    while address < CPU_V3_CACHE_WORDS_PER_WAY / 2 {
         words[address] = I::WORDS[2 * address + ODD as usize];
         address += 1;
     }
@@ -100,7 +102,7 @@ impl<I: CpuV3CacheImage> Module for CpuV3ParitySplitCacheData<I> {
         let even = parity_image::<I, false>();
         let odd = parity_image::<I, true>();
         let mut overrides = String::new();
-        for address in 0..CPU_V3_CACHE_WORDS {
+        for address in 0..CPU_V3_CACHE_WORDS_PER_WAY {
             assert!(even[address] <= u64::from(u16::MAX));
             assert!(odd[address] <= u64::from(u16::MAX));
             if even[address] != 0 {
@@ -182,19 +184,21 @@ impl CpuV3CacheImage for ZeroBsramImage {
 
 const CPU_V3_CACHE_TAG_BITS: usize = 12;
 const CPU_V3_CACHE_TAG_RAM16S: usize =
-    CPU_V3_CACHE_SETS.div_ceil(16) * CPU_V3_CACHE_TAG_BITS.div_ceil(4);
+    CPU_V3_CACHE_WAYS * CPU_V3_CACHE_SETS.div_ceil(16) * CPU_V3_CACHE_TAG_BITS.div_ceil(4);
 const CPU_V3_CACHE_TAG_PHYSICAL_BITS: usize = CPU_V3_CACHE_TAG_RAM16S * 64;
 
 #[derive(Clone, ModuleIo)]
 pub struct CpuV3CacheTagRamInput {
     pub write_enable: Wire,
+    pub write_way: Wire,
     pub address: Wires<6>,
     pub write_data: Wires<12>,
 }
 
 #[derive(Clone, ModuleIo)]
 pub struct CpuV3CacheTagRamOutput {
-    pub read_data: Wires<12>,
+    pub way_0_read_data: Wires<12>,
+    pub way_1_read_data: Wires<12>,
 }
 
 /// Characterized synchronous-write, asynchronous-read tag SSRAM.
@@ -211,7 +215,7 @@ impl HardwareIdentity for CpuV3CacheTagRam {
 impl Module for CpuV3CacheTagRam {
     type Input = CpuV3CacheTagRamInput;
     type Output = CpuV3CacheTagRamOutput;
-    type EmuState = [u16; CPU_V3_CACHE_SETS];
+    type EmuState = [[u16; CPU_V3_CACHE_SETS]; CPU_V3_CACHE_WAYS];
 
     const USES_MAIN_CLOCK: bool = true;
 
@@ -222,7 +226,7 @@ impl Module for CpuV3CacheTagRam {
     }
 
     fn create_emu(_input: &Self::Input, _output: &Self::Output) -> Self::EmuState {
-        [0; CPU_V3_CACHE_SETS]
+        [[0; CPU_V3_CACHE_SETS]; CPU_V3_CACHE_WAYS]
     }
 
     fn execute_emu(
@@ -235,7 +239,8 @@ impl Module for CpuV3CacheTagRam {
         output.drive(
             circuit,
             &CpuV3CacheTagRamOutputValue {
-                read_data: u64::from(state[input.address as usize]),
+                way_0_read_data: u64::from(state[0][input.address as usize]),
+                way_1_read_data: u64::from(state[1][input.address as usize]),
             },
         );
     }
@@ -248,7 +253,7 @@ impl Module for CpuV3CacheTagRam {
     ) {
         let input = input.sample(circuit);
         if input.write_enable {
-            state[input.address as usize] = input.write_data as u16;
+            state[input.write_way as usize][input.address as usize] = input.write_data as u16;
         }
     }
 
@@ -314,6 +319,7 @@ enum Phase {
     #[default]
     Idle,
     Check,
+    HitRead,
     WordRequest,
     WordResponse,
     LineRequest,
@@ -331,8 +337,10 @@ struct Pending {
 
 pub struct CpuV3DirectMappedCacheState {
     data: Box<[u16; CPU_V3_CACHE_WORDS]>,
-    tags: [u16; CPU_V3_CACHE_SETS],
-    valid: [bool; CPU_V3_CACHE_SETS],
+    tags: [[u16; CPU_V3_CACHE_SETS]; CPU_V3_CACHE_WAYS],
+    valid: [[bool; CPU_V3_CACHE_SETS]; CPU_V3_CACHE_WAYS],
+    victim: [usize; CPU_V3_CACHE_SETS],
+    pending_way: usize,
     phase: Phase,
     pending: Pending,
     refill_buffer: [u32; CPU_V3_CACHE_LINE_BEATS],
@@ -346,8 +354,10 @@ impl Default for CpuV3DirectMappedCacheState {
     fn default() -> Self {
         Self {
             data: Box::new([0; CPU_V3_CACHE_WORDS]),
-            tags: [0; CPU_V3_CACHE_SETS],
-            valid: [false; CPU_V3_CACHE_SETS],
+            tags: [[0; CPU_V3_CACHE_SETS]; CPU_V3_CACHE_WAYS],
+            valid: [[false; CPU_V3_CACHE_SETS]; CPU_V3_CACHE_WAYS],
+            victim: [0; CPU_V3_CACHE_SETS],
+            pending_way: 0,
             phase: Phase::Idle,
             pending: Pending::default(),
             refill_buffer: [0; CPU_V3_CACHE_LINE_BEATS],
@@ -362,11 +372,14 @@ impl Default for CpuV3DirectMappedCacheState {
 impl CpuV3DirectMappedCacheState {
     fn initialized<I: CpuV3CacheImage>() -> Self {
         let mut state = Self::default();
-        for (target, source) in state.data.iter_mut().zip(I::WORDS) {
+        for (target, source) in state.data[..CPU_V3_CACHE_WORDS_PER_WAY]
+            .iter_mut()
+            .zip(I::WORDS)
+        {
             *target = source as u16;
         }
         for set in 0..CPU_V3_CACHE_SETS {
-            state.valid[set] = I::INITIAL_VALID & (1u64 << set) != 0;
+            state.valid[0][set] = I::INITIAL_VALID & (1u64 << set) != 0;
         }
         state
     }
@@ -445,19 +458,28 @@ impl<I: CpuV3CacheImage> Module for CpuV3DirectMappedCacheWithImage<I> {
             }
             Phase::Check => {
                 let (set, tag, word) = decode(state.pending.address);
-                let hit = state.valid[set] && state.tags[set] == tag;
+                let hit_way = (0..CPU_V3_CACHE_WAYS)
+                    .find(|way| state.valid[*way][set] && state.tags[*way][set] == tag);
                 if state.pending.write {
-                    if hit {
-                        state.data[set * CPU_V3_CACHE_LINE_WORDS + word] = state.pending.write_data;
+                    if let Some(way) = hit_way {
+                        state.data[data_index(way, set, word)] = state.pending.write_data;
                     }
                     state.phase = Phase::WordRequest;
-                } else if hit {
-                    state.response_data = state.data[set * CPU_V3_CACHE_LINE_WORDS + word];
-                    state.phase = Phase::CpuResponse;
+                } else if let Some(way) = hit_way {
+                    state.pending_way = way;
+                    state.phase = Phase::HitRead;
                 } else {
+                    state.pending_way = (0..CPU_V3_CACHE_WAYS)
+                        .find(|way| !state.valid[*way][set])
+                        .unwrap_or(state.victim[set]);
                     state.refill_beat = 0;
                     state.phase = Phase::LineRequest;
                 }
+            }
+            Phase::HitRead => {
+                let (set, _, word) = decode(state.pending.address);
+                state.response_data = state.data[data_index(state.pending_way, set, word)];
+                state.phase = Phase::CpuResponse;
             }
             Phase::WordRequest if input.memory_request_ready => {
                 state.phase = Phase::WordResponse;
@@ -492,8 +514,8 @@ impl<I: CpuV3CacheImage> Module for CpuV3DirectMappedCacheWithImage<I> {
                 let drain = usize::from(state.drain_beat);
                 let beat = state.refill_buffer[drain];
                 let even_word = 2 * drain;
-                state.data[set * CPU_V3_CACHE_LINE_WORDS + even_word] = beat as u16;
-                state.data[set * CPU_V3_CACHE_LINE_WORDS + even_word + 1] = (beat >> 16) as u16;
+                state.data[data_index(state.pending_way, set, even_word)] = beat as u16;
+                state.data[data_index(state.pending_way, set, even_word + 1)] = (beat >> 16) as u16;
                 if drain == requested_word / 2 {
                     state.response_data = if requested_word % 2 == 0 {
                         beat as u16
@@ -502,8 +524,9 @@ impl<I: CpuV3CacheImage> Module for CpuV3DirectMappedCacheWithImage<I> {
                     };
                 }
                 if drain + 1 == CPU_V3_CACHE_LINE_BEATS {
-                    state.tags[set] = tag;
-                    state.valid[set] = true;
+                    state.tags[state.pending_way][set] = tag;
+                    state.valid[state.pending_way][set] = true;
+                    state.victim[set] = 1 - state.pending_way;
                     state.phase = Phase::CpuResponse;
                 } else {
                     state.drain_beat += 1;
@@ -514,7 +537,7 @@ impl<I: CpuV3CacheImage> Module for CpuV3DirectMappedCacheWithImage<I> {
         }
 
         if input.invalidate_all {
-            state.valid.fill(false);
+            state.valid.fill([false; CPU_V3_CACHE_SETS]);
         }
     }
 
@@ -567,6 +590,10 @@ const fn decode(address: u32) -> (usize, u16, usize) {
     (set, tag, word)
 }
 
+const fn data_index(way: usize, set: usize, word: usize) -> usize {
+    (way * CPU_V3_CACHE_SETS + set) * CPU_V3_CACHE_LINE_WORDS + word
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -577,10 +604,10 @@ mod tests {
     struct InterleavedImage;
 
     impl BsramImage<16> for InterleavedImage {
-        const WORDS: [u64; CPU_V3_CACHE_WORDS] = {
-            let mut words = [0; CPU_V3_CACHE_WORDS];
+        const WORDS: [u64; CPU_V3_CACHE_WORDS_PER_WAY] = {
+            let mut words = [0; CPU_V3_CACHE_WORDS_PER_WAY];
             let mut index = 0;
-            while index < CPU_V3_CACHE_WORDS {
+            while index < CPU_V3_CACHE_WORDS_PER_WAY {
                 words[index] = index as u64;
                 index += 1;
             }
@@ -725,8 +752,8 @@ mod tests {
     }
 
     #[test]
-    fn cache_image_is_split_by_word_parity_and_leaves_the_future_way_empty() {
-        for address in 0..CPU_V3_CACHE_WORDS / 2 {
+    fn cache_image_is_split_by_word_parity_and_initializes_only_way_zero() {
+        for address in 0..CPU_V3_CACHE_WORDS_PER_WAY / 2 {
             assert_eq!(
                 parity_image::<InterleavedImage, false>()[address],
                 (2 * address) as u64
@@ -737,12 +764,12 @@ mod tests {
             );
         }
         assert!(
-            parity_image::<InterleavedImage, false>()[CPU_V3_CACHE_WORDS / 2..]
+            parity_image::<InterleavedImage, false>()[CPU_V3_CACHE_WORDS_PER_WAY / 2..]
                 .iter()
                 .all(|word| *word == 0)
         );
         assert!(
-            parity_image::<InterleavedImage, true>()[CPU_V3_CACHE_WORDS / 2..]
+            parity_image::<InterleavedImage, true>()[CPU_V3_CACHE_WORDS_PER_WAY / 2..]
                 .iter()
                 .all(|word| *word == 0)
         );
@@ -821,6 +848,21 @@ mod tests {
         );
         assert_eq!(
             transact(&mut circuit, &input, &output, &mut memory, false, 0x123, 0),
+            (0x4567, false, 0)
+        );
+        for address in 0x920..0x930 {
+            memory.words.insert(address, (0x3000 | address) as u16);
+        }
+        assert_eq!(
+            transact(&mut circuit, &input, &output, &mut memory, false, 0x923, 0),
+            (0x3923, false, 1)
+        );
+        assert_eq!(
+            transact(&mut circuit, &input, &output, &mut memory, false, 0x523, 0),
+            (0x2523, false, 0)
+        );
+        assert_eq!(
+            transact(&mut circuit, &input, &output, &mut memory, false, 0x123, 0),
             (0x4567, false, 1)
         );
     }
@@ -882,7 +924,7 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "explicit external simulation of the CpuV3 direct-mapped cache"]
+    #[ignore = "explicit external simulation of the CpuV3 two-way cache"]
     fn verify_verilog_with_iverilog() {
         digital_design_hardware::verify_verilog_with_iverilog::<CpuV3DirectMappedCache>().unwrap();
     }

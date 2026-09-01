@@ -31,44 +31,56 @@ module CpuV3DirectMappedCache (
 // buffer, so an error or invalidate can never expose a partially installed
 // line.
 
-localparam [2:0] ST_IDLE = 0;
-localparam [2:0] ST_CHECK = 1;
-localparam [2:0] ST_WORD_REQUEST = 2;
-localparam [2:0] ST_WORD_RESPONSE = 3;
-localparam [2:0] ST_LINE_REQUEST = 4;
-localparam [2:0] ST_LINE_RECEIVE = 5;
-localparam [2:0] ST_LINE_DRAIN = 6;
-localparam [2:0] ST_CPU_RESPONSE = 7;
+localparam [3:0] ST_IDLE = 0;
+localparam [3:0] ST_CHECK = 1;
+localparam [3:0] ST_HIT_READ = 2;
+localparam [3:0] ST_WORD_REQUEST = 3;
+localparam [3:0] ST_WORD_RESPONSE = 4;
+localparam [3:0] ST_LINE_REQUEST = 5;
+localparam [3:0] ST_LINE_RECEIVE = 6;
+localparam [3:0] ST_LINE_DRAIN = 7;
+localparam [3:0] ST_CPU_RESPONSE = 8;
 
-reg [2:0] state = ST_IDLE;
+reg [3:0] state = ST_IDLE;
 reg pending_write = 0;
 reg [31:0] pending_address = 0;
 reg [15:0] pending_write_data = 0;
 reg [2:0] refill_beat = 0;
 reg [2:0] drain_beat = 0;
+reg pending_way = 0;
 // The refill buffer is plain flip-flops, not inferred RAM: it is the future
 // CPU/DRAM clock-domain crossing structure and must stay a register array.
 (* syn_ramstyle = "registers" *) reg [31:0] refill_buffer [0:7];
 reg [15:0] response_data = 0;
 reg response_error = 0;
-reg [63:0] valid = __INITIAL_VALID__;
+reg [63:0] way_0_valid = __INITIAL_VALID__;
+reg [63:0] way_1_valid = 0;
+reg [63:0] victim = 0;
 
 wire cpu_address_valid = cpu_address[31:22] == 0;
 
 wire [5:0] pending_set = pending_address[9:4];
 wire [11:0] pending_tag = pending_address[21:10];
 wire [3:0] pending_word = pending_address[3:0];
-wire [11:0] tag_read_data;
-wire pending_hit = valid[pending_set] && tag_read_data == pending_tag;
+wire [11:0] way_0_tag_read_data;
+wire [11:0] way_1_tag_read_data;
+wire way_0_hit = way_0_valid[pending_set] && way_0_tag_read_data == pending_tag;
+wire way_1_hit = way_1_valid[pending_set] && way_1_tag_read_data == pending_tag;
+wire pending_hit = way_0_hit || way_1_hit;
+wire hit_way = !way_0_hit && way_1_hit;
+wire selected_victim = !way_0_valid[pending_set] ? 1'b0 :
+                       !way_1_valid[pending_set] ? 1'b1 : victim[pending_set];
 wire drain_last = drain_beat == 7;
 wire tag_write_enable = state == ST_LINE_DRAIN && drain_last;
 
 __CACHE_TAGS__ u_tags (
     .clk(clk),
     .write_enable(tag_write_enable),
+    .write_way(pending_way),
     .address(pending_set),
     .write_data(pending_tag),
-    .read_data(tag_read_data)
+    .way_0_read_data(way_0_tag_read_data),
+    .way_1_read_data(way_1_tag_read_data)
 );
 
 wire [31:0] drain_data = refill_buffer[drain_beat];
@@ -77,12 +89,10 @@ wire hit_write = state == ST_CHECK && pending_write && pending_hit;
 wire even_cache_write_enable = drain_write || (hit_write && !pending_word[0]);
 wire odd_cache_write_enable = drain_write || (hit_write && pending_word[0]);
 wire [9:0] cache_write_address = drain_write ?
-    {1'b0, pending_set, drain_beat} : {1'b0, pending_set, pending_word[3:1]};
+    {pending_way, pending_set, drain_beat} : {hit_way, pending_set, pending_word[3:1]};
 wire [15:0] even_cache_write_data = drain_write ? drain_data[15:0] : pending_write_data;
 wire [15:0] odd_cache_write_data = drain_write ? drain_data[31:16] : pending_write_data;
-wire [9:0] cache_read_address = state == ST_IDLE ?
-    {1'b0, cpu_address[9:4], cpu_address[3:1]} :
-    {1'b0, pending_set, pending_word[3:1]};
+wire [9:0] cache_read_address = {hit_way, pending_set, pending_word[3:1]};
 wire [15:0] even_cache_read_data;
 wire [15:0] odd_cache_read_data;
 wire [15:0] cache_read_data = pending_word[0] ? odd_cache_read_data : even_cache_read_data;
@@ -113,7 +123,9 @@ assign memory_response_ready = state == ST_WORD_RESPONSE || state == ST_LINE_REC
 always @(posedge clk) begin
     if (reset) begin
         state <= ST_IDLE;
-        valid <= __INITIAL_VALID__;
+        way_0_valid <= __INITIAL_VALID__;
+        way_1_valid <= 0;
+        victim <= 0;
         response_error <= 0;
     end else begin
         case (state)
@@ -135,12 +147,17 @@ always @(posedge clk) begin
                 if (pending_write) begin
                     state <= ST_WORD_REQUEST;
                 end else if (pending_hit) begin
-                    response_data <= cache_read_data;
-                    state <= ST_CPU_RESPONSE;
+                    state <= ST_HIT_READ;
                 end else begin
+                    pending_way <= selected_victim;
                     refill_beat <= 0;
                     state <= ST_LINE_REQUEST;
                 end
+            end
+
+            ST_HIT_READ: begin
+                response_data <= cache_read_data;
+                state <= ST_CPU_RESPONSE;
             end
 
             ST_WORD_REQUEST: if (memory_request_ready)
@@ -177,7 +194,11 @@ always @(posedge clk) begin
                 if (drain_beat == pending_word[3:1])
                     response_data <= pending_word[0] ? drain_data[31:16] : drain_data[15:0];
                 if (drain_last) begin
-                    valid[pending_set] <= 1;
+                    if (pending_way)
+                        way_1_valid[pending_set] <= 1;
+                    else
+                        way_0_valid[pending_set] <= 1;
+                    victim[pending_set] <= !pending_way;
                     state <= ST_CPU_RESPONSE;
                 end else begin
                     drain_beat <= drain_beat + 1'b1;
@@ -190,8 +211,10 @@ always @(posedge clk) begin
             default: state <= ST_IDLE;
         endcase
 
-        if (invalidate_all)
-            valid <= 0;
+        if (invalidate_all) begin
+            way_0_valid <= 0;
+            way_1_valid <= 0;
+        end
     end
 end
 

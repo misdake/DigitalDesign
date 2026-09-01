@@ -270,13 +270,16 @@ section, while button `01` and the default `00` select the primary one.
 
 ## First data-cache policy
 
-The first processor uses split 2-KiB instruction and data caches. Each is
-direct-mapped with 64 sets and 32 bytes (16 CPU words) per line. Each cache's
-1,024 data words are parity-split across two characterized 1024x16 BSRAM
-leaves: one stores even words and one stores odd words. Only 512 addresses per
-bank are used until the later second-way conversion. Its 64 physical 12-bit tags map through a characterized
-SSRAM leaf to 12 RAM16 primitives (768 physical SSRAM bits); resettable valid
-bits remain ordinary registers. One arbiter shares the SDRAM transaction port;
+The first processor uses split 4-KiB instruction and data caches. Each is
+two-way set-associative with 64 sets and 32 bytes (16 CPU words) per line. Each
+cache's 2,048 data words are parity-split across two characterized 1024x16 BSRAM
+leaves: one stores every even word and one stores every odd word, while the way
+selects the upper address bit inside both banks. Each bank remains one-read,
+one-write; both tags are compared first, then the selected way is read from both
+parity banks. The two 64-entry physical tag arrays map through a characterized
+SSRAM leaf to 24 RAM16 primitives (1,536 physical SSRAM bits). Resettable valid
+and next-victim bits remain ordinary registers. Invalid ways are filled before
+the deterministic per-set victim is replaced. One arbiter shares the SDRAM transaction port;
 instruction misses may not starve refresh or an already accepted data
 transaction.
 
@@ -286,9 +289,7 @@ simpler. A read miss issues one Controller HS burst and captures eight ordered
 32-bit beats in a private refill buffer. Both halves of one buffered beat drain
 into the even and odd BSRAM banks in the same cycle, so a complete line installs
 in eight cycles. A 16-bit store remains one 32-bit masked SDRAM write.
-Associativity and write-back are policy changes
-behind the same CPU interface, to be justified by measured miss traffic rather
-than copied from the exploratory model.
+Write-back remains a later policy change behind the same CPU interface.
 
 The first arbiter permits one accepted Controller HS operation. In the host
 scheduler model a due refresh has priority before accepting new client work,
