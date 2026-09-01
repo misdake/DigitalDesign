@@ -25,7 +25,7 @@ module CpuV3Core (
     output wire device_write_enable,
     output wire [15:0] device_write_data,
     output wire halted,
-    output wire [15:0] halt_signal,
+    output reg [15:0] halt_signal = 0,
     output wire fault,
     output reg [7:0] fault_code = 0,
     output reg [15:0] fault_pc = 0,
@@ -591,7 +591,6 @@ assign device_write_enable = !hold && state == ST_EXECUTE && opcode == 4'hc && f
 assign device_write_data = gpr_read_b_data;
 // Do not expose HALT until the last buffered store is globally observed.
 assign halted = state == ST_HALTED && !async_store_valid;
-assign halt_signal = gpr_read_a_data;
 assign fault = state == ST_FAULT;
 assign pc = pc_register;
 assign code_segment = code_segment_register;
@@ -955,6 +954,11 @@ always @(posedge clk) begin
                                     state <= ST_FETCH_REQUEST;
                                 end
                                 8: if (field_a == 0 && field_b == 0) begin
+                                    // Latch the architectural halt signal at the
+                                    // retire edge, like a register-read: the value
+                                    // must be stable for the whole halted period
+                                    // rather than a live async GPR tap.
+                                    halt_signal <= gpr_read_a_data;
                                     retired_words <= retired_words + success_retire_words;
                                     state <= ST_HALTED;
                                 end else begin

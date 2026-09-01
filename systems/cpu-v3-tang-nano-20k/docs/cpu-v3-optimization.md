@@ -694,6 +694,15 @@ natural next targets.
 - `cargo test --workspace`: 410 passed; CPU V3 78 passed / 10 ignored.
 - Verilog/RTL Icarus for the CPU V3 core, GPR RAM, and the fetch-pipeline probe passed with the new
   cycle contract.
+- A cycle-accurate emulator-vs-Icarus co-simulation of the core now drives the same program through
+  the Rust emulator and the RTL and compares a curated set of deterministic outputs every cycle
+  (program counter, segments, retired words, halt/fault, and the instruction/data handshake), covering
+  the Stage 12 overlap (a dependent `ADDI` chain at one instruction per cycle), the wide SETP-retire,
+  a taken-branch redirect, the async store whose data value equals the forwarded `r0`, an FPU barrier,
+  and the halt value. It runs as `core_emu_matches_rtl_pipeline_overlap` under `--ignored`.
+- `halt_signal` was tightened from a live async GPR tap to a value latched at the HALT retire edge
+  (mirrored in the emulator), so it is a stable architectural property that the co-simulation compares
+  directly each cycle rather than only at the halt cycle.
 - `scripts/validate-hardware.ps1 -Mode quick` and `-Mode iverilog` pass, including the two-stage flash
   boot signature testbench. This surfaced and fixed a pre-existing (Stage 9) mismatch: the
   `CpuV3System` top module exposes a 64-bit `sdram_write_data`/`sdram_read_data` gearbox interface
