@@ -66,10 +66,10 @@ enum Pending {
 
 /// A 2-KiB direct-mapped, write-through, no-write-allocate cache.
 ///
-/// Direct mapping is intentional for the first RTL: all 1,024 cached words fit
-/// one measured 1024x16 BSRAM leaf, and one synchronous lookup does not require
-/// duplicate data banks. Associativity remains a replaceable policy above the
-/// CPU transaction interface if measurements later justify more BSRAM blocks.
+/// Direct mapping is intentional for the first RTL. The 1,024 cached words are
+/// split across even and odd 1024x16 BSRAM leaves so both halves of a 32-bit
+/// refill beat can be installed together. The upper half of each physical bank
+/// is reserved for a later second way.
 pub struct DataCache {
     words: Box<[[Word; CACHE_LINE_WORDS]; CACHE_SETS]>,
     tags: [u32; CACHE_SETS],
@@ -77,7 +77,7 @@ pub struct DataCache {
     pending: Option<Pending>,
 }
 
-/// The instruction side uses the same measured one-BSRAM geometry. The first
+/// The instruction side uses the same parity-split two-BSRAM geometry. The first
 /// processor has split instruction and data instances, with an arbiter sharing
 /// one SDRAM line-transaction port.
 pub type InstructionCache = DataCache;
@@ -200,9 +200,10 @@ mod tests {
     }
 
     #[test]
-    fn geometry_fits_one_1024x16_bsram_data_leaf() {
+    fn geometry_fits_two_half_used_1024x16_bsram_data_leaves() {
         assert_eq!(CACHE_CAPACITY_BYTES, 2_048);
         assert_eq!(CACHE_SETS * CACHE_LINE_WORDS, 1_024);
+        assert_eq!(CACHE_SETS * (CACHE_LINE_WORDS / 2), 512);
     }
 
     #[test]

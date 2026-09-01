@@ -111,10 +111,10 @@ impl Module for CpuV3MemoryArbiter {
         let selected = select(&input);
         let requesting = state.owner == Owner::None && selected != Owner::None;
         let accepted = requesting && input.memory_request_ready;
-        let selected_line_read = selected == Owner::Instruction
-            || (selected == Owner::Data && !input.data_write);
-        let instruction_responding = state.owner == Owner::Instruction
-            && input.memory_response_valid;
+        let selected_line_read =
+            selected == Owner::Instruction || (selected == Owner::Data && !input.data_write);
+        let instruction_responding =
+            state.owner == Owner::Instruction && input.memory_response_valid;
         let data_responding = state.owner == Owner::Data && input.memory_response_valid;
         let dma_responding = state.owner == Owner::Dma && input.memory_response_valid;
         output.drive(
@@ -248,8 +248,7 @@ impl Module for CpuV3MemoryArbiter {
         let instruction_responding = owner_instruction & input.memory_response_valid;
         let data_responding = owner_data & input.memory_response_valid;
         let dma_responding = owner_dma & input.memory_response_valid;
-        let selected_line_read =
-            selected_instruction | (selected_data & !input.data_write);
+        let selected_line_read = selected_instruction | (selected_data & !input.data_write);
         let read_data_lo = Wires {
             wires: std::array::from_fn(|bit| input.memory_read_data.wires[bit]),
         };

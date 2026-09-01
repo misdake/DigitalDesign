@@ -42,7 +42,7 @@ aligned line request; the system arbiter forwards it as one SDRAM burst
 command, holds the port while the adapter streams eight ordered 32-bit beats
 (the low half of beat `n` is word `2*n`) into the cache's private 256-bit
 refill buffer, and releases the port once the final beat is accepted. The
-cache then drains sixteen words into its data BSRAM on its own and commits tag
+cache then drains eight beats into its even/odd data BSRAM banks on its own and commits tag
 and valid state only after a complete error-free line, so an error or
 invalidate can never expose a partially installed line. The boot DMA keeps
 single-word transactions. Only full-cache invalidation exists; there is no

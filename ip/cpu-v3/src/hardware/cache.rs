@@ -2,18 +2,19 @@
 //!
 //! A read miss issues one aligned line request and captures the eight ordered
 //! 32-bit response beats in a private 256-bit refill buffer. The cache then
-//! drains sixteen 16-bit words from the buffer into its data BSRAM on its own
+//! drains eight 32-bit beats from the buffer into parity-split data BSRAMs
 //! and commits tag and valid state only after a complete error-free line, so
 //! an error or invalidate can never expose a partially installed line. Writes
 //! remain single write-through word transactions.
 
 use digital_design_circuit::{CircuitWires, Wire, Wires};
 use digital_design_hardware::{
-    resources::components::SsramBits, HardwareIdentity, Module, ModuleIo, TargetResourceRequest,
-    VerilogDependency, VerilogIdentity,
+    resources::components::{BsramBlocks, SsramBits},
+    HardwareIdentity, Module, ModuleIo, TargetResourceRequest, VerilogDependency, VerilogIdentity,
 };
 use digital_design_hardware_gowin::BsramImage;
-use digital_design_hardware_gowin::{Bsram1R1Rw1024, ZeroBsramImage};
+use digital_design_hardware_gowin::ZeroBsramImage;
+use std::fmt::Write;
 use std::marker::PhantomData;
 
 pub const CPU_V3_CACHE_WORDS: usize = 1024;
@@ -21,7 +22,152 @@ pub const CPU_V3_CACHE_LINE_WORDS: usize = 16;
 pub const CPU_V3_CACHE_LINE_BEATS: usize = CPU_V3_CACHE_LINE_WORDS / 2;
 pub const CPU_V3_CACHE_SETS: usize = CPU_V3_CACHE_WORDS / CPU_V3_CACHE_LINE_WORDS;
 
-type CacheData<I> = Bsram1R1Rw1024<16, I>;
+const fn parity_image<I: CpuV3CacheImage, const ODD: bool>() -> [u64; CPU_V3_CACHE_WORDS] {
+    let mut words = [0; CPU_V3_CACHE_WORDS];
+    let mut address = 0;
+    while address < CPU_V3_CACHE_WORDS / 2 {
+        words[address] = I::WORDS[2 * address + ODD as usize];
+        address += 1;
+    }
+    words
+}
+
+fn cache_data_image_hash<I: CpuV3CacheImage>() -> u64 {
+    let mut hash = 0xcbf29ce484222325u64;
+    for byte in b"cpu-v3-parity-split-cache-data-v1"
+        .iter()
+        .copied()
+        .chain([0])
+        .chain(I::WORDS.iter().flat_map(|word| word.to_le_bytes()))
+    {
+        hash ^= u64::from(byte);
+        hash = hash.wrapping_mul(0x100000001b3);
+    }
+    hash
+}
+
+#[derive(Clone, ModuleIo)]
+struct CpuV3ParitySplitCacheDataInput {
+    read_address: Wires<10>,
+    even_write_enable: Wire,
+    odd_write_enable: Wire,
+    write_address: Wires<10>,
+    even_write_data: Wires<16>,
+    odd_write_data: Wires<16>,
+}
+
+#[derive(Clone, ModuleIo)]
+struct CpuV3ParitySplitCacheDataOutput {
+    even_read_data: Wires<16>,
+    odd_read_data: Wires<16>,
+}
+
+struct CpuV3ParitySplitCacheData<I>(PhantomData<I>);
+
+impl<I: CpuV3CacheImage> HardwareIdentity for CpuV3ParitySplitCacheData<I> {
+    const TARGET_RESOURCE_LEAF: bool = true;
+
+    fn verilog_identity() -> VerilogIdentity {
+        VerilogIdentity::new("CpuV3ParitySplitCacheData")
+            .namespace(["components", "cpu", "cpu_v3"])
+            .symbol("IMAGE", format!("h{:016x}", cache_data_image_hash::<I>()))
+    }
+}
+
+impl<I: CpuV3CacheImage> Module for CpuV3ParitySplitCacheData<I> {
+    type Input = CpuV3ParitySplitCacheDataInput;
+    type Output = CpuV3ParitySplitCacheDataOutput;
+    type EmuState = ();
+
+    const USES_MAIN_CLOCK: bool = true;
+    const EMU_AVAILABLE: bool = false;
+
+    fn target_resources() -> Vec<TargetResourceRequest> {
+        vec![TargetResourceRequest::new(BsramBlocks::new(2))]
+    }
+
+    fn execute_emu(
+        _state: &mut Self::EmuState,
+        _circuit: &mut CircuitWires,
+        _input: &Self::Input,
+        _output: &Self::Output,
+    ) {
+        panic!("parity-split cache data BSRAM is Verilog-only")
+    }
+
+    fn verilog_source() -> Option<String> {
+        let module_name = Self::verilog_identity().module_name();
+        let even = parity_image::<I, false>();
+        let odd = parity_image::<I, true>();
+        let mut overrides = String::new();
+        for address in 0..CPU_V3_CACHE_WORDS {
+            assert!(even[address] <= u64::from(u16::MAX));
+            assert!(odd[address] <= u64::from(u16::MAX));
+            if even[address] != 0 {
+                writeln!(
+                    overrides,
+                    "    even_memory[10'd{address}] = 16'h{:04x};",
+                    even[address]
+                )
+                .unwrap();
+            }
+            if odd[address] != 0 {
+                writeln!(
+                    overrides,
+                    "    odd_memory[10'd{address}] = 16'h{:04x};",
+                    odd[address]
+                )
+                .unwrap();
+            }
+        }
+        Some(format!(
+            r#"module {module_name}(
+    input wire clk,
+    input wire [9:0] read_address,
+    input wire even_write_enable,
+    input wire odd_write_enable,
+    input wire [9:0] write_address,
+    input wire [15:0] even_write_data,
+    input wire [15:0] odd_write_data,
+    output reg [15:0] even_read_data,
+    output reg [15:0] odd_read_data
+);
+
+reg [15:0] even_memory [0:1023];
+reg [15:0] odd_memory [0:1023];
+integer init_address;
+
+initial begin
+    for (init_address = 0; init_address < 1024; init_address = init_address + 1) begin
+        even_memory[init_address] = 16'h0000;
+        odd_memory[init_address] = 16'h0000;
+    end
+{overrides}end
+
+always @(posedge clk) begin
+    even_read_data <= even_memory[read_address];
+    if (even_write_enable)
+        even_memory[write_address] <= even_write_data;
+end
+
+always @(posedge clk) begin
+    odd_read_data <= odd_memory[read_address];
+    if (odd_write_enable)
+        odd_memory[write_address] <= odd_write_data;
+end
+
+endmodule
+"#
+        ))
+    }
+
+    fn verilog_testbench() -> Option<String> {
+        Some(include_str!("cpu_v3_parity_split_cache_data_tb.v").replace(
+            "CpuV3ParitySplitCacheData dut",
+            &format!("{} dut", Self::verilog_identity().module_name()),
+        ))
+    }
+}
 
 /// Power-up contents for a normal writable cache. Initial lines describe
 /// physical segment zero; later misses replace them through the ordinary
@@ -156,7 +302,7 @@ impl<I: CpuV3CacheImage> HardwareIdentity for CpuV3DirectMappedCacheWithImage<I>
                 "IMAGE",
                 format!(
                     "{}_v{:016x}",
-                    CacheData::<I>::verilog_identity().module_name(),
+                    CpuV3ParitySplitCacheData::<I>::verilog_identity().module_name(),
                     I::INITIAL_VALID
                 ),
             )
@@ -191,7 +337,7 @@ pub struct CpuV3DirectMappedCacheState {
     pending: Pending,
     refill_buffer: [u32; CPU_V3_CACHE_LINE_BEATS],
     refill_beat: u8,
-    drain_word: u8,
+    drain_beat: u8,
     response_data: u16,
     response_error: bool,
 }
@@ -206,7 +352,7 @@ impl Default for CpuV3DirectMappedCacheState {
             pending: Pending::default(),
             refill_buffer: [0; CPU_V3_CACHE_LINE_BEATS],
             refill_beat: 0,
-            drain_word: 0,
+            drain_beat: 0,
             response_data: 0,
             response_error: false,
         }
@@ -334,7 +480,7 @@ impl<I: CpuV3CacheImage> Module for CpuV3DirectMappedCacheWithImage<I> {
                     state.refill_buffer[usize::from(state.refill_beat)] =
                         input.memory_read_data as u32;
                     if state.refill_beat as usize + 1 == CPU_V3_CACHE_LINE_BEATS {
-                        state.drain_word = 0;
+                        state.drain_beat = 0;
                         state.phase = Phase::LineDrain;
                     } else {
                         state.refill_beat += 1;
@@ -343,23 +489,24 @@ impl<I: CpuV3CacheImage> Module for CpuV3DirectMappedCacheWithImage<I> {
             }
             Phase::LineDrain => {
                 let (set, tag, requested_word) = decode(state.pending.address);
-                let drain = usize::from(state.drain_word);
-                let beat = state.refill_buffer[drain / 2];
-                let value = if drain % 2 == 0 {
-                    beat as u16
-                } else {
-                    (beat >> 16) as u16
-                };
-                state.data[set * CPU_V3_CACHE_LINE_WORDS + drain] = value;
-                if drain == requested_word {
-                    state.response_data = value;
+                let drain = usize::from(state.drain_beat);
+                let beat = state.refill_buffer[drain];
+                let even_word = 2 * drain;
+                state.data[set * CPU_V3_CACHE_LINE_WORDS + even_word] = beat as u16;
+                state.data[set * CPU_V3_CACHE_LINE_WORDS + even_word + 1] = (beat >> 16) as u16;
+                if drain == requested_word / 2 {
+                    state.response_data = if requested_word % 2 == 0 {
+                        beat as u16
+                    } else {
+                        (beat >> 16) as u16
+                    };
                 }
-                if drain + 1 == CPU_V3_CACHE_LINE_WORDS {
+                if drain + 1 == CPU_V3_CACHE_LINE_BEATS {
                     state.tags[set] = tag;
                     state.valid[set] = true;
                     state.phase = Phase::CpuResponse;
                 } else {
-                    state.drain_word += 1;
+                    state.drain_beat += 1;
                 }
             }
             Phase::CpuResponse if input.cpu_response_ready => state.phase = Phase::Idle,
@@ -384,8 +531,8 @@ impl<I: CpuV3CacheImage> Module for CpuV3DirectMappedCacheWithImage<I> {
                     &format!("64'h{:016x}", I::INITIAL_VALID),
                 )
                 .replace(
-                    "__CACHE_DATA__",
-                    &CacheData::<I>::verilog_identity().module_name(),
+                    "__CACHE_DATA_BANKS__",
+                    &CpuV3ParitySplitCacheData::<I>::verilog_identity().module_name(),
                 )
                 .replace(
                     "__CACHE_TAGS__",
@@ -396,7 +543,7 @@ impl<I: CpuV3CacheImage> Module for CpuV3DirectMappedCacheWithImage<I> {
 
     fn verilog_dependencies() -> Vec<VerilogDependency> {
         vec![
-            VerilogDependency::new::<CacheData<I>>("u_data"),
+            VerilogDependency::new::<CpuV3ParitySplitCacheData<I>>("u_data_banks"),
             VerilogDependency::new::<CpuV3CacheTagRam>("u_tags"),
         ]
     }
@@ -426,6 +573,24 @@ mod tests {
     use digital_design_circuit::{build_circuit, Circuit};
     use digital_design_hardware::{ResourceAmount, ResourceKind, VerilogProject};
     use std::collections::{HashMap, VecDeque};
+
+    struct InterleavedImage;
+
+    impl BsramImage<16> for InterleavedImage {
+        const WORDS: [u64; CPU_V3_CACHE_WORDS] = {
+            let mut words = [0; CPU_V3_CACHE_WORDS];
+            let mut index = 0;
+            while index < CPU_V3_CACHE_WORDS {
+                words[index] = index as u64;
+                index += 1;
+            }
+            words
+        };
+    }
+
+    impl CpuV3CacheImage for InterleavedImage {
+        const INITIAL_VALID: u64 = 1;
+    }
 
     /// A line-serving memory model behind the cache port: a read request
     /// returns eight ordered 32-bit beats (low half = even word), a write
@@ -458,7 +623,8 @@ mod tests {
                     let low = self.word(address + 2 * beat);
                     let high = self.word(address + 2 * beat + 1);
                     let error = self.error_on_beat == Some(beat as usize);
-                    self.beats.push_back((u32::from(low) | u32::from(high) << 16, error));
+                    self.beats
+                        .push_back((u32::from(low) | u32::from(high) << 16, error));
                 }
             }
         }
@@ -556,6 +722,39 @@ mod tests {
             (input, output)
         });
         (circuit, input, output)
+    }
+
+    #[test]
+    fn cache_image_is_split_by_word_parity_and_leaves_the_future_way_empty() {
+        for address in 0..CPU_V3_CACHE_WORDS / 2 {
+            assert_eq!(
+                parity_image::<InterleavedImage, false>()[address],
+                (2 * address) as u64
+            );
+            assert_eq!(
+                parity_image::<InterleavedImage, true>()[address],
+                (2 * address + 1) as u64
+            );
+        }
+        assert!(
+            parity_image::<InterleavedImage, false>()[CPU_V3_CACHE_WORDS / 2..]
+                .iter()
+                .all(|word| *word == 0)
+        );
+        assert!(
+            parity_image::<InterleavedImage, true>()[CPU_V3_CACHE_WORDS / 2..]
+                .iter()
+                .all(|word| *word == 0)
+        );
+    }
+
+    #[test]
+    #[ignore = "explicit external simulation of the parity-split cache data banks"]
+    fn verify_parity_split_cache_data_with_iverilog() {
+        digital_design_hardware::verify_verilog_with_iverilog::<
+            CpuV3ParitySplitCacheData<ZeroBsramImage>,
+        >()
+        .unwrap();
     }
 
     #[test]
@@ -666,12 +865,12 @@ mod tests {
     }
 
     #[test]
-    fn export_claims_data_bsram_and_characterized_tag_ssram_leaves() {
+    fn export_claims_two_data_bsram_and_characterized_tag_ssram_leaves() {
         let project = VerilogProject::generate::<CpuV3DirectMappedCache>().unwrap();
         assert_eq!(project.resource_claims.len(), 2);
         assert_eq!(
             project.resource_claims[0].resources,
-            [ResourceAmount::new(ResourceKind::Bsram18K, 1)]
+            [ResourceAmount::new(ResourceKind::Bsram18K, 2)]
         );
         assert_eq!(
             project.resource_claims[1].resources,

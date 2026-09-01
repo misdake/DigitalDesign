@@ -268,7 +268,9 @@ mod tests {
         address: u64,
         write_data: u64,
     ) -> u64 {
-        drive(circuit, input, true, write, false, address, write_data, false);
+        drive(
+            circuit, input, true, write, false, address, write_data, false,
+        );
         circuit.execute_gates();
         assert!(output.sample(circuit).request_ready);
         circuit.clock_tick();
@@ -367,6 +369,9 @@ mod tests {
             assert_eq!(*beat, high << 16 | low, "beat {index} pairing");
         }
         // A word read afterwards still works and sees the written data.
-        assert_eq!(transact(&mut circuit, &input, &output, false, 0x121, 0), 0x4121);
+        assert_eq!(
+            transact(&mut circuit, &input, &output, false, 0x121, 0),
+            0x4121
+        );
     }
 }

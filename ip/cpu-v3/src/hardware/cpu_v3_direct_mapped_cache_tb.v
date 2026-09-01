@@ -29,6 +29,7 @@ always #5 clk = ~clk;
 integer line_requests = 0;
 integer write_requests = 0;
 integer beats_served = 0;
+integer drain_cycles = 0;
 integer cycles = 0;
 reg [3:0] beats_remaining = 0;
 reg [21:0] line_base_r = 0;
@@ -46,6 +47,8 @@ endfunction
 
 always @(posedge clk) begin
     cycles <= cycles + 1;
+    if (dut.state == 3'd6)
+        drain_cycles <= drain_cycles + 1;
     if (cycles > 20000)
         $fatal(1, "testbench cycle limit exceeded");
 
@@ -146,6 +149,8 @@ initial begin
     read_word(32'h0000_0123, 16'h8123);
     if (line_requests != 1 || beats_served != 8)
         $fatal(1, "miss did not refill exactly one line as eight beats");
+    if (drain_cycles != 8)
+        $fatal(1, "parity-split cache did not drain the line in eight cycles");
     read_word(32'h0000_012e, 16'h812e);
     read_word(32'h0000_012f, 16'h812f);
     if (line_requests != 1)
@@ -156,8 +161,9 @@ initial begin
         last_write_data != 16'h4567)
         $fatal(1, "write-through word transaction malformed");
     read_word(32'h0000_0123, 16'h4567);
+    read_word(32'h0000_0122, 16'h8122);
     if (line_requests != 1)
-        $fatal(1, "written line did not stay resident");
+        $fatal(1, "written line did not stay resident or parity neighbor caused a refill");
 
     invalidate_all <= 1;
     @(posedge clk);
