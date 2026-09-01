@@ -606,8 +606,8 @@ initial begin
     memory[16'h0107] = 16'd512;
     scenario = 35;
     expect_halt(16'd0, 350);
-    if (last_run_cycles != 80) begin
-        $display("FAIL: scenario 35 cycles %0d, expected 80", last_run_cycles);
+    if (last_run_cycles != 76) begin
+        $display("FAIL: scenario 35 cycles %0d, expected 76", last_run_cycles);
         errors = errors + 1;
     end
     if (fpr_word(2, 0) !== 16'd512 ||
@@ -634,8 +634,8 @@ initial begin
     memory[16'h0103] = 16'd128;
     scenario = 36;
     expect_halt(16'd0, 200);
-    if (last_run_cycles != 48) begin
-        $display("FAIL: scenario 36 cycles %0d, expected 48", last_run_cycles);
+    if (last_run_cycles != 46) begin
+        $display("FAIL: scenario 36 cycles %0d, expected 46", last_run_cycles);
         errors = errors + 1;
     end
     if (fpr_word(0, 0) !== 16'd1024 ||

@@ -104,10 +104,10 @@ reg [15:0] async_store_data = 0;
 reg [15:0] async_store_fault_pc = 0;
 
 // The scalar register file has two asynchronous read ports and one
-// synchronous write port. The FSM registers a write request at retirement;
-// it lands during the following fetch cycle, before the next Execute cycle.
-wire [15:0] gpr_read_a_data;
-wire [15:0] gpr_read_b_data;
+// synchronous write port. Back-to-back Execute cycles forward the pending
+// synchronous write so a dependent instruction never observes the old word.
+wire [15:0] gpr_read_a_ram_data;
+wire [15:0] gpr_read_b_ram_data;
 reg gpr_write_enable = 0;
 reg [3:0] gpr_write_address = 0;
 reg [15:0] gpr_write_data = 0;
@@ -176,6 +176,29 @@ wire [3:0] field_b = instruction[3:0];
 wire [3:0] gpr_read_a_address = state == ST_HALTED ? 4'd0 : field_a;
 wire [3:0] gpr_read_b_address =
     state == ST_EXECUTE && (opcode == 4'h8 || opcode == 4'h9) ? field_d : field_b;
+wire [15:0] gpr_read_a_data =
+    gpr_write_enable && gpr_write_address == gpr_read_a_address ?
+    gpr_write_data : gpr_read_a_ram_data;
+wire [15:0] gpr_read_b_data =
+    gpr_write_enable && gpr_write_address == gpr_read_b_address ?
+    gpr_write_data : gpr_read_b_ram_data;
+
+// Conservative two-stage frontend: only instructions that retire in one
+// Execute cycle and keep sequential control flow may overlap the next queue
+// pop. Loads, branches/jumps, devices, multiply, and FPU operations remain
+// barriers and continue to use the existing blocking FSM paths.
+wire immediate_pipelineable = opcode == 4'ha && field_d != 4'h8;
+wire control_alu_pipelineable = opcode == 4'he &&
+    (field_d <= 4'h3 || field_d == 4'h6 || field_d == 4'h7 ||
+     (field_d >= 4'h9 && field_d <= 4'hc) ||
+     (field_d == 4'hd && field_b <= 4'h1) ||
+     (field_d == 4'he && field_a == 4'h1));
+wire execute_pipelineable = state == ST_EXECUTE &&
+    (opcode == 4'h0 || opcode == 4'h1 ||
+     (opcode >= 4'h3 && opcode <= 4'h7) ||
+     (opcode == 4'h9 && !async_store_valid) ||
+     immediate_pipelineable || control_alu_pipelineable || opcode == 4'hf);
+wire execute_fetch_accepted = execute_pipelineable && instruction_request_ready;
 wire fpu_sine_operation = field_d == 4'he && field_b == 4'h2;
 // DSP lane operands index the wide asynchronous reads directly; the FSM parks
 // both read addresses on Fa/Fb for the whole operation, so fpu_step selects
@@ -508,8 +531,8 @@ __GPR_RAM__ u_gpr_ram (
     .write_data(gpr_write_data),
     .read_a_address(gpr_read_a_address),
     .read_b_address(gpr_read_b_address),
-    .read_a_data(gpr_read_a_data),
-    .read_b_data(gpr_read_b_data)
+    .read_a_data(gpr_read_a_ram_data),
+    .read_b_data(gpr_read_b_ram_data)
 );
 
 __DSP_MULTIPLIER__ u_multiplier (
@@ -545,13 +568,15 @@ __FPU_REGISTER_RAM__ u_fpu_register_ram (
     .read_b_data(fpu_rf_read_b_data)
 );
 
-assign instruction_request_valid = !hold && state == ST_FETCH_REQUEST;
+assign instruction_request_valid = !hold &&
+    (state == ST_FETCH_REQUEST || execute_pipelineable);
 assign instruction_address = {code_segment_register, pc_register};
 // A queued instruction may be returned in the same cycle that its request is
 // accepted. The legacy split request/response path remains valid for slower
 // instruction memories.
 assign instruction_response_ready = !hold && (state == ST_FETCH_REQUEST ||
-                                    state == ST_FETCH_RESPONSE);
+                                    state == ST_FETCH_RESPONSE ||
+                                    execute_pipelineable);
 assign data_request_valid = !hold && ((async_store_valid && !async_store_issued) ||
                             state == ST_DATA_REQUEST);
 assign data_write = async_store_valid ? 1'b1 : pending_write;
@@ -1023,6 +1048,27 @@ always @(posedge clk) begin
                             state <= ST_FAULT;
                         end
                     endcase
+                end
+                // A queue hit can provide the next sequential instruction in
+                // the same cycle that the current one retires. These
+                // assignments intentionally follow the opcode case so they
+                // replace its ST_FETCH_REQUEST transition only for the
+                // explicitly pipelineable subset above.
+                if (execute_fetch_accepted) begin
+                    if (instruction_response_valid) begin
+                        if (instruction_error) begin
+                            fault_code <= FAULT_INSTRUCTION_MEMORY;
+                            fault_pc <= pc_register;
+                            state <= ST_FAULT;
+                        end else begin
+                            instruction <= instruction_data;
+                            instruction_pc <= pc_register;
+                            pc_register <= pc_register + 1'b1;
+                            state <= ST_EXECUTE;
+                        end
+                    end else begin
+                        state <= ST_FETCH_RESPONSE;
+                    end
                 end
             end
             ST_DATA_REQUEST: begin

@@ -52,6 +52,7 @@ __FETCH_QUEUE__ u_fetch (
 __CPU_CORE__ u_core (
     .clk(clk),
     .reset(reset),
+    .hold(1'b0),
     .instruction_request_ready(core_request_ready),
     .instruction_response_valid(core_response_valid),
     .instruction_data(core_read_data),

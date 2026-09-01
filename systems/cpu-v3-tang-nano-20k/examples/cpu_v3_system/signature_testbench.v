@@ -7,10 +7,11 @@ module tb;
 reg clk = 0;
 reg [1:0] buttons = 0;
 reg flash_miso = 1;
-reg [31:0] sdram_read_data = 0;
+reg [63:0] sdram_read_data = 0;
 reg sdram_read_valid = 0;
 reg sdram_init_done = 0;
 reg sdram_command_ack = 0;
+reg sdram_write_data_ready = 1;
 wire [5:0] leds;
 wire uart_tx;
 wire flash_clk;
@@ -21,7 +22,8 @@ wire [2:0] sdram_command;
 wire sdram_precharge;
 wire [20:0] sdram_address;
 wire [3:0] sdram_write_mask;
-wire [31:0] sdram_write_data;
+wire [63:0] sdram_write_data;
+wire sdram_write_data_valid;
 wire [7:0] sdram_burst_length;
 reg pixel_clock = 0;
 reg serial_clock = 0;
@@ -38,21 +40,41 @@ always #1 serial_clock = ~serial_clock;
 
 // SDRAM model: 16-bit words, two words per 32-bit controller word. The boot
 // sections stay below physical word 0x50000, so 19 index bits suffice.
+//
+// The DisplaySdramPort is a 64-bit gearbox: a cache line is eight 32-bit words
+// (four 64-bit beats), and it streams line-write beats through
+// sdram_write_data_valid BEFORE the ACTIVE/WRITE command pair. The model
+// therefore buffers the four 64-bit beats and commits them to memory when the
+// WRITE command acknowledges a burst of seven, and it returns line reads as
+// four ordered 64-bit beats. A 32-bit word W occupies memory[2*W] (low half)
+// and memory[2*W+1] (high half), matching the port's packing.
 reg [15:0] memory [0:524287];
 integer read_delay = 0;
 integer read_beats = 0;
 reg [20:0] pending_read_address = 0;
+reg read_is_line = 0;
+reg [2:0] read_beat = 0;
 reg word_read_seen = 0;
 reg line_burst_seen = 0;
 integer write_beats = 0;
 reg [20:0] pending_write_address = 0;
-reg write_command_pending = 0;
 reg [7:0] pending_write_length = 0;
+reg [63:0] write_capture [0:3];
+reg [2:0] write_capture_beat = 0;
+reg [17:0] idx;
+reg [17:0] idx2;
 integer cycle;
 
 always @(posedge clk) begin
     sdram_command_ack <= 0;
     sdram_read_valid <= 0;
+
+    // The word port streams the four line-write beats while it is in its
+    // ST_WRITE_STAGE, which runs before ACTIVE/WRITE. Capture each beat here.
+    if (sdram_write_data_valid) begin
+        write_capture[write_capture_beat] <= sdram_write_data;
+        write_capture_beat <= write_capture_beat + 1'b1;
+    end
 
     // The word port interleaves a refresh command every 600 clocks.
     if (sdram_command_valid && (sdram_command == 3'b001 || sdram_command == 3'b011))
@@ -60,46 +82,67 @@ always @(posedge clk) begin
 
     if (sdram_command_valid && sdram_command == 3'b100) begin
         sdram_command_ack <= 1;
-        write_command_pending <= 1;
+        write_capture_beat <= 0;
         pending_write_address <= sdram_address;
         pending_write_length <= sdram_burst_length;
         if (sdram_burst_length != 0 && sdram_burst_length != 7)
             $fatal(1, "unexpected write burst length %0d", sdram_burst_length);
-    end else if (write_command_pending) begin
-        if (!sdram_write_mask[0]) memory[{pending_write_address[17:0], 1'b0}][7:0] <= sdram_write_data[7:0];
-        if (!sdram_write_mask[1]) memory[{pending_write_address[17:0], 1'b0}][15:8] <= sdram_write_data[15:8];
-        if (!sdram_write_mask[2]) memory[{pending_write_address[17:0], 1'b1}][7:0] <= sdram_write_data[23:16];
-        if (!sdram_write_mask[3]) memory[{pending_write_address[17:0], 1'b1}][15:8] <= sdram_write_data[31:24];
-        write_command_pending <= 0;
-        if (pending_write_length == 7) begin
-            pending_write_address <= pending_write_address + 1'b1;
-            write_beats <= 7;
+        if (sdram_burst_length == 7) begin
+            // Commit a cache line: beat j carries 32-bit words (base+2*j) and
+            // (base+2*j+1) in sdram_write_data[31:0] and [63:32].
+            begin : line_write_commit
+                integer j;
+                for (j = 0; j < 4; j = j + 1) begin
+                    idx = sdram_address[17:0] + 2*j;
+                    memory[{idx, 1'b0}] <= write_capture[j][15:0];
+                    memory[{idx, 1'b1}] <= write_capture[j][31:16];
+                    idx = idx + 1;
+                    memory[{idx, 1'b0}] <= write_capture[j][47:32];
+                    memory[{idx, 1'b1}] <= write_capture[j][63:48];
+                end
+            end
+        end else begin
+            if (!sdram_write_mask[0]) memory[{sdram_address[17:0], 1'b0}][7:0] <= sdram_write_data[7:0];
+            if (!sdram_write_mask[1]) memory[{sdram_address[17:0], 1'b0}][15:8] <= sdram_write_data[15:8];
+            if (!sdram_write_mask[2]) memory[{sdram_address[17:0], 1'b1}][7:0] <= sdram_write_data[23:16];
+            if (!sdram_write_mask[3]) memory[{sdram_address[17:0], 1'b1}][15:8] <= sdram_write_data[31:24];
         end
-    end else if (write_beats != 0) begin
-        memory[{pending_write_address[17:0], 1'b0}] <= sdram_write_data[15:0];
-        memory[{pending_write_address[17:0], 1'b1}] <= sdram_write_data[31:16];
-        pending_write_address <= pending_write_address + 1'b1;
-        write_beats <= write_beats - 1;
     end
 
-    // One READ command returns burst_length+1 ordered 32-bit beats.
+    // One READ command returns burst_length+1 ordered 64-bit beats for a line
+    // (four beats) or one 32-bit word for a burst of zero.
     if (sdram_command_valid && sdram_command == 3'b101) begin
         if (sdram_burst_length == 0) word_read_seen <= 1;
         else if (sdram_burst_length == 7) line_burst_seen <= 1;
         else $fatal(1, "unexpected burst length %0d", sdram_burst_length);
         pending_read_address <= sdram_address;
+        read_is_line <= sdram_burst_length == 7;
         read_delay <= 2;
-        read_beats <= sdram_burst_length + 1;
+        read_beat <= 0;
+        read_beats <= sdram_burst_length == 7 ? 4 : 1;
         sdram_command_ack <= 1;
     end else if (read_delay != 0) begin
         read_delay <= read_delay - 1;
     end else if (read_beats != 0) begin
-        sdram_read_data <= {
-            memory[{pending_read_address[17:0], 1'b1}],
-            memory[{pending_read_address[17:0], 1'b0}]
-        };
         sdram_read_valid <= 1;
-        pending_read_address <= pending_read_address + 1;
+        if (read_is_line) begin
+            idx = pending_read_address[17:0] + 2*read_beat;
+            idx2 = idx + 1;
+            sdram_read_data <= {
+                memory[{idx2, 1'b1}],
+                memory[{idx2, 1'b0}],
+                memory[{idx, 1'b1}],
+                memory[{idx, 1'b0}]
+            };
+        end else begin
+            idx = pending_read_address[17:0];
+            sdram_read_data <= {
+                32'b0,
+                memory[{idx, 1'b1}],
+                memory[{idx, 1'b0}]
+            };
+        end
+        read_beat <= read_beat + 1'b1;
         read_beats <= read_beats - 1;
     end
 end

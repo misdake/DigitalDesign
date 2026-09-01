@@ -847,6 +847,28 @@ impl CpuV3CoreState {
         self.fpu_mul_products[0] = self.fpu_product(0);
         self.phase = Phase::FpuMultiplyPipeline;
     }
+
+    fn execute_pipelineable(&self) -> bool {
+        if self.phase != Phase::Execute {
+            return false;
+        }
+        let opcode = field(self.instruction, 12);
+        let function = field(self.instruction, 8);
+        let a = field(self.instruction, 4);
+        let b = field(self.instruction, 0);
+        match opcode {
+            0 | 1 | 3..=7 | 15 => true,
+            9 => !self.async_store.valid,
+            10 => function != 8,
+            14 => {
+                function <= 3
+                    || matches!(function, 6 | 7 | 9..=12)
+                    || (function == 13 && b <= 1)
+                    || (function == 14 && a == 1)
+            }
+            _ => false,
+        }
+    }
 }
 
 impl Module for CpuV3Core {
@@ -869,16 +891,19 @@ impl Module for CpuV3Core {
         let input = input.sample(circuit);
         let pending = state.pending_data;
         let store = state.async_store;
+        let execute_pipelineable = state.execute_pipelineable();
         let device_instruction = state.phase == Phase::Execute && state.instruction >> 12 == 0xc;
         let device_field = field(state.instruction, 8);
         let device_register = field(state.instruction, 0);
         output.drive(
             circuit,
             &CpuV3CoreOutputValue {
-                instruction_request_valid: !input.hold && state.phase == Phase::FetchRequest,
+                instruction_request_valid: !input.hold
+                    && (state.phase == Phase::FetchRequest || execute_pipelineable),
                 instruction_address: u64::from(physical_address(state.code_segment, state.pc)),
                 instruction_response_ready: !input.hold
-                    && matches!(state.phase, Phase::FetchRequest | Phase::FetchResponse),
+                    && (matches!(state.phase, Phase::FetchRequest | Phase::FetchResponse)
+                        || execute_pipelineable),
                 data_request_valid: !input.hold
                     && ((store.valid && !store.issued) || state.phase == Phase::DataRequest),
                 data_write: store.valid || pending.write,
@@ -936,6 +961,7 @@ impl Module for CpuV3Core {
             state.registers[usize::from(state.gpr_write_address)] = state.gpr_write_data;
             state.gpr_write_enable = false;
         }
+        let execute_pipelineable = state.execute_pipelineable();
         // Snapshot the pre-clock buffer state to preserve the RTL's
         // nonblocking semantics: a waiter observes completion one cycle after
         // the response handshake, and a newly enqueued store cannot issue on
@@ -983,7 +1009,26 @@ impl Module for CpuV3Core {
                     state.phase = Phase::Execute;
                 }
             }
-            Phase::Execute => state.execute(input.device_read_data as u16),
+            Phase::Execute => {
+                state.execute(input.device_read_data as u16);
+                if execute_pipelineable
+                    && input.instruction_request_ready
+                    && state.phase == Phase::FetchRequest
+                {
+                    if input.instruction_response_valid {
+                        if input.instruction_error {
+                            state.fault(CPU_V3_FAULT_INSTRUCTION_MEMORY, state.pc);
+                        } else {
+                            state.instruction = input.instruction_data as u16;
+                            state.instruction_pc = state.pc;
+                            state.pc = state.pc.wrapping_add(1);
+                            state.phase = Phase::Execute;
+                        }
+                    } else {
+                        state.phase = Phase::FetchResponse;
+                    }
+                }
+            }
             Phase::DataRequest if input.data_request_ready => {
                 state.phase = Phase::DataResponse;
             }
@@ -1682,7 +1727,10 @@ mod tests {
             words
         }
 
-        let baseline = program(crate::move_register(15, 15));
+        // Use a one-cycle barrier as the frontend baseline. A scalar MOV is
+        // intentionally pipelineable now and would overlap the following
+        // FPU store, obscuring the FPU operation's blocking latency.
+        let baseline = program(crate::device_send(15, 0, 0));
         let mov = program(crate::fpu(crate::FpuOp::Move, 0, 1));
         let add = program(crate::fpu(crate::FpuOp::Add, 0, 1));
         let multiply = program(crate::fpu(crate::FpuOp::Mul, 0, 1));

@@ -1,8 +1,12 @@
 # CPU V3 optimization roadmap
 
 Status: active handoff plan for future conversations
-Repository: `..`
+Repository: `../../../`
 Updated: 2026-09-01
+
+This roadmap lives inside the CPU V3 system crate so it stays with the system it describes; it is
+maintained and committed together with each milestone. Benchmark suites are not committed to the
+repo; the per-stage numbers are recorded here from the release-mode emulator run described below.
 
 ## Milestone workflow and document lifecycle
 
@@ -34,6 +38,7 @@ Updated: 2026-09-01
 | 9 | Complete, 2026-08-31 | Added an exact related-clock 54/108 MHz gearbox. Cache/arbiter line traffic is 4 x 64-bit at 54 MHz; the Controller HS and SDRAM side remains 8 x 32-bit at 108 MHz. | Full system: 10,345 Logic; 7 BSRAM; CPU 54.965 MHz |
 | 10 | Complete, 2026-08-31 | Replaced XOR/way-interleaved cache storage with two parity-split DPBs per cache. Refill and D-cache write-back now transfer directly as 4 x 64-bit beats without private 256-bit cache buffers. | Full system: 9,977 Logic; 4 DPB + 1 SDPB + 2 pROM; CPU 54.692 MHz |
 | 11 | Complete, 2026-09-01 | Added a one-entry asynchronous store. A scalar store retires immediately and its data-port request/response runs in the background, overlapping ALU and other non-memory instructions; later memory operations wait on the single store buffer. | Full system: 10,025 Logic; 4 DPB + 1 SDPB + 2 pROM; CPU 56.51 MHz |
+| 12 | Complete, 2026-09-01 | Added a conservative two-stage frontend: single-cycle integer ALU/immediate/control instructions overlap their fetch with the preceding execute, and a registered GPR forwarding path lets back-to-back dependent instructions observe the pending write. Loads, stores with a busy buffer, branches/jumps, devices, multiply, and FPU remain barriers. | Full system: 10,100 Logic; 4 DPB + 1 SDPB + 2 pROM; CPU 56.230 MHz |
 
 Starting with System consolidation, PnR evidence is always taken from the complete `cpu_v3_system`
 containing the CPU, boot path, SDRAM controller, and display path. Every subsequent completed stage
@@ -41,7 +46,10 @@ must record the Gowin PnR report's total `Logic` count alongside BSRAM use and F
 vendor report's aggregate logic-unit metric, not merely its LUT subtotal. The consolidation and Stage
 5 counts above were reproduced from full-system builds at commits `3f62078` and `df4774a`; Stage 6
 and Stage 7 use their corresponding full-system milestone builds. Stage 11 changed only the CPU store
-path, and its full-system build closes the 54 MHz CPU clock at 56.51 MHz.
+path, and its full-system build closes the 54 MHz CPU clock at 56.51 MHz. Stage 12's full-system build
+(commit `1e7ea68`) closes the 54 MHz CPU clock at 56.230 MHz; the forward-compare/operand-mux/ALU/
+registered-writeback bypass and the Execute-cycle request/response mux cost a little timing over
+Stage 11, but the build still reports zero setup and hold TNS on every clock.
 
 ## Ordered major tasks
 
@@ -57,6 +65,7 @@ path, and its full-system build closes the 54 MHz CPU clock at 56.51 MHz.
 9. Run DRAM at exactly twice the CPU frequency through a related-clock 2:1 gearbox while keeping the rest of the system at 54 MHz.
 10. Convert each cache's two data BSRAMs to true-dual-port parity banks and transfer cache lines directly as four 64-bit beats.
 11. Let one scalar store complete asynchronously in the background while non-memory instructions continue to execute.
+12. Overlap single-cycle integer execute with the next fetch through a conservative two-stage frontend and a single registered GPR writeback forwards path.
 
 Task 0 should happen before Tasks 1 and 2. Tasks 1 and 2 remain the next performance implementation
 scope after that policy cleanup. Do not combine all tasks into one change.
@@ -598,6 +607,106 @@ store pipeline or a small write-combining buffer is the natural follow-up.
 
 The Stage 11 full-system PnR reports 10,025 Logic, 4 DPB + 1 SDPB + 2 pROM, and closes the 54 MHz CPU
 clock at 56.51 MHz.
+
+## Stage 12: conservative two-stage fetch/execute overlap
+
+Stage 5 pipelined the I-cache lookup and added a four-entry fetch queue, but the core was still a
+blocking machine: it waited for the next word before retiring the current instruction. The Stage 11
+commit history shows a roughly two-cycle-per-instruction floor for pure integer code (Stage 11
+`int-medium-alu` was 2.50 cycles per retired word). Stage 12 overlaps ordinary single-cycle integer
+execution with the next fetch so the core can accept a fresh instruction in the same cycle it retires
+one, approaching one cycle per instruction without building a full execute pipeline.
+
+Design:
+
+- Keep the existing staged backend for every instruction that does not retire cleanly in one Execute
+  cycle. Only a narrow class is promoted to the overlap path, so the change is a "limited two-stage
+  frontend", not a pipelined CPU.
+- Promote single-cycle, sequential-control-flow instructions to the overlap path:
+  `opcode` `0`/`1`/`3..7` (ALU), `0xa` with `field_d != 8` (immediate; `field_d == 8` is the multiply
+  barrier), the `0xe` control subset that is not itself a control transfer (`field_d <= 3`, `6`, `7`,
+  `9..c`, `d` with `field_b <= 1`, `e` with `field_a == 1`), the `0xf` SETP prefix, and `0x9` stores
+  only while the single async store buffer is empty.
+- Keep as barriers: loads (`0x8`), stores with a busy buffer, multiply (`0x2`, `0xa/8`), FPU (`0xd`),
+  branches/jumps (`0xb`, `0xe` fields `4`/`5`/`15`), devices (`0xc`), and the invalid instruction
+  cases. These continue to use the exact pre-existing FSM transition.
+- When a pipelineable instruction is in `ST_EXECUTE` and the queue has a response, the core drives
+  `instruction_request_valid`/`instruction_response_ready` from Execute, loads the popped word into
+  `instruction`/`instruction_pc`, advances `pc_register`, and stays in `ST_EXECUTE` instead of
+  returning to `ST_FETCH_REQUEST`. If the queue is momentarily empty it falls to `ST_FETCH_RESPONSE`
+  and resumes the original blocking path.
+- The scalar register file keeps its registered synchronous write port. The read level is now a mux:
+  `gpr_read_a_data`/`gpr_read_b_data` come from the pending `gpr_write_data` when
+  `gpr_write_enable && gpr_write_address == <read>` and from the RAM async reads otherwise. This single
+  bypass removes the earlier ordering requirement that back-to-back Execute cycles be two apart and is
+  what makes a dependent `ADDI r0,r0+1` chain run at one cycle per instruction. The ALU result is still
+  captured into the registered writeback; it is never driven combinationally into the GPR RAM write
+  port, keeping the forward-compare/operand-mux/ALU/registered-writeback path off the timing-critical
+  wrap.
+
+### Implementation decision (2026-09-01)
+
+The Verilog and the Rust emulator evolved together and share the same nonblocking timing. The
+fetch-pipeline probe's sequential-ALU cycle target tightened from `<= 17` to `<= 10` cycles after the
+first retire (the test now expects one instruction per cycle for a register-dependent chain, which
+also exercises the forwarding bypass directly). `cpu_v3_core_tb.v` scenario 35/36 expected cycles were
+reduced from 80/48 to 76/46 because the frontend no longer inserts a fetch bubble before the FPU
+operations; these are timing updates, not numerical changes.
+
+The cycle-profiled benchmark profiler changed its retirement attribution. The old model assumed the
+instruction fetched before the next was also the one that just retired, which under the overlap path
+counted every successor tag; that would mis-attribute, for example, 391 data requests against 256 real
+loads. The profiler now keeps a small FIFO of frontend-accepted words and attributes a retire to the
+oldest accepted word (popping per retired word, so a prefixed consumer retires two), and only flags a
+redirect for genuinely control-transfer instructions whose resolved target differs from the fall-through
+word.
+
+### Stage 12 results (against Stage 11)
+
+The same 13-program suite. Integer workloads gain the most; FPU-composed programs are nearly unchanged
+because their steady state is dominated by the FPU pipeline barriers, not the fetch frontend.
+
+| Workload | Stage 11 cycles | Stage 12 cycles | Change |
+| --- | ---: | ---: | ---: |
+| int-short-alu | 590 | 404 | -31.5% |
+| int-short-branch | 2,244 | 1,508 | -32.8% |
+| int-short-memory | 3,214 | 2,147 | -33.2% |
+| int-short-mixed | 1,355 | 878 | -35.2% |
+| int-medium-alu | 30,768 | 21,547 | -30.0% |
+| int-medium-memory | 70,750 | 46,164 | -34.8% |
+| streaming-mix | 842,341 | 594,894 | -29.4% |
+| quicksort-4096 | 4,989,362 | 4,106,038 | -17.7% |
+| int-icache-jump | 10,990 | 8,393 | -23.6% |
+| fpu-short-add | 62 | 59 | -4.8% |
+| fpu-short-mul | 63 | 60 | -4.8% |
+| fpu-short-unary | 54 | 53 | -1.9% |
+| fpu-long-mixed | 24,630 | 24,627 | -0.0% |
+
+The geometric mean of the per-program cycle ratio is 0.774, a 22.6% cycle reduction across the suite.
+`int-medium-alu` falls to 1.75 cycles per retired word (from 2.50) and `int-medium-memory` to 1.55
+(from 2.38). The remaining head in integer programs is the data request/response path (quicksort-4096
+still attributes 38.9% of its cycles to the memory path) and the branch redirect wait; those are the
+natural next targets.
+
+### Validation (2026-09-01)
+
+- Release-mode emulator results above (not committed).
+- `cargo test --workspace`: 410 passed; CPU V3 78 passed / 10 ignored.
+- Verilog/RTL Icarus for the CPU V3 core, GPR RAM, and the fetch-pipeline probe passed with the new
+  cycle contract.
+- `scripts/validate-hardware.ps1 -Mode quick` and `-Mode iverilog` pass, including the two-stage flash
+  boot signature testbench. This surfaced and fixed a pre-existing (Stage 9) mismatch: the
+  `CpuV3System` top module exposes a 64-bit `sdram_write_data`/`sdram_read_data` gearbox interface
+  while the signature testbench still modeled the 32-bit controller path, so its `.*` instantiation
+  could not elaborate. The model now captures the four 64-bit line-write beats and returns line reads
+  as four 64-bit beats, matching `DisplaySdramPort`.
+- Full-system Gowin PnR (`cpu_v3_system`, commit `1e7ea68`): 10,100 Logic (8,822 LUT, 750 ALU,
+  88 SSRAM); 4,324 registers; 4 DPB + 1 SDPB + 2 pROM; 2 MULT18X18. The CPU clock closes at
+  56.230 MHz against the 54.000 MHz constraint (2.23 MHz margin), and every reported setup and hold
+  TNS is zero. `clk` and the display controller clocks close as expected. The tightest CPU path is the
+  fetch-queue to I-cache way-valid route (0.734 ns slack), a Stage 5+/fetch-frontend path rather than
+  the new forwarding/overlap logic. Board-level DRAM timing is unchanged from the Stage 9/10 gearbox
+  and remains subject to the normal physical-boardside validation.
 
 ## Risk-scaled validation
 

@@ -334,7 +334,7 @@ mod tests {
 
     #[test]
     #[ignore = "explicit cycle-count simulation of the complete fetch frontend"]
-    fn sequential_alu_stream_reaches_two_cycle_throughput() {
+    fn sequential_alu_stream_reaches_one_cycle_throughput() {
         digital_design_hardware::verify_verilog_with_iverilog::<FetchPipelineProbe>().unwrap();
     }
 

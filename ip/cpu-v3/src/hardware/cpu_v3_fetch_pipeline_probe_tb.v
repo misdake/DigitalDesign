@@ -27,8 +27,8 @@ initial begin
     if (fault || halt_signal != 8 || retired_words != 9)
         $fatal(1, "sequential ALU stream failed: fault=%0d signal=%0d retired=%0d",
                fault, halt_signal, retired_words);
-    if (cycles - first_retire_cycle > 17)
-        $fatal(1, "eight post-first-retire instructions took %0d cycles, expected <=17",
+    if (cycles - first_retire_cycle > 10)
+        $fatal(1, "eight post-first-retire instructions took %0d cycles, expected <=10",
                cycles - first_retire_cycle);
     $display("DIGITAL_DESIGN_PASS");
     $finish;

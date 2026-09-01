@@ -16,6 +16,7 @@ use cpu_v3::{
 use cpu_v3_tang_nano_20k::{CpuV3MemoryArbiter, CpuV3MemoryArbiterInput, CpuV3MemoryArbiterOutput};
 use digital_design_circuit::{build_circuit, Circuit, Wire, Wires};
 use digital_design_hardware::{Module, ModuleIo};
+use std::collections::VecDeque;
 use std::fs::{create_dir_all, File};
 use std::io::{BufWriter, Write};
 use std::path::Path;
@@ -715,7 +716,7 @@ pub fn run_benchmark_profiled_with_prefetch(
     let mut trace = TraceRecorder::new(trace_directory);
     let mut previous_retired = 0u32;
     let mut retired_instructions = 0u32;
-    let mut last_fetched = None;
+    let mut accepted_instructions = VecDeque::new();
     let mut pending_redirect = None;
     let mut fetch_wait_cycles = 0usize;
     let mut execute_cycles = 0usize;
@@ -817,11 +818,24 @@ pub fn run_benchmark_profiled_with_prefetch(
             let retired = core.retired_words as u32;
             if retired != previous_retired {
                 retired_instructions = retired_instructions.wrapping_add(1);
-                if let Some((origin, instruction)) = last_fetched {
+                let retired_words = retired.wrapping_sub(previous_retired);
+                let mut retired_instruction = None;
+                for _ in 0..retired_words {
+                    let entry = accepted_instructions
+                        .pop_front()
+                        .expect("retired word was never accepted by the core frontend");
+                    let (_, instruction) = entry;
                     opcode_retired[usize::from(instruction >> 12)] =
                         opcode_retired[usize::from(instruction >> 12)].wrapping_add(1);
+                    retired_instruction = Some(entry);
+                }
+                if let Some((origin, instruction)) = retired_instruction {
                     let target = physical_pc(core.code_segment as u16, core.pc as u16);
-                    if target != next_physical_word(origin) {
+                    let opcode = instruction >> 12;
+                    let function = (instruction >> 8) & 0xfu16;
+                    let can_redirect = opcode == 0xbu16
+                        || (opcode == 0xeu16 && matches!(function, 4u16 | 5u16 | 15u16));
+                    if can_redirect && target != next_physical_word(origin) {
                         redirect_count = redirect_count.wrapping_add(1);
                         pending_redirect = Some((origin, target, instruction, cycle));
                     }
@@ -838,7 +852,7 @@ pub fn run_benchmark_profiled_with_prefetch(
                 if fetch.core_request_ready {
                     instruction_fetches = instruction_fetches.wrapping_add(1);
                     let address = physical_pc(core.code_segment as u16, core.pc as u16);
-                    last_fetched = Some((address, fetch.core_read_data as u16));
+                    accepted_instructions.push_back((address, fetch.core_read_data as u16));
                     if let Some((origin, target, instruction, retired_cycle)) =
                         pending_redirect.take()
                     {
