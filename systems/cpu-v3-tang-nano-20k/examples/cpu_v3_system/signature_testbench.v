@@ -257,6 +257,9 @@ initial begin
         $fatal(1, "a word read reached the SDRAM adapter; line refills must burst");
     if (!line_burst_seen)
         $fatal(1, "no line burst reached the SDRAM adapter");
+    if (dut.u_instruction_cache.prefetch_issued_count == 0 ||
+        dut.u_instruction_cache.prefetch_useful_count == 0)
+        $fatal(1, "two-stage boot did not issue and consume an I-cache prefetch");
     if (!wait_sdram_phase_seen || !stage0_phase_seen || !dma_phase_seen ||
         !stage1_phase_seen || !application_phase_seen)
         $fatal(1, "boot observer missed phases: wait=%0d s0=%0d dma=%0d s1=%0d app=%0d",

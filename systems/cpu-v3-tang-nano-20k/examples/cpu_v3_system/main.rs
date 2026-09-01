@@ -1,4 +1,4 @@
-use cpu_v3::{CpuV3Core, CpuV3DirectMappedCache, CpuV3InstructionFetchQueue};
+use cpu_v3::{CpuV3Core, CpuV3InstructionFetchQueue, CpuV3TwoWayCache};
 use cpu_v3_tang_nano_20k::{
     BootDmaDevice, BootDmaEngine, BootProgressMonitor, CpuV3MemoryArbiter, DisplaySdramPort,
     FramebufferHdmi, SystemControlDevice,
@@ -82,7 +82,7 @@ impl Module for CpuV3System {
                 )
                 .replace(
                     "__CACHE__",
-                    &CpuV3DirectMappedCache::verilog_identity().module_name(),
+                    &CpuV3TwoWayCache::verilog_identity().module_name(),
                 )
                 .replace(
                     "__ARBITER__",
@@ -128,8 +128,8 @@ impl Module for CpuV3System {
             VerilogDependency::new::<BootMemory>("u_boot"),
             VerilogDependency::new::<CpuV3Core>("u_core"),
             VerilogDependency::new::<CpuV3InstructionFetchQueue>("u_instruction_fetch_queue"),
-            VerilogDependency::new::<CpuV3DirectMappedCache>("u_instruction_cache"),
-            VerilogDependency::new::<CpuV3DirectMappedCache>("u_data_cache"),
+            VerilogDependency::new::<CpuV3TwoWayCache>("u_instruction_cache"),
+            VerilogDependency::new::<CpuV3TwoWayCache>("u_data_cache"),
             VerilogDependency::new::<CpuV3MemoryArbiter>("u_memory_arbiter"),
             VerilogDependency::new::<SystemControl>("u_sysctl"),
             VerilogDependency::new::<BootDmaDevice>("u_boot_dma_device"),
