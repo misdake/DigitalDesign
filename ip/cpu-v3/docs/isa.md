@@ -25,6 +25,9 @@ under `ip/cpu-v3/docs` and `systems/cpu-v3-tang-nano-20k/docs`.
 - `r0..r1` return values, `r2..r7` arguments, `r8..r11` callee-saved values,
   `r12` compiler scratch, `r13` stack pointer, and `r14` the architecturally
   fixed link register. `r15` is an ordinary allocatable register.
+- The compiler FPU ABI mirrors it: `f0..f1` return values, `f2..f7` arguments,
+  `f8..f14` allocatable, and `f15` the compiler scratch for parallel moves.
+  Every F register is caller-saved and ACC is caller-clobbered.
 - `CSEG` supplies the high physical bits for instruction fetch. `DSEG` supplies
   them for every ordinary load and store, including stack accesses and offsets
   `0xff00..0xffff`.

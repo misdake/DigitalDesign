@@ -45,6 +45,8 @@ pub struct FuncBuilder {
     sealed: Vec<bool>,
     /// current SSA value of each variable, per block
     var_defs: Vec<HashMap<BlockId, VReg>>,
+    /// register class of each frontend variable (phis take the variable's class)
+    var_class: Vec<RegClass>,
     /// phis awaiting their operands, per unsealed block: (phi dst, variable)
     incomplete: HashMap<BlockId, Vec<(VReg, VarId)>>,
     current: Option<BlockId>,
@@ -55,8 +57,19 @@ pub struct FuncBuilder {
 
 impl FuncBuilder {
     /// creates a builder with the entry block as current; returns the
-    /// builder plus the parameter variables (already bound to ABI vregs)
+    /// builder plus the parameter variables (already bound to ABI vregs).
+    /// All parameters are Gpr-class; use `new_typed` for FPU parameters.
     pub fn new(name: FuncName, n_params: usize, n_rets: usize) -> (Self, Vec<VarId>) {
+        Self::new_typed(name, &vec![RegClass::Gpr; n_params], n_rets)
+    }
+
+    /// like `new`, with an explicit register class per parameter
+    pub fn new_typed(
+        name: FuncName,
+        param_classes: &[RegClass],
+        n_rets: usize,
+    ) -> (Self, Vec<VarId>) {
+        let n_params = param_classes.len();
         let entry = 0;
         let mut b = Self {
             func: IrFunc {
@@ -78,15 +91,19 @@ impl FuncBuilder {
                 block_notes: vec![None],
                 block_lines: vec![None],
                 local_slots: 0,
+                vreg_class: param_classes.to_vec(),
             },
             sealed: vec![false],
             var_defs: vec![],
+            var_class: vec![],
             incomplete: HashMap::new(),
             current: Some(entry),
             loops: vec![],
             line_hint: None,
         };
-        let params = (0..n_params).map(|_| b.new_var()).collect::<Vec<_>>();
+        let params = (0..n_params)
+            .map(|i| b.new_var_typed(param_classes[i]))
+            .collect::<Vec<_>>();
         for (i, &var) in params.iter().enumerate() {
             b.write_var(var, entry, i as VReg);
         }
@@ -95,14 +112,28 @@ impl FuncBuilder {
     }
 
     pub fn new_var(&mut self) -> VarId {
+        self.new_var_typed(RegClass::Gpr)
+    }
+
+    /// a frontend variable whose SSA values (and phis) have the given class
+    pub fn new_var_typed(&mut self, class: RegClass) -> VarId {
         self.var_defs.push(HashMap::new());
+        self.var_class.push(class);
         self.var_defs.len() - 1
     }
 
+    /// override the class of a vreg (used for call results, whose class is
+    /// known only from the callee signature)
+    pub fn set_vreg_class(&mut self, v: VReg, class: RegClass) {
+        self.func.vreg_class[v as usize] = class;
+    }
+
     fn fresh_vreg(&mut self) -> VReg {
-        let v = self.func.vreg_count;
-        self.func.vreg_count += 1;
-        v
+        self.func.fresh_vreg(RegClass::Gpr)
+    }
+
+    fn fresh_fpu_vreg(&mut self) -> VReg {
+        self.func.fresh_vreg(RegClass::Fpu)
     }
 
     fn cur(&self) -> BlockId {
@@ -296,6 +327,87 @@ impl FuncBuilder {
         self.terminate(Terminator::IcacheInvalidateDelayedAndJump { cseg, target });
     }
 
+    // ----- FPU emitters (CpuV3 fix16/vecN; results are Fpu-class) -----
+
+    fn check_class(&self, v: VReg, class: RegClass, what: &str) {
+        debug_assert_eq!(
+            self.func.class_of(v),
+            class,
+            "{what}: vreg class mismatch in {}",
+            self.func.name
+        );
+    }
+
+    pub fn fbin(&mut self, op: FBinOp, lhs: VReg, rhs: VReg) -> VReg {
+        self.check_class(lhs, RegClass::Fpu, "fbin lhs");
+        self.check_class(rhs, RegClass::Fpu, "fbin rhs");
+        let dst = self.fresh_fpu_vreg();
+        self.push(Instr::FBin { dst, op, lhs, rhs });
+        dst
+    }
+    pub fn fmov(&mut self, src: VReg) -> VReg {
+        self.check_class(src, RegClass::Fpu, "fmov src");
+        let dst = self.fresh_fpu_vreg();
+        self.push(Instr::FMov { dst, src });
+        dst
+    }
+    /// GPR to FPU lane-x bridge (FLOAD)
+    pub fn fload(&mut self, src_gpr: VReg) -> VReg {
+        self.check_class(src_gpr, RegClass::Gpr, "fload src");
+        let dst = self.fresh_fpu_vreg();
+        self.push(Instr::FLoad { dst, src_gpr });
+        dst
+    }
+    /// FPU to GPR lane-x bridge (FSTORE)
+    pub fn fstore(&mut self, src: VReg) -> VReg {
+        self.check_class(src, RegClass::Fpu, "fstore src");
+        let dst = self.fresh_vreg();
+        self.push(Instr::FStore { dst_gpr: dst, src });
+        dst
+    }
+    /// dst = four words at {DSEG, base_gpr} (FIMPORT4; 4-aligned base)
+    pub fn fimport4(&mut self, base_gpr: VReg) -> VReg {
+        self.check_class(base_gpr, RegClass::Gpr, "fimport4 base");
+        let dst = self.fresh_fpu_vreg();
+        self.push(Instr::FImport4 { dst, base_gpr });
+        dst
+    }
+    /// four words at {DSEG, base_gpr} = src lanes (FEXPORT4; 4-aligned base)
+    pub fn fexport4(&mut self, src: VReg, base_gpr: VReg) {
+        self.check_class(src, RegClass::Fpu, "fexport4 src");
+        self.check_class(base_gpr, RegClass::Gpr, "fexport4 base");
+        self.push(Instr::FExport4 { src, base_gpr });
+    }
+    pub fn funary(&mut self, op: FUnOp, src: VReg) -> VReg {
+        self.check_class(src, RegClass::Fpu, "funary src");
+        let dst = self.fresh_fpu_vreg();
+        self.push(Instr::FUnary { dst, op, src });
+        dst
+    }
+    /// ACC += dot4(lhs, rhs); pair with `facc_store` so ACC returns to zero
+    pub fn fdot4acc(&mut self, lhs: VReg, rhs: VReg) {
+        self.check_class(lhs, RegClass::Fpu, "fdot4acc lhs");
+        self.check_class(rhs, RegClass::Fpu, "fdot4acc rhs");
+        self.push(Instr::FDot4Acc { lhs, rhs });
+    }
+    /// dst lanes selected by `mask` = round(ACC); ACC = 0
+    pub fn facc_store(&mut self, mask: u8) -> VReg {
+        let dst = self.fresh_fpu_vreg();
+        self.push(Instr::FAccStore { dst, mask });
+        dst
+    }
+    /// ACC = exact src lane in accumulator format (overwrite, not accumulate)
+    pub fn facc_load(&mut self, src: VReg, lane: u8) {
+        self.check_class(src, RegClass::Fpu, "facc_load src");
+        assert!(lane < 4, "facc_load lane {lane} is outside 0..4");
+        self.push(Instr::FAccLoad { src, lane });
+    }
+    pub fn fzero(&mut self) -> VReg {
+        let dst = self.fresh_fpu_vreg();
+        self.push(Instr::FZero { dst });
+        dst
+    }
+
     // ----- variables (versioned SSA views) -----
 
     /// assign `value` to `var` in the current block
@@ -319,7 +431,7 @@ impl FuncBuilder {
         }
         if !self.sealed[block] {
             // block not sealed (loop header): phi with operands filled at seal time
-            let dst = self.fresh_vreg();
+            let dst = self.func.fresh_vreg(self.var_class[var]);
             self.func.blocks[block].phis.push(Phi { dst, args: vec![] });
             self.incomplete.entry(block).or_default().push((dst, var));
             self.write_var(var, block, dst);
@@ -338,7 +450,7 @@ impl FuncBuilder {
             }
             preds => {
                 let preds = preds.to_vec();
-                let dst = self.fresh_vreg();
+                let dst = self.func.fresh_vreg(self.var_class[var]);
                 // write before recursing, to break cycles through this phi
                 self.write_var(var, block, dst);
                 let args = preds.iter().map(|&p| (p, self.read_var(var, p))).collect();
@@ -750,6 +862,20 @@ pub(crate) fn remove_trivial_phis(func: &mut IrFunc) -> bool {
                         subst(target);
                     }
                     Instr::StoreSp { src, .. } | Instr::StoreLocal { src, .. } => subst(src),
+                    Instr::FBin { lhs, rhs, .. } | Instr::FDot4Acc { lhs, rhs } => {
+                        subst(lhs);
+                        subst(rhs);
+                    }
+                    Instr::FAccLoad { src, .. } => subst(src),
+                    Instr::FMov { src, .. } | Instr::FUnary { src, .. } => subst(src),
+                    Instr::FLoad { src_gpr, .. } => subst(src_gpr),
+                    Instr::FStore { src, .. } => subst(src),
+                    Instr::FImport4 { base_gpr, .. } => subst(base_gpr),
+                    Instr::FExport4 { src, base_gpr } => {
+                        subst(src);
+                        subst(base_gpr);
+                    }
+                    Instr::FAccStore { .. } | Instr::FZero { .. } | Instr::AddrOfFpuSpill { .. } => {}
                 }
             }
             if let Some(term) = &mut b.term {

@@ -337,6 +337,9 @@ return F-register assignment is a compiler-ABI decision.</p>
   <tr><td class="mono">r13</td><td>stack pointer</td><td>callee restores</td><td>Frame grows downward; reset value 0 denotes the exclusive <code>0x10000</code> segment top.</td></tr>
   <tr><td class="mono">r14</td><td>link register</td><td>saved by non-leaf functions</td><td>Direct and indirect calls write the return PC here; the architecture fixes the link register to r14 (<code>JALREL</code> has no link field, <code>JALR</code> requires link = 14).</td></tr>
   <tr><td class="mono">r15</td><td>general allocation</td><td>caller-saved</td><td>Ordinary allocatable register since v0.5; device instructions replaced the former reserved device-base convention.</td></tr>
+  <tr><td class="mono">f0..f1</td><td>FPU return values</td><td>caller-saved</td><td rowspan="3">FPU ABI mirrors the GPR roles. All F registers are caller-saved; ACC is caller-clobbered.</td></tr>
+  <tr><td class="mono">f2..f7</td><td>FPU arguments</td><td>caller-saved</td></tr>
+  <tr><td class="mono">f8..f15</td><td>FPU temporaries</td><td>caller-saved</td></tr>
 </table>
 <div class="grid">
   <div class="panel">

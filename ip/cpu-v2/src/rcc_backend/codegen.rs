@@ -732,6 +732,20 @@ fn emit_inst(
                 "mtsr_dseg/jseg are CpuV3-only intrinsics; the v2.6 ISA has no segment registers"
             )
         }
+        Instr::FBin { .. }
+        | Instr::FMov { .. }
+        | Instr::FLoad { .. }
+        | Instr::FStore { .. }
+        | Instr::FImport4 { .. }
+        | Instr::FExport4 { .. }
+        | Instr::FUnary { .. }
+        | Instr::FDot4Acc { .. }
+        | Instr::FAccStore { .. }
+        | Instr::FAccLoad { .. }
+        | Instr::FZero { .. }
+        | Instr::AddrOfFpuSpill { .. } => {
+            panic!("FPU instructions are CpuV3-only; the v2.6 ISA has no FPU")
+        }
         Instr::LoadSp { dst, slot } => {
             let (hi, lo) = hi_lo(local_base + n_locals + *slot);
             lines.push(MachineLine::Inst(load_sp(hi, lo, reg(*dst)), ir_line));

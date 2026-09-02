@@ -154,6 +154,31 @@ fn program_pipeline_overlap() -> Vec<u16> {
     p
 }
 
+/// An rcc-compiled FPU program: vec4 constructors, a mixed-signature call
+/// with FPU argument and return registers, the ACC splat multiply, fdot, and
+/// an aligned FEXPORT4 through the D-cache.
+const FPU_COMPILER_SOURCE: &str = r#"
+use crate::dsl_rt::*;
+static OUT: [u16; 4] = [0; 4];
+
+fn scaled(v: vec4, factor: fix16, tag: u16) -> vec4 {
+    if tag == 1 { v * factor } else { v }
+}
+
+fn main() {
+    let a = vec4::new(
+        fix16::from_int(1),
+        fix16::from_int(2),
+        fix16::from_int(3),
+        fix16::from_int(4),
+    );
+    let b = scaled(a, fix16::from_bits(0x0080), 1); // halves every lane
+    let d = fdot(a, b); // 0.5 + 2 + 4.5 + 8 = 15.0
+    vec4::export(b, OUT.as_array().as_ptr());
+    if d.to_bits() == 3840 { halt(1); } else { halt(0); }
+}
+"#;
+
 fn programs() -> Vec<CosimProgram> {
     vec![
         CosimProgram {
@@ -187,6 +212,14 @@ fn programs() -> Vec<CosimProgram> {
             check_base: 0x6000,
             check_len: 8,
             expected_halt: Some(0x2d),
+        },
+        CosimProgram {
+            name: "fpu_compiler_rcc",
+            words: compile_cpu_v3_source(FPU_COMPILER_SOURCE),
+            max_cycles: 20_000,
+            check_base: 0x4000,
+            check_len: 4,
+            expected_halt: Some(1),
         },
         CosimProgram {
             name: "icache_loop",

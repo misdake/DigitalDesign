@@ -21,6 +21,8 @@ Only these types exist; no other primitive types are supported:
 | `Array<T>` | **typed array view** | one-word unchecked address, where T is `u16` or `i16`; supports indexing and converts to/from `Ptr` |
 | `fn(A, B) -> R` | **function pointer** (into instruction memory) | plain Rust fn pointer type; on a Harvard machine this is a *different kind* from `Ptr` and they never convert |
 | `bool` | **condition expressions only** | the type of comparisons and `&& \|\| !`; cannot be stored in variables/memory (see §6) |
+| `fix16` | **signed Q8.8 fixed-point scalar** | CPU V3-only; occupies one F register (lane x) |
+| `vec2` / `vec3` / `vec4` | **fix16 vectors** | CPU V3-only; one F register each (4 lanes; vec2/vec3 keep zero tails, per the ISA convention) |
 | `()` | unit | return type of procedures |
 
 ### 1.1 Type rules
@@ -37,6 +39,11 @@ Only these types exist; no other primitive types are supported:
   **The shift amount must be a literal constant** (the ISA has no register-shift instruction).
 - `*` multiplication, `/` and `%` are **not supported yet** (the hardware has no mul/div;
   multiplication will arrive via the library, division is out of scope).
+- FPU types (CPU V3): `+`, `-`, `*` work component-wise on same-typed FPU values; `vecN * fix16`
+  and `fix16 * vecN` scale the vector (lowered to an ACC splat plus `FMUL`); unary `-` negates.
+  Comparisons exist only on `fix16` (signed lane-x ordering through `FCMP` and the pending
+  test). There are no implicit conversions between FPU and integer types — use
+  `fix16::from_int` / `.to_int()` / `fix16::from_bits` / `.to_bits()`.
 
 ## 2. The `Ptr` data pointer
 
@@ -100,6 +107,15 @@ Declared for real in `dsl_rt` (so the IDE sees them); the compiler lowers them d
 | `mtsr_dseg(v: u16)` | CPU V3-only: write the DSEG special register (MTSR DSEG) |
 | `jseg(cseg: u16, target: u16) -> !` | CPU V3-only: atomically switch CSEG to `cseg` and jump to `target` (JSEG); never returns |
 | `icache_invalidate_delayed_and_jump(cseg: u16, target: u16) -> !` | CPU V3-only: terminal barrier lowered to adjacent `ICACHE_INVALIDATE_ALL_DELAYED; JSEG`; never returns |
+| `fix16::from_bits(u16)` / `fix16::from_int(i16)` | CPU V3-only: build a Q8.8 scalar from raw bits / an integer (`FLOAD`) |
+| `fix16::zero()`, `vecN::zero()` | all-zero value (`FZERO`) |
+| `vec2/3/4::new(...)` | build a vector from fix16 lanes (through an aligned frame scratch + `FIMPORT4`) |
+| `vec4::import(Ptr) -> vec4` / `vec4::export(v, Ptr)` | four aligned words at the pointer (`FIMPORT4`/`FEXPORT4`; faults if not 4-aligned) |
+| `.x()` / `.y()` / `.z()` / `.w()` | lane extraction; `.x()` is free, the others cross the frame scratch |
+| `.to_bits() -> u16` / `.to_int() -> i16` | `FSTORE` bridge / truncating integer conversion |
+| `.abs() .floor() .ceil() .round() .sat01() .sign()` | component-wise unary (each satisfies `f(0) = 0`) |
+| `fdot(a, b) -> fix16` | dot product through the wide ACC (`FDOT4ACC` + `FACCSTORE 0b0001`) |
+| `frcp(x)` / `frsqrt(x)` / `fsincos(x) -> vec2` | ROM operations (scalar; fsincos yields `{sin, cos}`); host models panic |
 
 ## 6. Design decisions
 
@@ -116,6 +132,11 @@ Declared for real in `dsl_rt` (so the IDE sees them); the compiler lowers them d
   `const`/`static`, attributes (except ignored `#[allow(...)]`), `use` (parsed but ignored;
   it exists for the IDE).
 - **No division** (`/`, `%`), **no multiplication yet** (`*`): both report "not supported yet".
+- **FPU values live in the F register file**: every `fix16`/`vecN` value occupies exactly one
+  F register, stays in SSA form (never in a frame slot except as a 4-word-aligned spill), and
+  follows the FPU ABI: `f0..f1` return values, `f2..f7` arguments, `f8..f14` allocatable, `f15`
+  scratch for parallel-move cycles; all F registers are caller-saved and ACC is
+  caller-clobbered (the compiler only touches ACC inside the atomic fdot and splat sequences).
 
 ## 7. A complete example
 
