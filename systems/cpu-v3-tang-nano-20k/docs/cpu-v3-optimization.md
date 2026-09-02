@@ -99,8 +99,8 @@ write-back capture that the RTL never had. Emulator-side measurements in the Sta
 Stage 12 sections (store-miss refill latency, dirty eviction/write-back latency, post-halt flush
 cycles, and total cycles of D-cache-miss-heavy workloads) were recorded with the old model and are
 inflated. RTL and hardware behavior were always correct. Do not mix these pre-fix latency figures
-with post-fix numbers in the same comparison; the affected Stages are scheduled for a rerun with
-the corrected model.
+with post-fix numbers in the same comparison; the affected Stages have been rerun
+with the corrected model through `benchmarks/run-history.ps1` (rows marked `reconstructed`).
 
 ## Stage 0: remove dead coherence machinery and freeze the final contract
 
