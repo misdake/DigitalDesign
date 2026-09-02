@@ -79,6 +79,16 @@ halt/fault, `halt_signal`, and the instruction/data handshake each cycle, so a c
 overlap, forwarding, or halt value is caught directly. The fetch (`fetch.rs`) and cache (`cache.rs`)
 co-sims sit alongside it.
 
+The system-level co-simulation `systems/cpu-v3-tang-nano-20k/tests/system_cosim.rs` drives the
+composed RTL (core, fetch queue, I-cache, D-cache, memory arbiter, behavioral SDRAM) in Icarus
+against the shared cycle-accurate system model (`tests/system_emu/mod.rs`), comparing the core
+ports cycle by cycle and the post-flush SDRAM contents exactly. It is mandatory for changes
+touching the core, fetch, cache, arbiter, or memory paths:
+
+```powershell
+& scripts/run-cargo.ps1 -Subcommand test -Label "cpu-v3 system co-sim" -CargoArgs @("-p", "cpu-v3-tang-nano-20k", "--test", "system_cosim", "--", "--ignored", "--nocapture", "--test-threads=1")
+```
+
 ## Cargo output summarization
 
 Run cargo through `scripts/run-cargo.ps1` instead of invoking `cargo` directly when the raw

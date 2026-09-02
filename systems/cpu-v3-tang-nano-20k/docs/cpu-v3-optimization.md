@@ -93,6 +93,15 @@ Each Stage section below is a historical record: it describes the design, the me
 repository state at the time that Stage was implemented, not the current architecture. Where a Stage
 section disagrees with the current-state sections above, the current-state sections take precedence.
 
+Stale-measurement notice: the system co-simulation suite commit exposed and fixed a
+D-cache emulator timing drift — the Rust model inserted an 8-cycle read drain and an 8-cycle
+write-back capture that the RTL never had. Emulator-side measurements in the Stage 8 through
+Stage 12 sections (store-miss refill latency, dirty eviction/write-back latency, post-halt flush
+cycles, and total cycles of D-cache-miss-heavy workloads) were recorded with the old model and are
+inflated. RTL and hardware behavior were always correct. Do not mix these pre-fix latency figures
+with post-fix numbers in the same comparison; the affected Stages are scheduled for a rerun with
+the corrected model.
+
 ## Stage 0: remove dead coherence machinery and freeze the final contract
 
 Do this while D-cache is still write-through. It is a small deletion and contract change, not an

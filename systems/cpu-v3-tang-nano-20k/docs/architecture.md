@@ -144,6 +144,12 @@ four DPB, one SDPB, two pROM, and two `MULT18X18` cells. The CPU clock closes at
 the 54-MHz constraint with zero setup and hold TNS. The tightest CPU path is the fetch-queue to
 I-cache way-valid route.
 
+The system-level emulator-vs-RTL co-simulation `tests/system_cosim.rs` drives the composed RTL
+(core, fetch queue, I-cache, D-cache, memory arbiter, and a behavioral SDRAM word port) in Icarus
+against the cycle-accurate Rust system model shared with `tests/bench_emu.rs`, comparing the core
+ports cycle by cycle and the post-flush SDRAM contents exactly. It is ignored by default; run it
+with `cargo test -p cpu-v3-tang-nano-20k --test system_cosim -- --ignored --test-threads=1`.
+
 This result is implementation evidence, not a substitute for board validation. Changes to clocks,
 memory geometry, cache policy, SDRAM protocol, CDC, display scheduling, or resource composition must
 run the corresponding hardware validation and update both this current-state document and

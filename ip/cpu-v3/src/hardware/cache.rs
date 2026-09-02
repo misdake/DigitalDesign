@@ -1025,7 +1025,6 @@ enum DataMemoryPhase {
     WritebackCapture,
     Request,
     ReadReceive,
-    ReadDrain,
     WriteStream,
     WriteResponse,
 }
@@ -1293,13 +1292,11 @@ impl Module for CpuV3DataCache {
                 state.beat = 0;
                 state.phase = DataMemoryPhase::WritebackCapture;
             }
+            // The RTL spends a single ST_WB_CAPTURE cycle latching the first
+            // writeback beat; the emulator snapshots the whole line in the
+            // request, so capture lasts one cycle as well.
             DataMemoryPhase::WritebackCapture => {
-                if state.beat == CPU_V3_CACHE_LINE_BEATS - 1 {
-                    state.beat = 0;
-                    state.phase = DataMemoryPhase::Request;
-                } else {
-                    state.beat += 1;
-                }
+                state.phase = DataMemoryPhase::Request;
             }
             DataMemoryPhase::Request if input.memory_request_ready => {
                 state.beat = 0;
@@ -1339,25 +1336,22 @@ impl Module for CpuV3DataCache {
                     state.words[word + 2] = (input.memory_read_data >> 32) as u16;
                     state.words[word + 3] = (input.memory_read_data >> 48) as u16;
                     if state.beat == CPU_V3_CACHE_MEMORY_BEATS - 1 {
+                        // The RTL writes the banks during the receive beats and
+                        // responds on the last one; there is no drain phase.
                         state.beat = 0;
-                        state.phase = DataMemoryPhase::ReadDrain;
+                        let action = state
+                            .cache
+                            .complete(crate::MainMemoryResponse::ReadLine {
+                                words: state.words,
+                            })
+                            .expect("data-cache completion must match a line read");
+                        state.apply_action(action);
                     } else {
                         state.beat += 1;
                     }
                 }
             }
             DataMemoryPhase::ReadReceive => {}
-            DataMemoryPhase::ReadDrain => {
-                if state.beat == CPU_V3_CACHE_LINE_BEATS - 1 {
-                    let action = state
-                        .cache
-                        .complete(crate::MainMemoryResponse::ReadLine { words: state.words })
-                        .expect("data-cache completion must match a line read");
-                    state.apply_action(action);
-                } else {
-                    state.beat += 1;
-                }
-            }
         }
     }
 
