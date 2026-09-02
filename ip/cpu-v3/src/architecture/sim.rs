@@ -503,14 +503,13 @@ impl Machine {
                 self.fpu_registers[a + 3] =
                     [source[0][3], source[1][3], source[2][3], source[3][3]];
             }
-            8..=10 | 15 => {
+            8..=10 => {
                 let left = self.fpu_registers[a];
                 let right = self.fpu_registers[b];
                 self.fpu_registers[a] = std::array::from_fn(|lane| match function {
                     8 => fix16_add(left[lane], right[lane]),
                     9 => fix16_sub(left[lane], right[lane]),
                     10 => fix16_mul(left[lane], right[lane]),
-                    15 => fix16_mul(left[lane], right[0]),
                     _ => unreachable!(),
                 });
             }
@@ -525,10 +524,14 @@ impl Machine {
                 }
             }
             12 => {
-                if b > 3 {
-                    return Err(FaultKind::InvalidInstruction);
+                // FACCSTORE: `b` is a 4-bit destination write mask. Every set
+                // bit writes the same rounded ACC value; ACC is then cleared.
+                let value = fix16_from_acc(self.fpu_accumulator);
+                for (lane, word) in self.fpu_registers[a].iter_mut().enumerate() {
+                    if b >> lane & 1 == 1 {
+                        *word = value;
+                    }
                 }
-                self.fpu_registers[a][b] = fix16_from_acc(self.fpu_accumulator);
                 self.fpu_accumulator = 0;
             }
             13 => {
@@ -538,7 +541,8 @@ impl Machine {
                 ));
             }
             14 => self.execute_fpu_unary(a, b)?,
-            _ => unreachable!(),
+            // fn 15 is reserved (formerly FMULS).
+            _ => return Err(FaultKind::InvalidInstruction),
         }
         Ok(StepOutcome::Running)
     }
@@ -580,6 +584,14 @@ impl Machine {
                 self.fpu_registers[register] = source.map(fix16_sign)
             }
             value if value == FpuUnaryOp::Zero as usize => self.fpu_registers[register] = [0; 4],
+            // FACCLOAD.X/Y/Z/W: overwrite ACC with the exact selected-lane
+            // value in accumulator format (Q8.8 shifted left by 8).
+            value if (FpuUnaryOp::AccLoadX as usize..=FpuUnaryOp::AccLoadW as usize)
+                .contains(&value) =>
+            {
+                let lane = value - FpuUnaryOp::AccLoadX as usize;
+                self.fpu_accumulator = i64::from(source[lane]) << 8;
+            }
             _ => return Err(FaultKind::InvalidInstruction),
         }
         Ok(())
@@ -824,7 +836,7 @@ mod tests {
             crate::fpu(crate::FpuOp::Import4, 0, 1),
             crate::fpu(crate::FpuOp::Move, 1, 0),
             crate::fpu(crate::FpuOp::Dot4Acc, 0, 1),
-            crate::fpu(crate::FpuOp::AccStore, 2, 0),
+            crate::fpu(crate::FpuOp::AccStore, 2, 1),
             crate::fpu(crate::FpuOp::Export4, 2, 2),
             halt(),
         ]);
@@ -840,6 +852,50 @@ mod tests {
         assert_eq!(machine.fpu_accumulator(), 0);
         assert_eq!(machine.memory(0x0104), 1600);
         assert_eq!(machine.memory(0x0105), 0);
+    }
+
+    #[test]
+    fn fpu_accstore_mask_and_accload_round_trip() {
+        let mut program = vec![];
+        program.extend(load_immediate16(1, 0x0100));
+        program.extend([
+            crate::fpu(crate::FpuOp::Import4, 0, 1),
+            crate::fpu(crate::FpuOp::Move, 1, 0),
+            crate::fpu(crate::FpuOp::Dot4Acc, 0, 1),
+            // Mask 0b0101 writes lanes x and z; mask 0 only clears ACC.
+            crate::fpu(crate::FpuOp::AccStore, 2, 0b0101),
+            crate::fpu(crate::FpuOp::AccStore, 3, 0),
+            // FACCLOAD.W overwrites ACC with lane w exactly; a full mask
+            // splats it to every lane.
+            crate::fpu_unary(0, crate::FpuUnaryOp::AccLoadW),
+            crate::fpu(crate::FpuOp::AccStore, 4, 0b1111),
+            halt(),
+        ]);
+        let mut machine = Machine::default();
+        machine.load_program(0, &program).unwrap();
+        machine
+            .load_program(0x0100, &[256, 512, 768, 1024])
+            .unwrap();
+        machine.run(32).unwrap();
+        // dot = 1 + 4 + 9 + 16 = 30.0 -> 7680.
+        assert_eq!(machine.fpu_register(2), Some([7680, 0, 7680, 0]));
+        assert_eq!(machine.fpu_register(3), Some([0; 4]));
+        assert_eq!(machine.fpu_register(4), Some([1024; 4]));
+        assert_eq!(machine.fpu_accumulator(), 0);
+    }
+
+    #[test]
+    fn fpu_fn_15_is_reserved_and_faults() {
+        let mut machine = Machine::default();
+        machine.load_program(0, &[0xdf00]).unwrap();
+        assert_eq!(
+            machine.step(),
+            Err(Fault {
+                kind: FaultKind::InvalidInstruction,
+                address: 0,
+                instruction: 0xdf00
+            })
+        );
     }
 
     #[test]

@@ -140,7 +140,6 @@ reg signed [39:0] fpu_accumulator = 0;
 reg fpu_memory_active = 0;
 reg [1:0] fpu_memory_lane = 0;
 reg signed [15:0] fpu_memory_value [0:3];
-reg [15:0] fpu_scalar = 0;
 reg [9:0] fpu_rom_address = 0;
 wire [15:0] fpu_rom_read_data;
 reg signed [5:0] fpu_rom_exponent = 0;
@@ -209,10 +208,7 @@ wire signed [17:0] fpu_multiplier_left =
     {{2{fpu_multiply_a_word[15]}}, fpu_multiply_a_word};
 wire signed [17:0] fpu_multiplier_right =
     fpu_sine_operation ? 18'sd41722 :
-    (field_d == 4'hf ?
-     (state == ST_FPU_EXECUTE ? {{2{fpu_multiply_b_word[15]}}, fpu_multiply_b_word} :
-      {{2{fpu_scalar[15]}}, fpu_scalar}) :
-     {{2{fpu_multiply_b_word[15]}}, fpu_multiply_b_word});
+    {{2{fpu_multiply_b_word[15]}}, fpu_multiply_b_word};
 wire signed [35:0] fpu_multiplier_product;
 wire prefix_consumer = opcode == 4'h8 || opcode == 4'h9 ||
                        (opcode == 4'ha &&
@@ -1238,28 +1234,22 @@ always @(posedge clk) begin
                         fpu_step <= 0;
                         state <= ST_FPU_WRITE_LANES;
                     end
-                    10, 11, 15: begin
-                        // Latch the broadcast scalar: earlier lane commits
-                        // may overwrite Fb.x when Fa and Fb alias.
-                        fpu_scalar <= fpu_rf_read_b_data[15:0];
+                    10, 11: begin
                         fpu_step <= 1;
                         fpu_mul_valid <= 2'b01;
                         fpu_mul_tag_0 <= 0;
                         state <= ST_FPU_MULTIPLY_PIPELINE;
                     end
                     12: begin
-                        if (field_b <= 3) begin
-                            fpu_rf_write_enable <= 4'b0001 << field_b[1:0];
-                            fpu_rf_write_address <= field_a;
-                            fpu_rf_write_data <=
-                                {4{fix16_from_accumulator(fpu_accumulator)}};
-                            fpu_accumulator <= 0;
-                            state <= ST_FPU_COMMIT;
-                        end else begin
-                            fault_code <= FAULT_INVALID_INSTRUCTION;
-                            fault_pc <= fpu_fault_pc;
-                            state <= ST_FAULT;
-                        end
+                        // FACCSTORE: field_b is a 4-bit destination lane
+                        // write mask (not a lane index); every set bit takes
+                        // the same rounded ACC value. Mask 0 only clears ACC.
+                        fpu_rf_write_enable <= field_b;
+                        fpu_rf_write_address <= field_a;
+                        fpu_rf_write_data <=
+                            {4{fix16_from_accumulator(fpu_accumulator)}};
+                        fpu_accumulator <= 0;
+                        state <= ST_FPU_COMMIT;
                     end
                     13: begin
                         pending_test_valid <= 1;
@@ -1285,6 +1275,14 @@ always @(posedge clk) begin
                                 fpu_operand_b <= fpu_rf_read_b_data[15:0];
                                 fpu_step <= 0;
                                 state <= ST_FPU_WRITE_LANES;
+                            end
+                            11, 12, 13, 14: begin
+                                // FACCLOAD.*: overwrite ACC with the exact
+                                // selected source lane in accumulator format.
+                                fpu_accumulator <=
+                                    {{16{fpu_rf_read_a_data[(field_b - 4'd11)*16 + 15]}},
+                                     fpu_rf_read_a_data[(field_b - 4'd11)*16 +: 16], 8'd0};
+                                state <= ST_FPU_COMMIT;
                             end
                             default: begin
                                 fault_code <= FAULT_INVALID_INSTRUCTION;

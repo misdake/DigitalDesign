@@ -162,22 +162,54 @@ and boot ABI stack value.
 ## Revision 0.7
 
 Revision 0.7 assigns the complete `D fn a b` family to the blocking fix16 FPU.
-It adds sixteen four-lane F registers, each lane holding signed Q8.8 data, and
-a signed saturating 40-bit accumulator. An FPU instruction is a core-execution
+It adds sixteen F registers, each holding four signed Q8.8 lanes, and a signed
+saturating 40-bit accumulator ACC. An FPU instruction is a core-execution
 barrier: it completes and retires before the core accepts its successor for
 execution, although the fitted system's independent fetch queue may fetch ahead.
 FPU instructions never consume `IMMHI12`.
 
+The ISA defines exactly two uses of an F register: scalar (lane `.x`) and vec4
+(lanes `.xyzw`). There are no vec2 or vec3 encodings; software represents them
+as vec4 values with the unused tail lanes set to zero, and the simple unary
+operations below all satisfy `f(0) = 0` so those tail lanes stay zero.
+
 | fn | Name | Operation |
 | --- | --- | --- |
-| 0/1 | `FLOAD`/`FSTORE` | raw fix16 bridge between a GPR and lane x |
+| 0/1 | `FLOAD`/`FSTORE` | raw fix16 bridge between a GPR and lane x; `FLOAD Fa, Rb` sets `Fa = {Rb, 0, 0, 0}` |
 | 2/3 | `FIMPORT4`/`FEXPORT4` | four aligned words at `{DSEG, rb}` |
 | 4..7 | `FMOV`/`FPACK4`/`FUNPACK4`/`FTRANSPOSE4` | register reorganization |
-| 8..A | `FADD`/`FSUB`/`FMUL` | saturating component arithmetic |
-| B/C | `FDOT4ACC`/`FACCSTORE` | wide accumulation and rounded lane writeback |
+| 8..A | `FADD`/`FSUB`/`FMUL` | saturating destructive component arithmetic (`Fa op= Fb`) |
+| B | `FDOT4ACC` | `ACC += dot4(Fa, Fb)`, saturating |
+| C | `FACCSTORE Fa, mask4` | write the rounded ACC value to every lane selected by the 4-bit mask, then clear ACC |
 | D | `FCMP` | signed lane-x ordering for the pending test |
-| E | `FUNARY` | reciprocal, reciprocal sqrt, sin/cos, and simple unary operations |
-| F | `FMULS` | vector multiplied by `Fb.x` |
+| E | `FUNARY` | see below |
+| F | reserved | invalid instruction (formerly `FMULS`) |
+
+Scalar-by-vector multiply has no dedicated instruction: splat the scalar
+through ACC first (`FACCLOAD.X Fs` then `FACCSTORE Ft, 0b1111`), then use a
+plain `FMUL`.
+
+`FACCSTORE`'s `b` field is a **write mask**, not a lane index: bit 0 selects
+lane x through bit 3 selecting lane w, every set bit writes the same rounded
+ACC value, and mask `0b0000` writes nothing and only clears ACC. `FACCLOAD`
+is the mirror operation with a completely different encoding: it occupies
+`FUNARY` subops `B..E` (`FACCLOAD.X/Y/Z/W`), where the subop selects exactly
+one **source** lane and overwrites ACC with that lane in accumulator format
+(`ACC = sign_extend(lane) << 8`), so a Q8.8 lane round-trips exactly through
+ACC. ACC is caller-clobbered temporary state: it serves both as the wide dot
+accumulator and as a scalar transfer register, and software must not rely on
+its contents surviving a call.
+
+`FUNARY` suboperations:
+
+| subop | Name | Type | Operation |
+| --- | --- | --- | --- |
+| 0/1 | `FRCP`/`FRSQRT` | scalar | `Fa.x = 1 / Fa.x` or `1 / sqrt(Fa.x)` |
+| 2 | `FSINCOS` | scalar -> vec4 | `Fa = {sin(Fa.x), cos(Fa.x), 0, 0}` |
+| 3..9 | `FABS`/`FNEG`/`FFLOOR`/`FCEIL`/`FROUND`/`FSAT01`/`FSIGN` | vec4 | component-wise; each satisfies `f(0) = 0` |
+| A | `FZERO` | vec4 | `Fa = {0, 0, 0, 0}` |
+| B..E | `FACCLOAD.X/Y/Z/W` | lane -> ACC | overwrite ACC from the selected lane |
+| F | reserved | — | invalid instruction |
 
 All narrowing uses round-to-nearest with ties to even followed by signed Q8.8
 saturation. `FRCP(0)` and `FRSQRT(x)` for `x <= 0` raise FPU-domain fault code
@@ -187,5 +219,6 @@ transfer reads or writes four consecutive words.
 
 The three continuation bits are derived combinationally from the current four
 lane values and are only an execution hint. They are not architectural state
-and are neither spilled nor restored. All F registers are caller-saved. The
-software ABI requires ACC to be zero at every function entry, call, and return.
+and are neither spilled nor restored. All F registers are caller-saved and ACC
+is caller-clobbered; the assignment of argument and return F registers is a
+compiler-ABI decision outside this specification.
