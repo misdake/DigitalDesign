@@ -19,6 +19,25 @@ fn main() {
     assert_eq!(signal, Some(37u16.wrapping_mul(1111)));
 }
 
+#[test]
+fn test_mul_operator_uses_the_library_fallback() {
+    // CpuV2 has no hardware multiply: `*` lowers to the rcc_std mul_16x16 call.
+    let src = r#"
+fn main() {
+    let mut acc: u16 = 0;
+    let mut i: u16 = 0;
+    while i < 8 {
+        acc = acc + 37 * 11 + i * 3;
+        i = i + 1;
+    }
+    halt(acc);
+}
+"#;
+    let opts = CompilerOptions::default();
+    let (_, signal, _) = compile_program_and_run(src, &opts, 8000);
+    assert_eq!(signal, Some(3340));
+}
+
 fn heap_stat(mem: &[u16], begin: usize, end: usize) -> (usize, usize) {
     let mut alloc_count = 0;
     let mut alloc_size = 0;

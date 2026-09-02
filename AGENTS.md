@@ -89,6 +89,12 @@ touching the core, fetch, cache, arbiter, or memory paths:
 & scripts/run-cargo.ps1 -Subcommand test -Label "cpu-v3 system co-sim" -CargoArgs @("-p", "cpu-v3-tang-nano-20k", "--test", "system_cosim", "--", "--ignored", "--nocapture", "--test-threads=1")
 ```
 
+The frozen CPU V3 benchmark suite lives in
+`systems/cpu-v3-tang-nano-20k/benchmarks/suite/` (contract and metric definitions in the
+adjacent `README.md`). Run it with `benchmarks/run-suite.ps1 -Stage <N>`. Do not change suite
+programs, their metadata, or the metric set without treating it as a suite revision (invalid
+for silent cross-Stage comparison).
+
 ## Cargo output summarization
 
 Run cargo through `scripts/run-cargo.ps1` instead of invoking `cargo` directly when the raw

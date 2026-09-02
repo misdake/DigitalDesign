@@ -1,9 +1,10 @@
 // bench-max-cycles: 30000000
 // bench-expected-halt: 1
+// bench-tier: long
 use crate::dsl_rt::*;
 
-const N: u16 = 4096;
-static DATA: [u16; 4096] = [0; 4096];
+const N: u16 = 2048;
+static DATA: [u16; 2048] = [0; 2048];
 
 fn qsort(mut d: Array<u16>, lo: u16, hi: u16) {
     if lo < hi {
@@ -30,12 +31,14 @@ fn qsort(mut d: Array<u16>, lo: u16, hi: u16) {
         if i < hi { qsort(d, i + 1, hi); }
     }
 }
+
 fn checksum(d: Array<u16>) -> u16 {
     let mut sum: u16 = 0;
     let mut i: u16 = 0;
     while i < N { sum = sum + d[i]; i = i + 1; }
     sum
 }
+
 fn main() {
     let mut d = DATA.as_array();
     let mut i: u16 = 0;
@@ -52,4 +55,3 @@ fn main() {
     }
     if before == checksum(d) { halt(1); } else { halt(0); }
 }
-

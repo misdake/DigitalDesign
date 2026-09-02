@@ -591,6 +591,9 @@ fn emit_inst(
                 BinOp::And => and,
                 BinOp::Or => or,
                 BinOp::Xor => xor,
+                BinOp::Mul => unreachable!(
+                    "the v2 driver rewrites integer multiply into a mul_16x16 call"
+                ),
             };
             lines.push(MachineLine::Inst(
                 f(reg(*lhs), reg(*rhs), reg(*dst)),

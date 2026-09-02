@@ -36,7 +36,7 @@ fn test_module_semantic_error_keeps_its_source_file() {
         &cpu_v2::CompilerOptions::default(),
         &mut |name| match name {
             "helper" => {
-                Ok("fn helper() {\n    let x = 1u16 * 2u16;\n    halt(x);\n}\n".to_string())
+                Ok("fn helper() {\n    let x = 1u16 / 2u16;\n    halt(x);\n}\n".to_string())
             }
             _ => Err(format!("unknown module `{name}`")),
         },
@@ -102,7 +102,6 @@ fn test_static_data_cannot_overlap_the_function_table() {
 #[test]
 fn test_unsupported_constructs() {
     expect_error("fn f(x: u16) -> u16 { x / 2 }", "not supported");
-    expect_error("fn f(x: u16) -> u16 { x * 2 }", "not supported");
     expect_error("fn f(x: u16) -> u16 { x % 2 }", "not supported");
     expect_error(
         "fn f(x: u16) -> u16 { match x { _ => 0 } }",
@@ -173,8 +172,8 @@ fn test_unsupported_types() {
 
 #[test]
 fn test_operator_restrictions() {
-    // no hardware mul/div (spec §1.1)
-    expect_error("fn f(x: u16) -> u16 { x * 2 }", "not supported yet");
+    // no hardware divide (spec §1.1); integer `*` works (hardware MUL on
+    // CpuV3, the mul_16x16 library on CpuV2)
     expect_error("fn f(x: u16) -> u16 { x / 2 }", "not supported yet");
     expect_error("fn f(x: u16) -> u16 { x % 2 }", "not supported yet");
     // unary minus is i16-only, same as Rust

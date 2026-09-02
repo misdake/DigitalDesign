@@ -1,6 +1,6 @@
 param(
-    [Parameter(Mandatory = $true)]
-    [string]$ProgramsDirectory,
+    [Parameter()]
+    [string]$ProgramsDirectory = (Join-Path $PSScriptRoot "suite"),
 
     [Parameter(Mandatory = $true)]
     [int]$Stage,

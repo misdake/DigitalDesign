@@ -1,3 +1,6 @@
+// bench-max-cycles: 2000000
+// bench-expected-halt: 1
+// bench-tier: medium
 use crate::dsl_rt::*;
 
 const N: u16 = 2048;

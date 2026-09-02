@@ -1,5 +1,7 @@
+// bench-max-cycles: 2000000
+// bench-expected-halt: 1
+// bench-tier: medium
 use crate::dsl_rt::*;
-use crate::rcc_std::*;
 
 const N: u16 = 2000;
 static COMPOSITE: [u16; 2000] = [0; 2000];
@@ -9,7 +11,7 @@ fn main() {
     let mut p: u16 = 2;
     while p < 45 {
         if composite[p] == 0 {
-            let mut multiple: u16 = mul_16x16(p, p);
+            let mut multiple: u16 = p * p;
             while multiple < N {
                 composite[multiple] = 1;
                 multiple = multiple + p;

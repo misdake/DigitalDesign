@@ -1,8 +1,0 @@
-# bench-max-cycles: 10000
-# bench-expected-halt: 256
-fff0
-af10
-d001
-de03
-d100
-e800

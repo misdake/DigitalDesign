@@ -43,6 +43,9 @@ impl CompareOp {
 pub enum BinOp {
     Add,
     Sub,
+    /// low 16 bits of the product; CpuV3 lowers to hardware MUL, CpuV2 to the
+    /// rcc_std mul_16x16 library call
+    Mul,
     And,
     Or,
     Xor,
@@ -463,6 +466,7 @@ impl fmt::Display for Instr {
                 let op = match op {
                     BinOp::Add => "add",
                     BinOp::Sub => "sub",
+                    BinOp::Mul => "mul",
                     BinOp::And => "and",
                     BinOp::Or => "or",
                     BinOp::Xor => "xor",

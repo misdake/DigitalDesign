@@ -17,6 +17,40 @@ struct PreparedFunction {
     alloc: Allocation,
 }
 
+/// CpuV2 has no hardware multiply: rewrite integer `BinOp::Mul` into a call to
+/// the rcc_std `mul_16x16` library function (always linked from rcc_std).
+fn rewrite_mul_as_library_calls(funcs: &mut HashMap<FuncName, IrFunc>) {
+    let mut uses_mul = false;
+    for f in funcs.values() {
+        for block in &f.blocks {
+            for inst in &block.insts {
+                if matches!(inst, Instr::Bin { op: BinOp::Mul, .. }) {
+                    uses_mul = true;
+                }
+            }
+        }
+    }
+    if uses_mul {
+        assert!(
+            funcs.contains_key("mul_16x16"),
+            "integer multiply on CpuV2 requires the rcc_std library (compile through the frontend)"
+        );
+    }
+    for f in funcs.values_mut() {
+        for block in &mut f.blocks {
+            for inst in &mut block.insts {
+                if let Instr::Bin { dst, op: BinOp::Mul, lhs, rhs } = inst {
+                    *inst = Instr::Call {
+                        func: "mul_16x16",
+                        args: vec![*lhs, *rhs],
+                        rets: vec![*dst],
+                    };
+                }
+            }
+        }
+    }
+}
+
 fn reachable_functions(funcs: &HashMap<FuncName, IrFunc>, main: FuncName) -> HashSet<FuncName> {
     let mut reachable = HashSet::from([main]);
     let mut work = vec![main];
@@ -235,15 +269,16 @@ impl Compiler {
     }
 
     fn finish_impl(self, main: FuncName) -> (Vec<Instruction>, String, Option<DebugInfo>) {
-        let reachable = reachable_functions(&self.funcs, main);
+        let mut funcs = self.funcs.clone();
+        rewrite_mul_as_library_calls(&mut funcs);
+        let reachable = reachable_functions(&funcs, main);
         let mut prepared = vec![];
         let mut called: HashSet<FuncName> = HashSet::new();
         let mut next = vec![main];
         called.insert(main);
 
         while let Some(name) = next.pop() {
-            let f = self
-                .funcs
+            let f = funcs
                 .get(&name)
                 .unwrap_or_else(|| panic!("unknown function `{name}`"));
             let mut f = f.clone();
@@ -301,7 +336,7 @@ impl Compiler {
         };
 
         let mut function_table =
-            select_function_table(&self.funcs, &reachable, &self.opts.function_table);
+            select_function_table(&funcs, &reachable, &self.opts.function_table);
         let validate_function_table = |table: &HashMap<FuncName, u8>| {
             if !table.is_empty() && self.opts.stack_init > crate::FUNCTION_TABLE_BASE {
                 panic!(

@@ -1,5 +1,6 @@
 // bench-max-cycles: 12000000
 // bench-expected-halt: 1
+// bench-tier: long
 use crate::dsl_rt::*;
 const N: u16 = 4096;
 const B_OFFSET: u16 = 4112;
