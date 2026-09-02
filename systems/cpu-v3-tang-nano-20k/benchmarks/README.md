@@ -63,3 +63,26 @@ and must be called out in any comparison that mixes revisions.
    prints each program's halt signal from the instruction-level oracle; bake the value into
    `bench-expected-halt`.
 3. Run the frozen suite and confirm every program passes its exact check.
+## Historical reruns (cross-Stage comparison)
+
+Stage milestones carry `stageN-bench` tags: benchmark-ready backport commits whose emulators
+speak the current ISA (the revised FPU encodings, and for Stages 8-12 the corrected D-cache
+timing). The old trees predate the current compiler, so historical runs execute prebuilt word
+images instead of compiling source:
+
+```powershell
+# one-off: build the images with the current compiler
+cargo run -p cpu-v3-tang-nano-20k --bin cpu-v3-bench-images
+
+# single ref (HEAD runs from source; a tag runs its own emulator on the images)
+benchmarks/run-commit.ps1 -Ref stage12-bench -Label stage12
+
+# everything: images + stage0..12 + current, merged CSV
+benchmarks/run-history.ps1
+```
+
+`run-history.ps1` writes `target/bench-history/combined.csv`. Rows from `stageN-bench` tags
+carry `config=reconstructed` (the revised encodings and corrected D-cache timing never existed
+on those stages' RTL) and must not be presented as hardware-measured. Image `bench-max-cycles`
+budgets are scaled by 4 (recorded in each image header) because the budgets are tuned on
+current hardware; the bound is a hang guard, never a metric.
