@@ -1,4 +1,8 @@
 //! Versioned CpuV3 boot container shared by the host packer and both loaders.
+//!
+//! The format and fitted Flash placement are documented in
+//! [`../../docs/boot-image-format.md`](../../docs/boot-image-format.md) and
+//! [`../../docs/flash-layout.md`](../../docs/flash-layout.md).
 
 mod device_abi;
 mod devices;

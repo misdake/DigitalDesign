@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>CPU V3 ISA v0.6 — Encoding, ABI, Memory, and Hardware</title>
+<title>CPU V3 ISA v0.7 — Encoding, ABI, and Addressing</title>
 <style>
   :root {
     --bg: #f7f9fc; --paper: #ffffff; --ink: #172033; --dim: #5d687c;
@@ -82,27 +82,25 @@
 <body><main>
 
 <section class="hero">
-  <h1>CPU V3 ISA v0.6</h1>
-  <p class="subtitle">Instruction encoding, architectural behavior, compiler ABI, unified memory map, and current FPGA organization.</p>
+  <h1>CPU V3 ISA v0.7</h1>
+  <p class="subtitle">Instruction encoding, architectural behavior, segmented addressing, faults, and compiler ABI.</p>
   <div class="badges">
     <span class="badge">16-bit fixed instruction words</span>
     <span class="badge">16 × 16-bit GPRs</span>
     <span class="badge">16-bit word offsets</span>
-    <span class="badge">Segmented physical SDRAM</span>
+    <span class="badge">Segmented physical word addresses</span>
     <span class="badge">Transient pending test, no persistent flags</span>
     <span class="badge">Revision 0.7</span>
   </div>
   <ol class="toc">
     <li><a href="#overview">Architectural overview</a></li>
-    <li><a href="#hardware">Hardware organization</a></li>
     <li><a href="#encoding">Encoding rules</a></li>
     <li><a href="#opmap">Opcode map</a></li>
     <li><a href="#instructions">Instruction reference</a></li>
     <li><a href="#prefix">IMMHI12 and wide operations</a></li>
-    <li><a href="#memory">Memory map and caches</a></li>
+    <li><a href="#memory">Segmented addressing</a></li>
     <li><a href="#abi">Compiler ABI</a></li>
     <li><a href="#faults">Fault and retirement behavior</a></li>
-    <li><a href="#status">Implementation status</a></li>
   </ol>
 </section>
 
@@ -133,60 +131,13 @@
       <li>Small decoding surface: the high nibble selects the major operation.</li>
       <li>A single transient pending test result, not persistent flags, carries a comparison outcome to its consuming branch.</li>
       <li>Short immediates stay compact; <code>IMMHI12</code> extends only explicitly listed consumers.</li>
-      <li>Near 16-bit pointers simplify the compiler while physical cache tags expose all fitted SDRAM.</li>
+      <li>Near 16-bit pointers keep compiler data compact while segment registers form full physical word addresses.</li>
       <li>Opcode <code>0xD</code> is the blocking four-lane signed fix16 FPU family.</li>
     </ul>
   </div>
 </div>
 
-<h2 id="hardware">2. Hardware organization</h2>
-<div class="panel">
-<svg viewBox="0 0 1120 420" role="img" aria-label="CPU V3 hardware block diagram">
-  <defs><marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse"><path d="M 0 0 L 10 5 L 0 10 z" fill="#64748b"/></marker></defs>
-  <rect class="box-blue" x="30" y="92" width="230" height="236" rx="12"/>
-  <text class="svg-title" x="145" y="120" text-anchor="middle">CPU V3 core</text>
-  <rect class="box" x="55" y="140" width="180" height="42" rx="6"/><text class="svg-text" x="145" y="159" text-anchor="middle">PC + prefix state</text><text class="svg-mono" x="145" y="175" text-anchor="middle">CSEG / DSEG</text>
-  <rect class="box" x="55" y="194" width="180" height="42" rx="6"/><text class="svg-text" x="145" y="220" text-anchor="middle">16 × 16-bit register file</text>
-  <rect class="box" x="55" y="248" width="82" height="54" rx="6"/><text class="svg-text" x="96" y="271" text-anchor="middle">ALU</text><text class="svg-mono" x="96" y="288" text-anchor="middle">add/logic/shift</text>
-  <rect class="box" x="153" y="248" width="82" height="54" rx="6"/><text class="svg-text" x="194" y="271" text-anchor="middle">control</text><text class="svg-mono" x="194" y="288" text-anchor="middle">branch/call</text>
-
-  <rect class="box-green" x="340" y="40" width="220" height="130" rx="12"/>
-  <text class="svg-title" x="450" y="69" text-anchor="middle">Instruction cache</text>
-  <text class="svg-text" x="450" y="94" text-anchor="middle">2 KiB direct-mapped</text>
-  <text class="svg-mono" x="450" y="116" text-anchor="middle">64 sets × 16 words</text>
-  <text class="svg-text" x="450" y="141" text-anchor="middle">one 1024×16 BSRAM data leaf</text>
-
-  <rect class="box-green" x="340" y="250" width="220" height="130" rx="12"/>
-  <text class="svg-title" x="450" y="279" text-anchor="middle">Data cache</text>
-  <text class="svg-text" x="450" y="304" text-anchor="middle">2 KiB direct-mapped</text>
-  <text class="svg-mono" x="450" y="326" text-anchor="middle">write-through / no-write-allocate</text>
-  <text class="svg-text" x="450" y="351" text-anchor="middle">one 1024×16 BSRAM data leaf</text>
-
-  <rect class="box-amber" x="650" y="115" width="200" height="190" rx="12"/>
-  <text class="svg-title" x="750" y="145" text-anchor="middle">Memory scheduler</text>
-  <text class="svg-text" x="750" y="174" text-anchor="middle">one outstanding operation</text>
-  <text class="svg-text" x="750" y="198" text-anchor="middle">refresh before new traffic</text>
-  <text class="svg-text" x="750" y="222" text-anchor="middle">data wins an idle tie</text>
-  <text class="svg-text" x="750" y="246" text-anchor="middle">accepted work is atomic</text>
-  <text class="svg-mono" x="750" y="275" text-anchor="middle">32-byte line transactions</text>
-
-  <rect class="box-red" x="930" y="92" width="160" height="236" rx="12"/>
-  <text class="svg-title" x="1010" y="122" text-anchor="middle">Tang Nano 20K</text>
-  <text class="svg-title" x="1010" y="145" text-anchor="middle">SDRAM target</text>
-  <rect class="box" x="950" y="169" width="120" height="56" rx="6"/><text class="svg-text" x="1010" y="193" text-anchor="middle">Controller HS</text><text class="svg-mono" x="1010" y="211" text-anchor="middle">32-bit @ 54 MHz</text>
-  <rect class="box" x="950" y="242" width="120" height="58" rx="6"/><text class="svg-text" x="1010" y="266" text-anchor="middle">64-Mibit fitted</text><text class="svg-text" x="1010" y="284" text-anchor="middle">SDR SDRAM</text>
-
-  <path class="arrow" d="M260 154 L340 105"/><text class="svg-mono" x="292" y="113">fetch</text>
-  <path class="arrow" d="M340 135 L260 188"/>
-  <path class="arrow" d="M260 275 L340 304"/><text class="svg-mono" x="286" y="306">load/store</text>
-  <path class="arrow" d="M560 105 L650 168"/><path class="arrow" d="M560 315 L650 252"/>
-  <path class="arrow" d="M850 210 L930 210"/><path class="arrow" d="M930 235 L850 235"/>
-  <text class="svg-mono" x="890" y="197" text-anchor="middle">8 × 32-bit</text>
-</svg>
-<p class="caption">Normative target organization. The host cache and scheduler models implement these policies, and the reusable CpuV3 RTL core executes the complete v0.6 integer ISA; see implementation status.</p>
-</div>
-
-<h2 id="encoding">3. Encoding rules</h2>
+<h2 id="encoding">2. Encoding rules</h2>
 <p>Every physical instruction is one 16-bit word shown as four hexadecimal nibbles <code>[n3 n2 n1 n0]</code>. Bit 15 is the most significant bit.</p>
 <div class="panel">
   <div class="bitrow">
@@ -208,7 +159,7 @@
   <tr><td class="mn">IMMHI12</td><td class="sem">F · high12</td><td>Prefix state for the immediately following eligible consumer.</td></tr>
 </table>
 
-<h2 id="opmap">4. Major opcode map</h2>
+<h2 id="opmap">3. Major opcode map</h2>
 <table>
   <tr><th class="center">n3</th><th>Family</th><th>Form</th><th>Summary</th></tr>
   <tr><td class="center op mono">0..7</td><td class="op">Register ALU</td><td class="mono">op rd ra rb</td><td>Add, subtract, multiply, logic, and register-count shifts.</td></tr>
@@ -222,8 +173,8 @@
   <tr><td class="center imm mono">F</td><td class="imm">IMMHI12</td><td class="mono">F high12</td><td>Creates a pending wide immediate.</td></tr>
 </table>
 
-<h2 id="instructions">5. Instruction reference</h2>
-<h3>5.1 Register ALU — opcodes 0 through 7</h3>
+<h2 id="instructions">4. Instruction reference</h2>
+<h3>4.1 Register ALU — opcodes 0 through 7</h3>
 <table>
   <tr><th>Mnemonic</th><th>Encoding</th><th>Semantics</th><th>Signedness / notes</th></tr>
   <tr><td class="mn">ADD rd, ra, rb</td><td class="mono">0 rd ra rb</td><td class="sem">rd = ra + rb</td><td>Wrapping.</td></tr>
@@ -236,7 +187,7 @@
   <tr><td class="mn">ASR rd, ra, rb</td><td class="mono">7 rd ra rb</td><td class="sem">rd = signed(ra) &gt;&gt; (rb &amp; 15)</td><td>Arithmetic right.</td></tr>
 </table>
 
-<h3>5.2 Memory — opcodes 8 and 9</h3>
+<h3>4.2 Memory — opcodes 8 and 9</h3>
 <table>
   <tr><th>Mnemonic</th><th>Encoding</th><th>Semantics</th><th>Prefix</th></tr>
   <tr><td class="mn">LOAD rd, [base + off]</td><td class="mono">8 rd base imm4</td><td class="sem">rd = memory[base + sext4(imm4)]</td><td>With IMMHI12, <code>off = {high12, imm4}</code>.</td></tr>
@@ -244,7 +195,7 @@
 </table>
 <p class="caption">Address arithmetic wraps at 16 bits. Every final offset is ordinary memory in <code>DSEG</code>.</p>
 
-<h3>5.3 Immediate — opcode A</h3>
+<h3>4.3 Immediate — opcode A</h3>
 <table>
   <tr><th>n2</th><th>Mnemonic</th><th>Semantics</th><th>Immediate and prefix behavior</th></tr>
   <tr><td class="mono">0</td><td class="mn">ADDI rd, imm</td><td class="sem">rd = rd + imm</td><td>Signed i4; prefix accepts a 16-bit bit pattern.</td></tr>
@@ -265,7 +216,7 @@
   <tr><td class="mono">F</td><td class="mn">LDUI rd, u4</td><td class="sem">rd = zext4(u4)</td><td>With prefix, loads the complete 16-bit bit pattern.</td></tr>
 </table>
 
-<h3>5.4 Branch and relative jump — opcode B</h3>
+<h3>4.4 Branch and relative jump — opcode B</h3>
 <table>
   <tr><th>n2</th><th>Mnemonic</th><th>Taken when</th><th>Target</th></tr>
   <tr><td class="mono">0</td><td class="mn">BEQ off</td><td>pending == Equal</td><td rowspan="6" class="sem">PC_after + off</td></tr>
@@ -283,7 +234,7 @@
 <p>Conditions 0..5 test the <b>pending test result</b>, a transient three-way ordering (Less/Equal/Greater) set only by the CMP-class instructions <code>CMPS</code>, <code>CMPU</code>, <code>CMPSI</code>, and <code>CMPUI</code>. A conditional branch consumes the pending result whether or not it is taken; any other retired non-prefix instruction expires it, and <code>IMMHI12</code> is transparent to it. A conditional branch with no pending result faults <code>InvalidInstruction</code> — reported at the prefix address when prefixed. Reset leaves no pending result.</p>
 <p><code>JALREL</code> has no link field: the link register is architecturally fixed to <code>r14</code>, which receives the fall-through address before the jump. Compiler-generated wide control flow uses the canonical prefix with a 16-bit wrapping relative offset.</p>
 
-<h3>5.5 Device access — opcode C</h3>
+<h3>4.5 Device access — opcode C</h3>
 <table>
   <tr><th>Mnemonic</th><th>Encoding</th><th>Semantics</th><th>Notes</th></tr>
   <tr><td class="mn">DEVRECV rd, dev, ch</td><td class="mono">C {0,dev[2:0]} ch rd</td><td class="sem">rd = device[dev].read(ch)</td><td>dir bit 11 = 0.</td></tr>
@@ -291,7 +242,7 @@
 </table>
 <p>The encoding covers devices 0..7, each with channels 0..15. Device access is independent of memory and <code>DSEG</code>: only <code>DEVRECV</code>/<code>DEVSEND</code> reach devices, while <code>LOAD</code>/<code>STORE</code> always reach memory. Reads sample combinational device data, writes pulse for one execute cycle, and an unconnected device reads zero and ignores writes. Device instructions carry no immediate and never consume an <code>IMMHI12</code> prefix.</p>
 
-<h3>5.6 Extended/control — opcode E</h3>
+<h3>4.6 Extended/control — opcode E</h3>
 <table>
   <tr><th>n2</th><th>Mnemonic</th><th>Encoding</th><th>Semantics / constraints</th></tr>
   <tr><td class="mono">0</td><td class="mn">POPCNT rd, rs</td><td class="mono">E 0 rd rs</td><td class="sem">rd = population_count(rs); added in v0.3 at E B, moved in v0.5</td></tr>
@@ -312,7 +263,23 @@
   <tr><td class="mono">F</td><td class="mn">JSEG seg, target</td><td class="mono">E F seg target</td><td class="sem">Atomically set CSEG = r[seg] and PC = r[target].</td></tr>
 </table>
 
-<h2 id="prefix">6. IMMHI12 and wide operations</h2>
+<h3>4.7 fix16 FPU &mdash; opcode D</h3>
+<p>Each F register contains four signed Q8.8 lanes. FPU operations are blocking,
+do not consume IMMHI12, and retire only after their final writeback or memory
+response. Narrowing rounds to nearest with ties to even and then saturates.</p>
+<table>
+  <tr><th>fn</th><th>Mnemonic</th><th>Summary</th></tr>
+  <tr><td class="mono">0/1</td><td class="mn">FLOAD / FSTORE</td><td>Raw GPR bridge through lane x; FLOAD clears y/z/w.</td></tr>
+  <tr><td class="mono">2/3</td><td class="mn">FIMPORT4 / FEXPORT4</td><td>Four aligned words at DSEG:r[b], transferred as four architectural word accesses.</td></tr>
+  <tr><td class="mono">4..7</td><td class="mn">FMOV / FPACK4 / FUNPACK4 / FTRANSPOSE4</td><td>Snapshot-defined F-register reorganization.</td></tr>
+  <tr><td class="mono">8..A</td><td class="mn">FADD / FSUB / FMUL</td><td>Destructive component arithmetic.</td></tr>
+  <tr><td class="mono">B/C</td><td class="mn">FDOT4ACC / FACCSTORE</td><td>Signed 40-bit saturating accumulation and rounded lane writeback.</td></tr>
+  <tr><td class="mono">D</td><td class="mn">FCMP</td><td>Signed lane-x ordering written to the transient pending test.</td></tr>
+  <tr><td class="mono">E</td><td class="mn">FUNARY</td><td>RCP, RSQRT, SINCOS, ABS, NEG, FLOOR, CEIL, ROUND, SAT01, SIGN, or ZERO.</td></tr>
+  <tr><td class="mono">F</td><td class="mn">FMULS</td><td>Multiply every lane of Fa by Fb.x.</td></tr>
+</table>
+
+<h2 id="prefix">5. IMMHI12 and wide operations</h2>
 <div class="grid">
   <div class="panel">
     <h3>Canonical 16-bit immediate</h3>
@@ -328,8 +295,8 @@
 </div>
 <div class="notice"><b>Precise prefix rule:</b> a non-consumer expires the pending prefix and retires it separately. A second prefix also retires and replaces the first. If a prefixed consumer faults, the reported address is the prefix address and neither word retires.</div>
 
-<h2 id="memory">7. Segmented memory map and cache policy</h2>
-<div class="notice"><b>Physical address rule:</b> <code>physical_word = {segment[15:0], offset[15:0]}</code>. There is no segment addition and a wrapping offset never carries into the segment. The Tang Nano 20K implements physical word addresses <code>0x00000000..0x003fffff</code>.</div>
+<h2 id="memory">6. Segmented addressing and ABI memory map</h2>
+<div class="notice"><b>Physical address rule:</b> <code>physical_word = {segment[15:0], offset[15:0]}</code>. There is no segment addition and a wrapping offset never carries into the segment. A fitted target may implement a smaller physical range and must report an error rather than truncate or alias an unsupported address.</div>
 <div class="grid">
   <div class="panel">
     <svg viewBox="0 0 580 460" role="img" aria-label="CPU V3 unified address-space map">
@@ -347,47 +314,14 @@
     <ul>
       <li>Ordinary CPU pointers cover one 65,536-word = 128-KiB segment.</li>
       <li>Instruction fetch uses <code>{CSEG, PC}</code>; ordinary data and stack accesses use <code>{DSEG, offset}</code>.</li>
-      <li>The fitted 8-MiB Tang Nano 20K SDRAM uses 22 physical word-address bits. Larger architectural addresses fault instead of aliasing.</li>
       <li>All offsets, including <code>0xff00..0xffff</code>, select ordinary memory in <code>DSEG</code>. Devices 0..7 are accessible only through the dedicated device instructions.</li>
       <li><code>CompilerOptions::default()</code> selects data base <code>0x4000</code>, heap base <code>0x8000</code>, and stack top <code>0x10000</code>, encoded as SP = 0. CPU V3 has no v2.6 function table.</li>
       <li>The CPU V3 compiler's optional <code>code_base</code> relocates all linked code offsets and function pointers without padding the emitted section bytes.</li>
     </ul>
-    <h3>Cache geometry</h3>
-    <table>
-      <tr><th></th><th>I-cache</th><th>D-cache</th></tr>
-      <tr><td>Capacity</td><td>2 KiB</td><td>2 KiB</td></tr>
-      <tr><td>Mapping</td><td colspan="2">direct-mapped, 64 sets</td></tr>
-      <tr><td>Line</td><td colspan="2">16 × 16-bit words = 32 bytes</td></tr>
-      <tr><td>Data storage</td><td colspan="2">one 1024×16 BSRAM leaf each</td></tr>
-      <tr><td>Stores</td><td>—</td><td>write-through, no-write-allocate</td></tr>
-    </table>
-    <h3>Global maintenance contract</h3>
-    <ul>
-      <li>There is no per-line invalidate or DMA write-snoop interface. Software transfers ownership only after CPU writes are visible in DRAM, and reacquires it only after device writes are visible followed by complete D-cache invalidation.</li>
-      <li><code>D_INVALIDATE_ALL</code> clears all valid bits while D-cache is write-through; the same ABI becomes blocking clean-plus-invalidate when write-back is implemented.</li>
-      <li>The compiler lowers <code>icache_invalidate_delayed_and_jump</code> as adjacent <code>ICACHE_INVALIDATE_ALL_DELAYED; JSEG</code> words so no spill, helper, or ordinary instruction can separate the final handoff.</li>
-      <li><code>D_CLEAN_ALL</code> and final maintenance status are reserved, not implemented before dirty cache state exists.</li>
-    </ul>
   </div>
 </div>
-<div class="panel">
-  <svg viewBox="0 0 1100 220" role="img" aria-label="Cache line to SDRAM beat mapping">
-    <defs><marker id="arrow2" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse"><path d="M 0 0 L 10 5 L 0 10 z" fill="#64748b"/></marker></defs>
-    <text class="svg-title" x="30" y="34">One CPU cache line</text>
-    <g transform="translate(30 54)">
-      <rect class="box-green" x="0" y="0" width="62" height="44"/><rect class="box-green" x="62" y="0" width="62" height="44"/><rect class="box-green" x="124" y="0" width="62" height="44"/><rect class="box-green" x="186" y="0" width="62" height="44"/>
-      <rect class="box-green" x="248" y="0" width="62" height="44"/><rect class="box-green" x="310" y="0" width="62" height="44"/><rect class="box-green" x="372" y="0" width="62" height="44"/><rect class="box-green" x="434" y="0" width="62" height="44"/>
-      <rect class="box-green" x="496" y="0" width="62" height="44"/><rect class="box-green" x="558" y="0" width="62" height="44"/><rect class="box-green" x="620" y="0" width="62" height="44"/><rect class="box-green" x="682" y="0" width="62" height="44"/>
-      <rect class="box-green" x="744" y="0" width="62" height="44"/><rect class="box-green" x="806" y="0" width="62" height="44"/><rect class="box-green" x="868" y="0" width="62" height="44"/><rect class="box-green" x="930" y="0" width="62" height="44"/>
-      <text class="svg-mono" x="31" y="27" text-anchor="middle">w0</text><text class="svg-mono" x="93" y="27" text-anchor="middle">w1</text><text class="svg-mono" x="155" y="27" text-anchor="middle">w2</text><text class="svg-mono" x="217" y="27" text-anchor="middle">w3</text><text class="svg-mono" x="961" y="27" text-anchor="middle">w15</text>
-    </g>
-    <path d="M60 122 L60 150 L1022 150 L1022 122" stroke="#64748b" fill="none"/>
-    <text class="svg-text" x="540" y="174" text-anchor="middle">8 consecutive 32-bit Controller HS beats: {w1,w0}, {w3,w2}, … {w15,w14}</text>
-    <text class="svg-text" x="540" y="201" text-anchor="middle">A single-word store becomes one masked 32-bit beat; mask bit 1 disables its byte lane.</text>
-  </svg>
-</div>
 
-<h2 id="abi">8. Compiler ABI</h2>
+<h2 id="abi">7. Compiler ABI</h2>
 <table>
   <tr><th>Register</th><th>ABI role</th><th>Preservation</th><th>Compiler use</th></tr>
   <tr><td class="mono">r0..r1</td><td>return values 0 and 1</td><td>caller-saved</td><td>Also general allocation and the first result registers.</td></tr>
@@ -428,23 +362,7 @@
   </div>
 </div>
 
-<h3>5.7 fix16 FPU &mdash; opcode D</h3>
-<p>Each F register contains four signed Q8.8 lanes. FPU operations are blocking,
-do not consume IMMHI12, and retire only after their final writeback or memory
-response. Narrowing rounds to nearest with ties to even and then saturates.</p>
-<table>
-  <tr><th>fn</th><th>Mnemonic</th><th>Summary</th></tr>
-  <tr><td class="mono">0/1</td><td class="mn">FLOAD / FSTORE</td><td>Raw GPR bridge through lane x; FLOAD clears y/z/w.</td></tr>
-  <tr><td class="mono">2/3</td><td class="mn">FIMPORT4 / FEXPORT4</td><td>Four aligned words at DSEG:r[b], transferred through four word requests.</td></tr>
-  <tr><td class="mono">4..7</td><td class="mn">FMOV / FPACK4 / FUNPACK4 / FTRANSPOSE4</td><td>Snapshot-defined F-register reorganization.</td></tr>
-  <tr><td class="mono">8..A</td><td class="mn">FADD / FSUB / FMUL</td><td>Destructive component arithmetic.</td></tr>
-  <tr><td class="mono">B/C</td><td class="mn">FDOT4ACC / FACCSTORE</td><td>Signed 40-bit saturating accumulation and rounded lane writeback.</td></tr>
-  <tr><td class="mono">D</td><td class="mn">FCMP</td><td>Signed lane-x ordering written to the transient pending test.</td></tr>
-  <tr><td class="mono">E</td><td class="mn">FUNARY</td><td>RCP, RSQRT, SINCOS, ABS, NEG, FLOOR, CEIL, ROUND, SAT01, SIGN, or ZERO.</td></tr>
-  <tr><td class="mono">F</td><td class="mn">FMULS</td><td>Multiply every lane of Fa by Fb.x.</td></tr>
-</table>
-
-<h2 id="faults">9. Fault and retirement behavior</h2>
+<h2 id="faults">8. Fault and retirement behavior</h2>
 <table>
   <tr><th>Condition</th><th>Result</th><th>Fault PC</th><th>Retirement</th></tr>
   <tr><td>Reserved or malformed integer encoding</td><td><code>InvalidInstruction</code></td><td>instruction address, or prefix address for an eligible consumer</td><td>faulting operation does not retire</td></tr>
@@ -457,17 +375,7 @@ response. Narrowing rounds to nearest with ties to even and then saturates.</p>
   <tr><td>HALT after already halted</td><td>returns the same <code>r0</code> signal</td><td>—</td><td>no additional execution</td></tr>
 </table>
 
-<h2 id="status">10. Implementation status</h2>
-<table>
-  <tr><th>Layer</th><th>Status</th><th>What is implemented now</th><th>Important remaining work</th></tr>
-  <tr><td>Encoding helpers</td><td><span class="status done">complete v0.7</span></td><td>Constructors and stable reference encodings for integer, device, segment-control, and fix16 FPU operations.</td><td>Update only through a deliberate ISA revision.</td></tr>
-  <tr><td>Architectural simulator</td><td><span class="status done">complete v0.7</span></td><td>Integer v0.6 plus bit-exact F registers, vector memory, saturating arithmetic, 40-bit ACC, comparisons, and unary math.</td><td>Keep differential parity with the multicycle RTL.</td></tr>
-  <tr><td>Compiler backend</td><td><span class="status done">usable v0.6</span></td><td>CPU V3 ABI with SP = 0 as the segment top, register allocation, calls, stack frames, memory operations, compare/branch lowering, single-instruction device intrinsics, static initialization, and fixed-width symbolic linking.</td><td>Optional size relaxation.</td></tr>
-  <tr><td>Host cache/scheduler models</td><td><span class="status done">policy baseline</span></td><td>Physical cache tags, explicit invalidation, refill/write-through rules, full SDRAM address/lane mapping, and refresh-aware arbitration.</td><td>Associativity or write-back policy changes only with measured miss traffic.</td></tr>
-  <tr><td>Tang Nano 20K RTL</td><td><span class="status done">complete v0.6 core</span></td><td>Reusable CpuV3Core executing the complete v0.6 integer ISA, split I/D caches, a direct single-cycle device port connected to system-control, boot-select, and boot-DMA, and a three-client memory arbiter (DMA &gt; data &gt; instruction) over the Controller HS word port.</td><td>Physical v0.6 revalidation and interrupts if adopted.</td></tr>
-  <tr><td>Physical validation</td><td><span class="status done">v0.5 evidence retained</span></td><td>The previous v0.5 boot path passed full board validation, complete Flash programming, and cold-boot observation.</td><td>Repeat boot and display board validation for v0.6 before recording new physical evidence.</td></tr>
-</table>
-<div class="notice"><b>Source-of-truth rule:</b> executable behavior lives in <code>architecture/encoding.rs</code> and <code>architecture/sim.rs</code>; compiler convention lives in <code>rcc_backend/mod.rs</code> and <code>compiler/rcc/src/compiler/regalloc.rs</code>; cache and SDRAM policy lives in <code>architecture/cache.rs</code> and <code>architecture/sdram.rs</code>. This page is the human-readable companion and must be updated with those files.</div>
+<div class="notice"><b>Source-of-truth rule:</b> ISA behavior lives in <code>src/architecture/encoding.rs</code> and <code>src/architecture/sim.rs</code>; compiler convention lives in <code>src/rcc_backend/</code> and <code>compiler/rcc/src/compiler/regalloc.rs</code>. Hardware and fitted-system policy are intentionally documented outside this ISA reference.</div>
 
 </main></body>
 </html>

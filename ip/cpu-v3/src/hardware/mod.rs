@@ -1,4 +1,7 @@
 //! Reusable CpuV3 revision 0.7 processor core with physical-memory and device ports.
+//!
+//! See [`../../docs/hardware-architecture.md`](../../docs/hardware-architecture.md) for the
+//! current Stage 12 microarchitecture and fitted-cache boundary.
 
 mod cache;
 mod fetch;
