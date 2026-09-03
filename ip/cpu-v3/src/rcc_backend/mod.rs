@@ -948,8 +948,18 @@ fn link(functions: Vec<LoweredFunction>, options: &CompilerOptions) -> CpuV3Prog
             }
         }
         words.push(cpu_v3::halt());
-        for (offset, word) in words[local_start..].iter().enumerate() {
-            listing.push_str(&format!("  {:04x}: {:04x}\n", start + offset, word));
+        // mnemonic listing: wide (prefixed) operations occupy one line
+        for line in cpu_v3::disassemble_words(&words[local_start..], start as u16) {
+            let span = if line.wide { 2 } else { 1 };
+            let raw: Vec<String> = (0..span)
+                .map(|i| format!("{:04x}", words[usize::from(line.address) - (start - local_start) + i]))
+                .collect();
+            listing.push_str(&format!(
+                "  {:04x}: {:<11} {}\n",
+                line.address,
+                raw.join(" "),
+                line.text
+            ));
         }
     }
     CpuV3Program {

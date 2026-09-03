@@ -6,6 +6,7 @@
 //! The normative ISA and migration notes are in [`../../docs/isa.md`](../../docs/isa.md).
 
 mod cache;
+mod decode;
 mod encoding;
 mod fpu;
 mod sdram;
@@ -14,6 +15,7 @@ mod sim;
 pub use digital_design_ip_common::PhysicalWordAddress;
 
 pub use cache::*;
+pub use decode::*;
 pub use encoding::*;
 pub use fpu::*;
 pub use sdram::*;
