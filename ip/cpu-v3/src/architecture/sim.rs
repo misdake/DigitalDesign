@@ -212,6 +212,16 @@ impl Machine {
         self.retired_words
     }
 
+    pub fn pending_test(&self) -> Option<std::cmp::Ordering> {
+        self.pending_test
+    }
+
+    /// Set the program counter directly. The debugger uses this to enter a
+    /// linked program at its code base instead of running a register bootstrap.
+    pub fn set_pc(&mut self, pc: Word) {
+        self.pc = pc;
+    }
+
     pub fn run(&mut self, maximum_steps: usize) -> Result<RunOutcome, Fault> {
         for steps in 1..=maximum_steps {
             if let StepOutcome::Halted { signal } = self.step()? {

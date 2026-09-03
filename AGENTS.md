@@ -27,9 +27,15 @@ cargo run -p compiler-tools --bin rcc -- input.rs --target cpu-v2
 cargo run -p compiler-tools --bin rcc -- input.rs --target cpu-v3 --code-base 0x200
 cargo run -p cpu-v2-sim --bin rcc-run -- input.bin 1000000
 cargo run -p cpu-v2-sim --bin rcc-dbg -- input.bin
+cargo run -p cpu-v3-tang-nano-20k --bin cpu-v3-dbg -- input.rs
 cargo run -p cpu-v3-tang-nano-20k --bin cpu-v3-pack -- manifest
 cargo run -p cpu-v3-tang-nano-20k --bin cpu-v3-boot-assets
 ```
+
+`cpu-v3-dbg` takes a CPU V3 rcc source file (or a directory whose `main.rs` is the entry),
+compiles it in-process, and serves a single-page web debugger (source tabs per module,
+breakpoints, step/over/out/continue, variables, call stack, registers/F0-F15/ACC, and memory).
+Library code under `rcc_std/` is stepped over and hidden from the call stack.
 
 The CPU V3 system build script generates Stage0, Stage1, the demo application, and boot image data
 from `systems/cpu-v3-tang-nano-20k/rcc` into Cargo `OUT_DIR`. Use `cpu-v3-boot-assets` to materialize
