@@ -41,11 +41,12 @@ const CPU_V3_REGISTER_CONVENTION: rcc::RegisterConvention = rcc::RegisterConvent
     }),
 };
 
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug)]
 pub struct CpuV3Program {
     pub code_base: Word,
     pub words: Vec<Word>,
     pub listing: String,
+    pub debug: rcc::DebugInfo,
 }
 
 #[derive(Clone)]
@@ -81,6 +82,10 @@ struct LoweredFunction {
     name: FuncName,
     lines: Vec<Line>,
     static_addresses: Vec<u16>,
+    /// per-block source line from the allocated IR (for the debug line map)
+    block_lines: Vec<Option<u32>>,
+    frame_size: usize,
+    callee_saved: usize,
 }
 
 /// Compile target-independent RCC IR for the CpuV3 ABI and ISA.
@@ -89,18 +94,20 @@ pub fn compile(
     options: &CompilerOptions,
     main: FuncName,
 ) -> CpuV3Program {
+    let debug = program.debug;
     let functions = program
         .funcs
         .into_iter()
         .map(|function| (function.name, function))
         .collect();
-    compile_ir(functions, options, main)
+    compile_ir(functions, options, main, debug)
 }
 
 fn compile_ir(
     functions: HashMap<FuncName, IrFunc>,
     options: &CompilerOptions,
     main: FuncName,
+    debug: rcc::frontend::FrontendDebug,
 ) -> CpuV3Program {
     let reachable = reachable_functions(&functions, main);
     let mut order = vec![main];
@@ -132,7 +139,7 @@ fn compile_ir(
         ));
     }
 
-    link(lowered, options)
+    link(lowered, options, debug)
 }
 
 fn reachable_functions(functions: &HashMap<FuncName, IrFunc>, main: FuncName) -> HashSet<FuncName> {
@@ -302,6 +309,9 @@ fn lower_function(
         name: function.name,
         lines,
         static_addresses,
+        block_lines: function.block_lines.clone(),
+        frame_size: allocation.frame_size(),
+        callee_saved: allocation.callee_saved.len(),
     }
 }
 
@@ -843,7 +853,11 @@ fn emit_store(lines: &mut Vec<Line>, src: u8, base: u8, offset: i16) {
     }
 }
 
-fn link(functions: Vec<LoweredFunction>, options: &CompilerOptions) -> CpuV3Program {
+fn link(
+    functions: Vec<LoweredFunction>,
+    options: &CompilerOptions,
+    frontend_debug: rcc::frontend::FrontendDebug,
+) -> CpuV3Program {
     let mut function_addresses = HashMap::new();
     let code_base = usize::from(options.code_base);
     let mut cursor = code_base;
@@ -906,9 +920,17 @@ fn link(functions: Vec<LoweredFunction>, options: &CompilerOptions) -> CpuV3Prog
 
     let mut words = Vec::with_capacity(cursor - code_base);
     let mut listing = String::new();
+    let mut debug_lines = Vec::new();
+    let mut debug_functions = Vec::new();
     for function in &functions {
         let local_start = words.len();
         let start = code_base + local_start;
+        let file = frontend_debug
+            .funcs
+            .iter()
+            .find(|d| d.name == function.name)
+            .map(|d| d.file)
+            .unwrap_or(0);
         let mut labels = HashMap::new();
         let mut address = start;
         for line in &function.lines {
@@ -922,7 +944,13 @@ fn link(functions: Vec<LoweredFunction>, options: &CompilerOptions) -> CpuV3Prog
             }
         }
         listing.push_str(&format!("{} @ {start:#06x}\n", function.name));
+        let mut block_line = None;
         for line in &function.lines {
+            if let Line::Label(block) = line {
+                block_line = function.block_lines.get(*block).copied().flatten();
+                continue;
+            }
+            let emitted = words.len();
             match line {
                 Line::Word(word) => words.push(*word),
                 Line::Label(_) => continue,
@@ -946,8 +974,48 @@ fn link(functions: Vec<LoweredFunction>, options: &CompilerOptions) -> CpuV3Prog
                     ));
                 }
             }
+            if let Some(line) = block_line {
+                for word in emitted..words.len() {
+                    debug_lines.push((code_base + word, file, line));
+                }
+            }
         }
+        let end = code_base + words.len();
         words.push(cpu_v3::halt());
+        debug_functions.push(rcc::DebugFunc {
+            name: function.name.to_string(),
+            file,
+            addr: (start, end),
+            frame_size: function.frame_size,
+            locals: frontend_debug
+                .funcs
+                .iter()
+                .find(|d| d.name == function.name)
+                .map(|d| {
+                    d.locals
+                        .iter()
+                        .map(|v| {
+                            let mut v = v.clone();
+                            match v.loc {
+                                rcc::VarLoc::Frame(slot) => {
+                                    v.loc = rcc::VarLoc::Frame(
+                                        function.callee_saved as u8 + slot,
+                                    );
+                                }
+                                rcc::VarLoc::ParamIndex(index) => {
+                                    v.loc = rcc::VarLoc::Param(
+                                        CPU_V3_REGISTER_CONVENTION.argument_registers
+                                            [index as usize],
+                                    );
+                                }
+                                _ => {}
+                            }
+                            v
+                        })
+                        .collect()
+                })
+                .unwrap_or_default(),
+        });
         // mnemonic listing: wide (prefixed) operations occupy one line
         for line in cpu_v3::disassemble_words(&words[local_start..], start as u16) {
             let span = if line.wide { 2 } else { 1 };
@@ -962,10 +1030,20 @@ fn link(functions: Vec<LoweredFunction>, options: &CompilerOptions) -> CpuV3Prog
             ));
         }
     }
+    debug_lines.sort();
     CpuV3Program {
         code_base: options.code_base,
         words,
         listing,
+        debug: rcc::DebugInfo {
+            files: frontend_debug.files,
+            function_table: vec![],
+            init_sections: vec![],
+            functions: debug_functions,
+            globals: frontend_debug.globals,
+            consts: frontend_debug.consts,
+            lines: debug_lines,
+        },
     }
 }
 
@@ -1085,6 +1163,55 @@ mod tests {
             }
         "#;
         assert_eq!(run(source), 6160);
+    }
+
+    #[test]
+    fn debug_info_covers_modules_lines_and_locals() {
+        let source = r#"
+            mod helper;
+            fn main() {
+                let x: u16 = double(21);
+                halt(x);
+            }
+        "#;
+        let module = "fn double(v: u16) -> u16 { v + v }";
+        let program = rcc::frontend::compile_program_named(
+            "main.rs",
+            source,
+            &CompilerOptions::default(),
+            &mut |name| {
+                assert_eq!(name, "helper");
+                Ok(module.to_string())
+            },
+        )
+        .unwrap();
+        let program = super::compile(program, &CompilerOptions::default(), "main");
+        let debug = &program.debug;
+        // both files recorded
+        assert!(debug.files.len() >= 2, "files: {:?}", debug.files);
+        // the line map is non-empty, sorted, and in range
+        assert!(!debug.lines.is_empty());
+        assert!(debug.lines.windows(2).all(|w| w[0].0 <= w[1].0));
+        let main_fn = debug
+            .functions
+            .iter()
+            .find(|f| f.name == "main")
+            .expect("main in debug info");
+        assert!(main_fn.addr.1 > main_fn.addr.0);
+        // `x` is a local in main with a concrete lowered location
+        let x = main_fn
+            .locals
+            .iter()
+            .find(|v| v.name == "x")
+            .expect("local x in debug info");
+        match x.loc {
+            rcc::VarLoc::Frame(_) | rcc::VarLoc::Param(_) | rcc::VarLoc::Ssa => {}
+            ref other => panic!("unexpected location for x: {other:?}"),
+        }
+        // render/parse round-trip
+        let parsed = rcc::parse_debug(&debug.render()).expect("debug info round-trips");
+        assert_eq!(parsed.files.len(), debug.files.len());
+        assert_eq!(parsed.lines.len(), debug.lines.len());
     }
 
     #[test]
