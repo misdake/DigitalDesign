@@ -2,7 +2,7 @@
 // SPI Flash through the boot DMA engine, Stage1 loads the application, and the
 // application reports through the device-0 system control UART. The 320x240
 // RGB565 framebuffer scanout is written to SDRAM by the CPU and scanned out
-// through the shared DisplaySdramPort and the 720p HDMI datapath. Reporting is
+// through the SharedSdramPort adapter and the 720p HDMI datapath. Reporting is
 // entirely the software's job; the harness only wires devices, caches,
 // memories, and the display together.
 module CpuV3System (
@@ -568,7 +568,7 @@ wire [31:0] display_memory_read_data;
 wire display_memory_last;
 wire display_memory_error;
 
-__DISPLAY_SDRAM_PORT__ u_sdram_word_port (
+__SHARED_SDRAM_PORT__ u_shared_sdram_port (
     .clk(clk),
     .reset(reset),
     .cpu_request_valid(memory_request_valid),

@@ -1,6 +1,6 @@
 use cpu_v3::{CpuV3Core, CpuV3DataCache, CpuV3InstructionCache, CpuV3InstructionFetchQueue};
 use cpu_v3_tang_nano_20k::{
-    BootDmaDevice, BootDmaEngine, BootProgressMonitor, CpuV3MemoryArbiter, DisplaySdramPort,
+    BootDmaDevice, BootDmaEngine, BootProgressMonitor, CpuV3MemoryArbiter, SharedSdramPort,
     FramebufferHdmi, SystemControlDevice,
 };
 use digital_design_circuit::CircuitWires;
@@ -109,8 +109,8 @@ impl Module for CpuV3System {
                     &FittedFlashReader::verilog_identity().module_name(),
                 )
                 .replace(
-                    "__DISPLAY_SDRAM_PORT__",
-                    &DisplaySdramPort::verilog_identity().module_name(),
+                    "__SHARED_SDRAM_PORT__",
+                    &SharedSdramPort::verilog_identity().module_name(),
                 )
                 .replace(
                     "__FRAMEBUFFER_HDMI__",
@@ -139,7 +139,7 @@ impl Module for CpuV3System {
             VerilogDependency::new::<BootDmaDevice>("u_boot_dma_device"),
             VerilogDependency::new::<BootDmaEngine>("u_boot_dma_engine"),
             VerilogDependency::new::<FittedFlashReader>("u_flash"),
-            VerilogDependency::new::<DisplaySdramPort>("u_sdram_word_port"),
+            VerilogDependency::new::<SharedSdramPort>("u_shared_sdram_port"),
             VerilogDependency::new::<FramebufferHdmi>("u_display"),
             VerilogDependency::new::<BoardReset>("u_reset"),
             VerilogDependency::new::<BootProgressMonitor>("u_boot_progress"),

@@ -1,4 +1,4 @@
-module DisplaySdramPort (
+module SharedSdramPort (
     input wire clk, input wire reset,
     input wire cpu_request_valid, input wire cpu_write, input wire cpu_line,
     input wire [21:0] cpu_address, input wire [63:0] cpu_write_data,

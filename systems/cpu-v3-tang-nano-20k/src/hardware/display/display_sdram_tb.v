@@ -12,7 +12,7 @@ wire controller_write_data_valid;
 wire [63:0] cpu_read_data; wire [31:0] display_read_data;
 wire [2:0] controller_command; wire [20:0] controller_address;
 wire [3:0] controller_write_mask; wire [63:0] controller_write_data; wire [7:0] controller_burst_length;
-DisplaySdramPort dut(.*);
+SharedSdramPort dut(.*);
 integer cycles=0;
 always @(posedge clk) begin
   cycles<=cycles+1;

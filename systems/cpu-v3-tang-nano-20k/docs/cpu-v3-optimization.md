@@ -728,7 +728,7 @@ natural next targets.
   `CpuV3System` top module exposes a 64-bit `sdram_write_data`/`sdram_read_data` gearbox interface
   while the signature testbench still modeled the 32-bit controller path, so its `.*` instantiation
   could not elaborate. The model now captures the four 64-bit line-write beats and returns line reads
-  as four 64-bit beats, matching `DisplaySdramPort`.
+  as four 64-bit beats, matching `SharedSdramPort`.
 - Full-system Gowin PnR (`cpu_v3_system`, commit `dabcb10`): 10,100 Logic (8,822 LUT, 750 ALU,
   88 SSRAM); 4,324 registers; 4 DPB + 1 SDPB + 2 pROM; 2 MULT18X18. The CPU clock closes at
   56.230 MHz against the 54.000 MHz constraint (2.23 MHz margin), and every reported setup and hold

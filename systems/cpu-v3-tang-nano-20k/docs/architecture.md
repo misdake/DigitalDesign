@@ -62,7 +62,7 @@ The fitted SDRAM is 8 MiB: 23 byte-address bits or 22 CPU word-address bits. The
 larger architectural physical addresses instead of truncating or aliasing them.
 
 `CpuV3MemoryArbiter` serializes I-cache, D-cache, and boot-DMA transactions onto the CPU-side memory
-port. Accepted work runs to completion. `DisplaySdramPort` then schedules that traffic with display
+port. Accepted work runs to completion. `SharedSdramPort` then schedules that traffic with display
 scanout and exposes the fitted 64-bit line or narrow-word interface toward the 108-MHz SDRAM
 controller. Display urgency protects scanout deadlines without changing CPU cache semantics.
 

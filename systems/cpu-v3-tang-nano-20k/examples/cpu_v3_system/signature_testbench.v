@@ -41,7 +41,7 @@ always #1 serial_clock = ~serial_clock;
 // SDRAM model: 16-bit words, two words per 32-bit controller word. The boot
 // sections stay below physical word 0x50000, so 19 index bits suffice.
 //
-// The DisplaySdramPort is a 64-bit gearbox: a cache line is eight 32-bit words
+// The SharedSdramPort is a 64-bit gearbox: a cache line is eight 32-bit words
 // (four 64-bit beats), and it streams line-write beats through
 // sdram_write_data_valid BEFORE the ACTIVE/WRITE command pair. The model
 // therefore buffers the four 64-bit beats and commits them to memory when the
