@@ -26,6 +26,20 @@ pub struct RegisterConvention {
     pub stack_register: u8,
     pub temporary_register: u8,
     pub maximum_frame_words: usize,
+    /// optional FPU register file; targets without an FPU leave this `None`
+    /// and assert when an Fpu-class vreg reaches allocation
+    pub fpu: Option<FpuRegisterConvention>,
+}
+
+/// FPU register roles (all FPU registers are caller-saved; there is no
+/// callee-saved FPU half, so intervals crossing a call always spill)
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct FpuRegisterConvention {
+    pub return_registers: &'static [u8],
+    pub argument_registers: &'static [u8],
+    pub allocatable_registers: &'static [u8],
+    /// excluded from allocation; used to break parallel-move cycles
+    pub scratch_register: u8,
 }
 
 /// result of register allocation for one function
@@ -40,10 +54,29 @@ pub struct Allocation {
     pub local_slots: u8,
     /// number of spill frame slots used (after the local area)
     pub spill_slots: u8,
+    /// number of FPU spill slots; each is 4 words and 4-aligned, in an area
+    /// after the GPR spill area (preceded by up to 3 words of alignment
+    /// padding)
+    pub fpu_spill_slots: u8,
 }
 impl Allocation {
     pub fn frame_size(&self) -> usize {
-        self.callee_saved.len() + self.local_slots as usize + self.spill_slots as usize
+        self.callee_saved.len()
+            + self.local_slots as usize
+            + self.spill_slots as usize
+            + self.fpu_area_words()
+    }
+    /// words reserved for the FPU spill area (4 per slot plus alignment pad)
+    pub fn fpu_area_words(&self) -> usize {
+        if self.fpu_spill_slots == 0 {
+            0
+        } else {
+            4 * self.fpu_spill_slots as usize + 3
+        }
+    }
+    /// word offset from sp where the FPU spill alignment window starts
+    pub fn fpu_area_offset(&self) -> u8 {
+        self.callee_saved.len() as u8 + self.local_slots + self.spill_slots
     }
     /// frame slot index of a frontend local slot
     pub fn local_frame_slot(&self, slot: u8) -> u8 {
@@ -61,11 +94,19 @@ pub fn allocate_with_convention(
     convention: RegisterConvention,
 ) -> (IrFunc, Allocation) {
     validate_convention(convention);
+    if convention.fpu.is_none() {
+        assert!(
+            func.vreg_class.iter().all(|&c| c == RegClass::Gpr),
+            "function {} has FPU vregs but the target has no FPU register file",
+            func.name
+        );
+    }
     let mut f = func.clone();
     let abi = insert_abi_shims(&mut f, convention);
     split_critical_edges(&mut f);
 
     let mut spill_slots = 0u8;
+    let mut fpu_spill_slots = 0u8;
     for _ in 0..8 {
         let intervals = compute_intervals(&f);
         let affinity = if coalesce {
@@ -73,7 +114,7 @@ pub fn allocate_with_convention(
         } else {
             HashMap::new()
         };
-        let scan = linear_scan(&intervals, &abi, &affinity, convention);
+        let scan = linear_scan(&f, &intervals, &abi, &affinity, convention);
         if scan.spilled.is_empty() {
             let mut callee_saved: Vec<u8> = scan
                 .reg
@@ -96,6 +137,7 @@ pub fn allocate_with_convention(
                 callee_saved,
                 local_slots: f.local_slots,
                 spill_slots,
+                fpu_spill_slots,
             };
             collapse_redundant_phi_trampolines(&mut f, &alloc.reg);
             assert!(
@@ -107,7 +149,12 @@ pub fn allocate_with_convention(
             );
             return (f, alloc);
         }
-        rewrite_spills(&mut f, &scan.spilled, &mut spill_slots);
+        rewrite_spills(
+            &mut f,
+            &scan.spilled,
+            &mut spill_slots,
+            &mut fpu_spill_slots,
+        );
     }
     panic!("register allocation for {} did not converge", f.name)
 }
@@ -154,6 +201,26 @@ fn validate_convention(convention: RegisterConvention) {
         assert!(
             !convention.allocatable_registers.contains(&register),
             "reserved register r{register} is also allocatable"
+        );
+    }
+    if let Some(fpu) = convention.fpu {
+        // ABI registers (returns f0-f1, arguments f2-f7) are pinned only, not
+        // generally allocatable; every FPU register is caller-saved
+        let mut roles = HashSet::new();
+        for (name, registers) in [
+            ("fpu return", fpu.return_registers),
+            ("fpu argument", fpu.argument_registers),
+            ("fpu allocatable", fpu.allocatable_registers),
+        ] {
+            for &register in registers {
+                assert!(register < 16, "{name} register f{register} is out of range");
+                assert!(roles.insert(register), "duplicate {name} register f{register}");
+            }
+        }
+        assert!(
+            roles.insert(fpu.scratch_register),
+            "fpu scratch register f{} collides with an ABI role",
+            fpu.scratch_register
         );
     }
 }
@@ -248,6 +315,16 @@ pub(crate) fn inst_uses(inst: &Instr) -> Vec<VReg> {
             vec![*src]
         }
         Instr::Jseg { cseg, target } => vec![*cseg, *target],
+        Instr::FBin { lhs, rhs, .. } | Instr::FDot4Acc { lhs, rhs } => vec![*lhs, *rhs],
+        Instr::FAccLoad { src, .. } => vec![*src],
+        Instr::FMov { src, .. } | Instr::FUnary { src, .. } | Instr::FStore { src, .. } => {
+            vec![*src]
+        }
+        Instr::FLoad { src_gpr, .. } | Instr::FImport4 { base_gpr: src_gpr, .. } => {
+            vec![*src_gpr]
+        }
+        Instr::FExport4 { src, base_gpr } => vec![*src, *base_gpr],
+        Instr::FAccStore { .. } | Instr::FZero { .. } | Instr::AddrOfFpuSpill { .. } => vec![],
     }
 }
 pub(crate) fn inst_defs(inst: &Instr) -> Vec<VReg> {
@@ -274,6 +351,18 @@ pub(crate) fn inst_defs(inst: &Instr) -> Vec<VReg> {
             vec![]
         }
         Instr::Call { rets, .. } | Instr::CallPtr { rets, .. } => rets.clone(),
+        Instr::FBin { dst, .. }
+        | Instr::FMov { dst, .. }
+        | Instr::FLoad { dst, .. }
+        | Instr::FStore {
+            dst_gpr: dst, ..
+        }
+        | Instr::FImport4 { dst, .. }
+        | Instr::FUnary { dst, .. }
+        | Instr::FAccStore { dst, .. }
+        | Instr::FZero { dst }
+        | Instr::AddrOfFpuSpill { dst, .. } => vec![*dst],
+        Instr::FExport4 { .. } | Instr::FDot4Acc { .. } | Instr::FAccLoad { .. } => vec![],
     }
 }
 fn term_uses(term: &Terminator) -> Vec<VReg> {
@@ -336,6 +425,20 @@ fn replace_all_uses(f: &mut IrFunc, from: VReg, to: VReg) {
                     subst(addr);
                     args.iter_mut().for_each(&subst);
                 }
+                Instr::FBin { lhs, rhs, .. } | Instr::FDot4Acc { lhs, rhs } => {
+                    subst(lhs);
+                    subst(rhs);
+                }
+                Instr::FAccLoad { src, .. } => subst(src),
+                Instr::FMov { src, .. } | Instr::FUnary { src, .. } => subst(src),
+                Instr::FLoad { src_gpr, .. } => subst(src_gpr),
+                Instr::FStore { src, .. } => subst(src),
+                Instr::FImport4 { base_gpr, .. } => subst(base_gpr),
+                Instr::FExport4 { src, base_gpr } => {
+                    subst(src);
+                    subst(base_gpr);
+                }
+                Instr::FAccStore { .. } | Instr::FZero { .. } | Instr::AddrOfFpuSpill { .. } => {}
             }
         }
         if let Some(term) = &mut b.term {
@@ -369,42 +472,63 @@ struct AbiInfo {
 
 fn insert_abi_shims(f: &mut IrFunc, convention: RegisterConvention) -> AbiInfo {
     let mut pinned = HashMap::new();
-    let fresh = |f: &mut IrFunc| {
-        let v = f.vreg_count;
-        f.vreg_count += 1;
-        v
+    let fresh = |f: &mut IrFunc, v: VReg| {
+        // the shim copy inherits the class of the value it carries
+        f.fresh_vreg(f.class_of(v))
     };
 
+    let count_class = |class: RegClass, values: &[VReg]| {
+        values.iter().filter(|&&v| f.class_of(v) == class).count()
+    };
+    let gpr_params = count_class(RegClass::Gpr, &f.params);
+    let fpu_params = f.params.len() - gpr_params;
     assert!(
-        f.params.len() <= convention.argument_registers.len(),
-        "function {} has {} params, max {}",
+        gpr_params <= convention.argument_registers.len(),
+        "function {} has {} GPR params, max {}",
         f.name,
-        f.params.len(),
+        gpr_params,
         convention.argument_registers.len()
     );
+    if fpu_params > 0 {
+        let fpu = convention
+            .fpu
+            .expect("FPU parameters need an FPU register convention");
+        assert!(
+            fpu_params <= fpu.argument_registers.len(),
+            "function {} has {} FPU params, max {}",
+            f.name,
+            fpu_params,
+            fpu.argument_registers.len()
+        );
+    }
     assert!(
         f.n_rets <= convention.return_registers.len(),
         "function {} has too many return values",
         f.name
     );
 
-    // params: pin to ARG_REGS; copy to a fresh vreg for all real uses
+    // params: pin to their per-class ABI registers; copy to a fresh vreg for
+    // all real uses
     let params = f.params.clone();
-    for (i, p) in params.iter().enumerate() {
-        pinned.insert(*p, convention.argument_registers[i]);
+    let mut next_param = [0usize; 2];
+    for p in params {
+        let class = f.class_of(p);
+        let index = next_param[class as usize];
+        next_param[class as usize] += 1;
+        pinned.insert(p, abi_register(convention, class, index, AbiRole::Argument));
         let used = f.blocks.iter().any(|b| {
             b.phis
                 .iter()
-                .any(|phi| phi.args.iter().any(|(_, v)| v == p))
-                || b.insts.iter().any(|inst| inst_uses(inst).contains(p))
-                || b.term.as_ref().is_some_and(|t| term_uses(t).contains(p))
+                .any(|phi| phi.args.iter().any(|(_, v)| *v == p))
+                || b.insts.iter().any(|inst| inst_uses(inst).contains(&p))
+                || b.term.as_ref().is_some_and(|t| term_uses(t).contains(&p))
         });
         if used {
-            let p2 = fresh(f);
-            replace_all_uses(f, *p, p2);
+            let p2 = fresh(f, p);
+            replace_all_uses(f, p, p2);
             f.blocks[f.entry]
                 .insts
-                .insert(0, Instr::Mov { dst: p2, src: *p });
+                .insert(0, shim_mov(p2, p, class));
             f.blocks[f.entry].lines.insert(0, None);
         }
     }
@@ -424,23 +548,37 @@ fn insert_abi_shims(f: &mut IrFunc, convention: RegisterConvention) -> AbiInfo {
                     "call {func} exceeds ABI register count"
                 );
                 let mut pinned_args = Vec::with_capacity(args.len());
-                for (j, a) in args.iter().enumerate() {
-                    let alpha = fresh(f);
-                    pinned.insert(alpha, convention.argument_registers[j]);
-                    new_insts.push(Instr::Mov {
-                        dst: alpha,
-                        src: *a,
-                    });
+                let mut next_arg = [0usize; 2];
+                for a in &args {
+                    let class = f.class_of(*a);
+                    let alpha = fresh(f, *a);
+                    pinned.insert(
+                        alpha,
+                        abi_register(
+                            convention,
+                            class,
+                            next_arg[class as usize],
+                            AbiRole::Argument,
+                        ),
+                    );
+                    next_arg[class as usize] += 1;
+                    new_insts.push(shim_mov(alpha, *a, class));
                     new_lines.push(line);
                     pinned_args.push(alpha);
                 }
                 let mut pinned_rets = Vec::with_capacity(rets.len());
                 let mut result_movs = Vec::with_capacity(rets.len());
-                for (k, r) in rets.iter().enumerate() {
-                    let rho = fresh(f);
-                    pinned.insert(rho, convention.return_registers[k]);
+                let mut next_ret = [0usize; 2];
+                for r in &rets {
+                    let class = f.class_of(*r);
+                    let rho = fresh(f, *r);
+                    pinned.insert(
+                        rho,
+                        abi_register(convention, class, next_ret[class as usize], AbiRole::Return),
+                    );
+                    next_ret[class as usize] += 1;
                     pinned_rets.push(rho);
-                    result_movs.push(Instr::Mov { dst: *r, src: rho });
+                    result_movs.push(shim_mov(*r, rho, class));
                 }
                 new_insts.push(Instr::Call {
                     func,
@@ -459,7 +597,7 @@ fn insert_abi_shims(f: &mut IrFunc, convention: RegisterConvention) -> AbiInfo {
                 );
                 // The target address goes to the backend's temporary register;
                 // it must survive the argument parallel move.
-                let alpha_addr = fresh(f);
+                let alpha_addr = fresh(f, addr);
                 pinned.insert(alpha_addr, convention.temporary_register);
                 new_insts.push(Instr::Mov {
                     dst: alpha_addr,
@@ -467,23 +605,37 @@ fn insert_abi_shims(f: &mut IrFunc, convention: RegisterConvention) -> AbiInfo {
                 });
                 new_lines.push(line);
                 let mut pinned_args = Vec::with_capacity(args.len());
-                for (j, a) in args.iter().enumerate() {
-                    let alpha = fresh(f);
-                    pinned.insert(alpha, convention.argument_registers[j]);
-                    new_insts.push(Instr::Mov {
-                        dst: alpha,
-                        src: *a,
-                    });
+                let mut next_arg = [0usize; 2];
+                for a in &args {
+                    let class = f.class_of(*a);
+                    let alpha = fresh(f, *a);
+                    pinned.insert(
+                        alpha,
+                        abi_register(
+                            convention,
+                            class,
+                            next_arg[class as usize],
+                            AbiRole::Argument,
+                        ),
+                    );
+                    next_arg[class as usize] += 1;
+                    new_insts.push(shim_mov(alpha, *a, class));
                     new_lines.push(line);
                     pinned_args.push(alpha);
                 }
                 let mut pinned_rets = Vec::with_capacity(rets.len());
                 let mut result_movs = Vec::with_capacity(rets.len());
-                for (k, r) in rets.iter().enumerate() {
-                    let rho = fresh(f);
-                    pinned.insert(rho, convention.return_registers[k]);
+                let mut next_ret = [0usize; 2];
+                for r in &rets {
+                    let class = f.class_of(*r);
+                    let rho = fresh(f, *r);
+                    pinned.insert(
+                        rho,
+                        abi_register(convention, class, next_ret[class as usize], AbiRole::Return),
+                    );
+                    next_ret[class as usize] += 1;
                     pinned_rets.push(rho);
-                    result_movs.push(Instr::Mov { dst: *r, src: rho });
+                    result_movs.push(shim_mov(*r, rho, class));
                 }
                 new_insts.push(Instr::CallPtr {
                     addr: alpha_addr,
@@ -506,10 +658,16 @@ fn insert_abi_shims(f: &mut IrFunc, convention: RegisterConvention) -> AbiInfo {
         if let Some(Terminator::Ret { values }) = f.blocks[b].term.clone() {
             let line = f.blocks[b].term_line;
             let mut pinned_values = Vec::with_capacity(values.len());
-            for (k, v) in values.iter().enumerate() {
-                let beta = fresh(f);
-                pinned.insert(beta, convention.return_registers[k]);
-                f.blocks[b].insts.push(Instr::Mov { dst: beta, src: *v });
+            let mut next_ret = [0usize; 2];
+            for v in &values {
+                let class = f.class_of(*v);
+                let beta = fresh(f, *v);
+                pinned.insert(
+                    beta,
+                    abi_register(convention, class, next_ret[class as usize], AbiRole::Return),
+                );
+                next_ret[class as usize] += 1;
+                f.blocks[b].insts.push(shim_mov(beta, *v, class));
                 f.blocks[b].lines.push(line);
                 pinned_values.push(beta);
             }
@@ -521,6 +679,39 @@ fn insert_abi_shims(f: &mut IrFunc, convention: RegisterConvention) -> AbiInfo {
 
     AbiInfo { pinned }
 }
+
+/// which ABI register list a pinned value comes from
+#[derive(Clone, Copy)]
+enum AbiRole {
+    Argument,
+    Return,
+}
+
+/// ABI register for the `index`-th value of `class` in `role`
+fn abi_register(
+    convention: RegisterConvention,
+    class: RegClass,
+    index: usize,
+    role: AbiRole,
+) -> u8 {
+    match (class, role) {
+        (RegClass::Gpr, AbiRole::Argument) => convention.argument_registers[index],
+        (RegClass::Gpr, AbiRole::Return) => convention.return_registers[index],
+        (RegClass::Fpu, AbiRole::Argument) => {
+            convention.fpu.expect("FPU ABI").argument_registers[index]
+        }
+        (RegClass::Fpu, AbiRole::Return) => convention.fpu.expect("FPU ABI").return_registers[index],
+    }
+}
+
+/// shim copy between same-class vregs
+fn shim_mov(dst: VReg, src: VReg, class: RegClass) -> Instr {
+    match class {
+        RegClass::Gpr => Instr::Mov { dst, src },
+        RegClass::Fpu => Instr::FMov { dst, src },
+    }
+}
+
 
 // ---------------------------------------------------------------------------
 // step 2: critical edge splitting
@@ -772,8 +963,9 @@ fn compute_affinity(f: &IrFunc) -> HashMap<VReg, Vec<VReg>> {
     };
     for b in &f.blocks {
         for inst in &b.insts {
-            if let Instr::Mov { dst, src } = inst {
-                pair(*src, *dst);
+            match inst {
+                Instr::Mov { dst, src } | Instr::FMov { dst, src } => pair(*src, *dst),
+                _ => {}
             }
         }
         for phi in &b.phis {
@@ -790,15 +982,56 @@ struct ScanResult {
     spilled: Vec<VReg>,
 }
 
+/// one linear scan per register class; the two files are independent
 fn linear_scan(
+    f: &IrFunc,
     intervals: &[Interval],
     abi: &AbiInfo,
     affinity: &HashMap<VReg, Vec<VReg>>,
     convention: RegisterConvention,
 ) -> ScanResult {
+    let mut result = ScanResult {
+        reg: HashMap::new(),
+        spilled: vec![],
+    };
+    for class in [RegClass::Gpr, RegClass::Fpu] {
+        let (allocatable, callee_saved): (&[u8], &[u8]) = match class {
+            RegClass::Gpr => (
+                convention.allocatable_registers,
+                convention.callee_saved,
+            ),
+            // all FPU registers are caller-saved: intervals crossing a call
+            // have no register to live in and always spill
+            RegClass::Fpu => match convention.fpu {
+                Some(fpu) => (fpu.allocatable_registers, &[]),
+                None => continue,
+            },
+        };
+        let scan = scan_class(
+            f, intervals, abi, affinity, class, allocatable, callee_saved,
+        );
+        result.reg.extend(scan.reg);
+        result.spilled.extend(scan.spilled);
+    }
+    result
+}
+
+#[allow(clippy::too_many_arguments)]
+fn scan_class(
+    f: &IrFunc,
+    intervals: &[Interval],
+    abi: &AbiInfo,
+    affinity: &HashMap<VReg, Vec<VReg>>,
+    class: RegClass,
+    allocatable: &'static [u8],
+    callee_saved: &'static [u8],
+) -> ScanResult {
     // fixed ranges per register (from pinned vregs), known upfront
     let mut fixed_ranges: HashMap<u8, Vec<(u32, u32)>> = HashMap::new();
     for (&v, &r) in &abi.pinned {
+        if f.class_of(v) != class {
+            continue;
+        }
         fixed_ranges
             .entry(r)
             .or_default()
@@ -815,6 +1048,7 @@ fn linear_scan(
 
     let mut order: Vec<VReg> = (0..intervals.len() as VReg)
         .filter(|&v| intervals[v as usize].start != u32::MAX) // skip dead vregs
+        .filter(|&v| f.class_of(v) == class)
         .collect();
     order.sort_by_key(|&v| intervals[v as usize].start);
 
@@ -843,9 +1077,9 @@ fn linear_scan(
         }
 
         let prefs: &[u8] = if iv.crosses_call {
-            convention.callee_saved
+            callee_saved
         } else {
-            convention.allocatable_registers
+            allocatable
         };
         let free = |r: u8| {
             !active.iter().any(|&(_, _, ar)| ar == r)
@@ -856,6 +1090,9 @@ fn linear_scan(
         // coalescing hint: prefer the affinity target's register
         let preferred = affinity.get(&v).and_then(|neighbors| {
             neighbors.iter().find_map(|a| {
+                if f.class_of(*a) != class {
+                    return None;
+                }
                 if let Some(&r) = abi.pinned.get(a) {
                     Some(r)
                 } else {
@@ -903,27 +1140,40 @@ fn linear_scan(
     ScanResult { reg, spilled }
 }
 
+
 // ---------------------------------------------------------------------------
 // step 4: spill rewriting (returns number of frame slots used)
 // ---------------------------------------------------------------------------
 
-/// rewrite spilled vregs into explicit LoadSp/StoreSp. each spilled vreg gets
-/// a fresh frame slot from the persistent counter `next_slot` (monotonic
-/// across fixpoint iterations, so slots assigned in earlier iterations are
-/// never clobbered). TODO(M5): pack slots of non-overlapping spills.
-fn rewrite_spills(f: &mut IrFunc, spilled: &[VReg], next_slot: &mut u8) {
+/// rewrite spilled vregs into explicit frame traffic: LoadSp/StoreSp for GPR
+/// vregs, AddrOfFpuSpill + FImport4/FExport4 for FPU vregs (4-word aligned
+/// slots addressed through a fresh GPR temporary). each spilled vreg gets a
+/// fresh frame slot from the persistent counters `next_slot`/`next_fpu_slot`
+/// (monotonic across fixpoint iterations, so slots assigned in earlier
+/// iterations are never clobbered). TODO(M5): pack slots of non-overlapping
+/// spills.
+fn rewrite_spills(
+    f: &mut IrFunc,
+    spilled: &[VReg],
+    next_slot: &mut u8,
+    next_fpu_slot: &mut u8,
+) {
     let mut slot_of: HashMap<VReg, u8> = HashMap::new();
+    let mut fpu_slot_of: HashMap<VReg, u8> = HashMap::new();
     for &v in spilled {
-        slot_of.insert(v, *next_slot);
-        *next_slot += 1;
+        match f.class_of(v) {
+            RegClass::Gpr => {
+                slot_of.insert(v, *next_slot);
+                *next_slot += 1;
+            }
+            RegClass::Fpu => {
+                fpu_slot_of.insert(v, *next_fpu_slot);
+                *next_fpu_slot += 1;
+            }
+        }
     }
 
     let spilled: HashSet<VReg> = spilled.iter().copied().collect();
-    let fresh = |f: &mut IrFunc| {
-        let v = f.vreg_count;
-        f.vreg_count += 1;
-        v
-    };
 
     // loads/stores to append at the end of specific pred blocks (phi args);
     // collected in the first pass and applied in a second pass, because a
@@ -939,30 +1189,43 @@ fn rewrite_spills(f: &mut IrFunc, spilled: &[VReg], next_slot: &mut u8) {
                 // dissolve into per-edge stores
                 for (p, v) in phi.args {
                     let app = edge_appends.entry(p).or_default();
-                    let src = if spilled.contains(&v) {
-                        let t = fresh(f);
-                        app.push(Instr::LoadSp {
-                            dst: t,
-                            slot: slot_of[&v],
-                        });
-                        t
-                    } else {
-                        v
-                    };
-                    app.push(Instr::StoreSp {
-                        slot: slot_of[&phi.dst],
-                        src,
-                    });
+                    let mut lines = vec![];
+                    let mut v = v;
+                    reload(
+                        &mut v,
+                        &slot_of,
+                        &fpu_slot_of,
+                        &spilled,
+                        f,
+                        app,
+                        &mut lines,
+                        None,
+                    );
+                    spill_store(
+                        v,
+                        phi.dst,
+                        &slot_of,
+                        &fpu_slot_of,
+                        f,
+                        app,
+                        &mut lines,
+                        None,
+                    );
                 }
             } else {
                 for (p, v) in &mut phi.args {
                     if spilled.contains(v) {
-                        let t = fresh(f);
-                        edge_appends.entry(*p).or_default().push(Instr::LoadSp {
-                            dst: t,
-                            slot: slot_of[v],
-                        });
-                        *v = t;
+                        let mut lines = vec![];
+                        reload(
+                            v,
+                            &slot_of,
+                            &fpu_slot_of,
+                            &spilled,
+                            f,
+                            edge_appends.entry(*p).or_default(),
+                            &mut lines,
+                            None,
+                        );
                     }
                 }
                 kept.push(phi);
@@ -985,6 +1248,7 @@ fn rewrite_spills(f: &mut IrFunc, spilled: &[VReg], next_slot: &mut u8) {
                     reload(
                         lhs,
                         &slot_of,
+                        &fpu_slot_of,
                         &spilled,
                         f,
                         &mut new_insts,
@@ -994,6 +1258,7 @@ fn rewrite_spills(f: &mut IrFunc, spilled: &[VReg], next_slot: &mut u8) {
                     reload(
                         rhs,
                         &slot_of,
+                        &fpu_slot_of,
                         &spilled,
                         f,
                         &mut new_insts,
@@ -1005,6 +1270,7 @@ fn rewrite_spills(f: &mut IrFunc, spilled: &[VReg], next_slot: &mut u8) {
                     reload(
                         src,
                         &slot_of,
+                        &fpu_slot_of,
                         &spilled,
                         f,
                         &mut new_insts,
@@ -1022,6 +1288,7 @@ fn rewrite_spills(f: &mut IrFunc, spilled: &[VReg], next_slot: &mut u8) {
                 Instr::LoadMem { base, .. } => reload(
                     base,
                     &slot_of,
+                    &fpu_slot_of,
                     &spilled,
                     f,
                     &mut new_insts,
@@ -1032,6 +1299,7 @@ fn rewrite_spills(f: &mut IrFunc, spilled: &[VReg], next_slot: &mut u8) {
                     reload(
                         base,
                         &slot_of,
+                        &fpu_slot_of,
                         &spilled,
                         f,
                         &mut new_insts,
@@ -1041,6 +1309,7 @@ fn rewrite_spills(f: &mut IrFunc, spilled: &[VReg], next_slot: &mut u8) {
                     reload(
                         src,
                         &slot_of,
+                        &fpu_slot_of,
                         &spilled,
                         f,
                         &mut new_insts,
@@ -1053,6 +1322,7 @@ fn rewrite_spills(f: &mut IrFunc, spilled: &[VReg], next_slot: &mut u8) {
                         reload(
                             a,
                             &slot_of,
+                            &fpu_slot_of,
                             &spilled,
                             f,
                             &mut new_insts,
@@ -1066,6 +1336,7 @@ fn rewrite_spills(f: &mut IrFunc, spilled: &[VReg], next_slot: &mut u8) {
                     reload(
                         addr,
                         &slot_of,
+                        &fpu_slot_of,
                         &spilled,
                         f,
                         &mut new_insts,
@@ -1076,6 +1347,7 @@ fn rewrite_spills(f: &mut IrFunc, spilled: &[VReg], next_slot: &mut u8) {
                         reload(
                             a,
                             &slot_of,
+                            &fpu_slot_of,
                             &spilled,
                             f,
                             &mut new_insts,
@@ -1090,6 +1362,7 @@ fn rewrite_spills(f: &mut IrFunc, spilled: &[VReg], next_slot: &mut u8) {
                 | Instr::StoreLocal { src, .. } => reload(
                     src,
                     &slot_of,
+                    &fpu_slot_of,
                     &spilled,
                     f,
                     &mut new_insts,
@@ -1100,6 +1373,7 @@ fn rewrite_spills(f: &mut IrFunc, spilled: &[VReg], next_slot: &mut u8) {
                     reload(
                         cseg,
                         &slot_of,
+                        &fpu_slot_of,
                         &spilled,
                         f,
                         &mut new_insts,
@@ -1109,6 +1383,7 @@ fn rewrite_spills(f: &mut IrFunc, spilled: &[VReg], next_slot: &mut u8) {
                     reload(
                         target,
                         &slot_of,
+                        &fpu_slot_of,
                         &spilled,
                         f,
                         &mut new_insts,
@@ -1116,13 +1391,98 @@ fn rewrite_spills(f: &mut IrFunc, spilled: &[VReg], next_slot: &mut u8) {
                         line,
                     );
                 }
+                Instr::FBin { lhs, rhs, .. } | Instr::FDot4Acc { lhs, rhs } => {
+                    reload(
+                        lhs,
+                        &slot_of,
+                        &fpu_slot_of,
+                        &spilled,
+                        f,
+                        &mut new_insts,
+                        &mut new_lines,
+                        line,
+                    );
+                    reload(
+                        rhs,
+                        &slot_of,
+                        &fpu_slot_of,
+                        &spilled,
+                        f,
+                        &mut new_insts,
+                        &mut new_lines,
+                        line,
+                    );
+                }
+                Instr::FMov { src, .. } | Instr::FUnary { src, .. } | Instr::FAccLoad { src, .. } => reload(
+                    src,
+                    &slot_of,
+                    &fpu_slot_of,
+                    &spilled,
+                    f,
+                    &mut new_insts,
+                    &mut new_lines,
+                    line,
+                ),
+                Instr::FLoad { src_gpr, .. } => reload(
+                    src_gpr,
+                    &slot_of,
+                    &fpu_slot_of,
+                    &spilled,
+                    f,
+                    &mut new_insts,
+                    &mut new_lines,
+                    line,
+                ),
+                Instr::FStore { src, .. } => reload(
+                    src,
+                    &slot_of,
+                    &fpu_slot_of,
+                    &spilled,
+                    f,
+                    &mut new_insts,
+                    &mut new_lines,
+                    line,
+                ),
+                Instr::FImport4 { base_gpr, .. } => reload(
+                    base_gpr,
+                    &slot_of,
+                    &fpu_slot_of,
+                    &spilled,
+                    f,
+                    &mut new_insts,
+                    &mut new_lines,
+                    line,
+                ),
+                Instr::FExport4 { src, base_gpr } => {
+                    reload(
+                        src,
+                        &slot_of,
+                        &fpu_slot_of,
+                        &spilled,
+                        f,
+                        &mut new_insts,
+                        &mut new_lines,
+                        line,
+                    );
+                    reload(
+                        base_gpr,
+                        &slot_of,
+                        &fpu_slot_of,
+                        &spilled,
+                        f,
+                        &mut new_insts,
+                        &mut new_lines,
+                        line,
+                    );
+                }
+                Instr::FAccStore { .. } | Instr::FZero { .. } | Instr::AddrOfFpuSpill { .. } => {}
             }
             new_insts.push(inst.clone());
             new_lines.push(line);
             // defs after
             for d in inst_defs(&inst) {
                 if spilled.contains(&d) {
-                    let t = fresh(f);
+                    let t = f.fresh_vreg(f.class_of(d));
                     // replace the just-pushed inst's def with t, then store
                     let last = new_insts.last_mut().unwrap();
                     for dd in defs_mut(last) {
@@ -1130,11 +1490,16 @@ fn rewrite_spills(f: &mut IrFunc, spilled: &[VReg], next_slot: &mut u8) {
                             *dd = t;
                         }
                     }
-                    new_insts.push(Instr::StoreSp {
-                        slot: slot_of[&d],
-                        src: t,
-                    });
-                    new_lines.push(line);
+                    spill_store(
+                        t,
+                        d,
+                        &slot_of,
+                        &fpu_slot_of,
+                        f,
+                        &mut new_insts,
+                        &mut new_lines,
+                        line,
+                    );
                 }
             }
         }
@@ -1156,6 +1521,7 @@ fn rewrite_spills(f: &mut IrFunc, spilled: &[VReg], next_slot: &mut u8) {
                     reload(
                         &mut cmp.lhs,
                         &slot_of,
+                        &fpu_slot_of,
                         &spilled,
                         f,
                         &mut pre,
@@ -1166,6 +1532,7 @@ fn rewrite_spills(f: &mut IrFunc, spilled: &[VReg], next_slot: &mut u8) {
                         reload(
                             r,
                             &slot_of,
+                            &fpu_slot_of,
                             &spilled,
                             f,
                             &mut pre,
@@ -1179,6 +1546,7 @@ fn rewrite_spills(f: &mut IrFunc, spilled: &[VReg], next_slot: &mut u8) {
                         reload(
                             v,
                             &slot_of,
+                            &fpu_slot_of,
                             &spilled,
                             f,
                             &mut pre,
@@ -1190,6 +1558,7 @@ fn rewrite_spills(f: &mut IrFunc, spilled: &[VReg], next_slot: &mut u8) {
                 Terminator::Halt { signal } => reload(
                     signal,
                     &slot_of,
+                    &fpu_slot_of,
                     &spilled,
                     f,
                     &mut pre,
@@ -1200,6 +1569,7 @@ fn rewrite_spills(f: &mut IrFunc, spilled: &[VReg], next_slot: &mut u8) {
                     reload(
                         cseg,
                         &slot_of,
+                        &fpu_slot_of,
                         &spilled,
                         f,
                         &mut pre,
@@ -1209,6 +1579,7 @@ fn rewrite_spills(f: &mut IrFunc, spilled: &[VReg], next_slot: &mut u8) {
                     reload(
                         target,
                         &slot_of,
+                        &fpu_slot_of,
                         &spilled,
                         f,
                         &mut pre,
@@ -1232,27 +1603,84 @@ fn rewrite_spills(f: &mut IrFunc, spilled: &[VReg], next_slot: &mut u8) {
     }
 }
 
+/// if `v` is spilled, load it from its frame slot into a fresh vreg (GPR:
+/// LoadSp; FPU: FImport4 through a fresh GPR address temporary)
+#[allow(clippy::too_many_arguments)]
 fn reload(
     v: &mut VReg,
     slot_of: &HashMap<VReg, u8>,
+    fpu_slot_of: &HashMap<VReg, u8>,
     spilled: &HashSet<VReg>,
     f: &mut IrFunc,
     out: &mut Vec<Instr>,
     lines: &mut Vec<Option<u32>>,
     line: Option<u32>,
 ) {
-    if spilled.contains(v) {
-        let t = {
-            let t = f.vreg_count;
-            f.vreg_count += 1;
-            t
-        };
-        out.push(Instr::LoadSp {
-            dst: t,
-            slot: slot_of[v],
-        });
-        lines.push(line);
-        *v = t;
+    if !spilled.contains(v) {
+        return;
+    }
+    match f.class_of(*v) {
+        RegClass::Gpr => {
+            let t = f.fresh_vreg(RegClass::Gpr);
+            out.push(Instr::LoadSp {
+                dst: t,
+                slot: slot_of[v],
+            });
+            lines.push(line);
+            *v = t;
+        }
+        RegClass::Fpu => {
+            let addr = f.fresh_vreg(RegClass::Gpr);
+            out.push(Instr::AddrOfFpuSpill {
+                dst: addr,
+                slot: fpu_slot_of[v],
+            });
+            lines.push(line);
+            let t = f.fresh_vreg(RegClass::Fpu);
+            out.push(Instr::FImport4 {
+                dst: t,
+                base_gpr: addr,
+            });
+            lines.push(line);
+            *v = t;
+        }
+    }
+}
+
+/// store the fresh vreg `t` (holding the value of the spilled vreg `orig`)
+/// into `orig`'s frame slot
+#[allow(clippy::too_many_arguments)]
+fn spill_store(
+    t: VReg,
+    orig: VReg,
+    slot_of: &HashMap<VReg, u8>,
+    fpu_slot_of: &HashMap<VReg, u8>,
+    f: &mut IrFunc,
+    out: &mut Vec<Instr>,
+    lines: &mut Vec<Option<u32>>,
+    line: Option<u32>,
+) {
+    match f.class_of(orig) {
+        RegClass::Gpr => {
+            out.push(Instr::StoreSp {
+                slot: slot_of[&orig],
+                src: t,
+            });
+            lines.push(line);
+        }
+        RegClass::Fpu => {
+            let addr = f.fresh_vreg(RegClass::Gpr);
+            out.push(Instr::AddrOfFpuSpill {
+                dst: addr,
+                slot: fpu_slot_of[&orig],
+            });
+            lines.push(line);
+            out.push(Instr::FExport4 {
+                src: t,
+                base_gpr: addr,
+            });
+            lines.push(line);
+        }
     }
 }
 
@@ -1280,5 +1708,15 @@ fn defs_mut(inst: &mut Instr) -> Vec<&mut VReg> {
             vec![]
         }
         Instr::Call { rets, .. } | Instr::CallPtr { rets, .. } => rets.iter_mut().collect(),
+        Instr::FBin { dst, .. }
+        | Instr::FMov { dst, .. }
+        | Instr::FLoad { dst, .. }
+        | Instr::FUnary { dst, .. }
+        | Instr::FAccStore { dst, .. }
+        | Instr::FZero { dst }
+        | Instr::FImport4 { dst, .. }
+        | Instr::AddrOfFpuSpill { dst, .. } => vec![dst],
+        Instr::FStore { dst_gpr, .. } => vec![dst_gpr],
+        Instr::FExport4 { .. } | Instr::FDot4Acc { .. } | Instr::FAccLoad { .. } => vec![],
     }
 }

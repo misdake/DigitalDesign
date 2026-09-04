@@ -264,20 +264,26 @@
 </table>
 
 <h3>4.7 fix16 FPU &mdash; opcode D</h3>
-<p>Each F register contains four signed Q8.8 lanes. FPU operations are blocking,
-do not consume IMMHI12, and retire only after their final writeback or memory
+<p>Each F register contains four signed Q8.8 lanes. The ISA defines exactly two
+uses of an F register: scalar (lane x) and vec4 (lanes xyzw); vec2/vec3 values
+are vec4 values with zeroed tail lanes. FPU operations are blocking, do not
+consume IMMHI12, and retire only after their final writeback or memory
 response. Narrowing rounds to nearest with ties to even and then saturates.</p>
 <table>
   <tr><th>fn</th><th>Mnemonic</th><th>Summary</th></tr>
-  <tr><td class="mono">0/1</td><td class="mn">FLOAD / FSTORE</td><td>Raw GPR bridge through lane x; FLOAD clears y/z/w.</td></tr>
+  <tr><td class="mono">0/1</td><td class="mn">FLOAD / FSTORE</td><td>Raw GPR bridge through lane x. FLOAD sets Fa = {Rb, 0, 0, 0}.</td></tr>
   <tr><td class="mono">2/3</td><td class="mn">FIMPORT4 / FEXPORT4</td><td>Four aligned words at DSEG:r[b], transferred as four architectural word accesses.</td></tr>
   <tr><td class="mono">4..7</td><td class="mn">FMOV / FPACK4 / FUNPACK4 / FTRANSPOSE4</td><td>Snapshot-defined F-register reorganization.</td></tr>
   <tr><td class="mono">8..A</td><td class="mn">FADD / FSUB / FMUL</td><td>Destructive component arithmetic.</td></tr>
-  <tr><td class="mono">B/C</td><td class="mn">FDOT4ACC / FACCSTORE</td><td>Signed 40-bit saturating accumulation and rounded lane writeback.</td></tr>
+  <tr><td class="mono">B</td><td class="mn">FDOT4ACC</td><td>ACC += dot4(Fa, Fb) with signed 40-bit saturation.</td></tr>
+  <tr><td class="mono">C</td><td class="mn">FACCSTORE Fa, mask4</td><td>b is a 4-bit destination lane <em>write mask</em> (bit 0 = x .. bit 3 = w): every set bit writes the same rounded ACC value, then ACC clears. Mask 0000 writes nothing and only clears ACC; mask 1111 splats.</td></tr>
   <tr><td class="mono">D</td><td class="mn">FCMP</td><td>Signed lane-x ordering written to the transient pending test.</td></tr>
-  <tr><td class="mono">E</td><td class="mn">FUNARY</td><td>RCP, RSQRT, SINCOS, ABS, NEG, FLOOR, CEIL, ROUND, SAT01, SIGN, or ZERO.</td></tr>
-  <tr><td class="mono">F</td><td class="mn">FMULS</td><td>Multiply every lane of Fa by Fb.x.</td></tr>
+  <tr><td class="mono">E</td><td class="mn">FUNARY</td><td>Scalar: FRCP, FRSQRT (both lane x, domain faults); FSINCOS yields {sin, cos, 0, 0}. Component-wise vec4 (each f(0)=0): FABS, FNEG, FFLOOR, FCEIL, FROUND, FSAT01, FSIGN. Vec4 clear: FZERO. Subops B..E are FACCLOAD.X/Y/Z/W, overwriting ACC from the selected source lane (a lane <em>selector</em>, unlike FACCSTORE's mask).</td></tr>
+  <tr><td class="mono">F</td><td class="mn">reserved</td><td>Invalid instruction (formerly FMULS; scalar-by-vector uses FACCLOAD.X + FACCSTORE 1111 + FMUL).</td></tr>
 </table>
+<p>ACC is both the wide dot accumulator and a temporary scalar transfer register.
+All F registers are caller-saved and ACC is caller-clobbered; argument and
+return F-register assignment is a compiler-ABI decision.</p>
 
 <h2 id="prefix">5. IMMHI12 and wide operations</h2>
 <div class="grid">
@@ -331,6 +337,9 @@ response. Narrowing rounds to nearest with ties to even and then saturates.</p>
   <tr><td class="mono">r13</td><td>stack pointer</td><td>callee restores</td><td>Frame grows downward; reset value 0 denotes the exclusive <code>0x10000</code> segment top.</td></tr>
   <tr><td class="mono">r14</td><td>link register</td><td>saved by non-leaf functions</td><td>Direct and indirect calls write the return PC here; the architecture fixes the link register to r14 (<code>JALREL</code> has no link field, <code>JALR</code> requires link = 14).</td></tr>
   <tr><td class="mono">r15</td><td>general allocation</td><td>caller-saved</td><td>Ordinary allocatable register since v0.5; device instructions replaced the former reserved device-base convention.</td></tr>
+  <tr><td class="mono">f0..f1</td><td>FPU return values</td><td>caller-saved</td><td rowspan="3">FPU ABI mirrors the GPR roles. All F registers are caller-saved; ACC is caller-clobbered.</td></tr>
+  <tr><td class="mono">f2..f7</td><td>FPU arguments</td><td>caller-saved</td></tr>
+  <tr><td class="mono">f8..f15</td><td>FPU temporaries</td><td>caller-saved</td></tr>
 </table>
 <div class="grid">
   <div class="panel">

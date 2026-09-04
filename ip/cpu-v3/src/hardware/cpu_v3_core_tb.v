@@ -368,13 +368,16 @@ initial begin
     memory[4] = 16'hd000; // FLOAD f0, r0
     memory[5] = 16'hd011; // FLOAD f1, r1
     memory[6] = 16'hd801; // FADD f0, f1 -> fix16 3.5
-    memory[7] = 16'hdf01; // FMULS f0, f1 -> fix16 7.0
-    memory[8] = 16'hd100; // FSTORE r0, f0
-    memory[9] = 16'he800; // HALT
+    // FMULS was removed: scalar-by-vector uses an explicit ACC splat + FMUL.
+    memory[7] = 16'hde1b; // FACCLOAD.X f1 -> ACC = 2.0
+    memory[8] = 16'hdc2f; // FACCSTORE f2, 0b1111 -> f2 = {2.0, 2.0, 2.0, 2.0}
+    memory[9] = 16'hda02; // FMUL f0, f2 -> fix16 7.0
+    memory[10] = 16'hd100; // FSTORE r0, f0
+    memory[11] = 16'he800; // HALT
     scenario = 18;
     expect_halt(16'd1792, 200);
-    if (retired_words !== 10) begin
-        $display("FAIL: scenario 18 retired %0d words, expected 10", retired_words);
+    if (retired_words !== 12) begin
+        $display("FAIL: scenario 18 retired %0d words, expected 12", retired_words);
         errors = errors + 1;
     end
 
@@ -401,7 +404,7 @@ initial begin
     memory[4] = 16'hd201; // FIMPORT4 f0, [r1]
     memory[5] = 16'hd212; // FIMPORT4 f1, [r2]
     memory[6] = 16'hdb01; // FDOT4ACC f0, f1
-    memory[7] = 16'hdc00; // FACCSTORE f0.x
+    memory[7] = 16'hdc01; // FACCSTORE f0, 0b0001 -> f0.x
     memory[8] = 16'hd302; // FEXPORT4 f0, [r2]
     memory[9] = 16'hd100; // FSTORE r0, f0
     memory[10] = 16'he800; // HALT
@@ -620,29 +623,31 @@ initial begin
         errors = errors + 1;
     end
 
-    // Scenario 36: FMULS snapshots the broadcast x lane before an aliased
-    // destination starts overwriting the same vector.
+    // Scenario 36: the ACC splat sequence lifts the broadcast x lane into a
+    // fresh register first, so an aliased FMUL destination cannot disturb it.
     clear_memory;
     memory[0] = 16'hf010;
     memory[1] = 16'haf10; // r1 = 0x0100
     memory[2] = 16'hd201; // FIMPORT4 f0, [r1]
-    memory[3] = 16'hdf00; // FMULS f0, f0.x
-    memory[4] = 16'he800; // HALT
+    memory[3] = 16'hde0b; // FACCLOAD.X f0 -> ACC = 2.0
+    memory[4] = 16'hdc1f; // FACCSTORE f1, 0b1111 -> f1 = splat(2.0)
+    memory[5] = 16'hda01; // FMUL f0, f1
+    memory[6] = 16'he800; // HALT
     memory[16'h0100] = 16'd512;
     memory[16'h0101] = 16'd256;
     memory[16'h0102] = -16'sd256;
     memory[16'h0103] = 16'd128;
     scenario = 36;
     expect_halt(16'd0, 200);
-    if (last_run_cycles != 46) begin
-        $display("FAIL: scenario 36 cycles %0d, expected 46", last_run_cycles);
+    if (last_run_cycles != 56) begin
+        $display("FAIL: scenario 36 cycles %0d, expected 56", last_run_cycles);
         errors = errors + 1;
     end
     if (fpr_word(0, 0) !== 16'd1024 ||
         fpr_word(0, 1) !== 16'd512 ||
         fpr_word(0, 2) !== -16'sd512 ||
         fpr_word(0, 3) !== 16'd256) begin
-        $display("FAIL: scenario 36 FMULS alias results %h %h %h %h",
+        $display("FAIL: scenario 36 splat multiply results %h %h %h %h",
                  fpr_word(0, 0), fpr_word(0, 1),
                  fpr_word(0, 2), fpr_word(0, 3));
         errors = errors + 1;
@@ -712,6 +717,70 @@ initial begin
         $display("FAIL: scenario 37 store value %h", memory[16'h0100]);
         errors = errors + 1;
     end
+
+
+    // Scenario 38: FACCSTORE treats its low field as a 4-bit write mask; a
+    // zero mask clears ACC without writing any lane.
+    clear_memory;
+    memory[0] = 16'hf010;
+    memory[1] = 16'haf10; // r1 = 0x0100
+    memory[2] = 16'hd201; // FIMPORT4 f0, [r1] -> {1.0, 2.0, 3.0, 4.0}
+    memory[3] = 16'hd211; // FIMPORT4 f1, [r1]
+    memory[4] = 16'hdb01; // FDOT4ACC f0, f1 -> ACC = 30.0
+    memory[5] = 16'hdc25; // FACCSTORE f2, 0b0101 -> f2.x = f2.z = 30.0
+    memory[6] = 16'hdc30; // FACCSTORE f3, 0b0000 -> no write, ACC = 0
+    memory[7] = 16'hdc41; // FACCSTORE f4, 0b0001 -> f4.x = 0 (ACC cleared)
+    memory[8] = 16'he800; // HALT
+    memory[16'h0100] = 16'd256;
+    memory[16'h0101] = 16'd512;
+    memory[16'h0102] = 16'd768;
+    memory[16'h0103] = 16'd1024;
+    scenario = 38;
+    expect_halt(16'd0, 200);
+    if (fpr_word(2, 0) !== 16'd7680 || fpr_word(2, 1) !== 16'd0 ||
+        fpr_word(2, 2) !== 16'd7680 || fpr_word(2, 3) !== 16'd0) begin
+        $display("FAIL: scenario 38 mask store results %h %h %h %h",
+                 fpr_word(2, 0), fpr_word(2, 1),
+                 fpr_word(2, 2), fpr_word(2, 3));
+        errors = errors + 1;
+    end
+    if (fpr_word(4, 0) !== 16'd0) begin
+        $display("FAIL: scenario 38 ACC was not cleared by a zero mask");
+        errors = errors + 1;
+    end
+
+    // Scenario 39: FACCLOAD selects one source lane, and the Q8.8 value makes
+    // an exact round trip through ACC.
+    clear_memory;
+    memory[0] = 16'hf010;
+    memory[1] = 16'haf10; // r1 = 0x0100
+    memory[2] = 16'hd201; // FIMPORT4 f0, [r1] -> {1.5, -2.0, 3.25, 0}
+    memory[3] = 16'hde0c; // FACCLOAD.Y f0 -> ACC = -2.0
+    memory[4] = 16'hdc12; // FACCSTORE f1, 0b0010 -> f1.y = -2.0
+    memory[5] = 16'hde0d; // FACCLOAD.Z f0 -> ACC = 3.25
+    memory[6] = 16'hdc24; // FACCSTORE f2, 0b0100 -> f2.z = 3.25
+    memory[7] = 16'hde0b; // FACCLOAD.X f0 -> ACC = 1.5
+    memory[8] = 16'hdc31; // FACCSTORE f3, 0b0001 -> f3.x = 1.5
+    memory[9] = 16'he800; // HALT
+    memory[16'h0100] = 16'd384;
+    memory[16'h0101] = -16'sd512;
+    memory[16'h0102] = 16'd832;
+    memory[16'h0103] = 16'd0;
+    scenario = 39;
+    expect_halt(16'd0, 200);
+    if (fpr_word(1, 1) !== -16'sd512 || fpr_word(2, 2) !== 16'd832 ||
+        fpr_word(3, 0) !== 16'd384) begin
+        $display("FAIL: scenario 39 accload round trip %h %h %h",
+                 fpr_word(1, 1), fpr_word(2, 2), fpr_word(3, 0));
+        errors = errors + 1;
+    end
+
+    // Scenario 40: the former FMULS encoding (FPU fn 15) is reserved and
+    // faults as an invalid instruction.
+    clear_memory;
+    memory[0] = 16'hdf00; // reserved FPU fn 15
+    scenario = 40;
+    expect_fault(8'd1, 16'd0, 100);
 
     if (errors != 0) begin
         $display("FAIL: %0d error(s)", errors);

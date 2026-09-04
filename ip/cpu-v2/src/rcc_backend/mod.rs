@@ -38,4 +38,6 @@ pub const V2_REGISTER_CONVENTION: rcc::RegisterConvention = rcc::RegisterConvent
     stack_register: REG_SP,
     temporary_register: REG_TMP,
     maximum_frame_words: 255,
+    // CpuV2 has no FPU; allocation asserts if an Fpu-class vreg shows up
+    fpu: None,
 };

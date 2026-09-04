@@ -9,7 +9,7 @@ mod options;
 pub use options::CompilerOptions;
 
 use crate as cpu_v3;
-use crate::{AluOp, ImmediateOp, TestCondition, Word};
+use crate::{AluOp, FpuOp, FpuUnaryOp, ImmediateOp, TestCondition, Word};
 use crate::{CACHE_MAINTENANCE_DEVICE, D_INVALIDATE_ALL, ICACHE_INVALIDATE_ALL_DELAYED};
 use rcc::*;
 use std::collections::{HashMap, HashSet};
@@ -17,6 +17,8 @@ use std::collections::{HashMap, HashSet};
 const REG_TMP: u8 = 12;
 const REG_SP: u8 = 13;
 const REG_LINK: u8 = 14;
+/// reserved FPU register for breaking parallel-move cycles (never allocated)
+const FPU_SCRATCH: u8 = 15;
 
 const CPU_V3_REGISTER_CONVENTION: rcc::RegisterConvention = rcc::RegisterConvention {
     return_registers: &[0, 1],
@@ -28,6 +30,15 @@ const CPU_V3_REGISTER_CONVENTION: rcc::RegisterConvention = rcc::RegisterConvent
     stack_register: REG_SP,
     temporary_register: REG_TMP,
     maximum_frame_words: 255,
+    // FPU ABI: f0-f1 returns, f2-f7 arguments, f8-f14 allocatable; all FPU
+    // registers are caller-saved. f15 is reserved to break parallel-move
+    // cycles between FPU registers.
+    fpu: Some(rcc::FpuRegisterConvention {
+        return_registers: &[0, 1],
+        argument_registers: &[2, 3, 4, 5, 6, 7],
+        allocatable_registers: &[8, 9, 10, 11, 12, 13, 14],
+        scratch_register: FPU_SCRATCH,
+    }),
 };
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -187,7 +198,11 @@ fn lower_function(
                         .find(|(pred, _)| *pred == predecessor)
                         .expect("missing phi predecessor")
                         .1;
-                    (register(value), register(phi.dst))
+                    (
+                        register(value),
+                        register(phi.dst),
+                        function.class_of(phi.dst),
+                    )
                 })
                 .collect::<Vec<_>>();
             emit_parallel_moves(&mut lines, &moves);
@@ -228,7 +243,7 @@ fn lower_function(
                 } else {
                     // Critical edges were split by allocation, so neither
                     // conditional successor needs edge-local phi moves here.
-                    let condition = lower_comparison(cmp, &register, &mut lines);
+                    let condition = lower_comparison(function, cmp, &register, &mut lines);
                     if next == Some(*if_false) {
                         lines.push(Line::Branch {
                             condition,
@@ -433,6 +448,126 @@ fn lower_instruction(
                 true,
             );
         }
+        Instr::FBin { dst, op, lhs, rhs } => {
+            // FPU arithmetic is destructive two-address (`Fa op= Fb`) while the
+            // interval model allows dst to share a register with a last-use
+            // operand. When dst == rhs, the copy dst = lhs would clobber rhs
+            // before the operation reads it, so swap the operands (FADD/FMUL
+            // are commutative) or route rhs through FPU_SCRATCH (FSUB).
+            let dst = register(*dst);
+            let lhs = register(*lhs);
+            let rhs = register(*rhs);
+            let fpu_op = match op {
+                FBinOp::Add => FpuOp::Add,
+                FBinOp::Sub => FpuOp::Sub,
+                FBinOp::Mul => FpuOp::Mul,
+            };
+            if dst == rhs && dst != lhs {
+                match op {
+                    FBinOp::Add | FBinOp::Mul => {
+                        lines.push(Line::Word(cpu_v3::fpu(fpu_op, dst, lhs)));
+                    }
+                    FBinOp::Sub => {
+                        lines.push(Line::Word(cpu_v3::fpu(FpuOp::Move, FPU_SCRATCH, rhs)));
+                        lines.push(Line::Word(cpu_v3::fpu(FpuOp::Move, dst, lhs)));
+                        lines.push(Line::Word(cpu_v3::fpu(fpu_op, dst, FPU_SCRATCH)));
+                    }
+                }
+            } else {
+                if dst != lhs {
+                    lines.push(Line::Word(cpu_v3::fpu(FpuOp::Move, dst, lhs)));
+                }
+                lines.push(Line::Word(cpu_v3::fpu(fpu_op, dst, rhs)));
+            }
+        }
+        Instr::FMov { dst, src } => {
+            let dst = register(*dst);
+            let src = register(*src);
+            if dst != src {
+                lines.push(Line::Word(cpu_v3::fpu(FpuOp::Move, dst, src)));
+            }
+        }
+        Instr::FLoad { dst, src_gpr } => lines.push(Line::Word(cpu_v3::fpu(
+            FpuOp::Load,
+            register(*dst),
+            register(*src_gpr),
+        ))),
+        Instr::FStore { dst_gpr, src } => lines.push(Line::Word(cpu_v3::fpu(
+            FpuOp::Store,
+            register(*dst_gpr),
+            register(*src),
+        ))),
+        Instr::FImport4 { dst, base_gpr } => lines.push(Line::Word(cpu_v3::fpu(
+            FpuOp::Import4,
+            register(*dst),
+            register(*base_gpr),
+        ))),
+        Instr::FExport4 { src, base_gpr } => lines.push(Line::Word(cpu_v3::fpu(
+            FpuOp::Export4,
+            register(*src),
+            register(*base_gpr),
+        ))),
+        Instr::FUnary { dst, op, src } => {
+            let dst = register(*dst);
+            let src = register(*src);
+            if dst != src {
+                lines.push(Line::Word(cpu_v3::fpu(FpuOp::Move, dst, src)));
+            }
+            let unary_op = match op {
+                FUnOp::Rcp => FpuUnaryOp::Reciprocal,
+                FUnOp::Rsqrt => FpuUnaryOp::ReciprocalSqrt,
+                FUnOp::SinCos => FpuUnaryOp::SinCos,
+                FUnOp::Abs => FpuUnaryOp::Abs,
+                FUnOp::Neg => FpuUnaryOp::Neg,
+                FUnOp::Floor => FpuUnaryOp::Floor,
+                FUnOp::Ceil => FpuUnaryOp::Ceil,
+                FUnOp::Round => FpuUnaryOp::Round,
+                FUnOp::Sat01 => FpuUnaryOp::Saturate01,
+                FUnOp::Sign => FpuUnaryOp::Sign,
+            };
+            lines.push(Line::Word(cpu_v3::fpu_unary(dst, unary_op)));
+        }
+        Instr::FDot4Acc { lhs, rhs } => lines.push(Line::Word(cpu_v3::fpu(
+            FpuOp::Dot4Acc,
+            register(*lhs),
+            register(*rhs),
+        ))),
+        Instr::FAccStore { dst, mask } => lines.push(Line::Word(cpu_v3::fpu(
+            FpuOp::AccStore,
+            register(*dst),
+            *mask,
+        ))),
+        Instr::FAccLoad { src, lane } => {
+            let op = match lane {
+                0 => FpuUnaryOp::AccLoadX,
+                1 => FpuUnaryOp::AccLoadY,
+                2 => FpuUnaryOp::AccLoadZ,
+                _ => FpuUnaryOp::AccLoadW,
+            };
+            lines.push(Line::Word(cpu_v3::fpu_unary(register(*src), op)));
+        }
+        Instr::FZero { dst } => lines.push(Line::Word(cpu_v3::fpu_unary(
+            register(*dst),
+            FpuUnaryOp::Zero,
+        ))),
+        Instr::AddrOfFpuSpill { dst, slot } => {
+            // dst = align4(sp + fpu_area_offset) + 4 * slot; the alignment is
+            // computed at run time because nothing guarantees sp mod 4 == 0
+            let dst = register(*dst);
+            lines.push(Line::Word(cpu_v3::move_register(dst, REG_SP)));
+            emit_immediate(
+                lines,
+                ImmediateOp::Add,
+                dst,
+                u16::from(allocation.fpu_area_offset()) + 3,
+                true,
+            );
+            emit_load_immediate(lines, REG_TMP, 0xfffc);
+            lines.push(Line::Word(cpu_v3::alu(AluOp::And, dst, dst, REG_TMP)));
+            if *slot != 0 {
+                emit_immediate(lines, ImmediateOp::Add, dst, 4 * u16::from(*slot), true);
+            }
+        }
     }
 }
 
@@ -494,6 +629,7 @@ fn emit_test_nonzero(lines: &mut Vec<Line>, test: u8) {
 /// conditional branch; no 0/1 value is materialized. Returns the condition
 /// that branches when `cmp` holds.
 fn lower_comparison(
+    function: &IrFunc,
     comparison: &Cmp,
     register: &dyn Fn(VReg) -> u8,
     lines: &mut Vec<Line>,
@@ -509,14 +645,24 @@ fn lower_comparison(
         // A value always compares Equal to itself, so these degenerate
         // conditions do not depend on the compared values at all.
         CompareOp::Always => {
-            lines.push(Line::Word(cpu_v3::compare_signed(lhs, lhs)));
+            emit_self_compare(function, comparison, register, lines);
             return TestCondition::Equal;
         }
         CompareOp::Never => {
-            lines.push(Line::Word(cpu_v3::compare_signed(lhs, lhs)));
+            emit_self_compare(function, comparison, register, lines);
             return TestCondition::NotEqual;
         }
     };
+    if function.class_of(comparison.lhs) == RegClass::Fpu {
+        // FCMP sets the pending test from the signed lane-x ordering; the
+        // following B-family branch consumes it exactly like CMPS/CMPU, and
+        // nothing may be emitted between the compare and the branch
+        let CmpRhs::Reg(rhs) = comparison.rhs else {
+            unreachable!("FPU comparisons always have a register operand");
+        };
+        lines.push(Line::Word(cpu_v3::fpu(FpuOp::Compare, lhs, register(rhs))));
+        return condition;
+    }
     match comparison.rhs {
         CmpRhs::Reg(rhs) => {
             let rhs = register(rhs);
@@ -541,6 +687,21 @@ fn lower_comparison(
     condition
 }
 
+/// the degenerate Always/Never conditions compare a value with itself
+fn emit_self_compare(
+    function: &IrFunc,
+    comparison: &Cmp,
+    register: &dyn Fn(VReg) -> u8,
+    lines: &mut Vec<Line>,
+) {
+    let lhs = register(comparison.lhs);
+    if function.class_of(comparison.lhs) == RegClass::Fpu {
+        lines.push(Line::Word(cpu_v3::fpu(FpuOp::Compare, lhs, lhs)));
+    } else {
+        lines.push(Line::Word(cpu_v3::compare_signed(lhs, lhs)));
+    }
+}
+
 fn emit_edge_moves(
     function: &IrFunc,
     predecessor: BlockId,
@@ -562,13 +723,39 @@ fn emit_edge_moves(
                 .find(|(pred, _)| *pred == predecessor)
                 .expect("missing phi edge")
                 .1;
-            (register(value), register(phi.dst))
+            (
+                register(value),
+                register(phi.dst),
+                function.class_of(phi.dst),
+            )
         })
         .collect::<Vec<_>>();
     emit_parallel_moves(lines, &moves);
 }
 
-fn emit_parallel_moves(lines: &mut Vec<Line>, moves: &[(u8, u8)]) {
+/// parallel phi moves, split by register class: GPR moves use MOV with
+/// REG_TMP as the cycle-breaking scratch, FPU moves use FMOV with the
+/// reserved FPU_SCRATCH register
+fn emit_parallel_moves(lines: &mut Vec<Line>, moves: &[(u8, u8, RegClass)]) {
+    for class in [RegClass::Gpr, RegClass::Fpu] {
+        let class_moves = moves
+            .iter()
+            .filter(|&&(_, _, c)| c == class)
+            .map(|&(from, to, _)| (from, to))
+            .collect::<Vec<_>>();
+        emit_parallel_moves_in_file(lines, &class_moves, class);
+    }
+}
+
+fn emit_parallel_moves_in_file(lines: &mut Vec<Line>, moves: &[(u8, u8)], class: RegClass) {
+    let emit_move = |lines: &mut Vec<Line>, to: u8, from: u8| match class {
+        RegClass::Gpr => lines.push(Line::Word(cpu_v3::move_register(to, from))),
+        RegClass::Fpu => lines.push(Line::Word(cpu_v3::fpu(FpuOp::Move, to, from))),
+    };
+    let scratch = match class {
+        RegClass::Gpr => REG_TMP,
+        RegClass::Fpu => FPU_SCRATCH,
+    };
     let mut pending = moves
         .iter()
         .copied()
@@ -583,13 +770,13 @@ fn emit_parallel_moves(lines: &mut Vec<Line>, moves: &[(u8, u8)]) {
             .then_some(index)
         }) {
             let (from, to) = pending.remove(index);
-            lines.push(Line::Word(cpu_v3::move_register(to, from)));
+            emit_move(lines, to, from);
         } else {
             let target = pending[0].1;
-            lines.push(Line::Word(cpu_v3::move_register(REG_TMP, target)));
+            emit_move(lines, scratch, target);
             for (from, _) in &mut pending {
                 if *from == target {
-                    *from = REG_TMP;
+                    *from = scratch;
                 }
             }
         }
@@ -791,6 +978,155 @@ fn wide_call(offset: i16) -> [Word; 2] {
 mod tests {
     use super::*;
     use rcc::frontend::parse_source_with;
+
+    #[test]
+    fn fpu_fix16_arithmetic_and_compare_run_on_the_machine() {
+        let source = r#"
+            fn main() {
+                let a = fix16::from_int(3);
+                let b = fix16::from_bits(0x0180); // 1.5
+                let c = a + b * b; // 3.0 + 2.25 = 5.25
+                if c > fix16::from_int(5) {
+                    halt(c.to_int() as u16);
+                } else {
+                    halt(0);
+                }
+            }
+        "#;
+        assert_eq!(run(source), 5);
+    }
+
+    #[test]
+    fn fpu_vec4_dot_export_and_splat_multiply() {
+        let source = r#"
+            use crate::dsl_rt::*;
+            static OUT: [u16; 4] = [0; 4];
+            fn main() {
+                let a = vec4::new(
+                    fix16::from_int(1),
+                    fix16::from_int(2),
+                    fix16::from_int(3),
+                    fix16::from_int(4),
+                );
+                let d = fdot(a, a); // 1+4+9+16 = 30.0
+                let half = fix16::from_bits(0x0080); // 0.5
+                let scaled = a * half; // {0.5, 1.0, 1.5, 2.0} through the ACC splat
+                vec4::export(scaled, OUT.as_array().as_ptr());
+                if OUT.read(0) == 128
+                    && OUT.read(1) == 256
+                    && OUT.read(2) == 384
+                    && OUT.read(3) == 512
+                    && d.to_bits() == 7680
+                {
+                    halt(1);
+                } else {
+                    halt(0);
+                }
+            }
+        "#;
+        assert_eq!(run(source), 1);
+    }
+
+    #[test]
+    fn fpu_rom_operations_and_lane_access() {
+        let source = r#"
+            fn main() {
+                let sc = fsincos(fix16::zero()); // {0.0, 1.0, 0, 0}
+                let r = frcp(fix16::from_int(2)); // 0.5
+                if sc.x().to_bits() == 0 && sc.y().to_bits() == 256 && r.to_bits() == 128 {
+                    halt(1);
+                } else {
+                    halt(0);
+                }
+            }
+        "#;
+        assert_eq!(run(source), 1);
+    }
+
+    #[test]
+    fn fpu_values_spill_and_reload_through_aligned_frame_slots() {
+        // Ten live vec4 values exceed the allocatable F registers and force
+        // FPU spill slots (4-aligned FEXPORT4/FIMPORT4 through the frame).
+        let source = r#"
+            fn main() {
+                let v0 = vec4::new(fix16::from_bits(64), fix16::zero(), fix16::zero(), fix16::zero());
+                let v1 = vec4::new(fix16::from_bits(128), fix16::zero(), fix16::zero(), fix16::zero());
+                let v2 = vec4::new(fix16::from_bits(192), fix16::zero(), fix16::zero(), fix16::zero());
+                let v3 = vec4::new(fix16::from_bits(256), fix16::zero(), fix16::zero(), fix16::zero());
+                let v4 = vec4::new(fix16::from_bits(320), fix16::zero(), fix16::zero(), fix16::zero());
+                let v5 = vec4::new(fix16::from_bits(384), fix16::zero(), fix16::zero(), fix16::zero());
+                let v6 = vec4::new(fix16::from_bits(448), fix16::zero(), fix16::zero(), fix16::zero());
+                let v7 = vec4::new(fix16::from_bits(512), fix16::zero(), fix16::zero(), fix16::zero());
+                let v8 = vec4::new(fix16::from_bits(576), fix16::zero(), fix16::zero(), fix16::zero());
+                let v9 = vec4::new(fix16::from_bits(640), fix16::zero(), fix16::zero(), fix16::zero());
+                let total = fdot(v0, v0)
+                    + fdot(v1, v1)
+                    + fdot(v2, v2)
+                    + fdot(v3, v3)
+                    + fdot(v4, v4)
+                    + fdot(v5, v5)
+                    + fdot(v6, v6)
+                    + fdot(v7, v7)
+                    + fdot(v8, v8)
+                    + fdot(v9, v9);
+                // (0.25k)^2 sums to 385 * 16 = 6160 in Q8.8
+                halt(total.to_bits());
+            }
+        "#;
+        assert_eq!(run(source), 6160);
+    }
+
+    #[test]
+    fn fpu_call_dot_and_export_match_isa_values() {
+        let source = r#"
+            use crate::dsl_rt::*;
+            static OUT: [u16; 4] = [0; 4];
+            fn scaled(v: vec4, factor: fix16, tag: u16) -> vec4 {
+                if tag == 1 { v * factor } else { v }
+            }
+            fn main() {
+                let a = vec4::new(
+                    fix16::from_int(1),
+                    fix16::from_int(2),
+                    fix16::from_int(3),
+                    fix16::from_int(4),
+                );
+                let b = scaled(a, fix16::from_bits(0x0080), 1);
+                let d = fdot(a, b); // 0.5 + 2 + 4.5 + 8 = 15.0
+                vec4::export(b, OUT.as_array().as_ptr());
+                if OUT.read(0) == 128 && OUT.read(3) == 512 {
+                    halt(d.to_bits()); // 3840
+                } else {
+                    halt(0);
+                }
+            }
+        "#;
+        assert_eq!(run(source), 3840);
+    }
+
+    #[test]
+    fn fpu_mixed_signature_calls_follow_the_fpu_abi() {
+        let source = r#"
+            fn scale(factor: fix16, v: vec4, tag: u16) -> fix16 {
+                let scaled = v * factor;
+                if tag == 7 { scaled.w() } else { fix16::zero() }
+            }
+            fn main() {
+                let r = scale(
+                    fix16::from_int(2),
+                    vec4::new(
+                        fix16::from_int(1),
+                        fix16::from_int(2),
+                        fix16::from_int(3),
+                        fix16::from_int(4),
+                    ),
+                    7,
+                );
+                if r.to_bits() == 2048 { halt(1); } else { halt(0); }
+            }
+        "#;
+        assert_eq!(run(source), 1);
+    }
 
     fn compile(source: &str, options: CompilerOptions) -> CpuV3Program {
         let program = parse_source_with(source, options.data_base).unwrap();

@@ -90,12 +90,12 @@ latencies assume every request and response phase advances immediately.
 
 | Operations | FPU phases | Execute-to-retire cycles | Current work per phase |
 |---|---:|---:|---|
-| `FSTORE`, `FACCSTORE`, `FCMP` | 2 | 3 | Execute operation, then commit/retire; for `FACCSTORE`, the synchronous FPR write lands on the retirement edge |
+| `FSTORE`, `FACCSTORE`, `FCMP`, `FACCLOAD.*` | 2 | 3 | Execute operation, then commit/retire; for `FACCSTORE`, the mask-selected synchronous FPR writes land on the retirement edge |
 | `FLOAD` | 2 | 3 | One wide vector write (`x`, zero `yzw`) at dispatch, then commit |
 | `FMOV` | 2 | 3 | One wide vector copy at dispatch, then commit |
 | `FADD`, `FSUB` | 6 | 7 | Capture lane zero at dispatch; four overlapped result-write/next-lane-capture phases; commit |
 | `FABS`, `FNEG`, `FFLOOR`, `FCEIL`, `FROUND`, `FSAT01`, `FSIGN`, `FZERO` | 6 | 7 | Same one-lane-per-cycle schedule as vector add |
-| `FMUL`, `FMULS`, `FDOT4ACC` | 7 | 8 | Issue four consecutive tagged DSP inputs off the wide reads, drain the two-cycle DSP pipeline in order, then commit |
+| `FMUL`, `FDOT4ACC` | 7 | 8 | Issue four consecutive tagged DSP inputs off the wide reads, drain the two-cycle DSP pipeline in order, then commit |
 | `FPACK4` | 5 | 6 | Dispatch latches the first lane-x, two dual-port snapshot reads, one wide write, commit |
 | `FUNPACK4` | 6 | 7 | Dispatch snapshots the source vector, four wide writes, commit |
 | `FTRANSPOSE4` | 8 | 9 | Dispatch latches row zero, two dual-port row reads, four wide transposed writes, commit |
@@ -194,8 +194,7 @@ only the lane just computed while later lanes are still being read.
 valid/tag shift register accepts one lane every cycle and associates each
 returned product with its destination lane. Vector multiply rounds and
 schedules one result per cycle after the fill. DOT consumes the same ordered
-product stream through the 40-bit saturating ACC feedback path. `FMULS`
-snapshots its scalar before issuing lane zero, preserving `Fa == Fb` behavior.
+product stream through the 40-bit saturating ACC feedback path.
 
 | FPU operation | Before pipelining | Current FPU phases |
 |---|---:|---:|

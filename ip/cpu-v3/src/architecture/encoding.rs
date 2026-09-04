@@ -66,6 +66,10 @@ pub enum SpecialRegister {
     DataSegment = 1,
 }
 
+/// `AccStore`'s `b` field is a 4-bit destination lane write mask (bit 0 = x
+/// through bit 3 = w), not a lane index: every set bit writes the same rounded
+/// ACC value into that lane, and ACC is cleared afterwards. Mask 0b0000 writes
+/// no lane and only clears ACC.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 #[repr(u16)]
 pub enum FpuOp {
@@ -84,7 +88,8 @@ pub enum FpuOp {
     AccStore = 12,
     Compare = 13,
     Unary = 14,
-    MulScalar = 15,
+    // 15 is reserved (formerly FMULS; scalar-by-vector uses an explicit
+    // FACCLOAD.X + FACCSTORE 0b1111 splat followed by FMUL).
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -101,6 +106,13 @@ pub enum FpuUnaryOp {
     Saturate01 = 8,
     Sign = 9,
     Zero = 10,
+    // The FACCLOAD.* subops select one source lane (unlike AccStore's write
+    // mask) and overwrite ACC with the exact lane value shifted into the
+    // accumulator format.
+    AccLoadX = 11,
+    AccLoadY = 12,
+    AccLoadZ = 13,
+    AccLoadW = 14,
 }
 
 impl TestCondition {

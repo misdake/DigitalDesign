@@ -357,7 +357,6 @@ pub struct CpuV3CoreState {
     fpu_memory_active: bool,
     fpu_memory_lane: u8,
     fpu_memory_value: FpuVector,
-    fpu_scalar: u16,
     fpu_rom_step: u8,
     fpu_rom_first: Fix16Raw,
     fpu_rom_second: Fix16Raw,
@@ -405,7 +404,6 @@ impl Default for CpuV3CoreState {
             fpu_memory_active: false,
             fpu_memory_lane: 0,
             fpu_memory_value: [0; 4],
-            fpu_scalar: 0,
             fpu_rom_step: 0,
             fpu_rom_first: 0,
             fpu_rom_second: 0,
@@ -799,14 +797,19 @@ impl CpuV3CoreState {
                 self.fpu_step = 0;
                 self.phase = Phase::FpuWriteLanes;
             }
-            10 | 11 | 15 => {
-                // Latch the broadcast scalar: earlier lane commits may
-                // overwrite Fb.x when Fa and Fb alias.
-                self.fpu_scalar = self.fpu_registers[b][0] as u16;
+            10 | 11 => {
                 self.begin_fpu_multiply_pipeline();
             }
-            12 if b <= 3 => {
-                self.fpu_registers[a][b] = fix16_from_acc(self.fpu_accumulator);
+            12 => {
+                // FACCSTORE: `b` is a 4-bit destination lane write mask; every
+                // set bit receives the same rounded ACC value. Mask 0 clears
+                // ACC without writing.
+                let value = fix16_from_acc(self.fpu_accumulator);
+                for (lane, word) in self.fpu_registers[a].iter_mut().enumerate() {
+                    if b >> lane & 1 == 1 {
+                        *word = value;
+                    }
+                }
                 self.fpu_accumulator = 0;
                 self.phase = Phase::FpuCommit;
             }
@@ -831,6 +834,12 @@ impl CpuV3CoreState {
                     self.fpu_step = 0;
                     self.phase = Phase::FpuWriteLanes;
                 }
+                // FACCLOAD.X/Y/Z/W: overwrite ACC with the exact selected
+                // lane in accumulator format.
+                11..=14 => {
+                    self.fpu_accumulator = i64::from(self.fpu_registers[a][b - 11]) << 8;
+                    self.phase = Phase::FpuCommit;
+                }
                 _ => {
                     self.fault(CPU_V3_FAULT_INVALID_INSTRUCTION, self.fpu_fault_pc);
                 }
@@ -840,15 +849,9 @@ impl CpuV3CoreState {
     }
 
     fn fpu_product(&self, lane: usize) -> i64 {
-        let function = field(self.instruction, 8);
         let a = usize::from(field(self.instruction, 4));
         let b = usize::from(field(self.instruction, 0));
-        let right = if function == 15 {
-            self.fpu_scalar as i16
-        } else {
-            self.fpu_registers[b][lane]
-        };
-        i64::from(self.fpu_registers[a][lane]) * i64::from(right)
+        i64::from(self.fpu_registers[a][lane]) * i64::from(self.fpu_registers[b][lane])
     }
 
     fn begin_fpu_multiply_pipeline(&mut self) {
@@ -1704,7 +1707,11 @@ mod tests {
             crate::fpu(crate::FpuOp::Load, 0, 0),
             crate::fpu(crate::FpuOp::Load, 1, 1),
             crate::fpu(crate::FpuOp::Add, 0, 1),
-            crate::fpu(crate::FpuOp::MulScalar, 0, 1),
+            // scalar-by-vector multiply through the ACC splat (FMULS was
+            // removed from the ISA): broadcast f1.x, then a plain FMUL.
+            crate::fpu_unary(1, crate::FpuUnaryOp::AccLoadX),
+            crate::fpu(crate::FpuOp::AccStore, 2, 0b1111),
+            crate::fpu(crate::FpuOp::Mul, 0, 2),
             crate::fpu(crate::FpuOp::Store, 0, 0),
             crate::halt(),
         ]);
@@ -1872,7 +1879,7 @@ mod tests {
             crate::fpu(crate::FpuOp::Import4, 0, 1),
             crate::fpu(crate::FpuOp::Import4, 1, 2),
             crate::fpu(crate::FpuOp::Dot4Acc, 0, 1),
-            crate::fpu(crate::FpuOp::AccStore, 0, 0),
+            crate::fpu(crate::FpuOp::AccStore, 0, 1),
             crate::fpu(crate::FpuOp::Export4, 0, 2),
             crate::fpu_unary(0, crate::FpuUnaryOp::Abs),
             crate::fpu(crate::FpuOp::Store, 0, 0),
@@ -1893,6 +1900,57 @@ mod tests {
         let mut memory = HashMap::new();
         load(&mut memory, 0, &program);
         for (lane, value) in vector.into_iter().chain(ones).enumerate() {
+            memory.insert(0x0100 + lane as u32, value);
+        }
+        let core = run_core(memory, 400);
+        assert_eq!(core.halt_signal, signal);
+        assert_eq!(core.retired_words as u64, oracle.retired_words());
+    }
+
+    #[test]
+    fn emulator_matches_oracle_for_acc_mask_store_and_acc_load() {
+        // FACCSTORE takes a 4-bit lane write mask; FACCLOAD.* overwrites ACC
+        // with one exact source lane. Together they splat a scalar for a
+        // vector multiply (the FMULS replacement).
+        let mut program = vec![];
+        program.extend(crate::load_immediate16(1, 0x0100));
+        program.extend([
+            crate::fpu(crate::FpuOp::Import4, 0, 1),
+            crate::fpu(crate::FpuOp::Move, 1, 0),
+            crate::fpu(crate::FpuOp::Dot4Acc, 0, 1),
+            // Mask 0b0101 writes lanes x and z only.
+            crate::fpu(crate::FpuOp::AccStore, 2, 0b0101),
+            // Mask 0 clears ACC without writing.
+            crate::fpu(crate::FpuOp::AccStore, 3, 0),
+            // ACC was cleared: lane x of f4 becomes zero.
+            crate::fpu(crate::FpuOp::AccStore, 4, 1),
+            // FACCLOAD.W selects lane w exactly and splat writes all lanes.
+            crate::fpu_unary(0, crate::FpuUnaryOp::AccLoadW),
+            crate::fpu(crate::FpuOp::AccStore, 5, 0b1111),
+            crate::fpu(crate::FpuOp::Mul, 0, 5),
+            crate::fpu(crate::FpuOp::Store, 0, 0),
+            crate::halt(),
+        ]);
+        let vector = [384_u16, 512, 768, 1024];
+        let mut oracle = Machine::default();
+        oracle.load_program(0, &program).unwrap();
+        for (lane, value) in vector.into_iter().enumerate() {
+            oracle.physical_memory_mut()[0x0100 + lane] = value;
+        }
+        let RunOutcome::Halted { signal, .. } = oracle.run(200).unwrap() else {
+            panic!("oracle did not halt")
+        };
+        // dot = 1.5^2 + 2^2 + 3^2 + 4^2 = 31.25 -> 8000; w = 4.0 splat
+        // multiplies f0 lane-wise; the stored lane x is 1.5 * 4.0 = 6.0.
+        assert_eq!(oracle.fpu_register(2), Some([8000, 0, 8000, 0]));
+        assert_eq!(oracle.fpu_register(4), Some([0, 0, 0, 0]));
+        assert_eq!(oracle.fpu_register(5), Some([1024; 4]));
+        assert_eq!(oracle.fpu_accumulator(), 0);
+        assert_eq!(signal, 1536);
+
+        let mut memory = HashMap::new();
+        load(&mut memory, 0, &program);
+        for (lane, value) in vector.into_iter().enumerate() {
             memory.insert(0x0100 + lane as u32, value);
         }
         let core = run_core(memory, 400);
