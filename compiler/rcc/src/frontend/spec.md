@@ -95,8 +95,11 @@ Declared for real in `dsl_rt` (so the IDE sees them); the compiler lowers them d
 | `log2(x: u16) -> u16` | integer base-2 logarithm; returns 0 when x is 0 |
 | `dev_recv(dev: u8, ch: u8) -> u16` | read a device register; device and channel are compile-time constant IDs |
 | `dev_send(dev: u8, ch: u8, v: u16)` | write a device register; device and channel are compile-time constant IDs |
+| `dcache_clean_all() -> u16` | CPU V3-only: blocking full compiler memory/control barrier; write every dirty D-cache line and return final maintenance status |
+| `dcache_invalidate_all() -> u16` | CPU V3-only: blocking full compiler memory/control barrier; clean and invalidate the complete D-cache, then return final maintenance status |
 | `mtsr_dseg(v: u16)` | CPU V3-only: write the DSEG special register (MTSR DSEG) |
 | `jseg(cseg: u16, target: u16) -> !` | CPU V3-only: atomically switch CSEG to `cseg` and jump to `target` (JSEG); never returns |
+| `icache_invalidate_delayed_and_jump(cseg: u16, target: u16) -> !` | CPU V3-only: terminal barrier lowered to adjacent `ICACHE_INVALIDATE_ALL_DELAYED; JSEG`; never returns |
 
 ## 6. Design decisions
 

@@ -90,6 +90,7 @@ pub(crate) fn subst_uses(f: &mut IrFunc, replace: &HashMap<VReg, VReg>) {
                 Instr::LoadImm { .. }
                 | Instr::StoreStatic { .. }
                 | Instr::DevRecv { .. }
+                | Instr::DcacheInvalidateAll
                 | Instr::LoadSp { .. }
                 | Instr::LoadLocal { .. }
                 | Instr::AddrOfLocal { .. } => {}
@@ -125,6 +126,10 @@ pub(crate) fn subst_uses(f: &mut IrFunc, replace: &HashMap<VReg, VReg>) {
                 }
                 Terminator::Ret { values } => values.iter_mut().for_each(&subst),
                 Terminator::Halt { signal } => subst(signal),
+                Terminator::IcacheInvalidateDelayedAndJump { cseg, target } => {
+                    subst(cseg);
+                    subst(target);
+                }
             }
         }
     }
@@ -655,6 +660,7 @@ fn dce(f: &mut IrFunc) -> bool {
                         | Instr::CallPtr { .. }
                         | Instr::DevSend { .. }
                         | Instr::DevRecv { .. }
+                        | Instr::DcacheInvalidateAll
                         | Instr::MtsrDseg { .. }
                         | Instr::Jseg { .. }
                 );
@@ -674,6 +680,9 @@ fn dce(f: &mut IrFunc) -> bool {
                     },
                     Terminator::Ret { values } => values.clone(),
                     Terminator::Halt { signal } => vec![*signal],
+                    Terminator::IcacheInvalidateDelayedAndJump { cseg, target } => {
+                        vec![*cseg, *target]
+                    }
                 } {
                     mark(u, &mut useful, &mut changed);
                 }

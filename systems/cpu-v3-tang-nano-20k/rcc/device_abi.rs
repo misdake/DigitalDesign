@@ -1,11 +1,15 @@
 //! Device indices, channels, and commands shared by CPU V3 RCC firmware.
 
 pub const SYSTEM_CONTROL_DEVICE: u16 = 0;
-pub const SYSCTL_INVALIDATE_ICACHE: u16 = 0;
-pub const SYSCTL_INVALIDATE_DCACHE: u16 = 1;
+pub const ICACHE_INVALIDATE_ALL_DELAYED: u16 = 0;
+pub const D_INVALIDATE_ALL: u16 = 1;
 pub const SYSCTL_LED: u16 = 2;
 pub const SYSCTL_UART_STATUS: u16 = 3;
 pub const SYSCTL_UART_TX_DATA: u16 = 3;
+pub const D_CLEAN_ALL: u16 = 4;
+pub const CACHE_MAINTENANCE_STATUS: u16 = 5;
+pub const CACHE_MAINTENANCE_STATUS_SUCCESS: u16 = 0;
+pub const CACHE_MAINTENANCE_STATUS_ERROR: u16 = 0x8000;
 
 pub const BOOT_SELECT_DEVICE: u16 = 1;
 pub const BOOT_SELECT_VALUE: u16 = 0;

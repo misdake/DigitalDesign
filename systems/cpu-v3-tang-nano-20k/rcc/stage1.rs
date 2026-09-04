@@ -244,8 +244,7 @@ fn main() {
         cseg = 5;
         entry = 0x0200;
     }
-    dev_send(SYSTEM_CONTROL_DEVICE, SYSCTL_INVALIDATE_ICACHE, 0);
-    dev_send(SYSTEM_CONTROL_DEVICE, SYSCTL_INVALIDATE_DCACHE, 0);
+    dcache_invalidate_all();
     mtsr_dseg(dseg);
-    jseg(cseg, entry);
+    icache_invalidate_delayed_and_jump(cseg, entry);
 }

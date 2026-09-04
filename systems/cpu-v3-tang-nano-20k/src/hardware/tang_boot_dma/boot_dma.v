@@ -44,7 +44,7 @@ wire [21:0] memory_address;
 wire [15:0] memory_write_data;
 wire memory_response_ready;
 wire memory_response_valid;
-wire [15:0] memory_read_data;
+wire [31:0] memory_read_data;
 wire memory_error;
 
 __BOOT_DMA_ENGINE__ u_engine (
@@ -101,6 +101,7 @@ __SDRAM_WORD_PORT__ u_memory (
     .reset(reset),
     .request_valid(memory_request_valid),
     .write(memory_write),
+    .read_line(1'b0),
     .address(memory_address),
     .write_data(memory_write_data),
     .response_ready(memory_response_ready),
@@ -111,6 +112,7 @@ __SDRAM_WORD_PORT__ u_memory (
     .request_ready(memory_request_ready),
     .response_valid(memory_response_valid),
     .read_data(memory_read_data),
+    .response_last(),
     .error(memory_error),
     .controller_command_valid(sdram_command_valid),
     .controller_command(sdram_command),
@@ -121,5 +123,5 @@ __SDRAM_WORD_PORT__ u_memory (
     .controller_burst_length(sdram_burst_length)
 );
 
-wire [15:0] unused_memory_read_data = memory_read_data;
+wire [31:0] unused_memory_read_data = memory_read_data;
 endmodule

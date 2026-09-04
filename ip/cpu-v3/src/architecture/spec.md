@@ -201,8 +201,9 @@ does not relax timing and is not used as a substitute for pipelining.
 Program loading is a separate concern from cache operation: SDRAM has no
 bitstream initialization. Immutable Stage0 code starts from initialized
 BSRAM/instruction-cache state in segment zero, copies Stage1 from
-SPI Flash into SDRAM, invalidates both caches entirely, writes the Stage1
-data segment, and enters Stage1 with `JSEG`. Stage0 does not write a stack
+SPI Flash into SDRAM, invalidates the complete D-cache, writes the Stage1
+data segment, and enters Stage1 with the adjacent
+`ICACHE_INVALIDATE_ALL_DELAYED; JSEG` handoff. Stage0 does not write a stack
 pointer: each stage initializes its own from its compiled-in `--stack-init`.
 Stage1 understands the extensible section table and loads the application.
 
@@ -227,15 +228,20 @@ segment alone does not invalidate correctly tagged lines.
 
 ## System control device and boot error reporting
 
-Device 0 is addressed only with `DEVRECV`/`DEVSEND`. Writing any value to
-channel 0 invalidates the whole instruction cache, and to channel 1 the whole
-data cache. Channel 2 drives the six board LEDs from the low six written
+Device 0 is addressed only with `DEVRECV`/`DEVSEND`. Channel 0 is
+`ICACHE_INVALIDATE_ALL_DELAYED`: a write produces the registered one-cycle-
+delayed whole-I-cache invalidation pulse. Channel 1 is `D_INVALIDATE_ALL`:
+it starts blocking clean-plus-invalidate on the write-back D-cache. Channel 4
+starts blocking `D_CLEAN_ALL`, and channel 5 returns final maintenance status.
+The system controller holds the CPU from command acceptance until the D-cache
+reports success or error. Channel 2 drives the six board LEDs from the low six written
 bits. Channel 3 accepts one UART transmit byte per write (8N1) and reports
 bit 0 set on reads while the transmitter is busy.
 
-After DMA loads and before `JSEG` the boot code must invalidate both caches
-through channels 0 and 1. This is harmless at cold boot, when every valid bit
-is already clear.
+After DMA loads, boot code invokes the semantic D-cache invalidation barrier,
+prepares DSEG and the final registers, then invokes the non-returning semantic
+I-cache-invalidate-and-jump intrinsic. The compiler lowers that terminal IR
+operation to adjacent `DEVSEND channel 0; JSEG` words with nothing between.
 
 On failure a boot stage writes channel 2 with `{stage[1:0], category[3:0]}` in
 the low six bits (stage `01` = Stage0, `10` = Stage1; category `1` =
@@ -264,25 +270,44 @@ section, while button `01` and the default `00` select the primary one.
 
 ## First data-cache policy
 
-The first processor uses split 2-KiB instruction and data caches. Each is
-direct-mapped with 64 sets and 32 bytes (16 CPU words) per line. Each cache's
-1,024 data words map exactly to one characterized 1024x16 BSRAM leaf, for two
-data blocks total. Its 64 physical 12-bit tags map through a characterized
-SSRAM leaf to 12 RAM16 primitives (768 physical SSRAM bits); resettable valid
-bits remain ordinary registers. One arbiter shares the SDRAM transaction port;
+The first processor uses split 4-KiB instruction and data caches. Each is
+two-way set-associative with 64 sets and 32 bytes (16 CPU words) per line. Each
+cache's 2,048 data words are interleaved across two characterized 1024x16 BSRAM
+leaves using `bank = way XOR word_parity`, while the way selects the upper
+address bit inside each bank. Each bank remains one-read, one-write. A lookup
+reads way zero from one bank and way one from the other while both tags are
+compared, then selects the matching registered bank result. Resident reads are
+pipelined: while one lookup resolves, the next may start, for one ordered hit
+request and response per cycle when there is no conflict or backpressure. The two 64-entry
+physical tag arrays map through a characterized
+SSRAM leaf to 24 RAM16 primitives (1,536 physical SSRAM bits). Resettable valid
+and next-victim bits remain ordinary registers. Invalid ways are filled before
+the deterministic per-set victim is replaced. One arbiter shares the SDRAM transaction port;
 instruction misses may not starve refresh or an already accepted data
 transaction.
 
-Reads allocate a complete line. Stores are write-through; write misses do not
-allocate. This avoids dirty eviction and makes early correctness/debugging much
-simpler. The first reusable RTL revision deliberately refills a line through
-16 serialized physical-word transactions and converts a 16-bit store into a
-one-beat 32-bit masked write. This keeps the cache, DMA, and CPU on one already
-characterized word-port contract. Replacing the refill sequencer with one
-Controller HS 8-beat burst is a contained throughput optimization after the
-complete boot path is stable. Associativity and write-back are policy changes
-behind the same CPU interface, to be justified by measured miss traffic rather
-than copied from the exploratory model.
+The I-cache is read-only. D-cache reads and stores allocate a complete line;
+stores set a per-way/set dirty bit in a separate 128-bit SSRAM. Replacing a dirty
+victim writes its complete line before refill. A miss issues one Controller HS burst and captures eight ordered
+32-bit beats in a private refill buffer. Both halves of one buffered beat drain
+into the even and odd BSRAM banks in the same cycle, so a complete line installs
+in eight cycles. Dirty eviction and maintenance stream eight ordered 32-bit
+write beats. Full clean preserves valid lines after successful write-back;
+full invalidate writes dirty lines and then clears all valid state. Both are
+blocking operations driven by the system controller's CPU hold.
+
+The fitted instruction path adds a four-entry register-based fetch queue between
+the core and the boot-memory/I-cache responders. Fetched and outstanding words
+share the four-entry reservation limit. Each downstream request records its
+physical address and an epoch bit; a redirect or global I-cache invalidate clears
+the visible queue and causes late old-epoch responses to be drained without
+becoming architectural. Sequential issue wraps the 16-bit PC without carrying
+into `CSEG`. A redirect issues its target lookup in the restart cycle when a
+metadata slot is available. If the visible queue is empty and the matching
+current-epoch response arrives while the core is ready, the response falls
+through directly instead of spending another cycle in the queue; backpressure
+still stores it normally. The blocking core still retires at most one instruction per cycle
+and performs no cross-instruction execute pipelining.
 
 The first arbiter permits one accepted Controller HS operation. In the host
 scheduler model a due refresh has priority before accepting new client work,

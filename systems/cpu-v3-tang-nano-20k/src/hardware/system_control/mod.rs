@@ -1,15 +1,17 @@
-//! CpuV3 device-0 system control: cache invalidate pulses, LEDs, and UART TX.
+//! CpuV3 device-0 system control: cache maintenance, CPU hold, LEDs, and UART TX.
 //!
 //! The device connects to the CpuV3 device port as device index 0 and answers
 //! the standard device register-bank interface (`device_index` /
 //! `device_channel` / enables / write data / read data):
 //!
 //! - channel 0 (write): pulse `icache_invalidate` for one clock;
-//! - channel 1 (write): pulse `dcache_invalidate` for one clock;
+//! - channel 1 (write): start blocking D-cache clean-plus-invalidate;
 //! - channel 2 (write): drive `leds[5:0]` from the low six write-data bits
 //!   (logical value; a board wrapper applies active-low inversion);
 //! - channel 3 (write): enqueue `write_data[7:0]` to the 8N1 UART
 //!   transmitter; (read): bit 0 is the transmitter busy flag.
+//! - channel 4 (write): start blocking D-cache clean;
+//! - channel 5 (read): return the final maintenance status.
 //!
 //! Writes while the UART is busy are dropped; software must poll the busy
 //! flag before enqueueing the next byte. All accesses with a device index
@@ -19,8 +21,10 @@ use crate::{Hardware, HardwareIdentity, Module, ModuleIo};
 use askama::Template;
 use digital_design_circuit::{CircuitWires, Wire, Wires};
 
-pub use crate::boot::SYSCTL_INVALIDATE_DCACHE as SYSTEM_CONTROL_CHANNEL_DCACHE_INVALIDATE;
-pub use crate::boot::SYSCTL_INVALIDATE_ICACHE as SYSTEM_CONTROL_CHANNEL_ICACHE_INVALIDATE;
+pub use crate::boot::CACHE_MAINTENANCE_STATUS as SYSTEM_CONTROL_CHANNEL_CACHE_MAINTENANCE_STATUS;
+pub use crate::boot::D_CLEAN_ALL as SYSTEM_CONTROL_CHANNEL_D_CLEAN_ALL;
+pub use crate::boot::D_INVALIDATE_ALL as SYSTEM_CONTROL_CHANNEL_D_INVALIDATE_ALL;
+pub use crate::boot::ICACHE_INVALIDATE_ALL_DELAYED as SYSTEM_CONTROL_CHANNEL_ICACHE_INVALIDATE_ALL_DELAYED;
 pub use crate::boot::SYSCTL_LED as SYSTEM_CONTROL_CHANNEL_LEDS;
 pub use crate::boot::SYSCTL_UART as SYSTEM_CONTROL_CHANNEL_UART;
 /// Device index of the system control device on the CpuV3 device port.
@@ -34,6 +38,8 @@ pub struct SystemControlDeviceInput {
     pub device_read_enable: Wire,
     pub device_write_enable: Wire,
     pub device_write_data: Wires<16>,
+    pub dcache_maintenance_done: Wire,
+    pub dcache_maintenance_error: Wire,
 }
 
 #[derive(Clone, ModuleIo)]
@@ -41,6 +47,8 @@ pub struct SystemControlDeviceOutput {
     pub device_read_data: Wires<16>,
     pub icache_invalidate: Wire,
     pub dcache_invalidate: Wire,
+    pub dcache_clean: Wire,
+    pub cache_maintenance_hold: Wire,
     /// Logical LED value; board wrappers handle active-low inversion.
     pub leds: Wires<6>,
     /// 8N1 serial output, idle high.
@@ -60,6 +68,9 @@ pub struct SystemControlDevice<const CLOCKS_PER_BIT: u16>;
 pub struct SystemControlDeviceState {
     icache_invalidate: bool,
     dcache_invalidate: bool,
+    dcache_clean: bool,
+    cache_maintenance_hold: bool,
+    cache_maintenance_status: u16,
     leds: u8,
     uart_busy: bool,
     uart_frame: u16,
@@ -72,6 +83,9 @@ impl Default for SystemControlDeviceState {
         Self {
             icache_invalidate: false,
             dcache_invalidate: false,
+            dcache_clean: false,
+            cache_maintenance_hold: false,
+            cache_maintenance_status: crate::boot::CACHE_MAINTENANCE_STATUS_SUCCESS,
             leds: 0,
             uart_busy: false,
             uart_frame: 0x3ff,
@@ -124,18 +138,23 @@ impl<const CLOCKS_PER_BIT: u16> Module for SystemControlDevice<CLOCKS_PER_BIT> {
         let input = input.sample(circuit);
         let selected =
             input.device_read_enable && input.device_index == u64::from(SYSTEM_CONTROL_DEVICE);
-        let read_data =
-            if selected && input.device_channel == u64::from(SYSTEM_CONTROL_CHANNEL_UART) {
-                u16::from(state.uart_busy)
-            } else {
-                0
-            };
+        let read_data = if selected {
+            match input.device_channel as u8 {
+                SYSTEM_CONTROL_CHANNEL_UART => u16::from(state.uart_busy),
+                SYSTEM_CONTROL_CHANNEL_CACHE_MAINTENANCE_STATUS => state.cache_maintenance_status,
+                _ => 0,
+            }
+        } else {
+            0
+        };
         output.drive(
             circuit,
             &SystemControlDeviceOutputValue {
                 device_read_data: u64::from(read_data),
                 icache_invalidate: state.icache_invalidate,
                 dcache_invalidate: state.dcache_invalidate,
+                dcache_clean: state.dcache_clean,
+                cache_maintenance_hold: state.cache_maintenance_hold,
                 leds: u64::from(state.leds),
                 uart_tx: !state.uart_busy || ((state.uart_frame >> state.uart_bit) & 1) == 1,
             },
@@ -155,6 +174,16 @@ impl<const CLOCKS_PER_BIT: u16> Module for SystemControlDevice<CLOCKS_PER_BIT> {
         }
         state.icache_invalidate = false;
         state.dcache_invalidate = false;
+        state.dcache_clean = false;
+
+        if state.cache_maintenance_hold && input.dcache_maintenance_done {
+            state.cache_maintenance_hold = false;
+            state.cache_maintenance_status = if input.dcache_maintenance_error {
+                crate::boot::CACHE_MAINTENANCE_STATUS_ERROR
+            } else {
+                crate::boot::CACHE_MAINTENANCE_STATUS_SUCCESS
+            };
+        }
 
         let was_busy = state.uart_busy;
         if was_busy {
@@ -175,8 +204,15 @@ impl<const CLOCKS_PER_BIT: u16> Module for SystemControlDevice<CLOCKS_PER_BIT> {
         }
         let value = input.device_write_data as u16;
         match input.device_channel as u8 {
-            SYSTEM_CONTROL_CHANNEL_ICACHE_INVALIDATE => state.icache_invalidate = true,
-            SYSTEM_CONTROL_CHANNEL_DCACHE_INVALIDATE => state.dcache_invalidate = true,
+            SYSTEM_CONTROL_CHANNEL_ICACHE_INVALIDATE_ALL_DELAYED => state.icache_invalidate = true,
+            SYSTEM_CONTROL_CHANNEL_D_INVALIDATE_ALL if !state.cache_maintenance_hold => {
+                state.dcache_invalidate = true;
+                state.cache_maintenance_hold = true;
+            }
+            SYSTEM_CONTROL_CHANNEL_D_CLEAN_ALL if !state.cache_maintenance_hold => {
+                state.dcache_clean = true;
+                state.cache_maintenance_hold = true;
+            }
             SYSTEM_CONTROL_CHANNEL_LEDS => state.leds = (value & 0x3f) as u8,
             // A write while busy is dropped; software polls the busy flag.
             SYSTEM_CONTROL_CHANNEL_UART if !was_busy => {
@@ -234,6 +270,8 @@ mod tests {
         device_read_enable: false,
         device_write_enable: false,
         device_write_data: 0,
+        dcache_maintenance_done: false,
+        dcache_maintenance_error: false,
     };
 
     fn write(channel: u64, data: u64) -> SystemControlDeviceInputValue {
@@ -278,8 +316,28 @@ mod tests {
             device_read_data: read_data,
             icache_invalidate,
             dcache_invalidate,
+            dcache_clean: false,
+            cache_maintenance_hold: false,
             leds,
             uart_tx,
+        }
+    }
+
+    fn maintenance_output(
+        read_data: u64,
+        invalidate: bool,
+        clean: bool,
+        hold: bool,
+        leds: u64,
+    ) -> SystemControlDeviceOutputValue {
+        SystemControlDeviceOutputValue {
+            device_read_data: read_data,
+            icache_invalidate: false,
+            dcache_invalidate: invalidate,
+            dcache_clean: clean,
+            cache_maintenance_hold: hold,
+            leds,
+            uart_tx: true,
         }
     }
 
@@ -301,8 +359,35 @@ mod tests {
             TestStep::new(write(0, 0xffff), output(0, true, false, 0, true)),
             TestStep::new(IDLE, output(0, false, false, 0, true)),
             // Channel 1 pulses dcache_invalidate for exactly one clock.
-            TestStep::new(write(1, 0), output(0, false, true, 0, true)),
-            TestStep::new(IDLE, output(0, false, false, 0, true)),
+            TestStep::new(write(1, 0), maintenance_output(0, true, false, true, 0)),
+            TestStep::new(IDLE, maintenance_output(0, false, false, true, 0)),
+            TestStep::new(
+                SystemControlDeviceInputValue {
+                    dcache_maintenance_done: true,
+                    ..IDLE
+                },
+                output(0, false, false, 0, true),
+            ),
+            // Channel 4 starts a clean and completion records the final error.
+            TestStep::new(write(4, 0), maintenance_output(0, false, true, true, 0)),
+            TestStep::new(
+                SystemControlDeviceInputValue {
+                    dcache_maintenance_done: true,
+                    dcache_maintenance_error: true,
+                    ..IDLE
+                },
+                output(0, false, false, 0, true),
+            ),
+            TestStep::new(
+                read(u64::from(SYSTEM_CONTROL_CHANNEL_CACHE_MAINTENANCE_STATUS)),
+                output(
+                    u64::from(crate::boot::CACHE_MAINTENANCE_STATUS_ERROR),
+                    false,
+                    false,
+                    0,
+                    true,
+                ),
+            ),
             // Writes to another device index are ignored.
             TestStep::new(write_index(2, 0, 1), output(0, false, false, 0, true)),
             TestStep::new(write_index(2, 2, 0x003f), output(0, false, false, 0, true)),

@@ -1,7 +1,9 @@
 //! Reusable CpuV3 revision 0.7 processor core with physical-memory and device ports.
 
 mod cache;
+mod fetch;
 pub use cache::*;
+pub use fetch::*;
 
 use digital_design_circuit::{CircuitWires, Wire, Wires};
 use digital_design_hardware::{
@@ -25,6 +27,7 @@ pub const CPU_V3_FAULT_DATA_MEMORY: u8 = 4;
 #[derive(Clone, ModuleIo)]
 pub struct CpuV3CoreInput {
     pub reset: Wire,
+    pub hold: Wire,
     pub instruction_request_ready: Wire,
     pub instruction_response_valid: Wire,
     pub instruction_data: Wires<16>,
@@ -72,13 +75,97 @@ impl BsramImage<16> for FpuRomImage {
 
 type FpuRom = Bsram1Rw1024<16, FpuRomImage>;
 
+/// SSRAM physical bits for the scalar register file: 16 words x 16 bits with
+/// two asynchronous read ports, which Gowin builds from two copies of four
+/// RAM16X4 cells.
+const CPU_V3_GPR_RAM16S: usize = 2 * 4;
+const CPU_V3_GPR_PHYSICAL_BITS: usize = CPU_V3_GPR_RAM16S * 64;
+
+#[derive(Clone, ModuleIo)]
+pub struct CpuV3GprRamInput {
+    pub write_enable: Wire,
+    pub write_address: Wires<4>,
+    pub write_data: Wires<16>,
+    pub read_a_address: Wires<4>,
+    pub read_b_address: Wires<4>,
+}
+
+#[derive(Clone, ModuleIo)]
+pub struct CpuV3GprRamOutput {
+    pub read_a_data: Wires<16>,
+    pub read_b_data: Wires<16>,
+}
+
+/// Synchronous-write, dual-asynchronous-read distributed RAM holding the
+/// sixteen scalar registers.
+pub struct CpuV3GprRam;
+
+impl HardwareIdentity for CpuV3GprRam {
+    const TARGET_RESOURCE_LEAF: bool = true;
+
+    fn verilog_identity() -> VerilogIdentity {
+        VerilogIdentity::new("CpuV3GprRam").namespace(["components", "cpu", "cpu_v3"])
+    }
+}
+
+impl Module for CpuV3GprRam {
+    type Input = CpuV3GprRamInput;
+    type Output = CpuV3GprRamOutput;
+    type EmuState = [u16; 16];
+
+    const USES_MAIN_CLOCK: bool = true;
+
+    fn target_resources() -> Vec<TargetResourceRequest> {
+        vec![TargetResourceRequest::new(SsramBits::new(
+            CPU_V3_GPR_PHYSICAL_BITS as u64,
+        ))]
+    }
+
+    fn create_emu(_input: &Self::Input, _output: &Self::Output) -> Self::EmuState {
+        [0; 16]
+    }
+
+    fn execute_emu(
+        state: &mut Self::EmuState,
+        circuit: &mut CircuitWires,
+        input: &Self::Input,
+        output: &Self::Output,
+    ) {
+        let input = input.sample(circuit);
+        output.drive(
+            circuit,
+            &CpuV3GprRamOutputValue {
+                read_a_data: u64::from(state[input.read_a_address as usize]),
+                read_b_data: u64::from(state[input.read_b_address as usize]),
+            },
+        );
+    }
+
+    fn clock_emu(
+        state: &mut Self::EmuState,
+        circuit: &mut CircuitWires,
+        input: &Self::Input,
+        _output: &Self::Output,
+    ) {
+        let input = input.sample(circuit);
+        if input.write_enable {
+            state[input.write_address as usize] = input.write_data as u16;
+        }
+    }
+
+    fn verilog_source() -> Option<String> {
+        Some(include_str!("cpu_v3_gpr_ram.v").to_string())
+    }
+
+    fn verilog_testbench() -> Option<String> {
+        Some(include_str!("cpu_v3_gpr_ram_tb.v").to_string())
+    }
+}
+
 /// SSRAM physical bits for the FPU register file: 16 vectors x 64 bits with
 /// two asynchronous read ports, which Gowin builds from two RAM16X4 copies
-/// (32 cells), plus the eight RAM16 cells that Gowin additionally infers for
-/// the scalar register file and FPU transfer buffer inside the handwritten
-/// core. The SSRAM audit only rejects usage above the claim, so covering the
-/// incidental inference here keeps the build robust to mapper drift.
-const CPU_V3_FPU_REGISTER_RAM16S: usize = 2 * 4 * 4 + 8;
+/// (32 cells).
+const CPU_V3_FPU_REGISTER_RAM16S: usize = 2 * 4 * 4;
 const CPU_V3_FPU_REGISTER_PHYSICAL_BITS: usize = CPU_V3_FPU_REGISTER_RAM16S * 64;
 
 #[derive(Clone, ModuleIo)]
@@ -189,6 +276,7 @@ enum Phase {
     Execute,
     DataRequest,
     DataResponse,
+    AsyncStoreWait,
     MultiplyWait,
     MultiplyCommit,
     FpuExecute,
@@ -230,8 +318,20 @@ struct PendingData {
     fault_pc: u16,
 }
 
+#[derive(Clone, Copy, Default)]
+struct AsyncStore {
+    valid: bool,
+    issued: bool,
+    address: u32,
+    write_data: u16,
+    fault_pc: u16,
+}
+
 pub struct CpuV3CoreState {
     registers: [u16; 16],
+    gpr_write_enable: bool,
+    gpr_write_address: u8,
+    gpr_write_data: u16,
     fpu_registers: [FpuVector; 16],
     pc: u16,
     code_segment: u16,
@@ -245,6 +345,7 @@ pub struct CpuV3CoreState {
     instruction: u16,
     instruction_pc: u16,
     pending_data: PendingData,
+    async_store: AsyncStore,
     multiply_destination: u8,
     multiply_result: u16,
     multiply_retire_words: u8,
@@ -276,6 +377,9 @@ impl Default for CpuV3CoreState {
     fn default() -> Self {
         Self {
             registers: [0; 16],
+            gpr_write_enable: false,
+            gpr_write_address: 0,
+            gpr_write_data: 0,
             fpu_registers: [[0; 4]; 16],
             pc: 0,
             code_segment: 0,
@@ -286,6 +390,7 @@ impl Default for CpuV3CoreState {
             instruction: 0,
             instruction_pc: 0,
             pending_data: PendingData::default(),
+            async_store: AsyncStore::default(),
             multiply_destination: 0,
             multiply_result: 0,
             multiply_retire_words: 0,
@@ -325,6 +430,15 @@ impl CpuV3CoreState {
     fn retire(&mut self, words: u8) {
         self.retired_words = self.retired_words.wrapping_add(u32::from(words));
         self.phase = Phase::FetchRequest;
+    }
+
+    /// Stages a write to the synchronous-write GPR RAM. The value lands one
+    /// cycle later, matching the RTL's `gpr_write_enable` register + GPR RAM
+    /// synchronous write port.
+    fn write_gpr(&mut self, destination: u8, value: u16) {
+        self.gpr_write_enable = true;
+        self.gpr_write_address = destination;
+        self.gpr_write_data = value;
     }
 
     fn execute(&mut self, device_read_data: u16) {
@@ -369,16 +483,19 @@ impl CpuV3CoreState {
             0..=7 if opcode != 2 => {
                 let left = self.registers[usize::from(lhs)];
                 let right = self.registers[usize::from(rhs)];
-                self.registers[usize::from(dst)] = match opcode {
-                    0 => left.wrapping_add(right),
-                    1 => left.wrapping_sub(right),
-                    3 => left & right,
-                    4 => left | right,
-                    5 => left ^ right,
-                    6 => left.wrapping_shl(u32::from(right & 15)),
-                    7 => ((left as i16) >> u32::from(right & 15)) as u16,
-                    _ => unreachable!(),
-                };
+                self.write_gpr(
+                    dst,
+                    match opcode {
+                        0 => left.wrapping_add(right),
+                        1 => left.wrapping_sub(right),
+                        3 => left & right,
+                        4 => left | right,
+                        5 => left ^ right,
+                        6 => left.wrapping_shl(u32::from(right & 15)),
+                        7 => ((left as i16) >> u32::from(right & 15)) as u16,
+                        _ => unreachable!(),
+                    },
+                );
                 self.retire(retire_words);
             }
             2 => self.begin_multiply(
@@ -390,7 +507,7 @@ impl CpuV3CoreState {
             8 | 9 => {
                 let offset = immediate4(instruction, prefix, true);
                 let logical = self.registers[usize::from(lhs)].wrapping_add(offset);
-                self.pending_data = PendingData {
+                let pending = PendingData {
                     write: opcode == 9,
                     address: physical_address(self.data_segment, logical),
                     write_data: self.registers[usize::from(dst)],
@@ -398,7 +515,23 @@ impl CpuV3CoreState {
                     retire_words,
                     fault_pc,
                 };
-                self.phase = Phase::DataRequest;
+                if opcode == 9 && !self.async_store.valid {
+                    self.async_store = AsyncStore {
+                        valid: true,
+                        issued: false,
+                        address: pending.address,
+                        write_data: pending.write_data,
+                        fault_pc: pending.fault_pc,
+                    };
+                    self.retire(retire_words);
+                } else {
+                    self.pending_data = pending;
+                    self.phase = if self.async_store.valid {
+                        Phase::AsyncStoreWait
+                    } else {
+                        Phase::DataRequest
+                    };
+                }
             }
             10 => self.execute_immediate(instruction, prefix, retire_words, fault_pc),
             11 => {
@@ -433,7 +566,7 @@ impl CpuV3CoreState {
                     9 => {
                         let next = self.pc;
                         self.pc = next.wrapping_add(offset);
-                        self.registers[14] = next;
+                        self.write_gpr(14, next);
                     }
                     _ => {
                         self.fault(CPU_V3_FAULT_INVALID_INSTRUCTION, fault_pc);
@@ -444,7 +577,7 @@ impl CpuV3CoreState {
             }
             12 => {
                 if dst & 8 == 0 {
-                    self.registers[usize::from(rhs)] = device_read_data;
+                    self.write_gpr(rhs, device_read_data);
                 }
                 self.retire(retire_words);
             }
@@ -516,7 +649,7 @@ impl CpuV3CoreState {
                 return;
             }
         };
-        self.registers[usize::from(dst)] = result;
+        self.write_gpr(dst, result);
         self.retire(retire_words);
     }
 
@@ -525,43 +658,35 @@ impl CpuV3CoreState {
         let dst = field(instruction, 4);
         let src = field(instruction, 0);
         match function {
-            0 => {
-                self.registers[usize::from(dst)] =
-                    self.registers[usize::from(src)].count_ones() as u16
-            }
-            1 => self.registers[usize::from(dst)] = self.registers[usize::from(src)],
-            2 => self.registers[usize::from(dst)] = !self.registers[usize::from(src)],
-            3 => self.registers[usize::from(dst)] = self.registers[usize::from(src)].wrapping_neg(),
+            0 => self.write_gpr(dst, self.registers[usize::from(src)].count_ones() as u16),
+            1 => self.write_gpr(dst, self.registers[usize::from(src)]),
+            2 => self.write_gpr(dst, !self.registers[usize::from(src)]),
+            3 => self.write_gpr(dst, self.registers[usize::from(src)].wrapping_neg()),
             4 if dst == 0 => self.pc = self.registers[usize::from(src)],
             // JALR: the link field is architecturally fixed to r14.
             5 if dst == 14 => {
                 let target = self.registers[usize::from(src)];
-                self.registers[usize::from(dst)] = self.pc;
+                self.write_gpr(dst, self.pc);
                 self.pc = target;
             }
-            6 => {
-                self.registers[usize::from(dst)] =
-                    sign_extend(self.registers[usize::from(src)] & 0xff, 8)
-            }
-            7 => {
-                self.registers[usize::from(dst)] =
-                    self.registers[usize::from(src)].leading_zeros() as u16
-            }
+            6 => self.write_gpr(dst, sign_extend(self.registers[usize::from(src)] & 0xff, 8)),
+            7 => self.write_gpr(dst, self.registers[usize::from(src)].leading_zeros() as u16),
             8 if dst == 0 && src == 0 => {
                 self.retired_words = self.retired_words.wrapping_add(u32::from(retire_words));
                 self.phase = Phase::Halted;
                 return;
             }
-            9 => {
-                self.registers[usize::from(dst)] = u16::from(
+            9 => self.write_gpr(
+                dst,
+                u16::from(
                     (self.registers[usize::from(dst)] as i16)
                         < (self.registers[usize::from(src)] as i16),
-                )
-            }
-            10 => {
-                self.registers[usize::from(dst)] =
-                    u16::from(self.registers[usize::from(dst)] < self.registers[usize::from(src)])
-            }
+                ),
+            ),
+            10 => self.write_gpr(
+                dst,
+                u16::from(self.registers[usize::from(dst)] < self.registers[usize::from(src)]),
+            ),
             11 => {
                 self.pending_test = Some(
                     (self.registers[usize::from(dst)] as i16)
@@ -573,14 +698,15 @@ impl CpuV3CoreState {
                     Some(self.registers[usize::from(dst)].cmp(&self.registers[usize::from(src)]))
             }
             13 => {
-                self.registers[usize::from(dst)] = match src {
+                let value = match src {
                     0 => self.code_segment,
                     1 => self.data_segment,
                     _ => {
                         self.fault(CPU_V3_FAULT_INVALID_INSTRUCTION, fault_pc);
                         return;
                     }
-                }
+                };
+                self.write_gpr(dst, value);
             }
             14 if dst == 1 => self.data_segment = self.registers[usize::from(src)],
             15 => {
@@ -606,7 +732,7 @@ impl CpuV3CoreState {
                 self.phase = Phase::FpuCommit;
             }
             1 => {
-                self.registers[a] = self.fpu_registers[b][0] as u16;
+                self.write_gpr(a as u8, self.fpu_registers[b][0] as u16);
                 self.phase = Phase::FpuCommit;
             }
             2 | 3 => {
@@ -625,7 +751,11 @@ impl CpuV3CoreState {
                     retire_words: self.fpu_retire_words,
                     fault_pc: self.fpu_fault_pc,
                 };
-                self.phase = Phase::DataRequest;
+                self.phase = if self.async_store.valid {
+                    Phase::AsyncStoreWait
+                } else {
+                    Phase::DataRequest
+                };
             }
             4 => {
                 // FMOV: one wide vector copy.
@@ -717,6 +847,28 @@ impl CpuV3CoreState {
         self.fpu_mul_products[0] = self.fpu_product(0);
         self.phase = Phase::FpuMultiplyPipeline;
     }
+
+    fn execute_pipelineable(&self) -> bool {
+        if self.phase != Phase::Execute {
+            return false;
+        }
+        let opcode = field(self.instruction, 12);
+        let function = field(self.instruction, 8);
+        let a = field(self.instruction, 4);
+        let b = field(self.instruction, 0);
+        match opcode {
+            0 | 1 | 3..=7 | 15 => true,
+            9 => !self.async_store.valid,
+            10 => function != 8,
+            14 => {
+                function <= 3
+                    || matches!(function, 6 | 7 | 9..=12)
+                    || (function == 13 && b <= 1)
+                    || (function == 14 && a == 1)
+            }
+            _ => false,
+        }
+    }
 }
 
 impl Module for CpuV3Core {
@@ -733,30 +885,46 @@ impl Module for CpuV3Core {
     fn execute_emu(
         state: &mut Self::EmuState,
         circuit: &mut CircuitWires,
-        _input: &Self::Input,
+        input: &Self::Input,
         output: &Self::Output,
     ) {
+        let input = input.sample(circuit);
         let pending = state.pending_data;
+        let store = state.async_store;
+        let execute_pipelineable = state.execute_pipelineable();
         let device_instruction = state.phase == Phase::Execute && state.instruction >> 12 == 0xc;
         let device_field = field(state.instruction, 8);
         let device_register = field(state.instruction, 0);
         output.drive(
             circuit,
             &CpuV3CoreOutputValue {
-                instruction_request_valid: state.phase == Phase::FetchRequest,
+                instruction_request_valid: !input.hold
+                    && (state.phase == Phase::FetchRequest || execute_pipelineable),
                 instruction_address: u64::from(physical_address(state.code_segment, state.pc)),
-                instruction_response_ready: state.phase == Phase::FetchResponse,
-                data_request_valid: state.phase == Phase::DataRequest,
-                data_write: pending.write,
-                data_address: u64::from(pending.address),
-                data_write_data: u64::from(pending.write_data),
-                data_response_ready: state.phase == Phase::DataResponse,
+                instruction_response_ready: !input.hold
+                    && (matches!(state.phase, Phase::FetchRequest | Phase::FetchResponse)
+                        || execute_pipelineable),
+                data_request_valid: !input.hold
+                    && ((store.valid && !store.issued) || state.phase == Phase::DataRequest),
+                data_write: store.valid || pending.write,
+                data_address: u64::from(if store.valid {
+                    store.address
+                } else {
+                    pending.address
+                }),
+                data_write_data: u64::from(if store.valid {
+                    store.write_data
+                } else {
+                    pending.write_data
+                }),
+                data_response_ready: !input.hold
+                    && ((store.valid && store.issued) || state.phase == Phase::DataResponse),
                 device_index: u64::from(device_field & 7),
                 device_channel: u64::from(field(state.instruction, 4)),
-                device_read_enable: device_instruction && device_field & 8 == 0,
-                device_write_enable: device_instruction && device_field & 8 != 0,
+                device_read_enable: !input.hold && device_instruction && device_field & 8 == 0,
+                device_write_enable: !input.hold && device_instruction && device_field & 8 != 0,
                 device_write_data: u64::from(state.registers[usize::from(device_register)]),
-                halted: state.phase == Phase::Halted,
+                halted: state.phase == Phase::Halted && !store.valid,
                 halt_signal: u64::from(state.registers[0]),
                 fault: state.phase == Phase::Fault,
                 fault_code: u64::from(state.fault_code),
@@ -783,9 +951,53 @@ impl Module for CpuV3Core {
             state.phase = Phase::ResetClear;
             return;
         }
+        if input.hold {
+            return;
+        }
+        // Land the previous cycle's staged GPR write. The RTL registers the
+        // write request at retirement and its synchronous GPR RAM commits one
+        // cycle later, during the following fetch cycle.
+        if state.gpr_write_enable {
+            state.registers[usize::from(state.gpr_write_address)] = state.gpr_write_data;
+            state.gpr_write_enable = false;
+        }
+        let execute_pipelineable = state.execute_pipelineable();
+        // Snapshot the pre-clock buffer state to preserve the RTL's
+        // nonblocking semantics: a waiter observes completion one cycle after
+        // the response handshake, and a newly enqueued store cannot issue on
+        // the same edge that created it.
+        let async_store_was_valid = state.async_store.valid;
+        let async_store_was_issued = state.async_store.issued;
+        if async_store_was_valid
+            && async_store_was_issued
+            && input.data_response_valid
+            && input.data_error
+        {
+            let fault_pc = state.async_store.fault_pc;
+            state.async_store = AsyncStore::default();
+            state.fault(CPU_V3_FAULT_DATA_MEMORY, fault_pc);
+            return;
+        }
+        if async_store_was_valid && !async_store_was_issued && input.data_request_ready {
+            state.async_store.issued = true;
+        }
+        if async_store_was_valid && async_store_was_issued && input.data_response_valid {
+            state.async_store = AsyncStore::default();
+        }
         match state.phase {
             Phase::FetchRequest if input.instruction_request_ready => {
-                state.phase = Phase::FetchResponse;
+                if input.instruction_response_valid {
+                    if input.instruction_error {
+                        state.fault(CPU_V3_FAULT_INSTRUCTION_MEMORY, state.pc);
+                    } else {
+                        state.instruction = input.instruction_data as u16;
+                        state.instruction_pc = state.pc;
+                        state.pc = state.pc.wrapping_add(1);
+                        state.phase = Phase::Execute;
+                    }
+                } else {
+                    state.phase = Phase::FetchResponse;
+                }
             }
             Phase::FetchResponse if input.instruction_response_valid => {
                 if input.instruction_error {
@@ -797,9 +1009,43 @@ impl Module for CpuV3Core {
                     state.phase = Phase::Execute;
                 }
             }
-            Phase::Execute => state.execute(input.device_read_data as u16),
+            Phase::Execute => {
+                state.execute(input.device_read_data as u16);
+                if execute_pipelineable
+                    && input.instruction_request_ready
+                    && state.phase == Phase::FetchRequest
+                {
+                    if input.instruction_response_valid {
+                        if input.instruction_error {
+                            state.fault(CPU_V3_FAULT_INSTRUCTION_MEMORY, state.pc);
+                        } else {
+                            state.instruction = input.instruction_data as u16;
+                            state.instruction_pc = state.pc;
+                            state.pc = state.pc.wrapping_add(1);
+                            state.phase = Phase::Execute;
+                        }
+                    } else {
+                        state.phase = Phase::FetchResponse;
+                    }
+                }
+            }
             Phase::DataRequest if input.data_request_ready => {
                 state.phase = Phase::DataResponse;
+            }
+            Phase::AsyncStoreWait if !async_store_was_valid => {
+                let pending = state.pending_data;
+                if pending.write && !state.fpu_memory_active {
+                    state.async_store = AsyncStore {
+                        valid: true,
+                        issued: false,
+                        address: pending.address,
+                        write_data: pending.write_data,
+                        fault_pc: pending.fault_pc,
+                    };
+                    state.retire(pending.retire_words);
+                } else {
+                    state.phase = Phase::DataRequest;
+                }
             }
             Phase::DataResponse if input.data_response_valid => {
                 let pending = state.pending_data;
@@ -837,15 +1083,14 @@ impl Module for CpuV3Core {
                     }
                 } else {
                     if !pending.write {
-                        state.registers[usize::from(pending.destination)] =
-                            input.data_read_data as u16;
+                        state.write_gpr(pending.destination, input.data_read_data as u16);
                     }
                     state.retire(pending.retire_words);
                 }
             }
             Phase::MultiplyWait => state.phase = Phase::MultiplyCommit,
             Phase::MultiplyCommit => {
-                state.registers[usize::from(state.multiply_destination)] = state.multiply_result;
+                state.write_gpr(state.multiply_destination, state.multiply_result);
                 state.retire(state.multiply_retire_words);
             }
             Phase::FpuExecute => state.execute_fpu_base(),
@@ -1040,6 +1285,7 @@ impl Module for CpuV3Core {
             Phase::ResetClear => {
                 let index = usize::from(state.fpu_clear_index);
                 state.fpu_registers[index] = [0; 4];
+                state.write_gpr(state.fpu_clear_index, 0);
                 if state.fpu_clear_index == 15 {
                     state.phase = Phase::FetchRequest;
                 } else {
@@ -1065,6 +1311,10 @@ impl Module for CpuV3Core {
                 .replace(
                     "__FPU_REGISTER_RAM__",
                     &CpuV3FpuRegisterRam::verilog_identity().module_name(),
+                )
+                .replace(
+                    "__GPR_RAM__",
+                    &CpuV3GprRam::verilog_identity().module_name(),
                 ),
         )
     }
@@ -1075,6 +1325,7 @@ impl Module for CpuV3Core {
             VerilogDependency::new::<DspMulS18>("u_fpu_multiplier"),
             VerilogDependency::new::<FpuRom>("u_fpu_rom"),
             VerilogDependency::new::<CpuV3FpuRegisterRam>("u_fpu_register_ram"),
+            VerilogDependency::new::<CpuV3GprRam>("u_gpr_ram"),
         ]
     }
 
@@ -1149,6 +1400,7 @@ mod tests {
             circuit,
             &CpuV3CoreInputValue {
                 reset: false,
+                hold: false,
                 instruction_request_ready: true,
                 instruction_response_valid: instruction_response.is_some(),
                 instruction_data: u64::from(instruction_response.unwrap_or(0)),
@@ -1242,6 +1494,34 @@ mod tests {
         })
         .unwrap();
         rcc_backend::compile(frontend, &options, "main").words
+    }
+
+    #[test]
+    fn emulator_async_store_overlaps_alu_and_blocks_next_memory_operation() {
+        let mut state = CpuV3CoreState::default();
+        state.registers[1] = 0x0100;
+        state.registers[2] = 10;
+
+        state.instruction = 0x9210; // STORE r2, [r1]
+        state.execute(0);
+        assert_eq!(state.phase, Phase::FetchRequest);
+        assert!(state.async_store.valid);
+        assert!(!state.async_store.issued);
+        assert_eq!(state.async_store.address, 0x0100);
+        assert_eq!(state.async_store.write_data, 10);
+
+        state.instruction = 0x0322; // ADD r3, r2, r2
+        state.execute(0);
+        assert_eq!(state.phase, Phase::FetchRequest);
+        assert!(state.async_store.valid);
+        assert!(state.gpr_write_enable);
+        assert_eq!(state.gpr_write_data, 20);
+
+        state.instruction = 0x8010; // LOAD r0, [r1]
+        state.execute(0);
+        assert_eq!(state.phase, Phase::AsyncStoreWait);
+        assert!(!state.pending_data.write);
+        assert_eq!(state.pending_data.address, 0x0100);
     }
 
     #[test]
@@ -1373,7 +1653,7 @@ mod tests {
     #[test]
     fn export_accounts_for_integer_and_fpu_multiplier_leaves() {
         let project = VerilogProject::generate::<CpuV3Core>().unwrap();
-        assert_eq!(project.resource_claims.len(), 4);
+        assert_eq!(project.resource_claims.len(), 5);
         assert_eq!(
             project
                 .resource_claims
@@ -1393,6 +1673,13 @@ mod tests {
                 == [ResourceAmount::new(
                     ResourceKind::SsramBit,
                     CPU_V3_FPU_REGISTER_PHYSICAL_BITS as u64,
+                )]
+        }));
+        assert!(project.resource_claims.iter().any(|claim| {
+            claim.resources
+                == [ResourceAmount::new(
+                    ResourceKind::SsramBit,
+                    CPU_V3_GPR_PHYSICAL_BITS as u64,
                 )]
         }));
     }
@@ -1440,7 +1727,10 @@ mod tests {
             words
         }
 
-        let baseline = program(crate::move_register(15, 15));
+        // Use a one-cycle barrier as the frontend baseline. A scalar MOV is
+        // intentionally pipelineable now and would overlap the following
+        // FPU store, obscuring the FPU operation's blocking latency.
+        let baseline = program(crate::device_send(15, 0, 0));
         let mov = program(crate::fpu(crate::FpuOp::Move, 0, 1));
         let add = program(crate::fpu(crate::FpuOp::Add, 0, 1));
         let multiply = program(crate::fpu(crate::FpuOp::Mul, 0, 1));
@@ -1644,5 +1934,11 @@ mod tests {
     #[ignore = "explicit external simulation of the FPU register file"]
     fn verify_fpu_register_ram_with_iverilog() {
         digital_design_hardware::verify_verilog_with_iverilog::<CpuV3FpuRegisterRam>().unwrap();
+    }
+
+    #[test]
+    #[ignore = "explicit external simulation of the scalar register file"]
+    fn verify_gpr_ram_with_iverilog() {
+        digital_design_hardware::verify_verilog_with_iverilog::<CpuV3GprRam>().unwrap();
     }
 }

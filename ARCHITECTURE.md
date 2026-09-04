@@ -21,7 +21,8 @@ compiler/
 systems/
   cpu-v1-sim/                    CPU V1 memory, devices, display, and programs
   cpu-v2-sim/                    CPU V2 runner and debugger
-  cpu-v3-tang-nano-20k/          fitted FPGA system and boot chain
+  cpu-v3-tang-nano-20k/          fitted full FPGA system (two-stage flash boot,
+                                 CPU, SDRAM, flash, and display/HDMI) and boot chain
 ```
 
 ## Ownership rules
@@ -54,8 +55,9 @@ CPU V2/V3 systems use physical addresses only. CPU V3 forms a 32-bit word addres
 device-channel allocation.
 
 `dev_send`/`dev_recv` are the control plane. Shared physical memory is the CPU/GPU/DMA data plane.
-The CPU cache is write-through. CPU-to-GPU ownership transfer waits for completed stores; GPU
-completion drains its writes; CPU ownership resumes only after the system-control device completes
+The CPU D-cache is write-back. CPU-to-GPU ownership transfer waits until a blocking full clean has
+made CPU writes visible in DRAM; GPU completion makes all
+of its writes visible in DRAM; CPU ownership resumes only after the system-control device completes
 a D-cache invalidation. There is no MMU, snooping, burst protocol, transaction ID, or multiple
 outstanding request support yet.
 
@@ -74,7 +76,7 @@ Directory migration must not change ISA encodings, compiler listings, boot bytes
 Verilog identities, resource claims, or simulator results. The CPU V3 system build script compiles
 Stage0, Stage1, and both boot demos from their real RCC sources and writes generated arrays only to
 Cargo `OUT_DIR`; no checked-in byte array is maintained in parallel.
-The build retains FNV-1a baselines for the 590-word Stage0 image and the 2,563-byte
+The build retains FNV-1a baselines for the 544-word Stage0 image and the 2,563-byte
 Flash package, so generation remains single-source without weakening byte-for-byte compatibility.
 
 ## Board bring-up and diagnostics

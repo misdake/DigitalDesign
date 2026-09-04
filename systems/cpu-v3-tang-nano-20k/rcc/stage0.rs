@@ -228,8 +228,7 @@ fn main() {
     let dseg = desc[DW_S1_DSEG];
     let cseg = desc[DW_S1_CSEG];
     let entry = desc[DW_S1_ENTRY];
-    dev_send(SYSTEM_CONTROL_DEVICE, SYSCTL_INVALIDATE_ICACHE, 0);
-    dev_send(SYSTEM_CONTROL_DEVICE, SYSCTL_INVALIDATE_DCACHE, 0);
+    dcache_invalidate_all();
     mtsr_dseg(dseg);
-    jseg(cseg, entry);
+    icache_invalidate_delayed_and_jump(cseg, entry);
 }

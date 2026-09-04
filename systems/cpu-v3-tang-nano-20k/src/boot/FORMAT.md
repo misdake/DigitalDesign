@@ -50,8 +50,9 @@ bytes from Flash offset `0` into the reserved physical scratch range at word
 `0x40` and validates the SDRAM copy: magic, version, target, every Flash and
 SDRAM extent, and the Stage1 entry. It then DMAs Stage1 to its destination,
 mirrors the 64 descriptor bytes from the scratch range into offset `0x0100`
-of the Stage1 data segment, invalidates both caches through system-control
-device 0, sets `DSEG` and the stack pointer, and executes `JSEG`. The packer
+of the Stage1 data segment, performs complete D-cache invalidation through the
+semantic compiler barrier, sets `DSEG` and the stack pointer, then executes the
+adjacent `ICACHE_INVALIDATE_ALL_DELAYED; JSEG` terminal handoff. The packer
 reserves both the scratch range and that handoff range against every
 loadable section.
 

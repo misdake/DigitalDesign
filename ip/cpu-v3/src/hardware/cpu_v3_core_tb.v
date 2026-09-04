@@ -1,6 +1,7 @@
 module tb;
 reg clk = 0;
 reg reset = 1;
+reg hold = 0;
 reg instruction_request_ready = 1;
 reg instruction_response_valid = 0;
 reg [15:0] instruction_data = 0;
@@ -50,6 +51,10 @@ integer fail_data_beat = -1;
 reg pending_tb_data_write = 0;
 reg [31:0] pending_tb_data_address = 0;
 reg [15:0] pending_tb_data_write_data = 0;
+reg delay_data_response = 0;
+integer data_response_delay = 0;
+integer observed_data_requests = 0;
+reg observed_alu_during_store = 0;
 
 // The FPR stores sixteen 64-bit vectors; lane l of vector v occupies bits
 // [16l, 16l+15] of words[v].
@@ -63,10 +68,23 @@ always @(posedge clk) begin
     instruction_response_valid <= instruction_request_valid;
     if (instruction_request_valid)
         instruction_data <= memory[instruction_address[15:0]];
-    data_response_valid <= data_request_valid;
+    if (delay_data_response) begin
+        data_response_valid <= 0;
+        if (data_request_valid)
+            data_response_delay <= 6;
+        else if (data_response_delay > 0) begin
+            data_response_delay <= data_response_delay - 1;
+            if (data_response_delay == 1)
+                data_response_valid <= 1;
+        end
+    end else begin
+        data_response_valid <= data_request_valid;
+    end
     if (data_response_valid && pending_tb_data_write && !data_error)
         memory[pending_tb_data_address[15:0]] <= pending_tb_data_write_data;
     if (data_request_valid) begin
+        if (scenario == 37)
+            observed_data_requests <= observed_data_requests + 1;
         if (scenario == 14) begin
             $display("FAIL: scenario 14 DEV instruction used the data port");
             errors = errors + 1;
@@ -84,6 +102,9 @@ always @(posedge clk) begin
             data_read_data <= memory[data_address[15:0]];
     end else
         data_error <= 0;
+    if (scenario == 37 && dut.async_store_valid && dut.async_store_issued &&
+        dut.state == 2 && dut.opcode == 0)
+        observed_alu_during_store <= 1;
     if (device_write_enable)
         devices[{device_index, device_channel}] <= device_write_data;
 end
@@ -585,8 +606,8 @@ initial begin
     memory[16'h0107] = 16'd512;
     scenario = 35;
     expect_halt(16'd0, 350);
-    if (last_run_cycles != 80) begin
-        $display("FAIL: scenario 35 cycles %0d, expected 80", last_run_cycles);
+    if (last_run_cycles != 76) begin
+        $display("FAIL: scenario 35 cycles %0d, expected 76", last_run_cycles);
         errors = errors + 1;
     end
     if (fpr_word(2, 0) !== 16'd512 ||
@@ -613,8 +634,8 @@ initial begin
     memory[16'h0103] = 16'd128;
     scenario = 36;
     expect_halt(16'd0, 200);
-    if (last_run_cycles != 48) begin
-        $display("FAIL: scenario 36 cycles %0d, expected 48", last_run_cycles);
+    if (last_run_cycles != 46) begin
+        $display("FAIL: scenario 36 cycles %0d, expected 46", last_run_cycles);
         errors = errors + 1;
     end
     if (fpr_word(0, 0) !== 16'd1024 ||
@@ -658,6 +679,38 @@ initial begin
                 errors = errors + 1;
             end
         end
+    end
+
+    // Scenario 37: one scalar store runs in the background. An ALU operation
+    // overlaps it, but the following load cannot request the data port until
+    // the store response arrives.
+    clear_memory;
+    memory[0] = 16'hf010;
+    memory[1] = 16'haf10; // r1 = 0x0100
+    memory[2] = 16'haf2a; // r2 = 10
+    memory[3] = 16'h9210; // STORE r2, [r1]
+    memory[4] = 16'h0322; // ADD r3, r2, r2
+    memory[5] = 16'h8010; // LOAD r0, [r1]
+    memory[6] = 16'he800; // HALT
+    scenario = 37;
+    delay_data_response = 1;
+    data_response_delay = 0;
+    observed_data_requests = 0;
+    observed_alu_during_store = 0;
+    expect_halt(16'd10, 200);
+    delay_data_response = 0;
+    if (!observed_alu_during_store) begin
+        $display("FAIL: scenario 37 did not overlap ALU with async store");
+        errors = errors + 1;
+    end
+    if (observed_data_requests != 2) begin
+        $display("FAIL: scenario 37 observed %0d data requests, expected 2",
+                 observed_data_requests);
+        errors = errors + 1;
+    end
+    if (memory[16'h0100] !== 16'd10) begin
+        $display("FAIL: scenario 37 store value %h", memory[16'h0100]);
+        errors = errors + 1;
     end
 
     if (errors != 0) begin
