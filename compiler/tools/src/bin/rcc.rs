@@ -162,6 +162,9 @@ fn main() -> ExitCode {
             .unwrap_or_else(|e| die(&format!("cannot write {}: {e}", out.display())));
         std::fs::write(&lst, &program.listing)
             .unwrap_or_else(|e| die(&format!("cannot write {}: {e}", lst.display())));
+        let dbg_path = out.with_extension("dbg");
+        std::fs::write(&dbg_path, program.debug.render())
+            .unwrap_or_else(|e| die(&format!("cannot write {}: {e}", dbg_path.display())));
         println!(
             "compiled {} functions, {} CpuV3 words -> {} (+ {})",
             n_funcs,

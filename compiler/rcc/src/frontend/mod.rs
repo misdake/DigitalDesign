@@ -70,6 +70,12 @@ const STD_SOURCES: &[(&str, &str)] = &[
     ("rcc_std/vec.rs", include_str!("../rcc_std/vec.rs")),
 ];
 
+/// The embedded standard library sources, exposed so tooling (such as the
+/// debugger) can display library source text without reading it from disk.
+pub fn std_sources() -> &'static [(&'static str, &'static str)] {
+    STD_SOURCES
+}
+
 /// compile a full program: the user source, any `mod name;` files resolved
 /// through `loader`, plus the rcc standard library, with automatic library
 /// initialization driven by `opts`

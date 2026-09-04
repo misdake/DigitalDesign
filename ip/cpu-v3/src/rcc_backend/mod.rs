@@ -41,39 +41,114 @@ const CPU_V3_REGISTER_CONVENTION: rcc::RegisterConvention = rcc::RegisterConvent
     }),
 };
 
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug)]
 pub struct CpuV3Program {
     pub code_base: Word,
     pub words: Vec<Word>,
     pub listing: String,
+    pub debug: rcc::DebugInfo,
 }
 
 #[derive(Clone)]
 enum Line {
-    Word(Word),
+    Word {
+        word: Word,
+        line: Option<u32>,
+    },
     Label(usize),
     Branch {
         condition: TestCondition,
         target: usize,
+        line: Option<u32>,
     },
-    Jump(usize),
-    Call(FuncName),
+    Jump {
+        target: usize,
+        line: Option<u32>,
+    },
+    Call {
+        function: FuncName,
+        line: Option<u32>,
+    },
     LoadFunctionAddress {
         function: FuncName,
         dst: u8,
+        line: Option<u32>,
     },
 }
 
 impl Line {
     fn size(&self) -> usize {
         match self {
-            Self::Word(_) => 1,
+            Self::Word { .. } => 1,
             Self::Label(_) => 0,
-            Self::Branch { .. }
-            | Self::Jump(_)
-            | Self::Call(_)
-            | Self::LoadFunctionAddress { .. } => 2,
+            Self::Branch { .. } | Self::Jump { .. } | Self::Call { .. } | Self::LoadFunctionAddress { .. } => 2,
         }
+    }
+}
+
+/// Lowers instructions into `Line`s while stamping each with the source line
+/// of the instruction that produced it (for the debug line map). `None` marks
+/// compiler-generated code with no source ownership.
+struct Lines {
+    items: Vec<Line>,
+    cur_line: Option<u32>,
+}
+
+impl Lines {
+    fn new() -> Self {
+        Self {
+            items: Vec::new(),
+            cur_line: None,
+        }
+    }
+
+    fn set_line(&mut self, line: Option<u32>) {
+        self.cur_line = line;
+    }
+
+    fn len(&self) -> usize {
+        self.items.len()
+    }
+
+    fn label(&mut self, block: usize) {
+        self.items.push(Line::Label(block));
+    }
+
+    fn word(&mut self, word: Word) {
+        self.items.push(Line::Word {
+            word,
+            line: self.cur_line,
+        });
+    }
+
+    fn branch(&mut self, condition: TestCondition, target: usize) {
+        self.items.push(Line::Branch {
+            condition,
+            target,
+            line: self.cur_line,
+        });
+    }
+
+    fn jump(&mut self, target: usize) {
+        self.items.push(Line::Jump {
+            target,
+            line: self.cur_line,
+        });
+    }
+
+    fn call(&mut self, function: FuncName) {
+        self.items.push(Line::Call {
+            function,
+            line: self.cur_line,
+        });
+    }
+
+    fn load_function_address(&mut self, function: FuncName, dst: u8) {
+        self.items.push(Line::LoadFunctionAddress {
+            function,
+            dst,
+            line: self.cur_line,
+        });
     }
 }
 
@@ -81,6 +156,8 @@ struct LoweredFunction {
     name: FuncName,
     lines: Vec<Line>,
     static_addresses: Vec<u16>,
+    frame_size: usize,
+    callee_saved: usize,
 }
 
 /// Compile target-independent RCC IR for the CpuV3 ABI and ISA.
@@ -89,18 +166,20 @@ pub fn compile(
     options: &CompilerOptions,
     main: FuncName,
 ) -> CpuV3Program {
+    let debug = program.debug;
     let functions = program
         .funcs
         .into_iter()
         .map(|function| (function.name, function))
         .collect();
-    compile_ir(functions, options, main)
+    compile_ir(functions, options, main, debug)
 }
 
 fn compile_ir(
     functions: HashMap<FuncName, IrFunc>,
     options: &CompilerOptions,
     main: FuncName,
+    debug: rcc::frontend::FrontendDebug,
 ) -> CpuV3Program {
     let reachable = reachable_functions(&functions, main);
     let mut order = vec![main];
@@ -132,7 +211,7 @@ fn compile_ir(
         ));
     }
 
-    link(lowered, options)
+    link(lowered, options, debug)
 }
 
 fn reachable_functions(functions: &HashMap<FuncName, IrFunc>, main: FuncName) -> HashSet<FuncName> {
@@ -162,10 +241,12 @@ fn lower_function(
     is_main: bool,
     stack_init: u16,
 ) -> LoweredFunction {
-    let mut lines = vec![];
+    let mut lines = Lines::new();
     let mut static_addresses = vec![];
     let register = |vreg: VReg| allocation.reg[&vreg];
 
+    // prologue is compiler-generated (no source line)
+    lines.set_line(None);
     if is_main && stack_init != 0 {
         emit_load_immediate(&mut lines, REG_SP, stack_init);
     }
@@ -184,7 +265,7 @@ fn lower_function(
 
     let layout = function.rpo();
     for (layout_index, &block_id) in layout.iter().enumerate() {
-        lines.push(Line::Label(block_id));
+        lines.label(block_id);
         let block = &function.blocks[block_id];
         if block.preds.len() == 1 && !block.phis.is_empty() {
             let predecessor = block.preds[0];
@@ -205,10 +286,12 @@ fn lower_function(
                     )
                 })
                 .collect::<Vec<_>>();
+            lines.set_line(None);
             emit_parallel_moves(&mut lines, &moves);
         }
 
-        for instruction in &block.insts {
+        for (index, instruction) in block.insts.iter().enumerate() {
+            lines.set_line(block.lines.get(index).copied().flatten());
             lower_instruction(
                 instruction,
                 &register,
@@ -218,6 +301,7 @@ fn lower_function(
             );
         }
 
+        lines.set_line(block.term_line);
         match block
             .term
             .as_ref()
@@ -226,7 +310,7 @@ fn lower_function(
             Terminator::Jmp { target } => {
                 emit_edge_moves(function, block_id, *target, &register, &mut lines);
                 if layout.get(layout_index + 1) != Some(target) {
-                    lines.push(Line::Jump(*target));
+                    lines.jump(*target);
                 }
             }
             Terminator::Br {
@@ -238,28 +322,19 @@ fn lower_function(
                 if if_true == if_false {
                     emit_edge_moves(function, block_id, *if_true, &register, &mut lines);
                     if next != Some(*if_true) {
-                        lines.push(Line::Jump(*if_true));
+                        lines.jump(*if_true);
                     }
                 } else {
                     // Critical edges were split by allocation, so neither
                     // conditional successor needs edge-local phi moves here.
                     let condition = lower_comparison(function, cmp, &register, &mut lines);
                     if next == Some(*if_false) {
-                        lines.push(Line::Branch {
-                            condition,
-                            target: *if_true,
-                        });
+                        lines.branch(condition, *if_true);
                     } else if next == Some(*if_true) {
-                        lines.push(Line::Branch {
-                            condition: condition.invert(),
-                            target: *if_false,
-                        });
+                        lines.branch(condition.invert(), *if_false);
                     } else {
-                        lines.push(Line::Branch {
-                            condition,
-                            target: *if_true,
-                        });
-                        lines.push(Line::Jump(*if_false));
+                        lines.branch(condition, *if_true);
+                        lines.jump(*if_false);
                     }
                 }
             }
@@ -276,32 +351,34 @@ fn lower_function(
                         true,
                     );
                 }
-                lines.push(Line::Word(cpu_v3::jump_register(REG_LINK)));
+                lines.word(cpu_v3::jump_register(REG_LINK));
             }
             Terminator::Halt { signal } => {
                 let signal = register(*signal);
                 if signal != 0 {
-                    lines.push(Line::Word(cpu_v3::move_register(0, signal)));
+                    lines.word(cpu_v3::move_register(0, signal));
                 }
-                lines.push(Line::Word(cpu_v3::halt()));
+                lines.word(cpu_v3::halt());
             }
             Terminator::IcacheInvalidateDelayedAndJump { cseg, target } => {
                 let cseg = register(*cseg);
                 let target = register(*target);
-                lines.push(Line::Word(cpu_v3::device_send(
+                lines.word(cpu_v3::device_send(
                     cseg,
                     CACHE_MAINTENANCE_DEVICE,
                     ICACHE_INVALIDATE_ALL_DELAYED,
-                )));
-                lines.push(Line::Word(cpu_v3::jump_segment(cseg, target)));
+                ));
+                lines.word(cpu_v3::jump_segment(cseg, target));
             }
         }
     }
 
     LoweredFunction {
         name: function.name,
-        lines,
+        lines: lines.items,
         static_addresses,
+        frame_size: allocation.frame_size(),
+        callee_saved: allocation.callee_saved.len(),
     }
 }
 
@@ -309,7 +386,7 @@ fn lower_instruction(
     instruction: &Instr,
     register: &dyn Fn(VReg) -> u8,
     allocation: &Allocation,
-    lines: &mut Vec<Line>,
+    lines: &mut Lines,
     static_addresses: &mut Vec<u16>,
 ) {
     match instruction {
@@ -322,12 +399,12 @@ fn lower_instruction(
                 BinOp::Or => AluOp::Or,
                 BinOp::Xor => AluOp::Xor,
             };
-            lines.push(Line::Word(cpu_v3::alu(
+            lines.word(cpu_v3::alu(
                 operation,
                 register(*dst),
                 register(*lhs),
                 register(*rhs),
-            )));
+            ));
         }
         Instr::Un { dst, op, src } => lower_unary(register(*dst), *op, register(*src), lines),
         Instr::Shift {
@@ -339,22 +416,20 @@ fn lower_instruction(
             let dst = register(*dst);
             let src = register(*src);
             if dst != src {
-                lines.push(Line::Word(cpu_v3::move_register(dst, src)));
+                lines.word(cpu_v3::move_register(dst, src));
             }
             let operation = match op {
                 ShiftOp::Lsl => ImmediateOp::ShiftLeft,
                 ShiftOp::Lsr => ImmediateOp::ShiftRightLogical,
                 ShiftOp::Asr => ImmediateOp::ShiftRightArithmetic,
             };
-            lines.push(Line::Word(cpu_v3::immediate_unsigned(
-                operation, dst, *amount,
-            )));
+            lines.word(cpu_v3::immediate_unsigned(operation, dst, *amount));
         }
         Instr::Mov { dst, src } => {
             let dst = register(*dst);
             let src = register(*src);
             if dst != src {
-                lines.push(Line::Word(cpu_v3::move_register(dst, src)));
+                lines.word(cpu_v3::move_register(dst, src));
             }
         }
         Instr::LoadImm { dst, value } => emit_load_immediate(lines, register(*dst), *value),
@@ -372,23 +447,20 @@ fn lower_instruction(
             emit_load_immediate(lines, REG_LINK, *value);
             emit_store(lines, REG_LINK, REG_TMP, 0);
         }
-        Instr::Call { func, .. } => lines.push(Line::Call(func)),
-        Instr::LoadFuncAddr { dst, func } => lines.push(Line::LoadFunctionAddress {
-            function: func,
-            dst: register(*dst),
-        }),
-        Instr::CallPtr { .. } => lines.push(Line::Word(cpu_v3::jump_and_link_register(REG_TMP))),
+        Instr::Call { func, .. } => lines.call(func),
+        Instr::LoadFuncAddr { dst, func } => lines.load_function_address(func, register(*dst)),
+        Instr::CallPtr { .. } => lines.word(cpu_v3::jump_and_link_register(REG_TMP)),
         Instr::DevRecv {
             dst,
             device,
             channel,
         } => {
             check_device(*device);
-            lines.push(Line::Word(cpu_v3::device_receive(
+            lines.word(cpu_v3::device_receive(
                 register(*dst),
                 *device,
                 *channel,
-            )));
+            ));
         }
         Instr::DevSend {
             device,
@@ -396,24 +468,22 @@ fn lower_instruction(
             src,
         } => {
             check_device(*device);
-            lines.push(Line::Word(cpu_v3::device_send(
+            lines.word(cpu_v3::device_send(
                 register(*src),
                 *device,
                 *channel,
-            )));
+            ));
         }
-        Instr::DcacheInvalidateAll => lines.push(Line::Word(cpu_v3::device_send(
+        Instr::DcacheInvalidateAll => lines.word(cpu_v3::device_send(
             REG_TMP,
             CACHE_MAINTENANCE_DEVICE,
             D_INVALIDATE_ALL,
-        ))),
-        Instr::MtsrDseg { src } => {
-            lines.push(Line::Word(cpu_v3::write_data_segment(register(*src))))
-        }
-        Instr::Jseg { cseg, target } => lines.push(Line::Word(cpu_v3::jump_segment(
+        )),
+        Instr::MtsrDseg { src } => lines.word(cpu_v3::write_data_segment(register(*src))),
+        Instr::Jseg { cseg, target } => lines.word(cpu_v3::jump_segment(
             register(*cseg),
             register(*target),
-        ))),
+        )),
         Instr::LoadSp { dst, slot } => emit_load(
             lines,
             register(*dst),
@@ -440,7 +510,7 @@ fn lower_instruction(
         ),
         Instr::AddrOfLocal { dst, slot } => {
             let dst = register(*dst);
-            lines.push(Line::Word(cpu_v3::move_register(dst, REG_SP)));
+            lines.word(cpu_v3::move_register(dst, REG_SP));
             emit_immediate(
                 lines,
                 ImmediateOp::Add,
@@ -466,53 +536,53 @@ fn lower_instruction(
             if dst == rhs && dst != lhs {
                 match op {
                     FBinOp::Add | FBinOp::Mul => {
-                        lines.push(Line::Word(cpu_v3::fpu(fpu_op, dst, lhs)));
+                        lines.word(cpu_v3::fpu(fpu_op, dst, lhs));
                     }
                     FBinOp::Sub => {
-                        lines.push(Line::Word(cpu_v3::fpu(FpuOp::Move, FPU_SCRATCH, rhs)));
-                        lines.push(Line::Word(cpu_v3::fpu(FpuOp::Move, dst, lhs)));
-                        lines.push(Line::Word(cpu_v3::fpu(fpu_op, dst, FPU_SCRATCH)));
+                        lines.word(cpu_v3::fpu(FpuOp::Move, FPU_SCRATCH, rhs));
+                        lines.word(cpu_v3::fpu(FpuOp::Move, dst, lhs));
+                        lines.word(cpu_v3::fpu(fpu_op, dst, FPU_SCRATCH));
                     }
                 }
             } else {
                 if dst != lhs {
-                    lines.push(Line::Word(cpu_v3::fpu(FpuOp::Move, dst, lhs)));
+                    lines.word(cpu_v3::fpu(FpuOp::Move, dst, lhs));
                 }
-                lines.push(Line::Word(cpu_v3::fpu(fpu_op, dst, rhs)));
+                lines.word(cpu_v3::fpu(fpu_op, dst, rhs));
             }
         }
         Instr::FMov { dst, src } => {
             let dst = register(*dst);
             let src = register(*src);
             if dst != src {
-                lines.push(Line::Word(cpu_v3::fpu(FpuOp::Move, dst, src)));
+                lines.word(cpu_v3::fpu(FpuOp::Move, dst, src));
             }
         }
-        Instr::FLoad { dst, src_gpr } => lines.push(Line::Word(cpu_v3::fpu(
+        Instr::FLoad { dst, src_gpr } => lines.word(cpu_v3::fpu(
             FpuOp::Load,
             register(*dst),
             register(*src_gpr),
-        ))),
-        Instr::FStore { dst_gpr, src } => lines.push(Line::Word(cpu_v3::fpu(
+        )),
+        Instr::FStore { dst_gpr, src } => lines.word(cpu_v3::fpu(
             FpuOp::Store,
             register(*dst_gpr),
             register(*src),
-        ))),
-        Instr::FImport4 { dst, base_gpr } => lines.push(Line::Word(cpu_v3::fpu(
+        )),
+        Instr::FImport4 { dst, base_gpr } => lines.word(cpu_v3::fpu(
             FpuOp::Import4,
             register(*dst),
             register(*base_gpr),
-        ))),
-        Instr::FExport4 { src, base_gpr } => lines.push(Line::Word(cpu_v3::fpu(
+        )),
+        Instr::FExport4 { src, base_gpr } => lines.word(cpu_v3::fpu(
             FpuOp::Export4,
             register(*src),
             register(*base_gpr),
-        ))),
+        )),
         Instr::FUnary { dst, op, src } => {
             let dst = register(*dst);
             let src = register(*src);
             if dst != src {
-                lines.push(Line::Word(cpu_v3::fpu(FpuOp::Move, dst, src)));
+                lines.word(cpu_v3::fpu(FpuOp::Move, dst, src));
             }
             let unary_op = match op {
                 FUnOp::Rcp => FpuUnaryOp::Reciprocal,
@@ -526,18 +596,18 @@ fn lower_instruction(
                 FUnOp::Sat01 => FpuUnaryOp::Saturate01,
                 FUnOp::Sign => FpuUnaryOp::Sign,
             };
-            lines.push(Line::Word(cpu_v3::fpu_unary(dst, unary_op)));
+            lines.word(cpu_v3::fpu_unary(dst, unary_op));
         }
-        Instr::FDot4Acc { lhs, rhs } => lines.push(Line::Word(cpu_v3::fpu(
+        Instr::FDot4Acc { lhs, rhs } => lines.word(cpu_v3::fpu(
             FpuOp::Dot4Acc,
             register(*lhs),
             register(*rhs),
-        ))),
-        Instr::FAccStore { dst, mask } => lines.push(Line::Word(cpu_v3::fpu(
+        )),
+        Instr::FAccStore { dst, mask } => lines.word(cpu_v3::fpu(
             FpuOp::AccStore,
             register(*dst),
             *mask,
-        ))),
+        )),
         Instr::FAccLoad { src, lane } => {
             let op = match lane {
                 0 => FpuUnaryOp::AccLoadX,
@@ -545,17 +615,17 @@ fn lower_instruction(
                 2 => FpuUnaryOp::AccLoadZ,
                 _ => FpuUnaryOp::AccLoadW,
             };
-            lines.push(Line::Word(cpu_v3::fpu_unary(register(*src), op)));
+            lines.word(cpu_v3::fpu_unary(register(*src), op));
         }
-        Instr::FZero { dst } => lines.push(Line::Word(cpu_v3::fpu_unary(
+        Instr::FZero { dst } => lines.word(cpu_v3::fpu_unary(
             register(*dst),
             FpuUnaryOp::Zero,
-        ))),
+        )),
         Instr::AddrOfFpuSpill { dst, slot } => {
             // dst = align4(sp + fpu_area_offset) + 4 * slot; the alignment is
             // computed at run time because nothing guarantees sp mod 4 == 0
             let dst = register(*dst);
-            lines.push(Line::Word(cpu_v3::move_register(dst, REG_SP)));
+            lines.word(cpu_v3::move_register(dst, REG_SP));
             emit_immediate(
                 lines,
                 ImmediateOp::Add,
@@ -564,7 +634,7 @@ fn lower_instruction(
                 true,
             );
             emit_load_immediate(lines, REG_TMP, 0xfffc);
-            lines.push(Line::Word(cpu_v3::alu(AluOp::And, dst, dst, REG_TMP)));
+            lines.word(cpu_v3::alu(AluOp::And, dst, dst, REG_TMP));
             if *slot != 0 {
                 emit_immediate(lines, ImmediateOp::Add, dst, 4 * u16::from(*slot), true);
             }
@@ -572,39 +642,32 @@ fn lower_instruction(
     }
 }
 
-fn lower_unary(dst: u8, operation: UnOp, src: u8, lines: &mut Vec<Line>) {
+fn lower_unary(dst: u8, operation: UnOp, src: u8, lines: &mut Lines) {
     match operation {
-        UnOp::Inv => lines.push(Line::Word(cpu_v3::not(dst, src))),
-        UnOp::Neg => lines.push(Line::Word(cpu_v3::negate(dst, src))),
-        UnOp::Cnt1 => lines.push(Line::Word(cpu_v3::population_count(dst, src))),
+        UnOp::Inv => lines.word(cpu_v3::not(dst, src)),
+        UnOp::Neg => lines.word(cpu_v3::negate(dst, src)),
+        UnOp::Cnt1 => lines.word(cpu_v3::population_count(dst, src)),
         UnOp::Log2 => {
             // log2(0) is defined by rcc as zero.
-            lines.push(Line::Word(cpu_v3::leading_zeros(dst, src)));
+            lines.word(cpu_v3::leading_zeros(dst, src));
             emit_load_immediate(lines, REG_TMP, 15);
-            lines.push(Line::Word(cpu_v3::alu(AluOp::Sub, dst, REG_TMP, dst)));
+            lines.word(cpu_v3::alu(AluOp::Sub, dst, REG_TMP, dst));
             let done = usize::MAX - lines.len();
             emit_test_nonzero(lines, src);
-            lines.push(Line::Branch {
-                condition: TestCondition::NotEqual,
-                target: done,
-            });
+            lines.branch(TestCondition::NotEqual, done);
             emit_load_immediate(lines, dst, 0);
-            lines.push(Line::Label(done));
+            lines.label(done);
         }
         UnOp::Not0 => {
             if dst != src {
-                lines.push(Line::Word(cpu_v3::move_register(dst, src)));
+                lines.word(cpu_v3::move_register(dst, src));
             }
-            lines.push(Line::Word(cpu_v3::immediate_signed(
+            lines.word(cpu_v3::immediate_signed(
                 ImmediateOp::CompareEqual,
                 dst,
                 0,
-            )));
-            lines.push(Line::Word(cpu_v3::immediate_unsigned(
-                ImmediateOp::Xor,
-                dst,
-                1,
-            )));
+            ));
+            lines.word(cpu_v3::immediate_unsigned(ImmediateOp::Xor, dst, 1));
         }
     }
 }
@@ -618,12 +681,12 @@ fn check_device(device: u8) {
 
 /// Emits the generic "test a value against zero" comparison used when a
 /// branch tests a plain value rather than a comparison outcome.
-fn emit_test_nonzero(lines: &mut Vec<Line>, test: u8) {
-    lines.push(Line::Word(cpu_v3::immediate_signed(
+fn emit_test_nonzero(lines: &mut Lines, test: u8) {
+    lines.word(cpu_v3::immediate_signed(
         ImmediateOp::CompareSigned,
         test,
         0,
-    )));
+    ));
 }
 
 /// Lowers a branch comparison directly to a CMP-class instruction feeding a
@@ -633,7 +696,7 @@ fn lower_comparison(
     function: &IrFunc,
     comparison: &Cmp,
     register: &dyn Fn(VReg) -> u8,
-    lines: &mut Vec<Line>,
+    lines: &mut Lines,
 ) -> TestCondition {
     let lhs = register(comparison.lhs);
     let condition = match comparison.cond {
@@ -661,17 +724,17 @@ fn lower_comparison(
         let CmpRhs::Reg(rhs) = comparison.rhs else {
             unreachable!("FPU comparisons always have a register operand");
         };
-        lines.push(Line::Word(cpu_v3::fpu(FpuOp::Compare, lhs, register(rhs))));
+        lines.word(cpu_v3::fpu(FpuOp::Compare, lhs, register(rhs)));
         return condition;
     }
     match comparison.rhs {
         CmpRhs::Reg(rhs) => {
             let rhs = register(rhs);
-            lines.push(Line::Word(if comparison.signed {
+            lines.word(if comparison.signed {
                 cpu_v3::compare_signed(lhs, rhs)
             } else {
                 cpu_v3::compare_unsigned(lhs, rhs)
-            }));
+            });
         }
         CmpRhs::Imm(rhs) => emit_immediate(
             lines,
@@ -693,13 +756,13 @@ fn emit_self_compare(
     function: &IrFunc,
     comparison: &Cmp,
     register: &dyn Fn(VReg) -> u8,
-    lines: &mut Vec<Line>,
+    lines: &mut Lines,
 ) {
     let lhs = register(comparison.lhs);
     if function.class_of(comparison.lhs) == RegClass::Fpu {
-        lines.push(Line::Word(cpu_v3::fpu(FpuOp::Compare, lhs, lhs)));
+        lines.word(cpu_v3::fpu(FpuOp::Compare, lhs, lhs));
     } else {
-        lines.push(Line::Word(cpu_v3::compare_signed(lhs, lhs)));
+        lines.word(cpu_v3::compare_signed(lhs, lhs));
     }
 }
 
@@ -708,7 +771,7 @@ fn emit_edge_moves(
     predecessor: BlockId,
     target: BlockId,
     register: &dyn Fn(VReg) -> u8,
-    lines: &mut Vec<Line>,
+    lines: &mut Lines,
 ) {
     let block = &function.blocks[target];
     if block.phis.is_empty() || block.preds.len() == 1 {
@@ -737,7 +800,7 @@ fn emit_edge_moves(
 /// parallel phi moves, split by register class: GPR moves use MOV with
 /// REG_TMP as the cycle-breaking scratch, FPU moves use FMOV with the
 /// reserved FPU_SCRATCH register
-fn emit_parallel_moves(lines: &mut Vec<Line>, moves: &[(u8, u8, RegClass)]) {
+fn emit_parallel_moves(lines: &mut Lines, moves: &[(u8, u8, RegClass)]) {
     for class in [RegClass::Gpr, RegClass::Fpu] {
         let class_moves = moves
             .iter()
@@ -748,10 +811,10 @@ fn emit_parallel_moves(lines: &mut Vec<Line>, moves: &[(u8, u8, RegClass)]) {
     }
 }
 
-fn emit_parallel_moves_in_file(lines: &mut Vec<Line>, moves: &[(u8, u8)], class: RegClass) {
-    let emit_move = |lines: &mut Vec<Line>, to: u8, from: u8| match class {
-        RegClass::Gpr => lines.push(Line::Word(cpu_v3::move_register(to, from))),
-        RegClass::Fpu => lines.push(Line::Word(cpu_v3::fpu(FpuOp::Move, to, from))),
+fn emit_parallel_moves_in_file(lines: &mut Lines, moves: &[(u8, u8)], class: RegClass) {
+    let emit_move = |lines: &mut Lines, to: u8, from: u8| match class {
+        RegClass::Gpr => lines.word(cpu_v3::move_register(to, from)),
+        RegClass::Fpu => lines.word(cpu_v3::fpu(FpuOp::Move, to, from)),
     };
     let scratch = match class {
         RegClass::Gpr => REG_TMP,
@@ -784,66 +847,78 @@ fn emit_parallel_moves_in_file(lines: &mut Vec<Line>, moves: &[(u8, u8)], class:
     }
 }
 
-fn emit_load_immediate(lines: &mut Vec<Line>, dst: u8, value: u16) {
+fn emit_load_immediate(lines: &mut Lines, dst: u8, value: u16) {
     if value <= 15 {
-        lines.push(Line::Word(cpu_v3::immediate_unsigned(
+        lines.word(cpu_v3::immediate_unsigned(
             ImmediateOp::LoadUnsigned,
             dst,
             value as u8,
-        )));
+        ));
     } else if value >= 0xfff8 {
-        lines.push(Line::Word(cpu_v3::immediate_signed(
+        lines.word(cpu_v3::immediate_signed(
             ImmediateOp::LoadSigned,
             dst,
             value as i16,
-        )));
+        ));
     } else {
-        lines.extend(cpu_v3::load_immediate16(dst, value).map(Line::Word));
+        for word in cpu_v3::load_immediate16(dst, value) {
+            lines.word(word);
+        }
     }
 }
 
 fn emit_immediate(
-    lines: &mut Vec<Line>,
+    lines: &mut Lines,
     operation: ImmediateOp,
     dst: u8,
     value: u16,
     signed_short: bool,
 ) {
     if signed_short && (-8..=7).contains(&(value as i16)) {
-        lines.push(Line::Word(cpu_v3::immediate_signed(
+        lines.word(cpu_v3::immediate_signed(
             operation,
             dst,
             value as i16,
-        )));
+        ));
     } else if !signed_short && value <= 15 {
-        lines.push(Line::Word(cpu_v3::immediate_unsigned(
+        lines.word(cpu_v3::immediate_unsigned(
             operation,
             dst,
             value as u8,
-        )));
+        ));
     } else {
         let consumer = 0xa000 | ((operation as u16) << 8) | (u16::from(dst) << 4);
-        lines.extend(cpu_v3::prefixed(consumer, value).map(Line::Word));
+        for word in cpu_v3::prefixed(consumer, value) {
+            lines.word(word);
+        }
     }
 }
 
-fn emit_load(lines: &mut Vec<Line>, dst: u8, base: u8, offset: i16) {
+fn emit_load(lines: &mut Lines, dst: u8, base: u8, offset: i16) {
     if (-8..=7).contains(&offset) {
-        lines.push(Line::Word(cpu_v3::load(dst, base, offset)));
+        lines.word(cpu_v3::load(dst, base, offset));
     } else {
-        lines.extend(cpu_v3::prefixed(cpu_v3::load(dst, base, 0), offset as u16).map(Line::Word));
+        for word in cpu_v3::prefixed(cpu_v3::load(dst, base, 0), offset as u16) {
+            lines.word(word);
+        }
     }
 }
 
-fn emit_store(lines: &mut Vec<Line>, src: u8, base: u8, offset: i16) {
+fn emit_store(lines: &mut Lines, src: u8, base: u8, offset: i16) {
     if (-8..=7).contains(&offset) {
-        lines.push(Line::Word(cpu_v3::store(src, base, offset)));
+        lines.word(cpu_v3::store(src, base, offset));
     } else {
-        lines.extend(cpu_v3::prefixed(cpu_v3::store(src, base, 0), offset as u16).map(Line::Word));
+        for word in cpu_v3::prefixed(cpu_v3::store(src, base, 0), offset as u16) {
+            lines.word(word);
+        }
     }
 }
 
-fn link(functions: Vec<LoweredFunction>, options: &CompilerOptions) -> CpuV3Program {
+fn link(
+    functions: Vec<LoweredFunction>,
+    options: &CompilerOptions,
+    frontend_debug: rcc::frontend::FrontendDebug,
+) -> CpuV3Program {
     let mut function_addresses = HashMap::new();
     let code_base = usize::from(options.code_base);
     let mut cursor = code_base;
@@ -906,9 +981,17 @@ fn link(functions: Vec<LoweredFunction>, options: &CompilerOptions) -> CpuV3Prog
 
     let mut words = Vec::with_capacity(cursor - code_base);
     let mut listing = String::new();
+    let mut debug_lines = Vec::new();
+    let mut debug_functions = Vec::new();
     for function in &functions {
         let local_start = words.len();
         let start = code_base + local_start;
+        let file = frontend_debug
+            .funcs
+            .iter()
+            .find(|d| d.name == function.name)
+            .map(|d| d.file)
+            .unwrap_or(0);
         let mut labels = HashMap::new();
         let mut address = start;
         for line in &function.lines {
@@ -923,39 +1006,120 @@ fn link(functions: Vec<LoweredFunction>, options: &CompilerOptions) -> CpuV3Prog
         }
         listing.push_str(&format!("{} @ {start:#06x}\n", function.name));
         for line in &function.lines {
-            match line {
-                Line::Word(word) => words.push(*word),
+            if let Line::Label(_) = line {
+                continue;
+            }
+            let emitted = words.len();
+            let (count, src_line) = match line {
+                Line::Word { word, line } => {
+                    words.push(*word);
+                    (1, *line)
+                }
                 Line::Label(_) => continue,
-                Line::Branch { condition, target } => {
+                Line::Branch {
+                    condition,
+                    target,
+                    line,
+                } => {
                     let offset = relative_offset(code_base + words.len() + 2, labels[target]);
                     words.extend(wide_branch(*condition, offset));
+                    (2, *line)
                 }
-                Line::Jump(target) => {
+                Line::Jump { target, line } => {
                     let offset = relative_offset(code_base + words.len() + 2, labels[target]);
                     words.extend(wide_jump(offset));
+                    (2, *line)
                 }
-                Line::Call(function) => {
+                Line::Call { function: target, line } => {
                     let offset =
-                        relative_offset(code_base + words.len() + 2, function_addresses[function]);
+                        relative_offset(code_base + words.len() + 2, function_addresses[target]);
                     words.extend(wide_call(offset));
+                    (2, *line)
                 }
-                Line::LoadFunctionAddress { function, dst } => {
+                Line::LoadFunctionAddress {
+                    function: target,
+                    dst,
+                    line,
+                } => {
                     words.extend(cpu_v3::load_immediate16(
                         *dst,
-                        function_addresses[function] as u16,
+                        function_addresses[target] as u16,
                     ));
+                    (2, *line)
+                }
+            };
+            let emitted_count = words.len() - emitted;
+            debug_assert_eq!(emitted_count, count);
+            if let Some(source_line) = src_line {
+                for word in emitted..words.len() {
+                    debug_lines.push((code_base + word, file, source_line));
                 }
             }
         }
+        let end = code_base + words.len();
         words.push(cpu_v3::halt());
-        for (offset, word) in words[local_start..].iter().enumerate() {
-            listing.push_str(&format!("  {:04x}: {:04x}\n", start + offset, word));
+        debug_functions.push(rcc::DebugFunc {
+            name: function.name.to_string(),
+            file,
+            addr: (start, end),
+            frame_size: function.frame_size,
+            locals: frontend_debug
+                .funcs
+                .iter()
+                .find(|d| d.name == function.name)
+                .map(|d| {
+                    d.locals
+                        .iter()
+                        .map(|v| {
+                            let mut v = v.clone();
+                            match v.loc {
+                                rcc::VarLoc::Frame(slot) => {
+                                    v.loc = rcc::VarLoc::Frame(
+                                        function.callee_saved as u8 + slot,
+                                    );
+                                }
+                                rcc::VarLoc::ParamIndex(index) => {
+                                    v.loc = rcc::VarLoc::Param(
+                                        CPU_V3_REGISTER_CONVENTION.argument_registers
+                                            [index as usize],
+                                    );
+                                }
+                                _ => {}
+                            }
+                            v
+                        })
+                        .collect()
+                })
+                .unwrap_or_default(),
+        });
+        // mnemonic listing: wide (prefixed) operations occupy one line
+        for line in cpu_v3::disassemble_words(&words[local_start..], start as u16) {
+            let span = if line.wide { 2 } else { 1 };
+            let raw: Vec<String> = (0..span)
+                .map(|i| format!("{:04x}", words[usize::from(line.address) - (start - local_start) + i]))
+                .collect();
+            listing.push_str(&format!(
+                "  {:04x}: {:<11} {}\n",
+                line.address,
+                raw.join(" "),
+                line.text
+            ));
         }
     }
+    debug_lines.sort();
     CpuV3Program {
         code_base: options.code_base,
         words,
         listing,
+        debug: rcc::DebugInfo {
+            files: frontend_debug.files,
+            function_table: vec![],
+            init_sections: vec![],
+            functions: debug_functions,
+            globals: frontend_debug.globals,
+            consts: frontend_debug.consts,
+            lines: debug_lines,
+        },
     }
 }
 
@@ -1075,6 +1239,55 @@ mod tests {
             }
         "#;
         assert_eq!(run(source), 6160);
+    }
+
+    #[test]
+    fn debug_info_covers_modules_lines_and_locals() {
+        let source = r#"
+            mod helper;
+            fn main() {
+                let x: u16 = double(21);
+                halt(x);
+            }
+        "#;
+        let module = "fn double(v: u16) -> u16 { v + v }";
+        let program = rcc::frontend::compile_program_named(
+            "main.rs",
+            source,
+            &CompilerOptions::default(),
+            &mut |name| {
+                assert_eq!(name, "helper");
+                Ok(module.to_string())
+            },
+        )
+        .unwrap();
+        let program = super::compile(program, &CompilerOptions::default(), "main");
+        let debug = &program.debug;
+        // both files recorded
+        assert!(debug.files.len() >= 2, "files: {:?}", debug.files);
+        // the line map is non-empty, sorted, and in range
+        assert!(!debug.lines.is_empty());
+        assert!(debug.lines.windows(2).all(|w| w[0].0 <= w[1].0));
+        let main_fn = debug
+            .functions
+            .iter()
+            .find(|f| f.name == "main")
+            .expect("main in debug info");
+        assert!(main_fn.addr.1 > main_fn.addr.0);
+        // `x` is a local in main with a concrete lowered location
+        let x = main_fn
+            .locals
+            .iter()
+            .find(|v| v.name == "x")
+            .expect("local x in debug info");
+        match x.loc {
+            rcc::VarLoc::Frame(_) | rcc::VarLoc::Param(_) | rcc::VarLoc::Ssa => {}
+            ref other => panic!("unexpected location for x: {other:?}"),
+        }
+        // render/parse round-trip
+        let parsed = rcc::parse_debug(&debug.render()).expect("debug info round-trips");
+        assert_eq!(parsed.files.len(), debug.files.len());
+        assert_eq!(parsed.lines.len(), debug.lines.len());
     }
 
     #[test]
