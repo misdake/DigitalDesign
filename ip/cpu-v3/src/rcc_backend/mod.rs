@@ -317,6 +317,7 @@ fn lower_instruction(
             let operation = match op {
                 BinOp::Add => AluOp::Add,
                 BinOp::Sub => AluOp::Sub,
+                BinOp::Mul => AluOp::Mul,
                 BinOp::And => AluOp::And,
                 BinOp::Or => AluOp::Or,
                 BinOp::Xor => AluOp::Xor,
@@ -1074,6 +1075,32 @@ mod tests {
             }
         "#;
         assert_eq!(run(source), 6160);
+    }
+
+    #[test]
+    fn integer_multiply_uses_the_hardware_mul() {
+        let source = r#"
+            fn main() {
+                let a: u16 = 37;
+                let b: u16 = 11;
+                let mut acc: u16 = 0;
+                let mut i: u16 = 0;
+                while i < 8 {
+                    acc = acc + a * b + i * 3;
+                    i = i + 1;
+                }
+                halt(acc);
+            }
+        "#;
+        let program = compile(source, CompilerOptions::default());
+        assert!(
+            !program.listing.contains("mul_16x"),
+            "CpuV3 must not call the software multiply library:
+{}",
+            program.listing
+        );
+        // sum of (407 + 3i) for i in 0..8 = 3256 + 84
+        assert_eq!(run(source), 3340);
     }
 
     #[test]

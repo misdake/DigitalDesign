@@ -824,6 +824,10 @@ impl CpuV3CoreState {
                     self.phase = Phase::FpuUnaryDispatch;
                 }
                 2 => {
+                    // SINCOS also sources the parked Fa.x read; the RTL gets it
+                    // from the asynchronous register-file read while the
+                    // emulator must latch it explicitly.
+                    self.fpu_operand_a = self.fpu_registers[a][0];
                     self.fpu_rom_step = 0;
                     self.fpu_step = 0;
                     self.phase = Phase::FpuMultiplyWait;
@@ -1953,6 +1957,34 @@ mod tests {
         for (lane, value) in vector.into_iter().enumerate() {
             memory.insert(0x0100 + lane as u32, value);
         }
+        let core = run_core(memory, 400);
+        assert_eq!(core.halt_signal, signal);
+        assert_eq!(core.retired_words as u64, oracle.retired_words());
+    }
+
+    #[test]
+    fn sincos_latches_its_own_operand() {
+        // Regression: the emulator's SINCOS dispatch did not latch Fa.x and
+        // used the previous operation's operand. Interleave an FADD (which
+        // latches its own operand) before a SINCOS of a different register.
+        let mut program = vec![];
+        program.extend(crate::load_immediate16(0, 256)); // 1.0
+        program.extend(crate::load_immediate16(1, 128)); // 0.5
+        program.extend([
+            crate::fpu(crate::FpuOp::Load, 0, 0),
+            crate::fpu(crate::FpuOp::Load, 1, 1),
+            crate::fpu(crate::FpuOp::Add, 0, 1), // operand_a = 256 (f0.x)
+            crate::fpu_unary(1, crate::FpuUnaryOp::SinCos), // sin/cos(0.5)
+            crate::fpu(crate::FpuOp::Store, 2, 1), // r2 = sin(0.5)
+            crate::halt(),
+        ]);
+        let mut oracle = Machine::default();
+        oracle.load_program(0, &program).unwrap();
+        let RunOutcome::Halted { signal, .. } = oracle.run(200).unwrap() else {
+            panic!("oracle did not halt")
+        };
+        let mut memory = HashMap::new();
+        load(&mut memory, 0, &program);
         let core = run_core(memory, 400);
         assert_eq!(core.halt_signal, signal);
         assert_eq!(core.retired_words as u64, oracle.retired_words());

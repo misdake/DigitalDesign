@@ -1,9 +1,12 @@
 param(
     [Parameter(Mandatory = $true)]
-    [int]$Stage,
+    [string]$Stage,
 
     [Parameter(Mandatory = $true)]
     [string]$Commit,
+
+    [Parameter()]
+    [string]$ConfigLabel = "current",
 
     [Parameter(Mandatory = $true)]
     [string]$InputRoot,
@@ -59,6 +62,7 @@ $rows = foreach ($summary in $summaries) {
     [ordered]@{
         stage = $Stage
         commit = $Commit
+        config = $ConfigLabel
         name = if (-not [string]::IsNullOrEmpty($StripNamePrefix) -and
             $summary.Directory.Name.StartsWith($StripNamePrefix)) {
             $summary.Directory.Name.Substring($StripNamePrefix.Length)
@@ -100,6 +104,8 @@ $rows = foreach ($summary in $summaries) {
         redirect_wait_cycles = $values.redirect_wait_cycles
         refreshes = $values.refreshes
         prefetch_issued = $values.prefetch_issued
+        fpu_percent = if ($retiredInstructions -gt 0) { ([double]$values.opcode_d_retired / $retiredInstructions * 100).ToString("F1", [Globalization.CultureInfo]::InvariantCulture) } else { "" }
+        load_store_percent = if ($retiredInstructions -gt 0) { ((([double]$values.opcode_8_retired + [double]$values.opcode_9_retired) / $retiredInstructions) * 100).ToString("F1", [Globalization.CultureInfo]::InvariantCulture) } else { "" }
         prefetch_useful = $values.prefetch_useful
         prefetch_useless = $values.prefetch_useless
         prefetch_dropped = $values.prefetch_dropped

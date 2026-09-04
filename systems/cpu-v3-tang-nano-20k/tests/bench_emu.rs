@@ -7,10 +7,6 @@
 mod system_emu;
 
 use system_emu::*;
-
-use cpu_v3::{
-    alu, fpu, fpu_unary, halt, jump_relative, load_immediate16, nop, AluOp, FpuOp, FpuUnaryOp,
-};
 use std::path::Path;
 
 #[cfg(test)]
@@ -119,216 +115,6 @@ fn main() {
     mod benchmark_suite {
         use super::*;
 
-        const QUICKSORT_SOURCE: &str = include_str!("../benchmarks/algorithms/quicksort.rs");
-
-        const INT_SHORT_ALU_SOURCE: &str = r#"
-fn main() {
-    let mut x: u16 = 0x1357;
-    let mut y: u16 = 0x2468;
-    let mut i: u16 = 0;
-    while i < 24 {
-        x = (x + y) ^ (x << 1);
-        y = (y + 3) ^ (x >> 2);
-        i = i + 1;
-    }
-    halt(1);
-}
-"#;
-
-        const INT_SHORT_BRANCH_SOURCE: &str = r#"
-fn main() {
-    let mut x: u16 = 0;
-    let mut i: u16 = 0;
-    while i < 48 {
-        if (i & 3) == 0 { x = x + 7; }
-        else if (i & 1) == 0 { x = x ^ i; }
-        else { x = x - 1; }
-        i = i + 1;
-    }
-    halt(1);
-}
-"#;
-
-        const INT_SHORT_MEMORY_SOURCE: &str = r#"
-use crate::dsl_rt::*;
-static DATA: [u16; 48] = [0; 48];
-fn main() {
-    let mut d = DATA.as_array();
-    let mut i: u16 = 0;
-    let mut sum: u16 = 0;
-    while i < 48 { d[i] = ((i << 3) + i) ^ 0x55aa; i = i + 1; }
-    i = 0;
-    while i < 48 { sum = sum + d[i]; i = i + 1; }
-    if sum != 0 { halt(1); } else { halt(0); }
-}
-"#;
-
-        const INT_SHORT_MIXED_SOURCE: &str = r#"
-fn mix(x0: u16, n: u16) -> u16 {
-    let mut x: u16 = x0;
-    let mut i: u16 = 0;
-    while i < n {
-        x = ((x << 3) ^ (x >> 2)) + i + 0x1234;
-        if (x & 7) == 3 { x = x ^ 0xa5a5; }
-        i = i + 1;
-    }
-    x
-}
-fn main() { let x = mix(7, 24); if x != 0 { halt(1); } else { halt(0); } }
-"#;
-
-        const INT_MEDIUM_ALU_SOURCE: &str = r#"
-fn main() {
-    let mut x: u16 = 1;
-    let mut y: u16 = 0x9e37;
-    let mut i: u16 = 0;
-    while i < 1536 {
-        x = (x + y) ^ (x << 5) ^ (x >> 3);
-        y = y + x + i;
-        i = i + 1;
-    }
-    halt(1);
-}
-"#;
-
-        const INT_MEDIUM_MEMORY_SOURCE: &str = r#"
-use crate::dsl_rt::*;
-static DATA: [u16; 1024] = [0; 1024];
-fn main() {
-    let mut d = DATA.as_array();
-    let mut i: u16 = 0;
-    let mut sum: u16 = 0;
-    while i < 1024 { d[i] = (i << 3) ^ (i >> 2) ^ 0x6d2b; i = i + 1; }
-    i = 0;
-    while i < 1024 { sum = sum + d[i]; i = i + 1; }
-    if sum != 0 { halt(1); } else { halt(0); }
-}
-"#;
-
-        const STREAMING_MIX_SOURCE: &str = r#"
-use crate::dsl_rt::*;
-const N: u16 = 4096;
-static INPUT_A: [u16; 4096] = [0; 4096];
-static INPUT_B: [u16; 4096] = [0; 4096];
-static OUTPUT: [u16; 4096] = [0; 4096];
-fn main() {
-    let mut a = INPUT_A.as_array();
-    let mut b = INPUT_B.as_array();
-    let mut out = OUTPUT.as_array();
-    let mut i: u16 = 0;
-    while i < N { a[i] = i ^ 0x5a5a; b[i] = (i << 1) + 3; i = i + 1; }
-    i = 0;
-    while i < N {
-        out[i] = (a[i] + b[i]) ^ (a[i] >> 3) ^ (b[i] << 2);
-        i = i + 1;
-    }
-    i = 0;
-    while i < N {
-        if out[i] != ((a[i] + b[i]) ^ (a[i] >> 3) ^ (b[i] << 2)) { halt(0); }
-        i = i + 1;
-    }
-    halt(1);
-}
-"#;
-
-        const STREAMING_BALANCED_SOURCE: &str = r#"
-use crate::dsl_rt::*;
-const N: u16 = 4096;
-const B_OFFSET: u16 = 4112;
-const OUT_OFFSET: u16 = 8224;
-static DATA: [u16; 12320] = [0; 12320];
-fn main() {
-    let mut d = DATA.as_array();
-    let mut i: u16 = 0;
-    while i < N {
-        d[i] = i ^ 0x5a5a;
-        d[B_OFFSET + i] = (i << 1) + 3;
-        i = i + 1;
-    }
-    i = 0;
-    while i < N {
-        d[OUT_OFFSET + i] =
-            (d[i] + d[B_OFFSET + i]) ^ (d[i] >> 3) ^ (d[B_OFFSET + i] << 2);
-        i = i + 1;
-    }
-    i = 0;
-    while i < N {
-        let expected =
-            (d[i] + d[B_OFFSET + i]) ^ (d[i] >> 3) ^ (d[B_OFFSET + i] << 2);
-        if d[OUT_OFFSET + i] != expected { halt(0); }
-        i = i + 1;
-    }
-    halt(1);
-}
-"#;
-
-        fn generated_int_icache_jump() -> Vec<u16> {
-            let mut words = Vec::new();
-            words.extend(load_immediate16(1, 0x1357));
-            words.extend(load_immediate16(2, 0x2468));
-            for _ in 0..144 {
-                for lane in 0..10 {
-                    words.push(alu(AluOp::Add, 1, 1, 2));
-                    words.push(alu(AluOp::Xor, 2, 2, 1));
-                    words.push(alu(AluOp::ShiftLeft, 1, 1, 2 + (lane & 1)));
-                }
-                words.push(jump_relative(1));
-                words.push(nop());
-            }
-            words.extend(load_immediate16(0, 1));
-            words.push(halt());
-            words
-        }
-
-        fn generated_fpu_short(op: FpuOp, left: u16, right: u16) -> Vec<u16> {
-            let mut words = Vec::new();
-            words.extend(load_immediate16(1, left));
-            words.extend(load_immediate16(2, right));
-            words.push(fpu(FpuOp::Load, 0, 1));
-            words.push(fpu(FpuOp::Load, 1, 2));
-            words.push(fpu(op, 0, 1));
-            words.push(fpu(FpuOp::Store, 0, 0));
-            words.push(halt());
-            words
-        }
-
-        fn generated_fpu_unary() -> Vec<u16> {
-            let mut words = Vec::new();
-            words.extend(load_immediate16(1, 0xff00));
-            words.push(fpu(FpuOp::Load, 0, 1));
-            words.push(fpu_unary(0, FpuUnaryOp::Abs));
-            words.push(fpu(FpuOp::Store, 0, 0));
-            words.push(halt());
-            words
-        }
-
-        fn generated_fpu_long() -> Vec<u16> {
-            let mut words = Vec::new();
-            words.extend(load_immediate16(1, 256));
-            words.extend(load_immediate16(2, 1));
-            words.push(fpu(FpuOp::Load, 0, 1));
-            words.push(fpu(FpuOp::Load, 1, 2));
-            for index in 0..3072 {
-                words.push(fpu(
-                    if index & 1 == 0 {
-                        FpuOp::Add
-                    } else {
-                        FpuOp::Sub
-                    },
-                    0,
-                    1,
-                ));
-            }
-            words.push(fpu(FpuOp::Store, 0, 0));
-            words.push(halt());
-            words
-        }
-
-        fn run_case(name: &str, source: &str, maximum_cycles: usize, prefetch_enabled: bool) {
-            let words = compile(source);
-            run_words_case(name, &words, maximum_cycles, prefetch_enabled, 1);
-        }
-
         fn run_words_case(
             name: &str,
             words: &[u16],
@@ -420,11 +206,35 @@ fn main() {
         }
 
         #[test]
+        #[ignore = "calibration helper: prints each suite program's halt signal (see benchmarks/README.md)"]
+        fn calibrate_suite_halts() {
+            let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("benchmarks/suite");
+            let mut paths = read_dir(&root)
+                .unwrap()
+                .map(|entry| entry.unwrap().path())
+                .filter(|path| path.extension().and_then(|v| v.to_str()) == Some("rs"))
+                .collect::<Vec<_>>();
+            paths.sort();
+            for path in paths {
+                let source = read_to_string(&path).unwrap();
+                let words = compile(&source);
+                let mut machine = cpu_v3::Machine::default();
+                machine.load_program(0, &words).unwrap();
+                let outcome = machine.run(200_000_000).unwrap();
+                let name = path.file_stem().unwrap().to_str().unwrap();
+                println!("CALIBRATE {name} -> {outcome:?}");
+            }
+        }
+
+        #[test]
         #[ignore = "explicit release-mode folder-driven benchmark suite"]
         fn run_benchmark_directory() {
+            // The frozen suite is the default; CPU_V3_BENCH_DIR overrides it.
             let input_root = env::var_os("CPU_V3_BENCH_DIR")
                 .map(PathBuf::from)
-                .expect("set CPU_V3_BENCH_DIR to a benchmark program directory");
+                .unwrap_or_else(|| {
+                    Path::new(env!("CARGO_MANIFEST_DIR")).join("benchmarks/suite")
+                });
             let mut paths = read_dir(&input_root)
                 .unwrap_or_else(|error| panic!("cannot read {}: {error}", input_root.display()))
                 .map(|entry| entry.expect("cannot read benchmark directory entry").path())
@@ -451,6 +261,8 @@ fn main() {
                     .unwrap_or_else(|error| {
                         panic!("invalid bench-max-cycles in {}: {error}", path.display())
                     });
+                let tier = metadata_value(&source, "bench-tier")
+                    .unwrap_or_else(|| panic!("{} lacks bench-tier metadata", path.display()));
                 let expected_halt = metadata_value(&source, "bench-expected-halt")
                     .unwrap_or_else(|| "1".to_string())
                     .parse::<u16>()
@@ -461,105 +273,14 @@ fn main() {
                     .file_stem()
                     .and_then(|value| value.to_str())
                     .expect("benchmark filename must be UTF-8");
+                let name = format!("{tier}/{name}");
                 let words = match path.extension().and_then(|value| value.to_str()) {
                     Some("rs") => compile(&source),
                     Some("hex") => parse_hex(&source, &path),
                     _ => unreachable!(),
                 };
-                run_words_case(name, &words, maximum_cycles, true, expected_halt);
+                run_words_case(&name, &words, maximum_cycles, true, expected_halt);
             }
-        }
-
-        fn run_suite(prefetch_enabled: bool) {
-            run_case(
-                "int-short-alu",
-                INT_SHORT_ALU_SOURCE,
-                10_000,
-                prefetch_enabled,
-            );
-            run_case(
-                "int-short-branch",
-                INT_SHORT_BRANCH_SOURCE,
-                10_000,
-                prefetch_enabled,
-            );
-            run_case(
-                "int-short-memory",
-                INT_SHORT_MEMORY_SOURCE,
-                10_000,
-                prefetch_enabled,
-            );
-            run_case(
-                "int-short-mixed",
-                INT_SHORT_MIXED_SOURCE,
-                10_000,
-                prefetch_enabled,
-            );
-            run_case(
-                "int-medium-alu",
-                INT_MEDIUM_ALU_SOURCE,
-                400_000,
-                prefetch_enabled,
-            );
-            run_case(
-                "int-medium-memory",
-                INT_MEDIUM_MEMORY_SOURCE,
-                600_000,
-                prefetch_enabled,
-            );
-            run_case(
-                "quicksort-4096",
-                QUICKSORT_SOURCE,
-                30_000_000,
-                prefetch_enabled,
-            );
-            run_words_case(
-                "int-icache-jump",
-                &generated_int_icache_jump(),
-                1_000_000,
-                prefetch_enabled,
-                1,
-            );
-            run_words_case(
-                "fpu-short-add",
-                &generated_fpu_short(FpuOp::Add, 256, 512),
-                10_000,
-                prefetch_enabled,
-                768,
-            );
-            run_words_case(
-                "fpu-short-mul",
-                &generated_fpu_short(FpuOp::Mul, 384, 512),
-                10_000,
-                prefetch_enabled,
-                768,
-            );
-            run_words_case(
-                "fpu-short-unary",
-                &generated_fpu_unary(),
-                10_000,
-                prefetch_enabled,
-                256,
-            );
-            run_words_case(
-                "fpu-long-mixed",
-                &generated_fpu_long(),
-                1_000_000,
-                prefetch_enabled,
-                256,
-            );
-            run_case(
-                "streaming-mix",
-                STREAMING_MIX_SOURCE,
-                8_000_000,
-                prefetch_enabled,
-            );
-            run_case(
-                "streaming-balanced",
-                STREAMING_BALANCED_SOURCE,
-                8_000_000,
-                prefetch_enabled,
-            );
         }
     }
 }

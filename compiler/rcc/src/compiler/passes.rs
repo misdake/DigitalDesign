@@ -157,6 +157,7 @@ fn fold_bin(op: BinOp, a: u16, b: u16) -> u16 {
     match op {
         BinOp::Add => a.wrapping_add(b),
         BinOp::Sub => a.wrapping_sub(b),
+        BinOp::Mul => a.wrapping_mul(b),
         BinOp::And => a & b,
         BinOp::Or => a | b,
         BinOp::Xor => a ^ b,

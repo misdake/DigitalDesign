@@ -1,3 +1,6 @@
+// bench-max-cycles: 8000000
+// bench-expected-halt: 1
+// bench-tier: frame
 use crate::dsl_rt::*;
 
 const CELLS: u16 = 1200;

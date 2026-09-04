@@ -1930,10 +1930,15 @@ fn expr(l: &mut FnLower, e: &Expr) -> Result<Val, syn::Error> {
                         let splat = l.b.facc_store(0b1111);
                         return Ok(Val::V(l.b.fbin(crate::FBinOp::Mul, vector, splat), ty));
                     }
-                    Err(err(
-                        &b.op,
-                        "`*` is not supported yet on integers (hardware has no mul; use the library)",
-                    ))
+                    // integers: hardware MUL on CpuV3, library call on CpuV2
+                    let ty = unify_int(lt.clone(), rt.clone()).ok_or_else(|| {
+                        err(e, format!(
+                            "type mismatch: {} vs {} (cast with `as`)",
+                            lt.display(),
+                            rt.display()
+                        ))
+                    })?;
+                    Ok(Val::V(l.b.bin(BinOp::Mul, lhs, rhs), ty))
                 }
                 Div(_) | Rem(_) => Err(err(
                     &b.op,

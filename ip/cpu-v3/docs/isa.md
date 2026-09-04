@@ -1,13 +1,14 @@
-# CPU V3 migration specification
+# CPU V3 ISA specification
 
 The `ip/cpu-v3` crate is the executable source of truth for the ISA replacing
 cpu_v2 v2.6. The exploratory `design_model/CPU_ISA.md` revision 0.2 supplied the
 base encoding. This repository owns later revisions so builds never depend on a
 machine-local project.
 
-The self-contained visual reference is [`isa.html`](isa.html). It documents the
-complete encoding alongside architectural behavior, addressing, faults, and the
-compiler ABI. Current hardware and fitted-system policy are documented separately
+This document is self-contained: the architectural boundary, the complete
+instruction encoding reference, the FPU contract, and the fault rules are all
+specified below, followed by the per-revision change history. [`isa.html`](isa.html)
+is a visual rendering of the same encoding for quick reference. Current hardware and fitted-system policy are documented separately
 under `ip/cpu-v3/docs` and `systems/cpu-v3-tang-nano-20k/docs`.
 
 ## Architectural boundary
@@ -52,6 +53,147 @@ The baseline offset map inside the selected data segment is:
 `CompilerOptions::default()` selects these boundaries. A zero initial stack
 pointer denotes the exclusive segment top `0x10000`; the first allocation
 therefore wraps naturally into offset `0xffff`.
+
+
+## Instruction encoding reference
+
+Every physical instruction is one 16-bit word, shown as four hexadecimal nibbles
+`[n3 n2 n1 n0]` with bit 15 the most significant. The major opcode is `n3`; later fields are
+registers, sub-operations, or immediate bits depending on the family.
+
+| Form | Layout | Meaning |
+| --- | --- | --- |
+| RRR | `opcode · rd · ra · rb` | Three-register ALU operation |
+| MEM | `opcode · rd/rs · base · imm4` | Word load/store at `r[base] + imm` |
+| IMM | `A · fn · rd · imm4` | In-place immediate operation on `rd` |
+| BR | `B · cond · imm8` | Conditional branch on the pending test, or unconditional relative jump |
+| DEV | `C · dir/dev · ch · reg` | Device channel receive/send |
+| EXT | `E · fn · rd · rs` | Unary, register control, comparison, halt |
+| IMMHI12 | `F · high12` | Prefix for the immediately following eligible consumer |
+
+### Major opcode map
+
+| n3 | Family | Form | Summary |
+| --- | --- | --- | --- |
+| 0..7 | Register ALU | `op rd ra rb` | Add, subtract, multiply, logic, and register-count shifts |
+| 8 | `LOAD` | `8 rd base imm4` | Read one 16-bit word |
+| 9 | `STORE` | `9 rs base imm4` | Write one 16-bit word |
+| A | Immediate | `A fn rd imm4` | Arithmetic, logic, shift, compare, and load-immediate |
+| B | Branch / jump | `B cond imm8` | Six predicates on the pending test result plus relative jumps |
+| C | Device | `C dir/dev ch reg` | Single-cycle device channel receive/send |
+| D | fix16 FPU | `D fn a b` | Blocking vector, accumulator, memory, compare, and unary operations |
+| E | Extended/control | `E fn rd rs` | Move, unary, register jumps, comparisons, bit operations, halt |
+| F | `IMMHI12` | `F high12` | Creates a pending wide immediate |
+
+### Register ALU (opcodes 0..7)
+
+| Mnemonic | Encoding | Semantics |
+| --- | --- | --- |
+| `ADD rd, ra, rb` | `0 rd ra rb` | `rd = ra + rb` (wrapping) |
+| `SUB rd, ra, rb` | `1 rd ra rb` | `rd = ra - rb` (wrapping) |
+| `MUL rd, ra, rb` | `2 rd ra rb` | `rd = low16(ra * rb)` (low half; sign-agnostic bit pattern) |
+| `AND` / `OR` / `XOR` | `3/4/5 rd ra rb` | bitwise |
+| `SHL rd, ra, rb` | `6 rd ra rb` | `rd = ra << (rb & 15)` (logical left) |
+| `ASR rd, ra, rb` | `7 rd ra rb` | `rd = signed(ra) >> (rb & 15)` (arithmetic right) |
+
+### Memory (opcodes 8 and 9)
+
+| Mnemonic | Encoding | Semantics | Prefix |
+| --- | --- | --- | --- |
+| `LOAD rd, [base + off]` | `8 rd base imm4` | `rd = memory[base + sext4(imm4)]` | with IMMHI12, `off = {high12, imm4}` |
+| `STORE rs, [base + off]` | `9 rs base imm4` | `memory[base + sext4(imm4)] = rs` | same |
+
+Address arithmetic wraps at 16 bits. Every final offset is ordinary memory in `DSEG`.
+
+### Immediate (opcode A)
+
+| fn | Mnemonic | Semantics | Immediate and prefix behavior |
+| --- | --- | --- | --- |
+| 0 | `ADDI` | `rd = rd + imm` | signed i4; prefix eligible |
+| 1 | `SUBI` | `rd = rd - imm` | signed i4; prefix eligible |
+| 2 | `ANDI` | `rd = rd & imm` | unsigned u4; prefix eligible |
+| 3 | `ORI` | `rd = rd \| imm` | unsigned u4; prefix eligible |
+| 4 | `XORI` | `rd = rd ^ imm` | unsigned u4; prefix eligible |
+| 5 | `SHLI` | `rd = rd << u4` | never consumes a prefix |
+| 6 | `SHRI` | `rd = rd >> u4` (logical) | never consumes a prefix |
+| 7 | `ASRI` | `rd = signed(rd) >> u4` | never consumes a prefix |
+| 8 | `MULI` | `rd = low16(rd * imm)` | signed i4; prefix eligible |
+| 9 | `CMPEQI` | `rd = (rd == imm)` | signed i4; prefix eligible |
+| A | `SLTI` | `rd = signed(rd) < signed(imm)` | signed i4; prefix eligible |
+| B | `SLTUI` | `rd = unsigned(rd) < unsigned(imm)` | unsigned u4; prefix eligible (v0.3) |
+| C | `CMPSI` | `pending = signed ordering of rd vs imm` | signed i4; prefix eligible (v0.5) |
+| D | `CMPUI` | `pending = unsigned ordering of rd vs imm` | unsigned u4; prefix eligible (v0.5) |
+| E | `LDI` | `rd = sext4(i4)` | with prefix, loads the full 16-bit pattern |
+| F | `LDUI` | `rd = zext4(u4)` | with prefix, loads the full 16-bit pattern |
+
+### Branch and relative jump (opcode B)
+
+| cond | Mnemonic | Taken when |
+| --- | --- | --- |
+| 0..5 | `BEQ/BNE/BLT/BGE/BGT/BLE off` | pending test is Equal / not Equal / Less / not Less / Greater / not Greater |
+| 6, 7 | reserved | invalid instruction |
+| 8 | `JREL off` | unconditional, no link |
+| 9 | `JALREL off` | unconditional; `r14 = PC_after` |
+| A..F | reserved | invalid instruction |
+
+The offset is a signed i8 relative to the already-incremented PC (±128 words). With IMMHI12
+the offset widens to `off16 = {prefix[7:0], imm8}`.
+
+### Device access (opcode C)
+
+| Mnemonic | Encoding | Semantics |
+| --- | --- | --- |
+| `DEVRECV rd, dev, ch` | `C {0,dev} ch rd` | `rd = device[dev].read(ch)` |
+| `DEVSEND rs, dev, ch` | `C {1,dev} ch rs` | `device[dev].write(ch, rs)` |
+
+Devices 0..7 each have channels 0..15. Only `DEVRECV`/`DEVSEND` reach devices;
+`LOAD`/`STORE` always reach memory. Reads sample combinational device data, writes pulse for
+one execute cycle, and an unconnected device reads as zero and ignores writes. Device
+instructions carry no immediate and never consume a prefix.
+
+### Extended/control (opcode E)
+
+| fn | Mnemonic | Semantics |
+| --- | --- | --- |
+| 0 | `POPCNT rd, rs` | population count |
+| 1 | `MOV rd, rs` | `rd = rs` (`NOP = E100`) |
+| 2 | `NOT` / 3 `NEG` | `~rs` / `0 - rs` |
+| 4 | `JREG rs` | `PC = rs`; `rd` must be 0 |
+| 5 | `JALR target` | `r14 = PC_after; PC = target`; the link field must encode 14 |
+| 6 | `SEXTB rd, rs` | `rd = sext8(rs[7:0])` |
+| 7 | `CLZ rd, rs` | count leading zeros |
+| 8 | `HALT` | stops execution; the halt signal is `r0`; both fields must be zero |
+| 9/A | `SLT` / `SLTU` | `rd = rd < rs`, signed / unsigned (v0.3) |
+| B/C | `CMPS` / `CMPU` | pending = ordering of `rd` vs `rs`, signed / unsigned; writes no register (v0.5) |
+| D | `MFSR rd, sr` | read `CSEG` (`sr=0`) or `DSEG` (`sr=1`) |
+| E | `MTSR DSEG, rs` | set the data segment |
+| F | `JSEG seg, target` | atomically `CSEG = r[seg]`, `PC = r[target]` |
+
+### fix16 FPU (opcode D)
+
+See the Revision 0.7 section below for the complete FPU contract.
+
+### IMMHI12 and wide operations
+
+`IMMHI12 0xabc` followed by an eligible consumer forms one precise two-word operation (for
+example `IMMHI12 0xabc; LDUI r3, 0xd` loads `r3 = 0xabcd`; the pair retires two physical words
+together). The closed consumer set is `LOAD`, `STORE`, immediate functions 0..4 and 8..F, and
+branch/jump conditions 0..5, 8, and 9. Shift-immediates, extended/control, register ALU,
+device instructions, reserved encodings, and another prefix do not consume a prefix. A prefix
+is transparent to the pending test result. A non-consumer expires a pending prefix and retires
+it separately; a second prefix replaces the first; if a prefixed consumer faults, the reported
+address is the prefix address and neither word retires.
+
+### Fault and retirement summary
+
+| Condition | Result |
+| --- | --- |
+| Reserved or malformed encoding | `InvalidInstruction` (code 1); the instruction does not retire |
+| Conditional branch without a pending test | `InvalidInstruction`; does not retire |
+| `FRCP(0)` / `FRSQRT(x <= 0)` | FPU-domain fault (code 2); FPU state unchanged; does not retire |
+| Misaligned `FIMPORT4`/`FEXPORT4` | data-memory fault before any memory traffic; does not retire |
+| Address outside fitted physical memory | physical-address fault at the faulting offset; does not retire |
+| `HALT` after halt | re-reports the same `r0` signal |
 
 ## Revision 0.3
 

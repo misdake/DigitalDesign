@@ -36,9 +36,10 @@ Only these types exist; no other primitive types are supported:
   logical not on bools.
 - `x as u16` / `x as i16` / `p as u16` / `a as Ptr` (only between `u16`/`i16`/`Ptr`) reinterpret bits.
 - `>>` is logical on `u16` and arithmetic on `i16` (matches Rust and the ISA).
-  **The shift amount must be a literal constant** (the ISA has no register-shift instruction).
-- `*` multiplication, `/` and `%` are **not supported yet** (the hardware has no mul/div;
-  multiplication will arrive via the library, division is out of scope).
+  **The shift amount must be a literal constant** (the compiler currently lowers only
+  literal shifts; the register-count SHL/ASR encodings are unused for now).
+- `*` multiplication works on integers: CpuV3 lowers it to the hardware `MUL`; CpuV2 calls
+  the rcc_std `mul_16x16` library. `/` and `%` are not supported (the hardware has no divide).
 - FPU types (CPU V3): `+`, `-`, `*` work component-wise on same-typed FPU values; `vecN * fix16`
   and `fix16 * vecN` scale the vector (lowered to an ACC splat plus `FMUL`); unary `-` negates.
   Comparisons exist only on `fix16` (signed lane-x ordering through `FCMP` and the pending
@@ -131,7 +132,8 @@ Declared for real in `dsl_rt` (so the IDE sees them); the compiler lowers them d
   literals, strings, floats, other integer types, `unsafe`, `extern`, lifetimes,
   `const`/`static`, attributes (except ignored `#[allow(...)]`), `use` (parsed but ignored;
   it exists for the IDE).
-- **No division** (`/`, `%`), **no multiplication yet** (`*`): both report "not supported yet".
+- **No division** (`/`, `%`): reports "not supported yet". Integer `*` is supported
+  (hardware MUL on CpuV3, `mul_16x16` library call on CpuV2).
 - **FPU values live in the F register file**: every `fix16`/`vecN` value occupies exactly one
   F register, stays in SSA form (never in a frame slot except as a 4-word-aligned spill), and
   follows the FPU ABI: `f0..f1` return values, `f2..f7` arguments, `f8..f14` allocatable, `f15`
@@ -295,6 +297,13 @@ precludes them (a struct is just an address plus offsets).
 
 `&x` references, fat slices, struct definitions, `static mut`, heap allocation of arrays,
 multi-dimensional arrays (use `arr[i * W + j]`), function inlining/`#[inline]`, `*`, `/`, `%`.
+
+## 12.1 Target policy
+
+rcc development now targets CPU V3 only. The CpuV2 backend is frozen: existing support stays
+and keeps compiling, but new frontend features (such as the FPU types) are not required to
+work on CpuV2. The CpuV2 backend rejects instructions it cannot lower with a clear panic
+(e.g. any FPU-class instruction).
 
 ## 13. The toolchain
 

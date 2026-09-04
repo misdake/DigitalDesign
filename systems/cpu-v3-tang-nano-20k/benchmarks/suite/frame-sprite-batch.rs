@@ -1,3 +1,6 @@
+// bench-max-cycles: 8000000
+// bench-expected-halt: 1
+// bench-tier: frame
 use crate::dsl_rt::*;
 
 static FRAMEBUFFER: [u16; 4096] = [0; 4096];
