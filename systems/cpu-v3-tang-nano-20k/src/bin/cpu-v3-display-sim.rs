@@ -1,4 +1,5 @@
 use cpu_v3::Machine;
+use cpu_v3_tang_nano_20k::boot::SystemControlDevice;
 use cpu_v3_tang_nano_20k::display::{render_frame_at, write_ppm};
 #[cfg(feature = "display-window")]
 use cpu_v3_tang_nano_20k::display::{HDMI_HEIGHT, HDMI_WIDTH};
@@ -55,6 +56,7 @@ fn main() -> Result<(), String> {
     machine
         .load_program(0, DISPLAY_DEMO_PROGRAM)
         .map_err(|error| format!("cannot load display demo: {error:?}"))?;
+    machine.attach_device(0, Box::<SystemControlDevice>::default());
     machine.attach_device(DISPLAY_DEVICE, Box::<DisplayDevice>::default());
 
     #[cfg(feature = "display-window")]

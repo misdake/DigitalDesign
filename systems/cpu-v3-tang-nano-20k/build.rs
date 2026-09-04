@@ -190,11 +190,12 @@ fn main() {
     std::fs::write(output.join("boot_images.rs"), generated)
         .expect("write generated boot image bindings");
 
-    // The display simulator includes this generated module even when a test
-    // target does not build a static display demo image.
     std::fs::write(
         output.join("display_image.rs"),
-        b"pub const DISPLAY_DEMO_PROGRAM: &[u16] = &[];\n",
+        format!(
+            "pub const DISPLAY_DEMO_PROGRAM: &[u16] = &{:?};\n",
+            display_demo
+        ),
     )
-    .expect("write display image placeholder");
+    .expect("write compiled display image");
 }

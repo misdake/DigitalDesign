@@ -6,11 +6,14 @@
 //! (device 0), with the flash image backing the DMA model.
 
 use cpu_v3::rcc_backend::{self, CompilerOptions, CpuV3Program};
-use cpu_v3::{Machine, PhysicalWordAddress};
+use cpu_v3::{decode, FpuOp, FpuUnaryOp, Instruction, Machine, PhysicalWordAddress};
 use cpu_v3_tang_nano_20k::boot::{
     build_boot_image, BootDmaDevice, BootEntry, BootErrorReport, BootImageSpec, BootSelectDevice,
-    BootTarget, InputSection, SectionKind, SystemControlDevice, SECTION_EXECUTE, SECTION_READ,
-    SECTION_WRITE,
+    BootTarget, InputSection, SectionKind, SystemControlDevice, CACHE_MAINTENANCE_STATUS,
+    D_CLEAN_ALL, SECTION_EXECUTE, SECTION_READ, SECTION_WRITE, SYSTEM_CONTROL_DEVICE,
+};
+use cpu_v3_tang_nano_20k::{
+    DISPLAY_CONTROL, DISPLAY_DEVICE, DISPLAY_FRAMEBUFFER_HIGH, DISPLAY_FRAMEBUFFER_LOW,
 };
 
 fn compile_cpu_v3(file: &str, opts: &CompilerOptions) -> CpuV3Program {
@@ -64,6 +67,142 @@ fn assert_canonical_cache_handoff(stage: &str, words: &[u16]) {
             .iter()
             .any(|word| word & 0xff00 == 0xee00),
         "{stage} must prepare DSEG after D-cache invalidation"
+    );
+}
+
+#[test]
+fn display_demo_exercises_fpu_rounding_and_cpu_framebuffer_stores() {
+    let program = compile_cpu_v3("display-demo.rs", &CompilerOptions::default());
+    let instructions = program
+        .words
+        .iter()
+        .copied()
+        .map(decode)
+        .collect::<Vec<_>>();
+
+    for (description, present) in [
+        (
+            "FSINCOS",
+            instructions.iter().any(|instruction| {
+                matches!(
+                    instruction,
+                    Instruction::FpuUnary {
+                        op: FpuUnaryOp::SinCos,
+                        ..
+                    }
+                )
+            }),
+        ),
+        (
+            "FROUND",
+            instructions.iter().any(|instruction| {
+                matches!(
+                    instruction,
+                    Instruction::FpuUnary {
+                        op: FpuUnaryOp::Round,
+                        ..
+                    }
+                )
+            }),
+        ),
+        (
+            "FMUL",
+            instructions
+                .iter()
+                .any(|instruction| matches!(instruction, Instruction::Fpu { op: FpuOp::Mul, .. })),
+        ),
+        (
+            "FSTORE integer bridge",
+            instructions.iter().any(|instruction| {
+                matches!(
+                    instruction,
+                    Instruction::Fpu {
+                        op: FpuOp::Store,
+                        ..
+                    }
+                )
+            }),
+        ),
+        (
+            "CPU framebuffer store",
+            instructions
+                .iter()
+                .any(|instruction| matches!(instruction, Instruction::Store { .. })),
+        ),
+    ] {
+        assert!(present, "display demo must contain {description}");
+    }
+}
+
+#[test]
+fn display_swap_waits_for_dcache_clean_before_publishing_the_back_buffer() {
+    let program = compile_cpu_v3("display-demo.rs", &CompilerOptions::default());
+    let publish = program
+        .debug
+        .functions
+        .iter()
+        .find(|function| function.name == "select_next_framebuffer")
+        .expect("display demo must retain its framebuffer publish function");
+    let start = publish.addr.0 - usize::from(program.code_base);
+    let end = publish.addr.1 - usize::from(program.code_base);
+    let instructions = program.words[start..end]
+        .iter()
+        .copied()
+        .map(decode)
+        .collect::<Vec<_>>();
+
+    let clean = instructions
+        .iter()
+        .position(|instruction| {
+            matches!(
+                instruction,
+                Instruction::DeviceSend {
+                    device: SYSTEM_CONTROL_DEVICE,
+                    channel: D_CLEAN_ALL,
+                    ..
+                }
+            )
+        })
+        .expect("framebuffer publish must start D_CLEAN_ALL");
+    assert!(
+        matches!(
+            instructions.get(clean + 1),
+            Some(Instruction::DeviceReceive {
+                device: SYSTEM_CONTROL_DEVICE,
+                channel: CACHE_MAINTENANCE_STATUS,
+                ..
+            })
+        ),
+        "D_CLEAN_ALL must immediately wait for its final maintenance status"
+    );
+
+    let display_channels = instructions
+        .iter()
+        .enumerate()
+        .filter_map(|(index, instruction)| match instruction {
+            Instruction::DeviceSend {
+                device: DISPLAY_DEVICE,
+                channel,
+                ..
+            } => Some((index, *channel)),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(
+        display_channels
+            .iter()
+            .map(|(_, channel)| *channel)
+            .collect::<Vec<_>>(),
+        [
+            DISPLAY_FRAMEBUFFER_LOW,
+            DISPLAY_FRAMEBUFFER_HIGH,
+            DISPLAY_CONTROL
+        ],
+        "publish must stage low/high addresses and then request NEXT_SWAP"
+    );
+    assert!(
+        display_channels[0].0 > clean + 1,
+        "no framebuffer register may be published before clean completes"
     );
 }
 
