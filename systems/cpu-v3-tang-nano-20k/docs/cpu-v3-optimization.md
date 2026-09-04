@@ -737,6 +737,40 @@ natural next targets.
   the new forwarding/overlap logic. Board-level DRAM timing is unchanged from the Stage 9/10 gearbox
   and remains subject to the normal physical-boardside validation.
 
+## Follow-up fix: word-write data path through the 108/54 gearbox (2026-09-04)
+
+The shared SDRAM port only asserted `controller_write_data_valid` for line writes
+(`state == ST_WRITE_STAGE`), and the 54/108 MHz gearbox only filled its `write_buffer` on that
+signal. A CPU/DMA word write therefore issued CMD_WRITE with `burst_length == 0` but never presented
+write data; the controller sampled a stale `I_sdrc_data = write_buffer[0][31:0]`. The boot DMA's
+Stage0-to-Stage1 SDRAM loads are word writes and were the first victim on physical hardware. All
+three simulators masked the fault: the signature testbench SDRAM model committed word writes straight
+from `sdram_write_data`, and the Rust `SdramModel` / `system_cosim_tb.v` committed
+`pending_write_data` directly, so none exercised the gearbox starvation.
+
+Fix:
+
+- `SharedSdramPort` (display_sdram.v) now routes a word write through the full four-beat
+  `ST_WRITE_STAGE`, holding the half-word (already placed for the DQM lane) on
+  `controller_write_data` while `controller_write_data_valid` pulses all four beats, before
+  ACTIVE/WRITE. The gearbox `write_buffer` is therefore always filled from capture index zero: the
+  write-data stream is four beats for every write, preserving the free-running `write_capture`
+  alignment without any gearbox change (a burst-zero write only reads entry zero). Line writes are
+  unchanged except that `ST_WRITE_STAGE` now only advances through the line buffer when
+  `pending_line`.
+- The Rust `SdramModel` and the `system_cosim_tb.v` behavioral port gained the same four-beat
+  word-write `ST_WRITE_STAGE` transition, keeping the cycle-accurate co-simulation aligned with the
+  RTL.
+- `display_sdram_tb.v` gained a dedicated from-idle word write that asserts the staged data and
+  `controller_write_data_valid`, plus a robust write-completion driver (`finish_cpu_write`) that acks
+  the ACTIVE/WRITE commands wherever the port is in its sequence.
+
+Validation: crate lib/tests, `shared_word_and_burst_port_runs_in_iverilog`, the two-stage boot
+signature testbench (which exercises DMA word writes), the system co-sim, and clippy all pass.
+Physical-board confirmation of the vendor controller's write-data sampling remains the final
+acceptance step; until then any future GPU word/partial-line write support must go through the same
+staged path.
+
 ## Risk-scaled validation
 
 Select the applicable checks for each stage and record both the checks run and any intentionally

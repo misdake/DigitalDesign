@@ -121,6 +121,12 @@ impl SdramModel {
                         self.line_write_buffer[0] = write_data;
                         self.beat = 1;
                         self.state = SdramState::WriteCapture;
+                    } else if write {
+                        // Word write: the full four-beat ST_WRITE_STAGE keeps
+                        // the gearbox write_buffer capture pointer aligned,
+                        // mirroring the RTL port.
+                        self.beat = 0;
+                        self.state = SdramState::WriteStage;
                     } else {
                         self.state = SdramState::ActiveReq;
                     }
