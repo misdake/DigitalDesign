@@ -48,7 +48,9 @@ pub struct SystemControlDeviceOutput {
     pub icache_invalidate: Wire,
     pub dcache_invalidate: Wire,
     pub dcache_clean: Wire,
-    pub cache_maintenance_hold: Wire,
+    /// CPU-local hold. This must never be used to gate DMA, display, SDRAM,
+    /// or other machine-owned hardware while D-cache maintenance runs.
+    pub cpu_hold: Wire,
     /// Logical LED value; board wrappers handle active-low inversion.
     pub leds: Wires<6>,
     /// 8N1 serial output, idle high.
@@ -69,7 +71,7 @@ pub struct SystemControlDeviceState {
     icache_invalidate: bool,
     dcache_invalidate: bool,
     dcache_clean: bool,
-    cache_maintenance_hold: bool,
+    cpu_hold: bool,
     cache_maintenance_status: u16,
     leds: u8,
     uart_busy: bool,
@@ -84,7 +86,7 @@ impl Default for SystemControlDeviceState {
             icache_invalidate: false,
             dcache_invalidate: false,
             dcache_clean: false,
-            cache_maintenance_hold: false,
+            cpu_hold: false,
             cache_maintenance_status: crate::boot::CACHE_MAINTENANCE_STATUS_SUCCESS,
             leds: 0,
             uart_busy: false,
@@ -154,7 +156,7 @@ impl<const CLOCKS_PER_BIT: u16> Module for SystemControlDevice<CLOCKS_PER_BIT> {
                 icache_invalidate: state.icache_invalidate,
                 dcache_invalidate: state.dcache_invalidate,
                 dcache_clean: state.dcache_clean,
-                cache_maintenance_hold: state.cache_maintenance_hold,
+                cpu_hold: state.cpu_hold,
                 leds: u64::from(state.leds),
                 uart_tx: !state.uart_busy || ((state.uart_frame >> state.uart_bit) & 1) == 1,
             },
@@ -176,8 +178,8 @@ impl<const CLOCKS_PER_BIT: u16> Module for SystemControlDevice<CLOCKS_PER_BIT> {
         state.dcache_invalidate = false;
         state.dcache_clean = false;
 
-        if state.cache_maintenance_hold && input.dcache_maintenance_done {
-            state.cache_maintenance_hold = false;
+        if state.cpu_hold && input.dcache_maintenance_done {
+            state.cpu_hold = false;
             state.cache_maintenance_status = if input.dcache_maintenance_error {
                 crate::boot::CACHE_MAINTENANCE_STATUS_ERROR
             } else {
@@ -205,13 +207,13 @@ impl<const CLOCKS_PER_BIT: u16> Module for SystemControlDevice<CLOCKS_PER_BIT> {
         let value = input.device_write_data as u16;
         match input.device_channel as u8 {
             SYSTEM_CONTROL_CHANNEL_ICACHE_INVALIDATE_ALL_DELAYED => state.icache_invalidate = true,
-            SYSTEM_CONTROL_CHANNEL_D_INVALIDATE_ALL if !state.cache_maintenance_hold => {
+            SYSTEM_CONTROL_CHANNEL_D_INVALIDATE_ALL if !state.cpu_hold => {
                 state.dcache_invalidate = true;
-                state.cache_maintenance_hold = true;
+                state.cpu_hold = true;
             }
-            SYSTEM_CONTROL_CHANNEL_D_CLEAN_ALL if !state.cache_maintenance_hold => {
+            SYSTEM_CONTROL_CHANNEL_D_CLEAN_ALL if !state.cpu_hold => {
                 state.dcache_clean = true;
-                state.cache_maintenance_hold = true;
+                state.cpu_hold = true;
             }
             SYSTEM_CONTROL_CHANNEL_LEDS => state.leds = (value & 0x3f) as u8,
             // A write while busy is dropped; software polls the busy flag.
@@ -317,7 +319,7 @@ mod tests {
             icache_invalidate,
             dcache_invalidate,
             dcache_clean: false,
-            cache_maintenance_hold: false,
+            cpu_hold: false,
             leds,
             uart_tx,
         }
@@ -335,7 +337,7 @@ mod tests {
             icache_invalidate: false,
             dcache_invalidate: invalidate,
             dcache_clean: clean,
-            cache_maintenance_hold: hold,
+            cpu_hold: hold,
             leds,
             uart_tx: true,
         }
@@ -370,13 +372,19 @@ mod tests {
             ),
             // Channel 4 starts a clean and completion records the final error.
             TestStep::new(write(4, 0), maintenance_output(0, false, true, true, 0)),
+            // The hold is consumed only by the CPU. The system-control
+            // peripheral itself continues to accept work while it is high.
+            TestStep::new(
+                write(2, 0x0025),
+                maintenance_output(0, false, false, true, 0x25),
+            ),
             TestStep::new(
                 SystemControlDeviceInputValue {
                     dcache_maintenance_done: true,
                     dcache_maintenance_error: true,
                     ..IDLE
                 },
-                output(0, false, false, 0, true),
+                output(0, false, false, 0x25, true),
             ),
             TestStep::new(
                 read(u64::from(SYSTEM_CONTROL_CHANNEL_CACHE_MAINTENANCE_STATUS)),
@@ -384,13 +392,16 @@ mod tests {
                     u64::from(crate::boot::CACHE_MAINTENANCE_STATUS_ERROR),
                     false,
                     false,
-                    0,
+                    0x25,
                     true,
                 ),
             ),
             // Writes to another device index are ignored.
-            TestStep::new(write_index(2, 0, 1), output(0, false, false, 0, true)),
-            TestStep::new(write_index(2, 2, 0x003f), output(0, false, false, 0, true)),
+            TestStep::new(write_index(2, 0, 1), output(0, false, false, 0x25, true)),
+            TestStep::new(
+                write_index(2, 2, 0x003f),
+                output(0, false, false, 0x25, true),
+            ),
             // Channel 2 drives the six LEDs from the low write-data bits.
             TestStep::new(write(2, 0xffea), output(0, false, false, 0x2a, true)),
             // The UART reports not busy before the first byte.

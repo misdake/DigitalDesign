@@ -69,7 +69,7 @@ wire instruction_prefetch_cancel;
 wire sysctl_icache_invalidate;
 wire sysctl_dcache_invalidate;
 wire sysctl_dcache_clean;
-wire sysctl_cache_maintenance_hold;
+wire sysctl_cpu_hold;
 wire dcache_maintenance_busy;
 wire dcache_maintenance_done;
 wire dcache_maintenance_error;
@@ -277,7 +277,7 @@ __SYSTEM_CONTROL__ u_sysctl (
     .icache_invalidate(sysctl_icache_invalidate),
     .dcache_invalidate(sysctl_dcache_invalidate),
     .dcache_clean(sysctl_dcache_clean),
-    .cache_maintenance_hold(sysctl_cache_maintenance_hold),
+    .cpu_hold(sysctl_cpu_hold),
     .leds(software_leds),
     .uart_tx(uart_tx)
 );
@@ -445,7 +445,9 @@ wire [31:0] retired_words;
 __CPU_V3_CORE__ u_core (
     .clk(clk),
     .reset(reset),
-    .hold(sysctl_cache_maintenance_hold),
+    // Maintenance blocks architectural CPU progress only. The D-cache,
+    // arbiter, DMA, display, and SDRAM adapter keep using clk normally.
+    .hold(sysctl_cpu_hold),
     .instruction_request_ready(core_instruction_request_ready),
     .instruction_response_valid(core_instruction_response_valid),
     .instruction_data(core_instruction_data),

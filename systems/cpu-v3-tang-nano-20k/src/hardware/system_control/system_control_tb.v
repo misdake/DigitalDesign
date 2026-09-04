@@ -12,7 +12,7 @@ wire [15:0] device_read_data;
 wire icache_invalidate;
 wire dcache_invalidate;
 wire dcache_clean;
-wire cache_maintenance_hold;
+wire cpu_hold;
 wire [5:0] leds;
 wire uart_tx;
 
@@ -83,20 +83,24 @@ initial begin
     write_channel(0, 1, 16'd0);
     if (dcache_invalidate !== 1'b1 || icache_invalidate !== 1'b0)
         fail("channel 1 must pulse dcache_invalidate");
-    if (!cache_maintenance_hold) fail("invalidate must hold the CPU");
+    if (!cpu_hold) fail("invalidate must hold the CPU");
     @(posedge clk);
     #1;
     if (dcache_invalidate !== 1'b0) fail("dcache_invalidate must last one clock");
     dcache_maintenance_done = 1;
     @(posedge clk); #1; dcache_maintenance_done = 0;
-    if (cache_maintenance_hold) fail("successful maintenance must release hold");
+    if (cpu_hold) fail("successful maintenance must release hold");
 
     write_channel(0, 4, 16'd0);
-    if (!dcache_clean || !cache_maintenance_hold) fail("channel 4 must start clean and hold");
+    if (!dcache_clean || !cpu_hold) fail("channel 4 must start clean and hold");
+    // CPU-local hold must not freeze the system-control peripheral itself.
+    write_channel(0, 2, 16'h0025);
+    if (!cpu_hold || leds !== 6'h25)
+        fail("maintenance CPU hold must not stall other devices");
     dcache_maintenance_done = 1; dcache_maintenance_error = 1;
     @(posedge clk); #1;
     dcache_maintenance_done = 0; dcache_maintenance_error = 0;
-    if (cache_maintenance_hold) fail("failed maintenance must release hold");
+    if (cpu_hold) fail("failed maintenance must release hold");
     device_index=0; device_channel=5; device_read_enable=1; #1;
     if(device_read_data!==16'h8000) fail("maintenance error status missing");
     device_read_enable=0;
@@ -105,7 +109,7 @@ initial begin
     write_channel(2, 0, 16'd1);
     if (icache_invalidate !== 1'b0) fail("device index must filter invalidate writes");
     write_channel(2, 2, 16'h003f);
-    if (leds !== 6'd0) fail("device index must filter led writes");
+    if (leds !== 6'h25) fail("device index must filter led writes");
 
     // Channel 2 drives the LEDs from the low six write-data bits.
     write_channel(0, 2, 16'hffea);
