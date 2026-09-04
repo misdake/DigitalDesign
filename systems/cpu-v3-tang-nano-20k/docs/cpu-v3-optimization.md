@@ -1,21 +1,23 @@
-# CPU V3 optimization roadmap
+# CPU V3 optimization history and roadmap
 
-Status: active handoff plan for future conversations
+Status: living record of the current implementation and future optimization work
 Repository: `../../../`
-Updated: 2026-09-01
+Updated: 2026-09-02
 
 This roadmap lives inside the CPU V3 system crate so it stays with the system it describes; it is
-maintained and committed together with each milestone. Benchmark suites are not committed to the
-repo; the per-stage numbers are recorded here from the release-mode emulator run described below.
+maintained and committed together with each milestone. Benchmark workloads and runners live in the
+system crate; generated per-stage CSV and presentation artifacts remain local unless explicitly
+selected for the repository. Historical numbers below record the exact release-mode emulator runs
+described by each Stage.
 
 ## Milestone workflow and document lifecycle
 
-- Keep this roadmap in the repository while any milestone remains incomplete.
+- Keep this document permanently as the optimization history and current-state handoff.
 - Before and after each milestone, update the current implementation state here so another agent can
   resume from the documented repository state.
 - Include the updated roadmap in the same commit that completes each milestone.
-- Delete this roadmap only in the final milestone commit, after every milestone has been completed
-  and accepted.
+- Never leave the current architecture, benchmark, validation, PnR, timing, or resource summary stale
+  after a CPU V3 optimization.
 - Scale validation to the risk of the change. Correctness-focused changes with little timing or
   resource pressure may use a smaller targeted test set, provided the completed milestone records
   what ran and what was intentionally skipped. Changes that affect timing, resource use, memory
@@ -47,7 +49,7 @@ vendor report's aggregate logic-unit metric, not merely its LUT subtotal. The co
 5 counts above were reproduced from full-system builds at commits `3f62078` and `df4774a`; Stage 6
 and Stage 7 use their corresponding full-system milestone builds. Stage 11 changed only the CPU store
 path, and its full-system build closes the 54 MHz CPU clock at 56.51 MHz. Stage 12's full-system build
-(commit `1e7ea68`) closes the 54 MHz CPU clock at 56.230 MHz; the forward-compare/operand-mux/ALU/
+(commit `dabcb10`) closes the 54 MHz CPU clock at 56.230 MHz; the forward-compare/operand-mux/ALU/
 registered-writeback bypass and the Execute-cycle request/response mux cost a little timing over
 Stage 11, but the build still reports zero setup and hold TNS on every clock.
 
@@ -65,29 +67,47 @@ Stage 11, but the build still reports zero setup and hold TNS on every clock.
 9. Run DRAM at exactly twice the CPU frequency through a related-clock 2:1 gearbox while keeping the rest of the system at 54 MHz.
 10. Convert each cache's two data BSRAMs to true-dual-port parity banks and transfer cache lines directly as four 64-bit beats.
 11. Let one scalar store complete asynchronously in the background while non-memory instructions continue to execute.
-12. Overlap single-cycle integer execute with the next fetch through a conservative two-stage frontend and a single registered GPR writeback forwards path.
+12. Overlap single-cycle integer execute with the next fetch through a conservative two-stage frontend and a single registered GPR writeback forwarding path.
 
-Task 0 should happen before Tasks 1 and 2. Tasks 1 and 2 remain the next performance implementation
-scope after that policy cleanup. Do not combine all tasks into one change.
+Stages 0 through 12 are complete. Preserve the historical ordering above when interpreting old
+measurements, and add future optimizations as separate numbered milestones rather than rewriting the
+meaning of a completed Stage.
 
 ## Architectural decisions
 
 - A cache line remains public and fixed at 16 physical 16-bit words, or 32 bytes.
 - The cache/arbiter view of one line is four ordered 64-bit beats at 54 MHz; the physical controller view is eight ordered 32-bit beats at 108 MHz.
 - I-cache and D-cache contain no private complete-line refill or write-back buffer.
-- The first refill revision keeps the current direct-mapped, single-BSRAM cache geometry.
+- The current caches are two-way and use two true-dual-port parity BSRAMs per cache; Stage 10 removed
+  the temporary complete-line refill and write-back buffers.
 - CPU and controller clocks are exact related PLL outputs. The fixed 2:1 board gearbox is the width and clock boundary; it is not an arbitrary-ratio asynchronous FIFO.
 - Two-way associativity, two-BSRAM banking, fetch pipelining, next-line prefetch, and write-back are separate milestones.
 - The sixteen scalar registers are an explicit `CpuV3GprRam` module: synchronous-write,
   dual-asynchronous-read distributed RAM. Its synchronous write port commits one cycle after the
-  retire; the Rust emulator models that delay exactly, and the two-cycle Execute spacing hides it.
+  retire; the Rust emulator models that delay exactly, and the Stage 12 forwarding mux exposes a
+  matching pending write to a back-to-back dependent instruction.
+
+## Historical stage records
+
+Each Stage section below is a historical record: it describes the design, the measurements, and the
+repository state at the time that Stage was implemented, not the current architecture. Where a Stage
+section disagrees with the current-state sections above, the current-state sections take precedence.
+
+Stale-measurement notice: the system co-simulation suite commit exposed and fixed a
+D-cache emulator timing drift — the Rust model inserted an 8-cycle read drain and an 8-cycle
+write-back capture that the RTL never had. Emulator-side measurements in the Stage 8 through
+Stage 12 sections (store-miss refill latency, dirty eviction/write-back latency, post-halt flush
+cycles, and total cycles of D-cache-miss-heavy workloads) were recorded with the old model and are
+inflated. RTL and hardware behavior were always correct. Do not mix these pre-fix latency figures
+with post-fix numbers in the same comparison; the affected Stages are scheduled for a rerun with
+the corrected model.
 
 ## Stage 0: remove dead coherence machinery and freeze the final contract
 
 Do this while D-cache is still write-through. It is a small deletion and contract change, not an
 early implementation of write-back maintenance.
 
-Current audited state at branch `code-v0.3-dev`, commit `5775bf3`:
+Audited state at the time, at branch `code-v0.3-dev`, commit `5775bf3`:
 
 - The architecture and RTL caches are direct-mapped, write-through, and no-write-allocate.
 - There are no dirty bits, write-back states, clean states, or maintenance busy/completion states.
@@ -694,13 +714,22 @@ natural next targets.
 - `cargo test --workspace`: 410 passed; CPU V3 78 passed / 10 ignored.
 - Verilog/RTL Icarus for the CPU V3 core, GPR RAM, and the fetch-pipeline probe passed with the new
   cycle contract.
+- A cycle-accurate emulator-vs-Icarus co-simulation of the core now drives the same program through
+  the Rust emulator and the RTL and compares a curated set of deterministic outputs every cycle
+  (program counter, segments, retired words, halt/fault, and the instruction/data handshake), covering
+  the Stage 12 overlap (a dependent `ADDI` chain at one instruction per cycle), the wide SETP-retire,
+  a taken-branch redirect, the async store whose data value equals the forwarded `r0`, an FPU barrier,
+  and the halt value. It runs as `core_emu_matches_rtl_pipeline_overlap` under `--ignored`.
+- `halt_signal` was tightened from a live async GPR tap to a value latched at the HALT retire edge
+  (mirrored in the emulator), so it is a stable architectural property that the co-simulation compares
+  directly each cycle rather than only at the halt cycle.
 - `scripts/validate-hardware.ps1 -Mode quick` and `-Mode iverilog` pass, including the two-stage flash
   boot signature testbench. This surfaced and fixed a pre-existing (Stage 9) mismatch: the
   `CpuV3System` top module exposes a 64-bit `sdram_write_data`/`sdram_read_data` gearbox interface
   while the signature testbench still modeled the 32-bit controller path, so its `.*` instantiation
   could not elaborate. The model now captures the four 64-bit line-write beats and returns line reads
   as four 64-bit beats, matching `DisplaySdramPort`.
-- Full-system Gowin PnR (`cpu_v3_system`, commit `1e7ea68`): 10,100 Logic (8,822 LUT, 750 ALU,
+- Full-system Gowin PnR (`cpu_v3_system`, commit `dabcb10`): 10,100 Logic (8,822 LUT, 750 ALU,
   88 SSRAM); 4,324 registers; 4 DPB + 1 SDPB + 2 pROM; 2 MULT18X18. The CPU clock closes at
   56.230 MHz against the 54.000 MHz constraint (2.23 MHz margin), and every reported setup and hold
   TNS is zero. `clk` and the display controller clocks close as expected. The tightest CPU path is the

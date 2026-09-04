@@ -60,6 +60,35 @@ recognizes both DDHT status and structured CPU V3 `CV3B` boot-error frames.
 External Verilog tests use `IVERILOG_EXE` and `VVP_EXE` when set, otherwise
 they resolve `iverilog` and `vvp` through `PATH`.
 
+CPU V3 emulator-vs-RTL co-simulations are `#[ignore]` tests in `ip/cpu-v3` that drive the same
+stimulus through the Rust model and the RTL in Icarus and compare cycle by cycle. They cover the
+three modules with standalone cycle-accurate peers: the four-entry fetch queue, the two-way cache,
+and the `CpuV3Core` itself. The core one is mandatory for every step that touches the CPU pipeline,
+forwarding, retirement, or the data/handshake paths (including Stage 12 fetch/execute overlap and the
+GPR forwarding mux):
+
+```powershell
+& scripts/run-cargo.ps1 -Subcommand test -Label "cpu-v3 emu/rtl co-sim" -CargoArgs @("-p", "cpu-v3", "--lib", "--", "--ignored", "--nocapture", "--test-threads=1")
+```
+
+The core co-sim is `ip/cpu-v3/src/hardware/mod.rs::tests::core_emu_matches_rtl_pipeline_overlap`.
+Its program is `core_cosim_program()` in the same file (a dependent `ADDI` chain that must run one
+instruction per cycle, a wide SETP load, a taken branch, an async store whose `data_write_data` must
+equal the forwarded `r0`, an FPU barrier, and a halt). It compares `pc`, segments, `retired_words`,
+halt/fault, `halt_signal`, and the instruction/data handshake each cycle, so a change that breaks the
+overlap, forwarding, or halt value is caught directly. The fetch (`fetch.rs`) and cache (`cache.rs`)
+co-sims sit alongside it.
+
+The system-level co-simulation `systems/cpu-v3-tang-nano-20k/tests/system_cosim.rs` drives the
+composed RTL (core, fetch queue, I-cache, D-cache, memory arbiter, behavioral SDRAM) in Icarus
+against the shared cycle-accurate system model (`tests/system_emu/mod.rs`), comparing the core
+ports cycle by cycle and the post-flush SDRAM contents exactly. It is mandatory for changes
+touching the core, fetch, cache, arbiter, or memory paths:
+
+```powershell
+& scripts/run-cargo.ps1 -Subcommand test -Label "cpu-v3 system co-sim" -CargoArgs @("-p", "cpu-v3-tang-nano-20k", "--test", "system_cosim", "--", "--ignored", "--nocapture", "--test-threads=1")
+```
+
 ## Cargo output summarization
 
 Run cargo through `scripts/run-cargo.ps1` instead of invoking `cargo` directly when the raw

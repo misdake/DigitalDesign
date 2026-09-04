@@ -15,8 +15,8 @@ package "Fitted CPU V3 system (optional around the reusable core)" {
   component "DMA / display\noptional system masters" as Masters
 }
 
-rectangle "CpuV3Core: blocking, in-order, one instruction in flight" as Core {
-  component "Fetch / execute FSM\nrequest -> response -> execute\nprecise single retirement" as FSM
+rectangle "CpuV3Core: precise, in-order, limited two-stage frontend" as Core {
+  component "Fetch / execute FSM\nExecute may accept the next queued word\nprecise single retirement" as FSM
   storage "Instruction state\nPC 16, CSEG 16, DSEG 16\nIMMHI12 prefix\npending comparison" as ControlState
   storage "GPR file\n16 x 16-bit\ncombinational read\nsynchronous write" as GPR
   component "Integer lane\n16-bit ALU, shifts, compare\nCLZ / popcount" as IntAlu
@@ -74,7 +74,8 @@ Transfer <--> DCache : four sequential beats
 note right of FpuFsm
 Current issue policy:
 * no CPU/FPU overlap
-* no cross-instruction pipeline
+* eligible single-cycle integer instructions overlap Execute with next fetch
+* loads, multiply, FPU, redirects, devices, and busy-buffer stores are barriers
 * add/sub/simple unary: one overlapped lane per cycle
 * load/move/pack/unpack/transpose: one wide vector per cycle
 * multiply/dot: one tagged DSP issue/result per cycle after fill

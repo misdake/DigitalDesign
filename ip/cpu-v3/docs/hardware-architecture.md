@@ -1,36 +1,42 @@
 # CPU V3 hardware structure and timing
 
-This document describes the revision 0.7 implementation, not an intended future
-pipeline. The maintainable PlantUML source is in
+This document describes the revision 0.7 ISA running on the current Stage 12
+microarchitecture, not an intended future pipeline. The maintainable PlantUML source is in
 [`cpu_v3_structure.puml`](cpu_v3_structure.puml).
 
 ## Execution model
 
-`CpuV3Core` is a blocking, in-order, single-instruction machine. It does not
-fetch another instruction while an integer memory request, integer multiply, or
-FPU instruction is active. A successful instruction updates architectural state
-and retirement exactly once. A fault updates neither retirement nor a partially
-computed FPU destination; the documented four-beat store exception still keeps
-memory writes acknowledged before a later beat faults.
+`CpuV3Core` is precise and in order, with a conservative two-stage frontend rather
+than a general pipeline. A single-cycle instruction with sequential control flow
+may accept the next queued word in its Execute cycle and remain in Execute, so an
+eligible sequence can retire one instruction per cycle. Loads, integer multiply,
+FPU instructions, control transfers, device operations, invalid cases, and stores
+while the one-entry asynchronous store buffer is busy remain barriers on the
+original staged path. At most one instruction retires per cycle. A successful
+instruction updates architectural state and retirement exactly once. A fault
+updates neither retirement nor a partially computed FPU destination; the
+documented four-beat store exception still keeps memory writes acknowledged
+before a later beat faults.
 
 The fitted system places a four-entry instruction fetch queue in front of the
 core. It reserves fetched and outstanding words, issues consecutive physical
 addresses, and tags each downstream request with an epoch. A branch, `JALR`,
 code-segment change, fault, reset, or I-cache invalidate discards queued and late
 old-epoch words. When the requested word is already queued, the core accepts it
-directly in `FetchRequest` and executes it on the following cycle. The legacy
-`FetchResponse` phase remains available for a slower responder. A redirect can
-issue the target lookup in its restart cycle, and a matching response can fall
-through an empty queue directly to a ready core. If the core is backpressured,
-the same response is enqueued instead of being lost. The tables below
-count core execute cycles from the `Execute` cycle through retirement; add fetch
-wait cycles only when the queue does not already contain the requested word.
+directly in `FetchRequest`, or during Execute when the retiring instruction is in
+the Stage 12 pipelineable subset. The legacy `FetchResponse` phase remains
+available for a slower responder or a queue bubble. A redirect can issue the
+target lookup in its restart cycle, and a matching response can fall through an
+empty queue directly to a ready core. If the core is backpressured, the same
+response is enqueued instead of being lost. The tables below count core execute
+cycles from the `Execute` cycle through retirement; add fetch wait cycles only
+when the queue does not already contain the requested word.
 
 ## Core storage and execution resources
 
 | Block | Current implementation | Per-cycle capability |
 |---|---|---|
-| GPR file | 16 x 16-bit registers | Combinational source reads and one or more decoded register updates at the clock edge |
+| GPR file | Explicit 16 x 16-bit distributed-RAM leaf with dual asynchronous reads and one synchronous write | One registered write per cycle; a forwarding mux exposes the pending write to a matching next instruction |
 | Control state | 16-bit PC, CSEG, DSEG, one IMMHI12 prefix, one transient three-way comparison | One instruction decoded; no speculative state |
 | Integer ALU | 16-bit add/sub/logic/shift/compare plus CLZ and popcount | One non-multiply integer result |
 | Integer multiplier | One registered signed 18 x 18 `MULT18X18` lane | Accepts an input each cycle, but the blocking core uses one operation at a time |
@@ -70,9 +76,11 @@ handoff resolves deterministically.
 
 | Operation class | Execute-to-retire cycles | Active phases |
 |---|---:|---|
-| ALU, immediate, compare, branch/jump, device, special-register, prefix, HALT | 1 | `Execute` |
+| Pipelineable ALU, immediate, compare, non-control E-family, prefix, and store with an empty async buffer | 1 | `Execute`, optionally accepting the next queued instruction in the same cycle |
+| Branch/jump, device, HALT, and other single-cycle barriers | 1 | `Execute`, then restart through the fetch path |
 | Integer `MUL` / `MULI` | 3 | `Execute -> MultiplyWait -> MultiplyCommit` |
-| Integer `LOAD` / `STORE`, minimum | 3 | `Execute -> DataRequest -> DataResponse` |
+| Integer `LOAD`, minimum | 3 | `Execute -> DataRequest -> DataResponse` |
+| Integer `STORE` with an empty async buffer | 1 to retire | The buffered data request/response continues in the background; a later memory operation waits for it |
 
 ## FPU instruction latency
 
@@ -96,7 +104,19 @@ latencies assume every request and response phase advances immediately.
 | `FIMPORT4`, minimum | 10 | 11 | Dispatch, four request/response pairs, one wide destination write, commit |
 | `FEXPORT4`, minimum | 9 | 10 | Dispatch snapshots the source vector and streams four request/response pairs; the final response retires directly |
 
-## Pre-pipeline 54 MHz timing baseline
+## Current fitted-system result
+
+Stage 12 is fitted and routed as the complete `cpu_v3_system`, including the CPU,
+boot path, caches, 54/108-MHz SDRAM gearbox, and display path. Against the normal
+54-MHz CPU constraint it reports 56.230 MHz with zero setup and hold TNS. The
+build uses 10,100 Logic (8,822 LUT, 750 ALU, 88 SSRAM), 4,324 registers, four DPB,
+one SDPB, two pROM, and two `MULT18X18` cells. The tightest CPU-clock path is the
+fetch-queue to I-cache way-valid route, not the Stage 12 GPR-forwarding path.
+
+The following timing sections are retained as implementation history for the FPU
+lane pipeline. They are not the current full-system Stage 12 result.
+
+## Historical pre-FPU-pipeline 54 MHz baseline
 
 These place-and-route measurements precede the lane-pipeline implementation
 above and provide the baseline for the required post-change timing audit:
@@ -122,7 +142,7 @@ variable shifter used by ROM normalization/scaling. The worst member has
 0.406 ns slack. The multiplier lanes and BSRAM ROM output are not the present
 critical paths.
 
-## Post-pipeline timing results
+## Historical post-FPU-pipeline timing results
 
 The final RTL was routed both with the normal 54 MHz system constraint and with
 a 60 MHz logic-clock characterization constraint. The latter changes only the
@@ -214,9 +234,9 @@ endpoints). The 60 MHz operating constraint still passes comfortably, so the
 trade is cycle-count savings on data movement for characterization headroom
 that the fitted 54 MHz clock never uses.
 
-These counts retain blocking instruction retirement. They improve
-intra-instruction lane throughput; they do not allow another CPU or FPU
-instruction to enter the pipeline.
+These counts retain blocking FPU retirement. They improve intra-instruction lane
+throughput; an FPU operation remains a Stage 12 frontend barrier and does not
+overlap execution of another CPU or FPU instruction.
 
 ### Continuation `k`
 

@@ -55,19 +55,15 @@ then reads and compares every word. It reports through the shared `DDHT` UART
 status protocol with test ID `0x03`.
 
 `systems/cpu-v3-tang-nano-20k/examples/cpu_v3_system` wires the full CPU V3
-system (the consolidated `cpu_v3_sdram`-style memory path plus the two-stage
-flash boot): a `CpuV3Core`, split two-way cache instances, a
-`CpuV3MemoryArbiter`, a `BootDmaDevice` and `BootDmaEngine`, and the shared
+system: `CpuV3Core`, the instruction fetch queue, split two-way caches,
+`CpuV3MemoryArbiter`, `BootDmaDevice` and `BootDmaEngine`, and the shared
 `DisplaySdramPort`. Stage0 in a BSRAM boot ROM below word `0x400` DMAs Stage1
-from SPI Flash into SDRAM, Stage1 loads the application, and the application
-writes through the data cache with the Controller HS byte mask, misses on a
-read, refills the complete line, and verifies the loaded value. It reports test
-ID `0x07`. The project uses BSRAM blocks (boot ROM, cache data, and the display
-line buffer), SSRAM RAM16 primitives for the cache tag arrays, MULT18X18, one
-rPLL for SDRAM, one for video, and the fitted SDRAM. The complete boot, refill,
-execution, write-through, and data-refill path passes its explicit Icarus
-Verilog simulation, and a repeated `0x07` UART success capture confirms the
-build on the board.
+from SPI Flash into SDRAM, and Stage1 loads the application. The current D-cache
+is write-back and write-allocate; cache lines cross the 54-MHz side as four
+64-bit beats and the fixed related-clock gearbox converts them to eight 32-bit
+Controller HS beats at 108 MHz. The current complete-system composition and
+validation boundary are documented in
+[`systems/cpu-v3-tang-nano-20k/docs/architecture.md`](../../systems/cpu-v3-tang-nano-20k/docs/architecture.md).
 
 The former `cpu_v3_sdram` example (test ID `0x05`, three BSRAM blocks, a
 reported Fmax of 57.282 MHz) was folded into `cpu_v3_system` during the

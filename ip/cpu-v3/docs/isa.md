@@ -1,13 +1,14 @@
 # CPU V3 migration specification
 
-This directory is the executable source of truth for the ISA replacing cpu_v2
-v2.6. The exploratory `design_model/CPU_ISA.md` revision 0.2 supplied the base
-encoding. This repository owns later revisions so builds never depend on a
+The `ip/cpu-v3` crate is the executable source of truth for the ISA replacing
+cpu_v2 v2.6. The exploratory `design_model/CPU_ISA.md` revision 0.2 supplied the
+base encoding. This repository owns later revisions so builds never depend on a
 machine-local project.
 
-The self-contained visual reference is [`isa.html`](isa.html). It documents
-the complete encoding alongside the compiler ABI, unified memory map, cache
-organization, and the explicitly separated current FPGA implementation status.
+The self-contained visual reference is [`isa.html`](isa.html). It documents the
+complete encoding alongside architectural behavior, addressing, faults, and the
+compiler ABI. Current hardware and fitted-system policy are documented separately
+under `ip/cpu-v3/docs` and `systems/cpu-v3-tang-nano-20k/docs`.
 
 ## Architectural boundary
 
@@ -30,15 +31,11 @@ organization, and the explicitly separated current FPGA implementation status.
 - Reset establishes `CSEG = 0`, `DSEG = 0`, and `PC = 0`. Normal applications
   do not change either segment. Stage0 writes `DSEG` immediately before an
   atomic segmented jump establishes the application `CSEG` and entry offset.
-- The initial Tang Nano 20K implementation fits 8 MiB of SDRAM: 23 byte-address
-  bits, 22 16-bit-word-address bits, and 21 32-bit controller-beat bits. Any
-  architectural physical address outside that fitted range faults instead of
-  being truncated or aliased.
 - `IMMHI12` and an eligible adjacent consumer form one precise two-word
   operation. A consumer fault reports the prefix address and retires neither
   word. A non-consumer expires and separately retires a pending prefix.
-- `HALT` carries no result field. Host tests observe `r0`; board programs write
-  their result to the system-control UART device before halting.
+- `HALT` carries no result field. Its architectural halt signal is the value of
+  `r0` latched at the HALT retirement edge.
 
 The baseline offset map inside the selected data segment is:
 
@@ -73,7 +70,7 @@ large software sequence.
 
 ## Revision 0.4
 
-Revision 0.4 makes the complete fitted SDRAM addressable without widening
+Revision 0.4 makes the complete fitted physical memory addressable without widening
 ordinary pointers or changing compiler-generated load/store instructions.
 
 | Encoding | Name | Operation |
@@ -166,8 +163,10 @@ and boot ABI stack value.
 
 Revision 0.7 assigns the complete `D fn a b` family to the blocking fix16 FPU.
 It adds sixteen four-lane F registers, each lane holding signed Q8.8 data, and
-a signed saturating 40-bit accumulator. FPU instructions complete and retire
-before the next instruction is fetched. They never consume `IMMHI12`.
+a signed saturating 40-bit accumulator. An FPU instruction is a core-execution
+barrier: it completes and retires before the core accepts its successor for
+execution, although the fitted system's independent fetch queue may fetch ahead.
+FPU instructions never consume `IMMHI12`.
 
 | fn | Name | Operation |
 | --- | --- | --- |
@@ -183,138 +182,10 @@ before the next instruction is fetched. They never consume `IMMHI12`.
 All narrowing uses round-to-nearest with ties to even followed by signed Q8.8
 saturation. `FRCP(0)` and `FRSQRT(x)` for `x <= 0` raise FPU-domain fault code
 2 without modifying FPU state. Four-word transfers require `rb & 3 == 0`; a
-misaligned transfer faults before issuing memory traffic. The first cache port
-remains one word wide, so the core performs four ordinary ready/valid transfers.
+misaligned transfer faults before issuing memory traffic. Architecturally, each
+transfer reads or writes four consecutive words.
 
 The three continuation bits are derived combinationally from the current four
 lane values and are only an execution hint. They are not architectural state
 and are neither spilled nor restored. All F registers are caller-saved. The
 software ABI requires ACC to be zero at every function entry, call, and return.
-
-## Memory and boot direction
-
-The first implementation keeps the CPU, cache controller, SDRAM scheduler, and
-Gowin Controller HS on the same 54-MHz project clock. BSRAM contains cache data,
-tags, and a small initialized boot path; SDRAM is main memory. A clock-enable
-does not relax timing and is not used as a substitute for pipelining.
-
-Program loading is a separate concern from cache operation: SDRAM has no
-bitstream initialization. Immutable Stage0 code starts from initialized
-BSRAM/instruction-cache state in segment zero, copies Stage1 from
-SPI Flash into SDRAM, invalidates the complete D-cache, writes the Stage1
-data segment, and enters Stage1 with the adjacent
-`ICACHE_INVALIDATE_ALL_DELAYED; JSEG` handoff. Stage0 does not write a stack
-pointer: each stage initializes its own from its compiled-in `--stack-init`.
-Stage1 understands the extensible section table and loads the application.
-
-Cache tags and all cache-to-SDRAM requests contain physical word addresses.
-
-## Boot DMA device registers
-
-Device 2 exposes channels 0..15. Stage1 programs an absolute 24-bit Flash byte address, a 22-bit physical SDRAM word
-destination, and file and in-memory byte sizes through literal-channel
-`dev_send` calls. Writing `1` to channel 0 starts one command; channel 1
-reports idle (`0`), busy (`1`), done (`2`), or error (`0x8000`). Channels 10
-through 13 held the CRC32 registers before format version 3 and are free.
-Channels 14 and 15 expose the error code and low completed-word count for
-diagnostics. The DMA zero-fills `memory_size - file_size`, so BSS does
-not require a second device command.
-Error codes are stable: `1` means file size exceeds memory size, `2` means the
-Flash extent is invalid, `3` means the physical-memory extent is invalid, and
-`4` and `5` are Flash and SDRAM transport failures.
-Consequently equal offsets in different segments never alias in a cache. DMA
-writes require explicit invalidation before CPU execution or reads; changing a
-segment alone does not invalidate correctly tagged lines.
-
-## System control device and boot error reporting
-
-Device 0 is addressed only with `DEVRECV`/`DEVSEND`. Channel 0 is
-`ICACHE_INVALIDATE_ALL_DELAYED`: a write produces the registered one-cycle-
-delayed whole-I-cache invalidation pulse. Channel 1 is `D_INVALIDATE_ALL`:
-it starts blocking clean-plus-invalidate on the write-back D-cache. Channel 4
-starts blocking `D_CLEAN_ALL`, and channel 5 returns final maintenance status.
-The system controller holds the CPU from command acceptance until the D-cache
-reports success or error. Channel 2 drives the six board LEDs from the low six written
-bits. Channel 3 accepts one UART transmit byte per write (8N1) and reports
-bit 0 set on reads while the transmitter is busy.
-
-After DMA loads, boot code invokes the semantic D-cache invalidation barrier,
-prepares DSEG and the final registers, then invokes the non-returning semantic
-I-cache-invalidate-and-jump intrinsic. The compiler lowers that terminal IR
-operation to adjacent `DEVSEND channel 0; JSEG` words with nothing between.
-
-On failure a boot stage writes channel 2 with `{stage[1:0], category[3:0]}` in
-the low six bits (stage `01` = Stage0, `10` = Stage1; category `1` =
-descriptor/format invalid, `2` = manifest/section invalid, `3` = DMA
-transport failure, `4` = entry/handoff invalid, `5` = internal/timeout) and
-then repeatedly emits a 10-byte UART frame on channel 3: ASCII `CV3B`, stage,
-category, error code, detail low byte, detail high byte, and the XOR checksum
-of bytes 0 through 8. The host reference loaders expose the same mapping as
-`LoaderError::boot_report` for the on-hardware stages to mirror.
-
-The LED word has no success encoding. Independently of software, the fitted
-system drives a passive boot-progress display on the same LEDs (reset held,
-SDRAM initialization, Stage0, DMA, Stage1, application entry, sticky fault);
-the first software write to channel 2 takes ownership permanently until
-reset. All of these patterns are progress evidence only: only the
-application's UART frame and system-level checks establish a successful boot
-(see `systems/cpu-v3-tang-nano-20k/src/boot/FLASH_LAYOUT.md`).
-
-## Boot-select strap device
-
-Device 1 exposes the boot-select channels. The fitted system latches a stable
-one-hot button value during reset and exposes it
-after button release; channel 0 reads it. Stage1 reads the low two bits to
-choose the application: button `10` selects the alternate application
-section, while button `01` and the default `00` select the primary one.
-
-## First data-cache policy
-
-The first processor uses split 4-KiB instruction and data caches. Each is
-two-way set-associative with 64 sets and 32 bytes (16 CPU words) per line. Each
-cache's 2,048 data words are interleaved across two characterized 1024x16 BSRAM
-leaves using `bank = way XOR word_parity`, while the way selects the upper
-address bit inside each bank. Each bank remains one-read, one-write. A lookup
-reads way zero from one bank and way one from the other while both tags are
-compared, then selects the matching registered bank result. Resident reads are
-pipelined: while one lookup resolves, the next may start, for one ordered hit
-request and response per cycle when there is no conflict or backpressure. The two 64-entry
-physical tag arrays map through a characterized
-SSRAM leaf to 24 RAM16 primitives (1,536 physical SSRAM bits). Resettable valid
-and next-victim bits remain ordinary registers. Invalid ways are filled before
-the deterministic per-set victim is replaced. One arbiter shares the SDRAM transaction port;
-instruction misses may not starve refresh or an already accepted data
-transaction.
-
-The I-cache is read-only. D-cache reads and stores allocate a complete line;
-stores set a per-way/set dirty bit in a separate 128-bit SSRAM. Replacing a dirty
-victim writes its complete line before refill. A miss issues one Controller HS burst and captures eight ordered
-32-bit beats in a private refill buffer. Both halves of one buffered beat drain
-into the even and odd BSRAM banks in the same cycle, so a complete line installs
-in eight cycles. Dirty eviction and maintenance stream eight ordered 32-bit
-write beats. Full clean preserves valid lines after successful write-back;
-full invalidate writes dirty lines and then clears all valid state. Both are
-blocking operations driven by the system controller's CPU hold.
-
-The fitted instruction path adds a four-entry register-based fetch queue between
-the core and the boot-memory/I-cache responders. Fetched and outstanding words
-share the four-entry reservation limit. Each downstream request records its
-physical address and an epoch bit; a redirect or global I-cache invalidate clears
-the visible queue and causes late old-epoch responses to be drained without
-becoming architectural. Sequential issue wraps the 16-bit PC without carrying
-into `CSEG`. A redirect issues its target lookup in the restart cycle when a
-metadata slot is available. If the visible queue is empty and the matching
-current-epoch response arrives while the core is ready, the response falls
-through directly instead of spending another cycle in the queue; backpressure
-still stores it normally. The blocking core still retires at most one instruction per cycle
-and performs no cross-instruction execute pipelining.
-
-The first arbiter permits one accepted Controller HS operation. In the host
-scheduler model a due refresh has priority before accepting new client work,
-data-cache traffic wins an idle tie with instruction traffic, and accepted
-work runs atomically to completion. At 54 MHz the initial refresh threshold
-is 600 project cycles (about 11.1 us), matching the board-characterized SDRAM
-self-test with conservative margin. The fitted board system adds the boot DMA
-engine as a third client of the same arbiter, with fixed priority DMA, then
-data, then instruction; there refresh is handled inside the Controller HS
-word-port adapter rather than by the arbiter itself.
