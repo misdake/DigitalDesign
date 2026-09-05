@@ -2,7 +2,7 @@
 //!
 //! serves a single-page UI over plain HTTP (no websocket): commands via POST,
 //! state via GET. Compiles the input source in-process and drives the
-//! architectural `Machine` directly.
+//! architectural `CpuV3Sim` directly.
 
 use cpu_v3::rcc_backend::{self, CompilerOptions as CpuV3Options};
 use cpu_v3_tang_nano_20k::debugger::V3DebugSession;
@@ -110,7 +110,7 @@ fn main() -> ExitCode {
         }
     }
 
-    // single-threaded on purpose: `Machine` is not `Send` (its device trait
+    // single-threaded on purpose: `CpuV3Sim` is not `Send` (its device trait
     // object is not thread-safe), and a debugger is single-user anyway.
     let mut session = session;
     for conn in listener.incoming() {

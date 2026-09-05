@@ -341,7 +341,7 @@ pub struct CpuV3CoreState {
     data_segment: u16,
     prefix: Option<Prefix>,
     /// Transient result of the last CMP-class instruction; mirrors the
-    /// architectural `Machine::pending_test` (consumed by conditional
+    /// architectural `CpuV3Sim::pending_test` (consumed by conditional
     /// branches, expired by any other retired non-prefix instruction).
     pending_test: Option<Ordering>,
     phase: Phase,
@@ -1392,7 +1392,7 @@ mod tests {
     use super::*;
     use crate as cpu_v3;
     use crate::rcc_backend::{self, CompilerOptions};
-    use crate::{AluOp, ImmediateOp, Machine, RunOutcome, SpecialRegister, TestCondition};
+    use crate::{AluOp, ImmediateOp, CpuV3Sim, RunOutcome, SpecialRegister, TestCondition};
     use digital_design_circuit::{build_circuit, Circuit};
     use digital_design_hardware::{ResourceAmount, ResourceKind, VerilogProject};
     use rcc::frontend::compile_program;
@@ -1559,7 +1559,7 @@ mod tests {
                 }
             "#,
         );
-        let mut oracle = Machine::default();
+        let mut oracle = CpuV3Sim::default();
         oracle.load_program(0, &program).unwrap();
         let outcome = oracle.run(10_000).unwrap();
         let RunOutcome::Halted { signal, .. } = outcome else {
@@ -1569,7 +1569,7 @@ mod tests {
         let mut memory = HashMap::new();
         load(&mut memory, 0, &program);
         // The compiler's static-data initialization runs from code, so the
-        // external memory begins with the same zero-filled state as Machine.
+        // external memory begins with the same zero-filled state as CpuV3Sim.
         let core = run_core(memory, 20_000);
         assert_eq!(core.halt_signal, signal);
         assert_eq!(core.retired_words as u64, oracle.retired_words());
@@ -1621,7 +1621,7 @@ mod tests {
             cpu_v3::immediate_unsigned(ImmediateOp::LoadUnsigned, 0, 0),
             cpu_v3::halt(),
         ]);
-        let mut oracle = Machine::default();
+        let mut oracle = CpuV3Sim::default();
         oracle.load_program(0, &program).unwrap();
         let RunOutcome::Halted { signal, .. } = oracle.run(1_000).unwrap() else {
             panic!("oracle did not halt")
@@ -1642,7 +1642,7 @@ mod tests {
             cpu_v3::device_receive(0, 2, 3),
             cpu_v3::halt(),
         ]);
-        let mut oracle = Machine::default();
+        let mut oracle = CpuV3Sim::default();
         oracle.load_program(0, &program).unwrap();
         struct EchoDevice([u16; 16]);
         impl cpu_v3::Device for EchoDevice {
@@ -1719,7 +1719,7 @@ mod tests {
             crate::fpu(crate::FpuOp::Store, 0, 0),
             crate::halt(),
         ]);
-        let mut oracle = Machine::default();
+        let mut oracle = CpuV3Sim::default();
         oracle.load_program(0, &program).unwrap();
         let RunOutcome::Halted { signal, .. } = oracle.run(100).unwrap() else {
             panic!("oracle did not halt")
@@ -1834,7 +1834,7 @@ mod tests {
             crate::halt(),
         ]);
 
-        let mut oracle = Machine::default();
+        let mut oracle = CpuV3Sim::default();
         oracle.load_program(0, &program).unwrap();
         for (index, value) in (1_u16..=16).enumerate() {
             oracle.physical_memory_mut()[0x0100 + index] = value;
@@ -1891,7 +1891,7 @@ mod tests {
         ]);
         let vector = [256_u16, 512, 768, 1024];
         let ones = [256_u16; 4];
-        let mut oracle = Machine::default();
+        let mut oracle = CpuV3Sim::default();
         oracle.load_program(0, &program).unwrap();
         for (lane, value) in vector.into_iter().chain(ones).enumerate() {
             oracle.physical_memory_mut()[0x0100 + lane] = value;
@@ -1936,7 +1936,7 @@ mod tests {
             crate::halt(),
         ]);
         let vector = [384_u16, 512, 768, 1024];
-        let mut oracle = Machine::default();
+        let mut oracle = CpuV3Sim::default();
         oracle.load_program(0, &program).unwrap();
         for (lane, value) in vector.into_iter().enumerate() {
             oracle.physical_memory_mut()[0x0100 + lane] = value;
@@ -1978,7 +1978,7 @@ mod tests {
             crate::fpu(crate::FpuOp::Store, 2, 1), // r2 = sin(0.5)
             crate::halt(),
         ]);
-        let mut oracle = Machine::default();
+        let mut oracle = CpuV3Sim::default();
         oracle.load_program(0, &program).unwrap();
         let RunOutcome::Halted { signal, .. } = oracle.run(200).unwrap() else {
             panic!("oracle did not halt")
@@ -2010,7 +2010,7 @@ mod tests {
             crate::fpu(crate::FpuOp::Store, 0, 4),
             crate::halt(),
         ]);
-        let mut oracle = Machine::default();
+        let mut oracle = CpuV3Sim::default();
         oracle.load_program(0, &program).unwrap();
         let RunOutcome::Halted { signal, .. } = oracle.run(200).unwrap() else {
             panic!("oracle did not halt")

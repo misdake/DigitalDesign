@@ -1,7 +1,7 @@
 //! Host-side reference model for framebuffer scanout and line buffering.
 
 use crate::{
-    framebuffer_word_at, rgb565_to_rgb888, Machine, PhysicalWordAddress, FRAMEBUFFER_A_BASE_WORD,
+    framebuffer_word_at, rgb565_to_rgb888, CpuV3Sim, PhysicalWordAddress, FRAMEBUFFER_A_BASE_WORD,
     FRAMEBUFFER_WIDTH,
 };
 
@@ -16,11 +16,11 @@ pub const DISPLAY_BURST_PIXELS: usize = 16;
 pub const DISPLAY_BURSTS_PER_LINE: usize = DISPLAY_LINE_WORDS / DISPLAY_BURST_PIXELS;
 pub const MEMORY_CYCLES_PER_SOURCE_LINE: usize = 3_600;
 
-pub fn render_frame(machine: &Machine) -> Vec<u32> {
+pub fn render_frame(machine: &CpuV3Sim) -> Vec<u32> {
     render_frame_at(machine, FRAMEBUFFER_A_BASE_WORD)
 }
 
-pub fn render_frame_at(machine: &Machine, framebuffer_base: u32) -> Vec<u32> {
+pub fn render_frame_at(machine: &CpuV3Sim, framebuffer_base: u32) -> Vec<u32> {
     let mut frame = vec![0; HDMI_WIDTH * HDMI_HEIGHT];
     for output_y in 0..HDMI_HEIGHT {
         let source_y = output_y / DISPLAY_SCALE;

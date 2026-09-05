@@ -48,7 +48,7 @@ pub trait Device {
     fn as_any(&self) -> &dyn std::any::Any;
 }
 
-pub struct Machine {
+pub struct CpuV3Sim {
     registers: [Word; 16],
     fpu_registers: [FpuVector; 16],
     fpu_accumulator: i64,
@@ -71,13 +71,13 @@ pub struct Machine {
     halted: bool,
 }
 
-impl Default for Machine {
+impl Default for CpuV3Sim {
     fn default() -> Self {
         Self::with_physical_memory_words(DEFAULT_PHYSICAL_MEMORY_WORDS)
     }
 }
 
-impl Machine {
+impl CpuV3Sim {
     pub fn with_physical_memory_words(words: usize) -> Self {
         assert!(
             words > 0,
@@ -105,7 +105,7 @@ impl Machine {
     }
 }
 
-impl Machine {
+impl CpuV3Sim {
     pub fn load_program(&mut self, base: Word, words: &[Word]) -> Result<(), ProgramLoadError> {
         self.load_physical(PhysicalWordAddress::from(base), words)
     }
@@ -769,7 +769,7 @@ mod tests {
             load(3, 2, 0),
             halt(),
         ]);
-        let mut machine = Machine::default();
+        let mut machine = CpuV3Sim::default();
         machine.load_program(0, &program).unwrap();
 
         assert_eq!(
@@ -786,7 +786,7 @@ mod tests {
 
     #[test]
     fn prefix_and_consumer_retire_as_one_wide_operation() {
-        let mut machine = Machine::default();
+        let mut machine = CpuV3Sim::default();
         machine.load_program(0, &[0xf400, 0x8100, halt()]).unwrap();
         machine.load_program(0x4000, &[0xbeef]).unwrap();
         assert_eq!(machine.step(), Ok(StepOutcome::Running));
@@ -798,7 +798,7 @@ mod tests {
 
     #[test]
     fn non_consumer_retires_and_expires_the_prefix() {
-        let mut machine = Machine::default();
+        let mut machine = CpuV3Sim::default();
         machine
             .load_program(0, &[0xfabc, 0xe111, 0xaf3d, halt()])
             .unwrap();
@@ -815,7 +815,7 @@ mod tests {
 
     #[test]
     fn fpu_domain_fault_is_precise() {
-        let mut machine = Machine::default();
+        let mut machine = CpuV3Sim::default();
         machine
             .load_program(
                 0,
@@ -850,7 +850,7 @@ mod tests {
             crate::fpu(crate::FpuOp::Export4, 2, 2),
             halt(),
         ]);
-        let mut machine = Machine::default();
+        let mut machine = CpuV3Sim::default();
         machine.load_program(0, &program).unwrap();
         machine
             .load_program(0x0100, &[256, 512, (-256_i16) as u16, 128])
@@ -881,7 +881,7 @@ mod tests {
             crate::fpu(crate::FpuOp::AccStore, 4, 0b1111),
             halt(),
         ]);
-        let mut machine = Machine::default();
+        let mut machine = CpuV3Sim::default();
         machine.load_program(0, &program).unwrap();
         machine
             .load_program(0x0100, &[256, 512, 768, 1024])
@@ -896,7 +896,7 @@ mod tests {
 
     #[test]
     fn fpu_fn_15_is_reserved_and_faults() {
-        let mut machine = Machine::default();
+        let mut machine = CpuV3Sim::default();
         machine.load_program(0, &[0xdf00]).unwrap();
         assert_eq!(
             machine.step(),
@@ -922,7 +922,7 @@ mod tests {
             crate::move_register(0, 1),
             halt(),
         ]);
-        let mut machine = Machine::default();
+        let mut machine = CpuV3Sim::default();
         machine.load_program(0, &program).unwrap();
         assert_eq!(
             machine.run(32).unwrap(),
@@ -946,7 +946,7 @@ mod tests {
             population_count(5, 1),
             halt(),
         ]);
-        let mut machine = Machine::default();
+        let mut machine = CpuV3Sim::default();
         machine.load_program(0, &program).unwrap();
         machine.run(20).unwrap();
 
@@ -970,7 +970,7 @@ mod tests {
         application.extend(load_immediate16(6, 0x1234));
         application.extend([load(0, 6, 0), halt()]);
 
-        let mut machine = Machine::default();
+        let mut machine = CpuV3Sim::default();
         machine.load_program(0, &boot).unwrap();
         machine.load_segment(1, 0x0020, &application).unwrap();
         machine.load_segment(2, 0x1234, &[0xbeef]).unwrap();
@@ -994,7 +994,7 @@ mod tests {
         program.extend(load_immediate16(1, 1));
         program.extend([write_data_segment(1), load(0, 0, 0)]);
 
-        let mut machine = Machine::with_physical_memory_words(1 << 16);
+        let mut machine = CpuV3Sim::with_physical_memory_words(1 << 16);
         machine.load_program(0, &program).unwrap();
         assert_eq!(
             machine.run(8),
@@ -1016,7 +1016,7 @@ mod tests {
         program.extend(load_immediate16(3, 0x55aa));
         program.extend([write_data_segment(1), store(3, 2, 0), load(0, 2, 0), halt()]);
 
-        let mut machine = Machine::default();
+        let mut machine = CpuV3Sim::default();
         machine.load_program(0, &program).unwrap();
         machine.attach_device(0, Box::new(EchoDevice { channels: [0; 16] }));
         assert_eq!(
@@ -1054,7 +1054,7 @@ mod tests {
                 immediate_unsigned(ImmediateOp::LoadUnsigned, 0, 9),
                 halt(),
             ]);
-            let mut machine = Machine::default();
+            let mut machine = CpuV3Sim::default();
             machine.load_program(0, &program).unwrap();
             let expected = if taken { 0 } else { 9 };
             assert_eq!(
@@ -1083,7 +1083,7 @@ mod tests {
             immediate_unsigned(ImmediateOp::LoadUnsigned, 0, 2),
             halt(),
         ]);
-        let mut machine = Machine::default();
+        let mut machine = CpuV3Sim::default();
         machine.load_program(0, &program).unwrap();
         assert_eq!(
             machine.run(16).unwrap(),
@@ -1104,7 +1104,7 @@ mod tests {
         program.extend(std::iter::repeat_n(filler, 0x103));
         program.extend([immediate_unsigned(ImmediateOp::LoadUnsigned, 1, 2), halt()]);
 
-        let mut machine = Machine::default();
+        let mut machine = CpuV3Sim::default();
         machine.load_program(0, &program).unwrap();
         assert_eq!(
             machine.run(0x200).unwrap(),
@@ -1120,7 +1120,7 @@ mod tests {
 
     #[test]
     fn conditional_branch_without_a_pending_test_faults() {
-        let mut machine = Machine::default();
+        let mut machine = CpuV3Sim::default();
         machine
             .load_program(0, &[branch(TestCondition::Equal, 0)])
             .unwrap();
@@ -1136,7 +1136,7 @@ mod tests {
 
     #[test]
     fn stale_branch_fault_reports_the_prefix_address_and_retires_nothing() {
-        let mut machine = Machine::default();
+        let mut machine = CpuV3Sim::default();
         let words = prefixed_branch(branch(TestCondition::NotEqual, 0), 0);
         machine.load_program(0, &words).unwrap();
         assert_eq!(machine.step(), Ok(StepOutcome::Running));
@@ -1154,7 +1154,7 @@ mod tests {
     #[test]
     fn reserved_branch_conditions_fault() {
         for condition in [0x6, 0x7, 0xa, 0xf] {
-            let mut machine = Machine::default();
+            let mut machine = CpuV3Sim::default();
             machine
                 .load_program(0, &[0xb000 | (condition << 8)])
                 .unwrap();
@@ -1173,7 +1173,7 @@ mod tests {
     #[test]
     fn prefixes_are_transparent_to_the_pending_test() {
         // CMP; IMMHI12; BR: the prefix sits between producer and consumer.
-        let mut machine = Machine::default();
+        let mut machine = CpuV3Sim::default();
         machine
             .load_program(
                 0,
@@ -1198,7 +1198,7 @@ mod tests {
 
     #[test]
     fn unconditional_jumps_expire_the_pending_test() {
-        let mut machine = Machine::default();
+        let mut machine = CpuV3Sim::default();
         machine
             .load_program(
                 0,
@@ -1226,7 +1226,7 @@ mod tests {
 
     #[test]
     fn jump_and_link_relative_links_the_fall_through_address() {
-        let mut machine = Machine::default();
+        let mut machine = CpuV3Sim::default();
         machine
             .load_program(0, &[jump_and_link_relative(2), nop(), nop(), halt()])
             .unwrap();
@@ -1243,7 +1243,7 @@ mod tests {
 
     #[test]
     fn jump_and_link_register_requires_the_fixed_link_register() {
-        let mut machine = Machine::default();
+        let mut machine = CpuV3Sim::default();
         machine.load_program(0, &[0xe5d1]).unwrap();
         assert_eq!(
             machine.step(),
@@ -1254,7 +1254,7 @@ mod tests {
             })
         );
 
-        let mut machine = Machine::default();
+        let mut machine = CpuV3Sim::default();
         machine
             .load_program(
                 0,
@@ -1333,7 +1333,7 @@ mod tests {
         ]);
         program.push(halt());
 
-        let mut machine = Machine::default();
+        let mut machine = CpuV3Sim::default();
         machine.load_program(0, &program).unwrap();
         assert!(matches!(
             machine.run(100).unwrap(),
@@ -1380,7 +1380,7 @@ mod tests {
 
     #[test]
     fn device_instructions_route_to_an_attached_device() {
-        let mut machine = Machine::default();
+        let mut machine = CpuV3Sim::default();
         machine
             .load_program(0, &device_round_trip_program())
             .unwrap();
@@ -1400,7 +1400,7 @@ mod tests {
 
     #[test]
     fn unconnected_device_reads_zero_and_writes_are_ignored() {
-        let mut machine = Machine::default();
+        let mut machine = CpuV3Sim::default();
         machine
             .load_program(0, &device_round_trip_program())
             .unwrap();

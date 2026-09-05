@@ -10,7 +10,7 @@ use super::{
     STAGE1_HANDOFF_SIZE_BYTES, SYSCTL_LED, SYSCTL_UART, SYSTEM_CONTROL_DEVICE,
 };
 use crate::{
-    device_send, jump_segment, load_immediate16, write_data_segment, Machine, PhysicalWordAddress,
+    device_send, jump_segment, load_immediate16, write_data_segment, CpuV3Sim, PhysicalWordAddress,
     ProgramLoadError, Word,
 };
 
@@ -435,7 +435,7 @@ impl ApplicationHandoff {
 
 pub fn run_stage0(
     flash: &[u8],
-    memory: &mut Machine,
+    memory: &mut CpuV3Sim,
     expected_target: BootTarget,
 ) -> Result<Stage0Handoff, LoaderError> {
     // Real hardware has no direct Flash read path: Stage0 DMAs the fixed
@@ -483,7 +483,7 @@ pub fn run_stage0(
 /// buffer first and parses that copy.
 pub fn run_stage1(
     flash: &[u8],
-    memory: &mut Machine,
+    memory: &mut CpuV3Sim,
     stage0: Stage0Handoff,
 ) -> Result<ApplicationHandoff, LoaderError> {
     let descriptor = stage0.descriptor;
@@ -509,7 +509,7 @@ pub fn run_stage1(
     })
 }
 
-fn run_dma(flash: &[u8], memory: &mut Machine, command: DmaCommand) -> Result<(), LoaderError> {
+fn run_dma(flash: &[u8], memory: &mut CpuV3Sim, command: DmaCommand) -> Result<(), LoaderError> {
     let mut dma = FlashToDramDma::default();
     dma.start(command, flash.len(), memory.physical_memory_words())?;
     loop {
@@ -534,7 +534,7 @@ fn command_for_section(section: SectionRecord) -> DmaCommand {
 fn validate_stage0_descriptor(
     descriptor: &BootDescriptor,
     flash: &[u8],
-    memory: &Machine,
+    memory: &CpuV3Sim,
     expected_target: BootTarget,
 ) -> Result<(), LoaderError> {
     if descriptor.target != expected_target {
@@ -870,7 +870,7 @@ mod tests {
     #[test]
     fn dma_holds_state_during_backpressure_and_zero_fills_the_tail() {
         let flash = [0x11, 0x22, 0x33];
-        let mut memory = Machine::with_physical_memory_words(64);
+        let mut memory = CpuV3Sim::with_physical_memory_words(64);
         let mut dma = FlashToDramDma::default();
         dma.start(
             DmaCommand {
@@ -908,7 +908,7 @@ mod tests {
     #[test]
     fn stage0_and_stage1_load_then_enter_the_segmented_application() {
         let flash = image();
-        let mut memory = Machine::default();
+        let mut memory = CpuV3Sim::default();
         let stage0 = run_stage0(&flash, &mut memory, BootTarget::TangNano20K).unwrap();
         // Stage0 read the descriptor through DMA into the scratch range.
         assert_eq!(
@@ -988,7 +988,7 @@ mod tests {
     fn a_descriptor_with_bad_magic_is_rejected_before_any_stage1_dma() {
         let mut flash = image();
         flash[0] ^= 1;
-        let mut memory = Machine::default();
+        let mut memory = CpuV3Sim::default();
         let error = run_stage0(&flash, &mut memory, BootTarget::TangNano20K).unwrap_err();
         assert!(matches!(
             error,

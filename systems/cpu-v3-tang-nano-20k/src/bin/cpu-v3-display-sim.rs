@@ -1,4 +1,4 @@
-use cpu_v3::Machine;
+use cpu_v3::CpuV3Sim;
 use cpu_v3_tang_nano_20k::boot::SystemControlDevice;
 use cpu_v3_tang_nano_20k::display::{render_frame_at, write_ppm};
 #[cfg(feature = "display-window")]
@@ -52,7 +52,7 @@ fn options() -> Result<Options, String> {
 
 fn main() -> Result<(), String> {
     let options = options()?;
-    let mut machine = Machine::default();
+    let mut machine = CpuV3Sim::default();
     machine
         .load_program(0, DISPLAY_DEMO_PROGRAM)
         .map_err(|error| format!("cannot load display demo: {error:?}"))?;

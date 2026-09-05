@@ -1,15 +1,15 @@
 //! interactive debugger session for CpuV3 programs: step/breakpoints/variable
-//! inspection over the instruction-level `Machine` and a `.dbg`-derived
+//! inspection over the instruction-level `CpuV3Sim` and a `.dbg`-derived
 //! `DebugInfo`.
 //!
-//! The session drives the architectural `Machine` directly (registers, FPU
+//! The session drives the architectural `CpuV3Sim` directly (registers, FPU
 //! vectors, physical memory) and never touches the RTL. Addresses in the
-//! debug info are code-base-relative word offsets, which match `Machine::pc`
+//! debug info are code-base-relative word offsets, which match `CpuV3Sim::pc`
 //! while the code segment is zero (segment switching is outside the debugger's
 //! scope).
 
 use cpu_v3::rcc_backend::CpuV3Program;
-use cpu_v3::{Fault, FaultKind, Instruction, Machine, PhysicalWordAddress, StepOutcome, Word};
+use cpu_v3::{Fault, FaultKind, Instruction, CpuV3Sim, PhysicalWordAddress, StepOutcome, Word};
 use rcc::{DebugFunc, DebugInfo, DebugVar, VarLoc};
 use std::collections::{HashMap, HashSet};
 use std::fmt::Write as _;
@@ -23,7 +23,7 @@ const LINK_REGISTER: u8 = 14;
 const LIBRARY_STEP_LIMIT: usize = 10_000_000;
 
 pub struct V3DebugSession {
-    pub machine: Machine,
+    pub machine: CpuV3Sim,
     pub debug: DebugInfo,
     pub breakpoints: HashSet<usize>,
     pub disasm: Vec<DisasmLine>,
@@ -110,7 +110,7 @@ impl V3DebugSession {
             .and_then(Path::parent)
             .map(Path::to_path_buf)
             .unwrap_or_default();
-        let mut machine = Machine::default();
+        let mut machine = CpuV3Sim::default();
         load_machine(&mut machine, code_base, &words);
         let disasm = build_disasm(&words, code_base, &program.debug);
 
@@ -131,7 +131,7 @@ impl V3DebugSession {
     }
 
     pub fn reset(&mut self) {
-        let mut machine = Machine::default();
+        let mut machine = CpuV3Sim::default();
         load_machine(&mut machine, self.code_base, &self.words);
         self.machine = machine;
         self.last_halt = None;
@@ -499,7 +499,7 @@ impl V3DebugSession {
 
 /// load a CpuV3 program into a fresh machine and enter it directly at its
 /// code base (no register bootstrap, so the pc starts at the first source line)
-fn load_machine(machine: &mut Machine, code_base: Word, words: &[Word]) {
+fn load_machine(machine: &mut CpuV3Sim, code_base: Word, words: &[Word]) {
     machine.load_program(code_base, words).expect("load program");
     machine.set_pc(code_base);
 }

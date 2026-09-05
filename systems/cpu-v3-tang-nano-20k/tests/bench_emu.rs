@@ -218,7 +218,7 @@ fn main() {
             for path in paths {
                 let source = read_to_string(&path).unwrap();
                 let words = compile(&source);
-                let mut machine = cpu_v3::Machine::default();
+                let mut machine = cpu_v3::CpuV3Sim::default();
                 machine.load_program(0, &words).unwrap();
                 let outcome = machine.run(200_000_000).unwrap();
                 let name = path.file_stem().unwrap().to_str().unwrap();

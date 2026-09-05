@@ -1,4 +1,4 @@
-//! Machine-owned arbiter between CpuV3 instruction/data traffic, boot DMA,
+//! CpuV3Sim-owned arbiter between CpuV3 instruction/data traffic, boot DMA,
 //! and the Tang Nano 20K physical SDRAM line/word port.
 //!
 //! Cache clients speak line transactions: one aligned request transfers four
