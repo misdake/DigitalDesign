@@ -116,6 +116,11 @@ cargo run -p cpu-v3-tang-nano-20k --bin cpu-v3-pack -- manifest
 cargo run -p cpu-v3-tang-nano-20k --bin cpu-v3-boot-assets
 ```
 
+The FPGA system's S1/default and S2-selected RCC applications are the only
+manual inputs in `systems/cpu-v3-tang-nano-20k/boot-applications.conf`. The
+build derives their entries and package layout and exports an independently
+repackable manifest through `cpu-v3-boot-assets`.
+
 `cpu-v3-dbg` compiles a CPU V3 rcc source file (or a directory whose `main.rs`
 is the entry) in-process and serves a single-page web debugger. Library code
 under `rcc_std/` is stepped over and hidden from the call stack.

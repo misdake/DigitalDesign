@@ -21,12 +21,13 @@ firmware can report either success or a detailed error code. These patterns are
 progress evidence only; only the application's UART frame and system-level
 checks establish a successful boot.
 
-Stage1 maps the single-button S2 choice directly to the framebuffer demo:
-reset-time button values `00`/`01` select the primary DDHT diagnostic, while
-`10` (S2) selects the CPU/FPU sine, cosine, and circle demo; `11` is ignored by
-the board-level selection latch. The display application is loaded at
-`0007:0200`; it renders through cached CPU stores and cleans D-cache before each
-vblank framebuffer publication.
+Stage1 maps the single-button S2 choice to the application's derived S2 slot:
+reset-time button values `00`/`01` select the configured S1/default application,
+while `10` selects the configured S2 application; `11` is ignored by the
+board-level selection latch. The current configuration uses the primary DDHT
+diagnostic for S1 and the CPU/FPU sine, cosine, and circle demo for S2. The S2
+slot is loaded at `0007:0200`; the current display program renders through
+cached CPU stores and cleans D-cache before each vblank framebuffer publication.
 
 The current board's runtime SFDP probe reports an 8-MiB device. Its JEDEC ID is
 `EF 40 17`; this is a Winbond-family 64-Mbit part even though some board
@@ -72,14 +73,14 @@ all passed host-side checks. The Gowin project CLI exposes this as
 range against the target's fitted flash capacity. The programmer sniffs the
 file format by extension, so the binary must be named `*.bin`.
 
-Materialize the exact package already generated from the system's RCC sources,
-then write it separately from the audited FPGA image:
+For development, one command audits the existing FPGA artifact, materializes
+and independently repacks the configured applications, compares their package
+hashes, writes the package at `0x100000`, restores the audited SRAM bitstream,
+and performs the default application's UART check:
 
 ```powershell
-cargo run -p cpu-v3-tang-nano-20k --bin cpu-v3-boot-assets
-cargo run -p cpu-v3-tang-nano-20k --example cpu_v3_system -- `
-    --program-flash 0x100000 target/cpu-v3-boot/cpu-v3-boot.bin
-cargo run -p cpu-v3-tang-nano-20k --example cpu_v3_system -- --program-existing
+powershell -ExecutionPolicy Bypass -File hardware/vendor/gowin/scripts/run_board_validation.ps1 `
+    -Profile cpu-v3-system -Mode Full -Port COM8 -WriteBootFlash
 ```
 
 For a stand-alone cold boot, write one validated image containing both the
@@ -92,7 +93,13 @@ powershell -ExecutionPolicy Bypass -File hardware/vendor/gowin/scripts/run_board
 ```
 
 `cpu-v3-boot-assets` does not compile a parallel copy of the firmware. It exports
-the Stage0, Stage1, application, data, package, and map files produced by the
-package build script in `OUT_DIR`, together with their sizes and fingerprints.
-The repository `quick` validation independently repacks the exported section
-files through `cpu-v3-pack` and requires byte-for-byte equality with that package.
+the Stage0, Stage1, S1/S2 application binaries, package, layout map, generated
+Stage1 selection source, and generated offline pack manifest produced in Cargo
+`OUT_DIR`, together with their sizes and fingerprints. The repository `quick`
+validation independently repacks those exported section files through
+`cpu-v3-pack` and requires byte-for-byte equality with the generated package.
+
+To replace an application, edit only `boot-applications.conf` and change the
+`s1` or `s2` source path. Layout, selection, asset names, package metadata, and
+the programming inputs are regenerated automatically. `boot-project.map` is
+the human-readable audit of the resulting source-to-slot mapping.

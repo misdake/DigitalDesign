@@ -12,6 +12,8 @@
 
 use crate::dsl_rt::*;
 mod device_abi;
+mod boot_selection;
+use boot_selection::*;
 
 /// Manifest buffer: 192 words = 384 bytes, holding the 48-byte header plus
 /// up to ten 32-byte section records. Zero-initialized statics emit no
@@ -145,10 +147,15 @@ fn main() {
     if m[MW_PACKAGE_LO] != desc[DW_PACKAGE_LO] || m[MW_PACKAGE_HI] != desc[DW_PACKAGE_HI] {
         boot_fail(2, CATEGORY_MANIFEST, 1, 0);
     }
+    if m[MW_APP_CSEG] != S1_CODE_SEGMENT
+        || m[MW_APP_ENTRY] != S1_ENTRY_OFFSET
+        || m[MW_APP_DSEG] != S1_DATA_SEGMENT
+    {
+        boot_fail(2, CATEGORY_MANIFEST, 3, 0);
+    }
 
-    // Read the reset-time choice before loading application sections. Button
-    // Button 10 (S2) selects the FPU/display application in segment 7;
-    // button 01 and the default 00 select segment 3.
+    // Read the reset-time choice before loading application sections. The
+    // generated selection module defines both application slots.
     let selection = dev_recv(BOOT_SELECT_DEVICE, BOOT_SELECT_VALUE) & 3;
     let mut i: u16 = 0;
     while i < count {
@@ -189,21 +196,29 @@ fn main() {
             0
         };
 
-        let is_primary_application = if kind == 1 && (flags & 4) != 0 && d_hi == 3 {
+        let is_s1_application = if kind == 1
+            && (flags & 4) != 0
+            && d_hi == S1_CODE_SEGMENT
+            && d_lo == S1_ENTRY_OFFSET
+        {
             1
         } else {
             0
         };
-        let is_display_application = if kind == 1 && (flags & 4) != 0 && d_hi == 7 {
+        let is_s2_application = if kind == 1
+            && (flags & 4) != 0
+            && d_hi == S2_CODE_SEGMENT
+            && d_lo == S2_ENTRY_OFFSET
+        {
             1
         } else {
             0
         };
         let mut skip_unselected: u16 = 0;
-        if selection == 2 && is_primary_application == 1 {
+        if selection == 2 && is_s1_application == 1 {
             skip_unselected = 1;
         }
-        if selection != 2 && is_display_application == 1 {
+        if selection != 2 && is_s2_application == 1 {
             skip_unselected = 1;
         }
 
@@ -233,17 +248,13 @@ fn main() {
     // every handoff field is read into registers before MTSR, because the
     // manifest buffer lives in the Stage1 data segment. The application
     // initializes its own stack pointer from its compiled-in `--stack-init`.
-    let mut dseg = m[MW_APP_DSEG];
-    let mut cseg = m[MW_APP_CSEG];
-    let mut entry = m[MW_APP_ENTRY];
-    // Button 10 (S2) selects the FPU/display application at 0007:0200. It uses
-    // data segment zero because its framebuffer helper temporarily changes
-    // DSEG and restores zero.
-    // Button 01 and the power-on default use the manifest's primary entry.
+    let mut dseg = S1_DATA_SEGMENT;
+    let mut cseg = S1_CODE_SEGMENT;
+    let mut entry = S1_ENTRY_OFFSET;
     if selection == 2 {
-        dseg = 0;
-        cseg = 7;
-        entry = 0x0200;
+        dseg = S2_DATA_SEGMENT;
+        cseg = S2_CODE_SEGMENT;
+        entry = S2_ENTRY_OFFSET;
     }
     dcache_invalidate_all();
     mtsr_dseg(dseg);

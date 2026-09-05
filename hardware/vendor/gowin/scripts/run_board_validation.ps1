@@ -151,10 +151,22 @@ try {
     if ($WriteBootFlash -or $WriteCompleteFlash) {
         $bootAssetsDirectory = Join-Path $repoRoot "target/cpu-v3-boot"
         $bootPackagePath = Join-Path $bootAssetsDirectory "cpu-v3-boot.bin"
+        $packManifestPath = Join-Path $bootAssetsDirectory "boot.cpu-v3-manifest"
+        $repackedPackagePath = Join-Path $runDirectory "cpu-v3-boot.repacked.bin"
+        $repackedMapPath = Join-Path $runDirectory "cpu-v3-boot.repacked.map"
         Invoke-CargoStage "materialize generated boot package" "run" @(
             "-p", "cpu-v3-tang-nano-20k", "--bin", "cpu-v3-boot-assets",
             "--", $bootAssetsDirectory
         )
+        Invoke-CargoStage "independently repack generated boot manifest" "run" @(
+            "-p", "cpu-v3-tang-nano-20k", "--bin", "cpu-v3-pack", "--",
+            $packManifestPath, "-o", $repackedPackagePath, "--map", $repackedMapPath
+        )
+        $generatedPackageHash = (Get-FileHash -Algorithm SHA256 -LiteralPath $bootPackagePath).Hash
+        $repackedPackageHash = (Get-FileHash -Algorithm SHA256 -LiteralPath $repackedPackagePath).Hash
+        if ($generatedPackageHash -ne $repackedPackageHash) {
+            throw "independently repacked boot package does not match the generated package"
+        }
         if ($WriteBootFlash) {
             Invoke-CargoStage "program external boot Flash once" "run" @(
                 "-p", $configuration.Package, "--example", $configuration.Example,
@@ -173,20 +185,12 @@ try {
             throw "Gowin configuration binary is missing beside the audited bitstream: $configurationBinPath"
         }
 
-        $packManifestPath = Join-Path $repoRoot "systems/cpu-v3-tang-nano-20k/examples/cpu_v3_system/boot.cpu-v3-manifest"
-        $repackedPackagePath = Join-Path $runDirectory "cpu-v3-boot.repacked.bin"
-        $repackedMapPath = Join-Path $runDirectory "cpu-v3-boot.repacked.map"
         $completeFlashPath = Join-Path $runDirectory "cpu-v3-complete-flash.bin"
         Invoke-CargoStage "build complete power-on Flash image" "run" @(
             "-p", "cpu-v3-tang-nano-20k", "--bin", "cpu-v3-pack", "--",
             $packManifestPath, "-o", $repackedPackagePath, "--map", $repackedMapPath,
             "--configuration-bin", $configurationBinPath, "--flash-image", $completeFlashPath
         )
-        $generatedPackageHash = (Get-FileHash -Algorithm SHA256 -LiteralPath $bootPackagePath).Hash
-        $repackedPackageHash = (Get-FileHash -Algorithm SHA256 -LiteralPath $repackedPackagePath).Hash
-        if ($generatedPackageHash -ne $repackedPackageHash) {
-            throw "independently repacked boot package does not match the generated package"
-        }
         Invoke-CargoStage "program complete power-on Flash image once" "run" @(
             "-p", $configuration.Package, "--example", $configuration.Example,
             "--", "--program-flash", "0x000000", $completeFlashPath

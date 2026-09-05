@@ -6,11 +6,11 @@
 //! (device 0), with the flash image backing the DMA model.
 
 use cpu_v3::rcc_backend::{self, CompilerOptions, CpuV3Program};
-use cpu_v3::{decode, FpuOp, FpuUnaryOp, Instruction, Machine, PhysicalWordAddress};
+use cpu_v3::{decode, FpuOp, FpuUnaryOp, Instruction, Machine};
 use cpu_v3_tang_nano_20k::boot::{
-    build_boot_image, BootDmaDevice, BootEntry, BootErrorReport, BootImageSpec, BootSelectDevice,
-    BootTarget, InputSection, SectionKind, SystemControlDevice, CACHE_MAINTENANCE_STATUS,
-    D_CLEAN_ALL, SECTION_EXECUTE, SECTION_READ, SECTION_WRITE, SYSTEM_CONTROL_DEVICE,
+    BootDmaDevice, BootErrorReport, BootSelectDevice, BootTarget, SystemControlDevice,
+    CACHE_MAINTENANCE_STATUS, D_CLEAN_ALL, S1_APPLICATION_LAYOUT, S2_APPLICATION_LAYOUT,
+    STAGE1_LAYOUT, SYSTEM_CONTROL_DEVICE,
 };
 use cpu_v3_tang_nano_20k::{
     DisplayDevice, DISPLAY_CONTROL, DISPLAY_DEVICE, DISPLAY_FRAMEBUFFER_HIGH,
@@ -28,16 +28,16 @@ fn compile_cpu_v3(file: &str, opts: &CompilerOptions) -> CpuV3Program {
         &src,
         opts,
         &mut |name| {
-            std::fs::read_to_string(source_dir.join(format!("{name}.rs")))
-                .map_err(|error| format!("read module `{name}`: {error}"))
+            let path = if name == "boot_selection" {
+                std::path::PathBuf::from(env!("OUT_DIR")).join("boot-selection.generated.rs")
+            } else {
+                source_dir.join(format!("{name}.rs"))
+            };
+            std::fs::read_to_string(path).map_err(|error| format!("read module `{name}`: {error}"))
         },
     )
     .expect("rcc compile failed");
     rcc_backend::compile(program, opts, "main")
-}
-
-fn words_bytes(words: &[u16]) -> Vec<u8> {
-    words.iter().flat_map(|word| word.to_le_bytes()).collect()
 }
 
 fn assert_canonical_cache_handoff(stage: &str, words: &[u16]) {
@@ -207,49 +207,15 @@ fn display_swap_waits_for_dcache_clean_before_publishing_the_back_buffer() {
     );
 }
 
-fn section(
-    name: &str,
-    destination: u32,
-    data: Vec<u8>,
-    memory_size_bytes: u32,
-    flags: u16,
-) -> InputSection {
-    InputSection {
-        name: name.into(),
-        kind: SectionKind::Load,
-        flags,
-        destination: PhysicalWordAddress::new(destination),
-        data,
-        memory_size_bytes,
-        alignment_bytes: 32,
-    }
-}
-
-/// Compiles both boot stages and the selectable applications into the flash image.
-/// Returns the flash bytes and the Stage0 image (linked at code base 0).
+/// Loads the package generated from the declarative application project and
+/// recompiles both boot stages for focused handoff assertions.
 fn boot_setup() -> (Vec<u8>, CpuV3Program) {
     let stage0 = compile_cpu_v3("stage0.rs", &CompilerOptions::default());
     let stage1 = compile_cpu_v3(
         "stage1.rs",
         &CompilerOptions {
-            code_base: 0x0100,
-            stack_init: 0xf000,
-            ..CompilerOptions::default()
-        },
-    );
-    let application = compile_cpu_v3(
-        "boot-demo.rs",
-        &CompilerOptions {
-            code_base: 0x0200,
-            stack_init: 0xe000,
-            ..CompilerOptions::default()
-        },
-    );
-    let display_application = compile_cpu_v3(
-        "display-demo.rs",
-        &CompilerOptions {
-            code_base: 0x0200,
-            stack_init: 0xf000,
+            code_base: STAGE1_LAYOUT.entry.offset,
+            stack_init: STAGE1_LAYOUT.entry.stack_offset,
             ..CompilerOptions::default()
         },
     );
@@ -263,82 +229,16 @@ fn boot_setup() -> (Vec<u8>, CpuV3Program) {
         stage0.words.len()
     );
 
-    let stage1_bytes = words_bytes(&stage1.words);
-    let application_bytes = words_bytes(&application.words);
-    let display_application_bytes = words_bytes(&display_application.words);
-    let image = build_boot_image(BootImageSpec {
-        target: BootTarget::TangNano20K,
-        stage1_section: "stage1".into(),
-        stage1_entry: BootEntry {
-            code_segment: 1,
-            offset: 0x0100,
-            data_segment: 2,
-            stack_offset: 0xf000,
-        },
-        application_entry: BootEntry {
-            code_segment: 3,
-            offset: 0x0200,
-            data_segment: 4,
-            stack_offset: 0xe000,
-        },
-        sections: vec![
-            InputSection {
-                name: "stage1".into(),
-                kind: SectionKind::Load,
-                flags: SECTION_READ | SECTION_EXECUTE,
-                destination: PhysicalWordAddress::new(0x0001_0100),
-                memory_size_bytes: stage1_bytes.len() as u32,
-                data: stage1_bytes,
-                alignment_bytes: 32,
-            },
-            InputSection {
-                name: "application".into(),
-                kind: SectionKind::Load,
-                flags: SECTION_READ | SECTION_EXECUTE,
-                destination: PhysicalWordAddress::new(0x0003_0200),
-                memory_size_bytes: application_bytes.len() as u32,
-                data: application_bytes,
-                alignment_bytes: 32,
-            },
-            InputSection {
-                name: "application-display".into(),
-                kind: SectionKind::Load,
-                flags: SECTION_READ | SECTION_EXECUTE,
-                destination: PhysicalWordAddress::new(0x0007_0200),
-                memory_size_bytes: display_application_bytes.len() as u32,
-                data: display_application_bytes,
-                alignment_bytes: 32,
-            },
-            section(
-                "data",
-                0x0004_0000,
-                vec![0xef, 0xbe, 0x55],
-                8,
-                SECTION_READ | SECTION_WRITE,
-            ),
-            InputSection {
-                name: "bss".into(),
-                kind: SectionKind::Zero,
-                flags: SECTION_READ | SECTION_WRITE,
-                destination: PhysicalWordAddress::new(0x0004_0100),
-                data: vec![],
-                memory_size_bytes: 64,
-                alignment_bytes: 32,
-            },
-        ],
-    })
-    .expect("boot image builds");
-
     let target = BootTarget::TangNano20K;
     let mut flash = vec![0xff; target.flash_bytes() as usize];
     let base = target.payload_flash_offset() as usize;
-    flash[base..base + image.bytes.len()].copy_from_slice(&image.bytes);
+    let package = include_bytes!(concat!(env!("OUT_DIR"), "/cpu-v3-boot.bin"));
+    flash[base..base + package.len()].copy_from_slice(package);
     (flash, stage0)
 }
 
 /// Runs the packed image from reset with the device models attached, bounded
-/// by `max_steps`. The BSS range is dirtied first so the test proves the
-/// Zero section DMA actually clears it.
+/// by `max_steps`.
 fn run_boot(
     flash: Vec<u8>,
     stage0: &CpuV3Program,
@@ -347,13 +247,10 @@ fn run_boot(
 ) -> Machine {
     let mut machine = Machine::default();
     machine
-        .load_physical(PhysicalWordAddress::new(0x0004_0100), &[0xffff; 32])
+        .load_physical(S1_APPLICATION_LAYOUT.destination(), &[0xdead])
         .unwrap();
     machine
-        .load_physical(PhysicalWordAddress::new(0x0003_0200), &[0xdead])
-        .unwrap();
-    machine
-        .load_physical(PhysicalWordAddress::new(0x0007_0200), &[0xdead])
+        .load_physical(S2_APPLICATION_LAYOUT.destination(), &[0xdead])
         .unwrap();
     machine.attach_device(0, Box::<SystemControlDevice>::default());
     machine.attach_device(1, Box::new(BootSelectDevice::new(boot_selection)));
@@ -401,14 +298,20 @@ fn button_01_boots_the_primary_application_from_flash() {
     assert_eq!(sysctl.led, Some(0b00_0001));
 
     // The machine reached the application segments.
-    assert_eq!(machine.code_segment(), 3);
-    assert_eq!(machine.data_segment(), 4);
+    assert_eq!(
+        machine.code_segment(),
+        S1_APPLICATION_LAYOUT.entry.code_segment
+    );
+    assert_eq!(
+        machine.data_segment(),
+        S1_APPLICATION_LAYOUT.entry.data_segment
+    );
     assert_ne!(
-        machine.physical_memory(PhysicalWordAddress::new(0x0003_0200)),
+        machine.physical_memory(S1_APPLICATION_LAYOUT.destination()),
         0xdead
     );
     assert_eq!(
-        machine.physical_memory(PhysicalWordAddress::new(0x0007_0200)),
+        machine.physical_memory(S2_APPLICATION_LAYOUT.destination()),
         0xdead,
         "the unselected display application must not be DMA-loaded"
     );
@@ -416,24 +319,6 @@ fn button_01_boots_the_primary_application_from_flash() {
     // minus its small frame.
     let sp = machine.register(13).unwrap();
     assert!((0xdfc0..=0xe000).contains(&sp), "sp = {sp:#06x}");
-
-    // The data section landed (with zero-filled tail) and BSS was cleared.
-    assert_eq!(
-        machine.physical_memory(PhysicalWordAddress::new(0x0004_0000)),
-        0xbeef
-    );
-    assert_eq!(
-        machine.physical_memory(PhysicalWordAddress::new(0x0004_0001)),
-        0x0055
-    );
-    assert_eq!(
-        machine.physical_memory(PhysicalWordAddress::new(0x0004_0003)),
-        0
-    );
-    assert_eq!(
-        machine.physical_memory(PhysicalWordAddress::new(0x0004_0100)),
-        0
-    );
 }
 
 #[test]
@@ -441,15 +326,21 @@ fn button_10_boots_the_fpu_display_application_from_flash() {
     let (flash, stage0) = boot_setup();
     let machine = run_boot(flash, &stage0, 0b10, 500_000);
 
-    assert_eq!(machine.code_segment(), 7);
-    assert_eq!(machine.data_segment(), 0);
     assert_eq!(
-        machine.physical_memory(PhysicalWordAddress::new(0x0003_0200)),
+        machine.code_segment(),
+        S2_APPLICATION_LAYOUT.entry.code_segment
+    );
+    assert_eq!(
+        machine.data_segment(),
+        S2_APPLICATION_LAYOUT.entry.data_segment
+    );
+    assert_eq!(
+        machine.physical_memory(S1_APPLICATION_LAYOUT.destination()),
         0xdead,
         "the unselected primary application must not be DMA-loaded"
     );
     assert_ne!(
-        machine.physical_memory(PhysicalWordAddress::new(0x0007_0200)),
+        machine.physical_memory(S2_APPLICATION_LAYOUT.destination()),
         0xdead
     );
     let sysctl = machine.device::<SystemControlDevice>(0).unwrap();

@@ -41,7 +41,7 @@ function Invoke-Cargo {
 
 function Invoke-BootArtifactValidation {
     $bootDirectory = Join-Path $repoRoot "target/cpu-v3-boot"
-    $manifest = Join-Path $repoRoot "systems/cpu-v3-tang-nano-20k/examples/cpu_v3_system/boot.cpu-v3-manifest"
+    $manifest = Join-Path $bootDirectory "boot.cpu-v3-manifest"
     $generatedPackage = Join-Path $bootDirectory "cpu-v3-boot.bin"
     $repackedPackage = Join-Path $bootDirectory "cpu-v3-boot.repacked.bin"
     $repackedMap = Join-Path $bootDirectory "cpu-v3-boot.repacked.map"
