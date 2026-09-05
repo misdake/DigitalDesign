@@ -39,7 +39,9 @@ pub struct DisplayDevice {
     high_written: Cell<bool>,
     pending: Cell<bool>,
     invalid_address: Cell<bool>,
-    auto_vblank_on_frame_index_read: bool,
+    pause_on_frame_index_wait: bool,
+    frame_index_observed: Cell<bool>,
+    waiting_for_vblank: Cell<bool>,
 }
 
 impl Default for DisplayDevice {
@@ -53,15 +55,17 @@ impl Default for DisplayDevice {
             high_written: Cell::new(false),
             pending: Cell::new(false),
             invalid_address: Cell::new(false),
-            auto_vblank_on_frame_index_read: false,
+            pause_on_frame_index_wait: false,
+            frame_index_observed: Cell::new(false),
+            waiting_for_vblank: Cell::new(false),
         }
     }
 }
 
 impl DisplayDevice {
-    pub(crate) fn with_auto_vblank_on_frame_index_read(enabled: bool) -> Self {
+    pub(crate) fn with_pause_on_frame_index_wait(enabled: bool) -> Self {
         Self {
-            auto_vblank_on_frame_index_read: enabled,
+            pause_on_frame_index_wait: enabled,
             ..Self::default()
         }
     }
@@ -78,12 +82,20 @@ impl DisplayDevice {
         self.pending.get()
     }
 
+    pub fn waiting_for_vblank(&self) -> bool {
+        self.waiting_for_vblank.get()
+    }
+
     /// Advances through one vblank event and atomically applies a pending base.
-    pub fn advance_frame(&self) {
+    pub fn advance_frame(&self) -> bool {
         self.frame_index.set(self.frame_index.get().wrapping_add(1));
-        if self.pending.replace(false) {
+        self.frame_index_observed.set(false);
+        self.waiting_for_vblank.set(false);
+        let swap_applied = self.pending.replace(false);
+        if swap_applied {
             self.active_base.set(self.pending_base.get());
         }
+        swap_applied
     }
 
     fn submit_swap(&self) {
@@ -123,8 +135,8 @@ impl Device for DisplayDevice {
         match channel {
             DISPLAY_FRAME_INDEX => {
                 let frame_index = self.frame_index.get();
-                if self.auto_vblank_on_frame_index_read {
-                    self.advance_frame();
+                if self.pause_on_frame_index_wait && self.frame_index_observed.replace(true) {
+                    self.waiting_for_vblank.set(true);
                 }
                 frame_index
             }

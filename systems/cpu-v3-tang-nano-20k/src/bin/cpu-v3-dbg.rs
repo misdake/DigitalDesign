@@ -248,6 +248,20 @@ fn route(
             let json = session.mem_json(addr, len);
             ("200 OK", "application/json", json.into_bytes())
         }
+        ("POST", "/api/vblank") => {
+            let swap_applied = session.system.advance_vblank();
+            let display = session.system.display_state();
+            let (width, height) =
+                cpu_v3_tang_nano_20k::system_sim::CpuV3SystemSim::framebuffer_dimensions();
+            let json = format!(
+                "{{\"width\":{width},\"height\":{height},\"active_base\":{},\"frame_index\":{},\"swap_pending\":{},\"waiting_for_vblank\":{},\"swap_applied\":{swap_applied}}}",
+                display.active_base,
+                display.frame_index,
+                display.swap_pending,
+                display.waiting_for_vblank
+            );
+            ("200 OK", "application/json", json.into_bytes())
+        }
         ("GET", "/api/framebuffer") => (
             "200 OK",
             "application/octet-stream",
@@ -261,7 +275,12 @@ fn route(
                 Some("over") => session.step_over(1_000_000),
                 Some("out") => session.step_out(1_000_000),
                 Some("continue") => {
-                    let _ = session.continue_run(5_000_000);
+                    let maximum_steps = q
+                        .get("max")
+                        .and_then(|value| value.parse().ok())
+                        .unwrap_or(5_000_000usize)
+                        .clamp(1, 5_000_000);
+                    let _ = session.continue_run(maximum_steps);
                 }
                 Some("reset") => session.reset(),
                 _ => return ("400 Bad Request", "text/plain", b"unknown cmd".to_vec()),
@@ -333,10 +352,25 @@ mod tests {
     }
 
     #[test]
+    fn vblank_route_advances_without_refreshing_the_framebuffer() {
+        let mut session = session();
+        let (status, content_type, payload) = route("POST", "/api/vblank", &mut session);
+        assert_eq!(status, "200 OK");
+        assert_eq!(content_type, "application/json");
+        assert_eq!(
+            String::from_utf8(payload).unwrap(),
+            "{\"width\":320,\"height\":240,\"active_base\":2097408,\"frame_index\":1,\"swap_pending\":false,\"waiting_for_vblank\":false,\"swap_applied\":false}"
+        );
+    }
+
+    #[test]
     fn ui_contains_a_collapsed_framebuffer_canvas() {
         assert!(UI.contains("<details id=\"displayPanel\""));
         assert!(!UI.contains("<details id=\"displayPanel\" open"));
         assert!(UI.contains("<canvas id=\"displayCanvas\""));
         assert!(UI.contains("fetch('/api/framebuffer')"));
+        assert!(UI.contains("requestAnimationFrame(async () =>"));
+        assert!(UI.contains("Pass VBlank"));
+        assert!(!UI.contains("RUN_STEPS_PER_FRAME"));
     }
 }

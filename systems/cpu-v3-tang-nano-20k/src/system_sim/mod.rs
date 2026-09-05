@@ -12,9 +12,11 @@ use crate::{
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub enum VBlankMode {
+    /// Frame-index reads never pause the CPU; the host advances vblank explicitly.
     #[default]
     Manual,
-    AutoOnFrameIndexRead,
+    /// A repeated frame-index read marks a wait that a host event must release.
+    PauseOnFrameIndexWait,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -22,6 +24,8 @@ pub struct DisplayState {
     pub active_base: u32,
     pub frame_index: u16,
     pub swap_pending: bool,
+    /// The CPU observed the same frame index again and is waiting for a host vblank.
+    pub waiting_for_vblank: bool,
 }
 
 pub struct CpuV3SystemSim {
@@ -41,8 +45,8 @@ impl CpuV3SystemSim {
         cpu.attach_device(SYSTEM_CONTROL_DEVICE, Box::<SystemControlDevice>::default());
         cpu.attach_device(
             DISPLAY_DEVICE,
-            Box::new(DisplayDevice::with_auto_vblank_on_frame_index_read(
-                vblank_mode == VBlankMode::AutoOnFrameIndexRead,
+            Box::new(DisplayDevice::with_pause_on_frame_index_wait(
+                vblank_mode == VBlankMode::PauseOnFrameIndexWait,
             )),
         );
         Self { cpu, vblank_mode }
@@ -65,11 +69,25 @@ impl CpuV3SystemSim {
     }
 
     pub fn run(&mut self, maximum_steps: usize) -> Result<RunOutcome, Fault> {
-        self.cpu.run(maximum_steps)
+        for steps in 0..maximum_steps {
+            if self.waiting_for_vblank() {
+                return Ok(RunOutcome::StepLimit { steps });
+            }
+            if let StepOutcome::Halted { signal } = self.cpu.step()? {
+                return Ok(RunOutcome::Halted {
+                    steps: steps + 1,
+                    signal,
+                });
+            }
+        }
+        Ok(RunOutcome::StepLimit {
+            steps: maximum_steps,
+        })
     }
 
-    pub fn advance_vblank(&mut self) {
-        self.display().advance_frame();
+    /// Advances one display vblank and reports whether it published a swap.
+    pub fn advance_vblank(&mut self) -> bool {
+        self.display().advance_frame()
     }
 
     pub fn display_state(&self) -> DisplayState {
@@ -78,7 +96,12 @@ impl CpuV3SystemSim {
             active_base: display.active_base(),
             frame_index: display.frame_index(),
             swap_pending: display.swap_pending(),
+            waiting_for_vblank: display.waiting_for_vblank(),
         }
+    }
+
+    pub fn waiting_for_vblank(&self) -> bool {
+        self.display().waiting_for_vblank()
     }
 
     pub fn render_active_framebuffer(&self) -> Vec<u32> {
@@ -141,17 +164,18 @@ mod tests {
                 active_base: FRAMEBUFFER_A_BASE_WORD,
                 frame_index: 0,
                 swap_pending: true,
+                waiting_for_vblank: false,
             }
         );
-        sim.advance_vblank();
+        assert!(sim.advance_vblank());
         assert_eq!(sim.display_state().active_base, FRAMEBUFFER_B_BASE_WORD);
         assert_eq!(sim.display_state().frame_index, 1);
         assert!(!sim.display_state().swap_pending);
     }
 
     #[test]
-    fn automatic_mode_advances_after_frame_index_reads() {
-        let mut sim = CpuV3SystemSim::new(VBlankMode::AutoOnFrameIndexRead);
+    fn pause_mode_stops_at_a_frame_index_wait() {
+        let mut sim = CpuV3SystemSim::new(VBlankMode::PauseOnFrameIndexWait);
         sim.cpu_mut()
             .load_program(
                 0,
@@ -164,13 +188,14 @@ mod tests {
                 ],
             )
             .unwrap();
-        assert!(matches!(
-            sim.run(5),
-            Ok(RunOutcome::Halted { steps: 5, .. })
-        ));
+        assert_eq!(sim.run(16), Ok(RunOutcome::StepLimit { steps: 2 }));
         assert_eq!(sim.cpu().register(1), Some(0));
+        assert_eq!(sim.cpu().register(2), Some(0));
+        assert!(sim.waiting_for_vblank());
+        assert!(!sim.advance_vblank());
+        assert!(matches!(sim.run(16), Ok(RunOutcome::Halted { .. })));
         assert_eq!(sim.cpu().register(2), Some(1));
-        assert_eq!(sim.display_state().frame_index, 2);
+        assert_eq!(sim.display_state().frame_index, 1);
     }
 
     #[test]

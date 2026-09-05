@@ -133,7 +133,9 @@ usage: cpu-v3-dbg <input.rs | input-dir> [--code-base N] [--stack-init N] [--por
 It opens the browser automatically on `http://127.0.0.1:8322` and provides
 source tabs per module, breakpoints, step/over/out/continue, variables, call
 stack, registers/F0-F15/ACC, memory, and a collapsible 320x240 framebuffer
-preview from the Tang Nano 20K functional system simulator.
+preview from the Tang Nano 20K functional system simulator. Frame-index waits
+pause CPU execution; the display panel can release one vblank manually or on
+the next browser `requestAnimationFrame`, without starting an unbounded CPU run.
 
 ## Documentation
 

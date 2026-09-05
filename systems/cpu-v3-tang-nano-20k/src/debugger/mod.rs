@@ -111,7 +111,7 @@ impl V3DebugSession {
             .and_then(Path::parent)
             .map(Path::to_path_buf)
             .unwrap_or_default();
-        let mut system = CpuV3SystemSim::new(VBlankMode::AutoOnFrameIndexRead);
+        let mut system = CpuV3SystemSim::new(VBlankMode::PauseOnFrameIndexWait);
         load_machine(system.cpu_mut(), code_base, &words);
         let disasm = build_disasm(&words, code_base, &program.debug);
 
@@ -218,6 +218,9 @@ impl V3DebugSession {
     }
 
     fn machine_step(&mut self) {
+        if self.system.waiting_for_vblank() {
+            return;
+        }
         match self.system.step() {
             Ok(StepOutcome::Halted { signal }) => self.last_halt = Some(signal),
             Ok(StepOutcome::Running) => {}
@@ -228,7 +231,7 @@ impl V3DebugSession {
 
     /// one step, draining a library call so it appears as a single unit
     fn step_once(&mut self, max: usize) {
-        if self.last_halt.is_some() || self.fault.is_some() {
+        if self.execution_stopped() {
             return;
         }
         let change = self.step_change();
@@ -236,7 +239,7 @@ impl V3DebugSession {
             let target_depth = self.depth().saturating_sub(1);
             for _ in 0..max {
                 self.step_change();
-                if self.last_halt.is_some() || self.fault.is_some() || self.depth() <= target_depth {
+                if self.execution_stopped() || self.depth() <= target_depth {
                     break;
                 }
             }
@@ -248,19 +251,27 @@ impl V3DebugSession {
         self.call_stack.len()
     }
 
+    pub fn waiting_for_vblank(&self) -> bool {
+        self.system.waiting_for_vblank()
+    }
+
+    fn execution_stopped(&self) -> bool {
+        self.last_halt.is_some() || self.fault.is_some() || self.waiting_for_vblank()
+    }
+
     pub fn step(&mut self) {
         self.step_once(LIBRARY_STEP_LIMIT);
     }
 
     /// step until the current source line changes (or the program halts)
     pub fn next_line(&mut self, max_cycles: usize) {
-        if self.last_halt.is_some() || self.fault.is_some() {
+        if self.execution_stopped() {
             return;
         }
         let cur = self.current_line();
         for _ in 0..max_cycles {
             self.step_once(max_cycles);
-            if self.last_halt.is_some() || self.fault.is_some() {
+            if self.execution_stopped() {
                 return;
             }
             if self.breakpoints.contains(&(self.cpu().pc() as usize)) {
@@ -274,14 +285,14 @@ impl V3DebugSession {
 
     /// step over: run until the source line changes without going deeper
     pub fn step_over(&mut self, max_cycles: usize) {
-        if self.last_halt.is_some() || self.fault.is_some() {
+        if self.execution_stopped() {
             return;
         }
         let cur = self.current_line();
         let depth0 = self.depth();
         for _ in 0..max_cycles {
             self.step_once(max_cycles);
-            if self.last_halt.is_some() || self.fault.is_some() {
+            if self.execution_stopped() {
                 return;
             }
             if self.breakpoints.contains(&(self.cpu().pc() as usize)) {
@@ -295,7 +306,7 @@ impl V3DebugSession {
 
     /// step out: run until the current function returns
     pub fn step_out(&mut self, max_cycles: usize) {
-        if self.last_halt.is_some() || self.fault.is_some() {
+        if self.execution_stopped() {
             return;
         }
         if self.depth() == 0 {
@@ -304,7 +315,7 @@ impl V3DebugSession {
         let depth0 = self.depth();
         for _ in 0..max_cycles {
             self.step_once(max_cycles);
-            if self.last_halt.is_some() || self.fault.is_some() {
+            if self.execution_stopped() {
                 return;
             }
             if self.breakpoints.contains(&(self.cpu().pc() as usize)) {
@@ -324,8 +335,11 @@ impl V3DebugSession {
         if self.fault.is_some() {
             return (None, None);
         }
+        if self.waiting_for_vblank() {
+            return (None, None);
+        }
         self.step_once(max_cycles);
-        if self.last_halt.is_some() || self.fault.is_some() {
+        if self.execution_stopped() {
             return (None, self.last_halt);
         }
         for _ in 0..max_cycles {
@@ -333,7 +347,7 @@ impl V3DebugSession {
                 return (Some(self.cpu().pc() as usize), None);
             }
             self.step_once(max_cycles);
-            if self.last_halt.is_some() || self.fault.is_some() {
+            if self.execution_stopped() {
                 return (None, self.last_halt);
             }
         }
@@ -676,12 +690,13 @@ impl V3DebugSession {
         let (display_width, display_height) = CpuV3SystemSim::framebuffer_dimensions();
         let _ = write!(
             out,
-            "\"display\":{{\"width\":{},\"height\":{},\"active_base\":{},\"frame_index\":{},\"swap_pending\":{}}},",
+            "\"display\":{{\"width\":{},\"height\":{},\"active_base\":{},\"frame_index\":{},\"swap_pending\":{},\"waiting_for_vblank\":{}}},",
             display_width,
             display_height,
             display.active_base,
             display.frame_index,
-            display.swap_pending
+            display.swap_pending,
+            display.waiting_for_vblank
         );
         match self.halted() {
             Some(h) => {
@@ -1032,9 +1047,10 @@ mod tests {
     use super::*;
     use crate::boot::{SystemControlDevice, SYSTEM_CONTROL_DEVICE};
     use crate::{
-        device_send, halt, load_immediate16, DisplayDevice, DISPLAY_CONTROL, DISPLAY_DEVICE,
-        DISPLAY_FRAMEBUFFER_HIGH, DISPLAY_FRAMEBUFFER_LOW, DISPLAY_NEXT_SWAP,
-        FRAMEBUFFER_A_BASE_WORD, FRAMEBUFFER_B_BASE_WORD,
+        branch, compare_unsigned, device_receive, device_send, halt, load_immediate16,
+        DisplayDevice, TestCondition, DISPLAY_CONTROL, DISPLAY_DEVICE, DISPLAY_FRAMEBUFFER_HIGH,
+        DISPLAY_FRAMEBUFFER_LOW, DISPLAY_FRAME_INDEX, DISPLAY_NEXT_SWAP, FRAMEBUFFER_A_BASE_WORD,
+        FRAMEBUFFER_B_BASE_WORD,
     };
 
     fn session(words: Vec<Word>) -> V3DebugSession {
@@ -1051,7 +1067,7 @@ mod tests {
         let mut session = session(vec![halt()]);
         assert_eq!(
             session.system.vblank_mode(),
-            VBlankMode::AutoOnFrameIndexRead
+            VBlankMode::PauseOnFrameIndexWait
         );
         assert!(session
             .system
@@ -1067,7 +1083,7 @@ mod tests {
         session.reset();
         assert_eq!(
             session.system.vblank_mode(),
-            VBlankMode::AutoOnFrameIndexRead
+            VBlankMode::PauseOnFrameIndexWait
         );
         assert!(session
             .system
@@ -1093,7 +1109,7 @@ mod tests {
         assert_eq!(halt, Some(0));
         let state = session.state_json(None);
         assert!(state.contains(&format!(
-            "\"display\":{{\"width\":320,\"height\":240,\"active_base\":{FRAMEBUFFER_A_BASE_WORD},\"frame_index\":0,\"swap_pending\":true}}"
+            "\"display\":{{\"width\":320,\"height\":240,\"active_base\":{FRAMEBUFFER_A_BASE_WORD},\"frame_index\":0,\"swap_pending\":true,\"waiting_for_vblank\":false}}"
         )));
 
         session.system.advance_vblank();
@@ -1114,5 +1130,27 @@ mod tests {
         let bytes = session.framebuffer_rgb888();
         assert_eq!(bytes.len(), 320 * 240 * 3);
         assert_eq!(&bytes[..6], &[0xff, 0x00, 0x00, 0x00, 0x00, 0x00]);
+    }
+
+    #[test]
+    fn continue_stops_at_vblank_and_does_not_run_again_until_released() {
+        let mut session = session(vec![
+            device_receive(1, DISPLAY_DEVICE, DISPLAY_FRAME_INDEX),
+            device_receive(2, DISPLAY_DEVICE, DISPLAY_FRAME_INDEX),
+            compare_unsigned(2, 1),
+            branch(TestCondition::Equal, -3),
+            halt(),
+        ]);
+
+        assert_eq!(session.continue_run(16), (None, None));
+        assert!(session.waiting_for_vblank());
+        assert_eq!(session.steps, 2);
+
+        assert_eq!(session.continue_run(16), (None, None));
+        assert_eq!(session.steps, 2, "a waiting CPU must remain paused");
+
+        assert!(!session.system.advance_vblank());
+        assert_eq!(session.continue_run(16), (None, Some(0)));
+        assert_eq!(session.halted(), Some(0));
     }
 }
