@@ -1,12 +1,12 @@
 //! End-to-end CpuV3 two-stage boot: the real rcc Stage0/Stage1/demo programs
 //! are compiled with the CpuV3 backend, packed into a boot image with the
-//! `cpu-v3-pack` builder, and executed on the `cpu_v3::sim::Machine` oracle from
+//! `cpu-v3-pack` builder, and executed on the `cpu_v3::sim::CpuV3Sim` oracle from
 //! reset (CSEG=0, PC=0). Device models attached to the machine's device bus
 //! stand in for the boot DMA engine (device 2) and the system-control block
 //! (device 0), with the flash image backing the DMA model.
 
 use cpu_v3::rcc_backend::{self, CompilerOptions, CpuV3Program};
-use cpu_v3::{decode, FpuOp, FpuUnaryOp, Instruction, Machine};
+use cpu_v3::{decode, FpuOp, FpuUnaryOp, Instruction, CpuV3Sim};
 use cpu_v3_tang_nano_20k::boot::{
     BootDmaDevice, BootErrorReport, BootSelectDevice, BootTarget, SystemControlDevice,
     CACHE_MAINTENANCE_STATUS, D_CLEAN_ALL, S1_APPLICATION_LAYOUT, S2_APPLICATION_LAYOUT,
@@ -244,8 +244,8 @@ fn run_boot(
     stage0: &CpuV3Program,
     boot_selection: u16,
     max_steps: usize,
-) -> Machine {
-    let mut machine = Machine::default();
+) -> CpuV3Sim {
+    let mut machine = CpuV3Sim::default();
     machine
         .load_physical(S1_APPLICATION_LAYOUT.destination(), &[0xdead])
         .unwrap();

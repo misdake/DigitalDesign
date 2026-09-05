@@ -1377,9 +1377,9 @@ mod tests {
         run_with_options(source, CompilerOptions::default()).0
     }
 
-    fn run_with_options(source: &str, options: CompilerOptions) -> (u16, cpu_v3::Machine) {
+    fn run_with_options(source: &str, options: CompilerOptions) -> (u16, cpu_v3::CpuV3Sim) {
         let program = compile(source, options);
-        let mut machine = cpu_v3::Machine::default();
+        let mut machine = cpu_v3::CpuV3Sim::default();
         machine
             .load_program(program.code_base, &program.words)
             .unwrap();
@@ -1493,7 +1493,7 @@ mod tests {
             }
         }
         let program = compile(source, CompilerOptions::default());
-        let mut machine = cpu_v3::Machine::default();
+        let mut machine = cpu_v3::CpuV3Sim::default();
         machine.load_program(0, &program.words).unwrap();
         machine.attach_device(2, Box::new(EchoDevice([0; 16])));
         let signal = match machine.run(10_000).unwrap() {
@@ -1516,7 +1516,7 @@ mod tests {
             }
         "#;
         let program = compile(source, CompilerOptions::default());
-        let mut machine = cpu_v3::Machine::default();
+        let mut machine = cpu_v3::CpuV3Sim::default();
         machine
             .load_program(program.code_base, &program.words)
             .unwrap();
@@ -1575,7 +1575,7 @@ mod tests {
             }
         "#;
         let program = compile(source, CompilerOptions::default());
-        let mut machine = cpu_v3::Machine::default();
+        let mut machine = cpu_v3::CpuV3Sim::default();
         machine
             .load_program(program.code_base, &program.words)
             .unwrap();

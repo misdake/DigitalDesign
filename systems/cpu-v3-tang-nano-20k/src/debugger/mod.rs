@@ -1,15 +1,16 @@
 //! interactive debugger session for CpuV3 programs: step/breakpoints/variable
-//! inspection over the instruction-level `Machine` and a `.dbg`-derived
-//! `DebugInfo`.
+//! inspection over the functional Tang Nano 20K system simulator and a
+//! `.dbg`-derived `DebugInfo`.
 //!
-//! The session drives the architectural `Machine` directly (registers, FPU
-//! vectors, physical memory) and never touches the RTL. Addresses in the
-//! debug info are code-base-relative word offsets, which match `Machine::pc`
+//! The session drives [`CpuV3SystemSim`], whose CPU remains the architectural
+//! [`CpuV3Sim`] rather than RTL. Addresses in the debug info are
+//! code-base-relative word offsets, which match `CpuV3Sim::pc`
 //! while the code segment is zero (segment switching is outside the debugger's
 //! scope).
 
+use crate::system_sim::{CpuV3SystemSim, VBlankMode};
 use cpu_v3::rcc_backend::CpuV3Program;
-use cpu_v3::{Fault, FaultKind, Instruction, Machine, PhysicalWordAddress, StepOutcome, Word};
+use cpu_v3::{Fault, FaultKind, Instruction, CpuV3Sim, PhysicalWordAddress, StepOutcome, Word};
 use rcc::{DebugFunc, DebugInfo, DebugVar, VarLoc};
 use std::collections::{HashMap, HashSet};
 use std::fmt::Write as _;
@@ -23,7 +24,7 @@ const LINK_REGISTER: u8 = 14;
 const LIBRARY_STEP_LIMIT: usize = 10_000_000;
 
 pub struct V3DebugSession {
-    pub machine: Machine,
+    pub system: CpuV3SystemSim,
     pub debug: DebugInfo,
     pub breakpoints: HashSet<usize>,
     pub disasm: Vec<DisasmLine>,
@@ -110,12 +111,12 @@ impl V3DebugSession {
             .and_then(Path::parent)
             .map(Path::to_path_buf)
             .unwrap_or_default();
-        let mut machine = Machine::default();
-        load_machine(&mut machine, code_base, &words);
+        let mut system = CpuV3SystemSim::new(VBlankMode::AutoOnFrameIndexRead);
+        load_machine(system.cpu_mut(), code_base, &words);
         let disasm = build_disasm(&words, code_base, &program.debug);
 
         V3DebugSession {
-            machine,
+            system,
             debug: program.debug,
             breakpoints: HashSet::new(),
             disasm,
@@ -131,24 +132,29 @@ impl V3DebugSession {
     }
 
     pub fn reset(&mut self) {
-        let mut machine = Machine::default();
-        load_machine(&mut machine, self.code_base, &self.words);
-        self.machine = machine;
+        let mode = self.system.vblank_mode();
+        let mut system = CpuV3SystemSim::new(mode);
+        load_machine(system.cpu_mut(), self.code_base, &self.words);
+        self.system = system;
         self.last_halt = None;
         self.fault = None;
         self.call_stack.clear();
         self.steps = 0;
     }
 
+    fn cpu(&self) -> &CpuV3Sim {
+        self.system.cpu()
+    }
+
     /// execute one logical instruction (a wide operation is one unit),
     /// recording a halt/fault and maintaining the shadow call stack
     fn step_change(&mut self) -> StepChange {
-        let mut inst = self.fetch_inst(self.machine.pc());
+        let mut inst = self.fetch_inst(self.cpu().pc());
         // a wide operation starts with a prefix word; skip it so call/return
         // detection and stepping observe whole instructions, not half of one
         if matches!(inst, Instruction::Prefix { .. }) {
             self.machine_step();
-            inst = self.fetch_inst(self.machine.pc());
+            inst = self.fetch_inst(self.cpu().pc());
         }
 
         let is_call = matches!(
@@ -158,7 +164,7 @@ impl V3DebugSession {
         let is_return = matches!(inst, Instruction::JumpRegister { target: LINK_REGISTER });
 
         let arg_values = if is_call {
-            let regs = self.machine.registers();
+            let regs = self.cpu().registers();
             std::array::from_fn(|i| regs[usize::from(ARG_REGS[i])])
         } else {
             [0; 6]
@@ -172,8 +178,8 @@ impl V3DebugSession {
         }
 
         if is_call {
-            let func_addr = self.machine.pc() as usize;
-            let return_addr = self.machine.register(LINK_REGISTER).unwrap_or(0) as usize;
+            let func_addr = self.cpu().pc() as usize;
+            let return_addr = self.cpu().register(LINK_REGISTER).unwrap_or(0) as usize;
             let func_name = self
                 .debug
                 .functions
@@ -204,15 +210,15 @@ impl V3DebugSession {
     }
 
     fn fetch_inst(&self, pc: Word) -> Instruction {
-        let word = self.machine.physical_memory(PhysicalWordAddress::from_segment_offset(
-            self.machine.code_segment(),
+        let word = self.cpu().physical_memory(PhysicalWordAddress::from_segment_offset(
+            self.cpu().code_segment(),
             pc,
         ));
         cpu_v3::decode(word)
     }
 
     fn machine_step(&mut self) {
-        match self.machine.step() {
+        match self.system.step() {
             Ok(StepOutcome::Halted { signal }) => self.last_halt = Some(signal),
             Ok(StepOutcome::Running) => {}
             Err(fault) => self.fault = Some(fault),
@@ -257,7 +263,7 @@ impl V3DebugSession {
             if self.last_halt.is_some() || self.fault.is_some() {
                 return;
             }
-            if self.breakpoints.contains(&(self.machine.pc() as usize)) {
+            if self.breakpoints.contains(&(self.cpu().pc() as usize)) {
                 return;
             }
             if self.current_line() != cur {
@@ -278,7 +284,7 @@ impl V3DebugSession {
             if self.last_halt.is_some() || self.fault.is_some() {
                 return;
             }
-            if self.breakpoints.contains(&(self.machine.pc() as usize)) {
+            if self.breakpoints.contains(&(self.cpu().pc() as usize)) {
                 return;
             }
             if self.depth() <= depth0 && self.current_line() != cur {
@@ -301,7 +307,7 @@ impl V3DebugSession {
             if self.last_halt.is_some() || self.fault.is_some() {
                 return;
             }
-            if self.breakpoints.contains(&(self.machine.pc() as usize)) {
+            if self.breakpoints.contains(&(self.cpu().pc() as usize)) {
                 return;
             }
             if self.depth() < depth0 {
@@ -323,8 +329,8 @@ impl V3DebugSession {
             return (None, self.last_halt);
         }
         for _ in 0..max_cycles {
-            if self.breakpoints.contains(&(self.machine.pc() as usize)) {
-                return (Some(self.machine.pc() as usize), None);
+            if self.breakpoints.contains(&(self.cpu().pc() as usize)) {
+                return (Some(self.cpu().pc() as usize), None);
             }
             self.step_once(max_cycles);
             if self.last_halt.is_some() || self.fault.is_some() {
@@ -361,7 +367,7 @@ impl V3DebugSession {
 
     /// the function containing `pc`, if any
     pub fn current_func(&self) -> Option<&DebugFunc> {
-        let pc = self.machine.pc() as usize;
+        let pc = self.cpu().pc() as usize;
         self.debug
             .functions
             .iter()
@@ -371,7 +377,7 @@ impl V3DebugSession {
     /// current source line (file index, line) closest to `pc` within the
     /// current function, as in the v2 driver
     pub fn current_line(&self) -> Option<(u16, u32)> {
-        let pc = self.machine.pc() as usize;
+        let pc = self.cpu().pc() as usize;
         let func = self.current_func()?;
         let entries = self.debug.lines.iter().filter(|(addr, file, _)| {
             *file == func.file && (func.addr.0..func.addr.1).contains(addr)
@@ -401,9 +407,7 @@ impl V3DebugSession {
         match v.loc {
             VarLoc::Global(addr) => VarValue::Mem(addr, self.preview(addr, &v.ty)),
             VarLoc::Frame(slot) => {
-                let addr = self
-                    .machine
-                    .registers()[usize::from(STACK_REGISTER)]
+                let addr = self.cpu().registers()[usize::from(STACK_REGISTER)]
                     .wrapping_add(slot as u16);
                 VarValue::Mem(addr, self.preview(addr, &v.ty))
             }
@@ -419,7 +423,7 @@ impl V3DebugSession {
                                 .map(|i| frame.arg_values[i])
                         })
                 });
-                VarValue::Reg(r, saved.unwrap_or(self.machine.registers()[usize::from(r)]))
+                VarValue::Reg(r, saved.unwrap_or(self.cpu().registers()[usize::from(r)]))
             }
             VarLoc::ParamIndex(_) => VarValue::Unavailable,
             VarLoc::Ssa => VarValue::Unavailable,
@@ -435,7 +439,7 @@ impl V3DebugSession {
             return in_scope;
         }
 
-        let pc = self.machine.pc() as usize;
+        let pc = self.cpu().pc() as usize;
         let first_source = self
             .debug
             .lines
@@ -482,9 +486,9 @@ impl V3DebugSession {
     }
 
     fn data_word(&self, offset: u16) -> u16 {
-        self.machine
+        self.cpu()
             .physical_memory(PhysicalWordAddress::from_segment_offset(
-                self.machine.data_segment(),
+                self.cpu().data_segment(),
                 offset,
             ))
     }
@@ -499,7 +503,7 @@ impl V3DebugSession {
 
 /// load a CpuV3 program into a fresh machine and enter it directly at its
 /// code base (no register bootstrap, so the pc starts at the first source line)
-fn load_machine(machine: &mut Machine, code_base: Word, words: &[Word]) {
+fn load_machine(machine: &mut CpuV3Sim, code_base: Word, words: &[Word]) {
     machine.load_program(code_base, words).expect("load program");
     machine.set_pc(code_base);
 }
@@ -658,15 +662,26 @@ fn ordering_name(ordering: std::cmp::Ordering) -> &'static str {
 impl V3DebugSession {
     pub fn state_json(&self, view_file: Option<u16>) -> String {
         let mut out = String::from("{");
-        let pc = self.machine.pc();
+        let pc = self.cpu().pc();
         let _ = write!(
             out,
             "\"pc\":{},\"cseg\":{},\"dseg\":{},\"cycles\":{},\"retired\":{},",
             pc,
-            self.machine.code_segment(),
-            self.machine.data_segment(),
+            self.cpu().code_segment(),
+            self.cpu().data_segment(),
             self.steps,
-            self.machine.retired_words()
+            self.cpu().retired_words()
+        );
+        let display = self.system.display_state();
+        let (display_width, display_height) = CpuV3SystemSim::framebuffer_dimensions();
+        let _ = write!(
+            out,
+            "\"display\":{{\"width\":{},\"height\":{},\"active_base\":{},\"frame_index\":{},\"swap_pending\":{}}},",
+            display_width,
+            display_height,
+            display.active_base,
+            display.frame_index,
+            display.swap_pending
         );
         match self.halted() {
             Some(h) => {
@@ -689,7 +704,7 @@ impl V3DebugSession {
                 let _ = write!(out, "\"fault\":null,");
             }
         }
-        match self.machine.pending_test() {
+        match self.cpu().pending_test() {
             Some(ordering) => {
                 let _ = write!(out, "\"test\":\"{}\",", ordering_name(ordering));
             }
@@ -697,7 +712,7 @@ impl V3DebugSession {
                 let _ = write!(out, "\"test\":null,");
             }
         }
-        let regs = self.machine.registers();
+        let regs = self.cpu().registers();
         let _ = write!(
             out,
             "\"regs\":[{}],",
@@ -706,7 +721,7 @@ impl V3DebugSession {
                 .collect::<Vec<_>>()
                 .join(",")
         );
-        let fpu = self.machine.fpu_registers();
+        let fpu = self.cpu().fpu_registers();
         let _ = write!(
             out,
             "\"fpu\":[{}],",
@@ -718,7 +733,7 @@ impl V3DebugSession {
                 .collect::<Vec<_>>()
                 .join(",")
         );
-        let _ = write!(out, "\"acc\":{},", self.machine.fpu_accumulator());
+        let _ = write!(out, "\"acc\":{},", self.cpu().fpu_accumulator());
         let _ = write!(
             out,
             "\"breakpoints\":[{}],",
@@ -996,5 +1011,108 @@ impl V3DebugSession {
             .map(|i| self.data_word(addr.wrapping_add(i)).to_string())
             .collect();
         format!("{{\"addr\":{addr},\"words\":[{}]}}", words.join(","))
+    }
+
+    pub fn framebuffer_rgb888(&self) -> Vec<u8> {
+        let pixels = self.system.render_active_framebuffer();
+        let mut bytes = Vec::with_capacity(pixels.len() * 3);
+        for pixel in pixels {
+            bytes.extend_from_slice(&[
+                (pixel >> 16) as u8,
+                (pixel >> 8) as u8,
+                pixel as u8,
+            ]);
+        }
+        bytes
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::boot::{SystemControlDevice, SYSTEM_CONTROL_DEVICE};
+    use crate::{
+        device_send, halt, load_immediate16, DisplayDevice, DISPLAY_CONTROL, DISPLAY_DEVICE,
+        DISPLAY_FRAMEBUFFER_HIGH, DISPLAY_FRAMEBUFFER_LOW, DISPLAY_NEXT_SWAP,
+        FRAMEBUFFER_A_BASE_WORD, FRAMEBUFFER_B_BASE_WORD,
+    };
+
+    fn session(words: Vec<Word>) -> V3DebugSession {
+        V3DebugSession::from_program(CpuV3Program {
+            code_base: 0,
+            words,
+            listing: String::new(),
+            debug: DebugInfo::default(),
+        })
+    }
+
+    #[test]
+    fn reset_rebuilds_the_functional_system_devices() {
+        let mut session = session(vec![halt()]);
+        assert_eq!(
+            session.system.vblank_mode(),
+            VBlankMode::AutoOnFrameIndexRead
+        );
+        assert!(session
+            .system
+            .cpu()
+            .device::<SystemControlDevice>(SYSTEM_CONTROL_DEVICE)
+            .is_some());
+        assert!(session
+            .system
+            .cpu()
+            .device::<DisplayDevice>(DISPLAY_DEVICE)
+            .is_some());
+
+        session.reset();
+        assert_eq!(
+            session.system.vblank_mode(),
+            VBlankMode::AutoOnFrameIndexRead
+        );
+        assert!(session
+            .system
+            .cpu()
+            .device::<DisplayDevice>(DISPLAY_DEVICE)
+            .is_some());
+    }
+
+    #[test]
+    fn state_reports_pending_and_published_framebuffer_swaps() {
+        let mut words = Vec::new();
+        words.extend(load_immediate16(1, FRAMEBUFFER_B_BASE_WORD as u16));
+        words.extend(load_immediate16(2, (FRAMEBUFFER_B_BASE_WORD >> 16) as u16));
+        words.extend(load_immediate16(3, DISPLAY_NEXT_SWAP));
+        words.extend([
+            device_send(1, DISPLAY_DEVICE, DISPLAY_FRAMEBUFFER_LOW),
+            device_send(2, DISPLAY_DEVICE, DISPLAY_FRAMEBUFFER_HIGH),
+            device_send(3, DISPLAY_DEVICE, DISPLAY_CONTROL),
+            halt(),
+        ]);
+        let mut session = session(words);
+        let (_, halt) = session.continue_run(16);
+        assert_eq!(halt, Some(0));
+        let state = session.state_json(None);
+        assert!(state.contains(&format!(
+            "\"display\":{{\"width\":320,\"height\":240,\"active_base\":{FRAMEBUFFER_A_BASE_WORD},\"frame_index\":0,\"swap_pending\":true}}"
+        )));
+
+        session.system.advance_vblank();
+        let state = session.state_json(None);
+        assert!(state.contains(&format!(
+            "\"active_base\":{FRAMEBUFFER_B_BASE_WORD},\"frame_index\":1,\"swap_pending\":false"
+        )));
+    }
+
+    #[test]
+    fn halted_session_keeps_its_final_rgb888_frame() {
+        let mut session = session(vec![halt()]);
+        let base = FRAMEBUFFER_A_BASE_WORD as usize;
+        session.system.cpu_mut().physical_memory_mut()[base] = 0xf800;
+        session.step();
+        assert_eq!(session.halted(), Some(0));
+
+        let bytes = session.framebuffer_rgb888();
+        assert_eq!(bytes.len(), 320 * 240 * 3);
+        assert_eq!(&bytes[..6], &[0xff, 0x00, 0x00, 0x00, 0x00, 0x00]);
     }
 }

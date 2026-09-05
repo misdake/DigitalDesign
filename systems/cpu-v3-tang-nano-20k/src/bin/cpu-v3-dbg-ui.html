@@ -60,6 +60,11 @@
   .tab { padding: 2px 8px; border-radius: 4px; background: #2a2c34; border: 1px solid #3a3d47; cursor: pointer; color: #9aa0ad; }
   .tab:hover { background: #34363f; }
   .tab-active { background: #2d5a80; border-color: #3d72a0; color: #e8e9ec; }
+  details.display-panel { margin-bottom: 10px; border: 1px solid #3a3d47; border-radius: 4px; background: #23242a; }
+  details.display-panel summary { padding: 5px 7px; cursor: pointer; color: #9aa0ad; text-transform: uppercase; letter-spacing: .5px; }
+  #displayBody { padding: 0 7px 7px; }
+  #displayMeta { margin-bottom: 5px; color: #7f8896; }
+  #displayCanvas { display: block; width: 100%; height: auto; aspect-ratio: 4 / 3; background: #000; image-rendering: pixelated; }
 </style>
 </head>
 <body>
@@ -83,6 +88,13 @@
   <section id="srccol"><h3 id="srctitle">source</h3><div id="tabs"></div><table id="src"></table></section>
   <section id="midcol"><h3>disassembly</h3><div id="diswrap"><svg id="arrowSvg"></svg><table id="dis"></table></div></section>
   <section id="varcol">
+    <details id="displayPanel" class="display-panel">
+      <summary>display</summary>
+      <div id="displayBody">
+        <div id="displayMeta"></div>
+        <canvas id="displayCanvas" width="320" height="240"></canvas>
+      </div>
+    </details>
     <h3>call stack</h3><table id="stack"></table>
     <h3>registers</h3><table class="regs" id="reg"></table>
     <h3 id="functitle">locals</h3><table id="locals"></table>
@@ -118,6 +130,35 @@ async function refresh(followPc = true) {
   state = await (await fetch('/api/state' + q)).json();
   render({followPc});
   renderMem();
+  renderDisplayState();
+  if ($('displayPanel').open) await renderFramebuffer();
+}
+
+function renderDisplayState() {
+  if (!state || !state.display) return;
+  const d = state.display;
+  $('displayMeta').textContent =
+    `base ${hx(d.active_base, 8)} · frame ${d.frame_index} · ${d.swap_pending ? 'swap pending' : 'active'}`;
+}
+
+async function renderFramebuffer() {
+  if (!state || !state.display) return;
+  const response = await fetch('/api/framebuffer');
+  const bytes = new Uint8Array(await response.arrayBuffer());
+  const {width, height} = state.display;
+  if (bytes.length !== width * height * 3) return;
+  const canvas = $('displayCanvas');
+  canvas.width = width;
+  canvas.height = height;
+  const context = canvas.getContext('2d');
+  const image = context.createImageData(width, height);
+  for (let src = 0, dst = 0; src < bytes.length; src += 3, dst += 4) {
+    image.data[dst] = bytes[src];
+    image.data[dst + 1] = bytes[src + 1];
+    image.data[dst + 2] = bytes[src + 2];
+    image.data[dst + 3] = 255;
+  }
+  context.putImageData(image, 0, 0);
 }
 
 function addrsOfLine(n) {
@@ -343,6 +384,9 @@ $('mgo').onclick = renderMem;
 document.querySelectorAll('.mq').forEach(b => b.onclick = () => {
   $('maddr').value = b.dataset.a === 'sp' ? hx(state.regs[13]) : b.dataset.a;
   renderMem();
+});
+$('displayPanel').addEventListener('toggle', () => {
+  if ($('displayPanel').open) renderFramebuffer();
 });
 function drawArrows() {
   const svg = $('arrowSvg');

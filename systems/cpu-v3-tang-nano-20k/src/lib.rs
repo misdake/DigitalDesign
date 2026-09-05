@@ -6,6 +6,7 @@ pub mod display;
 mod display_device;
 pub mod hardware;
 mod layout;
+pub mod system_sim;
 
 // System internals share the lower-layer types through this crate root. New
 // examples should still import each lower layer explicitly so ownership stays
