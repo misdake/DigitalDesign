@@ -43,7 +43,7 @@ enum SdramState {
     RefreshWait,
 }
 
-/// Cycle-faithful model of `display_sdram.v` for the CPU port only. Refresh is
+/// Cycle-faithful model of `SharedSdramPort` for the CPU port only. Refresh is
 /// due every 600 clocks; a line read costs ACTIVE + READ + four 64-bit beats + three
 /// recovery clocks.
 struct SdramModel {
@@ -101,7 +101,7 @@ impl SdramModel {
         write_data: u64,
     ) {
         // Evaluate the refresh condition against the pre-edge counter, exactly
-        // like `display_sdram.v` (refresh_due = refresh_count >= 600). The
+        // like the `SharedSdramPort` RTL (refresh_due = refresh_count >= 600). The
         // counter is incremented afterwards and stops at 600, so a request
         // accepted on the last pre-refresh cycle is actually served.
         let refresh_due = self.refresh_count >= 600;
@@ -121,6 +121,12 @@ impl SdramModel {
                         self.line_write_buffer[0] = write_data;
                         self.beat = 1;
                         self.state = SdramState::WriteCapture;
+                    } else if write {
+                        // Word write: the full four-beat ST_WRITE_STAGE keeps
+                        // the gearbox write_buffer capture pointer aligned,
+                        // mirroring the RTL port.
+                        self.beat = 0;
+                        self.state = SdramState::WriteStage;
                     } else {
                         self.state = SdramState::ActiveReq;
                     }

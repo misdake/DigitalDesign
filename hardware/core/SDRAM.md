@@ -57,7 +57,7 @@ status protocol with test ID `0x03`.
 `systems/cpu-v3-tang-nano-20k/examples/cpu_v3_system` wires the full CPU V3
 system: `CpuV3Core`, the instruction fetch queue, split two-way caches,
 `CpuV3MemoryArbiter`, `BootDmaDevice` and `BootDmaEngine`, and the shared
-`DisplaySdramPort`. Stage0 in a BSRAM boot ROM below word `0x400` DMAs Stage1
+`SharedSdramPort`. Stage0 in a BSRAM boot ROM below word `0x400` DMAs Stage1
 from SPI Flash into SDRAM, and Stage1 loads the application. The current D-cache
 is write-back and write-allocate; cache lines cross the 54-MHz side as four
 64-bit beats and the fixed related-clock gearbox converts them to eight 32-bit

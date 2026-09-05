@@ -1,4 +1,4 @@
-module DisplaySdramPort (
+module SharedSdramPort (
     input wire clk, input wire reset,
     input wire cpu_request_valid, input wire cpu_write, input wire cpu_line,
     input wire [21:0] cpu_address, input wire [63:0] cpu_write_data,
@@ -93,10 +93,19 @@ always @(posedge clk) begin
                 if (cpu_grant && cpu_write && cpu_line) begin
                     line_write_buffer[0] <= cpu_write_data;
                     beat <= 1;
+                end else if (cpu_grant && cpu_write) begin
+                    // A word write has no 64-bit CPU stream to capture; hold
+                    // the half-word on controller_write_data across the full
+                    // ST_WRITE_STAGE so the gearbox write_buffer stays
+                    // four-beat aligned (burst-zero only reads entry zero).
+                    controller_write_data <= cpu_address[0] ?
+                        {32'b0,cpu_write_data[15:0],16'b0} : {48'b0,cpu_write_data[15:0]};
+                    beat <= 0;
                 end
                 prefer_display <= next_prefer_display;
                 state <= cpu_grant && cpu_write && cpu_line ?
-                    ST_WRITE_CAPTURE : ST_ACTIVE_REQ;
+                    ST_WRITE_CAPTURE :
+                    (cpu_grant && cpu_write ? ST_WRITE_STAGE : ST_ACTIVE_REQ);
             end
         end
         // A cache-line write is an unstallable four-beat stream beginning on
@@ -115,7 +124,11 @@ always @(posedge clk) begin
             if (beat == 3) begin beat <= 0; state <= ST_ACTIVE_REQ; end
             else begin
                 beat <= beat + 1'b1;
-                controller_write_data <= line_write_buffer[beat + 1'b1];
+                // Line writes advance through the captured four-beat buffer;
+                // word writes hold one staged value across all four beats so
+                // the gearbox capture pointer stays aligned.
+                if (pending_line)
+                    controller_write_data <= line_write_buffer[beat + 1'b1];
             end
         end
         ST_ACTIVE_REQ: begin

@@ -317,6 +317,12 @@ always @(posedge clk) begin
                     line_write_buffer[0] <= arb_memory_write_data;
                     beat <= 1;
                     sdram_state <= ST_WRITE_CAPTURE;
+                end else if (arb_memory_write) begin
+                    // Word write: the full four-beat ST_WRITE_STAGE keeps the
+                    // gearbox write_buffer capture pointer aligned, mirroring
+                    // the RTL port.
+                    beat <= 0;
+                    sdram_state <= ST_WRITE_STAGE;
                 end else begin
                     sdram_state <= ST_ACTIVE_REQ;
                 end

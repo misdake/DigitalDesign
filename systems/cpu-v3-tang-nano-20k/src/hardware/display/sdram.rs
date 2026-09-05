@@ -5,7 +5,7 @@ use digital_design_circuit::{CircuitWires, Wire, Wires};
 use digital_design_hardware::{Hardware, HardwareIdentity, Module, ModuleIo, VerilogDependency};
 
 #[derive(Clone, ModuleIo)]
-pub struct DisplaySdramPortInput {
+pub struct SharedSdramPortInput {
     pub reset: Wire,
     pub cpu_request_valid: Wire,
     pub cpu_write: Wire,
@@ -24,7 +24,7 @@ pub struct DisplaySdramPortInput {
 }
 
 #[derive(Clone, ModuleIo)]
-pub struct DisplaySdramPortOutput {
+pub struct SharedSdramPortOutput {
     pub cpu_request_ready: Wire,
     pub cpu_response_valid: Wire,
     pub cpu_read_data: Wires<64>,
@@ -47,11 +47,11 @@ pub struct DisplaySdramPortOutput {
 
 #[derive(Hardware)]
 #[hardware(namespace = "systems/cpu_v3_tang_nano_20k/display")]
-pub struct DisplaySdramPort;
+pub struct SharedSdramPort;
 
-impl Module for DisplaySdramPort {
-    type Input = DisplaySdramPortInput;
-    type Output = DisplaySdramPortOutput;
+impl Module for SharedSdramPort {
+    type Input = SharedSdramPortInput;
+    type Output = SharedSdramPortOutput;
     type EmuState = ();
 
     const USES_MAIN_CLOCK: bool = true;
@@ -63,7 +63,7 @@ impl Module for DisplaySdramPort {
         _input: &Self::Input,
         _output: &Self::Output,
     ) {
-        panic!("DisplaySdramPort uses the host display scheduler for emulation")
+        panic!("SharedSdramPort uses the host display scheduler for emulation")
     }
 
     fn verilog_source() -> Option<String> {
@@ -89,7 +89,7 @@ mod tests {
 
     #[test]
     fn export_contains_gate_grant_dependency() {
-        let project = VerilogProject::generate::<DisplaySdramPort>().unwrap();
+        let project = VerilogProject::generate::<SharedSdramPort>().unwrap();
         assert_eq!(project.files.len(), 2);
         assert!(project.resource_claims.is_empty());
     }
@@ -97,6 +97,6 @@ mod tests {
     #[test]
     #[ignore = "explicit external simulation of shared SDRAM timing"]
     fn shared_word_and_burst_port_runs_in_iverilog() {
-        digital_design_hardware::verify_verilog_with_iverilog::<DisplaySdramPort>().unwrap();
+        digital_design_hardware::verify_verilog_with_iverilog::<SharedSdramPort>().unwrap();
     }
 }

@@ -12,7 +12,9 @@ module {{ module_name }} (
     output reg icache_invalidate = 0,
     output reg dcache_invalidate = 0,
     output reg dcache_clean = 0,
-    output reg cache_maintenance_hold = 0,
+    // This hold is deliberately CPU-local. Cache write-back traffic and all
+    // non-CPU clients of the shared SDRAM continue to run during maintenance.
+    output reg cpu_hold = 0,
     output reg [5:0] leds = 0,
     output wire uart_tx
 );
@@ -43,7 +45,7 @@ always @(posedge clk) begin
         icache_invalidate <= 0;
         dcache_invalidate <= 0;
         dcache_clean <= 0;
-        cache_maintenance_hold <= 0;
+        cpu_hold <= 0;
         cache_maintenance_status <= 0;
         leds <= 0;
         uart_busy <= 0;
@@ -54,8 +56,8 @@ always @(posedge clk) begin
         icache_invalidate <= 0;
         dcache_invalidate <= 0;
         dcache_clean <= 0;
-        if (cache_maintenance_hold && dcache_maintenance_done) begin
-            cache_maintenance_hold <= 0;
+        if (cpu_hold && dcache_maintenance_done) begin
+            cpu_hold <= 0;
             cache_maintenance_status <= dcache_maintenance_error ? 16'h8000 : 16'h0000;
         end
         if (uart_busy) begin
@@ -73,9 +75,9 @@ always @(posedge clk) begin
         if (device_write_enable && device_index == 3'd0) begin
             case (device_channel)
                 0: icache_invalidate <= 1;
-                1: if (!cache_maintenance_hold) begin
+                1: if (!cpu_hold) begin
                     dcache_invalidate <= 1;
-                    cache_maintenance_hold <= 1;
+                    cpu_hold <= 1;
                 end
                 2: leds <= device_write_data[5:0];
                 3: if (!uart_busy) begin
@@ -84,9 +86,9 @@ always @(posedge clk) begin
                     uart_divider <= 0;
                     uart_busy <= 1;
                 end
-                4: if (!cache_maintenance_hold) begin
+                4: if (!cpu_hold) begin
                     dcache_clean <= 1;
-                    cache_maintenance_hold <= 1;
+                    cpu_hold <= 1;
                 end
                 default: begin end
             endcase

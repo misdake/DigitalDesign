@@ -12,7 +12,7 @@ wire controller_write_data_valid;
 wire [63:0] cpu_read_data; wire [31:0] display_read_data;
 wire [2:0] controller_command; wire [20:0] controller_address;
 wire [3:0] controller_write_mask; wire [63:0] controller_write_data; wire [7:0] controller_burst_length;
-DisplaySdramPort dut(.*);
+SharedSdramPort dut(.*);
 integer cycles=0;
 always @(posedge clk) begin
   cycles<=cycles+1;
@@ -23,6 +23,18 @@ integer cpu_accepted_while_display_drain;
 task ack; input [2:0] command; begin
   while (!(controller_command_valid && controller_command==command)) @(posedge clk);
   controller_command_ack<=1; @(posedge clk); controller_command_ack<=0;
+end endtask
+// Drive an in-flight CPU write to completion wherever it is in its sequence:
+// ack the ACTIVE command if the port still waits on it, then ack WRITE at
+// ST_OP_WAIT. A write completion only needs controller_command_ack, so the
+// one-cycle command-valid windows do not have to be caught precisely.
+task finish_cpu_write; begin
+  while (dut.state!=5) begin
+    if (dut.state==3) begin
+      controller_command_ack<=1; @(posedge clk); #1; controller_command_ack<=0;
+    end else @(negedge clk);
+  end
+  controller_command_ack<=1; @(posedge clk); #1; controller_command_ack<=0;
 end endtask
 initial begin
   repeat(2) @(posedge clk); controller_init_done=1; @(posedge clk);
@@ -58,11 +70,24 @@ initial begin
   if(!cpu_accepted_while_display_drain)
     $fatal(1,"display buffer drain kept the SDRAM scheduler occupied");
   cpu_request_valid=0; cpu_write=0; controller_command_ack=0;
-  while(dut.state!=5) @(negedge clk);
-  controller_command_ack=1; @(posedge clk); #1; controller_command_ack=0;
+  finish_cpu_write;
   if(controller_write_mask!=4'b0011 || controller_write_data!=32'habcd0000) $fatal(1,"bad word lane");
   while(!cpu_response_valid) @(posedge clk);
   if(!cpu_response_last) $fatal(1,"cpu write completion must carry last");
+  @(negedge clk); cpu_response_ready=1; @(posedge clk); #1; cpu_response_ready=0;
+  // Dedicated word write from idle: the half-word must be staged through
+  // ST_WRITE_STAGE (controller_write_data_valid) so the 108/54 gearbox can
+  // capture it into write_buffer before ACTIVE/WRITE.
+  cpu_address=22'h00000f; cpu_write_data=16'h1234; cpu_write=1; cpu_request_valid=1;
+  while(!cpu_request_ready) @(posedge clk);
+  @(posedge clk); cpu_request_valid=0; cpu_write=0;
+  if(dut.state!=13 || !controller_write_data_valid) $fatal(1,"word write did not enter ST_WRITE_STAGE");
+  if(controller_write_data!=32'h12340000) $fatal(1,"word write staged wrong data");
+  @(negedge clk);
+  finish_cpu_write;
+  if(controller_write_mask!=4'b0011 || controller_write_data!=32'h12340000) $fatal(1,"bad dedicated word lane");
+  while(!cpu_response_valid) @(posedge clk);
+  if(!cpu_response_last) $fatal(1,"dedicated word write completion must carry last");
   @(negedge clk); cpu_response_ready=1; @(posedge clk); #1; cpu_response_ready=0;
   // CPU line read: one burst command, four ordered 64-bit beats.
   repeat(6) @(posedge clk);
