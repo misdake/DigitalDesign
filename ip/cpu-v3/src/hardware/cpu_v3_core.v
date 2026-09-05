@@ -141,16 +141,23 @@ reg fpu_memory_active = 0;
 reg [1:0] fpu_memory_lane = 0;
 reg signed [15:0] fpu_memory_value [0:3];
 reg [9:0] fpu_rom_address = 0;
+reg [9:0] fpu_rom_second_address = 0;
 wire [15:0] fpu_rom_read_data;
+wire [15:0] fpu_rom_second_read_data;
 reg signed [5:0] fpu_rom_exponent = 0;
 reg [7:0] fpu_rom_index = 0;
 reg [16:0] fpu_normalized = 0;
 reg fpu_rom_negative = 0;
-reg [9:0] fpu_sine_phase = 0;
+reg [10:0] fpu_sine_phase = 0;
 reg fpu_sine_endpoint = 0;
+reg fpu_cosine_endpoint = 0;
+reg fpu_sine_packed_high = 0;
+reg fpu_cosine_packed_high = 0;
+reg fpu_sine_saturated = 0;
+reg fpu_cosine_saturated = 0;
+reg fpu_cosine_negative = 0;
 reg signed [15:0] fpu_rom_first = 0;
 reg signed [15:0] fpu_rom_second = 0;
-reg fpu_rom_step = 0;
 // Whole-vector snapshots: export/scatter share one buffer, transpose keeps
 // all four rows so the in-place rewrite stays snapshot-clean.
 reg [63:0] fpu_vector_buffer = 0;
@@ -207,7 +214,7 @@ wire [15:0] fpu_multiply_b_word = fpu_rf_read_b_data[fpu_step[1:0]*16 +: 16];
 wire signed [17:0] fpu_multiplier_left =
     {{2{fpu_multiply_a_word[15]}}, fpu_multiply_a_word};
 wire signed [17:0] fpu_multiplier_right =
-    fpu_sine_operation ? 18'sd41722 :
+    fpu_sine_operation ? 18'sd83443 :
     {{2{fpu_multiply_b_word[15]}}, fpu_multiply_b_word};
 wire signed [35:0] fpu_multiplier_product;
 wire prefix_consumer = opcode == 4'h8 || opcode == 4'h9 ||
@@ -349,19 +356,21 @@ function [15:0] fix16_round_integer;
     end
 endfunction
 
-function [9:0] fpu_phase_from_product;
+function [10:0] fpu_phase_from_product;
     input signed [35:0] value;
     reg [35:0] magnitude;
     reg [19:0] quotient;
     reg signed [20:0] rounded;
     begin
         magnitude = value[35] ? -value : value;
-        quotient = magnitude[35:16];
+        // A signed fix16 magnitude times 83443 is below 2^32, so bits 35:32
+        // are sign-extension zeros after taking the absolute value.
+        quotient = {4'b0, magnitude[31:16]};
         if (magnitude[15:0] > 16'h8000 ||
             (magnitude[15:0] == 16'h8000 && quotient[0]))
             quotient = quotient + 1'b1;
         rounded = value[35] ? -$signed({1'b0, quotient}) : $signed({1'b0, quotient});
-        fpu_phase_from_product = rounded[9:0];
+        fpu_phase_from_product = rounded[10:0];
     end
 endfunction
 
@@ -421,22 +430,34 @@ function signed [5:0] fpu_normalize_exponent;
     end
 endfunction
 
-function [7:0] fpu_sine_address;
-    input [9:0] phase;
+function [8:0] fpu_sine_index;
+    input [10:0] phase;
     begin
-        if (!phase[8])
-            fpu_sine_address = phase[7:0];
-        else if (phase[7:0] == 0)
-            fpu_sine_address = 0;
+        if (!phase[9])
+            fpu_sine_index = phase[8:0];
+        else if (phase[8:0] == 0)
+            fpu_sine_index = 0;
         else
-            fpu_sine_address = 8'h00 - phase[7:0];
+            fpu_sine_index = 9'h000 - phase[8:0];
     end
 endfunction
 
 function fpu_sine_is_endpoint;
-    input [9:0] phase;
-    fpu_sine_is_endpoint = phase[8] && phase[7:0] == 0;
+    input [10:0] phase;
+    fpu_sine_is_endpoint = phase[9] && phase[8:0] == 0;
 endfunction
+
+wire [8:0] fpu_sine_index_value = fpu_sine_index(fpu_sine_phase);
+wire [10:0] fpu_cosine_phase = fpu_sine_phase + 11'd512;
+wire [8:0] fpu_cosine_index_value = fpu_sine_index(fpu_cosine_phase);
+wire [8:0] fpu_sine_magnitude = fpu_sine_saturated ?
+    9'd256 :
+    (fpu_sine_packed_high ? {1'b0, fpu_rom_read_data[15:8]} :
+                            {1'b0, fpu_rom_read_data[7:0]});
+wire [8:0] fpu_cosine_magnitude = fpu_cosine_saturated ?
+    9'd256 :
+    (fpu_cosine_packed_high ? {1'b0, fpu_rom_second_read_data[15:8]} :
+                              {1'b0, fpu_rom_second_read_data[7:0]});
 
 // One priority encoder serves the ROM unary normalization path.
 wire [15:0] fpu_unary_magnitude =
@@ -547,10 +568,14 @@ __FPU_DSP_MULTIPLIER__ u_fpu_multiplier (
 
 __FPU_ROM__ u_fpu_rom (
     .clk(clk),
-    .write_enable(1'b0),
-    .address(fpu_rom_address),
-    .write_data(16'b0),
-    .read_data(fpu_rom_read_data)
+    .a_write_enable(1'b0),
+    .a_address(fpu_rom_address),
+    .a_write_data(16'b0),
+    .b_write_enable(1'b0),
+    .b_address(fpu_rom_second_address),
+    .b_write_data(16'b0),
+    .a_read_data(fpu_rom_read_data),
+    .b_read_data(fpu_rom_second_read_data)
 );
 
 __FPU_REGISTER_RAM__ u_fpu_register_ram (
@@ -1266,7 +1291,6 @@ always @(posedge clk) begin
                                 state <= ST_FPU_UNARY_DISPATCH;
                             end
                             2: begin
-                                fpu_rom_step <= 0;
                                 fpu_step <= 0;
                                 state <= ST_FPU_MULTIPLY_WAIT;
                             end
@@ -1442,9 +1466,16 @@ always @(posedge clk) begin
                         (fpu_rom_exponent[0] ? 10'd768 : 10'd512) + {2'b00, fpu_rom_index};
                     fpu_rom_exponent <= fpu_rom_exponent >>> 1;
                 end else begin
-                    fpu_rom_address <= {2'b00, fpu_sine_address(fpu_sine_phase)};
-                    fpu_rom_negative <= fpu_sine_phase >= 10'd512;
+                    fpu_rom_address <= {2'b00, fpu_sine_index_value[8:1]};
+                    fpu_rom_second_address <= {2'b00, fpu_cosine_index_value[8:1]};
+                    fpu_rom_negative <= fpu_sine_phase >= 11'd1024;
+                    fpu_cosine_negative <= fpu_cosine_phase >= 11'd1024;
                     fpu_sine_endpoint <= fpu_sine_is_endpoint(fpu_sine_phase);
+                    fpu_cosine_endpoint <= fpu_sine_is_endpoint(fpu_cosine_phase);
+                    fpu_sine_packed_high <= fpu_sine_index_value[0];
+                    fpu_cosine_packed_high <= fpu_cosine_index_value[0];
+                    fpu_sine_saturated <= fpu_sine_index_value >= 9'd492;
+                    fpu_cosine_saturated <= fpu_cosine_index_value >= 9'd492;
                 end
                 state <= ST_FPU_ROM_WAIT;
             end
@@ -1453,18 +1484,13 @@ always @(posedge clk) begin
                 if (field_b <= 1) begin
                     fpu_result <= fpu_rom_scaled;
                     state <= ST_FPU_ROM_WRITE;
-                end else if (!fpu_rom_step) begin
-                    fpu_rom_first <= fpu_rom_negative ?
-                        -(fpu_sine_endpoint ? 16'sd256 : $signed(fpu_rom_read_data)) :
-                        (fpu_sine_endpoint ? 16'sd256 : $signed(fpu_rom_read_data));
-                    fpu_sine_phase <= fpu_sine_phase + 10'd256;
-                    fpu_rom_step <= 1;
-                    state <= ST_FPU_ROM_LOOKUP;
                 end else begin
-                    fpu_rom_second <= fpu_rom_negative ?
-                        -(fpu_sine_endpoint ? 16'sd256 : $signed(fpu_rom_read_data)) :
-                        (fpu_sine_endpoint ? 16'sd256 : $signed(fpu_rom_read_data));
-                    fpu_rom_step <= 0;
+                    fpu_rom_first <= fpu_rom_negative ?
+                        -(fpu_sine_endpoint ? 16'sd256 : $signed({7'b0, fpu_sine_magnitude})) :
+                        (fpu_sine_endpoint ? 16'sd256 : $signed({7'b0, fpu_sine_magnitude}));
+                    fpu_rom_second <= fpu_cosine_negative ?
+                        -(fpu_cosine_endpoint ? 16'sd256 : $signed({7'b0, fpu_cosine_magnitude})) :
+                        (fpu_cosine_endpoint ? 16'sd256 : $signed({7'b0, fpu_cosine_magnitude}));
                     state <= ST_FPU_ROM_WRITE;
                 end
             end

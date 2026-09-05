@@ -782,6 +782,24 @@ initial begin
     scenario = 40;
     expect_fault(8'd1, 16'd0, 100);
 
+    // Scenario 41: SINCOS(0.5) selects the high 9-bit half of both packed
+    // quarter-wave ROM words.
+    clear_memory;
+    memory[0] = 16'hf008; // IMMHI12 0x008
+    memory[1] = 16'haf00; // LDU r0, 0 -> fix16 0.5
+    memory[2] = 16'hd000; // FLOAD f0, r0
+    memory[3] = 16'hde02; // FSINCOS f0
+    memory[4] = 16'he800; // HALT
+    scenario = 41;
+    expect_halt(16'd128, 150);
+    if (fpr_word(0, 0) !== 16'd123 || fpr_word(0, 1) !== 16'd225 ||
+        fpr_word(0, 2) !== 16'd0 || fpr_word(0, 3) !== 16'd0) begin
+        $display("FAIL: scenario 41 packed sincos values %h %h %h %h",
+                 fpr_word(0, 0), fpr_word(0, 1),
+                 fpr_word(0, 2), fpr_word(0, 3));
+        errors = errors + 1;
+    end
+
     if (errors != 0) begin
         $display("FAIL: %0d error(s)", errors);
         $finish(1);

@@ -798,6 +798,47 @@ markers, while the opaque Controller HS netlist warnings are filtered only by th
 code, and internal-clock identity; other warnings remain visible. Any future GPU word/partial-line
 write support must go through the same staged path.
 
+## Follow-up: packed 2048-phase SINCOS lookup (2026-09-06)
+
+The Q8.8 `FSINCOS` range reduction formerly rounded each input onto 1024 phase
+steps and used one 16-bit ROM word per quarter-wave sample. Exhaustive software
+comparison against host `sin`/`cos` found a two-LSB worst-case error. Merely
+retuning the `2/pi` constant or biasing those 256 samples cannot reduce the
+bound because one phase bucket can cover ideal results spanning three raw
+Q8.8 values.
+
+The final implementation uses 2048 phase steps and 512 quarter-wave samples.
+Two unsigned 8-bit samples share each existing 16-bit sine word; samples 492
+through the endpoint have the saturated Q8.8 magnitude 256 and reconstruct it
+from the reflected sample index instead of storing a ninth bit. The reciprocal
+and reciprocal-square-root regions keep their original 16-bit layout. Range
+reduction uses the signed `MULT18X18` operand 83443 and rounds its product at
+bit 16, which more closely approximates `4/pi` while remaining within the
+18-bit multiplier input. The table is now an explicitly instantiated,
+initialized DPB; its two synchronous ports read sine and cosine in parallel,
+reducing `FSINCOS` from 12 to 9 execution cycles and from 13 to 10
+fetch-to-fetch phases. Merely inferring two read-only ports caused Gowin to
+duplicate the pROM, so the explicit primitive is required to keep both reads
+in one physical block.
+
+The architecture-level ROM error test checks every one of the 65,536 signed
+Q8.8 inputs directly through the bit-exact arithmetic, without running the
+device or system simulator. Worst error against a rounded Q8.8 host reference
+is one LSB, worst continuous-component error is 0.003457, and RMS component
+error is 0.001279. The canonical ROM regeneration audit, CPU V3 unit tests,
+all eleven ignored CPU RTL/emulator checks (including a nonzero packed-high-half
+SINCOS test), system co-simulation, and workspace quick validation pass with
+bounded runs.
+
+Full-system Gowin PnR reports 10,472 Logic (9,197 LUT, 747 ALU, 88 SSRAM),
+4,294 registers, 7,127 CLS, 5 DPB + 1 SDPB + 1 pROM, and 2 MULT18X18. The CPU
+clock closes at 57.917 MHz against 54 MHz with 1.253 ns worst setup slack; the
+108 MHz controller clock reaches 175.186 MHz, and setup/hold TNS are zero. The
+total BSRAM and DSP counts therefore remain seven and two respectively; the FPU
+table changes one pROM into one DPB to expose both physical ports. An explored
+18-bit packed ROM also preserved the block count but changed the pROM packing
+mode, increased logic/congestion, and failed timing; it was not retained.
+
 ## Risk-scaled validation
 
 Select the applicable checks for each stage and record both the checks run and any intentionally

@@ -181,6 +181,19 @@ struct TrueDualPortTemplate<'a> {
     image: &'a VerilogImage,
 }
 
+#[derive(Template)]
+#[template(path = "primitives/bsram/true_dual_port_1024x16.v", escape = "none")]
+struct TrueDualPort16Template<'a> {
+    module_name: &'a str,
+    image: &'a VerilogImage,
+    init_chunks: &'a [DpbInitChunk],
+}
+
+struct DpbInitChunk {
+    index: String,
+    literal: String,
+}
+
 /// One synchronous normal-mode read/write port backed by one 18-Kbit BSRAM.
 /// The registered output holds its previous value during a write.
 pub struct Bsram1Rw1024<const WIDTH: usize, I>(PhantomData<I>);
@@ -511,6 +524,31 @@ where
     fn generated_verilog_source() -> Option<String> {
         let module_name = Self::verilog_identity().module_name();
         let image = verilog_image::<I, WIDTH>();
+        if WIDTH == 16 {
+            // The explicit Gowin DPB initialization layout stores sixteen
+            // little-addressed 16-bit words in each 256-bit parameter.
+            let init_chunks = (0..64)
+                .map(|chunk| {
+                    let mut literal = String::with_capacity(64);
+                    for offset in (0..16).rev() {
+                        literal.push_str(&format!("{:04x}", I::WORDS[chunk * 16 + offset]));
+                    }
+                    DpbInitChunk {
+                        index: format!("{chunk:02X}"),
+                        literal,
+                    }
+                })
+                .collect::<Vec<_>>();
+            return Some(
+                TrueDualPort16Template {
+                    module_name: &module_name,
+                    image: &image,
+                    init_chunks: &init_chunks,
+                }
+                .render()
+                .expect("BSRAM Verilog template must render"),
+            );
+        }
         Some(
             TrueDualPortTemplate {
                 module_name: &module_name,
@@ -813,6 +851,17 @@ mod tests {
         assert!(sparse.contains("memory[17] = 16'h1234;"));
         assert!(sparse.contains("memory[901] = 16'habcd;"));
         assert_eq!(sparse.matches(" = 16'h").count(), 3);
+    }
+
+    #[test]
+    fn true_dual_port_16_uses_one_explicit_initialized_dpb() {
+        let source = BsramTrueDualPort1024::<16, TestImage>::generated_verilog_source().unwrap();
+        assert!(source.contains("DPB #("));
+        assert!(source.contains(
+            ".INIT_RAM_00(256'haa55ab54a857a956ae51af50ac53ad52a25da35ca05fa15ea659a758a45ba55a)"
+        ));
+        assert!(source.contains(".ADA({a_address, 2'b00, 2'b11})"));
+        assert!(source.contains(".ADB({b_address, 2'b00, 2'b11})"));
     }
 
     #[test]
