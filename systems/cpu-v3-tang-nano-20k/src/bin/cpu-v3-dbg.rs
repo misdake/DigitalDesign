@@ -2,7 +2,7 @@
 //!
 //! serves a single-page UI over plain HTTP (no websocket): commands via POST,
 //! state via GET. Compiles the input source in-process and drives the
-//! architectural `CpuV3Sim` directly.
+//! functional Tang Nano 20K system simulator.
 
 use cpu_v3::rcc_backend::{self, CompilerOptions as CpuV3Options};
 use cpu_v3_tang_nano_20k::debugger::V3DebugSession;
@@ -110,7 +110,7 @@ fn main() -> ExitCode {
         }
     }
 
-    // single-threaded on purpose: `CpuV3Sim` is not `Send` (its device trait
+    // single-threaded on purpose: `CpuV3SystemSim` is not `Send` (its device trait
     // object is not thread-safe), and a debugger is single-user anyway.
     let mut session = session;
     for conn in listener.incoming() {
@@ -248,6 +248,11 @@ fn route(
             let json = session.mem_json(addr, len);
             ("200 OK", "application/json", json.into_bytes())
         }
+        ("GET", "/api/framebuffer") => (
+            "200 OK",
+            "application/octet-stream",
+            session.framebuffer_rgb888(),
+        ),
         ("POST", "/api/cmd") => {
             let q = parse_query(query);
             match q.get("cmd").map(|s| s.as_str()) {
@@ -302,4 +307,36 @@ fn parse_query(query: &str) -> HashMap<String, String> {
                 .map(|(k, v)| (k.to_string(), v.to_string()))
         })
         .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use cpu_v3::rcc_backend::CpuV3Program;
+
+    fn session() -> V3DebugSession {
+        V3DebugSession::from_program(CpuV3Program {
+            code_base: 0,
+            words: vec![cpu_v3::halt()],
+            listing: String::new(),
+            debug: rcc::DebugInfo::default(),
+        })
+    }
+
+    #[test]
+    fn framebuffer_route_returns_rgb888_frame() {
+        let mut session = session();
+        let (status, content_type, payload) = route("GET", "/api/framebuffer", &mut session);
+        assert_eq!(status, "200 OK");
+        assert_eq!(content_type, "application/octet-stream");
+        assert_eq!(payload.len(), 320 * 240 * 3);
+    }
+
+    #[test]
+    fn ui_contains_a_collapsed_framebuffer_canvas() {
+        assert!(UI.contains("<details id=\"displayPanel\""));
+        assert!(!UI.contains("<details id=\"displayPanel\" open"));
+        assert!(UI.contains("<canvas id=\"displayCanvas\""));
+        assert!(UI.contains("fetch('/api/framebuffer')"));
+    }
 }
