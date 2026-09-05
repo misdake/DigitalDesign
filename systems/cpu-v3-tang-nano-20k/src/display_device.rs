@@ -39,6 +39,7 @@ pub struct DisplayDevice {
     high_written: Cell<bool>,
     pending: Cell<bool>,
     invalid_address: Cell<bool>,
+    auto_vblank_on_frame_index_read: bool,
 }
 
 impl Default for DisplayDevice {
@@ -52,11 +53,19 @@ impl Default for DisplayDevice {
             high_written: Cell::new(false),
             pending: Cell::new(false),
             invalid_address: Cell::new(false),
+            auto_vblank_on_frame_index_read: false,
         }
     }
 }
 
 impl DisplayDevice {
+    pub(crate) fn with_auto_vblank_on_frame_index_read(enabled: bool) -> Self {
+        Self {
+            auto_vblank_on_frame_index_read: enabled,
+            ..Self::default()
+        }
+    }
+
     pub fn frame_index(&self) -> u16 {
         self.frame_index.get()
     }
@@ -112,7 +121,13 @@ impl DisplayDevice {
 impl Device for DisplayDevice {
     fn read(&mut self, _memory: &mut [Word], channel: u8) -> Word {
         match channel {
-            DISPLAY_FRAME_INDEX => self.frame_index.get(),
+            DISPLAY_FRAME_INDEX => {
+                let frame_index = self.frame_index.get();
+                if self.auto_vblank_on_frame_index_read {
+                    self.advance_frame();
+                }
+                frame_index
+            }
             DISPLAY_FRAMEBUFFER_LOW => self.active_base.get() as u16,
             DISPLAY_FRAMEBUFFER_HIGH => (self.active_base.get() >> 16) as u16,
             DISPLAY_CONTROL => self.status(),

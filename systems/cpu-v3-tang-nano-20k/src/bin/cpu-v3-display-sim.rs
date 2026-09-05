@@ -1,9 +1,7 @@
-use cpu_v3::CpuV3Sim;
-use cpu_v3_tang_nano_20k::boot::SystemControlDevice;
 use cpu_v3_tang_nano_20k::display::{render_frame_at, write_ppm};
 #[cfg(feature = "display-window")]
 use cpu_v3_tang_nano_20k::display::{HDMI_HEIGHT, HDMI_WIDTH};
-use cpu_v3_tang_nano_20k::{DisplayDevice, DISPLAY_DEVICE};
+use cpu_v3_tang_nano_20k::system_sim::{CpuV3SystemSim, VBlankMode};
 use std::path::PathBuf;
 
 include!(concat!(env!("OUT_DIR"), "/display_image.rs"));
@@ -52,12 +50,11 @@ fn options() -> Result<Options, String> {
 
 fn main() -> Result<(), String> {
     let options = options()?;
-    let mut machine = CpuV3Sim::default();
-    machine
+    let mut system = CpuV3SystemSim::new(VBlankMode::Manual);
+    system
+        .cpu_mut()
         .load_program(0, DISPLAY_DEMO_PROGRAM)
         .map_err(|error| format!("cannot load display demo: {error:?}"))?;
-    machine.attach_device(0, Box::<SystemControlDevice>::default());
-    machine.attach_device(DISPLAY_DEVICE, Box::<DisplayDevice>::default());
 
     #[cfg(feature = "display-window")]
     let mut window = options.window.then(|| {
@@ -80,16 +77,13 @@ fn main() -> Result<(), String> {
     for _ in 0..options.frames {
         let next = (executed + chunk).min(options.max_cpu_steps);
         while executed < next {
-            machine
+            system
                 .step()
                 .map_err(|error| format!("CPU fault after {executed} steps: {error:?}"))?;
             executed += 1;
         }
-        let display = machine
-            .device::<DisplayDevice>(DISPLAY_DEVICE)
-            .expect("display device is attached");
-        display.advance_frame();
-        pixels = render_frame_at(&machine, display.active_base());
+        system.advance_vblank();
+        pixels = render_frame_at(system.cpu(), system.display_state().active_base);
         #[cfg(feature = "display-window")]
         if let Some(window) = window.as_mut() {
             if !window.is_open() {
