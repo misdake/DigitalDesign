@@ -107,8 +107,9 @@ Device 0 channel 0 emits the registered one-cycle-delayed whole-I-cache invalida
 5 returns final maintenance status. Channel 2 writes the six logical LEDs. Channel 3 transmits one
 UART byte and reports transmitter busy on reads.
 
-Device 1 channel 0 returns the reset-time boot selection. Stage1 selects the alternate application
-for button value `10`; `00` and `01` select the primary application.
+Device 1 channel 0 returns the reset-time boot selection. Stage1 selects the alternate diagnostic
+application for button value `10`, the FPU framebuffer demo for `11`, and the primary diagnostic
+application for `00` or `01`.
 
 Device 2 exposes the boot-DMA command and status register bank. It accepts a 24-bit absolute Flash
 byte address, a 22-bit physical SDRAM word destination, and file and memory byte sizes. Writing one
