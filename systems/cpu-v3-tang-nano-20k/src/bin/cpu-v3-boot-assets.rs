@@ -3,36 +3,11 @@
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
-const ASSETS: &[(&str, &[u8])] = &[
-    (
-        "stage0.v3bin",
-        include_bytes!(concat!(env!("OUT_DIR"), "/stage0.v3bin")),
-    ),
-    (
-        "stage1.v3bin",
-        include_bytes!(concat!(env!("OUT_DIR"), "/stage1.v3bin")),
-    ),
-    (
-        "boot-demo.v3bin",
-        include_bytes!(concat!(env!("OUT_DIR"), "/boot-demo.v3bin")),
-    ),
-    (
-        "display-demo.v3bin",
-        include_bytes!(concat!(env!("OUT_DIR"), "/display-demo.v3bin")),
-    ),
-    (
-        "data.bin",
-        include_bytes!(concat!(env!("OUT_DIR"), "/data.bin")),
-    ),
-    (
-        "cpu-v3-boot.bin",
-        include_bytes!(concat!(env!("OUT_DIR"), "/cpu-v3-boot.bin")),
-    ),
-    (
-        "cpu-v3-boot.map",
-        include_bytes!(concat!(env!("OUT_DIR"), "/cpu-v3-boot.map")),
-    ),
-];
+// The build script derives this list from the two application slots. Replacing
+// either configured source therefore cannot leave this exporter stale.
+include!(concat!(env!("OUT_DIR"), "/boot_asset_bindings.rs"));
+
+const LEGACY_ASSETS: &[&str] = &["boot-demo.v3bin", "display-demo.v3bin", "data.bin"];
 
 fn main() -> ExitCode {
     match run(std::env::args_os().skip(1)) {
@@ -66,6 +41,13 @@ fn run(mut args: impl Iterator<Item = std::ffi::OsString>) -> Result<(), String>
         .map_err(|error| format!("cannot create {}: {error}", output.display()))?;
     for (name, bytes) in ASSETS {
         write_if_changed(&output.join(name), bytes)?;
+    }
+    for name in LEGACY_ASSETS {
+        let path = output.join(name);
+        if path.exists() {
+            std::fs::remove_file(&path)
+                .map_err(|error| format!("cannot remove obsolete {}: {error}", path.display()))?;
+        }
     }
     write_if_changed(
         &output.join("boot-assets.manifest"),
@@ -109,15 +91,18 @@ mod tests {
     use super::*;
 
     #[test]
-    fn generated_assets_include_the_baselined_flash_package() {
+    fn generated_assets_include_both_applications_and_repacking_metadata() {
         let package = ASSETS
             .iter()
             .find(|(name, _)| *name == "cpu-v3-boot.bin")
             .unwrap()
             .1;
-        assert_eq!(package.len(), 4_099);
-        assert_eq!(fnv1a64(package), 11_890_089_686_521_855_294);
+        assert!(!package.is_empty());
         assert!(asset_manifest().contains("asset=stage0.v3bin"));
+        assert!(asset_manifest().contains("asset=application-s1.v3bin"));
+        assert!(asset_manifest().contains("asset=application-s2.v3bin"));
+        assert!(asset_manifest().contains("asset=boot.cpu-v3-manifest"));
+        assert!(asset_manifest().contains("asset=boot-project.map"));
         assert!(asset_manifest().contains("asset=cpu-v3-boot.map"));
     }
 }

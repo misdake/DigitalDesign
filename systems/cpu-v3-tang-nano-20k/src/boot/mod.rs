@@ -8,11 +8,13 @@ mod device_abi;
 mod devices;
 mod loader;
 mod manifest;
+mod project;
 
 pub use device_abi::*;
 pub use devices::*;
 pub use loader::*;
 pub use manifest::*;
+pub use project::*;
 
 use std::collections::HashSet;
 use std::fmt;

@@ -87,9 +87,11 @@ loads the selected application, initializes its segments and stack, and performs
 handoff.
 
 The package format is defined in [`boot-image-format.md`](boot-image-format.md); physical Flash
-placement and programming are defined in [`flash-layout.md`](flash-layout.md). Generated Stage0,
-Stage1, application, and package bytes come only from the system build output. No second checked-in
-instruction or Flash byte array is maintained.
+placement and programming are defined in [`flash-layout.md`](flash-layout.md). The project names
+exactly two RCC application sources in `boot-applications.conf`; the build derives their fixed
+S1/S2 slots, entries, section layout, Stage1 selection module, pack manifest, fingerprints, and
+package. Generated Stage0, Stage1, application, and package bytes come only from the system build
+output. No second checked-in instruction or Flash byte array is maintained.
 
 ## Devices and ownership transfer
 
@@ -107,9 +109,10 @@ Device 0 channel 0 emits the registered one-cycle-delayed whole-I-cache invalida
 5 returns final maintenance status. Channel 2 writes the six logical LEDs. Channel 3 transmits one
 UART byte and reports transmitter busy on reads.
 
-Device 1 channel 0 returns the reset-time boot selection. Stage1 selects the FPU framebuffer demo
-for button value `10` (S2), and the primary diagnostic application for `00` or `01`; `11` is ignored
-by the board-level selection latch.
+Device 1 channel 0 returns the reset-time boot selection. Stage1 selects the configured S2
+application for button value `10`, and the configured S1/default application for `00` or `01`; `11`
+is ignored by the board-level selection latch. The current project selects the FPU framebuffer demo
+as S2 and the primary diagnostic as S1.
 
 Device 2 exposes the boot-DMA command and status register bank. It accepts a 24-bit absolute Flash
 byte address, a 22-bit physical SDRAM word destination, and file and memory byte sizes. Writing one

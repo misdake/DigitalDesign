@@ -120,3 +120,20 @@ destination alignment, occupied memory bytes, and source file. A `zero` line
 omits the source file. Section names and file paths may not contain whitespace
 in host-manifest format 1. This text format has its own version independent of
 the binary boot-image version.
+
+The fitted system does not maintain this detailed manifest by hand. Its
+`boot-applications.conf` contains only:
+
+```text
+format 1
+s1 rcc/boot-demo.rs
+s2 rcc/display-demo.rs
+```
+
+The build compiles those sources into derived S1/default and S2 slots and emits
+`boot.cpu-v3-manifest` beside the section binaries. That generated manifest is
+the independently repackable input to `cpu-v3-pack`; `boot-project.map` records
+the source, entry, destination, size, and fingerprint for each slot, while
+`boot-selection.generated.rs` records the exact constants compiled into
+Stage1. Replacing either application requires changing only the corresponding
+line in `boot-applications.conf`.

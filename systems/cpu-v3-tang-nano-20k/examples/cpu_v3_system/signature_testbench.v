@@ -297,9 +297,9 @@ end
 initial begin
     for (cycle = 0; cycle < 524288; cycle = cycle + 1)
         memory[cycle] = 0;
-    // Dirty the BSS range so the zero-fill DMA is actually observable.
-    for (cycle = 0; cycle < 32; cycle = cycle + 1)
-        memory[20'h40100 + cycle] = 16'hffff;
+    // Sentinels prove that Stage1 loads only the selected application slot.
+    memory[20'h30200] = 16'hdead;
+    memory[20'h70200] = 16'hdead;
     repeat (16) @(posedge clk);
     sdram_init_done = 1;
 
@@ -311,11 +311,10 @@ initial begin
     if (dut.code_segment !== 16'd3 || dut.data_segment !== 16'd4)
         $fatal(1, "application segments not reached: cseg=0x%04x dseg=0x%04x",
             dut.code_segment, dut.data_segment);
-    if (memory[20'h40000] !== 16'hbeef || memory[20'h40001] !== 16'h0055)
-        $fatal(1, "data section did not reach SDRAM: %04x %04x",
-            memory[20'h40000], memory[20'h40001]);
-    if (memory[20'h40100] !== 16'h0000 || memory[20'h4011f] !== 16'h0000)
-        $fatal(1, "bss section was not zero-filled");
+    if (memory[20'h30200] === 16'hdead)
+        $fatal(1, "selected S1 application was not loaded");
+    if (memory[20'h70200] !== 16'hdead)
+        $fatal(1, "unselected S2 application was loaded");
     if (word_read_seen)
         $fatal(1, "a word read reached the SDRAM adapter; line refills must burst");
     if (!line_burst_seen)
@@ -343,6 +342,8 @@ initial begin
     if (dut.data_segment !== 16'd0)
         $fatal(1, "S2 display application segments not reached: cseg=0x%04x dseg=0x%04x",
             dut.code_segment, dut.data_segment);
+    if (memory[20'h70200] === 16'hdead)
+        $fatal(1, "selected S2 application was not loaded");
 
     // Phase 3: corrupt the descriptor magic, reset through button 01,
     // and expect the Stage0 boot error report.

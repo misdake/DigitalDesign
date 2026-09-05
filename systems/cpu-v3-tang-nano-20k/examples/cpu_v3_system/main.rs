@@ -1,7 +1,7 @@
 use cpu_v3::{CpuV3Core, CpuV3DataCache, CpuV3InstructionCache, CpuV3InstructionFetchQueue};
 use cpu_v3_tang_nano_20k::{
-    BootDmaDevice, BootDmaEngine, BootProgressMonitor, CpuV3MemoryArbiter, SharedSdramPort,
-    FramebufferHdmi, SystemControlDevice,
+    BootDmaDevice, BootDmaEngine, BootProgressMonitor, CpuV3MemoryArbiter, FramebufferHdmi,
+    SharedSdramPort, SystemControlDevice,
 };
 use digital_design_circuit::CircuitWires;
 use digital_design_hardware::{Hardware, HardwareIdentity, Module, VerilogDependency};
@@ -169,13 +169,12 @@ fn gowin_project() -> GowinModuleProject<TangNano20K, CpuV3System> {
 mod tests {
     use super::*;
     use cpu_v3::rcc_backend::{self, CompilerOptions, CpuV3Program};
-    use cpu_v3::PhysicalWordAddress;
     use cpu_v3_tang_nano_20k::boot::{
-        build_boot_image, BootEntry, BootImageSpec, BootTarget, InputSection, SectionKind,
-        SECTION_EXECUTE, SECTION_READ, SECTION_WRITE,
+        build_boot_image, PackManifest, S1_APPLICATION_LAYOUT, S2_APPLICATION_LAYOUT, STAGE1_LAYOUT,
     };
     use digital_design_hardware::{ResourceKind, VerilogProject};
     use rcc::frontend::compile_program_named;
+    use std::path::Path;
 
     fn compile_cpu_v3(file: &str, options: &CompilerOptions) -> CpuV3Program {
         let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
@@ -192,135 +191,10 @@ mod tests {
         rcc_backend::compile(program, options, "main")
     }
 
-    fn words_bytes(words: &[u16]) -> Vec<u8> {
-        words.iter().flat_map(|word| word.to_le_bytes()).collect()
-    }
-
-    fn section(
-        name: &str,
-        destination: u32,
-        data: Vec<u8>,
-        memory_size_bytes: u32,
-        flags: u16,
-    ) -> InputSection {
-        InputSection {
-            name: name.into(),
-            kind: SectionKind::Load,
-            flags,
-            destination: PhysicalWordAddress::new(destination),
-            data,
-            memory_size_bytes,
-            alignment_bytes: 32,
-        }
-    }
-
-    /// Packs Stage1 and the two selectable applications into the Flash boot
-    /// package, mirroring the build-script image exactly.
-    fn boot_package() -> Vec<u8> {
-        let stage1 = compile_cpu_v3(
-            "stage1.rs",
-            &CompilerOptions {
-                code_base: 0x0100,
-                stack_init: 0xf000,
-                ..CompilerOptions::default()
-            },
-        );
-        let application = compile_cpu_v3(
-            "boot-demo.rs",
-            &CompilerOptions {
-                code_base: 0x0200,
-                stack_init: 0xe000,
-                ..CompilerOptions::default()
-            },
-        );
-        let display_application = compile_cpu_v3(
-            "display-demo.rs",
-            &CompilerOptions {
-                code_base: 0x0200,
-                stack_init: 0xf000,
-                ..CompilerOptions::default()
-            },
-        );
-        let stage1_bytes = words_bytes(&stage1.words);
-        let application_bytes = words_bytes(&application.words);
-        let display_application_bytes = words_bytes(&display_application.words);
-        build_boot_image(BootImageSpec {
-            target: BootTarget::TangNano20K,
-            stage1_section: "stage1".into(),
-            stage1_entry: BootEntry {
-                code_segment: 1,
-                offset: 0x0100,
-                data_segment: 2,
-                stack_offset: 0xf000,
-            },
-            application_entry: BootEntry {
-                code_segment: 3,
-                offset: 0x0200,
-                data_segment: 4,
-                stack_offset: 0xe000,
-            },
-            sections: vec![
-                InputSection {
-                    name: "stage1".into(),
-                    kind: SectionKind::Load,
-                    flags: SECTION_READ | SECTION_EXECUTE,
-                    destination: PhysicalWordAddress::new(0x0001_0100),
-                    memory_size_bytes: stage1_bytes.len() as u32,
-                    data: stage1_bytes,
-                    alignment_bytes: 32,
-                },
-                InputSection {
-                    name: "application".into(),
-                    kind: SectionKind::Load,
-                    flags: SECTION_READ | SECTION_EXECUTE,
-                    destination: PhysicalWordAddress::new(0x0003_0200),
-                    memory_size_bytes: application_bytes.len() as u32,
-                    data: application_bytes,
-                    alignment_bytes: 32,
-                },
-                InputSection {
-                    name: "application-display".into(),
-                    kind: SectionKind::Load,
-                    flags: SECTION_READ | SECTION_EXECUTE,
-                    destination: PhysicalWordAddress::new(0x0007_0200),
-                    memory_size_bytes: display_application_bytes.len() as u32,
-                    data: display_application_bytes,
-                    alignment_bytes: 32,
-                },
-                section(
-                    "data",
-                    0x0004_0000,
-                    vec![0xef, 0xbe, 0x55],
-                    8,
-                    SECTION_READ | SECTION_WRITE,
-                ),
-                InputSection {
-                    name: "bss".into(),
-                    kind: SectionKind::Zero,
-                    flags: SECTION_READ | SECTION_WRITE,
-                    destination: PhysicalWordAddress::new(0x0004_0100),
-                    data: vec![],
-                    memory_size_bytes: 64,
-                    alignment_bytes: 32,
-                },
-            ],
-        })
-        .expect("boot image builds")
-        .bytes
-    }
-
     fn format_words(words: &[u16]) -> String {
         let items = words
             .iter()
             .map(|word| format!("0x{word:04x}"))
-            .collect::<Vec<_>>();
-        format!("&[{}]", items.join(", "))
-    }
-
-    fn format_bytes(bytes: &[u8]) -> String {
-        let items = bytes
-            .iter()
-            .map(|byte| format!("0x{byte:02x}"))
             .collect::<Vec<_>>();
         format!("&[{}]", items.join(", "))
     }
@@ -352,60 +226,55 @@ mod tests {
     }
 
     #[test]
-    fn flash_package_is_the_current_compiler_output() {
-        let package = boot_package();
-        if package != FLASH_PACKAGE {
-            panic!(
-                "boot package changed; new FLASH_PACKAGE = {}",
-                format_bytes(&package)
-            );
-        }
+    fn generated_manifest_repackages_the_embedded_flash_bytes() {
+        let manifest = PackManifest::parse(include_str!(concat!(
+            env!("OUT_DIR"),
+            "/boot.cpu-v3-manifest"
+        )))
+        .unwrap();
+        let spec = manifest.load(Path::new(env!("OUT_DIR"))).unwrap();
+        let package = build_boot_image(spec).unwrap().bytes;
+        assert_eq!(package, FLASH_PACKAGE);
     }
 
     #[test]
-    fn example_manifest_tracks_current_compiler_outputs() {
-        let stage1 = compile_cpu_v3(
-            "stage1.rs",
-            &CompilerOptions {
-                code_base: 0x0100,
-                stack_init: 0xf000,
-                ..CompilerOptions::default()
-            },
-        );
-        let application = compile_cpu_v3(
-            "boot-demo.rs",
-            &CompilerOptions {
-                code_base: 0x0200,
-                stack_init: 0xe000,
-                ..CompilerOptions::default()
-            },
-        );
-        let manifest =
-            cpu_v3_tang_nano_20k::boot::PackManifest::parse(include_str!("boot.cpu-v3-manifest"))
-                .unwrap();
+    fn generated_manifest_contains_the_derived_three_section_layout() {
+        let manifest = PackManifest::parse(include_str!(concat!(
+            env!("OUT_DIR"),
+            "/boot.cpu-v3-manifest"
+        )))
+        .unwrap();
+        assert_eq!(manifest.sections.len(), 3);
         let stage1_section = manifest
             .sections
             .iter()
-            .find(|section| section.name == "stage1")
+            .find(|section| section.name == STAGE1_LAYOUT.section_name)
             .unwrap();
-        let application_section = manifest
+        let s1_section = manifest
             .sections
             .iter()
-            .find(|section| section.name == "application")
+            .find(|section| section.name == S1_APPLICATION_LAYOUT.section_name)
             .unwrap();
-        assert_eq!(
-            stage1_section.memory_size_bytes,
-            stage1.words.len() as u32 * 2
-        );
-        assert_eq!(
-            application_section.memory_size_bytes,
-            application.words.len() as u32 * 2
-        );
+        let s2_section = manifest
+            .sections
+            .iter()
+            .find(|section| section.name == S2_APPLICATION_LAYOUT.section_name)
+            .unwrap();
+        assert_eq!(manifest.stage1_entry, STAGE1_LAYOUT.entry);
+        assert_eq!(manifest.application_entry, S1_APPLICATION_LAYOUT.entry);
         assert_eq!(
             stage1_section.source.as_deref(),
-            Some(std::path::Path::new(
-                "../../../../target/cpu-v3-boot/stage1.v3bin"
-            ))
+            Some(Path::new(STAGE1_LAYOUT.asset_name))
+        );
+        assert_eq!(s1_section.destination, S1_APPLICATION_LAYOUT.destination());
+        assert_eq!(
+            s1_section.source.as_deref(),
+            Some(Path::new(S1_APPLICATION_LAYOUT.asset_name))
+        );
+        assert_eq!(s2_section.destination, S2_APPLICATION_LAYOUT.destination());
+        assert_eq!(
+            s2_section.source.as_deref(),
+            Some(Path::new(S2_APPLICATION_LAYOUT.asset_name))
         );
     }
 
