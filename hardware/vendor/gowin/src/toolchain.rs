@@ -2454,7 +2454,7 @@ mod tests {
             &marked.replace("EX3791", "EX3792")
         ));
         assert!(gowin_warning_is_suppressed(
-            "WARN  (EX3791) : opaque warning(\"C:\\build\\sdrc_hs_top.vp\":0)"
+            "WARN  (EX3791) : opaque warning(\"build\\sdrc_hs_top.vp\":0)"
         ));
         assert!(gowin_warning_is_suppressed(
             "WARN  (PR1014) : Generic routing will be used for signal 'clk_d'"
