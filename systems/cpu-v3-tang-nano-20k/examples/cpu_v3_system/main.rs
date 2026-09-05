@@ -214,7 +214,7 @@ mod tests {
         }
     }
 
-    /// Packs Stage1 and all selectable applications into the Flash boot
+    /// Packs Stage1 and the two selectable applications into the Flash boot
     /// package, mirroring the build-script image exactly.
     fn boot_package() -> Vec<u8> {
         let stage1 = compile_cpu_v3(
@@ -233,14 +233,6 @@ mod tests {
                 ..CompilerOptions::default()
             },
         );
-        let alternate_application = compile_cpu_v3(
-            "boot-alt.rs",
-            &CompilerOptions {
-                code_base: 0x0200,
-                stack_init: 0xe000,
-                ..CompilerOptions::default()
-            },
-        );
         let display_application = compile_cpu_v3(
             "display-demo.rs",
             &CompilerOptions {
@@ -251,7 +243,6 @@ mod tests {
         );
         let stage1_bytes = words_bytes(&stage1.words);
         let application_bytes = words_bytes(&application.words);
-        let alternate_application_bytes = words_bytes(&alternate_application.words);
         let display_application_bytes = words_bytes(&display_application.words);
         build_boot_image(BootImageSpec {
             target: BootTarget::TangNano20K,
@@ -285,15 +276,6 @@ mod tests {
                     destination: PhysicalWordAddress::new(0x0003_0200),
                     memory_size_bytes: application_bytes.len() as u32,
                     data: application_bytes,
-                    alignment_bytes: 32,
-                },
-                InputSection {
-                    name: "application-alt".into(),
-                    kind: SectionKind::Load,
-                    flags: SECTION_READ | SECTION_EXECUTE,
-                    destination: PhysicalWordAddress::new(0x0005_0200),
-                    memory_size_bytes: alternate_application_bytes.len() as u32,
-                    data: alternate_application_bytes,
                     alignment_bytes: 32,
                 },
                 InputSection {
@@ -398,14 +380,6 @@ mod tests {
                 ..CompilerOptions::default()
             },
         );
-        let alternate_application = compile_cpu_v3(
-            "boot-alt.rs",
-            &CompilerOptions {
-                code_base: 0x0200,
-                stack_init: 0xe000,
-                ..CompilerOptions::default()
-            },
-        );
         let manifest =
             cpu_v3_tang_nano_20k::boot::PackManifest::parse(include_str!("boot.cpu-v3-manifest"))
                 .unwrap();
@@ -419,11 +393,6 @@ mod tests {
             .iter()
             .find(|section| section.name == "application")
             .unwrap();
-        let alternate_application_section = manifest
-            .sections
-            .iter()
-            .find(|section| section.name == "application-alt")
-            .unwrap();
         assert_eq!(
             stage1_section.memory_size_bytes,
             stage1.words.len() as u32 * 2
@@ -431,10 +400,6 @@ mod tests {
         assert_eq!(
             application_section.memory_size_bytes,
             application.words.len() as u32 * 2
-        );
-        assert_eq!(
-            alternate_application_section.memory_size_bytes,
-            alternate_application.words.len() as u32 * 2
         );
         assert_eq!(
             stage1_section.source.as_deref(),

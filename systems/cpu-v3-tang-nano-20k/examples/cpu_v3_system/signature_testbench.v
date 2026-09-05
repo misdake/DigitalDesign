@@ -331,19 +331,17 @@ initial begin
     if (dut.diagnostic_active !== 0)
         $fatal(1, "application LED write did not take ownership from diagnostics");
 
-    // Phase 2: holding button 10 resets the CPU and latches alternate boot.
-    // The live pins are 00 after release, so reaching CSEG/DSEG 5/6 proves the
-    // reset-time selection survived into Stage1.
+    // Phase 2: holding button 10 (S2) resets the CPU and latches the display
+    // boot. The live pins are 00 after release, so reaching CSEG 7 / DSEG 0
+    // proves the reset-time selection survived into Stage1.
     ddht_frame_seen = 0;
     buttons = 2'b10;
     repeat (8) @(posedge clk);
     buttons = 2'b00;
-    wait (ddht_frame_seen);
+    wait (dut.code_segment == 16'd7);
     @(posedge clk);
-    if (leds !== 6'b010101)
-        $fatal(1, "alternate boot must start at logical LEDs 010101, got %b", leds);
-    if (dut.code_segment !== 16'd5 || dut.data_segment !== 16'd6)
-        $fatal(1, "alternate application segments not reached: cseg=0x%04x dseg=0x%04x",
+    if (dut.data_segment !== 16'd0)
+        $fatal(1, "S2 display application segments not reached: cseg=0x%04x dseg=0x%04x",
             dut.code_segment, dut.data_segment);
 
     // Phase 3: corrupt the descriptor magic, reset through button 01,
