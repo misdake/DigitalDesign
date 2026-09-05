@@ -737,7 +737,7 @@ natural next targets.
   the new forwarding/overlap logic. Board-level DRAM timing is unchanged from the Stage 9/10 gearbox
   and remains subject to the normal physical-boardside validation.
 
-## Follow-up fix: word-write data path through the 108/54 gearbox (2026-09-04)
+## Follow-up fix: word writes and Controller HS burst protocol (2026-09-04)
 
 The shared SDRAM port only asserted `controller_write_data_valid` for line writes
 (`state == ST_WRITE_STAGE`), and the 54/108 MHz gearbox only filled its `write_buffer` on that
@@ -757,19 +757,46 @@ Fix:
   write-data stream is four beats for every write, preserving the free-running `write_capture`
   alignment without any gearbox change (a burst-zero write only reads entry zero). Line writes are
   unchanged except that `ST_WRITE_STAGE` now only advances through the line buffer when
-  `pending_line`.
+  `pending_line`. The lane-positioned word is written to the existing 64-bit output register only
+  on request acceptance and then held; recomputing it in `ST_OP_REQ` created a wide next-state mux
+  that added 289 LUTs and reduced a deterministic 54 MHz build to 46.991 MHz.
 - The Rust `SdramModel` and the `system_cosim_tb.v` behavioral port gained the same four-beat
   word-write `ST_WRITE_STAGE` transition, keeping the cycle-accurate co-simulation aligned with the
   RTL.
 - `display_sdram_tb.v` gained a dedicated from-idle word write that asserts the staged data and
   `controller_write_data_valid`, plus a robust write-completion driver (`finish_cpu_write`) that acks
   the ACTIVE/WRITE commands wherever the port is in its sequence.
+- Standalone 54/54 and 108/54 diagnostics exposed two additional edge-alignment faults. The
+  diagnostic producer itself had driven staged write data combinationally from an already-advanced
+  beat counter, rotating the four 64-bit pairs as `pair1, pair2, pair3, pair0`; it now registers
+  pair 0 with the first valid cycle and advances one pair per cycle. More importantly, the production
+  108/54 wrapper had held Controller HS `I_sdrc_cmd_en` until `O_sdrc_cmd_ack` and started its physical
+  write stream only at that ack. The reference contract and board behavior show that `cmd_en` is a
+  one-controller-clock request while `cmd_ack` is transaction completion. The wrapper now pulses the
+  command once, keeps a separate in-flight flag, presents M0 on the WRITE command interval, and then
+  advances through M1..M7. The same board characterization placed 108 MHz read data on phases 4..11;
+  phase 3 is stale bus data and is no longer published.
 
 Validation: crate lib/tests, `shared_word_and_burst_port_runs_in_iverilog`, the two-stage boot
-signature testbench (which exercises DMA word writes), the system co-sim, and clippy all pass.
-Physical-board confirmation of the vendor controller's write-data sampling remains the final
-acceptance step; until then any future GPU word/partial-line write support must go through the same
-staged path.
+signature testbench (which exercises DMA word writes), the system co-sim, and clippy pass. The fixed
+standalone 108/54 diagnostic also passes its Icarus memory model; that model was enlarged after this
+work found that its former last address was one word below the test region and had allowed unknown
+values to mask failures. On the Tang Nano 20K, an interactive LED viewer independently inspected all
+eight words through a burst read and eight burst-zero probes. Both the direct 54/54 path and the
+production 108/54 gearbox returned M0..M7 exactly. Before moving the 108 MHz read window, the viewer
+had shown `M6,M0,M1,M2,M3,M4,M5,M6` and constant stale M6 probes, directly identifying the early
+sample. This is physical confirmation despite the separate UART/USB capture failure (the board-health
+control also receives zero FPGA-UART bytes).
+
+The production `cpu_v3_system` passes full-system Gowin PnR with the corrected shared wrapper at
+10,099 Logic (8,822 LUT, 749 ALU, 88 SSRAM), 4,293 registers, 7,053 CLS, 4 DPB + 1 SDPB + 2 pROM,
+and 2 MULT18X18. CPU Fmax is 54.386 MHz against the 54 MHz constraint (0.131 ns worst setup slack);
+the 108 MHz controller clock reports 182.685 MHz Fmax, and all reported setup/hold TNS is zero. CPU
+timing remains valid but narrow rather than robust. Gowin's project-wide warning output remains
+enabled. Intentional RTL truncations are documented with source-line `gowin-lint: allow CODE`
+markers, while the opaque Controller HS netlist warnings are filtered only by their exact file,
+code, and internal-clock identity; other warnings remain visible. Any future GPU word/partial-line
+write support must go through the same staged path.
 
 ## Risk-scaled validation
 

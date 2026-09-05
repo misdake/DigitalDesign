@@ -21,6 +21,7 @@ reg [20:0] controller_address_108 = 0;
 reg [3:0] controller_write_mask_108 = 0;
 reg [7:0] controller_burst_length_108 = 0;
 reg command_seen_108 = 0;
+reg command_inflight_108 = 0;
 
 wire sdram_command_valid;
 wire [2:0] sdram_command;
@@ -48,7 +49,10 @@ end
 reg ack_event_108 = 0;
 reg ack_toggle_108 = 0;
 reg [3:0] read_phase_108 = 0;
-wire controller_read_valid_108 = read_phase_108 >= 3 && read_phase_108 <= 10;
+// Controller HS data M0 becomes observable four controller edges after the
+// READ command edge in this 108 MHz wrapper. Sample phases 4..11; phase 3 is
+// still the previous/stale bus value.
+wire controller_read_valid_108 = read_phase_108 >= 4 && read_phase_108 <= 11;
 reg read_is_line_108 = 0;
 reg read_word_published_108 = 0;
 reg read_half_108 = 0;
@@ -67,6 +71,7 @@ always @(posedge controller_clk) begin
     if (!sdram_pll_locked) begin
         controller_command_valid_108 <= 0;
         command_seen_108 <= 0;
+        command_inflight_108 <= 0;
         ack_event_108 <= 0;
         read_phase_108 <= 0;
         read_half_108 <= 0;
@@ -75,9 +80,12 @@ always @(posedge controller_clk) begin
         write_active_108 <= 0;
         write_physical_beat_108 <= 0;
     end else begin
+        // Controller HS cmd_en is a one-controller-clock pulse. cmd_ack is
+        // transaction completion, not command acceptance.
+        controller_command_valid_108 <= 0;
         if (!sdram_command_valid)
             command_seen_108 <= 0;
-        if (sdram_command_valid && !command_seen_108 && !controller_command_valid_108) begin
+        if (sdram_command_valid && !command_seen_108 && !command_inflight_108) begin
             controller_command_108 <= sdram_command;
             controller_precharge_108 <= sdram_precharge;
             controller_address_108 <= sdram_address;
@@ -85,20 +93,27 @@ always @(posedge controller_clk) begin
             controller_burst_length_108 <= sdram_burst_length;
             controller_command_valid_108 <= 1;
             command_seen_108 <= 1;
+            command_inflight_108 <= 1;
             read_is_line_108 <= sdram_burst_length != 0;
             read_word_published_108 <= 0;
-        end
-        if (controller_command_valid_108 && controller_command_ack_108) begin
-            controller_command_valid_108 <= 0;
-            ack_event_108 <= !ack_event_108;
-            if (controller_command_108 == 3'b101)
-                read_phase_108 <= 1;
-            if (controller_command_108 == 3'b100 && controller_burst_length_108 != 0) begin
-                write_active_108 <= 1;
-                write_physical_beat_108 <= 1;
+            if (sdram_command == 3'b100) begin
+                // Present M0 throughout the command interval. The beat counter
+                // advances only after the WRITE pulse is sampled.
+                write_active_108 <= 0;
+                write_physical_beat_108 <= 0;
             end
         end
-        if (read_phase_108 != 0 && read_phase_108 < 11)
+        if (command_inflight_108 && controller_command_ack_108) begin
+            command_inflight_108 <= 0;
+            ack_event_108 <= !ack_event_108;
+        end
+
+        // The prior-cycle pulse is being sampled by Controller HS on this
+        // edge, so read latency and the post-command write stream start here.
+        if (controller_command_valid_108 && controller_command_108 == 3'b101) begin
+            read_phase_108 <= 1;
+            read_half_108 <= 0;
+        end else if (read_phase_108 != 0 && read_phase_108 < 11)
             read_phase_108 <= read_phase_108 + 1'b1;
         else if (read_phase_108 == 11)
             read_phase_108 <= 0;
@@ -118,10 +133,13 @@ always @(posedge controller_clk) begin
             end
         end
 
-        if (write_active_108) begin
+        if (controller_command_valid_108 && controller_command_108 == 3'b100 &&
+            controller_burst_length_108 != 0) begin
+            write_active_108 <= 1;
+            write_physical_beat_108 <= 1;
+        end else if (write_active_108) begin
             if (write_physical_beat_108 == 7) begin
                 write_active_108 <= 0;
-                write_physical_beat_108 <= 0;
             end else begin
                 write_physical_beat_108 <= write_physical_beat_108 + 1'b1;
             end

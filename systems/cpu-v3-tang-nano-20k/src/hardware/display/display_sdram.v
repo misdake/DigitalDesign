@@ -32,7 +32,6 @@ localparam [19:0] TIMEOUT=20'hfffff;
 reg [3:0] state = ST_WAIT;
 reg owner_display = 0, pending_write = 0, pending_line = 0, prefer_display = 1;
 reg [21:0] pending_address = 0;
-reg [63:0] pending_write_data = 0;
 (* syn_ramstyle = "registers" *) reg [63:0] line_write_buffer [0:3];
 (* syn_ramstyle = "registers" *) reg [63:0] display_read_buffer [0:3];
 reg [2:0] beat = 0;
@@ -89,17 +88,17 @@ always @(posedge clk) begin
                 pending_write <= cpu_grant && cpu_write;
                 pending_line <= cpu_grant && cpu_line;
                 pending_address <= display_grant ? display_address : cpu_address;
-                pending_write_data <= cpu_write_data;
                 if (cpu_grant && cpu_write && cpu_line) begin
                     line_write_buffer[0] <= cpu_write_data;
                     beat <= 1;
                 end else if (cpu_grant && cpu_write) begin
                     // A word write has no 64-bit CPU stream to capture; hold
-                    // the half-word on controller_write_data across the full
-                    // ST_WRITE_STAGE so the gearbox write_buffer stays
-                    // four-beat aligned (burst-zero only reads entry zero).
+                    // this lane-positioned value across ST_WRITE_STAGE so the
+                    // gearbox stays four-beat aligned (burst-zero reads entry
+                    // zero). No later state rewrites it through a wide mux.
                     controller_write_data <= cpu_address[0] ?
-                        {32'b0,cpu_write_data[15:0],16'b0} : {48'b0,cpu_write_data[15:0]};
+                        {32'b0,cpu_write_data[15:0],16'b0} :
+                        {48'b0,cpu_write_data[15:0]};
                     beat <= 0;
                 end
                 prefer_display <= next_prefer_display;
@@ -153,10 +152,6 @@ always @(posedge clk) begin
             // the physical SDRAM. Reads must keep all lanes enabled.
             controller_write_mask <= pending_write && !pending_line ?
                 (pending_address[0] ? 4'b0011 : 4'b1100) : 4'b0000;
-            controller_write_data <= pending_line && pending_write ? controller_write_data :
-                (pending_address[0] ?
-                    {32'b0,pending_write_data[15:0],16'b0} :
-                    {48'b0,pending_write_data[15:0]});
             controller_command_valid <= 1; beat <= 0; read_ack_seen <= 0;
             timeout_count <= 0; state <= ST_OP_WAIT;
         end
