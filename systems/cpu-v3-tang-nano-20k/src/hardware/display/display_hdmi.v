@@ -120,7 +120,7 @@ always @(posedge clk) begin
                 if (burst_index==19) begin
                     published[fill_slot] <= ~published[fill_slot];
                     burst_index<=0;
-                    fill_slot <= fill_slot==2 ? 0 : fill_slot+1'b1;
+                    fill_slot <= fill_slot==2'd2 ? 2'd0 : fill_slot+1'b1;
                     if (fill_y==239) begin frame_complete<=1; end
                     else begin fill_y<=fill_y+1'b1; row_address<=row_address+22'd320; end
                 end else burst_index<=burst_index+1'b1;
@@ -145,13 +145,16 @@ reg [9:0] v_count=0;
 wire hsync = h_count < 40;
 wire vsync = v_count < 5;
 wire active = h_count>=260 && h_count<1540 && v_count>=25 && v_count<745;
-wire [10:0] active_x = h_count-260;
-wire [9:0] active_y = v_count-25;
+// These counters are range-constrained by the comparisons below. Their
+// explicit destination widths intentionally discard only constant high bits.
+wire [10:0] active_x = h_count-260; // gowin-lint: allow EX3791
 wire framebuffer_x = active && active_x>=160 && active_x<1120;
-wire [9:0] scaled_x = active_x-160;
-// Counter division by three is confined to the timing RTL; synthesis reduces
-// these fixed-width divisions to ordinary logic.
-wire [8:0] source_x = scaled_x / 3;
+wire [9:0] scaled_x = active_x-160; // gowin-lint: allow EX3791
+// scaled_x is at most 959, so floor(scaled_x/3) is at most 319 and always
+// fits in nine bits. Gowin reports the unsized constant's expression width
+// before the intentional narrowing; keep the compact proven divider and
+// suppress only this line.
+wire [8:0] source_x = scaled_x / 3; // gowin-lint: allow EX3791
 wire line_ready = publish_sync[display_slot] != released[display_slot];
 wire visible_request = started && active;
 wire framebuffer_request = started && framebuffer_x;
@@ -210,7 +213,7 @@ always @(posedge pixel_clock) begin
                 vertical_repeat<=0;
                 if (line_ready) begin
                     released[display_slot]<=~released[display_slot];
-                    display_slot<=display_slot==2 ? 0 : display_slot+1'b1;
+                    display_slot<=display_slot==2'd2 ? 2'd0 : display_slot+1'b1;
                 end else underflow_sticky<=1;
             end else vertical_repeat<=vertical_repeat+1'b1;
         end
@@ -235,7 +238,8 @@ assign underflow = underflow_sticky | memory_error_sticky;
 // encode do not meet the pixel clock as one combinational path. All video
 // signals receive the same three-stage delay.
 wire [7:0] red,green,blue;
-__RGB565__ u_rgb(.pixel(pixel565_pipe),.visible(visible_pipe3),.red(red),.green(green),.blue(blue));
+// This combinational leaf is intentionally flattened into the TMDS datapath.
+__RGB565__ u_rgb(.pixel(pixel565_pipe),.visible(visible_pipe3),.red(red),.green(green),.blue(blue)); // gowin-lint: allow NL0002
 
 wire [9:0] blue_symbol,green_symbol,red_symbol;
 HdmiTmdsEncoder u_blue(.clk(pixel_clock),.reset(pixel_reset),.de(visible_pipe3),
@@ -280,9 +284,12 @@ always @(posedge clk) begin
  else if(disparity==0 || qm_ones==4) begin
   symbol[9]<=~qm[8]; symbol[8]<=qm[8]; symbol[7:0]<=qm[8]?qm[7:0]:~qm[7:0];
   if(qm[8]) disparity<=disparity+qm_delta; else disparity<=disparity-qm_delta;
+ // The unsized alternatives below are literal zero, so narrowing them to the
+ // six-bit signed disparity datapath is exact. Sized zero changes Gowin's
+ // signed-expression inference and costs substantial logic on GW2AR-18.
  end else if((disparity>0&&qm_ones>4)||(disparity<0&&qm_ones<4)) begin
-  symbol<={1'b1,qm[8],~qm[7:0]}; disparity<=disparity-qm_delta+(qm[8]?6'sd2:0);
- end else begin symbol<={1'b0,qm[8],qm[7:0]}; disparity<=disparity+qm_delta-(qm[8]?0:6'sd2); end
+  symbol<={1'b1,qm[8],~qm[7:0]}; disparity<=disparity-qm_delta+(qm[8]?6'sd2:0); // gowin-lint: allow EX3791
+ end else begin symbol<={1'b0,qm[8],qm[7:0]}; disparity<=disparity+qm_delta-(qm[8]?0:6'sd2); end // gowin-lint: allow EX3791
 end endmodule
 `ifndef __ICARUS__
 module HdmiSerializer10(input wire pixel_clk,input wire serial_clk,input wire [9:0] data,output wire serial);

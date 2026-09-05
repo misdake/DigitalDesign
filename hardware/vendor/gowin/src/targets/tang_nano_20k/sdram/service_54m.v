@@ -16,9 +16,11 @@ wire [31:0] sdram_write_data;
 wire [7:0] sdram_burst_length;
 
 // Controller HS has no read-valid output. For the QN88 configuration below,
-// physical characterization at 54 MHz found eight read beats on phases 3..10
-// after the READ command pulse; cmd_ack is phase 9. Keep this target-specific
-// timing out of cache and application modules.
+// Controller HS has no read-valid output. Physical characterization at 54 MHz
+// found eight read beats while this counter is 3..10. Because the consuming
+// synchronous logic observes the combinational valid at the following edge,
+// its first capture is four clocks after the READ command is sampled. Keep
+// this target-specific timing out of cache and application modules.
 reg [3:0] sdram_read_phase = 0;
 always @(posedge logic_clk) begin
     if (sdram_command_valid && sdram_command == 3'b101)

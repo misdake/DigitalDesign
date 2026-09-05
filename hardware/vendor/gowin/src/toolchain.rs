@@ -1552,10 +1552,16 @@ impl GowinToolchain {
             return Err(GowinError::MissingTool(executable.clone()));
         }
         let build_tcl = canonicalize_for_gowin(directory.join("build.tcl"))?;
-        let status = Command::new(executable)
+        // Capture the console stream so precisely acknowledged Gowin warnings
+        // are suppressed there as well as in the persisted log collection.
+        // The CLI has only a project-wide warning switch, which stays enabled.
+        let output = Command::new(executable)
             .arg(&build_tcl)
             .current_dir(directory)
-            .status()?;
+            .output()?;
+        print_gowin_console(&output.stdout, false);
+        print_gowin_console(&output.stderr, true);
+        let status = output.status;
         if !status.success() {
             return Err(GowinError::BuildFailed(status));
         }
@@ -1723,6 +1729,19 @@ impl GowinToolchain {
     }
 }
 
+fn print_gowin_console(bytes: &[u8], stderr: bool) {
+    for line in String::from_utf8_lossy(bytes).lines() {
+        if gowin_warning_is_suppressed(line) {
+            continue;
+        }
+        if stderr {
+            eprintln!("{line}");
+        } else {
+            println!("{line}");
+        }
+    }
+}
+
 fn run_programmer(command: &mut Command) -> Result<Output, std::io::Error> {
     let output = command.output()?;
     std::io::stdout().write_all(&output.stdout)?;
@@ -1808,10 +1827,64 @@ fn collect_warnings(directory: &Path, project_name: &str) -> Result<Vec<String>,
             fs::read_to_string(log)?
                 .lines()
                 .filter(|line| line.contains("WARN"))
+                .filter(|line| !gowin_warning_is_suppressed(line))
                 .map(str::to_string),
         );
     }
     Ok(warnings)
+}
+
+/// Suppress only warnings that are either explicitly acknowledged on the
+/// generated Verilog source line or originate from the opaque Controller HS
+/// netlist. Gowin exposes only a project-wide "print all warnings" switch, so
+/// turning that off would also hide actionable width and connectivity issues.
+fn gowin_warning_is_suppressed(warning: &str) -> bool {
+    let vendor_controller_warning = warning.contains("sdrc_hs_top.vp\":0)")
+        && (warning.contains("WARN  (EX3670)") || warning.contains("WARN  (EX3791)"));
+    let vendor_controller_clock_warning =
+        warning.contains("WARN  (PR1014)") && warning.contains("signal 'clk_d'");
+    vendor_controller_warning
+        || vendor_controller_clock_warning
+        || source_line_allows_gowin_warning(warning)
+}
+
+fn source_line_allows_gowin_warning(warning: &str) -> bool {
+    let Some(code) = warning
+        .split_once("WARN  (")
+        .and_then(|(_, rest)| rest.split_once(')'))
+        .map(|(code, _)| code)
+    else {
+        return false;
+    };
+    let Some(location_start) = warning.rfind("(\"").map(|index| index + 2) else {
+        return false;
+    };
+    let Some(location_end) = warning[location_start..]
+        .rfind("\":")
+        .map(|index| index + location_start)
+    else {
+        return false;
+    };
+    let line_start = location_end + 2;
+    let Some(line_end) = warning[line_start..]
+        .find(')')
+        .map(|index| index + line_start)
+    else {
+        return false;
+    };
+    let Ok(line_number) = warning[line_start..line_end].parse::<usize>() else {
+        return false;
+    };
+    if line_number == 0 {
+        return false;
+    }
+    let Ok(source) = fs::read_to_string(&warning[location_start..location_end]) else {
+        return false;
+    };
+    let Some(source_line) = source.lines().nth(line_number - 1) else {
+        return false;
+    };
+    source_line.contains(&format!("gowin-lint: allow {code}"))
 }
 
 fn audit_timing(report: &Path) -> Result<(), GowinError> {
@@ -2357,6 +2430,40 @@ mod tests {
     #[derive(Clone, ModuleIo)]
     struct TestOutput {
         result: Wire,
+    }
+
+    #[test]
+    fn gowin_warning_suppression_is_source_local_and_vendor_specific() {
+        let directory = std::env::temp_dir().join(format!(
+            "digital-design-gowin-warning-filter-{}",
+            std::process::id()
+        ));
+        fs::create_dir_all(&directory).unwrap();
+        let source = directory.join("marked.v");
+        fs::write(
+            &source,
+            "wire [8:0] q = value / 10'd3; // gowin-lint: allow EX3791\n",
+        )
+        .unwrap();
+        let marked = format!(
+            "WARN  (EX3791) : Expression size 10 truncated to fit in target size 9(\"{}\":1)",
+            source.display()
+        );
+        assert!(gowin_warning_is_suppressed(&marked));
+        assert!(!gowin_warning_is_suppressed(
+            &marked.replace("EX3791", "EX3792")
+        ));
+        assert!(gowin_warning_is_suppressed(
+            "WARN  (EX3791) : opaque warning(\"C:\\build\\sdrc_hs_top.vp\":0)"
+        ));
+        assert!(gowin_warning_is_suppressed(
+            "WARN  (PR1014) : Generic routing will be used for signal 'clk_d'"
+        ));
+        assert!(!gowin_warning_is_suppressed(
+            "WARN  (PR1014) : Generic routing will be used for signal 'user_clock'"
+        ));
+        fs::remove_file(source).unwrap();
+        fs::remove_dir(directory).unwrap();
     }
 
     #[derive(Hardware)]
