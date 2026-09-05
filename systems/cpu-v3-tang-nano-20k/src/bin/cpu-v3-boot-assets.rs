@@ -17,10 +17,6 @@ const ASSETS: &[(&str, &[u8])] = &[
         include_bytes!(concat!(env!("OUT_DIR"), "/boot-demo.v3bin")),
     ),
     (
-        "boot-alt.v3bin",
-        include_bytes!(concat!(env!("OUT_DIR"), "/boot-alt.v3bin")),
-    ),
-    (
         "display-demo.v3bin",
         include_bytes!(concat!(env!("OUT_DIR"), "/display-demo.v3bin")),
     ),
@@ -120,7 +116,7 @@ mod tests {
             .unwrap()
             .1;
         assert_eq!(package.len(), 4_099);
-        assert_eq!(fnv1a64(package), 14_906_390_942_322_509_700);
+        assert_eq!(fnv1a64(package), 11_890_089_686_521_855_294);
         assert!(asset_manifest().contains("asset=stage0.v3bin"));
         assert!(asset_manifest().contains("asset=cpu-v3-boot.map"));
     }

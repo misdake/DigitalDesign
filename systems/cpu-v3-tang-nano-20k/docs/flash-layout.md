@@ -21,10 +21,10 @@ firmware can report either success or a detailed error code. These patterns are
 progress evidence only; only the application's UART frame and system-level
 checks establish a successful boot.
 
-Stage1 preserves both diagnostic choices and adds the framebuffer demo as a
-third application: reset-time button values `00`/`01` select the primary DDHT
-diagnostic, `10` selects the alternate diagnostic, and `11` selects the CPU/FPU
-sine, cosine, and circle demo. The display application is loaded at
+Stage1 maps the single-button S2 choice directly to the framebuffer demo:
+reset-time button values `00`/`01` select the primary DDHT diagnostic, while
+`10` (S2) selects the CPU/FPU sine, cosine, and circle demo; `11` is ignored by
+the board-level selection latch. The display application is loaded at
 `0007:0200`; it renders through cached CPU stores and cleans D-cache before each
 vblank framebuffer publication.
 

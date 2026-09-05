@@ -48,7 +48,6 @@ fn main() {
         "stage0.rs",
         "stage1.rs",
         "boot-demo.rs",
-        "boot-alt.rs",
         "display-demo.rs",
         "device_abi.rs",
     ] {
@@ -66,14 +65,6 @@ fn main() {
     );
     let application = compile(
         &sources.join("boot-demo.rs"),
-        &CompilerOptions {
-            code_base: 0x0200,
-            stack_init: 0xe000,
-            ..CompilerOptions::default()
-        },
-    );
-    let alternate_application = compile(
-        &sources.join("boot-alt.rs"),
         &CompilerOptions {
             code_base: 0x0200,
             stack_init: 0xe000,
@@ -99,7 +90,6 @@ fn main() {
     let stage0_bytes = word_bytes(&stage0);
     let stage1_bytes = word_bytes(&stage1);
     let application_bytes = word_bytes(&application);
-    let alternate_application_bytes = word_bytes(&alternate_application);
     let display_demo_bytes = word_bytes(&display_demo);
     let data = [0xef, 0xbe, 0x55];
     let image = build_boot_image(BootImageSpec {
@@ -134,15 +124,6 @@ fn main() {
                 destination: PhysicalWordAddress::new(0x0003_0200),
                 memory_size_bytes: application_bytes.len() as u32,
                 data: application_bytes.clone(),
-                alignment_bytes: 32,
-            },
-            InputSection {
-                name: "application-alt".into(),
-                kind: SectionKind::Load,
-                flags: SECTION_READ | SECTION_EXECUTE,
-                destination: PhysicalWordAddress::new(0x0005_0200),
-                memory_size_bytes: alternate_application_bytes.len() as u32,
-                data: alternate_application_bytes.clone(),
                 alignment_bytes: 32,
             },
             InputSection {
@@ -184,7 +165,7 @@ fn main() {
     );
     assert_eq!(
         fnv1a64(package),
-        14_906_390_942_322_509_700,
+        11_890_089_686_521_855_294,
         "Flash package bytes changed from the CPU V3 boot-format baseline"
     );
 
@@ -192,7 +173,6 @@ fn main() {
     write_artifact(&output, "stage0.v3bin", &stage0_bytes);
     write_artifact(&output, "stage1.v3bin", &stage1_bytes);
     write_artifact(&output, "boot-demo.v3bin", &application_bytes);
-    write_artifact(&output, "boot-alt.v3bin", &alternate_application_bytes);
     write_artifact(&output, "display-demo.v3bin", &display_demo_bytes);
     write_artifact(&output, "data.bin", &data);
     write_artifact(&output, "cpu-v3-boot.bin", package);

@@ -225,7 +225,7 @@ fn section(
     }
 }
 
-/// Compiles both boot stages and both applications into the flash image.
+/// Compiles both boot stages and the selectable applications into the flash image.
 /// Returns the flash bytes and the Stage0 image (linked at code base 0).
 fn boot_setup() -> (Vec<u8>, CpuV3Program) {
     let stage0 = compile_cpu_v3("stage0.rs", &CompilerOptions::default());
@@ -239,14 +239,6 @@ fn boot_setup() -> (Vec<u8>, CpuV3Program) {
     );
     let application = compile_cpu_v3(
         "boot-demo.rs",
-        &CompilerOptions {
-            code_base: 0x0200,
-            stack_init: 0xe000,
-            ..CompilerOptions::default()
-        },
-    );
-    let alternate_application = compile_cpu_v3(
-        "boot-alt.rs",
         &CompilerOptions {
             code_base: 0x0200,
             stack_init: 0xe000,
@@ -273,7 +265,6 @@ fn boot_setup() -> (Vec<u8>, CpuV3Program) {
 
     let stage1_bytes = words_bytes(&stage1.words);
     let application_bytes = words_bytes(&application.words);
-    let alternate_application_bytes = words_bytes(&alternate_application.words);
     let display_application_bytes = words_bytes(&display_application.words);
     let image = build_boot_image(BootImageSpec {
         target: BootTarget::TangNano20K,
@@ -307,15 +298,6 @@ fn boot_setup() -> (Vec<u8>, CpuV3Program) {
                 destination: PhysicalWordAddress::new(0x0003_0200),
                 memory_size_bytes: application_bytes.len() as u32,
                 data: application_bytes,
-                alignment_bytes: 32,
-            },
-            InputSection {
-                name: "application-alt".into(),
-                kind: SectionKind::Load,
-                flags: SECTION_READ | SECTION_EXECUTE,
-                destination: PhysicalWordAddress::new(0x0005_0200),
-                memory_size_bytes: alternate_application_bytes.len() as u32,
-                data: alternate_application_bytes,
                 alignment_bytes: 32,
             },
             InputSection {
@@ -369,9 +351,6 @@ fn run_boot(
         .unwrap();
     machine
         .load_physical(PhysicalWordAddress::new(0x0003_0200), &[0xdead])
-        .unwrap();
-    machine
-        .load_physical(PhysicalWordAddress::new(0x0005_0200), &[0xdead])
         .unwrap();
     machine
         .load_physical(PhysicalWordAddress::new(0x0007_0200), &[0xdead])
@@ -429,11 +408,6 @@ fn button_01_boots_the_primary_application_from_flash() {
         0xdead
     );
     assert_eq!(
-        machine.physical_memory(PhysicalWordAddress::new(0x0005_0200)),
-        0xdead,
-        "the unselected alternate application must not be DMA-loaded"
-    );
-    assert_eq!(
         machine.physical_memory(PhysicalWordAddress::new(0x0007_0200)),
         0xdead,
         "the unselected display application must not be DMA-loaded"
@@ -463,55 +437,20 @@ fn button_01_boots_the_primary_application_from_flash() {
 }
 
 #[test]
-fn button_10_boots_the_alternate_application_from_flash() {
+fn button_10_boots_the_fpu_display_application_from_flash() {
     let (flash, stage0) = boot_setup();
     let machine = run_boot(flash, &stage0, 0b10, 500_000);
 
-    let sysctl = machine.device::<SystemControlDevice>(0).unwrap();
-    let frame = ddht_frame();
-    assert!(sysctl.uart.len() >= frame.len() * 2);
-    assert_eq!(sysctl.uart[..8], frame);
-    assert_eq!(sysctl.uart[8..16], frame);
-    assert_eq!(sysctl.led, Some(0b01_0101));
-    assert_eq!(machine.code_segment(), 5);
-    assert_eq!(machine.data_segment(), 6);
-    assert_eq!(
-        machine.physical_memory(PhysicalWordAddress::new(0x0003_0200)),
-        0xdead,
-        "the unselected primary application must not be DMA-loaded"
-    );
-    assert_ne!(
-        machine.physical_memory(PhysicalWordAddress::new(0x0005_0200)),
-        0xdead
-    );
-    assert_eq!(
-        machine.physical_memory(PhysicalWordAddress::new(0x0007_0200)),
-        0xdead,
-        "the unselected display application must not be DMA-loaded"
-    );
-    assert_eq!(sysctl.icache_invalidations, 2);
-    assert_eq!(sysctl.dcache_invalidations, 2);
-}
-
-#[test]
-fn button_11_boots_the_fpu_display_application_from_flash() {
-    let (flash, stage0) = boot_setup();
-    let machine = run_boot(flash, &stage0, 0b11, 500_000);
-
     assert_eq!(machine.code_segment(), 7);
-    assert_ne!(
-        machine.physical_memory(PhysicalWordAddress::new(0x0007_0200)),
-        0xdead
-    );
+    assert_eq!(machine.data_segment(), 0);
     assert_eq!(
         machine.physical_memory(PhysicalWordAddress::new(0x0003_0200)),
         0xdead,
         "the unselected primary application must not be DMA-loaded"
     );
-    assert_eq!(
-        machine.physical_memory(PhysicalWordAddress::new(0x0005_0200)),
-        0xdead,
-        "the unselected alternate application must not be DMA-loaded"
+    assert_ne!(
+        machine.physical_memory(PhysicalWordAddress::new(0x0007_0200)),
+        0xdead
     );
     let sysctl = machine.device::<SystemControlDevice>(0).unwrap();
     assert_eq!(sysctl.icache_invalidations, 2);

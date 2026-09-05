@@ -147,8 +147,8 @@ fn main() {
     }
 
     // Read the reset-time choice before loading application sections. Button
-    // 10 selects application segment 5, button 11 selects the FPU/display
-    // application in segment 7, and button 01/default 00 select segment 3.
+    // Button 10 (S2) selects the FPU/display application in segment 7;
+    // button 01 and the default 00 select segment 3.
     let selection = dev_recv(BOOT_SELECT_DEVICE, BOOT_SELECT_VALUE) & 3;
     let mut i: u16 = 0;
     while i < count {
@@ -194,24 +194,16 @@ fn main() {
         } else {
             0
         };
-        let is_alternate_application = if kind == 1 && (flags & 4) != 0 && d_hi == 5 {
-            1
-        } else {
-            0
-        };
         let is_display_application = if kind == 1 && (flags & 4) != 0 && d_hi == 7 {
             1
         } else {
             0
         };
         let mut skip_unselected: u16 = 0;
-        if (selection == 2 || selection == 3) && is_primary_application == 1 {
+        if selection == 2 && is_primary_application == 1 {
             skip_unselected = 1;
         }
-        if selection != 2 && is_alternate_application == 1 {
-            skip_unselected = 1;
-        }
-        if selection != 3 && is_display_application == 1 {
+        if selection != 2 && is_display_application == 1 {
             skip_unselected = 1;
         }
 
@@ -244,16 +236,11 @@ fn main() {
     let mut dseg = m[MW_APP_DSEG];
     let mut cseg = m[MW_APP_CSEG];
     let mut entry = m[MW_APP_ENTRY];
-    // Button 10 selects the second application fitted at 0005:0200 with its
-    // independent stack/data segment 0006. Button 11 selects the FPU/display
-    // application at 0007:0200. It deliberately uses data segment zero because
-    // its framebuffer helper temporarily changes DSEG and restores zero.
+    // Button 10 (S2) selects the FPU/display application at 0007:0200. It uses
+    // data segment zero because its framebuffer helper temporarily changes
+    // DSEG and restores zero.
     // Button 01 and the power-on default use the manifest's primary entry.
     if selection == 2 {
-        dseg = 6;
-        cseg = 5;
-        entry = 0x0200;
-    } else if selection == 3 {
         dseg = 0;
         cseg = 7;
         entry = 0x0200;
