@@ -183,6 +183,10 @@ __CACHE__ u_instruction_cache (
     .cpu_response_valid(icache_cpu_response_valid),
     .cpu_read_data(icache_cpu_read_data),
     .cpu_error(icache_cpu_error),
+    .prefetch_issued(),
+    .prefetch_useful(),
+    .prefetch_useless(),
+    .prefetch_dropped(),
     .memory_request_valid(icache_memory_request_valid),
     .memory_address(icache_memory_address),
     .memory_response_ready(icache_memory_response_ready)
@@ -627,6 +631,7 @@ __FRAMEBUFFER_HDMI__ u_display (
     .memory_request_valid(display_memory_request_valid),
     .memory_urgent(display_memory_urgent),
     .memory_address(display_memory_address),
+    .underflow(),
     .device_read_data(display_read_data),
     .tmds_clk_p(tmds_clk_p),
     .tmds_clk_n(tmds_clk_n),
