@@ -1,5 +1,9 @@
-//! Draws into alternating 320x240 RGB565 framebuffers and publishes each
-//! completed back buffer at vertical blanking.
+//! Comprehensive physical-board demo for the CPU, write-back D-cache, FPU,
+//! SDRAM framebuffer, and display handoff. The CPU redraws an RGB565 back
+//! buffer, the FPU evaluates animated sine/cosine curves and a parametric
+//! circle, and rounded FPU results return through integer registers before
+//! normal cached stores write the pixels. Each completed buffer is cleaned
+//! before it is published to the display at vertical blanking.
 
 use crate::dsl_rt::*;
 mod device_abi;
@@ -13,9 +17,9 @@ const FB_B_OFFSET: u16 = 0x2d00;
 
 fn background(x: u16, y: u16) -> u16 {
     if x & 31 == 0 || y & 31 == 0 {
-        0x2104
+        0x18e3
     } else {
-        ((x & 31) << 11) | ((y & 63) << 5) | ((x + y) & 31)
+        0x0841 | ((x >> 4) & 1) | (((y >> 4) & 1) << 5)
     }
 }
 
@@ -47,41 +51,115 @@ fn fill_buffer(base_segment: u16, base_offset: u16) {
     }
 }
 
-fn paint_square(base_segment: u16, base_offset: u16, left: u16, color: u16, restore: u16) {
-    let mut y: u16 = 64;
-    let mut row_segment = base_segment;
-    let mut row_offset = base_offset + 0x5000;
-    if row_offset < base_offset {
-        row_segment += 1;
+/// Resolve a screen coordinate without 32-bit arithmetic. A framebuffer is
+/// only slightly larger than one segment, so incrementing by rows also makes
+/// the single segment carry explicit and easy to inspect on hardware.
+fn plot(base_segment: u16, base_offset: u16, x: u16, y: u16, color: u16) {
+    let mut segment = base_segment;
+    let mut offset = base_offset;
+    let mut row: u16 = 0;
+    while row < y {
+        offset += WIDTH;
+        if offset < WIDTH {
+            segment += 1;
+        }
+        row += 1;
     }
-    while y < 96 {
-        let mut pixel_segment = row_segment;
-        let mut pixel_offset = row_offset + left;
-        if pixel_offset < row_offset {
-            pixel_segment += 1;
-        }
-        let mut x: u16 = left;
-        while x < left + 32 {
-            if restore != 0 {
-                store_at(pixel_segment, pixel_offset, background(x, y));
-            } else {
-                store_at(pixel_segment, pixel_offset, color);
-            }
-            pixel_offset += 1;
-            if pixel_offset == 0 {
-                pixel_segment += 1;
-            }
-            x += 1;
-        }
-        row_offset += WIDTH;
-        if row_offset < WIDTH {
-            row_segment += 1;
-        }
+    let pixel_offset = offset + x;
+    if pixel_offset < offset {
+        segment += 1;
+    }
+    store_at(segment, pixel_offset, color);
+}
+
+fn draw_integer_axes(base_segment: u16, base_offset: u16) {
+    let mut x: u16 = 0;
+    while x < WIDTH {
+        plot(base_segment, base_offset, x, 58, 0x39e7);
+        plot(base_segment, base_offset, x, 118, 0x39e7);
+        x += 1;
+    }
+
+    let mut y: u16 = 132;
+    while y < 232 {
+        plot(base_segment, base_offset, 240, y, 0x39e7);
         y += 1;
+    }
+    let mut circle_x: u16 = 188;
+    while circle_x < 293 {
+        plot(base_segment, base_offset, circle_x, 182, 0x39e7);
+        circle_x += 1;
     }
 }
 
+/// Draw two independently visible ROM-sincos results. Multiplication scales
+/// Q8.8 values to pixels; FROUND followed by `to_int()` deliberately exercises
+/// the FPU-to-integer path before every framebuffer store.
+fn draw_waveforms(base_segment: u16, base_offset: u16, phase: u16) {
+    let amplitude = fix16::from_int(24);
+    let mut x: u16 = 0;
+    while x < WIDTH {
+        // 10 / 256 radians per pixel gives almost two periods across 320 px.
+        let angle = fix16::from_bits(phase + x * 10);
+        let sc = fsincos(angle);
+        let sine_offset = (sc.x() * amplitude).round().to_int();
+        let cosine_offset = (sc.y() * amplitude).round().to_int();
+        let sine_y = (58i16 + sine_offset) as u16;
+        let cosine_y = (118i16 + cosine_offset) as u16;
+        plot(base_segment, base_offset, x, sine_y, 0x07e0);
+        plot(base_segment, base_offset, x, sine_y + 1, 0x07e0);
+        plot(base_segment, base_offset, x, cosine_y, 0x07ff);
+        plot(base_segment, base_offset, x, cosine_y + 1, 0x07ff);
+        x += 1;
+    }
+}
+
+fn draw_circle(base_segment: u16, base_offset: u16, phase: u16) {
+    let radius = fix16::from_int(46);
+    let mut angle_bits = phase;
+    let mut sample: u16 = 0;
+    while sample < 256 {
+        let sc = fsincos(fix16::from_bits(angle_bits));
+        let x_offset = (sc.y() * radius).round().to_int();
+        let y_offset = (sc.x() * radius).round().to_int();
+        let x = (240i16 + x_offset) as u16;
+        let y = (182i16 + y_offset) as u16;
+        let color = if sample < 128 { 0xffe0 } else { 0xf81f };
+        plot(base_segment, base_offset, x, y, color);
+
+        // 6.25 raw Q8.8 steps approximate 2*pi over 256 samples without
+        // integer division: three 6s followed by a 7.
+        angle_bits += 6;
+        if sample & 3 == 3 {
+            angle_bits += 1;
+        }
+        sample += 1;
+    }
+
+    // A red phase marker makes it obvious that new FPU results, CPU stores,
+    // cache cleaning, and display swaps continue to complete frame by frame.
+    let marker = fsincos(fix16::from_bits(phase));
+    let marker_x = (240i16 + (marker.y() * radius).round().to_int()) as u16;
+    let marker_y = (182i16 + (marker.x() * radius).round().to_int()) as u16;
+    plot(base_segment, base_offset, marker_x, marker_y, 0xf800);
+    plot(base_segment, base_offset, marker_x + 1, marker_y, 0xf800);
+    plot(base_segment, base_offset, marker_x, marker_y + 1, 0xf800);
+}
+
+fn draw_scene(base_segment: u16, base_offset: u16, phase: u16) {
+    fill_buffer(base_segment, base_offset);
+    draw_integer_axes(base_segment, base_offset);
+    draw_waveforms(base_segment, base_offset, phase);
+    draw_circle(base_segment, base_offset, phase);
+}
+
 fn select_next_framebuffer(segment: u16, offset: u16) {
+    // The display reads SDRAM directly and does not snoop the CPU's write-back
+    // D-cache. Complete the ownership handoff before publishing this buffer.
+    let clean_status = dcache_clean_all();
+    if clean_status != CACHE_MAINTENANCE_STATUS_SUCCESS {
+        halt(clean_status);
+    }
     dev_send(DISPLAY_DEVICE, DISPLAY_STAGE_FRAMEBUFFER_LOW, offset);
     dev_send(DISPLAY_DEVICE, DISPLAY_STAGE_FRAMEBUFFER_HIGH, segment);
     dev_send(DISPLAY_DEVICE, DISPLAY_SWAP_COMMAND, DISPLAY_NEXT_SWAP);
@@ -97,49 +175,19 @@ fn wait_next_frame() {
 
 #[allow(clippy::eq_op)]
 fn main() {
-    fill_buffer(FB_A_SEGMENT, FB_A_OFFSET);
-    fill_buffer(FB_B_SEGMENT, FB_B_OFFSET);
-
-    let mut left: u16 = 0;
-    let mut direction: u16 = 1;
-    let mut frame: u16 = 0;
-    let mut back: u16 = 1;
-    let mut a_valid: u16 = 0;
-    let mut b_valid: u16 = 0;
-    let mut a_left: u16 = 0;
-    let mut b_left: u16 = 0;
+    let mut phase: u16 = 0;
+    let mut back: u16 = 0;
     while 1 == 1 {
-        let color = 0xf800 | ((frame & 63) << 5) | (frame & 31);
         if back == 0 {
-            if a_valid != 0 {
-                paint_square(FB_A_SEGMENT, FB_A_OFFSET, a_left, 0, 1);
-            }
-            paint_square(FB_A_SEGMENT, FB_A_OFFSET, left, color, 0);
-            a_left = left;
-            a_valid = 1;
+            draw_scene(FB_A_SEGMENT, FB_A_OFFSET, phase);
             select_next_framebuffer(FB_A_SEGMENT, FB_A_OFFSET);
             back = 1;
         } else {
-            if b_valid != 0 {
-                paint_square(FB_B_SEGMENT, FB_B_OFFSET, b_left, 0, 1);
-            }
-            paint_square(FB_B_SEGMENT, FB_B_OFFSET, left, color, 0);
-            b_left = left;
-            b_valid = 1;
+            draw_scene(FB_B_SEGMENT, FB_B_OFFSET, phase);
             select_next_framebuffer(FB_B_SEGMENT, FB_B_OFFSET);
             back = 0;
         }
         wait_next_frame();
-        if left == 288 {
-            direction = 0;
-        } else if left == 0 {
-            direction = 1;
-        }
-        if direction == 1 {
-            left += 1;
-        } else {
-            left -= 1;
-        }
-        frame += 1;
+        phase += 24;
     }
 }

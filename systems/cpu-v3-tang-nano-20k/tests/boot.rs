@@ -6,11 +6,15 @@
 //! (device 0), with the flash image backing the DMA model.
 
 use cpu_v3::rcc_backend::{self, CompilerOptions, CpuV3Program};
-use cpu_v3::{Machine, PhysicalWordAddress};
+use cpu_v3::{decode, FpuOp, FpuUnaryOp, Instruction, Machine, PhysicalWordAddress};
 use cpu_v3_tang_nano_20k::boot::{
     build_boot_image, BootDmaDevice, BootEntry, BootErrorReport, BootImageSpec, BootSelectDevice,
-    BootTarget, InputSection, SectionKind, SystemControlDevice, SECTION_EXECUTE, SECTION_READ,
-    SECTION_WRITE,
+    BootTarget, InputSection, SectionKind, SystemControlDevice, CACHE_MAINTENANCE_STATUS,
+    D_CLEAN_ALL, SECTION_EXECUTE, SECTION_READ, SECTION_WRITE, SYSTEM_CONTROL_DEVICE,
+};
+use cpu_v3_tang_nano_20k::{
+    DisplayDevice, DISPLAY_CONTROL, DISPLAY_DEVICE, DISPLAY_FRAMEBUFFER_HIGH,
+    DISPLAY_FRAMEBUFFER_LOW,
 };
 
 fn compile_cpu_v3(file: &str, opts: &CompilerOptions) -> CpuV3Program {
@@ -67,6 +71,142 @@ fn assert_canonical_cache_handoff(stage: &str, words: &[u16]) {
     );
 }
 
+#[test]
+fn display_demo_exercises_fpu_rounding_and_cpu_framebuffer_stores() {
+    let program = compile_cpu_v3("display-demo.rs", &CompilerOptions::default());
+    let instructions = program
+        .words
+        .iter()
+        .copied()
+        .map(decode)
+        .collect::<Vec<_>>();
+
+    for (description, present) in [
+        (
+            "FSINCOS",
+            instructions.iter().any(|instruction| {
+                matches!(
+                    instruction,
+                    Instruction::FpuUnary {
+                        op: FpuUnaryOp::SinCos,
+                        ..
+                    }
+                )
+            }),
+        ),
+        (
+            "FROUND",
+            instructions.iter().any(|instruction| {
+                matches!(
+                    instruction,
+                    Instruction::FpuUnary {
+                        op: FpuUnaryOp::Round,
+                        ..
+                    }
+                )
+            }),
+        ),
+        (
+            "FMUL",
+            instructions
+                .iter()
+                .any(|instruction| matches!(instruction, Instruction::Fpu { op: FpuOp::Mul, .. })),
+        ),
+        (
+            "FSTORE integer bridge",
+            instructions.iter().any(|instruction| {
+                matches!(
+                    instruction,
+                    Instruction::Fpu {
+                        op: FpuOp::Store,
+                        ..
+                    }
+                )
+            }),
+        ),
+        (
+            "CPU framebuffer store",
+            instructions
+                .iter()
+                .any(|instruction| matches!(instruction, Instruction::Store { .. })),
+        ),
+    ] {
+        assert!(present, "display demo must contain {description}");
+    }
+}
+
+#[test]
+fn display_swap_waits_for_dcache_clean_before_publishing_the_back_buffer() {
+    let program = compile_cpu_v3("display-demo.rs", &CompilerOptions::default());
+    let publish = program
+        .debug
+        .functions
+        .iter()
+        .find(|function| function.name == "select_next_framebuffer")
+        .expect("display demo must retain its framebuffer publish function");
+    let start = publish.addr.0 - usize::from(program.code_base);
+    let end = publish.addr.1 - usize::from(program.code_base);
+    let instructions = program.words[start..end]
+        .iter()
+        .copied()
+        .map(decode)
+        .collect::<Vec<_>>();
+
+    let clean = instructions
+        .iter()
+        .position(|instruction| {
+            matches!(
+                instruction,
+                Instruction::DeviceSend {
+                    device: SYSTEM_CONTROL_DEVICE,
+                    channel: D_CLEAN_ALL,
+                    ..
+                }
+            )
+        })
+        .expect("framebuffer publish must start D_CLEAN_ALL");
+    assert!(
+        matches!(
+            instructions.get(clean + 1),
+            Some(Instruction::DeviceReceive {
+                device: SYSTEM_CONTROL_DEVICE,
+                channel: CACHE_MAINTENANCE_STATUS,
+                ..
+            })
+        ),
+        "D_CLEAN_ALL must immediately wait for its final maintenance status"
+    );
+
+    let display_channels = instructions
+        .iter()
+        .enumerate()
+        .filter_map(|(index, instruction)| match instruction {
+            Instruction::DeviceSend {
+                device: DISPLAY_DEVICE,
+                channel,
+                ..
+            } => Some((index, *channel)),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(
+        display_channels
+            .iter()
+            .map(|(_, channel)| *channel)
+            .collect::<Vec<_>>(),
+        [
+            DISPLAY_FRAMEBUFFER_LOW,
+            DISPLAY_FRAMEBUFFER_HIGH,
+            DISPLAY_CONTROL
+        ],
+        "publish must stage low/high addresses and then request NEXT_SWAP"
+    );
+    assert!(
+        display_channels[0].0 > clean + 1,
+        "no framebuffer register may be published before clean completes"
+    );
+}
+
 fn section(
     name: &str,
     destination: u32,
@@ -113,6 +253,14 @@ fn boot_setup() -> (Vec<u8>, CpuV3Program) {
             ..CompilerOptions::default()
         },
     );
+    let display_application = compile_cpu_v3(
+        "display-demo.rs",
+        &CompilerOptions {
+            code_base: 0x0200,
+            stack_init: 0xf000,
+            ..CompilerOptions::default()
+        },
+    );
     assert_canonical_cache_handoff("Stage0", &stage0.words);
     assert_canonical_cache_handoff("Stage1", &stage1.words);
     // Stage0 must fit the BSRAM boot window (physical instruction words
@@ -126,6 +274,7 @@ fn boot_setup() -> (Vec<u8>, CpuV3Program) {
     let stage1_bytes = words_bytes(&stage1.words);
     let application_bytes = words_bytes(&application.words);
     let alternate_application_bytes = words_bytes(&alternate_application.words);
+    let display_application_bytes = words_bytes(&display_application.words);
     let image = build_boot_image(BootImageSpec {
         target: BootTarget::TangNano20K,
         stage1_section: "stage1".into(),
@@ -167,6 +316,15 @@ fn boot_setup() -> (Vec<u8>, CpuV3Program) {
                 destination: PhysicalWordAddress::new(0x0005_0200),
                 memory_size_bytes: alternate_application_bytes.len() as u32,
                 data: alternate_application_bytes,
+                alignment_bytes: 32,
+            },
+            InputSection {
+                name: "application-display".into(),
+                kind: SectionKind::Load,
+                flags: SECTION_READ | SECTION_EXECUTE,
+                destination: PhysicalWordAddress::new(0x0007_0200),
+                memory_size_bytes: display_application_bytes.len() as u32,
+                data: display_application_bytes,
                 alignment_bytes: 32,
             },
             section(
@@ -215,12 +373,16 @@ fn run_boot(
     machine
         .load_physical(PhysicalWordAddress::new(0x0005_0200), &[0xdead])
         .unwrap();
+    machine
+        .load_physical(PhysicalWordAddress::new(0x0007_0200), &[0xdead])
+        .unwrap();
     machine.attach_device(0, Box::<SystemControlDevice>::default());
     machine.attach_device(1, Box::new(BootSelectDevice::new(boot_selection)));
     machine.attach_device(
         2,
         Box::new(BootDmaDevice::new(flash, machine.physical_memory_words())),
     );
+    machine.attach_device(DISPLAY_DEVICE, Box::<DisplayDevice>::default());
     // Stage0 executes from the BSRAM boot window: on hardware, instruction
     // fetches from physical words 0x0000..0x03ff read BSRAM while data
     // accesses (descriptor scratch at word 0x40) go to SDRAM.
@@ -271,6 +433,11 @@ fn button_01_boots_the_primary_application_from_flash() {
         0xdead,
         "the unselected alternate application must not be DMA-loaded"
     );
+    assert_eq!(
+        machine.physical_memory(PhysicalWordAddress::new(0x0007_0200)),
+        0xdead,
+        "the unselected display application must not be DMA-loaded"
+    );
     // The application prologue set the stack to its --stack-init (0xe000)
     // minus its small frame.
     let sp = machine.register(13).unwrap();
@@ -317,6 +484,36 @@ fn button_10_boots_the_alternate_application_from_flash() {
         machine.physical_memory(PhysicalWordAddress::new(0x0005_0200)),
         0xdead
     );
+    assert_eq!(
+        machine.physical_memory(PhysicalWordAddress::new(0x0007_0200)),
+        0xdead,
+        "the unselected display application must not be DMA-loaded"
+    );
+    assert_eq!(sysctl.icache_invalidations, 2);
+    assert_eq!(sysctl.dcache_invalidations, 2);
+}
+
+#[test]
+fn button_11_boots_the_fpu_display_application_from_flash() {
+    let (flash, stage0) = boot_setup();
+    let machine = run_boot(flash, &stage0, 0b11, 500_000);
+
+    assert_eq!(machine.code_segment(), 7);
+    assert_ne!(
+        machine.physical_memory(PhysicalWordAddress::new(0x0007_0200)),
+        0xdead
+    );
+    assert_eq!(
+        machine.physical_memory(PhysicalWordAddress::new(0x0003_0200)),
+        0xdead,
+        "the unselected primary application must not be DMA-loaded"
+    );
+    assert_eq!(
+        machine.physical_memory(PhysicalWordAddress::new(0x0005_0200)),
+        0xdead,
+        "the unselected alternate application must not be DMA-loaded"
+    );
+    let sysctl = machine.device::<SystemControlDevice>(0).unwrap();
     assert_eq!(sysctl.icache_invalidations, 2);
     assert_eq!(sysctl.dcache_invalidations, 2);
 }

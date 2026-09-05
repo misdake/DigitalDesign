@@ -214,8 +214,8 @@ mod tests {
         }
     }
 
-    /// Packs Stage1 and the demo application into the Flash boot package,
-    /// mirroring the section layout of the `cpu_v2` `cpu_v3_boot` test.
+    /// Packs Stage1 and all selectable applications into the Flash boot
+    /// package, mirroring the build-script image exactly.
     fn boot_package() -> Vec<u8> {
         let stage1 = compile_cpu_v3(
             "stage1.rs",
@@ -241,9 +241,18 @@ mod tests {
                 ..CompilerOptions::default()
             },
         );
+        let display_application = compile_cpu_v3(
+            "display-demo.rs",
+            &CompilerOptions {
+                code_base: 0x0200,
+                stack_init: 0xf000,
+                ..CompilerOptions::default()
+            },
+        );
         let stage1_bytes = words_bytes(&stage1.words);
         let application_bytes = words_bytes(&application.words);
         let alternate_application_bytes = words_bytes(&alternate_application.words);
+        let display_application_bytes = words_bytes(&display_application.words);
         build_boot_image(BootImageSpec {
             target: BootTarget::TangNano20K,
             stage1_section: "stage1".into(),
@@ -285,6 +294,15 @@ mod tests {
                     destination: PhysicalWordAddress::new(0x0005_0200),
                     memory_size_bytes: alternate_application_bytes.len() as u32,
                     data: alternate_application_bytes,
+                    alignment_bytes: 32,
+                },
+                InputSection {
+                    name: "application-display".into(),
+                    kind: SectionKind::Load,
+                    flags: SECTION_READ | SECTION_EXECUTE,
+                    destination: PhysicalWordAddress::new(0x0007_0200),
+                    memory_size_bytes: display_application_bytes.len() as u32,
+                    data: display_application_bytes,
                     alignment_bytes: 32,
                 },
                 section(

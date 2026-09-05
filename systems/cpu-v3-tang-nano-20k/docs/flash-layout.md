@@ -21,6 +21,13 @@ firmware can report either success or a detailed error code. These patterns are
 progress evidence only; only the application's UART frame and system-level
 checks establish a successful boot.
 
+Stage1 preserves both diagnostic choices and adds the framebuffer demo as a
+third application: reset-time button values `00`/`01` select the primary DDHT
+diagnostic, `10` selects the alternate diagnostic, and `11` selects the CPU/FPU
+sine, cosine, and circle demo. The display application is loaded at
+`0007:0200`; it renders through cached CPU stores and cleans D-cache before each
+vblank framebuffer publication.
+
 The current board's runtime SFDP probe reports an 8-MiB device. Its JEDEC ID is
 `EF 40 17`; this is a Winbond-family 64-Mbit part even though some board
 material lists a different vendor. Software therefore binds this concrete

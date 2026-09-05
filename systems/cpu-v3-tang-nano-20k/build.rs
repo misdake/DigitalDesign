@@ -83,6 +83,14 @@ fn main() {
     let display_demo = compile(
         &sources.join("display-demo.rs"),
         &CompilerOptions {
+            code_base: 0x0200,
+            stack_init: 0xf000,
+            ..CompilerOptions::default()
+        },
+    );
+    let display_demo_simulator = compile(
+        &sources.join("display-demo.rs"),
+        &CompilerOptions {
             code_base: 0,
             stack_init: 0xf000,
             ..CompilerOptions::default()
@@ -92,6 +100,7 @@ fn main() {
     let stage1_bytes = word_bytes(&stage1);
     let application_bytes = word_bytes(&application);
     let alternate_application_bytes = word_bytes(&alternate_application);
+    let display_demo_bytes = word_bytes(&display_demo);
     let data = [0xef, 0xbe, 0x55];
     let image = build_boot_image(BootImageSpec {
         target: BootTarget::TangNano20K,
@@ -137,6 +146,15 @@ fn main() {
                 alignment_bytes: 32,
             },
             InputSection {
+                name: "application-display".into(),
+                kind: SectionKind::Load,
+                flags: SECTION_READ | SECTION_EXECUTE,
+                destination: PhysicalWordAddress::new(0x0007_0200),
+                memory_size_bytes: display_demo_bytes.len() as u32,
+                data: display_demo_bytes.clone(),
+                alignment_bytes: 32,
+            },
+            InputSection {
                 name: "data".into(),
                 kind: SectionKind::Load,
                 flags: SECTION_READ | SECTION_WRITE,
@@ -166,7 +184,7 @@ fn main() {
     );
     assert_eq!(
         fnv1a64(package),
-        2_916_494_193_676_194_166,
+        14_906_390_942_322_509_700,
         "Flash package bytes changed from the CPU V3 boot-format baseline"
     );
 
@@ -175,7 +193,7 @@ fn main() {
     write_artifact(&output, "stage1.v3bin", &stage1_bytes);
     write_artifact(&output, "boot-demo.v3bin", &application_bytes);
     write_artifact(&output, "boot-alt.v3bin", &alternate_application_bytes);
-    write_artifact(&output, "display-demo.v3bin", &word_bytes(&display_demo));
+    write_artifact(&output, "display-demo.v3bin", &display_demo_bytes);
     write_artifact(&output, "data.bin", &data);
     write_artifact(&output, "cpu-v3-boot.bin", package);
     write_artifact(&output, "cpu-v3-boot.map", image.map().as_bytes());
@@ -190,11 +208,12 @@ fn main() {
     std::fs::write(output.join("boot_images.rs"), generated)
         .expect("write generated boot image bindings");
 
-    // The display simulator includes this generated module even when a test
-    // target does not build a static display demo image.
     std::fs::write(
         output.join("display_image.rs"),
-        b"pub const DISPLAY_DEMO_PROGRAM: &[u16] = &[];\n",
+        format!(
+            "pub const DISPLAY_DEMO_PROGRAM: &[u16] = &{:?};\n",
+            display_demo_simulator
+        ),
     )
-    .expect("write display image placeholder");
+    .expect("write compiled display image");
 }
