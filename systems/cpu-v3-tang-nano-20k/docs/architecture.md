@@ -15,7 +15,8 @@ optimization Stage. Reusable processor details belong to the
 - the CPU V3 memory arbiter and boot DMA client;
 - the related-clock SDRAM/display port and Gowin Controller HS boundary;
 - SPI-Flash boot DMA, system-control, boot-select, and framebuffer devices;
-- boot-progress reporting, UART, LEDs, and the 720p HDMI output path.
+- boot-progress reporting, UART, LEDs, and the HDMI output path (compile-time
+  display mode from `display::ACTIVE_DISPLAY_CONFIG`).
 
 The system owns concrete memory layout, device indices and channels, board clocks, boot packaging,
 firmware, display scheduling, and physical validation. The CPU IP sees only physical instruction and
@@ -130,8 +131,14 @@ addresses.
 
 ## Display and diagnostics
 
-The application framebuffer is 320x240 RGB565 in SDRAM. The display path fetches it through the
-shared SDRAM port, buffers scanout lines, and produces the fitted 720p TMDS output. Boot progress owns
+The application framebuffer is 320x240 RGB565 in SDRAM. The display path fetches
+it through the shared SDRAM port, buffers scanout lines, and produces the fitted
+HDMI TMDS output. The scanout mode is a single compile-time configuration
+(`display::ACTIVE_DISPLAY_CONFIG`), currently 800x480@60 with a 2x upscale and
+80-pixel side borders; the retained 1280x720p60 3x mode is the one-word
+alternative. The framebuffer is always upscaled uniformly and centered, so the
+remaining horizontal strip stays a black border. The board video PLL follows
+the same switch through the example project. Boot progress owns
 the six LEDs until the first software LED write, after which software owns them until reset. LED
 patterns are progress evidence only; UART frames and system-level checks establish boot success or a
 structured boot failure.

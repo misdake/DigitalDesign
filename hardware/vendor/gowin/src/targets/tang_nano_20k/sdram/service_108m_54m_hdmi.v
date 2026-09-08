@@ -1,7 +1,7 @@
 wire video_serial_clock;
 wire video_pixel_clock;
 wire video_locked;
-TangNano20KVideoPll720p u_video_pll(
+TangNano20KVideoPll u_video_pll(
     .clkin(clk), .serial_clock(video_serial_clock),
     .pixel_clock(video_pixel_clock), .locked(video_locked)
 );
