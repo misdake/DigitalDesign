@@ -1,6 +1,6 @@
 # CPU V3 hardware structure and timing
 
-This document describes the revision 0.7 ISA running on the current Stage 12
+This document describes the revision 0.8 ISA running on the current Stage 12
 microarchitecture, not an intended future pipeline. The maintainable PlantUML source is in
 [`cpu_v3_structure.puml`](cpu_v3_structure.puml).
 
@@ -37,7 +37,7 @@ when the queue does not already contain the requested word.
 | Block | Current implementation | Per-cycle capability |
 |---|---|---|
 | GPR file | Explicit 16 x 16-bit distributed-RAM leaf with dual asynchronous reads and one synchronous write | One registered write per cycle; a forwarding mux exposes the pending write to a matching next instruction |
-| Control state | 16-bit PC, CSEG, DSEG, one IMMHI12 prefix, one transient three-way comparison | One instruction decoded; no speculative state |
+| Control state | 16-bit PC, CSEG, DSEG, one PFX12 prefix, one transient three-way comparison | One instruction decoded; no speculative state |
 | Integer ALU | 16-bit add/sub/logic/shift/compare plus CLZ and popcount | One non-multiply integer result |
 | Integer multiplier | One registered signed 18 x 18 `MULT18X18` lane | Accepts an input each cycle, but the blocking core uses one operation at a time |
 | FPR file | 16 registers x 4 signed Q8.8 lanes; 16 x 64-bit vectors, two registered-address asynchronous reads and one synchronous write with per-lane write enables | Read two whole vectors; commit one lane or one whole vector per cycle |
@@ -76,9 +76,9 @@ handoff resolves deterministically.
 
 | Operation class | Execute-to-retire cycles | Active phases |
 |---|---:|---|
-| Pipelineable ALU, immediate, compare, non-control E-family, prefix, and store with an empty async buffer | 1 | `Execute`, optionally accepting the next queued instruction in the same cycle |
-| Branch/jump, device, HALT, and other single-cycle barriers | 1 | `Execute`, then restart through the fetch path |
-| Integer `MUL` / `MULI` | 3 | `Execute -> MultiplyWait -> MultiplyCommit` |
+| Pipelineable ALU, immediate, compare, major-2 shifts, non-control major-6 operations, non-halting `SIGNAL`, prefix, and store with an empty async buffer | 1 | `Execute`, optionally accepting the next queued instruction in the same cycle |
+| Branch/jump, device, `SIGNAL` type 0 (halt), and other single-cycle barriers | 1 | `Execute`, then restart through the fetch path |
+| Integer `MUL0`/`MUL8`/`MUL16`/`MULI` | 3 | `Execute -> MultiplyWait -> MultiplyCommit` |
 | Integer `LOAD`, minimum | 3 | `Execute -> DataRequest -> DataResponse` |
 | Integer `STORE` with an empty async buffer | 1 to retire | The buffered data request/response continues in the background; a later memory operation waits for it |
 

@@ -272,9 +272,10 @@ fn main() {
     .expect("build boot image");
 
     // The ISA 0.8 integer rework (encoding, RTL, and the RCC backend) changed
-    // the Stage0 words, so the baseline is re-pinned here; the boot test still
-    // checks Stage0 fits the 0x400-word boot window. Step 5 regenerates the
-    // full asset set and re-validates this baseline against the final compiler.
+    // the Stage0 words; this FNV-1a baseline is re-pinned and re-validated for
+    // the final 0.8 compiler output (Stage0 is 461 words, fitting the
+    // 0x400-word boot window). Any future compiler change that alters these
+    // words must re-baseline deliberately, never silently.
     assert_eq!(
         fnv1a64(&stage0_bytes),
         12_690_216_350_937_041_954,
