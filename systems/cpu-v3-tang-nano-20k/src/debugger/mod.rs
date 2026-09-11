@@ -232,7 +232,7 @@ impl V3DebugSession {
         }
         match self.system.step() {
             Ok(StepOutcome::Halted { signal }) => self.last_halt = Some(signal),
-            Ok(StepOutcome::Running) => {}
+            Ok(StepOutcome::Running | StepOutcome::Signaled(_)) => {}
             Err(fault) => self.fault = Some(fault),
         }
         self.steps += 1;

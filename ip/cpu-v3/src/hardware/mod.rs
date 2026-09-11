@@ -19,7 +19,7 @@ use std::cmp::Ordering;
 use crate::{
     acc_saturate, fix16_abs, fix16_add, fix16_ceil, fix16_floor, fix16_from_acc, fix16_neg,
     fix16_reciprocal, fix16_reciprocal_sqrt, fix16_round, fix16_saturate, fix16_saturate01,
-    fix16_sign, fix16_sin_cos, fix16_sub, round_shift_ties_even, Fix16Raw, FpuVector,
+    fix16_sign, fix16_sin_cos, fix16_sub, round_shift_ties_even, Fix16Raw, FpuVector, SignalEvent,
 };
 
 pub const CPU_V3_FAULT_INVALID_INSTRUCTION: u8 = 1;
@@ -375,6 +375,10 @@ pub struct CpuV3CoreState {
     /// The architectural halt value, latched at the HALT retire edge like a
     /// register-read (mirrors the RTL's registered `halt_signal`).
     halt_signal: u16,
+    /// Model-only SIGNAL event: set when a nonzero `SIGNAL` retires and held
+    /// until the next executed instruction or `take_signal_event`. The RTL
+    /// exposes no port for it and retires nonzero types as a NOP.
+    signal_event: Option<SignalEvent>,
 }
 
 impl Default for CpuV3CoreState {
@@ -419,6 +423,7 @@ impl Default for CpuV3CoreState {
             fault_code: 0,
             fault_pc: 0,
             halt_signal: 0,
+            signal_event: None,
         }
     }
 }
@@ -435,6 +440,17 @@ impl CpuV3CoreState {
         self.phase = Phase::FetchRequest;
     }
 
+    /// The model-only event of the most recently retired nonzero `SIGNAL`.
+    /// Cleared by the next executed instruction or by `take_signal_event`.
+    pub fn signal_event(&self) -> Option<SignalEvent> {
+        self.signal_event
+    }
+
+    /// Reads and clears the pending model-only SIGNAL event.
+    pub fn take_signal_event(&mut self) -> Option<SignalEvent> {
+        self.signal_event.take()
+    }
+
     /// Stages a write to the synchronous-write GPR RAM. The value lands one
     /// cycle later, matching the RTL's `gpr_write_enable` register + GPR RAM
     /// synchronous write port.
@@ -447,6 +463,8 @@ impl CpuV3CoreState {
     fn execute(&mut self, device_read_data: u16) {
         let instruction = self.instruction;
         let opcode = instruction >> 12;
+        // The model-only SIGNAL event lives for one executed instruction.
+        self.signal_event = None;
         if opcode == 0xf {
             if self.prefix.is_some() {
                 self.retired_words = self.retired_words.wrapping_add(1);
@@ -483,6 +501,23 @@ impl CpuV3CoreState {
         let lhs = field(instruction, 4);
         let rhs = field(instruction, 0);
         match opcode {
+            // ISA 0.8 SIGNAL `6 C rs type4`, decoded ahead of the Step 3 RTL
+            // migration of the rest of major 6. Type 0 halts and latches rs;
+            // nonzero types retire as a NOP and record a model-only event.
+            6 if dst == 0xc => {
+                let value = self.registers[usize::from(lhs)];
+                if rhs == 0 {
+                    self.halt_signal = value;
+                    self.retired_words = self.retired_words.wrapping_add(u32::from(retire_words));
+                    self.phase = Phase::Halted;
+                    return;
+                }
+                self.signal_event = Some(SignalEvent {
+                    signal_type: rhs,
+                    value,
+                });
+                self.retire(retire_words);
+            }
             0..=7 if opcode != 2 => {
                 let left = self.registers[usize::from(lhs)];
                 let right = self.registers[usize::from(rhs)];
@@ -1503,6 +1538,52 @@ mod tests {
         })
         .unwrap();
         rcc_backend::compile(frontend, &options, "main").words
+    }
+
+    #[test]
+    fn cycle_model_signal_events_are_single_cycle_and_model_only() {
+        let mut state = CpuV3CoreState::default();
+        state.registers[5] = 0x2a;
+
+        // A nonzero SIGNAL retires as a NOP and records the event.
+        state.instruction = cpu_v3::signal(5, 1);
+        state.execute(0);
+        assert_eq!(state.phase, Phase::FetchRequest);
+        assert_eq!(state.retired_words, 1);
+        assert_eq!(
+            state.signal_event(),
+            Some(crate::SignalEvent {
+                signal_type: 1,
+                value: 0x2a,
+            })
+        );
+        // Reading does not clear the event; take does.
+        assert!(state.signal_event().is_some());
+        assert!(state.take_signal_event().is_some());
+        assert_eq!(state.signal_event(), None);
+
+        // A fresh nonzero SIGNAL re-arms the event; the next executed
+        // instruction ends the single-cycle window.
+        state.instruction = cpu_v3::signal(5, 15);
+        state.execute(0);
+        assert_eq!(
+            state.signal_event().map(|event| event.signal_type),
+            Some(15)
+        );
+        state.instruction = 0x0322; // ADD r3, r2, r2 (any ordinary instruction)
+        state.execute(0);
+        assert_eq!(state.signal_event(), None);
+
+        // Type 0 halts and latches the selected register, exactly like the
+        // architectural HALT path.
+        let mut state = CpuV3CoreState::default();
+        state.registers[7] = 0x1234;
+        state.instruction = cpu_v3::signal(7, 0);
+        state.execute(0);
+        assert_eq!(state.phase, Phase::Halted);
+        assert_eq!(state.halt_signal, 0x1234);
+        assert_eq!(state.retired_words, 1);
+        assert_eq!(state.signal_event(), None);
     }
 
     #[test]

@@ -27,10 +27,22 @@ pub struct Fault {
     pub instruction: Word,
 }
 
+/// A non-halting `SIGNAL` (types 1..=15) observed at its retirement edge.
+/// Models expose it as an event; hardware retires these types as a NOP.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct SignalEvent {
+    pub signal_type: u8,
+    pub value: Word,
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum StepOutcome {
     Running,
-    Halted { signal: Word },
+    /// A nonzero `SIGNAL` retired. `run()` ignores the event and continues.
+    Signaled(SignalEvent),
+    Halted {
+        signal: Word,
+    },
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -732,18 +744,20 @@ impl CpuV3Sim {
             }
             12 => {
                 // SIGNAL rs, type4. Type 0 halts and latches the value at the
-                // retirement edge. Nonzero types are model-side events; the
-                // Step 2 event interface (SignalEvent/StepOutcome::Signaled)
-                // is not wired up yet, so they retire as a NOP here, matching
-                // the RTL contract.
+                // retirement edge; nonzero types retire as a NOP in hardware
+                // and surface here as a model-side event.
                 let signal_type = src;
+                let value = self.registers[usize::from(dst)];
                 if signal_type == 0 {
-                    self.halt_signal = self.registers[usize::from(dst)];
+                    self.halt_signal = value;
                     self.halted = true;
                     return Ok(StepOutcome::Halted {
                         signal: self.halt_signal,
                     });
                 }
+                // Retirement accounting (including a consumed prefix) happens
+                // in step() like for every other instruction.
+                return Ok(StepOutcome::Signaled(SignalEvent { signal_type, value }));
             }
             13 => {
                 self.registers[usize::from(dst)] = match src {
@@ -834,10 +848,11 @@ mod tests {
     use crate::{
         alu, branch, compare_signed, compare_unsigned, conditional_move, device_receive,
         device_send, halt, immediate_signed, immediate_unsigned, jump_and_link_register,
-        jump_and_link_relative, jump_relative, jump_segment, load, load_immediate16, move_register,
-        nop, population_count, prefix12, prefixed, prefixed_branch, read_special,
-        set_less_than_signed, set_less_than_unsigned, signal, store, write_data_segment, AluOp,
-        ImmediateOp, SpecialRegister, TestCondition,
+        jump_and_link_relative, jump_register, jump_relative, jump_segment, load, load_immediate16,
+        move_register, multiply, multiply_immediate, nop, population_count, prefix12, prefixed,
+        prefixed_branch, read_special, set_less_than_signed, set_less_than_unsigned,
+        shift_immediate, shift_register, signal, store, write_data_segment, AluOp, ImmediateOp,
+        MultiplyWindow, ShiftOp, SpecialRegister, TestCondition,
     };
 
     #[test]
@@ -1305,12 +1320,32 @@ mod tests {
     }
 
     #[test]
-    fn nonzero_signal_types_retire_as_nops() {
-        // TODO(ISA 0.8 step 2): replace with the SignalEvent/Signaled
-        // interface; until then nonzero SIGNAL types retire in place.
+    fn nonzero_signal_types_retire_as_events() {
         let mut program = vec![];
         program.extend(load_immediate16(1, 0x77));
         program.extend([signal(1, 1), signal(1, 15), move_register(0, 1), halt()]);
+        let mut machine = CpuV3Sim::default();
+        machine.load_program(0, &program).unwrap();
+        // Each nonzero SIGNAL surfaces exactly once at its retirement edge and
+        // execution continues; step() observes the events, run() ignores them.
+        assert_eq!(machine.step(), Ok(StepOutcome::Running));
+        assert_eq!(machine.step(), Ok(StepOutcome::Running));
+        assert_eq!(
+            machine.step(),
+            Ok(StepOutcome::Signaled(SignalEvent {
+                signal_type: 1,
+                value: 0x77
+            }))
+        );
+        assert_eq!(machine.retired_words(), 3);
+        assert_eq!(
+            machine.step(),
+            Ok(StepOutcome::Signaled(SignalEvent {
+                signal_type: 15,
+                value: 0x77
+            }))
+        );
+
         let mut machine = CpuV3Sim::default();
         machine.load_program(0, &program).unwrap();
         assert_eq!(
@@ -1320,6 +1355,26 @@ mod tests {
                 signal: 0x77
             }
         );
+        assert_eq!(machine.retired_words(), 6);
+    }
+
+    #[test]
+    fn signal_type_zero_latches_the_selected_register() {
+        // HALT is SIGNAL r0, 0; a nonzero source register halts with its value.
+        let mut program = vec![];
+        program.extend(load_immediate16(1, 0x1234));
+        program.extend([signal(1, 0)]);
+        let mut machine = CpuV3Sim::default();
+        machine.load_program(0, &program).unwrap();
+        assert_eq!(
+            machine.run(8).unwrap(),
+            RunOutcome::Halted {
+                steps: 3,
+                signal: 0x1234
+            }
+        );
+        // After the halt the same latched signal is re-reported.
+        assert_eq!(machine.step(), Ok(StepOutcome::Halted { signal: 0x1234 }));
     }
 
     #[test]
@@ -1503,6 +1558,222 @@ mod tests {
         }
         // CMP-class instructions write no register: r1/r2 keep their values.
         assert_eq!(machine.register(2), Some(0x8000));
+    }
+
+    #[test]
+    fn shift_amounts_are_masked_to_four_bits() {
+        // Register-count shifts use rs & 15: amounts 0/15/16/31 exercise the
+        // mask boundary, and the high 12 bits of rs are ignored entirely.
+        let mut program = vec![];
+        for (slot, amount) in [0u16, 15, 16, 31].into_iter().enumerate() {
+            program.extend(load_immediate16(2, amount | 0x8000));
+            program.extend(load_immediate16(3, 0x0003));
+            program.extend([
+                shift_register(ShiftOp::Left, 3, 2),
+                move_register((4 + slot) as u8, 3),
+            ]);
+        }
+        program.push(halt());
+        let mut machine = CpuV3Sim::default();
+        machine.load_program(0, &program).unwrap();
+        machine.run(64).unwrap();
+        // 3 << 0 == 3, 3 << 15 == 0x8000; 16 and 31 mask back to 0 and 15.
+        for (slot, expected) in [0x0003u16, 0x8000, 0x0003, 0x8000].into_iter().enumerate() {
+            assert_eq!(
+                machine.register((4 + slot) as u8),
+                Some(expected),
+                "slot {slot}"
+            );
+        }
+    }
+
+    #[test]
+    fn destructive_read_modify_write_uses_the_old_value() {
+        // rd == rs: the destructive form reads the old rd value before
+        // writing the result back into the same register.
+        let mut program = vec![];
+        program.extend(load_immediate16(1, 0x00ff));
+        program.extend([
+            shift_register(ShiftOp::Left, 1, 1), // 0xff << 15 = 0x8000
+            multiply(MultiplyWindow::Low, 1, 1), // 0x8000^2 low = 0
+        ]);
+        program.extend(load_immediate16(2, 0x00ff));
+        program.extend([
+            // 0xff * 0xff = 0xfe01: MUL8 keeps [23:8] = 0xfe, MUL16 keeps 0.
+            multiply(MultiplyWindow::Shift8, 2, 2),
+        ]);
+        program.extend(load_immediate16(3, 0xffff));
+        program.extend([
+            // 0xffff * 0xffff = 0xfffe0001: MUL16 keeps 0xfffe.
+            multiply(MultiplyWindow::Shift16, 3, 3),
+        ]);
+        program.extend([move_register(0, 1), halt()]);
+        let mut machine = CpuV3Sim::default();
+        machine.load_program(0, &program).unwrap();
+        machine.run(32).unwrap();
+        assert_eq!(machine.register(1), Some(0));
+        assert_eq!(machine.register(2), Some(0x00fe));
+        assert_eq!(machine.register(3), Some(0xfffe));
+    }
+
+    #[test]
+    fn multiply_windows_select_product_bytes() {
+        let mut program = vec![];
+        program.extend(load_immediate16(1, 0xffff));
+        program.extend(load_immediate16(2, 0xffff));
+        // 0xffff * 0xffff = 0xfffe0001.
+        program.extend([multiply(MultiplyWindow::Low, 2, 1)]); // [15:0]
+        program.extend(load_immediate16(3, 0xffff));
+        program.extend([multiply(MultiplyWindow::Shift8, 3, 1)]); // [23:8]
+        program.extend(load_immediate16(4, 0xffff));
+        program.extend([multiply(MultiplyWindow::Shift16, 4, 1)]); // [31:16]
+        program.push(halt());
+        let mut machine = CpuV3Sim::default();
+        machine.load_program(0, &program).unwrap();
+        machine.run(32).unwrap();
+        assert_eq!(machine.register(2), Some(0x0001));
+        assert_eq!(machine.register(3), Some(0xfe00));
+        assert_eq!(machine.register(4), Some(0xfffe));
+    }
+
+    #[test]
+    fn muli_immediate_is_an_unsigned_bit_pattern() {
+        // Short form: 15 is fifteen, not minus one.
+        let mut program = vec![];
+        program.extend(load_immediate16(1, 2));
+        program.push(multiply_immediate(1, 15));
+        // Wide form: the prefixed pattern 0x8000 is unsigned 32768.
+        program.extend(load_immediate16(2, 2));
+        program.extend(prefixed(multiply_immediate(2, 0), 0x8000));
+        program.push(halt());
+        let mut machine = CpuV3Sim::default();
+        machine.load_program(0, &program).unwrap();
+        machine.run(16).unwrap();
+        assert_eq!(machine.register(1), Some(30));
+        assert_eq!(machine.register(2), Some(0));
+    }
+
+    #[test]
+    fn all_six_conditional_moves_test_the_pending_ordering() {
+        for (condition, writes) in [
+            (TestCondition::Equal, false),
+            (TestCondition::NotEqual, true),
+            (TestCondition::LessThan, true),
+            (TestCondition::GreaterOrEqual, false),
+            (TestCondition::GreaterThan, false),
+            (TestCondition::LessOrEqual, true),
+        ] {
+            // r1 = 3, r2 = 5: the signed pending ordering is Less.
+            let mut program = vec![];
+            program.extend(load_immediate16(1, 3));
+            program.extend(load_immediate16(2, 5));
+            program.extend(load_immediate16(3, 0));
+            program.extend([
+                compare_signed(1, 2),
+                conditional_move(condition, 3, 2),
+                move_register(0, 3),
+                halt(),
+            ]);
+            let mut machine = CpuV3Sim::default();
+            machine.load_program(0, &program).unwrap();
+            let expected = if writes { 5 } else { 0 };
+            assert_eq!(
+                machine.run(16).unwrap(),
+                RunOutcome::Halted {
+                    steps: 10,
+                    signal: expected,
+                },
+                "condition {condition:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn conditional_move_consumes_pending_even_when_not_taken() {
+        let mut program = vec![];
+        program.extend(load_immediate16(1, 3));
+        program.extend(load_immediate16(2, 5));
+        program.extend([
+            compare_signed(1, 2),
+            // Not taken (the ordering is Less), but the pending test is gone.
+            conditional_move(TestCondition::GreaterOrEqual, 1, 2),
+            branch(TestCondition::Equal, 0),
+        ]);
+        let mut machine = CpuV3Sim::default();
+        machine.load_program(0, &program).unwrap();
+        assert_eq!(
+            machine.run(16),
+            Err(Fault {
+                kind: FaultKind::InvalidInstruction,
+                address: 6,
+                instruction: branch(TestCondition::Equal, 0),
+            })
+        );
+    }
+
+    #[test]
+    fn jalr_and_jalrel_link_r14_and_jreg_returns() {
+        // JALR path: call the subroutine at offset 8, which returns via
+        // JREG r14 with the call's fall-through address in r0.
+        let mut program = vec![];
+        program.extend(load_immediate16(2, 8));
+        program.push(jump_and_link_register(2));
+        program.push(halt()); // returns here, halting with r0
+        program.extend([nop(); 4]);
+        program.extend([
+            move_register(0, LINK_REGISTER),
+            jump_register(LINK_REGISTER),
+        ]);
+        let mut machine = CpuV3Sim::default();
+        machine.load_program(0, &program).unwrap();
+        assert_eq!(
+            machine.run(16).unwrap(),
+            RunOutcome::Halted {
+                steps: 6,
+                signal: 3
+            }
+        );
+        assert_eq!(machine.register(LINK_REGISTER), Some(3));
+
+        // JALREL path: same flow through a relative call.
+        let program = [
+            jump_and_link_relative(2),
+            move_register(0, LINK_REGISTER),
+            halt(),
+            jump_register(LINK_REGISTER),
+        ];
+        let mut machine = CpuV3Sim::default();
+        machine.load_program(0, &program).unwrap();
+        assert_eq!(
+            machine.run(8).unwrap(),
+            RunOutcome::Halted {
+                steps: 4,
+                signal: 1
+            }
+        );
+    }
+
+    #[test]
+    fn immediate_shifts_cover_the_extreme_amounts() {
+        let mut program = vec![];
+        program.extend(load_immediate16(1, 0x8001));
+        program.extend([
+            shift_immediate(ShiftOp::Left, 1, 0),             // unchanged
+            shift_immediate(ShiftOp::RightLogical, 1, 15),    // 0x8001 >> 15 = 1
+            shift_immediate(ShiftOp::Left, 1, 15),            // 1 << 15 = 0x8000
+            shift_immediate(ShiftOp::RightArithmetic, 1, 15), // sign fills: 0xffff
+            move_register(0, 1),
+            halt(),
+        ]);
+        let mut machine = CpuV3Sim::default();
+        machine.load_program(0, &program).unwrap();
+        assert_eq!(
+            machine.run(16).unwrap(),
+            RunOutcome::Halted {
+                steps: 8,
+                signal: 0xffff
+            }
+        );
     }
 
     struct EchoDevice {
