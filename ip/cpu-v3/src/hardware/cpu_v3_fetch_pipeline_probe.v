@@ -21,7 +21,7 @@ reg memory_response_valid = 0;
 reg [15:0] memory_read_data = 0;
 
 wire [15:0] instruction_word = memory_address[15:0] < 8 ?
-    16'ha001 : 16'he800;
+    16'ha001 : 16'h6c00;
 
 always @(posedge clk) begin
     memory_response_valid <= memory_request_valid;

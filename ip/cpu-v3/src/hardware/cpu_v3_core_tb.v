@@ -173,15 +173,17 @@ endtask
 initial begin
     // Scenario 1: baseline load/store, prefix load-immediate, and multiply.
     clear_memory;
-    memory[0] = 16'haf23; // LDU r2, 3
-    memory[1] = 16'haf34; // LDU r3, 4
-    memory[2] = 16'h2432; // MUL r4, r2, r3
-    memory[3] = 16'hf020; // IMMHI12 0x020
-    memory[4] = 16'haf50; // LDU r5, 0 -> r5 = 0x200
-    memory[5] = 16'h9450; // STORE r4, [r5+0]
-    memory[6] = 16'h8050; // LOAD r0, [r5+0]
-    memory[7] = 16'ha003; // ADDI r0, 3
-    memory[8] = 16'he800; // HALT
+    memory[0] = 16'ha323; // LDUI r2, 3
+    memory[1] = 16'ha334; // LDUI r3, 4
+    // ISA 0.8 multiply is destructive: MUL0 rd, rs computes rd = rd * rs.
+    memory[2] = 16'h6042; // MOV r4, r2
+    memory[3] = 16'h2843; // MUL0 r4, r3 -> r4 = 12
+    memory[4] = 16'hf020; // PFX12 0x020
+    memory[5] = 16'ha350; // LDUI r5, 0 -> r5 = 0x200
+    memory[6] = 16'h9450; // STORE r4, [r5+0]
+    memory[7] = 16'h8050; // LOAD r0, [r5+0]
+    memory[8] = 16'ha003; // ADDI r0, 3
+    memory[9] = 16'h6c00; // HALT (SIGNAL r0, 0)
     scenario = 1;
     expect_halt(16'd15, 200);
 
@@ -189,14 +191,14 @@ initial begin
     // (r1 = 3 < 5 = r2, signed).
     for (cond = 0; cond < 6; cond = cond + 1) begin
         clear_memory;
-        memory[0] = 16'hf000; // IMMHI12 0
-        memory[1] = 16'haf13; // LDU r1, 3
-        memory[2] = 16'hf000; // IMMHI12 0
-        memory[3] = 16'haf25; // LDU r2, 5
-        memory[4] = 16'heb12; // CMPS r1, r2 -> Less
+        memory[0] = 16'hf000; // PFX12 0
+        memory[1] = 16'ha313; // LDUI r1, 3
+        memory[2] = 16'hf000; // PFX12 0
+        memory[3] = 16'ha325; // LDUI r2, 5
+        memory[4] = 16'h6a12; // CMPS r1, r2 -> Less
         memory[5] = 16'hb001 | (cond << 8); // B cond, +1
-        memory[6] = 16'haf09; // LDU r0, 9 (not-taken marker)
-        memory[7] = 16'he800; // HALT
+        memory[6] = 16'ha309; // LDUI r0, 9 (not-taken marker)
+        memory[7] = 16'h6c00; // HALT (SIGNAL r0, 0)
         scenario = scenario + 1;
         // Taken for NE/LT/LE (cond 1, 2, 5): r0 stays 0.
         expect_halt((cond == 0 || cond == 3 || cond == 4) ? 16'd9 : 16'd0, 200);
@@ -211,7 +213,7 @@ initial begin
     // Scenario 9: a prefixed conditional branch with no pending test faults
     // at the prefix address and retires nothing.
     clear_memory;
-    memory[0] = 16'hf000; // IMMHI12 0
+    memory[0] = 16'hf000; // PFX12 0
     memory[1] = 16'hb100; // BNE +0 (consumes the prefix)
     scenario = 9;
     expect_fault(8'd1, 16'd0, 100);
@@ -220,19 +222,19 @@ initial begin
         errors = errors + 1;
     end
 
-    // Scenario 10: prefix transparency - CMPSI, then IMMHI12, then BLT with
+    // Scenario 10: prefix transparency - CMPSI, then PFX12, then BLT with
     // a wide 16-bit offset {prefix[7:0], imm8}.
     clear_memory;
-    memory[0] = 16'haf10; // LDU r1, 0
+    memory[0] = 16'ha310; // LDUI r1, 0
     memory[1] = 16'hac15; // CMPSI r1, 5 -> Less
-    memory[2] = 16'hf001; // IMMHI12 0x001
+    memory[2] = 16'hf001; // PFX12 0x001
     memory[3] = 16'hb203; // BLT offset 0x0103 -> target 0x107
-    memory[4] = 16'haf09; // LDU r0, 9 (fall-through marker)
-    memory[5] = 16'he800; // HALT
+    memory[4] = 16'ha309; // LDUI r0, 9 (fall-through marker)
+    memory[5] = 16'h6c00; // HALT (SIGNAL r0, 0)
     for (index = 6; index < 16'h107; index = index + 1)
-        memory[index] = 16'haf21; // filler: LDU r2, 1 (must not run)
-    memory[16'h107] = 16'haf02; // LDU r0, 2
-    memory[16'h108] = 16'he800; // HALT
+        memory[index] = 16'ha321; // filler: LDU r2, 1 (must not run)
+    memory[16'h107] = 16'ha302; // LDUI r0, 2
+    memory[16'h108] = 16'h6c00; // HALT (SIGNAL r0, 0)
     scenario = 10;
     expect_halt(16'd2, 1000);
     if (retired_words !== 6) begin
@@ -242,59 +244,59 @@ initial begin
 
     // Scenario 11: JREL skips, JALREL links the fall-through address into r14.
     clear_memory;
-    memory[0] = 16'hb802; // JREL +2 -> 3
-    memory[1] = 16'haf09; // LDU r0, 9 (skipped)
-    memory[2] = 16'he800; // HALT (skipped)
-    memory[3] = 16'hb902; // JALREL +2 -> 6, r14 = 4
-    memory[4] = 16'haf09; // LDU r0, 9 (skipped)
-    memory[5] = 16'he800; // HALT (skipped)
-    memory[6] = 16'he10e; // MOV r0, r14
-    memory[7] = 16'he800; // HALT
+    memory[0] = 16'hb602; // JREL +2 -> 3
+    memory[1] = 16'ha309; // LDUI r0, 9 (skipped)
+    memory[2] = 16'h6c00; // HALT (SIGNAL r0, 0) (skipped)
+    memory[3] = 16'hb702; // JALREL +2 -> 6, r14 = 4
+    memory[4] = 16'ha309; // LDUI r0, 9 (skipped)
+    memory[5] = 16'h6c00; // HALT (SIGNAL r0, 0) (skipped)
+    memory[6] = 16'h600e; // MOV r0, r14
+    memory[7] = 16'h6c00; // HALT (SIGNAL r0, 0)
     scenario = 11;
     expect_halt(16'd4, 100);
 
     // Scenario 12: JALR with a link field other than r14 faults.
     clear_memory;
-    memory[0] = 16'he5d1; // JALR r13, r1 (link field 13 != 14)
+    memory[0] = 16'hbfd1; // JALR with link field 13 (!= the fixed 14)
     scenario = 12;
     expect_fault(8'd1, 16'd0, 100);
 
     // Scenario 13: CMPS/CMPU at the 0x7fff/0x8000 sign boundary, prefixed
     // CMPSI/CMPUI, and CMP-class instructions write no register.
     clear_memory;
-    memory[0] = 16'hf7ff; // IMMHI12 0x7ff
-    memory[1] = 16'haf1f; // LDU r1, 0xf -> r1 = 0x7fff
-    memory[2] = 16'hf800; // IMMHI12 0x800
-    memory[3] = 16'haf20; // LDU r2, 0 -> r2 = 0x8000
-    memory[4] = 16'haf31; // LDU r3, 1
-    memory[5] = 16'heb12; // CMPS r1, r2: 32767 > -32768 -> Greater
+    memory[0] = 16'hf7ff; // PFX12 0x7ff
+    memory[1] = 16'ha31f; // LDUI r1, 0xf -> r1 = 0x7fff
+    memory[2] = 16'hf800; // PFX12 0x800
+    memory[3] = 16'ha320; // LDUI r2, 0 -> r2 = 0x8000
+    memory[4] = 16'ha331; // LDUI r3, 1
+    memory[5] = 16'h6a12; // CMPS r1, r2: 32767 > -32768 -> Greater
     memory[6] = 16'hb401; // BGT +1
-    memory[7] = 16'haf30; // LDU r3, 0
-    memory[8] = 16'haf41; // LDU r4, 1
-    memory[9] = 16'hec12; // CMPU r1, r2: 0x7fff < 0x8000 -> Less
+    memory[7] = 16'ha330; // LDUI r3, 0
+    memory[8] = 16'ha341; // LDUI r4, 1
+    memory[9] = 16'h6b12; // CMPU r1, r2: 0x7fff < 0x8000 -> Less
     memory[10] = 16'hb201; // BLT +1
-    memory[11] = 16'haf40; // LDU r4, 0
-    memory[12] = 16'haf51; // LDU r5, 1
-    memory[13] = 16'hf800; // IMMHI12 0x800
+    memory[11] = 16'ha340; // LDUI r4, 0
+    memory[12] = 16'ha351; // LDUI r5, 1
+    memory[13] = 16'hf800; // PFX12 0x800
     memory[14] = 16'hac10; // CMPSI r1, 0x8000 (i16 -32768) -> Greater
     memory[15] = 16'hb401; // BGT +1
-    memory[16] = 16'haf50; // LDU r5, 0
-    memory[17] = 16'haf61; // LDU r6, 1
-    memory[18] = 16'hf800; // IMMHI12 0x800
+    memory[16] = 16'ha350; // LDUI r5, 0
+    memory[17] = 16'ha361; // LDUI r6, 1
+    memory[18] = 16'hf800; // PFX12 0x800
     memory[19] = 16'had10; // CMPUI r1, 0x8000 (u16) -> Less
     memory[20] = 16'hb201; // BLT +1
-    memory[21] = 16'haf60; // LDU r6, 0
-    memory[22] = 16'ha541; // SHL r4, 1
-    memory[23] = 16'ha552; // SHL r5, 2
-    memory[24] = 16'ha563; // SHL r6, 3
+    memory[21] = 16'ha360; // LDUI r6, 0
+    memory[22] = 16'h2441; // SHLI r4, 1
+    memory[23] = 16'h2452; // SHLI r5, 2
+    memory[24] = 16'h2463; // SHLI r6, 3
     memory[25] = 16'h0034; // ADD r0, r3, r4
     memory[26] = 16'h0005; // ADD r0, r0, r5
     memory[27] = 16'h0006; // ADD r0, r0, r6
-    memory[28] = 16'hf030; // IMMHI12 0x030
-    memory[29] = 16'haf70; // LDU r7, 0 -> r7 = 0x300
+    memory[28] = 16'hf030; // PFX12 0x030
+    memory[29] = 16'ha370; // LDUI r7, 0 -> r7 = 0x300
     memory[30] = 16'h9170; // STORE r1, [r7+0] (unchanged by CMPS/CMPU)
     memory[31] = 16'h9271; // STORE r2, [r7+1]
-    memory[32] = 16'he800; // HALT
+    memory[32] = 16'h6c00; // HALT (SIGNAL r0, 0)
     scenario = 13;
     expect_halt(16'd15, 500);
     if (memory[16'h0300] !== 16'h7fff || memory[16'h0301] !== 16'h8000) begin
@@ -305,11 +307,11 @@ initial begin
 
     // Scenario 14: single-cycle DEVSEND/DEVRECV on device 2, channel 3.
     clear_memory;
-    memory[0] = 16'hf123; // IMMHI12 0x123
-    memory[1] = 16'haf14; // LDU r1, 4 -> r1 = 0x1234
-    memory[2] = 16'hca31; // DEVSEND r1, dev 2, ch 3
-    memory[3] = 16'hc230; // DEVRECV r0, dev 2, ch 3
-    memory[4] = 16'he800; // HALT
+    memory[0] = 16'hf123; // PFX12 0x123
+    memory[1] = 16'ha314; // LDUI r1, 4 -> r1 = 0x1234
+    memory[2] = 16'h7a31; // DEVSEND r1, dev 2, ch 3
+    memory[3] = 16'h7230; // DEVRECV r0, dev 2, ch 3
+    memory[4] = 16'h6c00; // HALT (SIGNAL r0, 0)
     scenario = 14;
     expect_halt(16'h1234, 100);
     if (devices[7'h23] !== 16'h1234) begin
@@ -319,16 +321,16 @@ initial begin
 
     // Scenario 15: offsets 0xff00..0xffff retain DSEG like every other load/store.
     clear_memory;
-    memory[0] = 16'hf000; // IMMHI12 0
-    memory[1] = 16'haf13; // LDU r1, 3
-    memory[2] = 16'hee11; // MTSR DSEG, r1
-    memory[3] = 16'hfff0; // IMMHI12 0xfff
-    memory[4] = 16'haf20; // LDU r2, 0 -> 0xff00
-    memory[5] = 16'hf55a; // IMMHI12 0x55a
-    memory[6] = 16'haf3a; // LDU r3, 0xa -> 0x55aa
+    memory[0] = 16'hf000; // PFX12 0
+    memory[1] = 16'ha313; // LDUI r1, 3
+    memory[2] = 16'h6e11; // MTSR DSEG, r1
+    memory[3] = 16'hfff0; // PFX12 0xfff
+    memory[4] = 16'ha320; // LDUI r2, 0 -> 0xff00
+    memory[5] = 16'hf55a; // PFX12 0x55a
+    memory[6] = 16'ha33a; // LDUI r3, 0xa -> 0x55aa
     memory[7] = 16'h9320; // STORE r3, [r2]
     memory[8] = 16'h8020; // LOAD r0, [r2]
-    memory[9] = 16'he800; // HALT
+    memory[9] = 16'h6c00; // HALT (SIGNAL r0, 0)
     scenario = 15;
     check_high_data_address = 1;
     expect_halt(16'h55aa, 150);
@@ -337,10 +339,10 @@ initial begin
     // Scenario 16: device instructions do not consume a prefix; both physical
     // words retire and the device read still uses the dedicated port.
     clear_memory;
-    memory[0] = 16'hf000; // IMMHI12 0
-    memory[1] = 16'hc232; // DEVRECV r2, dev 2, ch 3
-    memory[2] = 16'he102; // MOV r0, r2
-    memory[3] = 16'he800; // HALT
+    memory[0] = 16'hf000; // PFX12 0
+    memory[1] = 16'h7232; // DEVRECV r2, dev 2, ch 3
+    memory[2] = 16'h6002; // MOV r0, r2
+    memory[3] = 16'h6c00; // HALT (SIGNAL r0, 0)
     devices[7'h23] = 16'h4567;
     scenario = 16;
     expect_halt(16'h4567, 100);
@@ -351,9 +353,9 @@ initial begin
 
     // Scenario 17: an ordinary retired instruction expires the pending test.
     clear_memory;
-    memory[0] = 16'haf10; // LDU r1, 0
+    memory[0] = 16'ha310; // LDUI r1, 0
     memory[1] = 16'hac10; // CMPSI r1, 0 -> Equal
-    memory[2] = 16'he111; // MOV r1, r1 (expires the pending test)
+    memory[2] = 16'h6011; // MOV r1, r1 (expires the pending test)
     memory[3] = 16'hb000; // BEQ +0 -> fault: no pending test
     scenario = 17;
     expect_fault(8'd1, 16'd3, 100);
@@ -361,10 +363,10 @@ initial begin
     // Scenario 18: the dedicated FPU multiplier executes a blocking vector
     // operation and the instruction retires exactly once.
     clear_memory;
-    memory[0] = 16'hf018; // IMMHI12 0x018
-    memory[1] = 16'haf00; // LDU r0, 0 -> 384 (fix16 1.5)
-    memory[2] = 16'hf020; // IMMHI12 0x020
-    memory[3] = 16'haf10; // LDU r1, 0 -> 512 (fix16 2.0)
+    memory[0] = 16'hf018; // PFX12 0x018
+    memory[1] = 16'ha300; // LDUI r0, 0 -> 384 (fix16 1.5)
+    memory[2] = 16'hf020; // PFX12 0x020
+    memory[3] = 16'ha310; // LDUI r1, 0 -> 512 (fix16 2.0)
     memory[4] = 16'hd000; // FLOAD f0, r0
     memory[5] = 16'hd011; // FLOAD f1, r1
     memory[6] = 16'hd801; // FADD f0, f1 -> fix16 3.5
@@ -373,7 +375,7 @@ initial begin
     memory[8] = 16'hdc2f; // FACCSTORE f2, 0b1111 -> f2 = {2.0, 2.0, 2.0, 2.0}
     memory[9] = 16'hda02; // FMUL f0, f2 -> fix16 7.0
     memory[10] = 16'hd100; // FSTORE r0, f0
-    memory[11] = 16'he800; // HALT
+    memory[11] = 16'h6c00; // HALT (SIGNAL r0, 0)
     scenario = 18;
     expect_halt(16'd1792, 200);
     if (retired_words !== 12) begin
@@ -383,31 +385,31 @@ initial begin
 
     // Scenario 19: addition widens before saturation at the positive limit.
     clear_memory;
-    memory[0] = 16'hf7ff; // IMMHI12 0x7ff
-    memory[1] = 16'haf0f; // LDU r0, 0xf -> 0x7fff
-    memory[2] = 16'haf11; // LDU r1, 1
+    memory[0] = 16'hf7ff; // PFX12 0x7ff
+    memory[1] = 16'ha30f; // LDUI r0, 0xf -> 0x7fff
+    memory[2] = 16'ha311; // LDUI r1, 1
     memory[3] = 16'hd000; // FLOAD f0, r0
     memory[4] = 16'hd011; // FLOAD f1, r1
     memory[5] = 16'hd801; // FADD f0, f1 -> saturated 0x7fff
     memory[6] = 16'hd100; // FSTORE r0, f0
-    memory[7] = 16'he800; // HALT
+    memory[7] = 16'h6c00; // HALT (SIGNAL r0, 0)
     scenario = 19;
     expect_halt(16'h7fff, 150);
 
     // Scenario 20: two atomic four-word imports feed the 40-bit accumulator;
     // ACCSTORE rounds lane x, clears ACC, and export emits four narrow writes.
     clear_memory;
-    memory[0] = 16'hf010; // IMMHI12 0x010
-    memory[1] = 16'haf10; // LDU r1, 0 -> 0x0100
-    memory[2] = 16'hf010; // IMMHI12 0x010
-    memory[3] = 16'haf24; // LDU r2, 4 -> 0x0104
+    memory[0] = 16'hf010; // PFX12 0x010
+    memory[1] = 16'ha310; // LDUI r1, 0 -> 0x0100
+    memory[2] = 16'hf010; // PFX12 0x010
+    memory[3] = 16'ha324; // LDUI r2, 4 -> 0x0104
     memory[4] = 16'hd201; // FIMPORT4 f0, [r1]
     memory[5] = 16'hd212; // FIMPORT4 f1, [r2]
     memory[6] = 16'hdb01; // FDOT4ACC f0, f1
     memory[7] = 16'hdc01; // FACCSTORE f0, 0b0001 -> f0.x
     memory[8] = 16'hd302; // FEXPORT4 f0, [r2]
     memory[9] = 16'hd100; // FSTORE r0, f0
-    memory[10] = 16'he800; // HALT
+    memory[10] = 16'h6c00; // HALT (SIGNAL r0, 0)
     memory[16'h0100] = 16'd256;
     memory[16'h0101] = 16'd512;
     memory[16'h0102] = 16'd768;
@@ -429,10 +431,10 @@ initial begin
     // FPR unchanged and retires no part of the FIMPORT4 instruction.
     for (cond = 0; cond < 4; cond = cond + 1) begin
         clear_memory;
-        memory[0] = 16'hf010; // IMMHI12 0x010
-        memory[1] = 16'haf10; // LDU r1, 0 -> 0x0100
-        memory[2] = 16'hf123; // IMMHI12 0x123
-        memory[3] = 16'haf04; // LDU r0, 4 -> 0x1234
+        memory[0] = 16'hf010; // PFX12 0x010
+        memory[1] = 16'ha310; // LDUI r1, 0 -> 0x0100
+        memory[2] = 16'hf123; // PFX12 0x123
+        memory[3] = 16'ha304; // LDUI r0, 4 -> 0x1234
         memory[4] = 16'hd000; // FLOAD f0, r0
         memory[5] = 16'hd201; // FIMPORT4 f0, [r1]
         memory[16'h0100] = 16'ha001;
@@ -456,16 +458,16 @@ initial begin
     // Scenario 29: RCP, RSQRT, and both SINCOS ROM reads share one synchronous
     // lookup memory and preserve their specified fixed-point values.
     clear_memory;
-    memory[0] = 16'hf020; // IMMHI12 0x020
-    memory[1] = 16'haf50; // LDU r5, 0 -> 0x0200
-    memory[2] = 16'hf020; // IMMHI12 0x020
-    memory[3] = 16'haf00; // LDU r0, 0 -> fix16 2.0
+    memory[0] = 16'hf020; // PFX12 0x020
+    memory[1] = 16'ha350; // LDUI r5, 0 -> 0x0200
+    memory[2] = 16'hf020; // PFX12 0x020
+    memory[3] = 16'ha300; // LDUI r0, 0 -> fix16 2.0
     memory[4] = 16'hd000; // FLOAD f0, r0
     memory[5] = 16'hde00; // FRCP f0 -> fix16 0.5
     memory[6] = 16'hd100; // FSTORE r0, f0
     memory[7] = 16'h9050; // STORE r0, [r5]
-    memory[8] = 16'hf040; // IMMHI12 0x040
-    memory[9] = 16'haf10; // LDU r1, 0 -> fix16 4.0
+    memory[8] = 16'hf040; // PFX12 0x040
+    memory[9] = 16'ha310; // LDUI r1, 0 -> fix16 4.0
     memory[10] = 16'hd011; // FLOAD f1, r1
     memory[11] = 16'hde11; // FRSQRT f1 -> fix16 0.5
     memory[12] = 16'hd111; // FSTORE r1, f1
@@ -474,7 +476,7 @@ initial begin
     memory[15] = 16'hde22; // FSINCOS f2 -> (0, 1)
     memory[16] = 16'hd632; // FUNPACK4 f3..f6, f2
     memory[17] = 16'hd104; // FSTORE r0, f4 (cosine)
-    memory[18] = 16'he800; // HALT
+    memory[18] = 16'h6c00; // HALT (SIGNAL r0, 0)
     scenario = 29;
     expect_halt(16'd256, 400);
     if (memory[16'h0200] !== 16'd128 || memory[16'h0201] !== 16'd128) begin
@@ -497,8 +499,8 @@ initial begin
 
     // Scenario 31: reciprocal sqrt rejects negative input without modifying f0.
     clear_memory;
-    memory[0] = 16'hffff; // IMMHI12 0xfff
-    memory[1] = 16'haf0f; // LDU r0, 0xf -> -1 raw
+    memory[0] = 16'hffff; // PFX12 0xfff
+    memory[1] = 16'ha30f; // LDUI r0, 0xf -> -1 raw
     memory[2] = 16'hd000; // FLOAD f0, r0
     memory[3] = 16'hde01; // FRSQRT f0 -> domain fault
     scenario = 31;
@@ -511,29 +513,29 @@ initial begin
     // Scenario 32: normalization rounding from 511.5 to 512 increments the
     // exponent and wraps the ROM mantissa index to zero.
     clear_memory;
-    memory[0] = 16'hf03f; // IMMHI12 0x03f
-    memory[1] = 16'haf0f; // LDU r0, 0xf -> raw 1023
+    memory[0] = 16'hf03f; // PFX12 0x03f
+    memory[1] = 16'ha30f; // LDUI r0, 0xf -> raw 1023
     memory[2] = 16'hd000; // FLOAD f0, r0
     memory[3] = 16'hde00; // FRCP f0 -> raw 64
     memory[4] = 16'hd100; // FSTORE r0, f0
-    memory[5] = 16'he800; // HALT
+    memory[5] = 16'h6c00; // HALT (SIGNAL r0, 0)
     scenario = 32;
     expect_halt(16'd64, 150);
 
     // Scenario 33: overlapping PACK4 and UNPACK4 both observe a complete
     // source snapshot despite their writes aliasing later source registers.
     clear_memory;
-    memory[0] = 16'haf01; // LDU r0, 1
-    memory[1] = 16'haf12; // LDU r1, 2
-    memory[2] = 16'haf23; // LDU r2, 3
-    memory[3] = 16'haf34; // LDU r3, 4
+    memory[0] = 16'ha301; // LDUI r0, 1
+    memory[1] = 16'ha312; // LDUI r1, 2
+    memory[2] = 16'ha323; // LDUI r2, 3
+    memory[3] = 16'ha334; // LDUI r3, 4
     memory[4] = 16'hd000; // FLOAD f0, r0
     memory[5] = 16'hd011; // FLOAD f1, r1
     memory[6] = 16'hd022; // FLOAD f2, r2
     memory[7] = 16'hd033; // FLOAD f3, r3
     memory[8] = 16'hd510; // FPACK4 f1, f0..f3 (overlaps f1)
     memory[9] = 16'hd601; // FUNPACK4 f0..f3, f1 (overlaps f1)
-    memory[10] = 16'he800; // HALT
+    memory[10] = 16'h6c00; // HALT (SIGNAL r0, 0)
     scenario = 33;
     expect_halt(16'd1, 350);
     if (fpr_word(0, 0) !== 16'd1 ||
@@ -557,20 +559,20 @@ initial begin
     // Scenario 34: the in-place transpose snapshots all four rows and rewrites
     // them as wide vectors without corrupting adjacent elements.
     clear_memory;
-    memory[0] = 16'hf010; // IMMHI12 0x010
-    memory[1] = 16'haf10; // LDU r1, 0 -> 0x0100
+    memory[0] = 16'hf010; // PFX12 0x010
+    memory[1] = 16'ha310; // LDUI r1, 0 -> 0x0100
     memory[2] = 16'hf010;
-    memory[3] = 16'haf24; // LDU r2, 4 -> 0x0104
+    memory[3] = 16'ha324; // LDUI r2, 4 -> 0x0104
     memory[4] = 16'hf010;
-    memory[5] = 16'haf38; // LDU r3, 8 -> 0x0108
+    memory[5] = 16'ha338; // LDUI r3, 8 -> 0x0108
     memory[6] = 16'hf010;
-    memory[7] = 16'haf4c; // LDU r4, 12 -> 0x010c
+    memory[7] = 16'ha34c; // LDUI r4, 12 -> 0x010c
     memory[8] = 16'hd241; // FIMPORT4 f4, [r1]
     memory[9] = 16'hd252; // FIMPORT4 f5, [r2]
     memory[10] = 16'hd263; // FIMPORT4 f6, [r3]
     memory[11] = 16'hd274; // FIMPORT4 f7, [r4]
     memory[12] = 16'hd740; // FTRANSPOSE4 f4..f7
-    memory[13] = 16'he800; // HALT
+    memory[13] = 16'h6c00; // HALT (SIGNAL r0, 0)
     for (index = 0; index < 16; index = index + 1)
         memory[16'h0100 + index] = index + 1;
     scenario = 34;
@@ -588,17 +590,17 @@ initial begin
     // read ports and branch on the resulting scalar comparison.
     clear_memory;
     memory[0] = 16'hf010;
-    memory[1] = 16'haf10; // r1 = 0x0100
+    memory[1] = 16'ha310; // r1 = 0x0100
     memory[2] = 16'hf010;
-    memory[3] = 16'haf24; // r2 = 0x0104
+    memory[3] = 16'ha324; // r2 = 0x0104
     memory[4] = 16'hd201; // FIMPORT4 f0, [r1]
     memory[5] = 16'hd212; // FIMPORT4 f1, [r2]
     memory[6] = 16'hd420; // FMOV f2, f0
     memory[7] = 16'hda21; // FMUL f2, f1
     memory[8] = 16'hdd20; // FCMP f2.x, f0.x -> Greater
     memory[9] = 16'hb401; // BGT +1
-    memory[10] = 16'haf09; // skipped failure marker
-    memory[11] = 16'he800; // HALT
+    memory[10] = 16'ha309; // skipped failure marker
+    memory[11] = 16'h6c00; // HALT (SIGNAL r0, 0)
     memory[16'h0100] = 16'd256;
     memory[16'h0101] = 16'd512;
     memory[16'h0102] = -16'sd256;
@@ -627,12 +629,12 @@ initial begin
     // fresh register first, so an aliased FMUL destination cannot disturb it.
     clear_memory;
     memory[0] = 16'hf010;
-    memory[1] = 16'haf10; // r1 = 0x0100
+    memory[1] = 16'ha310; // r1 = 0x0100
     memory[2] = 16'hd201; // FIMPORT4 f0, [r1]
     memory[3] = 16'hde0b; // FACCLOAD.X f0 -> ACC = 2.0
     memory[4] = 16'hdc1f; // FACCSTORE f1, 0b1111 -> f1 = splat(2.0)
     memory[5] = 16'hda01; // FMUL f0, f1
-    memory[6] = 16'he800; // HALT
+    memory[6] = 16'h6c00; // HALT (SIGNAL r0, 0)
     memory[16'h0100] = 16'd512;
     memory[16'h0101] = 16'd256;
     memory[16'h0102] = -16'sd256;
@@ -657,10 +659,10 @@ initial begin
     // faults, while the failing and unissued beats retain their old values.
     for (cond = 0; cond < 4; cond = cond + 1) begin
         clear_memory;
-        memory[0] = 16'hf010; // IMMHI12 0x010
-        memory[1] = 16'haf10; // LDU r1, 0 -> 0x0100
-        memory[2] = 16'hf010; // IMMHI12 0x010
-        memory[3] = 16'haf24; // LDU r2, 4 -> 0x0104
+        memory[0] = 16'hf010; // PFX12 0x010
+        memory[1] = 16'ha310; // LDUI r1, 0 -> 0x0100
+        memory[2] = 16'hf010; // PFX12 0x010
+        memory[3] = 16'ha324; // LDUI r2, 4 -> 0x0104
         memory[4] = 16'hd201; // FIMPORT4 f0, [r1]
         memory[5] = 16'hd302; // FEXPORT4 f0, [r2]
         memory[16'h0100] = 16'ha001;
@@ -691,12 +693,12 @@ initial begin
     // the store response arrives.
     clear_memory;
     memory[0] = 16'hf010;
-    memory[1] = 16'haf10; // r1 = 0x0100
-    memory[2] = 16'haf2a; // r2 = 10
+    memory[1] = 16'ha310; // r1 = 0x0100
+    memory[2] = 16'ha32a; // r2 = 10
     memory[3] = 16'h9210; // STORE r2, [r1]
     memory[4] = 16'h0322; // ADD r3, r2, r2
     memory[5] = 16'h8010; // LOAD r0, [r1]
-    memory[6] = 16'he800; // HALT
+    memory[6] = 16'h6c00; // HALT (SIGNAL r0, 0)
     scenario = 37;
     delay_data_response = 1;
     data_response_delay = 0;
@@ -723,14 +725,14 @@ initial begin
     // zero mask clears ACC without writing any lane.
     clear_memory;
     memory[0] = 16'hf010;
-    memory[1] = 16'haf10; // r1 = 0x0100
+    memory[1] = 16'ha310; // r1 = 0x0100
     memory[2] = 16'hd201; // FIMPORT4 f0, [r1] -> {1.0, 2.0, 3.0, 4.0}
     memory[3] = 16'hd211; // FIMPORT4 f1, [r1]
     memory[4] = 16'hdb01; // FDOT4ACC f0, f1 -> ACC = 30.0
     memory[5] = 16'hdc25; // FACCSTORE f2, 0b0101 -> f2.x = f2.z = 30.0
     memory[6] = 16'hdc30; // FACCSTORE f3, 0b0000 -> no write, ACC = 0
     memory[7] = 16'hdc41; // FACCSTORE f4, 0b0001 -> f4.x = 0 (ACC cleared)
-    memory[8] = 16'he800; // HALT
+    memory[8] = 16'h6c00; // HALT (SIGNAL r0, 0)
     memory[16'h0100] = 16'd256;
     memory[16'h0101] = 16'd512;
     memory[16'h0102] = 16'd768;
@@ -753,7 +755,7 @@ initial begin
     // an exact round trip through ACC.
     clear_memory;
     memory[0] = 16'hf010;
-    memory[1] = 16'haf10; // r1 = 0x0100
+    memory[1] = 16'ha310; // r1 = 0x0100
     memory[2] = 16'hd201; // FIMPORT4 f0, [r1] -> {1.5, -2.0, 3.25, 0}
     memory[3] = 16'hde0c; // FACCLOAD.Y f0 -> ACC = -2.0
     memory[4] = 16'hdc12; // FACCSTORE f1, 0b0010 -> f1.y = -2.0
@@ -761,7 +763,7 @@ initial begin
     memory[6] = 16'hdc24; // FACCSTORE f2, 0b0100 -> f2.z = 3.25
     memory[7] = 16'hde0b; // FACCLOAD.X f0 -> ACC = 1.5
     memory[8] = 16'hdc31; // FACCSTORE f3, 0b0001 -> f3.x = 1.5
-    memory[9] = 16'he800; // HALT
+    memory[9] = 16'h6c00; // HALT (SIGNAL r0, 0)
     memory[16'h0100] = 16'd384;
     memory[16'h0101] = -16'sd512;
     memory[16'h0102] = 16'd832;
@@ -785,11 +787,11 @@ initial begin
     // Scenario 41: SINCOS(0.5) selects the high 9-bit half of both packed
     // quarter-wave ROM words.
     clear_memory;
-    memory[0] = 16'hf008; // IMMHI12 0x008
-    memory[1] = 16'haf00; // LDU r0, 0 -> fix16 0.5
+    memory[0] = 16'hf008; // PFX12 0x008
+    memory[1] = 16'ha300; // LDUI r0, 0 -> fix16 0.5
     memory[2] = 16'hd000; // FLOAD f0, r0
     memory[3] = 16'hde02; // FSINCOS f0
-    memory[4] = 16'he800; // HALT
+    memory[4] = 16'h6c00; // HALT (SIGNAL r0, 0)
     scenario = 41;
     expect_halt(16'd128, 150);
     if (fpr_word(0, 0) !== 16'd123 || fpr_word(0, 1) !== 16'd225 ||
@@ -799,6 +801,52 @@ initial begin
                  fpr_word(0, 2), fpr_word(0, 3));
         errors = errors + 1;
     end
+
+    // Scenario 42: majors C and E are fully reserved in ISA 0.8; the
+    // revision 0.7 HALT word 0xe800 faults as an invalid instruction.
+    clear_memory;
+    memory[0] = 16'hc000; // reserved major C
+    scenario = 42;
+    expect_fault(8'd1, 16'd0, 100);
+    clear_memory;
+    memory[0] = 16'he800; // reserved major E (the 0.7 HALT word)
+    scenario = 42;
+    expect_fault(8'd1, 16'd0, 100);
+
+    // Scenario 43: unsigned multiply windows, a masked destructive register
+    // shift, conditional moves, and a non-halting SIGNAL retiring as a NOP.
+    clear_memory;
+    memory[0] = 16'hf00f; // PFX12 0x00f
+    memory[1] = 16'ha31f; // LDUI r1, 0xf -> r1 = 0x00ff
+    memory[2] = 16'h6021; // MOV r2, r1
+    // 0xff * 0xff = 0xfe01: MUL8 keeps [23:8] = 0xfe.
+    memory[3] = 16'h2921; // MUL8 r2, r1
+    memory[4] = 16'hffff; // PFX12 0xfff
+    memory[5] = 16'ha33f; // LDUI r3, 0xf -> r3 = 0xffff
+    // 0xffff * 0x00ff = 0xfeff01: MUL16 keeps [31:16] = 0xfe.
+    memory[6] = 16'h2a31; // MUL16 r3, r1
+    memory[7] = 16'hf800; // PFX12 0x800
+    memory[8] = 16'ha340; // LDUI r4, 0 -> r4 = 0x8000
+    memory[9] = 16'hf001; // PFX12 0x001
+    memory[10] = 16'ha351; // LDUI r5, 1 -> r5 = 0x11
+    // Register-count shifts mask rs to four bits: 0x11 & 15 = 1.
+    memory[11] = 16'h2145; // SHR r4, r5 -> r4 = 0x4000
+    memory[12] = 16'h6a12; // CMPS r1, r2: 0xff > 0xfe -> Greater
+    memory[13] = 16'hbc61; // MOVGT r6, r1 -> r6 = 0x00ff
+    memory[14] = 16'h6a12; // CMPS r1, r2 -> Greater again
+    // Not taken, but still consumes the pending test.
+    memory[15] = 16'hba63; // MOVLT r6, r3
+    memory[16] = 16'h6a11; // CMPS r1, r1 -> Equal
+    memory[17] = 16'hb871; // MOVEQ r7, r1 -> r7 = 0x00ff
+    memory[18] = 16'h6c61; // SIGNAL r6, 1 -> retires as a NOP
+    memory[19] = 16'h6002; // MOV r0, r2
+    memory[20] = 16'h0003; // ADD r0, r0, r3
+    memory[21] = 16'h0004; // ADD r0, r0, r4
+    memory[22] = 16'h0006; // ADD r0, r0, r6
+    memory[23] = 16'h0007; // ADD r0, r0, r7
+    memory[24] = 16'h6c00; // HALT (SIGNAL r0, 0)
+    scenario = 43;
+    expect_halt(16'h43fa, 300);
 
     if (errors != 0) begin
         $display("FAIL: %0d error(s)", errors);

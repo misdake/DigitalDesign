@@ -415,10 +415,10 @@ pub(crate) fn sign_extend(value: Word, bits: u32) -> Word {
 /// This predicate is the single authoritative statement of the consumer set.
 /// Three other places encode the same legality rules and must stay aligned:
 /// `decode` decides which words are valid instructions at all, `CpuV3Sim::step`
-/// dispatches the same major opcodes, and `hardware::CpuV3CoreState` (revision
-/// 0.7 until step 3 rewrites the RTL) carries its own copy. The consumer list
-/// below is exactly the set of *defined* (non-reserved) forms in the families
-/// that consume a prefix, so a reserved slot can never appear here; the
+/// dispatches the same major opcodes, and `hardware::CpuV3CoreState` carries
+/// its own copy. The consumer list below is exactly the set of *defined*
+/// (non-reserved) forms in the families that consume a prefix, so a reserved
+/// slot can never appear here; the
 /// exhaustive replay in `prefix_consumers_decode_and_are_never_reserved`
 /// enforces that alignment over the whole 16-bit word space.
 pub(crate) fn is_prefix_consumer(instruction: Word) -> bool {

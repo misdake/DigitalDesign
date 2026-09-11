@@ -79,7 +79,6 @@ fn main() {
     }
 
     #[test]
-    #[ignore = "ISA 0.8 step 3: the cycle model drives the revision 0.7 RTL core"]
     fn control_flow_probe_records_calls_returns_and_taken_loop_edges() {
         let words = compile(CONTROL_FLOW_SOURCE);
         let trace_directory = trace_directory("control-flow");
@@ -90,7 +89,6 @@ fn main() {
     }
 
     #[test]
-    #[ignore = "ISA 0.8 step 3: the cycle model drives the revision 0.7 RTL core"]
     fn data_probe_counts_overlapped_scalar_requests_and_latency() {
         let words = compile(DATA_SOURCE);
         let trace_directory = trace_directory("data");
@@ -103,7 +101,6 @@ fn main() {
     }
 
     #[test]
-    #[ignore = "ISA 0.8 step 3: the cycle model drives the revision 0.7 RTL core"]
     fn smoke_halt_runs_to_completion() {
         let words = compile("fn main() { halt(7); }");
         let result = run_benchmark(&words, 100_000);

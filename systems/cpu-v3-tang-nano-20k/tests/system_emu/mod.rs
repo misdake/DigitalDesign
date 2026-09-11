@@ -861,8 +861,11 @@ pub fn run_benchmark_profiled_with_prefetch(
                     let target = physical_pc(core.code_segment as u16, core.pc as u16);
                     let opcode = instruction >> 12;
                     let function = (instruction >> 8) & 0xfu16;
-                    let can_redirect = opcode == 0xbu16
-                        || (opcode == 0xeu16 && matches!(function, 4u16 | 5u16 | 15u16));
+                    // ISA 0.8: major B relative forms (0..=7) and register
+                    // jumps (E/F) can redirect; the conditional moves (8..D)
+                    // cannot. JSEG is major 6 function F.
+                    let can_redirect = (opcode == 0xbu16 && !matches!(function, 8u16..=13))
+                        || (opcode == 0x6u16 && function == 15u16);
                     if can_redirect && target != next_physical_word(origin) {
                         redirect_count = redirect_count.wrapping_add(1);
                         pending_redirect = Some((origin, target, instruction, cycle));
