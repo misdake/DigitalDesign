@@ -1884,11 +1884,14 @@ fn expr(l: &mut FnLower, e: &Expr) -> Result<Val, syn::Error> {
                         return Ok(Val::V(l.b.fbin(fop, lhs, rhs), lt));
                     }
                     let ty = unify_int(lt.clone(), rt.clone()).ok_or_else(|| {
-                        err(e, format!(
-                            "type mismatch: {} vs {} (cast with `as`)",
-                            lt.display(),
-                            rt.display()
-                        ))
+                        err(
+                            e,
+                            format!(
+                                "type mismatch: {} vs {} (cast with `as`)",
+                                lt.display(),
+                                rt.display()
+                            ),
+                        )
                     })?;
                     let op = match b.op {
                         Add(_) => BinOp::Add,
@@ -1938,11 +1941,14 @@ fn expr(l: &mut FnLower, e: &Expr) -> Result<Val, syn::Error> {
                     }
                     // integers: hardware MUL on CpuV3, library call on CpuV2
                     let ty = unify_int(lt.clone(), rt.clone()).ok_or_else(|| {
-                        err(e, format!(
-                            "type mismatch: {} vs {} (cast with `as`)",
-                            lt.display(),
-                            rt.display()
-                        ))
+                        err(
+                            e,
+                            format!(
+                                "type mismatch: {} vs {} (cast with `as`)",
+                                lt.display(),
+                                rt.display()
+                            ),
+                        )
                     })?;
                     Ok(Val::V(l.b.bin(BinOp::Mul, lhs, rhs), ty))
                 }
@@ -2627,8 +2633,8 @@ fn fpu_associated_call(
             let addr = aligned_scratch4(l);
             for i in 0..4usize {
                 let word = if i < lanes {
-                    let (v, from) = expr(l, &call.args[i])?
-                        .reg(l, &call.args[i], "vec constructor lane")?;
+                    let (v, from) =
+                        expr(l, &call.args[i])?.reg(l, &call.args[i], "vec constructor lane")?;
                     let (v, _) = coerce(l, v, &from, &Ty::Fix16, &call.args[i])?;
                     l.b.fstore(v)
                 } else {
@@ -2710,13 +2716,19 @@ fn fpu_method(
         }
         "to_bits" => {
             if !m.args.is_empty() || *base_ty != Ty::Fix16 {
-                return Err(err(&m.method, "to_bits() is a fix16 method without arguments"));
+                return Err(err(
+                    &m.method,
+                    "to_bits() is a fix16 method without arguments",
+                ));
             }
             Ok(Val::V(l.b.fstore(base), Ty::U16))
         }
         "to_int" => {
             if !m.args.is_empty() || *base_ty != Ty::Fix16 {
-                return Err(err(&m.method, "to_int() is a fix16 method without arguments"));
+                return Err(err(
+                    &m.method,
+                    "to_int() is a fix16 method without arguments",
+                ));
             }
             let bits = l.b.fstore(base);
             Ok(Val::V(l.b.shift(ShiftOp::Asr, bits, 8), Ty::I16))

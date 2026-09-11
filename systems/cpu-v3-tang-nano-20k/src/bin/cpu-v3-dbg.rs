@@ -157,12 +157,16 @@ fn compile_input(
                 return Ok(text);
             }
         }
-        Err(format!("module file not found next to {}", src_path.display()))
+        Err(format!(
+            "module file not found next to {}",
+            src_path.display()
+        ))
     };
 
     std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        let program = compile_program_named(&src_path.display().to_string(), &src, &opts, &mut loader)
-            .map_err(|error| error.to_string())?;
+        let program =
+            compile_program_named(&src_path.display().to_string(), &src, &opts, &mut loader)
+                .map_err(|error| error.to_string())?;
         if !program.funcs.iter().any(|f| f.name == "main") {
             return Err("program needs a `fn main` entry point".to_string());
         }

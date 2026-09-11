@@ -6,8 +6,8 @@
 
 mod system_emu;
 
-use system_emu::*;
 use std::path::Path;
+use system_emu::*;
 
 #[cfg(test)]
 mod tests {

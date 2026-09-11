@@ -10,8 +10,8 @@
 mod system_emu;
 
 use cpu_v3::{
-    alu, branch, halt, immediate_unsigned, load, load_immediate16, nop, store, AluOp,
-    CpuV3Core, CpuV3DataCache, CpuV3InstructionFetchQueue, CpuV3TwoWayCache, FpuOp, ImmediateOp,
+    alu, branch, halt, immediate_unsigned, load, load_immediate16, nop, store, AluOp, CpuV3Core,
+    CpuV3DataCache, CpuV3InstructionFetchQueue, CpuV3TwoWayCache, FpuOp, ImmediateOp,
     TestCondition,
 };
 use cpu_v3::{fpu, fpu_unary, FpuUnaryOp};
@@ -259,10 +259,22 @@ fn system_verilog_sources() -> Vec<String> {
         }
     };
     append(&VerilogProject::generate::<CpuV3Core>().unwrap().files);
-    append(&VerilogProject::generate::<CpuV3InstructionFetchQueue>().unwrap().files);
-    append(&VerilogProject::generate::<CpuV3TwoWayCache>().unwrap().files);
+    append(
+        &VerilogProject::generate::<CpuV3InstructionFetchQueue>()
+            .unwrap()
+            .files,
+    );
+    append(
+        &VerilogProject::generate::<CpuV3TwoWayCache>()
+            .unwrap()
+            .files,
+    );
     append(&VerilogProject::generate::<CpuV3DataCache>().unwrap().files);
-    append(&VerilogProject::generate::<CpuV3MemoryArbiter>().unwrap().files);
+    append(
+        &VerilogProject::generate::<CpuV3MemoryArbiter>()
+            .unwrap()
+            .files,
+    );
     sources
 }
 
@@ -272,10 +284,7 @@ fn build_tb(program: &CosimProgram, max_cycles: usize) -> String {
         memory_init.push_str(&format!("    memory[{index}] = 16'h{word:04x};\n"));
     }
     include_str!("system_cosim_tb.v")
-        .replace(
-            "__CORE__",
-            &CpuV3Core::verilog_identity().module_name(),
-        )
+        .replace("__CORE__", &CpuV3Core::verilog_identity().module_name())
         .replace(
             "__FETCH__",
             &CpuV3InstructionFetchQueue::verilog_identity().module_name(),

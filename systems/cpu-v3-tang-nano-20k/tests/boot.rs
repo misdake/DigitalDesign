@@ -6,7 +6,7 @@
 //! (device 0), with the flash image backing the DMA model.
 
 use cpu_v3::rcc_backend::{self, CompilerOptions, CpuV3Program};
-use cpu_v3::{decode, FpuOp, FpuUnaryOp, Instruction, CpuV3Sim};
+use cpu_v3::{decode, CpuV3Sim, FpuOp, FpuUnaryOp, Instruction};
 use cpu_v3_tang_nano_20k::boot::{
     BootDmaDevice, BootErrorReport, BootSelectDevice, BootTarget, SystemControlDevice,
     CACHE_MAINTENANCE_STATUS, D_CLEAN_ALL, S1_APPLICATION_LAYOUT, S2_APPLICATION_LAYOUT,

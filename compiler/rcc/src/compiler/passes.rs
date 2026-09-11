@@ -597,9 +597,7 @@ fn cse(f: &mut IrFunc) -> bool {
                 Some((Key::FBin(*op, a, b), *dst))
             }
             Instr::FLoad { dst, src_gpr } => Some((Key::FLoad(canon(replace, *src_gpr)), *dst)),
-            Instr::FStore { dst_gpr, src } => {
-                Some((Key::FStore(canon(replace, *src)), *dst_gpr))
-            }
+            Instr::FStore { dst_gpr, src } => Some((Key::FStore(canon(replace, *src)), *dst_gpr)),
             Instr::FZero { dst } => Some((Key::FZero, *dst)),
             _ => None,
         }

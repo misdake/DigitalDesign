@@ -214,7 +214,10 @@ fn validate_convention(convention: RegisterConvention) {
         ] {
             for &register in registers {
                 assert!(register < 16, "{name} register f{register} is out of range");
-                assert!(roles.insert(register), "duplicate {name} register f{register}");
+                assert!(
+                    roles.insert(register),
+                    "duplicate {name} register f{register}"
+                );
             }
         }
         assert!(
@@ -320,7 +323,10 @@ pub(crate) fn inst_uses(inst: &Instr) -> Vec<VReg> {
         Instr::FMov { src, .. } | Instr::FUnary { src, .. } | Instr::FStore { src, .. } => {
             vec![*src]
         }
-        Instr::FLoad { src_gpr, .. } | Instr::FImport4 { base_gpr: src_gpr, .. } => {
+        Instr::FLoad { src_gpr, .. }
+        | Instr::FImport4 {
+            base_gpr: src_gpr, ..
+        } => {
             vec![*src_gpr]
         }
         Instr::FExport4 { src, base_gpr } => vec![*src, *base_gpr],
@@ -354,9 +360,7 @@ pub(crate) fn inst_defs(inst: &Instr) -> Vec<VReg> {
         Instr::FBin { dst, .. }
         | Instr::FMov { dst, .. }
         | Instr::FLoad { dst, .. }
-        | Instr::FStore {
-            dst_gpr: dst, ..
-        }
+        | Instr::FStore { dst_gpr: dst, .. }
         | Instr::FImport4 { dst, .. }
         | Instr::FUnary { dst, .. }
         | Instr::FAccStore { dst, .. }
@@ -526,9 +530,7 @@ fn insert_abi_shims(f: &mut IrFunc, convention: RegisterConvention) -> AbiInfo {
         if used {
             let p2 = fresh(f, p);
             replace_all_uses(f, p, p2);
-            f.blocks[f.entry]
-                .insts
-                .insert(0, shim_mov(p2, p, class));
+            f.blocks[f.entry].insts.insert(0, shim_mov(p2, p, class));
             f.blocks[f.entry].lines.insert(0, None);
         }
     }
@@ -700,7 +702,9 @@ fn abi_register(
         (RegClass::Fpu, AbiRole::Argument) => {
             convention.fpu.expect("FPU ABI").argument_registers[index]
         }
-        (RegClass::Fpu, AbiRole::Return) => convention.fpu.expect("FPU ABI").return_registers[index],
+        (RegClass::Fpu, AbiRole::Return) => {
+            convention.fpu.expect("FPU ABI").return_registers[index]
+        }
     }
 }
 
@@ -711,7 +715,6 @@ fn shim_mov(dst: VReg, src: VReg, class: RegClass) -> Instr {
         RegClass::Fpu => Instr::FMov { dst, src },
     }
 }
-
 
 // ---------------------------------------------------------------------------
 // step 2: critical edge splitting
@@ -996,10 +999,7 @@ fn linear_scan(
     };
     for class in [RegClass::Gpr, RegClass::Fpu] {
         let (allocatable, callee_saved): (&[u8], &[u8]) = match class {
-            RegClass::Gpr => (
-                convention.allocatable_registers,
-                convention.callee_saved,
-            ),
+            RegClass::Gpr => (convention.allocatable_registers, convention.callee_saved),
             // all FPU registers are caller-saved: intervals crossing a call
             // have no register to live in and always spill
             RegClass::Fpu => match convention.fpu {
@@ -1008,7 +1008,13 @@ fn linear_scan(
             },
         };
         let scan = scan_class(
-            f, intervals, abi, affinity, class, allocatable, callee_saved,
+            f,
+            intervals,
+            abi,
+            affinity,
+            class,
+            allocatable,
+            callee_saved,
         );
         result.reg.extend(scan.reg);
         result.spilled.extend(scan.spilled);
@@ -1140,7 +1146,6 @@ fn scan_class(
     ScanResult { reg, spilled }
 }
 
-
 // ---------------------------------------------------------------------------
 // step 4: spill rewriting (returns number of frame slots used)
 // ---------------------------------------------------------------------------
@@ -1152,12 +1157,7 @@ fn scan_class(
 /// (monotonic across fixpoint iterations, so slots assigned in earlier
 /// iterations are never clobbered). TODO(M5): pack slots of non-overlapping
 /// spills.
-fn rewrite_spills(
-    f: &mut IrFunc,
-    spilled: &[VReg],
-    next_slot: &mut u8,
-    next_fpu_slot: &mut u8,
-) {
+fn rewrite_spills(f: &mut IrFunc, spilled: &[VReg], next_slot: &mut u8, next_fpu_slot: &mut u8) {
     let mut slot_of: HashMap<VReg, u8> = HashMap::new();
     let mut fpu_slot_of: HashMap<VReg, u8> = HashMap::new();
     for &v in spilled {
@@ -1201,16 +1201,7 @@ fn rewrite_spills(
                         &mut lines,
                         None,
                     );
-                    spill_store(
-                        v,
-                        phi.dst,
-                        &slot_of,
-                        &fpu_slot_of,
-                        f,
-                        app,
-                        &mut lines,
-                        None,
-                    );
+                    spill_store(v, phi.dst, &slot_of, &fpu_slot_of, f, app, &mut lines, None);
                 }
             } else {
                 for (p, v) in &mut phi.args {
@@ -1413,7 +1404,9 @@ fn rewrite_spills(
                         line,
                     );
                 }
-                Instr::FMov { src, .. } | Instr::FUnary { src, .. } | Instr::FAccLoad { src, .. } => reload(
+                Instr::FMov { src, .. }
+                | Instr::FUnary { src, .. }
+                | Instr::FAccLoad { src, .. } => reload(
                     src,
                     &slot_of,
                     &fpu_slot_of,

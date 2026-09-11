@@ -875,7 +875,9 @@ pub(crate) fn remove_trivial_phis(func: &mut IrFunc) -> bool {
                         subst(src);
                         subst(base_gpr);
                     }
-                    Instr::FAccStore { .. } | Instr::FZero { .. } | Instr::AddrOfFpuSpill { .. } => {}
+                    Instr::FAccStore { .. }
+                    | Instr::FZero { .. }
+                    | Instr::AddrOfFpuSpill { .. } => {}
                 }
             }
             if let Some(term) = &mut b.term {

@@ -39,7 +39,13 @@ fn rewrite_mul_as_library_calls(funcs: &mut HashMap<FuncName, IrFunc>) {
     for f in funcs.values_mut() {
         for block in &mut f.blocks {
             for inst in &mut block.insts {
-                if let Instr::Bin { dst, op: BinOp::Mul, lhs, rhs } = inst {
+                if let Instr::Bin {
+                    dst,
+                    op: BinOp::Mul,
+                    lhs,
+                    rhs,
+                } = inst
+                {
                     *inst = Instr::Call {
                         func: "mul_16x16",
                         args: vec![*lhs, *rhs],
