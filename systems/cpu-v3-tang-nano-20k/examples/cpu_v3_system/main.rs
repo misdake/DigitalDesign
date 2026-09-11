@@ -193,7 +193,8 @@ mod tests {
                     .map_err(|error| format!("read module `{name}`: {error}"))
             })
             .expect("rcc compile failed");
-        rcc_backend::compile(program, options, "main")
+        rcc_backend::try_compile(program, options, "main")
+            .unwrap_or_else(|error| panic!("cpu-v3 compile failed: {error}"))
     }
 
     fn format_words(words: &[u16]) -> String {

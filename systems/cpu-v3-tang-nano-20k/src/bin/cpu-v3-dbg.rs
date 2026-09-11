@@ -170,7 +170,8 @@ fn compile_input(
         if !program.funcs.iter().any(|f| f.name == "main") {
             return Err("program needs a `fn main` entry point".to_string());
         }
-        let program = rcc_backend::compile(program, &opts, "main");
+        let program =
+            rcc_backend::try_compile(program, &opts, "main").map_err(|error| error.to_string())?;
         Ok(V3DebugSession::from_program(program))
     }))
     .map_err(|payload| {

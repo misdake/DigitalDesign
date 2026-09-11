@@ -157,7 +157,8 @@ fn main() -> ExitCode {
             compile_program_named(&input.display().to_string(), &src, &v3_opts, &mut loader)
                 .unwrap_or_else(|error| die(&error.to_string()));
         let n_funcs = program.funcs.len();
-        let program = cpu_v3_backend::compile(program, &v3_opts, "main");
+        let program = cpu_v3_backend::try_compile(program, &v3_opts, "main")
+            .unwrap_or_else(|error| die(&error.to_string()));
         std::fs::write(&out, encode_cpu_v3_words(&program.words))
             .unwrap_or_else(|e| die(&format!("cannot write {}: {e}", out.display())));
         std::fs::write(&lst, &program.listing)

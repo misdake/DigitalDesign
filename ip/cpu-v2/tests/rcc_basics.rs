@@ -157,15 +157,30 @@ fn main() {
 
 #[test]
 fn test_shift_amount_errors() {
-    // the ISA has no register-shift: amount must be a literal in 0..=15
+    // immediate shifts still reject out-of-range literal amounts
     expect_error(
         "fn f() { let x = 1u16 << 16; }",
         "shift amount must be a literal constant in 0..=15",
     );
-    expect_error(
-        "fn f() { let s = 4u16; let x = 1u16 >> s; }",
-        "shift amount must be a literal constant",
-    );
+    // dynamic (register-count) shifts parse now, but the v2.6 ISA cannot
+    // encode them, so the v2 backend rejects them explicitly
+    let program =
+        cpu_v2::frontend::parse_source("fn f() { let s = 4u16; let x = 1u16 >> s; halt(x); }")
+            .expect("dynamic shifts parse");
+    let result = std::panic::catch_unwind(|| {
+        let mut c = cpu_v2::Compiler::new();
+        for f in program.funcs {
+            c.add_func(f);
+        }
+        c.finish("f");
+    });
+    let error = result.expect_err("the v2 backend must reject register-count shifts");
+    let message = error
+        .downcast_ref::<String>()
+        .map(String::as_str)
+        .or_else(|| error.downcast_ref::<&str>().copied())
+        .unwrap_or("");
+    assert!(message.contains("register-count shifts"), "{message}");
 }
 
 #[test]

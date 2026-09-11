@@ -17,14 +17,21 @@ struct PreparedFunction {
     alloc: Allocation,
 }
 
-/// CpuV2 has no hardware multiply: rewrite integer `BinOp::Mul` into a call to
-/// the rcc_std `mul_16x16` library function (always linked from rcc_std).
-fn rewrite_mul_as_library_calls(funcs: &mut HashMap<FuncName, IrFunc>) {
+/// CpuV2 legalization for the shared IR:
+/// - `Instr::Mul` with the Low window becomes a call to the rcc_std
+///   `mul_16x16` library function (CpuV2 has no hardware multiply); the
+///   windowed forms are CpuV3-only and rejected.
+/// - Immediate operands are materialized into fresh `LoadImm` vregs, matching
+///   the historical expansion exactly (the v2.6 ISA has no immediate ALU
+///   forms beyond shifts and `addi`, which the frontend already used).
+/// - Register-count shifts are rejected: the v2.6 ISA only encodes
+///   immediate shifts.
+fn legalize_for_v2(funcs: &mut HashMap<FuncName, IrFunc>) {
     let mut uses_mul = false;
     for f in funcs.values() {
         for block in &f.blocks {
             for inst in &block.insts {
-                if matches!(inst, Instr::Bin { op: BinOp::Mul, .. }) {
+                if matches!(inst, Instr::Mul { .. }) {
                     uses_mul = true;
                 }
             }
@@ -37,23 +44,69 @@ fn rewrite_mul_as_library_calls(funcs: &mut HashMap<FuncName, IrFunc>) {
         );
     }
     for f in funcs.values_mut() {
-        for block in &mut f.blocks {
-            for inst in &mut block.insts {
-                if let Instr::Bin {
-                    dst,
-                    op: BinOp::Mul,
-                    lhs,
-                    rhs,
-                } = inst
-                {
-                    *inst = Instr::Call {
-                        func: "mul_16x16",
-                        args: vec![*lhs, *rhs],
-                        rets: vec![*dst],
-                    };
+        let mut blocks = std::mem::take(&mut f.blocks);
+        for block in &mut blocks {
+            let mut rewritten = Vec::with_capacity(block.insts.len());
+            let mut rewritten_lines = Vec::with_capacity(block.lines.len());
+            let old_lines = std::mem::take(&mut block.lines);
+            for (inst, line) in std::mem::take(&mut block.insts).into_iter().zip(old_lines) {
+                match inst {
+                    Instr::Mul {
+                        dst,
+                        window: MulWindow::Low,
+                        lhs,
+                        rhs,
+                    } => {
+                        let rhs = match rhs {
+                            IntOperand::Reg(v) => v,
+                            IntOperand::Imm(value) => {
+                                let tmp = f.fresh_vreg(RegClass::Gpr);
+                                rewritten.push(Instr::LoadImm { dst: tmp, value });
+                                rewritten_lines.push(line);
+                                tmp
+                            }
+                        };
+                        rewritten.push(Instr::Call {
+                            func: "mul_16x16",
+                            args: vec![lhs, rhs],
+                            rets: vec![dst],
+                        });
+                        rewritten_lines.push(line);
+                    }
+                    Instr::Mul { window, .. } => panic!(
+                        "{window} is a CpuV3-only multiply window; the v2.6 ISA has no hardware multiply"
+                    ),
+                    Instr::Bin { dst, op, lhs, rhs } => {
+                        let rhs = match rhs {
+                            IntOperand::Reg(v) => v,
+                            IntOperand::Imm(value) => {
+                                let tmp = f.fresh_vreg(RegClass::Gpr);
+                                rewritten.push(Instr::LoadImm { dst: tmp, value });
+                                rewritten_lines.push(line);
+                                tmp
+                            }
+                        };
+                        rewritten.push(Instr::Bin {
+                            dst,
+                            op,
+                            lhs,
+                            rhs: IntOperand::Reg(rhs),
+                        });
+                        rewritten_lines.push(line);
+                    }
+                    Instr::Shift { amount: IntOperand::Reg(v), .. } => panic!(
+                        "register-count shifts (used by v{v}) are CpuV3-only; the v2.6 ISA only encodes immediate shifts"
+                    ),
+                    inst => {
+                        rewritten.push(inst);
+                        rewritten_lines.push(line);
+                    }
                 }
             }
+            block.insts = rewritten;
+            block.lines = rewritten_lines;
         }
+        f.blocks = blocks;
     }
 }
 
@@ -276,7 +329,7 @@ impl Compiler {
 
     fn finish_impl(self, main: FuncName) -> (Vec<Instruction>, String, Option<DebugInfo>) {
         let mut funcs = self.funcs.clone();
-        rewrite_mul_as_library_calls(&mut funcs);
+        legalize_for_v2(&mut funcs);
         let reachable = reachable_functions(&funcs, main);
         let mut prepared = vec![];
         let mut called: HashSet<FuncName> = HashSet::new();

@@ -48,7 +48,9 @@ fn compile(
             })
         })
         .unwrap_or_else(|error| panic!("compile RCC source {}: {error}", path.display()));
-    rcc_backend::compile(program, options, "main").words
+    rcc_backend::try_compile(program, options, "main")
+        .unwrap_or_else(|error| panic!("compile RCC source {}: {error}", path.display()))
+        .words
 }
 
 fn options(layout: ApplicationLayout) -> CompilerOptions {
@@ -269,12 +271,13 @@ fn main() {
     })
     .expect("build boot image");
 
-    // ISA 0.8 encoding migration rebaselined the Stage0 words; Step 5
-    // re-validates the boot assets (including Stage0 < 1024 words) against
-    // the final compiler and updates this baseline again if they change.
+    // The ISA 0.8 integer rework (encoding, RTL, and the RCC backend) changed
+    // the Stage0 words, so the baseline is re-pinned here; the boot test still
+    // checks Stage0 fits the 0x400-word boot window. Step 5 regenerates the
+    // full asset set and re-validates this baseline against the final compiler.
     assert_eq!(
         fnv1a64(&stage0_bytes),
-        17_837_455_290_091_098_869,
+        12_690_216_350_937_041_954,
         "Stage0 bytes changed from the CPU V3 boot-format baseline"
     );
 
