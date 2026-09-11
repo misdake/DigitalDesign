@@ -48,6 +48,12 @@ when the queue does not already contain the requested word.
 | ACC | Signed saturating 40-bit accumulator | One in-order product accumulation per cycle while the DOT pipeline drains |
 | Transfer buffer | Four 16-bit import/gather words, one 64-bit export/scatter snapshot, and four 64-bit transpose row registers | Makes imports and overlapping rearrangements snapshot-clean |
 
+The integer `ASR`/`ASRI` instructions shift `signed(rd)` arithmetically. The RTL computes the
+shift result in a statement-based `case` and the FSM selects it; it never places `>>>` inside a
+conditional expression, because Verilog makes `?:` unsigned when any branch is unsigned and would
+silently turn the arithmetic shift into a logical one. `fix16::to_int()` compiles to `FSTORE`
+followed by `ASRI 8`, so every negative fix16 conversion depends on this rule.
+
 The optional fitted system places separate 4 KiB instruction and data caches
 around the core. Each cache is two-way set-associative with 64 sets and 16 words per line.
 Two true-dual-port BSRAMs split every line strictly by word parity. During lookup,

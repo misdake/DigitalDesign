@@ -536,6 +536,23 @@ end
 wire [15:0] fpu_write_lanes_data =
     field_d <= 4'h9 ? fpu_lane_addsub : fpu_lane_result;
 
+// Destructive shifts compute the result in a statement-based case so the
+// arithmetic `>>>` is never inside a conditional expression. In Verilog a `?:`
+// is unsigned if any branch is unsigned, which silently turns `>>>` into a
+// logical shift.
+reg [15:0] shift_result;
+always @* begin
+    case (field_d)
+        4'h0: shift_result = gpr_read_a_data << gpr_read_b_data[3:0];
+        4'h1: shift_result = gpr_read_a_data >> gpr_read_b_data[3:0];
+        4'h2: shift_result = $signed(gpr_read_a_data) >>> gpr_read_b_data[3:0];
+        4'h4: shift_result = gpr_read_a_data << instruction[3:0];
+        4'h5: shift_result = gpr_read_a_data >> instruction[3:0];
+        4'h6: shift_result = $signed(gpr_read_a_data) >>> instruction[3:0];
+        default: shift_result = 16'd0;
+    endcase
+end
+
 // Transpose write phase (steps 2..5): output row w gathers lane w from all
 // four buffered rows, a pure wiring permutation of the snapshot. The two-bit
 // subtraction wraps modulo four, landing exactly on 0..3 for steps 2..5.
@@ -749,10 +766,7 @@ always @(posedge clk) begin
                                 4'h0, 4'h1, 4'h2: begin
                                     gpr_write_enable <= 1;
                                     gpr_write_address <= field_a;
-                                    gpr_write_data <=
-                                        field_d == 4'h0 ? gpr_read_a_data << gpr_read_b_data[3:0] :
-                                        field_d == 4'h1 ? gpr_read_a_data >> gpr_read_b_data[3:0] :
-                                        $signed(gpr_read_a_data) >>> gpr_read_b_data[3:0];
+                                    gpr_write_data <= shift_result;
                                     retired_words <= retired_words + success_retire_words;
                                     state <= ST_FETCH_REQUEST;
                                 end
@@ -760,10 +774,7 @@ always @(posedge clk) begin
                                 4'h4, 4'h5, 4'h6: begin
                                     gpr_write_enable <= 1;
                                     gpr_write_address <= field_a;
-                                    gpr_write_data <=
-                                        field_d == 4'h4 ? gpr_read_a_data << instruction[3:0] :
-                                        field_d == 4'h5 ? gpr_read_a_data >> instruction[3:0] :
-                                        $signed(gpr_read_a_data) >>> instruction[3:0];
+                                    gpr_write_data <= shift_result;
                                     retired_words <= retired_words + success_retire_words;
                                     state <= ST_FETCH_REQUEST;
                                 end

@@ -179,6 +179,25 @@ fn main() {
 }
 "#;
 
+/// `fix16::to_int()` is `FSTORE` followed by an `ASR` by 8. Regression for the
+/// RTL `>>>` inside a mixed-signedness conditional, which evaluated as a
+/// logical shift and turned negative results into `0x00xx` (e.g. the display
+/// demo's negative sine/cosine offsets landed at +255 instead of -1).
+const FIX16_TO_INT_SOURCE: &str = r#"
+use crate::dsl_rt::*;
+
+fn main() {
+    let mut out = Ptr::from_addr(0x4000).as_u16_array();
+    out[0u16] = fix16::from_bits(0xff00).to_int() as u16; // -1.0   -> -1   (0xffff)
+    out[1u16] = fix16::from_bits(0xfe70).to_int() as u16; // -1.5625 -> -2  (0xfffe)
+    out[2u16] = fix16::from_bits(0x8000).to_int() as u16; // -128.0 -> -128 (0xff80)
+    out[3u16] = fix16::from_bits(0x0180).to_int() as u16; // 1.5    -> 1
+    out[4u16] = fix16::from_bits(0x0001).to_int() as u16; // 1/256  -> 0
+    out[5u16] = fix16::from_bits(0x0080).to_int() as u16; // 0.5    -> 0
+    halt(0x5a);
+}
+"#;
+
 fn programs() -> Vec<CosimProgram> {
     vec![
         CosimProgram {
@@ -220,6 +239,14 @@ fn programs() -> Vec<CosimProgram> {
             check_base: 0x4000,
             check_len: 4,
             expected_halt: Some(1),
+        },
+        CosimProgram {
+            name: "fix16_to_int_rcc",
+            words: compile_cpu_v3_source(FIX16_TO_INT_SOURCE),
+            max_cycles: 20_000,
+            check_base: 0x4000,
+            check_len: 6,
+            expected_halt: Some(0x5a),
         },
         CosimProgram {
             name: "icache_loop",
