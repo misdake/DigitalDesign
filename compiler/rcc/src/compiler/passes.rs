@@ -568,6 +568,22 @@ fn cse(f: &mut IrFunc) -> bool {
         }
     }
 
+    // Copy/CSE aliasing is only sound for a vreg with a single definition. The
+    // if-conversion pass deliberately redefines its destination (a Mov/LoadImm
+    // feeding a CMov), and aliasing that vreg would replace the uses after the
+    // conditional write and drop it.
+    let mut seen_defs: HashSet<VReg> = HashSet::new();
+    let mut multi_def: HashSet<VReg> = HashSet::new();
+    for b in &f.blocks {
+        for inst in &b.insts {
+            for def in crate::compiler::regalloc::inst_defs(inst) {
+                if !seen_defs.insert(def) {
+                    multi_def.insert(def);
+                }
+            }
+        }
+    }
+
     fn canon(replace: &HashMap<VReg, VReg>, mut v: VReg) -> VReg {
         while let Some(&r) = replace.get(&v) {
             v = r;
@@ -635,6 +651,7 @@ fn cse(f: &mut IrFunc) -> bool {
         b: BlockId,
         f: &IrFunc,
         children: &[Vec<BlockId>],
+        multi_def: &HashSet<VReg>,
         scope: &mut HashMap<Key, VReg>,
         replace: &mut HashMap<VReg, VReg>,
         changed: &mut bool,
@@ -643,14 +660,18 @@ fn cse(f: &mut IrFunc) -> bool {
         for inst in &f.blocks[b].insts {
             match inst {
                 Instr::Mov { dst, src } | Instr::FMov { dst, src } => {
-                    replace.insert(*dst, canon(replace, *src));
-                    *changed = true;
+                    if !multi_def.contains(dst) {
+                        replace.insert(*dst, canon(replace, *src));
+                        *changed = true;
+                    }
                 }
                 _ => {
                     if let Some((key, dst)) = pure_key(inst, replace) {
                         if let Some(&found) = scope.get(&key) {
-                            replace.insert(dst, found);
-                            *changed = true;
+                            if !multi_def.contains(&dst) {
+                                replace.insert(dst, found);
+                                *changed = true;
+                            }
                         } else {
                             scope.insert(key.clone(), dst);
                             added.push(key);
@@ -660,7 +681,7 @@ fn cse(f: &mut IrFunc) -> bool {
             }
         }
         for &c in &children[b] {
-            walk(c, f, children, scope, replace, changed);
+            walk(c, f, children, multi_def, scope, replace, changed);
         }
         for k in added {
             scope.remove(&k);
@@ -672,6 +693,7 @@ fn cse(f: &mut IrFunc) -> bool {
             f.entry,
             f,
             &children,
+            &multi_def,
             &mut scope,
             &mut replace,
             &mut changed,
@@ -810,14 +832,41 @@ fn dce(f: &mut IrFunc) -> bool {
 // ---------------------------------------------------------------------------
 
 /// One arm of a convertible diamond, seen from its phi argument: the arm is
-/// empty (the phi uses an earlier value directly), a single LoadImm, or a
-/// single Mov; it has exactly one predecessor and ends in a plain jump.
-#[derive(Clone, Copy)]
+/// empty (the phi uses an earlier value directly), a single LoadImm, a single
+/// Mov, or a single pure value instruction; it has exactly one predecessor and
+/// ends in a plain jump.
+#[derive(Clone)]
 enum ArmValue {
     /// value vreg used as-is
     Reg(VReg),
     /// constant produced by the arm's own LoadImm
     Imm(u16),
+    /// value produced by a single pure instruction, which is hoisted into the
+    /// branch block (the instruction defines the phi argument)
+    Expr(Instr),
+}
+
+/// the vreg an instruction defines, if it is one of the value-producing forms
+/// this pass can hoist
+fn hoistable_def(inst: &Instr) -> Option<VReg> {
+    match inst {
+        Instr::Bin { dst, .. }
+        | Instr::Mul { dst, .. }
+        | Instr::Shift { dst, .. }
+        | Instr::Un { dst, .. } => Some(*dst),
+        _ => None,
+    }
+}
+
+/// whether an instruction is side-effect-free, non-faulting, and lowers
+/// without an internal branch (so it can run unconditionally before the
+/// compare). `Log2` is excluded because it expands to a branch.
+fn hoistable_value(inst: &Instr) -> bool {
+    match inst {
+        Instr::Bin { .. } | Instr::Mul { .. } | Instr::Shift { .. } => true,
+        Instr::Un { op, .. } => !matches!(op, UnOp::Log2),
+        _ => false,
+    }
 }
 
 fn diamond_arm(
@@ -837,14 +886,18 @@ fn diamond_arm(
         [] => Some((ArmValue::Reg(phi_arg), target)),
         [Instr::LoadImm { dst, value }] if *dst == phi_arg => Some((ArmValue::Imm(*value), target)),
         [Instr::Mov { dst, src }] if *dst == phi_arg => Some((ArmValue::Reg(*src), target)),
+        [inst] if hoistable_def(inst) == Some(phi_arg) && hoistable_value(inst) => {
+            Some((ArmValue::Expr(inst.clone()), target))
+        }
         _ => None,
     }
 }
 
 /// Convert simple if-expression diamonds to `Bool`/`CMov` instructions.
 ///
-/// Eligible shape (each arm is empty, a single LoadImm, or a single Mov, so
-/// there are no side effects, no faults, and no nested control flow):
+/// Eligible shape (each arm is empty, a single LoadImm, a single Mov, or a
+/// single pure value instruction, so there are no side effects, no faults, and
+/// no nested control flow):
 ///
 /// ```text
 /// B: br cmp, T, F
@@ -940,7 +993,7 @@ pub fn convert_diamonds(f: &mut IrFunc) -> bool {
         let line = f.blocks[b].term_line;
 
         // Boolean materialization: arms are exactly 1 and 0 (in any order)
-        let bool_cmp = match (true_value, false_value) {
+        let bool_cmp = match (&true_value, &false_value) {
             (ArmValue::Imm(1), ArmValue::Imm(0)) => Some(cmp),
             (ArmValue::Imm(0), ArmValue::Imm(1)) => {
                 let mut inverted = cmp;
@@ -953,10 +1006,27 @@ pub fn convert_diamonds(f: &mut IrFunc) -> bool {
         if let Some(bool_cmp) = bool_cmp {
             insts.push(Instr::Bool { dst, cmp: bool_cmp });
         } else {
+            // Hoist any arm that computes its value: a pure single instruction
+            // can run unconditionally before the compare. Arms are independent
+            // in SSA, so the order between them is irrelevant.
+            let mut arm_def = |arm: &ArmValue| -> Option<VReg> {
+                if let ArmValue::Expr(inst) = arm {
+                    insts.push(inst.clone());
+                    hoistable_def(inst)
+                } else {
+                    None
+                }
+            };
+            let true_def = arm_def(&true_value);
+            let false_def = arm_def(&false_value);
             // dst = false value; dst = true value when the condition holds
-            match false_value {
-                ArmValue::Imm(value) => insts.push(Instr::LoadImm { dst, value }),
-                ArmValue::Reg(src) => insts.push(Instr::Mov { dst, src }),
+            match &false_value {
+                ArmValue::Imm(value) => insts.push(Instr::LoadImm { dst, value: *value }),
+                ArmValue::Reg(src) => insts.push(Instr::Mov { dst, src: *src }),
+                ArmValue::Expr(_) => insts.push(Instr::Mov {
+                    dst,
+                    src: false_def.expect("computed arm has a defined value"),
+                }),
             }
             let src = match true_value {
                 ArmValue::Imm(value) => {
@@ -965,6 +1035,7 @@ pub fn convert_diamonds(f: &mut IrFunc) -> bool {
                     tmp
                 }
                 ArmValue::Reg(src) => src,
+                ArmValue::Expr(_) => true_def.expect("computed arm has a defined value"),
             };
             insts.push(Instr::CMov { dst, cmp, src });
         }

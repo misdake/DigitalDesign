@@ -2349,6 +2349,52 @@ mod tests {
     }
 
     #[test]
+    fn if_value_arms_with_one_simple_instruction_use_a_conditional_move() {
+        // `c3 - 1` is a single pure instruction, so the else arm stays
+        // if-convertible; the countdown wraps 0 -> 2.
+        let source = r#"
+            fn countdown(c3: u16) -> u16 {
+                if c3 == 0 { 2 } else { c3 - 1 }
+            }
+            fn main() {
+                halt(countdown(0) * 100 + countdown(5));
+            }
+        "#;
+        let program = compile(source, CompilerOptions::default());
+        assert!(
+            ["moveq", "movne", "movlt", "movge", "movgt", "movle"]
+                .iter()
+                .any(|m| has_prefix(&program, m)),
+            "no conditional move\n{}",
+            program.listing
+        );
+        assert!(has_prefix(&program, "subi"), "{}", program.listing);
+        // countdown(0) = 2, countdown(5) = 4
+        assert_eq!(run(source), 204);
+    }
+
+    #[test]
+    fn if_value_with_a_register_false_arm_keeps_the_conditional_move() {
+        // Regression: the `Mov dst, false` must survive CSE copy propagation,
+        // which previously aliased it with the redefined result and dropped the
+        // conditional write.
+        let source = r#"
+            fn clamp(x: u16) -> u16 { if x == 0 { 2 } else { x } }
+            fn main() { halt(clamp(0) * 100 + clamp(5)); }
+        "#;
+        let program = compile(source, CompilerOptions::default());
+        assert!(
+            ["moveq", "movne", "movlt", "movge", "movgt", "movle"]
+                .iter()
+                .any(|m| has_prefix(&program, m)),
+            "no conditional move\n{}",
+            program.listing
+        );
+        // clamp(0) = 2, clamp(5) = 5
+        assert_eq!(run(source), 205);
+    }
+
+    #[test]
     fn multiply_lowers_to_hardware_windows_and_muli() {
         let source = r#"
             fn products(a: u16, b: u16) -> u16 {
