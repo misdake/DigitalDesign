@@ -36,7 +36,7 @@ pub enum StepOutcome {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 struct Prefix {
     address: Word,
-    high: Word,
+    payload: Word,
 }
 
 /// A device reached exclusively through DEVRECV and DEVSEND. `memory` is the
@@ -69,6 +69,8 @@ pub struct CpuV3Sim {
     pending_test: Option<Ordering>,
     retired_words: u64,
     halted: bool,
+    /// Halt signal latched at the SIGNAL-type-0 retirement edge.
+    halt_signal: Word,
 }
 
 impl Default for CpuV3Sim {
@@ -101,6 +103,7 @@ impl CpuV3Sim {
             pending_test: None,
             retired_words: 0,
             halted: false,
+            halt_signal: 0,
         }
     }
 }
@@ -236,7 +239,7 @@ impl CpuV3Sim {
     pub fn step(&mut self) -> Result<StepOutcome, Fault> {
         if self.halted {
             return Ok(StepOutcome::Halted {
-                signal: self.registers[0],
+                signal: self.halt_signal,
             });
         }
 
@@ -262,7 +265,7 @@ impl CpuV3Sim {
             }
             self.prefix = Some(Prefix {
                 address,
-                high: instruction & 0xfff,
+                payload: instruction & 0xfff,
             });
             return Ok(StepOutcome::Running);
         }
@@ -288,21 +291,27 @@ impl CpuV3Sim {
         };
 
         let result = match opcode {
-            0x0..=0x7 => self.execute_alu(opcode, instruction),
+            0x0 | 0x1 | 0x3..=0x5 => self.execute_alu(opcode, instruction),
+            0x2 => self.execute_shift_multiply(instruction, prefix),
+            0x6 => self.execute_extended(instruction),
+            0x7 => self.execute_device(instruction),
             0x8 => self.execute_load(instruction, prefix),
             0x9 => self.execute_store(instruction, prefix),
             0xa => self.execute_immediate(instruction, prefix),
             0xb => self.execute_branch(instruction, prefix, pending),
-            0xc => self.execute_device(instruction),
             0xd => self.execute_fpu(instruction),
-            0xe => self.execute_control(instruction),
-            _ => unreachable!(),
+            // Majors C and E are fully reserved in revision 0.8; no other
+            // major exists. Reserved function slots inside the dispatched
+            // families are rejected by the individual executors.
+            _ => Err(FaultKind::InvalidInstruction),
         };
         match result {
             Ok(outcome) => {
                 self.retired_words += retire_words;
                 Ok(outcome)
             }
+            // The faulting word does not retire, so the increment above is
+            // undone by rewinding the program counter to the fault address.
             Err(kind) => {
                 self.pc = fault_address;
                 Err(Fault {
@@ -321,14 +330,59 @@ impl CpuV3Sim {
         self.registers[usize::from(dst)] = match opcode {
             0 => lhs.wrapping_add(rhs),
             1 => lhs.wrapping_sub(rhs),
-            2 => lhs.wrapping_mul(rhs),
             3 => lhs & rhs,
             4 => lhs | rhs,
             5 => lhs ^ rhs,
-            6 => lhs.wrapping_shl(u32::from(rhs & 15)),
-            7 => ((lhs as i16) >> u32::from(rhs & 15)) as Word,
             _ => unreachable!(),
         };
+        Ok(StepOutcome::Running)
+    }
+
+    fn execute_shift_multiply(
+        &mut self,
+        instruction: Word,
+        prefix: Option<Prefix>,
+    ) -> ExecuteResult {
+        let function = field(instruction, 8);
+        let dst = usize::from(field(instruction, 4));
+        let operand = field(instruction, 0);
+        let old = self.registers[dst];
+        // Every operation in the family reads `rd` before writing it, so the
+        // destructive `rd == rs` case needs no special handling.
+        let result = match function {
+            // Register-count shift: the count is the operand register's low
+            // nibble.
+            0..=2 => {
+                let amount = u32::from(self.registers[usize::from(operand)] & 15);
+                match function {
+                    0 => old.wrapping_shl(amount),
+                    1 => old.wrapping_shr(amount),
+                    _ => ((old as i16) >> amount) as Word,
+                }
+            }
+            // Immediate shift: the whole operand nibble is the count.
+            4..=6 => {
+                let amount = u32::from(operand);
+                match function {
+                    4 => old.wrapping_shl(amount),
+                    5 => old.wrapping_shr(amount),
+                    _ => ((old as i16) >> amount) as Word,
+                }
+            }
+            // MUL0/MUL8/MUL16: unsigned 32-bit product, keep the 16-bit window
+            // after shifting right by 0, 8, or 16.
+            8..=10 => {
+                let product = u32::from(old) * u32::from(self.registers[usize::from(operand)]);
+                (product >> (8 * (function - 8))) as Word
+            }
+            // MULI: unsigned immediate, shift-0 window only.
+            12 => {
+                let immediate = u32::from(immediate4(instruction, prefix, false));
+                (u32::from(old) * immediate) as Word
+            }
+            _ => return Err(FaultKind::InvalidInstruction),
+        };
+        self.registers[dst] = result;
         Ok(StepOutcome::Running)
     }
 
@@ -354,8 +408,14 @@ impl CpuV3Sim {
         let function = field(instruction, 8);
         let dst = field(instruction, 4);
         let old = self.registers[usize::from(dst)];
-        let signed = immediate4(instruction, prefix, true);
-        let unsigned = immediate4(instruction, prefix, false);
+        // The effective value is the prefixed 16-bit pattern when a prefix is
+        // present and the bare nibble otherwise. The signed and unsigned
+        // readings are the two interpretations of that one pattern, so they are
+        // derived from it rather than decoded twice.
+        let nibble = instruction & 15;
+        let wide = prefix.map(|prefix| (prefix.payload << 4) | nibble);
+        let signed = wide.unwrap_or_else(|| sign_extend(nibble, 4));
+        let unsigned = wide.unwrap_or(nibble);
         match function {
             // CMPSI/CMPUI set the pending test result and write no register.
             12 => {
@@ -371,19 +431,15 @@ impl CpuV3Sim {
         let result = match function {
             0 => old.wrapping_add(signed),
             1 => old.wrapping_sub(signed),
-            2 => old & unsigned,
-            3 => old | unsigned,
-            4 => old ^ unsigned,
-            5 => old.wrapping_shl(u32::from(instruction & 15)),
-            6 => old.wrapping_shr(u32::from(instruction & 15)),
-            7 => ((old as i16) >> u32::from(instruction & 15)) as Word,
-            8 => old.wrapping_mul(signed),
-            9 => Word::from(old == signed),
-            10 => Word::from((old as i16) < (signed as i16)),
-            11 => Word::from(old < unsigned),
-            14 if prefix.is_some() => unsigned,
-            14 => sign_extend(instruction & 15, 4),
-            15 => unsigned,
+            2 if wide.is_some() => unsigned,
+            2 => signed,
+            3 => unsigned,
+            4 => old & unsigned,
+            5 => old | unsigned,
+            6 => old ^ unsigned,
+            8 => Word::from(old == signed),
+            9 => Word::from((old as i16) < (signed as i16)),
+            10 => Word::from(old < unsigned),
             _ => return Err(FaultKind::InvalidInstruction),
         };
         self.registers[usize::from(dst)] = result;
@@ -396,36 +452,58 @@ impl CpuV3Sim {
         prefix: Option<Prefix>,
         pending: Option<Ordering>,
     ) -> ExecuteResult {
-        let condition = field(instruction, 8);
+        let function = field(instruction, 8);
         let offset = prefix.map_or_else(
             || sign_extend(instruction & 0xff, 8),
-            |prefix| ((prefix.high & 0xff) << 8) | (instruction & 0xff),
+            |prefix| ((prefix.payload & 0xff) << 8) | (instruction & 0xff),
         );
-        match condition {
+        let condition = |function: u8| match function & 7 {
+            0 => pending == Some(Ordering::Equal),
+            1 => pending != Some(Ordering::Equal),
+            2 => pending == Some(Ordering::Less),
+            3 => pending != Some(Ordering::Less),
+            4 => pending == Some(Ordering::Greater),
+            _ => pending != Some(Ordering::Greater),
+        };
+        match function {
             // Conditional branches consume the pending test result, whether
             // or not the branch is taken.
             0..=5 => {
-                let test = pending.ok_or(FaultKind::InvalidInstruction)?;
-                let taken = match condition {
-                    0 => test == Ordering::Equal,
-                    1 => test != Ordering::Equal,
-                    2 => test == Ordering::Less,
-                    3 => test != Ordering::Less,
-                    4 => test == Ordering::Greater,
-                    5 => test != Ordering::Greater,
-                    _ => unreachable!(),
-                };
-                if taken {
+                if pending.is_none() {
+                    return Err(FaultKind::InvalidInstruction);
+                }
+                if condition(function) {
                     self.pc = self.pc.wrapping_add(offset);
                 }
             }
             // JREL: unconditional relative jump, no link.
-            8 => self.pc = self.pc.wrapping_add(offset),
+            6 => self.pc = self.pc.wrapping_add(offset),
             // JALREL: link the fall-through address into r14, then jump.
-            9 => {
+            7 => {
                 let next = self.pc;
                 self.pc = next.wrapping_add(offset);
                 self.registers[usize::from(LINK_REGISTER)] = next;
+            }
+            // Conditional moves consume the pending test result, whether or
+            // not the move writes.
+            8..=13 => {
+                if pending.is_none() {
+                    return Err(FaultKind::InvalidInstruction);
+                }
+                if condition(function) {
+                    self.registers[usize::from(field(instruction, 4))] =
+                        self.registers[usize::from(field(instruction, 0))];
+                }
+            }
+            // JREG is canonically `B E 0 target`.
+            14 if field(instruction, 4) == 0 => {
+                self.pc = self.registers[usize::from(field(instruction, 0))];
+            }
+            // JALR is canonically `B F E target`: link r14, then jump.
+            15 if field(instruction, 4) == LINK_REGISTER => {
+                let target = self.registers[usize::from(field(instruction, 0))];
+                self.registers[usize::from(LINK_REGISTER)] = self.pc;
+                self.pc = target;
             }
             _ => return Err(FaultKind::InvalidInstruction),
         }
@@ -596,8 +674,9 @@ impl CpuV3Sim {
             value if value == FpuUnaryOp::Zero as usize => self.fpu_registers[register] = [0; 4],
             // FACCLOAD.X/Y/Z/W: overwrite ACC with the exact selected-lane
             // value in accumulator format (Q8.8 shifted left by 8).
-            value if (FpuUnaryOp::AccLoadX as usize..=FpuUnaryOp::AccLoadW as usize)
-                .contains(&value) =>
+            value
+                if (FpuUnaryOp::AccLoadX as usize..=FpuUnaryOp::AccLoadW as usize)
+                    .contains(&value) =>
             {
                 let lane = value - FpuUnaryOp::AccLoadX as usize;
                 self.fpu_accumulator = i64::from(source[lane]) << 8;
@@ -607,51 +686,64 @@ impl CpuV3Sim {
         Ok(())
     }
 
-    fn execute_control(&mut self, instruction: Word) -> ExecuteResult {
+    fn execute_extended(&mut self, instruction: Word) -> ExecuteResult {
         let function = field(instruction, 8);
         let dst = field(instruction, 4);
         let src = field(instruction, 0);
         match function {
-            0 => {
-                self.registers[usize::from(dst)] =
-                    self.registers[usize::from(src)].count_ones() as Word
-            }
-            1 => self.registers[usize::from(dst)] = self.registers[usize::from(src)],
-            2 => self.registers[usize::from(dst)] = !self.registers[usize::from(src)],
-            3 => self.registers[usize::from(dst)] = self.registers[usize::from(src)].wrapping_neg(),
-            4 if dst == 0 => self.pc = self.registers[usize::from(src)],
-            5 if dst == LINK_REGISTER => {
-                let target = self.registers[usize::from(src)];
-                self.registers[usize::from(dst)] = self.pc;
-                self.pc = target;
-            }
-            6 => {
+            0 => self.registers[usize::from(dst)] = self.registers[usize::from(src)],
+            1 => self.registers[usize::from(dst)] = !self.registers[usize::from(src)],
+            2 => self.registers[usize::from(dst)] = self.registers[usize::from(src)].wrapping_neg(),
+            3 => {
                 self.registers[usize::from(dst)] =
                     sign_extend(self.registers[usize::from(src)] & 0xff, 8)
             }
-            7 => {
+            4 => {
                 self.registers[usize::from(dst)] =
                     self.registers[usize::from(src)].leading_zeros() as Word
             }
-            9 => {
+            5 => {
+                self.registers[usize::from(dst)] =
+                    self.registers[usize::from(src)].count_ones() as Word
+            }
+            6 => {
+                self.registers[usize::from(dst)] =
+                    Word::from(self.registers[usize::from(dst)] == self.registers[usize::from(src)])
+            }
+            8 => {
                 self.registers[usize::from(dst)] = Word::from(
                     (self.registers[usize::from(dst)] as i16)
                         < (self.registers[usize::from(src)] as i16),
                 )
             }
-            10 => {
+            9 => {
                 self.registers[usize::from(dst)] =
                     Word::from(self.registers[usize::from(dst)] < self.registers[usize::from(src)])
             }
-            11 => {
+            10 => {
                 self.pending_test = Some(
                     (self.registers[usize::from(dst)] as i16)
                         .cmp(&(self.registers[usize::from(src)] as i16)),
                 )
             }
-            12 => {
+            11 => {
                 self.pending_test =
                     Some(self.registers[usize::from(dst)].cmp(&self.registers[usize::from(src)]))
+            }
+            12 => {
+                // SIGNAL rs, type4. Type 0 halts and latches the value at the
+                // retirement edge. Nonzero types are model-side events; the
+                // Step 2 event interface (SignalEvent/StepOutcome::Signaled)
+                // is not wired up yet, so they retire as a NOP here, matching
+                // the RTL contract.
+                let signal_type = src;
+                if signal_type == 0 {
+                    self.halt_signal = self.registers[usize::from(dst)];
+                    self.halted = true;
+                    return Ok(StepOutcome::Halted {
+                        signal: self.halt_signal,
+                    });
+                }
             }
             13 => {
                 self.registers[usize::from(dst)] = match src {
@@ -666,12 +758,6 @@ impl CpuV3Sim {
             15 => {
                 self.code_segment = self.registers[usize::from(dst)];
                 self.pc = self.registers[usize::from(src)];
-            }
-            8 if dst == 0 && src == 0 => {
-                self.halted = true;
-                return Ok(StepOutcome::Halted {
-                    signal: self.registers[0],
-                });
             }
             _ => return Err(FaultKind::InvalidInstruction),
         }
@@ -738,7 +824,7 @@ fn immediate4(instruction: Word, prefix: Option<Prefix>, signed: bool) -> Word {
                 instruction & 15
             }
         },
-        |prefix| (prefix.high << 4) | (instruction & 15),
+        |prefix| (prefix.payload << 4) | (instruction & 15),
     )
 }
 
@@ -746,12 +832,12 @@ fn immediate4(instruction: Word, prefix: Option<Prefix>, signed: bool) -> Word {
 mod tests {
     use super::*;
     use crate::{
-        alu, branch, compare_signed, compare_unsigned, device_receive, device_send, halt,
-        immediate_high12, immediate_signed, immediate_unsigned, jump_and_link_register,
-        jump_and_link_relative, jump_relative, jump_segment, load, load_immediate16, nop,
-        population_count, prefixed, prefixed_branch, read_special, set_less_than_signed,
-        set_less_than_unsigned, store, write_data_segment, AluOp, ImmediateOp, SpecialRegister,
-        TestCondition,
+        alu, branch, compare_signed, compare_unsigned, conditional_move, device_receive,
+        device_send, halt, immediate_signed, immediate_unsigned, jump_and_link_register,
+        jump_and_link_relative, jump_relative, jump_segment, load, load_immediate16, move_register,
+        nop, population_count, prefix12, prefixed, prefixed_branch, read_special,
+        set_less_than_signed, set_less_than_unsigned, signal, store, write_data_segment, AluOp,
+        ImmediateOp, SpecialRegister, TestCondition,
     };
 
     #[test]
@@ -800,7 +886,15 @@ mod tests {
     fn non_consumer_retires_and_expires_the_prefix() {
         let mut machine = CpuV3Sim::default();
         machine
-            .load_program(0, &[0xfabc, 0xe111, 0xaf3d, halt()])
+            .load_program(
+                0,
+                &[
+                    0xfabc,
+                    move_register(1, 1),
+                    immediate_unsigned(ImmediateOp::LoadUnsigned, 3, 0xd),
+                    halt(),
+                ],
+            )
             .unwrap();
         assert_eq!(
             machine.run(10).unwrap(),
@@ -1098,7 +1192,7 @@ mod tests {
     fn prefixed_branch_forms_a_wide_offset_and_retires_two_words() {
         let mut program = vec![immediate_signed(ImmediateOp::CompareSigned, 0, 0)];
         program.extend(prefixed_branch(branch(TestCondition::Equal, 0), 0x0103));
-        assert_eq!(program[1], immediate_high12(0x01));
+        assert_eq!(program[1], prefix12(0x01));
         assert_eq!(program[2], 0xb003);
         let filler = immediate_unsigned(ImmediateOp::LoadUnsigned, 1, 1);
         program.extend(std::iter::repeat_n(filler, 0x103));
@@ -1152,34 +1246,92 @@ mod tests {
     }
 
     #[test]
-    fn reserved_branch_conditions_fault() {
-        for condition in [0x6, 0x7, 0xa, 0xf] {
+    fn reserved_encodings_fault() {
+        // Revision 0.7's HALT word, the fully reserved majors C/E, and the
+        // non-canonical JREG/JALR link fields are all invalid now.
+        for word in [0xe800, 0xc000, 0xe100, 0xbe10, 0xbf00] {
             let mut machine = CpuV3Sim::default();
-            machine
-                .load_program(0, &[0xb000 | (condition << 8)])
-                .unwrap();
+            machine.load_program(0, &[word]).unwrap();
             assert_eq!(
                 machine.step(),
                 Err(Fault {
                     kind: FaultKind::InvalidInstruction,
                     address: 0,
-                    instruction: 0xb000 | (condition << 8),
+                    instruction: word,
                 }),
-                "condition {condition:#x}"
+                "word {word:#06x}"
             );
         }
     }
 
     #[test]
+    fn conditional_move_consumes_the_pending_test() {
+        // r1 = 3, r2 = 5: signed pending ordering is Less; MOVLT writes,
+        // MOVGE does not but still consumes the test.
+        let mut program = vec![];
+        program.extend(load_immediate16(1, 3));
+        program.extend(load_immediate16(2, 5));
+        program.extend(load_immediate16(3, 0));
+        program.extend([
+            compare_signed(1, 2),
+            conditional_move(TestCondition::LessThan, 3, 2),
+            compare_signed(1, 2),
+            conditional_move(TestCondition::GreaterOrEqual, 3, 1),
+            move_register(0, 3),
+            halt(),
+        ]);
+        let mut machine = CpuV3Sim::default();
+        machine.load_program(0, &program).unwrap();
+        assert_eq!(
+            machine.run(32).unwrap(),
+            RunOutcome::Halted {
+                steps: 12,
+                signal: 5
+            }
+        );
+
+        let mut machine = CpuV3Sim::default();
+        machine
+            .load_program(0, &[conditional_move(TestCondition::Equal, 1, 2)])
+            .unwrap();
+        assert_eq!(
+            machine.step(),
+            Err(Fault {
+                kind: FaultKind::InvalidInstruction,
+                address: 0,
+                instruction: conditional_move(TestCondition::Equal, 1, 2),
+            })
+        );
+    }
+
+    #[test]
+    fn nonzero_signal_types_retire_as_nops() {
+        // TODO(ISA 0.8 step 2): replace with the SignalEvent/Signaled
+        // interface; until then nonzero SIGNAL types retire in place.
+        let mut program = vec![];
+        program.extend(load_immediate16(1, 0x77));
+        program.extend([signal(1, 1), signal(1, 15), move_register(0, 1), halt()]);
+        let mut machine = CpuV3Sim::default();
+        machine.load_program(0, &program).unwrap();
+        assert_eq!(
+            machine.run(16).unwrap(),
+            RunOutcome::Halted {
+                steps: 6,
+                signal: 0x77
+            }
+        );
+    }
+
+    #[test]
     fn prefixes_are_transparent_to_the_pending_test() {
-        // CMP; IMMHI12; BR: the prefix sits between producer and consumer.
+        // CMP; PFX12; BR: the prefix sits between producer and consumer.
         let mut machine = CpuV3Sim::default();
         machine
             .load_program(
                 0,
                 &[
                     immediate_signed(ImmediateOp::CompareSigned, 0, 0),
-                    immediate_high12(0),
+                    prefix12(0),
                     branch(TestCondition::Equal, 1),
                     immediate_unsigned(ImmediateOp::LoadUnsigned, 0, 9),
                     halt(),
@@ -1244,13 +1396,13 @@ mod tests {
     #[test]
     fn jump_and_link_register_requires_the_fixed_link_register() {
         let mut machine = CpuV3Sim::default();
-        machine.load_program(0, &[0xe5d1]).unwrap();
+        machine.load_program(0, &[0xbf51]).unwrap();
         assert_eq!(
             machine.step(),
             Err(Fault {
                 kind: FaultKind::InvalidInstruction,
                 address: 0,
-                instruction: 0xe5d1,
+                instruction: 0xbf51,
             })
         );
 

@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>CPU V3 ISA v0.7 — Encoding, ABI, and Addressing</title>
+<title>CPU V3 ISA v0.8 — Encoding, ABI, and Addressing</title>
 <style>
   :root {
     --bg: #f7f9fc; --paper: #ffffff; --ink: #172033; --dim: #5d687c;
@@ -82,7 +82,7 @@
 <body><main>
 
 <section class="hero">
-  <h1>CPU V3 ISA v0.7</h1>
+  <h1>CPU V3 ISA v0.8</h1>
   <p class="subtitle">Instruction encoding, architectural behavior, segmented addressing, faults, and compiler ABI.</p>
   <div class="badges">
     <span class="badge">16-bit fixed instruction words</span>
@@ -90,14 +90,14 @@
     <span class="badge">16-bit word offsets</span>
     <span class="badge">Segmented physical word addresses</span>
     <span class="badge">Transient pending test, no persistent flags</span>
-    <span class="badge">Revision 0.7</span>
+    <span class="badge">Revision 0.8</span>
   </div>
   <ol class="toc">
     <li><a href="#overview">Architectural overview</a></li>
     <li><a href="#encoding">Encoding rules</a></li>
     <li><a href="#opmap">Opcode map</a></li>
     <li><a href="#instructions">Instruction reference</a></li>
-    <li><a href="#prefix">IMMHI12 and wide operations</a></li>
+    <li><a href="#prefix">PFX12 and wide operations</a></li>
     <li><a href="#memory">Segmented addressing</a></li>
     <li><a href="#abi">Compiler ABI</a></li>
     <li><a href="#faults">Fault and retirement behavior</a></li>
@@ -108,7 +108,7 @@
 <div class="cards">
   <div class="card"><b>16</b><span>general-purpose, writable 16-bit registers</span></div>
   <div class="card"><b>65,536</b><span>word offsets in each boot-selected segment</span></div>
-  <div class="card"><b>1 or 2</b><span>physical words per retired operation; two when IMMHI12 is consumed</span></div>
+  <div class="card"><b>1 or 2</b><span>physical words per retired operation; two when PFX12 is consumed</span></div>
   <div class="card"><b>CMP → B</b><span>a transient pending test result links a compare to its consuming branch; there are no persistent flags</span></div>
 </div>
 <div class="grid">
@@ -121,8 +121,8 @@
       <li>Reset starts with CSEG = DSEG = PC = 0; applications normally keep their boot-selected segments fixed.</li>
       <li>The PC normally advances before instruction semantics, so relative control flow is based on the following word.</li>
       <li>All registers are architecturally writable. ABI reservations are compiler conventions, not hardwired registers.</li>
-      <li>CMP-class instructions leave a transient pending test result (Less/Equal/Greater). Only a conditional branch consumes it; any other retired non-prefix instruction expires it, and <code>IMMHI12</code> is transparent to it. Reset leaves no pending result.</li>
-      <li><code>HALT</code> has no encoded signal register; the architectural halt signal is <code>r0</code>.</li>
+      <li>CMP-class instructions leave a transient pending test result (Less/Equal/Greater). Only a conditional branch or conditional move consumes it; any other retired non-prefix instruction expires it, and <code>PFX12</code> is transparent to it. Reset leaves no pending result.</li>
+      <li><code>SIGNAL rs, 0</code> halts execution and latches <code>rs</code> as the architectural halt signal; nonzero signal types retire as a NOP in hardware.</li>
     </ul>
   </div>
   <div class="panel">
@@ -130,7 +130,7 @@
     <ul>
       <li>Small decoding surface: the high nibble selects the major operation.</li>
       <li>A single transient pending test result, not persistent flags, carries a comparison outcome to its consuming branch.</li>
-      <li>Short immediates stay compact; <code>IMMHI12</code> extends only explicitly listed consumers.</li>
+      <li>Short immediates stay compact; <code>PFX12</code> extends only explicitly listed consumers.</li>
       <li>Near 16-bit pointers keep compiler data compact while segment registers form full physical word addresses.</li>
       <li>Opcode <code>0xD</code> is the blocking four-lane signed fix16 FPU family.</li>
     </ul>
@@ -151,124 +151,142 @@
 <table>
   <tr><th>Form</th><th>Layout</th><th>Meaning</th></tr>
   <tr><td class="mn">RRR</td><td class="sem">opcode[15:12] · rd[11:8] · ra[7:4] · rb[3:0]</td><td>Three-register ALU operation.</td></tr>
+  <tr><td class="mn">SHM</td><td class="sem">2 · function · rd · operand</td><td>Destructive shift or multiply on <code>rd</code>.</td></tr>
+  <tr><td class="mn">EXT</td><td class="sem">6 · function · a · b</td><td>Move, unary, bit query, register comparison, signal, and special-register operations.</td></tr>
+  <tr><td class="mn">DEV</td><td class="sem">7 · dir/dev[2:0] · channel · reg</td><td>Device channel receive/send on the dedicated device port.</td></tr>
   <tr><td class="mn">MEM</td><td class="sem">opcode · rd/rs · base · imm4</td><td>Word load/store at <code>r[base] + immediate</code>.</td></tr>
   <tr><td class="mn">IMM</td><td class="sem">A · function · rd · imm4</td><td>In-place immediate operation on <code>rd</code>.</td></tr>
-  <tr><td class="mn">BR</td><td class="sem">B · condition · imm8</td><td>Conditional branch on the pending test result, or unconditional relative jump.</td></tr>
-  <tr><td class="mn">DEV</td><td class="sem">C · dir/dev[2:0] · channel · reg</td><td>Device channel receive/send on the dedicated device port.</td></tr>
-  <tr><td class="mn">EXT</td><td class="sem">E · function · rd · rs</td><td>Unary, register control, comparison, and halt operations.</td></tr>
-  <tr><td class="mn">IMMHI12</td><td class="sem">F · high12</td><td>Prefix state for the immediately following eligible consumer.</td></tr>
+  <tr><td class="mn">BR</td><td class="sem">B · function · ...</td><td>Conditional branch or move on the pending test result, or a jump.</td></tr>
+  <tr><td class="mn">PFX12</td><td class="sem">F · payload12</td><td>Neutral prefix payload for the immediately following eligible consumer.</td></tr>
 </table>
+<p>Every field not used by an instruction has the canonical value <code>0</code>; a non-canonical field value makes the word an invalid encoding. All reserved function slots are invalid in this revision.</p>
 
 <h2 id="opmap">3. Major opcode map</h2>
 <table>
   <tr><th class="center">n3</th><th>Family</th><th>Form</th><th>Summary</th></tr>
-  <tr><td class="center op mono">0..7</td><td class="op">Register ALU</td><td class="mono">op rd ra rb</td><td>Add, subtract, multiply, logic, and register-count shifts.</td></tr>
+  <tr><td class="center op mono">0/1/3/4/5</td><td class="op">Register ALU</td><td class="mono">op rd ra rb</td><td>Add, subtract, and three-operand logic.</td></tr>
+  <tr><td class="center op mono">2</td><td class="op">Shift / multiply</td><td class="mono">2 fn rd operand</td><td>Destructive shifts and unsigned multiplies.</td></tr>
+  <tr><td class="center extended mono">6</td><td class="extended">Extended / system</td><td class="mono">6 fn a b</td><td>Move, unary, bit queries, comparisons, SIGNAL, special registers, JSEG.</td></tr>
+  <tr><td class="center control mono">7</td><td class="control">Device</td><td class="mono">7 dir/dev ch reg</td><td>Single-cycle device channel receive/send.</td></tr>
   <tr><td class="center memory mono">8</td><td class="memory">LOAD</td><td class="mono">8 rd base imm4</td><td>Read one 16-bit word.</td></tr>
   <tr><td class="center memory mono">9</td><td class="memory">STORE</td><td class="mono">9 rs base imm4</td><td>Write one 16-bit word.</td></tr>
-  <tr><td class="center imm mono">A</td><td class="imm">Immediate</td><td class="mono">A fn rd imm4</td><td>Arithmetic, logic, shift, compare, and load-immediate.</td></tr>
-  <tr><td class="center control mono">B</td><td class="control">Branch / jump</td><td class="mono">B cond imm8</td><td>Six predicates on the pending test result plus relative jumps.</td></tr>
-  <tr><td class="center control mono">C</td><td class="control">Device</td><td class="mono">C dir/dev ch reg</td><td>Single-cycle device channel receive/send.</td></tr>
+  <tr><td class="center imm mono">A</td><td class="imm">Immediate</td><td class="mono">A fn rd imm4</td><td>Arithmetic, logic, constant construction, and immediate comparisons.</td></tr>
+  <tr><td class="center control mono">B</td><td class="control">Branch / move / jump</td><td class="mono">B fn ...</td><td>Six conditional branches, JREL/JALREL, six conditional moves, JREG/JALR.</td></tr>
+  <tr><td class="center reserved mono">C</td><td class="reserved">reserved</td><td class="mono">—</td><td>Invalid instruction.</td></tr>
   <tr><td class="center extended mono">D</td><td class="extended">fix16 FPU</td><td class="mono">D fn a b</td><td>Blocking vector, matrix, accumulator, memory, compare, and unary operations.</td></tr>
-  <tr><td class="center extended mono">E</td><td class="extended">Extended/control</td><td class="mono">E fn rd rs</td><td>Move, unary, register jumps, comparisons, bit operations, halt.</td></tr>
-  <tr><td class="center imm mono">F</td><td class="imm">IMMHI12</td><td class="mono">F high12</td><td>Creates a pending wide immediate.</td></tr>
+  <tr><td class="center reserved mono">E</td><td class="reserved">reserved</td><td class="mono">—</td><td>Invalid instruction.</td></tr>
+  <tr><td class="center imm mono">F</td><td class="imm">PFX12</td><td class="mono">F payload12</td><td>Creates a pending 12-bit prefix payload.</td></tr>
 </table>
 
 <h2 id="instructions">4. Instruction reference</h2>
-<h3>4.1 Register ALU — opcodes 0 through 7</h3>
+<h3>4.1 Register ALU — opcodes 0, 1, 3, 4, 5</h3>
 <table>
   <tr><th>Mnemonic</th><th>Encoding</th><th>Semantics</th><th>Signedness / notes</th></tr>
   <tr><td class="mn">ADD rd, ra, rb</td><td class="mono">0 rd ra rb</td><td class="sem">rd = ra + rb</td><td>Wrapping.</td></tr>
   <tr><td class="mn">SUB rd, ra, rb</td><td class="mono">1 rd ra rb</td><td class="sem">rd = ra - rb</td><td>Wrapping.</td></tr>
-  <tr><td class="mn">MUL rd, ra, rb</td><td class="mono">2 rd ra rb</td><td class="sem">rd = low16(ra × rb)</td><td>Low 16 bits; bit pattern is independent of signed interpretation.</td></tr>
   <tr><td class="mn">AND rd, ra, rb</td><td class="mono">3 rd ra rb</td><td class="sem">rd = ra &amp; rb</td><td>Bitwise.</td></tr>
   <tr><td class="mn">OR rd, ra, rb</td><td class="mono">4 rd ra rb</td><td class="sem">rd = ra | rb</td><td>Bitwise.</td></tr>
   <tr><td class="mn">XOR rd, ra, rb</td><td class="mono">5 rd ra rb</td><td class="sem">rd = ra ^ rb</td><td>Bitwise.</td></tr>
-  <tr><td class="mn">SHL rd, ra, rb</td><td class="mono">6 rd ra rb</td><td class="sem">rd = ra &lt;&lt; (rb &amp; 15)</td><td>Logical left.</td></tr>
-  <tr><td class="mn">ASR rd, ra, rb</td><td class="mono">7 rd ra rb</td><td class="sem">rd = signed(ra) &gt;&gt; (rb &amp; 15)</td><td>Arithmetic right.</td></tr>
 </table>
 
-<h3>4.2 Memory — opcodes 8 and 9</h3>
+<h3>4.2 Shift and multiply — opcode 2</h3>
+<table>
+  <tr><th>n2</th><th>Mnemonic</th><th>Semantics</th><th>Notes</th></tr>
+  <tr><td class="mono">0</td><td class="mn">SHL rd, rs</td><td class="sem">rd = rd &lt;&lt; (rs &amp; 15)</td><td rowspan="3">Destructive register-count shifts.</td></tr>
+  <tr><td class="mono">1</td><td class="mn">SHR rd, rs</td><td class="sem">rd = rd &gt;&gt; (rs &amp; 15)</td></tr>
+  <tr><td class="mono">2</td><td class="mn">ASR rd, rs</td><td class="sem">rd = signed(rd) &gt;&gt; (rs &amp; 15)</td></tr>
+  <tr><td class="mono reserved">3</td><td class="reserved">reserved</td><td>Invalid instruction</td><td>—</td></tr>
+  <tr><td class="mono">4</td><td class="mn">SHLI rd, u4</td><td class="sem">rd = rd &lt;&lt; u4</td><td rowspan="3">Destructive immediate shifts; never consume a prefix.</td></tr>
+  <tr><td class="mono">5</td><td class="mn">SHRI rd, u4</td><td class="sem">rd = rd &gt;&gt; u4 (logical)</td></tr>
+  <tr><td class="mono">6</td><td class="mn">ASRI rd, u4</td><td class="sem">rd = signed(rd) &gt;&gt; u4</td></tr>
+  <tr><td class="mono reserved">7</td><td class="reserved">reserved</td><td>Invalid instruction</td><td>—</td></tr>
+  <tr><td class="mono">8</td><td class="mn">MUL0 rd, rs</td><td class="sem">rd = (rd × rs)[15:0]</td><td rowspan="3">Unsigned 32-bit product; keep the window after shifting right by 0, 8, or 16.</td></tr>
+  <tr><td class="mono">9</td><td class="mn">MUL8 rd, rs</td><td class="sem">rd = (rd × rs)[23:8]</td></tr>
+  <tr><td class="mono">A</td><td class="mn">MUL16 rd, rs</td><td class="sem">rd = (rd × rs)[31:16]</td></tr>
+  <tr><td class="mono reserved">B</td><td class="reserved">reserved</td><td>Invalid instruction</td><td>—</td></tr>
+  <tr><td class="mono">C</td><td class="mn">MULI rd, imm</td><td class="sem">rd = (rd × imm)[15:0]</td><td>Unsigned bit pattern: unprefixed u4, full u16 with <code>PFX12</code>. The family's only prefix consumer.</td></tr>
+  <tr><td class="mono reserved">D..F</td><td class="reserved">reserved</td><td>Invalid instruction</td><td>—</td></tr>
+</table>
+<p class="caption">All operations in this family are destructive two-operand forms. There is no signed integer multiply, rounding, saturation, or dual-register product writeback; general numeric computation belongs to the FPU.</p>
+
+<h3>4.3 Extended and system — opcode 6</h3>
+<table>
+  <tr><th>n2</th><th>Mnemonic</th><th>Encoding</th><th>Semantics / constraints</th></tr>
+  <tr><td class="mono">0</td><td class="mn">MOV rd, rs</td><td class="mono">6 0 rd rs</td><td class="sem">rd = rs; NOP = 6000</td></tr>
+  <tr><td class="mono">1</td><td class="mn">NOT rd, rs</td><td class="mono">6 1 rd rs</td><td class="sem">rd = ~rs</td></tr>
+  <tr><td class="mono">2</td><td class="mn">NEG rd, rs</td><td class="mono">6 2 rd rs</td><td class="sem">rd = 0 - rs</td></tr>
+  <tr><td class="mono">3</td><td class="mn">SEXTB rd, rs</td><td class="mono">6 3 rd rs</td><td class="sem">rd = sext8(rs[7:0])</td></tr>
+  <tr><td class="mono">4</td><td class="mn">CLZ rd, rs</td><td class="mono">6 4 rd rs</td><td class="sem">rd = count_leading_zeros(rs)</td></tr>
+  <tr><td class="mono">5</td><td class="mn">POPCNT rd, rs</td><td class="mono">6 5 rd rs</td><td class="sem">rd = population_count(rs)</td></tr>
+  <tr><td class="mono">6</td><td class="mn">SEQ rd, rs</td><td class="mono">6 6 rd rs</td><td class="sem">rd = (rd == rs) ? 1 : 0</td></tr>
+  <tr><td class="mono reserved">7</td><td class="reserved">reserved</td><td class="mono">6 7 .. ..</td><td>Invalid instruction</td></tr>
+  <tr><td class="mono">8</td><td class="mn">SLT rd, rs</td><td class="mono">6 8 rd rs</td><td class="sem">rd = signed(rd) &lt; signed(rs) as 0/1</td></tr>
+  <tr><td class="mono">9</td><td class="mn">SLTU rd, rs</td><td class="mono">6 9 rd rs</td><td class="sem">rd = unsigned(rd) &lt; unsigned(rs) as 0/1</td></tr>
+  <tr><td class="mono">A</td><td class="mn">CMPS ra, rb</td><td class="mono">6 A ra rb</td><td class="sem">pending = signed ordering of ra vs rb; writes no register</td></tr>
+  <tr><td class="mono">B</td><td class="mn">CMPU ra, rb</td><td class="mono">6 B ra rb</td><td class="sem">pending = unsigned ordering of ra vs rb; writes no register</td></tr>
+  <tr><td class="mono">C</td><td class="mn">SIGNAL rs, type4</td><td class="mono">6 C rs type</td><td class="sem">type 0 halts and latches rs at the retirement edge; types 1..15 are simulator-side events that retire as a NOP in hardware</td></tr>
+  <tr><td class="mono">D</td><td class="mn">MFSR rd, sr</td><td class="mono">6 D rd sr</td><td class="sem">Read CSEG (sr=0) or DSEG (sr=1); other selectors are invalid.</td></tr>
+  <tr><td class="mono">E</td><td class="mn">MTSR DSEG, rs</td><td class="mono">6 E 1 rs</td><td class="sem">Set the boot-time data segment. Other special-register selectors are invalid.</td></tr>
+  <tr><td class="mono">F</td><td class="mn">JSEG seg, target</td><td class="mono">6 F seg target</td><td class="sem">Atomically set CSEG = r[seg] and PC = r[target].</td></tr>
+</table>
+<p class="caption">No instruction in this family consumes a <code>PFX12</code> prefix. <code>S*</code> names write a Boolean register result; <code>CMP*</code> names write the transient pending test.</p>
+
+<h3>4.4 Device access — opcode 7</h3>
+<table>
+  <tr><th>Mnemonic</th><th>Encoding</th><th>Semantics</th><th>Notes</th></tr>
+  <tr><td class="mn">DEVRECV rd, dev, ch</td><td class="mono">7 {0,dev[2:0]} ch rd</td><td class="sem">rd = device[dev].read(ch)</td><td>dir bit 11 = 0.</td></tr>
+  <tr><td class="mn">DEVSEND rs, dev, ch</td><td class="mono">7 {1,dev[2:0]} ch rs</td><td class="sem">device[dev].write(ch, rs)</td><td>dir bit 11 = 1.</td></tr>
+</table>
+<p>The encoding covers devices 0..7, each with channels 0..15. Device access is independent of memory and <code>DSEG</code>: only <code>DEVRECV</code>/<code>DEVSEND</code> reach devices, while <code>LOAD</code>/<code>STORE</code> always reach memory. Reads sample combinational device data, writes pulse for one execute cycle, and an unconnected device reads zero and ignores writes. Device instructions carry no immediate and never consume a <code>PFX12</code> prefix.</p>
+
+<h3>4.5 Memory — opcodes 8 and 9</h3>
 <table>
   <tr><th>Mnemonic</th><th>Encoding</th><th>Semantics</th><th>Prefix</th></tr>
-  <tr><td class="mn">LOAD rd, [base + off]</td><td class="mono">8 rd base imm4</td><td class="sem">rd = memory[base + sext4(imm4)]</td><td>With IMMHI12, <code>off = {high12, imm4}</code>.</td></tr>
-  <tr><td class="mn">STORE rs, [base + off]</td><td class="mono">9 rs base imm4</td><td class="sem">memory[base + sext4(imm4)] = rs</td><td>With IMMHI12, <code>off = {high12, imm4}</code>.</td></tr>
+  <tr><td class="mn">LOAD rd, [base + off]</td><td class="mono">8 rd base imm4</td><td class="sem">rd = memory[base + sext4(imm4)]</td><td>With PFX12, <code>off = {payload12, imm4}</code>.</td></tr>
+  <tr><td class="mn">STORE rs, [base + off]</td><td class="mono">9 rs base imm4</td><td class="sem">memory[base + sext4(imm4)] = rs</td><td>With PFX12, <code>off = {payload12, imm4}</code>.</td></tr>
 </table>
 <p class="caption">Address arithmetic wraps at 16 bits. Every final offset is ordinary memory in <code>DSEG</code>.</p>
 
-<h3>4.3 Immediate — opcode A</h3>
+<h3>4.6 Immediate — opcode A</h3>
 <table>
   <tr><th>n2</th><th>Mnemonic</th><th>Semantics</th><th>Immediate and prefix behavior</th></tr>
   <tr><td class="mono">0</td><td class="mn">ADDI rd, imm</td><td class="sem">rd = rd + imm</td><td>Signed i4; prefix accepts a 16-bit bit pattern.</td></tr>
   <tr><td class="mono">1</td><td class="mn">SUBI rd, imm</td><td class="sem">rd = rd - imm</td><td>Signed i4; prefix eligible.</td></tr>
-  <tr><td class="mono">2</td><td class="mn">ANDI rd, imm</td><td class="sem">rd = rd &amp; imm</td><td>Unsigned u4; prefix eligible.</td></tr>
-  <tr><td class="mono">3</td><td class="mn">ORI rd, imm</td><td class="sem">rd = rd | imm</td><td>Unsigned u4; prefix eligible.</td></tr>
-  <tr><td class="mono">4</td><td class="mn">XORI rd, imm</td><td class="sem">rd = rd ^ imm</td><td>Unsigned u4; prefix eligible.</td></tr>
-  <tr><td class="mono">5</td><td class="mn">SHLI rd, u4</td><td class="sem">rd = rd &lt;&lt; u4</td><td>Never consumes a prefix.</td></tr>
-  <tr><td class="mono">6</td><td class="mn">SHRI rd, u4</td><td class="sem">rd = rd &gt;&gt; u4</td><td>Logical; never consumes a prefix.</td></tr>
-  <tr><td class="mono">7</td><td class="mn">ASRI rd, u4</td><td class="sem">rd = signed(rd) &gt;&gt; u4</td><td>Arithmetic; never consumes a prefix.</td></tr>
-  <tr><td class="mono">8</td><td class="mn">MULI rd, imm</td><td class="sem">rd = low16(rd × imm)</td><td>Signed i4; prefix eligible.</td></tr>
-  <tr><td class="mono">9</td><td class="mn">CMPEQI rd, imm</td><td class="sem">rd = (rd == imm) ? 1 : 0</td><td>Signed i4; prefix eligible.</td></tr>
-  <tr><td class="mono">A</td><td class="mn">SLTI rd, imm</td><td class="sem">rd = (signed(rd) &lt; signed(imm)) ? 1 : 0</td><td>Signed i4; prefix eligible.</td></tr>
-  <tr><td class="mono">B</td><td class="mn">SLTUI rd, imm</td><td class="sem">rd = (unsigned(rd) &lt; unsigned(imm)) ? 1 : 0</td><td>Unsigned u4; prefix eligible; added in v0.3.</td></tr>
-  <tr><td class="mono">C</td><td class="mn">CMPSI rd, imm</td><td class="sem">pending = signed ordering of rd vs imm</td><td>Signed i4 without a prefix; prefix eligible for the full 16-bit pattern. Writes no register; added in v0.5.</td></tr>
-  <tr><td class="mono">D</td><td class="mn">CMPUI rd, imm</td><td class="sem">pending = unsigned ordering of rd vs imm</td><td>Unsigned u4 without a prefix; prefix eligible for the full 16-bit pattern. Writes no register; added in v0.5.</td></tr>
-  <tr><td class="mono">E</td><td class="mn">LDI rd, i4</td><td class="sem">rd = sext4(i4)</td><td>With prefix, loads the complete 16-bit bit pattern.</td></tr>
-  <tr><td class="mono">F</td><td class="mn">LDUI rd, u4</td><td class="sem">rd = zext4(u4)</td><td>With prefix, loads the complete 16-bit bit pattern.</td></tr>
+  <tr><td class="mono">2</td><td class="mn">LDI rd, i4</td><td class="sem">rd = sext4(i4)</td><td>With prefix, loads the complete 16-bit bit pattern.</td></tr>
+  <tr><td class="mono">3</td><td class="mn">LDUI rd, u4</td><td class="sem">rd = zext4(u4)</td><td>With prefix, loads the complete 16-bit bit pattern.</td></tr>
+  <tr><td class="mono">4</td><td class="mn">ANDI rd, imm</td><td class="sem">rd = rd &amp; imm</td><td>Unsigned u4; prefix eligible.</td></tr>
+  <tr><td class="mono">5</td><td class="mn">ORI rd, imm</td><td class="sem">rd = rd | imm</td><td>Unsigned u4; prefix eligible.</td></tr>
+  <tr><td class="mono">6</td><td class="mn">XORI rd, imm</td><td class="sem">rd = rd ^ imm</td><td>Unsigned u4; prefix eligible.</td></tr>
+  <tr><td class="mono reserved">7</td><td class="reserved">reserved</td><td>Invalid instruction</td><td>—</td></tr>
+  <tr><td class="mono">8</td><td class="mn">SEQI rd, imm</td><td class="sem">rd = (rd == imm) ? 1 : 0</td><td>Signed i4 so small negative constants stay compact; prefix eligible. Renamed from CMPEQI.</td></tr>
+  <tr><td class="mono">9</td><td class="mn">SLTI rd, imm</td><td class="sem">rd = (signed(rd) &lt; signed(imm)) ? 1 : 0</td><td>Signed i4; prefix eligible.</td></tr>
+  <tr><td class="mono">A</td><td class="mn">SLTUI rd, imm</td><td class="sem">rd = (unsigned(rd) &lt; unsigned(imm)) ? 1 : 0</td><td>Unsigned u4; prefix eligible.</td></tr>
+  <tr><td class="mono reserved">B</td><td class="reserved">reserved</td><td>Invalid instruction</td><td>—</td></tr>
+  <tr><td class="mono">C</td><td class="mn">CMPSI rd, imm</td><td class="sem">pending = signed ordering of rd vs imm</td><td>Signed i4 without a prefix; prefix eligible for the full 16-bit pattern. Writes no register.</td></tr>
+  <tr><td class="mono">D</td><td class="mn">CMPUI rd, imm</td><td class="sem">pending = unsigned ordering of rd vs imm</td><td>Unsigned u4 without a prefix; prefix eligible for the full 16-bit pattern. Writes no register.</td></tr>
+  <tr><td class="mono reserved">E..F</td><td class="reserved">reserved</td><td>Invalid instruction</td><td>—</td></tr>
 </table>
 
-<h3>4.4 Branch and relative jump — opcode B</h3>
+<h3>4.7 Branch, conditional move, and jump — opcode B</h3>
 <table>
-  <tr><th>n2</th><th>Mnemonic</th><th>Taken when</th><th>Target</th></tr>
-  <tr><td class="mono">0</td><td class="mn">BEQ off</td><td>pending == Equal</td><td rowspan="6" class="sem">PC_after + off</td></tr>
-  <tr><td class="mono">1</td><td class="mn">BNE off</td><td>pending != Equal</td></tr>
-  <tr><td class="mono">2</td><td class="mn">BLT off</td><td>pending == Less</td></tr>
-  <tr><td class="mono">3</td><td class="mn">BGE off</td><td>pending != Less</td></tr>
-  <tr><td class="mono">4</td><td class="mn">BGT off</td><td>pending == Greater</td></tr>
-  <tr><td class="mono">5</td><td class="mn">BLE off</td><td>pending != Greater</td></tr>
-  <tr><td class="mono reserved">6,7</td><td class="reserved">reserved</td><td>Invalid instruction</td><td>—</td></tr>
-  <tr><td class="mono">8</td><td class="mn">JREL off</td><td>unconditional</td><td class="sem">PC = PC_after + off</td></tr>
-  <tr><td class="mono">9</td><td class="mn">JALREL off</td><td>unconditional; <code>r14 = PC_after</code></td><td class="sem">PC = PC_after + off</td></tr>
-  <tr><td class="mono reserved">A..F</td><td class="reserved">reserved</td><td>Invalid instruction</td><td>—</td></tr>
+  <tr><th>n2</th><th>Mnemonic</th><th>Form</th><th>Notes</th></tr>
+  <tr><td class="mono">0..5</td><td class="mn">BEQ / BNE / BLT / BGE / BGT / BLE off</td><td class="sem">B fn imm8</td><td>Branch on the pending test result (Equal / not Equal / Less / not Less / Greater / not Greater).</td></tr>
+  <tr><td class="mono">6</td><td class="mn">JREL off</td><td class="sem">B 6 imm8</td><td>Unconditional relative jump, no link.</td></tr>
+  <tr><td class="mono">7</td><td class="mn">JALREL off</td><td class="sem">B 7 imm8</td><td>Unconditional relative jump; <code>r14 = PC_after</code>.</td></tr>
+  <tr><td class="mono">8..D</td><td class="mn">MOVEQ / MOVNE / MOVLT / MOVGE / MOVGT / MOVLE rd, rs</td><td class="sem">B fn rd rs</td><td><code>rd = rs</code> when the condition holds; the same six condition codes in the same order as the branches.</td></tr>
+  <tr><td class="mono">E</td><td class="mn">JREG target</td><td class="sem">B E 0 target</td><td><code>PC = r[target]</code>; the middle nibble must be 0.</td></tr>
+  <tr><td class="mono">F</td><td class="mn">JALR target</td><td class="sem">B F E target</td><td><code>r14 = PC_after; PC = r[target]</code>; the middle nibble must encode 14.</td></tr>
 </table>
-<p class="caption">The offset is signed i8 relative to the already-incremented PC (±128 words). With <code>IMMHI12</code> the offset widens to <code>off16 = {prefix[7:0], imm8}</code>: the prefix supplies the high byte and the instruction's immediate byte the low byte.</p>
-<p>Conditions 0..5 test the <b>pending test result</b>, a transient three-way ordering (Less/Equal/Greater) set only by the CMP-class instructions <code>CMPS</code>, <code>CMPU</code>, <code>CMPSI</code>, and <code>CMPUI</code>. A conditional branch consumes the pending result whether or not it is taken; any other retired non-prefix instruction expires it, and <code>IMMHI12</code> is transparent to it. A conditional branch with no pending result faults <code>InvalidInstruction</code> — reported at the prefix address when prefixed. Reset leaves no pending result.</p>
-<p><code>JALREL</code> has no link field: the link register is architecturally fixed to <code>r14</code>, which receives the fall-through address before the jump. Compiler-generated wide control flow uses the canonical prefix with a 16-bit wrapping relative offset.</p>
+<p class="caption">The relative offset is signed i8 relative to the already-incremented PC (±128 words). With <code>PFX12</code> the offset widens to <code>off16 = {payload12[7:0], imm8}</code>: the prefix's low byte supplies the high byte and <code>payload12[11:8]</code> is ignored. Conditional branches and conditional moves consume the pending test whether or not the branch is taken or the move writes, and fault <code>InvalidInstruction</code> without one — reported at the prefix address when prefixed. Register forms (functions 8..F) never consume a prefix. Reset leaves no pending result.</p>
+<p>The pending test result is a transient three-way ordering (Less/Equal/Greater) set only by the CMP-class instructions <code>CMPS</code>, <code>CMPU</code>, <code>CMPSI</code>, and <code>CMPUI</code>. Any other retired non-prefix instruction expires it, and <code>PFX12</code> is transparent to it. <code>JALREL</code>/<code>JALR</code> link to the architecturally fixed <code>r14</code>; compiler-generated wide control flow uses the canonical prefix with a 16-bit wrapping relative offset.</p>
 
-<h3>4.5 Device access — opcode C</h3>
-<table>
-  <tr><th>Mnemonic</th><th>Encoding</th><th>Semantics</th><th>Notes</th></tr>
-  <tr><td class="mn">DEVRECV rd, dev, ch</td><td class="mono">C {0,dev[2:0]} ch rd</td><td class="sem">rd = device[dev].read(ch)</td><td>dir bit 11 = 0.</td></tr>
-  <tr><td class="mn">DEVSEND rs, dev, ch</td><td class="mono">C {1,dev[2:0]} ch rs</td><td class="sem">device[dev].write(ch, rs)</td><td>dir bit 11 = 1.</td></tr>
-</table>
-<p>The encoding covers devices 0..7, each with channels 0..15. Device access is independent of memory and <code>DSEG</code>: only <code>DEVRECV</code>/<code>DEVSEND</code> reach devices, while <code>LOAD</code>/<code>STORE</code> always reach memory. Reads sample combinational device data, writes pulse for one execute cycle, and an unconnected device reads zero and ignores writes. Device instructions carry no immediate and never consume an <code>IMMHI12</code> prefix.</p>
-
-<h3>4.6 Extended/control — opcode E</h3>
-<table>
-  <tr><th>n2</th><th>Mnemonic</th><th>Encoding</th><th>Semantics / constraints</th></tr>
-  <tr><td class="mono">0</td><td class="mn">POPCNT rd, rs</td><td class="mono">E 0 rd rs</td><td class="sem">rd = population_count(rs); added in v0.3 at E B, moved in v0.5</td></tr>
-  <tr><td class="mono">1</td><td class="mn">MOV rd, rs</td><td class="mono">E 1 rd rs</td><td class="sem">rd = rs; NOP = E100</td></tr>
-  <tr><td class="mono">2</td><td class="mn">NOT rd, rs</td><td class="mono">E 2 rd rs</td><td class="sem">rd = ~rs</td></tr>
-  <tr><td class="mono">3</td><td class="mn">NEG rd, rs</td><td class="mono">E 3 rd rs</td><td class="sem">rd = 0 - rs</td></tr>
-  <tr><td class="mono">4</td><td class="mn">JREG rs</td><td class="mono">E 4 0 rs</td><td class="sem">PC = rs; rd must be 0</td></tr>
-  <tr><td class="mono">5</td><td class="mn">JALR target</td><td class="mono">E 5 E target</td><td class="sem">tmp = target; r14 = PC_after; PC = tmp. The link field must encode 14; any other value is InvalidInstruction.</td></tr>
-  <tr><td class="mono">6</td><td class="mn">SEXTB rd, rs</td><td class="mono">E 6 rd rs</td><td class="sem">rd = sext8(rs[7:0])</td></tr>
-  <tr><td class="mono">7</td><td class="mn">CLZ rd, rs</td><td class="mono">E 7 rd rs</td><td class="sem">rd = count_leading_zeros(rs)</td></tr>
-  <tr><td class="mono">8</td><td class="mn">HALT</td><td class="mono">E 8 0 0</td><td>Stops execution; signal is <code>r0</code>. Both fields must be zero.</td></tr>
-  <tr><td class="mono">9</td><td class="mn">SLT rd, rs</td><td class="mono">E 9 rd rs</td><td class="sem">rd = signed(rd) &lt; signed(rs); added in v0.3</td></tr>
-  <tr><td class="mono">A</td><td class="mn">SLTU rd, rs</td><td class="mono">E A rd rs</td><td class="sem">rd = unsigned(rd) &lt; unsigned(rs); added in v0.3</td></tr>
-  <tr><td class="mono">B</td><td class="mn">CMPS rd, rs</td><td class="mono">E B rd rs</td><td class="sem">pending = signed ordering of rd vs rs; writes no register; added in v0.5</td></tr>
-  <tr><td class="mono">C</td><td class="mn">CMPU rd, rs</td><td class="mono">E C rd rs</td><td class="sem">pending = unsigned ordering of rd vs rs; writes no register; added in v0.5</td></tr>
-  <tr><td class="mono">D</td><td class="mn">MFSR rd, sr</td><td class="mono">E D rd sr</td><td class="sem">Read CSEG (sr=0) or DSEG (sr=1).</td></tr>
-  <tr><td class="mono">E</td><td class="mn">MTSR DSEG, rs</td><td class="mono">E E 1 rs</td><td class="sem">Set the boot-time data segment. Other special-register selectors are invalid.</td></tr>
-  <tr><td class="mono">F</td><td class="mn">JSEG seg, target</td><td class="mono">E F seg target</td><td class="sem">Atomically set CSEG = r[seg] and PC = r[target].</td></tr>
-</table>
-
-<h3>4.7 fix16 FPU &mdash; opcode D</h3>
+<h3>4.8 fix16 FPU &mdash; opcode D</h3>
 <p>Each F register contains four signed Q8.8 lanes. The ISA defines exactly two
 uses of an F register: scalar (lane x) and vec4 (lanes xyzw); vec2/vec3 values
 are vec4 values with zeroed tail lanes. FPU operations are blocking, do not
-consume IMMHI12, and retire only after their final writeback or memory
-response. Narrowing rounds to nearest with ties to even and then saturates.</p>
+consume PFX12, and retire only after their final writeback or memory
+response. Narrowing rounds to nearest with ties to even and then saturates.
+Revision 0.8 changes no FPU encoding, semantics, exception, or latency.</p>
 <table>
   <tr><th>fn</th><th>Mnemonic</th><th>Summary</th></tr>
   <tr><td class="mono">0/1</td><td class="mn">FLOAD / FSTORE</td><td>Raw GPR bridge through lane x. FLOAD sets Fa = {Rb, 0, 0, 0}.</td></tr>
@@ -285,18 +303,19 @@ response. Narrowing rounds to nearest with ties to even and then saturates.</p>
 All F registers are caller-saved and ACC is caller-clobbered; argument and
 return F-register assignment is a compiler-ABI decision.</p>
 
-<h2 id="prefix">5. IMMHI12 and wide operations</h2>
+<h2 id="prefix">5. PFX12 and wide operations</h2>
 <div class="grid">
   <div class="panel">
     <h3>Canonical 16-bit immediate</h3>
-    <p class="mono">F abc &nbsp;&nbsp; AF 3 d</p>
-    <p><code>IMMHI12 0xabc</code> followed by <code>LDUI r3, 0xd</code> loads <code>r3 = 0xabcd</code>. The pair is one precise architectural operation and retires two physical words together.</p>
+    <p class="mono">F abc &nbsp;&nbsp; A3 3 d</p>
+    <p><code>PFX12 0xabc</code> followed by <code>LDUI r3, 0xd</code> loads <code>r3 = 0xabcd</code>. The pair is one precise architectural operation and retires two physical words together.</p>
   </div>
   <div class="panel">
     <h3>Closed consumer set</h3>
-    <p><code>LOAD</code>, <code>STORE</code>, immediate functions 0..4 and 8..F, and branch/jump conditions 0..5, 8, and 9 consume a pending prefix.</p>
-    <p>Shift-immediates, extended/control, register ALU, device instructions, reserved encodings, and another prefix do not consume it.</p>
-    <p>A prefix is transparent to the pending test result: an <code>IMMHI12</code> sitting between a CMP-class producer and its consuming branch neither sets nor expires the test.</p>
+    <p><code>LOAD</code>, <code>STORE</code>, <code>MULI</code>, every defined major-A operation, and the major-B relative forms (functions 0..7) consume a pending prefix.</p>
+    <p>Integer imm4 consumers form <code>value16 = {payload12, imm4}</code>; relative off8 consumers form <code>offset16 = {payload12[7:0], imm8}</code> and ignore <code>payload12[11:8]</code> without a canonical-value fault.</p>
+    <p>Register ALU, register/immediate shifts and register multiplies, the major-6 family, device instructions, conditional moves, register jumps, the FPU, reserved encodings, and another prefix do not consume it.</p>
+    <p>A prefix is transparent to the pending test result: a <code>PFX12</code> sitting between a CMP-class producer and its consuming branch neither sets nor expires the test.</p>
   </div>
 </div>
 <div class="notice"><b>Precise prefix rule:</b> a non-consumer expires the pending prefix and retires it separately. A second prefix also retires and replaces the first. If a prefixed consumer faults, the reported address is the prefix address and neither word retires.</div>
@@ -374,17 +393,30 @@ return F-register assignment is a compiler-ABI decision.</p>
 <h2 id="faults">8. Fault and retirement behavior</h2>
 <table>
   <tr><th>Condition</th><th>Result</th><th>Fault PC</th><th>Retirement</th></tr>
-  <tr><td>Reserved or malformed integer encoding</td><td><code>InvalidInstruction</code></td><td>instruction address, or prefix address for an eligible consumer</td><td>faulting operation does not retire</td></tr>
-  <tr><td>Conditional branch (B conditions 0..5) with no pending test result</td><td><code>InvalidInstruction</code></td><td>instruction address, or prefix address when prefixed</td><td>faulting operation does not retire</td></tr>
+  <tr><td>Reserved or malformed integer encoding (including majors C/E and non-canonical fields)</td><td><code>InvalidInstruction</code></td><td>instruction address, or prefix address for an eligible consumer</td><td>faulting operation does not retire</td></tr>
+  <tr><td>Conditional branch (B functions 0..5) or conditional move (B functions 8..D) with no pending test result</td><td><code>InvalidInstruction</code></td><td>instruction address, or prefix address when prefixed</td><td>faulting operation does not retire</td></tr>
   <tr><td>FRCP zero or FRSQRT nonpositive domain</td><td><code>FpuDomain</code> (code 2)</td><td>instruction address</td><td>does not retire and does not modify FPU state</td></tr>
   <tr><td>Misaligned FIMPORT4/FEXPORT4</td><td>data-memory fault</td><td>instruction address</td><td>does not issue memory traffic or retire</td></tr>
   <tr><td>Fetch or data address outside fitted physical memory</td><td><code>PhysicalAddressOutOfRange</code></td><td>faulting instruction offset</td><td>does not retire</td></tr>
   <tr><td>Valid prefixed consumer</td><td>executes one wide operation</td><td>—</td><td>retires two words together</td></tr>
   <tr><td>Pending prefix followed by non-consumer</td><td>prefix expires; next instruction executes normally</td><td>—</td><td>prefix and instruction retire separately</td></tr>
-  <tr><td>HALT after already halted</td><td>returns the same <code>r0</code> signal</td><td>—</td><td>no additional execution</td></tr>
+  <tr><td>SIGNAL type 0 after already halted</td><td>returns the latched halt signal</td><td>—</td><td>no additional execution</td></tr>
 </table>
 
 <div class="notice"><b>Source-of-truth rule:</b> ISA behavior lives in <code>src/architecture/encoding.rs</code> and <code>src/architecture/sim.rs</code>; compiler convention lives in <code>src/rcc_backend/</code> and <code>compiler/rcc/src/compiler/regalloc.rs</code>. Hardware and fitted-system policy are intentionally documented outside this ISA reference.</div>
+
+<h2 id="revision">9. Revision history</h2>
+<table>
+  <tr><th>Revision</th><th>Change</th></tr>
+  <tr><td class="mono">0.8</td><td><b>Current.</b> Breaking integer rearrangement with no binary compatibility. Majors 0/1/3/4/5 keep <code>ADD</code>/<code>SUB</code>/<code>AND</code>/<code>OR</code>/<code>XOR</code>; the old three-register <code>MUL</code> (major 2) and register-count <code>SHL</code>/<code>ASR</code> (majors 6/7) move into the destructive shift/multiply family at major 2, joined by <code>SHR</code>, the immediate shifts <code>SHLI</code>/<code>SHRI</code>/<code>ASRI</code> and <code>MULI</code> (both moved from major A), and the unsigned product windows <code>MUL8</code>/<code>MUL16</code>. Major 6 becomes the extended/system family (unary, bit queries, <code>SEQ</code>, destructive <code>SLT</code>/<code>SLTU</code>, pending-test <code>CMPS</code>/<code>CMPU</code>, <code>SIGNAL</code>, special registers, <code>JSEG</code>); <code>NOP</code> is now <code>6000</code>. <code>SIGNAL rs, type4</code> replaces <code>HALT</code> (<code>SIGNAL r0, 0</code> = <code>6C00</code>). Device access moves from major C to major 7 with an unchanged field layout. Major A keeps arithmetic/logic, constant construction at functions 2/3, and comparisons, with <code>CMPEQI</code> renamed <code>SEQI</code>. Major B becomes the symmetric control family: six conditional branches (0..5), <code>JREL</code> (6), <code>JALREL</code> (7), six conditional moves (8..D), <code>JREG</code> (<code>B E 0 target</code>), and <code>JALR</code> (<code>B F E target</code>), with <code>JALREL</code>/<code>JALR</code> linking to the fixed <code>r14</code>. <code>IMMHI12</code> is renamed <code>PFX12</code> and carries a neutral 12-bit payload with the closed consumer set above. Majors C and E are fully reserved, so the revision 0.7 <code>HALT</code> word <code>E800</code> is invalid. The fix16 FPU at major D is completely unchanged.</td></tr>
+  <tr><td class="mono">0.7</td><td>Assigns the complete <code>D fn a b</code> family to the blocking fix16 FPU.</td></tr>
+  <tr><td class="mono">0.6</td><td>Removes address-mapped device access; <code>LOAD</code>/<code>STORE</code> always reach memory.</td></tr>
+  <tr><td class="mono">0.5</td><td>Replaces test-register branches with a transient pending test result, moves relative jumps into the B family, turns opcode C into device instructions, and frees <code>r15</code> for general allocation.</td></tr>
+  <tr><td class="mono">0.4</td><td>Makes the complete fitted physical memory addressable via <code>MFSR</code>/<code>MTSR</code>/<code>JSEG</code> without widening pointers or changing compiler-generated load/store instructions.</td></tr>
+  <tr><td class="mono">0.3</td><td>Assigns previously reserved operations to the signed/unsigned comparison and <code>POPCNT</code> family.</td></tr>
+  <tr><td class="mono">0.2</td><td>Superseded; the sign test it used for comparisons fails at overflow boundaries.</td></tr>
+</table>
+<p class="caption">The normative text for every revision is <code>docs/isa.md</code>; this page tracks the current encoding and the revision sequence only. Earlier revisions were superseded without a compatibility mode, so no earlier encoding is accepted by this build.</p>
 
 </main></body>
 </html>

@@ -81,7 +81,10 @@ impl Line {
         match self {
             Self::Word { .. } => 1,
             Self::Label(_) => 0,
-            Self::Branch { .. } | Self::Jump { .. } | Self::Call { .. } | Self::LoadFunctionAddress { .. } => 2,
+            Self::Branch { .. }
+            | Self::Jump { .. }
+            | Self::Call { .. }
+            | Self::LoadFunctionAddress { .. } => 2,
         }
     }
 }
@@ -391,20 +394,32 @@ fn lower_instruction(
 ) {
     match instruction {
         Instr::Bin { dst, op, lhs, rhs } => {
+            let dst = register(*dst);
+            let lhs = register(*lhs);
+            let rhs = register(*rhs);
+            if matches!(op, BinOp::Mul) {
+                // ISA 0.8 multiply is the destructive two-operand MUL0; it is
+                // commutative, so a dst == rhs collision swaps the operands.
+                // Register affinity and deliberate MOV insertion are Step 4.
+                if dst == lhs {
+                    lines.word(cpu_v3::multiply(cpu_v3::MultiplyWindow::Low, dst, rhs));
+                } else if dst == rhs {
+                    lines.word(cpu_v3::multiply(cpu_v3::MultiplyWindow::Low, dst, lhs));
+                } else {
+                    lines.word(cpu_v3::move_register(dst, lhs));
+                    lines.word(cpu_v3::multiply(cpu_v3::MultiplyWindow::Low, dst, rhs));
+                }
+                return;
+            }
             let operation = match op {
                 BinOp::Add => AluOp::Add,
                 BinOp::Sub => AluOp::Sub,
-                BinOp::Mul => AluOp::Mul,
                 BinOp::And => AluOp::And,
                 BinOp::Or => AluOp::Or,
                 BinOp::Xor => AluOp::Xor,
+                BinOp::Mul => unreachable!(),
             };
-            lines.word(cpu_v3::alu(
-                operation,
-                register(*dst),
-                register(*lhs),
-                register(*rhs),
-            ));
+            lines.word(cpu_v3::alu(operation, dst, lhs, rhs));
         }
         Instr::Un { dst, op, src } => lower_unary(register(*dst), *op, register(*src), lines),
         Instr::Shift {
@@ -419,11 +434,11 @@ fn lower_instruction(
                 lines.word(cpu_v3::move_register(dst, src));
             }
             let operation = match op {
-                ShiftOp::Lsl => ImmediateOp::ShiftLeft,
-                ShiftOp::Lsr => ImmediateOp::ShiftRightLogical,
-                ShiftOp::Asr => ImmediateOp::ShiftRightArithmetic,
+                ShiftOp::Lsl => cpu_v3::ShiftOp::Left,
+                ShiftOp::Lsr => cpu_v3::ShiftOp::RightLogical,
+                ShiftOp::Asr => cpu_v3::ShiftOp::RightArithmetic,
             };
-            lines.word(cpu_v3::immediate_unsigned(operation, dst, *amount));
+            lines.word(cpu_v3::shift_immediate(operation, dst, *amount));
         }
         Instr::Mov { dst, src } => {
             let dst = register(*dst);
@@ -456,11 +471,7 @@ fn lower_instruction(
             channel,
         } => {
             check_device(*device);
-            lines.word(cpu_v3::device_receive(
-                register(*dst),
-                *device,
-                *channel,
-            ));
+            lines.word(cpu_v3::device_receive(register(*dst), *device, *channel));
         }
         Instr::DevSend {
             device,
@@ -468,11 +479,7 @@ fn lower_instruction(
             src,
         } => {
             check_device(*device);
-            lines.word(cpu_v3::device_send(
-                register(*src),
-                *device,
-                *channel,
-            ));
+            lines.word(cpu_v3::device_send(register(*src), *device, *channel));
         }
         Instr::DcacheInvalidateAll => lines.word(cpu_v3::device_send(
             REG_TMP,
@@ -480,10 +487,9 @@ fn lower_instruction(
             D_INVALIDATE_ALL,
         )),
         Instr::MtsrDseg { src } => lines.word(cpu_v3::write_data_segment(register(*src))),
-        Instr::Jseg { cseg, target } => lines.word(cpu_v3::jump_segment(
-            register(*cseg),
-            register(*target),
-        )),
+        Instr::Jseg { cseg, target } => {
+            lines.word(cpu_v3::jump_segment(register(*cseg), register(*target)))
+        }
         Instr::LoadSp { dst, slot } => emit_load(
             lines,
             register(*dst),
@@ -558,11 +564,9 @@ fn lower_instruction(
                 lines.word(cpu_v3::fpu(FpuOp::Move, dst, src));
             }
         }
-        Instr::FLoad { dst, src_gpr } => lines.word(cpu_v3::fpu(
-            FpuOp::Load,
-            register(*dst),
-            register(*src_gpr),
-        )),
+        Instr::FLoad { dst, src_gpr } => {
+            lines.word(cpu_v3::fpu(FpuOp::Load, register(*dst), register(*src_gpr)))
+        }
         Instr::FStore { dst_gpr, src } => lines.word(cpu_v3::fpu(
             FpuOp::Store,
             register(*dst_gpr),
@@ -598,16 +602,12 @@ fn lower_instruction(
             };
             lines.word(cpu_v3::fpu_unary(dst, unary_op));
         }
-        Instr::FDot4Acc { lhs, rhs } => lines.word(cpu_v3::fpu(
-            FpuOp::Dot4Acc,
-            register(*lhs),
-            register(*rhs),
-        )),
-        Instr::FAccStore { dst, mask } => lines.word(cpu_v3::fpu(
-            FpuOp::AccStore,
-            register(*dst),
-            *mask,
-        )),
+        Instr::FDot4Acc { lhs, rhs } => {
+            lines.word(cpu_v3::fpu(FpuOp::Dot4Acc, register(*lhs), register(*rhs)))
+        }
+        Instr::FAccStore { dst, mask } => {
+            lines.word(cpu_v3::fpu(FpuOp::AccStore, register(*dst), *mask))
+        }
         Instr::FAccLoad { src, lane } => {
             let op = match lane {
                 0 => FpuUnaryOp::AccLoadX,
@@ -617,10 +617,7 @@ fn lower_instruction(
             };
             lines.word(cpu_v3::fpu_unary(register(*src), op));
         }
-        Instr::FZero { dst } => lines.word(cpu_v3::fpu_unary(
-            register(*dst),
-            FpuUnaryOp::Zero,
-        )),
+        Instr::FZero { dst } => lines.word(cpu_v3::fpu_unary(register(*dst), FpuUnaryOp::Zero)),
         Instr::AddrOfFpuSpill { dst, slot } => {
             // dst = align4(sp + fpu_area_offset) + 4 * slot; the alignment is
             // computed at run time because nothing guarantees sp mod 4 == 0
@@ -662,11 +659,7 @@ fn lower_unary(dst: u8, operation: UnOp, src: u8, lines: &mut Lines) {
             if dst != src {
                 lines.word(cpu_v3::move_register(dst, src));
             }
-            lines.word(cpu_v3::immediate_signed(
-                ImmediateOp::CompareEqual,
-                dst,
-                0,
-            ));
+            lines.word(cpu_v3::immediate_signed(ImmediateOp::SetEqual, dst, 0));
             lines.word(cpu_v3::immediate_unsigned(ImmediateOp::Xor, dst, 1));
         }
     }
@@ -875,17 +868,9 @@ fn emit_immediate(
     signed_short: bool,
 ) {
     if signed_short && (-8..=7).contains(&(value as i16)) {
-        lines.word(cpu_v3::immediate_signed(
-            operation,
-            dst,
-            value as i16,
-        ));
+        lines.word(cpu_v3::immediate_signed(operation, dst, value as i16));
     } else if !signed_short && value <= 15 {
-        lines.word(cpu_v3::immediate_unsigned(
-            operation,
-            dst,
-            value as u8,
-        ));
+        lines.word(cpu_v3::immediate_unsigned(operation, dst, value as u8));
     } else {
         let consumer = 0xa000 | ((operation as u16) << 8) | (u16::from(dst) << 4);
         for word in cpu_v3::prefixed(consumer, value) {
@@ -1030,7 +1015,10 @@ fn link(
                     words.extend(wide_jump(offset));
                     (2, *line)
                 }
-                Line::Call { function: target, line } => {
+                Line::Call {
+                    function: target,
+                    line,
+                } => {
                     let offset =
                         relative_offset(code_base + words.len() + 2, function_addresses[target]);
                     words.extend(wide_call(offset));
@@ -1074,9 +1062,7 @@ fn link(
                             let mut v = v.clone();
                             match v.loc {
                                 rcc::VarLoc::Frame(slot) => {
-                                    v.loc = rcc::VarLoc::Frame(
-                                        function.callee_saved as u8 + slot,
-                                    );
+                                    v.loc = rcc::VarLoc::Frame(function.callee_saved as u8 + slot);
                                 }
                                 rcc::VarLoc::ParamIndex(index) => {
                                     v.loc = rcc::VarLoc::Param(
@@ -1096,7 +1082,12 @@ fn link(
         for line in cpu_v3::disassemble_words(&words[local_start..], start as u16) {
             let span = if line.wide { 2 } else { 1 };
             let raw: Vec<String> = (0..span)
-                .map(|i| format!("{:04x}", words[usize::from(line.address) - (start - local_start) + i]))
+                .map(|i| {
+                    format!(
+                        "{:04x}",
+                        words[usize::from(line.address) - (start - local_start) + i]
+                    )
+                })
                 .collect();
             listing.push_str(&format!(
                 "  {:04x}: {:<11} {}\n",
@@ -1548,12 +1539,12 @@ mod tests {
         let program = compile(source, CompilerOptions::default());
         assert_eq!(program.words.last(), Some(&cpu_v3::halt()));
         let tail = &program.words[program.words.len() - 3..program.words.len() - 1];
-        assert_eq!(tail[0] & 0xfff0, 0xc800);
-        assert_eq!(tail[1] & 0xff00, 0xef00);
+        assert_eq!(tail[0] & 0xfff0, 0x7800);
+        assert_eq!(tail[1] & 0xff00, 0x6f00);
         assert_eq!(tail[0] & 0x000f, (tail[1] >> 4) & 0x000f);
         assert!(program.words[..program.words.len() - 3]
             .iter()
-            .any(|word| word & 0xfff0 == 0xc810));
+            .any(|word| word & 0xfff0 == 0x7810));
     }
 
     #[test]

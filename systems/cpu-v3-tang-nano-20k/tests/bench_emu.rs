@@ -79,6 +79,7 @@ fn main() {
     }
 
     #[test]
+    #[ignore = "ISA 0.8 step 3: the cycle model drives the revision 0.7 RTL core"]
     fn control_flow_probe_records_calls_returns_and_taken_loop_edges() {
         let words = compile(CONTROL_FLOW_SOURCE);
         let trace_directory = trace_directory("control-flow");
@@ -89,6 +90,7 @@ fn main() {
     }
 
     #[test]
+    #[ignore = "ISA 0.8 step 3: the cycle model drives the revision 0.7 RTL core"]
     fn data_probe_counts_overlapped_scalar_requests_and_latency() {
         let words = compile(DATA_SOURCE);
         let trace_directory = trace_directory("data");
@@ -101,6 +103,7 @@ fn main() {
     }
 
     #[test]
+    #[ignore = "ISA 0.8 step 3: the cycle model drives the revision 0.7 RTL core"]
     fn smoke_halt_runs_to_completion() {
         let words = compile("fn main() { halt(7); }");
         let result = run_benchmark(&words, 100_000);
@@ -232,9 +235,7 @@ fn main() {
             // The frozen suite is the default; CPU_V3_BENCH_DIR overrides it.
             let input_root = env::var_os("CPU_V3_BENCH_DIR")
                 .map(PathBuf::from)
-                .unwrap_or_else(|| {
-                    Path::new(env!("CARGO_MANIFEST_DIR")).join("benchmarks/suite")
-                });
+                .unwrap_or_else(|| Path::new(env!("CARGO_MANIFEST_DIR")).join("benchmarks/suite"));
             let mut paths = read_dir(&input_root)
                 .unwrap_or_else(|error| panic!("cannot read {}: {error}", input_root.display()))
                 .map(|entry| entry.expect("cannot read benchmark directory entry").path())

@@ -44,16 +44,16 @@ fn assert_canonical_cache_handoff(stage: &str, words: &[u16]) {
     let handoffs = words
         .windows(2)
         .enumerate()
-        .filter(|(_, pair)| pair[0] & 0xfff0 == 0xc800 && pair[1] & 0xff00 == 0xef00)
+        .filter(|(_, pair)| pair[0] & 0xfff0 == 0x7800 && pair[1] & 0xff00 == 0x6f00)
         .collect::<Vec<_>>();
     assert_eq!(handoffs.len(), 1, "{stage} must contain one cache handoff");
     let (icache_index, tail) = handoffs[0];
     assert_eq!(
         tail[0] & 0xfff0,
-        0xc800,
+        0x7800,
         "{stage} handoff must issue ICACHE_INVALIDATE_ALL_DELAYED"
     );
-    assert_eq!(tail[1] & 0xff00, 0xef00, "{stage} handoff must issue JSEG");
+    assert_eq!(tail[1] & 0xff00, 0x6f00, "{stage} handoff must issue JSEG");
     assert_eq!(
         tail[0] & 0x000f,
         (tail[1] >> 4) & 0x000f,
@@ -61,12 +61,12 @@ fn assert_canonical_cache_handoff(stage: &str, words: &[u16]) {
     );
     let dcache_index = words[..icache_index]
         .iter()
-        .position(|word| word & 0xfff0 == 0xc810)
+        .position(|word| word & 0xfff0 == 0x7810)
         .unwrap_or_else(|| panic!("{stage} must invalidate D-cache before its final handoff"));
     assert!(
         words[dcache_index + 1..icache_index]
             .iter()
-            .any(|word| word & 0xff00 == 0xee00),
+            .any(|word| word & 0xff00 == 0x6e00),
         "{stage} must prepare DSEG after D-cache invalidation"
     );
 }

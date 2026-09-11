@@ -269,9 +269,12 @@ fn main() {
     })
     .expect("build boot image");
 
+    // ISA 0.8 encoding migration rebaselined the Stage0 words; Step 5
+    // re-validates the boot assets (including Stage0 < 1024 words) against
+    // the final compiler and updates this baseline again if they change.
     assert_eq!(
         fnv1a64(&stage0_bytes),
-        1_955_204_134_576_560_675,
+        17_837_455_290_091_098_869,
         "Stage0 bytes changed from the CPU V3 boot-format baseline"
     );
 
