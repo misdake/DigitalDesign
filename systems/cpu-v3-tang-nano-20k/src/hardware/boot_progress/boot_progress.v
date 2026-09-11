@@ -39,8 +39,6 @@ always @* begin
         phase = 3'd3;
     else if (code_segment == 0)
         phase = 3'd2;
-    else if (code_segment == 1)
-        phase = 3'd4;
     else
         phase = 3'd5;
 

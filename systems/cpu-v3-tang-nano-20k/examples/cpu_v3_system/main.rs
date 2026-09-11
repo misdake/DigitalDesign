@@ -175,7 +175,7 @@ mod tests {
     use super::*;
     use cpu_v3::rcc_backend::{self, CompilerOptions, CpuV3Program};
     use cpu_v3_tang_nano_20k::boot::{
-        build_boot_image, PackManifest, S1_APPLICATION_LAYOUT, S2_APPLICATION_LAYOUT, STAGE1_LAYOUT,
+        build_boot_image, PackManifest, S1_APPLICATION_LAYOUT, S2_APPLICATION_LAYOUT,
     };
     use digital_design_hardware::{ResourceKind, VerilogProject};
     use rcc::frontend::compile_program_named;
@@ -189,7 +189,12 @@ mod tests {
         let source_dir = path.parent().expect("rcc source directory");
         let program =
             compile_program_named(&path.display().to_string(), &source, options, &mut |name| {
-                std::fs::read_to_string(source_dir.join(format!("{name}.rs")))
+                let path = if name == "boot_selection" {
+                    std::path::PathBuf::from(env!("OUT_DIR")).join("boot-selection.generated.rs")
+                } else {
+                    source_dir.join(format!("{name}.rs"))
+                };
+                std::fs::read_to_string(path)
                     .map_err(|error| format!("read module `{name}`: {error}"))
             })
             .expect("rcc compile failed");
@@ -244,18 +249,13 @@ mod tests {
     }
 
     #[test]
-    fn generated_manifest_contains_the_derived_three_section_layout() {
+    fn generated_manifest_contains_the_derived_two_section_layout() {
         let manifest = PackManifest::parse(include_str!(concat!(
             env!("OUT_DIR"),
             "/boot.cpu-v3-manifest"
         )))
         .unwrap();
-        assert_eq!(manifest.sections.len(), 3);
-        let stage1_section = manifest
-            .sections
-            .iter()
-            .find(|section| section.name == STAGE1_LAYOUT.section_name)
-            .unwrap();
+        assert_eq!(manifest.sections.len(), 2);
         let s1_section = manifest
             .sections
             .iter()
@@ -266,12 +266,7 @@ mod tests {
             .iter()
             .find(|section| section.name == S2_APPLICATION_LAYOUT.section_name)
             .unwrap();
-        assert_eq!(manifest.stage1_entry, STAGE1_LAYOUT.entry);
         assert_eq!(manifest.application_entry, S1_APPLICATION_LAYOUT.entry);
-        assert_eq!(
-            stage1_section.source.as_deref(),
-            Some(Path::new(STAGE1_LAYOUT.asset_name))
-        );
         assert_eq!(s1_section.destination, S1_APPLICATION_LAYOUT.destination());
         assert_eq!(
             s1_section.source.as_deref(),
@@ -298,7 +293,7 @@ mod tests {
 
     #[test]
     #[ignore = "explicit external simulator validation"]
-    fn two_stage_flash_boot_executes_in_verilog() {
+    fn flash_boot_executes_in_verilog() {
         digital_design_hardware::verify_verilog_with_iverilog::<CpuV3System>().unwrap();
     }
 }

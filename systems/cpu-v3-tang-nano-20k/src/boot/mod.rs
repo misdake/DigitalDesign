@@ -21,14 +21,12 @@ use std::fmt;
 
 use super::{PhysicalWordAddress, Word, TANG_NANO_20K_SDRAM_WORDS};
 
-pub const BOOT_FORMAT_VERSION: u16 = 3;
+pub const BOOT_FORMAT_VERSION: u16 = 4;
 pub const BOOT_DESCRIPTOR_SIZE: usize = 64;
 pub const BOOT_MANIFEST_HEADER_SIZE: usize = 48;
 pub const BOOT_SECTION_RECORD_SIZE: usize = 32;
 pub const BOOT_DATA_ALIGNMENT: u32 = 256;
 pub const TANG_NANO_20K_CONFIGURATION_RESERVE_BYTES: u32 = 1 << 20;
-pub const STAGE1_HANDOFF_OFFSET: Word = 0x0100;
-pub const STAGE1_HANDOFF_SIZE_BYTES: u32 = BOOT_DESCRIPTOR_SIZE as u32;
 
 const BOOT_MAGIC: &[u8; 8] = b"CPU3BOOT";
 const MANIFEST_MAGIC: &[u8; 8] = b"CPU3SECT";
@@ -119,8 +117,6 @@ pub struct InputSection {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct BootImageSpec {
     pub target: BootTarget,
-    pub stage1_section: String,
-    pub stage1_entry: BootEntry,
     pub application_entry: BootEntry,
     pub sections: Vec<InputSection>,
 }
@@ -129,15 +125,8 @@ pub struct BootImageSpec {
 pub struct BootDescriptor {
     pub target: BootTarget,
     pub package_size_bytes: u32,
-    pub stage1_flash_offset: u32,
-    pub stage1_file_size_bytes: u32,
-    pub stage1_memory_size_bytes: u32,
-    pub stage1_destination: PhysicalWordAddress,
-    pub stage1_entry: BootEntry,
     pub manifest_flash_offset: u32,
     pub manifest_size_bytes: u32,
-    /// Physical SDRAM address where Stage0 mirrors this complete descriptor.
-    pub stage1_handoff_destination: PhysicalWordAddress,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -185,22 +174,12 @@ impl BootImage {
              target: {:?}\n\
              package: {:#010x} bytes\n\
              target Flash placement: {:#010x}..{:#010x}\n\
-             stage1: flash+{:#010x} -> word {:#010x}, {:#x}/{:#x} bytes, entry {:04x}:{:04x}\n\
-             stage1 handoff descriptor: word {:#010x}, {:#x} bytes\n\
              application entry: {:04x}:{:04x}, dseg={:04x}, sp={:04x}\n\
              sections:\n",
             self.descriptor.target,
             self.descriptor.package_size_bytes,
             self.descriptor.target.payload_flash_offset(),
             self.descriptor.target.payload_flash_offset() + self.descriptor.package_size_bytes,
-            self.descriptor.stage1_flash_offset,
-            self.descriptor.stage1_destination.get(),
-            self.descriptor.stage1_file_size_bytes,
-            self.descriptor.stage1_memory_size_bytes,
-            self.descriptor.stage1_entry.code_segment,
-            self.descriptor.stage1_entry.offset,
-            self.descriptor.stage1_handoff_destination.get(),
-            STAGE1_HANDOFF_SIZE_BYTES,
             self.manifest.application_entry.code_segment,
             self.manifest.application_entry.offset,
             self.manifest.application_entry.data_segment,
@@ -254,7 +233,6 @@ impl BootImage {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum BootImageError {
     DuplicateSection(String),
-    MissingStage1(String),
     EmptySectionName,
     InvalidAlignment {
         section: String,
@@ -316,7 +294,6 @@ impl fmt::Display for BootImageError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::DuplicateSection(name) => write!(f, "duplicate boot section name `{name}`"),
-            Self::MissingStage1(name) => write!(f, "stage1 section `{name}` does not exist"),
             Self::EmptySectionName => write!(f, "boot section names may not be empty"),
             Self::InvalidAlignment { section, alignment } => write!(
                 f,
@@ -400,11 +377,6 @@ impl std::error::Error for BootImageError {}
 pub fn build_boot_image(spec: BootImageSpec) -> Result<BootImage, BootImageError> {
     validate_entries(&spec)?;
     validate_sections(&spec)?;
-    let stage1_index = spec
-        .sections
-        .iter()
-        .position(|section| section.name == spec.stage1_section)
-        .ok_or_else(|| BootImageError::MissingStage1(spec.stage1_section.clone()))?;
 
     let section_count = u16::try_from(spec.sections.len())
         .map_err(|_| BootImageError::TooManySections(spec.sections.len()))?;
@@ -420,13 +392,9 @@ pub fn build_boot_image(spec: BootImageSpec) -> Result<BootImage, BootImageError
         BOOT_DATA_ALIGNMENT,
     )?;
 
-    let mut order = Vec::with_capacity(spec.sections.len());
-    order.push(stage1_index);
-    order.extend((0..spec.sections.len()).filter(|index| *index != stage1_index));
     let mut flash_offsets = vec![0; spec.sections.len()];
     let mut cursor = data_start;
-    for index in order {
-        let section = &spec.sections[index];
+    for (index, section) in spec.sections.iter().enumerate() {
         if section.kind == SectionKind::Load {
             cursor = align_up(cursor, BOOT_DATA_ALIGNMENT)?;
             flash_offsets[index] = cursor;
@@ -468,21 +436,11 @@ pub fn build_boot_image(spec: BootImageSpec) -> Result<BootImage, BootImageError
             .collect(),
     };
     let manifest_bytes = manifest.encode()?;
-    let stage1 = &packed_sections[stage1_index].record;
     let descriptor = BootDescriptor {
         target: spec.target,
         package_size_bytes: package_size,
-        stage1_flash_offset: stage1.flash_offset,
-        stage1_file_size_bytes: stage1.file_size_bytes,
-        stage1_memory_size_bytes: stage1.memory_size_bytes,
-        stage1_destination: stage1.destination,
-        stage1_entry: spec.stage1_entry,
         manifest_flash_offset: BOOT_DESCRIPTOR_SIZE as u32,
         manifest_size_bytes: u32_len(&manifest_bytes, "manifest size")?,
-        stage1_handoff_destination: PhysicalWordAddress::from_segment_offset(
-            spec.stage1_entry.data_segment,
-            STAGE1_HANDOFF_OFFSET,
-        ),
     };
 
     let mut bytes = vec![0xff; package_size as usize];
@@ -513,18 +471,20 @@ impl BootDescriptor {
         put_u16(&mut bytes, 10, BOOT_DESCRIPTOR_SIZE as u16);
         put_u32(&mut bytes, 12, self.target as u32);
         put_u32(&mut bytes, 16, self.package_size_bytes);
-        put_u32(&mut bytes, 20, self.stage1_flash_offset);
-        put_u32(&mut bytes, 24, self.stage1_file_size_bytes);
-        put_u32(&mut bytes, 28, self.stage1_memory_size_bytes);
-        put_u32(&mut bytes, 32, self.stage1_destination.get());
-        put_entry(&mut bytes, 36, self.stage1_entry);
+        // Offsets 20 through 43 (the former Stage1 load/entry fields) and 52
+        // through 63 (the former CRC32 and Stage1-handoff fields) are reserved
+        // zero since format version 4.
+        put_u32(&mut bytes, 20, 0);
+        put_u32(&mut bytes, 24, 0);
+        put_u32(&mut bytes, 28, 0);
+        put_u32(&mut bytes, 32, 0);
+        put_u32(&mut bytes, 36, 0);
+        put_u32(&mut bytes, 40, 0);
         put_u32(&mut bytes, 44, self.manifest_flash_offset);
         put_u32(&mut bytes, 48, self.manifest_size_bytes);
-        // Offsets 52 and 56 held CRC32 fields before format version 3 and are
-        // now reserved zero.
         put_u32(&mut bytes, 52, 0);
         put_u32(&mut bytes, 56, 0);
-        put_u32(&mut bytes, 60, self.stage1_handoff_destination.get());
+        put_u32(&mut bytes, 60, 0);
         bytes
     }
 
@@ -539,19 +499,13 @@ impl BootDescriptor {
         if get_u16(bytes, 10) != BOOT_DESCRIPTOR_SIZE as u16 {
             return Err(BootImageError::InvalidFormat("descriptor size mismatch"));
         }
-        // Offsets 52 and 56 are reserved zero since format version 3 and are
-        // not interpreted.
+        // Offsets 20 through 43 and 52 through 63 are reserved since format
+        // version 4 and are not interpreted.
         Ok(Self {
             target: BootTarget::from_raw(get_u32(bytes, 12))?,
             package_size_bytes: get_u32(bytes, 16),
-            stage1_flash_offset: get_u32(bytes, 20),
-            stage1_file_size_bytes: get_u32(bytes, 24),
-            stage1_memory_size_bytes: get_u32(bytes, 28),
-            stage1_destination: PhysicalWordAddress::new(get_u32(bytes, 32)),
-            stage1_entry: get_entry(bytes, 36),
             manifest_flash_offset: get_u32(bytes, 44),
             manifest_size_bytes: get_u32(bytes, 48),
-            stage1_handoff_destination: PhysicalWordAddress::new(get_u32(bytes, 60)),
         })
     }
 }
@@ -650,20 +604,16 @@ impl BootManifest {
 }
 
 fn validate_entries(spec: &BootImageSpec) -> Result<(), BootImageError> {
-    for (stage, entry) in [
-        ("stage1", spec.stage1_entry),
-        ("application", spec.application_entry),
-    ] {
-        let first_stack_word = PhysicalWordAddress::from_segment_offset(
-            entry.data_segment,
-            entry.stack_offset.wrapping_sub(1),
-        );
-        if first_stack_word.get() >= spec.target.physical_memory_words() {
-            return Err(BootImageError::StackOutsidePhysicalMemory {
-                stage,
-                address: first_stack_word,
-            });
-        }
+    let entry = spec.application_entry;
+    let first_stack_word = PhysicalWordAddress::from_segment_offset(
+        entry.data_segment,
+        entry.stack_offset.wrapping_sub(1),
+    );
+    if first_stack_word.get() >= spec.target.physical_memory_words() {
+        return Err(BootImageError::StackOutsidePhysicalMemory {
+            stage: "application",
+            address: first_stack_word,
+        });
     }
     Ok(())
 }
@@ -672,34 +622,18 @@ fn validate_sections(spec: &BootImageSpec) -> Result<(), BootImageError> {
     let mut names = HashSet::new();
     let capacity_bytes = u64::from(spec.target.physical_memory_words()) * 2;
     let mut ranges = Vec::with_capacity(spec.sections.len() + 1);
-    let handoff = PhysicalWordAddress::from_segment_offset(
-        spec.stage1_entry.data_segment,
-        STAGE1_HANDOFF_OFFSET,
-    );
-    let handoff_start = handoff.byte_address();
-    let handoff_end = handoff_start + u64::from(STAGE1_HANDOFF_SIZE_BYTES);
-    if handoff_end > capacity_bytes {
+    // The single first stage keeps its descriptor scratch and manifest buffer
+    // in data-segment word 0 (`rcc/stage0.rs`). Reserve that whole range so a
+    // loadable section cannot overwrite the manifest while it is being parsed.
+    let work_area_end = u64::from(STAGE0_WORK_AREA_BYTES);
+    if work_area_end > capacity_bytes {
         return Err(BootImageError::PhysicalMemoryExceeded {
-            section: "<stage1-handoff>".to_string(),
-            end_byte: handoff_end,
+            section: "<stage0-work-area>".to_string(),
+            end_byte: work_area_end,
             capacity_bytes,
         });
     }
-    ranges.push((handoff_start, handoff_end, "<stage1-handoff>".to_string()));
-    let scratch_start = u64::from(STAGE0_DESCRIPTOR_SCRATCH_WORD) * 2;
-    let scratch_end = scratch_start + BOOT_DESCRIPTOR_SIZE as u64;
-    if scratch_end > capacity_bytes {
-        return Err(BootImageError::PhysicalMemoryExceeded {
-            section: "<stage0-descriptor-scratch>".to_string(),
-            end_byte: scratch_end,
-            capacity_bytes,
-        });
-    }
-    ranges.push((
-        scratch_start,
-        scratch_end,
-        "<stage0-descriptor-scratch>".to_string(),
-    ));
+    ranges.push((0, work_area_end, "<stage0-work-area>".to_string()));
     for section in &spec.sections {
         if section.name.is_empty() {
             return Err(BootImageError::EmptySectionName);
@@ -765,30 +699,20 @@ fn validate_sections(spec: &BootImageSpec) -> Result<(), BootImageError> {
         }
     }
 
-    validate_entry_in_section("stage1", spec.stage1_entry, &spec.sections, |section| {
-        section.name == spec.stage1_section
-    })?;
-    validate_entry_in_section(
-        "application",
-        spec.application_entry,
-        &spec.sections,
-        |section| section.name != spec.stage1_section,
-    )
+    validate_entry_in_section("application", spec.application_entry, &spec.sections)
 }
 
 fn validate_entry_in_section(
     stage: &'static str,
     entry: BootEntry,
     sections: &[InputSection],
-    select: impl Fn(&InputSection) -> bool,
 ) -> Result<(), BootImageError> {
     let address = entry.physical_entry().get();
     let byte = u64::from(address) * 2;
     let contained = sections.iter().any(|section| {
         let start = section.destination.byte_address();
         let end = start + section.data.len() as u64;
-        select(section)
-            && section.kind == SectionKind::Load
+        section.kind == SectionKind::Load
             && section.flags & SECTION_EXECUTE != 0
             && byte >= start
             && byte < end
@@ -890,8 +814,6 @@ mod tests {
     fn example_spec() -> BootImageSpec {
         BootImageSpec {
             target: BootTarget::TangNano20K,
-            stage1_section: "stage1".into(),
-            stage1_entry: entry(1, 0x0100, 2),
             application_entry: entry(3, 0x0200, 4),
             sections: vec![
                 section(
@@ -899,13 +821,6 @@ mod tests {
                     0x0003_0200,
                     &[0x34, 0x12, 0x00, 0xe8],
                     4,
-                    SECTION_READ | SECTION_EXECUTE,
-                ),
-                section(
-                    "stage1",
-                    0x0001_0100,
-                    &[0xaa; 48],
-                    64,
                     SECTION_READ | SECTION_EXECUTE,
                 ),
                 InputSection {
@@ -940,13 +855,13 @@ mod tests {
             image.manifest
         );
         assert_eq!(image.sections[0].name, "application");
-        assert_eq!(image.sections[1].name, "stage1");
-        let stage1 = image.sections[1].record;
-        assert_eq!(stage1.flash_offset, BOOT_DATA_ALIGNMENT);
+        assert_eq!(image.sections[1].name, "bss");
+        let application = image.sections[0].record;
+        assert_eq!(application.flash_offset, BOOT_DATA_ALIGNMENT);
         assert_eq!(
-            &image.bytes[stage1.flash_offset as usize
-                ..(stage1.flash_offset + stage1.file_size_bytes) as usize],
-            &[0xaa; 48]
+            &image.bytes[application.flash_offset as usize
+                ..(application.flash_offset + application.file_size_bytes) as usize],
+            &[0x34, 0x12, 0x00, 0xe8]
         );
         assert!(image.map().contains("application entry: 0003:0200"));
     }
@@ -991,14 +906,14 @@ mod tests {
     }
 
     #[test]
-    fn descriptor_scratch_range_is_reserved_against_all_sections() {
+    fn first_stage_work_area_is_reserved_against_all_sections() {
         let mut spec = example_spec();
-        spec.sections[2].destination =
+        spec.sections[1].destination =
             PhysicalWordAddress::new(STAGE0_DESCRIPTOR_SCRATCH_WORD - 16);
         assert!(matches!(
             build_boot_image(spec),
             Err(BootImageError::OverlappingSections { first, second })
-                if first == "bss" && second == "<stage0-descriptor-scratch>"
+                if first == "<stage0-work-area>" && second == "bss"
         ));
     }
 
@@ -1010,12 +925,12 @@ mod tests {
             build_boot_image(spec),
             Err(BootImageError::OverlappingSections {
                 first: "application".into(),
-                second: "stage1".into(),
+                second: "bss".into(),
             })
         );
 
         let mut spec = example_spec();
-        spec.sections[2].destination = PhysicalWordAddress::new(TANG_NANO_20K_SDRAM_WORDS - 16);
+        spec.sections[1].destination = PhysicalWordAddress::new(TANG_NANO_20K_SDRAM_WORDS - 16);
         assert!(matches!(
             build_boot_image(spec),
             Err(BootImageError::PhysicalMemoryExceeded { section, .. }) if section == "bss"

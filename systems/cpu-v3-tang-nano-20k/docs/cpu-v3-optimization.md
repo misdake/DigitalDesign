@@ -42,6 +42,7 @@ described by each Stage.
 | 11 | Complete, 2026-09-01 | Added a one-entry asynchronous store. A scalar store retires immediately and its data-port request/response runs in the background, overlapping ALU and other non-memory instructions; later memory operations wait on the single store buffer. | Full system: 10,025 Logic; 4 DPB + 1 SDPB + 2 pROM; CPU 56.51 MHz |
 | 12 | Complete, 2026-09-01 | Added a conservative two-stage frontend: single-cycle integer ALU/immediate/control instructions overlap their fetch with the preceding execute, and a registered GPR forwarding path lets back-to-back dependent instructions observe the pending write. Loads, stores with a busy buffer, branches/jumps, devices, multiply, and FPU remain barriers. | Full system: 10,100 Logic; 4 DPB + 1 SDPB + 2 pROM; CPU 56.230 MHz |
 | ISA 0.8 migration | Complete, 2026-09-11 | Breaking integer ISA revision (no new numbered Stage): destructive shift/multiply family at major 2, extended/system family at major 6, device access at major 7, symmetric branch/conditional-move/jump family at major B, `IMMHI12` renamed to neutral `PFX12`, `HALT` replaced by `SIGNAL r0, 0`, majors C/E reserved. Encoding, simulators, handwritten RTL, RCC backend, debugger decoding, and boot assets switched at the same boundary. Stage0 is 461 words (fits the 1024-word boot window); integer side keeps one `MULT18X18`. | Full system: 10,436 Logic; 4 DPB + 1 SDPB + 2 pROM; 2 x MULT18X18; CPU 55.597 MHz, zero setup/hold TNS |
+| Single-stage boot merge | Complete, 2026-09-12 | Folded the former Stage1 into the BSRAM first stage: one image validates the descriptor and manifest and loads the reset-selected application, so the Stage1 image, the descriptor mirroring, and the duplicate DMA/UART/handoff code disappear. Container format version 4 reserves the former Stage1 descriptor fields; the error ABI uses stage `1` throughout and the boot-progress phases collapse to BOOT/DMA/APPLICATION. A manifest section-count bound closes the 16-bit `count << 5` wrap in the size check. | Merged Stage0 673 words (fits the 1024-word BSRAM boot window). Full system: 10,269 Logic; 4 DPB + 1 SDPB + 2 pROM; 2 x MULT18X18; CPU 54.522 MHz, zero setup/hold TNS |
 
 Starting with System consolidation, PnR evidence is always taken from the complete `cpu_v3_system`
 containing the CPU, boot path, SDRAM controller, and display path. Every subsequent completed stage
@@ -64,6 +65,8 @@ from the same single multiplier through a constant-indexed part-select. Boot ass
 the same RCC sources: Stage0 461 words, Stage1 555 words, S1 application 79 words, S2 application
 736 words; the Stage0 FNV-1a baseline is re-pinned in `build.rs`. A fresh run of the frozen
 benchmark suite under the new ISA is reported separately, not folded into the Stage-to-Stage table.
+The later single-stage boot merge (see the table) supersedes that asset set: the board now carries
+one 673-word first stage and no Stage1 binary, and the FNV-1a baseline is re-pinned again.
 
 ## Ordered major tasks
 

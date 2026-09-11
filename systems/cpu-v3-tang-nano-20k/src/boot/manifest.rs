@@ -12,8 +12,6 @@ use crate::PhysicalWordAddress;
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct PackManifest {
     pub target: BootTarget,
-    pub stage1_section: String,
-    pub stage1_entry: BootEntry,
     pub application_entry: BootEntry,
     pub sections: Vec<ManifestSection>,
 }
@@ -51,8 +49,6 @@ impl PackManifest {
     pub fn parse(text: &str) -> Result<Self, ManifestError> {
         let mut version = None;
         let mut target = None;
-        let mut stage1_section = None;
-        let mut stage1_entry = None;
         let mut application_entry = None;
         let mut sections = vec![];
 
@@ -85,24 +81,6 @@ impl PackManifest {
                         }
                     };
                     set_once(&mut target, value, "target", line_number)?;
-                }
-                "stage1-section" => {
-                    expect_fields(&fields, 2, line_number)?;
-                    set_once(
-                        &mut stage1_section,
-                        fields[1].to_owned(),
-                        "stage1-section",
-                        line_number,
-                    )?;
-                }
-                "stage1-entry" => {
-                    expect_fields(&fields, 5, line_number)?;
-                    set_once(
-                        &mut stage1_entry,
-                        parse_entry(&fields[1..], line_number)?,
-                        "stage1-entry",
-                        line_number,
-                    )?;
                 }
                 "application-entry" => {
                     expect_fields(&fields, 5, line_number)?;
@@ -149,8 +127,6 @@ impl PackManifest {
         required(version, "format")?;
         Ok(Self {
             target: required(target, "target")?,
-            stage1_section: required(stage1_section, "stage1-section")?,
-            stage1_entry: required(stage1_entry, "stage1-entry")?,
             application_entry: required(application_entry, "application-entry")?,
             sections,
         })
@@ -185,8 +161,6 @@ impl PackManifest {
         }
         Ok(BootImageSpec {
             target: self.target,
-            stage1_section: self.stage1_section,
-            stage1_entry: self.stage1_entry,
             application_entry: self.application_entry,
             sections,
         })
@@ -286,10 +260,7 @@ mod tests {
     const EXAMPLE: &str = "\
 format 1
 target tang-nano-20k
-stage1-section loader
-stage1-entry 0x1 0x100 0x2 0xf000
 application-entry 3 0x200 4 0xe000
-load loader 0x10100 rx 32 64 stage1.bin
 load code 0x30200 rx 32 4 game.bin
 zero bss 0x44000 rw 32 128
 ";
@@ -297,12 +268,10 @@ zero bss 0x44000 rw 32 128
     #[test]
     fn parses_the_dependency_free_manifest_format() {
         let parsed = PackManifest::parse(EXAMPLE).unwrap();
-        assert_eq!(parsed.stage1_section, "loader");
-        assert_eq!(parsed.stage1_entry.code_segment, 1);
         assert_eq!(parsed.application_entry.offset, 0x200);
-        assert_eq!(parsed.sections.len(), 3);
+        assert_eq!(parsed.sections.len(), 2);
         assert_eq!(parsed.sections[0].flags, SECTION_READ | SECTION_EXECUTE);
-        assert_eq!(parsed.sections[2].kind, SectionKind::Zero);
+        assert_eq!(parsed.sections[1].kind, SectionKind::Zero);
     }
 
     #[test]

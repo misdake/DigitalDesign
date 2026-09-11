@@ -3,11 +3,14 @@
 use crate::{Hardware, Module, ModuleIo};
 use digital_design_circuit::{CircuitWires, Wire, Wires};
 
+// Phase values are a stable observation/ABI numbering, not a contiguous
+// sequence: the former Stage1 phase (4) was removed by the single-stage boot
+// merge and is left unused, and 7 is the sticky-error phase. The 6-bit LED
+// patterns stay aligned with the documented boot-progress table.
 pub const BOOT_PHASE_RESET: u8 = 0;
 pub const BOOT_PHASE_WAIT_SDRAM: u8 = 1;
-pub const BOOT_PHASE_STAGE0: u8 = 2;
+pub const BOOT_PHASE_BOOT: u8 = 2;
 pub const BOOT_PHASE_DMA: u8 = 3;
-pub const BOOT_PHASE_STAGE1: u8 = 4;
 pub const BOOT_PHASE_APPLICATION: u8 = 5;
 pub const BOOT_PHASE_ERROR: u8 = 7;
 
@@ -76,9 +79,10 @@ impl BootProgressMonitorState {
 
 /// Reports the current boot state without controlling or delaying boot.
 ///
-/// DMA is shown as its own phase while Stage0 is loading Stage1. DMA performed
-/// by Stage1 remains a Stage1 activity, so the semantic phase does not regress.
-/// The first software LED write takes ownership immediately and until reset.
+/// The single first stage runs from code segment 0; DMA is shown as its own
+/// phase while that stage loads the application sections. Any other code
+/// segment is the application. The first software LED write takes ownership
+/// immediately and until reset.
 #[derive(Hardware)]
 #[hardware(namespace = "systems/cpu_v3_tang_nano_20k/diagnostics")]
 pub struct BootProgressMonitor;
@@ -150,9 +154,7 @@ fn observed_phase(sdram_ready: bool, dma_busy: bool, code_segment: u16) -> u8 {
     } else if code_segment == 0 && dma_busy {
         BOOT_PHASE_DMA
     } else if code_segment == 0 {
-        BOOT_PHASE_STAGE0
-    } else if code_segment == 1 {
-        BOOT_PHASE_STAGE1
+        BOOT_PHASE_BOOT
     } else {
         BOOT_PHASE_APPLICATION
     }
@@ -162,9 +164,8 @@ fn phase_leds(phase: u8) -> u8 {
     match phase {
         BOOT_PHASE_RESET => 0b00_0001,
         BOOT_PHASE_WAIT_SDRAM => 0b00_0010,
-        BOOT_PHASE_STAGE0 => 0b00_0100,
+        BOOT_PHASE_BOOT => 0b00_0100,
         BOOT_PHASE_DMA => 0b00_1000,
-        BOOT_PHASE_STAGE1 => 0b01_0000,
         BOOT_PHASE_APPLICATION => 0b10_0000,
         _ => 0b10_0001,
     }
@@ -180,9 +181,8 @@ mod tests {
         assert_eq!(state.phase(false, false, false, false, false, 0), 1);
         assert_eq!(state.phase(false, true, false, false, false, 0), 2);
         assert_eq!(state.phase(false, true, true, false, false, 0), 3);
-        assert_eq!(state.phase(false, true, false, false, false, 1), 4);
-        assert_eq!(state.phase(false, true, true, false, false, 1), 4);
         assert_eq!(state.phase(false, true, false, false, false, 3), 5);
+        assert_eq!(state.phase(false, true, false, false, false, 7), 5);
     }
 
     #[test]

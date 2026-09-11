@@ -6,8 +6,8 @@ use super::{
     BootDescriptor, BootEntry, BootImageError, BootManifest, BootTarget, SectionKind,
     SectionRecord, BOOT_DESCRIPTOR_SIZE, BOOT_MANIFEST_HEADER_SIZE, BOOT_SECTION_RECORD_SIZE,
     DMA_ERROR_FILE_LARGER_THAN_MEMORY, DMA_ERROR_FLASH_RANGE, DMA_ERROR_MEMORY_RANGE,
-    D_INVALIDATE_ALL, ICACHE_INVALIDATE_ALL_DELAYED, SECTION_EXECUTE, STAGE1_HANDOFF_OFFSET,
-    STAGE1_HANDOFF_SIZE_BYTES, SYSCTL_LED, SYSCTL_UART, SYSTEM_CONTROL_DEVICE,
+    D_INVALIDATE_ALL, ICACHE_INVALIDATE_ALL_DELAYED, SECTION_EXECUTE, SYSCTL_LED, SYSCTL_UART,
+    SYSTEM_CONTROL_DEVICE,
 };
 use crate::{
     device_send, jump_segment, load_immediate16, write_data_segment, CpuV3Sim, PhysicalWordAddress,
@@ -18,6 +18,14 @@ use crate::{
 /// descriptor (32 words) before validating it. The packer reserves this range
 /// against every section.
 pub const STAGE0_DESCRIPTOR_SCRATCH_WORD: u32 = 0x0000_0040;
+
+/// Size in bytes of the single first stage's reserved data-segment work area.
+///
+/// `rcc/stage0.rs` keeps its 192-word `MANIFEST` static buffer at data-segment
+/// word 0 (which contains the descriptor scratch at word `0x40`). The packer
+/// reserves `0 .. STAGE0_WORK_AREA_BYTES` so a loadable section can never
+/// overwrite the descriptor or the manifest mid-boot.
+pub const STAGE0_WORK_AREA_BYTES: u32 = 384;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct DmaCommand {
@@ -188,7 +196,6 @@ pub enum LoaderError {
         descriptor: u32,
         manifest: u32,
     },
-    Stage1RecordMismatch,
     InvalidSection {
         index: usize,
         reason: &'static str,
@@ -204,10 +211,6 @@ pub enum LoaderError {
         stage: &'static str,
         data_segment: Word,
         stack_offset: Word,
-    },
-    InvalidStage1Handoff {
-        expected: PhysicalWordAddress,
-        found: PhysicalWordAddress,
     },
     ProgramLoad(ProgramLoadError),
 }
@@ -237,9 +240,6 @@ impl fmt::Display for LoaderError {
                 f,
                 "manifest package size {manifest:#x} differs from descriptor size {descriptor:#x}"
             ),
-            Self::Stage1RecordMismatch => {
-                write!(f, "manifest does not contain exactly one matching Stage1 section")
-            }
             Self::InvalidSection { index, reason } => {
                 write!(f, "section {index} is invalid: {reason}")
             }
@@ -258,12 +258,6 @@ impl fmt::Display for LoaderError {
             } => write!(
                 f,
                 "{stage} initial stack {data_segment:04x}:{stack_offset:04x} is outside usable physical data memory"
-            ),
-            Self::InvalidStage1Handoff { expected, found } => write!(
-                f,
-                "Stage1 handoff destination is {:#010x}; expected {:#010x} from its data segment",
-                found.get(),
-                expected.get()
             ),
             Self::ProgramLoad(error) => write!(
                 f,
@@ -294,9 +288,9 @@ impl From<ProgramLoadError> for LoaderError {
     }
 }
 
-/// Boot stage identifiers for the error reporting ABI.
+/// Boot stage identifier for the error reporting ABI: the single first
+/// stage that runs from the BSRAM boot window.
 pub const BOOT_ERROR_STAGE0: u8 = 1;
-pub const BOOT_ERROR_STAGE1: u8 = 2;
 
 /// Boot failure categories for the error reporting ABI.
 pub const BOOT_ERROR_DESCRIPTOR: u8 = 1;
@@ -309,7 +303,7 @@ pub const BOOT_ERROR_INTERNAL: u8 = 5;
 /// LEDs and a repeating 10-byte UART frame with the detail.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct BootErrorReport {
-    /// `BOOT_ERROR_STAGE0` or `BOOT_ERROR_STAGE1`.
+    /// Always `BOOT_ERROR_STAGE0` for the single first stage.
     pub stage: u8,
     pub category: u8,
     /// Stable per-variant code within the category.
@@ -354,31 +348,21 @@ impl BootErrorReport {
 impl LoaderError {
     /// Maps a reference-loader failure onto the boot error reporting ABI.
     ///
-    /// The stage is the one whose validation failed in the reference flow.
-    /// Variants shared between stages default to Stage0; an on-hardware
-    /// Stage1 substitutes `BOOT_ERROR_STAGE1` for its own DMA and
-    /// entry-validation failures.
+    /// The merged single first stage reports every failure with the same
+    /// stage code; the category still distinguishes descriptor, manifest,
+    /// DMA, entry, and internal faults.
     pub fn boot_report(&self) -> BootErrorReport {
         let (stage, category, code) = match self {
             Self::Format(_) => (BOOT_ERROR_STAGE0, BOOT_ERROR_DESCRIPTOR, 1),
             Self::TargetMismatch { .. } => (BOOT_ERROR_STAGE0, BOOT_ERROR_DESCRIPTOR, 2),
             Self::PackageLargerThanFlash { .. } => (BOOT_ERROR_STAGE0, BOOT_ERROR_DESCRIPTOR, 3),
             Self::ExtentOutsidePackage(_) => (BOOT_ERROR_STAGE0, BOOT_ERROR_DESCRIPTOR, 4),
-            Self::ManifestPackageSizeMismatch { .. } => (BOOT_ERROR_STAGE1, BOOT_ERROR_MANIFEST, 1),
-            Self::Stage1RecordMismatch => (BOOT_ERROR_STAGE1, BOOT_ERROR_MANIFEST, 2),
-            Self::InvalidSection { .. } => (BOOT_ERROR_STAGE1, BOOT_ERROR_MANIFEST, 3),
-            Self::OverlappingSections { .. } => (BOOT_ERROR_STAGE1, BOOT_ERROR_MANIFEST, 4),
+            Self::ManifestPackageSizeMismatch { .. } => (BOOT_ERROR_STAGE0, BOOT_ERROR_MANIFEST, 1),
+            Self::InvalidSection { .. } => (BOOT_ERROR_STAGE0, BOOT_ERROR_MANIFEST, 3),
+            Self::OverlappingSections { .. } => (BOOT_ERROR_STAGE0, BOOT_ERROR_MANIFEST, 4),
             Self::Dma(_) => (BOOT_ERROR_STAGE0, BOOT_ERROR_DMA, 1),
-            Self::InvalidInitialStack { stage, .. } => (
-                match *stage {
-                    "application" => BOOT_ERROR_STAGE1,
-                    _ => BOOT_ERROR_STAGE0,
-                },
-                BOOT_ERROR_ENTRY,
-                1,
-            ),
+            Self::InvalidInitialStack { .. } => (BOOT_ERROR_STAGE0, BOOT_ERROR_ENTRY, 1),
             Self::EntryOutsideExecutableSection { .. } => (BOOT_ERROR_STAGE0, BOOT_ERROR_ENTRY, 2),
-            Self::InvalidStage1Handoff { .. } => (BOOT_ERROR_STAGE0, BOOT_ERROR_ENTRY, 3),
             Self::ProgramLoad(_) => (BOOT_ERROR_STAGE0, BOOT_ERROR_INTERNAL, 1),
         };
         BootErrorReport {
@@ -402,17 +386,12 @@ fn dma_error_detail(error: &LoaderError) -> u16 {
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub struct Stage0Handoff {
-    pub descriptor: BootDescriptor,
-}
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct ApplicationHandoff {
     pub entry: BootEntry,
 }
 
 impl ApplicationHandoff {
-    /// Canonical final sequence used by Stage1 after its last memory access.
+    /// Canonical final sequence used by Stage0 after its last memory access.
     ///
     /// DMA-filled memory may alias stale cache lines. Invalidate D-cache before
     /// preparing the new execution context, then emit the registered delayed
@@ -433,11 +412,18 @@ impl ApplicationHandoff {
     }
 }
 
-pub fn run_stage0(
+/// Runs the complete reference boot flow of the merged single first stage:
+/// DMA the descriptor into the reserved scratch range, validate it, validate
+/// the section manifest, and DMA every section of the application.
+///
+/// The manifest is decoded directly from the Flash slice as a host
+/// convenience; on hardware Stage0 DMAs the manifest into its own static
+/// buffer first and parses that copy.
+pub fn run_boot(
     flash: &[u8],
     memory: &mut CpuV3Sim,
     expected_target: BootTarget,
-) -> Result<Stage0Handoff, LoaderError> {
+) -> Result<ApplicationHandoff, LoaderError> {
     // Real hardware has no direct Flash read path: Stage0 DMAs the fixed
     // 64-byte descriptor into the reserved scratch range and validates the
     // SDRAM copy.
@@ -459,34 +445,8 @@ pub fn run_stage0(
     let descriptor_bytes: [u8; BOOT_DESCRIPTOR_SIZE] =
         std::array::from_fn(|index| descriptor_words[index / 2].to_le_bytes()[index % 2]);
     let descriptor = BootDescriptor::decode(&descriptor_bytes)?;
-    validate_stage0_descriptor(&descriptor, flash, memory, expected_target)?;
-    run_dma(
-        flash,
-        memory,
-        DmaCommand {
-            flash_offset: descriptor.stage1_flash_offset,
-            destination: descriptor.stage1_destination,
-            file_size_bytes: descriptor.stage1_file_size_bytes,
-            memory_size_bytes: descriptor.stage1_memory_size_bytes,
-        },
-    )?;
-    // Mirror the descriptor into the Stage1 handoff range, now a plain
-    // memory-to-memory copy of the scratch words.
-    memory.load_physical(descriptor.stage1_handoff_destination, &descriptor_words)?;
-    Ok(Stage0Handoff { descriptor })
-}
+    validate_boot_descriptor(&descriptor, flash, memory, expected_target)?;
 
-/// Runs the reference Stage1 flow on top of a completed Stage0 handoff.
-///
-/// The manifest is decoded directly from the Flash slice as a host
-/// convenience; on hardware Stage1 DMAs the manifest into its own static
-/// buffer first and parses that copy.
-pub fn run_stage1(
-    flash: &[u8],
-    memory: &mut CpuV3Sim,
-    stage0: Stage0Handoff,
-) -> Result<ApplicationHandoff, LoaderError> {
-    let descriptor = stage0.descriptor;
     let manifest_end = extent_end(
         descriptor.manifest_flash_offset,
         descriptor.manifest_size_bytes,
@@ -499,9 +459,6 @@ pub fn run_stage1(
     validate_manifest(&descriptor, &manifest, memory.physical_memory_words())?;
 
     for section in &manifest.sections {
-        if matches_stage1(section, &descriptor) {
-            continue;
-        }
         run_dma(flash, memory, command_for_section(*section))?;
     }
     Ok(ApplicationHandoff {
@@ -531,7 +488,7 @@ fn command_for_section(section: SectionRecord) -> DmaCommand {
     }
 }
 
-fn validate_stage0_descriptor(
+fn validate_boot_descriptor(
     descriptor: &BootDescriptor,
     flash: &[u8],
     memory: &CpuV3Sim,
@@ -543,25 +500,6 @@ fn validate_stage0_descriptor(
             found: descriptor.target,
         });
     }
-    let expected_handoff = PhysicalWordAddress::from_segment_offset(
-        descriptor.stage1_entry.data_segment,
-        STAGE1_HANDOFF_OFFSET,
-    );
-    if descriptor.stage1_handoff_destination != expected_handoff {
-        return Err(LoaderError::InvalidStage1Handoff {
-            expected: expected_handoff,
-            found: descriptor.stage1_handoff_destination,
-        });
-    }
-    let handoff_end = u64::from(descriptor.stage1_handoff_destination.get())
-        + u64::from(STAGE1_HANDOFF_SIZE_BYTES.div_ceil(2));
-    if handoff_end > memory.physical_memory_words() as u64 {
-        return Err(LoaderError::Dma(DmaError::PhysicalMemoryExceeded {
-            destination: descriptor.stage1_handoff_destination,
-            memory_bytes: STAGE1_HANDOFF_SIZE_BYTES,
-            available_words: memory.physical_memory_words(),
-        }));
-    }
     if descriptor.package_size_bytes as usize > flash.len() {
         return Err(LoaderError::PackageLargerThanFlash {
             package_bytes: descriptor.package_size_bytes,
@@ -569,38 +507,23 @@ fn validate_stage0_descriptor(
         });
     }
     extent_end(
-        descriptor.stage1_flash_offset,
-        descriptor.stage1_file_size_bytes,
-        descriptor.package_size_bytes,
-        "Stage1 Flash",
-    )?;
-    extent_end(
         descriptor.manifest_flash_offset,
         descriptor.manifest_size_bytes,
         descriptor.package_size_bytes,
         "manifest",
     )?;
+    // The on-hardware first stage DMAs the manifest into its own static buffer
+    // at data-segment word 0 (segment 0). The host reference decodes the
+    // manifest from the Flash slice instead, so this is only a range check
+    // against that destination; end-to-end tests run the real RCC stage.
     validate_dma(
         DmaCommand {
-            flash_offset: descriptor.stage1_flash_offset,
-            destination: descriptor.stage1_destination,
-            file_size_bytes: descriptor.stage1_file_size_bytes,
-            memory_size_bytes: descriptor.stage1_memory_size_bytes,
+            flash_offset: descriptor.manifest_flash_offset,
+            destination: PhysicalWordAddress::new(0),
+            file_size_bytes: descriptor.manifest_size_bytes,
+            memory_size_bytes: descriptor.manifest_size_bytes,
         },
         descriptor.package_size_bytes as usize,
-        memory.physical_memory_words(),
-    )?;
-    let entry_byte = descriptor.stage1_entry.physical_entry().byte_address();
-    let start = descriptor.stage1_destination.byte_address();
-    let end = start + u64::from(descriptor.stage1_file_size_bytes);
-    if entry_byte < start || entry_byte >= end {
-        return Err(LoaderError::EntryOutsideExecutableSection {
-            address: descriptor.stage1_entry.physical_entry(),
-        });
-    }
-    validate_initial_stack(
-        "stage1",
-        descriptor.stage1_entry,
         memory.physical_memory_words(),
     )?;
     Ok(())
@@ -624,7 +547,6 @@ fn validate_manifest(
         return Err(LoaderError::ExtentOutsidePackage("manifest size"));
     }
     let mut ranges = vec![];
-    let mut stage1_matches = 0;
     for (index, section) in manifest.sections.iter().copied().enumerate() {
         if section.alignment_bytes == 0 || !section.alignment_bytes.is_power_of_two() {
             return Err(LoaderError::InvalidSection {
@@ -668,9 +590,6 @@ fn validate_manifest(
         let start = section.destination.byte_address();
         let end = start + u64::from(section.memory_size_bytes);
         ranges.push((start, end, index));
-        if matches_stage1(&section, descriptor) {
-            stage1_matches += 1;
-        }
     }
     ranges.sort_by_key(|range| range.0);
     for pair in ranges.windows(2) {
@@ -680,9 +599,6 @@ fn validate_manifest(
                 second: pair[1].2,
             });
         }
-    }
-    if stage1_matches != 1 {
-        return Err(LoaderError::Stage1RecordMismatch);
     }
     validate_initial_stack(
         "application",
@@ -694,7 +610,6 @@ fn validate_manifest(
     let executable = manifest.sections.iter().any(|section| {
         section.kind == SectionKind::Load
             && section.flags & SECTION_EXECUTE != 0
-            && !matches_stage1(section, descriptor)
             && entry_byte >= section.destination.byte_address()
             && entry_byte < section.destination.byte_address() + u64::from(section.file_size_bytes)
     });
@@ -702,15 +617,6 @@ fn validate_manifest(
         return Err(LoaderError::EntryOutsideExecutableSection { address: entry });
     }
     Ok(())
-}
-
-fn matches_stage1(section: &SectionRecord, descriptor: &BootDescriptor) -> bool {
-    section.kind == SectionKind::Load
-        && section.flags & SECTION_EXECUTE != 0
-        && section.flash_offset == descriptor.stage1_flash_offset
-        && section.destination == descriptor.stage1_destination
-        && section.file_size_bytes == descriptor.stage1_file_size_bytes
-        && section.memory_size_bytes == descriptor.stage1_memory_size_bytes
 }
 
 fn validate_initial_stack(
@@ -817,13 +723,6 @@ mod tests {
         let application = words_bytes(&[load(0, 0, 0), halt()]);
         build_boot_image(BootImageSpec {
             target: BootTarget::TangNano20K,
-            stage1_section: "stage1".into(),
-            stage1_entry: BootEntry {
-                code_segment: 1,
-                offset: 0x0100,
-                data_segment: 2,
-                stack_offset: 0xf000,
-            },
             application_entry: BootEntry {
                 code_segment: 3,
                 offset: 0x0200,
@@ -831,13 +730,6 @@ mod tests {
                 stack_offset: 0xe000,
             },
             sections: vec![
-                section(
-                    "stage1",
-                    0x0001_0100,
-                    vec![0xaa; 64],
-                    96,
-                    SECTION_READ | SECTION_EXECUTE,
-                ),
                 section(
                     "application",
                     0x0003_0200,
@@ -906,33 +798,24 @@ mod tests {
     }
 
     #[test]
-    fn stage0_and_stage1_load_then_enter_the_segmented_application() {
+    fn boot_dma_loads_then_enters_the_segmented_application() {
         let flash = image();
         let mut memory = CpuV3Sim::default();
-        let stage0 = run_stage0(&flash, &mut memory, BootTarget::TangNano20K).unwrap();
-        // Stage0 read the descriptor through DMA into the scratch range.
+        // Prime the zero section to prove the DMA zero-fills its extent.
+        memory
+            .load_physical(PhysicalWordAddress::new(0x0004_0100), &[0xffff; 32])
+            .unwrap();
+        let handoff = run_boot(&flash, &mut memory, BootTarget::TangNano20K).unwrap();
+        // run_boot read the descriptor through DMA into the scratch range.
         assert_eq!(
             memory.physical_memory(PhysicalWordAddress::new(STAGE0_DESCRIPTOR_SCRATCH_WORD)),
             u16::from_le_bytes(*b"CP")
         );
+        // Every section was loaded by the first stage.
         assert_eq!(
-            memory.physical_memory(PhysicalWordAddress::new(0x0001_0100)),
-            0xaaaa
+            memory.physical_memory(handoff.entry.physical_entry()),
+            load(0, 0, 0)
         );
-        assert_eq!(
-            memory.physical_memory(PhysicalWordAddress::new(0x0001_012f)),
-            0
-        );
-        let encoded_descriptor = stage0.descriptor.encode();
-        assert_eq!(
-            memory.physical_memory(stage0.descriptor.stage1_handoff_destination),
-            u16::from_le_bytes([encoded_descriptor[0], encoded_descriptor[1]])
-        );
-
-        memory
-            .load_physical(PhysicalWordAddress::new(0x0004_0100), &[0xffff; 32])
-            .unwrap();
-        let application = run_stage1(&flash, &mut memory, stage0).unwrap();
         assert_eq!(
             memory.physical_memory(PhysicalWordAddress::new(0x0004_0000)),
             0xbeef
@@ -945,7 +828,7 @@ mod tests {
             memory.physical_memory(PhysicalWordAddress::new(0x0004_0100)),
             0
         );
-        memory.load_program(0, &application.instructions()).unwrap();
+        memory.load_program(0, &handoff.instructions()).unwrap();
         assert_eq!(
             memory.load_physical(PhysicalWordAddress::new(0x0004_0000), &[0x5a5a]),
             Ok(())
@@ -985,17 +868,17 @@ mod tests {
     }
 
     #[test]
-    fn a_descriptor_with_bad_magic_is_rejected_before_any_stage1_dma() {
+    fn a_descriptor_with_bad_magic_is_rejected_before_any_section_dma() {
         let mut flash = image();
         flash[0] ^= 1;
         let mut memory = CpuV3Sim::default();
-        let error = run_stage0(&flash, &mut memory, BootTarget::TangNano20K).unwrap_err();
+        let error = run_boot(&flash, &mut memory, BootTarget::TangNano20K).unwrap_err();
         assert!(matches!(
             error,
             LoaderError::Format(BootImageError::InvalidMagic("descriptor"))
         ));
         assert_eq!(
-            memory.physical_memory(PhysicalWordAddress::new(0x0001_0100)),
+            memory.physical_memory(PhysicalWordAddress::new(0x0004_0000)),
             0
         );
     }
@@ -1031,8 +914,8 @@ mod tests {
         };
         assert_eq!(
             stack_error.boot_report().stage,
-            BOOT_ERROR_STAGE1,
-            "application stack validation belongs to Stage1"
+            BOOT_ERROR_STAGE0,
+            "application stack validation belongs to the single first stage"
         );
     }
 

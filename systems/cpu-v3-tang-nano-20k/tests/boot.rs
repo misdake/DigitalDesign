@@ -1,4 +1,4 @@
-//! End-to-end CpuV3 two-stage boot: the real rcc Stage0/Stage1/demo programs
+//! End-to-end CpuV3 single-stage boot: the real rcc Stage0 and demo programs
 //! are compiled with the CpuV3 backend, packed into a boot image with the
 //! `cpu-v3-pack` builder, and executed on the `cpu_v3::sim::CpuV3Sim` oracle from
 //! reset (CSEG=0, PC=0). Device models attached to the machine's device bus
@@ -10,7 +10,7 @@ use cpu_v3::{decode, CpuV3Sim, FpuOp, FpuUnaryOp, Instruction};
 use cpu_v3_tang_nano_20k::boot::{
     BootDmaDevice, BootErrorReport, BootSelectDevice, BootTarget, SystemControlDevice,
     CACHE_MAINTENANCE_STATUS, D_CLEAN_ALL, S1_APPLICATION_LAYOUT, S2_APPLICATION_LAYOUT,
-    STAGE1_LAYOUT, SYSTEM_CONTROL_DEVICE,
+    SYSTEM_CONTROL_DEVICE,
 };
 use cpu_v3_tang_nano_20k::{
     DisplayDevice, DISPLAY_CONTROL, DISPLAY_DEVICE, DISPLAY_FRAMEBUFFER_HIGH,
@@ -208,19 +208,10 @@ fn display_swap_waits_for_dcache_clean_before_publishing_the_back_buffer() {
 }
 
 /// Loads the package generated from the declarative application project and
-/// recompiles both boot stages for focused handoff assertions.
+/// recompiles the single boot stage for focused handoff assertions.
 fn boot_setup() -> (Vec<u8>, CpuV3Program) {
     let stage0 = compile_cpu_v3("stage0.rs", &CompilerOptions::default());
-    let stage1 = compile_cpu_v3(
-        "stage1.rs",
-        &CompilerOptions {
-            code_base: STAGE1_LAYOUT.entry.offset,
-            stack_init: STAGE1_LAYOUT.entry.stack_offset,
-            ..CompilerOptions::default()
-        },
-    );
     assert_canonical_cache_handoff("Stage0", &stage0.words);
-    assert_canonical_cache_handoff("Stage1", &stage1.words);
     // Stage0 must fit the BSRAM boot window (physical instruction words
     // 0x0000..0x03ff).
     assert!(
@@ -290,9 +281,10 @@ fn button_01_boots_the_primary_application_from_flash() {
     );
     assert_eq!(sysctl.uart[..8], frame);
     assert_eq!(sysctl.uart[8..16], frame);
-    // Both stages invalidate both caches before their segment switch.
-    assert_eq!(sysctl.icache_invalidations, 2);
-    assert_eq!(sysctl.dcache_invalidations, 2);
+    // The single first stage invalidates both caches once before its segment
+    // switch.
+    assert_eq!(sysctl.icache_invalidations, 1);
+    assert_eq!(sysctl.dcache_invalidations, 1);
     // The demo starts its six-LED bounce at the rightmost logical LED. The
     // bounded model run observes this first position before the visual delay.
     assert_eq!(sysctl.led, Some(0b00_0001));
@@ -330,9 +322,14 @@ fn button_10_boots_the_fpu_display_application_from_flash() {
         machine.code_segment(),
         S2_APPLICATION_LAYOUT.entry.code_segment
     );
-    assert_eq!(
-        machine.data_segment(),
-        S2_APPLICATION_LAYOUT.entry.data_segment
+    // The display application transiently selects its framebuffer segment
+    // (0x20, `FB_A_SEGMENT` in `rcc/display-demo.rs`) around each SDRAM store
+    // and restores data segment 0 afterward, so a bounded run may end in
+    // either state. It must never still be in a boot/cache segment.
+    let data_segment = machine.data_segment();
+    assert!(
+        data_segment == S2_APPLICATION_LAYOUT.entry.data_segment || data_segment == 0x20,
+        "unexpected S2 data segment {data_segment:#06x}"
     );
     assert_eq!(
         machine.physical_memory(S1_APPLICATION_LAYOUT.destination()),
@@ -344,8 +341,8 @@ fn button_10_boots_the_fpu_display_application_from_flash() {
         0xdead
     );
     let sysctl = machine.device::<SystemControlDevice>(0).unwrap();
-    assert_eq!(sysctl.icache_invalidations, 2);
-    assert_eq!(sysctl.dcache_invalidations, 2);
+    assert_eq!(sysctl.icache_invalidations, 1);
+    assert_eq!(sysctl.dcache_invalidations, 1);
 }
 
 #[test]
@@ -377,14 +374,14 @@ fn a_corrupt_descriptor_magic_reports_stage0_category1() {
 }
 
 #[test]
-fn a_corrupt_manifest_magic_reports_stage1_category2() {
+fn a_corrupt_manifest_magic_reports_boot_category2() {
     let (mut flash, stage0) = boot_setup();
     let base = BootTarget::TangNano20K.payload_flash_offset() as usize;
     flash[base + 64] ^= 1; // break the "CPU3SECT" magic
     let machine = run_boot(flash, &stage0, 0, 200_000);
 
     let report = BootErrorReport {
-        stage: 2,
+        stage: 1,
         category: 2,
         code: 6,
         detail: 0,
@@ -400,7 +397,32 @@ fn a_corrupt_manifest_magic_reports_stage1_category2() {
     assert_eq!(sysctl.uart[..10], frame);
     assert_eq!(sysctl.uart[10..20], frame);
 
-    // Stage0 handed off successfully, but Stage1 rejected its manifest before
-    // entering the application segment.
-    assert_eq!(machine.code_segment(), 1);
+    // The single first stage rejected its manifest before entering the
+    // application segment.
+    assert_eq!(machine.code_segment(), 0);
+}
+
+#[test]
+fn an_oversized_manifest_section_count_is_rejected_before_the_section_loop() {
+    let (mut flash, stage0) = boot_setup();
+    let base = BootTarget::TangNano20K.payload_flash_offset() as usize;
+    // Shrink the descriptor's manifest size to 48 bytes and set the manifest
+    // count to 2048, whose `count << 5` wraps to zero in 16-bit arithmetic.
+    // Without the explicit count bound this satisfies the size equation and the
+    // section loop reads past the 192-word manifest buffer.
+    flash[base + 48] = 48;
+    flash[base + 78] = 0x00;
+    flash[base + 79] = 0x08;
+    let machine = run_boot(flash, &stage0, 0, 100_000);
+
+    let report = BootErrorReport {
+        stage: 1,
+        category: 2,
+        code: 6,
+        detail: 0x0800,
+    };
+    let sysctl = machine.device::<SystemControlDevice>(0).unwrap();
+    assert_eq!(sysctl.led, Some(report.led()));
+    assert_eq!(sysctl.uart[..10], report.uart_frame());
+    assert_eq!(machine.code_segment(), 0);
 }

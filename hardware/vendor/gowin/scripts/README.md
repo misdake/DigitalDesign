@@ -30,7 +30,11 @@ read-only artifact checks, observation, and hardware mutation:
 | `Full` | Perform `Program`, then bounded VCP wait, capture, and protocol validation. |
 
 Supported profiles are the FPGA-alive `board-health` probe and the full CPU V3
-`cpu-v3-system` system (two-stage flash boot plus the SDRAM and HDMI datapaths).
+`cpu-v3-system` system (single-stage flash boot plus the SDRAM and HDMI datapaths).
+The board's selection latch powers up in the S2 slot, so `cpu-v3-system` boots the
+display application by default; the DDHT UART check (test ID `0x07`) comes from the
+S1 slider diagnostic, so hold the S1 button during reset before an `Observe`/`Full`
+capture when validating over UART.
 Every attempted run writes `target/board-validation/<profile>/<UTC>/evidence.json`,
 including failure stage, source/bitstream fingerprints, SHA-256 hashes, commit and dirty state.
 The runner never resets USB and never retries programming after a failure.
@@ -65,8 +69,8 @@ All DDHT projects transmit 8N1 at 115200 baud (27 MHz designs use divider
 
 `check_uart_status.ps1` validates raw UART captures containing repeated
 eight-byte DDHT status frames. It also decodes the CPU V3 boot ABI's ten-byte
-`CV3B` frames into Stage0/Stage1, descriptor/manifest/DMA/entry/internal
-category, code, and 16-bit detail. A valid boot-error frame always takes
+`CV3B` frames into stage, descriptor/manifest/DMA/entry/internal category, code,
+and 16-bit detail. A valid boot-error frame always takes
 precedence over apparent DDHT success and is reported as a DUT failure rather
 than framing or baud corruption. The checker rejects stale captures, frames
 for another test, and any reported failure. Because a raw serial capture can
@@ -100,7 +104,7 @@ Assigned test IDs:
 | ---: | --- |
 | `0x01` | Tang Nano 20K BSRAM shapes self-test |
 | `0x03` | Tang Nano 20K fitted SDRAM burst/refresh self-test |
-| `0x07` | CPU V3 full system two-stage flash boot (application reached) |
+| `0x07` | CPU V3 full system single-stage flash boot (application reached) |
 | `0x0a` | Tang Nano 20K board clock/button/UART transport health probe |
 
 The former CPU V3 CPU-execution (`0x04`), SDRAM (`0x05`), boot-DMA (`0x06`),

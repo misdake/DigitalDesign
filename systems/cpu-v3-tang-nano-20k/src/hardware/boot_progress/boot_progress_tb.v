@@ -34,9 +34,9 @@ initial begin
     expect_phase(2, 6'b000100);
     dma_busy = 1;
     expect_phase(3, 6'b001000);
-    code_segment = 1;
-    expect_phase(4, 6'b010000);
     dma_busy = 0;
+    code_segment = 1;
+    expect_phase(5, 6'b100000);
     code_segment = 3;
     expect_phase(5, 6'b100000);
 

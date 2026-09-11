@@ -48,7 +48,7 @@ function Invoke-CheckerCase {
 }
 
 $success = New-DdhtFrame 0x07 0
-$bootError = Add-XorChecksum ([byte[]](0x43, 0x56, 0x33, 0x42, 2, 2, 6, 0x34, 0x12))
+$bootError = Add-XorChecksum ([byte[]](0x43, 0x56, 0x33, 0x42, 1, 2, 6, 0x34, 0x12))
 
 $decoded = Invoke-CheckerCase "success" ([byte[]](@(0xaa) + $success + $success)) $true "ddht_success"
 if ($decoded.ddht_success_frames -ne 2 -or $decoded.boot_error_frames -ne 0) {
@@ -57,7 +57,7 @@ if ($decoded.ddht_success_frames -ne 2 -or $decoded.boot_error_frames -ne 0) {
 
 $decoded = Invoke-CheckerCase "boot-error" ([byte[]]($bootError + $bootError)) $false "boot_error"
 $errorReport = $decoded.boot_errors[0]
-if ($decoded.boot_error_frames -ne 2 -or $errorReport.stage_name -ne "Stage1" -or
+if ($decoded.boot_error_frames -ne 2 -or $errorReport.stage_name -ne "Stage0" -or
     $errorReport.category_name -ne "manifest" -or $errorReport.code -ne 6 -or
     $errorReport.detail -ne 0x1234 -or $errorReport.count -ne 2) {
     throw "boot-error case did not preserve its structured report"

@@ -8,7 +8,7 @@ mod boot;
 use boot::{
     build_boot_image, ApplicationLayout, BootApplicationProject, BootImageSpec, BootTarget,
     InputSection, SectionKind, S1_APPLICATION_LAYOUT, S2_APPLICATION_LAYOUT, SECTION_EXECUTE,
-    SECTION_READ, STAGE1_LAYOUT,
+    SECTION_READ,
 };
 use cpu_v3::rcc_backend::{self, CompilerOptions};
 use rcc::frontend::compile_program_named;
@@ -108,26 +108,15 @@ fn selection_source() -> String {
     )
 }
 
-fn pack_manifest(stage1_bytes: usize, s1_bytes: usize, s2_bytes: usize) -> String {
-    let stage1 = STAGE1_LAYOUT.entry;
+fn pack_manifest(s1_bytes: usize, s2_bytes: usize) -> String {
     let s1 = S1_APPLICATION_LAYOUT.entry;
     format!(
         "# Generated from {PROJECT_CONFIG}; paths are relative to this file.\n\
          format 1\n\
          target tang-nano-20k\n\
-         stage1-section {stage1_name}\n\
-         stage1-entry {stage1_cseg:#06x} {stage1_offset:#06x} {stage1_dseg:#06x} {stage1_sp:#06x}\n\
          application-entry {s1_cseg:#06x} {s1_offset:#06x} {s1_dseg:#06x} {s1_sp:#06x}\n\n\
-         load {stage1_name} {stage1_destination:#010x} rx 32 {stage1_bytes} {stage1_asset}\n\
          load {s1_name} {s1_destination:#010x} rx 32 {s1_bytes} {s1_asset}\n\
          load {s2_name} {s2_destination:#010x} rx 32 {s2_bytes} {s2_asset}\n",
-        stage1_name = STAGE1_LAYOUT.section_name,
-        stage1_cseg = stage1.code_segment,
-        stage1_offset = stage1.offset,
-        stage1_dseg = stage1.data_segment,
-        stage1_sp = stage1.stack_offset,
-        stage1_destination = STAGE1_LAYOUT.destination().get(),
-        stage1_asset = STAGE1_LAYOUT.asset_name,
         s1_name = S1_APPLICATION_LAYOUT.section_name,
         s1_cseg = s1.code_segment,
         s1_offset = s1.offset,
@@ -141,20 +130,9 @@ fn pack_manifest(stage1_bytes: usize, s1_bytes: usize, s2_bytes: usize) -> Strin
     )
 }
 
-fn project_map(
-    project: &BootApplicationProject,
-    stage1_bytes: &[u8],
-    s1_bytes: &[u8],
-    s2_bytes: &[u8],
-) -> String {
+fn project_map(project: &BootApplicationProject, s1_bytes: &[u8], s2_bytes: &[u8]) -> String {
     let mut text = format!("format=1\nconfig={PROJECT_CONFIG}\n");
     for (slot, source, layout, bytes) in [
-        (
-            "stage1",
-            Path::new("rcc/stage1.rs"),
-            STAGE1_LAYOUT,
-            stage1_bytes,
-        ),
         (
             "s1",
             project.s1_source.as_path(),
@@ -193,7 +171,6 @@ fn project_map(
 fn asset_bindings() -> String {
     let assets = [
         "stage0.v3bin",
-        STAGE1_LAYOUT.asset_name,
         S1_APPLICATION_LAYOUT.asset_name,
         S2_APPLICATION_LAYOUT.asset_name,
         "cpu-v3-boot.bin",
@@ -236,15 +213,10 @@ fn main() {
     let stage0 = compile(
         &root.join("rcc/stage0.rs"),
         &CompilerOptions::default(),
-        &[],
+        &[(SELECTION_MODULE, selection_path.as_path())],
     );
     let s1_application = compile(&s1_path, &options(S1_APPLICATION_LAYOUT), &[]);
     let s2_application = compile(&s2_path, &options(S2_APPLICATION_LAYOUT), &[]);
-    let stage1 = compile(
-        &root.join("rcc/stage1.rs"),
-        &options(STAGE1_LAYOUT),
-        &[(SELECTION_MODULE, selection_path.as_path())],
-    );
     let s2_simulator = compile(
         &s2_path,
         &CompilerOptions {
@@ -254,36 +226,37 @@ fn main() {
         &[],
     );
 
+    // The merged first stage must fit the 0x400-word BSRAM boot window.
+    assert!(
+        stage0.len() < 0x400,
+        "merged Stage0 uses {} words; the BSRAM boot window holds 0x400",
+        stage0.len()
+    );
     let stage0_bytes = word_bytes(&stage0);
-    let stage1_bytes = word_bytes(&stage1);
     let s1_bytes = word_bytes(&s1_application);
     let s2_bytes = word_bytes(&s2_application);
     let image = build_boot_image(BootImageSpec {
         target: BootTarget::TangNano20K,
-        stage1_section: STAGE1_LAYOUT.section_name.into(),
-        stage1_entry: STAGE1_LAYOUT.entry,
         application_entry: S1_APPLICATION_LAYOUT.entry,
         sections: vec![
-            application_section(STAGE1_LAYOUT, stage1_bytes.clone()),
             application_section(S1_APPLICATION_LAYOUT, s1_bytes.clone()),
             application_section(S2_APPLICATION_LAYOUT, s2_bytes.clone()),
         ],
     })
     .expect("build boot image");
 
-    // The ISA 0.8 integer rework (encoding, RTL, and the RCC backend) changed
-    // the Stage0 words; this FNV-1a baseline is re-pinned and re-validated for
-    // the final 0.8 compiler output (Stage0 is 461 words, fitting the
-    // 0x400-word boot window). Any future compiler change that alters these
-    // words must re-baseline deliberately, never silently.
+    // The single-stage boot merge changed the Stage0 words; this FNV-1a
+    // baseline is re-pinned for the final merged compiler output. Note that
+    // Stage0 now also compiles the generated `boot_selection` constants, so a
+    // change to the S1/S2 layout changes these bytes too. Any such change must
+    // re-baseline deliberately, never silently.
     assert_eq!(
         fnv1a64(&stage0_bytes),
-        12_690_216_350_937_041_954,
+        2_509_393_493_274_322_378,
         "Stage0 bytes changed from the CPU V3 boot-format baseline"
     );
 
     write_artifact(&output, "stage0.v3bin", &stage0_bytes);
-    write_artifact(&output, STAGE1_LAYOUT.asset_name, &stage1_bytes);
     write_artifact(&output, S1_APPLICATION_LAYOUT.asset_name, &s1_bytes);
     write_artifact(&output, S2_APPLICATION_LAYOUT.asset_name, &s2_bytes);
     write_artifact(&output, "cpu-v3-boot.bin", &image.bytes);
@@ -291,12 +264,12 @@ fn main() {
     write_artifact(
         &output,
         "boot.cpu-v3-manifest",
-        pack_manifest(stage1_bytes.len(), s1_bytes.len(), s2_bytes.len()).as_bytes(),
+        pack_manifest(s1_bytes.len(), s2_bytes.len()).as_bytes(),
     );
     write_artifact(
         &output,
         "boot-project.map",
-        project_map(&project, &stage1_bytes, &s1_bytes, &s2_bytes).as_bytes(),
+        project_map(&project, &s1_bytes, &s2_bytes).as_bytes(),
     );
     write_artifact(
         &output,

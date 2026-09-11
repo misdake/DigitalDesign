@@ -13,8 +13,6 @@ usage: cpu-v3-pack <manifest.cpu-v3-manifest> [-o image.cpu-v3-boot] [--map imag
 manifest format:
   format 1
   target tang-nano-20k
-  stage1-section <name>
-  stage1-entry <cseg> <offset> <dseg> <stack-offset>
   application-entry <cseg> <offset> <dseg> <stack-offset>
   load <name> <physical-word> <rwx-flags> <alignment-bytes> <memory-bytes> <file>
   zero <name> <physical-word> <rw-flags> <alignment-bytes> <memory-bytes>

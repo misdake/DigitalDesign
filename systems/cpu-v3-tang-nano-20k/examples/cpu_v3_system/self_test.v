@@ -1,5 +1,5 @@
-// Full CPU V3 system board harness. Stage0 BSRAM boot ROM loads Stage1 from
-// SPI Flash through the boot DMA engine, Stage1 loads the application, and the
+// Full CPU V3 system board harness. The single-stage BSRAM boot ROM loads the
+// application from SPI Flash through the boot DMA engine, and the
 // application reports through the device-0 system control UART. The 320x240
 // RGB565 framebuffer scanout is written to SDRAM by the CPU and scanned out
 // through the SharedSdramPort adapter and the fitted HDMI datapath (the
@@ -248,12 +248,14 @@ wire [5:0] software_leds;
 assign device_read_data =
     sysctl_read_data | boot_select_read_data | dma_device_read_data | display_read_data;
 
-// Buttons are reset inputs, so their live value is 00 by the time Stage1 can
-// run. Synchronize and remember only the two valid one-hot selections while a
-// button is held; 00 retains the last selection and 11 is deliberately ignored.
+// Buttons are reset inputs, so their live value is 00 by the time the boot
+// stage can run. Synchronize and remember only the two valid one-hot
+// selections while a button is held; 00 retains the last selection and 11 is
+// deliberately ignored. The power-on default is S2 (`10`), so the board boots
+// the display application unless a button is held.
 reg [1:0] buttons_meta = 0;
 reg [1:0] buttons_synchronized = 0;
-reg [1:0] boot_select = 0;
+reg [1:0] boot_select = 2'b10;
 always @(posedge clk) begin
     buttons_meta <= buttons;
     buttons_synchronized <= buttons_meta;
