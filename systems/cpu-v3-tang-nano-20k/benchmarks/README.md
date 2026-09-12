@@ -55,6 +55,11 @@ Counter semantics are the actual transaction semantics of the composed system: e
 request-accept to response-valid cycles. Adding or renaming a metric is a metric-set revision
 and must be called out in any comparison that mixes revisions.
 
+The I-cache next-line prefetch mechanism was removed after the stage-12 audit showed ~1.5%
+Logic / ~4.6% register cost for +0.0003% suite benefit. The four prefetch columns remain in
+the CSV schema so old and new result files stay column-compatible, but they are pinned to
+zero in every run produced after the removal.
+
 ## Adding or changing a program
 
 1. Write or edit the `.rs` file with the metadata header.

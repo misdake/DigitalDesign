@@ -36,9 +36,9 @@ old-epoch work and drains late responses without making them architectural. Sequ
 the 16-bit PC without carrying into `CSEG`.
 
 Physical instruction words `0x00000000..0x000003ff` select the initialized Stage0 BSRAM. Other
-instruction addresses use the SDRAM-backed I-cache. Stage0 traffic is excluded from next-line
-prefetch. The I-cache is read-only; redirects and software-controlled invalidation preserve precise
-handoff semantics.
+instruction addresses use the SDRAM-backed I-cache. The I-cache is read-only and serves demand
+fetches only (the Stage 6 next-line prefetch was removed after measurement); redirects and
+software-controlled invalidation preserve precise handoff semantics.
 
 ## Cache and memory path
 

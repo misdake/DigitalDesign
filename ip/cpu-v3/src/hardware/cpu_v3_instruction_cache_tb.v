@@ -1,11 +1,10 @@
 module tb;
-reg clk=0,reset=1,invalidate_all=0,prefetch_request_valid=0,prefetch_cancel=0;
-reg [31:0] prefetch_address=0,cpu_address=0;
+reg clk=0,reset=1,invalidate_all=0;
+reg [31:0] cpu_address=0;
 reg cpu_request_valid=0,cpu_response_ready=0,memory_request_ready=1;
 reg memory_response_valid=0,memory_error=0; reg [63:0] memory_read_data=0;
 wire cpu_request_ready,cpu_response_valid,cpu_error,memory_request_valid,memory_response_ready;
 wire [15:0] cpu_read_data; wire [21:0] memory_address;
-wire [31:0] prefetch_issued,prefetch_useful,prefetch_useless,prefetch_dropped;
 CpuV3InstructionCache dut(.*);
 always #5 clk=~clk;
 integer beat,cycles=0;

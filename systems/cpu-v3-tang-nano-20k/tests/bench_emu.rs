@@ -119,21 +119,10 @@ fn main() {
             name: &str,
             words: &[u16],
             maximum_cycles: usize,
-            prefetch_enabled: bool,
             expected_halt: u16,
         ) {
-            let trace_name = if prefetch_enabled {
-                name.to_string()
-            } else {
-                format!("stage2-{name}")
-            };
-            let trace_directory = trace_directory(&trace_name);
-            let result = run_benchmark_profiled_with_prefetch(
-                words,
-                maximum_cycles,
-                Some(&trace_directory),
-                prefetch_enabled,
-            );
+            let trace_directory = trace_directory(name);
+            let result = run_benchmark_profiled(words, maximum_cycles, Some(&trace_directory));
             assert_eq!(
                 result.halt_signal, expected_halt,
                 "{name} self-check failed"
@@ -277,7 +266,7 @@ fn main() {
                     Some("hex") => parse_hex(&source, &path),
                     _ => unreachable!(),
                 };
-                run_words_case(&name, &words, maximum_cycles, true, expected_halt);
+                run_words_case(&name, &words, maximum_cycles, expected_halt);
             }
         }
     }
