@@ -66,6 +66,29 @@ is not equivalent on every BL616 firmware revision. At the end it returns to
 the quiet BL616 console before closing the handle; it never resets or
 re-enumerates USB.
 
+### UART capture recovery
+
+If a capture is interrupted, or the console is left mid-route, the BL616 can stay
+in a state where the host captures zero bytes even though the DUT is
+transmitting. Cross-check with a plain `board-health` run first: it transmits
+continuously, so it also captures zero bytes while the route is stuck, which
+means an empty `cpu-v3-system` capture is not by itself a DUT failure.
+
+The BL616 console shell provides `reboot`, which restarts the bridge MCU
+internally; its USB VCP drops and re-enumerates, clearing the stuck route while
+leaving the FPGA and its configuration untouched. Pass `-ResetBl616` to reboot
+the bridge before capturing:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File hardware/vendor/gowin/scripts/run_board_validation.ps1 `
+    -Profile cpu-v3-system -Mode Observe -Port COM8 -ResetBl616
+```
+
+`capture_bl616_uart.ps1 -ResetBl616` performs the same reboot for a direct
+capture. This is usually more reliable than unplugging and replugging USB,
+because it resets only the bridge MCU. A run that passes `-ResetBl616` records
+`reset_bl616: true` in `evidence.json`.
+
 All DDHT projects transmit 8N1 at 115200 baud (27 MHz designs use divider
 233, 54 MHz designs use 468); pass `-Baud` only for nonstandard captures.
 

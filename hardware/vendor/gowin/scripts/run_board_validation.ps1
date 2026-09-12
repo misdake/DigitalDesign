@@ -9,6 +9,9 @@ param(
     [string]$Port,
     [switch]$WriteBootFlash,
     [switch]$WriteCompleteFlash,
+    # Reboot the BL616 bridge MCU before capturing to clear a stuck UART
+    # route; the VCP re-enumerates and the FPGA is left untouched.
+    [switch]$ResetBl616,
     [int]$CaptureSeconds = 8,
     [int]$PortWaitSeconds = 15,
     [int]$MinimumSuccessFrames = 2
@@ -208,10 +211,12 @@ try {
 
     if ($Mode -eq "Observe" -or $Mode -eq "Full") {
         Wait-SerialPort -Name $Port -TimeoutSeconds $PortWaitSeconds
-        Invoke-Stage "capture UART in confirmed BL616 session" "powershell" @(
+        $captureArguments = @(
             "-ExecutionPolicy", "Bypass", "-File", (Join-Path $PSScriptRoot "capture_bl616_uart.ps1"),
             "-Port", $Port, "-Seconds", $CaptureSeconds, "-Out", $capturePath
         )
+        if ($ResetBl616) { $captureArguments += "-ResetBl616" }
+        Invoke-Stage "capture UART in confirmed BL616 session" "powershell" $captureArguments
         Invoke-Stage "validate DDHT status" "powershell" @(
             "-ExecutionPolicy", "Bypass", "-File", (Join-Path $PSScriptRoot "check_uart_status.ps1"),
             "-Path", $capturePath, "-TestId", $configuration.TestIds,
@@ -271,6 +276,7 @@ finally {
         complete_flash_programmed = $completedStages.Contains("program complete power-on Flash image once")
         sram_programmed = $completedStages.Contains("program audited SRAM bitstream once")
         uart_validated = $completedStages.Contains("validate DDHT status")
+        reset_bl616 = [bool]$ResetBl616
         port = if ($Port) { $Port } else { $null }
         expected_test_id = if ($null -ne $configuration.TestIds) { $configuration.TestIds } else { $null }
         expected_uart_protocol = "DDHT/CV3B"
