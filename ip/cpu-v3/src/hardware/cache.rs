@@ -993,6 +993,7 @@ enum DataMemoryPhase {
     ReadReceive,
     WriteStream,
     WriteResponse,
+    Scan,
 }
 
 pub struct CpuV3DataCacheState {
@@ -1008,6 +1009,17 @@ pub struct CpuV3DataCacheState {
     maintenance_active: bool,
     maintenance_done: bool,
     maintenance_error: bool,
+    // Mirror of the RTL maintenance dirty-line scan: one 16-entry window per
+    // cycle, overlapped with the in-flight write-back. `maintenance_dirty`
+    // snapshots the dirty bitmap at maintenance start; completed write-backs
+    // clear their bit. `scan_index` is the next entry to examine and a found
+    // candidate is latched in `found_index` until its write-back starts.
+    maintenance_command: Option<crate::MaintenanceCommand>,
+    maintenance_dirty: u128,
+    scan_active: bool,
+    scan_index: u8,
+    found_index: Option<u8>,
+    wb_index: u8,
     // Mirror of the RTL RAM16 valid-array sweep: reset, a full invalidate, or
     // a memory error clears one set of both ways per cycle; requests are
     // blocked meanwhile, and an invalidate's maintenance_done is delayed
@@ -1033,6 +1045,12 @@ impl Default for CpuV3DataCacheState {
             maintenance_active: false,
             maintenance_done: false,
             maintenance_error: false,
+            maintenance_command: None,
+            maintenance_dirty: 0,
+            scan_active: false,
+            scan_index: 0,
+            found_index: None,
+            wb_index: 0,
             maintenance_invalidate: false,
             sweep_active: false,
             sweep_set: 0,
@@ -1069,14 +1087,66 @@ impl CpuV3DataCacheState {
         }
     }
 
+    /// The lowest dirty entry in the current 16-entry scan window, masked to
+    /// entries at or after `scan_index` — mirror of the RTL `scan_masked`
+    /// window priority encoder.
+    fn scan_window_hit(&self) -> Option<u8> {
+        let window = (self.maintenance_dirty >> (self.scan_index & 0x70)) as u16;
+        let masked = window & (0xffffu16 << (self.scan_index & 0x0f));
+        (masked != 0).then(|| (self.scan_index & 0x70) | masked.trailing_zeros() as u8)
+    }
+
+    /// Background scan step during a write-back: latch a found candidate or
+    /// advance one 16-entry window.
+    fn scan_step(&mut self) {
+        if let Some(index) = self.scan_window_hit() {
+            self.found_index = Some(index);
+            self.scan_active = false;
+        } else if self.scan_index >> 4 == 7 {
+            self.scan_active = false;
+        } else {
+            self.scan_index = ((self.scan_index >> 4) + 1) << 4;
+        }
+    }
+
+    /// Resumes the scan strictly after a consumed candidate.
+    fn scan_resume_after(&mut self, index: u8) {
+        self.scan_index = index + 1;
+        self.scan_active = index != 127;
+        self.found_index = None;
+    }
+
+    /// Produces the write-back request for a found scan candidate: the first
+    /// candidate begins the crate-model maintenance, later ones continue it.
+    /// `DataCache::next_maintenance_write` selects lines in the same way-major
+    /// order as the RTL window scan, so the request matches the scanned entry.
+    fn next_maintenance_request(&mut self) -> crate::MainMemoryRequest {
+        if let Some(command) = self.maintenance_command.take() {
+            self.cache
+                .begin_maintenance(command)
+                .expect("idle data cache must accept maintenance")
+                .expect("a found scan candidate must have a pending write-back")
+        } else {
+            self.cache
+                .continue_maintenance(crate::MainMemoryResponse::WriteComplete)
+                .expect("maintenance completion must match a line write")
+                .expect("a found scan candidate must have a pending write-back")
+        }
+    }
+
     fn fail_transaction(&mut self) {
         // After a physical-memory error no cache line is allowed to remain
         // architecturally visible: the controller may have accepted an
-        // unknown prefix of a burst.
+        // unknown prefix of a burst. The crate model clears instantly; the
+        // RTL sweeps its RAM16 valid arrays, which blocks new requests.
         self.cache = crate::DataCache::default();
         self.pending_cpu_request = None;
         self.request = None;
         self.phase = DataMemoryPhase::Idle;
+        self.maintenance_command = None;
+        self.maintenance_dirty = 0;
+        self.scan_active = false;
+        self.found_index = None;
         self.sweep_active = true;
         self.sweep_set = 0;
         if self.maintenance_active {
@@ -1092,22 +1162,37 @@ impl CpuV3DataCacheState {
 
     fn complete_write(&mut self) {
         if self.maintenance_active {
-            match self
-                .cache
-                .continue_maintenance(crate::MainMemoryResponse::WriteComplete)
-                .expect("maintenance completion must match a line write")
-            {
-                Some(request) => self.start_request(request),
-                None => {
-                    self.request = None;
-                    self.phase = DataMemoryPhase::Idle;
-                    if self.maintenance_invalidate {
-                        self.sweep_active = true;
-                        self.sweep_set = 0;
-                        self.sweep_finishes_maintenance = true;
-                    } else {
-                        self.maintenance_active = false;
-                        self.maintenance_done = true;
+            // Mirror of the RTL dirty-write-back edge: the completed line's
+            // dirty bit clears before the scan decision.
+            self.maintenance_dirty &= !(1u128 << self.wb_index);
+            if let Some(index) = self.found_index {
+                // The overlapped scan already latched the next dirty line:
+                // launch it without a gap.
+                let request = self.next_maintenance_request();
+                self.wb_index = index;
+                self.scan_resume_after(index);
+                self.start_request(request);
+            } else if self.scan_active {
+                self.request = None;
+                self.phase = DataMemoryPhase::Scan;
+            } else {
+                match self
+                    .cache
+                    .continue_maintenance(crate::MainMemoryResponse::WriteComplete)
+                    .expect("maintenance completion must match a line write")
+                {
+                    Some(_) => unreachable!("scan exhausted but a dirty line remains"),
+                    None => {
+                        self.request = None;
+                        self.phase = DataMemoryPhase::Idle;
+                        if self.maintenance_invalidate {
+                            self.sweep_active = true;
+                            self.sweep_set = 0;
+                            self.sweep_finishes_maintenance = true;
+                        } else {
+                            self.maintenance_active = false;
+                            self.maintenance_done = true;
+                        }
                     }
                 }
             }
@@ -1240,22 +1325,42 @@ impl Module for CpuV3DataCache {
                 crate::MaintenanceCommand::Clean
             };
             state.maintenance_invalidate = input.invalidate_all;
-            match state
-                .cache
-                .begin_maintenance(command)
-                .expect("idle data cache must accept maintenance")
-            {
-                Some(request) => state.start_request(request),
-                None => {
-                    if state.maintenance_invalidate {
-                        state.sweep_active = true;
-                        state.sweep_set = 0;
-                        state.sweep_finishes_maintenance = true;
-                    } else {
-                        state.maintenance_active = false;
-                        state.maintenance_done = true;
+            state.maintenance_command = Some(command);
+            state.found_index = None;
+            state.maintenance_dirty = state.cache.dirty_bits();
+            if state.maintenance_dirty == 0 {
+                // No dirty line: a clean completes immediately; an invalidate
+                // sweeps the valid arrays and reports done at sweep end.
+                match state
+                    .cache
+                    .begin_maintenance(command)
+                    .expect("idle data cache must accept maintenance")
+                {
+                    Some(_) => unreachable!("empty dirty bitmap produced a write-back"),
+                    None => {
+                        state.maintenance_command = None;
+                        if state.maintenance_invalidate {
+                            state.sweep_active = true;
+                            state.sweep_set = 0;
+                            state.sweep_finishes_maintenance = true;
+                        } else {
+                            state.maintenance_active = false;
+                            state.maintenance_done = true;
+                        }
                     }
                 }
+            } else if state.maintenance_dirty as u16 != 0 {
+                // First dirty line sits in window zero: start its write-back
+                // immediately and scan on from after it.
+                let index = (state.maintenance_dirty as u16).trailing_zeros() as u8;
+                let request = state.next_maintenance_request();
+                state.wb_index = index;
+                state.scan_resume_after(index);
+                state.start_request(request);
+            } else {
+                state.scan_index = 16;
+                state.scan_active = true;
+                state.phase = DataMemoryPhase::Scan;
             }
             return;
         }
@@ -1301,9 +1406,60 @@ impl Module for CpuV3DataCache {
             return;
         }
 
+        let scan_background = state.scan_active
+            && state.found_index.is_none()
+            && matches!(
+                state.phase,
+                DataMemoryPhase::WritebackPrime
+                    | DataMemoryPhase::WritebackCapture
+                    | DataMemoryPhase::Request
+                    | DataMemoryPhase::WriteStream
+                    | DataMemoryPhase::WriteResponse
+            );
         match state.phase {
             DataMemoryPhase::Idle => {}
             DataMemoryPhase::Lookup => unreachable!(),
+            DataMemoryPhase::Scan => {
+                if let Some(index) = state.found_index {
+                    // Latched by the background scan in the previous cycle.
+                    let request = state.next_maintenance_request();
+                    state.wb_index = index;
+                    state.scan_resume_after(index);
+                    state.start_request(request);
+                } else if let Some(index) = state.scan_window_hit() {
+                    let request = state.next_maintenance_request();
+                    state.wb_index = index;
+                    state.scan_resume_after(index);
+                    state.start_request(request);
+                } else if state.scan_index >> 4 == 7 {
+                    // The scan found no further dirty line: maintenance ends.
+                    state.scan_active = false;
+                    if state.maintenance_command.is_some() {
+                        unreachable!("nonempty dirty bitmap survived a full scan");
+                    }
+                    match state
+                        .cache
+                        .continue_maintenance(crate::MainMemoryResponse::WriteComplete)
+                        .expect("maintenance completion must match a line write")
+                    {
+                        Some(_) => unreachable!("scan exhausted but a dirty line remains"),
+                        None => {
+                            state.request = None;
+                            state.phase = DataMemoryPhase::Idle;
+                            if state.maintenance_invalidate {
+                                state.sweep_active = true;
+                                state.sweep_set = 0;
+                                state.sweep_finishes_maintenance = true;
+                            } else {
+                                state.maintenance_active = false;
+                                state.maintenance_done = true;
+                            }
+                        }
+                    }
+                } else {
+                    state.scan_index = ((state.scan_index >> 4) + 1) << 4;
+                }
+            }
             DataMemoryPhase::WritebackPrime => {
                 state.beat = 0;
                 state.phase = DataMemoryPhase::WritebackCapture;
@@ -1366,6 +1522,12 @@ impl Module for CpuV3DataCache {
                 }
             }
             DataMemoryPhase::ReadReceive => {}
+        }
+        // Background scan step, evaluated against pre-edge scan state and
+        // applied after the phase logic, exactly like the RTL's separate
+        // nonblocking assignment block.
+        if scan_background {
+            state.scan_step();
         }
     }
 

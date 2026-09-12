@@ -53,7 +53,9 @@ does not issue requests while its reset or error-scrub sweep runs.
 
 The D-cache is write-back and write-allocate. Stores dirty resident or newly allocated lines. A dirty
 victim is written back before replacement. Full clean preserves valid lines; full invalidate first
-writes dirty lines and then clears validity. The system-control device holds the CPU internally until
+writes dirty lines and then clears validity. Dirty-line maintenance examines one 16-entry window of
+the 128-bit dirty bitmap per cycle and runs that scan ahead of the in-flight write-back, so
+consecutive write-backs start back to back. The system-control device holds the CPU internally until
 maintenance reports success or failure. There is no per-line snoop or range-maintenance interface.
 
 One cache line crosses the CPU-side memory interface as four ordered 64-bit beats at 54 MHz. Refill
@@ -152,10 +154,10 @@ the same stable mapping through `LoaderError::boot_report`.
 
 ## Current fitted result and validation boundary
 
-The Stage 12 full-system build uses 10,100 Logic (8,822 LUT, 750 ALU, 88 SSRAM), 4,324 registers,
-four DPB, one SDPB, two pROM, and two `MULT18X18` cells. The CPU clock closes at 56.230 MHz against
-the 54-MHz constraint with zero setup and hold TNS. The tightest CPU path is the fetch-queue to
-I-cache way-valid route.
+The current full-system build uses 9,640 Logic (8,294 LUT, 770 ALU, 96 SSRAM), 4,099 registers,
+four DPB, one SDPB, two pROM, and two `MULT18X18` cells. The CPU clock closes at 54.222 MHz against
+the 54-MHz constraint with zero setup and hold TNS. The tightest CPU path is the core's registered
+GPR write path rather than the cache frontend.
 
 The system-level emulator-vs-RTL co-simulation `tests/system_cosim.rs` drives the composed RTL
 (core, fetch queue, I-cache, D-cache, memory arbiter, and a behavioral SDRAM word port) in Icarus

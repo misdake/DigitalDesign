@@ -45,6 +45,7 @@ described by each Stage.
 | Single-stage boot merge | Complete, 2026-09-12 | Folded the former Stage1 into the BSRAM first stage: one image validates the descriptor and manifest and loads the reset-selected application, so the Stage1 image, the descriptor mirroring, and the duplicate DMA/UART/handoff code disappear. Container format version 4 reserves the former Stage1 descriptor fields; the error ABI uses stage `1` throughout and the boot-progress phases collapse to BOOT/DMA/APPLICATION. A manifest section-count bound closes the 16-bit `count << 5` wrap in the size check. | Merged Stage0 673 words (fits the 1024-word BSRAM boot window). Full system: 10,269 Logic; 4 DPB + 1 SDPB + 2 pROM; 2 x MULT18X18; CPU 54.522 MHz, zero setup/hold TNS |
 | `ASR`/`ASRI` signedness fix | Complete, 2026-09-12 | Found on hardware: the display demo's negative sine/cosine offsets landed at +255 instead of -1. The handwritten RTL put `>>>` inside a conditional whose other branches were unsigned, and Verilog makes a `?:` unsigned when any branch is unsigned, so `ASR`/`ASRI` (and therefore `fix16::to_int()`) shifted logically. The shifts now compute in a statement-based `case` and the FSM selects the result; `fix16_to_int_rcc` co-simulates the conversion. | Full system: 10,232 Logic; 4 DPB + 1 SDPB + 2 pROM; 2 x MULT18X18; CPU 54.747 MHz, zero setup/hold TNS |
 | Stage 6 prefetch removal | Complete, 2026-09-12 | Deleted the next-line I-cache prefetch entirely (offset-10 fetch-queue trigger, request/arm/cancel and cancelled-line learning in the I-cache engine, simulation counters) after the cost/benefit audit in the Stage 6 section showed ~4.6% register and ~1.5% Logic cost for +0.0003% frozen-suite benefit. The I-cache module sheds 31 REG / 178 LUT at synthesis; system PnR shifts the rest (unrelated modules move within normal re-optimization noise). Frozen stage-12 suite: +20 cycles out of 6,136,236; prefetch metric columns remain in the CSV schema, pinned to zero. | Full system: 10,321 Logic (4,196 FF); 4 DPB + 1 SDPB + 2 pROM; 2 x MULT18X18; CPU 56.141 MHz, zero setup/hold TNS |
+| Cache RAM16 valid/victim + dirty window scan | Complete, 2026-09-12 | Moved both caches' valid and victim bits from flip-flops into a `CpuV3CacheValidRam` RAM16 leaf (asynchronous read, synchronous single-way write), with a one-set-per-cycle clear for global invalidation, reset, and memory-error scrub. The D-cache exposes `valid_sweep` and the system holds the core for the reset/scrub sweep (`sysctl_cpu_hold || valid_sweep`) so the core never sees a not-ready D-cache on its first post-reset access. The two-way hit expression drops its own invalidating gate to restore the tight I-cache way-valid depth. Replaced the D-cache 128-bit dirty priority encoder with a 16-entry window scan overlapped with the in-flight write-back; the architecture `DataCache` selects lines way-major so the RTL and Rust wrapper stay bit-exact. Frozen-suite total cycles unchanged (post-halt flush within 3 cycles). | Full system: 9,640 Logic (8,294 LUT, 770 ALU, 96 RAM16); 4,099 FF; 4 DPB + 1 SDPB + 2 pROM; 2 x MULT18X18; CPU 54.222 MHz, zero setup/hold TNS |
 
 Starting with System consolidation, PnR evidence is always taken from the complete `cpu_v3_system`
 containing the CPU, boot path, SDRAM controller, and display path. Every subsequent completed stage
@@ -69,6 +70,17 @@ the same RCC sources: Stage0 461 words, Stage1 555 words, S1 application 79 word
 benchmark suite under the new ISA is reported separately, not folded into the Stage-to-Stage table.
 The later single-stage boot merge (see the table) supersedes that asset set: the board now carries
 one 673-word first stage and no Stage1 binary, and the FNV-1a baseline is re-pinned again.
+
+The cache valid/victim RAM16 change and the D-cache dirty window scan are likewise not numbered
+Stages. Their recorded numbers come from the full-system Gowin build after commit `148e63a`: 9,640
+Logic (8,294 LUT, 770 ALU, 96 RAM16), 4,099 registers, unchanged BSRAM geometry (4 DPB + 1 SDPB + 2
+pROM) and two `MULT18X18`, and 54.222 MHz on the 54 MHz CPU clock with zero setup/hold TNS. This
+closure is narrow and dominated by core placement: the tightest path is the core's registered GPR
+write, and the RAM16 leaves and the maintenance scan are not on it. Against the immediately
+preceding build (`a956ca5`, before the scan) the 16-entry window scan removes 282 LUT; against the
+pre-RAM16 `08bcc79` build the whole change removes 681 Logic and 97 registers at the cost of eight
+RAM16 cells. The frozen suite reports identical total cycles, with the post-halt flush varying by at
+most three cycles.
 
 ## Ordered major tasks
 
