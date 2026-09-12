@@ -71,6 +71,7 @@ wire sysctl_cpu_hold;
 wire dcache_maintenance_busy;
 wire dcache_maintenance_done;
 wire dcache_maintenance_error;
+wire dcache_valid_sweep;
 wire halted;
 wire faulted;
 
@@ -418,7 +419,8 @@ __DATA_CACHE__ u_data_cache (
     .memory_response_ready(dcache_memory_response_ready),
     .maintenance_busy(dcache_maintenance_busy),
     .maintenance_done(dcache_maintenance_done),
-    .maintenance_error(dcache_maintenance_error)
+    .maintenance_error(dcache_maintenance_error),
+    .valid_sweep(dcache_valid_sweep)
 );
 
 assign core_data_request_ready = dcache_cpu_request_ready;
@@ -438,8 +440,10 @@ __CPU_V3_CORE__ u_core (
     .clk(clk),
     .reset(reset),
     // Maintenance blocks architectural CPU progress only. The D-cache,
-    // arbiter, DMA, display, and SDRAM adapter keep using clk normally.
-    .hold(sysctl_cpu_hold),
+    // arbiter, DMA, display, and SDRAM adapter keep using clk normally. The
+    // core is also held while the RAM16 valid arrays sweep-clear, because the
+    // D-cache cannot accept requests until every stale line is invalid.
+    .hold(sysctl_cpu_hold || dcache_valid_sweep),
     .instruction_request_ready(core_instruction_request_ready),
     .instruction_response_valid(core_instruction_response_valid),
     .instruction_data(core_instruction_data),

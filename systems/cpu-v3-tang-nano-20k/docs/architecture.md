@@ -46,7 +46,10 @@ The I-cache and D-cache are independently instantiated 4-KiB, two-way caches wit
 16-bit words per line. Each cache uses two 1024x16 true-dual-port data BSRAMs split strictly by word
 parity. Way zero and way one occupy the lower and upper halves of both parity banks. Resident reads
 pipeline lookup and selected-way response for one ordered hit per cycle when there is no conflict or
-backpressure.
+backpressure. Both caches store their valid and victim bits in a RAM16 leaf with asynchronous reads;
+because the RAM cannot clear in one cycle, a global invalidate or reset clears one set of both ways
+per cycle and blocks lookups for the 64-set sweep. The D-cache additionally drives a hold so the core
+does not issue requests while its reset or error-scrub sweep runs.
 
 The D-cache is write-back and write-allocate. Stores dirty resident or newly allocated lines. A dirty
 victim is written back before replacement. Full clean preserves valid lines; full invalidate first

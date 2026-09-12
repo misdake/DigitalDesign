@@ -660,6 +660,9 @@ pub fn run_benchmark_profiled(
         core_input.data_response_valid = dcache_output.cpu_response_valid;
         core_input.data_read_data = dcache_output.cpu_read_data;
         core_input.data_error = dcache_output.cpu_error;
+        // Hold the core while the D-cache RAM16 valid arrays sweep-clear,
+        // mirroring the system template's `sysctl_cpu_hold || valid_sweep`.
+        core_input.hold = dcache_output.valid_sweep;
 
         // I-cache <-> arbiter
         arbiter_input.instruction_request_valid = icache_output.memory_request_valid;
@@ -754,7 +757,7 @@ pub fn run_benchmark_profiled(
 
     // Constant external inputs (device reads zero, DMA idle, no flush/invalidate).
     set_bits(core_input.device_read_data, 0, &mut circuit);
-    set_bit(core_input.hold, false, &mut circuit);
+    // core_input.hold is connected to the D-cache valid sweep in the wiring above.
     set_bit(fetch_input.flush, false, &mut circuit);
     set_bit(icache_input.invalidate_all, false, &mut circuit);
     set_bit(dcache_input.invalidate_all, false, &mut circuit);
@@ -1134,6 +1137,9 @@ pub fn run_system_trace(words: &[u16], maximum_cycles: usize) -> SystemTrace {
         core_input.data_response_valid = dcache_output.cpu_response_valid;
         core_input.data_read_data = dcache_output.cpu_read_data;
         core_input.data_error = dcache_output.cpu_error;
+        // Hold the core while the D-cache RAM16 valid arrays sweep-clear,
+        // mirroring the system template's `sysctl_cpu_hold || valid_sweep`.
+        core_input.hold = dcache_output.valid_sweep;
 
         // I-cache <-> arbiter
         arbiter_input.instruction_request_valid = icache_output.memory_request_valid;
@@ -1196,7 +1202,7 @@ pub fn run_system_trace(words: &[u16], maximum_cycles: usize) -> SystemTrace {
 
     // Constant external inputs (device reads zero, DMA idle, no flush/invalidate).
     set_bits(core_input.device_read_data, 0, &mut circuit);
-    set_bit(core_input.hold, false, &mut circuit);
+    // core_input.hold is connected to the D-cache valid sweep in the wiring above.
     set_bit(fetch_input.flush, false, &mut circuit);
     set_bit(icache_input.invalidate_all, false, &mut circuit);
     set_bit(dcache_input.invalidate_all, false, &mut circuit);

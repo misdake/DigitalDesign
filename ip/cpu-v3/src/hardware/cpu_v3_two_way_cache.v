@@ -49,9 +49,17 @@ reg [15:0] response_data = 0;
 reg response_error = 0;
 reg response_valid = 0;
 reg refill_discard = 0;
-reg [63:0] way_0_valid = __INITIAL_VALID__;
-reg [63:0] way_1_valid = 0;
-reg [63:0] victim = 0;
+// Valid and victim bits live in a RAM16 leaf (asynchronous read, synchronous
+// write, one set per access), like the tag arrays. invalidate_all cannot
+// clear RAM in one cycle: it starts a 64-set sweep that clears both ways in
+// parallel. New lookups are blocked through cpu_request_ready while the sweep
+// (or the invalidate pulse) is active, which preserves the all-invalid
+// semantics of the old flip-flop clear.
+reg sweep_active = 0;
+reg [5:0] sweep_set = 0;
+wire way_0_valid_read;
+wire way_1_valid_read;
+wire victim_read;
 
 wire pending_address_valid = pending_address[31:22] == 0;
 
@@ -60,16 +68,41 @@ wire [11:0] pending_tag = pending_address[21:10];
 wire [3:0] pending_word = pending_address[3:0];
 wire [11:0] way_0_tag_read_data;
 wire [11:0] way_1_tag_read_data;
-wire way_0_hit = way_0_valid[pending_set] && way_0_tag_read_data == pending_tag;
-wire way_1_hit = way_1_valid[pending_set] && way_1_tag_read_data == pending_tag;
+wire invalidating = invalidate_all || sweep_active;
+// The sweep blocks new requests through cpu_request_ready, so hit
+// qualification does not need its own `!invalidating` term. Keeping the gate
+// off this expression removes a LUT level from the tight fetch-frontend to
+// I-cache way-valid path that the old instant valid clear did not pay.
+wire way_0_hit = way_0_valid_read && way_0_tag_read_data == pending_tag;
+wire way_1_hit = way_1_valid_read && way_1_tag_read_data == pending_tag;
 wire pending_hit = way_0_hit || way_1_hit;
 wire hit_way = !way_0_hit && way_1_hit;
-wire selected_victim = !way_0_valid[pending_set] ? 1'b0 :
-                       !way_1_valid[pending_set] ? 1'b1 : victim[pending_set];
+wire selected_victim = !way_0_valid_read ? 1'b0 :
+                       !way_1_valid_read ? 1'b1 : victim_read;
 wire refill_commit = state == ST_LINE_RECEIVE && memory_response_valid &&
                         !memory_error && refill_beat == 3 &&
-                        !refill_discard && !invalidate_all;
+                        !refill_discard && !invalidating;
 wire tag_write_enable = refill_commit;
+// Single valid-array write port: the sweep has priority; otherwise the
+// line-request issue clears the victim way and a refill commit installs it.
+wire valid_write_enable = !sweep_active &&
+    (refill_commit || (state == ST_LINE_REQUEST && memory_request_ready));
+
+__CACHE_VALID__ u_valid (
+    .clk(clk),
+    .clear_enable(sweep_active),
+    .clear_set(sweep_set),
+    .write_enable(valid_write_enable),
+    .write_way(pending_way),
+    .write_set(pending_set),
+    .write_value(refill_commit),
+    .victim_write_enable(refill_commit),
+    .victim_write_value(!pending_way),
+    .read_set(pending_set),
+    .way_0_valid(way_0_valid_read),
+    .way_1_valid(way_1_valid_read),
+    .victim(victim_read)
+);
 
 __CACHE_TAGS__ u_tags (
     .clk(clk),
@@ -83,15 +116,15 @@ __CACHE_TAGS__ u_tags (
 
 wire response_space = !response_valid || cpu_response_ready;
 wire hit_write = state == ST_IDLE && lookup_valid && pending_write && pending_hit &&
-                 response_space && !invalidate_all;
+                 response_space && !invalidating;
 wire refill_write = state == ST_LINE_RECEIVE && memory_response_valid && !memory_error &&
-                    !refill_discard && !invalidate_all;
+                    !refill_discard && !invalidating;
 // Start both candidate-way reads on the request-acceptance edge. The data and
 // parallel tag comparison are therefore ready when the lookup resolves on the
 // following cycle.
 wire lookup_read_hit = lookup_valid && pending_address_valid &&
                        !pending_write && pending_hit;
-assign cpu_request_ready = !invalidate_all &&
+assign cpu_request_ready = !invalidate_all && !sweep_active &&
     (state == ST_IDLE && (!lookup_valid || lookup_read_hit && response_space));
 wire accept_cpu_request = cpu_request_valid && cpu_request_ready;
 wire [31:0] cache_lookup_address = accept_cpu_request ? cpu_address :
@@ -148,15 +181,22 @@ always @(posedge clk) begin
     if (reset) begin
         state <= ST_IDLE;
         lookup_valid <= 0;
-        way_0_valid <= __INITIAL_VALID__;
-        way_1_valid <= 0;
-        victim <= 0;
         response_error <= 0;
         response_valid <= 0;
         refill_discard <= 0;
+        sweep_active <= 0;
+        sweep_set <= 0;
     end else begin
         if (response_valid && cpu_response_ready)
             response_valid <= 0;
+        if (invalidate_all) begin
+            sweep_active <= 1;
+            sweep_set <= 0;
+        end else if (sweep_active) begin
+            sweep_set <= sweep_set + 1'b1;
+            if (sweep_set == 63)
+                sweep_active <= 0;
+        end
         case (state)
             ST_IDLE: begin
                 if (lookup_valid && response_space) begin
@@ -198,8 +238,6 @@ always @(posedge clk) begin
 
             ST_LINE_REQUEST: begin
                 if (memory_request_ready) begin
-                    if (pending_way) way_1_valid[pending_set] <= 0;
-                    else way_0_valid[pending_set] <= 0;
                     refill_beat <= 0;
                     state <= ST_LINE_RECEIVE;
                 end
@@ -220,14 +258,6 @@ always @(posedge clk) begin
                             default: refill_response_data <= memory_read_data[63:48];
                         endcase
                     if (refill_beat == 3) begin
-                    if (!refill_discard && !invalidate_all) begin
-                        if (pending_way) begin
-                            way_1_valid[pending_set] <= 1;
-                        end else begin
-                            way_0_valid[pending_set] <= 1;
-                        end
-                        victim[pending_set] <= !pending_way;
-                    end
                     response_data <= pending_word[3:2] == 3 ?
                         (pending_word[1:0] == 0 ? memory_read_data[15:0] :
                          pending_word[1:0] == 1 ? memory_read_data[31:16] :
@@ -253,8 +283,6 @@ always @(posedge clk) begin
         end
 
         if (invalidate_all) begin
-            way_0_valid <= 0;
-            way_1_valid <= 0;
             if (state == ST_LINE_REQUEST || state == ST_LINE_RECEIVE)
                 refill_discard <= 1;
         end

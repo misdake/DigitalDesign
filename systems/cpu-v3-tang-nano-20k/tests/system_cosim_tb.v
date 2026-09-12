@@ -65,6 +65,7 @@ wire arb_data_error;
 wire dc_maintenance_busy;
 wire dc_maintenance_done;
 wire dc_maintenance_error;
+wire dc_valid_sweep;
 
 // arbiter <-> SDRAM
 wire arb_memory_request_valid;
@@ -103,7 +104,7 @@ wire arb_dma_error;
 __CORE__ u_core (
     .clk(clk),
     .reset(reset),
-    .hold(1'b0),
+    .hold(dc_valid_sweep),
     .instruction_request_ready(fetch_core_request_ready),
     .instruction_response_valid(fetch_core_response_valid),
     .instruction_data(fetch_core_read_data),
@@ -208,7 +209,8 @@ __DCACHE__ u_dcache (
     .memory_response_ready(dc_memory_response_ready),
     .maintenance_busy(dc_maintenance_busy),
     .maintenance_done(dc_maintenance_done),
-    .maintenance_error(dc_maintenance_error)
+    .maintenance_error(dc_maintenance_error),
+    .valid_sweep(dc_valid_sweep)
 );
 
 __ARBITER__ u_arbiter (

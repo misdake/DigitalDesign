@@ -286,6 +286,123 @@ impl Module for CpuV3CacheTagRam {
     }
 }
 
+/// RAM16 valid (2 x 64) and victim (64) arrays with asynchronous read, a
+/// synchronous single-way write port, and a sweep clear that takes priority
+/// and clears both ways of one set per cycle. Way zero initializes from the
+/// cache image's INITIAL_VALID mask; all other bits start cleared.
+pub struct CpuV3CacheValidRamWithImage<I>(PhantomData<I>);
+pub type CpuV3CacheValidRam = CpuV3CacheValidRamWithImage<ZeroBsramImage>;
+
+impl<I: CpuV3CacheImage> HardwareIdentity for CpuV3CacheValidRamWithImage<I> {
+    const TARGET_RESOURCE_LEAF: bool = true;
+
+    fn verilog_identity() -> VerilogIdentity {
+        VerilogIdentity::new("CpuV3CacheValidRam")
+            .namespace(["components", "cpu", "cpu_v3"])
+            .symbol("IMAGE", format!("v{:016x}", I::INITIAL_VALID))
+    }
+}
+
+#[derive(Clone, ModuleIo)]
+pub struct CpuV3CacheValidRamInput {
+    pub clear_enable: Wire,
+    pub clear_set: Wires<6>,
+    pub write_enable: Wire,
+    pub write_way: Wire,
+    pub write_set: Wires<6>,
+    pub write_value: Wire,
+    pub victim_write_enable: Wire,
+    pub victim_write_value: Wire,
+    pub read_set: Wires<6>,
+}
+
+#[derive(Clone, ModuleIo)]
+pub struct CpuV3CacheValidRamOutput {
+    pub way_0_valid: Wire,
+    pub way_1_valid: Wire,
+    pub victim: Wire,
+}
+
+impl<I: CpuV3CacheImage> Module for CpuV3CacheValidRamWithImage<I> {
+    type Input = CpuV3CacheValidRamInput;
+    type Output = CpuV3CacheValidRamOutput;
+    type EmuState = ();
+
+    const USES_MAIN_CLOCK: bool = true;
+    const EMU_AVAILABLE: bool = false;
+
+    fn target_resources() -> Vec<TargetResourceRequest> {
+        // Three RAM16 cells: valid way 0, valid way 1, victim.
+        vec![TargetResourceRequest::new(SsramBits::new(192))]
+    }
+
+    fn execute_emu(
+        _state: &mut Self::EmuState,
+        _circuit: &mut CircuitWires,
+        _input: &Self::Input,
+        _output: &Self::Output,
+    ) {
+        panic!("valid/victim RAM16 is Verilog-only")
+    }
+
+    fn verilog_source() -> Option<String> {
+        let module_name = Self::verilog_identity().module_name();
+        Some(format!(
+            r#"module {module_name} (
+    input wire clk,
+    input wire clear_enable,
+    input wire [5:0] clear_set,
+    input wire write_enable,
+    input wire write_way,
+    input wire [5:0] write_set,
+    input wire write_value,
+    input wire victim_write_enable,
+    input wire victim_write_value,
+    input wire [5:0] read_set,
+    output wire way_0_valid,
+    output wire way_1_valid,
+    output wire victim
+);
+reg way_0_valid_ram [0:63];
+reg way_1_valid_ram [0:63];
+reg victim_ram [0:63];
+localparam [63:0] INITIAL_VALID = 64'h{:016x};
+integer initial_set;
+initial begin
+    for (initial_set = 0; initial_set < 64; initial_set = initial_set + 1) begin
+        way_0_valid_ram[initial_set] = INITIAL_VALID[initial_set];
+        way_1_valid_ram[initial_set] = 1'b0;
+        victim_ram[initial_set] = 1'b0;
+    end
+end
+always @(posedge clk) begin
+    if (clear_enable) begin
+        way_0_valid_ram[clear_set] <= 1'b0;
+        way_1_valid_ram[clear_set] <= 1'b0;
+    end else if (write_enable) begin
+        if (write_way) way_1_valid_ram[write_set] <= write_value;
+        else way_0_valid_ram[write_set] <= write_value;
+    end
+    if (victim_write_enable)
+        victim_ram[write_set] <= victim_write_value;
+end
+assign way_0_valid = way_0_valid_ram[read_set];
+assign way_1_valid = way_1_valid_ram[read_set];
+assign victim = victim_ram[read_set];
+endmodule
+"#,
+            I::INITIAL_VALID
+        ))
+    }
+
+    fn verilog_testbench() -> Option<String> {
+        Some(include_str!("cpu_v3_cache_valid_ram_tb.v").replace(
+            "CpuV3CacheValidRam dut",
+            &format!("{} dut", Self::verilog_identity().module_name()),
+        ))
+    }
+}
+
 #[derive(Clone, ModuleIo)]
 pub struct CpuV3TwoWayCacheInput {
     pub reset: Wire,
@@ -438,6 +555,12 @@ pub struct CpuV3TwoWayCacheState {
     response_error: bool,
     response_valid: bool,
     refill_discard: bool,
+    // Mirror of the RTL RAM16 valid/victim arrays: `valid`/`victim` hold the
+    // RAM contents and `invalidate_all` starts a 64-set sweep (both ways
+    // cleared in parallel, one set per cycle) instead of an instant clear.
+    // New requests are blocked through cpu_request_ready while it runs.
+    sweep_active: bool,
+    sweep_set: u8,
 }
 
 impl Default for CpuV3TwoWayCacheState {
@@ -457,6 +580,8 @@ impl Default for CpuV3TwoWayCacheState {
             response_error: false,
             response_valid: false,
             refill_discard: false,
+            sweep_active: false,
+            sweep_set: 0,
         }
     }
 }
@@ -497,13 +622,14 @@ impl<I: CpuV3CacheImage> Module for CpuV3TwoWayCacheWithImage<I> {
         let input = input.sample(circuit);
         let (set, tag, _) = decode(state.pending.address);
         let pending_address_valid = state.pending.address >> 22 == 0;
+        let invalidating = input.invalidate_all || state.sweep_active;
         let way_0_hit = state.valid[0][set] && state.tags[0][set] == tag;
         let way_1_hit = state.valid[1][set] && state.tags[1][set] == tag;
         let pending_hit = way_0_hit || way_1_hit;
         let lookup_read_hit =
             state.lookup_valid && pending_address_valid && !state.pending.write && pending_hit;
         let response_space = !state.response_valid || input.cpu_response_ready;
-        let cpu_request_ready = !input.invalidate_all
+        let cpu_request_ready = !invalidating
             && state.state == State::Idle
             && (!state.lookup_valid || lookup_read_hit && response_space);
         output.drive(
@@ -546,6 +672,7 @@ impl<I: CpuV3CacheImage> Module for CpuV3TwoWayCacheWithImage<I> {
         // Combinational values evaluated against the current (pre-edge) state.
         let (set, tag, word) = decode(state.pending.address);
         let pending_address_valid = state.pending.address >> 22 == 0;
+        let invalidating = input.invalidate_all || state.sweep_active;
         let way_0_hit = state.valid[0][set] && state.tags[0][set] == tag;
         let way_1_hit = state.valid[1][set] && state.tags[1][set] == tag;
         let pending_hit = way_0_hit || way_1_hit;
@@ -563,10 +690,10 @@ impl<I: CpuV3CacheImage> Module for CpuV3TwoWayCacheWithImage<I> {
             && state.pending.write
             && pending_hit
             && response_space
-            && !input.invalidate_all;
+            && !invalidating;
         let lookup_read_hit =
             state.lookup_valid && pending_address_valid && !state.pending.write && pending_hit;
-        let cpu_request_ready = !input.invalidate_all
+        let cpu_request_ready = !invalidating
             && state.state == State::Idle
             && (!state.lookup_valid || lookup_read_hit && response_space);
         let accept_cpu_request = input.cpu_request_valid && cpu_request_ready;
@@ -575,6 +702,22 @@ impl<I: CpuV3CacheImage> Module for CpuV3TwoWayCacheWithImage<I> {
 
         if state.response_valid && input.cpu_response_ready {
             next.response_valid = false;
+        }
+
+        // Sweep control: invalidate_all (re)starts the 64-set sweep; each
+        // following edge clears both ways of one set. The RAM write port
+        // gives the sweep priority over any line-request/commit write, which
+        // is therefore dropped while a sweep runs.
+        if input.invalidate_all {
+            next.sweep_active = true;
+            next.sweep_set = 0;
+        } else if state.sweep_active {
+            next.valid[0][state.sweep_set as usize] = false;
+            next.valid[1][state.sweep_set as usize] = false;
+            next.sweep_set = state.sweep_set + 1;
+            if state.sweep_set == 63 {
+                next.sweep_active = false;
+            }
         }
 
         match state.state {
@@ -620,7 +763,9 @@ impl<I: CpuV3CacheImage> Module for CpuV3TwoWayCacheWithImage<I> {
             }
             State::LineRequest => {
                 if input.memory_request_ready {
-                    next.valid[state.pending_way][set] = false;
+                    if !state.sweep_active {
+                        next.valid[state.pending_way][set] = false;
+                    }
                     next.refill_beat = 0;
                     next.state = State::LineReceive;
                 }
@@ -634,7 +779,7 @@ impl<I: CpuV3CacheImage> Module for CpuV3TwoWayCacheWithImage<I> {
                         next.state = State::Idle;
                     } else {
                         let first_word = 4 * usize::from(state.refill_beat);
-                        let install = !state.refill_discard && !input.invalidate_all;
+                        let install = !state.refill_discard && !invalidating;
                         if install {
                             for lane in 0..4 {
                                 next.data[data_index(state.pending_way, set, first_word + lane)] =
@@ -686,11 +831,10 @@ impl<I: CpuV3CacheImage> Module for CpuV3TwoWayCacheWithImage<I> {
             next.lookup_valid = true;
         }
 
-        if input.invalidate_all {
-            next.valid = [[false; CPU_V3_CACHE_SETS]; CPU_V3_CACHE_WAYS];
-            if state.state == State::LineRequest || state.state == State::LineReceive {
-                next.refill_discard = true;
-            }
+        if input.invalidate_all
+            && (state.state == State::LineRequest || state.state == State::LineReceive)
+        {
+            next.refill_discard = true;
         }
 
         *state = next;
@@ -715,6 +859,10 @@ impl<I: CpuV3CacheImage> Module for CpuV3TwoWayCacheWithImage<I> {
                 .replace(
                     "__CACHE_TAGS__",
                     &CpuV3CacheTagRam::verilog_identity().module_name(),
+                )
+                .replace(
+                    "__CACHE_VALID__",
+                    &CpuV3CacheValidRamWithImage::<I>::verilog_identity().module_name(),
                 ),
         )
     }
@@ -723,6 +871,7 @@ impl<I: CpuV3CacheImage> Module for CpuV3TwoWayCacheWithImage<I> {
         vec![
             VerilogDependency::new::<CpuV3DualPortCacheData<I>>("u_data_banks"),
             VerilogDependency::new::<CpuV3CacheTagRam>("u_tags"),
+            VerilogDependency::new::<CpuV3CacheValidRamWithImage<I>>("u_valid"),
         ]
     }
 
@@ -765,6 +914,7 @@ pub struct CpuV3DataCacheOutput {
     pub maintenance_busy: Wire,
     pub maintenance_done: Wire,
     pub maintenance_error: Wire,
+    pub valid_sweep: Wire,
 }
 
 pub struct CpuV3DataCache;
@@ -858,6 +1008,14 @@ pub struct CpuV3DataCacheState {
     maintenance_active: bool,
     maintenance_done: bool,
     maintenance_error: bool,
+    // Mirror of the RTL RAM16 valid-array sweep: reset, a full invalidate, or
+    // a memory error clears one set of both ways per cycle; requests are
+    // blocked meanwhile, and an invalidate's maintenance_done is delayed
+    // until the sweep completes.
+    maintenance_invalidate: bool,
+    sweep_active: bool,
+    sweep_set: u8,
+    sweep_finishes_maintenance: bool,
 }
 
 impl Default for CpuV3DataCacheState {
@@ -875,6 +1033,10 @@ impl Default for CpuV3DataCacheState {
             maintenance_active: false,
             maintenance_done: false,
             maintenance_error: false,
+            maintenance_invalidate: false,
+            sweep_active: false,
+            sweep_set: 0,
+            sweep_finishes_maintenance: false,
         }
     }
 }
@@ -915,6 +1077,8 @@ impl CpuV3DataCacheState {
         self.pending_cpu_request = None;
         self.request = None;
         self.phase = DataMemoryPhase::Idle;
+        self.sweep_active = true;
+        self.sweep_set = 0;
         if self.maintenance_active {
             self.maintenance_active = false;
             self.maintenance_done = true;
@@ -937,8 +1101,14 @@ impl CpuV3DataCacheState {
                 None => {
                     self.request = None;
                     self.phase = DataMemoryPhase::Idle;
-                    self.maintenance_active = false;
-                    self.maintenance_done = true;
+                    if self.maintenance_invalidate {
+                        self.sweep_active = true;
+                        self.sweep_set = 0;
+                        self.sweep_finishes_maintenance = true;
+                    } else {
+                        self.maintenance_active = false;
+                        self.maintenance_done = true;
+                    }
                 }
             }
         } else {
@@ -999,7 +1169,8 @@ impl Module for CpuV3DataCache {
                     && !state.response_valid
                     && !state.maintenance_active
                     && !input.clean_all
-                    && !input.invalidate_all,
+                    && !input.invalidate_all
+                    && !state.sweep_active,
                 cpu_response_valid: state.response_valid,
                 cpu_read_data: u64::from(state.response_data),
                 cpu_error: state.response_valid && state.response_error,
@@ -1015,6 +1186,7 @@ impl Module for CpuV3DataCache {
                 maintenance_busy: state.maintenance_active,
                 maintenance_done: state.maintenance_done,
                 maintenance_error: state.maintenance_error,
+                valid_sweep: state.sweep_active,
             },
         );
     }
@@ -1028,11 +1200,31 @@ impl Module for CpuV3DataCache {
         let input = input.sample(circuit);
         if input.reset {
             *state = CpuV3DataCacheState::default();
+            // The RTL RAM16 valid arrays sweep-clear after reset instead of
+            // clearing in one cycle; the system holds the core for the sweep.
+            state.sweep_active = true;
+            state.sweep_set = 0;
             return;
         }
         state.maintenance_done = false;
         if state.response_valid && input.cpu_response_ready {
             state.response_valid = false;
+        }
+        // Sweep control: one set of both valid ways cleared per cycle; an
+        // invalidate that finished its write-backs reports done when the
+        // sweep completes.
+        if state.sweep_active {
+            if state.sweep_set == 63 {
+                state.sweep_active = false;
+                state.sweep_set = 0;
+                if state.sweep_finishes_maintenance {
+                    state.sweep_finishes_maintenance = false;
+                    state.maintenance_active = false;
+                    state.maintenance_done = true;
+                }
+            } else {
+                state.sweep_set += 1;
+            }
         }
 
         if state.phase == DataMemoryPhase::Idle
@@ -1047,6 +1239,7 @@ impl Module for CpuV3DataCache {
             } else {
                 crate::MaintenanceCommand::Clean
             };
+            state.maintenance_invalidate = input.invalidate_all;
             match state
                 .cache
                 .begin_maintenance(command)
@@ -1054,8 +1247,14 @@ impl Module for CpuV3DataCache {
             {
                 Some(request) => state.start_request(request),
                 None => {
-                    state.maintenance_active = false;
-                    state.maintenance_done = true;
+                    if state.maintenance_invalidate {
+                        state.sweep_active = true;
+                        state.sweep_set = 0;
+                        state.sweep_finishes_maintenance = true;
+                    } else {
+                        state.maintenance_active = false;
+                        state.maintenance_done = true;
+                    }
                 }
             }
             return;
@@ -1064,6 +1263,7 @@ impl Module for CpuV3DataCache {
         if state.phase == DataMemoryPhase::Idle
             && !state.response_valid
             && !state.maintenance_active
+            && !state.sweep_active
             && input.cpu_request_valid
         {
             let address = crate::PhysicalWordAddress::new(input.cpu_address as u32);
@@ -1183,6 +1383,10 @@ impl Module for CpuV3DataCache {
                 .replace(
                     "__DIRTY_RAM__",
                     &CpuV3DataCacheDirtyRam::verilog_identity().module_name(),
+                )
+                .replace(
+                    "__CACHE_VALID__",
+                    &CpuV3CacheValidRam::verilog_identity().module_name(),
                 ),
         )
     }
@@ -1192,6 +1396,7 @@ impl Module for CpuV3DataCache {
             VerilogDependency::new::<CpuV3DualPortCacheData<ZeroBsramImage>>("u_data_banks"),
             VerilogDependency::new::<CpuV3CacheTagRam>("u_tags"),
             VerilogDependency::new::<CpuV3DataCacheDirtyRam>("u_dirty"),
+            VerilogDependency::new::<CpuV3CacheValidRam>("u_valid"),
         ]
     }
 
@@ -1534,6 +1739,7 @@ mod tests {
             ResourceKind::SsramBit,
             CPU_V3_CACHE_TAG_PHYSICAL_BITS as u64,
         )));
+        assert!(resources.contains(&ResourceAmount::new(ResourceKind::SsramBit, 192)));
     }
 
     #[test]
@@ -1891,7 +2097,31 @@ mod tests {
             "invalidate during refill exposed a stale installed line"
         );
 
-        // Invalidate clears the cache; the next read misses again.
+        // Invalidate clears the cache through the 64-set valid-array sweep; a
+        // second pulse mid-sweep restarts it, and the next read still misses
+        // and refetches the line.
+        cosim_step(
+            &mut circuit,
+            &input,
+            &output,
+            &mut memory,
+            None,
+            false,
+            true,
+            &mut trace,
+        );
+        for _ in 0..3 {
+            cosim_step(
+                &mut circuit,
+                &input,
+                &output,
+                &mut memory,
+                None,
+                false,
+                false,
+                &mut trace,
+            );
+        }
         cosim_step(
             &mut circuit,
             &input,
@@ -1988,6 +2218,8 @@ mod tests {
         s.push_str(&CpuV3DualPortCacheData::<ZeroBsramImage>::verilog_source().unwrap());
         s.push('\n');
         s.push_str(&CpuV3CacheTagRam::verilog_source().unwrap());
+        s.push('\n');
+        s.push_str(&CpuV3CacheValidRam::verilog_source().unwrap());
         s.push('\n');
         s.push_str(&CpuV3TwoWayCache::verilog_source().unwrap());
         s
