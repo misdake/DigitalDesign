@@ -4,9 +4,11 @@ module DisplayLineBuffer(
     input wire read_clock, input wire [9:0] read_address,
     output reg [31:0] read_data = 0
 );
-// Three 400-pixel lines pack into 600 32-bit words = 19200 bits, so Gowin
-// maps this dual-clock RAM into two 18-Kbit BSRAMs.
-reg [31:0] memory [0:1023];
+// Two 400-pixel lines pack into 400 32-bit words = 12800 bits, which fits one
+// 18432-bit block, so Gowin maps this dual-clock RAM into a single 18-Kbit
+// BSRAM. The 512-word depth is the next power of two above the 400 live
+// addresses; the two slot bases are 0 and 200 words.
+reg [31:0] memory [0:511];
 always @(posedge write_clock)
     if (write_enable) memory[write_address] <= write_data;
 always @(posedge read_clock)

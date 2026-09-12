@@ -20,10 +20,15 @@ localparam [15:0] BORDER_COLOR=16'h1082;
 // injected by the Rust host model so the RTL, testbench, and board video PLL
 // all derive from the single `ACTIVE_DISPLAY_CONFIG` constant.
 __DISPLAY_CONFIG__
-reg [2:0] published=0;
-reg [2:0] released=0;
-reg [2:0] release_meta=0, release_sync=0;
-reg [1:0] fill_slot=0;
+// Two line slots: the producer fills one while the display reads the other.
+// The display is always urgent when it requests (it only requests once the
+// consumer has freed a slot, when exactly one line is buffered), so it never
+// round-robins with the CPU; a single line of lead covers refresh and the
+// in-flight transaction.
+reg [1:0] published=0;
+reg [1:0] released=0;
+reg [1:0] release_meta=0, release_sync=0;
+reg fill_slot=0;
 reg [7:0] fill_y=0;
 reg [21:0] active_base=FB_BASE;
 reg [21:0] row_address=FB_BASE;
@@ -43,17 +48,15 @@ reg memory_error_sticky=0;
 wire fill_slot_free = published[fill_slot] == release_sync[fill_slot];
 wire [1:0] ready_count =
     (published[0] != release_sync[0]) +
-    (published[1] != release_sync[1]) +
-    (published[2] != release_sync[2]);
+    (published[1] != release_sync[1]);
 assign memory_urgent = ready_count <= 1;
 assign memory_request_valid = fill_slot_free && !burst_active && !frame_complete && !memory_error_sticky;
 assign memory_address = row_address + {13'b0,burst_index,4'b0};
 
 wire line_write = burst_active && memory_data_valid;
-// Slot bases are 0, LINE_SLOT_WORDS, 2*LINE_SLOT_WORDS. A three-way constant
-// select keeps the 2-bit slot index out of a synthesized DSP multiplier.
-wire [9:0] fill_slot_base = fill_slot==2'd0 ? 10'd0 :
-    fill_slot==2'd1 ? LINE_SLOT_WORDS : LINE_SLOT_WORDS + LINE_SLOT_WORDS;
+// Slot bases are 0 and LINE_SLOT_WORDS. A two-way constant select keeps the
+// slot index out of a synthesized DSP multiplier.
+wire [9:0] fill_slot_base = fill_slot ? LINE_SLOT_WORDS : 10'd0;
 wire [9:0] line_write_address = fill_slot_base + {burst_index, 3'b000} + beat_index;
 reg [9:0] line_read_address=0;
 wire [31:0] line_read_data;
@@ -128,7 +131,7 @@ always @(posedge clk) begin
                 if (burst_index==LAST_BURST) begin
                     published[fill_slot] <= ~published[fill_slot];
                     burst_index<=0;
-                    fill_slot <= fill_slot==2'd2 ? 2'd0 : fill_slot+1'b1;
+                    fill_slot <= ~fill_slot;
                     if (fill_y==LAST_FILL_Y) begin frame_complete<=1; end
                     else begin fill_y<=fill_y+1'b1; row_address<=row_address+ROW_STRIDE; end
                 end else burst_index<=burst_index+1'b1;
@@ -145,10 +148,9 @@ reg [2:0] pixel_reset_sync=0;
 always @(posedge pixel_clock)
     pixel_reset_sync <= {pixel_reset_sync[1:0], ~(reset | ~video_locked)};
 wire pixel_reset = ~pixel_reset_sync[2];
-reg [1:0] display_slot=0;
+reg display_slot=0;
 // Slot base for the displayed slot, selected without a DSP multiplier.
-wire [9:0] display_slot_base = display_slot==2'd0 ? 10'd0 :
-    display_slot==2'd1 ? LINE_SLOT_WORDS : LINE_SLOT_WORDS + LINE_SLOT_WORDS;
+wire [9:0] display_slot_base = display_slot ? LINE_SLOT_WORDS : 10'd0;
 reg [1:0] vertical_repeat=0;
 reg started=0;
 reg [10:0] h_count=0;
@@ -227,7 +229,7 @@ always @(posedge pixel_clock) begin
                 vertical_repeat<=0;
                 if (line_ready) begin
                     released[display_slot]<=~released[display_slot];
-                    display_slot<=display_slot==2'd2 ? 2'd0 : display_slot+1'b1;
+                    display_slot<=~display_slot;
                 end else underflow_sticky<=1;
             end else vertical_repeat<=vertical_repeat+1'b1;
         end

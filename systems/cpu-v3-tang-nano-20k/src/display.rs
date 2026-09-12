@@ -87,7 +87,7 @@ pub const HDMI_WIDTH: usize = ACTIVE_DISPLAY_CONFIG.hdmi_width;
 pub const HDMI_HEIGHT: usize = ACTIVE_DISPLAY_CONFIG.hdmi_height;
 pub const DISPLAY_SCALE: usize = ACTIVE_DISPLAY_CONFIG.scale;
 pub const DISPLAY_SIDE_BORDER: usize = ACTIVE_DISPLAY_CONFIG.side_border;
-pub const DISPLAY_LINE_SLOTS: usize = 3;
+pub const DISPLAY_LINE_SLOTS: usize = 2;
 pub const DISPLAY_LINE_WORDS: usize = FRAMEBUFFER_WIDTH as usize;
 pub const DISPLAY_LINE_BUFFER_WORDS: usize = DISPLAY_LINE_SLOTS * DISPLAY_LINE_WORDS;
 pub const DISPLAY_BURST_PIXELS: usize = 16;
@@ -194,7 +194,7 @@ pub struct BufferSimulation {
     pub minimum_ready_lines: usize,
 }
 
-/// Conservative line-level model. A display line fetch costs 20 bursts of 16
+/// Conservative line-level model. A display line fetch costs 25 bursts of 16
 /// memory clocks each. The caller can inject a complete SDRAM blackout.
 pub fn simulate_line_buffers(
     slots: usize,
@@ -240,18 +240,23 @@ mod tests {
     use super::*;
 
     #[test]
-    fn three_rgb565_lines_need_two_18k_blocks() {
-        // Three 400-pixel lines pack into 600 32-bit words = 19200 bits, which
-        // no longer fits one 18432-bit block, so the line buffer uses two.
+    fn two_rgb565_lines_fit_one_18k_block() {
+        // Two 400-pixel lines pack into 400 32-bit words = 12800 bits, which
+        // fits one 18432-bit block, so the line buffer uses one.
         assert_eq!(DISPLAY_LINE_WORDS, 400);
-        assert_eq!(DISPLAY_LINE_BUFFER_WORDS, 1200);
-        assert_eq!(DISPLAY_LINE_SLOTS * (DISPLAY_LINE_WORDS / 2), 600);
+        assert_eq!(DISPLAY_LINE_BUFFER_WORDS, 800);
+        assert_eq!(DISPLAY_LINE_SLOTS * (DISPLAY_LINE_WORDS / 2), 400);
         assert_eq!(DISPLAY_BURSTS_PER_LINE, 25);
     }
 
     #[test]
-    fn triple_buffer_absorbs_two_source_line_blackout() {
-        let result = simulate_line_buffers(3, 240 * 100, 7_200);
+    fn two_slots_absorb_a_source_line_blackout() {
+        // The display is arbiter-urgent whenever it requests (it only requests
+        // once a slot is free, when one line is buffered), so a single line of
+        // lead covers the realistic stall of refresh plus one in-flight
+        // transaction. The model's 0-underflow blackout ceiling for two slots
+        // is ~6400 cycles; 6000 leaves the tested margin below it.
+        let result = simulate_line_buffers(2, 240 * 100, 6_000);
         assert_eq!(result.underflows, 0);
         assert!(result.minimum_ready_lines >= 1);
         assert!(simulate_line_buffers(1, 240, 0).underflows > 0);

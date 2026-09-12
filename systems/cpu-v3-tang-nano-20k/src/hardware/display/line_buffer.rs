@@ -1,4 +1,4 @@
-//! One dual-clock line buffer for three 400-pixel lines (two 18-Kbit BSRAMs).
+//! One dual-clock line buffer for two 400-pixel lines (one 18-Kbit BSRAM).
 
 use digital_design_circuit::{CircuitWires, Wire, Wires};
 use digital_design_hardware::{BsramBlocks, Hardware, Module, ModuleIo, TargetResourceRequest};
@@ -30,7 +30,7 @@ impl Module for DisplayLineBuffer {
     const EMU_AVAILABLE: bool = false;
 
     fn target_resources() -> Vec<TargetResourceRequest> {
-        vec![TargetResourceRequest::new(BsramBlocks::new(2))]
+        vec![TargetResourceRequest::new(BsramBlocks::new(1))]
     }
 
     fn execute_emu(

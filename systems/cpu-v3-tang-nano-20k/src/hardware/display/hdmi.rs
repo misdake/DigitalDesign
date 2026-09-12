@@ -105,14 +105,14 @@ mod tests {
     use digital_design_hardware::{ResourceKind, VerilogProject};
 
     #[test]
-    fn display_claims_two_line_buffer_blocks() {
+    fn display_claims_one_line_buffer_block() {
         let project = VerilogProject::generate::<FramebufferHdmi>().unwrap();
         assert_eq!(project.resource_claims.len(), 1);
         assert_eq!(
             project.resource_claims[0].resources[0].kind,
             ResourceKind::Bsram18K
         );
-        assert_eq!(project.resource_claims[0].resources[0].amount, 2);
+        assert_eq!(project.resource_claims[0].resources[0].amount, 1);
     }
 
     #[test]
