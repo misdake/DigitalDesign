@@ -26,7 +26,8 @@ the slider diagnostic, and `11` is ignored. The current configuration uses the
 DDHT slider diagnostic for S1 and the CPU/FPU sine, cosine, and circle demo for
 S2. The S2 slot is loaded at `0007:0200`; the current display program renders
 through cached CPU stores and cleans D-cache before each vblank framebuffer
-publication.
+publication, and reports a DDHT success frame (test ID `0x0b`) once per
+published frame so the default boot is observable over UART.
 
 The current board's runtime SFDP probe reports an 8-MiB device. Its JEDEC ID is
 `EF 40 17`; this is a Winbond-family 64-Mbit part even though some board

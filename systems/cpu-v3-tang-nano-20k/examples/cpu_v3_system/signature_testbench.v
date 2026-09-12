@@ -211,6 +211,7 @@ reg [7:0] uart_shift = 0;
 reg uart_receiving = 0;
 reg [7:0] uart_history [0:9];
 reg ddht_frame_seen = 0;
+reg display_frame_seen = 0;
 reg descriptor_error_frame_seen = 0;
 reg manifest_error_frame_seen = 0;
 reg wait_sdram_phase_seen = 0;
@@ -259,6 +260,15 @@ always @(posedge clk) begin
                      uart_history[5] ^ uart_history[6] ^ uart_history[7] ^
                      uart_history[8] ^ uart_history[9]) == 0)
                     ddht_frame_seen = 1;
+                // Display success frame: same layout with test ID 0x0b.
+                if (uart_history[2] == 8'h44 && uart_history[3] == 8'h44 &&
+                    uart_history[4] == 8'h48 && uart_history[5] == 8'h54 &&
+                    uart_history[6] == 8'h01 && uart_history[7] == 8'h0b &&
+                    uart_history[8] == 8'h00 &&
+                    (uart_history[2] ^ uart_history[3] ^ uart_history[4] ^
+                     uart_history[5] ^ uart_history[6] ^ uart_history[7] ^
+                     uart_history[8] ^ uart_history[9]) == 0)
+                    display_frame_seen = 1;
                 // Boot error frame: magic CV3B, stage 1, category 1, code 1,
                 // detail 0, XOR checksum of bytes 0..8.
                 if (uart_history[0] == 8'h43 && uart_history[1] == 8'h56 &&
@@ -307,6 +317,9 @@ initial begin
     // (no button held). The display application never writes the LEDs, so the
     // boot monitor keeps ownership and shows the application phase.
     wait (dut.code_segment == 16'd7);
+    // The display application reports its own DDHT 0x0b frame as soon as it
+    // starts; wait for it so the default boot is validated over UART too.
+    wait (display_frame_seen);
     repeat (4) @(posedge clk);
     if (dut.data_segment !== 16'h0000 && dut.data_segment !== 16'h0020 &&
         dut.data_segment !== 16'h0021)

@@ -3,10 +3,16 @@
 //! buffer, the FPU evaluates animated sine/cosine curves and a parametric
 //! circle, and rounded FPU results return through integer registers before
 //! normal cached stores write the pixels. Each completed buffer is cleaned
-//! before it is published to the display at vertical blanking.
+//! before it is published to the display at vertical blanking. Every published
+//! frame also reports a DDHT success status frame (test ID `0x0b`) through the
+//! device-0 system-control UART, so the default S2 boot passes the board UART
+//! check without holding the S1 button.
 
 use crate::dsl_rt::*;
 mod device_abi;
+
+/// DDHT test ID for the display application's per-frame status report.
+const DISPLAY_TEST_ID: u16 = 0x0b;
 
 const WIDTH: u16 = 320;
 const HEIGHT: u16 = 240;
@@ -201,6 +207,26 @@ fn render_dynamic(base_segment: u16, base_offset: u16, phase: u16, restore: u16)
     draw_circle(base_segment, base_offset, phase, restore);
 }
 
+/// Transmits one byte through the device-0 system-control UART, polling its
+/// busy bit first.
+fn uart_byte(byte: u16) {
+    while dev_recv(SYSTEM_CONTROL_DEVICE, SYSCTL_UART_STATUS) & 1 != 0 { }
+    dev_send(SYSTEM_CONTROL_DEVICE, SYSCTL_UART_TX_DATA, byte);
+}
+
+/// Transmits the 8-byte DDHT success frame for the display application.
+fn uart_success() {
+    uart_byte(0x44); // 'D'
+    uart_byte(0x44); // 'D'
+    uart_byte(0x48); // 'H'
+    uart_byte(0x54); // 'T'
+    uart_byte(1);    // protocol version
+    uart_byte(DISPLAY_TEST_ID);
+    uart_byte(0);    // status: success
+    // XOR of 'D' 'D' 'H' 'T' 1 test ID 0 (the two 'D' bytes cancel).
+    uart_byte(0x48 ^ 0x54 ^ 1 ^ DISPLAY_TEST_ID);
+}
+
 fn select_next_framebuffer(segment: u16, offset: u16) {
     // The display reads SDRAM directly and does not snoop the CPU's write-back
     // D-cache. Complete the ownership handoff before publishing this buffer.
@@ -227,6 +253,9 @@ fn main() {
     let mut phase_a: u16 = 0;
     let mut phase_b: u16 = 0;
     let mut back: u16 = 0;
+    // Report once before the first frames complete so the boot chain's status
+    // is observable early, then once per published frame below.
+    uart_success();
     fill_buffer(FB_A_SEGMENT, FB_A_OFFSET);
     fill_buffer(FB_B_SEGMENT, FB_B_OFFSET);
     while 1 == 1 {
@@ -244,6 +273,7 @@ fn main() {
             back = 0;
         }
         wait_next_frame();
+        uart_success();
         phase += 24;
     }
 }

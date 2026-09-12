@@ -32,9 +32,11 @@ read-only artifact checks, observation, and hardware mutation:
 Supported profiles are the FPGA-alive `board-health` probe and the full CPU V3
 `cpu-v3-system` system (single-stage flash boot plus the SDRAM and HDMI datapaths).
 The board's selection latch powers up in the S2 slot, so `cpu-v3-system` boots the
-display application by default; the DDHT UART check (test ID `0x07`) comes from the
-S1 slider diagnostic, so hold the S1 button during reset before an `Observe`/`Full`
-capture when validating over UART.
+display application by default. That display application reports its own DDHT status
+frame (test ID `0x0b`) once per published frame, so a default `Observe`/`Full` capture
+validates over UART without touching the board. The S1 slider diagnostic reports
+`0x07`; hold the S1 button during reset to capture that application instead. The
+`cpu-v3-system` profile accepts either test ID.
 Every attempted run writes `target/board-validation/<profile>/<UTC>/evidence.json`,
 including failure stage, source/bitstream fingerprints, SHA-256 hashes, commit and dirty state.
 The runner never resets USB and never retries programming after a failure.
@@ -104,8 +106,9 @@ Assigned test IDs:
 | ---: | --- |
 | `0x01` | Tang Nano 20K BSRAM shapes self-test |
 | `0x03` | Tang Nano 20K fitted SDRAM burst/refresh self-test |
-| `0x07` | CPU V3 full system single-stage flash boot (application reached) |
+| `0x07` | CPU V3 full system single-stage flash boot, S1 slider diagnostic (application reached) |
 | `0x0a` | Tang Nano 20K board clock/button/UART transport health probe |
+| `0x0b` | CPU V3 S2 display application per-frame status |
 
 The former CPU V3 CPU-execution (`0x04`), SDRAM (`0x05`), boot-DMA (`0x06`),
 system-control-UART (`0x08`), device-path (`0x09`), and the read-only/diagnostic

@@ -32,7 +32,7 @@ function Get-ProfileConfiguration {
                 Package = "digital-design-hardware-gowin"
                 Example = "board_health"
                 Output = "target/board_health_gowin"
-                TestId = 0x0a
+                TestIds = "0x0a"
             }
         }
         "cpu-v3-system" {
@@ -40,7 +40,9 @@ function Get-ProfileConfiguration {
                 Package = "cpu-v3-tang-nano-20k"
                 Example = "cpu_v3_system"
                 Output = "target/cpu_v3_system_gowin"
-                TestId = 0x07
+                # The S2 display application reports 0x0b; the S1 slider
+                # diagnostic reports 0x07. Both are acceptable captures.
+                TestIds = "0x0b,0x07"
             }
         }
     }
@@ -212,7 +214,7 @@ try {
         )
         Invoke-Stage "validate DDHT status" "powershell" @(
             "-ExecutionPolicy", "Bypass", "-File", (Join-Path $PSScriptRoot "check_uart_status.ps1"),
-            "-Path", $capturePath, "-TestId", $configuration.TestId,
+            "-Path", $capturePath, "-TestId", $configuration.TestIds,
             "-MinimumSuccessFrames", $MinimumSuccessFrames,
             "-MaximumAgeSeconds", ($CaptureSeconds + 30),
             "-ResultPath", $uartStatusPath
@@ -270,9 +272,7 @@ finally {
         sram_programmed = $completedStages.Contains("program audited SRAM bitstream once")
         uart_validated = $completedStages.Contains("validate DDHT status")
         port = if ($Port) { $Port } else { $null }
-        expected_test_id = if ($null -ne $configuration.TestId) {
-            "0x$($configuration.TestId.ToString('x2'))"
-        } else { $null }
+        expected_test_id = if ($null -ne $configuration.TestIds) { $configuration.TestIds } else { $null }
         expected_uart_protocol = "DDHT/CV3B"
         artifact = $artifact
         boot_package_sha256 = if ($bootPackagePath -and (Test-Path -LiteralPath $bootPackagePath)) {
