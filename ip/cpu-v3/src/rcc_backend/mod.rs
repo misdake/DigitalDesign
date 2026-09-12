@@ -476,9 +476,10 @@ fn lower_instruction(
                 }
                 IntOperand::Imm(value) => {
                     // destructive immediate op on rd: lhs moves into dst first.
-                    // ADDI/SUBI sign-extend their i4; ANDI/ORI/XORI read a
-                    // zero-extended u4 mask, so only arithmetic uses the signed
-                    // short form.
+                    // ADDI/SUBI read an unsigned u4 (`emit_immediate` flips a
+                    // negative adjustment to the opposite operation); SEQI/
+                    // SLTI keep a signed i4 short form, and ANDI/ORI/XORI read
+                    // a zero-extended u4 mask.
                     let (operation, signed_short) = match op {
                         BinOp::Add => (ImmediateOp::Add, true),
                         BinOp::Sub => (ImmediateOp::Sub, true),
@@ -1199,6 +1200,30 @@ fn emit_immediate(
     value: u16,
     signed_short: bool,
 ) {
+    // ADDI/SUBI take an unsigned u4 unprefixed, so a negative adjustment is
+    // expressed with the opposite operation of its magnitude (equivalent
+    // under wrapping arithmetic, also for the prefixed 16-bit form).
+    if matches!(operation, ImmediateOp::Add | ImmediateOp::Sub) {
+        let (operation, value) = if (value as i16) < 0 {
+            let flipped = match operation {
+                ImmediateOp::Add => ImmediateOp::Sub,
+                ImmediateOp::Sub => ImmediateOp::Add,
+                _ => unreachable!(),
+            };
+            (flipped, (value as i16).unsigned_abs())
+        } else {
+            (operation, value)
+        };
+        if value <= 15 {
+            lines.word(cpu_v3::immediate_unsigned(operation, dst, value as u8));
+        } else {
+            let consumer = 0xa000 | ((operation as u16) << 8) | (u16::from(dst) << 4);
+            for word in cpu_v3::prefixed(consumer, value) {
+                lines.word(word);
+            }
+        }
+        return;
+    }
     if signed_short && (-8..=7).contains(&(value as i16)) {
         lines.word(cpu_v3::immediate_signed(operation, dst, value as i16));
     } else if !signed_short && value <= 15 {

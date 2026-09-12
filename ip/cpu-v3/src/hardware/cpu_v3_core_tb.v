@@ -64,6 +64,11 @@ function [15:0] fpr_word;
     fpr_word = dut.u_fpu_register_ram.words[vector] >> (lane * 16);
 endfunction
 
+function [15:0] gpr_word;
+    input [3:0] index;
+    gpr_word = dut.u_gpr_ram.words[index];
+endfunction
+
 always @(posedge clk) begin
     instruction_response_valid <= instruction_request_valid;
     if (instruction_request_valid)
@@ -847,6 +852,31 @@ initial begin
     memory[24] = 16'h6c00; // HALT (SIGNAL r0, 0)
     scenario = 43;
     expect_halt(16'h43fa, 300);
+
+    // Scenario 44: LDC/ADDC index the shared symmetric constant table; a
+    // pending prefix expires unused before the non-consuming ADDC and retires
+    // separately. ADDI/SUBI read the unprefixed immediate as an unsigned u4
+    // (15 was -1 under the old signed reading).
+    clear_memory;
+    memory[0] = 16'ha709; // LDC r0, 9 -> r0 = 0xfff0 (-16)
+    memory[1] = 16'ha71f; // LDC r1, 15 -> r1 = 0xfe00 (-512)
+    memory[2] = 16'hab14; // ADDC r1, 4 -> r1 = 0xfe00 + 64 = 0xfe40
+    memory[3] = 16'hfabc; // PFX12 0xabc (expires unused)
+    memory[4] = 16'hab06; // ADDC r0, 6 -> r0 = -16 + 256 = 0x00f0
+    memory[5] = 16'ha00f; // ADDI r0, 15 -> r0 = 0x00ff
+    memory[6] = 16'ha10f; // SUBI r0, 15 -> r0 = 0x00f0
+    memory[7] = 16'ha000; // ADDI r0, 0 -> r0 = 0x00f0
+    memory[8] = 16'h6c00; // HALT (SIGNAL r0, 0)
+    scenario = 44;
+    expect_halt(16'h00f0, 200);
+    if (gpr_word(1) !== 16'hfe40) begin
+        $display("FAIL: scenario 44 r1 %h, expected fe40", gpr_word(1));
+        errors = errors + 1;
+    end
+    if (retired_words !== 9) begin
+        $display("FAIL: scenario 44 retired %0d words, expected 9", retired_words);
+        errors = errors + 1;
+    end
 
     if (errors != 0) begin
         $display("FAIL: %0d error(s)", errors);

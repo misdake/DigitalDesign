@@ -10,9 +10,9 @@
 mod system_emu;
 
 use cpu_v3::{
-    alu, branch, halt, immediate_unsigned, load, load_immediate16, nop, store, AluOp, CpuV3Core,
-    CpuV3DataCache, CpuV3InstructionFetchQueue, CpuV3TwoWayCache, FpuOp, ImmediateOp,
-    TestCondition,
+    add_constant, alu, branch, halt, immediate_unsigned, load, load_constant, load_immediate16,
+    nop, prefix12, store, AluOp, CpuV3Core, CpuV3DataCache, CpuV3InstructionFetchQueue,
+    CpuV3TwoWayCache, FpuOp, ImmediateOp, TestCondition,
 };
 use cpu_v3::{fpu, fpu_unary, FpuUnaryOp};
 use cpu_v3_tang_nano_20k::CpuV3MemoryArbiter;
@@ -117,6 +117,28 @@ fn program_fpu_roundtrip() -> Vec<u16> {
     p.push(fpu(FpuOp::Export4, 3, 1)); // mem[0x6000..0x6004] = F3
     p.push(store(5, 1, 4)); // mem[0x6004] = r5 = 0x0700
     p.extend(load_immediate16(0, 0x2d));
+    p.push(halt());
+    p
+}
+
+/// LDC/ADDC (major A functions 7/B) index the shared 16-entry constant table
+/// and never consume PFX12; the prefix before the ADDC expires unused.
+/// ADDI/SUBI read the unprefixed immediate as an unsigned u4 (15 was -1
+/// under the signed reading). The results land in the checked memory region.
+fn program_constant_table() -> Vec<u16> {
+    let mut p = Vec::new();
+    p.extend(load_immediate16(1, 0x4000)); // data base
+    p.push(load_constant(2, 0)); // r2 = 8
+    p.push(load_constant(3, 15)); // r3 = -512
+    p.push(add_constant(2, 7)); // r2 = 8 + 512 = 520
+    p.push(add_constant(3, 9)); // r3 = -512 + -16 = -528
+    p.push(prefix12(0xabc)); // expires unused before the non-consuming ADDC
+    p.push(add_constant(2, 4)); // r2 = 520 + 64 = 584
+    p.push(immediate_unsigned(ImmediateOp::Add, 2, 15)); // r2 = 599
+    p.push(immediate_unsigned(ImmediateOp::Sub, 2, 15)); // r2 = 584
+    p.push(immediate_unsigned(ImmediateOp::Add, 2, 0)); // r2 = 584
+    p.push(store(2, 1, 0)); // mem[0x4000] = 584
+    p.push(store(3, 1, 1)); // mem[0x4001] = 0xfdf0
     p.push(halt());
     p
 }
@@ -255,6 +277,14 @@ fn programs() -> Vec<CosimProgram> {
             check_base: 0x4000,
             check_len: 0,
             expected_halt: None,
+        },
+        CosimProgram {
+            name: "constant_table",
+            words: program_constant_table(),
+            max_cycles: 20_000,
+            check_base: 0x4000,
+            check_len: 2,
+            expected_halt: Some(0),
         },
         CosimProgram {
             name: "pipeline_overlap",

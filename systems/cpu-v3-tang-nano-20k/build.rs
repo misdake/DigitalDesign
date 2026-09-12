@@ -248,11 +248,13 @@ fn main() {
     // The single-stage boot merge changed the Stage0 words; this FNV-1a
     // baseline is re-pinned for the final merged compiler output. Note that
     // Stage0 now also compiles the generated `boot_selection` constants, so a
-    // change to the S1/S2 layout changes these bytes too. Any such change must
+    // change to the S1/S2 layout changes these bytes too. The ISA 0.8
+    // amendment (unsigned ADDI/SUBI, LDC/ADDC) changed the compiler's
+    // immediate emission and was re-pinned deliberately. Any such change must
     // re-baseline deliberately, never silently.
     assert_eq!(
         fnv1a64(&stage0_bytes),
-        2_509_393_493_274_322_378,
+        11_746_644_041_991_125_477,
         "Stage0 bytes changed from the CPU V3 boot-format baseline"
     );
 

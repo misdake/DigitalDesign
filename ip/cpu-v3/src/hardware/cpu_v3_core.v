@@ -197,9 +197,7 @@ wire [15:0] gpr_read_b_data =
 // barriers and continue to use the existing blocking FSM paths.
 wire shift_pipelineable = opcode == 4'h2 &&
     (field_d <= 4'h2 || (field_d >= 4'h4 && field_d <= 4'h6));
-wire immediate_pipelineable = opcode == 4'ha &&
-    (field_d <= 4'h6 || (field_d >= 4'h8 && field_d <= 4'ha) ||
-     field_d == 4'hc || field_d == 4'hd);
+wire immediate_pipelineable = opcode == 4'ha && field_d <= 4'hd;
 // Major 6: MOV..SEQ, SLT..CMPU, non-halting SIGNAL, valid MFSR, and MTSR DSEG
 // retire in one cycle; reserved fn 7, halting SIGNAL, and JSEG do not.
 wire control_alu_pipelineable = opcode == 4'h6 &&
@@ -227,7 +225,7 @@ wire signed [17:0] fpu_multiplier_right =
     {{2{fpu_multiply_b_word[15]}}, fpu_multiply_b_word};
 wire signed [35:0] fpu_multiplier_product;
 // PFX12 consumer closed set: LOAD/STORE, MULI, every defined major-A
-// operation, and the major-B relative forms 0..7.
+// operation except LDC/ADDC, and the major-B relative forms 0..7.
 wire prefix_consumer = opcode == 4'h8 || opcode == 4'h9 ||
                        (opcode == 4'h2 && field_d == 4'hc) ||
                        (opcode == 4'ha &&
@@ -261,6 +259,34 @@ function [15:0] immediate_unsigned;
     begin
         immediate_unsigned = prefix_valid ? {prefix_high, value[3:0]} :
                                              {12'b0, value[3:0]};
+    end
+endfunction
+
+// The 16-entry constant table shared by LDC (fn 7) and ADDC (fn B), indexed
+// by the immediate nibble. Symmetric around the sign bit: indices 0..7 hold
+// the magnitudes 8, 16, 24, 32, 64, 128, 256, 512 and indices 8..15 their
+// negations. A plain unsigned constant select.
+function [15:0] constant_table;
+    input [3:0] index;
+    begin
+        case (index)
+            4'h0: constant_table = 16'h0008;
+            4'h1: constant_table = 16'h0010;
+            4'h2: constant_table = 16'h0018;
+            4'h3: constant_table = 16'h0020;
+            4'h4: constant_table = 16'h0040;
+            4'h5: constant_table = 16'h0080;
+            4'h6: constant_table = 16'h0100;
+            4'h7: constant_table = 16'h0200;
+            4'h8: constant_table = 16'hfff8;
+            4'h9: constant_table = 16'hfff0;
+            4'ha: constant_table = 16'hffe8;
+            4'hb: constant_table = 16'hffe0;
+            4'hc: constant_table = 16'hffc0;
+            4'hd: constant_table = 16'hff80;
+            4'he: constant_table = 16'hff00;
+            4'hf: constant_table = 16'hfe00;
+        endcase
     end
 endfunction
 
@@ -992,17 +1018,25 @@ always @(posedge clk) begin
                             left_value = gpr_read_a_data;
                             immediate_value = immediate_signed(instruction);
                             case (field_d)
-                                4'h0: gpr_write_data <= left_value + immediate_value;
-                                4'h1: gpr_write_data <= left_value - immediate_value;
+                                // ADDI/SUBI read the unprefixed immediate as
+                                // an unsigned u4; the prefixed form uses the
+                                // full 16-bit pattern.
+                                4'h0: gpr_write_data <= left_value + immediate_unsigned(instruction);
+                                4'h1: gpr_write_data <= left_value - immediate_unsigned(instruction);
                                 4'h2: gpr_write_data <= prefix_valid ?
                                     immediate_unsigned(instruction) : sign_extend4(instruction[3:0]);
                                 4'h3: gpr_write_data <= immediate_unsigned(instruction);
                                 4'h4: gpr_write_data <= left_value & immediate_unsigned(instruction);
                                 4'h5: gpr_write_data <= left_value | immediate_unsigned(instruction);
                                 4'h6: gpr_write_data <= left_value ^ immediate_unsigned(instruction);
+                                // LDC/ADDC index the shared constant table; a
+                                // pending prefix expires unused (these never
+                                // consume it).
+                                4'h7: gpr_write_data <= constant_table(instruction[3:0]);
                                 4'h8: gpr_write_data <= left_value == immediate_value;
                                 4'h9: gpr_write_data <= $signed(left_value) < $signed(immediate_value);
                                 4'ha: gpr_write_data <= left_value < immediate_unsigned(instruction);
+                                4'hb: gpr_write_data <= left_value + constant_table(instruction[3:0]);
                                 // CMPSI/CMPUI set the pending test result and
                                 // write no register.
                                 4'hc: begin
@@ -1025,12 +1059,11 @@ always @(posedge clk) begin
                                     state <= ST_FAULT;
                                 end
                             endcase
-                            if (field_d <= 4'h6 || (field_d >= 4'h8 && field_d <= 4'ha)) begin
+                            if (field_d <= 4'hb) begin
                                 gpr_write_enable <= 1;
                                 gpr_write_address <= field_a;
                             end
-                            if (field_d <= 4'h6 || (field_d >= 4'h8 && field_d <= 4'ha) ||
-                                field_d == 4'hc || field_d == 4'hd) begin
+                            if (field_d <= 4'hd) begin
                                 retired_words <= retired_words + success_retire_words;
                                 state <= ST_FETCH_REQUEST;
                             end

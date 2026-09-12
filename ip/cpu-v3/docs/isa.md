@@ -170,26 +170,43 @@ Address arithmetic wraps at 16 bits. Every final offset is ordinary memory in `D
 
 ### Immediate (opcode A)
 
-All defined A-family operations may consume `PFX12`. Functions 7, B, E, and F
-are reserved and invalid.
+All defined A-family operations except `LDC`/`ADDC` may consume `PFX12`.
+Functions E and F are reserved and invalid.
 
 | fn | Mnemonic | Semantics | Immediate and prefix behavior |
 | --- | --- | --- | --- |
-| 0 | `ADDI` | `rd = rd + imm` | signed i4; prefix eligible |
-| 1 | `SUBI` | `rd = rd - imm` | signed i4; prefix eligible |
+| 0 | `ADDI` | `rd = rd + imm` | unsigned u4; prefix eligible (with prefix, adds the full 16-bit pattern) |
+| 1 | `SUBI` | `rd = rd - imm` | unsigned u4; prefix eligible (with prefix, subtracts the full 16-bit pattern) |
 | 2 | `LDI` | `rd = sext4(i4)` | with prefix, loads the full 16-bit pattern |
 | 3 | `LDUI` | `rd = zext4(u4)` | with prefix, loads the full 16-bit pattern |
 | 4 | `ANDI` | `rd = rd & imm` | unsigned u4; prefix eligible |
 | 5 | `ORI` | `rd = rd \| imm` | unsigned u4; prefix eligible |
 | 6 | `XORI` | `rd = rd ^ imm` | unsigned u4; prefix eligible |
+| 7 | `LDC rd, k4` | `rd = CONST[k4]` | constant-table index; never consumes a prefix |
 | 8 | `SEQI` | `rd = (rd == imm) ? 1 : 0` | signed i4 so small negative constants stay compact; prefix eligible |
 | 9 | `SLTI` | `rd = signed(rd) < signed(imm)` | signed i4; prefix eligible |
 | A | `SLTUI` | `rd = unsigned(rd) < unsigned(imm)` | unsigned u4; prefix eligible |
+| B | `ADDC rd, k4` | `rd = rd + CONST[k4]` (wrapping) | constant-table index; never consumes a prefix |
 | C | `CMPSI` | `pending = signed ordering of rd vs imm` | signed i4; prefix eligible |
 | D | `CMPUI` | `pending = unsigned ordering of rd vs imm` | unsigned u4; prefix eligible |
 
 `S*` names write a Boolean `0`/`1` to a GPR; `CMP*` names write the transient
 pending test and no register.
+
+`LDC` and `ADDC` share one symmetric 16-entry constant table `CONST`, indexed
+by the immediate nibble. With `MAG = [8, 16, 24, 32, 64, 128, 256, 512]`,
+indices 0..7 hold `MAG[k]` and indices 8..15 hold `-MAG[k - 8]` (two's
+complement), so `CONST[k + 8] == -CONST[k]`. The entries, shown signed, are:
+
+| k4 | 0 | 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | A | B | C | D | E | F |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| `CONST[k4]` | 8 | 16 | 24 | 32 | 64 | 128 | 256 | 512 | -8 | -16 | -24 | -32 | -64 | -128 | -256 | -512 |
+
+`ADDI`/`LDI`/`LDUI` cover `0..=15` upward and `SUBI` covers the downward
+side, so the table starts just past that range; the values target struct
+sizes, pointer strides, and small stack-frame offsets. A `PFX12` before
+`LDC`/`ADDC` simply expires unused, exactly as before any other
+non-consumer.
 
 ### Branch, conditional move, and jump (opcode B)
 
@@ -242,8 +259,9 @@ immediately following eligible consumer; the prefix itself does not imply
 whether the payload occupies the high or low part of the consumer's effective
 value. For example `PFX12 0xabc; LDUI r3, 0xd` loads `r3 = 0xabcd`; the pair
 retires two physical words together. The closed consumer set is `LOAD`,
-`STORE`, `MULI`, every defined major-A operation, and the major-B relative
-forms (functions 0..7). Each consumer family defines the composition:
+`STORE`, `MULI`, every defined major-A operation except `LDC`/`ADDC`, and the
+major-B relative forms (functions 0..7). Each consumer family defines the
+composition:
 
 ```text
 integer imm4 consumer:  value16  = {payload12, imm4}
@@ -252,9 +270,9 @@ relative off8 consumer: offset16 = {payload12[7:0], imm8}
 
 Relative consumers use only `payload12[7:0]`; `payload12[11:8]` is ignored and
 carries no canonical-value fault. Register ALU, shift/multiply register and
-shift-immediate forms, the major-6 family, device instructions, conditional
-moves, register jumps, the FPU, reserved encodings, and another prefix do not
-consume a prefix. A prefix is transparent to the pending test result. A
+shift-immediate forms, `LDC`/`ADDC`, the major-6 family, device instructions,
+conditional moves, register jumps, the FPU, reserved encodings, and another
+prefix do not consume a prefix. A prefix is transparent to the pending test result. A
 non-consumer expires a pending prefix and retires it separately; a second
 prefix replaces the first; if a prefixed consumer faults, the reported address
 is the prefix address and neither word retires.
@@ -471,7 +489,16 @@ particular the revision 0.7 `HALT` word `E800` is invalid.
   (`LDI`/`LDUI` move to functions 2/3), and comparisons. `CMPEQI` is renamed
   `SEQI` so `S*` consistently means a Boolean register result while `CMP*`
   means a pending-test result. The shift-immediates and `MULI` move to major
-  2; functions 7, B, E, and F are reserved.
+  2. Functions 7 and B are `LDC`/`ADDC`, indexing a shared symmetric 16-entry
+  constant table (`MAG = [8, 16, 24, 32, 64, 128, 256, 512]`; indices 0..7
+  hold `MAG[k]`, indices 8..15 hold `-MAG[k - 8]`) that starts just past the
+  `0..=15` range `ADDI`/`LDI`/`LDUI` already cover; they never consume
+  `PFX12`. Functions E and F are reserved.
+- Amendment (still revision 0.8): `ADDI`/`SUBI` read the unprefixed immediate
+  as an unsigned u4 (`0..=15`) instead of a signed i4 — negative adjustments
+  are `SUBI`'s job, so the signed range wasted half the encodings. The
+  `PFX12`-widened forms are unchanged: both add/subtract the full 16-bit
+  immediate pattern.
 - Major B becomes the symmetric control family: six conditional branches
   (0..5), `JREL` (6), `JALREL` (7), six conditional moves `MOVEQ`..`MOVLE`
   (8..D), `JREG` (`B E 0 target`), and `JALR` (`B F E target`). Conditional
@@ -480,8 +507,8 @@ particular the revision 0.7 `HALT` word `E800` is invalid.
   `JREG`/`JALR` middle nibble must hold its canonical value.
 - `IMMHI12` is renamed `PFX12` and carries a neutral 12-bit payload. The
   closed consumer set is `LOAD`/`STORE`, `MULI`, every defined major-A
-  operation, and the major-B relative forms 0..7. Relative consumers use only
-  `payload12[7:0]`; `payload12[11:8]` is ignored without a canonical-value
-  fault.
+  operation except `LDC`/`ADDC`, and the major-B relative forms 0..7.
+  Relative consumers use only `payload12[7:0]`; `payload12[11:8]` is ignored
+  without a canonical-value fault.
 - All unused fields are canonically `0`; any non-canonical field value is an
   invalid encoding. All reserved function slots are invalid in this revision.

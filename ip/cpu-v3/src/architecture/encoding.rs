@@ -42,8 +42,10 @@ pub enum MultiplyWindow {
     Shift16 = 2,
 }
 
-/// In-place immediate operations (major A). Functions 7, B, E, and F are
-/// reserved and decode as invalid instructions.
+/// In-place immediate operations (major A). `Add`/`Sub` take an unsigned u4
+/// (0..=15) unprefixed — a negative adjustment is `Sub`'s job — and the full
+/// 16-bit pattern under `PFX12` like every other consumer. Functions E and F
+/// are reserved and decode as invalid instructions.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 #[repr(u16)]
 pub enum ImmediateOp {
@@ -54,12 +56,27 @@ pub enum ImmediateOp {
     And = 4,
     Or = 5,
     Xor = 6,
+    LoadConstant = 7,
     SetEqual = 8,
     SetLessThanSigned = 9,
     SetLessThanUnsigned = 10,
+    AddConstant = 11,
     CompareSigned = 12,
     CompareUnsigned = 13,
 }
+
+/// The 16-entry constant table shared by `LDC` (fn 7) and `ADDC` (fn B),
+/// indexed by the immediate nibble. The table is symmetric: with
+/// `MAG = [8, 16, 24, 32, 64, 128, 256, 512]`, indices 0..=7 hold `MAG[k]`
+/// and indices 8..=15 hold `-MAG[k - 8]`. The magnitudes sit just past the
+/// `0..=15` range `ADDI`/`LDI`/`LDUI` already cover (with `SUBI` covering the
+/// downward side); they target struct sizes, pointer strides, and small
+/// stack-frame offsets. Shown signed:
+/// 8, 16, 24, 32, 64, 128, 256, 512, -8, -16, -24, -32, -64, -128, -256, -512.
+pub const CONSTANT_TABLE: [Word; 16] = [
+    0x0008, 0x0010, 0x0018, 0x0020, 0x0040, 0x0080, 0x0100, 0x0200, 0xfff8, 0xfff0, 0xffe8, 0xffe0,
+    0xffc0, 0xff80, 0xff00, 0xfe00,
+];
 
 /// Predicates tested against the pending test result left by a CMP-class
 /// instruction. The same six conditions encode both the conditional branches
@@ -229,6 +246,18 @@ pub fn immediate_signed(op: ImmediateOp, dst: Register, value: i16) -> Word {
 
 pub fn immediate_unsigned(op: ImmediateOp, dst: Register, value: u8) -> Word {
     0xa000 | ((op as Word) << 8) | (register(dst) << 4) | unsigned4(value)
+}
+
+/// `LDC rd, k4`: loads the shared constant `CONST[k4]` (see
+/// [`CONSTANT_TABLE`]). Never consumes `PFX12`.
+pub fn load_constant(dst: Register, index: u8) -> Word {
+    immediate_unsigned(ImmediateOp::LoadConstant, dst, index)
+}
+
+/// `ADDC rd, k4`: wrapping `rd = rd + CONST[k4]` (see [`CONSTANT_TABLE`]).
+/// Never consumes `PFX12`.
+pub fn add_constant(dst: Register, index: u8) -> Word {
+    immediate_unsigned(ImmediateOp::AddConstant, dst, index)
 }
 
 /// Conditional branch on the pending test result, with a signed 8-bit
@@ -409,8 +438,9 @@ pub(crate) fn sign_extend(value: Word, bits: u32) -> Word {
 }
 
 /// The closed PFX12 consumer set: `LOAD`/`STORE`, `MULI`, every defined
-/// major-A operation, and the major-B relative forms 0..=7. Relative
-/// consumers use only `payload12[7:0]`; the upper payload bits are ignored.
+/// major-A operation except `LDC`/`ADDC`, and the major-B relative forms
+/// 0..=7. Relative consumers use only `payload12[7:0]`; the upper payload
+/// bits are ignored.
 ///
 /// This predicate is the single authoritative statement of the consumer set.
 /// Three other places encode the same legality rules and must stay aligned:
@@ -474,7 +504,7 @@ mod tests {
         assert_eq!(device_send(3, 2, 1), 0x7a13);
         assert_eq!(load(3, 4, -1), 0x834f);
         assert_eq!(store(3, 4, 7), 0x9347);
-        assert_eq!(immediate_signed(ImmediateOp::Add, 3, -1), 0xa03f);
+        assert_eq!(immediate_unsigned(ImmediateOp::Add, 3, 15), 0xa03f);
         assert_eq!(
             immediate_unsigned(ImmediateOp::LoadUnsigned, 3, 0xd),
             0xa33d
@@ -484,6 +514,8 @@ mod tests {
             immediate_unsigned(ImmediateOp::CompareUnsigned, 3, 7),
             0xad37
         );
+        assert_eq!(load_constant(3, 12), 0xa73c);
+        assert_eq!(add_constant(3, 4), 0xab34);
         assert_eq!(branch(TestCondition::NotEqual, -3), 0xb1fd);
         assert_eq!(jump_relative(-2), 0xb6fe);
         assert_eq!(jump_and_link_relative(-2), 0xb7fe);
@@ -493,6 +525,21 @@ mod tests {
         assert_eq!(load_immediate16(3, 0xabcd), [0xfabc, 0xa33d]);
         assert_eq!(fpu(FpuOp::Mul, 3, 4), 0xda34);
         assert_eq!(fpu_unary(3, FpuUnaryOp::ReciprocalSqrt), 0xde31);
+    }
+
+    #[test]
+    fn constant_table_matches_the_specification() {
+        let magnitudes = [8, 16, 24, 32, 64, 128, 256, 512];
+        for (index, magnitude) in magnitudes.into_iter().enumerate() {
+            assert_eq!(CONSTANT_TABLE[index], magnitude, "index {index}");
+            // The table is symmetric: CONST[k + 8] == -CONST[k].
+            assert_eq!(
+                CONSTANT_TABLE[index + 8],
+                magnitude.wrapping_neg(),
+                "index {}",
+                index + 8
+            );
+        }
     }
 
     #[test]
@@ -553,7 +600,8 @@ mod tests {
         )));
         assert!(!is_prefix_consumer(jump_register(0)));
         assert!(!is_prefix_consumer(jump_and_link_register(0)));
-        // Reserved immediate functions do not consume a prefix.
+        // LDC/ADDC never consume a prefix; neither do the reserved immediate
+        // functions E and F.
         assert!(!is_prefix_consumer(0xa700));
         assert!(!is_prefix_consumer(0xab00));
         assert!(!is_prefix_consumer(0xae00));
@@ -587,12 +635,17 @@ mod tests {
             // 2. The families whose every defined form is prefix-eligible make
             //    every legal word a consumer, so no prefix can be silently
             //    skipped by a defined form: LOAD/STORE have no other form, and
-            //    major A's consumer list is exactly its defined function set.
+            //    major A's consumer list is exactly its defined function set
+            //    minus the non-consuming LDC/ADDC.
             if matches!(major, 0x8 | 0x9) {
                 assert!(is_prefix_consumer(word), "{word:#06x}");
             }
             if major == 0xa && !reserved(word) {
-                assert!(is_prefix_consumer(word), "{word:#06x}");
+                assert_eq!(
+                    is_prefix_consumer(word),
+                    !matches!(function, 7 | 0xb),
+                    "{word:#06x}"
+                );
             }
             // 3. The shift/multiply family is prefix-eligible only for MULI;
             //    its shifts and register multiplies stay non-consumers.

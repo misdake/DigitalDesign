@@ -322,12 +322,14 @@ pub fn decode(word: Word) -> Instruction {
                 4 => ImmediateOp::And,
                 5 => ImmediateOp::Or,
                 6 => ImmediateOp::Xor,
+                7 => ImmediateOp::LoadConstant,
                 8 => ImmediateOp::SetEqual,
                 9 => ImmediateOp::SetLessThanSigned,
                 0xa => ImmediateOp::SetLessThanUnsigned,
+                0xb => ImmediateOp::AddConstant,
                 0xc => ImmediateOp::CompareSigned,
                 0xd => ImmediateOp::CompareUnsigned,
-                // 7, B, E, F are reserved.
+                // E and F are reserved.
                 _ => return Instruction::Invalid { word },
             };
             Instruction::Immediate {
@@ -472,16 +474,28 @@ impl Instruction {
                 format!("store r{src}, [r{base} + {offset}]")
             }
             Instruction::Immediate { op, dst, value } => {
+                // LDC/ADDC index the shared constant table and never consume
+                // a prefix; render the resolved constant signed.
+                if matches!(op, ImmediateOp::LoadConstant | ImmediateOp::AddConstant) {
+                    let name = if op == ImmediateOp::LoadConstant {
+                        "ldc"
+                    } else {
+                        "addc"
+                    };
+                    let constant = i32::from(crate::CONSTANT_TABLE[usize::from(value)] as i16);
+                    return format!("{name} r{dst}, {constant}");
+                }
                 let wide = prefix.map(|payload| (payload << 4) | value);
+                // ADDI/SUBI read the unprefixed nibble as an unsigned u4 but
+                // add/subtract the full 16-bit pattern under a prefix, so the
+                // wide rendering stays signed.
                 let signed = matches!(
                     op,
-                    ImmediateOp::Add
-                        | ImmediateOp::Sub
-                        | ImmediateOp::LoadSigned
+                    ImmediateOp::LoadSigned
                         | ImmediateOp::SetEqual
                         | ImmediateOp::SetLessThanSigned
                         | ImmediateOp::CompareSigned
-                );
+                ) || (matches!(op, ImmediateOp::Add | ImmediateOp::Sub) && wide.is_some());
                 let shown: i32 = if let Some(wide) = wide {
                     if signed {
                         wide as i16 as i32
@@ -506,6 +520,8 @@ impl Instruction {
                     ImmediateOp::SetLessThanUnsigned => "sltui",
                     ImmediateOp::CompareSigned => "cmpsi",
                     ImmediateOp::CompareUnsigned => "cmpui",
+                    // LDC/ADDC returned above with the resolved constant.
+                    ImmediateOp::LoadConstant | ImmediateOp::AddConstant => unreachable!(),
                 };
                 format!("{name} r{dst}, {shown}")
             }
@@ -779,8 +795,8 @@ mod tests {
         // Non-canonical special-register selectors are invalid.
         assert_eq!(decode(0x6d32), Instruction::Invalid { word: 0x6d32 });
         assert_eq!(decode(0x6e04), Instruction::Invalid { word: 0x6e04 });
-        // Immediate reserved functions 7, B, E, F.
-        for function in [0x7u16, 0xb, 0xe, 0xf] {
+        // Immediate reserved functions E and F.
+        for function in [0xeu16, 0xf] {
             let word = 0xa000 | (function << 8);
             assert_eq!(decode(word), Instruction::Invalid { word });
         }
@@ -793,6 +809,40 @@ mod tests {
             decode(0xbfe5),
             Instruction::JumpAndLinkRegister { target: 5 }
         );
+    }
+
+    #[test]
+    fn constant_table_ops_render_the_resolved_constant() {
+        assert_eq!(decode(load_constant(3, 9)).text(None), "ldc r3, -16");
+        assert_eq!(decode(load_constant(3, 0)).text(None), "ldc r3, 8");
+        assert_eq!(decode(add_constant(3, 2)).text(None), "addc r3, 24");
+        assert_eq!(decode(add_constant(2, 15)).text(None), "addc r2, -512");
+        // A pending prefix expires before the non-consuming LDC/ADDC and
+        // renders on its own line.
+        let words = [prefix12(0xabc), load_constant(3, 0), add_constant(3, 2)];
+        let lines = disassemble_words(&words, 0);
+        let texts: Vec<&str> = lines.iter().map(|l| l.text.as_str()).collect();
+        assert_eq!(texts, ["pfx12 0xabc", "ldc r3, 8", "addc r3, 24"]);
+        assert!(lines.iter().all(|line| !line.wide));
+    }
+
+    #[test]
+    fn addi_subi_render_unsigned_unprefixed() {
+        assert_eq!(
+            decode(immediate_unsigned(ImmediateOp::Add, 3, 15)).text(None),
+            "addi r3, 15"
+        );
+        assert_eq!(
+            decode(immediate_unsigned(ImmediateOp::Sub, 3, 0)).text(None),
+            "subi r3, 0"
+        );
+        // The prefixed form adds/subtracts the full 16-bit pattern and
+        // renders signed.
+        let words = prefixed(immediate_unsigned(ImmediateOp::Add, 3, 0), 0xfff0);
+        let lines = disassemble_words(&words, 0);
+        assert_eq!(lines.len(), 1);
+        assert_eq!(lines[0].text, "addi r3, -16");
+        assert!(lines[0].wide);
     }
 
     #[test]

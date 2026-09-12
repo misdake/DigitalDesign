@@ -1,6 +1,8 @@
 //! Small architectural interpreter used as the CpuV3 correctness oracle.
 
-use super::encoding::{is_prefix_consumer, sign_extend, SpecialRegister, Word, LINK_REGISTER};
+use super::encoding::{
+    is_prefix_consumer, sign_extend, SpecialRegister, Word, CONSTANT_TABLE, LINK_REGISTER,
+};
 use super::{
     acc_saturate, fix16_abs, fix16_add, fix16_ceil, fix16_compare, fix16_floor, fix16_from_acc,
     fix16_mul, fix16_neg, fix16_reciprocal, fix16_reciprocal_sqrt, fix16_round, fix16_saturate01,
@@ -441,17 +443,23 @@ impl CpuV3Sim {
             _ => {}
         }
         let result = match function {
-            0 => old.wrapping_add(signed),
-            1 => old.wrapping_sub(signed),
+            // ADDI/SUBI read the unprefixed immediate as an unsigned u4; the
+            // prefixed form adds/subtracts the full 16-bit pattern.
+            0 => old.wrapping_add(unsigned),
+            1 => old.wrapping_sub(unsigned),
             2 if wide.is_some() => unsigned,
             2 => signed,
             3 => unsigned,
             4 => old & unsigned,
             5 => old | unsigned,
             6 => old ^ unsigned,
+            // LDC/ADDC index the shared constant table; a pending prefix
+            // expires unused (these never consume it).
+            7 => CONSTANT_TABLE[usize::from(nibble)],
             8 => Word::from(old == signed),
             9 => Word::from((old as i16) < (signed as i16)),
             10 => Word::from(old < unsigned),
+            11 => old.wrapping_add(CONSTANT_TABLE[usize::from(nibble)]),
             _ => return Err(FaultKind::InvalidInstruction),
         };
         self.registers[usize::from(dst)] = result;
@@ -863,7 +871,7 @@ mod tests {
         program.extend(load_immediate16(2, 0x4000));
         program.extend([
             alu(AluOp::Add, 0, 0, 1),
-            immediate_signed(ImmediateOp::Add, 1, -1),
+            immediate_unsigned(ImmediateOp::Sub, 1, 1),
             immediate_signed(ImmediateOp::CompareSigned, 1, 0),
             branch(TestCondition::NotEqual, -4),
             store(0, 2, 0),
@@ -920,6 +928,85 @@ mod tests {
         );
         assert_eq!(machine.register(3), Some(13));
         assert_eq!(machine.retired_words(), 4);
+    }
+
+    #[test]
+    fn constant_table_ops_cover_signed_entries_and_expire_the_prefix() {
+        let mut machine = CpuV3Sim::default();
+        machine
+            .load_program(
+                0,
+                &[
+                    crate::load_constant(1, 0),  // r1 = 8
+                    crate::load_constant(2, 7),  // r2 = 512
+                    crate::load_constant(3, 9),  // r3 = -16 (0xfff0)
+                    crate::load_constant(4, 15), // r4 = -512 (0xfe00)
+                    crate::add_constant(1, 4),   // r1 = 8 + 64 = 72
+                    crate::add_constant(3, 15),  // r3 = -16 + -512 = -528 (0xfdf0)
+                    // A pending prefix expires unused before the non-consuming
+                    // ADDC and retires separately.
+                    prefix12(0xabc),
+                    crate::add_constant(1, 12), // r1 = 72 + -64 = 8
+                    halt(),
+                ],
+            )
+            .unwrap();
+        assert_eq!(
+            machine.run(20).unwrap(),
+            RunOutcome::Halted {
+                steps: 9,
+                signal: 0
+            }
+        );
+        assert_eq!(machine.register(1), Some(8));
+        assert_eq!(machine.register(2), Some(512));
+        assert_eq!(machine.register(3), Some(0xfdf0));
+        assert_eq!(machine.register(4), Some(0xfe00));
+        assert_eq!(machine.retired_words(), 9);
+    }
+
+    #[test]
+    fn addi_subi_read_the_unprefixed_immediate_as_unsigned() {
+        let mut machine = CpuV3Sim::default();
+        machine
+            .load_program(
+                0,
+                &[
+                    immediate_unsigned(ImmediateOp::Add, 1, 15), // r1 = 15
+                    immediate_unsigned(ImmediateOp::Add, 1, 0),  // r1 = 15
+                    immediate_unsigned(ImmediateOp::Sub, 1, 15), // r1 = 0
+                    immediate_unsigned(ImmediateOp::Sub, 1, 0),  // r1 = 0
+                    // The high nibbles are additions, not negative offsets:
+                    // the old signed reading would have made this r1 = -1.
+                    immediate_unsigned(ImmediateOp::Add, 1, 8), // r1 = 8
+                    halt(),
+                ],
+            )
+            .unwrap();
+        assert_eq!(
+            machine.run(10).unwrap(),
+            RunOutcome::Halted {
+                steps: 6,
+                signal: 0
+            }
+        );
+        assert_eq!(machine.register(1), Some(8));
+    }
+
+    #[test]
+    fn prefixed_addi_subi_use_the_full_16_bit_pattern() {
+        let mut machine = CpuV3Sim::default();
+        let [p0, add] = prefixed(immediate_unsigned(ImmediateOp::Add, 1, 0), 0x0010);
+        let [p1, sub] = prefixed(immediate_unsigned(ImmediateOp::Sub, 1, 0), 0x0008);
+        machine.load_program(0, &[p0, add, p1, sub, halt()]).unwrap();
+        assert_eq!(
+            machine.run(10).unwrap(),
+            RunOutcome::Halted {
+                steps: 5,
+                signal: 0
+            }
+        );
+        assert_eq!(machine.register(1), Some(8));
     }
 
     #[test]

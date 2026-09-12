@@ -701,17 +701,23 @@ impl CpuV3CoreState {
             _ => {}
         }
         let result = match function {
-            0 => old.wrapping_add(signed),
-            1 => old.wrapping_sub(signed),
+            // ADDI/SUBI read the unprefixed immediate as an unsigned u4; the
+            // prefixed form adds/subtracts the full 16-bit pattern.
+            0 => old.wrapping_add(unsigned),
+            1 => old.wrapping_sub(unsigned),
             2 if prefix.is_some() => unsigned,
             2 => sign_extend(instruction & 15, 4),
             3 => unsigned,
             4 => old & unsigned,
             5 => old | unsigned,
             6 => old ^ unsigned,
+            // LDC/ADDC index the shared constant table; a pending prefix
+            // expires unused (these never consume it).
+            7 => crate::CONSTANT_TABLE[usize::from(instruction & 15)],
             8 => u16::from(old == signed),
             9 => u16::from((old as i16) < (signed as i16)),
             10 => u16::from(old < unsigned),
+            11 => old.wrapping_add(crate::CONSTANT_TABLE[usize::from(instruction & 15)]),
             _ => {
                 self.fault(CPU_V3_FAULT_INVALID_INSTRUCTION, fault_pc);
                 return;
@@ -953,7 +959,7 @@ impl CpuV3CoreState {
                     || (function == 14 && a == 1)
             }
             9 => !self.async_store.valid,
-            10 => function <= 6 || (8..=10).contains(&function) || function == 12 || function == 13,
+            10 => function != 14 && function != 15,
             _ => false,
         }
     }
@@ -2339,6 +2345,23 @@ mod tests {
         p.push(cpu_v3::set_less_than_signed(9, 2)); // SLT rd, rs
         p.push(cpu_v3::set_less_than_unsigned(10, 4)); // SLTU rd, rs
 
+        // LDC/ADDC (major A functions 7/B) index the shared constant table
+        // and never consume PFX12; the prefix before the final LDC expires
+        // unused and retires separately. Both table signs are covered.
+        p.push(cpu_v3::load_constant(12, 0)); // r12 = 8
+        p.push(cpu_v3::load_constant(11, 15)); // r11 = -512
+        p.push(cpu_v3::add_constant(12, 7)); // r12 = 8 + 512 = 520
+        p.push(cpu_v3::add_constant(11, 9)); // r11 = -512 + -16 = -528
+        p.push(cpu_v3::prefix12(0xabc));
+        p.push(cpu_v3::load_constant(12, 0)); // r12 = 8 (prefix expires)
+
+        // ADDI/SUBI read the unprefixed immediate as an unsigned u4; 0 and 15
+        // are the range boundaries (15 was -1 under the signed reading).
+        p.push(cpu_v3::immediate_unsigned(crate::ImmediateOp::Add, 12, 15)); // r12 = 23
+        p.push(cpu_v3::immediate_unsigned(crate::ImmediateOp::Sub, 12, 0)); // r12 = 23
+        p.push(cpu_v3::immediate_unsigned(crate::ImmediateOp::Sub, 12, 15)); // r12 = 8
+        p.push(cpu_v3::immediate_unsigned(crate::ImmediateOp::Add, 12, 0)); // r12 = 8
+
         // Non-halting SIGNAL types retire as a NOP in the RTL; both special
         // registers are read and DSEG is rewritten with its current value.
         p.push(cpu_v3::signal(6, 1));
@@ -2367,6 +2390,9 @@ mod tests {
         p.extend(cpu_v3::load_immediate16(13, subroutine));
         p.push(cpu_v3::jump_and_link_register(13));
         p.push(cpu_v3::alu(crate::AluOp::Add, 0, 2, 3));
+        // Fold r12 (= 8 from the LDC/ADDI chain above) into the halt signal so
+        // the constant-table and unsigned-immediate results are observed.
+        p.push(cpu_v3::alu(crate::AluOp::Add, 0, 0, 12));
         p.push(cpu_v3::halt());
         p.push(cpu_v3::jump_register(cpu_v3::LINK_REGISTER));
         p
