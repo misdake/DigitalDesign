@@ -3,7 +3,7 @@ use digital_design_ip_common::{
     SystemMemoryLayout,
 };
 
-pub const FRAMEBUFFER_WIDTH: u32 = 320;
+pub const FRAMEBUFFER_WIDTH: u32 = 400;
 pub const FRAMEBUFFER_HEIGHT: u32 = 240;
 pub const FRAMEBUFFER_STRIDE_WORDS: u32 = FRAMEBUFFER_WIDTH;
 pub const FRAMEBUFFER_WORDS: u32 = FRAMEBUFFER_STRIDE_WORDS * FRAMEBUFFER_HEIGHT;
@@ -195,14 +195,14 @@ mod tests {
         assert_eq!(framebuffer.base.get(), FRAMEBUFFER_BASE_WORD);
         assert_eq!(framebuffer.words, FRAMEBUFFER_WORDS * 2);
         assert_eq!(framebuffer.kind, MemoryRegionKind::Shared);
-        assert_eq!(framebuffer_word(0, 203), 0x0020_fec0);
-        assert_eq!(framebuffer_word(319, 203), 0x0020_ffff);
-        assert_eq!(framebuffer_word(0, 204), 0x0021_0000);
-        assert_eq!(framebuffer_word(319, 239), FRAMEBUFFER_B_BASE_WORD - 1);
-        assert_eq!(FRAMEBUFFER_B_BASE_WORD, 0x0021_2d00);
-        assert_eq!(FRAMEBUFFER_END_WORD, 0x0022_5900);
+        assert_eq!(framebuffer_word(0, 203), 0x0021_3e30);
+        assert_eq!(framebuffer_word(399, 203), 0x0021_3fbf);
+        assert_eq!(framebuffer_word(0, 204), 0x0021_3fc0);
+        assert_eq!(framebuffer_word(399, 239), FRAMEBUFFER_B_BASE_WORD - 1);
+        assert_eq!(FRAMEBUFFER_B_BASE_WORD, 0x0021_7800);
+        assert_eq!(FRAMEBUFFER_END_WORD, 0x0022_ef00);
         assert_eq!(
-            framebuffer_word_at(FRAMEBUFFER_B_BASE_WORD, 319, 239),
+            framebuffer_word_at(FRAMEBUFFER_B_BASE_WORD, 399, 239),
             FRAMEBUFFER_END_WORD - 1
         );
     }

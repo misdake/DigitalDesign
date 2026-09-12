@@ -182,7 +182,7 @@ mod tests {
     #[test]
     fn address_requires_an_explicit_swap_command() {
         let mut device = DisplayDevice::default();
-        write(&mut device, DISPLAY_FRAMEBUFFER_LOW, 0x2d00);
+        write(&mut device, DISPLAY_FRAMEBUFFER_LOW, 0x7800);
         assert_eq!(device.status(), DISPLAY_STATUS_PARTIAL);
         device.advance_frame();
         assert_eq!(device.active_base(), FRAMEBUFFER_A_BASE_WORD);
@@ -193,7 +193,7 @@ mod tests {
         write(&mut device, DISPLAY_CONTROL, DISPLAY_NEXT_SWAP);
         assert_eq!(device.status(), DISPLAY_STATUS_PENDING);
         device.advance_frame();
-        assert_eq!(device.active_base(), 0x0021_2d00);
+        assert_eq!(device.active_base(), 0x0021_7800);
         assert_eq!(device.frame_index(), 3);
     }
 
@@ -201,7 +201,7 @@ mod tests {
     fn repeated_writes_and_submissions_use_the_last_complete_address() {
         let mut device = DisplayDevice::default();
         write(&mut device, DISPLAY_FRAMEBUFFER_LOW, 0x0100);
-        write(&mut device, DISPLAY_FRAMEBUFFER_LOW, 0x2d00);
+        write(&mut device, DISPLAY_FRAMEBUFFER_LOW, 0x7800);
         write(&mut device, DISPLAY_FRAMEBUFFER_HIGH, 0x0020);
         write(&mut device, DISPLAY_FRAMEBUFFER_HIGH, 0x0021);
         write(&mut device, DISPLAY_CONTROL, DISPLAY_NEXT_SWAP);
@@ -209,16 +209,16 @@ mod tests {
         // Staging another address cannot mutate the already submitted one.
         write(&mut device, DISPLAY_FRAMEBUFFER_LOW, 0x0100);
         device.advance_frame();
-        assert_eq!(device.active_base(), 0x0021_2d00);
+        assert_eq!(device.active_base(), 0x0021_7800);
 
         // Completing and submitting it replaces any pending address normally.
         write(&mut device, DISPLAY_FRAMEBUFFER_HIGH, 0x0020);
         write(&mut device, DISPLAY_CONTROL, DISPLAY_NEXT_SWAP);
-        write(&mut device, DISPLAY_FRAMEBUFFER_LOW, 0x2d00);
+        write(&mut device, DISPLAY_FRAMEBUFFER_LOW, 0x7800);
         write(&mut device, DISPLAY_FRAMEBUFFER_HIGH, 0x0021);
         write(&mut device, DISPLAY_CONTROL, DISPLAY_NEXT_SWAP);
         device.advance_frame();
-        assert_eq!(device.active_base(), 0x0021_2d00);
+        assert_eq!(device.active_base(), 0x0021_7800);
     }
 
     #[test]

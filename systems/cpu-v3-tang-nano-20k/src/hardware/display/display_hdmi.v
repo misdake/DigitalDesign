@@ -50,8 +50,12 @@ assign memory_request_valid = fill_slot_free && !burst_active && !frame_complete
 assign memory_address = row_address + {13'b0,burst_index,4'b0};
 
 wire line_write = burst_active && memory_data_valid;
-wire [8:0] line_write_address = fill_slot * LINE_SLOT_WORDS + burst_index * 9'd8 + beat_index;
-reg [8:0] line_read_address=0;
+// Slot bases are 0, LINE_SLOT_WORDS, 2*LINE_SLOT_WORDS. A three-way constant
+// select keeps the 2-bit slot index out of a synthesized DSP multiplier.
+wire [9:0] fill_slot_base = fill_slot==2'd0 ? 10'd0 :
+    fill_slot==2'd1 ? LINE_SLOT_WORDS : LINE_SLOT_WORDS + LINE_SLOT_WORDS;
+wire [9:0] line_write_address = fill_slot_base + {burst_index, 3'b000} + beat_index;
+reg [9:0] line_read_address=0;
 wire [31:0] line_read_data;
 __LINE_BUFFER__ u_line_buffer(
     .write_clock(clk), .write_enable(line_write), .write_address(line_write_address),
@@ -142,6 +146,9 @@ always @(posedge pixel_clock)
     pixel_reset_sync <= {pixel_reset_sync[1:0], ~(reset | ~video_locked)};
 wire pixel_reset = ~pixel_reset_sync[2];
 reg [1:0] display_slot=0;
+// Slot base for the displayed slot, selected without a DSP multiplier.
+wire [9:0] display_slot_base = display_slot==2'd0 ? 10'd0 :
+    display_slot==2'd1 ? LINE_SLOT_WORDS : LINE_SLOT_WORDS + LINE_SLOT_WORDS;
 reg [1:0] vertical_repeat=0;
 reg started=0;
 reg [10:0] h_count=0;
@@ -155,7 +162,7 @@ wire active = h_count>=H_ACTIVE_START && h_count<H_ACTIVE_END &&
 wire [10:0] active_x = h_count-H_ACTIVE_START; // gowin-lint: allow EX3791
 wire framebuffer_x = active && active_x>=SIDE_BORDER &&
                      active_x<SIDE_BORDER+FB_WIDTH*SCALE;
-wire [9:0] scaled_x = active_x-SIDE_BORDER; // gowin-lint: allow EX3791
+wire [10:0] scaled_x = active_x-SIDE_BORDER; // gowin-lint: allow EX3791
 // scaled_x is at most FB_WIDTH*SCALE-1, so floor(scaled_x/SCALE) is at most
 // FB_WIDTH-1 and always fits in nine bits. Gowin reports the unsized
 // constant's expression width before the intentional narrowing; keep the
@@ -198,7 +205,7 @@ always @(posedge pixel_clock) begin
             end else v_count<=v_count+1'b1;
         end else h_count<=h_count+1'b1;
         if (framebuffer_x)
-            line_read_address <= display_slot*LINE_SLOT_WORDS + source_x[8:1];
+            line_read_address <= display_slot_base + source_x[8:1];
         // Pipeline alignment: the line buffer data for a position arrives two
         // pixel clocks late (address register, then synchronous RAM read), so
         // the lane select and the visible/sync strobes are delayed to match,

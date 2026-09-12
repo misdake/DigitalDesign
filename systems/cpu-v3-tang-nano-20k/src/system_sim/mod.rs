@@ -223,7 +223,10 @@ mod tests {
         sim.cpu_mut().physical_memory_mut()[base.get() as usize] = 0xf800;
         sim.cpu_mut().physical_memory_mut()[base.get() as usize + 1] = 0x07e0;
         let pixels = sim.render_active_framebuffer();
-        assert_eq!(pixels.len(), 320 * 240);
+        assert_eq!(
+            pixels.len(),
+            crate::FRAMEBUFFER_WIDTH as usize * crate::FRAMEBUFFER_HEIGHT as usize
+        );
         assert_eq!(pixels[0], 0xff0000);
         assert_eq!(pixels[1], 0x00ff00);
     }

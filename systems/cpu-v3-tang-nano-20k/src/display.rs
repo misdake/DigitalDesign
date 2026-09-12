@@ -43,7 +43,7 @@ pub const VGA_720P_3X: DisplayConfig = DisplayConfig {
     hdmi_width: 1280,
     hdmi_height: 720,
     scale: 3,
-    side_border: 160,
+    side_border: 40,
     memory_cycles_per_source_line: memory_cycles_per_source_line(1650, 3, 74_250_000),
     h_total: 1650,
     h_sync_end: 40,
@@ -62,7 +62,7 @@ pub const VGA_800X480_2X: DisplayConfig = DisplayConfig {
     hdmi_width: 800,
     hdmi_height: 480,
     scale: 2,
-    side_border: 80,
+    side_border: 0,
     memory_cycles_per_source_line: memory_cycles_per_source_line(1056, 2, 33_300_000),
     h_total: 1056,
     h_sync_end: 48,
@@ -111,7 +111,7 @@ impl DisplayConfig {
              localparam [9:0] V_ACTIVE_START={6}; localparam [9:0] V_ACTIVE_END={7};\n\
              localparam [9:0] FB_WIDTH={8}; localparam [9:0] FB_HEIGHT={9};\n\
              localparam [8:0] SIDE_BORDER={10}; localparam [1:0] SCALE={11}; localparam [1:0] LAST_REPEAT={12};\n\
-             localparam [8:0] LINE_SLOT_WORDS=FB_WIDTH/2; localparam [4:0] BURSTS_PER_LINE=FB_WIDTH/16;\n\
+             localparam [9:0] LINE_SLOT_WORDS=FB_WIDTH/2; localparam [4:0] BURSTS_PER_LINE=FB_WIDTH/16;\n\
              localparam [4:0] LAST_BURST=BURSTS_PER_LINE-1; localparam [7:0] LAST_FILL_Y=FB_HEIGHT-1;\n\
              localparam [9:0] ROW_STRIDE=FB_WIDTH;",
             self.h_total,
@@ -240,11 +240,13 @@ mod tests {
     use super::*;
 
     #[test]
-    fn three_rgb565_lines_fit_one_18k_block_and_four_do_not() {
-        assert_eq!(DISPLAY_LINE_BUFFER_WORDS, 960);
-        assert_eq!(1024 - DISPLAY_LINE_BUFFER_WORDS, 64);
-        assert_eq!(4 * DISPLAY_LINE_WORDS, 1280);
-        assert_eq!(DISPLAY_BURSTS_PER_LINE, 20);
+    fn three_rgb565_lines_need_two_18k_blocks() {
+        // Three 400-pixel lines pack into 600 32-bit words = 19200 bits, which
+        // no longer fits one 18432-bit block, so the line buffer uses two.
+        assert_eq!(DISPLAY_LINE_WORDS, 400);
+        assert_eq!(DISPLAY_LINE_BUFFER_WORDS, 1200);
+        assert_eq!(DISPLAY_LINE_SLOTS * (DISPLAY_LINE_WORDS / 2), 600);
+        assert_eq!(DISPLAY_BURSTS_PER_LINE, 25);
     }
 
     #[test]

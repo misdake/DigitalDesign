@@ -105,13 +105,14 @@ mod tests {
     use digital_design_hardware::{ResourceKind, VerilogProject};
 
     #[test]
-    fn display_claims_one_line_buffer_block() {
+    fn display_claims_two_line_buffer_blocks() {
         let project = VerilogProject::generate::<FramebufferHdmi>().unwrap();
         assert_eq!(project.resource_claims.len(), 1);
         assert_eq!(
             project.resource_claims[0].resources[0].kind,
             ResourceKind::Bsram18K
         );
+        assert_eq!(project.resource_claims[0].resources[0].amount, 2);
     }
 
     #[test]
@@ -125,7 +126,7 @@ mod tests {
             config.side_border
         )));
         assert!(source.contains(&format!("localparam [1:0] SCALE={};", config.scale)));
-        assert!(source.contains("localparam [8:0] LINE_SLOT_WORDS=FB_WIDTH/2;"));
+        assert!(source.contains("localparam [9:0] LINE_SLOT_WORDS=FB_WIDTH/2;"));
         let testbench = verilog_testbench_for(&config).unwrap();
         assert!(testbench.contains(&format!("localparam [1:0] SCALE={};", config.scale)));
     }

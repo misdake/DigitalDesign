@@ -14,12 +14,15 @@ mod device_abi;
 /// DDHT test ID for the display application's per-frame status report.
 const DISPLAY_TEST_ID: u16 = 0x0b;
 
-const WIDTH: u16 = 320;
+const WIDTH: u16 = 400;
 const HEIGHT: u16 = 240;
 const FB_A_SEGMENT: u16 = 0x20;
 const FB_A_OFFSET: u16 = 0x0100;
 const FB_B_SEGMENT: u16 = 0x21;
-const FB_B_OFFSET: u16 = 0x2d00;
+const FB_B_OFFSET: u16 = 0x7800;
+
+/// Horizontal center of the framed circle and the vertical axis.
+const CENTER_X: u16 = 200;
 
 fn background(x: u16, y: u16) -> u16 {
     if x & 31 == 0 || y & 31 == 0 {
@@ -35,8 +38,8 @@ fn background(x: u16, y: u16) -> u16 {
 fn static_pixel(x: u16, y: u16) -> u16 {
     if y == 58
         || y == 118
-        || (x == 240 && y >= 132 && y < 232)
-        || (y == 182 && x >= 188 && x < 293)
+        || (x == CENTER_X && y >= 132 && y < 232)
+        || (y == 182 && x >= 148 && x < 253)
     {
         0x39e7
     } else {
@@ -73,12 +76,12 @@ fn fill_buffer(base_segment: u16, base_offset: u16) {
 }
 
 /// Resolve a screen coordinate in constant time without 32-bit arithmetic.
-/// `239 * 320` crosses the 16-bit boundary once; the two following additions
+/// `239 * 400` crosses the 16-bit boundary once; the two following additions
 /// can each carry into the segment as well.
 fn plot(base_segment: u16, base_offset: u16, x: u16, y: u16, color: u16) {
     let mut segment = base_segment;
     let row_offset = y * WIDTH;
-    if y >= 205 {
+    if y >= 164 {
         segment += 1;
     }
     let offset = base_offset + row_offset;
@@ -100,8 +103,8 @@ fn draw_waveforms(base_segment: u16, base_offset: u16, phase: u16, restore: u16)
     let amplitude = fix16::from_int(24);
     let mut x: u16 = 0;
     while x < WIDTH {
-        // 10 / 256 radians per pixel gives almost two periods across 320 px.
-        let angle = fix16::from_bits(phase + x * 10);
+        // 8 / 256 radians per pixel gives almost two periods across 400 px.
+        let angle = fix16::from_bits(phase + x * 8);
         let sc = fsincos(angle);
         let sine_offset = (sc.x() * amplitude).round().to_int();
         let cosine_offset = (sc.y() * amplitude).round().to_int();
@@ -143,7 +146,7 @@ fn draw_circle(base_segment: u16, base_offset: u16, phase: u16, restore: u16) {
         let sc = fsincos(fix16::from_bits(angle_bits));
         let x_offset = (sc.y() * radius).round().to_int();
         let y_offset = (sc.x() * radius).round().to_int();
-        let x = (240i16 + x_offset) as u16;
+        let x = (CENTER_X as i16 + x_offset) as u16;
         let y = (182i16 + y_offset) as u16;
         let color = if restore != 0 {
             static_pixel(x, y)
@@ -168,7 +171,7 @@ fn draw_circle(base_segment: u16, base_offset: u16, phase: u16, restore: u16) {
     // A red phase marker makes it obvious that new FPU results, CPU stores,
     // cache cleaning, and display swaps continue to complete frame by frame.
     let marker = fsincos(fix16::from_bits(phase));
-    let marker_x = (240i16 + (marker.y() * radius).round().to_int()) as u16;
+    let marker_x = (CENTER_X as i16 + (marker.y() * radius).round().to_int()) as u16;
     let marker_y = (182i16 + (marker.x() * radius).round().to_int()) as u16;
     let marker_color = if restore == 0 {
         0xf800

@@ -353,7 +353,12 @@ mod tests {
         let (status, content_type, payload) = route("GET", "/api/framebuffer", &mut session);
         assert_eq!(status, "200 OK");
         assert_eq!(content_type, "application/octet-stream");
-        assert_eq!(payload.len(), 320 * 240 * 3);
+        assert_eq!(
+            payload.len(),
+            cpu_v3_tang_nano_20k::FRAMEBUFFER_WIDTH as usize
+                * cpu_v3_tang_nano_20k::FRAMEBUFFER_HEIGHT as usize
+                * 3
+        );
     }
 
     #[test]
@@ -364,7 +369,12 @@ mod tests {
         assert_eq!(content_type, "application/json");
         assert_eq!(
             String::from_utf8(payload).unwrap(),
-            "{\"width\":320,\"height\":240,\"active_base\":2097408,\"frame_index\":1,\"swap_pending\":false,\"waiting_for_vblank\":false,\"swap_applied\":false}"
+            format!(
+                "{{\"width\":{},\"height\":{},\"active_base\":{},\"frame_index\":1,\"swap_pending\":false,\"waiting_for_vblank\":false,\"swap_applied\":false}}",
+                cpu_v3_tang_nano_20k::FRAMEBUFFER_WIDTH,
+                cpu_v3_tang_nano_20k::FRAMEBUFFER_HEIGHT,
+                cpu_v3_tang_nano_20k::FRAMEBUFFER_A_BASE_WORD
+            )
         );
     }
 
