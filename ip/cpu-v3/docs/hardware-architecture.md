@@ -63,10 +63,15 @@ While that resident read resolves, the next lookup may start, allowing one
 ordered hit request and response per cycle when there is no miss, invalidate,
 write, or response backpressure. The instruction cache exposes only reads. The
 data cache is write-back: stores allocate on a miss and set a dirty bit in a
-separate SSRAM; replacing a dirty victim first writes its complete line. Valid
-and victim bits live in a RAM16 leaf with asynchronous reads; a global
-invalidate, reset, or memory-error scrub clears one set of both ways per cycle,
-and the system holds the CPU for that sweep.
+separate flip-flop bitmap, not in a RAM leaf, because the maintenance scan reads
+a 16-entry window of both ways every cycle; replacing a dirty victim first
+writes its complete line. Valid and victim bits live in a RAM16 leaf with
+asynchronous reads: each cache keeps its two valid ways and the victim bit in
+twelve 16-deep cells. That inference only holds while no array write selects its
+way or enable from the same array's asynchronous read data, so both caches clear
+the victim from the registered pending way when the line request starts. A
+global invalidate, reset, or memory-error scrub clears one set of both ways per
+cycle, and the system holds the CPU for that sweep.
 A read or write-allocate miss issues one aligned line request; the system arbiter
 streams four ordered 64-bit beats at 54 MHz. Each beat writes four words directly
 through the four BSRAM ports, and tag/valid state commits only on the fourth
@@ -129,11 +134,14 @@ reference; the worst continuous-component error is below one Q8.8 LSB.
 
 The current design is fitted and routed as the complete `cpu_v3_system`,
 including the CPU, boot path, caches, 54/108-MHz SDRAM gearbox, and display
-path. Against the normal 54-MHz CPU constraint it reports 57.917 MHz with
-1.253 ns worst setup slack and zero setup and hold TNS. The build uses 10,472
-Logic (9,197 LUT, 747 ALU, 88 SSRAM), 4,294 registers, 7,127 CLS, five DPB, one
+path. Against the normal 54-MHz CPU constraint it reports 55.904 MHz with
+0.631 ns worst setup slack and zero setup and hold TNS. The build uses 9,025
+Logic (7,585 LUT, 768 ALU, 112 SSRAM), 3,902 registers, 6,329 CLS, five DPB, one
 SDPB, one pROM, and two `MULT18X18` cells. The tightest CPU-clock path is the
-D-cache dirty-state update path, not the packed sine lookup.
+core's registered GPR write, not the packed sine lookup or the cache frontend.
+The D-cache dirty write enable is the second tightest class at 0.782 ns slack,
+which is why the maintenance scan reads the whole-word bitmap instead of moving
+it into an addressed RAM leaf.
 
 The following timing sections are retained as implementation history for the FPU
 lane pipeline. They are not the current full-system Stage 12 result.

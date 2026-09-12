@@ -207,6 +207,18 @@ const CPU_V3_CACHE_TAG_RAM16S: usize =
     CPU_V3_CACHE_WAYS * CPU_V3_CACHE_SETS.div_ceil(16) * CPU_V3_CACHE_TAG_BITS.div_ceil(4);
 const CPU_V3_CACHE_TAG_PHYSICAL_BITS: usize = CPU_V3_CACHE_TAG_RAM16S * 64;
 
+/// The valid/victim leaf holds three 64-deep one-bit arrays: valid way zero,
+/// valid way one, and the victim bit. Gowin builds each of them from four
+/// RAM16 cells, so the leaf claims twelve cells. The claim uses the same
+/// "physical bits" convention as the tag array (the resource audit charges
+/// every SSRAM cell as 64 bits); in real RAM16S1/RAM16SDP1 cells the leaf is
+/// 12 x 16 bits. The inference only happens while no array write takes its way
+/// or enable from that array's own asynchronous read data, which is why both
+/// caches clear the victim from the registered pending way instead of from the
+/// combinationally selected victim or the request handshake.
+const CPU_V3_CACHE_VALID_RAM16S: usize = 3 * CPU_V3_CACHE_SETS.div_ceil(16);
+const CPU_V3_CACHE_VALID_PHYSICAL_BITS: usize = CPU_V3_CACHE_VALID_RAM16S * 64;
+
 #[derive(Clone, ModuleIo)]
 pub struct CpuV3CacheTagRamInput {
     pub write_enable: Wire,
@@ -290,6 +302,11 @@ impl Module for CpuV3CacheTagRam {
 /// synchronous single-way write port, and a sweep clear that takes priority
 /// and clears both ways of one set per cycle. Way zero initializes from the
 /// cache image's INITIAL_VALID mask; all other bits start cleared.
+///
+/// Every array write must select a registered way: a way select derived from
+/// this leaf's own read data closes a combinational loop through the array and
+/// makes Gowin map all three arrays as flip-flops plus read multiplexers
+/// instead of RAM16 cells.
 pub struct CpuV3CacheValidRamWithImage<I>(PhantomData<I>);
 pub type CpuV3CacheValidRam = CpuV3CacheValidRamWithImage<ZeroBsramImage>;
 
@@ -332,8 +349,9 @@ impl<I: CpuV3CacheImage> Module for CpuV3CacheValidRamWithImage<I> {
     const EMU_AVAILABLE: bool = false;
 
     fn target_resources() -> Vec<TargetResourceRequest> {
-        // Three RAM16 cells: valid way 0, valid way 1, victim.
-        vec![TargetResourceRequest::new(SsramBits::new(192))]
+        vec![TargetResourceRequest::new(SsramBits::new(
+            CPU_V3_CACHE_VALID_PHYSICAL_BITS as u64,
+        ))]
     }
 
     fn execute_emu(
@@ -953,7 +971,12 @@ impl Module for CpuV3DataCacheDirtyRam {
     const EMU_AVAILABLE: bool = false;
 
     fn target_resources() -> Vec<TargetResourceRequest> {
-        vec![TargetResourceRequest::new(SsramBits::new(128))]
+        // The maintenance scan reads both whole 64-bit words every cycle
+        // (`assign way_0 = dirty[0]`), so the bitmap cannot be an addressed
+        // RAM: Gowin keeps it in 128 flip-flops plus its 7-to-128 write decode
+        // and never reports an SSRAM cell for this module. The previous claim
+        // of 128 SSRAM bits was never honoured by the tool.
+        Vec::new()
     }
 
     fn execute_emu(
@@ -962,7 +985,7 @@ impl Module for CpuV3DataCacheDirtyRam {
         _input: &Self::Input,
         _output: &Self::Output,
     ) {
-        panic!("data-cache dirty SSRAM is Verilog-only")
+        panic!("data-cache dirty bitmap is Verilog-only")
     }
 
     fn verilog_source() -> Option<String> {
@@ -1897,11 +1920,15 @@ mod tests {
             .flat_map(|claim| claim.resources.iter().copied())
             .collect();
         assert!(resources.contains(&ResourceAmount::new(ResourceKind::Bsram18K, 2)));
-        assert!(resources.contains(&ResourceAmount::new(
-            ResourceKind::SsramBit,
-            CPU_V3_CACHE_TAG_PHYSICAL_BITS as u64,
-        )));
-        assert!(resources.contains(&ResourceAmount::new(ResourceKind::SsramBit, 192)));
+        let ssram: u64 = resources
+            .iter()
+            .filter(|resource| resource.kind == ResourceKind::SsramBit)
+            .map(|resource| resource.amount)
+            .sum();
+        assert_eq!(
+            ssram,
+            (CPU_V3_CACHE_TAG_PHYSICAL_BITS + CPU_V3_CACHE_VALID_PHYSICAL_BITS) as u64
+        );
     }
 
     #[test]
@@ -1911,7 +1938,7 @@ mod tests {
     }
 
     #[test]
-    fn data_cache_exports_two_data_bsrams_tag_ssram_and_dirty_ssram() {
+    fn data_cache_exports_two_data_bsrams_tag_ssram_and_ff_dirty_bitmap() {
         let project = VerilogProject::generate::<CpuV3DataCache>().unwrap();
         let resources: Vec<_> = project
             .resource_claims
@@ -1919,11 +1946,15 @@ mod tests {
             .flat_map(|claim| claim.resources.iter().copied())
             .collect();
         assert!(resources.contains(&ResourceAmount::new(ResourceKind::Bsram18K, 2)));
-        assert!(resources.contains(&ResourceAmount::new(
-            ResourceKind::SsramBit,
-            CPU_V3_CACHE_TAG_PHYSICAL_BITS as u64,
-        )));
-        assert!(resources.contains(&ResourceAmount::new(ResourceKind::SsramBit, 128)));
+        let ssram: u64 = resources
+            .iter()
+            .filter(|resource| resource.kind == ResourceKind::SsramBit)
+            .map(|resource| resource.amount)
+            .sum();
+        assert_eq!(
+            ssram,
+            (CPU_V3_CACHE_TAG_PHYSICAL_BITS + CPU_V3_CACHE_VALID_PHYSICAL_BITS) as u64
+        );
     }
 
     #[test]
