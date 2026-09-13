@@ -4,8 +4,10 @@
 #
 # Why: the ledger answers "what did the whole frozen suite cost at this commit". A row per
 # program would bury the signal (22 programs x 44 columns per run), so every row is a fixed
-# aggregate and the raw file is the evidence. The suite revision and the metric-set revision
-# are fingerprinted into each row, because cross-revision comparisons are not valid.
+# aggregate and the raw file is the evidence. Aggregates are geometric means over programs,
+# never sums (see benchmarks/README.md, "Comparing runs"). The suite revision and the
+# metric-set revision are fingerprinted into each row, because cross-revision comparisons
+# are not valid.
 #
 # The row's commit is read back from the raw CSV - the tree that was actually measured - and
 # every row of that file must agree on it. When the script runs the suite itself it also
@@ -44,8 +46,10 @@ $repoRoot = Split-Path -Parent $PSScriptRoot
 $inv = [Globalization.CultureInfo]::InvariantCulture
 
 $ledgerColumns = @(
-    "date", "commit", "state", "suite", "schema", "programs", "cycles", "retired", "cpi",
-    "fetch_wait_pct", "data_path_pct", "icache_refills", "dcache_refills", "dcache_writebacks",
+    "date", "commit", "state", "suite", "schema", "programs",
+    "cycles_geomean", "retired_geomean", "cpi_geomean",
+    "fetch_wait_pct_geomean", "data_path_pct_geomean",
+    "icache_refills_geomean1", "dcache_refills_geomean1", "dcache_writebacks_geomean1",
     "change", "raw", "promotion"
 )
 
@@ -85,8 +89,11 @@ function Get-SchemaDigest([string]$rawPath) {
     return Get-TextDigest ($columns -join ',')
 }
 
-function Get-ColumnSum($rows, [string]$name, [switch]$Required) {
-    $total = 0.0
+# Geometric mean over per-program values; adding across programs is banned (see
+# benchmarks/README.md, "Comparing runs"). -PlusOne smooths counters that may be zero.
+function Get-ColumnGeomean($rows, [string]$name, [switch]$Required, [switch]$PlusOne) {
+    $logSum = 0.0
+    $count = 0
     $found = $false
     foreach ($row in $rows) {
         $property = $row.PSObject.Properties[$name]
@@ -94,10 +101,32 @@ function Get-ColumnSum($rows, [string]$name, [switch]$Required) {
         $found = $true
         $text = "$($property.Value)"
         if ($text -eq "") { continue }
-        $total += [double]$text
+        $value = [double]$text
+        if ($PlusOne) { $value += 1.0 }
+        if ($value -le 0.0) { throw "Cannot geomean non-positive $name value '$text'." }
+        $logSum += [Math]::Log($value)
+        $count++
     }
     if ($Required -and -not $found) { throw "Raw suite CSV has no '$name' column." }
-    return $total
+    if ($count -eq 0) { return 0.0 }
+    return [Math]::Exp($logSum / $count)
+}
+
+# Geomean of a per-program ratio: sum the numerator columns within each program
+# (summing across programs is what is banned), divide by the denominator, then geomean.
+function Get-RatioGeomean($rows, [string[]]$numerators, [string]$denominator) {
+    $logSum = 0.0
+    $count = 0
+    foreach ($row in $rows) {
+        $n = 0.0
+        foreach ($column in $numerators) { $n += [double]"$($row.PSObject.Properties[$column].Value)" }
+        $d = [double]"$($row.PSObject.Properties[$denominator].Value)"
+        if ($n -le 0.0 -or $d -le 0.0) { continue }
+        $logSum += [Math]::Log($n / $d)
+        $count++
+    }
+    if ($count -eq 0) { return 0.0 }
+    return [Math]::Exp($logSum / $count)
 }
 
 function Get-BenchTier([string]$suiteDirectory, [string]$name) {
@@ -190,15 +219,17 @@ try {
         }
     }
 
-    # --- 3. Aggregate ----------------------------------------------------------
-    $cycles = Get-ColumnSum $rows "cycles" -Required
-    $retired = Get-ColumnSum $rows "retired_instructions" -Required
-    $fetchWait = Get-ColumnSum $rows "fetch_wait_cycles" -Required
-    $dataRequest = Get-ColumnSum $rows "data_request_cycles" -Required
-    $dataResponse = Get-ColumnSum $rows "data_response_cycles" -Required
-    $icacheRefills = Get-ColumnSum $rows "icache_demand_refills"
-    $dcacheRefills = Get-ColumnSum $rows "dcache_refills" -Required
-    $dcacheWritebacks = Get-ColumnSum $rows "dcache_writebacks" -Required
+    # --- 3. Aggregate (geomean over programs; never summed, see benchmarks/README.md) --
+    $cycles = Get-ColumnGeomean $rows "cycles" -Required
+    $retired = Get-ColumnGeomean $rows "retired_instructions" -Required
+    # Zero-numerator programs (no fetch wait / no data traffic) are excluded from
+    # that percentage's geomean rather than smoothed.
+    $fetchWaitPct = 100.0 * (Get-RatioGeomean $rows @("fetch_wait_cycles") "cycles")
+    $dataPathPct = 100.0 * (Get-RatioGeomean $rows @("data_request_cycles", "data_response_cycles") "cycles")
+    $cpi = Get-RatioGeomean $rows @("cycles") "retired_instructions"
+    $icacheRefills = Get-ColumnGeomean $rows "icache_demand_refills" -PlusOne
+    $dcacheRefills = Get-ColumnGeomean $rows "dcache_refills" -Required -PlusOne
+    $dcacheWritebacks = Get-ColumnGeomean $rows "dcache_writebacks" -Required -PlusOne
 
     $stage = "$($rows[0].stage)"
     $label = if ($stage) { "stage$stage" } else { "suite" }
@@ -212,23 +243,23 @@ try {
     $relativeRaw = ".agent/projects/$Project/records/performance/" + (Split-Path -Leaf $archivePath)
 
     $row = [ordered]@{
-        date              = $date
-        commit            = $commit
-        state             = $State
-        suite             = Get-SuiteDigest $suiteDir
-        schema            = Get-SchemaDigest $rawPath
-        programs          = $rows.Count
-        cycles            = [long]$cycles
-        retired           = [long]$retired
-        cpi               = if ($retired -gt 0) { ($cycles / $retired).ToString("F4", $inv) } else { "" }
-        fetch_wait_pct    = if ($cycles -gt 0) { (100.0 * $fetchWait / $cycles).ToString("F3", $inv) } else { "" }
-        data_path_pct     = if ($cycles -gt 0) { (100.0 * ($dataRequest + $dataResponse) / $cycles).ToString("F3", $inv) } else { "" }
-        icache_refills    = [long]$icacheRefills
-        dcache_refills    = [long]$dcacheRefills
-        dcache_writebacks = [long]$dcacheWritebacks
-        change            = $Change
-        raw               = $relativeRaw
-        promotion         = $Promotion
+        date                       = $date
+        commit                     = $commit
+        state                      = $State
+        suite                      = Get-SuiteDigest $suiteDir
+        schema                     = Get-SchemaDigest $rawPath
+        programs                   = $rows.Count
+        cycles_geomean             = $cycles.ToString("F1", $inv)
+        retired_geomean            = $retired.ToString("F1", $inv)
+        cpi_geomean                = $cpi.ToString("F4", $inv)
+        fetch_wait_pct_geomean     = $fetchWaitPct.ToString("F3", $inv)
+        data_path_pct_geomean      = $dataPathPct.ToString("F3", $inv)
+        icache_refills_geomean1    = $icacheRefills.ToString("F2", $inv)
+        dcache_refills_geomean1    = $dcacheRefills.ToString("F2", $inv)
+        dcache_writebacks_geomean1 = $dcacheWritebacks.ToString("F2", $inv)
+        change                     = $Change
+        raw                        = $relativeRaw
+        promotion                  = $Promotion
     }
     $line = (($ledgerColumns | ForEach-Object { Quote-CsvField ([string]$row[$_]) }) -join ",")
 
@@ -237,15 +268,14 @@ try {
     # The `fpu-*` subset cuts across those tiers (its programs declare short/medium/stress),
     # so it is printed separately rather than invented as a sixth tier.
     function Get-GroupLine([string]$label, $group) {
-        $groupCycles = Get-ColumnSum $group "cycles"
-        $groupRetired = Get-ColumnSum $group "retired_instructions"
-        $groupFetch = Get-ColumnSum $group "fetch_wait_cycles"
-        $groupData = (Get-ColumnSum $group "data_request_cycles") + (Get-ColumnSum $group "data_response_cycles")
+        $groupCycles = Get-ColumnGeomean $group "cycles"
+        $groupRetired = Get-ColumnGeomean $group "retired_instructions"
+        $groupCpi = Get-RatioGeomean $group @("cycles") "retired_instructions"
+        $groupFetch = 100.0 * (Get-RatioGeomean $group @("fetch_wait_cycles") "cycles")
+        $groupData = 100.0 * (Get-RatioGeomean $group @("data_request_cycles", "data_response_cycles") "cycles")
         return "| {0} | {1} | {2} | {3} | {4} | {5} | {6} |" -f `
-            $label, $group.Count, [long]$groupCycles, [long]$groupRetired,
-        $(if ($groupRetired -gt 0) { ($groupCycles / $groupRetired).ToString("F4", $inv) } else { "" }),
-        $(if ($groupCycles -gt 0) { (100.0 * $groupFetch / $groupCycles).ToString("F2", $inv) } else { "" }),
-        $(if ($groupCycles -gt 0) { (100.0 * $groupData / $groupCycles).ToString("F2", $inv) } else { "" })
+            $label, $group.Count, $groupCycles.ToString("F1", $inv), $groupRetired.ToString("F1", $inv),
+            $groupCpi.ToString("F4", $inv), $groupFetch.ToString("F2", $inv), $groupData.ToString("F2", $inv)
     }
 
     $tierNames = @{}
@@ -279,6 +309,7 @@ try {
     }
 
     Write-Host ""
+    Write-Host "Per-group geometric means (equal weight per program, never summed):"
     Write-Host "| group | programs | cycles | retired | CPI | fetch-wait % | data-path % |"
     Write-Host "| --- | ---: | ---: | ---: | ---: | ---: | ---: |"
     $groupLines | ForEach-Object { Write-Host $_ }

@@ -60,6 +60,49 @@ Logic / ~4.6% register cost for +0.0003% suite benefit. The four prefetch column
 the CSV schema so old and new result files stay column-compatible, but they are pinned to
 zero in every run produced after the removal.
 
+## Comparing runs
+
+**Never add values across programs** — not `cycles`, not `retired_*`, not the cache
+counters, not the wait cycles. A suite sum is dominated by the largest programs
+(long/frame) and hides what changed everywhere else. Every suite-level number is a
+**geometric mean over per-program values**, equal weight per program:
+
+- Comparisons: the headline is the geomean of per-program ratios (each program's
+  new/old value), with the per-program table alongside.
+- Single-run aggregates (the performance ledger, tier tables): the geomean of the
+  per-program metric itself; ratios like CPI or fetch-wait % are computed per program
+  first, then geomean-averaged. Counters that may be zero (e.g. D-cache write-backs)
+  use the geomean of (value + 1), noted wherever they are reported.
+
+## BTC comparison diagnostics
+
+Set `CPU_V3_BTC_ENTRIES` to `0`, `4` (the default), or `8` before building/running
+Cargo to compare the same workload with each fetch configuration. Use a separate
+absolute `CPU_V3_BENCH_OUTPUT` directory per configuration when invoking the harness
+directly; `run-suite.ps1` supplies its own absolute output directory. Label exported
+rows with the capacity and dirty-tree status. Changing this hardware configuration
+or a timing regression assertion does not revise the frozen workload or CSV schema.
+
+Each profiled program also writes a separate `btc.txt`, sampled from the actual
+fetch emulator at halt. This diagnostic file is outside the frozen metric set:
+
+- `btc_entries`: build capacity.
+- `lookups`: eligible stream restarts, including initial fetch (not identical to
+  retired branch redirects); zero when BTC is disabled.
+- `complete_hits`: restarts that start a complete-entry replay, counted once even
+  if the core initially backpressures the target.
+- `installed` / `cancelled_fills`: complete pair installations / incomplete fills
+  cancelled by restart, flush or an accepted instruction error.
+- `accepted_words` / `aborted_replays`: BTC words accepted by the core / unfinished
+  replays cancelled by restart or flush.
+- `continuation_wait_cycles`: request cycles without a response after both BTC
+  words, ending on the first ordinary word accepted, a restart or a flush.
+
+Always compare per-program cycles (geomean-aggregated per "Comparing runs") and exact
+final-state checks as well as target wait: a zero target wait can otherwise conceal a
+new continuation bubble. Retired instruction/word counts and the suite/compiler inputs
+must agree across capacities.
+
 ## Adding or changing a program
 
 1. Write or edit the `.rs` file with the metadata header.
