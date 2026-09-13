@@ -45,6 +45,25 @@ pub struct DebugInitSection {
     pub addr: (usize, usize),
 }
 
+/// one field of a published struct layout (spec §9b): its name, word offset and
+/// the display form of its type
+#[derive(Clone, Debug)]
+pub struct DebugTypeField {
+    pub name: String,
+    pub offset: u16,
+    pub ty: String,
+}
+
+/// a struct layout a debugger can use to expand a value; element `i` of a tuple
+/// needs no table (it sits at word `i`), so only structs are published
+#[derive(Clone, Debug)]
+pub struct DebugType {
+    pub name: String,
+    pub size: u16,
+    pub align: u16,
+    pub fields: Vec<DebugTypeField>,
+}
+
 #[derive(Clone, Debug, Default)]
 pub struct DebugInfo {
     pub files: Vec<String>,
@@ -55,6 +74,8 @@ pub struct DebugInfo {
     pub functions: Vec<DebugFunc>,
     pub globals: Vec<DebugVar>,
     pub consts: Vec<(String, String, u16)>,
+    /// struct layouts, by name
+    pub types: Vec<DebugType>,
     /// (address, file index, line)
     pub lines: Vec<(usize, u16, u32)>,
 }
@@ -116,6 +137,15 @@ impl DebugInfo {
         if !self.globals.is_empty() {
             out.push('\n');
         }
+        for t in &self.types {
+            let _ = writeln!(out, "type {} {} {}", t.name, t.size, t.align);
+            for f in &t.fields {
+                let _ = writeln!(out, "  {} {} {}", f.name, f.offset, f.ty);
+            }
+        }
+        if !self.types.is_empty() {
+            out.push('\n');
+        }
         for (name, ty, value) in &self.consts {
             let _ = writeln!(out, "const {name} {ty} {value}");
         }
@@ -150,10 +180,17 @@ fn unwrap_global(loc: &VarLoc) -> u16 {
 pub fn parse_debug(text: &str) -> Result<DebugInfo, String> {
     let mut info = DebugInfo::default();
     let mut cur_func: Option<DebugFunc> = None;
+    let mut cur_type: Option<DebugType> = None;
     for (ln, line) in text.lines().enumerate() {
         let line = line.trim_end();
         if line.is_empty() || line.starts_with('#') {
             continue;
+        }
+        // a `type` header owns the indented lines that follow it
+        if !line.starts_with(' ') && !line.starts_with("type ") {
+            if let Some(t) = cur_type.take() {
+                info.types.push(t);
+            }
         }
         let err = || format!("line {}: cannot parse `{line}`", ln + 1);
         let mut parts = line.split_whitespace();
@@ -188,6 +225,20 @@ pub fn parse_debug(text: &str) -> Result<DebugInfo, String> {
                     addr,
                     frame_size,
                     locals: vec![],
+                });
+            }
+            Some("type") => {
+                if let Some(t) = cur_type.take() {
+                    info.types.push(t);
+                }
+                let name = parts.next().ok_or_else(err)?.to_string();
+                let size: u16 = parts.next().ok_or_else(err)?.parse().map_err(|_| err())?;
+                let align: u16 = parts.next().ok_or_else(err)?.parse().map_err(|_| err())?;
+                cur_type = Some(DebugType {
+                    name,
+                    size,
+                    align,
+                    fields: vec![],
                 });
             }
             Some("table") => {
@@ -230,6 +281,20 @@ pub fn parse_debug(text: &str) -> Result<DebugInfo, String> {
                 let line_no: u32 = parts.next().ok_or_else(err)?.parse().map_err(|_| err())?;
                 info.lines.push((addr as usize, file, line_no));
             }
+            _ if line.starts_with(' ') && cur_type.is_some() => {
+                // indented struct field line: `  <name> <offset> <ty>` (ty may contain spaces)
+                let toks: Vec<&str> = line.split_whitespace().collect();
+                if toks.len() < 3 {
+                    return Err(err());
+                }
+                let offset: u16 = toks[1].parse().map_err(|_| err())?;
+                let ty = toks[2..].join(" ");
+                cur_type.as_mut().unwrap().fields.push(DebugTypeField {
+                    name: toks[0].to_string(),
+                    offset,
+                    ty,
+                });
+            }
             _ if line.starts_with(' ') => {
                 // indented local variable line: `  <loc> <name> <ty>` (ty may contain spaces)
                 let toks: Vec<&str> = line.split_whitespace().collect();
@@ -262,6 +327,9 @@ pub fn parse_debug(text: &str) -> Result<DebugInfo, String> {
     }
     if let Some(f) = cur_func.take() {
         info.functions.push(f);
+    }
+    if let Some(t) = cur_type.take() {
+        info.types.push(t);
     }
     Ok(info)
 }

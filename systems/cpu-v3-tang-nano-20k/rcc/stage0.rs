@@ -25,7 +25,7 @@ const FLASH_BASE_HI: u16 = 0x0010;
 /// Manifest buffer: 192 words = 384 bytes, holding the 48-byte header plus up
 /// to ten 32-byte section records. Zero-initialized statics emit no
 /// __data_init code; the DMA fills the buffer before it is read.
-static MANIFEST: [u16; 192] = [0; 192];
+static MANIFEST: Buf<u16, 192> = Buf::new([0; 192]);
 
 // Boot error ABI codes for the single first stage
 // (cpu_v3/boot/loader.rs `boot_report`).

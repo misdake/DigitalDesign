@@ -6,7 +6,7 @@ use crate::dsl_rt::*;
 // Normalize 256 vec3-as-vec4 vectors: len^2 via FDOT4ACC, 1/len via FRSQRT,
 // scale through the ACC splat + FMUL. Exact bit checksum of the x lanes.
 const N: u16 = 256;
-static OUT: [u16; 256] = [0; 256];
+static OUT: Buf<u16, 256> = Buf::new([0; 256]);
 
 fn main() {
     let mut out = OUT.as_array();

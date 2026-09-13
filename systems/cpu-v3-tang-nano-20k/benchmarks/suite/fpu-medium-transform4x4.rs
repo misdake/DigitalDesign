@@ -6,8 +6,8 @@ use crate::dsl_rt::*;
 // mat4 x vec4 over a 128-vertex batch. The matrix is stored column-major in a
 // static; each output lane is one dot product written through the ACC.
 const N: u16 = 128;
-static OUT: [u16; 512] = [0; 512];
-static MAT: [u16; 16] = [0; 16];
+static OUT: Buf<u16, 512> = Buf::new([0; 512]);
+static MAT: Buf<u16, 16> = Buf::new([0; 16]);
 
 fn main() {
     let mut out = OUT.as_array();

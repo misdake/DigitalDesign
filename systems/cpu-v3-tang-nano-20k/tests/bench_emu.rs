@@ -40,7 +40,7 @@ fn main() {
 use crate::dsl_rt::*;
 
 const N: u16 = 128;
-static DATA: [u16; 128] = [0; 128];
+static DATA: Buf<u16, 128> = Buf::new([0; 128]);
 
 fn main() {
     let mut d = DATA.as_array();

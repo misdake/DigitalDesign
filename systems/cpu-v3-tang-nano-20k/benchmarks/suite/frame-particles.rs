@@ -7,10 +7,10 @@ use crate::dsl_rt::*;
 // Scalar fix16 per component, stored as words in statics.
 const N: u16 = 128;
 const FRAMES: u16 = 10;
-static X: [u16; 128] = [0; 128];
-static Y: [u16; 128] = [0; 128];
-static VX: [u16; 128] = [0; 128];
-static VY: [u16; 128] = [0; 128];
+static X: Buf<u16, 128> = Buf::new([0; 128]);
+static Y: Buf<u16, 128> = Buf::new([0; 128]);
+static VX: Buf<u16, 128> = Buf::new([0; 128]);
+static VY: Buf<u16, 128> = Buf::new([0; 128]);
 
 fn main() {
     let mut x = X.as_array();

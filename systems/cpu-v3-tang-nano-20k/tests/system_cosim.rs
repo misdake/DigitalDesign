@@ -181,7 +181,7 @@ fn program_pipeline_overlap() -> Vec<u16> {
 /// an aligned FEXPORT4 through the D-cache.
 const FPU_COMPILER_SOURCE: &str = r#"
 use crate::dsl_rt::*;
-static OUT: [u16; 4] = [0; 4];
+static OUT: Buf<u16, 4> = Buf::new([0; 4]);
 
 fn scaled(v: vec4, factor: fix16, tag: u16) -> vec4 {
     if tag == 1 { v * factor } else { v }

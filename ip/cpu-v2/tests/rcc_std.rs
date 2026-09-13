@@ -1,4 +1,4 @@
-//! rcc standard library tests: heap (malloc/free + auto init), mem, mul, vec.
+//! rcc standard library tests: heap (malloc/free + auto init), mem, mul, div, vec.
 
 mod common;
 
@@ -150,6 +150,119 @@ fn main() {
         "heap: {:?}",
         &state.mem[opts.heap_begin as usize..(opts.heap_begin + 20) as usize]
     );
+}
+
+#[test]
+fn test_div_and_rem_unsigned() {
+    // a variable divisor calls the rcc_std shift-subtract routine
+    let src = r#"
+fn main() {
+    let mut acc: u16 = 0;
+    let mut i: u16 = 1;
+    while i <= 40 {
+        acc = acc + (1000 / i) + (1000 % i);
+        i = i + 1;
+    }
+    halt(acc);
+}
+"#;
+    let opts = CompilerOptions::default();
+    let (_, signal, _) = compile_program_and_run(src, &opts, 40_000);
+    let mut expected: u16 = 0;
+    for i in 1u16..=40 {
+        expected = expected.wrapping_add(1000 / i).wrapping_add(1000 % i);
+    }
+    assert_eq!(signal, Some(expected));
+}
+
+#[test]
+fn test_div_and_rem_power_of_two_literal_uses_shift_and_mask() {
+    // a literal power-of-two divisor lowers to shift/mask, not a call
+    let src = r#"
+fn main() {
+    let x: u16 = 12345;
+    let a = x / 8u16;
+    let b = x % 8u16;
+    let c = x / 1u16;
+    halt(a + b + c);
+}
+"#;
+    let opts = CompilerOptions::default();
+    let (_, signal, listing) = compile_program_and_run(src, &opts, 2000);
+    assert_eq!(signal, Some(12345 / 8 + 12345 % 8 + 12345));
+    assert!(
+        !listing.contains("div_u16") && !listing.contains("rem_u16"),
+        "power-of-two literal divisors must not call the divide routine:\n{listing}"
+    );
+}
+
+#[test]
+fn test_div_and_rem_define_a_zero_divisor() {
+    // the helper entry points define `x / 0 == 0` and `x % 0 == x` on both the
+    // host and the target; the raw `/` operator keeps Rust's host panic
+    let src = r#"
+fn main() {
+    let z: u16 = 0;
+    let zi: i16 = 0;
+    let a: u16 = 1000;
+    let s: i16 = -1000;
+    if div_u16(a, z) == 0 && rem_u16(a, z) == a && div_i16(s, zi) == 0i16 && rem_i16(s, zi) == s {
+        halt(1);
+    } else {
+        halt(0);
+    }
+}
+"#;
+    let opts = CompilerOptions::default();
+    let (_, signal, _) = compile_program_and_run(src, &opts, 40_000);
+    assert_eq!(signal, Some(1));
+}
+
+#[test]
+fn test_div_and_rem_signed_follow_c_truncation() {
+    let src = r#"
+fn main() {
+    let a: i16 = -7;
+    let b: i16 = 2;
+    let c: i16 = 7;
+    let d: i16 = -2;
+    let e: i16 = -13;
+    let acc: i16 = (a / b) + (a % b) + (c / d) + (c % d) + (e / 5i16) + (e % 5i16);
+    halt(acc as u16);
+}
+"#;
+    let opts = CompilerOptions::default();
+    let (_, signal, _) = compile_program_and_run(src, &opts, 40_000);
+    let expected =
+        (-7i16 / 2) + (-7i16 % 2) + (7i16 / -2) + (7i16 % -2) + (-13i16 / 5) + (-13i16 % 5);
+    assert_eq!(signal, Some(expected as u16));
+}
+
+#[test]
+fn test_div_edge_values_and_nesting() {
+    // the divisors are variables on purpose: a *constant* divisor lowers to the
+    // CpuV3-only MUL16 magic path, while this test exercises the library routine
+    let src = r#"
+fn main() {
+    let a: u16 = 0xffff;
+    let b: u16 = 0x8000;
+    let d3: u16 = 3;
+    let d7: u16 = 7;
+    let d6: u16 = 6;
+    let nested_div = 100 / (37 / d6);
+    let nested_rem = 100 % (37 / d6);
+    halt((a / d3) + (b / d3) + (a % d7) + (b % d7) + nested_div + nested_rem * 1000);
+}
+"#;
+    let opts = CompilerOptions::default();
+    let (_, signal, _) = compile_program_and_run(src, &opts, 40_000);
+    let expected = (0xffffu16 / 3)
+        .wrapping_add(0x8000u16 / 3)
+        .wrapping_add(0xffffu16 % 7)
+        .wrapping_add(0x8000u16 % 7)
+        .wrapping_add(100u16 / (37u16 / 6u16))
+        .wrapping_add((100u16 % (37u16 / 6u16)).wrapping_mul(1000u16));
+    assert_eq!(signal, Some(expected));
 }
 
 #[test]

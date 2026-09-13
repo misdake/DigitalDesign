@@ -1639,6 +1639,7 @@ fn link(
             init_sections: vec![],
             functions: debug_functions,
             globals: frontend_debug.globals,
+            types: frontend_debug.types,
             consts: frontend_debug.consts,
             lines: debug_lines,
         },
@@ -1687,7 +1688,7 @@ mod tests {
     fn fpu_vec4_dot_export_and_splat_multiply() {
         let source = r#"
             use crate::dsl_rt::*;
-            static OUT: [u16; 4] = [0; 4];
+            static OUT: Buf<u16, 4> = Buf::new([0; 4]);
             fn main() {
                 let a = vec4::new(
                     fix16::from_int(1),
@@ -1842,7 +1843,7 @@ mod tests {
     fn fpu_call_dot_and_export_match_isa_values() {
         let source = r#"
             use crate::dsl_rt::*;
-            static OUT: [u16; 4] = [0; 4];
+            static OUT: Buf<u16, 4> = Buf::new([0; 4]);
             fn scaled(v: vec4, factor: fix16, tag: u16) -> vec4 {
                 if tag == 1 { v * factor } else { v }
             }
@@ -1890,17 +1891,548 @@ mod tests {
         assert_eq!(run(source), 1);
     }
 
+    #[test]
+    fn div_and_rem_run_on_the_machine() {
+        let source = r#"
+            fn main() {
+                let a: u16 = 1000;
+                let b: u16 = 7;
+                let q = a / b;   // 142
+                let r = a % b;   // 6
+                let s: i16 = -1000;
+                let t: i16 = 7;
+                let u = s / t;   // -142: the quotient truncates toward zero
+                let v = s % t;   // -6: the remainder follows the dividend
+                let x: u16 = 0xabcd;
+                let shifted = x / 16u16;  // literal power of two: a shift
+                let masked = x % 16u16;   // literal power of two: a mask
+                halt(q + r + (u + v + 300i16) as u16 + shifted + masked);
+            }
+        "#;
+        // 142 + 6 + (-142 - 6 + 300) + 0x0abc + 0x000d = 3061
+        assert_eq!(run_with_std(source), 3061);
+    }
+
+    #[test]
+    fn div_and_rem_define_a_zero_divisor() {
+        let source = r#"
+            fn main() {
+                let z: u16 = 0;
+                let zi: i16 = 0;
+                let a: u16 = 1000;
+                let s: i16 = -1000;
+                if div_u16(a, z) == 0 && rem_u16(a, z) == a && div_i16(s, zi) == 0i16 && rem_i16(s, zi) == s {
+                    halt(1);
+                } else {
+                    halt(0);
+                }
+            }
+        "#;
+        assert_eq!(run_with_std(source), 1);
+    }
+
+    #[test]
+    fn constant_divisor_magic_divide_runs_on_the_machine() {
+        // A constant divisor lowers to the MUL16 magic path (the single-multiply
+        // High form and the 17-bit Add form), so this compares the emitted
+        // sequence against the host quotient across a range and at the edges.
+        let source = r#"
+            fn main() {
+                let mut acc: u16 = 0;
+                let mut x: u16 = 0;
+                while x < 512u16 {
+                    acc = acc + (x / 3u16) + (x % 3u16) + (x / 7u16) + (x % 7u16)
+                        + (x / 10u16) + (x % 10u16) + (x / 1000u16) + (x % 1000u16);
+                    x = x + 1;
+                }
+                acc = acc + (65535u16 / 3u16) + (65535u16 % 7u16) + (65534u16 / 65534u16)
+                    + (65535u16 / 65534u16) + (40000u16 % 257u16) + (32768u16 / 9u16)
+                    + (1u16 / 65535u16) + (65535u16 / 1u16);
+                halt(acc);
+            }
+        "#;
+        let mut expected: u16 = 0;
+        for x in 0u16..512 {
+            expected = expected
+                .wrapping_add(x / 3)
+                .wrapping_add(x % 3)
+                .wrapping_add(x / 7)
+                .wrapping_add(x % 7)
+                .wrapping_add(x / 10)
+                .wrapping_add(x % 10)
+                .wrapping_add(x / 1000)
+                .wrapping_add(x % 1000);
+        }
+        for term in [
+            65535u16 / 3,
+            65535u16 % 7,
+            65534u16 / 65534,
+            65535u16 / 65534,
+            40000u16 % 257,
+            32768u16 / 9,
+            1u16 / 65535,
+            // the source divides by 1u16; on the host that is the identity
+            65535u16,
+        ] {
+            expected = expected.wrapping_add(term);
+        }
+        assert_eq!(run_with_std_capped(source, 500_000), expected);
+    }
+
+    #[test]
+    fn stored_bool_materializes_negates_casts_and_branches() {
+        // A comparison bound to a variable becomes a 0/1 value (the ISA's
+        // Boolean-producing form); it can be negated, cast, passed, returned and
+        // used as a condition again, and `&&` builds a compound condition.
+        let source = r#"
+            fn is_small(x: u16) -> bool {
+                x < 100u16
+            }
+            fn main() {
+                let mut acc: u16 = 0;
+                let mut x: u16 = 0;
+                while x < 200u16 {
+                    let small = is_small(x);
+                    let odd = (x & 1u16) != 0u16;
+                    let flag = small && odd;
+                    if flag {
+                        acc = acc + 1u16;
+                    }
+                    if !small {
+                        acc = acc + 2u16;
+                    }
+                    acc = acc + (small as u16);
+                    x = x + 1;
+                }
+                halt(acc);
+            }
+        "#;
+        let mut expected: u16 = 0;
+        for x in 0u16..200 {
+            let small = x < 100;
+            let odd = (x & 1) != 0;
+            if small && odd {
+                expected = expected.wrapping_add(1);
+            }
+            if !small {
+                expected = expected.wrapping_add(2);
+            }
+            expected = expected.wrapping_add(u16::from(small));
+        }
+        assert_eq!(run_with_std_capped(source, 200_000), expected);
+    }
+
+    #[test]
+    fn bool_parameter_return_and_loop_condition() {
+        let source = r#"
+            fn keep_going(done: bool) -> bool {
+                !done
+            }
+            fn main() {
+                let mut i: u16 = 0;
+                let mut go: bool = true;
+                while go {
+                    i = i + 1;
+                    go = keep_going(i >= 5u16);
+                }
+                let pick = if 1u16 < 2u16 { 7u16 } else { 9u16 };
+                halt(i + pick);
+            }
+        "#;
+        // the loop stops the iteration i reaches 5, and the if-expression picks 7
+        assert_eq!(run_with_std(source), 12);
+    }
+
+    #[test]
+    fn struct_fields_nest_copy_and_run_on_the_machine() {
+        let source = r#"
+            #[repr(C)]
+            struct Inner {
+                a: u16,
+                b: i16,
+            }
+
+            struct Point {
+                x: u16,
+                y: u16,
+                inner: Inner,
+                flags: Buf<u16, 2>,
+                valid: bool,
+            }
+
+            fn main() {
+                let mut p: Point = Point {
+                    x: 3,
+                    y: 4,
+                    inner: Inner { a: 5, b: -6 },
+                    flags: Buf::new([7, 8]),
+                    valid: true,
+                };
+                p.x = p.x + 1u16;
+                p.inner.a += 10u16;
+                p.flags[1u16] = 9u16;
+                p.y = p.flags[0u16];
+                let copy: Point = p;
+                let total = copy.x + copy.y + copy.inner.a + (copy.inner.b as u16)
+                    + copy.flags[0u16] + copy.flags[1u16] + (copy.valid as u16);
+                halt(total);
+            }
+        "#;
+        // x = 3 + 1 = 4, y = flags[0] = 7, inner.a = 5 + 10 = 15, inner.b = 0xfffa,
+        // flags = {7, 9}, valid = 1
+        let expected = 4u16
+            .wrapping_add(7)
+            .wrapping_add(15)
+            .wrapping_add((-6i16) as u16)
+            .wrapping_add(7)
+            .wrapping_add(9)
+            .wrapping_add(1);
+        assert_eq!(run_with_std_capped(source, 20_000), expected);
+    }
+
+    #[test]
+    fn struct_copy_is_an_independent_value() {
+        let source = r#"
+            struct Pair {
+                a: u16,
+                b: u16,
+            }
+            fn main() {
+                let mut first: Pair = Pair { a: 1, b: 2 };
+                let mut second: Pair = first;
+                second.a = 40;
+                first.b = 3;
+                halt(first.a + first.b + second.a + second.b);
+            }
+        "#;
+        // the copy took its own slot: 1 + 3 + 40 + 2 = 46
+        assert_eq!(run_with_std_capped(source, 20_000), 46);
+    }
+
+    #[test]
+    fn struct_views_pass_by_pointer_and_index_fields() {
+        let source = r#"
+            struct Point { x: u16, y: u16 }
+
+            fn sum_x(points: Array<Point>, count: u16) -> u16 {
+                let mut total: u16 = 0;
+                let mut i: u16 = 0;
+                while i < count {
+                    total = total + points[i].x;
+                    i = i + 1u16;
+                }
+                total
+            }
+
+            fn bump(mut view: Array<Point>, dx: u16) {
+                view[0u16].x = view[0u16].x + dx;
+            }
+
+            fn main() {
+                let arr: Buf<Point, 3> = Buf::new([
+                    Point { x: 10, y: 1 },
+                    Point { x: 20, y: 2 },
+                    Point { x: 30, y: 3 },
+                ]);
+                let view = arr.as_array();
+                bump(view, 5u16);
+                let total = sum_x(view, 3u16);
+                let mut single: Point = Point { x: 7, y: 0 };
+                bump(view_of(&single), 100u16);
+                halt(total + single.x);
+            }
+        "#;
+        // bump(view) makes x = 15, so sum_x = 65; bump(view_of(&single)) makes 107
+        assert_eq!(run_with_std_capped(source, 40_000), 172);
+    }
+
+    #[test]
+    fn struct_view_index_scales_by_the_element_size() {
+        // five words per element: a runtime index needs a real multiply, not a shift
+        let source = r#"
+            struct Wide { a: u16, b: u16, c: u16, d: u16, e: u16 }
+
+            fn middle(view: Array<Wide>, i: u16) -> u16 {
+                view[i].c
+            }
+
+            fn main() {
+                let arr: Buf<Wide, 3> = Buf::new([
+                    Wide { a: 1, b: 2, c: 3, d: 4, e: 5 },
+                    Wide { a: 10, b: 20, c: 30, d: 40, e: 50 },
+                    Wide { a: 100, b: 200, c: 300, d: 400, e: 500 },
+                ]);
+                let view = arr.as_array();
+                let mut acc: u16 = 0;
+                let mut i: u16 = 0;
+                while i < 3u16 {
+                    acc = acc + middle(view, i) + view[i].e;
+                    i = i + 1u16;
+                }
+                halt(acc);
+            }
+        "#;
+        // (3 + 5) + (30 + 50) + (300 + 500) = 888
+        assert_eq!(run_with_std_capped(source, 40_000), 888);
+    }
+
+    #[test]
+    fn tuples_return_destructure_and_copy() {
+        let source = r#"
+            fn divmod_pair(a: u16, b: u16) -> (u16, u16) {
+                (a / b, a % b)
+            }
+
+            fn stats(x: u16, y: u16) -> (u16, u16, u16) {
+                let lo = if x < y { x } else { y };
+                let hi = if x < y { y } else { x };
+                (lo, hi, hi - lo)
+            }
+
+            fn main() {
+                let t = divmod_pair(47u16, 5u16);
+                let pair: (u16, u16) = t;
+                let (q, r) = pair;
+                let (lo, hi, span) = stats(9u16, 4u16);
+                halt(q + r + lo + hi + span + t.0);
+            }
+        "#;
+        // divmod_pair(47, 5) = (9, 2), stats(9, 4) = (4, 9, 5)
+        assert_eq!(run_with_std_capped(source, 60_000), 9 + 2 + 4 + 9 + 5 + 9);
+    }
+
+    #[test]
+    fn struct_returns_write_through_the_hidden_pointer() {
+        let source = r#"
+            struct Point { x: u16, y: u16 }
+
+            fn make(x: u16, y: u16) -> Point {
+                Point { x: x, y: y }
+            }
+
+            fn shifted(p: Array<Point>, dx: u16) -> Point {
+                Point { x: p[0u16].x + dx, y: p[0u16].y }
+            }
+
+            fn pass_through(p: Array<Point>) -> Point {
+                shifted(p, 1u16)
+            }
+
+            fn main() {
+                let p: Point = make(3u16, 4u16);
+                let q: Point = pass_through(view_of(&p));
+                let mut r: Point = q;
+                r = make(10u16, 20u16);
+                halt(p.x + p.y + q.x + q.y + r.x + r.y);
+            }
+        "#;
+        // p = (3, 4), q = shifted(p, 1) = (4, 4), r = make(10, 20)
+        assert_eq!(run_with_std_capped(source, 60_000), 3 + 4 + 4 + 4 + 10 + 20);
+    }
+
+    #[test]
+    fn buf_returns_and_struct_field_shorthand() {
+        let source = r#"
+            struct Pair { a: u16, b: u16 }
+
+            fn table() -> Buf<u16, 3> {
+                Buf::new([5, 6, 7])
+            }
+
+            fn pack(a: u16) -> Pair {
+                Pair { a: a, b: a + 1u16 }
+            }
+
+            fn main() {
+                let t: Buf<u16, 3> = table();
+                let view = t.as_array();
+                let p: Pair = pack(view[2u16]);
+                halt(view[0u16] + p.a + p.b);
+            }
+        "#;
+        // t = {5,6,7}; p = pack(7) = (7,8) => 5 + 7 + 8 = 20
+        assert_eq!(run_with_std_capped(source, 40_000), 20);
+    }
+
+    #[test]
+    fn labeled_break_and_continue_leave_the_right_loop() {
+        let source = r#"
+            fn main() {
+                let mut hits: u16 = 0;
+                let mut rows: u16 = 0;
+                'outer: for i in 0u16..4 {
+                    let mut j: u16 = 0;
+                    while j < 4u16 {
+                        j = j + 1u16;
+                        if i == 2u16 && j == 2u16 {
+                            break 'outer;
+                        }
+                        if j == 1u16 {
+                            continue;
+                        }
+                        hits = hits + 1u16;
+                    }
+                    rows = rows + 1u16;
+                }
+                let mut acc: u16 = 0;
+                'again: for i in 0u16..4 {
+                    let mut j: u16 = 0;
+                    while j < 4u16 {
+                        j = j + 1u16;
+                        if j == 2u16 {
+                            continue 'again;
+                        }
+                        acc = acc + 1u16;
+                    }
+                    acc = acc + 10u16;
+                }
+                halt(acc * 1000u16 + rows * 100u16 + hits);
+            }
+        "#;
+        // rows = 2 (i = 0, 1), hits = 6 (3 per row), acc = 4: `continue 'again`
+        // leaves the inner loop before it can finish, so the +10 never runs
+        assert_eq!(run_with_std_capped(source, 60_000), 4 * 1000 + 2 * 100 + 6);
+    }
+
+    #[test]
+    fn compound_assignments_run() {
+        let source = r#"
+            struct P { scale: u16 }
+
+            fn main() {
+                let mut a: u16 = 3;
+                a *= 5u16;              // 15
+                a /= 2u16;              // 7
+                a %= 4u16;              // 3
+                let mut buf: Buf<u16, 3> = Buf::new([1, 2, 3]);
+                let mut view = buf.as_array();
+                view[1u16] *= 4u16;
+                let mut p: P = P { scale: 2 };
+                p.scale *= 7u16;
+                halt(a + buf.as_array()[1u16] + p.scale);
+            }
+        "#;
+        // a = ((3 * 5) / 2) % 4 = 3, buf[1] = 8, p.scale = 14
+        assert_eq!(run_with_std_capped(source, 20_000), 25);
+    }
+
+    #[test]
+    fn aggregate_statics_land_in_the_data_section() {
+        let source = r#"
+            struct Sprite { x: u16, w: u16 }
+            struct Level { count: u16, origin: Sprite, tags: Buf<u16, 2> }
+
+            static TABLE: Buf<Sprite, 2> =
+                Buf::new([Sprite { x: 3, w: 5 }, Sprite { x: 7, w: 9 }]);
+            static LEVEL: Level =
+                Level { count: 4, origin: Sprite { x: 1, w: 2 }, tags: Buf::new([8, 6]) };
+            static PAIR: (u16, u16) = (10, 20);
+
+            fn main() {
+                let view = TABLE.as_array();
+                view[1u16].w = 11u16;              // writable through a view
+                let copy: Sprite = TABLE.as_array()[0u16];
+                halt(copy.x + view[1u16].w + LEVEL.count + LEVEL.origin.x
+                    + LEVEL.tags[1u16] + PAIR.0 + PAIR.1);
+            }
+        "#;
+        // copy.x = 3, view[1].w = 11, count = 4, origin.x = 1, tags[1] = 6, PAIR = (10, 20)
+        assert_eq!(
+            run_with_std_capped(source, 20_000),
+            3 + 11 + 4 + 1 + 6 + 10 + 20
+        );
+    }
+
+    #[test]
+    fn enums_are_words_and_carry_state() {
+        let source = r#"
+            #[derive(PartialEq)]
+            enum Trace { Idle, Run, Halt }
+            struct Job { state: Trace, ticks: u16 }
+
+            fn next(s: Trace) -> Trace {
+                if s == Trace::Idle { Trace::Run } else { Trace::Halt }
+            }
+
+            fn main() {
+                let mut j: Job = Job { state: Trace::Idle, ticks: 0 };
+                let first = j.state as u16;
+                j.state = next(j.state);
+                let second = j.state as u16;
+                let third = next(j.state) as u16;
+                let mut buf: Buf<Trace, 2> = Buf::new([Trace::Idle, Trace::Halt]);
+                let mut v = buf.as_array();
+                v[0u16] = j.state;
+                let r0 = v[0u16] as u16;
+                let r1 = v[1u16] as u16;
+                halt(first * 1000u16 + second * 100u16 + third * 10u16 + r0 + r1);
+            }
+        "#;
+        // Idle = 0, Run = 1, Halt = 2: first(0) second(1) third(2) r0(1) r1(2)
+        assert_eq!(run_with_std_capped(source, 40_000), 100 + 20 + 1 + 2);
+    }
+
+    #[test]
+    fn match_lowers_to_a_branch_chain() {
+        let source = r#"
+            #[derive(PartialEq)]
+            enum State { Idle, Run, Done }
+
+            fn step(s: State) -> State {
+                let mut next: State = State::Idle;
+                match s {
+                    State::Idle => { next = State::Run; }
+                    State::Run => { next = State::Done; }
+                    State::Done => { next = State::Idle; }
+                }
+                next
+            }
+
+            fn main() {
+                let mut s: State = State::Idle;
+                let mut acc: u16 = 0;
+                let mut i: u16 = 0;
+                while i < 6u16 {
+                    i = i + 1u16;
+                    s = step(s);
+                    acc = acc + (s as u16);
+                    match i {
+                        3u16 => { acc = acc + 100u16; }
+                        6u16 => { break; }
+                        _ => { acc = acc + 1u16; }
+                    }
+                }
+                halt(acc);
+            }
+        "#;
+        // states cycle Run(1) Done(2) Idle(0) Run(1) Done(2) Idle(0):
+        // acc = 1+2+0+1+2+0 = 6, plus a +1 on i=1,2,4,5 and +100 on i=3
+        assert_eq!(run_with_std_capped(source, 60_000), 6 + 4 + 100);
+    }
+
     fn compile(source: &str, options: CompilerOptions) -> CpuV3Program {
         let program = parse_source_with(source, options.data_base).unwrap();
         super::compile(program, &options, "main")
     }
 
-    fn run(source: &str) -> u16 {
-        run_with_options(source, CompilerOptions::default()).0
+    /// Compile with the rcc standard library appended. `compile` above is
+    /// parse-only, so operators that lower to a library call (such as `/`) and
+    /// the library modules themselves need this entry point.
+    fn compile_with_std(source: &str) -> CpuV3Program {
+        let options = CompilerOptions::default();
+        let program =
+            rcc::frontend::compile_program_named("<test>", source, &options, &mut |name| {
+                Err(format!("unknown module `{name}`"))
+            })
+            .unwrap();
+        super::compile(program, &options, "main")
     }
 
-    fn run_with_options(source: &str, options: CompilerOptions) -> (u16, cpu_v3::CpuV3Sim) {
-        let program = compile(source, options);
+    fn execute(program: CpuV3Program) -> (u16, cpu_v3::CpuV3Sim) {
+        execute_capped(program, 10_000)
+    }
+
+    fn execute_capped(program: CpuV3Program, max_cycles: usize) -> (u16, cpu_v3::CpuV3Sim) {
         let mut machine = cpu_v3::CpuV3Sim::default();
         machine
             .load_program(program.code_base, &program.words)
@@ -1910,11 +2442,28 @@ mod tests {
             bootstrap.push(cpu_v3::jump_register(REG_TMP));
             machine.load_program(0, &bootstrap).unwrap();
         }
-        let signal = match machine.run(10_000).unwrap() {
+        let signal = match machine.run(max_cycles).unwrap() {
             cpu_v3::RunOutcome::Halted { signal, .. } => signal,
             outcome => panic!("CpuV3 program did not halt: {outcome:?}"),
         };
         (signal, machine)
+    }
+
+    fn run(source: &str) -> u16 {
+        run_with_options(source, CompilerOptions::default()).0
+    }
+
+    fn run_with_options(source: &str, options: CompilerOptions) -> (u16, cpu_v3::CpuV3Sim) {
+        execute(compile(source, options))
+    }
+
+    fn run_with_std(source: &str) -> u16 {
+        execute(compile_with_std(source)).0
+    }
+
+    /// like `run_with_std`, for a program that needs more than the default cap
+    fn run_with_std_capped(source: &str, max_cycles: usize) -> u16 {
+        execute_capped(compile_with_std(source), max_cycles).0
     }
 
     fn disasm(program: &CpuV3Program) -> Vec<cpu_v3::DisasmLine> {
@@ -1995,7 +2544,7 @@ mod tests {
     fn local_arrays_and_bit_intrinsics_use_the_new_stack_and_operations() {
         let source = r#"
             fn main() {
-                let mut words: [u16; 4] = [1, 2, 4, 8];
+                let mut words: Buf<u16, 4> = Buf::new([1, 2, 4, 8]);
                 let mut view = words.as_array();
                 view[2u16] = 0x800f;
                 halt(view[0u16] + cnt1(view[2u16]) + log2(view[2u16]));
@@ -2179,7 +2728,7 @@ mod tests {
     fn zero_stack_pointer_denotes_the_top_of_the_segment() {
         let source = r#"
             fn main() {
-                let words: [u16; 2] = [0x1234, 0x4321];
+                let words: Buf<u16, 2> = Buf::new([0x1234, 0x4321]);
                 let view = words.as_array();
                 halt(view[0u16] + view[1u16]);
             }

@@ -5,9 +5,9 @@ use cpu_v2::CompilerOptions;
 #[test]
 fn test_debug_info_contents() {
     let src = r#"
-static TILE: [u16; 2] = [5, 6];
+static TILE: Buf<u16, 2> = Buf::new([5, 6]);
 fn main() {
-    let mut buf: [u16; 4] = [0; 4];
+    let mut buf: Buf<u16, 4> = Buf::new([0; 4]);
     buf.write(0, TILE.read(1));
     halt(buf.read(0));
 }
@@ -30,7 +30,7 @@ fn main() {
     assert!(text.contains("file 0 test.rs"));
     assert!(text.contains("rcc_std/heap.rs"));
     // globals with addresses
-    assert!(text.contains("global TILE [u16; 2] 0x0000"));
+    assert!(text.contains("global TILE Buf<u16, 2> 0x0000"));
     // the main function with its frame and the frame-local array
     let main = debug.functions.iter().find(|f| f.name == "main").unwrap();
     assert_eq!(main.file, 0);
@@ -46,4 +46,42 @@ fn main() {
         .collect();
     assert!(!main_lines.is_empty());
     assert!(main_lines.iter().all(|(_, file, _)| *file == 0));
+}
+
+#[test]
+fn test_debug_info_publishes_struct_layouts() {
+    let src = r#"
+struct P { x: u16, y: i16 }
+fn main() {
+    let mut p: P = P { x: 1, y: 2 };
+    p.x = 3;
+    halt(p.x);
+}
+"#;
+    let opts = CompilerOptions::default();
+    let program = cpu_v2::frontend::compile_program_named("layout.rs", src, &opts, &mut |name| {
+        Err(format!("unknown module `{name}`"))
+    })
+    .expect("parse failed");
+    let mut c = cpu_v2::Compiler::new();
+    c.set_debug(program.debug);
+    for f in program.funcs {
+        c.add_func(f);
+    }
+    let (_instructions, _listing, debug) = c.finish_with_debug("main");
+    let text = debug.render();
+    // the layout is published so a debugger can expand `p.x`
+    assert!(text.contains("type P 2 1"), "{text}");
+    assert!(text.contains("  x 0 u16"), "{text}");
+    assert!(text.contains("  y 1 i16"), "{text}");
+    // ... and it survives a .dbg round-trip
+    let parsed = rcc::parse_debug(&text).expect("dbg round-trip");
+    let layout = parsed.types.iter().find(|t| t.name == "P").expect("P");
+    assert_eq!((layout.size, layout.align), (2, 1));
+    assert_eq!(layout.fields.len(), 2);
+    assert_eq!(
+        (layout.fields[1].name.as_str(), layout.fields[1].offset),
+        ("y", 1)
+    );
+    assert_eq!(layout.fields[1].ty, "i16");
 }
