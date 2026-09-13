@@ -38,6 +38,8 @@ impl std::ops::Not for BoolExpr {
 struct LoopCtx {
     header: BlockId,
     exit: BlockId,
+    /// `'name` of the loop (spec §4), for labeled break/continue
+    label: Option<&'static str>,
 }
 
 pub struct FuncBuilder {
@@ -553,17 +555,44 @@ impl FuncBuilder {
     }
 
     pub fn break_(&mut self) {
-        let exit = self.loops.last().expect("break outside of loop").exit;
-        let cur = self.cur();
-        self.func.blocks[exit].preds.push(cur);
-        self.terminate(Terminator::Jmp { target: exit });
+        let jumped = self.break_labeled(None);
+        debug_assert!(jumped, "break outside of loop");
     }
 
     pub fn continue_(&mut self) {
-        let header = self.loops.last().expect("continue outside of loop").header;
+        let jumped = self.continue_labeled(None);
+        debug_assert!(jumped, "continue outside of loop");
+    }
+
+    /// jump to the exit of the innermost loop, or of the enclosing loop carrying
+    /// `label` (`break 'outer`). Returns false when no such loop encloses the site.
+    pub fn break_labeled(&mut self, label: Option<&str>) -> bool {
+        let Some(exit) = self.find_loop(label).map(|ctx| ctx.exit) else {
+            return false;
+        };
+        let cur = self.cur();
+        self.func.blocks[exit].preds.push(cur);
+        self.terminate(Terminator::Jmp { target: exit });
+        true
+    }
+
+    /// like `break_labeled`, but for `continue`: target the loop header
+    pub fn continue_labeled(&mut self, label: Option<&str>) -> bool {
+        let Some(header) = self.find_loop(label).map(|ctx| ctx.header) else {
+            return false;
+        };
         let cur = self.cur();
         self.func.blocks[header].preds.push(cur);
         self.terminate(Terminator::Jmp { target: header });
+        true
+    }
+
+    /// the innermost loop, or the innermost one whose label matches
+    fn find_loop(&self, label: Option<&str>) -> Option<&LoopCtx> {
+        match label {
+            None => self.loops.last(),
+            Some(name) => self.loops.iter().rev().find(|ctx| ctx.label == Some(name)),
+        }
     }
 
     pub fn ret(&mut self, values: &[VReg]) {
@@ -727,8 +756,18 @@ impl FuncBuilder {
     }
 
     /// push a loop context and enter the body block (sealing it)
-    pub fn begin_loop_body(&mut self, header: BlockId, body_b: BlockId, exit: BlockId) {
-        self.loops.push(LoopCtx { header, exit });
+    pub fn begin_loop_body(
+        &mut self,
+        header: BlockId,
+        body_b: BlockId,
+        exit: BlockId,
+        label: Option<&'static str>,
+    ) {
+        self.loops.push(LoopCtx {
+            header,
+            exit,
+            label,
+        });
         self.current = Some(body_b);
         self.seal(body_b);
     }
@@ -758,7 +797,11 @@ impl FuncBuilder {
     /// evaluate at the header: branch on `cond` into body/exit; current = body
     pub fn while_cond(&mut self, cond: BoolExpr, header: BlockId, body_b: BlockId, exit: BlockId) {
         self.lower_cond(cond, body_b, exit);
-        self.loops.push(LoopCtx { header, exit });
+        self.loops.push(LoopCtx {
+            header,
+            exit,
+            label: None,
+        });
         self.current = Some(body_b);
         self.seal(body_b);
     }

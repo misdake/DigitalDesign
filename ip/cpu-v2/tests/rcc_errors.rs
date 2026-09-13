@@ -321,6 +321,32 @@ fn test_return_type_mismatch() {
 }
 
 #[test]
+fn test_loop_label_restrictions() {
+    // a labeled jump must name an enclosing loop
+    expect_error("fn f() { break; }", "outside of a loop");
+    expect_error("fn f() { continue; }", "outside of a loop");
+    expect_error(
+        "fn f() { 'outer: loop { break 'nope; } }",
+        "no enclosing loop labeled 'nope",
+    );
+    expect_error(
+        "fn f() { 'outer: loop { continue 'nope; } }",
+        "no enclosing loop labeled 'nope",
+    );
+    expect_error("fn f() { break 5; }", "with a value is not supported");
+    // `*=` is supported now; `/=` and `%=` are still rejected operators
+    assert!(cpu_v2::frontend::parse_source("fn f(x: u16) { let mut y = x; y *= 2u16; }").is_ok());
+    expect_error(
+        "fn f(x: u16) { let mut y = x; y /= 2u16; }",
+        "unsupported compound assignment",
+    );
+    expect_error(
+        "fn f(x: u16) { let mut y = x; y %= 2u16; }",
+        "unsupported compound assignment",
+    );
+}
+
+#[test]
 fn test_missing_return_at_end_of_body() {
     expect_error("fn f() -> u16 { let x = 1; }", "without returning");
 }

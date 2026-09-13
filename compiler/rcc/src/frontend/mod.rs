@@ -2402,6 +2402,9 @@ fn stmt_expr(l: &mut FnLower, e: &Expr) -> Result<(), syn::Error> {
                     SBinOp::BitAndEq(_) => l.b.bin(BinOp::And, cur, rhs),
                     SBinOp::BitOrEq(_) => l.b.bin(BinOp::Or, cur, rhs),
                     SBinOp::BitXorEq(_) => l.b.bin(BinOp::Xor, cur, rhs),
+                    SBinOp::MulEq(_) => {
+                        l.b.mul(crate::MulWindow::Low, cur, crate::IntOperand::Reg(rhs))
+                    }
                     SBinOp::ShlEq(_) | SBinOp::ShrEq(_) => {
                         let amount = shift_operand(l, &a.right)?;
                         l.b.shift_op(shift_op(&a.op, &ty), cur, amount)
@@ -2429,6 +2432,9 @@ fn stmt_expr(l: &mut FnLower, e: &Expr) -> Result<(), syn::Error> {
                     SBinOp::BitAndEq(_) => l.b.bin(BinOp::And, cur, rhs),
                     SBinOp::BitOrEq(_) => l.b.bin(BinOp::Or, cur, rhs),
                     SBinOp::BitXorEq(_) => l.b.bin(BinOp::Xor, cur, rhs),
+                    SBinOp::MulEq(_) => {
+                        l.b.mul(crate::MulWindow::Low, cur, crate::IntOperand::Reg(rhs))
+                    }
                     SBinOp::ShlEq(_) | SBinOp::ShrEq(_) => {
                         let amount = shift_operand(l, &a.right)?;
                         l.b.shift_op(shift_op(&a.op, &elem), cur, amount)
@@ -2460,6 +2466,12 @@ fn stmt_expr(l: &mut FnLower, e: &Expr) -> Result<(), syn::Error> {
                 SBinOp::BitAndEq(_) => BinOp::And,
                 SBinOp::BitOrEq(_) => BinOp::Or,
                 SBinOp::BitXorEq(_) => BinOp::Xor,
+                SBinOp::MulEq(_) => {
+                    let v =
+                        l.b.mul(crate::MulWindow::Low, cur, crate::IntOperand::Reg(rhs));
+                    l.write_var(&kind, v);
+                    return Ok(());
+                }
                 SBinOp::ShlEq(_) | SBinOp::ShrEq(_) => {
                     let amount = shift_operand(l, &a.right)?;
                     let sop = shift_op(&a.op, &ty);
@@ -2512,13 +2524,34 @@ fn stmt_expr(l: &mut FnLower, e: &Expr) -> Result<(), syn::Error> {
             Ok(())
         }
         Expr::If(_) | Expr::While(_) | Expr::Loop(_) | Expr::ForLoop(_) => control_flow(l, e),
-        Expr::Break(_) => {
-            l.b.break_();
+        Expr::Break(b) => {
+            if b.expr.is_some() {
+                return Err(err(&b.break_token, "`break` with a value is not supported"));
+            }
+            let label = jump_label(&b.label);
+            if !l.b.break_labeled(label) {
+                return Err(err(
+                    e,
+                    match label {
+                        Some(name) => format!("no enclosing loop labeled '{name}"),
+                        None => "`break` outside of a loop".to_string(),
+                    },
+                ));
+            }
             l.dead = true;
             Ok(())
         }
-        Expr::Continue(_) => {
-            l.b.continue_();
+        Expr::Continue(c) => {
+            let label = jump_label(&c.label);
+            if !l.b.continue_labeled(label) {
+                return Err(err(
+                    e,
+                    match label {
+                        Some(name) => format!("no enclosing loop labeled '{name}"),
+                        None => "`continue` outside of a loop".to_string(),
+                    },
+                ));
+            }
             l.dead = true;
             Ok(())
         }
@@ -2534,6 +2567,16 @@ fn stmt_expr(l: &mut FnLower, e: &Expr) -> Result<(), syn::Error> {
             }
         }
     }
+}
+
+/// the `'name` of a labeled loop, for the builder's loop stack
+fn loop_label(label: &Option<syn::Label>) -> Option<&'static str> {
+    label.as_ref().map(|l| intern(&l.name.ident.to_string()))
+}
+
+/// the `'name` of a `break 'name` / `continue 'name` target
+fn jump_label(label: &Option<syn::Lifetime>) -> Option<&'static str> {
+    label.as_ref().map(|l| intern(&l.ident.to_string()))
 }
 
 fn control_flow(l: &mut FnLower, e: &Expr) -> Result<(), syn::Error> {
@@ -2579,7 +2622,7 @@ fn control_flow(l: &mut FnLower, e: &Expr) -> Result<(), syn::Error> {
             l.b.set_block_line(header, line_of(&w.while_token));
             l.b.set_block_line(body_b, line_of(&w.while_token));
             cond_lazy(l, &w.cond, body_b, exit)?;
-            l.b.begin_loop_body(header, body_b, exit);
+            l.b.begin_loop_body(header, body_b, exit, loop_label(&w.label));
             block(l, &w.body)?;
             l.b.end_while(header, exit);
             l.dead = false;
@@ -2588,7 +2631,7 @@ fn control_flow(l: &mut FnLower, e: &Expr) -> Result<(), syn::Error> {
         Expr::Loop(lp) => {
             let (header, body_b, exit) = l.b.begin_while();
             l.b.jmp(body_b);
-            l.b.begin_loop_body(header, body_b, exit);
+            l.b.begin_loop_body(header, body_b, exit, loop_label(&lp.label));
             block(l, &lp.body)?;
             l.b.end_while(header, exit);
             l.dead = false;
@@ -2667,7 +2710,7 @@ fn control_flow(l: &mut FnLower, e: &Expr) -> Result<(), syn::Error> {
                 );
             }
             l.b.set_block_line(body_b, line_of(&fl.for_token));
-            l.b.begin_loop_body(header, body_b, exit);
+            l.b.begin_loop_body(header, body_b, exit, loop_label(&fl.label));
             // continue must hit the increment block, not the header
             let incr = l.b.begin_continue_block();
             l.b.set_block_line(incr, line_of(&fl.for_token));

@@ -2253,6 +2253,66 @@ mod tests {
         assert_eq!(run_with_std_capped(source, 40_000), 20);
     }
 
+    #[test]
+    fn labeled_break_and_continue_leave_the_right_loop() {
+        let source = r#"
+            fn main() {
+                let mut hits: u16 = 0;
+                let mut rows: u16 = 0;
+                'outer: for i in 0u16..4 {
+                    let mut j: u16 = 0;
+                    while j < 4u16 {
+                        j = j + 1u16;
+                        if i == 2u16 && j == 2u16 {
+                            break 'outer;
+                        }
+                        if j == 1u16 {
+                            continue;
+                        }
+                        hits = hits + 1u16;
+                    }
+                    rows = rows + 1u16;
+                }
+                let mut acc: u16 = 0;
+                'again: for i in 0u16..4 {
+                    let mut j: u16 = 0;
+                    while j < 4u16 {
+                        j = j + 1u16;
+                        if j == 2u16 {
+                            continue 'again;
+                        }
+                        acc = acc + 1u16;
+                    }
+                    acc = acc + 10u16;
+                }
+                halt(acc * 1000u16 + rows * 100u16 + hits);
+            }
+        "#;
+        // rows = 2 (i = 0, 1), hits = 6 (3 per row), acc = 4: `continue 'again`
+        // leaves the inner loop before it can finish, so the +10 never runs
+        assert_eq!(run_with_std_capped(source, 60_000), 4 * 1000 + 2 * 100 + 6);
+    }
+
+    #[test]
+    fn compound_multiply_assignment_runs() {
+        let source = r#"
+            struct P { scale: u16 }
+
+            fn main() {
+                let mut a: u16 = 3;
+                a *= 5u16;
+                let mut buf: Buf<u16, 3> = Buf::new([1, 2, 3]);
+                let mut view = buf.as_array();
+                view[1u16] *= 4u16;
+                let mut p: P = P { scale: 2 };
+                p.scale *= 7u16;
+                halt(a + buf.as_array()[1u16] + p.scale);
+            }
+        "#;
+        // a = 15, buf[1] = 8, p.scale = 14
+        assert_eq!(run_with_std_capped(source, 20_000), 37);
+    }
+
     fn compile(source: &str, options: CompilerOptions) -> CpuV3Program {
         let program = parse_source_with(source, options.data_base).unwrap();
         super::compile(program, &options, "main")
