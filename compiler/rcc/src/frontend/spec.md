@@ -21,6 +21,7 @@ Only these types exist; no other primitive types are supported:
 | `Array<T>` | **typed array view** | one-word unchecked address, where T is `u16` or `i16`; supports indexing and converts to/from `Ptr` |
 | `fn(A, B) -> R` | **function pointer** (into instruction memory) | plain Rust fn pointer type; on a Harvard machine this is a *different kind* from `Ptr` and they never convert |
 | `bool` | **one word: 0 or 1** | the type of comparisons and `&& \|\| !`; storable in a variable, passed and returned, and usable as a condition again (`if b`); `b as u16` / `b as i16` yields 0/1 (see §1.1) |
+| a defined `struct` name | **struct value: one word address** | fields are 16-bit words in declaration order, total size padded to the struct's alignment; layout and access rules in §9b |
 | `fix16` | **signed Q8.8 fixed-point scalar** | CPU V3-only; occupies one F register (lane x) |
 | `vec2` / `vec3` / `vec4` | **fix16 vectors** | CPU V3-only; one F register each (4 lanes; vec2/vec3 keep zero tails, per the ISA convention) |
 | `()` | unit | return type of procedures |
@@ -242,6 +243,35 @@ static TILE: [u16; 8] = [0x3c, 0x66, 0xc3, 0xff, 0xff, 0xc3, 0x66, 0x3c];
 N consecutive words in data memory (the sprite/tile/palette data of a game). Same access
 rules as local arrays (§10), same `__data_init` emission for non-zero words.
 
+## 9b. Structs
+
+```rust
+#[repr(C)]
+struct Inner { a: u16, b: i16 }
+
+#[repr(align(4))]
+struct Point { x: u16, y: u16, inner: Inner, flags: [u16; 2], valid: bool }
+```
+
+- Fields keep declaration order and each occupies whole 16-bit words: a scalar
+  (`u16`/`i16`/`Ptr`/`bool`) one word, an array `N` words, a nested struct its own size. There is
+  no packing, because the machine has no byte accesses.
+- The total size is padded up to the struct's alignment. Alignment is one word by default;
+  `#[repr(align(N))]` raises it. As in Rust `N` is in *bytes*, so on this 16-bit-word target
+  `align(2)`, `align(4)`, `align(8)` and `align(16)` mean 1, 2, 4 and 8 words. `#[repr(C)]` is
+  accepted (declaration order already is the layout); any other attribute except `#[allow]` and
+  `#[doc]` is an error. A field is padded up to its own alignment, so a nested `#[repr(align(4))]`
+  field starts at an even word offset.
+- A struct value **is its word address** in the frame, exactly like an array: `let mut p: Point =
+  Point { .. };` allocates `sizeof` words through a frame slot; the literal — or another value of
+  the same struct type, copied word by word — initializes it; `p.x` loads a field and `p.x = v` /
+  `p.x += v` stores one; field chains (`p.inner.a`) and array fields (`p.flags[1u16] = v`) work.
+  The binding must be `mut` for any field write, and the type annotation is required.
+- A struct *name* is not a value: read a field, copy it with a typed `let`, or take its address.
+- Out of scope for now (§12): struct parameters and returns (pointer passing is the next phase),
+  `static` structs, arrays of structs and `Array<Struct>`, `impl` methods, `fix16`/`vecN` fields,
+  and recursive layouts.
+
 ## 10. Arrays
 
 C semantics: an array is N consecutive words, addressed by a plain (single-word) pointer,
@@ -332,13 +362,15 @@ The frontend decides residency statically by scanning for `addr_of` uses and arr
 The entry function has no caller and never returns, so it omits callee-save and return-address
 saves; any locals and spills still allocate their normal frame slots.
 
-Struct members (including array members) come with the library phase; nothing in §9–§11
-precludes them (a struct is just an address plus offsets).
+Struct members (including array members) are defined in §9b; the frame layout above applies to
+them unchanged (a struct local is just an address plus offsets).
 
 ## 12. Out of scope for now
 
-`&x` references, fat slices, struct definitions, `static mut`, heap allocation of arrays,
-multi-dimensional arrays (use `arr[i * W + j]`), function inlining/`#[inline]`.
+`&x` references, fat slices, `static mut`, heap allocation of arrays, multi-dimensional arrays
+(use `arr[i * W + j]`), function inlining/`#[inline]`, and the struct limits listed in §9b
+(struct parameters/returns, `static` structs, arrays of structs, `impl`, `fix16`/`vecN` fields,
+recursive layouts).
 
 A stored `bool` is one word, and these remain out of scope: arrays of `bool` / `Array<bool>`,
 `static` bool, comparing two bools (`b1 == b2`), and an integer cast *to* bool (write `x != 0`).

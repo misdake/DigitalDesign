@@ -106,7 +106,6 @@ fn test_unsupported_constructs() {
     expect_error("fn f(x: u16) -> u16 { let g = |y| y; x }", "not supported");
     expect_error("fn f<T>(x: T) -> T { x }", "not supported");
     expect_error("fn f(x: u16) -> u16 { x as u32 }", "not supported");
-    expect_error("struct S { x: u16 }", "not supported");
     expect_error("fn f(x: u16) -> u32 { x }", "not supported");
     expect_error("fn f(x: u16) { if x { halt(0); } }", "boolean");
     expect_error("fn f(x: u16) { x = 1; }", "not mutable");
@@ -309,4 +308,40 @@ fn test_return_type_mismatch() {
 #[test]
 fn test_missing_return_at_end_of_body() {
     expect_error("fn f() -> u16 { let x = 1; }", "without returning");
+}
+
+#[test]
+fn test_struct_restrictions() {
+    // struct values live in memory until pointer passing lands (spec §12)
+    expect_error("struct P { x: u16 }\nfn f(p: P) {}", "struct parameters");
+    expect_error("struct P { x: u16 }\nfn f() -> P {}", "struct parameters");
+    // a bare struct name is not a value
+    expect_error(
+        "struct P { x: u16 }\nfn f() { let mut p: P = P { x: 1 }; let q = p; }",
+        "used as a value",
+    );
+    // a struct literal needs a type annotation
+    expect_error(
+        "struct P { x: u16 }\nfn f() { let p = P { x: 1 }; }",
+        "needs a type annotation",
+    );
+    // unknown and missing fields
+    expect_error(
+        "struct P { x: u16 }\nfn f() { let mut p: P = P { y: 1 }; }",
+        "no field `y`",
+    );
+    expect_error(
+        "struct P { x: u16, y: u16 }\nfn f() { let mut p: P = P { x: 1 }; }",
+        "missing field",
+    );
+    // immutability is enforced through the struct binding
+    expect_error(
+        "struct P { x: u16 }\nfn f() { let p: P = P { x: 1 }; p.x = 2; }",
+        "not mutable",
+    );
+    // static structs and recursive layouts are out of scope
+    expect_error("struct P { x: u16 }\nstatic S: P = P { x: 1 };", "static");
+    expect_error("struct P { p: P }", "contains itself");
+    // attributes other than repr/allow are still rejected
+    expect_error("struct P { x: u16 }\n#[inline] fn f() {}", "attribute");
 }

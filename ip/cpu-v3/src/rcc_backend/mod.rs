@@ -2042,6 +2042,72 @@ mod tests {
         assert_eq!(run_with_std(source), 12);
     }
 
+    #[test]
+    fn struct_fields_nest_copy_and_run_on_the_machine() {
+        let source = r#"
+            #[repr(C)]
+            struct Inner {
+                a: u16,
+                b: i16,
+            }
+
+            struct Point {
+                x: u16,
+                y: u16,
+                inner: Inner,
+                flags: [u16; 2],
+                valid: bool,
+            }
+
+            fn main() {
+                let mut p: Point = Point {
+                    x: 3,
+                    y: 4,
+                    inner: Inner { a: 5, b: -6 },
+                    flags: [7, 8],
+                    valid: true,
+                };
+                p.x = p.x + 1u16;
+                p.inner.a += 10u16;
+                p.flags[1u16] = 9u16;
+                p.y = p.flags[0u16];
+                let copy: Point = p;
+                let total = copy.x + copy.y + copy.inner.a + (copy.inner.b as u16)
+                    + copy.flags[0u16] + copy.flags[1u16] + (copy.valid as u16);
+                halt(total);
+            }
+        "#;
+        // x = 3 + 1 = 4, y = flags[0] = 7, inner.a = 5 + 10 = 15, inner.b = 0xfffa,
+        // flags = {7, 9}, valid = 1
+        let expected = 4u16
+            .wrapping_add(7)
+            .wrapping_add(15)
+            .wrapping_add((-6i16) as u16)
+            .wrapping_add(7)
+            .wrapping_add(9)
+            .wrapping_add(1);
+        assert_eq!(run_with_std_capped(source, 20_000), expected);
+    }
+
+    #[test]
+    fn struct_copy_is_an_independent_value() {
+        let source = r#"
+            struct Pair {
+                a: u16,
+                b: u16,
+            }
+            fn main() {
+                let mut first: Pair = Pair { a: 1, b: 2 };
+                let mut second: Pair = first;
+                second.a = 40;
+                first.b = 3;
+                halt(first.a + first.b + second.a + second.b);
+            }
+        "#;
+        // the copy took its own slot: 1 + 3 + 40 + 2 = 46
+        assert_eq!(run_with_std_capped(source, 20_000), 46);
+    }
+
     fn compile(source: &str, options: CompilerOptions) -> CpuV3Program {
         let program = parse_source_with(source, options.data_base).unwrap();
         super::compile(program, &options, "main")

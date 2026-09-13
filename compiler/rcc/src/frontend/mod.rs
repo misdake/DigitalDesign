@@ -285,6 +285,24 @@ fn parse_files(
         limit_name: static_data_limit_name,
         ..Globals::default()
     };
+    // Struct definitions come first: a field may name a struct declared later, and
+    // `ty_of` recognises a type path as a struct only through this name set.
+    let mut raw_structs: std::collections::BTreeMap<String, (usize, &syn::ItemStruct)> =
+        std::collections::BTreeMap::new();
+    for (fi, file) in files.iter().enumerate() {
+        for item in &file.items {
+            if let Item::Struct(s) = item {
+                if !s.generics.params.is_empty() {
+                    return Err((fi, err(&s.generics, "generics are not supported")));
+                }
+                let name = s.ident.to_string();
+                if raw_structs.insert(name.clone(), (fi, s)).is_some() {
+                    return Err((fi, err(&s.ident, format!("struct `{name}` defined twice"))));
+                }
+            }
+        }
+    }
+    let struct_names: StructNames = raw_structs.keys().cloned().collect();
     for (fi, file) in files.iter().enumerate() {
         let result: Result<(), syn::Error> = (|| {
             for item in &file.items {
@@ -302,7 +320,7 @@ fn parse_files(
                     }
                     Item::Use(_) => { /* ignored: for the IDE only */ }
                     Item::Const(c) => {
-                        let ty = ty_of(&c.ty)?;
+                        let ty = ty_of(&c.ty, &StructNames::new())?;
                         if !matches!(ty, Ty::U16 | Ty::I16) {
                             return Err(err(&c.ty, "const must be u16 or i16"));
                         }
@@ -315,9 +333,7 @@ fn parse_files(
                     Item::Static(s) => add_static(s, &consts, &mut globals)?,
                     Item::Verbatim(_) => { /* attributes on use items land here */ }
                     Item::Mod(_) => { /* already resolved by compile_program */ }
-                    Item::Struct(_) => {
-                        return Err(err(item, "structs are not supported (see spec §12)"))
-                    }
+                    Item::Struct(_) => { /* collected before this loop */ }
                     Item::Trait(_) => return Err(err(item, "traits are not supported")),
                     Item::Impl(_) => return Err(err(item, "impl blocks are not supported")),
                     Item::Macro(_) => return Err(err(item, "macros are not supported")),
@@ -333,12 +349,28 @@ fn parse_files(
         })();
         result.map_err(|error| (fi, error))?;
     }
+    // Resolve the layouts now that the consts (array lengths) are known.
+    {
+        let mut builder = LayoutBuilder {
+            raw: &raw_structs,
+            consts: &consts,
+            names: &struct_names,
+            done: StructTable::new(),
+            visiting: vec![],
+        };
+        for (name, (fi, item)) in &raw_structs {
+            let def = builder.layout(name, item).map_err(|error| (*fi, error))?;
+            builder.done.insert(name.clone(), def);
+        }
+        globals.structs = builder.done;
+        globals.struct_names = struct_names.clone();
+    }
     // collect signatures first (functions can call each other regardless of order)
     let mut sigs: HashMap<String, Sig> = HashMap::new();
     let mut names = vec![];
     for (fi, f) in &fns {
         let name = f.sig.ident.to_string();
-        let sig = signature(f).map_err(|error| (*fi, error))?;
+        let sig = signature(f, &globals.struct_names).map_err(|error| (*fi, error))?;
         if sigs.insert(name.clone(), sig).is_some() {
             return Err((
                 *fi,
@@ -482,6 +514,222 @@ struct Globals {
     next_addr: u16,
     limit: usize,
     limit_name: &'static str,
+    /// resolved struct layouts, by name
+    structs: StructTable,
+    /// every struct name in the program (ty_of recognises a type path through it)
+    struct_names: StructNames,
+}
+
+/// every struct name in the program; `ty_of` needs only membership, while the
+/// layout pass needs the resolved definitions
+type StructNames = std::collections::BTreeSet<String>;
+
+/// one field of a struct: its name, type and word offset in the layout
+#[derive(Clone, Debug)]
+struct StructField {
+    name: String,
+    ty: Ty,
+    offset: u16,
+}
+
+/// a resolved struct layout: fields in declaration order in 16-bit words, the
+/// total size padded up to `align`, and the alignment itself
+#[derive(Clone, Debug)]
+struct StructDef {
+    fields: Vec<StructField>,
+    size: u16,
+    align: u16,
+}
+
+/// resolved layouts by struct name (ordered, so listings and debug output are
+/// deterministic)
+type StructTable = std::collections::BTreeMap<String, StructDef>;
+
+/// storage size of a value in 16-bit words (spec §1: every scalar is one word)
+fn word_size(
+    ty: &Ty,
+    structs: &StructTable,
+    at: &impl syn::spanned::Spanned,
+) -> Result<u16, syn::Error> {
+    match ty {
+        Ty::U16 | Ty::I16 | Ty::Ptr | Ty::Bool | Ty::Fix16 | Ty::ArrayRef(_) => Ok(1),
+        Ty::FnPtr { .. } => Ok(1),
+        Ty::Array(elem, n) => {
+            let elem = word_size(elem, structs, at)?;
+            u16::try_from(usize::from(elem) * n)
+                .map_err(|_| err(at, "aggregate is larger than the 16-bit address space"))
+        }
+        Ty::Struct(name) => structs
+            .get(name)
+            .map(|def| def.size)
+            .ok_or_else(|| err(at, format!("unknown struct `{name}`"))),
+        _ => Err(err(
+            at,
+            format!("{} cannot be stored as a value here", ty.display()),
+        )),
+    }
+}
+
+/// alignment of a value type in words: scalars are naturally aligned to one word,
+/// an array takes its element's alignment, and a struct its own `#[repr(align)]`
+fn type_align(ty: &Ty, structs: &StructTable) -> u16 {
+    match ty {
+        Ty::Array(elem, _) => type_align(elem, structs),
+        Ty::Struct(name) => structs.get(name).map_or(1, |def| def.align),
+        _ => 1,
+    }
+}
+
+fn align_up(value: u16, align: u16) -> u16 {
+    if align <= 1 {
+        value
+    } else {
+        value.div_ceil(align) * align
+    }
+}
+
+/// `#[repr(align(N))]` (N in bytes, like Rust) and `#[repr(C)]`; anything else
+/// except `#[allow]`/`#[doc]` is an error. The target measures alignment in
+/// 16-bit words, so the accepted byte alignments map to 1, 2, 4 and 8 words.
+fn struct_align(s: &syn::ItemStruct) -> Result<u16, syn::Error> {
+    let mut align = 1u16;
+    for attr in &s.attrs {
+        if attr.path.is_ident("allow") || attr.path.is_ident("doc") {
+            continue;
+        }
+        if !attr.path.is_ident("repr") {
+            return Err(err(
+                attr,
+                "attributes are not supported (only #[allow], #[doc] and #[repr])",
+            ));
+        }
+        let syn::Meta::List(list) = attr.parse_meta()? else {
+            return Err(err(attr, "#[repr] needs C or align(N)"));
+        };
+        let mut seen = false;
+        for nested in &list.nested {
+            match nested {
+                syn::NestedMeta::Meta(syn::Meta::Path(path)) if path.is_ident("C") => {
+                    seen = true;
+                }
+                syn::NestedMeta::Meta(syn::Meta::List(inner)) if inner.path.is_ident("align") => {
+                    let Some(syn::NestedMeta::Lit(syn::Lit::Int(bytes))) = inner.nested.first()
+                    else {
+                        return Err(err(nested, "align needs a byte count, like align(4)"));
+                    };
+                    let bytes: u16 = bytes.base10_parse()?;
+                    align = match bytes {
+                        2 => 1,
+                        4 => 2,
+                        8 => 4,
+                        16 => 8,
+                        _ => {
+                            return Err(err(
+                                nested,
+                                "align must be 2, 4, 8 or 16 bytes (1, 2, 4 or 8 words)",
+                            ))
+                        }
+                    };
+                    seen = true;
+                }
+                other => {
+                    return Err(err(
+                        other,
+                        "only #[repr(C)] and #[repr(align(N))] are supported",
+                    ))
+                }
+            }
+        }
+        if !seen {
+            return Err(err(attr, "#[repr] needs C or align(N)"));
+        }
+    }
+    Ok(align)
+}
+
+/// resolve every struct definition into a layout. Definitions may appear in any
+/// order and may nest, so this recurses on demand and reports a cycle instead of
+/// looping forever.
+struct LayoutBuilder<'a> {
+    raw: &'a std::collections::BTreeMap<String, (usize, &'a syn::ItemStruct)>,
+    consts: &'a HashMap<String, (u16, Ty)>,
+    names: &'a StructNames,
+    done: StructTable,
+    visiting: Vec<String>,
+}
+
+impl LayoutBuilder<'_> {
+    fn layout(
+        &mut self,
+        name: &str,
+        at: &impl syn::spanned::Spanned,
+    ) -> Result<StructDef, syn::Error> {
+        if let Some(def) = self.done.get(name) {
+            return Ok(def.clone());
+        }
+        let Some((_, item)) = self.raw.get(name) else {
+            return Err(err(at, format!("unknown struct `{name}`")));
+        };
+        if self.visiting.iter().any(|v| v == name) {
+            return Err(err(
+                item,
+                format!("struct `{name}` contains itself; only sized, non-recursive layouts are supported"),
+            ));
+        }
+        self.visiting.push(name.to_string());
+        let align = struct_align(item)?;
+        let mut fields = vec![];
+        let mut offset: u16 = 0;
+        match &item.fields {
+            syn::Fields::Named(named) => {
+                for field in &named.named {
+                    let Some(ident) = &field.ident else { continue };
+                    let fname = ident.to_string();
+                    let fty = ty_of_maybe_array(&field.ty, self.consts, self.names)?;
+                    if matches!(fty, Ty::Fix16 | Ty::Vec2 | Ty::Vec3 | Ty::Vec4) {
+                        return Err(err(
+                            &field.ty,
+                            "fix16/vecN struct fields are not supported yet (spec §12)",
+                        ));
+                    }
+                    if let Ty::Struct(inner) = &fty {
+                        self.layout(inner, &field.ty)?;
+                    }
+                    let size = word_size(&fty, &self.done, &field.ty)?;
+                    let falign = type_align(&fty, &self.done);
+                    offset = align_up(offset, falign);
+                    fields.push(StructField {
+                        name: fname,
+                        ty: fty,
+                        offset,
+                    });
+                    offset = offset.checked_add(size).ok_or_else(|| {
+                        err(&field.ty, "struct is larger than the 16-bit address space")
+                    })?;
+                }
+            }
+            syn::Fields::Unnamed(_) => {
+                return Err(err(
+                    item,
+                    "tuple structs are not supported (use named fields)",
+                ))
+            }
+            syn::Fields::Unit => {
+                return Err(err(
+                    item,
+                    "unit structs are not supported (give it a field)",
+                ))
+            }
+        }
+        let def = StructDef {
+            fields,
+            size: align_up(offset, align),
+            align,
+        };
+        self.visiting.pop();
+        self.done.insert(name.to_string(), def.clone());
+        Ok(def)
+    }
 }
 
 /// evaluate a constant expression (literals, other consts, wrapping arithmetic)
@@ -537,7 +785,7 @@ fn const_eval(e: &Expr, consts: &HashMap<String, (u16, Ty)>) -> Result<u16, syn:
         }
         Expr::Cast(c) => {
             // u16/i16 casts are free
-            let _ = ty_of(&c.ty)?;
+            let _ = ty_of(&c.ty, &StructNames::new())?;
             const_eval(&c.expr, consts)
         }
         _ => Err(err(e, "not a constant expression")),
@@ -581,7 +829,7 @@ fn add_static(
     let name = s.ident.to_string();
     match s.ty.as_ref() {
         Type::Array(a) => {
-            let elem = ty_of(&a.elem)?;
+            let elem = ty_of(&a.elem, &StructNames::new())?;
             if !matches!(elem, Ty::U16 | Ty::I16) {
                 return Err(err(&a.elem, "array element type must be u16 or i16"));
             }
@@ -626,9 +874,12 @@ fn add_static(
             Ok(())
         }
         t => {
-            let ty = ty_of(t)?;
+            let ty = ty_of(t, &StructNames::new())?;
             if !matches!(ty, Ty::U16 | Ty::I16) {
-                return Err(err(t, "static must be u16/i16 or an array of them"));
+                return Err(err(
+                    t,
+                    "static must be u16/i16 or an array of them (struct statics are not supported yet)",
+                ));
             }
             let v = const_eval(&s.expr, consts)?;
             let addr = reserve_static(g, 1, &s.ident)?;
@@ -661,6 +912,9 @@ enum Ty {
     },
     /// [u16; N] / [i16; N], memory-resident (data section or stack frame)
     Array(Box<Ty>, usize),
+    /// a struct: the value *is* its word address, like an array (spec §9b). The
+    /// name keys `Globals::structs`, which owns the layout.
+    Struct(String),
     /// CpuV3 FPU types: one F register per value. fix16 is a vector whose
     /// only meaningful lane is x; vec2/vec3 carry meaning in the first N
     /// lanes and keep the upper lanes zero.
@@ -706,6 +960,7 @@ impl Ty {
                 ret.display()
             ),
             Ty::Array(elem, n) => format!("[{}; {n}]", elem.display()),
+            Ty::Struct(name) => name.clone(),
             Ty::Fix16 => "fix16".into(),
             Ty::Vec2 => "vec2".into(),
             Ty::Vec3 => "vec3".into(),
@@ -722,13 +977,13 @@ struct Sig {
     ret: Ty,
 }
 
-fn ty_of(ty: &Type) -> Result<Ty, syn::Error> {
+fn ty_of(ty: &Type, structs: &StructNames) -> Result<Ty, syn::Error> {
     match ty {
         Type::Path(tp) => {
             if tp.path.segments.len() != 1 {
                 return Err(err(
                     ty,
-                    "unsupported type (expected u16/i16/Ptr/Array<T>/fn pointer)",
+                    "unsupported type (expected u16/i16/Ptr/Array<T>/fn pointer/struct)",
                 ));
             }
             let seg = &tp.path.segments[0];
@@ -751,7 +1006,7 @@ fn ty_of(ty: &Type) -> Result<Ty, syn::Error> {
                         "Array needs one element type: Array<u16> or Array<i16>",
                     ));
                 };
-                let elem = ty_of(elem)?;
+                let elem = ty_of(elem, structs)?;
                 if !matches!(elem, Ty::U16 | Ty::I16) {
                     return Err(err(ty, "Array element type must be u16 or i16"));
                 }
@@ -760,7 +1015,8 @@ fn ty_of(ty: &Type) -> Result<Ty, syn::Error> {
             if !seg.arguments.is_empty() {
                 return Err(err(ty, "generics are only supported for Array<u16/i16>"));
             }
-            match seg.ident.to_string().as_str() {
+            let name = seg.ident.to_string();
+            match name.as_str() {
                 "u16" => Ok(Ty::U16),
                 "i16" => Ok(Ty::I16),
                 "Ptr" => Ok(Ty::Ptr),
@@ -769,9 +1025,10 @@ fn ty_of(ty: &Type) -> Result<Ty, syn::Error> {
                 "vec2" => Ok(Ty::Vec2),
                 "vec3" => Ok(Ty::Vec3),
                 "vec4" => Ok(Ty::Vec4),
+                _ if structs.contains(&name) => Ok(Ty::Struct(name)),
                 _ => Err(err(
                     ty,
-                    "type not supported (only u16/i16/Ptr/Array<T>/fn pointer/fix16/vecN)",
+                    "type not supported (only u16/i16/Ptr/Array<T>/fn pointer/fix16/vecN/struct)",
                 )),
             }
         }
@@ -779,11 +1036,11 @@ fn ty_of(ty: &Type) -> Result<Ty, syn::Error> {
             let params = bf
                 .inputs
                 .iter()
-                .map(|a| ty_of(&a.ty))
+                .map(|a| ty_of(&a.ty, structs))
                 .collect::<Result<Vec<_>, _>>()?;
             let ret = match &bf.output {
                 syn::ReturnType::Default => Ty::Unit,
-                syn::ReturnType::Type(_, t) => ty_of(t)?,
+                syn::ReturnType::Type(_, t) => ty_of(t, structs)?,
             };
             Ok(Ty::FnPtr {
                 params,
@@ -791,7 +1048,7 @@ fn ty_of(ty: &Type) -> Result<Ty, syn::Error> {
             })
         }
         Type::Never(_) => Ok(Ty::Unit),
-        Type::Paren(p) => ty_of(&p.elem),
+        Type::Paren(p) => ty_of(&p.elem, structs),
         Type::Array(_) => Err(err(
             ty,
             "owned arrays are not allowed here (pass Array<T> or Ptr)",
@@ -808,30 +1065,34 @@ fn ty_of(ty: &Type) -> Result<Ty, syn::Error> {
     }
 }
 
-/// type annotation that may be an array type (valid only in let/static positions)
-fn ty_of_maybe_array(ty: &Type, consts: &HashMap<String, (u16, Ty)>) -> Result<Ty, syn::Error> {
+/// type annotation that may be an array type (valid only in let/static positions
+/// and struct fields)
+fn ty_of_maybe_array(
+    ty: &Type,
+    consts: &HashMap<String, (u16, Ty)>,
+    structs: &StructNames,
+) -> Result<Ty, syn::Error> {
     match ty {
         Type::Array(a) => {
-            let elem = ty_of(&a.elem)?;
+            let elem = ty_of(&a.elem, structs)?;
             if !matches!(elem, Ty::U16 | Ty::I16) {
                 return Err(err(&a.elem, "array element type must be u16 or i16"));
             }
             let len = const_eval(&a.len, consts)? as usize;
             Ok(Ty::Array(Box::new(elem), len))
         }
-        _ => ty_of(ty),
+        _ => ty_of(ty, structs),
     }
 }
 
-/// initialize a local array in the stack frame
-fn init_array(
+/// initialize an array at `base` (a frame slot, a struct field, ...)
+fn init_array_at(
     l: &mut FnLower,
-    slot: u8,
+    base: VReg,
     elem: &Ty,
     n: usize,
     init: &Expr,
 ) -> Result<(), syn::Error> {
-    let base = l.b.addr_of_local(slot);
     match init {
         Expr::Repeat(r) => {
             let m = const_eval(&r.len, l.consts)? as usize;
@@ -872,7 +1133,106 @@ fn init_array(
     }
 }
 
-fn signature(f: &ItemFn) -> Result<Sig, syn::Error> {
+/// initialize a struct value at `base`: a struct literal, or a copy of another
+/// value of the same struct type (a struct value is its address, spec §9b)
+fn init_struct_at(l: &mut FnLower, base: VReg, name: &str, init: &Expr) -> Result<(), syn::Error> {
+    let def = l
+        .globals
+        .structs
+        .get(name)
+        .cloned()
+        .ok_or_else(|| err(init, format!("unknown struct `{name}`")))?;
+    let Expr::Struct(se) = init else {
+        // a copy from another value of the same struct type
+        let (src_base, src_offset, src_ty, _) = place_addr_of(l, init)?;
+        if src_ty != Ty::Struct(name.to_string()) {
+            return Err(err(
+                init,
+                format!("expected {name}, got {}", src_ty.display()),
+            ));
+        }
+        let src = place_addr(l, src_base, src_offset);
+        let len = l.b.load_imm(def.size);
+        l.b.call("mem_copy", &[base, src, len], 0);
+        return Ok(());
+    };
+    if se.path.segments.len() != 1 {
+        return Err(err(&se.path, "unsupported struct literal path"));
+    }
+    let literal = se.path.segments[0].ident.to_string();
+    if literal != name {
+        return Err(err(&se.path, format!("expected {name}, got {literal}")));
+    }
+    if let Some(rest) = &se.rest {
+        return Err(err(
+            rest,
+            "struct update syntax (`..base`) is not supported",
+        ));
+    }
+    let mut seen: Vec<String> = vec![];
+    for value in &se.fields {
+        let fname = match &value.member {
+            syn::Member::Named(ident) => ident.to_string(),
+            syn::Member::Unnamed(index) => {
+                return Err(err(index, "only named struct fields are supported"))
+            }
+        };
+        let Some(field) = def.fields.iter().find(|field| field.name == fname) else {
+            let known = def
+                .fields
+                .iter()
+                .map(|field| field.name.as_str())
+                .collect::<Vec<_>>()
+                .join(", ");
+            return Err(err(
+                &value.member,
+                format!("struct `{name}` has no field `{fname}` (fields: {known})"),
+            ));
+        };
+        if seen.contains(&fname) {
+            return Err(err(
+                &value.member,
+                format!("field `{fname}` is initialized twice"),
+            ));
+        }
+        seen.push(fname);
+        let field_ty = field.ty.clone();
+        let field_offset = field.offset as i16;
+        match &field_ty {
+            Ty::Struct(inner) => {
+                let inner = inner.clone();
+                let addr = place_addr(l, base, field_offset);
+                init_struct_at(l, addr, &inner, &value.expr)?;
+            }
+            Ty::Array(elem, n) => {
+                let (elem, n) = ((**elem).clone(), *n);
+                let addr = place_addr(l, base, field_offset);
+                init_array_at(l, addr, &elem, n, &value.expr)?;
+            }
+            _ => {
+                let (v, from) = expr(l, &value.expr)?.reg(l, &value.expr, "struct field")?;
+                let (v, _) = coerce(l, v, &from, &field_ty, &value.expr)?;
+                l.b.store_mem(base, field_offset, v);
+            }
+        }
+    }
+    if seen.len() != def.fields.len() {
+        let missing = def
+            .fields
+            .iter()
+            .filter(|field| !seen.contains(&field.name))
+            .map(|field| field.name.as_str())
+            .collect::<Vec<_>>()
+            .join(", ");
+        return Err(err(
+            init,
+            format!("struct `{name}` is missing field(s): {missing}"),
+        ));
+    }
+    Ok(())
+}
+
+fn signature(f: &ItemFn, structs: &StructNames) -> Result<Sig, syn::Error> {
     if !f.sig.generics.params.is_empty() {
         return Err(err(&f.sig.generics, "generics are not supported"));
     }
@@ -888,7 +1248,7 @@ fn signature(f: &ItemFn) -> Result<Sig, syn::Error> {
     let mut params = vec![];
     for arg in &f.sig.inputs {
         match arg {
-            syn::FnArg::Typed(pt) => params.push(ty_of(&pt.ty)?),
+            syn::FnArg::Typed(pt) => params.push(ty_of(&pt.ty, structs)?),
             syn::FnArg::Receiver(r) => return Err(err(r, "methods are not supported")),
         }
     }
@@ -897,8 +1257,19 @@ fn signature(f: &ItemFn) -> Result<Sig, syn::Error> {
     }
     let ret = match &f.sig.output {
         syn::ReturnType::Default => Ty::Unit,
-        syn::ReturnType::Type(_, t) => ty_of(t)?,
+        syn::ReturnType::Type(_, t) => ty_of(t, structs)?,
     };
+    if params
+        .iter()
+        .chain(std::iter::once(&ret))
+        .any(|ty| matches!(ty, Ty::Struct(_)))
+    {
+        return Err(err(
+            &f.sig,
+            "struct parameters and struct returns are not supported yet (pass a Ptr or the \
+             fields); see spec §12",
+        ));
+    }
     Ok(Sig { params, ret })
 }
 
@@ -1009,7 +1380,10 @@ impl FnLower<'_> {
                 VarKind::Local { slot } => Ok(self.b.addr_of_local(slot)),
                 VarKind::Ssa { .. } => Err(err(
                     at,
-                    format!("`{name}` is not memory-resident; it must be declared as an array"),
+                    format!(
+                        "`{name}` is not memory-resident; declare it as an array or struct so it \
+                         gets a frame slot"
+                    ),
                 )),
             };
         }
@@ -1050,7 +1424,8 @@ fn scan_stmt(
         Stmt::Local(local) => {
             if let Pat::Type(pt) = &local.pat {
                 if let Type::Array(a) = pt.ty.as_ref() {
-                    ty_of(&a.elem)?;
+                    // an array element is never a struct (arrays hold u16/i16)
+                    ty_of(&a.elem, &StructNames::new())?;
                     const_eval(&a.len, consts)?;
                     if let Pat::Ident(p) = pt.pat.as_ref() {
                         out.insert(p.ident.to_string(), ResidentKind::Array);
@@ -1322,7 +1697,7 @@ fn stmt(l: &mut FnLower, s: &Stmt) -> Result<(), syn::Error> {
         Stmt::Local(local) => {
             let (inner_pat, annotated) = match &local.pat {
                 Pat::Type(pt) => {
-                    let ty = ty_of_maybe_array(&pt.ty, l.consts)?;
+                    let ty = ty_of_maybe_array(&pt.ty, l.consts, &l.globals.struct_names)?;
                     (pt.pat.as_ref(), Some(ty))
                 }
                 p => (p, None),
@@ -1345,7 +1720,31 @@ fn stmt(l: &mut FnLower, s: &Stmt) -> Result<(), syn::Error> {
             if let Some(Ty::Array(elem, n)) = &annotated {
                 let (elem, n) = (elem.as_ref().clone(), *n);
                 let slot = l.b.alloc_local_slots(n as u8);
-                init_array(l, slot, &elem, n, &init.1)?;
+                let base = l.b.addr_of_local(slot);
+                init_array_at(l, base, &elem, n, &init.1)?;
+                l.declare(
+                    ident,
+                    VarInfo {
+                        kind: VarKind::Local { slot },
+                        ty: annotated.clone().unwrap(),
+                        mutable,
+                    },
+                    line_of(s),
+                );
+                return Ok(());
+            }
+            // local struct: `let mut p: Point = Point { x: 1, y: 2 };`
+            if let Some(Ty::Struct(name)) = &annotated {
+                let name = name.clone();
+                let def = l
+                    .globals
+                    .structs
+                    .get(&name)
+                    .cloned()
+                    .ok_or_else(|| err(s, format!("unknown struct `{name}`")))?;
+                let slot = l.b.alloc_local_slots(def.size as u8);
+                let base = l.b.addr_of_local(slot);
+                init_struct_at(l, base, &name, &init.1)?;
                 l.declare(
                     ident,
                     VarInfo {
@@ -1361,6 +1760,12 @@ fn stmt(l: &mut FnLower, s: &Stmt) -> Result<(), syn::Error> {
                 return Err(err(
                     &local.pat,
                     "arrays need a type annotation like `let mut buf: [u16; N] = [0; N];`",
+                ));
+            }
+            if matches!(init.1.as_ref(), Expr::Struct(_)) {
+                return Err(err(
+                    &init.1,
+                    "a struct literal needs a type annotation: `let p: Point = Point { .. };`",
                 ));
             }
 
@@ -1425,9 +1830,28 @@ fn stmt(l: &mut FnLower, s: &Stmt) -> Result<(), syn::Error> {
 fn stmt_expr(l: &mut FnLower, e: &Expr) -> Result<(), syn::Error> {
     match e {
         Expr::Assign(a) => {
+            if let Expr::Field(f) = a.left.as_ref() {
+                let (base, offset, ty, mutable) = struct_field_place(l, f)?;
+                if !mutable {
+                    return Err(err(
+                        &a.left,
+                        "the struct is not mutable (declare it with `let mut`)",
+                    ));
+                }
+                let (v, from) = expr(l, &a.right)?.reg(l, &a.right, "field assignment")?;
+                let (v, _) = coerce(l, v, &from, &ty, &a.right)?;
+                l.b.store_mem(base, offset, v);
+                return Ok(());
+            }
             if let Expr::Index(index) = a.left.as_ref() {
                 ensure_mutable_array_view(l, &index.expr)?;
-                let (base, off, elem) = array_index_addr(l, index)?;
+                let (base, off, elem, mutable) = array_index_addr(l, index)?;
+                if !mutable {
+                    return Err(err(
+                        &a.left,
+                        "the array field is not mutable (declare the struct with `let mut`)",
+                    ));
+                }
                 let (v, from) = expr(l, &a.right)?.reg(l, &a.right, "array assignment")?;
                 let (v, _) = coerce(l, v, &from, &elem, &a.right)?;
                 l.b.store_mem(base, off, v);
@@ -1458,9 +1882,44 @@ fn stmt_expr(l: &mut FnLower, e: &Expr) -> Result<(), syn::Error> {
             Ok(())
         }
         Expr::AssignOp(a) => {
+            if let Expr::Field(f) = a.left.as_ref() {
+                let (base, offset, ty, mutable) = struct_field_place(l, f)?;
+                if !mutable {
+                    return Err(err(
+                        &a.left,
+                        "the struct is not mutable (declare it with `let mut`)",
+                    ));
+                }
+                if !ty.is_int() {
+                    return Err(err(&a.left, "compound assignment only works on integers"));
+                }
+                let cur = l.b.load_mem(base, offset);
+                let (rhs, rhs_ty) = expr(l, &a.right)?.reg(l, &a.right, "compound assignment")?;
+                let (rhs, _) = coerce(l, rhs, &rhs_ty, &ty, &a.right)?;
+                let value = match a.op {
+                    SBinOp::AddEq(_) => l.b.bin(BinOp::Add, cur, rhs),
+                    SBinOp::SubEq(_) => l.b.bin(BinOp::Sub, cur, rhs),
+                    SBinOp::BitAndEq(_) => l.b.bin(BinOp::And, cur, rhs),
+                    SBinOp::BitOrEq(_) => l.b.bin(BinOp::Or, cur, rhs),
+                    SBinOp::BitXorEq(_) => l.b.bin(BinOp::Xor, cur, rhs),
+                    SBinOp::ShlEq(_) | SBinOp::ShrEq(_) => {
+                        let amount = shift_operand(l, &a.right)?;
+                        l.b.shift_op(shift_op(&a.op, &ty), cur, amount)
+                    }
+                    _ => return Err(err(&a.op, "unsupported compound assignment operator")),
+                };
+                l.b.store_mem(base, offset, value);
+                return Ok(());
+            }
             if let Expr::Index(index) = a.left.as_ref() {
                 ensure_mutable_array_view(l, &index.expr)?;
-                let (base, off, elem) = array_index_addr(l, index)?;
+                let (base, off, elem, mutable) = array_index_addr(l, index)?;
+                if !mutable {
+                    return Err(err(
+                        &a.left,
+                        "the array field is not mutable (declare the struct with `let mut`)",
+                    ));
+                }
                 let cur = l.b.load_mem(base, off);
                 let (rhs, rhs_ty) = expr(l, &a.right)?.reg(l, &a.right, "compound assignment")?;
                 let (rhs, _) = coerce(l, rhs, &rhs_ty, &elem, &a.right)?;
@@ -1785,6 +2244,16 @@ fn expr(l: &mut FnLower, e: &Expr) -> Result<Val, syn::Error> {
                         "array `{name}` used as a value; use {name}.as_array(), {name}.as_ptr(), or {name}.read(i)"
                     )));
                 }
+                if matches!(ty, Ty::Struct(_)) {
+                    let shown = ty.display();
+                    return Err(err(
+                        &p,
+                        format!(
+                            "struct `{name}` used as a value; read a field (`{name}.x`), copy it \
+                             with a typed `let` (e.g. `let q: {shown} = {name};`), or take its address"
+                        ),
+                    ));
+                }
                 let v = l.read_var(&kind);
                 return Ok(Val::V(v, ty));
             }
@@ -2107,13 +2576,17 @@ fn expr(l: &mut FnLower, e: &Expr) -> Result<Val, syn::Error> {
         }
         Expr::Cast(c) => {
             let (v, from) = expr(l, &c.expr)?.reg(l, &c.expr, "cast")?;
-            let to = ty_of(&c.ty)?;
+            let to = ty_of(&c.ty, &l.globals.struct_names)?;
             cast(e, v, from, to).map(|(v, t)| Val::V(v, t))
         }
         Expr::Call(call) => call_expr(l, call),
         Expr::MethodCall(m) => method_call(l, m),
+        Expr::Field(f) => {
+            let (base, offset, ty, _) = struct_field_place(l, f)?;
+            Ok(Val::V(l.b.load_mem(base, offset), ty))
+        }
         Expr::Index(index) => {
-            let (base, off, elem) = array_index_addr(l, index)?;
+            let (base, off, elem, _) = array_index_addr(l, index)?;
             Ok(Val::V(l.b.load_mem(base, off), elem))
         }
         Expr::If(_) => {
@@ -2132,16 +2605,118 @@ fn expr(l: &mut FnLower, e: &Expr) -> Result<Val, syn::Error> {
     }
 }
 
+/// address, constant word offset, type and mutability of a **place**: a
+/// frame-resident variable (a struct, an address-taken local), or a field chain
+/// into one. The address of the place itself is `base + offset`.
+fn place_addr_of(l: &mut FnLower, e: &Expr) -> Result<(VReg, i16, Ty, bool), syn::Error> {
+    match e {
+        Expr::Paren(p) => place_addr_of(l, &p.expr),
+        Expr::Path(_) => {
+            let name = path_ident(e)?;
+            let info = l
+                .lookup(&name)
+                .ok_or_else(|| err(e, format!("undefined variable `{name}`")))?;
+            let (kind, ty, mutable) = (info.kind.clone(), info.ty.clone(), info.mutable);
+            match kind {
+                VarKind::Local { slot } => Ok((l.b.addr_of_local(slot), 0, ty, mutable)),
+                VarKind::Ssa { .. } => Err(err(
+                    e,
+                    format!(
+                        "`{name}` is not memory-resident; only structs, arrays and \
+                         address-taken locals have fields"
+                    ),
+                )),
+            }
+        }
+        Expr::Field(f) => struct_field_place(l, f),
+        _ => Err(err(
+            e,
+            "expected a variable or a field of one (struct values live in memory)",
+        )),
+    }
+}
+
+/// a place whose offset is folded in: `base + offset` when there is an offset
+fn place_addr(l: &mut FnLower, base: VReg, offset: i16) -> VReg {
+    if offset == 0 {
+        base
+    } else {
+        let off = l.b.load_imm(offset as u16);
+        l.b.bin(BinOp::Add, base, off)
+    }
+}
+
+/// `a.b`: the address of the base place plus the field's offset, the field's type
+/// and the base's mutability
+fn struct_field_place(
+    l: &mut FnLower,
+    f: &syn::ExprField,
+) -> Result<(VReg, i16, Ty, bool), syn::Error> {
+    let (base, offset, base_ty, mutable) = place_addr_of(l, &f.base)?;
+    let Ty::Struct(name) = &base_ty else {
+        return Err(err(
+            &f.base,
+            format!("{} has no fields (only structs do)", base_ty.display()),
+        ));
+    };
+    let member = match &f.member {
+        syn::Member::Named(ident) => ident.to_string(),
+        syn::Member::Unnamed(index) => {
+            return Err(err(
+                &index,
+                "only named struct fields are supported (use `name` not `.0`)",
+            ))
+        }
+    };
+    let def = l
+        .globals
+        .structs
+        .get(name)
+        .cloned()
+        .ok_or_else(|| err(&f.base, format!("unknown struct `{name}`")))?;
+    let Some(field) = def.fields.iter().find(|field| field.name == member) else {
+        let known = def
+            .fields
+            .iter()
+            .map(|field| field.name.as_str())
+            .collect::<Vec<_>>()
+            .join(", ");
+        return Err(err(
+            &f.member,
+            format!("struct `{name}` has no field `{member}` (fields: {known})"),
+        ));
+    };
+    Ok((
+        base,
+        offset + field.offset as i16,
+        field.ty.clone(),
+        mutable,
+    ))
+}
+
 fn array_index_addr(
     l: &mut FnLower,
     index: &syn::ExprIndex,
-) -> Result<(VReg, i16, Ty), syn::Error> {
-    let (base, ty) = expr(l, &index.expr)?.reg(l, &index.expr, "array index base")?;
-    let Ty::ArrayRef(elem) = ty else {
-        return Err(err(
-            &index.expr,
-            "indexing requires Array<u16> or Array<i16>",
-        ));
+) -> Result<(VReg, i16, Ty, bool), syn::Error> {
+    // A plain `Array<T>` view is a value; an array *field* (`s.arr[i]`) is a place
+    // whose address is the base. The returned flag is the place's mutability: a
+    // read ignores it, an assignment checks it.
+    let (base, ty, mutable) = if matches!(index.expr.as_ref(), Expr::Field(_)) {
+        let (b, off, ty, mutable) = place_addr_of(l, &index.expr)?;
+        (place_addr(l, b, off), ty, mutable)
+    } else {
+        let (base, ty) = expr(l, &index.expr)?.reg(l, &index.expr, "array index base")?;
+        (base, ty, true)
+    };
+    let elem = match ty {
+        Ty::ArrayRef(elem) => *elem,
+        Ty::Array(elem, _) => *elem,
+        _ => {
+            return Err(err(
+                &index.expr,
+                "indexing requires Array<u16>, Array<i16> or an array field",
+            ))
+        }
     };
     if let Expr::Lit(lit) = index.index.as_ref() {
         if let Lit::Int(value) = &lit.lit {
@@ -2166,13 +2741,13 @@ fn array_index_addr(
         }
     }
     if let Some(off) = literal_mem_offset(&index.index)? {
-        return Ok((base, off, *elem));
+        return Ok((base, off, elem, mutable));
     }
     let (off, off_ty) = expr(l, &index.index)?.reg(l, &index.index, "array index")?;
     if !matches!(off_ty, Ty::U16 | Ty::I16) {
         return Err(err(&index.index, "array index must have type u16 or i16"));
     }
-    Ok((l.b.bin(BinOp::Add, base, off), 0, *elem))
+    Ok((l.b.bin(BinOp::Add, base, off), 0, elem, mutable))
 }
 
 fn ensure_mutable_array_view(l: &FnLower, receiver: &Expr) -> Result<(), syn::Error> {
@@ -3571,5 +4146,92 @@ mod tests {
                 assert_eq!(magic.quotient(x), x / d, "d={d} x={x} magic={magic:?}");
             }
         }
+    }
+
+    #[test]
+    fn struct_layout_pads_fields_to_alignment() {
+        let file = syn::parse_file(
+            r#"
+            struct Inner { a: u16, b: u16 }
+            #[repr(align(4))]
+            struct Aligned { v: u16 }
+            struct Mixed { a: u16, b: Aligned, c: u16 }
+            #[repr(C)]
+            struct WithArray { head: u16, data: [u16; 3], tail: u16 }
+            "#,
+        )
+        .unwrap();
+        let mut raw: std::collections::BTreeMap<String, (usize, &syn::ItemStruct)> =
+            std::collections::BTreeMap::new();
+        for item in &file.items {
+            if let syn::Item::Struct(s) = item {
+                raw.insert(s.ident.to_string(), (0usize, s));
+            }
+        }
+        let names: super::StructNames = raw.keys().cloned().collect();
+        let consts = std::collections::HashMap::new();
+        let mut builder = super::LayoutBuilder {
+            raw: &raw,
+            consts: &consts,
+            names: &names,
+            done: super::StructTable::new(),
+            visiting: vec![],
+        };
+        let inner = builder.layout("Inner", raw["Inner"].1).unwrap();
+        assert_eq!((inner.size, inner.align), (2, 1));
+
+        // align(4) is two 16-bit words: one field pads the size up to two
+        let aligned = builder.layout("Aligned", raw["Aligned"].1).unwrap();
+        assert_eq!((aligned.size, aligned.align), (2, 2));
+
+        // `b` is padded to offset 2, `c` follows it, and the total stays unpadded
+        let mixed = builder.layout("Mixed", raw["Mixed"].1).unwrap();
+        assert_eq!(
+            mixed
+                .fields
+                .iter()
+                .map(|f| (f.name.as_str(), f.offset))
+                .collect::<Vec<_>>(),
+            vec![("a", 0), ("b", 2), ("c", 4)]
+        );
+        assert_eq!(mixed.size, 5);
+
+        let with_array = builder.layout("WithArray", raw["WithArray"].1).unwrap();
+        assert_eq!(with_array.size, 5);
+    }
+
+    #[test]
+    fn struct_layout_rejects_cycles_and_bad_align() {
+        let file = syn::parse_file(
+            r#"
+            struct Loop { next: Loop }
+            #[repr(align(3))]
+            struct Odd { v: u16 }
+            "#,
+        )
+        .unwrap();
+        let mut raw: std::collections::BTreeMap<String, (usize, &syn::ItemStruct)> =
+            std::collections::BTreeMap::new();
+        for item in &file.items {
+            if let syn::Item::Struct(s) = item {
+                raw.insert(s.ident.to_string(), (0usize, s));
+            }
+        }
+        let names: super::StructNames = raw.keys().cloned().collect();
+        let consts = std::collections::HashMap::new();
+        let mut builder = super::LayoutBuilder {
+            raw: &raw,
+            consts: &consts,
+            names: &names,
+            done: super::StructTable::new(),
+            visiting: vec![],
+        };
+        let error = builder
+            .layout("Loop", raw["Loop"].1)
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("contains itself"), "{error}");
+        let error = builder.layout("Odd", raw["Odd"].1).unwrap_err().to_string();
+        assert!(error.contains("align must be"), "{error}");
     }
 }
