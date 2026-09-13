@@ -84,9 +84,15 @@ wire refill_commit = state == ST_LINE_RECEIVE && memory_response_valid &&
                         !refill_discard && !invalidating;
 wire tag_write_enable = refill_commit;
 // Single valid-array write port: the sweep has priority; otherwise the
-// line-request issue clears the victim way and a refill commit installs it.
+// line-request state clears the victim way and a refill commit installs it.
+// The victim is invalid from the first request cycle, which still precedes the
+// first refill data beat, so the clear does not need the request handshake.
+// Gating the clear on `memory_request_ready` measured as 128 flip-flops plus
+// 419 LUT for the valid arrays instead of twelve RAM16 cells: both caches
+// instantiate this same leaf, and only the instance whose write enable stays
+// off that shared input keeps RAM16 inference.
 wire valid_write_enable = !sweep_active &&
-    (refill_commit || (state == ST_LINE_REQUEST && memory_request_ready));
+    (refill_commit || state == ST_LINE_REQUEST);
 
 __CACHE_VALID__ u_valid (
     .clk(clk),

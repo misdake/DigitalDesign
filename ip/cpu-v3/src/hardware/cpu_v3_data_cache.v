@@ -177,17 +177,19 @@ wire [127:0] dirty_bits = {way_1_dirty, way_0_dirty};
 wire selected_victim_dirty = selected_victim ?
     way_1_dirty[pending_set] : way_0_dirty[pending_set];
 
-// Single valid-array write port: the sweep has priority; otherwise a refill
-// commit installs the line, a clean-victim miss or a finished eviction clears
-// the way being replaced.
-wire lookup_miss_clean = state == ST_LOOKUP && pending_address_valid &&
-    !pending_hit && !selected_victim_dirty;
+// Single valid-array write port: the sweep has priority; otherwise the line
+// request holds the pending way invalid (the refill data beats can land before
+// the tag commits) and a refill commit installs the line. Every write selects
+// the registered `pending_way`: selecting the victim combinationally in
+// ST_LOOKUP would make the write address depend on this array's own
+// asynchronous read data, and Gowin then maps the three arrays as 128
+// flip-flops plus read multiplexers instead of twelve RAM16 cells.
+wire refill_prime = state == ST_LINE_REQUEST;
 wire eviction_done = state == ST_WB_RESPONSE && !wb_for_maintenance &&
     memory_response_valid && !memory_error;
 wire valid_write_enable = !sweep_active &&
-    (refill_commit || lookup_miss_clean || eviction_done);
-wire valid_write_way = refill_commit ? pending_way :
-                       lookup_miss_clean ? selected_victim : pending_way;
+    (refill_commit || refill_prime || eviction_done);
+wire valid_write_way = pending_way;
 
 __CACHE_VALID__ u_valid (
     .clk(clk), .clear_enable(sweep_active), .clear_set(sweep_set),

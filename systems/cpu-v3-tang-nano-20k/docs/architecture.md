@@ -46,8 +46,12 @@ The I-cache and D-cache are independently instantiated 4-KiB, two-way caches wit
 16-bit words per line. Each cache uses two 1024x16 true-dual-port data BSRAMs split strictly by word
 parity. Way zero and way one occupy the lower and upper halves of both parity banks. Resident reads
 pipeline lookup and selected-way response for one ordered hit per cycle when there is no conflict or
-backpressure. Both caches store their valid and victim bits in a RAM16 leaf with asynchronous reads;
-because the RAM cannot clear in one cycle, a global invalidate or reset clears one set of both ways
+backpressure. Both caches store their valid and victim bits in a RAM16 leaf with asynchronous reads:
+two valid ways and the victim bit per cache, twelve 16-deep cells in total. Gowin keeps that leaf in
+RAM16 only while no array write takes its way or enable from the same array's asynchronous read
+data, so the victim is invalidated from the registered pending way when the line request starts
+rather than from the combinationally selected victim or the request handshake. Because the RAM
+cannot clear in one cycle, a global invalidate or reset clears one set of both ways
 per cycle and blocks lookups for the 64-set sweep. The D-cache additionally drives a hold so the core
 does not issue requests while its reset or error-scrub sweep runs.
 
@@ -156,10 +160,11 @@ the same stable mapping through `LoaderError::boot_report`.
 
 ## Current fitted result and validation boundary
 
-The current full-system build uses 9,706 Logic (8,354 LUT, 776 ALU, 96 SSRAM), 4,098 registers,
-five DPB, two SDPB, one pROM, and two `MULT18X18` cells. The CPU clock closes at 56.304 MHz against
-the 54-MHz constraint with zero setup and hold TNS. The tightest CPU path is the core's registered
-GPR write path rather than the cache frontend.
+The current full-system build uses 9,025 Logic (7,585 LUT, 768 ALU, 112 SSRAM), 3,834 logic
+registers, 6,329 CLS, five DPB, one SDPB, one pROM, and two `MULT18X18` cells. The CPU clock
+closes at 55.904 MHz against the 54-MHz constraint with zero setup and hold TNS. The tightest CPU
+path is the core's registered GPR write path rather than the cache frontend; the D-cache dirty
+write enable follows it at 0.782 ns slack.
 
 The system-level emulator-vs-RTL co-simulation `tests/system_cosim.rs` drives the composed RTL
 (core, fetch queue, I-cache, D-cache, memory arbiter, and a behavioral SDRAM word port) in Icarus
