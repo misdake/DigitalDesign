@@ -9,6 +9,9 @@ param(
     [string]$Port,
     [switch]$WriteBootFlash,
     [switch]$WriteCompleteFlash,
+    # Reboot the BL616 bridge MCU before capturing to clear a stuck UART
+    # route; the VCP re-enumerates and the FPGA is left untouched.
+    [switch]$ResetBl616,
     [int]$CaptureSeconds = 8,
     [int]$PortWaitSeconds = 15,
     [int]$MinimumSuccessFrames = 2
@@ -32,7 +35,7 @@ function Get-ProfileConfiguration {
                 Package = "digital-design-hardware-gowin"
                 Example = "board_health"
                 Output = "target/board_health_gowin"
-                TestId = 0x0a
+                TestIds = "0x0a"
             }
         }
         "cpu-v3-system" {
@@ -40,7 +43,9 @@ function Get-ProfileConfiguration {
                 Package = "cpu-v3-tang-nano-20k"
                 Example = "cpu_v3_system"
                 Output = "target/cpu_v3_system_gowin"
-                TestId = 0x07
+                # The S2 display application reports 0x0b; the S1 slider
+                # diagnostic reports 0x07. Both are acceptable captures.
+                TestIds = "0x0b,0x07"
             }
         }
     }
@@ -206,13 +211,15 @@ try {
 
     if ($Mode -eq "Observe" -or $Mode -eq "Full") {
         Wait-SerialPort -Name $Port -TimeoutSeconds $PortWaitSeconds
-        Invoke-Stage "capture UART in confirmed BL616 session" "powershell" @(
+        $captureArguments = @(
             "-ExecutionPolicy", "Bypass", "-File", (Join-Path $PSScriptRoot "capture_bl616_uart.ps1"),
             "-Port", $Port, "-Seconds", $CaptureSeconds, "-Out", $capturePath
         )
+        if ($ResetBl616) { $captureArguments += "-ResetBl616" }
+        Invoke-Stage "capture UART in confirmed BL616 session" "powershell" $captureArguments
         Invoke-Stage "validate DDHT status" "powershell" @(
             "-ExecutionPolicy", "Bypass", "-File", (Join-Path $PSScriptRoot "check_uart_status.ps1"),
-            "-Path", $capturePath, "-TestId", $configuration.TestId,
+            "-Path", $capturePath, "-TestId", $configuration.TestIds,
             "-MinimumSuccessFrames", $MinimumSuccessFrames,
             "-MaximumAgeSeconds", ($CaptureSeconds + 30),
             "-ResultPath", $uartStatusPath
@@ -269,10 +276,9 @@ finally {
         complete_flash_programmed = $completedStages.Contains("program complete power-on Flash image once")
         sram_programmed = $completedStages.Contains("program audited SRAM bitstream once")
         uart_validated = $completedStages.Contains("validate DDHT status")
+        reset_bl616 = [bool]$ResetBl616
         port = if ($Port) { $Port } else { $null }
-        expected_test_id = if ($null -ne $configuration.TestId) {
-            "0x$($configuration.TestId.ToString('x2'))"
-        } else { $null }
+        expected_test_id = if ($null -ne $configuration.TestIds) { $configuration.TestIds } else { $null }
         expected_uart_protocol = "DDHT/CV3B"
         artifact = $artifact
         boot_package_sha256 = if ($bootPackagePath -and (Test-Path -LiteralPath $bootPackagePath)) {

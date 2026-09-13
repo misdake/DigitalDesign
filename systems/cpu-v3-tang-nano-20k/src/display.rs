@@ -43,7 +43,7 @@ pub const VGA_720P_3X: DisplayConfig = DisplayConfig {
     hdmi_width: 1280,
     hdmi_height: 720,
     scale: 3,
-    side_border: 160,
+    side_border: 40,
     memory_cycles_per_source_line: memory_cycles_per_source_line(1650, 3, 74_250_000),
     h_total: 1650,
     h_sync_end: 40,
@@ -62,7 +62,7 @@ pub const VGA_800X480_2X: DisplayConfig = DisplayConfig {
     hdmi_width: 800,
     hdmi_height: 480,
     scale: 2,
-    side_border: 80,
+    side_border: 0,
     memory_cycles_per_source_line: memory_cycles_per_source_line(1056, 2, 33_300_000),
     h_total: 1056,
     h_sync_end: 48,
@@ -87,7 +87,7 @@ pub const HDMI_WIDTH: usize = ACTIVE_DISPLAY_CONFIG.hdmi_width;
 pub const HDMI_HEIGHT: usize = ACTIVE_DISPLAY_CONFIG.hdmi_height;
 pub const DISPLAY_SCALE: usize = ACTIVE_DISPLAY_CONFIG.scale;
 pub const DISPLAY_SIDE_BORDER: usize = ACTIVE_DISPLAY_CONFIG.side_border;
-pub const DISPLAY_LINE_SLOTS: usize = 3;
+pub const DISPLAY_LINE_SLOTS: usize = 2;
 pub const DISPLAY_LINE_WORDS: usize = FRAMEBUFFER_WIDTH as usize;
 pub const DISPLAY_LINE_BUFFER_WORDS: usize = DISPLAY_LINE_SLOTS * DISPLAY_LINE_WORDS;
 pub const DISPLAY_BURST_PIXELS: usize = 16;
@@ -111,7 +111,7 @@ impl DisplayConfig {
              localparam [9:0] V_ACTIVE_START={6}; localparam [9:0] V_ACTIVE_END={7};\n\
              localparam [9:0] FB_WIDTH={8}; localparam [9:0] FB_HEIGHT={9};\n\
              localparam [8:0] SIDE_BORDER={10}; localparam [1:0] SCALE={11}; localparam [1:0] LAST_REPEAT={12};\n\
-             localparam [8:0] LINE_SLOT_WORDS=FB_WIDTH/2; localparam [4:0] BURSTS_PER_LINE=FB_WIDTH/16;\n\
+             localparam [9:0] LINE_SLOT_WORDS=FB_WIDTH/2; localparam [4:0] BURSTS_PER_LINE=FB_WIDTH/16;\n\
              localparam [4:0] LAST_BURST=BURSTS_PER_LINE-1; localparam [7:0] LAST_FILL_Y=FB_HEIGHT-1;\n\
              localparam [9:0] ROW_STRIDE=FB_WIDTH;",
             self.h_total,
@@ -194,7 +194,7 @@ pub struct BufferSimulation {
     pub minimum_ready_lines: usize,
 }
 
-/// Conservative line-level model. A display line fetch costs 20 bursts of 16
+/// Conservative line-level model. A display line fetch costs 25 bursts of 16
 /// memory clocks each. The caller can inject a complete SDRAM blackout.
 pub fn simulate_line_buffers(
     slots: usize,
@@ -240,16 +240,23 @@ mod tests {
     use super::*;
 
     #[test]
-    fn three_rgb565_lines_fit_one_18k_block_and_four_do_not() {
-        assert_eq!(DISPLAY_LINE_BUFFER_WORDS, 960);
-        assert_eq!(1024 - DISPLAY_LINE_BUFFER_WORDS, 64);
-        assert_eq!(4 * DISPLAY_LINE_WORDS, 1280);
-        assert_eq!(DISPLAY_BURSTS_PER_LINE, 20);
+    fn two_rgb565_lines_fit_one_18k_block() {
+        // Two 400-pixel lines pack into 400 32-bit words = 12800 bits, which
+        // fits one 18432-bit block, so the line buffer uses one.
+        assert_eq!(DISPLAY_LINE_WORDS, 400);
+        assert_eq!(DISPLAY_LINE_BUFFER_WORDS, 800);
+        assert_eq!(DISPLAY_LINE_SLOTS * (DISPLAY_LINE_WORDS / 2), 400);
+        assert_eq!(DISPLAY_BURSTS_PER_LINE, 25);
     }
 
     #[test]
-    fn triple_buffer_absorbs_two_source_line_blackout() {
-        let result = simulate_line_buffers(3, 240 * 100, 7_200);
+    fn two_slots_absorb_a_source_line_blackout() {
+        // The display is arbiter-urgent whenever it requests (it only requests
+        // once a slot is free, when one line is buffered), so a single line of
+        // lead covers the realistic stall of refresh plus one in-flight
+        // transaction. The model's 0-underflow blackout ceiling for two slots
+        // is ~6400 cycles; 6000 leaves the tested margin below it.
+        let result = simulate_line_buffers(2, 240 * 100, 6_000);
         assert_eq!(result.underflows, 0);
         assert!(result.minimum_ready_lines >= 1);
         assert!(simulate_line_buffers(1, 240, 0).underflows > 0);

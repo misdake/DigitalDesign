@@ -59,22 +59,22 @@ always @(posedge clk) begin
   if(beat==8) beat<=0; else beat<=beat+1;
  end
  if (!reset && memory_request_valid && memory_request_ready) begin
-  if (memory_address==22'h212d00) saw_second_base<=1;
-  if (memory_address<dut.active_base || memory_address>=dut.active_base+22'd76800)
+  if (memory_address==22'h217800) saw_second_base<=1;
+  if (memory_address<dut.active_base || memory_address>=dut.active_base+22'd96000)
    $fatal(1,"request %h outside active framebuffer %h",memory_address,dut.active_base);
  end
 end
 initial begin
  repeat(4) @(posedge clk); reset=0; video_locked=1;
  // A command with only half an address is ignored and keeps the staged half.
- device_write(1,16'h2d00);
+ device_write(1,16'h7800);
  expect_status(16'h0003,16'h0002);
  device_write(3,16'h0001);
  expect_status(16'h0003,16'h0002);
 
  // Repeated low/high writes overwrite the shadow address, but do not publish it.
  device_write(1,16'h0100);
- device_write(1,16'h2d00);
+ device_write(1,16'h7800);
  device_write(2,16'h0020);
  device_write(2,16'h0021);
  expect_status(16'h0003,16'h0000);
@@ -88,13 +88,13 @@ initial begin
  device_write(3,16'h0001);
  expect_status(16'h0001,16'h0001);
  device_write(1,16'h0100);
- if(dut.pending_base!==22'h212d00) $fatal(1,"staging mutated pending base: %h",dut.pending_base);
+ if(dut.pending_base!==22'h217800) $fatal(1,"staging mutated pending base: %h",dut.pending_base);
 
  // An out-of-range complete pair is rejected and cannot replace the pending base.
  device_write(2,16'h0040);
  device_write(3,16'h0001);
  expect_status(16'h0005,16'h0005);
- wait(dut.active_base==22'h212d00);
+ wait(dut.active_base==22'h217800);
 
  // A later complete submission replaces pending normally. If it lands on the
  // exact clock that applies the old pending base, it remains queued for the
@@ -103,13 +103,13 @@ initial begin
  device_write(2,16'h0020);
  device_write(3,16'h0001);
  if(dut.pending_base!==22'h200100) $fatal(1,"first replacement was not submitted");
- device_write(1,16'h2d00);
+ device_write(1,16'h7800);
  device_write(2,16'h0021);
  while (!(dut.frame_sync!=dut.frame_seen && dut.frame_complete)) @(negedge clk);
  device_channel=3; device_write_data=16'h0001; device_write_enable=1;
  @(negedge clk); device_write_enable=0;
  if(dut.active_base!==22'h200100) $fatal(1,"old pending base was not applied");
- if(!dut.next_pending || dut.pending_base!==22'h212d00)
+ if(!dut.next_pending || dut.pending_base!==22'h217800)
   $fatal(1,"simultaneous replacement was lost");
  repeat(1000) @(posedge pixel_clock);
  if(dut.active_base!==22'h200100) $fatal(1,"replacement base was not applied");
@@ -120,7 +120,7 @@ initial begin
  if(tmds_clk_n!==~tmds_clk_p || tmds_data_n!==~tmds_data_p) $fatal(1,"bad differential outputs");
  if(bad>0) $fatal(1,"pixel mismatches: %0d of %0d sampled",bad,sampled);
  if(sampled<100000) $fatal(1,"too few visible pixels sampled: %0d",sampled);
- if(border_sampled<100000) $fatal(1,"too few border pixels sampled: %0d",border_sampled);
+ if(SIDE_BORDER!=0 && border_sampled<100000) $fatal(1,"too few border pixels sampled: %0d",border_sampled);
  if(de_runs<100) $fatal(1,"too few complete active-video lines: %0d",de_runs);
  $display("DIGITAL_DESIGN_PASS"); $finish;
 end

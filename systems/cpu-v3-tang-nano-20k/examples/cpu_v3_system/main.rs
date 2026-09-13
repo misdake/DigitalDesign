@@ -288,7 +288,7 @@ mod tests {
         assert_eq!(project.resources.claimed[&ResourceKind::SpiFlashDevice], 1);
         assert_eq!(project.resources.claimed[&ResourceKind::Pll], 2);
         assert_eq!(project.resources.claimed[&ResourceKind::HdmiOutput], 1);
-        assert_eq!(project.resources.claimed[&ResourceKind::Bsram18K], 7);
+        assert_eq!(project.resources.claimed[&ResourceKind::Bsram18K], 6);
     }
 
     #[test]

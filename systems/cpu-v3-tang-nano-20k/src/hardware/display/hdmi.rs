@@ -112,6 +112,7 @@ mod tests {
             project.resource_claims[0].resources[0].kind,
             ResourceKind::Bsram18K
         );
+        assert_eq!(project.resource_claims[0].resources[0].amount, 1);
     }
 
     #[test]
@@ -125,7 +126,7 @@ mod tests {
             config.side_border
         )));
         assert!(source.contains(&format!("localparam [1:0] SCALE={};", config.scale)));
-        assert!(source.contains("localparam [8:0] LINE_SLOT_WORDS=FB_WIDTH/2;"));
+        assert!(source.contains("localparam [9:0] LINE_SLOT_WORDS=FB_WIDTH/2;"));
         let testbench = verilog_testbench_for(&config).unwrap();
         assert!(testbench.contains(&format!("localparam [1:0] SCALE={};", config.scale)));
     }

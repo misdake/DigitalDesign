@@ -1,4 +1,4 @@
-//! One inferred 18-Kbit, dual-clock line buffer for three 320-pixel lines.
+//! One dual-clock line buffer for two 400-pixel lines (one 18-Kbit BSRAM).
 
 use digital_design_circuit::{CircuitWires, Wire, Wires};
 use digital_design_hardware::{BsramBlocks, Hardware, Module, ModuleIo, TargetResourceRequest};
@@ -7,10 +7,10 @@ use digital_design_hardware::{BsramBlocks, Hardware, Module, ModuleIo, TargetRes
 pub struct DisplayLineBufferInput {
     pub write_clock: Wire,
     pub write_enable: Wire,
-    pub write_address: Wires<9>,
+    pub write_address: Wires<10>,
     pub write_data: Wires<32>,
     pub read_clock: Wire,
-    pub read_address: Wires<9>,
+    pub read_address: Wires<10>,
 }
 
 #[derive(Clone, ModuleIo)]

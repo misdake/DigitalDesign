@@ -32,9 +32,11 @@ read-only artifact checks, observation, and hardware mutation:
 Supported profiles are the FPGA-alive `board-health` probe and the full CPU V3
 `cpu-v3-system` system (single-stage flash boot plus the SDRAM and HDMI datapaths).
 The board's selection latch powers up in the S2 slot, so `cpu-v3-system` boots the
-display application by default; the DDHT UART check (test ID `0x07`) comes from the
-S1 slider diagnostic, so hold the S1 button during reset before an `Observe`/`Full`
-capture when validating over UART.
+display application by default. That display application reports its own DDHT status
+frame (test ID `0x0b`) once per published frame, so a default `Observe`/`Full` capture
+validates over UART without touching the board. The S1 slider diagnostic reports
+`0x07`; hold the S1 button during reset to capture that application instead. The
+`cpu-v3-system` profile accepts either test ID.
 Every attempted run writes `target/board-validation/<profile>/<UTC>/evidence.json`,
 including failure stage, source/bitstream fingerprints, SHA-256 hashes, commit and dirty state.
 The runner never resets USB and never retries programming after a failure.
@@ -63,6 +65,29 @@ same serial session open while capturing. Reopening the VCP after `choose uart`
 is not equivalent on every BL616 firmware revision. At the end it returns to
 the quiet BL616 console before closing the handle; it never resets or
 re-enumerates USB.
+
+### UART capture recovery
+
+If a capture is interrupted, or the console is left mid-route, the BL616 can stay
+in a state where the host captures zero bytes even though the DUT is
+transmitting. Cross-check with a plain `board-health` run first: it transmits
+continuously, so it also captures zero bytes while the route is stuck, which
+means an empty `cpu-v3-system` capture is not by itself a DUT failure.
+
+The BL616 console shell provides `reboot`, which restarts the bridge MCU
+internally; its USB VCP drops and re-enumerates, clearing the stuck route while
+leaving the FPGA and its configuration untouched. Pass `-ResetBl616` to reboot
+the bridge before capturing:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File hardware/vendor/gowin/scripts/run_board_validation.ps1 `
+    -Profile cpu-v3-system -Mode Observe -Port COM8 -ResetBl616
+```
+
+`capture_bl616_uart.ps1 -ResetBl616` performs the same reboot for a direct
+capture. This is usually more reliable than unplugging and replugging USB,
+because it resets only the bridge MCU. A run that passes `-ResetBl616` records
+`reset_bl616: true` in `evidence.json`.
 
 All DDHT projects transmit 8N1 at 115200 baud (27 MHz designs use divider
 233, 54 MHz designs use 468); pass `-Baud` only for nonstandard captures.
@@ -104,8 +129,9 @@ Assigned test IDs:
 | ---: | --- |
 | `0x01` | Tang Nano 20K BSRAM shapes self-test |
 | `0x03` | Tang Nano 20K fitted SDRAM burst/refresh self-test |
-| `0x07` | CPU V3 full system single-stage flash boot (application reached) |
+| `0x07` | CPU V3 full system single-stage flash boot, S1 slider diagnostic (application reached) |
 | `0x0a` | Tang Nano 20K board clock/button/UART transport health probe |
+| `0x0b` | CPU V3 S2 display application per-frame status |
 
 The former CPU V3 CPU-execution (`0x04`), SDRAM (`0x05`), boot-DMA (`0x06`),
 system-control-UART (`0x08`), device-path (`0x09`), and the read-only/diagnostic

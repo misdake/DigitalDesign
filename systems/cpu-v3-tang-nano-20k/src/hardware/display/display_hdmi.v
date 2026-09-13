@@ -20,10 +20,15 @@ localparam [15:0] BORDER_COLOR=16'h1082;
 // injected by the Rust host model so the RTL, testbench, and board video PLL
 // all derive from the single `ACTIVE_DISPLAY_CONFIG` constant.
 __DISPLAY_CONFIG__
-reg [2:0] published=0;
-reg [2:0] released=0;
-reg [2:0] release_meta=0, release_sync=0;
-reg [1:0] fill_slot=0;
+// Two line slots: the producer fills one while the display reads the other.
+// The display is always urgent when it requests (it only requests once the
+// consumer has freed a slot, when exactly one line is buffered), so it never
+// round-robins with the CPU; a single line of lead covers refresh and the
+// in-flight transaction.
+reg [1:0] published=0;
+reg [1:0] released=0;
+reg [1:0] release_meta=0, release_sync=0;
+reg fill_slot=0;
 reg [7:0] fill_y=0;
 reg [21:0] active_base=FB_BASE;
 reg [21:0] row_address=FB_BASE;
@@ -43,15 +48,17 @@ reg memory_error_sticky=0;
 wire fill_slot_free = published[fill_slot] == release_sync[fill_slot];
 wire [1:0] ready_count =
     (published[0] != release_sync[0]) +
-    (published[1] != release_sync[1]) +
-    (published[2] != release_sync[2]);
+    (published[1] != release_sync[1]);
 assign memory_urgent = ready_count <= 1;
 assign memory_request_valid = fill_slot_free && !burst_active && !frame_complete && !memory_error_sticky;
 assign memory_address = row_address + {13'b0,burst_index,4'b0};
 
 wire line_write = burst_active && memory_data_valid;
-wire [8:0] line_write_address = fill_slot * LINE_SLOT_WORDS + burst_index * 9'd8 + beat_index;
-reg [8:0] line_read_address=0;
+// Slot bases are 0 and LINE_SLOT_WORDS. A two-way constant select keeps the
+// slot index out of a synthesized DSP multiplier.
+wire [9:0] fill_slot_base = fill_slot ? LINE_SLOT_WORDS : 10'd0;
+wire [9:0] line_write_address = fill_slot_base + {burst_index, 3'b000} + beat_index;
+reg [9:0] line_read_address=0;
 wire [31:0] line_read_data;
 __LINE_BUFFER__ u_line_buffer(
     .write_clock(clk), .write_enable(line_write), .write_address(line_write_address),
@@ -124,7 +131,7 @@ always @(posedge clk) begin
                 if (burst_index==LAST_BURST) begin
                     published[fill_slot] <= ~published[fill_slot];
                     burst_index<=0;
-                    fill_slot <= fill_slot==2'd2 ? 2'd0 : fill_slot+1'b1;
+                    fill_slot <= ~fill_slot;
                     if (fill_y==LAST_FILL_Y) begin frame_complete<=1; end
                     else begin fill_y<=fill_y+1'b1; row_address<=row_address+ROW_STRIDE; end
                 end else burst_index<=burst_index+1'b1;
@@ -141,7 +148,9 @@ reg [2:0] pixel_reset_sync=0;
 always @(posedge pixel_clock)
     pixel_reset_sync <= {pixel_reset_sync[1:0], ~(reset | ~video_locked)};
 wire pixel_reset = ~pixel_reset_sync[2];
-reg [1:0] display_slot=0;
+reg display_slot=0;
+// Slot base for the displayed slot, selected without a DSP multiplier.
+wire [9:0] display_slot_base = display_slot ? LINE_SLOT_WORDS : 10'd0;
 reg [1:0] vertical_repeat=0;
 reg started=0;
 reg [10:0] h_count=0;
@@ -155,7 +164,7 @@ wire active = h_count>=H_ACTIVE_START && h_count<H_ACTIVE_END &&
 wire [10:0] active_x = h_count-H_ACTIVE_START; // gowin-lint: allow EX3791
 wire framebuffer_x = active && active_x>=SIDE_BORDER &&
                      active_x<SIDE_BORDER+FB_WIDTH*SCALE;
-wire [9:0] scaled_x = active_x-SIDE_BORDER; // gowin-lint: allow EX3791
+wire [10:0] scaled_x = active_x-SIDE_BORDER; // gowin-lint: allow EX3791
 // scaled_x is at most FB_WIDTH*SCALE-1, so floor(scaled_x/SCALE) is at most
 // FB_WIDTH-1 and always fits in nine bits. Gowin reports the unsized
 // constant's expression width before the intentional narrowing; keep the
@@ -198,7 +207,7 @@ always @(posedge pixel_clock) begin
             end else v_count<=v_count+1'b1;
         end else h_count<=h_count+1'b1;
         if (framebuffer_x)
-            line_read_address <= display_slot*LINE_SLOT_WORDS + source_x[8:1];
+            line_read_address <= display_slot_base + source_x[8:1];
         // Pipeline alignment: the line buffer data for a position arrives two
         // pixel clocks late (address register, then synchronous RAM read), so
         // the lane select and the visible/sync strobes are delayed to match,
@@ -220,7 +229,7 @@ always @(posedge pixel_clock) begin
                 vertical_repeat<=0;
                 if (line_ready) begin
                     released[display_slot]<=~released[display_slot];
-                    display_slot<=display_slot==2'd2 ? 2'd0 : display_slot+1'b1;
+                    display_slot<=~display_slot;
                 end else underflow_sticky<=1;
             end else vertical_repeat<=vertical_repeat+1'b1;
         end

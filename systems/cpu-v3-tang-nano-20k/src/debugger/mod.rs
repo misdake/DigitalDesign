@@ -1133,7 +1133,8 @@ mod tests {
         assert_eq!(halt, Some(0));
         let state = session.state_json(None);
         assert!(state.contains(&format!(
-            "\"display\":{{\"width\":320,\"height\":240,\"active_base\":{FRAMEBUFFER_A_BASE_WORD},\"frame_index\":0,\"swap_pending\":true,\"waiting_for_vblank\":false}}"
+            "\"display\":{{\"width\":{},\"height\":{},\"active_base\":{FRAMEBUFFER_A_BASE_WORD},\"frame_index\":0,\"swap_pending\":true,\"waiting_for_vblank\":false}}",
+            crate::FRAMEBUFFER_WIDTH, crate::FRAMEBUFFER_HEIGHT
         )));
 
         session.system.advance_vblank();
@@ -1152,7 +1153,10 @@ mod tests {
         assert_eq!(session.halted(), Some(0));
 
         let bytes = session.framebuffer_rgb888();
-        assert_eq!(bytes.len(), 320 * 240 * 3);
+        assert_eq!(
+            bytes.len(),
+            crate::FRAMEBUFFER_WIDTH as usize * crate::FRAMEBUFFER_HEIGHT as usize * 3
+        );
         assert_eq!(&bytes[..6], &[0xff, 0x00, 0x00, 0x00, 0x00, 0x00]);
     }
 

@@ -117,7 +117,9 @@ UART byte and reports transmitter busy on reads.
 Device 1 channel 0 returns the reset-time boot selection. The board-level selection latch powers up
 at `10`, so the boot stage selects the configured S2 display application by default; holding the S1
 button (`01`) selects the configured S1 slider diagnostic, and `11` is ignored. The current project
-selects the FPU framebuffer demo as S2 and the primary diagnostic as S1.
+selects the FPU framebuffer demo as S2 and the primary diagnostic as S1. Both applications repeat a
+DDHT success frame over the device-0 UART: the S1 diagnostic reports test ID `0x07`, and the S2
+display reports `0x0b` once per published frame.
 
 Device 2 exposes the boot-DMA command and status register bank. It accepts a 24-bit absolute Flash
 byte address, a 22-bit physical SDRAM word destination, and file and memory byte sizes. Writing one
@@ -135,14 +137,14 @@ addresses.
 
 ## Display and diagnostics
 
-The application framebuffer is 320x240 RGB565 in SDRAM. The display path fetches
+The application framebuffer is 400x240 RGB565 in SDRAM. The display path fetches
 it through the shared SDRAM port, buffers scanout lines, and produces the fitted
 HDMI TMDS output. The scanout mode is a single compile-time configuration
-(`display::ACTIVE_DISPLAY_CONFIG`), currently 800x480@60 with a 2x upscale and
-80-pixel side borders; the retained 1280x720p60 3x mode is the one-word
-alternative. The framebuffer is always upscaled uniformly and centered, so the
-remaining horizontal strip stays a black border. The board video PLL follows
-the same switch through the example project. Boot progress owns
+(`display::ACTIVE_DISPLAY_CONFIG`), currently 800x480@60 with a 2x upscale and no
+side border; the retained 1280x720p60 3x mode is the one-word alternative and
+leaves 40-pixel side borders. The framebuffer is always upscaled uniformly and
+centered, so any remaining horizontal strip stays a black border. The board video
+PLL follows the same switch through the example project. Boot progress owns
 the six LEDs until the first software LED write, after which software owns them until reset. LED
 patterns are progress evidence only; UART frames and system-level checks establish boot success or a
 structured boot failure.
@@ -154,8 +156,8 @@ the same stable mapping through `LoaderError::boot_report`.
 
 ## Current fitted result and validation boundary
 
-The current full-system build uses 9,640 Logic (8,294 LUT, 770 ALU, 96 SSRAM), 4,099 registers,
-four DPB, one SDPB, two pROM, and two `MULT18X18` cells. The CPU clock closes at 54.222 MHz against
+The current full-system build uses 9,706 Logic (8,354 LUT, 776 ALU, 96 SSRAM), 4,098 registers,
+five DPB, two SDPB, one pROM, and two `MULT18X18` cells. The CPU clock closes at 56.304 MHz against
 the 54-MHz constraint with zero setup and hold TNS. The tightest CPU path is the core's registered
 GPR write path rather than the cache frontend.
 

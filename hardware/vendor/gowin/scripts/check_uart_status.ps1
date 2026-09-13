@@ -1,18 +1,30 @@
 param(
     [Parameter(Mandatory = $true)][string]$Path,
-    [Parameter(Mandatory = $true)][byte]$TestId,
+    [Parameter(Mandatory = $true)][string]$TestId,
     [int]$MinimumSuccessFrames = 2,
     [int]$MaximumAgeSeconds = 30,
     [string]$ResultPath
 )
 
 $ErrorActionPreference = "Stop"
+$testIds = @()
+foreach ($part in ($TestId -split "[,\s]+")) {
+    $text = $part.Trim()
+    if ([string]::IsNullOrWhiteSpace($text)) { continue }
+    if ($text.StartsWith("0x") -or $text.StartsWith("0X")) {
+        $testIds += [byte][Convert]::ToByte($text.Substring(2), 16)
+    } else {
+        $testIds += [byte][int]$text
+    }
+}
+if ($testIds.Count -eq 0) { throw "no test IDs were supplied" }
+$expectedTestId = ($testIds | ForEach-Object { "0x{0:x2}" -f $_ }) -join ","
 $result = [ordered]@{
     schema = 1
     outcome = "invalid"
     reason = $null
     message = $null
-    expected_test_id = "0x$($TestId.ToString('x2'))"
+    expected_test_id = $expectedTestId
     capture_bytes = 0
     ddht_candidates = 0
     ddht_success_frames = 0
@@ -152,7 +164,7 @@ for ($offset = 0; $offset -lt $bytes.Length; $offset++) {
         $offset += 7
         continue
     }
-    if ($bytes[$offset + 5] -ne $TestId) {
+    if ($testIds -notcontains $bytes[$offset + 5]) {
         $wrongTestCount++
         $offset += 7
         continue
@@ -212,18 +224,18 @@ if ($failureCount -ne 0) {
     $summary = ($failureStatuses.GetEnumerator() | Sort-Object Name | ForEach-Object {
         "$($_.Name):$($_.Value)"
     }) -join ", "
-    Stop-Check "ddht_failure" "UART test 0x$($TestId.ToString('x2')) reported $failureCount failure frame(s) ($summary)."
+    Stop-Check "ddht_failure" "UART test $expectedTestId reported $failureCount failure frame(s) ($summary)."
 }
 if ($successCount -lt $MinimumSuccessFrames) {
     if ($ddhtCandidates -eq 0) {
         $preview = ($bytes | Select-Object -First 32 | ForEach-Object { $_.ToString('x2') }) -join " "
         Stop-Check "no_status_frame" "UART captured $($bytes.Length) byte(s), but none begin a DDHT v1 or valid CV3B frame. First bytes: $preview. Treat this as framing/baud/physical corruption, not a DUT result."
     }
-    Stop-Check "insufficient_success" "UART test 0x$($TestId.ToString('x2')) produced only $successCount valid success frame(s) from $ddhtCandidates DDHT candidate(s); expected at least $MinimumSuccessFrames."
+    Stop-Check "insufficient_success" "UART test $expectedTestId produced only $successCount valid success frame(s) from $ddhtCandidates DDHT candidate(s); expected at least $MinimumSuccessFrames."
 }
 
 $result["outcome"] = "passed"
 $result["reason"] = "ddht_success"
-$result["message"] = "UART test 0x$($TestId.ToString('x2')) passed ($successCount valid success frame(s), no failure frames)."
+$result["message"] = "UART test $expectedTestId passed ($successCount valid success frame(s), no failure frames)."
 Save-Result
 Write-Host $result["message"]

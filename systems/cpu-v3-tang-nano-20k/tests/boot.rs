@@ -260,10 +260,14 @@ fn run_boot(
     machine
 }
 
-fn ddht_frame() -> [u8; 8] {
-    let mut frame = [0x44, 0x44, 0x48, 0x54, 1, 0x07, 0, 0];
+fn ddht_frame_with_test_id(test_id: u8) -> [u8; 8] {
+    let mut frame = [0x44, 0x44, 0x48, 0x54, 1, test_id, 0, 0];
     frame[7] = frame[..7].iter().fold(0, |checksum, byte| checksum ^ byte);
     frame
+}
+
+fn ddht_frame() -> [u8; 8] {
+    ddht_frame_with_test_id(0x07)
 }
 
 #[test]
@@ -343,6 +347,15 @@ fn button_10_boots_the_fpu_display_application_from_flash() {
     let sysctl = machine.device::<SystemControlDevice>(0).unwrap();
     assert_eq!(sysctl.icache_invalidations, 1);
     assert_eq!(sysctl.dcache_invalidations, 1);
+    // The display application reports its own DDHT 0x0b success frame as soon
+    // as it starts, so the default S2 boot is observable over UART.
+    let frame = ddht_frame_with_test_id(0x0b);
+    assert!(
+        sysctl.uart.len() >= frame.len(),
+        "expected a display DDHT frame, got {:02x?}",
+        sysctl.uart
+    );
+    assert_eq!(sysctl.uart[..frame.len()], frame);
 }
 
 #[test]

@@ -2,7 +2,12 @@ param(
     [Parameter(Mandatory = $true)][string]$Port,
     [int]$Baud = 115200,
     [int]$Seconds = 8,
-    [Parameter(Mandatory = $true)][string]$Out
+    [Parameter(Mandatory = $true)][string]$Out,
+    # Reboot the BL616 bridge MCU before capturing. Its USB VCP drops and
+    # re-enumerates, clearing any UART route state left stuck by an earlier
+    # interrupted capture. Usually more reliable than unplugging USB, and it
+    # does not reset the FPGA.
+    [switch]$ResetBl616
 )
 
 $ErrorActionPreference = "Stop"
@@ -32,6 +37,42 @@ function Read-BoundedAscii {
     $read = $Serial.Read($bytes, 0, $count)
     return [System.Text.Encoding]::ASCII.GetString($bytes, 0, $read)
 }
+
+function Invoke-Bl616Reboot {
+    param([string]$Name, [int]$TimeoutSeconds = 30)
+    Write-Output "resetting BL616 on $Name (device-internal reboot)"
+    $console = New-Object System.IO.Ports.SerialPort $Name, $Baud, ([System.IO.Ports.Parity]::None), 8, ([System.IO.Ports.StopBits]::One)
+    $console.ReadTimeout = 200
+    $console.WriteTimeout = 1000
+    $console.DtrEnable = $false
+    $console.RtsEnable = $false
+    try {
+        $console.Open()
+        Start-Sleep -Milliseconds 500
+        foreach ($value in @(0x18, 0x03, 0x0d)) {
+            [byte[]]$one = @($value)
+            $console.Write($one, 0, 1)
+            Start-Sleep -Milliseconds 250
+        }
+        Start-Sleep -Milliseconds 300
+        $console.Write("reboot`r")
+        Start-Sleep -Milliseconds 500
+    } finally {
+        if ($console.IsOpen) { $console.Close() }
+        $console.Dispose()
+    }
+    # `reboot` restarts the bridge MCU; the VCP drops and re-enumerates. Wait
+    # for the port to come back before the caller opens its capture session.
+    Start-Sleep -Seconds 3
+    $deadline = (Get-Date).AddSeconds($TimeoutSeconds)
+    while ((Get-Date) -lt $deadline) {
+        if ([System.IO.Ports.SerialPort]::getportnames() -contains $Name) { break }
+        Start-Sleep -Milliseconds 200
+    }
+    Start-Sleep -Milliseconds 800
+}
+
+if ($ResetBl616) { Invoke-Bl616Reboot -Name $Port }
 
 try {
     $serial.Open()
