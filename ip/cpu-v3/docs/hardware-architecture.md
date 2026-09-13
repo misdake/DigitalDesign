@@ -43,7 +43,7 @@ when the queue does not already contain the requested word.
 | FPR file | 16 registers x 4 signed Q8.8 lanes; 16 x 64-bit vectors, two registered-address asynchronous reads and one synchronous write with per-lane write enables | Read two whole vectors; commit one lane or one whole vector per cycle |
 | FPU lane ALU | One 17-bit saturating add/sub or one simple unary lane fed from the wide reads | Captures lane zero at dispatch, then writes one registered result and captures the next lane every cycle |
 | FPU multiplier | One registered signed 18 x 18 `MULT18X18` lane | Primitive initiation interval is one cycle and latency is two cycles; four lane tags stream through a two-entry valid pipeline |
-| FPU ROM | One synchronous 1024 x 16-bit BSRAM: 256 sine, 256 reciprocal, 512 reciprocal-square-root words | One lookup address and one registered result per cycle |
+| FPU ROM | One explicitly instantiated true-dual-port synchronous 1024 x 16-bit DPB: 256 words packing 512 8-bit sine samples, 256 reciprocal words, and 512 reciprocal-square-root words | Two independent lookup addresses and registered results per cycle |
 | Unary front/back end | One priority encoder, one registered 17-bit normalized mantissa, and one shared rounded variable shifter | Domain/exponent, normalization, index adjustment, and result scaling use separate short phases |
 | ACC | Signed saturating 40-bit accumulator | One in-order product accumulation per cycle while the DOT pipeline drains |
 | Transfer buffer | Four 16-bit import/gather words, one 64-bit export/scatter snapshot, and four 64-bit transpose row registers | Makes imports and overlapping rearrangements snapshot-clean |
@@ -100,18 +100,30 @@ latencies assume every request and response phase advances immediately.
 | `FUNPACK4` | 6 | 7 | Dispatch snapshots the source vector, four wide writes, commit |
 | `FTRANSPOSE4` | 8 | 9 | Dispatch latches row zero, two dual-port row reads, four wide transposed writes, commit |
 | `FRCP`, `FRSQRT` | 9 | 10 | Dispatch, registered domain/exponent, registered normalization, address, ROM lookup/wait, registered scale, write, commit |
-| `FSINCOS` | 12 | 13 | Dispatch, angle multiply triplet, two ROM lookup triplets, one wide result write, commit |
+| `FSINCOS` | 9 | 10 | Dispatch, angle multiply triplet, one parallel dual-port ROM lookup triplet, one wide result write, commit |
 | `FIMPORT4`, minimum | 10 | 11 | Dispatch, four request/response pairs, one wide destination write, commit |
 | `FEXPORT4`, minimum | 9 | 10 | Dispatch snapshots the source vector and streams four request/response pairs; the final response retires directly |
 
+`FSINCOS` reduces its signed Q8.8 radian input to 2048 phase steps with the
+18-bit DSP multiplier and the `83443 / 65536` approximation of `4/pi`. Its
+512-sample quarter wave packs two unsigned 8-bit
+Q8.8 magnitudes into each 16-bit ROM word; indices 492 through 512 reconstruct
+the saturated magnitude 256 without storing a ninth bit. This doubles the
+previous phase resolution without enlarging the sine region. An explicit DPB
+primitive keeps the initialized table in one physical BSRAM while its two ports
+read sine and cosine in parallel. Exhaustive comparison over all 65,536
+inputs bounds each result to one Q8.8 LSB from the rounded host `sin`/`cos`
+reference; the worst continuous-component error is below one Q8.8 LSB.
+
 ## Current fitted-system result
 
-Stage 12 is fitted and routed as the complete `cpu_v3_system`, including the CPU,
-boot path, caches, 54/108-MHz SDRAM gearbox, and display path. Against the normal
-54-MHz CPU constraint it reports 56.230 MHz with zero setup and hold TNS. The
-build uses 10,100 Logic (8,822 LUT, 750 ALU, 88 SSRAM), 4,324 registers, four DPB,
-one SDPB, two pROM, and two `MULT18X18` cells. The tightest CPU-clock path is the
-fetch-queue to I-cache way-valid route, not the Stage 12 GPR-forwarding path.
+The current design is fitted and routed as the complete `cpu_v3_system`,
+including the CPU, boot path, caches, 54/108-MHz SDRAM gearbox, and display
+path. Against the normal 54-MHz CPU constraint it reports 57.917 MHz with
+1.253 ns worst setup slack and zero setup and hold TNS. The build uses 10,472
+Logic (9,197 LUT, 747 ALU, 88 SSRAM), 4,294 registers, 7,127 CLS, five DPB, one
+SDPB, one pROM, and two `MULT18X18` cells. The tightest CPU-clock path is the
+D-cache dirty-state update path, not the packed sine lookup.
 
 The following timing sections are retained as implementation history for the FPU
 lane pipeline. They are not the current full-system Stage 12 result.
@@ -218,13 +230,13 @@ commits its assembled buffer with one wide write after the fourth beat.
 | pack4 | 10 | 5 |
 | unpack4 | 22 | 6 |
 | transpose4 | 20 | 8 |
-| sincos | 15 | 12 |
+| sincos | 15 | 9 |
 | import4 (minimum) | 14 | 10 |
 
-The lane ALU, the multiply pipeline, and the ROM sequences keep their serial
-schedules: their phases are compute- or ROM-bound, not port-bound. Per-lane
-write enables preserve the in-place aliasing guarantees of the serial lane
-loop.
+The lane ALU and multiply pipeline keep their serial schedules. The SINCOS ROM
+sequence is the exception: its two independent DPB ports fetch sine and cosine
+in parallel. Per-lane write enables preserve the in-place aliasing guarantees
+of the remaining serial lane loop.
 
 The wide buses cost routing slack around the scalar register file: the display
 system's logic-clock characterization boundary moved from 64.75 MHz to 63 MHz

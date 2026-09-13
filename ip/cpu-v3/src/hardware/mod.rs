@@ -13,7 +13,7 @@ use digital_design_hardware::{
     resources::components::SsramBits, HardwareIdentity, Module, ModuleIo, TargetResourceRequest,
     VerilogDependency, VerilogIdentity,
 };
-use digital_design_hardware_gowin::{Bsram1Rw1024, BsramImage, DspMulS18};
+use digital_design_hardware_gowin::{BsramImage, BsramTrueDualPort1024, DspMulS18};
 use std::cmp::Ordering;
 
 use crate::{
@@ -76,7 +76,7 @@ impl BsramImage<16> for FpuRomImage {
     const WORDS: [u64; 1024] = crate::FPU_ROM_WORDS;
 }
 
-type FpuRom = Bsram1Rw1024<16, FpuRomImage>;
+type FpuRom = BsramTrueDualPort1024<16, FpuRomImage>;
 
 /// SSRAM physical bits for the scalar register file: 16 words x 16 bits with
 /// two asynchronous read ports, which Gowin builds from two copies of four
@@ -357,7 +357,6 @@ pub struct CpuV3CoreState {
     fpu_memory_active: bool,
     fpu_memory_lane: u8,
     fpu_memory_value: FpuVector,
-    fpu_rom_step: u8,
     fpu_rom_first: Fix16Raw,
     fpu_rom_second: Fix16Raw,
     fpu_transpose_rows: [FpuVector; 4],
@@ -404,7 +403,6 @@ impl Default for CpuV3CoreState {
             fpu_memory_active: false,
             fpu_memory_lane: 0,
             fpu_memory_value: [0; 4],
-            fpu_rom_step: 0,
             fpu_rom_first: 0,
             fpu_rom_second: 0,
             fpu_transpose_rows: [[0; 4]; 4],
@@ -820,7 +818,6 @@ impl CpuV3CoreState {
             14 => match b {
                 0 | 1 => {
                     self.fpu_operand_a = self.fpu_registers[a][0];
-                    self.fpu_rom_step = 0;
                     self.phase = Phase::FpuUnaryDispatch;
                 }
                 2 => {
@@ -828,7 +825,6 @@ impl CpuV3CoreState {
                     // from the asynchronous register-file read while the
                     // emulator must latch it explicitly.
                     self.fpu_operand_a = self.fpu_registers[a][0];
-                    self.fpu_rom_step = 0;
                     self.fpu_step = 0;
                     self.phase = Phase::FpuMultiplyWait;
                 }
@@ -1273,15 +1269,10 @@ impl Module for CpuV3Core {
                         state.fpu_result = fix16_reciprocal_sqrt(operand).expect("domain checked");
                         state.phase = Phase::FpuRomWrite;
                     }
-                    2 if state.fpu_rom_step == 0 => {
+                    2 => {
                         let (sin, cos) = fix16_sin_cos(operand);
                         state.fpu_rom_first = sin;
                         state.fpu_rom_second = cos;
-                        state.fpu_rom_step = 1;
-                        state.phase = Phase::FpuRomLookup;
-                    }
-                    2 => {
-                        state.fpu_rom_step = 0;
                         state.phase = Phase::FpuRomWrite;
                     }
                     _ => unreachable!("only complex unary operations use the FPU ROM"),
@@ -1669,7 +1660,7 @@ mod tests {
     }
 
     #[test]
-    fn export_accounts_for_integer_and_fpu_multiplier_leaves() {
+    fn export_accounts_for_fpu_rom_and_multiplier_leaves() {
         let project = VerilogProject::generate::<CpuV3Core>().unwrap();
         assert_eq!(project.resource_claims.len(), 5);
         assert_eq!(
@@ -1784,7 +1775,7 @@ mod tests {
         assert_eq!(pack.cycles - baseline.cycles, 5);
         assert_eq!(unpack.cycles - baseline.cycles, 6);
         assert_eq!(transpose.cycles - baseline.cycles, 8);
-        assert_eq!(sincos.cycles - baseline.cycles, 12);
+        assert_eq!(sincos.cycles - baseline.cycles, 9);
         assert_eq!(reciprocal.cycles - baseline.cycles, 9);
         assert_eq!(add.halt_signal, 768);
         assert_eq!(multiply.halt_signal, 512);
