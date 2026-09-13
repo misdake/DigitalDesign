@@ -2,7 +2,7 @@
 
 Status: living record of the current implementation and future optimization work
 Repository: `../../../`
-Updated: 2026-09-11
+Updated: 2026-09-13
 
 This roadmap lives inside the CPU V3 system crate so it stays with the system it describes; it is
 maintained and committed together with each milestone. Benchmark workloads and runners live in the
@@ -45,10 +45,11 @@ described by each Stage.
 | Single-stage boot merge | Complete, 2026-09-12 | Folded the former Stage1 into the BSRAM first stage: one image validates the descriptor and manifest and loads the reset-selected application, so the Stage1 image, the descriptor mirroring, and the duplicate DMA/UART/handoff code disappear. Container format version 4 reserves the former Stage1 descriptor fields; the error ABI uses stage `1` throughout and the boot-progress phases collapse to BOOT/DMA/APPLICATION. A manifest section-count bound closes the 16-bit `count << 5` wrap in the size check. | Merged Stage0 673 words (fits the 1024-word BSRAM boot window). Full system: 10,269 Logic; 4 DPB + 1 SDPB + 2 pROM; 2 x MULT18X18; CPU 54.522 MHz, zero setup/hold TNS |
 | `ASR`/`ASRI` signedness fix | Complete, 2026-09-12 | Found on hardware: the display demo's negative sine/cosine offsets landed at +255 instead of -1. The handwritten RTL put `>>>` inside a conditional whose other branches were unsigned, and Verilog makes a `?:` unsigned when any branch is unsigned, so `ASR`/`ASRI` (and therefore `fix16::to_int()`) shifted logically. The shifts now compute in a statement-based `case` and the FSM selects the result; `fix16_to_int_rcc` co-simulates the conversion. | Full system: 10,232 Logic; 4 DPB + 1 SDPB + 2 pROM; 2 x MULT18X18; CPU 54.747 MHz, zero setup/hold TNS |
 | Stage 6 prefetch removal | Complete, 2026-09-12 | Deleted the next-line I-cache prefetch entirely (offset-10 fetch-queue trigger, request/arm/cancel and cancelled-line learning in the I-cache engine, simulation counters) after the cost/benefit audit in the Stage 6 section showed ~4.6% register and ~1.5% Logic cost for +0.0003% frozen-suite benefit. The I-cache module sheds 31 REG / 178 LUT at synthesis; system PnR shifts the rest (unrelated modules move within normal re-optimization noise). Frozen stage-12 suite: +20 cycles out of 6,136,236; prefetch metric columns remain in the CSV schema, pinned to zero. | Full system: 10,321 Logic (4,196 FF); 4 DPB + 1 SDPB + 2 pROM; 2 x MULT18X18; CPU 56.141 MHz, zero setup/hold TNS |
-| Cache RAM16 valid/victim + dirty window scan | Complete, 2026-09-12 | Moved both caches' valid and victim bits from flip-flops into a `CpuV3CacheValidRam` RAM16 leaf (asynchronous read, synchronous single-way write), with a one-set-per-cycle clear for global invalidation, reset, and memory-error scrub. The D-cache exposes `valid_sweep` and the system holds the core for the reset/scrub sweep (`sysctl_cpu_hold || valid_sweep`) so the core never sees a not-ready D-cache on its first post-reset access. The two-way hit expression drops its own invalidating gate to restore the tight I-cache way-valid depth. Revision audit: only the victim bit actually inferred RAM16 here, because the valid-array write ports depended on the cache's own read data and on the request handshake; both valid ways stayed as 128 flip-flops plus read multiplexers per cache until the cache valid-array write-port fix recorded below. Replaced the D-cache 128-bit dirty priority encoder with a 16-entry window scan overlapped with the in-flight write-back; the architecture `DataCache` selects lines way-major so the RTL and Rust wrapper stay bit-exact. Frozen-suite total cycles unchanged (post-halt flush within 3 cycles). | Full system: 9,640 Logic (8,294 LUT, 770 ALU, 96 RAM16); 4,099 FF; 4 DPB + 1 SDPB + 2 pROM; 2 x MULT18X18; CPU 54.222 MHz, zero setup/hold TNS |
+| Cache RAM16 valid/victim + dirty window scan | Complete, 2026-09-12 | Moved both caches' valid and victim bits from flip-flops into a `CpuV3CacheValidRam` RAM16 leaf (asynchronous read, synchronous single-way write), with a one-set-per-cycle clear for global invalidation, reset, and memory-error scrub. The D-cache exposes `valid_sweep` and the system holds the core for the reset/scrub sweep (`sysctl_cpu_hold || valid_sweep`) so the core never sees a not-ready D-cache on its first post-reset access. The two-way hit expression drops its own invalidating gate to restore the tight I-cache way-valid depth. Revision audit: only the victim bit actually inferred RAM16 here, because the valid-array write ports depended on the cache's own read data and on the request handshake; both valid ways stayed as 128 flip-flops plus read multiplexers per cache until the cache valid-array write-port fix recorded below. Replaced the D-cache 128-bit dirty priority encoder with a 16-entry window scan overlapped with the in-flight write-back; the architecture `DataCache` selects lines way-major so the RTL and Rust wrapper stay bit-exact. Frozen-suite cycles unchanged per program (post-halt flush within 3 cycles). | Full system: 9,640 Logic (8,294 LUT, 770 ALU, 96 RAM16); 4,099 FF; 4 DPB + 1 SDPB + 2 pROM; 2 x MULT18X18; CPU 54.222 MHz, zero setup/hold TNS |
 | Framebuffer 400x240 | Complete, 2026-09-12 | Widened the CPU framebuffer from 320x240 to 400x240 RGB565, so the 2x-scaled 800x480 mode fills the active window with no side border and the 3x 1280x720 mode leaves 40-pixel borders. The scanout line buffer grows to three 200-word slots (two 18-Kbit BSRAMs) with 10-bit addresses; the slot-base select keeps the address math off a synthesized DSP multiplier. The display demo re-centers on x=200 and uses 8/256 radians per pixel. | Full system: 9,706 Logic (8,354 LUT, 776 ALU, 96 RAM16); 4,098 FF; 5 DPB + 2 SDPB + 1 pROM; 2 x MULT18X18; CPU 56.304 MHz, zero setup/hold TNS |
 | Scanout double buffer | Complete, 2026-09-12 | Collapsed the scanout line buffer from three 200-word slots to two. At two slots the producer only requests the bus once the consumer has freed a slot, when exactly one line is buffered, so the display is arbiter-urgent (`ready_count <= 1`) for every request and never round-robins with the CPU; the single line of lead covers SDRAM refresh plus the one in-flight transaction. Two 400-pixel lines are 12800 bits and fit a single 18-Kbit BSRAM (the three-slot 19200 did not). The host model's 0-underflow blackout ceiling drops from ~9900 to ~6400 cycles, so the line-buffer test pins 6000. | Full system: 9,706 Logic (8,361 LUT, 769 ALU, 96 RAM16); 4,088 FF; 5 DPB + 1 SDPB + 1 pROM; 2 x MULT18X18; CPU 54.298 MHz, zero setup/hold TNS |
 | Cache valid-array write port | Complete, 2026-09-12 | The valid/victim RAM16 leaf had only ever inferred RAM16 for the victim bit. The D-cache selected the victim write way from the array's own asynchronous read data in `ST_LOOKUP`, and the I-cache put the `memory_request_ready` handshake into the valid write enable; Gowin then mapped the leaf's two valid ways as 128 flip-flops plus read multiplexers in every instance, costing 256 FF and about 840 LUT across the two caches while the 96 system SSRAM cells stayed fully accounted for by tags, the victim bit, and the GPR/FPU files. Both caches now invalidate the victim from the registered `pending_way` as the line request starts, which still precedes the first refill data beat, so no array write depends on that array's read data; each leaf instance infers twelve RAM16 cells with no flip-flops. The `CpuV3CacheValidRam` SSRAM claim becomes twelve cells per instance and the flip-flop dirty bitmap stops claiming SSRAM. The change is RTL-mapping only: no emulator or architecture-model source changed and `system_cosim` re-verifies RTL/model equivalence cycle by cycle, so the frozen-suite cycle counts are unaffected. | Full system: 9,025 Logic (7,585 LUT, 768 ALU, 112 RAM16); 3,834 FF; 5 DPB + 1 SDPB + 1 pROM; 2 x MULT18X18; CPU 55.904 MHz, zero setup/hold TNS |
+| Resolved-target BTC | Complete implementation and validation, 2026-09-13; uncommitted, no new Stage | Default four-entry, two-word fully associative BTC with exact LRU, consumption-only fill and same-cycle target replay; optional eight-entry comparison and disabled control. Per-slot current metadata replaces toggled epochs so repeated redirects cannot revive old responses. Same 22 frozen programs and metric schema. See the BTC results below. | Full system, 4 entries: 9,408 Logic (7,872 LUT, 864 ALU, 112 RAM16), 4,103 logic FF, 6,688 CLS, 54.192 MHz, 0.066 ns setup slack. 8 entries: 9,637 Logic (7,968 LUT, 997 ALU, 112 RAM16), 4,340 logic FF, 6,958 CLS, 54.226 MHz, 0.077 ns setup slack. Both: 5 DPB + 1 SDPB + 1 pROM, two MULT18X18, zero setup/hold TNS. |
 
 Starting with System consolidation, PnR evidence is always taken from the complete `cpu_v3_system`
 containing the CPU, boot path, SDRAM controller, and display path. Every subsequent completed stage
@@ -82,7 +83,7 @@ closure is narrow and dominated by core placement: the tightest path is the core
 write, and the RAM16 leaves and the maintenance scan are not on it. Against the immediately
 preceding build (`a956ca5`, before the scan) the 16-entry window scan removes 282 LUT; against the
 pre-RAM16 `08bcc79` build the whole change removes 681 Logic and 97 registers at the cost of eight
-RAM16 cells. The frozen suite reports identical total cycles, with the post-halt flush varying by at
+RAM16 cells. The frozen suite reports identical per-program cycles, with the post-halt flush varying by at
 most three cycles.
 
 ## Ordered major tasks
@@ -201,7 +202,7 @@ the intrinsic's final `ICACHE_INVALIDATE_ALL_DELAYED; JSEG` adjacency remains un
 Do not hard-code system-control device/channel decoding into the generic CPU execute state merely to
 create the delay. Keep the system-control invalidate output registered and feed that architectural
 pulse to both I-cache and the instruction fetch frontend. When fetch pipelining is added, the frontend
-uses the pulse to advance its epoch and discard queued or outstanding old-path words. This preserves
+uses the pulse to discard queued and outstanding old-path words (now using per-slot current bits). This preserves
 the existing generic device bus while giving the intrinsic deterministic behavior.
 
 Stage 0 acceptance:
@@ -894,3 +895,74 @@ skipped checks in the current implementation progress:
 6. Run audit/PnR when RAM geometry, clocking, resource use, or timing paths change.
 7. Recheck BSRAM count and packing instead of weakening resource audits when memory changes.
 8. Run board validation only when the stage requires physical evidence.
+
+## Resolved-target BTC: measured 4/8-entry comparison
+
+Implemented on `701c7f3+dirty`, without a new Stage number. The architecture and
+handshake contract live in the CPU IP
+[hardware-architecture.md](../../../ip/cpu-v3/docs/hardware-architecture.md);
+configuration and diagnostic semantics live in the
+[benchmark contract](../benchmarks/README.md#btc-comparison-diagnostics).
+This adds no branch prediction, ISA changes, compiler changes or frozen workload revision.
+
+All three configurations ran the same 22 programs with the same compiler/options
+and exact halt checks. Program word counts and per-program retired instruction,
+retired word and redirect counts agree. Per the benchmark contract's "Comparing
+runs" rule nothing is added across programs: every aggregate below is a geometric
+mean over per-program values, equal weight (counters that may be zero use the
+geomean of value + 1, marked `(+1)`). Geomean characteristics are 12,851.7 retired
+instructions/words and 1,214.0 redirects per program. The disabled
+configuration reproduces the earlier suite's per-program cycles exactly.
+
+| Runtime metric | BTC disabled | 4 entries (default) | 8 entries (comparison) |
+| --- | ---: | ---: | ---: |
+| Cycles (geomean) | 34,197.9 | 31,118.3 | 30,683.0 |
+| Cycle ratio versus disabled (geomean of per-program ratios) | 1.0000 | 0.9099 (−9.01%) | 0.8972 (−10.28%) |
+| Redirect wait cycles (+1) | 2,644.6 | 139.2 | 51.8 |
+| Complete BTC hits (+1) / eligible restarts (+1) | — | 878.5 / 1,294.5 | 1,149.9 / 1,294.5 |
+| Incomplete fills cancelled (+1) | — | 2.4 | 2.4 |
+| Post-replay continuation wait cycles (+1) | — | 1.124 | 1.124 |
+
+Eligible restarts include each program's initial stream, hence 22 more than the
+retired-redirect count. Admission requires two consumed words: the ideal target-only
+cache simulation is not the actual hardware hit rate. Timing changes also affect
+cache/arbiter/refresh overlap, so cycle savings are not exactly the difference
+of redirect-wait counters. The near-1 continuation-wait geomean rules out simply
+moving most target bubbles to the first downstream word.
+
+| Program | Disabled cycles | 4-entry cycles | 8-entry cycles |
+| --- | ---: | ---: | ---: |
+| long-quicksort | 1,562,747 | 1,385,568 | 1,378,815 |
+| medium-binary-search | 225,385 | 192,696 | 185,544 |
+| medium-dijkstra | 221,322 | 206,346 | 182,592 |
+| frame-particles | 249,410 | 248,397 | 233,013 |
+| frame-sprite-batch | 938,144 | 764,250 | 764,206 |
+
+Four entries remain the default. Eight save another 1.40% on the geomean cycle ratio
+(0.9860 versus four entries); the exact fitted costs are recorded only in the
+milestone row above and generated reports.
+Both builds pass 54 MHz constraints, but timing margin is narrow: the four-entry
+limiter is the core GPR write-data path; the eight-entry limiter reaches the BTC
+LRU write enable from the fetch queue head. These are fitted results, not physical
+board validation or a guarantee that future placement changes will preserve margin.
+
+Validation: workspace tests (498 passed), strict workspace clippy, layering,
+source hygiene, documentation checks, reproducible boot packaging, all Icarus
+hardware groups including Flash boot, the required CPU emulator/RTL tests and
+system-level co-simulation, plus bounded independent full-address/data scoreboards
+and RTL traces for 0/4/8 entries. Directed cases cover simultaneous restart/hit
+acceptance, PC wrap, segment/high-address distinction, cache-line crossing,
+backpressure/full reservations, stalled continuation, incomplete/error fills,
+exact LRU eviction, reset/flush races, instruction-data changes after invalidation,
+and stale responses surviving repeated redirects with same-cycle FIFO slot reuse.
+Both capacities passed full-system Gowin PnR and `--check-existing` artifact audits.
+No physical-board programming was performed; no commit or post-commit ledger row
+was made.
+
+Generated evidence remains untracked under `target/btc-analysis/`: `btc0.csv`,
+`btc4.csv`, `btc8.csv` retain the frozen schema with explicit capacity labels;
+each capacity directory holds per-program `summary.txt`, `btc.txt`, traces and
+`aggregate.json`; `4/fit/` and `8/fit/` hold fitted reports. Validation logs are in
+`target/cargo-summaries/`, with the aggregate quick/Icarus evidence under
+`target/hardware-validation/`. The normal Gowin output is restored to the default
+four-entry build after the eight-entry comparison.

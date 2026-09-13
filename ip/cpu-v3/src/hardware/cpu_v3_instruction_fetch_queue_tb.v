@@ -27,7 +27,7 @@ integer consecutive_accepts = 0;
 
 function [15:0] word_pattern;
     input [31:0] address;
-    word_pattern = 16'h6000 ^ address[15:0];
+    word_pattern = 16'h6000 ^ address[15:0] ^ {address[23:16], address[31:24]};
 endfunction
 
 always @(posedge clk) begin
@@ -102,7 +102,7 @@ initial begin
     consume_redirect_fast(32'h0002_2000);
     consume(32'h0002_2001);
 
-    // Invalidation toggles the epoch; old responses must be drained, not used.
+    // Invalidation clears request ownership; old responses must be drained, not used.
     core_address <= 32'h0003_3000;
     core_request_valid <= 1;
     flush <= 1;

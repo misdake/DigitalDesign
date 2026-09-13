@@ -26,6 +26,55 @@ use std::fs::{create_dir_all, File};
 use std::io::{BufWriter, Write};
 use std::path::Path;
 
+// Observe the actual fetch emulator state without adding synthesized ports or
+// running a second model. Other system/co-sim paths retain normal emu_connect.
+struct ObservedFetch {
+    state: std::rc::Rc<std::cell::RefCell<cpu_v3::CpuV3InstructionFetchQueueState>>,
+    input: CpuV3InstructionFetchQueueInput,
+    output: CpuV3InstructionFetchQueueOutput,
+}
+impl digital_design_circuit::External for ObservedFetch {
+    fn execute(&mut self, circuit: &mut digital_design_circuit::CircuitWires) {
+        CpuV3InstructionFetchQueue::execute_emu(
+            &mut self.state.borrow_mut(),
+            circuit,
+            &self.input,
+            &self.output,
+        );
+    }
+    fn clock(&mut self, circuit: &mut digital_design_circuit::CircuitWires) {
+        CpuV3InstructionFetchQueue::clock_emu(
+            &mut self.state.borrow_mut(),
+            circuit,
+            &self.input,
+            &self.output,
+        );
+    }
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
+    }
+}
+
+fn write_btc_diagnostics(directory: Option<&Path>, stats: cpu_v3::CpuV3BtcStatistics) {
+    let Some(directory) = directory else {
+        return;
+    };
+    let mut out = BufWriter::new(File::create(directory.join("btc.txt")).unwrap());
+    writeln!(out, "btc_entries={}", cpu_v3::CPU_V3_BTC_ENTRIES).unwrap();
+    writeln!(out, "lookups={}", stats.lookups).unwrap();
+    writeln!(out, "complete_hits={}", stats.hits).unwrap();
+    writeln!(out, "installed={}", stats.installed).unwrap();
+    writeln!(out, "cancelled_fills={}", stats.cancelled_fills).unwrap();
+    writeln!(out, "accepted_words={}", stats.accepted_words).unwrap();
+    writeln!(out, "aborted_replays={}", stats.aborted_replays).unwrap();
+    writeln!(
+        out,
+        "continuation_wait_cycles={}",
+        stats.continuation_wait_cycles
+    )
+    .unwrap();
+}
+
 const SDRAM_WORDS: usize = 0x10000;
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -616,6 +665,9 @@ pub fn run_benchmark_profiled(
         memory[offset] = word;
     }
 
+    let fetch_state = std::rc::Rc::new(std::cell::RefCell::new(
+        cpu_v3::CpuV3InstructionFetchQueueState::default(),
+    ));
     let (mut circuit, handles) = build_circuit(|| {
         let mut core_input = CpuV3CoreInput::allocate();
         let core_output = CpuV3CoreOutput::allocate();
@@ -688,7 +740,11 @@ pub fn run_benchmark_profiled(
         // Create the emulator externals after every wire is connected. The
         // order matches the combinational dependency (core, caches, arbiter).
         CpuV3Core::emu_connect(&core_input, &core_output);
-        CpuV3InstructionFetchQueue::emu_connect(&fetch_input, &fetch_output);
+        digital_design_circuit::external(ObservedFetch {
+            state: fetch_state.clone(),
+            input: fetch_input.clone(),
+            output: fetch_output.clone(),
+        });
         CpuV3TwoWayCache::emu_connect(&icache_input, &icache_output);
         CpuV3DataCache::emu_connect(&dcache_input, &dcache_output);
         CpuV3MemoryArbiter::emu_connect(&arbiter_input, &arbiter_output);
@@ -962,6 +1018,7 @@ pub fn run_benchmark_profiled(
 
         if halt_at.is_none() && core.halted {
             halt_at = Some(cycle + 1);
+            write_btc_diagnostics(trace_directory, fetch_state.borrow().btc_statistics());
             halt_signal = core.halt_signal as u16;
             flush_request = true;
         } else if let Some(main_cycles) = halt_at {

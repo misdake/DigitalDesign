@@ -19,18 +19,41 @@ documented four-beat store exception still keeps memory writes acknowledged
 before a later beat faults.
 
 The fitted system places a four-entry instruction fetch queue in front of the
-core. It reserves fetched and outstanding words, issues consecutive physical
-addresses, and tags each downstream request with an epoch. A branch, `JALR`,
-code-segment change, fault, reset, or I-cache invalidate discards queued and late
-old-epoch words. When the requested word is already queued, the core accepts it
-directly in `FetchRequest`, or during Execute when the retiring instruction is in
-the Stage 12 pipelineable subset. The legacy `FetchResponse` phase remains
-available for a slower responder or a queue bubble. A redirect can issue the
-target lookup in its restart cycle, and a matching response can fall through an
-empty queue directly to a ready core. If the core is backpressured, the same
-response is enqueued instead of being lost. The tables below count core execute
-cycles from the `Execute` cycle through retirement; add fetch wait cycles only
-when the queue does not already contain the requested word.
+core. It reserves fetched and outstanding words and uses per-slot current bits:
+a redirect or flush marks all older requests stale, and their ordered responses
+are drained without delivery. New requests win when a slot is drained and reused
+in the same cycle. This remains correct across arbitrarily many redirects before
+an old response returns. Sequential word addresses wrap PC without carrying into
+CSEG. A queued word or matching memory-response bypass can be accepted directly
+in FetchRequest or in the Stage 12 pipelineable Execute subset; backpressured
+responses are queued.
+
+The queue also contains a fully associative resolved-target BTC, defaulting to
+four entries of two 16-bit instruction words (not necessarily two instructions).
+It compares the full physical target using a 22-bit tag plus a zero check on the
+upper address bits. A restart hit supplies the first word combinationally and
+resumes downstream requests at the target's second successor. A replay cursor
+advances only when the core accepts a word, independently of downstream readiness.
+The ordinary queue may hold later words during replay; BTC consumption never
+pops that queue or frees its capacity. A hot two-cycle I-cache continuation can
+therefore follow both BTC words without a bubble. Downstream refusal or a miss
+can still stall the continuation.
+
+A miss collects only the first two successful core acceptances of that stream;
+installation occurs after both words arrive. Redirect, flush or an instruction
+error cancels an incomplete fill without evicting a complete entry. Empty slots
+are used first, followed by exact LRU replacement; accepting the first BTC word
+marks its entry MRU. Reset, halt, fault and global I-cache invalidation clear the
+BTC and replay/fill state. Ordinary redirects retain complete entries. The BTC
+neither predicts a target nor adds memory traffic to complete a partial entry;
+software-controlled instruction coherency applies exactly as to the I-cache.
+
+`CPU_V3_BTC_ENTRIES=0|4|8` is a build-time environment setting, default 4.
+The CPU crate build script generates one constant used by both the Rust model
+and generated Verilog. Zero disables BTC storage/lookup for comparison while
+retaining the per-slot stale-response fix. There are no new hardware ports or
+ISA controls. The tables below count Execute through retirement; fetch waits
+are additional when neither the queue, BTC nor bypass can supply the word.
 
 ## Core storage and execution resources
 
