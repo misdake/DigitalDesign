@@ -2869,6 +2869,7 @@ fn stmt_expr(l: &mut FnLower, e: &Expr) -> Result<(), syn::Error> {
             Ok(())
         }
         Expr::If(_) | Expr::While(_) | Expr::Loop(_) | Expr::ForLoop(_) => control_flow(l, e),
+        Expr::Match(m) => lower_match(l, m),
         Expr::Break(b) => {
             if b.expr.is_some() {
                 return Err(err(&b.break_token, "`break` with a value is not supported"));
@@ -2922,6 +2923,180 @@ fn loop_label(label: &Option<syn::Label>) -> Option<&'static str> {
 /// the `'name` of a `break 'name` / `continue 'name` target
 fn jump_label(label: &Option<syn::Lifetime>) -> Option<&'static str> {
     label.as_ref().map(|l| intern(&l.ident.to_string()))
+}
+
+/// `match` lowered to a chain of `Br`s (the IR has no jump-table terminator).
+/// Patterns are integer literals, enum variants and `_` — no bindings, guards,
+/// ranges or nesting. Exhaustiveness follows Rust: an enum match must list every
+/// variant or have a `_` arm, and an integer match needs `_`.
+fn lower_match(l: &mut FnLower, m: &syn::ExprMatch) -> Result<(), syn::Error> {
+    let (scrut, scrut_ty) = expr(l, &m.expr)?.reg(l, &m.expr, "match scrutinee")?;
+    if !matches!(scrut_ty, Ty::U16 | Ty::I16 | Ty::Ptr | Ty::Enum(_)) {
+        return Err(err(
+            &m.expr,
+            format!(
+                "match needs an integer or enum value, got {}",
+                scrut_ty.display()
+            ),
+        ));
+    }
+    let mut arms: Vec<(Option<u16>, &syn::Arm)> = vec![];
+    let mut seen: Vec<u16> = vec![];
+    let mut wild = false;
+    for arm in &m.arms {
+        if let Some((_, guard)) = &arm.guard {
+            return Err(err(guard, "match guards are not supported"));
+        }
+        let value = match &arm.pat {
+            syn::Pat::Wild(_) => {
+                wild = true;
+                None
+            }
+            syn::Pat::Lit(lit) => Some(literal_pattern(lit)?),
+            syn::Pat::Path(path) => Some(variant_pattern(l, &scrut_ty, path)?),
+            syn::Pat::Ident(ident) => {
+                return Err(err(
+                    &ident.ident,
+                    "match bindings are not supported; use `_` or a constant",
+                ))
+            }
+            other => {
+                return Err(err(
+                    other,
+                    "unsupported pattern (an integer literal, an enum variant or `_`)",
+                ))
+            }
+        };
+        if let Some(v) = value {
+            if seen.contains(&v) {
+                return Err(err(&arm.pat, format!("duplicate match arm for {v}")));
+            }
+            seen.push(v);
+        }
+        arms.push((value, arm));
+    }
+    if !wild {
+        match &scrut_ty {
+            Ty::Enum(name) => {
+                let def = l
+                    .globals
+                    .enums
+                    .get(name)
+                    .cloned()
+                    .ok_or_else(|| err(&m.expr, format!("unknown enum `{name}`")))?;
+                let missing: Vec<&str> = def
+                    .variants
+                    .iter()
+                    .filter(|(_, value)| !seen.contains(value))
+                    .map(|(variant, _)| variant.as_str())
+                    .collect();
+                if !missing.is_empty() {
+                    return Err(err(
+                        m,
+                        format!(
+                            "match on `{name}` is not exhaustive: missing {} (add the arm or `_`)",
+                            missing.join(", ")
+                        ),
+                    ));
+                }
+            }
+            _ => return Err(err(m, "a match on integers needs a `_` arm")),
+        }
+    }
+    let join = l.b.raw_block(&[]);
+    for (value, arm) in arms {
+        match value {
+            Some(pattern) => {
+                let body = l.b.raw_block(&[]);
+                let next = l.b.raw_block(&[]);
+                let cmp = l.b.cmp(scrut, CmpRhs::Imm(pattern), CompareOp::Equal);
+                l.b.br(cmp, body, next);
+                l.b.enter_block(body);
+                lower_match_arm(l, arm)?;
+                // wire this arm's body to the join and continue in `next`
+                l.b.mid_if_else(next, join);
+                l.dead = false;
+            }
+            None => {
+                lower_match_arm(l, arm)?;
+                l.b.end_if(join);
+                l.dead = false;
+                return Ok(());
+            }
+        }
+    }
+    l.b.end_if(join);
+    l.dead = false;
+    Ok(())
+}
+
+/// the body of one `match` arm (a block, or any other statement expression)
+fn lower_match_arm(l: &mut FnLower, arm: &syn::Arm) -> Result<(), syn::Error> {
+    match arm.body.as_ref() {
+        Expr::Block(b) => block(l, &b.block),
+        other => stmt_expr(l, other),
+    }
+}
+
+/// an integer pattern literal (`3u16`, `-1i16`)
+fn literal_pattern(lit: &syn::PatLit) -> Result<u16, syn::Error> {
+    let negative = matches!(
+        lit.expr.as_ref(),
+        Expr::Unary(u) if matches!(u.op, SUnOp::Neg(_))
+    );
+    let inner = match lit.expr.as_ref() {
+        Expr::Unary(u) => u.expr.as_ref(),
+        other => other,
+    };
+    let Expr::Lit(value) = inner else {
+        return Err(err(lit, "a match pattern must be an integer literal"));
+    };
+    let Lit::Int(int) = &value.lit else {
+        return Err(err(lit, "a match pattern must be an integer literal"));
+    };
+    let v = lit_int_value(int)?;
+    if v > u16::MAX as u64 {
+        return Err(err(lit, "literal out of 16-bit range"));
+    }
+    let v = v as u16;
+    Ok(if negative { v.wrapping_neg() } else { v })
+}
+
+/// an enum variant pattern (`Trace::Run`), checked against the scrutinee's enum
+fn variant_pattern(l: &FnLower, scrut_ty: &Ty, path: &syn::PatPath) -> Result<u16, syn::Error> {
+    if path.qself.is_some() || path.path.segments.len() != 2 {
+        return Err(err(
+            path,
+            "a match pattern must be an integer literal, an enum variant or `_`",
+        ));
+    }
+    let enum_name = path.path.segments[0].ident.to_string();
+    let variant = path.path.segments[1].ident.to_string();
+    let Some(def) = l.globals.enums.get(&enum_name) else {
+        return Err(err(path, format!("unknown enum `{enum_name}`")));
+    };
+    let Some((_, value)) = def.variants.iter().find(|(name, _)| *name == variant) else {
+        let known = def
+            .variants
+            .iter()
+            .map(|(name, _)| name.as_str())
+            .collect::<Vec<_>>()
+            .join(", ");
+        return Err(err(
+            path,
+            format!("enum `{enum_name}` has no variant `{variant}` (variants: {known})"),
+        ));
+    };
+    if scrut_ty != &Ty::Enum(enum_name.clone()) {
+        return Err(err(
+            path,
+            format!(
+                "pattern `{enum_name}::{variant}` does not match {}",
+                scrut_ty.display()
+            ),
+        ));
+    }
+    Ok(*value)
 }
 
 fn control_flow(l: &mut FnLower, e: &Expr) -> Result<(), syn::Error> {
@@ -3562,7 +3737,10 @@ fn expr(l: &mut FnLower, e: &Expr) -> Result<Val, syn::Error> {
             "a tuple is memory-resident; bind it with `let (a, b) = ...`, a typed `let`, or return \
              it (spec §9c)",
         )),
-        Expr::Match(_) => Err(err(e, "match is not supported (use if/else)")),
+        Expr::Match(_) => Err(err(
+            e,
+            "match is a statement in this version; assign inside its arms (or use if/else)",
+        )),
         Expr::Closure(_) => Err(err(e, "closures are not supported")),
         Expr::Macro(_) => Err(err(e, "macros are not supported")),
         Expr::Reference(_) => Err(err(

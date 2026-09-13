@@ -101,7 +101,7 @@ fn test_static_data_cannot_overlap_the_function_table() {
 fn test_unsupported_constructs() {
     expect_error(
         "fn f(x: u16) -> u16 { match x { _ => 0 } }",
-        "not supported",
+        "match is a statement",
     );
     expect_error("fn f(x: u16) -> u16 { let g = |y| y; x }", "not supported");
     expect_error("fn f<T>(x: T) -> T { x }", "not supported");
@@ -499,4 +499,52 @@ fn test_enum_restrictions() {
         )
         .is_ok()
     );
+}
+
+#[test]
+fn test_match_restrictions() {
+    // an enum match must be exhaustive; an integer match needs `_`
+    expect_error(
+        "#[derive(PartialEq)] enum E { A, B }\nfn main() { let e = E::A; match e { E::A => { halt(1); } } }",
+        "not exhaustive",
+    );
+    expect_error(
+        "fn main() { let x = 1u16; match x { 1u16 => { halt(1); } } }",
+        "needs a `_` arm",
+    );
+    // bindings, guards, ranges and alternations are out of scope
+    expect_error(
+        "fn main() { let x = 1u16; match x { n => { halt(1); } _ => {} } }",
+        "bindings are not supported",
+    );
+    expect_error(
+        "fn main() { let x = 1u16; match x { 1u16 if x > 0u16 => { halt(1); } _ => {} } }",
+        "guards are not supported",
+    );
+    expect_error(
+        "fn main() { let x = 1u16; match x { 1u16..=3u16 => { halt(1); } _ => {} } }",
+        "unsupported pattern",
+    );
+    expect_error(
+        "fn main() { let x = 1u16; match x { 1u16 | 2u16 => { halt(1); } _ => {} } }",
+        "unsupported pattern",
+    );
+    // duplicate arms, and a pattern from another enum
+    expect_error(
+        "fn main() { let x = 1u16; match x { 1u16 => {} 1u16 => {} _ => {} } }",
+        "duplicate match arm",
+    );
+    expect_error(
+        "#[derive(PartialEq)] enum A { X }\n#[derive(PartialEq)] enum B { X }\nfn main() { let a = A::X; match a { B::X => {} } }",
+        "does not match",
+    );
+    // all variants, no `_`: fine
+    assert!(
+        cpu_v2::frontend::parse_source(
+            "#[derive(PartialEq)] enum E { A, B }\nfn main() { let e = E::A; match e { E::A => { halt(1); } E::B => { halt(2); } } }"
+        )
+        .is_ok()
+    );
+    // match is a statement, so it cannot be a function''s tail value
+    expect_error("fn f(x: u16) -> u16 { match x { _ => 0 } }", "match");
 }

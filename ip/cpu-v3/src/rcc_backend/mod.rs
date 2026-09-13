@@ -2370,6 +2370,44 @@ mod tests {
         assert_eq!(run_with_std_capped(source, 40_000), 100 + 20 + 1 + 2);
     }
 
+    #[test]
+    fn match_lowers_to_a_branch_chain() {
+        let source = r#"
+            #[derive(PartialEq)]
+            enum State { Idle, Run, Done }
+
+            fn step(s: State) -> State {
+                let mut next: State = State::Idle;
+                match s {
+                    State::Idle => { next = State::Run; }
+                    State::Run => { next = State::Done; }
+                    State::Done => { next = State::Idle; }
+                }
+                next
+            }
+
+            fn main() {
+                let mut s: State = State::Idle;
+                let mut acc: u16 = 0;
+                let mut i: u16 = 0;
+                while i < 6u16 {
+                    i = i + 1u16;
+                    s = step(s);
+                    acc = acc + (s as u16);
+                    match i {
+                        3u16 => { acc = acc + 100u16; }
+                        6u16 => { break; }
+                        _ => { acc = acc + 1u16; }
+                    }
+                }
+                halt(acc);
+            }
+        "#;
+        // states cycle Run(1) Done(2) Idle(0) Run(1) Done(2) Idle(0):
+        // acc = 1+2+0+1+2+0 = 6, plus a +1 on i=1,2,4,5 and +100 on i=3
+        assert_eq!(run_with_std_capped(source, 60_000), 6 + 4 + 100);
+    }
+
     fn compile(source: &str, options: CompilerOptions) -> CpuV3Program {
         let program = parse_source_with(source, options.data_base).unwrap();
         super::compile(program, &options, "main")

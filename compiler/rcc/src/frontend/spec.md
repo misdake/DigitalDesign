@@ -345,7 +345,11 @@ a binding, an argument, a return value, a struct field, a `Buf<Trace, N>` elemen
 - `==` and `!=` compare two values of the *same* enum, and — like real Rust — only when the enum
   derives `PartialEq`; ordering (`<`, `>=`, …) is not defined. An integer never compares with an
   enum, and arithmetic on enums is a type error.
-- `match` on enums is the next phase; until then use `if e == Trace::Idle { … }`.
+- `match` is a **statement** (it has no value): `match e { Trace::Idle => { .. } Trace::Run => { .. } _ => { .. } }`.
+  Patterns are integer literals, enum variants and `_`; bindings, guards, ranges, `|` and nested
+  patterns are errors. The value is tested once and the arms become a chain of branches.
+- Exhaustiveness follows Rust: a match on an enum must list every variant or have a `_` arm, and a
+  match on integers needs `_` — otherwise the same source would not build on the host.
 - Out of scope for now (§12): variants with payload, explicit discriminants, `#[repr]`, enum
   statics, and casting an integer *to* an enum.
 ## 10. Arrays: `Buf<T, N>`
