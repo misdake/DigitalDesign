@@ -458,3 +458,45 @@ fn test_tuple_and_sret_restrictions() {
     // a tuple name is not a value on its own
     expect_error("fn main() { let t = (1u16, 2u16); }", "memory-resident");
 }
+
+#[test]
+fn test_enum_restrictions() {
+    // a C-style enum: fieldless variants, no explicit discriminants, no duplicates
+    expect_error("enum E { A(u16) }", "fieldless");
+    expect_error("enum E { A = 5 }", "explicit discriminants");
+    expect_error("enum E { A, A }", "defined twice");
+    expect_error("enum E { }", "at least one variant");
+    assert!(
+        cpu_v2::frontend::parse_source("enum E { A, B }\nfn main() { halt(E::A as u16); }").is_ok()
+    );
+    // an unknown variant lists the known ones
+    expect_error(
+        "enum E { A, B }\nfn main() { halt(E::C as u16); }",
+        "has no variant `C`",
+    );
+    // comparing needs the derive, ordering is undefined, and types must match
+    expect_error(
+        "enum E { A, B }\nfn main() { if E::A == E::B { halt(1); } }",
+        "needs #[derive(PartialEq)]",
+    );
+    expect_error(
+        "#[derive(PartialEq)] enum E { A, B }\nfn main() { if E::A < E::B { halt(1); } }",
+        "compare with `==`/`!=` only",
+    );
+    expect_error(
+        "#[derive(PartialEq)] enum A { X }\n#[derive(PartialEq)] enum B { X }\nfn main() { if A::X == B::X { halt(1); } }",
+        "cannot compare",
+    );
+    // an enum is a word, not an integer
+    expect_error(
+        "enum E { A }\nfn main() { halt((E::A + 1u16) as u16); }",
+        "type mismatch",
+    );
+    // ... and it is a word, so it fits a struct field and a Buf element
+    assert!(
+        cpu_v2::frontend::parse_source(
+            "enum E { A }\nstruct S { e: E }\nfn main() { let b: Buf<E, 2> = Buf::new([E::A, E::A]); halt(b.len()); }"
+        )
+        .is_ok()
+    );
+}

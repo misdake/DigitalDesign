@@ -2341,6 +2341,35 @@ mod tests {
         );
     }
 
+    #[test]
+    fn enums_are_words_and_carry_state() {
+        let source = r#"
+            #[derive(PartialEq)]
+            enum Trace { Idle, Run, Halt }
+            struct Job { state: Trace, ticks: u16 }
+
+            fn next(s: Trace) -> Trace {
+                if s == Trace::Idle { Trace::Run } else { Trace::Halt }
+            }
+
+            fn main() {
+                let mut j: Job = Job { state: Trace::Idle, ticks: 0 };
+                let first = j.state as u16;
+                j.state = next(j.state);
+                let second = j.state as u16;
+                let third = next(j.state) as u16;
+                let mut buf: Buf<Trace, 2> = Buf::new([Trace::Idle, Trace::Halt]);
+                let mut v = buf.as_array();
+                v[0u16] = j.state;
+                let r0 = v[0u16] as u16;
+                let r1 = v[1u16] as u16;
+                halt(first * 1000u16 + second * 100u16 + third * 10u16 + r0 + r1);
+            }
+        "#;
+        // Idle = 0, Run = 1, Halt = 2: first(0) second(1) third(2) r0(1) r1(2)
+        assert_eq!(run_with_std_capped(source, 40_000), 100 + 20 + 1 + 2);
+    }
+
     fn compile(source: &str, options: CompilerOptions) -> CpuV3Program {
         let program = parse_source_with(source, options.data_base).unwrap();
         super::compile(program, &options, "main")

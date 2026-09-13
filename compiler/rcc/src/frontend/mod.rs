@@ -291,6 +291,18 @@ fn parse_files(
     // `ty_of` recognises a type path as a struct only through this name set.
     let mut raw_structs: std::collections::BTreeMap<String, (usize, &syn::ItemStruct)> =
         std::collections::BTreeMap::new();
+    let mut raw_enums: std::collections::BTreeMap<String, (usize, &syn::ItemEnum)> =
+        std::collections::BTreeMap::new();
+    for (fi, file) in files.iter().enumerate() {
+        for item in &file.items {
+            if let Item::Enum(e) = item {
+                let name = e.ident.to_string();
+                if raw_enums.insert(name.clone(), (fi, e)).is_some() {
+                    return Err((fi, err(&e.ident, format!("enum `{name}` defined twice"))));
+                }
+            }
+        }
+    }
     for (fi, file) in files.iter().enumerate() {
         for item in &file.items {
             if let Item::Struct(s) = item {
@@ -304,7 +316,15 @@ fn parse_files(
             }
         }
     }
-    let struct_names: StructNames = raw_structs.keys().cloned().collect();
+    let mut type_names: TypeNames = raw_structs
+        .keys()
+        .map(|name| (name.clone(), NominalKind::Struct))
+        .collect();
+    for (name, (fi, item)) in &raw_enums {
+        let def = enum_def(item).map_err(|error| (*fi, error))?;
+        type_names.insert(name.clone(), NominalKind::Enum);
+        globals.enums.insert(name.clone(), def);
+    }
     let mut deferred_statics: Vec<(usize, &syn::ItemStatic)> = vec![];
     for (fi, file) in files.iter().enumerate() {
         let result: Result<(), syn::Error> = (|| {
@@ -323,7 +343,7 @@ fn parse_files(
                     }
                     Item::Use(_) => { /* ignored: for the IDE only */ }
                     Item::Const(c) => {
-                        let ty = ty_of(&c.ty, &StructNames::new())?;
+                        let ty = ty_of(&c.ty, &TypeNames::new())?;
                         if !matches!(ty, Ty::U16 | Ty::I16) {
                             return Err(err(&c.ty, "const must be u16 or i16"));
                         }
@@ -337,7 +357,7 @@ fn parse_files(
                         // an aggregate static needs the resolved struct layouts, so it
                         // is laid out after the struct pass; scalars and buffers of
                         // scalars keep their original allocation order
-                        if static_is_aggregate(s, &struct_names) {
+                        if static_is_aggregate(s, &type_names) {
                             deferred_statics.push((fi, s));
                         } else {
                             add_static(s, &consts, &mut globals)?;
@@ -345,7 +365,7 @@ fn parse_files(
                     }
                     Item::Verbatim(_) => { /* attributes on use items land here */ }
                     Item::Mod(_) => { /* already resolved by compile_program */ }
-                    Item::Struct(_) => { /* collected before this loop */ }
+                    Item::Struct(_) | Item::Enum(_) => { /* collected before this loop */ }
                     Item::Trait(_) => return Err(err(item, "traits are not supported")),
                     Item::Impl(_) => return Err(err(item, "impl blocks are not supported")),
                     Item::Macro(_) => return Err(err(item, "macros are not supported")),
@@ -366,7 +386,7 @@ fn parse_files(
         let mut builder = LayoutBuilder {
             raw: &raw_structs,
             consts: &consts,
-            names: &struct_names,
+            names: &type_names,
             done: StructTable::new(),
             visiting: vec![],
         };
@@ -375,19 +395,20 @@ fn parse_files(
             builder.done.insert(name.clone(), def);
         }
         globals.structs = builder.done;
-        globals.struct_names = struct_names.clone();
+        globals.type_names = type_names.clone();
     }
     // aggregate statics now that the layouts exist (they land after the scalars)
     let layouts = globals.structs.clone();
     for (fi, s) in &deferred_statics {
-        add_aggregate_static(s, &consts, &layouts, &mut globals).map_err(|error| (*fi, error))?;
+        add_aggregate_static(s, &consts, &layouts, &type_names, &mut globals)
+            .map_err(|error| (*fi, error))?;
     }
     // collect signatures first (functions can call each other regardless of order)
     let mut sigs: HashMap<String, Sig> = HashMap::new();
     let mut names = vec![];
     for (fi, f) in &fns {
         let name = f.sig.ident.to_string();
-        let sig = signature(f, &consts, &globals.struct_names).map_err(|error| (*fi, error))?;
+        let sig = signature(f, &consts, &globals.type_names).map_err(|error| (*fi, error))?;
         if sigs.insert(name.clone(), sig).is_some() {
             return Err((
                 *fi,
@@ -560,13 +581,22 @@ struct Globals {
     limit_name: &'static str,
     /// resolved struct layouts, by name
     structs: StructTable,
+    /// C-style enums, by name (spec §9d)
+    enums: EnumTable,
     /// every struct name in the program (ty_of recognises a type path through it)
-    struct_names: StructNames,
+    type_names: TypeNames,
 }
 
-/// every struct name in the program; `ty_of` needs only membership, while the
-/// layout pass needs the resolved definitions
-type StructNames = std::collections::BTreeSet<String>;
+/// a nominal type a `ty_of` path may name
+#[derive(Clone, Copy, PartialEq, Debug)]
+enum NominalKind {
+    Struct,
+    Enum,
+}
+
+/// every struct/enum name in the program, mapped to its kind; `ty_of` needs only
+/// this, while the layout pass needs the resolved definitions
+type TypeNames = std::collections::BTreeMap<String, NominalKind>;
 
 /// one field of a struct: its name, type and word offset in the layout
 #[derive(Clone, Debug)]
@@ -589,6 +619,17 @@ struct StructDef {
 /// deterministic)
 type StructTable = std::collections::BTreeMap<String, StructDef>;
 
+/// a C-style enum: variants in declaration order with their discriminants, plus
+/// whether `#[derive(PartialEq)]` was written (spec §9d)
+#[derive(Clone, Debug)]
+struct EnumDef {
+    variants: Vec<(String, u16)>,
+    partial_eq: bool,
+}
+
+/// resolved enums by name
+type EnumTable = std::collections::BTreeMap<String, EnumDef>;
+
 /// storage size of a value in 16-bit words (spec §1: every scalar is one word)
 fn word_size(
     ty: &Ty,
@@ -596,7 +637,7 @@ fn word_size(
     at: &impl syn::spanned::Spanned,
 ) -> Result<u16, syn::Error> {
     match ty {
-        Ty::U16 | Ty::I16 | Ty::Ptr | Ty::Bool | Ty::Fix16 | Ty::ArrayRef(_) => Ok(1),
+        Ty::U16 | Ty::I16 | Ty::Ptr | Ty::Bool | Ty::Fix16 | Ty::ArrayRef(_) | Ty::Enum(_) => Ok(1),
         Ty::FnPtr { .. } => Ok(1),
         Ty::Tuple(elems) => u16::try_from(elems.len())
             .map_err(|_| err(at, "tuple is larger than the 16-bit address space")),
@@ -618,6 +659,7 @@ fn word_size(
 
 /// a value that lives in memory as a word range: a struct, a tuple or a buffer
 fn is_aggregate(ty: &Ty) -> bool {
+    // an enum is a plain word, not an address (spec §9d)
     matches!(ty, Ty::Struct(_) | Ty::Tuple(_) | Ty::Array(..))
 }
 
@@ -722,7 +764,7 @@ fn struct_align(s: &syn::ItemStruct) -> Result<u16, syn::Error> {
 struct LayoutBuilder<'a> {
     raw: &'a std::collections::BTreeMap<String, (usize, &'a syn::ItemStruct)>,
     consts: &'a HashMap<String, (u16, Ty)>,
-    names: &'a StructNames,
+    names: &'a TypeNames,
     done: StructTable,
     visiting: Vec<String>,
 }
@@ -859,7 +901,7 @@ fn const_eval(e: &Expr, consts: &HashMap<String, (u16, Ty)>) -> Result<u16, syn:
         }
         Expr::Cast(c) => {
             // u16/i16 casts are free
-            let _ = ty_of(&c.ty, &StructNames::new())?;
+            let _ = ty_of(&c.ty, &TypeNames::new())?;
             const_eval(&c.expr, consts)
         }
         _ => Err(err(e, "not a constant expression")),
@@ -869,7 +911,72 @@ fn const_eval(e: &Expr, consts: &HashMap<String, (u16, Ty)>) -> Result<u16, syn:
 /// whether a static's type is an aggregate, which needs the resolved layouts and
 /// is therefore laid out after the struct pass (spec §9.4). Scalar buffers stay on
 /// the original path so their addresses do not move.
-fn static_is_aggregate(s: &syn::ItemStatic, structs: &StructNames) -> bool {
+/// `enum E { A, B }`: fieldless variants only, no generics and no explicit
+/// discriminants; `#[derive(PartialEq)]`, `#[allow]` and `#[doc]` are accepted and
+/// anything else is an error (spec §9d)
+fn enum_def(item: &syn::ItemEnum) -> Result<EnumDef, syn::Error> {
+    if !item.generics.params.is_empty() {
+        return Err(err(&item.generics, "generics are not supported"));
+    }
+    let mut partial_eq = false;
+    for attr in &item.attrs {
+        if attr.path.is_ident("allow") || attr.path.is_ident("doc") {
+            continue;
+        }
+        if attr.path.is_ident("derive") {
+            let syn::Meta::List(list) = attr.parse_meta()? else {
+                return Err(err(attr, "expected #[derive(PartialEq)]"));
+            };
+            for nested in &list.nested {
+                match nested {
+                    syn::NestedMeta::Meta(syn::Meta::Path(path)) if path.is_ident("PartialEq") => {
+                        partial_eq = true;
+                    }
+                    other => {
+                        return Err(err(
+                            other,
+                            "only #[derive(PartialEq)] is supported on an enum",
+                        ))
+                    }
+                }
+            }
+            continue;
+        }
+        return Err(err(
+            attr,
+            "attributes are not supported on an enum (except #[derive(PartialEq)])",
+        ));
+    }
+    let mut variants: Vec<(String, u16)> = vec![];
+    for (index, variant) in item.variants.iter().enumerate() {
+        if !matches!(variant.fields, syn::Fields::Unit) {
+            return Err(err(
+                variant,
+                "only fieldless variants are supported (a C-style enum, spec §9d)",
+            ));
+        }
+        if let Some((_, value)) = &variant.discriminant {
+            return Err(err(value, "explicit discriminants are not supported"));
+        }
+        let name = variant.ident.to_string();
+        if variants.iter().any(|(existing, _)| *existing == name) {
+            return Err(err(
+                &variant.ident,
+                format!("variant `{name}` defined twice"),
+            ));
+        }
+        variants.push((name, index as u16));
+    }
+    if variants.is_empty() {
+        return Err(err(item, "an enum needs at least one variant"));
+    }
+    Ok(EnumDef {
+        variants,
+        partial_eq,
+    })
+}
+
+fn static_is_aggregate(s: &syn::ItemStatic, structs: &TypeNames) -> bool {
     match s.ty.as_ref() {
         syn::Type::Tuple(_) => true,
         syn::Type::Path(tp) => {
@@ -877,7 +984,7 @@ fn static_is_aggregate(s: &syn::ItemStatic, structs: &StructNames) -> bool {
                 return false;
             }
             let seg = &tp.path.segments[0];
-            if structs.contains(&seg.ident.to_string()) {
+            if structs.get(&seg.ident.to_string()) == Some(&NominalKind::Struct) {
                 return true;
             }
             if seg.ident == "Buf" {
@@ -886,7 +993,8 @@ fn static_is_aggregate(s: &syn::ItemStatic, structs: &StructNames) -> bool {
                         args.args.first()
                     {
                         return inner.path.segments.len() == 1
-                            && structs.contains(&inner.path.segments[0].ident.to_string());
+                            && structs.get(&inner.path.segments[0].ident.to_string())
+                                == Some(&NominalKind::Struct);
                     }
                 }
             }
@@ -902,6 +1010,7 @@ fn add_aggregate_static(
     s: &syn::ItemStatic,
     consts: &HashMap<String, (u16, Ty)>,
     structs: &StructTable,
+    names: &TypeNames,
     g: &mut Globals,
 ) -> Result<(), syn::Error> {
     if s.mutability.is_some() {
@@ -910,8 +1019,7 @@ fn add_aggregate_static(
             "static mut is not supported; write via addr_of(&X) (see spec §9.2)",
         ));
     }
-    let names: StructNames = structs.keys().cloned().collect();
-    let ty = ty_of_maybe_array(s.ty.as_ref(), consts, &names)?;
+    let ty = ty_of_maybe_array(s.ty.as_ref(), consts, names)?;
     let size = word_size(&ty, structs, s)?;
     let addr = reserve_static(g, size as usize, &s.ident)?;
     let mut words: Vec<(u16, u16)> = vec![];
@@ -1072,14 +1180,14 @@ fn add_static(
         ));
     }
     let name = s.ident.to_string();
-    if let Some(owned) = buf_type(s.ty.as_ref(), consts, &StructNames::new())? {
+    if let Some(owned) = buf_type(s.ty.as_ref(), consts, &TypeNames::new())? {
         let Ty::Array(elem, len) = owned else {
             unreachable!("buf_type returns an array")
         };
         if !matches!(*elem, Ty::U16 | Ty::I16) {
             return Err(err(
                 &s.ty,
-                "a static Buf element must be u16 or i16 (struct statics are not supported yet)",
+                "a static Buf element must be u16 or i16 (struct and enum statics are not supported yet)",
             ));
         }
         let elem = *elem;
@@ -1128,7 +1236,7 @@ fn add_static(
             "native arrays are not part of the subset; write Buf<T, N> (spec §10)",
         )),
         t => {
-            let ty = ty_of(t, &StructNames::new())?;
+            let ty = ty_of(t, &TypeNames::new())?;
             if !matches!(ty, Ty::U16 | Ty::I16) {
                 return Err(err(
                     t,
@@ -1172,6 +1280,8 @@ enum Ty {
     /// a tuple of scalars: memory-resident like a struct, element `i` at offset
     /// `i` (spec §9c)
     Tuple(Vec<Ty>),
+    /// a C-style enum: one word holding the variant's discriminant (spec §9d)
+    Enum(String),
     /// CpuV3 FPU types: one F register per value. fix16 is a vector whose
     /// only meaningful lane is x; vec2/vec3 carry meaning in the first N
     /// lanes and keep the upper lanes zero.
@@ -1218,6 +1328,7 @@ impl Ty {
             ),
             Ty::Array(elem, n) => format!("Buf<{}, {n}>", elem.display()),
             Ty::Struct(name) => name.clone(),
+            Ty::Enum(name) => name.clone(),
             Ty::Tuple(elems) => format!(
                 "({})",
                 elems
@@ -1242,7 +1353,9 @@ struct Sig {
     ret: Ty,
 }
 
-fn ty_of(ty: &Type, structs: &StructNames) -> Result<Ty, syn::Error> {
+/// `structs` is the nominal-type table (structs *and* enums): `ty_of` only needs to
+/// know which kind a name is
+fn ty_of(ty: &Type, structs: &TypeNames) -> Result<Ty, syn::Error> {
     match ty {
         Type::Path(tp) => {
             if tp.path.segments.len() != 1 {
@@ -1274,8 +1387,11 @@ fn ty_of(ty: &Type, structs: &StructNames) -> Result<Ty, syn::Error> {
                 let elem = ty_of(elem, structs)?;
                 // one list for both array spellings: this set must stay equal to
                 // `buf_type`'s (see the whitelist test in rcc_errors.rs)
-                if !matches!(elem, Ty::U16 | Ty::I16 | Ty::Struct(_)) {
-                    return Err(err(ty, "Array element type must be u16, i16 or a struct"));
+                if !matches!(elem, Ty::U16 | Ty::I16 | Ty::Struct(_) | Ty::Enum(_)) {
+                    return Err(err(
+                        ty,
+                        "Array element type must be u16, i16, a struct or an enum",
+                    ));
                 }
                 return Ok(Ty::ArrayRef(Box::new(elem)));
             }
@@ -1305,11 +1421,14 @@ fn ty_of(ty: &Type, structs: &StructNames) -> Result<Ty, syn::Error> {
                      length only builds for the target though (Rust const generics take `usize`), so \\
                      spell the literal (`Buf<u16, 6>`) when the source must build on the host too",
                 )),
-                _ if structs.contains(&name) => Ok(Ty::Struct(name)),
-                _ => Err(err(
-                    ty,
-                    "type not supported (only u16/i16/Ptr/Array<T>/fn pointer/fix16/vecN/struct)",
-                )),
+                _ => match structs.get(&name) {
+                    Some(NominalKind::Struct) => Ok(Ty::Struct(name)),
+                    Some(NominalKind::Enum) => Ok(Ty::Enum(name)),
+                    None => Err(err(
+                        ty,
+                        "type not supported (only u16/i16/Ptr/Array<T>/fn pointer/fix16/vecN/struct/enum)",
+                    )),
+                },
             }
         }
         Type::BareFn(bf) => {
@@ -1373,7 +1492,7 @@ fn ty_of(ty: &Type, structs: &StructNames) -> Result<Ty, syn::Error> {
 fn ty_of_maybe_array(
     ty: &Type,
     consts: &HashMap<String, (u16, Ty)>,
-    structs: &StructNames,
+    structs: &TypeNames,
 ) -> Result<Ty, syn::Error> {
     if let Some(owned) = buf_type(ty, consts, structs)? {
         return Ok(owned);
@@ -1393,7 +1512,7 @@ fn ty_of_maybe_array(
 fn buf_type(
     ty: &Type,
     consts: &HashMap<String, (u16, Ty)>,
-    structs: &StructNames,
+    structs: &TypeNames,
 ) -> Result<Option<Ty>, syn::Error> {
     let Type::Path(tp) = ty else {
         return Ok(None);
@@ -1429,10 +1548,10 @@ fn buf_type(
         return Err(err(ty, "Buf needs two parameters, like Buf<u16, 8>"));
     }
     let elem = ty_of(elem_ty, structs)?;
-    if !matches!(elem, Ty::U16 | Ty::I16 | Ty::Struct(_)) {
+    if !matches!(elem, Ty::U16 | Ty::I16 | Ty::Struct(_) | Ty::Enum(_)) {
         return Err(err(
             elem_ty,
-            "Buf element type must be u16, i16 or a struct",
+            "Buf element type must be u16, i16, a struct or an enum",
         ));
     }
     let n = len as usize;
@@ -1924,7 +2043,7 @@ fn bind_tuple_names(
 fn signature(
     f: &ItemFn,
     consts: &HashMap<String, (u16, Ty)>,
-    structs: &StructNames,
+    structs: &TypeNames,
 ) -> Result<Sig, syn::Error> {
     if !f.sig.generics.params.is_empty() {
         return Err(err(&f.sig.generics, "generics are not supported"));
@@ -2104,7 +2223,7 @@ fn place_base_name(e: &Expr) -> Option<String> {
 fn scan_residents(
     blk: &Block,
     consts: &HashMap<String, (u16, Ty)>,
-    structs: &StructNames,
+    structs: &TypeNames,
     out: &mut HashMap<String, ResidentKind>,
 ) -> Result<(), syn::Error> {
     for s in &blk.stmts {
@@ -2115,7 +2234,7 @@ fn scan_residents(
 fn scan_stmt(
     s: &Stmt,
     consts: &HashMap<String, (u16, Ty)>,
-    structs: &StructNames,
+    structs: &TypeNames,
     out: &mut HashMap<String, ResidentKind>,
 ) -> Result<(), syn::Error> {
     match s {
@@ -2139,7 +2258,7 @@ fn scan_stmt(
 fn scan_expr(
     e: &Expr,
     consts: &HashMap<String, (u16, Ty)>,
-    structs: &StructNames,
+    structs: &TypeNames,
     out: &mut HashMap<String, ResidentKind>,
 ) -> Result<(), syn::Error> {
     match e {
@@ -2245,7 +2364,7 @@ fn lower_fn(
 
     // prescan: which names must be memory-resident
     let mut residents: HashMap<String, ResidentKind> = HashMap::new();
-    scan_residents(&f.block, consts, &globals.struct_names, &mut residents)?;
+    scan_residents(&f.block, consts, &globals.type_names, &mut residents)?;
 
     let mut param_names = vec![];
     let mut l = FnLower {
@@ -2419,7 +2538,7 @@ fn stmt(l: &mut FnLower, s: &Stmt) -> Result<(), syn::Error> {
         Stmt::Local(local) => {
             let (inner_pat, annotated) = match &local.pat {
                 Pat::Type(pt) => {
-                    let ty = ty_of_maybe_array(&pt.ty, l.consts, &l.globals.struct_names)?;
+                    let ty = ty_of_maybe_array(&pt.ty, l.consts, &l.globals.type_names)?;
                     (pt.pat.as_ref(), Some(ty))
                 }
                 p => (p, None),
@@ -3018,6 +3137,31 @@ fn expr(l: &mut FnLower, e: &Expr) -> Result<Val, syn::Error> {
             )),
         },
         Expr::Path(p) => {
+            // `E::A` names a variant constant (spec §9d)
+            if p.path.segments.len() == 2 && p.qself.is_none() {
+                let enum_name = p.path.segments[0].ident.to_string();
+                let variant = p.path.segments[1].ident.to_string();
+                if let Some(def) = l.globals.enums.get(&enum_name) {
+                    let Some((_, value)) = def
+                        .variants
+                        .iter()
+                        .find(|(name, _)| *name == variant)
+                        .map(|(name, value)| (name.clone(), *value))
+                    else {
+                        let known = def
+                            .variants
+                            .iter()
+                            .map(|(name, _)| name.as_str())
+                            .collect::<Vec<_>>()
+                            .join(", ");
+                        return Err(err(
+                            &p.path,
+                            format!("enum `{enum_name}` has no variant `{variant}` (variants: {known})"),
+                        ));
+                    };
+                    return Ok(Val::V(l.b.load_imm(value), Ty::Enum(enum_name)));
+                }
+            }
             let name = path_ident(e)?;
             if let Some(info) = l.lookup(&name) {
                 let (kind, ty) = (info.kind.clone(), info.ty.clone());
@@ -3347,6 +3491,34 @@ fn expr(l: &mut FnLower, e: &Expr) -> Result<Val, syn::Error> {
                             (CmpRhs::Reg(v), t)
                         }
                     };
+                    if matches!(lt, Ty::Enum(_)) {
+                        if lt != rt {
+                            return Err(err(
+                                e,
+                                format!(
+                                    "cannot compare {} with {}",
+                                    lt.display(),
+                                    rt.display()
+                                ),
+                            ));
+                        }
+                        if !matches!(b.op, SBinOp::Eq(_) | SBinOp::Ne(_)) {
+                            return Err(err(&b.op, "enums compare with `==`/`!=` only"));
+                        }
+                        let Ty::Enum(name) = &lt else { unreachable!() };
+                        let partial_eq =
+                            l.globals.enums.get(name).is_some_and(|def| def.partial_eq);
+                        if !partial_eq {
+                            return Err(err(
+                                e,
+                                format!(
+                                    "enum `{name}` needs #[derive(PartialEq)] to be compared (spec §9d)"
+                                ),
+                            ));
+                        }
+                        return compare(e, b.op, lhs, lt, rhs, rt, swap_operands && ordered)
+                            .map(Val::Bool);
+                    }
                     compare(e, b.op, lhs, lt, rhs, rt, swap_operands && ordered).map(Val::Bool)
                 }
                 And(_) | Or(_) => {
@@ -3363,7 +3535,7 @@ fn expr(l: &mut FnLower, e: &Expr) -> Result<Val, syn::Error> {
         }
         Expr::Cast(c) => {
             let (v, from) = expr(l, &c.expr)?.reg(l, &c.expr, "cast")?;
-            let to = ty_of(&c.ty, &l.globals.struct_names)?;
+            let to = ty_of(&c.ty, &l.globals.type_names)?;
             cast(e, v, from, to).map(|(v, t)| Val::V(v, t))
         }
         Expr::Call(call) => call_expr(l, call),
@@ -3546,6 +3718,13 @@ fn peek_type(l: &FnLower, e: &Expr) -> Option<Ty> {
     match e {
         Expr::Paren(p) => peek_type(l, &p.expr),
         Expr::Path(_) => {
+            let Expr::Path(p) = e else { unreachable!() };
+            if p.path.segments.len() == 2 {
+                let enum_name = p.path.segments[0].ident.to_string();
+                if l.globals.enums.contains_key(&enum_name) {
+                    return Some(Ty::Enum(enum_name));
+                }
+            }
             let name = path_ident(e).ok()?;
             if let Some(info) = l.lookup(&name) {
                 return Some(info.ty.clone());
@@ -3830,6 +4009,15 @@ fn compare(
                 rt.display()
             ),
         ));
+    }
+    // a C-style enum compares by discriminant, equality only (spec §9d)
+    if let (Ty::Enum(_), Ty::Enum(_)) = (&lt, &rt) {
+        return Ok(BoolExpr::Cmp(Cmp {
+            lhs,
+            rhs,
+            cond: compare_cond(&op, e)?,
+            signed: false,
+        }));
     }
     let signed = match unify_int(lt.clone(), rt.clone()) {
         Some(Ty::I16) => true,
@@ -4846,6 +5034,8 @@ fn cast(e: &Expr, v: VReg, from: Ty, to: Ty) -> Result<(VReg, Ty), syn::Error> {
             | (Ty::Ptr, Ty::U16)
             | (Ty::Bool, Ty::U16)
             | (Ty::Bool, Ty::I16)
+            | (Ty::Enum(_), Ty::U16)
+            | (Ty::Enum(_), Ty::I16)
     ) || from == to
         || (from == Ty::UntypedInt && to.is_int());
     if ok {
@@ -5142,7 +5332,10 @@ mod tests {
                 raw.insert(s.ident.to_string(), (0usize, s));
             }
         }
-        let names: super::StructNames = raw.keys().cloned().collect();
+        let names: super::TypeNames = raw
+            .keys()
+            .map(|name| (name.clone(), super::NominalKind::Struct))
+            .collect();
         let consts = std::collections::HashMap::new();
         let mut builder = super::LayoutBuilder {
             raw: &raw,
@@ -5191,7 +5384,10 @@ mod tests {
                 raw.insert(s.ident.to_string(), (0usize, s));
             }
         }
-        let names: super::StructNames = raw.keys().cloned().collect();
+        let names: super::TypeNames = raw
+            .keys()
+            .map(|name| (name.clone(), super::NominalKind::Struct))
+            .collect();
         let consts = std::collections::HashMap::new();
         let mut builder = super::LayoutBuilder {
             raw: &raw,

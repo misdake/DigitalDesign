@@ -21,6 +21,7 @@ Only these types exist; no other primitive types are supported:
 | `Array<T>` | **typed array view** | one-word unchecked address, where T is `u16`, `i16` or a struct; supports indexing and converts to/from `Ptr` |
 | `Buf<T, N>` | **owned array: N consecutive words** | the array type (spec §10); `T` is `u16`, `i16` or a struct, initialized with `Buf::new([v; N])` / `Buf::new([e0, e1, ...])`, indexed with a `u16`/`i16` index |
 | `(A, B, ...)` | **tuple: up to four scalars** | element `i` at word offset `i` (spec §9c); returnable, destructure with `let (a, b) = ...` |
+| an `enum` name | **one word: the variant's discriminant** | C-style fieldless variants in declaration order (spec §9d); `E::A` is a constant, `e as u16` and (with `#[derive(PartialEq)]`) `==` |
 | `fn(A, B) -> R` | **function pointer** (into instruction memory) | plain Rust fn pointer type; on a Harvard machine this is a *different kind* from `Ptr` and they never convert |
 | `bool` | **one word: 0 or 1** | the type of comparisons and `&& \|\| !`; storable in a variable, passed and returned, and usable as a condition again (`if b`); `b as u16` / `b as i16` yields 0/1 (see §1.1) |
 | a defined `struct` name | **struct value: one word address** | fields are 16-bit words in declaration order, total size padded to the struct's alignment; layout and access rules in §9b |
@@ -328,6 +329,25 @@ halt(t.0 + q + r);                  // fields are positional: `.0`, `.1`, ...
   with an `Array<T>` view when a callee must see many of them.
 - `_` may ignore an element: `let (lo, _, _) = stats(a, b);`.
 
+## 9d. C-style enums
+
+```rust
+#[derive(PartialEq)]
+enum Trace { Idle, Run, Halt }
+```
+
+A fieldless enum is one word holding the variant's discriminant (`Idle` = 0, `Run` = 1, … in
+declaration order). `Trace::Run` is a compile-time constant, so it works anywhere a `u16` works:
+a binding, an argument, a return value, a struct field, a `Buf<Trace, N>` element, and `e as u16`.
+
+- Variants must be fieldless, unique and without explicit discriminants; `#[derive(PartialEq)]`,
+  `#[allow]` and `#[doc]` are the only accepted attributes.
+- `==` and `!=` compare two values of the *same* enum, and — like real Rust — only when the enum
+  derives `PartialEq`; ordering (`<`, `>=`, …) is not defined. An integer never compares with an
+  enum, and arithmetic on enums is a type error.
+- `match` on enums is the next phase; until then use `if e == Trace::Idle { … }`.
+- Out of scope for now (§12): variants with payload, explicit discriminants, `#[repr]`, enum
+  statics, and casting an integer *to* an enum.
 ## 10. Arrays: `Buf<T, N>`
 
 C semantics: an array is N consecutive words, addressed by a plain (single-word) pointer,
@@ -432,8 +452,9 @@ them unchanged (a struct local is just an address plus offsets).
 
 `&x` references, fat slices, native `[T; N]` arrays (use `Buf<T, N>`, §10), `static mut`, heap
 allocation of buffers, multi-dimensional buffers (use `arr[i * W + j]`), function
-inlining/`#[inline]`, and the aggregate limits listed in §9b/§9c/§14 (aggregate parameters,
-aggregate-returning fn pointers, `impl`, `fix16`/`vecN` fields, recursive layouts).
+inlining/`#[inline]`, and the limits listed in §9b/§9c/§9d/§14 (aggregate parameters,
+aggregate-returning fn pointers, `impl`, `fix16`/`vecN` fields, recursive layouts, enum payloads,
+`match` — the next phase — and enum statics).
 
 A stored `bool` is one word, and these remain out of scope: buffers of `bool` / `Array<bool>`,
 `static` bool, comparing two bools (`b1 == b2`), and an integer cast *to* bool (write `x != 0`).
