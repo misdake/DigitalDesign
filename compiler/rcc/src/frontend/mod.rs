@@ -1052,11 +1052,10 @@ fn ty_of(ty: &Type, structs: &StructNames) -> Result<Ty, syn::Error> {
                     ));
                 };
                 let elem = ty_of(elem, structs)?;
-                if !matches!(elem, Ty::U16 | Ty::I16 | Ty::Bool | Ty::Struct(_)) {
-                    return Err(err(
-                        ty,
-                        "Array element type must be u16, i16, bool or a struct",
-                    ));
+                // one list for both array spellings: this set must stay equal to
+                // `buf_type`'s (see the whitelist test in rcc_errors.rs)
+                if !matches!(elem, Ty::U16 | Ty::I16 | Ty::Struct(_)) {
+                    return Err(err(ty, "Array element type must be u16, i16 or a struct"));
                 }
                 return Ok(Ty::ArrayRef(Box::new(elem)));
             }

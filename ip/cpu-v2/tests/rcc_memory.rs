@@ -169,8 +169,9 @@ fn test_typed_array_view_errors() {
         "fn f() { let p = Ptr::from_addr(0); let x = p[0u16]; }",
         "indexing requires Array",
     );
-    // u16/i16/bool/struct views exist; an FPU element does not
+    // u16/i16/struct views exist; bool (P2: use a u16 bitmask) and FPU elements do not
     expect_error("fn f(a: Array<fix16>) {}", "Array element type must be");
+    expect_error("fn f(a: Array<bool>) {}", "Array element type must be");
     expect_error(
         "fn f(mut a: Array<u16>) { a[0u16] = -1i16; }",
         "expected u16, got i16",
@@ -183,6 +184,44 @@ fn test_typed_array_view_errors() {
         "fn f(a: Array<u16>) { let i = 0; let x = a[i]; }",
         "array index must have type u16 or i16",
     );
+}
+
+/// `Array<T>` (a view) and `Buf<T, N>` (owned storage) must accept exactly the
+/// same element types. The two lists drifted apart once (P2 restricted arrays to
+/// u16/i16, P4 rewrote the *view* list while adding structs and let `bool` slip
+/// in), which silently accepted `Array<bool>` while the spec and `Buf` rejected
+/// it. This pins both lists to the same answer.
+#[test]
+fn test_array_element_whitelists_agree() {
+    let parse = |src: &str| cpu_v2::frontend::parse_source(src).is_ok();
+    let view = |t: &str| parse(&format!("struct S {{ a: u16 }}\nfn f(a: Array<{t}>) {{ }}"));
+    let owned = |t: &str| {
+        let init = if t == "S" {
+            "[S { a: 1 }, S { a: 1 }]".to_string()
+        } else {
+            "[1; 2]".to_string()
+        };
+        parse(&format!(
+            "struct S {{ a: u16 }}\nfn f() {{ let b: Buf<{t}, 2> = Buf::new({init}); }}"
+        ))
+    };
+    let accepted = ["u16", "i16", "S"];
+    let rejected = ["bool", "Ptr", "fix16", "vec2", "vec4", "u8", "Buf<u16, 4>"];
+    for t in accepted {
+        assert!(view(t), "Array<{t}> should be accepted");
+        assert!(owned(t), "Buf<{t}, 2> should be accepted");
+    }
+    for t in rejected {
+        assert!(!view(t), "Array<{t}> should be rejected");
+        assert!(!owned(t), "Buf<{t}, 2> should be rejected");
+    }
+    // the property that actually matters: never one without the other
+    for t in accepted.iter().chain(rejected.iter()) {
+        assert_eq!(view(t), owned(t), "Array<{t}> and Buf<{t}, 2> disagree");
+    }
+    // deliberately *different* list: a struct field may be a bool or a Ptr (both
+    // are word-sized scalars), while an array element may not (P2: use a bitmask)
+    assert!(parse("struct S { a: bool, b: Ptr, c: u16 }"));
 }
 
 #[test]
