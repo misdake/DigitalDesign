@@ -1890,17 +1890,117 @@ mod tests {
         assert_eq!(run(source), 1);
     }
 
+    #[test]
+    fn div_and_rem_run_on_the_machine() {
+        let source = r#"
+            fn main() {
+                let a: u16 = 1000;
+                let b: u16 = 7;
+                let q = a / b;   // 142
+                let r = a % b;   // 6
+                let s: i16 = -1000;
+                let t: i16 = 7;
+                let u = s / t;   // -142: the quotient truncates toward zero
+                let v = s % t;   // -6: the remainder follows the dividend
+                let x: u16 = 0xabcd;
+                let shifted = x / 16u16;  // literal power of two: a shift
+                let masked = x % 16u16;   // literal power of two: a mask
+                halt(q + r + (u + v + 300i16) as u16 + shifted + masked);
+            }
+        "#;
+        // 142 + 6 + (-142 - 6 + 300) + 0x0abc + 0x000d = 3061
+        assert_eq!(run_with_std(source), 3061);
+    }
+
+    #[test]
+    fn div_and_rem_define_a_zero_divisor() {
+        let source = r#"
+            fn main() {
+                let z: u16 = 0;
+                let zi: i16 = 0;
+                let a: u16 = 1000;
+                let s: i16 = -1000;
+                if div_u16(a, z) == 0 && rem_u16(a, z) == a && div_i16(s, zi) == 0i16 && rem_i16(s, zi) == s {
+                    halt(1);
+                } else {
+                    halt(0);
+                }
+            }
+        "#;
+        assert_eq!(run_with_std(source), 1);
+    }
+
+    #[test]
+    fn constant_divisor_magic_divide_runs_on_the_machine() {
+        // A constant divisor lowers to the MUL16 magic path (the single-multiply
+        // High form and the 17-bit Add form), so this compares the emitted
+        // sequence against the host quotient across a range and at the edges.
+        let source = r#"
+            fn main() {
+                let mut acc: u16 = 0;
+                let mut x: u16 = 0;
+                while x < 512u16 {
+                    acc = acc + (x / 3u16) + (x % 3u16) + (x / 7u16) + (x % 7u16)
+                        + (x / 10u16) + (x % 10u16) + (x / 1000u16) + (x % 1000u16);
+                    x = x + 1;
+                }
+                acc = acc + (65535u16 / 3u16) + (65535u16 % 7u16) + (65534u16 / 65534u16)
+                    + (65535u16 / 65534u16) + (40000u16 % 257u16) + (32768u16 / 9u16)
+                    + (1u16 / 65535u16) + (65535u16 / 1u16);
+                halt(acc);
+            }
+        "#;
+        let mut expected: u16 = 0;
+        for x in 0u16..512 {
+            expected = expected
+                .wrapping_add(x / 3)
+                .wrapping_add(x % 3)
+                .wrapping_add(x / 7)
+                .wrapping_add(x % 7)
+                .wrapping_add(x / 10)
+                .wrapping_add(x % 10)
+                .wrapping_add(x / 1000)
+                .wrapping_add(x % 1000);
+        }
+        for term in [
+            65535u16 / 3,
+            65535u16 % 7,
+            65534u16 / 65534,
+            65535u16 / 65534,
+            40000u16 % 257,
+            32768u16 / 9,
+            1u16 / 65535,
+            // the source divides by 1u16; on the host that is the identity
+            65535u16,
+        ] {
+            expected = expected.wrapping_add(term);
+        }
+        assert_eq!(run_with_std_capped(source, 500_000), expected);
+    }
+
     fn compile(source: &str, options: CompilerOptions) -> CpuV3Program {
         let program = parse_source_with(source, options.data_base).unwrap();
         super::compile(program, &options, "main")
     }
 
-    fn run(source: &str) -> u16 {
-        run_with_options(source, CompilerOptions::default()).0
+    /// Compile with the rcc standard library appended. `compile` above is
+    /// parse-only, so operators that lower to a library call (such as `/`) and
+    /// the library modules themselves need this entry point.
+    fn compile_with_std(source: &str) -> CpuV3Program {
+        let options = CompilerOptions::default();
+        let program =
+            rcc::frontend::compile_program_named("<test>", source, &options, &mut |name| {
+                Err(format!("unknown module `{name}`"))
+            })
+            .unwrap();
+        super::compile(program, &options, "main")
     }
 
-    fn run_with_options(source: &str, options: CompilerOptions) -> (u16, cpu_v3::CpuV3Sim) {
-        let program = compile(source, options);
+    fn execute(program: CpuV3Program) -> (u16, cpu_v3::CpuV3Sim) {
+        execute_capped(program, 10_000)
+    }
+
+    fn execute_capped(program: CpuV3Program, max_cycles: usize) -> (u16, cpu_v3::CpuV3Sim) {
         let mut machine = cpu_v3::CpuV3Sim::default();
         machine
             .load_program(program.code_base, &program.words)
@@ -1910,11 +2010,28 @@ mod tests {
             bootstrap.push(cpu_v3::jump_register(REG_TMP));
             machine.load_program(0, &bootstrap).unwrap();
         }
-        let signal = match machine.run(10_000).unwrap() {
+        let signal = match machine.run(max_cycles).unwrap() {
             cpu_v3::RunOutcome::Halted { signal, .. } => signal,
             outcome => panic!("CpuV3 program did not halt: {outcome:?}"),
         };
         (signal, machine)
+    }
+
+    fn run(source: &str) -> u16 {
+        run_with_options(source, CompilerOptions::default()).0
+    }
+
+    fn run_with_options(source: &str, options: CompilerOptions) -> (u16, cpu_v3::CpuV3Sim) {
+        execute(compile(source, options))
+    }
+
+    fn run_with_std(source: &str) -> u16 {
+        execute(compile_with_std(source)).0
+    }
+
+    /// like `run_with_std`, for a program that needs more than the default cap
+    fn run_with_std_capped(source: &str, max_cycles: usize) -> u16 {
+        execute_capped(compile_with_std(source), max_cycles).0
     }
 
     fn disasm(program: &CpuV3Program) -> Vec<cpu_v3::DisasmLine> {

@@ -4,6 +4,8 @@
 //! by the linker). `use crate::rcc_std::*;` exists for the IDE only.
 
 #[allow(dead_code)]
+pub mod div;
+#[allow(dead_code)]
 pub mod heap;
 #[allow(dead_code)]
 pub mod mem;

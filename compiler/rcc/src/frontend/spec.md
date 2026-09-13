@@ -40,13 +40,39 @@ Only these types exist; no other primitive types are supported:
   on CpuV3), a variable selects the register-count encoding (SHL/SHR/ASR on CpuV3, masked to the
   low four bits; register-count shifts are rejected for CpuV2, whose ISA has only immediate shifts).
 - `*` multiplication works on integers: CpuV3 lowers it to the hardware `MUL0` (or `MULI` for a
-  constant operand); CpuV2 calls the rcc_std `mul_16x16` library. `/` and `%` are not supported
-  (the hardware has no divide).
+  constant operand); CpuV2 calls the rcc_std `mul_16x16` library.
+- `/` and `%` work on integers: neither ISA has a divide, so both lower to the rcc_std `div`
+  module (a 16-step shift-subtract routine, see §1.2). A literal power-of-two divisor on `u16`
+  becomes a shift or a mask instead of a call.
 - FPU types (CPU V3): `+`, `-`, `*` work component-wise on same-typed FPU values; `vecN * fix16`
   and `fix16 * vecN` scale the vector (lowered to an ACC splat plus `FMUL`); unary `-` negates.
   Comparisons exist only on `fix16` (signed lane-x ordering through `FCMP` and the pending
   test). There are no implicit conversions between FPU and integer types — use
   `fix16::from_int` / `.to_int()` / `fix16::from_bits` / `.to_bits()`.
+
+### 1.2 Division and remainder
+
+`/` and `%` are integer-only and follow C: the quotient truncates toward zero and the remainder
+takes the sign of the dividend. Neither ISA has a divide, so the frontend lowers the operation to
+the rcc_std `div` module: a 16-step shift-subtract core over `u16`, whose signed entry points take
+absolute values and restore the sign.
+
+A **constant** `u16` divisor is cheaper and never calls the routine when a round-up magic exists: a
+power of two becomes a shift (`/`) or a mask (`%`), and any other constant becomes one `MUL16` plus
+shifts — `q = mulhi(x, m) >> s` when the magic fits 16 bits, or the 17-bit form
+`q = ((x & t) + ((x ^ t) >> 1)) >> (s - 1)` with `t = mulhi(x, m)`, which averages `x + t` without a
+17-bit intermediate. The compiler verifies each candidate magic against **every** 16-bit numerator
+before using it and falls back to the routine otherwise. `i16` always calls the routine, because an
+arithmetic shift rounds toward negative infinity. The magic path uses `MUL16`, which CpuV2 lacks, so
+a CpuV2 build of a program with a non-power-of-two constant divisor is rejected by the V2 backend
+(§12.1).
+
+A zero divisor is **defined**: `x / 0` is `0` and `x % 0` is `x`, on both the target and (through the
+`dsl_rt` entry points) the host. `div_u16` / `rem_u16` / `div_i16` / `rem_i16` are real functions in
+`rcc_std` that mirror the `dsl_rt` host shims, so a program whose divisor may be zero calls them
+explicitly and runs identically both ways. The bare `/` and `%` operators keep rustc's host panic on
+a zero divisor — the host executes the real operator, exactly like the array bounds check the target
+does not have (§10.3).
 
 ## 2. The `Ptr` data pointer
 
@@ -140,8 +166,8 @@ Declared for real in `dsl_rt` (so the IDE sees them); the compiler lowers them d
   literals, strings, floats, other integer types, `unsafe`, `extern`, lifetimes,
   `const`/`static`, attributes (except ignored `#[allow(...)]`), `use` (parsed but ignored;
   it exists for the IDE).
-- **No division** (`/`, `%`): reports "not supported yet". Integer `*` is supported
-  (hardware MUL on CpuV3, `mul_16x16` library call on CpuV2).
+- **Integer `*` is supported** (hardware MUL on CpuV3, `mul_16x16` library call on CpuV2), and so
+  are `/` and `%` (the rcc_std `div` module, §1.2); dividing by zero is undefined.
 - **FPU values live in the F register file**: every `fix16`/`vecN` value occupies exactly one
   F register, stays in SSA form (never in a frame slot except as a 4-word-aligned spill), and
   follows the FPU ABI: `f0..f1` return values, `f2..f7` arguments, `f8..f14` allocatable, `f15`
@@ -304,7 +330,7 @@ precludes them (a struct is just an address plus offsets).
 ## 12. Out of scope for now
 
 `&x` references, fat slices, struct definitions, `static mut`, heap allocation of arrays,
-multi-dimensional arrays (use `arr[i * W + j]`), function inlining/`#[inline]`, `*`, `/`, `%`.
+multi-dimensional arrays (use `arr[i * W + j]`), function inlining/`#[inline]`.
 
 ## 12.1 Target policy
 

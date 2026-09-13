@@ -64,6 +64,7 @@ pub fn parse_source_with(src: &str, data_base: u16) -> Result<Program, CompileEr
 /// the rcc standard library, embedded and appended to every program compiled
 /// via `compile_program` (unused functions are dropped by the linker)
 const STD_SOURCES: &[(&str, &str)] = &[
+    ("rcc_std/div.rs", include_str!("../rcc_std/div.rs")),
     ("rcc_std/heap.rs", include_str!("../rcc_std/heap.rs")),
     ("rcc_std/mem.rs", include_str!("../rcc_std/mem.rs")),
     ("rcc_std/mul.rs", include_str!("../rcc_std/mul.rs")),
@@ -2001,10 +2002,89 @@ fn expr(l: &mut FnLower, e: &Expr) -> Result<Val, syn::Error> {
                     };
                     Ok(Val::V(l.b.mul(crate::MulWindow::Low, lhs, rhs_op), ty))
                 }
-                Div(_) | Rem(_) => Err(err(
-                    &b.op,
-                    "`/`, `%` are not supported yet (hardware has no div)",
-                )),
+                Div(_) | Rem(_) => {
+                    // Neither ISA has a divide, so `/` and `%` lower to the
+                    // rcc_std software routine (the `mul_16x16` precedent). A
+                    // constant divisor on unsigned values is cheaper: a power of
+                    // two becomes a shift or a mask, and any other constant that
+                    // has a 16-bit round-up magic becomes one `MUL16` plus a shift.
+                    let (lhs, lt) = expr(l, &b.left)?.reg(l, &b.left, "binary operand")?;
+                    let (rhs, rt) = expr(l, &b.right)?.reg(l, &b.right, "binary operand")?;
+                    let ty = unify_int(lt.clone(), rt.clone()).ok_or_else(|| {
+                        err(
+                            e,
+                            format!(
+                                "type mismatch: {} vs {} (cast with `as`)",
+                                lt.display(),
+                                rt.display()
+                            ),
+                        )
+                    })?;
+                    let remainder = matches!(b.op, Rem(_));
+                    if ty == Ty::U16 {
+                        if let Some((value, _)) = immediate_operand(l, &b.right) {
+                            if value != 0 && value.is_power_of_two() {
+                                let lowered = if remainder {
+                                    let mask = l.b.load_imm(value - 1);
+                                    l.b.bin(crate::BinOp::And, lhs, mask)
+                                } else {
+                                    l.b.shift_op(
+                                        ShiftOp::Lsr,
+                                        lhs,
+                                        crate::IntOperand::Imm(value.trailing_zeros() as u16),
+                                    )
+                                };
+                                return Ok(Val::V(lowered, ty));
+                            }
+                            if let Some(magic) = magic_divide_u16(value) {
+                                let magic_constant = match magic {
+                                    MagicDivide::High { m, .. } | MagicDivide::Add { m, .. } => m,
+                                };
+                                let high = l.b.mul(
+                                    crate::MulWindow::Shift16,
+                                    lhs,
+                                    crate::IntOperand::Imm(magic_constant),
+                                );
+                                let quotient = match magic {
+                                    MagicDivide::High { s, .. } => {
+                                        if s == 0 {
+                                            high
+                                        } else {
+                                            l.b.shift(ShiftOp::Lsr, high, s)
+                                        }
+                                    }
+                                    MagicDivide::Add { s, .. } => {
+                                        // (x & t) + ((x ^ t) >> 1) is (x + t) >> 1
+                                        // without letting the 17-bit sum overflow
+                                        let both = l.b.bin(crate::BinOp::And, lhs, high);
+                                        let diff = l.b.bin(crate::BinOp::Xor, lhs, high);
+                                        let half = l.b.shift(ShiftOp::Lsr, diff, 1);
+                                        let average = l.b.bin(crate::BinOp::Add, both, half);
+                                        l.b.shift(ShiftOp::Lsr, average, s - 1)
+                                    }
+                                };
+                                if !remainder {
+                                    return Ok(Val::V(quotient, ty));
+                                }
+                                // x % d == x - (x / d) * d
+                                let product = l.b.mul(
+                                    crate::MulWindow::Low,
+                                    quotient,
+                                    crate::IntOperand::Imm(value),
+                                );
+                                return Ok(Val::V(l.b.bin(crate::BinOp::Sub, lhs, product), ty));
+                            }
+                        }
+                    }
+                    let name: crate::FuncName = match (ty == Ty::I16, remainder) {
+                        (false, false) => "div_u16",
+                        (false, true) => "rem_u16",
+                        (true, false) => "div_i16",
+                        (true, true) => "rem_i16",
+                    };
+                    let ret = l.b.call(name, &[lhs, rhs], 1);
+                    Ok(Val::V(ret[0], ty))
+                }
                 Lt(_) | Le(_) | Gt(_) | Ge(_) | Eq(_) | Ne(_) => {
                     // Put a constant operand on the rhs so the compare can
                     // select an immediate encoding. Swapping an ordered
@@ -3256,6 +3336,66 @@ fn shift_operand(l: &mut FnLower, e: &Expr) -> Result<crate::IntOperand, syn::Er
     Ok(crate::IntOperand::Reg(v))
 }
 
+/// How a constant unsigned divisor becomes a multiply plus shifts.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum MagicDivide {
+    /// `q = mulhi(x, m) >> s`, with a magic that fits 16 bits
+    High { m: u16, s: u8 },
+    /// A 17-bit magic `M = 2^16 + m`: `q = (x + mulhi(x, m)) >> s`. That sum needs
+    /// 17 bits, so the sequence averages without overflowing:
+    /// `avg = (x & t) + ((x ^ t) >> 1) == (x + t) >> 1`, then `q = avg >> (s - 1)`.
+    /// The rounding-up magic only needs its extra bit when `s >= 1`.
+    Add { m: u16, s: u8 },
+}
+
+impl MagicDivide {
+    /// the exact sequence the backend emits, in u16 arithmetic
+    fn quotient(self, x: u16) -> u16 {
+        match self {
+            MagicDivide::High { m, s } => (((u32::from(x) * u32::from(m)) >> 16) as u16) >> s,
+            MagicDivide::Add { m, s } => {
+                let t = ((u32::from(x) * u32::from(m)) >> 16) as u16;
+                let avg = (x & t).wrapping_add((x ^ t) >> 1);
+                avg >> (s - 1)
+            }
+        }
+    }
+}
+
+/// round-up magic for a constant unsigned divisor: `x / d` as one `MUL16` plus
+/// shifts, exact for every 16-bit `x`.
+///
+/// Returns `None` when no such form exists (`d` is 1 or a power of two, or the shift
+/// search runs out); the caller then falls back to the `div_u16` routine. Candidates
+/// are checked against **every** 16-bit numerator rather than a closed-form bound: a
+/// rejected candidate stops at its first mismatch, an accepted one costs 65 536
+/// iterations of a multiply and a shift, and the compiler never has to trust a
+/// rounding bound it might have subtly wrong.
+fn magic_divide_u16(d: u16) -> Option<MagicDivide> {
+    if d < 2 || d.is_power_of_two() {
+        return None;
+    }
+    for s in 0..=16u8 {
+        let wide = (1u64 << (16 + u32::from(s))).div_ceil(u64::from(d));
+        let candidate = if wide <= u64::from(u16::MAX) && s <= 15 {
+            // the shift is the final `>> s`, which must fit the immediate field
+            MagicDivide::High { m: wide as u16, s }
+        } else if wide <= 0x1_ffff && s >= 1 {
+            // here the final shift is `s - 1`, so s may reach 16
+            MagicDivide::Add {
+                m: (wide - 0x1_0000) as u16,
+                s,
+            }
+        } else {
+            continue;
+        };
+        if (0..=u16::MAX).all(|x| candidate.quotient(x) == x / d) {
+            return Some(candidate);
+        }
+    }
+    None
+}
+
 fn shift_op(op: &SBinOp, ty: &Ty) -> ShiftOp {
     use SBinOp::*;
     match (op, ty) {
@@ -3369,5 +3509,26 @@ mod tests {
     fn fix16_comparison_is_allowed() {
         let src = "fn main() { let a = fix16::zero(); if a == a { halt(1); } }";
         assert!(parse_source_with(src, 0).is_ok());
+    }
+
+    #[test]
+    fn magic_divisor_is_exact_for_every_numerator() {
+        // 0/1 and powers of two have no magic form: the caller uses shift/mask there
+        for d in [0u16, 1, 2, 4, 4096, 32768] {
+            assert!(
+                super::magic_divide_u16(d).is_none(),
+                "d={d} must not have one"
+            );
+        }
+        for d in [
+            3u16, 5, 6, 7, 9, 10, 11, 12, 13, 17, 100, 255, 257, 1000, 1001, 4095, 32767, 65534,
+            65535,
+        ] {
+            let magic =
+                super::magic_divide_u16(d).unwrap_or_else(|| panic!("no magic form for d={d}"));
+            for x in 0..=u16::MAX {
+                assert_eq!(magic.quotient(x), x / d, "d={d} x={x} magic={magic:?}");
+            }
+        }
     }
 }

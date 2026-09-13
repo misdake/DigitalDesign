@@ -35,13 +35,11 @@ fn test_module_semantic_error_keeps_its_source_file() {
         source,
         &cpu_v2::CompilerOptions::default(),
         &mut |name| match name {
-            "helper" => {
-                Ok("fn helper() {\n    let x = 1u16 / 2u16;\n    halt(x);\n}\n".to_string())
-            }
+            "helper" => Ok("fn helper() {\n    let x = missing;\n    halt(x);\n}\n".to_string()),
             _ => Err(format!("unknown module `{name}`")),
         },
     ) {
-        Ok(_) => panic!("unsupported module expression unexpectedly compiled"),
+        Ok(_) => panic!("module with a semantic error unexpectedly compiled"),
         Err(error) => error,
     };
 
@@ -50,7 +48,7 @@ fn test_module_semantic_error_keeps_its_source_file() {
     assert!(column > 1);
     let rendered = error.to_string();
     assert!(rendered.contains(" --> helper.rs:2:"), "{rendered}");
-    assert!(rendered.contains("not supported yet"), "{rendered}");
+    assert!(rendered.contains("undefined name"), "{rendered}");
 }
 
 #[test]
@@ -101,8 +99,6 @@ fn test_static_data_cannot_overlap_the_function_table() {
 
 #[test]
 fn test_unsupported_constructs() {
-    expect_error("fn f(x: u16) -> u16 { x / 2 }", "not supported");
-    expect_error("fn f(x: u16) -> u16 { x % 2 }", "not supported");
     expect_error(
         "fn f(x: u16) -> u16 { match x { _ => 0 } }",
         "not supported",
@@ -172,10 +168,8 @@ fn test_unsupported_types() {
 
 #[test]
 fn test_operator_restrictions() {
-    // no hardware divide (spec §1.1); integer `*` works (hardware MUL on
-    // CpuV3, the mul_16x16 library on CpuV2)
-    expect_error("fn f(x: u16) -> u16 { x / 2 }", "not supported yet");
-    expect_error("fn f(x: u16) -> u16 { x % 2 }", "not supported yet");
+    // integer `*` works (hardware MUL on CpuV3, the mul_16x16 library on CpuV2)
+    // and so do `/` and `%` (the rcc_std div module, spec §1.2)
     // unary minus is i16-only, same as Rust
     expect_error("fn f(x: u16) -> u16 { -x }", "only allowed on i16");
     // dynamic (register-count) shifts parse now, but the v2.6 ISA cannot

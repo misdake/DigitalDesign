@@ -111,6 +111,38 @@ pub fn log2(x: u16) -> u16 {
     }
 }
 
+/// unsigned `/` with a defined zero divisor (`x / 0 == 0`), matching the target
+/// routine. The raw `/` operator keeps Rust's panic on the host, so a program
+/// that must run both ways calls this when the divisor may be zero.
+pub fn div_u16(a: u16, b: u16) -> u16 {
+    a.checked_div(b).unwrap_or(0)
+}
+
+/// unsigned `%` with a defined zero divisor (`x % 0 == x`)
+pub fn rem_u16(a: u16, b: u16) -> u16 {
+    a.checked_rem(b).unwrap_or(a)
+}
+
+/// signed `div_u16`: the quotient truncates toward zero, and `x / 0 == 0`
+pub fn div_i16(a: i16, b: i16) -> i16 {
+    if b == 0 {
+        0
+    } else {
+        // wrapping rather than checked: `i16::MIN / -1` wraps like the target
+        // routine instead of saturating or panicking
+        a.wrapping_div(b)
+    }
+}
+
+/// signed `rem_u16`: the remainder follows the dividend's sign, and `x % 0 == x`
+pub fn rem_i16(a: i16, b: i16) -> i16 {
+    if b == 0 {
+        a
+    } else {
+        a.wrapping_rem(b)
+    }
+}
+
 /// Receive a word from a device register (not available on the Rust host).
 pub fn dev_recv(dev: u8, ch: u8) -> u16 {
     let _ = (dev, ch);
