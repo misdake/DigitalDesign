@@ -1,5 +1,5 @@
 # Run this only right after a commit: rebuild the full system and append one PnR row
-# to the project ledger (.agent/logs/projects/<project>/resources.csv).
+# to the project ledger (.agent/projects/<project>/resources.csv).
 #
 # Why: that CSV records "the complete build of a committed tree". Copying the numbers by
 # hand is slow, error-prone, and easy to forget. This script does four things:
@@ -15,12 +15,12 @@
 # WIP or intermediate commits must not be recorded.
 #
 # Usage:
-#   scripts/log-post-commit-build.ps1 -Change "cache valid-array write port" `
+#   scripts/log-post-commit-pnr.ps1 -Change "cache valid-array write port" `
 #       [-Promotion "ledger:Cache valid-array write port"] [-State dirty] [-Project <name>]
 #   # record a probe build that lives somewhere other than target/cpu_v3_system_gowin:
-#   scripts/log-post-commit-build.ps1 -Change "..." -BuildDir target/valid-leaf-probe/system_valid_fix
+#   scripts/log-post-commit-pnr.ps1 -Change "..." -BuildDir target/valid-leaf-probe/system_valid_fix
 # Inspect what it would write first:
-#   scripts/log-post-commit-build.ps1 -Change "..." -SkipBuild -DryRun
+#   scripts/log-post-commit-pnr.ps1 -Change "..." -SkipBuild -DryRun
 
 param(
     [Parameter(Mandatory = $true)][string]$Change,
@@ -39,7 +39,7 @@ $repoRoot = Split-Path -Parent $PSScriptRoot
 
 if (-not $Project) {
     # The active project is the one whose project.md says `status: active`.
-    $projectsRoot = Join-Path $repoRoot ".agent/logs/projects"
+    $projectsRoot = Join-Path $repoRoot ".agent/projects"
     $active = @()
     if (Test-Path $projectsRoot) {
         $active = @(Get-ChildItem -Path $projectsRoot -Directory | Where-Object {
@@ -48,7 +48,7 @@ if (-not $Project) {
             })
     }
     if ($active.Count -ne 1) {
-        throw "Cannot resolve the active project: $($active.Count) found with 'status: active' under .agent/logs/projects. Pass -Project <name>."
+        throw "Cannot resolve the active project: $($active.Count) found with 'status: active' under .agent/projects. Pass -Project <name>."
     }
     $Project = $active[0].Name
 }
@@ -142,7 +142,7 @@ try {
     $commitTime = [datetime]::Parse((& git show -s --format=%cI HEAD).Trim())
     $commitDay = [datetime]::Parse((& git show -s --format=%aI HEAD).Trim()).AddHours(-6).ToString("yyyy-MM-dd")
 
-    $csv = Join-Path $repoRoot ".agent/logs/projects/$Project/resources.csv"
+    $csv = Join-Path $repoRoot ".agent/projects/$Project/resources.csv"
     if (-not (Test-Path $csv)) { throw "Project ledger not found: $csv" }
     $existing = Import-Csv $csv
     if ($existing | Where-Object { $_.commit -eq $commit }) {
@@ -182,10 +182,10 @@ try {
     # --- 3. Keep the reports the row is read from -------------------------------
     # target/ is scratch: reports there get overwritten by the next build (an earlier row's
     # evidence is already gone). The archived copy is what a later reader can actually check.
-    $archiveDir = Join-Path $repoRoot ".agent/logs/projects/$Project/records/resources/$($commitDay)-$commit-pnr"
+    $archiveDir = Join-Path $repoRoot ".agent/projects/$Project/records/resources/$($commitDay)-$commit-pnr"
     $suffix = 2
     while (Test-Path $archiveDir) {
-        $archiveDir = Join-Path $repoRoot ".agent/logs/projects/$Project/records/resources/$($commitDay)-$commit-pnr-$suffix"
+        $archiveDir = Join-Path $repoRoot ".agent/projects/$Project/records/resources/$($commitDay)-$commit-pnr-$suffix"
         $suffix++
     }
     $archiveFiles = @(
@@ -197,7 +197,7 @@ try {
     if (Test-Path $manifest) {
         $archiveFiles += @{ Source = $manifest; Name = "gowin-build.manifest" }
     }
-    $relativeEvidence = ".agent/logs/projects/$Project/records/resources/" + (Split-Path -Leaf $archiveDir)
+    $relativeEvidence = ".agent/projects/$Project/records/resources/" + (Split-Path -Leaf $archiveDir)
 
     # --- 4. Parse and append ---------------------------------------------------
     $text = Get-Content -Path $pnr -Raw
@@ -266,7 +266,7 @@ try {
     Write-Host "Appended to $csv"
     Write-Host $line
     Write-Host ""
-    Write-Host "Now update today's diary (see logs/README.md, 'when to write')."
+    Write-Host "Now update today's diary (see .agent/logs.md, 'when to write')."
 } finally {
     Pop-Location
 }

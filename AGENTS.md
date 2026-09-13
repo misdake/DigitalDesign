@@ -11,8 +11,8 @@ the retired-document store. If it is missing, the tracked documents (`README.md`
 
 ## Working loop
 
-1. **Intake.** Read `.agent/README.md`, the open items in `logs/projects/<project>/todo.md`, and the
-   current `logs/projects/<project>/project.md`.
+1. **Intake.** Read `.agent/README.md`, the open items in `projects/<project>/todo.md`, and the
+   current `projects/<project>/project.md`.
 2. **Work.** Honour the hard constraints, and run the mandatory co-simulations for every path you
    touch.
 3. **New documents.** When the user says a document is new, file it as `.agent/README.md` describes:
@@ -20,10 +20,11 @@ the retired-document store. If it is missing, the tracked documents (`README.md`
    `.agent/` with `id`/`status`/`last-verified` front matter plus one index row. One fact lives in one
    document; fitted numbers are linked, never copied.
 4. **Committing.** Read `.agent/commit-checklist.md` before and after a commit; it is the only place
-   that spells out the ledger row, `scripts/log-post-commit-build.ps1`, and the diary.
+   that spells out the two ledger rows (`scripts/log-post-commit-pnr.ps1`,
+   `scripts/log-post-commit-benchmark.ps1`) and the diary.
 
 Read on demand, never by default: `.agent/conventions.md`, `.agent/commit-checklist.md`,
-`.agent/logs/README.md`. When a document's home, or whether a change counts as a finished unit, is
+`.agent/logs.md`. When a document's home, or whether a change counts as a finished unit, is
 unclear, ask instead of deciding silently.
 
 ## Hard constraints
@@ -45,7 +46,7 @@ Icarus Verilog: `IVERILOG_EXE`, `VVP_EXE` (the ignored co-sim tests and
 
 ## Verification the agent must run
 
-Beyond the baseline `cargo test` / `cargo clippy` / layer / hygiene checks in `README.md`:
+Beyond the baseline `cargo test` / `cargo clippy` / layer / hygiene / docs checks in `README.md`:
 
 - CPU V3 emulator-vs-RTL co-simulation (pipeline, forwarding, retirement, data/handshake):
   ```powershell

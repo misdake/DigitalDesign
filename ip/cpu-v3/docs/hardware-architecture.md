@@ -132,16 +132,17 @@ reference; the worst continuous-component error is below one Q8.8 LSB.
 
 ## Current fitted-system result
 
-The current design is fitted and routed as the complete `cpu_v3_system`,
-including the CPU, boot path, caches, 54/108-MHz SDRAM gearbox, and display
-path. Against the normal 54-MHz CPU constraint it reports 55.904 MHz with
-0.631 ns worst setup slack and zero setup and hold TNS. The build uses 9,025
-Logic (7,585 LUT, 768 ALU, 112 SSRAM), 3,902 registers, 6,329 CLS, five DPB, one
-SDPB, one pROM, and two `MULT18X18` cells. The tightest CPU-clock path is the
-core's registered GPR write, not the packed sine lookup or the cache frontend.
-The D-cache dirty write enable is the second tightest class at 0.782 ns slack,
-which is why the maintenance scan reads the whole-word bitmap instead of moving
-it into an addressed RAM leaf.
+The complete `cpu_v3_system` is fitted and routed, including the CPU, boot path,
+caches, 54/108-MHz SDRAM gearbox, and display path. The fitted numbers live in
+[the system architecture document](../../../systems/cpu-v3-tang-nano-20k/docs/architecture.md),
+which owns them and is where they are updated; they are deliberately not repeated
+here.
+
+What that fit says about the CPU itself: the tightest CPU-clock path is the
+core's registered GPR write, not the packed sine lookup or the cache frontend,
+and the D-cache dirty write enable is the second tightest class, which is why the
+maintenance scan reads the whole-word bitmap instead of moving it into an
+addressed RAM leaf.
 
 The following timing sections are retained as implementation history for the FPU
 lane pipeline. They are not the current full-system Stage 12 result.

@@ -1,5 +1,5 @@
 # Run the frozen CPU V3 benchmark suite and append one aggregate row to the project
-# performance ledger (.agent/logs/projects/<project>/performance.csv), archiving the raw
+# performance ledger (.agent/projects/<project>/performance.csv), archiving the raw
 # suite CSV under that project's records/performance/.
 #
 # Why: the ledger answers "what did the whole frozen suite cost at this commit". A row per
@@ -112,7 +112,7 @@ function Get-BenchTier([string]$suiteDirectory, [string]$name) {
 }
 
 if (-not $Project) {
-    $projectsRoot = Join-Path $repoRoot ".agent/logs/projects"
+    $projectsRoot = Join-Path $repoRoot ".agent/projects"
     $active = @()
     if (Test-Path $projectsRoot) {
         $active = @(Get-ChildItem -Path $projectsRoot -Directory | Where-Object {
@@ -121,14 +121,14 @@ if (-not $Project) {
             })
     }
     if ($active.Count -ne 1) {
-        throw "Cannot resolve the active project: $($active.Count) found with 'status: active' under .agent/logs/projects. Pass -Project <name>."
+        throw "Cannot resolve the active project: $($active.Count) found with 'status: active' under .agent/projects. Pass -Project <name>."
     }
     $Project = $active[0].Name
 }
 
 Push-Location $repoRoot
 try {
-    $projectRoot = Join-Path $repoRoot ".agent/logs/projects/$Project"
+    $projectRoot = Join-Path $repoRoot ".agent/projects/$Project"
     if (-not (Test-Path $projectRoot)) { throw "Project directory not found: $projectRoot" }
     $ledger = Join-Path $projectRoot "performance.csv"
     $archiveDir = Join-Path $projectRoot "records/performance"
@@ -209,7 +209,7 @@ try {
         $archivePath = Join-Path $archiveDir "$baseName-$suffix.csv"
         $suffix++
     }
-    $relativeRaw = ".agent/logs/projects/$Project/records/performance/" + (Split-Path -Leaf $archivePath)
+    $relativeRaw = ".agent/projects/$Project/records/performance/" + (Split-Path -Leaf $archivePath)
 
     $row = [ordered]@{
         date              = $date
@@ -285,7 +285,7 @@ try {
     if (-not $DryRun) {
         Write-Host ""
         Write-Host "Now record what this delta means in records/performance-analysis.md,"
-        Write-Host "and update today's diary (see logs/README.md, 'when to write')."
+        Write-Host "and update today's diary (see .agent/logs.md, 'when to write')."
     }
 } finally {
     Pop-Location
