@@ -116,7 +116,7 @@ fn test_unsupported_constructs() {
         "not supported",
     );
     expect_error("static mut X: u16 = 0; fn f() {}", "static mut");
-    expect_error("fn f(a: Buf<u16, 2>) {}", "array");
+    expect_error("fn f(a: Buf<u16, 2>) {}", "cannot be a parameter");
 }
 
 // ---------------------------------------------------------------------------
@@ -145,8 +145,11 @@ fn test_unsupported_expressions() {
     expect_error("fn f(x: u16) -> u16 { let g = |y: u16| y; x }", "closures");
     expect_error("fn f() { println!(\"x\"); }", "macros");
     expect_error("fn f() { let mut x: u16 = 1; let p = &x; }", "references");
-    // destructuring patterns: only plain identifiers may be bound
-    expect_error("fn f() { let (a, b) = (1u16, 2u16); }", "pattern");
+    // destructuring patterns: only identifiers, tuples and `_` may be bound
+    expect_error(
+        "fn f() { let (a, (b, c)) = (1u16, 2u16); }",
+        "unsupported tuple pattern",
+    );
     expect_error("fn f() { let s = \"hi\"; }", "string");
     expect_error("fn f() { let x = 1.5; }", "float");
 }
@@ -161,7 +164,7 @@ fn test_unsupported_types() {
     // no fat slices, references, or owned arrays in parameter position
     expect_error("fn f(s: [u16]) {}", "slice");
     expect_error("fn f(r: &u16) {}", "reference");
-    expect_error("fn f(a: Buf<u16, 2>) {}", "owned arrays are not allowed");
+    expect_error("fn f(a: Buf<u16, 2>) {}", "cannot be a parameter");
 }
 
 #[test]
@@ -324,14 +327,13 @@ fn test_missing_return_at_end_of_body() {
 
 #[test]
 fn test_struct_restrictions() {
-    // a bare struct is not a parameter or a return value; a view is (spec §9b)
+    // a bare struct is not a parameter; a view is, and returning one is fine
     expect_error(
         "struct P { x: u16 }\nfn f(p: P) {}",
-        "bare struct cannot be a parameter",
+        "cannot be a parameter",
     );
-    expect_error(
-        "struct P { x: u16 }\nfn f() -> P { P { x: 1 } }",
-        "bare struct cannot be a parameter",
+    assert!(
+        cpu_v2::frontend::parse_source("struct P { x: u16 }\nfn f() -> P { P { x: 1 } }").is_ok()
     );
     // ... but a view of one is fine
     assert!(cpu_v2::frontend::parse_source("struct P { x: u16 }\nfn f(p: Array<P>) { }").is_ok());
@@ -364,4 +366,52 @@ fn test_struct_restrictions() {
     expect_error("struct P { p: P }", "contains itself");
     // attributes other than repr/allow are still rejected
     expect_error("struct P { x: u16 }\n#[inline] fn f() {}", "attribute");
+}
+
+#[test]
+fn test_tuple_and_sret_restrictions() {
+    // a tuple is a value type: it can be returned, bound and destructured
+    assert!(cpu_v2::frontend::parse_source("fn f() -> (u16, u16) { (1, 2) }").is_ok());
+    assert!(cpu_v2::frontend::parse_source(
+        "fn f() { let (a, b) = f2(); }\nfn f2() -> (u16, u16) { (1, 2) }"
+    )
+    .is_ok());
+    // ... but it is not a parameter (spec §9c)
+    expect_error("fn f(t: (u16, u16)) {}", "cannot be a parameter");
+    // an aggregate return uses a hidden destination pointer: at most 5 parameters
+    expect_error(
+        "fn f(a: u16, b: u16, c: u16, d: u16, e: u16, g: u16) -> (u16, u16) { (a, g) }",
+        "at most 5 parameters",
+    );
+    // the hidden destination means the call must be bound or returned directly
+    expect_error(
+        "fn g() -> (u16, u16) { (1, 2) }\nfn f(x: u16) {}\nfn main() { f(g().0); }",
+        "hidden destination pointer",
+    );
+    // tuple elements are scalars, at most four
+    expect_error(
+        "fn f() -> (u16, u16, u16, u16, u16) { (1, 2, 3, 4, 5) }",
+        "at most 4",
+    );
+    expect_error(
+        "fn f(x: fix16) -> (fix16, u16) { (x, 0) }",
+        "tuple elements must be",
+    );
+    // a tuple pattern must match the value's arity
+    expect_error(
+        "fn g() -> (u16, u16) { (1, 2) }\nfn main() { let (a, b, c) = g(); }",
+        "the value has 2 elements",
+    );
+    // a tuple index must exist
+    expect_error(
+        "fn g() -> (u16, u16) { (1, 2) }\nfn main() { let t = g(); halt(t.5); }",
+        "out of range",
+    );
+    // fn pointers cannot carry an aggregate return (no indirect sret)
+    expect_error(
+        "struct P { x: u16 }\nfn f(g: fn() -> P) {}",
+        "fn pointer cannot return an aggregate",
+    );
+    // a tuple name is not a value on its own
+    expect_error("fn main() { let t = (1u16, 2u16); }", "memory-resident");
 }

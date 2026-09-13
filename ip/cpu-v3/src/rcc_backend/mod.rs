@@ -2175,6 +2175,84 @@ mod tests {
         assert_eq!(run_with_std_capped(source, 40_000), 888);
     }
 
+    #[test]
+    fn tuples_return_destructure_and_copy() {
+        let source = r#"
+            fn divmod_pair(a: u16, b: u16) -> (u16, u16) {
+                (a / b, a % b)
+            }
+
+            fn stats(x: u16, y: u16) -> (u16, u16, u16) {
+                let lo = if x < y { x } else { y };
+                let hi = if x < y { y } else { x };
+                (lo, hi, hi - lo)
+            }
+
+            fn main() {
+                let t = divmod_pair(47u16, 5u16);
+                let pair: (u16, u16) = t;
+                let (q, r) = pair;
+                let (lo, hi, span) = stats(9u16, 4u16);
+                halt(q + r + lo + hi + span + t.0);
+            }
+        "#;
+        // divmod_pair(47, 5) = (9, 2), stats(9, 4) = (4, 9, 5)
+        assert_eq!(run_with_std_capped(source, 60_000), 9 + 2 + 4 + 9 + 5 + 9);
+    }
+
+    #[test]
+    fn struct_returns_write_through_the_hidden_pointer() {
+        let source = r#"
+            struct Point { x: u16, y: u16 }
+
+            fn make(x: u16, y: u16) -> Point {
+                Point { x: x, y: y }
+            }
+
+            fn shifted(p: Array<Point>, dx: u16) -> Point {
+                Point { x: p[0u16].x + dx, y: p[0u16].y }
+            }
+
+            fn pass_through(p: Array<Point>) -> Point {
+                shifted(p, 1u16)
+            }
+
+            fn main() {
+                let p: Point = make(3u16, 4u16);
+                let q: Point = pass_through(view_of(&p));
+                let mut r: Point = q;
+                r = make(10u16, 20u16);
+                halt(p.x + p.y + q.x + q.y + r.x + r.y);
+            }
+        "#;
+        // p = (3, 4), q = shifted(p, 1) = (4, 4), r = make(10, 20)
+        assert_eq!(run_with_std_capped(source, 60_000), 3 + 4 + 4 + 4 + 10 + 20);
+    }
+
+    #[test]
+    fn buf_returns_and_struct_field_shorthand() {
+        let source = r#"
+            struct Pair { a: u16, b: u16 }
+
+            fn table() -> Buf<u16, 3> {
+                Buf::new([5, 6, 7])
+            }
+
+            fn pack(a: u16) -> Pair {
+                Pair { a: a, b: a + 1u16 }
+            }
+
+            fn main() {
+                let t: Buf<u16, 3> = table();
+                let view = t.as_array();
+                let p: Pair = pack(view[2u16]);
+                halt(view[0u16] + p.a + p.b);
+            }
+        "#;
+        // t = {5,6,7}; p = pack(7) = (7,8) => 5 + 7 + 8 = 20
+        assert_eq!(run_with_std_capped(source, 40_000), 20);
+    }
+
     fn compile(source: &str, options: CompilerOptions) -> CpuV3Program {
         let program = parse_source_with(source, options.data_base).unwrap();
         super::compile(program, &options, "main")

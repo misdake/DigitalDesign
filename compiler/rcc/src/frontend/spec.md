@@ -20,6 +20,7 @@ Only these types exist; no other primitive types are supported:
 | `Ptr` | **data pointer** (into data memory) | the `dsl_rt::Ptr` newtype over a u16 address; no plain arithmetic, only its methods and `as` casts |
 | `Array<T>` | **typed array view** | one-word unchecked address, where T is `u16`, `i16` or a struct; supports indexing and converts to/from `Ptr` |
 | `Buf<T, N>` | **owned array: N consecutive words** | the array type (spec §10); `T` is `u16`, `i16` or a struct, initialized with `Buf::new([v; N])` / `Buf::new([e0, e1, ...])`, indexed with a `u16`/`i16` index |
+| `(A, B, ...)` | **tuple: up to four scalars** | element `i` at word offset `i` (spec §9c); returnable, destructure with `let (a, b) = ...` |
 | `fn(A, B) -> R` | **function pointer** (into instruction memory) | plain Rust fn pointer type; on a Harvard machine this is a *different kind* from `Ptr` and they never convert |
 | `bool` | **one word: 0 or 1** | the type of comparisons and `&& \|\| !`; storable in a variable, passed and returned, and usable as a condition again (`if b`); `b as u16` / `b as i16` yields 0/1 (see §1.1) |
 | a defined `struct` name | **struct value: one word address** | fields are 16-bit words in declaration order, total size padded to the struct's alignment; layout and access rules in §9b |
@@ -269,6 +270,10 @@ struct Point { x: u16, y: u16, inner: Inner, flags: Buf<u16, 2>, valid: bool }
   `p.x += v` stores one; field chains (`p.inner.a`) and buffer fields (`p.flags[1u16] = v`) work.
   The binding must be `mut` for any field write, and the type annotation is required.
 - A struct *name* is not a value: read a field, copy it with a typed `let`, or take its address.
+- **Returning structs**: `fn make(x: u16) -> Point` writes the result through a hidden destination
+  pointer the caller supplies (§14), so `let p: Point = make(1u16);` fills `p`'s own frame slot —
+  no copy at the call site. `return Point { .. };`, `return other;` and `return shifted(...)` all
+  work, and a struct can be assigned wholesale (`p = make(1u16);`).
 - **Passing structs**: a function takes a struct by pointer, written `Array<Point>` (the one-word
   typed view). Two ways to make one:
   - `view_of(&value)` — the address of one struct (or addressable scalar) value;
@@ -276,8 +281,32 @@ struct Point { x: u16, y: u16, inner: Inner, flags: Buf<u16, 2>, valid: bool }
   Inside the callee, `p[i]` is the element *address* (a struct value), so `p[i].x` reads a field at
   `i * sizeof` words: a shift for word-sized elements, a real multiply otherwise. A `mut view:
   Array<Point>` parameter may write through it, which is how a callee updates the caller's struct.
-- Out of scope for now (§12): struct returns (the next phase's hidden destination pointer), `static`
-  structs, `impl` methods, `fix16`/`vecN` fields, and recursive layouts.
+- Out of scope for now (§12): `static` structs, `impl` methods, `fix16`/`vecN` fields, and
+  recursive layouts.
+
+## 9c. Tuples
+
+A tuple is a small fixed group of scalars — `(u16, u16)`, `(u16, i16, u16)` — with at most four
+elements, each `u16`, `i16`, `Ptr` or `bool`. Element `i` sits at word offset `i`, so a tuple is
+laid out exactly like a struct whose fields happen to be unnamed.
+
+```rust
+fn divmod_pair(a: u16, b: u16) -> (u16, u16) {
+    (a / b, a % b)
+}
+
+let t = divmod_pair(47u16, 5u16);   // the type is inferred from the callee
+let pair: (u16, u16) = t;           // a typed `let` copies it
+let (q, r) = pair;                  // and a tuple pattern destructures it
+halt(t.0 + q + r);                  // fields are positional: `.0`, `.1`, ...
+```
+
+- A tuple value is memory-resident like a struct: it is its word address, a bare tuple is not a
+  value (`let t = (1u16, 2u16);` is fine — the literal is stored into `t`'s slot — but passing a
+  tuple *name* around needs one of the forms above).
+- Tuple *parameters* are not supported (a tuple is not a view); pass the elements, or use a struct
+  with an `Array<T>` view when a callee must see many of them.
+- `_` may ignore an element: `let (lo, _, _) = stats(a, b);`.
 
 ## 10. Arrays: `Buf<T, N>`
 
@@ -383,8 +412,9 @@ them unchanged (a struct local is just an address plus offsets).
 
 `&x` references, fat slices, native `[T; N]` arrays (use `Buf<T, N>`, §10), `static mut`, heap
 allocation of buffers, multi-dimensional buffers (use `arr[i * W + j]`), function
-inlining/`#[inline]`, and the struct limits listed in §9b (struct returns, `static` structs, `impl`,
-`fix16`/`vecN` fields, recursive layouts).
+inlining/`#[inline]`, and the aggregate limits listed in §9b/§9c/§14 (aggregate parameters,
+aggregate-returning fn pointers, `static` structs, `impl`, `fix16`/`vecN` fields, recursive
+layouts).
 
 A stored `bool` is one word, and these remain out of scope: buffers of `bool` / `Array<bool>`,
 `static` bool, comparing two bools (`b1 == b2`), and an integer cast *to* bool (write `x != 0`).
@@ -398,6 +428,30 @@ frontend feature has to be correct (and tested) on CPU V3 only, no new test has 
 no effort goes into keeping the two in step. A feature that happens to work on CpuV2 is a free bonus,
 not a requirement. The CpuV2 backend keeps rejecting instructions it cannot lower with a clear panic
 (e.g. any FPU-class instruction).
+
+## 14. Calling convention: scalars in registers, aggregates by pointer
+
+Scalar arguments (including `Array<T>` views and fn pointers) travel in the six argument registers
+(`r2`..`r7`) and scalar results come back in the return registers (`r0`/`r1`), with FPU values in
+the F registers. Aggregates — structs (§9b), tuples (§9c) and `Buf<T, N>` (§10) — are **not**
+passed by value:
+
+- **Parameters**: an aggregate cannot be a parameter. Pass `Array<T>` (a view of the aggregate, or
+  of an array of them) or the fields.
+- **Returns (sret)**: the caller supplies a *hidden destination pointer* as the first argument and
+  the callee writes the result there, returning nothing in registers:
+  - `let p: Point = make(1u16);` allocates `p`'s frame slot and passes its address, so the callee
+    fills the variable directly (no copy);
+  - `let t = divmod_pair(a, b);` does the same, taking the type from the callee's signature;
+  - `return Point { .. };` / `return other;` / a tail expression write into the caller's
+    destination — including `return shifted(...)`, which forwards the same pointer;
+  - a returned value in any other position (an argument, a field base, an operand) is an error:
+    bind it with `let` first.
+  Because the destination occupies the first argument register, a function returning an aggregate
+  takes at most **five** declared parameters. A fn pointer cannot return an aggregate (there is no
+  indirect sret), so such a function must be called directly.
+- `return` in an aggregate-returning function ends with a plain `ret`; the caller sees no result
+  register at all.
 
 ## 13. The toolchain
 

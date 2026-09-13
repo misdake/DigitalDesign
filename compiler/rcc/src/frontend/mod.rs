@@ -370,7 +370,7 @@ fn parse_files(
     let mut names = vec![];
     for (fi, f) in &fns {
         let name = f.sig.ident.to_string();
-        let sig = signature(f, &globals.struct_names).map_err(|error| (*fi, error))?;
+        let sig = signature(f, &consts, &globals.struct_names).map_err(|error| (*fi, error))?;
         if sigs.insert(name.clone(), sig).is_some() {
             return Err((
                 *fi,
@@ -554,6 +554,8 @@ fn word_size(
     match ty {
         Ty::U16 | Ty::I16 | Ty::Ptr | Ty::Bool | Ty::Fix16 | Ty::ArrayRef(_) => Ok(1),
         Ty::FnPtr { .. } => Ok(1),
+        Ty::Tuple(elems) => u16::try_from(elems.len())
+            .map_err(|_| err(at, "tuple is larger than the 16-bit address space")),
         Ty::Array(elem, n) => {
             let elem = word_size(elem, structs, at)?;
             u16::try_from(usize::from(elem) * n)
@@ -568,6 +570,29 @@ fn word_size(
             format!("{} cannot be stored as a value here", ty.display()),
         )),
     }
+}
+
+/// a value that lives in memory as a word range: a struct, a tuple or a buffer
+fn is_aggregate(ty: &Ty) -> bool {
+    matches!(ty, Ty::Struct(_) | Ty::Tuple(_) | Ty::Array(..))
+}
+
+/// the word size of an aggregate
+fn aggregate_size(
+    ty: &Ty,
+    structs: &StructTable,
+    at: &impl syn::spanned::Spanned,
+) -> Result<u16, syn::Error> {
+    if !is_aggregate(ty) {
+        return Err(err(
+            at,
+            format!(
+                "{} is not an aggregate (struct, tuple or Buf)",
+                ty.display()
+            ),
+        ));
+    }
+    word_size(ty, structs, at)
 }
 
 /// alignment of a value type in words: scalars are naturally aligned to one word,
@@ -924,6 +949,9 @@ enum Ty {
     /// a struct: the value *is* its word address, like an array (spec §9b). The
     /// name keys `Globals::structs`, which owns the layout.
     Struct(String),
+    /// a tuple of scalars: memory-resident like a struct, element `i` at offset
+    /// `i` (spec §9c)
+    Tuple(Vec<Ty>),
     /// CpuV3 FPU types: one F register per value. fix16 is a vector whose
     /// only meaningful lane is x; vec2/vec3 carry meaning in the first N
     /// lanes and keep the upper lanes zero.
@@ -970,6 +998,14 @@ impl Ty {
             ),
             Ty::Array(elem, n) => format!("Buf<{}, {n}>", elem.display()),
             Ty::Struct(name) => name.clone(),
+            Ty::Tuple(elems) => format!(
+                "({})",
+                elems
+                    .iter()
+                    .map(|t| t.display())
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            ),
             Ty::Fix16 => "fix16".into(),
             Ty::Vec2 => "vec2".into(),
             Ty::Vec3 => "vec3".into(),
@@ -1027,8 +1063,8 @@ fn ty_of(ty: &Type, structs: &StructNames) -> Result<Ty, syn::Error> {
             if seg.ident == "Buf" {
                 return Err(err(
                     ty,
-                    "owned arrays are not allowed here: Buf<T, N> cannot be a parameter, return \
-                     value or cast target; pass Array<T> (a view) or Ptr (spec §10)",
+                    "a Buf cannot be a parameter or a cast target; pass Array<T> (a view) or Ptr \
+                     (returning one is fine, spec §10/§14)",
                 ));
             }
             if !seg.arguments.is_empty() {
@@ -1061,10 +1097,33 @@ fn ty_of(ty: &Type, structs: &StructNames) -> Result<Ty, syn::Error> {
                 syn::ReturnType::Default => Ty::Unit,
                 syn::ReturnType::Type(_, t) => ty_of(t, structs)?,
             };
+            if is_aggregate(&ret) {
+                return Err(err(
+                    ty,
+                    "a fn pointer cannot return an aggregate; call the function directly (spec §14)",
+                ));
+            }
             Ok(Ty::FnPtr {
                 params,
                 ret: Box::new(ret),
             })
+        }
+        Type::Tuple(t) => {
+            if t.elems.is_empty() {
+                return Ok(Ty::Unit); // `()` is the unit type
+            }
+            if t.elems.len() > 4 {
+                return Err(err(ty, "tuples hold at most 4 elements"));
+            }
+            let mut elems = vec![];
+            for e in &t.elems {
+                let elem = ty_of(e, structs)?;
+                if !matches!(elem, Ty::U16 | Ty::I16 | Ty::Ptr | Ty::Bool) {
+                    return Err(err(e, "tuple elements must be u16, i16, Ptr or bool"));
+                }
+                elems.push(elem);
+            }
+            Ok(Ty::Tuple(elems))
         }
         Type::Never(_) => Ok(Ty::Unit),
         Type::Paren(p) => ty_of(&p.elem, structs),
@@ -1193,6 +1252,10 @@ fn init_array_at(
     n: usize,
     init: &Expr,
 ) -> Result<(), syn::Error> {
+    // an aggregate-returning call writes straight into the destination
+    if sret_call_into(l, init, base, &Ty::Array(Box::new(elem.clone()), n))? {
+        return Ok(());
+    }
     let init = buf_initializer(init)?;
     // a struct element spans several words, so element `i` starts at `i * size`
     if let Ty::Struct(name) = elem {
@@ -1308,6 +1371,10 @@ fn init_struct_at(l: &mut FnLower, base: VReg, name: &str, init: &Expr) -> Resul
         .cloned()
         .ok_or_else(|| err(init, format!("unknown struct `{name}`")))?;
     let Expr::Struct(se) = init else {
+        // an aggregate-returning call writes straight into the destination
+        if sret_call_into(l, init, base, &Ty::Struct(name.to_string()))? {
+            return Ok(());
+        }
         // a copy from another value of the same struct type
         let (src_base, src_offset, src_ty, _) = place_addr_of(l, init)?;
         if src_ty != Ty::Struct(name.to_string()) {
@@ -1397,7 +1464,243 @@ fn init_struct_at(l: &mut FnLower, base: VReg, name: &str, init: &Expr) -> Resul
     Ok(())
 }
 
-fn signature(f: &ItemFn, structs: &StructNames) -> Result<Sig, syn::Error> {
+/// the type a direct call returns when that type is an aggregate (sret, spec §14)
+fn sret_call_return(l: &FnLower, e: &Expr) -> Option<Ty> {
+    let Expr::Call(call) = e else {
+        return None;
+    };
+    let Expr::Path(p) = call.func.as_ref() else {
+        return None;
+    };
+    let name = p.path.get_ident()?.to_string();
+    let sig = l.sigs.get(&name)?;
+    is_aggregate(&sig.ret).then(|| sig.ret.clone())
+}
+
+/// A direct call to a function that returns an aggregate writes into `dst` — the
+/// hidden first parameter the caller supplies (spec §14). `Ok(false)` means `e`
+/// is not such a call, so the caller falls back to its usual path.
+fn sret_call_into(l: &mut FnLower, e: &Expr, dst: VReg, expected: &Ty) -> Result<bool, syn::Error> {
+    let Expr::Call(call) = e else {
+        return Ok(false);
+    };
+    let Expr::Path(p) = call.func.as_ref() else {
+        return Ok(false);
+    };
+    let Some(name) = p.path.get_ident().map(|i| i.to_string()) else {
+        return Ok(false);
+    };
+    let Some(sig) = l.sigs.get(&name).cloned() else {
+        return Ok(false);
+    };
+    if !is_aggregate(&sig.ret) {
+        return Ok(false);
+    }
+    if sig.ret != *expected {
+        return Err(err(
+            e,
+            format!("expected {}, got {}", expected.display(), sig.ret.display()),
+        ));
+    }
+    let args = call_arg_values(l, call)?;
+    let arg_tys: Vec<Ty> = args.iter().map(|(_, t)| t.clone()).collect();
+    check_call_args(call, &sig.params, &arg_tys, &name)?;
+    let mut all = vec![dst];
+    all.extend(args.iter().map(|(v, _)| *v));
+    l.b.call(intern(&name), &all, 0);
+    Ok(true)
+}
+
+/// initialize the aggregate `ty` at `dst` from `e`: a literal, a copy from
+/// another value, or an aggregate-returning call (spec §14)
+fn init_aggregate_at(l: &mut FnLower, dst: VReg, ty: &Ty, e: &Expr) -> Result<(), syn::Error> {
+    match ty {
+        Ty::Struct(name) => {
+            let name = name.clone();
+            init_struct_at(l, dst, &name, e)
+        }
+        Ty::Tuple(elems) => {
+            let elems = elems.clone();
+            init_tuple_at(l, dst, &elems, e)
+        }
+        Ty::Array(elem, n) => {
+            let (elem, n) = ((**elem).clone(), *n);
+            init_array_at(l, dst, &elem, n, e)
+        }
+        _ => Err(err(
+            e,
+            format!(
+                "{} is not an aggregate (struct, tuple or Buf)",
+                ty.display()
+            ),
+        )),
+    }
+}
+
+/// initialize a tuple at `base`: a tuple literal, a copy from another tuple, or
+/// an aggregate-returning call. Element `i` sits at offset `i`.
+fn init_tuple_at(l: &mut FnLower, base: VReg, elems: &[Ty], init: &Expr) -> Result<(), syn::Error> {
+    if let Expr::Tuple(t) = init {
+        if t.elems.len() != elems.len() {
+            return Err(err(
+                init,
+                format!(
+                    "tuple has {} elements, expected {}",
+                    t.elems.len(),
+                    elems.len()
+                ),
+            ));
+        }
+        for (i, (e, ty)) in t.elems.iter().zip(elems).enumerate() {
+            let (v, from) = expr(l, e)?.reg(l, e, "tuple element")?;
+            let (v, _) = coerce(l, v, &from, ty, e)?;
+            l.b.store_mem(base, i as i16, v);
+        }
+        return Ok(());
+    }
+    let tuple_ty = Ty::Tuple(elems.to_vec());
+    if sret_call_into(l, init, base, &tuple_ty)? {
+        return Ok(());
+    }
+    let (src_base, src_offset, src_ty, _) = place_addr_of(l, init)?;
+    if src_ty != tuple_ty {
+        return Err(err(
+            init,
+            format!("expected {}, got {}", tuple_ty.display(), src_ty.display()),
+        ));
+    }
+    let src = place_addr(l, src_base, src_offset);
+    let len = l.b.load_imm(elems.len() as u16);
+    l.b.call("mem_copy", &[base, src, len], 0);
+    Ok(())
+}
+
+/// `let (a, b) = expr;` — the value materializes in a frame slot and each name is
+/// bound to its word (spec §9c)
+fn let_tuple(
+    l: &mut FnLower,
+    pat: &syn::PatTuple,
+    annotated: Option<Ty>,
+    init: &Expr,
+    at: &Stmt,
+) -> Result<(), syn::Error> {
+    // a tuple literal binds its elements directly, with no temporary
+    if annotated.is_none() {
+        if let Expr::Tuple(t) = init {
+            if t.elems.len() != pat.elems.len() {
+                return Err(err(
+                    pat,
+                    format!(
+                        "pattern has {} names, the value has {} elements",
+                        pat.elems.len(),
+                        t.elems.len()
+                    ),
+                ));
+            }
+            let mut values = vec![];
+            for e in &t.elems {
+                let (v, ty) = expr(l, e)?.reg(l, e, "tuple element")?;
+                let ty = if ty == Ty::UntypedInt { Ty::U16 } else { ty };
+                if !matches!(ty, Ty::U16 | Ty::I16 | Ty::Ptr | Ty::Bool) {
+                    return Err(err(e, "tuple elements must be u16, i16, Ptr or bool"));
+                }
+                values.push((v, ty));
+            }
+            return bind_tuple_names(l, pat, &values, at);
+        }
+    }
+    let init_ty = match annotated {
+        Some(ty) => ty,
+        None => match sret_call_return(l, init) {
+            Some(ty) => ty,
+            None => peek_type(l, init).ok_or_else(|| {
+                err(
+                    init,
+                    "cannot infer the tuple type here; annotate the binding",
+                )
+            })?,
+        },
+    };
+    let Ty::Tuple(elems) = init_ty else {
+        return Err(err(
+            pat,
+            format!("expected a tuple, got {}", init_ty.display()),
+        ));
+    };
+    if elems.len() != pat.elems.len() {
+        return Err(err(
+            pat,
+            format!(
+                "pattern has {} names, the value has {} elements",
+                pat.elems.len(),
+                elems.len()
+            ),
+        ));
+    }
+    let slot = l.b.alloc_local_slots(elems.len() as u8);
+    let base = l.b.addr_of_local(slot);
+    init_tuple_at(l, base, &elems, init)?;
+    let values: Vec<(VReg, Ty)> = elems
+        .iter()
+        .enumerate()
+        .map(|(i, ty)| (l.b.load_mem(base, i as i16), ty.clone()))
+        .collect();
+    bind_tuple_names(l, pat, &values, at)
+}
+
+/// bind each name of a tuple pattern to its value
+fn bind_tuple_names(
+    l: &mut FnLower,
+    pat: &syn::PatTuple,
+    values: &[(VReg, Ty)],
+    at: &Stmt,
+) -> Result<(), syn::Error> {
+    for (p, (v, ty)) in pat.elems.iter().zip(values) {
+        match p {
+            Pat::Wild(_) => {}
+            Pat::Ident(pi) => {
+                if pi.mutability.is_some() {
+                    return Err(err(
+                        &pi.ident,
+                        "a tuple binding is immutable; copy it into a `let mut`",
+                    ));
+                }
+                let name = pi.ident.to_string();
+                // an address-taken name still gets its own frame slot
+                let kind = if matches!(l.residents.remove(&name), Some(ResidentKind::Scalar)) {
+                    let slot = l.b.alloc_local_slots(1);
+                    l.b.store_local(slot, *v);
+                    VarKind::Local { slot }
+                } else {
+                    let var = l.b.new_var_typed(if ty.is_fpu() {
+                        crate::RegClass::Fpu
+                    } else {
+                        crate::RegClass::Gpr
+                    });
+                    l.b.set(var, *v);
+                    VarKind::Ssa { var }
+                };
+                l.declare(
+                    name,
+                    VarInfo {
+                        kind,
+                        ty: ty.clone(),
+                        mutable: false,
+                    },
+                    line_of(at),
+                );
+            }
+            other => return Err(err(other, "unsupported tuple pattern element")),
+        }
+    }
+    Ok(())
+}
+
+fn signature(
+    f: &ItemFn,
+    consts: &HashMap<String, (u16, Ty)>,
+    structs: &StructNames,
+) -> Result<Sig, syn::Error> {
     if !f.sig.generics.params.is_empty() {
         return Err(err(&f.sig.generics, "generics are not supported"));
     }
@@ -1422,17 +1725,22 @@ fn signature(f: &ItemFn, structs: &StructNames) -> Result<Sig, syn::Error> {
     }
     let ret = match &f.sig.output {
         syn::ReturnType::Default => Ty::Unit,
-        syn::ReturnType::Type(_, t) => ty_of(t, structs)?,
+        // a returned Buf is spelled like any other owned array type
+        syn::ReturnType::Type(_, t) => ty_of_maybe_array(t, consts, structs)?,
     };
-    if params
-        .iter()
-        .chain(std::iter::once(&ret))
-        .any(|ty| matches!(ty, Ty::Struct(_)))
-    {
+    if params.iter().any(is_aggregate) {
         return Err(err(
             &f.sig,
-            "a bare struct cannot be a parameter or a return value yet; pass a view \
-             (`Array<Point>`) and index it, or pass the fields (see spec §9b)",
+            "a struct, tuple or Buf cannot be a parameter; pass a view (`Array<Point>`) and index \
+             it, pass the fields, or return it instead (spec §9b/§9c/§14)",
+        ));
+    }
+    // an aggregate return is written through a hidden first parameter (sret)
+    if is_aggregate(&ret) && params.len() > 5 {
+        return Err(err(
+            &f.sig,
+            "a function returning an aggregate takes at most 5 parameters: the destination \
+             pointer is a hidden first parameter (spec §14)",
         ));
     }
     Ok(Sig { params, ret })
@@ -1467,6 +1775,8 @@ struct FnLower<'a> {
     scope_ends: Vec<u32>,
     debug_locals: Vec<DebugVar>,
     ret_ty: Ty,
+    /// the hidden destination pointer of an aggregate return (sret, spec §14)
+    sret_dst: Option<VarId>,
     /// true once the current block has ended (return/halt)
     dead: bool,
     /// In no-opt builds, scalar locals use stable frame slots so the debugger
@@ -1511,6 +1821,14 @@ impl Val {
 impl FnLower<'_> {
     fn lookup(&self, name: &str) -> Option<&VarInfo> {
         self.scopes.iter().rev().find_map(|s| s.get(name))
+    }
+
+    /// the destination register of an aggregate return (sret, spec §14)
+    fn sret_dst_reg(&mut self) -> VReg {
+        let var = self
+            .sret_dst
+            .expect("an aggregate-returning function has a destination");
+        self.b.get(var)
     }
     fn declare(&mut self, name: String, info: VarInfo, start_line: u32) {
         let loc = match info.kind {
@@ -1681,19 +1999,24 @@ fn lower_fn(
     materialize_debug_locals: bool,
 ) -> Result<(IrFunc, FnDebug), syn::Error> {
     let sig = sigs.get(&f.sig.ident.to_string()).unwrap().clone();
-    let n_rets = if sig.ret == Ty::Unit { 0 } else { 1 };
-    let param_classes: Vec<crate::RegClass> = sig
-        .params
-        .iter()
-        .map(|ty| {
-            if ty.is_fpu() {
-                crate::RegClass::Fpu
-            } else {
-                crate::RegClass::Gpr
-            }
-        })
-        .collect();
+    // An aggregate return is written through a hidden first parameter: the callee
+    // takes one extra GPR argument and returns nothing in registers (spec §14).
+    let sret = is_aggregate(&sig.ret);
+    let n_rets = if sig.ret == Ty::Unit || sret { 0 } else { 1 };
+    let mut param_classes: Vec<crate::RegClass> = if sret {
+        vec![crate::RegClass::Gpr]
+    } else {
+        vec![]
+    };
+    param_classes.extend(sig.params.iter().map(|ty| {
+        if ty.is_fpu() {
+            crate::RegClass::Fpu
+        } else {
+            crate::RegClass::Gpr
+        }
+    }));
     let (b, param_vars) = FuncBuilder::new_typed(name, &param_classes, n_rets);
+    let sret_dst = if sret { Some(param_vars[0]) } else { None };
 
     // prescan: which names must be memory-resident
     let mut residents: HashMap<String, ResidentKind> = HashMap::new();
@@ -1710,14 +2033,17 @@ fn lower_fn(
         scope_ends: vec![end_line_of(&f.block)],
         debug_locals: vec![],
         ret_ty: sig.ret.clone(),
+        sret_dst,
         dead: false,
         materialize_debug_locals,
     };
+    // with sret the hidden destination occupies parameter slot 0
+    let declared_start = if sret { 1 } else { 0 };
     for (arg, (var, ty)) in f
         .sig
         .inputs
         .iter()
-        .zip(param_vars.iter().zip(sig.params.iter()))
+        .zip(param_vars[declared_start..].iter().zip(sig.params.iter()))
     {
         let syn::FnArg::Typed(pt) = arg else {
             unreachable!()
@@ -1772,7 +2098,7 @@ fn lower_fn(
     // rewrite their locations to ABI registers (frame slot when address-taken)
     for (i, dv) in l.debug_locals.iter_mut().enumerate() {
         if let VarLoc::Ssa = dv.loc {
-            dv.loc = VarLoc::ParamIndex(i as u8);
+            dv.loc = VarLoc::ParamIndex((i + declared_start) as u8);
         }
     }
     let ret_names: Vec<&'static str> = if sig.ret == Ty::Unit {
@@ -1807,6 +2133,18 @@ fn lower_fn(
         // Unlike ordinary statements, a trailing return expression does not
         // pass through `stmt`, so establish its source line explicitly.
         l.b.set_line_hint(line_of(t));
+        // an aggregate tail is written into the caller's destination, not a register
+        if is_aggregate(&sig.ret) {
+            let dst = l.sret_dst_reg();
+            let ret_ty = sig.ret.clone();
+            init_aggregate_at(&mut l, dst, &ret_ty, t)
+                .map_err(|e| syn::Error::new(e.span(), format!("in fn `{name}`: {e}")))?;
+            if !l.dead {
+                l.b.ret(&[]);
+                l.dead = true;
+            }
+            return finish_fn(l, name, file);
+        }
         let (v, from) = expr(&mut l, t)?
             .reg(&mut l, t, "tail expression")
             .map_err(|e| syn::Error::new(e.span(), format!("in fn `{name}`: {e}")))?;
@@ -1824,6 +2162,10 @@ fn lower_fn(
             format!("function `{name}` may reach its end without returning a value"),
         ));
     }
+    finish_fn(l, name, file)
+}
+
+fn finish_fn(l: FnLower, name: &str, file: u16) -> Result<(IrFunc, FnDebug), syn::Error> {
     let fdbg = FnDebug {
         name: name.to_string(),
         file,
@@ -1857,54 +2199,43 @@ fn stmt(l: &mut FnLower, s: &Stmt) -> Result<(), syn::Error> {
                 }
                 p => (p, None),
             };
-            let (ident, mutable) = match inner_pat {
-                Pat::Ident(p) => (p.ident.to_string(), p.mutability.is_some()),
-                _ => {
-                    return Err(err(
-                        &local.pat,
-                        "unsupported pattern (only plain identifiers)",
-                    ))
-                }
-            };
             let init = local
                 .init
                 .as_ref()
                 .ok_or_else(|| err(s, "let without initializer is not supported"))?;
 
-            // local Buf: `let mut buf: Buf<u16, N> = Buf::new([0; N]);`
-            if let Some(Ty::Array(elem, n)) = &annotated {
-                let (elem, n) = (elem.as_ref().clone(), *n);
-                let slot = l.b.alloc_local_slots(n as u8);
-                let base = l.b.addr_of_local(slot);
-                init_array_at(l, base, &elem, n, &init.1)?;
-                l.declare(
-                    ident,
-                    VarInfo {
-                        kind: VarKind::Local { slot },
-                        ty: annotated.clone().unwrap(),
-                        mutable,
-                    },
-                    line_of(s),
-                );
-                return Ok(());
+            // `let (q, r) = divmod_pair(a, b);` — tuples destructure by value
+            if let Pat::Tuple(pat) = inner_pat {
+                return let_tuple(l, pat, annotated, &init.1, s);
             }
-            // local struct: `let mut p: Point = Point { x: 1, y: 2 };`
-            if let Some(Ty::Struct(name)) = &annotated {
-                let name = name.clone();
-                let def = l
-                    .globals
-                    .structs
-                    .get(&name)
-                    .cloned()
-                    .ok_or_else(|| err(s, format!("unknown struct `{name}`")))?;
-                let slot = l.b.alloc_local_slots(def.size as u8);
+
+            let (ident, mutable) = match inner_pat {
+                Pat::Ident(p) => (p.ident.to_string(), p.mutability.is_some()),
+                _ => {
+                    return Err(err(
+                        &local.pat,
+                        "unsupported pattern (only plain identifiers and tuples)",
+                    ))
+                }
+            };
+
+            // an aggregate binding: `let mut p: Point = Point { .. };`,
+            // `let t = divmod_pair(a, b);` (the type then comes from the callee)
+            let aggregate = match (&annotated, sret_call_return(l, &init.1)) {
+                (Some(ty), _) if is_aggregate(ty) => Some(ty.clone()),
+                (None, Some(ret)) => Some(ret),
+                _ => None,
+            };
+            if let Some(ty) = aggregate {
+                let size = aggregate_size(&ty, &l.globals.structs, &init.1)?;
+                let slot = l.b.alloc_local_slots(size as u8);
                 let base = l.b.addr_of_local(slot);
-                init_struct_at(l, base, &name, &init.1)?;
+                init_aggregate_at(l, base, &ty, &init.1)?;
                 l.declare(
                     ident,
                     VarInfo {
                         kind: VarKind::Local { slot },
-                        ty: annotated.clone().unwrap(),
+                        ty,
                         mutable,
                     },
                     line_of(s),
@@ -1985,6 +2316,21 @@ fn stmt(l: &mut FnLower, s: &Stmt) -> Result<(), syn::Error> {
 fn stmt_expr(l: &mut FnLower, e: &Expr) -> Result<(), syn::Error> {
     match e {
         Expr::Assign(a) => {
+            // whole-aggregate assignment: `p = q;` / `p = make();` (spec §14)
+            if let Some(ty) = peek_type(l, &a.left) {
+                if is_aggregate(&ty) {
+                    let (base, offset, _, mutable) = place_addr_of(l, &a.left)?;
+                    if !mutable {
+                        return Err(err(
+                            &a.left,
+                            "the aggregate is not mutable (declare it with `let mut`)",
+                        ));
+                    }
+                    let dst = place_addr(l, base, offset);
+                    init_aggregate_at(l, dst, &ty, &a.right)?;
+                    return Ok(());
+                }
+            }
             if let Expr::Field(f) = a.left.as_ref() {
                 let (base, offset, ty, mutable) = struct_field_place(l, f)?;
                 if !mutable {
@@ -2130,6 +2476,19 @@ fn stmt_expr(l: &mut FnLower, e: &Expr) -> Result<(), syn::Error> {
         }
         Expr::Return(r) => {
             let ret_ty = l.ret_ty.clone();
+            if is_aggregate(&ret_ty) {
+                let Some(e) = &r.expr else {
+                    return Err(err(
+                        r,
+                        format!("missing return value (expected {})", ret_ty.display()),
+                    ));
+                };
+                let dst = l.sret_dst_reg();
+                init_aggregate_at(l, dst, &ret_ty, e)?;
+                l.b.ret(&[]);
+                l.dead = true;
+                return Ok(());
+            }
             match (&ret_ty, &r.expr) {
                 (Ty::Unit, None) => l.b.ret(&[]),
                 (Ty::Unit, Some(e)) => {
@@ -2753,6 +3112,11 @@ fn expr(l: &mut FnLower, e: &Expr) -> Result<Val, syn::Error> {
             control_flow_value(l, e)
         }
         Expr::Block(b) => Err(err(&b, "blocks as expressions are not supported")),
+        Expr::Tuple(_) => Err(err(
+            e,
+            "a tuple is memory-resident; bind it with `let (a, b) = ...`, a typed `let`, or return \
+             it (spec §9c)",
+        )),
         Expr::Match(_) => Err(err(e, "match is not supported (use if/else)")),
         Expr::Closure(_) => Err(err(e, "closures are not supported")),
         Expr::Macro(_) => Err(err(e, "macros are not supported")),
@@ -2801,10 +3165,19 @@ fn place_addr_of(l: &mut FnLower, e: &Expr) -> Result<(VReg, i16, Ty, bool), syn
             let (base, offset, elem, mutable) = array_index_addr(l, index)?;
             Ok((place_addr(l, base, offset), 0, elem, mutable))
         }
-        _ => Err(err(
-            e,
-            "expected a variable or a field of one (struct values live in memory)",
-        )),
+        _ => {
+            if sret_call_return(l, e).is_some() {
+                return Err(err(
+                    e,
+                    "a function returning an aggregate writes through a hidden destination pointer; \
+                     bind it with `let` first (spec §14)",
+                ));
+            }
+            Err(err(
+                e,
+                "expected a variable or a field of one (struct values live in memory)",
+            ))
+        }
     }
 }
 
@@ -2825,10 +3198,33 @@ fn struct_field_place(
     f: &syn::ExprField,
 ) -> Result<(VReg, i16, Ty, bool), syn::Error> {
     let (base, offset, base_ty, mutable) = place_addr_of(l, &f.base)?;
+    // a tuple field is positional: element `i` sits at offset `i` (spec §9c)
+    if let Ty::Tuple(elems) = &base_ty {
+        let syn::Member::Unnamed(index) = &f.member else {
+            return Err(err(
+                &f.member,
+                "a tuple has only positional fields (`.0`, `.1`, ...)",
+            ));
+        };
+        let i = index.index as usize;
+        let Some(elem) = elems.get(i) else {
+            return Err(err(
+                &index,
+                format!(
+                    "tuple has {} elements; index {i} is out of range",
+                    elems.len()
+                ),
+            ));
+        };
+        return Ok((base, offset + i as i16, elem.clone(), mutable));
+    }
     let Ty::Struct(name) = &base_ty else {
         return Err(err(
             &f.base,
-            format!("{} has no fields (only structs do)", base_ty.display()),
+            format!(
+                "{} has no fields (only structs and tuples do)",
+                base_ty.display()
+            ),
         ));
     };
     let member = match &f.member {
@@ -3312,6 +3708,32 @@ fn false_cond(l: &mut FnLower) -> BoolExpr {
 // calls and intrinsics
 // ---------------------------------------------------------------------------
 
+/// lower a call's arguments to (register, type) pairs, materializing function
+/// items passed as fn pointers
+fn call_arg_values(l: &mut FnLower, call: &syn::ExprCall) -> Result<Vec<(VReg, Ty)>, syn::Error> {
+    call.args
+        .iter()
+        .map(|a| match expr(l, a)? {
+            Val::FnItem(fname) => {
+                let sig = l
+                    .sigs
+                    .get(fname)
+                    .cloned()
+                    .ok_or_else(|| err(a, format!("undefined function `{fname}`")))?;
+                let v = l.b.load_func_addr(fname);
+                Ok((
+                    v,
+                    Ty::FnPtr {
+                        params: sig.params,
+                        ret: Box::new(sig.ret),
+                    },
+                ))
+            }
+            val => val.reg(l, a, "argument"),
+        })
+        .collect::<Result<_, _>>()
+}
+
 fn call_expr(l: &mut FnLower, call: &syn::ExprCall) -> Result<Val, syn::Error> {
     let Expr::Path(p) = call.func.as_ref() else {
         return Err(err(&call.func, "unsupported callee"));
@@ -3433,28 +3855,7 @@ fn call_expr(l: &mut FnLower, call: &syn::ExprCall) -> Result<Val, syn::Error> {
 
     // remaining calls take plain value arguments; function items passed as fn
     // pointer arguments are materialized to their address inline
-    let args: Vec<(VReg, Ty)> = call
-        .args
-        .iter()
-        .map(|a| match expr(l, a)? {
-            Val::FnItem(fname) => {
-                let sig = l
-                    .sigs
-                    .get(fname)
-                    .cloned()
-                    .ok_or_else(|| err(a, format!("undefined function `{fname}`")))?;
-                let v = l.b.load_func_addr(fname);
-                Ok((
-                    v,
-                    Ty::FnPtr {
-                        params: sig.params,
-                        ret: Box::new(sig.ret),
-                    },
-                ))
-            }
-            val => val.reg(l, a, "argument"),
-        })
-        .collect::<Result<_, _>>()?;
+    let args: Vec<(VReg, Ty)> = call_arg_values(l, call)?;
     if name.as_str() == "halt" {
         if args.len() != 1 {
             return Err(err(call, "halt(x) takes 1 argument"));
@@ -3616,6 +4017,13 @@ fn call_expr(l: &mut FnLower, call: &syn::ExprCall) -> Result<Val, syn::Error> {
     let arg_tys: Vec<Ty> = args.iter().map(|(_, t)| t.clone()).collect();
     if let Some(sig) = l.sigs.get(name).cloned() {
         check_call_args(call, &sig.params, &arg_tys, name)?;
+        if is_aggregate(&sig.ret) {
+            return Err(err(
+                call,
+                "a function returning an aggregate writes through a hidden destination pointer, so \
+                 it must be bound (`let x = f(..)`), assigned, or returned directly (spec §14)",
+            ));
+        }
         let n_rets = if sig.ret == Ty::Unit { 0 } else { 1 };
         let rets = l.b.call(intern(name), &arg_vregs, n_rets);
         if sig.ret.is_fpu() {
