@@ -508,6 +508,13 @@ impl V3DebugSession {
 
     /// read words, interpreting the type string (array preview like v2)
     fn preview(&self, addr: u16, ty: &str) -> Vec<u16> {
+        // a published struct layout says how many words the value occupies (the
+        // string alone cannot: `P` is not a scalar name)
+        if let Some(layout) = self.debug.types.iter().find(|layout| layout.name == ty) {
+            return (0..layout.size)
+                .map(|i| self.data_word(addr.wrapping_add(i)))
+                .collect();
+        }
         let n = if ty.starts_with('[') {
             ty.split(';')
                 .nth(1)
@@ -834,6 +841,34 @@ impl V3DebugSession {
             })
             .collect();
         let _ = write!(out, "\"consts\":[{}],", consts.join(","));
+        // struct layouts, so a client can render `p.x` without re-deriving offsets
+        let types: Vec<String> = self
+            .debug
+            .types
+            .iter()
+            .map(|layout| {
+                let fields: Vec<String> = layout
+                    .fields
+                    .iter()
+                    .map(|field| {
+                        format!(
+                            "{{\"name\":\"{}\",\"offset\":{},\"ty\":\"{}\"}}",
+                            esc(&field.name),
+                            field.offset,
+                            esc(&field.ty)
+                        )
+                    })
+                    .collect();
+                format!(
+                    "{{\"name\":\"{}\",\"size\":{},\"align\":{},\"fields\":[{}]}}",
+                    esc(&layout.name),
+                    layout.size,
+                    layout.align,
+                    fields.join(",")
+                )
+            })
+            .collect();
+        let _ = write!(out, "\"types\":[{}],", types.join(","));
 
         match self.current_line() {
             Some((file, line)) => {
@@ -965,24 +1000,51 @@ impl V3DebugSession {
     }
 
     fn var_json(&self, v: &DebugVar) -> String {
-        let value = match self.var_value(v) {
-            VarValue::Mem(addr, words) => format!(
-                "{{\"addr\":{},\"words\":[{}]}}",
-                addr,
-                words
-                    .iter()
-                    .map(|w| w.to_string())
-                    .collect::<Vec<_>>()
-                    .join(",")
+        let (value, words) = match self.var_value(v) {
+            VarValue::Mem(addr, words) => (
+                format!(
+                    "{{\"addr\":{},\"words\":[{}]}}",
+                    addr,
+                    words
+                        .iter()
+                        .map(|w| w.to_string())
+                        .collect::<Vec<_>>()
+                        .join(",")
+                ),
+                Some(words),
             ),
-            VarValue::Reg(reg, word) => format!("{{\"reg\":{reg},\"word\":{word}}}"),
-            VarValue::Unavailable => "null".to_string(),
+            VarValue::Reg(reg, word) => (format!("{{\"reg\":{reg},\"word\":{word}}}"), None),
+            VarValue::Unavailable => ("null".to_string(), None),
+        };
+        // a struct value carries its fields, so `p.x` is expandable in place
+        let fields = match (&words, self.debug.types.iter().find(|t| t.name == v.ty)) {
+            (Some(words), Some(layout)) => {
+                let items: Vec<String> = layout
+                    .fields
+                    .iter()
+                    .map(|field| {
+                        let word = match words.get(field.offset as usize) {
+                            Some(word) => word.to_string(),
+                            None => "null".to_string(),
+                        };
+                        format!(
+                            "{{\"name\":\"{}\",\"ty\":\"{}\",\"word\":{}}}",
+                            esc(&field.name),
+                            esc(&field.ty),
+                            word
+                        )
+                    })
+                    .collect();
+                format!(",\"fields\":[{}]", items.join(","))
+            }
+            _ => String::new(),
         };
         format!(
-            "{{\"name\":\"{}\",\"ty\":{},\"value\":{}}}",
+            "{{\"name\":\"{}\",\"ty\":{},\"value\":{}{}}}",
             esc(&v.name),
             ty_to_json(&v.ty),
-            value
+            value,
+            fields
         )
     }
 
@@ -1076,6 +1138,7 @@ mod tests {
         DISPLAY_FRAMEBUFFER_LOW, DISPLAY_FRAME_INDEX, DISPLAY_NEXT_SWAP, FRAMEBUFFER_A_BASE_WORD,
         FRAMEBUFFER_B_BASE_WORD,
     };
+    use rcc::{DebugType, DebugTypeField};
 
     fn session(words: Vec<Word>) -> V3DebugSession {
         V3DebugSession::from_program(CpuV3Program {
@@ -1142,6 +1205,58 @@ mod tests {
         assert!(state.contains(&format!(
             "\"active_base\":{FRAMEBUFFER_B_BASE_WORD},\"frame_index\":1,\"swap_pending\":false"
         )));
+    }
+
+    #[test]
+    fn struct_layouts_are_published_and_expanded() {
+        // a hand-built .dbg: one struct static `p` at data address 0x0040
+        let program = CpuV3Program {
+            code_base: 0,
+            words: vec![halt()],
+            listing: String::new(),
+            debug: DebugInfo {
+                globals: vec![DebugVar {
+                    name: "p".into(),
+                    ty: "P".into(),
+                    loc: VarLoc::Global(0x0040),
+                    scope: None,
+                }],
+                types: vec![DebugType {
+                    name: "P".into(),
+                    size: 2,
+                    align: 1,
+                    fields: vec![
+                        DebugTypeField {
+                            name: "x".into(),
+                            offset: 0,
+                            ty: "u16".into(),
+                        },
+                        DebugTypeField {
+                            name: "y".into(),
+                            offset: 1,
+                            ty: "i16".into(),
+                        },
+                    ],
+                }],
+                ..DebugInfo::default()
+            },
+        };
+        let mut session = V3DebugSession::from_program(program);
+        session.system.cpu_mut().physical_memory_mut()[0x0040] = 7;
+        session.system.cpu_mut().physical_memory_mut()[0x0041] = 0xfff9; // -7 as i16
+        let json = session.state_json(None);
+        assert!(
+            json.contains(
+                r#""types":[{"name":"P","size":2,"align":1,"fields":[{"name":"x","offset":0,"ty":"u16"},{"name":"y","offset":1,"ty":"i16"}]}]"#
+            ),
+            "{json}"
+        );
+        assert!(
+            json.contains(
+                r#""name":"p","ty":"P","value":{"addr":64,"words":[7,65529]},"fields":[{"name":"x","ty":"u16","word":7},{"name":"y","ty":"i16","word":65529}]"#
+            ),
+            "{json}"
+        );
     }
 
     #[test]
