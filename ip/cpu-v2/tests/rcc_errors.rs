@@ -312,9 +312,17 @@ fn test_missing_return_at_end_of_body() {
 
 #[test]
 fn test_struct_restrictions() {
-    // struct values live in memory until pointer passing lands (spec §12)
-    expect_error("struct P { x: u16 }\nfn f(p: P) {}", "struct parameters");
-    expect_error("struct P { x: u16 }\nfn f() -> P {}", "struct parameters");
+    // a bare struct is not a parameter or a return value; a view is (spec §9b)
+    expect_error(
+        "struct P { x: u16 }\nfn f(p: P) {}",
+        "bare struct cannot be a parameter",
+    );
+    expect_error(
+        "struct P { x: u16 }\nfn f() -> P { P { x: 1 } }",
+        "bare struct cannot be a parameter",
+    );
+    // ... but a view of one is fine
+    assert!(cpu_v2::frontend::parse_source("struct P { x: u16 }\nfn f(p: Array<P>) { }").is_ok());
     // a bare struct name is not a value
     expect_error(
         "struct P { x: u16 }\nfn f() { let mut p: P = P { x: 1 }; let q = p; }",

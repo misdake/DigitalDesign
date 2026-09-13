@@ -2108,6 +2108,73 @@ mod tests {
         assert_eq!(run_with_std_capped(source, 20_000), 46);
     }
 
+    #[test]
+    fn struct_views_pass_by_pointer_and_index_fields() {
+        let source = r#"
+            struct Point { x: u16, y: u16 }
+
+            fn sum_x(points: Array<Point>, count: u16) -> u16 {
+                let mut total: u16 = 0;
+                let mut i: u16 = 0;
+                while i < count {
+                    total = total + points[i].x;
+                    i = i + 1u16;
+                }
+                total
+            }
+
+            fn bump(mut view: Array<Point>, dx: u16) {
+                view[0u16].x = view[0u16].x + dx;
+            }
+
+            fn main() {
+                let arr: [Point; 3] = [
+                    Point { x: 10, y: 1 },
+                    Point { x: 20, y: 2 },
+                    Point { x: 30, y: 3 },
+                ];
+                let view = arr.as_view();
+                bump(view, 5u16);
+                let total = sum_x(view, 3u16);
+                let mut single: Point = Point { x: 7, y: 0 };
+                bump(view_of(&single), 100u16);
+                halt(total + single.x);
+            }
+        "#;
+        // bump(view) makes x = 15, so sum_x = 65; bump(view_of(&single)) makes 107
+        assert_eq!(run_with_std_capped(source, 40_000), 172);
+    }
+
+    #[test]
+    fn struct_view_index_scales_by_the_element_size() {
+        // five words per element: a runtime index needs a real multiply, not a shift
+        let source = r#"
+            struct Wide { a: u16, b: u16, c: u16, d: u16, e: u16 }
+
+            fn middle(view: Array<Wide>, i: u16) -> u16 {
+                view[i].c
+            }
+
+            fn main() {
+                let arr: [Wide; 3] = [
+                    Wide { a: 1, b: 2, c: 3, d: 4, e: 5 },
+                    Wide { a: 10, b: 20, c: 30, d: 40, e: 50 },
+                    Wide { a: 100, b: 200, c: 300, d: 400, e: 500 },
+                ];
+                let view = arr.as_view();
+                let mut acc: u16 = 0;
+                let mut i: u16 = 0;
+                while i < 3u16 {
+                    acc = acc + middle(view, i) + view[i].e;
+                    i = i + 1u16;
+                }
+                halt(acc);
+            }
+        "#;
+        // (3 + 5) + (30 + 50) + (300 + 500) = 888
+        assert_eq!(run_with_std_capped(source, 40_000), 888);
+    }
+
     fn compile(source: &str, options: CompilerOptions) -> CpuV3Program {
         let program = parse_source_with(source, options.data_base).unwrap();
         super::compile(program, &options, "main")

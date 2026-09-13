@@ -169,10 +169,8 @@ fn test_typed_array_view_errors() {
         "fn f() { let p = Ptr::from_addr(0); let x = p[0u16]; }",
         "indexing requires Array",
     );
-    expect_error(
-        "fn f(a: Array<bool>) {}",
-        "Array element type must be u16 or i16",
-    );
+    // u16/i16/bool/struct views exist; an FPU element does not
+    expect_error("fn f(a: Array<fix16>) {}", "Array element type must be");
     expect_error(
         "fn f(mut a: Array<u16>) { a[0u16] = -1i16; }",
         "expected u16, got i16",

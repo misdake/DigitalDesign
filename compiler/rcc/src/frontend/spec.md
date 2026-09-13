@@ -268,9 +268,19 @@ struct Point { x: u16, y: u16, inner: Inner, flags: [u16; 2], valid: bool }
   `p.x += v` stores one; field chains (`p.inner.a`) and array fields (`p.flags[1u16] = v`) work.
   The binding must be `mut` for any field write, and the type annotation is required.
 - A struct *name* is not a value: read a field, copy it with a typed `let`, or take its address.
-- Out of scope for now (§12): struct parameters and returns (pointer passing is the next phase),
-  `static` structs, arrays of structs and `Array<Struct>`, `impl` methods, `fix16`/`vecN` fields,
-  and recursive layouts.
+- **Passing structs**: a function takes a struct by pointer, written `Array<Point>` (the one-word
+  typed view). Two ways to make one:
+  - `view_of(&value)` — the address of one struct (or addressable scalar) value;
+  - `arr.as_view()` — the first-element address of an array, and the only view that works for
+    struct arrays (the `Slice2` host trait behind `as_array()` is `u16`/`i16`-only).
+  Inside the callee, `p[i]` is the element *address* (a struct value), so `p[i].x` reads a field at
+  `i * sizeof` words: a shift for word-sized elements, a real multiply otherwise. A `mut view:
+  Array<Point>` parameter may write through it, which is how a callee updates the caller's struct.
+- Array fields and struct arrays may also be indexed directly (`p.flags[1u16]`, `arr[i].x`) on the
+  target; Rust arrays index by `usize`, so that form does not type-check on the host — prefer a view
+  when the source has to build both ways.
+- Out of scope for now (§12): struct returns (the next phase's hidden destination pointer), `static`
+  structs, `impl` methods, `fix16`/`vecN` fields, and recursive layouts.
 
 ## 10. Arrays
 
@@ -368,9 +378,8 @@ them unchanged (a struct local is just an address plus offsets).
 ## 12. Out of scope for now
 
 `&x` references, fat slices, `static mut`, heap allocation of arrays, multi-dimensional arrays
-(use `arr[i * W + j]`), function inlining/`#[inline]`, and the struct limits listed in §9b
-(struct parameters/returns, `static` structs, arrays of structs, `impl`, `fix16`/`vecN` fields,
-recursive layouts).
+(use `arr[i * W + j]`), function inlining/`#[inline]`, and the struct limits listed in §9b (struct
+returns, `static` structs, `impl`, `fix16`/`vecN` fields, recursive layouts).
 
 A stored `bool` is one word, and these remain out of scope: arrays of `bool` / `Array<bool>`,
 `static` bool, comparing two bools (`b1 == b2`), and an integer cast *to* bool (write `x != 0`).

@@ -1007,8 +1007,11 @@ fn ty_of(ty: &Type, structs: &StructNames) -> Result<Ty, syn::Error> {
                     ));
                 };
                 let elem = ty_of(elem, structs)?;
-                if !matches!(elem, Ty::U16 | Ty::I16) {
-                    return Err(err(ty, "Array element type must be u16 or i16"));
+                if !matches!(elem, Ty::U16 | Ty::I16 | Ty::Bool | Ty::Struct(_)) {
+                    return Err(err(
+                        ty,
+                        "Array element type must be u16, i16, bool or a struct",
+                    ));
                 }
                 return Ok(Ty::ArrayRef(Box::new(elem)));
             }
@@ -1075,8 +1078,11 @@ fn ty_of_maybe_array(
     match ty {
         Type::Array(a) => {
             let elem = ty_of(&a.elem, structs)?;
-            if !matches!(elem, Ty::U16 | Ty::I16) {
-                return Err(err(&a.elem, "array element type must be u16 or i16"));
+            if !matches!(elem, Ty::U16 | Ty::I16 | Ty::Struct(_)) {
+                return Err(err(
+                    &a.elem,
+                    "array element type must be u16, i16 or a struct",
+                ));
             }
             let len = const_eval(&a.len, consts)? as usize;
             Ok(Ty::Array(Box::new(elem), len))
@@ -1093,6 +1099,70 @@ fn init_array_at(
     n: usize,
     init: &Expr,
 ) -> Result<(), syn::Error> {
+    // a struct element spans several words, so element `i` starts at `i * size`
+    if let Ty::Struct(name) = elem {
+        let name = name.clone();
+        let def = l
+            .globals
+            .structs
+            .get(&name)
+            .cloned()
+            .ok_or_else(|| err(init, format!("unknown struct `{name}`")))?;
+        let stride = i16::try_from(def.size).map_err(|_| {
+            err(
+                init,
+                "struct array element is larger than the address space",
+            )
+        })?;
+        let element_at = |l: &mut FnLower, index: usize| {
+            let offset = stride
+                .checked_mul(index as i16)
+                .expect("struct array fits the address space");
+            place_addr(l, base, offset)
+        };
+        match init {
+            Expr::Repeat(r) => {
+                let m = const_eval(&r.len, l.consts)? as usize;
+                if m != n {
+                    return Err(err(
+                        init,
+                        format!("array repeat count {m} does not match declared length {n}"),
+                    ));
+                }
+                let first = element_at(l, 0);
+                init_struct_at(l, first, &name, &r.expr)?;
+                // copy the initialized element over the rest
+                for index in 1..n {
+                    let dst = element_at(l, index);
+                    let len = l.b.load_imm(def.size);
+                    l.b.call("mem_copy", &[dst, first, len], 0);
+                }
+                return Ok(());
+            }
+            Expr::Array(arr) => {
+                if arr.elems.len() != n {
+                    return Err(err(
+                        init,
+                        format!(
+                            "array initializer has {} elements, expected {n}",
+                            arr.elems.len()
+                        ),
+                    ));
+                }
+                for (index, e) in arr.elems.iter().enumerate() {
+                    let addr = element_at(l, index);
+                    init_struct_at(l, addr, &name, e)?;
+                }
+                return Ok(());
+            }
+            _ => {
+                return Err(err(
+                    init,
+                    "a struct array needs [v; N] or a list of struct literals",
+                ))
+            }
+        }
+    }
     match init {
         Expr::Repeat(r) => {
             let m = const_eval(&r.len, l.consts)? as usize;
@@ -1266,8 +1336,8 @@ fn signature(f: &ItemFn, structs: &StructNames) -> Result<Sig, syn::Error> {
     {
         return Err(err(
             &f.sig,
-            "struct parameters and struct returns are not supported yet (pass a Ptr or the \
-             fields); see spec §12",
+            "a bare struct cannot be a parameter or a return value yet; pass a view \
+             (`Array<Point>`) and index it, or pass the fields (see spec §9b)",
         ));
     }
     Ok(Sig { params, ret })
@@ -1372,29 +1442,6 @@ impl FnLower<'_> {
             VarKind::Local { slot } => self.b.store_local(*slot, v),
         }
     }
-    /// the address of a variable as a Ptr (addr_of / as_ptr)
-    fn addr_of_var(&mut self, name: &str, at: &Expr) -> Result<VReg, syn::Error> {
-        if let Some(info) = self.lookup(name) {
-            let kind = info.kind.clone();
-            return match kind {
-                VarKind::Local { slot } => Ok(self.b.addr_of_local(slot)),
-                VarKind::Ssa { .. } => Err(err(
-                    at,
-                    format!(
-                        "`{name}` is not memory-resident; declare it as an array or struct so it \
-                         gets a frame slot"
-                    ),
-                )),
-            };
-        }
-        if let Some(&(addr, _)) = self.globals.scalars.get(name) {
-            return Ok(self.b.load_imm(addr));
-        }
-        if let Some(&(addr, _, _)) = self.globals.arrays.get(name) {
-            return Ok(self.b.load_imm(addr));
-        }
-        Err(err(at, format!("undefined name `{name}`")))
-    }
 }
 
 /// why a variable must live in the stack frame instead of a register
@@ -1403,40 +1450,51 @@ enum ResidentKind {
     Array,
 }
 
+/// the root variable name of a place expression (`x`, `x.f`, `x[i].f` all give `x`)
+fn place_base_name(e: &Expr) -> Option<String> {
+    match e {
+        Expr::Paren(p) => place_base_name(&p.expr),
+        Expr::Path(_) => path_ident(e).ok(),
+        Expr::Field(f) => place_base_name(&f.base),
+        Expr::Index(i) => place_base_name(&i.expr),
+        _ => None,
+    }
+}
+
 /// prescan a function body for names that must be memory-resident:
 /// variables whose address is taken (addr_of) and array-typed lets
 fn scan_residents(
     blk: &Block,
     consts: &HashMap<String, (u16, Ty)>,
+    structs: &StructNames,
     out: &mut HashMap<String, ResidentKind>,
 ) -> Result<(), syn::Error> {
     for s in &blk.stmts {
-        scan_stmt(s, consts, out)?;
+        scan_stmt(s, consts, structs, out)?;
     }
     Ok(())
 }
 fn scan_stmt(
     s: &Stmt,
     consts: &HashMap<String, (u16, Ty)>,
+    structs: &StructNames,
     out: &mut HashMap<String, ResidentKind>,
 ) -> Result<(), syn::Error> {
     match s {
         Stmt::Local(local) => {
             if let Pat::Type(pt) = &local.pat {
-                if let Type::Array(a) = pt.ty.as_ref() {
-                    // an array element is never a struct (arrays hold u16/i16)
-                    ty_of(&a.elem, &StructNames::new())?;
-                    const_eval(&a.len, consts)?;
+                if let Type::Array(_) = pt.ty.as_ref() {
+                    ty_of_maybe_array(&pt.ty, consts, structs)?;
                     if let Pat::Ident(p) = pt.pat.as_ref() {
                         out.insert(p.ident.to_string(), ResidentKind::Array);
                     }
                 }
             }
             if let Some((_, init)) = &local.init {
-                scan_expr(init, consts, out)?;
+                scan_expr(init, consts, structs, out)?;
             }
         }
-        Stmt::Expr(e) | Stmt::Semi(e, _) => scan_expr(e, consts, out)?,
+        Stmt::Expr(e) | Stmt::Semi(e, _) => scan_expr(e, consts, structs, out)?,
         Stmt::Item(_) => {}
     }
     Ok(())
@@ -1444,71 +1502,74 @@ fn scan_stmt(
 fn scan_expr(
     e: &Expr,
     consts: &HashMap<String, (u16, Ty)>,
+    structs: &StructNames,
     out: &mut HashMap<String, ResidentKind>,
 ) -> Result<(), syn::Error> {
     match e {
-        Expr::Paren(x) => scan_expr(&x.expr, consts, out),
+        Expr::Paren(x) => scan_expr(&x.expr, consts, structs, out),
         Expr::Binary(x) => {
-            scan_expr(&x.left, consts, out)?;
-            scan_expr(&x.right, consts, out)
+            scan_expr(&x.left, consts, structs, out)?;
+            scan_expr(&x.right, consts, structs, out)
         }
-        Expr::Unary(x) => scan_expr(&x.expr, consts, out),
-        Expr::Cast(x) => scan_expr(&x.expr, consts, out),
+        Expr::Unary(x) => scan_expr(&x.expr, consts, structs, out),
+        Expr::Cast(x) => scan_expr(&x.expr, consts, structs, out),
         Expr::Call(x) => {
             if let Expr::Path(p) = x.func.as_ref() {
-                if p.path.is_ident("addr_of") {
+                // taking the address of (or a view of) a scalar makes it
+                // memory-resident; structs and arrays already are
+                if p.path.is_ident("addr_of") || p.path.is_ident("view_of") {
                     if let Some(Expr::Reference(r)) = x.args.first() {
-                        if let Ok(name) = path_ident(&r.expr) {
+                        if let Some(name) = place_base_name(&r.expr) {
                             out.entry(name).or_insert(ResidentKind::Scalar);
                         }
                     }
                 }
             }
             for a in &x.args {
-                scan_expr(a, consts, out)?;
+                scan_expr(a, consts, structs, out)?;
             }
             Ok(())
         }
         Expr::MethodCall(x) => {
-            scan_expr(&x.receiver, consts, out)?;
+            scan_expr(&x.receiver, consts, structs, out)?;
             for a in &x.args {
-                scan_expr(a, consts, out)?;
+                scan_expr(a, consts, structs, out)?;
             }
             Ok(())
         }
         Expr::Index(x) => {
-            scan_expr(&x.expr, consts, out)?;
-            scan_expr(&x.index, consts, out)
+            scan_expr(&x.expr, consts, structs, out)?;
+            scan_expr(&x.index, consts, structs, out)
         }
         Expr::Assign(x) => {
-            scan_expr(&x.left, consts, out)?;
-            scan_expr(&x.right, consts, out)
+            scan_expr(&x.left, consts, structs, out)?;
+            scan_expr(&x.right, consts, structs, out)
         }
         Expr::AssignOp(x) => {
-            scan_expr(&x.left, consts, out)?;
-            scan_expr(&x.right, consts, out)
+            scan_expr(&x.left, consts, structs, out)?;
+            scan_expr(&x.right, consts, structs, out)
         }
         Expr::If(x) => {
-            scan_expr(&x.cond, consts, out)?;
-            scan_residents(&x.then_branch, consts, out)?;
+            scan_expr(&x.cond, consts, structs, out)?;
+            scan_residents(&x.then_branch, consts, structs, out)?;
             if let Some((_, e)) = &x.else_branch {
-                scan_expr(e, consts, out)?;
+                scan_expr(e, consts, structs, out)?;
             }
             Ok(())
         }
         Expr::While(x) => {
-            scan_expr(&x.cond, consts, out)?;
-            scan_residents(&x.body, consts, out)
+            scan_expr(&x.cond, consts, structs, out)?;
+            scan_residents(&x.body, consts, structs, out)
         }
-        Expr::Loop(x) => scan_residents(&x.body, consts, out),
+        Expr::Loop(x) => scan_residents(&x.body, consts, structs, out),
         Expr::ForLoop(x) => {
-            scan_expr(&x.expr, consts, out)?;
-            scan_residents(&x.body, consts, out)
+            scan_expr(&x.expr, consts, structs, out)?;
+            scan_residents(&x.body, consts, structs, out)
         }
-        Expr::Block(x) => scan_residents(&x.block, consts, out),
+        Expr::Block(x) => scan_residents(&x.block, consts, structs, out),
         Expr::Return(x) => {
             if let Some(e) = &x.expr {
-                scan_expr(e, consts, out)?;
+                scan_expr(e, consts, structs, out)?;
             }
             Ok(())
         }
@@ -1542,7 +1603,7 @@ fn lower_fn(
 
     // prescan: which names must be memory-resident
     let mut residents: HashMap<String, ResidentKind> = HashMap::new();
-    scan_residents(&f.block, consts, &mut residents)?;
+    scan_residents(&f.block, consts, &globals.struct_names, &mut residents)?;
 
     let mut param_names = vec![];
     let mut l = FnLower {
@@ -2587,6 +2648,10 @@ fn expr(l: &mut FnLower, e: &Expr) -> Result<Val, syn::Error> {
         }
         Expr::Index(index) => {
             let (base, off, elem, _) = array_index_addr(l, index)?;
+            if matches!(elem, Ty::Struct(_)) {
+                // a struct element *is* its address, like the struct value itself
+                return Ok(Val::V(place_addr(l, base, off), elem));
+            }
             Ok(Val::V(l.b.load_mem(base, off), elem))
         }
         Expr::If(_) => {
@@ -2613,22 +2678,35 @@ fn place_addr_of(l: &mut FnLower, e: &Expr) -> Result<(VReg, i16, Ty, bool), syn
         Expr::Paren(p) => place_addr_of(l, &p.expr),
         Expr::Path(_) => {
             let name = path_ident(e)?;
-            let info = l
-                .lookup(&name)
-                .ok_or_else(|| err(e, format!("undefined variable `{name}`")))?;
-            let (kind, ty, mutable) = (info.kind.clone(), info.ty.clone(), info.mutable);
-            match kind {
-                VarKind::Local { slot } => Ok((l.b.addr_of_local(slot), 0, ty, mutable)),
-                VarKind::Ssa { .. } => Err(err(
-                    e,
-                    format!(
-                        "`{name}` is not memory-resident; only structs, arrays and \
-                         address-taken locals have fields"
-                    ),
-                )),
+            if let Some(info) = l.lookup(&name) {
+                let (kind, ty, mutable) = (info.kind.clone(), info.ty.clone(), info.mutable);
+                return match kind {
+                    VarKind::Local { slot } => Ok((l.b.addr_of_local(slot), 0, ty, mutable)),
+                    VarKind::Ssa { .. } => Err(err(
+                        e,
+                        format!(
+                            "`{name}` is not memory-resident; declare it as an array or struct so \
+                             it gets a frame slot, or take its address with addr_of"
+                        ),
+                    )),
+                };
             }
+            if let Some((addr, ty)) = l.globals.scalars.get(&name) {
+                let (addr, ty) = (*addr, ty.clone());
+                return Ok((l.b.load_imm(addr), 0, ty, true));
+            }
+            if let Some((addr, elem, n)) = l.globals.arrays.get(&name) {
+                let (addr, elem, n) = (*addr, elem.clone(), *n);
+                return Ok((l.b.load_imm(addr), 0, Ty::Array(Box::new(elem), n), true));
+            }
+            Err(err(e, format!("undefined name `{name}`")))
         }
         Expr::Field(f) => struct_field_place(l, f),
+        Expr::Index(index) => {
+            // the element address of an array or view (`p[i].x` reaches here)
+            let (base, offset, elem, mutable) = array_index_addr(l, index)?;
+            Ok((place_addr(l, base, offset), 0, elem, mutable))
+        }
         _ => Err(err(
             e,
             "expected a variable or a field of one (struct values live in memory)",
@@ -2694,14 +2772,74 @@ fn struct_field_place(
     ))
 }
 
+/// the type a place expression denotes, without lowering it: choosing between the
+/// value path (an `Array<T>` view *is* a value) and the place path (a raw array is
+/// storage) needs the type before any instructions are emitted
+fn peek_type(l: &FnLower, e: &Expr) -> Option<Ty> {
+    match e {
+        Expr::Paren(p) => peek_type(l, &p.expr),
+        Expr::Path(_) => {
+            let name = path_ident(e).ok()?;
+            if let Some(info) = l.lookup(&name) {
+                return Some(info.ty.clone());
+            }
+            if let Some((_, ty)) = l.globals.scalars.get(&name) {
+                return Some(ty.clone());
+            }
+            l.globals
+                .arrays
+                .get(&name)
+                .map(|(_, elem, n)| Ty::Array(Box::new(elem.clone()), *n))
+        }
+        Expr::Field(f) => {
+            let Ty::Struct(name) = peek_type(l, &f.base)? else {
+                return None;
+            };
+            let syn::Member::Named(ident) = &f.member else {
+                return None;
+            };
+            let def = l.globals.structs.get(&name)?;
+            let member = ident.to_string();
+            def.fields
+                .iter()
+                .find(|field| field.name == member)
+                .map(|field| field.ty.clone())
+        }
+        Expr::Index(i) => match peek_type(l, &i.expr)? {
+            Ty::Array(elem, _) | Ty::ArrayRef(elem) => Some(*elem),
+            _ => None,
+        },
+        _ => None,
+    }
+}
+
+/// a struct element spans several words, so its index is scaled by the size
+fn scaled_index(
+    l: &mut FnLower,
+    index: &Expr,
+    size: u16,
+    at: &impl syn::spanned::Spanned,
+) -> Result<VReg, syn::Error> {
+    let (off, off_ty) = expr(l, index)?.reg(l, index, "array index")?;
+    if !matches!(off_ty, Ty::U16 | Ty::I16) {
+        return Err(err(at, "array index must have type u16 or i16"));
+    }
+    if size == 1 {
+        return Ok(off);
+    }
+    Ok(l.b.mul(crate::MulWindow::Low, off, crate::IntOperand::Imm(size)))
+}
+
 fn array_index_addr(
     l: &mut FnLower,
     index: &syn::ExprIndex,
 ) -> Result<(VReg, i16, Ty, bool), syn::Error> {
-    // A plain `Array<T>` view is a value; an array *field* (`s.arr[i]`) is a place
-    // whose address is the base. The returned flag is the place's mutability: a
-    // read ignores it, an assignment checks it.
-    let (base, ty, mutable) = if matches!(index.expr.as_ref(), Expr::Field(_)) {
+    // A plain `Array<T>` view is a value; an array *field* and a raw struct array
+    // are places whose address is the base. The returned flag is the place's
+    // mutability: a read ignores it, an assignment checks it.
+    let place_base = matches!(index.expr.as_ref(), Expr::Field(_))
+        || matches!(peek_type(l, &index.expr), Some(Ty::Array(elem, _)) if matches!(*elem, Ty::Struct(_)));
+    let (base, ty, mutable) = if place_base {
         let (b, off, ty, mutable) = place_addr_of(l, &index.expr)?;
         (place_addr(l, b, off), ty, mutable)
     } else {
@@ -2714,7 +2852,7 @@ fn array_index_addr(
         _ => {
             return Err(err(
                 &index.expr,
-                "indexing requires Array<u16>, Array<i16> or an array field",
+                "indexing requires Array<T>, an array field or a struct array",
             ))
         }
     };
@@ -2740,13 +2878,15 @@ fn array_index_addr(
             }
         }
     }
+    let size = word_size(&elem, &l.globals.structs, &index.index)?;
     if let Some(off) = literal_mem_offset(&index.index)? {
-        return Ok((base, off, elem, mutable));
+        let scaled = i32::from(off)
+            .checked_mul(i32::from(size))
+            .and_then(|value| i16::try_from(value).ok())
+            .ok_or_else(|| err(&index.index, "array offset out of range"))?;
+        return Ok((base, scaled, elem, mutable));
     }
-    let (off, off_ty) = expr(l, &index.index)?.reg(l, &index.index, "array index")?;
-    if !matches!(off_ty, Ty::U16 | Ty::I16) {
-        return Err(err(&index.index, "array index must have type u16 or i16"));
-    }
+    let off = scaled_index(l, &index.index, size, &index.index)?;
     Ok((l.b.bin(BinOp::Add, base, off), 0, elem, mutable))
 }
 
@@ -3117,9 +3257,34 @@ fn call_expr(l: &mut FnLower, call: &syn::ExprCall) -> Result<Val, syn::Error> {
                     "addr_of expects a reference: addr_of(&x)",
                 ));
             };
-            let target = path_ident(&r.expr)?;
-            let v = l.addr_of_var(&target, &call.args[0])?;
-            return Ok(Val::V(v, Ty::Ptr));
+            let (base, offset, _, _) = place_addr_of(l, &r.expr)?;
+            return Ok(Val::V(place_addr(l, base, offset), Ty::Ptr));
+        }
+        // the address of one value as a typed view: `view_of(&p)` for a struct or
+        // scalar place (arrays use `.as_view()`)
+        "view_of" => {
+            if call.args.len() != 1 {
+                return Err(err(call, "view_of(&x) takes 1 argument"));
+            }
+            let Expr::Reference(r) = &call.args[0] else {
+                return Err(err(
+                    &call.args[0],
+                    "view_of expects a reference: view_of(&x)",
+                ));
+            };
+            let (base, offset, ty, _) = place_addr_of(l, &r.expr)?;
+            match ty {
+                Ty::Array(..) => {
+                    return Err(err(
+                        &r.expr,
+                        "use `arr.as_view()` for an array; view_of takes one value",
+                    ))
+                }
+                Ty::ArrayRef(_) => return Err(err(&r.expr, "that expression is already a view")),
+                _ => {}
+            }
+            let addr = place_addr(l, base, offset);
+            return Ok(Val::V(addr, Ty::ArrayRef(Box::new(ty))));
         }
         "assert" => {
             if call.args.len() != 2 {
@@ -3641,9 +3806,29 @@ fn array_method(
             if !m.args.is_empty() {
                 return Err(err(&m.method, "as_array() takes no arguments"));
             }
+            if matches!(elem, Ty::Struct(_)) {
+                return Err(err(
+                    &m.method,
+                    "as_array() is the u16/i16 view; use as_view() for a struct array",
+                ));
+            }
+            Ok(Val::V(base, Ty::ArrayRef(Box::new(elem.clone()))))
+        }
+        // the generic view: the only one that works for struct arrays (the host
+        // `Slice2` trait above is u16/i16-only)
+        "as_view" => {
+            if !m.args.is_empty() {
+                return Err(err(&m.method, "as_view() takes no arguments"));
+            }
             Ok(Val::V(base, Ty::ArrayRef(Box::new(elem.clone()))))
         }
         "read" => {
+            if matches!(elem, Ty::Struct(_)) {
+                return Err(err(
+                    &m.method,
+                    "read() needs a scalar element; index a struct array instead (`arr[i].field`)",
+                ));
+            }
             if m.args.len() != 1 {
                 return Err(err(&m.method, "read(off) takes 1 argument"));
             }
@@ -3651,6 +3836,12 @@ fn array_method(
             Ok(Val::V(l.b.load_mem(base2, off), Ty::U16))
         }
         "write" => {
+            if matches!(elem, Ty::Struct(_)) {
+                return Err(err(
+                    &m.method,
+                    "write() needs a scalar element; assign a field instead (`arr[i].field = v`)",
+                ));
+            }
             if !mutable {
                 return Err(err(
                     &m.method,

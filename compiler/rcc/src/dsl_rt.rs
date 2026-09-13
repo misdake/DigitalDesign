@@ -85,6 +85,25 @@ macro_rules! impl_array_index {
 impl_array_index!(u16);
 impl_array_index!(i16);
 
+/// A view of a whole array: the generic counterpart of `Slice2::as_array`, which
+/// exists only for `u16`/`i16` arrays. `rcc` lowers it to the array's
+/// first-element address, so it works for struct arrays too.
+pub trait ArrayView<T> {
+    fn as_view(&self) -> Array<T>;
+}
+
+impl<T, const N: usize> ArrayView<T> for [T; N] {
+    fn as_view(&self) -> Array<T> {
+        Array::from_host_ptr(self.as_ptr() as *mut T)
+    }
+}
+
+/// The address of one value as a typed view. The target has no separate
+/// representation: a struct (or addressable scalar) value *is* its address.
+pub fn view_of<T>(value: &T) -> Array<T> {
+    Array::from_host_ptr(value as *const T as *mut T)
+}
+
 /// halt the machine with a signal value
 pub fn halt(x: u16) -> ! {
     panic!("halt with signal {x} ({x:#06x})")
