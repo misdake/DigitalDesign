@@ -2313,6 +2313,33 @@ mod tests {
         assert_eq!(run_with_std_capped(source, 20_000), 37);
     }
 
+    #[test]
+    fn aggregate_statics_land_in_the_data_section() {
+        let source = r#"
+            struct Sprite { x: u16, w: u16 }
+            struct Level { count: u16, origin: Sprite, tags: Buf<u16, 2> }
+
+            static TABLE: Buf<Sprite, 2> =
+                Buf::new([Sprite { x: 3, w: 5 }, Sprite { x: 7, w: 9 }]);
+            static LEVEL: Level =
+                Level { count: 4, origin: Sprite { x: 1, w: 2 }, tags: Buf::new([8, 6]) };
+            static PAIR: (u16, u16) = (10, 20);
+
+            fn main() {
+                let view = TABLE.as_array();
+                view[1u16].w = 11u16;              // writable through a view
+                let copy: Sprite = TABLE.as_array()[0u16];
+                halt(copy.x + view[1u16].w + LEVEL.count + LEVEL.origin.x
+                    + LEVEL.tags[1u16] + PAIR.0 + PAIR.1);
+            }
+        "#;
+        // copy.x = 3, view[1].w = 11, count = 4, origin.x = 1, tags[1] = 6, PAIR = (10, 20)
+        assert_eq!(
+            run_with_std_capped(source, 20_000),
+            3 + 11 + 4 + 1 + 6 + 10 + 20
+        );
+    }
+
     fn compile(source: &str, options: CompilerOptions) -> CpuV3Program {
         let program = parse_source_with(source, options.data_base).unwrap();
         super::compile(program, &options, "main")

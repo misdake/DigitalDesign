@@ -387,9 +387,26 @@ fn test_struct_restrictions() {
         "struct P { x: u16 }\nfn f() { let p: P = P { x: 1 }; p.x = 2; }",
         "not mutable",
     );
-    // static structs and recursive layouts are out of scope
-    expect_error("struct P { x: u16 }\nstatic S: P = P { x: 1 };", "static");
+    // recursive layouts stay out of scope; a struct static is fine (spec §9.4)
+    assert!(cpu_v2::frontend::parse_source(
+        "struct P { x: u16 }\nstatic S: P = P { x: 1 };\nfn main() { halt(S.x); }"
+    )
+    .is_ok());
     expect_error("struct P { p: P }", "contains itself");
+    // an aggregate static needs a literal, a matching length and known fields
+    expect_error(
+        "struct P { x: u16 }\nstatic A: P = make();\nfn make() -> P { P { x: 1 } }",
+        "needs a P { .. } literal",
+    );
+    expect_error(
+        "struct P { x: u16 }\nstatic A: Buf<P, 2> = Buf::new([P { x: 1 }]);",
+        "expected 2",
+    );
+    expect_error(
+        "struct P { x: u16 }\nstatic A: P = P { y: 1 };",
+        "no field `y`",
+    );
+    expect_error("static A: (u16, u16) = (1, 2, 3);", "expected 2");
     // attributes other than repr/allow are still rejected
     expect_error("struct P { x: u16 }\n#[inline] fn f() {}", "attribute");
 }

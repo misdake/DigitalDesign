@@ -245,6 +245,26 @@ static TILE: Buf<u16, 8> = Buf::new([0x3c, 0x66, 0xc3, 0xff, 0xff, 0xc3, 0x66, 0
 N consecutive words in data memory (the sprite/tile/palette data of a game). Same access
 rules as local buffers (§10), same `__data_init` emission for non-zero words.
 
+### 9.4 Aggregate statics — `struct`, tuple and buffer-of-struct tables
+
+```rust
+struct Sprite { x: u16, w: u16 }
+
+static TABLE: Buf<Sprite, 2> = Buf::new([Sprite { x: 3, w: 5 }, Sprite { x: 7, w: 9 }]);
+static TITLE: Sprite = Sprite { x: 1, w: 2 };
+static PAIR: (u16, u16) = (10, 20);
+```
+
+An aggregate static is a constant image in the data section, laid out by the same rules as a local
+one, and its name **is its address** (like a local aggregate): `TABLE.as_array()` indexes it,
+`TITLE.x` reads a field, `PAIR.0` a tuple element, and `let p: Sprite = TITLE;` copies it. Writing
+one goes through a view (`TABLE.as_array()[0u16].x = 5u16`) — the usual `static` idiom, since rcc
+has no `static mut`.
+
+The initializer must be a literal of that type built from constants (`const` values are fine, calls
+are not) and every field/element must be present. Aggregate statics are allocated **after** the
+scalar and `Buf<u16|i16, N>` statics, so adding one never moves an existing program's data.
+
 ## 9b. Structs
 
 ```rust
@@ -281,8 +301,8 @@ struct Point { x: u16, y: u16, inner: Inner, flags: Buf<u16, 2>, valid: bool }
   Inside the callee, `p[i]` is the element *address* (a struct value), so `p[i].x` reads a field at
   `i * sizeof` words: a shift for word-sized elements, a real multiply otherwise. A `mut view:
   Array<Point>` parameter may write through it, which is how a callee updates the caller's struct.
-- Out of scope for now (§12): `static` structs, `impl` methods, `fix16`/`vecN` fields, and
-  recursive layouts.
+- Out of scope for now (§12): `impl` methods, `fix16`/`vecN` fields, and recursive layouts.
+  (`static` structs are supported since §9.4.)
 
 ## 9c. Tuples
 
@@ -413,8 +433,7 @@ them unchanged (a struct local is just an address plus offsets).
 `&x` references, fat slices, native `[T; N]` arrays (use `Buf<T, N>`, §10), `static mut`, heap
 allocation of buffers, multi-dimensional buffers (use `arr[i * W + j]`), function
 inlining/`#[inline]`, and the aggregate limits listed in §9b/§9c/§14 (aggregate parameters,
-aggregate-returning fn pointers, `static` structs, `impl`, `fix16`/`vecN` fields, recursive
-layouts).
+aggregate-returning fn pointers, `impl`, `fix16`/`vecN` fields, recursive layouts).
 
 A stored `bool` is one word, and these remain out of scope: buffers of `bool` / `Array<bool>`,
 `static` bool, comparing two bools (`b1 == b2`), and an integer cast *to* bool (write `x != 0`).

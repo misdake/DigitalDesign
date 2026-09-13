@@ -303,6 +303,7 @@ fn parse_files(
         }
     }
     let struct_names: StructNames = raw_structs.keys().cloned().collect();
+    let mut deferred_statics: Vec<(usize, &syn::ItemStatic)> = vec![];
     for (fi, file) in files.iter().enumerate() {
         let result: Result<(), syn::Error> = (|| {
             for item in &file.items {
@@ -330,7 +331,16 @@ fn parse_files(
                             return Err(err(&c.ident, format!("const `{name}` defined twice")));
                         }
                     }
-                    Item::Static(s) => add_static(s, &consts, &mut globals)?,
+                    Item::Static(s) => {
+                        // an aggregate static needs the resolved struct layouts, so it
+                        // is laid out after the struct pass; scalars and buffers of
+                        // scalars keep their original allocation order
+                        if static_is_aggregate(s, &struct_names) {
+                            deferred_statics.push((fi, s));
+                        } else {
+                            add_static(s, &consts, &mut globals)?;
+                        }
+                    }
                     Item::Verbatim(_) => { /* attributes on use items land here */ }
                     Item::Mod(_) => { /* already resolved by compile_program */ }
                     Item::Struct(_) => { /* collected before this loop */ }
@@ -364,6 +374,11 @@ fn parse_files(
         }
         globals.structs = builder.done;
         globals.struct_names = struct_names.clone();
+    }
+    // aggregate statics now that the layouts exist (they land after the scalars)
+    let layouts = globals.structs.clone();
+    for (fi, s) in &deferred_statics {
+        add_aggregate_static(s, &consts, &layouts, &mut globals).map_err(|error| (*fi, error))?;
     }
     // collect signatures first (functions can call each other regardless of order)
     let mut sigs: HashMap<String, Sig> = HashMap::new();
@@ -413,6 +428,14 @@ fn parse_files(
         debug.globals.push(DebugVar {
             name: name.clone(),
             ty: Ty::Array(Box::new(elem.clone()), *len).display(),
+            loc: VarLoc::Global(*addr),
+            scope: None,
+        });
+    }
+    for (name, (addr, ty)) in &globals.aggregates {
+        debug.globals.push(DebugVar {
+            name: name.clone(),
+            ty: ty.display(),
             loc: VarLoc::Global(*addr),
             scope: None,
         });
@@ -509,6 +532,9 @@ fn lit_int_value(i: &syn::LitInt) -> Result<u64, syn::Error> {
 struct Globals {
     scalars: HashMap<String, (u16, Ty)>,
     arrays: HashMap<String, (u16, Ty, usize)>,
+    /// aggregate statics (structs, tuples, buffers of structs): the symbol is its
+    /// address, the type says how to read it (spec §9.4)
+    aggregates: HashMap<String, (u16, Ty)>,
     /// (addr, value) words for __data_init
     data_words: Vec<(u16, u16)>,
     next_addr: u16,
@@ -814,6 +840,177 @@ fn const_eval(e: &Expr, consts: &HashMap<String, (u16, Ty)>) -> Result<u16, syn:
             const_eval(&c.expr, consts)
         }
         _ => Err(err(e, "not a constant expression")),
+    }
+}
+
+/// whether a static's type is an aggregate, which needs the resolved layouts and
+/// is therefore laid out after the struct pass (spec §9.4). Scalar buffers stay on
+/// the original path so their addresses do not move.
+fn static_is_aggregate(s: &syn::ItemStatic, structs: &StructNames) -> bool {
+    match s.ty.as_ref() {
+        syn::Type::Tuple(_) => true,
+        syn::Type::Path(tp) => {
+            if tp.path.segments.len() != 1 {
+                return false;
+            }
+            let seg = &tp.path.segments[0];
+            if structs.contains(&seg.ident.to_string()) {
+                return true;
+            }
+            if seg.ident == "Buf" {
+                if let syn::PathArguments::AngleBracketed(args) = &seg.arguments {
+                    if let Some(syn::GenericArgument::Type(syn::Type::Path(inner))) =
+                        args.args.first()
+                    {
+                        return inner.path.segments.len() == 1
+                            && structs.contains(&inner.path.segments[0].ident.to_string());
+                    }
+                }
+            }
+            false
+        }
+        _ => false,
+    }
+}
+
+/// `static NAME: Point = Point { .. };`, `static T: (u16, u16) = (1, 2);`,
+/// `static TBL: Buf<Point, 2> = Buf::new([..]);` — constants only (spec §9.4)
+fn add_aggregate_static(
+    s: &syn::ItemStatic,
+    consts: &HashMap<String, (u16, Ty)>,
+    structs: &StructTable,
+    g: &mut Globals,
+) -> Result<(), syn::Error> {
+    if s.mutability.is_some() {
+        return Err(err(
+            s,
+            "static mut is not supported; write via addr_of(&X) (see spec §9.2)",
+        ));
+    }
+    let names: StructNames = structs.keys().cloned().collect();
+    let ty = ty_of_maybe_array(s.ty.as_ref(), consts, &names)?;
+    let size = word_size(&ty, structs, s)?;
+    let addr = reserve_static(g, size as usize, &s.ident)?;
+    let mut words: Vec<(u16, u16)> = vec![];
+    const_words(&ty, s.expr.as_ref(), consts, structs, addr, &mut words)?;
+    g.data_words.extend(words);
+    let name = s.ident.to_string();
+    let duplicate = g.aggregates.contains_key(&name)
+        || g.scalars.contains_key(&name)
+        || g.arrays.contains_key(&name);
+    if duplicate || g.aggregates.insert(name.clone(), (addr, ty)).is_some() {
+        return Err(err(&s.ident, format!("static `{name}` defined twice")));
+    }
+    Ok(())
+}
+
+/// fold a constant aggregate initializer into `(address, value)` words
+fn const_words(
+    ty: &Ty,
+    expr: &Expr,
+    consts: &HashMap<String, (u16, Ty)>,
+    structs: &StructTable,
+    base: u16,
+    out: &mut Vec<(u16, u16)>,
+) -> Result<(), syn::Error> {
+    match ty {
+        Ty::Struct(name) => {
+            let def = structs
+                .get(name)
+                .cloned()
+                .ok_or_else(|| err(expr, format!("unknown struct `{name}`")))?;
+            let Expr::Struct(se) = expr else {
+                return Err(err(
+                    expr,
+                    format!("a static {name} needs a {name} {{ .. }} literal"),
+                ));
+            };
+            for value in &se.fields {
+                let syn::Member::Named(ident) = &value.member else {
+                    return Err(err(&value.member, "only named struct fields are supported"));
+                };
+                let fname = ident.to_string();
+                let Some(field) = def.fields.iter().find(|f| f.name == fname) else {
+                    return Err(err(
+                        &value.member,
+                        format!("struct `{name}` has no field `{fname}`"),
+                    ));
+                };
+                const_words(
+                    &field.ty,
+                    &value.expr,
+                    consts,
+                    structs,
+                    base + field.offset,
+                    out,
+                )?;
+            }
+            Ok(())
+        }
+        Ty::Tuple(elems) => {
+            let Expr::Tuple(t) = expr else {
+                return Err(err(expr, "a static tuple needs a tuple literal"));
+            };
+            if t.elems.len() != elems.len() {
+                return Err(err(
+                    expr,
+                    format!(
+                        "tuple has {} elements, expected {}",
+                        t.elems.len(),
+                        elems.len()
+                    ),
+                ));
+            }
+            for (i, (e, elem)) in t.elems.iter().zip(elems).enumerate() {
+                const_words(elem, e, consts, structs, base + i as u16, out)?;
+            }
+            Ok(())
+        }
+        Ty::Array(elem, n) => {
+            let inner = buf_initializer(expr)?;
+            let size = word_size(elem, structs, inner)?;
+            let elements: Vec<&Expr> = match inner {
+                Expr::Repeat(r) => {
+                    let m = const_eval(&r.len, consts)? as usize;
+                    if m != *n {
+                        return Err(err(
+                            inner,
+                            format!("Buf repeat count {m} does not match declared length {n}"),
+                        ));
+                    }
+                    (0..*n).map(|_| r.expr.as_ref()).collect()
+                }
+                Expr::Array(arr) => {
+                    if arr.elems.len() != *n {
+                        return Err(err(
+                            inner,
+                            format!("initializer has {} elements, expected {n}", arr.elems.len()),
+                        ));
+                    }
+                    arr.elems.iter().collect()
+                }
+                other => {
+                    return Err(err(
+                        other,
+                        "a static Buf needs an initializer list or [v; N]",
+                    ))
+                }
+            };
+            for (i, e) in elements.into_iter().enumerate() {
+                const_words(elem, e, consts, structs, base + (i as u16) * size, out)?;
+            }
+            Ok(())
+        }
+        scalar => {
+            if !matches!(scalar, Ty::U16 | Ty::I16 | Ty::Ptr | Ty::Bool) {
+                return Err(err(
+                    expr,
+                    format!("{} cannot be a static value", scalar.display()),
+                ));
+            }
+            out.push((base, const_eval(expr, consts)?));
+            Ok(())
+        }
     }
 }
 
@@ -2827,6 +3024,11 @@ fn expr(l: &mut FnLower, e: &Expr) -> Result<Val, syn::Error> {
                 // a global array used as a value decays to its address (like C)
                 return Ok(Val::V(l.b.load_imm(addr), Ty::Ptr));
             }
+            if let Some((addr, ty)) = l.globals.aggregates.get(&name) {
+                // an aggregate static *is* its address, like a local aggregate
+                let (addr, ty) = (*addr, ty.clone());
+                return Ok(Val::V(l.b.load_imm(addr), ty));
+            }
             if l.sigs.contains_key(&name) {
                 return Ok(Val::FnItem(intern(&name)));
             }
@@ -3199,6 +3401,10 @@ fn place_addr_of(l: &mut FnLower, e: &Expr) -> Result<(VReg, i16, Ty, bool), syn
                 let (addr, elem, n) = (*addr, elem.clone(), *n);
                 return Ok((l.b.load_imm(addr), 0, Ty::Array(Box::new(elem), n), true));
             }
+            if let Some((addr, ty)) = l.globals.aggregates.get(&name) {
+                let (addr, ty) = (*addr, ty.clone());
+                return Ok((l.b.load_imm(addr), 0, ty, true));
+            }
             Err(err(e, format!("undefined name `{name}`")))
         }
         Expr::Field(f) => struct_field_place(l, f),
@@ -3316,6 +3522,9 @@ fn peek_type(l: &FnLower, e: &Expr) -> Option<Ty> {
                 return Some(info.ty.clone());
             }
             if let Some((_, ty)) = l.globals.scalars.get(&name) {
+                return Some(ty.clone());
+            }
+            if let Some((_, ty)) = l.globals.aggregates.get(&name) {
                 return Some(ty.clone());
             }
             l.globals
@@ -4405,6 +4614,15 @@ fn method_call(l: &mut FnLower, m: &syn::ExprMethodCall) -> Result<Val, syn::Err
             }
         }
         if let Some((addr, elem, n)) = l.globals.arrays.get(&name).cloned() {
+            let base = l.b.load_imm(addr);
+            return array_method(l, base, &elem, n, true, m);
+        }
+        if let Some((Ty::Array(elem, n), addr)) = l
+            .globals
+            .aggregates
+            .get(&name)
+            .map(|(addr, ty)| (ty.clone(), *addr))
+        {
             let base = l.b.load_imm(addr);
             return array_method(l, base, &elem, n, true, m);
         }
