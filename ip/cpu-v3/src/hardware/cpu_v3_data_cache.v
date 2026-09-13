@@ -24,13 +24,17 @@ module CpuV3DataCache (
     output wire memory_response_ready,
     output wire maintenance_busy,
     output reg maintenance_done = 0,
-    output reg maintenance_error = 0
+    output reg maintenance_error = 0,
+    // High while the RAM16 valid arrays are sweep-clearing. The system holds
+    // the core for this window so a reset clear cannot surface as a
+    // not-ready D-cache on the core's first access.
+    output wire valid_sweep
 );
 
 localparam [3:0] ST_IDLE=0, ST_LOOKUP=1, ST_LINE_REQUEST=2,
     ST_LINE_RECEIVE=3, ST_WB_PRIME=5,
     ST_WB_CAPTURE=6, ST_WB_REQUEST=7, ST_WB_STREAM=8,
-    ST_WB_RESPONSE=9;
+    ST_WB_RESPONSE=9, ST_SCAN=10;
 
 reg [3:0] state = ST_IDLE;
 reg pending_write = 0;
@@ -48,11 +52,27 @@ reg maintenance_invalidate = 0;
 reg [15:0] response_data = 0;
 reg response_error = 0;
 reg response_valid = 0;
-reg [63:0] way_0_valid = 0;
-reg [63:0] way_1_valid = 0;
-reg [63:0] victim = 0;
+// Valid and victim bits live in a RAM16 leaf (asynchronous read, synchronous
+// write, one set per access), like the tag arrays. A full clear (invalidate
+// maintenance or a memory error) starts a 64-set sweep that clears both ways
+// in parallel; requests are blocked during the sweep and hit qualification
+// treats every line as invalid while it runs. A clean keeps lines valid and
+// needs no sweep. `sweep_finishes_maintenance` delays maintenance_done of an
+// invalidate until the sweep completes.
+reg sweep_active = 0;
+reg [5:0] sweep_set = 0;
+reg sweep_finishes_maintenance = 0;
 reg [15:0] refill_response_data = 0;
 reg [63:0] wb_first_data = 0;
+
+// Maintenance dirty-line scan: one 16-entry window per cycle, overlapped with
+// the in-flight write-back. `scan_index` is the next entry to examine; a found
+// candidate is latched and the scan pauses until that line's write-back
+// starts, then resumes from the following entry.
+reg scan_active = 0;
+reg [6:0] scan_index = 0;
+reg found_valid = 0;
+reg [6:0] found_index = 0;
 
 wire [5:0] pending_set = pending_address[9:4];
 wire [11:0] pending_tag = pending_address[21:10];
@@ -62,15 +82,18 @@ wire [5:0] tag_read_set = (state == ST_WB_PRIME || state == ST_WB_CAPTURE) ?
     wb_set : pending_set;
 wire [11:0] way_0_tag;
 wire [11:0] way_1_tag;
-wire way_0_hit = way_0_valid[pending_set] && way_0_tag == pending_tag;
-wire way_1_hit = way_1_valid[pending_set] && way_1_tag == pending_tag;
+wire way_0_valid_read;
+wire way_1_valid_read;
+wire victim_read;
+wire way_0_hit = !sweep_active && way_0_valid_read && way_0_tag == pending_tag;
+wire way_1_hit = !sweep_active && way_1_valid_read && way_1_tag == pending_tag;
 wire pending_hit = way_0_hit || way_1_hit;
 wire hit_way = !way_0_hit && way_1_hit;
-wire selected_victim = !way_0_valid[pending_set] ? 1'b0 :
-                       !way_1_valid[pending_set] ? 1'b1 : victim[pending_set];
+wire selected_victim = !way_0_valid_read ? 1'b0 :
+                       !way_1_valid_read ? 1'b1 : victim_read;
 
 wire refill_commit = state == ST_LINE_RECEIVE && memory_response_valid &&
-    !memory_error && refill_beat == 3;
+    !memory_error && refill_beat == 3 && !sweep_active;
 wire tag_write_enable = refill_commit;
 __CACHE_TAGS__ u_tags (
     .clk(clk), .write_enable(tag_write_enable), .write_way(pending_way),
@@ -153,27 +176,58 @@ __DIRTY_RAM__ u_dirty (
 wire [127:0] dirty_bits = {way_1_dirty, way_0_dirty};
 wire selected_victim_dirty = selected_victim ?
     way_1_dirty[pending_set] : way_0_dirty[pending_set];
-function [6:0] find_first_dirty;
-    input [127:0] bits;
+
+// Single valid-array write port: the sweep has priority; otherwise a refill
+// commit installs the line, a clean-victim miss or a finished eviction clears
+// the way being replaced.
+wire lookup_miss_clean = state == ST_LOOKUP && pending_address_valid &&
+    !pending_hit && !selected_victim_dirty;
+wire eviction_done = state == ST_WB_RESPONSE && !wb_for_maintenance &&
+    memory_response_valid && !memory_error;
+wire valid_write_enable = !sweep_active &&
+    (refill_commit || lookup_miss_clean || eviction_done);
+wire valid_write_way = refill_commit ? pending_way :
+                       lookup_miss_clean ? selected_victim : pending_way;
+
+__CACHE_VALID__ u_valid (
+    .clk(clk), .clear_enable(sweep_active), .clear_set(sweep_set),
+    .write_enable(valid_write_enable), .write_way(valid_write_way),
+    .write_set(pending_set), .write_value(refill_commit),
+    .victim_write_enable(refill_commit), .victim_write_value(!pending_way),
+    .read_set(pending_set),
+    .way_0_valid(way_0_valid_read), .way_1_valid(way_1_valid_read),
+    .victim(victim_read)
+);
+
+// 16-entry scan window at the current scan position, masked so the scan only
+// ever looks at entries strictly after the last consumed candidate.
+wire [15:0] scan_window_bits = dirty_bits[scan_index[6:4] * 16 +: 16];
+wire [15:0] scan_masked = scan_window_bits & (16'hffff << scan_index[3:0]);
+function [3:0] first16;
+    input [15:0] bits;
     integer index;
     reg found;
     begin
-        find_first_dirty = 0;
+        first16 = 0;
         found = 0;
-        for (index = 0; index < 128; index = index + 1)
+        for (index = 0; index < 16; index = index + 1)
             if (bits[index] && !found) begin
-                find_first_dirty = index[6:0];
+                first16 = index[3:0];
                 found = 1;
             end
     end
 endfunction
-wire [6:0] first_dirty = find_first_dirty(dirty_bits);
-wire [127:0] completed_dirty_mask = 128'b1 << {wb_way, wb_set};
-wire [127:0] remaining_dirty_bits = dirty_bits & ~completed_dirty_mask;
-wire [6:0] next_dirty = find_first_dirty(remaining_dirty_bits);
+wire scan_window_hit = |scan_masked;
+wire [6:0] scan_window_first = {scan_index[6:4], first16(scan_masked)};
+wire scan_last_window = scan_index[6:4] == 3'd7;
+wire [6:0] idle_window_first = {3'b000, first16(dirty_bits[15:0])};
+// Background scan stepping while a write-back is in flight; ST_SCAN and the
+// write-back launch paths drive the scan registers explicitly instead.
+wire scan_background_state = state == ST_WB_PRIME || state == ST_WB_CAPTURE ||
+    state == ST_WB_REQUEST || state == ST_WB_STREAM || state == ST_WB_RESPONSE;
 
 assign cpu_request_ready = state == ST_IDLE && !response_valid &&
-    !maintenance_active && !clean_all && !invalidate_all;
+    !maintenance_active && !clean_all && !invalidate_all && !sweep_active;
 assign cpu_response_valid = response_valid;
 assign cpu_read_data = response_data;
 assign cpu_error = response_valid && response_error;
@@ -185,6 +239,7 @@ assign memory_address = memory_write ? wb_address : {pending_address[21:4],4'b0}
 assign memory_write_data = state == ST_WB_REQUEST ? wb_first_data : wb_read_data;
 assign memory_response_ready = state == ST_LINE_RECEIVE || state == ST_WB_RESPONSE;
 assign maintenance_busy = maintenance_active;
+assign valid_sweep = sweep_active;
 
 always @(posedge clk) begin
     maintenance_done <= 0;
@@ -192,33 +247,75 @@ always @(posedge clk) begin
         state <= ST_IDLE;
         response_valid <= 0;
         response_error <= 0;
-        way_0_valid <= 0;
-        way_1_valid <= 0;
-        victim <= 0;
         maintenance_active <= 0;
         maintenance_error <= 0;
+        scan_active <= 0;
+        found_valid <= 0;
+        sweep_active <= 1;
+        sweep_set <= 0;
+        sweep_finishes_maintenance <= 0;
     end else begin
         if (response_valid && cpu_response_ready)
             response_valid <= 0;
+        // Sweep control: one set of both valid ways cleared per cycle; an
+        // invalidate that finished its write-backs reports done when the
+        // sweep completes.
+        if (sweep_active) begin
+            sweep_set <= sweep_set + 1'b1;
+            if (sweep_set == 63) begin
+                sweep_active <= 0;
+                if (sweep_finishes_maintenance) begin
+                    sweep_finishes_maintenance <= 0;
+                    maintenance_active <= 0;
+                    maintenance_done <= 1;
+                end
+            end
+        end
+        if (scan_active && !found_valid && scan_background_state) begin
+            if (scan_window_hit) begin
+                found_valid <= 1;
+                found_index <= scan_window_first;
+                scan_active <= 0;
+            end else if (scan_last_window) begin
+                scan_active <= 0;
+            end else begin
+                scan_index <= {scan_index[6:4] + 3'd1, 4'b0000};
+            end
+        end
         case (state)
             ST_IDLE: begin
                 if (!response_valid && (clean_all || invalidate_all)) begin
                     maintenance_active <= 1;
                     maintenance_invalidate <= invalidate_all;
                     maintenance_error <= 0;
+                    found_valid <= 0;
                     if (|dirty_bits) begin
-                        wb_way <= first_dirty[6];
-                        wb_set <= first_dirty[5:0];
                         wb_for_maintenance <= 1;
                         wb_beat <= 0;
-                        state <= ST_WB_PRIME;
+                        if (|dirty_bits[15:0]) begin
+                            // First dirty line sits in window zero: start its
+                            // write-back immediately and scan on from after it.
+                            wb_way <= idle_window_first[6];
+                            wb_set <= idle_window_first[5:0];
+                            scan_index <= idle_window_first + 1'b1;
+                            scan_active <= idle_window_first != 7'd127;
+                            state <= ST_WB_PRIME;
+                        end else begin
+                            scan_index <= 7'd16;
+                            scan_active <= 1;
+                            state <= ST_SCAN;
+                        end
                     end else begin
                         if (invalidate_all) begin
-                            way_0_valid <= 0;
-                            way_1_valid <= 0;
+                            // Invalidate sweeps the valid arrays; done is
+                            // reported when the sweep completes.
+                            sweep_active <= 1;
+                            sweep_set <= 0;
+                            sweep_finishes_maintenance <= 1;
+                        end else begin
+                            maintenance_active <= 0;
+                            maintenance_done <= 1;
                         end
-                        maintenance_active <= 0;
-                        maintenance_done <= 1;
                     end
                 end else if (!response_valid && cpu_request_valid) begin
                     pending_write <= cpu_write;
@@ -248,8 +345,6 @@ always @(posedge clk) begin
                         wb_beat <= 0;
                         state <= ST_WB_PRIME;
                     end else begin
-                        if (selected_victim) way_1_valid[pending_set] <= 0;
-                        else way_0_valid[pending_set] <= 0;
                         refill_beat <= 0;
                         state <= ST_LINE_REQUEST;
                     end
@@ -275,8 +370,10 @@ always @(posedge clk) begin
             end
             ST_WB_RESPONSE: if (memory_response_valid) begin
                 if (memory_error) begin
-                    way_0_valid <= 0;
-                    way_1_valid <= 0;
+                    // Scrub every line with a sweep; the error itself is
+                    // reported immediately.
+                    sweep_active <= 1;
+                    sweep_set <= 0;
                     if (maintenance_active) begin
                         maintenance_active <= 0;
                         maintenance_error <= 1;
@@ -289,26 +386,65 @@ always @(posedge clk) begin
                     state <= ST_IDLE;
                 end else begin
                     if (wb_for_maintenance) begin
-                        if (|remaining_dirty_bits) begin
-                            wb_way <= next_dirty[6];
-                            wb_set <= next_dirty[5:0];
+                        if (found_valid) begin
+                            // The overlapped scan already latched the next
+                            // dirty line: launch it without a gap.
+                            wb_way <= found_index[6];
+                            wb_set <= found_index[5:0];
                             wb_beat <= 0;
+                            found_valid <= 0;
+                            scan_index <= found_index + 1'b1;
+                            scan_active <= found_index != 7'd127;
                             state <= ST_WB_PRIME;
+                        end else if (scan_active) begin
+                            state <= ST_SCAN;
                         end else begin
                             if (maintenance_invalidate) begin
-                                way_0_valid <= 0;
-                                way_1_valid <= 0;
+                                sweep_active <= 1;
+                                sweep_set <= 0;
+                                sweep_finishes_maintenance <= 1;
+                            end else begin
+                                maintenance_active <= 0;
+                                maintenance_done <= 1;
                             end
-                            maintenance_active <= 0;
-                            maintenance_done <= 1;
                             state <= ST_IDLE;
                         end
                     end else begin
-                        if (pending_way) way_1_valid[pending_set] <= 0;
-                        else way_0_valid[pending_set] <= 0;
                         refill_beat <= 0;
                         state <= ST_LINE_REQUEST;
                     end
+                end
+            end
+            ST_SCAN: begin
+                if (found_valid) begin
+                    wb_way <= found_index[6];
+                    wb_set <= found_index[5:0];
+                    wb_beat <= 0;
+                    found_valid <= 0;
+                    scan_index <= found_index + 1'b1;
+                    scan_active <= found_index != 7'd127;
+                    state <= ST_WB_PRIME;
+                end else if (scan_window_hit) begin
+                    wb_way <= scan_window_first[6];
+                    wb_set <= scan_window_first[5:0];
+                    wb_beat <= 0;
+                    scan_index <= scan_window_first + 1'b1;
+                    scan_active <= scan_window_first != 7'd127;
+                    state <= ST_WB_PRIME;
+                end else if (scan_last_window) begin
+                    // The scan found no further dirty line: maintenance ends.
+                    if (maintenance_invalidate) begin
+                        sweep_active <= 1;
+                        sweep_set <= 0;
+                        sweep_finishes_maintenance <= 1;
+                    end else begin
+                        maintenance_active <= 0;
+                        maintenance_done <= 1;
+                    end
+                    scan_active <= 0;
+                    state <= ST_IDLE;
+                end else begin
+                    scan_index <= {scan_index[6:4] + 3'd1, 4'b0000};
                 end
             end
             ST_LINE_REQUEST: if (memory_request_ready) begin
@@ -317,8 +453,8 @@ always @(posedge clk) begin
             end
             ST_LINE_RECEIVE: if (memory_response_valid) begin
                 if (memory_error) begin
-                    way_0_valid <= 0;
-                    way_1_valid <= 0;
+                    sweep_active <= 1;
+                    sweep_set <= 0;
                     response_data <= 0;
                     response_error <= 1;
                     response_valid <= 1;
@@ -332,9 +468,6 @@ always @(posedge clk) begin
                             default: refill_response_data <= memory_read_data[63:48];
                         endcase
                     if (refill_beat == 3) begin
-                    if (pending_way) way_1_valid[pending_set] <= 1;
-                    else way_0_valid[pending_set] <= 1;
-                    victim[pending_set] <= !pending_way;
                     response_data <= pending_write ? 16'b0 :
                         (pending_word[3:2] == 3 ?
                             (pending_word[1:0] == 0 ? memory_read_data[15:0] :

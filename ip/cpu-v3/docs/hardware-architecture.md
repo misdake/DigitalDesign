@@ -63,7 +63,10 @@ While that resident read resolves, the next lookup may start, allowing one
 ordered hit request and response per cycle when there is no miss, invalidate,
 write, or response backpressure. The instruction cache exposes only reads. The
 data cache is write-back: stores allocate on a miss and set a dirty bit in a
-separate SSRAM; replacing a dirty victim first writes its complete line.
+separate SSRAM; replacing a dirty victim first writes its complete line. Valid
+and victim bits live in a RAM16 leaf with asynchronous reads; a global
+invalidate, reset, or memory-error scrub clears one set of both ways per cycle,
+and the system holds the CPU for that sweep.
 A read or write-allocate miss issues one aligned line request; the system arbiter
 streams four ordered 64-bit beats at 54 MHz. Each beat writes four words directly
 through the four BSRAM ports, and tag/valid state commits only on the fourth
@@ -72,9 +75,10 @@ cannot expose a partial line. Dirty eviction primes the synchronous DPB outputs,
 then streams four ordered 64-bit beats without a private line buffer. The board
 gearbox pairs/splits those logical beats against the 32-bit SDRAM controller at
 the related 108 MHz clock. The boot DMA keeps
-single-word transactions. Full D-cache clean and clean-plus-invalidate scan
-dirty state while the CPU is held; there is no per-line snoop interface. The
-system-control I-cache invalidation pulse is
+single-word transactions. Full D-cache clean and clean-plus-invalidate scan the
+128-bit dirty bitmap one 16-entry window per cycle, overlapped with the
+in-flight write-back while the CPU is held; there is no per-line snoop
+interface. The system-control I-cache invalidation pulse is
 registered for one cycle so the compiler's adjacent invalidate-and-JSEG
 handoff resolves deterministically.
 

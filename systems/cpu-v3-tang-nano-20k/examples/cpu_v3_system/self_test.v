@@ -64,9 +64,6 @@ wire instruction_response_valid;
 wire [15:0] instruction_data;
 wire instruction_error;
 wire instruction_request_ready;
-wire instruction_prefetch_request_valid;
-wire [31:0] instruction_prefetch_address;
-wire instruction_prefetch_cancel;
 wire sysctl_icache_invalidate;
 wire sysctl_dcache_invalidate;
 wire sysctl_dcache_clean;
@@ -74,6 +71,7 @@ wire sysctl_cpu_hold;
 wire dcache_maintenance_busy;
 wire dcache_maintenance_done;
 wire dcache_maintenance_error;
+wire dcache_valid_sweep;
 wire halted;
 wire faulted;
 
@@ -94,10 +92,7 @@ __FETCH_QUEUE__ u_instruction_fetch_queue (
     .core_error(core_instruction_error),
     .memory_request_valid(instruction_request_valid),
     .memory_address(instruction_address),
-    .memory_response_ready(instruction_response_ready),
-    .prefetch_request_valid(instruction_prefetch_request_valid),
-    .prefetch_address(instruction_prefetch_address),
-    .prefetch_cancel(instruction_prefetch_cancel)
+    .memory_response_ready(instruction_response_ready)
 );
 
 // Boot window: physical instruction words 0x0000..0x03ff fetch the Stage0
@@ -166,11 +161,6 @@ __CACHE__ u_instruction_cache (
     .clk(clk),
     .reset(reset),
     .invalidate_all(sysctl_icache_invalidate),
-    // Stage0 executes from boot BSRAM, not SDRAM-backed I-cache.
-    .prefetch_request_valid(instruction_prefetch_request_valid &&
-                            instruction_prefetch_address[31:10] != 0),
-    .prefetch_address(instruction_prefetch_address),
-    .prefetch_cancel(instruction_prefetch_cancel),
     .cpu_request_valid(instruction_request_valid && !boot_selected &&
                        instruction_source_allowed),
     .cpu_address(instruction_address),
@@ -184,10 +174,6 @@ __CACHE__ u_instruction_cache (
     .cpu_response_valid(icache_cpu_response_valid),
     .cpu_read_data(icache_cpu_read_data),
     .cpu_error(icache_cpu_error),
-    .prefetch_issued(),
-    .prefetch_useful(),
-    .prefetch_useless(),
-    .prefetch_dropped(),
     .memory_request_valid(icache_memory_request_valid),
     .memory_address(icache_memory_address),
     .memory_response_ready(icache_memory_response_ready)
@@ -433,7 +419,8 @@ __DATA_CACHE__ u_data_cache (
     .memory_response_ready(dcache_memory_response_ready),
     .maintenance_busy(dcache_maintenance_busy),
     .maintenance_done(dcache_maintenance_done),
-    .maintenance_error(dcache_maintenance_error)
+    .maintenance_error(dcache_maintenance_error),
+    .valid_sweep(dcache_valid_sweep)
 );
 
 assign core_data_request_ready = dcache_cpu_request_ready;
@@ -453,8 +440,10 @@ __CPU_V3_CORE__ u_core (
     .clk(clk),
     .reset(reset),
     // Maintenance blocks architectural CPU progress only. The D-cache,
-    // arbiter, DMA, display, and SDRAM adapter keep using clk normally.
-    .hold(sysctl_cpu_hold),
+    // arbiter, DMA, display, and SDRAM adapter keep using clk normally. The
+    // core is also held while the RAM16 valid arrays sweep-clear, because the
+    // D-cache cannot accept requests until every stale line is invalid.
+    .hold(sysctl_cpu_hold || dcache_valid_sweep),
     .instruction_request_ready(core_instruction_request_ready),
     .instruction_response_valid(core_instruction_response_valid),
     .instruction_data(core_instruction_data),

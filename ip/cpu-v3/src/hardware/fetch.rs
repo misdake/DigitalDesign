@@ -25,9 +25,6 @@ pub struct CpuV3InstructionFetchQueueOutput {
     pub memory_request_valid: Wire,
     pub memory_address: Wires<32>,
     pub memory_response_ready: Wire,
-    pub prefetch_request_valid: Wire,
-    pub prefetch_address: Wires<32>,
-    pub prefetch_cancel: Wire,
 }
 
 /// Keeps four fetched or outstanding words reserved and tags every downstream
@@ -109,8 +106,6 @@ impl Module for CpuV3InstructionFetchQueue {
             && ((restart && redirect_slot_available)
                 || (!restart && state.stream_valid && reserved_words < QUEUE_DEPTH as u8));
 
-        let prefetch_address =
-            (core_address & 0xffff_0000) | ((((core_address >> 4) & 0x0fff) + 1) & 0x0fff) << 4;
         output.drive(
             circuit,
             &CpuV3InstructionFetchQueueOutputValue {
@@ -133,9 +128,6 @@ impl Module for CpuV3InstructionFetchQueue {
                     state.next_memory_address
                 }),
                 memory_response_ready,
-                prefetch_request_valid: core_pop && core_address & 0xf == 10,
-                prefetch_address: u64::from(prefetch_address),
-                prefetch_cancel: input.flush || restart,
             },
         );
     }
@@ -349,9 +341,6 @@ mod tests {
         memory_request_valid: bool,
         memory_address: u32,
         memory_response_ready: bool,
-        prefetch_request_valid: bool,
-        prefetch_address: u32,
-        prefetch_cancel: bool,
     }
 
     #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -405,9 +394,6 @@ mod tests {
             memory_request_valid: value.memory_request_valid,
             memory_address: value.memory_address as u32,
             memory_response_ready: value.memory_response_ready,
-            prefetch_request_valid: value.prefetch_request_valid,
-            prefetch_address: value.prefetch_address as u32,
-            prefetch_cancel: value.prefetch_cancel,
         };
         let cin = QueueIn {
             flush,
@@ -564,9 +550,7 @@ mod tests {
              wire core_request_ready, core_response_valid, core_error;\n\
              wire [15:0] core_read_data;\n\
              wire memory_request_valid, memory_response_ready;\n\
-             wire [31:0] memory_address;\n\
-             wire prefetch_request_valid, prefetch_cancel;\n\
-             wire [31:0] prefetch_address;\n\n\
+             wire [31:0] memory_address;\n\n\
              {module_name} dut(.*);\n\n\
              always #5 clk = ~clk;\n\n\
              initial begin\n\
@@ -583,7 +567,7 @@ mod tests {
                  flush = 1'b{f}; core_request_valid = 1'b{crv}; core_address = 32'h{ca:08x}; core_response_ready = 1'b{crr};\n\
                  memory_request_ready = 1'b1; memory_response_valid = 1'b{mrv}; memory_read_data = 16'h{mrd:04x}; memory_error = 1'b{me};\n\
                  #1;\n\
-                 $display(\"OUT %0d %0d %0d %0d %0d %0d %0d %0d %0d %0d %0d\", {i}, core_request_ready, core_response_valid, core_read_data, core_error, memory_request_valid, memory_address, memory_response_ready, prefetch_request_valid, prefetch_address, prefetch_cancel);\n\
+                 $display(\"OUT %0d %0d %0d %0d %0d %0d %0d %0d\", {i}, core_request_ready, core_response_valid, core_read_data, core_error, memory_request_valid, memory_address, memory_response_ready);\n\
                  @(posedge clk);\n\
                  @(negedge clk);\n",
                 f = u8::from(cin.flush),
@@ -644,7 +628,7 @@ mod tests {
             let line = line.trim();
             if let Some(rest) = line.strip_prefix("OUT ") {
                 let fields: Vec<&str> = rest.split_whitespace().collect();
-                assert_eq!(fields.len(), 11, "unexpected OUT line: {line}");
+                assert_eq!(fields.len(), 8, "unexpected OUT line: {line}");
                 outputs.push(QueueOut {
                     core_request_ready: fields[1] == "1",
                     core_response_valid: fields[2] == "1",
@@ -653,9 +637,6 @@ mod tests {
                     memory_request_valid: fields[5] == "1",
                     memory_address: fields[6].parse().unwrap(),
                     memory_response_ready: fields[7] == "1",
-                    prefetch_request_valid: fields[8] == "1",
-                    prefetch_address: parse_num(fields[9]),
-                    prefetch_cancel: fields[10] == "1",
                 });
             } else if line == "TRACE_END" {
                 break;

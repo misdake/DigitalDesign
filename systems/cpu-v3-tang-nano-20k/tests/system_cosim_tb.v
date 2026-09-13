@@ -27,9 +27,6 @@ wire ic_cpu_request_ready;
 wire ic_cpu_response_valid;
 wire [15:0] ic_cpu_read_data;
 wire ic_cpu_error;
-wire fetch_prefetch_request_valid;
-wire [31:0] fetch_prefetch_address;
-wire fetch_prefetch_cancel;
 
 // I-cache <-> arbiter
 wire ic_memory_request_valid;
@@ -42,10 +39,6 @@ wire arb_instruction_request_ready;
 wire arb_instruction_response_valid;
 wire [63:0] arb_instruction_read_data;
 wire arb_instruction_error;
-wire [31:0] ic_prefetch_issued;
-wire [31:0] ic_prefetch_useful;
-wire [31:0] ic_prefetch_useless;
-wire [31:0] ic_prefetch_dropped;
 
 // core <-> D-cache
 wire core_data_request_valid;
@@ -72,6 +65,7 @@ wire arb_data_error;
 wire dc_maintenance_busy;
 wire dc_maintenance_done;
 wire dc_maintenance_error;
+wire dc_valid_sweep;
 
 // arbiter <-> SDRAM
 wire arb_memory_request_valid;
@@ -110,7 +104,7 @@ wire arb_dma_error;
 __CORE__ u_core (
     .clk(clk),
     .reset(reset),
-    .hold(1'b0),
+    .hold(dc_valid_sweep),
     .instruction_request_ready(fetch_core_request_ready),
     .instruction_response_valid(fetch_core_response_valid),
     .instruction_data(fetch_core_read_data),
@@ -161,19 +155,13 @@ __FETCH__ u_fetch (
     .core_error(fetch_core_error),
     .memory_request_valid(fetch_memory_request_valid),
     .memory_address(fetch_memory_address),
-    .memory_response_ready(fetch_memory_response_ready),
-    .prefetch_request_valid(fetch_prefetch_request_valid),
-    .prefetch_address(fetch_prefetch_address),
-    .prefetch_cancel(fetch_prefetch_cancel)
+    .memory_response_ready(fetch_memory_response_ready)
 );
 
 __ICACHE__ u_icache (
     .clk(clk),
     .reset(reset),
     .invalidate_all(1'b0),
-    .prefetch_request_valid(fetch_prefetch_request_valid),
-    .prefetch_address(fetch_prefetch_address),
-    .prefetch_cancel(fetch_prefetch_cancel),
     .cpu_request_valid(fetch_memory_request_valid),
     .cpu_write(1'b0),
     .cpu_address(fetch_memory_address),
@@ -192,11 +180,7 @@ __ICACHE__ u_icache (
     .memory_line(ic_memory_line),
     .memory_address(ic_memory_address),
     .memory_write_data(ic_memory_write_data),
-    .memory_response_ready(ic_memory_response_ready),
-    .prefetch_issued(ic_prefetch_issued),
-    .prefetch_useful(ic_prefetch_useful),
-    .prefetch_useless(ic_prefetch_useless),
-    .prefetch_dropped(ic_prefetch_dropped)
+    .memory_response_ready(ic_memory_response_ready)
 );
 
 __DCACHE__ u_dcache (
@@ -225,7 +209,8 @@ __DCACHE__ u_dcache (
     .memory_response_ready(dc_memory_response_ready),
     .maintenance_busy(dc_maintenance_busy),
     .maintenance_done(dc_maintenance_done),
-    .maintenance_error(dc_maintenance_error)
+    .maintenance_error(dc_maintenance_error),
+    .valid_sweep(dc_valid_sweep)
 );
 
 __ARBITER__ u_arbiter (

@@ -3,7 +3,7 @@
 //! Cache lines use four ordered 64-bit memory beats. Two true-dual-port data
 //! BSRAMs split each line by word parity and directly transfer all four words
 //! of a beat. Tags and valid bits commit only after a complete error-free line. The
-//! production I-cache exposes a read-only boundary around this refill/prefetch
+//! production I-cache exposes a read-only boundary around this refill
 //! engine; the independent D-cache implements write-allocate, dirty eviction,
 //! and blocking global clean/invalidate.
 
@@ -286,13 +286,127 @@ impl Module for CpuV3CacheTagRam {
     }
 }
 
+/// RAM16 valid (2 x 64) and victim (64) arrays with asynchronous read, a
+/// synchronous single-way write port, and a sweep clear that takes priority
+/// and clears both ways of one set per cycle. Way zero initializes from the
+/// cache image's INITIAL_VALID mask; all other bits start cleared.
+pub struct CpuV3CacheValidRamWithImage<I>(PhantomData<I>);
+pub type CpuV3CacheValidRam = CpuV3CacheValidRamWithImage<ZeroBsramImage>;
+
+impl<I: CpuV3CacheImage> HardwareIdentity for CpuV3CacheValidRamWithImage<I> {
+    const TARGET_RESOURCE_LEAF: bool = true;
+
+    fn verilog_identity() -> VerilogIdentity {
+        VerilogIdentity::new("CpuV3CacheValidRam")
+            .namespace(["components", "cpu", "cpu_v3"])
+            .symbol("IMAGE", format!("v{:016x}", I::INITIAL_VALID))
+    }
+}
+
+#[derive(Clone, ModuleIo)]
+pub struct CpuV3CacheValidRamInput {
+    pub clear_enable: Wire,
+    pub clear_set: Wires<6>,
+    pub write_enable: Wire,
+    pub write_way: Wire,
+    pub write_set: Wires<6>,
+    pub write_value: Wire,
+    pub victim_write_enable: Wire,
+    pub victim_write_value: Wire,
+    pub read_set: Wires<6>,
+}
+
+#[derive(Clone, ModuleIo)]
+pub struct CpuV3CacheValidRamOutput {
+    pub way_0_valid: Wire,
+    pub way_1_valid: Wire,
+    pub victim: Wire,
+}
+
+impl<I: CpuV3CacheImage> Module for CpuV3CacheValidRamWithImage<I> {
+    type Input = CpuV3CacheValidRamInput;
+    type Output = CpuV3CacheValidRamOutput;
+    type EmuState = ();
+
+    const USES_MAIN_CLOCK: bool = true;
+    const EMU_AVAILABLE: bool = false;
+
+    fn target_resources() -> Vec<TargetResourceRequest> {
+        // Three RAM16 cells: valid way 0, valid way 1, victim.
+        vec![TargetResourceRequest::new(SsramBits::new(192))]
+    }
+
+    fn execute_emu(
+        _state: &mut Self::EmuState,
+        _circuit: &mut CircuitWires,
+        _input: &Self::Input,
+        _output: &Self::Output,
+    ) {
+        panic!("valid/victim RAM16 is Verilog-only")
+    }
+
+    fn verilog_source() -> Option<String> {
+        let module_name = Self::verilog_identity().module_name();
+        Some(format!(
+            r#"module {module_name} (
+    input wire clk,
+    input wire clear_enable,
+    input wire [5:0] clear_set,
+    input wire write_enable,
+    input wire write_way,
+    input wire [5:0] write_set,
+    input wire write_value,
+    input wire victim_write_enable,
+    input wire victim_write_value,
+    input wire [5:0] read_set,
+    output wire way_0_valid,
+    output wire way_1_valid,
+    output wire victim
+);
+reg way_0_valid_ram [0:63];
+reg way_1_valid_ram [0:63];
+reg victim_ram [0:63];
+localparam [63:0] INITIAL_VALID = 64'h{:016x};
+integer initial_set;
+initial begin
+    for (initial_set = 0; initial_set < 64; initial_set = initial_set + 1) begin
+        way_0_valid_ram[initial_set] = INITIAL_VALID[initial_set];
+        way_1_valid_ram[initial_set] = 1'b0;
+        victim_ram[initial_set] = 1'b0;
+    end
+end
+always @(posedge clk) begin
+    if (clear_enable) begin
+        way_0_valid_ram[clear_set] <= 1'b0;
+        way_1_valid_ram[clear_set] <= 1'b0;
+    end else if (write_enable) begin
+        if (write_way) way_1_valid_ram[write_set] <= write_value;
+        else way_0_valid_ram[write_set] <= write_value;
+    end
+    if (victim_write_enable)
+        victim_ram[write_set] <= victim_write_value;
+end
+assign way_0_valid = way_0_valid_ram[read_set];
+assign way_1_valid = way_1_valid_ram[read_set];
+assign victim = victim_ram[read_set];
+endmodule
+"#,
+            I::INITIAL_VALID
+        ))
+    }
+
+    fn verilog_testbench() -> Option<String> {
+        Some(include_str!("cpu_v3_cache_valid_ram_tb.v").replace(
+            "CpuV3CacheValidRam dut",
+            &format!("{} dut", Self::verilog_identity().module_name()),
+        ))
+    }
+}
+
 #[derive(Clone, ModuleIo)]
 pub struct CpuV3TwoWayCacheInput {
     pub reset: Wire,
     pub invalidate_all: Wire,
-    pub prefetch_request_valid: Wire,
-    pub prefetch_address: Wires<32>,
-    pub prefetch_cancel: Wire,
     pub cpu_request_valid: Wire,
     pub cpu_write: Wire,
     pub cpu_address: Wires<32>,
@@ -316,10 +430,6 @@ pub struct CpuV3TwoWayCacheOutput {
     pub memory_address: Wires<22>,
     pub memory_write_data: Wires<64>,
     pub memory_response_ready: Wire,
-    pub prefetch_issued: Wires<32>,
-    pub prefetch_useful: Wires<32>,
-    pub prefetch_useless: Wires<32>,
-    pub prefetch_dropped: Wires<32>,
 }
 
 pub struct CpuV3TwoWayCacheWithImage<I>(PhantomData<I>);
@@ -329,9 +439,6 @@ pub type CpuV3TwoWayCache = CpuV3TwoWayCacheWithImage<ZeroBsramImage>;
 pub struct CpuV3InstructionCacheInput {
     pub reset: Wire,
     pub invalidate_all: Wire,
-    pub prefetch_request_valid: Wire,
-    pub prefetch_address: Wires<32>,
-    pub prefetch_cancel: Wire,
     pub cpu_request_valid: Wire,
     pub cpu_address: Wires<32>,
     pub cpu_response_ready: Wire,
@@ -350,13 +457,9 @@ pub struct CpuV3InstructionCacheOutput {
     pub memory_request_valid: Wire,
     pub memory_address: Wires<22>,
     pub memory_response_ready: Wire,
-    pub prefetch_issued: Wires<32>,
-    pub prefetch_useful: Wires<32>,
-    pub prefetch_useless: Wires<32>,
-    pub prefetch_dropped: Wires<32>,
 }
 
-/// Production read-only I-cache boundary. The proven refill/prefetch engine is
+/// Production read-only I-cache boundary. The proven refill engine is
 /// retained underneath, with its legacy store pins tied off so synthesis
 /// removes the unreachable write-through path.
 pub struct CpuV3InstructionCache;
@@ -431,7 +534,6 @@ enum State {
 
 #[derive(Clone, Copy, Default)]
 struct Pending {
-    is_prefetch: bool,
     write: bool,
     address: u32,
     write_data: u16,
@@ -442,7 +544,6 @@ pub struct CpuV3TwoWayCacheState {
     data: Box<[u16; CPU_V3_CACHE_WORDS]>,
     tags: [[u16; CPU_V3_CACHE_SETS]; CPU_V3_CACHE_WAYS],
     valid: [[bool; CPU_V3_CACHE_SETS]; CPU_V3_CACHE_WAYS],
-    prefetched: [[bool; CPU_V3_CACHE_SETS]; CPU_V3_CACHE_WAYS],
     victim: [usize; CPU_V3_CACHE_SETS],
     pending_way: usize,
     state: State,
@@ -453,13 +554,13 @@ pub struct CpuV3TwoWayCacheState {
     response_data: u16,
     response_error: bool,
     response_valid: bool,
-    prefetch_pending: Option<u32>,
     refill_discard: bool,
-    prefetch_armed: bool,
-    prefetch_issued: u32,
-    prefetch_useful: u32,
-    prefetch_useless: u32,
-    prefetch_dropped: u32,
+    // Mirror of the RTL RAM16 valid/victim arrays: `valid`/`victim` hold the
+    // RAM contents and `invalidate_all` starts a 64-set sweep (both ways
+    // cleared in parallel, one set per cycle) instead of an instant clear.
+    // New requests are blocked through cpu_request_ready while it runs.
+    sweep_active: bool,
+    sweep_set: u8,
 }
 
 impl Default for CpuV3TwoWayCacheState {
@@ -468,7 +569,6 @@ impl Default for CpuV3TwoWayCacheState {
             data: Box::new([0; CPU_V3_CACHE_WORDS]),
             tags: [[0; CPU_V3_CACHE_SETS]; CPU_V3_CACHE_WAYS],
             valid: [[false; CPU_V3_CACHE_SETS]; CPU_V3_CACHE_WAYS],
-            prefetched: [[false; CPU_V3_CACHE_SETS]; CPU_V3_CACHE_WAYS],
             victim: [0; CPU_V3_CACHE_SETS],
             pending_way: 0,
             state: State::Idle,
@@ -479,13 +579,9 @@ impl Default for CpuV3TwoWayCacheState {
             response_data: 0,
             response_error: false,
             response_valid: false,
-            prefetch_pending: None,
             refill_discard: false,
-            prefetch_armed: false,
-            prefetch_issued: 0,
-            prefetch_useful: 0,
-            prefetch_useless: 0,
-            prefetch_dropped: 0,
+            sweep_active: false,
+            sweep_set: 0,
         }
     }
 }
@@ -526,19 +622,16 @@ impl<I: CpuV3CacheImage> Module for CpuV3TwoWayCacheWithImage<I> {
         let input = input.sample(circuit);
         let (set, tag, _) = decode(state.pending.address);
         let pending_address_valid = state.pending.address >> 22 == 0;
+        let invalidating = input.invalidate_all || state.sweep_active;
         let way_0_hit = state.valid[0][set] && state.tags[0][set] == tag;
         let way_1_hit = state.valid[1][set] && state.tags[1][set] == tag;
         let pending_hit = way_0_hit || way_1_hit;
         let lookup_read_hit =
             state.lookup_valid && pending_address_valid && !state.pending.write && pending_hit;
         let response_space = !state.response_valid || input.cpu_response_ready;
-        let steal =
-            state.state == State::LineRequest && state.pending.is_prefetch && !state.prefetch_armed;
-        let cpu_request_ready = !input.invalidate_all
-            && ((state.state == State::Idle
-                && (!state.lookup_valid
-                    || (state.pending.is_prefetch || lookup_read_hit) && response_space))
-                || steal);
+        let cpu_request_ready = !invalidating
+            && state.state == State::Idle
+            && (!state.lookup_valid || lookup_read_hit && response_space);
         output.drive(
             circuit,
             &CpuV3TwoWayCacheOutputValue {
@@ -547,8 +640,7 @@ impl<I: CpuV3CacheImage> Module for CpuV3TwoWayCacheWithImage<I> {
                 cpu_read_data: u64::from(state.response_data),
                 cpu_error: state.response_valid && state.response_error,
                 memory_request_valid: state.state == State::WordRequest
-                    || (state.state == State::LineRequest
-                        && (!state.pending.is_prefetch || state.prefetch_armed)),
+                    || state.state == State::LineRequest,
                 memory_write: state.pending.write,
                 memory_line: !state.pending.write,
                 memory_address: u64::from(if state.pending.write {
@@ -561,10 +653,6 @@ impl<I: CpuV3CacheImage> Module for CpuV3TwoWayCacheWithImage<I> {
                     state.state,
                     State::WordResponse | State::LineReceive
                 ),
-                prefetch_issued: u64::from(state.prefetch_issued),
-                prefetch_useful: u64::from(state.prefetch_useful),
-                prefetch_useless: u64::from(state.prefetch_useless),
-                prefetch_dropped: u64::from(state.prefetch_dropped),
             },
         );
     }
@@ -584,6 +672,7 @@ impl<I: CpuV3CacheImage> Module for CpuV3TwoWayCacheWithImage<I> {
         // Combinational values evaluated against the current (pre-edge) state.
         let (set, tag, word) = decode(state.pending.address);
         let pending_address_valid = state.pending.address >> 22 == 0;
+        let invalidating = input.invalidate_all || state.sweep_active;
         let way_0_hit = state.valid[0][set] && state.tags[0][set] == tag;
         let way_1_hit = state.valid[1][set] && state.tags[1][set] == tag;
         let pending_hit = way_0_hit || way_1_hit;
@@ -601,26 +690,13 @@ impl<I: CpuV3CacheImage> Module for CpuV3TwoWayCacheWithImage<I> {
             && state.pending.write
             && pending_hit
             && response_space
-            && !input.invalidate_all;
+            && !invalidating;
         let lookup_read_hit =
             state.lookup_valid && pending_address_valid && !state.pending.write && pending_hit;
-        let cancel_prefetch = input.prefetch_cancel || input.invalidate_all;
-        let prefetch_refill_cancelled = state.pending.is_prefetch && input.prefetch_cancel;
-        let steal =
-            state.state == State::LineRequest && state.pending.is_prefetch && !state.prefetch_armed;
-        let cpu_request_ready = !input.invalidate_all
-            && ((state.state == State::Idle
-                && (!state.lookup_valid
-                    || (state.pending.is_prefetch || lookup_read_hit) && response_space))
-                || steal);
+        let cpu_request_ready = !invalidating
+            && state.state == State::Idle
+            && (!state.lookup_valid || lookup_read_hit && response_space);
         let accept_cpu_request = input.cpu_request_valid && cpu_request_ready;
-        let accept_prefetch = state.state == State::Idle
-            && !input.invalidate_all
-            && !cancel_prefetch
-            && !state.lookup_valid
-            && !state.response_valid
-            && state.prefetch_pending.is_some()
-            && !input.cpu_request_valid;
 
         let mut next = state.clone();
 
@@ -628,67 +704,47 @@ impl<I: CpuV3CacheImage> Module for CpuV3TwoWayCacheWithImage<I> {
             next.response_valid = false;
         }
 
-        if !cancel_prefetch && input.prefetch_request_valid {
-            let address = input.prefetch_address as u32;
-            if state
-                .prefetch_pending
-                .is_some_and(|pending| pending != address)
-            {
-                next.prefetch_dropped = next.prefetch_dropped.wrapping_add(1);
+        // Sweep control: invalidate_all (re)starts the 64-set sweep; each
+        // following edge clears both ways of one set. The RAM write port
+        // gives the sweep priority over any line-request/commit write, which
+        // is therefore dropped while a sweep runs.
+        if input.invalidate_all {
+            next.sweep_active = true;
+            next.sweep_set = 0;
+        } else if state.sweep_active {
+            next.valid[0][state.sweep_set as usize] = false;
+            next.valid[1][state.sweep_set as usize] = false;
+            next.sweep_set = state.sweep_set + 1;
+            if state.sweep_set == 63 {
+                next.sweep_active = false;
             }
-            next.prefetch_pending = Some(address);
         }
 
         match state.state {
             State::Idle => {
-                if state.lookup_valid
-                    && (state.pending.is_prefetch || response_space)
-                    && !(cancel_prefetch && state.pending.is_prefetch)
-                {
+                if state.lookup_valid && response_space {
                     if !pending_address_valid {
-                        if state.pending.is_prefetch {
-                            next.prefetch_dropped = next.prefetch_dropped.wrapping_add(1);
-                        } else {
-                            next.response_data = 0;
-                            next.response_error = true;
-                            next.response_valid = true;
-                        }
+                        next.response_data = 0;
+                        next.response_error = true;
+                        next.response_valid = true;
                         next.lookup_valid = false;
-                        if state.pending.is_prefetch {
-                            next.pending.is_prefetch = false;
-                        }
                     } else if state.pending.write {
                         next.lookup_valid = false;
                         next.state = State::WordRequest;
                     } else if pending_hit {
-                        if !state.pending.is_prefetch {
-                            next.response_data = state.data[data_index(hit_way, set, word)];
-                            next.response_error = false;
-                            next.response_valid = true;
-                            if hit_way == 1 && state.prefetched[1][set] {
-                                next.prefetched[1][set] = false;
-                                next.prefetch_useful = next.prefetch_useful.wrapping_add(1);
-                            } else if hit_way == 0 && state.prefetched[0][set] {
-                                next.prefetched[0][set] = false;
-                                next.prefetch_useful = next.prefetch_useful.wrapping_add(1);
-                            }
-                        }
+                        next.response_data = state.data[data_index(hit_way, set, word)];
+                        next.response_error = false;
+                        next.response_valid = true;
                         next.lookup_valid = false;
-                        if state.pending.is_prefetch {
-                            next.pending.is_prefetch = false;
-                        }
                     } else {
                         next.lookup_valid = false;
-                        if state.pending.is_prefetch && accept_cpu_request {
-                            next.pending.is_prefetch = false;
-                            next.prefetch_dropped = next.prefetch_dropped.wrapping_add(1);
-                        } else {
-                            next.pending_way = selected_victim;
-                            next.refill_beat = 0;
-                            next.refill_discard = input.invalidate_all;
-                            next.prefetch_armed = false;
-                            next.state = State::LineRequest;
-                        }
+                        next.pending_way = selected_victim;
+                        next.refill_beat = 0;
+                        // An invalidate coincident with miss detection belongs
+                        // to the old fetch epoch. Complete its protocol
+                        // response, but never install the line.
+                        next.refill_discard = input.invalidate_all;
+                        next.state = State::LineRequest;
                     }
                 }
             }
@@ -706,47 +762,24 @@ impl<I: CpuV3CacheImage> Module for CpuV3TwoWayCacheWithImage<I> {
                 }
             }
             State::LineRequest => {
-                if state.pending.is_prefetch && !state.prefetch_armed {
-                    if input.cpu_request_valid || cancel_prefetch {
-                        if input.cpu_request_valid && !cancel_prefetch {
-                            next.prefetch_dropped = next.prefetch_dropped.wrapping_add(1);
-                        }
-                        next.pending.is_prefetch = false;
-                        next.prefetch_armed = false;
-                        next.refill_discard = false;
-                        next.state = State::Idle;
-                    } else {
-                        next.prefetch_armed = true;
+                if input.memory_request_ready {
+                    if !state.sweep_active {
+                        next.valid[state.pending_way][set] = false;
                     }
-                } else if input.memory_request_ready {
-                    next.valid[state.pending_way][set] = false;
                     next.refill_beat = 0;
-                    if state.pending.is_prefetch {
-                        next.prefetch_issued = next.prefetch_issued.wrapping_add(1);
-                    }
-                    next.prefetch_armed = false;
                     next.state = State::LineReceive;
                 }
             }
             State::LineReceive => {
                 if input.memory_response_valid {
                     if input.memory_error {
-                        if state.pending.is_prefetch {
-                            if !state.refill_discard {
-                                next.prefetch_dropped = next.prefetch_dropped.wrapping_add(1);
-                            }
-                            next.pending.is_prefetch = false;
-                        } else {
-                            next.response_data = 0;
-                            next.response_error = true;
-                            next.response_valid = true;
-                        }
+                        next.response_data = 0;
+                        next.response_error = true;
+                        next.response_valid = true;
                         next.state = State::Idle;
                     } else {
                         let first_word = 4 * usize::from(state.refill_beat);
-                        let install = !state.refill_discard
-                            && !input.invalidate_all
-                            && !prefetch_refill_cancelled;
+                        let install = !state.refill_discard && !invalidating;
                         if install {
                             for lane in 0..4 {
                                 next.data[data_index(state.pending_way, set, first_word + lane)] =
@@ -760,34 +793,20 @@ impl<I: CpuV3CacheImage> Module for CpuV3TwoWayCacheWithImage<I> {
                         if state.refill_beat as usize + 1 == CPU_V3_CACHE_MEMORY_BEATS {
                             if install {
                                 if state.pending_way == 1 {
-                                    if state.prefetched[1][set] {
-                                        next.prefetch_useless =
-                                            next.prefetch_useless.wrapping_add(1);
-                                    }
                                     next.valid[1][set] = true;
-                                    next.prefetched[1][set] = state.pending.is_prefetch;
                                 } else {
-                                    if state.prefetched[0][set] {
-                                        next.prefetch_useless =
-                                            next.prefetch_useless.wrapping_add(1);
-                                    }
                                     next.valid[0][set] = true;
-                                    next.prefetched[0][set] = state.pending.is_prefetch;
                                 }
                                 next.tags[state.pending_way][set] = tag;
                                 next.victim[set] = 1 - state.pending_way;
                             }
-                            if !state.pending.is_prefetch {
-                                next.response_data = if first_word <= word && word < first_word + 4
-                                {
-                                    (input.memory_read_data >> (16 * (word - first_word))) as u16
-                                } else {
-                                    state.refill_response_data
-                                };
-                                next.response_error = false;
-                                next.response_valid = true;
-                            }
-                            next.pending.is_prefetch = false;
+                            next.response_data = if first_word <= word && word < first_word + 4 {
+                                (input.memory_read_data >> (16 * (word - first_word))) as u16
+                            } else {
+                                state.refill_response_data
+                            };
+                            next.response_error = false;
+                            next.response_valid = true;
                             next.state = State::Idle;
                         } else {
                             next.refill_beat += 1;
@@ -801,21 +820,8 @@ impl<I: CpuV3CacheImage> Module for CpuV3TwoWayCacheWithImage<I> {
             next.data[data_index(hit_way, set, word)] = state.pending.write_data;
         }
 
-        if accept_prefetch {
-            next.pending = Pending {
-                is_prefetch: true,
-                write: false,
-                address: state.prefetch_pending.unwrap(),
-                write_data: 0,
-            };
-            next.refill_discard = false;
-            next.lookup_valid = true;
-            next.prefetch_pending = None;
-        }
-
         if accept_cpu_request {
             next.pending = Pending {
-                is_prefetch: false,
                 write: input.cpu_write,
                 address: input.cpu_address as u32,
                 write_data: input.cpu_write_data as u16,
@@ -825,56 +831,10 @@ impl<I: CpuV3CacheImage> Module for CpuV3TwoWayCacheWithImage<I> {
             next.lookup_valid = true;
         }
 
-        if cancel_prefetch {
-            let counting = state.prefetch_pending.is_some()
-                || (state.pending.is_prefetch
-                    && ((state.state == State::Idle && state.lookup_valid)
-                        || (state.state == State::LineRequest && !state.prefetch_armed)
-                        || ((state.state == State::LineReceive
-                            || (state.state == State::LineRequest && state.prefetch_armed))
-                            && !state.refill_discard)));
-            if counting {
-                next.prefetch_dropped = next.prefetch_dropped.wrapping_add(1);
-            }
-            next.prefetch_pending = None;
-            if state.pending.is_prefetch
-                && state.state == State::Idle
-                && state.lookup_valid
-                && !accept_cpu_request
-            {
-                next.lookup_valid = false;
-                next.pending.is_prefetch = false;
-            }
-            if state.pending.is_prefetch
-                && state.state == State::LineRequest
-                && !state.prefetch_armed
-            {
-                next.state = State::Idle;
-                next.pending.is_prefetch = false;
-                next.prefetch_armed = false;
-                next.refill_discard = false;
-            } else if state.pending.is_prefetch
-                && (state.state == State::LineReceive
-                    || (state.state == State::LineRequest && state.prefetch_armed))
-            {
-                next.refill_discard = true;
-            }
-        }
-
-        if input.invalidate_all {
-            next.prefetch_useless = next.prefetch_useless.wrapping_add(
-                state
-                    .prefetched
-                    .iter()
-                    .flatten()
-                    .filter(|prefetched| **prefetched)
-                    .count() as u32,
-            );
-            next.valid = [[false; CPU_V3_CACHE_SETS]; CPU_V3_CACHE_WAYS];
-            next.prefetched = [[false; CPU_V3_CACHE_SETS]; CPU_V3_CACHE_WAYS];
-            if state.state == State::LineRequest || state.state == State::LineReceive {
-                next.refill_discard = true;
-            }
+        if input.invalidate_all
+            && (state.state == State::LineRequest || state.state == State::LineReceive)
+        {
+            next.refill_discard = true;
         }
 
         *state = next;
@@ -899,6 +859,10 @@ impl<I: CpuV3CacheImage> Module for CpuV3TwoWayCacheWithImage<I> {
                 .replace(
                     "__CACHE_TAGS__",
                     &CpuV3CacheTagRam::verilog_identity().module_name(),
+                )
+                .replace(
+                    "__CACHE_VALID__",
+                    &CpuV3CacheValidRamWithImage::<I>::verilog_identity().module_name(),
                 ),
         )
     }
@@ -907,6 +871,7 @@ impl<I: CpuV3CacheImage> Module for CpuV3TwoWayCacheWithImage<I> {
         vec![
             VerilogDependency::new::<CpuV3DualPortCacheData<I>>("u_data_banks"),
             VerilogDependency::new::<CpuV3CacheTagRam>("u_tags"),
+            VerilogDependency::new::<CpuV3CacheValidRamWithImage<I>>("u_valid"),
         ]
     }
 
@@ -949,6 +914,7 @@ pub struct CpuV3DataCacheOutput {
     pub maintenance_busy: Wire,
     pub maintenance_done: Wire,
     pub maintenance_error: Wire,
+    pub valid_sweep: Wire,
 }
 
 pub struct CpuV3DataCache;
@@ -1027,6 +993,7 @@ enum DataMemoryPhase {
     ReadReceive,
     WriteStream,
     WriteResponse,
+    Scan,
 }
 
 pub struct CpuV3DataCacheState {
@@ -1042,6 +1009,25 @@ pub struct CpuV3DataCacheState {
     maintenance_active: bool,
     maintenance_done: bool,
     maintenance_error: bool,
+    // Mirror of the RTL maintenance dirty-line scan: one 16-entry window per
+    // cycle, overlapped with the in-flight write-back. `maintenance_dirty`
+    // snapshots the dirty bitmap at maintenance start; completed write-backs
+    // clear their bit. `scan_index` is the next entry to examine and a found
+    // candidate is latched in `found_index` until its write-back starts.
+    maintenance_command: Option<crate::MaintenanceCommand>,
+    maintenance_dirty: u128,
+    scan_active: bool,
+    scan_index: u8,
+    found_index: Option<u8>,
+    wb_index: u8,
+    // Mirror of the RTL RAM16 valid-array sweep: reset, a full invalidate, or
+    // a memory error clears one set of both ways per cycle; requests are
+    // blocked meanwhile, and an invalidate's maintenance_done is delayed
+    // until the sweep completes.
+    maintenance_invalidate: bool,
+    sweep_active: bool,
+    sweep_set: u8,
+    sweep_finishes_maintenance: bool,
 }
 
 impl Default for CpuV3DataCacheState {
@@ -1059,6 +1045,16 @@ impl Default for CpuV3DataCacheState {
             maintenance_active: false,
             maintenance_done: false,
             maintenance_error: false,
+            maintenance_command: None,
+            maintenance_dirty: 0,
+            scan_active: false,
+            scan_index: 0,
+            found_index: None,
+            wb_index: 0,
+            maintenance_invalidate: false,
+            sweep_active: false,
+            sweep_set: 0,
+            sweep_finishes_maintenance: false,
         }
     }
 }
@@ -1091,14 +1087,68 @@ impl CpuV3DataCacheState {
         }
     }
 
+    /// The lowest dirty entry in the current 16-entry scan window, masked to
+    /// entries at or after `scan_index` — mirror of the RTL `scan_masked`
+    /// window priority encoder.
+    fn scan_window_hit(&self) -> Option<u8> {
+        let window = (self.maintenance_dirty >> (self.scan_index & 0x70)) as u16;
+        let masked = window & (0xffffu16 << (self.scan_index & 0x0f));
+        (masked != 0).then(|| (self.scan_index & 0x70) | masked.trailing_zeros() as u8)
+    }
+
+    /// Background scan step during a write-back: latch a found candidate or
+    /// advance one 16-entry window.
+    fn scan_step(&mut self) {
+        if let Some(index) = self.scan_window_hit() {
+            self.found_index = Some(index);
+            self.scan_active = false;
+        } else if self.scan_index >> 4 == 7 {
+            self.scan_active = false;
+        } else {
+            self.scan_index = ((self.scan_index >> 4) + 1) << 4;
+        }
+    }
+
+    /// Resumes the scan strictly after a consumed candidate.
+    fn scan_resume_after(&mut self, index: u8) {
+        self.scan_index = index + 1;
+        self.scan_active = index != 127;
+        self.found_index = None;
+    }
+
+    /// Produces the write-back request for a found scan candidate: the first
+    /// candidate begins the crate-model maintenance, later ones continue it.
+    /// `DataCache::next_maintenance_write` selects lines in the same way-major
+    /// order as the RTL window scan, so the request matches the scanned entry.
+    fn next_maintenance_request(&mut self) -> crate::MainMemoryRequest {
+        if let Some(command) = self.maintenance_command.take() {
+            self.cache
+                .begin_maintenance(command)
+                .expect("idle data cache must accept maintenance")
+                .expect("a found scan candidate must have a pending write-back")
+        } else {
+            self.cache
+                .continue_maintenance(crate::MainMemoryResponse::WriteComplete)
+                .expect("maintenance completion must match a line write")
+                .expect("a found scan candidate must have a pending write-back")
+        }
+    }
+
     fn fail_transaction(&mut self) {
         // After a physical-memory error no cache line is allowed to remain
         // architecturally visible: the controller may have accepted an
-        // unknown prefix of a burst.
+        // unknown prefix of a burst. The crate model clears instantly; the
+        // RTL sweeps its RAM16 valid arrays, which blocks new requests.
         self.cache = crate::DataCache::default();
         self.pending_cpu_request = None;
         self.request = None;
         self.phase = DataMemoryPhase::Idle;
+        self.maintenance_command = None;
+        self.maintenance_dirty = 0;
+        self.scan_active = false;
+        self.found_index = None;
+        self.sweep_active = true;
+        self.sweep_set = 0;
         if self.maintenance_active {
             self.maintenance_active = false;
             self.maintenance_done = true;
@@ -1112,17 +1162,38 @@ impl CpuV3DataCacheState {
 
     fn complete_write(&mut self) {
         if self.maintenance_active {
-            match self
-                .cache
-                .continue_maintenance(crate::MainMemoryResponse::WriteComplete)
-                .expect("maintenance completion must match a line write")
-            {
-                Some(request) => self.start_request(request),
-                None => {
-                    self.request = None;
-                    self.phase = DataMemoryPhase::Idle;
-                    self.maintenance_active = false;
-                    self.maintenance_done = true;
+            // Mirror of the RTL dirty-write-back edge: the completed line's
+            // dirty bit clears before the scan decision.
+            self.maintenance_dirty &= !(1u128 << self.wb_index);
+            if let Some(index) = self.found_index {
+                // The overlapped scan already latched the next dirty line:
+                // launch it without a gap.
+                let request = self.next_maintenance_request();
+                self.wb_index = index;
+                self.scan_resume_after(index);
+                self.start_request(request);
+            } else if self.scan_active {
+                self.request = None;
+                self.phase = DataMemoryPhase::Scan;
+            } else {
+                match self
+                    .cache
+                    .continue_maintenance(crate::MainMemoryResponse::WriteComplete)
+                    .expect("maintenance completion must match a line write")
+                {
+                    Some(_) => unreachable!("scan exhausted but a dirty line remains"),
+                    None => {
+                        self.request = None;
+                        self.phase = DataMemoryPhase::Idle;
+                        if self.maintenance_invalidate {
+                            self.sweep_active = true;
+                            self.sweep_set = 0;
+                            self.sweep_finishes_maintenance = true;
+                        } else {
+                            self.maintenance_active = false;
+                            self.maintenance_done = true;
+                        }
+                    }
                 }
             }
         } else {
@@ -1183,7 +1254,8 @@ impl Module for CpuV3DataCache {
                     && !state.response_valid
                     && !state.maintenance_active
                     && !input.clean_all
-                    && !input.invalidate_all,
+                    && !input.invalidate_all
+                    && !state.sweep_active,
                 cpu_response_valid: state.response_valid,
                 cpu_read_data: u64::from(state.response_data),
                 cpu_error: state.response_valid && state.response_error,
@@ -1199,6 +1271,7 @@ impl Module for CpuV3DataCache {
                 maintenance_busy: state.maintenance_active,
                 maintenance_done: state.maintenance_done,
                 maintenance_error: state.maintenance_error,
+                valid_sweep: state.sweep_active,
             },
         );
     }
@@ -1212,11 +1285,31 @@ impl Module for CpuV3DataCache {
         let input = input.sample(circuit);
         if input.reset {
             *state = CpuV3DataCacheState::default();
+            // The RTL RAM16 valid arrays sweep-clear after reset instead of
+            // clearing in one cycle; the system holds the core for the sweep.
+            state.sweep_active = true;
+            state.sweep_set = 0;
             return;
         }
         state.maintenance_done = false;
         if state.response_valid && input.cpu_response_ready {
             state.response_valid = false;
+        }
+        // Sweep control: one set of both valid ways cleared per cycle; an
+        // invalidate that finished its write-backs reports done when the
+        // sweep completes.
+        if state.sweep_active {
+            if state.sweep_set == 63 {
+                state.sweep_active = false;
+                state.sweep_set = 0;
+                if state.sweep_finishes_maintenance {
+                    state.sweep_finishes_maintenance = false;
+                    state.maintenance_active = false;
+                    state.maintenance_done = true;
+                }
+            } else {
+                state.sweep_set += 1;
+            }
         }
 
         if state.phase == DataMemoryPhase::Idle
@@ -1231,16 +1324,43 @@ impl Module for CpuV3DataCache {
             } else {
                 crate::MaintenanceCommand::Clean
             };
-            match state
-                .cache
-                .begin_maintenance(command)
-                .expect("idle data cache must accept maintenance")
-            {
-                Some(request) => state.start_request(request),
-                None => {
-                    state.maintenance_active = false;
-                    state.maintenance_done = true;
+            state.maintenance_invalidate = input.invalidate_all;
+            state.maintenance_command = Some(command);
+            state.found_index = None;
+            state.maintenance_dirty = state.cache.dirty_bits();
+            if state.maintenance_dirty == 0 {
+                // No dirty line: a clean completes immediately; an invalidate
+                // sweeps the valid arrays and reports done at sweep end.
+                match state
+                    .cache
+                    .begin_maintenance(command)
+                    .expect("idle data cache must accept maintenance")
+                {
+                    Some(_) => unreachable!("empty dirty bitmap produced a write-back"),
+                    None => {
+                        state.maintenance_command = None;
+                        if state.maintenance_invalidate {
+                            state.sweep_active = true;
+                            state.sweep_set = 0;
+                            state.sweep_finishes_maintenance = true;
+                        } else {
+                            state.maintenance_active = false;
+                            state.maintenance_done = true;
+                        }
+                    }
                 }
+            } else if state.maintenance_dirty as u16 != 0 {
+                // First dirty line sits in window zero: start its write-back
+                // immediately and scan on from after it.
+                let index = (state.maintenance_dirty as u16).trailing_zeros() as u8;
+                let request = state.next_maintenance_request();
+                state.wb_index = index;
+                state.scan_resume_after(index);
+                state.start_request(request);
+            } else {
+                state.scan_index = 16;
+                state.scan_active = true;
+                state.phase = DataMemoryPhase::Scan;
             }
             return;
         }
@@ -1248,6 +1368,7 @@ impl Module for CpuV3DataCache {
         if state.phase == DataMemoryPhase::Idle
             && !state.response_valid
             && !state.maintenance_active
+            && !state.sweep_active
             && input.cpu_request_valid
         {
             let address = crate::PhysicalWordAddress::new(input.cpu_address as u32);
@@ -1285,9 +1406,60 @@ impl Module for CpuV3DataCache {
             return;
         }
 
+        let scan_background = state.scan_active
+            && state.found_index.is_none()
+            && matches!(
+                state.phase,
+                DataMemoryPhase::WritebackPrime
+                    | DataMemoryPhase::WritebackCapture
+                    | DataMemoryPhase::Request
+                    | DataMemoryPhase::WriteStream
+                    | DataMemoryPhase::WriteResponse
+            );
         match state.phase {
             DataMemoryPhase::Idle => {}
             DataMemoryPhase::Lookup => unreachable!(),
+            DataMemoryPhase::Scan => {
+                if let Some(index) = state.found_index {
+                    // Latched by the background scan in the previous cycle.
+                    let request = state.next_maintenance_request();
+                    state.wb_index = index;
+                    state.scan_resume_after(index);
+                    state.start_request(request);
+                } else if let Some(index) = state.scan_window_hit() {
+                    let request = state.next_maintenance_request();
+                    state.wb_index = index;
+                    state.scan_resume_after(index);
+                    state.start_request(request);
+                } else if state.scan_index >> 4 == 7 {
+                    // The scan found no further dirty line: maintenance ends.
+                    state.scan_active = false;
+                    if state.maintenance_command.is_some() {
+                        unreachable!("nonempty dirty bitmap survived a full scan");
+                    }
+                    match state
+                        .cache
+                        .continue_maintenance(crate::MainMemoryResponse::WriteComplete)
+                        .expect("maintenance completion must match a line write")
+                    {
+                        Some(_) => unreachable!("scan exhausted but a dirty line remains"),
+                        None => {
+                            state.request = None;
+                            state.phase = DataMemoryPhase::Idle;
+                            if state.maintenance_invalidate {
+                                state.sweep_active = true;
+                                state.sweep_set = 0;
+                                state.sweep_finishes_maintenance = true;
+                            } else {
+                                state.maintenance_active = false;
+                                state.maintenance_done = true;
+                            }
+                        }
+                    }
+                } else {
+                    state.scan_index = ((state.scan_index >> 4) + 1) << 4;
+                }
+            }
             DataMemoryPhase::WritebackPrime => {
                 state.beat = 0;
                 state.phase = DataMemoryPhase::WritebackCapture;
@@ -1351,6 +1523,12 @@ impl Module for CpuV3DataCache {
             }
             DataMemoryPhase::ReadReceive => {}
         }
+        // Background scan step, evaluated against pre-edge scan state and
+        // applied after the phase logic, exactly like the RTL's separate
+        // nonblocking assignment block.
+        if scan_background {
+            state.scan_step();
+        }
     }
 
     fn verilog_source() -> Option<String> {
@@ -1367,6 +1545,10 @@ impl Module for CpuV3DataCache {
                 .replace(
                     "__DIRTY_RAM__",
                     &CpuV3DataCacheDirtyRam::verilog_identity().module_name(),
+                )
+                .replace(
+                    "__CACHE_VALID__",
+                    &CpuV3CacheValidRam::verilog_identity().module_name(),
                 ),
         )
     }
@@ -1376,6 +1558,7 @@ impl Module for CpuV3DataCache {
             VerilogDependency::new::<CpuV3DualPortCacheData<ZeroBsramImage>>("u_data_banks"),
             VerilogDependency::new::<CpuV3CacheTagRam>("u_tags"),
             VerilogDependency::new::<CpuV3DataCacheDirtyRam>("u_dirty"),
+            VerilogDependency::new::<CpuV3CacheValidRam>("u_valid"),
         ]
     }
 
@@ -1487,9 +1670,6 @@ mod tests {
             &CpuV3TwoWayCacheInputValue {
                 reset: false,
                 invalidate_all,
-                prefetch_request_valid: false,
-                prefetch_address: 0,
-                prefetch_cancel: false,
                 cpu_request_valid: cpu_request.is_some(),
                 cpu_write,
                 cpu_address: u64::from(cpu_address),
@@ -1721,6 +1901,7 @@ mod tests {
             ResourceKind::SsramBit,
             CPU_V3_CACHE_TAG_PHYSICAL_BITS as u64,
         )));
+        assert!(resources.contains(&ResourceAmount::new(ResourceKind::SsramBit, 192)));
     }
 
     #[test]
@@ -1774,9 +1955,6 @@ mod tests {
     #[derive(Clone, Copy, Debug, Eq, PartialEq)]
     struct CycleIn {
         invalidate_all: bool,
-        prefetch_request_valid: bool,
-        prefetch_address: u32,
-        prefetch_cancel: bool,
         cpu_request_valid: bool,
         cpu_write: bool,
         cpu_address: u32,
@@ -1795,8 +1973,6 @@ mod tests {
         memory: &mut MemoryModel,
         cpu_request: Option<(bool, u32, u16)>,
         cpu_response_ready: bool,
-        prefetch: Option<u32>,
-        prefetch_cancel: bool,
         invalidate_all: bool,
         trace: &mut Vec<(CycleIn, CycleOut)>,
     ) -> CycleOut {
@@ -1807,9 +1983,6 @@ mod tests {
             &CpuV3TwoWayCacheInputValue {
                 reset: false,
                 invalidate_all,
-                prefetch_request_valid: prefetch.is_some(),
-                prefetch_address: u64::from(prefetch.unwrap_or(0)),
-                prefetch_cancel,
                 cpu_request_valid: cpu_request.is_some(),
                 cpu_write,
                 cpu_address: u64::from(cpu_address),
@@ -1842,9 +2015,6 @@ mod tests {
         };
         let cin = CycleIn {
             invalidate_all,
-            prefetch_request_valid: prefetch.is_some(),
-            prefetch_address: prefetch.unwrap_or(0),
-            prefetch_cancel,
             cpu_request_valid: cpu_request.is_some(),
             cpu_write,
             cpu_address,
@@ -1870,7 +2040,7 @@ mod tests {
         let mut request = Some((false, address, 0));
         while request.is_some() {
             let out = cosim_step(
-                circuit, input, output, memory, request, false, None, false, false, trace,
+                circuit, input, output, memory, request, false, false, trace,
             );
             if out.cpu_request_ready {
                 request = None;
@@ -1878,12 +2048,12 @@ mod tests {
         }
         loop {
             let out = cosim_step(
-                circuit, input, output, memory, None, false, None, false, false, trace,
+                circuit, input, output, memory, None, false, false, trace,
             );
             if out.cpu_response_valid {
                 let data = out.cpu_read_data;
                 cosim_step(
-                    circuit, input, output, memory, None, true, None, false, false, trace,
+                    circuit, input, output, memory, None, true, false, trace,
                 );
                 return data;
             }
@@ -1902,7 +2072,7 @@ mod tests {
         let mut request = Some((true, address, write_data));
         while request.is_some() {
             let out = cosim_step(
-                circuit, input, output, memory, request, false, None, false, false, trace,
+                circuit, input, output, memory, request, false, false, trace,
             );
             if out.cpu_request_ready {
                 request = None;
@@ -1910,11 +2080,11 @@ mod tests {
         }
         loop {
             let out = cosim_step(
-                circuit, input, output, memory, None, false, None, false, false, trace,
+                circuit, input, output, memory, None, false, false, trace,
             );
             if out.cpu_response_valid {
                 cosim_step(
-                    circuit, input, output, memory, None, true, None, false, false, trace,
+                    circuit, input, output, memory, None, true, false, trace,
                 );
                 return;
             }
@@ -1928,11 +2098,6 @@ mod tests {
             memory
                 .words
                 .insert(address, (0x8000 | (address & 0xff)) as u16);
-        }
-        for address in 0x1520..0x1530 {
-            memory
-                .words
-                .insert(address, (0x9000 | (address & 0xff)) as u16);
         }
         let mut trace = Vec::new();
 
@@ -1991,8 +2156,6 @@ mod tests {
             &mut memory,
             Some((false, 0x123, 0)),
             false,
-            None,
-            false,
             false,
             &mut trace,
         );
@@ -2003,8 +2166,6 @@ mod tests {
             &mut memory,
             Some((false, 0x124, 0)),
             false,
-            None,
-            false,
             false,
             &mut trace,
         );
@@ -2014,8 +2175,6 @@ mod tests {
                 &input,
                 &output,
                 &mut memory,
-                None,
-                false,
                 None,
                 false,
                 false,
@@ -2029,85 +2188,19 @@ mod tests {
                     &mut memory,
                     None,
                     true,
-                    None,
-                    false,
                     false,
                     &mut trace,
                 );
             }
         }
 
-        // Nominate a next-line prefetch; idle cycles let it issue and drain.
-        cosim_step(
-            &mut circuit,
-            &input,
-            &output,
-            &mut memory,
-            None,
-            false,
-            Some(0x1520),
-            false,
-            false,
-            &mut trace,
-        );
-        for _ in 0..40 {
-            cosim_step(
-                &mut circuit,
-                &input,
-                &output,
-                &mut memory,
-                None,
-                false,
-                None,
-                false,
-                false,
-                &mut trace,
-            );
-        }
-        // The prefetched line is present, so the demand read hits it.
-        assert_eq!(
-            cosim_read(
-                &mut circuit,
-                &input,
-                &output,
-                &mut memory,
-                0x1523,
-                &mut trace
-            ),
-            0x9023
-        );
-
-        // A redirect may cancel a prefetch lookup in the same cycle that a
-        // demand replaces it. The accepted demand must remain live.
+        // An invalidate racing an outstanding refill may return its old-epoch
+        // response, but it must not install that line as a subsequent hit.
         for address in 0x2520..0x2530 {
             memory
                 .words
                 .insert(address, (0xa000 | (address & 0xff)) as u16);
         }
-        cosim_step(
-            &mut circuit,
-            &input,
-            &output,
-            &mut memory,
-            None,
-            false,
-            Some(0x2120),
-            false,
-            false,
-            &mut trace,
-        );
-        cosim_step(
-            &mut circuit,
-            &input,
-            &output,
-            &mut memory,
-            None,
-            false,
-            None,
-            false,
-            false,
-            &mut trace,
-        );
         let out = cosim_step(
             &mut circuit,
             &input,
@@ -2115,17 +2208,13 @@ mod tests {
             &mut memory,
             Some((false, 0x2523, 0)),
             false,
-            None,
-            true,
             false,
             &mut trace,
         );
-        assert!(
-            out.cpu_request_ready,
-            "cancel must not reject the replacing demand"
-        );
-        let mut replaced_data = None;
-        for _ in 0..40 {
+        assert!(out.cpu_request_ready);
+        let mut refill_data = None;
+        for cycle in 0..40 {
+            // Pulse invalidate partway through the refill drain.
             let out = cosim_step(
                 &mut circuit,
                 &input,
@@ -2133,13 +2222,11 @@ mod tests {
                 &mut memory,
                 None,
                 false,
-                None,
-                false,
-                false,
+                cycle == 3,
                 &mut trace,
             );
             if out.cpu_response_valid {
-                replaced_data = Some(out.cpu_read_data);
+                refill_data = Some(out.cpu_read_data);
                 cosim_step(
                     &mut circuit,
                     &input,
@@ -2147,37 +2234,34 @@ mod tests {
                     &mut memory,
                     None,
                     true,
-                    None,
-                    false,
                     false,
                     &mut trace,
                 );
                 break;
             }
         }
-        assert_eq!(replaced_data, Some(0xa023));
-
-        // A prefetch cancellation during a demand refill drain must not turn
-        // the completed demand line into a subsequent miss.
-        for address in 0x2920..0x2930 {
-            memory
-                .words
-                .insert(address, (0xb000 | (address & 0xff)) as u16);
-        }
+        assert_eq!(refill_data, Some(0xa023));
         let requests_before = memory.requests;
-        let out = cosim_step(
-            &mut circuit,
-            &input,
-            &output,
-            &mut memory,
-            Some((false, 0x2923, 0)),
-            false,
-            None,
-            false,
-            false,
-            &mut trace,
+        assert_eq!(
+            cosim_read(
+                &mut circuit,
+                &input,
+                &output,
+                &mut memory,
+                0x2524,
+                &mut trace
+            ),
+            0xa024
         );
-        assert!(out.cpu_request_ready);
+        assert_eq!(
+            memory.requests,
+            requests_before + 1,
+            "invalidate during refill exposed a stale installed line"
+        );
+
+        // Invalidate clears the cache through the 64-set valid-array sweep; a
+        // second pulse mid-sweep restarts it, and the next read still misses
+        // and refetches the line.
         cosim_step(
             &mut circuit,
             &input,
@@ -2185,24 +2269,10 @@ mod tests {
             &mut memory,
             None,
             false,
-            None,
-            false,
-            false,
+            true,
             &mut trace,
         );
-        cosim_step(
-            &mut circuit,
-            &input,
-            &output,
-            &mut memory,
-            None,
-            false,
-            None,
-            false,
-            false,
-            &mut trace,
-        );
-        for _ in 0..8 {
+        for _ in 0..3 {
             cosim_step(
                 &mut circuit,
                 &input,
@@ -2210,8 +2280,6 @@ mod tests {
                 &mut memory,
                 None,
                 false,
-                None,
-                false,
                 false,
                 &mut trace,
             );
@@ -2223,70 +2291,6 @@ mod tests {
             &mut memory,
             None,
             false,
-            None,
-            true,
-            false,
-            &mut trace,
-        );
-        let mut demand_data = None;
-        for _ in 0..16 {
-            let out = cosim_step(
-                &mut circuit,
-                &input,
-                &output,
-                &mut memory,
-                None,
-                false,
-                None,
-                false,
-                false,
-                &mut trace,
-            );
-            if out.cpu_response_valid {
-                demand_data = Some(out.cpu_read_data);
-                cosim_step(
-                    &mut circuit,
-                    &input,
-                    &output,
-                    &mut memory,
-                    None,
-                    true,
-                    None,
-                    false,
-                    false,
-                    &mut trace,
-                );
-                break;
-            }
-        }
-        assert_eq!(demand_data, Some(0xb023));
-        assert_eq!(
-            cosim_read(
-                &mut circuit,
-                &input,
-                &output,
-                &mut memory,
-                0x2924,
-                &mut trace
-            ),
-            0xb024
-        );
-        assert_eq!(
-            memory.requests,
-            requests_before + 1,
-            "demand line was not installed while canceling prefetch"
-        );
-
-        // Invalidate clears the cache; the next read misses again.
-        cosim_step(
-            &mut circuit,
-            &input,
-            &output,
-            &mut memory,
-            None,
-            false,
-            None,
-            false,
             true,
             &mut trace,
         );
@@ -2295,8 +2299,6 @@ mod tests {
             &input,
             &output,
             &mut memory,
-            None,
-            false,
             None,
             false,
             false,
@@ -2321,8 +2323,7 @@ mod tests {
         let mut t = format!(
             "module tb;\n\
              reg clk = 0;\n\
-             reg reset, invalidate_all, prefetch_request_valid, prefetch_cancel;\n\
-             reg [31:0] prefetch_address;\n\
+             reg reset, invalidate_all;\n\
              reg cpu_request_valid, cpu_write, cpu_response_ready;\n\
              reg [31:0] cpu_address;\n\
              reg [15:0] cpu_write_data;\n\
@@ -2332,13 +2333,11 @@ mod tests {
              wire [15:0] cpu_read_data;\n\
              wire memory_request_valid, memory_write, memory_line, memory_response_ready;\n\
              wire [21:0] memory_address;\n\
-             wire [63:0] memory_write_data;\n\
-             wire [31:0] prefetch_issued, prefetch_useful, prefetch_useless, prefetch_dropped;\n\n\
+             wire [63:0] memory_write_data;\n\n\
              {module_name} dut(.*);\n\n\
              always #5 clk = ~clk;\n\n\
              initial begin\n\
-                 reset = 1; invalidate_all = 0; prefetch_request_valid = 0; prefetch_address = 0;\n\
-                 prefetch_cancel = 0; cpu_request_valid = 0; cpu_write = 0; cpu_address = 0;\n\
+                 reset = 1; invalidate_all = 0; cpu_request_valid = 0; cpu_write = 0; cpu_address = 0;\n\
                  cpu_write_data = 0; cpu_response_ready = 0; memory_request_ready = 1;\n\
                  memory_response_valid = 0; memory_read_data = 0; memory_error = 0;\n\
                  repeat (2) @(posedge clk);\n\
@@ -2350,7 +2349,8 @@ mod tests {
             t.push_str(&format!(
                 "    // cycle {i}\n\
                  cpu_request_valid = 1'b{crv}; cpu_write = 1'b{cw}; cpu_address = 32'h{ca:08x}; cpu_write_data = 16'h{cwd:04x};\n\
-                 cpu_response_ready = 1'b{crr}; invalidate_all = 1'b{inv}; prefetch_request_valid = 1'b{prv}; prefetch_address = 32'h{pa:08x}; prefetch_cancel = 1'b{pc};\n\
+                 cpu_response_ready = 1'b{crr}; invalidate_all = 1'b{inv};
+\
                  memory_response_valid = 1'b{mrv}; memory_read_data = 64'h{mrd:016x}; memory_error = 1'b{me};\n\
                  #1;\n\
                  $display(\"OUT %0d %0d %0d %0d %0d %0d %0d %0d %0d\", {i}, cpu_request_ready, cpu_response_valid, cpu_read_data, cpu_error, memory_request_valid, memory_write, memory_address, memory_response_ready);\n\
@@ -2362,9 +2362,6 @@ mod tests {
                 cwd = cin.cpu_write_data,
                 crr = u8::from(cin.cpu_response_ready),
                 inv = u8::from(cin.invalidate_all),
-                prv = u8::from(cin.prefetch_request_valid),
-                pa = cin.prefetch_address,
-                pc = u8::from(cin.prefetch_cancel),
                 mrv = u8::from(cin.memory_response_valid),
                 mrd = cin.memory_read_data,
                 me = u8::from(cin.memory_error),
@@ -2383,6 +2380,8 @@ mod tests {
         s.push_str(&CpuV3DualPortCacheData::<ZeroBsramImage>::verilog_source().unwrap());
         s.push('\n');
         s.push_str(&CpuV3CacheTagRam::verilog_source().unwrap());
+        s.push('\n');
+        s.push_str(&CpuV3CacheValidRam::verilog_source().unwrap());
         s.push('\n');
         s.push_str(&CpuV3TwoWayCache::verilog_source().unwrap());
         s

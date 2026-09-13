@@ -36,9 +36,9 @@ old-epoch work and drains late responses without making them architectural. Sequ
 the 16-bit PC without carrying into `CSEG`.
 
 Physical instruction words `0x00000000..0x000003ff` select the initialized Stage0 BSRAM. Other
-instruction addresses use the SDRAM-backed I-cache. Stage0 traffic is excluded from next-line
-prefetch. The I-cache is read-only; redirects and software-controlled invalidation preserve precise
-handoff semantics.
+instruction addresses use the SDRAM-backed I-cache. The I-cache is read-only and serves demand
+fetches only (the Stage 6 next-line prefetch was removed after measurement); redirects and
+software-controlled invalidation preserve precise handoff semantics.
 
 ## Cache and memory path
 
@@ -46,11 +46,16 @@ The I-cache and D-cache are independently instantiated 4-KiB, two-way caches wit
 16-bit words per line. Each cache uses two 1024x16 true-dual-port data BSRAMs split strictly by word
 parity. Way zero and way one occupy the lower and upper halves of both parity banks. Resident reads
 pipeline lookup and selected-way response for one ordered hit per cycle when there is no conflict or
-backpressure.
+backpressure. Both caches store their valid and victim bits in a RAM16 leaf with asynchronous reads;
+because the RAM cannot clear in one cycle, a global invalidate or reset clears one set of both ways
+per cycle and blocks lookups for the 64-set sweep. The D-cache additionally drives a hold so the core
+does not issue requests while its reset or error-scrub sweep runs.
 
 The D-cache is write-back and write-allocate. Stores dirty resident or newly allocated lines. A dirty
 victim is written back before replacement. Full clean preserves valid lines; full invalidate first
-writes dirty lines and then clears validity. The system-control device holds the CPU internally until
+writes dirty lines and then clears validity. Dirty-line maintenance examines one 16-entry window of
+the 128-bit dirty bitmap per cycle and runs that scan ahead of the in-flight write-back, so
+consecutive write-backs start back to back. The system-control device holds the CPU internally until
 maintenance reports success or failure. There is no per-line snoop or range-maintenance interface.
 
 One cache line crosses the CPU-side memory interface as four ordered 64-bit beats at 54 MHz. Refill
@@ -149,10 +154,10 @@ the same stable mapping through `LoaderError::boot_report`.
 
 ## Current fitted result and validation boundary
 
-The Stage 12 full-system build uses 10,100 Logic (8,822 LUT, 750 ALU, 88 SSRAM), 4,324 registers,
-four DPB, one SDPB, two pROM, and two `MULT18X18` cells. The CPU clock closes at 56.230 MHz against
-the 54-MHz constraint with zero setup and hold TNS. The tightest CPU path is the fetch-queue to
-I-cache way-valid route.
+The current full-system build uses 9,640 Logic (8,294 LUT, 770 ALU, 96 SSRAM), 4,099 registers,
+four DPB, one SDPB, two pROM, and two `MULT18X18` cells. The CPU clock closes at 54.222 MHz against
+the 54-MHz constraint with zero setup and hold TNS. The tightest CPU path is the core's registered
+GPR write path rather than the cache frontend.
 
 The system-level emulator-vs-RTL co-simulation `tests/system_cosim.rs` drives the composed RTL
 (core, fetch queue, I-cache, D-cache, memory arbiter, and a behavioral SDRAM word port) in Icarus

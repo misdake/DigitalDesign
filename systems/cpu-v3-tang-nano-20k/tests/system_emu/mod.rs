@@ -601,7 +601,7 @@ pub fn compile_cpu_v3_source(source: &str) -> Vec<u16> {
 }
 
 /// Runs `words` from physical word zero (code and data share segment zero) until
-/// the core halts, returning the cycle count and the I-cache prefetch counters.
+/// the core halts, returning the cycle count and the profile counters.
 pub fn run_benchmark(words: &[u16], maximum_cycles: usize) -> BenchResult {
     run_benchmark_profiled(words, maximum_cycles, None)
 }
@@ -610,15 +610,6 @@ pub fn run_benchmark_profiled(
     words: &[u16],
     maximum_cycles: usize,
     trace_directory: Option<&Path>,
-) -> BenchResult {
-    run_benchmark_profiled_with_prefetch(words, maximum_cycles, trace_directory, true)
-}
-
-pub fn run_benchmark_profiled_with_prefetch(
-    words: &[u16],
-    maximum_cycles: usize,
-    trace_directory: Option<&Path>,
-    prefetch_enabled: bool,
 ) -> BenchResult {
     let mut memory = vec![0u16; SDRAM_WORDS];
     for (offset, word) in words.iter().copied().enumerate() {
@@ -634,9 +625,6 @@ pub fn run_benchmark_profiled_with_prefetch(
 
         let mut icache_input = CpuV3TwoWayCacheInput::allocate();
         let icache_output = CpuV3TwoWayCacheOutput::allocate();
-        let disabled_prefetch_valid = icache_input.prefetch_request_valid;
-        let disabled_prefetch_address = icache_input.prefetch_address;
-        let disabled_prefetch_cancel = icache_input.prefetch_cancel;
 
         let mut dcache_input = CpuV3DataCacheInput::allocate();
         let dcache_output = CpuV3DataCacheOutput::allocate();
@@ -657,11 +645,6 @@ pub fn run_benchmark_profiled_with_prefetch(
         icache_input.cpu_request_valid = fetch_output.memory_request_valid;
         icache_input.cpu_address = fetch_output.memory_address;
         icache_input.cpu_response_ready = fetch_output.memory_response_ready;
-        if prefetch_enabled {
-            icache_input.prefetch_request_valid = fetch_output.prefetch_request_valid;
-            icache_input.prefetch_address = fetch_output.prefetch_address;
-            icache_input.prefetch_cancel = fetch_output.prefetch_cancel;
-        }
         fetch_input.memory_request_ready = icache_output.cpu_request_ready;
         fetch_input.memory_response_valid = icache_output.cpu_response_valid;
         fetch_input.memory_read_data = icache_output.cpu_read_data;
@@ -677,6 +660,9 @@ pub fn run_benchmark_profiled_with_prefetch(
         core_input.data_response_valid = dcache_output.cpu_response_valid;
         core_input.data_read_data = dcache_output.cpu_read_data;
         core_input.data_error = dcache_output.cpu_error;
+        // Hold the core while the D-cache RAM16 valid arrays sweep-clear,
+        // mirroring the system template's `sysctl_cpu_hold || valid_sweep`.
+        core_input.hold = dcache_output.valid_sweep;
 
         // I-cache <-> arbiter
         arbiter_input.instruction_request_valid = icache_output.memory_request_valid;
@@ -718,9 +704,6 @@ pub fn run_benchmark_profiled_with_prefetch(
             icache_output,
             dcache_output,
             fetch_output,
-            disabled_prefetch_valid,
-            disabled_prefetch_address,
-            disabled_prefetch_cancel,
         )
     });
 
@@ -735,9 +718,6 @@ pub fn run_benchmark_profiled_with_prefetch(
         icache_output,
         dcache_output,
         fetch_output,
-        disabled_prefetch_valid,
-        disabled_prefetch_address,
-        disabled_prefetch_cancel,
     ) = handles;
 
     let mut sdram = SdramModel::new(memory);
@@ -777,7 +757,7 @@ pub fn run_benchmark_profiled_with_prefetch(
 
     // Constant external inputs (device reads zero, DMA idle, no flush/invalidate).
     set_bits(core_input.device_read_data, 0, &mut circuit);
-    set_bit(core_input.hold, false, &mut circuit);
+    // core_input.hold is connected to the D-cache valid sweep in the wiring above.
     set_bit(fetch_input.flush, false, &mut circuit);
     set_bit(icache_input.invalidate_all, false, &mut circuit);
     set_bit(dcache_input.invalidate_all, false, &mut circuit);
@@ -788,9 +768,6 @@ pub fn run_benchmark_profiled_with_prefetch(
     set_bits(arbiter_input.dma_address, 0, &mut circuit);
     set_bits(arbiter_input.dma_write_data, 0, &mut circuit);
     set_bit(arbiter_input.memory_error, false, &mut circuit);
-    set_bit(disabled_prefetch_valid, false, &mut circuit);
-    set_bits(disabled_prefetch_address, 0, &mut circuit);
-    set_bit(disabled_prefetch_cancel, false, &mut circuit);
 
     for cycle in 0..maximum_cycles + 100_000 {
         if halt_at.is_none() && cycle >= maximum_cycles {
@@ -992,18 +969,18 @@ pub fn run_benchmark_profiled_with_prefetch(
                 panic!("D-cache flush failed after benchmark completion");
             }
             if dcache.maintenance_done {
-                let icache_demand_refills =
-                    icache_line_requests.saturating_sub(icache.prefetch_issued as u32);
                 let result = BenchResult {
                     program_words: words.len(),
                     cycles: main_cycles,
                     halt_signal,
                     retired_instructions,
                     retired_words: core.retired_words as u32,
-                    prefetch_issued: icache.prefetch_issued as u32,
-                    prefetch_useful: icache.prefetch_useful as u32,
-                    prefetch_useless: icache.prefetch_useless as u32,
-                    prefetch_dropped: icache.prefetch_dropped as u32,
+                    // The I-cache prefetch mechanism was removed; the frozen
+                    // suite CSV schema keeps these columns, pinned to zero.
+                    prefetch_issued: 0,
+                    prefetch_useful: 0,
+                    prefetch_useless: 0,
+                    prefetch_dropped: 0,
                     fetch_wait_cycles,
                     execute_cycles,
                     data_request_cycles,
@@ -1012,7 +989,7 @@ pub fn run_benchmark_profiled_with_prefetch(
                     icache_demand_requests,
                     data_requests,
                     icache_line_requests,
-                    icache_demand_refills,
+                    icache_demand_refills: icache_line_requests,
                     dcache_line_requests,
                     dcache_refills,
                     dcache_load_refills,
@@ -1141,13 +1118,10 @@ pub fn run_system_trace(words: &[u16], maximum_cycles: usize) -> SystemTrace {
         core_input.instruction_data = fetch_output.core_read_data;
         core_input.instruction_error = fetch_output.core_error;
 
-        // fetch queue -> I-cache (prefetch wired through)
+        // fetch queue -> I-cache
         icache_input.cpu_request_valid = fetch_output.memory_request_valid;
         icache_input.cpu_address = fetch_output.memory_address;
         icache_input.cpu_response_ready = fetch_output.memory_response_ready;
-        icache_input.prefetch_request_valid = fetch_output.prefetch_request_valid;
-        icache_input.prefetch_address = fetch_output.prefetch_address;
-        icache_input.prefetch_cancel = fetch_output.prefetch_cancel;
         fetch_input.memory_request_ready = icache_output.cpu_request_ready;
         fetch_input.memory_response_valid = icache_output.cpu_response_valid;
         fetch_input.memory_read_data = icache_output.cpu_read_data;
@@ -1163,6 +1137,9 @@ pub fn run_system_trace(words: &[u16], maximum_cycles: usize) -> SystemTrace {
         core_input.data_response_valid = dcache_output.cpu_response_valid;
         core_input.data_read_data = dcache_output.cpu_read_data;
         core_input.data_error = dcache_output.cpu_error;
+        // Hold the core while the D-cache RAM16 valid arrays sweep-clear,
+        // mirroring the system template's `sysctl_cpu_hold || valid_sweep`.
+        core_input.hold = dcache_output.valid_sweep;
 
         // I-cache <-> arbiter
         arbiter_input.instruction_request_valid = icache_output.memory_request_valid;
@@ -1225,7 +1202,7 @@ pub fn run_system_trace(words: &[u16], maximum_cycles: usize) -> SystemTrace {
 
     // Constant external inputs (device reads zero, DMA idle, no flush/invalidate).
     set_bits(core_input.device_read_data, 0, &mut circuit);
-    set_bit(core_input.hold, false, &mut circuit);
+    // core_input.hold is connected to the D-cache valid sweep in the wiring above.
     set_bit(fetch_input.flush, false, &mut circuit);
     set_bit(icache_input.invalidate_all, false, &mut circuit);
     set_bit(dcache_input.invalidate_all, false, &mut circuit);

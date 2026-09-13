@@ -34,7 +34,7 @@ described by each Stage.
 | 4 | Complete, 2026-08-29 | Converted both caches to two ways with invalid-way-first deterministic victim replacement. The tag comparison now precedes the data-bank read, so a hit costs one more registered cycle until Stage 5 pipelines it. | 6 BSRAM; 61.425 / 56.530 MHz |
 | System consolidation | Complete, 2026-08-30 | Folded the separate CPU V3 boot, SDRAM, and display systems into one fitted `cpu_v3_system`. This changed the full-system baseline to 7 BSRAM before the Stage 5 fetch pipeline work. | Full system: 9,740 Logic; 7 BSRAM; 57.345 MHz |
 | 5 | Complete, 2026-08-30 | Pipelined resident cache reads for one accepted lookup per cycle and added a four-entry, epoch-tagged instruction fetch queue. Sequential ALU throughput now approaches two cycles per instruction. | Full system: 9,974 Logic; 7 BSRAM; 61.842 MHz |
-| 6 | Complete, 2026-08-30 | Added demand-progress-triggered, low-priority next-line I-cache prefetch with redirect cancellation, discardable in-flight refills, simulation counters, and demand-safe cancellation races. | Full system: 10,129 Logic; 7 BSRAM; 54.538 MHz |
+| 6 | Complete, 2026-08-30; removed after measurement | Added demand-progress-triggered, low-priority next-line I-cache prefetch with redirect cancellation, discardable in-flight refills, simulation counters, and demand-safe cancellation races; an intermediate one-entry cancel-learning fix was folded into the removal. Later audit showed ~1.5% Logic / ~4.6% FF cost for +0.0003% frozen-suite benefit, so the whole mechanism was deleted again (see the Stage 6 section). | Full system: 10,129 Logic; 7 BSRAM; 54.538 MHz (at introduction) |
 | 7 | Complete, 2026-08-30 | Added cycle-profiled emulator benchmarks, a redirect fast path, and an explicit dual-read RAM16 scalar register file. Hot control-transfer fetch waits fell from four cycles to two; the RAM16 register file cut 2,178 LUTs. | Full system: 8,046 Logic; 7 BSRAM; 57.549 MHz |
 | 8 | Complete, 2026-08-30 | Split the production I/D caches, added write-allocate D-cache stores, dirty eviction, eight-beat SDRAM line writes, and blocking full-cache clean/invalidate with CPU hold and final status. | Full system: 9,548 Logic; 7 BSRAM; 54.918 MHz |
 | 9 | Complete, 2026-08-31 | Added an exact related-clock 54/108 MHz gearbox. Cache/arbiter line traffic is 4 x 64-bit at 54 MHz; the Controller HS and SDRAM side remains 8 x 32-bit at 108 MHz. | Full system: 10,345 Logic; 7 BSRAM; CPU 54.965 MHz |
@@ -44,6 +44,8 @@ described by each Stage.
 | ISA 0.8 migration | Complete, 2026-09-11 | Breaking integer ISA revision (no new numbered Stage): destructive shift/multiply family at major 2, extended/system family at major 6, device access at major 7, symmetric branch/conditional-move/jump family at major B, `IMMHI12` renamed to neutral `PFX12`, `HALT` replaced by `SIGNAL r0, 0`, majors C/E reserved. Encoding, simulators, handwritten RTL, RCC backend, debugger decoding, and boot assets switched at the same boundary. Stage0 is 461 words (fits the 1024-word boot window); integer side keeps one `MULT18X18`. | Full system: 10,436 Logic; 4 DPB + 1 SDPB + 2 pROM; 2 x MULT18X18; CPU 55.597 MHz, zero setup/hold TNS |
 | Single-stage boot merge | Complete, 2026-09-12 | Folded the former Stage1 into the BSRAM first stage: one image validates the descriptor and manifest and loads the reset-selected application, so the Stage1 image, the descriptor mirroring, and the duplicate DMA/UART/handoff code disappear. Container format version 4 reserves the former Stage1 descriptor fields; the error ABI uses stage `1` throughout and the boot-progress phases collapse to BOOT/DMA/APPLICATION. A manifest section-count bound closes the 16-bit `count << 5` wrap in the size check. | Merged Stage0 673 words (fits the 1024-word BSRAM boot window). Full system: 10,269 Logic; 4 DPB + 1 SDPB + 2 pROM; 2 x MULT18X18; CPU 54.522 MHz, zero setup/hold TNS |
 | `ASR`/`ASRI` signedness fix | Complete, 2026-09-12 | Found on hardware: the display demo's negative sine/cosine offsets landed at +255 instead of -1. The handwritten RTL put `>>>` inside a conditional whose other branches were unsigned, and Verilog makes a `?:` unsigned when any branch is unsigned, so `ASR`/`ASRI` (and therefore `fix16::to_int()`) shifted logically. The shifts now compute in a statement-based `case` and the FSM selects the result; `fix16_to_int_rcc` co-simulates the conversion. | Full system: 10,232 Logic; 4 DPB + 1 SDPB + 2 pROM; 2 x MULT18X18; CPU 54.747 MHz, zero setup/hold TNS |
+| Stage 6 prefetch removal | Complete, 2026-09-12 | Deleted the next-line I-cache prefetch entirely (offset-10 fetch-queue trigger, request/arm/cancel and cancelled-line learning in the I-cache engine, simulation counters) after the cost/benefit audit in the Stage 6 section showed ~4.6% register and ~1.5% Logic cost for +0.0003% frozen-suite benefit. The I-cache module sheds 31 REG / 178 LUT at synthesis; system PnR shifts the rest (unrelated modules move within normal re-optimization noise). Frozen stage-12 suite: +20 cycles out of 6,136,236; prefetch metric columns remain in the CSV schema, pinned to zero. | Full system: 10,321 Logic (4,196 FF); 4 DPB + 1 SDPB + 2 pROM; 2 x MULT18X18; CPU 56.141 MHz, zero setup/hold TNS |
+| Cache RAM16 valid/victim + dirty window scan | Complete, 2026-09-12 | Moved both caches' valid and victim bits from flip-flops into a `CpuV3CacheValidRam` RAM16 leaf (asynchronous read, synchronous single-way write), with a one-set-per-cycle clear for global invalidation, reset, and memory-error scrub. The D-cache exposes `valid_sweep` and the system holds the core for the reset/scrub sweep (`sysctl_cpu_hold || valid_sweep`) so the core never sees a not-ready D-cache on its first post-reset access. The two-way hit expression drops its own invalidating gate to restore the tight I-cache way-valid depth. Replaced the D-cache 128-bit dirty priority encoder with a 16-entry window scan overlapped with the in-flight write-back; the architecture `DataCache` selects lines way-major so the RTL and Rust wrapper stay bit-exact. Frozen-suite total cycles unchanged (post-halt flush within 3 cycles). | Full system: 9,640 Logic (8,294 LUT, 770 ALU, 96 RAM16); 4,099 FF; 4 DPB + 1 SDPB + 2 pROM; 2 x MULT18X18; CPU 54.222 MHz, zero setup/hold TNS |
 
 Starting with System consolidation, PnR evidence is always taken from the complete `cpu_v3_system`
 containing the CPU, boot path, SDRAM controller, and display path. Every subsequent completed stage
@@ -68,6 +70,17 @@ the same RCC sources: Stage0 461 words, Stage1 555 words, S1 application 79 word
 benchmark suite under the new ISA is reported separately, not folded into the Stage-to-Stage table.
 The later single-stage boot merge (see the table) supersedes that asset set: the board now carries
 one 673-word first stage and no Stage1 binary, and the FNV-1a baseline is re-pinned again.
+
+The cache valid/victim RAM16 change and the D-cache dirty window scan are likewise not numbered
+Stages. Their recorded numbers come from the full-system Gowin build after commit `148e63a`: 9,640
+Logic (8,294 LUT, 770 ALU, 96 RAM16), 4,099 registers, unchanged BSRAM geometry (4 DPB + 1 SDPB + 2
+pROM) and two `MULT18X18`, and 54.222 MHz on the 54 MHz CPU clock with zero setup/hold TNS. This
+closure is narrow and dominated by core placement: the tightest path is the core's registered GPR
+write, and the RAM16 leaves and the maintenance scan are not on it. Against the immediately
+preceding build (`a956ca5`, before the scan) the 16-entry window scan removes 282 LUT; against the
+pre-RAM16 `08bcc79` build the whole change removes 681 Logic and 97 registers at the cost of eight
+RAM16 cells. The frozen suite reports identical total cycles, with the post-halt flush varying by at
+most three cycles.
 
 ## Ordered major tasks
 
@@ -333,9 +346,9 @@ Acceptance:
 - A cycle-count test demonstrates that a sequential simple-ALU loop improves from the current four-cycle baseline.
 - PnR confirms that the pipelined tag/data/mux path meets the selected CPU clock.
 
-## Stage 6: low-priority next-line prefetch
+## Stage 6: low-priority next-line prefetch — REMOVED after measurement
 
-Only after the demand hit path and fetch queue are stable:
+Stage 6 added a demand-progress-triggered, low-priority next-line I-cache prefetch:
 
 - Trigger a candidate next-line request from real CPU fetch progress near the end of a line.
 - Never recursively trigger another prefetch merely because a prefetched line completed.
@@ -344,16 +357,26 @@ Only after the demand hit path and fetch queue are stable:
 - Cancel an unissued prefetch immediately; an unavoidable in-flight burst may complete, but its result must be discardable.
 - Track `issued`, `useful`, `useless`, and `dropped` counters in simulation or debug builds.
 
-Next-line prefetch reduces DRAM misses. It does not replace Stage 5 and does not by itself reduce I-cache BSRAM hit latency.
+A frozen-suite regression then exposed one violation of the strictly-low-priority rule: in small
+fully-cached loops the offset-10 trigger fired just before the loop's backward branch, and once
+the prefetch burst was committed it could not be aborted (the shared SDRAM port protocol has no
+cancel), so the redirect's own demand fetch — even a cache hit — stalled about seven cycles behind
+the draining dead burst, every iteration. The fix (later folded into the removal) was one-entry negative
+learning in the two-way cache: a prefetch dropped by `prefetch_cancel` recorded its line address,
+and a later request for the same line was dropped at the port without issuing. In the frozen
+stage-12 suite this recovered 6.8% of cycles on fpu-short-sincos and 4.7% on fpu-short-splat with
+zero cycle change in every other program.
 
-Stage 6 validation used emulator/RTL cycle-by-cycle co-simulation, the complete Icarus hardware suite,
-the two-stage boot testbench, and a full Gowin rebuild plus current-artifact audit. The fitted system
-used 10,129 Logic units: 7 BSRAM, 80 RAM16 leaves, 8,936 LUTs, 713 ALUs, and 3,656 logic flip-flops.
-The 54 MHz SDRAM/CPU clock closed at 54.538 MHz with zero setup and hold violations. On the
-checksum-protected 2,048-word
-recursive quicksort, one prefetch was issued and useful, none was useless, and 20,208 candidates were
-dropped because demand traffic or cache state had priority. The benchmark still took 2,652,077 cycles,
-and its redirect trace exposed the separate control-flow recovery bottleneck addressed by Stage 7.
+**Removal.** A later cost/benefit audit of the fitted design counted the prefetch-only logic at
+roughly 196 flip-flops (~4.6% of the system's 4,229 logic registers, dominated by the 128
+`way_*_prefetched` bits) and ~120-180 LUTs (~1.5% of 10,232 Logic), while the frozen stage-12
+suite showed the mechanism was nearly inert: 16 issued and 12 useful prefetches across all 22
+programs, and disabling it at the emulator cost +20 cycles out of 6,136,236 (+0.0003%). The
+entire mechanism — the offset-10 trigger in the fetch queue, the prefetch request/arm/cancel and
+cancelled-line learning logic in the I-cache engine, and the simulation counters — was therefore
+deleted from the RTL and every bit-exact model. The demand refill path, the fetch queue itself,
+and the two-way replacement are unchanged; the suite's prefetch metric columns are retained in
+the CSV schema, pinned to zero.
 
 ## Stage 7: profiled control-flow redirect fast path
 

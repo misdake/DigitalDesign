@@ -422,10 +422,14 @@ impl DataCache {
         self.next_maintenance_write()
     }
 
+    /// Picks the next dirty line in the same order as the hardware
+    /// maintenance scan: entry `way * CACHE_SETS + set` ascending, i.e. way
+    /// major. The overlapped window scan and the Rust wrapper therefore
+    /// select identical lines without carrying a separate bitmap.
     fn next_maintenance_write(&mut self) -> Result<Option<MainMemoryRequest>, CacheError> {
         let state = self.maintenance.as_mut().expect("maintenance is active");
-        for set in 0..CACHE_SETS {
-            for way in 0..CACHE_WAYS {
+        for way in 0..CACHE_WAYS {
+            for set in 0..CACHE_SETS {
                 if self.dirty[way][set] {
                     state.writing = Some((way, set));
                     return Ok(Some(MainMemoryRequest::WriteLine {
@@ -447,6 +451,21 @@ impl DataCache {
     fn line_address(&self, way: usize, set: usize) -> PhysicalWordAddress {
         let line = self.store.tags[way][set] * CACHE_SETS as u32 + set as u32;
         PhysicalWordAddress::new(line * CACHE_LINE_WORDS as u32)
+    }
+
+    /// Dirty bitmap with entry `way * CACHE_SETS + set` at the bit position of
+    /// that index. The hardware wrapper's overlapped maintenance scan mirrors
+    /// the RTL window scan against this bitmap.
+    pub fn dirty_bits(&self) -> u128 {
+        let mut bits = 0u128;
+        for way in 0..CACHE_WAYS {
+            for set in 0..CACHE_SETS {
+                if self.dirty[way][set] {
+                    bits |= 1u128 << (way * CACHE_SETS + set);
+                }
+            }
+        }
+        bits
     }
 }
 

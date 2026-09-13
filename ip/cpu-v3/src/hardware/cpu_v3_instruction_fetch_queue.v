@@ -15,10 +15,7 @@ module CpuV3InstructionFetchQueue (
     output wire core_error,
     output wire memory_request_valid,
     output wire [31:0] memory_address,
-    output wire memory_response_ready,
-    output wire prefetch_request_valid,
-    output wire [31:0] prefetch_address,
-    output wire prefetch_cancel
+    output wire memory_response_ready
 );
 
 localparam [2:0] QUEUE_DEPTH = 4;
@@ -62,15 +59,6 @@ wire core_pop = core_request_valid && core_response_ready &&
                 core_response_valid_internal;
 wire queue_pop = core_pop && !response_bypass;
 wire bypass_pop = core_pop && response_bypass;
-
-// Only architecturally consumed progress can nominate the next line. Word 10
-// accounts for the four-word fetch lead: words 11..15 can already be reserved
-// while the low-priority candidate starts, without recursively triggering from
-// speculative responses.
-assign prefetch_request_valid = core_pop && core_address[3:0] == 4'd10;
-assign prefetch_address = {core_address[31:16],
-                           core_address[15:4] + 1'b1, 4'b0};
-assign prefetch_cancel = flush || restart;
 
 assign core_response_valid = core_response_valid_internal;
 assign core_request_ready = core_response_valid && core_response_ready;

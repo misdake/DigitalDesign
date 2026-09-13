@@ -8,7 +8,7 @@ wire cpu_request_ready, cpu_response_valid, cpu_error;
 wire [15:0] cpu_read_data;
 wire memory_request_valid, memory_write, memory_line, memory_response_ready;
 wire [21:0] memory_address; wire [63:0] memory_write_data;
-wire maintenance_busy, maintenance_done, maintenance_error;
+wire maintenance_busy, maintenance_done, maintenance_error, valid_sweep;
 CpuV3DataCache dut(.*);
 always #5 clk=~clk;
 
@@ -112,6 +112,42 @@ initial begin
   if(memory[16'h820]!==16'hcafe) $fatal(1,"invalidate dropped dirty data");
   i=line_reads; access(0,32'h820,0,16'hcafe);
   if(line_reads!=i+1) $fatal(1,"invalidate left the line resident");
+
+  // Overlapped scan across windows: dirty entries 2 (window 0), 36 (window
+  // 2), and 66 (window 4) must be written back while the scan runs ahead of
+  // the in-flight write-back.
+  access(1,32'h0022,16'h1111,0);
+  access(1,32'h0242,16'h3333,0);
+  access(1,32'h0422,16'h2222,0);
+  i=line_writes;
+  maintain(0);
+  if(line_writes!=i+3) $fatal(1,"clean did not write back all dirty lines");
+  if(memory[16'h022]!==16'h1111 || memory[16'h242]!==16'h3333 ||
+     memory[16'h422]!==16'h2222)
+    $fatal(1,"overlapped scan wrote back wrong data");
+  i=line_reads;
+  access(0,32'h0022,0,16'h1111);
+  access(0,32'h0242,0,16'h3333);
+  access(0,32'h0422,0,16'h2222);
+  if(line_reads!=i) $fatal(1,"clean invalidated a resident line");
+
+  // A dirty line outside window zero is found by the window scan alone.
+  maintain(1);
+  access(1,32'h0203,16'h4444,0);
+  i=line_writes;
+  maintain(0);
+  if(line_writes!=i+1 || memory[16'h203]!==16'h4444)
+    $fatal(1,"window scan missed a dirty line outside window zero");
+
+  // Zero-dirty clean is a no-op; zero-dirty invalidate still sweeps valids.
+  i=line_writes;
+  maintain(0);
+  if(line_writes!=i) $fatal(1,"clean of a clean cache reached memory");
+  maintain(1);
+  i=line_reads;
+  access(0,32'h0203,0,16'h4444);
+  if(line_reads!=i+1) $fatal(1,"swept invalidate left the line resident");
+
   $display("DIGITAL_DESIGN_PASS"); $finish;
 end
 endmodule

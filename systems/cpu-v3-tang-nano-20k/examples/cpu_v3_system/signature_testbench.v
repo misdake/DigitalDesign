@@ -321,8 +321,8 @@ initial begin
     if (!line_burst_seen)
         $fatal(1, "no line burst reached the SDRAM adapter");
     // The boot stage runs from BSRAM and never touches the I-cache; only the
-    // application fetches through it. I-cache prefetching is covered by the
-    // system co-simulation's `icache_loop` program.
+    // application fetches through it. I-cache refill behavior is covered by
+    // the system co-simulation's `icache_loop` program.
     if (!wait_sdram_phase_seen || !boot_phase_seen || !dma_phase_seen ||
         !application_phase_seen)
         $fatal(1, "boot observer missed phases: wait=%0d boot=%0d dma=%0d app=%0d",
