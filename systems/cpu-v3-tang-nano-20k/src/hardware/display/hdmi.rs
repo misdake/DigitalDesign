@@ -1,5 +1,9 @@
-//! Multi-clock framebuffer fetch, line buffering, and 720p TMDS output.
+//! Multi-clock framebuffer fetch, line buffering, and HDMI TMDS output. The
+//! scanout timing is a compile-time [`DisplayConfig`]: the active mode is
+//! injected into the RTL and its testbench, so both always follow the single
+//! `ACTIVE_DISPLAY_CONFIG` constant.
 
+use crate::display::{DisplayConfig, ACTIVE_DISPLAY_CONFIG};
 use crate::{DisplayLineBuffer, Rgb565ToRgb888};
 use digital_design_circuit::{CircuitWires, Wire, Wires};
 use digital_design_hardware::{Hardware, HardwareIdentity, Module, ModuleIo, VerilogDependency};
@@ -56,17 +60,7 @@ impl Module for FramebufferHdmi {
     }
 
     fn verilog_source() -> Option<String> {
-        Some(
-            include_str!("display_hdmi.v")
-                .replace(
-                    "__LINE_BUFFER__",
-                    &DisplayLineBuffer::verilog_identity().module_name(),
-                )
-                .replace(
-                    "__RGB565__",
-                    &Rgb565ToRgb888::verilog_identity().module_name(),
-                ),
-        )
+        verilog_source_for(&ACTIVE_DISPLAY_CONFIG)
     }
 
     fn verilog_dependencies() -> Vec<VerilogDependency> {
@@ -77,13 +71,37 @@ impl Module for FramebufferHdmi {
     }
 
     fn verilog_testbench() -> Option<String> {
-        Some(include_str!("display_hdmi_tb.v").to_string())
+        verilog_testbench_for(&ACTIVE_DISPLAY_CONFIG)
     }
+}
+
+fn verilog_source_for(config: &DisplayConfig) -> Option<String> {
+    Some(
+        include_str!("display_hdmi.v")
+            .replace("__DISPLAY_CONFIG__", &config.verilog_localparams())
+            .replace(
+                "__LINE_BUFFER__",
+                &DisplayLineBuffer::verilog_identity().module_name(),
+            )
+            .replace(
+                "__RGB565__",
+                &Rgb565ToRgb888::verilog_identity().module_name(),
+            ),
+    )
+}
+
+fn verilog_testbench_for(config: &DisplayConfig) -> Option<String> {
+    Some(
+        include_str!("display_hdmi_tb.v")
+            .replace("__DISPLAY_CONFIG__", &config.verilog_localparams())
+            .to_string(),
+    )
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::display::DISPLAY_MODES;
     use digital_design_hardware::{ResourceKind, VerilogProject};
 
     #[test]
@@ -97,7 +115,36 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "explicit external simulation of 720p timing and burst fetch"]
+    fn generated_verilog_embeds_the_selected_mode_timing() {
+        let config = ACTIVE_DISPLAY_CONFIG;
+        let source = verilog_source_for(&config).unwrap();
+        assert!(source.contains(&format!("localparam [10:0] H_TOTAL={};", config.h_total)));
+        assert!(source.contains(&format!("localparam [9:0] V_TOTAL={};", config.v_total)));
+        assert!(source.contains(&format!(
+            "localparam [8:0] SIDE_BORDER={};",
+            config.side_border
+        )));
+        assert!(source.contains(&format!("localparam [1:0] SCALE={};", config.scale)));
+        assert!(source.contains("localparam [8:0] LINE_SLOT_WORDS=FB_WIDTH/2;"));
+        let testbench = verilog_testbench_for(&config).unwrap();
+        assert!(testbench.contains(&format!("localparam [1:0] SCALE={};", config.scale)));
+    }
+
+    #[test]
+    fn both_display_modes_inject_their_localparam_blocks() {
+        for config in DISPLAY_MODES {
+            assert!(config.verilog_localparams().contains("H_TOTAL"));
+            assert!(config.verilog_localparams().contains("V_TOTAL"));
+            let source = verilog_source_for(&config).unwrap();
+            assert!(!source.contains("__DISPLAY_CONFIG__"));
+            assert!(source.contains(&format!("H_ACTIVE_END={}", config.h_active_end)));
+            let testbench = verilog_testbench_for(&config).unwrap();
+            assert!(!testbench.contains("__DISPLAY_CONFIG__"));
+        }
+    }
+
+    #[test]
+    #[ignore = "explicit external simulation of active HDMI timing and burst fetch"]
     fn framebuffer_hdmi_runs_in_iverilog() {
         digital_design_hardware::verify_verilog_with_iverilog::<FramebufferHdmi>().unwrap();
     }

@@ -16,6 +16,10 @@ localparam [21:0] FB_BASE=22'h200100;
 localparam [2:0] DISPLAY_DEVICE=3'd3;
 localparam [31:0] LAST_VALID_FB_BASE=32'h003ed400;
 localparam [15:0] BORDER_COLOR=16'h1082;
+// Compile-time scanout configuration. The active mode's localparam block is
+// injected by the Rust host model so the RTL, testbench, and board video PLL
+// all derive from the single `ACTIVE_DISPLAY_CONFIG` constant.
+__DISPLAY_CONFIG__
 reg [2:0] published=0;
 reg [2:0] released=0;
 reg [2:0] release_meta=0, release_sync=0;
@@ -46,7 +50,7 @@ assign memory_request_valid = fill_slot_free && !burst_active && !frame_complete
 assign memory_address = row_address + {13'b0,burst_index,4'b0};
 
 wire line_write = burst_active && memory_data_valid;
-wire [8:0] line_write_address = fill_slot * 9'd160 + burst_index * 9'd8 + beat_index;
+wire [8:0] line_write_address = fill_slot * LINE_SLOT_WORDS + burst_index * 9'd8 + beat_index;
 reg [8:0] line_read_address=0;
 wire [31:0] line_read_data;
 __LINE_BUFFER__ u_line_buffer(
@@ -117,12 +121,12 @@ always @(posedge clk) begin
         if (line_write) begin
             if (memory_last || beat_index==7) begin
                 burst_active<=0; beat_index<=0;
-                if (burst_index==19) begin
+                if (burst_index==LAST_BURST) begin
                     published[fill_slot] <= ~published[fill_slot];
                     burst_index<=0;
                     fill_slot <= fill_slot==2'd2 ? 2'd0 : fill_slot+1'b1;
-                    if (fill_y==239) begin frame_complete<=1; end
-                    else begin fill_y<=fill_y+1'b1; row_address<=row_address+22'd320; end
+                    if (fill_y==LAST_FILL_Y) begin frame_complete<=1; end
+                    else begin fill_y<=fill_y+1'b1; row_address<=row_address+ROW_STRIDE; end
                 end else burst_index<=burst_index+1'b1;
             end else beat_index<=beat_index+1'b1;
         end
@@ -142,19 +146,21 @@ reg [1:0] vertical_repeat=0;
 reg started=0;
 reg [10:0] h_count=0;
 reg [9:0] v_count=0;
-wire hsync = h_count < 40;
-wire vsync = v_count < 5;
-wire active = h_count>=260 && h_count<1540 && v_count>=25 && v_count<745;
+wire hsync = h_count < H_SYNC_END;
+wire vsync = v_count < V_SYNC_END;
+wire active = h_count>=H_ACTIVE_START && h_count<H_ACTIVE_END &&
+               v_count>=V_ACTIVE_START && v_count<V_ACTIVE_END;
 // These counters are range-constrained by the comparisons below. Their
 // explicit destination widths intentionally discard only constant high bits.
-wire [10:0] active_x = h_count-260; // gowin-lint: allow EX3791
-wire framebuffer_x = active && active_x>=160 && active_x<1120;
-wire [9:0] scaled_x = active_x-160; // gowin-lint: allow EX3791
-// scaled_x is at most 959, so floor(scaled_x/3) is at most 319 and always
-// fits in nine bits. Gowin reports the unsized constant's expression width
-// before the intentional narrowing; keep the compact proven divider and
-// suppress only this line.
-wire [8:0] source_x = scaled_x / 3; // gowin-lint: allow EX3791
+wire [10:0] active_x = h_count-H_ACTIVE_START; // gowin-lint: allow EX3791
+wire framebuffer_x = active && active_x>=SIDE_BORDER &&
+                     active_x<SIDE_BORDER+FB_WIDTH*SCALE;
+wire [9:0] scaled_x = active_x-SIDE_BORDER; // gowin-lint: allow EX3791
+// scaled_x is at most FB_WIDTH*SCALE-1, so floor(scaled_x/SCALE) is at most
+// FB_WIDTH-1 and always fits in nine bits. Gowin reports the unsized
+// constant's expression width before the intentional narrowing; keep the
+// compact constant divider and suppress only this line.
+wire [8:0] source_x = scaled_x / SCALE; // gowin-lint: allow EX3791
 wire line_ready = publish_sync[display_slot] != released[display_slot];
 wire visible_request = started && active;
 wire framebuffer_request = started && framebuffer_x;
@@ -183,16 +189,16 @@ always @(posedge pixel_clock) begin
         vsync_pipe<=0; vsync_pipe2<=0; vsync_pipe3<=0;
         pixel565_pipe<=0;
     end else begin
-        if (h_count==1649) begin
+        if (h_count==H_TOTAL-1) begin
             h_count<=0;
-            if (v_count==744) frame_toggle<=~frame_toggle;
-            if (v_count==749) begin
+            if (v_count==V_ACTIVE_END-1) frame_toggle<=~frame_toggle;
+            if (v_count==V_TOTAL-1) begin
                 v_count<=0;
                 if (!started && publish_sync!=released) started<=1;
             end else v_count<=v_count+1'b1;
         end else h_count<=h_count+1'b1;
         if (framebuffer_x)
-            line_read_address <= display_slot*9'd160 + source_x[8:1];
+            line_read_address <= display_slot*LINE_SLOT_WORDS + source_x[8:1];
         // Pipeline alignment: the line buffer data for a position arrives two
         // pixel clocks late (address register, then synchronous RAM read), so
         // the lane select and the visible/sync strobes are delayed to match,
@@ -208,8 +214,9 @@ always @(posedge pixel_clock) begin
         vsync_pipe<=vsync; vsync_pipe2<=vsync_pipe; vsync_pipe3<=vsync_pipe2;
         pixel565_pipe<=framebuffer_pipe2 ?
             (framebuffer_ready_pipe2 ? pixel565 : 16'h0000) : BORDER_COLOR;
-        if (started && h_count==1539 && v_count>=25 && v_count<745) begin
-            if (vertical_repeat==2) begin
+        if (started && h_count==H_ACTIVE_END-1 && v_count>=V_ACTIVE_START &&
+            v_count<V_ACTIVE_END) begin
+            if (vertical_repeat==LAST_REPEAT) begin
                 vertical_repeat<=0;
                 if (line_ready) begin
                     released[display_slot]<=~released[display_slot];

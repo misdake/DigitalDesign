@@ -1,4 +1,5 @@
 use cpu_v3::{CpuV3Core, CpuV3DataCache, CpuV3InstructionCache, CpuV3InstructionFetchQueue};
+use cpu_v3_tang_nano_20k::display::ACTIVE_DISPLAY_CONFIG;
 use cpu_v3_tang_nano_20k::{
     BootDmaDevice, BootDmaEngine, BootProgressMonitor, CpuV3MemoryArbiter, FramebufferHdmi,
     SharedSdramPort, SystemControlDevice,
@@ -9,7 +10,8 @@ use digital_design_hardware_common::ResetController;
 use digital_design_hardware_gowin::{
     run_gowin_project_cli, Bsram1R1Rw1024, BsramImage, ErasedSpiFlashImage, GowinCliError,
     GowinDspMode, GowinModuleProject, ResourceCountExpectation, SpiFlashReader, TangNano20K,
-    TangNano20KBootHdmiWideInputs, TangNano20KBootHdmiWideOutputs, BSRAM_1024_DEPTH,
+    TangNano20KBootHdmiWideInputs, TangNano20KBootHdmiWideOutputs, TangNano20KVideoMode,
+    BSRAM_1024_DEPTH,
 };
 
 fn main() -> Result<(), GowinCliError> {
@@ -160,7 +162,10 @@ impl Module for CpuV3System {
 }
 
 fn gowin_project() -> GowinModuleProject<TangNano20K, CpuV3System> {
-    TangNano20K::boot_hdmi_memory_project::<CpuV3System>("cpu_v3_system")
+    // The board video PLL follows the single display-mode switch so the fitted
+    // pixel clock always matches the compiled-in scanout timing.
+    let video_mode = TangNano20KVideoMode::from_pixel_clock(ACTIVE_DISPLAY_CONFIG.pixel_clock_hz);
+    TangNano20K::boot_hdmi_memory_project::<CpuV3System>("cpu_v3_system", video_mode)
         .expect_bsram_blocks(ResourceCountExpectation::Claimed)
         .expect_dsp_mode(GowinDspMode::Mult18x18, ResourceCountExpectation::Claimed)
 }

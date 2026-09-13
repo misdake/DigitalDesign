@@ -108,7 +108,8 @@ pub struct TangNano20KSdramOutputs {
     pub sdram_burst_length: Wires<8>,
 }
 
-/// SDRAM controller signals plus the independent clocks used by 720p HDMI.
+/// SDRAM controller signals plus the independent clocks used by the fitted
+/// HDMI mode.
 #[derive(Clone, ModuleIo)]
 pub struct TangNano20KSdramHdmiInputs {
     pub buttons: Wires<2>,
@@ -237,6 +238,43 @@ pub struct TangNano20KBootHdmiWideOutputs {
     pub tmds_clk_n: digital_design_circuit::Wire,
     pub tmds_data_p: Wires<3>,
     pub tmds_data_n: Wires<3>,
+}
+
+/// Fitted onboard HDMI video modes. The board wrapper selects the video PLL
+/// source and the pixel-clock SDC constraint from this mode; the CPU V3 system
+/// derives the mode from its single `ACTIVE_DISPLAY_CONFIG` constant.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum TangNano20KVideoMode {
+    /// 1280x720p60, 74.25 MHz pixel clock.
+    Hdmi720p60,
+    /// 800x480@60, 33.3 MHz pixel clock (H 1056 / V 525).
+    Hdmi800x480_60,
+}
+
+impl TangNano20KVideoMode {
+    pub fn from_pixel_clock(pixel_clock_hz: u64) -> Self {
+        match pixel_clock_hz {
+            74_250_000 => Self::Hdmi720p60,
+            33_300_000 => Self::Hdmi800x480_60,
+            other => panic!("unsupported HDMI pixel clock {other} Hz"),
+        }
+    }
+
+    pub fn pixel_clock_hz(self) -> u64 {
+        match self {
+            Self::Hdmi720p60 => 74_250_000,
+            Self::Hdmi800x480_60 => 33_300_000,
+        }
+    }
+
+    /// `create_clock` constraint for the video PLL's pixel output.
+    fn sdc_pixel_clock_constraint(self) -> String {
+        let period_ns = 1_000_000_000.0 / self.pixel_clock_hz() as f64;
+        let half_ns = period_ns / 2.0;
+        format!(
+            "create_clock -name pixel_clk -period {period_ns:.6} -waveform {{0 {half_ns:.6}}} [get_pins {{u_video_pll/d/CLKOUT}}]"
+        )
+    }
 }
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
@@ -494,7 +532,11 @@ impl TangNano20K {
     /// logic, command scheduling, caches, and the controller use the same
     /// 54 MHz clock. Only the SDRAM physical clock uses the PLL's 180-degree
     /// output.
-    fn sdram_debug_uart_binding_with_video(video: bool, wide_2x: bool) -> GowinBoardBinding<Self> {
+    fn sdram_debug_uart_binding_with_video(
+        video: bool,
+        wide_2x: bool,
+        video_mode: TangNano20KVideoMode,
+    ) -> GowinBoardBinding<Self> {
         let wrapper = if wide_2x {
             include_str!("tang_nano_20k/sdram/service_108m_54m_hdmi.v")
         } else if video {
@@ -671,6 +713,22 @@ impl TangNano20K {
         }
 
         if video {
+            let pll_path = match video_mode {
+                TangNano20KVideoMode::Hdmi720p60 => {
+                    "src/generated/target/tang_nano_20k/sdram/video_pll_720p.v"
+                }
+                TangNano20KVideoMode::Hdmi800x480_60 => {
+                    "src/generated/target/tang_nano_20k/sdram/video_pll_800x480.v"
+                }
+            };
+            let pll_source = match video_mode {
+                TangNano20KVideoMode::Hdmi720p60 => {
+                    include_str!("tang_nano_20k/sdram/video_pll_720p.v").to_string()
+                }
+                TangNano20KVideoMode::Hdmi800x480_60 => {
+                    include_str!("tang_nano_20k/sdram/video_pll_800x480.v").to_string()
+                }
+            };
             extension = extension
                 .connect_logic(GowinLogicConnection::new(
                     "pixel_clock",
@@ -690,13 +748,8 @@ impl TangNano20K {
                     1,
                     "video_locked",
                 ))
-                .add_source_file(
-                    "src/generated/target/tang_nano_20k/sdram/video_pll_720p.v",
-                    include_str!("tang_nano_20k/sdram/video_pll_720p.v"),
-                )
-                .add_sdc_constraint(
-                    "create_clock -name pixel_clk -period 13.468013 -waveform {0 6.734007} [get_pins {u_video_pll/d/CLKOUT}]",
-                )
+                .add_source_file(pll_path, pll_source)
+                .add_sdc_constraint(video_mode.sdc_pixel_clock_constraint())
                 // The 54 MHz SDRAM/logic domain and the 74.25 MHz pixel domain
                 // only meet through double-flop synchronizers (slot publish /
                 // release handshake, pixel-domain reset release) and the
@@ -760,7 +813,7 @@ impl TangNano20K {
     }
 
     fn sdram_debug_uart_binding() -> GowinBoardBinding<Self> {
-        Self::sdram_debug_uart_binding_with_video(false, false)
+        Self::sdram_debug_uart_binding_with_video(false, false, TangNano20KVideoMode::Hdmi720p60)
     }
 
     pub fn sdram_debug_uart_project<M>(
@@ -780,10 +833,13 @@ impl TangNano20K {
     where
         M: Module<Input = TangNano20KSdramHdmiInputs, Output = TangNano20KSdramHdmiOutputs>,
     {
-        GowinModuleProject::new(
-            GowinProject::new(project_name)
-                .with_board_binding(Self::sdram_debug_uart_binding_with_video(true, false)),
-        )
+        GowinModuleProject::new(GowinProject::new(project_name).with_board_binding(
+            Self::sdram_debug_uart_binding_with_video(
+                true,
+                false,
+                TangNano20KVideoMode::Hdmi720p60,
+            ),
+        ))
     }
 
     /// Create a single-clock 54 MHz boot project with simultaneous access to
@@ -826,18 +882,20 @@ impl TangNano20K {
     }
 
     /// Create a multi-clock project that simultaneously owns the fitted SPI
-    /// Flash, the 64-Mibit SDRAM, and the onboard 720p HDMI port.
+    /// Flash, the 64-Mibit SDRAM, and the onboard HDMI port.
     ///
     /// This is the full CPU V3 system surface: the board wrapper owns the SDRAM
-    /// PLL/Controller HS and the video PLL, while the Flash reader leaf owns the
-    /// SPI Flash device. Higher-level logic claims none of these devices.
+    /// PLL/Controller HS and the video PLL for the selected
+    /// [`TangNano20KVideoMode`], while the Flash reader leaf owns the SPI Flash
+    /// device. Higher-level logic claims none of these devices.
     pub fn boot_hdmi_memory_project<M>(
         project_name: impl Into<String>,
+        video_mode: TangNano20KVideoMode,
     ) -> GowinModuleProject<Self, M>
     where
         M: Module<Input = TangNano20KBootHdmiWideInputs, Output = TangNano20KBootHdmiWideOutputs>,
     {
-        let binding = Self::sdram_debug_uart_binding_with_video(true, true)
+        let binding = Self::sdram_debug_uart_binding_with_video(true, true, video_mode)
             .bind_port(
                 GowinPortDirection::Output,
                 "flash_clk",
@@ -1104,5 +1162,25 @@ mod tests {
         ] {
             assert!(constraints.contains(&format!("IO_LOC \"{signal}\" {pin};")));
         }
+    }
+
+    #[test]
+    fn video_mode_sdc_clock_matches_the_fitted_pixel_clock() {
+        let constraint = TangNano20KVideoMode::Hdmi720p60.sdc_pixel_clock_constraint();
+        assert_eq!(
+            constraint,
+            "create_clock -name pixel_clk -period 13.468013 -waveform {0 6.734007} [get_pins {u_video_pll/d/CLKOUT}]"
+        );
+        let constraint = TangNano20KVideoMode::Hdmi800x480_60.sdc_pixel_clock_constraint();
+        assert_eq!(
+            constraint,
+            "create_clock -name pixel_clk -period 30.030030 -waveform {0 15.015015} [get_pins {u_video_pll/d/CLKOUT}]"
+        );
+        assert_eq!(
+            TangNano20KVideoMode::from_pixel_clock(
+                TangNano20KVideoMode::Hdmi800x480_60.pixel_clock_hz()
+            ),
+            TangNano20KVideoMode::Hdmi800x480_60
+        );
     }
 }

@@ -1,6 +1,6 @@
 use cpu_v3_tang_nano_20k::display::{render_frame_at, write_ppm};
 #[cfg(feature = "display-window")]
-use cpu_v3_tang_nano_20k::display::{HDMI_HEIGHT, HDMI_WIDTH};
+use cpu_v3_tang_nano_20k::display::{ACTIVE_DISPLAY_CONFIG, HDMI_HEIGHT, HDMI_WIDTH};
 use cpu_v3_tang_nano_20k::system_sim::{CpuV3SystemSim, VBlankMode};
 use std::path::PathBuf;
 
@@ -59,7 +59,10 @@ fn main() -> Result<(), String> {
     #[cfg(feature = "display-window")]
     let mut window = options.window.then(|| {
         minifb::Window::new(
-            "CPU V3 320x240 framebuffer (3x HDMI preview)",
+            &format!(
+                "CPU V3 320x240 framebuffer ({} HDMI preview)",
+                ACTIVE_DISPLAY_CONFIG.name
+            ),
             HDMI_WIDTH,
             HDMI_HEIGHT,
             minifb::WindowOptions::default(),
