@@ -9,7 +9,7 @@ optimization Stage. Reusable processor details belong to the
 
 `CpuV3System` is the final composition boundary for the Tang Nano 20K target. It connects:
 
-- the revision 0.7 `CpuV3Core` at the Stage 12 microarchitecture level;
+- the revision 0.8 `CpuV3Core` at the Stage 12 microarchitecture level;
 - a four-entry epoch-tagged instruction fetch queue;
 - a Stage0 instruction BSRAM window and separate 4-KiB I-cache and D-cache;
 - the CPU V3 memory arbiter and boot DMA client;
@@ -80,18 +80,17 @@ clock-domain boundary.
 
 ## Boot chain
 
-Reset starts Stage0 from initialized BSRAM with `CSEG = 0`, `DSEG = 0`, and `PC = 0`. Stage0 validates
-the fixed package descriptor, uses the boot DMA to copy Stage1 from SPI Flash to SDRAM, performs the
-required cache-maintenance handoff, initializes Stage1 state, and enters it through adjacent
-`ICACHE_INVALIDATE_ALL_DELAYED; JSEG` instructions. Stage1 parses the extensible section manifest,
-loads the selected application, initializes its segments and stack, and performs the same terminal
-handoff.
+Reset starts the single boot stage from initialized BSRAM with `CSEG = 0`, `DSEG = 0`, and `PC = 0`.
+It validates the fixed package descriptor, DMAs the extensible section manifest into its own static
+buffer, validates it, DMAs the reset-selected application from SPI Flash to SDRAM, initializes the
+application segments and stack, and enters it through adjacent `ICACHE_INVALIDATE_ALL_DELAYED; JSEG`
+instructions. There is no separate Stage1 image; the same stage understands both metadata levels.
 
 The package format is defined in [`boot-image-format.md`](boot-image-format.md); physical Flash
 placement and programming are defined in [`flash-layout.md`](flash-layout.md). The project names
 exactly two RCC application sources in `boot-applications.conf`; the build derives their fixed
-S1/S2 slots, entries, section layout, Stage1 selection module, pack manifest, fingerprints, and
-package. Generated Stage0, Stage1, application, and package bytes come only from the system build
+S1/S2 slots, entries, section layout, boot-stage selection module, pack manifest, fingerprints, and
+package. Generated boot-stage, application, and package bytes come only from the system build
 output. No second checked-in instruction or Flash byte array is maintained.
 
 ## Devices and ownership transfer
@@ -110,10 +109,10 @@ Device 0 channel 0 emits the registered one-cycle-delayed whole-I-cache invalida
 5 returns final maintenance status. Channel 2 writes the six logical LEDs. Channel 3 transmits one
 UART byte and reports transmitter busy on reads.
 
-Device 1 channel 0 returns the reset-time boot selection. Stage1 selects the configured S2
-application for button value `10`, and the configured S1/default application for `00` or `01`; `11`
-is ignored by the board-level selection latch. The current project selects the FPU framebuffer demo
-as S2 and the primary diagnostic as S1.
+Device 1 channel 0 returns the reset-time boot selection. The board-level selection latch powers up
+at `10`, so the boot stage selects the configured S2 display application by default; holding the S1
+button (`01`) selects the configured S1 slider diagnostic, and `11` is ignored. The current project
+selects the FPU framebuffer demo as S2 and the primary diagnostic as S1.
 
 Device 2 exposes the boot-DMA command and status register bank. It accepts a 24-bit absolute Flash
 byte address, a 22-bit physical SDRAM word destination, and file and memory byte sizes. Writing one
@@ -143,10 +142,10 @@ the six LEDs until the first software LED write, after which software owns them 
 patterns are progress evidence only; UART frames and system-level checks establish boot success or a
 structured boot failure.
 
-On boot failure, Stage0 or Stage1 repeatedly emits a ten-byte UART frame containing ASCII `CV3B`,
-stage, category, error code, two detail bytes, and an XOR checksum. The LED error value combines the
-two-bit stage and four-bit category. The host loader exposes the same stable mapping through
-`LoaderError::boot_report`.
+On boot failure, the boot stage repeatedly emits a ten-byte UART frame containing ASCII `CV3B`,
+stage, category, error code, two detail bytes, and an XOR checksum. The stage byte is always `1` for
+the single first stage. The LED error value combines the stage and category. The host loader exposes
+the same stable mapping through `LoaderError::boot_report`.
 
 ## Current fitted result and validation boundary
 

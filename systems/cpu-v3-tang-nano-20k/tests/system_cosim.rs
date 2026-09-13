@@ -10,9 +10,9 @@
 mod system_emu;
 
 use cpu_v3::{
-    alu, branch, halt, immediate_unsigned, load, load_immediate16, nop, store, AluOp,
-    CpuV3Core, CpuV3DataCache, CpuV3InstructionFetchQueue, CpuV3TwoWayCache, FpuOp, ImmediateOp,
-    TestCondition,
+    add_constant, alu, branch, halt, immediate_unsigned, load, load_constant, load_immediate16,
+    nop, prefix12, store, AluOp, CpuV3Core, CpuV3DataCache, CpuV3InstructionFetchQueue,
+    CpuV3TwoWayCache, FpuOp, ImmediateOp, TestCondition,
 };
 use cpu_v3::{fpu, fpu_unary, FpuUnaryOp};
 use cpu_v3_tang_nano_20k::CpuV3MemoryArbiter;
@@ -121,6 +121,28 @@ fn program_fpu_roundtrip() -> Vec<u16> {
     p
 }
 
+/// LDC/ADDC (major A functions 7/B) index the shared 16-entry constant table
+/// and never consume PFX12; the prefix before the ADDC expires unused.
+/// ADDI/SUBI read the unprefixed immediate as an unsigned u4 (15 was -1
+/// under the signed reading). The results land in the checked memory region.
+fn program_constant_table() -> Vec<u16> {
+    let mut p = Vec::new();
+    p.extend(load_immediate16(1, 0x4000)); // data base
+    p.push(load_constant(2, 0)); // r2 = 8
+    p.push(load_constant(3, 15)); // r3 = -512
+    p.push(add_constant(2, 7)); // r2 = 8 + 512 = 520
+    p.push(add_constant(3, 9)); // r3 = -512 + -16 = -528
+    p.push(prefix12(0xabc)); // expires unused before the non-consuming ADDC
+    p.push(add_constant(2, 4)); // r2 = 520 + 64 = 584
+    p.push(immediate_unsigned(ImmediateOp::Add, 2, 15)); // r2 = 599
+    p.push(immediate_unsigned(ImmediateOp::Sub, 2, 15)); // r2 = 584
+    p.push(immediate_unsigned(ImmediateOp::Add, 2, 0)); // r2 = 584
+    p.push(store(2, 1, 0)); // mem[0x4000] = 584
+    p.push(store(3, 1, 1)); // mem[0x4001] = 0xfdf0
+    p.push(halt());
+    p
+}
+
 /// I-cache pressure: an rcc-compiled loop whose body spans multiple 16-word
 /// lines, with the loop back-branch crossing line boundaries.
 const ICACHE_LOOP_SOURCE: &str = r#"
@@ -179,6 +201,25 @@ fn main() {
 }
 "#;
 
+/// `fix16::to_int()` is `FSTORE` followed by an `ASR` by 8. Regression for the
+/// RTL `>>>` inside a mixed-signedness conditional, which evaluated as a
+/// logical shift and turned negative results into `0x00xx` (e.g. the display
+/// demo's negative sine/cosine offsets landed at +255 instead of -1).
+const FIX16_TO_INT_SOURCE: &str = r#"
+use crate::dsl_rt::*;
+
+fn main() {
+    let mut out = Ptr::from_addr(0x4000).as_u16_array();
+    out[0u16] = fix16::from_bits(0xff00).to_int() as u16; // -1.0   -> -1   (0xffff)
+    out[1u16] = fix16::from_bits(0xfe70).to_int() as u16; // -1.5625 -> -2  (0xfffe)
+    out[2u16] = fix16::from_bits(0x8000).to_int() as u16; // -128.0 -> -128 (0xff80)
+    out[3u16] = fix16::from_bits(0x0180).to_int() as u16; // 1.5    -> 1
+    out[4u16] = fix16::from_bits(0x0001).to_int() as u16; // 1/256  -> 0
+    out[5u16] = fix16::from_bits(0x0080).to_int() as u16; // 0.5    -> 0
+    halt(0x5a);
+}
+"#;
+
 fn programs() -> Vec<CosimProgram> {
     vec![
         CosimProgram {
@@ -222,12 +263,28 @@ fn programs() -> Vec<CosimProgram> {
             expected_halt: Some(1),
         },
         CosimProgram {
+            name: "fix16_to_int_rcc",
+            words: compile_cpu_v3_source(FIX16_TO_INT_SOURCE),
+            max_cycles: 20_000,
+            check_base: 0x4000,
+            check_len: 6,
+            expected_halt: Some(0x5a),
+        },
+        CosimProgram {
             name: "icache_loop",
             words: compile_cpu_v3_source(ICACHE_LOOP_SOURCE),
             max_cycles: 50_000,
             check_base: 0x4000,
             check_len: 0,
             expected_halt: None,
+        },
+        CosimProgram {
+            name: "constant_table",
+            words: program_constant_table(),
+            max_cycles: 20_000,
+            check_base: 0x4000,
+            check_len: 2,
+            expected_halt: Some(0),
         },
         CosimProgram {
             name: "pipeline_overlap",
@@ -259,10 +316,22 @@ fn system_verilog_sources() -> Vec<String> {
         }
     };
     append(&VerilogProject::generate::<CpuV3Core>().unwrap().files);
-    append(&VerilogProject::generate::<CpuV3InstructionFetchQueue>().unwrap().files);
-    append(&VerilogProject::generate::<CpuV3TwoWayCache>().unwrap().files);
+    append(
+        &VerilogProject::generate::<CpuV3InstructionFetchQueue>()
+            .unwrap()
+            .files,
+    );
+    append(
+        &VerilogProject::generate::<CpuV3TwoWayCache>()
+            .unwrap()
+            .files,
+    );
     append(&VerilogProject::generate::<CpuV3DataCache>().unwrap().files);
-    append(&VerilogProject::generate::<CpuV3MemoryArbiter>().unwrap().files);
+    append(
+        &VerilogProject::generate::<CpuV3MemoryArbiter>()
+            .unwrap()
+            .files,
+    );
     sources
 }
 
@@ -272,10 +341,7 @@ fn build_tb(program: &CosimProgram, max_cycles: usize) -> String {
         memory_init.push_str(&format!("    memory[{index}] = 16'h{word:04x};\n"));
     }
     include_str!("system_cosim_tb.v")
-        .replace(
-            "__CORE__",
-            &CpuV3Core::verilog_identity().module_name(),
-        )
+        .replace("__CORE__", &CpuV3Core::verilog_identity().module_name())
         .replace(
             "__FETCH__",
             &CpuV3InstructionFetchQueue::verilog_identity().module_name(),

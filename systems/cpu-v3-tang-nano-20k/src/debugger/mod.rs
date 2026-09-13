@@ -10,7 +10,7 @@
 
 use crate::system_sim::{CpuV3SystemSim, VBlankMode};
 use cpu_v3::rcc_backend::CpuV3Program;
-use cpu_v3::{Fault, FaultKind, Instruction, CpuV3Sim, PhysicalWordAddress, StepOutcome, Word};
+use cpu_v3::{CpuV3Sim, Fault, FaultKind, Instruction, PhysicalWordAddress, StepOutcome, Word};
 use rcc::{DebugFunc, DebugInfo, DebugVar, VarLoc};
 use std::collections::{HashMap, HashSet};
 use std::fmt::Write as _;
@@ -98,7 +98,9 @@ impl V3DebugSession {
         // inject the embedded standard library sources so library tabs render
         for (name, text) in rcc::frontend::std_sources() {
             if let Some(index) = program.debug.files.iter().position(|f| f == name) {
-                source_overrides.entry(index as u16).or_insert_with(|| text.to_string());
+                source_overrides
+                    .entry(index as u16)
+                    .or_insert_with(|| text.to_string());
             }
         }
         let code_base = program.code_base;
@@ -161,7 +163,12 @@ impl V3DebugSession {
             inst,
             Instruction::JumpRelative { link: true, .. } | Instruction::JumpAndLinkRegister { .. }
         );
-        let is_return = matches!(inst, Instruction::JumpRegister { target: LINK_REGISTER });
+        let is_return = matches!(
+            inst,
+            Instruction::JumpRegister {
+                target: LINK_REGISTER
+            }
+        );
 
         let arg_values = if is_call {
             let regs = self.cpu().registers();
@@ -210,10 +217,12 @@ impl V3DebugSession {
     }
 
     fn fetch_inst(&self, pc: Word) -> Instruction {
-        let word = self.cpu().physical_memory(PhysicalWordAddress::from_segment_offset(
-            self.cpu().code_segment(),
-            pc,
-        ));
+        let word = self
+            .cpu()
+            .physical_memory(PhysicalWordAddress::from_segment_offset(
+                self.cpu().code_segment(),
+                pc,
+            ));
         cpu_v3::decode(word)
     }
 
@@ -223,7 +232,7 @@ impl V3DebugSession {
         }
         match self.system.step() {
             Ok(StepOutcome::Halted { signal }) => self.last_halt = Some(signal),
-            Ok(StepOutcome::Running) => {}
+            Ok(StepOutcome::Running | StepOutcome::Signaled(_)) => {}
             Err(fault) => self.fault = Some(fault),
         }
         self.steps += 1;
@@ -421,8 +430,8 @@ impl V3DebugSession {
         match v.loc {
             VarLoc::Global(addr) => VarValue::Mem(addr, self.preview(addr, &v.ty)),
             VarLoc::Frame(slot) => {
-                let addr = self.cpu().registers()[usize::from(STACK_REGISTER)]
-                    .wrapping_add(slot as u16);
+                let addr =
+                    self.cpu().registers()[usize::from(STACK_REGISTER)].wrapping_add(slot as u16);
                 VarValue::Mem(addr, self.preview(addr, &v.ty))
             }
             VarLoc::Param(r) => {
@@ -470,10 +479,24 @@ impl V3DebugSession {
         // the SP restore already ran by the time the return jump executes, so
         // frame-relative locals no longer have a valid address at that point.
         let word = self.instruction_word(pc);
-        let is_return = matches!(word, Some(Instruction::JumpRegister { target: LINK_REGISTER }));
+        let is_return = matches!(
+            word,
+            Some(Instruction::JumpRegister {
+                target: LINK_REGISTER
+            })
+        );
         let prev_restores_sp = self
             .instruction_word(pc.wrapping_sub(1))
-            .is_some_and(|inst| matches!(inst, Instruction::Immediate { op: cpu_v3::ImmediateOp::Add, dst: STACK_REGISTER, .. }));
+            .is_some_and(|inst| {
+                matches!(
+                    inst,
+                    Instruction::Immediate {
+                        op: cpu_v3::ImmediateOp::Add,
+                        dst: STACK_REGISTER,
+                        ..
+                    }
+                )
+            });
         !(is_return && prev_restores_sp)
     }
 
@@ -518,7 +541,9 @@ impl V3DebugSession {
 /// load a CpuV3 program into a fresh machine and enter it directly at its
 /// code base (no register bootstrap, so the pc starts at the first source line)
 fn load_machine(machine: &mut CpuV3Sim, code_base: Word, words: &[Word]) {
-    machine.load_program(code_base, words).expect("load program");
+    machine
+        .load_program(code_base, words)
+        .expect("load program");
     machine.set_pc(code_base);
 }
 
@@ -743,7 +768,10 @@ impl V3DebugSession {
             fpu.iter()
                 .map(|v| format!(
                     "[{}]",
-                    v.iter().map(|lane| lane.to_string()).collect::<Vec<_>>().join(",")
+                    v.iter()
+                        .map(|lane| lane.to_string())
+                        .collect::<Vec<_>>()
+                        .join(",")
                 ))
                 .collect::<Vec<_>>()
                 .join(",")
@@ -1032,11 +1060,7 @@ impl V3DebugSession {
         let pixels = self.system.render_active_framebuffer();
         let mut bytes = Vec::with_capacity(pixels.len() * 3);
         for pixel in pixels {
-            bytes.extend_from_slice(&[
-                (pixel >> 16) as u8,
-                (pixel >> 8) as u8,
-                pixel as u8,
-            ]);
+            bytes.extend_from_slice(&[(pixel >> 16) as u8, (pixel >> 8) as u8, pixel as u8]);
         }
         bytes
     }

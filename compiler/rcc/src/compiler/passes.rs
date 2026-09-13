@@ -67,7 +67,7 @@ pub fn optimize(f: &mut IrFunc, opts: &Opts) {
 // ---------------------------------------------------------------------------
 
 pub(crate) fn subst_uses(f: &mut IrFunc, replace: &HashMap<VReg, VReg>) {
-    let subst = |v: &mut VReg| {
+    let mut subst = |v: &mut VReg| {
         while let Some(&r) = replace.get(v) {
             *v = r;
         }
@@ -79,55 +79,7 @@ pub(crate) fn subst_uses(f: &mut IrFunc, replace: &HashMap<VReg, VReg>) {
             }
         }
         for inst in &mut b.insts {
-            match inst {
-                Instr::Bin { lhs, rhs, .. } => {
-                    subst(lhs);
-                    subst(rhs);
-                }
-                Instr::Un { src, .. } | Instr::Shift { src, .. } | Instr::Mov { src, .. } => {
-                    subst(src)
-                }
-                Instr::LoadImm { .. }
-                | Instr::StoreStatic { .. }
-                | Instr::DevRecv { .. }
-                | Instr::DcacheInvalidateAll
-                | Instr::LoadSp { .. }
-                | Instr::LoadLocal { .. }
-                | Instr::AddrOfLocal { .. } => {}
-                Instr::LoadMem { base, .. } => subst(base),
-                Instr::StoreMem { base, src, .. } => {
-                    subst(base);
-                    subst(src);
-                }
-                Instr::Call { args, .. } => args.iter_mut().for_each(&subst),
-                Instr::LoadFuncAddr { .. } => {}
-                Instr::CallPtr { addr, args, .. } => {
-                    subst(addr);
-                    args.iter_mut().for_each(&subst);
-                }
-                Instr::DevSend { src, .. }
-                | Instr::MtsrDseg { src }
-                | Instr::StoreSp { src, .. }
-                | Instr::StoreLocal { src, .. } => subst(src),
-                Instr::Jseg { cseg, target } => {
-                    subst(cseg);
-                    subst(target);
-                }
-                Instr::FBin { lhs, rhs, .. } | Instr::FDot4Acc { lhs, rhs } => {
-                    subst(lhs);
-                    subst(rhs);
-                }
-                Instr::FAccLoad { src, .. } => subst(src),
-                Instr::FMov { src, .. } | Instr::FUnary { src, .. } => subst(src),
-                Instr::FLoad { src_gpr, .. } => subst(src_gpr),
-                Instr::FStore { src, .. } => subst(src),
-                Instr::FImport4 { base_gpr, .. } => subst(base_gpr),
-                Instr::FExport4 { src, base_gpr } => {
-                    subst(src);
-                    subst(base_gpr);
-                }
-                Instr::FAccStore { .. } | Instr::FZero { .. } | Instr::AddrOfFpuSpill { .. } => {}
-            }
+            inst.for_each_use_mut(&mut subst);
         }
         if let Some(term) = &mut b.term {
             match term {
@@ -157,11 +109,19 @@ fn fold_bin(op: BinOp, a: u16, b: u16) -> u16 {
     match op {
         BinOp::Add => a.wrapping_add(b),
         BinOp::Sub => a.wrapping_sub(b),
-        BinOp::Mul => a.wrapping_mul(b),
         BinOp::And => a & b,
         BinOp::Or => a | b,
         BinOp::Xor => a ^ b,
     }
+}
+fn fold_mul(window: MulWindow, a: u16, b: u16) -> u16 {
+    let product = u32::from(a) * u32::from(b);
+    let shift = match window {
+        MulWindow::Low => 0,
+        MulWindow::Shift8 => 8,
+        MulWindow::Shift16 => 16,
+    };
+    (product >> shift) as u16
 }
 fn fold_un(op: UnOp, a: u16) -> Option<u16> {
     Some(match op {
@@ -176,13 +136,24 @@ fn fold_un(op: UnOp, a: u16) -> Option<u16> {
                 a.ilog2() as u16
             }
         }
+        UnOp::Sextb => (((a << 8) as i16) >> 8) as u16,
+        UnOp::Clz => a.leading_zeros() as u16,
     })
 }
 fn fold_shift(op: ShiftOp, a: u16, amount: u8) -> u16 {
+    let amount = u32::from(amount & 15);
     match op {
-        ShiftOp::Lsl => a.wrapping_shl(amount as u32),
-        ShiftOp::Lsr => a.wrapping_shr(amount as u32),
+        ShiftOp::Lsl => a.wrapping_shl(amount),
+        ShiftOp::Lsr => a.wrapping_shr(amount),
         ShiftOp::Asr => ((a as i16) >> amount) as u16,
+    }
+}
+
+/// the constant value of an operand, if known
+fn operand_konst(operand: &IntOperand, konst: &[Option<u16>]) -> Option<u16> {
+    match operand {
+        IntOperand::Imm(value) => Some(*value),
+        IntOperand::Reg(v) => konst[*v as usize],
     }
 }
 
@@ -213,8 +184,22 @@ fn const_prop(f: &mut IrFunc) -> bool {
                         }
                     }
                     Instr::Bin { dst, op, lhs, rhs } => {
-                        if let (Some(a), Some(b)) = (konst[*lhs as usize], konst[*rhs as usize]) {
+                        if let (Some(a), Some(b)) =
+                            (konst[*lhs as usize], operand_konst(rhs, &konst))
+                        {
                             learn(&mut konst, *dst, fold_bin(*op, a, b), &mut changed);
+                        }
+                    }
+                    Instr::Mul {
+                        dst,
+                        window,
+                        lhs,
+                        rhs,
+                    } => {
+                        if let (Some(a), Some(b)) =
+                            (konst[*lhs as usize], operand_konst(rhs, &konst))
+                        {
+                            learn(&mut konst, *dst, fold_mul(*window, a, b), &mut changed);
                         }
                     }
                     Instr::Un { dst, op, src } => {
@@ -230,8 +215,10 @@ fn const_prop(f: &mut IrFunc) -> bool {
                         src,
                         amount,
                     } => {
-                        if let Some(a) = konst[*src as usize] {
-                            learn(&mut konst, *dst, fold_shift(*op, a, *amount), &mut changed);
+                        if let (Some(a), Some(n)) =
+                            (konst[*src as usize], operand_konst(amount, &konst))
+                        {
+                            learn(&mut konst, *dst, fold_shift(*op, a, n as u8), &mut changed);
                         }
                     }
                     _ => {}
@@ -250,6 +237,7 @@ fn const_prop(f: &mut IrFunc) -> bool {
         for inst in &mut b.insts {
             let (dst, value) = match inst {
                 Instr::Bin { dst, .. }
+                | Instr::Mul { dst, .. }
                 | Instr::Un { dst, .. }
                 | Instr::Shift { dst, .. }
                 | Instr::Mov { dst, .. } => (*dst, konst[*dst as usize]),
@@ -534,9 +522,10 @@ fn hoist_constant_return_arm(f: &mut IrFunc, transformed: &mut HashSet<BlockId>)
 
 #[derive(Hash, Eq, PartialEq, Clone, Debug)]
 enum Key {
-    Bin(BinOp, VReg, VReg),
+    Bin(BinOp, VReg, IntOperand),
+    Mul(MulWindow, VReg, IntOperand),
     Un(UnOp, VReg),
-    Shift(ShiftOp, VReg, u8),
+    Shift(ShiftOp, VReg, IntOperand),
     Imm(u16),
     // pure FPU operations (saturation never faults); FUnary, FImport4,
     // FDot4Acc and FAccStore are side-effecting and never keyed
@@ -544,6 +533,19 @@ enum Key {
     FLoad(VReg),
     FStore(VReg),
     FZero,
+}
+
+fn canon_operand(replace: &HashMap<VReg, VReg>, operand: IntOperand) -> IntOperand {
+    match operand {
+        IntOperand::Imm(value) => IntOperand::Imm(value),
+        IntOperand::Reg(v) => {
+            let mut v = v;
+            while let Some(&r) = replace.get(&v) {
+                v = r;
+            }
+            IntOperand::Reg(v)
+        }
+    }
 }
 
 fn cse(f: &mut IrFunc) -> bool {
@@ -566,6 +568,22 @@ fn cse(f: &mut IrFunc) -> bool {
         }
     }
 
+    // Copy/CSE aliasing is only sound for a vreg with a single definition. The
+    // if-conversion pass deliberately redefines its destination (a Mov/LoadImm
+    // feeding a CMov), and aliasing that vreg would replace the uses after the
+    // conditional write and drop it.
+    let mut seen_defs: HashSet<VReg> = HashSet::new();
+    let mut multi_def: HashSet<VReg> = HashSet::new();
+    for b in &f.blocks {
+        for inst in &b.insts {
+            for def in crate::compiler::regalloc::inst_defs(inst) {
+                if !seen_defs.insert(def) {
+                    multi_def.insert(def);
+                }
+            }
+        }
+    }
+
     fn canon(replace: &HashMap<VReg, VReg>, mut v: VReg) -> VReg {
         while let Some(&r) = replace.get(&v) {
             v = r;
@@ -575,11 +593,32 @@ fn cse(f: &mut IrFunc) -> bool {
     fn pure_key(inst: &Instr, replace: &HashMap<VReg, VReg>) -> Option<(Key, VReg)> {
         match inst {
             Instr::Bin { dst, op, lhs, rhs } => {
-                let (mut a, mut b) = (canon(replace, *lhs), canon(replace, *rhs));
-                if matches!(op, BinOp::Add | BinOp::And | BinOp::Or | BinOp::Xor) && a > b {
-                    std::mem::swap(&mut a, &mut b);
+                let (mut a, mut b) = (canon(replace, *lhs), canon_operand(replace, *rhs));
+                if matches!(op, BinOp::Add | BinOp::And | BinOp::Or | BinOp::Xor) {
+                    if let IntOperand::Reg(rb) = b {
+                        if a > rb {
+                            b = IntOperand::Reg(a);
+                            a = rb;
+                        }
+                    }
                 }
                 Some((Key::Bin(*op, a, b), *dst))
+            }
+            Instr::Mul {
+                dst,
+                window,
+                lhs,
+                rhs,
+            } => {
+                // every multiply window is commutative
+                let (mut a, mut b) = (canon(replace, *lhs), canon_operand(replace, *rhs));
+                if let IntOperand::Reg(rb) = b {
+                    if a > rb {
+                        b = IntOperand::Reg(a);
+                        a = rb;
+                    }
+                }
+                Some((Key::Mul(*window, a, b), *dst))
             }
             Instr::Un { dst, op, src } => Some((Key::Un(*op, canon(replace, *src)), *dst)),
             Instr::Shift {
@@ -587,7 +626,10 @@ fn cse(f: &mut IrFunc) -> bool {
                 op,
                 src,
                 amount,
-            } => Some((Key::Shift(*op, canon(replace, *src), *amount), *dst)),
+            } => Some((
+                Key::Shift(*op, canon(replace, *src), canon_operand(replace, *amount)),
+                *dst,
+            )),
             Instr::LoadImm { dst, value } => Some((Key::Imm(*value), *dst)),
             Instr::FBin { dst, op, lhs, rhs } => {
                 let (mut a, mut b) = (canon(replace, *lhs), canon(replace, *rhs));
@@ -597,9 +639,7 @@ fn cse(f: &mut IrFunc) -> bool {
                 Some((Key::FBin(*op, a, b), *dst))
             }
             Instr::FLoad { dst, src_gpr } => Some((Key::FLoad(canon(replace, *src_gpr)), *dst)),
-            Instr::FStore { dst_gpr, src } => {
-                Some((Key::FStore(canon(replace, *src)), *dst_gpr))
-            }
+            Instr::FStore { dst_gpr, src } => Some((Key::FStore(canon(replace, *src)), *dst_gpr)),
             Instr::FZero { dst } => Some((Key::FZero, *dst)),
             _ => None,
         }
@@ -611,6 +651,7 @@ fn cse(f: &mut IrFunc) -> bool {
         b: BlockId,
         f: &IrFunc,
         children: &[Vec<BlockId>],
+        multi_def: &HashSet<VReg>,
         scope: &mut HashMap<Key, VReg>,
         replace: &mut HashMap<VReg, VReg>,
         changed: &mut bool,
@@ -619,14 +660,18 @@ fn cse(f: &mut IrFunc) -> bool {
         for inst in &f.blocks[b].insts {
             match inst {
                 Instr::Mov { dst, src } | Instr::FMov { dst, src } => {
-                    replace.insert(*dst, canon(replace, *src));
-                    *changed = true;
+                    if !multi_def.contains(dst) {
+                        replace.insert(*dst, canon(replace, *src));
+                        *changed = true;
+                    }
                 }
                 _ => {
                     if let Some((key, dst)) = pure_key(inst, replace) {
                         if let Some(&found) = scope.get(&key) {
-                            replace.insert(dst, found);
-                            *changed = true;
+                            if !multi_def.contains(&dst) {
+                                replace.insert(dst, found);
+                                *changed = true;
+                            }
                         } else {
                             scope.insert(key.clone(), dst);
                             added.push(key);
@@ -636,7 +681,7 @@ fn cse(f: &mut IrFunc) -> bool {
             }
         }
         for &c in &children[b] {
-            walk(c, f, children, scope, replace, changed);
+            walk(c, f, children, multi_def, scope, replace, changed);
         }
         for k in added {
             scope.remove(&k);
@@ -648,6 +693,7 @@ fn cse(f: &mut IrFunc) -> bool {
             f.entry,
             f,
             &children,
+            &multi_def,
             &mut scope,
             &mut replace,
             &mut changed,
@@ -684,7 +730,8 @@ fn dce(f: &mut IrFunc) -> bool {
             }
             for inst in &b.insts {
                 // FUnary (domain faults), FImport4/FExport4 (memory) and
-                // FDot4Acc/FAccStore (ACC state) are side-effecting roots
+                // FDot4Acc/FAccStore (ACC state) are side-effecting roots;
+                // SIGNAL is an observable compiler barrier and never dies
                 let root = matches!(
                     inst,
                     Instr::StoreMem { .. }
@@ -698,6 +745,7 @@ fn dce(f: &mut IrFunc) -> bool {
                         | Instr::DcacheInvalidateAll
                         | Instr::MtsrDseg { .. }
                         | Instr::Jseg { .. }
+                        | Instr::Signal { .. }
                         | Instr::FUnary { .. }
                         | Instr::FImport4 { .. }
                         | Instr::FExport4 { .. }
@@ -744,6 +792,7 @@ fn dce(f: &mut IrFunc) -> bool {
             let removable = matches!(
                 inst,
                 Instr::Bin { .. }
+                    | Instr::Mul { .. }
                     | Instr::Un { .. }
                     | Instr::Shift { .. }
                     | Instr::Mov { .. }
@@ -752,6 +801,9 @@ fn dce(f: &mut IrFunc) -> bool {
                     | Instr::LoadSp { .. }
                     | Instr::LoadLocal { .. }
                     | Instr::AddrOfLocal { .. }
+                    | Instr::Mfsr { .. }
+                    | Instr::Bool { .. }
+                    | Instr::CMov { .. }
                     | Instr::FBin { .. }
                     | Instr::FMov { .. }
                     | Instr::FLoad { .. }
@@ -770,6 +822,244 @@ fn dce(f: &mut IrFunc) -> bool {
             }
         }
         changed |= before != b.insts.len() + b.phis.len();
+    }
+    changed
+}
+
+// ---------------------------------------------------------------------------
+// safe if-conversion (CpuV3): simple one-instruction diamonds become a
+// Boolean-producing comparison or a conditional move
+// ---------------------------------------------------------------------------
+
+/// One arm of a convertible diamond, seen from its phi argument: the arm is
+/// empty (the phi uses an earlier value directly), a single LoadImm, a single
+/// Mov, or a single pure value instruction; it has exactly one predecessor and
+/// ends in a plain jump.
+#[derive(Clone)]
+enum ArmValue {
+    /// value vreg used as-is
+    Reg(VReg),
+    /// constant produced by the arm's own LoadImm
+    Imm(u16),
+    /// value produced by a single pure instruction, which is hoisted into the
+    /// branch block (the instruction defines the phi argument)
+    Expr(Instr),
+}
+
+/// the vreg an instruction defines, if it is one of the value-producing forms
+/// this pass can hoist
+fn hoistable_def(inst: &Instr) -> Option<VReg> {
+    match inst {
+        Instr::Bin { dst, .. }
+        | Instr::Mul { dst, .. }
+        | Instr::Shift { dst, .. }
+        | Instr::Un { dst, .. } => Some(*dst),
+        _ => None,
+    }
+}
+
+/// whether an instruction is side-effect-free, non-faulting, and lowers
+/// without an internal branch (so it can run unconditionally before the
+/// compare). `Log2` is excluded because it expands to a branch.
+fn hoistable_value(inst: &Instr) -> bool {
+    match inst {
+        Instr::Bin { .. } | Instr::Mul { .. } | Instr::Shift { .. } => true,
+        Instr::Un { op, .. } => !matches!(op, UnOp::Log2),
+        _ => false,
+    }
+}
+
+fn diamond_arm(
+    f: &IrFunc,
+    block: BlockId,
+    pred: BlockId,
+    phi_arg: VReg,
+) -> Option<(ArmValue, BlockId)> {
+    let arm = &f.blocks[block];
+    if !arm.phis.is_empty() || arm.preds.as_slice() != [pred] {
+        return None;
+    }
+    let Some(Terminator::Jmp { target }) = arm.term else {
+        return None;
+    };
+    match arm.insts.as_slice() {
+        [] => Some((ArmValue::Reg(phi_arg), target)),
+        [Instr::LoadImm { dst, value }] if *dst == phi_arg => Some((ArmValue::Imm(*value), target)),
+        [Instr::Mov { dst, src }] if *dst == phi_arg => Some((ArmValue::Reg(*src), target)),
+        [inst] if hoistable_def(inst) == Some(phi_arg) && hoistable_value(inst) => {
+            Some((ArmValue::Expr(inst.clone()), target))
+        }
+        _ => None,
+    }
+}
+
+/// Convert simple if-expression diamonds to `Bool`/`CMov` instructions.
+///
+/// Eligible shape (each arm is empty, a single LoadImm, a single Mov, or a
+/// single pure value instruction, so there are no side effects, no faults, and
+/// no nested control flow):
+///
+/// ```text
+/// B: br cmp, T, F
+/// T: ...; jmp J
+/// F: ...; jmp J
+/// J: dst = phi [(T, vT), (F, vF)]   (J's preds are exactly T and F)
+/// ```
+///
+/// The converted form (compare + move + conditional move, or one Boolean
+/// comparison) never exceeds the branchy form (compare + branch + jump + arm
+/// words) in static word count. Only the CpuV3 backend runs this pass, and
+/// only with optimizations enabled; CpuV2 keeps the branchy expansion.
+/// Resolve a `CmpRhs::Reg` back to `CmpRhs::Imm` when the register is defined
+/// by a single LoadImm, so constant comparisons in converted diamonds select
+/// the immediate encodings.
+fn resolve_cmp_imm(f: &IrFunc, cmp: &Cmp) -> Cmp {
+    let mut cmp = *cmp;
+    if let CmpRhs::Reg(v) = cmp.rhs {
+        let value = f.blocks.iter().flat_map(|b| &b.insts).find_map(|inst| {
+            if let Instr::LoadImm { dst, value } = inst {
+                (*dst == v).then_some(*value)
+            } else {
+                None
+            }
+        });
+        if let Some(value) = value {
+            cmp.rhs = CmpRhs::Imm(value);
+        }
+    }
+    cmp
+}
+
+pub fn convert_diamonds(f: &mut IrFunc) -> bool {
+    let mut changed = false;
+    for b in 0..f.blocks.len() {
+        let Some(Terminator::Br {
+            cmp,
+            if_true,
+            if_false,
+        }) = f.blocks[b].term.clone()
+        else {
+            continue;
+        };
+        if if_true == if_false || if_true == b || if_false == b {
+            continue;
+        }
+        // only the six real predicates map to hardware conditions
+        if matches!(cmp.cond, CompareOp::Never | CompareOp::Always) {
+            continue;
+        }
+        // find the join: one block with exactly these two preds and one phi
+        // selecting between the two arm values
+        let mut converted = None;
+        for join in 0..f.blocks.len() {
+            if join == b || join == if_true || join == if_false {
+                continue;
+            }
+            if f.blocks[join].preds.as_slice() != [if_true, if_false]
+                && f.blocks[join].preds.as_slice() != [if_false, if_true]
+            {
+                continue;
+            }
+            if f.blocks[join].phis.len() != 1 {
+                continue;
+            }
+            let phi = &f.blocks[join].phis[0];
+            let v_true = phi
+                .args
+                .iter()
+                .find(|&&(p, _)| p == if_true)
+                .map(|&(_, v)| v);
+            let v_false = phi
+                .args
+                .iter()
+                .find(|&&(p, _)| p == if_false)
+                .map(|&(_, v)| v);
+            let (Some(v_true), Some(v_false)) = (v_true, v_false) else {
+                continue;
+            };
+            let (Some((true_value, _)), Some((false_value, _))) = (
+                diamond_arm(f, if_true, b, v_true),
+                diamond_arm(f, if_false, b, v_false),
+            ) else {
+                continue;
+            };
+            converted = Some((join, phi.dst, true_value, false_value));
+            break;
+        }
+        let Some((join, dst, true_value, false_value)) = converted else {
+            continue;
+        };
+        let cmp = resolve_cmp_imm(f, &cmp);
+        let line = f.blocks[b].term_line;
+
+        // Boolean materialization: arms are exactly 1 and 0 (in any order)
+        let bool_cmp = match (&true_value, &false_value) {
+            (ArmValue::Imm(1), ArmValue::Imm(0)) => Some(cmp),
+            (ArmValue::Imm(0), ArmValue::Imm(1)) => {
+                let mut inverted = cmp;
+                inverted.cond = inverted.cond.invert();
+                Some(inverted)
+            }
+            _ => None,
+        };
+        let mut insts = vec![];
+        if let Some(bool_cmp) = bool_cmp {
+            insts.push(Instr::Bool { dst, cmp: bool_cmp });
+        } else {
+            // Hoist any arm that computes its value: a pure single instruction
+            // can run unconditionally before the compare. Arms are independent
+            // in SSA, so the order between them is irrelevant.
+            let mut arm_def = |arm: &ArmValue| -> Option<VReg> {
+                if let ArmValue::Expr(inst) = arm {
+                    insts.push(inst.clone());
+                    hoistable_def(inst)
+                } else {
+                    None
+                }
+            };
+            let true_def = arm_def(&true_value);
+            let false_def = arm_def(&false_value);
+            // dst = false value; dst = true value when the condition holds
+            match &false_value {
+                ArmValue::Imm(value) => insts.push(Instr::LoadImm { dst, value: *value }),
+                ArmValue::Reg(src) => insts.push(Instr::Mov { dst, src: *src }),
+                ArmValue::Expr(_) => insts.push(Instr::Mov {
+                    dst,
+                    src: false_def.expect("computed arm has a defined value"),
+                }),
+            }
+            let src = match true_value {
+                ArmValue::Imm(value) => {
+                    let tmp = f.fresh_vreg(crate::RegClass::Gpr);
+                    insts.push(Instr::LoadImm { dst: tmp, value });
+                    tmp
+                }
+                ArmValue::Reg(src) => src,
+                ArmValue::Expr(_) => true_def.expect("computed arm has a defined value"),
+            };
+            insts.push(Instr::CMov { dst, cmp, src });
+        }
+
+        let block = &mut f.blocks[b];
+        for inst in insts {
+            block.insts.push(inst);
+            block.lines.push(line);
+        }
+        block.term = Some(Terminator::Jmp { target: join });
+        for dead in [if_true, if_false] {
+            // The arm blocks become unreachable: drop their terminator too so no
+            // later pass can rediscover an edge from them to the join.
+            let arm = &mut f.blocks[dead];
+            arm.insts.clear();
+            arm.lines.clear();
+            arm.phis.clear();
+            arm.preds.clear();
+            arm.term = None;
+            arm.term_line = None;
+        }
+        f.blocks[join].phis.clear();
+        f.blocks[join].preds = vec![b];
+        changed = true;
     }
     changed
 }

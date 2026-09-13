@@ -1341,9 +1341,7 @@ impl Module for CpuV3DataCache {
                         state.beat = 0;
                         let action = state
                             .cache
-                            .complete(crate::MainMemoryResponse::ReadLine {
-                                words: state.words,
-                            })
+                            .complete(crate::MainMemoryResponse::ReadLine { words: state.words })
                             .expect("data-cache completion must match a line read");
                         state.apply_action(action);
                     } else {

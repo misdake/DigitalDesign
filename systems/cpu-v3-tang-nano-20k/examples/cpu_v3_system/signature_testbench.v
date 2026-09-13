@@ -1,8 +1,9 @@
 `timescale 1ns/1ps
-// Signature testbench for the two-stage flash boot. Phase 1 preloads the
+// Signature testbench for the single-stage flash boot. Phase 1 preloads the
 // Flash model with the packed boot package and verifies the default/01 primary
 // application followed by the button-10 alternate application. Later phases
-// corrupt the descriptor and manifest metadata and check both boot stages.
+// corrupt the descriptor and manifest metadata and check the boot stage's
+// failure reports.
 module tb;
 reg clk = 0;
 reg [1:0] buttons = 0;
@@ -39,7 +40,7 @@ always #2 pixel_clock = ~pixel_clock;
 always #1 serial_clock = ~serial_clock;
 
 // SDRAM model: 16-bit words, two words per 32-bit controller word. The boot
-// sections stay below physical word 0x50000, so 19 index bits suffice.
+// sections stay below physical word 0x80000, so 19 index bits suffice.
 //
 // The SharedSdramPort is a 64-bit gearbox: a cache line is eight 32-bit words
 // (four 64-bit beats), and it streams line-write beats through
@@ -210,20 +211,18 @@ reg [7:0] uart_shift = 0;
 reg uart_receiving = 0;
 reg [7:0] uart_history [0:9];
 reg ddht_frame_seen = 0;
-reg stage0_error_frame_seen = 0;
-reg stage1_error_frame_seen = 0;
+reg descriptor_error_frame_seen = 0;
+reg manifest_error_frame_seen = 0;
 reg wait_sdram_phase_seen = 0;
-reg stage0_phase_seen = 0;
+reg boot_phase_seen = 0;
 reg dma_phase_seen = 0;
-reg stage1_phase_seen = 0;
 reg application_phase_seen = 0;
 
 always @(posedge clk) begin
     case (dut.boot_phase)
         1: wait_sdram_phase_seen <= 1;
-        2: stage0_phase_seen <= 1;
+        2: boot_phase_seen <= 1;
         3: dma_phase_seen <= 1;
-        4: stage1_phase_seen <= 1;
         5: application_phase_seen <= 1;
         default: begin end
     endcase
@@ -271,19 +270,19 @@ always @(posedge clk) begin
                      uart_history[3] ^ uart_history[4] ^ uart_history[5] ^
                      uart_history[6] ^ uart_history[7] ^ uart_history[8] ^
                      uart_history[9]) == 0)
-                    stage0_error_frame_seen = 1;
-                // Stage1 manifest error: stage 2, category 2, code 6,
-                // detail 0, followed by the legacy wire checksum.
+                    descriptor_error_frame_seen = 1;
+                // Manifest error: stage 1, category 2, code 6, detail 0,
+                // followed by the XOR checksum.
                 if (uart_history[0] == 8'h43 && uart_history[1] == 8'h56 &&
                     uart_history[2] == 8'h33 && uart_history[3] == 8'h42 &&
-                    uart_history[4] == 8'h02 && uart_history[5] == 8'h02 &&
+                    uart_history[4] == 8'h01 && uart_history[5] == 8'h02 &&
                     uart_history[6] == 8'h06 && uart_history[7] == 8'h00 &&
                     uart_history[8] == 8'h00 &&
                     (uart_history[0] ^ uart_history[1] ^ uart_history[2] ^
                      uart_history[3] ^ uart_history[4] ^ uart_history[5] ^
                      uart_history[6] ^ uart_history[7] ^ uart_history[8] ^
                      uart_history[9]) == 0)
-                    stage1_error_frame_seen = 1;
+                    manifest_error_frame_seen = 1;
             end
         end else begin
             uart_shift[uart_bit] <= uart_tx;
@@ -297,79 +296,84 @@ end
 initial begin
     for (cycle = 0; cycle < 524288; cycle = cycle + 1)
         memory[cycle] = 0;
-    // Sentinels prove that Stage1 loads only the selected application slot.
+    // Sentinels prove that the boot stage loads only the selected application
+    // slot.
     memory[20'h30200] = 16'hdead;
     memory[20'h70200] = 16'hdead;
     repeat (16) @(posedge clk);
     sdram_init_done = 1;
 
-    // Phase 1: the intact package boots Stage0 -> Stage1 -> application.
-    wait (ddht_frame_seen);
-    @(posedge clk);
-    if (leds !== 6'b000001)
-        $fatal(1, "primary boot must start at logical LED 000001, got %b", leds);
-    if (dut.code_segment !== 16'd3 || dut.data_segment !== 16'd4)
-        $fatal(1, "application segments not reached: cseg=0x%04x dseg=0x%04x",
-            dut.code_segment, dut.data_segment);
-    if (memory[20'h30200] === 16'hdead)
-        $fatal(1, "selected S1 application was not loaded");
-    if (memory[20'h70200] !== 16'hdead)
-        $fatal(1, "unselected S2 application was loaded");
+    // Phase 1: the intact package boots the default S2 display application
+    // (no button held). The display application never writes the LEDs, so the
+    // boot monitor keeps ownership and shows the application phase.
+    wait (dut.code_segment == 16'd7);
+    repeat (4) @(posedge clk);
+    if (dut.data_segment !== 16'h0000 && dut.data_segment !== 16'h0020 &&
+        dut.data_segment !== 16'h0021)
+        $fatal(1, "S2 display application data segment is not a framebuffer store: dseg=0x%04x",
+            dut.data_segment);
+    if (memory[20'h70200] === 16'hdead)
+        $fatal(1, "selected S2 application was not loaded");
+    if (memory[20'h30200] !== 16'hdead)
+        $fatal(1, "unselected S1 application was loaded");
     if (word_read_seen)
         $fatal(1, "a word read reached the SDRAM adapter; line refills must burst");
     if (!line_burst_seen)
         $fatal(1, "no line burst reached the SDRAM adapter");
-    if (dut.u_instruction_cache.prefetch_issued_count == 0 ||
-        dut.u_instruction_cache.prefetch_useful_count == 0)
-        $fatal(1, "two-stage boot did not issue and consume an I-cache prefetch");
-    if (!wait_sdram_phase_seen || !stage0_phase_seen || !dma_phase_seen ||
-        !stage1_phase_seen || !application_phase_seen)
-        $fatal(1, "boot observer missed phases: wait=%0d s0=%0d dma=%0d s1=%0d app=%0d",
-            wait_sdram_phase_seen, stage0_phase_seen, dma_phase_seen,
-            stage1_phase_seen, application_phase_seen);
-    if (dut.diagnostic_active !== 0)
-        $fatal(1, "application LED write did not take ownership from diagnostics");
+    // The boot stage runs from BSRAM and never touches the I-cache; only the
+    // application fetches through it. I-cache prefetching is covered by the
+    // system co-simulation's `icache_loop` program.
+    if (!wait_sdram_phase_seen || !boot_phase_seen || !dma_phase_seen ||
+        !application_phase_seen)
+        $fatal(1, "boot observer missed phases: wait=%0d boot=%0d dma=%0d app=%0d",
+            wait_sdram_phase_seen, boot_phase_seen, dma_phase_seen,
+            application_phase_seen);
+    if (dut.diagnostic_active !== 1 || leds !== 6'b100000)
+        $fatal(1, "display application must leave diagnostic ownership at phase 5: active=%0d leds=%b",
+            dut.diagnostic_active, leds);
 
-    // Phase 2: holding button 10 (S2) resets the CPU and latches the display
-    // boot. The live pins are 00 after release, so reaching CSEG 7 / DSEG 0
-    // proves the reset-time selection survived into Stage1.
+    // Phase 2: holding the S1 button (01) resets the CPU and latches the
+    // slider boot. The live pins are 00 after release, so reaching CSEG 3 /
+    // DSEG 4 proves the reset-time selection survived into the boot stage.
     ddht_frame_seen = 0;
-    buttons = 2'b10;
+    buttons = 2'b01;
     repeat (8) @(posedge clk);
     buttons = 2'b00;
-    wait (dut.code_segment == 16'd7);
+    wait (ddht_frame_seen);
     @(posedge clk);
-    if (dut.data_segment !== 16'd0)
-        $fatal(1, "S2 display application segments not reached: cseg=0x%04x dseg=0x%04x",
+    if (dut.code_segment !== 16'd3 || dut.data_segment !== 16'd4)
+        $fatal(1, "S1 slider application segments not reached: cseg=0x%04x dseg=0x%04x",
             dut.code_segment, dut.data_segment);
-    if (memory[20'h70200] === 16'hdead)
-        $fatal(1, "selected S2 application was not loaded");
+    if (memory[20'h30200] === 16'hdead)
+        $fatal(1, "selected S1 application was not loaded");
+    if (leds !== 6'b000001)
+        $fatal(1, "slider application must light logical LED 000001, got %b", leds);
 
     // Phase 3: corrupt the descriptor magic, reset through button 01,
-    // and expect the Stage0 boot error report.
+    // and expect the descriptor boot error report.
     corrupt_metadata = 1;
     buttons = 2'b01;
     repeat (8) @(posedge clk);
     buttons = 2'b00;
-    wait (stage0_error_frame_seen);
+    wait (descriptor_error_frame_seen);
     @(posedge clk);
     if (leds !== 6'b010001)
-        $fatal(1, "stage0 descriptor failure must light LEDs 6'b010001, got %b", leds);
+        $fatal(1, "descriptor failure must light LEDs 6'b010001, got %b", leds);
     if (dut.code_segment !== 16'd0)
         $fatal(1, "failed boot must stay in the boot segment, cseg=0x%04x", dut.code_segment);
 
-    // Phase 4: allow Stage0 to run, corrupt the manifest magic, and prove
-    // Stage1 reports the failure without entering the application.
+    // Phase 4: allow Stage0 to run, corrupt the manifest magic, and prove the
+    // boot stage reports the failure without entering the application.
     corrupt_metadata = 2;
     buttons = 2'b01;
     repeat (8) @(posedge clk);
     buttons = 2'b00;
-    wait (stage1_error_frame_seen);
+    wait (manifest_error_frame_seen);
     @(posedge clk);
-    if (leds !== 6'b100010)
-        $fatal(1, "stage1 manifest failure must light LEDs 6'b100010, got %b", leds);
-    if (dut.code_segment !== 16'd1)
-        $fatal(1, "stage1 failure must stay in segment 1, cseg=0x%04x", dut.code_segment);
+    if (leds !== 6'b010010)
+        $fatal(1, "manifest failure must light LEDs 6'b010010, got %b", leds);
+    if (dut.code_segment !== 16'd0)
+        $fatal(1, "manifest failure must stay in the boot segment, cseg=0x%04x", dut.code_segment);
     $display("DIGITAL_DESIGN_PASS");
     $finish;
 end

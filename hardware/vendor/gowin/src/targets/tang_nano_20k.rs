@@ -847,7 +847,8 @@ impl TangNano20K {
     ///
     /// The Flash reader leaf owns the indivisible Flash resource. SDRAM and
     /// its PLL/controller are owned here at the lowest target-specific board
-    /// boundary. Higher-level Stage0 and Stage1 logic claims neither device.
+    /// boundary. Higher-level boot-stage and application logic claims neither
+    /// device.
     pub fn boot_memory_project<M>(project_name: impl Into<String>) -> GowinModuleProject<Self, M>
     where
         M: Module<Input = TangNano20KBootInputs, Output = TangNano20KBootOutputs>,

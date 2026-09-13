@@ -16,7 +16,7 @@ pub const SYSCTL_LED: u8 = 2;
 pub const SYSCTL_UART: u8 = 3;
 
 /// Boot-selection strap device. The fitted system latches a stable one-hot
-/// button value during reset and exposes it to Stage1 after button release.
+/// button value during reset and exposes it to the boot stage after button release.
 pub const BOOT_SELECT_DEVICE: u8 = 1;
 pub const BOOT_SELECT_VALUE: u8 = 0;
 

@@ -21,7 +21,7 @@ compiler/
 systems/
   cpu-v1-sim/                    CPU V1 memory, devices, display, and programs
   cpu-v2-sim/                    CPU V2 runner and debugger
-  cpu-v3-tang-nano-20k/          fitted full FPGA system (two-stage flash boot,
+  cpu-v3-tang-nano-20k/          fitted full FPGA system (single-stage flash boot,
                                  CPU, SDRAM, flash, and display/HDMI) and boot chain
 ```
 
@@ -74,11 +74,11 @@ while device and complete-program tests stay with the system.
 
 Directory migration must not change ISA encodings, compiler listings, boot bytes, generated
 Verilog identities, resource claims, or simulator results. The CPU V3 system build script compiles
-Stage0, Stage1, and the two applications selected by `boot-applications.conf` from their real RCC
-sources and writes generated arrays only to Cargo `OUT_DIR`; no checked-in byte array is maintained
-in parallel. The immutable 544-word Stage0 retains its FNV-1a baseline. The application-dependent
-Flash package is fingerprinted in the generated asset manifest and independently repacked from the
-generated offline manifest for byte-for-byte validation.
+the single boot stage and the two applications selected by `boot-applications.conf` from their real
+RCC sources and writes generated arrays only to Cargo `OUT_DIR`; no checked-in byte array is
+maintained in parallel. The immutable 673-word boot stage retains its FNV-1a baseline. The
+application-dependent Flash package is fingerprinted in the generated asset manifest and
+independently repacked from the generated offline manifest for byte-for-byte validation.
 
 ## Board bring-up and diagnostics
 

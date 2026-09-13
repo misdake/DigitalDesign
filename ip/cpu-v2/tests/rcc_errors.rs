@@ -178,8 +178,27 @@ fn test_operator_restrictions() {
     expect_error("fn f(x: u16) -> u16 { x % 2 }", "not supported yet");
     // unary minus is i16-only, same as Rust
     expect_error("fn f(x: u16) -> u16 { -x }", "only allowed on i16");
-    // the ISA has no register-shift: the amount must be a literal in 0..=15
-    expect_error("fn f(x: u16, n: u16) -> u16 { x << n }", "shift amount");
+    // dynamic (register-count) shifts parse now, but the v2.6 ISA cannot
+    // encode them, so the v2 backend rejects them explicitly
+    let program = cpu_v2::frontend::parse_source(
+        "fn f(x: u16, n: u16) -> u16 { x << n } fn main() { halt(f(1, 2)); }",
+    )
+    .expect("dynamic shifts parse");
+    let result = std::panic::catch_unwind(|| {
+        let mut c = cpu_v2::Compiler::new();
+        for f in program.funcs {
+            c.add_func(f);
+        }
+        c.finish("main");
+    });
+    let error = result.expect_err("the v2 backend must reject register-count shifts");
+    let message = error
+        .downcast_ref::<String>()
+        .map(String::as_str)
+        .or_else(|| error.downcast_ref::<&str>().copied())
+        .unwrap_or("");
+    assert!(message.contains("register-count shifts"), "{message}");
+    // immediate shifts still reject out-of-range literal amounts
     expect_error("fn f(x: u16) -> u16 { x << 16 }", "0..=15");
 }
 

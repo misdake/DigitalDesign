@@ -35,11 +35,13 @@ Only these types exist; no other primitive types are supported:
 - Unary `-` is allowed only on `i16` (same as Rust); `!x` is bitwise not on integers and
   logical not on bools.
 - `x as u16` / `x as i16` / `p as u16` / `a as Ptr` (only between `u16`/`i16`/`Ptr`) reinterpret bits.
-- `>>` is logical on `u16` and arithmetic on `i16` (matches Rust and the ISA).
-  **The shift amount must be a literal constant** (the compiler currently lowers only
-  literal shifts; the register-count SHL/ASR encodings are unused for now).
-- `*` multiplication works on integers: CpuV3 lowers it to the hardware `MUL`; CpuV2 calls
-  the rcc_std `mul_16x16` library. `/` and `%` are not supported (the hardware has no divide).
+- `>>` is logical on `u16` and arithmetic on `i16` (matches Rust and the ISA). The shift
+  amount may be any integer expression: a literal selects the immediate encoding (SHLI/SHRI/ASRI
+  on CpuV3), a variable selects the register-count encoding (SHL/SHR/ASR on CpuV3, masked to the
+  low four bits; register-count shifts are rejected for CpuV2, whose ISA has only immediate shifts).
+- `*` multiplication works on integers: CpuV3 lowers it to the hardware `MUL0` (or `MULI` for a
+  constant operand); CpuV2 calls the rcc_std `mul_16x16` library. `/` and `%` are not supported
+  (the hardware has no divide).
 - FPU types (CPU V3): `+`, `-`, `*` work component-wise on same-typed FPU values; `vecN * fix16`
   and `fix16 * vecN` scale the vector (lowered to an ACC splat plus `FMUL`); unary `-` negates.
   Comparisons exist only on `fix16` (signed lane-x ordering through `FCMP` and the pending
@@ -99,8 +101,14 @@ Declared for real in `dsl_rt` (so the IDE sees them); the compiler lowers them d
 |---|---|
 | `halt(x: u16) -> !` | halt the machine with signal x |
 | `assert(cond: bool, sig: u16)` | halt(sig) unless cond holds |
-| `cnt1(x: u16) -> u16` | number of set bits in x |
+| `cnt1(x: u16) -> u16` | number of set bits in x (`POPCNT`) |
 | `log2(x: u16) -> u16` | integer base-2 logarithm; returns 0 when x is 0 |
+| `clz(x: u16) -> u16` | count leading zeros (`CLZ`); CpuV3-only |
+| `sextb(x: u16) -> i16` | sign-extend the low byte (`SEXTB` on CpuV3, a shift expansion on CpuV2) |
+| `mul8(a: u16, b: u16) -> u16` | unsigned product bits [23:8] (`MUL8`); CpuV3-only |
+| `mul16(a: u16, b: u16) -> u16` | unsigned product bits [31:16] (`MUL16`); CpuV3-only |
+| `signal(ty: u8, value: u16)` | CpuV3 `SIGNAL` event with compile-time constant type 1..=15 (retires as a NOP in hardware; a no-op on hosts) |
+| `read_cseg() -> u16` / `read_dseg() -> u16` | CpuV3-only: read the CSEG/DSEG special register (`MFSR`) |
 | `dev_recv(dev: u8, ch: u8) -> u16` | read a device register; device and channel are compile-time constant IDs |
 | `dev_send(dev: u8, ch: u8, v: u16)` | write a device register; device and channel are compile-time constant IDs |
 | `dcache_clean_all() -> u16` | CPU V3-only: blocking full compiler memory/control barrier; write every dirty D-cache line and return final maintenance status |

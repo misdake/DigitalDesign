@@ -3,7 +3,7 @@
 Full-stack digital design in Rust: a gate-level circuit simulator, a hardware
 description framework that targets Gowin FPGAs, custom 16-bit CPU IP, a
 Rust-subset compiler (`rcc`), and fitted FPGA systems — including a complete
-CPU V3 machine running on the Tang Nano 20K board with two-stage flash boot,
+CPU V3 machine running on the Tang Nano 20K board with single-stage flash boot,
 SDRAM, and HDMI display.
 
 Everything is developed and verified in one workspace. Design flow, CPU
@@ -25,7 +25,7 @@ benchmark evidence live at the same commit.
   - **CPU V1**: pilot processor with assembler, core, reference model, and an
     abstract device bus; runs Sokoban in `cpu-v1-sim`.
   - **CPU V2**: 16-bit Harvard CPU, ISA 2.6, cycle model, and rcc backend.
-  - **CPU V3**: current ISA (revision 0.7), Stage 12 microarchitecture with
+  - **CPU V3**: current ISA (revision 0.8), Stage 12 microarchitecture with
     overlapped integer execution, FPU (`fix16`, `vec2/3/4`), fetch queue,
     two-way I-cache, write-back D-cache with asynchronous store, and a
     hardware multiplier.
@@ -36,7 +36,7 @@ benchmark evidence live at the same commit.
   info.
 - **Fitted FPGA system** (`systems/cpu-v3-tang-nano-20k`): 22-bit physical
   memory map, 320x240 HDMI framebuffer, system-control/boot/display device
-  channels, two-stage flash boot, and the boot package. Simulator tools and
+  channels, single-stage flash boot, and the boot package. Simulator tools and
   a single-page web debugger (`cpu-v3-dbg`) target the same sources the build
   script compiles into boot images.
 - **Verification depth**: modules are tested against emulation, NAND, and

@@ -24,7 +24,9 @@ fn compile(source: &str) -> Vec<u16> {
         Err("benchmark programs use no modules".to_string())
     })
     .unwrap_or_else(|error| panic!("compile failed: {error}"));
-    cpu_v3::rcc_backend::compile(program, &options, "main").words
+    cpu_v3::rcc_backend::try_compile(program, &options, "main")
+        .unwrap_or_else(|error| panic!("compile failed: {error}"))
+        .words
 }
 
 fn run(args: Vec<String>) -> Result<(), String> {
@@ -111,4 +113,3 @@ fn main() -> ExitCode {
         }
     }
 }
-

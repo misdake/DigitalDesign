@@ -6,8 +6,8 @@
 
 mod system_emu;
 
-use system_emu::*;
 use std::path::Path;
+use system_emu::*;
 
 #[cfg(test)]
 mod tests {
@@ -232,9 +232,7 @@ fn main() {
             // The frozen suite is the default; CPU_V3_BENCH_DIR overrides it.
             let input_root = env::var_os("CPU_V3_BENCH_DIR")
                 .map(PathBuf::from)
-                .unwrap_or_else(|| {
-                    Path::new(env!("CARGO_MANIFEST_DIR")).join("benchmarks/suite")
-                });
+                .unwrap_or_else(|| Path::new(env!("CARGO_MANIFEST_DIR")).join("benchmarks/suite"));
             let mut paths = read_dir(&input_root)
                 .unwrap_or_else(|error| panic!("cannot read {}: {error}", input_root.display()))
                 .map(|entry| entry.expect("cannot read benchmark directory entry").path())

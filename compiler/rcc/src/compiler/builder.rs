@@ -230,8 +230,24 @@ impl FuncBuilder {
         dst
     }
     pub fn bin(&mut self, op: BinOp, lhs: VReg, rhs: VReg) -> VReg {
+        self.bin_op(op, lhs, IntOperand::Reg(rhs))
+    }
+    pub fn bin_imm(&mut self, op: BinOp, lhs: VReg, value: u16) -> VReg {
+        self.bin_op(op, lhs, IntOperand::Imm(value))
+    }
+    pub fn bin_op(&mut self, op: BinOp, lhs: VReg, rhs: IntOperand) -> VReg {
         let dst = self.fresh_vreg();
         self.push(Instr::Bin { dst, op, lhs, rhs });
+        dst
+    }
+    pub fn mul(&mut self, window: MulWindow, lhs: VReg, rhs: IntOperand) -> VReg {
+        let dst = self.fresh_vreg();
+        self.push(Instr::Mul {
+            dst,
+            window,
+            lhs,
+            rhs,
+        });
         dst
     }
     pub fn un(&mut self, op: UnOp, src: VReg) -> VReg {
@@ -241,6 +257,13 @@ impl FuncBuilder {
     }
     pub fn shift(&mut self, op: ShiftOp, src: VReg, amount: u8) -> VReg {
         assert!(amount <= 15, "shift amount {amount} does not fit u4");
+        self.shift_op(op, src, IntOperand::Imm(u16::from(amount)))
+    }
+    /// dynamic (register-count) shift; the hardware masks the amount to four bits
+    pub fn shift_reg(&mut self, op: ShiftOp, src: VReg, amount: VReg) -> VReg {
+        self.shift_op(op, src, IntOperand::Reg(amount))
+    }
+    pub fn shift_op(&mut self, op: ShiftOp, src: VReg, amount: IntOperand) -> VReg {
         let dst = self.fresh_vreg();
         self.push(Instr::Shift {
             dst,
@@ -325,6 +348,23 @@ impl FuncBuilder {
     /// and JSEG as two adjacent machine words.
     pub fn icache_invalidate_delayed_and_jump(&mut self, cseg: VReg, target: VReg) {
         self.terminate(Terminator::IcacheInvalidateDelayedAndJump { cseg, target });
+    }
+
+    /// CpuV3 SIGNAL with a nonzero type: a simulator-side event and an
+    /// observable compiler barrier (never deleted, never reordered across).
+    pub fn signal(&mut self, signal_type: u8, value: VReg) {
+        assert!(
+            (1..=15).contains(&signal_type),
+            "SIGNAL type {signal_type} is outside the non-halting 1..=15 range"
+        );
+        self.push(Instr::Signal { signal_type, value });
+    }
+
+    /// CpuV3-only: read an architectural special register (MFSR)
+    pub fn mfsr(&mut self, sr: SpecialReg) -> VReg {
+        let dst = self.fresh_vreg();
+        self.push(Instr::Mfsr { dst, sr });
+        dst
     }
 
     // ----- FPU emitters (CpuV3 fix16/vecN; results are Fpu-class) -----
@@ -816,7 +856,7 @@ pub(crate) fn remove_trivial_phis(func: &mut IrFunc) -> bool {
             break;
         }
         any = true;
-        let subst = |v: &mut VReg| {
+        let mut subst = |v: &mut VReg| {
             while let Some(&r) = replace.get(v) {
                 *v = r;
             }
@@ -829,54 +869,7 @@ pub(crate) fn remove_trivial_phis(func: &mut IrFunc) -> bool {
                 }
             }
             for inst in &mut b.insts {
-                match inst {
-                    Instr::Bin { lhs, rhs, .. } => {
-                        subst(lhs);
-                        subst(rhs);
-                    }
-                    Instr::Un { src, .. } | Instr::Shift { src, .. } | Instr::Mov { src, .. } => {
-                        subst(src)
-                    }
-                    Instr::LoadImm { .. }
-                    | Instr::StoreStatic { .. }
-                    | Instr::DevRecv { .. }
-                    | Instr::LoadSp { .. }
-                    | Instr::LoadLocal { .. }
-                    | Instr::AddrOfLocal { .. } => {}
-                    Instr::LoadMem { base, .. } => subst(base),
-                    Instr::StoreMem { base, src, .. } => {
-                        subst(base);
-                        subst(src);
-                    }
-                    Instr::Call { args, .. } => args.iter_mut().for_each(&subst),
-                    Instr::LoadFuncAddr { .. } => {}
-                    Instr::CallPtr { addr, args, .. } => {
-                        subst(addr);
-                        args.iter_mut().for_each(&subst);
-                    }
-                    Instr::DevSend { src, .. } => subst(src),
-                    Instr::DcacheInvalidateAll => {}
-                    Instr::MtsrDseg { src } => subst(src),
-                    Instr::Jseg { cseg, target } => {
-                        subst(cseg);
-                        subst(target);
-                    }
-                    Instr::StoreSp { src, .. } | Instr::StoreLocal { src, .. } => subst(src),
-                    Instr::FBin { lhs, rhs, .. } | Instr::FDot4Acc { lhs, rhs } => {
-                        subst(lhs);
-                        subst(rhs);
-                    }
-                    Instr::FAccLoad { src, .. } => subst(src),
-                    Instr::FMov { src, .. } | Instr::FUnary { src, .. } => subst(src),
-                    Instr::FLoad { src_gpr, .. } => subst(src_gpr),
-                    Instr::FStore { src, .. } => subst(src),
-                    Instr::FImport4 { base_gpr, .. } => subst(base_gpr),
-                    Instr::FExport4 { src, base_gpr } => {
-                        subst(src);
-                        subst(base_gpr);
-                    }
-                    Instr::FAccStore { .. } | Instr::FZero { .. } | Instr::AddrOfFpuSpill { .. } => {}
-                }
+                inst.for_each_use_mut(&mut subst);
             }
             if let Some(term) = &mut b.term {
                 match term {

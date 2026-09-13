@@ -214,7 +214,10 @@ fn validate_convention(convention: RegisterConvention) {
         ] {
             for &register in registers {
                 assert!(register < 16, "{name} register f{register} is out of range");
-                assert!(roles.insert(register), "duplicate {name} register f{register}");
+                assert!(
+                    roles.insert(register),
+                    "duplicate {name} register f{register}"
+                );
             }
         }
         assert!(
@@ -289,47 +292,14 @@ fn collapse_redundant_phi_trampolines(f: &mut IrFunc, registers: &HashMap<VReg, 
 // ---------------------------------------------------------------------------
 
 pub(crate) fn inst_uses(inst: &Instr) -> Vec<VReg> {
-    match inst {
-        Instr::Bin { lhs, rhs, .. } => vec![*lhs, *rhs],
-        Instr::Un { src, .. } | Instr::Shift { src, .. } | Instr::Mov { src, .. } => vec![*src],
-        Instr::LoadImm { .. }
-        | Instr::StoreStatic { .. }
-        | Instr::DevRecv { .. }
-        | Instr::DcacheInvalidateAll
-        | Instr::LoadSp { .. }
-        | Instr::LoadLocal { .. }
-        | Instr::AddrOfLocal { .. }
-        | Instr::LoadFuncAddr { .. } => vec![],
-        Instr::LoadMem { base, .. } => vec![*base],
-        Instr::StoreMem { base, src, .. } => vec![*base, *src],
-        Instr::Call { args, .. } => args.clone(),
-        Instr::CallPtr { addr, args, .. } => {
-            let mut u = vec![*addr];
-            u.extend_from_slice(args);
-            u
-        }
-        Instr::DevSend { src, .. }
-        | Instr::MtsrDseg { src }
-        | Instr::StoreSp { src, .. }
-        | Instr::StoreLocal { src, .. } => {
-            vec![*src]
-        }
-        Instr::Jseg { cseg, target } => vec![*cseg, *target],
-        Instr::FBin { lhs, rhs, .. } | Instr::FDot4Acc { lhs, rhs } => vec![*lhs, *rhs],
-        Instr::FAccLoad { src, .. } => vec![*src],
-        Instr::FMov { src, .. } | Instr::FUnary { src, .. } | Instr::FStore { src, .. } => {
-            vec![*src]
-        }
-        Instr::FLoad { src_gpr, .. } | Instr::FImport4 { base_gpr: src_gpr, .. } => {
-            vec![*src_gpr]
-        }
-        Instr::FExport4 { src, base_gpr } => vec![*src, *base_gpr],
-        Instr::FAccStore { .. } | Instr::FZero { .. } | Instr::AddrOfFpuSpill { .. } => vec![],
-    }
+    let mut uses = vec![];
+    inst.for_each_use(&mut |v| uses.push(v));
+    uses
 }
 pub(crate) fn inst_defs(inst: &Instr) -> Vec<VReg> {
     match inst {
         Instr::Bin { dst, .. }
+        | Instr::Mul { dst, .. }
         | Instr::Un { dst, .. }
         | Instr::Shift { dst, .. }
         | Instr::Mov { dst, .. }
@@ -339,6 +309,9 @@ pub(crate) fn inst_defs(inst: &Instr) -> Vec<VReg> {
         | Instr::LoadFuncAddr { dst, .. }
         | Instr::LoadLocal { dst, .. }
         | Instr::AddrOfLocal { dst, .. }
+        | Instr::Mfsr { dst, .. }
+        | Instr::Bool { dst, .. }
+        | Instr::CMov { dst, .. }
         | Instr::LoadSp { dst, .. } => vec![*dst],
         Instr::StoreMem { .. }
         | Instr::StoreStatic { .. }
@@ -346,6 +319,7 @@ pub(crate) fn inst_defs(inst: &Instr) -> Vec<VReg> {
         | Instr::DcacheInvalidateAll
         | Instr::MtsrDseg { .. }
         | Instr::Jseg { .. }
+        | Instr::Signal { .. }
         | Instr::StoreSp { .. }
         | Instr::StoreLocal { .. } => {
             vec![]
@@ -354,9 +328,7 @@ pub(crate) fn inst_defs(inst: &Instr) -> Vec<VReg> {
         Instr::FBin { dst, .. }
         | Instr::FMov { dst, .. }
         | Instr::FLoad { dst, .. }
-        | Instr::FStore {
-            dst_gpr: dst, ..
-        }
+        | Instr::FStore { dst_gpr: dst, .. }
         | Instr::FImport4 { dst, .. }
         | Instr::FUnary { dst, .. }
         | Instr::FAccStore { dst, .. }
@@ -379,7 +351,7 @@ fn term_uses(term: &Terminator) -> Vec<VReg> {
 }
 
 fn replace_all_uses(f: &mut IrFunc, from: VReg, to: VReg) {
-    let subst = |v: &mut VReg| {
+    let mut subst = |v: &mut VReg| {
         if *v == from {
             *v = to;
         }
@@ -391,55 +363,7 @@ fn replace_all_uses(f: &mut IrFunc, from: VReg, to: VReg) {
             }
         }
         for inst in &mut b.insts {
-            match inst {
-                Instr::Bin { lhs, rhs, .. } => {
-                    subst(lhs);
-                    subst(rhs);
-                }
-                Instr::Un { src, .. }
-                | Instr::Shift { src, .. }
-                | Instr::Mov { src, .. }
-                | Instr::DevSend { src, .. }
-                | Instr::MtsrDseg { src }
-                | Instr::StoreSp { src, .. }
-                | Instr::StoreLocal { src, .. } => subst(src),
-                Instr::Jseg { cseg, target } => {
-                    subst(cseg);
-                    subst(target);
-                }
-                Instr::LoadImm { .. }
-                | Instr::StoreStatic { .. }
-                | Instr::DevRecv { .. }
-                | Instr::DcacheInvalidateAll
-                | Instr::LoadSp { .. }
-                | Instr::LoadLocal { .. }
-                | Instr::AddrOfLocal { .. } => {}
-                Instr::LoadMem { base, .. } => subst(base),
-                Instr::StoreMem { base, src, .. } => {
-                    subst(base);
-                    subst(src);
-                }
-                Instr::Call { args, .. } => args.iter_mut().for_each(&subst),
-                Instr::LoadFuncAddr { .. } => {}
-                Instr::CallPtr { addr, args, .. } => {
-                    subst(addr);
-                    args.iter_mut().for_each(&subst);
-                }
-                Instr::FBin { lhs, rhs, .. } | Instr::FDot4Acc { lhs, rhs } => {
-                    subst(lhs);
-                    subst(rhs);
-                }
-                Instr::FAccLoad { src, .. } => subst(src),
-                Instr::FMov { src, .. } | Instr::FUnary { src, .. } => subst(src),
-                Instr::FLoad { src_gpr, .. } => subst(src_gpr),
-                Instr::FStore { src, .. } => subst(src),
-                Instr::FImport4 { base_gpr, .. } => subst(base_gpr),
-                Instr::FExport4 { src, base_gpr } => {
-                    subst(src);
-                    subst(base_gpr);
-                }
-                Instr::FAccStore { .. } | Instr::FZero { .. } | Instr::AddrOfFpuSpill { .. } => {}
-            }
+            inst.for_each_use_mut(&mut subst);
         }
         if let Some(term) = &mut b.term {
             match term {
@@ -450,7 +374,7 @@ fn replace_all_uses(f: &mut IrFunc, from: VReg, to: VReg) {
                         subst(r);
                     }
                 }
-                Terminator::Ret { values } => values.iter_mut().for_each(&subst),
+                Terminator::Ret { values } => values.iter_mut().for_each(&mut subst),
                 Terminator::Halt { signal } => subst(signal),
                 Terminator::IcacheInvalidateDelayedAndJump { cseg, target } => {
                     subst(cseg);
@@ -526,9 +450,7 @@ fn insert_abi_shims(f: &mut IrFunc, convention: RegisterConvention) -> AbiInfo {
         if used {
             let p2 = fresh(f, p);
             replace_all_uses(f, p, p2);
-            f.blocks[f.entry]
-                .insts
-                .insert(0, shim_mov(p2, p, class));
+            f.blocks[f.entry].insts.insert(0, shim_mov(p2, p, class));
             f.blocks[f.entry].lines.insert(0, None);
         }
     }
@@ -700,7 +622,9 @@ fn abi_register(
         (RegClass::Fpu, AbiRole::Argument) => {
             convention.fpu.expect("FPU ABI").argument_registers[index]
         }
-        (RegClass::Fpu, AbiRole::Return) => convention.fpu.expect("FPU ABI").return_registers[index],
+        (RegClass::Fpu, AbiRole::Return) => {
+            convention.fpu.expect("FPU ABI").return_registers[index]
+        }
     }
 }
 
@@ -711,7 +635,6 @@ fn shim_mov(dst: VReg, src: VReg, class: RegClass) -> Instr {
         RegClass::Fpu => Instr::FMov { dst, src },
     }
 }
-
 
 // ---------------------------------------------------------------------------
 // step 2: critical edge splitting
@@ -965,6 +888,60 @@ fn compute_affinity(f: &IrFunc) -> HashMap<VReg, Vec<VReg>> {
         for inst in &b.insts {
             match inst {
                 Instr::Mov { dst, src } | Instr::FMov { dst, src } => pair(*src, *dst),
+                // Destructive two-address forms: the backend copies the first
+                // operand into the destination before the operation whenever
+                // the allocator cannot place them together. Prefer coalescing
+                // `dst` with whichever operand becomes the destination so that
+                // copy disappears.
+                Instr::Bin {
+                    dst,
+                    lhs,
+                    rhs: IntOperand::Imm(_),
+                    ..
+                }
+                | Instr::Mul {
+                    dst,
+                    lhs,
+                    rhs: IntOperand::Imm(_),
+                    ..
+                }
+                | Instr::Shift {
+                    dst,
+                    src: lhs,
+                    amount: IntOperand::Imm(_),
+                    ..
+                } => pair(*lhs, *dst),
+                // MUL is commutative: the backend swaps operands when `dst`
+                // already aliases the source, so either side may coalesce.
+                Instr::Mul {
+                    dst,
+                    lhs,
+                    rhs: IntOperand::Reg(rhs),
+                    ..
+                } => {
+                    pair(*lhs, *dst);
+                    pair(*rhs, *dst);
+                }
+                // Register-count shifts copy the shifted value into `dst`
+                // (never the amount register: aliasing that takes the scratch
+                // path in the backend).
+                Instr::Shift {
+                    dst,
+                    src,
+                    amount: IntOperand::Reg(_),
+                    ..
+                } => pair(*src, *dst),
+                // Boolean materialization copies the first comparison operand
+                // into `dst`, except for the swapped conditions (`>`/`<=`),
+                // where the register right-hand side is the first operand.
+                Instr::Bool { dst, cmp } => {
+                    let swapped = matches!(cmp.cond, CompareOp::Greater | CompareOp::LessEqual);
+                    match (swapped, cmp.rhs) {
+                        (true, CmpRhs::Reg(rhs)) => pair(rhs, *dst),
+                        (true, CmpRhs::Imm(_)) => {}
+                        (false, _) => pair(cmp.lhs, *dst),
+                    }
+                }
                 _ => {}
             }
         }
@@ -996,10 +973,7 @@ fn linear_scan(
     };
     for class in [RegClass::Gpr, RegClass::Fpu] {
         let (allocatable, callee_saved): (&[u8], &[u8]) = match class {
-            RegClass::Gpr => (
-                convention.allocatable_registers,
-                convention.callee_saved,
-            ),
+            RegClass::Gpr => (convention.allocatable_registers, convention.callee_saved),
             // all FPU registers are caller-saved: intervals crossing a call
             // have no register to live in and always spill
             RegClass::Fpu => match convention.fpu {
@@ -1008,7 +982,13 @@ fn linear_scan(
             },
         };
         let scan = scan_class(
-            f, intervals, abi, affinity, class, allocatable, callee_saved,
+            f,
+            intervals,
+            abi,
+            affinity,
+            class,
+            allocatable,
+            callee_saved,
         );
         result.reg.extend(scan.reg);
         result.spilled.extend(scan.spilled);
@@ -1140,7 +1120,6 @@ fn scan_class(
     ScanResult { reg, spilled }
 }
 
-
 // ---------------------------------------------------------------------------
 // step 4: spill rewriting (returns number of frame slots used)
 // ---------------------------------------------------------------------------
@@ -1152,12 +1131,7 @@ fn scan_class(
 /// (monotonic across fixpoint iterations, so slots assigned in earlier
 /// iterations are never clobbered). TODO(M5): pack slots of non-overlapping
 /// spills.
-fn rewrite_spills(
-    f: &mut IrFunc,
-    spilled: &[VReg],
-    next_slot: &mut u8,
-    next_fpu_slot: &mut u8,
-) {
+fn rewrite_spills(f: &mut IrFunc, spilled: &[VReg], next_slot: &mut u8, next_fpu_slot: &mut u8) {
     let mut slot_of: HashMap<VReg, u8> = HashMap::new();
     let mut fpu_slot_of: HashMap<VReg, u8> = HashMap::new();
     for &v in spilled {
@@ -1201,16 +1175,7 @@ fn rewrite_spills(
                         &mut lines,
                         None,
                     );
-                    spill_store(
-                        v,
-                        phi.dst,
-                        &slot_of,
-                        &fpu_slot_of,
-                        f,
-                        app,
-                        &mut lines,
-                        None,
-                    );
+                    spill_store(v, phi.dst, &slot_of, &fpu_slot_of, f, app, &mut lines, None);
                 }
             } else {
                 for (p, v) in &mut phi.args {
@@ -1243,50 +1208,9 @@ fn rewrite_spills(
         for mut inst in std::mem::take(&mut f.blocks[b].insts) {
             let line = old_lines.next().unwrap_or(None);
             // uses first
-            match &mut inst {
-                Instr::Bin { lhs, rhs, .. } => {
-                    reload(
-                        lhs,
-                        &slot_of,
-                        &fpu_slot_of,
-                        &spilled,
-                        f,
-                        &mut new_insts,
-                        &mut new_lines,
-                        line,
-                    );
-                    reload(
-                        rhs,
-                        &slot_of,
-                        &fpu_slot_of,
-                        &spilled,
-                        f,
-                        &mut new_insts,
-                        &mut new_lines,
-                        line,
-                    );
-                }
-                Instr::Un { src, .. } | Instr::Shift { src, .. } | Instr::Mov { src, .. } => {
-                    reload(
-                        src,
-                        &slot_of,
-                        &fpu_slot_of,
-                        &spilled,
-                        f,
-                        &mut new_insts,
-                        &mut new_lines,
-                        line,
-                    )
-                }
-                Instr::LoadImm { .. }
-                | Instr::StoreStatic { .. }
-                | Instr::DevRecv { .. }
-                | Instr::DcacheInvalidateAll
-                | Instr::LoadSp { .. }
-                | Instr::LoadLocal { .. }
-                | Instr::AddrOfLocal { .. } => {}
-                Instr::LoadMem { base, .. } => reload(
-                    base,
+            inst.for_each_use_mut(&mut |v| {
+                reload(
+                    v,
                     &slot_of,
                     &fpu_slot_of,
                     &spilled,
@@ -1294,189 +1218,8 @@ fn rewrite_spills(
                     &mut new_insts,
                     &mut new_lines,
                     line,
-                ),
-                Instr::StoreMem { base, src, .. } => {
-                    reload(
-                        base,
-                        &slot_of,
-                        &fpu_slot_of,
-                        &spilled,
-                        f,
-                        &mut new_insts,
-                        &mut new_lines,
-                        line,
-                    );
-                    reload(
-                        src,
-                        &slot_of,
-                        &fpu_slot_of,
-                        &spilled,
-                        f,
-                        &mut new_insts,
-                        &mut new_lines,
-                        line,
-                    );
-                }
-                Instr::Call { args, .. } => {
-                    for a in args {
-                        reload(
-                            a,
-                            &slot_of,
-                            &fpu_slot_of,
-                            &spilled,
-                            f,
-                            &mut new_insts,
-                            &mut new_lines,
-                            line,
-                        );
-                    }
-                }
-                Instr::LoadFuncAddr { .. } => {}
-                Instr::CallPtr { addr, args, .. } => {
-                    reload(
-                        addr,
-                        &slot_of,
-                        &fpu_slot_of,
-                        &spilled,
-                        f,
-                        &mut new_insts,
-                        &mut new_lines,
-                        line,
-                    );
-                    for a in args {
-                        reload(
-                            a,
-                            &slot_of,
-                            &fpu_slot_of,
-                            &spilled,
-                            f,
-                            &mut new_insts,
-                            &mut new_lines,
-                            line,
-                        );
-                    }
-                }
-                Instr::DevSend { src, .. }
-                | Instr::MtsrDseg { src }
-                | Instr::StoreSp { src, .. }
-                | Instr::StoreLocal { src, .. } => reload(
-                    src,
-                    &slot_of,
-                    &fpu_slot_of,
-                    &spilled,
-                    f,
-                    &mut new_insts,
-                    &mut new_lines,
-                    line,
-                ),
-                Instr::Jseg { cseg, target } => {
-                    reload(
-                        cseg,
-                        &slot_of,
-                        &fpu_slot_of,
-                        &spilled,
-                        f,
-                        &mut new_insts,
-                        &mut new_lines,
-                        line,
-                    );
-                    reload(
-                        target,
-                        &slot_of,
-                        &fpu_slot_of,
-                        &spilled,
-                        f,
-                        &mut new_insts,
-                        &mut new_lines,
-                        line,
-                    );
-                }
-                Instr::FBin { lhs, rhs, .. } | Instr::FDot4Acc { lhs, rhs } => {
-                    reload(
-                        lhs,
-                        &slot_of,
-                        &fpu_slot_of,
-                        &spilled,
-                        f,
-                        &mut new_insts,
-                        &mut new_lines,
-                        line,
-                    );
-                    reload(
-                        rhs,
-                        &slot_of,
-                        &fpu_slot_of,
-                        &spilled,
-                        f,
-                        &mut new_insts,
-                        &mut new_lines,
-                        line,
-                    );
-                }
-                Instr::FMov { src, .. } | Instr::FUnary { src, .. } | Instr::FAccLoad { src, .. } => reload(
-                    src,
-                    &slot_of,
-                    &fpu_slot_of,
-                    &spilled,
-                    f,
-                    &mut new_insts,
-                    &mut new_lines,
-                    line,
-                ),
-                Instr::FLoad { src_gpr, .. } => reload(
-                    src_gpr,
-                    &slot_of,
-                    &fpu_slot_of,
-                    &spilled,
-                    f,
-                    &mut new_insts,
-                    &mut new_lines,
-                    line,
-                ),
-                Instr::FStore { src, .. } => reload(
-                    src,
-                    &slot_of,
-                    &fpu_slot_of,
-                    &spilled,
-                    f,
-                    &mut new_insts,
-                    &mut new_lines,
-                    line,
-                ),
-                Instr::FImport4 { base_gpr, .. } => reload(
-                    base_gpr,
-                    &slot_of,
-                    &fpu_slot_of,
-                    &spilled,
-                    f,
-                    &mut new_insts,
-                    &mut new_lines,
-                    line,
-                ),
-                Instr::FExport4 { src, base_gpr } => {
-                    reload(
-                        src,
-                        &slot_of,
-                        &fpu_slot_of,
-                        &spilled,
-                        f,
-                        &mut new_insts,
-                        &mut new_lines,
-                        line,
-                    );
-                    reload(
-                        base_gpr,
-                        &slot_of,
-                        &fpu_slot_of,
-                        &spilled,
-                        f,
-                        &mut new_insts,
-                        &mut new_lines,
-                        line,
-                    );
-                }
-                Instr::FAccStore { .. } | Instr::FZero { .. } | Instr::AddrOfFpuSpill { .. } => {}
-            }
+                )
+            });
             new_insts.push(inst.clone());
             new_lines.push(line);
             // defs after
@@ -1687,6 +1430,7 @@ fn spill_store(
 fn defs_mut(inst: &mut Instr) -> Vec<&mut VReg> {
     match inst {
         Instr::Bin { dst, .. }
+        | Instr::Mul { dst, .. }
         | Instr::Un { dst, .. }
         | Instr::Shift { dst, .. }
         | Instr::Mov { dst, .. }
@@ -1696,6 +1440,9 @@ fn defs_mut(inst: &mut Instr) -> Vec<&mut VReg> {
         | Instr::LoadFuncAddr { dst, .. }
         | Instr::LoadLocal { dst, .. }
         | Instr::AddrOfLocal { dst, .. }
+        | Instr::Mfsr { dst, .. }
+        | Instr::Bool { dst, .. }
+        | Instr::CMov { dst, .. }
         | Instr::LoadSp { dst, .. } => vec![dst],
         Instr::StoreMem { .. }
         | Instr::StoreStatic { .. }
@@ -1703,6 +1450,7 @@ fn defs_mut(inst: &mut Instr) -> Vec<&mut VReg> {
         | Instr::DcacheInvalidateAll
         | Instr::MtsrDseg { .. }
         | Instr::Jseg { .. }
+        | Instr::Signal { .. }
         | Instr::StoreSp { .. }
         | Instr::StoreLocal { .. } => {
             vec![]

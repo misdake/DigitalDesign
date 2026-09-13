@@ -7,7 +7,12 @@ use std::process::ExitCode;
 // either configured source therefore cannot leave this exporter stale.
 include!(concat!(env!("OUT_DIR"), "/boot_asset_bindings.rs"));
 
-const LEGACY_ASSETS: &[&str] = &["boot-demo.v3bin", "display-demo.v3bin", "data.bin"];
+const LEGACY_ASSETS: &[&str] = &[
+    "stage1.v3bin",
+    "boot-demo.v3bin",
+    "display-demo.v3bin",
+    "data.bin",
+];
 
 fn main() -> ExitCode {
     match run(std::env::args_os().skip(1)) {

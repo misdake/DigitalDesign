@@ -254,7 +254,11 @@ fn round_shift_ties_even(value: i64, shift: u32) -> i64 {
     } else {
         quotient
     };
-    if negative { -rounded } else { rounded }
+    if negative {
+        -rounded
+    } else {
+        rounded
+    }
 }
 
 fn fix16_mul(a: i16, b: i16) -> i16 {
@@ -278,11 +282,19 @@ fn fix16_round(v: i16) -> i16 {
 }
 
 fn fix16_abs(v: i16) -> i16 {
-    if v == i16::MIN { i16::MAX } else { v.abs() }
+    if v == i16::MIN {
+        i16::MAX
+    } else {
+        v.abs()
+    }
 }
 
 fn fix16_neg(v: i16) -> i16 {
-    if v == i16::MIN { i16::MAX } else { -v }
+    if v == i16::MIN {
+        i16::MAX
+    } else {
+        -v
+    }
 }
 
 /// signed Q8.8 fixed-point scalar (one F register on the target)
@@ -506,7 +518,11 @@ impl vec4 {
     }
     /// load four aligned words from data memory (FIMPORT4)
     pub fn import(ptr: Ptr) -> vec4 {
-        assert_eq!(ptr.addr() & 3, 0, "vec4::import requires a 4-aligned address");
+        assert_eq!(
+            ptr.addr() & 3,
+            0,
+            "vec4::import requires a 4-aligned address"
+        );
         let mut lanes = [fix16(0); 4];
         for (i, lane) in lanes.iter_mut().enumerate() {
             *lane = fix16::from_bits(ptr.read(i as i16));
@@ -515,7 +531,11 @@ impl vec4 {
     }
     /// store four aligned words to data memory (FEXPORT4)
     pub fn export(v: vec4, ptr: Ptr) {
-        assert_eq!(ptr.addr() & 3, 0, "vec4::export requires a 4-aligned address");
+        assert_eq!(
+            ptr.addr() & 3,
+            0,
+            "vec4::export requires a 4-aligned address"
+        );
         for (i, lane) in v.0.iter().enumerate() {
             ptr.write(i as i16, lane.to_bits());
         }

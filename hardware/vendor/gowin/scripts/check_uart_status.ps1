@@ -50,7 +50,6 @@ function Get-StageName {
     param([byte]$Stage)
     switch ($Stage) {
         1 { return "Stage0" }
-        2 { return "Stage1" }
         default { return "stage-$Stage" }
     }
 }

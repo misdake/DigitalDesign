@@ -9,9 +9,8 @@ logical LEDs. Phase changes are shown immediately without display delays:
 | --- | --- |
 | `000001` | reset held |
 | `000010` | waiting for SDRAM initialization |
-| `000100` | Stage0 executing |
+| `000100` | boot stage executing |
 | `001000` | boot DMA active |
-| `010000` | Stage1 executing |
 | `100000` | application segment entered before its first LED write |
 | `100001` | sticky DMA or CPU fault |
 
@@ -21,13 +20,13 @@ firmware can report either success or a detailed error code. These patterns are
 progress evidence only; only the application's UART frame and system-level
 checks establish a successful boot.
 
-Stage1 maps the single-button S2 choice to the application's derived S2 slot:
-reset-time button values `00`/`01` select the configured S1/default application,
-while `10` selects the configured S2 application; `11` is ignored by the
-board-level selection latch. The current configuration uses the primary DDHT
-diagnostic for S1 and the CPU/FPU sine, cosine, and circle demo for S2. The S2
-slot is loaded at `0007:0200`; the current display program renders through
-cached CPU stores and cleans D-cache before each vblank framebuffer publication.
+The board-level selection latch powers up at `10` (S2), so the display
+application boots by default; holding the S1 button (`01`) during reset selects
+the slider diagnostic, and `11` is ignored. The current configuration uses the
+DDHT slider diagnostic for S1 and the CPU/FPU sine, cosine, and circle demo for
+S2. The S2 slot is loaded at `0007:0200`; the current display program renders
+through cached CPU stores and cleans D-cache before each vblank framebuffer
+publication.
 
 The current board's runtime SFDP probe reports an 8-MiB device. Its JEDEC ID is
 `EF 40 17`; this is a Winbond-family 64-Mbit part even though some board
@@ -93,10 +92,10 @@ powershell -ExecutionPolicy Bypass -File hardware/vendor/gowin/scripts/run_board
 ```
 
 `cpu-v3-boot-assets` does not compile a parallel copy of the firmware. It exports
-the Stage0, Stage1, S1/S2 application binaries, package, layout map, generated
-Stage1 selection source, and generated offline pack manifest produced in Cargo
-`OUT_DIR`, together with their sizes and fingerprints. The repository `quick`
-validation independently repacks those exported section files through
+the single boot stage, the S1/S2 application binaries, the package, layout map,
+generated selection source, and generated offline pack manifest produced in
+Cargo `OUT_DIR`, together with their sizes and fingerprints. The repository
+`quick` validation independently repacks those exported section files through
 `cpu-v3-pack` and requires byte-for-byte equality with the generated package.
 
 To replace an application, edit only `boot-applications.conf` and change the

@@ -1,4 +1,4 @@
-//! Reusable CpuV3 revision 0.7 processor core with physical-memory and device ports.
+//! Reusable CpuV3 revision 0.8 processor core with physical-memory and device ports.
 //!
 //! See [`../../docs/hardware-architecture.md`](../../docs/hardware-architecture.md) for the
 //! current Stage 12 microarchitecture and fitted-cache boundary.
@@ -19,7 +19,7 @@ use std::cmp::Ordering;
 use crate::{
     acc_saturate, fix16_abs, fix16_add, fix16_ceil, fix16_floor, fix16_from_acc, fix16_neg,
     fix16_reciprocal, fix16_reciprocal_sqrt, fix16_round, fix16_saturate, fix16_saturate01,
-    fix16_sign, fix16_sin_cos, fix16_sub, round_shift_ties_even, Fix16Raw, FpuVector,
+    fix16_sign, fix16_sin_cos, fix16_sub, round_shift_ties_even, Fix16Raw, FpuVector, SignalEvent,
 };
 
 pub const CPU_V3_FAULT_INVALID_INSTRUCTION: u8 = 1;
@@ -308,7 +308,7 @@ enum Phase {
 #[derive(Clone, Copy)]
 struct Prefix {
     address: u16,
-    high: u16,
+    payload: u16,
 }
 
 #[derive(Clone, Copy, Default)]
@@ -350,7 +350,8 @@ pub struct CpuV3CoreState {
     pending_data: PendingData,
     async_store: AsyncStore,
     multiply_destination: u8,
-    multiply_result: u16,
+    multiply_product: u32,
+    multiply_shift: u8,
     multiply_retire_words: u8,
     fpu_step: u8,
     fpu_accumulator: i64,
@@ -375,6 +376,10 @@ pub struct CpuV3CoreState {
     /// The architectural halt value, latched at the HALT retire edge like a
     /// register-read (mirrors the RTL's registered `halt_signal`).
     halt_signal: u16,
+    /// Model-only SIGNAL event: set when a nonzero `SIGNAL` retires and held
+    /// until the next executed instruction or `take_signal_event`. The RTL
+    /// exposes no port for it and retires nonzero types as a NOP.
+    signal_event: Option<SignalEvent>,
 }
 
 impl Default for CpuV3CoreState {
@@ -396,7 +401,8 @@ impl Default for CpuV3CoreState {
             pending_data: PendingData::default(),
             async_store: AsyncStore::default(),
             multiply_destination: 0,
-            multiply_result: 0,
+            multiply_product: 0,
+            multiply_shift: 0,
             multiply_retire_words: 0,
             fpu_step: 0,
             fpu_accumulator: 0,
@@ -419,6 +425,7 @@ impl Default for CpuV3CoreState {
             fault_code: 0,
             fault_pc: 0,
             halt_signal: 0,
+            signal_event: None,
         }
     }
 }
@@ -435,6 +442,17 @@ impl CpuV3CoreState {
         self.phase = Phase::FetchRequest;
     }
 
+    /// The model-only event of the most recently retired nonzero `SIGNAL`.
+    /// Cleared by the next executed instruction or by `take_signal_event`.
+    pub fn signal_event(&self) -> Option<SignalEvent> {
+        self.signal_event
+    }
+
+    /// Reads and clears the pending model-only SIGNAL event.
+    pub fn take_signal_event(&mut self) -> Option<SignalEvent> {
+        self.signal_event.take()
+    }
+
     /// Stages a write to the synchronous-write GPR RAM. The value lands one
     /// cycle later, matching the RTL's `gpr_write_enable` register + GPR RAM
     /// synchronous write port.
@@ -447,13 +465,15 @@ impl CpuV3CoreState {
     fn execute(&mut self, device_read_data: u16) {
         let instruction = self.instruction;
         let opcode = instruction >> 12;
+        // The model-only SIGNAL event lives for one executed instruction.
+        self.signal_event = None;
         if opcode == 0xf {
             if self.prefix.is_some() {
                 self.retired_words = self.retired_words.wrapping_add(1);
             }
             self.prefix = Some(Prefix {
                 address: self.instruction_pc,
-                high: instruction & 0x0fff,
+                payload: instruction & 0x0fff,
             });
             self.phase = Phase::FetchRequest;
             return;
@@ -483,7 +503,7 @@ impl CpuV3CoreState {
         let lhs = field(instruction, 4);
         let rhs = field(instruction, 0);
         match opcode {
-            0..=7 if opcode != 2 => {
+            0 | 1 | 3..=5 => {
                 let left = self.registers[usize::from(lhs)];
                 let right = self.registers[usize::from(rhs)];
                 self.write_gpr(
@@ -493,20 +513,56 @@ impl CpuV3CoreState {
                         1 => left.wrapping_sub(right),
                         3 => left & right,
                         4 => left | right,
-                        5 => left ^ right,
-                        6 => left.wrapping_shl(u32::from(right & 15)),
-                        7 => ((left as i16) >> u32::from(right & 15)) as u16,
-                        _ => unreachable!(),
+                        _ => left ^ right,
                     },
                 );
                 self.retire(retire_words);
             }
-            2 => self.begin_multiply(
-                dst,
-                self.registers[usize::from(lhs)],
-                self.registers[usize::from(rhs)],
-                retire_words,
-            ),
+            2 => {
+                let function = dst;
+                let old = self.registers[usize::from(lhs)];
+                match function {
+                    // Destructive shifts: register count (0..=2) or immediate
+                    // (4..=6).
+                    0..=2 | 4..=6 => {
+                        let amount = if function < 4 {
+                            self.registers[usize::from(rhs)] & 15
+                        } else {
+                            u16::from(rhs)
+                        };
+                        let result = match function & 3 {
+                            0 => old.wrapping_shl(u32::from(amount)),
+                            1 => old.wrapping_shr(u32::from(amount)),
+                            _ => ((old as i16) >> u32::from(amount)) as u16,
+                        };
+                        self.write_gpr(lhs, result);
+                        self.retire(retire_words);
+                    }
+                    // MUL0/MUL8/MUL16 and MULI share the single integer DSP.
+                    8..=10 | 12 => {
+                        let shift = match function {
+                            9 => 8,
+                            10 => 16,
+                            _ => 0,
+                        };
+                        // MULI sources the unsigned immediate bit pattern.
+                        let right = if function == 12 {
+                            immediate4(instruction, prefix, false)
+                        } else {
+                            self.registers[usize::from(rhs)]
+                        };
+                        self.begin_multiply(lhs, old, right, shift, retire_words);
+                    }
+                    _ => self.fault(CPU_V3_FAULT_INVALID_INSTRUCTION, fault_pc),
+                }
+            }
+            6 => self.execute_extended(instruction, retire_words, fault_pc),
+            7 => {
+                if dst & 8 == 0 {
+                    self.write_gpr(rhs, device_read_data);
+                }
+                self.retire(retire_words);
+            }
             8 | 9 => {
                 let offset = immediate4(instruction, prefix, true);
                 let logical = self.registers[usize::from(lhs)].wrapping_add(offset);
@@ -538,49 +594,56 @@ impl CpuV3CoreState {
             }
             10 => self.execute_immediate(instruction, prefix, retire_words, fault_pc),
             11 => {
-                let condition = dst;
+                let function = dst;
                 let offset = prefix.map_or_else(
                     || sign_extend(instruction & 0xff, 8),
-                    |value| ((value.high & 0xff) << 8) | (instruction & 0xff),
+                    |value| ((value.payload & 0xff) << 8) | (instruction & 0xff),
                 );
-                match condition {
-                    // Conditional branches consume the pending test result.
-                    0..=5 => {
+                match function {
+                    // Conditional branches and conditional moves consume the
+                    // pending test result, whether or not the condition holds.
+                    0..=5 | 8..=13 => {
                         let Some(test) = pending else {
                             self.fault(CPU_V3_FAULT_INVALID_INSTRUCTION, fault_pc);
                             return;
                         };
-                        let taken = match condition {
+                        let taken = match function & 7 {
                             0 => test == Ordering::Equal,
                             1 => test != Ordering::Equal,
                             2 => test == Ordering::Less,
                             3 => test != Ordering::Less,
                             4 => test == Ordering::Greater,
-                            5 => test != Ordering::Greater,
-                            _ => unreachable!(),
+                            _ => test != Ordering::Greater,
                         };
-                        if taken {
-                            self.pc = self.pc.wrapping_add(offset);
+                        if function <= 5 {
+                            if taken {
+                                self.pc = self.pc.wrapping_add(offset);
+                            }
+                        } else if taken {
+                            // MOVcc rd, rs
+                            self.write_gpr(lhs, self.registers[usize::from(rhs)]);
                         }
                     }
                     // JREL: unconditional relative jump, no link.
-                    8 => self.pc = self.pc.wrapping_add(offset),
+                    6 => self.pc = self.pc.wrapping_add(offset),
                     // JALREL: link the fall-through address into r14.
-                    9 => {
+                    7 => {
                         let next = self.pc;
                         self.pc = next.wrapping_add(offset);
                         self.write_gpr(14, next);
+                    }
+                    // JREG: canonical `B E 0 target`.
+                    14 if lhs == 0 => self.pc = self.registers[usize::from(rhs)],
+                    // JALR: canonical `B F E target`, link fixed to r14.
+                    15 if lhs == 14 => {
+                        let target = self.registers[usize::from(rhs)];
+                        self.write_gpr(14, self.pc);
+                        self.pc = target;
                     }
                     _ => {
                         self.fault(CPU_V3_FAULT_INVALID_INSTRUCTION, fault_pc);
                         return;
                     }
-                }
-                self.retire(retire_words);
-            }
-            12 => {
-                if dst & 8 == 0 {
-                    self.write_gpr(rhs, device_read_data);
                 }
                 self.retire(retire_words);
             }
@@ -590,14 +653,23 @@ impl CpuV3CoreState {
                 self.fpu_step = 0;
                 self.phase = Phase::FpuExecute;
             }
-            14 => self.execute_control(instruction, retire_words, fault_pc),
             _ => self.fault(CPU_V3_FAULT_INVALID_INSTRUCTION, fault_pc),
         }
     }
 
-    fn begin_multiply(&mut self, destination: u8, left: u16, right: u16, retire_words: u8) {
+    fn begin_multiply(
+        &mut self,
+        destination: u8,
+        left: u16,
+        right: u16,
+        shift: u8,
+        retire_words: u8,
+    ) {
         self.multiply_destination = destination;
-        self.multiply_result = left.wrapping_mul(right);
+        // The DSP sees zero-extended inputs, so this is the full unsigned
+        // 32-bit product; the window is selected at commit.
+        self.multiply_product = u32::from(left) * u32::from(right);
+        self.multiply_shift = shift;
         self.multiply_retire_words = retire_words;
         self.phase = Phase::MultiplyWait;
     }
@@ -614,10 +686,6 @@ impl CpuV3CoreState {
         let old = self.registers[usize::from(dst)];
         let signed = immediate4(instruction, prefix, true);
         let unsigned = immediate4(instruction, prefix, false);
-        if function == 8 {
-            self.begin_multiply(dst, old, signed, retire_words);
-            return;
-        }
         match function {
             // CMPSI/CMPUI set the pending test result and write no register.
             12 => {
@@ -633,20 +701,23 @@ impl CpuV3CoreState {
             _ => {}
         }
         let result = match function {
-            0 => old.wrapping_add(signed),
-            1 => old.wrapping_sub(signed),
-            2 => old & unsigned,
-            3 => old | unsigned,
-            4 => old ^ unsigned,
-            5 => old.wrapping_shl(u32::from(instruction & 15)),
-            6 => old.wrapping_shr(u32::from(instruction & 15)),
-            7 => ((old as i16) >> u32::from(instruction & 15)) as u16,
-            9 => u16::from(old == signed),
-            10 => u16::from((old as i16) < (signed as i16)),
-            11 => u16::from(old < unsigned),
-            14 if prefix.is_some() => unsigned,
-            14 => sign_extend(instruction & 15, 4),
-            15 => unsigned,
+            // ADDI/SUBI read the unprefixed immediate as an unsigned u4; the
+            // prefixed form adds/subtracts the full 16-bit pattern.
+            0 => old.wrapping_add(unsigned),
+            1 => old.wrapping_sub(unsigned),
+            2 if prefix.is_some() => unsigned,
+            2 => sign_extend(instruction & 15, 4),
+            3 => unsigned,
+            4 => old & unsigned,
+            5 => old | unsigned,
+            6 => old ^ unsigned,
+            // LDC/ADDC index the shared constant table; a pending prefix
+            // expires unused (these never consume it).
+            7 => crate::CONSTANT_TABLE[usize::from(instruction & 15)],
+            8 => u16::from(old == signed),
+            9 => u16::from((old as i16) < (signed as i16)),
+            10 => u16::from(old < unsigned),
+            11 => old.wrapping_add(crate::CONSTANT_TABLE[usize::from(instruction & 15)]),
             _ => {
                 self.fault(CPU_V3_FAULT_INVALID_INSTRUCTION, fault_pc);
                 return;
@@ -656,53 +727,56 @@ impl CpuV3CoreState {
         self.retire(retire_words);
     }
 
-    fn execute_control(&mut self, instruction: u16, retire_words: u8, fault_pc: u16) {
+    fn execute_extended(&mut self, instruction: u16, retire_words: u8, fault_pc: u16) {
         let function = field(instruction, 8);
         let dst = field(instruction, 4);
         let src = field(instruction, 0);
         match function {
-            0 => self.write_gpr(dst, self.registers[usize::from(src)].count_ones() as u16),
-            1 => self.write_gpr(dst, self.registers[usize::from(src)]),
-            2 => self.write_gpr(dst, !self.registers[usize::from(src)]),
-            3 => self.write_gpr(dst, self.registers[usize::from(src)].wrapping_neg()),
-            4 if dst == 0 => self.pc = self.registers[usize::from(src)],
-            // JALR: the link field is architecturally fixed to r14.
-            5 if dst == 14 => {
-                let target = self.registers[usize::from(src)];
-                self.write_gpr(dst, self.pc);
-                self.pc = target;
-            }
-            6 => self.write_gpr(dst, sign_extend(self.registers[usize::from(src)] & 0xff, 8)),
-            7 => self.write_gpr(dst, self.registers[usize::from(src)].leading_zeros() as u16),
-            8 if dst == 0 && src == 0 => {
-                // Latch the architectural halt value at the retire edge, like a
-                // register-read: HALT reads r0 and holds it for the whole halted
-                // period instead of exposing a live async GPR tap.
-                self.halt_signal = self.registers[0];
-                self.retired_words = self.retired_words.wrapping_add(u32::from(retire_words));
-                self.phase = Phase::Halted;
-                return;
-            }
-            9 => self.write_gpr(
+            0 => self.write_gpr(dst, self.registers[usize::from(src)]),
+            1 => self.write_gpr(dst, !self.registers[usize::from(src)]),
+            2 => self.write_gpr(dst, self.registers[usize::from(src)].wrapping_neg()),
+            3 => self.write_gpr(dst, sign_extend(self.registers[usize::from(src)] & 0xff, 8)),
+            4 => self.write_gpr(dst, self.registers[usize::from(src)].leading_zeros() as u16),
+            5 => self.write_gpr(dst, self.registers[usize::from(src)].count_ones() as u16),
+            6 => self.write_gpr(
+                dst,
+                u16::from(self.registers[usize::from(dst)] == self.registers[usize::from(src)]),
+            ),
+            8 => self.write_gpr(
                 dst,
                 u16::from(
                     (self.registers[usize::from(dst)] as i16)
                         < (self.registers[usize::from(src)] as i16),
                 ),
             ),
-            10 => self.write_gpr(
+            9 => self.write_gpr(
                 dst,
                 u16::from(self.registers[usize::from(dst)] < self.registers[usize::from(src)]),
             ),
-            11 => {
+            10 => {
                 self.pending_test = Some(
                     (self.registers[usize::from(dst)] as i16)
                         .cmp(&(self.registers[usize::from(src)] as i16)),
                 )
             }
-            12 => {
+            11 => {
                 self.pending_test =
                     Some(self.registers[usize::from(dst)].cmp(&self.registers[usize::from(src)]))
+            }
+            // SIGNAL rs, type4: type 0 halts and latches rs at the retire
+            // edge, like a register-read; nonzero types retire as a NOP and
+            // record a model-only event (the RTL exposes no port for it).
+            12 if src == 0 => {
+                self.halt_signal = self.registers[usize::from(dst)];
+                self.retired_words = self.retired_words.wrapping_add(u32::from(retire_words));
+                self.phase = Phase::Halted;
+                return;
+            }
+            12 => {
+                self.signal_event = Some(SignalEvent {
+                    signal_type: src,
+                    value: self.registers[usize::from(dst)],
+                });
             }
             13 => {
                 let value = match src {
@@ -871,15 +945,21 @@ impl CpuV3CoreState {
         let a = field(self.instruction, 4);
         let b = field(self.instruction, 0);
         match opcode {
-            0 | 1 | 3..=7 | 15 => true,
-            9 => !self.async_store.valid,
-            10 => function != 8,
-            14 => {
-                function <= 3
-                    || matches!(function, 6 | 7 | 9..=12)
+            0 | 1 | 3..=5 | 15 => true,
+            // Major 2: the single-cycle shifts; multiplies go through the
+            // blocking DSP states and reserved functions fault.
+            2 => function <= 2 || (4..=6).contains(&function),
+            // Major 6: MOV..SEQ, SLT..CMPU, non-halting SIGNAL, valid MFSR,
+            // and MTSR DSEG retire in one cycle.
+            6 => {
+                function <= 6
+                    || (8..=11).contains(&function)
+                    || (function == 12 && b != 0)
                     || (function == 13 && b <= 1)
                     || (function == 14 && a == 1)
             }
+            9 => !self.async_store.valid,
+            10 => function != 14 && function != 15,
             _ => false,
         }
     }
@@ -906,7 +986,7 @@ impl Module for CpuV3Core {
         let pending = state.pending_data;
         let store = state.async_store;
         let execute_pipelineable = state.execute_pipelineable();
-        let device_instruction = state.phase == Phase::Execute && state.instruction >> 12 == 0xc;
+        let device_instruction = state.phase == Phase::Execute && state.instruction >> 12 == 0x7;
         let device_field = field(state.instruction, 8);
         let device_register = field(state.instruction, 0);
         output.drive(
@@ -1104,7 +1184,10 @@ impl Module for CpuV3Core {
             }
             Phase::MultiplyWait => state.phase = Phase::MultiplyCommit,
             Phase::MultiplyCommit => {
-                state.write_gpr(state.multiply_destination, state.multiply_result);
+                state.write_gpr(
+                    state.multiply_destination,
+                    (state.multiply_product >> state.multiply_shift) as u16,
+                );
                 state.retire(state.multiply_retire_words);
             }
             Phase::FpuExecute => state.execute_fpu_base(),
@@ -1365,15 +1448,17 @@ fn immediate4(instruction: u16, prefix: Option<Prefix>, signed: bool) -> u16 {
                 instruction & 15
             }
         },
-        |value| (value.high << 4) | (instruction & 15),
+        |value| (value.payload << 4) | (instruction & 15),
     )
 }
 
 fn is_prefix_consumer(instruction: u16) -> bool {
+    let function = (instruction >> 8) & 15;
     match instruction >> 12 {
         8 | 9 => true,
-        10 => !matches!((instruction >> 8) & 15, 5..=7),
-        11 => matches!((instruction >> 8) & 15, 0..=5 | 8 | 9),
+        2 => function == 12,
+        10 => matches!(function, 0..=6 | 8..=10 | 12 | 13),
+        11 => matches!(function, 0..=7),
         _ => false,
     }
 }
@@ -1383,7 +1468,7 @@ mod tests {
     use super::*;
     use crate as cpu_v3;
     use crate::rcc_backend::{self, CompilerOptions};
-    use crate::{AluOp, ImmediateOp, CpuV3Sim, RunOutcome, SpecialRegister, TestCondition};
+    use crate::{AluOp, CpuV3Sim, ImmediateOp, RunOutcome, SpecialRegister, TestCondition};
     use digital_design_circuit::{build_circuit, Circuit};
     use digital_design_hardware::{ResourceAmount, ResourceKind, VerilogProject};
     use rcc::frontend::compile_program;
@@ -1506,6 +1591,52 @@ mod tests {
     }
 
     #[test]
+    fn cycle_model_signal_events_are_single_cycle_and_model_only() {
+        let mut state = CpuV3CoreState::default();
+        state.registers[5] = 0x2a;
+
+        // A nonzero SIGNAL retires as a NOP and records the event.
+        state.instruction = cpu_v3::signal(5, 1);
+        state.execute(0);
+        assert_eq!(state.phase, Phase::FetchRequest);
+        assert_eq!(state.retired_words, 1);
+        assert_eq!(
+            state.signal_event(),
+            Some(crate::SignalEvent {
+                signal_type: 1,
+                value: 0x2a,
+            })
+        );
+        // Reading does not clear the event; take does.
+        assert!(state.signal_event().is_some());
+        assert!(state.take_signal_event().is_some());
+        assert_eq!(state.signal_event(), None);
+
+        // A fresh nonzero SIGNAL re-arms the event; the next executed
+        // instruction ends the single-cycle window.
+        state.instruction = cpu_v3::signal(5, 15);
+        state.execute(0);
+        assert_eq!(
+            state.signal_event().map(|event| event.signal_type),
+            Some(15)
+        );
+        state.instruction = 0x0322; // ADD r3, r2, r2 (any ordinary instruction)
+        state.execute(0);
+        assert_eq!(state.signal_event(), None);
+
+        // Type 0 halts and latches the selected register, exactly like the
+        // architectural HALT path.
+        let mut state = CpuV3CoreState::default();
+        state.registers[7] = 0x1234;
+        state.instruction = cpu_v3::signal(7, 0);
+        state.execute(0);
+        assert_eq!(state.phase, Phase::Halted);
+        assert_eq!(state.halt_signal, 0x1234);
+        assert_eq!(state.retired_words, 1);
+        assert_eq!(state.signal_event(), None);
+    }
+
+    #[test]
     fn emulator_async_store_overlaps_alu_and_blocks_next_memory_operation() {
         let mut state = CpuV3CoreState::default();
         state.registers[1] = 0x0100;
@@ -1597,13 +1728,14 @@ mod tests {
         program.extend(cpu_v3::load_immediate16(6, 3));
         program.extend(cpu_v3::load_immediate16(7, 5));
         program.extend([
-            cpu_v3::alu(AluOp::Mul, 8, 6, 7),
+            cpu_v3::move_register(8, 6),
+            cpu_v3::multiply(cpu_v3::MultiplyWindow::Low, 8, 7),
             cpu_v3::move_register(3, 1),
             cpu_v3::set_less_than_signed(3, 2),
             cpu_v3::move_register(4, 1),
             cpu_v3::set_less_than_unsigned(4, 2),
             cpu_v3::population_count(5, 1),
-            cpu_v3::immediate_unsigned(ImmediateOp::ShiftRightLogical, 1, 15),
+            cpu_v3::shift_immediate(cpu_v3::ShiftOp::RightLogical, 1, 15),
             cpu_v3::alu(AluOp::Add, 0, 3, 4),
             cpu_v3::alu(AluOp::Add, 0, 0, 5),
             cpu_v3::alu(AluOp::Add, 0, 0, 8),
@@ -2140,8 +2272,13 @@ mod tests {
     /// Pipeline-focused program: a wide (SETP) load, a dependent immediate
     /// chain that the forwarding bypass permits to run one instruction per
     /// cycle, control-path ALU ops, a comparison, and a store whose data value
-    /// must equal the forwarded `r0`, then halt. Interleaved with an FPU op and
-    /// a device op to cross the barrier paths.
+    /// must equal the forwarded `r0`, then halt. Interleaved with an FPU op to
+    /// cross the barrier path, and followed by ISA 0.8 coverage for the
+    /// destructive shift/multiply family, the Boolean comparisons and
+    /// conditional moves, non-halting SIGNAL, the special registers, and the
+    /// relative/register call-return pair. Keeping both phases here means the
+    /// Rust cycle model and the RTL stay compared on every new decoder and
+    /// pipeline classification.
     fn core_cosim_program() -> Vec<u16> {
         let mut p = Vec::new();
         p.extend(cpu_v3::load_immediate16(0, 0)); // r0 = 0 (SETP + ADDIU, two physical words)
@@ -2164,7 +2301,100 @@ mod tests {
         p.push(cpu_v3::negate(5, 4)); // r5 = -r4
         p.push(cpu_v3::store(0, 1, 4)); // mem[r1+4] = r0 (async store, observes forwarded r0 = 5)
         p.push(cpu_v3::fpu(crate::FpuOp::Move, 6, 7)); // FPU barrier path
+
+        // Destructive shift/multiply family (major 2). `MUL8 rd == rs`
+        // exercises the read-before-write window, the immediate shifts cover
+        // the 4-bit amount field, and the register form masks `rs & 15`.
+        p.extend(cpu_v3::load_immediate16(2, 0x00ff)); // r2 = 0x00ff
+        p.extend(cpu_v3::load_immediate16(3, 0x00ff)); // r3 = 0x00ff
+        p.push(cpu_v3::multiply(cpu_v3::MultiplyWindow::Low, 2, 3)); // MUL0, rd != rs
+        p.push(cpu_v3::multiply(cpu_v3::MultiplyWindow::Shift8, 3, 3)); // MUL8, rd == rs
+        p.push(cpu_v3::multiply(cpu_v3::MultiplyWindow::Shift16, 3, 2)); // MUL16
+        p.extend(cpu_v3::load_immediate16(4, 0x8001)); // r4 = 0x8001
+        p.push(cpu_v3::shift_immediate(
+            cpu_v3::ShiftOp::RightLogical,
+            4,
+            15,
+        ));
+        p.push(cpu_v3::shift_immediate(cpu_v3::ShiftOp::Left, 4, 15));
+        p.push(cpu_v3::shift_immediate(
+            cpu_v3::ShiftOp::RightArithmetic,
+            4,
+            15,
+        ));
+        p.extend(cpu_v3::load_immediate16(5, 0x0011)); // r5 = 0x11
+        p.push(cpu_v3::shift_register(cpu_v3::ShiftOp::RightLogical, 4, 5)); // amount = 0x11 & 15 = 1
+        p.push(cpu_v3::multiply_immediate(2, 3)); // MULI, u4
+        p.extend(cpu_v3::prefixed(cpu_v3::multiply_immediate(3, 0), 4)); // MULI with PFX12
+
+        // Boolean comparisons and conditional moves consume the pending test
+        // whether or not the move writes.
+        p.push(cpu_v3::compare_signed(2, 3));
+        p.push(cpu_v3::conditional_move(
+            crate::TestCondition::GreaterOrEqual,
+            6,
+            2,
+        ));
+        p.push(cpu_v3::compare_unsigned(2, 3));
+        p.push(cpu_v3::conditional_move(
+            crate::TestCondition::LessThan,
+            7,
+            3,
+        ));
+        p.push(cpu_v3::set_equal(8, 3)); // SEQ rd, rs
+        p.push(cpu_v3::set_less_than_signed(9, 2)); // SLT rd, rs
+        p.push(cpu_v3::set_less_than_unsigned(10, 4)); // SLTU rd, rs
+
+        // LDC/ADDC (major A functions 7/B) index the shared constant table
+        // and never consume PFX12; the prefix before the final LDC expires
+        // unused and retires separately. Both table signs are covered.
+        p.push(cpu_v3::load_constant(12, 0)); // r12 = 8
+        p.push(cpu_v3::load_constant(11, 15)); // r11 = -512
+        p.push(cpu_v3::add_constant(12, 7)); // r12 = 8 + 512 = 520
+        p.push(cpu_v3::add_constant(11, 9)); // r11 = -512 + -16 = -528
+        p.push(cpu_v3::prefix12(0xabc));
+        p.push(cpu_v3::load_constant(12, 0)); // r12 = 8 (prefix expires)
+
+        // ADDI/SUBI read the unprefixed immediate as an unsigned u4; 0 and 15
+        // are the range boundaries (15 was -1 under the signed reading).
+        p.push(cpu_v3::immediate_unsigned(crate::ImmediateOp::Add, 12, 15)); // r12 = 23
+        p.push(cpu_v3::immediate_unsigned(crate::ImmediateOp::Sub, 12, 0)); // r12 = 23
+        p.push(cpu_v3::immediate_unsigned(crate::ImmediateOp::Sub, 12, 15)); // r12 = 8
+        p.push(cpu_v3::immediate_unsigned(crate::ImmediateOp::Add, 12, 0)); // r12 = 8
+
+        // Non-halting SIGNAL types retire as a NOP in the RTL; both special
+        // registers are read and DSEG is rewritten with its current value.
+        p.push(cpu_v3::signal(6, 1));
+        p.push(cpu_v3::signal(7, 15));
+        p.push(cpu_v3::read_special(
+            11,
+            crate::SpecialRegister::DataSegment,
+        ));
+        p.push(cpu_v3::write_data_segment(11));
+        p.push(cpu_v3::read_special(
+            12,
+            crate::SpecialRegister::CodeSegment,
+        ));
+
+        // JALREL links the fixed r14 and JREG returns through it; the trailing
+        // JREL skips the subroutine body once control comes back.
+        p.push(cpu_v3::jump_and_link_relative(2)); // r14 = next word, pc = +3
+        p.push(cpu_v3::nop()); // return point
+        p.push(cpu_v3::jump_relative(1)); // skip the JREG subroutine body
+        p.push(cpu_v3::jump_register(cpu_v3::LINK_REGISTER)); // subroutine body: return
+
+        // JALR loads an absolute target, links r14, jumps, and returns through
+        // JREG. The subroutine sits after the final halt so fall-through never
+        // reaches it.
+        let subroutine = (p.len() + 5) as u16;
+        p.extend(cpu_v3::load_immediate16(13, subroutine));
+        p.push(cpu_v3::jump_and_link_register(13));
+        p.push(cpu_v3::alu(crate::AluOp::Add, 0, 2, 3));
+        // Fold r12 (= 8 from the LDC/ADDI chain above) into the halt signal so
+        // the constant-table and unsigned-immediate results are observed.
+        p.push(cpu_v3::alu(crate::AluOp::Add, 0, 0, 12));
         p.push(cpu_v3::halt());
+        p.push(cpu_v3::jump_register(cpu_v3::LINK_REGISTER));
         p
     }
 
@@ -2280,9 +2510,7 @@ mod tests {
              initial begin\n",
         );
         for (index, word) in program.iter().copied().enumerate() {
-            t.push_str(&format!(
-                "    memory[{index}] = 16'h{word:04x};\n"
-            ));
+            t.push_str(&format!("    memory[{index}] = 16'h{word:04x};\n"));
         }
         t.push_str(&format!(
             "    for (index = 0; index < 128; index = index + 1) devices[index] = 16'h0000;\n\
@@ -2403,6 +2631,32 @@ mod tests {
         }
         std::fs::remove_dir_all(&directory).ok();
         trace
+    }
+
+    #[test]
+    fn core_cosim_program_halts_in_the_simulators() {
+        // The ignored emu/RTL co-simulation only compares well-defined runs, so
+        // keep its program valid, in-range, and terminating. This checks the
+        // program against the architectural oracle and the Rust cycle model
+        // (the emu half of the co-sim) without needing Icarus, and pins the
+        // cycle count below the emu trace cap used by the co-sim.
+        let program = core_cosim_program();
+        let mut machine = CpuV3Sim::with_physical_memory_words(1 << 16);
+        machine.load_program(0, &program).unwrap();
+        assert!(matches!(machine.run(10_000), Ok(RunOutcome::Halted { .. })));
+
+        let emu = run_core_emu_trace(&program, 10_000);
+        let last = emu.last().copied().expect("emu trace empty");
+        assert!(!last.fault, "co-sim program faulted in the cycle model");
+        assert!(
+            last.halted,
+            "co-sim program did not halt in the cycle model"
+        );
+        assert!(
+            emu.len() < 2000,
+            "co-sim program needs {} cycles, above the co-sim emu trace cap",
+            emu.len()
+        );
     }
 
     #[test]

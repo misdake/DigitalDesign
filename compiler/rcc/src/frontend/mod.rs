@@ -1490,8 +1490,8 @@ fn stmt_expr(l: &mut FnLower, e: &Expr) -> Result<(), syn::Error> {
                     SBinOp::BitOrEq(_) => l.b.bin(BinOp::Or, cur, rhs),
                     SBinOp::BitXorEq(_) => l.b.bin(BinOp::Xor, cur, rhs),
                     SBinOp::ShlEq(_) | SBinOp::ShrEq(_) => {
-                        let amount = shift_amount(l, &a.right)?;
-                        l.b.shift(shift_op(&a.op, &elem), cur, amount)
+                        let amount = shift_operand(l, &a.right)?;
+                        l.b.shift_op(shift_op(&a.op, &elem), cur, amount)
                     }
                     _ => return Err(err(&a.op, "unsupported compound assignment operator")),
                 };
@@ -1521,9 +1521,9 @@ fn stmt_expr(l: &mut FnLower, e: &Expr) -> Result<(), syn::Error> {
                 SBinOp::BitOrEq(_) => BinOp::Or,
                 SBinOp::BitXorEq(_) => BinOp::Xor,
                 SBinOp::ShlEq(_) | SBinOp::ShrEq(_) => {
-                    let amount = shift_amount(l, &a.right)?;
+                    let amount = shift_operand(l, &a.right)?;
                     let sop = shift_op(&a.op, &ty);
-                    let v = l.b.shift(sop, cur, amount);
+                    let v = l.b.shift_op(sop, cur, amount);
                     l.write_var(&kind, v);
                     return Ok(());
                 }
@@ -1857,8 +1857,26 @@ fn expr(l: &mut FnLower, e: &Expr) -> Result<Val, syn::Error> {
             use SBinOp::*;
             match b.op {
                 Add(_) | Sub(_) | BitAnd(_) | BitOr(_) | BitXor(_) => {
-                    let (lhs, lt) = expr(l, &b.left)?.reg(l, &b.left, "binary operand")?;
-                    let (rhs, rt) = expr(l, &b.right)?.reg(l, &b.right, "binary operand")?;
+                    // a lone constant moves to the rhs of a commutative
+                    // operation so it can select an immediate encoding
+                    let commutative = !matches!(b.op, Sub(_));
+                    let swap = commutative
+                        && immediate_operand(l, &b.left).is_some()
+                        && immediate_operand(l, &b.right).is_none();
+                    let (left_e, right_e) = if swap {
+                        (&b.right, &b.left)
+                    } else {
+                        (&b.left, &b.right)
+                    };
+                    let (lhs, lt) = expr(l, left_e)?.reg(l, left_e, "binary operand")?;
+                    let literal_rhs = immediate_operand(l, right_e);
+                    let (rhs, rt) = match literal_rhs {
+                        Some((_, ref ty)) => (None, ty.clone()),
+                        None => {
+                            let (v, t) = expr(l, right_e)?.reg(l, right_e, "binary operand")?;
+                            (Some(v), t)
+                        }
+                    };
                     if lt.is_fpu() || rt.is_fpu() {
                         // per-lane FADD/FSUB on matching FPU types
                         let fop = match b.op {
@@ -1881,14 +1899,21 @@ fn expr(l: &mut FnLower, e: &Expr) -> Result<Val, syn::Error> {
                                 ),
                             ));
                         }
+                        let rhs = match rhs {
+                            Some(v) => v,
+                            None => l.b.load_imm(literal_rhs.unwrap().0),
+                        };
                         return Ok(Val::V(l.b.fbin(fop, lhs, rhs), lt));
                     }
                     let ty = unify_int(lt.clone(), rt.clone()).ok_or_else(|| {
-                        err(e, format!(
-                            "type mismatch: {} vs {} (cast with `as`)",
-                            lt.display(),
-                            rt.display()
-                        ))
+                        err(
+                            e,
+                            format!(
+                                "type mismatch: {} vs {} (cast with `as`)",
+                                lt.display(),
+                                rt.display()
+                            ),
+                        )
                     })?;
                     let op = match b.op {
                         Add(_) => BinOp::Add,
@@ -1898,23 +1923,46 @@ fn expr(l: &mut FnLower, e: &Expr) -> Result<Val, syn::Error> {
                         BitXor(_) => BinOp::Xor,
                         _ => unreachable!(),
                     };
-                    Ok(Val::V(l.b.bin(op, lhs, rhs), ty))
+                    let rhs_op = match rhs {
+                        Some(v) => crate::IntOperand::Reg(v),
+                        None => crate::IntOperand::Imm(literal_rhs.unwrap().0),
+                    };
+                    Ok(Val::V(l.b.bin_op(op, lhs, rhs_op), ty))
                 }
                 Shl(_) | Shr(_) => {
                     let (lhs, lt) = expr(l, &b.left)?.reg(l, &b.left, "shift value")?;
                     if !lt.is_int() {
                         return Err(err(&b.left, "shifts only work on integers"));
                     }
-                    let amount = shift_amount(l, &b.right)?;
-                    Ok(Val::V(l.b.shift(shift_op(&b.op, &lt), lhs, amount), lt))
+                    let amount = shift_operand(l, &b.right)?;
+                    Ok(Val::V(l.b.shift_op(shift_op(&b.op, &lt), lhs, amount), lt))
                 }
                 Mul(_) => {
-                    let (lhs, lt) = expr(l, &b.left)?.reg(l, &b.left, "binary operand")?;
-                    let (rhs, rt) = expr(l, &b.right)?.reg(l, &b.right, "binary operand")?;
+                    // a lone constant moves to the rhs to select MULI
+                    let swap = immediate_operand(l, &b.left).is_some()
+                        && immediate_operand(l, &b.right).is_none();
+                    let (left_e, right_e) = if swap {
+                        (&b.right, &b.left)
+                    } else {
+                        (&b.left, &b.right)
+                    };
+                    let (lhs, lt) = expr(l, left_e)?.reg(l, left_e, "binary operand")?;
+                    let literal_rhs = immediate_operand(l, right_e);
+                    let (rhs, rt) = match literal_rhs {
+                        Some((_, ref ty)) => (None, ty.clone()),
+                        None => {
+                            let (v, t) = expr(l, right_e)?.reg(l, right_e, "binary operand")?;
+                            (Some(v), t)
+                        }
+                    };
                     if lt.is_fpu() || rt.is_fpu() {
                         // same-type: per-lane FMUL; vecN scaled by fix16: an
                         // explicit ACC splat of the scalar followed by FMUL
                         // (the ISA has no scalar-by-vector instruction)
+                        let rhs = match rhs {
+                            Some(v) => v,
+                            None => l.b.load_imm(literal_rhs.unwrap().0),
+                        };
                         if lt == rt {
                             return Ok(Val::V(l.b.fbin(crate::FBinOp::Mul, lhs, rhs), lt));
                         }
@@ -1938,22 +1986,47 @@ fn expr(l: &mut FnLower, e: &Expr) -> Result<Val, syn::Error> {
                     }
                     // integers: hardware MUL on CpuV3, library call on CpuV2
                     let ty = unify_int(lt.clone(), rt.clone()).ok_or_else(|| {
-                        err(e, format!(
-                            "type mismatch: {} vs {} (cast with `as`)",
-                            lt.display(),
-                            rt.display()
-                        ))
+                        err(
+                            e,
+                            format!(
+                                "type mismatch: {} vs {} (cast with `as`)",
+                                lt.display(),
+                                rt.display()
+                            ),
+                        )
                     })?;
-                    Ok(Val::V(l.b.bin(BinOp::Mul, lhs, rhs), ty))
+                    let rhs_op = match rhs {
+                        Some(v) => crate::IntOperand::Reg(v),
+                        None => crate::IntOperand::Imm(literal_rhs.unwrap().0),
+                    };
+                    Ok(Val::V(l.b.mul(crate::MulWindow::Low, lhs, rhs_op), ty))
                 }
                 Div(_) | Rem(_) => Err(err(
                     &b.op,
                     "`/`, `%` are not supported yet (hardware has no div)",
                 )),
                 Lt(_) | Le(_) | Gt(_) | Ge(_) | Eq(_) | Ne(_) => {
-                    let (lhs, lt) = expr(l, &b.left)?.reg(l, &b.left, "comparison")?;
-                    let (rhs, rt) = expr(l, &b.right)?.reg(l, &b.right, "comparison")?;
-                    compare(e, b.op, lhs, lt, rhs, rt).map(Val::Bool)
+                    // Put a constant operand on the rhs so the compare can
+                    // select an immediate encoding. Swapping an ordered
+                    // comparison also inverts its condition (`k < x` becomes
+                    // `x > k`); equality is symmetric and needs no inversion.
+                    let ordered = matches!(b.op, Lt(_) | Le(_) | Gt(_) | Ge(_));
+                    let swap_operands = immediate_operand(l, &b.left).is_some()
+                        && immediate_operand(l, &b.right).is_none();
+                    let (left_e, right_e) = if swap_operands {
+                        (&b.right, &b.left)
+                    } else {
+                        (&b.left, &b.right)
+                    };
+                    let (lhs, lt) = expr(l, left_e)?.reg(l, left_e, "comparison")?;
+                    let (rhs, rt) = match immediate_operand(l, right_e) {
+                        Some((value, ty)) => (CmpRhs::Imm(value), ty),
+                        None => {
+                            let (v, t) = expr(l, right_e)?.reg(l, right_e, "comparison")?;
+                            (CmpRhs::Reg(v), t)
+                        }
+                    };
+                    compare(e, b.op, lhs, lt, rhs, rt, swap_operands && ordered).map(Val::Bool)
                 }
                 And(_) | Or(_) => {
                     let lhs = cond(l, &b.left)?;
@@ -2138,13 +2211,20 @@ fn compare(
     op: SBinOp,
     lhs: VReg,
     lt: Ty,
-    rhs: VReg,
+    rhs: CmpRhs,
     rt: Ty,
+    swapped: bool,
 ) -> Result<BoolExpr, syn::Error> {
     // fix16 comparisons use FCMP (signed lane-x ordering); vecN values have
     // no per-lane compare in this version
     if lt == Ty::Fix16 && rt == Ty::Fix16 {
-        let cond = compare_cond(&op, e)?;
+        let CmpRhs::Reg(rhs) = rhs else {
+            return Err(err(e, "fix16 comparisons do not take an immediate operand"));
+        };
+        let mut cond = compare_cond(&op, e)?;
+        if swapped {
+            cond = swapped_cond(cond);
+        }
         return Ok(BoolExpr::Cmp(Cmp {
             lhs,
             rhs: CmpRhs::Reg(rhs),
@@ -2173,7 +2253,10 @@ fn compare(
             ))
         }
     };
-    let cond = compare_cond(&op, e)?;
+    let mut cond = compare_cond(&op, e)?;
+    if swapped {
+        cond = swapped_cond(cond);
+    }
     if matches!(
         op,
         SBinOp::Lt(_) | SBinOp::Le(_) | SBinOp::Gt(_) | SBinOp::Ge(_)
@@ -2183,10 +2266,25 @@ fn compare(
     }
     Ok(BoolExpr::Cmp(Cmp {
         lhs,
-        rhs: CmpRhs::Reg(rhs),
+        rhs,
         cond,
         signed,
     }))
+}
+
+/// the condition code for `rhs cond' lhs` when `lhs cond rhs` was written:
+/// `a < b` becomes `b > a`, `a <= b` becomes `b >= a`, and so on. This is the
+/// operand-swap mapping, not the logical negation (`CompareOp::invert`).
+fn swapped_cond(cond: CompareOp) -> CompareOp {
+    match cond {
+        CompareOp::Equal => CompareOp::Equal,
+        CompareOp::NotEqual => CompareOp::NotEqual,
+        CompareOp::Less => CompareOp::Greater,
+        CompareOp::LessEqual => CompareOp::GreaterEqual,
+        CompareOp::Greater => CompareOp::Less,
+        CompareOp::GreaterEqual => CompareOp::LessEqual,
+        CompareOp::Never | CompareOp::Always => cond,
+    }
 }
 
 fn compare_cond(op: &SBinOp, e: &Expr) -> Result<CompareOp, syn::Error> {
@@ -2349,19 +2447,35 @@ fn call_expr(l: &mut FnLower, call: &syn::ExprCall) -> Result<Val, syn::Error> {
             if call.args.len() != 2 {
                 return Err(err(call, "dev_recv(dev, ch) takes 2 arguments"));
             }
-            let device = constant_u8(&call.args[0], "device", l.consts)?;
-            let channel = constant_u8(&call.args[1], "channel", l.consts)?;
+            let device = constant_below(&call.args[0], "device index", 8, l.consts)?;
+            let channel = constant_below(&call.args[1], "channel", 16, l.consts)?;
             return Ok(Val::V(l.b.dev_recv(device, channel), Ty::U16));
         }
         "dev_send" => {
             if call.args.len() != 3 {
                 return Err(err(call, "dev_send(dev, ch, value) takes 3 arguments"));
             }
-            let device = constant_u8(&call.args[0], "device", l.consts)?;
-            let channel = constant_u8(&call.args[1], "channel", l.consts)?;
+            let device = constant_below(&call.args[0], "device index", 8, l.consts)?;
+            let channel = constant_below(&call.args[1], "channel", 16, l.consts)?;
             let (value, from) = expr(l, &call.args[2])?.reg(l, &call.args[2], "device value")?;
             let (value, _) = coerce(l, value, &from, &Ty::U16, &call.args[2])?;
             l.b.dev_send(device, channel, value);
+            return Ok(Val::Unit);
+        }
+        "signal" => {
+            if call.args.len() != 2 {
+                return Err(err(call, "signal(type, value) takes 2 arguments"));
+            }
+            let signal_type = constant_u8(&call.args[0], "signal type", l.consts)?;
+            if !(1..=15).contains(&signal_type) {
+                return Err(err(
+                    &call.args[0],
+                    "signal type must be a compile-time constant in 1..=15",
+                ));
+            }
+            let (value, from) = expr(l, &call.args[1])?.reg(l, &call.args[1], "signal value")?;
+            let (value, _) = coerce(l, value, &from, &Ty::U16, &call.args[1])?;
+            l.b.signal(signal_type, value);
             return Ok(Val::Unit);
         }
         _ => {}
@@ -2506,6 +2620,46 @@ fn call_expr(l: &mut FnLower, call: &syn::ExprCall) -> Result<Val, syn::Error> {
         };
         return Ok(Val::V(l.b.un(op, v), Ty::U16));
     }
+    if matches!(name.as_str(), "mul8" | "mul16") {
+        if args.len() != 2 {
+            return Err(err(call, format!("{name}(a, b) takes 2 arguments")));
+        }
+        let (a, from) = &args[0];
+        let (a, _) = coerce(l, *a, from, &Ty::U16, &call.args[0])?;
+        let (b, from) = &args[1];
+        let (b, _) = coerce(l, *b, from, &Ty::U16, &call.args[1])?;
+        let window = if name == "mul8" {
+            crate::MulWindow::Shift8
+        } else {
+            crate::MulWindow::Shift16
+        };
+        return Ok(Val::V(
+            l.b.mul(window, a, crate::IntOperand::Reg(b)),
+            Ty::U16,
+        ));
+    }
+    if matches!(name.as_str(), "sextb" | "clz") {
+        if args.len() != 1 {
+            return Err(err(call, format!("{name}(x) takes 1 argument")));
+        }
+        let (v, from) = &args[0];
+        let (v, _) = coerce(l, *v, from, &Ty::U16, &call.args[0])?;
+        return Ok(match name.as_str() {
+            "sextb" => Val::V(l.b.un(UnOp::Sextb, v), Ty::I16),
+            _ => Val::V(l.b.un(UnOp::Clz, v), Ty::U16),
+        });
+    }
+    if matches!(name.as_str(), "read_cseg" | "read_dseg") {
+        if !args.is_empty() {
+            return Err(err(call, format!("{name}() takes no arguments")));
+        }
+        let sr = if name == "read_cseg" {
+            crate::SpecialReg::Cseg
+        } else {
+            crate::SpecialReg::Dseg
+        };
+        return Ok(Val::V(l.b.mfsr(sr), Ty::U16));
+    }
 
     // direct or indirect call
     let arg_vregs: Vec<VReg> = args.iter().map(|(v, _)| *v).collect();
@@ -2551,6 +2705,26 @@ fn constant_u8(
 ) -> Result<u8, syn::Error> {
     u8::try_from(const_eval(expression, consts)?)
         .map_err(|_| err(expression, format!("{name} must be from 0 through 255")))
+}
+
+/// a compile-time constant that must be strictly below `limit`, so an invalid
+/// device/channel/type argument is a source diagnostic rather than a lowering
+/// panic
+fn constant_below(
+    expression: &Expr,
+    name: &str,
+    limit: u8,
+    consts: &HashMap<String, (u16, Ty)>,
+) -> Result<u8, syn::Error> {
+    let value = constant_u8(expression, name, consts)?;
+    if value < limit {
+        Ok(value)
+    } else {
+        Err(err(
+            expression,
+            format!("{name} {value} is outside 0..={}", limit - 1),
+        ))
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -2627,8 +2801,8 @@ fn fpu_associated_call(
             let addr = aligned_scratch4(l);
             for i in 0..4usize {
                 let word = if i < lanes {
-                    let (v, from) = expr(l, &call.args[i])?
-                        .reg(l, &call.args[i], "vec constructor lane")?;
+                    let (v, from) =
+                        expr(l, &call.args[i])?.reg(l, &call.args[i], "vec constructor lane")?;
                     let (v, _) = coerce(l, v, &from, &Ty::Fix16, &call.args[i])?;
                     l.b.fstore(v)
                 } else {
@@ -2710,13 +2884,19 @@ fn fpu_method(
         }
         "to_bits" => {
             if !m.args.is_empty() || *base_ty != Ty::Fix16 {
-                return Err(err(&m.method, "to_bits() is a fix16 method without arguments"));
+                return Err(err(
+                    &m.method,
+                    "to_bits() is a fix16 method without arguments",
+                ));
             }
             Ok(Val::V(l.b.fstore(base), Ty::U16))
         }
         "to_int" => {
             if !m.args.is_empty() || *base_ty != Ty::Fix16 {
-                return Err(err(&m.method, "to_int() is a fix16 method without arguments"));
+                return Err(err(
+                    &m.method,
+                    "to_int() is a fix16 method without arguments",
+                ));
             }
             let bits = l.b.fstore(base);
             Ok(Val::V(l.b.shift(ShiftOp::Asr, bits, 8), Ty::I16))
@@ -3008,16 +3188,72 @@ fn cast(e: &Expr, v: VReg, from: Ty, to: Ty) -> Result<(VReg, Ty), syn::Error> {
     }
 }
 
-fn shift_amount(_l: &mut FnLower, e: &Expr) -> Result<u8, syn::Error> {
-    if let Expr::Lit(lit) = e {
-        if let Lit::Int(i) = &lit.lit {
-            let v = lit_int_value(i)?;
-            if v <= 15 {
-                return Ok(v as u8);
+/// a plain integer literal (optionally negated) usable directly as an
+/// immediate operand; other expressions keep the normal register lowering
+fn literal_int(e: &Expr) -> Option<(u16, Ty)> {
+    fn plain(i: &syn::LitInt) -> Option<(u16, Ty)> {
+        let ty = match i.suffix() {
+            "" => Ty::UntypedInt,
+            "u16" => Ty::U16,
+            "i16" => Ty::I16,
+            _ => return None,
+        };
+        // `lit_int_value` understands hex/octal/binary and `_` separators
+        u16::try_from(lit_int_value(i).ok()?).ok().map(|v| (v, ty))
+    }
+    match e {
+        Expr::Lit(lit) => match &lit.lit {
+            Lit::Int(i) => plain(i),
+            _ => None,
+        },
+        Expr::Unary(u) if matches!(u.op, SUnOp::Neg(_)) => match u.expr.as_ref() {
+            Expr::Lit(lit) => match &lit.lit {
+                Lit::Int(i) => plain(i).map(|(v, ty)| (v.wrapping_neg(), ty)),
+                _ => None,
+            },
+            _ => None,
+        },
+        _ => None,
+    }
+}
+
+/// an integer operand usable directly as an immediate: a literal or a named
+/// integer constant, resolved to its value and declared type. Variables,
+/// pointers, and aggregate/FPU constants are not eligible.
+fn immediate_operand(l: &FnLower, e: &Expr) -> Option<(u16, Ty)> {
+    if let Some(value) = literal_int(e) {
+        return Some(value);
+    }
+    if let Expr::Path(_) = e {
+        if let Ok(name) = path_ident(e) {
+            // a local or parameter shadows a constant of the same name
+            if l.lookup(&name).is_none() {
+                if let Some((value, ty)) = l.consts.get(&name) {
+                    if ty.is_int() {
+                        return Some((*value, ty.clone()));
+                    }
+                }
             }
         }
     }
-    Err(err(e, "shift amount must be a literal constant in 0..=15"))
+    None
+}
+
+/// shift amount: a constant selects the immediate encoding, any other integer
+/// expression selects the register-count encoding (the hardware masks the
+/// amount to the low four bits)
+fn shift_operand(l: &mut FnLower, e: &Expr) -> Result<crate::IntOperand, syn::Error> {
+    if let Some((value, _)) = immediate_operand(l, e) {
+        if value > 15 {
+            return Err(err(e, "shift amount must be a literal constant in 0..=15"));
+        }
+        return Ok(crate::IntOperand::Imm(value));
+    }
+    let (v, ty) = expr(l, e)?.reg(l, e, "shift amount")?;
+    if !ty.is_int() {
+        return Err(err(e, "shift amount must be an integer"));
+    }
+    Ok(crate::IntOperand::Reg(v))
 }
 
 fn shift_op(op: &SBinOp, ty: &Ty) -> ShiftOp {

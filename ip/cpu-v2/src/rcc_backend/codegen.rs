@@ -591,22 +591,41 @@ fn emit_inst(
                 BinOp::And => and,
                 BinOp::Or => or,
                 BinOp::Xor => xor,
-                BinOp::Mul => unreachable!(
-                    "the v2 driver rewrites integer multiply into a mul_16x16 call"
-                ),
+            };
+            // the v2 driver legalized every immediate operand into a vreg
+            let IntOperand::Reg(rhs) = rhs else {
+                unreachable!("the v2 driver legalizes immediate operands into vregs")
             };
             lines.push(MachineLine::Inst(
                 f(reg(*lhs), reg(*rhs), reg(*dst)),
                 ir_line,
             ));
         }
+        Instr::Mul { window, .. } => {
+            unreachable!(
+                "the v2 driver rewrites Low products into a mul_16x16 call; {window} is CpuV3-only"
+            )
+        }
         Instr::Un { dst, op, src } => {
+            if matches!(op, UnOp::Clz) {
+                panic!("clz is a CpuV3-only intrinsic; the v2.6 ISA has no leading-zero count");
+            }
+            if matches!(op, UnOp::Sextb) {
+                // expansion: dst = signed(src << 8) >> 8 through immediate shifts
+                if reg(*dst) != reg(*src) {
+                    lines.push(MachineLine::Inst(mov(reg(*src), reg(*dst)), ir_line));
+                }
+                lines.push(MachineLine::Inst(lsl(8, reg(*dst)), ir_line));
+                lines.push(MachineLine::Inst(asr(8, reg(*dst)), ir_line));
+                return;
+            }
             let f = match op {
                 UnOp::Inv => inv,
                 UnOp::Neg => neg,
                 UnOp::Not0 => not0,
                 UnOp::Cnt1 => cnt1,
                 UnOp::Log2 => log2,
+                UnOp::Sextb | UnOp::Clz => unreachable!(),
             };
             lines.push(MachineLine::Inst(f(reg(*src), reg(*dst)), ir_line));
         }
@@ -624,7 +643,11 @@ fn emit_inst(
                 ShiftOp::Lsr => lsr,
                 ShiftOp::Asr => asr,
             };
-            lines.push(MachineLine::Inst(f(*amount, reg(*dst)), ir_line));
+            // the v2 driver rejects register-count shifts
+            let IntOperand::Imm(amount) = amount else {
+                unreachable!("the v2 driver rejects register-count shifts")
+            };
+            lines.push(MachineLine::Inst(f(*amount as u8, reg(*dst)), ir_line));
         }
         Instr::Mov { dst, src } => {
             if reg(*dst) != reg(*src) {
@@ -729,6 +752,12 @@ fn emit_inst(
                 dev_send(*device, *channel, reg(*src)),
                 ir_line,
             ));
+        }
+        Instr::Signal { .. } => {
+            // SIGNAL retires as a NOP on hosts without the CpuV3 event model
+        }
+        Instr::Mfsr { .. } | Instr::Bool { .. } | Instr::CMov { .. } => {
+            panic!("mfsr/bool/cmov are CpuV3-only forms; the v2.6 ISA cannot encode them")
         }
         Instr::MtsrDseg { .. } | Instr::Jseg { .. } | Instr::DcacheInvalidateAll => {
             panic!(

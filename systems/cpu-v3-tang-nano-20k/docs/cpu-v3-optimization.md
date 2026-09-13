@@ -2,7 +2,7 @@
 
 Status: living record of the current implementation and future optimization work
 Repository: `../../../`
-Updated: 2026-09-02
+Updated: 2026-09-11
 
 This roadmap lives inside the CPU V3 system crate so it stays with the system it describes; it is
 maintained and committed together with each milestone. Benchmark workloads and runners live in the
@@ -41,6 +41,9 @@ described by each Stage.
 | 10 | Complete, 2026-08-31 | Replaced XOR/way-interleaved cache storage with two parity-split DPBs per cache. Refill and D-cache write-back now transfer directly as 4 x 64-bit beats without private 256-bit cache buffers. | Full system: 9,977 Logic; 4 DPB + 1 SDPB + 2 pROM; CPU 54.692 MHz |
 | 11 | Complete, 2026-09-01 | Added a one-entry asynchronous store. A scalar store retires immediately and its data-port request/response runs in the background, overlapping ALU and other non-memory instructions; later memory operations wait on the single store buffer. | Full system: 10,025 Logic; 4 DPB + 1 SDPB + 2 pROM; CPU 56.51 MHz |
 | 12 | Complete, 2026-09-01 | Added a conservative two-stage frontend: single-cycle integer ALU/immediate/control instructions overlap their fetch with the preceding execute, and a registered GPR forwarding path lets back-to-back dependent instructions observe the pending write. Loads, stores with a busy buffer, branches/jumps, devices, multiply, and FPU remain barriers. | Full system: 10,100 Logic; 4 DPB + 1 SDPB + 2 pROM; CPU 56.230 MHz |
+| ISA 0.8 migration | Complete, 2026-09-11 | Breaking integer ISA revision (no new numbered Stage): destructive shift/multiply family at major 2, extended/system family at major 6, device access at major 7, symmetric branch/conditional-move/jump family at major B, `IMMHI12` renamed to neutral `PFX12`, `HALT` replaced by `SIGNAL r0, 0`, majors C/E reserved. Encoding, simulators, handwritten RTL, RCC backend, debugger decoding, and boot assets switched at the same boundary. Stage0 is 461 words (fits the 1024-word boot window); integer side keeps one `MULT18X18`. | Full system: 10,436 Logic; 4 DPB + 1 SDPB + 2 pROM; 2 x MULT18X18; CPU 55.597 MHz, zero setup/hold TNS |
+| Single-stage boot merge | Complete, 2026-09-12 | Folded the former Stage1 into the BSRAM first stage: one image validates the descriptor and manifest and loads the reset-selected application, so the Stage1 image, the descriptor mirroring, and the duplicate DMA/UART/handoff code disappear. Container format version 4 reserves the former Stage1 descriptor fields; the error ABI uses stage `1` throughout and the boot-progress phases collapse to BOOT/DMA/APPLICATION. A manifest section-count bound closes the 16-bit `count << 5` wrap in the size check. | Merged Stage0 673 words (fits the 1024-word BSRAM boot window). Full system: 10,269 Logic; 4 DPB + 1 SDPB + 2 pROM; 2 x MULT18X18; CPU 54.522 MHz, zero setup/hold TNS |
+| `ASR`/`ASRI` signedness fix | Complete, 2026-09-12 | Found on hardware: the display demo's negative sine/cosine offsets landed at +255 instead of -1. The handwritten RTL put `>>>` inside a conditional whose other branches were unsigned, and Verilog makes a `?:` unsigned when any branch is unsigned, so `ASR`/`ASRI` (and therefore `fix16::to_int()`) shifted logically. The shifts now compute in a statement-based `case` and the FSM selects the result; `fix16_to_int_rcc` co-simulates the conversion. | Full system: 10,232 Logic; 4 DPB + 1 SDPB + 2 pROM; 2 x MULT18X18; CPU 54.747 MHz, zero setup/hold TNS |
 
 Starting with System consolidation, PnR evidence is always taken from the complete `cpu_v3_system`
 containing the CPU, boot path, SDRAM controller, and display path. Every subsequent completed stage
@@ -52,6 +55,19 @@ path, and its full-system build closes the 54 MHz CPU clock at 56.51 MHz. Stage 
 (commit `dabcb10`) closes the 54 MHz CPU clock at 56.230 MHz; the forward-compare/operand-mux/ALU/
 registered-writeback bypass and the Execute-cycle request/response mux cost a little timing over
 Stage 11, but the build still reports zero setup and hold TNS on every clock.
+
+The ISA 0.8 migration is deliberately not a numbered Stage: it is an architectural revision, not a
+microarchitecture optimization. Its recorded numbers come from the post-migration full-system Gowin
+build (`validate-hardware.ps1 -Mode all`, worktree after commit `b43ce4e`): 10,436 Logic (51% of the
+fitted device), unchanged memory geometry (4 DPB + 1 SDPB + 2 pROM = 7 BSRAM blocks), and 55.597 MHz
+on the 54 MHz CPU clock with zero setup/hold TNS on every clock. Integer DSP use stays at one
+`MULT18X18` (the FPU keeps its own); the destructive multiply windows select [15:0]/[23:8]/[31:16]
+from the same single multiplier through a constant-indexed part-select. Boot assets regenerated from
+the same RCC sources: Stage0 461 words, Stage1 555 words, S1 application 79 words, S2 application
+736 words; the Stage0 FNV-1a baseline is re-pinned in `build.rs`. A fresh run of the frozen
+benchmark suite under the new ISA is reported separately, not folded into the Stage-to-Stage table.
+The later single-stage boot merge (see the table) supersedes that asset set: the board now carries
+one 673-word first stage and no Stage1 binary, and the FNV-1a baseline is re-pinned again.
 
 ## Ordered major tasks
 

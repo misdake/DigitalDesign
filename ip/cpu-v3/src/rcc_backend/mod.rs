@@ -1,15 +1,16 @@
-//! CpuV3 lowering and fixed-width symbolic linking.
+//! CpuV3 lowering and symbolic linking with iterative branch relaxation.
 //!
-//! Control-flow references always use the two-word wide form in this first
-//! backend. This keeps layout deterministic while the ISA and hardware settle;
-//! shortening is a later size optimization, not a correctness requirement.
+//! Control-flow references start in the two-word wide form (PFX12 + relative)
+//! and the linker shrinks any branch, jump, or call whose final offset fits
+//! the signed 8-bit relative encoding to one word, iterating until the layout
+//! is stable.
 
 mod options;
 
 pub use options::CompilerOptions;
 
 use crate as cpu_v3;
-use crate::{AluOp, FpuOp, FpuUnaryOp, ImmediateOp, TestCondition, Word};
+use crate::{AluOp, FpuOp, FpuUnaryOp, ImmediateOp, SpecialRegister, TestCondition, Word};
 use crate::{CACHE_MAINTENANCE_DEVICE, D_INVALIDATE_ALL, ICACHE_INVALIDATE_ALL_DELAYED};
 use rcc::*;
 use std::collections::{HashMap, HashSet};
@@ -60,14 +61,18 @@ enum Line {
         condition: TestCondition,
         target: usize,
         line: Option<u32>,
+        /// one-word i8 relative form selected by relaxation
+        short: bool,
     },
     Jump {
         target: usize,
         line: Option<u32>,
+        short: bool,
     },
     Call {
         function: FuncName,
         line: Option<u32>,
+        short: bool,
     },
     LoadFunctionAddress {
         function: FuncName,
@@ -81,7 +86,14 @@ impl Line {
         match self {
             Self::Word { .. } => 1,
             Self::Label(_) => 0,
-            Self::Branch { .. } | Self::Jump { .. } | Self::Call { .. } | Self::LoadFunctionAddress { .. } => 2,
+            Self::Branch { short, .. } | Self::Jump { short, .. } | Self::Call { short, .. } => {
+                if *short {
+                    1
+                } else {
+                    2
+                }
+            }
+            Self::LoadFunctionAddress { .. } => 2,
         }
     }
 }
@@ -126,6 +138,7 @@ impl Lines {
             condition,
             target,
             line: self.cur_line,
+            short: false,
         });
     }
 
@@ -133,6 +146,7 @@ impl Lines {
         self.items.push(Line::Jump {
             target,
             line: self.cur_line,
+            short: false,
         });
     }
 
@@ -140,6 +154,7 @@ impl Lines {
         self.items.push(Line::Call {
             function,
             line: self.cur_line,
+            short: false,
         });
     }
 
@@ -160,12 +175,53 @@ struct LoweredFunction {
     callee_saved: usize,
 }
 
-/// Compile target-independent RCC IR for the CpuV3 ABI and ISA.
+/// An error the CpuV3 backend reports after the frontend has accepted the
+/// source program: a missing function, or a linked image that violates an
+/// encoding requirement. Callers that want to display a compiler error should
+/// use [`try_compile`].
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum BackendError {
+    /// A referenced function was not provided by the frontend.
+    UnknownFunction(String),
+    /// The linked code image violated an encoding requirement.
+    Validation(ProgramValidationError),
+}
+
+impl std::fmt::Display for BackendError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::UnknownFunction(name) => write!(f, "unknown function `{name}`"),
+            Self::Validation(error) => write!(f, "{error}"),
+        }
+    }
+}
+
+impl std::error::Error for BackendError {}
+
+impl From<ProgramValidationError> for BackendError {
+    fn from(error: ProgramValidationError) -> Self {
+        Self::Validation(error)
+    }
+}
+
+/// Compile target-independent RCC IR for the CpuV3 ABI and ISA, panicking on a
+/// backend error. Compiler front ends should call [`try_compile`] and report
+/// the error instead.
 pub fn compile(
     program: rcc::frontend::Program,
     options: &CompilerOptions,
     main: FuncName,
 ) -> CpuV3Program {
+    try_compile(program, options, main).unwrap_or_else(|error| panic!("{error}"))
+}
+
+/// Fallible form of [`compile`]: returns a [`BackendError`] for a missing
+/// function or an invalid code image so the caller can display it.
+pub fn try_compile(
+    program: rcc::frontend::Program,
+    options: &CompilerOptions,
+    main: FuncName,
+) -> Result<CpuV3Program, BackendError> {
     let debug = program.debug;
     let functions = program
         .funcs
@@ -180,8 +236,8 @@ fn compile_ir(
     options: &CompilerOptions,
     main: FuncName,
     debug: rcc::frontend::FrontendDebug,
-) -> CpuV3Program {
-    let reachable = reachable_functions(&functions, main);
+) -> Result<CpuV3Program, BackendError> {
+    let reachable = reachable_functions(&functions, main)?;
     let mut order = vec![main];
     let mut rest = reachable
         .iter()
@@ -195,8 +251,16 @@ fn compile_ir(
     for name in order {
         let mut function = functions
             .get(name)
-            .unwrap_or_else(|| panic!("unknown function `{name}`"))
+            .ok_or_else(|| BackendError::UnknownFunction(name.to_string()))?
             .clone();
+        // Safe if-conversion (CpuV3): simple one-instruction diamonds become
+        // Boolean comparisons or conditional moves. It changes the CFG and
+        // debugger stepping shape, so it only runs with optimizations enabled;
+        // it runs before the optimizer's constant-arm hoisting, which would
+        // otherwise dissolve the diamond shape.
+        if !options.opt.is_disabled() {
+            convert_diamonds(&mut function);
+        }
         optimize(&mut function, &options.opt);
         let (function, mut allocation) =
             allocate_with_convention(&function, options.opt.coalesce, CPU_V3_REGISTER_CONVENTION);
@@ -211,20 +275,25 @@ fn compile_ir(
         ));
     }
 
-    link(lowered, options, debug)
+    link(lowered, options, debug).map_err(BackendError::from)
 }
 
-fn reachable_functions(functions: &HashMap<FuncName, IrFunc>, main: FuncName) -> HashSet<FuncName> {
+fn reachable_functions(
+    functions: &HashMap<FuncName, IrFunc>,
+    main: FuncName,
+) -> Result<HashSet<FuncName>, BackendError> {
     let mut reachable = HashSet::from([main]);
     let mut work = vec![main];
     while let Some(name) = work.pop() {
         let function = functions
             .get(name)
-            .unwrap_or_else(|| panic!("unknown function `{name}`"));
+            .ok_or_else(|| BackendError::UnknownFunction(name.to_string()))?;
         for block in function.rpo() {
             for instruction in &function.blocks[block].insts {
                 if let Instr::Call { func, .. } | Instr::LoadFuncAddr { func, .. } = instruction {
-                    assert!(functions.contains_key(func), "unknown function `{func}`");
+                    if !functions.contains_key(func) {
+                        return Err(BackendError::UnknownFunction(func.to_string()));
+                    }
                     if reachable.insert(*func) {
                         work.push(*func);
                     }
@@ -232,7 +301,7 @@ fn reachable_functions(functions: &HashMap<FuncName, IrFunc>, main: FuncName) ->
             }
         }
     }
-    reachable
+    Ok(reachable)
 }
 
 fn lower_function(
@@ -391,20 +460,84 @@ fn lower_instruction(
 ) {
     match instruction {
         Instr::Bin { dst, op, lhs, rhs } => {
-            let operation = match op {
-                BinOp::Add => AluOp::Add,
-                BinOp::Sub => AluOp::Sub,
-                BinOp::Mul => AluOp::Mul,
-                BinOp::And => AluOp::And,
-                BinOp::Or => AluOp::Or,
-                BinOp::Xor => AluOp::Xor,
+            let dst = register(*dst);
+            let lhs = register(*lhs);
+            match rhs {
+                IntOperand::Reg(rhs) => {
+                    let rhs = register(*rhs);
+                    let operation = match op {
+                        BinOp::Add => AluOp::Add,
+                        BinOp::Sub => AluOp::Sub,
+                        BinOp::And => AluOp::And,
+                        BinOp::Or => AluOp::Or,
+                        BinOp::Xor => AluOp::Xor,
+                    };
+                    lines.word(cpu_v3::alu(operation, dst, lhs, rhs));
+                }
+                IntOperand::Imm(value) => {
+                    // destructive immediate op on rd: lhs moves into dst first.
+                    // ADDI/SUBI read an unsigned u4 (`emit_immediate` flips a
+                    // negative adjustment to the opposite operation); SEQI/
+                    // SLTI keep a signed i4 short form, and ANDI/ORI/XORI read
+                    // a zero-extended u4 mask.
+                    let (operation, signed_short) = match op {
+                        BinOp::Add => (ImmediateOp::Add, true),
+                        BinOp::Sub => (ImmediateOp::Sub, true),
+                        BinOp::And => (ImmediateOp::And, false),
+                        BinOp::Or => (ImmediateOp::Or, false),
+                        BinOp::Xor => (ImmediateOp::Xor, false),
+                    };
+                    if dst != lhs {
+                        lines.word(cpu_v3::move_register(dst, lhs));
+                    }
+                    emit_immediate(lines, operation, dst, *value, signed_short);
+                }
+            }
+        }
+        Instr::Mul {
+            dst,
+            window,
+            lhs,
+            rhs,
+        } => {
+            let dst = register(*dst);
+            let lhs = register(*lhs);
+            let window = match window {
+                MulWindow::Low => cpu_v3::MultiplyWindow::Low,
+                MulWindow::Shift8 => cpu_v3::MultiplyWindow::Shift8,
+                MulWindow::Shift16 => cpu_v3::MultiplyWindow::Shift16,
             };
-            lines.word(cpu_v3::alu(
-                operation,
-                register(*dst),
-                register(*lhs),
-                register(*rhs),
-            ));
+            match rhs {
+                IntOperand::Reg(rhs) => {
+                    let rhs = register(*rhs);
+                    // destructive multiply is commutative, so a dst == rhs
+                    // collision swaps the operands
+                    if dst == lhs {
+                        lines.word(cpu_v3::multiply(window, dst, rhs));
+                    } else if dst == rhs {
+                        lines.word(cpu_v3::multiply(window, dst, lhs));
+                    } else {
+                        lines.word(cpu_v3::move_register(dst, lhs));
+                        lines.word(cpu_v3::multiply(window, dst, rhs));
+                    }
+                }
+                IntOperand::Imm(value) => {
+                    if matches!(window, cpu_v3::MultiplyWindow::Low) {
+                        // MULI: destructive multiply by the unsigned immediate
+                        if dst != lhs {
+                            lines.word(cpu_v3::move_register(dst, lhs));
+                        }
+                        emit_muli(lines, dst, *value);
+                    } else {
+                        // MUL8/MUL16 have no immediate form: materialize first
+                        emit_load_immediate(lines, REG_TMP, *value);
+                        if dst != lhs {
+                            lines.word(cpu_v3::move_register(dst, lhs));
+                        }
+                        lines.word(cpu_v3::multiply(window, dst, REG_TMP));
+                    }
+                }
+            }
         }
         Instr::Un { dst, op, src } => lower_unary(register(*dst), *op, register(*src), lines),
         Instr::Shift {
@@ -415,15 +548,56 @@ fn lower_instruction(
         } => {
             let dst = register(*dst);
             let src = register(*src);
-            if dst != src {
-                lines.word(cpu_v3::move_register(dst, src));
-            }
             let operation = match op {
-                ShiftOp::Lsl => ImmediateOp::ShiftLeft,
-                ShiftOp::Lsr => ImmediateOp::ShiftRightLogical,
-                ShiftOp::Asr => ImmediateOp::ShiftRightArithmetic,
+                ShiftOp::Lsl => cpu_v3::ShiftOp::Left,
+                ShiftOp::Lsr => cpu_v3::ShiftOp::RightLogical,
+                ShiftOp::Asr => cpu_v3::ShiftOp::RightArithmetic,
             };
-            lines.word(cpu_v3::immediate_unsigned(operation, dst, *amount));
+            match amount {
+                IntOperand::Imm(amount) => {
+                    if dst != src {
+                        lines.word(cpu_v3::move_register(dst, src));
+                    }
+                    lines.word(cpu_v3::shift_immediate(operation, dst, *amount as u8))
+                }
+                IntOperand::Reg(amount) => {
+                    let amount = register(*amount);
+                    // when dst aliases the amount register, the MOV into dst
+                    // would clobber the amount before the shift reads it
+                    if dst == amount {
+                        lines.word(cpu_v3::move_register(REG_TMP, amount));
+                        if dst != src {
+                            lines.word(cpu_v3::move_register(dst, src));
+                        }
+                        lines.word(cpu_v3::shift_register(operation, dst, REG_TMP));
+                    } else {
+                        if dst != src {
+                            lines.word(cpu_v3::move_register(dst, src));
+                        }
+                        lines.word(cpu_v3::shift_register(operation, dst, amount));
+                    }
+                }
+            }
+        }
+        Instr::Signal { signal_type, value } => {
+            lines.word(cpu_v3::signal(register(*value), *signal_type));
+        }
+        Instr::Mfsr { dst, sr } => {
+            let sr = match sr {
+                SpecialReg::Cseg => SpecialRegister::CodeSegment,
+                SpecialReg::Dseg => SpecialRegister::DataSegment,
+            };
+            lines.word(cpu_v3::read_special(register(*dst), sr));
+        }
+        Instr::Bool { dst, cmp } => lower_bool(register(*dst), cmp, register, lines),
+        Instr::CMov { dst, cmp, src } => {
+            lower_compare(lines, cmp, register);
+            let condition = test_condition(cmp.cond);
+            lines.word(cpu_v3::conditional_move(
+                condition,
+                register(*dst),
+                register(*src),
+            ));
         }
         Instr::Mov { dst, src } => {
             let dst = register(*dst);
@@ -456,11 +630,7 @@ fn lower_instruction(
             channel,
         } => {
             check_device(*device);
-            lines.word(cpu_v3::device_receive(
-                register(*dst),
-                *device,
-                *channel,
-            ));
+            lines.word(cpu_v3::device_receive(register(*dst), *device, *channel));
         }
         Instr::DevSend {
             device,
@@ -468,11 +638,7 @@ fn lower_instruction(
             src,
         } => {
             check_device(*device);
-            lines.word(cpu_v3::device_send(
-                register(*src),
-                *device,
-                *channel,
-            ));
+            lines.word(cpu_v3::device_send(register(*src), *device, *channel));
         }
         Instr::DcacheInvalidateAll => lines.word(cpu_v3::device_send(
             REG_TMP,
@@ -480,10 +646,9 @@ fn lower_instruction(
             D_INVALIDATE_ALL,
         )),
         Instr::MtsrDseg { src } => lines.word(cpu_v3::write_data_segment(register(*src))),
-        Instr::Jseg { cseg, target } => lines.word(cpu_v3::jump_segment(
-            register(*cseg),
-            register(*target),
-        )),
+        Instr::Jseg { cseg, target } => {
+            lines.word(cpu_v3::jump_segment(register(*cseg), register(*target)))
+        }
         Instr::LoadSp { dst, slot } => emit_load(
             lines,
             register(*dst),
@@ -558,11 +723,9 @@ fn lower_instruction(
                 lines.word(cpu_v3::fpu(FpuOp::Move, dst, src));
             }
         }
-        Instr::FLoad { dst, src_gpr } => lines.word(cpu_v3::fpu(
-            FpuOp::Load,
-            register(*dst),
-            register(*src_gpr),
-        )),
+        Instr::FLoad { dst, src_gpr } => {
+            lines.word(cpu_v3::fpu(FpuOp::Load, register(*dst), register(*src_gpr)))
+        }
         Instr::FStore { dst_gpr, src } => lines.word(cpu_v3::fpu(
             FpuOp::Store,
             register(*dst_gpr),
@@ -598,16 +761,12 @@ fn lower_instruction(
             };
             lines.word(cpu_v3::fpu_unary(dst, unary_op));
         }
-        Instr::FDot4Acc { lhs, rhs } => lines.word(cpu_v3::fpu(
-            FpuOp::Dot4Acc,
-            register(*lhs),
-            register(*rhs),
-        )),
-        Instr::FAccStore { dst, mask } => lines.word(cpu_v3::fpu(
-            FpuOp::AccStore,
-            register(*dst),
-            *mask,
-        )),
+        Instr::FDot4Acc { lhs, rhs } => {
+            lines.word(cpu_v3::fpu(FpuOp::Dot4Acc, register(*lhs), register(*rhs)))
+        }
+        Instr::FAccStore { dst, mask } => {
+            lines.word(cpu_v3::fpu(FpuOp::AccStore, register(*dst), *mask))
+        }
         Instr::FAccLoad { src, lane } => {
             let op = match lane {
                 0 => FpuUnaryOp::AccLoadX,
@@ -617,10 +776,7 @@ fn lower_instruction(
             };
             lines.word(cpu_v3::fpu_unary(register(*src), op));
         }
-        Instr::FZero { dst } => lines.word(cpu_v3::fpu_unary(
-            register(*dst),
-            FpuUnaryOp::Zero,
-        )),
+        Instr::FZero { dst } => lines.word(cpu_v3::fpu_unary(register(*dst), FpuUnaryOp::Zero)),
         Instr::AddrOfFpuSpill { dst, slot } => {
             // dst = align4(sp + fpu_area_offset) + 4 * slot; the alignment is
             // computed at run time because nothing guarantees sp mod 4 == 0
@@ -647,6 +803,8 @@ fn lower_unary(dst: u8, operation: UnOp, src: u8, lines: &mut Lines) {
         UnOp::Inv => lines.word(cpu_v3::not(dst, src)),
         UnOp::Neg => lines.word(cpu_v3::negate(dst, src)),
         UnOp::Cnt1 => lines.word(cpu_v3::population_count(dst, src)),
+        UnOp::Sextb => lines.word(cpu_v3::sign_extend_byte(dst, src)),
+        UnOp::Clz => lines.word(cpu_v3::leading_zeros(dst, src)),
         UnOp::Log2 => {
             // log2(0) is defined by rcc as zero.
             lines.word(cpu_v3::leading_zeros(dst, src));
@@ -662,12 +820,169 @@ fn lower_unary(dst: u8, operation: UnOp, src: u8, lines: &mut Lines) {
             if dst != src {
                 lines.word(cpu_v3::move_register(dst, src));
             }
-            lines.word(cpu_v3::immediate_signed(
-                ImmediateOp::CompareEqual,
-                dst,
-                0,
-            ));
+            lines.word(cpu_v3::immediate_signed(ImmediateOp::SetEqual, dst, 0));
             lines.word(cpu_v3::immediate_unsigned(ImmediateOp::Xor, dst, 1));
+        }
+    }
+}
+
+/// the hardware condition code for one of the six real predicates
+fn test_condition(cond: CompareOp) -> TestCondition {
+    match cond {
+        CompareOp::Equal => TestCondition::Equal,
+        CompareOp::NotEqual => TestCondition::NotEqual,
+        CompareOp::Less => TestCondition::LessThan,
+        CompareOp::GreaterEqual => TestCondition::GreaterOrEqual,
+        CompareOp::Greater => TestCondition::GreaterThan,
+        CompareOp::LessEqual => TestCondition::LessOrEqual,
+        CompareOp::Never | CompareOp::Always => {
+            unreachable!("diamond conversion never emits degenerate conditions")
+        }
+    }
+}
+
+/// Emits the CMP-class instruction feeding a conditional move (registers or
+/// immediate, signed or unsigned).
+fn lower_compare(lines: &mut Lines, cmp: &Cmp, register: &dyn Fn(VReg) -> u8) {
+    let lhs = register(cmp.lhs);
+    match &cmp.rhs {
+        CmpRhs::Reg(r) => {
+            let r = register(*r);
+            lines.word(if cmp.signed {
+                cpu_v3::compare_signed(lhs, r)
+            } else {
+                cpu_v3::compare_unsigned(lhs, r)
+            });
+        }
+        CmpRhs::Imm(value) => emit_immediate(
+            lines,
+            if cmp.signed {
+                ImmediateOp::CompareSigned
+            } else {
+                ImmediateOp::CompareUnsigned
+            },
+            lhs,
+            *value,
+            cmp.signed,
+        ),
+    }
+}
+
+/// Lowers a Boolean-producing comparison (`dst = lhs cond rhs` as 0/1) to the
+/// destructive S* instructions; inverted conditions use an operand swap or a
+/// trailing XORI 1.
+/// kind of a destructive S* operation
+#[derive(Clone, Copy)]
+enum SetKind {
+    Equal,
+    Less { signed: bool },
+}
+
+impl SetKind {
+    fn reg_op(self, dst: u8, rhs: u8) -> Word {
+        match self {
+            SetKind::Equal => cpu_v3::set_equal(dst, rhs),
+            SetKind::Less { signed: true } => cpu_v3::set_less_than_signed(dst, rhs),
+            SetKind::Less { signed: false } => cpu_v3::set_less_than_unsigned(dst, rhs),
+        }
+    }
+    fn imm_op(self) -> ImmediateOp {
+        match self {
+            SetKind::Equal => ImmediateOp::SetEqual,
+            SetKind::Less { signed: true } => ImmediateOp::SetLessThanSigned,
+            SetKind::Less { signed: false } => ImmediateOp::SetLessThanUnsigned,
+        }
+    }
+    fn signed(self) -> bool {
+        match self {
+            SetKind::Equal => true,
+            SetKind::Less { signed } => signed,
+        }
+    }
+}
+
+/// Emits `dst = left SET_OP right` through the destructive S* forms. The
+/// scratch register preserves the right operand when `dst` aliases it.
+fn set_op(
+    lines: &mut Lines,
+    dst: u8,
+    left: u8,
+    kind: SetKind,
+    right: &CmpRhs,
+    register: &dyn Fn(VReg) -> u8,
+) {
+    match right {
+        CmpRhs::Reg(r) => {
+            let r = register(*r);
+            if dst == r {
+                // preserve the right operand before dst is overwritten
+                lines.word(cpu_v3::move_register(REG_TMP, r));
+                if dst != left {
+                    lines.word(cpu_v3::move_register(dst, left));
+                }
+                lines.word(kind.reg_op(dst, REG_TMP));
+            } else {
+                if dst != left {
+                    lines.word(cpu_v3::move_register(dst, left));
+                }
+                lines.word(kind.reg_op(dst, r));
+            }
+        }
+        CmpRhs::Imm(value) => {
+            if dst != left {
+                lines.word(cpu_v3::move_register(dst, left));
+            }
+            emit_immediate(lines, kind.imm_op(), dst, *value, kind.signed());
+        }
+    }
+}
+
+/// Lowers a Boolean-producing comparison (`dst = lhs cond rhs` as 0/1) to the
+/// destructive S* instructions; inverted conditions use an operand swap or a
+/// trailing XORI 1.
+fn lower_bool(dst: u8, cmp: &Cmp, register: &dyn Fn(VReg) -> u8, lines: &mut Lines) {
+    let lhs = register(cmp.lhs);
+    let xor1 = |lines: &mut Lines| {
+        lines.word(cpu_v3::immediate_unsigned(ImmediateOp::Xor, dst, 1));
+    };
+    let less = SetKind::Less { signed: cmp.signed };
+    match cmp.cond {
+        CompareOp::Equal => set_op(lines, dst, lhs, SetKind::Equal, &cmp.rhs, register),
+        CompareOp::NotEqual => {
+            set_op(lines, dst, lhs, SetKind::Equal, &cmp.rhs, register);
+            xor1(lines);
+        }
+        CompareOp::Less => set_op(lines, dst, lhs, less, &cmp.rhs, register),
+        CompareOp::GreaterEqual => {
+            set_op(lines, dst, lhs, less, &cmp.rhs, register);
+            xor1(lines);
+        }
+        // swapped: lhs > rhs is rhs < lhs; lhs <= rhs is !(rhs < lhs)
+        CompareOp::Greater | CompareOp::LessEqual => {
+            match &cmp.rhs {
+                CmpRhs::Reg(r) => {
+                    let r = register(*r);
+                    set_op(lines, dst, r, less, &CmpRhs::Reg(cmp.lhs), register);
+                }
+                CmpRhs::Imm(value) => {
+                    // dst must start as the immediate; when it aliases lhs the
+                    // sequence routes through the scratch register
+                    if dst == lhs {
+                        emit_load_immediate(lines, REG_TMP, *value);
+                        lines.word(less.reg_op(REG_TMP, dst));
+                        lines.word(cpu_v3::move_register(dst, REG_TMP));
+                    } else {
+                        emit_load_immediate(lines, dst, *value);
+                        lines.word(less.reg_op(dst, lhs));
+                    }
+                }
+            }
+            if matches!(cmp.cond, CompareOp::LessEqual) {
+                xor1(lines);
+            }
+        }
+        CompareOp::Never | CompareOp::Always => {
+            unreachable!("diamond conversion never emits degenerate conditions")
         }
     }
 }
@@ -867,6 +1182,17 @@ fn emit_load_immediate(lines: &mut Lines, dst: u8, value: u16) {
     }
 }
 
+/// Emits a MULI (short u4, or PFX12 + full unsigned u16 bit pattern).
+fn emit_muli(lines: &mut Lines, dst: u8, value: u16) {
+    if value <= 15 {
+        lines.word(cpu_v3::multiply_immediate(dst, value as u8));
+    } else {
+        for word in cpu_v3::prefixed(cpu_v3::multiply_immediate(dst, 0), value) {
+            lines.word(word);
+        }
+    }
+}
+
 fn emit_immediate(
     lines: &mut Lines,
     operation: ImmediateOp,
@@ -874,18 +1200,34 @@ fn emit_immediate(
     value: u16,
     signed_short: bool,
 ) {
+    // ADDI/SUBI take an unsigned u4 unprefixed, so a negative adjustment is
+    // expressed with the opposite operation of its magnitude (equivalent
+    // under wrapping arithmetic, also for the prefixed 16-bit form).
+    if matches!(operation, ImmediateOp::Add | ImmediateOp::Sub) {
+        let (operation, value) = if (value as i16) < 0 {
+            let flipped = match operation {
+                ImmediateOp::Add => ImmediateOp::Sub,
+                ImmediateOp::Sub => ImmediateOp::Add,
+                _ => unreachable!(),
+            };
+            (flipped, (value as i16).unsigned_abs())
+        } else {
+            (operation, value)
+        };
+        if value <= 15 {
+            lines.word(cpu_v3::immediate_unsigned(operation, dst, value as u8));
+        } else {
+            let consumer = 0xa000 | ((operation as u16) << 8) | (u16::from(dst) << 4);
+            for word in cpu_v3::prefixed(consumer, value) {
+                lines.word(word);
+            }
+        }
+        return;
+    }
     if signed_short && (-8..=7).contains(&(value as i16)) {
-        lines.word(cpu_v3::immediate_signed(
-            operation,
-            dst,
-            value as i16,
-        ));
+        lines.word(cpu_v3::immediate_signed(operation, dst, value as i16));
     } else if !signed_short && value <= 15 {
-        lines.word(cpu_v3::immediate_unsigned(
-            operation,
-            dst,
-            value as u8,
-        ));
+        lines.word(cpu_v3::immediate_unsigned(operation, dst, value as u8));
     } else {
         let consumer = 0xa000 | ((operation as u16) << 8) | (u16::from(dst) << 4);
         for word in cpu_v3::prefixed(consumer, value) {
@@ -914,13 +1256,162 @@ fn emit_store(lines: &mut Lines, src: u8, base: u8, offset: i16) {
     }
 }
 
+/// One relaxation decision: shrink to the one-word form when the target is
+/// reachable with a signed 8-bit offset from the following word.
+fn relax_one(from: usize, target: usize, short: &mut bool, changed: &mut bool) {
+    let offset = target as i64 - (from + 1) as i64;
+    let fits = (-128..=127).contains(&offset);
+    if *short != fits {
+        *short = fits;
+        *changed = true;
+    }
+}
+
+/// Iterative branch relaxation: any branch, jump, or call whose final signed
+/// 8-bit relative offset fits shrinks from the two-word wide form (PFX12 +
+/// relative) to one word. Widths only ever shrink, so the layout converges.
+fn relax_branches(functions: &mut [LoweredFunction], code_base: usize) {
+    loop {
+        let mut function_addresses = HashMap::new();
+        let mut cursor = code_base;
+        for function in functions.iter() {
+            function_addresses.insert(function.name, cursor);
+            cursor += function.lines.iter().map(Line::size).sum::<usize>() + 1;
+        }
+        let mut changed = false;
+        for function in functions.iter_mut() {
+            let start = function_addresses[&function.name];
+            let mut labels = HashMap::new();
+            let mut address = start;
+            for line in &function.lines {
+                if let Line::Label(label) = line {
+                    labels.insert(*label, address);
+                } else {
+                    address += line.size();
+                }
+            }
+            let mut address = start;
+            for line in &mut function.lines {
+                match line {
+                    Line::Branch { target, short, .. } => {
+                        relax_one(address, labels[target], short, &mut changed);
+                    }
+                    Line::Jump { target, short, .. } => {
+                        relax_one(address, labels[target], short, &mut changed);
+                    }
+                    Line::Call {
+                        function: target,
+                        short,
+                        ..
+                    } => {
+                        relax_one(address, function_addresses[target], short, &mut changed);
+                    }
+                    _ => {}
+                }
+                address += line.size();
+            }
+        }
+        if !changed {
+            return;
+        }
+    }
+}
+
+/// A requirement violated by the generated CpuV3 code image.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ProgramValidationError {
+    /// The word is not a legal instruction: a reserved opcode/function or a
+    /// non-canonical unused field.
+    InvalidInstruction { address: Word, word: Word },
+    /// A `PFX12` word is not immediately followed by a prefix consumer.
+    DanglingPrefix { address: Word, next: Option<Word> },
+    /// A `PFX12` feeding a major-B relative consumer (function 0..=7) must
+    /// carry only the low eight payload bits; `payload12[11:8]` is ignored by
+    /// the ISA, and the backend promises to zero it.
+    RelativePrefixHighBits { address: Word, payload: Word },
+}
+
+impl std::fmt::Display for ProgramValidationError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::InvalidInstruction { address, word } => {
+                write!(f, "illegal instruction {word:#06x} at {address:#06x}")
+            }
+            Self::DanglingPrefix { address, next } => match next {
+                Some(next) => write!(
+                    f,
+                    "PFX12 at {address:#06x} is not followed by a consumer ({next:#06x})"
+                ),
+                None => write!(f, "PFX12 at {address:#06x} is the last word"),
+            },
+            Self::RelativePrefixHighBits { address, payload } => write!(
+                f,
+                "relative PFX12 at {address:#06x} has non-zero payload12[11:8] ({payload:#05x})"
+            ),
+        }
+    }
+}
+
+/// The single final check of the CpuV3 backend's output. It asserts the
+/// encoding requirements the frontend, optimizer, and linker are jointly
+/// responsible for, after linking and branch relaxation:
+///
+/// - every word is a legal instruction with canonical unused fields, so no
+///   reserved major/function, `JREG`/`JALR` non-canonical nibble, or invalid
+///   `MFSR`/`MTSR` selector can reach the image;
+/// - every `PFX12` is immediately consumed by the next word;
+/// - a relative (`B 0..=7`) prefixed consumer is given `payload12[11:8] == 0`.
+///
+/// Constant shift amounts, immediate widths, and `PFX12` payload widths are
+/// bounded before encoding (`shift_operand` rejects constant shift amounts
+/// above 15, and the encoding helpers assert their field widths), so they need
+/// no separate image re-check once the words exist.
+pub fn validate_program(words: &[Word], code_base: Word) -> Result<(), ProgramValidationError> {
+    let address_of = |index: usize| code_base.wrapping_add(index as Word);
+    let mut index = 0;
+    while index < words.len() {
+        let word = words[index];
+        if let cpu_v3::Instruction::Prefix { payload } = cpu_v3::decode(word) {
+            let Some(&next) = words.get(index + 1) else {
+                return Err(ProgramValidationError::DanglingPrefix {
+                    address: address_of(index),
+                    next: None,
+                });
+            };
+            if !cpu_v3::is_prefix_consumer(next) {
+                return Err(ProgramValidationError::DanglingPrefix {
+                    address: address_of(index),
+                    next: Some(next),
+                });
+            }
+            if next >> 12 == 0xb && (next >> 8) & 0xf <= 7 && payload >> 8 != 0 {
+                return Err(ProgramValidationError::RelativePrefixHighBits {
+                    address: address_of(index),
+                    payload,
+                });
+            }
+            index += 2;
+            continue;
+        }
+        if matches!(cpu_v3::decode(word), cpu_v3::Instruction::Invalid { .. }) {
+            return Err(ProgramValidationError::InvalidInstruction {
+                address: address_of(index),
+                word,
+            });
+        }
+        index += 1;
+    }
+    Ok(())
+}
+
 fn link(
-    functions: Vec<LoweredFunction>,
+    mut functions: Vec<LoweredFunction>,
     options: &CompilerOptions,
     frontend_debug: rcc::frontend::FrontendDebug,
-) -> CpuV3Program {
-    let mut function_addresses = HashMap::new();
+) -> Result<CpuV3Program, ProgramValidationError> {
     let code_base = usize::from(options.code_base);
+    relax_branches(&mut functions, code_base);
+    let mut function_addresses = HashMap::new();
     let mut cursor = code_base;
     for function in &functions {
         function_addresses.insert(function.name, cursor);
@@ -1020,21 +1511,48 @@ fn link(
                     condition,
                     target,
                     line,
+                    short,
                 } => {
-                    let offset = relative_offset(code_base + words.len() + 2, labels[target]);
-                    words.extend(wide_branch(*condition, offset));
-                    (2, *line)
+                    let span = if *short { 1 } else { 2 };
+                    let offset = relative_offset(code_base + words.len() + span, labels[target]);
+                    if *short {
+                        words.push(cpu_v3::branch(*condition, offset));
+                        (1, *line)
+                    } else {
+                        words.extend(wide_branch(*condition, offset));
+                        (2, *line)
+                    }
                 }
-                Line::Jump { target, line } => {
-                    let offset = relative_offset(code_base + words.len() + 2, labels[target]);
-                    words.extend(wide_jump(offset));
-                    (2, *line)
+                Line::Jump {
+                    target,
+                    line,
+                    short,
+                } => {
+                    let span = if *short { 1 } else { 2 };
+                    let offset = relative_offset(code_base + words.len() + span, labels[target]);
+                    if *short {
+                        words.push(cpu_v3::jump_relative(offset));
+                        (1, *line)
+                    } else {
+                        words.extend(wide_jump(offset));
+                        (2, *line)
+                    }
                 }
-                Line::Call { function: target, line } => {
+                Line::Call {
+                    function: target,
+                    line,
+                    short,
+                } => {
+                    let span = if *short { 1 } else { 2 };
                     let offset =
-                        relative_offset(code_base + words.len() + 2, function_addresses[target]);
-                    words.extend(wide_call(offset));
-                    (2, *line)
+                        relative_offset(code_base + words.len() + span, function_addresses[target]);
+                    if *short {
+                        words.push(cpu_v3::jump_and_link_relative(offset));
+                        (1, *line)
+                    } else {
+                        words.extend(wide_call(offset));
+                        (2, *line)
+                    }
                 }
                 Line::LoadFunctionAddress {
                     function: target,
@@ -1074,9 +1592,7 @@ fn link(
                             let mut v = v.clone();
                             match v.loc {
                                 rcc::VarLoc::Frame(slot) => {
-                                    v.loc = rcc::VarLoc::Frame(
-                                        function.callee_saved as u8 + slot,
-                                    );
+                                    v.loc = rcc::VarLoc::Frame(function.callee_saved as u8 + slot);
                                 }
                                 rcc::VarLoc::ParamIndex(index) => {
                                     v.loc = rcc::VarLoc::Param(
@@ -1096,7 +1612,12 @@ fn link(
         for line in cpu_v3::disassemble_words(&words[local_start..], start as u16) {
             let span = if line.wide { 2 } else { 1 };
             let raw: Vec<String> = (0..span)
-                .map(|i| format!("{:04x}", words[usize::from(line.address) - (start - local_start) + i]))
+                .map(|i| {
+                    format!(
+                        "{:04x}",
+                        words[usize::from(line.address) - (start - local_start) + i]
+                    )
+                })
                 .collect();
             listing.push_str(&format!(
                 "  {:04x}: {:<11} {}\n",
@@ -1106,8 +1627,9 @@ fn link(
             ));
         }
     }
+    validate_program(&words, options.code_base)?;
     debug_lines.sort();
-    CpuV3Program {
+    Ok(CpuV3Program {
         code_base: options.code_base,
         words,
         listing,
@@ -1120,7 +1642,7 @@ fn link(
             consts: frontend_debug.consts,
             lines: debug_lines,
         },
-    }
+    })
 }
 
 fn relative_offset(from: usize, to: usize) -> i16 {
@@ -1395,6 +1917,18 @@ mod tests {
         (signal, machine)
     }
 
+    fn disasm(program: &CpuV3Program) -> Vec<cpu_v3::DisasmLine> {
+        cpu_v3::disassemble_words(&program.words, program.code_base)
+    }
+
+    fn mnemonics(program: &CpuV3Program) -> Vec<String> {
+        disasm(program).into_iter().map(|line| line.text).collect()
+    }
+
+    fn has_prefix(program: &CpuV3Program, prefix: &str) -> bool {
+        mnemonics(program).iter().any(|m| m.starts_with(prefix))
+    }
+
     #[test]
     fn frontend_ir_runs_arithmetic_loop_and_signed_comparisons() {
         let source = r#"
@@ -1548,12 +2082,12 @@ mod tests {
         let program = compile(source, CompilerOptions::default());
         assert_eq!(program.words.last(), Some(&cpu_v3::halt()));
         let tail = &program.words[program.words.len() - 3..program.words.len() - 1];
-        assert_eq!(tail[0] & 0xfff0, 0xc800);
-        assert_eq!(tail[1] & 0xff00, 0xef00);
+        assert_eq!(tail[0] & 0xfff0, 0x7800);
+        assert_eq!(tail[1] & 0xff00, 0x6f00);
         assert_eq!(tail[0] & 0x000f, (tail[1] >> 4) & 0x000f);
         assert!(program.words[..program.words.len() - 3]
             .iter()
-            .any(|word| word & 0xfff0 == 0xc810));
+            .any(|word| word & 0xfff0 == 0x7810));
     }
 
     #[test]
@@ -1651,5 +2185,487 @@ mod tests {
             }
         "#;
         assert_eq!(run(source), 0x5555);
+    }
+
+    #[test]
+    fn dynamic_shifts_select_register_count_encodings() {
+        // Parameters keep the operands unknown so the optimizer cannot fold
+        // the operations into a single constant.
+        let source = r#"
+            fn sh(a: u16, n: u16) -> u16 { a << n }
+            fn lsr(a: u16, n: u16) -> u16 { a >> n }
+            fn asr(a: i16, n: u16) -> i16 { a >> n }
+            fn main() {
+                let a: u16 = 3;
+                let n: u16 = 1;
+                let s: i16 = -8;
+                halt(sh(a, n) + lsr(a, n) + (asr(s, n) as u16));
+            }
+        "#;
+        let program = compile(source, CompilerOptions::default());
+        assert!(has_prefix(&program, "shl "), "{}", program.listing);
+        assert!(has_prefix(&program, "shr "), "{}", program.listing);
+        assert!(has_prefix(&program, "asr "), "{}", program.listing);
+        assert!(!has_prefix(&program, "shli"), "{}", program.listing);
+        // 6 + 1 + 0xfffc wraps to 3
+        assert_eq!(run(source), 3);
+    }
+
+    #[test]
+    fn constant_shifts_select_immediate_encodings() {
+        let source = r#"
+            fn sh(a: u16) -> u16 { a << 2 }
+            fn shr(a: u16) -> u16 { a >> 1 }
+            fn asr(a: i16) -> i16 { a >> 1 }
+            fn main() {
+                let a: u16 = 3;
+                let s: i16 = -8;
+                halt(sh(a) + shr(a) + (asr(s) as u16));
+            }
+        "#;
+        let program = compile(source, CompilerOptions::default());
+        assert!(has_prefix(&program, "shli"), "{}", program.listing);
+        assert!(has_prefix(&program, "shri"), "{}", program.listing);
+        assert!(has_prefix(&program, "asri"), "{}", program.listing);
+        // 12 + 1 + 0xfffc wraps to 9
+        assert_eq!(run(source), 9);
+    }
+
+    #[test]
+    fn immediate_arithmetic_families_select_short_and_wide_forms() {
+        let source = r#"
+            fn calc(x: u16) -> u16 {
+                let a = x + 5;
+                let b = a - 3;
+                let c = b & 0x00ff; // does not fit u4: wide PFX12 form
+                let d = c | 6;
+                d ^ 7
+            }
+            fn main() { halt(calc(100)); }
+        "#;
+        let program = compile(source, CompilerOptions::default());
+        for mnemonic in ["addi", "subi", "andi", "ori", "xori"] {
+            assert!(
+                has_prefix(&program, mnemonic),
+                "missing {mnemonic}\n{}",
+                program.listing
+            );
+        }
+        assert!(
+            disasm(&program)
+                .iter()
+                .any(|line| line.wide && line.text.starts_with("andi")),
+            "andi 0x00ff must use the wide form\n{}",
+            program.listing
+        );
+        // 100 + 5 - 3 = 102; & 0xff = 102; | 6 = 102; ^ 7 = 97
+        assert_eq!(run(source), 97);
+    }
+
+    #[test]
+    fn wide_immediate_comparisons_use_pfx12() {
+        let source = r#"
+            fn wide(x: u16) { if x < 1000 { halt(1); } else { halt(0); } }
+            fn main() { wide(500); }
+        "#;
+        let program = compile(source, CompilerOptions::default());
+        assert!(
+            disasm(&program)
+                .iter()
+                .any(|line| line.wide && line.text.starts_with("cmpui")),
+            "{}",
+            program.listing
+        );
+        assert_eq!(run(source), 1);
+    }
+
+    #[test]
+    fn constant_on_the_left_swaps_the_condition() {
+        // 40 > x must become x < 40 (not x >= 40), and -8 <= s must become
+        // s >= -8, so the immediate compare keeps the written meaning.
+        let source = r#"
+            fn above(x: u16) { if 40 > x { halt(1); } else { halt(0); } }
+            fn at_least(s: i16) { if -8 <= s { halt(2); } else { halt(0); } }
+            fn main() { above(30); at_least(-5); }
+        "#;
+        let program = compile(source, CompilerOptions::default());
+        assert!(has_prefix(&program, "cmpui"), "{}", program.listing);
+        assert!(has_prefix(&program, "cmpsi"), "{}", program.listing);
+        // above(30): 40 > 30 is true
+        assert_eq!(run(source), 1);
+    }
+
+    #[test]
+    fn immediate_selection_runs_with_optimizations_disabled() {
+        // Legalization and immediate selection must not depend on the
+        // optimizer; only the CFG-changing diamond conversion is opt-gated.
+        let source = r#"
+            fn calc(x: u16) -> u16 { x + 5 }
+            fn main() { halt(calc(1)); }
+        "#;
+        let options = CompilerOptions {
+            opt: rcc::Opts::disabled(),
+            ..CompilerOptions::default()
+        };
+        let program = compile(source, options.clone());
+        assert!(has_prefix(&program, "addi"), "{}", program.listing);
+        assert_eq!(run_with_options(source, options).0, 6);
+    }
+
+    #[test]
+    fn constant_comparisons_select_immediate_encodings() {
+        // Statement branches stay branches (no diamond conversion), so the
+        // compare must select CMPSI/CMPUI rather than a register compare.
+        let source = r#"
+            fn ucmp(x: u16) { if x < 40 { halt(1); } else { halt(0); } }
+            fn scmp(s: i16) { if s >= -8 { halt(2); } else { halt(0); } }
+            fn main() { ucmp(30); scmp(-5); }
+        "#;
+        let program = compile(source, CompilerOptions::default());
+        assert!(has_prefix(&program, "cmpui"), "{}", program.listing);
+        assert!(has_prefix(&program, "cmpsi"), "{}", program.listing);
+        assert_eq!(run(source), 1);
+    }
+
+    #[test]
+    fn destructive_operations_copy_the_source_when_both_remain_live() {
+        // `a` is live across the shift and multiply, so the destructive forms
+        // cannot reuse its register and must insert a MOV first.
+        let source = r#"
+            fn mix(x: u16) -> u16 {
+                let a = x & 0x00ff;
+                let b = a + 1;
+                let s = a << 1;
+                let m = a * 3;
+                a + b + s + m
+            }
+            fn main() { halt(mix(100)); }
+        "#;
+        let program = compile(source, CompilerOptions::default());
+        assert!(has_prefix(&program, "mov "), "{}", program.listing);
+        assert!(has_prefix(&program, "shli"), "{}", program.listing);
+        assert!(has_prefix(&program, "muli"), "{}", program.listing);
+        // a = 100, b = 101, s = 200, m = 300
+        assert_eq!(run(source), 701);
+    }
+
+    #[test]
+    fn if_value_diamonds_become_boolean_comparisons_and_conditional_moves() {
+        let source = r#"
+            fn classify(x: u16) -> u16 {
+                let flag = if x < 40 { 1 } else { 0 };
+                let m = if x < 40 { x } else { 0 };
+                let n = if x > 40 { x } else { 7 };
+                flag + m + n
+            }
+            fn main() { halt(classify(30)); }
+        "#;
+        let program = compile(source, CompilerOptions::default());
+        assert!(has_prefix(&program, "sltui"), "{}", program.listing);
+        assert!(
+            ["moveq", "movne", "movlt", "movge", "movgt", "movle"]
+                .iter()
+                .any(|m| has_prefix(&program, m)),
+            "no conditional move\n{}",
+            program.listing
+        );
+        // flag = 1, m = 30, n = 7
+        assert_eq!(run(source), 38);
+    }
+
+    #[test]
+    fn if_value_arms_with_one_simple_instruction_use_a_conditional_move() {
+        // `c3 - 1` is a single pure instruction, so the else arm stays
+        // if-convertible; the countdown wraps 0 -> 2.
+        let source = r#"
+            fn countdown(c3: u16) -> u16 {
+                if c3 == 0 { 2 } else { c3 - 1 }
+            }
+            fn main() {
+                halt(countdown(0) * 100 + countdown(5));
+            }
+        "#;
+        let program = compile(source, CompilerOptions::default());
+        assert!(
+            ["moveq", "movne", "movlt", "movge", "movgt", "movle"]
+                .iter()
+                .any(|m| has_prefix(&program, m)),
+            "no conditional move\n{}",
+            program.listing
+        );
+        assert!(has_prefix(&program, "subi"), "{}", program.listing);
+        // countdown(0) = 2, countdown(5) = 4
+        assert_eq!(run(source), 204);
+    }
+
+    #[test]
+    fn if_value_with_a_register_false_arm_keeps_the_conditional_move() {
+        // Regression: the `Mov dst, false` must survive CSE copy propagation,
+        // which previously aliased it with the redefined result and dropped the
+        // conditional write.
+        let source = r#"
+            fn clamp(x: u16) -> u16 { if x == 0 { 2 } else { x } }
+            fn main() { halt(clamp(0) * 100 + clamp(5)); }
+        "#;
+        let program = compile(source, CompilerOptions::default());
+        assert!(
+            ["moveq", "movne", "movlt", "movge", "movgt", "movle"]
+                .iter()
+                .any(|m| has_prefix(&program, m)),
+            "no conditional move\n{}",
+            program.listing
+        );
+        // clamp(0) = 2, clamp(5) = 5
+        assert_eq!(run(source), 205);
+    }
+
+    #[test]
+    fn multiply_lowers_to_hardware_windows_and_muli() {
+        let source = r#"
+            fn products(a: u16, b: u16) -> u16 {
+                let lo = a * b;
+                let w8 = mul8(a, b);
+                let w16 = mul16(a, b);
+                let m = a * 9;
+                lo ^ w8 ^ w16 ^ m
+            }
+            fn main() { halt(products(0x00ff, 0x00ff)); }
+        "#;
+        let program = compile(source, CompilerOptions::default());
+        for mnemonic in ["mul0", "mul8", "mul16", "muli"] {
+            assert!(
+                has_prefix(&program, mnemonic),
+                "missing {mnemonic}\n{}",
+                program.listing
+            );
+        }
+        // 0xfe01 ^ 0x00fe ^ 0x0000 ^ 0x08f7 = 0xf608
+        assert_eq!(run(source), 0xf608);
+    }
+
+    #[test]
+    fn byte_sign_extend_and_leading_zero_count_use_their_instructions() {
+        let source = r#"
+            fn extend(x: u16) -> i16 { sextb(x) }
+            fn bits(x: u16) -> u16 { clz(x) }
+            fn main() {
+                let a: i16 = extend(0x00ff); // -1
+                let b: u16 = bits(0x8000);   // 0
+                let c: u16 = bits(0x0001);   // 15
+                halt((a as u16) + b + c);
+            }
+        "#;
+        let program = compile(source, CompilerOptions::default());
+        assert!(has_prefix(&program, "sextb"), "{}", program.listing);
+        assert!(has_prefix(&program, "clz"), "{}", program.listing);
+        // 0xffff + 0 + 15 wraps to 14
+        assert_eq!(run(source), 14);
+    }
+
+    #[test]
+    fn halt_and_signal_use_the_signal_encoding() {
+        let source = r#"
+            fn main() {
+                signal(1, 5);
+                signal(15, 6);
+                halt(7);
+            }
+        "#;
+        let program = compile(source, CompilerOptions::default());
+        let signals = mnemonics(&program)
+            .iter()
+            .filter(|m| m.starts_with("signal"))
+            .count();
+        assert_eq!(signals, 2, "{}", program.listing);
+        assert!(has_prefix(&program, "halt"), "{}", program.listing);
+        assert_eq!(run(source), 7);
+    }
+
+    #[test]
+    fn special_register_reads_lower_to_mfsr() {
+        let source = r#"
+            fn main() {
+                let c = read_cseg();
+                let d = read_dseg();
+                signal(1, c + d);
+                halt(c + d);
+            }
+        "#;
+        let program = compile(source, CompilerOptions::default());
+        assert_eq!(
+            mnemonics(&program)
+                .iter()
+                .filter(|m| m.starts_with("mfsr"))
+                .count(),
+            2,
+            "{}",
+            program.listing
+        );
+        assert_eq!(run(source), 0);
+    }
+
+    #[test]
+    fn branch_relaxation_selects_short_and_wide_forms() {
+        // near target: the conditional branch relaxes to the one-word form
+        let near = compile(
+            r#"
+                fn pick(x: u16) { if x == 1 { halt(7); } else { halt(9); } }
+                fn main() { pick(1); }
+            "#,
+            CompilerOptions::default(),
+        );
+        assert!(
+            disasm(&near).iter().any(|line| {
+                !line.wide
+                    && ["beq", "bne", "blt", "bge", "bgt", "ble"]
+                        .iter()
+                        .any(|c| line.text.starts_with(c))
+            }),
+            "expected a short branch\n{}",
+            near.listing
+        );
+
+        // far target: a 150-instruction loop body makes the back edge exceed
+        // the signed 8-bit range, so it must stay in the wide form
+        let mut body = String::new();
+        for _ in 0..150 {
+            body.push_str("acc = acc + x;\n");
+        }
+        let far_source = format!(
+            "fn loopy(x: u16) {{ let mut i: u16 = 0; let mut acc: u16 = 0; \
+             while i < 10 {{ {body} i = i + 1; }} halt(acc); }}\nfn main() {{ loopy(1); }}"
+        );
+        let far = compile(&far_source, CompilerOptions::default());
+        assert!(
+            disasm(&far).iter().any(|line| {
+                line.wide
+                    && (["beq", "bne", "blt", "bge", "bgt", "ble", "jrel"]
+                        .iter()
+                        .any(|c| line.text.starts_with(c)))
+            }),
+            "expected a wide branch/jump\n{}",
+            far.listing
+        );
+        // 10 iterations * 150 additions of x = 1
+        assert_eq!(run(&far_source), 1500);
+    }
+
+    #[test]
+    fn invalid_constant_arguments_are_source_diagnostics() {
+        // Invalid device/channel constants are rejected by the frontend with a
+        // source diagnostic instead of reaching the lowering asserts.
+        for (source, expected) in [
+            (
+                "const D: u16 = 8; fn main() { dev_recv(D, 0); halt(0); }",
+                "device index 8",
+            ),
+            (
+                "const C: u16 = 20; fn main() { dev_recv(0, C); halt(0); }",
+                "channel 20",
+            ),
+            ("fn main() { dev_send(0, 16, 1); halt(0); }", "channel 16"),
+        ] {
+            let error = parse_source_with(source, 0)
+                .err()
+                .expect("the invalid constant must be rejected");
+            assert!(
+                error.to_string().contains(expected),
+                "expected {expected:?} in:\n{error}"
+            );
+        }
+    }
+
+    #[test]
+    fn fallible_compile_succeeds_for_valid_programs() {
+        let options = CompilerOptions::default();
+        let program = parse_source_with("fn main() { halt(1); }", options.data_base).unwrap();
+        let compiled =
+            super::try_compile(program, &options, "main").expect("a well-formed program compiles");
+        assert_eq!(compiled.words.last(), Some(&cpu_v3::halt()));
+        assert_eq!(
+            validate_program(&compiled.words, compiled.code_base),
+            Ok(())
+        );
+    }
+
+    #[test]
+    fn backend_error_display_is_a_compiler_message() {
+        assert_eq!(
+            BackendError::Validation(ProgramValidationError::InvalidInstruction {
+                address: 0x10,
+                word: 0xe800,
+            })
+            .to_string(),
+            "illegal instruction 0xe800 at 0x0010"
+        );
+        assert_eq!(
+            BackendError::UnknownFunction("ghost".to_string()).to_string(),
+            "unknown function `ghost`"
+        );
+    }
+
+    #[test]
+    fn program_validator_accepts_compiled_output() {
+        let source = r#"
+            fn main() {
+                let a: u16 = 0x1234;
+                let b = a + 5;
+                signal(1, b);
+                halt(b);
+            }
+        "#;
+        let program = compile(source, CompilerOptions::default());
+        assert_eq!(validate_program(&program.words, program.code_base), Ok(()));
+    }
+
+    #[test]
+    fn program_validator_rejects_illegal_and_malformed_images() {
+        // the reserved revision-0.7 HALT word
+        assert_eq!(
+            validate_program(&[0xe800], 0),
+            Err(ProgramValidationError::InvalidInstruction {
+                address: 0,
+                word: 0xe800
+            })
+        );
+        // a prefix followed by a non-consumer, and a trailing prefix
+        assert_eq!(
+            validate_program(&[cpu_v3::prefix12(0), cpu_v3::halt()], 0),
+            Err(ProgramValidationError::DanglingPrefix {
+                address: 0,
+                next: Some(cpu_v3::halt())
+            })
+        );
+        assert_eq!(
+            validate_program(&[cpu_v3::prefix12(0)], 0),
+            Err(ProgramValidationError::DanglingPrefix {
+                address: 0,
+                next: None
+            })
+        );
+        // relative consumers must zero payload12[11:8]
+        assert_eq!(
+            validate_program(
+                &[
+                    cpu_v3::prefix12(0x100),
+                    cpu_v3::branch(cpu_v3::TestCondition::Equal, 0)
+                ],
+                0
+            ),
+            Err(ProgramValidationError::RelativePrefixHighBits {
+                address: 0,
+                payload: 0x100
+            })
+        );
+        assert_eq!(
+            validate_program(
+                &[
+                    cpu_v3::prefix12(0x001),
+                    cpu_v3::branch(cpu_v3::TestCondition::Equal, 0)
+                ],
+                0
+            ),
+            Ok(())
+        );
     }
 }

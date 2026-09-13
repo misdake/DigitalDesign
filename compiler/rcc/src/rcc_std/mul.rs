@@ -1,4 +1,9 @@
-//! shift-add multiplication (rcc subset): the ISA has no mul instruction
+//! shift-add multiplication (rcc subset): the CpuV2 library multiply.
+//!
+//! CpuV2's v2.6 ISA has no hardware multiply, so the CpuV2 backend rewrites
+//! integer products into calls to `mul_16x16`. CpuV3 lowers integer `*` to the
+//! hardware `MUL0`/`MULI` instead (and `MUL8`/`MUL16` through intrinsics) and
+//! does not use this module.
 
 fn mul_bits(a: u16, b: u16, bits: u16) -> u16 {
     let mut x = a;

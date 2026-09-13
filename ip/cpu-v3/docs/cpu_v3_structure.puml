@@ -1,5 +1,5 @@
 @startuml
-title CPU V3 revision 0.7 hardware structure
+title CPU V3 revision 0.8 hardware structure
 
 skinparam componentStyle rectangle
 skinparam shadowing false
@@ -17,7 +17,7 @@ package "Fitted CPU V3 system (optional around the reusable core)" {
 
 rectangle "CpuV3Core: precise, in-order, limited two-stage frontend" as Core {
   component "Fetch / execute FSM\nExecute may accept the next queued word\nprecise single retirement" as FSM
-  storage "Instruction state\nPC 16, CSEG 16, DSEG 16\nIMMHI12 prefix\npending comparison" as ControlState
+  storage "Instruction state\nPC 16, CSEG 16, DSEG 16\nPFX12 prefix\npending comparison" as ControlState
   storage "GPR file\n16 x 16-bit\ncombinational read\nsynchronous write" as GPR
   component "Integer lane\n16-bit ALU, shifts, compare\nCLZ / popcount" as IntAlu
   component "Integer multiplier\nregistered signed 18 x 18 DSP\n2-stage primitive" as IntDsp

@@ -1,7 +1,7 @@
-//! Demo application for the CpuV3 two-stage flash boot: moves one lit LED back
+//! Demo application for the CpuV3 flash boot: moves one lit LED back
 //! and forth across all six logical LEDs through device 0 channel 2, while
 //! repeatedly transmitting the 8-byte DDHT status frame (magic "DDHT",
-//! protocol version 1, test ID 0x07 "CpuV3 two-stage flash boot", status 0 =
+//! protocol version 1, test ID 0x07 "CpuV3 flash boot", status 0 =
 //! success, XOR checksum of bytes 0..6) through the device 0 UART. Never halts.
 
 use crate::dsl_rt::*;
@@ -21,7 +21,7 @@ fn uart_success() {
     uart_byte(0x48); // 'H'
     uart_byte(0x54); // 'T'
     uart_byte(1);    // protocol version
-    uart_byte(0x07); // test ID: CpuV3 two-stage flash boot
+    uart_byte(0x07); // test ID: CpuV3 flash boot
     uart_byte(0);    // status: success
     // XOR of 'D' 'D' 'H' 'T' 1 0x07 0 (the two 'D' bytes cancel).
     uart_byte(0x48 ^ 0x54 ^ 1 ^ 0x07);

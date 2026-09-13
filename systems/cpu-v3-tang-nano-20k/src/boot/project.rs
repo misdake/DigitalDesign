@@ -27,20 +27,8 @@ impl ApplicationLayout {
     }
 }
 
-/// Stage1 occupies separate code/data segments so its descriptor handoff and
-/// manifest buffer cannot collide with either application.
-pub const STAGE1_LAYOUT: ApplicationLayout = ApplicationLayout {
-    section_name: "stage1",
-    asset_name: "stage1.v3bin",
-    entry: BootEntry {
-        code_segment: 1,
-        offset: 0x0100,
-        data_segment: 2,
-        stack_offset: 0xf000,
-    },
-};
-
-/// Reset-time selections 00/01 use the S1/default application slot.
+/// Reset-time selection `01` (the S1 button held during reset) uses this
+/// slider-diagnostic slot.
 pub const S1_APPLICATION_LAYOUT: ApplicationLayout = ApplicationLayout {
     section_name: "application-s1",
     asset_name: "application-s1.v3bin",
@@ -52,9 +40,10 @@ pub const S1_APPLICATION_LAYOUT: ApplicationLayout = ApplicationLayout {
     },
 };
 
-/// Reset-time selection 10 (the board's S2 button) uses this application slot.
-/// Data segment zero is retained for programs that temporarily switch DSEG for
-/// framebuffer stores and restore the reset segment afterward.
+/// The board-level selection latch powers up at `10`, so this display
+/// application is the default. Data segment zero is retained for programs that
+/// temporarily switch DSEG for framebuffer stores and restore the reset
+/// segment afterward.
 pub const S2_APPLICATION_LAYOUT: ApplicationLayout = ApplicationLayout {
     section_name: "application-s2",
     asset_name: "application-s2.v3bin",
