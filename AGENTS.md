@@ -31,6 +31,10 @@ unclear, ask instead of deciding silently.
 
 - `compiler/rcc` must not import either CPU crate (`scripts/check-layering.ps1` enforces it); CPU V3
   has its own `rcc_backend`. CPU V2 `src/isa.rs` and `src/isa.html` define ISA v2.6 and are frozen.
+- `compiler/rcc` targets CPU V3 only. CpuV2 compatibility is **not** an acceptance criterion for new
+  work: the V2 backend and its existing tests stay as they are, a new frontend feature needs to be
+  correct (and tested) on CPU V3 only, and a feature that happens to work on CpuV2 is a bonus rather
+  than a requirement.
 - Never check in a second hand-maintained instruction or Flash byte array: the CPU V3 build script
   generates the boot stage, applications, and boot image data from `systems/cpu-v3-tang-nano-20k/rcc`
   into Cargo `OUT_DIR`; use the `cpu-v3-boot-assets` binary to materialize those exact files.

@@ -308,9 +308,11 @@ multi-dimensional arrays (use `arr[i * W + j]`), function inlining/`#[inline]`, 
 
 ## 12.1 Target policy
 
-rcc development now targets CPU V3 only. The CpuV2 backend is frozen: existing support stays
-and keeps compiling, but new frontend features (such as the FPU types) are not required to
-work on CpuV2. The CpuV2 backend rejects instructions it cannot lower with a clear panic
+rcc targets CPU V3 only. The CpuV2 backend is frozen legacy: it still compiles the programs it
+compiled before, but CpuV2 compatibility is **not** an acceptance criterion for new work — a new
+frontend feature has to be correct (and tested) on CPU V3 only, no new test has to cover CpuV2, and
+no effort goes into keeping the two in step. A feature that happens to work on CpuV2 is a free bonus,
+not a requirement. The CpuV2 backend keeps rejecting instructions it cannot lower with a clear panic
 (e.g. any FPU-class instruction).
 
 ## 13. The toolchain
