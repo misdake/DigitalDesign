@@ -1639,6 +1639,7 @@ fn link(
             init_sections: vec![],
             functions: debug_functions,
             globals: frontend_debug.globals,
+            types: frontend_debug.types,
             consts: frontend_debug.consts,
             lines: debug_lines,
         },

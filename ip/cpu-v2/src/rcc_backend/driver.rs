@@ -532,6 +532,7 @@ impl Compiler {
                     })
                     .collect(),
                 globals: fd.globals,
+                types: fd.types,
                 consts: fd.consts,
                 ..DebugInfo::default()
             };

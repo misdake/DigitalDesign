@@ -30,6 +30,8 @@ pub struct FrontendDebug {
     pub funcs: Vec<FnDebug>,
     pub globals: Vec<DebugVar>,
     pub consts: Vec<(String, String, u16)>,
+    /// struct layouts, so a debugger can expand a value (spec §9b)
+    pub types: Vec<crate::DebugType>,
 }
 
 pub struct FnDebug {
@@ -440,6 +442,22 @@ fn parse_files(
             scope: None,
         });
     }
+    for (name, def) in &globals.structs {
+        debug.types.push(crate::DebugType {
+            name: name.clone(),
+            size: def.size,
+            align: def.align,
+            fields: def
+                .fields
+                .iter()
+                .map(|f| crate::DebugTypeField {
+                    name: f.name.clone(),
+                    offset: f.offset,
+                    ty: f.ty.display(),
+                })
+                .collect(),
+        });
+    }
     for (name, (v, ty)) in &consts {
         debug.consts.push((name.clone(), ty.display(), *v));
     }
@@ -787,6 +805,11 @@ impl LayoutBuilder<'_> {
 fn const_eval(e: &Expr, consts: &HashMap<String, (u16, Ty)>) -> Result<u16, syn::Error> {
     match e {
         Expr::Paren(p) => const_eval(&p.expr, consts),
+        // a braced const argument (`Buf<u16, {N + 1}>`) arrives as a block
+        Expr::Block(b) => match b.block.stmts.as_slice() {
+            [Stmt::Expr(inner)] => const_eval(inner, consts),
+            _ => Err(err(e, "not a constant expression")),
+        },
         Expr::Lit(lit) => match &lit.lit {
             Lit::Int(i) => {
                 let v = lit_int_value(i)?;
@@ -1276,6 +1299,12 @@ fn ty_of(ty: &Type, structs: &StructNames) -> Result<Ty, syn::Error> {
                 "vec2" => Ok(Ty::Vec2),
                 "vec3" => Ok(Ty::Vec3),
                 "vec4" => Ok(Ty::Vec4),
+                "usize" => Err(err(
+                    ty,
+                    "rcc has no `usize`: one word is `u16`, so write `const N: u16 = 6;`. A named \\
+                     length only builds for the target though (Rust const generics take `usize`), so \\
+                     spell the literal (`Buf<u16, 6>`) when the source must build on the host too",
+                )),
                 _ if structs.contains(&name) => Ok(Ty::Struct(name)),
                 _ => Err(err(
                     ty,

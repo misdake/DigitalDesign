@@ -159,7 +159,7 @@ fn test_unsupported_types() {
     // only u16/i16/Ptr/Array<T>/fn pointer types exist (spec §1)
     expect_error("fn f(x: u8) {}", "type not supported");
     expect_error("fn f(x: u32) {}", "type not supported");
-    expect_error("fn f(x: usize) {}", "type not supported");
+    expect_error("fn f(x: usize) {}", "rcc has no `usize`");
     expect_error("fn f() -> u16 { 1u8 as u16 }", "suffix");
     // no fat slices, references, or owned arrays in parameter position
     expect_error("fn f(s: [u16]) {}", "slice");

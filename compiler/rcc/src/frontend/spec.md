@@ -528,6 +528,9 @@ Alongside the binary and listing, `rcc` writes `<input>.dbg` for a hypothetical 
   also carry an inclusive lexical `scope START..END` line range; parameter values are
   captured at call entry because the ABI argument registers are caller-save;
 - **globals/consts**: static names with types and data addresses, constants with values;
+- **struct layouts**: `type NAME size align` followed by indented `  field offset type` lines
+  (spec §9b). A debugger can use these to expand `p.x`; tuples need no table, since element `i`
+  always sits at word `i`;
 - **line table**: `line 0xADDR <file> <line>` per instruction that maps to a source line.
   Supporting instructions introduced for a source operation (call slots, branch
   legalization, ABI moves, and address legalization) retain that operation's line;

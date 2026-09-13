@@ -440,6 +440,9 @@ const G: i16 = F - F - F;
 fn main() {
     // a const can size a local array
     let buf: Buf<u16, N> = Buf::new([0; N]);
+    // a braced const expression is a valid length too
+    let tall: Buf<u16, { N + 2 }> = Buf::new([0; N + 2]);
+    assert(tall.len() == N + 2, 2);
     assert(buf.len() == N, 1);
     halt(A + B + C + D + E + G as u16);
 }
