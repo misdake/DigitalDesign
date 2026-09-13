@@ -85,7 +85,11 @@ fn main() {
         let result = run_benchmark_profiled(&words, 1_000_000, Some(&trace_directory));
         assert_eq!(result.halt_signal, 1);
         assert!(result.redirect_count >= 3 * 256);
-        assert!(result.redirect_wait_histogram[2] >= 3 * 256);
+        if cpu_v3::CPU_V3_BTC_ENTRIES == 0 {
+            assert!(result.redirect_wait_histogram[2] >= 3 * 256);
+        } else {
+            assert!(result.redirect_wait_histogram[0] >= 3 * 250);
+        }
     }
 
     #[test]
@@ -115,12 +119,7 @@ fn main() {
     mod benchmark_suite {
         use super::*;
 
-        fn run_words_case(
-            name: &str,
-            words: &[u16],
-            maximum_cycles: usize,
-            expected_halt: u16,
-        ) {
+        fn run_words_case(name: &str, words: &[u16], maximum_cycles: usize, expected_halt: u16) {
             let trace_directory = trace_directory(name);
             let result = run_benchmark_profiled(words, maximum_cycles, Some(&trace_directory));
             assert_eq!(

@@ -1,4 +1,4 @@
-//! Four-entry speculative instruction fetch queue for the blocking CpuV3 core.
+//! Four-entry instruction fetch queue with a resolved-target, two-word BTC.
 
 use digital_design_circuit::{CircuitWires, Wire, Wires};
 use digital_design_hardware::{Hardware, Module, ModuleIo};
@@ -27,21 +27,48 @@ pub struct CpuV3InstructionFetchQueueOutput {
     pub memory_response_ready: Wire,
 }
 
-/// Keeps four fetched or outstanding words reserved and tags every downstream
-/// request with an internal epoch. Redirects and invalidation toggle the epoch,
-/// so responses already in flight are drained but never reach the core.
+/// Reserves four fetched/outstanding words. Per-slot current bits invalidate
+/// late responses across arbitrarily many redirects, without epoch wraparound.
 #[derive(Hardware)]
 #[hardware(namespace = "components/cpu/cpu_v3")]
 pub struct CpuV3InstructionFetchQueue;
 
+include!(concat!(env!("OUT_DIR"), "/fetch_config.rs"));
 const QUEUE_DEPTH: usize = 4;
+const BTC_STORAGE: usize = if CPU_V3_BTC_ENTRIES == 0 {
+    1
+} else {
+    CPU_V3_BTC_ENTRIES
+};
 
-/// Cycle-accurate model of the four-entry fetch queue. Mirrors the register
-/// set and per-cycle behavior of `cpu_v3_instruction_fetch_queue.v`.
+/// Model-only diagnostics, intentionally absent from the hardware ports and
+/// frozen benchmark schema. A lookup/hit counts once when a replay starts,
+/// even if the core initially backpressures it.
+#[derive(Clone, Copy, Default, Debug)]
+pub struct CpuV3BtcStatistics {
+    pub lookups: u64,
+    pub hits: u64,
+    pub installed: u64,
+    pub cancelled_fills: u64,
+    pub accepted_words: u64,
+    pub aborted_replays: u64,
+    /// Core-request cycles waiting after both BTC words, until the first
+    /// ordinary word is accepted or the stream is redirected/flushed.
+    pub continuation_wait_cycles: u64,
+}
+
+#[derive(Clone, Copy, Default)]
+struct BtcEntry {
+    valid: bool,
+    tag: u32,
+    words: [u16; 2],
+    rank: u8,
+}
+
+/// Cycle-accurate register model of `cpu_v3_instruction_fetch_queue.v`.
 #[derive(Clone, Default)]
 pub struct CpuV3InstructionFetchQueueState {
     stream_valid: bool,
-    epoch: bool,
     expected_core_address: u32,
     next_memory_address: u32,
     queue_data: [u16; QUEUE_DEPTH],
@@ -50,204 +77,324 @@ pub struct CpuV3InstructionFetchQueueState {
     queue_head: u8,
     queue_tail: u8,
     queue_count: u8,
-    metadata_epoch: [bool; QUEUE_DEPTH],
+    metadata_current: [bool; QUEUE_DEPTH],
     metadata_address: [u32; QUEUE_DEPTH],
     metadata_head: u8,
     metadata_tail: u8,
     metadata_count: u8,
+    btc: [BtcEntry; BTC_STORAGE],
+    replay_entry: usize,
+    replay_remaining: u8,
+    fill_phase: u8,
+    fill_tag: u32,
+    fill_word: u16,
+    statistics: CpuV3BtcStatistics,
+    tracking_continuation: bool,
+}
+
+fn next_word(address: u32, count: u32) -> u32 {
+    (address & 0xffff_0000) | (address.wrapping_add(count) & 0xffff)
+}
+
+struct FetchSignals {
+    output: CpuV3InstructionFetchQueueOutputValue,
+    restart: bool,
+    hit: Option<usize>,
+    btc_response: bool,
+    core_pop: bool,
+    queue_pop: bool,
+    request_fire: bool,
+    response_fire: bool,
+    enqueue: bool,
+}
+
+impl CpuV3InstructionFetchQueueState {
+    pub fn btc_statistics(&self) -> CpuV3BtcStatistics {
+        self.statistics
+    }
+
+    fn signals(&self, input: &CpuV3InstructionFetchQueueInputValue) -> FetchSignals {
+        let address = input.core_address as u32;
+        let address_matches = self.stream_valid && address == self.expected_core_address;
+        let head_matches =
+            self.queue_count != 0 && self.queue_address[self.queue_head as usize] == address;
+        let replay = self.replay_remaining != 0;
+        let restart = input.core_request_valid
+            && (!address_matches || (!replay && self.queue_count != 0 && !head_matches));
+        let hit = if restart && address >> 22 == 0 && !input.flush && !input.reset {
+            self.btc[..CPU_V3_BTC_ENTRIES]
+                .iter()
+                .position(|e| e.valid && e.tag == address)
+        } else {
+            None
+        };
+        let btc_response = !input.reset
+            && !input.flush
+            && input.core_request_valid
+            && (hit.is_some() || (!restart && address_matches && replay));
+        let current =
+            self.metadata_count != 0 && self.metadata_current[self.metadata_head as usize];
+        let bypass = !input.reset
+            && !input.flush
+            && !restart
+            && !btc_response
+            && input.core_request_valid
+            && address_matches
+            && self.queue_count == 0
+            && input.memory_response_valid
+            && current
+            && self.metadata_address[self.metadata_head as usize] == address;
+        let valid = !input.reset
+            && !input.flush
+            && input.core_request_valid
+            && (btc_response || (!restart && address_matches && (head_matches || bypass)));
+        let core_pop = valid && input.core_response_ready;
+        let queue_pop = core_pop && !btc_response && !bypass;
+        let response_ready = !input.reset
+            && self.metadata_count != 0
+            && (input.flush
+                || restart
+                || !current
+                || self.queue_count < QUEUE_DEPTH as u8
+                || queue_pop);
+        let response_fire = input.memory_response_valid && response_ready;
+        let request_valid = !input.reset
+            && !input.flush
+            && ((restart && (self.metadata_count < QUEUE_DEPTH as u8 || response_fire))
+                || (!restart
+                    && self.stream_valid
+                    && self.queue_count + self.metadata_count < QUEUE_DEPTH as u8));
+        let issue_address = if restart {
+            next_word(address, if hit.is_some() { 2 } else { 0 })
+        } else {
+            self.next_memory_address
+        };
+        let (data, error) = if btc_response {
+            let index = hit.unwrap_or(self.replay_entry);
+            let word = if hit.is_some() || self.replay_remaining == 2 {
+                0
+            } else {
+                1
+            };
+            (self.btc[index].words[word], false)
+        } else if bypass {
+            (input.memory_read_data as u16, input.memory_error)
+        } else {
+            (
+                self.queue_data[self.queue_head as usize],
+                self.queue_error[self.queue_head as usize],
+            )
+        };
+        FetchSignals {
+            output: CpuV3InstructionFetchQueueOutputValue {
+                core_request_ready: core_pop,
+                core_response_valid: valid,
+                core_read_data: data.into(),
+                core_error: error,
+                memory_request_valid: request_valid,
+                memory_address: issue_address.into(),
+                memory_response_ready: response_ready,
+            },
+            restart,
+            hit,
+            btc_response,
+            core_pop,
+            queue_pop,
+            request_fire: request_valid && input.memory_request_ready,
+            response_fire,
+            enqueue: response_fire && current && !input.flush && !restart && !(core_pop && bypass),
+        }
+    }
+
+    fn touch(&mut self, index: usize, installing: bool) {
+        let old_rank = self.btc[index].rank;
+        for (i, entry) in self.btc[..CPU_V3_BTC_ENTRIES].iter_mut().enumerate() {
+            if i == index {
+                entry.rank = 0;
+            } else if entry.valid && (installing || entry.rank < old_rank) {
+                entry.rank = (entry.rank + 1).min((CPU_V3_BTC_ENTRIES as u8).saturating_sub(1));
+            }
+        }
+    }
+
+    fn clock(&mut self, input: &CpuV3InstructionFetchQueueInputValue) {
+        if input.reset {
+            *self = Self::default();
+            return;
+        }
+        let sig = self.signals(input);
+        let address = input.core_address as u32;
+        let issue_address = sig.output.memory_address as u32;
+        let response_address = self.metadata_address[self.metadata_head as usize];
+        if (input.flush || sig.restart) && self.fill_phase != 0 {
+            self.statistics.cancelled_fills += 1;
+        }
+        if (input.flush || sig.restart) && self.replay_remaining != 0 {
+            self.statistics.aborted_replays += 1;
+        }
+        if sig.restart && !input.flush && CPU_V3_BTC_ENTRIES != 0 && address >> 22 == 0 {
+            self.statistics.lookups += 1;
+            self.statistics.hits += u64::from(sig.hit.is_some());
+        }
+        if !input.flush && !sig.restart && self.tracking_continuation {
+            if input.core_request_valid
+                && !sig.output.core_response_valid
+                && self.replay_remaining == 0
+            {
+                self.statistics.continuation_wait_cycles += 1;
+            }
+            if sig.core_pop && !sig.btc_response {
+                self.tracking_continuation = false;
+            }
+        }
+        if sig.core_pop && sig.btc_response {
+            self.statistics.accepted_words += 1;
+        }
+
+        if input.flush {
+            for entry in &mut self.btc {
+                entry.valid = false;
+            }
+            self.replay_remaining = 0;
+            self.fill_phase = 0;
+            self.tracking_continuation = false;
+        } else if sig.restart {
+            self.replay_remaining = if sig.hit.is_some() {
+                2 - u8::from(sig.core_pop)
+            } else {
+                0
+            };
+            self.tracking_continuation = sig.hit.is_some();
+            self.fill_phase = if CPU_V3_BTC_ENTRIES != 0 && address >> 22 == 0 && sig.hit.is_none()
+            {
+                1
+            } else {
+                0
+            };
+            self.fill_tag = address & 0x3f_ffff;
+            if let Some(index) = sig.hit {
+                self.replay_entry = index;
+                if sig.core_pop {
+                    self.touch(index, false);
+                }
+            }
+        } else if sig.core_pop {
+            if sig.btc_response {
+                if self.replay_remaining == 2 {
+                    self.touch(self.replay_entry, false);
+                }
+                self.replay_remaining -= 1;
+            }
+            if self.fill_phase != 0 {
+                if sig.output.core_error {
+                    self.fill_phase = 0;
+                    self.statistics.cancelled_fills += 1;
+                } else if self.fill_phase == 1 && address == self.fill_tag {
+                    self.fill_word = sig.output.core_read_data as u16;
+                    self.fill_phase = 2;
+                } else if self.fill_phase == 2 && address == next_word(self.fill_tag, 1) {
+                    let index = self.btc[..CPU_V3_BTC_ENTRIES]
+                        .iter()
+                        .position(|e| !e.valid)
+                        .unwrap_or_else(|| {
+                            self.btc[..CPU_V3_BTC_ENTRIES]
+                                .iter()
+                                .position(|e| {
+                                    e.rank == (CPU_V3_BTC_ENTRIES as u8).saturating_sub(1)
+                                })
+                                .unwrap()
+                        });
+                    self.touch(index, true);
+                    self.btc[index] = BtcEntry {
+                        valid: true,
+                        tag: self.fill_tag,
+                        words: [self.fill_word, sig.output.core_read_data as u16],
+                        rank: 0,
+                    };
+                    self.fill_phase = 0;
+                    self.statistics.installed += 1;
+                }
+            }
+        }
+
+        if input.flush || sig.restart {
+            self.metadata_current.fill(false);
+            self.queue_head = 0;
+            self.queue_tail = 0;
+            self.queue_count = 0;
+            self.stream_valid = input.core_request_valid;
+            if input.core_request_valid {
+                self.expected_core_address = next_word(address, u32::from(sig.core_pop));
+                self.next_memory_address = if input.flush {
+                    address
+                } else {
+                    next_word(issue_address, u32::from(sig.request_fire))
+                };
+            }
+        } else {
+            if sig.core_pop {
+                self.expected_core_address = next_word(self.expected_core_address, 1);
+            }
+            if sig.queue_pop {
+                self.queue_head = (self.queue_head + 1) & 3;
+            }
+            if sig.enqueue {
+                self.queue_data[self.queue_tail as usize] = input.memory_read_data as u16;
+                self.queue_error[self.queue_tail as usize] = input.memory_error;
+                self.queue_address[self.queue_tail as usize] = response_address;
+                self.queue_tail = (self.queue_tail + 1) & 3;
+            }
+            self.queue_count = self.queue_count + u8::from(sig.enqueue) - u8::from(sig.queue_pop);
+            if sig.request_fire {
+                self.next_memory_address = next_word(issue_address, 1);
+            }
+        }
+        // A new request wins if a full FIFO drains and reuses the same slot.
+        if sig.response_fire {
+            self.metadata_current[self.metadata_head as usize] = false;
+            self.metadata_head = (self.metadata_head + 1) & 3;
+        }
+        if sig.request_fire {
+            self.metadata_current[self.metadata_tail as usize] = true;
+            self.metadata_address[self.metadata_tail as usize] = issue_address;
+            self.metadata_tail = (self.metadata_tail + 1) & 3;
+        }
+        self.metadata_count =
+            self.metadata_count + u8::from(sig.request_fire) - u8::from(sig.response_fire);
+    }
 }
 
 impl Module for CpuV3InstructionFetchQueue {
     type Input = CpuV3InstructionFetchQueueInput;
     type Output = CpuV3InstructionFetchQueueOutput;
     type EmuState = CpuV3InstructionFetchQueueState;
-
     const USES_MAIN_CLOCK: bool = true;
 
     fn create_emu(_input: &Self::Input, _output: &Self::Output) -> Self::EmuState {
-        CpuV3InstructionFetchQueueState::default()
+        Self::EmuState::default()
     }
-
     fn execute_emu(
         state: &mut Self::EmuState,
         circuit: &mut CircuitWires,
         input: &Self::Input,
         output: &Self::Output,
     ) {
-        let input = input.sample(circuit);
-        let core_address = input.core_address as u32;
-        let core_address_matches =
-            state.stream_valid && core_address == state.expected_core_address;
-        let queue_head_matches = state.queue_count != 0
-            && state.queue_address[usize::from(state.queue_head)] == core_address;
-        let restart = input.core_request_valid
-            && (!core_address_matches || (state.queue_count != 0 && !queue_head_matches));
-        let response_is_current = state.metadata_count != 0
-            && state.metadata_epoch[usize::from(state.metadata_head)] == state.epoch;
-        let response_bypass = input.core_request_valid
-            && core_address_matches
-            && state.queue_count == 0
-            && input.memory_response_valid
-            && response_is_current
-            && state.metadata_address[usize::from(state.metadata_head)] == core_address
-            && !input.flush
-            && !restart;
-        let core_response_valid = input.core_request_valid
-            && core_address_matches
-            && (queue_head_matches || response_bypass);
-        let core_pop = input.core_request_valid && input.core_response_ready && core_response_valid;
-        let reserved_words = state.queue_count + state.metadata_count;
-        let memory_response_ready = state.metadata_count != 0
-            && (!response_is_current || state.queue_count < QUEUE_DEPTH as u8 || core_pop);
-        let memory_response_fire = input.memory_response_valid && memory_response_ready;
-        let redirect_slot_available =
-            state.metadata_count < QUEUE_DEPTH as u8 || memory_response_fire;
-        let memory_request_valid = !input.flush
-            && ((restart && redirect_slot_available)
-                || (!restart && state.stream_valid && reserved_words < QUEUE_DEPTH as u8));
-
-        output.drive(
-            circuit,
-            &CpuV3InstructionFetchQueueOutputValue {
-                core_request_ready: core_response_valid && input.core_response_ready,
-                core_response_valid,
-                core_read_data: u64::from(if response_bypass {
-                    input.memory_read_data as u16
-                } else {
-                    state.queue_data[usize::from(state.queue_head)]
-                }),
-                core_error: if response_bypass {
-                    input.memory_error
-                } else {
-                    state.queue_error[usize::from(state.queue_head)]
-                },
-                memory_request_valid,
-                memory_address: u64::from(if restart {
-                    core_address
-                } else {
-                    state.next_memory_address
-                }),
-                memory_response_ready,
-            },
-        );
+        output.drive(circuit, &state.signals(&input.sample(circuit)).output);
     }
-
     fn clock_emu(
         state: &mut Self::EmuState,
         circuit: &mut CircuitWires,
         input: &Self::Input,
         _output: &Self::Output,
     ) {
-        let input = input.sample(circuit);
-        let core_address = input.core_address as u32;
-        let core_address_matches =
-            state.stream_valid && core_address == state.expected_core_address;
-        let queue_head_matches = state.queue_count != 0
-            && state.queue_address[usize::from(state.queue_head)] == core_address;
-        let restart = input.core_request_valid
-            && (!core_address_matches || (state.queue_count != 0 && !queue_head_matches));
-        let response_is_current = state.metadata_count != 0
-            && state.metadata_epoch[usize::from(state.metadata_head)] == state.epoch;
-        let response_bypass = input.core_request_valid
-            && core_address_matches
-            && state.queue_count == 0
-            && input.memory_response_valid
-            && response_is_current
-            && state.metadata_address[usize::from(state.metadata_head)] == core_address
-            && !input.flush
-            && !restart;
-        let core_response_valid = input.core_request_valid
-            && core_address_matches
-            && (queue_head_matches || response_bypass);
-        let core_pop = input.core_request_valid && input.core_response_ready && core_response_valid;
-        let queue_pop = core_pop && !response_bypass;
-        let bypass_pop = core_pop && response_bypass;
-        let reserved_words = state.queue_count + state.metadata_count;
-        let memory_response_ready = state.metadata_count != 0
-            && (!response_is_current || state.queue_count < QUEUE_DEPTH as u8 || core_pop);
-        let memory_response_fire = input.memory_response_valid && memory_response_ready;
-        let redirect_slot_available =
-            state.metadata_count < QUEUE_DEPTH as u8 || memory_response_fire;
-        let memory_request_valid = !input.flush
-            && ((restart && redirect_slot_available)
-                || (!restart && state.stream_valid && reserved_words < QUEUE_DEPTH as u8));
-        let memory_request_fire = memory_request_valid && input.memory_request_ready;
-        let enqueue_response =
-            memory_response_fire && response_is_current && !input.flush && !restart && !bypass_pop;
-
-        if input.reset {
-            *state = CpuV3InstructionFetchQueueState::default();
-            return;
-        }
-
-        let issue_address = if restart {
-            core_address
-        } else {
-            state.next_memory_address
-        };
-        let issue_epoch = if restart { !state.epoch } else { state.epoch };
-        let next_issue_address = (issue_address & 0xffff_0000) | ((issue_address + 1) & 0xffff);
-        let next_expected_address = (state.expected_core_address & 0xffff_0000)
-            | ((state.expected_core_address + 1) & 0xffff);
-        if input.flush || restart {
-            state.epoch = !state.epoch;
-            state.queue_head = 0;
-            state.queue_tail = 0;
-            state.queue_count = 0;
-            if input.core_request_valid {
-                state.stream_valid = true;
-                state.expected_core_address = core_address;
-                state.next_memory_address = if memory_request_fire {
-                    next_issue_address
-                } else {
-                    core_address
-                };
-            } else {
-                state.stream_valid = false;
-            }
-        } else {
-            if core_pop {
-                if queue_pop {
-                    state.queue_head = (state.queue_head + 1) & (QUEUE_DEPTH as u8 - 1);
-                }
-                state.expected_core_address = next_expected_address;
-            }
-            if enqueue_response {
-                state.queue_data[usize::from(state.queue_tail)] = input.memory_read_data as u16;
-                state.queue_error[usize::from(state.queue_tail)] = input.memory_error;
-                state.queue_address[usize::from(state.queue_tail)] =
-                    state.metadata_address[usize::from(state.metadata_head)];
-                state.queue_tail = (state.queue_tail + 1) & (QUEUE_DEPTH as u8 - 1);
-            }
-            match (enqueue_response, queue_pop) {
-                (true, false) => state.queue_count += 1,
-                (false, true) => state.queue_count -= 1,
-                _ => {}
-            }
-            if memory_request_fire {
-                state.next_memory_address = next_issue_address;
-            }
-        }
-
-        if memory_request_fire {
-            state.metadata_epoch[usize::from(state.metadata_tail)] = issue_epoch;
-            state.metadata_address[usize::from(state.metadata_tail)] = issue_address;
-            state.metadata_tail = (state.metadata_tail + 1) & (QUEUE_DEPTH as u8 - 1);
-        }
-        if memory_response_fire {
-            state.metadata_head = (state.metadata_head + 1) & (QUEUE_DEPTH as u8 - 1);
-        }
-        match (memory_request_fire, memory_response_fire) {
-            (true, false) => state.metadata_count += 1,
-            (false, true) => state.metadata_count -= 1,
-            _ => {}
-        }
+        state.clock(&input.sample(circuit));
     }
-
     fn verilog_source() -> Option<String> {
-        Some(include_str!("cpu_v3_instruction_fetch_queue.v").to_string())
+        Some(
+            include_str!("cpu_v3_instruction_fetch_queue.v")
+                .replace("__BTC_ENTRIES__", &CPU_V3_BTC_ENTRIES.to_string()),
+        )
     }
-
     fn verilog_testbench() -> Option<String> {
         Some(include_str!("cpu_v3_instruction_fetch_queue_tb.v").to_string())
     }
@@ -515,7 +662,7 @@ mod tests {
             0x2001,
             &mut trace,
         );
-        // Flush toggles the epoch.
+        // Flush clears request ownership and the BTC.
         queue_cosim_step(
             &mut circuit,
             &input,
@@ -670,3 +817,7 @@ mod tests {
         }
     }
 }
+
+#[cfg(test)]
+#[path = "fetch_btc_tests.rs"]
+mod btc_tests;

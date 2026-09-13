@@ -10,7 +10,7 @@ optimization Stage. Reusable processor details belong to the
 `CpuV3System` is the final composition boundary for the Tang Nano 20K target. It connects:
 
 - the revision 0.8 `CpuV3Core` at the Stage 12 microarchitecture level;
-- a four-entry epoch-tagged instruction fetch queue;
+- a four-entry instruction fetch queue with a four-entry, two-word resolved-target BTC;
 - a Stage0 instruction BSRAM window and separate 4-KiB I-cache and D-cache;
 - the CPU V3 memory arbiter and boot DMA client;
 - the related-clock SDRAM/display port and Gowin Controller HS boundary;
@@ -30,10 +30,13 @@ retire at one instruction per cycle. Loads, multiply, FPU, control transfers, de
 invalid cases, and stores while the one-entry asynchronous store buffer is busy remain barriers.
 The full rules are in [`hardware-architecture.md`](../../../ip/cpu-v3/docs/hardware-architecture.md).
 
-The instruction fetch queue reserves at most four fetched or outstanding words and tags downstream
-requests with an epoch. Redirect, fault, halt, reset, or global I-cache invalidation flushes visible
-old-epoch work and drains late responses without making them architectural. Sequential fetch wraps
-the 16-bit PC without carrying into `CSEG`.
+The instruction fetch queue reserves at most four fetched or outstanding downstream words.
+Per-slot current bits discard late responses across any number of redirects. A four-entry,
+two-word resolved-target BTC can deliver a target immediately while the queue requests its
+second successor. Redirects retain complete BTC entries; fault, halt, reset and global I-cache
+invalidation clear them together with pending replay/fill state. Sequential fetch wraps the
+16-bit PC without carrying into `CSEG`. Replacement and handshake details are specified in
+[hardware-architecture.md](../../../ip/cpu-v3/docs/hardware-architecture.md).
 
 Physical instruction words `0x00000000..0x000003ff` select the initialized Stage0 BSRAM. Other
 instruction addresses use the SDRAM-backed I-cache. The I-cache is read-only and serves demand
