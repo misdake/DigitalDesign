@@ -4,9 +4,9 @@
 use crate::dsl_rt::*;
 
 const N: u16 = 16;
-static A: [u16; 256] = [0; 256];
-static B: [u16; 256] = [0; 256];
-static C: [u16; 256] = [0; 256];
+static A: Buf<u16, 256> = Buf::new([0; 256]);
+static B: Buf<u16, 256> = Buf::new([0; 256]);
+static C: Buf<u16, 256> = Buf::new([0; 256]);
 
 fn main() {
     let mut a = A.as_array();
@@ -36,7 +36,9 @@ fn main() {
     }
     i = 0;
     while i < 256 {
-        if c[i] != 1496 { halt(0); }
+        if c[i] != 1496 {
+            halt(0);
+        }
         i = i + 1;
     }
     halt(1);

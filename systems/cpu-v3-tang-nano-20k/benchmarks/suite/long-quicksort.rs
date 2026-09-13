@@ -4,7 +4,7 @@
 use crate::dsl_rt::*;
 
 const N: u16 = 2048;
-static DATA: [u16; 2048] = [0; 2048];
+static DATA: Buf<u16, 2048> = Buf::new([0; 2048]);
 
 fn qsort(mut d: Array<u16>, lo: u16, hi: u16) {
     if lo < hi {
@@ -27,15 +27,22 @@ fn qsort(mut d: Array<u16>, lo: u16, hi: u16) {
         let swap = d[i];
         d[i] = d[hi];
         d[hi] = swap;
-        if lo < i { qsort(d, lo, i - 1); }
-        if i < hi { qsort(d, i + 1, hi); }
+        if lo < i {
+            qsort(d, lo, i - 1);
+        }
+        if i < hi {
+            qsort(d, i + 1, hi);
+        }
     }
 }
 
 fn checksum(d: Array<u16>) -> u16 {
     let mut sum: u16 = 0;
     let mut i: u16 = 0;
-    while i < N { sum = sum + d[i]; i = i + 1; }
+    while i < N {
+        sum = sum + d[i];
+        i = i + 1;
+    }
     sum
 }
 
@@ -50,8 +57,14 @@ fn main() {
     qsort(d, 0, N - 1);
     i = 1;
     while i < N {
-        if d[i - 1] > d[i] { halt(0); }
+        if d[i - 1] > d[i] {
+            halt(0);
+        }
         i = i + 1;
     }
-    if before == checksum(d) { halt(1); } else { halt(0); }
+    if before == checksum(d) {
+        halt(1);
+    } else {
+        halt(0);
+    }
 }

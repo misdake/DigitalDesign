@@ -19,7 +19,7 @@ fn test_const_and_static() {
 const WIDTH: u16 = 8;
 const DOUBLE: u16 = WIDTH * 2;
 static SCORE: u16 = 0;
-static TILE: [u16; 3] = [11, 22, 33];
+static TILE: Buf<u16, 3> = Buf::new([11, 22, 33]);
 fn main() {
     // statics are initialized by __data_init at main entry
     assert(TILE.read(0) == 11 && TILE.read(2) == 33, 1);
@@ -74,7 +74,7 @@ fn sum(buf: Ptr, n: u16) -> u16 {
     s
 }
 fn main() {
-    let mut a: [u16; 10] = [0; 10];
+    let mut a: Buf<u16, 10> = Buf::new([0; 10]);
     fill(a.as_ptr(), 10, 4);
     halt(sum(a.as_ptr(), 10));
 }
@@ -85,17 +85,17 @@ fn main() {
 #[test]
 fn test_typed_array_view_indexing() {
     let src = r#"
-static WORDS: [u16; 3] = [10, 20, 30];
+static WORDS: Buf<u16, 3> = Buf::new([10, 20, 30]);
 fn bump(mut data: Array<u16>, i: u16) {
     data[i] += 1;
 }
 fn main() {
-    let mut local: [u16; 3] = [1, 2, 3];
+    let mut local: Buf<u16, 3> = Buf::new([1, 2, 3]);
     let mut data = local.as_array();
     data[0u16] = 7;
     bump(data, 1);
 
-    let mut signed: [i16; 2] = [-2, -4];
+    let mut signed: Buf<i16, 2> = Buf::new([-2, -4]);
     let mut signed_view = signed.as_array();
     signed_view[1i16] += 2i16;
 
@@ -162,7 +162,7 @@ fn main() {
 #[test]
 fn test_typed_array_view_errors() {
     expect_error(
-        "fn f() { let mut a: [u16; 2] = [0; 2]; let view = a.as_array(); view[0u16] = 1; }",
+        "fn f() { let mut a: Buf<u16, 2> = Buf::new([0; 2]); let view = a.as_array(); view[0u16] = 1; }",
         "not mutable",
     );
     expect_error(
@@ -243,7 +243,7 @@ fn main() {
 #[test]
 fn test_ptr_from_addr_roundtrip() {
     let src = r#"
-static G: [u16; 3] = [111, 222, 333];
+static G: Buf<u16, 3> = Buf::new([111, 222, 333]);
 fn main() {
     let p = G.as_ptr();
     // from_addr(addr(p)) rebuilds the same pointer
@@ -261,8 +261,8 @@ fn main() {
 fn test_local_array_init_forms() {
     let src = r#"
 fn main() {
-    let mut z: [u16; 5] = [7; 5]; // repeat form
-    let l: [u16; 4] = [1, 2, 4, 8]; // list form
+    let mut z: Buf<u16, 5> = Buf::new([7; 5]); // repeat form
+    let l: Buf<u16, 4> = Buf::new([1, 2, 4, 8]); // list form
     z.write(2, z.read(0) + l.read(3));
     let mut sum: u16 = 0;
     let mut i: u16 = 0;
@@ -289,7 +289,7 @@ fn main() {
 fn test_as_ptr_aliases_array() {
     let src = r#"
 fn main() {
-    let mut a: [u16; 4] = [1, 2, 3, 4];
+    let mut a: Buf<u16, 4> = Buf::new([1, 2, 3, 4]);
     let p = a.as_ptr();
     // raw pointer writes land in the array's frame slots
     p.write(0, p.read(3) + 10);
@@ -306,15 +306,15 @@ fn main() {
 #[test]
 fn test_array_len_mismatch() {
     expect_error(
-        "fn main() { let a: [u16; 3] = [1, 2]; }",
+        "fn main() { let a: Buf<u16, 3> = Buf::new([1, 2]); }",
         "array initializer has 2 elements, expected 3",
     );
     expect_error(
-        "fn main() { let a: [u16; 2] = [1, 2, 3]; }",
+        "fn main() { let a: Buf<u16, 2> = Buf::new([1, 2, 3]); }",
         "array initializer has 3 elements, expected 2",
     );
     expect_error(
-        "static A: [u16; 3] = [1, 2]; fn main() {}",
+        "static A: Buf<u16, 3> = Buf::new([1, 2]); fn main() {}",
         "initializer has 2 elements, expected 3",
     );
 }
@@ -325,9 +325,9 @@ fn test_data_init_layout() {
     // __data_init stores each non-zero word at main entry
     let src = r#"
 static A: u16 = 5;                    // addr 0
-static B: [u16; 4] = [10, 0, 30, 40]; // addr 1..=4 (B[1] is zero: nothing stored)
+static B: Buf<u16, 4> = Buf::new([10, 0, 30, 40]); // addr 1..=4 (B[1] is zero: nothing stored)
 static C: i16 = -2;                   // addr 5 (raw sign bits)
-static D: [u16; 3] = [0; 3];          // addr 6..=8 (all zero: nothing stored)
+static D: Buf<u16, 3> = Buf::new([0; 3]);          // addr 6..=8 (all zero: nothing stored)
 fn main() {
     addr_of(&A).write(0, A + 1);
     halt(0);
@@ -347,7 +347,7 @@ fn main() {
 #[test]
 fn test_data_init_uses_sp_across_pages_and_restores_it() {
     let src = r#"
-static DATA: [u16; 4] = [11, 22, 33, 44];
+static DATA: Buf<u16, 4> = Buf::new([11, 22, 33, 44]);
 fn main() {
     halt(DATA.read(0) + DATA.read(1) + DATA.read(2) + DATA.read(3));
 }
@@ -400,7 +400,7 @@ const F: i16 = -5;
 const G: i16 = F - F - F;
 fn main() {
     // a const can size a local array
-    let buf: [u16; N] = [0; N];
+    let buf: Buf<u16, N> = Buf::new([0; N]);
     assert(buf.len() == N, 1);
     halt(A + B + C + D + E + G as u16);
 }
@@ -459,7 +459,7 @@ fn main() {
 #[test]
 fn test_array_as_ptr_and_len() {
     let src = r#"
-static KEYS: [u16; 5] = [3, 1, 4, 1, 5];
+static KEYS: Buf<u16, 5> = Buf::new([3, 1, 4, 1, 5]);
 fn sum_at(p: Ptr, n: u16) -> u16 {
     let mut s: u16 = 0;
     let mut i: u16 = 0;
@@ -470,7 +470,7 @@ fn sum_at(p: Ptr, n: u16) -> u16 {
     s
 }
 fn main() {
-    let local: [u16; 3] = [9, 2, 6];
+    let local: Buf<u16, 3> = Buf::new([9, 2, 6]);
     // the same helper walks a global array and a stack array
     let g = sum_at(KEYS.as_ptr(), KEYS.len());
     let l = sum_at(local.as_ptr(), local.len());
@@ -486,9 +486,9 @@ fn main() {
 #[test]
 fn test_i16_array_elements() {
     let src = r#"
-static NEGS: [i16; 4] = [-1, -2, -3, -4];
+static NEGS: Buf<i16, 4> = Buf::new([-1, -2, -3, -4]);
 fn main() {
-    let mut local: [i16; 3] = [0; 3];
+    let mut local: Buf<i16, 3> = Buf::new([0; 3]);
     // i16 elements are raw words; casts make the signedness explicit
     local.write(0, (-10i16) as u16);
     local.write(1, 20);
@@ -523,7 +523,7 @@ fn main() {
 #[test]
 fn test_bubble_sort_matches_rust() {
     let src = r#"
-static DATA: [u16; 8] = [50, 20, 90, 10, 70, 30, 80, 60];
+static DATA: Buf<u16, 8> = Buf::new([50, 20, 90, 10, 70, 30, 80, 60]);
 fn sort(p: Ptr, n: u16) {
     let mut i: u16 = 0;
     while i < n {
@@ -558,7 +558,7 @@ fn main() {
 fn test_fib_local_array_matches_rust() {
     let src = r#"
 fn main() {
-    let mut fib: [u16; 10] = [0; 10];
+    let mut fib: Buf<u16, 10> = Buf::new([0; 10]);
     fib.write(0, 1);
     fib.write(1, 1);
     let mut i: u16 = 2;

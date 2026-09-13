@@ -6,7 +6,7 @@ use crate::dsl_rt::*;
 // Insertion sort over 24 words from a xorshift generator; exact sorted-array
 // checksum.
 const N: u16 = 24;
-static DATA: [u16; 24] = [0; 24];
+static DATA: Buf<u16, 24> = Buf::new([0; 24]);
 
 fn main() {
     let mut d = DATA.as_array();

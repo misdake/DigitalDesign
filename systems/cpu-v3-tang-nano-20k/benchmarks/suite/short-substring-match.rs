@@ -5,8 +5,8 @@ use crate::dsl_rt::*;
 
 // Naive substring search over a fixed 64-word buffer; exact match count and
 // position checksum.
-static TEXT: [u16; 64] = [0; 64];
-static PAT: [u16; 5] = [0; 5];
+static TEXT: Buf<u16, 64> = Buf::new([0; 64]);
+static PAT: Buf<u16, 5> = Buf::new([0; 5]);
 
 fn main() {
     let mut t = TEXT.as_array();

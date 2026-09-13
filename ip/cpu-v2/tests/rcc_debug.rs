@@ -5,9 +5,9 @@ use cpu_v2::CompilerOptions;
 #[test]
 fn test_debug_info_contents() {
     let src = r#"
-static TILE: [u16; 2] = [5, 6];
+static TILE: Buf<u16, 2> = Buf::new([5, 6]);
 fn main() {
-    let mut buf: [u16; 4] = [0; 4];
+    let mut buf: Buf<u16, 4> = Buf::new([0; 4]);
     buf.write(0, TILE.read(1));
     halt(buf.read(0));
 }
@@ -30,7 +30,7 @@ fn main() {
     assert!(text.contains("file 0 test.rs"));
     assert!(text.contains("rcc_std/heap.rs"));
     // globals with addresses
-    assert!(text.contains("global TILE [u16; 2] 0x0000"));
+    assert!(text.contains("global TILE Buf<u16, 2> 0x0000"));
     // the main function with its frame and the frame-local array
     let main = debug.functions.iter().find(|f| f.name == "main").unwrap();
     assert_eq!(main.file, 0);

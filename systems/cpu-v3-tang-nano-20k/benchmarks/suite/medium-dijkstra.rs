@@ -6,13 +6,17 @@ use crate::dsl_rt::*;
 // Dijkstra shortest paths from node 0 over a 96-node graph with on-the-fly
 // deterministic weights; exact distance-vector checksum.
 const N: u16 = 96;
-static DIST: [u16; 96] = [0; 96];
-static VISITED: [u16; 96] = [0; 96];
+static DIST: Buf<u16, 96> = Buf::new([0; 96]);
+static VISITED: Buf<u16, 96> = Buf::new([0; 96]);
 
 fn weight(i: u16, j: u16) -> u16 {
     // edge exists when the low two bits of a hash are zero
     let h = (i << 3) ^ (j << 1) ^ (i + j);
-    if h & 3 == 0 { ((h >> 2) & 15) + 1 } else { 0 }
+    if h & 3 == 0 {
+        ((h >> 2) & 15) + 1
+    } else {
+        0
+    }
 }
 
 fn main() {

@@ -110,13 +110,13 @@ fn test_unsupported_constructs() {
     expect_error("fn f(x: u16) { if x { halt(0); } }", "boolean");
     expect_error("fn f(x: u16) { x = 1; }", "not mutable");
     expect_error("fn f(x: u16) -> u16 { return; }", "return");
-    expect_error("fn f() { let a: [u16; 3]; }", "initializer");
+    expect_error("fn f() { let a: Buf<u16, 3>; }", "initializer");
     expect_error(
         "fn f() { let mut x: u16 = 1; let p = &x; }",
         "not supported",
     );
     expect_error("static mut X: u16 = 0; fn f() {}", "static mut");
-    expect_error("fn f(a: [u16; 2]) {}", "array");
+    expect_error("fn f(a: Buf<u16, 2>) {}", "array");
 }
 
 // ---------------------------------------------------------------------------
@@ -161,7 +161,7 @@ fn test_unsupported_types() {
     // no fat slices, references, or owned arrays in parameter position
     expect_error("fn f(s: [u16]) {}", "slice");
     expect_error("fn f(r: &u16) {}", "reference");
-    expect_error("fn f(a: [u16; 2]) {}", "owned arrays are not allowed");
+    expect_error("fn f(a: Buf<u16, 2>) {}", "owned arrays are not allowed");
 }
 
 #[test]
@@ -269,18 +269,30 @@ fn test_assignment_and_return_errors() {
 #[test]
 fn test_array_errors() {
     // local arrays always need an initializer
-    expect_error("fn f() { let a: [u16; 3]; }", "initializer");
+    expect_error("fn f() { let a: Buf<u16, 3>; }", "initializer");
     // list length must match the declared length
-    expect_error("fn f() { let mut a: [u16; 3] = [1, 2]; }", "expected 3");
-    expect_error("static A: [u16; 3] = [1, 2];", "expected 3");
-    // the initializer must be [v; N] or a full list
-    expect_error("fn f() { let mut a: [u16; 2] = 0; }", "array initializer");
+    expect_error(
+        "fn f() { let mut a: Buf<u16, 3> = Buf::new([1, 2]); }",
+        "expected 3",
+    );
+    expect_error("static A: Buf<u16, 3> = Buf::new([1, 2]);", "expected 3");
+    // the initializer must be `Buf::new([v; N])` or `Buf::new([e0, e1, ...])`
+    expect_error("fn f() { let mut a: Buf<u16, 2> = 0; }", "Buf::new");
+    // native arrays are not part of the subset (spec §10): they index by usize
+    expect_error(
+        "fn f() { let a: [u16; 2] = [0; 2]; }",
+        "native arrays are not part of the subset",
+    );
+    expect_error(
+        "fn f(a: [u16; 2]) {}",
+        "native arrays are not part of the subset",
+    );
     // static array initializers are compile-time constants only
     expect_error(
-        "static A: [u16; 2] = [f(), 0]; fn f() -> u16 { 1 }",
+        "static A: Buf<u16, 2> = Buf::new([f(), 0]); fn f() -> u16 { 1 }",
         "constant expression",
     );
-    expect_error("static A: [u16; 2] = [X, 0];", "unknown const");
+    expect_error("static A: Buf<u16, 2> = Buf::new([X, 0]);", "unknown const");
 }
 
 #[test]

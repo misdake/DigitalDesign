@@ -4,10 +4,11 @@
 use crate::dsl_rt::*;
 
 static BASIC_RESULT: u16 = 0;
-static CRC_WORDS: [u16; 12] = [
+static CRC_WORDS: Buf<u16, 12> = Buf::new([
     0x1234, 0xabcd, 0x0001, 0xffff, 0x55aa, 0x0f0f, 0x8001, 0x2468, 0x1357, 0xbeef, 0xcafe, 0x0102,
-];
-static SORT_DATA: [u16; 16] = [42, 7, 19, 3, 88, 1, 55, 34, 13, 5, 21, 8, 2, 77, 11, 6];
+]);
+static SORT_DATA: Buf<u16, 16> =
+    Buf::new([42, 7, 19, 3, 88, 1, 55, 34, 13, 5, 21, 8, 2, 77, 11, 6]);
 
 #[allow(clippy::collapsible_else_if)]
 fn clamp_i16(x: i16, low: i16, high: i16) -> i16 {
@@ -29,7 +30,7 @@ fn mix(x: u16, y: u16) -> u16 {
 }
 
 fn benchmark_basics() -> u16 {
-    let values: [u16; 8] = [3, 14, 15, 9, 26, 5, 35, 8];
+    let values: Buf<u16, 8> = Buf::new([3, 14, 15, 9, 26, 5, 35, 8]);
     let mut data = values.as_array();
     let mut acc: u16 = 0x1234;
 

@@ -6,7 +6,7 @@ use crate::dsl_rt::*;
 const WIDTH: u16 = 8;
 
 static SCORE: u16 = 0;
-static TILE: [u16; 4] = [0x3c66, 0xc3ff, 0xffc3, 0x663c];
+static TILE: Buf<u16, 4> = Buf::new([0x3c66, 0xc3ff, 0xffc3, 0x663c]);
 
 fn add_row(mut buf: Array<u16>, row: u16, value: u16) {
     // row offset = row * WIDTH, WIDTH is 8
@@ -15,7 +15,7 @@ fn add_row(mut buf: Array<u16>, row: u16, value: u16) {
 
 fn main() {
     // local array on the stack
-    let grid: [u16; 64] = [0; 64];
+    let grid: Buf<u16, 64> = Buf::new([0; 64]);
     let grid_view = grid.as_array();
     let tile = TILE.as_array();
     add_row(grid_view, 2, tile[1u16]);

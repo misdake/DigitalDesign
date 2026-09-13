@@ -827,58 +827,67 @@ fn add_static(
         ));
     }
     let name = s.ident.to_string();
-    match s.ty.as_ref() {
-        Type::Array(a) => {
-            let elem = ty_of(&a.elem, &StructNames::new())?;
-            if !matches!(elem, Ty::U16 | Ty::I16) {
-                return Err(err(&a.elem, "array element type must be u16 or i16"));
-            }
-            let len = const_eval(&a.len, consts)? as usize;
-            let init: Vec<u16> = match s.expr.as_ref() {
-                Expr::Array(arr) => arr
-                    .elems
-                    .iter()
-                    .map(|e| const_eval(e, consts))
-                    .collect::<Result<_, _>>()?,
-                Expr::Repeat(r) => {
-                    let m = const_eval(&r.len, consts)? as usize;
-                    if m != len {
-                        return Err(err(
-                            &s.expr,
-                            format!("array repeat count {m} does not match declared length {len}"),
-                        ));
-                    }
-                    let v = const_eval(&r.expr, consts)?;
-                    vec![v; len]
-                }
-                _ => {
+    if let Some(owned) = buf_type(s.ty.as_ref(), consts, &StructNames::new())? {
+        let Ty::Array(elem, len) = owned else {
+            unreachable!("buf_type returns an array")
+        };
+        if !matches!(*elem, Ty::U16 | Ty::I16) {
+            return Err(err(
+                &s.ty,
+                "a static Buf element must be u16 or i16 (struct statics are not supported yet)",
+            ));
+        }
+        let elem = *elem;
+        let init: Vec<u16> = match buf_initializer(s.expr.as_ref())? {
+            Expr::Array(arr) => arr
+                .elems
+                .iter()
+                .map(|e| const_eval(e, consts))
+                .collect::<Result<_, _>>()?,
+            Expr::Repeat(r) => {
+                let m = const_eval(&r.len, consts)? as usize;
+                if m != len {
                     return Err(err(
                         &s.expr,
-                        "array static needs an initializer list or [v; N]",
-                    ))
+                        format!("Buf repeat count {m} does not match declared length {len}"),
+                    ));
                 }
-            };
-            if init.len() != len {
+                let v = const_eval(&r.expr, consts)?;
+                vec![v; len]
+            }
+            other => {
                 return Err(err(
-                    &s.expr,
-                    format!("initializer has {} elements, expected {len}", init.len()),
-                ));
+                    other,
+                    "a static Buf needs an initializer list or [v; N]",
+                ))
             }
-            let addr = reserve_static(g, len, &s.ident)?;
-            for (i, w) in init.iter().enumerate() {
-                g.data_words.push((addr + i as u16, *w));
-            }
-            if g.arrays.insert(name.clone(), (addr, elem, len)).is_some() {
-                return Err(err(&s.ident, format!("static `{name}` defined twice")));
-            }
-            Ok(())
+        };
+        if init.len() != len {
+            return Err(err(
+                &s.expr,
+                format!("initializer has {} elements, expected {len}", init.len()),
+            ));
         }
+        let addr = reserve_static(g, len, &s.ident)?;
+        for (i, w) in init.iter().enumerate() {
+            g.data_words.push((addr + i as u16, *w));
+        }
+        if g.arrays.insert(name.clone(), (addr, elem, len)).is_some() {
+            return Err(err(&s.ident, format!("static `{name}` defined twice")));
+        }
+        return Ok(());
+    }
+    match s.ty.as_ref() {
+        Type::Array(_) => Err(err(
+            &s.ty,
+            "native arrays are not part of the subset; write Buf<T, N> (spec §10)",
+        )),
         t => {
             let ty = ty_of(t, &StructNames::new())?;
             if !matches!(ty, Ty::U16 | Ty::I16) {
                 return Err(err(
                     t,
-                    "static must be u16/i16 or an array of them (struct statics are not supported yet)",
+                    "static must be u16/i16 or a Buf of them (struct statics are not supported yet)",
                 ));
             }
             let v = const_eval(&s.expr, consts)?;
@@ -910,7 +919,7 @@ enum Ty {
         params: Vec<Ty>,
         ret: Box<Ty>,
     },
-    /// [u16; N] / [i16; N], memory-resident (data section or stack frame)
+    /// Buf<u16, N> / Buf<i16, N>, memory-resident (data section or stack frame)
     Array(Box<Ty>, usize),
     /// a struct: the value *is* its word address, like an array (spec §9b). The
     /// name keys `Globals::structs`, which owns the layout.
@@ -959,7 +968,7 @@ impl Ty {
                     .join(", "),
                 ret.display()
             ),
-            Ty::Array(elem, n) => format!("[{}; {n}]", elem.display()),
+            Ty::Array(elem, n) => format!("Buf<{}, {n}>", elem.display()),
             Ty::Struct(name) => name.clone(),
             Ty::Fix16 => "fix16".into(),
             Ty::Vec2 => "vec2".into(),
@@ -1015,6 +1024,13 @@ fn ty_of(ty: &Type, structs: &StructNames) -> Result<Ty, syn::Error> {
                 }
                 return Ok(Ty::ArrayRef(Box::new(elem)));
             }
+            if seg.ident == "Buf" {
+                return Err(err(
+                    ty,
+                    "owned arrays are not allowed here: Buf<T, N> cannot be a parameter, return \
+                     value or cast target; pass Array<T> (a view) or Ptr (spec §10)",
+                ));
+            }
             if !seg.arguments.is_empty() {
                 return Err(err(ty, "generics are only supported for Array<u16/i16>"));
             }
@@ -1054,7 +1070,7 @@ fn ty_of(ty: &Type, structs: &StructNames) -> Result<Ty, syn::Error> {
         Type::Paren(p) => ty_of(&p.elem, structs),
         Type::Array(_) => Err(err(
             ty,
-            "owned arrays are not allowed here (pass Array<T> or Ptr)",
+            "native arrays are not part of the subset; write Buf<T, N> (spec §10)",
         )),
         Type::Reference(_) => Err(err(
             ty,
@@ -1068,30 +1084,108 @@ fn ty_of(ty: &Type, structs: &StructNames) -> Result<Ty, syn::Error> {
     }
 }
 
-/// type annotation that may be an array type (valid only in let/static positions
-/// and struct fields)
+/// type annotation that may be an owned array type (valid only in let/static
+/// positions and struct fields)
 fn ty_of_maybe_array(
     ty: &Type,
     consts: &HashMap<String, (u16, Ty)>,
     structs: &StructNames,
 ) -> Result<Ty, syn::Error> {
+    if let Some(owned) = buf_type(ty, consts, structs)? {
+        return Ok(owned);
+    }
     match ty {
-        Type::Array(a) => {
-            let elem = ty_of(&a.elem, structs)?;
-            if !matches!(elem, Ty::U16 | Ty::I16 | Ty::Struct(_)) {
-                return Err(err(
-                    &a.elem,
-                    "array element type must be u16, i16 or a struct",
-                ));
-            }
-            let len = const_eval(&a.len, consts)? as usize;
-            Ok(Ty::Array(Box::new(elem), len))
-        }
+        Type::Array(_) => Err(err(
+            ty,
+            "native arrays are not part of the subset; write Buf<T, N> (spec §10)",
+        )),
         _ => ty_of(ty, structs),
     }
 }
 
-/// initialize an array at `base` (a frame slot, a struct field, ...)
+/// `Buf<T, N>` — the owned array type (spec §10). Native `[T; N]` is **not** part of
+/// the subset: Rust arrays index by `usize`, so a word-sized `u16` index would not
+/// type-check on the host, and the orphan rule forbids adding `Index<u16>` to them.
+fn buf_type(
+    ty: &Type,
+    consts: &HashMap<String, (u16, Ty)>,
+    structs: &StructNames,
+) -> Result<Option<Ty>, syn::Error> {
+    let Type::Path(tp) = ty else {
+        return Ok(None);
+    };
+    if tp.path.segments.len() != 1 || tp.path.segments[0].ident != "Buf" {
+        return Ok(None);
+    }
+    let syn::PathArguments::AngleBracketed(args) = &tp.path.segments[0].arguments else {
+        return Err(err(ty, "Buf needs two parameters, like Buf<u16, 8>"));
+    };
+    let mut args = args.args.iter();
+    let Some(syn::GenericArgument::Type(elem_ty)) = args.next() else {
+        return Err(err(ty, "Buf needs two parameters, like Buf<u16, 8>"));
+    };
+    let len = match args.next() {
+        Some(syn::GenericArgument::Const(len)) => const_eval(len, consts)?,
+        // syn parses a bare identifier as a *type* argument, but `Buf<u16, N>` names
+        // the const `N` (Rust requires braces around anything more complex)
+        Some(syn::GenericArgument::Type(Type::Path(tp)))
+            if tp.path.segments.len() == 1 && tp.path.segments[0].arguments.is_empty() =>
+        {
+            let name = tp.path.segments[0].ident.to_string();
+            consts.get(&name).map(|&(v, _)| v).ok_or_else(|| {
+                err(
+                    ty,
+                    format!("the Buf length must be a constant: unknown const `{name}`"),
+                )
+            })?
+        }
+        _ => return Err(err(ty, "Buf needs two parameters, like Buf<u16, 8>")),
+    };
+    if args.next().is_some() {
+        return Err(err(ty, "Buf needs two parameters, like Buf<u16, 8>"));
+    }
+    let elem = ty_of(elem_ty, structs)?;
+    if !matches!(elem, Ty::U16 | Ty::I16 | Ty::Struct(_)) {
+        return Err(err(
+            elem_ty,
+            "Buf element type must be u16, i16 or a struct",
+        ));
+    }
+    let n = len as usize;
+    Ok(Some(Ty::Array(Box::new(elem), n)))
+}
+
+/// the `[v; N]` / `[e0, e1, ...]` inside `Buf::new(...)` (or `Buf(...)`)
+fn buf_initializer(init: &Expr) -> Result<&Expr, syn::Error> {
+    let Expr::Call(call) = init else {
+        return Err(err(
+            init,
+            "a Buf is initialized with Buf::new([v; N]) or Buf::new([e0, e1, ...])",
+        ));
+    };
+    let Expr::Path(func) = call.func.as_ref() else {
+        return Err(err(init, "a Buf is initialized with Buf::new([v; N])"));
+    };
+    let segs: Vec<String> = func
+        .path
+        .segments
+        .iter()
+        .map(|s| s.ident.to_string())
+        .collect();
+    if segs.as_slice() != ["Buf", "new"] && segs.as_slice() != ["Buf"] {
+        return Err(err(
+            init,
+            "a Buf is initialized with Buf::new([v; N]) or Buf::new([e0, e1, ...])",
+        ));
+    }
+    if call.args.len() != 1 {
+        return Err(err(init, "Buf::new takes one array literal"));
+    }
+    Ok(&call.args[0])
+}
+
+/// initialize an array at `base` (a frame slot, a struct field, ...). The
+/// initializer is `Buf::new([v; N])` or `Buf::new([e0, e1, ...])`.
 fn init_array_at(
     l: &mut FnLower,
     base: VReg,
@@ -1099,6 +1193,7 @@ fn init_array_at(
     n: usize,
     init: &Expr,
 ) -> Result<(), syn::Error> {
+    let init = buf_initializer(init)?;
     // a struct element spans several words, so element `i` starts at `i * size`
     if let Ty::Struct(name) = elem {
         let name = name.clone();
@@ -1158,7 +1253,7 @@ fn init_array_at(
             _ => {
                 return Err(err(
                     init,
-                    "a struct array needs [v; N] or a list of struct literals",
+                    "a struct Buf needs Buf::new([v; N]) or a list of struct literals",
                 ))
             }
         }
@@ -1483,8 +1578,7 @@ fn scan_stmt(
     match s {
         Stmt::Local(local) => {
             if let Pat::Type(pt) = &local.pat {
-                if let Type::Array(_) = pt.ty.as_ref() {
-                    ty_of_maybe_array(&pt.ty, consts, structs)?;
+                if matches!(ty_of_maybe_array(&pt.ty, consts, structs)?, Ty::Array(..)) {
                     if let Pat::Ident(p) = pt.pat.as_ref() {
                         out.insert(p.ident.to_string(), ResidentKind::Array);
                     }
@@ -1777,7 +1871,7 @@ fn stmt(l: &mut FnLower, s: &Stmt) -> Result<(), syn::Error> {
                 .as_ref()
                 .ok_or_else(|| err(s, "let without initializer is not supported"))?;
 
-            // local array: `let mut buf: [u16; N] = [0; N];`
+            // local Buf: `let mut buf: Buf<u16, N> = Buf::new([0; N]);`
             if let Some(Ty::Array(elem, n)) = &annotated {
                 let (elem, n) = (elem.as_ref().clone(), *n);
                 let slot = l.b.alloc_local_slots(n as u8);
@@ -1820,7 +1914,7 @@ fn stmt(l: &mut FnLower, s: &Stmt) -> Result<(), syn::Error> {
             if matches!(l.residents.get(&ident), Some(ResidentKind::Array)) {
                 return Err(err(
                     &local.pat,
-                    "arrays need a type annotation like `let mut buf: [u16; N] = [0; N];`",
+                    "a Buf needs a type annotation like `let mut buf: Buf<u16, N> = Buf::new([0; N]);`",
                 ));
             }
             if matches!(init.1.as_ref(), Expr::Struct(_)) {
@@ -3261,7 +3355,7 @@ fn call_expr(l: &mut FnLower, call: &syn::ExprCall) -> Result<Val, syn::Error> {
             return Ok(Val::V(place_addr(l, base, offset), Ty::Ptr));
         }
         // the address of one value as a typed view: `view_of(&p)` for a struct or
-        // scalar place (arrays use `.as_view()`)
+        // scalar place (a Buf uses `.as_array()`)
         "view_of" => {
             if call.args.len() != 1 {
                 return Err(err(call, "view_of(&x) takes 1 argument"));
@@ -3277,7 +3371,7 @@ fn call_expr(l: &mut FnLower, call: &syn::ExprCall) -> Result<Val, syn::Error> {
                 Ty::Array(..) => {
                     return Err(err(
                         &r.expr,
-                        "use `arr.as_view()` for an array; view_of takes one value",
+                        "use `buf.as_array()` for a Buf; view_of takes one value",
                     ))
                 }
                 Ty::ArrayRef(_) => return Err(err(&r.expr, "that expression is already a view")),
@@ -3778,14 +3872,13 @@ fn fpu_method(
     }
 }
 
-/// owned-array methods (Slice2 intrinsics): read/write/as_ptr/as_array/len
+/// Buf methods (spec §10): read/write/as_ptr/as_array/len
 fn array_method(
     l: &mut FnLower,
     base: VReg,
     elem: &Ty,
     n: usize,
     mutable: bool,
-    name: &str,
     m: &syn::ExprMethodCall,
 ) -> Result<Val, syn::Error> {
     let method = m.method.to_string();
@@ -3805,20 +3898,6 @@ fn array_method(
         "as_array" => {
             if !m.args.is_empty() {
                 return Err(err(&m.method, "as_array() takes no arguments"));
-            }
-            if matches!(elem, Ty::Struct(_)) {
-                return Err(err(
-                    &m.method,
-                    "as_array() is the u16/i16 view; use as_view() for a struct array",
-                ));
-            }
-            Ok(Val::V(base, Ty::ArrayRef(Box::new(elem.clone()))))
-        }
-        // the generic view: the only one that works for struct arrays (the host
-        // `Slice2` trait above is u16/i16-only)
-        "as_view" => {
-            if !m.args.is_empty() {
-                return Err(err(&m.method, "as_view() takes no arguments"));
             }
             Ok(Val::V(base, Ty::ArrayRef(Box::new(elem.clone()))))
         }
@@ -3845,7 +3924,7 @@ fn array_method(
             if !mutable {
                 return Err(err(
                     &m.method,
-                    format!("array `{name}` is not mutable (declare with `let mut`)"),
+                    "the Buf is not mutable (declare it with `let mut`)",
                 ));
             }
             if m.args.len() != 2 {
@@ -3862,23 +3941,30 @@ fn array_method(
 }
 
 fn method_call(l: &mut FnLower, m: &syn::ExprMethodCall) -> Result<Val, syn::Error> {
-    // array methods on local arrays / global arrays
+    // Buf methods on local buffers / global buffers
     if let Ok(name) = path_ident(&m.receiver) {
         if let Some(info) = l.lookup(&name) {
             if let Ty::Array(elem, n) = &info.ty {
                 let (kind, elem, n, mutable) =
                     (info.kind.clone(), elem.as_ref().clone(), *n, info.mutable);
                 let VarKind::Local { slot } = kind else {
-                    unreachable!("arrays are always memory-resident")
+                    unreachable!("buffers are always memory-resident")
                 };
                 let base = l.b.addr_of_local(slot);
-                return array_method(l, base, &elem, n, mutable, &name, m);
+                return array_method(l, base, &elem, n, mutable, m);
             }
         }
         if let Some((addr, elem, n)) = l.globals.arrays.get(&name).cloned() {
             let base = l.b.load_imm(addr);
-            return array_method(l, base, &elem, n, true, &name, m);
+            return array_method(l, base, &elem, n, true, m);
         }
+    }
+    // ... and on a Buf *place* (`p.flags.as_array()`, a buffer field)
+    if let Some(Ty::Array(elem, n)) = peek_type(l, &m.receiver) {
+        let (elem, n) = ((*elem).clone(), n);
+        let (base, offset, _, mutable) = place_addr_of(l, &m.receiver)?;
+        let base = place_addr(l, base, offset);
+        return array_method(l, base, &elem, n, mutable, m);
     }
 
     let (base, base_ty) = expr(l, &m.receiver)?.reg(l, &m.receiver, "method receiver")?;
@@ -4348,7 +4434,7 @@ mod tests {
             struct Aligned { v: u16 }
             struct Mixed { a: u16, b: Aligned, c: u16 }
             #[repr(C)]
-            struct WithArray { head: u16, data: [u16; 3], tail: u16 }
+            struct WithArray { head: u16, data: Buf<u16, 3>, tail: u16 }
             "#,
         )
         .unwrap();

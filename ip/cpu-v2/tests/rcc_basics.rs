@@ -350,7 +350,7 @@ fn fill(p: Ptr, n: u16, v: u16) {
     }
 }
 fn main() {
-    let mut buf: [u16; 4] = [0; 4];
+    let mut buf: Buf<u16, 4> = Buf::new([0; 4]);
     fill(buf.as_ptr(), 4, 100);
     let mut sum: u16 = 0;
     let mut i: u16 = 0;

@@ -85,18 +85,67 @@ macro_rules! impl_array_index {
 impl_array_index!(u16);
 impl_array_index!(i16);
 
-/// A view of a whole array: the generic counterpart of `Slice2::as_array`, which
-/// exists only for `u16`/`i16` arrays. `rcc` lowers it to the array's
-/// first-element address, so it works for struct arrays too.
-pub trait ArrayView<T> {
-    fn as_view(&self) -> Array<T>;
-}
+/// Owned word storage — **the** array type (spec §10). The compiler recognizes
+/// `Buf<T, N>` in a type position and lowers it to N consecutive words, where T is
+/// `u16`, `i16` or a struct; the methods below are target intrinsics. On the host
+/// they touch real Rust storage, so a host run keeps the bounds check for free.
+#[repr(transparent)]
+pub struct Buf<T, const N: usize>([T; N]);
 
-impl<T, const N: usize> ArrayView<T> for [T; N] {
-    fn as_view(&self) -> Array<T> {
-        Array::from_host_ptr(self.as_ptr() as *mut T)
+impl<T, const N: usize> Buf<T, N> {
+    /// initialize from `[v; N]` or `[e0, e1, ...]`
+    pub const fn new(words: [T; N]) -> Self {
+        Self(words)
+    }
+    #[allow(clippy::len_without_is_empty)]
+    pub fn len(&self) -> u16 {
+        N as u16
+    }
+    pub fn as_ptr(&self) -> Ptr {
+        unimplemented!("as_ptr is a target intrinsic")
+    }
+    /// the first-element address as a one-word typed view
+    pub fn as_array(&self) -> Array<T> {
+        Array::from_host_ptr(self.0.as_slice().as_ptr() as *mut T)
     }
 }
+
+impl<const N: usize> Buf<u16, N> {
+    pub fn read(&self, i: u16) -> u16 {
+        self[i]
+    }
+    pub fn write(&mut self, i: u16, v: u16) {
+        self[i] = v;
+    }
+}
+
+impl<const N: usize> Buf<i16, N> {
+    pub fn read(&self, i: u16) -> u16 {
+        self[i] as u16
+    }
+    pub fn write(&mut self, i: u16, v: u16) {
+        self[i] = v as i16;
+    }
+}
+
+macro_rules! impl_buf_index {
+    ($index:ty) => {
+        impl<T, const N: usize> Index<$index> for Buf<T, N> {
+            type Output = T;
+            fn index(&self, index: $index) -> &Self::Output {
+                &self.0[index as usize]
+            }
+        }
+        impl<T, const N: usize> IndexMut<$index> for Buf<T, N> {
+            fn index_mut(&mut self, index: $index) -> &mut Self::Output {
+                &mut self.0[index as usize]
+            }
+        }
+    };
+}
+
+impl_buf_index!(u16);
+impl_buf_index!(i16);
 
 /// The address of one value as a typed view. The target has no separate
 /// representation: a struct (or addressable scalar) value *is* its address.
@@ -212,72 +261,40 @@ pub fn addr_of<T>(_r: &T) -> Ptr {
     unimplemented!("addr_of is a target intrinsic")
 }
 
-/// array access extension trait (spec §10): the rcc compiler recognizes these
-/// methods as intrinsics with no bounds checks; on the host they index real
-/// Rust arrays, so the host run keeps the bounds check for free.
-#[allow(clippy::len_without_is_empty)]
-pub trait Slice2 {
-    type Item;
-    fn read(&self, i: u16) -> u16;
-    fn write(&mut self, i: u16, v: u16);
-    fn as_ptr(&self) -> Ptr;
-    fn as_array(&self) -> Array<Self::Item>;
-    fn len(&self) -> u16;
-}
-
-impl<const N: usize> Slice2 for [u16; N] {
-    type Item = u16;
-    fn read(&self, i: u16) -> u16 {
-        self[i as usize]
-    }
-    fn write(&mut self, i: u16, v: u16) {
-        self[i as usize] = v;
-    }
-    fn as_ptr(&self) -> Ptr {
-        unimplemented!("as_ptr is a target intrinsic")
-    }
-    fn as_array(&self) -> Array<u16> {
-        Array::from_host_ptr(self.as_slice().as_ptr() as *mut u16)
-    }
-    fn len(&self) -> u16 {
-        N as u16
-    }
-}
-
-impl<const N: usize> Slice2 for [i16; N] {
-    type Item = i16;
-    fn read(&self, i: u16) -> u16 {
-        self[i as usize] as u16
-    }
-    fn write(&mut self, i: u16, v: u16) {
-        self[i as usize] = v as i16;
-    }
-    fn as_ptr(&self) -> Ptr {
-        unimplemented!("as_ptr is a target intrinsic")
-    }
-    fn as_array(&self) -> Array<i16> {
-        Array::from_host_ptr(self.as_slice().as_ptr() as *mut i16)
-    }
-    fn len(&self) -> u16 {
-        N as u16
-    }
-}
-
 #[cfg(test)]
 mod tests {
-    use super::Slice2;
+    use super::Buf;
 
     #[test]
-    fn host_array_view_indexes_real_arrays() {
-        let words = [1u16, 2, 3];
+    fn host_buf_indexes_real_storage() {
+        let mut words: Buf<u16, 3> = Buf::new([1, 2, 3]);
+        words[1u16] = 7;
+        words[2u16] += 4;
+        assert_eq!((words[0u16], words[1u16], words[2u16]), (1, 7, 7));
+        assert_eq!(words.len(), 3);
+        words.write(0, 9);
+        assert_eq!(words.read(0), 9);
+
+        let signed: Buf<i16, 2> = Buf::new([-3, 5]);
+        assert_eq!(signed[0i16], -3);
+        assert_eq!(signed[1i16], 5);
+    }
+
+    #[test]
+    fn buf_view_indexes_the_same_storage() {
+        let words: Buf<u16, 3> = Buf::new([1, 2, 3]);
         let mut view = words.as_array();
         view[1u16] = 7;
         view[2u16] += 4;
-        assert_eq!(words, [1, 7, 7]);
+        assert_eq!(words[1u16], 7);
+        assert_eq!(words[2u16], 7);
+    }
 
-        let signed = [-3i16, 5];
-        let view = signed.as_array();
-        assert_eq!(view[0i16], -3);
+    #[test]
+    #[should_panic]
+    fn host_buf_keeps_the_bounds_check() {
+        let words: Buf<u16, 2> = Buf::new([1, 2]);
+        let _ = words[2u16];
     }
 }
 

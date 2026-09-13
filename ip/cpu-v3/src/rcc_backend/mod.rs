@@ -1687,7 +1687,7 @@ mod tests {
     fn fpu_vec4_dot_export_and_splat_multiply() {
         let source = r#"
             use crate::dsl_rt::*;
-            static OUT: [u16; 4] = [0; 4];
+            static OUT: Buf<u16, 4> = Buf::new([0; 4]);
             fn main() {
                 let a = vec4::new(
                     fix16::from_int(1),
@@ -1842,7 +1842,7 @@ mod tests {
     fn fpu_call_dot_and_export_match_isa_values() {
         let source = r#"
             use crate::dsl_rt::*;
-            static OUT: [u16; 4] = [0; 4];
+            static OUT: Buf<u16, 4> = Buf::new([0; 4]);
             fn scaled(v: vec4, factor: fix16, tag: u16) -> vec4 {
                 if tag == 1 { v * factor } else { v }
             }
@@ -2055,7 +2055,7 @@ mod tests {
                 x: u16,
                 y: u16,
                 inner: Inner,
-                flags: [u16; 2],
+                flags: Buf<u16, 2>,
                 valid: bool,
             }
 
@@ -2064,7 +2064,7 @@ mod tests {
                     x: 3,
                     y: 4,
                     inner: Inner { a: 5, b: -6 },
-                    flags: [7, 8],
+                    flags: Buf::new([7, 8]),
                     valid: true,
                 };
                 p.x = p.x + 1u16;
@@ -2128,12 +2128,12 @@ mod tests {
             }
 
             fn main() {
-                let arr: [Point; 3] = [
+                let arr: Buf<Point, 3> = Buf::new([
                     Point { x: 10, y: 1 },
                     Point { x: 20, y: 2 },
                     Point { x: 30, y: 3 },
-                ];
-                let view = arr.as_view();
+                ]);
+                let view = arr.as_array();
                 bump(view, 5u16);
                 let total = sum_x(view, 3u16);
                 let mut single: Point = Point { x: 7, y: 0 };
@@ -2156,12 +2156,12 @@ mod tests {
             }
 
             fn main() {
-                let arr: [Wide; 3] = [
+                let arr: Buf<Wide, 3> = Buf::new([
                     Wide { a: 1, b: 2, c: 3, d: 4, e: 5 },
                     Wide { a: 10, b: 20, c: 30, d: 40, e: 50 },
                     Wide { a: 100, b: 200, c: 300, d: 400, e: 500 },
-                ];
-                let view = arr.as_view();
+                ]);
+                let view = arr.as_array();
                 let mut acc: u16 = 0;
                 let mut i: u16 = 0;
                 while i < 3u16 {
@@ -2309,7 +2309,7 @@ mod tests {
     fn local_arrays_and_bit_intrinsics_use_the_new_stack_and_operations() {
         let source = r#"
             fn main() {
-                let mut words: [u16; 4] = [1, 2, 4, 8];
+                let mut words: Buf<u16, 4> = Buf::new([1, 2, 4, 8]);
                 let mut view = words.as_array();
                 view[2u16] = 0x800f;
                 halt(view[0u16] + cnt1(view[2u16]) + log2(view[2u16]));
@@ -2493,7 +2493,7 @@ mod tests {
     fn zero_stack_pointer_denotes_the_top_of_the_segment() {
         let source = r#"
             fn main() {
-                let words: [u16; 2] = [0x1234, 0x4321];
+                let words: Buf<u16, 2> = Buf::new([0x1234, 0x4321]);
                 let view = words.as_array();
                 halt(view[0u16] + view[1u16]);
             }

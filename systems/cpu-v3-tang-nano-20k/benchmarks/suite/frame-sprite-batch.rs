@@ -3,7 +3,7 @@
 // bench-tier: frame
 use crate::dsl_rt::*;
 
-static FRAMEBUFFER: [u16; 4096] = [0; 4096];
+static FRAMEBUFFER: Buf<u16, 4096> = Buf::new([0; 4096]);
 
 fn main() {
     let mut pixels = FRAMEBUFFER.as_array();
@@ -12,8 +12,7 @@ fn main() {
     while frame < 10 {
         let mut sprite: u16 = 0;
         while sprite < 64 {
-            let base = ((sprite << 6) - (sprite << 2) - sprite
-                + (frame << 4) + frame) & 0x0fff;
+            let base = ((sprite << 6) - (sprite << 2) - sprite + (frame << 4) + frame) & 0x0fff;
             let mut pixel: u16 = 0;
             while pixel < 64 {
                 let address = (base + pixel) & 0x0fff;

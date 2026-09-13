@@ -18,7 +18,8 @@ Only these types exist; no other primitive types are supported:
 | `u16` | unsigned 16-bit word | default integer type; literals `123`, `0x1f`, `123u16` |
 | `i16` | signed 16-bit word | literals `123i16`, `-5i16`; comparisons/shifts are signed |
 | `Ptr` | **data pointer** (into data memory) | the `dsl_rt::Ptr` newtype over a u16 address; no plain arithmetic, only its methods and `as` casts |
-| `Array<T>` | **typed array view** | one-word unchecked address, where T is `u16` or `i16`; supports indexing and converts to/from `Ptr` |
+| `Array<T>` | **typed array view** | one-word unchecked address, where T is `u16`, `i16` or a struct; supports indexing and converts to/from `Ptr` |
+| `Buf<T, N>` | **owned array: N consecutive words** | the array type (spec §10); `T` is `u16`, `i16` or a struct, initialized with `Buf::new([v; N])` / `Buf::new([e0, e1, ...])`, indexed with a `u16`/`i16` index |
 | `fn(A, B) -> R` | **function pointer** (into instruction memory) | plain Rust fn pointer type; on a Harvard machine this is a *different kind* from `Ptr` and they never convert |
 | `bool` | **one word: 0 or 1** | the type of comparisons and `&& \|\| !`; storable in a variable, passed and returned, and usable as a condition again (`if b`); `b as u16` / `b as i16` yields 0/1 (see §1.1) |
 | a defined `struct` name | **struct value: one word address** | fields are 16-bit words in declaration order, total size padded to the struct's alignment; layout and access rules in §9b |
@@ -234,14 +235,14 @@ One word in data memory at a compiler-assigned address; the compiler emits a hid
 - Writing goes through the address: `addr_of(&SCORE).write(0, v)` (immutable `static` reads
   are safe Rust, so rust-analyzer stays quiet; mutation is intentionally explicit).
 
-### 9.3 `static NAME: [Ty; N] = [e0, e1, ...];` — global arrays
+### 9.3 `static NAME: Buf<T, N> = Buf::new([e0, e1, ...]);` — global buffers
 
 ```rust
-static TILE: [u16; 8] = [0x3c, 0x66, 0xc3, 0xff, 0xff, 0xc3, 0x66, 0x3c];
+static TILE: Buf<u16, 8> = Buf::new([0x3c, 0x66, 0xc3, 0xff, 0xff, 0xc3, 0x66, 0x3c]);
 ```
 
 N consecutive words in data memory (the sprite/tile/palette data of a game). Same access
-rules as local arrays (§10), same `__data_init` emission for non-zero words.
+rules as local buffers (§10), same `__data_init` emission for non-zero words.
 
 ## 9b. Structs
 
@@ -250,67 +251,71 @@ rules as local arrays (§10), same `__data_init` emission for non-zero words.
 struct Inner { a: u16, b: i16 }
 
 #[repr(align(4))]
-struct Point { x: u16, y: u16, inner: Inner, flags: [u16; 2], valid: bool }
+struct Point { x: u16, y: u16, inner: Inner, flags: Buf<u16, 2>, valid: bool }
 ```
 
 - Fields keep declaration order and each occupies whole 16-bit words: a scalar
-  (`u16`/`i16`/`Ptr`/`bool`) one word, an array `N` words, a nested struct its own size. There is
-  no packing, because the machine has no byte accesses.
+  (`u16`/`i16`/`Ptr`/`bool`) one word, a `Buf<T, N>` `N * sizeof(T)` words, a nested struct its own
+  size. There is no packing, because the machine has no byte accesses.
 - The total size is padded up to the struct's alignment. Alignment is one word by default;
   `#[repr(align(N))]` raises it. As in Rust `N` is in *bytes*, so on this 16-bit-word target
   `align(2)`, `align(4)`, `align(8)` and `align(16)` mean 1, 2, 4 and 8 words. `#[repr(C)]` is
   accepted (declaration order already is the layout); any other attribute except `#[allow]` and
   `#[doc]` is an error. A field is padded up to its own alignment, so a nested `#[repr(align(4))]`
   field starts at an even word offset.
-- A struct value **is its word address** in the frame, exactly like an array: `let mut p: Point =
+- A struct value **is its word address** in the frame, exactly like a buffer: `let mut p: Point =
   Point { .. };` allocates `sizeof` words through a frame slot; the literal — or another value of
   the same struct type, copied word by word — initializes it; `p.x` loads a field and `p.x = v` /
-  `p.x += v` stores one; field chains (`p.inner.a`) and array fields (`p.flags[1u16] = v`) work.
+  `p.x += v` stores one; field chains (`p.inner.a`) and buffer fields (`p.flags[1u16] = v`) work.
   The binding must be `mut` for any field write, and the type annotation is required.
 - A struct *name* is not a value: read a field, copy it with a typed `let`, or take its address.
 - **Passing structs**: a function takes a struct by pointer, written `Array<Point>` (the one-word
   typed view). Two ways to make one:
   - `view_of(&value)` — the address of one struct (or addressable scalar) value;
-  - `arr.as_view()` — the first-element address of an array, and the only view that works for
-    struct arrays (the `Slice2` host trait behind `as_array()` is `u16`/`i16`-only).
+  - `buf.as_array()` — the first-element address of a buffer, including a buffer of structs.
   Inside the callee, `p[i]` is the element *address* (a struct value), so `p[i].x` reads a field at
   `i * sizeof` words: a shift for word-sized elements, a real multiply otherwise. A `mut view:
   Array<Point>` parameter may write through it, which is how a callee updates the caller's struct.
-- Array fields and struct arrays may also be indexed directly (`p.flags[1u16]`, `arr[i].x`) on the
-  target; Rust arrays index by `usize`, so that form does not type-check on the host — prefer a view
-  when the source has to build both ways.
 - Out of scope for now (§12): struct returns (the next phase's hidden destination pointer), `static`
   structs, `impl` methods, `fix16`/`vecN` fields, and recursive layouts.
 
-## 10. Arrays
+## 10. Arrays: `Buf<T, N>`
 
 C semantics: an array is N consecutive words, addressed by a plain (single-word) pointer,
-**no bounds checks** on target. Array types are `[u16; N]` and `[i16; N]`.
+**no bounds checks** on target. The array type is `Buf<T, N>` with `T` = `u16`, `i16` or a struct.
 
-### 10.1 Local arrays
+**Native `[T; N]` is not part of the subset.** Rust arrays implement `Index<usize>` only, and a
+crate cannot add `Index<u16>` to them (the orphan rule), so a word-sized index could never
+type-check on the host — which is exactly the check that keeps a host run honest. `Buf<T, N>` is a
+`dsl_rt` type instead, so `buf[i]` is real Rust *and* one word of addressing on the target.
+
+### 10.1 Local buffers
 
 ```rust
-let mut buf: [u16; 8] = [0; 8];        // stack, zero-filled (or a full list [1,2,..,8])
-buf.write(i, 7);
-let x = buf.read(i) + buf.read(3);
+let mut buf: Buf<u16, 8> = Buf::new([0; 8]);   // stack, zero-filled (or a full list)
+let mut lut: Buf<u16, 3> = Buf::new([3, 5, 7]);
+buf[i] = 7;                                    // u16/i16 index, no cast
+let x = buf[i] + buf[3u16];
 ```
 
-Local arrays live in the stack frame (a compile-time sized local area, see §11).
+A buffer lives in the stack frame (a compile-time sized local area, see §11) and its initializer
+is always `Buf::new([v; N])` or `Buf::new([e0, e1, ...])` — the type annotation is required.
 
-### 10.2 Typed array views and indexing
+### 10.2 Indexing and views
 
-`arr.as_array()` produces `Array<u16>` or `Array<i16>`. It is only a typed one-word
-address; the length is not carried at run time and target accesses are unchecked. Index
-expressions must be `u16` or `i16`. Give a bare literal an explicit suffix (`a[3u16]` or
-`a[-1i16]`) so the same source also type-checks in Rust; `i32` and `usize` indices are not
-supported. Small literal offsets lower directly to the load/store i4 address field.
+Index expressions must be `u16` or `i16`; give a literal an explicit suffix (`a[3u16]`, `a[-1i16]`)
+so the same source also type-checks in Rust. Small literal offsets lower directly to the load/store
+i4 address field, a runtime index adds registers, and a struct element scales the index by its size.
+
+`buf.as_array()` produces `Array<T>`, a one-word typed address: the way to hand a buffer to a
+function (the length is not carried at run time, and target accesses are unchecked). The same
+methods exist on a buffer field, so `p.flags[1u16]` and `p.flags.as_array()` both work.
 
 ```rust
-let mut storage: [u16; 8] = [0; 8];
+let mut storage: Buf<u16, 8> = Buf::new([0; 8]);
 let mut words = storage.as_array();
 words[i] = 7;
 words[3u16] += 1;
-let x = words[i] + words[3u16];
 let raw: Ptr = words.as_ptr();
 ```
 
@@ -325,24 +330,23 @@ clear_first(storage.as_array());
 Convert a raw pointer with `p.as_u16_array()` or `p.as_i16_array()`. The explicit method
 name supplies the element type without generic-method inference.
 
-### 10.3 Legacy fixed-array methods
+### 10.3 Buffer methods
 
-`dsl_rt` provides a real Rust extension trait `Slice2` implemented for `[u16; N]`/`[i16; N]`
-(const generics), so method calls resolve cleanly in rust-analyzer; the compiler recognizes
-them as intrinsics. These methods remain supported for compatibility:
+`Buf<T, N>` carries the methods below as inherent methods in `dsl_rt` (const generics), so they
+resolve cleanly in rust-analyzer; the compiler recognizes them as intrinsics:
 
 | method | meaning |
 |---|---|
-| `arr.read(i) -> u16` | `arr[i]` (i is any integer expression) |
-| `arr.write(i, v)` | `arr[i] = v` |
-| `arr.as_ptr() -> Ptr` | address of element 0 (array *decays* to a pointer, like C) |
-| `arr.as_array() -> Array<T>` | typed address of element 0 |
-| `arr.len() -> u16` | N as a compile-time constant |
+| `buf.read(i) -> u16` | `buf[i]` (u16/i16 elements only) |
+| `buf.write(i, v)` | `buf[i] = v` |
+| `buf.as_ptr() -> Ptr` | address of element 0 (the buffer *decays* to a pointer, like C) |
+| `buf.as_array() -> Array<T>` | typed address of element 0 |
+| `buf.len() -> u16` | N as a compile-time constant |
 
-On the host these methods index real Rust arrays — so **the host run keeps Rust's bounds
-check for free**, while the target emits raw unchecked addressing (exactly the C model).
+On the host these index real Rust storage — so **the host run keeps Rust's bounds check for
+free**, while the target emits raw unchecked addressing (exactly the C model).
 
-### 10.4 Arrays as parameters
+### 10.4 Buffers as parameters
 
 There are no fat slices (`&[u16]` is two words — not supported). Pass typed data as
 `Array<T>`, or use `Ptr` when the function intentionally operates on raw words:
@@ -364,24 +368,25 @@ There is no `&` operator (references are out of subset). The intrinsic
   only known at run time** (`sp + slot`). The compiler emits `mov sp, t; addi t, slot`
   wherever `addr_of(&x)` is evaluated. So: compile-time placement, run-time value.
 
-Any local whose address is taken, and every local array, becomes **memory-resident**: all
+Any local whose address is taken, and every local buffer, becomes **memory-resident**: all
 its reads/writes go through frame slots (the existing `load_sp`/`store_sp` machinery).
-The frontend decides residency statically by scanning for `addr_of` uses and array-typed
+The frontend decides residency statically by scanning for `addr_of` uses and buffer-typed
 `let`s — no escape analysis. The frame layout becomes
-`[callee-save saves][locals/arrays][spill slots]`, all sized at compile time.
+`[callee-save saves][locals/buffers][spill slots]`, all sized at compile time.
 The entry function has no caller and never returns, so it omits callee-save and return-address
 saves; any locals and spills still allocate their normal frame slots.
 
-Struct members (including array members) are defined in §9b; the frame layout above applies to
+Struct members (including buffer members) are defined in §9b; the frame layout above applies to
 them unchanged (a struct local is just an address plus offsets).
 
 ## 12. Out of scope for now
 
-`&x` references, fat slices, `static mut`, heap allocation of arrays, multi-dimensional arrays
-(use `arr[i * W + j]`), function inlining/`#[inline]`, and the struct limits listed in §9b (struct
-returns, `static` structs, `impl`, `fix16`/`vecN` fields, recursive layouts).
+`&x` references, fat slices, native `[T; N]` arrays (use `Buf<T, N>`, §10), `static mut`, heap
+allocation of buffers, multi-dimensional buffers (use `arr[i * W + j]`), function
+inlining/`#[inline]`, and the struct limits listed in §9b (struct returns, `static` structs, `impl`,
+`fix16`/`vecN` fields, recursive layouts).
 
-A stored `bool` is one word, and these remain out of scope: arrays of `bool` / `Array<bool>`,
+A stored `bool` is one word, and these remain out of scope: buffers of `bool` / `Array<bool>`,
 `static` bool, comparing two bools (`b1 == b2`), and an integer cast *to* bool (write `x != 0`).
 A stored bool value is CPU V3-only, like the other Boolean-producing paths (§12.1).
 
@@ -445,7 +450,7 @@ Alongside the binary and listing, `rcc` writes `<input>.dbg` for a hypothetical 
 - **initialization sections**: address ranges and details for compiler-generated stack,
   function-table, static-data, heap, and vector initialization code;
 - **functions**: name, address range, source file, frame size, and every local variable
-  with a location: `rN` (ABI register for params), `frame+N` (frame slot — arrays and
+  with a location: `rN` (ABI register for params), `frame+N` (frame slot — buffers and
   address-taken locals), `global@0xADDR`, or `ssa` (register/versioned). Local entries
   also carry an inclusive lexical `scope START..END` line range; parameter values are
   captured at call entry because the ABI argument registers are caller-save;
@@ -469,8 +474,8 @@ section) which `malloc`/`free` read at run time — no compile-time patching of 
 ### 13.5 Host/IDE side
 
 `dsl_rt` keeps the subset programs valid Rust: `Ptr` methods, typed `Array<T>` indexing,
-`Slice2` (const-generic fixed-array access), `addr_of`, and other intrinsics. `rcc_std` is
-a real module tree for the same reason.
+`Buf<T, N>` (const-generic word storage with `u16`/`i16` indexing), `addr_of`, and other
+intrinsics. `rcc_std` is a real module tree for the same reason.
 
 `rcc-dbg [input.bin] [--port N]` opens an existing binary in the web debugger. With no
 input file (or with `--playground`) it serves a single-file playground: source is compiled
