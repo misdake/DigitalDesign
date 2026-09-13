@@ -2747,6 +2747,19 @@ fn stmt_expr(l: &mut FnLower, e: &Expr) -> Result<(), syn::Error> {
                     SBinOp::BitAndEq(_) => l.b.bin(BinOp::And, cur, rhs),
                     SBinOp::BitOrEq(_) => l.b.bin(BinOp::Or, cur, rhs),
                     SBinOp::BitXorEq(_) => l.b.bin(BinOp::Xor, cur, rhs),
+                    SBinOp::DivEq(_) | SBinOp::RemEq(_) => {
+                        let result = divmod_value(
+                            l,
+                            &a.left,
+                            cur,
+                            &ty,
+                            &a.right,
+                            Some((rhs, ty.clone())),
+                            matches!(a.op, SBinOp::RemEq(_)),
+                        )?;
+                        let (v, _) = result.reg(l, &a.right, "compound assignment")?;
+                        v
+                    }
                     SBinOp::MulEq(_) => {
                         l.b.mul(crate::MulWindow::Low, cur, crate::IntOperand::Reg(rhs))
                     }
@@ -2777,6 +2790,19 @@ fn stmt_expr(l: &mut FnLower, e: &Expr) -> Result<(), syn::Error> {
                     SBinOp::BitAndEq(_) => l.b.bin(BinOp::And, cur, rhs),
                     SBinOp::BitOrEq(_) => l.b.bin(BinOp::Or, cur, rhs),
                     SBinOp::BitXorEq(_) => l.b.bin(BinOp::Xor, cur, rhs),
+                    SBinOp::DivEq(_) | SBinOp::RemEq(_) => {
+                        let result = divmod_value(
+                            l,
+                            &a.left,
+                            cur,
+                            &elem,
+                            &a.right,
+                            Some((rhs, elem.clone())),
+                            matches!(a.op, SBinOp::RemEq(_)),
+                        )?;
+                        let (v, _) = result.reg(l, &a.right, "compound assignment")?;
+                        v
+                    }
                     SBinOp::MulEq(_) => {
                         l.b.mul(crate::MulWindow::Low, cur, crate::IntOperand::Reg(rhs))
                     }
@@ -2811,6 +2837,20 @@ fn stmt_expr(l: &mut FnLower, e: &Expr) -> Result<(), syn::Error> {
                 SBinOp::BitAndEq(_) => BinOp::And,
                 SBinOp::BitOrEq(_) => BinOp::Or,
                 SBinOp::BitXorEq(_) => BinOp::Xor,
+                SBinOp::DivEq(_) | SBinOp::RemEq(_) => {
+                    let result = divmod_value(
+                        l,
+                        &a.left,
+                        cur,
+                        &ty,
+                        &a.right,
+                        Some((rhs, ty.clone())),
+                        matches!(a.op, SBinOp::RemEq(_)),
+                    )?;
+                    let (v, _) = result.reg(l, &a.right, "compound assignment")?;
+                    l.write_var(&kind, v);
+                    return Ok(());
+                }
                 SBinOp::MulEq(_) => {
                     let v =
                         l.b.mul(crate::MulWindow::Low, cur, crate::IntOperand::Reg(rhs));
@@ -3097,6 +3137,106 @@ fn variant_pattern(l: &FnLower, scrut_ty: &Ty, path: &syn::PatPath) -> Result<u1
         ));
     }
     Ok(*value)
+}
+
+/// `/` and `%`: the software divide shared by the binary operators and the
+/// compound assignments (`x /= d`, `x %= d`). A constant divisor becomes a shift,
+/// a mask or a compile-time-verified magic multiply.
+fn divmod_value(
+    l: &mut FnLower,
+    e: &Expr,
+    lhs: VReg,
+    lt: &Ty,
+    right: &Expr,
+    rhs_value: Option<(VReg, Ty)>,
+    remainder: bool,
+) -> Result<Val, syn::Error> {
+    // Neither ISA has a divide, so `/` and `%` lower to the
+    // rcc_std software routine (the `mul_16x16` precedent). A
+    // constant divisor on unsigned values is cheaper: a power of
+    // two becomes a shift or a mask, and any other constant that
+    // has a 16-bit round-up magic becomes one `MUL16` plus a shift.
+
+    let (rhs, rt) = match rhs_value {
+        Some((value, ty)) => (value, ty),
+        None => {
+            let (value, ty) = expr(l, right)?.reg(l, right, "binary operand")?;
+            (value, ty)
+        }
+    };
+    let ty = unify_int(lt.clone(), rt.clone()).ok_or_else(|| {
+        err(
+            e,
+            format!(
+                "type mismatch: {} vs {} (cast with `as`)",
+                lt.display(),
+                rt.display()
+            ),
+        )
+    })?;
+    if ty == Ty::U16 {
+        if let Some((value, _)) = immediate_operand(l, right) {
+            if value != 0 && value.is_power_of_two() {
+                let lowered = if remainder {
+                    let mask = l.b.load_imm(value - 1);
+                    l.b.bin(crate::BinOp::And, lhs, mask)
+                } else {
+                    l.b.shift_op(
+                        ShiftOp::Lsr,
+                        lhs,
+                        crate::IntOperand::Imm(value.trailing_zeros() as u16),
+                    )
+                };
+                return Ok(Val::V(lowered, ty));
+            }
+            if let Some(magic) = magic_divide_u16(value) {
+                let magic_constant = match magic {
+                    MagicDivide::High { m, .. } | MagicDivide::Add { m, .. } => m,
+                };
+                let high = l.b.mul(
+                    crate::MulWindow::Shift16,
+                    lhs,
+                    crate::IntOperand::Imm(magic_constant),
+                );
+                let quotient = match magic {
+                    MagicDivide::High { s, .. } => {
+                        if s == 0 {
+                            high
+                        } else {
+                            l.b.shift(ShiftOp::Lsr, high, s)
+                        }
+                    }
+                    MagicDivide::Add { s, .. } => {
+                        // (x & t) + ((x ^ t) >> 1) is (x + t) >> 1
+                        // without letting the 17-bit sum overflow
+                        let both = l.b.bin(crate::BinOp::And, lhs, high);
+                        let diff = l.b.bin(crate::BinOp::Xor, lhs, high);
+                        let half = l.b.shift(ShiftOp::Lsr, diff, 1);
+                        let average = l.b.bin(crate::BinOp::Add, both, half);
+                        l.b.shift(ShiftOp::Lsr, average, s - 1)
+                    }
+                };
+                if !remainder {
+                    return Ok(Val::V(quotient, ty));
+                }
+                // x % d == x - (x / d) * d
+                let product = l.b.mul(
+                    crate::MulWindow::Low,
+                    quotient,
+                    crate::IntOperand::Imm(value),
+                );
+                return Ok(Val::V(l.b.bin(crate::BinOp::Sub, lhs, product), ty));
+            }
+        }
+    }
+    let name: crate::FuncName = match (ty == Ty::I16, remainder) {
+        (false, false) => "div_u16",
+        (false, true) => "rem_u16",
+        (true, false) => "div_i16",
+        (true, true) => "rem_i16",
+    };
+    let ret = l.b.call(name, &[lhs, rhs], 1);
+    Ok(Val::V(ret[0], ty))
 }
 
 fn control_flow(l: &mut FnLower, e: &Expr) -> Result<(), syn::Error> {
@@ -3563,87 +3703,8 @@ fn expr(l: &mut FnLower, e: &Expr) -> Result<Val, syn::Error> {
                     Ok(Val::V(l.b.mul(crate::MulWindow::Low, lhs, rhs_op), ty))
                 }
                 Div(_) | Rem(_) => {
-                    // Neither ISA has a divide, so `/` and `%` lower to the
-                    // rcc_std software routine (the `mul_16x16` precedent). A
-                    // constant divisor on unsigned values is cheaper: a power of
-                    // two becomes a shift or a mask, and any other constant that
-                    // has a 16-bit round-up magic becomes one `MUL16` plus a shift.
                     let (lhs, lt) = expr(l, &b.left)?.reg(l, &b.left, "binary operand")?;
-                    let (rhs, rt) = expr(l, &b.right)?.reg(l, &b.right, "binary operand")?;
-                    let ty = unify_int(lt.clone(), rt.clone()).ok_or_else(|| {
-                        err(
-                            e,
-                            format!(
-                                "type mismatch: {} vs {} (cast with `as`)",
-                                lt.display(),
-                                rt.display()
-                            ),
-                        )
-                    })?;
-                    let remainder = matches!(b.op, Rem(_));
-                    if ty == Ty::U16 {
-                        if let Some((value, _)) = immediate_operand(l, &b.right) {
-                            if value != 0 && value.is_power_of_two() {
-                                let lowered = if remainder {
-                                    let mask = l.b.load_imm(value - 1);
-                                    l.b.bin(crate::BinOp::And, lhs, mask)
-                                } else {
-                                    l.b.shift_op(
-                                        ShiftOp::Lsr,
-                                        lhs,
-                                        crate::IntOperand::Imm(value.trailing_zeros() as u16),
-                                    )
-                                };
-                                return Ok(Val::V(lowered, ty));
-                            }
-                            if let Some(magic) = magic_divide_u16(value) {
-                                let magic_constant = match magic {
-                                    MagicDivide::High { m, .. } | MagicDivide::Add { m, .. } => m,
-                                };
-                                let high = l.b.mul(
-                                    crate::MulWindow::Shift16,
-                                    lhs,
-                                    crate::IntOperand::Imm(magic_constant),
-                                );
-                                let quotient = match magic {
-                                    MagicDivide::High { s, .. } => {
-                                        if s == 0 {
-                                            high
-                                        } else {
-                                            l.b.shift(ShiftOp::Lsr, high, s)
-                                        }
-                                    }
-                                    MagicDivide::Add { s, .. } => {
-                                        // (x & t) + ((x ^ t) >> 1) is (x + t) >> 1
-                                        // without letting the 17-bit sum overflow
-                                        let both = l.b.bin(crate::BinOp::And, lhs, high);
-                                        let diff = l.b.bin(crate::BinOp::Xor, lhs, high);
-                                        let half = l.b.shift(ShiftOp::Lsr, diff, 1);
-                                        let average = l.b.bin(crate::BinOp::Add, both, half);
-                                        l.b.shift(ShiftOp::Lsr, average, s - 1)
-                                    }
-                                };
-                                if !remainder {
-                                    return Ok(Val::V(quotient, ty));
-                                }
-                                // x % d == x - (x / d) * d
-                                let product = l.b.mul(
-                                    crate::MulWindow::Low,
-                                    quotient,
-                                    crate::IntOperand::Imm(value),
-                                );
-                                return Ok(Val::V(l.b.bin(crate::BinOp::Sub, lhs, product), ty));
-                            }
-                        }
-                    }
-                    let name: crate::FuncName = match (ty == Ty::I16, remainder) {
-                        (false, false) => "div_u16",
-                        (false, true) => "rem_u16",
-                        (true, false) => "div_i16",
-                        (true, true) => "rem_i16",
-                    };
-                    let ret = l.b.call(name, &[lhs, rhs], 1);
-                    Ok(Val::V(ret[0], ty))
+                    divmod_value(l, e, lhs, &lt, &b.right, None, matches!(b.op, Rem(_)))
                 }
                 Lt(_) | Le(_) | Gt(_) | Ge(_) | Eq(_) | Ne(_) => {
                     // Put a constant operand on the rhs so the compare can

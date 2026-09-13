@@ -85,6 +85,10 @@ explicitly and runs identically both ways. The bare `/` and `%` operators keep r
 a zero divisor — the host executes the real operator, exactly like the array bounds check the target
 does not have (§10.3).
 
+
+`x /= d` and `x %= d` are the compound forms of the same operation and go through the same
+lowering, including the constant-divisor specialization (`x /= 4` is a shift, `x %= 4` a mask),
+so a compound form never costs more than the two-operand spelling.
 ## 2. The `Ptr` data pointer
 
 Raw pointer arithmetic needs `unsafe {}` in real Rust (which would make rust-analyzer

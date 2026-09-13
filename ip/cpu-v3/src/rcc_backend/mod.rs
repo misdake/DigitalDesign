@@ -2295,13 +2295,15 @@ mod tests {
     }
 
     #[test]
-    fn compound_multiply_assignment_runs() {
+    fn compound_assignments_run() {
         let source = r#"
             struct P { scale: u16 }
 
             fn main() {
                 let mut a: u16 = 3;
-                a *= 5u16;
+                a *= 5u16;              // 15
+                a /= 2u16;              // 7
+                a %= 4u16;              // 3
                 let mut buf: Buf<u16, 3> = Buf::new([1, 2, 3]);
                 let mut view = buf.as_array();
                 view[1u16] *= 4u16;
@@ -2310,8 +2312,8 @@ mod tests {
                 halt(a + buf.as_array()[1u16] + p.scale);
             }
         "#;
-        // a = 15, buf[1] = 8, p.scale = 14
-        assert_eq!(run_with_std_capped(source, 20_000), 37);
+        // a = ((3 * 5) / 2) % 4 = 3, buf[1] = 8, p.scale = 14
+        assert_eq!(run_with_std_capped(source, 20_000), 25);
     }
 
     #[test]

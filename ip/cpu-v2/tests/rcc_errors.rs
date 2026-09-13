@@ -334,16 +334,14 @@ fn test_loop_label_restrictions() {
         "no enclosing loop labeled 'nope",
     );
     expect_error("fn f() { break 5; }", "with a value is not supported");
-    // `*=` is supported now; `/=` and `%=` are still rejected operators
-    assert!(cpu_v2::frontend::parse_source("fn f(x: u16) { let mut y = x; y *= 2u16; }").is_ok());
-    expect_error(
-        "fn f(x: u16) { let mut y = x; y /= 2u16; }",
-        "unsupported compound assignment",
-    );
-    expect_error(
-        "fn f(x: u16) { let mut y = x; y %= 2u16; }",
-        "unsupported compound assignment",
-    );
+    // every compound assignment operator is supported
+    for op in ["*=", "/=", "%=", "&=", "|=", "^=", "<<=", ">>="] {
+        let src = format!("fn f(x: u16) {{ let mut y = x; y {op} 2u16; }}");
+        assert!(
+            cpu_v2::frontend::parse_source(&src).is_ok(),
+            "y {op} 2u16 should compile"
+        );
+    }
 }
 
 #[test]
