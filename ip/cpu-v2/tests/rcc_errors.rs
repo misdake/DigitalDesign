@@ -56,7 +56,7 @@ fn test_value_conversion_error_uses_the_expression_location() {
     let source = concat!(
         "fn main() {\n",
         "    let x = 1u16;\n",
-        "    let invalid = x < 3u16;\n",
+        "    let invalid: i16 = x;\n",
         "}\n",
     );
     let error = match cpu_v2::frontend::compile_program_named(
@@ -65,14 +65,14 @@ fn test_value_conversion_error_uses_the_expression_location() {
         &cpu_v2::CompilerOptions::default(),
         &mut |name| Err(format!("unknown module `{name}`")),
     ) {
-        Ok(_) => panic!("stored boolean unexpectedly compiled"),
+        Ok(_) => panic!("mismatched value unexpectedly compiled"),
         Err(error) => error,
     };
 
     assert_eq!(error.location().map(|(_, line, _)| line), Some(3));
     let rendered = error.to_string();
     assert!(
-        rendered.contains("3 |     let invalid = x < 3u16;"),
+        rendered.contains("3 |     let invalid: i16 = x;"),
         "{rendered}"
     );
 }
@@ -108,7 +108,6 @@ fn test_unsupported_constructs() {
     expect_error("fn f(x: u16) -> u16 { x as u32 }", "not supported");
     expect_error("struct S { x: u16 }", "not supported");
     expect_error("fn f(x: u16) -> u32 { x }", "not supported");
-    expect_error("fn f(x: u16) { let b = x < 3u16; }", "bool");
     expect_error("fn f(x: u16) { if x { halt(0); } }", "boolean");
     expect_error("fn f(x: u16) { x = 1; }", "not mutable");
     expect_error("fn f(x: u16) -> u16 { return; }", "return");
@@ -204,16 +203,13 @@ fn test_bit_intrinsic_errors() {
 
 #[test]
 fn test_bool_restrictions() {
-    // bool only lives in conditions; it cannot be stored (spec §6)
-    expect_error("fn f(x: u16) { let b = x < 3u16; }", "bool");
-    expect_error("fn f(x: u16) { let b: bool = true; }", "bool");
-    // a bare u16 is not a condition
+    // a stored bool is legal now (spec §1.1), but a bare integer is not a
+    // condition and a bool still does not mix with integers
     expect_error("fn f(x: u16) { if x { halt(0); } }", "boolean expression");
     expect_error(
         "fn f(x: u16) { while x { halt(0); } }",
         "boolean expression",
     );
-    // a bool cannot be compared with an integer
     expect_error("fn f(x: u16) { if (x < 3u16) == 1 { halt(0); } }", "bool");
 }
 
@@ -302,11 +298,6 @@ fn test_allow_attribute_is_ignored() {
 #[test]
 fn test_attribute_macro_rejected() {
     expect_error("#[inline] fn f() {}", "attribute");
-}
-
-#[test]
-fn test_bool_param_rejected() {
-    expect_error("fn f(b: bool) {}", "bool");
 }
 
 #[test]

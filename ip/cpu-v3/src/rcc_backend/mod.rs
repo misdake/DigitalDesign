@@ -1978,6 +1978,70 @@ mod tests {
         assert_eq!(run_with_std_capped(source, 500_000), expected);
     }
 
+    #[test]
+    fn stored_bool_materializes_negates_casts_and_branches() {
+        // A comparison bound to a variable becomes a 0/1 value (the ISA's
+        // Boolean-producing form); it can be negated, cast, passed, returned and
+        // used as a condition again, and `&&` builds a compound condition.
+        let source = r#"
+            fn is_small(x: u16) -> bool {
+                x < 100u16
+            }
+            fn main() {
+                let mut acc: u16 = 0;
+                let mut x: u16 = 0;
+                while x < 200u16 {
+                    let small = is_small(x);
+                    let odd = (x & 1u16) != 0u16;
+                    let flag = small && odd;
+                    if flag {
+                        acc = acc + 1u16;
+                    }
+                    if !small {
+                        acc = acc + 2u16;
+                    }
+                    acc = acc + (small as u16);
+                    x = x + 1;
+                }
+                halt(acc);
+            }
+        "#;
+        let mut expected: u16 = 0;
+        for x in 0u16..200 {
+            let small = x < 100;
+            let odd = (x & 1) != 0;
+            if small && odd {
+                expected = expected.wrapping_add(1);
+            }
+            if !small {
+                expected = expected.wrapping_add(2);
+            }
+            expected = expected.wrapping_add(u16::from(small));
+        }
+        assert_eq!(run_with_std_capped(source, 200_000), expected);
+    }
+
+    #[test]
+    fn bool_parameter_return_and_loop_condition() {
+        let source = r#"
+            fn keep_going(done: bool) -> bool {
+                !done
+            }
+            fn main() {
+                let mut i: u16 = 0;
+                let mut go: bool = true;
+                while go {
+                    i = i + 1;
+                    go = keep_going(i >= 5u16);
+                }
+                let pick = if 1u16 < 2u16 { 7u16 } else { 9u16 };
+                halt(i + pick);
+            }
+        "#;
+        // the loop stops the iteration i reaches 5, and the if-expression picks 7
+        assert_eq!(run_with_std(source), 12);
+    }
+
     fn compile(source: &str, options: CompilerOptions) -> CpuV3Program {
         let program = parse_source_with(source, options.data_base).unwrap();
         super::compile(program, &options, "main")

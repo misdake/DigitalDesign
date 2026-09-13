@@ -895,27 +895,10 @@ fn signature(f: &ItemFn) -> Result<Sig, syn::Error> {
     if params.len() > 6 {
         return Err(err(&f.sig, "too many parameters (max 6)"));
     }
-    for (i, ty) in params.iter().enumerate() {
-        if *ty == Ty::Bool {
-            return Err(err(
-                &f.sig,
-                format!(
-                    "parameter {} is bool: bool only lives in conditions (use u16 0/1)",
-                    i + 1
-                ),
-            ));
-        }
-    }
     let ret = match &f.sig.output {
         syn::ReturnType::Default => Ty::Unit,
         syn::ReturnType::Type(_, t) => ty_of(t)?,
     };
-    if ret == Ty::Bool {
-        return Err(err(
-            &f.sig,
-            "bool return type is not supported (bool only lives in conditions)",
-        ));
-    }
     Ok(Sig { params, ret })
 }
 
@@ -968,18 +951,15 @@ enum Val {
 impl Val {
     fn reg(
         self,
-        _l: &mut FnLower,
+        l: &mut FnLower,
         at: &impl syn::spanned::Spanned,
         what: &str,
     ) -> Result<(VReg, Ty), syn::Error> {
         match self {
             Val::V(v, ty) => Ok((v, ty)),
-            Val::Bool(_) => Err(err(
-                at,
-                format!(
-                    "boolean value used as {what}; bool only lives in conditions (see spec §6)"
-                ),
-            )),
+            // a condition used where a value is needed is materialized as a
+            // stored 0/1 bool (spec §1.1)
+            Val::Bool(c) => Ok((bool_value(l, c), Ty::Bool)),
             Val::FnItem(name) => Err(err(
                 at,
                 format!(
@@ -1842,6 +1822,11 @@ fn expr(l: &mut FnLower, e: &Expr) -> Result<Val, syn::Error> {
                 let val = expr(l, &u.expr)?;
                 match val {
                     Val::V(v, ty) if ty.is_int() => Ok(Val::V(l.b.un(UnOp::Inv, v), ty)),
+                    // stored bool: `!b` is `b ^ 1`
+                    Val::V(v, Ty::Bool) => {
+                        let one = l.b.load_imm(1);
+                        Ok(Val::V(l.b.bin(crate::BinOp::Xor, v, one), Ty::Bool))
+                    }
                     Val::V(_, ty) => Err(err(
                         &u.op,
                         format!("`!` does not apply to {}", ty.display()),
@@ -2232,16 +2217,20 @@ fn control_flow_value(l: &mut FnLower, e: &Expr) -> Result<Val, syn::Error> {
         _ => return Err(err(else_e, "if-expression branches must be blocks")),
     };
     let (ev, et) = if_expr_branch(l, else_blk)?;
-    let ty = unify_int(tt.clone(), et.clone()).ok_or_else(|| {
-        err(
-            e,
-            format!(
-                "if-expression branches have different types: {} vs {}",
-                tt.display(),
-                et.display()
-            ),
-        )
-    })?;
+    // integer/FPU branches unify through unify_int; identical non-integer types
+    // (bool, Ptr) unify with themselves
+    let ty = unify_int(tt.clone(), et.clone())
+        .or_else(|| (tt == et).then(|| tt.clone()))
+        .ok_or_else(|| {
+            err(
+                e,
+                format!(
+                    "if-expression branches have different types: {} vs {}",
+                    tt.display(),
+                    et.display()
+                ),
+            )
+        })?;
     l.b.set(r, ev);
     l.b.end_if_else(join);
 
@@ -2273,6 +2262,11 @@ fn if_expr_branch(l: &mut FnLower, blk: &Block) -> Result<(VReg, Ty), syn::Error
 fn cond(l: &mut FnLower, e: &Expr) -> Result<BoolExpr, syn::Error> {
     match expr(l, e)? {
         Val::Bool(c) => Ok(c),
+        // a stored bool is true when it is nonzero
+        Val::V(v, Ty::Bool) => {
+            let cmp = l.b.cmp(v, CmpRhs::Imm(0), CompareOp::NotEqual);
+            Ok(BoolExpr::Cmp(cmp))
+        }
         Val::V(_, ty) => Err(err(
             e,
             format!(
@@ -2283,6 +2277,36 @@ fn cond(l: &mut FnLower, e: &Expr) -> Result<BoolExpr, syn::Error> {
         Val::FnItem(_) => Err(err(e, "function used as a condition")),
         Val::Unit => Err(err(e, "unit used as a condition")),
         Val::Never => Err(err(e, "never used as a condition")),
+    }
+}
+
+/// materialize a condition as a stored 0/1 bool: one comparison uses the ISA's
+/// Boolean-producing form, `!` flips the low bit, and a compound condition becomes
+/// a two-block diamond (which the diamond-conversion pass folds back into a
+/// Boolean comparison when the shape allows).
+fn bool_value(l: &mut FnLower, c: BoolExpr) -> VReg {
+    match c {
+        BoolExpr::Cmp(cmp) => match cmp.cond {
+            CompareOp::Always => l.b.load_imm(1),
+            CompareOp::Never => l.b.load_imm(0),
+            _ => l.b.bool_value(cmp),
+        },
+        BoolExpr::Not(inner) => {
+            let v = bool_value(l, *inner);
+            let one = l.b.load_imm(1);
+            l.b.bin(crate::BinOp::Xor, v, one)
+        }
+        c => {
+            let r = l.b.new_var_typed(crate::RegClass::Gpr);
+            let (else_b, join) = l.b.begin_if_else(c);
+            let one = l.b.load_imm(1);
+            l.b.set(r, one);
+            l.b.mid_if_else(else_b, join);
+            let zero = l.b.load_imm(0);
+            l.b.set(r, zero);
+            l.b.end_if_else(join);
+            l.b.get(r)
+        }
     }
 }
 
@@ -2426,9 +2450,21 @@ fn cond_lazy(l: &mut FnLower, e: &Expr, t: BlockId, f: BlockId) -> Result<(), sy
             )),
         },
         _ => {
-            // delegate to the eager checker for a precise error message
+            // a plain expression: a stored bool branches on "nonzero", everything
+            // else gets the eager checker's precise message
             match expr(l, e)? {
-                Val::Bool(_) => unreachable!(),
+                Val::V(v, Ty::Bool) => {
+                    let cmp = l.b.cmp(v, CmpRhs::Imm(0), CompareOp::NotEqual);
+                    l.b.br(cmp, t, f);
+                    Ok(())
+                }
+                Val::Bool(c) => {
+                    let BoolExpr::Cmp(cmp) = c else {
+                        return Err(err(e, "condition must be a boolean expression"));
+                    };
+                    l.b.br(cmp, t, f);
+                    Ok(())
+                }
                 Val::V(_, ty) => Err(err(
                     e,
                     format!(
@@ -3255,7 +3291,12 @@ fn coerce(
 fn cast(e: &Expr, v: VReg, from: Ty, to: Ty) -> Result<(VReg, Ty), syn::Error> {
     let ok = matches!(
         (&from, &to),
-        (Ty::U16, Ty::I16) | (Ty::I16, Ty::U16) | (Ty::U16, Ty::Ptr) | (Ty::Ptr, Ty::U16)
+        (Ty::U16, Ty::I16)
+            | (Ty::I16, Ty::U16)
+            | (Ty::U16, Ty::Ptr)
+            | (Ty::Ptr, Ty::U16)
+            | (Ty::Bool, Ty::U16)
+            | (Ty::Bool, Ty::I16)
     ) || from == to
         || (from == Ty::UntypedInt && to.is_int());
     if ok {

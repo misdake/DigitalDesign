@@ -20,7 +20,7 @@ Only these types exist; no other primitive types are supported:
 | `Ptr` | **data pointer** (into data memory) | the `dsl_rt::Ptr` newtype over a u16 address; no plain arithmetic, only its methods and `as` casts |
 | `Array<T>` | **typed array view** | one-word unchecked address, where T is `u16` or `i16`; supports indexing and converts to/from `Ptr` |
 | `fn(A, B) -> R` | **function pointer** (into instruction memory) | plain Rust fn pointer type; on a Harvard machine this is a *different kind* from `Ptr` and they never convert |
-| `bool` | **condition expressions only** | the type of comparisons and `&& \|\| !`; cannot be stored in variables/memory (see §6) |
+| `bool` | **one word: 0 or 1** | the type of comparisons and `&& \|\| !`; storable in a variable, passed and returned, and usable as a condition again (`if b`); `b as u16` / `b as i16` yields 0/1 (see §1.1) |
 | `fix16` | **signed Q8.8 fixed-point scalar** | CPU V3-only; occupies one F register (lane x) |
 | `vec2` / `vec3` / `vec4` | **fix16 vectors** | CPU V3-only; one F register each (4 lanes; vec2/vec3 keep zero tails, per the ISA convention) |
 | `()` | unit | return type of procedures |
@@ -34,6 +34,13 @@ Only these types exist; no other primitive types are supported:
   (`u16`/`u16` or `i16`/`i16`); mixing is an error — cast explicitly with `as`.
 - Unary `-` is allowed only on `i16` (same as Rust); `!x` is bitwise not on integers and
   logical not on bools.
+- A `bool` value is one word holding 0 or 1. A comparison or logical expression used where a value
+  is needed (`let b = x < y;`, an argument, a return, a field) is **materialized**: one comparison
+  becomes the ISA's Boolean-producing instruction (`SEQ`/`SEQI`, `SLT`/`SLTU`/`SLTI`/`SLTUI`), `!`
+  flips the low bit, and a compound `&&`/`||` condition becomes a two-block diamond that the
+  diamond-conversion pass folds back when it can. A stored bool is a condition again (`if b`,
+  `while b`) and can be passed and returned like any other one-word value. It still never mixes
+  with integers: use `b as u16` / `b as i16`, or compare (`x != 0`).
 - `x as u16` / `x as i16` / `p as u16` / `a as Ptr` (only between `u16`/`i16`/`Ptr`) reinterpret bits.
 - `>>` is logical on `u16` and arithmetic on `i16` (matches Rust and the ISA). The shift
   amount may be any integer expression: a literal selects the immediate encoding (SHLI/SHRI/ASRI
@@ -154,10 +161,11 @@ Declared for real in `dsl_rt` (so the IDE sees them); the compiler lowers them d
 
 ## 6. Design decisions
 
-- **bool does not exist as a stored type**: the machine has no byte/bool instructions, so a
-  stored bool would waste a whole word and invite arithmetic-on-bool confusion. Comparisons
-  and logical operators cover control flow; to keep a flag, use `u16` 0/1.
-  `let b = x < y;` is currently an error (bool only lives in conditions).
+- **bool is one word, 0 or 1**: the machine has no byte/bool instructions, so a stored bool costs a
+  whole word — but materializing a comparison costs only the ISA's Boolean-producing form
+  (`SEQ`/`SEQI`, `SLT`/`SLTU`/`SLTI`/`SLTUI`, plus an XOR for negation), so a stored bool is cheap
+  enough to keep. Bools still never mix with integers: write `b as u16`, or compare (`x != 0`).
+  Comparing two bools, arrays of bool, and `static` bool are not supported yet (§12).
 - **u16 vs i16 matters**: signed comparisons (`cmp_s`) and arithmetic shifts are only
   produced when both operands are `i16`; mixed integer arithmetic is an error, because 
   implicit conversions hide too many bugs on a 16-bit machine.
@@ -331,6 +339,10 @@ precludes them (a struct is just an address plus offsets).
 
 `&x` references, fat slices, struct definitions, `static mut`, heap allocation of arrays,
 multi-dimensional arrays (use `arr[i * W + j]`), function inlining/`#[inline]`.
+
+A stored `bool` is one word, and these remain out of scope: arrays of `bool` / `Array<bool>`,
+`static` bool, comparing two bools (`b1 == b2`), and an integer cast *to* bool (write `x != 0`).
+A stored bool value is CPU V3-only, like the other Boolean-producing paths (§12.1).
 
 ## 12.1 Target policy
 

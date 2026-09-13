@@ -250,6 +250,14 @@ impl FuncBuilder {
         });
         dst
     }
+    /// Boolean-producing comparison: `dst = (lhs cond rhs) as 0/1`. The frontend
+    /// emits this when a condition is stored as a value; the diamond-conversion
+    /// pass emits the same instruction when it folds a 0/1 `if`/`else`.
+    pub fn bool_value(&mut self, cmp: Cmp) -> VReg {
+        let dst = self.fresh_vreg();
+        self.push(Instr::Bool { dst, cmp });
+        dst
+    }
     pub fn un(&mut self, op: UnOp, src: VReg) -> VReg {
         let dst = self.fresh_vreg();
         self.push(Instr::Un { dst, op, src });
