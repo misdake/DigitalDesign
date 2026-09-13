@@ -97,12 +97,20 @@ cargo clippy --workspace --all-targets
 
 powershell -ExecutionPolicy Bypass -File scripts/check-layering.ps1
 powershell -ExecutionPolicy Bypass -File scripts/check-source-hygiene.ps1
+powershell -ExecutionPolicy Bypass -File scripts/check-docs.ps1
 powershell -ExecutionPolicy Bypass -File scripts/validate-hardware.ps1 -Mode quick
 ```
 
 `validate-hardware.ps1` accepts `quick | iverilog | audit | pnr | all`. Run
 cargo through `scripts/run-cargo.ps1` when raw output would be large — it tees
 the full log and prints a compact summary.
+
+`check-docs.ps1` keeps the documentation rules machine-checked: a current-state
+section stays within its line budget, a fitted number lives in one current-state
+section only (the milestone ledger and the generated reports are the other
+allowed homes), and — when the local `.agent/` tree is present — its documents
+carry front matter that agrees with the index in `.agent/README.md`, with every
+link resolving.
 
 ## Tools
 

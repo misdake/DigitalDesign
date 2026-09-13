@@ -17,7 +17,17 @@ function Invoke-ValidationStep {
 
     Write-Host ""
     Write-Host "== $Name =="
-    & $Executable @Arguments
+    # A step may legitimately write to stderr: the Flash readback fixture prints the corruption
+    # it expects. With $ErrorActionPreference = "Stop" that line becomes a terminating error as
+    # soon as the caller pipes this script through 2>&1, so relax the preference around the call
+    # and keep judging the step by its exit code.
+    $previousPreference = $ErrorActionPreference
+    $ErrorActionPreference = "Continue"
+    try {
+        & $Executable @Arguments
+    } finally {
+        $ErrorActionPreference = $previousPreference
+    }
     if ($LASTEXITCODE -ne 0) {
         throw "$Name failed with exit code $LASTEXITCODE"
     }
@@ -85,6 +95,7 @@ function Invoke-QuickValidation {
     )
     Invoke-ValidationStep -Name "layering constraints" -Executable (Join-Path $repoRoot "scripts/check-layering.ps1")
     Invoke-ValidationStep -Name "source hygiene constraints" -Executable (Join-Path $repoRoot "scripts/check-source-hygiene.ps1")
+    Invoke-ValidationStep -Name "documentation constraints" -Executable (Join-Path $repoRoot "scripts/check-docs.ps1")
     Invoke-BootArtifactValidation
 }
 
