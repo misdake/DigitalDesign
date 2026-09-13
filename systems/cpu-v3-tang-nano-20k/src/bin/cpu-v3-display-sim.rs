@@ -82,7 +82,7 @@ fn main() -> Result<(), String> {
                 .map_err(|error| format!("CPU fault after {executed} steps: {error:?}"))?;
             executed += 1;
         }
-        system.advance_vblank();
+        let _ = system.advance_vblank();
         pixels = render_frame_at(system.cpu(), system.display_state().active_base);
         #[cfg(feature = "display-window")]
         if let Some(window) = window.as_mut() {

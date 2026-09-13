@@ -54,6 +54,7 @@
   .plink { color: #8ec7ff; text-decoration: underline; cursor: pointer; }
   #mem td:nth-child(even) { color: #7f8896; }
   input[type=text] { background: #1a1b20; color: inherit; border: 1px solid #4a4e5c; border-radius: 4px; padding: 3px 6px; width: 70px; font: inherit; }
+  select { background: #1a1b20; color: inherit; border: 1px solid #4a4e5c; border-radius: 4px; padding: 3px 6px; font: inherit; }
   .row { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; margin-bottom: 6px; }
   .muted { color: #7f8896; }
   #tabs { display: flex; flex-wrap: wrap; gap: 4px; margin-bottom: 6px; }
@@ -89,8 +90,16 @@
   <section id="midcol"><h3>disassembly</h3><div id="diswrap"><svg id="arrowSvg"></svg><table id="dis"></table></div></section>
   <section id="varcol">
     <details id="displayPanel" class="display-panel">
-      <summary>display</summary>
+      <summary>display <span id="displaySummary"></span></summary>
       <div id="displayBody">
+        <div class="row">
+          vblank
+          <select id="vblankMode">
+            <option value="manual">manual pass</option>
+            <option value="raf">requestAnimationFrame</option>
+          </select>
+          <button id="bvblank" disabled>Pass VBlank</button>
+        </div>
         <div id="displayMeta"></div>
         <canvas id="displayCanvas" width="320" height="240"></canvas>
       </div>
@@ -124,21 +133,29 @@ let pinnedLine = null;
 let pinnedFile = null;
 let viewFile = null;
 let fpuCollapsed = false;
+let rafVblankScheduled = false;
 
-async function refresh(followPc = true) {
-  const q = viewFile != null ? `?file=${viewFile}` : '';
-  state = await (await fetch('/api/state' + q)).json();
+function applyState(nextState, followPc = true) {
+  state = nextState;
   render({followPc});
   renderMem();
   renderDisplayState();
-  if ($('displayPanel').open) await renderFramebuffer();
+  scheduleVblankIfNeeded();
+}
+
+async function refresh(followPc = true, forceFramebuffer = false) {
+  const q = viewFile != null ? `?file=${viewFile}` : '';
+  applyState(await (await fetch('/api/state' + q)).json(), followPc);
+  if (forceFramebuffer && $('displayPanel').open) await renderFramebuffer();
 }
 
 function renderDisplayState() {
   if (!state || !state.display) return;
   const d = state.display;
+  $('displaySummary').textContent = d.waiting_for_vblank ? '· CPU waiting for vblank' : '';
   $('displayMeta').textContent =
-    `base ${hx(d.active_base, 8)} · frame ${d.frame_index} · ${d.swap_pending ? 'swap pending' : 'active'}`;
+    `base ${hx(d.active_base, 8)} · frame ${d.frame_index} · ${d.swap_pending ? 'swap pending' : 'active'}${d.waiting_for_vblank ? ' · CPU waiting' : ''}`;
+  $('bvblank').disabled = !d.waiting_for_vblank;
 }
 
 async function renderFramebuffer() {
@@ -159,6 +176,39 @@ async function renderFramebuffer() {
     image.data[dst + 3] = 255;
   }
   context.putImageData(image, 0, 0);
+}
+
+async function passVblank() {
+  try {
+    const display = await (await fetch('/api/vblank', {method: 'POST'})).json();
+    if (state) {
+      state.display = display;
+      renderDisplayState();
+    }
+    if (display.swap_applied && $('displayPanel').open) {
+      await renderFramebuffer();
+    }
+  } catch (error) {
+    console.error('vblank pass failed', error);
+  }
+}
+
+function scheduleVblankIfNeeded() {
+  if (!state || !state.display.waiting_for_vblank) return;
+  if ($('vblankMode').value !== 'raf' || rafVblankScheduled) return;
+  rafVblankScheduled = true;
+  requestAnimationFrame(async () => {
+    await passVblank();
+    rafVblankScheduled = false;
+  });
+}
+
+async function command(name, forceFramebuffer = false) {
+  const next = await (await fetch(`/api/cmd?cmd=${name}`, {method: 'POST'})).json();
+  applyState(next, true);
+  if ((forceFramebuffer || next.halted != null || next.fault) && $('displayPanel').open) {
+    await renderFramebuffer();
+  }
 }
 
 function addrsOfLine(n) {
@@ -374,12 +424,14 @@ document.addEventListener('click', e => {
   }
 });
 
-$('bstep').onclick = () => fetch('/api/cmd?cmd=step', {method: 'POST'}).then(refresh);
-$('bnext').onclick = () => fetch('/api/cmd?cmd=next', {method: 'POST'}).then(refresh);
-$('bover').onclick = () => fetch('/api/cmd?cmd=over', {method: 'POST'}).then(refresh);
-$('bout').onclick = () => fetch('/api/cmd?cmd=out', {method: 'POST'}).then(refresh);
-$('bcont').onclick = () => fetch('/api/cmd?cmd=continue', {method: 'POST'}).then(refresh);
-$('breset').onclick = () => fetch('/api/cmd?cmd=reset', {method: 'POST'}).then(refresh);
+$('bstep').onclick = () => command('step');
+$('bnext').onclick = () => command('next');
+$('bover').onclick = () => command('over');
+$('bout').onclick = () => command('out');
+$('bcont').onclick = () => command('continue');
+$('breset').onclick = () => command('reset', true);
+$('bvblank').onclick = passVblank;
+$('vblankMode').onchange = scheduleVblankIfNeeded;
 $('mgo').onclick = renderMem;
 document.querySelectorAll('.mq').forEach(b => b.onclick = () => {
   $('maddr').value = b.dataset.a === 'sp' ? hx(state.regs[13]) : b.dataset.a;
@@ -424,7 +476,7 @@ function drawArrows() {
   svg.setAttribute('height', Math.max(svg.parentElement.scrollHeight, 200));
 }
 
-refresh();
+refresh(false, true);
 </script>
 </body>
 </html>
