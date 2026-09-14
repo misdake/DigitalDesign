@@ -74,6 +74,21 @@ counters, not the wait cycles. A suite sum is dominated by the largest programs
   first, then geomean-averaged. Counters that may be zero (e.g. D-cache write-backs)
   use the geomean of (value + 1), noted wherever they are reported.
 
+## Performance ledger identity
+
+The performance ledger's suite fingerprint uses sorted filenames and Git blob IDs
+(`git-blobs-v2`, hashed to 12 hex digits), with Git clean filters normalizing checkout
+line endings. Fresh runs fingerprint the measured working tree; imported clean/baseline
+CSV files use their recorded commit's suite tree, never the current checkout.
+For clean/baseline imports, the CSV program-name set must exactly match that tree;
+this rejects results polluted by temporary probe programs even when the CSV says `current`.
+For imported dirty or reconstructed runs, pass the recorded `-SuiteDigest` explicitly:
+the emulator commit does not identify their workload. The v2 fingerprint must not be
+compared directly with the older file-byte fingerprint. Historical ledger rows are left
+as audit evidence; mark invalid inputs `superseded` and append corrected reruns rather than
+silently rewriting their measurements. Regenerate old fingerprints before comparison.
+This changes ledger identity only, not the frozen program set or raw metric schema.
+
 ## BTC comparison diagnostics
 
 Set `CPU_V3_BTC_ENTRIES` to `0`, `4` (the default), or `8` before building/running

@@ -33,6 +33,10 @@ param(
     [string]$State = "clean",
     # Use an existing suite CSV instead of running the suite.
     [string]$RawCsv = "",
+    # Required when importing dirty/reconstructed runs: their workload cannot be
+    # recovered from the CSV's emulator commit. Supply the recorded v2 digest.
+    [ValidatePattern('^[0-9a-f]{12}$')]
+    [string]$SuiteDigest = "",
     # Run label handed to benchmarks/run-suite.ps1; it only names the scratch trace directory
     # and the scratch CSV, never a milestone. The durable copy is the archived raw CSV.
     [int]$StageLabel = 900,
@@ -70,14 +74,64 @@ function Get-TextDigest([string]$text) {
     }
 }
 
+# Return the suite files from either a worktree directory or a committed tree.
+function Get-SuiteFiles([string]$suiteDirectory, [string]$sourceCommit = "") {
+    $suitePath = "systems/cpu-v3-tang-nano-20k/benchmarks/suite"
+    if ($sourceCommit) {
+        $resolved = @(& git rev-parse --verify --end-of-options "$sourceCommit^{commit}" 2>$null)
+        if ($LASTEXITCODE -ne 0 -or $resolved.Count -ne 1) {
+            throw "Cannot recover the suite for commit '$sourceCommit'; supply -SuiteDigest from the measured run."
+        }
+        $entries = @(& git ls-tree ($resolved[0] + ":" + $suitePath))
+        if ($LASTEXITCODE -ne 0) { throw "Cannot read the suite tree at '$sourceCommit'." }
+        $files = foreach ($entry in $entries) {
+            if ($entry -match '^\d+ blob ([0-9a-f]+)\t(.+\.(rs|hex))$') {
+                [pscustomobject]@{ Name = $Matches[2]; Blob = $Matches[1] }
+            }
+        }
+    } else {
+        $files = foreach ($file in (Get-ChildItem -LiteralPath $suiteDirectory -File |
+                Where-Object { $_.Extension -in @(".rs", ".hex") })) {
+            # Git's clean filters normalize checkout line endings, so an
+            # unchanged worktree and its committed tree have the same identity.
+            $blob = & git hash-object "--path=$suitePath/$($file.Name)" -- $file.FullName
+            if ($LASTEXITCODE -ne 0) { throw "Cannot fingerprint $($file.FullName)." }
+            [pscustomobject]@{ Name = $file.Name; Blob = $blob }
+        }
+    }
+    if (@($files).Count -eq 0) { throw "The measured suite contains no .rs/.hex programs." }
+    return @($files)
+}
+
 # One digest over the whole program set: renaming, editing or adding a program changes it,
 # which is exactly the "suite revision" boundary the benchmark README talks about.
-function Get-SuiteDigest([string]$suiteDirectory) {
-    $lines = foreach ($file in (Get-ChildItem -LiteralPath $suiteDirectory -File |
-            Where-Object { $_.Extension -in @(".rs", ".hex") } | Sort-Object Name)) {
-        $file.Name + " " + (Get-FileHash -LiteralPath $file.FullName -Algorithm SHA256).Hash
+function Get-SuiteDigest([string]$suiteDirectory, [string]$sourceCommit = "") {
+    $files = @(Get-SuiteFiles $suiteDirectory $sourceCommit)
+    $lines = @($files | Sort-Object Name | ForEach-Object { $_.Name + " " + $_.Blob })
+    return Get-TextDigest ("git-blobs-v2`n" + [string]::Join("`n", $lines))
+}
+
+function Assert-SuitePrograms($rows, [string]$suiteDirectory, [string]$sourceCommit = "") {
+    $actual = @($rows | ForEach-Object { "$($_.name)" } | Sort-Object)
+    if (@($actual | Where-Object { [string]::IsNullOrWhiteSpace($_) }).Count -ne 0) {
+        throw "Raw suite CSV has an empty program name."
     }
-    return Get-TextDigest ([string]::Join("`n", $lines))
+    $unique = @($actual | Sort-Object -Unique)
+    if ($unique.Count -ne $actual.Count) {
+        throw "Raw suite CSV contains duplicate program rows."
+    }
+    $expected = @(Get-SuiteFiles $suiteDirectory $sourceCommit |
+        ForEach-Object { [IO.Path]::GetFileNameWithoutExtension($_.Name) } |
+        Sort-Object -Unique)
+    $difference = @(Compare-Object -ReferenceObject $expected -DifferenceObject $unique)
+    if ($difference.Count -ne 0) {
+        $where = if ($sourceCommit) { "commit '$sourceCommit'" } else { "the measured worktree" }
+        $missing = @($difference | Where-Object SideIndicator -eq '<=' | ForEach-Object InputObject)
+        $extra = @($difference | Where-Object SideIndicator -eq '=>' | ForEach-Object InputObject)
+        $missingText = if ($missing.Count) { $missing -join ', ' } else { "none" }
+        $extraText = if ($extra.Count) { $extra -join ', ' } else { "none" }
+        throw "Raw CSV program set does not match $where (missing: $missingText; extra: $extraText)."
+    }
 }
 
 # The metric set is the exported column list; reordering or adding a column changes it.
@@ -170,6 +224,7 @@ try {
         $rawPath = (Resolve-Path -LiteralPath $RawCsv).Path
         Write-Host "Reusing raw suite CSV: $rawPath"
     } else {
+        if ($SuiteDigest) { throw "-SuiteDigest is only for importing an existing -RawCsv." }
         if ($dirty -and $State -ne "dirty") {
             if ($DryRun) {
                 Write-Warning "Worktree is not clean; previewing anyway because -DryRun writes nothing."
@@ -178,12 +233,16 @@ try {
             }
         }
         $rawPath = Join-Path $repoRoot "target/bench-log-$([guid]::NewGuid().ToString('N').Substring(0,8)).csv"
+        $measuredSuite = Get-SuiteDigest $suiteDir
         Write-Host "Running the frozen suite (run label stage$StageLabel)..."
         & (Join-Path $repoRoot "systems/cpu-v3-tang-nano-20k/benchmarks/run-suite.ps1") `
             -Stage $StageLabel `
             -OutputFile $rawPath
         if ($LASTEXITCODE -ne 0) { throw "Benchmark suite failed; nothing was recorded." }
         if (-not (Test-Path $rawPath)) { throw "Suite run produced no CSV at $rawPath" }
+        if ((Get-SuiteDigest $suiteDir) -ne $measuredSuite) {
+            throw "Suite sources changed during measurement; nothing was recorded."
+        }
     }
 
     # --- 2. Validate the raw CSV and read its identity --------------------------
@@ -195,6 +254,19 @@ try {
     }
     $commit = $commits[0]
     if ([string]::IsNullOrWhiteSpace($commit)) { throw "Raw suite CSV has an empty commit column; rerun the suite." }
+    if ($RawCsv) {
+        if ($SuiteDigest) {
+            $measuredSuite = $SuiteDigest
+        } else {
+            if ($State -eq "dirty" -or @($rows | Where-Object { $_.config -eq "reconstructed" }).Count -ne 0) {
+                throw "A dirty/reconstructed CSV does not identify its source suite; supply -SuiteDigest from the measured run."
+            }
+            Assert-SuitePrograms $rows $suiteDir $commit
+            $measuredSuite = Get-SuiteDigest $suiteDir $commit
+        }
+    } else {
+        Assert-SuitePrograms $rows $suiteDir
+    }
 
     $authorDate = ""
     $log = @(& git show -s --format=%aI $commit 2>$null)
@@ -246,7 +318,7 @@ try {
         date                       = $date
         commit                     = $commit
         state                      = $State
-        suite                      = Get-SuiteDigest $suiteDir
+        suite                      = $measuredSuite
         schema                     = Get-SchemaDigest $rawPath
         programs                   = $rows.Count
         cycles_geomean             = $cycles.ToString("F1", $inv)
