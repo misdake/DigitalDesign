@@ -52,6 +52,8 @@
   .vname { color: #8ec7ff; }
   .vloc { color: #7f8896; }
   .plink { color: #8ec7ff; text-decoration: underline; cursor: pointer; }
+  details.aggregate > summary { cursor: pointer; color: #9aa0ad; }
+  details.aggregate > table { margin: 3px 0 3px 12px; }
   #mem td:nth-child(even) { color: #7f8896; }
   input[type=text] { background: #1a1b20; color: inherit; border: 1px solid #4a4e5c; border-radius: 4px; padding: 3px 6px; width: 70px; font: inherit; }
   select { background: #1a1b20; color: inherit; border: 1px solid #4a4e5c; border-radius: 4px; padding: 3px 6px; font: inherit; }
@@ -389,6 +391,25 @@ function fmtVal(v) {
     return `${value} <span class="vloc">@r${val.reg}</span>`;
   }
   if (val.words) {
+    const layout = (state.types || []).find(t => t.name === v.ty);
+    if (layout) {
+      const fields = layout.fields.map(f => varRow({
+        name: f.name, ty: f.ty,
+        value: { addr: (val.addr + f.offset) & 0xffff, words: val.words.slice(f.offset) }
+      })).join('');
+      return `<details class="aggregate" open><summary>${esc(v.ty)} <span class="plink" data-addr="${val.addr}">@${hx(val.addr)}</span></summary><table>${fields}</table></details>`;
+    }
+    const buffer = /^Buf<(.+),\s*(\d+)>$/.exec(v.ty);
+    if (buffer) {
+      const elem = buffer[1].trim(), count = Number(buffer[2]);
+      const stride = (state.types || []).find(t => t.name === elem)?.size || 1;
+      const shown = Math.min(count, 8, Math.floor(val.words.length / stride));
+      const elements = Array.from({ length: shown }, (_, i) => varRow({
+        name: `[${i}]`, ty: elem,
+        value: { addr: (val.addr + i * stride) & 0xffff, words: val.words.slice(i * stride, (i + 1) * stride) }
+      })).join('');
+      return `<details class="aggregate" open><summary>${esc(v.ty)} <span class="plink" data-addr="${val.addr}">@${hx(val.addr)}</span></summary><table>${elements}</table>${shown < count ? '<span class="muted">…</span>' : ''}</details>`;
+    }
     if (!v.ty.startsWith('['))
       return `${fmtWord(val.words[0], v.ty)} <span class="plink" data-addr="${val.addr}">@${hx(val.addr)}</span>`;
     const head = val.words.slice(0, 4).map(w => fmtWord(w, v.ty.startsWith('[i16;') ? 'i16' : 'u16')).join(', ');

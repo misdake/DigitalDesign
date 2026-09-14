@@ -515,7 +515,17 @@ impl V3DebugSession {
                 .map(|i| self.data_word(addr.wrapping_add(i)))
                 .collect();
         }
-        let n = if ty.starts_with('[') {
+        let n = if let Some(buffer) = ty.strip_prefix("Buf<").and_then(|s| s.strip_suffix('>')) {
+            buffer.rsplit_once(',').map_or(1, |(elem, count)| {
+                let stride = self
+                    .debug
+                    .types
+                    .iter()
+                    .find(|layout| layout.name == elem.trim())
+                    .map_or(1, |layout| usize::from(layout.size));
+                count.trim().parse::<usize>().unwrap_or(1).min(8) * stride
+            })
+        } else if ty.starts_with('[') {
             ty.split(';')
                 .nth(1)
                 .and_then(|t| t.trim_end_matches(']').trim().parse::<usize>().ok())
@@ -1244,6 +1254,8 @@ mod tests {
         let mut session = V3DebugSession::from_program(program);
         session.system.cpu_mut().physical_memory_mut()[0x0040] = 7;
         session.system.cpu_mut().physical_memory_mut()[0x0041] = 0xfff9; // -7 as i16
+        assert_eq!(session.preview(0x0040, "Buf<u16, 2>"), vec![7, 0xfff9]);
+        assert_eq!(session.preview(0x0040, "Buf<P, 1>"), vec![7, 0xfff9]);
         let json = session.state_json(None);
         assert!(
             json.contains(
