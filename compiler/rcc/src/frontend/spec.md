@@ -299,6 +299,9 @@ struct Point { x: u16, y: u16, inner: Inner, flags: Buf<u16, 2>, valid: bool }
   pointer the caller supplies (§14), so `let p: Point = make(1u16);` fills `p`'s own frame slot —
   no copy at the call site. `return Point { .. };`, `return other;` and `return shifted(...)` all
   work, and a struct can be assigned wholesale (`p = make(1u16);`).
+  Whole-aggregate assignment evaluates the complete right-hand value before the destination
+  place, using temporary frame storage before copying it back. Thus `p = swap(view_of(&p))`
+  reads the old `p` throughout the call. Initialization of a new binding still uses direct sret.
 - **Passing structs**: a function takes a struct by pointer, written `Array<Point>` (the one-word
   typed view). Two ways to make one:
   - `view_of(&value)` — the address of one struct (or addressable scalar) value;
