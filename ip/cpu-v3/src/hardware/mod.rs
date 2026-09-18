@@ -667,6 +667,226 @@ impl Module for CpuV3FpuV2ScalarPath {
     }
 }
 
+#[derive(Clone, ModuleIo)]
+pub struct CpuV3FpuV2Input {
+    pub abort: Wire,
+    pub word_valid: Wire,
+    pub word: Wires<16>,
+    pub ext_access: Wire,
+    pub ext_write_enable: Wire,
+    pub ext_write_address: Wires<9>,
+    pub ext_write_data: Wires<32>,
+    pub ext_read_address: Wires<9>,
+}
+
+#[derive(Clone, ModuleIo)]
+pub struct CpuV3FpuV2Output {
+    pub busy: Wire,
+    pub flag_lt: Wire,
+    pub flag_eq: Wire,
+    pub flag_gt: Wire,
+    pub instr_complete: Wire,
+    pub ext_read_data: Wires<32>,
+}
+
+/// FPU v2 unit top level: two-word front-end + mirrored-BSRAM register
+/// file + scalar execution path, plus the external memory channel the core
+/// uses for FLD/FST until the internal store buffer arrives (Stage 6).
+/// Integration contract: fpu-design-v2 section 26.
+pub struct CpuV3FpuV2;
+
+impl HardwareIdentity for CpuV3FpuV2 {
+    const TARGET_RESOURCE_LEAF: bool = false;
+
+    fn verilog_identity() -> VerilogIdentity {
+        VerilogIdentity::new("CpuV3FpuV2").namespace(["components", "cpu", "cpu_v3"])
+    }
+}
+
+/// Compositional emu state: the three leaf states plus the one-beat
+/// operand-address hold register.
+pub struct CpuV3FpuV2State {
+    frontend: CpuV3FpuV2FrontendState,
+    rf: CpuV3FpuV2RegisterRamState,
+    scalar_path: CpuV3FpuV2ScalarPathState,
+    held_read_a_address: u16,
+    held_read_b_address: u16,
+}
+
+impl Default for CpuV3FpuV2State {
+    fn default() -> Self {
+        CpuV3FpuV2State {
+            frontend: CpuV3FpuV2FrontendState::default(),
+            rf: CpuV3FpuV2RegisterRamState {
+                memory: Box::new([0; 512]),
+                read_a_data: 0,
+                read_b_data: 0,
+            },
+            scalar_path: CpuV3FpuV2ScalarPathState::default(),
+            held_read_a_address: 0,
+            held_read_b_address: 0,
+        }
+    }
+}
+
+impl CpuV3FpuV2State {
+    /// Combinational outputs of the unit top (registered leaf outputs and the
+    /// busy/complete status); register updates live in `clock_emu`.
+    fn step(&mut self, input: &CpuV3FpuV2InputValue) -> CpuV3FpuV2OutputValue {
+        let sp = &self.scalar_path;
+        let sp_load_now =
+            self.frontend.instr_complete && self.frontend.instr_opcode == 0xD && !input.abort;
+        let sp_w_wait = if sp_load_now { 2 } else { sp.w_count };
+        CpuV3FpuV2OutputValue {
+            busy: sp_w_wait != 0,
+            flag_lt: self.scalar_path.flag_lt,
+            flag_eq: self.scalar_path.flag_eq,
+            flag_gt: self.scalar_path.flag_gt,
+            instr_complete: self.frontend.instr_complete,
+            ext_read_data: u64::from(self.rf.read_b_data),
+        }
+    }
+}
+
+impl Module for CpuV3FpuV2 {
+    type Input = CpuV3FpuV2Input;
+    type Output = CpuV3FpuV2Output;
+    type EmuState = CpuV3FpuV2State;
+
+    const USES_MAIN_CLOCK: bool = true;
+
+    fn target_resources() -> Vec<TargetResourceRequest> {
+        // The register file claims two 18-Kbit BSRAM blocks.
+        vec![TargetResourceRequest::new(BsramBlocks::new(2))]
+    }
+
+    fn create_emu(_input: &Self::Input, _output: &Self::Output) -> Self::EmuState {
+        Self::EmuState::default()
+    }
+
+    fn execute_emu(
+        state: &mut Self::EmuState,
+        circuit: &mut CircuitWires,
+        input: &Self::Input,
+        output: &Self::Output,
+    ) {
+        let input = input.sample(circuit);
+        output.drive(circuit, &state.step(&input));
+    }
+
+    fn clock_emu(
+        state: &mut Self::EmuState,
+        circuit: &mut CircuitWires,
+        input: &Self::Input,
+        _output: &Self::Output,
+    ) {
+        let input = input.sample(circuit);
+        let word = input.word as u16;
+
+        // Front-end register updates (identical to the leaf clock_emu).
+        let accept_word0 = input.word_valid && !state.frontend.waiting_word1;
+        let accept_word1 = input.word_valid && state.frontend.waiting_word1 && !input.abort;
+        let discard_word0 = input.abort && state.frontend.waiting_word1;
+        state.frontend.instr_complete = accept_word1;
+        if accept_word0 {
+            state.frontend.word0_raw = word;
+            state.frontend.instr_opcode = (word >> 12) as u8;
+            state.frontend.waiting_word1 = true;
+            // The wrapper captures the read addresses on the word0 beat.
+            state.held_read_a_address = if word >> 12 == 0xE {
+                (word >> 2) & 0x3F
+            } else {
+                (word >> 6) & 0x3F
+            };
+            state.held_read_b_address = word & 0x3F;
+        } else if accept_word1 || discard_word0 {
+            state.frontend.waiting_word1 = false;
+        }
+        if accept_word1 {
+            state.frontend.word1_raw = word;
+        }
+
+        // Scalar path register updates (identical to the leaf clock_emu).
+        let sp = &mut state.scalar_path;
+        if input.abort {
+            sp.write_enable = false;
+            sp.w_count = 0;
+            sp.x_count = 0;
+        } else {
+            let word1 = state.frontend.word1_raw;
+            let subop = ((word1 >> 4) & 0x3F) as u8;
+            let fd = (word1 >> 10) & 0x3F;
+            let is_cmp = subop == 0x0B;
+            let load_now = state.frontend.instr_complete && state.frontend.instr_opcode == 0xD;
+            // read-first: the RF read registers still hold T0 operands here.
+            sp.write_enable = load_now && !is_cmp;
+            if load_now {
+                let (result, lt, eq, gt) = CpuV3FpuV2ScalarPathState::alu(
+                    state.rf.read_a_data,
+                    state.rf.read_b_data,
+                    subop,
+                );
+                sp.write_address = fd;
+                sp.write_data = result;
+                if is_cmp {
+                    sp.flag_lt = lt;
+                    sp.flag_eq = eq;
+                    sp.flag_gt = gt;
+                }
+                sp.w_count = 1;
+                sp.x_count = 1;
+            } else {
+                sp.w_count = sp.w_count.saturating_sub(1);
+                sp.x_count = sp.x_count.saturating_sub(1);
+            }
+        }
+
+        // Register-file updates last: reads sample the pre-write contents.
+        let rf = &mut state.rf;
+        let sp = &state.scalar_path;
+        let read_a_address = state.held_read_a_address as usize;
+        let read_b_address = if input.ext_access {
+            input.ext_read_address as usize
+        } else {
+            state.held_read_b_address as usize
+        };
+        rf.read_a_data = rf.memory[read_a_address];
+        rf.read_b_data = rf.memory[read_b_address];
+        let (we, wa, wd) = if input.ext_access {
+            (
+                input.ext_write_enable,
+                input.ext_write_address as usize,
+                input.ext_write_data as u32,
+            )
+        } else {
+            (
+                sp.write_enable && !input.abort,
+                sp.write_address as usize,
+                sp.write_data,
+            )
+        };
+        if we {
+            rf.memory[wa] = wd;
+        }
+    }
+
+    fn verilog_source() -> Option<String> {
+        Some(include_str!("cpu_v3_fpu_v2.v").to_string())
+    }
+
+    fn verilog_dependencies() -> Vec<VerilogDependency> {
+        vec![
+            VerilogDependency::new::<CpuV3FpuV2Frontend>("frontend"),
+            VerilogDependency::new::<CpuV3FpuV2RegisterRam>("rf"),
+            VerilogDependency::new::<CpuV3FpuV2ScalarPath>("scalar_path"),
+        ]
+    }
+
+    fn verilog_testbench() -> Option<String> {
+        Some(include_str!("cpu_v3_fpu_v2_tb.v").to_string())
+    }
+}
+
 impl HardwareIdentity for CpuV3Core {
     const TARGET_RESOURCE_LEAF: bool = false;
 
@@ -2337,5 +2557,11 @@ mod tests {
     #[ignore = "explicit external simulation of the FPU v2 scalar path"]
     fn verify_fpu_v2_scalar_path_with_iverilog() {
         digital_design_hardware::verify_verilog_with_iverilog::<CpuV3FpuV2ScalarPath>().unwrap();
+    }
+
+    #[test]
+    #[ignore = "explicit external simulation of the FPU v2 unit top"]
+    fn verify_fpu_v2_unit_with_iverilog() {
+        digital_design_hardware::verify_verilog_with_iverilog::<CpuV3FpuV2>().unwrap();
     }
 }
