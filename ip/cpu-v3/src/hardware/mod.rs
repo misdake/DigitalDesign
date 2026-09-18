@@ -474,6 +474,311 @@ impl Module for CpuV3FpuV2Frontend {
     }
 }
 
+#[derive(Clone, ModuleIo)]
+pub struct CpuV3FpuV2ScalarAluInput {
+    pub a: Wires<32>,
+    pub b: Wires<32>,
+    pub op: Wires<4>,
+}
+
+#[derive(Clone, ModuleIo)]
+pub struct CpuV3FpuV2ScalarAluOutput {
+    pub result: Wires<32>,
+    pub flag_lt: Wire,
+    pub flag_eq: Wire,
+    pub flag_gt: Wire,
+}
+
+/// FPU v2 scalar Q16.16 ALU: purely combinational, all arithmetic in fabric
+/// LUTs (syn_dspstyle="logic"; DSP absorption of wide adds is a measured
+/// Gowin pitfall). Wrap overflow policy, round-half-up ROUND; flags are only
+/// specified for op == CMP.
+pub struct CpuV3FpuV2ScalarAlu;
+
+impl HardwareIdentity for CpuV3FpuV2ScalarAlu {
+    const TARGET_RESOURCE_LEAF: bool = true;
+
+    fn verilog_identity() -> VerilogIdentity {
+        VerilogIdentity::new("CpuV3FpuV2ScalarAlu").namespace(["components", "cpu", "cpu_v3"])
+    }
+}
+
+impl Module for CpuV3FpuV2ScalarAlu {
+    type Input = CpuV3FpuV2ScalarAluInput;
+    type Output = CpuV3FpuV2ScalarAluOutput;
+    type EmuState = ();
+
+    fn create_emu(_input: &Self::Input, _output: &Self::Output) -> Self::EmuState {}
+
+    fn execute_emu(
+        _state: &mut Self::EmuState,
+        circuit: &mut CircuitWires,
+        input: &Self::Input,
+        output: &Self::Output,
+    ) {
+        let input = input.sample(circuit);
+        let a = input.a as u32;
+        let b = input.b as u32;
+        let sa = a as i32;
+        let sb = b as i32;
+        let floor_a = a & 0xFFFF_0000;
+        let frac_nonzero = a & 0xFFFF != 0;
+        let ceil_a = floor_a.wrapping_add(if frac_nonzero { 0x1_0000 } else { 0 });
+        let result = match input.op & 0xF {
+            0x0 => a.wrapping_add(b),
+            0x1 => a.wrapping_sub(b),
+            0x3 => {
+                if sa < sb {
+                    a
+                } else {
+                    b
+                }
+            }
+            0x4 => {
+                if sa > sb {
+                    a
+                } else {
+                    b
+                }
+            }
+            0x5 => {
+                if sa < 0 {
+                    a.wrapping_neg()
+                } else {
+                    a
+                }
+            }
+            0x6 => a.wrapping_neg(),
+            0x7 => floor_a,
+            0x8 => ceil_a,
+            0x9 => a.wrapping_add(0x8000) & 0xFFFF_0000,
+            0xA => {
+                if sa < 0 {
+                    ceil_a
+                } else {
+                    floor_a
+                }
+            }
+            0xB => 0,
+            0xF => a,
+            _ => 0,
+        };
+        output.drive(
+            circuit,
+            &CpuV3FpuV2ScalarAluOutputValue {
+                result: u64::from(result),
+                flag_lt: sa < sb,
+                flag_eq: sa == sb,
+                flag_gt: sa > sb,
+            },
+        );
+    }
+
+    fn verilog_source() -> Option<String> {
+        Some(include_str!("cpu_v3_fpu_v2_scalar_alu.v").to_string())
+    }
+
+    fn verilog_testbench() -> Option<String> {
+        Some(include_str!("cpu_v3_fpu_v2_scalar_alu_tb.v").to_string())
+    }
+}
+
+#[derive(Clone, ModuleIo)]
+pub struct CpuV3FpuV2ScalarPathInput {
+    pub abort: Wire,
+    pub instr_complete: Wire,
+    pub instr_opcode: Wires<4>,
+    pub word1_raw: Wires<16>,
+    pub rf_read_a_data: Wires<32>,
+    pub rf_read_b_data: Wires<32>,
+}
+
+#[derive(Clone, ModuleIo)]
+pub struct CpuV3FpuV2ScalarPathOutput {
+    pub rf_write_enable: Wire,
+    pub rf_write_address: Wires<9>,
+    pub rf_write_data: Wires<32>,
+    pub flag_lt: Wire,
+    pub flag_eq: Wire,
+    pub flag_gt: Wire,
+    pub busy: Wire,
+    pub r_wait: Wires<4>,
+    pub w_wait: Wires<4>,
+    pub x_wait: Wires<4>,
+}
+
+/// FPU v2 scalar execution-path controller: on instr_complete (opcode 0xD)
+/// it evaluates the combinational scalar ALU on the already-valid RF read
+/// data (T0), captures the result, writes back on T1, and drives the
+/// section-16 R/W/X countdown skeleton. CMP only updates the flag registers;
+/// abort cancels any in-flight write.
+pub struct CpuV3FpuV2ScalarPath;
+
+impl HardwareIdentity for CpuV3FpuV2ScalarPath {
+    const TARGET_RESOURCE_LEAF: bool = false;
+
+    fn verilog_identity() -> VerilogIdentity {
+        VerilogIdentity::new("CpuV3FpuV2ScalarPath").namespace(["components", "cpu", "cpu_v3"])
+    }
+}
+
+#[derive(Default)]
+pub struct CpuV3FpuV2ScalarPathState {
+    write_enable: bool,
+    write_address: u16,
+    write_data: u32,
+    flag_lt: bool,
+    flag_eq: bool,
+    flag_gt: bool,
+    w_count: u8,
+    x_count: u8,
+}
+
+impl CpuV3FpuV2ScalarPathState {
+    /// Mirrors CpuV3FpuV2ScalarAlu: wrap-only Q16.16 ops.
+    fn alu(a: u32, b: u32, op: u8) -> (u32, bool, bool, bool) {
+        let sa = a as i32;
+        let sb = b as i32;
+        let floor_a = a & 0xFFFF_0000;
+        let frac = a & 0xFFFF != 0;
+        let ceil_a = floor_a.wrapping_add(if frac { 0x1_0000 } else { 0 });
+        let result = match op & 0xF {
+            0x0 => a.wrapping_add(b),
+            0x1 => a.wrapping_sub(b),
+            0x3 => {
+                if sa < sb {
+                    a
+                } else {
+                    b
+                }
+            }
+            0x4 => {
+                if sa > sb {
+                    a
+                } else {
+                    b
+                }
+            }
+            0x5 => {
+                if sa < 0 {
+                    a.wrapping_neg()
+                } else {
+                    a
+                }
+            }
+            0x6 => a.wrapping_neg(),
+            0x7 => floor_a,
+            0x8 => ceil_a,
+            0x9 => a.wrapping_add(0x8000) & 0xFFFF_0000,
+            0xA => {
+                if sa < 0 {
+                    ceil_a
+                } else {
+                    floor_a
+                }
+            }
+            0xF => a,
+            _ => 0,
+        };
+        (result, sa < sb, sa == sb, sa > sb)
+    }
+}
+
+impl Module for CpuV3FpuV2ScalarPath {
+    type Input = CpuV3FpuV2ScalarPathInput;
+    type Output = CpuV3FpuV2ScalarPathOutput;
+    type EmuState = CpuV3FpuV2ScalarPathState;
+
+    const USES_MAIN_CLOCK: bool = true;
+
+    fn create_emu(_input: &Self::Input, _output: &Self::Output) -> Self::EmuState {
+        Self::EmuState::default()
+    }
+
+    fn execute_emu(
+        state: &mut Self::EmuState,
+        circuit: &mut CircuitWires,
+        input: &Self::Input,
+        output: &Self::Output,
+    ) {
+        let input = input.sample(circuit);
+        let load_now = input.instr_complete && input.instr_opcode == 0xD && !input.abort;
+        let w_wait = if load_now { 2 } else { state.w_count };
+        let x_wait = if load_now { 2 } else { state.x_count };
+        output.drive(
+            circuit,
+            &CpuV3FpuV2ScalarPathOutputValue {
+                rf_write_enable: state.write_enable && !input.abort,
+                rf_write_address: u64::from(state.write_address),
+                rf_write_data: u64::from(state.write_data),
+                flag_lt: state.flag_lt,
+                flag_eq: state.flag_eq,
+                flag_gt: state.flag_gt,
+                busy: w_wait != 0,
+                r_wait: 0,
+                w_wait: u64::from(w_wait),
+                x_wait: u64::from(x_wait),
+            },
+        );
+    }
+
+    fn clock_emu(
+        state: &mut Self::EmuState,
+        circuit: &mut CircuitWires,
+        input: &Self::Input,
+        _output: &Self::Output,
+    ) {
+        let input = input.sample(circuit);
+        if input.abort {
+            state.write_enable = false;
+            state.w_count = 0;
+            state.x_count = 0;
+            return;
+        }
+        let word1 = input.word1_raw as u16;
+        let subop = ((word1 >> 4) & 0x3F) as u8;
+        let fd = (word1 >> 10) & 0x3F;
+        let is_cmp = subop == 0x0B;
+        let load_now = input.instr_complete && input.instr_opcode == 0xD;
+        state.write_enable = load_now && !is_cmp;
+        if load_now {
+            let (result, lt, eq, gt) = Self::EmuState::alu(
+                input.rf_read_a_data as u32,
+                input.rf_read_b_data as u32,
+                subop,
+            );
+            state.write_address = fd;
+            state.write_data = result;
+            if is_cmp {
+                state.flag_lt = lt;
+                state.flag_eq = eq;
+                state.flag_gt = gt;
+            }
+            state.w_count = 1;
+            state.x_count = 1;
+        } else {
+            state.w_count = state.w_count.saturating_sub(1);
+            state.x_count = state.x_count.saturating_sub(1);
+        }
+    }
+
+    fn verilog_source() -> Option<String> {
+        Some(include_str!("cpu_v3_fpu_v2_scalar_path.v").to_string())
+    }
+
+    fn verilog_dependencies() -> Vec<VerilogDependency> {
+        vec![
+            VerilogDependency::new::<CpuV3FpuV2ScalarAlu>("scalar_alu"),
+            VerilogDependency::new::<CpuV3FpuV2Frontend>("frontend"),
+            VerilogDependency::new::<CpuV3FpuV2RegisterRam>("rf"),
+        ]
+    }
+
+    fn verilog_testbench() -> Option<String> {
+        Some(include_str!("cpu_v3_fpu_v2_scalar_path_tb.v").to_string())
+    }
+}
+
 impl HardwareIdentity for CpuV3Core {
     const TARGET_RESOURCE_LEAF: bool = false;
 
@@ -2920,5 +3225,17 @@ mod tests {
     #[ignore = "explicit external simulation of the FPU v2 instruction front-end"]
     fn verify_fpu_v2_frontend_with_iverilog() {
         digital_design_hardware::verify_verilog_with_iverilog::<CpuV3FpuV2Frontend>().unwrap();
+    }
+
+    #[test]
+    #[ignore = "explicit external simulation of the FPU v2 scalar ALU"]
+    fn verify_fpu_v2_scalar_alu_with_iverilog() {
+        digital_design_hardware::verify_verilog_with_iverilog::<CpuV3FpuV2ScalarAlu>().unwrap();
+    }
+
+    #[test]
+    #[ignore = "explicit external simulation of the FPU v2 scalar path"]
+    fn verify_fpu_v2_scalar_path_with_iverilog() {
+        digital_design_hardware::verify_verilog_with_iverilog::<CpuV3FpuV2ScalarPath>().unwrap();
     }
 }
