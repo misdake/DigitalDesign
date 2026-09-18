@@ -10,8 +10,8 @@ pub use fetch::*;
 
 use digital_design_circuit::{CircuitWires, Wire, Wires};
 use digital_design_hardware::{
-    resources::components::SsramBits, HardwareIdentity, Module, ModuleIo, TargetResourceRequest,
-    VerilogDependency, VerilogIdentity,
+    resources::components::{BsramBlocks, SsramBits},
+    HardwareIdentity, Module, ModuleIo, TargetResourceRequest, VerilogDependency, VerilogIdentity,
 };
 use digital_design_hardware_gowin::{BsramImage, BsramTrueDualPort1024, DspMulS18};
 use std::cmp::Ordering;
@@ -261,6 +261,216 @@ impl Module for CpuV3FpuRegisterRam {
 
     fn verilog_testbench() -> Option<String> {
         Some(include_str!("cpu_v3_fpu_register_ram_tb.v").to_string())
+    }
+}
+
+#[derive(Clone, ModuleIo)]
+pub struct CpuV3FpuV2RegisterRamInput {
+    pub write_enable: Wire,
+    pub write_address: Wires<9>,
+    pub write_data: Wires<32>,
+    pub read_a_address: Wires<9>,
+    pub read_b_address: Wires<9>,
+}
+
+#[derive(Clone, ModuleIo)]
+pub struct CpuV3FpuV2RegisterRamOutput {
+    pub read_a_data: Wires<32>,
+    pub read_b_data: Wires<32>,
+}
+
+/// FPU v2 register file: two mirrored 512x32 BSRAMs (SDPB) giving one
+/// broadcast write port plus two independent synchronous read ports.
+/// Physical addresses 0..63 alias architectural F0..F63 (the parent forces
+/// the top three address bits of architectural accesses to zero); 64..511
+/// are the hidden LUT region for RCP/RSQRT/SINCOS. Same-cycle write/read on
+/// one address returns the old word on both read ports.
+pub struct CpuV3FpuV2RegisterRam;
+
+impl HardwareIdentity for CpuV3FpuV2RegisterRam {
+    const TARGET_RESOURCE_LEAF: bool = true;
+
+    fn verilog_identity() -> VerilogIdentity {
+        VerilogIdentity::new("CpuV3FpuV2RegisterRam").namespace(["components", "cpu", "cpu_v3"])
+    }
+}
+
+pub struct CpuV3FpuV2RegisterRamState {
+    memory: Box<[u32; 512]>,
+    read_a_data: u32,
+    read_b_data: u32,
+}
+
+impl Module for CpuV3FpuV2RegisterRam {
+    type Input = CpuV3FpuV2RegisterRamInput;
+    type Output = CpuV3FpuV2RegisterRamOutput;
+    type EmuState = CpuV3FpuV2RegisterRamState;
+
+    const USES_MAIN_CLOCK: bool = true;
+
+    fn target_resources() -> Vec<TargetResourceRequest> {
+        vec![TargetResourceRequest::new(BsramBlocks::new(2))]
+    }
+
+    fn create_emu(_input: &Self::Input, _output: &Self::Output) -> Self::EmuState {
+        CpuV3FpuV2RegisterRamState {
+            memory: Box::new([0; 512]),
+            read_a_data: 0,
+            read_b_data: 0,
+        }
+    }
+
+    fn execute_emu(
+        state: &mut Self::EmuState,
+        circuit: &mut CircuitWires,
+        _input: &Self::Input,
+        output: &Self::Output,
+    ) {
+        output.drive(
+            circuit,
+            &CpuV3FpuV2RegisterRamOutputValue {
+                read_a_data: u64::from(state.read_a_data),
+                read_b_data: u64::from(state.read_b_data),
+            },
+        );
+    }
+
+    fn clock_emu(
+        state: &mut Self::EmuState,
+        circuit: &mut CircuitWires,
+        input: &Self::Input,
+        _output: &Self::Output,
+    ) {
+        let input = input.sample(circuit);
+        // Both reads observe the pre-write contents (read-first semantics).
+        state.read_a_data = state.memory[input.read_a_address as usize];
+        state.read_b_data = state.memory[input.read_b_address as usize];
+        if input.write_enable {
+            state.memory[input.write_address as usize] = input.write_data as u32;
+        }
+    }
+
+    fn verilog_source() -> Option<String> {
+        Some(include_str!("cpu_v3_fpu_v2_register_ram.v").to_string())
+    }
+
+    fn verilog_testbench() -> Option<String> {
+        Some(include_str!("cpu_v3_fpu_v2_register_ram_tb.v").to_string())
+    }
+}
+
+#[derive(Clone, ModuleIo)]
+pub struct CpuV3FpuV2FrontendInput {
+    pub word_valid: Wire,
+    pub word: Wires<16>,
+    pub abort: Wire,
+}
+
+#[derive(Clone, ModuleIo)]
+pub struct CpuV3FpuV2FrontendOutput {
+    pub read_valid: Wire,
+    pub rf_read_a_address: Wires<9>,
+    pub rf_read_b_address: Wires<9>,
+    pub word0_raw: Wires<16>,
+    pub word1_raw: Wires<16>,
+    pub instr_opcode: Wires<4>,
+    pub instr_complete: Wire,
+}
+
+/// FPU v2 instruction front-end: assembles the 32-bit instruction from two
+/// 16-bit words and forms the register-file read addresses combinationally
+/// in the word0 cycle so the synchronous RF presents operands one cycle
+/// later, before word1 is decoded. Word1 field splitting (len/subop/mode)
+/// is left to the downstream controller; this leaf only latches raw halves.
+#[derive(Default)]
+pub struct CpuV3FpuV2Frontend;
+
+impl HardwareIdentity for CpuV3FpuV2Frontend {
+    const TARGET_RESOURCE_LEAF: bool = true;
+
+    fn verilog_identity() -> VerilogIdentity {
+        VerilogIdentity::new("CpuV3FpuV2Frontend").namespace(["components", "cpu", "cpu_v3"])
+    }
+}
+
+#[derive(Default)]
+pub struct CpuV3FpuV2FrontendState {
+    waiting_word1: bool,
+    word0_raw: u16,
+    word1_raw: u16,
+    instr_opcode: u8,
+    instr_complete: bool,
+}
+
+impl Module for CpuV3FpuV2Frontend {
+    type Input = CpuV3FpuV2FrontendInput;
+    type Output = CpuV3FpuV2FrontendOutput;
+    type EmuState = CpuV3FpuV2FrontendState;
+
+    const USES_MAIN_CLOCK: bool = true;
+
+    fn create_emu(_input: &Self::Input, _output: &Self::Output) -> Self::EmuState {
+        Self::EmuState::default()
+    }
+
+    fn execute_emu(
+        state: &mut Self::EmuState,
+        circuit: &mut CircuitWires,
+        input: &Self::Input,
+        output: &Self::Output,
+    ) {
+        let input = input.sample(circuit);
+        let word = input.word as u16;
+        let read_valid = input.word_valid && !state.waiting_word1;
+        let read_a = if word >> 12 == 0xE {
+            (word >> 2) & 0x3F
+        } else {
+            (word >> 6) & 0x3F
+        };
+        output.drive(
+            circuit,
+            &CpuV3FpuV2FrontendOutputValue {
+                read_valid,
+                rf_read_a_address: u64::from(read_a),
+                rf_read_b_address: u64::from(word & 0x3F),
+                word0_raw: u64::from(state.word0_raw),
+                word1_raw: u64::from(state.word1_raw),
+                instr_opcode: u64::from(state.instr_opcode),
+                instr_complete: state.instr_complete,
+            },
+        );
+    }
+
+    fn clock_emu(
+        state: &mut Self::EmuState,
+        circuit: &mut CircuitWires,
+        input: &Self::Input,
+        _output: &Self::Output,
+    ) {
+        let input = input.sample(circuit);
+        let word = input.word as u16;
+        let accept_word0 = input.word_valid && !state.waiting_word1;
+        let accept_word1 = input.word_valid && state.waiting_word1 && !input.abort;
+        let discard_word0 = input.abort && state.waiting_word1;
+        state.instr_complete = accept_word1;
+        if accept_word0 {
+            state.word0_raw = word;
+            state.instr_opcode = (word >> 12) as u8;
+            state.waiting_word1 = true;
+        } else if accept_word1 || discard_word0 {
+            state.waiting_word1 = false;
+        }
+        if accept_word1 {
+            state.word1_raw = word;
+        }
+    }
+
+    fn verilog_source() -> Option<String> {
+        Some(include_str!("cpu_v3_fpu_v2_frontend.v").to_string())
+    }
+
+    fn verilog_testbench() -> Option<String> {
+        Some(include_str!("cpu_v3_fpu_v2_frontend_tb.v").to_string())
     }
 }
 
@@ -2698,5 +2908,17 @@ mod tests {
     #[ignore = "explicit external simulation of the scalar register file"]
     fn verify_gpr_ram_with_iverilog() {
         digital_design_hardware::verify_verilog_with_iverilog::<CpuV3GprRam>().unwrap();
+    }
+
+    #[test]
+    #[ignore = "explicit external simulation of the FPU v2 register file"]
+    fn verify_fpu_v2_register_ram_with_iverilog() {
+        digital_design_hardware::verify_verilog_with_iverilog::<CpuV3FpuV2RegisterRam>().unwrap();
+    }
+
+    #[test]
+    #[ignore = "explicit external simulation of the FPU v2 instruction front-end"]
+    fn verify_fpu_v2_frontend_with_iverilog() {
+        digital_design_hardware::verify_verilog_with_iverilog::<CpuV3FpuV2Frontend>().unwrap();
     }
 }
