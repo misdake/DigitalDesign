@@ -2070,22 +2070,16 @@ mod tests {
     ) -> u16 {
         let mut request = Some((false, address, 0));
         while request.is_some() {
-            let out = cosim_step(
-                circuit, input, output, memory, request, false, false, trace,
-            );
+            let out = cosim_step(circuit, input, output, memory, request, false, false, trace);
             if out.cpu_request_ready {
                 request = None;
             }
         }
         loop {
-            let out = cosim_step(
-                circuit, input, output, memory, None, false, false, trace,
-            );
+            let out = cosim_step(circuit, input, output, memory, None, false, false, trace);
             if out.cpu_response_valid {
                 let data = out.cpu_read_data;
-                cosim_step(
-                    circuit, input, output, memory, None, true, false, trace,
-                );
+                cosim_step(circuit, input, output, memory, None, true, false, trace);
                 return data;
             }
         }
@@ -2102,21 +2096,15 @@ mod tests {
     ) {
         let mut request = Some((true, address, write_data));
         while request.is_some() {
-            let out = cosim_step(
-                circuit, input, output, memory, request, false, false, trace,
-            );
+            let out = cosim_step(circuit, input, output, memory, request, false, false, trace);
             if out.cpu_request_ready {
                 request = None;
             }
         }
         loop {
-            let out = cosim_step(
-                circuit, input, output, memory, None, false, false, trace,
-            );
+            let out = cosim_step(circuit, input, output, memory, None, false, false, trace);
             if out.cpu_response_valid {
-                cosim_step(
-                    circuit, input, output, memory, None, true, false, trace,
-                );
+                cosim_step(circuit, input, output, memory, None, true, false, trace);
                 return;
             }
         }

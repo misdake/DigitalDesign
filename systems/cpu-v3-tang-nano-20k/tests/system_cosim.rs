@@ -10,11 +10,9 @@
 mod system_emu;
 
 use cpu_v3::{
-    add_constant, alu, branch, halt, immediate_unsigned, load, load_constant, load_immediate16,
-    nop, prefix12, store, AluOp, CpuV3Core, CpuV3DataCache, CpuV3InstructionFetchQueue,
-    CpuV3TwoWayCache, FpuOp, ImmediateOp, TestCondition,
+    alu, branch, halt, immediate_unsigned, load, load_immediate16, nop, store, AluOp, CpuV3Core,
+    CpuV3DataCache, CpuV3InstructionFetchQueue, CpuV3TwoWayCache, ImmediateOp, TestCondition,
 };
-use cpu_v3::{fpu, fpu_unary, FpuUnaryOp};
 use cpu_v3_tang_nano_20k::CpuV3MemoryArbiter;
 use digital_design_hardware::{HardwareIdentity, VerilogProject};
 use std::collections::BTreeMap;
@@ -99,50 +97,6 @@ fn program_async_store_overlap() -> Vec<u16> {
     p
 }
 
-/// Integer -> FPU -> integer transitions, FADD/FMUL, and an FSTORE vector
-/// store to memory. fix16 with 8 fraction bits: 1.5 + 2.0 = 3.5, 3.5 * 2.0 =
-/// 7.0 = 0x0700, exactly representable.
-fn program_fpu_roundtrip() -> Vec<u16> {
-    let mut p = Vec::new();
-    p.extend(load_immediate16(1, 0x6000)); // data base (4-aligned for Export4)
-    p.extend(load_immediate16(0, 0x0180)); // 1.5
-    p.extend(load_immediate16(2, 0x0200)); // 2.0
-    p.push(fpu(FpuOp::Load, 0, 0)); // F0.x = r0 (int -> FPU)
-    p.push(fpu(FpuOp::Load, 1, 2)); // F1.x = r2
-    p.push(fpu(FpuOp::Move, 3, 0)); // F3 = F0
-    p.push(fpu(FpuOp::Add, 3, 1)); // F3.x = 1.5 + 2.0 = 3.5
-    p.push(fpu(FpuOp::Mul, 3, 1)); // F3.x = 3.5 * 2.0 = 7.0
-    p.push(fpu_unary(4, FpuUnaryOp::Neg)); // F4 = -F4 = 0, barrier variety
-    p.push(fpu(FpuOp::Store, 5, 3)); // r5 = F3.x (FPU -> int)
-    p.push(fpu(FpuOp::Export4, 3, 1)); // mem[0x6000..0x6004] = F3
-    p.push(store(5, 1, 4)); // mem[0x6004] = r5 = 0x0700
-    p.extend(load_immediate16(0, 0x2d));
-    p.push(halt());
-    p
-}
-
-/// LDC/ADDC (major A functions 7/B) index the shared 16-entry constant table
-/// and never consume PFX12; the prefix before the ADDC expires unused.
-/// ADDI/SUBI read the unprefixed immediate as an unsigned u4 (15 was -1
-/// under the signed reading). The results land in the checked memory region.
-fn program_constant_table() -> Vec<u16> {
-    let mut p = Vec::new();
-    p.extend(load_immediate16(1, 0x4000)); // data base
-    p.push(load_constant(2, 0)); // r2 = 8
-    p.push(load_constant(3, 15)); // r3 = -512
-    p.push(add_constant(2, 7)); // r2 = 8 + 512 = 520
-    p.push(add_constant(3, 9)); // r3 = -512 + -16 = -528
-    p.push(prefix12(0xabc)); // expires unused before the non-consuming ADDC
-    p.push(add_constant(2, 4)); // r2 = 520 + 64 = 584
-    p.push(immediate_unsigned(ImmediateOp::Add, 2, 15)); // r2 = 599
-    p.push(immediate_unsigned(ImmediateOp::Sub, 2, 15)); // r2 = 584
-    p.push(immediate_unsigned(ImmediateOp::Add, 2, 0)); // r2 = 584
-    p.push(store(2, 1, 0)); // mem[0x4000] = 584
-    p.push(store(3, 1, 1)); // mem[0x4001] = 0xfdf0
-    p.push(halt());
-    p
-}
-
 /// I-cache pressure: an rcc-compiled loop whose body spans multiple 16-word
 /// lines, with the loop back-branch crossing line boundaries.
 const ICACHE_LOOP_SOURCE: &str = r#"
@@ -176,50 +130,6 @@ fn program_pipeline_overlap() -> Vec<u16> {
     p
 }
 
-/// An rcc-compiled FPU program: vec4 constructors, a mixed-signature call
-/// with FPU argument and return registers, the ACC splat multiply, fdot, and
-/// an aligned FEXPORT4 through the D-cache.
-const FPU_COMPILER_SOURCE: &str = r#"
-use crate::dsl_rt::*;
-static OUT: Buf<u16, 4> = Buf::new([0; 4]);
-
-fn scaled(v: vec4, factor: fix16, tag: u16) -> vec4 {
-    if tag == 1 { v * factor } else { v }
-}
-
-fn main() {
-    let a = vec4::new(
-        fix16::from_int(1),
-        fix16::from_int(2),
-        fix16::from_int(3),
-        fix16::from_int(4),
-    );
-    let b = scaled(a, fix16::from_bits(0x0080), 1); // halves every lane
-    let d = fdot(a, b); // 0.5 + 2 + 4.5 + 8 = 15.0
-    vec4::export(b, OUT.as_array().as_ptr());
-    if d.to_bits() == 3840 { halt(1); } else { halt(0); }
-}
-"#;
-
-/// `fix16::to_int()` is `FSTORE` followed by an `ASR` by 8. Regression for the
-/// RTL `>>>` inside a mixed-signedness conditional, which evaluated as a
-/// logical shift and turned negative results into `0x00xx` (e.g. the display
-/// demo's negative sine/cosine offsets landed at +255 instead of -1).
-const FIX16_TO_INT_SOURCE: &str = r#"
-use crate::dsl_rt::*;
-
-fn main() {
-    let mut out = Ptr::from_addr(0x4000).as_u16_array();
-    out[0u16] = fix16::from_bits(0xff00).to_int() as u16; // -1.0   -> -1   (0xffff)
-    out[1u16] = fix16::from_bits(0xfe70).to_int() as u16; // -1.5625 -> -2  (0xfffe)
-    out[2u16] = fix16::from_bits(0x8000).to_int() as u16; // -128.0 -> -128 (0xff80)
-    out[3u16] = fix16::from_bits(0x0180).to_int() as u16; // 1.5    -> 1
-    out[4u16] = fix16::from_bits(0x0001).to_int() as u16; // 1/256  -> 0
-    out[5u16] = fix16::from_bits(0x0080).to_int() as u16; // 0.5    -> 0
-    halt(0x5a);
-}
-"#;
-
 fn programs() -> Vec<CosimProgram> {
     vec![
         CosimProgram {
@@ -247,44 +157,12 @@ fn programs() -> Vec<CosimProgram> {
             expected_halt: Some(0x2c),
         },
         CosimProgram {
-            name: "fpu_roundtrip",
-            words: program_fpu_roundtrip(),
-            max_cycles: 20_000,
-            check_base: 0x6000,
-            check_len: 8,
-            expected_halt: Some(0x2d),
-        },
-        CosimProgram {
-            name: "fpu_compiler_rcc",
-            words: compile_cpu_v3_source(FPU_COMPILER_SOURCE),
-            max_cycles: 20_000,
-            check_base: 0x4000,
-            check_len: 4,
-            expected_halt: Some(1),
-        },
-        CosimProgram {
-            name: "fix16_to_int_rcc",
-            words: compile_cpu_v3_source(FIX16_TO_INT_SOURCE),
-            max_cycles: 20_000,
-            check_base: 0x4000,
-            check_len: 6,
-            expected_halt: Some(0x5a),
-        },
-        CosimProgram {
             name: "icache_loop",
             words: compile_cpu_v3_source(ICACHE_LOOP_SOURCE),
             max_cycles: 50_000,
             check_base: 0x4000,
             check_len: 0,
             expected_halt: None,
-        },
-        CosimProgram {
-            name: "constant_table",
-            words: program_constant_table(),
-            max_cycles: 20_000,
-            check_base: 0x4000,
-            check_len: 2,
-            expected_halt: Some(0),
         },
         CosimProgram {
             name: "pipeline_overlap",
