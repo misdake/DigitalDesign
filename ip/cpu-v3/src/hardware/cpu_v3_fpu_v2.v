@@ -88,10 +88,17 @@ always @(posedge clk) begin
     end
 end
 
-// Read port A stays with the front-end. Read port B switches to the external
-// address while the core owns the register file.
-wire [8:0] rf_read_a_address = held_read_a_address;
+// Read-port ownership: the vector path drives both ports for its whole busy
+// window (starting at its T0), otherwise port A serves the front-end's held
+// operand address and port B switches to the external channel while the core
+// owns the register file.
+wire vp_busy;
+wire [8:0] vp_read_a_address;
+wire [8:0] vp_read_b_address;
+wire [8:0] rf_read_a_address =
+    vp_busy ? vp_read_a_address : held_read_a_address;
 wire [8:0] rf_read_b_address =
+    vp_busy ? vp_read_b_address :
     ext_access ? ext_read_address : held_read_b_address;
 
 // Scalar path write port. While ext_access is high the external channel owns
@@ -99,12 +106,19 @@ wire [8:0] rf_read_b_address =
 wire sp_write_enable;
 wire [8:0] sp_write_address;
 wire [31:0] sp_write_data;
+wire sp_busy;
 
-wire rf_write_enable = ext_access ? ext_write_enable : sp_write_enable;
+wire vp_write_enable;
+wire [8:0] vp_write_address;
+wire [31:0] vp_write_data;
+wire rf_write_enable = ext_access ? ext_write_enable :
+                       vp_write_enable | sp_write_enable;
 wire [8:0] rf_write_address =
-    ext_access ? ext_write_address : sp_write_address;
+    ext_access ? ext_write_address :
+    vp_write_enable ? vp_write_address : sp_write_address;
 wire [31:0] rf_write_data =
-    ext_access ? ext_write_data : sp_write_data;
+    ext_access ? ext_write_data :
+    vp_write_enable ? vp_write_data : sp_write_data;
 
 wire [31:0] rf_read_a_data;
 wire [31:0] rf_read_b_data;
@@ -136,9 +150,30 @@ CpuV3FpuV2ScalarPath scalar_path (
     .flag_lt(flag_lt),
     .flag_eq(flag_eq),
     .flag_gt(flag_gt),
-    .busy(busy)
+    .busy(sp_busy)
 );
 
+// Vector execution path (opcode 0xC). It consumes the same front-end pair;
+// the bases come from the front-end's latched word0.
+CpuV3FpuV2VectorPath vector_path (
+    .clk(clk),
+    .abort(abort),
+    .instr_complete(fe_instr_complete),
+    .instr_opcode(instr_opcode),
+    .word1_raw(word1_raw),
+    .base_a(word0_raw[11:6]),
+    .base_b(word0_raw[5:0]),
+    .rf_read_a_data(rf_read_a_data),
+    .rf_read_b_data(rf_read_b_data),
+    .rf_read_a_address(vp_read_a_address),
+    .rf_read_b_address(vp_read_b_address),
+    .rf_write_enable(vp_write_enable),
+    .rf_write_address(vp_write_address),
+    .rf_write_data(vp_write_data),
+    .busy(vp_busy)
+);
+
+assign busy = sp_busy | vp_busy;
 assign instr_complete = fe_instr_complete;
 assign ext_read_data = rf_read_b_data;
 

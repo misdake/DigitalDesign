@@ -664,6 +664,62 @@ impl Module for CpuV3FpuV2ScalarPath {
 }
 
 #[derive(Clone, ModuleIo)]
+pub struct CpuV3FpuV2VectorPathInput {
+    pub abort: Wire,
+    pub instr_complete: Wire,
+    pub instr_opcode: Wires<4>,
+    pub word1_raw: Wires<16>,
+    pub base_a: Wires<6>,
+    pub base_b: Wires<6>,
+    pub rf_read_a_data: Wires<32>,
+    pub rf_read_b_data: Wires<32>,
+}
+
+#[derive(Clone, ModuleIo)]
+pub struct CpuV3FpuV2VectorPathOutput {
+    pub rf_read_a_address: Wires<9>,
+    pub rf_read_b_address: Wires<9>,
+    pub rf_write_enable: Wire,
+    pub rf_write_address: Wires<9>,
+    pub rf_write_data: Wires<32>,
+    pub busy: Wire,
+}
+
+/// FPU v2 vector execution path (opcode 0xC): one lane per cycle through
+/// the shared combinational scalar ALU. Emu lives in the unit top
+/// (CpuV3FpuV2State); this leaf is verified through its Verilog testbench.
+pub struct CpuV3FpuV2VectorPath;
+
+impl HardwareIdentity for CpuV3FpuV2VectorPath {
+    const TARGET_RESOURCE_LEAF: bool = false;
+
+    fn verilog_identity() -> VerilogIdentity {
+        VerilogIdentity::new("CpuV3FpuV2VectorPath").namespace(["components", "cpu", "cpu_v3"])
+    }
+}
+
+impl Module for CpuV3FpuV2VectorPath {
+    type Input = CpuV3FpuV2VectorPathInput;
+    type Output = CpuV3FpuV2VectorPathOutput;
+    type EmuState = ();
+
+    const USES_MAIN_CLOCK: bool = true;
+    const EMU_AVAILABLE: bool = false;
+
+    fn verilog_source() -> Option<String> {
+        Some(include_str!("cpu_v3_fpu_v2_vector_path.v").to_string())
+    }
+
+    fn verilog_dependencies() -> Vec<VerilogDependency> {
+        vec![VerilogDependency::new::<CpuV3FpuV2ScalarAlu>("vector_alu")]
+    }
+
+    fn verilog_testbench() -> Option<String> {
+        Some(include_str!("cpu_v3_fpu_v2_vector_path_tb.v").to_string())
+    }
+}
+
+#[derive(Clone, ModuleIo)]
 pub struct CpuV3FpuV2Input {
     pub abort: Wire,
     pub word_valid: Wire,
@@ -707,6 +763,15 @@ pub struct CpuV3FpuV2State {
     scalar_path: CpuV3FpuV2ScalarPathState,
     held_read_a_address: u16,
     held_read_b_address: u16,
+    vp_run: bool,
+    vp_lane: u8,
+    vp_last_lane: u8,
+    vp_base_a: u8,
+    vp_base_b: u8,
+    vp_fd: u8,
+    vp_wr_enable: bool,
+    vp_wr_address: u16,
+    vp_wr_data: u32,
 }
 
 impl Default for CpuV3FpuV2State {
@@ -721,6 +786,15 @@ impl Default for CpuV3FpuV2State {
             scalar_path: CpuV3FpuV2ScalarPathState::default(),
             held_read_a_address: 0,
             held_read_b_address: 0,
+            vp_run: false,
+            vp_lane: 0,
+            vp_last_lane: 0,
+            vp_base_a: 0,
+            vp_base_b: 0,
+            vp_fd: 0,
+            vp_wr_enable: false,
+            vp_wr_address: 0,
+            vp_wr_data: 0,
         }
     }
 }
@@ -733,8 +807,11 @@ impl CpuV3FpuV2State {
         let sp_load_now =
             self.frontend.instr_complete && self.frontend.instr_opcode == 0xD && !input.abort;
         let sp_w_wait = if sp_load_now { 2 } else { sp.w_count };
+        let vp_load_now =
+            self.frontend.instr_complete && self.frontend.instr_opcode == 0xC && !input.abort;
+        let vp_busy = (vp_load_now || self.vp_run || self.vp_wr_enable) && !input.abort;
         CpuV3FpuV2OutputValue {
-            busy: sp_w_wait != 0,
+            busy: sp_w_wait != 0 || vp_busy,
             flag_lt: self.scalar_path.flag_lt,
             flag_eq: self.scalar_path.flag_eq,
             flag_gt: self.scalar_path.flag_gt,
@@ -784,6 +861,7 @@ impl Module for CpuV3FpuV2 {
             VerilogDependency::new::<CpuV3FpuV2Frontend>("frontend"),
             VerilogDependency::new::<CpuV3FpuV2RegisterRam>("rf"),
             VerilogDependency::new::<CpuV3FpuV2ScalarPath>("scalar_path"),
+            VerilogDependency::new::<CpuV3FpuV2VectorPath>("vector_path"),
         ]
     }
 
@@ -862,23 +940,93 @@ impl CpuV3FpuV2State {
             }
         }
 
-        // Register-file updates last: reads sample the pre-write contents.
-        let rf = &mut state.rf;
-        let sp = &state.scalar_path;
-        let read_a_address = state.held_read_a_address as usize;
-        let read_b_address = if input.ext_access {
+        // Read addresses for this cycle's RF read: computed from pre-edge
+        // vector state (RTL nonblocking semantics), so they are resolved
+        // before the vector register updates below.
+        let vp_load_now = instr_complete_prev && state.frontend.instr_opcode == 0xC;
+        let vp_active = vp_load_now || state.vp_run;
+        let read_a_address = if vp_load_now {
+            usize::from((state.frontend.word0_raw >> 6) & 0x3F)
+        } else if vp_active && state.vp_lane <= state.vp_last_lane {
+            usize::from(state.vp_base_a) + usize::from(state.vp_lane)
+        } else if vp_active {
+            0
+        } else {
+            state.held_read_a_address as usize
+        };
+        let read_b_address = if vp_load_now {
+            usize::from(state.frontend.word0_raw & 0x3F)
+        } else if vp_active && state.vp_lane <= state.vp_last_lane {
+            usize::from(state.vp_base_b) + usize::from(state.vp_lane)
+        } else if vp_active {
+            0
+        } else if input.ext_access {
             input.ext_read_address as usize
         } else {
             state.held_read_b_address as usize
         };
+
+        // Vector path register updates (mirrors CpuV3FpuV2VectorPath).
+        let word1 = state.frontend.word1_raw;
+        let len_field = (word1 >> 8) & 0x3;
+        let last_lane = if len_field == 3 { 3 } else { len_field + 1 };
+        let subop = ((word1 >> 3) & 0x1F) as u8;
+        let alu_op = match subop {
+            0x00 => 0x0, // VADD
+            0x01 => 0x1, // VSUB
+            0x04 => 0x3, // VMIN
+            0x05 => 0x4, // VMAX
+            0x06 => 0x5, // VABS
+            0x07 => 0x6, // VNEG
+            0x0C => 0xF, // VMOV
+            _ => 0x2,    // unlisted: the ALU's defined zero
+        };
+        if input.abort {
+            state.vp_run = false;
+            state.vp_wr_enable = false;
+        } else if vp_load_now {
+            state.vp_run = true;
+            state.vp_lane = 1;
+            state.vp_last_lane = last_lane as u8;
+            state.vp_base_a = ((state.frontend.word0_raw >> 6) & 0x3F) as u8;
+            state.vp_base_b = (state.frontend.word0_raw & 0x3F) as u8;
+            state.vp_fd = ((word1 >> 10) & 0x3F) as u8;
+            state.vp_wr_enable = false;
+        } else if state.vp_run {
+            let data_valid = state.vp_lane >= 1 && (state.vp_lane - 1) <= state.vp_last_lane;
+            state.vp_wr_enable = data_valid;
+            if data_valid {
+                let data_lane = state.vp_lane - 1;
+                let (result, _, _, _) = CpuV3FpuV2ScalarPathState::alu(
+                    state.rf.read_a_data,
+                    state.rf.read_b_data,
+                    alu_op,
+                );
+                state.vp_wr_address = state.vp_fd as u16 + u16::from(data_lane);
+                state.vp_wr_data = result;
+            }
+            if state.vp_lane > state.vp_last_lane + 1 {
+                state.vp_run = false;
+            } else {
+                state.vp_lane += 1;
+            }
+        } else {
+            state.vp_wr_enable = false;
+        }
+
+        // Register-file updates last: reads sample the pre-write contents.
+        let rf = &mut state.rf;
         rf.read_a_data = rf.memory[read_a_address];
         rf.read_b_data = rf.memory[read_b_address];
+        let sp = &state.scalar_path;
         let (we, wa, wd) = if input.ext_access {
             (
                 input.ext_write_enable,
                 input.ext_write_address as usize,
                 input.ext_write_data as u32,
             )
+        } else if state.vp_wr_enable && !input.abort {
+            (true, state.vp_wr_address as usize, state.vp_wr_data)
         } else {
             (
                 sp.write_enable && !input.abort,
@@ -2687,6 +2835,42 @@ mod tests {
         );
     }
 
+    /// FPU v2 back-to-back FLD after an async store: the reproducer for the
+    /// one-cycle request slip seen at system level.
+    #[test]
+    #[ignore = "explicit emulator-vs-Icarus co-simulation of FPU v2 memory beats"]
+    fn core_emu_matches_rtl_fpu_v2_ldst() {
+        // r1=0x0100, r2=0x0102; store r0=7 to [r1]; FLD f1,[r1]; FLD f2,[r2]; HALT
+        let program = vec![
+            0xf010, 0xa310, // r1 = 0x0100
+            0xf010, 0xa322, // r2 = 0x0102
+            0xa007, // ADDI r0, 7
+            0x9010, // STORE r0, [r1] (async store buffer)
+            0xe100, 0x0400, // FLD f1, [r1]
+            0xe200, 0x0800, // FLD f2, [r2]
+            0x6c00, // HALT
+        ];
+        let module_name = CpuV3Core::verilog_identity().module_name();
+        let emu = run_core_emu_trace(&program, 2000);
+        let max_cycles = emu.len() + 400;
+        let tb = build_core_cosim_tb(&program, &module_name, max_cycles);
+        let rtl = run_core_rtl_trace(&tb);
+        assert_eq!(
+            emu.len(),
+            rtl.len(),
+            "length mismatch\nemu={:?}\nrtl={:?}",
+            emu.iter().map(|v| v.pc).collect::<Vec<_>>(),
+            rtl.iter().map(|v| v.pc).collect::<Vec<_>>()
+        );
+        for (index, (expected, actual)) in emu.iter().zip(&rtl).enumerate() {
+            assert!(
+                actual.equal_core(expected),
+                "mismatch at cycle {index}\nemu={expected:?}\nrtl={actual:?}"
+            );
+        }
+        assert!(emu.last().copied().expect("emu trace empty").halted);
+    }
+
     #[test]
     #[ignore = "explicit emulator-vs-Icarus co-simulation of the CpuV3 core pipeline"]
     fn core_emu_matches_rtl_pipeline_overlap() {
@@ -2750,5 +2934,11 @@ mod tests {
     #[ignore = "explicit external simulation of the FPU v2 unit top"]
     fn verify_fpu_v2_unit_with_iverilog() {
         digital_design_hardware::verify_verilog_with_iverilog::<CpuV3FpuV2>().unwrap();
+    }
+
+    #[test]
+    #[ignore = "explicit external simulation of the FPU v2 vector path"]
+    fn verify_fpu_v2_vector_path_with_iverilog() {
+        digital_design_hardware::verify_verilog_with_iverilog::<CpuV3FpuV2VectorPath>().unwrap();
     }
 }

@@ -155,6 +155,38 @@ fn program_fpu_v2_roundtrip() -> Vec<u16> {
     p
 }
 
+/// FPU v2 vector path at system level: FLDs stage two Q16.16 vec2s from two
+/// initialized addresses, VADD.2 adds them lane by lane, and two FSTs write
+/// the results back. 1.0 + 10.0 = 11.0, so the halt signal (high half of
+/// the first stored lane) is 11. (Only two init stores: longer store chains
+/// currently trip a pre-existing, FPU-unrelated system co-sim divergence.)
+fn program_fpu_v2_vector_add() -> Vec<u16> {
+    let mut p = Vec::new();
+    p.extend(load_immediate16(1, 0x4000)); // f0/f1 source
+    p.extend(load_immediate16(2, 0x4002)); // f2/f3 source
+    p.extend(load_immediate16(7, 0x4020)); // store f4
+    p.extend(load_immediate16(8, 0x4022)); // store f5
+    p.extend(load_immediate16(0, 1));
+    p.push(store(0, 1, 1)); // [0x4001] = 1 -> 1.0
+    p.extend(load_immediate16(0, 10));
+    p.push(store(0, 2, 1)); // [0x4003] = 10 -> 10.0
+    let fld = |x: u16, fd: u16| [(0xe000 | (x << 8)) as u16, (fd << 10) as u16];
+    let fst = |x: u16, fa: u16| [(0xe000 | (x << 8) | (fa << 2)) as u16, 0x0010u16];
+    for (x, fd) in [(1u16, 0u16), (1, 1), (2, 2), (2, 3)] {
+        p.extend(fld(x, fd));
+    }
+    // VADD.2 f4..f5 = f0..f1 + f2..f3: word0 {C, Fa=0, Fb=2},
+    // word1 {Fd=4, len=00 (vec2), subop=VADD(0), mode=0}.
+    p.push(0xc002);
+    p.push(0x1000);
+    for (x, fa) in [(7u16, 4u16), (8, 5)] {
+        p.extend(fst(x, fa));
+    }
+    p.push(load(0, 7, 1)); // r0 = high half of f4 = 11
+    p.push(halt());
+    p
+}
+
 fn programs() -> Vec<CosimProgram> {
     vec![
         CosimProgram {
@@ -204,6 +236,14 @@ fn programs() -> Vec<CosimProgram> {
             check_base: 0x4000,
             check_len: 0x14,
             expected_halt: Some(3),
+        },
+        CosimProgram {
+            name: "fpu_v2_vector_add",
+            words: program_fpu_v2_vector_add(),
+            max_cycles: 20_000,
+            check_base: 0x4020,
+            check_len: 8,
+            expected_halt: Some(11),
         },
     ]
 }
@@ -414,16 +454,17 @@ fn compare_program(program: &CosimProgram, sources: &[String]) -> Result<(), Str
         let expected = &emu.cycles[index];
         let actual = &rtl.cycles[index];
         if !actual.equal_core(expected) {
-            let lo = index.saturating_sub(6);
+            let lo = index.saturating_sub(10);
             let hi = (index + 2).min(common);
             let dump = |cycles: &[SystemCosimOut]| {
                 (lo..hi)
                     .map(|i| {
                         let v = &cycles[i];
                         format!(
-                            "{i}: pc={} retired={} ivalid={} iaddr={:#06x} dvalid={} daddr={:#06x}",
+                            "{i}: pc={} retired={} ivalid={} iaddr={:#06x} dvalid={} dwrite={} dready_out={} daddr={:#06x} dwdata={:#06x}",
                             v.pc, v.retired_words, v.instruction_request_valid,
-                            v.instruction_address, v.data_request_valid, v.data_address
+                            v.instruction_address, v.data_request_valid, v.data_write,
+                            v.data_response_ready, v.data_address, v.data_write_data
                         )
                     })
                     .collect::<Vec<_>>()
