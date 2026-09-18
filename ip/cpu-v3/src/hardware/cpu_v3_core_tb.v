@@ -390,23 +390,44 @@ initial begin
     end
 
 
-    // Scenario 40: major D (the old fix16 FPU space) is reserved until
-    // FPU v2 integration and faults as an invalid instruction.
-    clear_memory;
-    memory[0] = 16'hdf00; // reserved FPU fn 15
-    scenario = 40;
-    expect_fault(8'd1, 16'd0, 100);
+    // Majors C/D/E are the FPU v2 instruction space since the fix16 FPU was
+    // removed; the old reserved-major fault scenarios are gone. FPU v2
+    // behavior is covered by the scenarios appended below.
 
-    // Scenario 42: majors C and E are fully reserved in ISA 0.8; the
-    // revision 0.7 HALT word 0xe800 faults as an invalid instruction.
+    // Scenario 45: FPU v2 end to end. FLD loads f2 = 1.0 and f3 = 2.0
+    // (Q16.16) from data memory through the ext channel, scalar ADD computes
+    // f4 = 3.0, and FST writes it back to a fresh address; the data port runs
+    // with a one-cycle response delay so the FPU memory beats prove they
+    // tolerate variable latency.
     clear_memory;
-    memory[0] = 16'hc000; // reserved major C
-    scenario = 42;
-    expect_fault(8'd1, 16'd0, 100);
-    clear_memory;
-    memory[0] = 16'he800; // reserved major E (the 0.7 HALT word)
-    scenario = 42;
-    expect_fault(8'd1, 16'd0, 100);
+    memory[0] = 16'hf010; // PFX12 0x010
+    memory[1] = 16'ha310; // LDUI r1 -> r1 = 0x0100
+    memory[2] = 16'hf010; // PFX12 0x010
+    memory[3] = 16'ha322; // LDUI r2, 2 -> r2 = 0x0102
+    memory[4] = 16'hf011; // PFX12 0x011
+    memory[5] = 16'ha330; // LDUI r3, 0 -> r3 = 0x0110
+    memory[6] = 16'he100; // FLD f2, [r1]: word0 {E, X=1, Fa=0, kind=00}
+    memory[7] = 16'h0800; // word1 {Fd=2, subop=FLD(0), mode=0}
+    memory[8] = 16'he200; // FLD f3, [r2]: word0 {E, X=2}
+    memory[9] = 16'h0c00; // word1 {Fd=3, subop=FLD}
+    memory[10] = 16'hd083; // ADD f4, f2, f3: word0 {D, Fa=2, Fb=3}
+    memory[11] = 16'h1000; // word1 {Fd=4, subop=ADD(0), mode=0}
+    memory[12] = 16'he310; // FST [r3], f4: word0 {E, X=3, Fa=4, kind=00}
+    memory[13] = 16'h0010; // word1 {subop=FST(1)}
+    memory[14] = 16'h6c00; // HALT (SIGNAL r0, 0)
+    memory[16'h0100] = 16'h0000; // f2 low half
+    memory[16'h0101] = 16'h0001; // f2 high half -> f2 = 1.0
+    memory[16'h0102] = 16'h0000; // f3 low half
+    memory[16'h0103] = 16'h0002; // f3 high half -> f3 = 2.0
+    scenario = 45;
+    delay_data_response = 1;
+    expect_halt(16'd0, 300);
+    delay_data_response = 0;
+    if (memory[16'h0110] !== 16'h0000 || memory[16'h0111] !== 16'h0003) begin
+        $display("FAIL: scenario 45 FST wrote %h %h, expected 0000 0003",
+                 memory[16'h0110], memory[16'h0111]);
+        errors = errors + 1;
+    end
 
     // Scenario 43: unsigned multiply windows, a masked destructive register
     // shift, conditional moves, and a non-halting SIGNAL retiring as a NOP.

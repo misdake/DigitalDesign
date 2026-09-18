@@ -655,11 +655,7 @@ impl Module for CpuV3FpuV2ScalarPath {
     }
 
     fn verilog_dependencies() -> Vec<VerilogDependency> {
-        vec![
-            VerilogDependency::new::<CpuV3FpuV2ScalarAlu>("scalar_alu"),
-            VerilogDependency::new::<CpuV3FpuV2Frontend>("frontend"),
-            VerilogDependency::new::<CpuV3FpuV2RegisterRam>("rf"),
-        ]
+        vec![VerilogDependency::new::<CpuV3FpuV2ScalarAlu>("scalar_alu")]
     }
 
     fn verilog_testbench() -> Option<String> {
@@ -731,8 +727,8 @@ impl Default for CpuV3FpuV2State {
 
 impl CpuV3FpuV2State {
     /// Combinational outputs of the unit top (registered leaf outputs and the
-    /// busy/complete status); register updates live in `clock_emu`.
-    fn step(&mut self, input: &CpuV3FpuV2InputValue) -> CpuV3FpuV2OutputValue {
+    /// busy/complete status); register updates live in `tick`.
+    fn comb(&self, input: &CpuV3FpuV2InputValue) -> CpuV3FpuV2OutputValue {
         let sp = &self.scalar_path;
         let sp_load_now =
             self.frontend.instr_complete && self.frontend.instr_opcode == 0xD && !input.abort;
@@ -755,11 +751,6 @@ impl Module for CpuV3FpuV2 {
 
     const USES_MAIN_CLOCK: bool = true;
 
-    fn target_resources() -> Vec<TargetResourceRequest> {
-        // The register file claims two 18-Kbit BSRAM blocks.
-        vec![TargetResourceRequest::new(BsramBlocks::new(2))]
-    }
-
     fn create_emu(_input: &Self::Input, _output: &Self::Output) -> Self::EmuState {
         Self::EmuState::default()
     }
@@ -771,7 +762,7 @@ impl Module for CpuV3FpuV2 {
         output: &Self::Output,
     ) {
         let input = input.sample(circuit);
-        output.drive(circuit, &state.step(&input));
+        output.drive(circuit, &state.comb(&input));
     }
 
     fn clock_emu(
@@ -781,7 +772,37 @@ impl Module for CpuV3FpuV2 {
         _output: &Self::Output,
     ) {
         let input = input.sample(circuit);
+        state.tick(&input);
+    }
+
+    fn verilog_source() -> Option<String> {
+        Some(include_str!("cpu_v3_fpu_v2.v").to_string())
+    }
+
+    fn verilog_dependencies() -> Vec<VerilogDependency> {
+        vec![
+            VerilogDependency::new::<CpuV3FpuV2Frontend>("frontend"),
+            VerilogDependency::new::<CpuV3FpuV2RegisterRam>("rf"),
+            VerilogDependency::new::<CpuV3FpuV2ScalarPath>("scalar_path"),
+        ]
+    }
+
+    fn verilog_testbench() -> Option<String> {
+        Some(include_str!("cpu_v3_fpu_v2_tb.v").to_string())
+    }
+}
+
+impl CpuV3FpuV2State {
+    /// Register updates for one cycle. The core emu also drives the unit
+    /// through `comb`/`tick` directly (value-level, no wires).
+    fn tick(&mut self, input: &CpuV3FpuV2InputValue) {
+        let state = self;
         let word = input.word as u16;
+        // Snapshot the pre-edge instr_complete: the scalar path below must
+        // observe the value the RTL presents during this cycle, not the value
+        // the front-end register update is about to write (nonblocking
+        // semantics; the leaf-level Verilog testbenches cannot catch this).
+        let instr_complete_prev = state.frontend.instr_complete;
 
         // Front-end register updates (identical to the leaf clock_emu).
         let accept_word0 = input.word_valid && !state.frontend.waiting_word1;
@@ -817,7 +838,7 @@ impl Module for CpuV3FpuV2 {
             let subop = ((word1 >> 4) & 0x3F) as u8;
             let fd = (word1 >> 10) & 0x3F;
             let is_cmp = subop == 0x0B;
-            let load_now = state.frontend.instr_complete && state.frontend.instr_opcode == 0xD;
+            let load_now = instr_complete_prev && state.frontend.instr_opcode == 0xD;
             // read-first: the RF read registers still hold T0 operands here.
             sp.write_enable = load_now && !is_cmp;
             if load_now {
@@ -869,22 +890,6 @@ impl Module for CpuV3FpuV2 {
             rf.memory[wa] = wd;
         }
     }
-
-    fn verilog_source() -> Option<String> {
-        Some(include_str!("cpu_v3_fpu_v2.v").to_string())
-    }
-
-    fn verilog_dependencies() -> Vec<VerilogDependency> {
-        vec![
-            VerilogDependency::new::<CpuV3FpuV2Frontend>("frontend"),
-            VerilogDependency::new::<CpuV3FpuV2RegisterRam>("rf"),
-            VerilogDependency::new::<CpuV3FpuV2ScalarPath>("scalar_path"),
-        ]
-    }
-
-    fn verilog_testbench() -> Option<String> {
-        Some(include_str!("cpu_v3_fpu_v2_tb.v").to_string())
-    }
 }
 
 impl HardwareIdentity for CpuV3Core {
@@ -905,6 +910,13 @@ enum Phase {
     AsyncStoreWait,
     MultiplyWait,
     MultiplyCommit,
+    /// FPU v2: fetch the second instruction word through the instruction port.
+    Fpu2Word1,
+    /// FPU v2: scalar ops wait out the unit; memory ops wait for the async
+    /// store buffer to drain before taking the data port.
+    Fpu2Exec,
+    Fpu2MemRequest,
+    Fpu2MemResponse,
     ResetClear,
     Halted,
     Fault,
@@ -962,6 +974,22 @@ pub struct CpuV3CoreState {
     retired_words: u32,
     fault_code: u8,
     fault_pc: u16,
+    /// The FPU v2 unit (frontend + register file + scalar path).
+    fpu: CpuV3FpuV2State,
+    fpu_word_valid: bool,
+    fpu_word: u16,
+    fpu_abort: bool,
+    fpu_word0: u16,
+    fpu_subop: u8,
+    fpu_fd: u8,
+    fpu_fa: u8,
+    fpu_is_memory: bool,
+    fpu_write_back: bool,
+    fpu_beat: bool,
+    fpu_address: u32,
+    fpu_low: u16,
+    fpu_seen_complete: bool,
+    fpu_fault_pc: u16,
     /// The architectural halt value, latched at the HALT retire edge like a
     /// register-read (mirrors the RTL's registered `halt_signal`).
     halt_signal: u16,
@@ -998,11 +1026,54 @@ impl Default for CpuV3CoreState {
             fault_pc: 0,
             halt_signal: 0,
             signal_event: None,
+            fpu: CpuV3FpuV2State::default(),
+            fpu_word_valid: false,
+            fpu_word: 0,
+            fpu_abort: false,
+            fpu_word0: 0,
+            fpu_subop: 0,
+            fpu_fd: 0,
+            fpu_fa: 0,
+            fpu_is_memory: false,
+            fpu_write_back: false,
+            fpu_beat: false,
+            fpu_address: 0,
+            fpu_low: 0,
+            fpu_seen_complete: false,
+            fpu_fault_pc: 0,
         }
     }
 }
 
 impl CpuV3CoreState {
+    /// This cycle's FPU v2 unit inputs, mirroring the RTL wiring: the
+    /// registered word stream plus the combinational ext channel (owned by
+    /// the core during the FPU memory states).
+    fn fpu_input(
+        &self,
+        data_response_valid: bool,
+        data_error: bool,
+        data_read_data: u16,
+    ) -> CpuV3FpuV2InputValue {
+        let ext_access = (self.phase == Phase::Fpu2Exec && self.fpu_is_memory)
+            || matches!(self.phase, Phase::Fpu2MemRequest | Phase::Fpu2MemResponse);
+        let ext_write_enable = self.phase == Phase::Fpu2MemResponse
+            && !self.fpu_write_back
+            && self.fpu_beat
+            && data_response_valid
+            && !data_error;
+        CpuV3FpuV2InputValue {
+            abort: self.fpu_abort,
+            word_valid: self.fpu_word_valid,
+            word: u64::from(self.fpu_word),
+            ext_access,
+            ext_write_enable,
+            ext_write_address: u64::from(self.fpu_fd),
+            ext_write_data: (u64::from(data_read_data) << 16) | u64::from(self.fpu_low),
+            ext_read_address: u64::from(self.fpu_fa),
+        }
+    }
+
     fn fault(&mut self, code: u8, pc: u16) {
         self.fault_code = code;
         self.fault_pc = pc;
@@ -1219,6 +1290,20 @@ impl CpuV3CoreState {
                 }
                 self.retire(retire_words);
             }
+            // FPU v2 two-word instruction (VECTOR 0xC / SCALAR 0xD / AUX
+            // 0xE): word0 goes to the unit now, word1 is fetched through
+            // the instruction port. FPU instructions never consume PFX12;
+            // a pending prefix already retired separately above.
+            0xC..=0xE => {
+                self.fpu_word = instruction;
+                self.fpu_word_valid = true;
+                self.fpu_word0 = instruction;
+                self.fpu_fault_pc = self.instruction_pc;
+                self.fpu_seen_complete = false;
+                self.fpu_is_memory = false;
+                self.fpu_write_back = false;
+                self.phase = Phase::Fpu2Word1;
+            }
             _ => self.fault(CPU_V3_FAULT_INVALID_INSTRUCTION, fault_pc),
         }
     }
@@ -1418,6 +1503,14 @@ impl Module for CpuV3Core {
         let pending = state.pending_data;
         let store = state.async_store;
         let execute_pipelineable = state.execute_pipelineable();
+        // FPU v2: the unit's combinational read data feeds FST write beats.
+        let fpu_input = state.fpu_input(
+            input.data_response_valid,
+            input.data_error,
+            input.data_read_data as u16,
+        );
+        let fpu_out = state.fpu.comb(&fpu_input);
+        let fpu_mem_active = matches!(state.phase, Phase::Fpu2MemRequest | Phase::Fpu2MemResponse);
         let device_instruction = state.phase == Phase::Execute && state.instruction >> 12 == 0x7;
         let device_field = field(state.instruction, 8);
         let device_register = field(state.instruction, 0);
@@ -1425,26 +1518,49 @@ impl Module for CpuV3Core {
             circuit,
             &CpuV3CoreOutputValue {
                 instruction_request_valid: !input.hold
-                    && (state.phase == Phase::FetchRequest || execute_pipelineable),
+                    && (state.phase == Phase::FetchRequest
+                        || state.phase == Phase::Fpu2Word1
+                        || execute_pipelineable),
                 instruction_address: u64::from(physical_address(state.code_segment, state.pc)),
                 instruction_response_ready: !input.hold
-                    && (matches!(state.phase, Phase::FetchRequest | Phase::FetchResponse)
-                        || execute_pipelineable),
+                    && (matches!(
+                        state.phase,
+                        Phase::FetchRequest | Phase::FetchResponse | Phase::Fpu2Word1
+                    ) || execute_pipelineable),
                 data_request_valid: !input.hold
-                    && ((store.valid && !store.issued) || state.phase == Phase::DataRequest),
-                data_write: store.valid || pending.write,
+                    && ((store.valid && !store.issued)
+                        || state.phase == Phase::DataRequest
+                        || state.phase == Phase::Fpu2MemRequest),
+                data_write: store.valid
+                    || if fpu_mem_active {
+                        state.fpu_write_back
+                    } else {
+                        pending.write
+                    },
                 data_address: u64::from(if store.valid {
                     store.address
+                } else if fpu_mem_active {
+                    state.fpu_address + u32::from(state.fpu_beat)
                 } else {
                     pending.address
                 }),
                 data_write_data: u64::from(if store.valid {
                     store.write_data
+                } else if fpu_mem_active {
+                    // FST beats stream the low then the high half of the F
+                    // register; FLD never drives write data.
+                    if state.fpu_beat {
+                        (fpu_out.ext_read_data >> 16) as u16
+                    } else {
+                        fpu_out.ext_read_data as u16
+                    }
                 } else {
                     pending.write_data
                 }),
                 data_response_ready: !input.hold
-                    && ((store.valid && store.issued) || state.phase == Phase::DataResponse),
+                    && ((store.valid && store.issued)
+                        || state.phase == Phase::DataResponse
+                        || state.phase == Phase::Fpu2MemResponse),
                 device_index: u64::from(device_field & 7),
                 device_channel: u64::from(field(state.instruction, 4)),
                 device_read_enable: !input.hold && device_instruction && device_field & 8 == 0,
@@ -1510,6 +1626,18 @@ impl Module for CpuV3Core {
         if async_store_was_valid && async_store_was_issued && input.data_response_valid {
             state.async_store = AsyncStore::default();
         }
+        // Drive the FPU v2 unit with this cycle's inputs and clock it. The
+        // combinational outputs seen by the phase logic below are pre-edge,
+        // mirroring the RTL's nonblocking semantics.
+        let fpu_input = state.fpu_input(
+            input.data_response_valid,
+            input.data_error,
+            input.data_read_data as u16,
+        );
+        let fpu_out = state.fpu.comb(&fpu_input);
+        state.fpu.tick(&fpu_input);
+        state.fpu_word_valid = false;
+        state.fpu_abort = false;
         match state.phase {
             Phase::FetchRequest if input.instruction_request_ready => {
                 if input.instruction_response_valid {
@@ -1584,6 +1712,64 @@ impl Module for CpuV3Core {
                     state.retire(pending.retire_words);
                 }
             }
+            Phase::Fpu2Word1 => {
+                if input.instruction_response_valid {
+                    if input.instruction_error {
+                        state.fpu_abort = true;
+                        state.fault(CPU_V3_FAULT_INSTRUCTION_MEMORY, state.pc);
+                    } else {
+                        let word1 = input.instruction_data as u16;
+                        state.fpu_word = word1;
+                        state.fpu_word_valid = true;
+                        state.pc = state.pc.wrapping_add(1);
+                        state.fpu_subop = ((word1 >> 4) & 0x3F) as u8;
+                        state.fpu_fd = ((word1 >> 10) & 0x3F) as u8;
+                        state.fpu_fa = ((state.fpu_word0 >> 2) & 0x3F) as u8;
+                        state.fpu_is_memory = (state.instruction >> 12) == 0xE
+                            && state.fpu_word0 & 0x3 == 0
+                            && state.fpu_subop <= 1;
+                        state.fpu_write_back = state.fpu_subop == 1;
+                        state.fpu_address = physical_address(
+                            state.data_segment,
+                            state.registers[usize::from((state.fpu_word0 >> 8) & 0xF)],
+                        );
+                        state.fpu_beat = false;
+                        state.phase = Phase::Fpu2Exec;
+                    }
+                }
+            }
+            Phase::Fpu2Exec => {
+                let seen_complete = state.fpu_seen_complete;
+                if fpu_out.instr_complete {
+                    state.fpu_seen_complete = true;
+                }
+                if state.fpu_is_memory {
+                    if !async_store_was_valid {
+                        state.fpu_beat = false;
+                        state.phase = Phase::Fpu2MemRequest;
+                    }
+                } else if seen_complete && !fpu_out.busy {
+                    state.retire(2);
+                    state.phase = Phase::FetchRequest;
+                }
+            }
+            Phase::Fpu2MemRequest if input.data_request_ready => {
+                state.phase = Phase::Fpu2MemResponse;
+            }
+            Phase::Fpu2MemResponse if input.data_response_valid => {
+                if input.data_error {
+                    state.fpu_abort = true;
+                    let fault_pc = state.fpu_fault_pc;
+                    state.fault(CPU_V3_FAULT_DATA_MEMORY, fault_pc);
+                } else if !state.fpu_beat {
+                    state.fpu_low = input.data_read_data as u16;
+                    state.fpu_beat = true;
+                    state.phase = Phase::Fpu2MemRequest;
+                } else {
+                    state.retire(2);
+                    state.phase = Phase::FetchRequest;
+                }
+            }
             Phase::MultiplyWait => state.phase = Phase::MultiplyCommit,
             Phase::MultiplyCommit => {
                 state.write_gpr(
@@ -1622,6 +1808,7 @@ impl Module for CpuV3Core {
         vec![
             VerilogDependency::new::<DspMulS18>("u_multiplier"),
             VerilogDependency::new::<CpuV3GprRam>("u_gpr_ram"),
+            VerilogDependency::new::<CpuV3FpuV2>("u_fpu"),
         ]
     }
 

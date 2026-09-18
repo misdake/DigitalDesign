@@ -43,6 +43,10 @@ localparam [4:0] ST_MULTIPLY_WAIT = 5;
 localparam [4:0] ST_MULTIPLY_COMMIT = 6;
 localparam [4:0] ST_HALTED = 7;
 localparam [4:0] ST_FAULT = 8;
+localparam [4:0] ST_FPU2_WORD1 = 9;
+localparam [4:0] ST_FPU2_EXEC = 10;
+localparam [4:0] ST_FPU2_MEM_REQUEST = 11;
+localparam [4:0] ST_FPU2_MEM_RESPONSE = 12;
 localparam [4:0] ST_RESET_CLEAR = 22;
 localparam [4:0] ST_ASYNC_STORE_WAIT = 24;
 
@@ -109,7 +113,24 @@ wire [3:0] opcode = instruction[15:12];
 wire [3:0] field_d = instruction[11:8];
 wire [3:0] field_a = instruction[7:4];
 wire [3:0] field_b = instruction[3:0];
-wire [3:0] gpr_read_a_address = state == ST_HALTED ? 4'd0 : field_a;
+// Word0 latch (AUX fields X = [11:8], Fa = [7:2], kind = [1:0]) and the
+// word1 fields captured at the word1 response beat.
+reg [15:0] fpu2_word0 = 0;
+reg [5:0] fpu2_subop = 0;
+reg [5:0] fpu2_fd = 0;
+reg [5:0] fpu2_fa = 0;
+reg fpu2_is_memory = 0;
+reg fpu2_write_back = 0;
+reg fpu2_beat = 0;
+reg [31:0] fpu2_address = 0;
+reg [15:0] fpu2_low = 0;
+reg fpu2_seen_complete = 0;
+reg [15:0] fpu2_fault_pc = 0;
+
+wire [3:0] gpr_read_a_address =
+    state == ST_HALTED ? 4'd0 :
+    state == ST_FPU2_WORD1 ? fpu2_word0[11:8] :
+    field_a;
 wire [3:0] gpr_read_b_address =
     state == ST_EXECUTE && (opcode == 4'h8 || opcode == 4'h9) ? field_d : field_b;
 wire [15:0] gpr_read_a_data =
@@ -277,22 +298,79 @@ __DSP_MULTIPLIER__ u_multiplier (
     .product(multiplier_product)
 );
 
+// FPU v2 unit (fpu-design-v2 section 26). The core streams both instruction
+// words in, and implements FLD/FST itself through the ext_* channel while
+// the unit is idle.
+wire fpu2_busy;
+wire fpu2_flag_lt;
+wire fpu2_flag_eq;
+wire fpu2_flag_gt;
+wire fpu2_instr_complete;
+wire [31:0] fpu2_ext_read_data;
+reg fpu2_word_valid = 0;
+reg [15:0] fpu2_word = 0;
+reg fpu2_abort = 0;
+
+// The external channel is owned by the core during FPU memory beats and is
+// released as soon as the transaction retires. For FLD the RF write fires
+// combinationally on the second response beat (a synchronous write that
+// commits at the edge leaving ST_FPU2_MEM_RESPONSE).
+wire fpu2_ext_access = state == ST_FPU2_EXEC && fpu2_is_memory ||
+                       state == ST_FPU2_MEM_REQUEST ||
+                       state == ST_FPU2_MEM_RESPONSE;
+wire fpu2_ext_write_enable = state == ST_FPU2_MEM_RESPONSE &&
+    !fpu2_write_back && fpu2_beat == 1 &&
+    data_response_valid && !data_error;
+
+CpuV3FpuV2 u_fpu (
+    .clk(clk),
+    .abort(fpu2_abort),
+    .word_valid(fpu2_word_valid),
+    .word(fpu2_word),
+    .busy(fpu2_busy),
+    .flag_lt(fpu2_flag_lt),
+    .flag_eq(fpu2_flag_eq),
+    .flag_gt(fpu2_flag_gt),
+    .instr_complete(fpu2_instr_complete),
+    .ext_access(fpu2_ext_access),
+    .ext_write_enable(fpu2_ext_write_enable),
+    .ext_write_address({3'b000, fpu2_fd}),
+    .ext_write_data({data_read_data, fpu2_low}),
+    .ext_read_address({3'b000, fpu2_fa}),
+    .ext_read_data(fpu2_ext_read_data)
+);
+
 assign instruction_request_valid = !hold &&
-    (state == ST_FETCH_REQUEST || execute_pipelineable);
+    (state == ST_FETCH_REQUEST || state == ST_FPU2_WORD1 || execute_pipelineable);
 assign instruction_address = {code_segment_register, pc_register};
 // A queued instruction may be returned in the same cycle that its request is
 // accepted. The legacy split request/response path remains valid for slower
 // instruction memories.
 assign instruction_response_ready = !hold && (state == ST_FETCH_REQUEST ||
                                     state == ST_FETCH_RESPONSE ||
+                                    state == ST_FPU2_WORD1 ||
                                     execute_pipelineable);
 assign data_request_valid = !hold && ((async_store_valid && !async_store_issued) ||
-                            state == ST_DATA_REQUEST);
-assign data_write = async_store_valid ? 1'b1 : pending_write;
-assign data_address = async_store_valid ? async_store_address : pending_address;
-assign data_write_data = async_store_valid ? async_store_data : pending_write_data;
+                            state == ST_DATA_REQUEST ||
+                            state == ST_FPU2_MEM_REQUEST);
+// FPU memory beats never overlap the async store buffer: the core only enters
+// the FPU memory states while the buffer is idle, and no new store is issued
+// from inside them.
+wire fpu2_mem_active = state == ST_FPU2_MEM_REQUEST ||
+                       state == ST_FPU2_MEM_RESPONSE;
+assign data_write = async_store_valid ? 1'b1 :
+                    fpu2_mem_active ? fpu2_write_back : pending_write;
+assign data_address = async_store_valid ? async_store_address :
+                      fpu2_mem_active ? fpu2_address + {31'b0, fpu2_beat} :
+                      pending_address;
+assign data_write_data = async_store_valid ? async_store_data :
+                         fpu2_mem_active ?
+                             (fpu2_beat == 0 ? fpu2_ext_read_data[15:0] :
+                                               fpu2_ext_read_data[31:16]) :
+                         pending_write_data;
 assign data_response_ready = !hold && ((async_store_valid && async_store_issued) ||
-                             state == ST_DATA_RESPONSE);
+                             state == ST_DATA_RESPONSE ||
+                             state == ST_FPU2_MEM_RESPONSE);
 assign device_index = field_d[2:0];
 assign device_channel = field_a;
 assign device_read_enable = !hold && state == ST_EXECUTE && opcode == 4'h7 && !field_d[3];
@@ -329,8 +407,14 @@ always @(posedge clk) begin
         fault_pc <= 0;
         async_store_valid <= 0;
         async_store_issued <= 0;
+        fpu2_word_valid <= 0;
+        fpu2_abort <= 1;
+        fpu2_seen_complete <= 0;
+        fpu2_is_memory <= 0;
     end else if (!hold) begin
         gpr_write_enable <= 0;
+        fpu2_word_valid <= 0;
+        fpu2_abort <= 0;
         if (async_store_valid && async_store_issued &&
             data_response_valid && data_error) begin
             async_store_valid <= 0;
@@ -764,6 +848,20 @@ always @(posedge clk) begin
                                 end
                             end
                         end
+                        // FPU v2 two-word instruction (VECTOR / SCALAR /
+                        // AUX). Word0 goes to the unit now; word1 is fetched
+                        // through the normal instruction port. FPU v2
+                        // instructions never consume a pending PFX12 prefix.
+                        4'hc, 4'hd, 4'he: begin
+                            fpu2_word <= instruction;
+                            fpu2_word_valid <= 1;
+                            fpu2_word0 <= instruction;
+                            fpu2_fault_pc <= instruction_pc;
+                            fpu2_seen_complete <= 0;
+                            fpu2_is_memory <= 0;
+                            fpu2_write_back <= 0;
+                            state <= ST_FPU2_WORD1;
+                        end
                         default: begin
                             fault_code <= FAULT_INVALID_INSTRUCTION;
                             fault_pc <= current_fault_pc;
@@ -838,6 +936,76 @@ always @(posedge clk) begin
                 gpr_write_data <= multiplier_product[multiply_shift +: 16];
                 retired_words <= retired_words + multiply_retire_words;
                 state <= ST_FETCH_REQUEST;
+            end
+            ST_FPU2_WORD1: begin
+                // Fetch the second instruction word through the instruction
+                // port; the unit's front-end accepts it on the beat after
+                // the response arrives.
+                if (instruction_response_valid) begin
+                    if (instruction_error) begin
+                        fault_code <= FAULT_INSTRUCTION_MEMORY;
+                        fault_pc <= pc_register;
+                        fpu2_abort <= 1;
+                        state <= ST_FAULT;
+                    end else begin
+                        fpu2_word <= instruction_data;
+                        fpu2_word_valid <= 1;
+                        pc_register <= pc_register + 1'b1;
+                        // AUX kind 00, subops FLD (0x00) / FST (0x01).
+                        fpu2_subop <= instruction_data[9:4];
+                        fpu2_fd <= instruction_data[15:10];
+                        fpu2_fa <= fpu2_word0[7:2];
+                        fpu2_is_memory <= instruction[15:12] == 4'he &&
+                            fpu2_word0[1:0] == 2'b00 &&
+                            instruction_data[9:4] <= 6'h01;
+                        fpu2_write_back <= instruction_data[9:4] == 6'h01;
+                        fpu2_address <= {data_segment_register,
+                                         gpr_read_a_data};
+                        fpu2_beat <= 0;
+                        state <= ST_FPU2_EXEC;
+                    end
+                end
+            end
+            ST_FPU2_EXEC: begin
+                if (fpu2_instr_complete)
+                    fpu2_seen_complete <= 1;
+                if (fpu2_is_memory) begin
+                    // Wait out the async store buffer before touching the
+                    // data port; FST parks the ext read address through the
+                    // ext_access comb path so the RF data is valid by the
+                    // first request beat.
+                    if (!async_store_valid) begin
+                        fpu2_beat <= 0;
+                        state <= ST_FPU2_MEM_REQUEST;
+                    end
+                end else if (fpu2_seen_complete && !fpu2_busy) begin
+                    retired_words <= retired_words + 2;
+                    state <= ST_FETCH_REQUEST;
+                end
+            end
+            ST_FPU2_MEM_REQUEST: begin
+                if (data_request_ready)
+                    state <= ST_FPU2_MEM_RESPONSE;
+            end
+            ST_FPU2_MEM_RESPONSE: begin
+                if (data_response_valid) begin
+                    if (data_error) begin
+                        fault_code <= FAULT_DATA_MEMORY;
+                        fault_pc <= fpu2_fault_pc;
+                        fpu2_abort <= 1;
+                        state <= ST_FAULT;
+                    end else if (fpu2_beat == 0) begin
+                        // FLD: keep the low half; FST: low half sent.
+                        fpu2_low <= data_read_data;
+                        fpu2_beat <= 1;
+                        state <= ST_FPU2_MEM_REQUEST;
+                    end else begin
+                        // FLD's RF write commits combinationally at this
+                        // edge (fpu2_ext_write_enable).
+                        retired_words <= retired_words + 2;
+                        state <= ST_FETCH_REQUEST;
+                    end
+                end
             end
             ST_RESET_CLEAR: begin
                 // Reset walks the scalar register file back to zero one word

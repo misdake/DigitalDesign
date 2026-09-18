@@ -130,6 +130,31 @@ fn program_pipeline_overlap() -> Vec<u16> {
     p
 }
 
+/// FPU v2 handwritten-encodings integration program: FLD x2 through the
+/// data port, scalar ADD inside the unit, FST back, then an integer load of
+/// the stored high half as the halt signal. Q16.16: 1.0 + 2.0 = 3.0.
+fn program_fpu_v2_roundtrip() -> Vec<u16> {
+    let mut p = Vec::new();
+    p.extend(load_immediate16(1, 0x4000)); // r1 = f2 address
+    p.extend(load_immediate16(2, 0x4002)); // r2 = f3 address
+    p.extend(load_immediate16(3, 0x4010)); // r3 = store address
+    p.extend(load_immediate16(0, 1));
+    p.push(store(0, 1, 1)); // f2 high half = 1 -> f2 = 1.0
+    p.extend(load_immediate16(0, 2));
+    p.push(store(0, 2, 1)); // f3 high half = 2 -> f3 = 2.0
+    p.push(0xe100); // FLD f2, [r1]: word0 {E, X=1, Fa=0, kind=00}
+    p.push(0x0800); //       word1 {Fd=2, subop=FLD(0), mode=0}
+    p.push(0xe200); // FLD f3, [r2]
+    p.push(0x0c00); //       word1 {Fd=3, subop=FLD}
+    p.push(0xd083); // ADD f4, f2, f3: word0 {D, Fa=2, Fb=3}
+    p.push(0x1000); //       word1 {Fd=4, subop=ADD(0), mode=0}
+    p.push(0xe310); // FST [r3], f4: word0 {E, X=3, Fa=4, kind=00}
+    p.push(0x0010); //       word1 {subop=FST(1)}
+    p.push(load(0, 3, 1)); // r0 = mem[r3+1] = 3 (high half of 3.0)
+    p.push(halt());
+    p
+}
+
 fn programs() -> Vec<CosimProgram> {
     vec![
         CosimProgram {
@@ -171,6 +196,14 @@ fn programs() -> Vec<CosimProgram> {
             check_base: 0x4000,
             check_len: 0,
             expected_halt: Some(60),
+        },
+        CosimProgram {
+            name: "fpu_v2_roundtrip",
+            words: program_fpu_v2_roundtrip(),
+            max_cycles: 20_000,
+            check_base: 0x4000,
+            check_len: 0x14,
+            expected_halt: Some(3),
         },
     ]
 }
@@ -381,10 +414,25 @@ fn compare_program(program: &CosimProgram, sources: &[String]) -> Result<(), Str
         let expected = &emu.cycles[index];
         let actual = &rtl.cycles[index];
         if !actual.equal_core(expected) {
+            let lo = index.saturating_sub(6);
+            let hi = (index + 2).min(common);
+            let dump = |cycles: &[SystemCosimOut]| {
+                (lo..hi)
+                    .map(|i| {
+                        let v = &cycles[i];
+                        format!(
+                            "{i}: pc={} retired={} ivalid={} iaddr={:#06x} dvalid={} daddr={:#06x}",
+                            v.pc, v.retired_words, v.instruction_request_valid,
+                            v.instruction_address, v.data_request_valid, v.data_address
+                        )
+                    })
+                    .collect::<Vec<_>>()
+                    .join("\n")
+            };
             return Err(format!(
-                "trace mismatch at cycle {index} (emu len {}, rtl len {})\nemu={expected:?}\nrtl={actual:?}",
-                emu.cycles.len(),
-                rtl.cycles.len()
+                "trace mismatch at cycle {index}\nemu:\n{}\nrtl:\n{}",
+                dump(&emu.cycles),
+                dump(&rtl.cycles)
             ));
         }
     }

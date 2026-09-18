@@ -3,35 +3,10 @@ reg clk = 0;
 reg word_valid = 0;
 reg [15:0] word = 0;
 reg abort = 0;
-
-wire read_valid;
-wire [8:0] fe_read_a;
-wire [8:0] fe_read_b;
-wire [15:0] word0_raw;
-wire [15:0] word1_raw;
-wire [3:0] instr_opcode;
-wire instr_complete;
-
-CpuV3FpuV2Frontend frontend (
-    .clk(clk),
-    .word_valid(word_valid),
-    .word(word),
-    .abort(abort),
-    .read_valid(read_valid),
-    .rf_read_a_address(fe_read_a),
-    .rf_read_b_address(fe_read_b),
-    .word0_raw(word0_raw),
-    .word1_raw(word1_raw),
-    .instr_opcode(instr_opcode),
-    .instr_complete(instr_complete)
-);
-
 always #5 clk = ~clk;
 
 localparam integer MAX_CYCLES = 500000;
 integer cycles = 0;
-reg [31:0] result_a;
-reg [31:0] result_b;
 always @(posedge clk) begin
     cycles <= cycles + 1;
     if (cycles > MAX_CYCLES) begin
@@ -40,20 +15,40 @@ always @(posedge clk) begin
     end
 end
 
-// The front-end forms the register-file read address in the word0 cycle, but
-// the synchronous RF captures it one edge later and instr_complete arrives one
-// beat after that. This testbench therefore holds the word0-cycle address into
-// the word1 cycle, so the RF presents the operands on the instr_complete (T0)
-// beat that the scalar path samples. The hold is testbench glue only; it does
-// not change the scalar path contract.
+// This leaf testbench previously instantiated the real front-end and
+// register-file leaves. That made the framework count them as physical
+// children of the scalar path (double BSRAM claims in the system build:
+// the same leaf was claimed through the unit top and again here). They are
+// now behavioral stubs inside this TB; the full leaf interconnection is
+// covered by the CpuV3FpuV2 unit testbench instead.
+
+// Front-end stub: two-word acceptance with the leaf's exact contract
+// (read_valid during the word0 beat, instr_complete one cycle after the
+// word1 beat, abort discards a pending word0).
+wire read_valid;
 reg [8:0] hold_a = 0;
 reg [8:0] hold_b = 0;
+reg fe_waiting_word1 = 0;
+reg [3:0] instr_opcode = 0;
+reg [15:0] word0_raw = 0;
+reg [15:0] word1_raw = 0;
+reg instr_complete = 0;
 always @(posedge clk) begin
-    if (read_valid) begin
-        hold_a <= fe_read_a;
-        hold_b <= fe_read_b;
+    instr_complete <= word_valid && fe_waiting_word1 && !abort;
+    if (word_valid && !fe_waiting_word1) begin
+        fe_waiting_word1 <= 1'b1;
+        instr_opcode <= word[15:12];
+        word0_raw <= word;
+        hold_a <= {3'b000, word[11:6]};
+        hold_b <= {3'b000, word[5:0]};
+    end else if ((word_valid && fe_waiting_word1 && !abort) ||
+                 (abort && fe_waiting_word1)) begin
+        fe_waiting_word1 <= 1'b0;
     end
+    if (word_valid && fe_waiting_word1 && !abort)
+        word1_raw <= word;
 end
+assign read_valid = word_valid && !fe_waiting_word1;
 
 // Register-file write port: the testbench drives it during the preparation
 // phase (initial register load), the scalar path drives it during execution.
@@ -69,8 +64,8 @@ reg [8:0] rb_b = 0;
 
 wire [8:0] rf_read_a_address = rb_sel ? rb_a : hold_a;
 wire [8:0] rf_read_b_address = rb_sel ? rb_b : hold_b;
-wire [31:0] rf_read_a_data;
-wire [31:0] rf_read_b_data;
+reg [31:0] rf_read_a_data = 0;
+reg [31:0] rf_read_b_data = 0;
 wire sp_write_enable;
 wire [8:0] sp_write_address;
 wire [31:0] sp_write_data;
@@ -86,16 +81,20 @@ wire rf_write_enable = prep_write_enable ? 1'b1 : sp_write_enable;
 wire [8:0] rf_write_address = prep_write_enable ? prep_write_address : sp_write_address;
 wire [31:0] rf_write_data = prep_write_enable ? prep_write_data : sp_write_data;
 
-CpuV3FpuV2RegisterRam rf (
-    .clk(clk),
-    .write_enable(rf_write_enable),
-    .write_address(rf_write_address),
-    .write_data(rf_write_data),
-    .read_a_address(rf_read_a_address),
-    .read_b_address(rf_read_b_address),
-    .read_a_data(rf_read_a_data),
-    .read_b_data(rf_read_b_data)
-);
+// Register-file stub: one synchronous write port (testbench preparation or
+// the scalar path), two synchronous read ports with read-first semantics.
+reg [31:0] rf_mem [0:511];
+integer rf_init;
+always @(posedge clk) begin
+    if (rf_write_enable)
+        rf_mem[rf_write_address] <= rf_write_data;
+    rf_read_a_data <= rf_mem[rf_read_a_address];
+    rf_read_b_data <= rf_mem[rf_read_b_address];
+end
+initial begin
+    for (rf_init = 0; rf_init < 512; rf_init = rf_init + 1)
+        rf_mem[rf_init] = 32'b0;
+end
 
 CpuV3FpuV2ScalarPath scalar_path (
     .clk(clk),
@@ -132,6 +131,8 @@ reg [5:0] rfa;
 reg [5:0] rfb;
 reg [5:0] rfd;
 reg [3:0] rop;
+reg [31:0] result_a;
+reg [31:0] result_b;
 
 function [31:0] ref_floor;
     input [31:0] x;
