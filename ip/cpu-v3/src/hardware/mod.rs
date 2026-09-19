@@ -780,6 +780,70 @@ impl Module for CpuV3FpuV2MultiplyPath {
 }
 
 #[derive(Clone, ModuleIo)]
+pub struct CpuV3FpuV2DotPathInput {
+    pub abort: Wire,
+    pub instr_complete: Wire,
+    pub instr_opcode: Wires<4>,
+    pub word1_raw: Wires<16>,
+    pub base_a: Wires<6>,
+    pub base_b: Wires<6>,
+    pub rf_read_a_data: Wires<32>,
+    pub rf_read_b_data: Wires<32>,
+}
+
+#[derive(Clone, ModuleIo)]
+pub struct CpuV3FpuV2DotPathOutput {
+    pub rf_read_a_address: Wires<9>,
+    pub rf_read_b_address: Wires<9>,
+    pub rf_write_enable: Wire,
+    pub rf_write_address: Wires<9>,
+    pub rf_write_data: Wires<32>,
+    pub busy: Wire,
+    pub acc_out: Wires<64>,
+}
+
+/// FPU v2 dot-product path (DOT/DOTADD/DOTSTORE, opcode 0xC): per-lane full
+/// 72-bit products accumulate into a 64-bit Q32.32 fabric ACC (LUT adder,
+/// syn_dspstyle="logic"), narrowing only at DOTSTORE. Emu lives in the unit
+/// top; this leaf is verified through its Verilog testbench.
+pub struct CpuV3FpuV2DotPath;
+
+impl HardwareIdentity for CpuV3FpuV2DotPath {
+    const TARGET_RESOURCE_LEAF: bool = true;
+
+    fn verilog_identity() -> VerilogIdentity {
+        VerilogIdentity::new("CpuV3FpuV2DotPath").namespace(["components", "cpu", "cpu_v3"])
+    }
+}
+
+impl Module for CpuV3FpuV2DotPath {
+    type Input = CpuV3FpuV2DotPathInput;
+    type Output = CpuV3FpuV2DotPathOutput;
+    type EmuState = ();
+
+    const USES_MAIN_CLOCK: bool = true;
+    const EMU_AVAILABLE: bool = false;
+
+    fn target_resources() -> Vec<TargetResourceRequest> {
+        // One MULT36X36 (four 18x18 lanes) for the multiplier, plus the
+        // 64-bit accumulate that gowinsynthesis fuses into a MULTADDALU18X18
+        // macro (a full macro, two lanes). The fusion is deliberate; see the
+        // leaf's header comment.
+        vec![TargetResourceRequest::new(
+            digital_design_hardware::resources::components::DspMultipliers::new(6),
+        )]
+    }
+
+    fn verilog_source() -> Option<String> {
+        Some(include_str!("cpu_v3_fpu_v2_dot_path.v").to_string())
+    }
+
+    fn verilog_testbench() -> Option<String> {
+        Some(include_str!("cpu_v3_fpu_v2_dot_path_tb.v").to_string())
+    }
+}
+
+#[derive(Clone, ModuleIo)]
 pub struct CpuV3FpuV2Input {
     pub abort: Wire,
     pub word_valid: Wire,
@@ -849,6 +913,25 @@ pub struct CpuV3FpuV2State {
     mp_s3_valid: bool,
     mp_s3_prod: i64,
     mp_s3_waddr: u16,
+    dp_run: bool,
+    dp_lane: u8,
+    dp_last_lane: u8,
+    dp_base_a: u8,
+    dp_base_b: u8,
+    dp_stride: u8,
+    dp_store_mode: bool,
+    dp_acc_lane: u8,
+    dp_store: bool,
+    dp_store_addr: u16,
+    dp_store_data: u32,
+    dp_s1_valid: bool,
+    dp_s1_a: i64,
+    dp_s1_b: i64,
+    dp_s2_valid: bool,
+    dp_s2_prod: i64,
+    dp_s3_valid: bool,
+    dp_s3_prod: i64,
+    dp_acc: i64,
 }
 
 impl Default for CpuV3FpuV2State {
@@ -889,6 +972,25 @@ impl Default for CpuV3FpuV2State {
             mp_s3_valid: false,
             mp_s3_prod: 0,
             mp_s3_waddr: 0,
+            dp_run: false,
+            dp_lane: 0,
+            dp_last_lane: 0,
+            dp_base_a: 0,
+            dp_base_b: 0,
+            dp_stride: 1,
+            dp_store_mode: false,
+            dp_acc_lane: 0,
+            dp_store: false,
+            dp_store_addr: 0,
+            dp_store_data: 0,
+            dp_s1_valid: false,
+            dp_s1_a: 0,
+            dp_s1_b: 0,
+            dp_s2_valid: false,
+            dp_s2_prod: 0,
+            dp_s3_valid: false,
+            dp_s3_prod: 0,
+            dp_acc: 0,
         }
     }
 }
@@ -901,8 +1003,13 @@ impl CpuV3FpuV2State {
         let sp_load_now =
             self.frontend.instr_complete && self.frontend.instr_opcode == 0xD && !input.abort;
         let sp_w_wait = if sp_load_now { 2 } else { sp.w_count };
-        let vp_load_now =
-            self.frontend.instr_complete && self.frontend.instr_opcode == 0xC && !input.abort;
+        let vp_load_now = self.frontend.instr_complete
+            && self.frontend.instr_opcode == 0xC
+            && !input.abort
+            && matches!(
+                (self.frontend.word1_raw >> 3) & 0x1F,
+                0x00 | 0x01 | 0x04..=0x07 | 0x0C
+            );
         let vp_busy = (vp_load_now || self.vp_run || self.vp_wr_enable) && !input.abort;
         let mp_load_now = self.frontend.instr_complete
             && !input.abort
@@ -916,8 +1023,19 @@ impl CpuV3FpuV2State {
             || self.mp_s2_valid
             || self.mp_s3_valid)
             && !input.abort;
+        let dp_load_now = self.frontend.instr_complete
+            && !input.abort
+            && self.frontend.instr_opcode == 0xC
+            && matches!((self.frontend.word1_raw >> 3) & 0x1F, 0x0D..=0x0F);
+        let dp_busy = (dp_load_now
+            || self.dp_run
+            || self.dp_s1_valid
+            || self.dp_s2_valid
+            || self.dp_s3_valid
+            || self.dp_store)
+            && !input.abort;
         CpuV3FpuV2OutputValue {
-            busy: sp_w_wait != 0 || vp_busy || mp_busy,
+            busy: sp_w_wait != 0 || vp_busy || mp_busy || dp_busy,
             flag_lt: self.scalar_path.flag_lt,
             flag_eq: self.scalar_path.flag_eq,
             flag_gt: self.scalar_path.flag_gt,
@@ -969,6 +1087,7 @@ impl Module for CpuV3FpuV2 {
             VerilogDependency::new::<CpuV3FpuV2ScalarPath>("scalar_path"),
             VerilogDependency::new::<CpuV3FpuV2VectorPath>("vector_path"),
             VerilogDependency::new::<CpuV3FpuV2MultiplyPath>("multiply_path"),
+            VerilogDependency::new::<CpuV3FpuV2DotPath>("dot_path"),
         ]
     }
 
@@ -1050,15 +1169,27 @@ impl CpuV3FpuV2State {
         // Read addresses for this cycle's RF read: computed from pre-edge
         // vector state (RTL nonblocking semantics), so they are resolved
         // before the vector register updates below.
-        let vp_load_now = instr_complete_prev && state.frontend.instr_opcode == 0xC;
         let word1_fields = state.frontend.word1_raw;
+        let vp_load_now = instr_complete_prev
+            && state.frontend.instr_opcode == 0xC
+            && matches!((word1_fields >> 3) & 0x1F, 0x00 | 0x01 | 0x04..=0x07 | 0x0C);
+        let dp_load_now = instr_complete_prev
+            && state.frontend.instr_opcode == 0xC
+            && matches!((word1_fields >> 3) & 0x1F, 0x0D..=0x0F);
+        let dp_active = dp_load_now || state.dp_run;
         let mp_load_now = instr_complete_prev
             && ((state.frontend.instr_opcode == 0xC
                 && matches!((word1_fields >> 3) & 0x1F, 0x02 | 0x03))
                 || (state.frontend.instr_opcode == 0xD && (word1_fields >> 4) & 0x3F == 0x02));
         let mp_active = mp_load_now || state.mp_run;
         let vp_active = vp_load_now || state.vp_run;
-        let read_a_address = if mp_load_now {
+        let read_a_address = if dp_load_now {
+            usize::from((state.frontend.word0_raw >> 6) & 0x3F)
+        } else if dp_active && state.dp_lane <= state.dp_last_lane {
+            usize::from(state.dp_base_a) + usize::from(state.dp_lane)
+        } else if dp_active {
+            0
+        } else if mp_load_now {
             usize::from((state.frontend.word0_raw >> 6) & 0x3F)
         } else if mp_active && state.mp_lane <= state.mp_last_lane {
             usize::from(state.mp_base_a) + usize::from(state.mp_lane)
@@ -1073,7 +1204,13 @@ impl CpuV3FpuV2State {
         } else {
             state.held_read_a_address as usize
         };
-        let read_b_address = if mp_load_now {
+        let read_b_address = if dp_load_now {
+            usize::from(state.frontend.word0_raw & 0x3F)
+        } else if dp_active && state.dp_lane <= state.dp_last_lane {
+            usize::from(state.dp_base_b) + usize::from(state.dp_lane) * usize::from(state.dp_stride)
+        } else if dp_active {
+            0
+        } else if mp_load_now {
             usize::from(state.frontend.word0_raw & 0x3F)
         } else if mp_active && state.mp_lane <= state.mp_last_lane {
             usize::from(state.mp_base_b)
@@ -1205,6 +1342,94 @@ impl CpuV3FpuV2State {
             }
         }
 
+        // Dot path register updates (mirrors CpuV3FpuV2DotPath). Every stage
+        // transfer reads its predecessor's pre-edge value: the s-chain is
+        // evaluated s3 <- s2 <- s1, and ACC accumulates the pre-edge s3
+        // product. DOT/DOTSTORE start from a cleared ACC; DOTADD continues.
+        // DOTSTORE captures the completed sum on its final lane and clears
+        // ACC after the writeback beat.
+        if input.abort {
+            state.dp_run = false;
+            state.dp_s1_valid = false;
+            state.dp_s2_valid = false;
+            state.dp_s3_valid = false;
+            state.dp_store_mode = false;
+            state.dp_store = false;
+        } else if dp_load_now {
+            state.dp_run = true;
+            state.dp_lane = 1;
+            state.dp_last_lane = if len_field == 3 {
+                3
+            } else {
+                (len_field + 1) as u8
+            };
+            state.dp_base_a = ((state.frontend.word0_raw >> 6) & 0x3F) as u8;
+            state.dp_base_b = (state.frontend.word0_raw & 0x3F) as u8;
+            state.dp_stride = match word1_fields & 0x3 {
+                1 => 3,
+                2 => 4,
+                _ => 1,
+            };
+            state.dp_store_mode = (word1_fields >> 3) & 0x1F == 0x0F;
+            state.dp_acc_lane = 0;
+            state.dp_store = false;
+            state.dp_store_addr = (word1_fields >> 10) & 0x3F;
+            let subop = (word1_fields >> 3) & 0x1F;
+            if subop == 0x0D || subop == 0x0F {
+                state.dp_acc = 0;
+            }
+            state.dp_s1_valid = false;
+            state.dp_s2_valid = false;
+            state.dp_s3_valid = false;
+        } else {
+            // Pre-edge stage snapshot.
+            let s1v = state.dp_s1_valid;
+            let s1a = state.dp_s1_a;
+            let s1b = state.dp_s1_b;
+            let s2v = state.dp_s2_valid;
+            let s2p = state.dp_s2_prod;
+            let s3v = state.dp_s3_valid;
+            let s3p = state.dp_s3_prod;
+            let store_prev = state.dp_store;
+            let data_valid =
+                state.dp_run && state.dp_lane >= 1 && (state.dp_lane - 1) <= state.dp_last_lane;
+            // Lane sequencer.
+            if state.dp_run {
+                if state.dp_lane > state.dp_last_lane + 1 {
+                    state.dp_run = false;
+                } else {
+                    state.dp_lane += 1;
+                }
+            }
+            state.dp_s3_valid = s2v;
+            if s2v {
+                state.dp_s3_prod = s2p;
+            }
+            state.dp_s2_valid = s1v;
+            if s1v {
+                state.dp_s2_prod = s1a * s1b;
+            }
+            state.dp_s1_valid = data_valid;
+            if data_valid {
+                state.dp_s1_a = state.rf.read_a_data as i32 as i64;
+                state.dp_s1_b = state.rf.read_b_data as i32 as i64;
+            }
+            if s3v {
+                let sum = state.dp_acc.wrapping_add(s3p);
+                state.dp_acc = sum;
+                if state.dp_store_mode && state.dp_acc_lane == state.dp_last_lane {
+                    state.dp_store_data = ((sum >> 16) & 0xFFFF_FFFF) as u32;
+                    state.dp_store = true;
+                    state.dp_store_mode = false;
+                }
+                state.dp_acc_lane += 1;
+            }
+            if store_prev {
+                state.dp_store = false;
+                state.dp_acc = 0;
+            }
+        }
+
         // Register-file updates last: reads sample the pre-write contents.
         let rf = &mut state.rf;
         rf.read_a_data = rf.memory[read_a_address];
@@ -1224,6 +1449,8 @@ impl CpuV3FpuV2State {
                 state.mp_s3_waddr as usize,
                 ((state.mp_s3_prod >> 16) & 0xFFFF_FFFF) as u32,
             )
+        } else if state.dp_store && !input.abort {
+            (true, state.dp_store_addr as usize, state.dp_store_data)
         } else {
             (
                 sp.write_enable && !input.abort,
@@ -2898,6 +3125,7 @@ mod tests {
                      started = 1;\n\
                  if (started) begin\n\
                      $display(\"CORE %0d %0d %0d %0d %0d %0d %0d %0d %0d %0d %0d %0d %0d %0d %0d %0d %0d %0d\", cycles, pc, code_segment, data_segment, retired_words, halted, halt_signal, fault, fault_code, fault_pc, instruction_request_valid, instruction_address, instruction_response_ready, data_request_valid, data_write, data_address, data_write_data, data_response_ready);\n\
+                     $display(\"STATE %0d %0d %0d\", cycles, dut.state, dut.fpu2_busy);\n\
                      if (halted || fault) end_flag = 1;\n\
                  end\n\
                  @(posedge clk);\n\
@@ -3002,7 +3230,9 @@ mod tests {
                 break;
             }
         }
-        std::fs::remove_dir_all(&directory).ok();
+        if std::env::var_os("FPU2_KEEP_COSIM_DIR").is_none() {
+            std::fs::remove_dir_all(&directory).ok();
+        }
         trace
     }
 
@@ -3047,6 +3277,9 @@ mod tests {
             0xe200, 0x0800, // FLD f2, [r2]
             0xd041, 0x0c20, // MUL f3 = f1 * f2
             0xc042, 0x1018, // VMULS.2 f4..f5 = f1..f2 * f2
+            0xc042, 0x0068, // DOT.2 ACC = f1*f1 + f2*f2 = 1 + 4 = 5.0
+            0xc042, 0x0070, // DOTADD.2: ACC = 10.0
+            0xc042, 0x1878, // DOTSTORE.2 f6 = 5.0, ACC cleared
             0x6c00, // HALT
         ];
         let module_name = CpuV3Core::verilog_identity().module_name();
@@ -3162,5 +3395,11 @@ mod tests {
     #[ignore = "explicit external simulation of the FPU v2 multiply path"]
     fn verify_fpu_v2_multiply_path_with_iverilog() {
         digital_design_hardware::verify_verilog_with_iverilog::<CpuV3FpuV2MultiplyPath>().unwrap();
+    }
+
+    #[test]
+    #[ignore = "explicit external simulation of the FPU v2 dot path"]
+    fn verify_fpu_v2_dot_path_with_iverilog() {
+        digital_design_hardware::verify_verilog_with_iverilog::<CpuV3FpuV2DotPath>().unwrap();
     }
 }

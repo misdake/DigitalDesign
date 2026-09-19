@@ -221,6 +221,40 @@ fn program_fpu_v2_multiply() -> Vec<u16> {
     p
 }
 
+/// FPU v2 dot path at system level: DOT.2 computes dot(f,f) = 5.0 into ACC,
+/// DOTADD.2 accumulates the same again (ACC = 10.0), DOTSTORE.2 stores a
+/// fresh dot (5.0) into f6 and clears ACC. FST writes f6 back; the halt
+/// signal is its high half (5).
+fn program_fpu_v2_dot() -> Vec<u16> {
+    let mut p = Vec::new();
+    p.extend(load_immediate16(1, 0x4000)); // f0 at [0x4000..0x4001]
+    p.extend(load_immediate16(2, 0x4002)); // f1 at [0x4002..0x4003]
+    p.extend(load_immediate16(7, 0x4020)); // store f6
+    p.extend(load_immediate16(0, 1));
+    p.push(store(0, 1, 1)); // [0x4001] = 1 -> f0 = 1.0
+    p.extend(load_immediate16(0, 2));
+    p.push(store(0, 1, 3)); // [0x4003] = 2 -> f1 = 2.0
+    let fld = |x: u16, fd: u16| [(0xe000 | (x << 8)) as u16, (fd << 10) as u16];
+    let fst = |x: u16, fa: u16| [(0xe000 | (x << 8) | (fa << 2)) as u16, 0x0010u16];
+    p.extend(fld(1, 0)); // f0 = 1.0
+    p.extend(fld(2, 1)); // f1 = 2.0
+                         // DOT.2 ACC = f0*f0 + f1*f1 = 1 + 4 = 5.0: word0 {C, Fa=0, Fb=0},
+                         // word1 {Fd=0, len=00, subop=DOT(0x0D), mode=S1}.
+    p.push(0xc000);
+    p.push(0x0068);
+    // DOTADD.2: ACC = 10.0.
+    p.push(0xc000);
+    p.push(0x0070);
+    // DOTSTORE.2 f6 = 5.0 (its own dot), ACC cleared:
+    // word1 {Fd=6, subop=DOTSTORE(0x0F)}.
+    p.push(0xc000);
+    p.push(0x1878);
+    p.extend(fst(7, 6));
+    p.push(load(0, 7, 1)); // r0 = high half of f6 = 5
+    p.push(halt());
+    p
+}
+
 fn programs() -> Vec<CosimProgram> {
     vec![
         CosimProgram {
@@ -286,6 +320,14 @@ fn programs() -> Vec<CosimProgram> {
             check_base: 0x4020,
             check_len: 8,
             expected_halt: Some(6),
+        },
+        CosimProgram {
+            name: "fpu_v2_dot",
+            words: program_fpu_v2_dot(),
+            max_cycles: 20_000,
+            check_base: 0x4020,
+            check_len: 4,
+            expected_halt: Some(5),
         },
     ]
 }

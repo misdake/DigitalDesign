@@ -9,7 +9,7 @@ use digital_design_hardware::{Hardware, HardwareIdentity, Module, VerilogDepende
 use digital_design_hardware_common::ResetController;
 use digital_design_hardware_gowin::{
     run_gowin_project_cli, Bsram1R1Rw1024, BsramImage, ErasedSpiFlashImage, GowinCliError,
-    GowinDspMode, GowinModuleProject, ResourceCountExpectation, SpiFlashReader, TangNano20K,
+    GowinModuleProject, ResourceCountExpectation, SpiFlashReader, TangNano20K,
     TangNano20KBootHdmiWideInputs, TangNano20KBootHdmiWideOutputs, TangNano20KVideoMode,
     BSRAM_1024_DEPTH,
 };

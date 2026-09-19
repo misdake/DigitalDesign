@@ -100,10 +100,15 @@ wire [8:0] vp_read_b_address;
 wire mp_busy;
 wire [8:0] mp_read_a_address;
 wire [8:0] mp_read_b_address;
+wire dp_busy;
+wire [8:0] dp_read_a_address;
+wire [8:0] dp_read_b_address;
 wire [8:0] rf_read_a_address =
+    dp_busy ? dp_read_a_address :
     mp_busy ? mp_read_a_address :
     vp_busy ? vp_read_a_address : held_read_a_address;
 wire [8:0] rf_read_b_address =
+    dp_busy ? dp_read_b_address :
     mp_busy ? mp_read_b_address :
     vp_busy ? vp_read_b_address :
     ext_access ? ext_read_address : held_read_b_address;
@@ -121,16 +126,22 @@ wire [31:0] vp_write_data;
 wire mp_write_enable;
 wire [8:0] mp_write_address;
 wire [31:0] mp_write_data;
+wire dp_write_enable;
+wire [8:0] dp_write_address;
+wire [31:0] dp_write_data;
 wire rf_write_enable = ext_access ? ext_write_enable :
-                       vp_write_enable | mp_write_enable | sp_write_enable;
+                       vp_write_enable | mp_write_enable | dp_write_enable |
+                       sp_write_enable;
 wire [8:0] rf_write_address =
     ext_access ? ext_write_address :
     vp_write_enable ? vp_write_address :
-    mp_write_enable ? mp_write_address : sp_write_address;
+    mp_write_enable ? mp_write_address :
+    dp_write_enable ? dp_write_address : sp_write_address;
 wire [31:0] rf_write_data =
     ext_access ? ext_write_data :
     vp_write_enable ? vp_write_data :
-    mp_write_enable ? mp_write_data : sp_write_data;
+    mp_write_enable ? mp_write_data :
+    dp_write_enable ? dp_write_data : sp_write_data;
 
 wire [31:0] rf_read_a_data;
 wire [31:0] rf_read_b_data;
@@ -205,7 +216,29 @@ CpuV3FpuV2MultiplyPath multiply_path (
     .busy(mp_busy)
 );
 
-assign busy = sp_busy | vp_busy | mp_busy;
+// Dot-product path (DOT/DOTADD/DOTSTORE, opcode 0xC subops 0x0D..0x0F).
+// Same front-end pair contract as the vector path.
+wire [63:0] dp_acc;
+CpuV3FpuV2DotPath dot_path (
+    .clk(clk),
+    .abort(abort),
+    .instr_complete(fe_instr_complete),
+    .instr_opcode(instr_opcode),
+    .word1_raw(word1_raw),
+    .base_a(word0_raw[11:6]),
+    .base_b(word0_raw[5:0]),
+    .rf_read_a_data(rf_read_a_data),
+    .rf_read_b_data(rf_read_b_data),
+    .rf_read_a_address(dp_read_a_address),
+    .rf_read_b_address(dp_read_b_address),
+    .rf_write_enable(dp_write_enable),
+    .rf_write_address(dp_write_address),
+    .rf_write_data(dp_write_data),
+    .busy(dp_busy),
+    .acc_out(dp_acc)
+);
+
+assign busy = sp_busy | vp_busy | mp_busy | dp_busy;
 assign instr_complete = fe_instr_complete;
 assign ext_read_data = rf_read_b_data;
 
