@@ -170,8 +170,8 @@ fn program_fpu_vector_add() -> Vec<u16> {
     p.push(store(0, 1, 1)); // [0x4001] = 1 -> 1.0
     p.extend(load_immediate16(0, 10));
     p.push(store(0, 2, 1)); // [0x4003] = 10 -> 10.0
-    let fld = |x: u16, fd: u16| [(0xe000 | (x << 8)) as u16, (fd << 10) as u16];
-    let fst = |x: u16, fa: u16| [(0xe000 | (x << 8) | (fa << 2)) as u16, 0x0010u16];
+    let fld = |x: u16, fd: u16| [0xe000 | (x << 8), fd << 10];
+    let fst = |x: u16, fa: u16| [0xe000 | (x << 8) | (fa << 2), 0x0010u16];
     for (x, fd) in [(1u16, 0u16), (1, 1), (2, 2), (2, 3)] {
         p.extend(fld(x, fd));
     }
@@ -202,8 +202,8 @@ fn program_fpu_multiply() -> Vec<u16> {
     p.push(store(0, 1, 1)); // f0 = 2.0
     p.extend(load_immediate16(0, 3));
     p.push(store(0, 2, 1)); // f1 = 3.0
-    let fld = |x: u16, fd: u16| [(0xe000 | (x << 8)) as u16, (fd << 10) as u16];
-    let fst = |x: u16, fa: u16| [(0xe000 | (x << 8) | (fa << 2)) as u16, 0x0010u16];
+    let fld = |x: u16, fd: u16| [0xe000 | (x << 8), fd << 10];
+    let fst = |x: u16, fa: u16| [0xe000 | (x << 8) | (fa << 2), 0x0010u16];
     p.extend(fld(1, 0)); // f0 = 2.0
     p.extend(fld(2, 1)); // f1 = 3.0
                          // MUL f4 = f0 * f1: word0 {D, Fa=0, Fb=1}, word1 {Fd=4, subop=MUL(2), 0}
@@ -234,8 +234,8 @@ fn program_fpu_dot() -> Vec<u16> {
     p.push(store(0, 1, 1)); // [0x4001] = 1 -> f0 = 1.0
     p.extend(load_immediate16(0, 2));
     p.push(store(0, 1, 3)); // [0x4003] = 2 -> f1 = 2.0
-    let fld = |x: u16, fd: u16| [(0xe000 | (x << 8)) as u16, (fd << 10) as u16];
-    let fst = |x: u16, fa: u16| [(0xe000 | (x << 8) | (fa << 2)) as u16, 0x0010u16];
+    let fld = |x: u16, fd: u16| [0xe000 | (x << 8), fd << 10];
+    let fst = |x: u16, fa: u16| [0xe000 | (x << 8) | (fa << 2), 0x0010u16];
     p.extend(fld(1, 0)); // f0 = 1.0
     p.extend(fld(2, 1)); // f1 = 2.0
                          // DOT.2 ACC = f0*f0 + f1*f1 = 1 + 4 = 5.0: word0 {C, Fa=0, Fb=0},
@@ -370,21 +370,79 @@ fn program_fpu_store_drain_hazard() -> Vec<u16> {
     let fstv = |x: u16, fa: u16, mode: u16| [0xe000 | (x << 8) | (fa << 2), 0x0010 | mode];
     p.extend(fldv(1, 0, 3)); // f0..f3 = 1.0, 2.0, 3.0, 4.0
     p.extend(fstv(2, 0, 3)); // FSTV4 [0x4080] = f0..f3; early release, 8 words pending
-    // Hazard A: a CPU load of the second word must not read stale memory.
+                             // Hazard A: a CPU load of the second word must not read stale memory.
     p.push(load(3, 2, 1)); // r3 = [0x4081] high half of 1.0; must be 1
-    // Hazard B: a CPU store to a later word must beat the remaining drain.
+                           // Hazard B: a CPU store to a later word must beat the remaining drain.
     p.extend(load_immediate16(0, 9));
     p.push(store(0, 2, 3)); // [0x4083] = 9 (architecturally after the FSTV)
-    // Force the drain to complete, then read both words back.
+                            // Force the drain to complete, then read both words back.
     p.extend(fldv(2, 8, 1)); // FLDV2 f8..f9 = [0x4080]; waits for the drain
     p.push(load(4, 2, 3)); // r4 = [0x4083]; must be 9 (CPU store won)
-    // Signal = (r3 - 1) + (r4 - 9) + 0x2a; 0x2a only when both hazards held.
+                           // Signal = (r3 - 1) + (r4 - 9) + 0x2a; 0x2a only when both hazards held.
     p.push(alu(AluOp::Add, 7, 3, 7)); // r7 = r3 (r7 is zero)
     p.push(immediate_unsigned(ImmediateOp::Sub, 7, 1));
     p.push(alu(AluOp::Add, 7, 7, 4));
     p.push(immediate_unsigned(ImmediateOp::Sub, 7, 9));
     p.extend(load_immediate16(5, 0x2a));
     p.push(alu(AluOp::Add, 0, 7, 5));
+    p.push(halt());
+    p
+}
+
+/// FPU v2 special-function path at system level (Stage 7b): FLD loads four
+/// Q16.16 operands, scalar RCP (subop 0x0C) and RSQRT (subop 0x0D) evaluate
+/// them, and FST writes the results back. The program covers a normal
+/// reciprocal (RCP 4.0 -> 0.25), a normal reciprocal square root
+/// (RSQRT 4.0 -> 0.5), the RCP zero clamp (0 -> 0x7FFF_FFFF), the RSQRT
+/// non-positive domain (RSQRT -1.0 -> 0), and two more interpolated points
+/// (RCP 2.0 -> 0.5, RSQRT 2.0 -> ~0.7071). The halt signal is the high half
+/// of the clamped result (0x7FFF), so it only reads 0x7FFF when the special
+/// path's LUT and interpolation actually ran.
+fn program_fpu_special_rcp_rsqrt() -> Vec<u16> {
+    let mut p = Vec::new();
+    // Source operands: 4.0, 0.0, -1.0 and 2.0, two words each (low, high).
+    p.extend(load_immediate16(1, 0x4000)); // 4.0 at [0x4000..0x4001]
+    p.extend(load_immediate16(2, 0x4002)); // 0.0 at [0x4002..0x4003] (zero)
+    p.extend(load_immediate16(3, 0x4004)); // -1.0 at [0x4004..0x4005]
+    p.extend(load_immediate16(4, 0x4006)); // 2.0 at [0x4006..0x4007]
+                                           // Result addresses, one GPR per FST.
+    p.extend(load_immediate16(5, 0x4020)); // RCP(4.0)
+    p.extend(load_immediate16(6, 0x4022)); // RSQRT(4.0)
+    p.extend(load_immediate16(7, 0x4024)); // RCP(0.0) clamp
+    p.extend(load_immediate16(8, 0x4026)); // RSQRT(-1.0)
+    p.extend(load_immediate16(9, 0x4028)); // RCP(2.0)
+    p.extend(load_immediate16(10, 0x402A)); // RSQRT(2.0)
+                                            // 4.0 = 0x00040000, -1.0 = 0xFFFF0000, 2.0 = 0x00020000 (high halves).
+    p.extend(load_immediate16(0, 4));
+    p.push(store(0, 1, 1));
+    p.extend(load_immediate16(0, 0xFFFF));
+    p.push(store(0, 3, 1));
+    p.extend(load_immediate16(0, 2));
+    p.push(store(0, 4, 1));
+
+    // AUX word0 {E, X, Fa, kind=00}; word1 {Fd, subop=FLD(0), mode}.
+    let fld = |x: u16, fd: u16| [0xe000 | (x << 8), fd << 10];
+    // AUX word0 {E, X, Fa=source}; word1 {subop=FST(1)}.
+    let fst = |x: u16, fa: u16| [0xe000 | (x << 8) | (fa << 2), 0x0010u16];
+    // Scalar word0 {D, Fa=operand, Fb=0}; word1 {Fd, subop, mode=0}.
+    let unary = |fa: u16, fd: u16, subop: u16| [0xd000 | (fa << 6), (fd << 10) | (subop << 4)];
+
+    p.extend(fld(1, 0)); // f0 = 4.0
+    p.extend(fld(2, 1)); // f1 = 0.0
+    p.extend(fld(3, 2)); // f2 = -1.0
+    p.extend(fld(4, 3)); // f3 = 2.0
+
+    p.extend(unary(0, 8, 0x0C)); // f8 = RCP(4.0) = 0.25
+    p.extend(unary(0, 9, 0x0D)); // f9 = RSQRT(4.0) = 0.5
+    p.extend(unary(1, 10, 0x0C)); // f10 = RCP(0.0) = 0x7FFF_FFFF
+    p.extend(unary(2, 11, 0x0D)); // f11 = RSQRT(-1.0) = 0
+    p.extend(unary(3, 12, 0x0C)); // f12 = RCP(2.0) = 0.5
+    p.extend(unary(3, 13, 0x0D)); // f13 = RSQRT(2.0) ~ 0.7071
+
+    for (x, fa) in [(5u16, 8u16), (6, 9), (7, 10), (8, 11), (9, 12), (10, 13)] {
+        p.extend(fst(x, fa));
+    }
+    p.push(load(0, 7, 1)); // r0 = high half of f10 = 0x7FFF
     p.push(halt());
     p
 }
@@ -486,6 +544,14 @@ fn programs() -> Vec<CosimProgram> {
             check_base: 0x4080,
             check_len: 8,
             expected_halt: Some(0x2a),
+        },
+        CosimProgram {
+            name: "fpu_special_rcp_rsqrt",
+            words: program_fpu_special_rcp_rsqrt(),
+            max_cycles: 20_000,
+            check_base: 0x4020,
+            check_len: 0x0C,
+            expected_halt: Some(0x7FFF),
         },
     ]
 }

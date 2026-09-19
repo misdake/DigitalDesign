@@ -88,12 +88,14 @@ always @(posedge clk) begin
     end
 end
 
-// Read-port ownership: the vector and multiply paths drive both ports for
+// Read-port ownership: the vector, multiply and dot paths drive both ports for
 // their whole busy windows (starting at their T0), otherwise port A serves
 // the front-end's held operand address and port B switches to the external
-// channel while the core owns the register file. The two execution paths are
-// never busy at once (the core serializes instructions), and the multiply
-// mux arm simply takes precedence so the select stays defined.
+// channel while the core owns the register file. The special-function path is
+// blocking (design section 4.2) and owns both ports while active, so it sits at
+// the head of each mux. The execution paths are never busy at once (the core
+// serializes instructions), and the multiply mux arm simply takes precedence so
+// the select stays defined.
 wire vp_busy;
 wire [8:0] vp_read_a_address;
 wire [8:0] vp_read_b_address;
@@ -103,11 +105,16 @@ wire [8:0] mp_read_b_address;
 wire dp_busy;
 wire [8:0] dp_read_a_address;
 wire [8:0] dp_read_b_address;
+wire sf_busy;
+wire [8:0] sf_read_a_address;
+wire [8:0] sf_read_b_address;
 wire [8:0] rf_read_a_address =
+    sf_busy ? sf_read_a_address :
     dp_busy ? dp_read_a_address :
     mp_busy ? mp_read_a_address :
     vp_busy ? vp_read_a_address : held_read_a_address;
 wire [8:0] rf_read_b_address =
+    sf_busy ? sf_read_b_address :
     dp_busy ? dp_read_b_address :
     mp_busy ? mp_read_b_address :
     vp_busy ? vp_read_b_address :
@@ -129,19 +136,24 @@ wire [31:0] mp_write_data;
 wire dp_write_enable;
 wire [8:0] dp_write_address;
 wire [31:0] dp_write_data;
+wire sf_write_enable;
+wire [8:0] sf_write_address;
+wire [31:0] sf_write_data;
 wire rf_write_enable = ext_access ? ext_write_enable :
                        vp_write_enable | mp_write_enable | dp_write_enable |
-                       sp_write_enable;
+                       sp_write_enable | sf_write_enable;
 wire [8:0] rf_write_address =
     ext_access ? ext_write_address :
     vp_write_enable ? vp_write_address :
     mp_write_enable ? mp_write_address :
-    dp_write_enable ? dp_write_address : sp_write_address;
+    dp_write_enable ? dp_write_address :
+    sf_write_enable ? sf_write_address : sp_write_address;
 wire [31:0] rf_write_data =
     ext_access ? ext_write_data :
     vp_write_enable ? vp_write_data :
     mp_write_enable ? mp_write_data :
-    dp_write_enable ? dp_write_data : sp_write_data;
+    dp_write_enable ? dp_write_data :
+    sf_write_enable ? sf_write_data : sp_write_data;
 
 wire [31:0] rf_read_a_data;
 wire [31:0] rf_read_b_data;
@@ -174,6 +186,30 @@ CpuV3FpuScalarPath scalar_path (
     .flag_eq(flag_eq),
     .flag_gt(flag_gt),
     .busy(sp_busy)
+);
+
+// Special-function execution path (opcode 0xD subops 0x0C RCP and 0x0D
+// RSQRT). It is blocking: while active it owns both RF read ports and drives
+// its own LUT addresses into the two asymmetric mirrors. Subop 0x0E (SINCOS)
+// is deliberately not routed anywhere in this step: it is a defined no-op
+// until the SINCOS datapath lands, and the scalar path filters it out too.
+CpuV3FpuSpecialPath special_path (
+    .clk(clk),
+    .abort(abort),
+    .instr_complete(fe_instr_complete),
+    .instr_opcode(instr_opcode),
+    .word1_raw(word1_raw),
+    .rf_read_a_data(rf_read_a_data),
+    .rf_read_b_data(rf_read_b_data),
+    .rf_read_a_address(sf_read_a_address),
+    .rf_read_b_address(sf_read_b_address),
+    .rf_write_enable(sf_write_enable),
+    .rf_write_address(sf_write_address),
+    .rf_write_data(sf_write_data),
+    .busy(sf_busy),
+    .r_wait(),
+    .w_wait(),
+    .x_wait()
 );
 
 // Vector execution path (opcode 0xC). It consumes the same front-end pair;
@@ -284,7 +320,7 @@ CpuV3FpuDotPath dot_path (
     .acc_out(dp_acc)
 );
 
-assign busy = sp_busy | vp_busy | mp_busy | dp_busy;
+assign busy = sp_busy | vp_busy | mp_busy | dp_busy | sf_busy;
 assign instr_complete = fe_instr_complete;
 assign ext_read_data = rf_read_b_data;
 
