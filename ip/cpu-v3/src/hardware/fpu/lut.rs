@@ -1,25 +1,40 @@
 //! FPU v2 special-function reference model: the hidden-BSRAM LUT contents and
 //! the pure-integer RCP/RSQRT/SINCOS datapath (design `fpu-design-v2` section
-//! 9.4, Stage 7a).
+//! 9.4, Stage 7a, revised freeze 2026-09-19).
 //!
 //! This module is the single source of truth for the three LUTs. Later steps
-//! emit the Verilog BSRAM `initial` block and mirror the same arrays in the
+//! emit the Verilog BSRAM `initial` blocks and mirror the same arrays in the
 //! emulator from here; the arrays are checked into the source as literals so
 //! that the emulator path never builds a table at run time. The literals were
 //! generated offline with the f64 formulas below and are re-derived by a test
 //! so a transcription slip cannot survive `cargo test`.
 //!
 //! ```text
-//! RCP_LUT[i]    = round(1 / (1 + i/128)        * 2^16), i = 0..127
-//! RSQRT_LUT[i]  = round(1 / sqrt(1 + 3i/128)   * 2^16), i = 0..127
-//! SINCOS_LUT[i] = round(sin(pi/2 * i/128)      * 2^16), i = 0..=128
+//! RCP_LUT[i]    = round(1 / (1 + i/128)      * 2^16), i = 0..127
+//! RSQRT_LUT[i]  = round(1 / sqrt(1 + 3i/256) * 2^16), i = 0..255
+//! SINCOS_LUT[i] = round(sin(pi/2 * i/256)    * 2^16), i = 0..=256
+//! ```
+//!
+//! The hidden region's two SDPB mirrors carry different halves, which doubles
+//! the effective read-only capacity to 896 words. That split is a Verilog
+//! concern; this module only supplies the plain tables:
+//!
+//! ```text
+//! mirror A: RCP   @  64..191, SINCOS @ 192..448
+//! mirror B: RSQRT @  64..319, reserve @ 320..511
 //! ```
 //!
 //! The interpolation arithmetic is exactly the integer shape the RTL will use:
-//! `delta = next - current` (signed), `current + ((delta * residue) >> 9)` with
-//! an arithmetic `>> 9`. `|delta|` is far below `i16::MAX` (max 508 / 755 / 804
-//! for RCP / RSQRT / SINCOS; see the delta test), so the product is a plain
-//! 16x16-class signed multiply and cannot overflow `i32`.
+//! `delta = next - current` (signed), `current + ((delta * residue) >> shift)`
+//! with an arithmetic shift (`>> 9` for the 128-entry RCP, `>> 8` for the
+//! 256-entry RSQRT/SINCOS). `|delta|` is far below `i16::MAX` (see the delta
+//! test), so the product is a plain 16x16-class signed multiply that cannot
+//! overflow `i32`.
+//!
+//! This revised freeze drops the RSQRT Newton step and the shared multiplication
+//! pipe entirely: the finer tables (error ~ h^2) meet the targets on their own,
+//! and the 32x32-class range reduction is replaced by a decomposed two-term
+//! constant that only forms 16x16-class partial products.
 //!
 //! The LUTs and datapath have no in-crate consumer until the special-function
 //! path and its emulator mirror land (Stage 7b/7c); `dead_code` is allowed for
@@ -45,79 +60,115 @@ pub(crate) const RCP_LUT: [u32; 128] = [
     0x00008421, 0x00008399, 0x00008312, 0x0000828D, 0x00008208, 0x00008185, 0x00008102, 0x00008081,
 ];
 
-pub(crate) const RSQRT_LUT: [u32; 128] = [
-    0x00010000, 0x0000FD0D, 0x0000FA34, 0x0000F773, 0x0000F4C8, 0x0000F234, 0x0000EFB3, 0x0000ED46,
-    0x0000EAEC, 0x0000E8A3, 0x0000E66B, 0x0000E443, 0x0000E22A, 0x0000E020, 0x0000DE23, 0x0000DC34,
-    0x0000DA51, 0x0000D87B, 0x0000D6B0, 0x0000D4F1, 0x0000D33C, 0x0000D192, 0x0000CFF1, 0x0000CE5A,
-    0x0000CCCD, 0x0000CB48, 0x0000C9CC, 0x0000C858, 0x0000C6EB, 0x0000C587, 0x0000C42A, 0x0000C2D4,
-    0x0000C185, 0x0000C03C, 0x0000BEFA, 0x0000BDBE, 0x0000BC89, 0x0000BB59, 0x0000BA2F, 0x0000B90A,
-    0x0000B7EA, 0x0000B6D0, 0x0000B5BB, 0x0000B4AB, 0x0000B39F, 0x0000B298, 0x0000B196, 0x0000B097,
-    0x0000AF9D, 0x0000AEA7, 0x0000ADB6, 0x0000ACC8, 0x0000ABDD, 0x0000AAF7, 0x0000AA14, 0x0000A934,
-    0x0000A858, 0x0000A77F, 0x0000A6AA, 0x0000A5D8, 0x0000A508, 0x0000A43C, 0x0000A373, 0x0000A2AC,
-    0x0000A1E9, 0x0000A128, 0x0000A069, 0x00009FAE, 0x00009EF5, 0x00009E3E, 0x00009D8A, 0x00009CD8,
-    0x00009C29, 0x00009B7B, 0x00009AD0, 0x00009A28, 0x00009981, 0x000098DD, 0x0000983A, 0x0000979A,
-    0x000096FB, 0x0000965E, 0x000095C4, 0x0000952B, 0x00009494, 0x000093FF, 0x0000936B, 0x000092D9,
-    0x00009249, 0x000091BB, 0x0000912E, 0x000090A3, 0x00009019, 0x00008F91, 0x00008F0A, 0x00008E85,
-    0x00008E01, 0x00008D7E, 0x00008CFD, 0x00008C7E, 0x00008C00, 0x00008B83, 0x00008B07, 0x00008A8D,
-    0x00008A13, 0x0000899C, 0x00008925, 0x000088AF, 0x0000883B, 0x000087C8, 0x00008756, 0x000086E5,
-    0x00008675, 0x00008606, 0x00008599, 0x0000852C, 0x000084C1, 0x00008456, 0x000083EC, 0x00008384,
-    0x0000831C, 0x000082B5, 0x00008250, 0x000081EB, 0x00008187, 0x00008124, 0x000080C2, 0x00008060,
+pub(crate) const RSQRT_LUT: [u32; 256] = [
+    0x00010000, 0x0000FE83, 0x0000FD0D, 0x0000FB9E, 0x0000FA34, 0x0000F8D0, 0x0000F773, 0x0000F61B,
+    0x0000F4C8, 0x0000F37B, 0x0000F234, 0x0000F0F1, 0x0000EFB3, 0x0000EE7A, 0x0000ED46, 0x0000EC17,
+    0x0000EAEC, 0x0000E9C5, 0x0000E8A3, 0x0000E785, 0x0000E66B, 0x0000E555, 0x0000E443, 0x0000E335,
+    0x0000E22A, 0x0000E123, 0x0000E020, 0x0000DF20, 0x0000DE23, 0x0000DD2A, 0x0000DC34, 0x0000DB41,
+    0x0000DA51, 0x0000D965, 0x0000D87B, 0x0000D794, 0x0000D6B0, 0x0000D5CF, 0x0000D4F1, 0x0000D415,
+    0x0000D33C, 0x0000D266, 0x0000D192, 0x0000D0C0, 0x0000CFF1, 0x0000CF25, 0x0000CE5A, 0x0000CD93,
+    0x0000CCCD, 0x0000CC09, 0x0000CB48, 0x0000CA89, 0x0000C9CC, 0x0000C911, 0x0000C858, 0x0000C7A0,
+    0x0000C6EB, 0x0000C638, 0x0000C587, 0x0000C4D7, 0x0000C42A, 0x0000C37E, 0x0000C2D4, 0x0000C22B,
+    0x0000C185, 0x0000C0E0, 0x0000C03C, 0x0000BF9A, 0x0000BEFA, 0x0000BE5B, 0x0000BDBE, 0x0000BD23,
+    0x0000BC89, 0x0000BBF0, 0x0000BB59, 0x0000BAC3, 0x0000BA2F, 0x0000B99C, 0x0000B90A, 0x0000B879,
+    0x0000B7EA, 0x0000B75D, 0x0000B6D0, 0x0000B645, 0x0000B5BB, 0x0000B532, 0x0000B4AB, 0x0000B424,
+    0x0000B39F, 0x0000B31B, 0x0000B298, 0x0000B216, 0x0000B196, 0x0000B116, 0x0000B097, 0x0000B01A,
+    0x0000AF9D, 0x0000AF22, 0x0000AEA7, 0x0000AE2E, 0x0000ADB6, 0x0000AD3E, 0x0000ACC8, 0x0000AC52,
+    0x0000ABDD, 0x0000AB6A, 0x0000AAF7, 0x0000AA85, 0x0000AA14, 0x0000A9A4, 0x0000A934, 0x0000A8C6,
+    0x0000A858, 0x0000A7EB, 0x0000A77F, 0x0000A714, 0x0000A6AA, 0x0000A640, 0x0000A5D8, 0x0000A570,
+    0x0000A508, 0x0000A4A2, 0x0000A43C, 0x0000A3D7, 0x0000A373, 0x0000A30F, 0x0000A2AC, 0x0000A24A,
+    0x0000A1E9, 0x0000A188, 0x0000A128, 0x0000A0C8, 0x0000A069, 0x0000A00B, 0x00009FAE, 0x00009F51,
+    0x00009EF5, 0x00009E99, 0x00009E3E, 0x00009DE4, 0x00009D8A, 0x00009D31, 0x00009CD8, 0x00009C80,
+    0x00009C29, 0x00009BD2, 0x00009B7B, 0x00009B26, 0x00009AD0, 0x00009A7C, 0x00009A28, 0x000099D4,
+    0x00009981, 0x0000992F, 0x000098DD, 0x0000988B, 0x0000983A, 0x000097EA, 0x0000979A, 0x0000974A,
+    0x000096FB, 0x000096AC, 0x0000965E, 0x00009611, 0x000095C4, 0x00009577, 0x0000952B, 0x000094DF,
+    0x00009494, 0x00009449, 0x000093FF, 0x000093B5, 0x0000936B, 0x00009322, 0x000092D9, 0x00009291,
+    0x00009249, 0x00009202, 0x000091BB, 0x00009174, 0x0000912E, 0x000090E8, 0x000090A3, 0x0000905D,
+    0x00009019, 0x00008FD4, 0x00008F91, 0x00008F4D, 0x00008F0A, 0x00008EC7, 0x00008E85, 0x00008E43,
+    0x00008E01, 0x00008DBF, 0x00008D7E, 0x00008D3E, 0x00008CFD, 0x00008CBD, 0x00008C7E, 0x00008C3F,
+    0x00008C00, 0x00008BC1, 0x00008B83, 0x00008B45, 0x00008B07, 0x00008ACA, 0x00008A8D, 0x00008A50,
+    0x00008A13, 0x000089D7, 0x0000899C, 0x00008960, 0x00008925, 0x000088EA, 0x000088AF, 0x00008875,
+    0x0000883B, 0x00008801, 0x000087C8, 0x0000878F, 0x00008756, 0x0000871D, 0x000086E5, 0x000086AD,
+    0x00008675, 0x0000863E, 0x00008606, 0x000085CF, 0x00008599, 0x00008562, 0x0000852C, 0x000084F6,
+    0x000084C1, 0x0000848B, 0x00008456, 0x00008421, 0x000083EC, 0x000083B8, 0x00008384, 0x00008350,
+    0x0000831C, 0x000082E9, 0x000082B5, 0x00008282, 0x00008250, 0x0000821D, 0x000081EB, 0x000081B9,
+    0x00008187, 0x00008155, 0x00008124, 0x000080F3, 0x000080C2, 0x00008091, 0x00008060, 0x00008030,
 ];
 
-pub(crate) const SINCOS_LUT: [u32; 129] = [
-    0x00000000, 0x00000324, 0x00000648, 0x0000096C, 0x00000C90, 0x00000FB3, 0x000012D5, 0x000015F7,
-    0x00001918, 0x00001C38, 0x00001F56, 0x00002274, 0x00002590, 0x000028AB, 0x00002BC4, 0x00002EDC,
-    0x000031F1, 0x00003505, 0x00003817, 0x00003B27, 0x00003E34, 0x0000413F, 0x00004447, 0x0000474D,
-    0x00004A50, 0x00004D50, 0x0000504D, 0x00005348, 0x0000563E, 0x00005932, 0x00005C22, 0x00005F0F,
-    0x000061F8, 0x000064DD, 0x000067BE, 0x00006A9B, 0x00006D74, 0x00007049, 0x0000731A, 0x000075E6,
-    0x000078AD, 0x00007B70, 0x00007E2F, 0x000080E8, 0x0000839C, 0x0000864C, 0x000088F6, 0x00008B9A,
-    0x00008E3A, 0x000090D4, 0x00009368, 0x000095F7, 0x00009880, 0x00009B03, 0x00009D80, 0x00009FF7,
-    0x0000A268, 0x0000A4D2, 0x0000A736, 0x0000A994, 0x0000ABEB, 0x0000AE3C, 0x0000B086, 0x0000B2C9,
-    0x0000B505, 0x0000B73A, 0x0000B968, 0x0000BB8F, 0x0000BDAF, 0x0000BFC7, 0x0000C1D8, 0x0000C3E2,
-    0x0000C5E4, 0x0000C7DE, 0x0000C9D1, 0x0000CBBC, 0x0000CD9F, 0x0000CF7A, 0x0000D14D, 0x0000D318,
-    0x0000D4DB, 0x0000D696, 0x0000D848, 0x0000D9F2, 0x0000DB94, 0x0000DD2D, 0x0000DEBE, 0x0000E046,
-    0x0000E1C6, 0x0000E33C, 0x0000E4AA, 0x0000E610, 0x0000E76C, 0x0000E8BF, 0x0000EA0A, 0x0000EB4B,
-    0x0000EC83, 0x0000EDB3, 0x0000EED9, 0x0000EFF5, 0x0000F109, 0x0000F213, 0x0000F314, 0x0000F40C,
-    0x0000F4FA, 0x0000F5DF, 0x0000F6BA, 0x0000F78C, 0x0000F854, 0x0000F913, 0x0000F9C8, 0x0000FA73,
-    0x0000FB15, 0x0000FBAD, 0x0000FC3B, 0x0000FCC0, 0x0000FD3B, 0x0000FDAC, 0x0000FE13, 0x0000FE71,
-    0x0000FEC4, 0x0000FF0E, 0x0000FF4E, 0x0000FF85, 0x0000FFB1, 0x0000FFD4, 0x0000FFEC, 0x0000FFFB,
+pub(crate) const SINCOS_LUT: [u32; 257] = [
+    0x00000000, 0x00000192, 0x00000324, 0x000004B6, 0x00000648, 0x000007DA, 0x0000096C, 0x00000AFE,
+    0x00000C90, 0x00000E21, 0x00000FB3, 0x00001144, 0x000012D5, 0x00001466, 0x000015F7, 0x00001787,
+    0x00001918, 0x00001AA8, 0x00001C38, 0x00001DC7, 0x00001F56, 0x000020E5, 0x00002274, 0x00002402,
+    0x00002590, 0x0000271E, 0x000028AB, 0x00002A38, 0x00002BC4, 0x00002D50, 0x00002EDC, 0x00003067,
+    0x000031F1, 0x0000337C, 0x00003505, 0x0000368E, 0x00003817, 0x0000399F, 0x00003B27, 0x00003CAE,
+    0x00003E34, 0x00003FBA, 0x0000413F, 0x000042C3, 0x00004447, 0x000045CB, 0x0000474D, 0x000048CF,
+    0x00004A50, 0x00004BD1, 0x00004D50, 0x00004ECF, 0x0000504D, 0x000051CB, 0x00005348, 0x000054C3,
+    0x0000563E, 0x000057B9, 0x00005932, 0x00005AAA, 0x00005C22, 0x00005D99, 0x00005F0F, 0x00006084,
+    0x000061F8, 0x0000636B, 0x000064DD, 0x0000664E, 0x000067BE, 0x0000692D, 0x00006A9B, 0x00006C08,
+    0x00006D74, 0x00006EDF, 0x00007049, 0x000071B2, 0x0000731A, 0x00007480, 0x000075E6, 0x0000774A,
+    0x000078AD, 0x00007A10, 0x00007B70, 0x00007CD0, 0x00007E2F, 0x00007F8C, 0x000080E8, 0x00008243,
+    0x0000839C, 0x000084F5, 0x0000864C, 0x000087A1, 0x000088F6, 0x00008A49, 0x00008B9A, 0x00008CEB,
+    0x00008E3A, 0x00008F88, 0x000090D4, 0x0000921F, 0x00009368, 0x000094B0, 0x000095F7, 0x0000973C,
+    0x00009880, 0x000099C2, 0x00009B03, 0x00009C42, 0x00009D80, 0x00009EBC, 0x00009FF7, 0x0000A130,
+    0x0000A268, 0x0000A39E, 0x0000A4D2, 0x0000A605, 0x0000A736, 0x0000A866, 0x0000A994, 0x0000AAC1,
+    0x0000ABEB, 0x0000AD14, 0x0000AE3C, 0x0000AF62, 0x0000B086, 0x0000B1A8, 0x0000B2C9, 0x0000B3E8,
+    0x0000B505, 0x0000B620, 0x0000B73A, 0x0000B852, 0x0000B968, 0x0000BA7D, 0x0000BB8F, 0x0000BCA0,
+    0x0000BDAF, 0x0000BEBC, 0x0000BFC7, 0x0000C0D1, 0x0000C1D8, 0x0000C2DE, 0x0000C3E2, 0x0000C4E4,
+    0x0000C5E4, 0x0000C6E2, 0x0000C7DE, 0x0000C8D9, 0x0000C9D1, 0x0000CAC7, 0x0000CBBC, 0x0000CCAE,
+    0x0000CD9F, 0x0000CE8E, 0x0000CF7A, 0x0000D065, 0x0000D14D, 0x0000D234, 0x0000D318, 0x0000D3FB,
+    0x0000D4DB, 0x0000D5BA, 0x0000D696, 0x0000D770, 0x0000D848, 0x0000D91E, 0x0000D9F2, 0x0000DAC4,
+    0x0000DB94, 0x0000DC62, 0x0000DD2D, 0x0000DDF7, 0x0000DEBE, 0x0000DF83, 0x0000E046, 0x0000E107,
+    0x0000E1C6, 0x0000E282, 0x0000E33C, 0x0000E3F4, 0x0000E4AA, 0x0000E55E, 0x0000E610, 0x0000E6BF,
+    0x0000E76C, 0x0000E817, 0x0000E8BF, 0x0000E966, 0x0000EA0A, 0x0000EAAB, 0x0000EB4B, 0x0000EBE8,
+    0x0000EC83, 0x0000ED1C, 0x0000EDB3, 0x0000EE47, 0x0000EED9, 0x0000EF68, 0x0000EFF5, 0x0000F080,
+    0x0000F109, 0x0000F18F, 0x0000F213, 0x0000F295, 0x0000F314, 0x0000F391, 0x0000F40C, 0x0000F484,
+    0x0000F4FA, 0x0000F56E, 0x0000F5DF, 0x0000F64E, 0x0000F6BA, 0x0000F724, 0x0000F78C, 0x0000F7F1,
+    0x0000F854, 0x0000F8B4, 0x0000F913, 0x0000F96E, 0x0000F9C8, 0x0000FA1F, 0x0000FA73, 0x0000FAC5,
+    0x0000FB15, 0x0000FB62, 0x0000FBAD, 0x0000FBF5, 0x0000FC3B, 0x0000FC7F, 0x0000FCC0, 0x0000FCFE,
+    0x0000FD3B, 0x0000FD74, 0x0000FDAC, 0x0000FDE1, 0x0000FE13, 0x0000FE43, 0x0000FE71, 0x0000FE9C,
+    0x0000FEC4, 0x0000FEEB, 0x0000FF0E, 0x0000FF30, 0x0000FF4E, 0x0000FF6B, 0x0000FF85, 0x0000FF9C,
+    0x0000FFB1, 0x0000FFC4, 0x0000FFD4, 0x0000FFE1, 0x0000FFEC, 0x0000FFF5, 0x0000FFFB, 0x0000FFFF,
     0x00010000,
 ];
 
-/// RCP endpoint: `1/m` at `m = 2`, i.e. index 127's `next` (design section
-/// 9.4). The 128-entry table does not store it, so the datapath supplies the
-/// exact constant instead of reading out of bounds.
+/// RCP endpoint: `1/m` at `m = 2`, i.e. index 127's `next`. The 128-entry table
+/// does not store it, so the datapath supplies the exact constant instead of
+/// reading out of bounds.
 const RCP_ENDPOINT: i32 = 0x8000;
 
-/// RSQRT endpoint: `1/sqrt(m)` at `m = 4` (index 127's `next`).
+/// RSQRT endpoint: `1/sqrt(m)` at `m = 4`, i.e. index 255's `next`. The
+/// 256-entry table covers `m = 1 + 3i/256` up to `3.98828125`, so the exact
+/// `0.5` is supplied as the final interpolation endpoint.
 const RSQRT_ENDPOINT: i32 = 0x8000;
 
-/// `round(2/pi * 2^30)`, the Q2.30 range-reduction constant. `round(2/pi *
-/// 2^16)` only carries ~16 bits of `2/pi`, whose error times `|a|` blows the
-/// 4 ulp bound by `|a| ~ 60`; the Q2.30 form pushes the constant error to
-/// `~2^-30`.
-const TWO_OVER_PI_Q2_30: i32 = 683_565_276;
+/// `round(2/pi * 2^16)`, the leading Q16.16 term of the two-term SINCOS range
+/// reduction (revised freeze, design section 9.4).
+const TWO_OVER_PI_C0: i32 = 41_722;
 
-/// Q16.16 multiply with the FPU's standard narrowing `product[47:16]` (wrap):
-/// an arithmetic `>> 16` of the 64-bit product, truncated to 32 bits. This is
-/// the same operation the shared mul pipe's write port performs, so the
-/// reference model and RTL see identical wraparound at every refinement step.
-#[inline]
-fn q16_mul(a: i32, b: i32) -> i32 {
-    ((i64::from(a) * i64::from(b)) >> 16) as i32
-}
+/// `round((2/pi - C0 * 2^-16) * 2^32)`, the residual term. It is negative
+/// because `C0` rounded up; `|C1| < 2^16` keeps every partial product 16x16
+/// class. The represented constant `C0*2^-16 + C1*2^-32` differs from `2/pi` by
+/// ~7.1e-11, i.e. `< 5e-4` Q16.16 LSB over `|a| <= 2^22`.
+const TWO_OVER_PI_C1: i32 = -31_890;
 
-/// Linear interpolation of the 128-entry tables shared by RCP and RSQRT.
+/// SINCOS input clamp: `64.0` rad in Q16.16 (`64 * 2^16 = 0x40_0000`).
+/// Out-of-range inputs are defined to behave exactly as this bound.
+const SINCOS_CLAMP: i32 = 0x40_0000;
+
+/// Linear interpolation shared by RCP (128 entries, 9-bit residue, `>> 9`) and
+/// RSQRT (256 entries, 8-bit residue, `>> 8`). The stored table stops one entry
+/// short of the interval's right edge, so the final entry's `next` comes from
+/// `endpoint` instead of reading out of bounds.
 #[inline]
-fn interpolate(lut: &[u32; 128], index: usize, residue: i32, endpoint: i32) -> i32 {
+fn interpolate(lut: &[u32], index: usize, residue: i32, shift: u32, endpoint: i32) -> i32 {
     let current = lut[index] as i32;
-    let next = if index == 127 {
-        endpoint
-    } else {
+    let next = if index + 1 < lut.len() {
         lut[index + 1] as i32
+    } else {
+        endpoint
     };
     let delta = next - current;
-    current + ((delta * residue) >> 9)
+    current + ((delta * residue) >> shift)
 }
 
 /// RCP approximation of `x` in Q16.16 (design section 9.4):
@@ -136,7 +187,7 @@ pub(crate) fn rcp_q16(x: i32) -> i32 {
     let normalized = magnitude << clz;
     let index = ((normalized >> 24) & 0x7F) as usize;
     let residue = ((normalized >> 15) & 0x1FF) as i32;
-    let interpolated = interpolate(&RCP_LUT, index, residue, RCP_ENDPOINT);
+    let interpolated = interpolate(&RCP_LUT, index, residue, 9, RCP_ENDPOINT);
     // Real exponent of |x| is e = clz - 16, so 1/|x| rescales by 2^(15 - clz).
     let shift = clz as i32 - 15;
     let scaled = if shift >= 0 {
@@ -156,16 +207,16 @@ pub(crate) fn rcp_q16(x: i32) -> i32 {
     }
 }
 
-/// RSQRT approximation of `x` in Q16.16: `x <= 0 -> 0`, otherwise normalize
-/// `x = m * 2^(2k)` with `m in [1,4)` (CLZ, even exponent), look up
-/// `1/sqrt(m)` from the table uniform in `m`, refine with **one**
-/// Newton-Raphson step, and rescale by `2^-k`.
+/// RSQRT approximation of `x` in Q16.16 (revised freeze, design section 9.4):
+/// `x <= 0 -> 0`, otherwise normalize `x = m * 2^(2k)` with `m in [1,4)`
+/// (CLZ, even exponent), look up the 256-entry table uniform in `m` (step
+/// `3/256`), linearly interpolate with an 8-bit residue, and rescale by `2^-k`.
+/// There is **no** Newton step: the finer table already meets the 2 ulp target.
 ///
-/// The refinement is `y1 = y0 * (3 - m*y0^2) / 2`, with `y0` the interpolated
-/// seed and `m` the normalized mantissa in Q16.16 (`normalized >> 14`, the
-/// low 14 bits of the `m * 2^30` representation are dropped by the Q16.16
-/// cast). Each product is the shared pipe's Q16.16 narrowing
-/// (`q16_mul`), the `3` is `3 << 16`, and `/2` is a final arithmetic `>> 1`.
+/// The table is indexed by `u = (m - 1) / 3` in Q16.16. The top 8 bits of `u`
+/// select the entry, the low 8 bits are the interpolation residue, and
+/// `delta * residue >> 8` is the arithmetic-shifted correction. Index 255's
+/// `next` is the exact endpoint `1/sqrt(4) = 0.5`.
 pub(crate) fn rsqrt_q16(x: i32) -> i32 {
     if x <= 0 {
         return 0;
@@ -182,38 +233,34 @@ pub(crate) fn rsqrt_q16(x: i32) -> i32 {
         ((31 - binary_exponent) as i32, (exponent - 1) / 2)
     };
     let normalized = magnitude << normalize_shift as u32;
-    // `normalized = m * 2^30`; the table is uniform over `m = 1 + 3i/128`, so
-    // `u = (m - 1) / 3` in Q16.16 supplies the 7-bit index and 9-bit residue.
+    // `normalized = m * 2^30`; the table is uniform over `m = 1 + 3i/256`, so
+    // `u = (m - 1) / 3` in Q16.16 supplies the 8-bit index and 8-bit residue.
     let offset = normalized - (1u32 << 30);
     let fraction = (u64::from(offset) << 16) / (3u64 << 30);
-    let index = ((fraction >> 9) & 0x7F) as usize;
-    let residue = (fraction & 0x1FF) as i32;
-    let seed = interpolate(&RSQRT_LUT, index, residue, RSQRT_ENDPOINT);
-    let mantissa = (normalized >> 14) as i32;
-    let y0_squared = q16_mul(seed, seed);
-    let m_y0_squared = q16_mul(mantissa, y0_squared);
-    let correction = (3i32 << 16).wrapping_sub(m_y0_squared);
-    let refined = q16_mul(seed, correction) >> 1;
+    let index = ((fraction >> 8) & 0xFF) as usize;
+    let residue = (fraction & 0xFF) as i32;
+    let interpolated = interpolate(&RSQRT_LUT, index, residue, 8, RSQRT_ENDPOINT);
     if scale_shift >= 0 {
-        refined >> scale_shift
+        interpolated >> scale_shift
     } else {
-        refined << (-scale_shift)
+        interpolated << (-scale_shift)
     }
 }
 
 /// Single sample of `sin(pi/2 * u)` for `u` in Q16.16 over `[0,1]`, from the
-/// 129-entry quarter-wave sine table. `u == 1.0` is the exact endpoint entry.
+/// 257-entry quarter-wave sine table. `u == 1.0` is the exact endpoint entry,
+/// which the `0x1_0000 - f` quadrant reflection needs when `f == 0`.
 #[inline]
 fn sine_quarter(u: i32) -> i32 {
     if u >= 0x1_0000 {
-        return SINCOS_LUT[128] as i32;
+        return SINCOS_LUT[256] as i32;
     }
-    let index = ((u >> 9) & 0x7F) as usize;
-    let residue = u & 0x1FF;
+    let index = ((u >> 8) & 0xFF) as usize;
+    let residue = u & 0xFF;
     let current = SINCOS_LUT[index] as i32;
     let next = SINCOS_LUT[index + 1] as i32;
     let delta = next - current;
-    current + ((delta * residue) >> 9)
+    current + ((delta * residue) >> 8)
 }
 
 /// `sin(pi/2 * (quadrant + fraction))` via the quarter-wave symmetries.
@@ -227,25 +274,43 @@ fn quadrant_sine(quadrant: i32, fraction: i32) -> i32 {
     }
 }
 
-/// SINCOS of `a` (radians, Q16.16): `t = a * 2/pi` via the shared mul pipe,
-/// quadrant `q = floor(t) mod 4`, fraction `f = frac(t)`, then
-/// `sin = quarter(q, f)` and `cos = quarter(q + 1, f)`.
+/// SINCOS of `a` (radians, Q16.16), returning `(sin, cos)`.
 ///
-/// Range reduction multiplies the Q16.16 input by the Q2.30 constant
-/// [`TWO_OVER_PI_Q2_30`] with a full 64-bit `i64` product. A Q16.16 x Q2.30
-/// product carries `16 + 30 = 46` fraction bits, so converting the product
-/// back to Q16.16 drops 30 of them; the narrowing implemented here is an
-/// arithmetic `>> 30` followed by a 32-bit wrap (`as i32`), i.e. product bits
-/// `[61:30]` of the full 64-bit product.
+/// The input is first clamped to `[-64, 64]` rad ([`SINCOS_CLAMP`]) so that
+/// out-of-range inputs are defined. Range reduction then evaluates
+/// `t = floor(a * (2/pi))` in Q16.16 with the two-term constant
+/// `2/pi ~= C0*2^-16 + C1*2^-32` ([`TWO_OVER_PI_C0`], [`TWO_OVER_PI_C1`]).
+/// Splitting `a = a_hi*2^16 + a_lo` (`a_hi` arithmetic, `a_lo` the unsigned low
+/// 16 bits) keeps every partial product 16x16 class because `|a| <= 2^22`:
 ///
-/// The Stage-7 design text phrased this as "product bits `[45:14]`"; that is
-/// the Q16.16 window for a **Q2.14** constant, i.e. 16 bits too low for Q2.30
-/// (it drops `a`'s own 16 fraction bits twice). Taken literally it wraps for
-/// `|a| > ~0.8` and measures 131071 LSB, so the constant's precision, the
-/// `~2^-30` constant error and the Q16.16 result all force `[61:30]`.
+/// ```text
+/// p0 = a_lo * C0            (unsigned)
+/// p1 = a_lo * C1            (signed)
+/// h0 = a_hi * C0            (signed)
+/// h1 = a_hi * C1            (signed)
+/// t  = h0 + (((p0 + h1) << 16) + p1) >> 32
+/// ```
+///
+/// The numerator `(a*C0 << 16) + a*C1` expands to
+/// `(h0 << 32) + ((p0 + h1) << 16) + p1`, and the final `>> 32` is an
+/// arithmetic shift, so the formula is `floor(a * represented_constant)`: the
+/// only truncation is the final shift (< 1 LSB) plus the constant error
+/// (< 5e-4 LSB). Negative `a` works because `a_hi`, `h0`, `h1` and `p1` are
+/// signed, `p0` is unsigned, and the arithmetic shift floors.
+///
+/// `q = (t >> 16) & 3`, `f = t & 0xFFFF`; `sin` uses the quarter-wave table at
+/// `(q, f)` and `cos` at `(q + 1, f)` ([`quadrant_sine`]).
 pub(crate) fn sincos_q16(a: i32) -> (i32, i32) {
-    let product = i64::from(a) * i64::from(TWO_OVER_PI_Q2_30);
-    let t = ((product >> 30) & 0xFFFF_FFFF) as u32 as i32;
+    let a = a.clamp(-SINCOS_CLAMP, SINCOS_CLAMP);
+    let a_hi = i64::from(a >> 16);
+    let a_lo = i64::from(a & 0xFFFF);
+    let c0 = i64::from(TWO_OVER_PI_C0);
+    let c1 = i64::from(TWO_OVER_PI_C1);
+    let h0 = a_hi * c0;
+    let h1 = a_hi * c1;
+    let p0 = a_lo * c0;
+    let p1 = a_lo * c1;
+    let t = (h0 + ((((p0 + h1) << 16) + p1) >> 32)) as i32;
     let quadrant = (t >> 16) & 3;
     let fraction = t & 0xFFFF;
     (
@@ -283,21 +348,33 @@ mod tests {
 
     #[test]
     fn lut_literals_match_f64_generation() {
-        for i in 0..128 {
+        for (i, &entry) in RCP_LUT.iter().enumerate() {
             let rcp = ((1.0 / (1.0 + i as f64 / 128.0)) * 65536.0).round() as u32;
-            assert_eq!(RCP_LUT[i], rcp, "RCP_LUT[{i}]");
-            let rsqrt = ((1.0 / (1.0 + 3.0 * i as f64 / 128.0).sqrt()) * 65536.0).round() as u32;
-            assert_eq!(RSQRT_LUT[i], rsqrt, "RSQRT_LUT[{i}]");
+            assert_eq!(entry, rcp, "RCP_LUT[{i}]");
+        }
+        for (i, &entry) in RSQRT_LUT.iter().enumerate() {
+            let rsqrt = ((1.0 / (1.0 + 3.0 * i as f64 / 256.0).sqrt()) * 65536.0).round() as u32;
+            assert_eq!(entry, rsqrt, "RSQRT_LUT[{i}]");
         }
         for (i, &entry) in SINCOS_LUT.iter().enumerate() {
             let sine =
-                ((std::f64::consts::PI / 2.0 * i as f64 / 128.0).sin() * 65536.0).round() as u32;
+                ((std::f64::consts::PI / 2.0 * i as f64 / 256.0).sin() * 65536.0).round() as u32;
             assert_eq!(entry, sine, "SINCOS_LUT[{i}]");
         }
         assert_eq!(RCP_LUT[0], 0x1_0000);
         assert_eq!(RSQRT_LUT[0], 0x1_0000);
         assert_eq!(SINCOS_LUT[0], 0);
-        assert_eq!(SINCOS_LUT[128], 0x1_0000);
+        assert_eq!(SINCOS_LUT[256], 0x1_0000);
+    }
+
+    #[test]
+    fn range_reduction_constants_match_f64() {
+        let two_over_pi = 2.0 / std::f64::consts::PI;
+        let c0 = (two_over_pi * 65536.0).round() as i32;
+        let c1 = ((two_over_pi - f64::from(c0) / 65536.0) * 4294967296.0).round() as i32;
+        assert_eq!(TWO_OVER_PI_C0, c0);
+        assert_eq!(TWO_OVER_PI_C1, c1);
+        assert_eq!(SINCOS_CLAMP, 64 * 65536);
     }
 
     #[test]
@@ -308,12 +385,12 @@ mod tests {
         }
         rcp_max = rcp_max.max((RCP_ENDPOINT - RCP_LUT[127] as i32).abs());
         let mut rsqrt_max = 0i32;
-        for i in 0..127 {
+        for i in 0..255 {
             rsqrt_max = rsqrt_max.max((RSQRT_LUT[i + 1] as i32 - RSQRT_LUT[i] as i32).abs());
         }
-        rsqrt_max = rsqrt_max.max((RSQRT_ENDPOINT - RSQRT_LUT[127] as i32).abs());
+        rsqrt_max = rsqrt_max.max((RSQRT_ENDPOINT - RSQRT_LUT[255] as i32).abs());
         let mut sincos_max = 0i32;
-        for i in 0..128 {
+        for i in 0..256 {
             sincos_max = sincos_max.max(SINCOS_LUT[i + 1] as i32 - SINCOS_LUT[i] as i32);
         }
         eprintln!(
@@ -447,8 +524,8 @@ mod tests {
 
     #[test]
     fn sincos_accuracy() {
-        // The full Q16.16 input domain: |a| up to 0x7FFF_0000 (32768 rad).
-        let limit = 0x7FFF_0000i32;
+        // Accuracy target domain: |a| <= 45 rad (Q16.16, dense).
+        let limit = 45 << 16;
         let mut max_error = 0i32;
         let mut worst = (0i32, 0i32, 0i32);
         let mut check = |a: i32| {
@@ -462,11 +539,8 @@ mod tests {
                 worst = (a, sin, cos);
             }
         };
-        // Coarse sweep over the whole range: 1 ulp of output is 1 Q16.16 LSB.
-        let mut a = -limit;
-        while a <= limit {
+        for a in -limit..=limit {
             check(a);
-            a += 2048;
         }
         // Fine sweep around every quadrant boundary k*pi/2, where sin/cos cross
         // zero and the interpolation kink meets the range-reduction error.
@@ -490,6 +564,25 @@ mod tests {
             "SINCOS absolute error {max_error} ulp > 4 at a={}",
             worst.0
         );
+    }
+
+    #[test]
+    fn sincos_clamp_is_defined() {
+        let high = sincos_q16(SINCOS_CLAMP);
+        let low = sincos_q16(-SINCOS_CLAMP);
+        for a in [SINCOS_CLAMP, SINCOS_CLAMP + 1, 0x7FFF_FFFF, i32::MAX] {
+            assert_eq!(sincos_q16(a), high, "high clamp at a={a}");
+        }
+        for a in [i32::MIN, i32::MIN + 1, -SINCOS_CLAMP - 1, -SINCOS_CLAMP] {
+            assert_eq!(sincos_q16(a), low, "low clamp at a={a}");
+        }
+        // Exactly 64 rad is still an ordinary approximation, not a saturated
+        // sentinel: it must stay within the 4 ulp bound.
+        let radians = f64::from(SINCOS_CLAMP) / 65536.0;
+        let exact_sin = (radians.sin() * 65536.0).round() as i32;
+        let exact_cos = (radians.cos() * 65536.0).round() as i32;
+        assert!((high.0 - exact_sin).abs() <= 4, "sin(64) error");
+        assert!((high.1 - exact_cos).abs() <= 4, "cos(64) error");
     }
 
     #[test]
