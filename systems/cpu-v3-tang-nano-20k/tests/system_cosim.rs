@@ -187,6 +187,40 @@ fn program_fpu_v2_vector_add() -> Vec<u16> {
     p
 }
 
+/// FPU v2 multiply path at system level: two FLDs, one scalar MUL
+/// (2.0 * 3.0 = 6.0) and one VMULS.2 (f2..f3 = f0..f1 * f1 = 6.0, 9.0).
+/// Three FSTs write the results back; the halt signal is the high half of
+/// the first stored lane (6).
+fn program_fpu_v2_multiply() -> Vec<u16> {
+    let mut p = Vec::new();
+    p.extend(load_immediate16(1, 0x4000)); // f0 source
+    p.extend(load_immediate16(2, 0x4002)); // f1 source
+    p.extend(load_immediate16(7, 0x4020)); // store f4
+    p.extend(load_immediate16(8, 0x4022)); // store f2
+    p.extend(load_immediate16(9, 0x4024)); // store f3
+    p.extend(load_immediate16(0, 2));
+    p.push(store(0, 1, 1)); // f0 = 2.0
+    p.extend(load_immediate16(0, 3));
+    p.push(store(0, 2, 1)); // f1 = 3.0
+    let fld = |x: u16, fd: u16| [(0xe000 | (x << 8)) as u16, (fd << 10) as u16];
+    let fst = |x: u16, fa: u16| [(0xe000 | (x << 8) | (fa << 2)) as u16, 0x0010u16];
+    p.extend(fld(1, 0)); // f0 = 2.0
+    p.extend(fld(2, 1)); // f1 = 3.0
+                         // MUL f4 = f0 * f1: word0 {D, Fa=0, Fb=1}, word1 {Fd=4, subop=MUL(2), 0}
+    p.push(0xd001);
+    p.push(0x1020);
+    // VMULS.2 f2..f3 = f0..f1 * f1: word0 {C, Fa=0, Fb=1},
+    // word1 {Fd=2, len=00, subop=VMULS(3), mode=0}.
+    p.push(0xc001);
+    p.push(0x0818);
+    for (x, fa) in [(7u16, 4u16), (8, 2), (9, 3)] {
+        p.extend(fst(x, fa));
+    }
+    p.push(load(0, 7, 1)); // r0 = high half of f4 = 6
+    p.push(halt());
+    p
+}
+
 fn programs() -> Vec<CosimProgram> {
     vec![
         CosimProgram {
@@ -244,6 +278,14 @@ fn programs() -> Vec<CosimProgram> {
             check_base: 0x4020,
             check_len: 8,
             expected_halt: Some(11),
+        },
+        CosimProgram {
+            name: "fpu_v2_multiply",
+            words: program_fpu_v2_multiply(),
+            max_cycles: 20_000,
+            check_base: 0x4020,
+            check_len: 8,
+            expected_halt: Some(6),
         },
     ]
 }

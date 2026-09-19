@@ -2207,10 +2207,12 @@ fn dsp_multiplier_lane_usage(report: &str) -> Option<u64> {
         return Some(0);
     }
     let plain = resource_mode_usage(report, "DSP", "MULT18X18")?;
+    let wide = resource_mode_usage(report, "DSP", "MULT36X36")?;
     let multiply_add = resource_mode_usage(report, "DSP", "MULTADDALU18X18")?;
     let pre_add = resource_mode_usage(report, "DSP", "PADD18")?;
     let alu = resource_mode_usage(report, "DSP", "ALU54D")?;
     let known_primitives = plain
+        .checked_add(wide)?
         .checked_add(multiply_add)?
         .checked_add(pre_add)?
         .checked_add(alu)?;
@@ -2218,7 +2220,10 @@ fn dsp_multiplier_lane_usage(report: &str) -> Option<u64> {
     if all_primitives != known_primitives {
         return None;
     }
-    plain.checked_add(multiply_add.checked_mul(2)?)
+    // A MULT36X36 occupies four 18x18 multiplier lanes.
+    plain
+        .checked_add(multiply_add.checked_mul(2)?)?
+        .checked_add(wide.checked_mul(4)?)
 }
 
 #[derive(Debug)]

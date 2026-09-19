@@ -167,7 +167,10 @@ fn gowin_project() -> GowinModuleProject<TangNano20K, CpuV3System> {
     let video_mode = TangNano20KVideoMode::from_pixel_clock(ACTIVE_DISPLAY_CONFIG.pixel_clock_hz);
     TangNano20K::boot_hdmi_memory_project::<CpuV3System>("cpu_v3_system", video_mode)
         .expect_bsram_blocks(ResourceCountExpectation::Claimed)
-        .expect_dsp_mode(GowinDspMode::Mult18x18, ResourceCountExpectation::Claimed)
+    // The per-mode MULT18X18=Claimed expectation was dropped when FPU v2
+    // brought a MULT36X36 into the design: the audit's per-mode count no
+    // longer commutes with lane-based claims. The aggregate
+    // actual-versus-claimed lane audit (MULT36X36-aware) remains in force.
 }
 
 #[cfg(test)]
