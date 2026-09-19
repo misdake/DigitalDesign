@@ -3,8 +3,8 @@
 // The dot family keeps one 64-bit Q32.32 accumulator (ACC) across instructions
 // and adds the complete signed 72-bit multiplier product of every lane straight
 // into it. There is deliberately no per-lane narrowing: the accumulator sees the
-// full product, and only DOTSTORE narrows once at the end, taking the finished
-// sum's Q16.16 view to the destination register.
+// full product, and only DOTSTORE narrows once at the end, taking the Q16.16
+// view of the completed sum to the destination register.
 //
 // The instruction word split follows CpuV3FpuV2Frontend. Word1 carries
 // {Fd[15:10], len[9:8], subop[7:3], mode[2:0]} with len 00 = vec2, 01 = vec3,
@@ -13,48 +13,38 @@
 // register bases and presents them as base_a / base_b on the beat this module
 // starts, exactly as for the other FPU v2 execution paths.
 //
-// Supported subops (section 6.3, section 14):
+// Supported subops (section 6.3):
 //   0x0D DOT     : ACC  = sum(A+i * B+i)      fresh sum, ACC cleared at T0
 //   0x0E DOTADD  : ACC += sum(A+i * B+i)      continues the current ACC
-//   0x0F DOTSTORE: D[0] = q16(sum(A+i * B+i)); ACC = 0
-//
-// DOTSTORE is not an ACC spill: it computes a complete dot product of its own.
-// It runs the exact same lane pipeline as DOT, clearing ACC on its first beat
-// and reading A/B with the same len/mode/stride decoding as DOT. When the last
-// lane's product reaches the accumulator stage it captures that completed sum
-// (including the last lane), writes D[0] = sum[47:16] on the following beat and
-// clears ACC. Fd is the destination base, so D[0] is Fd.
+//   0x0F DOTSTORE: D[0] = q16(sum); ACC = 0   computes its own dot, stores, clears
 //
 // A is always stride 1; mode[1:0] selects the B stride: 00 = +1, 01 = +3,
 // 10 = +4, 11 is reserved and treated as +1. Lane i therefore reads
 // A = base_a + i and B = base_b + i * stride.
 //
-// ACC accumulate: gowinsynthesis fuses it with the multiplier into a
-// MULTADDALU18X18 DSP macro regardless of syn_dspstyle placement (all forms
-// tried). That fusion is accepted deliberately: it is the DSP-efficient form
-// and passes timing. See fpu-design-v2 §14.
+// The multiplier is the shared CpuV3FpuV2MulPipe instance in the unit top (the
+// core serializes instructions, so this path and the multiply path never
+// multiply at once). This controller sequences lanes and hands each to the
+// pipe with its destination tag; products return three cycles later and are
+// accumulated (or, for DOTSTORE's final lane, captured for the writeback).
 //
-// Multiply pipeline (II = 1, the same inferred $signed 36x36 -> 72-bit
-// multiplier and three register stages as the multiply path). T0 is the cycle
-// where instr_complete is high:
-//   T0          : present the lane-0 read addresses.
-//   T1..T(last) : present the lane-n read addresses while lane n-1 sits on the
-//                 read buses.
-//   T(k+4)      : the lane-k product has drained through the three stages and
-//                 is added into ACC at the end of this cycle.
-//   T(last+4)   : the last lane is accumulated; busy drops one beat later for
-//                 DOT / DOTADD.
-//   T(last+5)   : DOTSTORE presents its register write (the captured sum); busy
-//                 drops one beat later.
-// The read window is T0..T(last) for all three subops. Busy covers
-// T0..T(last+4) for DOT / DOTADD, i.e. last_lane + 5 beats, and T0..T(last+5)
-// for DOTSTORE, i.e. last_lane + 6 beats.
+// gowinsynthesis note: the 64-bit accumulate fuses with the multiplier into a
+// MULTADDALU18X18 macro regardless of syn_dspstyle placement (all forms tried);
+// the fusion is accepted deliberately (DSP-efficient, passes timing). See
+// fpu-design-v2 §14.
+//
+// Lane timing (II = 1). T0 is the cycle where instr_complete is high:
+//   T0         : present the lane-0 read addresses.
+//   T(k)       : present the lane-k read addresses (k <= last_lane).
+//   T(k+1)     : the lane-k operands are on the buses; the pipe captures them.
+//   T(k+3)     : lane k's product returns; it is accumulated this beat.
+// The read window is T0..T(last_lane); busy covers T0 through the last
+// accumulation (DOTSTORE: through the writeback beat one cycle later).
 //
 // ACC reset semantics:
 //   - abort leaves ACC untouched; it only voids the in-flight pipeline.
-//   - DOT and DOTSTORE clear ACC on their first beat, so a stale value is never
-//     accumulated.
-//   - DOTSTORE clears ACC once more after its writeback beat.
+//   - DOT clears ACC on its first beat, so a stale value is never accumulated.
+//   - DOTSTORE clears ACC after its writeback beat.
 module CpuV3FpuV2DotPath (
     input wire clk,
     input wire abort,
@@ -67,6 +57,15 @@ module CpuV3FpuV2DotPath (
     input wire [31:0] rf_read_b_data,
     output wire [8:0] rf_read_a_address,
     output wire [8:0] rf_read_b_address,
+    // Shared multiplier pipe (in the unit top).
+    output wire mul_in_valid,
+    output wire [31:0] mul_in_a,
+    output wire [31:0] mul_in_b,
+    output wire [8:0] mul_in_tag,
+    input wire mul_out_valid,
+    input wire signed [63:0] mul_out_product,
+    input wire [8:0] mul_out_tag,
+    // Register-file write port (only DOTSTORE's narrowed sum uses it).
     output wire rf_write_enable,
     output wire [8:0] rf_write_address,
     output wire [31:0] rf_write_data,
@@ -84,12 +83,11 @@ wire is_vector = (instr_opcode == 4'hC);
 wire is_dot = is_vector && (subop == 5'h0D);
 wire is_dotadd = is_vector && (subop == 5'h0E);
 wire is_dotstore = is_vector && (subop == 5'h0F);
-wire is_dot_family = is_dot || is_dotadd || is_dotstore;
 
 // T0 of this cycle: a live supported dot instruction completed and is not
-// cancelled. All three subops run the shared lane pipeline; DOT and DOTSTORE
-// clear ACC on this first beat while DOTADD continues the current ACC.
-wire load_now = instr_complete && is_dot_family && !abort;
+// cancelled. All three subops run the shared lane pipeline.
+wire load_now = instr_complete && (is_dot || is_dotadd || is_dotstore) &&
+    !abort;
 
 // len 11 is reserved and clamps to vec4, so last_lane stays in 0..3.
 wire [2:0] decoded_last_lane =
@@ -100,8 +98,8 @@ wire [2:0] decoded_stride =
     (mode_field[1:0] == 2'b01) ? 3'd3 :
     (mode_field[1:0] == 2'b10) ? 3'd4 : 3'd1;
 
-// 64-bit Q32.32 accumulator. Fabric registers plus a LUT adder; the module
-// attribute keeps the wide add out of the DSP block.
+// 64-bit Q32.32 accumulator (fabric registers; the accumulate itself fuses
+// into the multiplier's DSP macro, see the header note).
 reg signed [63:0] acc_r = 64'sd0;
 
 // Latched instruction state, loaded on the T0 edge.
@@ -112,28 +110,17 @@ reg [5:0] base_a_r = 6'd0;
 reg [5:0] base_b_r = 6'd0;
 reg [2:0] stride_r = 3'd1;
 
-// DOTSTORE completion state. store_mode_r marks the running instruction as a
-// DOTSTORE, acc_lane_r counts the products already accumulated so the final
-// lane can be recognised, and store_r is the one-beat register-file write that
-// carries the captured sum and its destination.
+// Pipe bookkeeping: entries issued minus returned, and (for DOTSTORE) how
+// many lanes have been accumulated, so the final product is recognised.
+reg [3:0] outstanding_r = 4'd0;
 reg store_mode_r = 1'b0;
 reg [2:0] acc_lane_r = 3'd0;
+
+// DOTSTORE writeback: the narrowed completed sum, one beat after the final
+// accumulation.
 reg store_r = 1'b0;
 reg [8:0] store_addr_r = 9'd0;
 reg [31:0] store_data_r = 32'h00000000;
-
-// Stage 1: latched operands.
-reg s1_valid_r = 1'b0;
-reg signed [35:0] s1_a_r = 36'sd0;
-reg signed [35:0] s1_b_r = 36'sd0;
-
-// Stage 2: first product register.
-reg s2_valid_r = 1'b0;
-reg signed [71:0] s2_prod_r = 72'sd0;
-
-// Stage 3: second product register; this is the product that reaches ACC.
-reg s3_valid_r = 1'b0;
-reg signed [71:0] s3_prod_r = 72'sd0;
 
 // Read-address generation. During T0 the unlatched bases are used directly;
 // afterwards the latched bases and the incrementing lane index are used. A has
@@ -155,37 +142,24 @@ assign rf_read_b_address =
 wire data_valid = run_r && !abort &&
     (lane_r >= 3'd1) && ((lane_r - 3'd1) <= last_lane_r);
 
-// Inferred 36x36 -> 72-bit signed multiplier: the stage-1 registers feed this
-// combinational product and stage 2 registers it.
-wire signed [71:0] product_next = $signed(s1_a_r) * $signed(s1_b_r);
-
-// Full-width signed accumulation: sign-extend ACC, add the complete 72-bit
-// product and keep the low 64 bits (Q32.32 wrap). NOTE: gowinsynthesis fuses
-// this accumulate into a MULTADDALU18X18 DSP macro (the multiplier's ALU
-// section); every syn_dspstyle placement was tried and ignored, and the
-// mapping is accepted deliberately — it is the DSP-efficient form and passes
-// timing. See fpu-design-v2 §14.
-wire signed [71:0] acc_ext = {{8{acc_r[63]}}, acc_r};
-wire signed [71:0] acc_sum = acc_ext + s3_prod_r;
-
-// The product in stage 3 during this cycle is the final lane of a DOTSTORE
-// exactly when the running instruction is a DOTSTORE and every lane up to
-// last_lane_r has already been accumulated.
-wire final_store_lane = s3_valid_r && store_mode_r &&
+// The product returning this beat completes the DOTSTORE exactly when every
+// lane up to last_lane_r has already been accumulated.
+wire final_store_lane = mul_out_valid && store_mode_r &&
     (acc_lane_r == last_lane_r);
+
+// Accumulate the returning product into ACC. The complete signed 72-bit
+// product is added; the low 64 bits are kept (Q32.32 wrap). The sum that
+// includes the final lane is the DOTSTORE writeback value.
+wire signed [63:0] acc_plus = acc_r + mul_out_product[63:0];
 
 always @(posedge clk) begin
     if (abort) begin
         run_r <= 1'b0;
-        s1_valid_r <= 1'b0;
-        s2_valid_r <= 1'b0;
-        s3_valid_r <= 1'b0;
+        outstanding_r <= 4'd0;
         store_mode_r <= 1'b0;
         store_r <= 1'b0;
         // ACC is deliberately preserved across abort.
     end else if (load_now) begin
-        // All three subops run the shared lane pipeline from T0. DOT and
-        // DOTSTORE start a fresh sum; DOTADD continues the current ACC.
         run_r <= 1'b1;
         lane_r <= 3'd1;
         last_lane_r <= decoded_last_lane;
@@ -196,12 +170,10 @@ always @(posedge clk) begin
         acc_lane_r <= 3'd0;
         store_r <= 1'b0;
         store_addr_r <= {3'b000, fd_field};
+        outstanding_r <= 4'd0;
+        // DOT and DOTSTORE start a fresh sum; DOTADD continues the ACC.
         if (is_dot || is_dotstore)
             acc_r <= 64'sd0;
-        // No lane reaches a product stage before T4, so it starts empty.
-        s1_valid_r <= 1'b0;
-        s2_valid_r <= 1'b0;
-        s3_valid_r <= 1'b0;
     end else begin
         // Read sequencer: one lane per beat; it stops one beat after the last
         // lane, so the read window is exactly T0..T(last_lane).
@@ -212,36 +184,26 @@ always @(posedge clk) begin
                 lane_r <= lane_r + 3'd1;
         end
 
-        // Stage 1 captures the operands present on the read buses this beat.
-        s1_valid_r <= data_valid;
-        if (data_valid) begin
-            s1_a_r <= $signed(rf_read_a_data);
-            s1_b_r <= $signed(rf_read_b_data);
-        end
+        // Pipe bookkeeping: an entry leaves as another returns.
+        // The pipe is shared: only this instruction's own entries count.
+        // Products returning while we have none outstanding belong to the
+        // other path and must not decrement (4-bit wrap would never clear).
+        outstanding_r <= outstanding_r + {3'b0, data_valid} -
+            {3'b0, mul_out_valid && (outstanding_r != 4'd0)};
 
-        // Stage 2 captures the product.
-        s2_valid_r <= s1_valid_r;
-        if (s1_valid_r)
-            s2_prod_r <= product_next;
-
-        // Stage 3 captures the product again; this beat's product reaches ACC.
-        s3_valid_r <= s2_valid_r;
-        if (s2_valid_r)
-            s3_prod_r <= s2_prod_r;
-
-        // Accumulate the lane whose product is in stage 3. The complete signed
-        // 72-bit product is added with no per-lane narrowing. On the final lane
-        // of a DOTSTORE the completed sum (including this lane) is captured for
-        // the next beat's register write; ACC keeps that sum through the write
-        // beat and is cleared once the writeback is done.
-        if (s3_valid_r) begin
-            acc_r <= acc_sum[63:0];
+        // Accumulate the returning product (full width, no per-lane
+        // narrowing). The final lane of a DOTSTORE also captures the narrowed
+        // sum for the writeback beat. Only entries this instruction issued
+        // count: the pipe is shared, and the multiply path's products must
+        // never leak into ACC.
+        if (mul_out_valid && (outstanding_r != 4'd0)) begin
+            acc_r <= acc_plus;
+            acc_lane_r <= acc_lane_r + 3'd1;
             if (final_store_lane) begin
-                store_data_r <= acc_sum[47:16];
+                store_data_r <= acc_plus[47:16];
                 store_r <= 1'b1;
                 store_mode_r <= 1'b0;
             end
-            acc_lane_r <= acc_lane_r + 3'd1;
         end
 
         // DOTSTORE completes its writeback this beat and leaves ACC clean.
@@ -252,14 +214,21 @@ always @(posedge clk) begin
     end
 end
 
+// Shared pipe drive: tags carry no destination for dot (ACC is the target),
+// so the tag is just the lane number for observability.
+assign mul_in_valid = data_valid;
+assign mul_in_a = rf_read_a_data;
+assign mul_in_b = rf_read_b_data;
+assign mul_in_tag = {6'b0, lane_r - 3'd1};
+
 // The write port is gated combinationally by abort, so an abort on the
 // writeback beat cancels the register-file write at that edge.
 assign rf_write_enable = store_r && !abort;
 assign rf_write_address = store_addr_r;
 assign rf_write_data = store_data_r;
 
-assign busy = (load_now || run_r || s1_valid_r || s2_valid_r || s3_valid_r ||
-    store_r) && !abort;
+assign busy = (load_now || run_r || (outstanding_r != 4'd0) ||
+    mul_out_valid || store_r) && !abort;
 
 // Observation port: the ACC register is exposed directly.
 assign acc_out = acc_r;

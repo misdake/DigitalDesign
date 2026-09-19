@@ -273,6 +273,8 @@ task run_scalar;
         sa = a;
         sb = b;
         is_cmp = (subop == 4'hB);
+        // subop 0x02 (MUL) is owned by the multiply path: the scalar path
+        // does not fire at all (no write, no countdown).
         alu_reference(a, b, subop, result);
 
         w0 = {4'hD, fa, fb};
@@ -290,9 +292,10 @@ task run_scalar;
         word = 16'h0000;
         // The instr_complete pulse is high in the cycle that just started (T0).
         #1;
-        check_value(busy, 1'b1, "T0 busy");
-        check_value(sp_w_wait, 4'd2, "T0 w_wait");
-        check_value(sp_x_wait, 4'd2, "T0 x_wait");
+        // MUL (subop 0x02) does not fire the scalar path at all.
+        check_value(busy, (subop == 4'h2) ? 1'b0 : 1'b1, "T0 busy");
+        check_value(sp_w_wait, (subop == 4'h2) ? 4'd0 : 4'd2, "T0 w_wait");
+        check_value(sp_x_wait, (subop == 4'h2) ? 4'd0 : 4'd2, "T0 x_wait");
         check_value(sp_r_wait, 4'd0, "T0 r_wait");
 
         @(posedge clk);
@@ -310,10 +313,10 @@ task run_scalar;
             check_value({31'b0, flag_eq}, ref_flag_eq, "T1 flag_eq holds");
             check_value({31'b0, flag_gt}, ref_flag_gt, "T1 flag_gt holds");
         end
-        check_value({31'b0, sp_write_enable}, is_cmp ? 32'h0 : 32'h1,
+        check_value({31'b0, sp_write_enable}, (is_cmp || subop == 4'h2) ? 32'h0 : 32'h1,
             "T1 write enable");
-        check_value(sp_w_wait, 4'd1, "T1 w_wait");
-        check_value(busy, 1'b1, "T1 busy");
+        check_value(sp_w_wait, (subop == 4'h2) ? 4'd0 : 4'd1, "T1 w_wait");
+        check_value(busy, (subop == 4'h2) ? 1'b0 : 1'b1, "T1 busy");
 
         @(posedge clk);
         #1;
@@ -323,11 +326,11 @@ task run_scalar;
         check_value(sp_x_wait, 4'd0, "T2 x_wait");
         check_value(busy, 1'b0, "T2 busy");
 
-        if (!is_cmp)
+        if (!is_cmp && subop != 4'h2)
             ref_mem[fd] = result;
         read_reg({3'b000, fd});
-        if (is_cmp)
-            check_value(rd_value, ref_mem[fd], "CMP leaves RF unchanged");
+        if (is_cmp || subop == 4'h2)
+            check_value(rd_value, ref_mem[fd], "CMP/MUL leave RF unchanged here");
         else
             check_value(rd_value, ref_mem[fd], "writeback readback");
     end

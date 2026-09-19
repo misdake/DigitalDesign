@@ -196,6 +196,38 @@ CpuV3FpuV2VectorPath vector_path (
     .busy(vp_busy)
 );
 
+// Shared 36x36 multiply pipe. The core serializes instructions, so the
+// multiply and dot paths are never active at once; the operand buses are
+// muxed by which path is busy (multiply wins the tie so the select is
+// always defined).
+wire mp_mul_in_valid;
+wire [31:0] mp_mul_in_a;
+wire [31:0] mp_mul_in_b;
+wire [8:0] mp_mul_in_tag;
+wire dp_mul_in_valid;
+wire [31:0] dp_mul_in_a;
+wire [31:0] dp_mul_in_b;
+wire [8:0] dp_mul_in_tag;
+wire mul_in_valid = mp_busy ? mp_mul_in_valid : dp_mul_in_valid;
+wire [31:0] mul_in_a = mp_busy ? mp_mul_in_a : dp_mul_in_a;
+wire [31:0] mul_in_b = mp_busy ? mp_mul_in_b : dp_mul_in_b;
+wire [8:0] mul_in_tag = mp_busy ? mp_mul_in_tag : dp_mul_in_tag;
+wire mul_out_valid;
+wire signed [63:0] mul_out_product;
+wire [8:0] mul_out_tag;
+
+CpuV3FpuV2MulPipe mul_pipe (
+    .clk(clk),
+    .abort(abort),
+    .in_valid(mul_in_valid),
+    .in_a(mul_in_a),
+    .in_b(mul_in_b),
+    .in_tag(mul_in_tag),
+    .out_valid(mul_out_valid),
+    .out_product(mul_out_product),
+    .out_tag(mul_out_tag)
+);
+
 // Multiply execution path (VMUL/VMULS/scalar MUL). Same front-end pair
 // contract as the vector path.
 CpuV3FpuV2MultiplyPath multiply_path (
@@ -210,6 +242,13 @@ CpuV3FpuV2MultiplyPath multiply_path (
     .rf_read_b_data(rf_read_b_data),
     .rf_read_a_address(mp_read_a_address),
     .rf_read_b_address(mp_read_b_address),
+    .mul_in_valid(mp_mul_in_valid),
+    .mul_in_a(mp_mul_in_a),
+    .mul_in_b(mp_mul_in_b),
+    .mul_in_tag(mp_mul_in_tag),
+    .mul_out_valid(mul_out_valid),
+    .mul_out_product(mul_out_product),
+    .mul_out_tag(mul_out_tag),
     .rf_write_enable(mp_write_enable),
     .rf_write_address(mp_write_address),
     .rf_write_data(mp_write_data),
@@ -231,6 +270,13 @@ CpuV3FpuV2DotPath dot_path (
     .rf_read_b_data(rf_read_b_data),
     .rf_read_a_address(dp_read_a_address),
     .rf_read_b_address(dp_read_b_address),
+    .mul_in_valid(dp_mul_in_valid),
+    .mul_in_a(dp_mul_in_a),
+    .mul_in_b(dp_mul_in_b),
+    .mul_in_tag(dp_mul_in_tag),
+    .mul_out_valid(mul_out_valid),
+    .mul_out_product(mul_out_product),
+    .mul_out_tag(mul_out_tag),
     .rf_write_enable(dp_write_enable),
     .rf_write_address(dp_write_address),
     .rf_write_data(dp_write_data),

@@ -17,7 +17,9 @@
 // hardware never checks it.
 //
 // Supported subops (section 6.3): 0x00 VADD, 0x01 VSUB, 0x04 VMIN, 0x05 VMAX,
-// 0x06 VABS (B ignored), 0x07 VNEG (B ignored), 0x0C VMOV (B ignored). They map
+// 0x06 VABS (B ignored), 0x07 VNEG (B ignored), 0x0C VMOV (B ignored); any
+// other subop is ignored entirely (no lane runs, no write) because VMUL/VMULS
+// and the dot family are owned by the multiply and dot paths. They map
 // onto the combinational CpuV3FpuV2ScalarAlu leaf, one lane per cycle, so the
 // vector path adds no second arithmetic datapath. Any other subop maps to an
 // ALU op code the leaf does not list, so it yields the leaf's defined zero
@@ -62,8 +64,12 @@ wire [1:0] len_field = word1_raw[9:8];
 wire [4:0] subop = word1_raw[7:3];
 
 wire is_vector = (instr_opcode == 4'hC);
+// Only the subops implemented here start the lane sequencer; multiply and dot
+// subops belong to the other execution paths and must not disturb them.
+wire supported = subop == 5'h00 || subop == 5'h01 ||
+    (subop >= 5'h04 && subop <= 5'h07) || subop == 5'h0C;
 // T0 of this cycle: a live vector instruction completed and is not cancelled.
-wire load_now = instr_complete && is_vector && !abort;
+wire load_now = instr_complete && is_vector && supported && !abort;
 
 // subop -> scalar ALU op. The seven supported subops select the exact entries
 // of the scalar leaf; unlisted subops select 4'h2, which the leaf does not

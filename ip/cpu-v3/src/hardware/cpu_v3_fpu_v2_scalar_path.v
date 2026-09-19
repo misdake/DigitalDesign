@@ -66,9 +66,12 @@ wire [5:0] fd = word1_raw[15:10];
 
 wire is_scalar = (instr_opcode == 4'hD);
 wire is_cmp = (subop == 6'h0B);
+// Subop 0x02 (MUL) is owned by the multiply path: the scalar path must not
+// touch it (an unfiltered scalar path would write the ALU's defined zero at
+// T1, overwritten by the product at T4 — correct but dirty).
 // T0 of this cycle: a live scalar instruction has completed and is not being
 // cancelled. It is the only beat that starts work.
-wire load_now = instr_complete && is_scalar && !abort;
+wire load_now = instr_complete && is_scalar && (subop != 6'h02) && !abort;
 
 // Combinational scalar ALU leaf; it owns no register of its own.
 wire [31:0] alu_result;

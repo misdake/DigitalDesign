@@ -89,6 +89,47 @@ initial begin
         rf_mem[rf_init] = 32'b0;
 end
 
+// Shared-pipe stub: the real CpuV3FpuV2MulPipe lives in the unit top; this
+// TB-local copy reproduces its exact 3-stage tag-carrying behavior so the
+// leaf test needs no resource-claiming sibling modules (same pattern as the
+// scalar-path and multiply-path TBs).
+wire mul_in_valid;
+wire [31:0] mul_in_a;
+wire [31:0] mul_in_b;
+wire [8:0] mul_in_tag;
+wire mul_out_valid;
+wire signed [63:0] mul_out_product;
+wire [8:0] mul_out_tag;
+
+reg mul_s1_valid = 0;
+reg signed [35:0] mul_s1_a = 0;
+reg signed [35:0] mul_s1_b = 0;
+reg [8:0] mul_s1_tag = 0;
+reg mul_s2_valid = 0;
+reg signed [71:0] mul_s2_prod = 0;
+reg [8:0] mul_s2_tag = 0;
+reg mul_s3_valid = 0;
+reg signed [71:0] mul_s3_prod = 0;
+reg [8:0] mul_s3_tag = 0;
+always @(posedge clk) begin
+    if (abort) begin
+        mul_s1_valid <= 0; mul_s2_valid <= 0; mul_s3_valid <= 0;
+    end else begin
+        mul_s3_valid <= mul_s2_valid;
+        if (mul_s2_valid) begin mul_s3_prod <= mul_s2_prod; mul_s3_tag <= mul_s2_tag; end
+        mul_s2_valid <= mul_s1_valid;
+        if (mul_s1_valid) begin mul_s2_prod <= mul_s1_a * mul_s1_b; mul_s2_tag <= mul_s1_tag; end
+        mul_s1_valid <= mul_in_valid;
+        if (mul_in_valid) begin
+            mul_s1_a <= $signed(mul_in_a); mul_s1_b <= $signed(mul_in_b);
+            mul_s1_tag <= mul_in_tag;
+        end
+    end
+end
+assign mul_out_valid = mul_s3_valid && !abort;
+assign mul_out_product = mul_s3_prod[63:0];
+assign mul_out_tag = mul_s3_tag;
+
 CpuV3FpuV2DotPath dot_path (
     .clk(clk),
     .abort(abort),
@@ -101,6 +142,13 @@ CpuV3FpuV2DotPath dot_path (
     .rf_read_b_data(rf_read_b_data),
     .rf_read_a_address(dp_read_a_address),
     .rf_read_b_address(dp_read_b_address),
+    .mul_in_valid(mul_in_valid),
+    .mul_in_a(mul_in_a),
+    .mul_in_b(mul_in_b),
+    .mul_in_tag(mul_in_tag),
+    .mul_out_valid(mul_out_valid),
+    .mul_out_product(mul_out_product),
+    .mul_out_tag(mul_out_tag),
     .rf_write_enable(dp_write_enable),
     .rf_write_address(dp_write_address),
     .rf_write_data(dp_write_data),
