@@ -1556,6 +1556,9 @@ enum Phase {
     /// FPU v2: scalar ops wait out the unit; memory ops wait for the async
     /// store buffer to drain before taking the data port.
     Fpu2Exec,
+    /// FPU v2: capture an FST source vector into the early-release store
+    /// buffer, one F register per beat through the FPU ext read port.
+    Fpu2Capture,
     Fpu2MemRequest,
     Fpu2MemResponse,
     ResetClear,
@@ -1636,6 +1639,15 @@ pub struct CpuV3CoreState {
     fpu_low: u16,
     fpu_seen_complete: bool,
     fpu_fault_pc: u16,
+    /// FST early-release store buffer (FPU design section 18): up to four
+    /// captured 32-bit F registers, the address and fault pc of the pending
+    /// store, and the remaining 16-bit word count/index draining through the
+    /// single-entry async store channel.
+    fpu_buf: [u32; 4],
+    fpu_pending: u8,
+    fpu_pending_index: u8,
+    fpu_store_address: u32,
+    fpu_store_fault_pc: u16,
     /// The architectural halt value, latched at the HALT retire edge like a
     /// register-read (mirrors the RTL's registered `halt_signal`).
     halt_signal: u16,
@@ -1688,6 +1700,11 @@ impl Default for CpuV3CoreState {
             fpu_low: 0,
             fpu_seen_complete: false,
             fpu_fault_pc: 0,
+            fpu_buf: [0; 4],
+            fpu_pending: 0,
+            fpu_pending_index: 0,
+            fpu_store_address: 0,
+            fpu_store_fault_pc: 0,
         }
     }
 }
@@ -1703,6 +1720,7 @@ impl CpuV3CoreState {
         data_read_data: u16,
     ) -> CpuV3FpuV2InputValue {
         let ext_access = (self.phase == Phase::Fpu2Exec && self.fpu_is_memory)
+            || self.phase == Phase::Fpu2Capture
             || matches!(self.phase, Phase::Fpu2MemRequest | Phase::Fpu2MemResponse);
         let ext_write_enable = self.phase == Phase::Fpu2MemResponse
             && !self.fpu_write_back
@@ -1711,16 +1729,22 @@ impl CpuV3CoreState {
             && !data_error;
         // The register index advances once per two beats (one F register), so
         // beat >> 1 selects Fd+i for FLD and Fa+i for FST, matching the RTL.
-        let beat_index = u64::from(self.fpu_beat >> 1);
+        // During capture the synchronous RF read is pipelined: present the next
+        // register (beat + 1) while the current one is captured.
+        let ext_read_index = if self.phase == Phase::Fpu2Capture {
+            u64::from(self.fpu_beat) + 1
+        } else {
+            u64::from(self.fpu_beat >> 1)
+        };
         CpuV3FpuV2InputValue {
             abort: self.fpu_abort,
             word_valid: self.fpu_word_valid,
             word: u64::from(self.fpu_word),
             ext_access,
             ext_write_enable,
-            ext_write_address: u64::from(self.fpu_fd) + beat_index,
+            ext_write_address: u64::from(self.fpu_fd) + (u64::from(self.fpu_beat) >> 1),
             ext_write_data: (u64::from(data_read_data) << 16) | u64::from(self.fpu_low),
-            ext_read_address: u64::from(self.fpu_fa) + beat_index,
+            ext_read_address: u64::from(self.fpu_fa) + ext_read_index,
         }
     }
 
@@ -2216,7 +2240,7 @@ impl Module for CpuV3Core {
                 device_read_enable: !input.hold && device_instruction && device_field & 8 == 0,
                 device_write_enable: !input.hold && device_instruction && device_field & 8 != 0,
                 device_write_data: u64::from(state.registers[usize::from(device_register)]),
-                halted: state.phase == Phase::Halted && !store.valid,
+                halted: state.phase == Phase::Halted && !store.valid && state.fpu_pending == 0,
                 halt_signal: u64::from(state.halt_signal),
                 fault: state.phase == Phase::Fault,
                 fault_code: u64::from(state.fault_code),
@@ -2260,6 +2284,32 @@ impl Module for CpuV3Core {
         // the same edge that created it.
         let async_store_was_valid = state.async_store.valid;
         let async_store_was_issued = state.async_store.issued;
+        // Pre-edge FST drain state for the same nonblocking reason: the capture
+        // that retires on this edge must not make the refill fire early.
+        let fpu_pending_was = state.fpu_pending;
+        let fpu_pending_index_was = state.fpu_pending_index;
+        let fpu_word_reg = ((fpu_pending_index_was >> 1) & 0x3) as usize;
+        let fpu_word_data = state.fpu_buf[fpu_word_reg];
+        let fpu_word_half = if fpu_pending_index_was & 1 == 1 {
+            (fpu_word_data >> 16) as u16
+        } else {
+            fpu_word_data as u16
+        };
+        let async_store_completing = async_store_was_valid
+            && async_store_was_issued
+            && input.data_response_valid
+            && !input.data_error;
+        let async_store_free = !async_store_was_valid || async_store_completing;
+        let cpu_mem_active = matches!(state.phase, Phase::DataRequest | Phase::DataResponse);
+        let fpu_mem_active = matches!(state.phase, Phase::Fpu2MemRequest | Phase::Fpu2MemResponse);
+        let cpu_store_enqueue = state.phase == Phase::Execute
+            && (state.instruction >> 12) == 9
+            && !async_store_was_valid;
+        let fpu_refill = fpu_pending_was != 0
+            && async_store_free
+            && !cpu_store_enqueue
+            && !cpu_mem_active
+            && !fpu_mem_active;
         if async_store_was_valid
             && async_store_was_issued
             && input.data_response_valid
@@ -2338,7 +2388,7 @@ impl Module for CpuV3Core {
             Phase::DataRequest if input.data_request_ready => {
                 state.phase = Phase::DataResponse;
             }
-            Phase::AsyncStoreWait if !async_store_was_valid => {
+            Phase::AsyncStoreWait if !async_store_was_valid && fpu_pending_was == 0 => {
                 let pending = state.pending_data;
                 if pending.write {
                     state.async_store = AsyncStore {
@@ -2404,13 +2454,34 @@ impl Module for CpuV3Core {
                     state.fpu_seen_complete = true;
                 }
                 if state.fpu_is_memory {
-                    if !async_store_was_valid {
+                    if fpu_pending_was == 0 && !async_store_was_valid {
                         state.fpu_beat = 0;
-                        state.phase = Phase::Fpu2MemRequest;
+                        state.phase = if state.fpu_write_back {
+                            Phase::Fpu2Capture
+                        } else {
+                            Phase::Fpu2MemRequest
+                        };
                     }
                 } else if seen_complete && !fpu_out.busy {
                     state.retire(2);
                     state.phase = Phase::FetchRequest;
+                }
+            }
+            Phase::Fpu2Capture => {
+                // The F value indexed by fpu_beat was requested on the previous
+                // beat; capture it while fpu_input presents beat + 1.
+                let index = state.fpu_beat as usize;
+                if index < state.fpu_buf.len() {
+                    state.fpu_buf[index] = fpu_out.ext_read_data as u32;
+                }
+                if state.fpu_beat == state.fpu_len - 1 {
+                    state.fpu_store_address = state.fpu_address;
+                    state.fpu_store_fault_pc = state.fpu_fault_pc;
+                    state.fpu_pending = state.fpu_len * 2;
+                    state.fpu_pending_index = 0;
+                    state.retire(2);
+                } else {
+                    state.fpu_beat += 1;
                 }
             }
             Phase::Fpu2MemRequest if input.data_request_ready => {
@@ -2460,6 +2531,23 @@ impl Module for CpuV3Core {
         // store or load retiring on this edge saw the pre-edge valid bit.
         if async_store_was_valid && async_store_was_issued && input.data_response_valid {
             state.async_store = AsyncStore::default();
+        }
+        // FST early-release drain refill, mirroring the RTL's assignment that
+        // follows the phase case: a free (or completing) channel takes the
+        // next pending word, keeping the drain gapless. A CPU store enqueuing
+        // in Execute is excluded so it wins a genuinely empty channel.
+        if fpu_refill {
+            state.async_store = AsyncStore {
+                valid: true,
+                issued: false,
+                address: state
+                    .fpu_store_address
+                    .wrapping_add(u32::from(fpu_pending_index_was)),
+                write_data: fpu_word_half,
+                fault_pc: state.fpu_store_fault_pc,
+            };
+            state.fpu_pending = fpu_pending_was - 1;
+            state.fpu_pending_index = fpu_pending_index_was + 1;
         }
     }
 

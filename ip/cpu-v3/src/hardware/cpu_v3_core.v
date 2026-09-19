@@ -47,6 +47,7 @@ localparam [4:0] ST_FPU2_WORD1 = 9;
 localparam [4:0] ST_FPU2_EXEC = 10;
 localparam [4:0] ST_FPU2_MEM_REQUEST = 11;
 localparam [4:0] ST_FPU2_MEM_RESPONSE = 12;
+localparam [4:0] ST_FPU2_CAPTURE = 13;
 localparam [4:0] ST_RESET_CLEAR = 22;
 localparam [4:0] ST_ASYNC_STORE_WAIT = 24;
 
@@ -134,6 +135,22 @@ reg [31:0] fpu2_address = 0;
 reg [15:0] fpu2_low = 0;
 reg fpu2_seen_complete = 0;
 reg [15:0] fpu2_fault_pc = 0;
+
+// FST(V) early-release store buffer (fpu-design-v2 section 18). Fpu2Exec
+// captures the `len` source F registers through the FPU ext read port (the
+// synchronous RF read is pipelined: address i+1 is presented while register i
+// is captured) and retires; the 2*len 16-bit words then drain through the
+// existing async store channel, low half first, while the core keeps
+// executing. The address/fault pc are latched here so a following FPU memory
+// instruction cannot disturb an in-flight drain.
+reg [31:0] fpu2_buf0 = 0;
+reg [31:0] fpu2_buf1 = 0;
+reg [31:0] fpu2_buf2 = 0;
+reg [31:0] fpu2_buf3 = 0;
+reg [3:0] fpu2_pending = 0;
+reg [3:0] fpu2_pending_index = 0;
+reg [31:0] fpu2_store_address = 0;
+reg [15:0] fpu2_store_fault_pc = 0;
 
 wire [3:0] gpr_read_a_address =
     state == ST_HALTED ? 4'd0 :
@@ -319,16 +336,23 @@ reg fpu2_word_valid = 0;
 reg [15:0] fpu2_word = 0;
 reg fpu2_abort = 0;
 
-// The external channel is owned by the core during FPU memory beats and is
-// released as soon as the transaction retires. For FLD the RF write fires
-// combinationally on the second response beat (a synchronous write that
-// commits at the edge leaving ST_FPU2_MEM_RESPONSE).
+// The external channel is owned by the core while it captures an FST source
+// vector and while it runs the FLD/FST memory beats, and is released as soon
+// as the transaction retires. For FLD the RF write fires combinationally on
+// the second response beat (a synchronous write that commits at the edge
+// leaving ST_FPU2_MEM_RESPONSE).
 wire fpu2_ext_access = state == ST_FPU2_EXEC && fpu2_is_memory ||
+                       state == ST_FPU2_CAPTURE ||
                        state == ST_FPU2_MEM_REQUEST ||
                        state == ST_FPU2_MEM_RESPONSE;
 wire fpu2_ext_write_enable = state == ST_FPU2_MEM_RESPONSE &&
     !fpu2_write_back && fpu2_beat[0] &&
     data_response_valid && !data_error;
+// Capture pipelining: the register indexed by the current capture beat was
+// requested on the previous beat, so present beat+1 while capturing beat. The
+// FLD memory beats keep the two-half-per-register index.
+wire [3:0] fpu2_ext_read_index =
+    state == ST_FPU2_CAPTURE ? fpu2_beat + 1'b1 : fpu2_beat_index;
 
 CpuV3FpuV2 u_fpu (
     .clk(clk),
@@ -344,7 +368,7 @@ CpuV3FpuV2 u_fpu (
     .ext_write_enable(fpu2_ext_write_enable),
     .ext_write_address({3'b000, fpu2_fd} + {6'b0, fpu2_beat_index}),
     .ext_write_data({data_read_data, fpu2_low}),
-    .ext_read_address({3'b000, fpu2_fa} + {6'b0, fpu2_beat_index}),
+    .ext_read_address({3'b000, fpu2_fa} + {6'b0, fpu2_ext_read_index}),
     .ext_read_data(fpu2_ext_read_data)
 );
 
@@ -366,6 +390,29 @@ assign data_request_valid = !hold && ((async_store_valid && !async_store_issued)
 // from inside them.
 wire fpu2_mem_active = state == ST_FPU2_MEM_REQUEST ||
                        state == ST_FPU2_MEM_RESPONSE;
+
+// Early-release store drain (section 18). The next pending word is selected
+// low half first; the refill moves it into the single-entry async store
+// channel whenever that channel is free (or is completing this cycle, so the
+// drain streams without an empty-buffer gap). It pauses for any architectural
+// memory state that owns the data port, and a CPU store enqueuing in
+// ST_EXECUTE wins a free channel over the refill.
+wire cpu_mem_active = state == ST_DATA_REQUEST || state == ST_DATA_RESPONSE;
+wire cpu_store_enqueue = state == ST_EXECUTE && opcode == 4'h9 &&
+                         !async_store_valid;
+wire async_store_completing = async_store_valid && async_store_issued &&
+                              data_response_valid && !data_error;
+wire async_store_free = !async_store_valid || async_store_completing;
+wire fpu2_refill = fpu2_pending != 0 && async_store_free &&
+                   !cpu_store_enqueue && !cpu_mem_active &&
+                   !fpu2_mem_active;
+wire [1:0] fpu2_word_reg = fpu2_pending_index[2:1];
+wire [31:0] fpu2_word_data =
+    fpu2_word_reg == 2'd0 ? fpu2_buf0 :
+    fpu2_word_reg == 2'd1 ? fpu2_buf1 :
+    fpu2_word_reg == 2'd2 ? fpu2_buf2 : fpu2_buf3;
+wire [15:0] fpu2_word_half =
+    fpu2_pending_index[0] ? fpu2_word_data[31:16] : fpu2_word_data[15:0];
 assign data_write = async_store_valid ? 1'b1 :
                     fpu2_mem_active ? fpu2_write_back : pending_write;
 assign data_address = async_store_valid ? async_store_address :
@@ -384,8 +431,9 @@ assign device_channel = field_a;
 assign device_read_enable = !hold && state == ST_EXECUTE && opcode == 4'h7 && !field_d[3];
 assign device_write_enable = !hold && state == ST_EXECUTE && opcode == 4'h7 && field_d[3];
 assign device_write_data = gpr_read_b_data;
-// Do not expose HALT until the last buffered store is globally observed.
-assign halted = state == ST_HALTED && !async_store_valid;
+// Do not expose HALT until the last buffered store is globally observed and
+// the FST early-release drain has fully left the core.
+assign halted = state == ST_HALTED && !async_store_valid && fpu2_pending == 0;
 assign fault = state == ST_FAULT;
 assign pc = pc_register;
 assign code_segment = code_segment_register;
@@ -419,6 +467,8 @@ always @(posedge clk) begin
         fpu2_abort <= 1;
         fpu2_seen_complete <= 0;
         fpu2_is_memory <= 0;
+        fpu2_pending <= 0;
+        fpu2_pending_index <= 0;
     end else if (!hold) begin
         gpr_write_enable <= 0;
         fpu2_word_valid <= 0;
@@ -904,7 +954,10 @@ always @(posedge clk) begin
                     state <= ST_DATA_RESPONSE;
             end
             ST_ASYNC_STORE_WAIT: begin
-                if (!async_store_valid) begin
+                // Wait until the channel is free and, when an FST drain is in
+                // flight, until every pending FST word has been issued: a CPU
+                // store or load must never overtake an earlier FPU store.
+                if (!async_store_valid && fpu2_pending == 0) begin
                     if (pending_write) begin
                         async_store_valid <= 1;
                         async_store_issued <= 0;
@@ -985,17 +1038,44 @@ always @(posedge clk) begin
                 if (fpu2_instr_complete)
                     fpu2_seen_complete <= 1;
                 if (fpu2_is_memory) begin
-                    // Wait out the async store buffer before touching the
-                    // data port; FST parks the ext read address through the
-                    // ext_access comb path so the RF data is valid by the
-                    // first request beat.
-                    if (!async_store_valid) begin
+                    // No FPU memory op may start while an earlier FST drain is
+                    // in flight: a load must not overtake it, and a new FST
+                    // capture must not overwrite the buffer payload. The async
+                    // channel must also be idle, since the FPU memory states
+                    // own the same data port. FST then captures its source
+                    // vector (early release) while FLD takes the blocking
+                    // data-port path.
+                    if (fpu2_pending == 0 && !async_store_valid) begin
                         fpu2_beat <= 0;
-                        state <= ST_FPU2_MEM_REQUEST;
+                        state <= fpu2_write_back ? ST_FPU2_CAPTURE :
+                                                   ST_FPU2_MEM_REQUEST;
                     end
                 end else if (fpu2_seen_complete && !fpu2_busy) begin
                     retired_words <= retired_words + 2;
                     state <= ST_FETCH_REQUEST;
+                end
+            end
+            ST_FPU2_CAPTURE: begin
+                // The F value indexed by `fpu2_beat` was requested through the
+                // ext read port on the previous beat (address fa+beat); capture
+                // it now while presenting fa+beat+1 for the next beat. The last
+                // capture retires the instruction with the whole vector pending
+                // for the early-release drain.
+                case (fpu2_beat)
+                    4'd0: fpu2_buf0 <= fpu2_ext_read_data;
+                    4'd1: fpu2_buf1 <= fpu2_ext_read_data;
+                    4'd2: fpu2_buf2 <= fpu2_ext_read_data;
+                    4'd3: fpu2_buf3 <= fpu2_ext_read_data;
+                endcase
+                if (fpu2_beat == fpu2_len - 1'b1) begin
+                    fpu2_store_address <= fpu2_address;
+                    fpu2_store_fault_pc <= fpu2_fault_pc;
+                    fpu2_pending <= fpu2_double_len;
+                    fpu2_pending_index <= 0;
+                    retired_words <= retired_words + 2;
+                    state <= ST_FETCH_REQUEST;
+                end else begin
+                    fpu2_beat <= fpu2_beat + 1'b1;
                 end
             end
             ST_FPU2_MEM_REQUEST: begin
@@ -1043,6 +1123,21 @@ always @(posedge clk) begin
             end
             default: state <= state;
         endcase
+        // FST early-release drain: move the next pending word into the async
+        // store channel when it is free. This assignment deliberately follows
+        // the phase case (and the async-store completion above), so a drain
+        // that completes this cycle hands the channel straight to the next
+        // word, while a CPU store enqueued in ST_EXECUTE still wins the free
+        // channel (fpu2_refill is gated on cpu_store_enqueue).
+        if (fpu2_refill) begin
+            async_store_valid <= 1;
+            async_store_issued <= 0;
+            async_store_address <= fpu2_store_address + fpu2_pending_index;
+            async_store_data <= fpu2_word_half;
+            async_store_fault_pc <= fpu2_store_fault_pc;
+            fpu2_pending <= fpu2_pending - 1'b1;
+            fpu2_pending_index <= fpu2_pending_index + 1'b1;
+        end
         end
     end
 end

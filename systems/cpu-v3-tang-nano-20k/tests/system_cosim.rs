@@ -285,6 +285,110 @@ fn program_fpu_v2_vector_ldst() -> Vec<u16> {
     p
 }
 
+/// FPU v2 early-release FST(V) store buffer at system level (Stage 6b). A
+/// VADD.4 computes 2/4/6/8 into f4..f7, FSTV4 posts them to [0x4020] and
+/// retires immediately (only the capture blocks); unrelated FPU and CPU work
+/// then overlaps the drain. The program reads the same address back with an
+/// FLDV4, doubles the read values into f12..f15, stores them to [0x4040], and
+/// mirrors an immediate FSTV4/FLDV4 pair through [0x4060]. The four words the
+/// CPU loads from [0x4060] sum to 40, proving every drain completed before the
+/// dependent reads and that the drains never corrupted later FPU memory
+/// traffic. Correctness alone validates the overlap: with blocking stores the
+/// readbacks would still match, but every unrelated instruction would have
+/// serialized behind the data port.
+fn program_fpu_v2_store_overlap() -> Vec<u16> {
+    let mut p = Vec::new();
+    p.extend(load_immediate16(1, 0x4000)); // 1.0..4.0 source for FLDV4
+    p.extend(load_immediate16(2, 0x4020)); // first FSTV4 / readback address
+    p.extend(load_immediate16(3, 0x4040)); // doubled values destination
+    p.extend(load_immediate16(4, 0x4060)); // mirrored pair destination
+    for (value, offset) in [(1u16, 1i16), (2, 3), (3, 5), (4, 7)] {
+        p.extend(load_immediate16(0, value));
+        p.push(store(0, 1, offset)); // [0x4000 + offset] = value (high half)
+    }
+    // word0 {E, X, Fa, kind}; word1 {Fd/Fa, subop, mode}; mode[1:0] = vec-1.
+    let fldv = |x: u16, fd: u16, mode: u16| [0xe000 | (x << 8), (fd << 10) | mode];
+    let fstv = |x: u16, fa: u16, mode: u16| [0xe000 | (x << 8) | (fa << 2), 0x0010 | mode];
+    // word0 for VADD-style ops: {C, Fa, Fb}; word1 {Fd, len, subop}.
+    let vadd =
+        |fa: u16, fb: u16, fd: u16, len: u16| [0xc000 | (fa << 6) | fb, (fd << 10) | (len << 8)];
+
+    p.extend(fldv(1, 0, 3)); // f0..f3 = 1.0, 2.0, 3.0, 4.0
+    p.extend(vadd(0, 0, 4, 3)); // f4..f7 = 2.0, 4.0, 6.0, 8.0
+    p.extend(fstv(2, 4, 3)); // FSTV4 [0x4020] = f4..f7; early release.
+
+    // ~20 cycles of work unrelated to the pending drain.
+    p.extend(vadd(0, 0, 16, 0)); // VADD.2 f16..f17
+    p.push(0xc000); // VMULS.2 f18..f19 = f0..f1 * f0..f1
+    p.push(0x4818);
+    for _ in 0..10 {
+        p.push(immediate_unsigned(ImmediateOp::Add, 5, 1)); // dependent ALU chain
+    }
+
+    // Read the just-stored window back through the FPU memory path (this FLD
+    // waits for the drain), double it, and post it again.
+    p.extend(fldv(2, 8, 3)); // f8..f11 = [0x4020] = 2.0, 4.0, 6.0, 8.0
+    p.extend(vadd(8, 8, 12, 3)); // f12..f15 = 4.0, 8.0, 12.0, 16.0
+    p.extend(fstv(3, 12, 3)); // FSTV4 [0x4040] = f12..f15; early release.
+
+    // Second shape: an FLDV4 of the same address immediately after the FSTV4
+    // must read back the new values through the ordering rule.
+    p.extend(fldv(3, 0, 3)); // f0..f3 = [0x4040] = 4.0, 8.0, 12.0, 16.0
+    p.extend(fstv(4, 0, 3)); // FSTV4 [0x4060] = f0..f3; early release.
+
+    // Dependent CPU loads prove every drain completed and preserved order.
+    p.push(load(0, 4, 1)); // r0 = [0x4061] high half of 4.0 = 4
+    p.push(load(9, 4, 3)); // r9 = [0x4063] = 8
+    p.push(alu(AluOp::Add, 0, 0, 9)); // 12
+    p.push(load(10, 4, 5)); // r10 = [0x4065] = 12
+    p.push(alu(AluOp::Add, 0, 0, 10)); // 24
+    p.push(load(11, 4, 7)); // r11 = [0x4067] = 16
+    p.push(alu(AluOp::Add, 0, 0, 11)); // 40
+
+    // Branch on the last lane to keep a failure path distinguishable.
+    p.push(immediate_unsigned(ImmediateOp::CompareUnsigned, 11, 15)); // 16 > 15
+    p.push(branch(TestCondition::GreaterThan, 2)); // taken -> skip the bad halt
+    p.extend(load_immediate16(0, 0x00bb)); // failure halt signal
+    p.push(halt());
+    p.push(halt()); // r0 = 40 = 0x28
+    p
+}
+
+/// Memory-ordering hazards of the FST early-release drain versus CPU memory
+/// ops: a CPU load right after an FSTV4 must see the new values even though
+/// most drain words have not been written yet, and a CPU store right after an
+/// FSTV4 must win over the drain words that target the same word later.
+fn program_fpu_v2_store_drain_hazard() -> Vec<u16> {
+    let mut p = Vec::new();
+    p.extend(load_immediate16(1, 0x4000)); // 1.0..4.0 source
+    p.extend(load_immediate16(2, 0x4080)); // FSTV4 destination
+    for (value, offset) in [(1u16, 1i16), (2, 3), (3, 5), (4, 7)] {
+        p.extend(load_immediate16(0, value));
+        p.push(store(0, 1, offset));
+    }
+    let fldv = |x: u16, fd: u16, mode: u16| [0xe000 | (x << 8), (fd << 10) | mode];
+    let fstv = |x: u16, fa: u16, mode: u16| [0xe000 | (x << 8) | (fa << 2), 0x0010 | mode];
+    p.extend(fldv(1, 0, 3)); // f0..f3 = 1.0, 2.0, 3.0, 4.0
+    p.extend(fstv(2, 0, 3)); // FSTV4 [0x4080] = f0..f3; early release, 8 words pending
+    // Hazard A: a CPU load of the second word must not read stale memory.
+    p.push(load(3, 2, 1)); // r3 = [0x4081] high half of 1.0; must be 1
+    // Hazard B: a CPU store to a later word must beat the remaining drain.
+    p.extend(load_immediate16(0, 9));
+    p.push(store(0, 2, 3)); // [0x4083] = 9 (architecturally after the FSTV)
+    // Force the drain to complete, then read both words back.
+    p.extend(fldv(2, 8, 1)); // FLDV2 f8..f9 = [0x4080]; waits for the drain
+    p.push(load(4, 2, 3)); // r4 = [0x4083]; must be 9 (CPU store won)
+    // Signal = (r3 - 1) + (r4 - 9) + 0x2a; 0x2a only when both hazards held.
+    p.push(alu(AluOp::Add, 7, 3, 7)); // r7 = r3 (r7 is zero)
+    p.push(immediate_unsigned(ImmediateOp::Sub, 7, 1));
+    p.push(alu(AluOp::Add, 7, 7, 4));
+    p.push(immediate_unsigned(ImmediateOp::Sub, 7, 9));
+    p.extend(load_immediate16(5, 0x2a));
+    p.push(alu(AluOp::Add, 0, 7, 5));
+    p.push(halt());
+    p
+}
+
 fn programs() -> Vec<CosimProgram> {
     vec![
         CosimProgram {
@@ -366,6 +470,22 @@ fn programs() -> Vec<CosimProgram> {
             check_base: 0x4020,
             check_len: 0x14,
             expected_halt: Some(2),
+        },
+        CosimProgram {
+            name: "fpu_v2_store_overlap",
+            words: program_fpu_v2_store_overlap(),
+            max_cycles: 20_000,
+            check_base: 0x4020,
+            check_len: 0x48,
+            expected_halt: Some(0x28),
+        },
+        CosimProgram {
+            name: "fpu_v2_store_drain_hazard",
+            words: program_fpu_v2_store_drain_hazard(),
+            max_cycles: 20_000,
+            check_base: 0x4080,
+            check_len: 8,
+            expected_halt: Some(0x2a),
         },
     ]
 }
