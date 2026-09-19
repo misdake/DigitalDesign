@@ -7,7 +7,7 @@ wire flag_lt;
 wire flag_eq;
 wire flag_gt;
 
-CpuV3FpuV2ScalarAlu dut(.*);
+CpuV3FpuScalarAlu dut(.*);
 
 // The ALU is purely combinational, so there is no clock and the testbench
 // drives inputs with #delay instead. A step counter still enforces the

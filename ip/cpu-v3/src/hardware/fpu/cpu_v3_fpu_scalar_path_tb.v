@@ -20,7 +20,7 @@ end
 // children of the scalar path (double BSRAM claims in the system build:
 // the same leaf was claimed through the unit top and again here). They are
 // now behavioral stubs inside this TB; the full leaf interconnection is
-// covered by the CpuV3FpuV2 unit testbench instead.
+// covered by the CpuV3Fpu unit testbench instead.
 
 // Front-end stub: two-word acceptance with the leaf's exact contract
 // (read_valid during the word0 beat, instr_complete one cycle after the
@@ -96,7 +96,7 @@ initial begin
         rf_mem[rf_init] = 32'b0;
 end
 
-CpuV3FpuV2ScalarPath scalar_path (
+CpuV3FpuScalarPath scalar_path (
     .clk(clk),
     .abort(abort),
     .instr_complete(instr_complete),

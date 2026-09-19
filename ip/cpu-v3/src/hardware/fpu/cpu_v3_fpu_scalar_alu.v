@@ -16,7 +16,7 @@
 // Gowin synthesis silently absorbs wide additions into a DSP block. All
 // add/sub on this leaf must stay in fabric LUTs, hence the attribute below.
 /* synthesis syn_dspstyle = "logic" */
-module CpuV3FpuV2ScalarAlu (
+module CpuV3FpuScalarAlu (
     input wire [31:0] a,
     input wire [31:0] b,
     input wire [3:0] op,

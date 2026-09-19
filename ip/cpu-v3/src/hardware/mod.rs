@@ -6,12 +6,12 @@
 mod cache;
 mod core;
 mod fetch;
-mod fpu_v2;
+mod fpu;
 
 pub use cache::*;
 pub use core::*;
 pub use fetch::*;
-pub use fpu_v2::*;
+pub use fpu::*;
 
 #[cfg(test)]
 mod tests;

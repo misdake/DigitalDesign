@@ -8,7 +8,7 @@ reg [8:0] read_b_address = 0;
 wire [31:0] read_a_data;
 wire [31:0] read_b_data;
 
-CpuV3FpuV2RegisterRam dut(.*);
+CpuV3FpuRegisterRam dut(.*);
 always #5 clk = ~clk;
 
 localparam integer MAX_CYCLES = 20000;

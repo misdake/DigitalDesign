@@ -31,7 +31,7 @@ wire flag_gt;
 wire instr_complete;
 wire [31:0] ext_read_data;
 
-CpuV3FpuV2 dut (.*);
+CpuV3Fpu dut (.*);
 
 always #5 clk = ~clk;
 

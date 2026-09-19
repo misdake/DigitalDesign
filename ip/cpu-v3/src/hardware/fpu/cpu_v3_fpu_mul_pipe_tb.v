@@ -1,4 +1,4 @@
-// Testbench for CpuV3FpuV2MulPipe: directed corners plus randomized streams
+// Testbench for CpuV3FpuMulPipe: directed corners plus randomized streams
 // against a 64-bit reference with a fixed three-cycle latency.
 module tb;
 reg clk = 0;
@@ -13,7 +13,7 @@ wire out_valid;
 wire signed [63:0] out_product;
 wire [8:0] out_tag;
 
-CpuV3FpuV2MulPipe dut (
+CpuV3FpuMulPipe dut (
     .clk(clk), .abort(abort),
     .in_valid(in_valid), .in_a(in_a), .in_b(in_b), .in_tag(in_tag),
     .out_valid(out_valid), .out_product(out_product), .out_tag(out_tag)

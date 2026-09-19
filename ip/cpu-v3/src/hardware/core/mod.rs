@@ -8,9 +8,7 @@ use std::cmp::Ordering;
 
 use crate::SignalEvent;
 
-use super::fpu_v2::{
-    encoding, CpuV3FpuV2, CpuV3FpuV2InputValue, CpuV3FpuV2OutputValue, CpuV3FpuV2State,
-};
+use super::fpu::{encoding, CpuV3Fpu, CpuV3FpuInputValue, CpuV3FpuOutputValue, CpuV3FpuState};
 
 pub const CPU_V3_FAULT_INVALID_INSTRUCTION: u8 = 1;
 pub const CPU_V3_FAULT_INSTRUCTION_MEMORY: u8 = 3;
@@ -232,7 +230,7 @@ pub struct CpuV3CoreState {
     fault_code: u8,
     fault_pc: u16,
     /// The FPU v2 unit (frontend + register file + scalar path).
-    fpu: CpuV3FpuV2State,
+    fpu: CpuV3FpuState,
     fpu2_word_valid: bool,
     fpu2_word: u16,
     fpu2_abort: bool,
@@ -297,7 +295,7 @@ impl Default for CpuV3CoreState {
             fault_pc: 0,
             halt_signal: 0,
             signal_event: None,
-            fpu: CpuV3FpuV2State::default(),
+            fpu: CpuV3FpuState::default(),
             fpu2_word_valid: false,
             fpu2_word: 0,
             fpu2_abort: false,
@@ -331,7 +329,7 @@ impl CpuV3CoreState {
         data_response_valid: bool,
         data_error: bool,
         data_read_data: u16,
-    ) -> CpuV3FpuV2InputValue {
+    ) -> CpuV3FpuInputValue {
         let ext_access = (self.phase == Phase::Fpu2Exec && self.fpu2_is_memory)
             || self.phase == Phase::Fpu2Capture
             || matches!(self.phase, Phase::Fpu2MemRequest | Phase::Fpu2MemResponse);
@@ -349,7 +347,7 @@ impl CpuV3CoreState {
         } else {
             u64::from(self.fpu2_beat >> 1)
         };
-        CpuV3FpuV2InputValue {
+        CpuV3FpuInputValue {
             abort: self.fpu2_abort,
             word_valid: self.fpu2_word_valid,
             word: u64::from(self.fpu2_word),
@@ -371,7 +369,7 @@ impl CpuV3CoreState {
         data_response_valid: bool,
         data_error: bool,
         data_read_data: u16,
-    ) -> CpuV3FpuV2OutputValue {
+    ) -> CpuV3FpuOutputValue {
         let fpu_input = self.fpu_input(data_response_valid, data_error, data_read_data);
         let fpu_out = self.fpu.comb(&fpu_input);
         self.fpu.tick(&fpu_input);
@@ -1203,7 +1201,7 @@ impl Module for CpuV3Core {
         vec![
             VerilogDependency::new::<DspMulS18>("u_multiplier"),
             VerilogDependency::new::<CpuV3GprRam>("u_gpr_ram"),
-            VerilogDependency::new::<CpuV3FpuV2>("u_fpu"),
+            VerilogDependency::new::<CpuV3Fpu>("u_fpu"),
         ]
     }
 

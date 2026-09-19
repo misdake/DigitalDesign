@@ -102,7 +102,7 @@ pub(crate) mod encoding {
 }
 
 #[derive(Clone, ModuleIo)]
-pub struct CpuV3FpuV2RegisterRamInput {
+pub struct CpuV3FpuRegisterRamInput {
     pub write_enable: Wire,
     pub write_address: Wires<9>,
     pub write_data: Wires<32>,
@@ -111,7 +111,7 @@ pub struct CpuV3FpuV2RegisterRamInput {
 }
 
 #[derive(Clone, ModuleIo)]
-pub struct CpuV3FpuV2RegisterRamOutput {
+pub struct CpuV3FpuRegisterRamOutput {
     pub read_a_data: Wires<32>,
     pub read_b_data: Wires<32>,
 }
@@ -122,26 +122,26 @@ pub struct CpuV3FpuV2RegisterRamOutput {
 /// the top three address bits of architectural accesses to zero); 64..511
 /// are the hidden LUT region for RCP/RSQRT/SINCOS. Same-cycle write/read on
 /// one address returns the old word on both read ports.
-pub struct CpuV3FpuV2RegisterRam;
+pub struct CpuV3FpuRegisterRam;
 
-impl HardwareIdentity for CpuV3FpuV2RegisterRam {
+impl HardwareIdentity for CpuV3FpuRegisterRam {
     const TARGET_RESOURCE_LEAF: bool = true;
 
     fn verilog_identity() -> VerilogIdentity {
-        VerilogIdentity::new("CpuV3FpuV2RegisterRam").namespace(["components", "cpu", "cpu_v3"])
+        VerilogIdentity::new("CpuV3FpuRegisterRam").namespace(["components", "cpu", "cpu_v3"])
     }
 }
 
-pub struct CpuV3FpuV2RegisterRamState {
+pub struct CpuV3FpuRegisterRamState {
     memory: Box<[u32; 512]>,
     read_a_data: u32,
     read_b_data: u32,
 }
 
-impl Module for CpuV3FpuV2RegisterRam {
-    type Input = CpuV3FpuV2RegisterRamInput;
-    type Output = CpuV3FpuV2RegisterRamOutput;
-    type EmuState = CpuV3FpuV2RegisterRamState;
+impl Module for CpuV3FpuRegisterRam {
+    type Input = CpuV3FpuRegisterRamInput;
+    type Output = CpuV3FpuRegisterRamOutput;
+    type EmuState = CpuV3FpuRegisterRamState;
 
     const USES_MAIN_CLOCK: bool = true;
 
@@ -150,7 +150,7 @@ impl Module for CpuV3FpuV2RegisterRam {
     }
 
     fn create_emu(_input: &Self::Input, _output: &Self::Output) -> Self::EmuState {
-        CpuV3FpuV2RegisterRamState {
+        CpuV3FpuRegisterRamState {
             memory: Box::new([0; 512]),
             read_a_data: 0,
             read_b_data: 0,
@@ -165,7 +165,7 @@ impl Module for CpuV3FpuV2RegisterRam {
     ) {
         output.drive(
             circuit,
-            &CpuV3FpuV2RegisterRamOutputValue {
+            &CpuV3FpuRegisterRamOutputValue {
                 read_a_data: u64::from(state.read_a_data),
                 read_b_data: u64::from(state.read_b_data),
             },
@@ -188,23 +188,23 @@ impl Module for CpuV3FpuV2RegisterRam {
     }
 
     fn verilog_source() -> Option<String> {
-        Some(include_str!("cpu_v3_fpu_v2_register_ram.v").to_string())
+        Some(include_str!("cpu_v3_fpu_register_ram.v").to_string())
     }
 
     fn verilog_testbench() -> Option<String> {
-        Some(include_str!("cpu_v3_fpu_v2_register_ram_tb.v").to_string())
+        Some(include_str!("cpu_v3_fpu_register_ram_tb.v").to_string())
     }
 }
 
 #[derive(Clone, ModuleIo)]
-pub struct CpuV3FpuV2FrontendInput {
+pub struct CpuV3FpuFrontendInput {
     pub word_valid: Wire,
     pub word: Wires<16>,
     pub abort: Wire,
 }
 
 #[derive(Clone, ModuleIo)]
-pub struct CpuV3FpuV2FrontendOutput {
+pub struct CpuV3FpuFrontendOutput {
     pub read_valid: Wire,
     pub rf_read_a_address: Wires<9>,
     pub rf_read_b_address: Wires<9>,
@@ -220,18 +220,18 @@ pub struct CpuV3FpuV2FrontendOutput {
 /// later, before word1 is decoded. Word1 field splitting (len/subop/mode)
 /// is left to the downstream controller; this leaf only latches raw halves.
 #[derive(Default)]
-pub struct CpuV3FpuV2Frontend;
+pub struct CpuV3FpuFrontend;
 
-impl HardwareIdentity for CpuV3FpuV2Frontend {
+impl HardwareIdentity for CpuV3FpuFrontend {
     const TARGET_RESOURCE_LEAF: bool = true;
 
     fn verilog_identity() -> VerilogIdentity {
-        VerilogIdentity::new("CpuV3FpuV2Frontend").namespace(["components", "cpu", "cpu_v3"])
+        VerilogIdentity::new("CpuV3FpuFrontend").namespace(["components", "cpu", "cpu_v3"])
     }
 }
 
 #[derive(Default)]
-pub struct CpuV3FpuV2FrontendState {
+pub struct CpuV3FpuFrontendState {
     waiting_word1: bool,
     word0_raw: u16,
     word1_raw: u16,
@@ -239,10 +239,10 @@ pub struct CpuV3FpuV2FrontendState {
     instr_complete: bool,
 }
 
-impl Module for CpuV3FpuV2Frontend {
-    type Input = CpuV3FpuV2FrontendInput;
-    type Output = CpuV3FpuV2FrontendOutput;
-    type EmuState = CpuV3FpuV2FrontendState;
+impl Module for CpuV3FpuFrontend {
+    type Input = CpuV3FpuFrontendInput;
+    type Output = CpuV3FpuFrontendOutput;
+    type EmuState = CpuV3FpuFrontendState;
 
     const USES_MAIN_CLOCK: bool = true;
 
@@ -267,7 +267,7 @@ impl Module for CpuV3FpuV2Frontend {
         };
         output.drive(
             circuit,
-            &CpuV3FpuV2FrontendOutputValue {
+            &CpuV3FpuFrontendOutputValue {
                 read_valid,
                 rf_read_a_address: u64::from(read_a),
                 rf_read_b_address: u64::from(encoding::word0_fb(word)),
@@ -304,23 +304,23 @@ impl Module for CpuV3FpuV2Frontend {
     }
 
     fn verilog_source() -> Option<String> {
-        Some(include_str!("cpu_v3_fpu_v2_frontend.v").to_string())
+        Some(include_str!("cpu_v3_fpu_frontend.v").to_string())
     }
 
     fn verilog_testbench() -> Option<String> {
-        Some(include_str!("cpu_v3_fpu_v2_frontend_tb.v").to_string())
+        Some(include_str!("cpu_v3_fpu_frontend_tb.v").to_string())
     }
 }
 
 #[derive(Clone, ModuleIo)]
-pub struct CpuV3FpuV2ScalarAluInput {
+pub struct CpuV3FpuScalarAluInput {
     pub a: Wires<32>,
     pub b: Wires<32>,
     pub op: Wires<4>,
 }
 
 #[derive(Clone, ModuleIo)]
-pub struct CpuV3FpuV2ScalarAluOutput {
+pub struct CpuV3FpuScalarAluOutput {
     pub result: Wires<32>,
     pub flag_lt: Wire,
     pub flag_eq: Wire,
@@ -331,19 +331,19 @@ pub struct CpuV3FpuV2ScalarAluOutput {
 /// LUTs (syn_dspstyle="logic"; DSP absorption of wide adds is a measured
 /// Gowin pitfall). Wrap overflow policy, round-half-up ROUND; flags are only
 /// specified for op == CMP.
-pub struct CpuV3FpuV2ScalarAlu;
+pub struct CpuV3FpuScalarAlu;
 
-impl HardwareIdentity for CpuV3FpuV2ScalarAlu {
+impl HardwareIdentity for CpuV3FpuScalarAlu {
     const TARGET_RESOURCE_LEAF: bool = true;
 
     fn verilog_identity() -> VerilogIdentity {
-        VerilogIdentity::new("CpuV3FpuV2ScalarAlu").namespace(["components", "cpu", "cpu_v3"])
+        VerilogIdentity::new("CpuV3FpuScalarAlu").namespace(["components", "cpu", "cpu_v3"])
     }
 }
 
-impl Module for CpuV3FpuV2ScalarAlu {
-    type Input = CpuV3FpuV2ScalarAluInput;
-    type Output = CpuV3FpuV2ScalarAluOutput;
+impl Module for CpuV3FpuScalarAlu {
+    type Input = CpuV3FpuScalarAluInput;
+    type Output = CpuV3FpuScalarAluOutput;
     type EmuState = ();
 
     fn create_emu(_input: &Self::Input, _output: &Self::Output) -> Self::EmuState {}
@@ -403,7 +403,7 @@ impl Module for CpuV3FpuV2ScalarAlu {
         };
         output.drive(
             circuit,
-            &CpuV3FpuV2ScalarAluOutputValue {
+            &CpuV3FpuScalarAluOutputValue {
                 result: u64::from(result),
                 flag_lt: sa < sb,
                 flag_eq: sa == sb,
@@ -413,16 +413,16 @@ impl Module for CpuV3FpuV2ScalarAlu {
     }
 
     fn verilog_source() -> Option<String> {
-        Some(include_str!("cpu_v3_fpu_v2_scalar_alu.v").to_string())
+        Some(include_str!("cpu_v3_fpu_scalar_alu.v").to_string())
     }
 
     fn verilog_testbench() -> Option<String> {
-        Some(include_str!("cpu_v3_fpu_v2_scalar_alu_tb.v").to_string())
+        Some(include_str!("cpu_v3_fpu_scalar_alu_tb.v").to_string())
     }
 }
 
 #[derive(Clone, ModuleIo)]
-pub struct CpuV3FpuV2ScalarPathInput {
+pub struct CpuV3FpuScalarPathInput {
     pub abort: Wire,
     pub instr_complete: Wire,
     pub instr_opcode: Wires<4>,
@@ -432,7 +432,7 @@ pub struct CpuV3FpuV2ScalarPathInput {
 }
 
 #[derive(Clone, ModuleIo)]
-pub struct CpuV3FpuV2ScalarPathOutput {
+pub struct CpuV3FpuScalarPathOutput {
     pub rf_write_enable: Wire,
     pub rf_write_address: Wires<9>,
     pub rf_write_data: Wires<32>,
@@ -450,18 +450,18 @@ pub struct CpuV3FpuV2ScalarPathOutput {
 /// data (T0), captures the result, writes back on T1, and drives the
 /// section-16 R/W/X countdown skeleton. CMP only updates the flag registers;
 /// abort cancels any in-flight write.
-pub struct CpuV3FpuV2ScalarPath;
+pub struct CpuV3FpuScalarPath;
 
-impl HardwareIdentity for CpuV3FpuV2ScalarPath {
+impl HardwareIdentity for CpuV3FpuScalarPath {
     const TARGET_RESOURCE_LEAF: bool = false;
 
     fn verilog_identity() -> VerilogIdentity {
-        VerilogIdentity::new("CpuV3FpuV2ScalarPath").namespace(["components", "cpu", "cpu_v3"])
+        VerilogIdentity::new("CpuV3FpuScalarPath").namespace(["components", "cpu", "cpu_v3"])
     }
 }
 
 #[derive(Default)]
-pub struct CpuV3FpuV2ScalarPathState {
+pub struct CpuV3FpuScalarPathState {
     write_enable: bool,
     write_address: u16,
     write_data: u32,
@@ -472,8 +472,8 @@ pub struct CpuV3FpuV2ScalarPathState {
     x_count: u8,
 }
 
-impl CpuV3FpuV2ScalarPathState {
-    /// Mirrors CpuV3FpuV2ScalarAlu: wrap-only Q16.16 ops.
+impl CpuV3FpuScalarPathState {
+    /// Mirrors CpuV3FpuScalarAlu: wrap-only Q16.16 ops.
     fn alu(a: u32, b: u32, op: u8) -> (u32, bool, bool, bool) {
         let sa = a as i32;
         let sb = b as i32;
@@ -522,10 +522,10 @@ impl CpuV3FpuV2ScalarPathState {
     }
 }
 
-impl Module for CpuV3FpuV2ScalarPath {
-    type Input = CpuV3FpuV2ScalarPathInput;
-    type Output = CpuV3FpuV2ScalarPathOutput;
-    type EmuState = CpuV3FpuV2ScalarPathState;
+impl Module for CpuV3FpuScalarPath {
+    type Input = CpuV3FpuScalarPathInput;
+    type Output = CpuV3FpuScalarPathOutput;
+    type EmuState = CpuV3FpuScalarPathState;
 
     const USES_MAIN_CLOCK: bool = true;
 
@@ -547,7 +547,7 @@ impl Module for CpuV3FpuV2ScalarPath {
         let x_wait = if load_now { 2 } else { state.x_count };
         output.drive(
             circuit,
-            &CpuV3FpuV2ScalarPathOutputValue {
+            &CpuV3FpuScalarPathOutputValue {
                 rf_write_enable: state.write_enable && !input.abort,
                 rf_write_address: u64::from(state.write_address),
                 rf_write_data: u64::from(state.write_data),
@@ -606,20 +606,20 @@ impl Module for CpuV3FpuV2ScalarPath {
     }
 
     fn verilog_source() -> Option<String> {
-        Some(include_str!("cpu_v3_fpu_v2_scalar_path.v").to_string())
+        Some(include_str!("cpu_v3_fpu_scalar_path.v").to_string())
     }
 
     fn verilog_dependencies() -> Vec<VerilogDependency> {
-        vec![VerilogDependency::new::<CpuV3FpuV2ScalarAlu>("scalar_alu")]
+        vec![VerilogDependency::new::<CpuV3FpuScalarAlu>("scalar_alu")]
     }
 
     fn verilog_testbench() -> Option<String> {
-        Some(include_str!("cpu_v3_fpu_v2_scalar_path_tb.v").to_string())
+        Some(include_str!("cpu_v3_fpu_scalar_path_tb.v").to_string())
     }
 }
 
 #[derive(Clone, ModuleIo)]
-pub struct CpuV3FpuV2VectorPathInput {
+pub struct CpuV3FpuVectorPathInput {
     pub abort: Wire,
     pub instr_complete: Wire,
     pub instr_opcode: Wires<4>,
@@ -631,7 +631,7 @@ pub struct CpuV3FpuV2VectorPathInput {
 }
 
 #[derive(Clone, ModuleIo)]
-pub struct CpuV3FpuV2VectorPathOutput {
+pub struct CpuV3FpuVectorPathOutput {
     pub rf_read_a_address: Wires<9>,
     pub rf_read_b_address: Wires<9>,
     pub rf_write_enable: Wire,
@@ -642,40 +642,40 @@ pub struct CpuV3FpuV2VectorPathOutput {
 
 /// FPU v2 vector execution path (opcode 0xC): one lane per cycle through
 /// the shared combinational scalar ALU. Emu lives in the unit top
-/// (CpuV3FpuV2State); this leaf is verified through its Verilog testbench.
-pub struct CpuV3FpuV2VectorPath;
+/// (CpuV3FpuState); this leaf is verified through its Verilog testbench.
+pub struct CpuV3FpuVectorPath;
 
-impl HardwareIdentity for CpuV3FpuV2VectorPath {
+impl HardwareIdentity for CpuV3FpuVectorPath {
     const TARGET_RESOURCE_LEAF: bool = false;
 
     fn verilog_identity() -> VerilogIdentity {
-        VerilogIdentity::new("CpuV3FpuV2VectorPath").namespace(["components", "cpu", "cpu_v3"])
+        VerilogIdentity::new("CpuV3FpuVectorPath").namespace(["components", "cpu", "cpu_v3"])
     }
 }
 
-impl Module for CpuV3FpuV2VectorPath {
-    type Input = CpuV3FpuV2VectorPathInput;
-    type Output = CpuV3FpuV2VectorPathOutput;
+impl Module for CpuV3FpuVectorPath {
+    type Input = CpuV3FpuVectorPathInput;
+    type Output = CpuV3FpuVectorPathOutput;
     type EmuState = ();
 
     const USES_MAIN_CLOCK: bool = true;
     const EMU_AVAILABLE: bool = false;
 
     fn verilog_source() -> Option<String> {
-        Some(include_str!("cpu_v3_fpu_v2_vector_path.v").to_string())
+        Some(include_str!("cpu_v3_fpu_vector_path.v").to_string())
     }
 
     fn verilog_dependencies() -> Vec<VerilogDependency> {
-        vec![VerilogDependency::new::<CpuV3FpuV2ScalarAlu>("vector_alu")]
+        vec![VerilogDependency::new::<CpuV3FpuScalarAlu>("vector_alu")]
     }
 
     fn verilog_testbench() -> Option<String> {
-        Some(include_str!("cpu_v3_fpu_v2_vector_path_tb.v").to_string())
+        Some(include_str!("cpu_v3_fpu_vector_path_tb.v").to_string())
     }
 }
 
 #[derive(Clone, ModuleIo)]
-pub struct CpuV3FpuV2MultiplyPathInput {
+pub struct CpuV3FpuMultiplyPathInput {
     pub abort: Wire,
     pub instr_complete: Wire,
     pub instr_opcode: Wires<4>,
@@ -690,7 +690,7 @@ pub struct CpuV3FpuV2MultiplyPathInput {
 }
 
 #[derive(Clone, ModuleIo)]
-pub struct CpuV3FpuV2MultiplyPathOutput {
+pub struct CpuV3FpuMultiplyPathOutput {
     pub mul_in_valid: Wire,
     pub mul_in_a: Wires<32>,
     pub mul_in_b: Wires<32>,
@@ -706,37 +706,37 @@ pub struct CpuV3FpuV2MultiplyPathOutput {
 /// FPU v2 multiply execution path (VMUL/VMULS/scalar MUL): one lane per
 /// cycle through an inferred 36x36 signed multiplier, three register stages,
 /// narrowing to Q16.16 at the write port. Emu lives in the unit top.
-pub struct CpuV3FpuV2MultiplyPath;
+pub struct CpuV3FpuMultiplyPath;
 
-impl HardwareIdentity for CpuV3FpuV2MultiplyPath {
+impl HardwareIdentity for CpuV3FpuMultiplyPath {
     const TARGET_RESOURCE_LEAF: bool = true;
 
     fn verilog_identity() -> VerilogIdentity {
-        VerilogIdentity::new("CpuV3FpuV2MultiplyPath").namespace(["components", "cpu", "cpu_v3"])
+        VerilogIdentity::new("CpuV3FpuMultiplyPath").namespace(["components", "cpu", "cpu_v3"])
     }
 }
 
-impl Module for CpuV3FpuV2MultiplyPath {
-    type Input = CpuV3FpuV2MultiplyPathInput;
-    type Output = CpuV3FpuV2MultiplyPathOutput;
+impl Module for CpuV3FpuMultiplyPath {
+    type Input = CpuV3FpuMultiplyPathInput;
+    type Output = CpuV3FpuMultiplyPathOutput;
     type EmuState = ();
 
     const USES_MAIN_CLOCK: bool = true;
     const EMU_AVAILABLE: bool = false;
 
-    // The multiplier lives in the shared CpuV3FpuV2MulPipe leaf; this
+    // The multiplier lives in the shared CpuV3FpuMulPipe leaf; this
     // controller claims nothing itself.
     fn verilog_source() -> Option<String> {
-        Some(include_str!("cpu_v3_fpu_v2_multiply_path.v").to_string())
+        Some(include_str!("cpu_v3_fpu_multiply_path.v").to_string())
     }
 
     fn verilog_testbench() -> Option<String> {
-        Some(include_str!("cpu_v3_fpu_v2_multiply_path_tb.v").to_string())
+        Some(include_str!("cpu_v3_fpu_multiply_path_tb.v").to_string())
     }
 }
 
 #[derive(Clone, ModuleIo)]
-pub struct CpuV3FpuV2MulPipeInput {
+pub struct CpuV3FpuMulPipeInput {
     pub abort: Wire,
     pub in_valid: Wire,
     pub in_a: Wires<32>,
@@ -745,7 +745,7 @@ pub struct CpuV3FpuV2MulPipeInput {
 }
 
 #[derive(Clone, ModuleIo)]
-pub struct CpuV3FpuV2MulPipeOutput {
+pub struct CpuV3FpuMulPipeOutput {
     pub out_valid: Wire,
     pub out_product: Wires<64>,
     pub out_tag: Wires<9>,
@@ -755,19 +755,19 @@ pub struct CpuV3FpuV2MulPipeOutput {
 /// lanes): three register stages, tag-carrying FIFO. The multiply and dot
 /// paths share it because the core serializes instructions. Emu lives in the
 /// unit top; this leaf is verified through its Verilog testbench.
-pub struct CpuV3FpuV2MulPipe;
+pub struct CpuV3FpuMulPipe;
 
-impl HardwareIdentity for CpuV3FpuV2MulPipe {
+impl HardwareIdentity for CpuV3FpuMulPipe {
     const TARGET_RESOURCE_LEAF: bool = true;
 
     fn verilog_identity() -> VerilogIdentity {
-        VerilogIdentity::new("CpuV3FpuV2MulPipe").namespace(["components", "cpu", "cpu_v3"])
+        VerilogIdentity::new("CpuV3FpuMulPipe").namespace(["components", "cpu", "cpu_v3"])
     }
 }
 
-impl Module for CpuV3FpuV2MulPipe {
-    type Input = CpuV3FpuV2MulPipeInput;
-    type Output = CpuV3FpuV2MulPipeOutput;
+impl Module for CpuV3FpuMulPipe {
+    type Input = CpuV3FpuMulPipeInput;
+    type Output = CpuV3FpuMulPipeOutput;
     type EmuState = ();
 
     const USES_MAIN_CLOCK: bool = true;
@@ -780,16 +780,16 @@ impl Module for CpuV3FpuV2MulPipe {
     }
 
     fn verilog_source() -> Option<String> {
-        Some(include_str!("cpu_v3_fpu_v2_mul_pipe.v").to_string())
+        Some(include_str!("cpu_v3_fpu_mul_pipe.v").to_string())
     }
 
     fn verilog_testbench() -> Option<String> {
-        Some(include_str!("cpu_v3_fpu_v2_mul_pipe_tb.v").to_string())
+        Some(include_str!("cpu_v3_fpu_mul_pipe_tb.v").to_string())
     }
 }
 
 #[derive(Clone, ModuleIo)]
-pub struct CpuV3FpuV2DotPathInput {
+pub struct CpuV3FpuDotPathInput {
     pub abort: Wire,
     pub instr_complete: Wire,
     pub instr_opcode: Wires<4>,
@@ -804,7 +804,7 @@ pub struct CpuV3FpuV2DotPathInput {
 }
 
 #[derive(Clone, ModuleIo)]
-pub struct CpuV3FpuV2DotPathOutput {
+pub struct CpuV3FpuDotPathOutput {
     pub mul_in_valid: Wire,
     pub mul_in_a: Wires<32>,
     pub mul_in_b: Wires<32>,
@@ -822,19 +822,19 @@ pub struct CpuV3FpuV2DotPathOutput {
 /// 72-bit products accumulate into a 64-bit Q32.32 fabric ACC (LUT adder,
 /// syn_dspstyle="logic"), narrowing only at DOTSTORE. Emu lives in the unit
 /// top; this leaf is verified through its Verilog testbench.
-pub struct CpuV3FpuV2DotPath;
+pub struct CpuV3FpuDotPath;
 
-impl HardwareIdentity for CpuV3FpuV2DotPath {
+impl HardwareIdentity for CpuV3FpuDotPath {
     const TARGET_RESOURCE_LEAF: bool = true;
 
     fn verilog_identity() -> VerilogIdentity {
-        VerilogIdentity::new("CpuV3FpuV2DotPath").namespace(["components", "cpu", "cpu_v3"])
+        VerilogIdentity::new("CpuV3FpuDotPath").namespace(["components", "cpu", "cpu_v3"])
     }
 }
 
-impl Module for CpuV3FpuV2DotPath {
-    type Input = CpuV3FpuV2DotPathInput;
-    type Output = CpuV3FpuV2DotPathOutput;
+impl Module for CpuV3FpuDotPath {
+    type Input = CpuV3FpuDotPathInput;
+    type Output = CpuV3FpuDotPathOutput;
     type EmuState = ();
 
     const USES_MAIN_CLOCK: bool = true;
@@ -850,16 +850,16 @@ impl Module for CpuV3FpuV2DotPath {
     }
 
     fn verilog_source() -> Option<String> {
-        Some(include_str!("cpu_v3_fpu_v2_dot_path.v").to_string())
+        Some(include_str!("cpu_v3_fpu_dot_path.v").to_string())
     }
 
     fn verilog_testbench() -> Option<String> {
-        Some(include_str!("cpu_v3_fpu_v2_dot_path_tb.v").to_string())
+        Some(include_str!("cpu_v3_fpu_dot_path_tb.v").to_string())
     }
 }
 
 #[derive(Clone, ModuleIo)]
-pub struct CpuV3FpuV2Input {
+pub struct CpuV3FpuInput {
     pub abort: Wire,
     pub word_valid: Wire,
     pub word: Wires<16>,
@@ -871,7 +871,7 @@ pub struct CpuV3FpuV2Input {
 }
 
 #[derive(Clone, ModuleIo)]
-pub struct CpuV3FpuV2Output {
+pub struct CpuV3FpuOutput {
     pub busy: Wire,
     pub flag_lt: Wire,
     pub flag_eq: Wire,
@@ -884,22 +884,22 @@ pub struct CpuV3FpuV2Output {
 /// file + scalar execution path, plus the external memory channel the core
 /// uses for FLD/FST until the internal store buffer arrives (Stage 6).
 /// Integration contract: fpu-design-v2 section 26.
-pub struct CpuV3FpuV2;
+pub struct CpuV3Fpu;
 
-impl HardwareIdentity for CpuV3FpuV2 {
+impl HardwareIdentity for CpuV3Fpu {
     const TARGET_RESOURCE_LEAF: bool = false;
 
     fn verilog_identity() -> VerilogIdentity {
-        VerilogIdentity::new("CpuV3FpuV2").namespace(["components", "cpu", "cpu_v3"])
+        VerilogIdentity::new("CpuV3Fpu").namespace(["components", "cpu", "cpu_v3"])
     }
 }
 
 /// Compositional emu state: the three leaf states plus the one-beat
 /// operand-address hold register.
-pub struct CpuV3FpuV2State {
-    frontend: CpuV3FpuV2FrontendState,
-    rf: CpuV3FpuV2RegisterRamState,
-    scalar_path: CpuV3FpuV2ScalarPathState,
+pub struct CpuV3FpuState {
+    frontend: CpuV3FpuFrontendState,
+    rf: CpuV3FpuRegisterRamState,
+    scalar_path: CpuV3FpuScalarPathState,
     held_read_a_address: u16,
     held_read_b_address: u16,
     vp_run: bool,
@@ -932,7 +932,7 @@ pub struct CpuV3FpuV2State {
     dp_store_data: u32,
     dp_outstanding: u8,
     dp_acc: i64,
-    // Shared multiply pipe (CpuV3FpuV2MulPipe): the only multiplier in the
+    // Shared multiply pipe (CpuV3FpuMulPipe): the only multiplier in the
     // unit. The tag carries the multiply path's write address; the dot path
     // tags lanes for observability.
     pipe_s1_valid: bool,
@@ -947,16 +947,16 @@ pub struct CpuV3FpuV2State {
     pipe_s3_tag: u16,
 }
 
-impl Default for CpuV3FpuV2State {
+impl Default for CpuV3FpuState {
     fn default() -> Self {
-        CpuV3FpuV2State {
-            frontend: CpuV3FpuV2FrontendState::default(),
-            rf: CpuV3FpuV2RegisterRamState {
+        CpuV3FpuState {
+            frontend: CpuV3FpuFrontendState::default(),
+            rf: CpuV3FpuRegisterRamState {
                 memory: Box::new([0; 512]),
                 read_a_data: 0,
                 read_b_data: 0,
             },
-            scalar_path: CpuV3FpuV2ScalarPathState::default(),
+            scalar_path: CpuV3FpuScalarPathState::default(),
             held_read_a_address: 0,
             held_read_b_address: 0,
             vp_run: false,
@@ -1003,10 +1003,10 @@ impl Default for CpuV3FpuV2State {
     }
 }
 
-impl CpuV3FpuV2State {
+impl CpuV3FpuState {
     /// Combinational outputs of the unit top (registered leaf outputs and the
     /// busy/complete status); register updates live in `tick`.
-    pub(crate) fn comb(&self, input: &CpuV3FpuV2InputValue) -> CpuV3FpuV2OutputValue {
+    pub(crate) fn comb(&self, input: &CpuV3FpuInputValue) -> CpuV3FpuOutputValue {
         let sp = &self.scalar_path;
         let sp_load_now = self.frontend.instr_complete
             && self.frontend.instr_opcode == encoding::OPCODE_SCALAR
@@ -1051,7 +1051,7 @@ impl CpuV3FpuV2State {
             || self.pipe_s3_valid
             || self.dp_store)
             && !input.abort;
-        CpuV3FpuV2OutputValue {
+        CpuV3FpuOutputValue {
             busy: sp_w_wait != 0 || vp_busy || mp_busy || dp_busy,
             flag_lt: self.scalar_path.flag_lt,
             flag_eq: self.scalar_path.flag_eq,
@@ -1062,10 +1062,10 @@ impl CpuV3FpuV2State {
     }
 }
 
-impl Module for CpuV3FpuV2 {
-    type Input = CpuV3FpuV2Input;
-    type Output = CpuV3FpuV2Output;
-    type EmuState = CpuV3FpuV2State;
+impl Module for CpuV3Fpu {
+    type Input = CpuV3FpuInput;
+    type Output = CpuV3FpuOutput;
+    type EmuState = CpuV3FpuState;
 
     const USES_MAIN_CLOCK: bool = true;
 
@@ -1094,30 +1094,30 @@ impl Module for CpuV3FpuV2 {
     }
 
     fn verilog_source() -> Option<String> {
-        Some(include_str!("cpu_v3_fpu_v2.v").to_string())
+        Some(include_str!("cpu_v3_fpu.v").to_string())
     }
 
     fn verilog_dependencies() -> Vec<VerilogDependency> {
         vec![
-            VerilogDependency::new::<CpuV3FpuV2Frontend>("frontend"),
-            VerilogDependency::new::<CpuV3FpuV2RegisterRam>("rf"),
-            VerilogDependency::new::<CpuV3FpuV2ScalarPath>("scalar_path"),
-            VerilogDependency::new::<CpuV3FpuV2VectorPath>("vector_path"),
-            VerilogDependency::new::<CpuV3FpuV2MultiplyPath>("multiply_path"),
-            VerilogDependency::new::<CpuV3FpuV2DotPath>("dot_path"),
-            VerilogDependency::new::<CpuV3FpuV2MulPipe>("mul_pipe"),
+            VerilogDependency::new::<CpuV3FpuFrontend>("frontend"),
+            VerilogDependency::new::<CpuV3FpuRegisterRam>("rf"),
+            VerilogDependency::new::<CpuV3FpuScalarPath>("scalar_path"),
+            VerilogDependency::new::<CpuV3FpuVectorPath>("vector_path"),
+            VerilogDependency::new::<CpuV3FpuMultiplyPath>("multiply_path"),
+            VerilogDependency::new::<CpuV3FpuDotPath>("dot_path"),
+            VerilogDependency::new::<CpuV3FpuMulPipe>("mul_pipe"),
         ]
     }
 
     fn verilog_testbench() -> Option<String> {
-        Some(include_str!("cpu_v3_fpu_v2_tb.v").to_string())
+        Some(include_str!("cpu_v3_fpu_tb.v").to_string())
     }
 }
 
-impl CpuV3FpuV2State {
+impl CpuV3FpuState {
     /// Register updates for one cycle. The core emu also drives the unit
     /// through `comb`/`tick` directly (value-level, no wires).
-    pub(crate) fn tick(&mut self, input: &CpuV3FpuV2InputValue) {
+    pub(crate) fn tick(&mut self, input: &CpuV3FpuInputValue) {
         let state = self;
         let word = input.word as u16;
         // Snapshot the pre-edge instr_complete: the scalar path below must
@@ -1169,11 +1169,8 @@ impl CpuV3FpuV2State {
             // read-first: the RF read registers still hold T0 operands here.
             sp.write_enable = load_now && !is_cmp;
             if load_now {
-                let (result, lt, eq, gt) = CpuV3FpuV2ScalarPathState::alu(
-                    state.rf.read_a_data,
-                    state.rf.read_b_data,
-                    subop,
-                );
+                let (result, lt, eq, gt) =
+                    CpuV3FpuScalarPathState::alu(state.rf.read_a_data, state.rf.read_b_data, subop);
                 sp.write_address = u16::from(fd);
                 sp.write_data = result;
                 if is_cmp {
@@ -1310,21 +1307,21 @@ impl CpuV3FpuV2State {
             rf_read_b: state.rf.read_b_data,
         };
 
-        // Vector path register updates (mirrors CpuV3FpuV2VectorPath).
+        // Vector path register updates (mirrors CpuV3FpuVectorPath).
         state.tick_vector_path(&ctx);
 
-        // Multiply path register updates (mirrors CpuV3FpuV2MultiplyPath):
+        // Multiply path register updates (mirrors CpuV3FpuMultiplyPath):
         // the lane sequencer hands operand pairs to the shared pipe with the
         // destination tag; the pipe returns them three cycles later.
         state.tick_multiply_path(&ctx);
 
-        // Dot path register updates (mirrors CpuV3FpuV2DotPath). ACC
+        // Dot path register updates (mirrors CpuV3FpuDotPath). ACC
         // accumulates the pipe product returning this cycle (pre-edge stage
         // three); the DOTSTORE final-lane capture and the writeback clear
         // read the pre-edge store flag.
         state.tick_dot_path(&ctx);
 
-        // Shared multiply pipe transfer (mirrors CpuV3FpuV2MulPipe): reverse
+        // Shared multiply pipe transfer (mirrors CpuV3FpuMulPipe): reverse
         // order so every stage reads its predecessor's pre-edge value.
         state.tick_mul_pipe(&ctx);
 
@@ -1390,9 +1387,9 @@ struct TickContext {
     rf_read_b: u32,
 }
 
-impl CpuV3FpuV2State {
+impl CpuV3FpuState {
     /// Vector-path register updates: one RTL always block of
-    /// CpuV3FpuV2VectorPath. Reads only the pre-edge operands in `ctx`.
+    /// CpuV3FpuVectorPath. Reads only the pre-edge operands in `ctx`.
     fn tick_vector_path(&mut self, ctx: &TickContext) {
         let last_lane = encoding::decoded_last_lane(ctx.len_field);
         // subop -> scalar ALU op; the seven supported subops select the exact
@@ -1424,7 +1421,7 @@ impl CpuV3FpuV2State {
             if data_valid {
                 let data_lane = self.vp_lane - 1;
                 let (result, _, _, _) =
-                    CpuV3FpuV2ScalarPathState::alu(ctx.rf_read_a, ctx.rf_read_b, alu_op);
+                    CpuV3FpuScalarPathState::alu(ctx.rf_read_a, ctx.rf_read_b, alu_op);
                 self.vp_wr_address = self.vp_fd as u16 + u16::from(data_lane);
                 self.vp_wr_data = result;
             }
@@ -1439,7 +1436,7 @@ impl CpuV3FpuV2State {
     }
 
     /// Multiply-path register updates: one RTL always block of
-    /// CpuV3FpuV2MultiplyPath. The lane sequencer hands operand pairs to the
+    /// CpuV3FpuMultiplyPath. The lane sequencer hands operand pairs to the
     /// shared pipe with the destination tag; the pipe returns them three
     /// cycles later. Reads only the pre-edge operands in `ctx`.
     fn tick_multiply_path(&mut self, ctx: &TickContext) {
@@ -1477,7 +1474,7 @@ impl CpuV3FpuV2State {
         }
     }
 
-    /// Dot-path register updates: one RTL always block of CpuV3FpuV2DotPath.
+    /// Dot-path register updates: one RTL always block of CpuV3FpuDotPath.
     /// ACC accumulates the pipe product returning this cycle (pre-edge stage
     /// three); the DOTSTORE final-lane capture and the writeback clear read the
     /// pre-edge store flag. Reads only the pre-edge operands in `ctx`.
@@ -1539,7 +1536,7 @@ impl CpuV3FpuV2State {
     }
 
     /// Shared multiply pipe transfer: one RTL always block of
-    /// CpuV3FpuV2MulPipe. The stages move in reverse order so every stage reads
+    /// CpuV3FpuMulPipe. The stages move in reverse order so every stage reads
     /// its predecessor's pre-edge value; the operand mux gives the multiply
     /// path the tie (never both). Reads only the pre-edge operands in `ctx`.
     fn tick_mul_pipe(&mut self, ctx: &TickContext) {

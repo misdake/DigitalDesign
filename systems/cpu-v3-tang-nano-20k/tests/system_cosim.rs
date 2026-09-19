@@ -133,7 +133,7 @@ fn program_pipeline_overlap() -> Vec<u16> {
 /// FPU v2 handwritten-encodings integration program: FLD x2 through the
 /// data port, scalar ADD inside the unit, FST back, then an integer load of
 /// the stored high half as the halt signal. Q16.16: 1.0 + 2.0 = 3.0.
-fn program_fpu_v2_roundtrip() -> Vec<u16> {
+fn program_fpu_roundtrip() -> Vec<u16> {
     let mut p = Vec::new();
     p.extend(load_immediate16(1, 0x4000)); // r1 = f2 address
     p.extend(load_immediate16(2, 0x4002)); // r2 = f3 address
@@ -160,7 +160,7 @@ fn program_fpu_v2_roundtrip() -> Vec<u16> {
 /// the results back. 1.0 + 10.0 = 11.0, so the halt signal (high half of
 /// the first stored lane) is 11. (Only two init stores: longer store chains
 /// currently trip a pre-existing, FPU-unrelated system co-sim divergence.)
-fn program_fpu_v2_vector_add() -> Vec<u16> {
+fn program_fpu_vector_add() -> Vec<u16> {
     let mut p = Vec::new();
     p.extend(load_immediate16(1, 0x4000)); // f0/f1 source
     p.extend(load_immediate16(2, 0x4002)); // f2/f3 source
@@ -191,7 +191,7 @@ fn program_fpu_v2_vector_add() -> Vec<u16> {
 /// (2.0 * 3.0 = 6.0) and one VMULS.2 (f2..f3 = f0..f1 * f1 = 6.0, 9.0).
 /// Three FSTs write the results back; the halt signal is the high half of
 /// the first stored lane (6).
-fn program_fpu_v2_multiply() -> Vec<u16> {
+fn program_fpu_multiply() -> Vec<u16> {
     let mut p = Vec::new();
     p.extend(load_immediate16(1, 0x4000)); // f0 source
     p.extend(load_immediate16(2, 0x4002)); // f1 source
@@ -225,7 +225,7 @@ fn program_fpu_v2_multiply() -> Vec<u16> {
 /// DOTADD.2 accumulates the same again (ACC = 10.0), DOTSTORE.2 stores a
 /// fresh dot (5.0) into f6 and clears ACC. FST writes f6 back; the halt
 /// signal is its high half (5).
-fn program_fpu_v2_dot() -> Vec<u16> {
+fn program_fpu_dot() -> Vec<u16> {
     let mut p = Vec::new();
     p.extend(load_immediate16(1, 0x4000)); // f0 at [0x4000..0x4001]
     p.extend(load_immediate16(2, 0x4002)); // f1 at [0x4002..0x4003]
@@ -261,7 +261,7 @@ fn program_fpu_v2_dot() -> Vec<u16> {
 /// FSTV2 pair moves the same two values to [0x4030..0x4033]. The halt signal
 /// is the high half of the first FSTV3 lane (2.0), proving contiguous
 /// multi-register memory movement with low half first.
-fn program_fpu_v2_vector_ldst() -> Vec<u16> {
+fn program_fpu_vector_ldst() -> Vec<u16> {
     let mut p = Vec::new();
     p.extend(load_immediate16(1, 0x4000)); // source base for FLDV4
     p.extend(load_immediate16(2, 0x4020)); // FSTV3 destination
@@ -296,7 +296,7 @@ fn program_fpu_v2_vector_ldst() -> Vec<u16> {
 /// traffic. Correctness alone validates the overlap: with blocking stores the
 /// readbacks would still match, but every unrelated instruction would have
 /// serialized behind the data port.
-fn program_fpu_v2_store_overlap() -> Vec<u16> {
+fn program_fpu_store_overlap() -> Vec<u16> {
     let mut p = Vec::new();
     p.extend(load_immediate16(1, 0x4000)); // 1.0..4.0 source for FLDV4
     p.extend(load_immediate16(2, 0x4020)); // first FSTV4 / readback address
@@ -358,7 +358,7 @@ fn program_fpu_v2_store_overlap() -> Vec<u16> {
 /// ops: a CPU load right after an FSTV4 must see the new values even though
 /// most drain words have not been written yet, and a CPU store right after an
 /// FSTV4 must win over the drain words that target the same word later.
-fn program_fpu_v2_store_drain_hazard() -> Vec<u16> {
+fn program_fpu_store_drain_hazard() -> Vec<u16> {
     let mut p = Vec::new();
     p.extend(load_immediate16(1, 0x4000)); // 1.0..4.0 source
     p.extend(load_immediate16(2, 0x4080)); // FSTV4 destination
@@ -432,56 +432,56 @@ fn programs() -> Vec<CosimProgram> {
             expected_halt: Some(60),
         },
         CosimProgram {
-            name: "fpu_v2_roundtrip",
-            words: program_fpu_v2_roundtrip(),
+            name: "fpu_roundtrip",
+            words: program_fpu_roundtrip(),
             max_cycles: 20_000,
             check_base: 0x4000,
             check_len: 0x14,
             expected_halt: Some(3),
         },
         CosimProgram {
-            name: "fpu_v2_vector_add",
-            words: program_fpu_v2_vector_add(),
+            name: "fpu_vector_add",
+            words: program_fpu_vector_add(),
             max_cycles: 20_000,
             check_base: 0x4020,
             check_len: 8,
             expected_halt: Some(11),
         },
         CosimProgram {
-            name: "fpu_v2_multiply",
-            words: program_fpu_v2_multiply(),
+            name: "fpu_multiply",
+            words: program_fpu_multiply(),
             max_cycles: 20_000,
             check_base: 0x4020,
             check_len: 8,
             expected_halt: Some(6),
         },
         CosimProgram {
-            name: "fpu_v2_dot",
-            words: program_fpu_v2_dot(),
+            name: "fpu_dot",
+            words: program_fpu_dot(),
             max_cycles: 20_000,
             check_base: 0x4020,
             check_len: 4,
             expected_halt: Some(5),
         },
         CosimProgram {
-            name: "fpu_v2_vector_ldst",
-            words: program_fpu_v2_vector_ldst(),
+            name: "fpu_vector_ldst",
+            words: program_fpu_vector_ldst(),
             max_cycles: 20_000,
             check_base: 0x4020,
             check_len: 0x14,
             expected_halt: Some(2),
         },
         CosimProgram {
-            name: "fpu_v2_store_overlap",
-            words: program_fpu_v2_store_overlap(),
+            name: "fpu_store_overlap",
+            words: program_fpu_store_overlap(),
             max_cycles: 20_000,
             check_base: 0x4020,
             check_len: 0x48,
             expected_halt: Some(0x28),
         },
         CosimProgram {
-            name: "fpu_v2_store_drain_hazard",
-            words: program_fpu_v2_store_drain_hazard(),
+            name: "fpu_store_drain_hazard",
+            words: program_fpu_store_drain_hazard(),
             max_cycles: 20_000,
             check_base: 0x4080,
             check_len: 8,

@@ -6,7 +6,7 @@
 // full product, and only DOTSTORE narrows once at the end, taking the Q16.16
 // view of the completed sum to the destination register.
 //
-// The instruction word split follows CpuV3FpuV2Frontend. Word1 carries
+// The instruction word split follows CpuV3FpuFrontend. Word1 carries
 // {Fd[15:10], len[9:8], subop[7:3], mode[2:0]} with len 00 = vec2, 01 = vec3,
 // 10 = vec4 and 11 reserved and clamped to vec4 (last_lane = len + 1). Word0
 // carries Fa in bits [11:6] and Fb in bits [5:0]; the parent latches both 6-bit
@@ -22,7 +22,7 @@
 // 10 = +4, 11 is reserved and treated as +1. Lane i therefore reads
 // A = base_a + i and B = base_b + i * stride.
 //
-// The multiplier is the shared CpuV3FpuV2MulPipe instance in the unit top (the
+// The multiplier is the shared CpuV3FpuMulPipe instance in the unit top (the
 // core serializes instructions, so this path and the multiply path never
 // multiply at once). This controller sequences lanes and hands each to the
 // pipe with its destination tag; products return three cycles later and are
@@ -45,7 +45,7 @@
 //   - abort leaves ACC untouched; it only voids the in-flight pipeline.
 //   - DOT clears ACC on its first beat, so a stale value is never accumulated.
 //   - DOTSTORE clears ACC after its writeback beat.
-module CpuV3FpuV2DotPath (
+module CpuV3FpuDotPath (
     input wire clk,
     input wire abort,
     input wire instr_complete,

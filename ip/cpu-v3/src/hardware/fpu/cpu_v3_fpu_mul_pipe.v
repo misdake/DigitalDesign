@@ -12,7 +12,7 @@
 //   T0+2 : stage 2 holds the product.
 //   T0+3 : stage 3 presents out_valid with the full-width product and tag.
 // abort voids every in-flight entry combinationally and clears the valids.
-module CpuV3FpuV2MulPipe (
+module CpuV3FpuMulPipe (
     input wire clk,
     input wire abort,
     input wire in_valid,

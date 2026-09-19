@@ -1,6 +1,6 @@
 // FPU v2 vector execution-path controller (opcode 0xC, subops of section 6.3).
 //
-// A vector instruction is delivered by CpuV3FpuV2Frontend as a two-word pair.
+// A vector instruction is delivered by CpuV3FpuFrontend as a two-word pair.
 // Word0 carries Fa in bits [11:6] and Fb in bits [5:0]; the parent latches both
 // 6-bit bases and presents them as base_a / base_b on the beat this module
 // starts. Word1 carries Fd in bits [15:10], len in bits [9:8], the 5-bit subop
@@ -20,7 +20,7 @@
 // 0x06 VABS (B ignored), 0x07 VNEG (B ignored), 0x0C VMOV (B ignored); any
 // other subop is ignored entirely (no lane runs, no write) because VMUL/VMULS
 // and the dot family are owned by the multiply and dot paths. They map
-// onto the combinational CpuV3FpuV2ScalarAlu leaf, one lane per cycle, so the
+// onto the combinational CpuV3FpuScalarAlu leaf, one lane per cycle, so the
 // vector path adds no second arithmetic datapath. Any other subop maps to an
 // ALU op code the leaf does not list, so it yields the leaf's defined zero
 // rather than propagating an X.
@@ -41,7 +41,7 @@
 // abort clears the controller immediately: the RF write port is gated
 // combinationally as well as cleared on the edge, and busy drops to zero in the
 // same cycle.
-module CpuV3FpuV2VectorPath (
+module CpuV3FpuVectorPath (
     input wire clk,
     input wire abort,
     input wire instr_complete,
@@ -91,7 +91,7 @@ end
 // One combinational scalar ALU instance is shared by every lane; the lane
 // sequencer reuses it once per cycle. The comparison flags are unused here.
 wire [31:0] alu_result;
-CpuV3FpuV2ScalarAlu vector_alu (
+CpuV3FpuScalarAlu vector_alu (
     .a(rf_read_a_data),
     .b(rf_read_b_data),
     .op(alu_op),

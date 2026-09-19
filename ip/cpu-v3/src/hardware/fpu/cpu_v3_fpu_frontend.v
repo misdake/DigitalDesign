@@ -1,4 +1,4 @@
-module CpuV3FpuV2Frontend (
+module CpuV3FpuFrontend (
     input wire clk,
     input wire word_valid,
     input wire [15:0] word,
