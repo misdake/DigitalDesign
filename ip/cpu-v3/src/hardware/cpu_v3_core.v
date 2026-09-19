@@ -121,7 +121,15 @@ reg [5:0] fpu2_fd = 0;
 reg [5:0] fpu2_fa = 0;
 reg fpu2_is_memory = 0;
 reg fpu2_write_back = 0;
-reg fpu2_beat = 0;
+// Memory beats: FLD/FST stream two 16-bit halves per architectural register.
+// `fpu2_beat` counts halves across the whole vector (2*len beats); bit 0
+// selects low/high and the upper bits select which F register. `fpu2_len` is
+// the register count (1 for scalar, 2..4 for the vector forms).
+reg [3:0] fpu2_beat = 0;
+reg [2:0] fpu2_len = 1;
+wire [2:0] fpu2_beat_index = fpu2_beat[3:1];
+wire [3:0] fpu2_double_len = {fpu2_len, 1'b0};
+wire [3:0] fpu2_last_beat = fpu2_double_len - 1'b1;
 reg [31:0] fpu2_address = 0;
 reg [15:0] fpu2_low = 0;
 reg fpu2_seen_complete = 0;
@@ -319,7 +327,7 @@ wire fpu2_ext_access = state == ST_FPU2_EXEC && fpu2_is_memory ||
                        state == ST_FPU2_MEM_REQUEST ||
                        state == ST_FPU2_MEM_RESPONSE;
 wire fpu2_ext_write_enable = state == ST_FPU2_MEM_RESPONSE &&
-    !fpu2_write_back && fpu2_beat == 1 &&
+    !fpu2_write_back && fpu2_beat[0] &&
     data_response_valid && !data_error;
 
 CpuV3FpuV2 u_fpu (
@@ -334,9 +342,9 @@ CpuV3FpuV2 u_fpu (
     .instr_complete(fpu2_instr_complete),
     .ext_access(fpu2_ext_access),
     .ext_write_enable(fpu2_ext_write_enable),
-    .ext_write_address({3'b000, fpu2_fd}),
+    .ext_write_address({3'b000, fpu2_fd} + {6'b0, fpu2_beat_index}),
     .ext_write_data({data_read_data, fpu2_low}),
-    .ext_read_address({3'b000, fpu2_fa}),
+    .ext_read_address({3'b000, fpu2_fa} + {6'b0, fpu2_beat_index}),
     .ext_read_data(fpu2_ext_read_data)
 );
 
@@ -365,8 +373,8 @@ assign data_address = async_store_valid ? async_store_address :
                       pending_address;
 assign data_write_data = async_store_valid ? async_store_data :
                          fpu2_mem_active ?
-                             (fpu2_beat == 0 ? fpu2_ext_read_data[15:0] :
-                                               fpu2_ext_read_data[31:16]) :
+                             (fpu2_beat[0] == 0 ? fpu2_ext_read_data[15:0] :
+                                                  fpu2_ext_read_data[31:16]) :
                          pending_write_data;
 assign data_response_ready = !hold && ((async_store_valid && async_store_issued) ||
                              state == ST_DATA_RESPONSE ||
@@ -959,6 +967,13 @@ always @(posedge clk) begin
                             fpu2_word0[1:0] == 2'b00 &&
                             instruction_data[9:4] <= 6'h01;
                         fpu2_write_back <= instruction_data[9:4] == 6'h01;
+                        // mode[1:0]: 00 scalar, 01 vec2, 10 vec3, 11 vec4, so
+                        // len = mode[1:0] + 1. Reserved mode[3:2] != 00 is
+                        // defined to behave as the scalar form (len 1):
+                        // software must not emit it, so no vector semantics
+                        // are attached to the reserved bits.
+                        fpu2_len <= instruction_data[3:2] != 2'b00 ? 3'd1 :
+                                    {1'b0, instruction_data[1:0]} + 3'd1;
                         fpu2_address <= {data_segment_register,
                                          gpr_read_a_data};
                         fpu2_beat <= 0;
@@ -994,16 +1009,24 @@ always @(posedge clk) begin
                         fault_pc <= fpu2_fault_pc;
                         fpu2_abort <= 1;
                         state <= ST_FAULT;
-                    end else if (fpu2_beat == 0) begin
-                        // FLD: keep the low half; FST: low half sent.
+                    end else if (!fpu2_beat[0]) begin
+                        // Low half: FLD keeps it for the register write on the
+                        // following (high) beat; FST has already sent it.
                         fpu2_low <= data_read_data;
-                        fpu2_beat <= 1;
+                        fpu2_beat <= fpu2_beat + 1'b1;
                         state <= ST_FPU2_MEM_REQUEST;
-                    end else begin
-                        // FLD's RF write commits combinationally at this
-                        // edge (fpu2_ext_write_enable).
+                    end else if (fpu2_beat == fpu2_last_beat) begin
+                        // Last high half retires the whole vector. FLD's
+                        // register write commits at this edge
+                        // (fpu2_ext_write_enable, addressed by beat_index).
                         retired_words <= retired_words + 2;
                         state <= ST_FETCH_REQUEST;
+                    end else begin
+                        // High half of a non-final register: FLD's write
+                        // commits at this edge, then the next register's low
+                        // half begins.
+                        fpu2_beat <= fpu2_beat + 1'b1;
+                        state <= ST_FPU2_MEM_REQUEST;
                     end
                 end
             end

@@ -1626,7 +1626,12 @@ pub struct CpuV3CoreState {
     fpu_fa: u8,
     fpu_is_memory: bool,
     fpu_write_back: bool,
-    fpu_beat: bool,
+    /// Half-beat counter across the whole vector memory transaction (2*len
+    /// beats); bit 0 selects low/high, the upper bits select the F register.
+    fpu_beat: u8,
+    /// Register count of the current memory access (1 scalar, 2..4 vector),
+    /// derived from mode[1:0]; reserved mode[3:2] forces the scalar length.
+    fpu_len: u8,
     fpu_address: u32,
     fpu_low: u16,
     fpu_seen_complete: bool,
@@ -1677,7 +1682,8 @@ impl Default for CpuV3CoreState {
             fpu_fa: 0,
             fpu_is_memory: false,
             fpu_write_back: false,
-            fpu_beat: false,
+            fpu_beat: 0,
+            fpu_len: 1,
             fpu_address: 0,
             fpu_low: 0,
             fpu_seen_complete: false,
@@ -1700,18 +1706,21 @@ impl CpuV3CoreState {
             || matches!(self.phase, Phase::Fpu2MemRequest | Phase::Fpu2MemResponse);
         let ext_write_enable = self.phase == Phase::Fpu2MemResponse
             && !self.fpu_write_back
-            && self.fpu_beat
+            && self.fpu_beat & 1 == 1
             && data_response_valid
             && !data_error;
+        // The register index advances once per two beats (one F register), so
+        // beat >> 1 selects Fd+i for FLD and Fa+i for FST, matching the RTL.
+        let beat_index = u64::from(self.fpu_beat >> 1);
         CpuV3FpuV2InputValue {
             abort: self.fpu_abort,
             word_valid: self.fpu_word_valid,
             word: u64::from(self.fpu_word),
             ext_access,
             ext_write_enable,
-            ext_write_address: u64::from(self.fpu_fd),
+            ext_write_address: u64::from(self.fpu_fd) + beat_index,
             ext_write_data: (u64::from(data_read_data) << 16) | u64::from(self.fpu_low),
-            ext_read_address: u64::from(self.fpu_fa),
+            ext_read_address: u64::from(self.fpu_fa) + beat_index,
         }
     }
 
@@ -2190,7 +2199,7 @@ impl Module for CpuV3Core {
                 } else if fpu_mem_active {
                     // FST beats stream the low then the high half of the F
                     // register; FLD never drives write data.
-                    if state.fpu_beat {
+                    if state.fpu_beat & 1 == 1 {
                         (fpu_out.ext_read_data >> 16) as u16
                     } else {
                         fpu_out.ext_read_data as u16
@@ -2372,11 +2381,19 @@ impl Module for CpuV3Core {
                             && state.fpu_word0 & 0x3 == 0
                             && state.fpu_subop <= 1;
                         state.fpu_write_back = state.fpu_subop == 1;
+                        // mode[1:0]: 00 scalar, 01 vec2, 10 vec3, 11 vec4, so
+                        // len = mode[1:0] + 1. Reserved mode[3:2] != 00 is
+                        // defined to behave as the scalar form (len 1).
+                        state.fpu_len = if word1 & 0xC != 0 {
+                            1
+                        } else {
+                            (word1 & 0x3) as u8 + 1
+                        };
                         state.fpu_address = physical_address(
                             state.data_segment,
                             state.registers[usize::from((state.fpu_word0 >> 8) & 0xF)],
                         );
-                        state.fpu_beat = false;
+                        state.fpu_beat = 0;
                         state.phase = Phase::Fpu2Exec;
                     }
                 }
@@ -2388,7 +2405,7 @@ impl Module for CpuV3Core {
                 }
                 if state.fpu_is_memory {
                     if !async_store_was_valid {
-                        state.fpu_beat = false;
+                        state.fpu_beat = 0;
                         state.phase = Phase::Fpu2MemRequest;
                     }
                 } else if seen_complete && !fpu_out.busy {
@@ -2404,13 +2421,20 @@ impl Module for CpuV3Core {
                     state.fpu_abort = true;
                     let fault_pc = state.fpu_fault_pc;
                     state.fault(CPU_V3_FAULT_DATA_MEMORY, fault_pc);
-                } else if !state.fpu_beat {
+                } else if state.fpu_beat & 1 == 0 {
+                    // Low half of an F register: FLD keeps it for the write on
+                    // the following high beat.
                     state.fpu_low = input.data_read_data as u16;
-                    state.fpu_beat = true;
+                    state.fpu_beat += 1;
                     state.phase = Phase::Fpu2MemRequest;
-                } else {
+                } else if state.fpu_beat + 1 == state.fpu_len * 2 {
+                    // Last high half: the whole vector retires.
                     state.retire(2);
-                    state.phase = Phase::FetchRequest;
+                } else {
+                    // High half of a non-final register; the next register's
+                    // low half begins.
+                    state.fpu_beat += 1;
+                    state.phase = Phase::Fpu2MemRequest;
                 }
             }
             Phase::MultiplyWait => state.phase = Phase::MultiplyCommit,

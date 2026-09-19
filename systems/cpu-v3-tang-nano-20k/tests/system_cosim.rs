@@ -255,6 +255,36 @@ fn program_fpu_v2_dot() -> Vec<u16> {
     p
 }
 
+/// FPU v2 vector load/store at system level (Stage 6a): four Q16.16 values
+/// 1.0..4.0 are stored to [0x4000..0x4007], FLDV4 loads f8..f11, FSTV3 writes
+/// the window f9..f11 (2.0, 3.0, 4.0) to [0x4020..0x4025], then an FLDV2 /
+/// FSTV2 pair moves the same two values to [0x4030..0x4033]. The halt signal
+/// is the high half of the first FSTV3 lane (2.0), proving contiguous
+/// multi-register memory movement with low half first.
+fn program_fpu_v2_vector_ldst() -> Vec<u16> {
+    let mut p = Vec::new();
+    p.extend(load_immediate16(1, 0x4000)); // source base for FLDV4
+    p.extend(load_immediate16(2, 0x4020)); // FSTV3 destination
+    p.extend(load_immediate16(3, 0x4004)); // source base for FLDV2 (3.0, 4.0)
+    p.extend(load_immediate16(4, 0x4030)); // FSTV2 destination
+    p.extend(load_immediate16(5, 0x4021)); // halt half (high half of 2.0)
+    for (value, offset) in [(1u16, 1i16), (2, 3), (3, 5), (4, 7)] {
+        p.extend(load_immediate16(0, value));
+        p.push(store(0, 1, offset)); // [0x4000 + offset] = value (high half)
+    }
+    // word0 {E, X, Fa, kind}; word1 {Fd, subop, mode}. mode[1:0] is vec-1:
+    // 1 = vec2, 2 = vec3, 3 = vec4; subop FLD(0) reads, FST(1) writes.
+    let fldv = |x: u16, fd: u16, mode: u16| [0xe000 | (x << 8), (fd << 10) | mode];
+    let fstv = |x: u16, fa: u16, mode: u16| [0xe000 | (x << 8) | (fa << 2), 0x0010 | mode];
+    p.extend(fldv(1, 8, 3)); // FLDV4 f8..f11 = 1.0, 2.0, 3.0, 4.0
+    p.extend(fstv(2, 9, 2)); // FSTV3 [0x4020..0x4025] = f9..f11
+    p.extend(fldv(3, 12, 1)); // FLDV2 f12..f13 = 3.0, 4.0
+    p.extend(fstv(4, 12, 1)); // FSTV2 [0x4030..0x4033] = f12..f13
+    p.push(load(0, 5, 0)); // r0 = mem[0x4021] = high half of 2.0 = 2
+    p.push(halt());
+    p
+}
+
 fn programs() -> Vec<CosimProgram> {
     vec![
         CosimProgram {
@@ -328,6 +358,14 @@ fn programs() -> Vec<CosimProgram> {
             check_base: 0x4020,
             check_len: 4,
             expected_halt: Some(5),
+        },
+        CosimProgram {
+            name: "fpu_v2_vector_ldst",
+            words: program_fpu_v2_vector_ldst(),
+            max_cycles: 20_000,
+            check_base: 0x4020,
+            check_len: 0x14,
+            expected_halt: Some(2),
         },
     ]
 }
