@@ -148,12 +148,9 @@ const TWO_OVER_PI_C0: i32 = 41_722;
 /// `round((2/pi - C0 * 2^-16) * 2^32)`, the residual term. It is negative
 /// because `C0` rounded up; `|C1| < 2^16` keeps every partial product 16x16
 /// class. The represented constant `C0*2^-16 + C1*2^-32` differs from `2/pi` by
-/// ~7.1e-11, i.e. `< 5e-4` Q16.16 LSB over `|a| <= 2^22`.
+/// ~7.1e-11, i.e. `< 0.16` LSB of the reduced argument `t` over the full i32
+/// input range.
 const TWO_OVER_PI_C1: i32 = -31_890;
-
-/// SINCOS input clamp: `64.0` rad in Q16.16 (`64 * 2^16 = 0x40_0000`).
-/// Out-of-range inputs are defined to behave exactly as this bound.
-const SINCOS_CLAMP: i32 = 0x40_0000;
 
 /// Linear interpolation shared by RCP (128 entries, 9-bit residue, `>> 9`) and
 /// RSQRT (256 entries, 8-bit residue, `>> 8`). The stored table stops one entry
@@ -276,32 +273,41 @@ fn quadrant_sine(quadrant: i32, fraction: i32) -> i32 {
 
 /// SINCOS of `a` (radians, Q16.16), returning `(sin, cos)`.
 ///
-/// The input is first clamped to `[-64, 64]` rad ([`SINCOS_CLAMP`]) so that
-/// out-of-range inputs are defined. Range reduction then evaluates
-/// `t = floor(a * (2/pi))` in Q16.16 with the two-term constant
-/// `2/pi ~= C0*2^-16 + C1*2^-32` ([`TWO_OVER_PI_C0`], [`TWO_OVER_PI_C1`]).
-/// Splitting `a = a_hi*2^16 + a_lo` (`a_hi` arithmetic, `a_lo` the unsigned low
-/// 16 bits) keeps every partial product 16x16 class because `|a| <= 2^22`:
+/// There is no input clamp: any `i32` is evaluated at its actual angle. Range
+/// reduction evaluates `t = floor(a * (2/pi))` in Q16.16 with the two-term
+/// constant `2/pi ~= C0*2^-16 + C1*2^-32` ([`TWO_OVER_PI_C0`],
+/// [`TWO_OVER_PI_C1`]). Splitting `a = a_hi*2^16 + a_lo` (`a_hi = a >> 16`
+/// arithmetic in `[-32768, 32767]`, `a_lo` the unsigned low 16 bits in
+/// `[0, 65535]`) keeps the whole computation inside `i64` for the full range:
 ///
 /// ```text
-/// p0 = a_lo * C0            (unsigned)
-/// p1 = a_lo * C1            (signed)
-/// h0 = a_hi * C0            (signed)
-/// h1 = a_hi * C1            (signed)
+/// p0 = a_lo * C0            (unsigned, |p0| <= 2.73e9)
+/// p1 = a_lo * C1            (signed,   |p1| <= 2.09e9)
+/// h0 = a_hi * C0            (signed,   |h0| <= 1.37e9)
+/// h1 = a_hi * C1            (signed,   |h1| <= 1.05e9)
 /// t  = h0 + (((p0 + h1) << 16) + p1) >> 32
 /// ```
+///
+/// `|p0 + h1| <= 3.78e9`, so the shift peaks near `2^47.8`; the reduced value
+/// itself satisfies `|t| <= ceil(2^31 * 2/pi) + 1 < 2^30.4 < i32::MAX`, which
+/// the `debug_assert!` below confirms on every debug/test build (notably for
+/// `a = i32::MIN`/`i32::MAX`).
 ///
 /// The numerator `(a*C0 << 16) + a*C1` expands to
 /// `(h0 << 32) + ((p0 + h1) << 16) + p1`, and the final `>> 32` is an
 /// arithmetic shift, so the formula is `floor(a * represented_constant)`: the
 /// only truncation is the final shift (< 1 LSB) plus the constant error
-/// (< 5e-4 LSB). Negative `a` works because `a_hi`, `h0`, `h1` and `p1` are
-/// signed, `p0` is unsigned, and the arithmetic shift floors.
+/// (< 0.16 LSB over the full range). Negative `a` works because `a_hi`, `h0`,
+/// `h1` and `p1` are signed, `p0` is unsigned, and the arithmetic shift floors.
+///
+/// The 4 LSB accuracy guarantee holds for `|a| <= 45` rad; outside it the
+/// result is still the actual `sin`/`cos` (the argument never wraps or
+/// saturates), but the error grows slowly with `|a|` and is only bounded by the
+/// measured full-range test.
 ///
 /// `q = (t >> 16) & 3`, `f = t & 0xFFFF`; `sin` uses the quarter-wave table at
 /// `(q, f)` and `cos` at `(q + 1, f)` ([`quadrant_sine`]).
 pub(crate) fn sincos_q16(a: i32) -> (i32, i32) {
-    let a = a.clamp(-SINCOS_CLAMP, SINCOS_CLAMP);
     let a_hi = i64::from(a >> 16);
     let a_lo = i64::from(a & 0xFFFF);
     let c0 = i64::from(TWO_OVER_PI_C0);
@@ -310,7 +316,12 @@ pub(crate) fn sincos_q16(a: i32) -> (i32, i32) {
     let h1 = a_hi * c1;
     let p0 = a_lo * c0;
     let p1 = a_lo * c1;
-    let t = (h0 + ((((p0 + h1) << 16) + p1) >> 32)) as i32;
+    let t_wide = h0 + ((((p0 + h1) << 16) + p1) >> 32);
+    debug_assert!(
+        t_wide >= i64::from(i32::MIN) && t_wide <= i64::from(i32::MAX),
+        "SINCOS range reduction t={t_wide} escaped i32 for a={a}"
+    );
+    let t = t_wide as i32;
     let quadrant = (t >> 16) & 3;
     let fraction = t & 0xFFFF;
     (
@@ -346,6 +357,31 @@ mod tests {
         }
     }
 
+    /// `(max(|sin error|, |cos error|) in Q16.16 LSB, sin, cos)` for the
+    /// integer model against `f64`. The input `a` is an exact multiple of
+    /// `2^-16`, so the reference is trustworthy at every magnitude.
+    fn sincos_abs_error(a: i32) -> (i32, i32, i32) {
+        let radians = f64::from(a) / 65536.0;
+        let (sin, cos) = sincos_q16(a);
+        let sin_exact = (radians.sin() * 65536.0).round() as i32;
+        let cos_exact = (radians.cos() * 65536.0).round() as i32;
+        (
+            (sin - sin_exact).abs().max((cos - cos_exact).abs()),
+            sin,
+            cos,
+        )
+    }
+
+    /// Deterministic xorshift64* used to sample the full `i32` input range.
+    fn xorshift64(state: &mut u64) -> u64 {
+        let mut x = *state;
+        x ^= x >> 12;
+        x ^= x << 25;
+        x ^= x >> 27;
+        *state = x;
+        x.wrapping_mul(0x2545_F491_4F6C_DD1D)
+    }
+
     #[test]
     fn lut_literals_match_f64_generation() {
         for (i, &entry) in RCP_LUT.iter().enumerate() {
@@ -374,7 +410,6 @@ mod tests {
         let c1 = ((two_over_pi - f64::from(c0) / 65536.0) * 4294967296.0).round() as i32;
         assert_eq!(TWO_OVER_PI_C0, c0);
         assert_eq!(TWO_OVER_PI_C1, c1);
-        assert_eq!(SINCOS_CLAMP, 64 * 65536);
     }
 
     #[test]
@@ -566,23 +601,95 @@ mod tests {
         );
     }
 
+    /// Full-range SINCOS error bound (Q16.16 LSB). The clamp is gone, so every
+    /// `i32` is reduced at its actual angle. The measured maximum over the dense
+    /// domain plus edges, a whole-range stride and 2^20 pseudo-random full-range
+    /// points is **3 LSB** (worst at `a = -2948768`, i.e. `-44.9946` rad); the
+    /// bound is set one LSB above that, matching the dense `<= 4` margin.
+    const SINCOS_FULL_RANGE_ULP: i32 = 4;
+
     #[test]
-    fn sincos_clamp_is_defined() {
-        let high = sincos_q16(SINCOS_CLAMP);
-        let low = sincos_q16(-SINCOS_CLAMP);
-        for a in [SINCOS_CLAMP, SINCOS_CLAMP + 1, 0x7FFF_FFFF, i32::MAX] {
-            assert_eq!(sincos_q16(a), high, "high clamp at a={a}");
+    fn sincos_full_range_accuracy() {
+        // The 4 LSB guarantee still applies only to |a| <= 45 rad.
+        let limit = 45 << 16;
+        let mut dense_max = 0i32;
+        let mut dense_worst = (0i32, 0i32, 0i32);
+        let mut range_max = 0i32;
+        let mut range_worst = (0i32, 0i32, 0i32);
+        let mut check = |a: i32| {
+            let (error, sin, cos) = sincos_abs_error(a);
+            if error > range_max {
+                range_max = error;
+                range_worst = (a, sin, cos);
+            }
+            if a >= -limit && a <= limit && error > dense_max {
+                dense_max = error;
+                dense_worst = (a, sin, cos);
+            }
+        };
+
+        // Dense sweep of the guaranteed domain, exactly as before the clamp was
+        // removed (the clamp never applied here).
+        for a in -limit..=limit {
+            check(a);
         }
-        for a in [i32::MIN, i32::MIN + 1, -SINCOS_CLAMP - 1, -SINCOS_CLAMP] {
-            assert_eq!(sincos_q16(a), low, "low clamp at a={a}");
+
+        // Every power of two and its neighbours on both signs: the sign and
+        // exponent boundaries stress the `a_hi`/`a_lo` split.
+        for bit in 0..31 {
+            let power = 1i32 << bit;
+            check(power);
+            check(power + 1);
+            check(power - 1);
+            check(-power);
+            check(-power + 1);
+            check(-power - 1);
         }
-        // Exactly 64 rad is still an ordinary approximation, not a saturated
-        // sentinel: it must stay within the 4 ulp bound.
-        let radians = f64::from(SINCOS_CLAMP) / 65536.0;
-        let exact_sin = (radians.sin() * 65536.0).round() as i32;
-        let exact_cos = (radians.cos() * 65536.0).round() as i32;
-        assert!((high.0 - exact_sin).abs() <= 4, "sin(64) error");
-        assert!((high.1 - exact_cos).abs() <= 4, "cos(64) error");
+        for a in [
+            i32::MIN,
+            i32::MIN + 1,
+            i32::MIN + 2,
+            i32::MAX,
+            i32::MAX - 1,
+            i32::MAX - 2,
+        ] {
+            check(a);
+        }
+
+        // Deterministic stride through the whole i32 range.
+        let mut a = i32::MIN;
+        while let Some(next) = a.checked_add(65_537) {
+            check(a);
+            a = next;
+        }
+        check(i32::MAX);
+
+        // 2^20 deterministic pseudo-random full-range points.
+        let mut state = 0x9E37_79B9_7F4A_7C15u64;
+        for _ in 0..(1 << 20) {
+            check(xorshift64(&mut state) as u32 as i32);
+        }
+
+        eprintln!(
+            "SINCOS full range: dense |a|<=45 max {dense_max} LSB at a={} (sin={}, cos={}); \
+             full i32 max {range_max} LSB at a={} (sin={}, cos={})",
+            dense_worst.0,
+            dense_worst.1,
+            dense_worst.2,
+            range_worst.0,
+            range_worst.1,
+            range_worst.2
+        );
+        assert!(
+            dense_max <= 4,
+            "SINCOS dense error {dense_max} ulp > 4 at a={}",
+            dense_worst.0
+        );
+        assert!(
+            range_max <= SINCOS_FULL_RANGE_ULP,
+            "SINCOS full-range error {range_max} ulp > {SINCOS_FULL_RANGE_ULP} at a={}",
+            range_worst.0
+        );
     }
 
     #[test]
