@@ -601,6 +601,29 @@ mod tests {
         );
     }
 
+    /// Inner-range (|a| <= 2 pi) SINCOS error bound (Q16.16 LSB), the range
+    /// that matters for rotation use. Measured value pinned by the test print.
+    const SINCOS_INNER_RANGE_ULP: i32 = 4;
+
+    #[test]
+    fn sincos_inner_range_accuracy() {
+        let limit = (2.0 * std::f64::consts::PI * 65536.0).round() as i32;
+        let mut max_error = 0i32;
+        let mut worst = (0i32, 0i32, 0i32);
+        for a in -limit..=limit {
+            let (error, sin, cos) = sincos_abs_error(a);
+            if error > max_error {
+                max_error = error;
+                worst = (a, sin, cos);
+            }
+        }
+        eprintln!(
+            "SINCOS inner range (|a|<=2pi): max {max_error} Q16.16 LSB at a={} (sin={}, cos={})",
+            worst.0, worst.1, worst.2
+        );
+        assert!(max_error <= SINCOS_INNER_RANGE_ULP);
+    }
+
     /// Full-range SINCOS error bound (Q16.16 LSB). The clamp is gone, so every
     /// `i32` is reduced at its actual angle. The measured maximum over the dense
     /// domain plus edges, a whole-range stride and 2^20 pseudo-random full-range
