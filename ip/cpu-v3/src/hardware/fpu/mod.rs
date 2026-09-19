@@ -101,7 +101,7 @@ pub(crate) mod encoding {
     }
 }
 
-pub(crate) mod lut;
+pub mod lut;
 
 #[derive(Clone, ModuleIo)]
 pub struct CpuV3FpuRegisterRamInput {

@@ -60,6 +60,33 @@ initial begin
     for (i = 0; i < 512; i = i + 1)
         reference[i] = 0;
 
+    // Hidden LUT region: the register file powers up with the special-function
+    // tables already in BSRAM. Check the two table bases plus the mirror
+    // asymmetry before the writes below overwrite everything. Reads have one
+    // cycle of latency, so drive the addresses on the falling edge and sample
+    // after the next rising edge.
+    @(negedge clk);
+    read_a_address = 9'd64;
+    read_b_address = 9'd64;
+    @(posedge clk);
+    #1;
+    check_value(read_a_data, 32'h00010000, "LUT mirror_0[64] RCP(1.0)");
+    check_value(read_b_data, 32'h00010000, "LUT mirror_1[64] RSQRT(1.0)");
+
+    // mirror_0[192] is SINCOS sin(0) = 0; mirror_1[192] is an RSQRT entry and
+    // must be nonzero, proving the two mirrors really carry different tables.
+    @(negedge clk);
+    read_a_address = 9'd192;
+    read_b_address = 9'd192;
+    @(posedge clk);
+    #1;
+    check_value(read_a_data, 32'h0, "LUT mirror_0[192] SINCOS sin(0)");
+    if (read_b_data === 32'h0) begin
+        $display("DIGITAL_DESIGN_FAIL: LUT mirror_1[192] RSQRT entry is zero");
+        $finish;
+    end
+    check_count = check_count + 1;
+
     // Write every physical address with a distinct word.
     write_enable = 0;
     for (i = 0; i < 512; i = i + 1) begin
