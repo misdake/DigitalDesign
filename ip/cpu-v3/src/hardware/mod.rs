@@ -2264,9 +2264,11 @@ impl Module for CpuV3Core {
         if async_store_was_valid && !async_store_was_issued && input.data_request_ready {
             state.async_store.issued = true;
         }
-        if async_store_was_valid && async_store_was_issued && input.data_response_valid {
-            state.async_store = AsyncStore::default();
-        }
+        // The buffer drain is applied only after the phase logic below: an
+        // instruction that retires on the same edge must still observe the
+        // pre-edge `async_store.valid` (the RTL reads the nonblocking
+        // `async_store_valid`), otherwise a store behind a draining buffer
+        // would enqueue a beat early instead of waiting in AsyncStoreWait.
         // Drive the FPU v2 unit with this cycle's inputs and clock it. The
         // combinational outputs seen by the phase logic below are pre-edge,
         // mirroring the RTL's nonblocking semantics.
@@ -2428,6 +2430,12 @@ impl Module for CpuV3Core {
                 }
             }
             _ => {}
+        }
+        // Apply the completed-async-store drain after the phase logic, exactly
+        // like the RTL's nonblocking `async_store_valid <= 0` assignment: a
+        // store or load retiring on this edge saw the pre-edge valid bit.
+        if async_store_was_valid && async_store_was_issued && input.data_response_valid {
+            state.async_store = AsyncStore::default();
         }
     }
 

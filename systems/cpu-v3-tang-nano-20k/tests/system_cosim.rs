@@ -615,3 +615,47 @@ fn system_emu_matches_rtl() {
         failures.join("\n")
     );
 }
+
+// ---------------------------------------------------------------------------
+// Regression guard for the former one-cycle store-chain drift in the system
+// co-simulation. The root cause was in the core emulator: it drained the
+// completed async store before running the Execute phase logic, so a store
+// retiring on the same edge read the already-cleared buffer and enqueued a beat
+// early. The RTL reads the pre-edge `async_store_valid` via nonblocking
+// assignments and waits one extra beat in `ST_ASYNC_STORE_WAIT`.
+//
+// Minimal shape found by iterative reduction: three stores to consecutive words
+// of one cache line (0x4100/0x4102/0x4104), separated by a `nop`. The base
+// load-immediate is the only two-word instruction. Both a separator between the
+// stores and exactly three stores are required: one/two stores, three
+// back-to-back stores, and a two-word load-immediate ahead of the run all match.
+// ---------------------------------------------------------------------------
+
+fn repro_store_chain_drift() -> Vec<u16> {
+    let mut p = Vec::new();
+    p.extend(load_immediate16(5, 0x4100)); // words 0..1: store base
+    p.push(store(0, 5, 0)); // word 2: [0x4100] = 0
+    p.push(nop()); // word 3
+    p.push(store(0, 5, 2)); // word 4: [0x4102] = 0
+    p.push(nop()); // word 5
+    p.push(store(0, 5, 4)); // word 6: [0x4104] = 0
+    p.push(halt()); // word 7
+    p
+}
+
+#[test]
+#[ignore = "explicit emulator-vs-Icarus co-simulation of the one-cycle store-chain drift regression"]
+fn system_emu_matches_rtl_store_chain_drift_repro() {
+    let sources = system_verilog_sources();
+    let program = CosimProgram {
+        name: "store_chain_drift_repro",
+        words: repro_store_chain_drift(),
+        max_cycles: 20_000,
+        check_base: 0x4100,
+        check_len: 4,
+        expected_halt: None,
+    };
+    if let Err(message) = compare_program(&program, &sources) {
+        panic!("store-chain drift regressed; emu and RTL differ:\n{message}");
+    }
+}
