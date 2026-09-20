@@ -76,6 +76,12 @@ conditional expression, because Verilog makes `?:` unsigned when any branch is u
 silently turn the arithmetic shift into a logical one. `FTOI16` and every other signed FPU result
 depend on the same rule for any arithmetic shift in their datapath.
 
+The AUX kind-00 integer bridges (`ILO2F`/`IHI2F`/`I16TOF`/`FLO2I`/`FHI2I`/`FTOI16`) are performed
+by the core through the unit's external F read/write ports, since only the core can reach the GPR
+file. A scalar `CMP` publishes its registered `flag_lt`/`flag_eq`/`flag_gt` into the core's
+transient pending test when the pair retires, so a following conditional branch or conditional
+move consumes it exactly like `CMPS`/`CMPU`.
+
 The optional fitted system places separate 4 KiB instruction and data caches
 around the core. Each cache is two-way set-associative with 64 sets and 16 words per line.
 Two true-dual-port BSRAMs split every line strictly by word parity. During lookup,

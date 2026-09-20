@@ -300,6 +300,85 @@ impl FuncBuilder {
     pub fn store_mem(&mut self, base: VReg, offset: i16, src: VReg) {
         self.push(Instr::StoreMem { base, offset, src });
     }
+
+    // ----- FPU v2 scalar emitters (all vregs are Fpu-class unless stated) -----
+
+    fn fresh_fpu(&mut self) -> VReg {
+        self.func.fresh_vreg(RegClass::Fpu)
+    }
+    pub fn fpu_bin(&mut self, op: FpuBinOp, lhs: VReg, rhs: VReg) -> VReg {
+        let dst = self.fresh_fpu();
+        self.push(Instr::FpuBin { dst, op, lhs, rhs });
+        dst
+    }
+    pub fn fpu_un(&mut self, op: FpuUnOp, src: VReg) -> VReg {
+        let dst = self.fresh_fpu();
+        self.push(Instr::FpuUn { dst, op, src });
+        dst
+    }
+    pub fn fpu_mov(&mut self, src: VReg) -> VReg {
+        let dst = self.fresh_fpu();
+        self.push(Instr::FpuMov { dst, src });
+        dst
+    }
+    /// dst = sign_extend(src_gpr) << 16 (`I16TOF`)
+    pub fn fpu_from_int(&mut self, src_gpr: VReg) -> VReg {
+        let dst = self.fresh_fpu();
+        self.push(Instr::FpuFromInt { dst, src_gpr });
+        dst
+    }
+    /// dst_gpr = trunc-toward-zero(src) (`FTOI16`)
+    pub fn fpu_to_int(&mut self, src: VReg) -> VReg {
+        let dst_gpr = self.fresh_vreg();
+        self.push(Instr::FpuToInt { dst_gpr, src });
+        dst_gpr
+    }
+    /// dst = src_gpr in the low half, high half preserved (`ILO2F`)
+    pub fn fpu_from_lo(&mut self, src_gpr: VReg) -> VReg {
+        let dst = self.fresh_fpu();
+        self.push(Instr::FpuFromLo { dst, src_gpr });
+        dst
+    }
+    /// dst = src with the high half replaced by src_gpr (`IHI2F`)
+    pub fn fpu_from_hi(&mut self, src: VReg, src_gpr: VReg) -> VReg {
+        let dst = self.fresh_fpu();
+        self.push(Instr::FpuFromHi { dst, src, src_gpr });
+        dst
+    }
+    /// dst_gpr = src[15:0] (`FLO2I`)
+    pub fn fpu_to_lo(&mut self, src: VReg) -> VReg {
+        let dst_gpr = self.fresh_vreg();
+        self.push(Instr::FpuToLo { dst_gpr, src });
+        dst_gpr
+    }
+    /// dst_gpr = src[31:16] (`FHI2I`)
+    pub fn fpu_to_hi(&mut self, src: VReg) -> VReg {
+        let dst_gpr = self.fresh_vreg();
+        self.push(Instr::FpuToHi { dst_gpr, src });
+        dst_gpr
+    }
+    pub fn fpu_load(&mut self, base_gpr: VReg, offset: i16) -> VReg {
+        let dst = self.fresh_fpu();
+        self.push(Instr::FpuLoad {
+            dst,
+            base_gpr,
+            offset,
+        });
+        dst
+    }
+    pub fn fpu_store(&mut self, base_gpr: VReg, offset: i16, src: VReg) {
+        self.push(Instr::FpuStore {
+            base_gpr,
+            offset,
+            src,
+        });
+    }
+    /// dst_gpr = address of the 4-word-aligned FPU spill slot `slot`
+    pub fn addr_of_fpu_spill(&mut self, slot: u8) -> VReg {
+        let dst = self.fresh_vreg();
+        self.push(Instr::AddrOfFpuSpill { dst, slot });
+        dst
+    }
     pub fn call(&mut self, func: FuncName, args: &[VReg], n_rets: usize) -> Vec<VReg> {
         let rets = (0..n_rets).map(|_| self.fresh_vreg()).collect::<Vec<_>>();
         self.push(Instr::Call {

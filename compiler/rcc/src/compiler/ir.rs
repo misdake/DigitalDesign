@@ -95,6 +95,27 @@ pub enum ShiftOp {
     Asr,
 }
 
+/// FPU v2 scalar two-operand subops (design section 7.3). All operands are
+/// single Q16.16 F registers.
+#[derive(Copy, Clone, Debug, Eq, PartialEq, Hash)]
+pub enum FpuBinOp {
+    Add,
+    Sub,
+    Mul,
+}
+
+/// FPU v2 scalar unary subops (design section 7.3). The second source is
+/// ignored by the hardware.
+#[derive(Copy, Clone, Debug, Eq, PartialEq, Hash)]
+pub enum FpuUnOp {
+    Abs,
+    Neg,
+    Floor,
+    Ceil,
+    Round,
+    Trunc,
+}
+
 /// register file a virtual register belongs to
 #[derive(Copy, Clone, Debug, Eq, PartialEq, Hash)]
 pub enum RegClass {
@@ -278,6 +299,74 @@ pub enum Instr {
         dst: VReg,
         slot: u8,
     },
+    // ----- CpuV3 FPU v2 scalar instructions (Fpu-class vregs unless noted) -----
+    /// `Fd = Fa op Fb` (scalar ADD/SUB/MUL)
+    FpuBin {
+        dst: VReg,
+        op: FpuBinOp,
+        lhs: VReg,
+        rhs: VReg,
+    },
+    /// `Fd = op(Fa)` (scalar ABS/NEG/FLOOR/CEIL/ROUND/TRUNC)
+    FpuUn {
+        dst: VReg,
+        op: FpuUnOp,
+        src: VReg,
+    },
+    /// `Fd = Fa` (FMOV)
+    FpuMov {
+        dst: VReg,
+        src: VReg,
+    },
+    /// `I16TOF`: dst = sign_extend(src_gpr) << 16
+    FpuFromInt {
+        dst: VReg,
+        src_gpr: VReg,
+    },
+    /// `FTOI16`: dst_gpr = trunc-toward-zero(src)
+    FpuToInt {
+        dst_gpr: VReg,
+        src: VReg,
+    },
+    /// `ILO2F`: dst[15:0] = src_gpr, other bits preserved
+    FpuFromLo {
+        dst: VReg,
+        src_gpr: VReg,
+    },
+    /// `IHI2F`: dst[31:16] = src_gpr, dst[15:0] comes from `src`
+    FpuFromHi {
+        dst: VReg,
+        src: VReg,
+        src_gpr: VReg,
+    },
+    /// `FLO2I`: dst_gpr = src[15:0]
+    FpuToLo {
+        dst_gpr: VReg,
+        src: VReg,
+    },
+    /// `FHI2I`: dst_gpr = src[31:16]
+    FpuToHi {
+        dst_gpr: VReg,
+        src: VReg,
+    },
+    /// `FLD`: dst = {mem[addr+1], mem[addr]}, low half first; addr = base_gpr + offset
+    FpuLoad {
+        dst: VReg,
+        base_gpr: VReg,
+        offset: i16,
+    },
+    /// `FST`: mem[addr] = src[15:0], mem[addr+1] = src[31:16]
+    FpuStore {
+        base_gpr: VReg,
+        offset: i16,
+        src: VReg,
+    },
+    /// dst_gpr = 4-word-aligned address of FPU spill frame slot `slot`
+    /// (register allocator spills only; the word offset is resolved in codegen)
+    AddrOfFpuSpill {
+        dst: VReg,
+        slot: u8,
+    },
 }
 
 impl Instr {
@@ -321,6 +410,28 @@ impl Instr {
                 f(*cseg);
                 f(*target);
             }
+            Instr::FpuBin { lhs, rhs, .. } => {
+                f(*lhs);
+                f(*rhs);
+            }
+            Instr::FpuUn { src, .. }
+            | Instr::FpuMov { src, .. }
+            | Instr::FpuToInt { src, .. }
+            | Instr::FpuToLo { src, .. }
+            | Instr::FpuToHi { src, .. } => f(*src),
+            Instr::FpuFromInt { src_gpr, .. }
+            | Instr::FpuFromLo { src_gpr, .. }
+            | Instr::FpuLoad {
+                base_gpr: src_gpr, ..
+            } => f(*src_gpr),
+            Instr::FpuFromHi { src, src_gpr, .. } => {
+                f(*src);
+                f(*src_gpr);
+            }
+            Instr::FpuStore { base_gpr, src, .. } => {
+                f(*base_gpr);
+                f(*src);
+            }
             Instr::LoadImm { .. }
             | Instr::StoreStatic { .. }
             | Instr::DevRecv { .. }
@@ -329,6 +440,7 @@ impl Instr {
             | Instr::LoadLocal { .. }
             | Instr::AddrOfLocal { .. }
             | Instr::LoadFuncAddr { .. }
+            | Instr::AddrOfFpuSpill { .. }
             | Instr::Mfsr { .. } => {}
         }
     }
@@ -373,6 +485,28 @@ impl Instr {
                 f(cseg);
                 f(target);
             }
+            Instr::FpuBin { lhs, rhs, .. } => {
+                f(lhs);
+                f(rhs);
+            }
+            Instr::FpuUn { src, .. }
+            | Instr::FpuMov { src, .. }
+            | Instr::FpuToInt { src, .. }
+            | Instr::FpuToLo { src, .. }
+            | Instr::FpuToHi { src, .. } => f(src),
+            Instr::FpuFromInt { src_gpr, .. }
+            | Instr::FpuFromLo { src_gpr, .. }
+            | Instr::FpuLoad {
+                base_gpr: src_gpr, ..
+            } => f(src_gpr),
+            Instr::FpuFromHi { src, src_gpr, .. } => {
+                f(src);
+                f(src_gpr);
+            }
+            Instr::FpuStore { base_gpr, src, .. } => {
+                f(base_gpr);
+                f(src);
+            }
             Instr::LoadImm { .. }
             | Instr::StoreStatic { .. }
             | Instr::DevRecv { .. }
@@ -381,6 +515,7 @@ impl Instr {
             | Instr::LoadLocal { .. }
             | Instr::AddrOfLocal { .. }
             | Instr::LoadFuncAddr { .. }
+            | Instr::AddrOfFpuSpill { .. }
             | Instr::Mfsr { .. } => {}
         }
     }
@@ -702,6 +837,45 @@ impl fmt::Display for Instr {
             Instr::LoadLocal { dst, slot } => write!(f, "v{dst} = load_local #{slot}"),
             Instr::StoreLocal { slot, src } => write!(f, "store_local #{slot} = v{src}"),
             Instr::AddrOfLocal { dst, slot } => write!(f, "v{dst} = &local #{slot}"),
+            Instr::FpuBin { dst, op, lhs, rhs } => {
+                let op = match op {
+                    FpuBinOp::Add => "fadd",
+                    FpuBinOp::Sub => "fsub",
+                    FpuBinOp::Mul => "fmul",
+                };
+                write!(f, "v{dst} = {op} v{lhs}, v{rhs}")
+            }
+            Instr::FpuUn { dst, op, src } => {
+                let op = match op {
+                    FpuUnOp::Abs => "fabs",
+                    FpuUnOp::Neg => "fneg",
+                    FpuUnOp::Floor => "ffloor",
+                    FpuUnOp::Ceil => "fceil",
+                    FpuUnOp::Round => "fround",
+                    FpuUnOp::Trunc => "ftrunc",
+                };
+                write!(f, "v{dst} = {op} v{src}")
+            }
+            Instr::FpuMov { dst, src } => write!(f, "v{dst} = fmov v{src}"),
+            Instr::FpuFromInt { dst, src_gpr } => write!(f, "v{dst} = ffromint v{src_gpr}"),
+            Instr::FpuToInt { dst_gpr, src } => write!(f, "v{dst_gpr} = ftoint v{src}"),
+            Instr::FpuFromLo { dst, src_gpr } => write!(f, "v{dst} = ffromlo v{src_gpr}"),
+            Instr::FpuFromHi { dst, src, src_gpr } => {
+                write!(f, "v{dst} = ffromhi v{src}, v{src_gpr}")
+            }
+            Instr::FpuToLo { dst_gpr, src } => write!(f, "v{dst_gpr} = ftolo v{src}"),
+            Instr::FpuToHi { dst_gpr, src } => write!(f, "v{dst_gpr} = ftohi v{src}"),
+            Instr::FpuLoad {
+                dst,
+                base_gpr,
+                offset,
+            } => write!(f, "v{dst} = fld [v{base_gpr} + {offset}]"),
+            Instr::FpuStore {
+                base_gpr,
+                offset,
+                src,
+            } => write!(f, "fst [v{base_gpr} + {offset}] = v{src}"),
+            Instr::AddrOfFpuSpill { dst, slot } => write!(f, "v{dst} = &fpu_spill #{slot}"),
         }
     }
 }

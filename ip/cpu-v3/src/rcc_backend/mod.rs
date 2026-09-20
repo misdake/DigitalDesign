@@ -10,7 +10,10 @@ mod options;
 pub use options::CompilerOptions;
 
 use crate as cpu_v3;
-use crate::{AluOp, ImmediateOp, SpecialRegister, TestCondition, Word};
+use crate::{
+    AluOp, FpuAuxKind, FpuAuxSubop, FpuScalarSubop, ImmediateOp, SpecialRegister, TestCondition,
+    Word,
+};
 use crate::{CACHE_MAINTENANCE_DEVICE, D_INVALIDATE_ALL, ICACHE_INVALIDATE_ALL_DELAYED};
 use rcc::*;
 use std::collections::{HashMap, HashSet};
@@ -199,12 +202,6 @@ struct LoweredFunction {
 pub enum BackendError {
     /// A referenced function was not provided by the frontend.
     UnknownFunction(String),
-    /// The program uses FPU values or operations, but CpuV3 FPU v2 lowering
-    /// is not implemented yet (C0 freezes the contract only; C1-C3 add the
-    /// scalar, vector and special-function lowering). Emitting the retired
-    /// single-word Q8.8 `0xD` encoding would be silently reinterpreted as a
-    /// different v2 instruction, so the backend refuses instead.
-    FpuLoweringUnavailable { function: String },
     /// The linked code image violated an encoding requirement.
     Validation(ProgramValidationError),
 }
@@ -213,11 +210,6 @@ impl std::fmt::Display for BackendError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::UnknownFunction(name) => write!(f, "unknown function `{name}`"),
-            Self::FpuLoweringUnavailable { function } => write!(
-                f,
-                "function `{function}` uses FPU values, but CpuV3 FPU v2 lowering is not \
-                 implemented yet (C0 freezes the Q16.16 contract; C1-C3 add lowering)"
-            ),
             Self::Validation(error) => write!(f, "{error}"),
         }
     }
@@ -280,15 +272,6 @@ fn compile_ir(
             .get(name)
             .ok_or_else(|| BackendError::UnknownFunction(name.to_string()))?
             .clone();
-        // C0 freezes the FPU v2 contract but does not lower it. Refuse an FPU
-        // program explicitly rather than emitting the retired single-word
-        // Q8.8 encoding, which the v2 unit would reinterpret as a different
-        // instruction.
-        if function.vreg_class.contains(&RegClass::Fpu) {
-            return Err(BackendError::FpuLoweringUnavailable {
-                function: name.to_string(),
-            });
-        }
         // Safe if-conversion (CpuV3): simple one-instruction diamonds become
         // Boolean comparisons or conditional moves. It changes the CFG and
         // debugger stepping shape, so it only runs with optimizations enabled;
@@ -398,6 +381,7 @@ fn lower_function(
         for (index, instruction) in block.insts.iter().enumerate() {
             lines.set_line(block.lines.get(index).copied().flatten());
             lower_instruction(
+                function,
                 instruction,
                 &register,
                 allocation,
@@ -488,6 +472,7 @@ fn lower_function(
 }
 
 fn lower_instruction(
+    function: &IrFunc,
     instruction: &Instr,
     register: &dyn Fn(VReg) -> u8,
     allocation: &Allocation,
@@ -625,7 +610,7 @@ fn lower_instruction(
             };
             lines.word(cpu_v3::read_special(register(*dst), sr));
         }
-        Instr::Bool { dst, cmp } => lower_bool(register(*dst), cmp, register, lines),
+        Instr::Bool { dst, cmp } => lower_bool(register(*dst), cmp, function, register, lines),
         Instr::CMov { dst, cmp, src } => {
             lower_compare(lines, cmp, register);
             let condition = test_condition(cmp.cond);
@@ -720,7 +705,147 @@ fn lower_instruction(
                 true,
             );
         }
+        Instr::FpuBin { dst, op, lhs, rhs } => {
+            let subop = match op {
+                FpuBinOp::Add => FpuScalarSubop::Add,
+                FpuBinOp::Sub => FpuScalarSubop::Sub,
+                FpuBinOp::Mul => FpuScalarSubop::Mul,
+            };
+            emit_fpu_scalar(lines, register(*lhs), register(*rhs), register(*dst), subop);
+        }
+        Instr::FpuUn { dst, op, src } => {
+            let subop = match op {
+                FpuUnOp::Abs => FpuScalarSubop::Abs,
+                FpuUnOp::Neg => FpuScalarSubop::Neg,
+                FpuUnOp::Floor => FpuScalarSubop::Floor,
+                FpuUnOp::Ceil => FpuScalarSubop::Ceil,
+                FpuUnOp::Round => FpuScalarSubop::Round,
+                FpuUnOp::Trunc => FpuScalarSubop::Trunc,
+            };
+            emit_fpu_scalar(lines, register(*src), 0, register(*dst), subop);
+        }
+        Instr::FpuMov { dst, src } => {
+            let dst = register(*dst);
+            let src = register(*src);
+            if dst != src {
+                emit_fpu_scalar(lines, src, 0, dst, FpuScalarSubop::Mov);
+            }
+        }
+        Instr::FpuFromInt { dst, src_gpr } => {
+            emit_fpu_aux(
+                lines,
+                register(*src_gpr),
+                0,
+                register(*dst),
+                FpuAuxSubop::I16tof,
+            );
+        }
+        Instr::FpuToInt { dst_gpr, src } => {
+            emit_fpu_aux(
+                lines,
+                register(*dst_gpr),
+                register(*src),
+                0,
+                FpuAuxSubop::Ftoi16,
+            );
+        }
+        Instr::FpuFromLo { dst, src_gpr } => {
+            emit_fpu_aux(
+                lines,
+                register(*src_gpr),
+                0,
+                register(*dst),
+                FpuAuxSubop::Ilo2f,
+            );
+        }
+        Instr::FpuFromHi { dst, src, src_gpr } => {
+            let dst = register(*dst);
+            let src = register(*src);
+            // IHI2F reads and writes the same F register, so materialize the
+            // low half into dst first.
+            if dst != src {
+                emit_fpu_scalar(lines, src, 0, dst, FpuScalarSubop::Mov);
+            }
+            emit_fpu_aux(lines, register(*src_gpr), 0, dst, FpuAuxSubop::Ihi2f);
+        }
+        Instr::FpuToLo { dst_gpr, src } => {
+            emit_fpu_aux(
+                lines,
+                register(*dst_gpr),
+                register(*src),
+                0,
+                FpuAuxSubop::Flo2i,
+            );
+        }
+        Instr::FpuToHi { dst_gpr, src } => {
+            emit_fpu_aux(
+                lines,
+                register(*dst_gpr),
+                register(*src),
+                0,
+                FpuAuxSubop::Fhi2i,
+            );
+        }
+        Instr::FpuLoad {
+            dst,
+            base_gpr,
+            offset,
+        } => {
+            let addr = emit_fpu_address(lines, register(*base_gpr), *offset);
+            emit_fpu_aux(lines, addr, 0, register(*dst), FpuAuxSubop::Fld);
+        }
+        Instr::FpuStore {
+            base_gpr,
+            offset,
+            src,
+        } => {
+            let addr = emit_fpu_address(lines, register(*base_gpr), *offset);
+            emit_fpu_aux(lines, addr, register(*src), 0, FpuAuxSubop::Fst);
+        }
+        Instr::AddrOfFpuSpill { dst, slot } => {
+            // dst = align4(sp + fpu_area_offset) + 4 * slot; alignment is
+            // computed at run time because nothing guarantees sp mod 4 == 0.
+            let dst = register(*dst);
+            lines.word(cpu_v3::move_register(dst, REG_SP));
+            emit_immediate(
+                lines,
+                ImmediateOp::Add,
+                dst,
+                u16::from(allocation.fpu_area_offset()) + 3,
+                true,
+            );
+            emit_load_immediate(lines, REG_TMP, 0xfffc);
+            lines.word(cpu_v3::alu(AluOp::And, dst, dst, REG_TMP));
+            if *slot != 0 {
+                emit_immediate(lines, ImmediateOp::Add, dst, 4 * u16::from(*slot), true);
+            }
+        }
     }
+}
+
+/// Emits one two-word FPU SCALAR instruction.
+fn emit_fpu_scalar(lines: &mut Lines, fa: u8, fb: u8, fd: u8, subop: FpuScalarSubop) {
+    for word in cpu_v3::fpu_scalar(fa, fb, fd, subop, 0) {
+        lines.word(word);
+    }
+}
+
+/// Emits one two-word FPU AUX instruction (kind `00`, integer register X).
+fn emit_fpu_aux(lines: &mut Lines, x: u8, fa: u8, fd: u8, subop: FpuAuxSubop) {
+    for word in cpu_v3::fpu_aux(FpuAuxKind::IntegerRegister, x, fa, fd, subop, 0) {
+        lines.word(word);
+    }
+}
+
+/// Materializes `base + offset` into REG_TMP when an FPU load/store needs an
+/// address register; `base` itself is returned when the offset is zero.
+fn emit_fpu_address(lines: &mut Lines, base: u8, offset: i16) -> u8 {
+    if offset == 0 {
+        return base;
+    }
+    lines.word(cpu_v3::move_register(REG_TMP, base));
+    emit_immediate(lines, ImmediateOp::Add, REG_TMP, offset as u16, true);
+    REG_TMP
 }
 
 fn lower_unary(dst: u8, operation: UnOp, src: u8, lines: &mut Lines) {
@@ -862,11 +987,31 @@ fn set_op(
     }
 }
 
-/// Lowers a Boolean-producing comparison (`dst = lhs cond rhs` as 0/1) to the
-/// destructive S* instructions; inverted conditions use an operand swap or a
-/// trailing XORI 1.
-fn lower_bool(dst: u8, cmp: &Cmp, register: &dyn Fn(VReg) -> u8, lines: &mut Lines) {
+/// Lowers a Boolean-producing comparison (`dst = lhs cond rhs` as 0/1). Integer
+/// comparisons use the destructive S* instructions (inverted conditions swap
+/// operands or append XORI 1); an FPU comparison sets the pending test with the
+/// scalar `CMP` and materializes 0/1 through one conditional move.
+fn lower_bool(
+    dst: u8,
+    cmp: &Cmp,
+    function: &IrFunc,
+    register: &dyn Fn(VReg) -> u8,
+    lines: &mut Lines,
+) {
     let lhs = register(cmp.lhs);
+    if function.class_of(cmp.lhs) == RegClass::Fpu {
+        // `CMP` sets the pending test and the following conditional move
+        // consumes it immediately, so the two constants are prepared first.
+        let CmpRhs::Reg(rhs) = cmp.rhs else {
+            unreachable!("FPU comparisons always have a register operand");
+        };
+        let condition = test_condition(cmp.cond);
+        emit_load_immediate(lines, REG_TMP, 1);
+        emit_load_immediate(lines, dst, 0);
+        emit_fpu_scalar(lines, lhs, register(rhs), 0, FpuScalarSubop::Cmp);
+        lines.word(cpu_v3::conditional_move(condition, dst, REG_TMP));
+        return;
+    }
     let xor1 = |lines: &mut Lines| {
         lines.word(cpu_v3::immediate_unsigned(ImmediateOp::Xor, dst, 1));
     };
@@ -958,9 +1103,14 @@ fn lower_comparison(
         }
     };
     if function.class_of(comparison.lhs) == RegClass::Fpu {
-        // The FPU CMP lowering (C1) will set the pending test from the signed
-        // ordering; FPU programs are rejected before code emission in C0.
-        unreachable!("FPU comparisons are rejected before code emission")
+        // The FPU scalar `CMP` sets the pending test from the signed Q16.16
+        // ordering; the following conditional branch consumes it exactly like
+        // CMPS/CMPU, and nothing may be emitted between the compare and branch.
+        let CmpRhs::Reg(rhs) = comparison.rhs else {
+            unreachable!("FPU comparisons always have a register operand");
+        };
+        emit_fpu_scalar(lines, lhs, register(rhs), 0, FpuScalarSubop::Cmp);
+        return condition;
     }
     match comparison.rhs {
         CmpRhs::Reg(rhs) => {
@@ -995,7 +1145,8 @@ fn emit_self_compare(
 ) {
     let lhs = register(comparison.lhs);
     if function.class_of(comparison.lhs) == RegClass::Fpu {
-        unreachable!("FPU comparisons are rejected before code emission")
+        emit_fpu_scalar(lines, lhs, lhs, 0, FpuScalarSubop::Cmp);
+        return;
     }
     lines.word(cpu_v3::compare_signed(lhs, lhs));
 }
@@ -1048,7 +1199,7 @@ fn emit_parallel_moves(lines: &mut Lines, moves: &[(u8, u8, RegClass)]) {
 fn emit_parallel_moves_in_file(lines: &mut Lines, moves: &[(u8, u8)], class: RegClass) {
     let emit_move = |lines: &mut Lines, to: u8, from: u8| match class {
         RegClass::Gpr => lines.word(cpu_v3::move_register(to, from)),
-        RegClass::Fpu => unreachable!("FPU moves are rejected before code emission"),
+        RegClass::Fpu => emit_fpu_scalar(lines, from, 0, to, FpuScalarSubop::Mov),
     };
     let scratch = match class {
         RegClass::Gpr => REG_TMP,
@@ -1607,53 +1758,155 @@ mod tests {
     use super::*;
     use rcc::frontend::parse_source_with;
 
-    /// C0 freezes the FPU v2 contract but does not lower it. Every FPU
-    /// operation is rejected at the frontend boundary, so the retired Q8.8
-    /// lowering can never run and the single-word `0xD` encoding is never
-    /// emitted.
+    /// C1 lowers scalar `fix16` end to end through the two-word v2 ISA:
+    /// construction, arithmetic, unary operations and the numeric conversion.
     #[test]
-    fn fpu_operations_are_rejected_at_the_frontend_boundary() {
+    fn scalar_fix16_arithmetic_unary_and_conversions_run_on_the_machine() {
         let source = r#"
             fn main() {
-                let a = fix16::from_int(3);
-                let b = fix16::from_int(4);
+                let a = fix16::from_int(7);
+                let b = fix16::from_int(-2);
+                let sum = a + b;             // 5
+                let diff = a - b;            // 9
+                let prod = a * b;            // -14
+                let neg = -b;                // 2
+                let fl = fix16::from_words(0x8000, 0x0001); // 1.5
+                let down = fl.trunc();       // 1.0
+                let up = fl.ceil();          // 2.0
+                halt((sum + diff + prod + neg + down + up).to_int() as u16);
+            }
+        "#;
+        // 5 + 9 - 14 + 2 + 1 + 2 = 5
+        assert_eq!(run(source), 5);
+    }
+
+    /// The raw-half bridge (`ILO2F`/`IHI2F`/`FLO2I`/`FHI2I`) moves both words
+    /// without numeric conversion.
+    #[test]
+    fn scalar_fix16_raw_half_bridge_round_trips_words() {
+        let source = r#"
+            fn main() {
+                let v = fix16::from_words(0x1234u16, 0xabcdu16);
+                halt(v.lo_bits() ^ v.hi_bits());
+            }
+        "#;
+        assert_eq!(run(source), 0x1234u16 ^ 0xabcdu16);
+    }
+
+    /// A fix16 value live across a call has no callee-saved F register to live
+    /// in, so it spills through a frame slot (`AddrOfFpuSpill` + FST/FLD).
+    #[test]
+    fn scalar_fix16_values_spill_across_calls() {
+        let source = r#"
+            fn addfix(a: fix16, b: fix16) -> fix16 { a + b }
+            fn main() {
+                let a = fix16::from_int(5);
+                let b = addfix(a, fix16::from_int(1)); // `a` lives across the call
                 halt((a + b).to_int() as u16);
             }
         "#;
-        let error = rcc::frontend::compile_program_named(
-            "main.rs",
-            source,
-            &CompilerOptions::default(),
-            &mut |_| Err("no module".to_string()),
-        )
-        .err()
-        .expect("an FPU program must be rejected");
-        assert!(error.to_string().contains("FPU v2 lowering"), "{error}");
+        assert_eq!(run(source), 11);
     }
 
-    /// The backend keeps a second, explicit refusal for any FPU-class vreg that
-    /// reaches it. An FPU-typed function pointer needs no FPU operation, so it
-    /// survives the frontend and exercises that check directly.
+    /// fix16 comparisons feed the shared pending test; a materialized bool uses
+    /// a scalar `CMP` plus one conditional move.
     #[test]
-    fn an_fpu_class_vreg_is_refused_by_the_backend() {
+    fn scalar_fix16_comparisons_branch_and_materialize_bools() {
+        let source = r#"
+            fn main() {
+                let a = fix16::from_int(2);
+                let b = fix16::from_int(3);
+                let lt = a < b;
+                let ge = a >= b;
+                let eq = a == a;
+                let le = a <= b;
+                if lt && !ge && eq && le && b != a {
+                    halt(1);
+                } else {
+                    halt(0);
+                }
+            }
+        "#;
+        assert_eq!(run(source), 1);
+    }
+
+    /// fix16 variables, loops and if-expressions exercise phis, compound
+    /// assignment and range-free scalar allocation.
+    #[test]
+    fn scalar_fix16_variables_loops_and_if_expressions_run() {
+        let source = r#"
+            fn main() {
+                let mut acc = fix16::zero();
+                let mut i = fix16::zero();
+                let one = fix16::from_int(1);
+                let limit = fix16::from_int(5);
+                while i < limit {
+                    acc += i;
+                    i += one;
+                }
+                let pick = if acc > limit { acc } else { limit };
+                halt((acc + pick).to_int() as u16);
+            }
+        "#;
+        // acc = 0+1+2+3+4 = 10, pick = acc (10), total = 20
+        assert_eq!(run(source), 20);
+    }
+
+    /// The scalar FPU lowering emits the exact two-word v2 encodings; this
+    /// hand-built IR function pins the whole image (allocation is deterministic
+    /// for a straight-line function).
+    #[test]
+    fn scalar_fix16_add_emits_exact_two_word_words() {
+        use rcc::{FpuBinOp, FuncBuilder, RegClass};
+        let (mut b, params) = FuncBuilder::new_typed("main", &[RegClass::Fpu, RegClass::Fpu], 1);
+        let a = b.get(params[0]);
+        let c = b.get(params[1]);
+        let sum = b.fpu_bin(FpuBinOp::Add, a, c);
+        b.ret(&[sum]);
+        let function = b.finish();
+        let functions = std::collections::HashMap::from([("main", function)]);
+        let program = compile_ir(
+            functions,
+            &CompilerOptions::default(),
+            "main",
+            rcc::frontend::FrontendDebug::default(),
+        )
+        .unwrap();
+        // Pin the allocator/codegen contract, not merely decoder round-tripping:
+        // the two ABI inputs are moved to f29/f28, the destructive ADD reuses
+        // f28 as its destination, and the resulting pair is exactly these two
+        // architectural words.
+        let mut found = Vec::new();
+        let mut index = 0;
+        while index + 1 < program.words.len() {
+            if let cpu_v3::Instruction::FpuScalar {
+                fa,
+                fb,
+                fd,
+                subop: cpu_v3::FpuScalarSubop::Add,
+                ..
+            } = cpu_v3::decode_fpu_pair(program.words[index], program.words[index + 1])
+            {
+                found.push((index, fa, fb, fd));
+            }
+            index += 1;
+        }
+        assert_eq!(found, vec![(4, 29, 28, 28)], "{}", program.listing);
+        assert_eq!(&program.words[4..6], &[0xd75c, 0x7000]);
+    }
+
+    /// The backend no longer refuses FPU programs: an FPU-typed function
+    /// pointer plus a scalar body compiles.
+    #[test]
+    fn an_fpu_class_program_is_now_lowered_by_the_backend() {
         let source = r#"
             fn identity(v: fix16) -> fix16 { v }
             fn main() {
                 let keep: fn(fix16) -> fix16 = identity;
-                halt(0);
+                halt(keep(fix16::from_int(9)).to_int() as u16);
             }
         "#;
-        let program = rcc::frontend::compile_program_named(
-            "main.rs",
-            source,
-            &CompilerOptions::default(),
-            &mut |_| Err("no module".to_string()),
-        )
-        .unwrap();
-        match try_compile(program, &CompilerOptions::default(), "main") {
-            Err(BackendError::FpuLoweringUnavailable { .. }) => {}
-            other => panic!("expected FpuLoweringUnavailable, got {other:?}"),
-        }
+        assert_eq!(run(source), 9);
     }
 
     /// C0 freezes the Q16.16 contiguous-range ABI even though range-aware

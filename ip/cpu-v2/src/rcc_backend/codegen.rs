@@ -792,6 +792,23 @@ fn emit_inst(
                 ));
             }
         }
+        // The FPU v2 scalar file is CpuV3-only. The v2 driver never builds
+        // these instructions (an FPU value is rejected before codegen on a
+        // target without `RegisterConvention::fpu`), so reaching one is a bug.
+        Instr::FpuBin { .. }
+        | Instr::FpuUn { .. }
+        | Instr::FpuMov { .. }
+        | Instr::FpuFromInt { .. }
+        | Instr::FpuToInt { .. }
+        | Instr::FpuFromLo { .. }
+        | Instr::FpuFromHi { .. }
+        | Instr::FpuToLo { .. }
+        | Instr::FpuToHi { .. }
+        | Instr::FpuLoad { .. }
+        | Instr::FpuStore { .. }
+        | Instr::AddrOfFpuSpill { .. } => {
+            unreachable!("FPU v2 instructions are CpuV3-only")
+        }
     }
 }
 

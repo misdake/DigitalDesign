@@ -580,6 +580,7 @@ fn run_core_emu_trace(program: &[u16], max_cycles: usize) -> Vec<CoreCosimOut> {
     let mut prev_instr_req = false;
     let mut prev_instr_word: u16 = 0;
     let mut prev_data_req = false;
+    let mut prev_data_read: u16 = 0;
     let mut started = false;
     let mut trace = Vec::new();
     for _ in 0..max_cycles {
@@ -590,7 +591,7 @@ fn run_core_emu_trace(program: &[u16], max_cycles: usize) -> Vec<CoreCosimOut> {
             instruction_data: prev_instr_word,
             data_request_ready: true,
             data_response_valid: prev_data_req,
-            data_read_data: 0,
+            data_read_data: prev_data_read,
             device_read_data: 0,
         };
         input.drive(&mut circuit, &cin.into_value());
@@ -608,8 +609,14 @@ fn run_core_emu_trace(program: &[u16], max_cycles: usize) -> Vec<CoreCosimOut> {
             prev_instr_word = memory[(value.instruction_address as usize) & 0xffff];
         }
         prev_data_req = value.data_request_valid;
-        if value.data_request_valid && value.data_write {
-            memory[(value.data_address as usize) & 0xffff] = value.data_write_data as u16;
+        if value.data_request_valid {
+            let address = (value.data_address as usize) & 0xffff;
+            if value.data_write {
+                memory[address] = value.data_write_data as u16;
+                prev_data_read = 0;
+            } else {
+                prev_data_read = memory[address];
+            }
         }
         circuit.clock_tick();
     }
@@ -891,6 +898,67 @@ fn core_emu_matches_rtl_fpu_ldst() {
         );
     }
     assert!(emu.last().copied().expect("emu trace empty").halted);
+}
+
+#[test]
+#[ignore = "explicit emulator-vs-Icarus co-simulation of a compiled scalar FPU program"]
+fn core_emu_matches_rtl_compiled_scalar_fpu_program() {
+    // The rcc scalar `fix16` path end to end on the hardware-supported subset:
+    // integer construction (`I16TOF`), calls through the F-register ABI, an
+    // FPU `ADD`/`MUL`/`trunc`, the raw-half bridge (`ILO2F`/`IHI2F`), a scalar
+    // `CMP` feeding a GPR branch, the signed numeric conversion back
+    // (`FTOI16`, truncating toward zero), and values kept live across a call so
+    // they spill through FLD/FST:
+    // a=7, b=-2, addfix(a,b)=5, scaled=-14, kept=1.5, down=1, pick=1,
+    // live=-13, (5 + -13 + 0.5).to_int() = -7 -> 0xfff9.
+    let source = r#"
+        fn addfix(a: fix16, b: fix16) -> fix16 { a + b }
+        fn main() {
+            let a = fix16::from_int(7);
+            let b = fix16::from_int(-2);
+            let s = addfix(a, b);
+            let scaled = a * b;
+            let kept = fix16::from_words(0x8000, 0x0001);
+            let down = kept.trunc();
+            let pick = if s < down { s } else { down };
+            let live = addfix(scaled, pick);
+            halt((s + live + (kept - down)).to_int() as u16);
+        }
+    "#;
+    let program = compile(source);
+    let module_name = CpuV3Core::verilog_identity().module_name();
+    let emu = run_core_emu_trace(&program, 4000);
+    assert!(!emu.is_empty(), "emu trace empty");
+    let last_emu = emu.last().copied().expect("emu trace non-empty");
+    assert!(
+        !last_emu.fault,
+        "compiled FPU program faulted in the cycle model: code={} pc={:#06x}",
+        last_emu.fault_code, last_emu.fault_pc
+    );
+    assert!(last_emu.halted, "compiled FPU program did not halt");
+    assert_eq!(last_emu.halt_signal, 0xfff9, "unexpected Q16.16 result");
+
+    let max_cycles = emu.len() + 600;
+    let tb = build_core_cosim_tb(&program, &module_name, max_cycles);
+    let rtl = run_core_rtl_trace(&tb);
+    // Report the first divergence (if any) before the length check, so a timing
+    // slip points at the exact cycle.
+    for (index, (expected, actual)) in emu.iter().zip(&rtl).enumerate() {
+        if !actual.equal_core(expected) {
+            panic!("mismatch at cycle {index}\nemu={expected:?}\nrtl={actual:?}");
+        }
+    }
+    assert_eq!(
+        emu.len(),
+        rtl.len(),
+        "emu/RTL trace length mismatch: emu={} rtl={}",
+        emu.len(),
+        rtl.len()
+    );
+    assert_eq!(
+        rtl.last().copied().expect("rtl trace empty").halt_signal,
+        0xfff9
+    );
 }
 
 #[test]

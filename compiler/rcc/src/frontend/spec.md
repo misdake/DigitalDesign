@@ -66,12 +66,14 @@ Only these types exist; no other primitive types are supported:
   numeric conversions are deliberately distinct: `from_words`/`lo_bits`/`hi_bits`
   correspond to `ILO2F`/`IHI2F`/`FLO2I`/`FHI2I`/`FLD`/`FST`, while
   `from_int`/`to_int` correspond to `I16TOF`/`FTOI16`.
-- FPU lowering is **not implemented yet**: C0 freezes the Q16.16 type/ABI/raw-half
-  contract and the frontend rejects every FPU operation with an explicit
-  diagnostic, so the retired single-word Q8.8 encoding can never be emitted. The
-  CpuV3 backend additionally refuses any FPU-class value that reaches it. Scalar
-  lowering arrives with C1, vector/range allocation with C2, and special
-  functions with C3.
+- FPU lowering has landed for **scalar `fix16`** (milestone C1): construction
+  (`from_int`, `from_words`, `zero`), `+`/`-`/`*` and `+=`/`-=`/`*=` on `fix16`,
+  unary `-`, the `abs`/`floor`/`ceil`/`round`/`trunc` methods, the raw-half
+  `lo_bits`/`hi_bits`, `to_int`, and `fix16` comparisons all lower to the FPU
+  v2 scalar/aux/memory ISA and run on the emulator and the RTL. Vector forms
+  (`vec2/3/4`, `fdot`, `vec4::import`/`export`), the special functions
+  (`frcp`/`frsqrt`/`fsincos`) and the prescale helpers still need C2/C3 and are
+  rejected with an explicit diagnostic, so no silently wrong code is emitted.
 
 ### 1.2 Division and remainder
 
@@ -148,9 +150,9 @@ an `Array<T>` when typed indexing is clearer. Struct memory layouts remain out o
 
 ## 5. Intrinsics
 
-Declared for real in `dsl_rt` (so the IDE sees them); the compiler lowers them directly,
-**except that C0 rejects every FPU operation**: the `fix16`/`vecN`/`fdot`/`frcp`/prescale rows
-below are the frozen Q16.16 type/ABI contract, not yet-lowered operations.
+Declared for real in `dsl_rt` (so the IDE sees them); the compiler lowers them directly.
+C1 lowers the scalar `fix16` rows and leaves the `vecN`/`fdot`/`frcp`/`frsqrt`/`fsincos`/prescale
+rows rejected with an explicit "after C1" diagnostic on CPU V3.
 
 | function | meaning |
 |---|---|

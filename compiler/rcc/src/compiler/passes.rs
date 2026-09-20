@@ -643,7 +643,7 @@ fn cse(f: &mut IrFunc) -> bool {
         let mut added = vec![];
         for inst in &f.blocks[b].insts {
             match inst {
-                Instr::Mov { dst, src } => {
+                Instr::Mov { dst, src } | Instr::FpuMov { dst, src } => {
                     if !multi_def.contains(dst) {
                         replace.insert(*dst, canon(replace, *src));
                         *changed = true;
@@ -720,6 +720,7 @@ fn dce(f: &mut IrFunc) -> bool {
                         | Instr::StoreStatic { .. }
                         | Instr::StoreSp { .. }
                         | Instr::StoreLocal { .. }
+                        | Instr::FpuStore { .. }
                         | Instr::Call { .. }
                         | Instr::CallPtr { .. }
                         | Instr::DevSend { .. }
@@ -780,6 +781,17 @@ fn dce(f: &mut IrFunc) -> bool {
                     | Instr::Mfsr { .. }
                     | Instr::Bool { .. }
                     | Instr::CMov { .. }
+                    | Instr::FpuBin { .. }
+                    | Instr::FpuUn { .. }
+                    | Instr::FpuMov { .. }
+                    | Instr::FpuFromInt { .. }
+                    | Instr::FpuFromLo { .. }
+                    | Instr::FpuFromHi { .. }
+                    | Instr::FpuToInt { .. }
+                    | Instr::FpuToLo { .. }
+                    | Instr::FpuToHi { .. }
+                    | Instr::FpuLoad { .. }
+                    | Instr::AddrOfFpuSpill { .. }
             );
             !removable || defs.iter().any(|d| useful.contains(d))
         };
@@ -953,6 +965,12 @@ pub fn convert_diamonds(f: &mut IrFunc) -> bool {
             ) else {
                 continue;
             };
+            // Only GPR diamonds are converted: the Boolean/CMov lowering is a
+            // GPR form, and an FPU phi would otherwise be rewritten to a plain
+            // `Mov` between F registers.
+            if f.class_of(phi.dst) != RegClass::Gpr {
+                continue;
+            }
             converted = Some((join, phi.dst, true_value, false_value));
             break;
         }
