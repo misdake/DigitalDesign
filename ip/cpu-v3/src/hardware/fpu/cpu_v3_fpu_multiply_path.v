@@ -173,7 +173,12 @@ assign rf_write_enable = mul_out_valid && (outstanding_r != 4'd0) && !abort;
 assign rf_write_address = mul_out_tag;
 assign rf_write_data = mul_out_product[47:16];
 
-assign busy = (load_now || run_r || (outstanding_r != 4'd0) ||
-    mul_out_valid) && !abort;
+// busy must mean "this path owns the shared pipe", never "a product is
+// returning". The unit top selects the multiply vs dot operand mux on
+// `mp_busy`, so folding the shared `mul_out_valid` in here made a returning dot
+// product look like multiply ownership and hijacked the dot's operand mux.
+// `outstanding_r` already stays nonzero across every return beat, so the drain
+// window is covered without it.
+assign busy = (load_now || run_r || (outstanding_r != 4'd0)) && !abort;
 
 endmodule

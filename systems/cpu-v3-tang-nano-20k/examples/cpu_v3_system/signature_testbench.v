@@ -1,7 +1,7 @@
 `timescale 1ns/1ps
 // Signature testbench for the single-stage flash boot. Phase 1 preloads the
-// Flash model with the packed boot package and verifies the default/01 primary
-// application followed by the button-10 alternate application. Later phases
+// Flash model with the packed boot package and verifies the default S2
+// application followed by the button-01 S1 application. Later phases
 // corrupt the descriptor and manifest metadata and check the boot stage's
 // failure reports.
 module tb;
@@ -313,13 +313,11 @@ initial begin
     repeat (16) @(posedge clk);
     sdram_init_done = 1;
 
-    // Phase 1: the intact package boots the default S2 display application
-    // (no button held). The display application never writes the LEDs, so the
-    // boot monitor keeps ownership and shows the application phase.
+    // Phase 1: the intact package boots the current default S2 placeholder
+    // (no button held). It reports DDHT 0x07 and writes its first LED pattern.
+    // C3 restores the display application and its 0x0b frame to this slot.
     wait (dut.code_segment == 16'd7);
-    // The display application reports its own DDHT 0x0b frame as soon as it
-    // starts; wait for it so the default boot is validated over UART too.
-    wait (display_frame_seen);
+    wait (ddht_frame_seen);
     repeat (4) @(posedge clk);
     if (dut.data_segment !== 16'h0000 && dut.data_segment !== 16'h0020 &&
         dut.data_segment !== 16'h0021)
@@ -341,8 +339,8 @@ initial begin
         $fatal(1, "boot observer missed phases: wait=%0d boot=%0d dma=%0d app=%0d",
             wait_sdram_phase_seen, boot_phase_seen, dma_phase_seen,
             application_phase_seen);
-    if (dut.diagnostic_active !== 1 || leds !== 6'b100000)
-        $fatal(1, "display application must leave diagnostic ownership at phase 5: active=%0d leds=%b",
+    if (dut.diagnostic_active !== 0 || leds !== 6'b010101)
+        $fatal(1, "S2 placeholder must take LED ownership with its first pattern: active=%0d leds=%b",
             dut.diagnostic_active, leds);
 
     // Phase 2: holding the S1 button (01) resets the CPU and latches the

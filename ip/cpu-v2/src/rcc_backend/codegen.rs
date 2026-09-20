@@ -806,6 +806,15 @@ fn emit_inst(
         | Instr::FpuToHi { .. }
         | Instr::FpuLoad { .. }
         | Instr::FpuStore { .. }
+        | Instr::FpuVecBin { .. }
+        | Instr::FpuVecMulS { .. }
+        | Instr::FpuVecUn { .. }
+        | Instr::FpuVecMove { .. }
+        | Instr::FpuVecConstruct { .. }
+        | Instr::FpuVecLane { .. }
+        | Instr::FpuDotStore { .. }
+        | Instr::FpuVecLoad { .. }
+        | Instr::FpuVecStore { .. }
         | Instr::AddrOfFpuSpill { .. } => {
             unreachable!("FPU v2 instructions are CpuV3-only")
         }

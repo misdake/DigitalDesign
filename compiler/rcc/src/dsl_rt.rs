@@ -604,14 +604,35 @@ impl vec4 {
     }
 }
 
+/// A vector type usable with [`fdot`] (host model): each implementation sums
+/// its real lanes in the wide accumulator.
+pub trait Fdot: Copy {
+    fn dot_terms(self, other: Self) -> i64;
+}
+
+macro_rules! impl_fdot {
+    ($name:ident, $lanes:expr) => {
+        impl Fdot for $name {
+            fn dot_terms(self, other: Self) -> i64 {
+                let mut acc: i64 = 0;
+                for i in 0..$lanes {
+                    acc = acc
+                        .wrapping_add(i64::from(self.0[i].0).wrapping_mul(i64::from(other.0[i].0)));
+                }
+                acc
+            }
+        }
+    };
+}
+
+impl_fdot!(vec2, 2);
+impl_fdot!(vec3, 3);
+impl_fdot!(vec4, 4);
+
 /// Dot product through the wide Q32.32 accumulator, narrowed once to Q16.16
 /// (`DOTSTORE`). Each product is exact; accumulation keeps the low 64 bits.
-pub fn fdot(a: vec4, b: vec4) -> fix16 {
-    let mut acc: i64 = 0;
-    for i in 0..4 {
-        acc = acc.wrapping_add(i64::from(a.0[i].0).wrapping_mul(i64::from(b.0[i].0)));
-    }
-    fix16((acc >> FIX16_FRACTION_BITS) as i32)
+pub fn fdot<T: Fdot>(a: T, b: T) -> fix16 {
+    fix16((a.dot_terms(b) >> FIX16_FRACTION_BITS) as i32)
 }
 
 /// Target special function; the bit-exact reference lives in the CPU V3

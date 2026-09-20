@@ -137,7 +137,10 @@ the pair retires as two words.
 - Scalar ALU, vector ALU, `VMUL`/`VMULS` and `MOV` run one lane per cycle; the
   vector read window is `T0..T(last_lane)` and the writes trail by two beats.
 - The shared 36 x 36 pipe has latency 3 and II = 1, so `VMUL`/`VMULS`/scalar
-  `MUL` write back three beats after the lane's operands are captured.
+  `MUL` write back three beats after the lane's operands are captured. Its
+  return-valid signal is not path ownership: the multiply and dot sequencers
+  retain ownership through their own outstanding counters until every issued
+  product has returned, which keeps the shared operand mux on the issuer.
 - `DOT`/`DOTADD`/`DOTSTORE` accumulate the complete signed product of every
   lane into the 64-bit Q32.32 ACC with no per-lane narrowing; `DOTSTORE`
   narrows once and clears ACC.

@@ -721,6 +721,7 @@ fn dce(f: &mut IrFunc) -> bool {
                         | Instr::StoreSp { .. }
                         | Instr::StoreLocal { .. }
                         | Instr::FpuStore { .. }
+                        | Instr::FpuVecStore { .. }
                         | Instr::Call { .. }
                         | Instr::CallPtr { .. }
                         | Instr::DevSend { .. }
@@ -792,6 +793,14 @@ fn dce(f: &mut IrFunc) -> bool {
                     | Instr::FpuToHi { .. }
                     | Instr::FpuLoad { .. }
                     | Instr::AddrOfFpuSpill { .. }
+                    | Instr::FpuVecBin { .. }
+                    | Instr::FpuVecMulS { .. }
+                    | Instr::FpuVecUn { .. }
+                    | Instr::FpuVecMove { .. }
+                    | Instr::FpuVecConstruct { .. }
+                    | Instr::FpuVecLane { .. }
+                    | Instr::FpuDotStore { .. }
+                    | Instr::FpuVecLoad { .. }
             );
             !removable || defs.iter().any(|d| useful.contains(d))
         };

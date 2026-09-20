@@ -735,7 +735,21 @@ fn collect_verilog_files(directory: &std::path::Path, into: &mut Vec<std::path::
 }
 
 fn run_core_rtl_trace(tb: &str) -> Vec<CoreCosimOut> {
-    let directory = std::env::temp_dir().join(format!("core-cosim-{}", std::process::id()));
+    // Keep the generated project under the workspace `target/` tree (never the
+    // OS temp directory) so the co-sim artifacts stay inside the repository.
+    // The directory is unique per invocation: `cargo test` runs tests in
+    // parallel threads of one process, and a pid-only name let concurrent
+    // co-sims overwrite each other's generated project.
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    static NEXT_DIR: AtomicUsize = AtomicUsize::new(0);
+    let repo_root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("..")
+        .join("..");
+    let directory = repo_root.join("target").join(format!(
+        "core-cosim-{}-{}",
+        std::process::id(),
+        NEXT_DIR.fetch_add(1, Ordering::Relaxed)
+    ));
     std::fs::create_dir_all(&directory).unwrap();
     // Write the core with every dependency (DSP multiplier, GPR RAM)
     // via the same flattening used by `verify_verilog_with_iverilog`, then
@@ -958,6 +972,63 @@ fn core_emu_matches_rtl_compiled_scalar_fpu_program() {
     assert_eq!(
         rtl.last().copied().expect("rtl trace empty").halt_signal,
         0xfff9
+    );
+}
+
+#[test]
+#[ignore = "explicit emulator-vs-Icarus co-simulation of a compiled vector FPU program"]
+fn core_emu_matches_rtl_compiled_vector_fpu_program() {
+    // The rcc vector path end to end on the hardware-supported subset: vec4
+    // construction, an ABI-packed vector call, VADD, VMULS scalar broadcast,
+    // lane extraction, `fdot`, and a vector value live across a call so it
+    // spills through FLDV/FSTV:
+    // a=(1,2,3,4), b=(10,20,30,40), add4(a,b)=(11,22,33,44),
+    // d = c*2 = (22,44,66,88), s = 220, fdot(c,d) = 7260 -> 7480.
+    let source = r#"
+        fn add4(a: vec4, b: vec4) -> vec4 { a + b }
+        fn main() {
+            let a = vec4::new(fix16::from_int(1), fix16::from_int(2),
+                              fix16::from_int(3), fix16::from_int(4));
+            let b = vec4::new(fix16::from_int(10), fix16::from_int(20),
+                              fix16::from_int(30), fix16::from_int(40));
+            let c = add4(a, b);
+            let d = c * fix16::from_int(2);
+            let s = d.x() + d.y() + d.z() + d.w();
+            let dot = fdot(c, d);
+            halt((s + dot).to_int() as u16);
+        }
+    "#;
+    let program = compile(source);
+    let module_name = CpuV3Core::verilog_identity().module_name();
+    let emu = run_core_emu_trace(&program, 6000);
+    assert!(!emu.is_empty(), "emu trace empty");
+    let last_emu = emu.last().copied().expect("emu trace non-empty");
+    assert!(
+        !last_emu.fault,
+        "compiled vector FPU program faulted in the cycle model: code={} pc={:#06x}",
+        last_emu.fault_code, last_emu.fault_pc
+    );
+    assert!(last_emu.halted, "compiled vector FPU program did not halt");
+    assert_eq!(last_emu.halt_signal, 7480, "unexpected vector result");
+
+    let max_cycles = emu.len() + 600;
+    let tb = build_core_cosim_tb(&program, &module_name, max_cycles);
+    let rtl = run_core_rtl_trace(&tb);
+    for (index, (expected, actual)) in emu.iter().zip(&rtl).enumerate() {
+        if !actual.equal_core(expected) {
+            panic!("mismatch at cycle {index}\nemu={expected:?}\nrtl={actual:?}");
+        }
+    }
+    assert_eq!(
+        emu.len(),
+        rtl.len(),
+        "emu/RTL trace length mismatch: emu={} rtl={}",
+        emu.len(),
+        rtl.len()
+    );
+    assert_eq!(
+        rtl.last().copied().expect("rtl trace empty").halt_signal,
+        7480
     );
 }
 

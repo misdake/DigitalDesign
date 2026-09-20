@@ -49,6 +49,8 @@ pub struct FuncBuilder {
     var_defs: Vec<HashMap<BlockId, VReg>>,
     /// register class of each frontend variable (phis take the variable's class)
     var_class: Vec<RegClass>,
+    /// lane count of each frontend variable (phis take the variable's lanes)
+    var_lanes: Vec<u8>,
     /// phis awaiting their operands, per unsealed block: (phi dst, variable)
     incomplete: HashMap<BlockId, Vec<(VReg, VarId)>>,
     current: Option<BlockId>,
@@ -94,10 +96,12 @@ impl FuncBuilder {
                 block_lines: vec![None],
                 local_slots: 0,
                 vreg_class: param_classes.to_vec(),
+                vreg_lanes: vec![1; n_params],
             },
             sealed: vec![false],
             var_defs: vec![],
             var_class: vec![],
+            var_lanes: vec![],
             incomplete: HashMap::new(),
             current: Some(entry),
             loops: vec![],
@@ -119,8 +123,15 @@ impl FuncBuilder {
 
     /// a frontend variable whose SSA values (and phis) have the given class
     pub fn new_var_typed(&mut self, class: RegClass) -> VarId {
+        self.new_var_typed_lanes(class, 1)
+    }
+
+    /// a frontend variable whose SSA values (and phis) occupy `lanes`
+    /// contiguous F registers (a `vec2`/`vec3`/`vec4` frontend variable)
+    pub fn new_var_typed_lanes(&mut self, class: RegClass, lanes: u8) -> VarId {
         self.var_defs.push(HashMap::new());
         self.var_class.push(class);
+        self.var_lanes.push(lanes);
         self.var_defs.len() - 1
     }
 
@@ -128,6 +139,21 @@ impl FuncBuilder {
     /// known only from the callee signature)
     pub fn set_vreg_class(&mut self, v: VReg, class: RegClass) {
         self.func.vreg_class[v as usize] = class;
+    }
+
+    /// override the lane count of a vreg (used for call results and vector
+    /// parameters, whose shape is known only from the signature)
+    pub fn set_vreg_lanes(&mut self, v: VReg, lanes: u8) {
+        assert!(
+            (1..=4).contains(&lanes),
+            "vreg lane count {lanes} is outside 1..=4"
+        );
+        self.func.vreg_lanes[v as usize] = lanes;
+    }
+
+    /// override the lane count of a frontend variable (its phis follow)
+    pub fn set_var_lanes(&mut self, var: VarId, lanes: u8) {
+        self.var_lanes[var] = lanes;
     }
 
     fn fresh_vreg(&mut self) -> VReg {
@@ -379,6 +405,81 @@ impl FuncBuilder {
         self.push(Instr::AddrOfFpuSpill { dst, slot });
         dst
     }
+
+    // ----- FPU v2 vector emitters (all vregs are Fpu-class; `lanes` is the
+    // contiguous F-register count, 2/3/4) -----
+
+    fn fresh_fpu_vec(&mut self, lanes: u8) -> VReg {
+        self.func.fresh_vreg_lanes(RegClass::Fpu, lanes)
+    }
+    /// `dst[i] = lhs[i] op rhs[i]` over a contiguous range
+    pub fn fpu_vec_bin(&mut self, op: FpuBinOp, lhs: VReg, rhs: VReg, lanes: u8) -> VReg {
+        let dst = self.fresh_fpu_vec(lanes);
+        self.push(Instr::FpuVecBin { dst, op, lhs, rhs });
+        dst
+    }
+    /// `dst[i] = lhs[i] * scalar` (VMULS)
+    pub fn fpu_vec_muls(&mut self, lhs: VReg, scalar: VReg, lanes: u8) -> VReg {
+        let dst = self.fresh_fpu_vec(lanes);
+        self.push(Instr::FpuVecMulS { dst, lhs, scalar });
+        dst
+    }
+    /// `dst[i] = op(src[i])`
+    pub fn fpu_vec_un(&mut self, op: FpuUnOp, src: VReg, lanes: u8) -> VReg {
+        let dst = self.fresh_fpu_vec(lanes);
+        self.push(Instr::FpuVecUn { dst, op, src });
+        dst
+    }
+    /// `dst = src` over a contiguous range (cycle-safe parallel move)
+    pub fn fpu_vec_move(&mut self, src: VReg, lanes: u8) -> VReg {
+        let dst = self.fresh_fpu_vec(lanes);
+        self.push(Instr::FpuVecMove { dst, src });
+        dst
+    }
+    /// build a vector from scalar lanes (one value per lane)
+    pub fn fpu_vec_construct(&mut self, lanes: &[VReg]) -> VReg {
+        assert!(
+            (2..=4).contains(&lanes.len()),
+            "a vector has 2, 3 or 4 lanes"
+        );
+        let dst = self.fresh_fpu_vec(lanes.len() as u8);
+        self.push(Instr::FpuVecConstruct {
+            dst,
+            lanes: lanes.to_vec(),
+        });
+        dst
+    }
+    /// `dst = src[lane]` (scalar extraction)
+    pub fn fpu_vec_lane(&mut self, src: VReg, lane: u8) -> VReg {
+        let dst = self.fresh_fpu();
+        self.push(Instr::FpuVecLane { dst, src, lane });
+        dst
+    }
+    /// `dst = q16(dot(lhs, rhs))` (DOTSTORE, one narrowing)
+    pub fn fpu_dot_store(&mut self, lhs: VReg, rhs: VReg) -> VReg {
+        let dst = self.fresh_fpu();
+        self.push(Instr::FpuDotStore { dst, lhs, rhs });
+        dst
+    }
+    /// vector load `dst[i] = {mem[a+2i+1], mem[a+2i]}` (FLDV)
+    pub fn fpu_vec_load(&mut self, base_gpr: VReg, offset: i16, lanes: u8) -> VReg {
+        let dst = self.fresh_fpu_vec(lanes);
+        self.push(Instr::FpuVecLoad {
+            dst,
+            base_gpr,
+            offset,
+        });
+        dst
+    }
+    /// vector store (FSTV)
+    pub fn fpu_vec_store(&mut self, base_gpr: VReg, offset: i16, src: VReg) {
+        self.push(Instr::FpuVecStore {
+            base_gpr,
+            offset,
+            src,
+        });
+    }
+
     pub fn call(&mut self, func: FuncName, args: &[VReg], n_rets: usize) -> Vec<VReg> {
         let rets = (0..n_rets).map(|_| self.fresh_vreg()).collect::<Vec<_>>();
         self.push(Instr::Call {
@@ -483,7 +584,9 @@ impl FuncBuilder {
         }
         if !self.sealed[block] {
             // block not sealed (loop header): phi with operands filled at seal time
-            let dst = self.func.fresh_vreg(self.var_class[var]);
+            let dst = self
+                .func
+                .fresh_vreg_lanes(self.var_class[var], self.var_lanes[var]);
             self.func.blocks[block].phis.push(Phi { dst, args: vec![] });
             self.incomplete.entry(block).or_default().push((dst, var));
             self.write_var(var, block, dst);
@@ -502,7 +605,9 @@ impl FuncBuilder {
             }
             preds => {
                 let preds = preds.to_vec();
-                let dst = self.func.fresh_vreg(self.var_class[var]);
+                let dst = self
+                    .func
+                    .fresh_vreg_lanes(self.var_class[var], self.var_lanes[var]);
                 // write before recursing, to break cycles through this phi
                 self.write_var(var, block, dst);
                 let args = preds.iter().map(|&p| (p, self.read_var(var, p))).collect();

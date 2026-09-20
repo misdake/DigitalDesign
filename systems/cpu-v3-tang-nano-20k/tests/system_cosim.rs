@@ -488,6 +488,24 @@ fn program_fpu_sincos() -> Vec<u16> {
     p
 }
 
+/// rcc-compiled FPU v2 vector program (C2 lowering): vec4 construction, an
+/// ABI-packed vector call, VMULS scalar broadcast, lane extraction and `fdot`
+/// all run through the full system co-simulation.
+const FPU_VECTOR_SOURCE: &str = r#"
+fn add4(a: vec4, b: vec4) -> vec4 { a + b }
+fn main() {
+    let a = vec4::new(fix16::from_int(1), fix16::from_int(2),
+                      fix16::from_int(3), fix16::from_int(4));
+    let b = vec4::new(fix16::from_int(10), fix16::from_int(20),
+                      fix16::from_int(30), fix16::from_int(40));
+    let c = add4(a, b);                      // 11, 22, 33, 44
+    let d = c * fix16::from_int(2);          // 22, 44, 66, 88
+    let s = d.x() + d.y() + d.z() + d.w();   // 220
+    let dot = fdot(c, d);                    // 7260
+    halt((s + dot).to_int() as u16);         // 7480
+}
+"#;
+
 fn programs() -> Vec<CosimProgram> {
     vec![
         CosimProgram {
@@ -601,6 +619,14 @@ fn programs() -> Vec<CosimProgram> {
             check_base: 0x4020,
             check_len: 8,
             expected_halt: Some(0xD76A),
+        },
+        CosimProgram {
+            name: "fpu_vector_compiled",
+            words: compile_cpu_v3_source(FPU_VECTOR_SOURCE),
+            max_cycles: 40_000,
+            check_base: 0x4000,
+            check_len: 0,
+            expected_halt: Some(7480),
         },
     ]
 }
