@@ -80,7 +80,10 @@ The AUX kind-00 integer bridges (`ILO2F`/`IHI2F`/`I16TOF`/`FLO2I`/`FHI2I`/`FTOI1
 by the core through the unit's external F read/write ports, since only the core can reach the GPR
 file. A scalar `CMP` publishes its registered `flag_lt`/`flag_eq`/`flag_gt` into the core's
 transient pending test when the pair retires, so a following conditional branch or conditional
-move consumes it exactly like `CMPS`/`CMPU`.
+move consumes it exactly like `CMPS`/`CMPU`. The core captures AUX/FLD/FST word0 `X` when it
+accepts the pair and holds a registered select across the required beats. The asynchronous GPR
+read address therefore does not depend on a live multi-state FPU decode; this preserves the same
+cycle schedule while removing that decode from the GPR read/compute/write timing cone.
 
 The optional fitted system places separate 4 KiB instruction and data caches
 around the core. Each cache is two-way set-associative with 64 sets and 16 words per line.
@@ -167,11 +170,10 @@ caches, 54/108-MHz SDRAM gearbox, and display path. The fitted numbers live in
 which owns them and is where they are updated; they are deliberately not repeated
 here.
 
-What that fit says about the CPU itself: the tightest CPU-clock path is the
-core's registered GPR write, not the hidden special-function lookup or the cache frontend,
-and the D-cache dirty write enable is the second tightest class, which is why the
-maintenance scan reads the whole-word bitmap instead of moving it into an
-addressed RAM leaf.
+What that fit says about the CPU itself: after registering the AUX/FLD/FST GPR
+address selection, the former state-to-GPR-write critical cone is absent from
+the top 25. The tightest CPU-clock path now runs from the instruction fetch
+queue head into core state; the hidden special-function lookup is not critical.
 
 The following timing sections are retained as implementation history for the FPU
 lane pipeline. They are not the current full-system Stage 12 result.

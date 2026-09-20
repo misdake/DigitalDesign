@@ -119,6 +119,12 @@ wire [3:0] field_b = instruction[3:0];
 // Word0 latch (AUX fields X = [11:8], Fa = [7:2], kind = [1:0]) and the
 // word1 fields captured at the word1 response beat.
 reg [15:0] fpu2_word0 = 0;
+// AUX/FLD/FST GPR register/base address (word0 X, bits [11:8]). It is captured
+// once when the two-word pair is accepted and held in its own register, so the
+// GPR read-address mux selects a register instead of routing the live
+// multi-state FPU decode across the register-file critical path.
+reg [3:0] fpu2_gpr_x = 0;
+reg fpu2_gpr_x_valid = 0;
 reg [5:0] fpu2_subop = 0;
 reg [5:0] fpu2_fd = 0;
 reg [5:0] fpu2_fa = 0;
@@ -156,9 +162,8 @@ reg [31:0] fpu2_store_address = 0;
 reg [15:0] fpu2_store_fault_pc = 0;
 
 wire [3:0] gpr_read_a_address =
+    fpu2_gpr_x_valid ? fpu2_gpr_x :
     state == ST_HALTED ? 4'd0 :
-    (state == ST_FPU2_WORD1 || state == ST_FPU2_AUX_READ ||
-     state == ST_FPU2_AUX_APPLY) ? fpu2_word0[11:8] :
     field_a;
 wire [3:0] gpr_read_b_address =
     state == ST_EXECUTE && (opcode == 4'h8 || opcode == 4'h9) ? field_d : field_b;
@@ -496,10 +501,12 @@ always @(posedge clk) begin
         fpu2_is_memory <= 0;
         fpu2_pending <= 0;
         fpu2_pending_index <= 0;
+        fpu2_gpr_x_valid <= 0;
     end else if (!hold) begin
         gpr_write_enable <= 0;
         fpu2_word_valid <= 0;
         fpu2_abort <= 0;
+        fpu2_gpr_x_valid <= 0;
         if (async_store_valid && async_store_issued &&
             data_response_valid && data_error) begin
             async_store_valid <= 0;
@@ -941,6 +948,8 @@ always @(posedge clk) begin
                             fpu2_word <= instruction;
                             fpu2_word_valid <= 1;
                             fpu2_word0 <= instruction;
+                            fpu2_gpr_x <= instruction[11:8];
+                            fpu2_gpr_x_valid <= 1;
                             fpu2_fault_pc <= instruction_pc;
                             fpu2_seen_complete <= 0;
                             fpu2_is_memory <= 0;
@@ -1028,7 +1037,9 @@ always @(posedge clk) begin
             ST_FPU2_WORD1: begin
                 // Fetch the second instruction word through the instruction
                 // port; the unit's front-end accepts it on the beat after
-                // the response arrives.
+                // the response arrives. Keep the captured AUX/FLD base
+                // register selected one more beat for the AUX read state.
+                fpu2_gpr_x_valid <= 1;
                 if (instruction_response_valid) begin
                     if (instruction_error) begin
                         fault_code <= FAULT_INSTRUCTION_MEMORY;
@@ -1100,7 +1111,9 @@ always @(posedge clk) begin
                 // The source F register was addressed through the ext read port
                 // this cycle; the synchronous RF data lands next cycle. Hold
                 // the address until the unit finishes the pair, then latch the
-                // value for the apply state.
+                // value for the apply state. Keep the captured base register
+                // selected for the apply beat's F-writing bridges.
+                fpu2_gpr_x_valid <= 1;
                 if (fpu2_instr_complete)
                     fpu2_seen_complete <= 1;
                 if (fpu2_seen_complete) begin
