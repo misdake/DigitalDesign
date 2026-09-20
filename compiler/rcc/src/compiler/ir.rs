@@ -116,6 +116,19 @@ pub enum FpuUnOp {
     Trunc,
 }
 
+/// FPU v2 scalar special-function subops (design sections 7.3 and 9.3). `Rcp`
+/// and `Rsqrt` write one F register; `Sin`/`Cos` write one F register through
+/// the `SINCOS` subop's single-output modes; `SinCos` writes the contiguous
+/// pair `Fd`/`Fd+1` (so its destination carries two lanes).
+#[derive(Copy, Clone, Debug, Eq, PartialEq, Hash)]
+pub enum FpuSpecialOp {
+    Rcp,
+    Rsqrt,
+    Sin,
+    Cos,
+    SinCos,
+}
+
 /// register file a virtual register belongs to
 #[derive(Copy, Clone, Debug, Eq, PartialEq, Hash)]
 pub enum RegClass {
@@ -313,6 +326,14 @@ pub enum Instr {
         op: FpuUnOp,
         src: VReg,
     },
+    /// `Fd = op(Fa)` (scalar RCP/RSQRT, or SINCOS single/dual output). The
+    /// destination lane count is `lanes(dst)`: one for RCP/RSQRT/SIN/COS and
+    /// two for the dual-output SINCOS.
+    FpuSpecial {
+        dst: VReg,
+        op: FpuSpecialOp,
+        src: VReg,
+    },
     /// `Fd = Fa` (FMOV)
     FpuMov {
         dst: VReg,
@@ -479,6 +500,7 @@ impl Instr {
                 f(*rhs);
             }
             Instr::FpuUn { src, .. }
+            | Instr::FpuSpecial { src, .. }
             | Instr::FpuMov { src, .. }
             | Instr::FpuToInt { src, .. }
             | Instr::FpuToLo { src, .. }
@@ -574,6 +596,7 @@ impl Instr {
                 f(rhs);
             }
             Instr::FpuUn { src, .. }
+            | Instr::FpuSpecial { src, .. }
             | Instr::FpuMov { src, .. }
             | Instr::FpuToInt { src, .. }
             | Instr::FpuToLo { src, .. }
@@ -985,6 +1008,16 @@ impl fmt::Display for Instr {
                     FpuUnOp::Ceil => "fceil",
                     FpuUnOp::Round => "fround",
                     FpuUnOp::Trunc => "ftrunc",
+                };
+                write!(f, "v{dst} = {op} v{src}")
+            }
+            Instr::FpuSpecial { dst, op, src } => {
+                let op = match op {
+                    FpuSpecialOp::Rcp => "frcp",
+                    FpuSpecialOp::Rsqrt => "frsqrt",
+                    FpuSpecialOp::Sin => "fsin",
+                    FpuSpecialOp::Cos => "fcos",
+                    FpuSpecialOp::SinCos => "fsincos",
                 };
                 write!(f, "v{dst} = {op} v{src}")
             }

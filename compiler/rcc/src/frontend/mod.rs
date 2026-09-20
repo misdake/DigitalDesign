@@ -4,7 +4,10 @@
 //! anything outside the subset is a hard error with a source span.
 
 use crate::CompareOp;
-use crate::{BinOp, BlockId, Cmp, CmpRhs, FpuBinOp, FpuUnOp, Instr, IrFunc, ShiftOp, UnOp, VReg};
+use crate::{
+    BinOp, BlockId, Cmp, CmpRhs, FpuBinOp, FpuSpecialOp, FpuUnOp, Instr, IrFunc, ShiftOp, UnOp,
+    VReg,
+};
 use crate::{BoolExpr, FuncBuilder, RccConfig, VarId};
 use crate::{DebugVar, VarLoc};
 use std::collections::{HashMap, HashSet};
@@ -4356,9 +4359,9 @@ fn compare(
     // always signed and have no immediate form.
     if lt.is_fpu() || rt.is_fpu() {
         if lt != Ty::Fix16 || rt != Ty::Fix16 {
-            return Err(fpu_lowering_unavailable(
+            return Err(err(
                 e,
-                "FPU comparison (C1 compares fix16 scalars only)",
+                "FPU comparison is defined for fix16 scalars only; vectors have no comparison",
             ));
         }
         if let CmpRhs::Imm(_) = rhs {
@@ -4769,14 +4772,29 @@ fn call_expr(l: &mut FnLower, call: &syn::ExprCall) -> Result<Val, syn::Error> {
         }
         return Ok(Val::V(l.b.fpu_dot_store(*a, *b), Ty::Fix16));
     }
-    if matches!(name.as_str(), "frcp" | "frsqrt" | "fsincos") {
-        return Err(fpu_lowering_unavailable(&p, name));
+    if matches!(
+        name.as_str(),
+        "frcp" | "frsqrt" | "fsin" | "fcos" | "fsincos"
+    ) {
+        if args.len() != 1 {
+            return Err(err(call, format!("{name}(x) takes 1 argument")));
+        }
+        let (v, from) = &args[0];
+        let (v, _) = coerce(l, *v, from, &Ty::Fix16, &call.args[0])?;
+        let (op, lanes, ty) = match name.as_str() {
+            "frcp" => (FpuSpecialOp::Rcp, 1, Ty::Fix16),
+            "frsqrt" => (FpuSpecialOp::Rsqrt, 1, Ty::Fix16),
+            "fsin" => (FpuSpecialOp::Sin, 1, Ty::Fix16),
+            "fcos" => (FpuSpecialOp::Cos, 1, Ty::Fix16),
+            _ => (FpuSpecialOp::SinCos, 2, Ty::Vec2),
+        };
+        return Ok(Val::V(l.b.fpu_special(op, v, lanes), ty));
     }
     if matches!(
         name.as_str(),
         "v3_length2_shift" | "v3_length2_scaled" | "v3_normalize_safe" | "v3_distance2_gt"
     ) {
-        return Err(fpu_lowering_unavailable(&p, name));
+        return Err(prescale_lowering_unavailable(&p, name));
     }
     if matches!(name.as_str(), "cnt1" | "log2") {
         if args.len() != 1 {
@@ -4911,22 +4929,32 @@ fn constant_below(
 // FPU (fix16/vec2/vec3/vec4) operations
 // ---------------------------------------------------------------------------
 
-/// C1 lowers the scalar `fix16` operations and C2 the contiguous vector forms.
-/// The special functions and the prescale helpers still need C3, so they are
-/// rejected at the frontend boundary rather than being silently unrecognized.
-fn fpu_lowering_unavailable(at: &impl syn::spanned::Spanned, what: &str) -> syn::Error {
+/// C1 lowers the scalar `fix16` operations, C2 the contiguous vector forms and
+/// C3 the scalar special functions. The C0-frozen prescale library family is
+/// deliberately still rejected rather than partially exposed. Its first three
+/// helpers can be built from a multiword unsigned `k` calculation, exact
+/// power-of-two VMULS, DOTSTORE and RSQRT, but `v3_distance2_gt` cannot meet
+/// its frozen exact boundary with the current ISA: it compares the un-narrowed
+/// raw `sum_i ((a_i - b_i) >> k)^2` (up to ~`2^45.6`) against
+///   `(threshold << 16) >> (2k)`. The only wide value the ISA can read back is
+///   `DOTSTORE`, which returns `ACC[47:16]` (narrowed to 32 bits); the low 16
+///   bits of the sum are unrecoverable and there is no ACC-read subop
+///   (AUX kind `01` is reserved). Whether to split the family, relax that
+/// boundary, or add an architectural wide comparison is a separate decision.
+fn prescale_lowering_unavailable(at: &impl syn::spanned::Spanned, what: &str) -> syn::Error {
     err(
         at,
         format!(
-            "{what} needs CpuV3 FPU v2 lowering that lands after C2 (C1/C2 lower scalar fix16 and \
-             contiguous vec2/vec3/vec4; special functions and constants arrive with C3)"
+            "{what} has no CpuV3 FPU v2 lowering: the frozen prescale family remains deferred \
+             because v3_distance2_gt needs an un-narrowed wide-accumulator comparison that the \
+             FPU v2 ISA does not expose"
         ),
     )
 }
 
 /// fix16::/vec2::/vec3::/vec4:: associated functions. C2 implements the
 /// vector constructors, `zero`, and the vec4 memory import/export; the
-/// special functions and prescale helpers stay rejected (C3).
+/// C3 adds the scalar special functions; the prescale family stays rejected.
 fn fpu_associated_call(
     l: &mut FnLower,
     ty_name: &str,
@@ -5000,9 +5028,9 @@ fn fpu_associated_call(
             l.b.fpu_vec_store(ptr, 0, v);
             Ok(Val::Unit)
         }
-        _ => Err(fpu_lowering_unavailable(
+        _ => Err(err(
             &call.func,
-            &format!("`{ty_name}::{method}`"),
+            format!("unknown `{ty_name}::{method}` associated function"),
         )),
     }
 }
@@ -5058,9 +5086,9 @@ fn fpu_method(
                     base_ty.display()
                 ),
             )),
-            _ => Err(fpu_lowering_unavailable(
+            _ => Err(err(
                 &m.method,
-                &format!("`{}.{}()`", base_ty.display(), method),
+                format!("unknown {}.{method}() method", base_ty.display()),
             )),
         }
     } else {
@@ -5648,11 +5676,12 @@ mod tests {
         assert!(parse_source_with(src, 0).is_err());
     }
 
-    /// C1 lowers the scalar `fix16` operations and C2 the contiguous vector
-    /// forms, so both must parse and build IR; the special functions and the
-    /// prescale helpers still fail with the explicit boundary message.
+    /// C1 lowers the scalar `fix16` operations, C2 the contiguous vector forms
+    /// and C3 the scalar specials plus `fsin`/`fcos`, so all of them must parse
+    /// and build IR; only the prescale library helpers still fail with the
+    /// explicit boundary message.
     #[test]
-    fn c2_lowers_fix16_and_vectors_but_defers_special_functions() {
+    fn c3_lowers_scalar_vectors_and_special_functions() {
         for src in [
             "fn main() { let a = fix16::from_int(1); halt(0); }",
             "fn main() { let a = fix16::from_words(1, 0); halt(a.lo_bits() + a.hi_bits()); }",
@@ -5663,22 +5692,29 @@ mod tests {
             "fn main() { let a = vec4::new(fix16::zero(), fix16::zero(), fix16::zero(), fix16::zero()); halt(0); }",
             "fn main() { let a = vec3::zero(); let b = a + a; halt(b.x().to_int() as u16); }",
             "fn main() { let a = fdot(vec4::zero(), vec4::zero()); halt(a.to_int() as u16); }",
+            "fn main() { let a = frcp(fix16::from_int(1)); halt(a.to_int() as u16); }",
+            "fn main() { let a = frsqrt(fix16::from_int(1)); halt(a.to_int() as u16); }",
+            "fn main() { let a = fsin(fix16::from_int(1)); halt(a.to_int() as u16); }",
+            "fn main() { let a = fcos(fix16::from_int(1)); halt(a.to_int() as u16); }",
+            "fn main() { let a = fsincos(fix16::from_int(1)); halt(a.y().to_int() as u16); }",
         ] {
             parse_source_with(src, 0).unwrap_or_else(|error| {
-                panic!("scalar fix16 and vector forms must lower now: `{src}`: {error}")
+                panic!("scalar, vector and special forms must lower now: `{src}`: {error}")
             });
         }
         for src in [
             "fn main() { let a = v3_normalize_safe(vec3::zero()); halt(0); }",
-            "fn main() { let a = frcp(fix16::from_int(1)); halt(0); }",
-            "fn main() { let a = frsqrt(fix16::from_int(1)); halt(0); }",
-            "fn main() { let a = fsincos(fix16::from_int(1)); halt(0); }",
+            "fn main() { let a = v3_length2_shift(vec3::zero()); halt(a); }",
+            "fn main() { let a = v3_length2_scaled(vec3::zero()); halt(a.to_int() as u16); }",
+            "fn main() { let a = v3_distance2_gt(vec3::zero(), vec3::zero(), fix16::zero()); halt(0); }",
         ] {
             let error = parse_source_with(src, 0)
                 .err()
-                .expect("a special-function/prescale program must still be rejected");
+                .expect("a prescale-helper program must still be rejected");
             assert!(
-                error.to_string().contains("FPU v2 lowering"),
+                error
+                    .to_string()
+                    .contains("un-narrowed wide-accumulator comparison"),
                 "unexpected error for `{src}`: {error}"
             );
         }

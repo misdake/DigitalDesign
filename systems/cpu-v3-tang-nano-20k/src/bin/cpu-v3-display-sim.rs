@@ -1,9 +1,9 @@
 //! Host display simulator for the configured S2 application.
 //!
-//! C0 boundary: the FPU display demo is parked, so the configured S2 program is
-//! the non-FPU `rcc/boot-alt.rs` placeholder and this simulator renders an
-//! empty framebuffer while it runs. It picks the FPU display demo back up
-//! automatically when `boot-applications.conf` restores that source after C3.
+//! C3 restored the Q16.16 FPU display demo (`rcc/display-demo.rs`) in the S2
+//! slot, so this simulator renders the animated waveforms and circle the demo
+//! draws. `boot-applications.conf` selects the source and the build script
+//! compiles it into `DISPLAY_DEMO_PROGRAM`.
 
 use cpu_v3_tang_nano_20k::display::{render_frame_at, write_ppm};
 #[cfg(feature = "display-window")]

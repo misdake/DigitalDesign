@@ -506,6 +506,47 @@ fn main() {
 }
 "#;
 
+/// rcc-compiled FPU v2 special-function program (C3 lowering): `frcp`,
+/// `frsqrt`, `fsin`, `fcos` and the dual-output `fsincos` all lower to the
+/// two-word SCALAR special subops and run through the full system. Each result
+/// is scaled by 1000 and truncated so the halt signal is a stable integer that
+/// the hidden-BSRAM LUT path alone determines.
+const FPU_SPECIAL_SOURCE: &str = r#"
+fn main() {
+    let x = fix16::from_int(4);
+    let scaled = fix16::from_int(1000);
+    let r = frcp(x);
+    let s = frsqrt(x);
+    let si = fsin(x);
+    let co = fcos(x);
+    let sc = fsincos(x);
+    halt((r * scaled).to_int() as u16
+        + (s * scaled).to_int() as u16
+        + (si * scaled).to_int() as u16
+        + (co * scaled).to_int() as u16
+        + (sc.x() * scaled).to_int() as u16
+        + (sc.y() * scaled).to_int() as u16);
+}
+"#;
+
+/// Reference halt signal for [`FPU_SPECIAL_SOURCE`], computed with the same
+/// architecture reference the emulator and RTL share. Each term follows the
+/// compiled shape exactly: a Q16.16 multiply by `1000`, then `to_int()`
+/// (`FTOI16`, truncating toward zero), cast to `u16`, and summed with the
+/// target's wrapping 16-bit addition.
+fn fpu_special_compiled_halt() -> u16 {
+    let x = 4 << 16;
+    let scaled = 1000 << 16;
+    let term = |v: i32| cpu_v3::fix16_to_i16(cpu_v3::fix16_mul(v, scaled)) as u16;
+    let (sin, cos) = cpu_v3::sincos_q16(x);
+    term(cpu_v3::rcp_q16(x))
+        .wrapping_add(term(cpu_v3::rsqrt_q16(x)))
+        .wrapping_add(term(sin))
+        .wrapping_add(term(cos))
+        .wrapping_add(term(sin))
+        .wrapping_add(term(cos))
+}
+
 fn programs() -> Vec<CosimProgram> {
     vec![
         CosimProgram {
@@ -627,6 +668,14 @@ fn programs() -> Vec<CosimProgram> {
             check_base: 0x4000,
             check_len: 0,
             expected_halt: Some(7480),
+        },
+        CosimProgram {
+            name: "fpu_special_compiled",
+            words: compile_cpu_v3_source(FPU_SPECIAL_SOURCE),
+            max_cycles: 40_000,
+            check_base: 0x4000,
+            check_len: 0,
+            expected_halt: Some(fpu_special_compiled_halt()),
         },
     ]
 }

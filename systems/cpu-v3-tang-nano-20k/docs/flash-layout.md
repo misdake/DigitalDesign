@@ -23,12 +23,10 @@ checks establish a successful boot.
 The board-level selection latch powers up at `10` (S2), so the configured S2
 application boots by default; holding the S1 button (`01`) during reset selects
 the slider diagnostic, and `11` is ignored. The current configuration uses the
-DDHT slider diagnostic for S1. The CPU/FPU sine, cosine, and circle demo is
-parked in `rcc/display-demo.rs`; C1 lowers scalar `fix16` but the demo still
-needs the vector forms and special functions (C2/C3), so the S2 slot boots the
-non-FPU `rcc/boot-alt.rs` placeholder and reports the boot DDHT `0x07` frame;
-the display demo (test ID `0x0b`) returns to S2 after C3. The S2
-slot is loaded at `0007:0200`. The display program renders through cached CPU
+DDHT slider diagnostic for S1 and the migrated Q16.16 CPU/FPU sine, cosine,
+and circle demo (`rcc/display-demo.rs`) for S2. The display demo reports DDHT
+test ID `0x0b`, uses the hardware SINCOS path without a software trig table,
+and is loaded at `0007:0200`. The display program renders through cached CPU
 stores and cleans D-cache before each vblank framebuffer publication when it is
 configured.
 

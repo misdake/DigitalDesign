@@ -6,7 +6,7 @@
 //! (device 0), with the flash image backing the DMA model.
 
 use cpu_v3::rcc_backend::{self, CompilerOptions, CpuV3Program};
-use cpu_v3::{decode, CpuV3Sim, Instruction};
+use cpu_v3::{decode_fpu_pair, CpuV3Sim, FpuScalarSubop, FpuSinCosMode, Instruction};
 use cpu_v3_tang_nano_20k::boot::{
     BootDmaDevice, BootErrorReport, BootSelectDevice, BootTarget, SystemControlDevice,
     S1_APPLICATION_LAYOUT, S2_APPLICATION_LAYOUT,
@@ -34,26 +34,6 @@ fn compile_cpu_v3(file: &str, opts: &CompilerOptions) -> CpuV3Program {
     )
     .expect("rcc compile failed");
     rcc_backend::compile(program, opts, "main")
-}
-
-/// Compiles an `rcc/` source for the CPU V3 backend, returning the frontend or
-/// backend error instead of panicking.
-fn compile_cpu_v3_error(file: &str, opts: &CompilerOptions) -> rcc::frontend::CompileError {
-    let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("rcc")
-        .join(file);
-    let src = std::fs::read_to_string(&path).expect("read rcc source");
-    let source_dir = path.parent().expect("rcc source directory");
-    rcc::frontend::compile_program_named(&path.display().to_string(), &src, opts, &mut |name| {
-        let path = if name == "boot_selection" {
-            std::path::PathBuf::from(env!("OUT_DIR")).join("boot-selection.generated.rs")
-        } else {
-            source_dir.join(format!("{name}.rs"))
-        };
-        std::fs::read_to_string(path).map_err(|error| format!("read module `{name}`: {error}"))
-    })
-    .err()
-    .expect("source must fail to compile")
 }
 
 fn assert_canonical_cache_handoff(stage: &str, words: &[u16]) {
@@ -87,43 +67,42 @@ fn assert_canonical_cache_handoff(stage: &str, words: &[u16]) {
     );
 }
 
-/// C0 parks the physical-board FPU display demo in `rcc/display-demo.rs` until
-/// FPU lowering lands in C1-C3. The configured S2 slot therefore boots the
-/// existing non-FPU `rcc/boot-alt.rs`, and the parked demo is deliberately not
-/// compiled; this keeps the boot assets buildable without pretending the FPU
-/// display path is still exercised.
+/// C3 restores the Q16.16 FPU display demo in the S2 slot: it must compile
+/// (no software trig table) and emit the special-function subops it relies on.
 #[test]
-fn c0_boots_a_non_fpu_placeholder_in_the_parked_display_slot() {
-    let program = compile_cpu_v3("boot-alt.rs", &CompilerOptions::default());
-    let instructions = program
-        .words
-        .iter()
-        .copied()
-        .map(decode)
-        .collect::<Vec<_>>();
+fn c3_display_demo_lowers_to_fpu_special_subops() {
+    let program = compile_cpu_v3("display-demo.rs", &CompilerOptions::default());
 
+    let mut rcp = 0usize;
+    let mut rsqrt = 0usize;
+    let mut sincos_single = 0usize;
+    let mut sincos_dual = 0usize;
+    let mut index = 0;
+    while index + 1 < program.words.len() {
+        if let Instruction::FpuScalar { subop, mode, .. } =
+            decode_fpu_pair(program.words[index], program.words[index + 1])
+        {
+            match subop {
+                FpuScalarSubop::Rcp => rcp += 1,
+                FpuScalarSubop::Rsqrt => rsqrt += 1,
+                FpuScalarSubop::SinCos => match FpuSinCosMode::from_mode(mode) {
+                    Some(FpuSinCosMode::SinCos) => sincos_dual += 1,
+                    Some(_) => sincos_single += 1,
+                    None => panic!("display-demo emitted a reserved SINCOS mode"),
+                },
+                _ => {}
+            }
+        }
+        index += 1;
+    }
     assert!(
-        !instructions
-            .iter()
-            .any(|instruction| matches!(instruction, Instruction::FpuWord0 { .. })),
-        "the C0 S2 placeholder must not emit FPU instructions"
+        sincos_dual > 0,
+        "the display demo must emit the dual-output SINCOS"
     );
-    assert!(
-        instructions
-            .iter()
-            .any(|instruction| matches!(instruction, Instruction::DeviceSend { .. })),
-        "the placeholder must still drive the board"
-    );
-}
-
-/// The parked display demo is an FPU program, so C0 must reject it with the
-/// explicit frontend boundary rather than emit a stale single-word encoding.
-#[test]
-fn the_parked_fpu_display_demo_is_rejected_until_c1() {
-    let display = compile_cpu_v3_error("display-demo.rs", &CompilerOptions::default());
-    assert!(
-        display.to_string().contains("FPU v2 lowering"),
-        "unexpected display-demo error: {display}"
+    assert_eq!(
+        (rcp, rsqrt, sincos_single),
+        (0, 0, 0),
+        "the demo uses only dual-output SINCOS"
     );
 }
 
@@ -237,23 +216,18 @@ fn button_01_boots_the_primary_application_from_flash() {
     assert!((0xdfc0..=0xe000).contains(&sp), "sp = {sp:#06x}");
 }
 
-/// The default S2 boot now runs the C0 non-FPU placeholder (`rcc/boot-alt.rs`)
-/// rather than the parked FPU display demo; the demo returns to this slot at
-/// C1. The placeholder reports the boot DDHT 0x07 frame like the S1 demo.
+/// The default S2 boot runs the restored Q16.16 FPU display demo
+/// (`rcc/display-demo.rs`). Within the bounded run the demo reports its DDHT
+/// `0x0b` frame before the first frame is filled; the fill then keeps it busy
+/// in framebuffer segments, so only the early observable effects are asserted.
 #[test]
-fn button_10_boots_the_configured_placeholder_application_from_flash() {
+fn button_10_boots_the_restored_display_demo_from_flash() {
     let (flash, stage0) = boot_setup();
     let machine = run_boot(flash, &stage0, 0b10, 500_000);
 
     assert_eq!(
         machine.code_segment(),
         S2_APPLICATION_LAYOUT.entry.code_segment
-    );
-    // The placeholder keeps data segment 0; it never selects a framebuffer
-    // segment the way the parked display demo does.
-    assert_eq!(
-        machine.data_segment(),
-        S2_APPLICATION_LAYOUT.entry.data_segment
     );
     assert_eq!(
         machine.physical_memory(S1_APPLICATION_LAYOUT.destination()),
@@ -265,18 +239,16 @@ fn button_10_boots_the_configured_placeholder_application_from_flash() {
         0xdead
     );
     let sysctl = machine.device::<SystemControlDevice>(0).unwrap();
+    // Stage0 invalidates I-cache once during the handoff; the demo reports its
+    // DDHT 0x0b display frame before it starts filling the framebuffers.
     assert_eq!(sysctl.icache_invalidations, 1);
-    assert_eq!(sysctl.dcache_invalidations, 1);
-    // `boot-alt.rs` repeats the boot DDHT 0x07 frame and starts on the odd LED
-    // pattern, so the S2 boot is observable over UART and LEDs.
-    let frame = ddht_frame_with_test_id(0x07);
+    let frame = ddht_frame_with_test_id(0x0b);
     assert!(
         sysctl.uart.len() >= frame.len(),
-        "expected a placeholder DDHT frame, got {:02x?}",
+        "expected a display-demo DDHT frame, got {:02x?}",
         sysctl.uart
     );
     assert_eq!(sysctl.uart[..frame.len()], frame);
-    assert_eq!(sysctl.led, Some(0b01_0101));
 }
 
 #[test]

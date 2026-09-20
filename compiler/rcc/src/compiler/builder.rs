@@ -342,6 +342,18 @@ impl FuncBuilder {
         self.push(Instr::FpuUn { dst, op, src });
         dst
     }
+    /// Scalar special function. `lanes` is 1 for RCP/RSQRT/SIN/COS and 2 for
+    /// the dual-output SINCOS, whose destination is a contiguous `Fd`/`Fd+1`.
+    pub fn fpu_special(&mut self, op: FpuSpecialOp, src: VReg, lanes: u8) -> VReg {
+        assert_eq!(
+            lanes,
+            if op == FpuSpecialOp::SinCos { 2 } else { 1 },
+            "FPU special destination width does not match the operation"
+        );
+        let dst = self.fresh_fpu_vec(lanes);
+        self.push(Instr::FpuSpecial { dst, op, src });
+        dst
+    }
     pub fn fpu_mov(&mut self, src: VReg) -> VReg {
         let dst = self.fresh_fpu();
         self.push(Instr::FpuMov { dst, src });

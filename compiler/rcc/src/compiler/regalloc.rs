@@ -316,6 +316,7 @@ pub(crate) fn inst_defs(inst: &Instr) -> Vec<VReg> {
         | Instr::LoadSp { dst, .. }
         | Instr::FpuBin { dst, .. }
         | Instr::FpuUn { dst, .. }
+        | Instr::FpuSpecial { dst, .. }
         | Instr::FpuMov { dst, .. }
         | Instr::FpuFromInt { dst, .. }
         | Instr::FpuFromLo { dst, .. }
@@ -1643,6 +1644,7 @@ fn defs_mut(inst: &mut Instr) -> Vec<&mut VReg> {
         | Instr::LoadSp { dst, .. }
         | Instr::FpuBin { dst, .. }
         | Instr::FpuUn { dst, .. }
+        | Instr::FpuSpecial { dst, .. }
         | Instr::FpuMov { dst, .. }
         | Instr::FpuFromInt { dst, .. }
         | Instr::FpuFromLo { dst, .. }

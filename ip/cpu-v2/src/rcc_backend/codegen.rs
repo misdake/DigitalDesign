@@ -797,6 +797,7 @@ fn emit_inst(
         // target without `RegisterConvention::fpu`), so reaching one is a bug.
         Instr::FpuBin { .. }
         | Instr::FpuUn { .. }
+        | Instr::FpuSpecial { .. }
         | Instr::FpuMov { .. }
         | Instr::FpuFromInt { .. }
         | Instr::FpuToInt { .. }

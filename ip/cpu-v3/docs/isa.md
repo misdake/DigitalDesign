@@ -304,6 +304,12 @@ returns the **prescaled** squared length `|v|^2 * 2^-2k` (not an unscaled
 length), and `v3_length2_shift` returns `k`. `scaled << 2k` is an
 original-scale approximation, not an exact reconstruction, because shifting
 the components and narrowing the dot result discard low bits when `k > 0`.
+The C3 compiler deliberately still rejects this family: the first three
+helpers can be composed from existing operations, but the frozen exact
+`v3_distance2_gt` boundary needs the low bits of the un-narrowed accumulator,
+and FPU v2 exposes only `DOTSTORE`'s narrowed `ACC[47:16]`. Splitting the
+family, relaxing that boundary, or adding a wide comparison remains a future
+architecture decision.
 
 ### PFX12 and wide operations
 

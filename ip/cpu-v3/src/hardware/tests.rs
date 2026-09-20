@@ -1033,6 +1033,72 @@ fn core_emu_matches_rtl_compiled_vector_fpu_program() {
 }
 
 #[test]
+#[ignore = "explicit emulator-vs-Icarus co-simulation of a compiled special-function FPU program"]
+fn core_emu_matches_rtl_compiled_special_fpu_program() {
+    // The rcc C3 special-function path end to end: `frcp`, `frsqrt`, `fsin`,
+    // `fcos` and the dual-output `fsincos` lower to the SCALAR special subops
+    // and their results flow back through the raw-half bridge into a mixed halt
+    // signal, so the RTL's hidden-BSRAM LUT path and the stylized trace must
+    // match the emulator cycle for cycle.
+    let source = r#"
+        fn main() {
+            let x = fix16::from_words(0x0000u16, 0x0003u16); // 3.0
+            let r = frcp(x);
+            let s = frsqrt(x);
+            let sc = fsincos(x);
+            let si = fsin(x);
+            let co = fcos(x);
+            halt(r.lo_bits() ^ (s.hi_bits() << 1) ^ (sc.x().hi_bits() << 2)
+                 ^ (sc.y().hi_bits() << 3) ^ (si.lo_bits() << 4)
+                 ^ (co.hi_bits() << 5));
+        }
+    "#;
+    let program = compile(source);
+    let module_name = CpuV3Core::verilog_identity().module_name();
+    let emu = run_core_emu_trace(&program, 6000);
+    assert!(!emu.is_empty(), "emu trace empty");
+    let last_emu = emu.last().copied().expect("emu trace non-empty");
+    assert!(
+        !last_emu.fault,
+        "compiled special FPU program faulted in the cycle model: code={} pc={:#06x}",
+        last_emu.fault_code, last_emu.fault_pc
+    );
+    assert!(last_emu.halted, "compiled special FPU program did not halt");
+    let x = 3 << 16;
+    let (sin, cos) = crate::sincos_q16(x);
+    let expected = (crate::rcp_q16(x) as u16)
+        ^ (((crate::rsqrt_q16(x) as u32 >> 16) as u16) << 1)
+        ^ (((sin as u32 >> 16) as u16) << 2)
+        ^ (((cos as u32 >> 16) as u16) << 3)
+        ^ ((sin as u16) << 4)
+        ^ (((cos as u32 >> 16) as u16) << 5);
+    assert_eq!(
+        last_emu.halt_signal, expected,
+        "unexpected special-function result"
+    );
+
+    let max_cycles = emu.len() + 600;
+    let tb = build_core_cosim_tb(&program, &module_name, max_cycles);
+    let rtl = run_core_rtl_trace(&tb);
+    for (index, (expected, actual)) in emu.iter().zip(&rtl).enumerate() {
+        if !actual.equal_core(expected) {
+            panic!("mismatch at cycle {index}\nemu={expected:?}\nrtl={actual:?}");
+        }
+    }
+    assert_eq!(
+        emu.len(),
+        rtl.len(),
+        "emu/RTL trace length mismatch: emu={} rtl={}",
+        emu.len(),
+        rtl.len()
+    );
+    assert_eq!(
+        rtl.last().copied().expect("rtl trace empty").halt_signal,
+        expected
+    );
+}
+
+#[test]
 #[ignore = "explicit emulator-vs-Icarus co-simulation of the CpuV3 core pipeline"]
 fn core_emu_matches_rtl_pipeline_overlap() {
     let program = core_cosim_program();

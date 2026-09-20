@@ -124,12 +124,10 @@ UART byte and reports transmitter busy on reads.
 Device 1 channel 0 returns the reset-time boot selection. The board-level selection latch powers up
 at `10`, so the boot stage selects the configured S2 application by default; holding the S1 button
 (`01`) selects the configured S1 slider diagnostic, and `11` is ignored. The current project selects
-the primary diagnostic as S1. The FPU framebuffer demo is parked in `rcc/display-demo.rs`; C1
-lowers scalar `fix16` but the demo also needs the vector forms and special functions (C2/C3), so
-the S2 slot boots the non-FPU `rcc/boot-alt.rs` placeholder until C2/C3 land. Every configured
-application repeats a DDHT success frame over the
-device-0 UART: the S1 diagnostic and the S2 placeholder report test ID `0x07`, and the parked
-display demo will report `0x0b` once per published frame when it returns.
+the primary diagnostic as S1 and the C3 Q16.16 FPU framebuffer demo as S2. The demo uses the
+compiled scalar, vector, and SINCOS paths directly, with no software trig table. Every configured
+application repeats a DDHT success frame over the device-0 UART: the S1 diagnostic reports test
+ID `0x07`, while the S2 display demo reports `0x0b` before drawing and once per published frame.
 
 Device 2 exposes the boot-DMA command and status register bank. It accepts a 24-bit absolute Flash
 byte address, a 22-bit physical SDRAM word destination, and file and memory byte sizes. Writing one

@@ -635,27 +635,43 @@ pub fn fdot<T: Fdot>(a: T, b: T) -> fix16 {
     fix16((a.dot_terms(b) >> FIX16_FRACTION_BITS) as i32)
 }
 
-/// Target special function; the bit-exact reference lives in the CPU V3
-/// architecture crate and the lowering lands with C3.
+// The special-function declarations below are target intrinsics: C3 lowers
+// them to the two-word FPU v2 special subops (`RCP`, `RSQRT`, and `SINCOS`
+// modes 00/01/10), so `fsin`/`fcos` reuse the same `SINCOS` encoding as
+// `fsincos`. The bit-exact reference model (and its hidden BSRAM tables) lives
+// in the CPU V3 architecture crate. The host cannot reproduce it without
+// duplicating that table, so these shims panic on the Rust host exactly like
+// the other target-only intrinsics.
+
+/// Target special function `Fd = rcp(Fa)` (`SCALAR` subop `0x0C`).
 pub fn frcp(_x: fix16) -> fix16 {
     unimplemented!("frcp is a target FPU special function without a host model")
 }
 
-/// Target special function; the bit-exact reference lives in the CPU V3
-/// architecture crate and the lowering lands with C3.
+/// Target special function `Fd = rsqrt(Fa)` (`SCALAR` subop `0x0D`).
 pub fn frsqrt(_x: fix16) -> fix16 {
     unimplemented!("frsqrt is a target FPU special function without a host model")
 }
 
-/// Target special function; the bit-exact reference lives in the CPU V3
-/// architecture crate and the lowering lands with C3.
+/// Target special function `Fd = sin(Fa)` (`SINCOS` mode `01`).
+pub fn fsin(_x: fix16) -> fix16 {
+    unimplemented!("fsin is a target FPU special function without a host model")
+}
+
+/// Target special function `Fd = cos(Fa)` (`SINCOS` mode `10`).
+pub fn fcos(_x: fix16) -> fix16 {
+    unimplemented!("fcos is a target FPU special function without a host model")
+}
+
+/// Target special function `Fd = sin(Fa)`, `Fd+1 = cos(Fa)` (`SINCOS` mode
+/// `00`); the pair is a contiguous `vec2` over two adjacent F registers.
 pub fn fsincos(_x: fix16) -> vec2 {
     unimplemented!("fsincos is a target FPU special function without a host model")
 }
 
 // ---------------------------------------------------------------------------
-// Prescale library contract (C0 signature freeze; target lowering lands with
-// C1/C2). The functions are ordinary rcc library calls, not new opcodes. They
+// Prescale library contract (C0 signature freeze; target lowering remains
+// deferred after C3). The functions are ordinary rcc library calls, not new opcodes. They
 // share one `2^-k` scaling derived from the largest absolute component; the
 // distance comparison scales its threshold by `2^-2k` to match. The pure,
 // bit-exact reference model and its full-range tests live in the CPU V3
@@ -670,22 +686,22 @@ pub fn fsincos(_x: fix16) -> vec2 {
 
 /// The `2^-k` prescale exponent `k` (`0..=10`) used by the three helpers below.
 pub fn v3_length2_shift(_v: vec3) -> u16 {
-    unimplemented!("v3_length2_shift is a target library intrinsic (C1/C2 lowering)")
+    unimplemented!("v3_length2_shift target lowering is deferred")
 }
 
 /// The **prescaled** squared length `|v|^2 * 2^-2k`, never overflowing Q16.16.
 /// It is not the unscaled length squared; combine with `v3_length2_shift` only
 /// for an approximate scaled-back value.
 pub fn v3_length2_scaled(_v: vec3) -> fix16 {
-    unimplemented!("v3_length2_scaled is a target library intrinsic (C1/C2 lowering)")
+    unimplemented!("v3_length2_scaled target lowering is deferred")
 }
 
 /// `v / |v|`, safe for any Q16.16 input; a zero vector stays zero.
 pub fn v3_normalize_safe(_v: vec3) -> vec3 {
-    unimplemented!("v3_normalize_safe is a target library intrinsic (C1/C2 lowering)")
+    unimplemented!("v3_normalize_safe target lowering is deferred")
 }
 
 /// `|a - b|^2 > threshold`, with both sides scaled by `2^-2k`.
 pub fn v3_distance2_gt(_a: vec3, _b: vec3, _threshold: fix16) -> bool {
-    unimplemented!("v3_distance2_gt is a target library intrinsic (C1/C2 lowering)")
+    unimplemented!("v3_distance2_gt target lowering is deferred")
 }

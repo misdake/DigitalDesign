@@ -126,13 +126,12 @@ The fitted system does not maintain this detailed manifest by hand. Its
 ```text
 format 1
 s1 rcc/boot-demo.rs
-s2 rcc/boot-alt.rs
+s2 rcc/display-demo.rs
 ```
 
-C1 now lowers scalar `fix16`, but the parked FPU demo also needs the vector
-forms and special functions (C2/C3), so the S2 slot still names the non-FPU
-`boot-alt.rs` placeholder; `rcc/display-demo.rs` returns to S2 after C2/C3 and
-its Q16.16 source migration.
+C3 restores the migrated Q16.16 FPU display demo to S2. It uses the compiler's
+scalar, vector, and special-function lowering directly and contains no software
+trigonometric table.
 
 The build compiles those sources into derived S1/default and S2 slots and emits
 `boot.cpu-v3-manifest` beside the section binaries. That generated manifest is

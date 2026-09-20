@@ -11,8 +11,8 @@ pub use options::CompilerOptions;
 
 use crate as cpu_v3;
 use crate::{
-    AluOp, FpuAuxKind, FpuAuxSubop, FpuScalarSubop, FpuVectorLength, FpuVectorSubop, ImmediateOp,
-    SpecialRegister, TestCondition, Word,
+    AluOp, FpuAuxKind, FpuAuxSubop, FpuScalarSubop, FpuSinCosMode, FpuVectorLength, FpuVectorSubop,
+    ImmediateOp, SpecialRegister, TestCondition, Word,
 };
 use crate::{CACHE_MAINTENANCE_DEVICE, D_INVALIDATE_ALL, ICACHE_INVALIDATE_ALL_DELAYED};
 use rcc::*;
@@ -707,7 +707,14 @@ fn lower_instruction(
                 FpuBinOp::Sub => FpuScalarSubop::Sub,
                 FpuBinOp::Mul => FpuScalarSubop::Mul,
             };
-            emit_fpu_scalar(lines, register(*lhs), register(*rhs), register(*dst), subop);
+            emit_fpu_scalar(
+                lines,
+                register(*lhs),
+                register(*rhs),
+                register(*dst),
+                subop,
+                0,
+            );
         }
         Instr::FpuUn { dst, op, src } => {
             let subop = match op {
@@ -718,13 +725,23 @@ fn lower_instruction(
                 FpuUnOp::Round => FpuScalarSubop::Round,
                 FpuUnOp::Trunc => FpuScalarSubop::Trunc,
             };
-            emit_fpu_scalar(lines, register(*src), 0, register(*dst), subop);
+            emit_fpu_scalar(lines, register(*src), 0, register(*dst), subop, 0);
+        }
+        Instr::FpuSpecial { dst, op, src } => {
+            let (subop, mode) = match op {
+                FpuSpecialOp::Rcp => (FpuScalarSubop::Rcp, 0),
+                FpuSpecialOp::Rsqrt => (FpuScalarSubop::Rsqrt, 0),
+                FpuSpecialOp::Sin => (FpuScalarSubop::SinCos, FpuSinCosMode::Sin as u8),
+                FpuSpecialOp::Cos => (FpuScalarSubop::SinCos, FpuSinCosMode::Cos as u8),
+                FpuSpecialOp::SinCos => (FpuScalarSubop::SinCos, FpuSinCosMode::SinCos as u8),
+            };
+            emit_fpu_scalar(lines, register(*src), 0, register(*dst), subop, mode);
         }
         Instr::FpuMov { dst, src } => {
             let dst = register(*dst);
             let src = register(*src);
             if dst != src {
-                emit_fpu_scalar(lines, src, 0, dst, FpuScalarSubop::Mov);
+                emit_fpu_scalar(lines, src, 0, dst, FpuScalarSubop::Mov, 0);
             }
         }
         Instr::FpuFromInt { dst, src_gpr } => {
@@ -760,7 +777,7 @@ fn lower_instruction(
             // IHI2F reads and writes the same F register, so materialize the
             // low half into dst first.
             if dst != src {
-                emit_fpu_scalar(lines, src, 0, dst, FpuScalarSubop::Mov);
+                emit_fpu_scalar(lines, src, 0, dst, FpuScalarSubop::Mov, 0);
             }
             emit_fpu_aux(lines, register(*src_gpr), 0, dst, FpuAuxSubop::Ihi2f);
         }
@@ -893,6 +910,7 @@ fn lower_instruction(
                 0,
                 register(*dst),
                 FpuScalarSubop::Mov,
+                0,
             );
         }
         Instr::FpuDotStore { dst, lhs, rhs } => emit_fpu_vector(
@@ -969,9 +987,10 @@ fn emit_fpu_aux_vec(lines: &mut Lines, x: u8, fa: u8, fd: u8, subop: FpuAuxSubop
     }
 }
 
-/// Emits one two-word FPU SCALAR instruction.
-fn emit_fpu_scalar(lines: &mut Lines, fa: u8, fb: u8, fd: u8, subop: FpuScalarSubop) {
-    for word in cpu_v3::fpu_scalar(fa, fb, fd, subop, 0) {
+/// Emits one two-word FPU SCALAR instruction. `mode` is zero for every subop
+/// except `SINCOS`, where it selects sin, cos, or the dual output.
+fn emit_fpu_scalar(lines: &mut Lines, fa: u8, fb: u8, fd: u8, subop: FpuScalarSubop, mode: u8) {
+    for word in cpu_v3::fpu_scalar(fa, fb, fd, subop, mode) {
         lines.word(word);
     }
 }
@@ -1154,7 +1173,7 @@ fn lower_bool(
         let condition = test_condition(cmp.cond);
         emit_load_immediate(lines, REG_TMP, 1);
         emit_load_immediate(lines, dst, 0);
-        emit_fpu_scalar(lines, lhs, register(rhs), 0, FpuScalarSubop::Cmp);
+        emit_fpu_scalar(lines, lhs, register(rhs), 0, FpuScalarSubop::Cmp, 0);
         lines.word(cpu_v3::conditional_move(condition, dst, REG_TMP));
         return;
     }
@@ -1255,7 +1274,7 @@ fn lower_comparison(
         let CmpRhs::Reg(rhs) = comparison.rhs else {
             unreachable!("FPU comparisons always have a register operand");
         };
-        emit_fpu_scalar(lines, lhs, register(rhs), 0, FpuScalarSubop::Cmp);
+        emit_fpu_scalar(lines, lhs, register(rhs), 0, FpuScalarSubop::Cmp, 0);
         return condition;
     }
     match comparison.rhs {
@@ -1291,7 +1310,7 @@ fn emit_self_compare(
 ) {
     let lhs = register(comparison.lhs);
     if function.class_of(comparison.lhs) == RegClass::Fpu {
-        emit_fpu_scalar(lines, lhs, lhs, 0, FpuScalarSubop::Cmp);
+        emit_fpu_scalar(lines, lhs, lhs, 0, FpuScalarSubop::Cmp, 0);
         return;
     }
     lines.word(cpu_v3::compare_signed(lhs, lhs));
@@ -1372,7 +1391,7 @@ fn emit_parallel_moves(lines: &mut Lines, moves: &[(u8, u8, RegClass)]) {
 fn emit_parallel_moves_in_file(lines: &mut Lines, moves: &[(u8, u8)], class: RegClass) {
     let emit_move = |lines: &mut Lines, to: u8, from: u8| match class {
         RegClass::Gpr => lines.word(cpu_v3::move_register(to, from)),
-        RegClass::Fpu => emit_fpu_scalar(lines, from, 0, to, FpuScalarSubop::Mov),
+        RegClass::Fpu => emit_fpu_scalar(lines, from, 0, to, FpuScalarSubop::Mov, 0),
     };
     let scratch = match class {
         RegClass::Gpr => REG_TMP,
@@ -2249,6 +2268,98 @@ mod tests {
         }
         assert_eq!(found, vec![(4, 29, 28, 28)], "{}", program.listing);
         assert_eq!(&program.words[4..6], &[0xd75c, 0x7000]);
+    }
+
+    /// C3 lowers the scalar special functions to the two-word SCALAR special
+    /// subops: `frcp`/`frsqrt` use subops `0x0C`/`0x0D`, and `fsin`/`fcos`/
+    /// `fsincos` all reuse `SINCOS` (`0x0E`) with `mode[1:0]` selecting the
+    /// result. The dual output allocates a contiguous `Fd`/`Fd+1` pair.
+    #[test]
+    fn scalar_special_functions_emit_the_exact_subop_and_mode() {
+        use rcc::{FpuSpecialOp, FuncBuilder, RegClass};
+        for (op, subop, mode, lanes) in [
+            (FpuSpecialOp::Rcp, cpu_v3::FpuScalarSubop::Rcp, 0u8, 1u8),
+            (FpuSpecialOp::Rsqrt, cpu_v3::FpuScalarSubop::Rsqrt, 0, 1),
+            (FpuSpecialOp::Sin, cpu_v3::FpuScalarSubop::SinCos, 1, 1),
+            (FpuSpecialOp::Cos, cpu_v3::FpuScalarSubop::SinCos, 2, 1),
+            (FpuSpecialOp::SinCos, cpu_v3::FpuScalarSubop::SinCos, 0, 2),
+        ] {
+            let (mut b, params) = FuncBuilder::new_typed("main", &[RegClass::Fpu], 1);
+            let a = b.get(params[0]);
+            let r = b.fpu_special(op, a, lanes);
+            b.ret(&[r]);
+            let function = b.finish();
+            let functions = std::collections::HashMap::from([("main", function)]);
+            let program = compile_ir(
+                functions,
+                &CompilerOptions::default(),
+                "main",
+                rcc::frontend::FrontendDebug::default(),
+            )
+            .unwrap();
+            let mut found = Vec::new();
+            let mut index = 0;
+            while index + 1 < program.words.len() {
+                if let cpu_v3::Instruction::FpuScalar {
+                    fd,
+                    subop: found_subop,
+                    mode: found_mode,
+                    ..
+                } = cpu_v3::decode_fpu_pair(program.words[index], program.words[index + 1])
+                {
+                    if found_subop == subop {
+                        found.push((index, fd, found_mode));
+                    }
+                }
+                index += 1;
+            }
+            assert_eq!(
+                found.len(),
+                1,
+                "{op:?} must emit exactly one special subop\n{}",
+                program.listing
+            );
+            let (index, fd, found_mode) = found[0];
+            assert_eq!(found_mode, mode, "{op:?}");
+            // Check the emitted word1 field packing too: word0 is
+            // {D, Fa, Fb=0}, word1 is {Fd, subop<<4 | mode}.
+            assert_eq!(
+                program.words[index + 1],
+                (u16::from(fd) << 10) | (subop as u16) << 4 | u16::from(mode),
+                "{op:?} word1"
+            );
+            // The dual-output form writes fd and fd+1.
+            assert!(fd + lanes <= 64, "{op:?} destination range");
+        }
+    }
+
+    /// C3 special functions are bit-exact with the architecture reference
+    /// model. Each result is folded into the halt signal with its own raw
+    /// halves, so a single register mix-up cannot cancel out.
+    #[test]
+    fn compiled_special_functions_match_the_reference_model() {
+        let source = r#"
+            fn main() {
+                let x = fix16::from_words(0x0000u16, 0x0003u16); // 3.0
+                let r = frcp(x);
+                let s = frsqrt(x);
+                let sc = fsincos(x);
+                let si = fsin(x);
+                let co = fcos(x);
+                halt(r.lo_bits() ^ (s.hi_bits() << 1) ^ (sc.x().hi_bits() << 2)
+                     ^ (sc.y().hi_bits() << 3) ^ (si.lo_bits() << 4)
+                     ^ (co.hi_bits() << 5));
+            }
+        "#;
+        let x = 3 << 16;
+        let (sin, cos) = cpu_v3::sincos_q16(x);
+        let expected = (cpu_v3::rcp_q16(x) as u16)
+            ^ (((cpu_v3::rsqrt_q16(x) as u32 >> 16) as u16) << 1)
+            ^ (((sin as u32 >> 16) as u16) << 2)
+            ^ (((cos as u32 >> 16) as u16) << 3)
+            ^ ((sin as u16) << 4)
+            ^ (((cos as u32 >> 16) as u16) << 5);
+        assert_eq!(run(source), expected);
     }
 
     /// The vector lowering emits the exact two-word VECTOR encoding. A vec3

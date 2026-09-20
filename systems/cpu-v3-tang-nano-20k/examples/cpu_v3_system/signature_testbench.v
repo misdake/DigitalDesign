@@ -313,11 +313,11 @@ initial begin
     repeat (16) @(posedge clk);
     sdram_init_done = 1;
 
-    // Phase 1: the intact package boots the current default S2 placeholder
-    // (no button held). It reports DDHT 0x07 and writes its first LED pattern.
-    // C3 restores the display application and its 0x0b frame to this slot.
+    // Phase 1: the intact package boots the default S2 display application
+    // (no button held). The display application never writes the LEDs, so the
+    // boot monitor keeps ownership and shows the application phase.
     wait (dut.code_segment == 16'd7);
-    wait (ddht_frame_seen);
+    wait (display_frame_seen);
     repeat (4) @(posedge clk);
     if (dut.data_segment !== 16'h0000 && dut.data_segment !== 16'h0020 &&
         dut.data_segment !== 16'h0021)
@@ -339,8 +339,8 @@ initial begin
         $fatal(1, "boot observer missed phases: wait=%0d boot=%0d dma=%0d app=%0d",
             wait_sdram_phase_seen, boot_phase_seen, dma_phase_seen,
             application_phase_seen);
-    if (dut.diagnostic_active !== 0 || leds !== 6'b010101)
-        $fatal(1, "S2 placeholder must take LED ownership with its first pattern: active=%0d leds=%b",
+    if (dut.diagnostic_active !== 1 || leds !== 6'b100000)
+        $fatal(1, "display application must leave diagnostic ownership at phase 5: active=%0d leds=%b",
             dut.diagnostic_active, leds);
 
     // Phase 2: holding the S1 button (01) resets the CPU and latches the

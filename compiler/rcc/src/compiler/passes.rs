@@ -784,6 +784,7 @@ fn dce(f: &mut IrFunc) -> bool {
                     | Instr::CMov { .. }
                     | Instr::FpuBin { .. }
                     | Instr::FpuUn { .. }
+                    | Instr::FpuSpecial { .. }
                     | Instr::FpuMov { .. }
                     | Instr::FpuFromInt { .. }
                     | Instr::FpuFromLo { .. }

@@ -66,14 +66,16 @@ Only these types exist; no other primitive types are supported:
   numeric conversions are deliberately distinct: `from_words`/`lo_bits`/`hi_bits`
   correspond to `ILO2F`/`IHI2F`/`FLO2I`/`FHI2I`/`FLD`/`FST`, while
   `from_int`/`to_int` correspond to `I16TOF`/`FTOI16`.
-- FPU lowering has landed for **scalar `fix16`** (milestone C1): construction
+- FPU lowering has landed through C3: scalar `fix16` construction
   (`from_int`, `from_words`, `zero`), `+`/`-`/`*` and `+=`/`-=`/`*=` on `fix16`,
   unary `-`, the `abs`/`floor`/`ceil`/`round`/`trunc` methods, the raw-half
   `lo_bits`/`hi_bits`, `to_int`, and `fix16` comparisons all lower to the FPU
-  v2 scalar/aux/memory ISA and run on the emulator and the RTL. Vector forms
-  (`vec2/3/4`, `fdot`, `vec4::import`/`export`), the special functions
-  (`frcp`/`frsqrt`/`fsincos`) and the prescale helpers still need C2/C3 and are
-  rejected with an explicit diagnostic, so no silently wrong code is emitted.
+  v2 scalar/aux/memory ISA and run on the emulator and the RTL. C2 adds
+  `vec2/3/4`, `fdot`, VMULS broadcasts, and `vec4::import`/`export`; C3 adds
+  `frcp`/`frsqrt` plus `fsin`/`fcos`/`fsincos` through the three frozen SINCOS
+  modes. The prescale helper family remains rejected with an explicit
+  diagnostic because its exact `v3_distance2_gt` boundary needs an
+  un-narrowed wide-accumulator comparison that FPU v2 does not expose.
 
 ### 1.2 Division and remainder
 
@@ -181,8 +183,8 @@ rows rejected with an explicit "after C1" diagnostic on CPU V3.
 | `.x()` / `.y()` / `.z()` / `.w()` | lane extraction from the consecutive range |
 | `.abs() .floor() .ceil() .round() .trunc()` | component-wise unary (the scalar/vector ALU subops) |
 | `fdot(a, b) -> fix16` | dot product through the 64-bit Q32.32 ACC, narrowed once (`DOT` + `DOTSTORE`) |
-| `frcp(x)` / `frsqrt(x)` / `fsincos(x) -> vec2` | special functions (scalar; `fsincos` yields `{sin, cos}`); target lowering with C3, host models panic |
-| `v3_length2_shift(vec3) -> u16` / `v3_length2_scaled(vec3) -> fix16` / `v3_normalize_safe(vec3) -> vec3` / `v3_distance2_gt(vec3, vec3, fix16) -> bool` | prescale library contract, not opcodes; `scaled` returns the **prescaled** squared length after component shifts and Q16.16 narrowing, and `shift` returns `k`; `scaled << 2k` is only an approximate reconstruction when `k > 0`; target lowering with C1/C2, pure reference model in the CPU V3 architecture crate |
+| `frcp(x) -> fix16` / `frsqrt(x) -> fix16` / `fsin(x) -> fix16` / `fcos(x) -> fix16` / `fsincos(x) -> vec2` | special functions; `fsincos` yields `{sin, cos}`, while `fsin`/`fcos` select one SINCOS result; target lowering landed with C3, host models panic |
+| `v3_length2_shift(vec3) -> u16` / `v3_length2_scaled(vec3) -> fix16` / `v3_normalize_safe(vec3) -> vec3` / `v3_distance2_gt(vec3, vec3, fix16) -> bool` | frozen prescale library contract, not opcodes; pure reference model lives in the CPU V3 architecture crate, but target lowering remains deferred because exact `v3_distance2_gt` needs an un-narrowed wide-accumulator comparison |
 
 ## 6. Design decisions
 
