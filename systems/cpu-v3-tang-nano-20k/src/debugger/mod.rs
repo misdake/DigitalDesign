@@ -697,10 +697,6 @@ fn ty_to_json(ty: &str) -> String {
 fn fault_kind_name(fault: &Fault) -> String {
     match fault.kind {
         FaultKind::InvalidInstruction => "invalid instruction".to_string(),
-        FaultKind::FpuDomain(error) => format!("fpu domain error: {error:?}"),
-        FaultKind::MisalignedFpuVectorAddress { offset } => {
-            format!("misaligned fpu vector address {offset:#06x}")
-        }
         FaultKind::PhysicalAddressOutOfRange { address } => {
             format!("physical address out of range {address:?}")
         }
@@ -783,13 +779,7 @@ impl V3DebugSession {
             out,
             "\"fpu\":[{}],",
             fpu.iter()
-                .map(|v| format!(
-                    "[{}]",
-                    v.iter()
-                        .map(|lane| lane.to_string())
-                        .collect::<Vec<_>>()
-                        .join(",")
-                ))
+                .map(|value| value.to_string())
                 .collect::<Vec<_>>()
                 .join(",")
         );

@@ -99,53 +99,535 @@ pub enum SpecialRegister {
     DataSegment = 1,
 }
 
-/// `AccStore`'s `b` field is a 4-bit destination lane write mask (bit 0 = x
-/// through bit 3 = w), not a lane index: every set bit writes the same rounded
-/// ACC value into that lane, and ACC is cleared afterwards. Mask 0b0000 writes
-/// no lane and only clears ACC.
+/// FPU v2 major opcode, word0 bits [15:12] (design `fpu-design-v2` section 5).
+/// Every FPU v2 instruction is 32 bits wide, fetched as two 16-bit words, and
+/// never consumes a `PFX12` prefix.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 #[repr(u16)]
-pub enum FpuOp {
-    Load = 0,
-    Store = 1,
-    Import4 = 2,
-    Export4 = 3,
-    Move = 4,
-    Pack4 = 5,
-    Unpack4 = 6,
-    Transpose4 = 7,
-    Add = 8,
-    Sub = 9,
-    Mul = 10,
-    Dot4Acc = 11,
-    AccStore = 12,
-    Compare = 13,
-    Unary = 14,
-    // 15 is reserved (formerly FMULS; scalar-by-vector uses an explicit
-    // FACCLOAD.X + FACCSTORE 0b1111 splat followed by FMUL).
+pub enum FpuOpcode {
+    Vector = 0xc,
+    Scalar = 0xd,
+    Aux = 0xe,
 }
 
+impl FpuOpcode {
+    /// Returns the FPU major opcode for a word0, or `None` for any other
+    /// major. Only 0xC/0xD/0xE start an FPU v2 pair.
+    pub const fn from_word0(word0: Word) -> Option<Self> {
+        match word0 >> 12 {
+            0xc => Some(Self::Vector),
+            0xd => Some(Self::Scalar),
+            0xe => Some(Self::Aux),
+            _ => None,
+        }
+    }
+}
+
+/// Vector length field, word1 bits [9:8]. `11` is reserved; software must not
+/// emit it, and the architecture rejects it.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 #[repr(u8)]
-pub enum FpuUnaryOp {
-    Reciprocal = 0,
-    ReciprocalSqrt = 1,
-    SinCos = 2,
-    Abs = 3,
-    Neg = 4,
-    Floor = 5,
-    Ceil = 6,
-    Round = 7,
-    Saturate01 = 8,
-    Sign = 9,
-    Zero = 10,
-    // The FACCLOAD.* subops select one source lane (unlike AccStore's write
-    // mask) and overwrite ACC with the exact lane value shifted into the
-    // accumulator format.
-    AccLoadX = 11,
-    AccLoadY = 12,
-    AccLoadZ = 13,
-    AccLoadW = 14,
+pub enum FpuVectorLength {
+    Vec2 = 0b00,
+    Vec3 = 0b01,
+    Vec4 = 0b10,
+}
+
+impl FpuVectorLength {
+    pub const fn from_field(field: u8) -> Option<Self> {
+        match field & 0b11 {
+            0b00 => Some(Self::Vec2),
+            0b01 => Some(Self::Vec3),
+            0b10 => Some(Self::Vec4),
+            _ => None,
+        }
+    }
+
+    /// Number of scalar F registers the range occupies.
+    pub const fn lanes(self) -> u8 {
+        self as u8 + 2
+    }
+}
+
+/// Vector subop, word1 bits [7:3] (design section 6.3). `0x10..0x1F` are
+/// reserved (0x10 was the rejected CROSS3 candidate).
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[repr(u8)]
+pub enum FpuVectorSubop {
+    VAdd = 0x00,
+    VSub = 0x01,
+    VMul = 0x02,
+    VMulS = 0x03,
+    VMin = 0x04,
+    VMax = 0x05,
+    VAbs = 0x06,
+    VNeg = 0x07,
+    VFloor = 0x08,
+    VCeil = 0x09,
+    VRound = 0x0a,
+    VTrunc = 0x0b,
+    VMove = 0x0c,
+    Dot = 0x0d,
+    DotAdd = 0x0e,
+    DotStore = 0x0f,
+}
+
+impl FpuVectorSubop {
+    pub const fn from_field(field: u8) -> Option<Self> {
+        match field {
+            0x00 => Some(Self::VAdd),
+            0x01 => Some(Self::VSub),
+            0x02 => Some(Self::VMul),
+            0x03 => Some(Self::VMulS),
+            0x04 => Some(Self::VMin),
+            0x05 => Some(Self::VMax),
+            0x06 => Some(Self::VAbs),
+            0x07 => Some(Self::VNeg),
+            0x08 => Some(Self::VFloor),
+            0x09 => Some(Self::VCeil),
+            0x0a => Some(Self::VRound),
+            0x0b => Some(Self::VTrunc),
+            0x0c => Some(Self::VMove),
+            0x0d => Some(Self::Dot),
+            0x0e => Some(Self::DotAdd),
+            0x0f => Some(Self::DotStore),
+            _ => None,
+        }
+    }
+
+    /// Unary subops ignore `Fb`; the front end still reads it, but the range
+    /// check must not require `Fb` to cover the full vector.
+    pub const fn ignores_second_source(self) -> bool {
+        matches!(
+            self,
+            Self::VAbs
+                | Self::VNeg
+                | Self::VFloor
+                | Self::VCeil
+                | Self::VRound
+                | Self::VTrunc
+                | Self::VMove
+        )
+    }
+
+    /// Whether `mode[1:0]` is the second-source stride (DOT family).
+    pub const fn uses_stride_mode(self) -> bool {
+        matches!(self, Self::Dot | Self::DotAdd | Self::DotStore)
+    }
+}
+
+/// Scalar subop, word1 bits [9:4] (design section 7.3). `0x10..0x3F` are
+/// reserved.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[repr(u8)]
+pub enum FpuScalarSubop {
+    Add = 0x00,
+    Sub = 0x01,
+    Mul = 0x02,
+    Min = 0x03,
+    Max = 0x04,
+    Abs = 0x05,
+    Neg = 0x06,
+    Floor = 0x07,
+    Ceil = 0x08,
+    Round = 0x09,
+    Trunc = 0x0a,
+    Cmp = 0x0b,
+    Rcp = 0x0c,
+    Rsqrt = 0x0d,
+    SinCos = 0x0e,
+    Mov = 0x0f,
+}
+
+impl FpuScalarSubop {
+    pub const fn from_field(field: u8) -> Option<Self> {
+        match field {
+            0x00 => Some(Self::Add),
+            0x01 => Some(Self::Sub),
+            0x02 => Some(Self::Mul),
+            0x03 => Some(Self::Min),
+            0x04 => Some(Self::Max),
+            0x05 => Some(Self::Abs),
+            0x06 => Some(Self::Neg),
+            0x07 => Some(Self::Floor),
+            0x08 => Some(Self::Ceil),
+            0x09 => Some(Self::Round),
+            0x0a => Some(Self::Trunc),
+            0x0b => Some(Self::Cmp),
+            0x0c => Some(Self::Rcp),
+            0x0d => Some(Self::Rsqrt),
+            0x0e => Some(Self::SinCos),
+            0x0f => Some(Self::Mov),
+            _ => None,
+        }
+    }
+}
+
+/// AUX kind field, word0 bits [1:0] (design section 10.1).
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[repr(u8)]
+pub enum FpuAuxKind {
+    IntegerRegister = 0b00,
+    ConstantIndex = 0b01,
+    Selector = 0b10,
+    Reserved = 0b11,
+}
+
+impl FpuAuxKind {
+    pub const fn from_field(field: u8) -> Self {
+        match field & 0b11 {
+            0b00 => Self::IntegerRegister,
+            0b01 => Self::ConstantIndex,
+            0b10 => Self::Selector,
+            _ => Self::Reserved,
+        }
+    }
+}
+
+/// AUX subop, word1 bits [9:4], for kind `00` (design section 10.2).
+/// `0x08..0x3F` are reserved (constant-table operations land here later).
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[repr(u8)]
+pub enum FpuAuxSubop {
+    Fld = 0x00,
+    Fst = 0x01,
+    Ilo2f = 0x02,
+    Ihi2f = 0x03,
+    Flo2i = 0x04,
+    Fhi2i = 0x05,
+    I16tof = 0x06,
+    Ftoi16 = 0x07,
+}
+
+impl FpuAuxSubop {
+    pub const fn from_field(field: u8) -> Option<Self> {
+        match field {
+            0x00 => Some(Self::Fld),
+            0x01 => Some(Self::Fst),
+            0x02 => Some(Self::Ilo2f),
+            0x03 => Some(Self::Ihi2f),
+            0x04 => Some(Self::Flo2i),
+            0x05 => Some(Self::Fhi2i),
+            0x06 => Some(Self::I16tof),
+            0x07 => Some(Self::Ftoi16),
+            _ => None,
+        }
+    }
+}
+
+/// `DOT`/`DOTADD`/`DOTSTORE` second-source stride, vector `mode[1:0]`
+/// (design section 6.5). The first source is always stride 1. `11` is
+/// reserved.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[repr(u8)]
+pub enum FpuDotStride {
+    Stride1 = 0b00,
+    Stride3 = 0b01,
+    Stride4 = 0b10,
+}
+
+impl FpuDotStride {
+    pub const fn from_mode(mode: u8) -> Option<Self> {
+        match mode & 0b11 {
+            0b00 => Some(Self::Stride1),
+            0b01 => Some(Self::Stride3),
+            0b10 => Some(Self::Stride4),
+            _ => None,
+        }
+    }
+
+    /// Register step between consecutive second-source lanes.
+    pub const fn step(self) -> u8 {
+        match self {
+            Self::Stride1 => 1,
+            Self::Stride3 => 3,
+            Self::Stride4 => 4,
+        }
+    }
+}
+
+/// `SINCOS` result selection, scalar `mode[1:0]` (design section 9.3). `11` is
+/// reserved; `mode[3:2]` must be zero.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[repr(u8)]
+pub enum FpuSinCosMode {
+    SinCos = 0b00,
+    Sin = 0b01,
+    Cos = 0b10,
+}
+
+impl FpuSinCosMode {
+    pub const fn from_mode(mode: u8) -> Option<Self> {
+        match mode & 0b11 {
+            0b00 => Some(Self::SinCos),
+            0b01 => Some(Self::Sin),
+            0b10 => Some(Self::Cos),
+            _ => None,
+        }
+    }
+}
+
+/// Vector/scalar word0 Fa, bits [11:6].
+pub const fn fpu_fa(word0: Word) -> u8 {
+    ((word0 >> 6) & 0x3f) as u8
+}
+
+/// Vector/scalar word0 Fb, bits [5:0].
+pub const fn fpu_fb(word0: Word) -> u8 {
+    (word0 & 0x3f) as u8
+}
+
+/// AUX word0 integer-register index X, bits [11:8].
+pub const fn fpu_aux_x(word0: Word) -> u8 {
+    ((word0 >> 8) & 0xf) as u8
+}
+
+/// AUX word0 Fa, bits [7:2].
+pub const fn fpu_aux_fa(word0: Word) -> u8 {
+    ((word0 >> 2) & 0x3f) as u8
+}
+
+/// Word1 destination Fd, bits [15:10].
+pub const fn fpu_fd(word1: Word) -> u8 {
+    ((word1 >> 10) & 0x3f) as u8
+}
+
+/// Word1 vector length field, bits [9:8].
+pub const fn fpu_vector_len_field(word1: Word) -> u8 {
+    ((word1 >> 8) & 0b11) as u8
+}
+
+/// Word1 vector subop field, bits [7:3].
+pub const fn fpu_vector_subop_field(word1: Word) -> u8 {
+    ((word1 >> 3) & 0x1f) as u8
+}
+
+/// Word1 scalar/AUX subop field, bits [9:4].
+pub const fn fpu_scalar_subop_field(word1: Word) -> u8 {
+    ((word1 >> 4) & 0x3f) as u8
+}
+
+/// Word1 mode field, bits [3:0] (scalar/AUX).
+pub const fn fpu_mode(word1: Word) -> u8 {
+    (word1 & 0xf) as u8
+}
+
+/// Word1 vector mode field, bits [2:0]. Bit 3 belongs to the 5-bit subop.
+pub const fn fpu_vector_mode(word1: Word) -> u8 {
+    (word1 & 0b111) as u8
+}
+
+fn fpu_register(value: u8) -> Word {
+    assert!(value < 64, "FPU register index {value} is outside f0..f63");
+    Word::from(value)
+}
+
+/// Validates the second-source read for one vector subop, returning the
+/// highest register index it touches.
+fn vector_second_source_last(fb: u8, lanes: usize, subop: FpuVectorSubop, mode: u8) -> usize {
+    if subop.ignores_second_source() || subop == FpuVectorSubop::VMulS {
+        return usize::from(fb);
+    }
+    if subop.uses_stride_mode() {
+        let step = usize::from(
+            FpuDotStride::from_mode(mode)
+                .expect("validated DOT mode")
+                .step(),
+        );
+        return usize::from(fb) + (lanes - 1) * step;
+    }
+    usize::from(fb) + lanes - 1
+}
+
+/// Single source of truth for the vector encoding contract: reserved modes and
+/// any operand range that crosses past `F63`. Returns the rejection reason.
+///
+/// [`fpu_vector`] asserts on it, `decode_fpu_pair` reports `FpuReserved`, and
+/// `CpuV3Sim` raises `InvalidInstruction`, so the three can never drift.
+pub fn fpu_vector_field_error(
+    fa: u8,
+    fb: u8,
+    fd: u8,
+    len: FpuVectorLength,
+    subop: FpuVectorSubop,
+    mode: u8,
+) -> Option<&'static str> {
+    if subop.uses_stride_mode() {
+        if mode & 0b100 != 0 || FpuDotStride::from_mode(mode).is_none() {
+            return Some("FPU DOT mode is not a defined stride");
+        }
+    } else if mode != 0 {
+        return Some("FPU vector mode must be zero for a non-DOT subop");
+    }
+    let lanes = usize::from(len.lanes());
+    if usize::from(fa) + lanes > 64 || usize::from(fd) + lanes > 64 {
+        return Some("FPU source or destination range crosses past f63");
+    }
+    if !subop.ignores_second_source()
+        && subop != FpuVectorSubop::VMulS
+        && vector_second_source_last(fb, lanes, subop, mode) >= 64
+    {
+        return Some("FPU Fb range ends past f63");
+    }
+    None
+}
+
+/// Builds a two-word `0xC` VECTOR instruction:
+/// `word0 = {0xC, Fa[5:0], Fb[5:0]}`,
+/// `word1 = {Fd[5:0], len[1:0], subop[4:0], mode[2:0]}`.
+///
+/// Rejects every reserved field: non-DOT subops require `mode == 0`; the DOT
+/// family requires `mode[2] == 0` and a defined stride in `mode[1:0]`. It also
+/// rejects any source or destination range that would cross past `F63`. Use
+/// [`fpu_vector_raw`] only for invalid-encoding tests.
+pub fn fpu_vector(
+    fa: u8,
+    fb: u8,
+    fd: u8,
+    len: FpuVectorLength,
+    subop: FpuVectorSubop,
+    mode: u8,
+) -> [Word; 2] {
+    if let Some(reason) = fpu_vector_field_error(fa, fb, fd, len, subop, mode) {
+        panic!("FPU vector encoding rejected: {reason}");
+    }
+    fpu_vector_raw(fa, fb, fd, len as u8, subop as u8, mode)
+}
+
+/// Raw VECTOR builder for reserved or arbitrary encodings; fields must fit the
+/// hardware bit widths. No mode or range validation: only invalid-encoding
+/// tests and the RTL extractor lock use this.
+pub fn fpu_vector_raw(
+    fa: u8,
+    fb: u8,
+    fd: u8,
+    len_field: u8,
+    subop_field: u8,
+    mode: u8,
+) -> [Word; 2] {
+    assert!(len_field < 4, "FPU vector len {len_field} exceeds 2 bits");
+    assert!(
+        subop_field < 32,
+        "FPU vector subop {subop_field} exceeds 5 bits"
+    );
+    assert!(mode < 8, "FPU vector mode {mode} exceeds 3 bits");
+    [
+        0xc000 | (fpu_register(fa) << 6) | fpu_register(fb),
+        (fpu_register(fd) << 10)
+            | (Word::from(len_field) << 8)
+            | (Word::from(subop_field) << 3)
+            | Word::from(mode),
+    ]
+}
+
+/// Builds a two-word `0xD` SCALAR instruction:
+/// `word0 = {0xD, Fa[5:0], Fb[5:0]}`,
+/// `word1 = {Fd[5:0], subop[5:0], mode[3:0]}`.
+///
+/// Only `SINCOS` uses `mode`: it requires `mode[3:2] == 0` and a defined
+/// `mode[1:0]`, and the dual-output form needs `Fd <= 62`. Every other subop
+/// requires `mode == 0`. Use [`fpu_scalar_raw`] only for invalid tests.
+pub fn fpu_scalar(fa: u8, fb: u8, fd: u8, subop: FpuScalarSubop, mode: u8) -> [Word; 2] {
+    if let Some(reason) = fpu_scalar_field_error(fa, fb, fd, subop, mode) {
+        panic!("FPU scalar encoding rejected: {reason}");
+    }
+    fpu_scalar_raw(fa, fb, fd, subop as u8, mode)
+}
+
+/// Single source of truth for the scalar encoding contract: the `SINCOS` mode
+/// bits and its dual-output destination range. See [`fpu_vector_field_error`].
+pub fn fpu_scalar_field_error(
+    _fa: u8,
+    _fb: u8,
+    fd: u8,
+    subop: FpuScalarSubop,
+    mode: u8,
+) -> Option<&'static str> {
+    if subop == FpuScalarSubop::SinCos {
+        if mode & 0b1100 != 0 {
+            return Some("FPU SINCOS mode[3:2] must be zero");
+        }
+        if FpuSinCosMode::from_mode(mode).is_none() {
+            return Some("FPU SINCOS mode[1:0] is reserved");
+        }
+        if mode == FpuSinCosMode::SinCos as u8 && usize::from(fd) + 1 >= 64 {
+            return Some("FPU SINCOS dual output needs Fd <= 62");
+        }
+    } else if mode != 0 {
+        return Some("FPU scalar mode must be zero for a non-SINCOS subop");
+    }
+    None
+}
+
+/// Raw SCALAR builder for reserved or arbitrary encodings; fields must fit the
+/// hardware bit widths. No mode validation.
+pub fn fpu_scalar_raw(fa: u8, fb: u8, fd: u8, subop_field: u8, mode: u8) -> [Word; 2] {
+    assert!(
+        subop_field < 64,
+        "FPU scalar subop {subop_field} exceeds 6 bits"
+    );
+    assert!(mode < 16, "FPU scalar mode {mode} exceeds 4 bits");
+    [
+        0xd000 | (fpu_register(fa) << 6) | fpu_register(fb),
+        (fpu_register(fd) << 10) | (Word::from(subop_field) << 4) | Word::from(mode),
+    ]
+}
+
+/// Builds a two-word `0xE` AUX instruction:
+/// `word0 = {0xE, X[3:0], Fa[5:0], kind[1:0]}`,
+/// `word1 = {Fd[5:0], subop[5:0], mode[3:0]}`.
+///
+/// Only `kind = 00` is defined; the strict builder rejects the reserved and
+/// not-yet-implemented kinds. `FLD`/`FST` use `mode[1:0] + 1` lanes with
+/// `mode[3:2] == 0`; every other subop requires `mode == 0`. Ranges that would
+/// cross past `F63` are rejected.
+pub fn fpu_aux(kind: FpuAuxKind, x: u8, fa: u8, fd: u8, subop: FpuAuxSubop, mode: u8) -> [Word; 2] {
+    if let Some(reason) = fpu_aux_field_error(kind, fa, fd, subop, mode) {
+        panic!("FPU AUX encoding rejected: {reason}");
+    }
+    fpu_aux_raw(kind, x, fa, fd, subop as u8, mode)
+}
+
+/// Single source of truth for the AUX encoding contract: the implemented kind,
+/// the `FLD`/`FST` mode bits, and their destination/source register range. See
+/// [`fpu_vector_field_error`].
+pub fn fpu_aux_field_error(
+    kind: FpuAuxKind,
+    fa: u8,
+    fd: u8,
+    subop: FpuAuxSubop,
+    mode: u8,
+) -> Option<&'static str> {
+    if kind != FpuAuxKind::IntegerRegister {
+        return Some("FPU AUX kind is not implemented");
+    }
+    let is_memory = matches!(subop, FpuAuxSubop::Fld | FpuAuxSubop::Fst);
+    if is_memory {
+        if mode >= 4 {
+            return Some("FPU FLD/FST mode exceeds 2 bits");
+        }
+        let lanes = usize::from(mode) + 1;
+        let base = if subop == FpuAuxSubop::Fld { fd } else { fa };
+        if usize::from(base) + lanes > 64 {
+            return Some("FPU range crosses past f63");
+        }
+    } else if mode != 0 {
+        return Some("FPU AUX mode must be zero for a non-memory subop");
+    }
+    None
+}
+
+/// Raw AUX builder for reserved or not-yet-defined kinds/subops; fields must
+/// fit the hardware bit widths. No validation: only invalid-encoding tests and
+/// the RTL extractor lock use this.
+pub fn fpu_aux_raw(kind: FpuAuxKind, x: u8, fa: u8, fd: u8, subop: u8, mode: u8) -> [Word; 2] {
+    assert!(x < 16, "FPU AUX X index {x} exceeds 4 bits");
+    assert!(subop < 64, "FPU AUX subop {subop} exceeds 6 bits");
+    assert!(mode < 16, "FPU AUX mode {mode} exceeds 4 bits");
+    [
+        0xe000 | (Word::from(x) << 8) | (fpu_register(fa) << 2) | (kind as Word),
+        (fpu_register(fd) << 10) | (Word::from(subop) << 4) | Word::from(mode),
+    ]
 }
 
 impl TestCondition {
@@ -167,14 +649,6 @@ fn register(value: Register) -> Word {
         "CpuV3 register index {value} is outside r0..r15"
     );
     Word::from(value)
-}
-
-pub fn fpu(op: FpuOp, a: Register, b: Register) -> Word {
-    0xd000 | ((op as Word) << 8) | (register(a) << 4) | register(b)
-}
-
-pub fn fpu_unary(dst: Register, op: FpuUnaryOp) -> Word {
-    fpu(FpuOp::Unary, dst, op as Register)
 }
 
 fn signed4(value: i16) -> Word {
@@ -523,8 +997,219 @@ mod tests {
         assert_eq!(jump_register(5), 0xbe05);
         assert_eq!(jump_and_link_register(5), 0xbfe5);
         assert_eq!(load_immediate16(3, 0xabcd), [0xfabc, 0xa33d]);
-        assert_eq!(fpu(FpuOp::Mul, 3, 4), 0xda34);
-        assert_eq!(fpu_unary(3, FpuUnaryOp::ReciprocalSqrt), 0xde31);
+    }
+
+    /// The design's worked examples must encode to these exact words. They are
+    /// the frozen reference for both the disassembler and the RTL extractor.
+    #[test]
+    fn fpu_v2_design_examples_encode_to_exact_words() {
+        // VADD.3 F20, F4, F8
+        assert_eq!(
+            fpu_vector(4, 8, 20, FpuVectorLength::Vec3, FpuVectorSubop::VAdd, 0),
+            [0xc108, 0x5100]
+        );
+        // VMULS.3 F0, F0, F4
+        assert_eq!(
+            fpu_vector(0, 4, 0, FpuVectorLength::Vec3, FpuVectorSubop::VMulS, 0),
+            [0xc004, 0x0118]
+        );
+        // DOTSTORE.4.S1 F20, F16, F0
+        assert_eq!(
+            fpu_vector(
+                16,
+                0,
+                20,
+                FpuVectorLength::Vec4,
+                FpuVectorSubop::DotStore,
+                0
+            ),
+            [0xc400, 0x5278]
+        );
+        // RSQRT F4, F3
+        assert_eq!(
+            fpu_scalar(4, 3, 4, FpuScalarSubop::Rsqrt, 0),
+            [0xd103, 0x10d0]
+        );
+        // FLD f1, [r2] (kind 00, X = 2, Fa unused)
+        assert_eq!(
+            fpu_aux(FpuAuxKind::IntegerRegister, 2, 0, 1, FpuAuxSubop::Fld, 0),
+            [0xe200, 0x0400]
+        );
+        // FST [r1], f2 (kind 00, X = 1, Fa = 2; Fd is unused)
+        assert_eq!(
+            fpu_aux(FpuAuxKind::IntegerRegister, 1, 2, 0, FpuAuxSubop::Fst, 0),
+            [0xe108, 0x0010]
+        );
+    }
+
+    /// The raw builders must round-trip every field, including reserved and
+    /// not-yet-defined values, so the disassembler and the RTL extractor lock
+    /// can be exercised independently of the strict builder validation.
+    #[test]
+    fn fpu_raw_field_extractors_round_trip_every_field_value() {
+        for len_field in 0..4u8 {
+            for subop_field in 0..32u8 {
+                let mode = 0b101;
+                let [word0, word1] = fpu_vector_raw(37, 5, 61, len_field, subop_field, mode);
+                assert_eq!(FpuOpcode::from_word0(word0), Some(FpuOpcode::Vector));
+                assert_eq!(fpu_fa(word0), 37);
+                assert_eq!(fpu_fb(word0), 5);
+                assert_eq!(fpu_fd(word1), 61);
+                assert_eq!(fpu_vector_len_field(word1), len_field);
+                assert_eq!(fpu_vector_subop_field(word1), subop_field);
+                assert_eq!(fpu_vector_mode(word1), mode);
+            }
+        }
+        for subop_field in 0..64u8 {
+            let [word0, word1] = fpu_scalar_raw(12, 51, 63, subop_field, 0xd);
+            assert_eq!(FpuOpcode::from_word0(word0), Some(FpuOpcode::Scalar));
+            assert_eq!(fpu_fa(word0), 12);
+            assert_eq!(fpu_fb(word0), 51);
+            assert_eq!(fpu_fd(word1), 63);
+            assert_eq!(fpu_scalar_subop_field(word1), subop_field);
+            assert_eq!(fpu_mode(word1), 0xd);
+        }
+        for kind in [
+            FpuAuxKind::IntegerRegister,
+            FpuAuxKind::ConstantIndex,
+            FpuAuxKind::Selector,
+            FpuAuxKind::Reserved,
+        ] {
+            for subop in 0..64u8 {
+                let [word0, word1] = fpu_aux_raw(kind, 9, 42, 17, subop, 0b0011);
+                assert_eq!(FpuOpcode::from_word0(word0), Some(FpuOpcode::Aux));
+                assert_eq!(fpu_aux_x(word0), 9);
+                assert_eq!(fpu_aux_fa(word0), 42);
+                assert_eq!(FpuAuxKind::from_field((word0 & 3) as u8), kind);
+                assert_eq!(fpu_fd(word1), 17);
+                assert_eq!(fpu_scalar_subop_field(word1), subop);
+                assert_eq!(fpu_mode(word1), 0b0011);
+            }
+        }
+    }
+
+    /// The strict builders must accept every defined in-range encoding and
+    /// reject the reserved mode, kind, and range-overflow cases.
+    #[test]
+    fn fpu_strict_builders_accept_defined_encodings() {
+        for len in [
+            FpuVectorLength::Vec2,
+            FpuVectorLength::Vec3,
+            FpuVectorLength::Vec4,
+        ] {
+            let last = 64 - len.lanes();
+            for subop in 0..=0x0fu8 {
+                let subop = FpuVectorSubop::from_field(subop).unwrap();
+                let mode = if subop.uses_stride_mode() { 0b01 } else { 0 };
+                let _ = fpu_vector(0, 0, last, len, subop, mode);
+            }
+        }
+        for subop in 0..=0x0fu8 {
+            let subop = FpuScalarSubop::from_field(subop).unwrap();
+            let mode = if subop == FpuScalarSubop::SinCos {
+                0b10
+            } else {
+                0
+            };
+            let _ = fpu_scalar(0, 0, 63, subop, mode);
+        }
+        for subop in 0..=0x07u8 {
+            let subop = FpuAuxSubop::from_field(subop).unwrap();
+            let mode = if matches!(subop, FpuAuxSubop::Fld | FpuAuxSubop::Fst) {
+                3
+            } else {
+                0
+            };
+            let _ = fpu_aux(FpuAuxKind::IntegerRegister, 0, 0, 0, subop, mode);
+        }
+    }
+
+    #[test]
+    #[should_panic(expected = "must be zero")]
+    fn fpu_vector_rejects_a_mode_on_a_non_dot_subop() {
+        let _ = fpu_vector(0, 0, 0, FpuVectorLength::Vec2, FpuVectorSubop::VAdd, 1);
+    }
+
+    #[test]
+    #[should_panic(expected = "not a defined stride")]
+    fn fpu_vector_rejects_a_reserved_dot_stride() {
+        let _ = fpu_vector(0, 0, 0, FpuVectorLength::Vec2, FpuVectorSubop::Dot, 0b11);
+    }
+
+    #[test]
+    #[should_panic(expected = "not a defined stride")]
+    fn fpu_vector_rejects_a_dot_mode_bit_two() {
+        let _ = fpu_vector(
+            0,
+            0,
+            0,
+            FpuVectorLength::Vec2,
+            FpuVectorSubop::DotAdd,
+            0b100,
+        );
+    }
+
+    #[test]
+    #[should_panic(expected = "crosses past f63")]
+    fn fpu_vector_rejects_a_destination_range_overflow() {
+        let _ = fpu_vector(0, 0, 62, FpuVectorLength::Vec3, FpuVectorSubop::VAdd, 0);
+    }
+
+    #[test]
+    #[should_panic(expected = "Fb range ends")]
+    fn fpu_vector_rejects_a_strided_second_source_overflow() {
+        let _ = fpu_vector(
+            0,
+            60,
+            0,
+            FpuVectorLength::Vec4,
+            FpuVectorSubop::Dot,
+            FpuDotStride::Stride4 as u8,
+        );
+    }
+
+    #[test]
+    #[should_panic(expected = "must be zero")]
+    fn fpu_scalar_rejects_a_mode_on_a_non_sincos_subop() {
+        let _ = fpu_scalar(0, 0, 0, FpuScalarSubop::Add, 1);
+    }
+
+    #[test]
+    #[should_panic(expected = "mode[3:2]")]
+    fn fpu_scalar_rejects_a_sincos_mode_bit() {
+        let _ = fpu_scalar(0, 0, 0, FpuScalarSubop::SinCos, 0b0100);
+    }
+
+    #[test]
+    #[should_panic(expected = "dual output")]
+    fn fpu_scalar_rejects_a_sincos_destination_overflow() {
+        let _ = fpu_scalar(0, 0, 63, FpuScalarSubop::SinCos, 0);
+    }
+
+    #[test]
+    #[should_panic(expected = "not implemented")]
+    fn fpu_aux_rejects_a_reserved_kind() {
+        let _ = fpu_aux(FpuAuxKind::Reserved, 0, 0, 0, FpuAuxSubop::Fld, 0);
+    }
+
+    #[test]
+    #[should_panic(expected = "crosses past f63")]
+    fn fpu_aux_rejects_a_vector_load_range_overflow() {
+        let _ = fpu_aux(FpuAuxKind::IntegerRegister, 0, 0, 62, FpuAuxSubop::Fld, 3);
+    }
+
+    #[test]
+    fn fpu_reserved_fields_are_rejected() {
+        assert_eq!(FpuVectorLength::from_field(0b11), None);
+        assert_eq!(FpuVectorSubop::from_field(0x10), None);
+        assert_eq!(FpuVectorSubop::from_field(0x1f), None);
+        assert_eq!(FpuScalarSubop::from_field(0x10), None);
+        assert_eq!(FpuScalarSubop::from_field(0x3f), None);
+        assert_eq!(FpuAuxSubop::from_field(0x08), None);
+        assert_eq!(FpuDotStride::from_mode(0b11), None);
+        assert_eq!(FpuSinCosMode::from_mode(0b11), None);
+        assert_eq!(FpuOpcode::from_word0(0xb000), None);
+        assert_eq!(FpuOpcode::from_word0(0xf000), None);
     }
 
     #[test]
@@ -610,7 +1295,15 @@ mod tests {
         assert!(!is_prefix_consumer(device_receive(0, 0, 0)));
         assert!(!is_prefix_consumer(device_send(0, 0, 0)));
         assert!(!is_prefix_consumer(move_register(0, 0)));
-        assert!(!is_prefix_consumer(fpu(FpuOp::Add, 0, 0)));
+        // FPU v2 instructions are two-word fetch barriers and never consume a
+        // PFX12 prefix, exactly like the old FPU.
+        for word in [
+            fpu_vector(0, 0, 0, FpuVectorLength::Vec2, FpuVectorSubop::VAdd, 0)[0],
+            fpu_scalar(0, 0, 0, FpuScalarSubop::Add, 0)[0],
+            fpu_aux(FpuAuxKind::IntegerRegister, 0, 0, 0, FpuAuxSubop::Fld, 0)[0],
+        ] {
+            assert!(!is_prefix_consumer(word), "{word:#06x}");
+        }
     }
 
     /// Replays the whole 16-bit word space to hold the consumer set, the

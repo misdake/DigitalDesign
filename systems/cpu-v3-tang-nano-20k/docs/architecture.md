@@ -122,11 +122,13 @@ Device 0 channel 0 emits the registered one-cycle-delayed whole-I-cache invalida
 UART byte and reports transmitter busy on reads.
 
 Device 1 channel 0 returns the reset-time boot selection. The board-level selection latch powers up
-at `10`, so the boot stage selects the configured S2 display application by default; holding the S1
-button (`01`) selects the configured S1 slider diagnostic, and `11` is ignored. The current project
-selects the FPU framebuffer demo as S2 and the primary diagnostic as S1. Both applications repeat a
-DDHT success frame over the device-0 UART: the S1 diagnostic reports test ID `0x07`, and the S2
-display reports `0x0b` once per published frame.
+at `10`, so the boot stage selects the configured S2 application by default; holding the S1 button
+(`01`) selects the configured S1 slider diagnostic, and `11` is ignored. The current project selects
+the primary diagnostic as S1. The FPU framebuffer demo is parked in `rcc/display-demo.rs` while the
+FPU compiler line is frozen at C0, so the S2 slot boots the non-FPU `rcc/boot-alt.rs` placeholder
+until C1 lowering lands. Every configured application repeats a DDHT success frame over the
+device-0 UART: the S1 diagnostic and the S2 placeholder report test ID `0x07`, and the parked
+display demo will report `0x0b` once per published frame when it returns.
 
 Device 2 exposes the boot-DMA command and status register bank. It accepts a 24-bit absolute Flash
 byte address, a 22-bit physical SDRAM word destination, and file and memory byte sizes. Writing one

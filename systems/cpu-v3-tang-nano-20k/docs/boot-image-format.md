@@ -126,8 +126,12 @@ The fitted system does not maintain this detailed manifest by hand. Its
 ```text
 format 1
 s1 rcc/boot-demo.rs
-s2 rcc/display-demo.rs
+s2 rcc/boot-alt.rs
 ```
+
+While the FPU compiler line is frozen at C0 the S2 slot names the non-FPU
+`boot-alt.rs` placeholder; `rcc/display-demo.rs` is parked as the FPU demo and
+returns to S2 after C1-C3 lowering and its Q16.16 source migration.
 
 The build compiles those sources into derived S1/default and S2 slots and emits
 `boot.cpu-v3-manifest` beside the section binaries. That generated manifest is

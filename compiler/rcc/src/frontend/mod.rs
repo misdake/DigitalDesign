@@ -1288,9 +1288,9 @@ enum Ty {
     Tuple(Vec<Ty>),
     /// a C-style enum: one word holding the variant's discriminant (spec §9d)
     Enum(String),
-    /// CpuV3 FPU types: one F register per value. fix16 is a vector whose
-    /// only meaningful lane is x; vec2/vec3 carry meaning in the first N
-    /// lanes and keep the upper lanes zero.
+    /// CpuV3 FPU v2 source types. `fix16` occupies one scalar F register;
+    /// vec2/vec3/vec4 occupy consecutive ranges of 2/3/4 registers once C2
+    /// implements range allocation. C0 rejects their operations before IR.
     Fix16,
     Vec2,
     Vec3,
@@ -1304,16 +1304,6 @@ impl Ty {
     }
     fn is_fpu(&self) -> bool {
         matches!(self, Ty::Fix16 | Ty::Vec2 | Ty::Vec3 | Ty::Vec4)
-    }
-    /// number of meaningful lanes (fix16 counts as a 1-lane vector)
-    fn fpu_lanes(&self) -> usize {
-        match self {
-            Ty::Fix16 => 1,
-            Ty::Vec2 => 2,
-            Ty::Vec3 => 3,
-            Ty::Vec4 => 4,
-            _ => 0,
-        }
     }
     fn display(&self) -> String {
         match self {
@@ -3549,7 +3539,7 @@ fn expr(l: &mut FnLower, e: &Expr) -> Result<Val, syn::Error> {
             SUnOp::Neg(_) => {
                 let (v, ty) = expr(l, &u.expr)?.reg(l, &u.expr, "negation")?;
                 if ty.is_fpu() {
-                    return Ok(Val::V(l.b.funary(crate::FUnOp::Neg, v), ty));
+                    return Err(fpu_lowering_unavailable(&u.op, "unary `-` on an FPU value"));
                 }
                 if ty == Ty::U16 {
                     return Err(err(&u.op, "unary `-` is only allowed on i16"));
@@ -3602,32 +3592,7 @@ fn expr(l: &mut FnLower, e: &Expr) -> Result<Val, syn::Error> {
                         }
                     };
                     if lt.is_fpu() || rt.is_fpu() {
-                        // per-lane FADD/FSUB on matching FPU types
-                        let fop = match b.op {
-                            Add(_) => crate::FBinOp::Add,
-                            Sub(_) => crate::FBinOp::Sub,
-                            _ => {
-                                return Err(err(
-                                    &b.op,
-                                    "bitwise operators do not apply to fix16/vecN",
-                                ))
-                            }
-                        };
-                        if lt != rt {
-                            return Err(err(
-                                e,
-                                format!(
-                                    "type mismatch: {} vs {} (no implicit conversions)",
-                                    lt.display(),
-                                    rt.display()
-                                ),
-                            ));
-                        }
-                        let rhs = match rhs {
-                            Some(v) => v,
-                            None => l.b.load_imm(literal_rhs.unwrap().0),
-                        };
-                        return Ok(Val::V(l.b.fbin(fop, lhs, rhs), lt));
+                        return Err(fpu_lowering_unavailable(e, "FPU arithmetic"));
                     }
                     let ty = unify_int(lt.clone(), rt.clone()).ok_or_else(|| {
                         err(
@@ -3680,33 +3645,7 @@ fn expr(l: &mut FnLower, e: &Expr) -> Result<Val, syn::Error> {
                         }
                     };
                     if lt.is_fpu() || rt.is_fpu() {
-                        // same-type: per-lane FMUL; vecN scaled by fix16: an
-                        // explicit ACC splat of the scalar followed by FMUL
-                        // (the ISA has no scalar-by-vector instruction)
-                        let rhs = match rhs {
-                            Some(v) => v,
-                            None => l.b.load_imm(literal_rhs.unwrap().0),
-                        };
-                        if lt == rt {
-                            return Ok(Val::V(l.b.fbin(crate::FBinOp::Mul, lhs, rhs), lt));
-                        }
-                        let (vector, scalar, ty) = if lt != Ty::Fix16 && rt == Ty::Fix16 {
-                            (lhs, rhs, lt)
-                        } else if lt == Ty::Fix16 && rt != Ty::Fix16 && rt.is_fpu() {
-                            (rhs, lhs, rt)
-                        } else {
-                            return Err(err(
-                                e,
-                                format!(
-                                    "cannot multiply {} by {} (want vecN * fix16 or same types)",
-                                    lt.display(),
-                                    rt.display()
-                                ),
-                            ));
-                        };
-                        l.b.facc_load(scalar, 0);
-                        let splat = l.b.facc_store(0b1111);
-                        return Ok(Val::V(l.b.fbin(crate::FBinOp::Mul, vector, splat), ty));
+                        return Err(fpu_lowering_unavailable(e, "FPU multiplication"));
                     }
                     // integers: hardware MUL on CpuV3, library call on CpuV2
                     let ty = unify_int(lt.clone(), rt.clone()).ok_or_else(|| {
@@ -4258,32 +4197,10 @@ fn compare(
     rt: Ty,
     swapped: bool,
 ) -> Result<BoolExpr, syn::Error> {
-    // fix16 comparisons use FCMP (signed lane-x ordering); vecN values have
-    // no per-lane compare in this version
-    if lt == Ty::Fix16 && rt == Ty::Fix16 {
-        let CmpRhs::Reg(rhs) = rhs else {
-            return Err(err(e, "fix16 comparisons do not take an immediate operand"));
-        };
-        let mut cond = compare_cond(&op, e)?;
-        if swapped {
-            cond = swapped_cond(cond);
-        }
-        return Ok(BoolExpr::Cmp(Cmp {
-            lhs,
-            rhs: CmpRhs::Reg(rhs),
-            cond,
-            signed: true,
-        }));
-    }
+    // fix16 comparisons used the retired FCMP path; FPU v2 lowering (scalar
+    // CMP + the pending test) arrives with C1.
     if lt.is_fpu() || rt.is_fpu() {
-        return Err(err(
-            e,
-            format!(
-                "cannot compare {} with {} (only fix16 comparisons are supported)",
-                lt.display(),
-                rt.display()
-            ),
-        ));
+        return Err(fpu_lowering_unavailable(e, "FPU comparison"));
     }
     // a C-style enum compares by discriminant, equality only (spec §9d)
     if let (Ty::Enum(_), Ty::Enum(_)) = (&lt, &rt) {
@@ -4665,44 +4582,14 @@ fn call_expr(l: &mut FnLower, call: &syn::ExprCall) -> Result<Val, syn::Error> {
         l.dead = true;
         return Ok(Val::Never);
     }
-    if name.as_str() == "fdot" {
-        // atomic ACC sequence: FDOT4ACC immediately followed by FACCSTORE
-        // lane 0, so ACC is zero before and after (the FPU ABI invariant)
-        if args.len() != 2 {
-            return Err(err(call, "fdot(a, b) takes 2 arguments"));
-        }
-        let (a, at) = &args[0];
-        let (b, bt) = &args[1];
-        if !at.is_fpu() || at != bt {
-            return Err(err(
-                call,
-                format!(
-                    "fdot needs two values of the same FPU type, got {} and {}",
-                    at.display(),
-                    bt.display()
-                ),
-            ));
-        }
-        l.b.fdot4acc(*a, *b);
-        return Ok(Val::V(l.b.facc_store(1), Ty::Fix16));
+    if matches!(name.as_str(), "fdot" | "frcp" | "frsqrt" | "fsincos") {
+        return Err(fpu_lowering_unavailable(&p, name));
     }
-    if matches!(name.as_str(), "frcp" | "frsqrt" | "fsincos") {
-        if args.len() != 1 {
-            return Err(err(call, format!("{name}(x) takes 1 argument")));
-        }
-        let (v, from) = &args[0];
-        if *from != Ty::Fix16 {
-            return Err(err(
-                &call.args[0],
-                format!("{name} takes a fix16, got {}", from.display()),
-            ));
-        }
-        let (op, ty) = match name.as_str() {
-            "frcp" => (crate::FUnOp::Rcp, Ty::Fix16),
-            "frsqrt" => (crate::FUnOp::Rsqrt, Ty::Fix16),
-            _ => (crate::FUnOp::SinCos, Ty::Vec2),
-        };
-        return Ok(Val::V(l.b.funary(op, *v), ty));
+    if matches!(
+        name.as_str(),
+        "v3_length2_shift" | "v3_length2_scaled" | "v3_normalize_safe" | "v3_distance2_gt"
+    ) {
+        return Err(fpu_lowering_unavailable(&p, name));
     }
     if matches!(name.as_str(), "cnt1" | "log2") {
         if args.len() != 1 {
@@ -4832,198 +4719,52 @@ fn constant_below(
 }
 
 // ---------------------------------------------------------------------------
-// FPU (fix16/vec2/vec3/vec4) lowering helpers
+// FPU (fix16/vec2/vec3/vec4) operations
 // ---------------------------------------------------------------------------
 
-/// a 4-word aligned 4-word scratch window in the stack frame (8 words are
-/// reserved so the aligned window always fits; alignment is computed at run
-/// time because nothing guarantees sp mod 4 == 0)
-fn aligned_scratch4(l: &mut FnLower) -> VReg {
-    let slot = l.b.alloc_local_slots(8);
-    let base = l.b.addr_of_local(slot);
-    let three = l.b.load_imm(3);
-    let up = l.b.bin(BinOp::Add, base, three);
-    let mask = l.b.load_imm(0xfffc);
-    l.b.bin(BinOp::And, up, mask)
+/// C0 freezes the RCC-visible Q16.16 type/ABI contract (see `dsl_rt::fix16` and
+/// `spec.md`) but does not lower FPU operations. Every FPU expression is
+/// rejected here at the frontend boundary before any IR is built, so the
+/// retired Q8.8 instructions can never be emitted; scalar lowering arrives
+/// with C1, vector/range allocation with C2, and special functions with C3.
+fn fpu_lowering_unavailable(at: &impl syn::spanned::Spanned, what: &str) -> syn::Error {
+    err(
+        at,
+        format!(
+            "{what} needs CpuV3 FPU v2 lowering, which is not implemented in C0 (the Q16.16 \
+             type/ABI contract is frozen; scalar, vector and special-function lowering arrive \
+             with C1-C3)"
+        ),
+    )
 }
 
-/// extract lane `lane` as a fix16 through the frame scratch (FEXPORT4 +
-/// LOAD + FLOAD); documented as expensive compared to the free `.x()`
-fn fpu_lane(l: &mut FnLower, v: VReg, lane: i16) -> VReg {
-    let addr = aligned_scratch4(l);
-    l.b.fexport4(v, addr);
-    let word = l.b.load_mem(addr, lane);
-    l.b.fload(word)
-}
-
-/// fix16::/vec2::/vec3::/vec4:: associated functions
+/// fix16::/vec2::/vec3::/vec4:: associated functions. C0 rejects them all,
+/// including the documented `from_int`/`to_int`/`from_words`/`lo_bits` and the
+/// prescale helpers, so no source method is silently unrecognized.
 fn fpu_associated_call(
-    l: &mut FnLower,
+    _l: &mut FnLower,
     ty_name: &str,
     method: &str,
     call: &syn::ExprCall,
 ) -> Result<Val, syn::Error> {
-    let ty = match ty_name {
-        "fix16" => Ty::Fix16,
-        "vec2" => Ty::Vec2,
-        "vec3" => Ty::Vec3,
-        _ => Ty::Vec4,
-    };
-    match (ty_name, method) {
-        ("fix16", "from_bits") => {
-            let (v, from) = exactly_args(l, &call.args, call, 1, "fix16::from_bits")?[0]
-                .clone()
-                .reg(l, &call.args[0], "fix16::from_bits")?;
-            let (v, _) = coerce(l, v, &from, &Ty::U16, &call.args[0])?;
-            Ok(Val::V(l.b.fload(v), Ty::Fix16))
-        }
-        ("fix16", "from_int") => {
-            let (v, from) = exactly_args(l, &call.args, call, 1, "fix16::from_int")?[0]
-                .clone()
-                .reg(l, &call.args[0], "fix16::from_int")?;
-            let (v, _) = coerce(l, v, &from, &Ty::I16, &call.args[0])?;
-            let shifted = l.b.shift(ShiftOp::Lsl, v, 8);
-            Ok(Val::V(l.b.fload(shifted), Ty::Fix16))
-        }
-        (_, "zero") => {
-            if !call.args.is_empty() {
-                return Err(err(call, format!("{ty_name}::zero() takes no arguments")));
-            }
-            Ok(Val::V(l.b.fzero(), ty))
-        }
-        ("vec2" | "vec3" | "vec4", "new") => {
-            let lanes = ty.fpu_lanes();
-            if call.args.len() != lanes {
-                return Err(err(
-                    call,
-                    format!(
-                        "{ty_name}::new takes {lanes} fix16 arguments, got {}",
-                        call.args.len()
-                    ),
-                ));
-            }
-            let addr = aligned_scratch4(l);
-            for i in 0..4usize {
-                let word = if i < lanes {
-                    let (v, from) =
-                        expr(l, &call.args[i])?.reg(l, &call.args[i], "vec constructor lane")?;
-                    let (v, _) = coerce(l, v, &from, &Ty::Fix16, &call.args[i])?;
-                    l.b.fstore(v)
-                } else {
-                    // upper lanes carry no meaning and stay zero
-                    l.b.load_imm(0)
-                };
-                l.b.store_mem(addr, i as i16, word);
-            }
-            Ok(Val::V(l.b.fimport4(addr), ty))
-        }
-        ("vec4", "import") => {
-            let (v, from) = exactly_args(l, &call.args, call, 1, "vec4::import")?[0]
-                .clone()
-                .reg(l, &call.args[0], "vec4::import")?;
-            if from != Ty::Ptr {
-                return Err(err(
-                    &call.args[0],
-                    format!("vec4::import takes a Ptr, got {}", from.display()),
-                ));
-            }
-            // hardware faults when the address is not 4-aligned
-            Ok(Val::V(l.b.fimport4(v), Ty::Vec4))
-        }
-        ("vec4", "export") => {
-            if call.args.len() != 2 {
-                return Err(err(call, "vec4::export(v, ptr) takes 2 arguments"));
-            }
-            let (v, from) = expr(l, &call.args[0])?.reg(l, &call.args[0], "vec4::export")?;
-            let (v, _) = coerce(l, v, &from, &Ty::Vec4, &call.args[0])?;
-            let (p, from) = expr(l, &call.args[1])?.reg(l, &call.args[1], "vec4::export")?;
-            if from != Ty::Ptr {
-                return Err(err(
-                    &call.args[1],
-                    format!("vec4::export takes a Ptr, got {}", from.display()),
-                ));
-            }
-            l.b.fexport4(v, p);
-            Ok(Val::Unit)
-        }
-        _ => Err(err(
-            &call.func,
-            format!("unknown {ty_name} function `{method}`"),
-        )),
-    }
+    Err(fpu_lowering_unavailable(
+        &call.func,
+        &format!("`{ty_name}::{method}`"),
+    ))
 }
 
-/// methods on fix16/vec2/vec3/vec4 values (lane access, bit bridge, unary ops)
+/// methods on fix16/vec2/vec3/vec4 values (lane access, raw halves, unary
+/// operations). C0 rejects them all.
 fn fpu_method(
-    l: &mut FnLower,
-    base: VReg,
+    _l: &mut FnLower,
+    _base: VReg,
     base_ty: &Ty,
     m: &syn::ExprMethodCall,
 ) -> Result<Val, syn::Error> {
-    let method = m.method.to_string();
-    match method.as_str() {
-        "x" | "y" | "z" | "w" => {
-            if !m.args.is_empty() {
-                return Err(err(&m.method, format!("{method}() takes no arguments")));
-            }
-            let lane = match method.as_str() {
-                "x" => 0,
-                "y" => 1,
-                "z" => 2,
-                _ => 3,
-            };
-            if lane >= base_ty.fpu_lanes() {
-                return Err(err(
-                    &m.method,
-                    format!("{} has no lane {method}", base_ty.display()),
-                ));
-            }
-            // lane x is a free retype; the others go through the frame scratch
-            let v = if lane == 0 {
-                base
-            } else {
-                fpu_lane(l, base, lane as i16)
-            };
-            Ok(Val::V(v, Ty::Fix16))
-        }
-        "to_bits" => {
-            if !m.args.is_empty() || *base_ty != Ty::Fix16 {
-                return Err(err(
-                    &m.method,
-                    "to_bits() is a fix16 method without arguments",
-                ));
-            }
-            Ok(Val::V(l.b.fstore(base), Ty::U16))
-        }
-        "to_int" => {
-            if !m.args.is_empty() || *base_ty != Ty::Fix16 {
-                return Err(err(
-                    &m.method,
-                    "to_int() is a fix16 method without arguments",
-                ));
-            }
-            let bits = l.b.fstore(base);
-            Ok(Val::V(l.b.shift(ShiftOp::Asr, bits, 8), Ty::I16))
-        }
-        "abs" | "floor" | "ceil" | "round" | "sat01" | "sign" => {
-            if !m.args.is_empty() {
-                return Err(err(&m.method, format!("{method}() takes no arguments")));
-            }
-            let op = match method.as_str() {
-                "abs" => crate::FUnOp::Abs,
-                "floor" => crate::FUnOp::Floor,
-                "ceil" => crate::FUnOp::Ceil,
-                "round" => crate::FUnOp::Round,
-                "sat01" => crate::FUnOp::Sat01,
-                _ => crate::FUnOp::Sign,
-            };
-            Ok(Val::V(l.b.funary(op, base), base_ty.clone()))
-        }
-        _ => Err(err(
-            &m.method,
-            format!("unknown {} method `{method}`", base_ty.display()),
-        )),
-    }
+    Err(fpu_lowering_unavailable(
+        &m.method,
+        &format!("`{}.{}()`", base_ty.display(), m.method),
+    ))
 }
 
 /// Buf methods (spec §10): read/write/as_ptr/as_array/len
@@ -5553,7 +5294,7 @@ mod tests {
 
     #[test]
     fn fix16_rejects_int_operands_without_conversion() {
-        let src = "fn main() { let a = fix16::zero(); let b: u16 = 1; let c = a + b; halt(c.to_bits()); }";
+        let src = "fn main() { let a = fix16::zero(); let b: u16 = 1; let c = a + b; halt(c.lo_bits()); }";
         assert!(parse_source_with(src, 0).is_err());
     }
 
@@ -5563,10 +5304,31 @@ mod tests {
         assert!(parse_source_with(src, 0).is_err());
     }
 
+    /// C0 freezes the Q16.16 contract but does not lower it: every FPU
+    /// operation must fail with the explicit C0 boundary message, including
+    /// the documented-but-new `from_words`/`lo_bits`/`hi_bits`/`trunc` and the
+    /// prescale helpers, so nothing is silently unrecognized.
     #[test]
-    fn fix16_comparison_is_allowed() {
-        let src = "fn main() { let a = fix16::zero(); if a == a { halt(1); } }";
-        assert!(parse_source_with(src, 0).is_ok());
+    fn every_fpu_operation_is_rejected_with_the_c0_boundary() {
+        for src in [
+            "fn main() { let a = fix16::from_int(1); halt(0); }",
+            "fn main() { let a = fix16::from_words(1, 0); halt(0); }",
+            "fn main() { let a = fix16::zero(); let b = a + a; halt(0); }",
+            "fn main() { let a = fix16::zero(); if a == a { halt(1); } }",
+            "fn main() { let a = fix16::zero().lo_bits(); halt(a); }",
+            "fn main() { let a = fix16::zero().trunc(); halt(0); }",
+            "fn main() { let a = vec4::new(fix16::zero(), fix16::zero(), fix16::zero(), fix16::zero()); halt(0); }",
+            "fn main() { let a = fdot(vec4::zero(), vec4::zero()); halt(0); }",
+            "fn main() { let a = v3_normalize_safe(vec3::zero()); halt(0); }",
+        ] {
+            let error = parse_source_with(src, 0)
+                .err()
+                .expect("an FPU program must be rejected at the frontend");
+            assert!(
+                error.to_string().contains("FPU v2 lowering"),
+                "unexpected error for `{src}`: {error}"
+            );
+        }
     }
 
     #[test]

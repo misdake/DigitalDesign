@@ -6,16 +6,12 @@
 //! (device 0), with the flash image backing the DMA model.
 
 use cpu_v3::rcc_backend::{self, CompilerOptions, CpuV3Program};
-use cpu_v3::{decode, CpuV3Sim, FpuOp, FpuUnaryOp, Instruction};
+use cpu_v3::{decode, CpuV3Sim, Instruction};
 use cpu_v3_tang_nano_20k::boot::{
     BootDmaDevice, BootErrorReport, BootSelectDevice, BootTarget, SystemControlDevice,
-    CACHE_MAINTENANCE_STATUS, D_CLEAN_ALL, S1_APPLICATION_LAYOUT, S2_APPLICATION_LAYOUT,
-    SYSTEM_CONTROL_DEVICE,
+    S1_APPLICATION_LAYOUT, S2_APPLICATION_LAYOUT,
 };
-use cpu_v3_tang_nano_20k::{
-    DisplayDevice, DISPLAY_CONTROL, DISPLAY_DEVICE, DISPLAY_FRAMEBUFFER_HIGH,
-    DISPLAY_FRAMEBUFFER_LOW,
-};
+use cpu_v3_tang_nano_20k::{DisplayDevice, DISPLAY_DEVICE};
 
 fn compile_cpu_v3(file: &str, opts: &CompilerOptions) -> CpuV3Program {
     let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
@@ -38,6 +34,26 @@ fn compile_cpu_v3(file: &str, opts: &CompilerOptions) -> CpuV3Program {
     )
     .expect("rcc compile failed");
     rcc_backend::compile(program, opts, "main")
+}
+
+/// Compiles an `rcc/` source for the CPU V3 backend, returning the frontend or
+/// backend error instead of panicking.
+fn compile_cpu_v3_error(file: &str, opts: &CompilerOptions) -> rcc::frontend::CompileError {
+    let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("rcc")
+        .join(file);
+    let src = std::fs::read_to_string(&path).expect("read rcc source");
+    let source_dir = path.parent().expect("rcc source directory");
+    rcc::frontend::compile_program_named(&path.display().to_string(), &src, opts, &mut |name| {
+        let path = if name == "boot_selection" {
+            std::path::PathBuf::from(env!("OUT_DIR")).join("boot-selection.generated.rs")
+        } else {
+            source_dir.join(format!("{name}.rs"))
+        };
+        std::fs::read_to_string(path).map_err(|error| format!("read module `{name}`: {error}"))
+    })
+    .err()
+    .expect("source must fail to compile")
 }
 
 fn assert_canonical_cache_handoff(stage: &str, words: &[u16]) {
@@ -71,9 +87,14 @@ fn assert_canonical_cache_handoff(stage: &str, words: &[u16]) {
     );
 }
 
+/// C0 parks the physical-board FPU display demo in `rcc/display-demo.rs` until
+/// FPU lowering lands in C1-C3. The configured S2 slot therefore boots the
+/// existing non-FPU `rcc/boot-alt.rs`, and the parked demo is deliberately not
+/// compiled; this keeps the boot assets buildable without pretending the FPU
+/// display path is still exercised.
 #[test]
-fn display_demo_exercises_fpu_rounding_and_cpu_framebuffer_stores() {
-    let program = compile_cpu_v3("display-demo.rs", &CompilerOptions::default());
+fn c0_boots_a_non_fpu_placeholder_in_the_parked_display_slot() {
+    let program = compile_cpu_v3("boot-alt.rs", &CompilerOptions::default());
     let instructions = program
         .words
         .iter()
@@ -81,129 +102,28 @@ fn display_demo_exercises_fpu_rounding_and_cpu_framebuffer_stores() {
         .map(decode)
         .collect::<Vec<_>>();
 
-    for (description, present) in [
-        (
-            "FSINCOS",
-            instructions.iter().any(|instruction| {
-                matches!(
-                    instruction,
-                    Instruction::FpuUnary {
-                        op: FpuUnaryOp::SinCos,
-                        ..
-                    }
-                )
-            }),
-        ),
-        (
-            "FROUND",
-            instructions.iter().any(|instruction| {
-                matches!(
-                    instruction,
-                    Instruction::FpuUnary {
-                        op: FpuUnaryOp::Round,
-                        ..
-                    }
-                )
-            }),
-        ),
-        (
-            "FMUL",
-            instructions
-                .iter()
-                .any(|instruction| matches!(instruction, Instruction::Fpu { op: FpuOp::Mul, .. })),
-        ),
-        (
-            "FSTORE integer bridge",
-            instructions.iter().any(|instruction| {
-                matches!(
-                    instruction,
-                    Instruction::Fpu {
-                        op: FpuOp::Store,
-                        ..
-                    }
-                )
-            }),
-        ),
-        (
-            "CPU framebuffer store",
-            instructions
-                .iter()
-                .any(|instruction| matches!(instruction, Instruction::Store { .. })),
-        ),
-    ] {
-        assert!(present, "display demo must contain {description}");
-    }
+    assert!(
+        !instructions
+            .iter()
+            .any(|instruction| matches!(instruction, Instruction::FpuWord0 { .. })),
+        "the C0 S2 placeholder must not emit FPU instructions"
+    );
+    assert!(
+        instructions
+            .iter()
+            .any(|instruction| matches!(instruction, Instruction::DeviceSend { .. })),
+        "the placeholder must still drive the board"
+    );
 }
 
+/// The parked display demo is an FPU program, so C0 must reject it with the
+/// explicit frontend boundary rather than emit a stale single-word encoding.
 #[test]
-fn display_swap_waits_for_dcache_clean_before_publishing_the_back_buffer() {
-    let program = compile_cpu_v3("display-demo.rs", &CompilerOptions::default());
-    let publish = program
-        .debug
-        .functions
-        .iter()
-        .find(|function| function.name == "select_next_framebuffer")
-        .expect("display demo must retain its framebuffer publish function");
-    let start = publish.addr.0 - usize::from(program.code_base);
-    let end = publish.addr.1 - usize::from(program.code_base);
-    let instructions = program.words[start..end]
-        .iter()
-        .copied()
-        .map(decode)
-        .collect::<Vec<_>>();
-
-    let clean = instructions
-        .iter()
-        .position(|instruction| {
-            matches!(
-                instruction,
-                Instruction::DeviceSend {
-                    device: SYSTEM_CONTROL_DEVICE,
-                    channel: D_CLEAN_ALL,
-                    ..
-                }
-            )
-        })
-        .expect("framebuffer publish must start D_CLEAN_ALL");
+fn the_parked_fpu_display_demo_is_rejected_until_c1() {
+    let display = compile_cpu_v3_error("display-demo.rs", &CompilerOptions::default());
     assert!(
-        matches!(
-            instructions.get(clean + 1),
-            Some(Instruction::DeviceReceive {
-                device: SYSTEM_CONTROL_DEVICE,
-                channel: CACHE_MAINTENANCE_STATUS,
-                ..
-            })
-        ),
-        "D_CLEAN_ALL must immediately wait for its final maintenance status"
-    );
-
-    let display_channels = instructions
-        .iter()
-        .enumerate()
-        .filter_map(|(index, instruction)| match instruction {
-            Instruction::DeviceSend {
-                device: DISPLAY_DEVICE,
-                channel,
-                ..
-            } => Some((index, *channel)),
-            _ => None,
-        })
-        .collect::<Vec<_>>();
-    assert_eq!(
-        display_channels
-            .iter()
-            .map(|(_, channel)| *channel)
-            .collect::<Vec<_>>(),
-        [
-            DISPLAY_FRAMEBUFFER_LOW,
-            DISPLAY_FRAMEBUFFER_HIGH,
-            DISPLAY_CONTROL
-        ],
-        "publish must stage low/high addresses and then request NEXT_SWAP"
-    );
-    assert!(
-        display_channels[0].0 > clean + 1,
-        "no framebuffer register may be published before clean completes"
+        display.to_string().contains("FPU v2 lowering"),
+        "unexpected display-demo error: {display}"
     );
 }
 
@@ -317,8 +237,11 @@ fn button_01_boots_the_primary_application_from_flash() {
     assert!((0xdfc0..=0xe000).contains(&sp), "sp = {sp:#06x}");
 }
 
+/// The default S2 boot now runs the C0 non-FPU placeholder (`rcc/boot-alt.rs`)
+/// rather than the parked FPU display demo; the demo returns to this slot at
+/// C1. The placeholder reports the boot DDHT 0x07 frame like the S1 demo.
 #[test]
-fn button_10_boots_the_fpu_display_application_from_flash() {
+fn button_10_boots_the_configured_placeholder_application_from_flash() {
     let (flash, stage0) = boot_setup();
     let machine = run_boot(flash, &stage0, 0b10, 500_000);
 
@@ -326,14 +249,11 @@ fn button_10_boots_the_fpu_display_application_from_flash() {
         machine.code_segment(),
         S2_APPLICATION_LAYOUT.entry.code_segment
     );
-    // The display application transiently selects its framebuffer segment
-    // (0x20, `FB_A_SEGMENT` in `rcc/display-demo.rs`) around each SDRAM store
-    // and restores data segment 0 afterward, so a bounded run may end in
-    // either state. It must never still be in a boot/cache segment.
-    let data_segment = machine.data_segment();
-    assert!(
-        data_segment == S2_APPLICATION_LAYOUT.entry.data_segment || data_segment == 0x20,
-        "unexpected S2 data segment {data_segment:#06x}"
+    // The placeholder keeps data segment 0; it never selects a framebuffer
+    // segment the way the parked display demo does.
+    assert_eq!(
+        machine.data_segment(),
+        S2_APPLICATION_LAYOUT.entry.data_segment
     );
     assert_eq!(
         machine.physical_memory(S1_APPLICATION_LAYOUT.destination()),
@@ -347,15 +267,16 @@ fn button_10_boots_the_fpu_display_application_from_flash() {
     let sysctl = machine.device::<SystemControlDevice>(0).unwrap();
     assert_eq!(sysctl.icache_invalidations, 1);
     assert_eq!(sysctl.dcache_invalidations, 1);
-    // The display application reports its own DDHT 0x0b success frame as soon
-    // as it starts, so the default S2 boot is observable over UART.
-    let frame = ddht_frame_with_test_id(0x0b);
+    // `boot-alt.rs` repeats the boot DDHT 0x07 frame and starts on the odd LED
+    // pattern, so the S2 boot is observable over UART and LEDs.
+    let frame = ddht_frame_with_test_id(0x07);
     assert!(
         sysctl.uart.len() >= frame.len(),
-        "expected a display DDHT frame, got {:02x?}",
+        "expected a placeholder DDHT frame, got {:02x?}",
         sysctl.uart
     );
     assert_eq!(sysctl.uart[..frame.len()], frame);
+    assert_eq!(sysctl.led, Some(0b01_0101));
 }
 
 #[test]

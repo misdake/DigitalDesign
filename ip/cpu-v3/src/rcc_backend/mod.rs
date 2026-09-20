@@ -10,7 +10,7 @@ mod options;
 pub use options::CompilerOptions;
 
 use crate as cpu_v3;
-use crate::{AluOp, FpuOp, FpuUnaryOp, ImmediateOp, SpecialRegister, TestCondition, Word};
+use crate::{AluOp, ImmediateOp, SpecialRegister, TestCondition, Word};
 use crate::{CACHE_MAINTENANCE_DEVICE, D_INVALIDATE_ALL, ICACHE_INVALIDATE_ALL_DELAYED};
 use rcc::*;
 use std::collections::{HashMap, HashSet};
@@ -18,8 +18,22 @@ use std::collections::{HashMap, HashSet};
 const REG_TMP: u8 = 12;
 const REG_SP: u8 = 13;
 const REG_LINK: u8 = 14;
-/// reserved FPU register for breaking parallel-move cycles (never allocated)
-const FPU_SCRATCH: u8 = 15;
+/// Reserved FPU register for breaking parallel-move cycles (never allocated).
+/// The FPU v2 convention reserves `F63` as the parallel-move scratch.
+const FPU_SCRATCH: u8 = 63;
+
+/// FPU v2 argument registers: `F4..F27`, i.e. six `vec4` values placed
+/// compactly after the `F0..F3` return area (design `fpu-design-v2` todo C0).
+const FPU_ARGUMENT_REGISTERS: &[u8] = &[
+    4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27,
+];
+
+/// FPU v2 ordinary allocation area: `F28..F62`. `F0..F3` are reserved for
+/// returns, `F4..F27` for arguments, and `F63` for parallel-move cycles.
+const FPU_ALLOCATABLE_REGISTERS: &[u8] = &[
+    28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 43, 44, 45, 46, 47, 48, 49, 50, 51,
+    52, 53, 54, 55, 56, 57, 58, 59, 60, 61, 62,
+];
 
 const CPU_V3_REGISTER_CONVENTION: rcc::RegisterConvention = rcc::RegisterConvention {
     return_registers: &[0, 1],
@@ -31,13 +45,15 @@ const CPU_V3_REGISTER_CONVENTION: rcc::RegisterConvention = rcc::RegisterConvent
     stack_register: REG_SP,
     temporary_register: REG_TMP,
     maximum_frame_words: 255,
-    // FPU ABI: f0-f1 returns, f2-f7 arguments, f8-f14 allocatable; all FPU
-    // registers are caller-saved. f15 is reserved to break parallel-move
-    // cycles between FPU registers.
+    // FPU v2 ABI (Q16.16, contiguous scalar ranges): F0..F3 returns, F4..F27
+    // arguments placed compactly, F28..F62 ordinary allocation, F63 the
+    // parallel-move scratch. All FPU registers are caller-saved and ACC is
+    // caller-clobbered. C0 freezes this layout; range-aware allocation for
+    // vec2/vec3/vec4 values lands with C2.
     fpu: Some(rcc::FpuRegisterConvention {
-        return_registers: &[0, 1],
-        argument_registers: &[2, 3, 4, 5, 6, 7],
-        allocatable_registers: &[8, 9, 10, 11, 12, 13, 14],
+        return_registers: &[0, 1, 2, 3],
+        argument_registers: FPU_ARGUMENT_REGISTERS,
+        allocatable_registers: FPU_ALLOCATABLE_REGISTERS,
         scratch_register: FPU_SCRATCH,
     }),
 };
@@ -183,6 +199,12 @@ struct LoweredFunction {
 pub enum BackendError {
     /// A referenced function was not provided by the frontend.
     UnknownFunction(String),
+    /// The program uses FPU values or operations, but CpuV3 FPU v2 lowering
+    /// is not implemented yet (C0 freezes the contract only; C1-C3 add the
+    /// scalar, vector and special-function lowering). Emitting the retired
+    /// single-word Q8.8 `0xD` encoding would be silently reinterpreted as a
+    /// different v2 instruction, so the backend refuses instead.
+    FpuLoweringUnavailable { function: String },
     /// The linked code image violated an encoding requirement.
     Validation(ProgramValidationError),
 }
@@ -191,6 +213,11 @@ impl std::fmt::Display for BackendError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::UnknownFunction(name) => write!(f, "unknown function `{name}`"),
+            Self::FpuLoweringUnavailable { function } => write!(
+                f,
+                "function `{function}` uses FPU values, but CpuV3 FPU v2 lowering is not \
+                 implemented yet (C0 freezes the Q16.16 contract; C1-C3 add lowering)"
+            ),
             Self::Validation(error) => write!(f, "{error}"),
         }
     }
@@ -253,6 +280,15 @@ fn compile_ir(
             .get(name)
             .ok_or_else(|| BackendError::UnknownFunction(name.to_string()))?
             .clone();
+        // C0 freezes the FPU v2 contract but does not lower it. Refuse an FPU
+        // program explicitly rather than emitting the retired single-word
+        // Q8.8 encoding, which the v2 unit would reinterpret as a different
+        // instruction.
+        if function.vreg_class.contains(&RegClass::Fpu) {
+            return Err(BackendError::FpuLoweringUnavailable {
+                function: name.to_string(),
+            });
+        }
         // Safe if-conversion (CpuV3): simple one-instruction diamonds become
         // Boolean comparisons or conditional moves. It changes the CFG and
         // debugger stepping shape, so it only runs with optimizations enabled;
@@ -684,117 +720,6 @@ fn lower_instruction(
                 true,
             );
         }
-        Instr::FBin { dst, op, lhs, rhs } => {
-            // FPU arithmetic is destructive two-address (`Fa op= Fb`) while the
-            // interval model allows dst to share a register with a last-use
-            // operand. When dst == rhs, the copy dst = lhs would clobber rhs
-            // before the operation reads it, so swap the operands (FADD/FMUL
-            // are commutative) or route rhs through FPU_SCRATCH (FSUB).
-            let dst = register(*dst);
-            let lhs = register(*lhs);
-            let rhs = register(*rhs);
-            let fpu_op = match op {
-                FBinOp::Add => FpuOp::Add,
-                FBinOp::Sub => FpuOp::Sub,
-                FBinOp::Mul => FpuOp::Mul,
-            };
-            if dst == rhs && dst != lhs {
-                match op {
-                    FBinOp::Add | FBinOp::Mul => {
-                        lines.word(cpu_v3::fpu(fpu_op, dst, lhs));
-                    }
-                    FBinOp::Sub => {
-                        lines.word(cpu_v3::fpu(FpuOp::Move, FPU_SCRATCH, rhs));
-                        lines.word(cpu_v3::fpu(FpuOp::Move, dst, lhs));
-                        lines.word(cpu_v3::fpu(fpu_op, dst, FPU_SCRATCH));
-                    }
-                }
-            } else {
-                if dst != lhs {
-                    lines.word(cpu_v3::fpu(FpuOp::Move, dst, lhs));
-                }
-                lines.word(cpu_v3::fpu(fpu_op, dst, rhs));
-            }
-        }
-        Instr::FMov { dst, src } => {
-            let dst = register(*dst);
-            let src = register(*src);
-            if dst != src {
-                lines.word(cpu_v3::fpu(FpuOp::Move, dst, src));
-            }
-        }
-        Instr::FLoad { dst, src_gpr } => {
-            lines.word(cpu_v3::fpu(FpuOp::Load, register(*dst), register(*src_gpr)))
-        }
-        Instr::FStore { dst_gpr, src } => lines.word(cpu_v3::fpu(
-            FpuOp::Store,
-            register(*dst_gpr),
-            register(*src),
-        )),
-        Instr::FImport4 { dst, base_gpr } => lines.word(cpu_v3::fpu(
-            FpuOp::Import4,
-            register(*dst),
-            register(*base_gpr),
-        )),
-        Instr::FExport4 { src, base_gpr } => lines.word(cpu_v3::fpu(
-            FpuOp::Export4,
-            register(*src),
-            register(*base_gpr),
-        )),
-        Instr::FUnary { dst, op, src } => {
-            let dst = register(*dst);
-            let src = register(*src);
-            if dst != src {
-                lines.word(cpu_v3::fpu(FpuOp::Move, dst, src));
-            }
-            let unary_op = match op {
-                FUnOp::Rcp => FpuUnaryOp::Reciprocal,
-                FUnOp::Rsqrt => FpuUnaryOp::ReciprocalSqrt,
-                FUnOp::SinCos => FpuUnaryOp::SinCos,
-                FUnOp::Abs => FpuUnaryOp::Abs,
-                FUnOp::Neg => FpuUnaryOp::Neg,
-                FUnOp::Floor => FpuUnaryOp::Floor,
-                FUnOp::Ceil => FpuUnaryOp::Ceil,
-                FUnOp::Round => FpuUnaryOp::Round,
-                FUnOp::Sat01 => FpuUnaryOp::Saturate01,
-                FUnOp::Sign => FpuUnaryOp::Sign,
-            };
-            lines.word(cpu_v3::fpu_unary(dst, unary_op));
-        }
-        Instr::FDot4Acc { lhs, rhs } => {
-            lines.word(cpu_v3::fpu(FpuOp::Dot4Acc, register(*lhs), register(*rhs)))
-        }
-        Instr::FAccStore { dst, mask } => {
-            lines.word(cpu_v3::fpu(FpuOp::AccStore, register(*dst), *mask))
-        }
-        Instr::FAccLoad { src, lane } => {
-            let op = match lane {
-                0 => FpuUnaryOp::AccLoadX,
-                1 => FpuUnaryOp::AccLoadY,
-                2 => FpuUnaryOp::AccLoadZ,
-                _ => FpuUnaryOp::AccLoadW,
-            };
-            lines.word(cpu_v3::fpu_unary(register(*src), op));
-        }
-        Instr::FZero { dst } => lines.word(cpu_v3::fpu_unary(register(*dst), FpuUnaryOp::Zero)),
-        Instr::AddrOfFpuSpill { dst, slot } => {
-            // dst = align4(sp + fpu_area_offset) + 4 * slot; the alignment is
-            // computed at run time because nothing guarantees sp mod 4 == 0
-            let dst = register(*dst);
-            lines.word(cpu_v3::move_register(dst, REG_SP));
-            emit_immediate(
-                lines,
-                ImmediateOp::Add,
-                dst,
-                u16::from(allocation.fpu_area_offset()) + 3,
-                true,
-            );
-            emit_load_immediate(lines, REG_TMP, 0xfffc);
-            lines.word(cpu_v3::alu(AluOp::And, dst, dst, REG_TMP));
-            if *slot != 0 {
-                emit_immediate(lines, ImmediateOp::Add, dst, 4 * u16::from(*slot), true);
-            }
-        }
     }
 }
 
@@ -1033,14 +958,9 @@ fn lower_comparison(
         }
     };
     if function.class_of(comparison.lhs) == RegClass::Fpu {
-        // FCMP sets the pending test from the signed lane-x ordering; the
-        // following B-family branch consumes it exactly like CMPS/CMPU, and
-        // nothing may be emitted between the compare and the branch
-        let CmpRhs::Reg(rhs) = comparison.rhs else {
-            unreachable!("FPU comparisons always have a register operand");
-        };
-        lines.word(cpu_v3::fpu(FpuOp::Compare, lhs, register(rhs)));
-        return condition;
+        // The FPU CMP lowering (C1) will set the pending test from the signed
+        // ordering; FPU programs are rejected before code emission in C0.
+        unreachable!("FPU comparisons are rejected before code emission")
     }
     match comparison.rhs {
         CmpRhs::Reg(rhs) => {
@@ -1075,10 +995,9 @@ fn emit_self_compare(
 ) {
     let lhs = register(comparison.lhs);
     if function.class_of(comparison.lhs) == RegClass::Fpu {
-        lines.word(cpu_v3::fpu(FpuOp::Compare, lhs, lhs));
-    } else {
-        lines.word(cpu_v3::compare_signed(lhs, lhs));
+        unreachable!("FPU comparisons are rejected before code emission")
     }
+    lines.word(cpu_v3::compare_signed(lhs, lhs));
 }
 
 fn emit_edge_moves(
@@ -1129,7 +1048,7 @@ fn emit_parallel_moves(lines: &mut Lines, moves: &[(u8, u8, RegClass)]) {
 fn emit_parallel_moves_in_file(lines: &mut Lines, moves: &[(u8, u8)], class: RegClass) {
     let emit_move = |lines: &mut Lines, to: u8, from: u8| match class {
         RegClass::Gpr => lines.word(cpu_v3::move_register(to, from)),
-        RegClass::Fpu => lines.word(cpu_v3::fpu(FpuOp::Move, to, from)),
+        RegClass::Fpu => unreachable!("FPU moves are rejected before code emission"),
     };
     let scratch = match class {
         RegClass::Gpr => REG_TMP,
@@ -1388,6 +1307,27 @@ pub fn validate_program(words: &[Word], code_base: Word) -> Result<(), ProgramVa
                 return Err(ProgramValidationError::RelativePrefixHighBits {
                     address: address_of(index),
                     payload,
+                });
+            }
+            index += 2;
+            continue;
+        }
+        // An FPU v2 instruction is two physical words; a reserved pair is an
+        // illegal image and a lone first word is truncated.
+        if cpu_v3::FpuOpcode::from_word0(word).is_some() {
+            let Some(&next) = words.get(index + 1) else {
+                return Err(ProgramValidationError::InvalidInstruction {
+                    address: address_of(index),
+                    word,
+                });
+            };
+            if matches!(
+                cpu_v3::decode_fpu_pair(word, next),
+                cpu_v3::Instruction::FpuReserved { .. }
+            ) {
+                return Err(ProgramValidationError::InvalidInstruction {
+                    address: address_of(index),
+                    word,
                 });
             }
             index += 2;
@@ -1667,101 +1607,66 @@ mod tests {
     use super::*;
     use rcc::frontend::parse_source_with;
 
+    /// C0 freezes the FPU v2 contract but does not lower it. Every FPU
+    /// operation is rejected at the frontend boundary, so the retired Q8.8
+    /// lowering can never run and the single-word `0xD` encoding is never
+    /// emitted.
     #[test]
-    fn fpu_fix16_arithmetic_and_compare_run_on_the_machine() {
+    fn fpu_operations_are_rejected_at_the_frontend_boundary() {
         let source = r#"
             fn main() {
                 let a = fix16::from_int(3);
-                let b = fix16::from_bits(0x0180); // 1.5
-                let c = a + b * b; // 3.0 + 2.25 = 5.25
-                if c > fix16::from_int(5) {
-                    halt(c.to_int() as u16);
-                } else {
-                    halt(0);
-                }
+                let b = fix16::from_int(4);
+                halt((a + b).to_int() as u16);
             }
         "#;
-        assert_eq!(run(source), 5);
+        let error = rcc::frontend::compile_program_named(
+            "main.rs",
+            source,
+            &CompilerOptions::default(),
+            &mut |_| Err("no module".to_string()),
+        )
+        .err()
+        .expect("an FPU program must be rejected");
+        assert!(error.to_string().contains("FPU v2 lowering"), "{error}");
     }
 
+    /// The backend keeps a second, explicit refusal for any FPU-class vreg that
+    /// reaches it. An FPU-typed function pointer needs no FPU operation, so it
+    /// survives the frontend and exercises that check directly.
     #[test]
-    fn fpu_vec4_dot_export_and_splat_multiply() {
+    fn an_fpu_class_vreg_is_refused_by_the_backend() {
         let source = r#"
-            use crate::dsl_rt::*;
-            static OUT: Buf<u16, 4> = Buf::new([0; 4]);
+            fn identity(v: fix16) -> fix16 { v }
             fn main() {
-                let a = vec4::new(
-                    fix16::from_int(1),
-                    fix16::from_int(2),
-                    fix16::from_int(3),
-                    fix16::from_int(4),
-                );
-                let d = fdot(a, a); // 1+4+9+16 = 30.0
-                let half = fix16::from_bits(0x0080); // 0.5
-                let scaled = a * half; // {0.5, 1.0, 1.5, 2.0} through the ACC splat
-                vec4::export(scaled, OUT.as_array().as_ptr());
-                if OUT.read(0) == 128
-                    && OUT.read(1) == 256
-                    && OUT.read(2) == 384
-                    && OUT.read(3) == 512
-                    && d.to_bits() == 7680
-                {
-                    halt(1);
-                } else {
-                    halt(0);
-                }
+                let keep: fn(fix16) -> fix16 = identity;
+                halt(0);
             }
         "#;
-        assert_eq!(run(source), 1);
+        let program = rcc::frontend::compile_program_named(
+            "main.rs",
+            source,
+            &CompilerOptions::default(),
+            &mut |_| Err("no module".to_string()),
+        )
+        .unwrap();
+        match try_compile(program, &CompilerOptions::default(), "main") {
+            Err(BackendError::FpuLoweringUnavailable { .. }) => {}
+            other => panic!("expected FpuLoweringUnavailable, got {other:?}"),
+        }
     }
 
+    /// C0 freezes the Q16.16 contiguous-range ABI even though range-aware
+    /// allocation lands with C2.
     #[test]
-    fn fpu_rom_operations_and_lane_access() {
-        let source = r#"
-            fn main() {
-                let sc = fsincos(fix16::zero()); // {0.0, 1.0, 0, 0}
-                let r = frcp(fix16::from_int(2)); // 0.5
-                if sc.x().to_bits() == 0 && sc.y().to_bits() == 256 && r.to_bits() == 128 {
-                    halt(1);
-                } else {
-                    halt(0);
-                }
-            }
-        "#;
-        assert_eq!(run(source), 1);
-    }
-
-    #[test]
-    fn fpu_values_spill_and_reload_through_aligned_frame_slots() {
-        // Ten live vec4 values exceed the allocatable F registers and force
-        // FPU spill slots (4-aligned FEXPORT4/FIMPORT4 through the frame).
-        let source = r#"
-            fn main() {
-                let v0 = vec4::new(fix16::from_bits(64), fix16::zero(), fix16::zero(), fix16::zero());
-                let v1 = vec4::new(fix16::from_bits(128), fix16::zero(), fix16::zero(), fix16::zero());
-                let v2 = vec4::new(fix16::from_bits(192), fix16::zero(), fix16::zero(), fix16::zero());
-                let v3 = vec4::new(fix16::from_bits(256), fix16::zero(), fix16::zero(), fix16::zero());
-                let v4 = vec4::new(fix16::from_bits(320), fix16::zero(), fix16::zero(), fix16::zero());
-                let v5 = vec4::new(fix16::from_bits(384), fix16::zero(), fix16::zero(), fix16::zero());
-                let v6 = vec4::new(fix16::from_bits(448), fix16::zero(), fix16::zero(), fix16::zero());
-                let v7 = vec4::new(fix16::from_bits(512), fix16::zero(), fix16::zero(), fix16::zero());
-                let v8 = vec4::new(fix16::from_bits(576), fix16::zero(), fix16::zero(), fix16::zero());
-                let v9 = vec4::new(fix16::from_bits(640), fix16::zero(), fix16::zero(), fix16::zero());
-                let total = fdot(v0, v0)
-                    + fdot(v1, v1)
-                    + fdot(v2, v2)
-                    + fdot(v3, v3)
-                    + fdot(v4, v4)
-                    + fdot(v5, v5)
-                    + fdot(v6, v6)
-                    + fdot(v7, v7)
-                    + fdot(v8, v8)
-                    + fdot(v9, v9);
-                // (0.25k)^2 sums to 385 * 16 = 6160 in Q8.8
-                halt(total.to_bits());
-            }
-        "#;
-        assert_eq!(run(source), 6160);
+    fn cpu_v3_fpu_convention_uses_the_frozen_q16_layout() {
+        let fpu = CPU_V3_REGISTER_CONVENTION.fpu.unwrap();
+        assert_eq!(fpu.return_registers, &[0, 1, 2, 3]);
+        assert_eq!(fpu.argument_registers.first(), Some(&4));
+        assert_eq!(fpu.argument_registers.last(), Some(&27));
+        assert_eq!(fpu.allocatable_registers.first(), Some(&28));
+        assert_eq!(fpu.allocatable_registers.last(), Some(&62));
+        assert_eq!(fpu.scratch_register, 63);
     }
 
     #[test]
@@ -1837,58 +1742,6 @@ mod tests {
         );
         // sum of (407 + 3i) for i in 0..8 = 3256 + 84
         assert_eq!(run(source), 3340);
-    }
-
-    #[test]
-    fn fpu_call_dot_and_export_match_isa_values() {
-        let source = r#"
-            use crate::dsl_rt::*;
-            static OUT: Buf<u16, 4> = Buf::new([0; 4]);
-            fn scaled(v: vec4, factor: fix16, tag: u16) -> vec4 {
-                if tag == 1 { v * factor } else { v }
-            }
-            fn main() {
-                let a = vec4::new(
-                    fix16::from_int(1),
-                    fix16::from_int(2),
-                    fix16::from_int(3),
-                    fix16::from_int(4),
-                );
-                let b = scaled(a, fix16::from_bits(0x0080), 1);
-                let d = fdot(a, b); // 0.5 + 2 + 4.5 + 8 = 15.0
-                vec4::export(b, OUT.as_array().as_ptr());
-                if OUT.read(0) == 128 && OUT.read(3) == 512 {
-                    halt(d.to_bits()); // 3840
-                } else {
-                    halt(0);
-                }
-            }
-        "#;
-        assert_eq!(run(source), 3840);
-    }
-
-    #[test]
-    fn fpu_mixed_signature_calls_follow_the_fpu_abi() {
-        let source = r#"
-            fn scale(factor: fix16, v: vec4, tag: u16) -> fix16 {
-                let scaled = v * factor;
-                if tag == 7 { scaled.w() } else { fix16::zero() }
-            }
-            fn main() {
-                let r = scale(
-                    fix16::from_int(2),
-                    vec4::new(
-                        fix16::from_int(1),
-                        fix16::from_int(2),
-                        fix16::from_int(3),
-                        fix16::from_int(4),
-                    ),
-                    7,
-                );
-                if r.to_bits() == 2048 { halt(1); } else { halt(0); }
-            }
-        "#;
-        assert_eq!(run(source), 1);
     }
 
     #[test]

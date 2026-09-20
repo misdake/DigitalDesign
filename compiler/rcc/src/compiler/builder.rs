@@ -134,10 +134,6 @@ impl FuncBuilder {
         self.func.fresh_vreg(RegClass::Gpr)
     }
 
-    fn fresh_fpu_vreg(&mut self) -> VReg {
-        self.func.fresh_vreg(RegClass::Fpu)
-    }
-
     fn cur(&self) -> BlockId {
         self.current
             .expect("no current block (already terminated?)")
@@ -382,87 +378,6 @@ impl FuncBuilder {
     pub fn mfsr(&mut self, sr: SpecialReg) -> VReg {
         let dst = self.fresh_vreg();
         self.push(Instr::Mfsr { dst, sr });
-        dst
-    }
-
-    // ----- FPU emitters (CpuV3 fix16/vecN; results are Fpu-class) -----
-
-    fn check_class(&self, v: VReg, class: RegClass, what: &str) {
-        debug_assert_eq!(
-            self.func.class_of(v),
-            class,
-            "{what}: vreg class mismatch in {}",
-            self.func.name
-        );
-    }
-
-    pub fn fbin(&mut self, op: FBinOp, lhs: VReg, rhs: VReg) -> VReg {
-        self.check_class(lhs, RegClass::Fpu, "fbin lhs");
-        self.check_class(rhs, RegClass::Fpu, "fbin rhs");
-        let dst = self.fresh_fpu_vreg();
-        self.push(Instr::FBin { dst, op, lhs, rhs });
-        dst
-    }
-    pub fn fmov(&mut self, src: VReg) -> VReg {
-        self.check_class(src, RegClass::Fpu, "fmov src");
-        let dst = self.fresh_fpu_vreg();
-        self.push(Instr::FMov { dst, src });
-        dst
-    }
-    /// GPR to FPU lane-x bridge (FLOAD)
-    pub fn fload(&mut self, src_gpr: VReg) -> VReg {
-        self.check_class(src_gpr, RegClass::Gpr, "fload src");
-        let dst = self.fresh_fpu_vreg();
-        self.push(Instr::FLoad { dst, src_gpr });
-        dst
-    }
-    /// FPU to GPR lane-x bridge (FSTORE)
-    pub fn fstore(&mut self, src: VReg) -> VReg {
-        self.check_class(src, RegClass::Fpu, "fstore src");
-        let dst = self.fresh_vreg();
-        self.push(Instr::FStore { dst_gpr: dst, src });
-        dst
-    }
-    /// dst = four words at {DSEG, base_gpr} (FIMPORT4; 4-aligned base)
-    pub fn fimport4(&mut self, base_gpr: VReg) -> VReg {
-        self.check_class(base_gpr, RegClass::Gpr, "fimport4 base");
-        let dst = self.fresh_fpu_vreg();
-        self.push(Instr::FImport4 { dst, base_gpr });
-        dst
-    }
-    /// four words at {DSEG, base_gpr} = src lanes (FEXPORT4; 4-aligned base)
-    pub fn fexport4(&mut self, src: VReg, base_gpr: VReg) {
-        self.check_class(src, RegClass::Fpu, "fexport4 src");
-        self.check_class(base_gpr, RegClass::Gpr, "fexport4 base");
-        self.push(Instr::FExport4 { src, base_gpr });
-    }
-    pub fn funary(&mut self, op: FUnOp, src: VReg) -> VReg {
-        self.check_class(src, RegClass::Fpu, "funary src");
-        let dst = self.fresh_fpu_vreg();
-        self.push(Instr::FUnary { dst, op, src });
-        dst
-    }
-    /// ACC += dot4(lhs, rhs); pair with `facc_store` so ACC returns to zero
-    pub fn fdot4acc(&mut self, lhs: VReg, rhs: VReg) {
-        self.check_class(lhs, RegClass::Fpu, "fdot4acc lhs");
-        self.check_class(rhs, RegClass::Fpu, "fdot4acc rhs");
-        self.push(Instr::FDot4Acc { lhs, rhs });
-    }
-    /// dst lanes selected by `mask` = round(ACC); ACC = 0
-    pub fn facc_store(&mut self, mask: u8) -> VReg {
-        let dst = self.fresh_fpu_vreg();
-        self.push(Instr::FAccStore { dst, mask });
-        dst
-    }
-    /// ACC = exact src lane in accumulator format (overwrite, not accumulate)
-    pub fn facc_load(&mut self, src: VReg, lane: u8) {
-        self.check_class(src, RegClass::Fpu, "facc_load src");
-        assert!(lane < 4, "facc_load lane {lane} is outside 0..4");
-        self.push(Instr::FAccLoad { src, lane });
-    }
-    pub fn fzero(&mut self) -> VReg {
-        let dst = self.fresh_fpu_vreg();
-        self.push(Instr::FZero { dst });
         dst
     }
 

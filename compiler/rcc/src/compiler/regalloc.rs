@@ -204,8 +204,9 @@ fn validate_convention(convention: RegisterConvention) {
         );
     }
     if let Some(fpu) = convention.fpu {
-        // ABI registers (returns f0-f1, arguments f2-f7) are pinned only, not
-        // generally allocatable; every FPU register is caller-saved
+        // ABI registers (returns f0-f3, arguments f4-f27) are pinned only, not
+        // generally allocatable; every FPU register is caller-saved. The FPU v2
+        // file is F0..F63.
         let mut roles = HashSet::new();
         for (name, registers) in [
             ("fpu return", fpu.return_registers),
@@ -213,7 +214,7 @@ fn validate_convention(convention: RegisterConvention) {
             ("fpu allocatable", fpu.allocatable_registers),
         ] {
             for &register in registers {
-                assert!(register < 16, "{name} register f{register} is out of range");
+                assert!(register < 64, "{name} register f{register} is out of range");
                 assert!(
                     roles.insert(register),
                     "duplicate {name} register f{register}"
@@ -325,16 +326,6 @@ pub(crate) fn inst_defs(inst: &Instr) -> Vec<VReg> {
             vec![]
         }
         Instr::Call { rets, .. } | Instr::CallPtr { rets, .. } => rets.clone(),
-        Instr::FBin { dst, .. }
-        | Instr::FMov { dst, .. }
-        | Instr::FLoad { dst, .. }
-        | Instr::FStore { dst_gpr: dst, .. }
-        | Instr::FImport4 { dst, .. }
-        | Instr::FUnary { dst, .. }
-        | Instr::FAccStore { dst, .. }
-        | Instr::FZero { dst }
-        | Instr::AddrOfFpuSpill { dst, .. } => vec![*dst],
-        Instr::FExport4 { .. } | Instr::FDot4Acc { .. } | Instr::FAccLoad { .. } => vec![],
     }
 }
 fn term_uses(term: &Terminator) -> Vec<VReg> {
@@ -632,7 +623,9 @@ fn abi_register(
 fn shim_mov(dst: VReg, src: VReg, class: RegClass) -> Instr {
     match class {
         RegClass::Gpr => Instr::Mov { dst, src },
-        RegClass::Fpu => Instr::FMov { dst, src },
+        RegClass::Fpu => {
+            unreachable!("FPU programs are rejected before register allocation")
+        }
     }
 }
 
@@ -887,7 +880,7 @@ fn compute_affinity(f: &IrFunc) -> HashMap<VReg, Vec<VReg>> {
     for b in &f.blocks {
         for inst in &b.insts {
             match inst {
-                Instr::Mov { dst, src } | Instr::FMov { dst, src } => pair(*src, *dst),
+                Instr::Mov { dst, src } => pair(*src, *dst),
                 // Destructive two-address forms: the backend copies the first
                 // operand into the destination before the operation whenever
                 // the allocator cannot place them together. Prefer coalescing
@@ -1124,16 +1117,16 @@ fn scan_class(
 // step 4: spill rewriting (returns number of frame slots used)
 // ---------------------------------------------------------------------------
 
-/// rewrite spilled vregs into explicit frame traffic: LoadSp/StoreSp for GPR
-/// vregs, AddrOfFpuSpill + FImport4/FExport4 for FPU vregs (4-word aligned
-/// slots addressed through a fresh GPR temporary). each spilled vreg gets a
-/// fresh frame slot from the persistent counters `next_slot`/`next_fpu_slot`
-/// (monotonic across fixpoint iterations, so slots assigned in earlier
-/// iterations are never clobbered). TODO(M5): pack slots of non-overlapping
-/// spills.
-fn rewrite_spills(f: &mut IrFunc, spilled: &[VReg], next_slot: &mut u8, next_fpu_slot: &mut u8) {
+/// Rewrite spilled GPR vregs into explicit LoadSp/StoreSp frame traffic. C0
+/// rejects FPU programs before allocation; C2 will add range-aware FPU spills.
+/// Each GPR gets a fresh slot from the persistent `next_slot` counter
+/// (monotonic across fixpoint iterations, so earlier slots are not clobbered).
+/// TODO(M5): pack slots of non-overlapping spills.
+fn rewrite_spills(f: &mut IrFunc, spilled: &[VReg], next_slot: &mut u8, _next_fpu_slot: &mut u8) {
     let mut slot_of: HashMap<VReg, u8> = HashMap::new();
-    let mut fpu_slot_of: HashMap<VReg, u8> = HashMap::new();
+    // Kept for the rejected FPU class: no Gpr-only program ever fills it, but
+    // the GPR reload/spill paths still thread it through.
+    let fpu_slot_of: HashMap<VReg, u8> = HashMap::new();
     for &v in spilled {
         match f.class_of(v) {
             RegClass::Gpr => {
@@ -1141,8 +1134,7 @@ fn rewrite_spills(f: &mut IrFunc, spilled: &[VReg], next_slot: &mut u8, next_fpu
                 *next_slot += 1;
             }
             RegClass::Fpu => {
-                fpu_slot_of.insert(v, *next_fpu_slot);
-                *next_fpu_slot += 1;
+                unreachable!("FPU programs are rejected before register allocation")
             }
         }
     }
@@ -1352,7 +1344,7 @@ fn rewrite_spills(f: &mut IrFunc, spilled: &[VReg], next_slot: &mut u8, next_fpu
 fn reload(
     v: &mut VReg,
     slot_of: &HashMap<VReg, u8>,
-    fpu_slot_of: &HashMap<VReg, u8>,
+    _fpu_slot_of: &HashMap<VReg, u8>,
     spilled: &HashSet<VReg>,
     f: &mut IrFunc,
     out: &mut Vec<Instr>,
@@ -1372,21 +1364,7 @@ fn reload(
             lines.push(line);
             *v = t;
         }
-        RegClass::Fpu => {
-            let addr = f.fresh_vreg(RegClass::Gpr);
-            out.push(Instr::AddrOfFpuSpill {
-                dst: addr,
-                slot: fpu_slot_of[v],
-            });
-            lines.push(line);
-            let t = f.fresh_vreg(RegClass::Fpu);
-            out.push(Instr::FImport4 {
-                dst: t,
-                base_gpr: addr,
-            });
-            lines.push(line);
-            *v = t;
-        }
+        RegClass::Fpu => unreachable!("FPU programs are rejected before register allocation"),
     }
 }
 
@@ -1397,7 +1375,7 @@ fn spill_store(
     t: VReg,
     orig: VReg,
     slot_of: &HashMap<VReg, u8>,
-    fpu_slot_of: &HashMap<VReg, u8>,
+    _fpu_slot_of: &HashMap<VReg, u8>,
     f: &mut IrFunc,
     out: &mut Vec<Instr>,
     lines: &mut Vec<Option<u32>>,
@@ -1411,19 +1389,7 @@ fn spill_store(
             });
             lines.push(line);
         }
-        RegClass::Fpu => {
-            let addr = f.fresh_vreg(RegClass::Gpr);
-            out.push(Instr::AddrOfFpuSpill {
-                dst: addr,
-                slot: fpu_slot_of[&orig],
-            });
-            lines.push(line);
-            out.push(Instr::FExport4 {
-                src: t,
-                base_gpr: addr,
-            });
-            lines.push(line);
-        }
+        RegClass::Fpu => unreachable!("FPU programs are rejected before register allocation"),
     }
 }
 
@@ -1456,15 +1422,5 @@ fn defs_mut(inst: &mut Instr) -> Vec<&mut VReg> {
             vec![]
         }
         Instr::Call { rets, .. } | Instr::CallPtr { rets, .. } => rets.iter_mut().collect(),
-        Instr::FBin { dst, .. }
-        | Instr::FMov { dst, .. }
-        | Instr::FLoad { dst, .. }
-        | Instr::FUnary { dst, .. }
-        | Instr::FAccStore { dst, .. }
-        | Instr::FZero { dst }
-        | Instr::FImport4 { dst, .. }
-        | Instr::AddrOfFpuSpill { dst, .. } => vec![dst],
-        Instr::FStore { dst_gpr, .. } => vec![dst_gpr],
-        Instr::FExport4 { .. } | Instr::FDot4Acc { .. } | Instr::FAccLoad { .. } => vec![],
     }
 }

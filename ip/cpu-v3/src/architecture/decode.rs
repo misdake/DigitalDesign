@@ -5,8 +5,11 @@
 //! operation (a prefix before a non-consumer renders on its own line).
 
 use crate::{
-    is_prefix_consumer, AluOp, FpuOp, FpuUnaryOp, ImmediateOp, MultiplyWindow, ShiftOp,
-    SpecialRegister, TestCondition, Word,
+    fpu_aux_fa, fpu_aux_field_error, fpu_aux_x, fpu_fa, fpu_fb, fpu_fd, fpu_mode,
+    fpu_scalar_field_error, fpu_scalar_subop_field, fpu_vector_field_error, fpu_vector_len_field,
+    fpu_vector_mode, fpu_vector_subop_field, is_prefix_consumer, AluOp, FpuAuxKind, FpuAuxSubop,
+    FpuDotStride, FpuOpcode, FpuScalarSubop, FpuSinCosMode, FpuVectorLength, FpuVectorSubop,
+    ImmediateOp, MultiplyWindow, ShiftOp, SpecialRegister, TestCondition, Word,
 };
 
 /// One decoded CpuV3 instruction word (or the whole two-word wide operation).
@@ -81,14 +84,42 @@ pub enum Instruction {
         device: u8,
         channel: u8,
     },
-    Fpu {
-        op: FpuOp,
-        a: u8,
-        b: u8,
+    /// One complete two-word `0xC` VECTOR instruction.
+    FpuVector {
+        fa: u8,
+        fb: u8,
+        fd: u8,
+        len: FpuVectorLength,
+        subop: FpuVectorSubop,
+        mode: u8,
     },
-    FpuUnary {
-        dst: u8,
-        op: FpuUnaryOp,
+    /// One complete two-word `0xD` SCALAR instruction.
+    FpuScalar {
+        fa: u8,
+        fb: u8,
+        fd: u8,
+        subop: FpuScalarSubop,
+        mode: u8,
+    },
+    /// One complete two-word `0xE` AUX instruction. The subop is raw because
+    /// only kind-`00` subops are defined so far.
+    FpuAux {
+        kind: FpuAuxKind,
+        x: u8,
+        fa: u8,
+        fd: u8,
+        subop: u8,
+        mode: u8,
+    },
+    /// A first FPU word seen without its second word. `decode` maps a single
+    /// word; the stream disassembler and the simulator always merge the pair.
+    FpuWord0 {
+        word: Word,
+    },
+    /// A complete FPU pair whose subop, length, or mode field is reserved.
+    FpuReserved {
+        word0: Word,
+        word1: Word,
     },
     Move {
         dst: u8,
@@ -366,59 +397,90 @@ pub fn decode(word: Word) -> Instruction {
             },
             _ => Instruction::Invalid { word },
         },
-        0xd => {
-            if n2 == FpuOp::Unary as u8 {
-                let op = match n0 {
-                    0 => FpuUnaryOp::Reciprocal,
-                    1 => FpuUnaryOp::ReciprocalSqrt,
-                    2 => FpuUnaryOp::SinCos,
-                    3 => FpuUnaryOp::Abs,
-                    4 => FpuUnaryOp::Neg,
-                    5 => FpuUnaryOp::Floor,
-                    6 => FpuUnaryOp::Ceil,
-                    7 => FpuUnaryOp::Round,
-                    8 => FpuUnaryOp::Saturate01,
-                    9 => FpuUnaryOp::Sign,
-                    10 => FpuUnaryOp::Zero,
-                    11 => FpuUnaryOp::AccLoadX,
-                    12 => FpuUnaryOp::AccLoadY,
-                    13 => FpuUnaryOp::AccLoadZ,
-                    14 => FpuUnaryOp::AccLoadW,
-                    _ => return Instruction::Invalid { word },
-                };
-                return Instruction::FpuUnary {
-                    dst: reg(n1.into()),
-                    op,
-                };
-            }
-            let op = match n2 {
-                0 => FpuOp::Load,
-                1 => FpuOp::Store,
-                2 => FpuOp::Import4,
-                3 => FpuOp::Export4,
-                4 => FpuOp::Move,
-                5 => FpuOp::Pack4,
-                6 => FpuOp::Unpack4,
-                7 => FpuOp::Transpose4,
-                8 => FpuOp::Add,
-                9 => FpuOp::Sub,
-                10 => FpuOp::Mul,
-                11 => FpuOp::Dot4Acc,
-                12 => FpuOp::AccStore,
-                13 => FpuOp::Compare,
-                _ => return Instruction::Invalid { word },
-            };
-            Instruction::Fpu {
-                op,
-                a: reg(n1.into()),
-                b: reg(n0.into()),
-            }
-        }
+        // FPU v2 (major 0xC / 0xD / 0xE) is a 32-bit instruction fetched as two
+        // 16-bit words. `decode` maps one physical word, so it can only report
+        // the first half; `decode_fpu_pair` merges the pair, and
+        // `disassemble_words` and `CpuV3Sim` always do.
+        0xc..=0xe => Instruction::FpuWord0 { word },
         0xf => Instruction::Prefix {
             payload: word & 0xfff,
         },
-        // C and E are fully reserved in revision 0.8; no other major exists.
+        // No other major exists.
         _ => Instruction::Invalid { word },
+    }
+}
+
+/// Merges a complete FPU v2 word pair (word0 with opcode 0xC/0xD/0xE and the
+/// following word1). Returns `FpuReserved` when a subop, length, or mode field
+/// is reserved; returns `FpuWord0` when `word0` is not an FPU opcode.
+pub fn decode_fpu_pair(word0: Word, word1: Word) -> Instruction {
+    let Some(opcode) = FpuOpcode::from_word0(word0) else {
+        return Instruction::FpuWord0 { word: word0 };
+    };
+    let fd = fpu_fd(word1);
+    let mode = fpu_mode(word1);
+    let vector_mode = fpu_vector_mode(word1);
+    match opcode {
+        FpuOpcode::Vector => {
+            let Some(len) = FpuVectorLength::from_field(fpu_vector_len_field(word1)) else {
+                return Instruction::FpuReserved { word0, word1 };
+            };
+            let Some(subop) = FpuVectorSubop::from_field(fpu_vector_subop_field(word1)) else {
+                return Instruction::FpuReserved { word0, word1 };
+            };
+            // Reused by the strict builder and `CpuV3Sim`, so reserved modes and
+            // ranges past F63 reject identically in all three.
+            if fpu_vector_field_error(fpu_fa(word0), fpu_fb(word0), fd, len, subop, vector_mode)
+                .is_some()
+            {
+                return Instruction::FpuReserved { word0, word1 };
+            }
+            Instruction::FpuVector {
+                fa: fpu_fa(word0),
+                fb: fpu_fb(word0),
+                fd,
+                len,
+                subop,
+                mode: vector_mode,
+            }
+        }
+        FpuOpcode::Scalar => {
+            let Some(subop) = FpuScalarSubop::from_field(fpu_scalar_subop_field(word1)) else {
+                return Instruction::FpuReserved { word0, word1 };
+            };
+            // Only SINCOS uses the scalar mode field; the shared contract also
+            // rejects its `Fd = 63` dual-output overflow.
+            if fpu_scalar_field_error(fpu_fa(word0), fpu_fb(word0), fd, subop, mode).is_some() {
+                return Instruction::FpuReserved { word0, word1 };
+            }
+            Instruction::FpuScalar {
+                fa: fpu_fa(word0),
+                fb: fpu_fb(word0),
+                fd,
+                subop,
+                mode,
+            }
+        }
+        FpuOpcode::Aux => {
+            let kind = FpuAuxKind::from_field((word0 & 3) as u8);
+            let subop = fpu_scalar_subop_field(word1);
+            let Some(aux_subop) = FpuAuxSubop::from_field(subop) else {
+                return Instruction::FpuReserved { word0, word1 };
+            };
+            // The shared contract rejects unimplemented kinds, the reserved
+            // FLD/FST mode bits, and their register-range overflow.
+            if fpu_aux_field_error(kind, fpu_aux_fa(word0), fd, aux_subop, mode).is_some() {
+                return Instruction::FpuReserved { word0, word1 };
+            }
+            Instruction::FpuAux {
+                kind,
+                x: fpu_aux_x(word0),
+                fa: fpu_aux_fa(word0),
+                fd,
+                subop,
+                mode,
+            }
+        }
     }
 }
 
@@ -495,7 +557,8 @@ impl Instruction {
                         | ImmediateOp::SetEqual
                         | ImmediateOp::SetLessThanSigned
                         | ImmediateOp::CompareSigned
-                ) || (matches!(op, ImmediateOp::Add | ImmediateOp::Sub) && wide.is_some());
+                ) || (matches!(op, ImmediateOp::Add | ImmediateOp::Sub)
+                    && wide.is_some());
                 let shown: i32 = if let Some(wide) = wide {
                     if signed {
                         wide as i16 as i32
@@ -554,47 +617,93 @@ impl Instruction {
             } => {
                 format!("devsend dev{device}.ch{channel}, r{src}")
             }
-            Instruction::Fpu { op, a, b } => {
-                let name = match op {
-                    FpuOp::Load => return format!("fload f{a}, r{b}"),
-                    FpuOp::Store => return format!("fstore r{a}, f{b}"),
-                    FpuOp::Import4 => return format!("fimport4 f{a}, [r{b}]"),
-                    FpuOp::Export4 => return format!("fexport4 f{a}, [r{b}]"),
-                    FpuOp::Move => "fmov",
-                    FpuOp::Pack4 => "fpack4",
-                    FpuOp::Unpack4 => "funpack4",
-                    FpuOp::Transpose4 => "ftranspose4",
-                    FpuOp::Add => "fadd",
-                    FpuOp::Sub => "fsub",
-                    FpuOp::Mul => "fmul",
-                    FpuOp::Dot4Acc => "fdot4acc",
-                    FpuOp::Compare => "fcmp",
-                    FpuOp::AccStore => {
-                        return format!("faccstore f{a}, 0b{b:04b}");
+            Instruction::FpuVector {
+                fa,
+                fb,
+                fd,
+                len,
+                subop,
+                mode,
+            } => {
+                let length = len.lanes();
+                let name = vector_subop_name(subop);
+                let stride = if matches!(
+                    subop,
+                    FpuVectorSubop::Dot | FpuVectorSubop::DotAdd | FpuVectorSubop::DotStore
+                ) {
+                    match FpuDotStride::from_mode(mode).unwrap_or(FpuDotStride::Stride1) {
+                        FpuDotStride::Stride1 => ".s1",
+                        FpuDotStride::Stride3 => ".s3",
+                        FpuDotStride::Stride4 => ".s4",
                     }
-                    FpuOp::Unary => unreachable!(),
+                } else {
+                    ""
                 };
-                format!("{name} f{a}, f{b}")
+                format!("{name}.{length}{stride} f{fd}, f{fa}, f{fb}")
             }
-            Instruction::FpuUnary { dst, op } => {
-                let name = match op {
-                    FpuUnaryOp::Reciprocal => "frcp",
-                    FpuUnaryOp::ReciprocalSqrt => "frsqrt",
-                    FpuUnaryOp::SinCos => "fsincos",
-                    FpuUnaryOp::Abs => "fabs",
-                    FpuUnaryOp::Neg => "fneg",
-                    FpuUnaryOp::Floor => "ffloor",
-                    FpuUnaryOp::Ceil => "fceil",
-                    FpuUnaryOp::Round => "fround",
-                    FpuUnaryOp::Saturate01 => "fsat01",
-                    FpuUnaryOp::Sign => "fsign",
-                    FpuUnaryOp::Zero => "fzero",
-                    FpuUnaryOp::AccLoadX => "faccload.x",
-                    FpuUnaryOp::AccLoadY => "faccload.y",
-                    FpuUnaryOp::AccLoadZ => "faccload.z",
-                    FpuUnaryOp::AccLoadW => "faccload.w",
-                };
-                format!("{name} f{dst}")
+            Instruction::FpuScalar {
+                fa,
+                fb,
+                fd,
+                subop,
+                mode,
+            } => match subop {
+                FpuScalarSubop::Mov => format!("mov f{fd}, f{fa}"),
+                FpuScalarSubop::Cmp => format!("cmp f{fa}, f{fb}"),
+                FpuScalarSubop::SinCos => {
+                    let name = match FpuSinCosMode::from_mode(mode).unwrap_or(FpuSinCosMode::SinCos)
+                    {
+                        FpuSinCosMode::SinCos => "sincos",
+                        FpuSinCosMode::Sin => "sin",
+                        FpuSinCosMode::Cos => "cos",
+                    };
+                    format!("{name} f{fd}, f{fa}")
+                }
+                FpuScalarSubop::Add
+                | FpuScalarSubop::Sub
+                | FpuScalarSubop::Mul
+                | FpuScalarSubop::Min
+                | FpuScalarSubop::Max => {
+                    format!("{} f{fd}, f{fa}, f{fb}", scalar_subop_name(subop))
+                }
+                _ => format!("{} f{fd}, f{fa}", scalar_subop_name(subop)),
+            },
+            Instruction::FpuAux {
+                x,
+                fa,
+                fd,
+                subop,
+                mode,
+                ..
+            } => match subop {
+                0x00 | 0x01 => {
+                    let memory = if subop == 0x00 { "fld" } else { "fst" };
+                    if mode == 0 {
+                        if subop == 0x00 {
+                            format!("{memory} f{fd}, [r{x}]")
+                        } else {
+                            format!("{memory} [r{x}], f{fa}")
+                        }
+                    } else {
+                        let length = mode + 1;
+                        let memory = if subop == 0x00 { "fldv" } else { "fstv" };
+                        if subop == 0x00 {
+                            format!("{memory}.{length} f{fd}, [r{x}]")
+                        } else {
+                            format!("{memory}.{length} [r{x}], f{fa}")
+                        }
+                    }
+                }
+                0x02 => format!("ilo2f f{fd}, r{x}"),
+                0x03 => format!("ihi2f f{fd}, r{x}"),
+                0x04 => format!("flo2i r{x}, f{fa}"),
+                0x05 => format!("fhi2i r{x}, f{fa}"),
+                0x06 => format!("i16tof f{fd}, r{x}"),
+                _ => format!("ftoi16 r{x}, f{fa}"),
+            },
+            Instruction::FpuWord0 { word } => format!(".fpuword 0x{word:04x}"),
+            Instruction::FpuReserved { word0, word1 } => {
+                format!(".word 0x{word0:04x} 0x{word1:04x}  ; reserved fpu")
             }
             Instruction::Move { dst, src } => {
                 if dst == src {
@@ -629,6 +738,48 @@ impl Instruction {
             Instruction::Prefix { payload } => format!("pfx12 0x{payload:03x}"),
             Instruction::Invalid { word } => format!(".word 0x{word:04x}  ; invalid"),
         }
+    }
+}
+
+fn vector_subop_name(subop: FpuVectorSubop) -> &'static str {
+    match subop {
+        FpuVectorSubop::VAdd => "vadd",
+        FpuVectorSubop::VSub => "vsub",
+        FpuVectorSubop::VMul => "vmul",
+        FpuVectorSubop::VMulS => "vmuls",
+        FpuVectorSubop::VMin => "vmin",
+        FpuVectorSubop::VMax => "vmax",
+        FpuVectorSubop::VAbs => "vabs",
+        FpuVectorSubop::VNeg => "vneg",
+        FpuVectorSubop::VFloor => "vfloor",
+        FpuVectorSubop::VCeil => "vceil",
+        FpuVectorSubop::VRound => "vround",
+        FpuVectorSubop::VTrunc => "vtrunc",
+        FpuVectorSubop::VMove => "vmov",
+        FpuVectorSubop::Dot => "dot",
+        FpuVectorSubop::DotAdd => "dotadd",
+        FpuVectorSubop::DotStore => "dotstore",
+    }
+}
+
+fn scalar_subop_name(subop: FpuScalarSubop) -> &'static str {
+    match subop {
+        FpuScalarSubop::Add => "add",
+        FpuScalarSubop::Sub => "sub",
+        FpuScalarSubop::Mul => "mul",
+        FpuScalarSubop::Min => "min",
+        FpuScalarSubop::Max => "max",
+        FpuScalarSubop::Abs => "abs",
+        FpuScalarSubop::Neg => "neg",
+        FpuScalarSubop::Floor => "floor",
+        FpuScalarSubop::Ceil => "ceil",
+        FpuScalarSubop::Round => "round",
+        FpuScalarSubop::Trunc => "trunc",
+        FpuScalarSubop::Cmp => "cmp",
+        FpuScalarSubop::Rcp => "rcp",
+        FpuScalarSubop::Rsqrt => "rsqrt",
+        FpuScalarSubop::SinCos => "sincos",
+        FpuScalarSubop::Mov => "mov",
     }
 }
 
@@ -691,6 +842,28 @@ pub fn disassemble_words(words: &[Word], base: u16) -> Vec<DisasmLine> {
     let mut i = 0;
     while i < words.len() {
         let word = words[i];
+        // An FPU v2 instruction is one 32-bit operation spread over two
+        // physical words. It never consumes a prefix, so a preceding PFX12
+        // renders on its own line first.
+        if FpuOpcode::from_word0(word).is_some() {
+            if i + 1 < words.len() {
+                let text = decode_fpu_pair(word, words[i + 1]).text(None);
+                out.push(DisasmLine {
+                    address: base.wrapping_add(i as u16),
+                    text,
+                    wide: true,
+                });
+                i += 2;
+            } else {
+                out.push(DisasmLine {
+                    address: base.wrapping_add(i as u16),
+                    text: decode(word).text(None),
+                    wide: false,
+                });
+                i += 1;
+            }
+            continue;
+        }
         if let Instruction::Prefix { payload } = decode(word) {
             if i + 1 < words.len() && is_prefix_consumer(words[i + 1]) {
                 let text = decode(words[i + 1]).text(Some(payload));
@@ -759,15 +932,6 @@ mod tests {
             decode(device_send(3, 2, 1)).text(None),
             "devsend dev2.ch1, r3"
         );
-        assert_eq!(decode(fpu(FpuOp::Mul, 3, 4)).text(None), "fmul f3, f4");
-        assert_eq!(
-            decode(fpu(FpuOp::AccStore, 3, 0b0101)).text(None),
-            "faccstore f3, 0b0101"
-        );
-        assert_eq!(
-            decode(fpu_unary(3, FpuUnaryOp::AccLoadW)).text(None),
-            "faccload.w f3"
-        );
         assert_eq!(decode(set_equal(3, 4)).text(None), "seq r3, r4");
         assert_eq!(decode(move_register(0, 0)).text(None), "nop");
         assert_eq!(decode(halt()).text(None), "halt");
@@ -777,14 +941,216 @@ mod tests {
     }
 
     #[test]
+    fn fpu_pairs_render_every_family() {
+        let text = |pair: [Word; 2]| decode_fpu_pair(pair[0], pair[1]).text(None);
+        assert_eq!(
+            text(fpu_vector(
+                4,
+                8,
+                20,
+                FpuVectorLength::Vec3,
+                FpuVectorSubop::VAdd,
+                0
+            )),
+            "vadd.3 f20, f4, f8"
+        );
+        assert_eq!(
+            text(fpu_vector(
+                0,
+                4,
+                0,
+                FpuVectorLength::Vec3,
+                FpuVectorSubop::VMulS,
+                0
+            )),
+            "vmuls.3 f0, f0, f4"
+        );
+        assert_eq!(
+            text(fpu_vector(
+                16,
+                0,
+                20,
+                FpuVectorLength::Vec4,
+                FpuVectorSubop::DotStore,
+                0
+            )),
+            "dotstore.4.s1 f20, f16, f0"
+        );
+        assert_eq!(
+            text(fpu_vector(
+                4,
+                8,
+                20,
+                FpuVectorLength::Vec4,
+                FpuVectorSubop::Dot,
+                FpuDotStride::Stride4 as u8
+            )),
+            "dot.4.s4 f20, f4, f8"
+        );
+        assert_eq!(
+            text(fpu_scalar(3, 4, 5, FpuScalarSubop::Mul, 0)),
+            "mul f5, f3, f4"
+        );
+        assert_eq!(
+            text(fpu_scalar(3, 4, 3, FpuScalarSubop::Rsqrt, 0)),
+            "rsqrt f3, f3"
+        );
+        assert_eq!(
+            text(fpu_scalar(3, 4, 3, FpuScalarSubop::Cmp, 0)),
+            "cmp f3, f4"
+        );
+        assert_eq!(
+            text(fpu_scalar(3, 4, 5, FpuScalarSubop::SinCos, 0)),
+            "sincos f5, f3"
+        );
+        assert_eq!(
+            text(fpu_scalar(3, 4, 5, FpuScalarSubop::SinCos, 1)),
+            "sin f5, f3"
+        );
+        assert_eq!(
+            text(fpu_aux(
+                FpuAuxKind::IntegerRegister,
+                2,
+                0,
+                1,
+                FpuAuxSubop::Fld,
+                0
+            )),
+            "fld f1, [r2]"
+        );
+        assert_eq!(
+            text(fpu_aux(
+                FpuAuxKind::IntegerRegister,
+                1,
+                2,
+                0,
+                FpuAuxSubop::Fst,
+                0
+            )),
+            "fst [r1], f2"
+        );
+        assert_eq!(
+            text(fpu_aux(
+                FpuAuxKind::IntegerRegister,
+                1,
+                0,
+                4,
+                FpuAuxSubop::Fld,
+                2
+            )),
+            "fldv.3 f4, [r1]"
+        );
+        assert_eq!(
+            text(fpu_aux(
+                FpuAuxKind::IntegerRegister,
+                5,
+                3,
+                0,
+                FpuAuxSubop::Ilo2f,
+                0
+            )),
+            "ilo2f f0, r5"
+        );
+        assert_eq!(
+            text(fpu_aux(
+                FpuAuxKind::IntegerRegister,
+                5,
+                3,
+                0,
+                FpuAuxSubop::Fhi2i,
+                0
+            )),
+            "fhi2i r5, f3"
+        );
+    }
+
+    #[test]
+    fn fpu_pairs_do_not_consume_a_prefix_and_merge_streaming() {
+        let [word0, word1] = fpu_scalar(3, 4, 5, FpuScalarSubop::Mul, 0);
+        let words = [prefix12(0xabc), word0, word1, halt()];
+        let lines = disassemble_words(&words, 0);
+        let texts: Vec<&str> = lines.iter().map(|line| line.text.as_str()).collect();
+        assert_eq!(texts, ["pfx12 0xabc", "mul f5, f3, f4", "halt"]);
+        // The prefix renders alone; the FPU pair is one wide two-word line.
+        assert!(!lines[0].wide);
+        assert!(lines[1].wide);
+        assert_eq!(lines[1].address, 1);
+        // A trailing first word without its second half is reported as such.
+        let lone = disassemble_words(&[word0], 0);
+        assert_eq!(lone.len(), 1);
+        assert_eq!(lone[0].text, ".fpuword 0xd0c4");
+        assert!(!lone[0].wide);
+    }
+
+    #[test]
+    fn fpu_reserved_pairs_and_lone_first_words_are_reported() {
+        // Reserved vector subop 0x10.
+        assert!(matches!(
+            decode_fpu_pair(0xc000, 0x0080),
+            Instruction::FpuReserved { .. }
+        ));
+        // Reserved vector length 11.
+        assert!(matches!(
+            decode_fpu_pair(0xc000, 0b0000_0011_0000_0000),
+            Instruction::FpuReserved { .. }
+        ));
+        // Reserved DOT stride 11.
+        assert!(matches!(
+            decode_fpu_pair(0xc000, 0x0068 | 0b11),
+            Instruction::FpuReserved { .. }
+        ));
+        // DOT mode bit 2 is reserved even when mode[1:0] names a stride.
+        assert!(matches!(
+            decode_fpu_pair(0xc000, 0x0068 | 0b100),
+            Instruction::FpuReserved { .. }
+        ));
+        // VADD.4 with Fa=61 overflows F63 and is rejected by the decoder too.
+        assert!(matches!(
+            decode_fpu_pair(0xcf40, 0x0200),
+            Instruction::FpuReserved { .. }
+        ));
+        // Non-DOT vector subops reject a nonzero mode.
+        assert!(matches!(
+            decode_fpu_pair(0xc000, 0x0001),
+            Instruction::FpuReserved { .. }
+        ));
+        // FLDV4 with Fd=62 overflows F63.
+        assert!(matches!(
+            decode_fpu_pair(0xe100, 0xf803),
+            Instruction::FpuReserved { .. }
+        ));
+        // Reserved scalar subop 0x10.
+        assert!(matches!(
+            decode_fpu_pair(0xd000, 0x0100),
+            Instruction::FpuReserved { .. }
+        ));
+        // SINCOS mode 11 is reserved.
+        assert!(matches!(
+            decode_fpu_pair(0xd000, 0x00e3),
+            Instruction::FpuReserved { .. }
+        ));
+        // AUX reserved kind 11.
+        assert!(matches!(
+            decode_fpu_pair(0xe003, 0x0000),
+            Instruction::FpuReserved { .. }
+        ));
+        // A non-FPU first word is not silently merged.
+        assert!(matches!(
+            decode_fpu_pair(0x6000, 0x0000),
+            Instruction::FpuWord0 { .. }
+        ));
+    }
+
+    #[test]
     fn reserved_and_noncanonical_encodings_are_invalid() {
-        // The revision 0.7 HALT word is invalid in revision 0.8.
-        assert_eq!(decode(0xe800), Instruction::Invalid { word: 0xe800 });
-        // Majors C and E are fully reserved.
-        assert_eq!(decode(0xc000), Instruction::Invalid { word: 0xc000 });
-        assert_eq!(decode(0xcabc), Instruction::Invalid { word: 0xcabc });
-        assert_eq!(decode(0xe100), Instruction::Invalid { word: 0xe100 });
-        assert_eq!(decode(0xefff), Instruction::Invalid { word: 0xefff });
+        // Majors C/D/E are FPU v2 first words; one word is only half of a
+        // two-word instruction. Reserved *pairs* are handled by
+        // `decode_fpu_pair` above.
+        assert_eq!(decode(0xc000), Instruction::FpuWord0 { word: 0xc000 });
+        assert_eq!(decode(0xcabc), Instruction::FpuWord0 { word: 0xcabc });
+        assert_eq!(decode(0xd000), Instruction::FpuWord0 { word: 0xd000 });
+        assert_eq!(decode(0xe100), Instruction::FpuWord0 { word: 0xe100 });
+        assert_eq!(decode(0xefff), Instruction::FpuWord0 { word: 0xefff });
         // Shift/multiply reserved functions 3, 7, B, D..F.
         for function in [0x3u16, 0x7, 0xb, 0xd, 0xe, 0xf] {
             let word = 0x2000 | (function << 8);

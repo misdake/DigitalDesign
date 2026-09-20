@@ -1,13 +1,17 @@
 //! Small architectural interpreter used as the CpuV3 correctness oracle.
 
 use super::encoding::{
-    is_prefix_consumer, sign_extend, SpecialRegister, Word, CONSTANT_TABLE, LINK_REGISTER,
+    fpu_aux_fa, fpu_aux_field_error, fpu_aux_x, fpu_fa, fpu_fb, fpu_fd, fpu_mode,
+    fpu_scalar_field_error, fpu_scalar_subop_field, fpu_vector_field_error, fpu_vector_len_field,
+    fpu_vector_mode, fpu_vector_subop_field, is_prefix_consumer, sign_extend, SpecialRegister,
+    Word, CONSTANT_TABLE, LINK_REGISTER,
 };
 use super::{
-    acc_saturate, fix16_abs, fix16_add, fix16_ceil, fix16_compare, fix16_floor, fix16_from_acc,
-    fix16_mul, fix16_neg, fix16_reciprocal, fix16_reciprocal_sqrt, fix16_round, fix16_saturate01,
-    fix16_sign, fix16_sin_cos, fix16_sub, FpuDomainError, FpuUnaryOp, FpuVector,
-    PhysicalWordAddress,
+    fix16_abs, fix16_accumulate_product, fix16_add, fix16_ceil, fix16_compare, fix16_floor,
+    fix16_from_acc, fix16_from_i16, fix16_mul, fix16_neg, fix16_round, fix16_sub, fix16_to_i16,
+    fix16_trunc, rcp_q16, rsqrt_q16, sincos_q16, FpuAuxKind, FpuAuxSubop, FpuDotStride, FpuOpcode,
+    FpuScalarSubop, FpuSinCosMode, FpuVectorLength, FpuVectorSubop, PhysicalWordAddress,
+    FPU_REGISTER_COUNT,
 };
 use std::cmp::Ordering;
 
@@ -17,8 +21,6 @@ pub const DEFAULT_PHYSICAL_MEMORY_WORDS: usize = 1 << 22;
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum FaultKind {
     InvalidInstruction,
-    FpuDomain(FpuDomainError),
-    MisalignedFpuVectorAddress { offset: Word },
     PhysicalAddressOutOfRange { address: PhysicalWordAddress },
 }
 
@@ -64,7 +66,7 @@ pub trait Device {
 
 pub struct CpuV3Sim {
     registers: [Word; 16],
-    fpu_registers: [FpuVector; 16],
+    fpu_registers: [i32; FPU_REGISTER_COUNT],
     fpu_accumulator: i64,
     memory: Box<[Word]>,
     devices: [Option<Box<dyn Device>>; 8],
@@ -105,7 +107,7 @@ impl CpuV3Sim {
         );
         Self {
             registers: [0; 16],
-            fpu_registers: [[0; 4]; 16],
+            fpu_registers: [0; FPU_REGISTER_COUNT],
             fpu_accumulator: 0,
             memory: vec![0; words].into_boxed_slice(),
             devices: std::array::from_fn(|_| None),
@@ -164,11 +166,13 @@ impl CpuV3Sim {
         self.registers.get(usize::from(index)).copied()
     }
 
-    pub fn fpu_registers(&self) -> &[FpuVector; 16] {
+    pub fn fpu_registers(&self) -> &[i32; FPU_REGISTER_COUNT] {
         &self.fpu_registers
     }
 
-    pub fn fpu_register(&self, index: u8) -> Option<FpuVector> {
+    /// One Q16.16 scalar F register, or `None` when `index` is outside
+    /// `F0..F63`.
+    pub fn fpu_register(&self, index: u8) -> Option<i32> {
         self.fpu_registers.get(usize::from(index)).copied()
     }
 
@@ -284,6 +288,45 @@ impl CpuV3Sim {
             return Ok(StepOutcome::Running);
         }
 
+        // FPU v2 (major 0xC / 0xD / 0xE) is a 32-bit instruction fetched as two
+        // 16-bit words. The unit takes word0 and then word1; the architecture
+        // retires the pair as two words. A pending PFX12 expires unused first,
+        // exactly as it does before any other non-consuming instruction.
+        if let Some(fpu_opcode) = FpuOpcode::from_word0(instruction) {
+            if self.prefix.take().is_some() {
+                self.retired_words += 1;
+            }
+            self.pending_test = None;
+            let word1_address = self.pc;
+            let fetch1 = PhysicalWordAddress::from_segment_offset(self.code_segment, word1_address);
+            let word1 = match &self.boot_window {
+                Some(window) if (fetch1.get() as usize) < window.len() => {
+                    window[fetch1.get() as usize]
+                }
+                _ => self.read_physical(fetch1).map_err(|kind| Fault {
+                    kind,
+                    address: word1_address,
+                    instruction: 0,
+                })?,
+            };
+            self.pc = self.pc.wrapping_add(1);
+            return match self.execute_fpu_pair(instruction, word1, fpu_opcode) {
+                Ok(outcome) => {
+                    self.retired_words += 2;
+                    Ok(outcome)
+                }
+                Err(kind) => {
+                    // Neither half retires; rewind to the first word.
+                    self.pc = address;
+                    Err(Fault {
+                        kind,
+                        address,
+                        instruction,
+                    })
+                }
+            };
+        }
+
         let consumes_prefix = is_prefix_consumer(instruction);
         let prefix = self.prefix.take();
         // Every retired non-prefix instruction expires the pending test;
@@ -313,8 +356,7 @@ impl CpuV3Sim {
             0x9 => self.execute_store(instruction, prefix),
             0xa => self.execute_immediate(instruction, prefix),
             0xb => self.execute_branch(instruction, prefix, pending),
-            0xd => self.execute_fpu(instruction),
-            // Majors C and E are fully reserved in revision 0.8; no other
+            // Majors C/D/E are handled as two-word FPU pairs above; no other
             // major exists. Reserved function slots inside the dispatched
             // families are rejected by the individual executors.
             _ => Err(FaultKind::InvalidInstruction),
@@ -547,163 +589,229 @@ impl CpuV3Sim {
         Ok(StepOutcome::Running)
     }
 
-    fn execute_fpu(&mut self, instruction: Word) -> ExecuteResult {
-        let function = field(instruction, 8);
-        let a = usize::from(field(instruction, 4));
-        let b = usize::from(field(instruction, 0));
-        match function {
-            0 => self.fpu_registers[a] = [self.registers[b] as i16, 0, 0, 0],
-            1 => self.registers[a] = self.fpu_registers[b][0] as Word,
-            2 => {
-                let offset = self.registers[b];
-                if offset & 3 != 0 {
-                    return Err(FaultKind::MisalignedFpuVectorAddress { offset });
-                }
-                let mut value = [0; 4];
-                for (lane, slot) in value.iter_mut().enumerate() {
-                    *slot = self.read_data(self.data_address(offset.wrapping_add(lane as Word)))?
-                        as i16;
-                }
-                self.fpu_registers[a] = value;
+    fn execute_fpu_pair(&mut self, word0: Word, word1: Word, opcode: FpuOpcode) -> ExecuteResult {
+        match opcode {
+            FpuOpcode::Vector => self.execute_fpu_vector(word0, word1),
+            FpuOpcode::Scalar => self.execute_fpu_scalar(word0, word1),
+            FpuOpcode::Aux => self.execute_fpu_aux(word0, word1),
+        }
+    }
+
+    fn fpu_read(&self, index: usize) -> i32 {
+        self.fpu_registers[index]
+    }
+
+    fn fpu_write(&mut self, index: usize, value: i32) {
+        self.fpu_registers[index] = value;
+    }
+
+    /// `0xC` VECTOR: a consecutive register-range view. Lane `i` computes
+    /// `A = Fa + i`, `B = Fb + i` (or `Fb` for `VMULS`), `D = Fd + i`. The
+    /// destination/source partial-overlap rule (design section 3.2) is a
+    /// software contract; the architecture executes lanes in increasing order.
+    fn execute_fpu_vector(&mut self, word0: Word, word1: Word) -> ExecuteResult {
+        let fa = usize::from(fpu_fa(word0));
+        let fb = usize::from(fpu_fb(word0));
+        let fd = usize::from(fpu_fd(word1));
+        let mode = fpu_vector_mode(word1);
+        let len_field = fpu_vector_len_field(word1);
+        let subop_field = fpu_vector_subop_field(word1);
+        let Some(len) = FpuVectorLength::from_field(len_field) else {
+            return Err(FaultKind::InvalidInstruction);
+        };
+        let Some(subop) = FpuVectorSubop::from_field(subop_field) else {
+            return Err(FaultKind::InvalidInstruction);
+        };
+        // The same contract the strict builder asserts and the decoder reports;
+        // reserved modes and ranges past F63 fault here identically.
+        if fpu_vector_field_error(
+            fpu_fa(word0),
+            fpu_fb(word0),
+            fpu_fd(word1),
+            len,
+            subop,
+            mode,
+        )
+        .is_some()
+        {
+            return Err(FaultKind::InvalidInstruction);
+        }
+        let lanes = usize::from(len.lanes());
+
+        // Unary subops ignore B; VMULS broadcasts lane 0; DOT uses a stride.
+        let unary = matches!(
+            subop,
+            FpuVectorSubop::VAbs
+                | FpuVectorSubop::VNeg
+                | FpuVectorSubop::VFloor
+                | FpuVectorSubop::VCeil
+                | FpuVectorSubop::VRound
+                | FpuVectorSubop::VTrunc
+                | FpuVectorSubop::VMove
+        );
+        let dot = matches!(
+            subop,
+            FpuVectorSubop::Dot | FpuVectorSubop::DotAdd | FpuVectorSubop::DotStore
+        );
+        if dot {
+            let stride = FpuDotStride::from_mode(mode).expect("validated DOT stride");
+            let mut acc = if subop == FpuVectorSubop::DotAdd {
+                self.fpu_accumulator
+            } else {
+                0
+            };
+            for lane in 0..lanes {
+                let a = self.fpu_read(fa + lane);
+                let b = self.fpu_read(fb + lane * usize::from(stride.step()));
+                acc = fix16_accumulate_product(acc, a, b);
             }
-            3 => {
-                let offset = self.registers[b];
-                if offset & 3 != 0 {
-                    return Err(FaultKind::MisalignedFpuVectorAddress { offset });
-                }
-                let value = self.fpu_registers[a];
-                for (lane, word) in value.into_iter().enumerate() {
-                    self.write_data(
-                        self.data_address(offset.wrapping_add(lane as Word)),
-                        word as Word,
-                    )?;
+            match subop {
+                FpuVectorSubop::Dot | FpuVectorSubop::DotAdd => self.fpu_accumulator = acc,
+                _ => {
+                    // DOTSTORE narrows once and leaves ACC clean.
+                    self.fpu_write(fd, fix16_from_acc(acc));
+                    self.fpu_accumulator = 0;
                 }
             }
-            4 => self.fpu_registers[a] = self.fpu_registers[b],
-            5 => {
-                if b > 12 {
-                    return Err(FaultKind::InvalidInstruction);
+            return Ok(StepOutcome::Running);
+        }
+        for lane in 0..lanes {
+            let a = self.fpu_read(fa + lane);
+            let b = if unary {
+                0
+            } else if subop == FpuVectorSubop::VMulS {
+                self.fpu_read(fb)
+            } else {
+                self.fpu_read(fb + lane)
+            };
+            let result = match subop {
+                FpuVectorSubop::VAdd => fix16_add(a, b),
+                FpuVectorSubop::VSub => fix16_sub(a, b),
+                FpuVectorSubop::VMul | FpuVectorSubop::VMulS => fix16_mul(a, b),
+                FpuVectorSubop::VMin => a.min(b),
+                FpuVectorSubop::VMax => a.max(b),
+                FpuVectorSubop::VAbs => fix16_abs(a),
+                FpuVectorSubop::VNeg => fix16_neg(a),
+                FpuVectorSubop::VFloor => fix16_floor(a),
+                FpuVectorSubop::VCeil => fix16_ceil(a),
+                FpuVectorSubop::VRound => fix16_round(a),
+                FpuVectorSubop::VTrunc => fix16_trunc(a),
+                FpuVectorSubop::VMove => a,
+                FpuVectorSubop::Dot | FpuVectorSubop::DotAdd | FpuVectorSubop::DotStore => {
+                    unreachable!()
                 }
-                let source = self.fpu_registers;
-                self.fpu_registers[a] = std::array::from_fn(|lane| source[b + lane][0]);
-            }
-            6 => {
-                if a > 12 {
-                    return Err(FaultKind::InvalidInstruction);
-                }
-                let source = self.fpu_registers[b];
-                for (lane, value) in source.into_iter().enumerate() {
-                    self.fpu_registers[a + lane] = [value, 0, 0, 0];
-                }
-            }
-            7 => {
-                if a > 12 || b != 0 {
-                    return Err(FaultKind::InvalidInstruction);
-                }
-                let source: [FpuVector; 4] = self.fpu_registers[a..a + 4]
-                    .try_into()
-                    .expect("validated four-register matrix");
-                self.fpu_registers[a] = [source[0][0], source[1][0], source[2][0], source[3][0]];
-                self.fpu_registers[a + 1] =
-                    [source[0][1], source[1][1], source[2][1], source[3][1]];
-                self.fpu_registers[a + 2] =
-                    [source[0][2], source[1][2], source[2][2], source[3][2]];
-                self.fpu_registers[a + 3] =
-                    [source[0][3], source[1][3], source[2][3], source[3][3]];
-            }
-            8..=10 => {
-                let left = self.fpu_registers[a];
-                let right = self.fpu_registers[b];
-                self.fpu_registers[a] = std::array::from_fn(|lane| match function {
-                    8 => fix16_add(left[lane], right[lane]),
-                    9 => fix16_sub(left[lane], right[lane]),
-                    10 => fix16_mul(left[lane], right[lane]),
-                    _ => unreachable!(),
-                });
-            }
-            11 => {
-                let left = self.fpu_registers[a];
-                let right = self.fpu_registers[b];
-                for lane in 0..4 {
-                    self.fpu_accumulator = acc_saturate(
-                        i128::from(self.fpu_accumulator)
-                            + i128::from(left[lane]) * i128::from(right[lane]),
-                    );
-                }
-            }
-            12 => {
-                // FACCSTORE: `b` is a 4-bit destination write mask. Every set
-                // bit writes the same rounded ACC value; ACC is then cleared.
-                let value = fix16_from_acc(self.fpu_accumulator);
-                for (lane, word) in self.fpu_registers[a].iter_mut().enumerate() {
-                    if b >> lane & 1 == 1 {
-                        *word = value;
-                    }
-                }
-                self.fpu_accumulator = 0;
-            }
-            13 => {
-                self.pending_test = Some(fix16_compare(
-                    self.fpu_registers[a][0],
-                    self.fpu_registers[b][0],
-                ));
-            }
-            14 => self.execute_fpu_unary(a, b)?,
-            // fn 15 is reserved (formerly FMULS).
-            _ => return Err(FaultKind::InvalidInstruction),
+            };
+            self.fpu_write(fd + lane, result);
         }
         Ok(StepOutcome::Running)
     }
 
-    fn execute_fpu_unary(&mut self, register: usize, operation: usize) -> Result<(), FaultKind> {
-        let source = self.fpu_registers[register];
-        match operation {
-            value if value == FpuUnaryOp::Reciprocal as usize => {
-                self.fpu_registers[register][0] =
-                    fix16_reciprocal(source[0]).map_err(FaultKind::FpuDomain)?;
-            }
-            value if value == FpuUnaryOp::ReciprocalSqrt as usize => {
-                self.fpu_registers[register][0] =
-                    fix16_reciprocal_sqrt(source[0]).map_err(FaultKind::FpuDomain)?;
-            }
-            value if value == FpuUnaryOp::SinCos as usize => {
-                let (sin, cos) = fix16_sin_cos(source[0]);
-                self.fpu_registers[register] = [sin, cos, 0, 0];
-            }
-            value if value == FpuUnaryOp::Abs as usize => {
-                self.fpu_registers[register] = source.map(fix16_abs)
-            }
-            value if value == FpuUnaryOp::Neg as usize => {
-                self.fpu_registers[register] = source.map(fix16_neg)
-            }
-            value if value == FpuUnaryOp::Floor as usize => {
-                self.fpu_registers[register] = source.map(fix16_floor)
-            }
-            value if value == FpuUnaryOp::Ceil as usize => {
-                self.fpu_registers[register] = source.map(fix16_ceil)
-            }
-            value if value == FpuUnaryOp::Round as usize => {
-                self.fpu_registers[register] = source.map(fix16_round)
-            }
-            value if value == FpuUnaryOp::Saturate01 as usize => {
-                self.fpu_registers[register] = source.map(fix16_saturate01)
-            }
-            value if value == FpuUnaryOp::Sign as usize => {
-                self.fpu_registers[register] = source.map(fix16_sign)
-            }
-            value if value == FpuUnaryOp::Zero as usize => self.fpu_registers[register] = [0; 4],
-            // FACCLOAD.X/Y/Z/W: overwrite ACC with the exact selected-lane
-            // value in accumulator format (Q8.8 shifted left by 8).
-            value
-                if (FpuUnaryOp::AccLoadX as usize..=FpuUnaryOp::AccLoadW as usize)
-                    .contains(&value) =>
-            {
-                let lane = value - FpuUnaryOp::AccLoadX as usize;
-                self.fpu_accumulator = i64::from(source[lane]) << 8;
-            }
-            _ => return Err(FaultKind::InvalidInstruction),
+    /// `0xD` SCALAR: `Fa`/`Fb` are scalar sources, `Fd` the scalar destination.
+    fn execute_fpu_scalar(&mut self, word0: Word, word1: Word) -> ExecuteResult {
+        let fa = usize::from(fpu_fa(word0));
+        let fb = usize::from(fpu_fb(word0));
+        let fd = usize::from(fpu_fd(word1));
+        let mode = fpu_mode(word1);
+        let subop_field = fpu_scalar_subop_field(word1);
+        let Some(subop) = FpuScalarSubop::from_field(subop_field) else {
+            return Err(FaultKind::InvalidInstruction);
+        };
+        if fpu_scalar_field_error(fpu_fa(word0), fpu_fb(word0), fpu_fd(word1), subop, mode)
+            .is_some()
+        {
+            return Err(FaultKind::InvalidInstruction);
         }
-        Ok(())
+        let a = self.fpu_read(fa);
+        let b = self.fpu_read(fb);
+        match subop {
+            FpuScalarSubop::Add => self.fpu_write(fd, fix16_add(a, b)),
+            FpuScalarSubop::Sub => self.fpu_write(fd, fix16_sub(a, b)),
+            FpuScalarSubop::Mul => self.fpu_write(fd, fix16_mul(a, b)),
+            FpuScalarSubop::Min => self.fpu_write(fd, a.min(b)),
+            FpuScalarSubop::Max => self.fpu_write(fd, a.max(b)),
+            FpuScalarSubop::Abs => self.fpu_write(fd, fix16_abs(a)),
+            FpuScalarSubop::Neg => self.fpu_write(fd, fix16_neg(a)),
+            FpuScalarSubop::Floor => self.fpu_write(fd, fix16_floor(a)),
+            FpuScalarSubop::Ceil => self.fpu_write(fd, fix16_ceil(a)),
+            FpuScalarSubop::Round => self.fpu_write(fd, fix16_round(a)),
+            FpuScalarSubop::Trunc => self.fpu_write(fd, fix16_trunc(a)),
+            FpuScalarSubop::Cmp => self.pending_test = Some(fix16_compare(a, b)),
+            FpuScalarSubop::Rcp => self.fpu_write(fd, rcp_q16(a)),
+            FpuScalarSubop::Rsqrt => self.fpu_write(fd, rsqrt_q16(a)),
+            FpuScalarSubop::SinCos => {
+                let sc_mode = FpuSinCosMode::from_mode(mode).expect("validated SINCOS mode");
+                let (sin, cos) = sincos_q16(a);
+                match sc_mode {
+                    FpuSinCosMode::SinCos => {
+                        self.fpu_write(fd, sin);
+                        self.fpu_write(fd + 1, cos);
+                    }
+                    FpuSinCosMode::Sin => self.fpu_write(fd, sin),
+                    FpuSinCosMode::Cos => self.fpu_write(fd, cos),
+                }
+            }
+            FpuScalarSubop::Mov => self.fpu_write(fd, a),
+        }
+        Ok(StepOutcome::Running)
+    }
+
+    /// `0xE` AUX: integer-register bridges and FLD/FST/FLDV/FSTV.
+    fn execute_fpu_aux(&mut self, word0: Word, word1: Word) -> ExecuteResult {
+        let kind = FpuAuxKind::from_field((word0 & 0b11) as u8);
+        let x = usize::from(fpu_aux_x(word0));
+        let fa = usize::from(fpu_aux_fa(word0));
+        let fd = usize::from(fpu_fd(word1));
+        let mode = fpu_mode(word1);
+        let subop_field = fpu_scalar_subop_field(word1);
+        let Some(subop) = FpuAuxSubop::from_field(subop_field) else {
+            return Err(FaultKind::InvalidInstruction);
+        };
+        // The shared contract rejects unimplemented kinds, reserved FLD/FST
+        // mode bits, and register-range overflow for builder, decoder and sim.
+        if fpu_aux_field_error(kind, fpu_aux_fa(word0), fpu_fd(word1), subop, mode).is_some() {
+            return Err(FaultKind::InvalidInstruction);
+        }
+        let gpr = self.registers[x];
+        match subop {
+            FpuAuxSubop::Fld => {
+                let lanes = usize::from(mode) + 1;
+                for lane in 0..lanes {
+                    // Low half first, as FST and the core memory beats.
+                    let low =
+                        self.read_data(self.data_address(gpr.wrapping_add(2 * lane as Word)))?;
+                    let high =
+                        self.read_data(self.data_address(gpr.wrapping_add(2 * lane as Word + 1)))?;
+                    self.fpu_write(fd + lane, ((u32::from(high) << 16) | u32::from(low)) as i32);
+                }
+            }
+            FpuAuxSubop::Fst => {
+                let lanes = usize::from(mode) + 1;
+                for lane in 0..lanes {
+                    let value = self.fpu_read(fa + lane) as u32;
+                    self.write_data(
+                        self.data_address(gpr.wrapping_add(2 * lane as Word)),
+                        (value & 0xffff) as Word,
+                    )?;
+                    self.write_data(
+                        self.data_address(gpr.wrapping_add(2 * lane as Word + 1)),
+                        (value >> 16) as Word,
+                    )?;
+                }
+            }
+            FpuAuxSubop::Ilo2f => {
+                let current = self.fpu_read(fd);
+                self.fpu_write(fd, (current & !0xffff) | i32::from(gpr));
+            }
+            FpuAuxSubop::Ihi2f => {
+                let current = self.fpu_read(fd);
+                self.fpu_write(fd, (current & 0xffff) | (i32::from(gpr) << 16));
+            }
+            FpuAuxSubop::Flo2i => self.registers[x] = (self.fpu_read(fa) & 0xffff) as Word,
+            FpuAuxSubop::Fhi2i => self.registers[x] = ((self.fpu_read(fa) >> 16) & 0xffff) as Word,
+            FpuAuxSubop::I16tof => self.fpu_write(fd, fix16_from_i16(gpr as i16)),
+            FpuAuxSubop::Ftoi16 => self.registers[x] = fix16_to_i16(self.fpu_read(fa)) as Word,
+        }
+        Ok(StepOutcome::Running)
     }
 
     fn execute_extended(&mut self, instruction: Word) -> ExecuteResult {
@@ -855,12 +963,14 @@ mod tests {
     use super::*;
     use crate::{
         alu, branch, compare_signed, compare_unsigned, conditional_move, device_receive,
-        device_send, halt, immediate_signed, immediate_unsigned, jump_and_link_register,
-        jump_and_link_relative, jump_register, jump_relative, jump_segment, load, load_immediate16,
-        move_register, multiply, multiply_immediate, nop, population_count, prefix12, prefixed,
-        prefixed_branch, read_special, set_less_than_signed, set_less_than_unsigned,
-        shift_immediate, shift_register, signal, store, write_data_segment, AluOp, ImmediateOp,
-        MultiplyWindow, ShiftOp, SpecialRegister, TestCondition,
+        device_send, fpu_aux, fpu_aux_raw, fpu_scalar, fpu_vector, fpu_vector_raw, halt,
+        immediate_signed, immediate_unsigned, jump_and_link_register, jump_and_link_relative,
+        jump_register, jump_relative, jump_segment, load, load_immediate16, move_register,
+        multiply, multiply_immediate, nop, population_count, prefix12, prefixed, prefixed_branch,
+        read_special, set_less_than_signed, set_less_than_unsigned, shift_immediate,
+        shift_register, signal, store, write_data_segment, AluOp, FpuAuxKind, FpuAuxSubop,
+        FpuDotStride, FpuScalarSubop, FpuVectorLength, FpuVectorSubop, ImmediateOp, MultiplyWindow,
+        ShiftOp, SpecialRegister, TestCondition,
     };
 
     #[test]
@@ -998,7 +1108,9 @@ mod tests {
         let mut machine = CpuV3Sim::default();
         let [p0, add] = prefixed(immediate_unsigned(ImmediateOp::Add, 1, 0), 0x0010);
         let [p1, sub] = prefixed(immediate_unsigned(ImmediateOp::Sub, 1, 0), 0x0008);
-        machine.load_program(0, &[p0, add, p1, sub, halt()]).unwrap();
+        machine
+            .load_program(0, &[p0, add, p1, sub, halt()])
+            .unwrap();
         assert_eq!(
             machine.run(10).unwrap(),
             RunOutcome::Halted {
@@ -1010,123 +1122,571 @@ mod tests {
     }
 
     #[test]
-    fn fpu_domain_fault_is_precise() {
+    fn fpu_scalar_two_word_instructions_retire_as_pairs() {
+        let mut program = vec![];
+        program.extend(load_immediate16(1, 3));
+        program.extend(load_immediate16(2, 4));
+        program.extend(fpu_aux(
+            FpuAuxKind::IntegerRegister,
+            1,
+            0,
+            0,
+            FpuAuxSubop::I16tof,
+            0,
+        )); // f0 = 3.0
+        program.extend(fpu_aux(
+            FpuAuxKind::IntegerRegister,
+            2,
+            0,
+            1,
+            FpuAuxSubop::I16tof,
+            0,
+        )); // f1 = 4.0
+        program.extend(fpu_scalar(0, 1, 2, FpuScalarSubop::Add, 0)); // f2 = 7.0
+        program.extend(fpu_scalar(0, 1, 3, FpuScalarSubop::Mul, 0)); // f3 = 12.0
+        program.extend(fpu_scalar(2, 0, 4, FpuScalarSubop::Mov, 0)); // f4 = 7.0
+        program.extend(fpu_aux(
+            FpuAuxKind::IntegerRegister,
+            3,
+            3,
+            0,
+            FpuAuxSubop::Ftoi16,
+            0,
+        )); // r3 = trunc(f3) = 12
+        program.push(halt());
+        let words = program.len();
         let mut machine = CpuV3Sim::default();
+        machine.load_program(0, &program).unwrap();
+        assert!(matches!(
+            machine.run(64).unwrap(),
+            RunOutcome::Halted { .. }
+        ));
+        assert_eq!(machine.fpu_register(0), Some(3 << 16));
+        assert_eq!(machine.fpu_register(1), Some(4 << 16));
+        assert_eq!(machine.fpu_register(2), Some(7 << 16));
+        assert_eq!(machine.fpu_register(3), Some(12 << 16));
+        assert_eq!(machine.fpu_register(4), Some(7 << 16));
+        assert_eq!(machine.register(3), Some(12));
+        // Every FPU instruction retires two words.
+        assert_eq!(machine.retired_words(), words as u64);
+    }
+
+    #[test]
+    fn fpu_vector_lanes_dot_and_stride_follow_the_range_model() {
+        let mut program = vec![];
+        program.extend(load_immediate16(1, 0x0100));
+        program.extend(fpu_aux(
+            FpuAuxKind::IntegerRegister,
+            1,
+            0,
+            0,
+            FpuAuxSubop::Fld,
+            3,
+        )); // FLDV4 f0..f3 = 1,2,3,4
+        program.extend(fpu_vector(
+            0,
+            0,
+            4,
+            FpuVectorLength::Vec4,
+            FpuVectorSubop::VAdd,
+            0,
+        )); // f4..f7 = 2,4,6,8
+        program.extend(fpu_vector(
+            0,
+            0,
+            8,
+            FpuVectorLength::Vec4,
+            FpuVectorSubop::VMul,
+            0,
+        )); // f8..f11 = 1,4,9,16
+        program.extend(fpu_vector(
+            0,
+            0,
+            16,
+            FpuVectorLength::Vec4,
+            FpuVectorSubop::VMulS,
+            0,
+        )); // f16..f19 = 1,2,3,4
+        program.extend(fpu_vector(
+            0,
+            0,
+            12,
+            FpuVectorLength::Vec4,
+            FpuVectorSubop::DotStore,
+            0,
+        )); // f12 = 30.0
+        program.push(halt());
+        let mut machine = CpuV3Sim::default();
+        machine.load_program(0, &program).unwrap();
         machine
             .load_program(
-                0,
+                0x0100,
                 &[
-                    crate::fpu(crate::FpuOp::Load, 0, 0),
-                    crate::fpu_unary(0, crate::FpuUnaryOp::Reciprocal),
+                    0x0000, 0x0001, 0x0000, 0x0002, 0x0000, 0x0003, 0x0000, 0x0004,
                 ],
             )
             .unwrap();
-        assert_eq!(machine.step(), Ok(StepOutcome::Running));
+        assert!(matches!(
+            machine.run(64).unwrap(),
+            RunOutcome::Halted { .. }
+        ));
         assert_eq!(
-            machine.step(),
-            Err(Fault {
-                kind: FaultKind::FpuDomain(FpuDomainError::ReciprocalZero),
-                address: 1,
-                instruction: crate::fpu_unary(0, crate::FpuUnaryOp::Reciprocal)
-            })
+            [
+                machine.fpu_register(0),
+                machine.fpu_register(1),
+                machine.fpu_register(2),
+                machine.fpu_register(3),
+            ],
+            [Some(1 << 16), Some(2 << 16), Some(3 << 16), Some(4 << 16)]
         );
-        assert_eq!(machine.fpu_register(0), Some([0; 4]));
-    }
-
-    #[test]
-    fn fpu_vector_memory_dot_and_acc_writeback_follow_fix16_semantics() {
-        let mut program = vec![];
-        program.extend(load_immediate16(1, 0x0100));
-        program.extend(load_immediate16(2, 0x0104));
-        program.extend([
-            crate::fpu(crate::FpuOp::Import4, 0, 1),
-            crate::fpu(crate::FpuOp::Move, 1, 0),
-            crate::fpu(crate::FpuOp::Dot4Acc, 0, 1),
-            crate::fpu(crate::FpuOp::AccStore, 2, 1),
-            crate::fpu(crate::FpuOp::Export4, 2, 2),
-            halt(),
-        ]);
-        let mut machine = CpuV3Sim::default();
-        machine.load_program(0, &program).unwrap();
-        machine
-            .load_program(0x0100, &[256, 512, (-256_i16) as u16, 128])
-            .unwrap();
-        machine.run(32).unwrap();
-
-        assert_eq!(machine.fpu_register(0), Some([256, 512, -256, 128]));
-        assert_eq!(machine.fpu_register(2), Some([1600, 0, 0, 0]));
-        assert_eq!(machine.fpu_accumulator(), 0);
-        assert_eq!(machine.memory(0x0104), 1600);
-        assert_eq!(machine.memory(0x0105), 0);
-    }
-
-    #[test]
-    fn fpu_accstore_mask_and_accload_round_trip() {
-        let mut program = vec![];
-        program.extend(load_immediate16(1, 0x0100));
-        program.extend([
-            crate::fpu(crate::FpuOp::Import4, 0, 1),
-            crate::fpu(crate::FpuOp::Move, 1, 0),
-            crate::fpu(crate::FpuOp::Dot4Acc, 0, 1),
-            // Mask 0b0101 writes lanes x and z; mask 0 only clears ACC.
-            crate::fpu(crate::FpuOp::AccStore, 2, 0b0101),
-            crate::fpu(crate::FpuOp::AccStore, 3, 0),
-            // FACCLOAD.W overwrites ACC with lane w exactly; a full mask
-            // splats it to every lane.
-            crate::fpu_unary(0, crate::FpuUnaryOp::AccLoadW),
-            crate::fpu(crate::FpuOp::AccStore, 4, 0b1111),
-            halt(),
-        ]);
-        let mut machine = CpuV3Sim::default();
-        machine.load_program(0, &program).unwrap();
-        machine
-            .load_program(0x0100, &[256, 512, 768, 1024])
-            .unwrap();
-        machine.run(32).unwrap();
-        // dot = 1 + 4 + 9 + 16 = 30.0 -> 7680.
-        assert_eq!(machine.fpu_register(2), Some([7680, 0, 7680, 0]));
-        assert_eq!(machine.fpu_register(3), Some([0; 4]));
-        assert_eq!(machine.fpu_register(4), Some([1024; 4]));
+        assert_eq!(
+            [
+                machine.fpu_register(4),
+                machine.fpu_register(5),
+                machine.fpu_register(6),
+                machine.fpu_register(7),
+            ],
+            [Some(2 << 16), Some(4 << 16), Some(6 << 16), Some(8 << 16)]
+        );
+        assert_eq!(
+            [
+                machine.fpu_register(8),
+                machine.fpu_register(9),
+                machine.fpu_register(10),
+                machine.fpu_register(11),
+            ],
+            [Some(1 << 16), Some(4 << 16), Some(9 << 16), Some(16 << 16)]
+        );
+        assert_eq!(
+            [
+                machine.fpu_register(16),
+                machine.fpu_register(17),
+                machine.fpu_register(18),
+                machine.fpu_register(19),
+            ],
+            [Some(1 << 16), Some(2 << 16), Some(3 << 16), Some(4 << 16)]
+        );
+        assert_eq!(machine.fpu_register(12), Some(30 << 16));
         assert_eq!(machine.fpu_accumulator(), 0);
     }
 
     #[test]
-    fn fpu_fn_15_is_reserved_and_faults() {
+    fn fpu_dot_stride_reads_the_second_source_with_a_step() {
+        let mut program = vec![];
+        program.extend(load_immediate16(1, 0x0100));
+        program.extend(fpu_aux(
+            FpuAuxKind::IntegerRegister,
+            1,
+            0,
+            0,
+            FpuAuxSubop::Fld,
+            3,
+        )); // FLDV4 f0..f3 = 1,2,3,4
+            // B = f8, f11, f14, f17 (stride 3), all set to 1.0 by I16TOF.
+        program.extend(load_immediate16(2, 1));
+        for fd in [8u8, 11, 14, 17] {
+            program.extend(fpu_aux(
+                FpuAuxKind::IntegerRegister,
+                2,
+                0,
+                fd,
+                FpuAuxSubop::I16tof,
+                0,
+            ));
+        }
+        program.extend(fpu_vector(
+            0,
+            8,
+            20,
+            FpuVectorLength::Vec4,
+            FpuVectorSubop::DotStore,
+            FpuDotStride::Stride3 as u8,
+        )); // f20 = 1+2+3+4 = 10.0
+        program.push(halt());
         let mut machine = CpuV3Sim::default();
-        machine.load_program(0, &[0xdf00]).unwrap();
+        machine.load_program(0, &program).unwrap();
+        machine
+            .load_program(
+                0x0100,
+                &[
+                    0x0000, 0x0001, 0x0000, 0x0002, 0x0000, 0x0003, 0x0000, 0x0004,
+                ],
+            )
+            .unwrap();
+        assert!(matches!(
+            machine.run(64).unwrap(),
+            RunOutcome::Halted { .. }
+        ));
+        assert_eq!(machine.fpu_register(20), Some(10 << 16));
+    }
+
+    #[test]
+    fn fpu_aux_memory_moves_low_half_first_and_bridges_raw_halves() {
+        let mut program = vec![];
+        program.extend(load_immediate16(1, 0x0100));
+        program.extend(load_immediate16(2, 0x0102));
+        program.extend(load_immediate16(3, 0xbeef));
+        program.extend(fpu_aux(
+            FpuAuxKind::IntegerRegister,
+            1,
+            0,
+            0,
+            FpuAuxSubop::Fld,
+            0,
+        )); // f0 = {mem[0x0101], mem[0x0100]}
+        program.extend(fpu_aux(
+            FpuAuxKind::IntegerRegister,
+            2,
+            0,
+            0,
+            FpuAuxSubop::Fst,
+            0,
+        )); // mem[0x0102..] = f0, low half first
+        program.extend(fpu_aux(
+            FpuAuxKind::IntegerRegister,
+            3,
+            0,
+            1,
+            FpuAuxSubop::Ilo2f,
+            0,
+        )); // f1 low = 0xbeef
+        program.extend(fpu_aux(
+            FpuAuxKind::IntegerRegister,
+            3,
+            0,
+            2,
+            FpuAuxSubop::Ihi2f,
+            0,
+        )); // f2 high = 0xbeef
+        program.extend(fpu_aux(
+            FpuAuxKind::IntegerRegister,
+            4,
+            0,
+            0,
+            FpuAuxSubop::Flo2i,
+            0,
+        )); // r4 = f0 low
+        program.extend(fpu_aux(
+            FpuAuxKind::IntegerRegister,
+            5,
+            0,
+            0,
+            FpuAuxSubop::Fhi2i,
+            0,
+        )); // r5 = f0 high
+        program.push(halt());
+        let mut machine = CpuV3Sim::default();
+        machine.load_program(0, &program).unwrap();
+        machine.load_program(0x0100, &[0x1234, 0x5678]).unwrap();
+        assert!(matches!(
+            machine.run(64).unwrap(),
+            RunOutcome::Halted { .. }
+        ));
+        assert_eq!(machine.fpu_register(0), Some(0x5678_1234));
+        assert_eq!(machine.memory(0x0102), 0x1234);
+        assert_eq!(machine.memory(0x0103), 0x5678);
+        assert_eq!(machine.fpu_register(1), Some(0x0000_beef));
+        assert_eq!(machine.fpu_register(2), Some(0xbeef_0000_u32 as i32));
+        assert_eq!(machine.register(4), Some(0x1234));
+        assert_eq!(machine.register(5), Some(0x5678));
+    }
+
+    /// Runs `RCP`, `RSQRT` and dual `SINCOS` on one raw Q16.16 input and
+    /// returns `(rcp, rsqrt, sin, cos)`.
+    fn run_special(input: i32) -> (i32, i32, i32, i32) {
+        let raw = input as u32;
+        let mut program = vec![];
+        program.extend(load_immediate16(1, 0x0100));
+        program.extend(fpu_aux(
+            FpuAuxKind::IntegerRegister,
+            1,
+            0,
+            0,
+            FpuAuxSubop::Fld,
+            0,
+        )); // f0 = input
+        program.extend(fpu_scalar(0, 0, 1, FpuScalarSubop::Rcp, 0));
+        program.extend(fpu_scalar(0, 0, 2, FpuScalarSubop::Rsqrt, 0));
+        program.extend(fpu_scalar(0, 0, 3, FpuScalarSubop::SinCos, 0));
+        program.push(halt());
+        let mut machine = CpuV3Sim::default();
+        machine.load_program(0, &program).unwrap();
+        machine
+            .load_program(0x0100, &[raw as u16, (raw >> 16) as u16])
+            .unwrap();
+        assert!(matches!(
+            machine.run(64).unwrap(),
+            RunOutcome::Halted { .. }
+        ));
+        (
+            machine.fpu_register(1).unwrap(),
+            machine.fpu_register(2).unwrap(),
+            machine.fpu_register(3).unwrap(),
+            machine.fpu_register(4).unwrap(),
+        )
+    }
+
+    #[test]
+    fn fpu_special_functions_are_bit_exact_with_the_reference_model() {
+        for input in [
+            0,
+            1,
+            -1,
+            0x0001_0000,
+            -0x0001_0000,
+            0x0002_0000,
+            0x7fff_ffff,
+            i32::MIN,
+            0x1234_5678,
+            -0x1234_5678,
+        ] {
+            let (sin, cos) = sincos_q16(input);
+            assert_eq!(
+                run_special(input),
+                (rcp_q16(input), rsqrt_q16(input), sin, cos),
+                "input {input:#010x}"
+            );
+        }
+    }
+
+    #[test]
+    fn fpu_scalar_arithmetic_wraps_and_rounds_half_up() {
+        let mut program = vec![];
+        program.extend(load_immediate16(1, 0x7fff));
+        program.extend(load_immediate16(2, 1));
+        program.extend(fpu_aux(
+            FpuAuxKind::IntegerRegister,
+            1,
+            0,
+            0,
+            FpuAuxSubop::I16tof,
+            0,
+        )); // f0 = 32767.0
+        program.extend(fpu_aux(
+            FpuAuxKind::IntegerRegister,
+            2,
+            0,
+            1,
+            FpuAuxSubop::I16tof,
+            0,
+        )); // f1 = 1.0
+        program.extend(fpu_scalar(0, 1, 2, FpuScalarSubop::Add, 0)); // wraps to i32::MIN
+        program.extend(fpu_aux(
+            FpuAuxKind::IntegerRegister,
+            3,
+            2,
+            0,
+            FpuAuxSubop::Ftoi16,
+            0,
+        )); // r3 = -32768 (0x8000)
+        program.extend(load_immediate16(4, 0x0100));
+        program.extend(fpu_aux(
+            FpuAuxKind::IntegerRegister,
+            4,
+            0,
+            4,
+            FpuAuxSubop::Fld,
+            0,
+        )); // f4 = 0.5 from memory
+        program.extend(fpu_scalar(4, 0, 5, FpuScalarSubop::Round, 0)); // 0.5 -> 1.0
+        program.extend(fpu_aux(
+            FpuAuxKind::IntegerRegister,
+            6,
+            5,
+            0,
+            FpuAuxSubop::Ftoi16,
+            0,
+        )); // r6 = 1
+        program.extend(load_immediate16(7, 0x0102));
+        program.extend(fpu_aux(
+            FpuAuxKind::IntegerRegister,
+            7,
+            0,
+            6,
+            FpuAuxSubop::Fld,
+            0,
+        )); // f6 = -0.5 from memory
+        program.extend(fpu_scalar(6, 0, 7, FpuScalarSubop::Round, 0)); // -0.5 -> 0.0
+        program.extend(fpu_aux(
+            FpuAuxKind::IntegerRegister,
+            8,
+            7,
+            0,
+            FpuAuxSubop::Ftoi16,
+            0,
+        )); // r8 = 0
+        program.push(halt());
+        let mut machine = CpuV3Sim::default();
+        machine.load_program(0, &program).unwrap();
+        machine
+            .load_program(
+                0x0100,
+                &[0x8000, 0x0000, 0x8000, 0xffff], // +0.5, -0.5 (low half first)
+            )
+            .unwrap();
+        assert!(matches!(
+            machine.run(128).unwrap(),
+            RunOutcome::Halted { .. }
+        ));
+        assert_eq!(machine.register(3), Some(0x8000));
+        assert_eq!(machine.register(6), Some(1));
+        assert_eq!(machine.register(8), Some(0));
+    }
+
+    #[test]
+    fn fpu_out_of_range_register_ranges_fault() {
+        // FLDV2 with Fd = 63 needs F63 and F64; F64 does not exist.
+        let mut machine = CpuV3Sim::default();
+        let [broken0, broken1] = fpu_aux_raw(
+            FpuAuxKind::IntegerRegister,
+            1,
+            0,
+            63,
+            FpuAuxSubop::Fld as u8,
+            1,
+        );
+        machine
+            .load_program(0, &[broken0, broken1, halt()])
+            .unwrap();
         assert_eq!(
             machine.step(),
             Err(Fault {
                 kind: FaultKind::InvalidInstruction,
                 address: 0,
-                instruction: 0xdf00
+                instruction: broken0,
             })
         );
+        assert_eq!(machine.pc(), 0);
+
+        // VADD.4 with Fa = 61 needs F61..F64.
+        let [word0, word1] = fpu_vector_raw(
+            61,
+            0,
+            0,
+            FpuVectorLength::Vec4 as u8,
+            FpuVectorSubop::VAdd as u8,
+            0,
+        );
+        let mut machine = CpuV3Sim::default();
+        machine.load_program(0, &[word0, word1, halt()]).unwrap();
+        assert_eq!(
+            machine.step(),
+            Err(Fault {
+                kind: FaultKind::InvalidInstruction,
+                address: 0,
+                instruction: word0,
+            })
+        );
+        assert_eq!(machine.pc(), 0);
     }
 
     #[test]
     fn fpu_compare_sets_the_existing_pending_test() {
         let mut program = vec![];
-        program.extend(load_immediate16(0, (-256_i16) as u16));
-        program.extend(load_immediate16(1, 256));
-        program.extend([
-            crate::fpu(crate::FpuOp::Load, 0, 0),
-            crate::fpu(crate::FpuOp::Load, 1, 1),
-            crate::fpu(crate::FpuOp::Compare, 0, 1),
-            branch(TestCondition::LessThan, 1),
-            halt(),
-            crate::move_register(0, 1),
-            halt(),
-        ]);
+        program.extend(load_immediate16(0, 5));
+        program.extend(load_immediate16(1, 9));
+        program.extend(fpu_aux(
+            FpuAuxKind::IntegerRegister,
+            0,
+            0,
+            0,
+            FpuAuxSubop::I16tof,
+            0,
+        )); // f0 = 5.0
+        program.extend(fpu_aux(
+            FpuAuxKind::IntegerRegister,
+            1,
+            0,
+            1,
+            FpuAuxSubop::I16tof,
+            0,
+        )); // f1 = 9.0
+        program.extend(fpu_scalar(0, 1, 0, FpuScalarSubop::Cmp, 0));
+        program.push(branch(TestCondition::LessThan, 1));
+        program.push(halt());
+        program.push(crate::move_register(0, 1));
+        program.push(halt());
         let mut machine = CpuV3Sim::default();
         machine.load_program(0, &program).unwrap();
         assert_eq!(
-            machine.run(32).unwrap(),
+            machine.run(64).unwrap(),
             RunOutcome::Halted {
                 steps: 10,
-                signal: 256
+                signal: 9
             }
         );
+    }
+
+    #[test]
+    fn fpu_reserved_pairs_fault_and_rewind_to_the_first_word() {
+        let mut machine = CpuV3Sim::default();
+        // Reserved vector subop 0x10 in word1.
+        machine.load_program(0, &[0xc000, 0x0080, halt()]).unwrap();
+        assert_eq!(
+            machine.step(),
+            Err(Fault {
+                kind: FaultKind::InvalidInstruction,
+                address: 0,
+                instruction: 0xc000
+            })
+        );
+        assert_eq!(machine.pc(), 0);
+        assert_eq!(machine.retired_words(), 0);
+
+        // Reserved SINCOS mode 11.
+        let mut machine = CpuV3Sim::default();
+        machine.load_program(0, &[0xd000, 0x00e3, halt()]).unwrap();
+        assert_eq!(
+            machine.step(),
+            Err(Fault {
+                kind: FaultKind::InvalidInstruction,
+                address: 0,
+                instruction: 0xd000
+            })
+        );
+        assert_eq!(machine.pc(), 0);
+
+        // DOT keeps mode[2] reserved even when mode[1:0] names a stride.
+        let [dot0, dot1] = fpu_vector_raw(
+            0,
+            0,
+            0,
+            FpuVectorLength::Vec2 as u8,
+            FpuVectorSubop::Dot as u8,
+            0b100,
+        );
+        let mut machine = CpuV3Sim::default();
+        machine.load_program(0, &[dot0, dot1, halt()]).unwrap();
+        assert_eq!(
+            machine.step(),
+            Err(Fault {
+                kind: FaultKind::InvalidInstruction,
+                address: 0,
+                instruction: dot0
+            })
+        );
+        assert_eq!(machine.pc(), 0);
+
+        // A vector range past F63 faults before any register is written.
+        let [far0, far1] = fpu_vector_raw(
+            61,
+            0,
+            0,
+            FpuVectorLength::Vec4 as u8,
+            FpuVectorSubop::VAdd as u8,
+            0,
+        );
+        let mut machine = CpuV3Sim::default();
+        machine.load_program(0, &[far0, far1, halt()]).unwrap();
+        assert_eq!(
+            machine.step(),
+            Err(Fault {
+                kind: FaultKind::InvalidInstruction,
+                address: 0,
+                instruction: far0
+            })
+        );
+        assert_eq!(machine.pc(), 0);
     }
 
     #[test]
@@ -1349,9 +1909,9 @@ mod tests {
 
     #[test]
     fn reserved_encodings_fault() {
-        // Revision 0.7's HALT word, the fully reserved majors C/E, and the
-        // non-canonical JREG/JALR link fields are all invalid now.
-        for word in [0xe800, 0xc000, 0xe100, 0xbe10, 0xbf00] {
+        // Majors C/D/E are now FPU v2 first words, so only the non-canonical
+        // JREG/JALR link fields remain invalid single words.
+        for word in [0xbe10, 0xbf00] {
             let mut machine = CpuV3Sim::default();
             machine.load_program(0, &[word]).unwrap();
             assert_eq!(

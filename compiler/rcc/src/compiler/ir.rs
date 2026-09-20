@@ -99,34 +99,11 @@ pub enum ShiftOp {
 #[derive(Copy, Clone, Debug, Eq, PartialEq, Hash)]
 pub enum RegClass {
     Gpr,
-    /// CpuV3 FPU: one 4-lane fix16 vector register per value
+    /// CpuV3 FPU v2: one signed Q16.16 scalar F register per value. The
+    /// frontend does not yet allocate it (C0 rejects FPU lowering); the class
+    /// stays so the frozen `F0..F63` ABI convention is validated and the
+    /// backend can refuse an FPU program explicitly.
     Fpu,
-}
-
-/// per-lane fixed-point binary operations (FADD/FSUB/FMUL)
-#[derive(Copy, Clone, Debug, Eq, PartialEq, Hash)]
-pub enum FBinOp {
-    Add,
-    Sub,
-    Mul,
-}
-
-/// fixed-point unary operations (FUNARY)
-#[derive(Copy, Clone, Debug, Eq, PartialEq, Hash)]
-pub enum FUnOp {
-    /// lane x only; domain fault on zero
-    Rcp,
-    /// lane x only; domain fault on non-positive input
-    Rsqrt,
-    /// dst = [sin, cos, 0, 0]
-    SinCos,
-    Abs,
-    Neg,
-    Floor,
-    Ceil,
-    Round,
-    Sat01,
-    Sign,
 }
 
 /// right-hand side of a comparison; immediates are legalized (u4/i4) in codegen
@@ -301,70 +278,6 @@ pub enum Instr {
         dst: VReg,
         slot: u8,
     },
-    // ----- CpuV3 FPU instructions (Fpu-class vregs unless noted) -----
-    /// per-lane fixed-point arithmetic: dst = lhs op rhs (FMULS: lane i of
-    /// dst = lane i of lhs times lane x of rhs)
-    FBin {
-        dst: VReg,
-        op: FBinOp,
-        lhs: VReg,
-        rhs: VReg,
-    },
-    FMov {
-        dst: VReg,
-        src: VReg,
-    },
-    /// GPR to FPU lane-x bridge: dst = [src_gpr, 0, 0, 0] (FLOAD)
-    FLoad {
-        dst: VReg,
-        src_gpr: VReg,
-    },
-    /// FPU to GPR lane-x bridge: dst_gpr = src lane x (FSTORE)
-    FStore {
-        dst_gpr: VReg,
-        src: VReg,
-    },
-    /// dst = four words at {DSEG, base_gpr} (FIMPORT4; base must be 4-aligned)
-    FImport4 {
-        dst: VReg,
-        base_gpr: VReg,
-    },
-    /// four words at {DSEG, base_gpr} = src lanes (FEXPORT4; 4-aligned base)
-    FExport4 {
-        src: VReg,
-        base_gpr: VReg,
-    },
-    /// dst = op(src) (FUNARY; Rcp/Rsqrt can raise a domain fault)
-    FUnary {
-        dst: VReg,
-        op: FUnOp,
-        src: VReg,
-    },
-    /// ACC += dot4(lhs, rhs) (FDOT4ACC; touches the ACC machine state)
-    FDot4Acc {
-        lhs: VReg,
-        rhs: VReg,
-    },
-    /// dst lanes selected by `mask` = round(ACC); ACC = 0 (FACCSTORE)
-    FAccStore {
-        dst: VReg,
-        mask: u8,
-    },
-    /// ACC = sign_extend(src lane `lane`) << 8 (FACCLOAD.*; ACC machine state)
-    FAccLoad {
-        src: VReg,
-        lane: u8,
-    },
-    /// dst = [0, 0, 0, 0] (FUNARY ZERO)
-    FZero {
-        dst: VReg,
-    },
-    /// dst (Gpr) = 4-aligned address of FPU spill frame slot `slot`
-    /// (register allocator spills only; resolved in codegen)
-    AddrOfFpuSpill {
-        dst: VReg,
-        slot: u8,
-    },
 }
 
 impl Instr {
@@ -408,22 +321,6 @@ impl Instr {
                 f(*cseg);
                 f(*target);
             }
-            Instr::FBin { lhs, rhs, .. } | Instr::FDot4Acc { lhs, rhs } => {
-                f(*lhs);
-                f(*rhs);
-            }
-            Instr::FAccLoad { src, .. } => f(*src),
-            Instr::FMov { src, .. } | Instr::FUnary { src, .. } | Instr::FStore { src, .. } => {
-                f(*src)
-            }
-            Instr::FLoad { src_gpr, .. }
-            | Instr::FImport4 {
-                base_gpr: src_gpr, ..
-            } => f(*src_gpr),
-            Instr::FExport4 { src, base_gpr } => {
-                f(*src);
-                f(*base_gpr);
-            }
             Instr::LoadImm { .. }
             | Instr::StoreStatic { .. }
             | Instr::DevRecv { .. }
@@ -432,10 +329,7 @@ impl Instr {
             | Instr::LoadLocal { .. }
             | Instr::AddrOfLocal { .. }
             | Instr::LoadFuncAddr { .. }
-            | Instr::Mfsr { .. }
-            | Instr::FAccStore { .. }
-            | Instr::FZero { .. }
-            | Instr::AddrOfFpuSpill { .. } => {}
+            | Instr::Mfsr { .. } => {}
         }
     }
 
@@ -479,22 +373,6 @@ impl Instr {
                 f(cseg);
                 f(target);
             }
-            Instr::FBin { lhs, rhs, .. } | Instr::FDot4Acc { lhs, rhs } => {
-                f(lhs);
-                f(rhs);
-            }
-            Instr::FAccLoad { src, .. } => f(src),
-            Instr::FMov { src, .. } | Instr::FUnary { src, .. } | Instr::FStore { src, .. } => {
-                f(src)
-            }
-            Instr::FLoad { src_gpr, .. }
-            | Instr::FImport4 {
-                base_gpr: src_gpr, ..
-            } => f(src_gpr),
-            Instr::FExport4 { src, base_gpr } => {
-                f(src);
-                f(base_gpr);
-            }
             Instr::LoadImm { .. }
             | Instr::StoreStatic { .. }
             | Instr::DevRecv { .. }
@@ -503,10 +381,7 @@ impl Instr {
             | Instr::LoadLocal { .. }
             | Instr::AddrOfLocal { .. }
             | Instr::LoadFuncAddr { .. }
-            | Instr::Mfsr { .. }
-            | Instr::FAccStore { .. }
-            | Instr::FZero { .. }
-            | Instr::AddrOfFpuSpill { .. } => {}
+            | Instr::Mfsr { .. } => {}
         }
     }
 }
@@ -827,43 +702,6 @@ impl fmt::Display for Instr {
             Instr::LoadLocal { dst, slot } => write!(f, "v{dst} = load_local #{slot}"),
             Instr::StoreLocal { slot, src } => write!(f, "store_local #{slot} = v{src}"),
             Instr::AddrOfLocal { dst, slot } => write!(f, "v{dst} = &local #{slot}"),
-            Instr::FBin { dst, op, lhs, rhs } => {
-                let op = match op {
-                    FBinOp::Add => "fadd",
-                    FBinOp::Sub => "fsub",
-                    FBinOp::Mul => "fmul",
-                };
-                write!(f, "v{dst} = {op} v{lhs}, v{rhs}")
-            }
-            Instr::FMov { dst, src } => write!(f, "v{dst} = fmov v{src}"),
-            Instr::FLoad { dst, src_gpr } => write!(f, "v{dst} = fload v{src_gpr}"),
-            Instr::FStore { dst_gpr, src } => write!(f, "v{dst_gpr} = fstore v{src}"),
-            Instr::FImport4 { dst, base_gpr } => {
-                write!(f, "v{dst} = fimport4 [v{base_gpr}]")
-            }
-            Instr::FExport4 { src, base_gpr } => {
-                write!(f, "fexport4 [v{base_gpr}] = v{src}")
-            }
-            Instr::FUnary { dst, op, src } => {
-                let op = match op {
-                    FUnOp::Rcp => "frcp",
-                    FUnOp::Rsqrt => "frsqrt",
-                    FUnOp::SinCos => "fsincos",
-                    FUnOp::Abs => "fabs",
-                    FUnOp::Neg => "fneg",
-                    FUnOp::Floor => "ffloor",
-                    FUnOp::Ceil => "fceil",
-                    FUnOp::Round => "fround",
-                    FUnOp::Sat01 => "fsat01",
-                    FUnOp::Sign => "fsign",
-                };
-                write!(f, "v{dst} = {op} v{src}")
-            }
-            Instr::FDot4Acc { lhs, rhs } => write!(f, "fdot4acc v{lhs}, v{rhs}"),
-            Instr::FAccStore { dst, mask } => write!(f, "v{dst} = faccstore {mask:#06b}"),
-            Instr::FAccLoad { src, lane } => write!(f, "faccload.{lane} v{src}"),
-            Instr::FZero { dst } => write!(f, "v{dst} = fzero"),
-            Instr::AddrOfFpuSpill { dst, slot } => write!(f, "v{dst} = &fpu_spill #{slot}"),
         }
     }
 }

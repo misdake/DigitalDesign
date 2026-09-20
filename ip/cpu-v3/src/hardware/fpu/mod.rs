@@ -2239,6 +2239,60 @@ impl CpuV3FpuState {
 mod tests {
     use super::*;
 
+    /// The architecture `encoding` module is the public source of truth for
+    /// every FPU v2 field. This module keeps a private copy for the Verilog
+    /// literals, so replay the whole 16-bit word space and require the two to
+    /// agree exactly. A silent second encoding can never survive this test.
+    #[test]
+    fn architecture_encoding_locks_the_private_rtl_extractor() {
+        use crate::{
+            fpu_aux_fa, fpu_aux_x, fpu_fa, fpu_fb, fpu_fd, fpu_mode, fpu_scalar_subop_field,
+            fpu_vector_len_field, fpu_vector_subop_field, FpuAuxKind, FpuOpcode, FpuVectorLength,
+        };
+        for word in 0..=u16::MAX {
+            let major = (word >> 12) as u8;
+            assert_eq!(encoding::opcode(word), major, "opcode {word:#06x}");
+            assert_eq!(
+                FpuOpcode::from_word0(word).is_some(),
+                matches!(major, 0xc..=0xe),
+                "fpu opcode set {word:#06x}"
+            );
+            assert_eq!(encoding::word0_fa(word), fpu_fa(word), "{word:#06x}");
+            assert_eq!(encoding::word0_fb(word), fpu_fb(word), "{word:#06x}");
+            assert_eq!(encoding::aux_fa(word), fpu_aux_fa(word), "{word:#06x}");
+            assert_eq!(encoding::aux_x(word), fpu_aux_x(word), "{word:#06x}");
+            assert_eq!(
+                encoding::aux_kind(word),
+                FpuAuxKind::from_field((word & 3) as u8) as u8,
+                "{word:#06x}"
+            );
+            assert_eq!(encoding::word1_fd(word), fpu_fd(word), "{word:#06x}");
+            assert_eq!(
+                encoding::word1_len(word),
+                fpu_vector_len_field(word),
+                "{word:#06x}"
+            );
+            assert_eq!(
+                encoding::vector_subop(word),
+                fpu_vector_subop_field(word),
+                "{word:#06x}"
+            );
+            assert_eq!(
+                encoding::scalar_subop(word),
+                fpu_scalar_subop_field(word),
+                "{word:#06x}"
+            );
+            assert_eq!(encoding::word1_mode(word), fpu_mode(word), "{word:#06x}");
+        }
+        for len in 0..4u8 {
+            assert_eq!(
+                encoding::decoded_last_lane(len),
+                FpuVectorLength::from_field(len).map_or(3, |len| len.lanes() - 1),
+                "len {len}"
+            );
+        }
+    }
+
     /// Three-stage mirror of the shared CpuV3FpuMulPipe used by the leaf-level
     /// SINCOS cycle test, since the pipeline itself lives in the unit top.
     #[derive(Default)]

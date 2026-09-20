@@ -27,9 +27,14 @@ under `ip/cpu-v3/docs` and `systems/cpu-v3-tang-nano-20k/docs`.
 - `r0..r1` return values, `r2..r7` arguments, `r8..r11` callee-saved values,
   `r12` compiler scratch, `r13` stack pointer, and `r14` the architecturally
   fixed link register. `r15` is an ordinary allocatable register.
-- The compiler FPU ABI mirrors it: `f0..f1` return values, `f2..f7` arguments,
-  `f8..f14` allocatable, and `f15` the compiler scratch for parallel moves.
-  Every F register is caller-saved and ACC is caller-clobbered.
+- The FPU v2 file is `F0..F63`, one signed Q16.16 value each (16 fractional
+  bits, range about `[-32768, +32767.99998]`, all arithmetic wrapping). There
+  is no `F0 = 0` and no vec2/vec3/vec4 architectural register type: a vector
+  instruction views a consecutive register range. The compiler ABI reserves
+  `F0..F3` for returns, places arguments compactly from `F4` (up to `F27`),
+  allocates `F28..F62`, and keeps `F63` as the parallel-move scratch. Every F
+  register is caller-saved and the 64-bit Q32.32 accumulator is
+  caller-clobbered.
 - `CSEG` supplies the high physical bits for instruction fetch. `DSEG` supplies
   them for every ordinary load and store, including stack accesses and offsets
   `0xff00..0xffff`.
@@ -91,9 +96,9 @@ the word an invalid encoding.
 | 9 | `STORE` | `9 rs base imm4` | Write one 16-bit word |
 | A | Immediate | `A fn rd imm4` | Arithmetic, logic, constant construction, and immediate comparisons |
 | B | Branch / move / jump | `B fn ...` | Six conditional branches, JREL/JALREL, six conditional moves, JREG/JALR |
-| C | reserved | — | Invalid instruction |
-| D | fix16 FPU | `D fn a b` | Blocking vector, accumulator, memory, compare, and unary operations |
-| E | reserved | — | Invalid instruction |
+| C | FPU VECTOR | `C Fa Fb` + word1 | Two-word vector ALU, multiply, and dot operations |
+| D | FPU SCALAR | `D Fa Fb` + word1 | Two-word scalar ALU, compare, and special functions |
+| E | FPU AUX | `E X Fa kind` + word1 | Two-word integer bridges and FLD/FST/FLDV/FSTV |
 | F | `PFX12` | `F payload12` | Creates a pending 12-bit prefix payload |
 
 ### Register ALU (opcodes 0, 1, 3, 4, 5)
@@ -229,28 +234,76 @@ one. `JALREL` and `JALR` link to the architecturally fixed `r14`; the middle
 nibble of `JREG`/`JALR` must hold its canonical value (0 / E) and any other
 value is invalid. Register forms never consume a prefix.
 
-### fix16 FPU (opcode D)
+### FPU v2 (opcodes C, D, E)
 
-Every `D fn a b` word belongs to the blocking fix16 FPU. Revision 0.8 changes no
-FPU encoding, semantics, exception, or latency; the current encoding is:
+Every FPU v2 instruction is **32 bits wide, fetched as two consecutive 16-bit
+words**, and never consumes a `PFX12` prefix. Word0 exposes the source bases so
+the register-file reads can start before word1 is decoded; word1 carries the
+destination and the operation. The architecture encoding lives in
+`architecture/encoding.rs` and is the single source of truth; the RTL extractor
+is locked to it by an exhaustive test.
 
-| fn | Encoding | Mnemonic | Summary |
-| --- | --- | --- | --- |
-| 0/1 | `D 0/1 a b` | `FLOAD`/`FSTORE` | Raw lane-x bridge between a GPR and an F register |
-| 2/3 | `D 2/3 a b` | `FIMPORT4`/`FEXPORT4` | Four aligned words at `{DSEG, r[b]}` |
-| 4..7 | `D 4..7 a b` | `FMOV`/`FPACK4`/`FUNPACK4`/`FTRANSPOSE4` | F-register reorganization |
-| 8..A | `D 8..A a b` | `FADD`/`FSUB`/`FMUL` | Saturating destructive component arithmetic |
-| B | `D B a b` | `FDOT4ACC` | `ACC += dot4(Fa, Fb)`, signed 40-bit saturation |
-| C | `D C a mask4` | `FACCSTORE` | Write the rounded ACC to every lane in `b`, then clear ACC |
-| D | `D D a b` | `FCMP` | Signed lane-x ordering into the transient pending test |
-| E | `D E a subop` | `FUNARY` | Scalar/vec4 unary operations and `FACCLOAD.*` |
-| F | `D F a b` | reserved | Invalid instruction (formerly `FMULS`) |
+```text
+VECTOR/SCALAR word0:  [15:12]=opcode  [11:6]=Fa  [5:0]=Fb
+VECTOR word1:         [15:10]=Fd  [9:8]=len  [7:3]=subop  [2:0]=mode
+SCALAR/AUX word1:     [15:10]=Fd  [9:4]=subop  [3:0]=mode
+AUX word0:            [15:12]=0xE  [11:8]=X  [7:2]=Fa  [1:0]=kind
+```
 
-`FCMP` produces the pending test, so conditional branches and conditional moves
-consume it exactly as they consume `CMPS`/`CMPU`. An FPU instruction is a
-core-execution barrier and never consumes `PFX12`. The `FUNARY` suboperations,
-the `FACCSTORE` write-mask rule, ACC semantics, the domain faults, and the
-alignment rule are specified in the Revision 0.7 section below.
+A vector is a consecutive register-range view, not an architectural type:
+`VADD.3 F20, F4, F8` computes `F20=F4+F8`, `F21=F5+F9`, `F22=F6+F10`. Length
+`00/01/10` selects vec2/vec3/vec4 and `11` is reserved. Destination/source
+ranges must be exactly base-equal or fully disjoint; partial overlap is a
+software contract violation and is not checked by hardware.
+
+`0xC` VECTOR subops: `00` VADD, `01` VSUB, `02` VMUL (`q16(A*B)`), `03` VMULS
+(`q16(A*B0)`), `04` VMIN, `05` VMAX, `06` VABS, `07` VNEG, `08` VFLOOR, `09`
+VCEIL, `0A` VROUND, `0B` VTRUNC, `0C` VMOV, `0D` DOT, `0E` DOTADD, `0F`
+DOTSTORE. `10..1F` are reserved. `mode[1:0]` is the second-source stride for the
+DOT family (`00` +1, `01` +3, `10` +4; `11` reserved) and is reserved for the
+other vector subops. `DOT` sets `ACC = sum(A[i]*B[i])`, `DOTADD` accumulates,
+and `DOTSTORE` narrows the completed sum to `Fd` and clears ACC.
+
+`0xD` SCALAR subops: `00` ADD, `01` SUB, `02` MUL, `03` MIN, `04` MAX, `05`
+ABS, `06` NEG, `07` FLOOR, `08` CEIL, `09` ROUND, `0A` TRUNC, `0B` CMP, `0C`
+RCP, `0D` RSQRT, `0E` SINCOS, `0F` MOV. `10..3F` are reserved. `CMP` writes the
+transient pending test (signed ordering of `Fa` and `Fb`), so conditional
+branches and conditional moves consume it exactly as they consume
+`CMPS`/`CMPU`. `SINCOS` selects its result with `mode[1:0]`: `00` writes
+`Fd=sin`, `Fd+1=cos` (requires `Fd<=62`), `01` writes `sin`, `10` writes `cos`,
+`11` is reserved; `mode[3:2]` is reserved and must be zero. Every other scalar
+subop has a reserved mode field that must be zero.
+
+`0xE` AUX word0 `kind` is `00` integer-register index, `01` constant-table
+index, `10` selector, `11` reserved. Only kind `00` is defined today; word1
+subops are `00` FLD, `01` FST, `02` ILO2F, `03` IHI2F, `04` FLO2I, `05` FHI2I,
+`06` I16TOF, `07` FTOI16, and `08..3F` are reserved. FLD/FST use `mode[1:0] + 1`
+lanes (`00` scalar through `11` vec4) with `mode[3:2]` reserved. `FLD` loads
+`Fd+i = {mem[a+2i+1], mem[a+2i]}` and `FST` stores the same two halves, **low
+half first**, at `a = {DSEG, GPR[X]}`. `ILO2F`/`IHI2F` copy `GPR[X]` into the
+low/high half of `Fd`; `FLO2I`/`FHI2I` copy a half back; `I16TOF` sign-extends
+`GPR[X]` into a Q16.16 value; `FTOI16` truncates `Fa` toward zero into `GPR[X]`.
+
+All F registers are signed Q16.16 and every operation **wraps**: there is no
+saturation and no exception output. `FLOOR` clears the 16 fraction bits;
+`CEIL` adds one unit when a fraction remains; `ROUND` is round-half-up
+(`floor(x + 0x8000)`, ties toward `+infinity`); `TRUNC` is toward zero. The
+wide accumulator is signed 64-bit Q32.32. Every Q16.16 product fits exactly,
+but accumulation keeps only the low 64 bits: extreme legal DOT operands can
+wrap the ACC, and `DOTSTORE` takes `ACC[47:16]` from that wrapped sum. `RCP(0)`
+returns `0x7FFF_FFFF` (sign applied for negative magnitudes) and `RSQRT(x)` is
+zero for `x <= 0`; both are approximate special functions with no IEEE special
+values. The hidden register-file BSRAM region holds the RCP/RSQRT/SINCOS
+lookup tables.
+
+The prescale library contract (`v3_length2_shift` -> `u16`,
+`v3_length2_scaled` -> `fix16`, `v3_normalize_safe`, `v3_distance2_gt`) is a
+compiler library, not a new opcode; its pure reference model and frozen `2^-k`
+scaling rule live in the CPU V3 architecture crate. `v3_length2_scaled`
+returns the **prescaled** squared length `|v|^2 * 2^-2k` (not an unscaled
+length), and `v3_length2_shift` returns `k`. `scaled << 2k` is an
+original-scale approximation, not an exact reconstruction, because shifting
+the components and narrowing the dot result discard low bits when `k > 0`.
 
 ### PFX12 and wide operations
 
@@ -281,11 +334,9 @@ is the prefix address and neither word retires.
 
 | Condition | Result |
 | --- | --- |
-| Reserved or malformed encoding (including majors C/E and non-canonical fields) | `InvalidInstruction` (code 1); the instruction does not retire |
+| Reserved or malformed encoding (reserved subop/length/mode, non-canonical fields, a truncated FPU pair) | `InvalidInstruction` (code 1); the instruction does not retire |
 | Conditional branch or conditional move without a pending test | `InvalidInstruction`; does not retire |
-| `FRCP(0)` / `FRSQRT(x <= 0)` | FPU-domain fault (code 2); FPU state unchanged; does not retire |
-| Misaligned `FIMPORT4`/`FEXPORT4` | data-memory fault before any memory traffic; does not retire |
-| Address outside fitted physical memory | physical-address fault at the faulting offset; does not retire |
+| Address outside fitted physical memory (including FLD/FST/FLDV/FSTV) | physical-address fault at the faulting offset; does not retire |
 | `SIGNAL` type 0 after halt | re-reports the latched halt signal |
 
 ## Revision 0.3
@@ -397,78 +448,25 @@ With the high offset page restored to memory, `SP = 0` again denotes the
 exclusive `0x10000` top of a 64K-word data segment. This is the default compiler
 and boot ABI stack value.
 
-## Revision 0.7
+## Revision 0.7 (historical)
 
-Revision 0.7 assigns the complete `D fn a b` family to the blocking fix16 FPU.
-It adds sixteen F registers, each holding four signed Q8.8 lanes, and a signed
-saturating 40-bit accumulator ACC. An FPU instruction is a core-execution
-barrier: it completes and retires before the core accepts its successor for
-execution, although the fitted system's independent fetch queue may fetch ahead.
-FPU instructions never consume `IMMHI12`.
-
-The ISA defines exactly two uses of an F register: scalar (lane `.x`) and vec4
-(lanes `.xyzw`). There are no vec2 or vec3 encodings; software represents them
-as vec4 values with the unused tail lanes set to zero, and the simple unary
-operations below all satisfy `f(0) = 0` so those tail lanes stay zero.
-
-| fn | Name | Operation |
-| --- | --- | --- |
-| 0/1 | `FLOAD`/`FSTORE` | raw fix16 bridge between a GPR and lane x; `FLOAD Fa, Rb` sets `Fa = {Rb, 0, 0, 0}` |
-| 2/3 | `FIMPORT4`/`FEXPORT4` | four aligned words at `{DSEG, rb}` |
-| 4..7 | `FMOV`/`FPACK4`/`FUNPACK4`/`FTRANSPOSE4` | register reorganization |
-| 8..A | `FADD`/`FSUB`/`FMUL` | saturating destructive component arithmetic (`Fa op= Fb`) |
-| B | `FDOT4ACC` | `ACC += dot4(Fa, Fb)`, saturating |
-| C | `FACCSTORE Fa, mask4` | write the rounded ACC value to every lane selected by the 4-bit mask, then clear ACC |
-| D | `FCMP` | signed lane-x ordering for the pending test |
-| E | `FUNARY` | see below |
-| F | reserved | invalid instruction (formerly `FMULS`) |
-
-Scalar-by-vector multiply has no dedicated instruction: splat the scalar
-through ACC first (`FACCLOAD.X Fs` then `FACCSTORE Ft, 0b1111`), then use a
-plain `FMUL`.
-
-`FACCSTORE`'s `b` field is a **write mask**, not a lane index: bit 0 selects
-lane x through bit 3 selecting lane w, every set bit writes the same rounded
-ACC value, and mask `0b0000` writes nothing and only clears ACC. `FACCLOAD`
-is the mirror operation with a completely different encoding: it occupies
-`FUNARY` subops `B..E` (`FACCLOAD.X/Y/Z/W`), where the subop selects exactly
-one **source** lane and overwrites ACC with that lane in accumulator format
-(`ACC = sign_extend(lane) << 8`), so a Q8.8 lane round-trips exactly through
-ACC. ACC is caller-clobbered temporary state: it serves both as the wide dot
-accumulator and as a scalar transfer register, and software must not rely on
-its contents surviving a call.
-
-`FUNARY` suboperations:
-
-| subop | Name | Type | Operation |
-| --- | --- | --- | --- |
-| 0/1 | `FRCP`/`FRSQRT` | scalar | `Fa.x = 1 / Fa.x` or `1 / sqrt(Fa.x)` |
-| 2 | `FSINCOS` | scalar -> vec4 | `Fa = {sin(Fa.x), cos(Fa.x), 0, 0}` |
-| 3..9 | `FABS`/`FNEG`/`FFLOOR`/`FCEIL`/`FROUND`/`FSAT01`/`FSIGN` | vec4 | component-wise; each satisfies `f(0) = 0` |
-| A | `FZERO` | vec4 | `Fa = {0, 0, 0, 0}` |
-| B..E | `FACCLOAD.X/Y/Z/W` | lane -> ACC | overwrite ACC from the selected lane |
-| F | reserved | — | invalid instruction |
-
-All narrowing uses round-to-nearest with ties to even followed by signed Q8.8
-saturation. `FRCP(0)` and `FRSQRT(x)` for `x <= 0` raise FPU-domain fault code
-2 without modifying FPU state. Four-word transfers require `rb & 3 == 0`; a
-misaligned transfer faults before issuing memory traffic. Architecturally, each
-transfer reads or writes four consecutive words.
-
-The three continuation bits are derived combinationally from the current four
-lane values and are only an execution hint. They are not architectural state
-and are neither spilled nor restored. All F registers are caller-saved and ACC
-is caller-clobbered; the assignment of argument and return F registers is a
-compiler-ABI decision outside this specification.
+Revision 0.7 introduced a blocking fix16 FPU in the `D fn a b` family: sixteen
+F registers of four signed Q8.8 lanes and a saturating 40-bit accumulator.
+That architecture is **retired**; it is replaced wholesale by the two-word
+Q16.16 FPU v2 above. The old single-word encodings, Q8.8 semantics, saturating
+ACC, `FIMPORT4`/`FEXPORT4`, `FACCLOAD`/`FACCSTORE`, and `FUNARY` subops no
+longer exist, and a revision-0.7 FPU word is no longer a valid instruction.
+The revision-0.7 knowledge and RTL remain only under the project history store.
 
 ## Revision 0.8
 
 Revision 0.8 is a breaking integer rearrangement; no binary compatibility with
 earlier revisions is preserved. The compiler, simulators, RTL, debugger
-decoding, and generated boot images switch at the same boundary. The fix16 FPU
-family at major `D` is completely unchanged; majors `C` and `E` are now fully
-reserved and every `Cxxx`/`Exxx` word is an invalid instruction — in
-particular the revision 0.7 `HALT` word `E800` is invalid.
+decoding, and generated boot images switch at the same boundary. At the time of
+revision 0.8 the fix16 FPU family at major `D` was unchanged and majors `C`/`E`
+were reserved. **The FPU was subsequently replaced wholesale by the two-word
+Q16.16 FPU v2** documented above: majors `C`, `D`, and `E` now start a 32-bit
+FPU pair, and the old single-word Q8.8 `Dxxx` encoding is no longer valid.
 
 - Majors 0/1/3/4/5 keep the three-register `ADD`/`SUB`/`AND`/`OR`/`XOR`. The
   old three-register `MUL` (major 2) and register-count `SHL`/`ASR` (majors
