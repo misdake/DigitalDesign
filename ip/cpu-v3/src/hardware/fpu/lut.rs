@@ -22,16 +22,22 @@
 //! concern; this module only supplies the plain tables:
 //!
 //! ```text
-//! mirror A: RCP         @  64..191, SINCOS    @ 192..448
-//! mirror B: RSQRT even  @  64..191, RSQRT odd @ 192..319
+//! mirror A: RCP         @ 128..255, SINCOS    @ 256..511
+//! mirror B: RSQRT even  @ 128..255, RSQRT odd @ 256..383
 //! ```
+//!
+//! Hidden words are packed interpolation intervals rather than bare samples:
+//! bits 16:0 hold `current` and bits 26:17 hold the signed 10-bit
+//! `next-current` delta. This uses the otherwise-idle upper half of each
+//! 32-bit BSRAM word, removes the second table read and runtime subtraction,
+//! and still reproduces the reference interpolation bit for bit.
 //!
 //! The interpolation arithmetic is exactly the integer shape the RTL will use:
 //! `delta = next - current` (signed), `current + ((delta * residue) >> shift)`
 //! with an arithmetic shift. RCP and both RSQRT tables are 128-entry with a
 //! 9-bit residue (`>> 9`); the 257-entry SINCOS table uses an 8-bit residue
-//! (`>> 8`). `|delta|` is far below `i16::MAX` (see the delta test), so the
-//! product is a plain 16x16-class signed multiply that cannot overflow `i32`.
+//! (`>> 8`). `delta` fits signed 10 bits (see the packing test), so the product
+//! is a plain 18x18 DSP-class signed multiply that cannot overflow `i32`.
 //!
 //! RSQRT normalizes `x = m * 2^e` with `m in [1,2)` exactly like RCP and picks
 //! its table by the parity of `e`: even selects [`RSQRT_EVEN_LUT`]
@@ -146,18 +152,17 @@ pub const SINCOS_LUT: [u32; 257] = [
 
 /// Physical address of the RCP table inside mirror A of the register-file
 /// BSRAM (design `fpu-design-v2` section 9.4).
-pub const MIRROR_A_RCP_BASE: usize = 64;
+pub const MIRROR_A_RCP_BASE: usize = 128;
 
-/// Physical address of the SINCOS table inside mirror A (RCP occupies
-/// `64..192`, so SINCOS starts right after it).
-pub const MIRROR_A_SINCOS_BASE: usize = 192;
+/// Physical address of the 256 packed SINCOS intervals inside mirror A.
+pub const MIRROR_A_SINCOS_BASE: usize = 256;
 
 /// Physical address of the even-exponent RSQRT table inside mirror B.
-pub const MIRROR_B_RSQRT_EVEN_BASE: usize = 64;
+pub const MIRROR_B_RSQRT_EVEN_BASE: usize = 128;
 
 /// Physical address of the odd-exponent RSQRT table inside mirror B, right
 /// after the even table's 128 entries.
-pub const MIRROR_B_RSQRT_ODD_BASE: usize = 192;
+pub const MIRROR_B_RSQRT_ODD_BASE: usize = 256;
 
 /// Marker that opens the generated BSRAM initialization region in
 /// `cpu_v3_fpu_register_ram.v`.
@@ -189,6 +194,48 @@ fn push_table(output: &mut String, mirror: &str, base: usize, table: &[u32]) {
     }
 }
 
+/// Packs one interpolation interval into a register-file word.
+///
+/// Every special-function sample is an unsigned 17-bit Q16.16 value and the
+/// measured delta bounds fit signed 10 bits (`-508..=402` across all tables).
+fn pack_interval(current: u32, next: u32) -> u32 {
+    assert!(current <= 0x1_0000);
+    assert!(next <= 0x1_0000);
+    let delta = next as i32 - current as i32;
+    assert!((-512..=511).contains(&delta));
+    current | (((delta as u32) & 0x03FF) << 17)
+}
+
+fn pack_with_endpoint(table: &[u32], endpoint: u32) -> Vec<u32> {
+    table
+        .iter()
+        .enumerate()
+        .map(|(index, &current)| {
+            let next = table.get(index + 1).copied().unwrap_or(endpoint);
+            pack_interval(current, next)
+        })
+        .collect()
+}
+
+pub(crate) fn packed_rcp_lut() -> Vec<u32> {
+    pack_with_endpoint(&RCP_LUT, RCP_ENDPOINT as u32)
+}
+
+pub(crate) fn packed_rsqrt_even_lut() -> Vec<u32> {
+    pack_with_endpoint(&RSQRT_EVEN_LUT, RSQRT_EVEN_ENDPOINT as u32)
+}
+
+pub(crate) fn packed_rsqrt_odd_lut() -> Vec<u32> {
+    pack_with_endpoint(&RSQRT_ODD_LUT, RSQRT_ODD_ENDPOINT as u32)
+}
+
+pub(crate) fn packed_sincos_lut() -> Vec<u32> {
+    SINCOS_LUT
+        .windows(2)
+        .map(|samples| pack_interval(samples[0], samples[1]))
+        .collect()
+}
+
 /// Renders the complete generated BSRAM initialization region (markers
 /// included) for `cpu_v3_fpu_register_ram.v`. The zero-fill of the whole
 /// 512-word array and every nonzero LUT entry live in one `initial` block:
@@ -207,19 +254,29 @@ pub fn render_lut_init_region() -> String {
     output.push_str("        mirror_0[initial_word] = 0;\n");
     output.push_str("        mirror_1[initial_word] = 0;\n");
     output.push_str("    end\n");
-    push_table(&mut output, "mirror_0", MIRROR_A_RCP_BASE, &RCP_LUT);
-    push_table(&mut output, "mirror_0", MIRROR_A_SINCOS_BASE, &SINCOS_LUT);
+    push_table(
+        &mut output,
+        "mirror_0",
+        MIRROR_A_RCP_BASE,
+        &packed_rcp_lut(),
+    );
+    push_table(
+        &mut output,
+        "mirror_0",
+        MIRROR_A_SINCOS_BASE,
+        &packed_sincos_lut(),
+    );
     push_table(
         &mut output,
         "mirror_1",
         MIRROR_B_RSQRT_EVEN_BASE,
-        &RSQRT_EVEN_LUT,
+        &packed_rsqrt_even_lut(),
     );
     push_table(
         &mut output,
         "mirror_1",
         MIRROR_B_RSQRT_ODD_BASE,
-        &RSQRT_ODD_LUT,
+        &packed_rsqrt_odd_lut(),
     );
     output.push_str("end\n");
     output.push_str(LUT_INIT_END);
@@ -596,6 +653,85 @@ mod tests {
         assert!(rcp_max <= i32::from(i16::MAX));
         assert!(rsqrt_max <= i32::from(i16::MAX));
         assert!(sincos_max <= i32::from(i16::MAX));
+    }
+
+    #[test]
+    fn packed_intervals_round_trip_samples_and_signed_10_bit_deltas() {
+        fn check(words: &[u32], samples: &[u32], endpoint: Option<u32>) {
+            assert_eq!(words.len(), samples.len() - usize::from(endpoint.is_none()));
+            for (index, &word) in words.iter().enumerate() {
+                let current = word & 0x1_FFFF;
+                let delta_bits = ((word >> 17) & 0x03FF) as i32;
+                let delta = (delta_bits << 22) >> 22;
+                let next = samples
+                    .get(index + 1)
+                    .copied()
+                    .or(endpoint)
+                    .expect("packed interval must have a next sample");
+                assert_eq!(current, samples[index]);
+                assert_eq!(delta, next as i32 - current as i32);
+                assert!((-512..=511).contains(&delta));
+                assert_eq!(word >> 27, 0);
+            }
+        }
+
+        check(&packed_rcp_lut(), &RCP_LUT, Some(RCP_ENDPOINT as u32));
+        check(
+            &packed_rsqrt_even_lut(),
+            &RSQRT_EVEN_LUT,
+            Some(RSQRT_EVEN_ENDPOINT as u32),
+        );
+        check(
+            &packed_rsqrt_odd_lut(),
+            &RSQRT_ODD_LUT,
+            Some(RSQRT_ODD_ENDPOINT as u32),
+        );
+        check(&packed_sincos_lut(), &SINCOS_LUT, None);
+    }
+
+    #[test]
+    fn packed_interpolation_is_bit_exact_for_every_index_and_residue() {
+        fn packed_interpolate(word: u32, residue: i32, shift: u32) -> i32 {
+            let current = (word & 0x1_FFFF) as i32;
+            let delta_bits = ((word >> 17) & 0x03FF) as i32;
+            let delta = (delta_bits << 22) >> 22;
+            current + ((delta * residue) >> shift)
+        }
+
+        for (packed, samples, endpoint) in [
+            (packed_rcp_lut(), &RCP_LUT[..], RCP_ENDPOINT),
+            (
+                packed_rsqrt_even_lut(),
+                &RSQRT_EVEN_LUT[..],
+                RSQRT_EVEN_ENDPOINT,
+            ),
+            (
+                packed_rsqrt_odd_lut(),
+                &RSQRT_ODD_LUT[..],
+                RSQRT_ODD_ENDPOINT,
+            ),
+        ] {
+            for (index, &word) in packed.iter().enumerate() {
+                for residue in 0..512 {
+                    assert_eq!(
+                        packed_interpolate(word, residue, 9),
+                        interpolate(samples, index, residue, 9, endpoint),
+                        "index={index} residue={residue}"
+                    );
+                }
+            }
+        }
+
+        let packed = packed_sincos_lut();
+        for (index, &word) in packed.iter().enumerate() {
+            for residue in 0..256 {
+                assert_eq!(
+                    packed_interpolate(word, residue, 8),
+                    interpolate(&SINCOS_LUT, index, residue, 8, SINCOS_LUT[256] as i32),
+                    "sincos index={index} residue={residue}"
+                );
+            }
+        }
     }
 
     fn rcp_inputs() -> Vec<i32> {

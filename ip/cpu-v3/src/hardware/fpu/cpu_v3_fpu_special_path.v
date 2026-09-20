@@ -3,11 +3,12 @@
 //
 // The special path is blocking (fpu-design-v2 section 4.2): while active it
 // monopolizes both register-file BSRAM read ports. Each function addresses its
-// own asymmetric mirror -- RCP reads port A (mirror 0, RCP @64..191), RSQRT
-// reads port B (mirror 1, even table @64..191, odd table @192..319). It is
+// own asymmetric mirror -- RCP reads port A (mirror 0, RCP @128..255), RSQRT
+// reads port B (mirror 1, even table @128..255, odd table @256..383). It is
 // fully self-contained: no shared multiply pipe and no Newton step (revised
 // Stage 7 freeze, section 9.4). The one inferred 18x18 multiplier below is the
-// interpolation product `delta * residue`.
+// interpolation product `delta * residue`; explicit sign extension preserves
+// that mapping even though the useful operands are only 10 and 9 bits.
 //
 // Word0 carries Fa in bits [11:6]; for 0xD subops only Fa matters (the
 // operand), and the front-end parks that address on RF read port A one beat
@@ -16,25 +17,16 @@
 // bits [3:0]. T0 is the cycle where instr_complete is high and
 // instr_opcode == 0xD with subop 0x0C or 0x0D.
 //
-// Linear interpolation needs two consecutive table entries. They are read one
-// per beat on the function's own port:
-//   T0         : normalize rf_read_a_data (CLZ, index/residue/exponent) and
-//                drive the table address `base + index`; the T0 edge registers
-//                the operand and the read, so the RF latches `table[index]`.
-//   T1         : drive the address `base + index + 1` (the RF presents
-//                `table[index]` as `current`); the T1 edge captures `current`
-//                and the RF latches `table[index + 1]`.
-//   T2         : the RF presents `next`; interpolate combinationally with the
-//                residue (one inferred 18x18 signed product plus fabric adds);
-//                the T2 edge captures the interpolated magnitude.
+// Each hidden BSRAM word packs a 17-bit sample and its signed 10-bit delta to
+// the next sample. Linear interpolation therefore needs only one table read:
+//   T0         : capture the operand and instruction controls. This register
+//                boundary keeps the RF output out of the CLZ/LUT-address path.
+//   T1         : normalize the captured operand and drive the aligned packed
+//                table address; the RF latches `{delta,current}`.
+//   T2         : interpolate the packed interval and capture its 17-bit result.
 //   T3         : scale by the power of two (barrel shift; RCP saturating) and
 //                apply the sign, presenting rf_write_enable with Fd.
 //   after T3   : busy returns low.
-//
-// The final table entry's `next` is the exact endpoint at index 127: 0.5 for
-// RCP and for the odd RSQRT table, round(2^16/sqrt(2)) for the even RSQRT
-// table. The second read address is masked and the constant swapped in, so the
-// interpolation never reads past the table.
 //
 // Special values (section 9.4): RCP(0) -> 0x7FFF_FFFF with the input's sign;
 // RCP of a negative value is the negative of the magnitude's reciprocal;
@@ -77,210 +69,146 @@ wire is_special = is_rcp || is_rsqrt;
 wire load_now = instr_complete && is_special && !abort;
 
 // ---------------------------------------------------------------------------
-// T0 combinational normalization.
+// T0 operand capture and T1 combinational normalization.
 // ---------------------------------------------------------------------------
 wire [31:0] x0 = rf_read_a_data;
 wire x0_negative = x0[31];
 wire [31:0] x0_magnitude = x0_negative ? (~x0 + 32'd1) : x0;
-wire x0_zero = (x0_magnitude == 32'd0);
+
+// Pre-normalization register: the timing boundary between the synchronous RF
+// output and the CLZ/barrel-shift/LUT-address logic.
+reg p0_valid = 1'b0;
+reg p0_rcp = 1'b0;
+reg p0_negative = 1'b0;
+reg [31:0] p0_magnitude = 32'd0;
+reg [5:0] p0_fd = 6'd0;
+
+wire p0_zero = (p0_magnitude == 32'd0);
 
 // Leading-zero count of the T0 magnitude; 32 for zero.
-wire [5:0] clz = clz32(x0_magnitude);
+wire [5:0] clz = clz32(p0_magnitude);
 
-// RCP: m = |x| << clz is in [2^31, 2^32). Bits [30:24] are the top 7 fraction
-// bits (index) and bits [23:15] the 9-bit residue. The real exponent of |x| is
-// e = clz - 16, so 1/|x| rescales by 2^(15 - clz): a left shift by clz-15 when
-// clz >= 15, a right shift by 15-clz otherwise.
-wire [31:0] rcp_norm = x0_magnitude << clz[4:0];
-wire [6:0] rcp_index = rcp_norm[30:24];
-wire [8:0] rcp_residue = rcp_norm[23:15];
-wire [5:0] rcp_shift = (clz >= 6'd15) ? (clz - 6'd15) : (6'd15 - clz);
+// Both functions use the same normalized index/residue bits. Only these 16
+// bits are consumed downstream; synthesis can prune the other shift outputs.
+wire [31:0] normalized = p0_magnitude << clz[4:0];
+wire [6:0] norm_index = normalized[30:24];
+wire [8:0] norm_residue = normalized[23:15];
+
+// RCP rescales by 2^(clz-15). The useful magnitude is 0..16, so five bits are
+// sufficient once the explicit zero case is carried alongside it.
 wire rcp_left = (clz >= 6'd15);
+wire [4:0] rcp_shift = rcp_left
+    ? (clz[4:0] - 5'd15)
+    : (5'd15 - clz[4:0]);
 
-// RSQRT: normalize |x| = m * 2^e with m in [1,2), the same shape as RCP. The
-// top 7 fraction bits of m index a 128-entry table and the next 9 bits are the
-// residue -- plain bit slices, no division. The table is selected by the parity
-// of the binary exponent: even uses T_even @64 (1/sqrt(m)), odd uses T_odd @192
-// (1/sqrt(2m)). e = binary_exponent - 16, and the result rescales by
-// 2^(-floor(e/2)): a right shift when e >= 0, a left shift otherwise.
-wire [5:0] rsqrt_binary_exponent = 6'd31 - clz;
-wire rsqrt_odd = rsqrt_binary_exponent[0];
-wire [31:0] rsqrt_norm = x0_magnitude << clz[4:0];
-wire [6:0] rsqrt_index = rsqrt_norm[30:24];
-wire [8:0] rsqrt_residue = rsqrt_norm[23:15];
-wire [8:0] rsqrt_base = rsqrt_odd ? 9'd192 : 9'd64;
-wire signed [5:0] rsqrt_e =
-    $signed({1'b0, rsqrt_binary_exponent}) - 6'sd16;
-wire signed [5:0] rsqrt_shift = rsqrt_e >>> 1;
-wire [4:0] rsqrt_shift_mag =
-    rsqrt_shift[5] ? (~rsqrt_shift[4:0] + 5'd1) : rsqrt_shift[4:0];
+// RSQRT table parity is parity(31-clz), i.e. !clz[0]. Its scale is
+// floor((15-clz)/2): right by floor(distance/2) below clz=16, otherwise left
+// by ceil(distance/2). The largest useful magnitude is eight.
+wire rsqrt_odd = !clz[0];
+wire rsqrt_left = (clz > 6'd15);
+wire [5:0] rsqrt_distance = rsqrt_left
+    ? (clz - 6'd15)
+    : (6'd15 - clz);
+wire [4:0] rsqrt_shift = rsqrt_left
+    ? ((rsqrt_distance + 6'd1) >> 1)
+    : (rsqrt_distance >> 1);
 
-// Entry index (7 bits, zero-extended) and base of this instruction's table.
-wire [7:0] t0_index = is_rcp ? {1'b0, rcp_index} : {1'b0, rsqrt_index};
-wire t0_final = (t0_index == 8'd127);
-wire [8:0] t0_base = is_rcp ? 9'd64 : rsqrt_base;
+// Aligned hidden-table bases turn address formation into wiring rather than
+// addition: 128..255 for RCP/even RSQRT, 256..383 for odd RSQRT.
+wire [8:0] table_address = p0_rcp
+    ? {2'b01, norm_index}
+    : (rsqrt_odd ? {2'b10, norm_index} : {2'b01, norm_index});
 
-// T0 address `base + index`; T1 reuses the registered base/index to address
-// `base + index + 1` (masked for the final entry, which uses the endpoint).
-wire [8:0] t0_address = t0_base + {1'b0, t0_index};
-
-// ---------------------------------------------------------------------------
-// Pipeline registers.
-// ---------------------------------------------------------------------------
-// Stage 1: normalization registered at the T0 edge; its base/index/final drive
-// the T1 read address.
+// One blocking operation owns a single context. Control fields are written
+// once after normalization and remain stable while only the valid token and
+// useful data advance.
 reg s1_valid = 1'b0;
-reg s1_rcp = 1'b0;
-reg s1_negative = 1'b0;
-reg [8:0] s1_base = 9'd0;
-reg [7:0] s1_index = 8'd0;
-reg s1_final = 1'b0;
-reg s1_odd = 1'b0;
 reg [8:0] s1_residue = 9'd0;
-reg [5:0] s1_shift = 6'd0;
+reg [4:0] s1_shift = 5'd0;
 reg s1_left = 1'b0;
 reg s1_zero = 1'b0;
 
-// Stage 2: `current` (= table[index], presented during T1) registered at the
-// T1 edge. `next` is read combinationally during T2 from the live port.
 reg s2_valid = 1'b0;
-reg s2_rcp = 1'b0;
-reg s2_negative = 1'b0;
-reg s2_final = 1'b0;
-reg s2_odd = 1'b0;
-reg [8:0] s2_residue = 9'd0;
-reg [5:0] s2_shift = 6'd0;
-reg s2_left = 1'b0;
-reg s2_zero = 1'b0;
-reg signed [31:0] s2_current = 32'sd0;
+reg [16:0] s2_interpolated = 17'd0;
 
-// Stage 3: the interpolated magnitude registered at the T2 edge.
-reg s3_valid = 1'b0;
-reg s3_rcp = 1'b0;
-reg s3_negative = 1'b0;
-reg signed [31:0] s3_interpolated = 32'sd0;
-reg [5:0] s3_shift = 6'd0;
-reg s3_left = 1'b0;
-reg s3_zero = 1'b0;
-reg [5:0] s3_fd = 6'd0;
+assign rf_read_a_address = (p0_valid && p0_rcp) ? table_address : 9'd0;
+assign rf_read_b_address = (p0_valid && !p0_rcp) ? table_address : 9'd0;
 
-// T1 read address, from the registered base and index.
-wire [8:0] t1_address = s1_base + {1'b0, s1_index} + (s1_final ? 9'd0 : 9'd1);
-// During T0 the path drives t0_address; during T1 (s1_valid one-shot) it
-// drives t1_address.
-wire driving = load_now || s1_valid;
+// Packed interval: unsigned 17-bit current plus signed 10-bit delta. Explicit
+// 18-bit operands keep the interpolation product in one MULT18X18.
+wire [31:0] packed_interval = p0_rcp ? rf_read_a_data : rf_read_b_data;
+wire [16:0] interval_current = packed_interval[16:0];
+wire signed [9:0] interval_delta = $signed(packed_interval[26:17]);
+wire signed [17:0] interp_delta = {{8{interval_delta[9]}}, interval_delta};
+wire signed [17:0] interp_residue = $signed({9'b0, s1_residue});
+wire signed [35:0] interp_product = interp_delta * interp_residue;
+wire signed [35:0] interp_shifted = interp_product >>> 9;
+wire signed [9:0] interp_correction = interp_shifted[9:0];
+wire signed [17:0] interp_sum =
+    $signed({1'b0, interval_current}) + {{8{interp_correction[9]}}, interp_correction};
 
-assign rf_read_a_address =
-    is_rcp ? (driving ? (load_now ? t0_address : t1_address) : 9'd0) : 9'd0;
-assign rf_read_b_address =
-    is_rsqrt ? (driving ? (load_now ? t0_address : t1_address) : 9'd0) : 9'd0;
-
-// T1/T2: the function's own port presents table[index] during T1 and
-// table[index+1] during T2. The final entry substitutes the exact endpoint:
-// 0x8000 for RCP and the odd RSQRT table, 0xB505 for the even RSQRT table.
-wire signed [31:0] port_current =
-    is_rcp ? $signed(rf_read_a_data) : $signed(rf_read_b_data);
-wire signed [31:0] s2_next = s2_final
-    ? ((s2_rcp || s2_odd) ? 32'sh00008000 : 32'sh0000B505)
-    : port_current;
-
-// T2 combination: linear interpolation. `delta` is small and signed, `residue`
-// unsigned, so the product fits one inferred 18x18 multiplier; every table is
-// 128-entry with a 9-bit residue, so the arithmetic shift is always 9.
-wire signed [31:0] s2_delta = s2_next - s2_current;
-wire signed [31:0] s2_product = s2_delta * $signed({23'b0, s2_residue});
-wire signed [31:0] s2_interpolated = s2_current + (s2_product >>> 9);
-
-// T3 combination: scale and sign. Both functions rescale by a power of two --
-// a right shift for a non-negative shift, a saturating left shift otherwise --
-// then RCP applies the input sign; its zero case is the clamp 0x7FFF_FFFF with
-// the input sign. RSQRT is always positive and its non-positive case is zero.
-wire signed [31:0] s3_scaled = s3_left
-    ? saturate_shift(s3_interpolated, s3_shift)
-    : (s3_interpolated >>> s3_shift);
-wire signed [31:0] s3_rcp_value = s3_negative ? (~s3_scaled + 32'd1) : s3_scaled;
-wire [31:0] s3_out_rcp = s3_zero
-    ? (s3_negative ? 32'h80000001 : 32'h7FFFFFFF)
-    : s3_rcp_value;
-wire [31:0] s3_out_rsqrt = s3_zero ? 32'h00000000 : s3_scaled;
-wire [31:0] s3_signed = s3_rcp ? s3_out_rcp : s3_out_rsqrt;
-
-// Left-shift a signed value by `shift` bits, saturating to 0x7FFF_FFFF. The
-// 64-bit intermediate is wide enough for a 32-bit magnitude shifted by 16.
-function signed [31:0] saturate_shift;
-    input signed [31:0] value;
-    input [5:0] shift;
-    reg [63:0] wide;
-    begin
-        wide = {32'b0, value[31:0]} << shift;
-        if (wide > 64'h000000007FFFFFFF)
-            saturate_shift = 32'sh7FFFFFFF;
-        else
-            saturate_shift = $signed(wide[31:0]);
-    end
-endfunction
+// Scaling starts from a 17-bit positive magnitude. RCP needs at most a 33-bit
+// temporary to detect signed-32 overflow; RSQRT's left shift is at most eight
+// and never needs saturation. This replaces the old 64-bit shift/compare.
+wire [31:0] right_scaled = {15'b0, s2_interpolated} >> s1_shift;
+wire [32:0] rcp_left_wide = {16'b0, s2_interpolated} << s1_shift;
+wire rcp_left_overflow = |rcp_left_wide[32:31];
+wire [31:0] rcp_left_scaled = rcp_left_overflow
+    ? 32'h7FFFFFFF
+    : {1'b0, rcp_left_wide[30:0]};
+wire [31:0] rsqrt_left_scaled = {15'b0, s2_interpolated} << s1_shift;
+wire [31:0] scaled = s1_left
+    ? (p0_rcp ? rcp_left_scaled : rsqrt_left_scaled)
+    : right_scaled;
+wire [31:0] rcp_value = p0_negative ? (~scaled + 32'd1) : scaled;
+wire [31:0] out_rcp = s1_zero
+    ? (p0_negative ? 32'h80000001 : 32'h7FFFFFFF)
+    : rcp_value;
+wire [31:0] out_rsqrt = s1_zero ? 32'h00000000 : scaled;
+wire [31:0] result = p0_rcp ? out_rcp : out_rsqrt;
 
 // ---------------------------------------------------------------------------
 // Registers.
 // ---------------------------------------------------------------------------
 always @(posedge clk) begin
     if (abort) begin
+        p0_valid <= 1'b0;
         s1_valid <= 1'b0;
         s2_valid <= 1'b0;
-        s3_valid <= 1'b0;
     end else if (load_now) begin
+        p0_valid <= 1'b1;
+        p0_rcp <= is_rcp;
+        p0_negative <= x0_negative;
+        p0_magnitude <= x0_magnitude;
+        p0_fd <= fd;
+        s1_valid <= 1'b0;
         s2_valid <= 1'b0;
-        s3_valid <= 1'b0;
+    end else if (p0_valid) begin
+        p0_valid <= 1'b0;
         s1_valid <= 1'b1;
-        s1_rcp <= is_rcp;
-        s1_negative <= x0_negative;
-        s1_base <= t0_base;
-        s1_index <= t0_index;
-        s1_final <= t0_final;
-        s1_odd <= is_rcp ? 1'b0 : rsqrt_odd;
-        s1_residue <= is_rcp ? rcp_residue : rsqrt_residue;
-        s1_shift <= is_rcp ? rcp_shift : {1'b0, rsqrt_shift_mag};
-        s1_left <= is_rcp ? rcp_left : rsqrt_shift[5];
+        s1_residue <= norm_residue;
+        s1_shift <= p0_rcp ? rcp_shift : rsqrt_shift;
+        s1_left <= p0_rcp ? rcp_left : rsqrt_left;
         // RCP's zero flag selects the clamp; RSQRT's also covers x < 0 (its
         // result is zero for every non-positive input).
-        s1_zero <= is_rcp ? x0_zero : (x0_negative || x0_zero);
-    end else if (s1_valid) begin
-        // T1 edge: capture `current` (table[index], on the port now) and the
-        // control bits; `next` is read live during T2.
-        s2_valid <= 1'b1;
-        s2_rcp <= s1_rcp;
-        s2_negative <= s1_negative;
-        s2_final <= s1_final;
-        s2_odd <= s1_odd;
-        s2_residue <= s1_residue;
-        s2_shift <= s1_shift;
-        s2_left <= s1_left;
-        s2_zero <= s1_zero;
-        s2_current <= port_current;
-        s1_valid <= 1'b0;
-        s3_valid <= 1'b0;
-    end else if (s2_valid) begin
-        // T2 edge: capture the interpolated magnitude.
-        s3_valid <= 1'b1;
-        s3_rcp <= s2_rcp;
-        s3_negative <= s2_negative;
-        s3_interpolated <= s2_interpolated;
-        s3_shift <= s2_shift;
-        s3_left <= s2_left;
-        s3_zero <= s2_zero;
-        s3_fd <= fd;
+        s1_zero <= p0_rcp ? p0_zero : (p0_negative || p0_zero);
         s2_valid <= 1'b0;
+    end else if (s1_valid) begin
+        // T2 edge: capture the interpolation from the packed interval.
+        s2_valid <= 1'b1;
+        s2_interpolated <= interp_sum[16:0];
+        s1_valid <= 1'b0;
     end else begin
-        s3_valid <= 1'b0;
+        s2_valid <= 1'b0;
     end
 end
 
-assign rf_write_enable = s3_valid && !abort;
-assign rf_write_address = {3'b000, s3_fd};
-assign rf_write_data = s3_signed;
+assign rf_write_enable = s2_valid && !abort;
+assign rf_write_address = {3'b000, p0_fd};
+assign rf_write_data = result;
 
 // Busy is combinational over the T0..T3 window; abort clears it immediately.
-assign busy = (load_now || s1_valid || s2_valid || s3_valid) && !abort;
+assign busy = (load_now || p0_valid || s1_valid || s2_valid) && !abort;
 
 // Section-16 countdowns: R was satisfied before T0; W/X span the fixed T0..T3
 // latency. The presented values read 4 during the load beat and count down.

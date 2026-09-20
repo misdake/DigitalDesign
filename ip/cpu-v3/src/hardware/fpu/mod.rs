@@ -146,24 +146,26 @@ impl HardwareIdentity for CpuV3FpuRegisterRam {
 fn rf_mirrors_from_lut() -> (Box<[u32; 512]>, Box<[u32; 512]>) {
     let mut mirror_a = Box::new([0u32; 512]);
     let mut mirror_b = Box::new([0u32; 512]);
-    mirror_a[lut::MIRROR_A_RCP_BASE..lut::MIRROR_A_RCP_BASE + lut::RCP_LUT.len()]
-        .copy_from_slice(&lut::RCP_LUT);
-    mirror_a[lut::MIRROR_A_SINCOS_BASE..lut::MIRROR_A_SINCOS_BASE + lut::SINCOS_LUT.len()]
-        .copy_from_slice(&lut::SINCOS_LUT);
-    mirror_b
-        [lut::MIRROR_B_RSQRT_EVEN_BASE..lut::MIRROR_B_RSQRT_EVEN_BASE + lut::RSQRT_EVEN_LUT.len()]
-        .copy_from_slice(&lut::RSQRT_EVEN_LUT);
-    mirror_b[lut::MIRROR_B_RSQRT_ODD_BASE..lut::MIRROR_B_RSQRT_ODD_BASE + lut::RSQRT_ODD_LUT.len()]
-        .copy_from_slice(&lut::RSQRT_ODD_LUT);
+    let rcp = lut::packed_rcp_lut();
+    let sincos = lut::packed_sincos_lut();
+    let rsqrt_even = lut::packed_rsqrt_even_lut();
+    let rsqrt_odd = lut::packed_rsqrt_odd_lut();
+    mirror_a[lut::MIRROR_A_RCP_BASE..lut::MIRROR_A_RCP_BASE + rcp.len()].copy_from_slice(&rcp);
+    mirror_a[lut::MIRROR_A_SINCOS_BASE..lut::MIRROR_A_SINCOS_BASE + sincos.len()]
+        .copy_from_slice(&sincos);
+    mirror_b[lut::MIRROR_B_RSQRT_EVEN_BASE..lut::MIRROR_B_RSQRT_EVEN_BASE + rsqrt_even.len()]
+        .copy_from_slice(&rsqrt_even);
+    mirror_b[lut::MIRROR_B_RSQRT_ODD_BASE..lut::MIRROR_B_RSQRT_ODD_BASE + rsqrt_odd.len()]
+        .copy_from_slice(&rsqrt_odd);
     (mirror_a, mirror_b)
 }
 
 pub struct CpuV3FpuRegisterRamState {
     /// Mirror A (read port A): architectural F0..F63 plus the RCP table at
-    /// 64..191 and the SINCOS table at 192..448 (design section 9.4).
+    /// 128..255 and the SINCOS intervals at 256..511 (design section 9.4).
     mirror_a: Box<[u32; 512]>,
     /// Mirror B (read port B): architectural F0..F63 plus the RSQRT even table
-    /// at 64..191 and the RSQRT odd table at 192..319.
+    /// at 128..255 and the RSQRT odd table at 256..383.
     mirror_b: Box<[u32; 512]>,
     read_a_data: u32,
     read_b_data: u32,
@@ -696,39 +698,22 @@ impl HardwareIdentity for CpuV3FpuSpecialPath {
     }
 }
 
-/// Pipeline registers of the special path, one field group per stage
-/// (s1 = normalize, s2 = table current, s3 = interpolated magnitude).
+/// Pipeline registers of the blocking special path. Instruction context is
+/// written once and remains stable while only the valid token/data advance.
 #[derive(Default)]
 pub struct CpuV3FpuSpecialPathState {
+    p0_valid: bool,
+    p0_rcp: bool,
+    p0_negative: bool,
+    p0_magnitude: u32,
+    p0_fd: u8,
     s1_valid: bool,
-    s1_rcp: bool,
-    s1_negative: bool,
-    s1_base: u16,
-    s1_index: u8,
-    s1_final: bool,
-    s1_odd: bool,
     s1_residue: u16,
     s1_shift: u8,
     s1_left: bool,
     s1_zero: bool,
     s2_valid: bool,
-    s2_rcp: bool,
-    s2_negative: bool,
-    s2_final: bool,
-    s2_odd: bool,
-    s2_residue: u16,
-    s2_shift: u8,
-    s2_left: bool,
-    s2_zero: bool,
-    s2_current: i32,
-    s3_valid: bool,
-    s3_rcp: bool,
-    s3_negative: bool,
-    s3_interpolated: i32,
-    s3_shift: u8,
-    s3_left: bool,
-    s3_zero: bool,
-    s3_fd: u8,
+    s2_interpolated: u32,
 }
 
 /// All combinational results of one cycle, sampled from the pre-edge state.
@@ -737,6 +722,8 @@ pub struct CpuV3FpuSpecialPathState {
 struct CpuV3FpuSpecialPathComputed {
     load_now: bool,
     is_rcp: bool,
+    p0_negative: bool,
+    p0_magnitude: u32,
     read_a_address: u16,
     read_b_address: u16,
     write_enable: bool,
@@ -746,30 +733,12 @@ struct CpuV3FpuSpecialPathComputed {
     r_wait: u8,
     w_wait: u8,
     x_wait: u8,
-    s1_negative: bool,
-    s1_base: u16,
-    s1_index: u8,
-    s1_final: bool,
-    s1_odd: bool,
     s1_residue: u16,
     s1_shift: u8,
     s1_left: bool,
     s1_zero: bool,
-    capture_current: i32,
-    capture_interpolated: i32,
+    capture_interpolated: u32,
     fd: u8,
-}
-
-/// Left-shifts a signed value by `shift` bits, saturating to `0x7FFF_FFFF`.
-/// Mirrors the `saturate_shift` Verilog function: the 64-bit intermediate is
-/// wide enough for a 32-bit magnitude shifted by 16.
-fn saturating_shift(value: i32, shift: u8) -> i32 {
-    let wide = u64::from(value as u32) << u32::from(shift);
-    if wide > 0x7FFF_FFFF {
-        i32::MAX
-    } else {
-        wide as u32 as i32
-    }
 }
 
 impl CpuV3FpuSpecialPathState {
@@ -785,133 +754,118 @@ impl CpuV3FpuSpecialPathState {
         let is_rsqrt = is_scalar && subop == encoding::RSQRT;
         let load_now = input.instr_complete && (is_rcp || is_rsqrt) && !input.abort;
 
-        // T0 normalization.
+        // T0 operand capture; normalization runs from the registered operand.
         let x0 = input.rf_read_a_data as u32;
         let x0_negative = x0 & 0x8000_0000 != 0;
         let x0_magnitude = if x0_negative { x0.wrapping_neg() } else { x0 };
-        let x0_zero = x0_magnitude == 0;
-        let clz = x0_magnitude.leading_zeros();
+        let p0_zero = self.p0_magnitude == 0;
+        let clz = self.p0_magnitude.leading_zeros();
 
-        // RCP: m in [1,2); 7 index bits, 9 residue bits.
-        let rcp_norm = x0_magnitude.wrapping_shl(clz);
-        let rcp_index = ((rcp_norm >> 24) & 0x7F) as u8;
-        let rcp_residue = ((rcp_norm >> 15) & 0x1FF) as u16;
+        // Shared normalized index/residue for both tables.
+        let normalized = self.p0_magnitude.wrapping_shl(clz);
+        let norm_index = ((normalized >> 24) & 0x7F) as u8;
+        let norm_residue = ((normalized >> 15) & 0x1FF) as u16;
+
+        // RCP scale: 2^(clz-15).
         let rcp_shift = clz.abs_diff(15) as u8;
         let rcp_left = clz >= 15;
 
-        // RSQRT: m in [1,2), the same shape as RCP. The exponent parity picks
-        // the even or odd table; index and residue are plain bit slices.
-        let rsqrt_binary_exponent = 31u32.wrapping_sub(clz) & 0x3F;
-        let rsqrt_odd = rsqrt_binary_exponent & 1 != 0;
-        let rsqrt_norm = x0_magnitude.wrapping_shl(clz);
-        let rsqrt_index = ((rsqrt_norm >> 24) & 0x7F) as u8;
-        let rsqrt_residue = ((rsqrt_norm >> 15) & 0x1FF) as u16;
-        let rsqrt_base = if rsqrt_odd { 192u16 } else { 64u16 };
-        // floor(e/2) with e = binary_exponent - 16; the numerator is always even.
-        let rsqrt_shift = (rsqrt_binary_exponent as i32 - 16 - i32::from(rsqrt_odd)) / 2;
+        // RSQRT parity is parity(31-clz). Its scale is floor((15-clz)/2).
+        let rsqrt_odd = clz & 1 == 0;
+        let rsqrt_left = clz > 15;
+        let rsqrt_distance = clz.abs_diff(15);
+        let rsqrt_shift = if rsqrt_left {
+            rsqrt_distance.div_ceil(2)
+        } else {
+            rsqrt_distance / 2
+        };
 
-        let t0_index = if is_rcp { rcp_index } else { rsqrt_index };
-        let t0_final = t0_index == 127;
-        let t0_base = if is_rcp { 64u16 } else { rsqrt_base };
-        let t0_address = t0_base + u16::from(t0_index);
-        let t1_address = self.s1_base + u16::from(self.s1_index) + u16::from(!self.s1_final);
-        let driving = load_now || self.s1_valid;
-        let read_a_address = if is_rcp && driving {
-            if load_now {
-                t0_address
-            } else {
-                t1_address
-            }
+        // Aligned bases make the address a concatenation, not an addition.
+        let table_address = if self.p0_rcp || !rsqrt_odd {
+            128u16 | u16::from(norm_index)
+        } else {
+            256u16 | u16::from(norm_index)
+        };
+        let read_a_address = if self.p0_valid && self.p0_rcp {
+            table_address
         } else {
             0
         };
-        let read_b_address = if is_rsqrt && driving {
-            if load_now {
-                t0_address
-            } else {
-                t1_address
-            }
+        let read_b_address = if self.p0_valid && !self.p0_rcp {
+            table_address
         } else {
             0
         };
 
-        // T1/T2 table ports and interpolation.
-        let port_current = if is_rcp {
-            input.rf_read_a_data as u32 as i32
+        // One packed read supplies both the 17-bit current and signed 10-bit
+        // delta. The product fits signed 19 bits, but i32 keeps the emu clear.
+        let packed_interval = if self.p0_rcp {
+            input.rf_read_a_data as u32
         } else {
-            input.rf_read_b_data as u32 as i32
+            input.rf_read_b_data as u32
         };
-        let s2_next = if self.s2_final {
-            if self.s2_rcp || self.s2_odd {
-                0x8000
-            } else {
-                0xB505
-            }
-        } else {
-            port_current
-        };
-        let s2_delta = s2_next.wrapping_sub(self.s2_current);
-        let s2_product = s2_delta.wrapping_mul(i32::from(self.s2_residue));
-        let s2_interpolated = self.s2_current.wrapping_add(s2_product >> 9);
+        let interval_current = packed_interval & 0x1_FFFF;
+        let delta_bits = ((packed_interval >> 17) & 0x03FF) as i32;
+        let interval_delta = (delta_bits << 22) >> 22;
+        let interp_product = interval_delta * i32::from(self.s1_residue);
+        let interpolated = (interval_current as i32 + (interp_product >> 9)) as u32;
 
-        // T3 scaling and sign.
-        let s3_scaled = if self.s3_left {
-            saturating_shift(self.s3_interpolated, self.s3_shift)
-        } else {
-            self.s3_interpolated >> u32::from(self.s3_shift)
-        };
-        let s3_rcp_value = if self.s3_negative {
-            (!s3_scaled).wrapping_add(1)
-        } else {
-            s3_scaled
-        };
-        let s3_out_rcp = if self.s3_zero {
-            if self.s3_negative {
-                0x8000_0001u32
+        // T3 scaling and sign. Only RCP's left path can overflow signed 32;
+        // RSQRT's maximum left shift is eight.
+        let scaled = if self.s1_left {
+            let wide = u64::from(self.s2_interpolated) << self.s1_shift;
+            if self.p0_rcp && wide > 0x7FFF_FFFF {
+                0x7FFF_FFFF
             } else {
-                0x7FFF_FFFFu32
+                wide as u32
             }
         } else {
-            s3_rcp_value as u32
+            self.s2_interpolated >> self.s1_shift
         };
-        let s3_out_rsqrt = if self.s3_zero { 0u32 } else { s3_scaled as u32 };
-        let write_data = if self.s3_rcp {
-            s3_out_rcp
+        let rcp_value = if self.p0_negative {
+            scaled.wrapping_neg()
         } else {
-            s3_out_rsqrt
+            scaled
         };
+        let out_rcp = if self.s1_zero {
+            if self.p0_negative {
+                0x8000_0001
+            } else {
+                0x7FFF_FFFF
+            }
+        } else {
+            rcp_value
+        };
+        let out_rsqrt = if self.s1_zero { 0 } else { scaled };
+        let write_data = if self.p0_rcp { out_rcp } else { out_rsqrt };
 
         CpuV3FpuSpecialPathComputed {
             load_now,
             is_rcp,
+            p0_negative: x0_negative,
+            p0_magnitude: x0_magnitude,
             read_a_address,
             read_b_address,
-            write_enable: self.s3_valid && !input.abort,
-            write_address: u16::from(self.s3_fd),
+            write_enable: self.s2_valid && !input.abort,
+            write_address: u16::from(self.p0_fd),
             write_data,
-            busy: (load_now || self.s1_valid || self.s2_valid || self.s3_valid) && !input.abort,
+            busy: (load_now || self.p0_valid || self.s1_valid || self.s2_valid) && !input.abort,
             r_wait: 0,
             w_wait: if load_now { 4 } else { 0 },
             x_wait: if load_now { 4 } else { 0 },
-            s1_negative: x0_negative,
-            s1_base: t0_base,
-            s1_index: t0_index,
-            s1_final: t0_final,
-            s1_odd: if is_rcp { false } else { rsqrt_odd },
-            s1_residue: if is_rcp { rcp_residue } else { rsqrt_residue },
-            s1_shift: if is_rcp {
+            s1_residue: norm_residue,
+            s1_shift: if self.p0_rcp {
                 rcp_shift
             } else {
-                rsqrt_shift.unsigned_abs() as u8
+                rsqrt_shift as u8
             },
-            s1_left: if is_rcp { rcp_left } else { rsqrt_shift < 0 },
-            s1_zero: if is_rcp {
-                x0_zero
+            s1_left: if self.p0_rcp { rcp_left } else { rsqrt_left },
+            s1_zero: if self.p0_rcp {
+                p0_zero
             } else {
-                x0_negative || x0_zero
+                self.p0_negative || p0_zero
             },
-            capture_current: port_current,
-            capture_interpolated: s2_interpolated,
+            capture_interpolated: interpolated,
             fd,
         }
     }
@@ -936,48 +890,31 @@ impl CpuV3FpuSpecialPathState {
     fn tick(&mut self, input: &CpuV3FpuSpecialPathInputValue) {
         let c = self.compute(input);
         if input.abort {
+            self.p0_valid = false;
             self.s1_valid = false;
             self.s2_valid = false;
-            self.s3_valid = false;
         } else if c.load_now {
+            self.p0_valid = true;
+            self.p0_rcp = c.is_rcp;
+            self.p0_negative = c.p0_negative;
+            self.p0_magnitude = c.p0_magnitude;
+            self.p0_fd = c.fd;
+            self.s1_valid = false;
             self.s2_valid = false;
-            self.s3_valid = false;
+        } else if self.p0_valid {
+            self.p0_valid = false;
             self.s1_valid = true;
-            self.s1_rcp = c.is_rcp;
-            self.s1_negative = c.s1_negative;
-            self.s1_base = c.s1_base;
-            self.s1_index = c.s1_index;
-            self.s1_final = c.s1_final;
-            self.s1_odd = c.s1_odd;
             self.s1_residue = c.s1_residue;
             self.s1_shift = c.s1_shift;
             self.s1_left = c.s1_left;
             self.s1_zero = c.s1_zero;
+            self.s2_valid = false;
         } else if self.s1_valid {
             self.s2_valid = true;
-            self.s2_rcp = self.s1_rcp;
-            self.s2_negative = self.s1_negative;
-            self.s2_final = self.s1_final;
-            self.s2_odd = self.s1_odd;
-            self.s2_residue = self.s1_residue;
-            self.s2_shift = self.s1_shift;
-            self.s2_left = self.s1_left;
-            self.s2_zero = self.s1_zero;
-            self.s2_current = c.capture_current;
+            self.s2_interpolated = c.capture_interpolated;
             self.s1_valid = false;
-            self.s3_valid = false;
-        } else if self.s2_valid {
-            self.s3_valid = true;
-            self.s3_rcp = self.s2_rcp;
-            self.s3_negative = self.s2_negative;
-            self.s3_interpolated = c.capture_interpolated;
-            self.s3_shift = self.s2_shift;
-            self.s3_left = self.s2_left;
-            self.s3_zero = self.s2_zero;
-            self.s3_fd = c.fd;
-            self.s2_valid = false;
         } else {
-            self.s3_valid = false;
+            self.s2_valid = false;
         }
     }
 }
@@ -1475,9 +1412,9 @@ impl CpuV3FpuState {
             )
             && !input.abort;
         let sf_busy = (sf_load_now
+            || self.special_path.p0_valid
             || self.special_path.s1_valid
-            || self.special_path.s2_valid
-            || self.special_path.s3_valid)
+            || self.special_path.s2_valid)
             && !input.abort;
         CpuV3FpuOutputValue {
             busy: sp_w_wait != 0 || vp_busy || mp_busy || dp_busy || sf_busy,

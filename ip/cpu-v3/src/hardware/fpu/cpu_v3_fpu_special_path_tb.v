@@ -1,8 +1,8 @@
 // Testbench for CpuV3FpuSpecialPath.
 //
 // The register file is a behavioral stub with the two asymmetric mirrors
-// (mirror 0 = RCP at 64..191, mirror 1 = RSQRT even at 64..191 and odd at
-// 192..319) initialized with the frozen section-9.4 tables. The path is driven
+// (mirror 0 = RCP at 128..255, mirror 1 = RSQRT even at 128..255 and odd at
+// 256..383) initialized with packed `{delta,current}` intervals. The path is driven
 // directly with
 // instr_complete / instr_opcode / word1_raw, exactly like the other
 // execution-path TBs.
@@ -59,7 +59,7 @@ wire [3:0] sf_w_wait;
 wire [3:0] sf_x_wait;
 
 // Read address seen by the RF: the parked operand address before T0, the
-// path's LUT address from T0 on (the path asserts busy for T0..T3). Readback
+// path's LUT address during T1 (the path asserts busy for T0..T3). Readback
 // for TB inspection uses the same port while idle.
 reg [8:0] parked_a = 9'd0;
 reg rb_sel = 0;
@@ -74,6 +74,10 @@ wire [31:0] rf_read_b_data;
 // Behavioral 2R1W register file with the two asymmetric LUT mirrors.
 reg [31:0] mirror_0 [0:511];
 reg [31:0] mirror_1 [0:511];
+reg [31:0] rcp_samples [0:128];
+reg [31:0] rsqrt_even_samples [0:128];
+reg [31:0] rsqrt_odd_samples [0:128];
+reg signed [31:0] pack_delta;
 reg [31:0] rf_read_a_data_r = 32'b0;
 reg [31:0] rf_read_b_data_r = 32'b0;
 always @(posedge clk) begin
@@ -96,7 +100,7 @@ initial begin
         mirror_0[t] = 32'b0;
         mirror_1[t] = 32'b0;
     end
-    // RCP (mirror 0, 64..191).
+    // Plain RCP reference samples (temporarily staged at 64..191, then packed).
     mirror_0[64] = 32'h00010000; mirror_0[65] = 32'h0000FE04; mirror_0[66] = 32'h0000FC10; mirror_0[67] = 32'h0000FA23;
     mirror_0[68] = 32'h0000F83E; mirror_0[69] = 32'h0000F660; mirror_0[70] = 32'h0000F48A; mirror_0[71] = 32'h0000F2BA;
     mirror_0[72] = 32'h0000F0F1; mirror_0[73] = 32'h0000EF2F; mirror_0[74] = 32'h0000ED73; mirror_0[75] = 32'h0000EBBE;
@@ -129,7 +133,7 @@ initial begin
     mirror_0[180] = 32'h0000864C; mirror_0[181] = 32'h000085BF; mirror_0[182] = 32'h00008534; mirror_0[183] = 32'h000084AA;
     mirror_0[184] = 32'h00008421; mirror_0[185] = 32'h00008399; mirror_0[186] = 32'h00008312; mirror_0[187] = 32'h0000828D;
     mirror_0[188] = 32'h00008208; mirror_0[189] = 32'h00008185; mirror_0[190] = 32'h00008102; mirror_0[191] = 32'h00008081;
-    // RSQRT even, 1/sqrt(m) (mirror 1, 64..191).
+    // Plain RSQRT-even reference samples (temporarily staged at 64..191).
     mirror_1[64] = 32'h00010000; mirror_1[65] = 32'h0000FF01; mirror_1[66] = 32'h0000FE06; mirror_1[67] = 32'h0000FD0D;
     mirror_1[68] = 32'h0000FC17; mirror_1[69] = 32'h0000FB24; mirror_1[70] = 32'h0000FA34; mirror_1[71] = 32'h0000F946;
     mirror_1[72] = 32'h0000F85B; mirror_1[73] = 32'h0000F773; mirror_1[74] = 32'h0000F68D; mirror_1[75] = 32'h0000F5A9;
@@ -162,7 +166,7 @@ initial begin
     mirror_1[180] = 32'h0000B96B; mirror_1[181] = 32'h0000B90A; mirror_1[182] = 32'h0000B8A9; mirror_1[183] = 32'h0000B84A;
     mirror_1[184] = 32'h0000B7EA; mirror_1[185] = 32'h0000B78C; mirror_1[186] = 32'h0000B72E; mirror_1[187] = 32'h0000B6D0;
     mirror_1[188] = 32'h0000B673; mirror_1[189] = 32'h0000B617; mirror_1[190] = 32'h0000B5BB; mirror_1[191] = 32'h0000B560;
-    // RSQRT odd, 1/sqrt(2m) (mirror 1, 192..319).
+    // Plain RSQRT-odd reference samples (temporarily staged at 192..319).
     mirror_1[192] = 32'h0000B505; mirror_1[193] = 32'h0000B451; mirror_1[194] = 32'h0000B39F; mirror_1[195] = 32'h0000B2EF;
     mirror_1[196] = 32'h0000B241; mirror_1[197] = 32'h0000B196; mirror_1[198] = 32'h0000B0EC; mirror_1[199] = 32'h0000B044;
     mirror_1[200] = 32'h0000AF9D; mirror_1[201] = 32'h0000AEF9; mirror_1[202] = 32'h0000AE56; mirror_1[203] = 32'h0000ADB6;
@@ -195,6 +199,29 @@ initial begin
     mirror_1[308] = 32'h0000831C; mirror_1[309] = 32'h000082D8; mirror_1[310] = 32'h00008293; mirror_1[311] = 32'h00008250;
     mirror_1[312] = 32'h0000820C; mirror_1[313] = 32'h000081C9; mirror_1[314] = 32'h00008187; mirror_1[315] = 32'h00008145;
     mirror_1[316] = 32'h00008103; mirror_1[317] = 32'h000080C2; mirror_1[318] = 32'h00008081; mirror_1[319] = 32'h00008040;
+
+    // Preserve the independent literal samples for the reference model, then
+    // repack them into the aligned physical layout consumed by the DUT.
+    for (t = 0; t < 128; t = t + 1) begin
+        rcp_samples[t] = mirror_0[64 + t];
+        rsqrt_even_samples[t] = mirror_1[64 + t];
+        rsqrt_odd_samples[t] = mirror_1[192 + t];
+    end
+    rcp_samples[128] = 32'h00008000;
+    rsqrt_even_samples[128] = 32'h0000B505;
+    rsqrt_odd_samples[128] = 32'h00008000;
+    for (t = 64; t < 512; t = t + 1) begin
+        mirror_0[t] = 32'b0;
+        mirror_1[t] = 32'b0;
+    end
+    for (t = 0; t < 128; t = t + 1) begin
+        pack_delta = $signed(rcp_samples[t + 1]) - $signed(rcp_samples[t]);
+        mirror_0[128 + t] = {5'b0, pack_delta[9:0], rcp_samples[t][16:0]};
+        pack_delta = $signed(rsqrt_even_samples[t + 1]) - $signed(rsqrt_even_samples[t]);
+        mirror_1[128 + t] = {5'b0, pack_delta[9:0], rsqrt_even_samples[t][16:0]};
+        pack_delta = $signed(rsqrt_odd_samples[t + 1]) - $signed(rsqrt_odd_samples[t]);
+        mirror_1[256 + t] = {5'b0, pack_delta[9:0], rsqrt_odd_samples[t][16:0]};
+    end
 end
 
 CpuV3FpuSpecialPath special_path (
@@ -291,8 +318,8 @@ function [31:0] rcp_ref;
             if (index == 127)
                 lut_next = 32'h00008000;
             else
-                lut_next = mirror_0[64 + index + 1];
-            interp = interp_ref(mirror_0[64 + index], lut_next, residue, 9);
+                lut_next = rcp_samples[index + 1];
+            interp = interp_ref(rcp_samples[index], lut_next, residue, 9);
             shift = clz - 15;
             if (shift >= 0) begin
                 wide = {32'b0, interp} << shift;
@@ -314,7 +341,6 @@ function [31:0] rsqrt_ref;
     integer clz;
     integer be;
     integer odd;
-    integer base;
     integer index;
     integer residue;
     integer scale_shift;
@@ -331,12 +357,17 @@ function [31:0] rsqrt_ref;
             norm = x << clz;
             index = (norm >> 24) & 7'h7F;
             residue = (norm >> 15) & 9'h1FF;
-            base = odd ? 192 : 64;
             if (index == 127)
                 lut_next = odd ? 32'h00008000 : 32'h0000B505;
             else
-                lut_next = mirror_1[base + index + 1];
-            interp = interp_ref(mirror_1[base + index], lut_next, residue, 9);
+                lut_next = odd ? rsqrt_odd_samples[index + 1]
+                               : rsqrt_even_samples[index + 1];
+            interp = interp_ref(
+                odd ? rsqrt_odd_samples[index] : rsqrt_even_samples[index],
+                lut_next,
+                residue,
+                9
+            );
             scale_shift = (be - 16 - odd) / 2;
             if (scale_shift >= 0)
                 rsqrt_ref = interp >> scale_shift;

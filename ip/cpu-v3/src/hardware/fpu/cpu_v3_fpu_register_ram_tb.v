@@ -66,26 +66,22 @@ initial begin
     // cycle of latency, so drive the addresses on the falling edge and sample
     // after the next rising edge.
     @(negedge clk);
-    read_a_address = 9'd64;
-    read_b_address = 9'd64;
+    read_a_address = 9'd128;
+    read_b_address = 9'd128;
     @(posedge clk);
     #1;
-    check_value(read_a_data, 32'h00010000, "LUT mirror_0[64] RCP(1.0)");
-    check_value(read_b_data, 32'h00010000, "LUT mirror_1[64] RSQRT(1.0)");
+    check_value(read_a_data, 32'h04090000, "packed RCP interval 0");
+    check_value(read_b_data, 32'h06030000, "packed RSQRT-even interval 0");
 
-    // mirror_0[192] is SINCOS sin(0) = 0; mirror_1[192] is an RSQRT entry and
-    // must be nonzero, proving the two mirrors really carry different tables.
+    // Address 256 is SINCOS interval 0 in mirror A and RSQRT-odd interval 0 in
+    // mirror B, proving the asymmetric packed layout.
     @(negedge clk);
-    read_a_address = 9'd192;
-    read_b_address = 9'd192;
+    read_a_address = 9'd256;
+    read_b_address = 9'd256;
     @(posedge clk);
     #1;
-    check_value(read_a_data, 32'h0, "LUT mirror_0[192] SINCOS sin(0)");
-    if (read_b_data === 32'h0) begin
-        $display("DIGITAL_DESIGN_FAIL: LUT mirror_1[192] RSQRT entry is zero");
-        $finish;
-    end
-    check_count = check_count + 1;
+    check_value(read_a_data, 32'h03240000, "packed SINCOS interval 0");
+    check_value(read_b_data, 32'h0698B505, "packed RSQRT-odd interval 0");
 
     // Write every physical address with a distinct word.
     write_enable = 0;
