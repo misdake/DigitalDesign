@@ -1,10 +1,17 @@
-// Shared 36x36 multiply pipeline for the FPU v2 multiply and dot paths.
+// Shared 36x36 multiply pipeline for the FPU v2 multiply, dot and SINCOS
+// range-reduction owners.
 //
-// The core serializes instructions, so the two execution paths are never
-// active at once and share this one inferred multiplier (one MULT36X36 =
-// four 18x18 DSP lanes). The pipe is a FIFO: a tag (the RF write address)
-// travels with the operands and comes back with the product, so the owner
-// never recomputes a lane's destination.
+// The core serializes instructions, so the execution paths are never active at
+// once and share this one inferred multiplier (one MULT36X36 = four 18x18 DSP
+// lanes). The pipe is a FIFO: a tag (the RF write address) travels with the
+// operands and comes back with the product, so the owner never recomputes a
+// lane's destination.
+//
+// The operand buses are signed 36 bits. The multiply and dot paths sign-extend
+// their architectural signed-32 Q16.16 values to 36 and so keep exact
+// sign-extended 32-bit behavior; SINCOS feeds a sign-extended Fa and the
+// positive 36-bit hardware constant 36'h0_A2F9836E (bit 31 of K is set, so a
+// signed 32-bit bus would have mis-sign-extended it).
 //
 // Timing (II = 1, latency 3):
 //   T0   : in_valid with operands + tag on the input ports.
@@ -16,13 +23,14 @@ module CpuV3FpuMulPipe (
     input wire clk,
     input wire abort,
     input wire in_valid,
-    input wire [31:0] in_a,
-    input wire [31:0] in_b,
+    input wire signed [35:0] in_a,
+    input wire signed [35:0] in_b,
     input wire [8:0] in_tag,
     output wire out_valid,
-    // The low 64 bits of the product: Q16.16 pairs never exceed 2^62, so the
-    // dropped bits are pure sign extension, and the dot accumulator wraps mod
-    // 2^64 identically either way. (The harness IO layer is u64-wide.)
+    // The low 64 bits of the product: Q16.16 pairs never exceed 2^62, the
+    // SINCOS range product (|Fa| < 2^31, K < 2^32) stays below 2^63, and the
+    // dot accumulator wraps mod 2^64 identically either way. (The harness IO
+    // layer is u64-wide.)
     output wire signed [63:0] out_product,
     output wire [8:0] out_tag
 );

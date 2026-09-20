@@ -6,8 +6,10 @@ always #5 clk = ~clk;
 
 reg abort = 0;
 reg in_valid = 0;
-reg [31:0] in_a = 0;
-reg [31:0] in_b = 0;
+// The pipe's operand buses are signed 36 bits; the TB drives the same
+// sign-extended values the ordinary MUL/DOT owners present.
+reg [35:0] in_a = 0;
+reg [35:0] in_b = 0;
 reg [8:0] in_tag = 0;
 wire out_valid;
 wire signed [63:0] out_product;
@@ -71,7 +73,10 @@ task push;
     input [8:0] tg;
     begin
         @(negedge clk);
-        in_valid = v; in_a = a; in_b = b; in_tag = tg;
+        in_valid = v;
+        in_a = {{4{a[31]}}, a};
+        in_b = {{4{b[31]}}, b};
+        in_tag = tg;
         @(posedge clk); #1;
         check_output;
         ref_valid[2] = ref_valid[1]; ref_valid[1] = ref_valid[0]; ref_valid[0] = v;

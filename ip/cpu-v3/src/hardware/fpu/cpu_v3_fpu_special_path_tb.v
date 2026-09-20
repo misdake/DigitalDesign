@@ -36,6 +36,7 @@ end
 
 localparam [5:0] RCP_SUBOP = 6'h0C;
 localparam [5:0] RSQRT_SUBOP = 6'h0D;
+localparam [5:0] SINCOS_SUBOP = 6'h0E;
 
 // Instruction inputs.
 reg instr_complete = 0;
@@ -77,6 +78,7 @@ reg [31:0] mirror_1 [0:511];
 reg [31:0] rcp_samples [0:128];
 reg [31:0] rsqrt_even_samples [0:128];
 reg [31:0] rsqrt_odd_samples [0:128];
+reg [31:0] sincos_samples [0:256];
 reg signed [31:0] pack_delta;
 reg [31:0] rf_read_a_data_r = 32'b0;
 reg [31:0] rf_read_b_data_r = 32'b0;
@@ -222,7 +224,63 @@ initial begin
         pack_delta = $signed(rsqrt_odd_samples[t + 1]) - $signed(rsqrt_odd_samples[t]);
         mirror_1[256 + t] = {5'b0, pack_delta[9:0], rsqrt_odd_samples[t][16:0]};
     end
+
+    // SINCOS samples sin(pi/2 * i/256) in Q16.16. The reference model below
+    // consumes the same independently computed samples, and the DUT consumes
+    // the packed intervals at mirror_0[256..511] (7.1 LSB resolution is enough
+    // that the f64 `$sin` rounding is exact; the packed deltas fit signed 10
+    // bits).
+    for (t = 0; t <= 256; t = t + 1) begin
+        sincos_samples[t] = $rtoi(
+            $sin(3.14159265358979323846 / 2.0 * t / 256.0) * 65536.0 + 0.5
+        );
+    end
+    for (t = 0; t < 256; t = t + 1) begin
+        pack_delta = $signed(sincos_samples[t + 1]) - $signed(sincos_samples[t]);
+        mirror_0[256 + t] = {5'b0, pack_delta[9:0], sincos_samples[t][16:0]};
+    end
 end
+
+// Shared-pipe stub: the real CpuV3FpuMulPipe lives in the unit top; this
+// TB-local copy reproduces its exact signed-36 3-stage tag-carrying behavior
+// so the leaf test needs no resource-claiming sibling modules (same pattern as
+// the multiply-path TB).
+wire sf_mul_in_valid;
+wire signed [35:0] sf_mul_in_a;
+wire signed [35:0] sf_mul_in_b;
+wire [8:0] sf_mul_in_tag;
+wire mul_out_valid;
+wire signed [63:0] mul_out_product;
+wire [8:0] mul_out_tag;
+
+reg mul_s1_valid = 0;
+reg signed [35:0] mul_s1_a = 0;
+reg signed [35:0] mul_s1_b = 0;
+reg [8:0] mul_s1_tag = 0;
+reg mul_s2_valid = 0;
+reg signed [71:0] mul_s2_prod = 0;
+reg [8:0] mul_s2_tag = 0;
+reg mul_s3_valid = 0;
+reg signed [71:0] mul_s3_prod = 0;
+reg [8:0] mul_s3_tag = 0;
+always @(posedge clk) begin
+    if (abort) begin
+        mul_s1_valid <= 0; mul_s2_valid <= 0; mul_s3_valid <= 0;
+    end else begin
+        mul_s3_valid <= mul_s2_valid;
+        if (mul_s2_valid) begin mul_s3_prod <= mul_s2_prod; mul_s3_tag <= mul_s2_tag; end
+        mul_s2_valid <= mul_s1_valid;
+        if (mul_s1_valid) begin mul_s2_prod <= mul_s1_a * mul_s1_b; mul_s2_tag <= mul_s1_tag; end
+        mul_s1_valid <= sf_mul_in_valid;
+        if (sf_mul_in_valid) begin
+            mul_s1_a <= sf_mul_in_a; mul_s1_b <= sf_mul_in_b;
+            mul_s1_tag <= sf_mul_in_tag;
+        end
+    end
+end
+assign mul_out_valid = mul_s3_valid && !abort;
+assign mul_out_product = mul_s3_prod[63:0];
+assign mul_out_tag = mul_s3_tag;
 
 CpuV3FpuSpecialPath special_path (
     .clk(clk),
@@ -240,7 +298,14 @@ CpuV3FpuSpecialPath special_path (
     .busy(busy),
     .r_wait(sf_r_wait),
     .w_wait(sf_w_wait),
-    .x_wait(sf_x_wait)
+    .x_wait(sf_x_wait),
+    .mul_in_valid(sf_mul_in_valid),
+    .mul_in_a(sf_mul_in_a),
+    .mul_in_b(sf_mul_in_b),
+    .mul_in_tag(sf_mul_in_tag),
+    .mul_out_valid(mul_out_valid),
+    .mul_out_product(mul_out_product),
+    .mul_out_tag(mul_out_tag)
 );
 
 integer check_count = 0;
@@ -377,6 +442,80 @@ function [31:0] rsqrt_ref;
     end
 endfunction
 
+// ---------------------------------------------------------------------------
+// Reference model: independent behavioral SINCOS (design section 9.4). Range
+// reduction uses the frozen two-term constant `(p0+h1)<<16 + p1 >> 32`; the
+// quarter-wave table is walked with the sin(pi/2 * u) reflections. The DUT
+// uses an algebraically equal modular limb form, so any disagreement points at
+// the mux/register schedule rather than the algorithm.
+// ---------------------------------------------------------------------------
+function [31:0] sine_quarter_ref;
+    input [16:0] u;
+    integer index;
+    integer residue;
+    reg signed [63:0] delta;
+    begin
+        if (u >= 17'h10000) begin
+            sine_quarter_ref = sincos_samples[256];
+        end else begin
+            index = (u >> 8) & 8'hFF;
+            residue = u & 8'hFF;
+            delta = $signed(sincos_samples[index + 1]) - $signed(sincos_samples[index]);
+            sine_quarter_ref = sincos_samples[index] + ((delta * residue) >>> 8);
+        end
+    end
+endfunction
+
+function [31:0] quadrant_sine_ref;
+    input [1:0] quadrant;
+    input [15:0] fraction;
+    begin
+        case (quadrant & 2'b11)
+            2'd0: quadrant_sine_ref = sine_quarter_ref({1'b0, fraction});
+            2'd1: quadrant_sine_ref = sine_quarter_ref(17'h10000 - {1'b0, fraction});
+            2'd2: quadrant_sine_ref = 32'd0 - sine_quarter_ref({1'b0, fraction});
+            default: quadrant_sine_ref = 32'd0 - sine_quarter_ref(17'h10000 - {1'b0, fraction});
+        endcase
+    end
+endfunction
+
+function signed [63:0] sincos_t_ref;
+    input [31:0] a;
+    reg signed [63:0] a_hi;
+    reg signed [63:0] a_lo;
+    reg signed [63:0] h0;
+    reg signed [63:0] h1;
+    reg signed [63:0] p0;
+    reg signed [63:0] p1;
+    begin
+        a_hi = {{48{a[31]}}, a[31:16]};
+        a_lo = {48'b0, a[15:0]};
+        h0 = a_hi * 64'sd41722;
+        h1 = a_hi * (-64'sd31890);
+        p0 = a_lo * 64'sd41722;
+        p1 = a_lo * (-64'sd31890);
+        sincos_t_ref = h0 + ((((p0 + h1) << 16) + p1) >>> 32);
+    end
+endfunction
+
+function [31:0] sincos_sin_ref;
+    input [31:0] a;
+    reg signed [63:0] t;
+    begin
+        t = sincos_t_ref(a);
+        sincos_sin_ref = quadrant_sine_ref(t[17:16], t[15:0]);
+    end
+endfunction
+
+function [31:0] sincos_cos_ref;
+    input [31:0] a;
+    reg signed [63:0] t;
+    begin
+        t = sincos_t_ref(a);
+        sincos_cos_ref = quadrant_sine_ref(t[17:16] + 2'd1, t[15:0]);
+    end
+endfunction
+
 // Prepares F0 with the operand through the RF write port (parked address 0).
 task set_operand;
     input [31:0] x;
@@ -461,6 +600,135 @@ task run_rsqrt;
     end
 endtask
 
+// Issues one SINCOS mode and checks its busy window and architectural writes.
+// mode 00 writes sin/cos in T6/T7; 01 and 10 write only sin or cos in T6.
+task run_sincos_mode;
+    input [5:0] fd;
+    input [31:0] a;
+    input [1:0] mode;
+    integer t;
+    integer busy_count;
+    integer writes;
+    integer expected_cycles;
+    reg [31:0] got_sin;
+    reg [31:0] got_cos;
+    begin
+        set_operand(a);
+
+        // Operand address parked on port A; the RF latches it at this edge so
+        // it is on rf_read_a_data during T0.
+        parked_a = 9'd0;
+        @(negedge clk);
+        #1;
+        instr_complete = 1'b1;
+        instr_opcode = 4'hD;
+        word1_raw = {fd, SINCOS_SUBOP, 2'b00, mode};
+        expected_cycles = ((mode == 2'b01) || (mode == 2'b10)) ? 7 : 8;
+        #1;
+        check_value({31'b0, busy}, 32'h1, "sincos T0 busy");
+        check_value({31'b0, sf_w_wait}, expected_cycles, "sincos T0 w_wait");
+        check_value({31'b0, sf_x_wait}, expected_cycles, "sincos T0 x_wait");
+        check_value({31'b0, sf_r_wait}, 32'h0, "sincos T0 r_wait");
+        check_value({31'b0, sf_write_enable}, 32'h0, "sincos T0 write idle");
+
+        busy_count = 1;
+        writes = 0;
+        got_sin = 32'hDEADBEEF;
+        got_cos = 32'hDEADBEEF;
+        @(negedge clk);
+        instr_complete = 1'b0;
+        #1;
+        t = 1;
+        while (busy) begin
+            if (sf_write_enable) begin
+                writes = writes + 1;
+                if (writes == 1) begin
+                    check_value({23'b0, sf_write_address}, fd, "sincos first addr");
+                    if (mode == 2'b10)
+                        got_cos = sf_write_data;
+                    else
+                        got_sin = sf_write_data;
+                end else if (writes == 2) begin
+                    check_value({23'b0, sf_write_address}, fd + 1, "sincos cos addr");
+                    got_cos = sf_write_data;
+                end else begin
+                    fail("sincos too many writes");
+                end
+            end else begin
+                check_value({31'b0, sf_write_enable}, 32'h0, "sincos write idle");
+            end
+            busy_count = busy_count + 1;
+            t = t + 1;
+            @(negedge clk);
+            #1;
+        end
+        check_value(busy_count, expected_cycles, "sincos busy window length");
+        check_value({31'b0, busy}, 32'h0, "sincos busy clear");
+        check_value({31'b0, sf_write_enable}, 32'h0, "sincos write clear");
+        if (mode == 2'b00) begin
+            check_value(writes, 2, "sincos dual write count");
+            check_value(got_sin, sincos_sin_ref(a), "sincos sin ref");
+            check_value(got_cos, sincos_cos_ref(a), "sincos cos ref");
+        end else if (mode == 2'b01) begin
+            check_value(writes, 1, "sincos sin-only write count");
+            check_value(got_sin, sincos_sin_ref(a), "sincos sin-only ref");
+            check_value(got_cos, 32'hDEADBEEF, "sincos sin-only no cos");
+        end else if (mode == 2'b10) begin
+            check_value(writes, 1, "sincos cos-only write count");
+            check_value(got_sin, 32'hDEADBEEF, "sincos cos-only no sin");
+            check_value(got_cos, sincos_cos_ref(a), "sincos cos-only ref");
+        end
+        @(negedge clk);
+    end
+endtask
+
+task run_sincos;
+    input [5:0] fd;
+    input [31:0] a;
+    begin
+        run_sincos_mode(fd, a, 2'b00);
+    end
+endtask
+
+// Starts a SINCOS, asserts abort mid-flight, and checks that busy drops
+// combinationally, no write escapes, and a following SINCOS runs cleanly
+// (the context was fully cleared, not left half-written).
+task run_sincos_abort;
+    input [5:0] fd;
+    input [31:0] a;
+    begin
+        set_operand(a);
+        parked_a = 9'd0;
+        @(negedge clk);
+        #1;
+        instr_complete = 1'b1;
+        instr_opcode = 4'hD;
+        word1_raw = {fd, SINCOS_SUBOP, 4'h0};
+        #1;
+        check_value({31'b0, busy}, 32'h1, "abort T0 busy");
+        @(negedge clk);
+        instr_complete = 1'b0;
+        #1;
+        @(negedge clk);
+        #1;
+        @(negedge clk);
+        #1;
+        abort = 1'b1;
+        #1;
+        check_value({31'b0, busy}, 32'h0, "abort clears busy");
+        check_value({31'b0, sf_write_enable}, 32'h0, "abort gates write");
+        @(posedge clk);
+        #1;
+        abort = 1'b0;
+        @(negedge clk);
+        #1;
+        check_value({31'b0, busy}, 32'h0, "post-abort idle");
+        @(negedge clk);
+        // The next SINCOS must compute normally from a clean context.
+        run_sincos(fd, a);
+    end
+endtask
+
 integer i;
 reg [31:0] rnd;
 reg [31:0] rnd_x;
@@ -502,6 +770,57 @@ initial begin
     end
     for (i = 0; i < 500; i = i + 1) begin
         run_rsqrt(6'd12, (i * 65537) + 1);
+    end
+
+    // SINCOS directed corners: zeros, positive/negative radian values, the
+    // exact quadrant boundaries (pi/2, pi, 3pi/2, 2pi and their negatives) and
+    // the full-range extremes. Both writes and the measured sin/cos values are
+    // checked against the independent reference.
+    run_sincos(6'd0, 32'h00000000);  // 0
+    run_sincos(6'd2, 32'h00010000);  // 1.0 rad
+    run_sincos(6'd4, 32'hFFFF0000);  // -1.0 rad
+    run_sincos(6'd6, 32'h00019220);  // +pi/2
+    run_sincos(6'd8, 32'hFFFE6DE0);  // -pi/2
+    run_sincos(6'd10, 32'h0003243F); // +pi
+    run_sincos(6'd12, 32'hFFFCDBC1); // -pi
+    run_sincos(6'd14, 32'h0004B65F); // +3pi/2
+    run_sincos(6'd16, 32'hFFFB49A1); // -3pi/2
+    run_sincos(6'd18, 32'h0006487F); // +2pi
+    run_sincos(6'd20, 32'hFFF9B781); // -2pi
+    run_sincos(6'd22, 32'h7FFFFFFF); // max
+    run_sincos(6'd24, 32'h80000000); // min
+    run_sincos(6'd26, 32'h00000001); // tiny positive
+    run_sincos(6'd28, 32'hFFFFFFFF); // tiny negative
+    run_sincos(6'd30, 32'h0000FFFF); // just under 1.0
+    run_sincos(6'd32, 32'h00010001); // just over 1.0
+
+    // Single-output encodings use the same numerical datapath, finish one beat
+    // earlier, and allow F63 because they never address Fd+1.
+    run_sincos_mode(6'd63, 32'h00010000, 2'b01);
+    run_sincos_mode(6'd63, 32'h00010000, 2'b10);
+    run_sincos_mode(6'd44, 32'h0006487F, 2'b01);
+    run_sincos_mode(6'd45, 32'h0006487F, 2'b10);
+
+    // Abort cancels the context with no write, and the next SINCOS is clean.
+    run_sincos_abort(6'd40, 32'h00010000);
+    run_sincos_abort(6'd42, 32'hFFF9B781);
+
+    // Fine sweep around each quadrant boundary, where sin/cos cross zero and
+    // the interpolation kink meets the range-reduction error.
+    for (i = -16; i <= 16; i = i + 1) begin
+        run_sincos(6'd34, 32'h00019220 + i);
+        run_sincos(6'd34, 32'hFFFE6DE0 + i);
+        run_sincos(6'd34, 32'h0003243F + i);
+        run_sincos(6'd34, 32'h0006487F + i);
+    end
+
+    // Deterministic full-range randomization plus a positive/negative stride.
+    for (i = 0; i < 1500; i = i + 1) begin
+        rnd = $random(seed);
+        run_sincos(6'd36, rnd);
+    end
+    for (i = 0; i < 500; i = i + 1) begin
+        run_sincos(6'd38, (i - 250) * 100003 + 7);
     end
 
     if (check_count == 0)

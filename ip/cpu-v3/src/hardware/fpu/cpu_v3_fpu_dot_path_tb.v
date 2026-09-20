@@ -94,8 +94,8 @@ end
 // leaf test needs no resource-claiming sibling modules (same pattern as the
 // scalar-path and multiply-path TBs).
 wire mul_in_valid;
-wire [31:0] mul_in_a;
-wire [31:0] mul_in_b;
+wire signed [35:0] mul_in_a;
+wire signed [35:0] mul_in_b;
 wire [8:0] mul_in_tag;
 wire mul_out_valid;
 wire signed [63:0] mul_out_product;
