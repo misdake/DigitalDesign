@@ -7,6 +7,9 @@ pub struct CompilerOptions {
     pub stack_init: u16,
     pub data_base: u16,
     pub code_base: u16,
+    /// Code and ordinary data use different physical segments. This permits
+    /// their 16-bit offset ranges to overlap.
+    pub separate_code_data_segments: bool,
     pub heap_begin: u16,
     pub heap_size: u16,
     pub vec_init_cap: u16,
@@ -19,9 +22,29 @@ impl Default for CompilerOptions {
             stack_init: crate::DEFAULT_STACK_TOP,
             data_base: crate::DEFAULT_DATA_BASE,
             code_base: 0,
+            separate_code_data_segments: false,
             heap_begin: 0x8000,
-            heap_size: 20,
+            heap_size: 0x6000,
             vec_init_cap: 4,
+        }
+    }
+}
+
+impl CompilerOptions {
+    /// Layout for an application entered with distinct CSEG and DSEG values.
+    ///
+    /// The data segment's 128 KiB window is divided into 16 KiB of static
+    /// data, almost 64 KiB of heap (the current boundary-tag format's maximum),
+    /// and about 48 KiB for a stack growing down from the segment top.
+    pub fn for_separate_code_and_data_segments(code_base: u16) -> Self {
+        Self {
+            stack_init: crate::DEFAULT_STACK_TOP,
+            data_base: 0,
+            code_base,
+            separate_code_data_segments: true,
+            heap_begin: 0x2000,
+            heap_size: 0x7fff,
+            ..Self::default()
         }
     }
 }

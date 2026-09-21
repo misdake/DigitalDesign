@@ -1,5 +1,5 @@
 // bench-max-cycles: 100000
-// bench-expected-halt: 32788
+// bench-expected-halt: 1
 // bench-tier: short
 use crate::dsl_rt::*;
 use crate::rcc_std::*;
@@ -34,5 +34,8 @@ fn main() {
         vec_free(v);
         round = round + 1;
     }
-    halt(total);
+    if total != 0 {
+        halt(0xff);
+    }
+    halt(1);
 }

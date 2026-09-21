@@ -189,7 +189,7 @@ fn auto_init(out: &mut [IrFunc], opts: &impl RccConfig) -> Result<(), syn::Error
         }
     }
     let heap_used = reachable.contains("malloc") || reachable.contains("free");
-    let vec_used = reachable.contains("vec_new") || reachable.contains("init_vec");
+    let vec_used = reachable.iter().any(|name| name.starts_with("vec_"));
     if !heap_used && !vec_used {
         return Ok(());
     }

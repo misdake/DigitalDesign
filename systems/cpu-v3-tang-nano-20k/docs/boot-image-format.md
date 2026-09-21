@@ -107,11 +107,11 @@ continues to work offline. `#` starts a comment. Numbers are decimal or
 ```text
 format 1
 target tang-nano-20k
-application-entry 0x0003 0x0200 0x0004 0xf000
+application-entry 0x0003 0x0000 0x0004 0x0000
 
-load code   0x00030200 rx 32 32768 game-code.bin
-load data   0x00044000 rw 32 16384 game-data.bin
-zero bss    0x00048000 rw 32 8192
+load code   0x00030000 rx 32 32768 game-code.bin
+load data   0x00040000 rw 32 16384 game-data.bin
+zero bss    0x00042000 rw 32 8192
 ```
 
 The columns after a `load` name are physical destination word, flags,

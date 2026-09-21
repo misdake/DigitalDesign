@@ -51,18 +51,21 @@ under `ip/cpu-v3/docs` and `systems/cpu-v3-tang-nano-20k/docs`.
   signal at the retirement edge. `SIGNAL` types 1..15 are simulator-side
   events that retire as a NOP in hardware.
 
-The baseline offset map inside the selected data segment is:
+Tang Nano 20K applications use distinct code and data segments. Linked instructions start at
+offset `0x0000` of CSEG, giving code the complete 128-KiB segment window. The default offset map
+inside DSEG is:
 
 | Range | Initial use |
 | --- | --- |
-| `0x0000..` | linked code, growing upward |
-| `0x4000..` | static data |
-| `0x8000..` | heap baseline |
-| below `0x10000` | stack, growing downward from the exclusive segment top |
+| `0x0000..0x1fff` | static data, growing upward |
+| `0x2000..0x9ffe` | heap (`0x7fff` words, the current boundary-tag limit) |
+| `0x9fff..0xffff` | stack capacity, growing downward from the exclusive segment top |
 
-`CompilerOptions::default()` selects these boundaries. A zero initial stack
-pointer denotes the exclusive segment top `0x10000`; the first allocation
-therefore wraps naturally into offset `0xffff`.
+`CompilerOptions::for_separate_code_and_data_segments` selects these data boundaries. A zero
+initial stack pointer denotes the exclusive segment top `0x10000`; the first allocation therefore
+wraps naturally into offset `0xffff`. `CompilerOptions::default()` instead retains a conservative
+unified-segment layout for standalone images and simulators that do not establish distinct CSEG and
+DSEG values.
 
 
 ## Instruction encoding reference
@@ -386,11 +389,12 @@ sequential instruction after such a write would be pipeline-dependent.
 function pointers remain near and within one code segment; dynamic data-bank
 switching and far calls are outside the compiler contract.
 
-The compiler continues to emit 16-bit offsets. Its linked code must fit one
-64K-word code window, and static data, heap, and stack must fit one 64K-word
-data window. `CompilerOptions::code_base` (CLI `--target cpu-v3 --code-base`) relocates
-the linked code offsets without adding padding to the output file. The offline
-packer places those bytes at the matching physical segment and offset.
+The compiler continues to emit 16-bit offsets. Its linked code must fit one 64K-word code window,
+and static data, heap, and stack must fit one 64K-word data window. When the backend declares that
+CSEG and DSEG differ, code offsets may overlap data offsets; otherwise the linker rejects overlap
+for standalone unified-segment execution. `CompilerOptions::code_base` (CLI
+`--target cpu-v3 --code-base`) relocates the linked code offsets without adding padding to the
+output file. The offline packer places those bytes at the matching physical segment and offset.
 
 ## Revision 0.5
 

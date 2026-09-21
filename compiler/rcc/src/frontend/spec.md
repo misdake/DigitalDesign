@@ -567,21 +567,28 @@ passed by value:
 1. the main source plus any `mod name;` files resolved through `loader`;
 2. the **rcc_std library** (`compiler/rcc/src/rcc_std/`, written in rcc itself) is always appended;
    unused functions are dropped by the linker;
-3. **automatic library initialization**: if the program's call graph reaches `malloc`/`free`,
+3. **automatic library initialization**: if the program's call graph reaches a heap entry point,
    a single `init_heap(heap_begin, heap_size)` call is inserted at the start of `main`; if it
    reaches `vec_*`, a single `init_vec(vec_init_cap)` call follows. each init runs exactly once
    per program, with parameters from `CompilerOptions`.
 
 ### 13.2 `CompilerOptions`
 
+Memory-layout defaults belong to the target backend; the frontend only consumes `RccConfig`.
+CpuV3's standalone default keeps code and data in one segment (`code_base=0`, static data at
+`0x4000`, heap `0x8000..0xe000`, stack from the exclusive `0x10000` top). A booted application
+whose CSEG and DSEG differ uses `CompilerOptions::for_separate_code_and_data_segments`: code starts
+at its supplied offset, while the 128-KiB data window uses static data from `0x0000`, heap
+`0x2000..0x9fff`, and a downward-growing stack from the exclusive `0x10000` top.
+
 | option | default | meaning |
 |---|---|---|
 | `opt` | all on | optimization passes (const-prop/cse/dce/coalesce) |
-| `stack_init` | 0 | initial sp of the entry fn (0 = simulator default; frames grow downward) |
+| `stack_init` | backend | initial sp of the entry fn (0 denotes the exclusive segment top; frames grow downward) |
 | `function_table` | `Auto` | `Disabled`, automatically profitable/hot direct callees, all direct callees, or an explicit list of function names |
-| `data_base` | 0 | static data section base address |
-| `heap_begin` | 0x1000 | heap region start |
-| `heap_size` | 20 | heap region size in words |
+| `data_base` | backend | static data section base address |
+| `heap_begin` | backend | heap region start |
+| `heap_size` | backend | heap region size in words |
 | `vec_init_cap` | 4 | `vec_new()` initial capacity |
 
 ### 13.3 Artifacts
@@ -632,6 +639,16 @@ lexical lifetime; optimized builds may report such SSA locals as unavailable.
 `init_heap` stores the heap bounds in static cells (`HEAP_BEGIN`/`HEAP_END` in the data
 section) which `malloc`/`free` read at run time — no compile-time patching of library code.
 `init_vec` does the same for `VEC_INIT_CAP`.
+
+The heap uses boundary tags plus four segregated intrusive free lists. Allocation chooses the
+smallest fitting block in the first usable size class; `free` coalesces both neighbours, and
+`heap_realloc` first tries to resize in place. Invalid frees, exhaustion, and invalid heap
+configuration halt with `0xffe2`, `0xffe1`, and `0xffe0` respectively.
+
+The `u16` vector API provides `vec_new`/`vec_with_capacity`, checked `vec_get`/`vec_set`,
+`vec_push`/`vec_pop`, `vec_reserve`, `vec_clear`, `vec_shrink_to_fit`, and `vec_free`. Growth is
+approximately 1.5x to balance copying against memory use; bounds and capacity failures halt with
+`0xffe3` and `0xffe4`.
 
 ### 13.5 Host/IDE side
 
