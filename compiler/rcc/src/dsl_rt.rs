@@ -670,13 +670,12 @@ pub fn fsincos(_x: fix16) -> vec2 {
 }
 
 // ---------------------------------------------------------------------------
-// Prescale library contract (C0 signature freeze; target lowering remains
-// deferred after C3). The functions are ordinary rcc library calls, not new opcodes. They
-// share one `2^-k` scaling derived from the largest absolute component; the
-// distance comparison scales its threshold by `2^-2k` to match. The pure,
-// bit-exact reference model and its full-range tests live in the CPU V3
-// architecture crate (`cpu_v3::v3_length2_scaled` etc.), because the scaling
-// depends on the FPU's RSQRT reference.
+// Prescale library contract (target lowering landed after C3; no new opcodes).
+// The functions are ordinary rcc library calls built from existing FPU v2
+// scalar/vector instructions. They share one `2^-k` scaling derived from the
+// largest absolute component; the distance comparison scales its ordinary
+// Q16.16 threshold by `2^-k` to match. The pure reference model and its tests
+// live in the CPU V3 architecture crate (`cpu_v3::v3_length2_scaled` etc.).
 //
 // `v3_length2_scaled` returns a *prescaled* squared length, not an unscaled
 // one: `|v|^2 * 2^-2k`. `v3_length2_shift` exposes `k`, so a caller that needs
@@ -686,22 +685,27 @@ pub fn fsincos(_x: fix16) -> vec2 {
 
 /// The `2^-k` prescale exponent `k` (`0..=10`) used by the three helpers below.
 pub fn v3_length2_shift(_v: vec3) -> u16 {
-    unimplemented!("v3_length2_shift target lowering is deferred")
+    unimplemented!("v3_length2_shift is a target FPU v2 library lowering")
 }
 
 /// The **prescaled** squared length `|v|^2 * 2^-2k`, never overflowing Q16.16.
 /// It is not the unscaled length squared; combine with `v3_length2_shift` only
 /// for an approximate scaled-back value.
 pub fn v3_length2_scaled(_v: vec3) -> fix16 {
-    unimplemented!("v3_length2_scaled target lowering is deferred")
+    unimplemented!("v3_length2_scaled is a target FPU v2 library lowering")
 }
 
 /// `v / |v|`, safe for any Q16.16 input; a zero vector stays zero.
 pub fn v3_normalize_safe(_v: vec3) -> vec3 {
-    unimplemented!("v3_normalize_safe target lowering is deferred")
+    unimplemented!("v3_normalize_safe is a target FPU v2 library lowering")
 }
 
-/// `|a - b|^2 > threshold`, with both sides scaled by `2^-2k`.
-pub fn v3_distance2_gt(_a: vec3, _b: vec3, _threshold: fix16) -> bool {
-    unimplemented!("v3_distance2_gt target lowering is deferred")
+/// `|a - b| > threshold`, an approximate ordinary-distance comparison built
+/// from the FPU v2 ISA. Both vectors are prescaled by one `k` before the
+/// subtraction, the squared length is narrowed once (`DOTSTORE`), the ordinary
+/// distance is approximated as `s * RSQRT(s)`, and the ordinary Q16.16
+/// threshold is shifted by `k` before the scalar `CMP`. A negative threshold is
+/// always exceeded by the non-negative distance.
+pub fn v3_distance_gt(_a: vec3, _b: vec3, _threshold: fix16) -> bool {
+    unimplemented!("v3_distance_gt is a target FPU v2 library lowering")
 }

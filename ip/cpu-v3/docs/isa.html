@@ -307,12 +307,17 @@ RSQRT(x) is zero for x &le; 0. All F registers are caller-saved and ACC is
 caller-clobbered; the compiler ABI reserves F0..F3 for returns, F4..F27 for
 arguments, F28..F62 for allocation, and F63 for parallel-move cycles. The
 prescale helpers (<code>v3_length2_shift</code>, <code>v3_length2_scaled</code>,
-<code>v3_normalize_safe</code>, <code>v3_distance2_gt</code>) are a compiler
-library, not opcodes: <code>v3_length2_scaled</code> returns the
-<em>prescaled</em> squared length <code>|v|^2 * 2^-2k</code> and
-<code>v3_length2_shift</code> returns <code>k</code>. Scaling the result back is
-only approximate when <code>k &gt; 0</code>, because the component shifts and
-Q16.16 narrowing discard low bits.</p>
+<code>v3_normalize_safe</code>, <code>v3_distance_gt</code>) are a compiler
+library, not opcodes, lowered to existing FPU v2 instructions:
+<code>v3_length2_scaled</code> returns the <em>prescaled</em> squared length
+<code>|v|^2 * 2^-2k</code> and <code>v3_length2_shift</code> returns
+<code>k</code>. Scaling the result back is only approximate when
+<code>k &gt; 0</code>, because the component shifts and Q16.16 narrowing discard
+low bits. <code>v3_distance_gt</code> is an approximate <em>ordinary</em>
+distance comparison: both vectors are prescaled before the subtraction, the
+scaled squared length is narrowed once, the ordinary distance is approximated as
+<code>s * rsqrt(s)</code>, and the ordinary threshold is shifted by the same
+<code>k</code>.</p>
 
 <h2 id="prefix">5. PFX12 and wide operations</h2>
 <div class="grid">

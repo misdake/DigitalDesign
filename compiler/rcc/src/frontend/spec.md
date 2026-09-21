@@ -73,9 +73,12 @@ Only these types exist; no other primitive types are supported:
   v2 scalar/aux/memory ISA and run on the emulator and the RTL. C2 adds
   `vec2/3/4`, `fdot`, VMULS broadcasts, and `vec4::import`/`export`; C3 adds
   `frcp`/`frsqrt` plus `fsin`/`fcos`/`fsincos` through the three frozen SINCOS
-  modes. The prescale helper family remains rejected with an explicit
-  diagnostic because its exact `v3_distance2_gt` boundary needs an
-  un-narrowed wide-accumulator comparison that FPU v2 does not expose.
+  modes. The prescale helper family also lowers, entirely onto existing FPU v2
+  instructions (no new opcode): it prescales by a `k` derived from the largest
+  absolute component, narrows the scaled squared length once through
+  `DOTSTORE`, and uses `RSQRT` plus a scalar `MUL` for the ordinary-distance
+  comparison. The distance boundary is approximate, not the exact
+  squared-distance boundary.
 
 ### 1.2 Division and remainder
 
@@ -153,8 +156,8 @@ an `Array<T>` when typed indexing is clearer. Struct memory layouts remain out o
 ## 5. Intrinsics
 
 Declared for real in `dsl_rt` (so the IDE sees them); the compiler lowers them directly.
-C1 lowers the scalar `fix16` rows and leaves the `vecN`/`fdot`/`frcp`/`frsqrt`/`fsincos`/prescale
-rows rejected with an explicit "after C1" diagnostic on CPU V3.
+C1 lowers the scalar `fix16` rows, C2 the `vecN`/`fdot` rows, and C3 the
+`frcp`/`frsqrt`/`fsincos` and prescale rows on CPU V3.
 
 | function | meaning |
 |---|---|
@@ -184,7 +187,7 @@ rows rejected with an explicit "after C1" diagnostic on CPU V3.
 | `.abs() .floor() .ceil() .round() .trunc()` | component-wise unary (the scalar/vector ALU subops) |
 | `fdot(a, b) -> fix16` | dot product through the 64-bit Q32.32 ACC, narrowed once (`DOT` + `DOTSTORE`) |
 | `frcp(x) -> fix16` / `frsqrt(x) -> fix16` / `fsin(x) -> fix16` / `fcos(x) -> fix16` / `fsincos(x) -> vec2` | special functions; `fsincos` yields `{sin, cos}`, while `fsin`/`fcos` select one SINCOS result; target lowering landed with C3, host models panic |
-| `v3_length2_shift(vec3) -> u16` / `v3_length2_scaled(vec3) -> fix16` / `v3_normalize_safe(vec3) -> vec3` / `v3_distance2_gt(vec3, vec3, fix16) -> bool` | frozen prescale library contract, not opcodes; pure reference model lives in the CPU V3 architecture crate, but target lowering remains deferred because exact `v3_distance2_gt` needs an un-narrowed wide-accumulator comparison |
+| `v3_length2_shift(vec3) -> u16` / `v3_length2_scaled(vec3) -> fix16` / `v3_normalize_safe(vec3) -> vec3` / `v3_distance_gt(vec3, vec3, fix16) -> bool` | prescale library helpers, not opcodes; they lower to existing FPU v2 instructions (the reference model lives in the CPU V3 architecture crate). `v3_length2_scaled` is the prescaled `|v|^2 * 2^-2k`, `v3_length2_shift` is `k`, and `v3_distance_gt` is an approximate ordinary-distance `|a - b| > threshold` |
 
 ## 6. Design decisions
 

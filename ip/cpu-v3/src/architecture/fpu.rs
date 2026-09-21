@@ -133,6 +133,19 @@ pub fn prescale_shift_for_max_abs(max_abs: u64) -> u32 {
     (64 - max_abs.leading_zeros()).saturating_sub(22)
 }
 
+/// Prescale exponent for the approximate **ordinary-distance** comparison
+/// ([`v3_distance_gt`]): one extra bit of headroom over
+/// [`prescale_shift_for_max_abs`], because both input vectors are shifted before
+/// the subtraction and their difference can reach twice the largest input
+/// magnitude. `k = max(0, bit_length(max|input component|) - 21)` keeps
+/// `|a_i >> k| < 2^21`, so `|(a_i >> k) - (b_i >> k)| < 2^22`, every scaled
+/// square stays below `2^44`, and the narrowed three-component sum stays well
+/// inside `i32`. The plain [`prescale_shift_for_max_abs`] rule would only bound
+/// the shifted inputs, not their difference.
+pub fn prescale_shift_for_input_difference(max_abs: u64) -> u32 {
+    (64 - max_abs.leading_zeros()).saturating_sub(21)
+}
+
 /// Largest absolute component as an unsigned magnitude that handles
 /// `i32::MIN` (whose magnitude is `2^31`).
 fn max_abs_component(components: &[i32]) -> u64 {
@@ -187,37 +200,40 @@ pub fn v3_normalize_safe(v: FpuVec3) -> FpuVec3 {
     ]
 }
 
-/// `v3_distance2_gt(vec3, vec3, fix16) -> bool`: `|a - b|^2 > threshold`, with
-/// both sides scaled by the same `2^-2k` derived from the difference's largest
-/// component.
+/// `v3_distance_gt(vec3, vec3, fix16) -> bool`: an approximate **ordinary**
+/// distance comparison `|a - b| > threshold` built from the FPU v2 ISA.
 ///
-/// The exact predicate is the scaled one: it compares
-/// `sum_i ((a_i - b_i) >> k)^2` against `threshold * 2^(16 - 2k)` in `i128`, so
-/// the comparison itself never overflows and a negative threshold is always
-/// exceeded by the non-negative squared distance. The `>> k` truncation is
-/// shared by both sides, so for a difference whose largest raw component is
-/// below `2^22` (`k = 0`) it is exactly `|a - b|^2 > threshold`.
-pub fn v3_distance2_gt(a: FpuVec3, b: FpuVec3, threshold: i32) -> bool {
-    let difference = [
-        i128::from(a[0]) - i128::from(b[0]),
-        i128::from(a[1]) - i128::from(b[1]),
-        i128::from(a[2]) - i128::from(b[2]),
-    ];
-    let max_abs = difference
+/// Both inputs are arithmetic-shifted by one shared `k` derived from the largest
+/// absolute **input** component ([`prescale_shift_for_input_difference`]) before
+/// the subtraction, so the subtraction cannot overflow. The scaled squared
+/// distance `s = sum_i ((a_i >> k) - (b_i >> k))^2 >> 16` is narrowed once, the
+/// ordinary distance is approximated as `s * rsqrt(s)` (the target's `RSQRT`
+/// plus a scalar `MUL`), and the ordinary Q16.16 `threshold` is shifted by the
+/// same `k` before the scalar `CMP`. The shifts, the single `DOTSTORE`
+/// narrowing, and the `RSQRT`/`MUL` approximation make the boundary approximate;
+/// the predicate is not the exact squared-distance boundary. A negative
+/// threshold is always exceeded by the non-negative distance, and equal points
+/// never exceed a zero threshold.
+pub fn v3_distance_gt(a: FpuVec3, b: FpuVec3, threshold: i32) -> bool {
+    let max_abs = a
         .iter()
-        .map(|value| value.unsigned_abs())
+        .chain(b.iter())
+        .map(|value| u64::from(value.unsigned_abs()))
         .max()
         .unwrap_or(0);
-    // `max_abs` fits 33 bits, so the u64 shift helper takes it directly.
-    let k = prescale_shift_for_max_abs(max_abs as u64);
-    let mut sum = 0_i128;
-    for component in difference {
-        let scaled = component >> k;
-        sum += scaled * scaled;
-    }
-    // Q16.16 threshold -> raw Q32.32 scale, then the same 2^-2k shift.
-    let scaled_threshold = (i128::from(threshold) << 16) >> (2 * k);
-    sum > scaled_threshold
+    let k = prescale_shift_for_input_difference(max_abs);
+    let scaled = |component: i32| component >> k;
+    let difference = [
+        i64::from(scaled(a[0])) - i64::from(scaled(b[0])),
+        i64::from(scaled(a[1])) - i64::from(scaled(b[1])),
+        i64::from(scaled(a[2])) - i64::from(scaled(b[2])),
+    ];
+    let sum = difference.iter().map(|d| d * d).sum::<i64>();
+    // `DOTSTORE` narrows `ACC[47:16]`; the headroom keeps this inside `i32`.
+    let squared = (sum >> FIX16_FRACTION_BITS) as i32;
+    let distance = fix16_mul(squared, rsqrt_q16(squared));
+    // The ordinary Q16.16 threshold carries the same `2^-k` scale.
+    distance > (threshold >> k)
 }
 
 #[cfg(test)]
@@ -286,6 +302,11 @@ mod tests {
         assert_eq!(prescale_shift_for_max_abs(1 << 23), 2);
         // i32::MIN's magnitude is 2^31 (bit length 32).
         assert_eq!(prescale_shift_for_max_abs(1 << 31), 10);
+        // The distance helper keeps one extra bit of headroom for the difference.
+        assert_eq!(prescale_shift_for_input_difference(0), 0);
+        assert_eq!(prescale_shift_for_input_difference((1 << 21) - 1), 0);
+        assert_eq!(prescale_shift_for_input_difference(1 << 21), 1);
+        assert_eq!(prescale_shift_for_input_difference(1 << 31), 11);
     }
 
     /// Higher-precision reference for the frozen prescale algorithm. `i128`
@@ -308,27 +329,18 @@ mod tests {
         (sum >> FIX16_FRACTION_BITS) as i32
     }
 
-    /// Higher-precision reference for the frozen distance predicate.
-    fn reference_distance2_gt(a: [i32; 3], b: [i32; 3], threshold: i32) -> bool {
-        let difference: [i128; 3] = [
-            i128::from(a[0]) - i128::from(b[0]),
-            i128::from(a[1]) - i128::from(b[1]),
-            i128::from(a[2]) - i128::from(b[2]),
-        ];
-        let max_abs = difference
+    /// Exact Euclidean distance of two Q16.16 vectors as `f64`, used only to
+    /// check the approximate predicate away from its accepted boundary band.
+    fn exact_distance(a: [i32; 3], b: [i32; 3]) -> f64 {
+        let squared = a
             .iter()
-            .map(|value| value.unsigned_abs())
-            .max()
-            .unwrap();
-        let k = prescale_shift_for_max_abs(max_abs as u64);
-        let sum = difference
-            .iter()
-            .map(|&component| {
-                let scaled = component >> k;
-                scaled * scaled
+            .zip(b.iter())
+            .map(|(&x, &y)| {
+                let d = f64::from(x) - f64::from(y);
+                d * d
             })
-            .sum::<i128>();
-        sum > (i128::from(threshold) << 16) >> (2 * k)
+            .sum::<f64>();
+        (squared.sqrt()) / 65536.0
     }
 
     #[test]
@@ -406,7 +418,50 @@ mod tests {
     }
 
     #[test]
-    fn distance2_gt_matches_the_high_precision_reference_at_every_boundary() {
+    fn distance_gt_compares_the_ordinary_distance() {
+        // 3-4-5: ordinary distance 5.0. The boundary is approximate (shift,
+        // DOTSTORE, RSQRT and MUL), so the test keeps a margin around it.
+        let a = [0, 0, 0];
+        let b = [3 << 16, 4 << 16, 0];
+        assert!(v3_distance_gt(a, b, 4 << 16));
+        assert!(v3_distance_gt(a, b, (9 << 15) - 1)); // 4.5 - 1 ulp
+        assert!(!v3_distance_gt(a, b, 11 << 15)); // 5.5
+        assert!(!v3_distance_gt(a, b, 6 << 16));
+    }
+
+    #[test]
+    fn distance_gt_handles_negative_thresholds_and_zero_vectors() {
+        let a = [0, 0, 0];
+        let b = [3 << 16, 4 << 16, 0];
+        // A negative threshold is always exceeded by the non-negative distance.
+        assert!(v3_distance_gt(a, b, -1));
+        assert!(v3_distance_gt(a, a, -1));
+        // Equal points never exceed a zero (or positive) threshold.
+        assert!(!v3_distance_gt(a, a, 0));
+        assert!(!v3_distance_gt(a, a, 1));
+        // Two zero vectors stay zero.
+        assert!(!v3_distance_gt([0, 0, 0], [0, 0, 0], 0));
+        // This small distance is below the largest Q16.16 threshold.
+        assert!(!v3_distance_gt(a, b, i32::MAX));
+    }
+
+    #[test]
+    fn distance_gt_prescale_prevents_subtraction_overflow_at_the_extremes() {
+        // `a - b` in raw `i32` would overflow; shifting both inputs first keeps
+        // the difference, the squared sum, and the narrowed `DOTSTORE` in range.
+        let a = [i32::MAX, i32::MAX, i32::MAX];
+        let b = [i32::MIN, i32::MIN, i32::MIN];
+        assert!(v3_distance_gt(a, b, 0));
+        // The extreme distance (~113511.0) still exceeds the largest threshold.
+        assert!(v3_distance_gt(a, b, i32::MAX));
+        // Identical extreme points have distance zero.
+        assert!(!v3_distance_gt(a, a, 0));
+        assert!(!v3_distance_gt(a, a, i32::MAX));
+        assert!(v3_distance_gt(a, a, -1));
+    }
+
+    #[test]
+    fn distance_gt_matches_the_exact_distance_away_from_the_boundary_band() {
         let mut cases: Vec<([i32; 3], [i32; 3])> = vec![];
         for bits in 0..=31u32 {
             let magnitude = 1_i32.wrapping_shl(bits);
@@ -423,43 +478,30 @@ mod tests {
             }
         }
         for (a, b) in cases {
-            // Probe a threshold just below, at, and just above the true scaled
-            // squared distance, so the predicate's boundary is exercised.
+            let exact = exact_distance(a, b);
             for threshold in [
                 i32::MIN,
                 -1,
                 0,
                 1 << 10,
-                (25 << 16) - 1,
-                25 << 16,
-                (25 << 16) + 1,
+                (9 << 15) - 1,
+                9 << 15,
+                (9 << 15) + 1,
+                11 << 15,
                 i32::MAX - 1,
                 i32::MAX,
             ] {
+                let t = f64::from(threshold) / 65536.0;
+                // Skip the accepted approximation band around the true distance.
+                if (exact - t).abs() <= exact * 0.02 + 0.01 {
+                    continue;
+                }
                 assert_eq!(
-                    v3_distance2_gt(a, b, threshold),
-                    reference_distance2_gt(a, b, threshold),
-                    "a={a:?} b={b:?} threshold={threshold}"
+                    v3_distance_gt(a, b, threshold),
+                    exact > t,
+                    "a={a:?} b={b:?} threshold={threshold} exact={exact}"
                 );
             }
         }
-    }
-
-    #[test]
-    fn distance2_gt_scales_both_sides_and_handles_negative_thresholds() {
-        // 3-4-5: squared distance 25.0.
-        let a = [0, 0, 0];
-        let b = [3 << 16, 4 << 16, 0];
-        assert!(v3_distance2_gt(a, b, 24 << 16));
-        assert!(!v3_distance2_gt(a, b, 25 << 16));
-        assert!(!v3_distance2_gt(a, b, 26 << 16));
-        // A negative threshold is always exceeded by a non-negative distance.
-        assert!(v3_distance2_gt(a, b, -1));
-        // Equal points never exceed a zero threshold.
-        assert!(!v3_distance2_gt(a, a, 0));
-        // Large coordinates: |a - b| = 2^20 in one component; both sides scale.
-        let far = [1 << 20, 0, 0];
-        assert!(v3_distance2_gt(a, far, 0));
-        assert!(!v3_distance2_gt(a, far, i32::MAX));
     }
 }

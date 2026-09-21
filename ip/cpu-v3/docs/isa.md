@@ -296,20 +296,22 @@ zero for `x <= 0`; both are approximate special functions with no IEEE special
 values. The hidden register-file BSRAM region holds the RCP/RSQRT/SINCOS
 lookup tables.
 
-The prescale library contract (`v3_length2_shift` -> `u16`,
-`v3_length2_scaled` -> `fix16`, `v3_normalize_safe`, `v3_distance2_gt`) is a
-compiler library, not a new opcode; its pure reference model and frozen `2^-k`
-scaling rule live in the CPU V3 architecture crate. `v3_length2_scaled`
-returns the **prescaled** squared length `|v|^2 * 2^-2k` (not an unscaled
-length), and `v3_length2_shift` returns `k`. `scaled << 2k` is an
-original-scale approximation, not an exact reconstruction, because shifting
-the components and narrowing the dot result discard low bits when `k > 0`.
-The C3 compiler deliberately still rejects this family: the first three
-helpers can be composed from existing operations, but the frozen exact
-`v3_distance2_gt` boundary needs the low bits of the un-narrowed accumulator,
-and FPU v2 exposes only `DOTSTORE`'s narrowed `ACC[47:16]`. Splitting the
-family, relaxing that boundary, or adding a wide comparison remains a future
-architecture decision.
+The prescale library family (`v3_length2_shift` -> `u16`,
+`v3_length2_scaled` -> `fix16`, `v3_normalize_safe`, `v3_distance_gt`) is a
+compiler library, not a new opcode; its reference model and `2^-k` scaling rule
+live in the CPU V3 architecture crate, and the compiler lowers it to existing
+FPU v2 instructions. `v3_length2_scaled` returns the **prescaled** squared
+length `|v|^2 * 2^-2k` (not an unscaled length), and `v3_length2_shift` returns
+`k`. `scaled << 2k` is an original-scale approximation, not an exact
+reconstruction, because shifting the components and narrowing the dot result
+discard low bits when `k > 0`. `v3_distance_gt` is an approximate **ordinary**
+distance comparison `|a - b| > threshold`: both vectors are prescaled by one `k`
+(with one extra bit of headroom) before the subtraction, the scaled squared
+length is narrowed once through `DOTSTORE`, the ordinary distance is
+approximated as `s * rsqrt(s)`, and the ordinary Q16.16 threshold is shifted by
+`k` before the scalar `CMP`. The shifts, the single `DOTSTORE` narrowing, and
+the `RSQRT`/`MUL` approximation make the boundary approximate; a negative
+threshold is always exceeded by the non-negative distance.
 
 ### PFX12 and wide operations
 

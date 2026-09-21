@@ -1098,6 +1098,131 @@ fn core_emu_matches_rtl_compiled_special_fpu_program() {
     );
 }
 
+/// Source for the prescale-library tests: one call to each of the four helpers,
+/// folded into a single halt signal through the raw-half bridge. The lanes are
+/// integer literals so each case compiles a fresh, bounded program.
+fn prescale_helper_source(ax: i16, ay: i16, bx: i16, by: i16, threshold: i16) -> String {
+    format!(
+        r#"
+    fn main() {{
+        let a = vec3::new(fix16::from_int({ax}), fix16::from_int({ay}), fix16::zero());
+        let b = vec3::new(fix16::from_int({bx}), fix16::from_int({by}), fix16::zero());
+        let k = v3_length2_shift(a);
+        let s = v3_length2_scaled(a);
+        let n = v3_normalize_safe(a);
+        let gt = v3_distance_gt(a, b, fix16::from_int({threshold}));
+        halt(k ^ s.lo_bits() ^ (s.hi_bits() << 1)
+             ^ (n.x().lo_bits() << 2) ^ (n.y().hi_bits() << 3)
+             ^ ((gt as u16) << 4));
+    }}
+"#
+    )
+}
+
+/// The CPU V3 reference model result for [`prescale_helper_source`]. The target
+/// sequence and this model share the shifts, `DOTSTORE`, `RSQRT` and `MUL`, so
+/// they must agree bit for bit.
+fn prescale_expected_signal(ax: i32, ay: i32, bx: i32, by: i32, threshold: i32) -> u16 {
+    let a = [ax << 16, ay << 16, 0];
+    let b = [bx << 16, by << 16, 0];
+    let k = cpu_v3::v3_length2_shift(a) as u16;
+    let s = cpu_v3::v3_length2_scaled(a);
+    let n = cpu_v3::v3_normalize_safe(a);
+    let gt = cpu_v3::v3_distance_gt(a, b, threshold << 16);
+    k ^ (s as u16)
+        ^ (((s as u32 >> 16) as u16) << 1)
+        ^ ((n[0] as u16) << 2)
+        ^ (((n[1] as u32 >> 16) as u16) << 3)
+        ^ (u16::from(gt) << 4)
+}
+
+/// Cases that exercise `k = 0`, the variable-shift path (`k > 0`), the largest
+/// `k` from an `i16`-range component, zero vectors, negative components, and a
+/// negative threshold.
+const PRESCALE_HELPER_CASES: &[(i16, i16, i16, i16, i16)] = &[
+    (3, 4, 1, 1, 2),
+    (300, 400, -100, 100, 100),
+    (30000, 4, -7, 9, 25000),
+    (-30000, -30000, 30000, 30000, -1),
+    (-32768, 0, 32767, 0, 32767),
+    (0, 0, 0, 0, 0),
+    (1, 2, 1, 2, -5),
+];
+
+/// The prescale library family compiles to existing FPU v2 instructions. This
+/// runs each generated sequence on the architectural simulator and checks the
+/// result against the reference model, so it pins the lowering without needing
+/// Icarus and keeps every program under a bounded step count.
+#[test]
+fn emulator_matches_reference_for_compiled_prescale_helpers() {
+    for &(ax, ay, bx, by, threshold) in PRESCALE_HELPER_CASES {
+        let program = compile(&prescale_helper_source(ax, ay, bx, by, threshold));
+        let expected = prescale_expected_signal(
+            i32::from(ax),
+            i32::from(ay),
+            i32::from(bx),
+            i32::from(by),
+            i32::from(threshold),
+        );
+        let mut machine = CpuV3Sim::default();
+        machine.load_program(0, &program).unwrap();
+        let outcome = machine.run(20_000).unwrap();
+        let RunOutcome::Halted { signal, .. } = outcome else {
+            panic!("prescale program {ax},{ay},{bx},{by},{threshold} did not halt in 20000 steps")
+        };
+        assert_eq!(
+            signal, expected,
+            "prescale helper mismatch for a=({ax},{ay}) b=({bx},{by}) threshold={threshold}"
+        );
+    }
+}
+
+#[test]
+#[ignore = "explicit emulator-vs-Icarus co-simulation of a compiled prescale-helper FPU program"]
+fn core_emu_matches_rtl_compiled_prescale_fpu_program() {
+    // Use the full-range case so the RTL path also covers the maximum k = 11.
+    let (ax, ay, bx, by, threshold) = PRESCALE_HELPER_CASES[4];
+    let program = compile(&prescale_helper_source(ax, ay, bx, by, threshold));
+    let expected = prescale_expected_signal(
+        i32::from(ax),
+        i32::from(ay),
+        i32::from(bx),
+        i32::from(by),
+        i32::from(threshold),
+    );
+    let module_name = CpuV3Core::verilog_identity().module_name();
+    let emu = run_core_emu_trace(&program, 20_000);
+    assert!(!emu.is_empty(), "emu trace empty");
+    let last_emu = emu.last().copied().expect("emu trace non-empty");
+    assert!(
+        !last_emu.fault,
+        "compiled prescale program faulted in the cycle model: code={} pc={:#06x}",
+        last_emu.fault_code, last_emu.fault_pc
+    );
+    assert!(last_emu.halted, "compiled prescale program did not halt");
+    assert_eq!(last_emu.halt_signal, expected, "unexpected prescale result");
+
+    let max_cycles = emu.len() + 800;
+    let tb = build_core_cosim_tb(&program, &module_name, max_cycles);
+    let rtl = run_core_rtl_trace(&tb);
+    for (index, (expected, actual)) in emu.iter().zip(&rtl).enumerate() {
+        if !actual.equal_core(expected) {
+            panic!("mismatch at cycle {index}\nemu={expected:?}\nrtl={actual:?}");
+        }
+    }
+    assert_eq!(
+        emu.len(),
+        rtl.len(),
+        "emu/RTL trace length mismatch: emu={} rtl={}",
+        emu.len(),
+        rtl.len()
+    );
+    assert_eq!(
+        rtl.last().copied().expect("rtl trace empty").halt_signal,
+        expected
+    );
+}
+
 #[test]
 #[ignore = "explicit emulator-vs-Icarus co-simulation of the CpuV3 core pipeline"]
 fn core_emu_matches_rtl_pipeline_overlap() {

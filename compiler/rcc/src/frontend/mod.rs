@@ -4792,9 +4792,9 @@ fn call_expr(l: &mut FnLower, call: &syn::ExprCall) -> Result<Val, syn::Error> {
     }
     if matches!(
         name.as_str(),
-        "v3_length2_shift" | "v3_length2_scaled" | "v3_normalize_safe" | "v3_distance2_gt"
+        "v3_length2_shift" | "v3_length2_scaled" | "v3_normalize_safe" | "v3_distance_gt"
     ) {
-        return Err(prescale_lowering_unavailable(&p, name));
+        return prescale_call(l, name, call, &args);
     }
     if matches!(name.as_str(), "cnt1" | "log2") {
         if args.len() != 1 {
@@ -4929,32 +4929,171 @@ fn constant_below(
 // FPU (fix16/vec2/vec3/vec4) operations
 // ---------------------------------------------------------------------------
 
-/// C1 lowers the scalar `fix16` operations, C2 the contiguous vector forms and
-/// C3 the scalar special functions. The C0-frozen prescale library family is
-/// deliberately still rejected rather than partially exposed. Its first three
-/// helpers can be built from a multiword unsigned `k` calculation, exact
-/// power-of-two VMULS, DOTSTORE and RSQRT, but `v3_distance2_gt` cannot meet
-/// its frozen exact boundary with the current ISA: it compares the un-narrowed
-/// raw `sum_i ((a_i - b_i) >> k)^2` (up to ~`2^45.6`) against
-///   `(threshold << 16) >> (2k)`. The only wide value the ISA can read back is
-///   `DOTSTORE`, which returns `ACC[47:16]` (narrowed to 32 bits); the low 16
-///   bits of the sum are unrecoverable and there is no ACC-read subop
-///   (AUX kind `01` is reserved). Whether to split the family, relax that
-/// boundary, or add an architectural wide comparison is a separate decision.
-fn prescale_lowering_unavailable(at: &impl syn::spanned::Spanned, what: &str) -> syn::Error {
-    err(
-        at,
-        format!(
-            "{what} has no CpuV3 FPU v2 lowering: the frozen prescale family remains deferred \
-             because v3_distance2_gt needs an un-narrowed wide-accumulator comparison that the \
-             FPU v2 ISA does not expose"
-        ),
-    )
+/// Lowers the prescale library family onto the existing FPU v2 scalar/vector
+/// instructions (no new opcodes). The first three helpers share
+/// `k = max(0, bit_length(max|component|) - 22)`; `v3_distance_gt` derives its
+/// own `k` with one extra bit of headroom, because it shifts both inputs before
+/// the subtraction and the difference can reach twice the largest input
+/// magnitude.
+fn prescale_call(
+    l: &mut FnLower,
+    name: &str,
+    call: &syn::ExprCall,
+    args: &[(VReg, Ty)],
+) -> Result<Val, syn::Error> {
+    match name {
+        "v3_length2_shift" | "v3_length2_scaled" | "v3_normalize_safe" => {
+            if args.len() != 1 {
+                return Err(err(call, format!("{name}(v) takes 1 argument")));
+            }
+            let (v, from) = &args[0];
+            let (v, _) = coerce(l, *v, from, &Ty::Vec3, &call.args[0])?;
+            let k = prescale_k(l, &[v], 10);
+            match name {
+                "v3_length2_shift" => Ok(Val::V(k, Ty::U16)),
+                "v3_length2_scaled" => {
+                    let scaled = prescale_vec(l, v, k);
+                    Ok(Val::V(l.b.fpu_dot_store(scaled, scaled), Ty::Fix16))
+                }
+                _ => {
+                    let scaled = prescale_vec(l, v, k);
+                    let squared = l.b.fpu_dot_store(scaled, scaled);
+                    // `RSQRT(0) == 0`, so a zero vector normalizes to zero.
+                    let inverse = l.b.fpu_special(FpuSpecialOp::Rsqrt, squared, 1);
+                    Ok(Val::V(l.b.fpu_vec_muls(scaled, inverse, 3), Ty::Vec3))
+                }
+            }
+        }
+        "v3_distance_gt" => {
+            if args.len() != 3 {
+                return Err(err(
+                    call,
+                    "v3_distance_gt(a, b, threshold) takes 3 arguments",
+                ));
+            }
+            let (a, a_from) = &args[0];
+            let (a, _) = coerce(l, *a, a_from, &Ty::Vec3, &call.args[0])?;
+            let (b, b_from) = &args[1];
+            let (b, _) = coerce(l, *b, b_from, &Ty::Vec3, &call.args[1])?;
+            let (threshold, t_from) = &args[2];
+            let (threshold, _) = coerce(l, *threshold, t_from, &Ty::Fix16, &call.args[2])?;
+            // One extra headroom bit: the prescaled difference is compared.
+            let k = prescale_k(l, &[a, b], 11);
+            let a_scaled = prescale_vec(l, a, k);
+            let b_scaled = prescale_vec(l, b, k);
+            let difference = l.b.fpu_vec_bin(FpuBinOp::Sub, a_scaled, b_scaled, 3);
+            let squared = l.b.fpu_dot_store(difference, difference);
+            // Approximate `sqrt(s)` as `s * rsqrt(s)`; `RSQRT(0) == 0`.
+            let inverse = l.b.fpu_special(FpuSpecialOp::Rsqrt, squared, 1);
+            let distance = l.b.fpu_bin(FpuBinOp::Mul, squared, inverse);
+            let threshold_scaled = prescale_scalar(l, threshold, k);
+            Ok(Val::Bool(BoolExpr::Cmp(Cmp {
+                lhs: distance,
+                rhs: CmpRhs::Reg(threshold_scaled),
+                cond: CompareOp::Greater,
+                signed: true,
+            })))
+        }
+        _ => unreachable!("prescale_call only handles the prescale family"),
+    }
+}
+
+/// The shared prescale exponent `k = max(0, bias - clz32(max|component|))` over
+/// one or two `vec3` operands. The raw magnitudes are combined with bitwise OR,
+/// so the leading-zero count sees the largest component without a comparison:
+/// `bit_length(a | b | c)` is the maximum of the individual bit lengths. `bias`
+/// is 10 for the length helpers and 11 for the distance helper.
+fn prescale_k(l: &mut FnLower, vectors: &[VReg], bias: u16) -> VReg {
+    let mut combined_hi: Option<VReg> = None;
+    let mut combined_lo: Option<VReg> = None;
+    for &vector in vectors {
+        let magnitudes = l.b.fpu_vec_un(FpuUnOp::Abs, vector, 3);
+        for lane in 0..3u8 {
+            let magnitude = l.b.fpu_vec_lane(magnitudes, lane);
+            let lo = l.b.fpu_to_lo(magnitude);
+            let hi = l.b.fpu_to_hi(magnitude);
+            combined_lo = Some(match combined_lo {
+                Some(acc) => l.b.bin(BinOp::Or, acc, lo),
+                None => lo,
+            });
+            combined_hi = Some(match combined_hi {
+                Some(acc) => l.b.bin(BinOp::Or, acc, hi),
+                None => hi,
+            });
+        }
+    }
+    let hi = combined_hi.expect("prescale_k takes at least one vector");
+    let lo = combined_lo.expect("prescale_k takes at least one vector");
+    // `clz32 = clz(hi)` when the high word is nonzero, else `16 + clz(lo)`.
+    let clz_hi = l.b.un(UnOp::Clz, hi);
+    let clz_lo = l.b.un(UnOp::Clz, lo);
+    let sixteen = l.b.load_imm(16);
+    let clz_lo = l.b.bin(BinOp::Add, clz_lo, sixteen);
+    let high_nonzero = l.b.bool_value(Cmp {
+        lhs: hi,
+        rhs: CmpRhs::Imm(0),
+        cond: CompareOp::NotEqual,
+        signed: false,
+    });
+    let zero = l.b.load_imm(0);
+    let high_mask = l.b.bin(BinOp::Sub, zero, high_nonzero);
+    let high_part = l.b.bin(BinOp::And, clz_hi, high_mask);
+    let low_mask = l.b.un(UnOp::Inv, high_mask);
+    let low_part = l.b.bin(BinOp::And, clz_lo, low_mask);
+    let clz32 = l.b.bin(BinOp::Or, high_part, low_part);
+    // `k = bias - clz32` when `clz32 < bias`, otherwise zero.
+    let below = l.b.bool_value(Cmp {
+        lhs: clz32,
+        rhs: CmpRhs::Imm(bias),
+        cond: CompareOp::Less,
+        signed: false,
+    });
+    let bias_mask = l.b.bin(BinOp::Sub, zero, below);
+    let bias_reg = l.b.load_imm(bias);
+    let difference = l.b.bin(BinOp::Sub, bias_reg, clz32);
+    l.b.bin(BinOp::And, difference, bias_mask)
+}
+
+/// Arithmetic-shifts a Q16.16 F register right by the variable amount `k`
+/// (`0..=11`) through the integer half bridge, then rebuilds the F register.
+/// The high word's low `k` bits cross into the low word; `k == 0` has no cross,
+/// which the mask clears because a shift by 16 is not encodable.
+fn prescale_scalar(l: &mut FnLower, value: VReg, k: VReg) -> VReg {
+    let lo = l.b.fpu_to_lo(value);
+    let hi = l.b.fpu_to_hi(value);
+    let zero = l.b.load_imm(0);
+    let nonzero = l.b.bool_value(Cmp {
+        lhs: k,
+        rhs: CmpRhs::Imm(0),
+        cond: CompareOp::NotEqual,
+        signed: false,
+    });
+    let cross_mask = l.b.bin(BinOp::Sub, zero, nonzero);
+    let sixteen = l.b.load_imm(16);
+    let shift_in = l.b.bin(BinOp::Sub, sixteen, k);
+    let crossing = l.b.shift_reg(ShiftOp::Lsl, hi, shift_in);
+    let crossing = l.b.bin(BinOp::And, crossing, cross_mask);
+    let low = l.b.shift_reg(ShiftOp::Lsr, lo, k);
+    let low = l.b.bin(BinOp::Or, low, crossing);
+    let high = l.b.shift_reg(ShiftOp::Asr, hi, k);
+    let partial = l.b.fpu_from_lo(low);
+    l.b.fpu_from_hi(partial, high)
+}
+
+/// [`prescale_scalar`] over the three contiguous lanes of a `vec3`.
+fn prescale_vec(l: &mut FnLower, vector: VReg, k: VReg) -> VReg {
+    let mut lanes = Vec::with_capacity(3);
+    for lane in 0..3u8 {
+        let value = l.b.fpu_vec_lane(vector, lane);
+        lanes.push(prescale_scalar(l, value, k));
+    }
+    l.b.fpu_vec_construct(&lanes)
 }
 
 /// fix16::/vec2::/vec3::/vec4:: associated functions. C2 implements the
-/// vector constructors, `zero`, and the vec4 memory import/export; the
-/// C3 adds the scalar special functions; the prescale family stays rejected.
+/// vector constructors, `zero`, and the vec4 memory import/export; C3 adds the
+/// scalar special functions; the prescale library family lowers through
+/// [`prescale_call`].
 fn fpu_associated_call(
     l: &mut FnLower,
     ty_name: &str,
@@ -5676,12 +5815,12 @@ mod tests {
         assert!(parse_source_with(src, 0).is_err());
     }
 
-    /// C1 lowers the scalar `fix16` operations, C2 the contiguous vector forms
-    /// and C3 the scalar specials plus `fsin`/`fcos`, so all of them must parse
-    /// and build IR; only the prescale library helpers still fail with the
-    /// explicit boundary message.
+    /// C1 lowers the scalar `fix16` operations, C2 the contiguous vector forms,
+    /// C3 the scalar specials plus `fsin`/`fcos`, and the prescale library
+    /// family lowers through existing FPU v2 instructions, so all of them must
+    /// parse and build IR.
     #[test]
-    fn c3_lowers_scalar_vectors_and_special_functions() {
+    fn c3_lowers_scalar_vectors_specials_and_prescale_helpers() {
         for src in [
             "fn main() { let a = fix16::from_int(1); halt(0); }",
             "fn main() { let a = fix16::from_words(1, 0); halt(a.lo_bits() + a.hi_bits()); }",
@@ -5697,26 +5836,14 @@ mod tests {
             "fn main() { let a = fsin(fix16::from_int(1)); halt(a.to_int() as u16); }",
             "fn main() { let a = fcos(fix16::from_int(1)); halt(a.to_int() as u16); }",
             "fn main() { let a = fsincos(fix16::from_int(1)); halt(a.y().to_int() as u16); }",
-        ] {
-            parse_source_with(src, 0).unwrap_or_else(|error| {
-                panic!("scalar, vector and special forms must lower now: `{src}`: {error}")
-            });
-        }
-        for src in [
             "fn main() { let a = v3_normalize_safe(vec3::zero()); halt(0); }",
             "fn main() { let a = v3_length2_shift(vec3::zero()); halt(a); }",
             "fn main() { let a = v3_length2_scaled(vec3::zero()); halt(a.to_int() as u16); }",
-            "fn main() { let a = v3_distance2_gt(vec3::zero(), vec3::zero(), fix16::zero()); halt(0); }",
+            "fn main() { let a = v3_distance_gt(vec3::zero(), vec3::zero(), fix16::zero()); halt(a as u16); }",
         ] {
-            let error = parse_source_with(src, 0)
-                .err()
-                .expect("a prescale-helper program must still be rejected");
-            assert!(
-                error
-                    .to_string()
-                    .contains("un-narrowed wide-accumulator comparison"),
-                "unexpected error for `{src}`: {error}"
-            );
+            parse_source_with(src, 0).unwrap_or_else(|error| {
+                panic!("scalar, vector, special and prescale forms must lower now: `{src}`: {error}")
+            });
         }
     }
 
