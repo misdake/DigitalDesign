@@ -11,7 +11,7 @@ wire [15:0] word1_raw;
 wire [3:0] instr_opcode;
 wire instr_complete;
 
-CpuV3FpuV2Frontend dut(.*);
+CpuV3FpuFrontend dut(.*);
 always #5 clk = ~clk;
 
 localparam integer MAX_CYCLES = 200000;

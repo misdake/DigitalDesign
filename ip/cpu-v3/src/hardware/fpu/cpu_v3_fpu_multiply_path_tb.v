@@ -1,6 +1,6 @@
-// Testbench for CpuV3FpuV2MultiplyPath.
+// Testbench for CpuV3FpuMultiplyPath.
 //
-// Following cpu_v3_fpu_v2_vector_path_tb.v, the parent front-end and the
+// Following cpu_v3_fpu_vector_path_tb.v, the parent front-end and the
 // register file are behavioral stubs inside this TB rather than instantiated
 // leaves. This TB drives instr_complete / instr_opcode / word1_raw / base_a /
 // base_b directly and owns a behavioral 2R1W register file, so the multiply
@@ -77,7 +77,7 @@ initial begin
         rf_mem[rf_init] = 32'b0;
 end
 
-// Shared-pipe stub: the real CpuV3FpuV2MulPipe lives in the unit top; this
+// Shared-pipe stub: the real CpuV3FpuMulPipe lives in the unit top; this
 // TB-local copy reproduces its exact 3-stage tag-carrying behavior so the
 // leaf test needs no resource-claiming sibling modules (see the scalar-path
 // TB for the same pattern).
@@ -118,7 +118,7 @@ assign mul_out_valid = mul_s3_valid && !abort;
 assign mul_out_product = mul_s3_prod[63:0];
 assign mul_out_tag = mul_s3_tag;
 
-CpuV3FpuV2MultiplyPath multiply_path (
+CpuV3FpuMultiplyPath multiply_path (
     .clk(clk),
     .abort(abort),
     .instr_complete(instr_complete),

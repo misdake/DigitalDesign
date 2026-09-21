@@ -6,7 +6,7 @@
 //   opcode 0xC (VECTOR) subop 0x03 VMULS: D+i = q16(A+i * B0)
 //   opcode 0xD (SCALAR) subop 0x02 MUL : Fd   = q16(Fa * Fb)
 //
-// The instruction word split follows CpuV3FpuV2Frontend. A vector word1 is
+// The instruction word split follows CpuV3FpuFrontend. A vector word1 is
 // {Fd[15:10], len[9:8], subop[7:3], mode[2:0]} with len 00 = vec2, 01 = vec3,
 // 10 = vec4 and 11 clamped to vec4 (last_lane = len + 1). A scalar word1 is
 // {Fd[15:10], subop[9:4], mode[3:0]}. The parent latches the two 6-bit register
@@ -20,7 +20,7 @@
 //
 // All arithmetic is Q16.16 with wrap: products are narrowed at the write port
 // by taking product[47:16]. The multiplier itself is the shared
-// CpuV3FpuV2MulPipe instance in the unit top (the core serializes
+// CpuV3FpuMulPipe instance in the unit top (the core serializes
 // instructions, so this path and the dot path never multiply at once). This
 // controller sequences the lanes and hands each to the pipe with its
 // destination tag; the tag comes back with the product.
@@ -41,7 +41,7 @@
 // abort discards every in-flight lane (the shared pipe voids them), keeps
 // every lane already written, gates the write port combinationally and drops
 // busy in the same cycle.
-module CpuV3FpuV2MultiplyPath (
+module CpuV3FpuMultiplyPath (
     input wire clk,
     input wire abort,
     input wire instr_complete,

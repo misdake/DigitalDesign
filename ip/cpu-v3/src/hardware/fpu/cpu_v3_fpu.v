@@ -37,7 +37,7 @@
 //   only reads port B, so no read port A mux is needed. This whole channel is
 //   the first-version FLD/FST implementation and is removed when the internal
 //   store buffer arrives in Stage 6.
-module CpuV3FpuV2 (
+module CpuV3Fpu (
     input wire clk,
     input wire abort,
     input wire word_valid,
@@ -64,7 +64,7 @@ wire [15:0] word1_raw;
 wire [3:0] instr_opcode;
 wire fe_instr_complete;
 
-CpuV3FpuV2Frontend frontend (
+CpuV3FpuFrontend frontend (
     .clk(clk),
     .word_valid(word_valid),
     .word(word),
@@ -146,7 +146,7 @@ wire [31:0] rf_write_data =
 wire [31:0] rf_read_a_data;
 wire [31:0] rf_read_b_data;
 
-CpuV3FpuV2RegisterRam rf (
+CpuV3FpuRegisterRam rf (
     .clk(clk),
     .write_enable(rf_write_enable),
     .write_address(rf_write_address),
@@ -159,7 +159,7 @@ CpuV3FpuV2RegisterRam rf (
 
 // Scalar execution path. It consumes the front-end pair and the RF operand
 // data; abort reaches both the front-end and the path.
-CpuV3FpuV2ScalarPath scalar_path (
+CpuV3FpuScalarPath scalar_path (
     .clk(clk),
     .abort(abort),
     .instr_complete(fe_instr_complete),
@@ -178,7 +178,7 @@ CpuV3FpuV2ScalarPath scalar_path (
 
 // Vector execution path (opcode 0xC). It consumes the same front-end pair;
 // the bases come from the front-end's latched word0.
-CpuV3FpuV2VectorPath vector_path (
+CpuV3FpuVectorPath vector_path (
     .clk(clk),
     .abort(abort),
     .instr_complete(fe_instr_complete),
@@ -216,7 +216,7 @@ wire mul_out_valid;
 wire signed [63:0] mul_out_product;
 wire [8:0] mul_out_tag;
 
-CpuV3FpuV2MulPipe mul_pipe (
+CpuV3FpuMulPipe mul_pipe (
     .clk(clk),
     .abort(abort),
     .in_valid(mul_in_valid),
@@ -230,7 +230,7 @@ CpuV3FpuV2MulPipe mul_pipe (
 
 // Multiply execution path (VMUL/VMULS/scalar MUL). Same front-end pair
 // contract as the vector path.
-CpuV3FpuV2MultiplyPath multiply_path (
+CpuV3FpuMultiplyPath multiply_path (
     .clk(clk),
     .abort(abort),
     .instr_complete(fe_instr_complete),
@@ -258,7 +258,7 @@ CpuV3FpuV2MultiplyPath multiply_path (
 // Dot-product path (DOT/DOTADD/DOTSTORE, opcode 0xC subops 0x0D..0x0F).
 // Same front-end pair contract as the vector path.
 wire [63:0] dp_acc;
-CpuV3FpuV2DotPath dot_path (
+CpuV3FpuDotPath dot_path (
     .clk(clk),
     .abort(abort),
     .instr_complete(fe_instr_complete),

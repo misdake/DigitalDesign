@@ -1,6 +1,6 @@
 // FPU v2 scalar execution-path controller.
 //
-// A scalar instruction (opcode 0xD) is delivered by CpuV3FpuV2Frontend as a
+// A scalar instruction (opcode 0xD) is delivered by CpuV3FpuFrontend as a
 // two-word pair. Word0 carries Fa in bits [11:6] and Fb in bits [5:0]; the
 // frontend forms those register-file read addresses combinationally in the
 // word0 cycle, so the synchronous RF presents both operands on the beat shown
@@ -38,7 +38,7 @@
 // abort cancels everything in flight: a pending result is not captured, the
 // write enable is suppressed (both on the capture edge and, combinationally,
 // on the writeback edge), busy drops and all three countdowns are cleared.
-module CpuV3FpuV2ScalarPath (
+module CpuV3FpuScalarPath (
     input wire clk,
     input wire abort,
     input wire instr_complete,
@@ -78,7 +78,7 @@ wire [31:0] alu_result;
 wire alu_lt;
 wire alu_eq;
 wire alu_gt;
-CpuV3FpuV2ScalarAlu scalar_alu (
+CpuV3FpuScalarAlu scalar_alu (
     .a(rf_read_a_data),
     .b(rf_read_b_data),
     .op(subop[3:0]),

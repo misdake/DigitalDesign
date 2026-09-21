@@ -354,7 +354,7 @@ wire fpu2_ext_write_enable = state == ST_FPU2_MEM_RESPONSE &&
 wire [3:0] fpu2_ext_read_index =
     state == ST_FPU2_CAPTURE ? fpu2_beat + 1'b1 : fpu2_beat_index;
 
-CpuV3FpuV2 u_fpu (
+CpuV3Fpu u_fpu (
     .clk(clk),
     .abort(fpu2_abort),
     .word_valid(fpu2_word_valid),

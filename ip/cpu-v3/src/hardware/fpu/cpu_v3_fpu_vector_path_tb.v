@@ -1,11 +1,11 @@
-// Testbench for CpuV3FpuV2VectorPath.
+// Testbench for CpuV3FpuVectorPath.
 //
-// Following cpu_v3_fpu_v2_scalar_path_tb.v, the parent front-end and the
+// Following cpu_v3_fpu_scalar_path_tb.v, the parent front-end and the
 // register file are behavioral stubs inside this TB rather than instantiated
 // leaves. (Instantiating the real leaves here would make the framework count
 // them as physical children again, double-claiming the BSRAM; the full leaf
-// interconnection is covered by the CpuV3FpuV2 unit testbench.) Only the
-// combinational CpuV3FpuV2ScalarAlu leaf is instantiated, through the vector
+// interconnection is covered by the CpuV3Fpu unit testbench.) Only the
+// combinational CpuV3FpuScalarAlu leaf is instantiated, through the vector
 // path itself. This TB drives instr_complete / instr_opcode / word1_raw /
 // base_a / base_b directly and owns a behavioral 2R1W register file.
 //
@@ -78,7 +78,7 @@ initial begin
         rf_mem[rf_init] = 32'b0;
 end
 
-CpuV3FpuV2VectorPath vector_path (
+CpuV3FpuVectorPath vector_path (
     .clk(clk),
     .abort(abort),
     .instr_complete(instr_complete),

@@ -1,4 +1,4 @@
-module CpuV3FpuV2RegisterRam (
+module CpuV3FpuRegisterRam (
     input wire clk,
     input wire write_enable,
     input wire [8:0] write_address,
