@@ -953,6 +953,12 @@ fn verify_fpu_scalar_path_with_iverilog() {
 }
 
 #[test]
+#[ignore = "explicit external simulation of the FPU v2 special-function path"]
+fn verify_fpu_special_path_with_iverilog() {
+    digital_design_hardware::verify_verilog_with_iverilog::<CpuV3FpuSpecialPath>().unwrap();
+}
+
+#[test]
 #[ignore = "explicit external simulation of the FPU v2 unit top"]
 fn verify_fpu_unit_with_iverilog() {
     digital_design_hardware::verify_verilog_with_iverilog::<CpuV3Fpu>().unwrap();

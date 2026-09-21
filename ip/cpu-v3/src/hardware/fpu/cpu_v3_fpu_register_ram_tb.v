@@ -60,6 +60,29 @@ initial begin
     for (i = 0; i < 512; i = i + 1)
         reference[i] = 0;
 
+    // Hidden LUT region: the register file powers up with the special-function
+    // tables already in BSRAM. Check the two table bases plus the mirror
+    // asymmetry before the writes below overwrite everything. Reads have one
+    // cycle of latency, so drive the addresses on the falling edge and sample
+    // after the next rising edge.
+    @(negedge clk);
+    read_a_address = 9'd128;
+    read_b_address = 9'd128;
+    @(posedge clk);
+    #1;
+    check_value(read_a_data, 32'h04090000, "packed RCP interval 0");
+    check_value(read_b_data, 32'h06030000, "packed RSQRT-even interval 0");
+
+    // Address 256 is SINCOS interval 0 in mirror A and RSQRT-odd interval 0 in
+    // mirror B, proving the asymmetric packed layout.
+    @(negedge clk);
+    read_a_address = 9'd256;
+    read_b_address = 9'd256;
+    @(posedge clk);
+    #1;
+    check_value(read_a_data, 32'h03240000, "packed SINCOS interval 0");
+    check_value(read_b_data, 32'h0698B505, "packed RSQRT-odd interval 0");
+
     // Write every physical address with a distinct word.
     write_enable = 0;
     for (i = 0; i < 512; i = i + 1) begin

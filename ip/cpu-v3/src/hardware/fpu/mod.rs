@@ -28,9 +28,14 @@ pub(crate) mod encoding {
     pub(crate) const DOTSTORE: u8 = 0x0F;
 
     /// Scalar word1 subop field, bits [9:4] (section 7). Only the subops the
-    /// scalar and multiply paths act on are named here.
+    /// scalar, multiply and special paths act on are named here.
     pub(crate) const MUL: u8 = 0x02;
     pub(crate) const CMP: u8 = 0x0B;
+    pub(crate) const RCP: u8 = 0x0C;
+    pub(crate) const RSQRT: u8 = 0x0D;
+    /// SINCOS: a defined no-op until its datapath lands, but it still must not
+    /// fire the scalar path.
+    pub(crate) const SINCOS: u8 = 0x0E;
 
     /// AUX word1 subop field, bits [9:4], for kind 00 (section 10.2).
     pub(crate) const FLD: u8 = 0x00;
@@ -101,7 +106,7 @@ pub(crate) mod encoding {
     }
 }
 
-pub(crate) mod lut;
+pub mod lut;
 
 #[derive(Clone, ModuleIo)]
 pub struct CpuV3FpuRegisterRamInput {
@@ -134,10 +139,48 @@ impl HardwareIdentity for CpuV3FpuRegisterRam {
     }
 }
 
+/// Builds the two register-file BSRAM mirrors from the frozen LUT tables:
+/// mirror A carries RCP and SINCOS, mirror B carries the even- and odd-exponent
+/// RSQRT tables. The architectural region 0..63 stays zero in both; writes
+/// broadcast to both arrays at runtime.
+fn rf_mirrors_from_lut() -> (Box<[u32; 512]>, Box<[u32; 512]>) {
+    let mut mirror_a = Box::new([0u32; 512]);
+    let mut mirror_b = Box::new([0u32; 512]);
+    let rcp = lut::packed_rcp_lut();
+    let sincos = lut::packed_sincos_lut();
+    let rsqrt_even = lut::packed_rsqrt_even_lut();
+    let rsqrt_odd = lut::packed_rsqrt_odd_lut();
+    mirror_a[lut::MIRROR_A_RCP_BASE..lut::MIRROR_A_RCP_BASE + rcp.len()].copy_from_slice(&rcp);
+    mirror_a[lut::MIRROR_A_SINCOS_BASE..lut::MIRROR_A_SINCOS_BASE + sincos.len()]
+        .copy_from_slice(&sincos);
+    mirror_b[lut::MIRROR_B_RSQRT_EVEN_BASE..lut::MIRROR_B_RSQRT_EVEN_BASE + rsqrt_even.len()]
+        .copy_from_slice(&rsqrt_even);
+    mirror_b[lut::MIRROR_B_RSQRT_ODD_BASE..lut::MIRROR_B_RSQRT_ODD_BASE + rsqrt_odd.len()]
+        .copy_from_slice(&rsqrt_odd);
+    (mirror_a, mirror_b)
+}
+
 pub struct CpuV3FpuRegisterRamState {
-    memory: Box<[u32; 512]>,
+    /// Mirror A (read port A): architectural F0..F63 plus the RCP table at
+    /// 128..255 and the SINCOS intervals at 256..511 (design section 9.4).
+    mirror_a: Box<[u32; 512]>,
+    /// Mirror B (read port B): architectural F0..F63 plus the RSQRT even table
+    /// at 128..255 and the RSQRT odd table at 256..383.
+    mirror_b: Box<[u32; 512]>,
     read_a_data: u32,
     read_b_data: u32,
+}
+
+impl Default for CpuV3FpuRegisterRamState {
+    fn default() -> Self {
+        let (mirror_a, mirror_b) = rf_mirrors_from_lut();
+        CpuV3FpuRegisterRamState {
+            mirror_a,
+            mirror_b,
+            read_a_data: 0,
+            read_b_data: 0,
+        }
+    }
 }
 
 impl Module for CpuV3FpuRegisterRam {
@@ -152,11 +195,7 @@ impl Module for CpuV3FpuRegisterRam {
     }
 
     fn create_emu(_input: &Self::Input, _output: &Self::Output) -> Self::EmuState {
-        CpuV3FpuRegisterRamState {
-            memory: Box::new([0; 512]),
-            read_a_data: 0,
-            read_b_data: 0,
-        }
+        Self::EmuState::default()
     }
 
     fn execute_emu(
@@ -181,11 +220,13 @@ impl Module for CpuV3FpuRegisterRam {
         _output: &Self::Output,
     ) {
         let input = input.sample(circuit);
-        // Both reads observe the pre-write contents (read-first semantics).
-        state.read_a_data = state.memory[input.read_a_address as usize];
-        state.read_b_data = state.memory[input.read_b_address as usize];
+        // Both reads observe the pre-write contents (read-first semantics); the
+        // write broadcasts the same word into both mirrors.
+        state.read_a_data = state.mirror_a[input.read_a_address as usize];
+        state.read_b_data = state.mirror_b[input.read_b_address as usize];
         if input.write_enable {
-            state.memory[input.write_address as usize] = input.write_data as u32;
+            state.mirror_a[input.write_address as usize] = input.write_data as u32;
+            state.mirror_b[input.write_address as usize] = input.write_data as u32;
         }
     }
 
@@ -621,6 +662,312 @@ impl Module for CpuV3FpuScalarPath {
 }
 
 #[derive(Clone, ModuleIo)]
+pub struct CpuV3FpuSpecialPathInput {
+    pub abort: Wire,
+    pub instr_complete: Wire,
+    pub instr_opcode: Wires<4>,
+    pub word1_raw: Wires<16>,
+    pub rf_read_a_data: Wires<32>,
+    pub rf_read_b_data: Wires<32>,
+}
+
+#[derive(Clone, ModuleIo)]
+pub struct CpuV3FpuSpecialPathOutput {
+    pub rf_read_a_address: Wires<9>,
+    pub rf_read_b_address: Wires<9>,
+    pub rf_write_enable: Wire,
+    pub rf_write_address: Wires<9>,
+    pub rf_write_data: Wires<32>,
+    pub busy: Wire,
+    pub r_wait: Wires<4>,
+    pub w_wait: Wires<4>,
+    pub x_wait: Wires<4>,
+}
+
+/// FPU v2 special-function execution-path controller (opcode 0xD subops 0x0C
+/// RCP and 0x0D RSQRT). Blocking: while active it owns both register-file read
+/// ports. Emu lives in the unit top; the leaf is verified through its Verilog
+/// testbench and the system co-simulation.
+pub struct CpuV3FpuSpecialPath;
+
+impl HardwareIdentity for CpuV3FpuSpecialPath {
+    const TARGET_RESOURCE_LEAF: bool = true;
+
+    fn verilog_identity() -> VerilogIdentity {
+        VerilogIdentity::new("CpuV3FpuSpecialPath").namespace(["components", "cpu", "cpu_v3"])
+    }
+}
+
+/// Pipeline registers of the blocking special path. Instruction context is
+/// written once and remains stable while only the valid token/data advance.
+#[derive(Default)]
+pub struct CpuV3FpuSpecialPathState {
+    p0_valid: bool,
+    p0_rcp: bool,
+    p0_negative: bool,
+    p0_magnitude: u32,
+    p0_fd: u8,
+    s1_valid: bool,
+    s1_residue: u16,
+    s1_shift: u8,
+    s1_left: bool,
+    s1_zero: bool,
+    s2_valid: bool,
+    s2_interpolated: u32,
+}
+
+/// All combinational results of one cycle, sampled from the pre-edge state.
+/// `comb` turns the output subset into wires; `tick` uses the capture subset to
+/// update the pipeline registers. Both must see the same pre-edge snapshot.
+struct CpuV3FpuSpecialPathComputed {
+    load_now: bool,
+    is_rcp: bool,
+    p0_negative: bool,
+    p0_magnitude: u32,
+    read_a_address: u16,
+    read_b_address: u16,
+    write_enable: bool,
+    write_address: u16,
+    write_data: u32,
+    busy: bool,
+    r_wait: u8,
+    w_wait: u8,
+    x_wait: u8,
+    s1_residue: u16,
+    s1_shift: u8,
+    s1_left: bool,
+    s1_zero: bool,
+    capture_interpolated: u32,
+    fd: u8,
+}
+
+impl CpuV3FpuSpecialPathState {
+    /// Mirrors every combinational assignment of CpuV3FpuSpecialPath from the
+    /// pre-edge state and the live inputs.
+    fn compute(&self, input: &CpuV3FpuSpecialPathInputValue) -> CpuV3FpuSpecialPathComputed {
+        let instr_opcode = input.instr_opcode as u8;
+        let word1 = input.word1_raw as u16;
+        let subop = encoding::scalar_subop(word1);
+        let fd = encoding::word1_fd(word1);
+        let is_scalar = instr_opcode == encoding::OPCODE_SCALAR;
+        let is_rcp = is_scalar && subop == encoding::RCP;
+        let is_rsqrt = is_scalar && subop == encoding::RSQRT;
+        let load_now = input.instr_complete && (is_rcp || is_rsqrt) && !input.abort;
+
+        // T0 operand capture; normalization runs from the registered operand.
+        let x0 = input.rf_read_a_data as u32;
+        let x0_negative = x0 & 0x8000_0000 != 0;
+        let x0_magnitude = if x0_negative { x0.wrapping_neg() } else { x0 };
+        let p0_zero = self.p0_magnitude == 0;
+        let clz = self.p0_magnitude.leading_zeros();
+
+        // Shared normalized index/residue for both tables.
+        let normalized = self.p0_magnitude.wrapping_shl(clz);
+        let norm_index = ((normalized >> 24) & 0x7F) as u8;
+        let norm_residue = ((normalized >> 15) & 0x1FF) as u16;
+
+        // RCP scale: 2^(clz-15).
+        let rcp_shift = clz.abs_diff(15) as u8;
+        let rcp_left = clz >= 15;
+
+        // RSQRT parity is parity(31-clz). Its scale is floor((15-clz)/2).
+        let rsqrt_odd = clz & 1 == 0;
+        let rsqrt_left = clz > 15;
+        let rsqrt_distance = clz.abs_diff(15);
+        let rsqrt_shift = if rsqrt_left {
+            rsqrt_distance.div_ceil(2)
+        } else {
+            rsqrt_distance / 2
+        };
+
+        // Aligned bases make the address a concatenation, not an addition.
+        let table_address = if self.p0_rcp || !rsqrt_odd {
+            128u16 | u16::from(norm_index)
+        } else {
+            256u16 | u16::from(norm_index)
+        };
+        let read_a_address = if self.p0_valid && self.p0_rcp {
+            table_address
+        } else {
+            0
+        };
+        let read_b_address = if self.p0_valid && !self.p0_rcp {
+            table_address
+        } else {
+            0
+        };
+
+        // One packed read supplies both the 17-bit current and signed 10-bit
+        // delta. The product fits signed 19 bits, but i32 keeps the emu clear.
+        let packed_interval = if self.p0_rcp {
+            input.rf_read_a_data as u32
+        } else {
+            input.rf_read_b_data as u32
+        };
+        let interval_current = packed_interval & 0x1_FFFF;
+        let delta_bits = ((packed_interval >> 17) & 0x03FF) as i32;
+        let interval_delta = (delta_bits << 22) >> 22;
+        let interp_product = interval_delta * i32::from(self.s1_residue);
+        let interpolated = (interval_current as i32 + (interp_product >> 9)) as u32;
+
+        // T3 scaling and sign. Only RCP's left path can overflow signed 32;
+        // RSQRT's maximum left shift is eight.
+        let scaled = if self.s1_left {
+            let wide = u64::from(self.s2_interpolated) << self.s1_shift;
+            if self.p0_rcp && wide > 0x7FFF_FFFF {
+                0x7FFF_FFFF
+            } else {
+                wide as u32
+            }
+        } else {
+            self.s2_interpolated >> self.s1_shift
+        };
+        let rcp_value = if self.p0_negative {
+            scaled.wrapping_neg()
+        } else {
+            scaled
+        };
+        let out_rcp = if self.s1_zero {
+            if self.p0_negative {
+                0x8000_0001
+            } else {
+                0x7FFF_FFFF
+            }
+        } else {
+            rcp_value
+        };
+        let out_rsqrt = if self.s1_zero { 0 } else { scaled };
+        let write_data = if self.p0_rcp { out_rcp } else { out_rsqrt };
+
+        CpuV3FpuSpecialPathComputed {
+            load_now,
+            is_rcp,
+            p0_negative: x0_negative,
+            p0_magnitude: x0_magnitude,
+            read_a_address,
+            read_b_address,
+            write_enable: self.s2_valid && !input.abort,
+            write_address: u16::from(self.p0_fd),
+            write_data,
+            busy: (load_now || self.p0_valid || self.s1_valid || self.s2_valid) && !input.abort,
+            r_wait: 0,
+            w_wait: if load_now { 4 } else { 0 },
+            x_wait: if load_now { 4 } else { 0 },
+            s1_residue: norm_residue,
+            s1_shift: if self.p0_rcp {
+                rcp_shift
+            } else {
+                rsqrt_shift as u8
+            },
+            s1_left: if self.p0_rcp { rcp_left } else { rsqrt_left },
+            s1_zero: if self.p0_rcp {
+                p0_zero
+            } else {
+                self.p0_negative || p0_zero
+            },
+            capture_interpolated: interpolated,
+            fd,
+        }
+    }
+
+    fn comb(&self, input: &CpuV3FpuSpecialPathInputValue) -> CpuV3FpuSpecialPathOutputValue {
+        let c = self.compute(input);
+        CpuV3FpuSpecialPathOutputValue {
+            rf_read_a_address: u64::from(c.read_a_address),
+            rf_read_b_address: u64::from(c.read_b_address),
+            rf_write_enable: c.write_enable,
+            rf_write_address: u64::from(c.write_address),
+            rf_write_data: u64::from(c.write_data),
+            busy: c.busy,
+            r_wait: u64::from(c.r_wait),
+            w_wait: u64::from(c.w_wait),
+            x_wait: u64::from(c.x_wait),
+        }
+    }
+
+    /// Mirrors the single always block of CpuV3FpuSpecialPath. Reads only the
+    /// pre-edge snapshot in `c` plus the pre-edge register fields it mutates.
+    fn tick(&mut self, input: &CpuV3FpuSpecialPathInputValue) {
+        let c = self.compute(input);
+        if input.abort {
+            self.p0_valid = false;
+            self.s1_valid = false;
+            self.s2_valid = false;
+        } else if c.load_now {
+            self.p0_valid = true;
+            self.p0_rcp = c.is_rcp;
+            self.p0_negative = c.p0_negative;
+            self.p0_magnitude = c.p0_magnitude;
+            self.p0_fd = c.fd;
+            self.s1_valid = false;
+            self.s2_valid = false;
+        } else if self.p0_valid {
+            self.p0_valid = false;
+            self.s1_valid = true;
+            self.s1_residue = c.s1_residue;
+            self.s1_shift = c.s1_shift;
+            self.s1_left = c.s1_left;
+            self.s1_zero = c.s1_zero;
+            self.s2_valid = false;
+        } else if self.s1_valid {
+            self.s2_valid = true;
+            self.s2_interpolated = c.capture_interpolated;
+            self.s1_valid = false;
+        } else {
+            self.s2_valid = false;
+        }
+    }
+}
+
+impl Module for CpuV3FpuSpecialPath {
+    type Input = CpuV3FpuSpecialPathInput;
+    type Output = CpuV3FpuSpecialPathOutput;
+    type EmuState = CpuV3FpuSpecialPathState;
+
+    const USES_MAIN_CLOCK: bool = true;
+
+    fn create_emu(_input: &Self::Input, _output: &Self::Output) -> Self::EmuState {
+        Self::EmuState::default()
+    }
+
+    fn execute_emu(
+        state: &mut Self::EmuState,
+        circuit: &mut CircuitWires,
+        input: &Self::Input,
+        output: &Self::Output,
+    ) {
+        let input = input.sample(circuit);
+        output.drive(circuit, &state.comb(&input));
+    }
+
+    fn clock_emu(
+        state: &mut Self::EmuState,
+        circuit: &mut CircuitWires,
+        input: &Self::Input,
+        _output: &Self::Output,
+    ) {
+        let input = input.sample(circuit);
+        state.tick(&input);
+    }
+
+    fn verilog_source() -> Option<String> {
+        Some(include_str!("cpu_v3_fpu_special_path.v").to_string())
+    }
+
+    fn target_resources() -> Vec<TargetResourceRequest> {
+        // The one inferred 18x18 signed multiplier (the interpolation product
+        // `delta * residue`) maps to a single MULT18X18 lane.
+        vec![TargetResourceRequest::new(
+            digital_design_hardware::resources::components::DspMultipliers::new(1),
+        )]
+    }
+
+    fn verilog_testbench() -> Option<String> {
+        Some(include_str!("cpu_v3_fpu_special_path_tb.v").to_string())
+    }
+}
+
+#[derive(Clone, ModuleIo)]
 pub struct CpuV3FpuVectorPathInput {
     pub abort: Wire,
     pub instr_complete: Wire,
@@ -902,6 +1249,7 @@ pub struct CpuV3FpuState {
     frontend: CpuV3FpuFrontendState,
     rf: CpuV3FpuRegisterRamState,
     scalar_path: CpuV3FpuScalarPathState,
+    special_path: CpuV3FpuSpecialPathState,
     held_read_a_address: u16,
     held_read_b_address: u16,
     vp_run: bool,
@@ -953,12 +1301,9 @@ impl Default for CpuV3FpuState {
     fn default() -> Self {
         CpuV3FpuState {
             frontend: CpuV3FpuFrontendState::default(),
-            rf: CpuV3FpuRegisterRamState {
-                memory: Box::new([0; 512]),
-                read_a_data: 0,
-                read_b_data: 0,
-            },
+            rf: CpuV3FpuRegisterRamState::default(),
             scalar_path: CpuV3FpuScalarPathState::default(),
+            special_path: CpuV3FpuSpecialPathState::default(),
             held_read_a_address: 0,
             held_read_b_address: 0,
             vp_run: false,
@@ -1012,6 +1357,10 @@ impl CpuV3FpuState {
         let sp = &self.scalar_path;
         let sp_load_now = self.frontend.instr_complete
             && self.frontend.instr_opcode == encoding::OPCODE_SCALAR
+            && !matches!(
+                encoding::scalar_subop(self.frontend.word1_raw),
+                encoding::MUL | encoding::RCP | encoding::RSQRT | encoding::SINCOS
+            )
             && !input.abort;
         let sp_w_wait = if sp_load_now { 2 } else { sp.w_count };
         let vp_load_now = self.frontend.instr_complete
@@ -1053,8 +1402,22 @@ impl CpuV3FpuState {
             || self.pipe_s3_valid
             || self.dp_store)
             && !input.abort;
+        // Special path (RCP/RSQRT): blocking, so its busy window is exactly the
+        // T0..T3 pipeline its own state tracks.
+        let sf_load_now = self.frontend.instr_complete
+            && self.frontend.instr_opcode == encoding::OPCODE_SCALAR
+            && matches!(
+                encoding::scalar_subop(self.frontend.word1_raw),
+                encoding::RCP | encoding::RSQRT
+            )
+            && !input.abort;
+        let sf_busy = (sf_load_now
+            || self.special_path.p0_valid
+            || self.special_path.s1_valid
+            || self.special_path.s2_valid)
+            && !input.abort;
         CpuV3FpuOutputValue {
-            busy: sp_w_wait != 0 || vp_busy || mp_busy || dp_busy,
+            busy: sp_w_wait != 0 || vp_busy || mp_busy || dp_busy || sf_busy,
             flag_lt: self.scalar_path.flag_lt,
             flag_eq: self.scalar_path.flag_eq,
             flag_gt: self.scalar_path.flag_gt,
@@ -1104,6 +1467,7 @@ impl Module for CpuV3Fpu {
             VerilogDependency::new::<CpuV3FpuFrontend>("frontend"),
             VerilogDependency::new::<CpuV3FpuRegisterRam>("rf"),
             VerilogDependency::new::<CpuV3FpuScalarPath>("scalar_path"),
+            VerilogDependency::new::<CpuV3FpuSpecialPath>("special_path"),
             VerilogDependency::new::<CpuV3FpuVectorPath>("vector_path"),
             VerilogDependency::new::<CpuV3FpuMultiplyPath>("multiply_path"),
             VerilogDependency::new::<CpuV3FpuDotPath>("dot_path"),
@@ -1127,6 +1491,20 @@ impl CpuV3FpuState {
         // the front-end register update is about to write (nonblocking
         // semantics; the leaf-level Verilog testbenches cannot catch this).
         let instr_complete_prev = state.frontend.instr_complete;
+
+        // Pre-edge special-path snapshot. The leaf's combinational logic and
+        // its always block both read these values, exactly as the RTL reads its
+        // inputs and register outputs during one cycle. `sp_comb` gives the
+        // RF port muxes the same addresses and write the RTL presents.
+        let sp_input = CpuV3FpuSpecialPathInputValue {
+            abort: input.abort,
+            instr_complete: instr_complete_prev,
+            instr_opcode: u64::from(state.frontend.instr_opcode),
+            word1_raw: u64::from(state.frontend.word1_raw),
+            rf_read_a_data: u64::from(state.rf.read_a_data),
+            rf_read_b_data: u64::from(state.rf.read_b_data),
+        };
+        let sp_comb = state.special_path.comb(&sp_input);
 
         // Front-end register updates (identical to the leaf clock_emu).
         let accept_word0 = input.word_valid && !state.frontend.waiting_word1;
@@ -1164,10 +1542,14 @@ impl CpuV3FpuState {
             let subop = encoding::scalar_subop(word1);
             let fd = encoding::word1_fd(word1);
             let is_cmp = subop == encoding::CMP;
-            // MUL is owned by the multiply path.
+            // MUL is owned by the multiply path; RCP/RSQRT/SINCOS by the
+            // special path.
             let load_now = instr_complete_prev
                 && state.frontend.instr_opcode == encoding::OPCODE_SCALAR
-                && subop != encoding::MUL;
+                && !matches!(
+                    subop,
+                    encoding::MUL | encoding::RCP | encoding::RSQRT | encoding::SINCOS
+                );
             // read-first: the RF read registers still hold T0 operands here.
             sp.write_enable = load_now && !is_cmp;
             if load_now {
@@ -1221,7 +1603,9 @@ impl CpuV3FpuState {
                     && encoding::scalar_subop(word1_fields) == encoding::MUL));
         let mp_active = mp_load_now || state.mp_run;
         let vp_active = vp_load_now || state.vp_run;
-        let read_a_address = if dp_load_now {
+        let read_a_address = if sp_comb.busy {
+            sp_comb.rf_read_a_address as usize
+        } else if dp_load_now {
             usize::from(encoding::word0_fa(state.frontend.word0_raw))
         } else if dp_active && state.dp_lane <= state.dp_last_lane {
             usize::from(state.dp_base_a) + usize::from(state.dp_lane)
@@ -1242,7 +1626,9 @@ impl CpuV3FpuState {
         } else {
             state.held_read_a_address as usize
         };
-        let read_b_address = if dp_load_now {
+        let read_b_address = if sp_comb.busy {
+            sp_comb.rf_read_b_address as usize
+        } else if dp_load_now {
             usize::from(encoding::word0_fb(state.frontend.word0_raw))
         } else if dp_active && state.dp_lane <= state.dp_last_lane {
             usize::from(state.dp_base_b) + usize::from(state.dp_lane) * usize::from(state.dp_stride)
@@ -1327,10 +1713,14 @@ impl CpuV3FpuState {
         // order so every stage reads its predecessor's pre-edge value.
         state.tick_mul_pipe(&ctx);
 
+        // Special-function path register updates (mirrors CpuV3FpuSpecialPath):
+        // the pre-edge snapshot was taken at the top of this function.
+        state.tick_special_path(&sp_input);
+
         // Register-file updates last: reads sample the pre-write contents.
         let rf = &mut state.rf;
-        rf.read_a_data = rf.memory[read_a_address];
-        rf.read_b_data = rf.memory[read_b_address];
+        rf.read_a_data = rf.mirror_a[read_a_address];
+        rf.read_b_data = rf.mirror_b[read_b_address];
         let sp = &state.scalar_path;
         let (we, wa, wd) = if input.ext_access {
             (
@@ -1348,6 +1738,12 @@ impl CpuV3FpuState {
             )
         } else if ctx.dp_store_prev && !input.abort {
             (true, state.dp_store_addr as usize, state.dp_store_data)
+        } else if sp_comb.rf_write_enable {
+            (
+                true,
+                sp_comb.rf_write_address as usize,
+                sp_comb.rf_write_data as u32,
+            )
         } else {
             (
                 sp.write_enable && !input.abort,
@@ -1356,7 +1752,8 @@ impl CpuV3FpuState {
             )
         };
         if we {
-            rf.memory[wa] = wd;
+            rf.mirror_a[wa] = wd;
+            rf.mirror_b[wa] = wd;
         }
     }
 }
@@ -1583,5 +1980,12 @@ impl CpuV3FpuState {
                 }
             }
         }
+    }
+
+    /// Special-path register updates: the single always block of
+    /// CpuV3FpuSpecialPath. The snapshot in `input` is sampled before any path
+    /// update, so the leaf sees the pre-edge state the RTL sees.
+    fn tick_special_path(&mut self, input: &CpuV3FpuSpecialPathInputValue) {
+        self.special_path.tick(input);
     }
 }

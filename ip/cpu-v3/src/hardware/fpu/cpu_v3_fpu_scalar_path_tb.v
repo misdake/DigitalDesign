@@ -267,14 +267,18 @@ task run_scalar;
     reg signed [31:0] sa;
     reg signed [31:0] sb;
     reg is_cmp;
+    reg is_owned;
     begin
         a = ref_mem[fa];
         b = ref_mem[fb];
         sa = a;
         sb = b;
         is_cmp = (subop == 4'hB);
-        // subop 0x02 (MUL) is owned by the multiply path: the scalar path
-        // does not fire at all (no write, no countdown).
+        // The multiply path owns 0x02 (MUL); the special path owns 0x0C (RCP),
+        // 0x0D (RSQRT) and 0x0E (SINCOS, a defined no-op until it lands). For
+        // those the scalar path does not fire at all (no write, no countdown).
+        is_owned = (subop == 4'h2) || (subop == 4'hC) ||
+            (subop == 4'hD) || (subop == 4'hE);
         alu_reference(a, b, subop, result);
 
         w0 = {4'hD, fa, fb};
@@ -292,10 +296,10 @@ task run_scalar;
         word = 16'h0000;
         // The instr_complete pulse is high in the cycle that just started (T0).
         #1;
-        // MUL (subop 0x02) does not fire the scalar path at all.
-        check_value(busy, (subop == 4'h2) ? 1'b0 : 1'b1, "T0 busy");
-        check_value(sp_w_wait, (subop == 4'h2) ? 4'd0 : 4'd2, "T0 w_wait");
-        check_value(sp_x_wait, (subop == 4'h2) ? 4'd0 : 4'd2, "T0 x_wait");
+        // An owned-elsewhere subop does not fire the scalar path at all.
+        check_value(busy, is_owned ? 1'b0 : 1'b1, "T0 busy");
+        check_value(sp_w_wait, is_owned ? 4'd0 : 4'd2, "T0 w_wait");
+        check_value(sp_x_wait, is_owned ? 4'd0 : 4'd2, "T0 x_wait");
         check_value(sp_r_wait, 4'd0, "T0 r_wait");
 
         @(posedge clk);
@@ -313,10 +317,10 @@ task run_scalar;
             check_value({31'b0, flag_eq}, ref_flag_eq, "T1 flag_eq holds");
             check_value({31'b0, flag_gt}, ref_flag_gt, "T1 flag_gt holds");
         end
-        check_value({31'b0, sp_write_enable}, (is_cmp || subop == 4'h2) ? 32'h0 : 32'h1,
+        check_value({31'b0, sp_write_enable}, (is_cmp || is_owned) ? 32'h0 : 32'h1,
             "T1 write enable");
-        check_value(sp_w_wait, (subop == 4'h2) ? 4'd0 : 4'd1, "T1 w_wait");
-        check_value(busy, (subop == 4'h2) ? 1'b0 : 1'b1, "T1 busy");
+        check_value(sp_w_wait, is_owned ? 4'd0 : 4'd1, "T1 w_wait");
+        check_value(busy, is_owned ? 1'b0 : 1'b1, "T1 busy");
 
         @(posedge clk);
         #1;
@@ -326,11 +330,11 @@ task run_scalar;
         check_value(sp_x_wait, 4'd0, "T2 x_wait");
         check_value(busy, 1'b0, "T2 busy");
 
-        if (!is_cmp && subop != 4'h2)
+        if (!is_cmp && !is_owned)
             ref_mem[fd] = result;
         read_reg({3'b000, fd});
-        if (is_cmp || subop == 4'h2)
-            check_value(rd_value, ref_mem[fd], "CMP/MUL leave RF unchanged here");
+        if (is_cmp || is_owned)
+            check_value(rd_value, ref_mem[fd], "CMP/owned-elsewhere leave RF unchanged here");
         else
             check_value(rd_value, ref_mem[fd], "writeback readback");
     end
