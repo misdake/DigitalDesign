@@ -580,6 +580,7 @@ fn run_core_emu_trace(program: &[u16], max_cycles: usize) -> Vec<CoreCosimOut> {
     let mut prev_instr_req = false;
     let mut prev_instr_word: u16 = 0;
     let mut prev_data_req = false;
+    let mut prev_data_read: u16 = 0;
     let mut started = false;
     let mut trace = Vec::new();
     for _ in 0..max_cycles {
@@ -590,7 +591,7 @@ fn run_core_emu_trace(program: &[u16], max_cycles: usize) -> Vec<CoreCosimOut> {
             instruction_data: prev_instr_word,
             data_request_ready: true,
             data_response_valid: prev_data_req,
-            data_read_data: 0,
+            data_read_data: prev_data_read,
             device_read_data: 0,
         };
         input.drive(&mut circuit, &cin.into_value());
@@ -608,8 +609,14 @@ fn run_core_emu_trace(program: &[u16], max_cycles: usize) -> Vec<CoreCosimOut> {
             prev_instr_word = memory[(value.instruction_address as usize) & 0xffff];
         }
         prev_data_req = value.data_request_valid;
-        if value.data_request_valid && value.data_write {
-            memory[(value.data_address as usize) & 0xffff] = value.data_write_data as u16;
+        if value.data_request_valid {
+            let address = (value.data_address as usize) & 0xffff;
+            if value.data_write {
+                memory[address] = value.data_write_data as u16;
+                prev_data_read = 0;
+            } else {
+                prev_data_read = memory[address];
+            }
         }
         circuit.clock_tick();
     }
@@ -728,7 +735,21 @@ fn collect_verilog_files(directory: &std::path::Path, into: &mut Vec<std::path::
 }
 
 fn run_core_rtl_trace(tb: &str) -> Vec<CoreCosimOut> {
-    let directory = std::env::temp_dir().join(format!("core-cosim-{}", std::process::id()));
+    // Keep the generated project under the workspace `target/` tree (never the
+    // OS temp directory) so the co-sim artifacts stay inside the repository.
+    // The directory is unique per invocation: `cargo test` runs tests in
+    // parallel threads of one process, and a pid-only name let concurrent
+    // co-sims overwrite each other's generated project.
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    static NEXT_DIR: AtomicUsize = AtomicUsize::new(0);
+    let repo_root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("..")
+        .join("..");
+    let directory = repo_root.join("target").join(format!(
+        "core-cosim-{}-{}",
+        std::process::id(),
+        NEXT_DIR.fetch_add(1, Ordering::Relaxed)
+    ));
     std::fs::create_dir_all(&directory).unwrap();
     // Write the core with every dependency (DSP multiplier, GPR RAM)
     // via the same flattening used by `verify_verilog_with_iverilog`, then
@@ -891,6 +912,190 @@ fn core_emu_matches_rtl_fpu_ldst() {
         );
     }
     assert!(emu.last().copied().expect("emu trace empty").halted);
+}
+
+#[test]
+#[ignore = "explicit emulator-vs-Icarus co-simulation of a compiled scalar FPU program"]
+fn core_emu_matches_rtl_compiled_scalar_fpu_program() {
+    // The rcc scalar `fix16` path end to end on the hardware-supported subset:
+    // integer construction (`I16TOF`), calls through the F-register ABI, an
+    // FPU `ADD`/`MUL`/`trunc`, the raw-half bridge (`ILO2F`/`IHI2F`), a scalar
+    // `CMP` feeding a GPR branch, the signed numeric conversion back
+    // (`FTOI16`, truncating toward zero), and values kept live across a call so
+    // they spill through FLD/FST:
+    // a=7, b=-2, addfix(a,b)=5, scaled=-14, kept=1.5, down=1, pick=1,
+    // live=-13, (5 + -13 + 0.5).to_int() = -7 -> 0xfff9.
+    let source = r#"
+        fn addfix(a: fix16, b: fix16) -> fix16 { a + b }
+        fn main() {
+            let a = fix16::from_int(7);
+            let b = fix16::from_int(-2);
+            let s = addfix(a, b);
+            let scaled = a * b;
+            let kept = fix16::from_words(0x8000, 0x0001);
+            let down = kept.trunc();
+            let pick = if s < down { s } else { down };
+            let live = addfix(scaled, pick);
+            halt((s + live + (kept - down)).to_int() as u16);
+        }
+    "#;
+    let program = compile(source);
+    let module_name = CpuV3Core::verilog_identity().module_name();
+    let emu = run_core_emu_trace(&program, 4000);
+    assert!(!emu.is_empty(), "emu trace empty");
+    let last_emu = emu.last().copied().expect("emu trace non-empty");
+    assert!(
+        !last_emu.fault,
+        "compiled FPU program faulted in the cycle model: code={} pc={:#06x}",
+        last_emu.fault_code, last_emu.fault_pc
+    );
+    assert!(last_emu.halted, "compiled FPU program did not halt");
+    assert_eq!(last_emu.halt_signal, 0xfff9, "unexpected Q16.16 result");
+
+    let max_cycles = emu.len() + 600;
+    let tb = build_core_cosim_tb(&program, &module_name, max_cycles);
+    let rtl = run_core_rtl_trace(&tb);
+    // Report the first divergence (if any) before the length check, so a timing
+    // slip points at the exact cycle.
+    for (index, (expected, actual)) in emu.iter().zip(&rtl).enumerate() {
+        if !actual.equal_core(expected) {
+            panic!("mismatch at cycle {index}\nemu={expected:?}\nrtl={actual:?}");
+        }
+    }
+    assert_eq!(
+        emu.len(),
+        rtl.len(),
+        "emu/RTL trace length mismatch: emu={} rtl={}",
+        emu.len(),
+        rtl.len()
+    );
+    assert_eq!(
+        rtl.last().copied().expect("rtl trace empty").halt_signal,
+        0xfff9
+    );
+}
+
+#[test]
+#[ignore = "explicit emulator-vs-Icarus co-simulation of a compiled vector FPU program"]
+fn core_emu_matches_rtl_compiled_vector_fpu_program() {
+    // The rcc vector path end to end on the hardware-supported subset: vec4
+    // construction, an ABI-packed vector call, VADD, VMULS scalar broadcast,
+    // lane extraction, `fdot`, and a vector value live across a call so it
+    // spills through FLDV/FSTV:
+    // a=(1,2,3,4), b=(10,20,30,40), add4(a,b)=(11,22,33,44),
+    // d = c*2 = (22,44,66,88), s = 220, fdot(c,d) = 7260 -> 7480.
+    let source = r#"
+        fn add4(a: vec4, b: vec4) -> vec4 { a + b }
+        fn main() {
+            let a = vec4::new(fix16::from_int(1), fix16::from_int(2),
+                              fix16::from_int(3), fix16::from_int(4));
+            let b = vec4::new(fix16::from_int(10), fix16::from_int(20),
+                              fix16::from_int(30), fix16::from_int(40));
+            let c = add4(a, b);
+            let d = c * fix16::from_int(2);
+            let s = d.x() + d.y() + d.z() + d.w();
+            let dot = fdot(c, d);
+            halt((s + dot).to_int() as u16);
+        }
+    "#;
+    let program = compile(source);
+    let module_name = CpuV3Core::verilog_identity().module_name();
+    let emu = run_core_emu_trace(&program, 6000);
+    assert!(!emu.is_empty(), "emu trace empty");
+    let last_emu = emu.last().copied().expect("emu trace non-empty");
+    assert!(
+        !last_emu.fault,
+        "compiled vector FPU program faulted in the cycle model: code={} pc={:#06x}",
+        last_emu.fault_code, last_emu.fault_pc
+    );
+    assert!(last_emu.halted, "compiled vector FPU program did not halt");
+    assert_eq!(last_emu.halt_signal, 7480, "unexpected vector result");
+
+    let max_cycles = emu.len() + 600;
+    let tb = build_core_cosim_tb(&program, &module_name, max_cycles);
+    let rtl = run_core_rtl_trace(&tb);
+    for (index, (expected, actual)) in emu.iter().zip(&rtl).enumerate() {
+        if !actual.equal_core(expected) {
+            panic!("mismatch at cycle {index}\nemu={expected:?}\nrtl={actual:?}");
+        }
+    }
+    assert_eq!(
+        emu.len(),
+        rtl.len(),
+        "emu/RTL trace length mismatch: emu={} rtl={}",
+        emu.len(),
+        rtl.len()
+    );
+    assert_eq!(
+        rtl.last().copied().expect("rtl trace empty").halt_signal,
+        7480
+    );
+}
+
+#[test]
+#[ignore = "explicit emulator-vs-Icarus co-simulation of a compiled special-function FPU program"]
+fn core_emu_matches_rtl_compiled_special_fpu_program() {
+    // The rcc C3 special-function path end to end: `frcp`, `frsqrt`, `fsin`,
+    // `fcos` and the dual-output `fsincos` lower to the SCALAR special subops
+    // and their results flow back through the raw-half bridge into a mixed halt
+    // signal, so the RTL's hidden-BSRAM LUT path and the stylized trace must
+    // match the emulator cycle for cycle.
+    let source = r#"
+        fn main() {
+            let x = fix16::from_words(0x0000u16, 0x0003u16); // 3.0
+            let r = frcp(x);
+            let s = frsqrt(x);
+            let sc = fsincos(x);
+            let si = fsin(x);
+            let co = fcos(x);
+            halt(r.lo_bits() ^ (s.hi_bits() << 1) ^ (sc.x().hi_bits() << 2)
+                 ^ (sc.y().hi_bits() << 3) ^ (si.lo_bits() << 4)
+                 ^ (co.hi_bits() << 5));
+        }
+    "#;
+    let program = compile(source);
+    let module_name = CpuV3Core::verilog_identity().module_name();
+    let emu = run_core_emu_trace(&program, 6000);
+    assert!(!emu.is_empty(), "emu trace empty");
+    let last_emu = emu.last().copied().expect("emu trace non-empty");
+    assert!(
+        !last_emu.fault,
+        "compiled special FPU program faulted in the cycle model: code={} pc={:#06x}",
+        last_emu.fault_code, last_emu.fault_pc
+    );
+    assert!(last_emu.halted, "compiled special FPU program did not halt");
+    let x = 3 << 16;
+    let (sin, cos) = crate::sincos_q16(x);
+    let expected = (crate::rcp_q16(x) as u16)
+        ^ (((crate::rsqrt_q16(x) as u32 >> 16) as u16) << 1)
+        ^ (((sin as u32 >> 16) as u16) << 2)
+        ^ (((cos as u32 >> 16) as u16) << 3)
+        ^ ((sin as u16) << 4)
+        ^ (((cos as u32 >> 16) as u16) << 5);
+    assert_eq!(
+        last_emu.halt_signal, expected,
+        "unexpected special-function result"
+    );
+
+    let max_cycles = emu.len() + 600;
+    let tb = build_core_cosim_tb(&program, &module_name, max_cycles);
+    let rtl = run_core_rtl_trace(&tb);
+    for (index, (expected, actual)) in emu.iter().zip(&rtl).enumerate() {
+        if !actual.equal_core(expected) {
+            panic!("mismatch at cycle {index}\nemu={expected:?}\nrtl={actual:?}");
+        }
+    }
+    assert_eq!(
+        emu.len(),
+        rtl.len(),
+        "emu/RTL trace length mismatch: emu={} rtl={}",
+        emu.len(),
+        rtl.len()
+    );
+    assert_eq!(
+        rtl.last().copied().expect("rtl trace empty").halt_signal,
+        expected
+    );
 }
 
 #[test]

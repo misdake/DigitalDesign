@@ -22,15 +22,14 @@ rectangle "CpuV3Core: precise, in-order, limited two-stage frontend" as Core {
   component "Integer lane\n16-bit ALU, shifts, compare\nCLZ / popcount" as IntAlu
   component "Integer multiplier\nregistered signed 18 x 18 DSP\n2-stage primitive" as IntDsp
 
-  package "Blocking fix16 FPU" {
-    storage "FPR file\n16 x (4 x signed Q8.8)\n16 x 64-bit RAM16 vectors\n2 registered-address 64-bit async reads\n1 sync write, per-lane enables" as FPR
-    component "Serialized vector lane\n17-bit saturated add/sub\nABS/NEG/FLOOR/CEIL/ROUND\nSAT01/SIGN" as LaneAlu
-    component "FPU multiplier\nregistered signed 18 x 18 DSP\n1 lane, 2-stage primitive\nnearest-even writeback" as FpuDsp
-    database "Shared unary ROM\n1024 x 16-bit BSRAM\n256 sin + 256 rcp + 512 rsqrt" as Rom
-    component "Unary normalize / scale\nlatched domain + exponent\nregistered normalized mantissa\nshared 17-bit round shifter\nregistered scale result" as Unary
-    storage "ACC\nsigned 40-bit\nper-product saturation" as Acc
-    storage "Transfer / snapshot state\n4 x 16-bit import/gather buffer\n64-bit export/scatter snapshot\n4 x 64-bit transpose rows" as Transfer
-    component "FPU phase controller\nblocking until commit or fault\nfixed four-lane execution today" as FpuFsm
+  package "Two-word Q16.16 FPU v2 (opcodes C/D/E)" {
+    component "Two-word front-end\nword0 drives RF read addresses\nword1 Fd / subop / len / mode" as Fe
+    storage "FPR file\n2 x 512 x 32 SDPB BSRAM (2R1W)\nF0..F63 signed Q16.16\nhidden RCP/RSQRT/SINCOS tables" as FPR
+    component "Scalar / vector lane ALU\n32-bit Q16.16 wrap\nADD/SUB/MIN/MAX/ABS/NEG\nFLOOR/CEIL/ROUND/TRUNC/MOV" as LaneAlu
+    component "Shared multiply pipe\ninferred 36 x 36, 3 stages, II=1\n9-bit destination tag" as FpuDsp
+    storage "ACC\nsigned 64-bit Q32.32\nfull-product accumulate" as Acc
+    component "Dot path\nDOT / DOTADD / DOTSTORE\nstride 1/3/4" as Dot
+    component "Special path\nblocking RCP / RSQRT / SINCOS\nlocal 18 x 18 interpolator" as Special
   }
 }
 
@@ -54,41 +53,35 @@ GPR --> IntAlu
 IntAlu --> GPR
 GPR --> IntDsp
 IntDsp --> GPR
-FSM --> FpuFsm : opcode D dispatch
-FpuFsm --> FSM : one precise retire / fault
-GPR --> FpuFsm : scalar and address
-FpuFsm --> GPR : FSTORE
+FSM --> Fe : two-word pair (0xC/0xD/0xE)
+Fe --> FSM : two-word precise retire
+Fe --> FPR : early word0 operand addresses
+GPR <--> FSM : FLD / FST address (DSEG:GPR[X])
+FSM <--> FPR : ext channel (FLD / FST beats)
 FPR --> LaneAlu : one lane from each read port
-LaneAlu --> FPR : registered serial write
-FPR --> FpuDsp
-FpuDsp --> FPR
+LaneAlu --> FPR
+FPR <--> FpuDsp : multiply / VMULS
 FpuDsp --> Acc
-Acc --> FPR : FACCSTORE
-FPR --> Unary
-Unary --> Rom : 10-bit address
-Rom --> Unary : synchronous table word
-Unary --> FPR
-FPR <--> Transfer
-Transfer <--> DCache : four sequential beats
+Acc <--> Dot : DOT / DOTADD / DOTSTORE
+Dot --> FPR : DOTSTORE
+Special <--> FPR : hidden LUT reads
+Special --> FpuDsp : SINCOS range product
+Special --> FPR : RCP / RSQRT / SINCOS writes
 
-note right of FpuFsm
-Current issue policy:
-* no CPU/FPU overlap
-* eligible single-cycle integer instructions overlap Execute with next fetch
-* loads, multiply, FPU, redirects, devices, and busy-buffer stores are barriers
-* add/sub/simple unary: one overlapped lane per cycle
-* load/move/pack/unpack/transpose: one wide vector per cycle
-* multiply/dot: one tagged DSP issue/result per cycle after fill
-* continuation k early-exit is not implemented
+note right of Fe
+Issue policy:
+* no scoreboard, forwarding, or dependency comparison
+* fixed countdowns R_WAIT / W_WAIT / X_WAIT gate the next FPU instruction
+* FPU instructions are fetch barriers and never consume PFX12
+* vector lanes run one per cycle; the shared pipe is latency 3, II = 1
+* RCP/RSQRT are blocking T0..T3; SINCOS T0..T7 dual / T0..T6 single
 end note
 
 note bottom of Core
 Core target-leaf resources:
 * integer multiplier: 1 MULT18X18 lane
-* FPU multiplier: 1 MULT18X18 lane
-* FPU unary table: 1 x 1024x16 BSRAM
-* FPR leaf claim: 40 RAM16 cells
-  (32 for two read copies + 8 characterized incidental cells)
+* FPU multiply pipe: 1 inferred 36 x 36 (four 18 x 18 lanes)
+* FPR leaf claim: 2 SDPB BSRAM blocks
 The system composes these claims with cache, boot, display, and board resources.
 end note
 

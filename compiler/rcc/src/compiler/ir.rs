@@ -95,38 +95,49 @@ pub enum ShiftOp {
     Asr,
 }
 
-/// register file a virtual register belongs to
+/// FPU v2 scalar two-operand subops (design section 7.3). All operands are
+/// single Q16.16 F registers.
 #[derive(Copy, Clone, Debug, Eq, PartialEq, Hash)]
-pub enum RegClass {
-    Gpr,
-    /// CpuV3 FPU: one 4-lane fix16 vector register per value
-    Fpu,
-}
-
-/// per-lane fixed-point binary operations (FADD/FSUB/FMUL)
-#[derive(Copy, Clone, Debug, Eq, PartialEq, Hash)]
-pub enum FBinOp {
+pub enum FpuBinOp {
     Add,
     Sub,
     Mul,
 }
 
-/// fixed-point unary operations (FUNARY)
+/// FPU v2 scalar unary subops (design section 7.3). The second source is
+/// ignored by the hardware.
 #[derive(Copy, Clone, Debug, Eq, PartialEq, Hash)]
-pub enum FUnOp {
-    /// lane x only; domain fault on zero
-    Rcp,
-    /// lane x only; domain fault on non-positive input
-    Rsqrt,
-    /// dst = [sin, cos, 0, 0]
-    SinCos,
+pub enum FpuUnOp {
     Abs,
     Neg,
     Floor,
     Ceil,
     Round,
-    Sat01,
-    Sign,
+    Trunc,
+}
+
+/// FPU v2 scalar special-function subops (design sections 7.3 and 9.3). `Rcp`
+/// and `Rsqrt` write one F register; `Sin`/`Cos` write one F register through
+/// the `SINCOS` subop's single-output modes; `SinCos` writes the contiguous
+/// pair `Fd`/`Fd+1` (so its destination carries two lanes).
+#[derive(Copy, Clone, Debug, Eq, PartialEq, Hash)]
+pub enum FpuSpecialOp {
+    Rcp,
+    Rsqrt,
+    Sin,
+    Cos,
+    SinCos,
+}
+
+/// register file a virtual register belongs to
+#[derive(Copy, Clone, Debug, Eq, PartialEq, Hash)]
+pub enum RegClass {
+    Gpr,
+    /// CpuV3 FPU v2: one signed Q16.16 scalar F register per value. The
+    /// frontend does not yet allocate it (C0 rejects FPU lowering); the class
+    /// stays so the frozen `F0..F63` ABI convention is validated and the
+    /// backend can refuse an FPU program explicitly.
+    Fpu,
 }
 
 /// right-hand side of a comparison; immediates are legalized (u4/i4) in codegen
@@ -301,66 +312,142 @@ pub enum Instr {
         dst: VReg,
         slot: u8,
     },
-    // ----- CpuV3 FPU instructions (Fpu-class vregs unless noted) -----
-    /// per-lane fixed-point arithmetic: dst = lhs op rhs (FMULS: lane i of
-    /// dst = lane i of lhs times lane x of rhs)
-    FBin {
+    // ----- CpuV3 FPU v2 scalar instructions (Fpu-class vregs unless noted) -----
+    /// `Fd = Fa op Fb` (scalar ADD/SUB/MUL)
+    FpuBin {
         dst: VReg,
-        op: FBinOp,
+        op: FpuBinOp,
         lhs: VReg,
         rhs: VReg,
     },
-    FMov {
+    /// `Fd = op(Fa)` (scalar ABS/NEG/FLOOR/CEIL/ROUND/TRUNC)
+    FpuUn {
+        dst: VReg,
+        op: FpuUnOp,
+        src: VReg,
+    },
+    /// `Fd = op(Fa)` (scalar RCP/RSQRT, or SINCOS single/dual output). The
+    /// destination lane count is `lanes(dst)`: one for RCP/RSQRT/SIN/COS and
+    /// two for the dual-output SINCOS.
+    FpuSpecial {
+        dst: VReg,
+        op: FpuSpecialOp,
+        src: VReg,
+    },
+    /// `Fd = Fa` (FMOV)
+    FpuMov {
         dst: VReg,
         src: VReg,
     },
-    /// GPR to FPU lane-x bridge: dst = [src_gpr, 0, 0, 0] (FLOAD)
-    FLoad {
+    /// `I16TOF`: dst = sign_extend(src_gpr) << 16
+    FpuFromInt {
         dst: VReg,
         src_gpr: VReg,
     },
-    /// FPU to GPR lane-x bridge: dst_gpr = src lane x (FSTORE)
-    FStore {
+    /// `FTOI16`: dst_gpr = trunc-toward-zero(src)
+    FpuToInt {
         dst_gpr: VReg,
         src: VReg,
     },
-    /// dst = four words at {DSEG, base_gpr} (FIMPORT4; base must be 4-aligned)
-    FImport4 {
+    /// `ILO2F`: dst[15:0] = src_gpr, other bits preserved
+    FpuFromLo {
+        dst: VReg,
+        src_gpr: VReg,
+    },
+    /// `IHI2F`: dst[31:16] = src_gpr, dst[15:0] comes from `src`
+    FpuFromHi {
+        dst: VReg,
+        src: VReg,
+        src_gpr: VReg,
+    },
+    /// `FLO2I`: dst_gpr = src[15:0]
+    FpuToLo {
+        dst_gpr: VReg,
+        src: VReg,
+    },
+    /// `FHI2I`: dst_gpr = src[31:16]
+    FpuToHi {
+        dst_gpr: VReg,
+        src: VReg,
+    },
+    /// `FLD`: dst = {mem[addr+1], mem[addr]}, low half first; addr = base_gpr + offset
+    FpuLoad {
         dst: VReg,
         base_gpr: VReg,
+        offset: i16,
     },
-    /// four words at {DSEG, base_gpr} = src lanes (FEXPORT4; 4-aligned base)
-    FExport4 {
-        src: VReg,
+    /// `FST`: mem[addr] = src[15:0], mem[addr+1] = src[31:16]
+    FpuStore {
         base_gpr: VReg,
-    },
-    /// dst = op(src) (FUNARY; Rcp/Rsqrt can raise a domain fault)
-    FUnary {
-        dst: VReg,
-        op: FUnOp,
+        offset: i16,
         src: VReg,
     },
-    /// ACC += dot4(lhs, rhs) (FDOT4ACC; touches the ACC machine state)
-    FDot4Acc {
+    // ----- CpuV3 FPU v2 vector instructions (contiguous F-register ranges) -----
+    /// `D[i] = A[i] op B[i]` over a contiguous range (VADD/VSUB/VMUL); the
+    /// lane count is `lanes(dst)`. The destination range must be either
+    /// identical to a source range (in-place) or disjoint from both.
+    FpuVecBin {
+        dst: VReg,
+        op: FpuBinOp,
         lhs: VReg,
         rhs: VReg,
     },
-    /// dst lanes selected by `mask` = round(ACC); ACC = 0 (FACCSTORE)
-    FAccStore {
+    /// `D[i] = A[i] * scalar` over a contiguous range (VMULS); the scalar is
+    /// latched by the hardware before the lanes are written, but the
+    /// destination range must not partially overlap the scalar register.
+    FpuVecMulS {
         dst: VReg,
-        mask: u8,
+        lhs: VReg,
+        scalar: VReg,
     },
-    /// ACC = sign_extend(src lane `lane`) << 8 (FACCLOAD.*; ACC machine state)
-    FAccLoad {
+    /// `D[i] = op(A[i])` over a contiguous range (VABS/VNEG/VFLOOR/VCEIL/
+    /// VROUND/VTRUNC); the second source is ignored by the hardware.
+    FpuVecUn {
+        dst: VReg,
+        op: FpuUnOp,
+        src: VReg,
+    },
+    /// `D[i] = A[i]` over a contiguous range. Lowered as a cycle-safe
+    /// parallel move, so the two ranges may overlap in any way.
+    FpuVecMove {
+        dst: VReg,
+        src: VReg,
+    },
+    /// build a vector from `lanes.len()` scalar values, one per lane. Lowered
+    /// as a cycle-safe parallel move into the destination range.
+    FpuVecConstruct {
+        dst: VReg,
+        lanes: Vec<VReg>,
+    },
+    /// `dst = src[lane]` (scalar lane extraction; FMOV from `base + lane`)
+    FpuVecLane {
+        dst: VReg,
         src: VReg,
         lane: u8,
     },
-    /// dst = [0, 0, 0, 0] (FUNARY ZERO)
-    FZero {
+    /// `dst = q16(sum_i lhs[i] * rhs[i])` through the wide ACC (DOTSTORE).
+    /// `dst` is scalar and the lane count is `lanes(lhs)`.
+    FpuDotStore {
         dst: VReg,
+        lhs: VReg,
+        rhs: VReg,
     },
-    /// dst (Gpr) = 4-aligned address of FPU spill frame slot `slot`
-    /// (register allocator spills only; resolved in codegen)
+    /// vector load: `dst[i] = {mem[addr+2i+1], mem[addr+2i]}`, low half first
+    /// (`FLDV`); the lane count is `lanes(dst)`.
+    FpuVecLoad {
+        dst: VReg,
+        base_gpr: VReg,
+        offset: i16,
+    },
+    /// vector store: `mem[addr+2i]`/`mem[addr+2i+1] = src[i]` (`FSTV`); the
+    /// lane count is `lanes(src)`.
+    FpuVecStore {
+        base_gpr: VReg,
+        offset: i16,
+        src: VReg,
+    },
+    /// dst_gpr = 4-word-aligned address of FPU spill frame slot `slot`
+    /// (register allocator spills only; the word offset is resolved in codegen)
     AddrOfFpuSpill {
         dst: VReg,
         slot: u8,
@@ -408,21 +495,48 @@ impl Instr {
                 f(*cseg);
                 f(*target);
             }
-            Instr::FBin { lhs, rhs, .. } | Instr::FDot4Acc { lhs, rhs } => {
+            Instr::FpuBin { lhs, rhs, .. } => {
                 f(*lhs);
                 f(*rhs);
             }
-            Instr::FAccLoad { src, .. } => f(*src),
-            Instr::FMov { src, .. } | Instr::FUnary { src, .. } | Instr::FStore { src, .. } => {
-                f(*src)
-            }
-            Instr::FLoad { src_gpr, .. }
-            | Instr::FImport4 {
+            Instr::FpuUn { src, .. }
+            | Instr::FpuSpecial { src, .. }
+            | Instr::FpuMov { src, .. }
+            | Instr::FpuToInt { src, .. }
+            | Instr::FpuToLo { src, .. }
+            | Instr::FpuToHi { src, .. } => f(*src),
+            Instr::FpuFromInt { src_gpr, .. }
+            | Instr::FpuFromLo { src_gpr, .. }
+            | Instr::FpuLoad {
                 base_gpr: src_gpr, ..
             } => f(*src_gpr),
-            Instr::FExport4 { src, base_gpr } => {
+            Instr::FpuFromHi { src, src_gpr, .. } => {
                 f(*src);
+                f(*src_gpr);
+            }
+            Instr::FpuStore { base_gpr, src, .. } => {
                 f(*base_gpr);
+                f(*src);
+            }
+            Instr::FpuVecBin { lhs, rhs, .. } => {
+                f(*lhs);
+                f(*rhs);
+            }
+            Instr::FpuVecMulS { lhs, scalar, .. } => {
+                f(*lhs);
+                f(*scalar);
+            }
+            Instr::FpuVecUn { src, .. } | Instr::FpuVecMove { src, .. } => f(*src),
+            Instr::FpuVecConstruct { lanes, .. } => lanes.iter().copied().for_each(f),
+            Instr::FpuVecLane { src, .. } => f(*src),
+            Instr::FpuDotStore { lhs, rhs, .. } => {
+                f(*lhs);
+                f(*rhs);
+            }
+            Instr::FpuVecLoad { base_gpr, .. } => f(*base_gpr),
+            Instr::FpuVecStore { base_gpr, src, .. } => {
+                f(*base_gpr);
+                f(*src);
             }
             Instr::LoadImm { .. }
             | Instr::StoreStatic { .. }
@@ -432,10 +546,8 @@ impl Instr {
             | Instr::LoadLocal { .. }
             | Instr::AddrOfLocal { .. }
             | Instr::LoadFuncAddr { .. }
-            | Instr::Mfsr { .. }
-            | Instr::FAccStore { .. }
-            | Instr::FZero { .. }
-            | Instr::AddrOfFpuSpill { .. } => {}
+            | Instr::AddrOfFpuSpill { .. }
+            | Instr::Mfsr { .. } => {}
         }
     }
 
@@ -479,21 +591,48 @@ impl Instr {
                 f(cseg);
                 f(target);
             }
-            Instr::FBin { lhs, rhs, .. } | Instr::FDot4Acc { lhs, rhs } => {
+            Instr::FpuBin { lhs, rhs, .. } => {
                 f(lhs);
                 f(rhs);
             }
-            Instr::FAccLoad { src, .. } => f(src),
-            Instr::FMov { src, .. } | Instr::FUnary { src, .. } | Instr::FStore { src, .. } => {
-                f(src)
-            }
-            Instr::FLoad { src_gpr, .. }
-            | Instr::FImport4 {
+            Instr::FpuUn { src, .. }
+            | Instr::FpuSpecial { src, .. }
+            | Instr::FpuMov { src, .. }
+            | Instr::FpuToInt { src, .. }
+            | Instr::FpuToLo { src, .. }
+            | Instr::FpuToHi { src, .. } => f(src),
+            Instr::FpuFromInt { src_gpr, .. }
+            | Instr::FpuFromLo { src_gpr, .. }
+            | Instr::FpuLoad {
                 base_gpr: src_gpr, ..
             } => f(src_gpr),
-            Instr::FExport4 { src, base_gpr } => {
+            Instr::FpuFromHi { src, src_gpr, .. } => {
                 f(src);
+                f(src_gpr);
+            }
+            Instr::FpuStore { base_gpr, src, .. } => {
                 f(base_gpr);
+                f(src);
+            }
+            Instr::FpuVecBin { lhs, rhs, .. } => {
+                f(lhs);
+                f(rhs);
+            }
+            Instr::FpuVecMulS { lhs, scalar, .. } => {
+                f(lhs);
+                f(scalar);
+            }
+            Instr::FpuVecUn { src, .. } | Instr::FpuVecMove { src, .. } => f(src),
+            Instr::FpuVecConstruct { lanes, .. } => lanes.iter_mut().for_each(f),
+            Instr::FpuVecLane { src, .. } => f(src),
+            Instr::FpuDotStore { lhs, rhs, .. } => {
+                f(lhs);
+                f(rhs);
+            }
+            Instr::FpuVecLoad { base_gpr, .. } => f(base_gpr),
+            Instr::FpuVecStore { base_gpr, src, .. } => {
+                f(base_gpr);
+                f(src);
             }
             Instr::LoadImm { .. }
             | Instr::StoreStatic { .. }
@@ -503,10 +642,8 @@ impl Instr {
             | Instr::LoadLocal { .. }
             | Instr::AddrOfLocal { .. }
             | Instr::LoadFuncAddr { .. }
-            | Instr::Mfsr { .. }
-            | Instr::FAccStore { .. }
-            | Instr::FZero { .. }
-            | Instr::AddrOfFpuSpill { .. } => {}
+            | Instr::AddrOfFpuSpill { .. }
+            | Instr::Mfsr { .. } => {}
         }
     }
 }
@@ -606,19 +743,47 @@ pub struct IrFunc {
     pub local_slots: u8,
     /// register class of every vreg (indexed by vreg id)
     pub vreg_class: Vec<RegClass>,
+    /// number of contiguous F registers a vreg occupies (indexed by vreg id):
+    /// `1` for every GPR and every scalar `fix16`, `2`/`3`/`4` for a
+    /// `vec2`/`vec3`/`vec4` value. The register allocator assigns the range
+    /// `base .. base + lanes - 1` and codegen reads the base.
+    pub vreg_lanes: Vec<u8>,
 }
 
 impl IrFunc {
-    /// allocate a fresh vreg of the given class
+    /// allocate a fresh vreg of the given class (one lane)
     pub fn fresh_vreg(&mut self, class: RegClass) -> VReg {
+        self.fresh_vreg_lanes(class, 1)
+    }
+
+    /// allocate a fresh vreg of the given class occupying `lanes` contiguous
+    /// F registers (`lanes` must be 1 for a GPR)
+    pub fn fresh_vreg_lanes(&mut self, class: RegClass, lanes: u8) -> VReg {
+        assert!(
+            (1..=4).contains(&lanes),
+            "vreg lane count {lanes} is outside 1..=4"
+        );
+        assert!(
+            class == RegClass::Fpu || lanes == 1,
+            "a GPR vreg cannot occupy {lanes} registers"
+        );
         let v = self.vreg_count;
         self.vreg_count += 1;
         self.vreg_class.push(class);
+        self.vreg_lanes.push(lanes);
         v
     }
     /// register class of vreg `v`
     pub fn class_of(&self, v: VReg) -> RegClass {
         self.vreg_class[v as usize]
+    }
+    /// number of contiguous F registers vreg `v` occupies
+    pub fn lanes(&self, v: VReg) -> u8 {
+        self.vreg_lanes[v as usize]
+    }
+    /// whether vreg `v` is a multi-lane FPU vector value
+    pub fn is_vector(&self, v: VReg) -> bool {
+        self.vreg_lanes[v as usize] > 1
     }
 
     /// successor blocks of `b` (terminator targets)
@@ -827,42 +992,96 @@ impl fmt::Display for Instr {
             Instr::LoadLocal { dst, slot } => write!(f, "v{dst} = load_local #{slot}"),
             Instr::StoreLocal { slot, src } => write!(f, "store_local #{slot} = v{src}"),
             Instr::AddrOfLocal { dst, slot } => write!(f, "v{dst} = &local #{slot}"),
-            Instr::FBin { dst, op, lhs, rhs } => {
+            Instr::FpuBin { dst, op, lhs, rhs } => {
                 let op = match op {
-                    FBinOp::Add => "fadd",
-                    FBinOp::Sub => "fsub",
-                    FBinOp::Mul => "fmul",
+                    FpuBinOp::Add => "fadd",
+                    FpuBinOp::Sub => "fsub",
+                    FpuBinOp::Mul => "fmul",
                 };
                 write!(f, "v{dst} = {op} v{lhs}, v{rhs}")
             }
-            Instr::FMov { dst, src } => write!(f, "v{dst} = fmov v{src}"),
-            Instr::FLoad { dst, src_gpr } => write!(f, "v{dst} = fload v{src_gpr}"),
-            Instr::FStore { dst_gpr, src } => write!(f, "v{dst_gpr} = fstore v{src}"),
-            Instr::FImport4 { dst, base_gpr } => {
-                write!(f, "v{dst} = fimport4 [v{base_gpr}]")
-            }
-            Instr::FExport4 { src, base_gpr } => {
-                write!(f, "fexport4 [v{base_gpr}] = v{src}")
-            }
-            Instr::FUnary { dst, op, src } => {
+            Instr::FpuUn { dst, op, src } => {
                 let op = match op {
-                    FUnOp::Rcp => "frcp",
-                    FUnOp::Rsqrt => "frsqrt",
-                    FUnOp::SinCos => "fsincos",
-                    FUnOp::Abs => "fabs",
-                    FUnOp::Neg => "fneg",
-                    FUnOp::Floor => "ffloor",
-                    FUnOp::Ceil => "fceil",
-                    FUnOp::Round => "fround",
-                    FUnOp::Sat01 => "fsat01",
-                    FUnOp::Sign => "fsign",
+                    FpuUnOp::Abs => "fabs",
+                    FpuUnOp::Neg => "fneg",
+                    FpuUnOp::Floor => "ffloor",
+                    FpuUnOp::Ceil => "fceil",
+                    FpuUnOp::Round => "fround",
+                    FpuUnOp::Trunc => "ftrunc",
                 };
                 write!(f, "v{dst} = {op} v{src}")
             }
-            Instr::FDot4Acc { lhs, rhs } => write!(f, "fdot4acc v{lhs}, v{rhs}"),
-            Instr::FAccStore { dst, mask } => write!(f, "v{dst} = faccstore {mask:#06b}"),
-            Instr::FAccLoad { src, lane } => write!(f, "faccload.{lane} v{src}"),
-            Instr::FZero { dst } => write!(f, "v{dst} = fzero"),
+            Instr::FpuSpecial { dst, op, src } => {
+                let op = match op {
+                    FpuSpecialOp::Rcp => "frcp",
+                    FpuSpecialOp::Rsqrt => "frsqrt",
+                    FpuSpecialOp::Sin => "fsin",
+                    FpuSpecialOp::Cos => "fcos",
+                    FpuSpecialOp::SinCos => "fsincos",
+                };
+                write!(f, "v{dst} = {op} v{src}")
+            }
+            Instr::FpuMov { dst, src } => write!(f, "v{dst} = fmov v{src}"),
+            Instr::FpuFromInt { dst, src_gpr } => write!(f, "v{dst} = ffromint v{src_gpr}"),
+            Instr::FpuToInt { dst_gpr, src } => write!(f, "v{dst_gpr} = ftoint v{src}"),
+            Instr::FpuFromLo { dst, src_gpr } => write!(f, "v{dst} = ffromlo v{src_gpr}"),
+            Instr::FpuFromHi { dst, src, src_gpr } => {
+                write!(f, "v{dst} = ffromhi v{src}, v{src_gpr}")
+            }
+            Instr::FpuToLo { dst_gpr, src } => write!(f, "v{dst_gpr} = ftolo v{src}"),
+            Instr::FpuToHi { dst_gpr, src } => write!(f, "v{dst_gpr} = ftohi v{src}"),
+            Instr::FpuLoad {
+                dst,
+                base_gpr,
+                offset,
+            } => write!(f, "v{dst} = fld [v{base_gpr} + {offset}]"),
+            Instr::FpuStore {
+                base_gpr,
+                offset,
+                src,
+            } => write!(f, "fst [v{base_gpr} + {offset}] = v{src}"),
+            Instr::FpuVecBin { dst, op, lhs, rhs } => {
+                let op = match op {
+                    FpuBinOp::Add => "vadd",
+                    FpuBinOp::Sub => "vsub",
+                    FpuBinOp::Mul => "vmul",
+                };
+                write!(f, "v{dst} = {op} v{lhs}, v{rhs}")
+            }
+            Instr::FpuVecMulS { dst, lhs, scalar } => {
+                write!(f, "v{dst} = vmuls v{lhs}, v{scalar}")
+            }
+            Instr::FpuVecUn { dst, op, src } => {
+                let op = match op {
+                    FpuUnOp::Abs => "vabs",
+                    FpuUnOp::Neg => "vneg",
+                    FpuUnOp::Floor => "vfloor",
+                    FpuUnOp::Ceil => "vceil",
+                    FpuUnOp::Round => "vround",
+                    FpuUnOp::Trunc => "vtrunc",
+                };
+                write!(f, "v{dst} = {op} v{src}")
+            }
+            Instr::FpuVecMove { dst, src } => write!(f, "v{dst} = vmov v{src}"),
+            Instr::FpuVecConstruct { dst, lanes } => {
+                write!(f, "v{dst} = vconstruct [{}]", fmt_vregs(lanes))
+            }
+            Instr::FpuVecLane { dst, src, lane } => {
+                write!(f, "v{dst} = vlanes v{src}[{lane}]")
+            }
+            Instr::FpuDotStore { dst, lhs, rhs } => {
+                write!(f, "v{dst} = dotstore v{lhs}, v{rhs}")
+            }
+            Instr::FpuVecLoad {
+                dst,
+                base_gpr,
+                offset,
+            } => write!(f, "v{dst} = fldv [v{base_gpr} + {offset}]"),
+            Instr::FpuVecStore {
+                base_gpr,
+                offset,
+                src,
+            } => write!(f, "fstv [v{base_gpr} + {offset}] = v{src}"),
             Instr::AddrOfFpuSpill { dst, slot } => write!(f, "v{dst} = &fpu_spill #{slot}"),
         }
     }

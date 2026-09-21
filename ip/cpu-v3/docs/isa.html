@@ -132,7 +132,7 @@
       <li>A single transient pending test result, not persistent flags, carries a comparison outcome to its consuming branch.</li>
       <li>Short immediates stay compact; <code>PFX12</code> extends only explicitly listed consumers.</li>
       <li>Near 16-bit pointers keep compiler data compact while segment registers form full physical word addresses.</li>
-      <li>Opcode <code>0xD</code> is the blocking four-lane signed fix16 FPU family.</li>
+      <li>Opcodes <code>0xC</code>/<code>0xD</code>/<code>0xE</code> start the two-word signed Q16.16 FPU v2 (vector, scalar, and aux).</li>
     </ul>
   </div>
 </div>
@@ -172,9 +172,9 @@
   <tr><td class="center memory mono">9</td><td class="memory">STORE</td><td class="mono">9 rs base imm4</td><td>Write one 16-bit word.</td></tr>
   <tr><td class="center imm mono">A</td><td class="imm">Immediate</td><td class="mono">A fn rd imm4</td><td>Arithmetic, logic, constant construction (including the shared LDC/ADDC constant table), and immediate comparisons.</td></tr>
   <tr><td class="center control mono">B</td><td class="control">Branch / move / jump</td><td class="mono">B fn ...</td><td>Six conditional branches, JREL/JALREL, six conditional moves, JREG/JALR.</td></tr>
-  <tr><td class="center reserved mono">C</td><td class="reserved">reserved</td><td class="mono">—</td><td>Invalid instruction.</td></tr>
-  <tr><td class="center extended mono">D</td><td class="extended">fix16 FPU</td><td class="mono">D fn a b</td><td>Blocking vector, matrix, accumulator, memory, compare, and unary operations.</td></tr>
-  <tr><td class="center reserved mono">E</td><td class="reserved">reserved</td><td class="mono">—</td><td>Invalid instruction.</td></tr>
+  <tr><td class="center extended mono">C</td><td class="extended">FPU VECTOR</td><td class="mono">C Fa Fb + word1</td><td>Two-word vector ALU, multiply, and dot operations.</td></tr>
+  <tr><td class="center extended mono">D</td><td class="extended">FPU SCALAR</td><td class="mono">D Fa Fb + word1</td><td>Two-word scalar ALU, compare, and special functions.</td></tr>
+  <tr><td class="center extended mono">E</td><td class="extended">FPU AUX</td><td class="mono">E X Fa kind + word1</td><td>Two-word integer bridges and FLD/FST/FLDV/FSTV.</td></tr>
   <tr><td class="center imm mono">F</td><td class="imm">PFX12</td><td class="mono">F payload12</td><td>Creates a pending 12-bit prefix payload.</td></tr>
 </table>
 
@@ -286,28 +286,33 @@
 <p class="caption">The relative offset is signed i8 relative to the already-incremented PC (±128 words). With <code>PFX12</code> the offset widens to <code>off16 = {payload12[7:0], imm8}</code>: the prefix's low byte supplies the high byte and <code>payload12[11:8]</code> is ignored. Conditional branches and conditional moves consume the pending test whether or not the branch is taken or the move writes, and fault <code>InvalidInstruction</code> without one — reported at the prefix address when prefixed. Register forms (functions 8..F) never consume a prefix. Reset leaves no pending result.</p>
 <p>The pending test result is a transient three-way ordering (Less/Equal/Greater) set only by the CMP-class instructions <code>CMPS</code>, <code>CMPU</code>, <code>CMPSI</code>, and <code>CMPUI</code>. Any other retired non-prefix instruction expires it, and <code>PFX12</code> is transparent to it. <code>JALREL</code>/<code>JALR</code> link to the architecturally fixed <code>r14</code>; compiler-generated wide control flow uses the canonical prefix with a 16-bit wrapping relative offset.</p>
 
-<h3>4.8 fix16 FPU &mdash; opcode D</h3>
-<p>Each F register contains four signed Q8.8 lanes. The ISA defines exactly two
-uses of an F register: scalar (lane x) and vec4 (lanes xyzw); vec2/vec3 values
-are vec4 values with zeroed tail lanes. FPU operations are blocking, do not
-consume PFX12, and retire only after their final writeback or memory
-response. Narrowing rounds to nearest with ties to even and then saturates.
-Revision 0.8 changes no FPU encoding, semantics, exception, or latency.</p>
+<h3>4.8 FPU v2 &mdash; opcodes C, D, E</h3>
+<p>Every FPU v2 instruction is 32 bits fetched as two consecutive 16-bit words
+and never consumes <code>PFX12</code>. All F registers are signed Q16.16
+(16 fractional bits, range about [-32768, +32767.99998]) and every operation
+wraps: no saturation and no exception output. A vector is a consecutive
+register-range view, not an architectural type. The wide accumulator is signed
+64-bit Q32.32: each product is exact, accumulation keeps the low 64 bits, and
+<code>DOTSTORE</code> takes <code>ACC[47:16]</code> from that wrapped sum.</p>
 <table>
-  <tr><th>fn</th><th>Mnemonic</th><th>Summary</th></tr>
-  <tr><td class="mono">0/1</td><td class="mn">FLOAD / FSTORE</td><td>Raw GPR bridge through lane x. FLOAD sets Fa = {Rb, 0, 0, 0}.</td></tr>
-  <tr><td class="mono">2/3</td><td class="mn">FIMPORT4 / FEXPORT4</td><td>Four aligned words at DSEG:r[b], transferred as four architectural word accesses.</td></tr>
-  <tr><td class="mono">4..7</td><td class="mn">FMOV / FPACK4 / FUNPACK4 / FTRANSPOSE4</td><td>Snapshot-defined F-register reorganization.</td></tr>
-  <tr><td class="mono">8..A</td><td class="mn">FADD / FSUB / FMUL</td><td>Destructive component arithmetic.</td></tr>
-  <tr><td class="mono">B</td><td class="mn">FDOT4ACC</td><td>ACC += dot4(Fa, Fb) with signed 40-bit saturation.</td></tr>
-  <tr><td class="mono">C</td><td class="mn">FACCSTORE Fa, mask4</td><td>b is a 4-bit destination lane <em>write mask</em> (bit 0 = x .. bit 3 = w): every set bit writes the same rounded ACC value, then ACC clears. Mask 0000 writes nothing and only clears ACC; mask 1111 splats.</td></tr>
-  <tr><td class="mono">D</td><td class="mn">FCMP</td><td>Signed lane-x ordering written to the transient pending test.</td></tr>
-  <tr><td class="mono">E</td><td class="mn">FUNARY</td><td>Scalar: FRCP, FRSQRT (both lane x, domain faults); FSINCOS yields {sin, cos, 0, 0}. Component-wise vec4 (each f(0)=0): FABS, FNEG, FFLOOR, FCEIL, FROUND, FSAT01, FSIGN. Vec4 clear: FZERO. Subops B..E are FACCLOAD.X/Y/Z/W, overwriting ACC from the selected source lane (a lane <em>selector</em>, unlike FACCSTORE's mask).</td></tr>
-  <tr><td class="mono">F</td><td class="mn">reserved</td><td>Invalid instruction (formerly FMULS; scalar-by-vector uses FACCLOAD.X + FACCSTORE 1111 + FMUL).</td></tr>
+  <tr><th>opcode</th><th>Layout</th><th>Summary</th></tr>
+  <tr><td class="mono">C</td><td class="mono">word0: 0xC Fa Fb &middot; word1: Fd len subop mode</td><td>VADD, VSUB, VMUL, VMULS, VMIN, VMAX, VABS, VNEG, VFLOOR, VCEIL, VROUND, VTRUNC, VMOV, DOT, DOTADD, DOTSTORE; len 00/01/10 = vec2/3/4; DOT mode[1:0] selects stride 1/3/4.</td></tr>
+  <tr><td class="mono">D</td><td class="mono">word0: 0xD Fa Fb &middot; word1: Fd subop mode</td><td>ADD, SUB, MUL, MIN, MAX, ABS, NEG, FLOOR, CEIL, ROUND, TRUNC, CMP, RCP, RSQRT, SINCOS, MOV; CMP writes the pending test; SINCOS mode[1:0] selects sin+cos / sin / cos.</td></tr>
+  <tr><td class="mono">E</td><td class="mono">word0: 0xE X Fa kind &middot; word1: Fd subop mode</td><td>kind 00: FLD, FST, ILO2F, IHI2F, FLO2I, FHI2I, I16TOF, FTOI16. FLD/FST move two words per register, <em>low half first</em>; mode[1:0] + 1 gives the vector length.</td></tr>
 </table>
-<p>ACC is both the wide dot accumulator and a temporary scalar transfer register.
-All F registers are caller-saved and ACC is caller-clobbered; argument and
-return F-register assignment is a compiler-ABI decision.</p>
+<p>Rounding is frozen as round-half-up (<code>floor(x + 0x8000)</code>, ties
+toward +infinity); FLOOR clears the fraction, CEIL adds a unit when a fraction
+remains, and TRUNC is toward zero. RCP(0) returns <code>0x7FFFFFFF</code> and
+RSQRT(x) is zero for x &le; 0. All F registers are caller-saved and ACC is
+caller-clobbered; the compiler ABI reserves F0..F3 for returns, F4..F27 for
+arguments, F28..F62 for allocation, and F63 for parallel-move cycles. The
+prescale helpers (<code>v3_length2_shift</code>, <code>v3_length2_scaled</code>,
+<code>v3_normalize_safe</code>, <code>v3_distance2_gt</code>) are a compiler
+library, not opcodes: <code>v3_length2_scaled</code> returns the
+<em>prescaled</em> squared length <code>|v|^2 * 2^-2k</code> and
+<code>v3_length2_shift</code> returns <code>k</code>. Scaling the result back is
+only approximate when <code>k &gt; 0</code>, because the component shifts and
+Q16.16 narrowing discard low bits.</p>
 
 <h2 id="prefix">5. PFX12 and wide operations</h2>
 <div class="grid">
@@ -362,9 +367,10 @@ return F-register assignment is a compiler-ABI decision.</p>
   <tr><td class="mono">r13</td><td>stack pointer</td><td>callee restores</td><td>Frame grows downward; reset value 0 denotes the exclusive <code>0x10000</code> segment top.</td></tr>
   <tr><td class="mono">r14</td><td>link register</td><td>saved by non-leaf functions</td><td>Direct and indirect calls write the return PC here; the architecture fixes the link register to r14 (<code>JALREL</code> has no link field, <code>JALR</code> requires link = 14).</td></tr>
   <tr><td class="mono">r15</td><td>general allocation</td><td>caller-saved</td><td>Ordinary allocatable register since v0.5; device instructions replaced the former reserved device-base convention.</td></tr>
-  <tr><td class="mono">f0..f1</td><td>FPU return values</td><td>caller-saved</td><td rowspan="3">FPU ABI mirrors the GPR roles. All F registers are caller-saved; ACC is caller-clobbered.</td></tr>
-  <tr><td class="mono">f2..f7</td><td>FPU arguments</td><td>caller-saved</td></tr>
-  <tr><td class="mono">f8..f15</td><td>FPU temporaries</td><td>caller-saved</td></tr>
+  <tr><td class="mono">F0..F3</td><td>FPU return values</td><td>caller-saved</td><td rowspan="4">FPU v2 ABI over the flat <code>F0..F63</code> Q16.16 file; a vector occupies a consecutive range. All F registers are caller-saved and ACC is caller-clobbered. FPU lowering is not implemented yet (C0).</td></tr>
+  <tr><td class="mono">F4..F27</td><td>FPU arguments (compact)</td><td>caller-saved</td></tr>
+  <tr><td class="mono">F28..F62</td><td>FPU allocatable</td><td>caller-saved</td></tr>
+  <tr><td class="mono">F63</td><td>parallel-move scratch</td><td>reserved, not allocated</td></tr>
 </table>
 <div class="grid">
   <div class="panel">
@@ -399,11 +405,9 @@ return F-register assignment is a compiler-ABI decision.</p>
 <h2 id="faults">8. Fault and retirement behavior</h2>
 <table>
   <tr><th>Condition</th><th>Result</th><th>Fault PC</th><th>Retirement</th></tr>
-  <tr><td>Reserved or malformed integer encoding (including majors C/E and non-canonical fields)</td><td><code>InvalidInstruction</code></td><td>instruction address, or prefix address for an eligible consumer</td><td>faulting operation does not retire</td></tr>
+  <tr><td>Reserved or malformed encoding (reserved FPU subop/length/mode, non-canonical fields, a truncated FPU pair)</td><td><code>InvalidInstruction</code></td><td>instruction address, or prefix address for an eligible consumer</td><td>faulting operation does not retire</td></tr>
   <tr><td>Conditional branch (B functions 0..5) or conditional move (B functions 8..D) with no pending test result</td><td><code>InvalidInstruction</code></td><td>instruction address, or prefix address when prefixed</td><td>faulting operation does not retire</td></tr>
-  <tr><td>FRCP zero or FRSQRT nonpositive domain</td><td><code>FpuDomain</code> (code 2)</td><td>instruction address</td><td>does not retire and does not modify FPU state</td></tr>
-  <tr><td>Misaligned FIMPORT4/FEXPORT4</td><td>data-memory fault</td><td>instruction address</td><td>does not issue memory traffic or retire</td></tr>
-  <tr><td>Fetch or data address outside fitted physical memory</td><td><code>PhysicalAddressOutOfRange</code></td><td>faulting instruction offset</td><td>does not retire</td></tr>
+  <tr><td>Fetch or data address outside fitted physical memory (including FLD/FST/FLDV/FSTV)</td><td><code>PhysicalAddressOutOfRange</code></td><td>faulting instruction offset</td><td>does not retire</td></tr>
   <tr><td>Valid prefixed consumer</td><td>executes one wide operation</td><td>—</td><td>retires two words together</td></tr>
   <tr><td>Pending prefix followed by non-consumer</td><td>prefix expires; next instruction executes normally</td><td>—</td><td>prefix and instruction retire separately</td></tr>
   <tr><td>SIGNAL type 0 after already halted</td><td>returns the latched halt signal</td><td>—</td><td>no additional execution</td></tr>
@@ -414,8 +418,8 @@ return F-register assignment is a compiler-ABI decision.</p>
 <h2 id="revision">9. Revision history</h2>
 <table>
   <tr><th>Revision</th><th>Change</th></tr>
-  <tr><td class="mono">0.8</td><td><b>Current.</b> Breaking integer rearrangement with no binary compatibility. Majors 0/1/3/4/5 keep <code>ADD</code>/<code>SUB</code>/<code>AND</code>/<code>OR</code>/<code>XOR</code>; the old three-register <code>MUL</code> (major 2) and register-count <code>SHL</code>/<code>ASR</code> (majors 6/7) move into the destructive shift/multiply family at major 2, joined by <code>SHR</code>, the immediate shifts <code>SHLI</code>/<code>SHRI</code>/<code>ASRI</code> and <code>MULI</code> (both moved from major A), and the unsigned product windows <code>MUL8</code>/<code>MUL16</code>. Major 6 becomes the extended/system family (unary, bit queries, <code>SEQ</code>, destructive <code>SLT</code>/<code>SLTU</code>, pending-test <code>CMPS</code>/<code>CMPU</code>, <code>SIGNAL</code>, special registers, <code>JSEG</code>); <code>NOP</code> is now <code>6000</code>. <code>SIGNAL rs, type4</code> replaces <code>HALT</code> (<code>SIGNAL r0, 0</code> = <code>6C00</code>). Device access moves from major C to major 7 with an unchanged field layout. Major A keeps arithmetic/logic, constant construction at functions 2/3, and comparisons, with <code>CMPEQI</code> renamed <code>SEQI</code>; functions 7/B are <code>LDC</code>/<code>ADDC</code>, indexing a shared symmetric 16-entry constant table (<code>MAG = [8, 16, 24, 32, 64, 128, 256, 512]</code>; indices 0..7 hold <code>MAG[k]</code>, indices 8..15 hold <code>-MAG[k - 8]</code>) that starts just past the <code>0..=15</code> range <code>ADDI</code>/<code>LDI</code>/<code>LDUI</code> already cover, and they never consume <code>PFX12</code>. Amendment (still revision 0.8): <code>ADDI</code>/<code>SUBI</code> read the unprefixed immediate as an unsigned u4 (<code>0..=15</code>) instead of a signed i4 — negative adjustments are <code>SUBI</code>'s job, so the signed range wasted half the encodings; the <code>PFX12</code>-widened forms still add/subtract the full 16-bit immediate pattern. Major B becomes the symmetric control family: six conditional branches (0..5), <code>JREL</code> (6), <code>JALREL</code> (7), six conditional moves (8..D), <code>JREG</code> (<code>B E 0 target</code>), and <code>JALR</code> (<code>B F E target</code>), with <code>JALREL</code>/<code>JALR</code> linking to the fixed <code>r14</code>. <code>IMMHI12</code> is renamed <code>PFX12</code> and carries a neutral 12-bit payload with the closed consumer set above. Majors C and E are fully reserved, so the revision 0.7 <code>HALT</code> word <code>E800</code> is invalid. The fix16 FPU at major D is completely unchanged.</td></tr>
-  <tr><td class="mono">0.7</td><td>Assigns the complete <code>D fn a b</code> family to the blocking fix16 FPU.</td></tr>
+  <tr><td class="mono">0.8</td><td><b>Current.</b> Breaking integer rearrangement with no binary compatibility. Majors 0/1/3/4/5 keep <code>ADD</code>/<code>SUB</code>/<code>AND</code>/<code>OR</code>/<code>XOR</code>; the old three-register <code>MUL</code> (major 2) and register-count <code>SHL</code>/<code>ASR</code> (majors 6/7) move into the destructive shift/multiply family at major 2, joined by <code>SHR</code>, the immediate shifts <code>SHLI</code>/<code>SHRI</code>/<code>ASRI</code> and <code>MULI</code> (both moved from major A), and the unsigned product windows <code>MUL8</code>/<code>MUL16</code>. Major 6 becomes the extended/system family (unary, bit queries, <code>SEQ</code>, destructive <code>SLT</code>/<code>SLTU</code>, pending-test <code>CMPS</code>/<code>CMPU</code>, <code>SIGNAL</code>, special registers, <code>JSEG</code>); <code>NOP</code> is now <code>6000</code>. <code>SIGNAL rs, type4</code> replaces <code>HALT</code> (<code>SIGNAL r0, 0</code> = <code>6C00</code>). Device access moves from major C to major 7 with an unchanged field layout. Major A keeps arithmetic/logic, constant construction at functions 2/3, and comparisons, with <code>CMPEQI</code> renamed <code>SEQI</code>; functions 7/B are <code>LDC</code>/<code>ADDC</code>, indexing a shared symmetric 16-entry constant table (<code>MAG = [8, 16, 24, 32, 64, 128, 256, 512]</code>; indices 0..7 hold <code>MAG[k]</code>, indices 8..15 hold <code>-MAG[k - 8]</code>) that starts just past the <code>0..=15</code> range <code>ADDI</code>/<code>LDI</code>/<code>LDUI</code> already cover, and they never consume <code>PFX12</code>. Amendment (still revision 0.8): <code>ADDI</code>/<code>SUBI</code> read the unprefixed immediate as an unsigned u4 (<code>0..=15</code>) instead of a signed i4 — negative adjustments are <code>SUBI</code>'s job, so the signed range wasted half the encodings; the <code>PFX12</code>-widened forms still add/subtract the full 16-bit immediate pattern. Major B becomes the symmetric control family: six conditional branches (0..5), <code>JREL</code> (6), <code>JALREL</code> (7), six conditional moves (8..D), <code>JREG</code> (<code>B E 0 target</code>), and <code>JALR</code> (<code>B F E target</code>), with <code>JALREL</code>/<code>JALR</code> linking to the fixed <code>r14</code>. <code>IMMHI12</code> is renamed <code>PFX12</code> and carries a neutral 12-bit payload with the closed consumer set above. The FPU was subsequently replaced wholesale by the two-word Q16.16 FPU v2: majors C/D/E now start a 32-bit pair and the old single-word Q8.8 <code>Dxxx</code> encoding is invalid.</td></tr>
+  <tr><td class="mono">0.7</td><td>Historical: introduced the blocking fix16 FPU in the <code>D fn a b</code> family; retired and replaced by the two-word Q16.16 FPU v2.</td></tr>
   <tr><td class="mono">0.6</td><td>Removes address-mapped device access; <code>LOAD</code>/<code>STORE</code> always reach memory.</td></tr>
   <tr><td class="mono">0.5</td><td>Replaces test-register branches with a transient pending test result, moves relative jumps into the B family, turns opcode C into device instructions, and frees <code>r15</code> for general allocation.</td></tr>
   <tr><td class="mono">0.4</td><td>Makes the complete fitted physical memory addressable via <code>MFSR</code>/<code>MTSR</code>/<code>JSEG</code> without widening pointers or changing compiler-generated load/store instructions.</td></tr>

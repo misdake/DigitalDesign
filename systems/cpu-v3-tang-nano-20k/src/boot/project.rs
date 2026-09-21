@@ -193,12 +193,11 @@ mod tests {
 
     #[test]
     fn parses_exactly_two_application_sources() {
-        let project = BootApplicationProject::parse(
-            "format 1\ns1 rcc/boot-demo.rs\ns2 rcc/display-demo.rs\n",
-        )
-        .unwrap();
+        let project =
+            BootApplicationProject::parse("format 1\ns1 rcc/boot-demo.rs\ns2 rcc/boot-alt.rs\n")
+                .unwrap();
         assert_eq!(project.s1_source, Path::new("rcc/boot-demo.rs"));
-        assert_eq!(project.s2_source, Path::new("rcc/display-demo.rs"));
+        assert_eq!(project.s2_source, Path::new("rcc/boot-alt.rs"));
     }
 
     #[test]

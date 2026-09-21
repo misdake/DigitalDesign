@@ -1,227 +1,223 @@
-//! Bit-exact architectural arithmetic for the CpuV3 revision 0.7 fix16 FPU.
+//! Architectural Q16.16 arithmetic for the CpuV3 FPU v2.
+//!
+//! Every architectural F register is a signed Q16.16 value: bit 31 is the sign
+//! bit, bits 30:16 the integer part, and bits 15:0 the fraction. The numeric
+//! range is `[-32768, +32767.9999847]`. All arithmetic wraps (two's-complement
+//! modulo `2^32`): there is no saturation, no rounding flag, and no exception
+//! output (design `fpu-design-v2` sections 2, 8 and 25).
+//!
+//! The FPU's wide accumulator is a signed 64-bit Q32.32 value. Every Q16.16
+//! product is exact, while accumulation keeps the low 64 bits. Extreme legal
+//! operands can therefore wrap the ACC (two `i32::MIN` squares already reach
+//! `2^63`); `DOTSTORE` then takes bits `[47:16]` from that wrapped sum.
+//!
+//! The special-function reference arithmetic lives in [`super::fpu_lut`]; this
+//! module re-exports it so the simulator has one place to reach the whole
+//! numeric contract. The hardware layer depends on the same reference, so the
+//! tables and formulas are never copied.
 
 use std::cmp::Ordering;
 
-#[path = "fpu_rom_data.rs"]
-mod fpu_rom_data;
-pub use fpu_rom_data::FPU_ROM_WORDS;
+pub use super::fpu_lut::{rcp_q16, rsqrt_q16, sincos_q16};
 
-pub type Fix16Raw = i16;
-pub type FpuVector = [Fix16Raw; 4];
+/// Fractional bits of an architectural F register.
+pub const FIX16_FRACTION_BITS: u32 = 16;
+/// Raw Q16.16 encoding of `1.0`.
+pub const FIX16_ONE: i32 = 1 << FIX16_FRACTION_BITS;
+/// One half unit in the last place, the round-half-up bias (`floor(x + 0.5)`).
+pub const FIX16_HALF: i32 = 1 << (FIX16_FRACTION_BITS - 1);
 
-pub const FIX16_FRACTION_BITS: u32 = 8;
-pub const FIX16_ONE: Fix16Raw = 1 << FIX16_FRACTION_BITS;
-pub const FPU_ACC_BITS: u32 = 40;
-pub const FPU_ACC_MIN: i64 = -(1_i64 << (FPU_ACC_BITS - 1));
-pub const FPU_ACC_MAX: i64 = (1_i64 << (FPU_ACC_BITS - 1)) - 1;
+/// Number of architectural F registers (`F0..F63`).
+pub const FPU_REGISTER_COUNT: usize = 64;
+/// Width of the wide dot-product accumulator (`Q32.32`).
+pub const FPU_ACC_BITS: u32 = 64;
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum FpuDomainError {
-    ReciprocalZero,
-    ReciprocalSqrtNonPositive,
+/// Wrapping Q16.16 addition.
+pub fn fix16_add(a: i32, b: i32) -> i32 {
+    a.wrapping_add(b)
 }
 
-pub fn fix16_saturate(value: i64) -> Fix16Raw {
-    value.clamp(i64::from(i16::MIN), i64::from(i16::MAX)) as i16
+/// Wrapping Q16.16 subtraction.
+pub fn fix16_sub(a: i32, b: i32) -> i32 {
+    a.wrapping_sub(b)
 }
 
-pub fn acc_saturate(value: i128) -> i64 {
-    value.clamp(i128::from(FPU_ACC_MIN), i128::from(FPU_ACC_MAX)) as i64
+/// Wrapping Q16.16 negation; `FIX16_MIN` maps to itself.
+pub fn fix16_neg(a: i32) -> i32 {
+    a.wrapping_neg()
 }
 
-/// Divides by `2^shift`, rounding to nearest with ties to an even integer.
-pub fn round_shift_ties_even(value: i64, shift: u32) -> i64 {
-    debug_assert!(shift > 0 && shift < 63);
-    let negative = value < 0;
-    let magnitude = i128::from(value).abs();
-    let divisor = 1_i128 << shift;
-    let mut quotient = magnitude >> shift;
-    let remainder = magnitude & (divisor - 1);
-    let half = divisor >> 1;
-    if remainder > half || (remainder == half && quotient & 1 != 0) {
-        quotient += 1;
+/// Wrapping Q16.16 absolute value; `FIX16_MIN` maps to itself, exactly as the
+/// scalar ALU's `0 - a` does.
+pub fn fix16_abs(a: i32) -> i32 {
+    a.wrapping_abs()
+}
+
+/// Q16.16 multiply: the full signed 64-bit product narrowed at bit 16, which is
+/// the RTL's `product[47:16]` write port.
+pub fn fix16_mul(a: i32, b: i32) -> i32 {
+    ((i64::from(a) * i64::from(b)) >> FIX16_FRACTION_BITS) as i32
+}
+
+/// Clears the 16 fractional bits, i.e. rounds toward negative infinity.
+pub fn fix16_floor(a: i32) -> i32 {
+    a & !0xffff
+}
+
+/// Mathematical ceiling: the floor plus one when a fraction remains.
+pub fn fix16_ceil(a: i32) -> i32 {
+    if a & 0xffff == 0 {
+        a
+    } else {
+        fix16_floor(a).wrapping_add(FIX16_ONE)
     }
-    let rounded = if negative { -quotient } else { quotient };
-    rounded as i64
 }
 
-pub fn fix16_add(a: Fix16Raw, b: Fix16Raw) -> Fix16Raw {
-    fix16_saturate(i64::from(a) + i64::from(b))
+/// Round-half-up (ties toward `+infinity`): `floor(x + 0x8000)`.
+pub fn fix16_round(a: i32) -> i32 {
+    a.wrapping_add(FIX16_HALF) & !0xffff
 }
 
-pub fn fix16_sub(a: Fix16Raw, b: Fix16Raw) -> Fix16Raw {
-    fix16_saturate(i64::from(a) - i64::from(b))
+/// Truncation toward zero.
+pub fn fix16_trunc(a: i32) -> i32 {
+    if a < 0 {
+        fix16_ceil(a)
+    } else {
+        fix16_floor(a)
+    }
 }
 
-pub fn fix16_mul(a: Fix16Raw, b: Fix16Raw) -> Fix16Raw {
-    fix16_saturate(round_shift_ties_even(
-        i64::from(a) * i64::from(b),
-        FIX16_FRACTION_BITS,
-    ))
-}
-
-pub fn fix16_accumulate_product(acc: i64, a: Fix16Raw, b: Fix16Raw) -> i64 {
-    acc_saturate(i128::from(acc) + i128::from(a) * i128::from(b))
-}
-
-pub fn fix16_from_acc(acc: i64) -> Fix16Raw {
-    fix16_saturate(round_shift_ties_even(acc, FIX16_FRACTION_BITS))
-}
-
-pub fn fix16_compare(a: Fix16Raw, b: Fix16Raw) -> Ordering {
+/// Signed Q16.16 ordering.
+pub fn fix16_compare(a: i32, b: i32) -> Ordering {
     a.cmp(&b)
 }
 
-pub fn fix16_reciprocal(value: Fix16Raw) -> Result<Fix16Raw, FpuDomainError> {
-    if value == 0 {
-        return Err(FpuDomainError::ReciprocalZero);
+/// Adds one exact Q16.16 product to the wide accumulator, keeping the low 64
+/// bits (`Q32.32` wrap), exactly as the RTL accumulate does.
+pub fn fix16_accumulate_product(acc: i64, a: i32, b: i32) -> i64 {
+    acc.wrapping_add(i64::from(a).wrapping_mul(i64::from(b)))
+}
+
+/// Narrows the wide accumulator to Q16.16, taking `ACC[47:16]` as the RTL
+/// `DOTSTORE` write port does.
+pub fn fix16_from_acc(acc: i64) -> i32 {
+    (acc >> FIX16_FRACTION_BITS) as i32
+}
+
+/// Sign-extends a 16-bit integer into a Q16.16 value (`I16TOF`).
+pub fn fix16_from_i16(value: i16) -> i32 {
+    i32::from(value) << FIX16_FRACTION_BITS
+}
+
+/// Converts a Q16.16 value to a 16-bit integer by truncating toward zero
+/// (`FTOI16`); the result wraps on overflow.
+pub fn fix16_to_i16(value: i32) -> i16 {
+    (fix16_trunc(value) >> FIX16_FRACTION_BITS) as i16
+}
+
+/// A `vec3` of Q16.16 components, the operand shape of the prescale library
+/// contract. On the target each component occupies one consecutive F register.
+pub type FpuVec3 = [i32; 3];
+
+/// Prescale exponent frozen by C0: `k = max(0, bit_length(max|component|) - 22)`
+/// on the **raw** Q16.16 magnitude.
+///
+/// The rule guarantees `|component >> k| < 2^22` in raw units (a real value
+/// below 64), so every scaled square is below `(2^22)^2 = 2^44` and a
+/// three-component sum stays below `3 * 2^44 < 2^45.6`. Narrowing that sum once
+/// at bit 16 stays below `2^29.6`, well inside `i32`. A vector whose largest
+/// raw component is below `2^22` (real value below 64) is not scaled at all
+/// (`k = 0`), so ordinary game coordinates keep their full 16 fractional bits;
+/// only genuinely large coordinates lose `k` low bits to arithmetic shifts.
+pub fn prescale_shift_for_max_abs(max_abs: u64) -> u32 {
+    (64 - max_abs.leading_zeros()).saturating_sub(22)
+}
+
+/// Largest absolute component as an unsigned magnitude that handles
+/// `i32::MIN` (whose magnitude is `2^31`).
+fn max_abs_component(components: &[i32]) -> u64 {
+    components
+        .iter()
+        .map(|value| u64::from(value.unsigned_abs()))
+        .max()
+        .unwrap_or(0)
+}
+
+/// `v3_length2_shift(vec3) -> u16`: the `k` of the shared `2^-k` prescale,
+/// `0..=10`. Exposed so a caller can interpret [`v3_length2_scaled`] as the
+/// approximate the original metric as `scaled * 2^(2k)`. The component shifts
+/// and the final Q16.16 narrowing are lossy when `k > 0`.
+pub fn v3_length2_shift(v: FpuVec3) -> u32 {
+    prescale_shift_for_max_abs(max_abs_component(&v))
+}
+
+/// `v3_length2_scaled(vec3) -> fix16`: the **prescaled** squared length
+/// `(sum_i (v_i >> k)^2) >> 16 = |v|^2 * 2^-2k` (truncated toward negative
+/// infinity), with `k` from [`prescale_shift_for_max_abs`]. This is not an
+/// unscaled length: combine it with [`v3_length2_shift`] for a scaled-back
+/// approximation. A vector whose largest component is below 64 (`k = 0`) returns
+/// the exact squared length in Q16.16. The single narrowing matches the
+/// target's `DOTSTORE` (`ACC[47:16]`), so the result never overflows `i32` and
+/// a zero vector yields zero.
+pub fn v3_length2_scaled(v: FpuVec3) -> i32 {
+    let k = v3_length2_shift(v);
+    let mut sum = 0_i64;
+    for component in v {
+        let scaled = component >> k;
+        sum += i64::from(scaled) * i64::from(scaled);
     }
-    let (index, exponent) = normalize_magnitude(value.unsigned_abs());
-    Ok(scale_q15(
-        FPU_ROM_WORDS[256 + index] as u16,
-        exponent,
-        value < 0,
-    ))
+    (sum >> FIX16_FRACTION_BITS) as i32
 }
 
-pub fn fix16_reciprocal_sqrt(value: Fix16Raw) -> Result<Fix16Raw, FpuDomainError> {
-    if value <= 0 {
-        return Err(FpuDomainError::ReciprocalSqrtNonPositive);
+/// `v3_normalize_safe(vec3) -> vec3`: `v / |v|` computed from the same 2^-k
+/// scaling, so the squared length never overflows. A zero vector normalizes to
+/// a zero vector. The sign of every component is preserved.
+pub fn v3_normalize_safe(v: FpuVec3) -> FpuVec3 {
+    let k = v3_length2_shift(v);
+    let length2 = v3_length2_scaled(v);
+    if length2 == 0 {
+        return [0; 3];
     }
-    let (index, exponent) = normalize_magnitude(value as u16);
-    let odd_exponent = exponent.rem_euclid(2) != 0;
-    let table = if odd_exponent { 768 } else { 512 };
-    Ok(scale_q15(
-        FPU_ROM_WORDS[table + index] as u16,
-        exponent.div_euclid(2),
-        false,
-    ))
+    // rsqrt(s) = 2^k / |v|, so (v_i >> k) * rsqrt(s) = v_i / |v|.
+    let inverse = rsqrt_q16(length2);
+    [
+        fix16_mul(v[0] >> k, inverse),
+        fix16_mul(v[1] >> k, inverse),
+        fix16_mul(v[2] >> k, inverse),
+    ]
 }
 
-pub fn fix16_sin_cos(value: Fix16Raw) -> (Fix16Raw, Fix16Raw) {
-    // 83443 / 65536 approximates 4/pi. The low eleven bits are a complete
-    // modulo-2pi reduction into 2048 phase steps.
-    let phase = round_shift_ties_even(i64::from(value) * 83_443, 16).rem_euclid(2048) as u16;
-    (quarter_sine(phase), quarter_sine((phase + 512) & 2047))
-}
-
-pub fn fix16_abs(value: Fix16Raw) -> Fix16Raw {
-    if value == i16::MIN {
-        i16::MAX
-    } else {
-        value.abs()
+/// `v3_distance2_gt(vec3, vec3, fix16) -> bool`: `|a - b|^2 > threshold`, with
+/// both sides scaled by the same `2^-2k` derived from the difference's largest
+/// component.
+///
+/// The exact predicate is the scaled one: it compares
+/// `sum_i ((a_i - b_i) >> k)^2` against `threshold * 2^(16 - 2k)` in `i128`, so
+/// the comparison itself never overflows and a negative threshold is always
+/// exceeded by the non-negative squared distance. The `>> k` truncation is
+/// shared by both sides, so for a difference whose largest raw component is
+/// below `2^22` (`k = 0`) it is exactly `|a - b|^2 > threshold`.
+pub fn v3_distance2_gt(a: FpuVec3, b: FpuVec3, threshold: i32) -> bool {
+    let difference = [
+        i128::from(a[0]) - i128::from(b[0]),
+        i128::from(a[1]) - i128::from(b[1]),
+        i128::from(a[2]) - i128::from(b[2]),
+    ];
+    let max_abs = difference
+        .iter()
+        .map(|value| value.unsigned_abs())
+        .max()
+        .unwrap_or(0);
+    // `max_abs` fits 33 bits, so the u64 shift helper takes it directly.
+    let k = prescale_shift_for_max_abs(max_abs as u64);
+    let mut sum = 0_i128;
+    for component in difference {
+        let scaled = component >> k;
+        sum += scaled * scaled;
     }
-}
-
-pub fn fix16_neg(value: Fix16Raw) -> Fix16Raw {
-    if value == i16::MIN {
-        i16::MAX
-    } else {
-        -value
-    }
-}
-
-pub fn fix16_floor(value: Fix16Raw) -> Fix16Raw {
-    value & !0xff
-}
-
-pub fn fix16_ceil(value: Fix16Raw) -> Fix16Raw {
-    if value & 0xff == 0 {
-        value
-    } else {
-        fix16_saturate(i64::from(value & !0xff) + i64::from(FIX16_ONE))
-    }
-}
-
-pub fn fix16_round(value: Fix16Raw) -> Fix16Raw {
-    fix16_saturate(round_shift_ties_even(i64::from(value), 8) << 8)
-}
-
-pub fn fix16_saturate01(value: Fix16Raw) -> Fix16Raw {
-    value.clamp(0, FIX16_ONE)
-}
-
-pub fn fix16_sign(value: Fix16Raw) -> Fix16Raw {
-    match value.cmp(&0) {
-        Ordering::Less => -FIX16_ONE,
-        Ordering::Equal => 0,
-        Ordering::Greater => FIX16_ONE,
-    }
-}
-
-pub fn continuation_mask(value: FpuVector) -> u8 {
-    u8::from(value[1..].iter().any(|&lane| lane != 0)) << 2
-        | u8::from(value[2..].iter().any(|&lane| lane != 0)) << 1
-        | u8::from(value[3] != 0)
-}
-
-#[cfg(test)]
-fn quantize_f64(value: f64) -> Fix16Raw {
-    let scaled = (value * 256.0).round_ties_even();
-    if scaled <= f64::from(i16::MIN) {
-        i16::MIN
-    } else if scaled >= f64::from(i16::MAX) {
-        i16::MAX
-    } else {
-        scaled as i16
-    }
-}
-
-fn normalize_magnitude(magnitude: u16) -> (usize, i32) {
-    debug_assert!(magnitude != 0);
-    let leading = magnitude.leading_zeros() as i32;
-    let mut exponent = 7 - leading;
-    let mut normalized = if exponent > 0 {
-        round_shift_ties_even(i64::from(magnitude), exponent as u32) as u16
-    } else if exponent == 0 {
-        magnitude
-    } else {
-        magnitude << (-exponent as u32)
-    };
-    if normalized == 512 {
-        normalized = 256;
-        exponent += 1;
-    }
-    debug_assert!((256..512).contains(&normalized));
-    (usize::from(normalized - 256), exponent)
-}
-
-fn scale_q15(value: u16, exponent: i32, negative: bool) -> Fix16Raw {
-    let shift = 7 + exponent;
-    let magnitude = if shift > 0 {
-        round_shift_ties_even(i64::from(value), shift as u32)
-    } else {
-        i64::from(value) << (-shift as u32)
-    };
-    fix16_saturate(if negative { -magnitude } else { magnitude })
-}
-
-fn quarter_sine(phase: u16) -> Fix16Raw {
-    let quadrant = phase >> 9;
-    let offset = usize::from(phase & 511);
-    let rising = || sine_sample(offset);
-    let falling = || {
-        if offset == 0 {
-            FIX16_ONE
-        } else {
-            sine_sample(512 - offset)
-        }
-    };
-    match quadrant {
-        0 => rising(),
-        1 => falling(),
-        2 => -rising(),
-        3 => -falling(),
-        _ => unreachable!(),
-    }
-}
-
-fn sine_sample(index: usize) -> Fix16Raw {
-    if index >= 492 {
-        return FIX16_ONE;
-    }
-    let packed = FPU_ROM_WORDS[index >> 1];
-    ((packed >> ((index & 1) * 8)) & 0xff) as Fix16Raw
+    // Q16.16 threshold -> raw Q32.32 scale, then the same 2^-2k shift.
+    let scaled_threshold = (i128::from(threshold) << 16) >> (2 * k);
+    sum > scaled_threshold
 }
 
 #[cfg(test)]
@@ -229,88 +225,241 @@ mod tests {
     use super::*;
 
     #[test]
-    fn nearest_even_and_saturation_are_bit_exact() {
-        assert_eq!(round_shift_ties_even(128, 8), 0);
-        assert_eq!(round_shift_ties_even(384, 8), 2);
-        assert_eq!(round_shift_ties_even(-128, 8), 0);
-        assert_eq!(round_shift_ties_even(-384, 8), -2);
-        assert_eq!(fix16_mul(384, 384), 576);
-        assert_eq!(fix16_add(i16::MAX, 1), i16::MAX);
-        assert_eq!(fix16_sub(i16::MIN, 1), i16::MIN);
+    fn arithmetic_wraps_instead_of_saturating() {
+        assert_eq!(fix16_add(i32::MAX, 1), i32::MIN);
+        assert_eq!(fix16_sub(i32::MIN, 1), i32::MAX);
+        assert_eq!(fix16_neg(i32::MIN), i32::MIN);
+        assert_eq!(fix16_abs(i32::MIN), i32::MIN);
     }
 
     #[test]
-    fn accumulator_has_a_signed_40_bit_saturating_contract() {
-        assert_eq!(acc_saturate(i128::MAX), FPU_ACC_MAX);
-        assert_eq!(acc_saturate(i128::MIN), FPU_ACC_MIN);
-        let four_max_products = (0..4).fold(0, |acc, _| {
-            fix16_accumulate_product(acc, i16::MIN, i16::MIN)
-        });
-        assert_eq!(four_max_products, 1_i64 << 32);
-        assert_eq!(fix16_from_acc(four_max_products), i16::MAX);
+    fn multiplication_narrows_the_full_product_at_bit_16() {
+        // 1.5 * 2.0 = 3.0
+        assert_eq!(fix16_mul(FIX16_ONE + 0x8000, 2 * FIX16_ONE), 3 * FIX16_ONE);
+        // 1.5 * 1.5 = 2.25
+        assert_eq!(fix16_mul(FIX16_ONE + 0x8000, FIX16_ONE + 0x8000), 0x2_4000);
+        // The most negative product keeps the RTL `product[47:16]` slice.
+        assert_eq!(fix16_mul(i32::MIN, FIX16_ONE), i32::MIN);
     }
 
     #[test]
-    fn unary_domains_and_geometry_helpers_are_defined() {
-        assert_eq!(fix16_reciprocal(0), Err(FpuDomainError::ReciprocalZero));
-        assert_eq!(fix16_reciprocal(256), Ok(256));
-        assert_eq!(fix16_reciprocal_sqrt(256), Ok(256));
-        assert_eq!(
-            fix16_reciprocal_sqrt(0),
-            Err(FpuDomainError::ReciprocalSqrtNonPositive)
-        );
-        assert_eq!(fix16_sin_cos(0), (0, 256));
-        assert_eq!(fix16_abs(i16::MIN), i16::MAX);
-        assert_eq!(fix16_neg(i16::MIN), i16::MAX);
+    fn rounding_family_matches_the_frozen_rules() {
+        assert_eq!(fix16_floor(0x1_8000), 0x1_0000);
+        assert_eq!(fix16_floor(-0x1_8000), -0x2_0000);
+        assert_eq!(fix16_ceil(0x1_8000), 0x2_0000);
+        assert_eq!(fix16_ceil(-0x1_8000), -0x1_0000);
+        assert_eq!(fix16_ceil(-0x1_0000), -0x1_0000);
+        // Ties round toward +infinity.
+        assert_eq!(fix16_round(0x1_8000), 0x2_0000);
+        assert_eq!(fix16_round(-0x1_8000), -0x1_0000);
+        assert_eq!(fix16_trunc(0x1_8000), 0x1_0000);
+        assert_eq!(fix16_trunc(-0x1_8000), -0x1_0000);
     }
 
     #[test]
-    fn continuation_bits_are_derived_only_from_values() {
-        assert_eq!(continuation_mask([0, 0, 0, 0]), 0b000);
-        assert_eq!(continuation_mask([1, 2, 0, 0]), 0b100);
-        assert_eq!(continuation_mask([1, 0, 3, 0]), 0b110);
-        assert_eq!(continuation_mask([0, 0, 0, 4]), 0b111);
-    }
-
-    #[test]
-    fn shared_rom_error_is_bounded_over_the_complete_fix16_domain() {
-        let mut reciprocal_error = 0_i32;
-        let mut rsqrt_error = 0_i32;
-        let mut sin_cos_error = 0_i32;
-        let mut sin_cos_continuous_error = 0.0_f64;
-        let mut sin_cos_squared_error_sum = 0.0_f64;
-        for raw in i16::MIN..=i16::MAX {
-            if raw != 0 {
-                let ideal = quantize_f64(1.0 / (f64::from(raw) / 256.0));
-                reciprocal_error = reciprocal_error
-                    .max((i32::from(fix16_reciprocal(raw).unwrap()) - i32::from(ideal)).abs());
-            }
-            if raw > 0 {
-                let ideal = quantize_f64(1.0 / (f64::from(raw) / 256.0).sqrt());
-                rsqrt_error = rsqrt_error
-                    .max((i32::from(fix16_reciprocal_sqrt(raw).unwrap()) - i32::from(ideal)).abs());
-            }
-            let radians = f64::from(raw) / 256.0;
-            let (sin, cos) = fix16_sin_cos(raw);
-            let sin_continuous_error = (f64::from(sin) / 256.0 - radians.sin()).abs();
-            let cos_continuous_error = (f64::from(cos) / 256.0 - radians.cos()).abs();
-            sin_cos_error = sin_cos_error
-                .max((i32::from(sin) - i32::from(quantize_f64(radians.sin()))).abs())
-                .max((i32::from(cos) - i32::from(quantize_f64(radians.cos()))).abs());
-            sin_cos_continuous_error = sin_cos_continuous_error
-                .max(sin_continuous_error)
-                .max(cos_continuous_error);
-            sin_cos_squared_error_sum +=
-                sin_continuous_error.powi(2) + cos_continuous_error.powi(2);
+    fn accumulator_wraps_at_64_bits_and_narrows_at_bit_16() {
+        let mut acc = 0_i64;
+        for _ in 0..4 {
+            acc = fix16_accumulate_product(acc, i32::MIN, i32::MIN);
         }
-        let sin_cos_rms_error = (sin_cos_squared_error_sum / (2.0 * 65_536.0)).sqrt();
-        eprintln!(
-            "complete-domain FPU ROM errors: rcp={reciprocal_error}, rsqrt={rsqrt_error}, sincos_raw={sin_cos_error}, sincos_continuous={sin_cos_continuous_error:.9}, sincos_rms={sin_cos_rms_error:.9}"
+        // 4 * 2^62 == 2^64, kept modulo 2^64.
+        assert_eq!(acc, 0);
+        assert_eq!(fix16_from_acc(1_i64 << 47), 1 << 31);
+    }
+
+    #[test]
+    fn integer_bridges_are_raw_half_moves_and_truncating_conversions() {
+        assert_eq!(fix16_from_i16(-3), -3 * FIX16_ONE);
+        assert_eq!(fix16_to_i16(3 * FIX16_ONE + 0x8000), 3);
+        assert_eq!(fix16_to_i16(-(3 * FIX16_ONE) - 0x8000), -3);
+        assert_eq!(fix16_to_i16(i32::MIN), i16::MIN);
+    }
+
+    #[test]
+    fn prescale_shift_boundaries_are_frozen() {
+        assert_eq!(prescale_shift_for_max_abs(0), 0);
+        assert_eq!(prescale_shift_for_max_abs(1), 0);
+        assert_eq!(prescale_shift_for_max_abs((1 << 22) - 1), 0);
+        // The first bit length that needs scaling.
+        assert_eq!(prescale_shift_for_max_abs(1 << 22), 1);
+        assert_eq!(prescale_shift_for_max_abs((1 << 23) - 1), 1);
+        assert_eq!(prescale_shift_for_max_abs(1 << 23), 2);
+        // i32::MIN's magnitude is 2^31 (bit length 32).
+        assert_eq!(prescale_shift_for_max_abs(1 << 31), 10);
+    }
+
+    /// Higher-precision reference for the frozen prescale algorithm. `i128`
+    /// leaves the implementation's `i64` intermediate with no truncation, so
+    /// the two must agree bit for bit across the whole input range.
+    fn reference_length2_scaled(v: [i32; 3]) -> i32 {
+        let max_abs = v
+            .iter()
+            .map(|value| u64::from(value.unsigned_abs()))
+            .max()
+            .unwrap();
+        let k = prescale_shift_for_max_abs(max_abs);
+        let sum = v
+            .iter()
+            .map(|&component| {
+                let scaled = i128::from(component) >> k;
+                scaled * scaled
+            })
+            .sum::<i128>();
+        (sum >> FIX16_FRACTION_BITS) as i32
+    }
+
+    /// Higher-precision reference for the frozen distance predicate.
+    fn reference_distance2_gt(a: [i32; 3], b: [i32; 3], threshold: i32) -> bool {
+        let difference: [i128; 3] = [
+            i128::from(a[0]) - i128::from(b[0]),
+            i128::from(a[1]) - i128::from(b[1]),
+            i128::from(a[2]) - i128::from(b[2]),
+        ];
+        let max_abs = difference
+            .iter()
+            .map(|value| value.unsigned_abs())
+            .max()
+            .unwrap();
+        let k = prescale_shift_for_max_abs(max_abs as u64);
+        let sum = difference
+            .iter()
+            .map(|&component| {
+                let scaled = component >> k;
+                scaled * scaled
+            })
+            .sum::<i128>();
+        sum > (i128::from(threshold) << 16) >> (2 * k)
+    }
+
+    #[test]
+    fn length2_scaled_and_normalize_safe_hold_the_zero_and_sign_rules() {
+        assert_eq!(v3_length2_shift([0, 0, 0]), 0);
+        assert_eq!(v3_length2_scaled([0, 0, 0]), 0);
+        assert_eq!(v3_normalize_safe([0, 0, 0]), [0, 0, 0]);
+        // 3-4-5 style exact small vector, no scaling, true squared length.
+        assert_eq!(v3_length2_shift([3 << 16, 4 << 16, 0]), 0);
+        assert_eq!(v3_length2_scaled([3 << 16, 4 << 16, 0]), 25 << 16);
+        let n = v3_normalize_safe([3 << 16, 4 << 16, 0]);
+        assert_eq!(
+            n,
+            [
+                fix16_mul(3 << 16, rsqrt_q16(25 << 16)),
+                fix16_mul(4 << 16, rsqrt_q16(25 << 16)),
+                0
+            ]
         );
-        assert!(reciprocal_error <= 2);
-        assert!(rsqrt_error <= 2);
-        assert!(sin_cos_error <= 1);
-        assert!(sin_cos_continuous_error < 1.0 / 256.0);
-        assert!(sin_cos_rms_error < 0.0013);
+        // The normalized magnitude is ~1.0 and signs are preserved.
+        assert!(n[0] > 0 && n[1] > 0);
+        let neg = v3_normalize_safe([-(3 << 16), 4 << 16, 0]);
+        assert!(neg[0] < 0 && neg[1] > 0);
+    }
+
+    #[test]
+    fn length2_scaled_matches_the_high_precision_reference_at_every_boundary() {
+        let mut cases: Vec<[i32; 3]> = vec![];
+        // Every prescale boundary 2^b and its neighbours.
+        for bits in 0..=31u32 {
+            let center = 1_i32.wrapping_shl(bits);
+            for delta in [-1i32, 0, 1] {
+                let value = center.wrapping_add(delta);
+                cases.push([value, 0, 0]);
+                cases.push([value, value, value]);
+                cases.push([value.wrapping_neg(), value.wrapping_neg() / 3, value / 2]);
+            }
+        }
+        // Extremes and mixed-sign combinations.
+        for value in [0, 1, -1, i32::MIN, i32::MIN + 1, i32::MAX, i32::MAX - 1] {
+            cases.push([value, value, value]);
+            cases.push([value, i32::MIN, i32::MAX]);
+            cases.push([i32::MAX, value, i32::MIN]);
+        }
+        for v in cases {
+            assert_eq!(
+                v3_length2_scaled(v),
+                reference_length2_scaled(v),
+                "components {v:?}"
+            );
+            // The prescaled result always fits the Q16.16 write port.
+            let scaled = v3_length2_scaled(v);
+            assert!((-0x4000_0000..=0x4000_0000).contains(&scaled), "{v:?}");
+        }
+    }
+
+    #[test]
+    fn length2_scaled_is_the_true_length_when_no_prescale_is_needed() {
+        // Below the first boundary (max raw component < 2^22, real value < 64)
+        // the function returns the exact Q16.16 squared length.
+        for v in [
+            [0, 0, 0],
+            [3 << 16, 4 << 16, 0],
+            [-(1 << 21), (1 << 21) - 1, 0],
+            [1 << 15, -(1 << 15), 1 << 14],
+        ] {
+            assert_eq!(v3_length2_shift(v), 0, "{v:?}");
+            let exact = v
+                .iter()
+                .map(|&c| i128::from(c) * i128::from(c))
+                .sum::<i128>()
+                >> 16;
+            assert_eq!(i128::from(v3_length2_scaled(v)), exact, "{v:?}");
+        }
+    }
+
+    #[test]
+    fn distance2_gt_matches_the_high_precision_reference_at_every_boundary() {
+        let mut cases: Vec<([i32; 3], [i32; 3])> = vec![];
+        for bits in 0..=31u32 {
+            let magnitude = 1_i32.wrapping_shl(bits);
+            for delta in [-1i32, 0, 1] {
+                let d = magnitude.wrapping_add(delta);
+                cases.push(([0, 0, 0], [d, 0, 0]));
+                cases.push(([0, 0, 0], [d, d, d]));
+                cases.push(([d, d.wrapping_neg(), 0], [0, 0, d]));
+            }
+        }
+        for a in [i32::MIN, i32::MIN + 1, i32::MAX, 0] {
+            for b in [i32::MIN, i32::MAX, 0] {
+                cases.push(([a, b, a], [b, a, b]));
+            }
+        }
+        for (a, b) in cases {
+            // Probe a threshold just below, at, and just above the true scaled
+            // squared distance, so the predicate's boundary is exercised.
+            for threshold in [
+                i32::MIN,
+                -1,
+                0,
+                1 << 10,
+                (25 << 16) - 1,
+                25 << 16,
+                (25 << 16) + 1,
+                i32::MAX - 1,
+                i32::MAX,
+            ] {
+                assert_eq!(
+                    v3_distance2_gt(a, b, threshold),
+                    reference_distance2_gt(a, b, threshold),
+                    "a={a:?} b={b:?} threshold={threshold}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn distance2_gt_scales_both_sides_and_handles_negative_thresholds() {
+        // 3-4-5: squared distance 25.0.
+        let a = [0, 0, 0];
+        let b = [3 << 16, 4 << 16, 0];
+        assert!(v3_distance2_gt(a, b, 24 << 16));
+        assert!(!v3_distance2_gt(a, b, 25 << 16));
+        assert!(!v3_distance2_gt(a, b, 26 << 16));
+        // A negative threshold is always exceeded by a non-negative distance.
+        assert!(v3_distance2_gt(a, b, -1));
+        // Equal points never exceed a zero threshold.
+        assert!(!v3_distance2_gt(a, a, 0));
+        // Large coordinates: |a - b| = 2^20 in one component; both sides scale.
+        let far = [1 << 20, 0, 0];
+        assert!(v3_distance2_gt(a, far, 0));
+        assert!(!v3_distance2_gt(a, far, i32::MAX));
     }
 }

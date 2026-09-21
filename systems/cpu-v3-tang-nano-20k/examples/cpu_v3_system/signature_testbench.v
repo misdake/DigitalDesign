@@ -1,7 +1,7 @@
 `timescale 1ns/1ps
 // Signature testbench for the single-stage flash boot. Phase 1 preloads the
-// Flash model with the packed boot package and verifies the default/01 primary
-// application followed by the button-10 alternate application. Later phases
+// Flash model with the packed boot package and verifies the default S2
+// application followed by the button-01 S1 application. Later phases
 // corrupt the descriptor and manifest metadata and check the boot stage's
 // failure reports.
 module tb;
@@ -317,8 +317,6 @@ initial begin
     // (no button held). The display application never writes the LEDs, so the
     // boot monitor keeps ownership and shows the application phase.
     wait (dut.code_segment == 16'd7);
-    // The display application reports its own DDHT 0x0b frame as soon as it
-    // starts; wait for it so the default boot is validated over UART too.
     wait (display_frame_seen);
     repeat (4) @(posedge clk);
     if (dut.data_segment !== 16'h0000 && dut.data_segment !== 16'h0020 &&

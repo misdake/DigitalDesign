@@ -129,6 +129,10 @@ s1 rcc/boot-demo.rs
 s2 rcc/display-demo.rs
 ```
 
+C3 restores the migrated Q16.16 FPU display demo to S2. It uses the compiler's
+scalar, vector, and special-function lowering directly and contains no software
+trigonometric table.
+
 The build compiles those sources into derived S1/default and S2 slots and emits
 `boot.cpu-v3-manifest` beside the section binaries. That generated manifest is
 the independently repackable input to `cpu-v3-pack`; `boot-project.map` records

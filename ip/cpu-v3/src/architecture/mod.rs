@@ -9,6 +9,7 @@ mod cache;
 mod decode;
 mod encoding;
 mod fpu;
+pub mod fpu_lut;
 mod sdram;
 mod sim;
 

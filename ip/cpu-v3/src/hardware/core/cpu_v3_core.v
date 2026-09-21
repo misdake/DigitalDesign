@@ -48,6 +48,8 @@ localparam [4:0] ST_FPU2_EXEC = 10;
 localparam [4:0] ST_FPU2_MEM_REQUEST = 11;
 localparam [4:0] ST_FPU2_MEM_RESPONSE = 12;
 localparam [4:0] ST_FPU2_CAPTURE = 13;
+localparam [4:0] ST_FPU2_AUX_READ = 14;
+localparam [4:0] ST_FPU2_AUX_APPLY = 15;
 localparam [4:0] ST_RESET_CLEAR = 22;
 localparam [4:0] ST_ASYNC_STORE_WAIT = 24;
 
@@ -122,6 +124,7 @@ reg [5:0] fpu2_fd = 0;
 reg [5:0] fpu2_fa = 0;
 reg fpu2_is_memory = 0;
 reg fpu2_write_back = 0;
+reg [31:0] fpu2_aux_data = 0;
 // Memory beats: FLD/FST stream two 16-bit halves per architectural register.
 // `fpu2_beat` counts halves across the whole vector (2*len beats); bit 0
 // selects low/high and the upper bits select which F register. `fpu2_len` is
@@ -154,7 +157,8 @@ reg [15:0] fpu2_store_fault_pc = 0;
 
 wire [3:0] gpr_read_a_address =
     state == ST_HALTED ? 4'd0 :
-    state == ST_FPU2_WORD1 ? fpu2_word0[11:8] :
+    (state == ST_FPU2_WORD1 || state == ST_FPU2_AUX_READ ||
+     state == ST_FPU2_AUX_APPLY) ? fpu2_word0[11:8] :
     field_a;
 wire [3:0] gpr_read_b_address =
     state == ST_EXECUTE && (opcode == 4'h8 || opcode == 4'h9) ? field_d : field_b;
@@ -332,6 +336,14 @@ wire fpu2_flag_eq;
 wire fpu2_flag_gt;
 wire fpu2_instr_complete;
 wire [31:0] fpu2_ext_read_data;
+// A scalar `CMP` publishes its ordering into the pending test at retire.
+wire fpu2_scalar_cmp = fpu2_word0[15:12] == 4'hd && fpu2_subop == 6'h0b;
+// AUX kind-00 integer bridges: the core performs the GPR <-> F transfer itself
+// through the ext channel. Subops 02/03 (ILO2F/IHI2F) and 06 (I16TOF) write F
+// from GPR[X]; 04/05 (FLO2I/FHI2I) and 07 (FTOI16) write GPR[X] from F.
+wire fpu2_aux_writes_f = fpu2_subop <= 6'h03 || fpu2_subop == 6'h06;
+wire fpu2_aux_reads_fd = fpu2_subop <= 6'h03 || fpu2_subop == 6'h06;
+wire [5:0] fpu2_aux_read_reg = fpu2_aux_reads_fd ? fpu2_fd : fpu2_fa;
 reg fpu2_word_valid = 0;
 reg [15:0] fpu2_word = 0;
 reg fpu2_abort = 0;
@@ -343,16 +355,31 @@ reg fpu2_abort = 0;
 // leaving ST_FPU2_MEM_RESPONSE).
 wire fpu2_ext_access = state == ST_FPU2_EXEC && fpu2_is_memory ||
                        state == ST_FPU2_CAPTURE ||
+                       state == ST_FPU2_AUX_READ ||
+                       (state == ST_FPU2_AUX_APPLY && fpu2_aux_writes_f) ||
                        state == ST_FPU2_MEM_REQUEST ||
                        state == ST_FPU2_MEM_RESPONSE;
-wire fpu2_ext_write_enable = state == ST_FPU2_MEM_RESPONSE &&
+wire fpu2_ext_write_enable = (state == ST_FPU2_MEM_RESPONSE &&
     !fpu2_write_back && fpu2_beat[0] &&
-    data_response_valid && !data_error;
+    data_response_valid && !data_error) ||
+    (state == ST_FPU2_AUX_APPLY && fpu2_aux_writes_f);
 // Capture pipelining: the register indexed by the current capture beat was
 // requested on the previous beat, so present beat+1 while capturing beat. The
 // FLD memory beats keep the two-half-per-register index.
 wire [3:0] fpu2_ext_read_index =
     state == ST_FPU2_CAPTURE ? fpu2_beat + 1'b1 : fpu2_beat_index;
+// The AUX bridges merge/extract F halves and sign-extend an integer into the
+// F high half; the FLD beats keep the memory path's assembled word.
+wire [31:0] fpu2_ext_write_data =
+    state == ST_FPU2_AUX_APPLY ?
+        (fpu2_subop == 6'h02 ? {fpu2_aux_data[31:16], gpr_read_a_data} :
+         fpu2_subop == 6'h03 ? {gpr_read_a_data, fpu2_aux_data[15:0]} :
+         fpu2_subop == 6'h06 ? {gpr_read_a_data, 16'b0} :
+                               {data_read_data, fpu2_low}) :
+        {data_read_data, fpu2_low};
+wire [8:0] fpu2_ext_read_address =
+    state == ST_FPU2_AUX_READ ? {3'b000, fpu2_aux_read_reg} :
+                                {3'b000, fpu2_fa} + {6'b0, fpu2_ext_read_index};
 
 CpuV3Fpu u_fpu (
     .clk(clk),
@@ -367,8 +394,8 @@ CpuV3Fpu u_fpu (
     .ext_access(fpu2_ext_access),
     .ext_write_enable(fpu2_ext_write_enable),
     .ext_write_address({3'b000, fpu2_fd} + {6'b0, fpu2_beat_index}),
-    .ext_write_data({data_read_data, fpu2_low}),
-    .ext_read_address({3'b000, fpu2_fa} + {6'b0, fpu2_ext_read_index}),
+    .ext_write_data(fpu2_ext_write_data),
+    .ext_read_address(fpu2_ext_read_address),
     .ext_read_data(fpu2_ext_read_data)
 );
 
@@ -1030,7 +1057,14 @@ always @(posedge clk) begin
                         fpu2_address <= {data_segment_register,
                                          gpr_read_a_data};
                         fpu2_beat <= 0;
-                        state <= ST_FPU2_EXEC;
+                        // AUX kind-00 integer bridges take the core-driven
+                        // GPR <-> F path; every other opcode uses the unit's
+                        // scalar/vector/dot/special paths.
+                        state <= (instruction[15:12] == 4'he &&
+                                  fpu2_word0[1:0] == 2'b00 &&
+                                  instruction_data[9:4] >= 6'h02 &&
+                                  instruction_data[9:4] <= 6'h07) ?
+                                 ST_FPU2_AUX_READ : ST_FPU2_EXEC;
                     end
                 end
             end
@@ -1051,9 +1085,59 @@ always @(posedge clk) begin
                                                    ST_FPU2_MEM_REQUEST;
                     end
                 end else if (fpu2_seen_complete && !fpu2_busy) begin
+                    // A scalar CMP publishes its signed Q16.16 ordering into
+                    // the pending test; the following branch/move consumes it.
+                    if (fpu2_scalar_cmp) begin
+                        pending_test_valid <= 1;
+                        pending_test_result <= fpu2_flag_lt ? TEST_LESS :
+                                               fpu2_flag_eq ? TEST_EQUAL : TEST_GREATER;
+                    end
                     retired_words <= retired_words + 2;
                     state <= ST_FETCH_REQUEST;
                 end
+            end
+            ST_FPU2_AUX_READ: begin
+                // The source F register was addressed through the ext read port
+                // this cycle; the synchronous RF data lands next cycle. Hold
+                // the address until the unit finishes the pair, then latch the
+                // value for the apply state.
+                if (fpu2_instr_complete)
+                    fpu2_seen_complete <= 1;
+                if (fpu2_seen_complete) begin
+                    fpu2_aux_data <= fpu2_ext_read_data;
+                    state <= ST_FPU2_AUX_APPLY;
+                end
+            end
+            ST_FPU2_AUX_APPLY: begin
+                // F writes were driven combinationally through the ext write
+                // port this cycle; the GPR-writing bridges stage their result
+                // through the normal synchronous GPR write.
+                case (fpu2_subop)
+                    6'h04: begin
+                        gpr_write_enable <= 1;
+                        gpr_write_address <= fpu2_word0[11:8];
+                        gpr_write_data <= fpu2_aux_data[15:0];
+                    end
+                    6'h05: begin
+                        gpr_write_enable <= 1;
+                        gpr_write_address <= fpu2_word0[11:8];
+                        gpr_write_data <= fpu2_aux_data[31:16];
+                    end
+                    6'h07: begin
+                        // FTOI16: truncate toward zero, then take the high
+                        // half. Adding 0x10000 for a negative fraction makes
+                        // the arithmetic high half the ceiling.
+                        gpr_write_enable <= 1;
+                        gpr_write_address <= fpu2_word0[11:8];
+                        gpr_write_data <= (fpu2_aux_data +
+                            (fpu2_aux_data[31] &&
+                             fpu2_aux_data[15:0] != 16'b0 ? 32'h0001_0000 : 32'h0))
+                            >> 16;
+                    end
+                    default: ;
+                endcase
+                retired_words <= retired_words + 2;
+                state <= ST_FETCH_REQUEST;
             end
             ST_FPU2_CAPTURE: begin
                 // The F value indexed by `fpu2_beat` was requested through the

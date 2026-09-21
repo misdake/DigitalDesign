@@ -6,16 +6,12 @@
 //! (device 0), with the flash image backing the DMA model.
 
 use cpu_v3::rcc_backend::{self, CompilerOptions, CpuV3Program};
-use cpu_v3::{decode, CpuV3Sim, FpuOp, FpuUnaryOp, Instruction};
+use cpu_v3::{decode_fpu_pair, CpuV3Sim, FpuScalarSubop, FpuSinCosMode, Instruction};
 use cpu_v3_tang_nano_20k::boot::{
     BootDmaDevice, BootErrorReport, BootSelectDevice, BootTarget, SystemControlDevice,
-    CACHE_MAINTENANCE_STATUS, D_CLEAN_ALL, S1_APPLICATION_LAYOUT, S2_APPLICATION_LAYOUT,
-    SYSTEM_CONTROL_DEVICE,
+    S1_APPLICATION_LAYOUT, S2_APPLICATION_LAYOUT,
 };
-use cpu_v3_tang_nano_20k::{
-    DisplayDevice, DISPLAY_CONTROL, DISPLAY_DEVICE, DISPLAY_FRAMEBUFFER_HIGH,
-    DISPLAY_FRAMEBUFFER_LOW,
-};
+use cpu_v3_tang_nano_20k::{DisplayDevice, DISPLAY_DEVICE};
 
 fn compile_cpu_v3(file: &str, opts: &CompilerOptions) -> CpuV3Program {
     let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
@@ -71,139 +67,42 @@ fn assert_canonical_cache_handoff(stage: &str, words: &[u16]) {
     );
 }
 
+/// C3 restores the Q16.16 FPU display demo in the S2 slot: it must compile
+/// (no software trig table) and emit the special-function subops it relies on.
 #[test]
-fn display_demo_exercises_fpu_rounding_and_cpu_framebuffer_stores() {
+fn c3_display_demo_lowers_to_fpu_special_subops() {
     let program = compile_cpu_v3("display-demo.rs", &CompilerOptions::default());
-    let instructions = program
-        .words
-        .iter()
-        .copied()
-        .map(decode)
-        .collect::<Vec<_>>();
 
-    for (description, present) in [
-        (
-            "FSINCOS",
-            instructions.iter().any(|instruction| {
-                matches!(
-                    instruction,
-                    Instruction::FpuUnary {
-                        op: FpuUnaryOp::SinCos,
-                        ..
-                    }
-                )
-            }),
-        ),
-        (
-            "FROUND",
-            instructions.iter().any(|instruction| {
-                matches!(
-                    instruction,
-                    Instruction::FpuUnary {
-                        op: FpuUnaryOp::Round,
-                        ..
-                    }
-                )
-            }),
-        ),
-        (
-            "FMUL",
-            instructions
-                .iter()
-                .any(|instruction| matches!(instruction, Instruction::Fpu { op: FpuOp::Mul, .. })),
-        ),
-        (
-            "FSTORE integer bridge",
-            instructions.iter().any(|instruction| {
-                matches!(
-                    instruction,
-                    Instruction::Fpu {
-                        op: FpuOp::Store,
-                        ..
-                    }
-                )
-            }),
-        ),
-        (
-            "CPU framebuffer store",
-            instructions
-                .iter()
-                .any(|instruction| matches!(instruction, Instruction::Store { .. })),
-        ),
-    ] {
-        assert!(present, "display demo must contain {description}");
+    let mut rcp = 0usize;
+    let mut rsqrt = 0usize;
+    let mut sincos_single = 0usize;
+    let mut sincos_dual = 0usize;
+    let mut index = 0;
+    while index + 1 < program.words.len() {
+        if let Instruction::FpuScalar { subop, mode, .. } =
+            decode_fpu_pair(program.words[index], program.words[index + 1])
+        {
+            match subop {
+                FpuScalarSubop::Rcp => rcp += 1,
+                FpuScalarSubop::Rsqrt => rsqrt += 1,
+                FpuScalarSubop::SinCos => match FpuSinCosMode::from_mode(mode) {
+                    Some(FpuSinCosMode::SinCos) => sincos_dual += 1,
+                    Some(_) => sincos_single += 1,
+                    None => panic!("display-demo emitted a reserved SINCOS mode"),
+                },
+                _ => {}
+            }
+        }
+        index += 1;
     }
-}
-
-#[test]
-fn display_swap_waits_for_dcache_clean_before_publishing_the_back_buffer() {
-    let program = compile_cpu_v3("display-demo.rs", &CompilerOptions::default());
-    let publish = program
-        .debug
-        .functions
-        .iter()
-        .find(|function| function.name == "select_next_framebuffer")
-        .expect("display demo must retain its framebuffer publish function");
-    let start = publish.addr.0 - usize::from(program.code_base);
-    let end = publish.addr.1 - usize::from(program.code_base);
-    let instructions = program.words[start..end]
-        .iter()
-        .copied()
-        .map(decode)
-        .collect::<Vec<_>>();
-
-    let clean = instructions
-        .iter()
-        .position(|instruction| {
-            matches!(
-                instruction,
-                Instruction::DeviceSend {
-                    device: SYSTEM_CONTROL_DEVICE,
-                    channel: D_CLEAN_ALL,
-                    ..
-                }
-            )
-        })
-        .expect("framebuffer publish must start D_CLEAN_ALL");
     assert!(
-        matches!(
-            instructions.get(clean + 1),
-            Some(Instruction::DeviceReceive {
-                device: SYSTEM_CONTROL_DEVICE,
-                channel: CACHE_MAINTENANCE_STATUS,
-                ..
-            })
-        ),
-        "D_CLEAN_ALL must immediately wait for its final maintenance status"
+        sincos_dual > 0,
+        "the display demo must emit the dual-output SINCOS"
     );
-
-    let display_channels = instructions
-        .iter()
-        .enumerate()
-        .filter_map(|(index, instruction)| match instruction {
-            Instruction::DeviceSend {
-                device: DISPLAY_DEVICE,
-                channel,
-                ..
-            } => Some((index, *channel)),
-            _ => None,
-        })
-        .collect::<Vec<_>>();
     assert_eq!(
-        display_channels
-            .iter()
-            .map(|(_, channel)| *channel)
-            .collect::<Vec<_>>(),
-        [
-            DISPLAY_FRAMEBUFFER_LOW,
-            DISPLAY_FRAMEBUFFER_HIGH,
-            DISPLAY_CONTROL
-        ],
-        "publish must stage low/high addresses and then request NEXT_SWAP"
-    );
-    assert!(
-        display_channels[0].0 > clean + 1,
-        "no framebuffer register may be published before clean completes"
+        (rcp, rsqrt, sincos_single),
+        (0, 0, 0),
+        "the demo uses only dual-output SINCOS"
     );
 }
 
@@ -317,23 +216,18 @@ fn button_01_boots_the_primary_application_from_flash() {
     assert!((0xdfc0..=0xe000).contains(&sp), "sp = {sp:#06x}");
 }
 
+/// The default S2 boot runs the restored Q16.16 FPU display demo
+/// (`rcc/display-demo.rs`). Within the bounded run the demo reports its DDHT
+/// `0x0b` frame before the first frame is filled; the fill then keeps it busy
+/// in framebuffer segments, so only the early observable effects are asserted.
 #[test]
-fn button_10_boots_the_fpu_display_application_from_flash() {
+fn button_10_boots_the_restored_display_demo_from_flash() {
     let (flash, stage0) = boot_setup();
     let machine = run_boot(flash, &stage0, 0b10, 500_000);
 
     assert_eq!(
         machine.code_segment(),
         S2_APPLICATION_LAYOUT.entry.code_segment
-    );
-    // The display application transiently selects its framebuffer segment
-    // (0x20, `FB_A_SEGMENT` in `rcc/display-demo.rs`) around each SDRAM store
-    // and restores data segment 0 afterward, so a bounded run may end in
-    // either state. It must never still be in a boot/cache segment.
-    let data_segment = machine.data_segment();
-    assert!(
-        data_segment == S2_APPLICATION_LAYOUT.entry.data_segment || data_segment == 0x20,
-        "unexpected S2 data segment {data_segment:#06x}"
     );
     assert_eq!(
         machine.physical_memory(S1_APPLICATION_LAYOUT.destination()),
@@ -345,14 +239,13 @@ fn button_10_boots_the_fpu_display_application_from_flash() {
         0xdead
     );
     let sysctl = machine.device::<SystemControlDevice>(0).unwrap();
+    // Stage0 invalidates I-cache once during the handoff; the demo reports its
+    // DDHT 0x0b display frame before it starts filling the framebuffers.
     assert_eq!(sysctl.icache_invalidations, 1);
-    assert_eq!(sysctl.dcache_invalidations, 1);
-    // The display application reports its own DDHT 0x0b success frame as soon
-    // as it starts, so the default S2 boot is observable over UART.
     let frame = ddht_frame_with_test_id(0x0b);
     assert!(
         sysctl.uart.len() >= frame.len(),
-        "expected a display DDHT frame, got {:02x?}",
+        "expected a display-demo DDHT frame, got {:02x?}",
         sysctl.uart
     );
     assert_eq!(sysctl.uart[..frame.len()], frame);

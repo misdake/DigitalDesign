@@ -764,20 +764,6 @@ fn emit_inst(
                 "mtsr_dseg/jseg are CpuV3-only intrinsics; the v2.6 ISA has no segment registers"
             )
         }
-        Instr::FBin { .. }
-        | Instr::FMov { .. }
-        | Instr::FLoad { .. }
-        | Instr::FStore { .. }
-        | Instr::FImport4 { .. }
-        | Instr::FExport4 { .. }
-        | Instr::FUnary { .. }
-        | Instr::FDot4Acc { .. }
-        | Instr::FAccStore { .. }
-        | Instr::FAccLoad { .. }
-        | Instr::FZero { .. }
-        | Instr::AddrOfFpuSpill { .. } => {
-            panic!("FPU instructions are CpuV3-only; the v2.6 ISA has no FPU")
-        }
         Instr::LoadSp { dst, slot } => {
             let (hi, lo) = hi_lo(local_base + n_locals + *slot);
             lines.push(MachineLine::Inst(load_sp(hi, lo, reg(*dst)), ir_line));
@@ -805,6 +791,33 @@ fn emit_inst(
                     ir_line,
                 ));
             }
+        }
+        // The FPU v2 scalar file is CpuV3-only. The v2 driver never builds
+        // these instructions (an FPU value is rejected before codegen on a
+        // target without `RegisterConvention::fpu`), so reaching one is a bug.
+        Instr::FpuBin { .. }
+        | Instr::FpuUn { .. }
+        | Instr::FpuSpecial { .. }
+        | Instr::FpuMov { .. }
+        | Instr::FpuFromInt { .. }
+        | Instr::FpuToInt { .. }
+        | Instr::FpuFromLo { .. }
+        | Instr::FpuFromHi { .. }
+        | Instr::FpuToLo { .. }
+        | Instr::FpuToHi { .. }
+        | Instr::FpuLoad { .. }
+        | Instr::FpuStore { .. }
+        | Instr::FpuVecBin { .. }
+        | Instr::FpuVecMulS { .. }
+        | Instr::FpuVecUn { .. }
+        | Instr::FpuVecMove { .. }
+        | Instr::FpuVecConstruct { .. }
+        | Instr::FpuVecLane { .. }
+        | Instr::FpuDotStore { .. }
+        | Instr::FpuVecLoad { .. }
+        | Instr::FpuVecStore { .. }
+        | Instr::AddrOfFpuSpill { .. } => {
+            unreachable!("FPU v2 instructions are CpuV3-only")
         }
     }
 }

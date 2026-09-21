@@ -63,19 +63,24 @@ are additional when neither the queue, BTC nor bypass can supply the word.
 | Control state | 16-bit PC, CSEG, DSEG, one PFX12 prefix, one transient three-way comparison | One instruction decoded; no speculative state |
 | Integer ALU | 16-bit add/sub/logic/shift/compare plus CLZ and popcount | One non-multiply integer result |
 | Integer multiplier | One registered signed 18 x 18 `MULT18X18` lane | Accepts an input each cycle, but the blocking core uses one operation at a time |
-| FPR file | 16 registers x 4 signed Q8.8 lanes; 16 x 64-bit vectors, two registered-address asynchronous reads and one synchronous write with per-lane write enables | Read two whole vectors; commit one lane or one whole vector per cycle |
-| FPU lane ALU | One 17-bit saturating add/sub or one simple unary lane fed from the wide reads | Captures lane zero at dispatch, then writes one registered result and captures the next lane every cycle |
-| FPU multiplier | One registered signed 18 x 18 `MULT18X18` lane | Primitive initiation interval is one cycle and latency is two cycles; four lane tags stream through a two-entry valid pipeline |
-| FPU ROM | One explicitly instantiated true-dual-port synchronous 1024 x 16-bit DPB: 256 words packing 512 8-bit sine samples, 256 reciprocal words, and 512 reciprocal-square-root words | Two independent lookup addresses and registered results per cycle |
-| Unary front/back end | One priority encoder, one registered 17-bit normalized mantissa, and one shared rounded variable shifter | Domain/exponent, normalization, index adjustment, and result scaling use separate short phases |
-| ACC | Signed saturating 40-bit accumulator | One in-order product accumulation per cycle while the DOT pipeline drains |
-| Transfer buffer | Four 16-bit import/gather words, one 64-bit export/scatter snapshot, and four 64-bit transpose row registers | Makes imports and overlapping rearrangements snapshot-clean |
+| FPU front-end | Two-word instruction latch: word0 exposes `Fa`/`Fb` (or AUX `X`/`Fa`) and drives the RF read addresses immediately; word1 carries `Fd`/subop/len/mode | One `instr_complete` pulse per pair; FPU instructions are fetch barriers and never consume `PFX12` |
+| FPR file | Two mirrored 512 x 32 SDPB BSRAMs giving 2R1W; architectural `F0..F63` are addresses `0..63`, the hidden LUT region is `64..511` (mirror A: RCP and SINCOS; mirror B: RSQRT even/odd) | Two registered-address synchronous reads and one broadcast write per cycle; a same-cycle write/read returns the old word on both ports |
+| FPU scalar/vector ALU | One combinational 32-bit Q16.16 ALU (add/sub/min/max/abs/neg/floor/ceil/round/trunc, all wrapping) shared lane-serially by the scalar and vector paths | One lane per cycle; the vector path sequences 2/3/4 consecutive lanes |
+| FPU multiplier | One shared inferred 36 x 36 pipe (four 18 x 18 lanes), three stages, II = 1, with a 9-bit destination tag | The multiply, dot and SINCOS range-reduction owners time-share it; the core serializes FPU instructions |
+| ACC | Signed 64-bit Q32.32 accumulator | One exact product enters per cycle; accumulation wraps modulo 2^64, and `DOTSTORE` narrows `ACC[47:16]` once |
+| Special path | Blocking RCP/RSQRT/SINCOS controller over the hidden BSRAM tables, one local inferred 18 x 18 interpolation lane, and the shared pipe for SINCOS range reduction | RCP/RSQRT `T0..T3`; SINCOS `T0..T7` dual, `T0..T6` single; owns both RF read ports while active |
 
 The integer `ASR`/`ASRI` instructions shift `signed(rd)` arithmetically. The RTL computes the
 shift result in a statement-based `case` and the FSM selects it; it never places `>>>` inside a
 conditional expression, because Verilog makes `?:` unsigned when any branch is unsigned and would
-silently turn the arithmetic shift into a logical one. `fix16::to_int()` compiles to `FSTORE`
-followed by `ASRI 8`, so every negative fix16 conversion depends on this rule.
+silently turn the arithmetic shift into a logical one. `FTOI16` and every other signed FPU result
+depend on the same rule for any arithmetic shift in their datapath.
+
+The AUX kind-00 integer bridges (`ILO2F`/`IHI2F`/`I16TOF`/`FLO2I`/`FHI2I`/`FTOI16`) are performed
+by the core through the unit's external F read/write ports, since only the core can reach the GPR
+file. A scalar `CMP` publishes its registered `flag_lt`/`flag_eq`/`flag_gt` into the core's
+transient pending test when the pair retires, so a following conditional branch or conditional
+move consumes it exactly like `CMPS`/`CMPU`.
 
 The optional fitted system places separate 4 KiB instruction and data caches
 around the core. Each cache is two-way set-associative with 64 sets and 16 words per line.
@@ -120,38 +125,39 @@ handoff resolves deterministically.
 | Integer `LOAD`, minimum | 3 | `Execute -> DataRequest -> DataResponse` |
 | Integer `STORE` with an empty async buffer | 1 to retire | The buffered data request/response continues in the background; a later memory operation waits for it |
 
-## FPU instruction latency
+## FPU v2 scheduling and latency
 
-The `FPU phases` column begins after the generic `Execute` cycle dispatches
-opcode D. `Execute-to-retire` includes that generic dispatch cycle. Memory
-latencies assume every request and response phase advances immediately.
+FPU v2 has no scoreboard, forwarding, or dependency comparison. Each operation
+belongs to a fixed timing profile, and the core starts the next FPU instruction
+only when the current instruction's `R_WAIT`, `W_WAIT`, and required `X_WAIT`
+countdowns have all reached zero. The two-word front-end is a fetch barrier:
+word0 is accepted in `Execute`, word1 through the normal instruction port, and
+the pair retires as two words.
 
-| Operations | FPU phases | Execute-to-retire cycles | Current work per phase |
-|---|---:|---:|---|
-| `FSTORE`, `FACCSTORE`, `FCMP`, `FACCLOAD.*` | 2 | 3 | Execute operation, then commit/retire; for `FACCSTORE`, the mask-selected synchronous FPR writes land on the retirement edge |
-| `FLOAD` | 2 | 3 | One wide vector write (`x`, zero `yzw`) at dispatch, then commit |
-| `FMOV` | 2 | 3 | One wide vector copy at dispatch, then commit |
-| `FADD`, `FSUB` | 6 | 7 | Capture lane zero at dispatch; four overlapped result-write/next-lane-capture phases; commit |
-| `FABS`, `FNEG`, `FFLOOR`, `FCEIL`, `FROUND`, `FSAT01`, `FSIGN`, `FZERO` | 6 | 7 | Same one-lane-per-cycle schedule as vector add |
-| `FMUL`, `FDOT4ACC` | 7 | 8 | Issue four consecutive tagged DSP inputs off the wide reads, drain the two-cycle DSP pipeline in order, then commit |
-| `FPACK4` | 5 | 6 | Dispatch latches the first lane-x, two dual-port snapshot reads, one wide write, commit |
-| `FUNPACK4` | 6 | 7 | Dispatch snapshots the source vector, four wide writes, commit |
-| `FTRANSPOSE4` | 8 | 9 | Dispatch latches row zero, two dual-port row reads, four wide transposed writes, commit |
-| `FRCP`, `FRSQRT` | 9 | 10 | Dispatch, registered domain/exponent, registered normalization, address, ROM lookup/wait, registered scale, write, commit |
-| `FSINCOS` | 9 | 10 | Dispatch, angle multiply triplet, one parallel dual-port ROM lookup triplet, one wide result write, commit |
-| `FIMPORT4`, minimum | 10 | 11 | Dispatch, four request/response pairs, one wide destination write, commit |
-| `FEXPORT4`, minimum | 9 | 10 | Dispatch snapshots the source vector and streams four request/response pairs; the final response retires directly |
+- Scalar ALU, vector ALU, `VMUL`/`VMULS` and `MOV` run one lane per cycle; the
+  vector read window is `T0..T(last_lane)` and the writes trail by two beats.
+- The shared 36 x 36 pipe has latency 3 and II = 1, so `VMUL`/`VMULS`/scalar
+  `MUL` write back three beats after the lane's operands are captured. Its
+  return-valid signal is not path ownership: the multiply and dot sequencers
+  retain ownership through their own outstanding counters until every issued
+  product has returned, which keeps the shared operand mux on the issuer.
+- `DOT`/`DOTADD`/`DOTSTORE` accumulate the complete signed product of every
+  lane into the 64-bit Q32.32 ACC with no per-lane narrowing; `DOTSTORE`
+  narrows once and clears ACC.
+- RCP/RSQRT are blocking `T0..T3`; SINCOS is `T0..T7` for the dual
+  `sin`/`cos` output and `T0..T6` for a single output. The special path
+  monopolizes both RF read ports while active and reuses the shared pipe for
+  its one SINCOS range-reduction product.
+- `FLD`/`FST` and their vector forms reuse the core data port with its existing
+  variable-latency handshake; loads stay blocking until the destination
+  registers are written, while stores drain through the core's early-release
+  store buffer after the source values are captured.
 
-`FSINCOS` reduces its signed Q8.8 radian input to 2048 phase steps with the
-18-bit DSP multiplier and the `83443 / 65536` approximation of `4/pi`. Its
-512-sample quarter wave packs two unsigned 8-bit
-Q8.8 magnitudes into each 16-bit ROM word; indices 492 through 512 reconstruct
-the saturated magnitude 256 without storing a ninth bit. This doubles the
-previous phase resolution without enlarging the sine region. An explicit DPB
-primitive keeps the initialized table in one physical BSRAM while its two ports
-read sine and cosine in parallel. Exhaustive comparison over all 65,536
-inputs bounds each result to one Q8.8 LSB from the rounded host `sin`/`cos`
-reference; the worst continuous-component error is below one Q8.8 LSB.
+The hidden BSRAM tables are generated from one Rust reference model in the
+architecture crate (`fpu_lut`), which also backs the architectural emulator and
+the host error test, so the emulator and the initialized RTL cannot disagree.
+RCP/RSQRT are measured at 1.38/1.47 result-ulp and SINCOS at 3 LSB over the
+whole `i32` input range, inside the frozen 2/2/4-ulp targets.
 
 ## Current fitted-system result
 
@@ -162,7 +168,7 @@ which owns them and is where they are updated; they are deliberately not repeate
 here.
 
 What that fit says about the CPU itself: the tightest CPU-clock path is the
-core's registered GPR write, not the packed sine lookup or the cache frontend,
+core's registered GPR write, not the hidden special-function lookup or the cache frontend,
 and the D-cache dirty write enable is the second tightest class, which is why the
 maintenance scan reads the whole-word bitmap instead of moving it into an
 addressed RAM leaf.
@@ -228,7 +234,13 @@ shifter, saturation into the result register), with the integer
 register-to-register writeback path close behind at roughly a 66-68 MHz
 equivalent delay.
 
-## Implemented lane pipeline
+## Revision 0.7 fix16 lane pipeline (historical)
+
+> This section and the two below describe the **retired** blocking Q8.8 FPU
+> pipeline (`FLOAD`/`FMOV`/`FPACK4`/`FUNARY`, 16-bit-vector FPR, 40-bit
+> saturating ACC, continuation `k`). The current two-word Q16.16 FPU v2 is
+> described in [FPU v2 scheduling and latency](#fpu-v2-scheduling-and-latency).
+> The numbers are kept only as timing history.
 
 The add/simple-unary loop overlaps these independent operations:
 
@@ -255,10 +267,10 @@ product stream through the 40-bit saturating ACC feedback path.
 | add/sub/simple unary | 10 | 6 |
 | multiply/multiply-scalar/dot | 14 | 7 |
 
-## Wide vector register file
+## Revision 0.7 wide vector register file (historical)
 
-The FPR reorganized from 64 lane words to sixteen 64-bit vectors with per-lane
-write enables. Both asynchronous read ports return a whole vec4, so pure
+The revision-0.7 FPR reorganized from 64 lane words to sixteen 64-bit vectors
+with per-lane write enables. Both asynchronous read ports return a whole vec4, so pure
 data-movement instructions no longer serialize lanes through the single ALU
 port schedule: `FMOV`/`FLOAD` commit one wide write at dispatch, `FPACK4`
 reads two source vectors per cycle through both ports, `FUNPACK4` and

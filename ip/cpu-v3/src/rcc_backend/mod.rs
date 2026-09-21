@@ -10,7 +10,10 @@ mod options;
 pub use options::CompilerOptions;
 
 use crate as cpu_v3;
-use crate::{AluOp, FpuOp, FpuUnaryOp, ImmediateOp, SpecialRegister, TestCondition, Word};
+use crate::{
+    AluOp, FpuAuxKind, FpuAuxSubop, FpuScalarSubop, FpuSinCosMode, FpuVectorLength, FpuVectorSubop,
+    ImmediateOp, SpecialRegister, TestCondition, Word,
+};
 use crate::{CACHE_MAINTENANCE_DEVICE, D_INVALIDATE_ALL, ICACHE_INVALIDATE_ALL_DELAYED};
 use rcc::*;
 use std::collections::{HashMap, HashSet};
@@ -18,8 +21,22 @@ use std::collections::{HashMap, HashSet};
 const REG_TMP: u8 = 12;
 const REG_SP: u8 = 13;
 const REG_LINK: u8 = 14;
-/// reserved FPU register for breaking parallel-move cycles (never allocated)
-const FPU_SCRATCH: u8 = 15;
+/// Reserved FPU register for breaking parallel-move cycles (never allocated).
+/// The FPU v2 convention reserves `F63` as the parallel-move scratch.
+const FPU_SCRATCH: u8 = 63;
+
+/// FPU v2 argument registers: `F4..F27`, i.e. six `vec4` values placed
+/// compactly after the `F0..F3` return area (design `fpu-design-v2` todo C0).
+const FPU_ARGUMENT_REGISTERS: &[u8] = &[
+    4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27,
+];
+
+/// FPU v2 ordinary allocation area: `F28..F62`. `F0..F3` are reserved for
+/// returns, `F4..F27` for arguments, and `F63` for parallel-move cycles.
+const FPU_ALLOCATABLE_REGISTERS: &[u8] = &[
+    28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 43, 44, 45, 46, 47, 48, 49, 50, 51,
+    52, 53, 54, 55, 56, 57, 58, 59, 60, 61, 62,
+];
 
 const CPU_V3_REGISTER_CONVENTION: rcc::RegisterConvention = rcc::RegisterConvention {
     return_registers: &[0, 1],
@@ -31,13 +48,15 @@ const CPU_V3_REGISTER_CONVENTION: rcc::RegisterConvention = rcc::RegisterConvent
     stack_register: REG_SP,
     temporary_register: REG_TMP,
     maximum_frame_words: 255,
-    // FPU ABI: f0-f1 returns, f2-f7 arguments, f8-f14 allocatable; all FPU
-    // registers are caller-saved. f15 is reserved to break parallel-move
-    // cycles between FPU registers.
+    // FPU v2 ABI (Q16.16, contiguous scalar ranges): F0..F3 returns, F4..F27
+    // arguments placed compactly, F28..F62 ordinary allocation, F63 the
+    // parallel-move scratch. All FPU registers are caller-saved and ACC is
+    // caller-clobbered. C0 freezes this layout; range-aware allocation for
+    // vec2/vec3/vec4 values lands with C2.
     fpu: Some(rcc::FpuRegisterConvention {
-        return_registers: &[0, 1],
-        argument_registers: &[2, 3, 4, 5, 6, 7],
-        allocatable_registers: &[8, 9, 10, 11, 12, 13, 14],
+        return_registers: &[0, 1, 2, 3],
+        argument_registers: FPU_ARGUMENT_REGISTERS,
+        allocatable_registers: FPU_ALLOCATABLE_REGISTERS,
         scratch_register: FPU_SCRATCH,
     }),
 };
@@ -348,20 +367,17 @@ fn lower_function(
                         .find(|(pred, _)| *pred == predecessor)
                         .expect("missing phi predecessor")
                         .1;
-                    (
-                        register(value),
-                        register(phi.dst),
-                        function.class_of(phi.dst),
-                    )
+                    (value, phi.dst)
                 })
                 .collect::<Vec<_>>();
             lines.set_line(None);
-            emit_parallel_moves(&mut lines, &moves);
+            emit_phi_moves(function, &moves, &register, &mut lines);
         }
 
         for (index, instruction) in block.insts.iter().enumerate() {
             lines.set_line(block.lines.get(index).copied().flatten());
             lower_instruction(
+                function,
                 instruction,
                 &register,
                 allocation,
@@ -452,6 +468,7 @@ fn lower_function(
 }
 
 fn lower_instruction(
+    function: &IrFunc,
     instruction: &Instr,
     register: &dyn Fn(VReg) -> u8,
     allocation: &Allocation,
@@ -589,7 +606,7 @@ fn lower_instruction(
             };
             lines.word(cpu_v3::read_special(register(*dst), sr));
         }
-        Instr::Bool { dst, cmp } => lower_bool(register(*dst), cmp, register, lines),
+        Instr::Bool { dst, cmp } => lower_bool(register(*dst), cmp, function, register, lines),
         Instr::CMov { dst, cmp, src } => {
             lower_compare(lines, cmp, register);
             let condition = test_condition(cmp.cond);
@@ -684,102 +701,123 @@ fn lower_instruction(
                 true,
             );
         }
-        Instr::FBin { dst, op, lhs, rhs } => {
-            // FPU arithmetic is destructive two-address (`Fa op= Fb`) while the
-            // interval model allows dst to share a register with a last-use
-            // operand. When dst == rhs, the copy dst = lhs would clobber rhs
-            // before the operation reads it, so swap the operands (FADD/FMUL
-            // are commutative) or route rhs through FPU_SCRATCH (FSUB).
-            let dst = register(*dst);
-            let lhs = register(*lhs);
-            let rhs = register(*rhs);
-            let fpu_op = match op {
-                FBinOp::Add => FpuOp::Add,
-                FBinOp::Sub => FpuOp::Sub,
-                FBinOp::Mul => FpuOp::Mul,
+        Instr::FpuBin { dst, op, lhs, rhs } => {
+            let subop = match op {
+                FpuBinOp::Add => FpuScalarSubop::Add,
+                FpuBinOp::Sub => FpuScalarSubop::Sub,
+                FpuBinOp::Mul => FpuScalarSubop::Mul,
             };
-            if dst == rhs && dst != lhs {
-                match op {
-                    FBinOp::Add | FBinOp::Mul => {
-                        lines.word(cpu_v3::fpu(fpu_op, dst, lhs));
-                    }
-                    FBinOp::Sub => {
-                        lines.word(cpu_v3::fpu(FpuOp::Move, FPU_SCRATCH, rhs));
-                        lines.word(cpu_v3::fpu(FpuOp::Move, dst, lhs));
-                        lines.word(cpu_v3::fpu(fpu_op, dst, FPU_SCRATCH));
-                    }
-                }
-            } else {
-                if dst != lhs {
-                    lines.word(cpu_v3::fpu(FpuOp::Move, dst, lhs));
-                }
-                lines.word(cpu_v3::fpu(fpu_op, dst, rhs));
-            }
+            emit_fpu_scalar(
+                lines,
+                register(*lhs),
+                register(*rhs),
+                register(*dst),
+                subop,
+                0,
+            );
         }
-        Instr::FMov { dst, src } => {
-            let dst = register(*dst);
-            let src = register(*src);
-            if dst != src {
-                lines.word(cpu_v3::fpu(FpuOp::Move, dst, src));
-            }
+        Instr::FpuUn { dst, op, src } => {
+            let subop = match op {
+                FpuUnOp::Abs => FpuScalarSubop::Abs,
+                FpuUnOp::Neg => FpuScalarSubop::Neg,
+                FpuUnOp::Floor => FpuScalarSubop::Floor,
+                FpuUnOp::Ceil => FpuScalarSubop::Ceil,
+                FpuUnOp::Round => FpuScalarSubop::Round,
+                FpuUnOp::Trunc => FpuScalarSubop::Trunc,
+            };
+            emit_fpu_scalar(lines, register(*src), 0, register(*dst), subop, 0);
         }
-        Instr::FLoad { dst, src_gpr } => {
-            lines.word(cpu_v3::fpu(FpuOp::Load, register(*dst), register(*src_gpr)))
+        Instr::FpuSpecial { dst, op, src } => {
+            let (subop, mode) = match op {
+                FpuSpecialOp::Rcp => (FpuScalarSubop::Rcp, 0),
+                FpuSpecialOp::Rsqrt => (FpuScalarSubop::Rsqrt, 0),
+                FpuSpecialOp::Sin => (FpuScalarSubop::SinCos, FpuSinCosMode::Sin as u8),
+                FpuSpecialOp::Cos => (FpuScalarSubop::SinCos, FpuSinCosMode::Cos as u8),
+                FpuSpecialOp::SinCos => (FpuScalarSubop::SinCos, FpuSinCosMode::SinCos as u8),
+            };
+            emit_fpu_scalar(lines, register(*src), 0, register(*dst), subop, mode);
         }
-        Instr::FStore { dst_gpr, src } => lines.word(cpu_v3::fpu(
-            FpuOp::Store,
-            register(*dst_gpr),
-            register(*src),
-        )),
-        Instr::FImport4 { dst, base_gpr } => lines.word(cpu_v3::fpu(
-            FpuOp::Import4,
-            register(*dst),
-            register(*base_gpr),
-        )),
-        Instr::FExport4 { src, base_gpr } => lines.word(cpu_v3::fpu(
-            FpuOp::Export4,
-            register(*src),
-            register(*base_gpr),
-        )),
-        Instr::FUnary { dst, op, src } => {
+        Instr::FpuMov { dst, src } => {
             let dst = register(*dst);
             let src = register(*src);
             if dst != src {
-                lines.word(cpu_v3::fpu(FpuOp::Move, dst, src));
+                emit_fpu_scalar(lines, src, 0, dst, FpuScalarSubop::Mov, 0);
             }
-            let unary_op = match op {
-                FUnOp::Rcp => FpuUnaryOp::Reciprocal,
-                FUnOp::Rsqrt => FpuUnaryOp::ReciprocalSqrt,
-                FUnOp::SinCos => FpuUnaryOp::SinCos,
-                FUnOp::Abs => FpuUnaryOp::Abs,
-                FUnOp::Neg => FpuUnaryOp::Neg,
-                FUnOp::Floor => FpuUnaryOp::Floor,
-                FUnOp::Ceil => FpuUnaryOp::Ceil,
-                FUnOp::Round => FpuUnaryOp::Round,
-                FUnOp::Sat01 => FpuUnaryOp::Saturate01,
-                FUnOp::Sign => FpuUnaryOp::Sign,
-            };
-            lines.word(cpu_v3::fpu_unary(dst, unary_op));
         }
-        Instr::FDot4Acc { lhs, rhs } => {
-            lines.word(cpu_v3::fpu(FpuOp::Dot4Acc, register(*lhs), register(*rhs)))
+        Instr::FpuFromInt { dst, src_gpr } => {
+            emit_fpu_aux(
+                lines,
+                register(*src_gpr),
+                0,
+                register(*dst),
+                FpuAuxSubop::I16tof,
+            );
         }
-        Instr::FAccStore { dst, mask } => {
-            lines.word(cpu_v3::fpu(FpuOp::AccStore, register(*dst), *mask))
+        Instr::FpuToInt { dst_gpr, src } => {
+            emit_fpu_aux(
+                lines,
+                register(*dst_gpr),
+                register(*src),
+                0,
+                FpuAuxSubop::Ftoi16,
+            );
         }
-        Instr::FAccLoad { src, lane } => {
-            let op = match lane {
-                0 => FpuUnaryOp::AccLoadX,
-                1 => FpuUnaryOp::AccLoadY,
-                2 => FpuUnaryOp::AccLoadZ,
-                _ => FpuUnaryOp::AccLoadW,
-            };
-            lines.word(cpu_v3::fpu_unary(register(*src), op));
+        Instr::FpuFromLo { dst, src_gpr } => {
+            emit_fpu_aux(
+                lines,
+                register(*src_gpr),
+                0,
+                register(*dst),
+                FpuAuxSubop::Ilo2f,
+            );
         }
-        Instr::FZero { dst } => lines.word(cpu_v3::fpu_unary(register(*dst), FpuUnaryOp::Zero)),
+        Instr::FpuFromHi { dst, src, src_gpr } => {
+            let dst = register(*dst);
+            let src = register(*src);
+            // IHI2F reads and writes the same F register, so materialize the
+            // low half into dst first.
+            if dst != src {
+                emit_fpu_scalar(lines, src, 0, dst, FpuScalarSubop::Mov, 0);
+            }
+            emit_fpu_aux(lines, register(*src_gpr), 0, dst, FpuAuxSubop::Ihi2f);
+        }
+        Instr::FpuToLo { dst_gpr, src } => {
+            emit_fpu_aux(
+                lines,
+                register(*dst_gpr),
+                register(*src),
+                0,
+                FpuAuxSubop::Flo2i,
+            );
+        }
+        Instr::FpuToHi { dst_gpr, src } => {
+            emit_fpu_aux(
+                lines,
+                register(*dst_gpr),
+                register(*src),
+                0,
+                FpuAuxSubop::Fhi2i,
+            );
+        }
+        Instr::FpuLoad {
+            dst,
+            base_gpr,
+            offset,
+        } => {
+            let addr = emit_fpu_address(lines, register(*base_gpr), *offset);
+            emit_fpu_aux(lines, addr, 0, register(*dst), FpuAuxSubop::Fld);
+        }
+        Instr::FpuStore {
+            base_gpr,
+            offset,
+            src,
+        } => {
+            let addr = emit_fpu_address(lines, register(*base_gpr), *offset);
+            emit_fpu_aux(lines, addr, register(*src), 0, FpuAuxSubop::Fst);
+        }
         Instr::AddrOfFpuSpill { dst, slot } => {
-            // dst = align4(sp + fpu_area_offset) + 4 * slot; the alignment is
-            // computed at run time because nothing guarantees sp mod 4 == 0
+            // dst = align4(sp + fpu_area_offset) + 4 * slot; alignment is
+            // computed at run time because nothing guarantees sp mod 4 == 0.
             let dst = register(*dst);
             lines.word(cpu_v3::move_register(dst, REG_SP));
             emit_immediate(
@@ -795,7 +833,184 @@ fn lower_instruction(
                 emit_immediate(lines, ImmediateOp::Add, dst, 4 * u16::from(*slot), true);
             }
         }
+        Instr::FpuVecBin { dst, op, lhs, rhs } => {
+            let subop = match op {
+                FpuBinOp::Add => FpuVectorSubop::VAdd,
+                FpuBinOp::Sub => FpuVectorSubop::VSub,
+                FpuBinOp::Mul => FpuVectorSubop::VMul,
+            };
+            emit_fpu_vector(
+                lines,
+                register(*lhs),
+                register(*rhs),
+                register(*dst),
+                vector_length(function.lanes(*dst)),
+                subop,
+                0,
+            );
+        }
+        Instr::FpuVecMulS { dst, lhs, scalar } => emit_fpu_vector(
+            lines,
+            register(*lhs),
+            register(*scalar),
+            register(*dst),
+            vector_length(function.lanes(*dst)),
+            FpuVectorSubop::VMulS,
+            0,
+        ),
+        Instr::FpuVecUn { dst, op, src } => {
+            let subop = match op {
+                FpuUnOp::Abs => FpuVectorSubop::VAbs,
+                FpuUnOp::Neg => FpuVectorSubop::VNeg,
+                FpuUnOp::Floor => FpuVectorSubop::VFloor,
+                FpuUnOp::Ceil => FpuVectorSubop::VCeil,
+                FpuUnOp::Round => FpuVectorSubop::VRound,
+                FpuUnOp::Trunc => FpuVectorSubop::VTrunc,
+            };
+            emit_fpu_vector(
+                lines,
+                register(*src),
+                0,
+                register(*dst),
+                vector_length(function.lanes(*dst)),
+                subop,
+                0,
+            );
+        }
+        Instr::FpuVecMove { dst, src } => {
+            // cycle-safe parallel move: any source/destination overlap is
+            // handled with the reserved F63 scratch
+            let lanes = function.lanes(*dst);
+            assert_eq!(
+                lanes,
+                function.lanes(*src),
+                "FPU vector move width mismatch"
+            );
+            let from_base = register(*src);
+            let to_base = register(*dst);
+            let moves = (0..lanes)
+                .map(|lane| (from_base + lane, to_base + lane, RegClass::Fpu))
+                .collect::<Vec<_>>();
+            emit_parallel_moves(lines, &moves);
+        }
+        Instr::FpuVecConstruct { dst, lanes } => {
+            let to_base = register(*dst);
+            let moves = lanes
+                .iter()
+                .enumerate()
+                .map(|(lane, &value)| (register(value), to_base + lane as u8, RegClass::Fpu))
+                .collect::<Vec<_>>();
+            emit_parallel_moves(lines, &moves);
+        }
+        Instr::FpuVecLane { dst, src, lane } => {
+            let src_base = register(*src);
+            emit_fpu_scalar(
+                lines,
+                src_base + *lane,
+                0,
+                register(*dst),
+                FpuScalarSubop::Mov,
+                0,
+            );
+        }
+        Instr::FpuDotStore { dst, lhs, rhs } => emit_fpu_vector(
+            lines,
+            register(*lhs),
+            register(*rhs),
+            register(*dst),
+            vector_length(function.lanes(*lhs)),
+            FpuVectorSubop::DotStore,
+            0,
+        ),
+        Instr::FpuVecLoad {
+            dst,
+            base_gpr,
+            offset,
+        } => {
+            let addr = emit_fpu_address(lines, register(*base_gpr), *offset);
+            emit_fpu_aux_vec(
+                lines,
+                addr,
+                0,
+                register(*dst),
+                FpuAuxSubop::Fld,
+                function.lanes(*dst) - 1,
+            );
+        }
+        Instr::FpuVecStore {
+            base_gpr,
+            offset,
+            src,
+        } => {
+            let addr = emit_fpu_address(lines, register(*base_gpr), *offset);
+            emit_fpu_aux_vec(
+                lines,
+                addr,
+                register(*src),
+                0,
+                FpuAuxSubop::Fst,
+                function.lanes(*src) - 1,
+            );
+        }
     }
+}
+
+/// Maps a contiguous lane count (2/3/4) to the VECTOR length field.
+fn vector_length(lanes: u8) -> FpuVectorLength {
+    match lanes {
+        2 => FpuVectorLength::Vec2,
+        3 => FpuVectorLength::Vec3,
+        4 => FpuVectorLength::Vec4,
+        _ => unreachable!("FPU vector lane count {lanes} is not 2/3/4"),
+    }
+}
+
+/// Emits one two-word FPU VECTOR instruction.
+fn emit_fpu_vector(
+    lines: &mut Lines,
+    fa: u8,
+    fb: u8,
+    fd: u8,
+    len: FpuVectorLength,
+    subop: FpuVectorSubop,
+    mode: u8,
+) {
+    for word in cpu_v3::fpu_vector(fa, fb, fd, len, subop, mode) {
+        lines.word(word);
+    }
+}
+
+/// Emits one two-word FPU AUX FLD/FST vector instruction (`mode` is lanes-1).
+fn emit_fpu_aux_vec(lines: &mut Lines, x: u8, fa: u8, fd: u8, subop: FpuAuxSubop, mode: u8) {
+    for word in cpu_v3::fpu_aux(FpuAuxKind::IntegerRegister, x, fa, fd, subop, mode) {
+        lines.word(word);
+    }
+}
+
+/// Emits one two-word FPU SCALAR instruction. `mode` is zero for every subop
+/// except `SINCOS`, where it selects sin, cos, or the dual output.
+fn emit_fpu_scalar(lines: &mut Lines, fa: u8, fb: u8, fd: u8, subop: FpuScalarSubop, mode: u8) {
+    for word in cpu_v3::fpu_scalar(fa, fb, fd, subop, mode) {
+        lines.word(word);
+    }
+}
+
+/// Emits one two-word FPU AUX instruction (kind `00`, integer register X).
+fn emit_fpu_aux(lines: &mut Lines, x: u8, fa: u8, fd: u8, subop: FpuAuxSubop) {
+    for word in cpu_v3::fpu_aux(FpuAuxKind::IntegerRegister, x, fa, fd, subop, 0) {
+        lines.word(word);
+    }
+}
+
+/// Materializes `base + offset` into REG_TMP when an FPU load/store needs an
+/// address register; `base` itself is returned when the offset is zero.
+fn emit_fpu_address(lines: &mut Lines, base: u8, offset: i16) -> u8 {
+    if offset == 0 {
+        return base;
+    }
+    lines.word(cpu_v3::move_register(REG_TMP, base));
+    emit_immediate(lines, ImmediateOp::Add, REG_TMP, offset as u16, true);
+    REG_TMP
 }
 
 fn lower_unary(dst: u8, operation: UnOp, src: u8, lines: &mut Lines) {
@@ -937,11 +1152,31 @@ fn set_op(
     }
 }
 
-/// Lowers a Boolean-producing comparison (`dst = lhs cond rhs` as 0/1) to the
-/// destructive S* instructions; inverted conditions use an operand swap or a
-/// trailing XORI 1.
-fn lower_bool(dst: u8, cmp: &Cmp, register: &dyn Fn(VReg) -> u8, lines: &mut Lines) {
+/// Lowers a Boolean-producing comparison (`dst = lhs cond rhs` as 0/1). Integer
+/// comparisons use the destructive S* instructions (inverted conditions swap
+/// operands or append XORI 1); an FPU comparison sets the pending test with the
+/// scalar `CMP` and materializes 0/1 through one conditional move.
+fn lower_bool(
+    dst: u8,
+    cmp: &Cmp,
+    function: &IrFunc,
+    register: &dyn Fn(VReg) -> u8,
+    lines: &mut Lines,
+) {
     let lhs = register(cmp.lhs);
+    if function.class_of(cmp.lhs) == RegClass::Fpu {
+        // `CMP` sets the pending test and the following conditional move
+        // consumes it immediately, so the two constants are prepared first.
+        let CmpRhs::Reg(rhs) = cmp.rhs else {
+            unreachable!("FPU comparisons always have a register operand");
+        };
+        let condition = test_condition(cmp.cond);
+        emit_load_immediate(lines, REG_TMP, 1);
+        emit_load_immediate(lines, dst, 0);
+        emit_fpu_scalar(lines, lhs, register(rhs), 0, FpuScalarSubop::Cmp, 0);
+        lines.word(cpu_v3::conditional_move(condition, dst, REG_TMP));
+        return;
+    }
     let xor1 = |lines: &mut Lines| {
         lines.word(cpu_v3::immediate_unsigned(ImmediateOp::Xor, dst, 1));
     };
@@ -1033,13 +1268,13 @@ fn lower_comparison(
         }
     };
     if function.class_of(comparison.lhs) == RegClass::Fpu {
-        // FCMP sets the pending test from the signed lane-x ordering; the
-        // following B-family branch consumes it exactly like CMPS/CMPU, and
-        // nothing may be emitted between the compare and the branch
+        // The FPU scalar `CMP` sets the pending test from the signed Q16.16
+        // ordering; the following conditional branch consumes it exactly like
+        // CMPS/CMPU, and nothing may be emitted between the compare and branch.
         let CmpRhs::Reg(rhs) = comparison.rhs else {
             unreachable!("FPU comparisons always have a register operand");
         };
-        lines.word(cpu_v3::fpu(FpuOp::Compare, lhs, register(rhs)));
+        emit_fpu_scalar(lines, lhs, register(rhs), 0, FpuScalarSubop::Cmp, 0);
         return condition;
     }
     match comparison.rhs {
@@ -1075,10 +1310,10 @@ fn emit_self_compare(
 ) {
     let lhs = register(comparison.lhs);
     if function.class_of(comparison.lhs) == RegClass::Fpu {
-        lines.word(cpu_v3::fpu(FpuOp::Compare, lhs, lhs));
-    } else {
-        lines.word(cpu_v3::compare_signed(lhs, lhs));
+        emit_fpu_scalar(lines, lhs, lhs, 0, FpuScalarSubop::Cmp, 0);
+        return;
     }
+    lines.word(cpu_v3::compare_signed(lhs, lhs));
 }
 
 fn emit_edge_moves(
@@ -1102,14 +1337,41 @@ fn emit_edge_moves(
                 .find(|(pred, _)| *pred == predecessor)
                 .expect("missing phi edge")
                 .1;
-            (
-                register(value),
-                register(phi.dst),
-                function.class_of(phi.dst),
-            )
+            (value, phi.dst)
         })
         .collect::<Vec<_>>();
-    emit_parallel_moves(lines, &moves);
+    emit_phi_moves(function, &moves, register, lines);
+}
+
+/// Expands phi moves to per-lane register pairs and emits a cycle-safe
+/// parallel move. A multi-lane FPU value contributes one move per lane, so a
+/// cycle through any lane is broken with the reserved F63 scratch.
+fn emit_phi_moves(
+    function: &IrFunc,
+    moves: &[(VReg, VReg)],
+    register: &dyn Fn(VReg) -> u8,
+    lines: &mut Lines,
+) {
+    let mut expanded: Vec<(u8, u8, RegClass)> = Vec::new();
+    for &(from, to) in moves {
+        let class = function.class_of(to);
+        let lanes = function.lanes(to);
+        assert_eq!(
+            lanes,
+            function.lanes(from),
+            "phi input and destination widths differ"
+        );
+        if class == RegClass::Fpu && lanes > 1 {
+            let from_base = register(from);
+            let to_base = register(to);
+            for lane in 0..lanes {
+                expanded.push((from_base + lane, to_base + lane, class));
+            }
+        } else {
+            expanded.push((register(from), register(to), class));
+        }
+    }
+    emit_parallel_moves(lines, &expanded);
 }
 
 /// parallel phi moves, split by register class: GPR moves use MOV with
@@ -1129,7 +1391,7 @@ fn emit_parallel_moves(lines: &mut Lines, moves: &[(u8, u8, RegClass)]) {
 fn emit_parallel_moves_in_file(lines: &mut Lines, moves: &[(u8, u8)], class: RegClass) {
     let emit_move = |lines: &mut Lines, to: u8, from: u8| match class {
         RegClass::Gpr => lines.word(cpu_v3::move_register(to, from)),
-        RegClass::Fpu => lines.word(cpu_v3::fpu(FpuOp::Move, to, from)),
+        RegClass::Fpu => emit_fpu_scalar(lines, from, 0, to, FpuScalarSubop::Mov, 0),
     };
     let scratch = match class {
         RegClass::Gpr => REG_TMP,
@@ -1388,6 +1650,27 @@ pub fn validate_program(words: &[Word], code_base: Word) -> Result<(), ProgramVa
                 return Err(ProgramValidationError::RelativePrefixHighBits {
                     address: address_of(index),
                     payload,
+                });
+            }
+            index += 2;
+            continue;
+        }
+        // An FPU v2 instruction is two physical words; a reserved pair is an
+        // illegal image and a lone first word is truncated.
+        if cpu_v3::FpuOpcode::from_word0(word).is_some() {
+            let Some(&next) = words.get(index + 1) else {
+                return Err(ProgramValidationError::InvalidInstruction {
+                    address: address_of(index),
+                    word,
+                });
+            };
+            if matches!(
+                cpu_v3::decode_fpu_pair(word, next),
+                cpu_v3::Instruction::FpuReserved { .. }
+            ) {
+                return Err(ProgramValidationError::InvalidInstruction {
+                    address: address_of(index),
+                    word,
                 });
             }
             index += 2;
@@ -1667,101 +1950,602 @@ mod tests {
     use super::*;
     use rcc::frontend::parse_source_with;
 
+    /// C1 lowers scalar `fix16` end to end through the two-word v2 ISA:
+    /// construction, arithmetic, unary operations and the numeric conversion.
     #[test]
-    fn fpu_fix16_arithmetic_and_compare_run_on_the_machine() {
+    fn scalar_fix16_arithmetic_unary_and_conversions_run_on_the_machine() {
         let source = r#"
             fn main() {
-                let a = fix16::from_int(3);
-                let b = fix16::from_bits(0x0180); // 1.5
-                let c = a + b * b; // 3.0 + 2.25 = 5.25
-                if c > fix16::from_int(5) {
-                    halt(c.to_int() as u16);
-                } else {
-                    halt(0);
-                }
+                let a = fix16::from_int(7);
+                let b = fix16::from_int(-2);
+                let sum = a + b;             // 5
+                let diff = a - b;            // 9
+                let prod = a * b;            // -14
+                let neg = -b;                // 2
+                let fl = fix16::from_words(0x8000, 0x0001); // 1.5
+                let down = fl.trunc();       // 1.0
+                let up = fl.ceil();          // 2.0
+                halt((sum + diff + prod + neg + down + up).to_int() as u16);
             }
         "#;
+        // 5 + 9 - 14 + 2 + 1 + 2 = 5
         assert_eq!(run(source), 5);
     }
 
+    /// The raw-half bridge (`ILO2F`/`IHI2F`/`FLO2I`/`FHI2I`) moves both words
+    /// without numeric conversion.
     #[test]
-    fn fpu_vec4_dot_export_and_splat_multiply() {
+    fn scalar_fix16_raw_half_bridge_round_trips_words() {
         let source = r#"
-            use crate::dsl_rt::*;
-            static OUT: Buf<u16, 4> = Buf::new([0; 4]);
             fn main() {
-                let a = vec4::new(
-                    fix16::from_int(1),
-                    fix16::from_int(2),
-                    fix16::from_int(3),
-                    fix16::from_int(4),
+                let v = fix16::from_words(0x1234u16, 0xabcdu16);
+                halt(v.lo_bits() ^ v.hi_bits());
+            }
+        "#;
+        assert_eq!(run(source), 0x1234u16 ^ 0xabcdu16);
+    }
+
+    /// A fix16 value live across a call has no callee-saved F register to live
+    /// in, so it spills through a frame slot (`AddrOfFpuSpill` + FST/FLD).
+    #[test]
+    fn scalar_fix16_values_spill_across_calls() {
+        let source = r#"
+            fn addfix(a: fix16, b: fix16) -> fix16 { a + b }
+            fn main() {
+                let a = fix16::from_int(5);
+                let b = addfix(a, fix16::from_int(1)); // `a` lives across the call
+                halt((a + b).to_int() as u16);
+            }
+        "#;
+        assert_eq!(run(source), 11);
+    }
+
+    /// fix16 comparisons feed the shared pending test; a materialized bool uses
+    /// a scalar `CMP` plus one conditional move.
+    #[test]
+    fn scalar_fix16_comparisons_branch_and_materialize_bools() {
+        let source = r#"
+            fn main() {
+                let a = fix16::from_int(2);
+                let b = fix16::from_int(3);
+                let lt = a < b;
+                let ge = a >= b;
+                let eq = a == a;
+                let le = a <= b;
+                if lt && !ge && eq && le && b != a {
+                    halt(1);
+                } else {
+                    halt(0);
+                }
+            }
+        "#;
+        assert_eq!(run(source), 1);
+    }
+
+    /// fix16 variables, loops and if-expressions exercise phis, compound
+    /// assignment and range-free scalar allocation.
+    #[test]
+    fn scalar_fix16_variables_loops_and_if_expressions_run() {
+        let source = r#"
+            fn main() {
+                let mut acc = fix16::zero();
+                let mut i = fix16::zero();
+                let one = fix16::from_int(1);
+                let limit = fix16::from_int(5);
+                while i < limit {
+                    acc += i;
+                    i += one;
+                }
+                let pick = if acc > limit { acc } else { limit };
+                halt((acc + pick).to_int() as u16);
+            }
+        "#;
+        // acc = 0+1+2+3+4 = 10, pick = acc (10), total = 20
+        assert_eq!(run(source), 20);
+    }
+
+    /// C2 lowers the contiguous-range vector surface: construction, vector
+    /// arithmetic, scalar broadcast (VMULS), unary map and lane extraction all
+    /// run through the two-word VECTOR ISA on the emulator.
+    #[test]
+    fn vector_construct_arithmetic_broadcast_unary_and_lanes_run() {
+        let source = r#"
+            fn main() {
+                let a = vec3::new(fix16::from_int(1), fix16::from_int(2), fix16::from_int(3));
+                let b = vec3::new(fix16::from_int(4), fix16::from_int(5), fix16::from_int(6));
+                let c = a + b;                     // 5, 7, 9
+                let d = c * fix16::from_int(2);    // 10, 14, 18
+                let e = -d;                        // -10, -14, -18
+                let f = e.abs();                   // 10, 14, 18
+                halt((f.x() + f.y() + f.z()).to_int() as u16); // 42
+            }
+        "#;
+        assert_eq!(run_vector(source), 42);
+    }
+
+    /// Vector parameters and returns pack through the frozen ABI: arguments
+    /// fill F4.. compactly by lane count and the result comes back in F0...
+    #[test]
+    fn vector_arguments_and_returns_follow_the_fpu_abi() {
+        let source = r#"
+            fn add3(a: vec3, b: vec3) -> vec3 { a + b }
+            fn scale4(v: vec4, s: fix16) -> vec4 { v * s }
+            fn dot3(a: vec3, b: vec3) -> fix16 { fdot(a, b) }
+            fn main() {
+                let a = vec3::new(fix16::from_int(1), fix16::from_int(2), fix16::from_int(3));
+                let b = vec3::new(fix16::from_int(4), fix16::from_int(5), fix16::from_int(6));
+                let c = add3(a, b);                 // 5, 7, 9
+                let d = scale4(vec4::new(c.x(), c.y(), c.z(), fix16::zero()), fix16::from_int(2));
+                let e = vec3::new(d.x(), d.y(), d.z()); // 10, 14, 18
+                halt(dot3(e, e).to_int() as u16);   // 100 + 196 + 324 = 620
+            }
+        "#;
+        assert_eq!(run_vector(source), 620);
+    }
+
+    /// `fdot` narrows the wide accumulator once; `vec4::import`/`export`
+    /// move four consecutive Q16.16 values through FLDV4/FSTV4.
+    #[test]
+    fn fdot_and_vec4_memory_import_export_run() {
+        let source = r#"
+            fn main() {
+                let mut buf: Buf<u16, 8> = Buf::new([0; 8]);
+                let ptr = buf.as_ptr();
+                let v = vec4::new(fix16::from_int(2), fix16::from_int(3),
+                                  fix16::from_int(4), fix16::from_int(5));
+                vec4::export(v, ptr);
+                let back = vec4::import(ptr);
+                let d = fdot(back, back);           // 4 + 9 + 16 + 25 = 54
+                halt(d.to_int() as u16);
+            }
+        "#;
+        assert_eq!(run_vector(source), 54);
+    }
+
+    /// A vector loop accumulator becomes a phi over a contiguous range; the
+    /// back-edge parallel move must place all lanes consistently.
+    #[test]
+    fn vector_loop_accumulator_runs() {
+        let source = r#"
+            fn main() {
+                let one = vec3::new(fix16::from_int(1), fix16::from_int(2), fix16::from_int(3));
+                let mut acc = vec3::zero();
+                let mut i: u16 = 0;
+                while i < 5 {
+                    acc += one;
+                    i += 1;
+                }
+                halt((acc.x() + acc.y() + acc.z()).to_int() as u16); // 5*(1+2+3)=30
+            }
+        "#;
+        assert_eq!(run_vector(source), 30);
+    }
+
+    /// A vector live across a call has no callee-saved F register, so it spills
+    /// through a wide FPU spill slot (FSTV/FLDV) and reloads after the call.
+    #[test]
+    fn vector_values_spill_across_calls_with_their_full_width() {
+        let source = r#"
+            fn keep(a: vec4, b: vec4) -> vec4 { a + b }
+            fn main() {
+                let v = vec4::new(fix16::from_int(1), fix16::from_int(2),
+                                  fix16::from_int(3), fix16::from_int(4));
+                let w = keep(v, vec4::new(fix16::from_int(10), fix16::from_int(10),
+                                          fix16::from_int(10), fix16::from_int(10)));
+                halt((v.x() + v.y() + v.z() + v.w()
+                      + w.x() + w.y() + w.z() + w.w()).to_int() as u16);
+            }
+        "#;
+        // v = 10, w = 10 + 40 = 50
+        assert_eq!(run_vector(source), 60);
+    }
+
+    /// Lane shuffles lower through cycle-safe parallel moves, so a destination
+    /// range that overlaps the sources in any way still produces the permuted
+    /// result.
+    #[test]
+    fn vector_lane_shuffle_handles_overlapping_parallel_moves() {
+        let source = r#"
+            fn main() {
+                let v = vec3::new(fix16::from_int(1), fix16::from_int(2), fix16::from_int(3));
+                let s = vec3::new(v.z(), v.x(), v.y()); // 3, 1, 2
+                halt((s.x() * fix16::from_int(100) + s.y() * fix16::from_int(10) + s.z())
+                     .to_int() as u16);
+            }
+        "#;
+        assert_eq!(run_vector(source), 312);
+    }
+
+    /// Every emitted hardware VECTOR instruction obeys the design's section
+    /// 3.2 partial-overlap rule: a destination range either shares a source
+    /// base exactly or is disjoint from it, and a `VMULS` scalar is never
+    /// inside the destination range.
+    fn assert_no_partial_overlap(program: &CpuV3Program) {
+        let mut index = 0;
+        while index + 1 < program.words.len() {
+            if let cpu_v3::Instruction::FpuVector {
+                fa,
+                fb,
+                fd,
+                len,
+                subop,
+                ..
+            } = cpu_v3::decode_fpu_pair(program.words[index], program.words[index + 1])
+            {
+                let lanes = usize::from(len.lanes());
+                let (fa, fb, fd) = (usize::from(fa), usize::from(fb), usize::from(fd));
+                let overlap =
+                    |a: usize, b: usize, blen: usize| a != b && a < b + blen && b < a + lanes;
+                assert!(
+                    !overlap(fd, fa, lanes),
+                    "destination f{fd}.. partially overlaps Fa f{fa}.. in:\n{}",
+                    program.listing
                 );
-                let d = fdot(a, a); // 1+4+9+16 = 30.0
-                let half = fix16::from_bits(0x0080); // 0.5
-                let scaled = a * half; // {0.5, 1.0, 1.5, 2.0} through the ACC splat
-                vec4::export(scaled, OUT.as_array().as_ptr());
-                if OUT.read(0) == 128
-                    && OUT.read(1) == 256
-                    && OUT.read(2) == 384
-                    && OUT.read(3) == 512
-                    && d.to_bits() == 7680
+                if subop == cpu_v3::FpuVectorSubop::VMulS {
+                    assert!(
+                        !(fb >= fd && fb < fd + lanes),
+                        "VMULS scalar f{fb} is inside destination f{fd}.. in:\n{}",
+                        program.listing
+                    );
+                } else if !subop.ignores_second_source() && !subop.uses_stride_mode() {
+                    assert!(
+                        !overlap(fd, fb, lanes),
+                        "destination f{fd}.. partially overlaps Fb f{fb}.. in:\n{}",
+                        program.listing
+                    );
+                }
+            }
+            index += 1;
+        }
+    }
+
+    /// Range pressure: ten `vec4` pair sums stay live at once (40 lanes, more
+    /// than the 35-register allocatable area), so the allocator must spill and
+    /// reload multi-lane values at full width without breaking the overlap rule.
+    #[test]
+    fn vector_range_pressure_spills_and_stays_correct() {
+        let mut source = String::from("fn main() {\n");
+        for i in 0..10 {
+            let v = i + 1;
+            source.push_str(&format!(
+                "let a{i} = vec4::new(fix16::from_int({v}), fix16::from_int({v}), \
+                 fix16::from_int({v}), fix16::from_int({v}));\n"
+            ));
+        }
+        for i in 0..10 {
+            source.push_str(&format!("let p{i} = a{i} + a{i};\n"));
+        }
+        source.push_str("let mut s = p0;\n");
+        for i in 1..10 {
+            source.push_str(&format!("s += p{i};\n"));
+        }
+        source.push_str("halt((s.x() + s.y() + s.z() + s.w()).to_int() as u16);\n}\n");
+        let program = compile(&source, CompilerOptions::default());
+        assert_no_partial_overlap(&program);
+        // each lane of p_i is 2*(i+1); four lanes per vector; sum over i
+        let expected: u16 = (1..=10u16).map(|v| 8 * v).sum();
+        assert_eq!(execute(program).0, expected);
+    }
+
+    /// The scalar FPU lowering emits the exact two-word v2 encodings; this
+    /// hand-built IR function pins the whole image (allocation is deterministic
+    /// for a straight-line function).
+    #[test]
+    fn scalar_fix16_add_emits_exact_two_word_words() {
+        use rcc::{FpuBinOp, FuncBuilder, RegClass};
+        let (mut b, params) = FuncBuilder::new_typed("main", &[RegClass::Fpu, RegClass::Fpu], 1);
+        let a = b.get(params[0]);
+        let c = b.get(params[1]);
+        let sum = b.fpu_bin(FpuBinOp::Add, a, c);
+        b.ret(&[sum]);
+        let function = b.finish();
+        let functions = std::collections::HashMap::from([("main", function)]);
+        let program = compile_ir(
+            functions,
+            &CompilerOptions::default(),
+            "main",
+            rcc::frontend::FrontendDebug::default(),
+        )
+        .unwrap();
+        // Pin the allocator/codegen contract, not merely decoder round-tripping:
+        // the two ABI inputs are moved to f29/f28, the destructive ADD reuses
+        // f28 as its destination, and the resulting pair is exactly these two
+        // architectural words.
+        let mut found = Vec::new();
+        let mut index = 0;
+        while index + 1 < program.words.len() {
+            if let cpu_v3::Instruction::FpuScalar {
+                fa,
+                fb,
+                fd,
+                subop: cpu_v3::FpuScalarSubop::Add,
+                ..
+            } = cpu_v3::decode_fpu_pair(program.words[index], program.words[index + 1])
+            {
+                found.push((index, fa, fb, fd));
+            }
+            index += 1;
+        }
+        assert_eq!(found, vec![(4, 29, 28, 28)], "{}", program.listing);
+        assert_eq!(&program.words[4..6], &[0xd75c, 0x7000]);
+    }
+
+    /// C3 lowers the scalar special functions to the two-word SCALAR special
+    /// subops: `frcp`/`frsqrt` use subops `0x0C`/`0x0D`, and `fsin`/`fcos`/
+    /// `fsincos` all reuse `SINCOS` (`0x0E`) with `mode[1:0]` selecting the
+    /// result. The dual output allocates a contiguous `Fd`/`Fd+1` pair.
+    #[test]
+    fn scalar_special_functions_emit_the_exact_subop_and_mode() {
+        use rcc::{FpuSpecialOp, FuncBuilder, RegClass};
+        for (op, subop, mode, lanes) in [
+            (FpuSpecialOp::Rcp, cpu_v3::FpuScalarSubop::Rcp, 0u8, 1u8),
+            (FpuSpecialOp::Rsqrt, cpu_v3::FpuScalarSubop::Rsqrt, 0, 1),
+            (FpuSpecialOp::Sin, cpu_v3::FpuScalarSubop::SinCos, 1, 1),
+            (FpuSpecialOp::Cos, cpu_v3::FpuScalarSubop::SinCos, 2, 1),
+            (FpuSpecialOp::SinCos, cpu_v3::FpuScalarSubop::SinCos, 0, 2),
+        ] {
+            let (mut b, params) = FuncBuilder::new_typed("main", &[RegClass::Fpu], 1);
+            let a = b.get(params[0]);
+            let r = b.fpu_special(op, a, lanes);
+            b.ret(&[r]);
+            let function = b.finish();
+            let functions = std::collections::HashMap::from([("main", function)]);
+            let program = compile_ir(
+                functions,
+                &CompilerOptions::default(),
+                "main",
+                rcc::frontend::FrontendDebug::default(),
+            )
+            .unwrap();
+            let mut found = Vec::new();
+            let mut index = 0;
+            while index + 1 < program.words.len() {
+                if let cpu_v3::Instruction::FpuScalar {
+                    fd,
+                    subop: found_subop,
+                    mode: found_mode,
+                    ..
+                } = cpu_v3::decode_fpu_pair(program.words[index], program.words[index + 1])
                 {
-                    halt(1);
-                } else {
-                    halt(0);
+                    if found_subop == subop {
+                        found.push((index, fd, found_mode));
+                    }
                 }
+                index += 1;
             }
-        "#;
-        assert_eq!(run(source), 1);
+            assert_eq!(
+                found.len(),
+                1,
+                "{op:?} must emit exactly one special subop\n{}",
+                program.listing
+            );
+            let (index, fd, found_mode) = found[0];
+            assert_eq!(found_mode, mode, "{op:?}");
+            // Check the emitted word1 field packing too: word0 is
+            // {D, Fa, Fb=0}, word1 is {Fd, subop<<4 | mode}.
+            assert_eq!(
+                program.words[index + 1],
+                (u16::from(fd) << 10) | (subop as u16) << 4 | u16::from(mode),
+                "{op:?} word1"
+            );
+            // The dual-output form writes fd and fd+1.
+            assert!(fd + lanes <= 64, "{op:?} destination range");
+        }
     }
 
+    /// C3 special functions are bit-exact with the architecture reference
+    /// model. Each result is folded into the halt signal with its own raw
+    /// halves, so a single register mix-up cannot cancel out.
     #[test]
-    fn fpu_rom_operations_and_lane_access() {
+    fn compiled_special_functions_match_the_reference_model() {
         let source = r#"
             fn main() {
-                let sc = fsincos(fix16::zero()); // {0.0, 1.0, 0, 0}
-                let r = frcp(fix16::from_int(2)); // 0.5
-                if sc.x().to_bits() == 0 && sc.y().to_bits() == 256 && r.to_bits() == 128 {
-                    halt(1);
-                } else {
-                    halt(0);
-                }
+                let x = fix16::from_words(0x0000u16, 0x0003u16); // 3.0
+                let r = frcp(x);
+                let s = frsqrt(x);
+                let sc = fsincos(x);
+                let si = fsin(x);
+                let co = fcos(x);
+                halt(r.lo_bits() ^ (s.hi_bits() << 1) ^ (sc.x().hi_bits() << 2)
+                     ^ (sc.y().hi_bits() << 3) ^ (si.lo_bits() << 4)
+                     ^ (co.hi_bits() << 5));
             }
         "#;
-        assert_eq!(run(source), 1);
+        let x = 3 << 16;
+        let (sin, cos) = cpu_v3::sincos_q16(x);
+        let expected = (cpu_v3::rcp_q16(x) as u16)
+            ^ (((cpu_v3::rsqrt_q16(x) as u32 >> 16) as u16) << 1)
+            ^ (((sin as u32 >> 16) as u16) << 2)
+            ^ (((cos as u32 >> 16) as u16) << 3)
+            ^ ((sin as u16) << 4)
+            ^ (((cos as u32 >> 16) as u16) << 5);
+        assert_eq!(run(source), expected);
     }
 
+    /// The vector lowering emits the exact two-word VECTOR encoding. A vec3
+    /// `VADD` packs `Fa`/`Fb` into word 0 and `Fd`/len/subop/mode into word 1;
+    /// this hand-built IR pins the allocator/codegen contract, including the
+    /// in-place destination reuse of the first source.
     #[test]
-    fn fpu_values_spill_and_reload_through_aligned_frame_slots() {
-        // Ten live vec4 values exceed the allocatable F registers and force
-        // FPU spill slots (4-aligned FEXPORT4/FIMPORT4 through the frame).
+    fn vector_vadd_emits_exact_two_word_words() {
+        use rcc::{FpuBinOp, FuncBuilder, RegClass};
+        let (mut b, params) = FuncBuilder::new_typed("main", &[RegClass::Fpu, RegClass::Fpu], 1);
+        b.set_vreg_lanes(params[0] as u32, 3);
+        b.set_vreg_lanes(params[1] as u32, 3);
+        let a = b.get(params[0]);
+        let c = b.get(params[1]);
+        let sum = b.fpu_vec_bin(FpuBinOp::Add, a, c, 3);
+        b.ret(&[sum]);
+        let function = b.finish();
+        let functions = std::collections::HashMap::from([("main", function)]);
+        let program = compile_ir(
+            functions,
+            &CompilerOptions::default(),
+            "main",
+            rcc::frontend::FrontendDebug::default(),
+        )
+        .unwrap();
+        let mut found = Vec::new();
+        let mut index = 0;
+        while index + 1 < program.words.len() {
+            if let cpu_v3::Instruction::FpuVector {
+                fa,
+                fb,
+                fd,
+                len,
+                subop: cpu_v3::FpuVectorSubop::VAdd,
+                ..
+            } = cpu_v3::decode_fpu_pair(program.words[index], program.words[index + 1])
+            {
+                found.push((index, fa, fb, fd, len));
+            }
+            index += 1;
+        }
+        assert_eq!(
+            found,
+            vec![(12, 31, 28, 28, cpu_v3::FpuVectorLength::Vec3)],
+            "{}",
+            program.listing
+        );
+        // VADD.3 f28..f30, f31..f33, f28..f30 (in-place with Fb):
+        // word0 = 0xC000 | (Fa=31 << 6) | Fb=28; word1 = Fd=28 << 10 | len=01 << 8.
+        assert_eq!(&program.words[12..14], &[0xc7dc, 0x7100]);
+    }
+
+    /// `VMULS` pins the broadcast encoding: the scalar source shares word 0
+    /// with the vector base and the subop sits in word 1.
+    #[test]
+    fn vector_vmuls_emits_exact_two_word_words() {
+        use rcc::{FuncBuilder, RegClass};
+        let (mut b, params) = FuncBuilder::new_typed("main", &[RegClass::Fpu, RegClass::Fpu], 1);
+        b.set_vreg_lanes(params[0] as u32, 3);
+        let v = b.get(params[0]);
+        let s = b.get(params[1]);
+        let r = b.fpu_vec_muls(v, s, 3);
+        b.ret(&[r]);
+        let function = b.finish();
+        let functions = std::collections::HashMap::from([("main", function)]);
+        let program = compile_ir(
+            functions,
+            &CompilerOptions::default(),
+            "main",
+            rcc::frontend::FrontendDebug::default(),
+        )
+        .unwrap();
+        let mut found = Vec::new();
+        let mut index = 0;
+        while index + 1 < program.words.len() {
+            if let cpu_v3::Instruction::FpuVector {
+                fa,
+                fb,
+                fd,
+                len,
+                subop: cpu_v3::FpuVectorSubop::VMulS,
+                ..
+            } = cpu_v3::decode_fpu_pair(program.words[index], program.words[index + 1])
+            {
+                found.push((index, fa, fb, fd, len));
+            }
+            index += 1;
+        }
+        assert_eq!(
+            found,
+            vec![(8, 29, 28, 29, cpu_v3::FpuVectorLength::Vec3)],
+            "{}",
+            program.listing
+        );
+        // VMULS.3 f29..f31 = f29..f31 * f28:
+        // word0 = 0xC000 | (Fa=29 << 6) | Fb=28; word1 = Fd=29 << 10 | len=01 | VMULS(3) << 3.
+        assert_eq!(&program.words[8..10], &[0xc75c, 0x7518]);
+    }
+
+    /// A vector live across a call spills through wide FLDV/FSTV traffic: the
+    /// `mode` field is lanes-1, so a vec3 spill uses mode 2 and never a scalar
+    /// FLD/FST or the wrong width.
+    #[test]
+    fn vector_spill_across_a_call_uses_full_width_fldv_fstv() {
         let source = r#"
+            fn keep(a: vec3, b: vec3) -> vec3 { a + b }
             fn main() {
-                let v0 = vec4::new(fix16::from_bits(64), fix16::zero(), fix16::zero(), fix16::zero());
-                let v1 = vec4::new(fix16::from_bits(128), fix16::zero(), fix16::zero(), fix16::zero());
-                let v2 = vec4::new(fix16::from_bits(192), fix16::zero(), fix16::zero(), fix16::zero());
-                let v3 = vec4::new(fix16::from_bits(256), fix16::zero(), fix16::zero(), fix16::zero());
-                let v4 = vec4::new(fix16::from_bits(320), fix16::zero(), fix16::zero(), fix16::zero());
-                let v5 = vec4::new(fix16::from_bits(384), fix16::zero(), fix16::zero(), fix16::zero());
-                let v6 = vec4::new(fix16::from_bits(448), fix16::zero(), fix16::zero(), fix16::zero());
-                let v7 = vec4::new(fix16::from_bits(512), fix16::zero(), fix16::zero(), fix16::zero());
-                let v8 = vec4::new(fix16::from_bits(576), fix16::zero(), fix16::zero(), fix16::zero());
-                let v9 = vec4::new(fix16::from_bits(640), fix16::zero(), fix16::zero(), fix16::zero());
-                let total = fdot(v0, v0)
-                    + fdot(v1, v1)
-                    + fdot(v2, v2)
-                    + fdot(v3, v3)
-                    + fdot(v4, v4)
-                    + fdot(v5, v5)
-                    + fdot(v6, v6)
-                    + fdot(v7, v7)
-                    + fdot(v8, v8)
-                    + fdot(v9, v9);
-                // (0.25k)^2 sums to 385 * 16 = 6160 in Q8.8
-                halt(total.to_bits());
+                let v = vec3::new(fix16::from_int(1), fix16::from_int(2), fix16::from_int(3));
+                let w = keep(v, v);
+                halt((v.x() + w.x()).to_int() as u16);
             }
         "#;
-        assert_eq!(run(source), 6160);
+        let program = compile(source, CompilerOptions::default());
+        assert_no_partial_overlap(&program);
+        let mut vec_loads = 0;
+        let mut vec_stores = 0;
+        let mut index = 0;
+        while index + 1 < program.words.len() {
+            if let cpu_v3::Instruction::FpuAux { subop, mode, .. } =
+                cpu_v3::decode_fpu_pair(program.words[index], program.words[index + 1])
+            {
+                if subop == cpu_v3::FpuAuxSubop::Fld as u8 && mode == 2 {
+                    vec_loads += 1;
+                }
+                if subop == cpu_v3::FpuAuxSubop::Fst as u8 && mode == 2 {
+                    vec_stores += 1;
+                }
+            }
+            index += 1;
+        }
+        assert!(
+            vec_loads > 0 && vec_stores > 0,
+            "expected a vec3 spill through FLDV/FSTV mode 2\n{}",
+            program.listing
+        );
+        // v.x() + w.x() = 1 + 2 = 3
+        assert_eq!(execute(program).0, 3);
+    }
+
+    /// The compiled program used by the system-level emulator/RTL co-simulation:
+    /// vec4 construction, a vector call, VMULS, lane extraction and `fdot`
+    /// together produce a single deterministic halt signal on the emulator.
+    #[test]
+    fn compiled_vec4_abi_vmuls_and_fdot_program_runs() {
+        let source = r#"
+            fn add4(a: vec4, b: vec4) -> vec4 { a + b }
+            fn main() {
+                let a = vec4::new(fix16::from_int(1), fix16::from_int(2),
+                                  fix16::from_int(3), fix16::from_int(4));
+                let b = vec4::new(fix16::from_int(10), fix16::from_int(20),
+                                  fix16::from_int(30), fix16::from_int(40));
+                let c = add4(a, b);
+                let d = c * fix16::from_int(2);
+                let s = d.x() + d.y() + d.z() + d.w();
+                let dot = fdot(c, d);
+                halt((s + dot).to_int() as u16);
+            }
+        "#;
+        assert_eq!(run_vector(source), 7480);
+    }
+
+    /// The backend no longer refuses FPU programs: an FPU-typed function
+    /// pointer plus a scalar body compiles.
+    #[test]
+    fn an_fpu_class_program_is_now_lowered_by_the_backend() {
+        let source = r#"
+            fn identity(v: fix16) -> fix16 { v }
+            fn main() {
+                let keep: fn(fix16) -> fix16 = identity;
+                halt(keep(fix16::from_int(9)).to_int() as u16);
+            }
+        "#;
+        assert_eq!(run(source), 9);
+    }
+
+    /// C0 freezes the Q16.16 contiguous-range ABI even though range-aware
+    /// allocation lands with C2.
+    #[test]
+    fn cpu_v3_fpu_convention_uses_the_frozen_q16_layout() {
+        let fpu = CPU_V3_REGISTER_CONVENTION.fpu.unwrap();
+        assert_eq!(fpu.return_registers, &[0, 1, 2, 3]);
+        assert_eq!(fpu.argument_registers.first(), Some(&4));
+        assert_eq!(fpu.argument_registers.last(), Some(&27));
+        assert_eq!(fpu.allocatable_registers.first(), Some(&28));
+        assert_eq!(fpu.allocatable_registers.last(), Some(&62));
+        assert_eq!(fpu.scratch_register, 63);
     }
 
     #[test]
@@ -1837,58 +2621,6 @@ mod tests {
         );
         // sum of (407 + 3i) for i in 0..8 = 3256 + 84
         assert_eq!(run(source), 3340);
-    }
-
-    #[test]
-    fn fpu_call_dot_and_export_match_isa_values() {
-        let source = r#"
-            use crate::dsl_rt::*;
-            static OUT: Buf<u16, 4> = Buf::new([0; 4]);
-            fn scaled(v: vec4, factor: fix16, tag: u16) -> vec4 {
-                if tag == 1 { v * factor } else { v }
-            }
-            fn main() {
-                let a = vec4::new(
-                    fix16::from_int(1),
-                    fix16::from_int(2),
-                    fix16::from_int(3),
-                    fix16::from_int(4),
-                );
-                let b = scaled(a, fix16::from_bits(0x0080), 1);
-                let d = fdot(a, b); // 0.5 + 2 + 4.5 + 8 = 15.0
-                vec4::export(b, OUT.as_array().as_ptr());
-                if OUT.read(0) == 128 && OUT.read(3) == 512 {
-                    halt(d.to_bits()); // 3840
-                } else {
-                    halt(0);
-                }
-            }
-        "#;
-        assert_eq!(run(source), 3840);
-    }
-
-    #[test]
-    fn fpu_mixed_signature_calls_follow_the_fpu_abi() {
-        let source = r#"
-            fn scale(factor: fix16, v: vec4, tag: u16) -> fix16 {
-                let scaled = v * factor;
-                if tag == 7 { scaled.w() } else { fix16::zero() }
-            }
-            fn main() {
-                let r = scale(
-                    fix16::from_int(2),
-                    vec4::new(
-                        fix16::from_int(1),
-                        fix16::from_int(2),
-                        fix16::from_int(3),
-                        fix16::from_int(4),
-                    ),
-                    7,
-                );
-                if r.to_bits() == 2048 { halt(1); } else { halt(0); }
-            }
-        "#;
-        assert_eq!(run(source), 1);
     }
 
     #[test]
@@ -2713,6 +3445,14 @@ mod tests {
 
     fn run(source: &str) -> u16 {
         run_with_options(source, CompilerOptions::default()).0
+    }
+
+    /// like `run`, but first asserts the section 3.2 partial-overlap rule over
+    /// every emitted VECTOR instruction (C2 lowering)
+    fn run_vector(source: &str) -> u16 {
+        let program = compile(source, CompilerOptions::default());
+        assert_no_partial_overlap(&program);
+        execute(program).0
     }
 
     fn run_with_options(source: &str, options: CompilerOptions) -> (u16, cpu_v3::CpuV3Sim) {

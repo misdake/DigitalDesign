@@ -20,14 +20,15 @@ firmware can report either success or a detailed error code. These patterns are
 progress evidence only; only the application's UART frame and system-level
 checks establish a successful boot.
 
-The board-level selection latch powers up at `10` (S2), so the display
+The board-level selection latch powers up at `10` (S2), so the configured S2
 application boots by default; holding the S1 button (`01`) during reset selects
 the slider diagnostic, and `11` is ignored. The current configuration uses the
-DDHT slider diagnostic for S1 and the CPU/FPU sine, cosine, and circle demo for
-S2. The S2 slot is loaded at `0007:0200`; the current display program renders
-through cached CPU stores and cleans D-cache before each vblank framebuffer
-publication, and reports a DDHT success frame (test ID `0x0b`) once per
-published frame so the default boot is observable over UART.
+DDHT slider diagnostic for S1 and the migrated Q16.16 CPU/FPU sine, cosine,
+and circle demo (`rcc/display-demo.rs`) for S2. The display demo reports DDHT
+test ID `0x0b`, uses the hardware SINCOS path without a software trig table,
+and is loaded at `0007:0200`. The display program renders through cached CPU
+stores and cleans D-cache before each vblank framebuffer publication when it is
+configured.
 
 The current board's runtime SFDP probe reports an 8-MiB device. Its JEDEC ID is
 `EF 40 17`; this is a Winbond-family 64-Mbit part even though some board

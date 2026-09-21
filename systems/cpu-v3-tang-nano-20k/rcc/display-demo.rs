@@ -95,8 +95,15 @@ fn plot(base_segment: u16, base_offset: u16, x: u16, y: u16, color: u16) {
     store_at(segment, pixel_offset, color);
 }
 
-/// Draw two independently visible ROM-sincos results. Multiplication scales
-/// Q8.8 values to pixels; FROUND followed by `to_int()` deliberately exercises
+/// Convert a raw angle step count at `1/256` radians into signed Q16.16.
+/// The old raw Q8.8 constructor interpreted `raw` as an `i16`; preserve that
+/// wrap by sign-extending its high byte into the Q16.16 high word.
+fn angle_q16(raw: u16) -> fix16 {
+    fix16::from_words(raw << 8, ((raw as i16) >> 8) as u16)
+}
+
+/// Draw two independently visible sincos results. Multiplication scales
+/// Q16.16 values to pixels; FROUND followed by `to_int()` deliberately exercises
 /// the FPU-to-integer path before every framebuffer store. When `restore` is
 /// nonzero, recompute the old geometry but replace it with the static layer.
 fn draw_waveforms(base_segment: u16, base_offset: u16, phase: u16, restore: u16) {
@@ -104,7 +111,7 @@ fn draw_waveforms(base_segment: u16, base_offset: u16, phase: u16, restore: u16)
     let mut x: u16 = 0;
     while x < WIDTH {
         // 8 / 256 radians per pixel gives almost two periods across 400 px.
-        let angle = fix16::from_bits(phase + x * 8);
+        let angle = angle_q16(phase + x * 8);
         let sc = fsincos(angle);
         let sine_offset = (sc.x() * amplitude).round().to_int();
         let cosine_offset = (sc.y() * amplitude).round().to_int();
@@ -143,7 +150,7 @@ fn draw_circle(base_segment: u16, base_offset: u16, phase: u16, restore: u16) {
     let mut angle_bits = phase;
     let mut sample: u16 = 0;
     while sample < 256 {
-        let sc = fsincos(fix16::from_bits(angle_bits));
+        let sc = fsincos(angle_q16(angle_bits));
         let x_offset = (sc.y() * radius).round().to_int();
         let y_offset = (sc.x() * radius).round().to_int();
         let x = (CENTER_X as i16 + x_offset) as u16;
@@ -159,7 +166,7 @@ fn draw_circle(base_segment: u16, base_offset: u16, phase: u16, restore: u16) {
         };
         plot(base_segment, base_offset, x, y, color);
 
-        // 6.25 raw Q8.8 steps approximate 2*pi over 256 samples without
+        // 6.25 raw 1/256-radian steps approximate 2*pi over 256 samples without
         // integer division: three 6s followed by a 7.
         angle_bits += 6;
         if sample & 3 == 3 {
@@ -170,7 +177,7 @@ fn draw_circle(base_segment: u16, base_offset: u16, phase: u16, restore: u16) {
 
     // A red phase marker makes it obvious that new FPU results, CPU stores,
     // cache cleaning, and display swaps continue to complete frame by frame.
-    let marker = fsincos(fix16::from_bits(phase));
+    let marker = fsincos(angle_q16(phase));
     let marker_x = (CENTER_X as i16 + (marker.y() * radius).round().to_int()) as u16;
     let marker_y = (182i16 + (marker.x() * radius).round().to_int()) as u16;
     let marker_color = if restore == 0 {
@@ -213,7 +220,7 @@ fn render_dynamic(base_segment: u16, base_offset: u16, phase: u16, restore: u16)
 /// Transmits one byte through the device-0 system-control UART, polling its
 /// busy bit first.
 fn uart_byte(byte: u16) {
-    while dev_recv(SYSTEM_CONTROL_DEVICE, SYSCTL_UART_STATUS) & 1 != 0 { }
+    while dev_recv(SYSTEM_CONTROL_DEVICE, SYSCTL_UART_STATUS) & 1 != 0 {}
     dev_send(SYSTEM_CONTROL_DEVICE, SYSCTL_UART_TX_DATA, byte);
 }
 
@@ -223,10 +230,10 @@ fn uart_success() {
     uart_byte(0x44); // 'D'
     uart_byte(0x48); // 'H'
     uart_byte(0x54); // 'T'
-    uart_byte(1);    // protocol version
+    uart_byte(1); // protocol version
     uart_byte(DISPLAY_TEST_ID);
-    uart_byte(0);    // status: success
-    // XOR of 'D' 'D' 'H' 'T' 1 test ID 0 (the two 'D' bytes cancel).
+    uart_byte(0); // status: success
+                  // XOR of 'D' 'D' 'H' 'T' 1 test ID 0 (the two 'D' bytes cancel).
     uart_byte(0x48 ^ 0x54 ^ 1 ^ DISPLAY_TEST_ID);
 }
 

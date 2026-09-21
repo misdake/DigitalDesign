@@ -93,6 +93,10 @@ function Get-RelativeAgentPath([string]$Path) {
 function Test-IsLocalDocument([string]$RelativePath) {
     $name = Split-Path -Leaf $RelativePath
     if ($name -eq "README.md" -or $name -eq "todo.md") { return $false }
+    # OpenCode prompts are per-run execution artifacts paired with JSONL/stderr,
+    # not durable project documents. Conventions intentionally keep them at
+    # `.agent/opencode-*-prompt.md`, so they do not need an id or index row.
+    if ($RelativePath -match '^opencode-.*-prompt\.md$') { return $false }
     if ($RelativePath -match '(^|/)(daily|weekly|history)/') { return $false }
     return $RelativePath.EndsWith(".md")
 }

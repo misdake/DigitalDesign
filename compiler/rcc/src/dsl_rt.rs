@@ -299,97 +299,89 @@ mod tests {
 }
 
 // ---------------------------------------------------------------------------
-// FPU types: fix16 scalar and vec2/vec3/vec4 vectors. On the target each value
-// occupies exactly one F register (four signed Q8.8 lanes); vec2/vec3 keep
-// their tail lanes zero. The host implementations below model the target
-// fix16 arithmetic exactly for +, -, *, dot, and the simple unary operations;
-// the ROM-based operations (frcp/frsqrt/fsincos) panic on the host.
+// FPU types: fix16 scalar and vec2/vec3/vec4 vectors. All architectural F
+// registers are **signed Q16.16**: 16 fractional bits, numeric range about
+// [-32768, +32767.99998], and every operation wraps (no saturation, no
+// rounding flag). The name `fix16` means "16 fractional bits". A vecN value
+// is a consecutive range of N scalar F registers (2/3/4 for vec2/3/4); the
+// host representation keeps four lanes with a zero tail for uniformity.
+//
+// The host implementations model the target Q16.16 arithmetic for +, -, *,
+// dot and the simple unary operations. The special functions
+// (frcp/frsqrt/fsincos) still panic on the host; their pure reference model
+// lives in the CPU V3 architecture crate.
 // ---------------------------------------------------------------------------
 
-fn fix16_saturate(value: i64) -> i16 {
-    value.clamp(i64::from(i16::MIN), i64::from(i16::MAX)) as i16
+/// Fractional bits of an architectural F register.
+pub const FIX16_FRACTION_BITS: u32 = 16;
+
+fn fix16_mul(a: i32, b: i32) -> i32 {
+    ((i64::from(a) * i64::from(b)) >> FIX16_FRACTION_BITS) as i32
 }
 
-fn round_shift_ties_even(value: i64, shift: u32) -> i64 {
-    let negative = value < 0;
-    let magnitude = value.unsigned_abs() as i64;
-    let divisor = 1_i64 << shift;
-    let quotient = magnitude >> shift;
-    let remainder = magnitude & (divisor - 1);
-    let half = divisor >> 1;
-    let rounded = if remainder > half || (remainder == half && quotient & 1 == 1) {
-        quotient + 1
-    } else {
-        quotient
-    };
-    if negative {
-        -rounded
-    } else {
-        rounded
-    }
+fn fix16_floor(v: i32) -> i32 {
+    v & !0xffff
 }
 
-fn fix16_mul(a: i16, b: i16) -> i16 {
-    fix16_saturate(round_shift_ties_even(i64::from(a) * i64::from(b), 8))
-}
-
-fn fix16_floor(v: i16) -> i16 {
-    v & !0xff
-}
-
-fn fix16_ceil(v: i16) -> i16 {
-    if v & 0xff == 0 {
+fn fix16_ceil(v: i32) -> i32 {
+    if v & 0xffff == 0 {
         v
     } else {
-        fix16_saturate(i64::from(v & !0xff) + 256)
+        fix16_floor(v).wrapping_add(1 << FIX16_FRACTION_BITS)
     }
 }
 
-fn fix16_round(v: i16) -> i16 {
-    fix16_saturate(round_shift_ties_even(i64::from(v), 8) << 8)
+fn fix16_round(v: i32) -> i32 {
+    v.wrapping_add(1 << (FIX16_FRACTION_BITS - 1)) & !0xffff
 }
 
-fn fix16_abs(v: i16) -> i16 {
-    if v == i16::MIN {
-        i16::MAX
+fn fix16_trunc(v: i32) -> i32 {
+    if v < 0 {
+        fix16_ceil(v)
     } else {
-        v.abs()
+        fix16_floor(v)
     }
 }
 
-fn fix16_neg(v: i16) -> i16 {
-    if v == i16::MIN {
-        i16::MAX
-    } else {
-        -v
-    }
+fn fix16_abs(v: i32) -> i32 {
+    v.wrapping_abs()
 }
 
-/// signed Q8.8 fixed-point scalar (one F register on the target)
+fn fix16_neg(v: i32) -> i32 {
+    v.wrapping_neg()
+}
+
+/// signed Q16.16 fixed-point scalar (one F register on the target)
 #[allow(non_camel_case_types)]
 #[derive(Copy, Clone, PartialEq, Eq, PartialOrd, Ord, Debug, Default)]
-pub struct fix16(pub i16);
+pub struct fix16(pub i32);
 
 #[allow(non_camel_case_types)]
 impl fix16 {
-    /// raw Q8.8 bit pattern (FLOAD bridge)
-    pub fn from_bits(bits: u16) -> fix16 {
-        fix16(bits as i16)
-    }
-    /// integer value, shifted into the Q8.8 format
+    /// integer value, shifted into the Q16.16 format
     pub fn from_int(value: i16) -> fix16 {
-        fix16(fix16_saturate(i64::from(value) << 8))
+        fix16(i32::from(value) << FIX16_FRACTION_BITS)
     }
     pub fn zero() -> fix16 {
         fix16(0)
     }
-    /// the raw Q8.8 bit pattern (FSTORE bridge)
-    pub fn to_bits(self) -> u16 {
+    /// Builds a Q16.16 value from its two raw halves, low half first. This is
+    /// the raw-move contract of `ILO2F`/`IHI2F`/`FLD`; it is deliberately
+    /// distinct from the numeric `from_int`/`to_int` conversions.
+    pub fn from_words(lo: u16, hi: u16) -> fix16 {
+        fix16(((u32::from(hi) << 16) | u32::from(lo)) as i32)
+    }
+    /// Low 16 bits as an unsigned word (`FLO2I`/`FST` half).
+    pub fn lo_bits(self) -> u16 {
         self.0 as u16
     }
-    /// truncate toward negative infinity (arithmetic shift)
+    /// High 16 bits as an unsigned word (`FHI2I`/`FST` half).
+    pub fn hi_bits(self) -> u16 {
+        (self.0 >> 16) as u16
+    }
+    /// Truncate toward zero (`FTOI16`); wraps on overflow.
     pub fn to_int(self) -> i16 {
-        self.0 >> 8
+        (fix16_trunc(self.0) >> FIX16_FRACTION_BITS) as i16
     }
     pub fn x(self) -> fix16 {
         self
@@ -406,14 +398,20 @@ impl fix16 {
     pub fn round(self) -> fix16 {
         fix16(fix16_round(self.0))
     }
-    pub fn sat01(self) -> fix16 {
-        fix16(self.0.clamp(0, 256))
+    /// Truncate toward zero.
+    pub fn trunc(self) -> fix16 {
+        fix16(fix16_trunc(self.0))
     }
+    /// Clamp to `[0.0, 1.0]`; a host helper only (v2 has no SAT01 subop).
+    pub fn sat01(self) -> fix16 {
+        fix16(self.0.clamp(0, 1 << FIX16_FRACTION_BITS))
+    }
+    /// `-1.0`, `0.0` or `1.0`; a host helper only (v2 has no SIGN subop).
     pub fn sign(self) -> fix16 {
         fix16(match self.0.cmp(&0) {
-            std::cmp::Ordering::Less => -256,
+            std::cmp::Ordering::Less => -(1 << FIX16_FRACTION_BITS),
             std::cmp::Ordering::Equal => 0,
-            std::cmp::Ordering::Greater => 256,
+            std::cmp::Ordering::Greater => 1 << FIX16_FRACTION_BITS,
         })
     }
 }
@@ -421,13 +419,13 @@ impl fix16 {
 impl std::ops::Add for fix16 {
     type Output = fix16;
     fn add(self, rhs: fix16) -> fix16 {
-        fix16(fix16_saturate(i64::from(self.0) + i64::from(rhs.0)))
+        fix16(self.0.wrapping_add(rhs.0))
     }
 }
 impl std::ops::Sub for fix16 {
     type Output = fix16;
     fn sub(self, rhs: fix16) -> fix16 {
-        fix16(fix16_saturate(i64::from(self.0) - i64::from(rhs.0)))
+        fix16(self.0.wrapping_sub(rhs.0))
     }
 }
 impl std::ops::Mul for fix16 {
@@ -454,7 +452,7 @@ macro_rules! fpu_vec {
             pub fn zero() -> $name {
                 $name([fix16(0); 4])
             }
-            fn map(self, f: fn(i16) -> i16) -> $name {
+            fn map(self, f: fn(i32) -> i32) -> $name {
                 let mut lanes = [fix16(0); 4];
                 for (i, lane) in lanes.iter_mut().enumerate().take($lanes) {
                     *lane = fix16(f(self.0[i].0));
@@ -476,14 +474,17 @@ macro_rules! fpu_vec {
             pub fn round(self) -> $name {
                 self.map(fix16_round)
             }
+            pub fn trunc(self) -> $name {
+                self.map(fix16_trunc)
+            }
             pub fn sat01(self) -> $name {
-                self.map(|v| v.clamp(0, 256))
+                self.map(|v| v.clamp(0, 1 << FIX16_FRACTION_BITS))
             }
             pub fn sign(self) -> $name {
                 self.map(|v| match v.cmp(&0) {
-                    std::cmp::Ordering::Less => -256,
+                    std::cmp::Ordering::Less => -(1 << FIX16_FRACTION_BITS),
                     std::cmp::Ordering::Equal => 0,
-                    std::cmp::Ordering::Greater => 256,
+                    std::cmp::Ordering::Greater => 1 << FIX16_FRACTION_BITS,
                 })
             }
         }
@@ -584,52 +585,123 @@ impl vec4 {
     pub fn w(self) -> fix16 {
         self.0[3]
     }
-    /// load four aligned words from data memory (FIMPORT4)
+    /// Load four consecutive Q16.16 values, two little-endian words each,
+    /// low half first (`FLDV4`).
     pub fn import(ptr: Ptr) -> vec4 {
-        assert_eq!(
-            ptr.addr() & 3,
-            0,
-            "vec4::import requires a 4-aligned address"
-        );
         let mut lanes = [fix16(0); 4];
         for (i, lane) in lanes.iter_mut().enumerate() {
-            *lane = fix16::from_bits(ptr.read(i as i16));
+            *lane = fix16::from_words(ptr.read(2 * i as i16), ptr.read(2 * i as i16 + 1));
         }
         vec4(lanes)
     }
-    /// store four aligned words to data memory (FEXPORT4)
+    /// Store four consecutive Q16.16 values, two little-endian words each,
+    /// low half first (`FSTV4`).
     pub fn export(v: vec4, ptr: Ptr) {
-        assert_eq!(
-            ptr.addr() & 3,
-            0,
-            "vec4::export requires a 4-aligned address"
-        );
         for (i, lane) in v.0.iter().enumerate() {
-            ptr.write(i as i16, lane.to_bits());
+            ptr.write(2 * i as i16, lane.lo_bits());
+            ptr.write(2 * i as i16 + 1, lane.hi_bits());
         }
     }
 }
 
-/// dot product accumulated in the wide ACC format and rounded back to Q8.8
-pub fn fdot(a: vec4, b: vec4) -> fix16 {
-    let mut acc: i64 = 0;
-    for i in 0..4 {
-        acc += i64::from(a.0[i].0) * i64::from(b.0[i].0);
-    }
-    fix16(fix16_saturate(round_shift_ties_even(acc, 8)))
+/// A vector type usable with [`fdot`] (host model): each implementation sums
+/// its real lanes in the wide accumulator.
+pub trait Fdot: Copy {
+    fn dot_terms(self, other: Self) -> i64;
 }
 
-/// ROM-based on the target; no bit-exact host model
+macro_rules! impl_fdot {
+    ($name:ident, $lanes:expr) => {
+        impl Fdot for $name {
+            fn dot_terms(self, other: Self) -> i64 {
+                let mut acc: i64 = 0;
+                for i in 0..$lanes {
+                    acc = acc
+                        .wrapping_add(i64::from(self.0[i].0).wrapping_mul(i64::from(other.0[i].0)));
+                }
+                acc
+            }
+        }
+    };
+}
+
+impl_fdot!(vec2, 2);
+impl_fdot!(vec3, 3);
+impl_fdot!(vec4, 4);
+
+/// Dot product through the wide Q32.32 accumulator, narrowed once to Q16.16
+/// (`DOTSTORE`). Each product is exact; accumulation keeps the low 64 bits.
+pub fn fdot<T: Fdot>(a: T, b: T) -> fix16 {
+    fix16((a.dot_terms(b) >> FIX16_FRACTION_BITS) as i32)
+}
+
+// The special-function declarations below are target intrinsics: C3 lowers
+// them to the two-word FPU v2 special subops (`RCP`, `RSQRT`, and `SINCOS`
+// modes 00/01/10), so `fsin`/`fcos` reuse the same `SINCOS` encoding as
+// `fsincos`. The bit-exact reference model (and its hidden BSRAM tables) lives
+// in the CPU V3 architecture crate. The host cannot reproduce it without
+// duplicating that table, so these shims panic on the Rust host exactly like
+// the other target-only intrinsics.
+
+/// Target special function `Fd = rcp(Fa)` (`SCALAR` subop `0x0C`).
 pub fn frcp(_x: fix16) -> fix16 {
-    unimplemented!("frcp is a target FPU ROM operation without a host model")
+    unimplemented!("frcp is a target FPU special function without a host model")
 }
 
-/// ROM-based on the target; no bit-exact host model
+/// Target special function `Fd = rsqrt(Fa)` (`SCALAR` subop `0x0D`).
 pub fn frsqrt(_x: fix16) -> fix16 {
-    unimplemented!("frsqrt is a target FPU ROM operation without a host model")
+    unimplemented!("frsqrt is a target FPU special function without a host model")
 }
 
-/// ROM-based on the target; no bit-exact host model
+/// Target special function `Fd = sin(Fa)` (`SINCOS` mode `01`).
+pub fn fsin(_x: fix16) -> fix16 {
+    unimplemented!("fsin is a target FPU special function without a host model")
+}
+
+/// Target special function `Fd = cos(Fa)` (`SINCOS` mode `10`).
+pub fn fcos(_x: fix16) -> fix16 {
+    unimplemented!("fcos is a target FPU special function without a host model")
+}
+
+/// Target special function `Fd = sin(Fa)`, `Fd+1 = cos(Fa)` (`SINCOS` mode
+/// `00`); the pair is a contiguous `vec2` over two adjacent F registers.
 pub fn fsincos(_x: fix16) -> vec2 {
-    unimplemented!("fsincos is a target FPU ROM operation without a host model")
+    unimplemented!("fsincos is a target FPU special function without a host model")
+}
+
+// ---------------------------------------------------------------------------
+// Prescale library contract (C0 signature freeze; target lowering remains
+// deferred after C3). The functions are ordinary rcc library calls, not new opcodes. They
+// share one `2^-k` scaling derived from the largest absolute component; the
+// distance comparison scales its threshold by `2^-2k` to match. The pure,
+// bit-exact reference model and its full-range tests live in the CPU V3
+// architecture crate (`cpu_v3::v3_length2_scaled` etc.), because the scaling
+// depends on the FPU's RSQRT reference.
+//
+// `v3_length2_scaled` returns a *prescaled* squared length, not an unscaled
+// one: `|v|^2 * 2^-2k`. `v3_length2_shift` exposes `k`, so a caller that needs
+// an approximate original-scale metric combines the two as `scaled << (2k)`;
+// the component shifts and Q16.16 narrowing are lossy when `k > 0`.
+// ---------------------------------------------------------------------------
+
+/// The `2^-k` prescale exponent `k` (`0..=10`) used by the three helpers below.
+pub fn v3_length2_shift(_v: vec3) -> u16 {
+    unimplemented!("v3_length2_shift target lowering is deferred")
+}
+
+/// The **prescaled** squared length `|v|^2 * 2^-2k`, never overflowing Q16.16.
+/// It is not the unscaled length squared; combine with `v3_length2_shift` only
+/// for an approximate scaled-back value.
+pub fn v3_length2_scaled(_v: vec3) -> fix16 {
+    unimplemented!("v3_length2_scaled target lowering is deferred")
+}
+
+/// `v / |v|`, safe for any Q16.16 input; a zero vector stays zero.
+pub fn v3_normalize_safe(_v: vec3) -> vec3 {
+    unimplemented!("v3_normalize_safe target lowering is deferred")
+}
+
+/// `|a - b|^2 > threshold`, with both sides scaled by `2^-2k`.
+pub fn v3_distance2_gt(_a: vec3, _b: vec3, _threshold: fix16) -> bool {
+    unimplemented!("v3_distance2_gt target lowering is deferred")
 }

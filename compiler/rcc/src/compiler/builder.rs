@@ -49,6 +49,8 @@ pub struct FuncBuilder {
     var_defs: Vec<HashMap<BlockId, VReg>>,
     /// register class of each frontend variable (phis take the variable's class)
     var_class: Vec<RegClass>,
+    /// lane count of each frontend variable (phis take the variable's lanes)
+    var_lanes: Vec<u8>,
     /// phis awaiting their operands, per unsealed block: (phi dst, variable)
     incomplete: HashMap<BlockId, Vec<(VReg, VarId)>>,
     current: Option<BlockId>,
@@ -94,10 +96,12 @@ impl FuncBuilder {
                 block_lines: vec![None],
                 local_slots: 0,
                 vreg_class: param_classes.to_vec(),
+                vreg_lanes: vec![1; n_params],
             },
             sealed: vec![false],
             var_defs: vec![],
             var_class: vec![],
+            var_lanes: vec![],
             incomplete: HashMap::new(),
             current: Some(entry),
             loops: vec![],
@@ -119,8 +123,15 @@ impl FuncBuilder {
 
     /// a frontend variable whose SSA values (and phis) have the given class
     pub fn new_var_typed(&mut self, class: RegClass) -> VarId {
+        self.new_var_typed_lanes(class, 1)
+    }
+
+    /// a frontend variable whose SSA values (and phis) occupy `lanes`
+    /// contiguous F registers (a `vec2`/`vec3`/`vec4` frontend variable)
+    pub fn new_var_typed_lanes(&mut self, class: RegClass, lanes: u8) -> VarId {
         self.var_defs.push(HashMap::new());
         self.var_class.push(class);
+        self.var_lanes.push(lanes);
         self.var_defs.len() - 1
     }
 
@@ -130,12 +141,23 @@ impl FuncBuilder {
         self.func.vreg_class[v as usize] = class;
     }
 
-    fn fresh_vreg(&mut self) -> VReg {
-        self.func.fresh_vreg(RegClass::Gpr)
+    /// override the lane count of a vreg (used for call results and vector
+    /// parameters, whose shape is known only from the signature)
+    pub fn set_vreg_lanes(&mut self, v: VReg, lanes: u8) {
+        assert!(
+            (1..=4).contains(&lanes),
+            "vreg lane count {lanes} is outside 1..=4"
+        );
+        self.func.vreg_lanes[v as usize] = lanes;
     }
 
-    fn fresh_fpu_vreg(&mut self) -> VReg {
-        self.func.fresh_vreg(RegClass::Fpu)
+    /// override the lane count of a frontend variable (its phis follow)
+    pub fn set_var_lanes(&mut self, var: VarId, lanes: u8) {
+        self.var_lanes[var] = lanes;
+    }
+
+    fn fresh_vreg(&mut self) -> VReg {
+        self.func.fresh_vreg(RegClass::Gpr)
     }
 
     fn cur(&self) -> BlockId {
@@ -304,6 +326,172 @@ impl FuncBuilder {
     pub fn store_mem(&mut self, base: VReg, offset: i16, src: VReg) {
         self.push(Instr::StoreMem { base, offset, src });
     }
+
+    // ----- FPU v2 scalar emitters (all vregs are Fpu-class unless stated) -----
+
+    fn fresh_fpu(&mut self) -> VReg {
+        self.func.fresh_vreg(RegClass::Fpu)
+    }
+    pub fn fpu_bin(&mut self, op: FpuBinOp, lhs: VReg, rhs: VReg) -> VReg {
+        let dst = self.fresh_fpu();
+        self.push(Instr::FpuBin { dst, op, lhs, rhs });
+        dst
+    }
+    pub fn fpu_un(&mut self, op: FpuUnOp, src: VReg) -> VReg {
+        let dst = self.fresh_fpu();
+        self.push(Instr::FpuUn { dst, op, src });
+        dst
+    }
+    /// Scalar special function. `lanes` is 1 for RCP/RSQRT/SIN/COS and 2 for
+    /// the dual-output SINCOS, whose destination is a contiguous `Fd`/`Fd+1`.
+    pub fn fpu_special(&mut self, op: FpuSpecialOp, src: VReg, lanes: u8) -> VReg {
+        assert_eq!(
+            lanes,
+            if op == FpuSpecialOp::SinCos { 2 } else { 1 },
+            "FPU special destination width does not match the operation"
+        );
+        let dst = self.fresh_fpu_vec(lanes);
+        self.push(Instr::FpuSpecial { dst, op, src });
+        dst
+    }
+    pub fn fpu_mov(&mut self, src: VReg) -> VReg {
+        let dst = self.fresh_fpu();
+        self.push(Instr::FpuMov { dst, src });
+        dst
+    }
+    /// dst = sign_extend(src_gpr) << 16 (`I16TOF`)
+    pub fn fpu_from_int(&mut self, src_gpr: VReg) -> VReg {
+        let dst = self.fresh_fpu();
+        self.push(Instr::FpuFromInt { dst, src_gpr });
+        dst
+    }
+    /// dst_gpr = trunc-toward-zero(src) (`FTOI16`)
+    pub fn fpu_to_int(&mut self, src: VReg) -> VReg {
+        let dst_gpr = self.fresh_vreg();
+        self.push(Instr::FpuToInt { dst_gpr, src });
+        dst_gpr
+    }
+    /// dst = src_gpr in the low half, high half preserved (`ILO2F`)
+    pub fn fpu_from_lo(&mut self, src_gpr: VReg) -> VReg {
+        let dst = self.fresh_fpu();
+        self.push(Instr::FpuFromLo { dst, src_gpr });
+        dst
+    }
+    /// dst = src with the high half replaced by src_gpr (`IHI2F`)
+    pub fn fpu_from_hi(&mut self, src: VReg, src_gpr: VReg) -> VReg {
+        let dst = self.fresh_fpu();
+        self.push(Instr::FpuFromHi { dst, src, src_gpr });
+        dst
+    }
+    /// dst_gpr = src[15:0] (`FLO2I`)
+    pub fn fpu_to_lo(&mut self, src: VReg) -> VReg {
+        let dst_gpr = self.fresh_vreg();
+        self.push(Instr::FpuToLo { dst_gpr, src });
+        dst_gpr
+    }
+    /// dst_gpr = src[31:16] (`FHI2I`)
+    pub fn fpu_to_hi(&mut self, src: VReg) -> VReg {
+        let dst_gpr = self.fresh_vreg();
+        self.push(Instr::FpuToHi { dst_gpr, src });
+        dst_gpr
+    }
+    pub fn fpu_load(&mut self, base_gpr: VReg, offset: i16) -> VReg {
+        let dst = self.fresh_fpu();
+        self.push(Instr::FpuLoad {
+            dst,
+            base_gpr,
+            offset,
+        });
+        dst
+    }
+    pub fn fpu_store(&mut self, base_gpr: VReg, offset: i16, src: VReg) {
+        self.push(Instr::FpuStore {
+            base_gpr,
+            offset,
+            src,
+        });
+    }
+    /// dst_gpr = address of the 4-word-aligned FPU spill slot `slot`
+    pub fn addr_of_fpu_spill(&mut self, slot: u8) -> VReg {
+        let dst = self.fresh_vreg();
+        self.push(Instr::AddrOfFpuSpill { dst, slot });
+        dst
+    }
+
+    // ----- FPU v2 vector emitters (all vregs are Fpu-class; `lanes` is the
+    // contiguous F-register count, 2/3/4) -----
+
+    fn fresh_fpu_vec(&mut self, lanes: u8) -> VReg {
+        self.func.fresh_vreg_lanes(RegClass::Fpu, lanes)
+    }
+    /// `dst[i] = lhs[i] op rhs[i]` over a contiguous range
+    pub fn fpu_vec_bin(&mut self, op: FpuBinOp, lhs: VReg, rhs: VReg, lanes: u8) -> VReg {
+        let dst = self.fresh_fpu_vec(lanes);
+        self.push(Instr::FpuVecBin { dst, op, lhs, rhs });
+        dst
+    }
+    /// `dst[i] = lhs[i] * scalar` (VMULS)
+    pub fn fpu_vec_muls(&mut self, lhs: VReg, scalar: VReg, lanes: u8) -> VReg {
+        let dst = self.fresh_fpu_vec(lanes);
+        self.push(Instr::FpuVecMulS { dst, lhs, scalar });
+        dst
+    }
+    /// `dst[i] = op(src[i])`
+    pub fn fpu_vec_un(&mut self, op: FpuUnOp, src: VReg, lanes: u8) -> VReg {
+        let dst = self.fresh_fpu_vec(lanes);
+        self.push(Instr::FpuVecUn { dst, op, src });
+        dst
+    }
+    /// `dst = src` over a contiguous range (cycle-safe parallel move)
+    pub fn fpu_vec_move(&mut self, src: VReg, lanes: u8) -> VReg {
+        let dst = self.fresh_fpu_vec(lanes);
+        self.push(Instr::FpuVecMove { dst, src });
+        dst
+    }
+    /// build a vector from scalar lanes (one value per lane)
+    pub fn fpu_vec_construct(&mut self, lanes: &[VReg]) -> VReg {
+        assert!(
+            (2..=4).contains(&lanes.len()),
+            "a vector has 2, 3 or 4 lanes"
+        );
+        let dst = self.fresh_fpu_vec(lanes.len() as u8);
+        self.push(Instr::FpuVecConstruct {
+            dst,
+            lanes: lanes.to_vec(),
+        });
+        dst
+    }
+    /// `dst = src[lane]` (scalar extraction)
+    pub fn fpu_vec_lane(&mut self, src: VReg, lane: u8) -> VReg {
+        let dst = self.fresh_fpu();
+        self.push(Instr::FpuVecLane { dst, src, lane });
+        dst
+    }
+    /// `dst = q16(dot(lhs, rhs))` (DOTSTORE, one narrowing)
+    pub fn fpu_dot_store(&mut self, lhs: VReg, rhs: VReg) -> VReg {
+        let dst = self.fresh_fpu();
+        self.push(Instr::FpuDotStore { dst, lhs, rhs });
+        dst
+    }
+    /// vector load `dst[i] = {mem[a+2i+1], mem[a+2i]}` (FLDV)
+    pub fn fpu_vec_load(&mut self, base_gpr: VReg, offset: i16, lanes: u8) -> VReg {
+        let dst = self.fresh_fpu_vec(lanes);
+        self.push(Instr::FpuVecLoad {
+            dst,
+            base_gpr,
+            offset,
+        });
+        dst
+    }
+    /// vector store (FSTV)
+    pub fn fpu_vec_store(&mut self, base_gpr: VReg, offset: i16, src: VReg) {
+        self.push(Instr::FpuVecStore {
+            base_gpr,
+            offset,
+            src,
+        });
+    }
+
     pub fn call(&mut self, func: FuncName, args: &[VReg], n_rets: usize) -> Vec<VReg> {
         let rets = (0..n_rets).map(|_| self.fresh_vreg()).collect::<Vec<_>>();
         self.push(Instr::Call {
@@ -385,87 +573,6 @@ impl FuncBuilder {
         dst
     }
 
-    // ----- FPU emitters (CpuV3 fix16/vecN; results are Fpu-class) -----
-
-    fn check_class(&self, v: VReg, class: RegClass, what: &str) {
-        debug_assert_eq!(
-            self.func.class_of(v),
-            class,
-            "{what}: vreg class mismatch in {}",
-            self.func.name
-        );
-    }
-
-    pub fn fbin(&mut self, op: FBinOp, lhs: VReg, rhs: VReg) -> VReg {
-        self.check_class(lhs, RegClass::Fpu, "fbin lhs");
-        self.check_class(rhs, RegClass::Fpu, "fbin rhs");
-        let dst = self.fresh_fpu_vreg();
-        self.push(Instr::FBin { dst, op, lhs, rhs });
-        dst
-    }
-    pub fn fmov(&mut self, src: VReg) -> VReg {
-        self.check_class(src, RegClass::Fpu, "fmov src");
-        let dst = self.fresh_fpu_vreg();
-        self.push(Instr::FMov { dst, src });
-        dst
-    }
-    /// GPR to FPU lane-x bridge (FLOAD)
-    pub fn fload(&mut self, src_gpr: VReg) -> VReg {
-        self.check_class(src_gpr, RegClass::Gpr, "fload src");
-        let dst = self.fresh_fpu_vreg();
-        self.push(Instr::FLoad { dst, src_gpr });
-        dst
-    }
-    /// FPU to GPR lane-x bridge (FSTORE)
-    pub fn fstore(&mut self, src: VReg) -> VReg {
-        self.check_class(src, RegClass::Fpu, "fstore src");
-        let dst = self.fresh_vreg();
-        self.push(Instr::FStore { dst_gpr: dst, src });
-        dst
-    }
-    /// dst = four words at {DSEG, base_gpr} (FIMPORT4; 4-aligned base)
-    pub fn fimport4(&mut self, base_gpr: VReg) -> VReg {
-        self.check_class(base_gpr, RegClass::Gpr, "fimport4 base");
-        let dst = self.fresh_fpu_vreg();
-        self.push(Instr::FImport4 { dst, base_gpr });
-        dst
-    }
-    /// four words at {DSEG, base_gpr} = src lanes (FEXPORT4; 4-aligned base)
-    pub fn fexport4(&mut self, src: VReg, base_gpr: VReg) {
-        self.check_class(src, RegClass::Fpu, "fexport4 src");
-        self.check_class(base_gpr, RegClass::Gpr, "fexport4 base");
-        self.push(Instr::FExport4 { src, base_gpr });
-    }
-    pub fn funary(&mut self, op: FUnOp, src: VReg) -> VReg {
-        self.check_class(src, RegClass::Fpu, "funary src");
-        let dst = self.fresh_fpu_vreg();
-        self.push(Instr::FUnary { dst, op, src });
-        dst
-    }
-    /// ACC += dot4(lhs, rhs); pair with `facc_store` so ACC returns to zero
-    pub fn fdot4acc(&mut self, lhs: VReg, rhs: VReg) {
-        self.check_class(lhs, RegClass::Fpu, "fdot4acc lhs");
-        self.check_class(rhs, RegClass::Fpu, "fdot4acc rhs");
-        self.push(Instr::FDot4Acc { lhs, rhs });
-    }
-    /// dst lanes selected by `mask` = round(ACC); ACC = 0
-    pub fn facc_store(&mut self, mask: u8) -> VReg {
-        let dst = self.fresh_fpu_vreg();
-        self.push(Instr::FAccStore { dst, mask });
-        dst
-    }
-    /// ACC = exact src lane in accumulator format (overwrite, not accumulate)
-    pub fn facc_load(&mut self, src: VReg, lane: u8) {
-        self.check_class(src, RegClass::Fpu, "facc_load src");
-        assert!(lane < 4, "facc_load lane {lane} is outside 0..4");
-        self.push(Instr::FAccLoad { src, lane });
-    }
-    pub fn fzero(&mut self) -> VReg {
-        let dst = self.fresh_fpu_vreg();
-        self.push(Instr::FZero { dst });
-        dst
-    }
-
     // ----- variables (versioned SSA views) -----
 
     /// assign `value` to `var` in the current block
@@ -489,7 +596,9 @@ impl FuncBuilder {
         }
         if !self.sealed[block] {
             // block not sealed (loop header): phi with operands filled at seal time
-            let dst = self.func.fresh_vreg(self.var_class[var]);
+            let dst = self
+                .func
+                .fresh_vreg_lanes(self.var_class[var], self.var_lanes[var]);
             self.func.blocks[block].phis.push(Phi { dst, args: vec![] });
             self.incomplete.entry(block).or_default().push((dst, var));
             self.write_var(var, block, dst);
@@ -508,7 +617,9 @@ impl FuncBuilder {
             }
             preds => {
                 let preds = preds.to_vec();
-                let dst = self.func.fresh_vreg(self.var_class[var]);
+                let dst = self
+                    .func
+                    .fresh_vreg_lanes(self.var_class[var], self.var_lanes[var]);
                 // write before recursing, to break cycles through this phi
                 self.write_var(var, block, dst);
                 let args = preds.iter().map(|&p| (p, self.read_var(var, p))).collect();

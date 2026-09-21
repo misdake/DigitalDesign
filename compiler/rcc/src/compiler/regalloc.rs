@@ -204,8 +204,9 @@ fn validate_convention(convention: RegisterConvention) {
         );
     }
     if let Some(fpu) = convention.fpu {
-        // ABI registers (returns f0-f1, arguments f2-f7) are pinned only, not
-        // generally allocatable; every FPU register is caller-saved
+        // ABI registers (returns f0-f3, arguments f4-f27) are pinned only, not
+        // generally allocatable; every FPU register is caller-saved. The FPU v2
+        // file is F0..F63.
         let mut roles = HashSet::new();
         for (name, registers) in [
             ("fpu return", fpu.return_registers),
@@ -213,7 +214,7 @@ fn validate_convention(convention: RegisterConvention) {
             ("fpu allocatable", fpu.allocatable_registers),
         ] {
             for &register in registers {
-                assert!(register < 16, "{name} register f{register} is out of range");
+                assert!(register < 64, "{name} register f{register} is out of range");
                 assert!(
                     roles.insert(register),
                     "duplicate {name} register f{register}"
@@ -312,7 +313,27 @@ pub(crate) fn inst_defs(inst: &Instr) -> Vec<VReg> {
         | Instr::Mfsr { dst, .. }
         | Instr::Bool { dst, .. }
         | Instr::CMov { dst, .. }
-        | Instr::LoadSp { dst, .. } => vec![*dst],
+        | Instr::LoadSp { dst, .. }
+        | Instr::FpuBin { dst, .. }
+        | Instr::FpuUn { dst, .. }
+        | Instr::FpuSpecial { dst, .. }
+        | Instr::FpuMov { dst, .. }
+        | Instr::FpuFromInt { dst, .. }
+        | Instr::FpuFromLo { dst, .. }
+        | Instr::FpuFromHi { dst, .. }
+        | Instr::FpuVecBin { dst, .. }
+        | Instr::FpuVecMulS { dst, .. }
+        | Instr::FpuVecUn { dst, .. }
+        | Instr::FpuVecMove { dst, .. }
+        | Instr::FpuVecConstruct { dst, .. }
+        | Instr::FpuVecLane { dst, .. }
+        | Instr::FpuDotStore { dst, .. }
+        | Instr::FpuLoad { dst, .. }
+        | Instr::FpuVecLoad { dst, .. } => vec![*dst],
+        Instr::FpuToInt { dst_gpr, .. }
+        | Instr::FpuToLo { dst_gpr, .. }
+        | Instr::FpuToHi { dst_gpr, .. }
+        | Instr::AddrOfFpuSpill { dst: dst_gpr, .. } => vec![*dst_gpr],
         Instr::StoreMem { .. }
         | Instr::StoreStatic { .. }
         | Instr::DevSend { .. }
@@ -321,20 +342,12 @@ pub(crate) fn inst_defs(inst: &Instr) -> Vec<VReg> {
         | Instr::Jseg { .. }
         | Instr::Signal { .. }
         | Instr::StoreSp { .. }
-        | Instr::StoreLocal { .. } => {
+        | Instr::StoreLocal { .. }
+        | Instr::FpuStore { .. }
+        | Instr::FpuVecStore { .. } => {
             vec![]
         }
         Instr::Call { rets, .. } | Instr::CallPtr { rets, .. } => rets.clone(),
-        Instr::FBin { dst, .. }
-        | Instr::FMov { dst, .. }
-        | Instr::FLoad { dst, .. }
-        | Instr::FStore { dst_gpr: dst, .. }
-        | Instr::FImport4 { dst, .. }
-        | Instr::FUnary { dst, .. }
-        | Instr::FAccStore { dst, .. }
-        | Instr::FZero { dst }
-        | Instr::AddrOfFpuSpill { dst, .. } => vec![*dst],
-        Instr::FExport4 { .. } | Instr::FDot4Acc { .. } | Instr::FAccLoad { .. } => vec![],
     }
 }
 fn term_uses(term: &Terminator) -> Vec<VReg> {
@@ -397,15 +410,22 @@ struct AbiInfo {
 fn insert_abi_shims(f: &mut IrFunc, convention: RegisterConvention) -> AbiInfo {
     let mut pinned = HashMap::new();
     let fresh = |f: &mut IrFunc, v: VReg| {
-        // the shim copy inherits the class of the value it carries
-        f.fresh_vreg(f.class_of(v))
+        // the shim copy inherits the class and lane count of the value it carries
+        f.fresh_vreg_lanes(f.class_of(v), f.lanes(v))
     };
 
     let count_class = |class: RegClass, values: &[VReg]| {
         values.iter().filter(|&&v| f.class_of(v) == class).count()
     };
+    let lane_sum = |class: RegClass, values: &[VReg]| -> usize {
+        values
+            .iter()
+            .filter(|&&v| f.class_of(v) == class)
+            .map(|&v| usize::from(f.lanes(v)))
+            .sum()
+    };
     let gpr_params = count_class(RegClass::Gpr, &f.params);
-    let fpu_params = f.params.len() - gpr_params;
+    let fpu_lanes = lane_sum(RegClass::Fpu, &f.params);
     assert!(
         gpr_params <= convention.argument_registers.len(),
         "function {} has {} GPR params, max {}",
@@ -413,15 +433,15 @@ fn insert_abi_shims(f: &mut IrFunc, convention: RegisterConvention) -> AbiInfo {
         gpr_params,
         convention.argument_registers.len()
     );
-    if fpu_params > 0 {
+    if fpu_lanes > 0 {
         let fpu = convention
             .fpu
             .expect("FPU parameters need an FPU register convention");
         assert!(
-            fpu_params <= fpu.argument_registers.len(),
-            "function {} has {} FPU params, max {}",
+            fpu_lanes <= fpu.argument_registers.len(),
+            "function {} has {} FPU argument lanes, max {}",
             f.name,
-            fpu_params,
+            fpu_lanes,
             fpu.argument_registers.len()
         );
     }
@@ -432,13 +452,15 @@ fn insert_abi_shims(f: &mut IrFunc, convention: RegisterConvention) -> AbiInfo {
     );
 
     // params: pin to their per-class ABI registers; copy to a fresh vreg for
-    // all real uses
+    // all real uses. FPU values advance the argument offset by their lane
+    // count, so vector parameters pack compactly from F4.
     let params = f.params.clone();
     let mut next_param = [0usize; 2];
     for p in params {
         let class = f.class_of(p);
+        let lanes = usize::from(f.lanes(p));
         let index = next_param[class as usize];
-        next_param[class as usize] += 1;
+        next_param[class as usize] += lanes;
         pinned.insert(p, abi_register(convention, class, index, AbiRole::Argument));
         let used = f.blocks.iter().any(|b| {
             b.phis
@@ -450,7 +472,9 @@ fn insert_abi_shims(f: &mut IrFunc, convention: RegisterConvention) -> AbiInfo {
         if used {
             let p2 = fresh(f, p);
             replace_all_uses(f, p, p2);
-            f.blocks[f.entry].insts.insert(0, shim_mov(p2, p, class));
+            f.blocks[f.entry]
+                .insts
+                .insert(0, shim_mov(p2, p, class, lanes as u8));
             f.blocks[f.entry].lines.insert(0, None);
         }
     }
@@ -465,8 +489,13 @@ fn insert_abi_shims(f: &mut IrFunc, convention: RegisterConvention) -> AbiInfo {
             let line = old_lines.next().unwrap_or(None);
             if let Instr::Call { func, args, rets } = inst {
                 assert!(
-                    args.len() <= convention.argument_registers.len()
-                        && rets.len() <= convention.return_registers.len(),
+                    abi_lane_count(f, &args, RegClass::Gpr) <= convention.argument_registers.len()
+                        && abi_lane_count(f, &args, RegClass::Fpu)
+                            <= convention.fpu.map_or(0, |c| c.argument_registers.len())
+                        && abi_lane_count(f, &rets, RegClass::Gpr)
+                            <= convention.return_registers.len()
+                        && abi_lane_count(f, &rets, RegClass::Fpu)
+                            <= convention.fpu.map_or(0, |c| c.return_registers.len()),
                     "call {func} exceeds ABI register count"
                 );
                 let mut pinned_args = Vec::with_capacity(args.len());
@@ -483,8 +512,8 @@ fn insert_abi_shims(f: &mut IrFunc, convention: RegisterConvention) -> AbiInfo {
                             AbiRole::Argument,
                         ),
                     );
-                    next_arg[class as usize] += 1;
-                    new_insts.push(shim_mov(alpha, *a, class));
+                    next_arg[class as usize] += usize::from(f.lanes(*a));
+                    new_insts.push(shim_mov(alpha, *a, class, f.lanes(*a)));
                     new_lines.push(line);
                     pinned_args.push(alpha);
                 }
@@ -498,9 +527,9 @@ fn insert_abi_shims(f: &mut IrFunc, convention: RegisterConvention) -> AbiInfo {
                         rho,
                         abi_register(convention, class, next_ret[class as usize], AbiRole::Return),
                     );
-                    next_ret[class as usize] += 1;
+                    next_ret[class as usize] += usize::from(f.lanes(*r));
                     pinned_rets.push(rho);
-                    result_movs.push(shim_mov(*r, rho, class));
+                    result_movs.push(shim_mov(*r, rho, class, f.lanes(*r)));
                 }
                 new_insts.push(Instr::Call {
                     func,
@@ -513,8 +542,13 @@ fn insert_abi_shims(f: &mut IrFunc, convention: RegisterConvention) -> AbiInfo {
                 new_lines.extend(std::iter::repeat_n(line, n_movs));
             } else if let Instr::CallPtr { addr, args, rets } = inst {
                 assert!(
-                    args.len() <= convention.argument_registers.len()
-                        && rets.len() <= convention.return_registers.len(),
+                    abi_lane_count(f, &args, RegClass::Gpr) <= convention.argument_registers.len()
+                        && abi_lane_count(f, &args, RegClass::Fpu)
+                            <= convention.fpu.map_or(0, |c| c.argument_registers.len())
+                        && abi_lane_count(f, &rets, RegClass::Gpr)
+                            <= convention.return_registers.len()
+                        && abi_lane_count(f, &rets, RegClass::Fpu)
+                            <= convention.fpu.map_or(0, |c| c.return_registers.len()),
                     "indirect call exceeds ABI register count"
                 );
                 // The target address goes to the backend's temporary register;
@@ -540,8 +574,8 @@ fn insert_abi_shims(f: &mut IrFunc, convention: RegisterConvention) -> AbiInfo {
                             AbiRole::Argument,
                         ),
                     );
-                    next_arg[class as usize] += 1;
-                    new_insts.push(shim_mov(alpha, *a, class));
+                    next_arg[class as usize] += usize::from(f.lanes(*a));
+                    new_insts.push(shim_mov(alpha, *a, class, f.lanes(*a)));
                     new_lines.push(line);
                     pinned_args.push(alpha);
                 }
@@ -555,9 +589,9 @@ fn insert_abi_shims(f: &mut IrFunc, convention: RegisterConvention) -> AbiInfo {
                         rho,
                         abi_register(convention, class, next_ret[class as usize], AbiRole::Return),
                     );
-                    next_ret[class as usize] += 1;
+                    next_ret[class as usize] += usize::from(f.lanes(*r));
                     pinned_rets.push(rho);
-                    result_movs.push(shim_mov(*r, rho, class));
+                    result_movs.push(shim_mov(*r, rho, class, f.lanes(*r)));
                 }
                 new_insts.push(Instr::CallPtr {
                     addr: alpha_addr,
@@ -583,13 +617,14 @@ fn insert_abi_shims(f: &mut IrFunc, convention: RegisterConvention) -> AbiInfo {
             let mut next_ret = [0usize; 2];
             for v in &values {
                 let class = f.class_of(*v);
+                let lanes = f.lanes(*v);
                 let beta = fresh(f, *v);
                 pinned.insert(
                     beta,
                     abi_register(convention, class, next_ret[class as usize], AbiRole::Return),
                 );
-                next_ret[class as usize] += 1;
-                f.blocks[b].insts.push(shim_mov(beta, *v, class));
+                next_ret[class as usize] += usize::from(lanes);
+                f.blocks[b].insts.push(shim_mov(beta, *v, class, lanes));
                 f.blocks[b].lines.push(line);
                 pinned_values.push(beta);
             }
@@ -628,12 +663,23 @@ fn abi_register(
     }
 }
 
-/// shim copy between same-class vregs
-fn shim_mov(dst: VReg, src: VReg, class: RegClass) -> Instr {
+/// shim copy between same-class vregs; a multi-lane FPU value uses the
+/// cycle-safe vector move so any source/destination overlap is handled
+fn shim_mov(dst: VReg, src: VReg, class: RegClass, lanes: u8) -> Instr {
     match class {
         RegClass::Gpr => Instr::Mov { dst, src },
-        RegClass::Fpu => Instr::FMov { dst, src },
+        RegClass::Fpu if lanes > 1 => Instr::FpuVecMove { dst, src },
+        RegClass::Fpu => Instr::FpuMov { dst, src },
     }
+}
+
+/// total ABI registers (lanes) `values` of `class` occupy
+fn abi_lane_count(f: &IrFunc, values: &[VReg], class: RegClass) -> usize {
+    values
+        .iter()
+        .filter(|&&v| f.class_of(v) == class)
+        .map(|&v| usize::from(f.lanes(v)))
+        .sum()
 }
 
 // ---------------------------------------------------------------------------
@@ -887,7 +933,7 @@ fn compute_affinity(f: &IrFunc) -> HashMap<VReg, Vec<VReg>> {
     for b in &f.blocks {
         for inst in &b.insts {
             match inst {
-                Instr::Mov { dst, src } | Instr::FMov { dst, src } => pair(*src, *dst),
+                Instr::Mov { dst, src } | Instr::FpuMov { dst, src } => pair(*src, *dst),
                 // Destructive two-address forms: the backend copies the first
                 // operand into the destination before the operation whenever
                 // the allocator cannot place them together. Prefer coalescing
@@ -996,6 +1042,61 @@ fn linear_scan(
     result
 }
 
+/// Extra register constraint on the destination of a hardware VECTOR
+/// instruction: the design's section 3.2 partial-overlap rule. The destination
+/// range must be disjoint from every vector source, or share a source's base
+/// exactly (in-place), and must not contain the scalar source of `VMULS`.
+#[derive(Default)]
+struct VecDefConstraint {
+    vectors: Vec<VReg>,
+    scalars: Vec<VReg>,
+}
+
+/// per-definition vector overlap constraints (only for the hardware VECTOR
+/// subops; `FpuVecMove`/`FpuVecConstruct` lower to cycle-safe parallel moves)
+fn vector_def_constraints(f: &IrFunc) -> HashMap<VReg, VecDefConstraint> {
+    let mut map: HashMap<VReg, VecDefConstraint> = HashMap::new();
+    for b in &f.blocks {
+        for inst in &b.insts {
+            match inst {
+                Instr::FpuVecBin { dst, lhs, rhs, .. } => {
+                    let e = map.entry(*dst).or_default();
+                    e.vectors.push(*lhs);
+                    e.vectors.push(*rhs);
+                }
+                Instr::FpuVecUn { dst, src, .. } => {
+                    map.entry(*dst).or_default().vectors.push(*src);
+                }
+                Instr::FpuVecMulS { dst, lhs, scalar } => {
+                    let e = map.entry(*dst).or_default();
+                    e.vectors.push(*lhs);
+                    e.scalars.push(*scalar);
+                }
+                _ => {}
+            }
+        }
+    }
+    map
+}
+
+/// `DOTSTORE` writes scalar `Fd` but the encoding still validates
+/// `Fd + lanes <= 64`, so a dot destination cannot use the top few registers.
+fn dot_destination_limits(f: &IrFunc) -> HashMap<VReg, u8> {
+    let mut map = HashMap::new();
+    for b in &f.blocks {
+        for inst in &b.insts {
+            if let Instr::FpuDotStore { dst, lhs, .. } = inst {
+                map.insert(*dst, 64u8.saturating_sub(f.lanes(*lhs)));
+            }
+        }
+    }
+    map
+}
+
+fn ranges_overlap(a: usize, a_len: usize, b: usize, b_len: usize) -> bool {
+    a < b + b_len && b < a + a_len
+}
+
 #[allow(clippy::too_many_arguments)]
 fn scan_class(
     f: &IrFunc,
@@ -1006,16 +1107,17 @@ fn scan_class(
     allocatable: &'static [u8],
     callee_saved: &'static [u8],
 ) -> ScanResult {
-    // fixed ranges per register (from pinned vregs), known upfront
+    // fixed ranges per register (from pinned vregs), known upfront. A pinned
+    // vector occupies one fixed range on each of its lane registers.
     let mut fixed_ranges: HashMap<u8, Vec<(u32, u32)>> = HashMap::new();
     for (&v, &r) in &abi.pinned {
         if f.class_of(v) != class {
             continue;
         }
-        fixed_ranges
-            .entry(r)
-            .or_default()
-            .push((intervals[v as usize].start, intervals[v as usize].end));
+        let range = (intervals[v as usize].start, intervals[v as usize].end);
+        for lane in 0..f.lanes(v) {
+            fixed_ranges.entry(r + lane).or_default().push(range);
+        }
     }
     for (r, ranges) in &fixed_ranges {
         let mut sorted = ranges.clone();
@@ -1026,6 +1128,17 @@ fn scan_class(
     }
     let overlaps = |a: (u32, u32), b: (u32, u32)| !(a.1 < b.0 || b.1 < a.0);
 
+    let constraints = if class == RegClass::Fpu {
+        vector_def_constraints(f)
+    } else {
+        HashMap::new()
+    };
+    let dot_limits = if class == RegClass::Fpu {
+        dot_destination_limits(f)
+    } else {
+        HashMap::new()
+    };
+
     let mut order: Vec<VReg> = (0..intervals.len() as VReg)
         .filter(|&v| intervals[v as usize].start != u32::MAX) // skip dead vregs
         .filter(|&v| f.class_of(v) == class)
@@ -1034,13 +1147,14 @@ fn scan_class(
 
     let mut reg: HashMap<VReg, u8> = HashMap::new();
     let mut spilled = vec![];
-    // (end, vreg, reg); kept sorted by end
-    let mut active: Vec<(u32, VReg, u8)> = vec![];
+    // (end, vreg, base register, lane count); kept sorted by end
+    let mut active: Vec<(u32, VReg, u8, u8)> = vec![];
 
     for &v in &order {
         let iv = &intervals[v as usize];
+        let lanes = f.lanes(v);
         // expire intervals that no longer overlap
-        active.retain(|&(e, av, _)| {
+        active.retain(|&(e, av, _, _)| {
             if e < iv.start {
                 debug_assert!(reg.contains_key(&av) || spilled.contains(&av));
                 false
@@ -1051,8 +1165,8 @@ fn scan_class(
 
         if let Some(&r) = abi.pinned.get(&v) {
             reg.insert(v, r);
-            active.push((iv.end, v, r));
-            active.sort_by_key(|&(e, _, _)| e);
+            active.push((iv.end, v, r, lanes));
+            active.sort_by_key(|&(e, _, _, _)| e);
             continue;
         }
 
@@ -1061,11 +1175,64 @@ fn scan_class(
         } else {
             allocatable
         };
-        let free = |r: u8| {
-            !active.iter().any(|&(_, _, ar)| ar == r)
-                && !fixed_ranges
-                    .get(&r)
-                    .is_some_and(|ranges| ranges.iter().any(|&fr| overlaps(fr, (iv.start, iv.end))))
+        // The destination of a hardware VECTOR op must keep its whole range
+        // clear of F63 and satisfy the partial-overlap rule; a dot destination
+        // additionally cannot sit too close to F63.
+        let mut limit = if lanes > 1 { 63 - lanes } else { 62 };
+        if let Some(&dot) = dot_limits.get(&v) {
+            limit = limit.min(dot);
+        }
+        // These closures take the live/assigned state as arguments so the
+        // allocation loop can mutate `active`/`reg` while checking candidates.
+        let free = |active: &[(u32, VReg, u8, u8)], base: u8, len: u8| {
+            if base > limit {
+                return false;
+            }
+            let lo = usize::from(base);
+            let hi = lo + usize::from(len);
+            (lo..hi).all(|r| allocatable.contains(&(r as u8)))
+                && !active.iter().any(|&(_, _, ab, al)| {
+                    ranges_overlap(lo, hi - lo, usize::from(ab), usize::from(al))
+                })
+                && !(lo..hi).any(|r| {
+                    fixed_ranges
+                        .get(&(r as u8))
+                        .is_some_and(|rs| rs.iter().any(|&fr| overlaps(fr, (iv.start, iv.end))))
+                })
+        };
+        let constraint_ok = |reg: &HashMap<VReg, u8>, base: u8| {
+            let Some(c) = constraints.get(&v) else {
+                return true;
+            };
+            for &s in &c.vectors {
+                let Some(sb) = abi.pinned.get(&s).copied().or_else(|| reg.get(&s).copied()) else {
+                    continue;
+                };
+                if base != sb
+                    && ranges_overlap(
+                        usize::from(base),
+                        usize::from(lanes),
+                        usize::from(sb),
+                        usize::from(f.lanes(s)),
+                    )
+                {
+                    return false;
+                }
+            }
+            for &s in &c.scalars {
+                let Some(sr) = abi.pinned.get(&s).copied().or_else(|| reg.get(&s).copied()) else {
+                    continue;
+                };
+                let lo = usize::from(base);
+                let hi = lo + usize::from(lanes);
+                if (lo..hi).contains(&usize::from(sr)) {
+                    return false;
+                }
+            }
+            true
+        };
+        let usable = |active: &[(u32, VReg, u8, u8)], reg: &HashMap<VReg, u8>, base: u8| {
+            free(active, base, lanes) && constraint_ok(reg, base)
         };
         // coalescing hint: prefer the affinity target's register
         let preferred = affinity.get(&v).and_then(|neighbors| {
@@ -1080,10 +1247,10 @@ fn scan_class(
                 }
             })
         });
-        let mut chosen = preferred.filter(|&r| prefs.contains(&r) && free(r));
+        let mut chosen = preferred.filter(|&r| prefs.contains(&r) && usable(&active, &reg, r));
         if chosen.is_none() {
             for &r in prefs {
-                if free(r) {
+                if usable(&active, &reg, r) {
                     chosen = Some(r);
                     break;
                 }
@@ -1092,28 +1259,38 @@ fn scan_class(
 
         if let Some(r) = chosen {
             reg.insert(v, r);
-            active.push((iv.end, v, r));
-            active.sort_by_key(|&(e, _, _)| e);
-        } else {
-            // spill the active (non-fixed) interval with the latest end if it
-            // outlives v; otherwise spill v itself
-            let victim = active
-                .iter()
-                .enumerate()
-                .filter(|(_, (_, av, _))| !abi.pinned.contains_key(av))
-                .max_by_key(|(_, &(e, _, _))| e)
-                .filter(|(_, &(e, _, _))| e > iv.end)
-                .map(|(i, _)| i);
-            if let Some(i) = victim {
-                let (_, av, ar) = active.remove(i);
+            active.push((iv.end, v, r, lanes));
+            active.sort_by_key(|&(e, _, _, _)| e);
+            continue;
+        }
+
+        // No free run: evict the active (non-fixed) interval with the latest
+        // end if it outlives v and its run can hold v; otherwise spill v.
+        let victim = active
+            .iter()
+            .enumerate()
+            .filter(|(_, &(e, av, _, al))| {
+                !abi.pinned.contains_key(&av) && e > iv.end && al >= lanes
+            })
+            .max_by_key(|(_, &(e, _, _, _))| e)
+            .map(|(i, _)| i);
+        if let Some(i) = victim {
+            let (_, av, ar, al) = active.remove(i);
+            if usable(&active, &reg, ar) {
                 reg.remove(&av);
                 spilled.push(av);
                 reg.insert(v, ar);
-                active.push((iv.end, v, ar));
-                active.sort_by_key(|&(e, _, _)| e);
+                active.push((iv.end, v, ar, lanes));
+                active.sort_by_key(|&(e, _, _, _)| e);
             } else {
+                // the victim's base does not satisfy v's constraints: put the
+                // victim back and spill v instead
+                active.push((intervals[av as usize].end, av, ar, al));
+                active.sort_by_key(|&(e, _, _, _)| e);
                 spilled.push(v);
             }
+        } else {
+            spilled.push(v);
         }
     }
 
@@ -1124,13 +1301,12 @@ fn scan_class(
 // step 4: spill rewriting (returns number of frame slots used)
 // ---------------------------------------------------------------------------
 
-/// rewrite spilled vregs into explicit frame traffic: LoadSp/StoreSp for GPR
-/// vregs, AddrOfFpuSpill + FImport4/FExport4 for FPU vregs (4-word aligned
-/// slots addressed through a fresh GPR temporary). each spilled vreg gets a
-/// fresh frame slot from the persistent counters `next_slot`/`next_fpu_slot`
-/// (monotonic across fixpoint iterations, so slots assigned in earlier
-/// iterations are never clobbered). TODO(M5): pack slots of non-overlapping
-/// spills.
+/// Rewrite spilled GPR vregs into explicit LoadSp/StoreSp frame traffic and
+/// spilled FPU vregs into `AddrOfFpuSpill` + FLD/FST through a fresh GPR address
+/// temporary. Each GPR gets a fresh slot from the persistent `next_slot`
+/// counter and each FPU value a fresh 4-word-aligned spill slot from
+/// `next_fpu_slot` (monotonic across fixpoint iterations, so earlier slots are
+/// not clobbered). TODO(M5): pack slots of non-overlapping spills.
 fn rewrite_spills(f: &mut IrFunc, spilled: &[VReg], next_slot: &mut u8, next_fpu_slot: &mut u8) {
     let mut slot_of: HashMap<VReg, u8> = HashMap::new();
     let mut fpu_slot_of: HashMap<VReg, u8> = HashMap::new();
@@ -1142,7 +1318,9 @@ fn rewrite_spills(f: &mut IrFunc, spilled: &[VReg], next_slot: &mut u8, next_fpu
             }
             RegClass::Fpu => {
                 fpu_slot_of.insert(v, *next_fpu_slot);
-                *next_fpu_slot += 1;
+                // a spill slot is a 4-word unit; a vector needs 2 words per
+                // lane, so a vec2 uses one unit, a vec3/vec4 two
+                *next_fpu_slot += f.lanes(v).div_ceil(2);
             }
         }
     }
@@ -1225,7 +1403,7 @@ fn rewrite_spills(f: &mut IrFunc, spilled: &[VReg], next_slot: &mut u8, next_fpu
             // defs after
             for d in inst_defs(&inst) {
                 if spilled.contains(&d) {
-                    let t = f.fresh_vreg(f.class_of(d));
+                    let t = f.fresh_vreg_lanes(f.class_of(d), f.lanes(d));
                     // replace the just-pushed inst's def with t, then store
                     let last = new_insts.last_mut().unwrap();
                     for dd in defs_mut(last) {
@@ -1373,17 +1551,27 @@ fn reload(
             *v = t;
         }
         RegClass::Fpu => {
+            let lanes = f.lanes(*v);
             let addr = f.fresh_vreg(RegClass::Gpr);
             out.push(Instr::AddrOfFpuSpill {
                 dst: addr,
                 slot: fpu_slot_of[v],
             });
             lines.push(line);
-            let t = f.fresh_vreg(RegClass::Fpu);
-            out.push(Instr::FImport4 {
-                dst: t,
-                base_gpr: addr,
-            });
+            let t = f.fresh_vreg_lanes(RegClass::Fpu, lanes);
+            if lanes > 1 {
+                out.push(Instr::FpuVecLoad {
+                    dst: t,
+                    base_gpr: addr,
+                    offset: 0,
+                });
+            } else {
+                out.push(Instr::FpuLoad {
+                    dst: t,
+                    base_gpr: addr,
+                    offset: 0,
+                });
+            }
             lines.push(line);
             *v = t;
         }
@@ -1412,16 +1600,26 @@ fn spill_store(
             lines.push(line);
         }
         RegClass::Fpu => {
+            let lanes = f.lanes(orig);
             let addr = f.fresh_vreg(RegClass::Gpr);
             out.push(Instr::AddrOfFpuSpill {
                 dst: addr,
                 slot: fpu_slot_of[&orig],
             });
             lines.push(line);
-            out.push(Instr::FExport4 {
-                src: t,
-                base_gpr: addr,
-            });
+            if lanes > 1 {
+                out.push(Instr::FpuVecStore {
+                    base_gpr: addr,
+                    offset: 0,
+                    src: t,
+                });
+            } else {
+                out.push(Instr::FpuStore {
+                    base_gpr: addr,
+                    offset: 0,
+                    src: t,
+                });
+            }
             lines.push(line);
         }
     }
@@ -1443,7 +1641,27 @@ fn defs_mut(inst: &mut Instr) -> Vec<&mut VReg> {
         | Instr::Mfsr { dst, .. }
         | Instr::Bool { dst, .. }
         | Instr::CMov { dst, .. }
-        | Instr::LoadSp { dst, .. } => vec![dst],
+        | Instr::LoadSp { dst, .. }
+        | Instr::FpuBin { dst, .. }
+        | Instr::FpuUn { dst, .. }
+        | Instr::FpuSpecial { dst, .. }
+        | Instr::FpuMov { dst, .. }
+        | Instr::FpuFromInt { dst, .. }
+        | Instr::FpuFromLo { dst, .. }
+        | Instr::FpuFromHi { dst, .. }
+        | Instr::FpuVecBin { dst, .. }
+        | Instr::FpuVecMulS { dst, .. }
+        | Instr::FpuVecUn { dst, .. }
+        | Instr::FpuVecMove { dst, .. }
+        | Instr::FpuVecConstruct { dst, .. }
+        | Instr::FpuVecLane { dst, .. }
+        | Instr::FpuDotStore { dst, .. }
+        | Instr::FpuLoad { dst, .. }
+        | Instr::FpuVecLoad { dst, .. } => vec![dst],
+        Instr::FpuToInt { dst_gpr, .. }
+        | Instr::FpuToLo { dst_gpr, .. }
+        | Instr::FpuToHi { dst_gpr, .. }
+        | Instr::AddrOfFpuSpill { dst: dst_gpr, .. } => vec![dst_gpr],
         Instr::StoreMem { .. }
         | Instr::StoreStatic { .. }
         | Instr::DevSend { .. }
@@ -1452,19 +1670,11 @@ fn defs_mut(inst: &mut Instr) -> Vec<&mut VReg> {
         | Instr::Jseg { .. }
         | Instr::Signal { .. }
         | Instr::StoreSp { .. }
-        | Instr::StoreLocal { .. } => {
+        | Instr::StoreLocal { .. }
+        | Instr::FpuStore { .. }
+        | Instr::FpuVecStore { .. } => {
             vec![]
         }
         Instr::Call { rets, .. } | Instr::CallPtr { rets, .. } => rets.iter_mut().collect(),
-        Instr::FBin { dst, .. }
-        | Instr::FMov { dst, .. }
-        | Instr::FLoad { dst, .. }
-        | Instr::FUnary { dst, .. }
-        | Instr::FAccStore { dst, .. }
-        | Instr::FZero { dst }
-        | Instr::FImport4 { dst, .. }
-        | Instr::AddrOfFpuSpill { dst, .. } => vec![dst],
-        Instr::FStore { dst_gpr, .. } => vec![dst_gpr],
-        Instr::FExport4 { .. } | Instr::FDot4Acc { .. } | Instr::FAccLoad { .. } => vec![],
     }
 }

@@ -527,12 +527,6 @@ enum Key {
     Un(UnOp, VReg),
     Shift(ShiftOp, VReg, IntOperand),
     Imm(u16),
-    // pure FPU operations (saturation never faults); FUnary, FImport4,
-    // FDot4Acc and FAccStore are side-effecting and never keyed
-    FBin(FBinOp, VReg, VReg),
-    FLoad(VReg),
-    FStore(VReg),
-    FZero,
 }
 
 fn canon_operand(replace: &HashMap<VReg, VReg>, operand: IntOperand) -> IntOperand {
@@ -631,16 +625,6 @@ fn cse(f: &mut IrFunc) -> bool {
                 *dst,
             )),
             Instr::LoadImm { dst, value } => Some((Key::Imm(*value), *dst)),
-            Instr::FBin { dst, op, lhs, rhs } => {
-                let (mut a, mut b) = (canon(replace, *lhs), canon(replace, *rhs));
-                if matches!(op, FBinOp::Add | FBinOp::Mul) && a > b {
-                    std::mem::swap(&mut a, &mut b);
-                }
-                Some((Key::FBin(*op, a, b), *dst))
-            }
-            Instr::FLoad { dst, src_gpr } => Some((Key::FLoad(canon(replace, *src_gpr)), *dst)),
-            Instr::FStore { dst_gpr, src } => Some((Key::FStore(canon(replace, *src)), *dst_gpr)),
-            Instr::FZero { dst } => Some((Key::FZero, *dst)),
             _ => None,
         }
     }
@@ -659,7 +643,7 @@ fn cse(f: &mut IrFunc) -> bool {
         let mut added = vec![];
         for inst in &f.blocks[b].insts {
             match inst {
-                Instr::Mov { dst, src } | Instr::FMov { dst, src } => {
+                Instr::Mov { dst, src } | Instr::FpuMov { dst, src } => {
                     if !multi_def.contains(dst) {
                         replace.insert(*dst, canon(replace, *src));
                         *changed = true;
@@ -729,8 +713,6 @@ fn dce(f: &mut IrFunc) -> bool {
                 }
             }
             for inst in &b.insts {
-                // FUnary (domain faults), FImport4/FExport4 (memory) and
-                // FDot4Acc/FAccStore (ACC state) are side-effecting roots;
                 // SIGNAL is an observable compiler barrier and never dies
                 let root = matches!(
                     inst,
@@ -738,6 +720,8 @@ fn dce(f: &mut IrFunc) -> bool {
                         | Instr::StoreStatic { .. }
                         | Instr::StoreSp { .. }
                         | Instr::StoreLocal { .. }
+                        | Instr::FpuStore { .. }
+                        | Instr::FpuVecStore { .. }
                         | Instr::Call { .. }
                         | Instr::CallPtr { .. }
                         | Instr::DevSend { .. }
@@ -746,12 +730,6 @@ fn dce(f: &mut IrFunc) -> bool {
                         | Instr::MtsrDseg { .. }
                         | Instr::Jseg { .. }
                         | Instr::Signal { .. }
-                        | Instr::FUnary { .. }
-                        | Instr::FImport4 { .. }
-                        | Instr::FExport4 { .. }
-                        | Instr::FDot4Acc { .. }
-                        | Instr::FAccStore { .. }
-                        | Instr::FAccLoad { .. }
                 );
                 let defs = crate::compiler::regalloc::inst_defs(inst);
                 if root || defs.iter().any(|d| useful.contains(d)) {
@@ -804,12 +782,26 @@ fn dce(f: &mut IrFunc) -> bool {
                     | Instr::Mfsr { .. }
                     | Instr::Bool { .. }
                     | Instr::CMov { .. }
-                    | Instr::FBin { .. }
-                    | Instr::FMov { .. }
-                    | Instr::FLoad { .. }
-                    | Instr::FStore { .. }
-                    | Instr::FZero { .. }
+                    | Instr::FpuBin { .. }
+                    | Instr::FpuUn { .. }
+                    | Instr::FpuSpecial { .. }
+                    | Instr::FpuMov { .. }
+                    | Instr::FpuFromInt { .. }
+                    | Instr::FpuFromLo { .. }
+                    | Instr::FpuFromHi { .. }
+                    | Instr::FpuToInt { .. }
+                    | Instr::FpuToLo { .. }
+                    | Instr::FpuToHi { .. }
+                    | Instr::FpuLoad { .. }
                     | Instr::AddrOfFpuSpill { .. }
+                    | Instr::FpuVecBin { .. }
+                    | Instr::FpuVecMulS { .. }
+                    | Instr::FpuVecUn { .. }
+                    | Instr::FpuVecMove { .. }
+                    | Instr::FpuVecConstruct { .. }
+                    | Instr::FpuVecLane { .. }
+                    | Instr::FpuDotStore { .. }
+                    | Instr::FpuVecLoad { .. }
             );
             !removable || defs.iter().any(|d| useful.contains(d))
         };
@@ -983,6 +975,12 @@ pub fn convert_diamonds(f: &mut IrFunc) -> bool {
             ) else {
                 continue;
             };
+            // Only GPR diamonds are converted: the Boolean/CMov lowering is a
+            // GPR form, and an FPU phi would otherwise be rewritten to a plain
+            // `Mov` between F registers.
+            if f.class_of(phi.dst) != RegClass::Gpr {
+                continue;
+            }
             converted = Some((join, phi.dst, true_value, false_value));
             break;
         }

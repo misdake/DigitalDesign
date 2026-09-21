@@ -25,8 +25,8 @@ Only these types exist; no other primitive types are supported:
 | `fn(A, B) -> R` | **function pointer** (into instruction memory) | plain Rust fn pointer type; on a Harvard machine this is a *different kind* from `Ptr` and they never convert |
 | `bool` | **one word: 0 or 1** | the type of comparisons and `&& \|\| !`; storable in a variable, passed and returned, and usable as a condition again (`if b`); `b as u16` / `b as i16` yields 0/1 (see §1.1) |
 | a defined `struct` name | **struct value: one word address** | fields are 16-bit words in declaration order, total size padded to the struct's alignment; layout and access rules in §9b |
-| `fix16` | **signed Q8.8 fixed-point scalar** | CPU V3-only; occupies one F register (lane x) |
-| `vec2` / `vec3` / `vec4` | **fix16 vectors** | CPU V3-only; one F register each (4 lanes; vec2/vec3 keep zero tails, per the ISA convention) |
+| `fix16` | **signed Q16.16 fixed-point scalar** | CPU V3-only; occupies one scalar F register (16 fractional bits) |
+| `vec2` / `vec3` / `vec4` | **fix16 vectors** | CPU V3-only; a consecutive range of 2/3/4 scalar F registers (the host type keeps a zero tail) |
 | `()` | unit | return type of procedures |
 
 ### 1.1 Type rules
@@ -55,11 +55,27 @@ Only these types exist; no other primitive types are supported:
 - `/` and `%` work on integers: neither ISA has a divide, so both lower to the rcc_std `div`
   module (a 16-step shift-subtract routine, see §1.2). A literal power-of-two divisor on `u16`
   becomes a shift or a mask instead of a call.
-- FPU types (CPU V3): `+`, `-`, `*` work component-wise on same-typed FPU values; `vecN * fix16`
-  and `fix16 * vecN` scale the vector (lowered to an ACC splat plus `FMUL`); unary `-` negates.
-  Comparisons exist only on `fix16` (signed lane-x ordering through `FCMP` and the pending
-  test). There are no implicit conversions between FPU and integer types — use
-  `fix16::from_int` / `.to_int()` / `fix16::from_bits` / `.to_bits()`.
+- FPU types (CPU V3) are **signed Q16.16**: 16 fractional bits, range about
+  `[-32768, +32767.99998]`, all arithmetic wrapping. `+`, `-`, `*` work
+  component-wise on same-typed FPU values; `vecN * fix16` and `fix16 * vecN`
+  scale the vector; unary `-` negates. Comparisons exist only on `fix16`
+  (signed ordering through the scalar `CMP` subop and the pending test). There
+  are no implicit conversions between FPU and integer types — use the numeric
+  `fix16::from_int` / `.to_int()` or the raw-half moves
+  `fix16::from_words(lo, hi)` / `.lo_bits()` / `.hi_bits()`. Raw-half moves and
+  numeric conversions are deliberately distinct: `from_words`/`lo_bits`/`hi_bits`
+  correspond to `ILO2F`/`IHI2F`/`FLO2I`/`FHI2I`/`FLD`/`FST`, while
+  `from_int`/`to_int` correspond to `I16TOF`/`FTOI16`.
+- FPU lowering has landed through C3: scalar `fix16` construction
+  (`from_int`, `from_words`, `zero`), `+`/`-`/`*` and `+=`/`-=`/`*=` on `fix16`,
+  unary `-`, the `abs`/`floor`/`ceil`/`round`/`trunc` methods, the raw-half
+  `lo_bits`/`hi_bits`, `to_int`, and `fix16` comparisons all lower to the FPU
+  v2 scalar/aux/memory ISA and run on the emulator and the RTL. C2 adds
+  `vec2/3/4`, `fdot`, VMULS broadcasts, and `vec4::import`/`export`; C3 adds
+  `frcp`/`frsqrt` plus `fsin`/`fcos`/`fsincos` through the three frozen SINCOS
+  modes. The prescale helper family remains rejected with an explicit
+  diagnostic because its exact `v3_distance2_gt` boundary needs an
+  un-narrowed wide-accumulator comparison that FPU v2 does not expose.
 
 ### 1.2 Division and remainder
 
@@ -136,7 +152,9 @@ an `Array<T>` when typed indexing is clearer. Struct memory layouts remain out o
 
 ## 5. Intrinsics
 
-Declared for real in `dsl_rt` (so the IDE sees them); the compiler lowers them directly:
+Declared for real in `dsl_rt` (so the IDE sees them); the compiler lowers them directly.
+C1 lowers the scalar `fix16` rows and leaves the `vecN`/`fdot`/`frcp`/`frsqrt`/`fsincos`/prescale
+rows rejected with an explicit "after C1" diagnostic on CPU V3.
 
 | function | meaning |
 |---|---|
@@ -157,15 +175,16 @@ Declared for real in `dsl_rt` (so the IDE sees them); the compiler lowers them d
 | `mtsr_dseg(v: u16)` | CPU V3-only: write the DSEG special register (MTSR DSEG) |
 | `jseg(cseg: u16, target: u16) -> !` | CPU V3-only: atomically switch CSEG to `cseg` and jump to `target` (JSEG); never returns |
 | `icache_invalidate_delayed_and_jump(cseg: u16, target: u16) -> !` | CPU V3-only: terminal barrier lowered to adjacent `ICACHE_INVALIDATE_ALL_DELAYED; JSEG`; never returns |
-| `fix16::from_bits(u16)` / `fix16::from_int(i16)` | CPU V3-only: build a Q8.8 scalar from raw bits / an integer (`FLOAD`) |
-| `fix16::zero()`, `vecN::zero()` | all-zero value (`FZERO`) |
-| `vec2/3/4::new(...)` | build a vector from fix16 lanes (through an aligned frame scratch + `FIMPORT4`) |
-| `vec4::import(Ptr) -> vec4` / `vec4::export(v, Ptr)` | four aligned words at the pointer (`FIMPORT4`/`FEXPORT4`; faults if not 4-aligned) |
-| `.x()` / `.y()` / `.z()` / `.w()` | lane extraction; `.x()` is free, the others cross the frame scratch |
-| `.to_bits() -> u16` / `.to_int() -> i16` | `FSTORE` bridge / truncating integer conversion |
-| `.abs() .floor() .ceil() .round() .sat01() .sign()` | component-wise unary (each satisfies `f(0) = 0`) |
-| `fdot(a, b) -> fix16` | dot product through the wide ACC (`FDOT4ACC` + `FACCSTORE 0b0001`) |
-| `frcp(x)` / `frsqrt(x)` / `fsincos(x) -> vec2` | ROM operations (scalar; fsincos yields `{sin, cos}`); host models panic |
+| `fix16::from_int(i16)` / `.to_int() -> i16` | CPU V3-only numeric conversion (`I16TOF` / `FTOI16`; `to_int` truncates toward zero) |
+| `fix16::from_words(lo, hi)` / `.lo_bits() -> u16` / `.hi_bits() -> u16` | CPU V3-only raw-half moves, low half first (`ILO2F`/`IHI2F`/`FLO2I`/`FHI2I`) |
+| `fix16::zero()`, `vecN::zero()` | all-zero host value (target lowering with C1) |
+| `vec2/3/4::new(...)` | build a vector from fix16 lanes (consecutive scalar F registers) |
+| `vec4::import(Ptr) -> vec4` / `vec4::export(v, Ptr)` | four consecutive Q16.16 values, two little-endian words each, low half first (`FLDV4`/`FSTV4`) |
+| `.x()` / `.y()` / `.z()` / `.w()` | lane extraction from the consecutive range |
+| `.abs() .floor() .ceil() .round() .trunc()` | component-wise unary (the scalar/vector ALU subops) |
+| `fdot(a, b) -> fix16` | dot product through the 64-bit Q32.32 ACC, narrowed once (`DOT` + `DOTSTORE`) |
+| `frcp(x) -> fix16` / `frsqrt(x) -> fix16` / `fsin(x) -> fix16` / `fcos(x) -> fix16` / `fsincos(x) -> vec2` | special functions; `fsincos` yields `{sin, cos}`, while `fsin`/`fcos` select one SINCOS result; target lowering landed with C3, host models panic |
+| `v3_length2_shift(vec3) -> u16` / `v3_length2_scaled(vec3) -> fix16` / `v3_normalize_safe(vec3) -> vec3` / `v3_distance2_gt(vec3, vec3, fix16) -> bool` | frozen prescale library contract, not opcodes; pure reference model lives in the CPU V3 architecture crate, but target lowering remains deferred because exact `v3_distance2_gt` needs an un-narrowed wide-accumulator comparison |
 
 ## 6. Design decisions
 
@@ -187,11 +206,14 @@ Declared for real in `dsl_rt` (so the IDE sees them); the compiler lowers them d
 - **Integer `*` is supported** (hardware MUL on CpuV3, `mul_16x16` library call on CpuV2), and so
   are `/` and `%` (the rcc_std `div` module, §1.2); a zero divisor is defined there — `x / 0` is
   `0` and `x % 0` is `x` on the target — while the bare host operator still panics.
-- **FPU values live in the F register file**: every `fix16`/`vecN` value occupies exactly one
-  F register, stays in SSA form (never in a frame slot except as a 4-word-aligned spill), and
-  follows the FPU ABI: `f0..f1` return values, `f2..f7` arguments, `f8..f14` allocatable, `f15`
-  scratch for parallel-move cycles; all F registers are caller-saved and ACC is
-  caller-clobbered (the compiler only touches ACC inside the atomic fdot and splat sequences).
+- **FPU values live in the F register file**: the FPU v2 file is `F0..F63`, one scalar Q16.16
+  value per register. A `fix16` value occupies one register; `vec2`/`vec3`/`vec4` occupy a
+  consecutive range of 2/3/4 scalar registers (range-aware allocation lands with C2). The FPU ABI
+  reserves `F0..F3` for returns, places arguments compactly from `F4` (up to `F27` for six `vec4`
+  values), allocates `F28..F62`, and keeps `F63` as the parallel-move scratch; all F registers are
+  caller-saved and ACC is caller-clobbered. Instruction selection must avoid the design's
+  partial-overlap case (destination range partially overlapping a source range); a shared base
+  (in-place) is legal.
 
 ## 7. A complete example
 

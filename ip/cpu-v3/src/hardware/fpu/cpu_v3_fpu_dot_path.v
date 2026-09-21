@@ -229,8 +229,14 @@ assign rf_write_enable = store_r && !abort;
 assign rf_write_address = store_addr_r;
 assign rf_write_data = store_data_r;
 
+// busy must mean "this path owns the shared pipe", never "a product is
+// returning". The unit top selects the multiply vs dot operand mux on
+// `mp_busy`, so folding the shared `mul_out_valid` in here made a returning
+// dot product look like multiply ownership and one dot lane was never issued.
+// `outstanding_r` already stays nonzero across every return beat, so the drain
+// window is covered without it.
 assign busy = (load_now || run_r || (outstanding_r != 4'd0) ||
-    mul_out_valid || store_r) && !abort;
+    store_r) && !abort;
 
 // Observation port: the ACC register is exposed directly.
 assign acc_out = acc_r;

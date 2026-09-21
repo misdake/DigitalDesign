@@ -14,6 +14,32 @@ pub const CPU_V3_FAULT_INVALID_INSTRUCTION: u8 = 1;
 pub const CPU_V3_FAULT_INSTRUCTION_MEMORY: u8 = 3;
 pub const CPU_V3_FAULT_DATA_MEMORY: u8 = 4;
 
+// AUX kind-00 integer-bridge subops (design section 10.2). The core performs
+// these moves through the FPU ext read/write ports because the F register file
+// is only reachable there; the numeric conversions are `I16TOF`/`FTOI16`.
+const AUX_ILO2F: u8 = 0x02;
+const AUX_IHI2F: u8 = 0x03;
+const AUX_FLO2I: u8 = 0x04;
+const AUX_FHI2I: u8 = 0x05;
+const AUX_I16TOF: u8 = 0x06;
+const AUX_FTOI16: u8 = 0x07;
+
+/// Is `subop` an AUX kind-00 integer bridge?
+fn aux_bridge_subop(subop: u8) -> bool {
+    (AUX_ILO2F..=AUX_FTOI16).contains(&subop)
+}
+
+/// The bridge's F read is `Fd` for the two low/high merges and `Fa` for the
+/// extractions.
+fn aux_bridge_reads_fd(subop: u8) -> bool {
+    matches!(subop, AUX_ILO2F | AUX_IHI2F | AUX_I16TOF)
+}
+
+/// Does the bridge write an F register (rather than a GPR)?
+fn aux_bridge_writes_f(subop: u8) -> bool {
+    matches!(subop, AUX_ILO2F | AUX_IHI2F | AUX_I16TOF)
+}
+
 #[derive(Clone, ModuleIo)]
 pub struct CpuV3CoreInput {
     pub reset: Wire,
@@ -170,6 +196,13 @@ pub(crate) enum Phase {
     /// FPU v2: capture an FST source vector into the early-release store
     /// buffer, one F register per beat through the FPU ext read port.
     Fpu2Capture,
+    /// FPU v2: AUX kind-00 integer bridge. Read the source F register (when the
+    /// subop needs it) through the ext read port and wait for the unit to
+    /// finish the pair.
+    Fpu2AuxRead,
+    /// FPU v2: apply the AUX bridge (write an F register through the ext write
+    /// port or a GPR) and retire.
+    Fpu2AuxApply,
     Fpu2MemRequest,
     Fpu2MemResponse,
     ResetClear,
@@ -240,6 +273,7 @@ pub struct CpuV3CoreState {
     fpu2_fa: u8,
     fpu2_is_memory: bool,
     fpu2_write_back: bool,
+    fpu2_aux_data: u32,
     /// Half-beat counter across the whole vector memory transaction (2*len
     /// beats); bit 0 selects low/high, the upper bits select the F register.
     fpu2_beat: u8,
@@ -305,6 +339,7 @@ impl Default for CpuV3CoreState {
             fpu2_fa: 0,
             fpu2_is_memory: false,
             fpu2_write_back: false,
+            fpu2_aux_data: 0,
             fpu2_beat: 0,
             fpu2_len: 1,
             fpu2_address: 0,
@@ -330,14 +365,19 @@ impl CpuV3CoreState {
         data_error: bool,
         data_read_data: u16,
     ) -> CpuV3FpuInputValue {
+        let aux_apply = self.phase == Phase::Fpu2AuxApply;
+        let aux_write_f = aux_apply && aux_bridge_writes_f(self.fpu2_subop);
         let ext_access = (self.phase == Phase::Fpu2Exec && self.fpu2_is_memory)
             || self.phase == Phase::Fpu2Capture
+            || self.phase == Phase::Fpu2AuxRead
+            || aux_write_f
             || matches!(self.phase, Phase::Fpu2MemRequest | Phase::Fpu2MemResponse);
-        let ext_write_enable = self.phase == Phase::Fpu2MemResponse
+        let ext_write_enable = (self.phase == Phase::Fpu2MemResponse
             && !self.fpu2_write_back
             && self.fpu2_beat & 1 == 1
             && data_response_valid
-            && !data_error;
+            && !data_error)
+            || aux_write_f;
         // The register index advances once per two beats (one F register), so
         // beat >> 1 selects Fd+i for FLD and Fa+i for FST, matching the RTL.
         // During capture the synchronous RF read is pipelined: present the next
@@ -347,6 +387,28 @@ impl CpuV3CoreState {
         } else {
             u64::from(self.fpu2_beat >> 1)
         };
+        let ext_read_address = if self.phase == Phase::Fpu2AuxRead {
+            let index = if aux_bridge_reads_fd(self.fpu2_subop) {
+                self.fpu2_fd
+            } else {
+                self.fpu2_fa
+            };
+            u64::from(index)
+        } else {
+            u64::from(self.fpu2_fa) + ext_read_index
+        };
+        let gpr_x = u32::from(self.registers[usize::from(encoding::aux_x(self.fpu2_word0))]);
+        let memory_write = (u32::from(data_read_data) << 16) | u32::from(self.fpu2_low);
+        let ext_write_data = if aux_apply {
+            match self.fpu2_subop {
+                AUX_ILO2F => (self.fpu2_aux_data & 0xffff_0000) | gpr_x,
+                AUX_IHI2F => (self.fpu2_aux_data & 0xffff) | (gpr_x << 16),
+                AUX_I16TOF => gpr_x << 16,
+                _ => memory_write,
+            }
+        } else {
+            memory_write
+        };
         CpuV3FpuInputValue {
             abort: self.fpu2_abort,
             word_valid: self.fpu2_word_valid,
@@ -354,8 +416,8 @@ impl CpuV3CoreState {
             ext_access,
             ext_write_enable,
             ext_write_address: u64::from(self.fpu2_fd) + (u64::from(self.fpu2_beat) >> 1),
-            ext_write_data: (u64::from(data_read_data) << 16) | u64::from(self.fpu2_low),
-            ext_read_address: u64::from(self.fpu2_fa) + ext_read_index,
+            ext_write_data: u64::from(ext_write_data),
+            ext_read_address,
         }
     }
 
@@ -1066,6 +1128,10 @@ impl Module for CpuV3Core {
                             && encoding::aux_kind(state.fpu2_word0) == 0
                             && matches!(state.fpu2_subop, encoding::FLD | encoding::FST);
                         state.fpu2_write_back = state.fpu2_subop == encoding::FST;
+                        let is_aux_bridge = encoding::opcode(state.instruction)
+                            == encoding::OPCODE_AUX
+                            && encoding::aux_kind(state.fpu2_word0) == 0
+                            && aux_bridge_subop(state.fpu2_subop);
                         // mode[1:0]: 00 scalar, 01 vec2, 10 vec3, 11 vec4, so
                         // len = mode[1:0] + 1. Reserved mode[3:2] != 00 is
                         // defined to behave as the scalar form (len 1).
@@ -1076,7 +1142,11 @@ impl Module for CpuV3Core {
                             state.registers[usize::from(encoding::aux_x(state.fpu2_word0))],
                         );
                         state.fpu2_beat = 0;
-                        state.phase = Phase::Fpu2Exec;
+                        state.phase = if is_aux_bridge {
+                            Phase::Fpu2AuxRead
+                        } else {
+                            Phase::Fpu2Exec
+                        };
                     }
                 }
             }
@@ -1095,9 +1165,55 @@ impl Module for CpuV3Core {
                         };
                     }
                 } else if seen_complete && !fpu_out.busy {
+                    // A scalar `CMP` publishes its signed Q16.16 ordering into
+                    // the core's pending test, exactly like CMPS/CMPU. The
+                    // flags were registered by the scalar path when the ALU
+                    // ran, so they are valid at this retire edge; the following
+                    // conditional branch/conditional move consumes them.
+                    if encoding::opcode(state.fpu2_word0) == encoding::OPCODE_SCALAR
+                        && state.fpu2_subop == encoding::CMP
+                    {
+                        state.pending_test = Some(if fpu_out.flag_lt {
+                            Ordering::Less
+                        } else if fpu_out.flag_eq {
+                            Ordering::Equal
+                        } else {
+                            Ordering::Greater
+                        });
+                    }
                     state.retire(2);
                     state.phase = Phase::FetchRequest;
                 }
+            }
+            Phase::Fpu2AuxRead => {
+                // The F register was addressed through the ext read port this
+                // cycle; the synchronous RF data lands next cycle. Wait for the
+                // unit's `instr_complete` strobe (sampled pre-edge, like the
+                // RTL's registered `fpu2_seen_complete`), then latch the read
+                // value.
+                let seen_complete = state.fpu2_seen_complete;
+                if fpu_out.instr_complete {
+                    state.fpu2_seen_complete = true;
+                }
+                if seen_complete {
+                    state.fpu2_aux_data = fpu_out.ext_read_data as u32;
+                    state.phase = Phase::Fpu2AuxApply;
+                }
+            }
+            Phase::Fpu2AuxApply => {
+                // F writes were driven combinationally through the ext write
+                // port this cycle; the GPR-writing bridges stage their result
+                // through the normal synchronous GPR write.
+                let x = encoding::aux_x(state.fpu2_word0);
+                match state.fpu2_subop {
+                    AUX_FLO2I => state.write_gpr(x, (state.fpu2_aux_data & 0xffff) as u16),
+                    AUX_FHI2I => state.write_gpr(x, (state.fpu2_aux_data >> 16) as u16),
+                    AUX_FTOI16 => {
+                        state.write_gpr(x, crate::fix16_to_i16(state.fpu2_aux_data as i32) as u16)
+                    }
+                    _ => {}
+                }
+                state.retire(2);
             }
             Phase::Fpu2Capture => {
                 // The F value indexed by fpu2_beat was requested on the previous

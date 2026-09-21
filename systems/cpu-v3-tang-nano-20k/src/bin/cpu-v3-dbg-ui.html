@@ -347,10 +347,10 @@ function render({followPc = false} = {}) {
   let rt = '';
   for (let i = 0; i < 16; i += 2)
     rt += `<tr><td>r${i}</td><td>${hx(state.regs[i])}</td><td>r${i+1}</td><td>${hx(state.regs[i+1])}</td></tr>`;
-  rt += `<tr class="fhead clickable" id="fputoggle"><td colspan="4">fpu (vec4) <span id="fpuarrow">${fpuCollapsed ? '▸' : '▾'}</span></td></tr>`;
+  rt += `<tr class="fhead clickable" id="fputoggle"><td colspan="4">fpu (f0..f63, Q16.16) <span id="fpuarrow">${fpuCollapsed ? '▸' : '▾'}</span></td></tr>`;
   rt += `<tbody id="fpubody"${fpuCollapsed ? ' style="display:none"' : ''}>`;
-  for (let i = 0; i < 16; i++)
-    rt += `<tr><td>f${i}</td><td colspan="3">${state.fpu[i].map(x => `<span class="fpu-cell">${x}</span>`).join(' ')}</td></tr>`;
+  for (let i = 0; i < 64; i += 2)
+    rt += `<tr><td>f${i}</td><td>${state.fpu[i]}</td><td>f${i+1}</td><td>${state.fpu[i+1]}</td></tr>`;
   rt += `<tr><td>acc</td><td colspan="3">${state.acc}</td></tr>`;
   rt += '</tbody>';
   $('reg').innerHTML = rt;
