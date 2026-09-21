@@ -101,6 +101,8 @@ pub(crate) mod encoding {
     }
 }
 
+pub(crate) mod lut;
+
 #[derive(Clone, ModuleIo)]
 pub struct CpuV3FpuRegisterRamInput {
     pub write_enable: Wire,
