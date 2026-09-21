@@ -159,10 +159,11 @@ fn rf_mirrors_from_lut() -> (Box<[u32; 512]>, Box<[u32; 512]>) {
     (mirror_a, mirror_b)
 }
 
+#[derive(Clone)]
 pub struct CpuV3FpuRegisterRamState {
     /// Mirror A (read port A): architectural F0..F63 plus the RCP table at
     /// 128..255 and the SINCOS intervals at 256..511 (design section 9.4).
-    mirror_a: Box<[u32; 512]>,
+    pub(crate) mirror_a: Box<[u32; 512]>,
     /// Mirror B (read port B): architectural F0..F63 plus the RSQRT even table
     /// at 128..255 and the RSQRT odd table at 256..383.
     mirror_b: Box<[u32; 512]>,
@@ -272,7 +273,7 @@ impl HardwareIdentity for CpuV3FpuFrontend {
     }
 }
 
-#[derive(Default)]
+#[derive(Default, Clone)]
 pub struct CpuV3FpuFrontendState {
     waiting_word1: bool,
     word0_raw: u16,
@@ -502,7 +503,7 @@ impl HardwareIdentity for CpuV3FpuScalarPath {
     }
 }
 
-#[derive(Default)]
+#[derive(Default, Clone)]
 pub struct CpuV3FpuScalarPathState {
     write_enable: bool,
     write_address: u16,
@@ -706,7 +707,7 @@ impl HardwareIdentity for CpuV3FpuSpecialPath {
 
 /// Pipeline registers of the blocking special path. Instruction context is
 /// written once and remains stable while only the valid token/data advance.
-#[derive(Default)]
+#[derive(Default, Clone)]
 pub struct CpuV3FpuSpecialPathState {
     p0_valid: bool,
     p0_rcp: bool,
@@ -1465,6 +1466,7 @@ impl HardwareIdentity for CpuV3Fpu {
 
 /// Compositional emu state: the three leaf states plus the one-beat
 /// operand-address hold register.
+#[derive(Clone)]
 pub struct CpuV3FpuState {
     frontend: CpuV3FpuFrontendState,
     rf: CpuV3FpuRegisterRamState,
@@ -1571,6 +1573,18 @@ impl Default for CpuV3FpuState {
 }
 
 impl CpuV3FpuState {
+    /// Read-only view of the architectural F registers (`F0..F63`), for the
+    /// system harness to compare against the naive simulator. Mirror A holds the
+    /// architectural registers in its first 64 words.
+    pub fn architectural_f_registers(&self) -> [i32; 64] {
+        std::array::from_fn(|index| self.rf.mirror_a[index] as i32)
+    }
+
+    /// The shared 64-bit dot accumulator.
+    pub fn accumulator(&self) -> i64 {
+        self.dp_acc
+    }
+
     /// Combinational outputs of the unit top (registered leaf outputs and the
     /// busy/complete status); register updates live in `tick`.
     pub(crate) fn comb(&self, input: &CpuV3FpuInputValue) -> CpuV3FpuOutputValue {

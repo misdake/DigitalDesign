@@ -17,7 +17,10 @@ use cpu_v3::{
     CpuV3InstructionFetchQueueInput, CpuV3InstructionFetchQueueOutput, CpuV3TwoWayCache,
     CpuV3TwoWayCacheInput, CpuV3TwoWayCacheOutput,
 };
-use cpu_v3_tang_nano_20k::{CpuV3MemoryArbiter, CpuV3MemoryArbiterInput, CpuV3MemoryArbiterOutput};
+use cpu_v3_tang_nano_20k::{
+    CpuV3MemoryArbiter, CpuV3MemoryArbiterInput, CpuV3MemoryArbiterOutput, CpuV3MemoryArbiterState,
+    SYSTEM_CONTROL_DEVICE,
+};
 use digital_design_circuit::{build_circuit, Circuit, Wire, Wires};
 use digital_design_hardware::{Module, ModuleIo};
 use rcc::frontend::compile_program_named;
@@ -26,8 +29,163 @@ use std::fs::{create_dir_all, File};
 use std::io::{BufWriter, Write};
 use std::path::Path;
 
+/// System-control channel carrying the fetch-pause register in the modelled
+/// device: a non-zero write holds the frontend off the core, a zero write
+/// releases it. The emulator owns this hold; there is no hardware port.
+pub const FETCH_PAUSE_CHANNEL: u8 = 6;
+
+// ---- complete-machine snapshot / restore (design/fetch-pause section 7.1) ----
+//
+// `Circuit` cannot be cloned (it owns `Box<dyn External>`), so a snapshot is
+// "clone every emulated module state + the SDRAM image" and a restore writes
+// those states back into the live circuit. The handles below are the same
+// `Rc<RefCell<..>>` pattern the fetch queue already used, attached for every
+// emulated module instead of only the queue.
+
+type CoreHandle = std::rc::Rc<std::cell::RefCell<cpu_v3::CpuV3CoreState>>;
+type IcacheHandle = std::rc::Rc<std::cell::RefCell<cpu_v3::CpuV3TwoWayCacheState>>;
+type DcacheHandle = std::rc::Rc<std::cell::RefCell<cpu_v3::CpuV3DataCacheState>>;
+type ArbiterHandle = std::rc::Rc<std::cell::RefCell<CpuV3MemoryArbiterState>>;
+
+/// One emulated module: its state handle plus the wires it is bound to, so it
+/// can be driven from the harness exactly like `emu_connect` would.
+struct ObservedModule<M: digital_design_hardware::Module> {
+    state: std::rc::Rc<std::cell::RefCell<M::EmuState>>,
+    input: M::Input,
+    output: M::Output,
+}
+
+impl<M: digital_design_hardware::Module> ObservedModule<M> {
+    fn new(
+        state: std::rc::Rc<std::cell::RefCell<M::EmuState>>,
+        input: M::Input,
+        output: M::Output,
+    ) -> Self {
+        Self {
+            state,
+            input,
+            output,
+        }
+    }
+}
+
+impl<M: digital_design_hardware::Module> digital_design_circuit::External for ObservedModule<M> {
+    fn execute(&mut self, circuit: &mut digital_design_circuit::CircuitWires) {
+        M::execute_emu(
+            &mut self.state.borrow_mut(),
+            circuit,
+            &self.input,
+            &self.output,
+        );
+    }
+    fn clock(&mut self, circuit: &mut digital_design_circuit::CircuitWires) {
+        M::clock_emu(
+            &mut self.state.borrow_mut(),
+            circuit,
+            &self.input,
+            &self.output,
+        );
+    }
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
+    }
+}
+
+/// A complete machine snapshot: every emulated module state plus architectural
+/// memory. Cloning it costs one copy of the caches and memory, which is what
+/// makes checkpointing cheap relative to re-running a prefix.
+#[derive(Clone)]
+pub struct SystemSnapshot {
+    core: cpu_v3::CpuV3CoreState,
+    fetch: cpu_v3::CpuV3InstructionFetchQueueState,
+    icache: cpu_v3::CpuV3TwoWayCacheState,
+    dcache: cpu_v3::CpuV3DataCacheState,
+    arbiter: CpuV3MemoryArbiterState,
+    /// SDRAM contents, including anything not yet written back from the D-cache.
+    pub memory: Vec<u16>,
+    /// The SDRAM port model itself, so a snapshot taken while a transaction is in
+    /// flight also restores the controller phase (`state`, `beat`, `read_delay`,
+    /// `pending_*`, `recovery_count`, refresh counter, response beat).
+    sdram: SdramModel,
+    /// Pause request state at the snapshot point.
+    paused: bool,
+}
+
+/// Read-only architectural state of the cycle model, for direct comparison
+/// against the naive `CpuV3Sim`.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ArchitecturalView {
+    pub gprs: [u16; 16],
+    pub f_registers: [i32; 64],
+    pub accumulator: i64,
+    pub pc: u16,
+    pub segments: (u16, u16),
+    pub retired_words: u32,
+}
+
+/// Live handles to the emulated machine, used to take and apply snapshots.
+pub struct SystemHandles {
+    core: CoreHandle,
+    fetch: std::rc::Rc<std::cell::RefCell<cpu_v3::CpuV3InstructionFetchQueueState>>,
+    icache: IcacheHandle,
+    dcache: DcacheHandle,
+    arbiter: ArbiterHandle,
+}
+
+impl SystemHandles {
+    /// Read-only architectural view of the core at this instant: 16 GPRs, 64 F
+    /// registers, the accumulator, the PC and the segment registers. The system
+    /// harness compares these directly against the naive simulator.
+    pub fn architectural_view(&self) -> ArchitecturalView {
+        let core = self.core.borrow();
+        ArchitecturalView {
+            gprs: core.architectural_gprs(),
+            f_registers: core.architectural_f_registers(),
+            accumulator: core.accumulator(),
+            pc: core.program_counter(),
+            segments: core.segments(),
+            retired_words: core.retired_words(),
+        }
+    }
+
+    /// Captures the whole machine. `memory` must be the SDRAM image at the same
+    /// instant, and `sdram` the port model at that instant.
+    pub fn snapshot(&self, memory: Vec<u16>, sdram: SdramModel, paused: bool) -> SystemSnapshot {
+        SystemSnapshot {
+            core: self.core.borrow().clone(),
+            fetch: self.fetch.borrow().clone(),
+            icache: self.icache.borrow().clone(),
+            dcache: self.dcache.borrow().clone(),
+            arbiter: self.arbiter.borrow().clone(),
+            memory,
+            sdram,
+            paused,
+        }
+    }
+
+    /// Writes a snapshot back into the live machine, so execution continues from
+    /// exactly the snapshotted point. The SDRAM model lives outside the circuit
+    /// and is restored by the caller through [`SystemSnapshot::sdram`].
+    pub fn restore(&self, snapshot: &SystemSnapshot) {
+        *self.core.borrow_mut() = snapshot.core.clone();
+        *self.fetch.borrow_mut() = snapshot.fetch.clone();
+        *self.icache.borrow_mut() = snapshot.icache.clone();
+        *self.dcache.borrow_mut() = snapshot.dcache.clone();
+        *self.arbiter.borrow_mut() = snapshot.arbiter.clone();
+    }
+}
+
 // Observe the actual fetch emulator state without adding synthesized ports or
 // running a second model. Other system/co-sim paths retain normal emu_connect.
+//
+// The system-control device's `fetch_pause` is an emulator-side hold. The queue
+// keeps being clocked in lockstep with the core - its pop and the core's latch
+// happen on the same edge, so stopping its clock would desynchronise the two -
+// and it keeps seeing the core's request, so the word the core is waiting for
+// stays in the queue and can be re-offered on release. Only the answer the core
+// samples is suppressed, and that is done at the core's own input in the run
+// loop (`instruction_response_valid` / `instruction_request_ready` are forced
+// low while paused), which is the signal the core actually reads.
 struct ObservedFetch {
     state: std::rc::Rc<std::cell::RefCell<cpu_v3::CpuV3InstructionFetchQueueState>>,
     input: CpuV3InstructionFetchQueueInput,
@@ -95,7 +253,12 @@ enum SdramState {
 /// Cycle-faithful model of `SharedSdramPort` for the CPU port only. Refresh is
 /// due every 600 clocks; a line read costs ACTIVE + READ + four 64-bit beats + three
 /// recovery clocks.
-struct SdramModel {
+///
+/// Cloneable because every field is part of the machine state a snapshot has to
+/// carry: the `memory` contents alone are not enough, since a snapshot taken
+/// while a transaction is in flight must also restore the controller phase.
+#[derive(Clone)]
+pub struct SdramModel {
     memory: Vec<u16>,
     state: SdramState,
     refresh_count: u16,
@@ -305,6 +468,19 @@ pub struct BenchResult {
     pub store_latency_cycles: u64,
     pub opcode_retired: [u32; 16],
     pub sdram_state_cycles: [u64; 11],
+    /// Cycles during which the modelled system-control fetch pause was held.
+    pub fetch_pause_cycles: u32,
+    /// Retired word count at the first paused cycle, when a pause was requested.
+    pub retired_words_at_first_pause: Option<u32>,
+    /// Cycles on which the data side was busy: the core had a data request in
+    /// flight or the D-cache was not accepting requests (refill, eviction,
+    /// write-back or maintenance). Writes retired just before a pause keep
+    /// draining for a while after it, so a comparison is only valid once this
+    /// has been false for a cycle while the pause is held.
+    pub data_side_busy_cycles: u32,
+    /// First cycle at or after the pause engaged on which the data side was
+    /// quiet. `None` when no pause was requested.
+    pub data_side_quiet_at: Option<usize>,
 }
 
 #[derive(Clone, Copy)]
@@ -652,7 +828,77 @@ pub fn compile_cpu_v3_source(source: &str) -> Vec<u16> {
 /// Runs `words` from physical word zero (code and data share segment zero) until
 /// the core halts, returning the cycle count and the profile counters.
 pub fn run_benchmark(words: &[u16], maximum_cycles: usize) -> BenchResult {
-    run_benchmark_profiled(words, maximum_cycles, None)
+    run_benchmark_paused_memory(words, maximum_cycles, |_, _| false).0
+}
+
+/// Runs `words` with a per-cycle hook on the modelled system-control fetch
+/// pause: returning `true` holds the fetch queue off the core for that cycle.
+/// The pause is emulator-owned (device 0 channel 6); there is no hardware port.
+pub fn run_benchmark_paused(
+    words: &[u16],
+    maximum_cycles: usize,
+    pause_at: impl FnMut(usize, u32) -> bool,
+) -> BenchResult {
+    run_benchmark_paused_memory(words, maximum_cycles, pause_at).0
+}
+
+/// As `run_benchmark_paused`, but also returns the final SDRAM image after the
+/// post-halt D-cache clean, for comparing architectural memory against another
+/// model.
+pub fn run_benchmark_paused_memory(
+    words: &[u16],
+    maximum_cycles: usize,
+    mut pause_at: impl FnMut(usize, u32) -> bool,
+) -> (BenchResult, Vec<u16>) {
+    let (result, memory, _) =
+        run_benchmark_profiled_inner(words, maximum_cycles, None, &mut pause_at, None, None);
+    (result, memory)
+}
+
+/// A checkpoint taken from inside a run: the complete machine snapshot.
+pub struct Checkpoint {
+    pub snapshot: SystemSnapshot,
+}
+
+impl Checkpoint {
+    /// True when the SDRAM port model was not idle at the snapshot point, i.e.
+    /// a transaction phase had to be carried in the snapshot for the resume to
+    /// be exact.
+    pub fn sdram_was_busy(&self) -> bool {
+        self.snapshot.sdram.state != SdramState::Idle
+    }
+}
+
+/// Per-cycle checkpoint observer: `(cycle, handles, sdram_busy) -> take now?`.
+/// It is offered the live machine every cycle once the pause is held and the
+/// data side has gone quiet (so the architectural state is stable), and it may
+/// take more than one checkpoint by returning `true` more than once.
+type CheckpointFn<'a> = &'a mut dyn FnMut(usize, &SystemHandles, bool) -> bool;
+
+/// As `run_benchmark_paused_memory`, but able to start from a checkpoint and to
+/// hand one back.
+///
+/// * `start_from` restores a previously taken checkpoint before the run begins,
+///   so a trace's prefix is reused instead of re-run.
+/// * `checkpoint_at` is offered the live machine at the end of every cycle while
+///   it is paused and the data side is quiescent (so the architectural state is
+///   stable). Return `true` to take a checkpoint; the first one accepted is
+///   returned.
+pub fn run_from_checkpoint(
+    words: &[u16],
+    maximum_cycles: usize,
+    mut pause_at: impl FnMut(usize, u32) -> bool,
+    start_from: Option<&Checkpoint>,
+    checkpoint_at: Option<CheckpointFn<'_>>,
+) -> (BenchResult, Vec<u16>, Option<Checkpoint>) {
+    run_benchmark_profiled_inner(
+        words,
+        maximum_cycles,
+        None,
+        &mut pause_at,
+        start_from,
+        checkpoint_at,
+    )
 }
 
 pub fn run_benchmark_profiled(
@@ -660,15 +906,56 @@ pub fn run_benchmark_profiled(
     maximum_cycles: usize,
     trace_directory: Option<&Path>,
 ) -> BenchResult {
+    run_benchmark_profiled_inner(
+        words,
+        maximum_cycles,
+        trace_directory,
+        &mut |_, _| false,
+        None,
+        None,
+    )
+    .0
+}
+
+fn run_benchmark_profiled_inner(
+    words: &[u16],
+    maximum_cycles: usize,
+    trace_directory: Option<&Path>,
+    pause_at: &mut impl FnMut(usize, u32) -> bool,
+    start_from: Option<&Checkpoint>,
+    mut checkpoint_at: Option<CheckpointFn<'_>>,
+) -> (BenchResult, Vec<u16>, Option<Checkpoint>) {
     let mut memory = vec![0u16; SDRAM_WORDS];
     for (offset, word) in words.iter().copied().enumerate() {
         memory[offset] = word;
+    }
+    // Starting from a checkpoint restores the SDRAM image and controller phase,
+    // not just the module states.
+    let start_sdram = start_from.map(|checkpoint| checkpoint.snapshot.sdram.clone());
+    if let Some(checkpoint) = start_from {
+        memory.clone_from(&checkpoint.snapshot.memory);
     }
 
     let fetch_state = std::rc::Rc::new(std::cell::RefCell::new(
         cpu_v3::CpuV3InstructionFetchQueueState::default(),
     ));
-    let (mut circuit, handles) = build_circuit(|| {
+    // State handles for every emulated module, so a complete machine snapshot can
+    // be taken and restored (design/fetch-pause section 7.1).
+    let core_state: CoreHandle =
+        std::rc::Rc::new(std::cell::RefCell::new(cpu_v3::CpuV3CoreState::default()));
+    let icache_state: IcacheHandle = std::rc::Rc::new(std::cell::RefCell::new(
+        cpu_v3::CpuV3TwoWayCacheState::default(),
+    ));
+    let dcache_state: DcacheHandle = std::rc::Rc::new(std::cell::RefCell::new(
+        cpu_v3::CpuV3DataCacheState::default(),
+    ));
+    let arbiter_state: ArbiterHandle =
+        std::rc::Rc::new(std::cell::RefCell::new(CpuV3MemoryArbiterState::default()));
+    let mut handles: Option<SystemHandles> = None;
+    // Emulator-side fetch pause, owned by the system-control device model (see
+    // `ObservedFetch`). Shared into the circuit closure so tests can toggle it.
+    let fetch_pause = std::rc::Rc::new(std::cell::Cell::new(false));
+    let (mut circuit, circuit_handles) = build_circuit(|| {
         let mut core_input = CpuV3CoreInput::allocate();
         let core_output = CpuV3CoreOutput::allocate();
 
@@ -739,15 +1026,40 @@ pub fn run_benchmark_profiled(
 
         // Create the emulator externals after every wire is connected. The
         // order matches the combinational dependency (core, caches, arbiter).
-        CpuV3Core::emu_connect(&core_input, &core_output);
+        // Every module is attached through `ObservedModule` rather than
+        // `emu_connect` so the harness keeps a state handle it can snapshot.
+        digital_design_circuit::external(ObservedModule::<CpuV3Core>::new(
+            core_state.clone(),
+            core_input.clone(),
+            core_output.clone(),
+        ));
         digital_design_circuit::external(ObservedFetch {
             state: fetch_state.clone(),
             input: fetch_input.clone(),
             output: fetch_output.clone(),
         });
-        CpuV3TwoWayCache::emu_connect(&icache_input, &icache_output);
-        CpuV3DataCache::emu_connect(&dcache_input, &dcache_output);
-        CpuV3MemoryArbiter::emu_connect(&arbiter_input, &arbiter_output);
+        digital_design_circuit::external(ObservedModule::<CpuV3TwoWayCache>::new(
+            icache_state.clone(),
+            icache_input.clone(),
+            icache_output.clone(),
+        ));
+        digital_design_circuit::external(ObservedModule::<CpuV3DataCache>::new(
+            dcache_state.clone(),
+            dcache_input.clone(),
+            dcache_output.clone(),
+        ));
+        digital_design_circuit::external(ObservedModule::<CpuV3MemoryArbiter>::new(
+            arbiter_state.clone(),
+            arbiter_input.clone(),
+            arbiter_output.clone(),
+        ));
+        handles = Some(SystemHandles {
+            core: core_state.clone(),
+            fetch: fetch_state.clone(),
+            icache: icache_state.clone(),
+            dcache: dcache_state.clone(),
+            arbiter: arbiter_state.clone(),
+        });
 
         (
             core_input,
@@ -774,9 +1086,17 @@ pub fn run_benchmark_profiled(
         icache_output,
         dcache_output,
         fetch_output,
-    ) = handles;
+    ) = circuit_handles;
 
-    let mut sdram = SdramModel::new(memory);
+    // Restore a checkpoint before the run starts, so the prefix it covers is
+    // reused rather than re-executed.
+    let live_handles = handles.expect("the circuit closure must publish its state handles");
+    let mut taken_checkpoint = None;
+    if let Some(checkpoint) = start_from {
+        live_handles.restore(&checkpoint.snapshot);
+    }
+
+    let mut sdram = start_sdram.unwrap_or_else(|| SdramModel::new(memory));
     let mut trace = TraceRecorder::new(trace_directory);
     let mut previous_retired = 0u32;
     let mut retired_instructions = 0u32;
@@ -807,6 +1127,11 @@ pub fn run_benchmark_profiled(
     let mut redirect_wait_histogram = [0u32; 32];
     let mut opcode_retired = [0u32; 16];
     let mut sdram_state_cycles = [0u64; 11];
+    let mut fetch_pause_cycles = 0u32;
+    let mut retired_words_at_first_pause = None;
+    let mut pause_requested = false;
+    let mut data_side_busy_cycles = 0u32;
+    let mut data_side_quiet_at = None;
     let mut halt_at = None;
     let mut halt_signal = 0u16;
     let mut flush_request = false;
@@ -858,6 +1183,27 @@ pub fn run_benchmark_profiled(
             &mut circuit,
         );
 
+        // A test-supplied pause request (or the device's channel-6 register) is
+        // evaluated BEFORE the settle passes so that it takes effect in the very
+        // cycle it is asked for. Applying it after the passes would let the core
+        // advance one more instruction and then gate it mid-handshake, which
+        // never resumes.
+        if !reset && halt_at.is_none() {
+            pause_requested |= pause_at(cycle, previous_retired);
+        }
+        fetch_pause.set(pause_requested);
+        let handshake_low = fetch_pause.get();
+        set_bit(
+            core_input.instruction_response_valid,
+            !handshake_low && fetch_output.sample(&circuit).core_response_valid,
+            &mut circuit,
+        );
+        set_bit(
+            core_input.instruction_request_ready,
+            !handshake_low && fetch_output.sample(&circuit).core_request_ready,
+            &mut circuit,
+        );
+
         // The composed emulator externals form ready/valid paths in both
         // directions. Re-evaluate to a fixed point approximation so a
         // cache-response fall-through reaches fetch and core in the same
@@ -872,6 +1218,60 @@ pub fn run_benchmark_profiled(
         let icache = icache_output.sample(&circuit);
         let dcache = dcache_output.sample(&circuit);
         let fetch = fetch_output.sample(&circuit);
+
+        // A pause request is sticky: it is honoured at the first cycle where the
+        // machine is settled rather than dropped if it arrives during the D-cache
+        // valid sweep (`valid_sweep` drives the core's `hold` through a gate, so
+        // freezing then would hold the core forever) or while the core is
+        // halting. The gate itself was already applied before the settle passes;
+        // this block only keeps the request state up to date.
+        if reset {
+            pause_requested = false;
+        } else if core.device_index == u64::from(SYSTEM_CONTROL_DEVICE)
+            && core.device_write_enable
+            && core.device_channel as u8 == FETCH_PAUSE_CHANNEL
+        {
+            pause_requested = core.device_write_data != 0;
+        }
+
+        if fetch_pause.get() {
+            fetch_pause_cycles = fetch_pause_cycles.wrapping_add(1);
+            if retired_words_at_first_pause.is_none() {
+                retired_words_at_first_pause = Some(core.retired_words as u32);
+            }
+        }
+
+        // Data-side quiescence: with the pause held the core issues no new data
+        // request, so once the D-cache is accepting requests again every write
+        // that retired before the pause has drained and the architectural memory
+        // is stable. Record the first such cycle while paused.
+        let data_side_busy = core.data_request_valid || !dcache.cpu_request_ready;
+        if data_side_busy {
+            data_side_busy_cycles = data_side_busy_cycles.wrapping_add(1);
+        } else if fetch_pause.get() {
+            if data_side_quiet_at.is_none() {
+                data_side_quiet_at = Some(cycle);
+            }
+            // Paused and quiescent: the architectural state is stable, so this is
+            // a point a checkpoint may be taken from. The observer keeps being
+            // offered the machine afterwards, which lets a caller pick a point
+            // (for example one where the SDRAM is still mid-transaction) rather
+            // than being forced to accept the first quiet cycle.
+            if taken_checkpoint.is_none() {
+                if let Some(observer) = checkpoint_at.as_mut() {
+                    let sdram_busy = sdram.state != SdramState::Idle;
+                    if observer(cycle, &live_handles, sdram_busy) {
+                        taken_checkpoint = Some(Checkpoint {
+                            snapshot: live_handles.snapshot(
+                                sdram.memory().to_vec(),
+                                sdram.clone(),
+                                fetch_pause.get(),
+                            ),
+                        });
+                    }
+                }
+            }
+        }
 
         sdram_state_cycles[sdram_state_index(sdram.state)] += 1;
 
@@ -998,9 +1398,11 @@ pub fn run_benchmark_profiled(
             refreshes = refreshes.wrapping_add(1);
         }
 
+        // The machine keeps running while paused: only the frontend is held, so
+        // the execute side drains and settles on its own and nothing is frozen
+        // mid-transaction.
         circuit.clock_tick();
         flush_request = false;
-
         sdram.clock(
             arb.memory_request_valid,
             arb.memory_write,
@@ -1064,9 +1466,13 @@ pub fn run_benchmark_profiled(
                     store_latency_cycles,
                     opcode_retired,
                     sdram_state_cycles,
+                    fetch_pause_cycles,
+                    retired_words_at_first_pause,
+                    data_side_busy_cycles,
+                    data_side_quiet_at,
                 };
                 trace.summary(trace_directory, &result);
-                return result;
+                return (result, sdram.memory().to_vec(), taken_checkpoint.take());
             }
         }
     }

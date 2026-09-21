@@ -87,6 +87,7 @@ fn decode(address: PhysicalWordAddress) -> DecodedAddress {
 }
 
 /// Two-way set-associative line store shared by both cache kinds.
+#[derive(Clone)]
 struct LineStore {
     words: Box<[[[Word; CACHE_LINE_WORDS]; CACHE_SETS]; CACHE_WAYS]>,
     tags: [[u32; CACHE_SETS]; CACHE_WAYS],
@@ -148,7 +149,7 @@ struct PendingMiss {
 }
 
 /// Read-only instruction cache: read hits and refills only.
-#[derive(Default)]
+#[derive(Clone, Default)]
 pub struct InstructionCache {
     store: LineStore,
     pending: Option<PendingMiss>,
@@ -238,6 +239,7 @@ struct MaintenanceState {
 }
 
 /// A 4-KiB two-way write-back data cache with write-allocate and dirty eviction.
+#[derive(Clone)]
 pub struct DataCache {
     store: LineStore,
     dirty: [[bool; CACHE_SETS]; CACHE_WAYS],

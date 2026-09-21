@@ -1019,6 +1019,9 @@ enum DataMemoryPhase {
     Scan,
 }
 
+/// Cloneable so a test harness can snapshot and restore the emulated cache
+/// state (see the fetch-pause sync-point work in the system harness).
+#[derive(Clone)]
 pub struct CpuV3DataCacheState {
     cache: crate::DataCache,
     pending_cpu_request: Option<crate::CpuMemoryRequest>,

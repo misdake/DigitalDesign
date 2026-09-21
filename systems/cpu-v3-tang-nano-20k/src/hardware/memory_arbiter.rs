@@ -84,7 +84,7 @@ enum Owner {
     Dma,
 }
 
-#[derive(Default)]
+#[derive(Clone, Default)]
 pub struct CpuV3MemoryArbiterState {
     owner: Owner,
 }

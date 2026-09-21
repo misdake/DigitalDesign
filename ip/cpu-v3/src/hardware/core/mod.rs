@@ -235,6 +235,9 @@ pub(crate) struct AsyncStore {
     pub(crate) fault_pc: u16,
 }
 
+/// Cloneable so a test harness can snapshot and restore the emulated core state
+/// (see the fetch-pause sync-point work in the system harness).
+#[derive(Clone)]
 pub struct CpuV3CoreState {
     pub(crate) registers: [u16; 16],
     pub(crate) gpr_write_enable: bool,
@@ -356,6 +359,34 @@ impl Default for CpuV3CoreState {
 }
 
 impl CpuV3CoreState {
+    /// Read-only architectural view for the system harness: the 16 GPRs, the 64
+    /// FPU registers, the shared accumulator, the PC and the segment registers.
+    /// Used to compare the cycle model against the naive `CpuV3Sim` directly
+    /// instead of inferring equivalence from a resumed run.
+    pub fn architectural_gprs(&self) -> [u16; 16] {
+        self.registers
+    }
+
+    pub fn architectural_f_registers(&self) -> [i32; 64] {
+        self.fpu.architectural_f_registers()
+    }
+
+    pub fn accumulator(&self) -> i64 {
+        self.fpu.accumulator()
+    }
+
+    pub fn program_counter(&self) -> u16 {
+        self.pc
+    }
+
+    pub fn retired_words(&self) -> u32 {
+        self.retired_words
+    }
+
+    pub fn segments(&self) -> (u16, u16) {
+        (self.code_segment, self.data_segment)
+    }
+
     /// This cycle's FPU v2 unit inputs, mirroring the RTL wiring: the
     /// registered word stream plus the combinational ext channel (owned by
     /// the core during the FPU memory states).
