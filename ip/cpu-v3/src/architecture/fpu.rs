@@ -115,125 +115,141 @@ pub fn fix16_to_i16(value: i32) -> i16 {
     (fix16_trunc(value) >> FIX16_FRACTION_BITS) as i16
 }
 
-/// A `vec3` of Q16.16 components, the operand shape of the prescale library
+/// A `vec3` of Q16.16 components, the operand shape of the v3 geometry
 /// contract. On the target each component occupies one consecutive F register.
 pub type FpuVec3 = [i32; 3];
 
-/// Prescale exponent frozen by C0: `k = max(0, bit_length(max|component|) - 22)`
-/// on the **raw** Q16.16 magnitude.
-///
-/// The rule guarantees `|component >> k| < 2^22` in raw units (a real value
-/// below 64), so every scaled square is below `(2^22)^2 = 2^44` and a
-/// three-component sum stays below `3 * 2^44 < 2^45.6`. Narrowing that sum once
-/// at bit 16 stays below `2^29.6`, well inside `i32`. A vector whose largest
-/// raw component is below `2^22` (real value below 64) is not scaled at all
-/// (`k = 0`), so ordinary game coordinates keep their full 16 fractional bits;
-/// only genuinely large coordinates lose `k` low bits to arithmetic shifts.
-pub fn prescale_shift_for_max_abs(max_abs: u64) -> u32 {
-    (64 - max_abs.leading_zeros()).saturating_sub(22)
+/// Inclusive Q16.16 component bound of the checked length/normalize contract,
+/// `[-104, +104]`: three components each at the bound give a squared sum of
+/// `3 * 104^2 = 32448`, so a single `DOTSTORE` narrowing stays inside `i32`.
+pub const V3_GEOMETRY_COMPONENT_LIMIT: i32 = 104;
+
+/// Raw Q16.16 encoding of [`V3_GEOMETRY_COMPONENT_LIMIT`].
+pub const V3_GEOMETRY_COMPONENT_LIMIT_Q16: i32 = V3_GEOMETRY_COMPONENT_LIMIT << FIX16_FRACTION_BITS;
+
+/// Inclusive lower input-component bound of the checked distance contract,
+/// `-16384` Q16.16: together with the upper bound this keeps a raw subtraction
+/// inside `i32`.
+pub const V3_GEOMETRY_DISTANCE_INPUT_MIN_Q16: i32 = -16384 << FIX16_FRACTION_BITS;
+
+/// Inclusive upper input-component bound of the checked distance contract,
+/// `+16383` Q16.16; see [`V3_GEOMETRY_DISTANCE_INPUT_MIN_Q16`].
+pub const V3_GEOMETRY_DISTANCE_INPUT_MAX_Q16: i32 = 16383 << FIX16_FRACTION_BITS;
+
+/// Fixed nonzero halt signal of [`v3_length2_checked`] on a violated range.
+pub const V3_LENGTH2_CHECKED_HALT: u16 = 1;
+/// Fixed nonzero halt signal of [`v3_normalize_checked`] on a violated range.
+pub const V3_NORMALIZE_CHECKED_HALT: u16 = 2;
+/// Fixed nonzero halt signal of [`v3_distance_gt_checked`] on a violated input
+/// component range.
+pub const V3_DISTANCE_GT_CHECKED_INPUT_HALT: u16 = 3;
+/// Fixed nonzero halt signal of [`v3_distance_gt_checked`] on a violated
+/// difference component range.
+pub const V3_DISTANCE_GT_CHECKED_DIFFERENCE_HALT: u16 = 4;
+
+fn component_in_range(component: i32, min: i32, max: i32) -> bool {
+    (min..=max).contains(&component)
 }
 
-/// Prescale exponent for the approximate **ordinary-distance** comparison
-/// ([`v3_distance_gt`]): one extra bit of headroom over
-/// [`prescale_shift_for_max_abs`], because both input vectors are shifted before
-/// the subtraction and their difference can reach twice the largest input
-/// magnitude. `k = max(0, bit_length(max|input component|) - 21)` keeps
-/// `|a_i >> k| < 2^21`, so `|(a_i >> k) - (b_i >> k)| < 2^22`, every scaled
-/// square stays below `2^44`, and the narrowed three-component sum stays well
-/// inside `i32`. The plain [`prescale_shift_for_max_abs`] rule would only bound
-/// the shifted inputs, not their difference.
-pub fn prescale_shift_for_input_difference(max_abs: u64) -> u32 {
-    (64 - max_abs.leading_zeros()).saturating_sub(21)
+fn vec3_in_range(v: FpuVec3, min: i32, max: i32) -> bool {
+    v.iter()
+        .all(|&component| component_in_range(component, min, max))
 }
 
-/// Largest absolute component as an unsigned magnitude that handles
-/// `i32::MIN` (whose magnitude is `2^31`).
-fn max_abs_component(components: &[i32]) -> u64 {
-    components
-        .iter()
-        .map(|value| u64::from(value.unsigned_abs()))
-        .max()
-        .unwrap_or(0)
-}
-
-/// `v3_length2_shift(vec3) -> u16`: the `k` of the shared `2^-k` prescale,
-/// `0..=10`. Exposed so a caller can interpret [`v3_length2_scaled`] as the
-/// approximate the original metric as `scaled * 2^(2k)`. The component shifts
-/// and the final Q16.16 narrowing are lossy when `k > 0`.
-pub fn v3_length2_shift(v: FpuVec3) -> u32 {
-    prescale_shift_for_max_abs(max_abs_component(&v))
-}
-
-/// `v3_length2_scaled(vec3) -> fix16`: the **prescaled** squared length
-/// `(sum_i (v_i >> k)^2) >> 16 = |v|^2 * 2^-2k` (truncated toward negative
-/// infinity), with `k` from [`prescale_shift_for_max_abs`]. This is not an
-/// unscaled length: combine it with [`v3_length2_shift`] for a scaled-back
-/// approximation. A vector whose largest component is below 64 (`k = 0`) returns
-/// the exact squared length in Q16.16. The single narrowing matches the
-/// target's `DOTSTORE` (`ACC[47:16]`), so the result never overflows `i32` and
-/// a zero vector yields zero.
-pub fn v3_length2_scaled(v: FpuVec3) -> i32 {
-    let k = v3_length2_shift(v);
-    let mut sum = 0_i64;
+/// `v3_length2(vec3) -> fix16`: the squared length computed by one `DOTSTORE`
+/// of `v` with itself. Under the small-range contract (every component in
+/// `[-104, +104]` Q16.16) the narrowed accumulator stays inside `i32`; outside
+/// it the wide accumulator wraps exactly as the hardware does, so the result is
+/// the wrapped `ACC[47:16]` rather than a clamped value.
+pub fn v3_length2(v: FpuVec3) -> i32 {
+    let mut acc = 0_i64;
     for component in v {
-        let scaled = component >> k;
-        sum += i64::from(scaled) * i64::from(scaled);
+        acc = fix16_accumulate_product(acc, component, component);
     }
-    (sum >> FIX16_FRACTION_BITS) as i32
+    fix16_from_acc(acc)
 }
 
-/// `v3_normalize_safe(vec3) -> vec3`: `v / |v|` computed from the same 2^-k
-/// scaling, so the squared length never overflows. A zero vector normalizes to
-/// a zero vector. The sign of every component is preserved.
-pub fn v3_normalize_safe(v: FpuVec3) -> FpuVec3 {
-    let k = v3_length2_shift(v);
-    let length2 = v3_length2_scaled(v);
-    if length2 == 0 {
-        return [0; 3];
-    }
-    // rsqrt(s) = 2^k / |v|, so (v_i >> k) * rsqrt(s) = v_i / |v|.
-    let inverse = rsqrt_q16(length2);
+/// `v3_normalize(vec3) -> vec3`: `DOTSTORE`, `RSQRT`, then `VMULS` of the
+/// vector by the reciprocal square root. `RSQRT(0) == 0`, so a zero vector
+/// stays zero, and the sign of every component is preserved. Under the
+/// small-range contract the squared length never overflows `i32`.
+pub fn v3_normalize(v: FpuVec3) -> FpuVec3 {
+    let inverse = rsqrt_q16(v3_length2(v));
     [
-        fix16_mul(v[0] >> k, inverse),
-        fix16_mul(v[1] >> k, inverse),
-        fix16_mul(v[2] >> k, inverse),
+        fix16_mul(v[0], inverse),
+        fix16_mul(v[1], inverse),
+        fix16_mul(v[2], inverse),
     ]
 }
 
-/// `v3_distance_gt(vec3, vec3, fix16) -> bool`: an approximate **ordinary**
-/// distance comparison `|a - b| > threshold` built from the FPU v2 ISA.
-///
-/// Both inputs are arithmetic-shifted by one shared `k` derived from the largest
-/// absolute **input** component ([`prescale_shift_for_input_difference`]) before
-/// the subtraction, so the subtraction cannot overflow. The scaled squared
-/// distance `s = sum_i ((a_i >> k) - (b_i >> k))^2 >> 16` is narrowed once, the
-/// ordinary distance is approximated as `s * rsqrt(s)` (the target's `RSQRT`
-/// plus a scalar `MUL`), and the ordinary Q16.16 `threshold` is shifted by the
-/// same `k` before the scalar `CMP`. The shifts, the single `DOTSTORE`
-/// narrowing, and the `RSQRT`/`MUL` approximation make the boundary approximate;
-/// the predicate is not the exact squared-distance boundary. A negative
-/// threshold is always exceeded by the non-negative distance, and equal points
-/// never exceed a zero threshold.
+/// `v3_distance_gt(vec3, vec3, fix16) -> bool`: `VSUB`, one `DOTSTORE` of the
+/// difference, then the ordinary distance approximated as `s * RSQRT(s)` and
+/// compared with the ordinary Q16.16 `threshold` through the scalar `CMP`.
+/// `RSQRT(0) == 0`, so equal points have distance zero. The `RSQRT`/`MUL`
+/// approximation makes the boundary approximate rather than exact.
 pub fn v3_distance_gt(a: FpuVec3, b: FpuVec3, threshold: i32) -> bool {
-    let max_abs = a
-        .iter()
-        .chain(b.iter())
-        .map(|value| u64::from(value.unsigned_abs()))
-        .max()
-        .unwrap_or(0);
-    let k = prescale_shift_for_input_difference(max_abs);
-    let scaled = |component: i32| component >> k;
     let difference = [
-        i64::from(scaled(a[0])) - i64::from(scaled(b[0])),
-        i64::from(scaled(a[1])) - i64::from(scaled(b[1])),
-        i64::from(scaled(a[2])) - i64::from(scaled(b[2])),
+        fix16_sub(a[0], b[0]),
+        fix16_sub(a[1], b[1]),
+        fix16_sub(a[2], b[2]),
     ];
-    let sum = difference.iter().map(|d| d * d).sum::<i64>();
-    // `DOTSTORE` narrows `ACC[47:16]`; the headroom keeps this inside `i32`.
-    let squared = (sum >> FIX16_FRACTION_BITS) as i32;
-    let distance = fix16_mul(squared, rsqrt_q16(squared));
-    // The ordinary Q16.16 threshold carries the same `2^-k` scale.
-    distance > (threshold >> k)
+    let squared = v3_length2(difference);
+    fix16_mul(squared, rsqrt_q16(squared)) > threshold
+}
+
+/// [`v3_length2`] with its small-range precondition checked: every component
+/// must be inclusively within `[-104, +104]` Q16.16 (raw
+/// [`V3_GEOMETRY_COMPONENT_LIMIT_Q16`]). A violation returns
+/// [`V3_LENGTH2_CHECKED_HALT`] instead of a silently wrapped result.
+pub fn v3_length2_checked(v: FpuVec3) -> Result<i32, u16> {
+    let limit = V3_GEOMETRY_COMPONENT_LIMIT_Q16;
+    if !vec3_in_range(v, -limit, limit) {
+        return Err(V3_LENGTH2_CHECKED_HALT);
+    }
+    Ok(v3_length2(v))
+}
+
+/// [`v3_normalize`] with the same small-range precondition as
+/// [`v3_length2_checked`]. A violation returns
+/// [`V3_NORMALIZE_CHECKED_HALT`] instead of normalizing a wrapped length.
+pub fn v3_normalize_checked(v: FpuVec3) -> Result<FpuVec3, u16> {
+    let limit = V3_GEOMETRY_COMPONENT_LIMIT_Q16;
+    if !vec3_in_range(v, -limit, limit) {
+        return Err(V3_NORMALIZE_CHECKED_HALT);
+    }
+    Ok(v3_normalize(v))
+}
+
+/// [`v3_distance_gt`] with both numeric preconditions checked: every input
+/// component must be inclusively within `[-16384, +16383]` Q16.16 (raw
+/// [`V3_GEOMETRY_DISTANCE_INPUT_MIN_Q16`]/[`V3_GEOMETRY_DISTANCE_INPUT_MAX_Q16`])
+/// so the 32-bit subtraction cannot overflow, and every component of the
+/// difference must then be inclusively within `[-104, +104]` before the
+/// `DOTSTORE`. The two violations return
+/// [`V3_DISTANCE_GT_CHECKED_INPUT_HALT`] and
+/// [`V3_DISTANCE_GT_CHECKED_DIFFERENCE_HALT`] respectively.
+pub fn v3_distance_gt_checked(a: FpuVec3, b: FpuVec3, threshold: i32) -> Result<bool, u16> {
+    if !vec3_in_range(
+        a,
+        V3_GEOMETRY_DISTANCE_INPUT_MIN_Q16,
+        V3_GEOMETRY_DISTANCE_INPUT_MAX_Q16,
+    ) || !vec3_in_range(
+        b,
+        V3_GEOMETRY_DISTANCE_INPUT_MIN_Q16,
+        V3_GEOMETRY_DISTANCE_INPUT_MAX_Q16,
+    ) {
+        return Err(V3_DISTANCE_GT_CHECKED_INPUT_HALT);
+    }
+    let difference = [
+        fix16_sub(a[0], b[0]),
+        fix16_sub(a[1], b[1]),
+        fix16_sub(a[2], b[2]),
+    ];
+    let limit = V3_GEOMETRY_COMPONENT_LIMIT_Q16;
+    if !vec3_in_range(difference, -limit, limit) {
+        return Err(V3_DISTANCE_GT_CHECKED_DIFFERENCE_HALT);
+    }
+    Ok(v3_distance_gt(a, b, threshold))
 }
 
 #[cfg(test)]
@@ -292,216 +308,112 @@ mod tests {
     }
 
     #[test]
-    fn prescale_shift_boundaries_are_frozen() {
-        assert_eq!(prescale_shift_for_max_abs(0), 0);
-        assert_eq!(prescale_shift_for_max_abs(1), 0);
-        assert_eq!(prescale_shift_for_max_abs((1 << 22) - 1), 0);
-        // The first bit length that needs scaling.
-        assert_eq!(prescale_shift_for_max_abs(1 << 22), 1);
-        assert_eq!(prescale_shift_for_max_abs((1 << 23) - 1), 1);
-        assert_eq!(prescale_shift_for_max_abs(1 << 23), 2);
-        // i32::MIN's magnitude is 2^31 (bit length 32).
-        assert_eq!(prescale_shift_for_max_abs(1 << 31), 10);
-        // The distance helper keeps one extra bit of headroom for the difference.
-        assert_eq!(prescale_shift_for_input_difference(0), 0);
-        assert_eq!(prescale_shift_for_input_difference((1 << 21) - 1), 0);
-        assert_eq!(prescale_shift_for_input_difference(1 << 21), 1);
-        assert_eq!(prescale_shift_for_input_difference(1 << 31), 11);
-    }
-
-    /// Higher-precision reference for the frozen prescale algorithm. `i128`
-    /// leaves the implementation's `i64` intermediate with no truncation, so
-    /// the two must agree bit for bit across the whole input range.
-    fn reference_length2_scaled(v: [i32; 3]) -> i32 {
-        let max_abs = v
-            .iter()
-            .map(|value| u64::from(value.unsigned_abs()))
-            .max()
-            .unwrap();
-        let k = prescale_shift_for_max_abs(max_abs);
-        let sum = v
-            .iter()
-            .map(|&component| {
-                let scaled = i128::from(component) >> k;
-                scaled * scaled
-            })
-            .sum::<i128>();
-        (sum >> FIX16_FRACTION_BITS) as i32
-    }
-
-    /// Exact Euclidean distance of two Q16.16 vectors as `f64`, used only to
-    /// check the approximate predicate away from its accepted boundary band.
-    fn exact_distance(a: [i32; 3], b: [i32; 3]) -> f64 {
-        let squared = a
-            .iter()
-            .zip(b.iter())
-            .map(|(&x, &y)| {
-                let d = f64::from(x) - f64::from(y);
-                d * d
-            })
-            .sum::<f64>();
-        (squared.sqrt()) / 65536.0
+    fn length2_is_one_dot_store_of_the_vector_with_itself() {
+        assert_eq!(v3_length2([0, 0, 0]), 0);
+        assert_eq!(v3_length2([3 << 16, 4 << 16, 0]), 25 << 16);
+        assert_eq!(v3_length2([-(3 << 16), 4 << 16, 0]), 25 << 16);
+        // At the checked bound the narrowed accumulator is still inside i32.
+        let at_bound = [104 << 16, 104 << 16, 104 << 16];
+        let exact =
+            ((3_i64 * i64::from(104 << 16) * i64::from(104 << 16)) >> FIX16_FRACTION_BITS) as i32;
+        assert_eq!(v3_length2(at_bound), exact);
+        assert!(v3_length2(at_bound) > 0);
     }
 
     #[test]
-    fn length2_scaled_and_normalize_safe_hold_the_zero_and_sign_rules() {
-        assert_eq!(v3_length2_shift([0, 0, 0]), 0);
-        assert_eq!(v3_length2_scaled([0, 0, 0]), 0);
-        assert_eq!(v3_normalize_safe([0, 0, 0]), [0, 0, 0]);
-        // 3-4-5 style exact small vector, no scaling, true squared length.
-        assert_eq!(v3_length2_shift([3 << 16, 4 << 16, 0]), 0);
-        assert_eq!(v3_length2_scaled([3 << 16, 4 << 16, 0]), 25 << 16);
-        let n = v3_normalize_safe([3 << 16, 4 << 16, 0]);
+    fn normalize_uses_rsqrt_and_keeps_zero_and_signs() {
+        assert_eq!(v3_normalize([0, 0, 0]), [0, 0, 0]);
+        let v = [3 << 16, 4 << 16, 0];
+        let inverse = rsqrt_q16(25 << 16);
         assert_eq!(
-            n,
+            v3_normalize(v),
             [
-                fix16_mul(3 << 16, rsqrt_q16(25 << 16)),
-                fix16_mul(4 << 16, rsqrt_q16(25 << 16)),
-                0
+                fix16_mul(v[0], inverse),
+                fix16_mul(v[1], inverse),
+                fix16_mul(v[2], inverse)
             ]
         );
-        // The normalized magnitude is ~1.0 and signs are preserved.
+        // Signs are preserved and the magnitude is ~1.0.
+        let n = v3_normalize(v);
         assert!(n[0] > 0 && n[1] > 0);
-        let neg = v3_normalize_safe([-(3 << 16), 4 << 16, 0]);
+        let neg = v3_normalize([-(3 << 16), 4 << 16, 0]);
         assert!(neg[0] < 0 && neg[1] > 0);
     }
 
     #[test]
-    fn length2_scaled_matches_the_high_precision_reference_at_every_boundary() {
-        let mut cases: Vec<[i32; 3]> = vec![];
-        // Every prescale boundary 2^b and its neighbours.
-        for bits in 0..=31u32 {
-            let center = 1_i32.wrapping_shl(bits);
-            for delta in [-1i32, 0, 1] {
-                let value = center.wrapping_add(delta);
-                cases.push([value, 0, 0]);
-                cases.push([value, value, value]);
-                cases.push([value.wrapping_neg(), value.wrapping_neg() / 3, value / 2]);
-            }
-        }
-        // Extremes and mixed-sign combinations.
-        for value in [0, 1, -1, i32::MIN, i32::MIN + 1, i32::MAX, i32::MAX - 1] {
-            cases.push([value, value, value]);
-            cases.push([value, i32::MIN, i32::MAX]);
-            cases.push([i32::MAX, value, i32::MIN]);
-        }
-        for v in cases {
-            assert_eq!(
-                v3_length2_scaled(v),
-                reference_length2_scaled(v),
-                "components {v:?}"
-            );
-            // The prescaled result always fits the Q16.16 write port.
-            let scaled = v3_length2_scaled(v);
-            assert!((-0x4000_0000..=0x4000_0000).contains(&scaled), "{v:?}");
-        }
-    }
-
-    #[test]
-    fn length2_scaled_is_the_true_length_when_no_prescale_is_needed() {
-        // Below the first boundary (max raw component < 2^22, real value < 64)
-        // the function returns the exact Q16.16 squared length.
-        for v in [
-            [0, 0, 0],
-            [3 << 16, 4 << 16, 0],
-            [-(1 << 21), (1 << 21) - 1, 0],
-            [1 << 15, -(1 << 15), 1 << 14],
-        ] {
-            assert_eq!(v3_length2_shift(v), 0, "{v:?}");
-            let exact = v
-                .iter()
-                .map(|&c| i128::from(c) * i128::from(c))
-                .sum::<i128>()
-                >> 16;
-            assert_eq!(i128::from(v3_length2_scaled(v)), exact, "{v:?}");
-        }
-    }
-
-    #[test]
-    fn distance_gt_compares_the_ordinary_distance() {
-        // 3-4-5: ordinary distance 5.0. The boundary is approximate (shift,
-        // DOTSTORE, RSQRT and MUL), so the test keeps a margin around it.
+    fn distance_gt_compares_the_approximate_ordinary_distance() {
+        // 3-4-5: the ordinary distance is ~5.0, but the `RSQRT`/`MUL`
+        // approximation makes the boundary approximate, so the test keeps a
+        // margin around it.
         let a = [0, 0, 0];
         let b = [3 << 16, 4 << 16, 0];
         assert!(v3_distance_gt(a, b, 4 << 16));
-        assert!(v3_distance_gt(a, b, (9 << 15) - 1)); // 4.5 - 1 ulp
-        assert!(!v3_distance_gt(a, b, 11 << 15)); // 5.5
         assert!(!v3_distance_gt(a, b, 6 << 16));
-    }
-
-    #[test]
-    fn distance_gt_handles_negative_thresholds_and_zero_vectors() {
-        let a = [0, 0, 0];
-        let b = [3 << 16, 4 << 16, 0];
-        // A negative threshold is always exceeded by the non-negative distance.
-        assert!(v3_distance_gt(a, b, -1));
+        // A negative threshold is always exceeded; equal points never exceed a
+        // non-negative threshold.
         assert!(v3_distance_gt(a, a, -1));
-        // Equal points never exceed a zero (or positive) threshold.
         assert!(!v3_distance_gt(a, a, 0));
         assert!(!v3_distance_gt(a, a, 1));
-        // Two zero vectors stay zero.
         assert!(!v3_distance_gt([0, 0, 0], [0, 0, 0], 0));
-        // This small distance is below the largest Q16.16 threshold.
-        assert!(!v3_distance_gt(a, b, i32::MAX));
     }
 
     #[test]
-    fn distance_gt_prescale_prevents_subtraction_overflow_at_the_extremes() {
-        // `a - b` in raw `i32` would overflow; shifting both inputs first keeps
-        // the difference, the squared sum, and the narrowed `DOTSTORE` in range.
-        let a = [i32::MAX, i32::MAX, i32::MAX];
-        let b = [i32::MIN, i32::MIN, i32::MIN];
-        assert!(v3_distance_gt(a, b, 0));
-        // The extreme distance (~113511.0) still exceeds the largest threshold.
-        assert!(v3_distance_gt(a, b, i32::MAX));
-        // Identical extreme points have distance zero.
-        assert!(!v3_distance_gt(a, a, 0));
-        assert!(!v3_distance_gt(a, a, i32::MAX));
-        assert!(v3_distance_gt(a, a, -1));
+    fn checked_helpers_match_unchecked_on_valid_input() {
+        for v in [
+            [0, 0, 0],
+            [3 << 16, 4 << 16, 0],
+            [104 << 16, -104 << 16, 0],
+            [1 << 15, -(1 << 15), 1 << 14],
+        ] {
+            assert_eq!(v3_length2_checked(v).unwrap(), v3_length2(v), "{v:?}");
+            assert_eq!(v3_normalize_checked(v).unwrap(), v3_normalize(v), "{v:?}");
+        }
+        let a = [100 << 16, -100 << 16, 0];
+        let b = [0, 0, 0];
+        for threshold in [-1, 0, 100 << 16, i32::MAX] {
+            assert_eq!(
+                v3_distance_gt_checked(a, b, threshold).unwrap(),
+                v3_distance_gt(a, b, threshold),
+                "threshold={threshold}"
+            );
+        }
     }
 
     #[test]
-    fn distance_gt_matches_the_exact_distance_away_from_the_boundary_band() {
-        let mut cases: Vec<([i32; 3], [i32; 3])> = vec![];
-        for bits in 0..=31u32 {
-            let magnitude = 1_i32.wrapping_shl(bits);
-            for delta in [-1i32, 0, 1] {
-                let d = magnitude.wrapping_add(delta);
-                cases.push(([0, 0, 0], [d, 0, 0]));
-                cases.push(([0, 0, 0], [d, d, d]));
-                cases.push(([d, d.wrapping_neg(), 0], [0, 0, d]));
-            }
-        }
-        for a in [i32::MIN, i32::MIN + 1, i32::MAX, 0] {
-            for b in [i32::MIN, i32::MAX, 0] {
-                cases.push(([a, b, a], [b, a, b]));
-            }
-        }
-        for (a, b) in cases {
-            let exact = exact_distance(a, b);
-            for threshold in [
-                i32::MIN,
-                -1,
-                0,
-                1 << 10,
-                (9 << 15) - 1,
-                9 << 15,
-                (9 << 15) + 1,
-                11 << 15,
-                i32::MAX - 1,
-                i32::MAX,
-            ] {
-                let t = f64::from(threshold) / 65536.0;
-                // Skip the accepted approximation band around the true distance.
-                if (exact - t).abs() <= exact * 0.02 + 0.01 {
-                    continue;
-                }
-                assert_eq!(
-                    v3_distance_gt(a, b, threshold),
-                    exact > t,
-                    "a={a:?} b={b:?} threshold={threshold} exact={exact}"
-                );
-            }
+    fn checked_helpers_halt_with_distinct_signals_on_violations() {
+        // One component outside [-104, +104].
+        let over = [105 << 16, 0, 0];
+        assert_eq!(v3_length2_checked(over), Err(V3_LENGTH2_CHECKED_HALT));
+        assert_eq!(v3_normalize_checked(over), Err(V3_NORMALIZE_CHECKED_HALT));
+        // An input component outside [-16384, +16383].
+        let big = [16384 << 16, 0, 0];
+        assert_eq!(
+            v3_distance_gt_checked(big, [0, 0, 0], 0),
+            Err(V3_DISTANCE_GT_CHECKED_INPUT_HALT)
+        );
+        // In-range inputs whose difference leaves [-104, +104].
+        let a = [100 << 16, 0, 0];
+        let b = [-(100 << 16), 0, 0];
+        assert_eq!(
+            v3_distance_gt_checked(a, b, 0),
+            Err(V3_DISTANCE_GT_CHECKED_DIFFERENCE_HALT)
+        );
+        // The signals are distinct.
+        let signals = [
+            V3_LENGTH2_CHECKED_HALT,
+            V3_NORMALIZE_CHECKED_HALT,
+            V3_DISTANCE_GT_CHECKED_INPUT_HALT,
+            V3_DISTANCE_GT_CHECKED_DIFFERENCE_HALT,
+        ];
+        for (i, signal) in signals.iter().enumerate() {
+            assert_ne!(*signal, 0);
+            assert!(
+                signals
+                    .iter()
+                    .enumerate()
+                    .all(|(j, other)| i == j || other != signal),
+                "signal {signal} is not distinct"
+            );
         }
     }
 }

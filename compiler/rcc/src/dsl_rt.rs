@@ -670,42 +670,70 @@ pub fn fsincos(_x: fix16) -> vec2 {
 }
 
 // ---------------------------------------------------------------------------
-// Prescale library contract (target lowering landed after C3; no new opcodes).
-// The functions are ordinary rcc library calls built from existing FPU v2
-// scalar/vector instructions. They share one `2^-k` scaling derived from the
-// largest absolute component; the distance comparison scales its ordinary
-// Q16.16 threshold by `2^-k` to match. The pure reference model and its tests
-// live in the CPU V3 architecture crate (`cpu_v3::v3_length2_scaled` etc.).
-//
-// `v3_length2_scaled` returns a *prescaled* squared length, not an unscaled
-// one: `|v|^2 * 2^-2k`. `v3_length2_shift` exposes `k`, so a caller that needs
-// an approximate original-scale metric combines the two as `scaled << (2k)`;
-// the component shifts and Q16.16 narrowing are lossy when `k > 0`.
+// v3 geometry library contract (target lowering; no new opcodes). The functions
+// are ordinary rcc library calls built from existing FPU v2 scalar/vector
+// instructions: `DOTSTORE`, `RSQRT`, `VMULS`, `VSUB` and the scalar `CMP`. The
+// pure reference model and its tests live in the CPU V3 architecture crate
+// (`cpu_v3::v3_length2` etc.). The release helpers assume a small-range Q16.16
+// contract and emit no checks; the `_checked` debug helpers validate the same
+// contract and halt with a fixed nonzero signal instead of silently clamping.
 // ---------------------------------------------------------------------------
 
-/// The `2^-k` prescale exponent `k` (`0..=10`) used by the three helpers below.
-pub fn v3_length2_shift(_v: vec3) -> u16 {
-    unimplemented!("v3_length2_shift is a target FPU v2 library lowering")
+/// Halt signal of `v3_length2_checked` on a violated component range.
+pub const V3_LENGTH2_CHECKED_HALT: u16 = 1;
+/// Halt signal of `v3_normalize_checked` on a violated component range.
+pub const V3_NORMALIZE_CHECKED_HALT: u16 = 2;
+/// Halt signal of `v3_distance_gt_checked` on a violated input range.
+pub const V3_DISTANCE_GT_CHECKED_INPUT_HALT: u16 = 3;
+/// Halt signal of `v3_distance_gt_checked` on a violated difference range.
+pub const V3_DISTANCE_GT_CHECKED_DIFFERENCE_HALT: u16 = 4;
+
+/// Raw Q16.16 inclusive component bound `[-104, +104]` of the checked
+/// `v3_length2`/`v3_normalize` contract.
+pub const V3_GEOMETRY_COMPONENT_LIMIT_Q16: i32 = 104 << FIX16_FRACTION_BITS;
+/// Raw Q16.16 inclusive lower input bound `-16384` of the checked distance
+/// contract.
+pub const V3_GEOMETRY_DISTANCE_INPUT_MIN_Q16: i32 = -16384 << FIX16_FRACTION_BITS;
+/// Raw Q16.16 inclusive upper input bound `+16383` of the checked distance
+/// contract.
+pub const V3_GEOMETRY_DISTANCE_INPUT_MAX_Q16: i32 = 16383 << FIX16_FRACTION_BITS;
+
+/// The squared length `|v|^2`: one `DOTSTORE` of `v` with itself.
+pub fn v3_length2(_v: vec3) -> fix16 {
+    unimplemented!("v3_length2 is a target FPU v2 library lowering")
 }
 
-/// The **prescaled** squared length `|v|^2 * 2^-2k`, never overflowing Q16.16.
-/// It is not the unscaled length squared; combine with `v3_length2_shift` only
-/// for an approximate scaled-back value.
-pub fn v3_length2_scaled(_v: vec3) -> fix16 {
-    unimplemented!("v3_length2_scaled is a target FPU v2 library lowering")
+/// `v / |v|`: `DOTSTORE`, `RSQRT`, then `VMULS`; a zero vector stays zero
+/// because `RSQRT(0) == 0`.
+pub fn v3_normalize(_v: vec3) -> vec3 {
+    unimplemented!("v3_normalize is a target FPU v2 library lowering")
 }
 
-/// `v / |v|`, safe for any Q16.16 input; a zero vector stays zero.
-pub fn v3_normalize_safe(_v: vec3) -> vec3 {
-    unimplemented!("v3_normalize_safe is a target FPU v2 library lowering")
-}
-
-/// `|a - b| > threshold`, an approximate ordinary-distance comparison built
-/// from the FPU v2 ISA. Both vectors are prescaled by one `k` before the
-/// subtraction, the squared length is narrowed once (`DOTSTORE`), the ordinary
-/// distance is approximated as `s * RSQRT(s)`, and the ordinary Q16.16
-/// threshold is shifted by `k` before the scalar `CMP`. A negative threshold is
-/// always exceeded by the non-negative distance.
+/// The approximate ordinary distance `|a - b|`: `VSUB`, one `DOTSTORE` of the
+/// difference, `s * RSQRT(s)`, then the scalar `CMP` against the ordinary
+/// Q16.16 `threshold`.
 pub fn v3_distance_gt(_a: vec3, _b: vec3, _threshold: fix16) -> bool {
     unimplemented!("v3_distance_gt is a target FPU v2 library lowering")
+}
+
+/// [`v3_length2`] with the small-range precondition checked: every component
+/// must be inclusively within `[-104, +104]` Q16.16, otherwise it halts with
+/// [`V3_LENGTH2_CHECKED_HALT`]. It never silently wraps a length.
+pub fn v3_length2_checked(_v: vec3) -> fix16 {
+    unimplemented!("v3_length2_checked is a target FPU v2 library lowering")
+}
+
+/// [`v3_normalize`] with the same `[-104, +104]` component precondition,
+/// otherwise it halts with [`V3_NORMALIZE_CHECKED_HALT`].
+pub fn v3_normalize_checked(_v: vec3) -> vec3 {
+    unimplemented!("v3_normalize_checked is a target FPU v2 library lowering")
+}
+
+/// [`v3_distance_gt`] with both preconditions checked: every input component
+/// within `[-16384, +16383]` Q16.16 (otherwise it halts with
+/// [`V3_DISTANCE_GT_CHECKED_INPUT_HALT`]), then every difference component
+/// within `[-104, +104]` (otherwise
+/// [`V3_DISTANCE_GT_CHECKED_DIFFERENCE_HALT`]).
+pub fn v3_distance_gt_checked(_a: vec3, _b: vec3, _threshold: fix16) -> bool {
+    unimplemented!("v3_distance_gt_checked is a target FPU v2 library lowering")
 }

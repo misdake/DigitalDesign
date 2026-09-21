@@ -1098,20 +1098,19 @@ fn core_emu_matches_rtl_compiled_special_fpu_program() {
     );
 }
 
-/// Source for the prescale-library tests: one call to each of the four helpers,
-/// folded into a single halt signal through the raw-half bridge. The lanes are
-/// integer literals so each case compiles a fresh, bounded program.
-fn prescale_helper_source(ax: i16, ay: i16, bx: i16, by: i16, threshold: i16) -> String {
+/// Source for the v3 geometry tests: one call to each release helper, folded
+/// into a single halt signal through the raw-half bridge. The lanes are integer
+/// literals so each case compiles a fresh, bounded program.
+fn geometry_helper_source(ax: i16, ay: i16, bx: i16, by: i16, threshold: i16) -> String {
     format!(
         r#"
     fn main() {{
         let a = vec3::new(fix16::from_int({ax}), fix16::from_int({ay}), fix16::zero());
         let b = vec3::new(fix16::from_int({bx}), fix16::from_int({by}), fix16::zero());
-        let k = v3_length2_shift(a);
-        let s = v3_length2_scaled(a);
-        let n = v3_normalize_safe(a);
+        let s = v3_length2(a);
+        let n = v3_normalize(a);
         let gt = v3_distance_gt(a, b, fix16::from_int({threshold}));
-        halt(k ^ s.lo_bits() ^ (s.hi_bits() << 1)
+        halt(s.lo_bits() ^ (s.hi_bits() << 1)
              ^ (n.x().lo_bits() << 2) ^ (n.y().hi_bits() << 3)
              ^ ((gt as u16) << 4));
     }}
@@ -1119,71 +1118,163 @@ fn prescale_helper_source(ax: i16, ay: i16, bx: i16, by: i16, threshold: i16) ->
     )
 }
 
-/// The CPU V3 reference model result for [`prescale_helper_source`]. The target
-/// sequence and this model share the shifts, `DOTSTORE`, `RSQRT` and `MUL`, so
-/// they must agree bit for bit.
-fn prescale_expected_signal(ax: i32, ay: i32, bx: i32, by: i32, threshold: i32) -> u16 {
+/// The same calls through the `_checked` debug helpers.
+fn geometry_checked_source(ax: i16, ay: i16, bx: i16, by: i16, threshold: i16) -> String {
+    format!(
+        r#"
+    fn main() {{
+        let a = vec3::new(fix16::from_int({ax}), fix16::from_int({ay}), fix16::zero());
+        let b = vec3::new(fix16::from_int({bx}), fix16::from_int({by}), fix16::zero());
+        let s = v3_length2_checked(a);
+        let n = v3_normalize_checked(a);
+        let gt = v3_distance_gt_checked(a, b, fix16::from_int({threshold}));
+        halt(s.lo_bits() ^ (s.hi_bits() << 1)
+             ^ (n.x().lo_bits() << 2) ^ (n.y().hi_bits() << 3)
+             ^ ((gt as u16) << 4));
+    }}
+"#
+    )
+}
+
+/// The CPU V3 reference model result for [`geometry_helper_source`]. The target
+/// sequence and this model share `DOTSTORE`, `RSQRT`, `VMULS`, `VSUB` and the
+/// scalar `CMP`, so they must agree bit for bit.
+fn geometry_expected_signal(ax: i32, ay: i32, bx: i32, by: i32, threshold: i32) -> u16 {
     let a = [ax << 16, ay << 16, 0];
     let b = [bx << 16, by << 16, 0];
-    let k = cpu_v3::v3_length2_shift(a) as u16;
-    let s = cpu_v3::v3_length2_scaled(a);
-    let n = cpu_v3::v3_normalize_safe(a);
+    let s = cpu_v3::v3_length2(a);
+    let n = cpu_v3::v3_normalize(a);
     let gt = cpu_v3::v3_distance_gt(a, b, threshold << 16);
-    k ^ (s as u16)
+    (s as u16)
         ^ (((s as u32 >> 16) as u16) << 1)
         ^ ((n[0] as u16) << 2)
         ^ (((n[1] as u32 >> 16) as u16) << 3)
         ^ (u16::from(gt) << 4)
 }
 
-/// Cases that exercise `k = 0`, the variable-shift path (`k > 0`), the largest
-/// `k` from an `i16`-range component, zero vectors, negative components, and a
-/// negative threshold.
-const PRESCALE_HELPER_CASES: &[(i16, i16, i16, i16, i16)] = &[
+/// Cases inside the small-range contract: every `a` component is within
+/// `[-104, +104]`, every input component is within `[-16384, +16383]`, and
+/// every difference component is within `[-104, +104]`.
+const GEOMETRY_CASES: &[(i16, i16, i16, i16, i16)] = &[
     (3, 4, 1, 1, 2),
-    (300, 400, -100, 100, 100),
-    (30000, 4, -7, 9, 25000),
-    (-30000, -30000, 30000, 30000, -1),
-    (-32768, 0, 32767, 0, 32767),
+    (100, -100, 90, -90, 100),
+    (-104, 104, 0, 0, 50),
     (0, 0, 0, 0, 0),
     (1, 2, 1, 2, -5),
 ];
 
-/// The prescale library family compiles to existing FPU v2 instructions. This
-/// runs each generated sequence on the architectural simulator and checks the
-/// result against the reference model, so it pins the lowering without needing
-/// Icarus and keeps every program under a bounded step count.
+/// The release v3 geometry library compiles to existing FPU v2 instructions.
+/// This runs each generated sequence on the architectural simulator and checks
+/// the result against the reference model, so it pins the lowering without
+/// needing Icarus and keeps every program under a bounded step count.
 #[test]
-fn emulator_matches_reference_for_compiled_prescale_helpers() {
-    for &(ax, ay, bx, by, threshold) in PRESCALE_HELPER_CASES {
-        let program = compile(&prescale_helper_source(ax, ay, bx, by, threshold));
-        let expected = prescale_expected_signal(
+fn emulator_matches_reference_for_compiled_geometry_helpers() {
+    for &(ax, ay, bx, by, threshold) in GEOMETRY_CASES {
+        let program = compile(&geometry_helper_source(ax, ay, bx, by, threshold));
+        let expected = geometry_expected_signal(
             i32::from(ax),
             i32::from(ay),
             i32::from(bx),
             i32::from(by),
             i32::from(threshold),
         );
-        let mut machine = CpuV3Sim::default();
-        machine.load_program(0, &program).unwrap();
-        let outcome = machine.run(20_000).unwrap();
-        let RunOutcome::Halted { signal, .. } = outcome else {
-            panic!("prescale program {ax},{ay},{bx},{by},{threshold} did not halt in 20000 steps")
-        };
+        let signal = run_program_signal(&program, 20_000);
         assert_eq!(
             signal, expected,
-            "prescale helper mismatch for a=({ax},{ay}) b=({bx},{by}) threshold={threshold}"
+            "geometry helper mismatch for a=({ax},{ay}) b=({bx},{by}) threshold={threshold}"
         );
     }
 }
 
+/// Runs a compiled program on the architectural simulator and returns its halt
+/// signal, failing if it faults or exceeds the bounded step count.
+fn run_program_signal(program: &[u16], maximum_steps: usize) -> u16 {
+    let mut machine = CpuV3Sim::default();
+    machine.load_program(0, program).unwrap();
+    let outcome = machine.run(maximum_steps).unwrap();
+    let RunOutcome::Halted { signal, .. } = outcome else {
+        panic!("program did not halt in {maximum_steps} steps")
+    };
+    signal
+}
+
+/// The `_checked` helpers must return exactly the release results whenever the
+/// small-range contract holds.
 #[test]
-#[ignore = "explicit emulator-vs-Icarus co-simulation of a compiled prescale-helper FPU program"]
-fn core_emu_matches_rtl_compiled_prescale_fpu_program() {
-    // Use the full-range case so the RTL path also covers the maximum k = 11.
-    let (ax, ay, bx, by, threshold) = PRESCALE_HELPER_CASES[4];
-    let program = compile(&prescale_helper_source(ax, ay, bx, by, threshold));
-    let expected = prescale_expected_signal(
+fn checked_geometry_helpers_match_unchecked_on_valid_input() {
+    for &(ax, ay, bx, by, threshold) in GEOMETRY_CASES {
+        let unchecked = compile(&geometry_helper_source(ax, ay, bx, by, threshold));
+        let checked = compile(&geometry_checked_source(ax, ay, bx, by, threshold));
+        let unchecked_signal = run_program_signal(&unchecked, 20_000);
+        let checked_signal = run_program_signal(&checked, 20_000);
+        assert_eq!(
+            checked_signal, unchecked_signal,
+            "checked helper diverged for a=({ax},{ay}) b=({bx},{by}) threshold={threshold}"
+        );
+    }
+}
+
+/// `v3_length2_checked` halts with its documented signal on a bad component.
+#[test]
+fn checked_length2_halts_with_its_signal() {
+    let program = compile(
+        "fn main() { let a = vec3::new(fix16::from_int(105), fix16::zero(), fix16::zero()); \
+         let s = v3_length2_checked(a); halt(s.lo_bits()); }",
+    );
+    assert_eq!(
+        run_program_signal(&program, 20_000),
+        cpu_v3::V3_LENGTH2_CHECKED_HALT
+    );
+}
+
+/// `v3_normalize_checked` halts with its documented signal on a bad component.
+#[test]
+fn checked_normalize_halts_with_its_signal() {
+    let program = compile(
+        "fn main() { let a = vec3::new(fix16::from_int(105), fix16::zero(), fix16::zero()); \
+         let n = v3_normalize_checked(a); halt(n.x().lo_bits()); }",
+    );
+    assert_eq!(
+        run_program_signal(&program, 20_000),
+        cpu_v3::V3_NORMALIZE_CHECKED_HALT
+    );
+}
+
+/// `v3_distance_gt_checked` halts with the input-range signal when a raw input
+/// component cannot be safely subtracted.
+#[test]
+fn checked_distance_halts_with_the_input_signal() {
+    let program = compile(
+        "fn main() { let a = vec3::new(fix16::from_int(16384), fix16::zero(), fix16::zero()); \
+         let b = vec3::zero(); let g = v3_distance_gt_checked(a, b, fix16::zero()); halt(g as u16); }",
+    );
+    assert_eq!(
+        run_program_signal(&program, 20_000),
+        cpu_v3::V3_DISTANCE_GT_CHECKED_INPUT_HALT
+    );
+}
+
+/// `v3_distance_gt_checked` halts with the difference-range signal when the
+/// in-range inputs differ by more than the `DOTSTORE` can hold.
+#[test]
+fn checked_distance_halts_with_the_difference_signal() {
+    let program = compile(
+        "fn main() { let a = vec3::new(fix16::from_int(100), fix16::zero(), fix16::zero()); \
+         let b = vec3::new(fix16::from_int(-100), fix16::zero(), fix16::zero()); \
+         let g = v3_distance_gt_checked(a, b, fix16::zero()); halt(g as u16); }",
+    );
+    assert_eq!(
+        run_program_signal(&program, 20_000),
+        cpu_v3::V3_DISTANCE_GT_CHECKED_DIFFERENCE_HALT
+    );
+}
+
+#[test]
+#[ignore = "explicit emulator-vs-Icarus co-simulation of a compiled geometry-library FPU program"]
+fn core_emu_matches_rtl_compiled_geometry_fpu_program() {
+    let (ax, ay, bx, by, threshold) = GEOMETRY_CASES[0];
+    let program = compile(&geometry_helper_source(ax, ay, bx, by, threshold));
+    let expected = geometry_expected_signal(
         i32::from(ax),
         i32::from(ay),
         i32::from(bx),
@@ -1196,11 +1287,11 @@ fn core_emu_matches_rtl_compiled_prescale_fpu_program() {
     let last_emu = emu.last().copied().expect("emu trace non-empty");
     assert!(
         !last_emu.fault,
-        "compiled prescale program faulted in the cycle model: code={} pc={:#06x}",
+        "compiled geometry program faulted in the cycle model: code={} pc={:#06x}",
         last_emu.fault_code, last_emu.fault_pc
     );
-    assert!(last_emu.halted, "compiled prescale program did not halt");
-    assert_eq!(last_emu.halt_signal, expected, "unexpected prescale result");
+    assert!(last_emu.halted, "compiled geometry program did not halt");
+    assert_eq!(last_emu.halt_signal, expected, "unexpected geometry result");
 
     let max_cycles = emu.len() + 800;
     let tb = build_core_cosim_tb(&program, &module_name, max_cycles);

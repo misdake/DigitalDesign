@@ -73,12 +73,13 @@ Only these types exist; no other primitive types are supported:
   v2 scalar/aux/memory ISA and run on the emulator and the RTL. C2 adds
   `vec2/3/4`, `fdot`, VMULS broadcasts, and `vec4::import`/`export`; C3 adds
   `frcp`/`frsqrt` plus `fsin`/`fcos`/`fsincos` through the three frozen SINCOS
-  modes. The prescale helper family also lowers, entirely onto existing FPU v2
-  instructions (no new opcode): it prescales by a `k` derived from the largest
-  absolute component, narrows the scaled squared length once through
-  `DOTSTORE`, and uses `RSQRT` plus a scalar `MUL` for the ordinary-distance
-  comparison. The distance boundary is approximate, not the exact
-  squared-distance boundary.
+  modes. The v3 geometry library also lowers, entirely onto existing FPU v2
+  instructions (no new opcode): `v3_length2` is one `DOTSTORE`, `v3_normalize`
+  adds `RSQRT` and a scalar-vector `VMULS`, and `v3_distance_gt` is `VSUB`, one
+  `DOTSTORE`, `s * RSQRT(s)`, then the scalar `CMP`. The release helpers emit no
+  checks and assume a small-range Q16.16 contract; the `_checked` variants
+  validate it and `halt` with a fixed nonzero signal instead of wrapping. The
+  distance boundary is approximate, not the exact squared-distance boundary.
 
 ### 1.2 Division and remainder
 
@@ -157,7 +158,7 @@ an `Array<T>` when typed indexing is clearer. Struct memory layouts remain out o
 
 Declared for real in `dsl_rt` (so the IDE sees them); the compiler lowers them directly.
 C1 lowers the scalar `fix16` rows, C2 the `vecN`/`fdot` rows, and C3 the
-`frcp`/`frsqrt`/`fsincos` and prescale rows on CPU V3.
+`frcp`/`frsqrt`/`fsincos` and v3 geometry rows on CPU V3.
 
 | function | meaning |
 |---|---|
@@ -187,7 +188,7 @@ C1 lowers the scalar `fix16` rows, C2 the `vecN`/`fdot` rows, and C3 the
 | `.abs() .floor() .ceil() .round() .trunc()` | component-wise unary (the scalar/vector ALU subops) |
 | `fdot(a, b) -> fix16` | dot product through the 64-bit Q32.32 ACC, narrowed once (`DOT` + `DOTSTORE`) |
 | `frcp(x) -> fix16` / `frsqrt(x) -> fix16` / `fsin(x) -> fix16` / `fcos(x) -> fix16` / `fsincos(x) -> vec2` | special functions; `fsincos` yields `{sin, cos}`, while `fsin`/`fcos` select one SINCOS result; target lowering landed with C3, host models panic |
-| `v3_length2_shift(vec3) -> u16` / `v3_length2_scaled(vec3) -> fix16` / `v3_normalize_safe(vec3) -> vec3` / `v3_distance_gt(vec3, vec3, fix16) -> bool` | prescale library helpers, not opcodes; they lower to existing FPU v2 instructions (the reference model lives in the CPU V3 architecture crate). `v3_length2_scaled` is the prescaled `|v|^2 * 2^-2k`, `v3_length2_shift` is `k`, and `v3_distance_gt` is an approximate ordinary-distance `|a - b| > threshold` |
+| `v3_length2(vec3) -> fix16` / `v3_normalize(vec3) -> vec3` / `v3_distance_gt(vec3, vec3, fix16) -> bool` / `v3_length2_checked` / `v3_normalize_checked` / `v3_distance_gt_checked` | v3 geometry library helpers, not opcodes; they lower to existing FPU v2 instructions (the reference model lives in the CPU V3 architecture crate). `v3_length2` is one `DOTSTORE`, `v3_normalize` adds `RSQRT` + `VMULS` (zero stays zero), and `v3_distance_gt` is `VSUB`, `DOTSTORE`, `s * RSQRT(s)`, then `CMP`. The release helpers emit no checks; the `_checked` variants require every length/normalize component in `[-104, +104]` Q16.16, and for distance every input component in `[-16384, +16383]` then every difference component in `[-104, +104]`, halting with a fixed nonzero signal (1/2/3/4) on a violation |
 
 ## 6. Design decisions
 

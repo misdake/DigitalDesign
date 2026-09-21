@@ -305,19 +305,24 @@ toward +infinity); FLOOR clears the fraction, CEIL adds a unit when a fraction
 remains, and TRUNC is toward zero. RCP(0) returns <code>0x7FFFFFFF</code> and
 RSQRT(x) is zero for x &le; 0. All F registers are caller-saved and ACC is
 caller-clobbered; the compiler ABI reserves F0..F3 for returns, F4..F27 for
-arguments, F28..F62 for allocation, and F63 for parallel-move cycles. The
-prescale helpers (<code>v3_length2_shift</code>, <code>v3_length2_scaled</code>,
-<code>v3_normalize_safe</code>, <code>v3_distance_gt</code>) are a compiler
-library, not opcodes, lowered to existing FPU v2 instructions:
-<code>v3_length2_scaled</code> returns the <em>prescaled</em> squared length
-<code>|v|^2 * 2^-2k</code> and <code>v3_length2_shift</code> returns
-<code>k</code>. Scaling the result back is only approximate when
-<code>k &gt; 0</code>, because the component shifts and Q16.16 narrowing discard
-low bits. <code>v3_distance_gt</code> is an approximate <em>ordinary</em>
-distance comparison: both vectors are prescaled before the subtraction, the
-scaled squared length is narrowed once, the ordinary distance is approximated as
-<code>s * rsqrt(s)</code>, and the ordinary threshold is shifted by the same
-<code>k</code>.</p>
+arguments, F28..F62 for allocation, and F63 for parallel-move cycles. The v3 geometry library (<code>v3_length2</code>, <code>v3_normalize</code>,
+<code>v3_distance_gt</code> and their <code>_checked</code> debug variants) is a
+compiler library, not opcodes, lowered to existing FPU v2 instructions:
+<code>v3_length2</code> is one <code>DOTSTORE</code>, <code>v3_normalize</code>
+adds <code>RSQRT</code> plus a scalar-vector <code>VMULS</code> (a zero vector
+stays zero), and <code>v3_distance_gt</code> is <code>VSUB</code>, one
+<code>DOTSTORE</code>, the ordinary distance approximated as
+<code>s * RSQRT(s)</code>, then the scalar <code>CMP</code> against the ordinary
+Q16.16 threshold. The release helpers emit no checks and assume a small-range
+Q16.16 contract; the <code>_checked</code> variants validate it and
+<code>halt</code> with a fixed nonzero signal (1 length2, 2 normalize, 3
+distance input, 4 distance difference) instead of clamping. Length/normalize
+require every component within <code>[-104, +104]</code> Q16.16; distance
+requires every input component within <code>[-16384, +16383]</code> so the
+32-bit subtraction cannot overflow, then every difference component within
+<code>[-104, +104]</code> before <code>DOTSTORE</code>. The single
+<code>DOTSTORE</code> narrowing and the <code>RSQRT</code>/<code>MUL</code>
+approximation make the ordinary-distance boundary approximate.</p>
 
 <h2 id="prefix">5. PFX12 and wide operations</h2>
 <div class="grid">
