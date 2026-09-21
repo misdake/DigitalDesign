@@ -56,14 +56,6 @@ integer data_response_delay = 0;
 integer observed_data_requests = 0;
 reg observed_alu_during_store = 0;
 
-// The FPR stores sixteen 64-bit vectors; lane l of vector v occupies bits
-// [16l, 16l+15] of words[v].
-function [15:0] fpr_word;
-    input [3:0] vector;
-    input [1:0] lane;
-    fpr_word = dut.u_fpu_register_ram.words[vector] >> (lane * 16);
-endfunction
-
 function [15:0] gpr_word;
     input [3:0] index;
     gpr_word = dut.u_gpr_ram.words[index];
@@ -365,334 +357,6 @@ initial begin
     scenario = 17;
     expect_fault(8'd1, 16'd3, 100);
 
-    // Scenario 18: the dedicated FPU multiplier executes a blocking vector
-    // operation and the instruction retires exactly once.
-    clear_memory;
-    memory[0] = 16'hf018; // PFX12 0x018
-    memory[1] = 16'ha300; // LDUI r0, 0 -> 384 (fix16 1.5)
-    memory[2] = 16'hf020; // PFX12 0x020
-    memory[3] = 16'ha310; // LDUI r1, 0 -> 512 (fix16 2.0)
-    memory[4] = 16'hd000; // FLOAD f0, r0
-    memory[5] = 16'hd011; // FLOAD f1, r1
-    memory[6] = 16'hd801; // FADD f0, f1 -> fix16 3.5
-    // FMULS was removed: scalar-by-vector uses an explicit ACC splat + FMUL.
-    memory[7] = 16'hde1b; // FACCLOAD.X f1 -> ACC = 2.0
-    memory[8] = 16'hdc2f; // FACCSTORE f2, 0b1111 -> f2 = {2.0, 2.0, 2.0, 2.0}
-    memory[9] = 16'hda02; // FMUL f0, f2 -> fix16 7.0
-    memory[10] = 16'hd100; // FSTORE r0, f0
-    memory[11] = 16'h6c00; // HALT (SIGNAL r0, 0)
-    scenario = 18;
-    expect_halt(16'd1792, 200);
-    if (retired_words !== 12) begin
-        $display("FAIL: scenario 18 retired %0d words, expected 12", retired_words);
-        errors = errors + 1;
-    end
-
-    // Scenario 19: addition widens before saturation at the positive limit.
-    clear_memory;
-    memory[0] = 16'hf7ff; // PFX12 0x7ff
-    memory[1] = 16'ha30f; // LDUI r0, 0xf -> 0x7fff
-    memory[2] = 16'ha311; // LDUI r1, 1
-    memory[3] = 16'hd000; // FLOAD f0, r0
-    memory[4] = 16'hd011; // FLOAD f1, r1
-    memory[5] = 16'hd801; // FADD f0, f1 -> saturated 0x7fff
-    memory[6] = 16'hd100; // FSTORE r0, f0
-    memory[7] = 16'h6c00; // HALT (SIGNAL r0, 0)
-    scenario = 19;
-    expect_halt(16'h7fff, 150);
-
-    // Scenario 20: two atomic four-word imports feed the 40-bit accumulator;
-    // ACCSTORE rounds lane x, clears ACC, and export emits four narrow writes.
-    clear_memory;
-    memory[0] = 16'hf010; // PFX12 0x010
-    memory[1] = 16'ha310; // LDUI r1, 0 -> 0x0100
-    memory[2] = 16'hf010; // PFX12 0x010
-    memory[3] = 16'ha324; // LDUI r2, 4 -> 0x0104
-    memory[4] = 16'hd201; // FIMPORT4 f0, [r1]
-    memory[5] = 16'hd212; // FIMPORT4 f1, [r2]
-    memory[6] = 16'hdb01; // FDOT4ACC f0, f1
-    memory[7] = 16'hdc01; // FACCSTORE f0, 0b0001 -> f0.x
-    memory[8] = 16'hd302; // FEXPORT4 f0, [r2]
-    memory[9] = 16'hd100; // FSTORE r0, f0
-    memory[10] = 16'h6c00; // HALT (SIGNAL r0, 0)
-    memory[16'h0100] = 16'd256;
-    memory[16'h0101] = 16'd512;
-    memory[16'h0102] = 16'd768;
-    memory[16'h0103] = 16'd1024;
-    memory[16'h0104] = 16'd256;
-    memory[16'h0105] = 16'd256;
-    memory[16'h0106] = 16'd256;
-    memory[16'h0107] = 16'd256;
-    scenario = 20;
-    expect_halt(16'd2560, 400);
-    if (memory[16'h0104] !== 16'd2560 || memory[16'h0105] !== 16'd512 ||
-        memory[16'h0106] !== 16'd768 || memory[16'h0107] !== 16'd1024) begin
-        $display("FAIL: scenario 20 exported %h %h %h %h",
-                 memory[16'h0104], memory[16'h0105], memory[16'h0106], memory[16'h0107]);
-        errors = errors + 1;
-    end
-
-    // Scenarios 21..24: an error on any import beat leaves the destination
-    // FPR unchanged and retires no part of the FIMPORT4 instruction.
-    for (cond = 0; cond < 4; cond = cond + 1) begin
-        clear_memory;
-        memory[0] = 16'hf010; // PFX12 0x010
-        memory[1] = 16'ha310; // LDUI r1, 0 -> 0x0100
-        memory[2] = 16'hf123; // PFX12 0x123
-        memory[3] = 16'ha304; // LDUI r0, 4 -> 0x1234
-        memory[4] = 16'hd000; // FLOAD f0, r0
-        memory[5] = 16'hd201; // FIMPORT4 f0, [r1]
-        memory[16'h0100] = 16'ha001;
-        memory[16'h0101] = 16'ha002;
-        memory[16'h0102] = 16'ha003;
-        memory[16'h0103] = 16'ha004;
-        data_beat = 0;
-        fail_data_beat = cond;
-        scenario = 21 + cond;
-        expect_fault(8'd4, 16'd5, 200);
-        fail_data_beat = -1;
-        if (fpr_word(0, 0) !== 16'h1234 || fpr_word(0, 1) !== 0 ||
-            fpr_word(0, 2) !== 0 || fpr_word(0, 3) !== 0) begin
-            $display("FAIL: scenario %0d import modified f0: %h %h %h %h", scenario,
-                     fpr_word(0, 0), fpr_word(0, 1),
-                     fpr_word(0, 2), fpr_word(0, 3));
-            errors = errors + 1;
-        end
-    end
-
-    // Scenario 29: RCP, RSQRT, and both SINCOS ROM reads share one synchronous
-    // lookup memory and preserve their specified fixed-point values.
-    clear_memory;
-    memory[0] = 16'hf020; // PFX12 0x020
-    memory[1] = 16'ha350; // LDUI r5, 0 -> 0x0200
-    memory[2] = 16'hf020; // PFX12 0x020
-    memory[3] = 16'ha300; // LDUI r0, 0 -> fix16 2.0
-    memory[4] = 16'hd000; // FLOAD f0, r0
-    memory[5] = 16'hde00; // FRCP f0 -> fix16 0.5
-    memory[6] = 16'hd100; // FSTORE r0, f0
-    memory[7] = 16'h9050; // STORE r0, [r5]
-    memory[8] = 16'hf040; // PFX12 0x040
-    memory[9] = 16'ha310; // LDUI r1, 0 -> fix16 4.0
-    memory[10] = 16'hd011; // FLOAD f1, r1
-    memory[11] = 16'hde11; // FRSQRT f1 -> fix16 0.5
-    memory[12] = 16'hd111; // FSTORE r1, f1
-    memory[13] = 16'h9151; // STORE r1, [r5+1]
-    memory[14] = 16'hde2a; // FZERO f2
-    memory[15] = 16'hde22; // FSINCOS f2 -> (0, 1)
-    memory[16] = 16'hd632; // FUNPACK4 f3..f6, f2
-    memory[17] = 16'hd104; // FSTORE r0, f4 (cosine)
-    memory[18] = 16'h6c00; // HALT (SIGNAL r0, 0)
-    scenario = 29;
-    expect_halt(16'd256, 400);
-    if (memory[16'h0200] !== 16'd128 || memory[16'h0201] !== 16'd128) begin
-        $display("FAIL: scenario 29 RCP/RSQRT values %h %h",
-                 memory[16'h0200], memory[16'h0201]);
-        errors = errors + 1;
-    end
-
-    // Scenario 30: reciprocal zero faults atomically before a ROM lookup.
-    clear_memory;
-    memory[0] = 16'hd000; // FLOAD f0, r0 (zero)
-    memory[1] = 16'hde00; // FRCP f0 -> domain fault
-    scenario = 30;
-    expect_fault(8'd2, 16'd1, 150);
-    if (dut.u_fpu_register_ram.words[0] !== 0 || retired_words !== 1) begin
-        $display("FAIL: scenario 30 changed f0 or retirement: f0=%h retired=%0d",
-                 dut.u_fpu_register_ram.words[0], retired_words);
-        errors = errors + 1;
-    end
-
-    // Scenario 31: reciprocal sqrt rejects negative input without modifying f0.
-    clear_memory;
-    memory[0] = 16'hffff; // PFX12 0xfff
-    memory[1] = 16'ha30f; // LDUI r0, 0xf -> -1 raw
-    memory[2] = 16'hd000; // FLOAD f0, r0
-    memory[3] = 16'hde01; // FRSQRT f0 -> domain fault
-    scenario = 31;
-    expect_fault(8'd2, 16'd3, 150);
-    if (dut.u_fpu_register_ram.words[0] !== 16'hffff) begin
-        $display("FAIL: scenario 31 changed f0: %h", dut.u_fpu_register_ram.words[0]);
-        errors = errors + 1;
-    end
-
-    // Scenario 32: normalization rounding from 511.5 to 512 increments the
-    // exponent and wraps the ROM mantissa index to zero.
-    clear_memory;
-    memory[0] = 16'hf03f; // PFX12 0x03f
-    memory[1] = 16'ha30f; // LDUI r0, 0xf -> raw 1023
-    memory[2] = 16'hd000; // FLOAD f0, r0
-    memory[3] = 16'hde00; // FRCP f0 -> raw 64
-    memory[4] = 16'hd100; // FSTORE r0, f0
-    memory[5] = 16'h6c00; // HALT (SIGNAL r0, 0)
-    scenario = 32;
-    expect_halt(16'd64, 150);
-
-    // Scenario 33: overlapping PACK4 and UNPACK4 both observe a complete
-    // source snapshot despite their writes aliasing later source registers.
-    clear_memory;
-    memory[0] = 16'ha301; // LDUI r0, 1
-    memory[1] = 16'ha312; // LDUI r1, 2
-    memory[2] = 16'ha323; // LDUI r2, 3
-    memory[3] = 16'ha334; // LDUI r3, 4
-    memory[4] = 16'hd000; // FLOAD f0, r0
-    memory[5] = 16'hd011; // FLOAD f1, r1
-    memory[6] = 16'hd022; // FLOAD f2, r2
-    memory[7] = 16'hd033; // FLOAD f3, r3
-    memory[8] = 16'hd510; // FPACK4 f1, f0..f3 (overlaps f1)
-    memory[9] = 16'hd601; // FUNPACK4 f0..f3, f1 (overlaps f1)
-    memory[10] = 16'h6c00; // HALT (SIGNAL r0, 0)
-    scenario = 33;
-    expect_halt(16'd1, 350);
-    if (fpr_word(0, 0) !== 16'd1 ||
-        fpr_word(1, 0) !== 16'd2 ||
-        fpr_word(2, 0) !== 16'd3 ||
-        fpr_word(3, 0) !== 16'd4) begin
-        $display("FAIL: scenario 33 overlap results %h %h %h %h",
-                 fpr_word(0, 0), fpr_word(1, 0),
-                 fpr_word(2, 0), fpr_word(3, 0));
-        errors = errors + 1;
-    end
-    for (index = 0; index < 4; index = index + 1) begin
-        if (fpr_word(index, 1) !== 0 ||
-            fpr_word(index, 2) !== 0 ||
-            fpr_word(index, 3) !== 0) begin
-            $display("FAIL: scenario 33 unpack did not clear f%0d.yzw", index);
-            errors = errors + 1;
-        end
-    end
-
-    // Scenario 34: the in-place transpose snapshots all four rows and rewrites
-    // them as wide vectors without corrupting adjacent elements.
-    clear_memory;
-    memory[0] = 16'hf010; // PFX12 0x010
-    memory[1] = 16'ha310; // LDUI r1, 0 -> 0x0100
-    memory[2] = 16'hf010;
-    memory[3] = 16'ha324; // LDUI r2, 4 -> 0x0104
-    memory[4] = 16'hf010;
-    memory[5] = 16'ha338; // LDUI r3, 8 -> 0x0108
-    memory[6] = 16'hf010;
-    memory[7] = 16'ha34c; // LDUI r4, 12 -> 0x010c
-    memory[8] = 16'hd241; // FIMPORT4 f4, [r1]
-    memory[9] = 16'hd252; // FIMPORT4 f5, [r2]
-    memory[10] = 16'hd263; // FIMPORT4 f6, [r3]
-    memory[11] = 16'hd274; // FIMPORT4 f7, [r4]
-    memory[12] = 16'hd740; // FTRANSPOSE4 f4..f7
-    memory[13] = 16'h6c00; // HALT (SIGNAL r0, 0)
-    for (index = 0; index < 16; index = index + 1)
-        memory[16'h0100 + index] = index + 1;
-    scenario = 34;
-    expect_halt(16'd0, 500);
-    for (index = 0; index < 16; index = index + 1) begin
-        if (fpr_word(4 + index / 4, index % 4) !==
-            1 + (index % 4) * 4 + index / 4) begin
-            $display("FAIL: scenario 34 transpose word %0d = %h", index,
-                     fpr_word(4 + index / 4, index % 4));
-            errors = errors + 1;
-        end
-    end
-
-    // Scenario 35: FMOV, vector FMUL, and FCMP exercise both asynchronous
-    // read ports and branch on the resulting scalar comparison.
-    clear_memory;
-    memory[0] = 16'hf010;
-    memory[1] = 16'ha310; // r1 = 0x0100
-    memory[2] = 16'hf010;
-    memory[3] = 16'ha324; // r2 = 0x0104
-    memory[4] = 16'hd201; // FIMPORT4 f0, [r1]
-    memory[5] = 16'hd212; // FIMPORT4 f1, [r2]
-    memory[6] = 16'hd420; // FMOV f2, f0
-    memory[7] = 16'hda21; // FMUL f2, f1
-    memory[8] = 16'hdd20; // FCMP f2.x, f0.x -> Greater
-    memory[9] = 16'hb401; // BGT +1
-    memory[10] = 16'ha309; // skipped failure marker
-    memory[11] = 16'h6c00; // HALT (SIGNAL r0, 0)
-    memory[16'h0100] = 16'd256;
-    memory[16'h0101] = 16'd512;
-    memory[16'h0102] = -16'sd256;
-    memory[16'h0103] = 16'd128;
-    memory[16'h0104] = 16'd512;
-    memory[16'h0105] = 16'd128;
-    memory[16'h0106] = -16'sd512;
-    memory[16'h0107] = 16'd512;
-    scenario = 35;
-    expect_halt(16'd0, 350);
-    if (last_run_cycles != 76) begin
-        $display("FAIL: scenario 35 cycles %0d, expected 76", last_run_cycles);
-        errors = errors + 1;
-    end
-    if (fpr_word(2, 0) !== 16'd512 ||
-        fpr_word(2, 1) !== 16'd256 ||
-        fpr_word(2, 2) !== 16'd512 ||
-        fpr_word(2, 3) !== 16'd256) begin
-        $display("FAIL: scenario 35 FMOV/FMUL results %h %h %h %h",
-                 fpr_word(2, 0), fpr_word(2, 1),
-                 fpr_word(2, 2), fpr_word(2, 3));
-        errors = errors + 1;
-    end
-
-    // Scenario 36: the ACC splat sequence lifts the broadcast x lane into a
-    // fresh register first, so an aliased FMUL destination cannot disturb it.
-    clear_memory;
-    memory[0] = 16'hf010;
-    memory[1] = 16'ha310; // r1 = 0x0100
-    memory[2] = 16'hd201; // FIMPORT4 f0, [r1]
-    memory[3] = 16'hde0b; // FACCLOAD.X f0 -> ACC = 2.0
-    memory[4] = 16'hdc1f; // FACCSTORE f1, 0b1111 -> f1 = splat(2.0)
-    memory[5] = 16'hda01; // FMUL f0, f1
-    memory[6] = 16'h6c00; // HALT (SIGNAL r0, 0)
-    memory[16'h0100] = 16'd512;
-    memory[16'h0101] = 16'd256;
-    memory[16'h0102] = -16'sd256;
-    memory[16'h0103] = 16'd128;
-    scenario = 36;
-    expect_halt(16'd0, 200);
-    if (last_run_cycles != 56) begin
-        $display("FAIL: scenario 36 cycles %0d, expected 56", last_run_cycles);
-        errors = errors + 1;
-    end
-    if (fpr_word(0, 0) !== 16'd1024 ||
-        fpr_word(0, 1) !== 16'd512 ||
-        fpr_word(0, 2) !== -16'sd512 ||
-        fpr_word(0, 3) !== 16'd256) begin
-        $display("FAIL: scenario 36 splat multiply results %h %h %h %h",
-                 fpr_word(0, 0), fpr_word(0, 1),
-                 fpr_word(0, 2), fpr_word(0, 3));
-        errors = errors + 1;
-    end
-
-    // Scenarios 25..28: export keeps writes confirmed before a later beat
-    // faults, while the failing and unissued beats retain their old values.
-    for (cond = 0; cond < 4; cond = cond + 1) begin
-        clear_memory;
-        memory[0] = 16'hf010; // PFX12 0x010
-        memory[1] = 16'ha310; // LDUI r1, 0 -> 0x0100
-        memory[2] = 16'hf010; // PFX12 0x010
-        memory[3] = 16'ha324; // LDUI r2, 4 -> 0x0104
-        memory[4] = 16'hd201; // FIMPORT4 f0, [r1]
-        memory[5] = 16'hd302; // FEXPORT4 f0, [r2]
-        memory[16'h0100] = 16'ha001;
-        memory[16'h0101] = 16'ha002;
-        memory[16'h0102] = 16'ha003;
-        memory[16'h0103] = 16'ha004;
-        memory[16'h0104] = 16'he001;
-        memory[16'h0105] = 16'he002;
-        memory[16'h0106] = 16'he003;
-        memory[16'h0107] = 16'he004;
-        data_beat = 0;
-        fail_data_beat = 4 + cond;
-        scenario = 25 + cond;
-        expect_fault(8'd4, 16'd5, 300);
-        fail_data_beat = -1;
-        for (index = 0; index < 4; index = index + 1) begin
-            if (memory[16'h0104 + index] !==
-                (index < cond ? 16'ha001 + index : 16'he001 + index)) begin
-                $display("FAIL: scenario %0d export lane %0d = %h", scenario,
-                         index, memory[16'h0104 + index]);
-                errors = errors + 1;
-            end
-        end
-    end
-
     // Scenario 37: one scalar store runs in the background. An ALU operation
     // overlaps it, but the following load cannot request the data port until
     // the store response arrives.
@@ -726,97 +390,44 @@ initial begin
     end
 
 
-    // Scenario 38: FACCSTORE treats its low field as a 4-bit write mask; a
-    // zero mask clears ACC without writing any lane.
+    // Majors C/D/E are the FPU v2 instruction space since the fix16 FPU was
+    // removed; the old reserved-major fault scenarios are gone. FPU v2
+    // behavior is covered by the scenarios appended below.
+
+    // Scenario 45: FPU v2 end to end. FLD loads f2 = 1.0 and f3 = 2.0
+    // (Q16.16) from data memory through the ext channel, scalar ADD computes
+    // f4 = 3.0, and FST writes it back to a fresh address; the data port runs
+    // with a one-cycle response delay so the FPU memory beats prove they
+    // tolerate variable latency.
     clear_memory;
-    memory[0] = 16'hf010;
-    memory[1] = 16'ha310; // r1 = 0x0100
-    memory[2] = 16'hd201; // FIMPORT4 f0, [r1] -> {1.0, 2.0, 3.0, 4.0}
-    memory[3] = 16'hd211; // FIMPORT4 f1, [r1]
-    memory[4] = 16'hdb01; // FDOT4ACC f0, f1 -> ACC = 30.0
-    memory[5] = 16'hdc25; // FACCSTORE f2, 0b0101 -> f2.x = f2.z = 30.0
-    memory[6] = 16'hdc30; // FACCSTORE f3, 0b0000 -> no write, ACC = 0
-    memory[7] = 16'hdc41; // FACCSTORE f4, 0b0001 -> f4.x = 0 (ACC cleared)
-    memory[8] = 16'h6c00; // HALT (SIGNAL r0, 0)
-    memory[16'h0100] = 16'd256;
-    memory[16'h0101] = 16'd512;
-    memory[16'h0102] = 16'd768;
-    memory[16'h0103] = 16'd1024;
-    scenario = 38;
-    expect_halt(16'd0, 200);
-    if (fpr_word(2, 0) !== 16'd7680 || fpr_word(2, 1) !== 16'd0 ||
-        fpr_word(2, 2) !== 16'd7680 || fpr_word(2, 3) !== 16'd0) begin
-        $display("FAIL: scenario 38 mask store results %h %h %h %h",
-                 fpr_word(2, 0), fpr_word(2, 1),
-                 fpr_word(2, 2), fpr_word(2, 3));
+    memory[0] = 16'hf010; // PFX12 0x010
+    memory[1] = 16'ha310; // LDUI r1 -> r1 = 0x0100
+    memory[2] = 16'hf010; // PFX12 0x010
+    memory[3] = 16'ha322; // LDUI r2, 2 -> r2 = 0x0102
+    memory[4] = 16'hf011; // PFX12 0x011
+    memory[5] = 16'ha330; // LDUI r3, 0 -> r3 = 0x0110
+    memory[6] = 16'he100; // FLD f2, [r1]: word0 {E, X=1, Fa=0, kind=00}
+    memory[7] = 16'h0800; // word1 {Fd=2, subop=FLD(0), mode=0}
+    memory[8] = 16'he200; // FLD f3, [r2]: word0 {E, X=2}
+    memory[9] = 16'h0c00; // word1 {Fd=3, subop=FLD}
+    memory[10] = 16'hd083; // ADD f4, f2, f3: word0 {D, Fa=2, Fb=3}
+    memory[11] = 16'h1000; // word1 {Fd=4, subop=ADD(0), mode=0}
+    memory[12] = 16'he310; // FST [r3], f4: word0 {E, X=3, Fa=4, kind=00}
+    memory[13] = 16'h0010; // word1 {subop=FST(1)}
+    memory[14] = 16'h6c00; // HALT (SIGNAL r0, 0)
+    memory[16'h0100] = 16'h0000; // f2 low half
+    memory[16'h0101] = 16'h0001; // f2 high half -> f2 = 1.0
+    memory[16'h0102] = 16'h0000; // f3 low half
+    memory[16'h0103] = 16'h0002; // f3 high half -> f3 = 2.0
+    scenario = 45;
+    delay_data_response = 1;
+    expect_halt(16'd0, 300);
+    delay_data_response = 0;
+    if (memory[16'h0110] !== 16'h0000 || memory[16'h0111] !== 16'h0003) begin
+        $display("FAIL: scenario 45 FST wrote %h %h, expected 0000 0003",
+                 memory[16'h0110], memory[16'h0111]);
         errors = errors + 1;
     end
-    if (fpr_word(4, 0) !== 16'd0) begin
-        $display("FAIL: scenario 38 ACC was not cleared by a zero mask");
-        errors = errors + 1;
-    end
-
-    // Scenario 39: FACCLOAD selects one source lane, and the Q8.8 value makes
-    // an exact round trip through ACC.
-    clear_memory;
-    memory[0] = 16'hf010;
-    memory[1] = 16'ha310; // r1 = 0x0100
-    memory[2] = 16'hd201; // FIMPORT4 f0, [r1] -> {1.5, -2.0, 3.25, 0}
-    memory[3] = 16'hde0c; // FACCLOAD.Y f0 -> ACC = -2.0
-    memory[4] = 16'hdc12; // FACCSTORE f1, 0b0010 -> f1.y = -2.0
-    memory[5] = 16'hde0d; // FACCLOAD.Z f0 -> ACC = 3.25
-    memory[6] = 16'hdc24; // FACCSTORE f2, 0b0100 -> f2.z = 3.25
-    memory[7] = 16'hde0b; // FACCLOAD.X f0 -> ACC = 1.5
-    memory[8] = 16'hdc31; // FACCSTORE f3, 0b0001 -> f3.x = 1.5
-    memory[9] = 16'h6c00; // HALT (SIGNAL r0, 0)
-    memory[16'h0100] = 16'd384;
-    memory[16'h0101] = -16'sd512;
-    memory[16'h0102] = 16'd832;
-    memory[16'h0103] = 16'd0;
-    scenario = 39;
-    expect_halt(16'd0, 200);
-    if (fpr_word(1, 1) !== -16'sd512 || fpr_word(2, 2) !== 16'd832 ||
-        fpr_word(3, 0) !== 16'd384) begin
-        $display("FAIL: scenario 39 accload round trip %h %h %h",
-                 fpr_word(1, 1), fpr_word(2, 2), fpr_word(3, 0));
-        errors = errors + 1;
-    end
-
-    // Scenario 40: the former FMULS encoding (FPU fn 15) is reserved and
-    // faults as an invalid instruction.
-    clear_memory;
-    memory[0] = 16'hdf00; // reserved FPU fn 15
-    scenario = 40;
-    expect_fault(8'd1, 16'd0, 100);
-
-    // Scenario 41: SINCOS(0.5) selects the high 9-bit half of both packed
-    // quarter-wave ROM words.
-    clear_memory;
-    memory[0] = 16'hf008; // PFX12 0x008
-    memory[1] = 16'ha300; // LDUI r0, 0 -> fix16 0.5
-    memory[2] = 16'hd000; // FLOAD f0, r0
-    memory[3] = 16'hde02; // FSINCOS f0
-    memory[4] = 16'h6c00; // HALT (SIGNAL r0, 0)
-    scenario = 41;
-    expect_halt(16'd128, 150);
-    if (fpr_word(0, 0) !== 16'd123 || fpr_word(0, 1) !== 16'd225 ||
-        fpr_word(0, 2) !== 16'd0 || fpr_word(0, 3) !== 16'd0) begin
-        $display("FAIL: scenario 41 packed sincos values %h %h %h %h",
-                 fpr_word(0, 0), fpr_word(0, 1),
-                 fpr_word(0, 2), fpr_word(0, 3));
-        errors = errors + 1;
-    end
-
-    // Scenario 42: majors C and E are fully reserved in ISA 0.8; the
-    // revision 0.7 HALT word 0xe800 faults as an invalid instruction.
-    clear_memory;
-    memory[0] = 16'hc000; // reserved major C
-    scenario = 42;
-    expect_fault(8'd1, 16'd0, 100);
-    clear_memory;
-    memory[0] = 16'he800; // reserved major E (the 0.7 HALT word)
-    scenario = 42;
-    expect_fault(8'd1, 16'd0, 100);
 
     // Scenario 43: unsigned multiply windows, a masked destructive register
     // shift, conditional moves, and a non-halting SIGNAL retiring as a NOP.

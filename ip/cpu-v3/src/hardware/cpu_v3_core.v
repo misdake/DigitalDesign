@@ -43,29 +43,14 @@ localparam [4:0] ST_MULTIPLY_WAIT = 5;
 localparam [4:0] ST_MULTIPLY_COMMIT = 6;
 localparam [4:0] ST_HALTED = 7;
 localparam [4:0] ST_FAULT = 8;
-localparam [4:0] ST_FPU_ROM_NORMALIZE = 9;
-localparam [4:0] ST_FPU_EXECUTE = 10;
-localparam [4:0] ST_FPU_WRITE_LANES = 11;
-localparam [4:0] ST_FPU_GATHER_READ = 12;
-localparam [4:0] ST_FPU_GATHER_WRITE = 13;
-localparam [4:0] ST_FPU_SCATTER = 14;
-localparam [4:0] ST_FPU_TRANSPOSE = 15;
-localparam [4:0] ST_FPU_MULTIPLY_WAIT = 16;
-localparam [4:0] ST_FPU_MULTIPLY_COMMIT = 17;
-localparam [4:0] ST_FPU_MULTIPLY_SETTLE = 23;
-localparam [4:0] ST_FPU_ROM_ADDRESS = 18;
-localparam [4:0] ST_FPU_ROM_WAIT = 19;
-localparam [4:0] ST_FPU_ROM_COMMIT = 20;
-localparam [4:0] ST_FPU_COMMIT = 21;
+localparam [4:0] ST_FPU2_WORD1 = 9;
+localparam [4:0] ST_FPU2_EXEC = 10;
+localparam [4:0] ST_FPU2_MEM_REQUEST = 11;
+localparam [4:0] ST_FPU2_MEM_RESPONSE = 12;
 localparam [4:0] ST_RESET_CLEAR = 22;
-localparam [4:0] ST_FPU_ROM_LOOKUP = 25;
-localparam [4:0] ST_FPU_MULTIPLY_PIPELINE = 26;
-localparam [4:0] ST_FPU_UNARY_DISPATCH = 27;
-localparam [4:0] ST_FPU_ROM_WRITE = 28;
 localparam [4:0] ST_ASYNC_STORE_WAIT = 24;
 
 localparam [7:0] FAULT_INVALID_INSTRUCTION = 1;
-localparam [7:0] FAULT_FPU_DOMAIN = 2;
 localparam [7:0] FAULT_INSTRUCTION_MEMORY = 3;
 localparam [7:0] FAULT_DATA_MEMORY = 4;
 
@@ -120,68 +105,32 @@ wire signed [17:0] multiplier_left;
 wire signed [17:0] multiplier_right;
 wire signed [35:0] multiplier_product;
 
-// The sixteen four-lane F registers live in a dual-asynchronous-read SSRAM
-// organized as 16 x 64-bit vectors with per-lane write enables. A registered
-// issue address makes the whole vector combinationally readable, so
-// data-movement instructions transfer a full vec4 per cycle while the
-// serialized lane ALU still consumes one lane at a time.
-wire [63:0] fpu_rf_read_a_data;
-wire [63:0] fpu_rf_read_b_data;
-reg [3:0] fpu_rf_read_a_address;
-reg [3:0] fpu_rf_read_b_address;
-// The write port is driven only by FSM-registered signals, so a write fires
-// one cycle after the state that computed it and no state-decode logic ever
-// sits on the RAM data or address paths. Single-lane writes replicate the
-// value across all four lanes and enable only the target lane.
-reg [3:0] fpu_rf_write_enable = 0;
-reg [3:0] fpu_rf_write_address = 0;
-reg [63:0] fpu_rf_write_data = 0;
-
-reg [4:0] fpu_step = 0;
-reg signed [39:0] fpu_accumulator = 0;
-reg fpu_memory_active = 0;
-reg [1:0] fpu_memory_lane = 0;
-reg signed [15:0] fpu_memory_value [0:3];
-reg [9:0] fpu_rom_address = 0;
-reg [9:0] fpu_rom_second_address = 0;
-wire [15:0] fpu_rom_read_data;
-wire [15:0] fpu_rom_second_read_data;
-reg signed [5:0] fpu_rom_exponent = 0;
-reg [7:0] fpu_rom_index = 0;
-reg [16:0] fpu_normalized = 0;
-reg fpu_rom_negative = 0;
-reg [10:0] fpu_sine_phase = 0;
-reg fpu_sine_endpoint = 0;
-reg fpu_cosine_endpoint = 0;
-reg fpu_sine_packed_high = 0;
-reg fpu_cosine_packed_high = 0;
-reg fpu_sine_saturated = 0;
-reg fpu_cosine_saturated = 0;
-reg fpu_cosine_negative = 0;
-reg signed [15:0] fpu_rom_first = 0;
-reg signed [15:0] fpu_rom_second = 0;
-// Whole-vector snapshots: export/scatter share one buffer, transpose keeps
-// all four rows so the in-place rewrite stays snapshot-clean.
-reg [63:0] fpu_vector_buffer = 0;
-reg [63:0] fpu_row_0 = 0;
-reg [63:0] fpu_row_1 = 0;
-reg [63:0] fpu_row_2 = 0;
-reg [63:0] fpu_row_3 = 0;
-reg signed [15:0] fpu_operand_a = 0;
-reg signed [15:0] fpu_operand_b = 0;
-reg [15:0] fpu_result = 0;
-reg [1:0] fpu_mul_valid = 0;
-reg [1:0] fpu_mul_tag_0 = 0;
-reg [1:0] fpu_mul_tag_1 = 0;
-reg [1:0] fpu_retire_words = 0;
-reg [15:0] fpu_fault_pc = 0;
-reg [5:0] fpu_clear_index = 0;
+// Reset walks the scalar register file back to zero one word per cycle
+// through its synchronous write port.
+reg [3:0] clear_index = 0;
 
 wire [3:0] opcode = instruction[15:12];
 wire [3:0] field_d = instruction[11:8];
 wire [3:0] field_a = instruction[7:4];
 wire [3:0] field_b = instruction[3:0];
-wire [3:0] gpr_read_a_address = state == ST_HALTED ? 4'd0 : field_a;
+// Word0 latch (AUX fields X = [11:8], Fa = [7:2], kind = [1:0]) and the
+// word1 fields captured at the word1 response beat.
+reg [15:0] fpu2_word0 = 0;
+reg [5:0] fpu2_subop = 0;
+reg [5:0] fpu2_fd = 0;
+reg [5:0] fpu2_fa = 0;
+reg fpu2_is_memory = 0;
+reg fpu2_write_back = 0;
+reg fpu2_beat = 0;
+reg [31:0] fpu2_address = 0;
+reg [15:0] fpu2_low = 0;
+reg fpu2_seen_complete = 0;
+reg [15:0] fpu2_fault_pc = 0;
+
+wire [3:0] gpr_read_a_address =
+    state == ST_HALTED ? 4'd0 :
+    state == ST_FPU2_WORD1 ? fpu2_word0[11:8] :
+    field_a;
 wire [3:0] gpr_read_b_address =
     state == ST_EXECUTE && (opcode == 4'h8 || opcode == 4'h9) ? field_d : field_b;
 wire [15:0] gpr_read_a_data =
@@ -193,7 +142,7 @@ wire [15:0] gpr_read_b_data =
 
 // Conservative two-stage frontend: only instructions that retire in one
 // Execute cycle and keep sequential control flow may overlap the next queue
-// pop. Loads, branches/jumps, devices, multiply, and FPU operations remain
+// pop. Loads, branches/jumps, devices, and multiply operations remain
 // barriers and continue to use the existing blocking FSM paths.
 wire shift_pipelineable = opcode == 4'h2 &&
     (field_d <= 4'h2 || (field_d >= 4'h4 && field_d <= 4'h6));
@@ -212,18 +161,6 @@ wire execute_pipelineable = state == ST_EXECUTE &&
      shift_pipelineable || immediate_pipelineable || control_alu_pipelineable ||
      opcode == 4'hf);
 wire execute_fetch_accepted = execute_pipelineable && instruction_request_ready;
-wire fpu_sine_operation = field_d == 4'he && field_b == 4'h2;
-// DSP lane operands index the wide asynchronous reads directly; the FSM parks
-// both read addresses on Fa/Fb for the whole operation, so fpu_step selects
-// the lane in flight.
-wire [15:0] fpu_multiply_a_word = fpu_rf_read_a_data[fpu_step[1:0]*16 +: 16];
-wire [15:0] fpu_multiply_b_word = fpu_rf_read_b_data[fpu_step[1:0]*16 +: 16];
-wire signed [17:0] fpu_multiplier_left =
-    {{2{fpu_multiply_a_word[15]}}, fpu_multiply_a_word};
-wire signed [17:0] fpu_multiplier_right =
-    fpu_sine_operation ? 18'sd83443 :
-    {{2{fpu_multiply_b_word[15]}}, fpu_multiply_b_word};
-wire signed [35:0] fpu_multiplier_product;
 // PFX12 consumer closed set: LOAD/STORE, MULI, every defined major-A
 // operation except LDC/ADDC, and the major-B relative forms 0..7.
 wire prefix_consumer = opcode == 4'h8 || opcode == 4'h9 ||
@@ -316,252 +253,6 @@ function [15:0] population_count;
     end
 endfunction
 
-// Products, accumulators, and lane results narrow by a constant 8 or 16
-// bits, so their rounding is wires plus an increment; only ROM
-// normalization and scaling need the shared variable shifter further down.
-function [15:0] fix16_saturate17;
-    input signed [16:0] value;
-    begin
-        if (value > 17'sd32767)
-            fix16_saturate17 = 16'h7fff;
-        else if (value < -17'sd32768)
-            fix16_saturate17 = 16'h8000;
-        else
-            fix16_saturate17 = value[15:0];
-    end
-endfunction
-
-function [15:0] fix16_from_product;
-    input signed [35:0] value;
-    reg [35:0] magnitude;
-    reg [27:0] quotient;
-    reg signed [28:0] rounded;
-    begin
-        magnitude = value[35] ? -value : value;
-        quotient = magnitude[35:8];
-        if (magnitude[7:0] > 8'h80 ||
-            (magnitude[7:0] == 8'h80 && quotient[0]))
-            quotient = quotient + 1'b1;
-        rounded = value[35] ? -$signed({1'b0, quotient}) : $signed({1'b0, quotient});
-        if (rounded > 29'sd32767)
-            fix16_from_product = 16'h7fff;
-        else if (rounded < -29'sd32768)
-            fix16_from_product = 16'h8000;
-        else
-            fix16_from_product = rounded[15:0];
-    end
-endfunction
-
-function [15:0] fix16_from_accumulator;
-    input signed [39:0] value;
-    reg [39:0] magnitude;
-    reg [31:0] quotient;
-    reg signed [32:0] rounded;
-    begin
-        magnitude = value[39] ? -value : value;
-        quotient = magnitude[39:8];
-        if (magnitude[7:0] > 8'h80 ||
-            (magnitude[7:0] == 8'h80 && quotient[0]))
-            quotient = quotient + 1'b1;
-        rounded = value[39] ? -$signed({1'b0, quotient}) : $signed({1'b0, quotient});
-        if (rounded > 33'sd32767)
-            fix16_from_accumulator = 16'h7fff;
-        else if (rounded < -33'sd32768)
-            fix16_from_accumulator = 16'h8000;
-        else
-            fix16_from_accumulator = rounded[15:0];
-    end
-endfunction
-
-function [15:0] fix16_round_integer;
-    input signed [15:0] value;
-    reg [15:0] magnitude;
-    reg [7:0] quotient;
-    reg signed [8:0] rounded;
-    begin
-        magnitude = value[15] ? -value : value;
-        quotient = magnitude[15:8];
-        if (magnitude[7:0] > 8'h80 ||
-            (magnitude[7:0] == 8'h80 && quotient[0]))
-            quotient = quotient + 1'b1;
-        rounded = value[15] ? -$signed({1'b0, quotient}) : $signed({1'b0, quotient});
-        if (rounded > 9'sd127)
-            fix16_round_integer = 16'h7fff;
-        else if (rounded < -9'sd128)
-            fix16_round_integer = 16'h8000;
-        else
-            fix16_round_integer = {rounded[7:0], 8'b0};
-    end
-endfunction
-
-function [10:0] fpu_phase_from_product;
-    input signed [35:0] value;
-    reg [35:0] magnitude;
-    reg [19:0] quotient;
-    reg signed [20:0] rounded;
-    begin
-        magnitude = value[35] ? -value : value;
-        // A signed fix16 magnitude times 83443 is below 2^32, so bits 35:32
-        // are sign-extension zeros after taking the absolute value.
-        quotient = {4'b0, magnitude[31:16]};
-        if (magnitude[15:0] > 16'h8000 ||
-            (magnitude[15:0] == 16'h8000 && quotient[0]))
-            quotient = quotient + 1'b1;
-        rounded = value[35] ? -$signed({1'b0, quotient}) : $signed({1'b0, quotient});
-        fpu_phase_from_product = rounded[10:0];
-    end
-endfunction
-
-// Shared variable shifter for the ROM paths: normalization (ST_FPU_ROM_NORMALIZE)
-// and Q15 scaling (ST_FPU_ROM_COMMIT) are the only variable shifts, both
-// over a 16-bit unsigned domain. Negative shifts widen to the left.
-function [16:0] fpu_round_shift16;
-    input [15:0] value;
-    input signed [4:0] shift;
-    reg [16:0] magnitude;
-    reg [16:0] quotient;
-    reg [16:0] remainder;
-    reg [16:0] half;
-    begin
-        magnitude = {1'b0, value};
-        if (shift > 0) begin
-            quotient = magnitude >> shift;
-            remainder = magnitude & ((17'd1 << shift) - 1'b1);
-            half = 17'd1 << (shift - 1'b1);
-            if (remainder > half || (remainder == half && quotient[0]))
-                quotient = quotient + 1'b1;
-        end else
-            quotient = magnitude << -shift;
-        fpu_round_shift16 = quotient;
-    end
-endfunction
-
-function signed [39:0] fpu_accumulate_product;
-    input signed [39:0] accumulator;
-    input signed [35:0] product;
-    reg signed [40:0] sum;
-    begin
-        sum = $signed({accumulator[39], accumulator}) +
-              $signed({{5{product[35]}}, product});
-        if (sum > 41'sd549755813887)
-            fpu_accumulate_product = 40'sh7fffffffff;
-        else if (sum < -41'sd549755813888)
-            fpu_accumulate_product = 40'sh8000000000;
-        else
-            fpu_accumulate_product = sum[39:0];
-    end
-endfunction
-
-function signed [5:0] fpu_normalize_exponent;
-    input [15:0] magnitude;
-    integer bit_index;
-    reg found;
-    begin
-        fpu_normalize_exponent = -6'sd8;
-        found = 0;
-        for (bit_index = 15; bit_index >= 0; bit_index = bit_index - 1) begin
-            if (!found && magnitude[bit_index]) begin
-                fpu_normalize_exponent = bit_index - 8;
-                found = 1;
-            end
-        end
-    end
-endfunction
-
-function [8:0] fpu_sine_index;
-    input [10:0] phase;
-    begin
-        if (!phase[9])
-            fpu_sine_index = phase[8:0];
-        else if (phase[8:0] == 0)
-            fpu_sine_index = 0;
-        else
-            fpu_sine_index = 9'h000 - phase[8:0];
-    end
-endfunction
-
-function fpu_sine_is_endpoint;
-    input [10:0] phase;
-    fpu_sine_is_endpoint = phase[9] && phase[8:0] == 0;
-endfunction
-
-wire [8:0] fpu_sine_index_value = fpu_sine_index(fpu_sine_phase);
-wire [10:0] fpu_cosine_phase = fpu_sine_phase + 11'd512;
-wire [8:0] fpu_cosine_index_value = fpu_sine_index(fpu_cosine_phase);
-wire [8:0] fpu_sine_magnitude = fpu_sine_saturated ?
-    9'd256 :
-    (fpu_sine_packed_high ? {1'b0, fpu_rom_read_data[15:8]} :
-                            {1'b0, fpu_rom_read_data[7:0]});
-wire [8:0] fpu_cosine_magnitude = fpu_cosine_saturated ?
-    9'd256 :
-    (fpu_cosine_packed_high ? {1'b0, fpu_rom_second_read_data[15:8]} :
-                              {1'b0, fpu_rom_second_read_data[7:0]});
-
-// One priority encoder serves the ROM unary normalization path.
-wire [15:0] fpu_unary_magnitude =
-    fpu_operand_a[15] ? -fpu_operand_a : fpu_operand_a;
-wire signed [5:0] fpu_unary_exponent = fpu_normalize_exponent(fpu_unary_magnitude);
-
-// The ROM normalize (ST_FPU_ROM_NORMALIZE) and scale (ST_FPU_ROM_COMMIT) paths
-// share the single variable shifter. Both shifter inputs are registered in
-// earlier phases (the unary magnitude in ST_FPU_UNARY_DISPATCH) or come
-// straight from the ROM output register, so no combinational cone crosses
-// from the latched unary operand into the scale result.
-reg [15:0] fpu_magnitude = 0;
-reg [15:0] fpu_variable_input;
-reg signed [4:0] fpu_variable_amount;
-always @* begin
-    if (state == ST_FPU_ROM_COMMIT) begin
-        fpu_variable_input = fpu_rom_read_data;
-        fpu_variable_amount = 5'sd7 + fpu_rom_exponent[4:0];
-    end else begin
-        fpu_variable_input = fpu_magnitude;
-        fpu_variable_amount = fpu_rom_exponent[4:0];
-    end
-end
-wire [16:0] fpu_variable_shifted = fpu_round_shift16(fpu_variable_input, fpu_variable_amount);
-wire [15:0] fpu_rom_scaled = fpu_rom_negative ?
-    (fpu_variable_shifted >= 17'd32768 ? 16'h8000 : -fpu_variable_shifted[15:0]) :
-    (fpu_variable_shifted > 17'd32767 ? 16'h7fff : fpu_variable_shifted[15:0]);
-
-// ALU lanes stage lane zero in ST_FPU_EXECUTE. Each following cycle writes
-// that registered lane while the wide asynchronous reads stage the next lane,
-// keeping the SSRAM read and ALU/writeback paths separated.
-wire [1:0] fpu_write_lane = fpu_step[1:0];
-
-
-// Single-lane add/sub operands for the serialized vector ALU.
-wire signed [16:0] fpu_lane_sum =
-    {fpu_operand_a[15], fpu_operand_a} + {fpu_operand_b[15], fpu_operand_b};
-wire signed [16:0] fpu_lane_difference =
-    {fpu_operand_a[15], fpu_operand_a} - {fpu_operand_b[15], fpu_operand_b};
-wire [15:0] fpu_lane_addsub =
-    fix16_saturate17(field_d == 4'h9 ? fpu_lane_difference : fpu_lane_sum);
-
-// Single-lane unary results for the serialized vector unary operations.
-wire signed [15:0] fpu_lane_left = fpu_operand_a;
-reg [15:0] fpu_lane_result;
-always @* begin
-    case (field_b)
-        4'h3: fpu_lane_result = fpu_lane_left == 16'sh8000 ? 16'h7fff :
-            (fpu_lane_left[15] ? -fpu_lane_left : fpu_lane_left);
-        4'h4: fpu_lane_result = fpu_lane_left == 16'sh8000 ? 16'h7fff : -fpu_lane_left;
-        4'h5: fpu_lane_result = {fpu_lane_left[15:8], 8'b0};
-        4'h6: fpu_lane_result = fpu_lane_left[7:0] == 0 ? fpu_lane_left :
-            (fpu_lane_left > 16'sh7eff ? 16'h7fff : {fpu_lane_left[15:8] + 1'b1, 8'b0});
-        4'h7: fpu_lane_result = fix16_round_integer(fpu_lane_left);
-        4'h8: fpu_lane_result = fpu_lane_left < 0 ? 16'd0 :
-            (fpu_lane_left > 16'sd256 ? 16'd256 : fpu_lane_left);
-        4'h9: fpu_lane_result = fpu_lane_left < 0 ? -16'sd256 :
-            (fpu_lane_left == 0 ? 16'd0 : 16'd256);
-        default: fpu_lane_result = 16'd0;
-    endcase
-end
-
-// Write data for the serial lane writer: the single shared ALU lane result.
-wire [15:0] fpu_write_lanes_data =
-    field_d <= 4'h9 ? fpu_lane_addsub : fpu_lane_result;
-
 // Destructive shifts compute the result in a statement-based case so the
 // arithmetic `>>>` is never inside a conditional expression. In Verilog a `?:`
 // is unsigned if any branch is unsigned, which silently turns `>>>` into a
@@ -579,14 +270,6 @@ always @* begin
     endcase
 end
 
-// Transpose write phase (steps 2..5): output row w gathers lane w from all
-// four buffered rows, a pure wiring permutation of the snapshot. The two-bit
-// subtraction wraps modulo four, landing exactly on 0..3 for steps 2..5.
-wire [1:0] fpu_transpose_write_index = fpu_step[1:0] - 2'd2;
-wire [15:0] fpu_transpose_lane_0 = fpu_row_0[fpu_transpose_write_index*16 +: 16];
-wire [15:0] fpu_transpose_lane_1 = fpu_row_1[fpu_transpose_write_index*16 +: 16];
-wire [15:0] fpu_transpose_lane_2 = fpu_row_2[fpu_transpose_write_index*16 +: 16];
-wire [15:0] fpu_transpose_lane_3 = fpu_row_3[fpu_transpose_write_index*16 +: 16];
 // Integer multiply: both DSP inputs are zero-extended, so the 36-bit signed
 // product carries the full unsigned 32-bit product in its low bits. MULI
 // (major 2, fn C) sources the unsigned immediate bit pattern.
@@ -615,52 +298,79 @@ __DSP_MULTIPLIER__ u_multiplier (
     .product(multiplier_product)
 );
 
-__FPU_DSP_MULTIPLIER__ u_fpu_multiplier (
-    .clk(clk),
-    .a(fpu_multiplier_left),
-    .b(fpu_multiplier_right),
-    .product(fpu_multiplier_product)
-);
+// FPU v2 unit (fpu-design-v2 section 26). The core streams both instruction
+// words in, and implements FLD/FST itself through the ext_* channel while
+// the unit is idle.
+wire fpu2_busy;
+wire fpu2_flag_lt;
+wire fpu2_flag_eq;
+wire fpu2_flag_gt;
+wire fpu2_instr_complete;
+wire [31:0] fpu2_ext_read_data;
+reg fpu2_word_valid = 0;
+reg [15:0] fpu2_word = 0;
+reg fpu2_abort = 0;
 
-__FPU_ROM__ u_fpu_rom (
-    .clk(clk),
-    .a_write_enable(1'b0),
-    .a_address(fpu_rom_address),
-    .a_write_data(16'b0),
-    .b_write_enable(1'b0),
-    .b_address(fpu_rom_second_address),
-    .b_write_data(16'b0),
-    .a_read_data(fpu_rom_read_data),
-    .b_read_data(fpu_rom_second_read_data)
-);
+// The external channel is owned by the core during FPU memory beats and is
+// released as soon as the transaction retires. For FLD the RF write fires
+// combinationally on the second response beat (a synchronous write that
+// commits at the edge leaving ST_FPU2_MEM_RESPONSE).
+wire fpu2_ext_access = state == ST_FPU2_EXEC && fpu2_is_memory ||
+                       state == ST_FPU2_MEM_REQUEST ||
+                       state == ST_FPU2_MEM_RESPONSE;
+wire fpu2_ext_write_enable = state == ST_FPU2_MEM_RESPONSE &&
+    !fpu2_write_back && fpu2_beat == 1 &&
+    data_response_valid && !data_error;
 
-__FPU_REGISTER_RAM__ u_fpu_register_ram (
+CpuV3FpuV2 u_fpu (
     .clk(clk),
-    .write_enable(fpu_rf_write_enable),
-    .write_address(fpu_rf_write_address),
-    .write_data(fpu_rf_write_data),
-    .read_a_address(fpu_rf_read_a_address),
-    .read_b_address(fpu_rf_read_b_address),
-    .read_a_data(fpu_rf_read_a_data),
-    .read_b_data(fpu_rf_read_b_data)
+    .abort(fpu2_abort),
+    .word_valid(fpu2_word_valid),
+    .word(fpu2_word),
+    .busy(fpu2_busy),
+    .flag_lt(fpu2_flag_lt),
+    .flag_eq(fpu2_flag_eq),
+    .flag_gt(fpu2_flag_gt),
+    .instr_complete(fpu2_instr_complete),
+    .ext_access(fpu2_ext_access),
+    .ext_write_enable(fpu2_ext_write_enable),
+    .ext_write_address({3'b000, fpu2_fd}),
+    .ext_write_data({data_read_data, fpu2_low}),
+    .ext_read_address({3'b000, fpu2_fa}),
+    .ext_read_data(fpu2_ext_read_data)
 );
 
 assign instruction_request_valid = !hold &&
-    (state == ST_FETCH_REQUEST || execute_pipelineable);
+    (state == ST_FETCH_REQUEST || state == ST_FPU2_WORD1 || execute_pipelineable);
 assign instruction_address = {code_segment_register, pc_register};
 // A queued instruction may be returned in the same cycle that its request is
 // accepted. The legacy split request/response path remains valid for slower
 // instruction memories.
 assign instruction_response_ready = !hold && (state == ST_FETCH_REQUEST ||
                                     state == ST_FETCH_RESPONSE ||
+                                    state == ST_FPU2_WORD1 ||
                                     execute_pipelineable);
 assign data_request_valid = !hold && ((async_store_valid && !async_store_issued) ||
-                            state == ST_DATA_REQUEST);
-assign data_write = async_store_valid ? 1'b1 : pending_write;
-assign data_address = async_store_valid ? async_store_address : pending_address;
-assign data_write_data = async_store_valid ? async_store_data : pending_write_data;
+                            state == ST_DATA_REQUEST ||
+                            state == ST_FPU2_MEM_REQUEST);
+// FPU memory beats never overlap the async store buffer: the core only enters
+// the FPU memory states while the buffer is idle, and no new store is issued
+// from inside them.
+wire fpu2_mem_active = state == ST_FPU2_MEM_REQUEST ||
+                       state == ST_FPU2_MEM_RESPONSE;
+assign data_write = async_store_valid ? 1'b1 :
+                    fpu2_mem_active ? fpu2_write_back : pending_write;
+assign data_address = async_store_valid ? async_store_address :
+                      fpu2_mem_active ? fpu2_address + {31'b0, fpu2_beat} :
+                      pending_address;
+assign data_write_data = async_store_valid ? async_store_data :
+                         fpu2_mem_active ?
+                             (fpu2_beat == 0 ? fpu2_ext_read_data[15:0] :
+                                               fpu2_ext_read_data[31:16]) :
+                         pending_write_data;
 assign data_response_ready = !hold && ((async_store_valid && async_store_issued) ||
-                             state == ST_DATA_RESPONSE);
+                             state == ST_DATA_RESPONSE ||
+                             state == ST_FPU2_MEM_RESPONSE);
 assign device_index = field_d[2:0];
 assign device_channel = field_a;
 assign device_read_enable = !hold && state == ST_EXECUTE && opcode == 4'h7 && !field_d[3];
@@ -684,31 +394,27 @@ reg [15:0] jump_target;
 always @(posedge clk) begin
     if (reset) begin
         gpr_write_enable <= 0;
-        fpu_rf_write_enable <= 1'b0;
         state <= ST_RESET_CLEAR;
-        fpu_clear_index <= 0;
+        clear_index <= 0;
         pc_register <= 0;
         code_segment_register <= 0;
         data_segment_register <= 0;
         prefix_valid <= 0;
         pending_test_valid <= 0;
         pending_test_result <= 0;
-        fpu_accumulator <= 0;
-        fpu_memory_active <= 0;
-        fpu_memory_lane <= 0;
-        fpu_rf_read_a_address <= 0;
-        fpu_rf_read_b_address <= 0;
-        fpu_mul_valid <= 0;
-        fpu_mul_tag_0 <= 0;
-        fpu_mul_tag_1 <= 0;
         retired_words <= 0;
         fault_code <= 0;
         fault_pc <= 0;
         async_store_valid <= 0;
         async_store_issued <= 0;
+        fpu2_word_valid <= 0;
+        fpu2_abort <= 1;
+        fpu2_seen_complete <= 0;
+        fpu2_is_memory <= 0;
     end else if (!hold) begin
         gpr_write_enable <= 0;
-        fpu_rf_write_enable <= 1'b0;
+        fpu2_word_valid <= 0;
+        fpu2_abort <= 0;
         if (async_store_valid && async_store_issued &&
             data_response_valid && data_error) begin
             async_store_valid <= 0;
@@ -1142,13 +848,19 @@ always @(posedge clk) begin
                                 end
                             end
                         end
-                        4'hd: begin
-                            fpu_retire_words <= success_retire_words;
-                            fpu_fault_pc <= current_fault_pc;
-                            fpu_step <= 0;
-                            fpu_rf_read_a_address <= field_a;
-                            fpu_rf_read_b_address <= field_b;
-                            state <= ST_FPU_EXECUTE;
+                        // FPU v2 two-word instruction (VECTOR / SCALAR /
+                        // AUX). Word0 goes to the unit now; word1 is fetched
+                        // through the normal instruction port. FPU v2
+                        // instructions never consume a pending PFX12 prefix.
+                        4'hc, 4'hd, 4'he: begin
+                            fpu2_word <= instruction;
+                            fpu2_word_valid <= 1;
+                            fpu2_word0 <= instruction;
+                            fpu2_fault_pc <= instruction_pc;
+                            fpu2_seen_complete <= 0;
+                            fpu2_is_memory <= 0;
+                            fpu2_write_back <= 0;
+                            state <= ST_FPU2_WORD1;
                         end
                         default: begin
                             fault_code <= FAULT_INVALID_INSTRUCTION;
@@ -1185,7 +897,7 @@ always @(posedge clk) begin
             end
             ST_ASYNC_STORE_WAIT: begin
                 if (!async_store_valid) begin
-                    if (pending_write && !fpu_memory_active) begin
+                    if (pending_write) begin
                         async_store_valid <= 1;
                         async_store_issued <= 0;
                         async_store_address <= pending_address;
@@ -1201,38 +913,9 @@ always @(posedge clk) begin
             ST_DATA_RESPONSE: begin
                 if (data_response_valid) begin
                     if (data_error) begin
-                        fpu_memory_active <= 0;
                         fault_code <= FAULT_DATA_MEMORY;
                         fault_pc <= pending_fault_pc;
                         state <= ST_FAULT;
-                    end else if (fpu_memory_active) begin
-                        if (!pending_write)
-                            fpu_memory_value[fpu_memory_lane] <= data_read_data;
-                        if (fpu_memory_lane == 3) begin
-                            fpu_memory_active <= 0;
-                            if (!pending_write) begin
-                                // Imported beats land in the register file as
-                                // one wide vector once the fourth transfer
-                                // confirmed.
-                                fpu_rf_write_enable <= 4'b1111;
-                                fpu_rf_write_address <= pending_destination;
-                                fpu_rf_write_data <= {data_read_data,
-                                    fpu_memory_value[2], fpu_memory_value[1],
-                                    fpu_memory_value[0]};
-                                state <= ST_FPU_COMMIT;
-                            end else begin
-                                retired_words <= retired_words + pending_retire_words;
-                                state <= ST_FETCH_REQUEST;
-                            end
-                        end else begin
-                            // Exported beats stream from the dispatch-time
-                            // vector snapshot, so no FPR reads remain here.
-                            fpu_memory_lane <= fpu_memory_lane + 1'b1;
-                            pending_address <= pending_address + 1'b1;
-                            pending_write_data <=
-                                fpu_vector_buffer[(fpu_memory_lane + 2'd1)*16 +: 16];
-                            state <= ST_DATA_REQUEST;
-                        end
                     end else begin
                         if (!pending_write) begin
                             gpr_write_enable <= 1;
@@ -1254,361 +937,86 @@ always @(posedge clk) begin
                 retired_words <= retired_words + multiply_retire_words;
                 state <= ST_FETCH_REQUEST;
             end
-            ST_FPU_EXECUTE: begin
-                case (field_d)
-                    0: begin
-                        // FLOAD: one wide write, lane zero plus cleared lanes.
-                        fpu_rf_write_enable <= 4'b1111;
-                        fpu_rf_write_address <= field_a;
-                        fpu_rf_write_data <= {48'd0, gpr_read_b_data};
-                        state <= ST_FPU_COMMIT;
-                    end
-                    1: begin
-                        gpr_write_enable <= 1;
-                        gpr_write_address <= field_a;
-                        gpr_write_data <= fpu_rf_read_b_data[15:0];
-                        state <= ST_FPU_COMMIT;
-                    end
-                    2, 3: begin
-                        if (gpr_read_b_data[1:0] != 0) begin
-                            fault_code <= FAULT_DATA_MEMORY;
-                            fault_pc <= fpu_fault_pc;
-                            state <= ST_FAULT;
-                        end else begin
-                            fpu_memory_active <= 1;
-                            fpu_memory_lane <= 0;
-                            pending_write <= field_d == 3;
-                            pending_address <= {data_segment_register, gpr_read_b_data};
-                            pending_write_data <= fpu_rf_read_a_data[15:0];
-                            fpu_vector_buffer <= fpu_rf_read_a_data;
-                            pending_destination <= field_a;
-                            pending_retire_words <= fpu_retire_words;
-                            pending_fault_pc <= fpu_fault_pc;
-                            state <= async_store_valid ? ST_ASYNC_STORE_WAIT :
-                                     ST_DATA_REQUEST;
-                        end
-                    end
-                    4: begin
-                        // FMOV: one wide vector copy.
-                        fpu_rf_write_enable <= 4'b1111;
-                        fpu_rf_write_address <= field_a;
-                        fpu_rf_write_data <= fpu_rf_read_b_data;
-                        state <= ST_FPU_COMMIT;
-                    end
-                    5: begin
-                        if (field_b <= 12) begin
-                            // Pack4: port B currently reads Fb; the remaining
-                            // snapshot reads run two vectors per cycle.
-                            fpu_memory_value[0] <= fpu_rf_read_b_data[15:0];
-                            fpu_rf_read_a_address <= field_b + 4'd1;
-                            fpu_rf_read_b_address <= field_b + 4'd2;
-                            fpu_step <= 0;
-                            state <= ST_FPU_GATHER_READ;
-                        end else begin
-                            fault_code <= FAULT_INVALID_INSTRUCTION;
-                            fault_pc <= fpu_fault_pc;
-                            state <= ST_FAULT;
-                        end
-                    end
-                    6: begin
-                        if (field_a <= 12) begin
-                            // Unpack4 snapshots the source vector so a
-                            // destination range overlapping Fb stays clean.
-                            fpu_vector_buffer <= fpu_rf_read_b_data;
-                            fpu_step <= 0;
-                            state <= ST_FPU_SCATTER;
-                        end else begin
-                            fault_code <= FAULT_INVALID_INSTRUCTION;
-                            fault_pc <= fpu_fault_pc;
-                            state <= ST_FAULT;
-                        end
-                    end
-                    7: begin
-                        if (field_a <= 12 && field_b == 0) begin
-                            // Transpose snapshots all four rows before any
-                            // write; port A currently reads row Fa.
-                            fpu_row_0 <= fpu_rf_read_a_data;
-                            fpu_rf_read_a_address <= field_a + 4'd1;
-                            fpu_rf_read_b_address <= field_a + 4'd2;
-                            fpu_step <= 0;
-                            state <= ST_FPU_TRANSPOSE;
-                        end else begin
-                            fault_code <= FAULT_INVALID_INSTRUCTION;
-                            fault_pc <= fpu_fault_pc;
-                            state <= ST_FAULT;
-                        end
-                    end
-                    8, 9: begin
-                        fpu_operand_a <= fpu_rf_read_a_data[15:0];
-                        fpu_operand_b <= fpu_rf_read_b_data[15:0];
-                        fpu_step <= 0;
-                        state <= ST_FPU_WRITE_LANES;
-                    end
-                    10, 11: begin
-                        fpu_step <= 1;
-                        fpu_mul_valid <= 2'b01;
-                        fpu_mul_tag_0 <= 0;
-                        state <= ST_FPU_MULTIPLY_PIPELINE;
-                    end
-                    12: begin
-                        // FACCSTORE: field_b is a 4-bit destination lane
-                        // write mask (not a lane index); every set bit takes
-                        // the same rounded ACC value. Mask 0 only clears ACC.
-                        fpu_rf_write_enable <= field_b;
-                        fpu_rf_write_address <= field_a;
-                        fpu_rf_write_data <=
-                            {4{fix16_from_accumulator(fpu_accumulator)}};
-                        fpu_accumulator <= 0;
-                        state <= ST_FPU_COMMIT;
-                    end
-                    13: begin
-                        pending_test_valid <= 1;
-                        pending_test_result <=
-                            fpu_rf_read_a_data[15:0] == fpu_rf_read_b_data[15:0] ? TEST_EQUAL :
-                            $signed(fpu_rf_read_a_data[15:0]) < $signed(fpu_rf_read_b_data[15:0]) ? TEST_LESS :
-                            TEST_GREATER;
-                        state <= ST_FPU_COMMIT;
-                    end
-                    14: begin
-                        case (field_b)
-                            0, 1: begin
-                                fpu_operand_a <= fpu_rf_read_a_data[15:0];
-                                state <= ST_FPU_UNARY_DISPATCH;
-                            end
-                            2: begin
-                                fpu_step <= 0;
-                                state <= ST_FPU_MULTIPLY_WAIT;
-                            end
-                            3, 4, 5, 6, 7, 8, 9, 10: begin
-                                fpu_operand_a <= fpu_rf_read_a_data[15:0];
-                                fpu_operand_b <= fpu_rf_read_b_data[15:0];
-                                fpu_step <= 0;
-                                state <= ST_FPU_WRITE_LANES;
-                            end
-                            11, 12, 13, 14: begin
-                                // FACCLOAD.*: overwrite ACC with the exact
-                                // selected source lane in accumulator format.
-                                fpu_accumulator <=
-                                    {{16{fpu_rf_read_a_data[(field_b - 4'd11)*16 + 15]}},
-                                     fpu_rf_read_a_data[(field_b - 4'd11)*16 +: 16], 8'd0};
-                                state <= ST_FPU_COMMIT;
-                            end
-                            default: begin
-                                fault_code <= FAULT_INVALID_INSTRUCTION;
-                                fault_pc <= fpu_fault_pc;
-                                state <= ST_FAULT;
-                            end
-                        endcase
-                    end
-                    default: begin
-                        fault_code <= FAULT_INVALID_INSTRUCTION;
-                        fault_pc <= fpu_fault_pc;
+            ST_FPU2_WORD1: begin
+                // Fetch the second instruction word through the instruction
+                // port; the unit's front-end accepts it on the beat after
+                // the response arrives.
+                if (instruction_response_valid) begin
+                    if (instruction_error) begin
+                        fault_code <= FAULT_INSTRUCTION_MEMORY;
+                        fault_pc <= pc_register;
+                        fpu2_abort <= 1;
                         state <= ST_FAULT;
-                    end
-                endcase
-            end
-            ST_FPU_UNARY_DISPATCH: begin
-                if ((field_b == 0 && fpu_operand_a == 0) ||
-                    (field_b == 1 && $signed(fpu_operand_a) <= 0)) begin
-                    fault_code <= FAULT_FPU_DOMAIN;
-                    fault_pc <= fpu_fault_pc;
-                    state <= ST_FAULT;
-                end else begin
-                    fpu_rom_negative <= field_b == 0 && fpu_operand_a[15];
-                    fpu_magnitude <= fpu_unary_magnitude;
-                    fpu_rom_exponent <= fpu_unary_exponent;
-                    state <= ST_FPU_ROM_NORMALIZE;
-                end
-            end
-            ST_FPU_WRITE_LANES: begin
-                if (fpu_step < 3) begin
-                    fpu_operand_a <= fpu_rf_read_a_data[(fpu_step[1:0] + 2'd1)*16 +: 16];
-                    fpu_operand_b <= fpu_rf_read_b_data[(fpu_step[1:0] + 2'd1)*16 +: 16];
-                end
-                fpu_rf_write_enable <= 4'b0001 << fpu_write_lane;
-                fpu_rf_write_address <= field_a;
-                fpu_rf_write_data <= {4{fpu_write_lanes_data}};
-                if (fpu_step == 3) begin
-                    fpu_step <= 0;
-                    state <= ST_FPU_COMMIT;
-                end else begin
-                    fpu_step <= fpu_step + 1'b1;
-                end
-            end
-            ST_FPU_MULTIPLY_PIPELINE: begin
-                // The DSP has two registered stages. Tags follow its products
-                // so one lane can be issued every cycle and committed in order.
-                fpu_mul_valid <= {fpu_mul_valid[0], fpu_step < 4};
-                fpu_mul_tag_1 <= fpu_mul_tag_0;
-                if (fpu_step < 4) begin
-                    fpu_mul_tag_0 <= fpu_step[1:0];
-                    fpu_step <= fpu_step + 1'b1;
-                end
-                if (fpu_mul_valid[1]) begin
-                    if (field_d == 11) begin
-                        fpu_accumulator <=
-                            fpu_accumulate_product(fpu_accumulator, fpu_multiplier_product);
                     end else begin
-                        fpu_rf_write_enable <= 4'b0001 << fpu_mul_tag_1;
-                        fpu_rf_write_address <= field_a;
-                        fpu_rf_write_data <= {4{fix16_from_product(fpu_multiplier_product)}};
+                        fpu2_word <= instruction_data;
+                        fpu2_word_valid <= 1;
+                        pc_register <= pc_register + 1'b1;
+                        // AUX kind 00, subops FLD (0x00) / FST (0x01).
+                        fpu2_subop <= instruction_data[9:4];
+                        fpu2_fd <= instruction_data[15:10];
+                        fpu2_fa <= fpu2_word0[7:2];
+                        fpu2_is_memory <= instruction[15:12] == 4'he &&
+                            fpu2_word0[1:0] == 2'b00 &&
+                            instruction_data[9:4] <= 6'h01;
+                        fpu2_write_back <= instruction_data[9:4] == 6'h01;
+                        fpu2_address <= {data_segment_register,
+                                         gpr_read_a_data};
+                        fpu2_beat <= 0;
+                        state <= ST_FPU2_EXEC;
                     end
-                    if (fpu_mul_tag_1 == 3) begin
-                        fpu_step <= 0;
-                        fpu_mul_valid <= 0;
-                        state <= ST_FPU_COMMIT;
+                end
+            end
+            ST_FPU2_EXEC: begin
+                if (fpu2_instr_complete)
+                    fpu2_seen_complete <= 1;
+                if (fpu2_is_memory) begin
+                    // Wait out the async store buffer before touching the
+                    // data port; FST parks the ext read address through the
+                    // ext_access comb path so the RF data is valid by the
+                    // first request beat.
+                    if (!async_store_valid) begin
+                        fpu2_beat <= 0;
+                        state <= ST_FPU2_MEM_REQUEST;
+                    end
+                end else if (fpu2_seen_complete && !fpu2_busy) begin
+                    retired_words <= retired_words + 2;
+                    state <= ST_FETCH_REQUEST;
+                end
+            end
+            ST_FPU2_MEM_REQUEST: begin
+                if (data_request_ready)
+                    state <= ST_FPU2_MEM_RESPONSE;
+            end
+            ST_FPU2_MEM_RESPONSE: begin
+                if (data_response_valid) begin
+                    if (data_error) begin
+                        fault_code <= FAULT_DATA_MEMORY;
+                        fault_pc <= fpu2_fault_pc;
+                        fpu2_abort <= 1;
+                        state <= ST_FAULT;
+                    end else if (fpu2_beat == 0) begin
+                        // FLD: keep the low half; FST: low half sent.
+                        fpu2_low <= data_read_data;
+                        fpu2_beat <= 1;
+                        state <= ST_FPU2_MEM_REQUEST;
+                    end else begin
+                        // FLD's RF write commits combinationally at this
+                        // edge (fpu2_ext_write_enable).
+                        retired_words <= retired_words + 2;
+                        state <= ST_FETCH_REQUEST;
                     end
                 end
-            end
-            ST_FPU_GATHER_READ: begin
-                // Pack4 snapshots the four lane-x sources two vectors per
-                // cycle so overlapping source and destination ranges stay
-                // snapshot-clean.
-                if (fpu_step == 0) begin
-                    fpu_memory_value[1] <= fpu_rf_read_a_data[15:0];
-                    fpu_memory_value[2] <= fpu_rf_read_b_data[15:0];
-                    fpu_rf_read_a_address <= field_b + 4'd3;
-                    fpu_step <= 1;
-                end else begin
-                    fpu_memory_value[3] <= fpu_rf_read_a_data[15:0];
-                    fpu_step <= 0;
-                    state <= ST_FPU_GATHER_WRITE;
-                end
-            end
-            ST_FPU_GATHER_WRITE: begin
-                fpu_rf_write_enable <= 4'b1111;
-                fpu_rf_write_address <= field_a;
-                fpu_rf_write_data <= {fpu_memory_value[3], fpu_memory_value[2],
-                    fpu_memory_value[1], fpu_memory_value[0]};
-                state <= ST_FPU_COMMIT;
-            end
-            ST_FPU_SCATTER: begin
-                // One wide write per destination vector: lane zero carries the
-                // selected source lane, the other lanes clear.
-                fpu_rf_write_enable <= 4'b1111;
-                fpu_rf_write_address <= field_a + {2'b00, fpu_step[1:0]};
-                fpu_rf_write_data <=
-                    {48'd0, fpu_vector_buffer[fpu_step[1:0]*16 +: 16]};
-                if (fpu_step == 3) begin
-                    fpu_step <= 0;
-                    state <= ST_FPU_COMMIT;
-                end else begin
-                    fpu_step <= fpu_step + 1'b1;
-                end
-            end
-            ST_FPU_TRANSPOSE: begin
-                // Steps 0-1 snapshot the remaining rows two per cycle; steps
-                // 2-5 write one transposed row per cycle from the snapshot.
-                if (fpu_step == 0) begin
-                    fpu_row_1 <= fpu_rf_read_a_data;
-                    fpu_row_2 <= fpu_rf_read_b_data;
-                    fpu_rf_read_a_address <= field_a + 4'd3;
-                end
-                if (fpu_step == 1)
-                    fpu_row_3 <= fpu_rf_read_a_data;
-                if (fpu_step >= 2) begin
-                    fpu_rf_write_enable <= 4'b1111;
-                    fpu_rf_write_address <=
-                        field_a + {2'b00, fpu_transpose_write_index};
-                    fpu_rf_write_data <= {fpu_transpose_lane_3,
-                        fpu_transpose_lane_2, fpu_transpose_lane_1,
-                        fpu_transpose_lane_0};
-                end
-                if (fpu_step == 5) begin
-                    fpu_step <= 0;
-                    state <= ST_FPU_COMMIT;
-                end else begin
-                    fpu_step <= fpu_step + 1'b1;
-                end
-            end
-            // SINCOS keeps the non-streaming DSP path because it issues one
-            // range-reduction multiply followed by two ROM reads.
-            ST_FPU_MULTIPLY_WAIT: state <= ST_FPU_MULTIPLY_SETTLE;
-            ST_FPU_MULTIPLY_SETTLE: state <= ST_FPU_MULTIPLY_COMMIT;
-            ST_FPU_MULTIPLY_COMMIT: begin
-                fpu_sine_phase <= fpu_phase_from_product(fpu_multiplier_product);
-                state <= ST_FPU_ROM_LOOKUP;
-            end
-            ST_FPU_ROM_NORMALIZE: begin
-                // Register the barrel-shifter output before endpoint handling
-                // so normalization and exponent adjustment are separate hops.
-                fpu_normalized <= fpu_variable_shifted;
-                state <= ST_FPU_ROM_ADDRESS;
-            end
-            ST_FPU_ROM_ADDRESS: begin
-                fpu_rom_index <=
-                    fpu_normalized == 17'd512 ? 8'd0 : fpu_normalized[7:0];
-                fpu_rom_exponent <= fpu_rom_exponent +
-                    (fpu_normalized == 17'd512 ? 6'sd1 : 6'sd0);
-                state <= ST_FPU_ROM_LOOKUP;
-            end
-            ST_FPU_ROM_LOOKUP: begin
-                // Short hop: every long path was registered in earlier states.
-                if (field_b == 0) begin
-                    fpu_rom_address <= 10'd256 + {2'b00, fpu_rom_index};
-                end else if (field_b == 1) begin
-                    fpu_rom_address <=
-                        (fpu_rom_exponent[0] ? 10'd768 : 10'd512) + {2'b00, fpu_rom_index};
-                    fpu_rom_exponent <= fpu_rom_exponent >>> 1;
-                end else begin
-                    fpu_rom_address <= {2'b00, fpu_sine_index_value[8:1]};
-                    fpu_rom_second_address <= {2'b00, fpu_cosine_index_value[8:1]};
-                    fpu_rom_negative <= fpu_sine_phase >= 11'd1024;
-                    fpu_cosine_negative <= fpu_cosine_phase >= 11'd1024;
-                    fpu_sine_endpoint <= fpu_sine_is_endpoint(fpu_sine_phase);
-                    fpu_cosine_endpoint <= fpu_sine_is_endpoint(fpu_cosine_phase);
-                    fpu_sine_packed_high <= fpu_sine_index_value[0];
-                    fpu_cosine_packed_high <= fpu_cosine_index_value[0];
-                    fpu_sine_saturated <= fpu_sine_index_value >= 9'd492;
-                    fpu_cosine_saturated <= fpu_cosine_index_value >= 9'd492;
-                end
-                state <= ST_FPU_ROM_WAIT;
-            end
-            ST_FPU_ROM_WAIT: state <= ST_FPU_ROM_COMMIT;
-            ST_FPU_ROM_COMMIT: begin
-                if (field_b <= 1) begin
-                    fpu_result <= fpu_rom_scaled;
-                    state <= ST_FPU_ROM_WRITE;
-                end else begin
-                    fpu_rom_first <= fpu_rom_negative ?
-                        -(fpu_sine_endpoint ? 16'sd256 : $signed({7'b0, fpu_sine_magnitude})) :
-                        (fpu_sine_endpoint ? 16'sd256 : $signed({7'b0, fpu_sine_magnitude}));
-                    fpu_rom_second <= fpu_cosine_negative ?
-                        -(fpu_cosine_endpoint ? 16'sd256 : $signed({7'b0, fpu_cosine_magnitude})) :
-                        (fpu_cosine_endpoint ? 16'sd256 : $signed({7'b0, fpu_cosine_magnitude}));
-                    state <= ST_FPU_ROM_WRITE;
-                end
-            end
-            ST_FPU_ROM_WRITE: begin
-                if (field_b <= 1) begin
-                    // RCP/RSQRT write only lane zero.
-                    fpu_rf_write_enable <= 4'b0001;
-                    fpu_rf_write_data <= {4{fpu_result}};
-                end else begin
-                    // SINCOS lands the whole vector in one wide write.
-                    fpu_rf_write_enable <= 4'b1111;
-                    fpu_rf_write_data <= {32'd0, fpu_rom_second, fpu_rom_first};
-                end
-                fpu_rf_write_address <= field_a;
-                state <= ST_FPU_COMMIT;
             end
             ST_RESET_CLEAR: begin
-                // Reset walks both register files back to zero, one scalar
-                // word and one vector per cycle through their write ports.
+                // Reset walks the scalar register file back to zero one word
+                // per cycle through its synchronous write port.
                 gpr_write_enable <= 1;
-                gpr_write_address <= fpu_clear_index[3:0];
+                gpr_write_address <= clear_index;
                 gpr_write_data <= 0;
-                fpu_rf_write_enable <= 4'b1111;
-                fpu_rf_write_address <= fpu_clear_index[3:0];
-                fpu_rf_write_data <= 64'd0;
-                if (fpu_clear_index == 15)
+                if (clear_index == 15)
                     state <= ST_FETCH_REQUEST;
                 else
-                    fpu_clear_index <= fpu_clear_index + 1'b1;
-            end
-            ST_FPU_COMMIT: begin
-                retired_words <= retired_words + fpu_retire_words;
-                state <= ST_FETCH_REQUEST;
+                    clear_index <= clear_index + 1'b1;
             end
             default: state <= state;
         endcase
