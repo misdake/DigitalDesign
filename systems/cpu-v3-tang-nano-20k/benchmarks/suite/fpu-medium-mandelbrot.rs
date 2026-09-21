@@ -1,5 +1,5 @@
 // bench-max-cycles: 6000000
-// bench-expected-halt: 9698
+// bench-expected-halt: 9691
 // bench-tier: medium
 use crate::dsl_rt::*;
 
@@ -16,11 +16,13 @@ fn main() {
     let mut py: u16 = 0;
     while py < H {
         // cy in [-1.0, 1.0): step 2/24 = 1/12 -> 21.33/256; use 21/256
-        let cy = fix16::from_bits((py << 4) + (py << 2) + py) - fix16::from_int(1);
+        let cy_raw = (py << 4) + (py << 2) + py;
+        let cy = fix16::from_words(cy_raw << 8, cy_raw >> 8) - fix16::from_int(1);
         let mut px: u16 = 0;
         while px < W {
             // cx in [-2.0, 1.0): step 3/32 = 24/256
-            let cx = fix16::from_bits((px << 4) + (px << 3)) - fix16::from_int(2);
+            let cx_raw = (px << 4) + (px << 3);
+            let cx = fix16::from_words(cx_raw << 8, cx_raw >> 8) - fix16::from_int(2);
             let mut x = fix16::zero();
             let mut y = fix16::zero();
             let mut iter: u16 = 0;

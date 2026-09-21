@@ -26,6 +26,28 @@ historical experiments). The harness itself is
 - Inputs and scale are fixed once frozen. Changing a program, its inputs, or the compiler
   options is a suite revision: cross-Stage comparison is only valid within one revision.
 
+## FPU source revision (Q8.8 -> Q16.16)
+
+The FPU programs (and `frame-particles`) originally built `fix16` values with the removed
+Q8.8 `fix16::from_bits`/`to_bits` bridge. They now use the FPU v2 Q16.16 raw-half APIs:
+`fix16::from_words(lo, hi)`, `.lo_bits()`, and `.hi_bits()`. A raw Q8.8 constant is the same
+real value as a Q16.16 raw value shifted left by 8, so each call site constructs the shifted
+low/high halves directly without adding a helper-function call to the measured loop. Real
+inputs, loop counts, and workload scale are unchanged.
+
+`u16` checksums and statics that used to hold one Q8.8 word now consume the full 32-bit
+Q16.16 value:
+
+- bit-pattern checksums fold both halves (`x.lo_bits() ^ x.hi_bits()`);
+- `transform4x4` matrix/vertex storage widened to adjacent low/high words so
+  `vec4::import`/`export` moves 2 words per lane; `frame-particles` uses separate low/high
+  planes in each static so its indexed scalar state also retains all 32 bits.
+
+The exact `bench-expected-halt` values were recomputed from the reviewed deterministic run
+and are revision-specific. This migration is the suite **identity boundary**: program bytes,
+halt checksums, and the performance-ledger fingerprint all differ from the Q8.8 revision, so
+results on either side must not be compared across it.
+
 ## Tiers
 
 | tier | scale target | programs |
@@ -33,7 +55,7 @@ historical experiments). The harness itself is
 | short | ~200-1000 retired instructions | fizzbuzz, insertion sort, substring match, vec+heap |
 | medium | tens of thousands | dijkstra-96, sieve-2000, binary-search-2048, matrix-16x16 |
 | long | ~million | quicksort-2048, streaming-mix |
-| frame | 10 heavy / 30 light frames | sprite-batch (10), particles (10, fix16 physics), tile-world (30) |
+| frame | 10 heavy / 30 light frames | sprite-batch (10), particles (10, Q16.16 physics), tile-world (30) |
 | fpu | short-to-medium | horner, sincos, splat (short); mandelbrot, normalize-batch, bezier, transform4x4 (medium) |
 | stress | short | interleave (FPU/integer barrier), spill (FPU spill pressure) |
 
