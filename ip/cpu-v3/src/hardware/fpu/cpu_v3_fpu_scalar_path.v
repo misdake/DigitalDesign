@@ -20,9 +20,8 @@
 // flag_lt / flag_eq / flag_gt registers. Every other instruction leaves those
 // flag registers unchanged.
 //
-// mode (word1_raw[3:0]) is ignored in this stage. The field is reserved for the
-// length and rounding controls of a later stage; the pair front-end already
-// passes it through, this controller simply does not decode it yet.
+// mode (word1_raw[3:0]) is ignored by this path. Other scalar subops may assign
+// it semantics (SINCOS uses mode[1:0]); the pair front-end passes it through.
 //
 // The three countdown outputs are the first implementation of the section-16
 // resource model:
@@ -68,8 +67,7 @@ wire is_scalar = (instr_opcode == 4'hD);
 wire is_cmp = (subop == 6'h0B);
 // Subops owned by other paths must not fire here. 0x02 (MUL) belongs to the
 // multiply path. 0x0C (RCP), 0x0D (RSQRT) and 0x0E (SINCOS) belong to the
-// special-function path; 0x0E is a defined no-op until SINCOS lands, so the
-// scalar path must still stay off it.
+// special-function path, so the scalar path must stay off them.
 wire subop_owned_elsewhere = (subop == 6'h02) || (subop == 6'h0C) ||
     (subop == 6'h0D) || (subop == 6'h0E);
 // T0 of this cycle: a live scalar instruction has completed and is not being

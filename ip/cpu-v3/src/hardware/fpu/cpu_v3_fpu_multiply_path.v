@@ -21,7 +21,8 @@
 // All arithmetic is Q16.16 with wrap: products are narrowed at the write port
 // by taking product[47:16]. The multiplier itself is the shared
 // CpuV3FpuMulPipe instance in the unit top (the core serializes
-// instructions, so this path and the dot path never multiply at once). This
+// instructions, so this path, the dot path and SINCOS never multiply at
+// once). This
 // controller sequences the lanes and hands each to the pipe with its
 // destination tag; the tag comes back with the product.
 //
@@ -53,10 +54,12 @@ module CpuV3FpuMultiplyPath (
     input wire [31:0] rf_read_b_data,
     output wire [8:0] rf_read_a_address,
     output wire [8:0] rf_read_b_address,
-    // Shared multiplier pipe (in the unit top).
+    // Shared multiplier pipe (in the unit top). The operands are sign-extended
+    // to the pipe's signed-36 buses so the architectural signed-32 Q16.16
+    // values keep their exact product.
     output wire mul_in_valid,
-    output wire [31:0] mul_in_a,
-    output wire [31:0] mul_in_b,
+    output wire signed [35:0] mul_in_a,
+    output wire signed [35:0] mul_in_b,
     output wire [8:0] mul_in_tag,
     input wire mul_out_valid,
     input wire signed [63:0] mul_out_product,
@@ -158,8 +161,8 @@ end
 
 // Shared pipe drive.
 assign mul_in_valid = data_valid;
-assign mul_in_a = rf_read_a_data;
-assign mul_in_b = rf_read_b_data;
+assign mul_in_a = {{4{rf_read_a_data[31]}}, rf_read_a_data};
+assign mul_in_b = {{4{rf_read_b_data[31]}}, rf_read_b_data};
 assign mul_in_tag = waddr_r;
 
 // The write port fires only for entries this instruction issued: the pipe is

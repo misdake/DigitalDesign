@@ -447,6 +447,47 @@ fn program_fpu_special_rcp_rsqrt() -> Vec<u16> {
     p
 }
 
+/// FPU v2 SINCOS at system level (Stage 7c): mode 00 writes sin/cos, mode 01
+/// writes sin only, and mode 10 writes cos only. The single-output cases also
+/// exercise F63/F62. The halt signal is the low half of sin(1.0), so a SINCOS
+/// that is treated as a no-op cannot produce 0xD76A.
+fn program_fpu_sincos() -> Vec<u16> {
+    let mut p = Vec::new();
+    // Operands: 1.0 at [0x4000..0x4001], pi/2 at [0x4002..0x4003].
+    p.extend(load_immediate16(1, 0x4000));
+    p.extend(load_immediate16(2, 0x4002));
+    // Result addresses, one GPR per FST.
+    p.extend(load_immediate16(5, 0x4020)); // sin(1.0)
+    p.extend(load_immediate16(6, 0x4022)); // cos(1.0)
+    p.extend(load_immediate16(7, 0x4024)); // sin-only(pi/2)
+    p.extend(load_immediate16(8, 0x4026)); // cos-only(1.0)
+    p.extend(load_immediate16(0, 1));
+    p.push(store(0, 1, 1)); // [0x4001] = 1 -> 1.0
+    p.extend(load_immediate16(0, 1));
+    p.push(store(0, 2, 1)); // [0x4003] = 1 (pi/2 high half)
+    p.extend(load_immediate16(0, 0x9220));
+    p.push(store(0, 2, 0)); // [0x4002] = 0x9220 -> pi/2
+
+    let fld = |x: u16, fd: u16| [0xe000 | (x << 8), fd << 10];
+    let fst = |x: u16, fa: u16| [0xe000 | (x << 8) | (fa << 2), 0x0010u16];
+    let unary = |fa: u16, fd: u16, subop: u16, mode: u16| {
+        [0xd000 | (fa << 6), (fd << 10) | (subop << 4) | mode]
+    };
+
+    p.extend(fld(1, 0)); // f0 = 1.0
+    p.extend(fld(2, 1)); // f1 = pi/2
+    p.extend(unary(0, 8, 0x0E, 0)); // f8 = sin(1.0), f9 = cos(1.0)
+    p.extend(unary(1, 63, 0x0E, 1)); // f63 = sin(pi/2)
+    p.extend(unary(0, 62, 0x0E, 2)); // f62 = cos(1.0)
+
+    for (x, fa) in [(5u16, 8u16), (6, 9), (7, 63), (8, 62)] {
+        p.extend(fst(x, fa));
+    }
+    p.push(load(0, 5, 0)); // r0 = low half of sin(1.0) = 0xD76A
+    p.push(halt());
+    p
+}
+
 fn programs() -> Vec<CosimProgram> {
     vec![
         CosimProgram {
@@ -552,6 +593,14 @@ fn programs() -> Vec<CosimProgram> {
             check_base: 0x4020,
             check_len: 0x0C,
             expected_halt: Some(0x7FFF),
+        },
+        CosimProgram {
+            name: "fpu_sincos",
+            words: program_fpu_sincos(),
+            max_cycles: 20_000,
+            check_base: 0x4020,
+            check_len: 8,
+            expected_halt: Some(0xD76A),
         },
     ]
 }

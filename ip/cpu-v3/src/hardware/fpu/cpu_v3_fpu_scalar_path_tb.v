@@ -275,7 +275,7 @@ task run_scalar;
         sb = b;
         is_cmp = (subop == 4'hB);
         // The multiply path owns 0x02 (MUL); the special path owns 0x0C (RCP),
-        // 0x0D (RSQRT) and 0x0E (SINCOS, a defined no-op until it lands). For
+        // 0x0D (RSQRT) and 0x0E (SINCOS). For
         // those the scalar path does not fire at all (no write, no countdown).
         is_owned = (subop == 4'h2) || (subop == 4'hC) ||
             (subop == 4'hD) || (subop == 4'hE);
