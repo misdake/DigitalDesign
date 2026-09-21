@@ -9,11 +9,63 @@
 //! the host for debugging.
 
 use once_cell::sync::Lazy;
+use std::cell::{Cell, UnsafeCell};
 use std::ops::{Index, IndexMut};
 use std::sync::Mutex;
 
-/// data memory shared by all subset programs running on the host
-pub static MEM: Lazy<Mutex<Box<[u16; 65536]>>> = Lazy::new(|| Mutex::new(Box::new([0; 65536])));
+thread_local! {
+    static HOST_RUN_ACTIVE: Cell<bool> = const { Cell::new(false) };
+}
+
+struct HostRunScope;
+
+impl Drop for HostRunScope {
+    fn drop(&mut self) {
+        HOST_RUN_ACTIVE.with(|active| active.set(false));
+    }
+}
+
+fn require_host_run() {
+    assert!(
+        HOST_RUN_ACTIVE.with(Cell::get),
+        "rcc host memory access must run inside dsl_rt::run_host"
+    );
+}
+
+/// Serialize complete host executions of rcc programs. Target programs are
+/// single-threaded, while Cargo may run their host tests in parallel. Memory
+/// views and accesses check that this scope is active, so a missed wrapper fails
+/// immediately instead of silently violating the runtime contract.
+///
+/// This is an execution boundary, not a reset boundary: consecutive calls see
+/// the same statics and data memory, like calling target code twice without a
+/// machine reset. Tests or tools that need power-on state must run the program
+/// in a fresh process. Process isolation deliberately resets the whole host
+/// model, including raw memory and device shims, rather than only registered
+/// `Buf` values.
+pub fn run_host<R>(f: impl FnOnce() -> R) -> R {
+    assert!(
+        !HOST_RUN_ACTIVE.with(Cell::get),
+        "nested dsl_rt::run_host calls are not supported"
+    );
+    static HOST_RUN_LOCK: Mutex<()> = Mutex::new(());
+    let _guard = HOST_RUN_LOCK
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    HOST_RUN_ACTIVE.with(|active| active.set(true));
+    let _scope = HostRunScope;
+    f()
+}
+
+/// Data memory shared by subset programs running on the host. `run_host` owns
+/// the only synchronization; individual word accesses need no second lock.
+struct HostMemory(UnsafeCell<Box<[u16; 65536]>>);
+
+// SAFETY: every access calls `require_host_run`, and `run_host` serializes the
+// complete execution that contains it.
+unsafe impl Sync for HostMemory {}
+
+static MEM: Lazy<HostMemory> = Lazy::new(|| HostMemory(UnsafeCell::new(Box::new([0; 65536]))));
 
 /// data pointer (address in data memory). In the rcc subset this is a
 /// distinct type from function pointers (Harvard architecture).
@@ -32,22 +84,35 @@ impl Ptr {
     pub fn add(self, off: i16) -> Ptr {
         Ptr(self.0.wrapping_add(off as u16))
     }
-    pub fn read(self, off: i16) -> u16 {
-        MEM.lock().unwrap()[self.add(off).0 as usize]
+    /// # Safety
+    /// The resulting address must be readable in the active rcc address space.
+    pub unsafe fn read(self, off: i16) -> u16 {
+        require_host_run();
+        // SAFETY: the global host-run lock excludes every other execution.
+        unsafe { (*MEM.0.get())[self.add(off).0 as usize] }
     }
-    pub fn write(self, off: i16, v: u16) {
-        MEM.lock().unwrap()[self.add(off).0 as usize] = v;
+    /// # Safety
+    /// The resulting address must be writable in the active rcc address space.
+    pub unsafe fn write(self, off: i16, v: u16) {
+        require_host_run();
+        // SAFETY: the global host-run lock excludes every other execution.
+        unsafe { (*MEM.0.get())[self.add(off).0 as usize] = v };
     }
-    pub fn as_u16_array(self) -> Array<u16> {
+    /// # Safety
+    /// The address must start a live region suitable for the subsequent access.
+    pub unsafe fn as_u16_array(self) -> Array<u16> {
         unimplemented!("Ptr::as_u16_array is a target intrinsic")
     }
-    pub fn as_i16_array(self) -> Array<i16> {
+    /// # Safety
+    /// The address must start a live region suitable for the subsequent access.
+    pub unsafe fn as_i16_array(self) -> Array<i16> {
         unimplemented!("Ptr::as_i16_array is a target intrinsic")
     }
 }
 
 /// Typed, one-word array view used by rcc's indexing syntax. On the target it
-/// has exactly the same representation as Ptr and performs unchecked access.
+/// has exactly the same representation as `Ptr` and performs unchecked access.
+/// A non-`mut` Rust binding is read-only; a `mut` binding enables `IndexMut`.
 pub struct Array<T>(*mut T);
 
 impl<T> Copy for Array<T> {}
@@ -71,11 +136,13 @@ macro_rules! impl_array_index {
         impl<T> Index<$index> for Array<T> {
             type Output = T;
             fn index(&self, index: $index) -> &Self::Output {
+                require_host_run();
                 unsafe { &*self.0.offset(index as isize) }
             }
         }
         impl<T> IndexMut<$index> for Array<T> {
             fn index_mut(&mut self, index: $index) -> &mut Self::Output {
+                require_host_run();
                 unsafe { &mut *self.0.offset(index as isize) }
             }
         }
@@ -89,13 +156,30 @@ impl_array_index!(i16);
 /// `Buf<T, N>` in a type position and lowers it to N consecutive words, where T is
 /// `u16`, `i16` or a struct; the methods below are target intrinsics. On the host
 /// they touch real Rust storage, so a host run keeps the bounds check for free.
+///
+/// The host storage is an `UnsafeCell` on purpose. `as_array()` hands out a
+/// writable view derived from a *shared* borrow - that is how the language is
+/// specified (§9.2: a `static` read is safe Rust and mutation goes through a view
+/// taken from it). Deriving a writable pointer from `&T` is only legal when the
+/// storage has interior mutability; with a plain `[T; N]` it is undefined
+/// behaviour and release builds drop the writes. Rcc code has no reference
+/// values or threads, and `run_host` serializes complete host executions; those
+/// constraints make `UnsafeCell` the narrow trusted boundary for this model.
 #[repr(transparent)]
-pub struct Buf<T, const N: usize>([T; N]);
+pub struct Buf<T, const N: usize>(UnsafeCell<[T; N]>);
+
+// A `Buf` may sit in a `static`, which requires `Sync`. This is a promise that the
+// subset is single-threaded: rcc targets one bare-metal core and `run_host`
+// serializes host executions. Rcc also admits only Send + Sync word/aggregate
+// elements. `Sync` is asserted rather than derived precisely because
+// `UnsafeCell` has no `Sync` of its own; this is a trusted runtime contract, not
+// a general-purpose concurrent container.
+unsafe impl<T: Send + Sync, const N: usize> Sync for Buf<T, N> {}
 
 impl<T, const N: usize> Buf<T, N> {
     /// initialize from `[v; N]` or `[e0, e1, ...]`
     pub const fn new(words: [T; N]) -> Self {
-        Self(words)
+        Self(UnsafeCell::new(words))
     }
     #[allow(clippy::len_without_is_empty)]
     pub fn len(&self) -> u16 {
@@ -104,9 +188,13 @@ impl<T, const N: usize> Buf<T, N> {
     pub fn as_ptr(&self) -> Ptr {
         unimplemented!("as_ptr is a target intrinsic")
     }
-    /// the first-element address as a one-word typed view
+    /// The first-element address as a typed view. The backing `UnsafeCell`
+    /// permits rcc's single-threaded static-buffer mutation; complete host runs
+    /// are serialized by [`run_host`].
+    #[allow(clippy::should_implement_trait)]
     pub fn as_array(&self) -> Array<T> {
-        Array::from_host_ptr(self.0.as_slice().as_ptr() as *mut T)
+        require_host_run();
+        Array::from_host_ptr(self.0.get() as *mut T)
     }
 }
 
@@ -133,12 +221,17 @@ macro_rules! impl_buf_index {
         impl<T, const N: usize> Index<$index> for Buf<T, N> {
             type Output = T;
             fn index(&self, index: $index) -> &Self::Output {
-                &self.0[index as usize]
+                require_host_run();
+                // SAFETY: rcc has no reference values, so this reference is
+                // confined to the indexing expression. Host runs are serialized.
+                &(unsafe { &*self.0.get() })[index as usize]
             }
         }
         impl<T, const N: usize> IndexMut<$index> for Buf<T, N> {
             fn index_mut(&mut self, index: $index) -> &mut Self::Output {
-                &mut self.0[index as usize]
+                require_host_run();
+                // SAFETY: `&mut self` guarantees exclusive access to the cell.
+                &mut (unsafe { &mut *self.0.get() })[index as usize]
             }
         }
     };
@@ -147,10 +240,11 @@ macro_rules! impl_buf_index {
 impl_buf_index!(u16);
 impl_buf_index!(i16);
 
-/// The address of one value as a typed view. The target has no separate
+/// The address of one mutable value as a typed view. The target has no separate
 /// representation: a struct (or addressable scalar) value *is* its address.
-pub fn view_of<T>(value: &T) -> Array<T> {
-    Array::from_host_ptr(value as *const T as *mut T)
+pub fn view_of<T>(value: &mut T) -> Array<T> {
+    require_host_run();
+    Array::from_host_ptr(value as *mut T)
 }
 
 /// halt the machine with a signal value
@@ -263,38 +357,85 @@ pub fn addr_of<T>(_r: &T) -> Ptr {
 
 #[cfg(test)]
 mod tests {
-    use super::Buf;
+    use super::{run_host, Buf, Ptr};
+
+    static REPEATED_RUN_WORDS: Buf<u16, 1> = Buf::new([3]);
 
     #[test]
     fn host_buf_indexes_real_storage() {
-        let mut words: Buf<u16, 3> = Buf::new([1, 2, 3]);
-        words[1u16] = 7;
-        words[2u16] += 4;
-        assert_eq!((words[0u16], words[1u16], words[2u16]), (1, 7, 7));
-        assert_eq!(words.len(), 3);
-        words.write(0, 9);
-        assert_eq!(words.read(0), 9);
+        run_host(|| {
+            let mut words: Buf<u16, 3> = Buf::new([1, 2, 3]);
+            words[1u16] = 7;
+            words[2u16] += 4;
+            assert_eq!((words[0u16], words[1u16], words[2u16]), (1, 7, 7));
+            assert_eq!(words.len(), 3);
+            words.write(0, 9);
+            assert_eq!(words.read(0), 9);
 
-        let signed: Buf<i16, 2> = Buf::new([-3, 5]);
-        assert_eq!(signed[0i16], -3);
-        assert_eq!(signed[1i16], 5);
+            let signed: Buf<i16, 2> = Buf::new([-3, 5]);
+            assert_eq!(signed[0i16], -3);
+            assert_eq!(signed[1i16], 5);
+        });
     }
 
     #[test]
     fn buf_view_indexes_the_same_storage() {
-        let words: Buf<u16, 3> = Buf::new([1, 2, 3]);
-        let mut view = words.as_array();
-        view[1u16] = 7;
-        view[2u16] += 4;
-        assert_eq!(words[1u16], 7);
-        assert_eq!(words[2u16], 7);
+        run_host(|| {
+            let words: Buf<u16, 3> = Buf::new([1, 2, 3]);
+            let mut view = words.as_array();
+            view[1u16] = 7;
+            view[2u16] += 4;
+            assert_eq!(words[1u16], 7);
+            assert_eq!(words[2u16], 7);
+        });
     }
 
     #[test]
     #[should_panic]
     fn host_buf_keeps_the_bounds_check() {
+        run_host(|| {
+            let words: Buf<u16, 2> = Buf::new([1, 2]);
+            let _ = words[2u16];
+        });
+    }
+
+    #[test]
+    #[should_panic(expected = "nested dsl_rt::run_host calls are not supported")]
+    fn nested_host_runs_are_rejected_before_locking_again() {
+        run_host(|| run_host(|| {}));
+    }
+
+    #[test]
+    #[should_panic(expected = "rcc host memory access must run inside dsl_rt::run_host")]
+    fn escaped_view_cannot_be_used_after_the_host_run() {
         let words: Buf<u16, 2> = Buf::new([1, 2]);
-        let _ = words[2u16];
+        let view = run_host(|| words.as_array());
+        let _ = view[0u16];
+    }
+
+    #[test]
+    fn ptr_memory_uses_the_outer_host_run_lock() {
+        run_host(|| {
+            let ptr = Ptr::from_addr(0x1234);
+            unsafe { ptr.write(0, 0xabcd) };
+            assert_eq!(unsafe { ptr.read(0) }, 0xabcd);
+        });
+    }
+
+    #[test]
+    #[should_panic(expected = "rcc host memory access must run inside dsl_rt::run_host")]
+    fn ptr_memory_rejects_access_outside_the_host_run() {
+        let _ = unsafe { Ptr::from_addr(0x1234).read(0) };
+    }
+
+    #[test]
+    fn consecutive_host_runs_preserve_machine_state() {
+        run_host(|| {
+            let mut words = REPEATED_RUN_WORDS.as_array();
+            assert_eq!(words[0u16], 3);
+            words[0u16] = 9;
+        });
+        run_host(|| assert_eq!(REPEATED_RUN_WORDS[0u16], 9));
     }
 }
 
@@ -591,7 +732,9 @@ impl vec4 {
     pub fn import(ptr: Ptr) -> vec4 {
         let mut lanes = [fix32(0); 4];
         for (i, lane) in lanes.iter_mut().enumerate() {
-            *lane = fix32::from_words(ptr.read(2 * i as i16), ptr.read(2 * i as i16 + 1));
+            *lane = fix32::from_words(unsafe { ptr.read(2 * i as i16) }, unsafe {
+                ptr.read(2 * i as i16 + 1)
+            });
         }
         vec4(lanes)
     }
@@ -599,8 +742,8 @@ impl vec4 {
     /// low half first (`FSTV4`).
     pub fn export(v: vec4, ptr: Ptr) {
         for (i, lane) in v.0.iter().enumerate() {
-            ptr.write(2 * i as i16, lane.lo_bits());
-            ptr.write(2 * i as i16 + 1, lane.hi_bits());
+            unsafe { ptr.write(2 * i as i16, lane.lo_bits()) };
+            unsafe { ptr.write(2 * i as i16 + 1, lane.hi_bits()) };
         }
     }
 }

@@ -2870,11 +2870,11 @@ mod tests {
                 bump(view, 5u16);
                 let total = sum_x(view, 3u16);
                 let mut single: Point = Point { x: 7, y: 0 };
-                bump(view_of(&single), 100u16);
+                bump(view_of(&mut single), 100u16);
                 halt(total + single.x);
             }
         "#;
-        // bump(view) makes x = 15, so sum_x = 65; bump(view_of(&single)) makes 107
+        // bump(view) makes x = 15, so sum_x = 65; bump(view_of(&mut single)) makes 107
         assert_eq!(run_with_std_capped(source, 40_000), 172);
     }
 
@@ -2951,8 +2951,8 @@ mod tests {
             }
 
             fn main() {
-                let p: Point = make(3u16, 4u16);
-                let q: Point = pass_through(view_of(&p));
+                let mut p: Point = make(3u16, 4u16);
+                let q: Point = pass_through(view_of(&mut p));
                 let mut r: Point = q;
                 r = make(10u16, 20u16);
                 halt(p.x + p.y + q.x + q.y + r.x + r.y);
@@ -3153,7 +3153,7 @@ mod tests {
             r#"
             static COUNT: u16 = 0;
             fn side(value: bool) -> bool {
-                addr_of(&COUNT).write(0, COUNT + 1u16);
+                unsafe { addr_of(&COUNT).write(0, COUNT + 1u16) };
                 value
             }
             fn choose(value: bool) -> bool { value || side(true) }
@@ -3178,12 +3178,12 @@ mod tests {
             struct P { x: u16, y: u16 }
             static INDEX: u16 = 0;
             fn swap(p: Array<P>) -> P { P { x: p[0u16].y, y: p[0u16].x } }
-            fn make() -> P { addr_of(&INDEX).write(0, 1); P { x: 7, y: 8 } }
+            fn make() -> P { unsafe { addr_of(&INDEX).write(0, 1) }; P { x: 7, y: 8 } }
             fn main() {
                 let mut p: P = P { x: 1, y: 2 };
                 p = P { x: p.y, y: p.x };
                 if p.x != 2u16 || p.y != 1u16 { halt(10); }
-                p = swap(view_of(&p));
+                p = swap(view_of(&mut p));
                 if p.x != 1u16 || p.y != 2u16 { halt(11); }
                 let mut t: (u16, u16) = (3, 4);
                 t = (t.1, t.0);
@@ -3335,7 +3335,7 @@ mod tests {
         assert_source_in_both_modes(
             r#"
             static CALLS: u16 = 0;
-            fn observe(x: u16) -> u16 { addr_of(&CALLS).write(0, CALLS + 1u16); x }
+            fn observe(x: u16) -> u16 { unsafe { addr_of(&CALLS).write(0, CALLS + 1u16) }; x }
             fn classify(x: i16) -> u16 {
                 let mut result: u16 = 0;
                 match x {
@@ -3595,7 +3595,7 @@ mod tests {
         let source = r#"
             fn main() {
                 mtsr_dseg(1);
-                let mut a = Ptr::from_addr(0x0010).as_u16_array();
+                let mut a = unsafe { Ptr::from_addr(0x0010).as_u16_array() };
                 a[0u16] = 0x1234;
                 jseg(2, 0x0020);
             }
@@ -3645,8 +3645,8 @@ mod tests {
     fn segment_switch_mirror_loop_copies_across_data_segments() {
         let source = r#"
             fn main() {
-                let desc = Ptr::from_addr(0x1000).as_u16_array();
-                let mut handoff = Ptr::from_addr(0x0100).as_u16_array();
+                let desc = unsafe { Ptr::from_addr(0x1000).as_u16_array() };
+                let mut handoff = unsafe { Ptr::from_addr(0x0100).as_u16_array() };
                 let hseg: u16 = 2;
                 let mut i: u16 = 0;
                 while i < 32 {

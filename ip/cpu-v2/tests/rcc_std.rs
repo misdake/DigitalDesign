@@ -101,8 +101,8 @@ fn test_heap_custom_region() {
     let src = r#"
 fn main() {
     let p = malloc(4);
-    p.write(0, 77);
-    halt(p.read(0));
+    unsafe { p.write(0, 77) };
+    halt(unsafe { p.read(0) });
 }
 "#;
     let opts = CompilerOptions {

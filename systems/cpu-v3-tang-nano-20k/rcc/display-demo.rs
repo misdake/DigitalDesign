@@ -51,7 +51,7 @@ fn static_pixel(x: u16, y: u16) -> u16 {
 /// performed while the framebuffer segment is selected, so the compiler's
 /// stack and static data remain in segment zero.
 fn store_at(segment: u16, offset: u16, value: u16) {
-    let mut pixel = Ptr::from_addr(offset).as_u16_array();
+    let mut pixel = unsafe { Ptr::from_addr(offset).as_u16_array() };
     mtsr_dseg(segment);
     pixel[0u16] = value;
     mtsr_dseg(0);

@@ -145,7 +145,7 @@ fn test_variables() {
     let src = r#"
 static G: u16 = 0;
 fn set(g: u16) {
-    addr_of(&G).write(0, g);
+    unsafe { addr_of(&G).write(0, g) };
 }
 fn main() {
     set(1234);
@@ -394,7 +394,7 @@ fn test_locals_follow_lexical_scope_and_frame_values() {
     let outer: u16 = 1;
     if outer == 1 {
         let mut inner: u16 = 7;
-        addr_of(&inner).write(0, 8);
+        unsafe { addr_of(&inner).write(0, 8) };
     }
     halt(outer);
 }

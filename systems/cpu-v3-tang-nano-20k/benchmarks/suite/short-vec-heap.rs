@@ -19,12 +19,12 @@ fn main() {
         let block = malloc(8);
         let mut j: u16 = 0;
         while j < 8 {
-            block.write(j, vec_get(v, j) ^ 0x11);
+            unsafe { block.write(j, vec_get(v, j) ^ 0x11) };
             j = j + 1;
         }
         j = 0;
         while j < 8 {
-            total = total ^ block.read(j);
+            total = total ^ unsafe { block.read(j) };
             j = j + 1;
         }
         free(block);

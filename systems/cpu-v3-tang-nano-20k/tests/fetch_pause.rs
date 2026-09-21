@@ -22,11 +22,8 @@
 //! arbiter state, and SDRAM controller state are not architectural (the SDRAM
 //! controller phase *is* carried in snapshots, but it is not compared).
 //!
-//! These tests run in the default suite: the whole file takes about 4.3 s in the
-//! debug profile that `scripts/run-cargo.ps1` uses (about 0.2 s release), so none
-//! of them is gated behind `#[ignore]`. See the design document
-//! (`.agent/.../design/fetch-pause/README.md`, section 8) for the per-test
-//! timings and the reasoning.
+//! These checks are part of the default suite; hardware co-simulation remains
+//! the explicitly invoked ignored workload.
 
 mod system_emu;
 

@@ -305,7 +305,7 @@ static CALLS: u16 = 0;
 
 fn bump() -> u16 {
     let c = CALLS + 1;
-    addr_of(&CALLS).write(0, c);
+    unsafe { addr_of(&CALLS).write(0, c) };
     c
 }
 
@@ -350,7 +350,7 @@ static CALLS: u16 = 0;
 
 fn bump() -> u16 {
     let c = CALLS + 1;
-    addr_of(&CALLS).write(0, c);
+    unsafe { addr_of(&CALLS).write(0, c) };
     c
 }
 

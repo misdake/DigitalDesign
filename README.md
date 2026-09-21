@@ -104,7 +104,9 @@ powershell -ExecutionPolicy Bypass -File scripts/validate-hardware.ps1 -Mode qui
 
 `validate-hardware.ps1` accepts `quick | iverilog | audit | pnr | all`. Run
 cargo through `scripts/run-cargo.ps1` when raw output would be large — it tees
-the full log and prints a compact summary.
+the full log and prints a compact summary. It uses the release profile by
+default; pass `-DebugProfile` when investigating debug assertions, overflow
+checks, or profile-dependent failures. Logs and summaries record the profile.
 
 `check-docs.ps1` keeps the documentation rules machine-checked: a current-state
 section stays within its line budget, a fitted number lives in one current-state

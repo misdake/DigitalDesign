@@ -3,8 +3,9 @@
 > rcc (retro console compiler) is a **tiny strict subset of Rust syntax**: every valid rcc
 > program is also a valid Rust program, so rust-analyzer parses, highlights and navigates
 > it with no plugin at all.
-> The design is **C's memory model under Rust syntax**: all code is semantically unsafe
-> bare-metal operation — no borrow checking, no lifetimes, no bounds checks.
+> The design uses a low-level C-like address model under Rust syntax. Ordinary storage uses
+> `Buf`/`Array`; raw `Ptr` dereference and typed conversion are the explicit `unsafe` boundary.
+> The target has no reference values, lifetimes, or dynamic bounds checks.
 > Anything outside the subset is a **hard error with a source location**.
 >
 > Target: a 16-bit Harvard-architecture CPU (separate instruction/data stores, see `isa.html`).
@@ -106,24 +107,26 @@ lowering, including the constant-divisor specialization (`x /= 4` is a shift, `x
 so a compound form never costs more than the two-operand spelling.
 ## 2. The `Ptr` data pointer
 
-Raw pointer arithmetic needs `unsafe {}` in real Rust (which would make rust-analyzer
-complain), so all pointer operations go through `Ptr`'s inherent methods (the compiler
-recognizes them as intrinsics; the IDE sees ordinary methods):
+`Ptr` is an address value. Constructing, inspecting and offsetting one is safe; dereferencing
+or converting an untyped address into a typed view is the narrow `unsafe` boundary. The compiler
+recognizes the methods as intrinsics and rust-analyzer sees the same signatures:
 
 ```rust
 impl Ptr {
     fn from_addr(addr: u16) -> Ptr;   // build from a word address
     fn addr(self) -> u16;             // extract the word address
     fn add(self, off: i16) -> Ptr;    // address + off (may be negative)
-    fn read(self, off: i16) -> u16;   // mem[self + off]
-    fn write(self, off: i16, v: u16); // mem[self + off] = v
-    fn as_u16_array(self) -> Array<u16>;
-    fn as_i16_array(self) -> Array<i16>;
+    unsafe fn read(self, off: i16) -> u16;   // mem[self + off]
+    unsafe fn write(self, off: i16, v: u16); // mem[self + off] = v
+    unsafe fn as_u16_array(self) -> Array<u16>;
+    unsafe fn as_i16_array(self) -> Array<i16>;
 }
 ```
 
-`Ptr` remains the untyped interface for address arithmetic and raw words. Convert it to
-an `Array<T>` when typed indexing is clearer. Struct memory layouts remain out of scope.
+`Ptr` remains the untyped interface at heap/MMIO/device boundaries. A dereference must appear in
+an `unsafe { ... }` block; empty/nested unsafe blocks and unsafe blocks without one of the four
+operations above are errors. Ordinary buffers and local values use `Buf`/`Array`/`view_of` without
+unsafe. Struct memory layouts remain out of scope.
 
 ## 3. Function pointers
 
@@ -221,7 +224,8 @@ they are not part of this surface.
   implicit conversions hide too many bugs on a 16-bit machine.
 - **Unsupported means error**: these Rust features are rejected with a span — generics,
   traits, impls and methods, closures, macros, references `&`, slices and native `[T; N]` arrays
-  (§10), strings, floats, other integer types, `unsafe`, `extern`, lifetimes, items declared
+  (§10), strings, floats, other integer types, unsafe operations other than the narrow `Ptr`
+  boundary in §2, `extern`, lifetimes, items declared
   inside a function body, attributes (except the ignored `#[allow(...)]` and the `#[doc]` /
   `#[repr(...)]` / `#[derive(PartialEq)]` that §9b/§9d accept), and `use` (parsed but ignored; it
   exists for the IDE). Patterns are limited to a plain identifier or a tuple in `let` (§9c) and to
@@ -348,11 +352,11 @@ struct Point { x: u16, y: u16, inner: Inner, flags: Buf<u16, 2>, valid: bool }
   no copy at the call site. `return Point { .. };`, `return other;` and `return shifted(...)` all
   work, and a struct can be assigned wholesale (`p = make(1u16);`).
   Whole-aggregate assignment evaluates the complete right-hand value before the destination
-  place, using temporary frame storage before copying it back. Thus `p = swap(view_of(&p))`
+  place, using temporary frame storage before copying it back. Thus `p = swap(view_of(&mut p))`
   reads the old `p` throughout the call. Initialization of a new binding still uses direct sret.
 - **Passing structs**: a function takes a struct by pointer, written `Array<Point>` (the one-word
   typed view). Two ways to make one:
-  - `view_of(&value)` — the address of one struct (or addressable scalar) value;
+  - `view_of(&mut value)` — the address of one mutable struct (or addressable scalar) value;
   - `buf.as_array()` — the first-element address of a buffer, including a buffer of structs.
   Inside the callee, `p[i]` is the element *address* (a struct value), so `p[i].x` reads a field at
   `i * sizeof` words: a shift for word-sized elements, a real multiply otherwise. A `mut view:
@@ -455,8 +459,10 @@ fn clear_first(mut words: Array<u16>) { words[0u16] = 0; }
 clear_first(storage.as_array());
 ```
 
-Convert a raw pointer with `p.as_u16_array()` or `p.as_i16_array()`. The explicit method
-name supplies the element type without generic-method inference.
+Convert a raw pointer with `unsafe { p.as_u16_array() }` or
+`unsafe { p.as_i16_array() }`. The explicit method name supplies the element type without
+generic-method inference, while the unsafe block marks the point where an untyped address is
+asserted to denote live storage.
 
 ### 10.3 Buffer methods
 

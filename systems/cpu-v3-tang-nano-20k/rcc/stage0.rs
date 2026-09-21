@@ -140,7 +140,7 @@ fn u32_above(a_hi: u16, a_lo: u16, b_hi: u16, b_lo: u16) -> u16 {
 
 /// Validates the scratch descriptor, mirroring `validate_boot_descriptor`.
 fn validate_descriptor() {
-    let desc = Ptr::from_addr(0x40).as_u16_array();
+    let desc = unsafe { Ptr::from_addr(0x40).as_u16_array() };
     // magic "CPU3BOOT" (little-endian words)
     if desc[0u16] != 0x5043 || desc[1u16] != 0x3355 || desc[2u16] != 0x4f42 || desc[3u16] != 0x544f {
         boot_fail(1, CATEGORY_DESCRIPTOR, 1, 0);
@@ -212,7 +212,7 @@ fn main() {
 
     validate_descriptor();
 
-    let desc = Ptr::from_addr(0x40).as_u16_array();
+    let desc = unsafe { Ptr::from_addr(0x40).as_u16_array() };
     let size_lo = desc[DW_MANIFEST_SIZE_LO];
     let size_hi = desc[DW_MANIFEST_SIZE_HI];
     // The manifest buffer starts at data-segment word 0, so a large manifest
