@@ -2415,6 +2415,268 @@ mod tests {
         super::compile(program, &options, "main")
     }
 
+    #[test]
+    fn stored_boolean_operators_short_circuit_side_effects() {
+        assert_source_in_both_modes(
+            r#"
+            static COUNT: u16 = 0;
+            fn side(value: bool) -> bool {
+                addr_of(&COUNT).write(0, COUNT + 1u16);
+                value
+            }
+            fn choose(value: bool) -> bool { value || side(true) }
+            fn main() {
+                let a = false && side(true);
+                let b = true || side(false);
+                let c = side(true) && side(false);
+                let d = side(false) || side(true);
+                let e = !(false && side(true)) && choose(true);
+                halt(COUNT * 100u16 + (a as u16) + (b as u16) * 2u16
+                    + (c as u16) * 4u16 + (d as u16) * 8u16 + (e as u16) * 16u16);
+            }
+        "#,
+            426,
+        );
+    }
+
+    #[test]
+    fn aggregate_assignments_preserve_the_rhs_and_evaluate_it_first() {
+        assert_source_in_both_modes(
+            r#"
+            struct P { x: u16, y: u16 }
+            static INDEX: u16 = 0;
+            fn swap(p: Array<P>) -> P { P { x: p[0u16].y, y: p[0u16].x } }
+            fn make() -> P { addr_of(&INDEX).write(0, 1); P { x: 7, y: 8 } }
+            fn main() {
+                let mut p: P = P { x: 1, y: 2 };
+                p = P { x: p.y, y: p.x };
+                if p.x != 2u16 || p.y != 1u16 { halt(10); }
+                p = swap(view_of(&p));
+                if p.x != 1u16 || p.y != 2u16 { halt(11); }
+                let mut t: (u16, u16) = (3, 4);
+                t = (t.1, t.0);
+                if t.0 != 4u16 || t.1 != 3u16 { halt(12); }
+                let mut b: Buf<u16, 2> = Buf::new([5, 6]);
+                b = Buf::new([b[1u16], b[0u16]]);
+                if b[0u16] != 6u16 || b[1u16] != 5u16 { halt(13); }
+                let mut rows: Buf<P, 2> = Buf::new([P { x: 0, y: 0 }; 2]);
+                rows[INDEX] = make();
+                if rows[0u16].x != 0u16 || rows[1u16].x != 7u16 { halt(14); }
+                halt(1);
+            }
+        "#,
+            1,
+        );
+    }
+
+    #[test]
+    fn owned_buffers_and_view_fields_use_their_element_addresses() {
+        assert_source_in_both_modes(
+            r#"
+            struct Holder { data: Array<u16>, signed: Array<i16> }
+            static GLOBAL: Buf<u16, 2> = Buf::new([10, 20]);
+            fn main() {
+                let mut b: Buf<u16, 2> = Buf::new([41, 42]);
+                let mut s: Buf<i16, 2> = Buf::new([-3, -4]);
+                b[0u16] += 1u16;
+                s[1i16] = -5;
+                let mut h: Holder = Holder { data: b.as_array(), signed: s.as_array() };
+                if h.data[1u16] != 42u16 || h.signed[1u16] != -5i16 { halt(10); }
+                h.data[0u16] = 50;
+                h.signed[1u16] += 2i16;
+                let i: u16 = 1;
+                GLOBAL.as_array()[i] = b[i];
+                halt(b[0u16] + GLOBAL[i] + (s[1u16] + 3i16) as u16);
+            }
+        "#,
+            92,
+        );
+    }
+
+    #[test]
+    fn buffer_struct_layout_dependencies_ignore_name_order() {
+        assert_source_in_both_modes(
+            r#"
+            struct A { data: Buf<Z, 2> }
+            struct Z { x: u16, y: u16 }
+            fn main() {
+                let a: A = A { data: Buf::new([Z { x: 1, y: 2 }, Z { x: 3, y: 4 }]) };
+                halt(a.data[0u16].y + a.data[1u16].x);
+            }
+        "#,
+            5,
+        );
+    }
+
+    #[test]
+    fn division_boundaries_match_host_quotients_and_remainders() {
+        let mut source = String::from(
+            r#"
+            fn unsigned(a: u16, b: u16, q: u16, r: u16) -> bool {
+                let mut cq = a; cq /= b;
+                let mut cr = a; cr %= b;
+                a / b == q && a % b == r && cq == q && cr == r
+            }
+            fn signed(a: i16, b: i16, q: i16, r: i16) -> bool {
+                let mut cq = a; cq /= b;
+                let mut cr = a; cr %= b;
+                a / b == q && a % b == r && cq == q && cr == r
+            }
+            fn main() {
+        "#,
+        );
+        for (a, b) in [
+            (0u16, 0u16),
+            (1, 0),
+            (65535, 0),
+            (65535, 1),
+            (65535, 2),
+            (65535, 32768),
+            (65535, 65535),
+            (32768, 65535),
+            (32768, 32767),
+            (12345, 257),
+            (40000, 3),
+        ] {
+            let q = a.checked_div(b).unwrap_or(0);
+            let r = a.checked_rem(b).unwrap_or(a);
+            source.push_str(&format!(
+                "if !unsigned({a}u16, {b}u16, {q}u16, {r}u16) {{ halt(10); }}\n"
+            ));
+        }
+        for (a, b) in [
+            (i16::MIN, -1i16),
+            (i16::MIN, 1),
+            (i16::MIN, i16::MIN),
+            (i16::MIN, 0),
+            (i16::MAX, -1),
+            (i16::MAX, i16::MIN),
+            (-1000, 7),
+            (1000, -7),
+            (-1000, -7),
+            (-1, 2),
+            (1, -2),
+            (0, -1),
+        ] {
+            let q = if b == 0 { 0 } else { a.wrapping_div(b) };
+            let r = if b == 0 { a } else { a.wrapping_rem(b) };
+            source.push_str(&format!(
+                "if !signed({a}i16, {b}i16, {q}i16, {r}i16) {{ halt(11); }}\n"
+            ));
+        }
+        source.push_str("halt(1); }");
+        assert_source_in_both_modes(&source, 1);
+    }
+
+    #[test]
+    fn recursive_sret_preserves_all_argument_registers_and_nested_destinations() {
+        assert_source_in_both_modes(
+            r#"
+            struct Record { sum: u16, values: Buf<u16, 3> }
+            struct Outer { item: Record, sentinel: u16 }
+            fn make(a: u16, b: u16, c: u16, d: u16, e: u16) -> Record {
+                Record { sum: a + b + c + d + e, values: Buf::new([a, b, c]) }
+            }
+            fn recur(n: u16, a: u16, b: u16, c: u16, d: u16) -> Record {
+                if n == 0u16 { return make(a, b, c, d, 99u16); }
+                let result: Record = recur(n - 1u16, a + 1u16, b + 2u16, c + 3u16, d + 4u16);
+                return result;
+            }
+            fn main() {
+                let mut outer: Outer = Outer { item: recur(3u16, 1u16, 2u16, 3u16, 4u16), sentinel: 777 };
+                let saved: Record = outer.item;
+                outer.item = recur(0u16, 9u16, 8u16, 7u16, 6u16);
+                if saved.sum != 139u16 || saved.values[0u16] != 4u16
+                    || saved.values[1u16] != 8u16 || saved.values[2u16] != 12u16 { halt(10); }
+                if outer.item.sum != 129u16 || outer.item.values[0u16] != 9u16
+                    || outer.item.values[1u16] != 8u16 || outer.item.values[2u16] != 7u16
+                    || outer.sentinel != 777u16 { halt(11); }
+                halt(1);
+            }
+        "#,
+            1,
+        );
+    }
+
+    #[test]
+    fn match_evaluates_once_and_composes_with_labeled_loop_exits() {
+        assert_source_in_both_modes(
+            r#"
+            static CALLS: u16 = 0;
+            fn observe(x: u16) -> u16 { addr_of(&CALLS).write(0, CALLS + 1u16); x }
+            fn classify(x: i16) -> u16 {
+                let mut result: u16 = 0;
+                match x {
+                    -32768i16 => { result = 3; }
+                    -1i16 => { result = 5; }
+                    _ => { result = 7; }
+                }
+                result
+            }
+            fn main() {
+                let mut total: u16 = 0;
+                'rows: for row in 0u16..4 {
+                    for col in 0u16..3 {
+                        match observe(row) {
+                            1u16 => { continue 'rows; }
+                            3u16 => { break 'rows; }
+                            _ => { total += row * 10u16 + col; }
+                        }
+                    }
+                }
+                // row 0 contributes 3, row 2 contributes 63; 3+1+3+1 observations.
+                halt(total + CALLS * 100u16 + classify(-32768i16) + classify(-1i16) + classify(0i16));
+            }
+        "#,
+            881,
+        );
+    }
+
+    #[test]
+    fn enum_buffer_and_bool_tuple_survive_indirect_calls() {
+        assert_source_in_both_modes(
+            r#"
+            #[derive(PartialEq)] enum State { Idle, Run, Done }
+            fn next(s: State) -> State {
+                if s == State::Idle { State::Run } else { State::Done }
+            }
+            fn flags(s: State) -> (bool, bool, u16) { (s == State::Run, s == State::Done, s as u16) }
+            fn main() {
+                let mut states: Buf<State, 3> = Buf::new([State::Idle, State::Run, State::Done]);
+                let advance: fn(State) -> State = next;
+                let mut total: u16 = 0;
+                for i in 0u16..3 {
+                    states[i] = advance(states[i]);
+                    let (running, done, tag) = flags(states[i]);
+                    if running { total += 10u16; }
+                    if done { total += 100u16; }
+                    total += tag;
+                }
+                halt(total);
+            }
+        "#,
+            215,
+        );
+    }
+
+    fn assert_source_in_both_modes(source: &str, expected: u16) {
+        for opt in [rcc::Opts::default(), rcc::Opts::disabled()] {
+            let options = CompilerOptions {
+                opt,
+                ..CompilerOptions::default()
+            };
+            let program = rcc::frontend::compile_program_named(
+                "<regression>",
+                source,
+                &options,
+                &mut |name| Err(format!("unknown module `{name}`")),
+            )
+            .unwrap();
+            let compiled = super::compile(program, &options, "main");
+            assert_eq!(execute_capped(compiled, 100_000).0, expected);
+        }
+    }
+
     /// Compile with the rcc standard library appended. `compile` above is
     /// parse-only, so operators that lower to a library call (such as `/`) and
     /// the library modules themselves need this entry point.

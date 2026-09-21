@@ -209,6 +209,14 @@ impl FuncBuilder {
         base
     }
 
+    /// Reserve aggregate storage without truncating or overflowing the frame.
+    pub fn try_alloc_local_slots(&mut self, n: u16) -> Option<u8> {
+        let n = u8::try_from(n).ok()?;
+        let base = self.func.local_slots;
+        self.func.local_slots = base.checked_add(n)?;
+        Some(base)
+    }
+
     pub fn load_local(&mut self, slot: u8) -> VReg {
         let dst = self.fresh_vreg();
         self.push(Instr::LoadLocal { dst, slot });

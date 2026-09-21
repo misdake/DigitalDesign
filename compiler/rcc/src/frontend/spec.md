@@ -178,12 +178,15 @@ Declared for real in `dsl_rt` (so the IDE sees them); the compiler lowers them d
   produced when both operands are `i16`; mixed integer arithmetic is an error, because 
   implicit conversions hide too many bugs on a 16-bit machine.
 - **Unsupported means error**: these Rust features are rejected with a span — generics,
-  traits, impls, closures, match, destructuring patterns, macros, references `&`, slices/array
-  literals, strings, floats, other integer types, `unsafe`, `extern`, lifetimes,
-  `const`/`static`, attributes (except ignored `#[allow(...)]`), `use` (parsed but ignored;
-  it exists for the IDE).
+  traits, impls and methods, closures, macros, references `&`, slices and native `[T; N]` arrays
+  (§10), strings, floats, other integer types, `unsafe`, `extern`, lifetimes, items declared
+  inside a function body, attributes (except the ignored `#[allow(...)]` and the `#[doc]` /
+  `#[repr(...)]` / `#[derive(PartialEq)]` that §9b/§9d accept), and `use` (parsed but ignored; it
+  exists for the IDE). Patterns are limited to a plain identifier or a tuple in `let` (§9c) and to
+  a constant or `_` in `match` (§9d): struct patterns, bindings, guards, ranges and `|` are errors.
 - **Integer `*` is supported** (hardware MUL on CpuV3, `mul_16x16` library call on CpuV2), and so
-  are `/` and `%` (the rcc_std `div` module, §1.2); dividing by zero is undefined.
+  are `/` and `%` (the rcc_std `div` module, §1.2); a zero divisor is defined there — `x / 0` is
+  `0` and `x % 0` is `x` on the target — while the bare host operator still panics.
 - **FPU values live in the F register file**: every `fix16`/`vecN` value occupies exactly one
   F register, stays in SSA form (never in a frame slot except as a 4-word-aligned spill), and
   follows the FPU ABI: `f0..f1` return values, `f2..f7` arguments, `f8..f14` allocatable, `f15`
@@ -299,6 +302,9 @@ struct Point { x: u16, y: u16, inner: Inner, flags: Buf<u16, 2>, valid: bool }
   pointer the caller supplies (§14), so `let p: Point = make(1u16);` fills `p`'s own frame slot —
   no copy at the call site. `return Point { .. };`, `return other;` and `return shifted(...)` all
   work, and a struct can be assigned wholesale (`p = make(1u16);`).
+  Whole-aggregate assignment evaluates the complete right-hand value before the destination
+  place, using temporary frame storage before copying it back. Thus `p = swap(view_of(&p))`
+  reads the old `p` throughout the call. Initialization of a new binding still uses direct sret.
 - **Passing structs**: a function takes a struct by pointer, written `Array<Point>` (the one-word
   typed view). Two ways to make one:
   - `view_of(&value)` — the address of one struct (or addressable scalar) value;
@@ -462,7 +468,7 @@ them unchanged (a struct local is just an address plus offsets).
 allocation of buffers, multi-dimensional buffers (use `arr[i * W + j]`), function
 inlining/`#[inline]`, and the limits listed in §9b/§9c/§9d/§14 (aggregate parameters,
 aggregate-returning fn pointers, `impl`, `fix16`/`vecN` fields, recursive layouts, enum payloads,
-`match` — the next phase — and enum statics).
+and enum statics).
 
 A stored `bool` is one word, and these remain out of scope: buffers of `bool` / `Array<bool>`,
 `static` bool, comparing two bools (`b1 == b2`), and an integer cast *to* bool (write `x != 0`).

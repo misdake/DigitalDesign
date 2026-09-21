@@ -803,7 +803,13 @@ impl LayoutBuilder<'_> {
                             "fix16/vecN struct fields are not supported yet (spec §12)",
                         ));
                     }
-                    if let Ty::Struct(inner) = &fty {
+                    // Owned buffers also depend on their element's layout;
+                    // views only store a pointer and must not recurse.
+                    let mut stored_ty = &fty;
+                    while let Ty::Array(elem, _) = stored_ty {
+                        stored_ty = elem;
+                    }
+                    if let Ty::Struct(inner) = stored_ty {
                         self.layout(inner, &field.ty)?;
                     }
                     let size = word_size(&fty, &self.done, &field.ty)?;
@@ -2572,7 +2578,12 @@ fn stmt(l: &mut FnLower, s: &Stmt) -> Result<(), syn::Error> {
             };
             if let Some(ty) = aggregate {
                 let size = aggregate_size(&ty, &l.globals.structs, &init.1)?;
-                let slot = l.b.alloc_local_slots(size as u8);
+                let slot = l.b.try_alloc_local_slots(size).ok_or_else(|| {
+                    err(
+                        &init.1,
+                        "aggregate storage exceeds the 255-word local frame limit",
+                    )
+                })?;
                 let base = l.b.addr_of_local(slot);
                 init_aggregate_at(l, base, &ty, &init.1)?;
                 l.declare(
@@ -2663,6 +2674,17 @@ fn stmt_expr(l: &mut FnLower, e: &Expr) -> Result<(), syn::Error> {
             // whole-aggregate assignment: `p = q;` / `p = make();` (spec §14)
             if let Some(ty) = peek_type(l, &a.left) {
                 if is_aggregate(&ty) {
+                    // Evaluate the complete RHS before the destination place.
+                    // In particular, sret must not alias a view of the old value.
+                    let size = aggregate_size(&ty, &l.globals.structs, &a.right)?;
+                    let slot = l.b.try_alloc_local_slots(size).ok_or_else(|| {
+                        err(
+                            &a.right,
+                            "aggregate assignment exceeds the 255-word local frame limit",
+                        )
+                    })?;
+                    let value = l.b.addr_of_local(slot);
+                    init_aggregate_at(l, value, &ty, &a.right)?;
                     let (base, offset, _, mutable) = place_addr_of(l, &a.left)?;
                     if !mutable {
                         return Err(err(
@@ -2671,7 +2693,8 @@ fn stmt_expr(l: &mut FnLower, e: &Expr) -> Result<(), syn::Error> {
                         ));
                     }
                     let dst = place_addr(l, base, offset);
-                    init_aggregate_at(l, dst, &ty, &a.right)?;
+                    let len = l.b.load_imm(size);
+                    l.b.call("mem_copy", &[dst, value, len], 0);
                     return Ok(());
                 }
             }
@@ -3758,13 +3781,21 @@ fn expr(l: &mut FnLower, e: &Expr) -> Result<Val, syn::Error> {
                     compare(e, b.op, lhs, lt, rhs, rt, swap_operands && ordered).map(Val::Bool)
                 }
                 And(_) | Or(_) => {
-                    let lhs = cond(l, &b.left)?;
-                    let rhs = cond(l, &b.right)?;
-                    Ok(Val::Bool(match b.op {
-                        And(_) => BoolExpr::And(Box::new(lhs), Box::new(rhs)),
-                        Or(_) => BoolExpr::Or(Box::new(lhs), Box::new(rhs)),
-                        _ => unreachable!(),
-                    }))
+                    // Build the branches before lowering either operand: calls
+                    // and loads on the RHS must remain behind the short circuit.
+                    let yes = l.b.raw_block(&[]);
+                    let no = l.b.raw_block(&[]);
+                    let join = l.b.raw_block(&[]);
+                    cond_lazy(l, e, yes, no)?;
+                    let result = l.b.new_var_typed(crate::RegClass::Gpr);
+                    l.b.enter_block(yes);
+                    let one = l.b.load_imm(1);
+                    l.b.set(result, one);
+                    l.b.mid_if_else(no, join);
+                    let zero = l.b.load_imm(0);
+                    l.b.set(result, zero);
+                    l.b.end_if_else(join);
+                    Ok(Val::V(l.b.get(result), Ty::Bool))
                 }
                 _ => Err(err(&b.op, "unsupported binary operator")),
             }
@@ -4026,10 +4057,15 @@ fn array_index_addr(
     // are places whose address is the base. The returned flag is the place's
     // mutability: a read ignores it, an assignment checks it.
     let place_base = matches!(index.expr.as_ref(), Expr::Field(_))
-        || matches!(peek_type(l, &index.expr), Some(Ty::Array(elem, _)) if matches!(*elem, Ty::Struct(_)));
+        || matches!(peek_type(l, &index.expr), Some(Ty::Array(..)));
     let (base, ty, mutable) = if place_base {
         let (b, off, ty, mutable) = place_addr_of(l, &index.expr)?;
-        (place_addr(l, b, off), ty, mutable)
+        let base = if matches!(ty, Ty::ArrayRef(_)) {
+            l.b.load_mem(b, off)
+        } else {
+            place_addr(l, b, off)
+        };
+        (base, ty, mutable)
     } else {
         let (base, ty) = expr(l, &index.expr)?.reg(l, &index.expr, "array index base")?;
         (base, ty, true)
@@ -4349,11 +4385,14 @@ fn cond_lazy(l: &mut FnLower, e: &Expr, t: BlockId, f: BlockId) -> Result<(), sy
         Expr::Unary(u) if matches!(u.op, SUnOp::Not(_)) => cond_lazy(l, &u.expr, f, t),
         Expr::Lit(lit) => match &lit.lit {
             Lit::Bool(b) => {
-                if b.value {
-                    l.b.jmp(t);
-                } else {
-                    l.b.jmp(f);
-                }
+                // Keep both CFG edges while lowering: an unreachable RHS may
+                // still refer to earlier SSA locals. Constant folding removes
+                // the impossible edge after all blocks have been constructed.
+                let BoolExpr::Cmp(cmp) = (if b.value { true_cond(l) } else { false_cond(l) })
+                else {
+                    unreachable!()
+                };
+                l.b.br(cmp, t, f);
                 Ok(())
             }
             _ => Err(err(
@@ -5642,5 +5681,21 @@ mod tests {
         assert!(error.contains("contains itself"), "{error}");
         let error = builder.layout("Odd", raw["Odd"].1).unwrap_err().to_string();
         assert!(error.contains("align must be"), "{error}");
+    }
+
+    #[test]
+    fn owned_buffer_layout_cycles_and_oversized_frames_are_errors() {
+        let error = parse_source_with("struct A { values: Buf<A, 1> } fn main() { halt(0); }", 0)
+            .err()
+            .unwrap()
+            .to_string();
+        assert!(error.contains("contains itself"), "{error}");
+        for source in [
+            "fn main() { let b: Buf<u16, 256> = Buf::new([0; 256]); halt(0); }",
+            "fn main() { let mut b: Buf<u16, 128> = Buf::new([0; 128]); b = Buf::new([1; 128]); halt(0); }",
+        ] {
+            let error = parse_source_with(source, 0).err().unwrap().to_string();
+            assert!(error.contains("255-word local frame limit"), "{error}");
+        }
     }
 }
