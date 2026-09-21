@@ -25,8 +25,8 @@ Only these types exist; no other primitive types are supported:
 | `fn(A, B) -> R` | **function pointer** (into instruction memory) | plain Rust fn pointer type; on a Harvard machine this is a *different kind* from `Ptr` and they never convert |
 | `bool` | **one word: 0 or 1** | the type of comparisons and `&& \|\| !`; storable in a variable, passed and returned, and usable as a condition again (`if b`); `b as u16` / `b as i16` yields 0/1 (see §1.1) |
 | a defined `struct` name | **struct value: one word address** | fields are 16-bit words in declaration order, total size padded to the struct's alignment; layout and access rules in §9b |
-| `fix16` | **signed Q16.16 fixed-point scalar** | CPU V3-only; occupies one scalar F register (16 fractional bits) |
-| `vec2` / `vec3` / `vec4` | **fix16 vectors** | CPU V3-only; a consecutive range of 2/3/4 scalar F registers (the host type keeps a zero tail) |
+| `fix32` | **signed Q16.16 fixed-point scalar** | CPU V3-only; occupies one scalar F register (16 fractional bits) |
+| `vec2` / `vec3` / `vec4` | **fix32 vectors** | CPU V3-only; a consecutive range of 2/3/4 scalar F registers (the host type keeps a zero tail) |
 | `()` | unit | return type of procedures |
 
 ### 1.1 Type rules
@@ -55,31 +55,26 @@ Only these types exist; no other primitive types are supported:
 - `/` and `%` work on integers: neither ISA has a divide, so both lower to the rcc_std `div`
   module (a 16-step shift-subtract routine, see §1.2). A literal power-of-two divisor on `u16`
   becomes a shift or a mask instead of a call.
-- FPU types (CPU V3) are **signed Q16.16**: 16 fractional bits, range about
-  `[-32768, +32767.99998]`, all arithmetic wrapping. `+`, `-`, `*` work
-  component-wise on same-typed FPU values; `vecN * fix16` and `fix16 * vecN`
-  scale the vector; unary `-` negates. Comparisons exist only on `fix16`
-  (signed ordering through the scalar `CMP` subop and the pending test). There
-  are no implicit conversions between FPU and integer types — use the numeric
-  `fix16::from_int` / `.to_int()` or the raw-half moves
-  `fix16::from_words(lo, hi)` / `.lo_bits()` / `.hi_bits()`. Raw-half moves and
-  numeric conversions are deliberately distinct: `from_words`/`lo_bits`/`hi_bits`
-  correspond to `ILO2F`/`IHI2F`/`FLO2I`/`FHI2I`/`FLD`/`FST`, while
-  `from_int`/`to_int` correspond to `I16TOF`/`FTOI16`.
-- FPU lowering has landed through C3: scalar `fix16` construction
-  (`from_int`, `from_words`, `zero`), `+`/`-`/`*` and `+=`/`-=`/`*=` on `fix16`,
-  unary `-`, the `abs`/`floor`/`ceil`/`round`/`trunc` methods, the raw-half
-  `lo_bits`/`hi_bits`, `to_int`, and `fix16` comparisons all lower to the FPU
-  v2 scalar/aux/memory ISA and run on the emulator and the RTL. C2 adds
-  `vec2/3/4`, `fdot`, VMULS broadcasts, and `vec4::import`/`export`; C3 adds
-  `frcp`/`frsqrt` plus `fsin`/`fcos`/`fsincos` through the three frozen SINCOS
-  modes. The v3 geometry library also lowers, entirely onto existing FPU v2
-  instructions (no new opcode): `v3_length2` is one `DOTSTORE`, `v3_normalize`
-  adds `RSQRT` and a scalar-vector `VMULS`, and `v3_distance_gt` is `VSUB`, one
-  `DOTSTORE`, `s * RSQRT(s)`, then the scalar `CMP`. The release helpers emit no
-  checks and assume a small-range Q16.16 contract; the `_checked` variants
-  validate it and `halt` with a fixed nonzero signal instead of wrapping. The
-  distance boundary is approximate, not the exact squared-distance boundary.
+- The source-level FPU scalar is **`fix32`**: 32-bit storage holding a signed
+  Q16.16 value (16 fractional bits, range `[-32768, +32767.9999847]`), not the
+  retired Q8.8 format. Arithmetic wraps; there is no saturation, exception
+  flag, NaN, or infinity. The vector names are `vec2`, `vec3`, and `vec4`,
+  each holding consecutive `fix32` lanes in the F register file. The compiler
+  performs no automatic vectorization: source code must use a `vecN` type to
+  request a vector instruction.
+
+| source type | target representation | supported operators | comparison |
+|---|---|---|---|
+| `fix32` | one signed Q16.16 F register | `+`, `-`, `*`, unary `-`, `+=`, `-=`, `*=` | `== != < <= > >=` (signed scalar `CMP`) |
+| `vec2` | two consecutive `fix32` F registers | component-wise `+`, `-`, `*`, unary `-`; `vec2 * fix32` and `fix32 * vec2` | none |
+| `vec3` | three consecutive `fix32` F registers | component-wise `+`, `-`, `*`, unary `-`; `vec3 * fix32` and `fix32 * vec3` | none |
+| `vec4` | four consecutive `fix32` F registers | component-wise `+`, `-`, `*`, unary `-`; `vec4 * fix32` and `fix32 * vec4` | none |
+
+There are no implicit integer/FPU conversions. Numeric conversion uses
+`fix32::from_int` / `.to_int()` (`I16TOF` / `FTOI16`); raw bit movement uses
+`fix32::from_words(lo, hi)` / `.lo_bits()` / `.hi_bits()`
+(`ILO2F` / `IHI2F` / `FLO2I` / `FHI2I`). These operations are deliberately
+distinct. The complete FPU intrinsic surface is in §5.
 
 ### 1.2 Division and remainder
 
@@ -157,8 +152,8 @@ an `Array<T>` when typed indexing is clearer. Struct memory layouts remain out o
 ## 5. Intrinsics
 
 Declared for real in `dsl_rt` (so the IDE sees them); the compiler lowers them directly.
-C1 lowers the scalar `fix16` rows, C2 the `vecN`/`fdot` rows, and C3 the
-`frcp`/`frsqrt`/`fsincos` and v3 geometry rows on CPU V3.
+
+### 5.1 Integer, machine, device, and cache intrinsics
 
 | function | meaning |
 |---|---|
@@ -179,16 +174,40 @@ C1 lowers the scalar `fix16` rows, C2 the `vecN`/`fdot` rows, and C3 the
 | `mtsr_dseg(v: u16)` | CPU V3-only: write the DSEG special register (MTSR DSEG) |
 | `jseg(cseg: u16, target: u16) -> !` | CPU V3-only: atomically switch CSEG to `cseg` and jump to `target` (JSEG); never returns |
 | `icache_invalidate_delayed_and_jump(cseg: u16, target: u16) -> !` | CPU V3-only: terminal barrier lowered to adjacent `ICACHE_INVALIDATE_ALL_DELAYED; JSEG`; never returns |
-| `fix16::from_int(i16)` / `.to_int() -> i16` | CPU V3-only numeric conversion (`I16TOF` / `FTOI16`; `to_int` truncates toward zero) |
-| `fix16::from_words(lo, hi)` / `.lo_bits() -> u16` / `.hi_bits() -> u16` | CPU V3-only raw-half moves, low half first (`ILO2F`/`IHI2F`/`FLO2I`/`FHI2I`) |
-| `fix16::zero()`, `vecN::zero()` | all-zero host value (target lowering with C1) |
-| `vec2/3/4::new(...)` | build a vector from fix16 lanes (consecutive scalar F registers) |
-| `vec4::import(Ptr) -> vec4` / `vec4::export(v, Ptr)` | four consecutive Q16.16 values, two little-endian words each, low half first (`FLDV4`/`FSTV4`) |
-| `.x()` / `.y()` / `.z()` / `.w()` | lane extraction from the consecutive range |
-| `.abs() .floor() .ceil() .round() .trunc()` | component-wise unary (the scalar/vector ALU subops) |
-| `fdot(a, b) -> fix16` | dot product through the 64-bit Q32.32 ACC, narrowed once (`DOT` + `DOTSTORE`) |
-| `frcp(x) -> fix16` / `frsqrt(x) -> fix16` / `fsin(x) -> fix16` / `fcos(x) -> fix16` / `fsincos(x) -> vec2` | special functions; `fsincos` yields `{sin, cos}`, while `fsin`/`fcos` select one SINCOS result; target lowering landed with C3, host models panic |
-| `v3_length2(vec3) -> fix16` / `v3_normalize(vec3) -> vec3` / `v3_distance_gt(vec3, vec3, fix16) -> bool` / `v3_length2_checked` / `v3_normalize_checked` / `v3_distance_gt_checked` | v3 geometry library helpers, not opcodes; they lower to existing FPU v2 instructions (the reference model lives in the CPU V3 architecture crate). `v3_length2` is one `DOTSTORE`, `v3_normalize` adds `RSQRT` + `VMULS` (zero stays zero), and `v3_distance_gt` is `VSUB`, `DOTSTORE`, `s * RSQRT(s)`, then `CMP`. The release helpers emit no checks; the `_checked` variants require every length/normalize component in `[-104, +104]` Q16.16, and for distance every input component in `[-16384, +16383]` then every difference component in `[-104, +104]`, halting with a fixed nonzero signal (1/2/3/4) on a violation |
+
+### 5.2 FPU types, operators, and intrinsics
+
+All entries in this table target CPU V3. `sat01()` and `sign()` exist only in
+the Rust host shim and are deliberately rejected by the target frontend, so
+they are not part of this surface.
+
+| category | source surface | result / target meaning |
+|---|---|---|
+| zero | `fix32::zero()`, `vec2::zero()`, `vec3::zero()`, `vec4::zero()` | all lanes are Q16.16 zero |
+| numeric conversion | `fix32::from_int(x: i16) -> fix32`, `x.to_int() -> i16` | `I16TOF`; `FTOI16` truncates toward zero and wraps on overflow |
+| raw construction | `fix32::from_words(lo: u16, hi: u16) -> fix32` | construct the exact 32-bit Q16.16 pattern, low half first (`ILO2F`, `IHI2F`) |
+| raw extraction | `x.lo_bits() -> u16`, `x.hi_bits() -> u16` | extract the exact low/high half (`FLO2I`, `FHI2I`) |
+| vector construction | `vec2::new(x, y)`, `vec3::new(x, y, z)`, `vec4::new(x, y, z, w)` | build a consecutive F-register range from `fix32` lanes |
+| lane extraction | `.x()`, `.y()`, `.z()`, `.w()` as applicable to the type | return one `fix32` lane; no memory access |
+| scalar arithmetic | `fix32 + fix32`, `-`, `*`, unary `-`; `+=`, `-=`, `*=` | wrapping scalar ALU/multiply operations |
+| vector arithmetic | same-width `vecN + vecN`, `-`, `*`, unary `-` | component-wise `VADD`, `VSUB`, `VMUL`, `VNEG` |
+| scalar-vector multiply | `vecN * fix32`, `fix32 * vecN` | broadcast scalar multiply (`VMULS`) |
+| comparison | `fix32 == != < <= > >= fix32` | signed scalar `CMP`; vectors have no compare/mask operation |
+| unary numeric methods | `x.abs()`, `.floor()`, `.ceil()`, `.round()`, `.trunc()` on `fix32` or `vecN` | scalar or component-wise ALU operation; `round` is round-half-up and `trunc` is toward zero |
+| vec4 memory load | `vec4::import(ptr: Ptr) -> vec4` | `FLDV4`: four adjacent Q16.16 values, each stored as low word then high word |
+| vec4 memory store | `vec4::export(v: vec4, ptr: Ptr)` | `FSTV4`: store the same eight-word layout |
+| dot product | `fdot(a: vecN, b: vecN) -> fix32` | exact Q32.32 products accumulate in the 64-bit ACC, then one `DOTSTORE` narrowing |
+| reciprocal | `frcp(x: fix32) -> fix32` | approximate `RCP`; returns zero for zero input |
+| reciprocal square root | `frsqrt(x: fix32) -> fix32` | approximate `RSQRT`; returns zero for `x <= 0` |
+| sine | `fsin(x: fix32) -> fix32` | approximate radians input, SINCOS sine-only mode |
+| cosine | `fcos(x: fix32) -> fix32` | approximate radians input, SINCOS cosine-only mode |
+| sine and cosine | `fsincos(x: fix32) -> vec2` | contiguous `{sin(x), cos(x)}` result |
+| squared length | `v3_length2(v: vec3) -> fix32` | one `DOTSTORE(v, v)`; unchecked small-range release helper |
+| normalization | `v3_normalize(v: vec3) -> vec3` | `DOTSTORE`, `RSQRT`, `VMULS`; zero stays zero; unchecked release helper |
+| distance predicate | `v3_distance_gt(a: vec3, b: vec3, threshold: fix32) -> bool` | approximate ordinary-distance comparison via `VSUB`, `DOTSTORE`, `s * RSQRT(s)`, `CMP` |
+| checked squared length | `v3_length2_checked(v: vec3) -> fix32` | require every component in inclusive `[-104,+104]`; otherwise halt signal 1 |
+| checked normalization | `v3_normalize_checked(v: vec3) -> vec3` | same component range; otherwise halt signal 2 |
+| checked distance | `v3_distance_gt_checked(a: vec3, b: vec3, threshold: fix32) -> bool` | require inputs in `[-16384,+16383]` then differences in `[-104,+104]`; otherwise halt signal 3 or 4 |
 
 ## 6. Design decisions
 
@@ -211,8 +230,8 @@ C1 lowers the scalar `fix16` rows, C2 the `vecN`/`fdot` rows, and C3 the
   are `/` and `%` (the rcc_std `div` module, §1.2); a zero divisor is defined there — `x / 0` is
   `0` and `x % 0` is `x` on the target — while the bare host operator still panics.
 - **FPU values live in the F register file**: the FPU v2 file is `F0..F63`, one scalar Q16.16
-  value per register. A `fix16` value occupies one register; `vec2`/`vec3`/`vec4` occupy a
-  consecutive range of 2/3/4 scalar registers (range-aware allocation lands with C2). The FPU ABI
+  value per register. A `fix32` value occupies one register; `vec2`/`vec3`/`vec4` occupy a
+  consecutive range of 2/3/4 scalar registers. The FPU ABI
   reserves `F0..F3` for returns, places arguments compactly from `F4` (up to `F27` for six `vec4`
   values), allocates `F28..F62`, and keeps `F63` as the parallel-move scratch; all F registers are
   caller-saved and ACC is caller-clobbered. Instruction selection must avoid the design's
@@ -338,7 +357,7 @@ struct Point { x: u16, y: u16, inner: Inner, flags: Buf<u16, 2>, valid: bool }
   Inside the callee, `p[i]` is the element *address* (a struct value), so `p[i].x` reads a field at
   `i * sizeof` words: a shift for word-sized elements, a real multiply otherwise. A `mut view:
   Array<Point>` parameter may write through it, which is how a callee updates the caller's struct.
-- Out of scope for now (§12): `impl` methods, `fix16`/`vecN` fields, and recursive layouts.
+- Out of scope for now (§12): `impl` methods, `fix32`/`vecN` fields, and recursive layouts.
   (`static` structs are supported since §9.4.)
 
 ## 9c. Tuples
@@ -493,7 +512,7 @@ them unchanged (a struct local is just an address plus offsets).
 `&x` references, fat slices, native `[T; N]` arrays (use `Buf<T, N>`, §10), `static mut`, heap
 allocation of buffers, multi-dimensional buffers (use `arr[i * W + j]`), function
 inlining/`#[inline]`, and the limits listed in §9b/§9c/§9d/§14 (aggregate parameters,
-aggregate-returning fn pointers, `impl`, `fix16`/`vecN` fields, recursive layouts, enum payloads,
+aggregate-returning fn pointers, `impl`, `fix32`/`vecN` fields, recursive layouts, enum payloads,
 and enum statics).
 
 A stored `bool` is one word, and these remain out of scope: buffers of `bool` / `Array<bool>`,

@@ -494,12 +494,12 @@ fn program_fpu_sincos() -> Vec<u16> {
 const FPU_VECTOR_SOURCE: &str = r#"
 fn add4(a: vec4, b: vec4) -> vec4 { a + b }
 fn main() {
-    let a = vec4::new(fix16::from_int(1), fix16::from_int(2),
-                      fix16::from_int(3), fix16::from_int(4));
-    let b = vec4::new(fix16::from_int(10), fix16::from_int(20),
-                      fix16::from_int(30), fix16::from_int(40));
+    let a = vec4::new(fix32::from_int(1), fix32::from_int(2),
+                      fix32::from_int(3), fix32::from_int(4));
+    let b = vec4::new(fix32::from_int(10), fix32::from_int(20),
+                      fix32::from_int(30), fix32::from_int(40));
     let c = add4(a, b);                      // 11, 22, 33, 44
-    let d = c * fix16::from_int(2);          // 22, 44, 66, 88
+    let d = c * fix32::from_int(2);          // 22, 44, 66, 88
     let s = d.x() + d.y() + d.z() + d.w();   // 220
     let dot = fdot(c, d);                    // 7260
     halt((s + dot).to_int() as u16);         // 7480
@@ -513,8 +513,8 @@ fn main() {
 /// the hidden-BSRAM LUT path alone determines.
 const FPU_SPECIAL_SOURCE: &str = r#"
 fn main() {
-    let x = fix16::from_int(4);
-    let scaled = fix16::from_int(1000);
+    let x = fix32::from_int(4);
+    let scaled = fix32::from_int(1000);
     let r = frcp(x);
     let s = frsqrt(x);
     let si = fsin(x);
@@ -537,7 +537,7 @@ fn main() {
 fn fpu_special_compiled_halt() -> u16 {
     let x = 4 << 16;
     let scaled = 1000 << 16;
-    let term = |v: i32| cpu_v3::fix16_to_i16(cpu_v3::fix16_mul(v, scaled)) as u16;
+    let term = |v: i32| cpu_v3::fix32_to_i16(cpu_v3::fix32_mul(v, scaled)) as u16;
     let (sin, cos) = cpu_v3::sincos_q16(x);
     term(cpu_v3::rcp_q16(x))
         .wrapping_add(term(cpu_v3::rsqrt_q16(x)))

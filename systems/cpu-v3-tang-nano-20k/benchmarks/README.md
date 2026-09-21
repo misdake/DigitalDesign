@@ -30,7 +30,7 @@ historical experiments). The harness itself is
 
 The FPU programs (and `frame-particles`) originally built `fix16` values with the removed
 Q8.8 `fix16::from_bits`/`to_bits` bridge. They now use the FPU v2 Q16.16 raw-half APIs:
-`fix16::from_words(lo, hi)`, `.lo_bits()`, and `.hi_bits()`. A raw Q8.8 constant is the same
+`fix32::from_words(lo, hi)`, `.lo_bits()`, and `.hi_bits()`. A raw Q8.8 constant is the same
 real value as a Q16.16 raw value shifted left by 8, so each call site constructs the shifted
 low/high halves directly without adding a helper-function call to the measured loop. Real
 inputs, loop counts, and workload scale are unchanged.

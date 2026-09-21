@@ -917,7 +917,7 @@ fn core_emu_matches_rtl_fpu_ldst() {
 #[test]
 #[ignore = "explicit emulator-vs-Icarus co-simulation of a compiled scalar FPU program"]
 fn core_emu_matches_rtl_compiled_scalar_fpu_program() {
-    // The rcc scalar `fix16` path end to end on the hardware-supported subset:
+    // The rcc scalar `fix32` path end to end on the hardware-supported subset:
     // integer construction (`I16TOF`), calls through the F-register ABI, an
     // FPU `ADD`/`MUL`/`trunc`, the raw-half bridge (`ILO2F`/`IHI2F`), a scalar
     // `CMP` feeding a GPR branch, the signed numeric conversion back
@@ -926,13 +926,13 @@ fn core_emu_matches_rtl_compiled_scalar_fpu_program() {
     // a=7, b=-2, addfix(a,b)=5, scaled=-14, kept=1.5, down=1, pick=1,
     // live=-13, (5 + -13 + 0.5).to_int() = -7 -> 0xfff9.
     let source = r#"
-        fn addfix(a: fix16, b: fix16) -> fix16 { a + b }
+        fn addfix(a: fix32, b: fix32) -> fix32 { a + b }
         fn main() {
-            let a = fix16::from_int(7);
-            let b = fix16::from_int(-2);
+            let a = fix32::from_int(7);
+            let b = fix32::from_int(-2);
             let s = addfix(a, b);
             let scaled = a * b;
-            let kept = fix16::from_words(0x8000, 0x0001);
+            let kept = fix32::from_words(0x8000, 0x0001);
             let down = kept.trunc();
             let pick = if s < down { s } else { down };
             let live = addfix(scaled, pick);
@@ -987,12 +987,12 @@ fn core_emu_matches_rtl_compiled_vector_fpu_program() {
     let source = r#"
         fn add4(a: vec4, b: vec4) -> vec4 { a + b }
         fn main() {
-            let a = vec4::new(fix16::from_int(1), fix16::from_int(2),
-                              fix16::from_int(3), fix16::from_int(4));
-            let b = vec4::new(fix16::from_int(10), fix16::from_int(20),
-                              fix16::from_int(30), fix16::from_int(40));
+            let a = vec4::new(fix32::from_int(1), fix32::from_int(2),
+                              fix32::from_int(3), fix32::from_int(4));
+            let b = vec4::new(fix32::from_int(10), fix32::from_int(20),
+                              fix32::from_int(30), fix32::from_int(40));
             let c = add4(a, b);
-            let d = c * fix16::from_int(2);
+            let d = c * fix32::from_int(2);
             let s = d.x() + d.y() + d.z() + d.w();
             let dot = fdot(c, d);
             halt((s + dot).to_int() as u16);
@@ -1042,7 +1042,7 @@ fn core_emu_matches_rtl_compiled_special_fpu_program() {
     // match the emulator cycle for cycle.
     let source = r#"
         fn main() {
-            let x = fix16::from_words(0x0000u16, 0x0003u16); // 3.0
+            let x = fix32::from_words(0x0000u16, 0x0003u16); // 3.0
             let r = frcp(x);
             let s = frsqrt(x);
             let sc = fsincos(x);
@@ -1105,11 +1105,11 @@ fn geometry_helper_source(ax: i16, ay: i16, bx: i16, by: i16, threshold: i16) ->
     format!(
         r#"
     fn main() {{
-        let a = vec3::new(fix16::from_int({ax}), fix16::from_int({ay}), fix16::zero());
-        let b = vec3::new(fix16::from_int({bx}), fix16::from_int({by}), fix16::zero());
+        let a = vec3::new(fix32::from_int({ax}), fix32::from_int({ay}), fix32::zero());
+        let b = vec3::new(fix32::from_int({bx}), fix32::from_int({by}), fix32::zero());
         let s = v3_length2(a);
         let n = v3_normalize(a);
-        let gt = v3_distance_gt(a, b, fix16::from_int({threshold}));
+        let gt = v3_distance_gt(a, b, fix32::from_int({threshold}));
         halt(s.lo_bits() ^ (s.hi_bits() << 1)
              ^ (n.x().lo_bits() << 2) ^ (n.y().hi_bits() << 3)
              ^ ((gt as u16) << 4));
@@ -1123,11 +1123,11 @@ fn geometry_checked_source(ax: i16, ay: i16, bx: i16, by: i16, threshold: i16) -
     format!(
         r#"
     fn main() {{
-        let a = vec3::new(fix16::from_int({ax}), fix16::from_int({ay}), fix16::zero());
-        let b = vec3::new(fix16::from_int({bx}), fix16::from_int({by}), fix16::zero());
+        let a = vec3::new(fix32::from_int({ax}), fix32::from_int({ay}), fix32::zero());
+        let b = vec3::new(fix32::from_int({bx}), fix32::from_int({by}), fix32::zero());
         let s = v3_length2_checked(a);
         let n = v3_normalize_checked(a);
-        let gt = v3_distance_gt_checked(a, b, fix16::from_int({threshold}));
+        let gt = v3_distance_gt_checked(a, b, fix32::from_int({threshold}));
         halt(s.lo_bits() ^ (s.hi_bits() << 1)
              ^ (n.x().lo_bits() << 2) ^ (n.y().hi_bits() << 3)
              ^ ((gt as u16) << 4));
@@ -1218,7 +1218,7 @@ fn checked_geometry_helpers_match_unchecked_on_valid_input() {
 #[test]
 fn checked_length2_halts_with_its_signal() {
     let program = compile(
-        "fn main() { let a = vec3::new(fix16::from_int(105), fix16::zero(), fix16::zero()); \
+        "fn main() { let a = vec3::new(fix32::from_int(105), fix32::zero(), fix32::zero()); \
          let s = v3_length2_checked(a); halt(s.lo_bits()); }",
     );
     assert_eq!(
@@ -1231,7 +1231,7 @@ fn checked_length2_halts_with_its_signal() {
 #[test]
 fn checked_normalize_halts_with_its_signal() {
     let program = compile(
-        "fn main() { let a = vec3::new(fix16::from_int(105), fix16::zero(), fix16::zero()); \
+        "fn main() { let a = vec3::new(fix32::from_int(105), fix32::zero(), fix32::zero()); \
          let n = v3_normalize_checked(a); halt(n.x().lo_bits()); }",
     );
     assert_eq!(
@@ -1245,8 +1245,8 @@ fn checked_normalize_halts_with_its_signal() {
 #[test]
 fn checked_distance_halts_with_the_input_signal() {
     let program = compile(
-        "fn main() { let a = vec3::new(fix16::from_int(16384), fix16::zero(), fix16::zero()); \
-         let b = vec3::zero(); let g = v3_distance_gt_checked(a, b, fix16::zero()); halt(g as u16); }",
+        "fn main() { let a = vec3::new(fix32::from_int(16384), fix32::zero(), fix32::zero()); \
+         let b = vec3::zero(); let g = v3_distance_gt_checked(a, b, fix32::zero()); halt(g as u16); }",
     );
     assert_eq!(
         run_program_signal(&program, 20_000),
@@ -1259,9 +1259,9 @@ fn checked_distance_halts_with_the_input_signal() {
 #[test]
 fn checked_distance_halts_with_the_difference_signal() {
     let program = compile(
-        "fn main() { let a = vec3::new(fix16::from_int(100), fix16::zero(), fix16::zero()); \
-         let b = vec3::new(fix16::from_int(-100), fix16::zero(), fix16::zero()); \
-         let g = v3_distance_gt_checked(a, b, fix16::zero()); halt(g as u16); }",
+        "fn main() { let a = vec3::new(fix32::from_int(100), fix32::zero(), fix32::zero()); \
+         let b = vec3::new(fix32::from_int(-100), fix32::zero(), fix32::zero()); \
+         let g = v3_distance_gt_checked(a, b, fix32::zero()); halt(g as u16); }",
     );
     assert_eq!(
         run_program_signal(&program, 20_000),

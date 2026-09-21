@@ -29,10 +29,10 @@ fn main() {
     i = 0;
     while i < N {
         let v = vec4::new(
-            fix16::from_words((i & 15) << 12, 0),
-            fix16::from_words((i & 31) << 11, 0),
-            fix16::from_words((i & 7) << 13, 0),
-            fix16::from_int(1),
+            fix32::from_words((i & 15) << 12, 0),
+            fix32::from_words((i & 31) << 11, 0),
+            fix32::from_words((i & 7) << 13, 0),
+            fix32::from_int(1),
         );
         let r = vec4::new(fdot(c0, v), fdot(c1, v), fdot(c2, v), fdot(c3, v));
         vec4::export(r, out.as_ptr().add((i << 3) as i16));

@@ -98,8 +98,8 @@ fn plot(base_segment: u16, base_offset: u16, x: u16, y: u16, color: u16) {
 /// Convert a raw angle step count at `1/256` radians into signed Q16.16.
 /// The old raw Q8.8 constructor interpreted `raw` as an `i16`; preserve that
 /// wrap by sign-extending its high byte into the Q16.16 high word.
-fn angle_q16(raw: u16) -> fix16 {
-    fix16::from_words(raw << 8, ((raw as i16) >> 8) as u16)
+fn angle_q16(raw: u16) -> fix32 {
+    fix32::from_words(raw << 8, ((raw as i16) >> 8) as u16)
 }
 
 /// Draw two independently visible sincos results. Multiplication scales
@@ -107,7 +107,7 @@ fn angle_q16(raw: u16) -> fix16 {
 /// the FPU-to-integer path before every framebuffer store. When `restore` is
 /// nonzero, recompute the old geometry but replace it with the static layer.
 fn draw_waveforms(base_segment: u16, base_offset: u16, phase: u16, restore: u16) {
-    let amplitude = fix16::from_int(24);
+    let amplitude = fix32::from_int(24);
     let mut x: u16 = 0;
     while x < WIDTH {
         // 8 / 256 radians per pixel gives almost two periods across 400 px.
@@ -146,7 +146,7 @@ fn draw_waveforms(base_segment: u16, base_offset: u16, phase: u16, restore: u16)
 }
 
 fn draw_circle(base_segment: u16, base_offset: u16, phase: u16, restore: u16) {
-    let radius = fix16::from_int(46);
+    let radius = fix32::from_int(46);
     let mut angle_bits = phase;
     let mut sample: u16 = 0;
     while sample < 256 {

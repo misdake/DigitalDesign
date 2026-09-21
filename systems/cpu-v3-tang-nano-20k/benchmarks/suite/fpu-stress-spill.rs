@@ -6,18 +6,18 @@ use crate::dsl_rt::*;
 // More simultaneously live vectors than allocatable F registers: forces FPU
 // spill/reload traffic through the frame. Exact sum-of-squares checksum.
 fn main() {
-    let v0 = vec4::new(fix16::from_words(0x4000, 0), fix16::zero(), fix16::zero(), fix16::zero());
-    let v1 = vec4::new(fix16::from_words(0x8000, 0), fix16::zero(), fix16::zero(), fix16::zero());
-    let v2 = vec4::new(fix16::from_words(0xc000, 0), fix16::zero(), fix16::zero(), fix16::zero());
-    let v3 = vec4::new(fix16::from_words(0, 1), fix16::zero(), fix16::zero(), fix16::zero());
-    let v4 = vec4::new(fix16::from_words(0x4000, 1), fix16::zero(), fix16::zero(), fix16::zero());
-    let v5 = vec4::new(fix16::from_words(0x8000, 1), fix16::zero(), fix16::zero(), fix16::zero());
-    let v6 = vec4::new(fix16::from_words(0xc000, 1), fix16::zero(), fix16::zero(), fix16::zero());
-    let v7 = vec4::new(fix16::from_words(0, 2), fix16::zero(), fix16::zero(), fix16::zero());
-    let v8 = vec4::new(fix16::from_words(0x4000, 2), fix16::zero(), fix16::zero(), fix16::zero());
-    let v9 = vec4::new(fix16::from_words(0x8000, 2), fix16::zero(), fix16::zero(), fix16::zero());
-    let v10 = vec4::new(fix16::from_words(0xc000, 2), fix16::zero(), fix16::zero(), fix16::zero());
-    let v11 = vec4::new(fix16::from_words(0, 3), fix16::zero(), fix16::zero(), fix16::zero());
+    let v0 = vec4::new(fix32::from_words(0x4000, 0), fix32::zero(), fix32::zero(), fix32::zero());
+    let v1 = vec4::new(fix32::from_words(0x8000, 0), fix32::zero(), fix32::zero(), fix32::zero());
+    let v2 = vec4::new(fix32::from_words(0xc000, 0), fix32::zero(), fix32::zero(), fix32::zero());
+    let v3 = vec4::new(fix32::from_words(0, 1), fix32::zero(), fix32::zero(), fix32::zero());
+    let v4 = vec4::new(fix32::from_words(0x4000, 1), fix32::zero(), fix32::zero(), fix32::zero());
+    let v5 = vec4::new(fix32::from_words(0x8000, 1), fix32::zero(), fix32::zero(), fix32::zero());
+    let v6 = vec4::new(fix32::from_words(0xc000, 1), fix32::zero(), fix32::zero(), fix32::zero());
+    let v7 = vec4::new(fix32::from_words(0, 2), fix32::zero(), fix32::zero(), fix32::zero());
+    let v8 = vec4::new(fix32::from_words(0x4000, 2), fix32::zero(), fix32::zero(), fix32::zero());
+    let v9 = vec4::new(fix32::from_words(0x8000, 2), fix32::zero(), fix32::zero(), fix32::zero());
+    let v10 = vec4::new(fix32::from_words(0xc000, 2), fix32::zero(), fix32::zero(), fix32::zero());
+    let v11 = vec4::new(fix32::from_words(0, 3), fix32::zero(), fix32::zero(), fix32::zero());
     let total = fdot(v0, v0)
         + fdot(v1, v1)
         + fdot(v2, v2)

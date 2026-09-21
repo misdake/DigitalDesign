@@ -435,7 +435,7 @@ fn test_tuple_and_sret_restrictions() {
         "at most 4",
     );
     expect_error(
-        "fn f(x: fix16) -> (fix16, u16) { (x, 0) }",
+        "fn f(x: fix32) -> (fix32, u16) { (x, 0) }",
         "tuple elements must be",
     );
     // a tuple pattern must match the value's arity

@@ -296,7 +296,7 @@ zero for `x <= 0`; both are approximate special functions with no IEEE special
 values. The hidden register-file BSRAM region holds the RCP/RSQRT/SINCOS
 lookup tables.
 
-The v3 geometry library (`v3_length2` -> `fix16`, `v3_normalize` -> `vec3`,
+The v3 geometry library (`v3_length2` -> `fix32`, `v3_normalize` -> `vec3`,
 `v3_distance_gt` -> `bool`, and the `_checked` debug variants) is a compiler
 library, not a new opcode; its reference model lives in the CPU V3 architecture
 crate, and the compiler lowers it to existing FPU v2 instructions.

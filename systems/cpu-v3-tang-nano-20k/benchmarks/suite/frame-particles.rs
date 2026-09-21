@@ -3,7 +3,7 @@
 // bench-tier: frame
 use crate::dsl_rt::*;
 
-// fix16 particle physics, 10 frames: pos += vel * dt with edge reflection.
+// fix32 particle physics, 10 frames: pos += vel * dt with edge reflection.
 // Scalar Q16.16 per component, stored as a low/high word pair in statics: a
 // component's low word sits at `i` and its high word at `i + N`.
 const N: u16 = 128;
@@ -18,20 +18,20 @@ fn main() {
     let mut y = Y.as_array();
     let mut vx = VX.as_array();
     let mut vy = VY.as_array();
-    let limit = fix16::from_int(120);
-    let dt = fix16::from_words(0x4000, 0); // 0.25
+    let limit = fix32::from_int(120);
+    let dt = fix32::from_words(0x4000, 0); // 0.25
     let mut i: u16 = 0;
     while i < N {
-        let p = fix16::from_words((i & 15) << 11, 0);
+        let p = fix32::from_words((i & 15) << 11, 0);
         x[i] = p.lo_bits();
         x[i + N] = p.hi_bits();
-        let q = fix16::from_words((i & 31) << 10, 0);
+        let q = fix32::from_words((i & 31) << 10, 0);
         y[i] = q.lo_bits();
         y[i + N] = q.hi_bits();
-        let u = fix16::from_words(((i & 3) + 1) << 12, 0);
+        let u = fix32::from_words(((i & 3) + 1) << 12, 0);
         vx[i] = u.lo_bits();
         vx[i + N] = u.hi_bits();
-        let w = fix16::from_words(((i & 7) + 1) << 10, 0);
+        let w = fix32::from_words(((i & 7) + 1) << 10, 0);
         vy[i] = w.lo_bits();
         vy[i + N] = w.hi_bits();
         i = i + 1;
@@ -40,13 +40,13 @@ fn main() {
     while frame < FRAMES {
         i = 0;
         while i < N {
-            let mut px = fix16::from_words(x[i], x[i + N]);
-            let mut py = fix16::from_words(y[i], y[i + N]);
-            let mut sx = fix16::from_words(vx[i], vx[i + N]);
-            let mut sy = fix16::from_words(vy[i], vy[i + N]);
+            let mut px = fix32::from_words(x[i], x[i + N]);
+            let mut py = fix32::from_words(y[i], y[i + N]);
+            let mut sx = fix32::from_words(vx[i], vx[i + N]);
+            let mut sy = fix32::from_words(vy[i], vy[i + N]);
             px = px + sx * dt;
             py = py + sy * dt;
-            if px < fix16::zero() {
+            if px < fix32::zero() {
                 px = -px;
                 sx = -sx;
             }
@@ -54,7 +54,7 @@ fn main() {
                 px = limit + limit - px;
                 sx = -sx;
             }
-            if py < fix16::zero() {
+            if py < fix32::zero() {
                 py = -py;
                 sy = -sy;
             }

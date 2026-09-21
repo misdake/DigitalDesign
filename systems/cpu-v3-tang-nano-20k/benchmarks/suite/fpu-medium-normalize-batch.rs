@@ -14,10 +14,10 @@ fn main() {
     let mut i: u16 = 0;
     while i < N {
         let v = vec4::new(
-            fix16::from_words(((i & 7) + 64) << 8, 0),
-            fix16::from_words(((i & 15) + 32) << 8, 0),
-            fix16::from_words(((i & 31) + 16) << 8, 0),
-            fix16::zero(),
+            fix32::from_words(((i & 7) + 64) << 8, 0),
+            fix32::from_words(((i & 15) + 32) << 8, 0),
+            fix32::from_words(((i & 31) + 16) << 8, 0),
+            fix32::zero(),
         );
         let inv = frsqrt(fdot(v, v));
         let n = v * inv;

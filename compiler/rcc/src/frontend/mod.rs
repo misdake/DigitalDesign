@@ -641,7 +641,7 @@ fn word_size(
     at: &impl syn::spanned::Spanned,
 ) -> Result<u16, syn::Error> {
     match ty {
-        Ty::U16 | Ty::I16 | Ty::Ptr | Ty::Bool | Ty::Fix16 | Ty::ArrayRef(_) | Ty::Enum(_) => Ok(1),
+        Ty::U16 | Ty::I16 | Ty::Ptr | Ty::Bool | Ty::Fix32 | Ty::ArrayRef(_) | Ty::Enum(_) => Ok(1),
         Ty::FnPtr { .. } => Ok(1),
         Ty::Tuple(elems) => u16::try_from(elems.len())
             .map_err(|_| err(at, "tuple is larger than the 16-bit address space")),
@@ -801,10 +801,10 @@ impl LayoutBuilder<'_> {
                     let Some(ident) = &field.ident else { continue };
                     let fname = ident.to_string();
                     let fty = ty_of_maybe_array(&field.ty, self.consts, self.names)?;
-                    if matches!(fty, Ty::Fix16 | Ty::Vec2 | Ty::Vec3 | Ty::Vec4) {
+                    if matches!(fty, Ty::Fix32 | Ty::Vec2 | Ty::Vec3 | Ty::Vec4) {
                         return Err(err(
                             &field.ty,
-                            "fix16/vecN struct fields are not supported yet (spec §12)",
+                            "fix32/vecN struct fields are not supported yet (spec §12)",
                         ));
                     }
                     // Owned buffers also depend on their element's layout;
@@ -1292,10 +1292,9 @@ enum Ty {
     Tuple(Vec<Ty>),
     /// a C-style enum: one word holding the variant's discriminant (spec §9d)
     Enum(String),
-    /// CpuV3 FPU v2 source types. `fix16` occupies one scalar F register;
-    /// vec2/vec3/vec4 occupy consecutive ranges of 2/3/4 registers once C2
-    /// implements range allocation. C0 rejects their operations before IR.
-    Fix16,
+    /// CpuV3 FPU v2 source types. `fix32` occupies one scalar F register;
+    /// vec2/vec3/vec4 occupy consecutive ranges of 2/3/4 registers.
+    Fix32,
     Vec2,
     Vec3,
     Vec4,
@@ -1307,7 +1306,7 @@ impl Ty {
         matches!(self, Ty::U16 | Ty::I16 | Ty::UntypedInt)
     }
     fn is_fpu(&self) -> bool {
-        matches!(self, Ty::Fix16 | Ty::Vec2 | Ty::Vec3 | Ty::Vec4)
+        matches!(self, Ty::Fix32 | Ty::Vec2 | Ty::Vec3 | Ty::Vec4)
     }
     /// whether this is a multi-lane FPU vector type
     fn is_vector(&self) -> bool {
@@ -1351,7 +1350,7 @@ impl Ty {
                     .collect::<Vec<_>>()
                     .join(", ")
             ),
-            Ty::Fix16 => "fix16".into(),
+            Ty::Fix32 => "fix32".into(),
             Ty::Vec2 => "vec2".into(),
             Ty::Vec3 => "vec3".into(),
             Ty::Vec4 => "vec4".into(),
@@ -1425,7 +1424,7 @@ fn ty_of(ty: &Type, structs: &TypeNames) -> Result<Ty, syn::Error> {
                 "i16" => Ok(Ty::I16),
                 "Ptr" => Ok(Ty::Ptr),
                 "bool" => Ok(Ty::Bool),
-                "fix16" => Ok(Ty::Fix16),
+                "fix32" => Ok(Ty::Fix32),
                 "vec2" => Ok(Ty::Vec2),
                 "vec3" => Ok(Ty::Vec3),
                 "vec4" => Ok(Ty::Vec4),
@@ -1440,7 +1439,7 @@ fn ty_of(ty: &Type, structs: &TypeNames) -> Result<Ty, syn::Error> {
                     Some(NominalKind::Enum) => Ok(Ty::Enum(name)),
                     None => Err(err(
                         ty,
-                        "type not supported (only u16/i16/Ptr/Array<T>/fn pointer/fix16/vecN/struct/enum)",
+                        "type not supported (only u16/i16/Ptr/Array<T>/fn pointer/fix32/vecN/struct/enum)",
                     )),
                 },
             }
@@ -2866,16 +2865,16 @@ fn stmt_expr(l: &mut FnLower, e: &Expr) -> Result<(), syn::Error> {
                 ));
             }
             let (kind, ty) = (info.kind.clone(), info.ty.clone());
-            if ty == Ty::Fix16 {
+            if ty == Ty::Fix32 {
                 let op = match a.op {
                     SBinOp::AddEq(_) => FpuBinOp::Add,
                     SBinOp::SubEq(_) => FpuBinOp::Sub,
                     SBinOp::MulEq(_) => FpuBinOp::Mul,
-                    _ => return Err(err(&a.op, "unsupported fix16 compound assignment operator")),
+                    _ => return Err(err(&a.op, "unsupported fix32 compound assignment operator")),
                 };
                 let cur = l.read_var(&kind);
                 let (rhs, rhs_ty) = expr(l, &a.right)?.reg(l, &a.right, "compound assignment")?;
-                let (rhs, _) = coerce(l, rhs, &rhs_ty, &Ty::Fix16, &a.right)?;
+                let (rhs, _) = coerce(l, rhs, &rhs_ty, &Ty::Fix32, &a.right)?;
                 let v = l.b.fpu_bin(op, cur, rhs);
                 l.write_var(&kind, v);
                 return Ok(());
@@ -2894,7 +2893,7 @@ fn stmt_expr(l: &mut FnLower, e: &Expr) -> Result<(), syn::Error> {
                         let (rhs, _) = coerce(l, rhs, &rhs_ty, &ty, &a.right)?;
                         l.b.fpu_vec_bin(op, cur, rhs, lanes)
                     }
-                    SBinOp::MulEq(_) if rhs_ty == Ty::Fix16 => l.b.fpu_vec_muls(cur, rhs, lanes),
+                    SBinOp::MulEq(_) if rhs_ty == Ty::Fix32 => l.b.fpu_vec_muls(cur, rhs, lanes),
                     SBinOp::MulEq(_) => {
                         let (rhs, _) = coerce(l, rhs, &rhs_ty, &ty, &a.right)?;
                         l.b.fpu_vec_bin(FpuBinOp::Mul, cur, rhs, lanes)
@@ -3609,8 +3608,8 @@ fn expr(l: &mut FnLower, e: &Expr) -> Result<Val, syn::Error> {
             SUnOp::Neg(_) => {
                 let (v, ty) = expr(l, &u.expr)?.reg(l, &u.expr, "negation")?;
                 if ty.is_fpu() {
-                    if ty == Ty::Fix16 {
-                        return Ok(Val::V(l.b.fpu_un(FpuUnOp::Neg, v), Ty::Fix16));
+                    if ty == Ty::Fix32 {
+                        return Ok(Val::V(l.b.fpu_un(FpuUnOp::Neg, v), Ty::Fix32));
                     }
                     return Ok(Val::V(l.b.fpu_vec_un(FpuUnOp::Neg, v, ty.fpu_lanes()), ty));
                 }
@@ -3675,11 +3674,11 @@ fn expr(l: &mut FnLower, e: &Expr) -> Result<Val, syn::Error> {
                                 ))
                             }
                         };
-                        if lt == Ty::Fix16 && rt == Ty::Fix16 {
+                        if lt == Ty::Fix32 && rt == Ty::Fix32 {
                             let rhs = rhs.ok_or_else(|| {
-                                err(e, "fix16 arithmetic takes two fix16 operands")
+                                err(e, "fix32 arithmetic takes two fix32 operands")
                             })?;
-                            return Ok(Val::V(l.b.fpu_bin(op, lhs, rhs), Ty::Fix16));
+                            return Ok(Val::V(l.b.fpu_bin(op, lhs, rhs), Ty::Fix32));
                         }
                         if lt.is_vector() && lt == rt {
                             let rhs = rhs.ok_or_else(|| {
@@ -3758,21 +3757,21 @@ fn expr(l: &mut FnLower, e: &Expr) -> Result<Val, syn::Error> {
                         }
                     };
                     if lt.is_fpu() || rt.is_fpu() {
-                        if lt == Ty::Fix16 && rt == Ty::Fix16 {
+                        if lt == Ty::Fix32 && rt == Ty::Fix32 {
                             let rhs = rhs
-                                .ok_or_else(|| err(e, "fix16 multiplication takes two fix16 operands"))?;
-                            return Ok(Val::V(l.b.fpu_bin(FpuBinOp::Mul, lhs, rhs), Ty::Fix16));
+                                .ok_or_else(|| err(e, "fix32 multiplication takes two fix32 operands"))?;
+                            return Ok(Val::V(l.b.fpu_bin(FpuBinOp::Mul, lhs, rhs), Ty::Fix32));
                         }
-                        // scalar broadcast: `vecN * fix16` and `fix16 * vecN`
-                        if lt.is_vector() && rt == Ty::Fix16 {
+                        // scalar broadcast: `vecN * fix32` and `fix32 * vecN`
+                        if lt.is_vector() && rt == Ty::Fix32 {
                             let rhs = rhs.ok_or_else(|| {
-                                err(e, "vector scaling needs a fix16 scalar")
+                                err(e, "vector scaling needs a fix32 scalar")
                             })?;
                             return Ok(Val::V(l.b.fpu_vec_muls(lhs, rhs, lt.fpu_lanes()), lt));
                         }
-                        if lt == Ty::Fix16 && rt.is_vector() {
+                        if lt == Ty::Fix32 && rt.is_vector() {
                             let rhs = rhs.ok_or_else(|| {
-                                err(e, "vector scaling needs a fix16 scalar")
+                                err(e, "vector scaling needs a fix32 scalar")
                             })?;
                             return Ok(Val::V(l.b.fpu_vec_muls(rhs, lhs, rt.fpu_lanes()), rt));
                         }
@@ -3795,7 +3794,7 @@ fn expr(l: &mut FnLower, e: &Expr) -> Result<Val, syn::Error> {
                         return Err(err(
                             e,
                             format!(
-                                "type mismatch: {} vs {} (multiply a vector by a fix16 or by \
+                                "type mismatch: {} vs {} (multiply a vector by a fix32 or by \
                                  another vector of the same type)",
                                 lt.display(),
                                 rt.display()
@@ -4355,17 +4354,17 @@ fn compare(
     rt: Ty,
     swapped: bool,
 ) -> Result<BoolExpr, syn::Error> {
-    // fix16 comparisons use the scalar FPU CMP + the pending test; they are
+    // fix32 comparisons use the scalar FPU CMP + the pending test; they are
     // always signed and have no immediate form.
     if lt.is_fpu() || rt.is_fpu() {
-        if lt != Ty::Fix16 || rt != Ty::Fix16 {
+        if lt != Ty::Fix32 || rt != Ty::Fix32 {
             return Err(err(
                 e,
-                "FPU comparison is defined for fix16 scalars only; vectors have no comparison",
+                "FPU comparison is defined for fix32 scalars only; vectors have no comparison",
             ));
         }
         if let CmpRhs::Imm(_) = rhs {
-            return Err(err(e, "fix16 comparisons do not take an immediate operand"));
+            return Err(err(e, "fix32 comparisons do not take an immediate operand"));
         }
         let mut cond = compare_cond(&op, e)?;
         if swapped {
@@ -4591,7 +4590,7 @@ fn call_expr(l: &mut FnLower, call: &syn::ExprCall) -> Result<Val, syn::Error> {
         let (v, _) = coerce(l, v, &Ty::U16, &Ty::U16, &call.args[0])?;
         return Ok(Val::V(v, Ty::Ptr));
     }
-    if segs.len() == 2 && matches!(segs[0].as_str(), "fix16" | "vec2" | "vec3" | "vec4") {
+    if segs.len() == 2 && matches!(segs[0].as_str(), "fix32" | "vec2" | "vec3" | "vec4") {
         return fpu_associated_call(l, &segs[0], &segs[1], call);
     }
     if segs.len() != 1 {
@@ -4770,7 +4769,7 @@ fn call_expr(l: &mut FnLower, call: &syn::ExprCall) -> Result<Val, syn::Error> {
                 "fdot takes two vectors of the same type (vec2, vec3 or vec4)",
             ));
         }
-        return Ok(Val::V(l.b.fpu_dot_store(*a, *b), Ty::Fix16));
+        return Ok(Val::V(l.b.fpu_dot_store(*a, *b), Ty::Fix32));
     }
     if matches!(
         name.as_str(),
@@ -4780,12 +4779,12 @@ fn call_expr(l: &mut FnLower, call: &syn::ExprCall) -> Result<Val, syn::Error> {
             return Err(err(call, format!("{name}(x) takes 1 argument")));
         }
         let (v, from) = &args[0];
-        let (v, _) = coerce(l, *v, from, &Ty::Fix16, &call.args[0])?;
+        let (v, _) = coerce(l, *v, from, &Ty::Fix32, &call.args[0])?;
         let (op, lanes, ty) = match name.as_str() {
-            "frcp" => (FpuSpecialOp::Rcp, 1, Ty::Fix16),
-            "frsqrt" => (FpuSpecialOp::Rsqrt, 1, Ty::Fix16),
-            "fsin" => (FpuSpecialOp::Sin, 1, Ty::Fix16),
-            "fcos" => (FpuSpecialOp::Cos, 1, Ty::Fix16),
+            "frcp" => (FpuSpecialOp::Rcp, 1, Ty::Fix32),
+            "frsqrt" => (FpuSpecialOp::Rsqrt, 1, Ty::Fix32),
+            "fsin" => (FpuSpecialOp::Sin, 1, Ty::Fix32),
+            "fcos" => (FpuSpecialOp::Cos, 1, Ty::Fix32),
             _ => (FpuSpecialOp::SinCos, 2, Ty::Vec2),
         };
         return Ok(Val::V(l.b.fpu_special(op, v, lanes), ty));
@@ -4931,7 +4930,7 @@ fn constant_below(
 }
 
 // ---------------------------------------------------------------------------
-// FPU (fix16/vec2/vec3/vec4) operations
+// FPU (fix32/vec2/vec3/vec4) operations
 // ---------------------------------------------------------------------------
 
 /// Lowers the v3 geometry library onto the existing FPU v2 scalar/vector
@@ -4971,7 +4970,7 @@ fn geometry_call(
                 );
             }
             if name.starts_with("v3_length2") {
-                Ok(Val::V(l.b.fpu_dot_store(v, v), Ty::Fix16))
+                Ok(Val::V(l.b.fpu_dot_store(v, v), Ty::Fix32))
             } else {
                 let squared = l.b.fpu_dot_store(v, v);
                 // `RSQRT(0) == 0`, so a zero vector normalizes to zero.
@@ -4991,7 +4990,7 @@ fn geometry_call(
             let (b, b_from) = &args[1];
             let (b, _) = coerce(l, *b, b_from, &Ty::Vec3, &call.args[1])?;
             let (threshold, t_from) = &args[2];
-            let (threshold, _) = coerce(l, *threshold, t_from, &Ty::Fix16, &call.args[2])?;
+            let (threshold, _) = coerce(l, *threshold, t_from, &Ty::Fix32, &call.args[2])?;
             if name.ends_with("_checked") {
                 // The input bound keeps the raw subtraction from overflowing.
                 for vector in [a, b] {
@@ -5074,10 +5073,9 @@ fn require_vec_range(l: &mut FnLower, vector: VReg, min: i32, max: i32, signal: 
     l.b.end_if(join);
 }
 
-/// fix16::/vec2::/vec3::/vec4:: associated functions. C2 implements the
-/// vector constructors, `zero`, and the vec4 memory import/export; C3 adds the
-/// scalar special functions; the v3 geometry library lowers through
-/// [`geometry_call`].
+/// fix32::/vec2::/vec3::/vec4:: associated functions, including vector
+/// constructors, zero values, vec4 memory import/export, and scalar special
+/// functions. The v3 geometry library lowers through [`geometry_call`].
 fn fpu_associated_call(
     l: &mut FnLower,
     ty_name: &str,
@@ -5091,28 +5089,28 @@ fn fpu_associated_call(
         _ => None,
     };
     match (ty_name, method) {
-        ("fix16", "from_int") => {
-            let (v, from) = exactly_args(l, &call.args, call, 1, "fix16::from_int")?[0]
+        ("fix32", "from_int") => {
+            let (v, from) = exactly_args(l, &call.args, call, 1, "fix32::from_int")?[0]
                 .clone()
-                .reg(l, &call.args[0], "fix16::from_int")?;
+                .reg(l, &call.args[0], "fix32::from_int")?;
             let (v, _) = coerce(l, v, &from, &Ty::I16, &call.args[0])?;
-            Ok(Val::V(l.b.fpu_from_int(v), Ty::Fix16))
+            Ok(Val::V(l.b.fpu_from_int(v), Ty::Fix32))
         }
-        ("fix16", "zero") => {
+        ("fix32", "zero") => {
             if !call.args.is_empty() {
-                return Err(err(call, "fix16::zero() takes no arguments"));
+                return Err(err(call, "fix32::zero() takes no arguments"));
             }
             let zero = l.b.load_imm(0);
-            Ok(Val::V(l.b.fpu_from_int(zero), Ty::Fix16))
+            Ok(Val::V(l.b.fpu_from_int(zero), Ty::Fix32))
         }
-        ("fix16", "from_words") => {
-            let args = exactly_args(l, &call.args, call, 2, "fix16::from_words")?;
-            let (lo, lo_ty) = args[0].clone().reg(l, &call.args[0], "fix16::from_words")?;
+        ("fix32", "from_words") => {
+            let args = exactly_args(l, &call.args, call, 2, "fix32::from_words")?;
+            let (lo, lo_ty) = args[0].clone().reg(l, &call.args[0], "fix32::from_words")?;
             let (lo, _) = coerce(l, lo, &lo_ty, &Ty::U16, &call.args[0])?;
-            let (hi, hi_ty) = args[1].clone().reg(l, &call.args[1], "fix16::from_words")?;
+            let (hi, hi_ty) = args[1].clone().reg(l, &call.args[1], "fix32::from_words")?;
             let (hi, _) = coerce(l, hi, &hi_ty, &Ty::U16, &call.args[1])?;
             let low = l.b.fpu_from_lo(lo);
-            Ok(Val::V(l.b.fpu_from_hi(low, hi), Ty::Fix16))
+            Ok(Val::V(l.b.fpu_from_hi(low, hi), Ty::Fix32))
         }
         (_, "new") if vector.is_some() => {
             let (lanes, ty) = vector.expect("vector constructor");
@@ -5120,7 +5118,7 @@ fn fpu_associated_call(
             let mut lane_values = Vec::with_capacity(lanes as usize);
             for (i, arg) in args.into_iter().enumerate() {
                 let (v, from) = arg.reg(l, &call.args[i], "vector::new lane")?;
-                let (v, _) = coerce(l, v, &from, &Ty::Fix16, &call.args[i])?;
+                let (v, _) = coerce(l, v, &from, &Ty::Fix32, &call.args[i])?;
                 lane_values.push(v);
             }
             Ok(Val::V(l.b.fpu_vec_construct(&lane_values), ty))
@@ -5158,8 +5156,8 @@ fn fpu_associated_call(
     }
 }
 
-/// methods on fix16/vec2/vec3/vec4 values. C2 adds vector lane access and the
-/// component-wise unary subops; `fix16` keeps its raw halves and conversions.
+/// Methods on fix32/vec2/vec3/vec4 values. Vectors expose lane access and
+/// component-wise unary subops; `fix32` also exposes raw halves and conversions.
 fn fpu_method(
     l: &mut FnLower,
     base: VReg,
@@ -5167,7 +5165,7 @@ fn fpu_method(
     m: &syn::ExprMethodCall,
 ) -> Result<Val, syn::Error> {
     let method = m.method.to_string();
-    if *base_ty != Ty::Fix16 {
+    if *base_ty != Ty::Fix32 {
         let lanes = base_ty.fpu_lanes();
         let lane = match method.as_str() {
             "x" => Some(0u8),
@@ -5186,7 +5184,7 @@ fn fpu_method(
                     format!("{} has no `{method}` lane", base_ty.display()),
                 ));
             }
-            return Ok(Val::V(l.b.fpu_vec_lane(base, lane), Ty::Fix16));
+            return Ok(Val::V(l.b.fpu_vec_lane(base, lane), Ty::Fix32));
         }
         match method.as_str() {
             "abs" | "floor" | "ceil" | "round" | "trunc" => {
@@ -5220,7 +5218,7 @@ fn fpu_method(
                 if !m.args.is_empty() {
                     return Err(err(&m.method, "x() takes no arguments"));
                 }
-                Ok(Val::V(base, Ty::Fix16))
+                Ok(Val::V(base, Ty::Fix32))
             }
             "lo_bits" => {
                 if !m.args.is_empty() {
@@ -5251,13 +5249,13 @@ fn fpu_method(
                     "round" => FpuUnOp::Round,
                     _ => FpuUnOp::Trunc,
                 };
-                Ok(Val::V(l.b.fpu_un(op, base), Ty::Fix16))
+                Ok(Val::V(l.b.fpu_un(op, base), Ty::Fix32))
             }
             "sat01" | "sign" => Err(err(
                 &m.method,
-                format!("`fix16::{method}` has no FPU v2 subop; it is a host-only helper"),
+                format!("`fix32::{method}` has no FPU v2 subop; it is a host-only helper"),
             )),
-            _ => Err(err(&m.method, format!("unknown fix16 method `{method}`"))),
+            _ => Err(err(&m.method, format!("unknown fix32 method `{method}`"))),
         }
     }
 }
@@ -5788,9 +5786,25 @@ mod tests {
     use super::parse_source_with;
 
     #[test]
-    fn fix16_rejects_int_operands_without_conversion() {
-        let src = "fn main() { let a = fix16::zero(); let b: u16 = 1; let c = a + b; halt(c.lo_bits()); }";
+    fn fix32_rejects_int_operands_without_conversion() {
+        let src = "fn main() { let a = fix32::zero(); let b: u16 = 1; let c = a + b; halt(c.lo_bits()); }";
         assert!(parse_source_with(src, 0).is_err());
+    }
+
+    /// The pre-rename spelling is no longer a type or an intrinsic namespace:
+    /// both the annotation and the associated-function path must be rejected.
+    #[test]
+    fn old_fix16_spelling_is_rejected() {
+        for src in [
+            "fn f(x: fix16) {}",
+            "fn main() { let a = fix16::from_int(1); halt(a.to_int() as u16); }",
+            "fn main() { let a = fix16::zero(); halt(a.lo_bits()); }",
+        ] {
+            assert!(
+                parse_source_with(src, 0).is_err(),
+                "`fix16` must not parse: `{src}`"
+            );
+        }
     }
 
     #[test]
@@ -5799,33 +5813,32 @@ mod tests {
         assert!(parse_source_with(src, 0).is_err());
     }
 
-    /// C1 lowers the scalar `fix16` operations, C2 the contiguous vector forms,
-    /// C3 the scalar specials plus `fsin`/`fcos`, and the v3 geometry library
-    /// lowers through existing FPU v2 instructions, so all of them must parse
-    /// and build IR.
+    /// The complete FPU source surface must parse and build IR, including
+    /// scalar operations, contiguous vector forms, special functions, and the
+    /// v3 geometry helpers lowered through existing FPU v2 instructions.
     #[test]
-    fn c3_lowers_scalar_vectors_specials_and_geometry_helpers() {
+    fn lowers_scalar_vectors_specials_and_geometry_helpers() {
         for src in [
-            "fn main() { let a = fix16::from_int(1); halt(0); }",
-            "fn main() { let a = fix16::from_words(1, 0); halt(a.lo_bits() + a.hi_bits()); }",
-            "fn main() { let a = fix16::zero(); let b = a + a; halt(b.to_int() as u16); }",
-            "fn main() { let a = fix16::zero(); if a == a { halt(1); } }",
-            "fn main() { let a = fix16::from_int(-3); halt(a.abs().trunc().to_int() as u16); }",
-            "fn main() { let mut a = fix16::from_int(2); a += fix16::from_int(3); halt(a.to_int() as u16); }",
-            "fn main() { let a = vec4::new(fix16::zero(), fix16::zero(), fix16::zero(), fix16::zero()); halt(0); }",
+            "fn main() { let a = fix32::from_int(1); halt(0); }",
+            "fn main() { let a = fix32::from_words(1, 0); halt(a.lo_bits() + a.hi_bits()); }",
+            "fn main() { let a = fix32::zero(); let b = a + a; halt(b.to_int() as u16); }",
+            "fn main() { let a = fix32::zero(); if a == a { halt(1); } }",
+            "fn main() { let a = fix32::from_int(-3); halt(a.abs().trunc().to_int() as u16); }",
+            "fn main() { let mut a = fix32::from_int(2); a += fix32::from_int(3); halt(a.to_int() as u16); }",
+            "fn main() { let a = vec4::new(fix32::zero(), fix32::zero(), fix32::zero(), fix32::zero()); halt(0); }",
             "fn main() { let a = vec3::zero(); let b = a + a; halt(b.x().to_int() as u16); }",
             "fn main() { let a = fdot(vec4::zero(), vec4::zero()); halt(a.to_int() as u16); }",
-            "fn main() { let a = frcp(fix16::from_int(1)); halt(a.to_int() as u16); }",
-            "fn main() { let a = frsqrt(fix16::from_int(1)); halt(a.to_int() as u16); }",
-            "fn main() { let a = fsin(fix16::from_int(1)); halt(a.to_int() as u16); }",
-            "fn main() { let a = fcos(fix16::from_int(1)); halt(a.to_int() as u16); }",
-            "fn main() { let a = fsincos(fix16::from_int(1)); halt(a.y().to_int() as u16); }",
+            "fn main() { let a = frcp(fix32::from_int(1)); halt(a.to_int() as u16); }",
+            "fn main() { let a = frsqrt(fix32::from_int(1)); halt(a.to_int() as u16); }",
+            "fn main() { let a = fsin(fix32::from_int(1)); halt(a.to_int() as u16); }",
+            "fn main() { let a = fcos(fix32::from_int(1)); halt(a.to_int() as u16); }",
+            "fn main() { let a = fsincos(fix32::from_int(1)); halt(a.y().to_int() as u16); }",
             "fn main() { let a = v3_normalize(vec3::zero()); halt(0); }",
             "fn main() { let a = v3_length2(vec3::zero()); halt(a.lo_bits()); }",
-            "fn main() { let a = v3_distance_gt(vec3::zero(), vec3::zero(), fix16::zero()); halt(a as u16); }",
+            "fn main() { let a = v3_distance_gt(vec3::zero(), vec3::zero(), fix32::zero()); halt(a as u16); }",
             "fn main() { let a = v3_normalize_checked(vec3::zero()); halt(0); }",
             "fn main() { let a = v3_length2_checked(vec3::zero()); halt(a.lo_bits()); }",
-            "fn main() { let a = v3_distance_gt_checked(vec3::zero(), vec3::zero(), fix16::zero()); halt(a as u16); }",
+            "fn main() { let a = v3_distance_gt_checked(vec3::zero(), vec3::zero(), fix32::zero()); halt(a as u16); }",
         ] {
             parse_source_with(src, 0).unwrap_or_else(|error| {
                 panic!("scalar, vector, special and geometry forms must lower now: `{src}`: {error}")
@@ -5893,7 +5906,7 @@ mod tests {
         // distance: VSUB, DOTSTORE, RSQRT and MUL; no branch. The returned
         // predicate is materialized by the caller (`g as u16`), not by a check.
         let (branches, _bools, dots, rsqrt, vec_muls, sub_or_mul) = geometry_ir_counts(
-            "fn main() { let a = vec3::zero(); let b = vec3::zero(); let g = v3_distance_gt(a, b, fix16::zero()); halt(g as u16); }",
+            "fn main() { let a = vec3::zero(); let b = vec3::zero(); let g = v3_distance_gt(a, b, fix32::zero()); halt(g as u16); }",
         );
         assert_eq!(
             (branches, dots, rsqrt, vec_muls, sub_or_mul),
@@ -5908,7 +5921,7 @@ mod tests {
         for src in [
             "fn main() { let v = vec3::zero(); let s = v3_length2_checked(v); halt(s.lo_bits()); }",
             "fn main() { let v = vec3::zero(); let n = v3_normalize_checked(v); halt(n.x().lo_bits()); }",
-            "fn main() { let a = vec3::zero(); let b = vec3::zero(); let g = v3_distance_gt_checked(a, b, fix16::zero()); halt(g as u16); }",
+            "fn main() { let a = vec3::zero(); let b = vec3::zero(); let g = v3_distance_gt_checked(a, b, fix32::zero()); halt(g as u16); }",
         ] {
             let (branches, ..) = geometry_ir_counts(src);
             assert!(branches > 0, "checked helper must emit a range guard: `{src}`");

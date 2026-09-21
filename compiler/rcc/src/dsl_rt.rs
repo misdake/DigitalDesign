@@ -299,10 +299,11 @@ mod tests {
 }
 
 // ---------------------------------------------------------------------------
-// FPU types: fix16 scalar and vec2/vec3/vec4 vectors. All architectural F
+// FPU types: fix32 scalar and vec2/vec3/vec4 vectors. All architectural F
 // registers are **signed Q16.16**: 16 fractional bits, numeric range about
 // [-32768, +32767.99998], and every operation wraps (no saturation, no
-// rounding flag). The name `fix16` means "16 fractional bits". A vecN value
+// rounding flag). The name `fix32` denotes the 32-bit Q16.16 storage of the
+// source scalar. A vecN value
 // is a consecutive range of N scalar F registers (2/3/4 for vec2/3/4); the
 // host representation keeps four lanes with a zero tail for uniformity.
 //
@@ -313,63 +314,63 @@ mod tests {
 // ---------------------------------------------------------------------------
 
 /// Fractional bits of an architectural F register.
-pub const FIX16_FRACTION_BITS: u32 = 16;
+pub const FIX32_FRACTION_BITS: u32 = 16;
 
-fn fix16_mul(a: i32, b: i32) -> i32 {
-    ((i64::from(a) * i64::from(b)) >> FIX16_FRACTION_BITS) as i32
+fn fix32_mul(a: i32, b: i32) -> i32 {
+    ((i64::from(a) * i64::from(b)) >> FIX32_FRACTION_BITS) as i32
 }
 
-fn fix16_floor(v: i32) -> i32 {
+fn fix32_floor(v: i32) -> i32 {
     v & !0xffff
 }
 
-fn fix16_ceil(v: i32) -> i32 {
+fn fix32_ceil(v: i32) -> i32 {
     if v & 0xffff == 0 {
         v
     } else {
-        fix16_floor(v).wrapping_add(1 << FIX16_FRACTION_BITS)
+        fix32_floor(v).wrapping_add(1 << FIX32_FRACTION_BITS)
     }
 }
 
-fn fix16_round(v: i32) -> i32 {
-    v.wrapping_add(1 << (FIX16_FRACTION_BITS - 1)) & !0xffff
+fn fix32_round(v: i32) -> i32 {
+    v.wrapping_add(1 << (FIX32_FRACTION_BITS - 1)) & !0xffff
 }
 
-fn fix16_trunc(v: i32) -> i32 {
+fn fix32_trunc(v: i32) -> i32 {
     if v < 0 {
-        fix16_ceil(v)
+        fix32_ceil(v)
     } else {
-        fix16_floor(v)
+        fix32_floor(v)
     }
 }
 
-fn fix16_abs(v: i32) -> i32 {
+fn fix32_abs(v: i32) -> i32 {
     v.wrapping_abs()
 }
 
-fn fix16_neg(v: i32) -> i32 {
+fn fix32_neg(v: i32) -> i32 {
     v.wrapping_neg()
 }
 
 /// signed Q16.16 fixed-point scalar (one F register on the target)
 #[allow(non_camel_case_types)]
 #[derive(Copy, Clone, PartialEq, Eq, PartialOrd, Ord, Debug, Default)]
-pub struct fix16(pub i32);
+pub struct fix32(pub i32);
 
 #[allow(non_camel_case_types)]
-impl fix16 {
+impl fix32 {
     /// integer value, shifted into the Q16.16 format
-    pub fn from_int(value: i16) -> fix16 {
-        fix16(i32::from(value) << FIX16_FRACTION_BITS)
+    pub fn from_int(value: i16) -> fix32 {
+        fix32(i32::from(value) << FIX32_FRACTION_BITS)
     }
-    pub fn zero() -> fix16 {
-        fix16(0)
+    pub fn zero() -> fix32 {
+        fix32(0)
     }
     /// Builds a Q16.16 value from its two raw halves, low half first. This is
     /// the raw-move contract of `ILO2F`/`IHI2F`/`FLD`; it is deliberately
     /// distinct from the numeric `from_int`/`to_int` conversions.
-    pub fn from_words(lo: u16, hi: u16) -> fix16 {
-        fix16(((u32::from(hi) << 16) | u32::from(lo)) as i32)
+    pub fn from_words(lo: u16, hi: u16) -> fix32 {
+        fix32(((u32::from(hi) << 16) | u32::from(lo)) as i32)
     }
     /// Low 16 bits as an unsigned word (`FLO2I`/`FST` half).
     pub fn lo_bits(self) -> u16 {
@@ -381,63 +382,63 @@ impl fix16 {
     }
     /// Truncate toward zero (`FTOI16`); wraps on overflow.
     pub fn to_int(self) -> i16 {
-        (fix16_trunc(self.0) >> FIX16_FRACTION_BITS) as i16
+        (fix32_trunc(self.0) >> FIX32_FRACTION_BITS) as i16
     }
-    pub fn x(self) -> fix16 {
+    pub fn x(self) -> fix32 {
         self
     }
-    pub fn abs(self) -> fix16 {
-        fix16(fix16_abs(self.0))
+    pub fn abs(self) -> fix32 {
+        fix32(fix32_abs(self.0))
     }
-    pub fn floor(self) -> fix16 {
-        fix16(fix16_floor(self.0))
+    pub fn floor(self) -> fix32 {
+        fix32(fix32_floor(self.0))
     }
-    pub fn ceil(self) -> fix16 {
-        fix16(fix16_ceil(self.0))
+    pub fn ceil(self) -> fix32 {
+        fix32(fix32_ceil(self.0))
     }
-    pub fn round(self) -> fix16 {
-        fix16(fix16_round(self.0))
+    pub fn round(self) -> fix32 {
+        fix32(fix32_round(self.0))
     }
     /// Truncate toward zero.
-    pub fn trunc(self) -> fix16 {
-        fix16(fix16_trunc(self.0))
+    pub fn trunc(self) -> fix32 {
+        fix32(fix32_trunc(self.0))
     }
     /// Clamp to `[0.0, 1.0]`; a host helper only (v2 has no SAT01 subop).
-    pub fn sat01(self) -> fix16 {
-        fix16(self.0.clamp(0, 1 << FIX16_FRACTION_BITS))
+    pub fn sat01(self) -> fix32 {
+        fix32(self.0.clamp(0, 1 << FIX32_FRACTION_BITS))
     }
     /// `-1.0`, `0.0` or `1.0`; a host helper only (v2 has no SIGN subop).
-    pub fn sign(self) -> fix16 {
-        fix16(match self.0.cmp(&0) {
-            std::cmp::Ordering::Less => -(1 << FIX16_FRACTION_BITS),
+    pub fn sign(self) -> fix32 {
+        fix32(match self.0.cmp(&0) {
+            std::cmp::Ordering::Less => -(1 << FIX32_FRACTION_BITS),
             std::cmp::Ordering::Equal => 0,
-            std::cmp::Ordering::Greater => 1 << FIX16_FRACTION_BITS,
+            std::cmp::Ordering::Greater => 1 << FIX32_FRACTION_BITS,
         })
     }
 }
 
-impl std::ops::Add for fix16 {
-    type Output = fix16;
-    fn add(self, rhs: fix16) -> fix16 {
-        fix16(self.0.wrapping_add(rhs.0))
+impl std::ops::Add for fix32 {
+    type Output = fix32;
+    fn add(self, rhs: fix32) -> fix32 {
+        fix32(self.0.wrapping_add(rhs.0))
     }
 }
-impl std::ops::Sub for fix16 {
-    type Output = fix16;
-    fn sub(self, rhs: fix16) -> fix16 {
-        fix16(self.0.wrapping_sub(rhs.0))
+impl std::ops::Sub for fix32 {
+    type Output = fix32;
+    fn sub(self, rhs: fix32) -> fix32 {
+        fix32(self.0.wrapping_sub(rhs.0))
     }
 }
-impl std::ops::Mul for fix16 {
-    type Output = fix16;
-    fn mul(self, rhs: fix16) -> fix16 {
-        fix16(fix16_mul(self.0, rhs.0))
+impl std::ops::Mul for fix32 {
+    type Output = fix32;
+    fn mul(self, rhs: fix32) -> fix32 {
+        fix32(fix32_mul(self.0, rhs.0))
     }
 }
-impl std::ops::Neg for fix16 {
-    type Output = fix16;
-    fn neg(self) -> fix16 {
-        fix16(fix16_neg(self.0))
+impl std::ops::Neg for fix32 {
+    type Output = fix32;
+    fn neg(self) -> fix32 {
+        fix32(fix32_neg(self.0))
     }
 }
 
@@ -445,46 +446,46 @@ macro_rules! fpu_vec {
     ($name:ident, $lanes:expr) => {
         #[allow(non_camel_case_types)]
         #[derive(Copy, Clone, PartialEq, Debug, Default)]
-        pub struct $name(pub [fix16; 4]);
+        pub struct $name(pub [fix32; 4]);
 
         #[allow(non_camel_case_types)]
         impl $name {
             pub fn zero() -> $name {
-                $name([fix16(0); 4])
+                $name([fix32(0); 4])
             }
             fn map(self, f: fn(i32) -> i32) -> $name {
-                let mut lanes = [fix16(0); 4];
+                let mut lanes = [fix32(0); 4];
                 for (i, lane) in lanes.iter_mut().enumerate().take($lanes) {
-                    *lane = fix16(f(self.0[i].0));
+                    *lane = fix32(f(self.0[i].0));
                 }
                 $name(lanes)
             }
-            pub fn x(self) -> fix16 {
+            pub fn x(self) -> fix32 {
                 self.0[0]
             }
             pub fn abs(self) -> $name {
-                self.map(fix16_abs)
+                self.map(fix32_abs)
             }
             pub fn floor(self) -> $name {
-                self.map(fix16_floor)
+                self.map(fix32_floor)
             }
             pub fn ceil(self) -> $name {
-                self.map(fix16_ceil)
+                self.map(fix32_ceil)
             }
             pub fn round(self) -> $name {
-                self.map(fix16_round)
+                self.map(fix32_round)
             }
             pub fn trunc(self) -> $name {
-                self.map(fix16_trunc)
+                self.map(fix32_trunc)
             }
             pub fn sat01(self) -> $name {
-                self.map(|v| v.clamp(0, 1 << FIX16_FRACTION_BITS))
+                self.map(|v| v.clamp(0, 1 << FIX32_FRACTION_BITS))
             }
             pub fn sign(self) -> $name {
                 self.map(|v| match v.cmp(&0) {
-                    std::cmp::Ordering::Less => -(1 << FIX16_FRACTION_BITS),
+                    std::cmp::Ordering::Less => -(1 << FIX32_FRACTION_BITS),
                     std::cmp::Ordering::Equal => 0,
-                    std::cmp::Ordering::Greater => 1 << FIX16_FRACTION_BITS,
+                    std::cmp::Ordering::Greater => 1 << FIX32_FRACTION_BITS,
                 })
             }
         }
@@ -492,7 +493,7 @@ macro_rules! fpu_vec {
         impl std::ops::Add for $name {
             type Output = $name;
             fn add(self, rhs: $name) -> $name {
-                let mut lanes = [fix16(0); 4];
+                let mut lanes = [fix32(0); 4];
                 for i in 0..$lanes {
                     lanes[i] = self.0[i] + rhs.0[i];
                 }
@@ -502,7 +503,7 @@ macro_rules! fpu_vec {
         impl std::ops::Sub for $name {
             type Output = $name;
             fn sub(self, rhs: $name) -> $name {
-                let mut lanes = [fix16(0); 4];
+                let mut lanes = [fix32(0); 4];
                 for i in 0..$lanes {
                     lanes[i] = self.0[i] - rhs.0[i];
                 }
@@ -512,24 +513,24 @@ macro_rules! fpu_vec {
         impl std::ops::Mul for $name {
             type Output = $name;
             fn mul(self, rhs: $name) -> $name {
-                let mut lanes = [fix16(0); 4];
+                let mut lanes = [fix32(0); 4];
                 for i in 0..$lanes {
                     lanes[i] = self.0[i] * rhs.0[i];
                 }
                 $name(lanes)
             }
         }
-        impl std::ops::Mul<fix16> for $name {
+        impl std::ops::Mul<fix32> for $name {
             type Output = $name;
-            fn mul(self, rhs: fix16) -> $name {
-                let mut lanes = [fix16(0); 4];
+            fn mul(self, rhs: fix32) -> $name {
+                let mut lanes = [fix32(0); 4];
                 for i in 0..$lanes {
                     lanes[i] = self.0[i] * rhs;
                 }
                 $name(lanes)
             }
         }
-        impl std::ops::Mul<$name> for fix16 {
+        impl std::ops::Mul<$name> for fix32 {
             type Output = $name;
             fn mul(self, rhs: $name) -> $name {
                 rhs * self
@@ -538,7 +539,7 @@ macro_rules! fpu_vec {
         impl std::ops::Neg for $name {
             type Output = $name;
             fn neg(self) -> $name {
-                self.map(fix16_neg)
+                self.map(fix32_neg)
             }
         }
     };
@@ -550,47 +551,47 @@ fpu_vec!(vec4, 4);
 
 #[allow(non_camel_case_types)]
 impl vec2 {
-    pub fn new(x: fix16, y: fix16) -> vec2 {
-        vec2([x, y, fix16(0), fix16(0)])
+    pub fn new(x: fix32, y: fix32) -> vec2 {
+        vec2([x, y, fix32(0), fix32(0)])
     }
-    pub fn y(self) -> fix16 {
+    pub fn y(self) -> fix32 {
         self.0[1]
     }
 }
 
 #[allow(non_camel_case_types)]
 impl vec3 {
-    pub fn new(x: fix16, y: fix16, z: fix16) -> vec3 {
-        vec3([x, y, z, fix16(0)])
+    pub fn new(x: fix32, y: fix32, z: fix32) -> vec3 {
+        vec3([x, y, z, fix32(0)])
     }
-    pub fn y(self) -> fix16 {
+    pub fn y(self) -> fix32 {
         self.0[1]
     }
-    pub fn z(self) -> fix16 {
+    pub fn z(self) -> fix32 {
         self.0[2]
     }
 }
 
 #[allow(non_camel_case_types)]
 impl vec4 {
-    pub fn new(x: fix16, y: fix16, z: fix16, w: fix16) -> vec4 {
+    pub fn new(x: fix32, y: fix32, z: fix32, w: fix32) -> vec4 {
         vec4([x, y, z, w])
     }
-    pub fn y(self) -> fix16 {
+    pub fn y(self) -> fix32 {
         self.0[1]
     }
-    pub fn z(self) -> fix16 {
+    pub fn z(self) -> fix32 {
         self.0[2]
     }
-    pub fn w(self) -> fix16 {
+    pub fn w(self) -> fix32 {
         self.0[3]
     }
     /// Load four consecutive Q16.16 values, two little-endian words each,
     /// low half first (`FLDV4`).
     pub fn import(ptr: Ptr) -> vec4 {
-        let mut lanes = [fix16(0); 4];
+        let mut lanes = [fix32(0); 4];
         for (i, lane) in lanes.iter_mut().enumerate() {
-            *lane = fix16::from_words(ptr.read(2 * i as i16), ptr.read(2 * i as i16 + 1));
+            *lane = fix32::from_words(ptr.read(2 * i as i16), ptr.read(2 * i as i16 + 1));
         }
         vec4(lanes)
     }
@@ -631,12 +632,12 @@ impl_fdot!(vec4, 4);
 
 /// Dot product through the wide Q32.32 accumulator, narrowed once to Q16.16
 /// (`DOTSTORE`). Each product is exact; accumulation keeps the low 64 bits.
-pub fn fdot<T: Fdot>(a: T, b: T) -> fix16 {
-    fix16((a.dot_terms(b) >> FIX16_FRACTION_BITS) as i32)
+pub fn fdot<T: Fdot>(a: T, b: T) -> fix32 {
+    fix32((a.dot_terms(b) >> FIX32_FRACTION_BITS) as i32)
 }
 
-// The special-function declarations below are target intrinsics: C3 lowers
-// them to the two-word FPU v2 special subops (`RCP`, `RSQRT`, and `SINCOS`
+// The special-function declarations below are target intrinsics lowered to
+// the two-word FPU v2 special subops (`RCP`, `RSQRT`, and `SINCOS`
 // modes 00/01/10), so `fsin`/`fcos` reuse the same `SINCOS` encoding as
 // `fsincos`. The bit-exact reference model (and its hidden BSRAM tables) lives
 // in the CPU V3 architecture crate. The host cannot reproduce it without
@@ -644,28 +645,28 @@ pub fn fdot<T: Fdot>(a: T, b: T) -> fix16 {
 // the other target-only intrinsics.
 
 /// Target special function `Fd = rcp(Fa)` (`SCALAR` subop `0x0C`).
-pub fn frcp(_x: fix16) -> fix16 {
+pub fn frcp(_x: fix32) -> fix32 {
     unimplemented!("frcp is a target FPU special function without a host model")
 }
 
 /// Target special function `Fd = rsqrt(Fa)` (`SCALAR` subop `0x0D`).
-pub fn frsqrt(_x: fix16) -> fix16 {
+pub fn frsqrt(_x: fix32) -> fix32 {
     unimplemented!("frsqrt is a target FPU special function without a host model")
 }
 
 /// Target special function `Fd = sin(Fa)` (`SINCOS` mode `01`).
-pub fn fsin(_x: fix16) -> fix16 {
+pub fn fsin(_x: fix32) -> fix32 {
     unimplemented!("fsin is a target FPU special function without a host model")
 }
 
 /// Target special function `Fd = cos(Fa)` (`SINCOS` mode `10`).
-pub fn fcos(_x: fix16) -> fix16 {
+pub fn fcos(_x: fix32) -> fix32 {
     unimplemented!("fcos is a target FPU special function without a host model")
 }
 
 /// Target special function `Fd = sin(Fa)`, `Fd+1 = cos(Fa)` (`SINCOS` mode
 /// `00`); the pair is a contiguous `vec2` over two adjacent F registers.
-pub fn fsincos(_x: fix16) -> vec2 {
+pub fn fsincos(_x: fix32) -> vec2 {
     unimplemented!("fsincos is a target FPU special function without a host model")
 }
 
@@ -690,16 +691,16 @@ pub const V3_DISTANCE_GT_CHECKED_DIFFERENCE_HALT: u16 = 4;
 
 /// Raw Q16.16 inclusive component bound `[-104, +104]` of the checked
 /// `v3_length2`/`v3_normalize` contract.
-pub const V3_GEOMETRY_COMPONENT_LIMIT_Q16: i32 = 104 << FIX16_FRACTION_BITS;
+pub const V3_GEOMETRY_COMPONENT_LIMIT_Q16: i32 = 104 << FIX32_FRACTION_BITS;
 /// Raw Q16.16 inclusive lower input bound `-16384` of the checked distance
 /// contract.
-pub const V3_GEOMETRY_DISTANCE_INPUT_MIN_Q16: i32 = -16384 << FIX16_FRACTION_BITS;
+pub const V3_GEOMETRY_DISTANCE_INPUT_MIN_Q16: i32 = -16384 << FIX32_FRACTION_BITS;
 /// Raw Q16.16 inclusive upper input bound `+16383` of the checked distance
 /// contract.
-pub const V3_GEOMETRY_DISTANCE_INPUT_MAX_Q16: i32 = 16383 << FIX16_FRACTION_BITS;
+pub const V3_GEOMETRY_DISTANCE_INPUT_MAX_Q16: i32 = 16383 << FIX32_FRACTION_BITS;
 
 /// The squared length `|v|^2`: one `DOTSTORE` of `v` with itself.
-pub fn v3_length2(_v: vec3) -> fix16 {
+pub fn v3_length2(_v: vec3) -> fix32 {
     unimplemented!("v3_length2 is a target FPU v2 library lowering")
 }
 
@@ -712,14 +713,14 @@ pub fn v3_normalize(_v: vec3) -> vec3 {
 /// The approximate ordinary distance `|a - b|`: `VSUB`, one `DOTSTORE` of the
 /// difference, `s * RSQRT(s)`, then the scalar `CMP` against the ordinary
 /// Q16.16 `threshold`.
-pub fn v3_distance_gt(_a: vec3, _b: vec3, _threshold: fix16) -> bool {
+pub fn v3_distance_gt(_a: vec3, _b: vec3, _threshold: fix32) -> bool {
     unimplemented!("v3_distance_gt is a target FPU v2 library lowering")
 }
 
 /// [`v3_length2`] with the small-range precondition checked: every component
 /// must be inclusively within `[-104, +104]` Q16.16, otherwise it halts with
 /// [`V3_LENGTH2_CHECKED_HALT`]. It never silently wraps a length.
-pub fn v3_length2_checked(_v: vec3) -> fix16 {
+pub fn v3_length2_checked(_v: vec3) -> fix32 {
     unimplemented!("v3_length2_checked is a target FPU v2 library lowering")
 }
 
@@ -734,6 +735,6 @@ pub fn v3_normalize_checked(_v: vec3) -> vec3 {
 /// [`V3_DISTANCE_GT_CHECKED_INPUT_HALT`]), then every difference component
 /// within `[-104, +104]` (otherwise
 /// [`V3_DISTANCE_GT_CHECKED_DIFFERENCE_HALT`]).
-pub fn v3_distance_gt_checked(_a: vec3, _b: vec3, _threshold: fix16) -> bool {
+pub fn v3_distance_gt_checked(_a: vec3, _b: vec3, _threshold: fix32) -> bool {
     unimplemented!("v3_distance_gt_checked is a target FPU v2 library lowering")
 }

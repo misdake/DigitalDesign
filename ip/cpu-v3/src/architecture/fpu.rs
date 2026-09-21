@@ -21,11 +21,11 @@ use std::cmp::Ordering;
 pub use super::fpu_lut::{rcp_q16, rsqrt_q16, sincos_q16};
 
 /// Fractional bits of an architectural F register.
-pub const FIX16_FRACTION_BITS: u32 = 16;
+pub const FIX32_FRACTION_BITS: u32 = 16;
 /// Raw Q16.16 encoding of `1.0`.
-pub const FIX16_ONE: i32 = 1 << FIX16_FRACTION_BITS;
+pub const FIX32_ONE: i32 = 1 << FIX32_FRACTION_BITS;
 /// One half unit in the last place, the round-half-up bias (`floor(x + 0.5)`).
-pub const FIX16_HALF: i32 = 1 << (FIX16_FRACTION_BITS - 1);
+pub const FIX32_HALF: i32 = 1 << (FIX32_FRACTION_BITS - 1);
 
 /// Number of architectural F registers (`F0..F63`).
 pub const FPU_REGISTER_COUNT: usize = 64;
@@ -33,86 +33,86 @@ pub const FPU_REGISTER_COUNT: usize = 64;
 pub const FPU_ACC_BITS: u32 = 64;
 
 /// Wrapping Q16.16 addition.
-pub fn fix16_add(a: i32, b: i32) -> i32 {
+pub fn fix32_add(a: i32, b: i32) -> i32 {
     a.wrapping_add(b)
 }
 
 /// Wrapping Q16.16 subtraction.
-pub fn fix16_sub(a: i32, b: i32) -> i32 {
+pub fn fix32_sub(a: i32, b: i32) -> i32 {
     a.wrapping_sub(b)
 }
 
-/// Wrapping Q16.16 negation; `FIX16_MIN` maps to itself.
-pub fn fix16_neg(a: i32) -> i32 {
+/// Wrapping Q16.16 negation; `i32::MIN` maps to itself.
+pub fn fix32_neg(a: i32) -> i32 {
     a.wrapping_neg()
 }
 
-/// Wrapping Q16.16 absolute value; `FIX16_MIN` maps to itself, exactly as the
+/// Wrapping Q16.16 absolute value; `i32::MIN` maps to itself, exactly as the
 /// scalar ALU's `0 - a` does.
-pub fn fix16_abs(a: i32) -> i32 {
+pub fn fix32_abs(a: i32) -> i32 {
     a.wrapping_abs()
 }
 
 /// Q16.16 multiply: the full signed 64-bit product narrowed at bit 16, which is
 /// the RTL's `product[47:16]` write port.
-pub fn fix16_mul(a: i32, b: i32) -> i32 {
-    ((i64::from(a) * i64::from(b)) >> FIX16_FRACTION_BITS) as i32
+pub fn fix32_mul(a: i32, b: i32) -> i32 {
+    ((i64::from(a) * i64::from(b)) >> FIX32_FRACTION_BITS) as i32
 }
 
 /// Clears the 16 fractional bits, i.e. rounds toward negative infinity.
-pub fn fix16_floor(a: i32) -> i32 {
+pub fn fix32_floor(a: i32) -> i32 {
     a & !0xffff
 }
 
 /// Mathematical ceiling: the floor plus one when a fraction remains.
-pub fn fix16_ceil(a: i32) -> i32 {
+pub fn fix32_ceil(a: i32) -> i32 {
     if a & 0xffff == 0 {
         a
     } else {
-        fix16_floor(a).wrapping_add(FIX16_ONE)
+        fix32_floor(a).wrapping_add(FIX32_ONE)
     }
 }
 
 /// Round-half-up (ties toward `+infinity`): `floor(x + 0x8000)`.
-pub fn fix16_round(a: i32) -> i32 {
-    a.wrapping_add(FIX16_HALF) & !0xffff
+pub fn fix32_round(a: i32) -> i32 {
+    a.wrapping_add(FIX32_HALF) & !0xffff
 }
 
 /// Truncation toward zero.
-pub fn fix16_trunc(a: i32) -> i32 {
+pub fn fix32_trunc(a: i32) -> i32 {
     if a < 0 {
-        fix16_ceil(a)
+        fix32_ceil(a)
     } else {
-        fix16_floor(a)
+        fix32_floor(a)
     }
 }
 
 /// Signed Q16.16 ordering.
-pub fn fix16_compare(a: i32, b: i32) -> Ordering {
+pub fn fix32_compare(a: i32, b: i32) -> Ordering {
     a.cmp(&b)
 }
 
 /// Adds one exact Q16.16 product to the wide accumulator, keeping the low 64
 /// bits (`Q32.32` wrap), exactly as the RTL accumulate does.
-pub fn fix16_accumulate_product(acc: i64, a: i32, b: i32) -> i64 {
+pub fn fix32_accumulate_product(acc: i64, a: i32, b: i32) -> i64 {
     acc.wrapping_add(i64::from(a).wrapping_mul(i64::from(b)))
 }
 
 /// Narrows the wide accumulator to Q16.16, taking `ACC[47:16]` as the RTL
 /// `DOTSTORE` write port does.
-pub fn fix16_from_acc(acc: i64) -> i32 {
-    (acc >> FIX16_FRACTION_BITS) as i32
+pub fn fix32_from_acc(acc: i64) -> i32 {
+    (acc >> FIX32_FRACTION_BITS) as i32
 }
 
 /// Sign-extends a 16-bit integer into a Q16.16 value (`I16TOF`).
-pub fn fix16_from_i16(value: i16) -> i32 {
-    i32::from(value) << FIX16_FRACTION_BITS
+pub fn fix32_from_i16(value: i16) -> i32 {
+    i32::from(value) << FIX32_FRACTION_BITS
 }
 
 /// Converts a Q16.16 value to a 16-bit integer by truncating toward zero
 /// (`FTOI16`); the result wraps on overflow.
-pub fn fix16_to_i16(value: i32) -> i16 {
-    (fix16_trunc(value) >> FIX16_FRACTION_BITS) as i16
+pub fn fix32_to_i16(value: i32) -> i16 {
+    (fix32_trunc(value) >> FIX32_FRACTION_BITS) as i16
 }
 
 /// A `vec3` of Q16.16 components, the operand shape of the v3 geometry
@@ -125,16 +125,16 @@ pub type FpuVec3 = [i32; 3];
 pub const V3_GEOMETRY_COMPONENT_LIMIT: i32 = 104;
 
 /// Raw Q16.16 encoding of [`V3_GEOMETRY_COMPONENT_LIMIT`].
-pub const V3_GEOMETRY_COMPONENT_LIMIT_Q16: i32 = V3_GEOMETRY_COMPONENT_LIMIT << FIX16_FRACTION_BITS;
+pub const V3_GEOMETRY_COMPONENT_LIMIT_Q16: i32 = V3_GEOMETRY_COMPONENT_LIMIT << FIX32_FRACTION_BITS;
 
 /// Inclusive lower input-component bound of the checked distance contract,
 /// `-16384` Q16.16: together with the upper bound this keeps a raw subtraction
 /// inside `i32`.
-pub const V3_GEOMETRY_DISTANCE_INPUT_MIN_Q16: i32 = -16384 << FIX16_FRACTION_BITS;
+pub const V3_GEOMETRY_DISTANCE_INPUT_MIN_Q16: i32 = -16384 << FIX32_FRACTION_BITS;
 
 /// Inclusive upper input-component bound of the checked distance contract,
 /// `+16383` Q16.16; see [`V3_GEOMETRY_DISTANCE_INPUT_MIN_Q16`].
-pub const V3_GEOMETRY_DISTANCE_INPUT_MAX_Q16: i32 = 16383 << FIX16_FRACTION_BITS;
+pub const V3_GEOMETRY_DISTANCE_INPUT_MAX_Q16: i32 = 16383 << FIX32_FRACTION_BITS;
 
 /// Fixed nonzero halt signal of [`v3_length2_checked`] on a violated range.
 pub const V3_LENGTH2_CHECKED_HALT: u16 = 1;
@@ -156,7 +156,7 @@ fn vec3_in_range(v: FpuVec3, min: i32, max: i32) -> bool {
         .all(|&component| component_in_range(component, min, max))
 }
 
-/// `v3_length2(vec3) -> fix16`: the squared length computed by one `DOTSTORE`
+/// `v3_length2(vec3) -> fix32`: the squared length computed by one `DOTSTORE`
 /// of `v` with itself. Under the small-range contract (every component in
 /// `[-104, +104]` Q16.16) the narrowed accumulator stays inside `i32`; outside
 /// it the wide accumulator wraps exactly as the hardware does, so the result is
@@ -164,9 +164,9 @@ fn vec3_in_range(v: FpuVec3, min: i32, max: i32) -> bool {
 pub fn v3_length2(v: FpuVec3) -> i32 {
     let mut acc = 0_i64;
     for component in v {
-        acc = fix16_accumulate_product(acc, component, component);
+        acc = fix32_accumulate_product(acc, component, component);
     }
-    fix16_from_acc(acc)
+    fix32_from_acc(acc)
 }
 
 /// `v3_normalize(vec3) -> vec3`: `DOTSTORE`, `RSQRT`, then `VMULS` of the
@@ -176,25 +176,25 @@ pub fn v3_length2(v: FpuVec3) -> i32 {
 pub fn v3_normalize(v: FpuVec3) -> FpuVec3 {
     let inverse = rsqrt_q16(v3_length2(v));
     [
-        fix16_mul(v[0], inverse),
-        fix16_mul(v[1], inverse),
-        fix16_mul(v[2], inverse),
+        fix32_mul(v[0], inverse),
+        fix32_mul(v[1], inverse),
+        fix32_mul(v[2], inverse),
     ]
 }
 
-/// `v3_distance_gt(vec3, vec3, fix16) -> bool`: `VSUB`, one `DOTSTORE` of the
+/// `v3_distance_gt(vec3, vec3, fix32) -> bool`: `VSUB`, one `DOTSTORE` of the
 /// difference, then the ordinary distance approximated as `s * RSQRT(s)` and
 /// compared with the ordinary Q16.16 `threshold` through the scalar `CMP`.
 /// `RSQRT(0) == 0`, so equal points have distance zero. The `RSQRT`/`MUL`
 /// approximation makes the boundary approximate rather than exact.
 pub fn v3_distance_gt(a: FpuVec3, b: FpuVec3, threshold: i32) -> bool {
     let difference = [
-        fix16_sub(a[0], b[0]),
-        fix16_sub(a[1], b[1]),
-        fix16_sub(a[2], b[2]),
+        fix32_sub(a[0], b[0]),
+        fix32_sub(a[1], b[1]),
+        fix32_sub(a[2], b[2]),
     ];
     let squared = v3_length2(difference);
-    fix16_mul(squared, rsqrt_q16(squared)) > threshold
+    fix32_mul(squared, rsqrt_q16(squared)) > threshold
 }
 
 /// [`v3_length2`] with its small-range precondition checked: every component
@@ -241,9 +241,9 @@ pub fn v3_distance_gt_checked(a: FpuVec3, b: FpuVec3, threshold: i32) -> Result<
         return Err(V3_DISTANCE_GT_CHECKED_INPUT_HALT);
     }
     let difference = [
-        fix16_sub(a[0], b[0]),
-        fix16_sub(a[1], b[1]),
-        fix16_sub(a[2], b[2]),
+        fix32_sub(a[0], b[0]),
+        fix32_sub(a[1], b[1]),
+        fix32_sub(a[2], b[2]),
     ];
     let limit = V3_GEOMETRY_COMPONENT_LIMIT_Q16;
     if !vec3_in_range(difference, -limit, limit) {
@@ -258,53 +258,53 @@ mod tests {
 
     #[test]
     fn arithmetic_wraps_instead_of_saturating() {
-        assert_eq!(fix16_add(i32::MAX, 1), i32::MIN);
-        assert_eq!(fix16_sub(i32::MIN, 1), i32::MAX);
-        assert_eq!(fix16_neg(i32::MIN), i32::MIN);
-        assert_eq!(fix16_abs(i32::MIN), i32::MIN);
+        assert_eq!(fix32_add(i32::MAX, 1), i32::MIN);
+        assert_eq!(fix32_sub(i32::MIN, 1), i32::MAX);
+        assert_eq!(fix32_neg(i32::MIN), i32::MIN);
+        assert_eq!(fix32_abs(i32::MIN), i32::MIN);
     }
 
     #[test]
     fn multiplication_narrows_the_full_product_at_bit_16() {
         // 1.5 * 2.0 = 3.0
-        assert_eq!(fix16_mul(FIX16_ONE + 0x8000, 2 * FIX16_ONE), 3 * FIX16_ONE);
+        assert_eq!(fix32_mul(FIX32_ONE + 0x8000, 2 * FIX32_ONE), 3 * FIX32_ONE);
         // 1.5 * 1.5 = 2.25
-        assert_eq!(fix16_mul(FIX16_ONE + 0x8000, FIX16_ONE + 0x8000), 0x2_4000);
+        assert_eq!(fix32_mul(FIX32_ONE + 0x8000, FIX32_ONE + 0x8000), 0x2_4000);
         // The most negative product keeps the RTL `product[47:16]` slice.
-        assert_eq!(fix16_mul(i32::MIN, FIX16_ONE), i32::MIN);
+        assert_eq!(fix32_mul(i32::MIN, FIX32_ONE), i32::MIN);
     }
 
     #[test]
     fn rounding_family_matches_the_frozen_rules() {
-        assert_eq!(fix16_floor(0x1_8000), 0x1_0000);
-        assert_eq!(fix16_floor(-0x1_8000), -0x2_0000);
-        assert_eq!(fix16_ceil(0x1_8000), 0x2_0000);
-        assert_eq!(fix16_ceil(-0x1_8000), -0x1_0000);
-        assert_eq!(fix16_ceil(-0x1_0000), -0x1_0000);
+        assert_eq!(fix32_floor(0x1_8000), 0x1_0000);
+        assert_eq!(fix32_floor(-0x1_8000), -0x2_0000);
+        assert_eq!(fix32_ceil(0x1_8000), 0x2_0000);
+        assert_eq!(fix32_ceil(-0x1_8000), -0x1_0000);
+        assert_eq!(fix32_ceil(-0x1_0000), -0x1_0000);
         // Ties round toward +infinity.
-        assert_eq!(fix16_round(0x1_8000), 0x2_0000);
-        assert_eq!(fix16_round(-0x1_8000), -0x1_0000);
-        assert_eq!(fix16_trunc(0x1_8000), 0x1_0000);
-        assert_eq!(fix16_trunc(-0x1_8000), -0x1_0000);
+        assert_eq!(fix32_round(0x1_8000), 0x2_0000);
+        assert_eq!(fix32_round(-0x1_8000), -0x1_0000);
+        assert_eq!(fix32_trunc(0x1_8000), 0x1_0000);
+        assert_eq!(fix32_trunc(-0x1_8000), -0x1_0000);
     }
 
     #[test]
     fn accumulator_wraps_at_64_bits_and_narrows_at_bit_16() {
         let mut acc = 0_i64;
         for _ in 0..4 {
-            acc = fix16_accumulate_product(acc, i32::MIN, i32::MIN);
+            acc = fix32_accumulate_product(acc, i32::MIN, i32::MIN);
         }
         // 4 * 2^62 == 2^64, kept modulo 2^64.
         assert_eq!(acc, 0);
-        assert_eq!(fix16_from_acc(1_i64 << 47), 1 << 31);
+        assert_eq!(fix32_from_acc(1_i64 << 47), 1 << 31);
     }
 
     #[test]
     fn integer_bridges_are_raw_half_moves_and_truncating_conversions() {
-        assert_eq!(fix16_from_i16(-3), -3 * FIX16_ONE);
-        assert_eq!(fix16_to_i16(3 * FIX16_ONE + 0x8000), 3);
-        assert_eq!(fix16_to_i16(-(3 * FIX16_ONE) - 0x8000), -3);
-        assert_eq!(fix16_to_i16(i32::MIN), i16::MIN);
+        assert_eq!(fix32_from_i16(-3), -3 * FIX32_ONE);
+        assert_eq!(fix32_to_i16(3 * FIX32_ONE + 0x8000), 3);
+        assert_eq!(fix32_to_i16(-(3 * FIX32_ONE) - 0x8000), -3);
+        assert_eq!(fix32_to_i16(i32::MIN), i16::MIN);
     }
 
     #[test]
@@ -315,7 +315,7 @@ mod tests {
         // At the checked bound the narrowed accumulator is still inside i32.
         let at_bound = [104 << 16, 104 << 16, 104 << 16];
         let exact =
-            ((3_i64 * i64::from(104 << 16) * i64::from(104 << 16)) >> FIX16_FRACTION_BITS) as i32;
+            ((3_i64 * i64::from(104 << 16) * i64::from(104 << 16)) >> FIX32_FRACTION_BITS) as i32;
         assert_eq!(v3_length2(at_bound), exact);
         assert!(v3_length2(at_bound) > 0);
     }
@@ -328,9 +328,9 @@ mod tests {
         assert_eq!(
             v3_normalize(v),
             [
-                fix16_mul(v[0], inverse),
-                fix16_mul(v[1], inverse),
-                fix16_mul(v[2], inverse)
+                fix32_mul(v[0], inverse),
+                fix32_mul(v[1], inverse),
+                fix32_mul(v[2], inverse)
             ]
         );
         // Signs are preserved and the magnitude is ~1.0.
