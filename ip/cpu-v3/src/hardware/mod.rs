@@ -627,7 +627,8 @@ impl Module for CpuV3FpuV2ScalarPath {
         let subop = ((word1 >> 4) & 0x3F) as u8;
         let fd = (word1 >> 10) & 0x3F;
         let is_cmp = subop == 0x0B;
-        let load_now = input.instr_complete && input.instr_opcode == 0xD;
+        // MUL (subop 0x02) is owned by the multiply path; never fire here.
+        let load_now = input.instr_complete && input.instr_opcode == 0xD && subop != 0x02;
         state.write_enable = load_now && !is_cmp;
         if load_now {
             let (result, lt, eq, gt) = Self::EmuState::alu(
@@ -660,6 +661,246 @@ impl Module for CpuV3FpuV2ScalarPath {
 
     fn verilog_testbench() -> Option<String> {
         Some(include_str!("cpu_v3_fpu_v2_scalar_path_tb.v").to_string())
+    }
+}
+
+#[derive(Clone, ModuleIo)]
+pub struct CpuV3FpuV2VectorPathInput {
+    pub abort: Wire,
+    pub instr_complete: Wire,
+    pub instr_opcode: Wires<4>,
+    pub word1_raw: Wires<16>,
+    pub base_a: Wires<6>,
+    pub base_b: Wires<6>,
+    pub rf_read_a_data: Wires<32>,
+    pub rf_read_b_data: Wires<32>,
+}
+
+#[derive(Clone, ModuleIo)]
+pub struct CpuV3FpuV2VectorPathOutput {
+    pub rf_read_a_address: Wires<9>,
+    pub rf_read_b_address: Wires<9>,
+    pub rf_write_enable: Wire,
+    pub rf_write_address: Wires<9>,
+    pub rf_write_data: Wires<32>,
+    pub busy: Wire,
+}
+
+/// FPU v2 vector execution path (opcode 0xC): one lane per cycle through
+/// the shared combinational scalar ALU. Emu lives in the unit top
+/// (CpuV3FpuV2State); this leaf is verified through its Verilog testbench.
+pub struct CpuV3FpuV2VectorPath;
+
+impl HardwareIdentity for CpuV3FpuV2VectorPath {
+    const TARGET_RESOURCE_LEAF: bool = false;
+
+    fn verilog_identity() -> VerilogIdentity {
+        VerilogIdentity::new("CpuV3FpuV2VectorPath").namespace(["components", "cpu", "cpu_v3"])
+    }
+}
+
+impl Module for CpuV3FpuV2VectorPath {
+    type Input = CpuV3FpuV2VectorPathInput;
+    type Output = CpuV3FpuV2VectorPathOutput;
+    type EmuState = ();
+
+    const USES_MAIN_CLOCK: bool = true;
+    const EMU_AVAILABLE: bool = false;
+
+    fn verilog_source() -> Option<String> {
+        Some(include_str!("cpu_v3_fpu_v2_vector_path.v").to_string())
+    }
+
+    fn verilog_dependencies() -> Vec<VerilogDependency> {
+        vec![VerilogDependency::new::<CpuV3FpuV2ScalarAlu>("vector_alu")]
+    }
+
+    fn verilog_testbench() -> Option<String> {
+        Some(include_str!("cpu_v3_fpu_v2_vector_path_tb.v").to_string())
+    }
+}
+
+#[derive(Clone, ModuleIo)]
+pub struct CpuV3FpuV2MultiplyPathInput {
+    pub abort: Wire,
+    pub instr_complete: Wire,
+    pub instr_opcode: Wires<4>,
+    pub word1_raw: Wires<16>,
+    pub base_a: Wires<6>,
+    pub base_b: Wires<6>,
+    pub rf_read_a_data: Wires<32>,
+    pub rf_read_b_data: Wires<32>,
+    pub mul_out_valid: Wire,
+    pub mul_out_product: Wires<64>,
+    pub mul_out_tag: Wires<9>,
+}
+
+#[derive(Clone, ModuleIo)]
+pub struct CpuV3FpuV2MultiplyPathOutput {
+    pub mul_in_valid: Wire,
+    pub mul_in_a: Wires<32>,
+    pub mul_in_b: Wires<32>,
+    pub mul_in_tag: Wires<9>,
+    pub rf_read_a_address: Wires<9>,
+    pub rf_read_b_address: Wires<9>,
+    pub rf_write_enable: Wire,
+    pub rf_write_address: Wires<9>,
+    pub rf_write_data: Wires<32>,
+    pub busy: Wire,
+}
+
+/// FPU v2 multiply execution path (VMUL/VMULS/scalar MUL): one lane per
+/// cycle through an inferred 36x36 signed multiplier, three register stages,
+/// narrowing to Q16.16 at the write port. Emu lives in the unit top.
+pub struct CpuV3FpuV2MultiplyPath;
+
+impl HardwareIdentity for CpuV3FpuV2MultiplyPath {
+    const TARGET_RESOURCE_LEAF: bool = true;
+
+    fn verilog_identity() -> VerilogIdentity {
+        VerilogIdentity::new("CpuV3FpuV2MultiplyPath").namespace(["components", "cpu", "cpu_v3"])
+    }
+}
+
+impl Module for CpuV3FpuV2MultiplyPath {
+    type Input = CpuV3FpuV2MultiplyPathInput;
+    type Output = CpuV3FpuV2MultiplyPathOutput;
+    type EmuState = ();
+
+    const USES_MAIN_CLOCK: bool = true;
+    const EMU_AVAILABLE: bool = false;
+
+    // The multiplier lives in the shared CpuV3FpuV2MulPipe leaf; this
+    // controller claims nothing itself.
+    fn verilog_source() -> Option<String> {
+        Some(include_str!("cpu_v3_fpu_v2_multiply_path.v").to_string())
+    }
+
+    fn verilog_testbench() -> Option<String> {
+        Some(include_str!("cpu_v3_fpu_v2_multiply_path_tb.v").to_string())
+    }
+}
+
+#[derive(Clone, ModuleIo)]
+pub struct CpuV3FpuV2MulPipeInput {
+    pub abort: Wire,
+    pub in_valid: Wire,
+    pub in_a: Wires<32>,
+    pub in_b: Wires<32>,
+    pub in_tag: Wires<9>,
+}
+
+#[derive(Clone, ModuleIo)]
+pub struct CpuV3FpuV2MulPipeOutput {
+    pub out_valid: Wire,
+    pub out_product: Wires<64>,
+    pub out_tag: Wires<9>,
+}
+
+/// Shared FPU v2 36x36 multiply pipeline (one MULT36X36 = four 18x18 DSP
+/// lanes): three register stages, tag-carrying FIFO. The multiply and dot
+/// paths share it because the core serializes instructions. Emu lives in the
+/// unit top; this leaf is verified through its Verilog testbench.
+pub struct CpuV3FpuV2MulPipe;
+
+impl HardwareIdentity for CpuV3FpuV2MulPipe {
+    const TARGET_RESOURCE_LEAF: bool = true;
+
+    fn verilog_identity() -> VerilogIdentity {
+        VerilogIdentity::new("CpuV3FpuV2MulPipe").namespace(["components", "cpu", "cpu_v3"])
+    }
+}
+
+impl Module for CpuV3FpuV2MulPipe {
+    type Input = CpuV3FpuV2MulPipeInput;
+    type Output = CpuV3FpuV2MulPipeOutput;
+    type EmuState = ();
+
+    const USES_MAIN_CLOCK: bool = true;
+    const EMU_AVAILABLE: bool = false;
+
+    fn target_resources() -> Vec<TargetResourceRequest> {
+        vec![TargetResourceRequest::new(
+            digital_design_hardware::resources::components::DspMultipliers::new(4),
+        )]
+    }
+
+    fn verilog_source() -> Option<String> {
+        Some(include_str!("cpu_v3_fpu_v2_mul_pipe.v").to_string())
+    }
+
+    fn verilog_testbench() -> Option<String> {
+        Some(include_str!("cpu_v3_fpu_v2_mul_pipe_tb.v").to_string())
+    }
+}
+
+#[derive(Clone, ModuleIo)]
+pub struct CpuV3FpuV2DotPathInput {
+    pub abort: Wire,
+    pub instr_complete: Wire,
+    pub instr_opcode: Wires<4>,
+    pub word1_raw: Wires<16>,
+    pub base_a: Wires<6>,
+    pub base_b: Wires<6>,
+    pub rf_read_a_data: Wires<32>,
+    pub rf_read_b_data: Wires<32>,
+    pub mul_out_valid: Wire,
+    pub mul_out_product: Wires<64>,
+    pub mul_out_tag: Wires<9>,
+}
+
+#[derive(Clone, ModuleIo)]
+pub struct CpuV3FpuV2DotPathOutput {
+    pub mul_in_valid: Wire,
+    pub mul_in_a: Wires<32>,
+    pub mul_in_b: Wires<32>,
+    pub mul_in_tag: Wires<9>,
+    pub rf_read_a_address: Wires<9>,
+    pub rf_read_b_address: Wires<9>,
+    pub rf_write_enable: Wire,
+    pub rf_write_address: Wires<9>,
+    pub rf_write_data: Wires<32>,
+    pub busy: Wire,
+    pub acc_out: Wires<64>,
+}
+
+/// FPU v2 dot-product path (DOT/DOTADD/DOTSTORE, opcode 0xC): per-lane full
+/// 72-bit products accumulate into a 64-bit Q32.32 fabric ACC (LUT adder,
+/// syn_dspstyle="logic"), narrowing only at DOTSTORE. Emu lives in the unit
+/// top; this leaf is verified through its Verilog testbench.
+pub struct CpuV3FpuV2DotPath;
+
+impl HardwareIdentity for CpuV3FpuV2DotPath {
+    const TARGET_RESOURCE_LEAF: bool = true;
+
+    fn verilog_identity() -> VerilogIdentity {
+        VerilogIdentity::new("CpuV3FpuV2DotPath").namespace(["components", "cpu", "cpu_v3"])
+    }
+}
+
+impl Module for CpuV3FpuV2DotPath {
+    type Input = CpuV3FpuV2DotPathInput;
+    type Output = CpuV3FpuV2DotPathOutput;
+    type EmuState = ();
+
+    const USES_MAIN_CLOCK: bool = true;
+    const EMU_AVAILABLE: bool = false;
+
+    fn target_resources() -> Vec<TargetResourceRequest> {
+        // The 64-bit accumulate maps to a MULTADDALU18X18 macro (a full
+        // macro, two lanes) even though the multiplier moved into the shared
+        // pipe leaf; the fusion is deliberate, see the leaf's header comment.
+        vec![TargetResourceRequest::new(
+            digital_design_hardware::resources::components::DspMultipliers::new(2),
+        )]
+    }
+
+    fn verilog_source() -> Option<String> {
+        Some(include_str!("cpu_v3_fpu_v2_dot_path.v").to_string())
+    }
+
+    fn verilog_testbench() -> Option<String> {
+        Some(include_str!("cpu_v3_fpu_v2_dot_path_tb.v").to_string())
     }
 }
 
@@ -707,6 +948,49 @@ pub struct CpuV3FpuV2State {
     scalar_path: CpuV3FpuV2ScalarPathState,
     held_read_a_address: u16,
     held_read_b_address: u16,
+    vp_run: bool,
+    vp_lane: u8,
+    vp_last_lane: u8,
+    vp_base_a: u8,
+    vp_base_b: u8,
+    vp_fd: u8,
+    vp_wr_enable: bool,
+    vp_wr_address: u16,
+    vp_wr_data: u32,
+    mp_run: bool,
+    mp_lane: u8,
+    mp_last_lane: u8,
+    mp_base_a: u8,
+    mp_base_b: u8,
+    mp_is_vmuls: bool,
+    mp_waddr: u16,
+    mp_outstanding: u8,
+    dp_run: bool,
+    dp_lane: u8,
+    dp_last_lane: u8,
+    dp_base_a: u8,
+    dp_base_b: u8,
+    dp_stride: u8,
+    dp_store_mode: bool,
+    dp_acc_lane: u8,
+    dp_store: bool,
+    dp_store_addr: u16,
+    dp_store_data: u32,
+    dp_outstanding: u8,
+    dp_acc: i64,
+    // Shared multiply pipe (CpuV3FpuV2MulPipe): the only multiplier in the
+    // unit. The tag carries the multiply path's write address; the dot path
+    // tags lanes for observability.
+    pipe_s1_valid: bool,
+    pipe_s1_a: i64,
+    pipe_s1_b: i64,
+    pipe_s1_tag: u16,
+    pipe_s2_valid: bool,
+    pipe_s2_prod: i64,
+    pipe_s2_tag: u16,
+    pipe_s3_valid: bool,
+    pipe_s3_prod: i64,
+    pipe_s3_tag: u16,
 }
 
 impl Default for CpuV3FpuV2State {
@@ -721,6 +1005,46 @@ impl Default for CpuV3FpuV2State {
             scalar_path: CpuV3FpuV2ScalarPathState::default(),
             held_read_a_address: 0,
             held_read_b_address: 0,
+            vp_run: false,
+            vp_lane: 0,
+            vp_last_lane: 0,
+            vp_base_a: 0,
+            vp_base_b: 0,
+            vp_fd: 0,
+            vp_wr_enable: false,
+            vp_wr_address: 0,
+            vp_wr_data: 0,
+            mp_run: false,
+            mp_lane: 0,
+            mp_last_lane: 0,
+            mp_base_a: 0,
+            mp_base_b: 0,
+            mp_is_vmuls: false,
+            mp_waddr: 0,
+            mp_outstanding: 0,
+            dp_run: false,
+            dp_lane: 0,
+            dp_last_lane: 0,
+            dp_base_a: 0,
+            dp_base_b: 0,
+            dp_stride: 1,
+            dp_store_mode: false,
+            dp_acc_lane: 0,
+            dp_store: false,
+            dp_store_addr: 0,
+            dp_store_data: 0,
+            dp_outstanding: 0,
+            dp_acc: 0,
+            pipe_s1_valid: false,
+            pipe_s1_a: 0,
+            pipe_s1_b: 0,
+            pipe_s1_tag: 0,
+            pipe_s2_valid: false,
+            pipe_s2_prod: 0,
+            pipe_s2_tag: 0,
+            pipe_s3_valid: false,
+            pipe_s3_prod: 0,
+            pipe_s3_tag: 0,
         }
     }
 }
@@ -733,8 +1057,35 @@ impl CpuV3FpuV2State {
         let sp_load_now =
             self.frontend.instr_complete && self.frontend.instr_opcode == 0xD && !input.abort;
         let sp_w_wait = if sp_load_now { 2 } else { sp.w_count };
+        let vp_load_now = self.frontend.instr_complete
+            && self.frontend.instr_opcode == 0xC
+            && !input.abort
+            && matches!(
+                (self.frontend.word1_raw >> 3) & 0x1F,
+                0x00 | 0x01 | 0x04..=0x07 | 0x0C
+            );
+        let vp_busy = (vp_load_now || self.vp_run || self.vp_wr_enable) && !input.abort;
+        let mp_load_now = self.frontend.instr_complete
+            && !input.abort
+            && ((self.frontend.instr_opcode == 0xC
+                && matches!((self.frontend.word1_raw >> 3) & 0x1F, 0x02 | 0x03))
+                || (self.frontend.instr_opcode == 0xD
+                    && (self.frontend.word1_raw >> 4) & 0x3F == 0x02));
+        let mp_busy =
+            (mp_load_now || self.mp_run || self.mp_outstanding != 0 || self.pipe_s3_valid)
+                && !input.abort;
+        let dp_load_now = self.frontend.instr_complete
+            && !input.abort
+            && self.frontend.instr_opcode == 0xC
+            && matches!((self.frontend.word1_raw >> 3) & 0x1F, 0x0D..=0x0F);
+        let dp_busy = (dp_load_now
+            || self.dp_run
+            || self.dp_outstanding != 0
+            || self.pipe_s3_valid
+            || self.dp_store)
+            && !input.abort;
         CpuV3FpuV2OutputValue {
-            busy: sp_w_wait != 0,
+            busy: sp_w_wait != 0 || vp_busy || mp_busy || dp_busy,
             flag_lt: self.scalar_path.flag_lt,
             flag_eq: self.scalar_path.flag_eq,
             flag_gt: self.scalar_path.flag_gt,
@@ -784,6 +1135,10 @@ impl Module for CpuV3FpuV2 {
             VerilogDependency::new::<CpuV3FpuV2Frontend>("frontend"),
             VerilogDependency::new::<CpuV3FpuV2RegisterRam>("rf"),
             VerilogDependency::new::<CpuV3FpuV2ScalarPath>("scalar_path"),
+            VerilogDependency::new::<CpuV3FpuV2VectorPath>("vector_path"),
+            VerilogDependency::new::<CpuV3FpuV2MultiplyPath>("multiply_path"),
+            VerilogDependency::new::<CpuV3FpuV2DotPath>("dot_path"),
+            VerilogDependency::new::<CpuV3FpuV2MulPipe>("mul_pipe"),
         ]
     }
 
@@ -838,7 +1193,9 @@ impl CpuV3FpuV2State {
             let subop = ((word1 >> 4) & 0x3F) as u8;
             let fd = (word1 >> 10) & 0x3F;
             let is_cmp = subop == 0x0B;
-            let load_now = instr_complete_prev && state.frontend.instr_opcode == 0xD;
+            // MUL (subop 0x02) is owned by the multiply path.
+            let load_now =
+                instr_complete_prev && state.frontend.instr_opcode == 0xD && subop != 0x02;
             // read-first: the RF read registers still hold T0 operands here.
             sp.write_enable = load_now && !is_cmp;
             if load_now {
@@ -862,23 +1219,307 @@ impl CpuV3FpuV2State {
             }
         }
 
-        // Register-file updates last: reads sample the pre-write contents.
-        let rf = &mut state.rf;
-        let sp = &state.scalar_path;
-        let read_a_address = state.held_read_a_address as usize;
-        let read_b_address = if input.ext_access {
+        // Read addresses for this cycle's RF read: computed from pre-edge
+        // vector state (RTL nonblocking semantics), so they are resolved
+        // before the vector register updates below.
+        let word1_fields = state.frontend.word1_raw;
+        let vp_load_now = instr_complete_prev
+            && state.frontend.instr_opcode == 0xC
+            && matches!((word1_fields >> 3) & 0x1F, 0x00 | 0x01 | 0x04..=0x07 | 0x0C);
+        let dp_load_now = instr_complete_prev
+            && state.frontend.instr_opcode == 0xC
+            && matches!((word1_fields >> 3) & 0x1F, 0x0D..=0x0F);
+        let dp_active = dp_load_now || state.dp_run;
+        let mp_load_now = instr_complete_prev
+            && ((state.frontend.instr_opcode == 0xC
+                && matches!((word1_fields >> 3) & 0x1F, 0x02 | 0x03))
+                || (state.frontend.instr_opcode == 0xD && (word1_fields >> 4) & 0x3F == 0x02));
+        let mp_active = mp_load_now || state.mp_run;
+        let vp_active = vp_load_now || state.vp_run;
+        let read_a_address = if dp_load_now {
+            usize::from((state.frontend.word0_raw >> 6) & 0x3F)
+        } else if dp_active && state.dp_lane <= state.dp_last_lane {
+            usize::from(state.dp_base_a) + usize::from(state.dp_lane)
+        } else if dp_active {
+            0
+        } else if mp_load_now {
+            usize::from((state.frontend.word0_raw >> 6) & 0x3F)
+        } else if mp_active && state.mp_lane <= state.mp_last_lane {
+            usize::from(state.mp_base_a) + usize::from(state.mp_lane)
+        } else if mp_active {
+            0
+        } else if vp_load_now {
+            usize::from((state.frontend.word0_raw >> 6) & 0x3F)
+        } else if vp_active && state.vp_lane <= state.vp_last_lane {
+            usize::from(state.vp_base_a) + usize::from(state.vp_lane)
+        } else if vp_active {
+            0
+        } else {
+            state.held_read_a_address as usize
+        };
+        let read_b_address = if dp_load_now {
+            usize::from(state.frontend.word0_raw & 0x3F)
+        } else if dp_active && state.dp_lane <= state.dp_last_lane {
+            usize::from(state.dp_base_b) + usize::from(state.dp_lane) * usize::from(state.dp_stride)
+        } else if dp_active {
+            0
+        } else if mp_load_now {
+            usize::from(state.frontend.word0_raw & 0x3F)
+        } else if mp_active && state.mp_lane <= state.mp_last_lane {
+            usize::from(state.mp_base_b)
+                + if state.mp_is_vmuls {
+                    0
+                } else {
+                    usize::from(state.mp_lane)
+                }
+        } else if mp_active {
+            0
+        } else if vp_load_now {
+            usize::from(state.frontend.word0_raw & 0x3F)
+        } else if vp_active && state.vp_lane <= state.vp_last_lane {
+            usize::from(state.vp_base_b) + usize::from(state.vp_lane)
+        } else if vp_active {
+            0
+        } else if input.ext_access {
             input.ext_read_address as usize
         } else {
             state.held_read_b_address as usize
         };
+
+        // Vector path register updates (mirrors CpuV3FpuV2VectorPath).
+        let word1 = state.frontend.word1_raw;
+        let len_field = (word1 >> 8) & 0x3;
+        let last_lane = if len_field == 3 { 3 } else { len_field + 1 };
+        let subop = ((word1 >> 3) & 0x1F) as u8;
+        let alu_op = match subop {
+            0x00 => 0x0, // VADD
+            0x01 => 0x1, // VSUB
+            0x04 => 0x3, // VMIN
+            0x05 => 0x4, // VMAX
+            0x06 => 0x5, // VABS
+            0x07 => 0x6, // VNEG
+            0x0C => 0xF, // VMOV
+            _ => 0x2,    // unlisted: the ALU's defined zero
+        };
+        if input.abort {
+            state.vp_run = false;
+            state.vp_wr_enable = false;
+        } else if vp_load_now {
+            state.vp_run = true;
+            state.vp_lane = 1;
+            state.vp_last_lane = last_lane as u8;
+            state.vp_base_a = ((state.frontend.word0_raw >> 6) & 0x3F) as u8;
+            state.vp_base_b = (state.frontend.word0_raw & 0x3F) as u8;
+            state.vp_fd = ((word1 >> 10) & 0x3F) as u8;
+            state.vp_wr_enable = false;
+        } else if state.vp_run {
+            let data_valid = state.vp_lane >= 1 && (state.vp_lane - 1) <= state.vp_last_lane;
+            state.vp_wr_enable = data_valid;
+            if data_valid {
+                let data_lane = state.vp_lane - 1;
+                let (result, _, _, _) = CpuV3FpuV2ScalarPathState::alu(
+                    state.rf.read_a_data,
+                    state.rf.read_b_data,
+                    alu_op,
+                );
+                state.vp_wr_address = state.vp_fd as u16 + u16::from(data_lane);
+                state.vp_wr_data = result;
+            }
+            if state.vp_lane > state.vp_last_lane + 1 {
+                state.vp_run = false;
+            } else {
+                state.vp_lane += 1;
+            }
+        } else {
+            state.vp_wr_enable = false;
+        }
+
+        // Multiply path register updates (mirrors CpuV3FpuV2MultiplyPath):
+        // the lane sequencer hands operand pairs to the shared pipe with the
+        // destination tag; the pipe returns them three cycles later.
+        // Everything read here is the pre-edge value (RTL nonblocking
+        // semantics).
+        let mp_data_valid =
+            state.mp_run && state.mp_lane >= 1 && (state.mp_lane - 1) <= state.mp_last_lane;
+        let dp_data_valid =
+            state.dp_run && state.dp_lane >= 1 && (state.dp_lane - 1) <= state.dp_last_lane;
+        let pipe_out_valid = state.pipe_s3_valid && !input.abort;
+        let pipe_out_product = state.pipe_s3_prod;
+        let pipe_out_tag = state.pipe_s3_tag;
+        // Pre-edge outstanding counts: the RTL guards the accumulate and the
+        // RF write with the count from before this edge's return is removed,
+        // so a returning final entry still counts as owned by the path.
+        let mp_outstanding_prev = state.mp_outstanding;
+        let dp_outstanding_prev = state.dp_outstanding;
+        // Pre-edge lane bookkeeping for the pipe tags: the RTL presents
+        // waddr_r / lane_r combinationally and only increments them at the
+        // edge, so the tag must be sampled before the updates below.
+        let mp_waddr_prev = state.mp_waddr;
+        let dp_lane_prev = state.dp_lane;
+        if input.abort {
+            state.mp_run = false;
+            state.mp_outstanding = 0;
+        } else if mp_load_now {
+            state.mp_run = true;
+            state.mp_lane = 1;
+            state.mp_last_lane = if state.frontend.instr_opcode == 0xD {
+                0
+            } else if len_field == 3 {
+                3
+            } else {
+                (len_field + 1) as u8
+            };
+            state.mp_base_a = ((state.frontend.word0_raw >> 6) & 0x3F) as u8;
+            state.mp_base_b = (state.frontend.word0_raw & 0x3F) as u8;
+            state.mp_is_vmuls =
+                state.frontend.instr_opcode == 0xC && (word1_fields >> 3) & 0x1F == 0x03;
+            state.mp_waddr = (word1_fields >> 10) & 0x3F;
+            state.mp_outstanding = 0;
+        } else {
+            if state.mp_run {
+                if state.mp_lane > state.mp_last_lane + 1 {
+                    state.mp_run = false;
+                } else {
+                    state.mp_lane += 1;
+                }
+                state.mp_waddr = state.mp_waddr.wrapping_add(1);
+            }
+            // Only this path's own returns decrement (the pipe is shared).
+            state.mp_outstanding = state
+                .mp_outstanding
+                .wrapping_add(u8::from(mp_data_valid))
+                .wrapping_sub(u8::from(pipe_out_valid && state.mp_outstanding != 0));
+        }
+
+        // Dot path register updates (mirrors CpuV3FpuV2DotPath). ACC
+        // accumulates the pipe product returning this cycle (pre-edge stage
+        // three); the DOTSTORE final-lane capture and the writeback clear
+        // read the pre-edge store flag.
+        let dp_store_prev = state.dp_store;
+        if input.abort {
+            state.dp_run = false;
+            state.dp_outstanding = 0;
+            state.dp_store_mode = false;
+            state.dp_store = false;
+        } else if dp_load_now {
+            state.dp_run = true;
+            state.dp_lane = 1;
+            state.dp_last_lane = if len_field == 3 {
+                3
+            } else {
+                (len_field + 1) as u8
+            };
+            state.dp_base_a = ((state.frontend.word0_raw >> 6) & 0x3F) as u8;
+            state.dp_base_b = (state.frontend.word0_raw & 0x3F) as u8;
+            state.dp_stride = match word1_fields & 0x3 {
+                1 => 3,
+                2 => 4,
+                _ => 1,
+            };
+            state.dp_store_mode = (word1_fields >> 3) & 0x1F == 0x0F;
+            state.dp_acc_lane = 0;
+            state.dp_store = false;
+            state.dp_store_addr = (word1_fields >> 10) & 0x3F;
+            state.dp_outstanding = 0;
+            let subop = (word1_fields >> 3) & 0x1F;
+            if subop == 0x0D || subop == 0x0F {
+                state.dp_acc = 0;
+            }
+        } else {
+            if state.dp_run {
+                if state.dp_lane > state.dp_last_lane + 1 {
+                    state.dp_run = false;
+                } else {
+                    state.dp_lane += 1;
+                }
+            }
+            state.dp_outstanding = state
+                .dp_outstanding
+                .wrapping_add(u8::from(dp_data_valid))
+                .wrapping_sub(u8::from(pipe_out_valid && state.dp_outstanding != 0));
+            // Accumulate the returning product. Only entries this instruction
+            // issued count (the pipe is shared with the multiply path).
+            if pipe_out_valid && dp_outstanding_prev != 0 {
+                let sum = state.dp_acc.wrapping_add(pipe_out_product);
+                state.dp_acc = sum;
+                if state.dp_store_mode && state.dp_acc_lane == state.dp_last_lane {
+                    state.dp_store_data = ((sum >> 16) & 0xFFFF_FFFF) as u32;
+                    state.dp_store = true;
+                    state.dp_store_mode = false;
+                }
+                state.dp_acc_lane += 1;
+            }
+            if dp_store_prev {
+                state.dp_store = false;
+                state.dp_acc = 0;
+            }
+        }
+
+        // Shared multiply pipe transfer (mirrors CpuV3FpuV2MulPipe): reverse
+        // order so every stage reads its predecessor's pre-edge value.
+        let pipe_s1v = state.pipe_s1_valid;
+        let pipe_s1a = state.pipe_s1_a;
+        let pipe_s1b = state.pipe_s1_b;
+        let pipe_s1tag = state.pipe_s1_tag;
+        let pipe_s2v = state.pipe_s2_valid;
+        let pipe_s2p = state.pipe_s2_prod;
+        let pipe_s2tag = state.pipe_s2_tag;
+        if input.abort {
+            state.pipe_s1_valid = false;
+            state.pipe_s2_valid = false;
+            state.pipe_s3_valid = false;
+        } else {
+            state.pipe_s3_valid = pipe_s2v;
+            if pipe_s2v {
+                state.pipe_s3_prod = pipe_s2p;
+                state.pipe_s3_tag = pipe_s2tag;
+            }
+            state.pipe_s2_valid = pipe_s1v;
+            if pipe_s1v {
+                state.pipe_s2_prod = pipe_s1a * pipe_s1b;
+                state.pipe_s2_tag = pipe_s1tag;
+            }
+            // The operand mux: the multiply path wins the tie (never both).
+            let in_valid = if state.mp_run || mp_load_now {
+                mp_data_valid
+            } else {
+                dp_data_valid
+            };
+            state.pipe_s1_valid = in_valid;
+            if in_valid {
+                if state.mp_run || mp_load_now {
+                    state.pipe_s1_a = state.rf.read_a_data as i32 as i64;
+                    state.pipe_s1_b = state.rf.read_b_data as i32 as i64;
+                    state.pipe_s1_tag = mp_waddr_prev;
+                } else {
+                    state.pipe_s1_a = state.rf.read_a_data as i32 as i64;
+                    state.pipe_s1_b = state.rf.read_b_data as i32 as i64;
+                    state.pipe_s1_tag = dp_lane_prev as u16 - 1;
+                }
+            }
+        }
+
+        // Register-file updates last: reads sample the pre-write contents.
+        let rf = &mut state.rf;
         rf.read_a_data = rf.memory[read_a_address];
         rf.read_b_data = rf.memory[read_b_address];
+        let sp = &state.scalar_path;
         let (we, wa, wd) = if input.ext_access {
             (
                 input.ext_write_enable,
                 input.ext_write_address as usize,
                 input.ext_write_data as u32,
             )
+        } else if state.vp_wr_enable && !input.abort {
+            (true, state.vp_wr_address as usize, state.vp_wr_data)
+        } else if pipe_out_valid && mp_outstanding_prev != 0 && !input.abort {
+            (
+                true,
+                pipe_out_tag as usize,
+                ((pipe_out_product >> 16) & 0xFFFF_FFFF) as u32,
+            )
+        } else if dp_store_prev && !input.abort {
+            (true, state.dp_store_addr as usize, state.dp_store_data)
         } else {
             (
                 sp.write_enable && !input.abort,
@@ -2553,6 +3194,7 @@ mod tests {
                      started = 1;\n\
                  if (started) begin\n\
                      $display(\"CORE %0d %0d %0d %0d %0d %0d %0d %0d %0d %0d %0d %0d %0d %0d %0d %0d %0d %0d\", cycles, pc, code_segment, data_segment, retired_words, halted, halt_signal, fault, fault_code, fault_pc, instruction_request_valid, instruction_address, instruction_response_ready, data_request_valid, data_write, data_address, data_write_data, data_response_ready);\n\
+                     $display(\"STATE %0d %0d %0d\", cycles, dut.state, dut.fpu2_busy);\n\
                      if (halted || fault) end_flag = 1;\n\
                  end\n\
                  @(posedge clk);\n\
@@ -2657,7 +3299,9 @@ mod tests {
                 break;
             }
         }
-        std::fs::remove_dir_all(&directory).ok();
+        if std::env::var_os("FPU2_KEEP_COSIM_DIR").is_none() {
+            std::fs::remove_dir_all(&directory).ok();
+        }
         trace
     }
 
@@ -2685,6 +3329,64 @@ mod tests {
             "co-sim program needs {} cycles, above the co-sim emu trace cap",
             emu.len()
         );
+    }
+
+    /// FPU v2 back-to-back FLD after an async store: the reproducer for the
+    /// one-cycle request slip seen at system level.
+    #[test]
+    #[ignore = "explicit emulator-vs-Icarus co-simulation of FPU v2 memory beats"]
+    fn core_emu_matches_rtl_fpu_v2_ldst() {
+        // r1=0x0100, r2=0x0102; store r0=7 to [r1]; FLD f1,[r1]; FLD f2,[r2]; HALT
+        let program = vec![
+            0xf010, 0xa310, // r1 = 0x0100
+            0xf010, 0xa322, // r2 = 0x0102
+            0xa007, // ADDI r0, 7
+            0x9010, // STORE r0, [r1] (async store buffer)
+            0xe100, 0x0400, // FLD f1, [r1]
+            0xe200, 0x0800, // FLD f2, [r2]
+            0xd041, 0x0c20, // MUL f3 = f1 * f2
+            0xc042, 0x1018, // VMULS.2 f4..f5 = f1..f2 * f2
+            0xc042, 0x0068, // DOT.2 ACC = f1*f1 + f2*f2 = 1 + 4 = 5.0
+            0xc042, 0x0070, // DOTADD.2: ACC = 10.0
+            0xc042, 0x1878, // DOTSTORE.2 f6 = 5.0, ACC cleared
+            0x6c00, // HALT
+        ];
+        let module_name = CpuV3Core::verilog_identity().module_name();
+        let emu = run_core_emu_trace(&program, 2000);
+        let max_cycles = emu.len() + 400;
+        let tb = build_core_cosim_tb(&program, &module_name, max_cycles);
+        let rtl = run_core_rtl_trace(&tb);
+        if emu.len() != rtl.len() {
+            let dump = |trace: &[CoreCosimOut]| {
+                trace
+                    .iter()
+                    .enumerate()
+                    .map(|(i, v)| {
+                        format!(
+                            "{i}: pc={} retired={} ireq={} iaddr={:#06x} dreq={} dw={} daddr={:#06x}",
+                            v.pc, v.retired_words, v.instruction_request_valid,
+                            v.instruction_address, v.data_request_valid, v.data_write,
+                            v.data_address
+                        )
+                    })
+                    .collect::<Vec<_>>()
+                    .join("\n")
+            };
+            panic!(
+                "length mismatch emu={} rtl={}\n--- emu ---\n{}\n--- rtl ---\n{}",
+                emu.len(),
+                rtl.len(),
+                dump(&emu),
+                dump(&rtl)
+            );
+        }
+        for (index, (expected, actual)) in emu.iter().zip(&rtl).enumerate() {
+            assert!(
+                actual.equal_core(expected),
+                "mismatch at cycle {index}\nemu={expected:?}\nrtl={actual:?}"
+            );
+        }
+        assert!(emu.last().copied().expect("emu trace empty").halted);
     }
 
     #[test]
@@ -2750,5 +3452,29 @@ mod tests {
     #[ignore = "explicit external simulation of the FPU v2 unit top"]
     fn verify_fpu_v2_unit_with_iverilog() {
         digital_design_hardware::verify_verilog_with_iverilog::<CpuV3FpuV2>().unwrap();
+    }
+
+    #[test]
+    #[ignore = "explicit external simulation of the FPU v2 vector path"]
+    fn verify_fpu_v2_vector_path_with_iverilog() {
+        digital_design_hardware::verify_verilog_with_iverilog::<CpuV3FpuV2VectorPath>().unwrap();
+    }
+
+    #[test]
+    #[ignore = "explicit external simulation of the FPU v2 multiply path"]
+    fn verify_fpu_v2_multiply_path_with_iverilog() {
+        digital_design_hardware::verify_verilog_with_iverilog::<CpuV3FpuV2MultiplyPath>().unwrap();
+    }
+
+    #[test]
+    #[ignore = "explicit external simulation of the FPU v2 dot path"]
+    fn verify_fpu_v2_dot_path_with_iverilog() {
+        digital_design_hardware::verify_verilog_with_iverilog::<CpuV3FpuV2DotPath>().unwrap();
+    }
+
+    #[test]
+    #[ignore = "explicit external simulation of the shared FPU v2 multiply pipe"]
+    fn verify_fpu_v2_mul_pipe_with_iverilog() {
+        digital_design_hardware::verify_verilog_with_iverilog::<CpuV3FpuV2MulPipe>().unwrap();
     }
 }

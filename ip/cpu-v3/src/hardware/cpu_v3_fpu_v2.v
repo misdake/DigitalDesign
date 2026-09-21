@@ -88,10 +88,29 @@ always @(posedge clk) begin
     end
 end
 
-// Read port A stays with the front-end. Read port B switches to the external
-// address while the core owns the register file.
-wire [8:0] rf_read_a_address = held_read_a_address;
+// Read-port ownership: the vector and multiply paths drive both ports for
+// their whole busy windows (starting at their T0), otherwise port A serves
+// the front-end's held operand address and port B switches to the external
+// channel while the core owns the register file. The two execution paths are
+// never busy at once (the core serializes instructions), and the multiply
+// mux arm simply takes precedence so the select stays defined.
+wire vp_busy;
+wire [8:0] vp_read_a_address;
+wire [8:0] vp_read_b_address;
+wire mp_busy;
+wire [8:0] mp_read_a_address;
+wire [8:0] mp_read_b_address;
+wire dp_busy;
+wire [8:0] dp_read_a_address;
+wire [8:0] dp_read_b_address;
+wire [8:0] rf_read_a_address =
+    dp_busy ? dp_read_a_address :
+    mp_busy ? mp_read_a_address :
+    vp_busy ? vp_read_a_address : held_read_a_address;
 wire [8:0] rf_read_b_address =
+    dp_busy ? dp_read_b_address :
+    mp_busy ? mp_read_b_address :
+    vp_busy ? vp_read_b_address :
     ext_access ? ext_read_address : held_read_b_address;
 
 // Scalar path write port. While ext_access is high the external channel owns
@@ -99,12 +118,30 @@ wire [8:0] rf_read_b_address =
 wire sp_write_enable;
 wire [8:0] sp_write_address;
 wire [31:0] sp_write_data;
+wire sp_busy;
 
-wire rf_write_enable = ext_access ? ext_write_enable : sp_write_enable;
+wire vp_write_enable;
+wire [8:0] vp_write_address;
+wire [31:0] vp_write_data;
+wire mp_write_enable;
+wire [8:0] mp_write_address;
+wire [31:0] mp_write_data;
+wire dp_write_enable;
+wire [8:0] dp_write_address;
+wire [31:0] dp_write_data;
+wire rf_write_enable = ext_access ? ext_write_enable :
+                       vp_write_enable | mp_write_enable | dp_write_enable |
+                       sp_write_enable;
 wire [8:0] rf_write_address =
-    ext_access ? ext_write_address : sp_write_address;
+    ext_access ? ext_write_address :
+    vp_write_enable ? vp_write_address :
+    mp_write_enable ? mp_write_address :
+    dp_write_enable ? dp_write_address : sp_write_address;
 wire [31:0] rf_write_data =
-    ext_access ? ext_write_data : sp_write_data;
+    ext_access ? ext_write_data :
+    vp_write_enable ? vp_write_data :
+    mp_write_enable ? mp_write_data :
+    dp_write_enable ? dp_write_data : sp_write_data;
 
 wire [31:0] rf_read_a_data;
 wire [31:0] rf_read_b_data;
@@ -136,9 +173,118 @@ CpuV3FpuV2ScalarPath scalar_path (
     .flag_lt(flag_lt),
     .flag_eq(flag_eq),
     .flag_gt(flag_gt),
-    .busy(busy)
+    .busy(sp_busy)
 );
 
+// Vector execution path (opcode 0xC). It consumes the same front-end pair;
+// the bases come from the front-end's latched word0.
+CpuV3FpuV2VectorPath vector_path (
+    .clk(clk),
+    .abort(abort),
+    .instr_complete(fe_instr_complete),
+    .instr_opcode(instr_opcode),
+    .word1_raw(word1_raw),
+    .base_a(word0_raw[11:6]),
+    .base_b(word0_raw[5:0]),
+    .rf_read_a_data(rf_read_a_data),
+    .rf_read_b_data(rf_read_b_data),
+    .rf_read_a_address(vp_read_a_address),
+    .rf_read_b_address(vp_read_b_address),
+    .rf_write_enable(vp_write_enable),
+    .rf_write_address(vp_write_address),
+    .rf_write_data(vp_write_data),
+    .busy(vp_busy)
+);
+
+// Shared 36x36 multiply pipe. The core serializes instructions, so the
+// multiply and dot paths are never active at once; the operand buses are
+// muxed by which path is busy (multiply wins the tie so the select is
+// always defined).
+wire mp_mul_in_valid;
+wire [31:0] mp_mul_in_a;
+wire [31:0] mp_mul_in_b;
+wire [8:0] mp_mul_in_tag;
+wire dp_mul_in_valid;
+wire [31:0] dp_mul_in_a;
+wire [31:0] dp_mul_in_b;
+wire [8:0] dp_mul_in_tag;
+wire mul_in_valid = mp_busy ? mp_mul_in_valid : dp_mul_in_valid;
+wire [31:0] mul_in_a = mp_busy ? mp_mul_in_a : dp_mul_in_a;
+wire [31:0] mul_in_b = mp_busy ? mp_mul_in_b : dp_mul_in_b;
+wire [8:0] mul_in_tag = mp_busy ? mp_mul_in_tag : dp_mul_in_tag;
+wire mul_out_valid;
+wire signed [63:0] mul_out_product;
+wire [8:0] mul_out_tag;
+
+CpuV3FpuV2MulPipe mul_pipe (
+    .clk(clk),
+    .abort(abort),
+    .in_valid(mul_in_valid),
+    .in_a(mul_in_a),
+    .in_b(mul_in_b),
+    .in_tag(mul_in_tag),
+    .out_valid(mul_out_valid),
+    .out_product(mul_out_product),
+    .out_tag(mul_out_tag)
+);
+
+// Multiply execution path (VMUL/VMULS/scalar MUL). Same front-end pair
+// contract as the vector path.
+CpuV3FpuV2MultiplyPath multiply_path (
+    .clk(clk),
+    .abort(abort),
+    .instr_complete(fe_instr_complete),
+    .instr_opcode(instr_opcode),
+    .word1_raw(word1_raw),
+    .base_a(word0_raw[11:6]),
+    .base_b(word0_raw[5:0]),
+    .rf_read_a_data(rf_read_a_data),
+    .rf_read_b_data(rf_read_b_data),
+    .rf_read_a_address(mp_read_a_address),
+    .rf_read_b_address(mp_read_b_address),
+    .mul_in_valid(mp_mul_in_valid),
+    .mul_in_a(mp_mul_in_a),
+    .mul_in_b(mp_mul_in_b),
+    .mul_in_tag(mp_mul_in_tag),
+    .mul_out_valid(mul_out_valid),
+    .mul_out_product(mul_out_product),
+    .mul_out_tag(mul_out_tag),
+    .rf_write_enable(mp_write_enable),
+    .rf_write_address(mp_write_address),
+    .rf_write_data(mp_write_data),
+    .busy(mp_busy)
+);
+
+// Dot-product path (DOT/DOTADD/DOTSTORE, opcode 0xC subops 0x0D..0x0F).
+// Same front-end pair contract as the vector path.
+wire [63:0] dp_acc;
+CpuV3FpuV2DotPath dot_path (
+    .clk(clk),
+    .abort(abort),
+    .instr_complete(fe_instr_complete),
+    .instr_opcode(instr_opcode),
+    .word1_raw(word1_raw),
+    .base_a(word0_raw[11:6]),
+    .base_b(word0_raw[5:0]),
+    .rf_read_a_data(rf_read_a_data),
+    .rf_read_b_data(rf_read_b_data),
+    .rf_read_a_address(dp_read_a_address),
+    .rf_read_b_address(dp_read_b_address),
+    .mul_in_valid(dp_mul_in_valid),
+    .mul_in_a(dp_mul_in_a),
+    .mul_in_b(dp_mul_in_b),
+    .mul_in_tag(dp_mul_in_tag),
+    .mul_out_valid(mul_out_valid),
+    .mul_out_product(mul_out_product),
+    .mul_out_tag(mul_out_tag),
+    .rf_write_enable(dp_write_enable),
+    .rf_write_address(dp_write_address),
+    .rf_write_data(dp_write_data),
+    .busy(dp_busy),
+    .acc_out(dp_acc)
+);
+
+assign busy = sp_busy | vp_busy | mp_busy | dp_busy;
 assign instr_complete = fe_instr_complete;
 assign ext_read_data = rf_read_b_data;
 

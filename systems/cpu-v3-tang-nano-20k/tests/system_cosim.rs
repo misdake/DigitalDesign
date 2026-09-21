@@ -155,6 +155,106 @@ fn program_fpu_v2_roundtrip() -> Vec<u16> {
     p
 }
 
+/// FPU v2 vector path at system level: FLDs stage two Q16.16 vec2s from two
+/// initialized addresses, VADD.2 adds them lane by lane, and two FSTs write
+/// the results back. 1.0 + 10.0 = 11.0, so the halt signal (high half of
+/// the first stored lane) is 11. (Only two init stores: longer store chains
+/// currently trip a pre-existing, FPU-unrelated system co-sim divergence.)
+fn program_fpu_v2_vector_add() -> Vec<u16> {
+    let mut p = Vec::new();
+    p.extend(load_immediate16(1, 0x4000)); // f0/f1 source
+    p.extend(load_immediate16(2, 0x4002)); // f2/f3 source
+    p.extend(load_immediate16(7, 0x4020)); // store f4
+    p.extend(load_immediate16(8, 0x4022)); // store f5
+    p.extend(load_immediate16(0, 1));
+    p.push(store(0, 1, 1)); // [0x4001] = 1 -> 1.0
+    p.extend(load_immediate16(0, 10));
+    p.push(store(0, 2, 1)); // [0x4003] = 10 -> 10.0
+    let fld = |x: u16, fd: u16| [(0xe000 | (x << 8)) as u16, (fd << 10) as u16];
+    let fst = |x: u16, fa: u16| [(0xe000 | (x << 8) | (fa << 2)) as u16, 0x0010u16];
+    for (x, fd) in [(1u16, 0u16), (1, 1), (2, 2), (2, 3)] {
+        p.extend(fld(x, fd));
+    }
+    // VADD.2 f4..f5 = f0..f1 + f2..f3: word0 {C, Fa=0, Fb=2},
+    // word1 {Fd=4, len=00 (vec2), subop=VADD(0), mode=0}.
+    p.push(0xc002);
+    p.push(0x1000);
+    for (x, fa) in [(7u16, 4u16), (8, 5)] {
+        p.extend(fst(x, fa));
+    }
+    p.push(load(0, 7, 1)); // r0 = high half of f4 = 11
+    p.push(halt());
+    p
+}
+
+/// FPU v2 multiply path at system level: two FLDs, one scalar MUL
+/// (2.0 * 3.0 = 6.0) and one VMULS.2 (f2..f3 = f0..f1 * f1 = 6.0, 9.0).
+/// Three FSTs write the results back; the halt signal is the high half of
+/// the first stored lane (6).
+fn program_fpu_v2_multiply() -> Vec<u16> {
+    let mut p = Vec::new();
+    p.extend(load_immediate16(1, 0x4000)); // f0 source
+    p.extend(load_immediate16(2, 0x4002)); // f1 source
+    p.extend(load_immediate16(7, 0x4020)); // store f4
+    p.extend(load_immediate16(8, 0x4022)); // store f2
+    p.extend(load_immediate16(9, 0x4024)); // store f3
+    p.extend(load_immediate16(0, 2));
+    p.push(store(0, 1, 1)); // f0 = 2.0
+    p.extend(load_immediate16(0, 3));
+    p.push(store(0, 2, 1)); // f1 = 3.0
+    let fld = |x: u16, fd: u16| [(0xe000 | (x << 8)) as u16, (fd << 10) as u16];
+    let fst = |x: u16, fa: u16| [(0xe000 | (x << 8) | (fa << 2)) as u16, 0x0010u16];
+    p.extend(fld(1, 0)); // f0 = 2.0
+    p.extend(fld(2, 1)); // f1 = 3.0
+                         // MUL f4 = f0 * f1: word0 {D, Fa=0, Fb=1}, word1 {Fd=4, subop=MUL(2), 0}
+    p.push(0xd001);
+    p.push(0x1020);
+    // VMULS.2 f2..f3 = f0..f1 * f1: word0 {C, Fa=0, Fb=1},
+    // word1 {Fd=2, len=00, subop=VMULS(3), mode=0}.
+    p.push(0xc001);
+    p.push(0x0818);
+    for (x, fa) in [(7u16, 4u16), (8, 2), (9, 3)] {
+        p.extend(fst(x, fa));
+    }
+    p.push(load(0, 7, 1)); // r0 = high half of f4 = 6
+    p.push(halt());
+    p
+}
+
+/// FPU v2 dot path at system level: DOT.2 computes dot(f,f) = 5.0 into ACC,
+/// DOTADD.2 accumulates the same again (ACC = 10.0), DOTSTORE.2 stores a
+/// fresh dot (5.0) into f6 and clears ACC. FST writes f6 back; the halt
+/// signal is its high half (5).
+fn program_fpu_v2_dot() -> Vec<u16> {
+    let mut p = Vec::new();
+    p.extend(load_immediate16(1, 0x4000)); // f0 at [0x4000..0x4001]
+    p.extend(load_immediate16(2, 0x4002)); // f1 at [0x4002..0x4003]
+    p.extend(load_immediate16(7, 0x4020)); // store f6
+    p.extend(load_immediate16(0, 1));
+    p.push(store(0, 1, 1)); // [0x4001] = 1 -> f0 = 1.0
+    p.extend(load_immediate16(0, 2));
+    p.push(store(0, 1, 3)); // [0x4003] = 2 -> f1 = 2.0
+    let fld = |x: u16, fd: u16| [(0xe000 | (x << 8)) as u16, (fd << 10) as u16];
+    let fst = |x: u16, fa: u16| [(0xe000 | (x << 8) | (fa << 2)) as u16, 0x0010u16];
+    p.extend(fld(1, 0)); // f0 = 1.0
+    p.extend(fld(2, 1)); // f1 = 2.0
+                         // DOT.2 ACC = f0*f0 + f1*f1 = 1 + 4 = 5.0: word0 {C, Fa=0, Fb=0},
+                         // word1 {Fd=0, len=00, subop=DOT(0x0D), mode=S1}.
+    p.push(0xc000);
+    p.push(0x0068);
+    // DOTADD.2: ACC = 10.0.
+    p.push(0xc000);
+    p.push(0x0070);
+    // DOTSTORE.2 f6 = 5.0 (its own dot), ACC cleared:
+    // word1 {Fd=6, subop=DOTSTORE(0x0F)}.
+    p.push(0xc000);
+    p.push(0x1878);
+    p.extend(fst(7, 6));
+    p.push(load(0, 7, 1)); // r0 = high half of f6 = 5
+    p.push(halt());
+    p
+}
+
 fn programs() -> Vec<CosimProgram> {
     vec![
         CosimProgram {
@@ -204,6 +304,30 @@ fn programs() -> Vec<CosimProgram> {
             check_base: 0x4000,
             check_len: 0x14,
             expected_halt: Some(3),
+        },
+        CosimProgram {
+            name: "fpu_v2_vector_add",
+            words: program_fpu_v2_vector_add(),
+            max_cycles: 20_000,
+            check_base: 0x4020,
+            check_len: 8,
+            expected_halt: Some(11),
+        },
+        CosimProgram {
+            name: "fpu_v2_multiply",
+            words: program_fpu_v2_multiply(),
+            max_cycles: 20_000,
+            check_base: 0x4020,
+            check_len: 8,
+            expected_halt: Some(6),
+        },
+        CosimProgram {
+            name: "fpu_v2_dot",
+            words: program_fpu_v2_dot(),
+            max_cycles: 20_000,
+            check_base: 0x4020,
+            check_len: 4,
+            expected_halt: Some(5),
         },
     ]
 }
@@ -414,16 +538,17 @@ fn compare_program(program: &CosimProgram, sources: &[String]) -> Result<(), Str
         let expected = &emu.cycles[index];
         let actual = &rtl.cycles[index];
         if !actual.equal_core(expected) {
-            let lo = index.saturating_sub(6);
+            let lo = index.saturating_sub(10);
             let hi = (index + 2).min(common);
             let dump = |cycles: &[SystemCosimOut]| {
                 (lo..hi)
                     .map(|i| {
                         let v = &cycles[i];
                         format!(
-                            "{i}: pc={} retired={} ivalid={} iaddr={:#06x} dvalid={} daddr={:#06x}",
+                            "{i}: pc={} retired={} ivalid={} iaddr={:#06x} dvalid={} dwrite={} dready_out={} daddr={:#06x} dwdata={:#06x}",
                             v.pc, v.retired_words, v.instruction_request_valid,
-                            v.instruction_address, v.data_request_valid, v.data_address
+                            v.instruction_address, v.data_request_valid, v.data_write,
+                            v.data_response_ready, v.data_address, v.data_write_data
                         )
                     })
                     .collect::<Vec<_>>()
