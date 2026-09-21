@@ -1209,7 +1209,7 @@ impl Module for CpuV3Core {
                     AUX_FLO2I => state.write_gpr(x, (state.fpu2_aux_data & 0xffff) as u16),
                     AUX_FHI2I => state.write_gpr(x, (state.fpu2_aux_data >> 16) as u16),
                     AUX_FTOI16 => {
-                        state.write_gpr(x, crate::fix16_to_i16(state.fpu2_aux_data as i32) as u16)
+                        state.write_gpr(x, crate::fix32_to_i16(state.fpu2_aux_data as i32) as u16)
                     }
                     _ => {}
                 }

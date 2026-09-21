@@ -164,11 +164,13 @@ the same stable mapping through `LoaderError::boot_report`.
 
 ## Current fitted result and validation boundary
 
-The current full-system build uses 9,025 Logic (7,585 LUT, 768 ALU, 112 SSRAM), 3,834 logic
-registers, 6,329 CLS, five DPB, one SDPB, one pROM, and two `MULT18X18` cells. The CPU clock
-closes at 55.904 MHz against the 54-MHz constraint with zero setup and hold TNS. The tightest CPU
-path is the core's registered GPR write path rather than the cache frontend; the D-cache dirty
-write enable follows it at 0.782 ns slack.
+The current full-system build uses 9,591 Logic (7,914 LUT, 1,197 ALU, 80 RAM16), 4,286 logic
+registers, 6,951 CLS, three SDPB, four DPB, one pROM, two `MULT18X18`, one `MULT36X36`, and one
+`MULTADDALU18X18`. The CPU clock closes at 55.966 MHz against the 54-MHz constraint with 0.650 ns
+worst setup slack and zero setup/hold TNS. Registering the FPU AUX/FLD/FST GPR address selection
+removed the former state-to-GPR-write path from the top 25; the tightest path now runs from the
+instruction fetch queue head into core state, while the first GPR write endpoint has 1.100 ns
+slack.
 
 The system-level emulator-vs-RTL co-simulation `tests/system_cosim.rs` drives the composed RTL
 (core, fetch queue, I-cache, D-cache, memory arbiter, and a behavioral SDRAM word port) in Icarus

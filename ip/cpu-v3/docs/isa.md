@@ -296,20 +296,25 @@ zero for `x <= 0`; both are approximate special functions with no IEEE special
 values. The hidden register-file BSRAM region holds the RCP/RSQRT/SINCOS
 lookup tables.
 
-The prescale library contract (`v3_length2_shift` -> `u16`,
-`v3_length2_scaled` -> `fix16`, `v3_normalize_safe`, `v3_distance2_gt`) is a
-compiler library, not a new opcode; its pure reference model and frozen `2^-k`
-scaling rule live in the CPU V3 architecture crate. `v3_length2_scaled`
-returns the **prescaled** squared length `|v|^2 * 2^-2k` (not an unscaled
-length), and `v3_length2_shift` returns `k`. `scaled << 2k` is an
-original-scale approximation, not an exact reconstruction, because shifting
-the components and narrowing the dot result discard low bits when `k > 0`.
-The C3 compiler deliberately still rejects this family: the first three
-helpers can be composed from existing operations, but the frozen exact
-`v3_distance2_gt` boundary needs the low bits of the un-narrowed accumulator,
-and FPU v2 exposes only `DOTSTORE`'s narrowed `ACC[47:16]`. Splitting the
-family, relaxing that boundary, or adding a wide comparison remains a future
-architecture decision.
+The v3 geometry library (`v3_length2` -> `fix32`, `v3_normalize` -> `vec3`,
+`v3_distance_gt` -> `bool`, and the `_checked` debug variants) is a compiler
+library, not a new opcode; its reference model lives in the CPU V3 architecture
+crate, and the compiler lowers it to existing FPU v2 instructions.
+`v3_length2(v)` is one `DOTSTORE` of `v` with itself. `v3_normalize(v)` is that
+`DOTSTORE`, then `RSQRT`, then a scalar-vector `VMULS`; `RSQRT(0) == 0`, so a
+zero vector stays zero. `v3_distance_gt(a, b, threshold)` is `VSUB`, one
+`DOTSTORE` of the difference, the ordinary distance approximated as
+`s * RSQRT(s)`, and the scalar `CMP` against the ordinary Q16.16 `threshold`.
+The release helpers emit no checks and assume the small-range Q16.16 contract;
+the `_checked` variants validate it and `halt` with a fixed nonzero signal
+(1 length2 range, 2 normalize range, 3 distance input range, 4 distance
+difference range) instead of clamping or returning zero. Length/normalize
+require every component inclusively within `[-104, +104]` Q16.16 (so a
+three-component squared sum is at most `32448`); distance first requires every
+input component within `[-16384, +16383]` so the 32-bit subtraction cannot
+overflow, then every difference component within `[-104, +104]` before
+`DOTSTORE`. The single `DOTSTORE` narrowing and the `RSQRT`/`MUL` approximation
+make the ordinary-distance boundary approximate.
 
 ### PFX12 and wide operations
 

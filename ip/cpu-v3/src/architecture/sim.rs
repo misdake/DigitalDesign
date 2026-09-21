@@ -7,9 +7,9 @@ use super::encoding::{
     Word, CONSTANT_TABLE, LINK_REGISTER,
 };
 use super::{
-    fix16_abs, fix16_accumulate_product, fix16_add, fix16_ceil, fix16_compare, fix16_floor,
-    fix16_from_acc, fix16_from_i16, fix16_mul, fix16_neg, fix16_round, fix16_sub, fix16_to_i16,
-    fix16_trunc, rcp_q16, rsqrt_q16, sincos_q16, FpuAuxKind, FpuAuxSubop, FpuDotStride, FpuOpcode,
+    fix32_abs, fix32_accumulate_product, fix32_add, fix32_ceil, fix32_compare, fix32_floor,
+    fix32_from_acc, fix32_from_i16, fix32_mul, fix32_neg, fix32_round, fix32_sub, fix32_to_i16,
+    fix32_trunc, rcp_q16, rsqrt_q16, sincos_q16, FpuAuxKind, FpuAuxSubop, FpuDotStride, FpuOpcode,
     FpuScalarSubop, FpuSinCosMode, FpuVectorLength, FpuVectorSubop, PhysicalWordAddress,
     FPU_REGISTER_COUNT,
 };
@@ -663,13 +663,13 @@ impl CpuV3Sim {
             for lane in 0..lanes {
                 let a = self.fpu_read(fa + lane);
                 let b = self.fpu_read(fb + lane * usize::from(stride.step()));
-                acc = fix16_accumulate_product(acc, a, b);
+                acc = fix32_accumulate_product(acc, a, b);
             }
             match subop {
                 FpuVectorSubop::Dot | FpuVectorSubop::DotAdd => self.fpu_accumulator = acc,
                 _ => {
                     // DOTSTORE narrows once and leaves ACC clean.
-                    self.fpu_write(fd, fix16_from_acc(acc));
+                    self.fpu_write(fd, fix32_from_acc(acc));
                     self.fpu_accumulator = 0;
                 }
             }
@@ -685,17 +685,17 @@ impl CpuV3Sim {
                 self.fpu_read(fb + lane)
             };
             let result = match subop {
-                FpuVectorSubop::VAdd => fix16_add(a, b),
-                FpuVectorSubop::VSub => fix16_sub(a, b),
-                FpuVectorSubop::VMul | FpuVectorSubop::VMulS => fix16_mul(a, b),
+                FpuVectorSubop::VAdd => fix32_add(a, b),
+                FpuVectorSubop::VSub => fix32_sub(a, b),
+                FpuVectorSubop::VMul | FpuVectorSubop::VMulS => fix32_mul(a, b),
                 FpuVectorSubop::VMin => a.min(b),
                 FpuVectorSubop::VMax => a.max(b),
-                FpuVectorSubop::VAbs => fix16_abs(a),
-                FpuVectorSubop::VNeg => fix16_neg(a),
-                FpuVectorSubop::VFloor => fix16_floor(a),
-                FpuVectorSubop::VCeil => fix16_ceil(a),
-                FpuVectorSubop::VRound => fix16_round(a),
-                FpuVectorSubop::VTrunc => fix16_trunc(a),
+                FpuVectorSubop::VAbs => fix32_abs(a),
+                FpuVectorSubop::VNeg => fix32_neg(a),
+                FpuVectorSubop::VFloor => fix32_floor(a),
+                FpuVectorSubop::VCeil => fix32_ceil(a),
+                FpuVectorSubop::VRound => fix32_round(a),
+                FpuVectorSubop::VTrunc => fix32_trunc(a),
                 FpuVectorSubop::VMove => a,
                 FpuVectorSubop::Dot | FpuVectorSubop::DotAdd | FpuVectorSubop::DotStore => {
                     unreachable!()
@@ -724,18 +724,18 @@ impl CpuV3Sim {
         let a = self.fpu_read(fa);
         let b = self.fpu_read(fb);
         match subop {
-            FpuScalarSubop::Add => self.fpu_write(fd, fix16_add(a, b)),
-            FpuScalarSubop::Sub => self.fpu_write(fd, fix16_sub(a, b)),
-            FpuScalarSubop::Mul => self.fpu_write(fd, fix16_mul(a, b)),
+            FpuScalarSubop::Add => self.fpu_write(fd, fix32_add(a, b)),
+            FpuScalarSubop::Sub => self.fpu_write(fd, fix32_sub(a, b)),
+            FpuScalarSubop::Mul => self.fpu_write(fd, fix32_mul(a, b)),
             FpuScalarSubop::Min => self.fpu_write(fd, a.min(b)),
             FpuScalarSubop::Max => self.fpu_write(fd, a.max(b)),
-            FpuScalarSubop::Abs => self.fpu_write(fd, fix16_abs(a)),
-            FpuScalarSubop::Neg => self.fpu_write(fd, fix16_neg(a)),
-            FpuScalarSubop::Floor => self.fpu_write(fd, fix16_floor(a)),
-            FpuScalarSubop::Ceil => self.fpu_write(fd, fix16_ceil(a)),
-            FpuScalarSubop::Round => self.fpu_write(fd, fix16_round(a)),
-            FpuScalarSubop::Trunc => self.fpu_write(fd, fix16_trunc(a)),
-            FpuScalarSubop::Cmp => self.pending_test = Some(fix16_compare(a, b)),
+            FpuScalarSubop::Abs => self.fpu_write(fd, fix32_abs(a)),
+            FpuScalarSubop::Neg => self.fpu_write(fd, fix32_neg(a)),
+            FpuScalarSubop::Floor => self.fpu_write(fd, fix32_floor(a)),
+            FpuScalarSubop::Ceil => self.fpu_write(fd, fix32_ceil(a)),
+            FpuScalarSubop::Round => self.fpu_write(fd, fix32_round(a)),
+            FpuScalarSubop::Trunc => self.fpu_write(fd, fix32_trunc(a)),
+            FpuScalarSubop::Cmp => self.pending_test = Some(fix32_compare(a, b)),
             FpuScalarSubop::Rcp => self.fpu_write(fd, rcp_q16(a)),
             FpuScalarSubop::Rsqrt => self.fpu_write(fd, rsqrt_q16(a)),
             FpuScalarSubop::SinCos => {
@@ -808,8 +808,8 @@ impl CpuV3Sim {
             }
             FpuAuxSubop::Flo2i => self.registers[x] = (self.fpu_read(fa) & 0xffff) as Word,
             FpuAuxSubop::Fhi2i => self.registers[x] = ((self.fpu_read(fa) >> 16) & 0xffff) as Word,
-            FpuAuxSubop::I16tof => self.fpu_write(fd, fix16_from_i16(gpr as i16)),
-            FpuAuxSubop::Ftoi16 => self.registers[x] = fix16_to_i16(self.fpu_read(fa)) as Word,
+            FpuAuxSubop::I16tof => self.fpu_write(fd, fix32_from_i16(gpr as i16)),
+            FpuAuxSubop::Ftoi16 => self.registers[x] = fix32_to_i16(self.fpu_read(fa)) as Word,
         }
         Ok(StepOutcome::Running)
     }

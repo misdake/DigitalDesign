@@ -917,7 +917,7 @@ fn core_emu_matches_rtl_fpu_ldst() {
 #[test]
 #[ignore = "explicit emulator-vs-Icarus co-simulation of a compiled scalar FPU program"]
 fn core_emu_matches_rtl_compiled_scalar_fpu_program() {
-    // The rcc scalar `fix16` path end to end on the hardware-supported subset:
+    // The rcc scalar `fix32` path end to end on the hardware-supported subset:
     // integer construction (`I16TOF`), calls through the F-register ABI, an
     // FPU `ADD`/`MUL`/`trunc`, the raw-half bridge (`ILO2F`/`IHI2F`), a scalar
     // `CMP` feeding a GPR branch, the signed numeric conversion back
@@ -926,13 +926,13 @@ fn core_emu_matches_rtl_compiled_scalar_fpu_program() {
     // a=7, b=-2, addfix(a,b)=5, scaled=-14, kept=1.5, down=1, pick=1,
     // live=-13, (5 + -13 + 0.5).to_int() = -7 -> 0xfff9.
     let source = r#"
-        fn addfix(a: fix16, b: fix16) -> fix16 { a + b }
+        fn addfix(a: fix32, b: fix32) -> fix32 { a + b }
         fn main() {
-            let a = fix16::from_int(7);
-            let b = fix16::from_int(-2);
+            let a = fix32::from_int(7);
+            let b = fix32::from_int(-2);
             let s = addfix(a, b);
             let scaled = a * b;
-            let kept = fix16::from_words(0x8000, 0x0001);
+            let kept = fix32::from_words(0x8000, 0x0001);
             let down = kept.trunc();
             let pick = if s < down { s } else { down };
             let live = addfix(scaled, pick);
@@ -987,12 +987,12 @@ fn core_emu_matches_rtl_compiled_vector_fpu_program() {
     let source = r#"
         fn add4(a: vec4, b: vec4) -> vec4 { a + b }
         fn main() {
-            let a = vec4::new(fix16::from_int(1), fix16::from_int(2),
-                              fix16::from_int(3), fix16::from_int(4));
-            let b = vec4::new(fix16::from_int(10), fix16::from_int(20),
-                              fix16::from_int(30), fix16::from_int(40));
+            let a = vec4::new(fix32::from_int(1), fix32::from_int(2),
+                              fix32::from_int(3), fix32::from_int(4));
+            let b = vec4::new(fix32::from_int(10), fix32::from_int(20),
+                              fix32::from_int(30), fix32::from_int(40));
             let c = add4(a, b);
-            let d = c * fix16::from_int(2);
+            let d = c * fix32::from_int(2);
             let s = d.x() + d.y() + d.z() + d.w();
             let dot = fdot(c, d);
             halt((s + dot).to_int() as u16);
@@ -1042,7 +1042,7 @@ fn core_emu_matches_rtl_compiled_special_fpu_program() {
     // match the emulator cycle for cycle.
     let source = r#"
         fn main() {
-            let x = fix16::from_words(0x0000u16, 0x0003u16); // 3.0
+            let x = fix32::from_words(0x0000u16, 0x0003u16); // 3.0
             let r = frcp(x);
             let s = frsqrt(x);
             let sc = fsincos(x);
@@ -1078,6 +1078,222 @@ fn core_emu_matches_rtl_compiled_special_fpu_program() {
     );
 
     let max_cycles = emu.len() + 600;
+    let tb = build_core_cosim_tb(&program, &module_name, max_cycles);
+    let rtl = run_core_rtl_trace(&tb);
+    for (index, (expected, actual)) in emu.iter().zip(&rtl).enumerate() {
+        if !actual.equal_core(expected) {
+            panic!("mismatch at cycle {index}\nemu={expected:?}\nrtl={actual:?}");
+        }
+    }
+    assert_eq!(
+        emu.len(),
+        rtl.len(),
+        "emu/RTL trace length mismatch: emu={} rtl={}",
+        emu.len(),
+        rtl.len()
+    );
+    assert_eq!(
+        rtl.last().copied().expect("rtl trace empty").halt_signal,
+        expected
+    );
+}
+
+/// Source for the v3 geometry tests: one call to each release helper, folded
+/// into a single halt signal through the raw-half bridge. The lanes are integer
+/// literals so each case compiles a fresh, bounded program.
+fn geometry_helper_source(ax: i16, ay: i16, bx: i16, by: i16, threshold: i16) -> String {
+    format!(
+        r#"
+    fn main() {{
+        let a = vec3::new(fix32::from_int({ax}), fix32::from_int({ay}), fix32::zero());
+        let b = vec3::new(fix32::from_int({bx}), fix32::from_int({by}), fix32::zero());
+        let s = v3_length2(a);
+        let n = v3_normalize(a);
+        let gt = v3_distance_gt(a, b, fix32::from_int({threshold}));
+        halt(s.lo_bits() ^ (s.hi_bits() << 1)
+             ^ (n.x().lo_bits() << 2) ^ (n.y().hi_bits() << 3)
+             ^ ((gt as u16) << 4));
+    }}
+"#
+    )
+}
+
+/// The same calls through the `_checked` debug helpers.
+fn geometry_checked_source(ax: i16, ay: i16, bx: i16, by: i16, threshold: i16) -> String {
+    format!(
+        r#"
+    fn main() {{
+        let a = vec3::new(fix32::from_int({ax}), fix32::from_int({ay}), fix32::zero());
+        let b = vec3::new(fix32::from_int({bx}), fix32::from_int({by}), fix32::zero());
+        let s = v3_length2_checked(a);
+        let n = v3_normalize_checked(a);
+        let gt = v3_distance_gt_checked(a, b, fix32::from_int({threshold}));
+        halt(s.lo_bits() ^ (s.hi_bits() << 1)
+             ^ (n.x().lo_bits() << 2) ^ (n.y().hi_bits() << 3)
+             ^ ((gt as u16) << 4));
+    }}
+"#
+    )
+}
+
+/// The CPU V3 reference model result for [`geometry_helper_source`]. The target
+/// sequence and this model share `DOTSTORE`, `RSQRT`, `VMULS`, `VSUB` and the
+/// scalar `CMP`, so they must agree bit for bit.
+fn geometry_expected_signal(ax: i32, ay: i32, bx: i32, by: i32, threshold: i32) -> u16 {
+    let a = [ax << 16, ay << 16, 0];
+    let b = [bx << 16, by << 16, 0];
+    let s = cpu_v3::v3_length2(a);
+    let n = cpu_v3::v3_normalize(a);
+    let gt = cpu_v3::v3_distance_gt(a, b, threshold << 16);
+    (s as u16)
+        ^ (((s as u32 >> 16) as u16) << 1)
+        ^ ((n[0] as u16) << 2)
+        ^ (((n[1] as u32 >> 16) as u16) << 3)
+        ^ (u16::from(gt) << 4)
+}
+
+/// Cases inside the small-range contract: every `a` component is within
+/// `[-104, +104]`, every input component is within `[-16384, +16383]`, and
+/// every difference component is within `[-104, +104]`.
+const GEOMETRY_CASES: &[(i16, i16, i16, i16, i16)] = &[
+    (3, 4, 1, 1, 2),
+    (100, -100, 90, -90, 100),
+    (-104, 104, 0, 0, 50),
+    (0, 0, 0, 0, 0),
+    (1, 2, 1, 2, -5),
+];
+
+/// The release v3 geometry library compiles to existing FPU v2 instructions.
+/// This runs each generated sequence on the architectural simulator and checks
+/// the result against the reference model, so it pins the lowering without
+/// needing Icarus and keeps every program under a bounded step count.
+#[test]
+fn emulator_matches_reference_for_compiled_geometry_helpers() {
+    for &(ax, ay, bx, by, threshold) in GEOMETRY_CASES {
+        let program = compile(&geometry_helper_source(ax, ay, bx, by, threshold));
+        let expected = geometry_expected_signal(
+            i32::from(ax),
+            i32::from(ay),
+            i32::from(bx),
+            i32::from(by),
+            i32::from(threshold),
+        );
+        let signal = run_program_signal(&program, 20_000);
+        assert_eq!(
+            signal, expected,
+            "geometry helper mismatch for a=({ax},{ay}) b=({bx},{by}) threshold={threshold}"
+        );
+    }
+}
+
+/// Runs a compiled program on the architectural simulator and returns its halt
+/// signal, failing if it faults or exceeds the bounded step count.
+fn run_program_signal(program: &[u16], maximum_steps: usize) -> u16 {
+    let mut machine = CpuV3Sim::default();
+    machine.load_program(0, program).unwrap();
+    let outcome = machine.run(maximum_steps).unwrap();
+    let RunOutcome::Halted { signal, .. } = outcome else {
+        panic!("program did not halt in {maximum_steps} steps")
+    };
+    signal
+}
+
+/// The `_checked` helpers must return exactly the release results whenever the
+/// small-range contract holds.
+#[test]
+fn checked_geometry_helpers_match_unchecked_on_valid_input() {
+    for &(ax, ay, bx, by, threshold) in GEOMETRY_CASES {
+        let unchecked = compile(&geometry_helper_source(ax, ay, bx, by, threshold));
+        let checked = compile(&geometry_checked_source(ax, ay, bx, by, threshold));
+        let unchecked_signal = run_program_signal(&unchecked, 20_000);
+        let checked_signal = run_program_signal(&checked, 20_000);
+        assert_eq!(
+            checked_signal, unchecked_signal,
+            "checked helper diverged for a=({ax},{ay}) b=({bx},{by}) threshold={threshold}"
+        );
+    }
+}
+
+/// `v3_length2_checked` halts with its documented signal on a bad component.
+#[test]
+fn checked_length2_halts_with_its_signal() {
+    let program = compile(
+        "fn main() { let a = vec3::new(fix32::from_int(105), fix32::zero(), fix32::zero()); \
+         let s = v3_length2_checked(a); halt(s.lo_bits()); }",
+    );
+    assert_eq!(
+        run_program_signal(&program, 20_000),
+        cpu_v3::V3_LENGTH2_CHECKED_HALT
+    );
+}
+
+/// `v3_normalize_checked` halts with its documented signal on a bad component.
+#[test]
+fn checked_normalize_halts_with_its_signal() {
+    let program = compile(
+        "fn main() { let a = vec3::new(fix32::from_int(105), fix32::zero(), fix32::zero()); \
+         let n = v3_normalize_checked(a); halt(n.x().lo_bits()); }",
+    );
+    assert_eq!(
+        run_program_signal(&program, 20_000),
+        cpu_v3::V3_NORMALIZE_CHECKED_HALT
+    );
+}
+
+/// `v3_distance_gt_checked` halts with the input-range signal when a raw input
+/// component cannot be safely subtracted.
+#[test]
+fn checked_distance_halts_with_the_input_signal() {
+    let program = compile(
+        "fn main() { let a = vec3::new(fix32::from_int(16384), fix32::zero(), fix32::zero()); \
+         let b = vec3::zero(); let g = v3_distance_gt_checked(a, b, fix32::zero()); halt(g as u16); }",
+    );
+    assert_eq!(
+        run_program_signal(&program, 20_000),
+        cpu_v3::V3_DISTANCE_GT_CHECKED_INPUT_HALT
+    );
+}
+
+/// `v3_distance_gt_checked` halts with the difference-range signal when the
+/// in-range inputs differ by more than the `DOTSTORE` can hold.
+#[test]
+fn checked_distance_halts_with_the_difference_signal() {
+    let program = compile(
+        "fn main() { let a = vec3::new(fix32::from_int(100), fix32::zero(), fix32::zero()); \
+         let b = vec3::new(fix32::from_int(-100), fix32::zero(), fix32::zero()); \
+         let g = v3_distance_gt_checked(a, b, fix32::zero()); halt(g as u16); }",
+    );
+    assert_eq!(
+        run_program_signal(&program, 20_000),
+        cpu_v3::V3_DISTANCE_GT_CHECKED_DIFFERENCE_HALT
+    );
+}
+
+#[test]
+#[ignore = "explicit emulator-vs-Icarus co-simulation of a compiled geometry-library FPU program"]
+fn core_emu_matches_rtl_compiled_geometry_fpu_program() {
+    let (ax, ay, bx, by, threshold) = GEOMETRY_CASES[0];
+    let program = compile(&geometry_helper_source(ax, ay, bx, by, threshold));
+    let expected = geometry_expected_signal(
+        i32::from(ax),
+        i32::from(ay),
+        i32::from(bx),
+        i32::from(by),
+        i32::from(threshold),
+    );
+    let module_name = CpuV3Core::verilog_identity().module_name();
+    let emu = run_core_emu_trace(&program, 20_000);
+    assert!(!emu.is_empty(), "emu trace empty");
+    let last_emu = emu.last().copied().expect("emu trace non-empty");
+    assert!(
+        !last_emu.fault,
+        "compiled geometry program faulted in the cycle model: code={} pc={:#06x}",
+        last_emu.fault_code, last_emu.fault_pc
+    );
+    assert!(last_emu.halted, "compiled geometry program did not halt");
+    assert_eq!(last_emu.halt_signal, expected, "unexpected geometry result");
+
+    let max_cycles = emu.len() + 800;
     let tb = build_core_cosim_tb(&program, &module_name, max_cycles);
     let rtl = run_core_rtl_trace(&tb);
     for (index, (expected, actual)) in emu.iter().zip(&rtl).enumerate() {

@@ -170,7 +170,7 @@ fn test_typed_array_view_errors() {
         "indexing requires Array",
     );
     // u16/i16/struct views exist; bool (P2: use a u16 bitmask) and FPU elements do not
-    expect_error("fn f(a: Array<fix16>) {}", "Array element type must be");
+    expect_error("fn f(a: Array<fix32>) {}", "Array element type must be");
     expect_error("fn f(a: Array<bool>) {}", "Array element type must be");
     expect_error(
         "fn f(mut a: Array<u16>) { a[0u16] = -1i16; }",
@@ -206,7 +206,7 @@ fn test_array_element_whitelists_agree() {
         ))
     };
     let accepted = ["u16", "i16", "S"];
-    let rejected = ["bool", "Ptr", "fix16", "vec2", "vec4", "u8", "Buf<u16, 4>"];
+    let rejected = ["bool", "Ptr", "fix32", "vec2", "vec4", "u8", "Buf<u16, 4>"];
     for t in accepted {
         assert!(view(t), "Array<{t}> should be accepted");
         assert!(owned(t), "Buf<{t}, 2> should be accepted");

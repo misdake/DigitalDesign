@@ -1950,19 +1950,19 @@ mod tests {
     use super::*;
     use rcc::frontend::parse_source_with;
 
-    /// C1 lowers scalar `fix16` end to end through the two-word v2 ISA:
-    /// construction, arithmetic, unary operations and the numeric conversion.
+    /// Scalar `fix32` lowers end to end through the two-word v2 ISA:
+    /// construction, arithmetic, unary operations, and numeric conversion.
     #[test]
-    fn scalar_fix16_arithmetic_unary_and_conversions_run_on_the_machine() {
+    fn scalar_fix32_arithmetic_unary_and_conversions_run_on_the_machine() {
         let source = r#"
             fn main() {
-                let a = fix16::from_int(7);
-                let b = fix16::from_int(-2);
+                let a = fix32::from_int(7);
+                let b = fix32::from_int(-2);
                 let sum = a + b;             // 5
                 let diff = a - b;            // 9
                 let prod = a * b;            // -14
                 let neg = -b;                // 2
-                let fl = fix16::from_words(0x8000, 0x0001); // 1.5
+                let fl = fix32::from_words(0x8000, 0x0001); // 1.5
                 let down = fl.trunc();       // 1.0
                 let up = fl.ceil();          // 2.0
                 halt((sum + diff + prod + neg + down + up).to_int() as u16);
@@ -1975,39 +1975,39 @@ mod tests {
     /// The raw-half bridge (`ILO2F`/`IHI2F`/`FLO2I`/`FHI2I`) moves both words
     /// without numeric conversion.
     #[test]
-    fn scalar_fix16_raw_half_bridge_round_trips_words() {
+    fn scalar_fix32_raw_half_bridge_round_trips_words() {
         let source = r#"
             fn main() {
-                let v = fix16::from_words(0x1234u16, 0xabcdu16);
+                let v = fix32::from_words(0x1234u16, 0xabcdu16);
                 halt(v.lo_bits() ^ v.hi_bits());
             }
         "#;
         assert_eq!(run(source), 0x1234u16 ^ 0xabcdu16);
     }
 
-    /// A fix16 value live across a call has no callee-saved F register to live
+    /// A fix32 value live across a call has no callee-saved F register to live
     /// in, so it spills through a frame slot (`AddrOfFpuSpill` + FST/FLD).
     #[test]
-    fn scalar_fix16_values_spill_across_calls() {
+    fn scalar_fix32_values_spill_across_calls() {
         let source = r#"
-            fn addfix(a: fix16, b: fix16) -> fix16 { a + b }
+            fn addfix(a: fix32, b: fix32) -> fix32 { a + b }
             fn main() {
-                let a = fix16::from_int(5);
-                let b = addfix(a, fix16::from_int(1)); // `a` lives across the call
+                let a = fix32::from_int(5);
+                let b = addfix(a, fix32::from_int(1)); // `a` lives across the call
                 halt((a + b).to_int() as u16);
             }
         "#;
         assert_eq!(run(source), 11);
     }
 
-    /// fix16 comparisons feed the shared pending test; a materialized bool uses
+    /// fix32 comparisons feed the shared pending test; a materialized bool uses
     /// a scalar `CMP` plus one conditional move.
     #[test]
-    fn scalar_fix16_comparisons_branch_and_materialize_bools() {
+    fn scalar_fix32_comparisons_branch_and_materialize_bools() {
         let source = r#"
             fn main() {
-                let a = fix16::from_int(2);
-                let b = fix16::from_int(3);
+                let a = fix32::from_int(2);
+                let b = fix32::from_int(3);
                 let lt = a < b;
                 let ge = a >= b;
                 let eq = a == a;
@@ -2022,16 +2022,16 @@ mod tests {
         assert_eq!(run(source), 1);
     }
 
-    /// fix16 variables, loops and if-expressions exercise phis, compound
+    /// fix32 variables, loops and if-expressions exercise phis, compound
     /// assignment and range-free scalar allocation.
     #[test]
-    fn scalar_fix16_variables_loops_and_if_expressions_run() {
+    fn scalar_fix32_variables_loops_and_if_expressions_run() {
         let source = r#"
             fn main() {
-                let mut acc = fix16::zero();
-                let mut i = fix16::zero();
-                let one = fix16::from_int(1);
-                let limit = fix16::from_int(5);
+                let mut acc = fix32::zero();
+                let mut i = fix32::zero();
+                let one = fix32::from_int(1);
+                let limit = fix32::from_int(5);
                 while i < limit {
                     acc += i;
                     i += one;
@@ -2051,10 +2051,10 @@ mod tests {
     fn vector_construct_arithmetic_broadcast_unary_and_lanes_run() {
         let source = r#"
             fn main() {
-                let a = vec3::new(fix16::from_int(1), fix16::from_int(2), fix16::from_int(3));
-                let b = vec3::new(fix16::from_int(4), fix16::from_int(5), fix16::from_int(6));
+                let a = vec3::new(fix32::from_int(1), fix32::from_int(2), fix32::from_int(3));
+                let b = vec3::new(fix32::from_int(4), fix32::from_int(5), fix32::from_int(6));
                 let c = a + b;                     // 5, 7, 9
-                let d = c * fix16::from_int(2);    // 10, 14, 18
+                let d = c * fix32::from_int(2);    // 10, 14, 18
                 let e = -d;                        // -10, -14, -18
                 let f = e.abs();                   // 10, 14, 18
                 halt((f.x() + f.y() + f.z()).to_int() as u16); // 42
@@ -2069,13 +2069,13 @@ mod tests {
     fn vector_arguments_and_returns_follow_the_fpu_abi() {
         let source = r#"
             fn add3(a: vec3, b: vec3) -> vec3 { a + b }
-            fn scale4(v: vec4, s: fix16) -> vec4 { v * s }
-            fn dot3(a: vec3, b: vec3) -> fix16 { fdot(a, b) }
+            fn scale4(v: vec4, s: fix32) -> vec4 { v * s }
+            fn dot3(a: vec3, b: vec3) -> fix32 { fdot(a, b) }
             fn main() {
-                let a = vec3::new(fix16::from_int(1), fix16::from_int(2), fix16::from_int(3));
-                let b = vec3::new(fix16::from_int(4), fix16::from_int(5), fix16::from_int(6));
+                let a = vec3::new(fix32::from_int(1), fix32::from_int(2), fix32::from_int(3));
+                let b = vec3::new(fix32::from_int(4), fix32::from_int(5), fix32::from_int(6));
                 let c = add3(a, b);                 // 5, 7, 9
-                let d = scale4(vec4::new(c.x(), c.y(), c.z(), fix16::zero()), fix16::from_int(2));
+                let d = scale4(vec4::new(c.x(), c.y(), c.z(), fix32::zero()), fix32::from_int(2));
                 let e = vec3::new(d.x(), d.y(), d.z()); // 10, 14, 18
                 halt(dot3(e, e).to_int() as u16);   // 100 + 196 + 324 = 620
             }
@@ -2091,8 +2091,8 @@ mod tests {
             fn main() {
                 let mut buf: Buf<u16, 8> = Buf::new([0; 8]);
                 let ptr = buf.as_ptr();
-                let v = vec4::new(fix16::from_int(2), fix16::from_int(3),
-                                  fix16::from_int(4), fix16::from_int(5));
+                let v = vec4::new(fix32::from_int(2), fix32::from_int(3),
+                                  fix32::from_int(4), fix32::from_int(5));
                 vec4::export(v, ptr);
                 let back = vec4::import(ptr);
                 let d = fdot(back, back);           // 4 + 9 + 16 + 25 = 54
@@ -2108,7 +2108,7 @@ mod tests {
     fn vector_loop_accumulator_runs() {
         let source = r#"
             fn main() {
-                let one = vec3::new(fix16::from_int(1), fix16::from_int(2), fix16::from_int(3));
+                let one = vec3::new(fix32::from_int(1), fix32::from_int(2), fix32::from_int(3));
                 let mut acc = vec3::zero();
                 let mut i: u16 = 0;
                 while i < 5 {
@@ -2128,10 +2128,10 @@ mod tests {
         let source = r#"
             fn keep(a: vec4, b: vec4) -> vec4 { a + b }
             fn main() {
-                let v = vec4::new(fix16::from_int(1), fix16::from_int(2),
-                                  fix16::from_int(3), fix16::from_int(4));
-                let w = keep(v, vec4::new(fix16::from_int(10), fix16::from_int(10),
-                                          fix16::from_int(10), fix16::from_int(10)));
+                let v = vec4::new(fix32::from_int(1), fix32::from_int(2),
+                                  fix32::from_int(3), fix32::from_int(4));
+                let w = keep(v, vec4::new(fix32::from_int(10), fix32::from_int(10),
+                                          fix32::from_int(10), fix32::from_int(10)));
                 halt((v.x() + v.y() + v.z() + v.w()
                       + w.x() + w.y() + w.z() + w.w()).to_int() as u16);
             }
@@ -2147,9 +2147,9 @@ mod tests {
     fn vector_lane_shuffle_handles_overlapping_parallel_moves() {
         let source = r#"
             fn main() {
-                let v = vec3::new(fix16::from_int(1), fix16::from_int(2), fix16::from_int(3));
+                let v = vec3::new(fix32::from_int(1), fix32::from_int(2), fix32::from_int(3));
                 let s = vec3::new(v.z(), v.x(), v.y()); // 3, 1, 2
-                halt((s.x() * fix16::from_int(100) + s.y() * fix16::from_int(10) + s.z())
+                halt((s.x() * fix32::from_int(100) + s.y() * fix32::from_int(10) + s.z())
                      .to_int() as u16);
             }
         "#;
@@ -2208,8 +2208,8 @@ mod tests {
         for i in 0..10 {
             let v = i + 1;
             source.push_str(&format!(
-                "let a{i} = vec4::new(fix16::from_int({v}), fix16::from_int({v}), \
-                 fix16::from_int({v}), fix16::from_int({v}));\n"
+                "let a{i} = vec4::new(fix32::from_int({v}), fix32::from_int({v}), \
+                 fix32::from_int({v}), fix32::from_int({v}));\n"
             ));
         }
         for i in 0..10 {
@@ -2231,7 +2231,7 @@ mod tests {
     /// hand-built IR function pins the whole image (allocation is deterministic
     /// for a straight-line function).
     #[test]
-    fn scalar_fix16_add_emits_exact_two_word_words() {
+    fn scalar_fix32_add_emits_exact_two_word_words() {
         use rcc::{FpuBinOp, FuncBuilder, RegClass};
         let (mut b, params) = FuncBuilder::new_typed("main", &[RegClass::Fpu, RegClass::Fpu], 1);
         let a = b.get(params[0]);
@@ -2340,7 +2340,7 @@ mod tests {
     fn compiled_special_functions_match_the_reference_model() {
         let source = r#"
             fn main() {
-                let x = fix16::from_words(0x0000u16, 0x0003u16); // 3.0
+                let x = fix32::from_words(0x0000u16, 0x0003u16); // 3.0
                 let r = frcp(x);
                 let s = frsqrt(x);
                 let sc = fsincos(x);
@@ -2467,7 +2467,7 @@ mod tests {
         let source = r#"
             fn keep(a: vec3, b: vec3) -> vec3 { a + b }
             fn main() {
-                let v = vec3::new(fix16::from_int(1), fix16::from_int(2), fix16::from_int(3));
+                let v = vec3::new(fix32::from_int(1), fix32::from_int(2), fix32::from_int(3));
                 let w = keep(v, v);
                 halt((v.x() + w.x()).to_int() as u16);
             }
@@ -2507,12 +2507,12 @@ mod tests {
         let source = r#"
             fn add4(a: vec4, b: vec4) -> vec4 { a + b }
             fn main() {
-                let a = vec4::new(fix16::from_int(1), fix16::from_int(2),
-                                  fix16::from_int(3), fix16::from_int(4));
-                let b = vec4::new(fix16::from_int(10), fix16::from_int(20),
-                                  fix16::from_int(30), fix16::from_int(40));
+                let a = vec4::new(fix32::from_int(1), fix32::from_int(2),
+                                  fix32::from_int(3), fix32::from_int(4));
+                let b = vec4::new(fix32::from_int(10), fix32::from_int(20),
+                                  fix32::from_int(30), fix32::from_int(40));
                 let c = add4(a, b);
-                let d = c * fix16::from_int(2);
+                let d = c * fix32::from_int(2);
                 let s = d.x() + d.y() + d.z() + d.w();
                 let dot = fdot(c, d);
                 halt((s + dot).to_int() as u16);
@@ -2526,10 +2526,10 @@ mod tests {
     #[test]
     fn an_fpu_class_program_is_now_lowered_by_the_backend() {
         let source = r#"
-            fn identity(v: fix16) -> fix16 { v }
+            fn identity(v: fix32) -> fix32 { v }
             fn main() {
-                let keep: fn(fix16) -> fix16 = identity;
-                halt(keep(fix16::from_int(9)).to_int() as u16);
+                let keep: fn(fix32) -> fix32 = identity;
+                halt(keep(fix32::from_int(9)).to_int() as u16);
             }
         "#;
         assert_eq!(run(source), 9);

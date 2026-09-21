@@ -14,14 +14,19 @@ fn main() {
     let mut i: u16 = 0;
     while i < N {
         let v = vec4::new(
-            fix16::from_bits((i & 7) + 64),
-            fix16::from_bits((i & 15) + 32),
-            fix16::from_bits((i & 31) + 16),
-            fix16::zero(),
+            fix32::from_words(((i & 7) + 64) << 8, 0),
+            fix32::from_words(((i & 15) + 32) << 8, 0),
+            fix32::from_words(((i & 31) + 16) << 8, 0),
+            fix32::zero(),
         );
         let inv = frsqrt(fdot(v, v));
         let n = v * inv;
-        out[i] = n.x().to_bits() ^ n.y().to_bits() ^ n.z().to_bits();
+        out[i] = n.x().lo_bits()
+            ^ n.x().hi_bits()
+            ^ n.y().lo_bits()
+            ^ n.y().hi_bits()
+            ^ n.z().lo_bits()
+            ^ n.z().hi_bits();
         i = i + 1;
     }
     i = 0;

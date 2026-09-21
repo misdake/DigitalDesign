@@ -744,7 +744,7 @@ pub struct IrFunc {
     /// register class of every vreg (indexed by vreg id)
     pub vreg_class: Vec<RegClass>,
     /// number of contiguous F registers a vreg occupies (indexed by vreg id):
-    /// `1` for every GPR and every scalar `fix16`, `2`/`3`/`4` for a
+    /// `1` for every GPR and every scalar `fix32`, `2`/`3`/`4` for a
     /// `vec2`/`vec3`/`vec4` value. The register allocator assigns the range
     /// `base .. base + lanes - 1` and codegen reads the base.
     pub vreg_lanes: Vec<u8>,

@@ -40,7 +40,7 @@ unclear, ask instead of deciding silently.
   into Cargo `OUT_DIR`; use the `cpu-v3-boot-assets` binary to materialize those exact files.
 - Verilog: a `?:` is unsigned when any branch is unsigned, so never nest `>>>` or a signed comparison
   in one — compute each signed result in its own assignment or a statement-based `case` and select
-  between the results. `ASR`/`ASRI` (hence `fix16::to_int()`) broke on hardware this way; after any
+  between the results. `ASR`/`ASRI` (hence `fix32::to_int()`) broke on hardware this way; after any
   RTL signed-arithmetic change run both co-simulations below.
 
 ## Tool environment
