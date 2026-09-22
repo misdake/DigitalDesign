@@ -3,103 +3,55 @@ module tb;
 reg clk=0; always #5 clk=~clk;
 reg reset=0, cpu_request_valid=0, cpu_write=0, cpu_line=0, cpu_response_ready=0;
 reg [21:0] cpu_address=0; reg [63:0] cpu_write_data=0;
-reg display_request_valid=0, display_urgent=0; reg [21:0] display_address=0;
 reg [63:0] controller_read_data=0; reg controller_read_valid=0;
 reg controller_init_done=0, controller_command_ack=0, controller_write_data_ready=1;
-wire cpu_request_ready,cpu_response_valid,cpu_response_last,cpu_error,display_request_ready;
-wire display_data_valid,display_last,display_error,controller_command_valid,controller_precharge;
-wire controller_write_data_valid;
-wire [63:0] cpu_read_data; wire [31:0] display_read_data;
+wire cpu_request_ready,cpu_response_valid,cpu_response_last,cpu_error;
+wire controller_command_valid,controller_precharge,controller_write_data_valid;
+wire [63:0] cpu_read_data;
 wire [2:0] controller_command; wire [20:0] controller_address;
 wire [3:0] controller_write_mask; wire [63:0] controller_write_data; wire [7:0] controller_burst_length;
 SharedSdramPort dut(.*);
+localparam CMD_REFRESH=3'b001, CMD_ACTIVE=3'b011, CMD_WRITE=3'b100, CMD_READ=3'b101;
+localparam ST_IDLE=1, ST_ACTIVE_WAIT=3, ST_OP_WAIT=5, ST_WRITE_STAGE=13;
 integer cycles=0;
 always @(posedge clk) begin
   cycles<=cycles+1;
   if(cycles>20000) $fatal(1,"testbench cycle limit exceeded");
 end
 integer i;
-integer cpu_accepted_while_display_drain;
 task ack; input [2:0] command; begin
-  while (!(controller_command_valid && controller_command==command)) @(posedge clk);
-  controller_command_ack<=1; @(posedge clk); controller_command_ack<=0;
-end endtask
-// Drive an in-flight CPU write to completion wherever it is in its sequence:
-// ack the ACTIVE command if the port still waits on it, then ack WRITE at
-// ST_OP_WAIT. A write completion only needs controller_command_ack, so the
-// one-cycle command-valid windows do not have to be caught precisely.
-task finish_cpu_write; begin
-  while (dut.state!=5) begin
-    if (dut.state==3) begin
-      controller_command_ack<=1; @(posedge clk); #1; controller_command_ack<=0;
-    end else @(negedge clk);
-  end
-  controller_command_ack<=1; @(posedge clk); #1; controller_command_ack<=0;
+  while (!(controller_command_valid && controller_command==command)) @(negedge clk);
+  controller_command_ack=1; @(posedge clk); #1; controller_command_ack=0;
 end endtask
 initial begin
   repeat(2) @(posedge clk); controller_init_done=1; @(posedge clk);
-  display_address=22'h200100; display_request_valid=1; display_urgent=1;
-  while(!display_request_ready) @(posedge clk); @(posedge clk); display_request_valid=0;
-  ack(3'b011);
-  while (!(controller_command_valid && controller_command==3'b101)) @(posedge clk);
-  if(controller_burst_length!=7) $fatal(1,"display did not request 8 beats");
-  controller_command_ack<=1;
-  @(posedge clk); #1; controller_command_ack<=0;
-  while(dut.state!=5) @(negedge clk);
-  for(i=0;i<4;i=i+1) begin
-    controller_read_data[31:0]=32'h10000000+2*i;
-    controller_read_data[63:32]=32'h10000001+2*i;
-    controller_read_valid=1; @(posedge clk);
-    @(negedge clk);
-  end
-  controller_read_valid<=0;
-  // The display's 8x32-bit consumer drain must not keep owning the SDRAM
-  // scheduler after the four 64-bit controller beats have been captured.
-  cpu_address=22'h000007; cpu_write_data=16'habcd; cpu_write=1; cpu_request_valid=1;
-  cpu_accepted_while_display_drain=0;
-  while(!display_data_valid) @(negedge clk);
-  for(i=0;i<8;i=i+1) begin
-    #1;
-    if(!display_data_valid || display_read_data!==32'h10000000+i)
-      $fatal(1,"lost display beat %0d data=%h state=%0d beat=%0d b0=%h b1=%h",i,display_read_data,dut.state,dut.beat,dut.display_read_buffer[0],dut.display_read_buffer[1]);
-    if(display_last !== (i==7)) $fatal(1,"bad last at %0d",i);
-    if(cpu_request_ready) cpu_accepted_while_display_drain=1;
-    controller_command_ack = controller_command_valid && controller_command==3'b011;
-    @(negedge clk);
-  end
-  if(!cpu_accepted_while_display_drain)
-    $fatal(1,"display buffer drain kept the SDRAM scheduler occupied");
-  cpu_request_valid=0; cpu_write=0; controller_command_ack=0;
-  finish_cpu_write;
-  if(controller_write_mask!=4'b0011 || controller_write_data!=32'habcd0000) $fatal(1,"bad word lane");
-  while(!cpu_response_valid) @(posedge clk);
-  if(!cpu_response_last) $fatal(1,"cpu write completion must carry last");
-  @(negedge clk); cpu_response_ready=1; @(posedge clk); #1; cpu_response_ready=0;
+
   // Dedicated word write from idle: the half-word must be staged through
   // ST_WRITE_STAGE (controller_write_data_valid) so the 108/54 gearbox can
   // capture it into write_buffer before ACTIVE/WRITE.
   cpu_address=22'h00000f; cpu_write_data=16'h1234; cpu_write=1; cpu_request_valid=1;
   while(!cpu_request_ready) @(posedge clk);
   @(posedge clk); cpu_request_valid=0; cpu_write=0;
-  if(dut.state!=13 || !controller_write_data_valid) $fatal(1,"word write did not enter ST_WRITE_STAGE");
+  if(dut.state!=ST_WRITE_STAGE || !controller_write_data_valid) $fatal(1,"word write did not enter ST_WRITE_STAGE");
   if(controller_write_data!=32'h12340000) $fatal(1,"word write staged wrong data");
-  @(negedge clk);
-  finish_cpu_write;
-  if(controller_write_mask!=4'b0011 || controller_write_data!=32'h12340000) $fatal(1,"bad dedicated word lane");
-  while(!cpu_response_valid) @(posedge clk);
-  if(!cpu_response_last) $fatal(1,"dedicated word write completion must carry last");
+  ack(CMD_ACTIVE);
+  ack(CMD_WRITE);
+  if(controller_write_mask!=4'b0011 || controller_write_data!=32'h12340000) $fatal(1,"bad word lane");
+  if(!cpu_response_valid || !cpu_response_last) $fatal(1,"word write completion must carry last");
   @(negedge clk); cpu_response_ready=1; @(posedge clk); #1; cpu_response_ready=0;
+
   // CPU line read: one burst command, four ordered 64-bit beats.
   repeat(6) @(posedge clk);
+  @(negedge clk);
   cpu_address=22'h000200; cpu_line=1; cpu_request_valid=1;
-  while(!cpu_request_ready) @(posedge clk); @(posedge clk); cpu_request_valid=0; cpu_line=0;
-  ack(3'b011);
-  while (!(controller_command_valid && controller_command==3'b101)) @(posedge clk);
+  while(!cpu_request_ready) @(negedge clk);
+  @(posedge clk); @(negedge clk); cpu_request_valid=0; cpu_line=0;
+  ack(CMD_ACTIVE);
+  while (!(controller_command_valid && controller_command==CMD_READ)) @(negedge clk);
   if(controller_burst_length!=7) $fatal(1,"cpu line did not request 8 beats");
   if(controller_address!==21'h000100) $fatal(1,"cpu line base is not the burst base");
-  controller_command_ack<=1;
-  @(posedge clk); #1; controller_command_ack<=0;
-  while(dut.state!=5) @(negedge clk);
+  controller_command_ack<=1; @(posedge clk); #1; controller_command_ack<=0;
+  while(dut.state!=ST_OP_WAIT) @(negedge clk);
   for(i=0;i<4;i=i+1) begin
     controller_read_data[31:0]=32'h20000000+2*i;
     controller_read_data[63:32]=32'h20000001+2*i;
@@ -111,9 +63,10 @@ initial begin
   end
   controller_read_valid<=0;
   @(posedge clk); #1;
-  if(cpu_response_valid) $fatal(1,"cpu line response did not end after beat seven");
-  // CPU line write: capture four incoming 64-bit beats first, then present beat zero
-  // with the command acknowledgement and advance once per controller clock.
+  if(cpu_response_valid) $fatal(1,"cpu line response did not end after the fourth beat");
+
+  // CPU line write: capture four incoming 64-bit beats first, then present beat
+  // zero with the command acknowledgement and advance once per controller clock.
   repeat(6) @(posedge clk);
   @(negedge clk);
   cpu_address=22'h000300; cpu_write=1; cpu_line=1;
@@ -138,8 +91,8 @@ initial begin
       $fatal(1,"bad staged line write beat %0d: %h",i,controller_write_data);
     @(posedge clk);
   end
-  ack(3'b011);
-  while (!(controller_command_valid && controller_command==3'b100)) @(posedge clk);
+  ack(CMD_ACTIVE);
+  while (!(controller_command_valid && controller_command==CMD_WRITE)) @(negedge clk);
   if(controller_burst_length!=7) $fatal(1,"cpu line write did not request 8 beats");
   if(controller_write_mask!=0) $fatal(1,"cpu line write must enable all byte lanes");
   controller_command_ack=1;
@@ -147,7 +100,7 @@ initial begin
   if(!cpu_response_valid || !cpu_response_last)
     $fatal(1,"cpu line write completion missing");
   @(negedge clk); cpu_response_ready=1; @(posedge clk); #1; cpu_response_ready=0;
-  if(display_error || cpu_error) $fatal(1,"unexpected error");
+  if(cpu_error) $fatal(1,"unexpected error");
   $display("DIGITAL_DESIGN_PASS"); $finish;
 end
 endmodule

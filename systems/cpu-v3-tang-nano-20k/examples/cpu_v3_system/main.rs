@@ -1,8 +1,8 @@
 use cpu_v3::{CpuV3Core, CpuV3DataCache, CpuV3InstructionCache, CpuV3InstructionFetchQueue};
 use cpu_v3_tang_nano_20k::display::ACTIVE_DISPLAY_CONFIG;
 use cpu_v3_tang_nano_20k::{
-    BootDmaDevice, BootDmaEngine, BootProgressMonitor, CpuV3MemoryArbiter, FramebufferHdmi,
-    SharedSdramPort, SystemControlDevice,
+    BootDmaDevice, BootDmaEngine, BootProgressMonitor, CpuV3Gpu, CpuV3MemoryArbiter,
+    FramebufferHdmi, SharedSdramPort, SystemControlDevice,
 };
 use digital_design_circuit::CircuitWires;
 use digital_design_hardware::{Hardware, HardwareIdentity, Module, VerilogDependency};
@@ -94,6 +94,7 @@ impl Module for CpuV3System {
                     "__ARBITER__",
                     &CpuV3MemoryArbiter::verilog_identity().module_name(),
                 )
+                .replace("__GPU__", &CpuV3Gpu::verilog_identity().module_name())
                 .replace(
                     "__SYSTEM_CONTROL__",
                     &SystemControl::verilog_identity().module_name(),
@@ -137,6 +138,7 @@ impl Module for CpuV3System {
             VerilogDependency::new::<CpuV3InstructionCache>("u_instruction_cache"),
             VerilogDependency::new::<CpuV3DataCache>("u_data_cache"),
             VerilogDependency::new::<CpuV3MemoryArbiter>("u_memory_arbiter"),
+            VerilogDependency::new::<CpuV3Gpu>("u_gpu"),
             VerilogDependency::new::<SystemControl>("u_sysctl"),
             VerilogDependency::new::<BootDmaDevice>("u_boot_dma_device"),
             VerilogDependency::new::<BootDmaEngine>("u_boot_dma_engine"),
@@ -286,12 +288,20 @@ mod tests {
     fn project_contains_full_system_memory_flash_and_display() {
         let verilog = VerilogProject::generate::<CpuV3System>().unwrap();
         assert!(!verilog.resource_claims.is_empty());
+        // The GPU command processor and dummy framebuffer writer are part of
+        // the fitted system.
+        assert!(verilog
+            .files
+            .keys()
+            .any(|path| path.to_string_lossy().contains("gpu")));
         let project = gowin_project().generate().unwrap();
         assert_eq!(project.resources.claimed[&ResourceKind::SdrSdramDevice], 1);
         assert_eq!(project.resources.claimed[&ResourceKind::SpiFlashDevice], 1);
         assert_eq!(project.resources.claimed[&ResourceKind::Pll], 2);
         assert_eq!(project.resources.claimed[&ResourceKind::HdmiOutput], 1);
-        assert_eq!(project.resources.claimed[&ResourceKind::Bsram18K], 6);
+        // Boot BSRAM + two dual-port cache data banks + the FPU register RAM
+        // (two blocks) + the display line buffer.
+        assert_eq!(project.resources.claimed[&ResourceKind::Bsram18K], 8);
     }
 
     #[test]

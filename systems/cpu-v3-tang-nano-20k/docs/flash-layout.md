@@ -23,12 +23,11 @@ checks establish a successful boot.
 The board-level selection latch powers up at `10` (S2), so the configured S2
 application boots by default; holding the S1 button (`01`) during reset selects
 the slider diagnostic, and `11` is ignored. The current configuration uses the
-DDHT slider diagnostic for S1 and the migrated Q16.16 CPU/FPU sine, cosine,
-and circle demo (`rcc/display-demo.rs`) for S2. The display demo reports DDHT
-test ID `0x0b`, uses the hardware SINCOS path without a software trig table,
-and is loaded at `0007:0200`. The display program renders through cached CPU
-stores and cleans D-cache before each vblank framebuffer publication when it is
-configured.
+DDHT slider diagnostic for S1 and the GPU memory-interface demo
+(`rcc/display-demo.rs`) for S2. The display demo reports DDHT test ID `0x0b`
+after each published frame. It alternates two heap-backed command buffers,
+cleans their two cache lines, and lets GPU device 4 render the tile-linear
+framebuffer before requesting a vblank swap; the CPU no longer writes pixels.
 
 The current board's runtime SFDP probe reports an 8-MiB device. Its JEDEC ID is
 `EF 40 17`; this is a Winbond-family 64-Mbit part even though some board

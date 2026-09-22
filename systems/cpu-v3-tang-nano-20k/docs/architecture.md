@@ -12,7 +12,7 @@ optimization Stage. Reusable processor details belong to the
 - the revision 0.9 `CpuV3Core` at the Stage 12 microarchitecture level;
 - a four-entry instruction fetch queue with a four-entry, two-word resolved-target BTC;
 - a Stage0 instruction BSRAM window and separate 4-KiB I-cache and D-cache;
-- the CPU V3 memory arbiter and boot DMA client;
+- the seven-owner CPU V3 memory arbiter, boot DMA, and dummy GPU bring-up engine;
 - the related-clock SDRAM/display port and Gowin Controller HS boundary;
 - SPI-Flash boot DMA, system-control, boot-select, and framebuffer devices;
 - boot-progress reporting, UART, LEDs, and the HDMI output path (compile-time
@@ -74,10 +74,14 @@ FIFO.
 The fitted SDRAM is 8 MiB: 23 byte-address bits or 22 CPU word-address bits. The system rejects
 larger architectural physical addresses instead of truncating or aliasing them.
 
-`CpuV3MemoryArbiter` serializes I-cache, D-cache, and boot-DMA transactions onto the CPU-side memory
-port. Accepted work runs to completion. `SharedSdramPort` then schedules that traffic with display
-scanout and exposes the fitted 64-bit line or narrow-word interface toward the 108-MHz SDRAM
-controller. Display urgency protects scanout deadlines without changing CPU cache semantics.
+`CpuV3MemoryArbiter` serializes display, boot DMA, I-cache, D-cache, GPU command reads, GPU
+framebuffer reads, and GPU framebuffer writes onto the CPU-side memory port. Display has strict
+priority at transaction boundaries. The other owners use base priority plus a saturating four-bit
+age, with round-robin selection for equal scores; an accepted owner remains selected through its
+last response or error. GPU framebuffer reads are wired but idle in this milestone. The I-cache,
+D-cache, display, and GPU paths transfer fixed 4x64-bit lines; boot DMA retains its narrow-word
+mode. `SharedSdramPort` is now a single-client line/word adapter and no longer contains a second
+CPU/display arbiter.
 
 ## Clock domains
 
@@ -117,6 +121,7 @@ The fitted device allocation is:
 | 1 | Boot select | Latched reset-time application selection |
 | 2 | Boot DMA | SPI-Flash source, SDRAM destination, length, start, and status registers |
 | 3 | Display | Framebuffer configuration and scanout control |
+| 4 | GPU | Two-entry submit FIFO, completion/status registers, and temporary dummy commands |
 
 Device 0 channel 0 emits the registered one-cycle-delayed whole-I-cache invalidation pulse. Channel
 1 starts blocking D-cache clean-plus-invalidate, channel 4 starts blocking D-cache clean, and channel
@@ -126,10 +131,9 @@ UART byte and reports transmitter busy on reads.
 Device 1 channel 0 returns the reset-time boot selection. The board-level selection latch powers up
 at `10`, so the boot stage selects the configured S2 application by default; holding the S1 button
 (`01`) selects the configured S1 slider diagnostic, and `11` is ignored. The current project selects
-the primary diagnostic as S1 and the C3 Q16.16 FPU framebuffer demo as S2. The demo uses the
-compiled scalar, vector, and SINCOS paths directly, with no software trig table. Every configured
-application repeats a DDHT success frame over the device-0 UART: the S1 diagnostic reports test
-ID `0x07`, while the S2 display demo reports `0x0b` before drawing and once per published frame.
+the primary diagnostic as S1 and the GPU memory-interface demo as S2. S2 alternates two permanent,
+32-byte-aligned heap command buffers and the two framebuffer slots; it reports DDHT test ID `0x0b`
+after each completed GPU render and display vblank. S1 reports test ID `0x07`.
 
 Device 2 exposes the boot-DMA command and status register bank. It accepts a 24-bit absolute Flash
 byte address, a 22-bit physical SDRAM word destination, and file and memory byte sizes. Writing one
@@ -139,7 +143,16 @@ zero-fills `memory_size - file_size`. Error codes are `1` for file size exceedin
 for an invalid Flash extent, `3` for an invalid physical-memory extent, and `4` or `5` for Flash or
 SDRAM transport failures.
 
-CPU, DMA, display, and future GPU clients share physical SDRAM without hardware snooping. Software
+Device 4 stages a 22-bit command-buffer word address and a word count on write channels 0..3;
+channel 4 submits, and channel 5 performs an idle-only soft reset or sticky-error clear. Read
+channels 0..3 return accepted count, retired count, busy/full/error status, and queued depth. The
+queue holds two submissions in addition to the active one. Full or malformed submissions are
+rejected without incrementing the accepted count. The temporary command processor accepts only
+`SET_TARGET`, `FAKE_DRAW`, and `END`; it fetches one 32-byte command line at a time and the dummy
+writer keeps at most one 32-byte framebuffer write outstanding. This is a bring-up ABI, not the
+future geometry command-buffer contract.
+
+CPU, DMA, display, and GPU clients share physical SDRAM without hardware snooping. Software
 transfers ownership explicitly: CPU-produced data becomes visible after blocking D-cache clean;
 device-produced data becomes safely CPU-readable only after completion and blocking D-cache
 invalidation. Segment changes do not provide coherence because cache tags contain physical word
@@ -147,8 +160,11 @@ addresses.
 
 ## Display and diagnostics
 
-The application framebuffer is 400x240 RGB565 in SDRAM. The display path fetches
-it through the shared SDRAM port, buffers scanout lines, and produces the fitted
+The application framebuffer is 400x240 RGB565 in SDRAM, arranged as 25x15 consecutive 16x16
+tiles. Slots A and B begin at word addresses `0x0020_0000` and `0x0021_8000`; each reserves
+`0x18000` words, including padding after the 96,000-word pixel payload. The display path issues
+6,000 fixed 32-byte segment reads per source frame, stages each 4x64-bit response locally, drains
+it as 8x32-bit writes into the existing dual-clock line buffers, and produces the fitted
 HDMI TMDS output. The scanout mode is a single compile-time configuration
 (`display::ACTIVE_DISPLAY_CONFIG`), currently 800x480@60 with a 2x upscale and no
 side border; the retained 1280x720p60 3x mode is the one-word alternative and
@@ -166,13 +182,14 @@ the same stable mapping through `LoaderError::boot_report`.
 
 ## Current fitted result and validation boundary
 
-The current full-system build uses 9,591 Logic (7,914 LUT, 1,197 ALU, 80 RAM16), 4,286 logic
-registers, 6,951 CLS, three SDPB, four DPB, one pROM, two `MULT18X18`, one `MULT36X36`, and one
-`MULTADDALU18X18`. The CPU clock closes at 55.966 MHz against the 54-MHz constraint with 0.650 ns
-worst setup slack and zero setup/hold TNS. Registering the FPU AUX/FLD/FST GPR address selection
-removed the former state-to-GPR-write path from the top 25; the tightest path now runs from the
-instruction fetch queue head into core state, while the first GPR write endpoint has 1.100 ns
-slack.
+The current full-system build uses 11,313 Logic (9,300 LUT, 1,431 ALU, 97 RAM16), 4,696 logic
+registers, 7,802 CLS, three SDPB, four DPB, one pROM, two `MULT18X18`, one `MULT36X36`, and one
+`MULTADDALU18X18`. Relative to the pre-GPU `3e2d4a0` baseline this milestone adds 1,534 Logic,
+seventeen RAM16 cells (1,088 physical bits), 423 logic FF, and
+759 CLS while leaving BSRAM and DSP counts unchanged. The CPU clock closes at 55.541 MHz against
+the 54-MHz constraint with 0.514 ns worst setup slack and zero setup/hold TNS. The limiting path is
+inside the existing FPU SINCOS result stage; GPU and arbiter endpoints are absent from the top setup
+path.
 
 The system-level emulator-vs-RTL co-simulation `tests/system_cosim.rs` drives the composed RTL
 (core, fetch queue, I-cache, D-cache, memory arbiter, and a behavioral SDRAM word port) in Icarus

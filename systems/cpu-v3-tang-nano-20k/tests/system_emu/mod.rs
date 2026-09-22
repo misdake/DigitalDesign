@@ -816,6 +816,33 @@ fn set_bits<const N: usize>(wires: Wires<N>, value: u64, circuit: &mut Circuit) 
     }
 }
 
+/// Drive every arbiter requester that the CPU-only co-simulation leaves idle:
+/// boot DMA, display, and the three GPU masters. The GPU ports exist for the
+/// next milestone but must still be tied off explicitly.
+fn drive_idle_arbiter_requests(arbiter_input: &CpuV3MemoryArbiterInput, circuit: &mut Circuit) {
+    set_bit(arbiter_input.dma_request_valid, false, circuit);
+    set_bit(arbiter_input.dma_write, false, circuit);
+    set_bit(arbiter_input.dma_response_ready, false, circuit);
+    set_bits(arbiter_input.dma_address, 0, circuit);
+    set_bits(arbiter_input.dma_write_data, 0, circuit);
+    set_bit(arbiter_input.display_request_valid, false, circuit);
+    set_bits(arbiter_input.display_address, 0, circuit);
+    set_bit(arbiter_input.display_response_ready, true, circuit);
+    set_bit(arbiter_input.gpu_ro_request_valid, false, circuit);
+    set_bit(arbiter_input.gpu_ro_write, false, circuit);
+    set_bits(arbiter_input.gpu_ro_address, 0, circuit);
+    set_bits(arbiter_input.gpu_ro_write_data, 0, circuit);
+    set_bit(arbiter_input.gpu_fb_r_request_valid, false, circuit);
+    set_bit(arbiter_input.gpu_fb_r_write, false, circuit);
+    set_bits(arbiter_input.gpu_fb_r_address, 0, circuit);
+    set_bits(arbiter_input.gpu_fb_r_write_data, 0, circuit);
+    set_bit(arbiter_input.gpu_fb_w_request_valid, false, circuit);
+    set_bit(arbiter_input.gpu_fb_w_write, false, circuit);
+    set_bits(arbiter_input.gpu_fb_w_address, 0, circuit);
+    set_bits(arbiter_input.gpu_fb_w_write_data, 0, circuit);
+    set_bit(arbiter_input.memory_error, false, circuit);
+}
+
 /// Compiles an rcc CpuV3 source snippet to its loaded word image.
 pub fn compile_cpu_v3_source(source: &str) -> Vec<u16> {
     let options = CompilerOptions::default();
@@ -1151,12 +1178,7 @@ fn run_benchmark_profiled_inner(
     set_bit(icache_input.invalidate_all, false, &mut circuit);
     set_bit(dcache_input.invalidate_all, false, &mut circuit);
     set_bit(dcache_input.clean_all, false, &mut circuit);
-    set_bit(arbiter_input.dma_request_valid, false, &mut circuit);
-    set_bit(arbiter_input.dma_write, false, &mut circuit);
-    set_bit(arbiter_input.dma_response_ready, false, &mut circuit);
-    set_bits(arbiter_input.dma_address, 0, &mut circuit);
-    set_bits(arbiter_input.dma_write_data, 0, &mut circuit);
-    set_bit(arbiter_input.memory_error, false, &mut circuit);
+    drive_idle_arbiter_requests(&arbiter_input, &mut circuit);
 
     for cycle in 0..maximum_cycles + 100_000 {
         if halt_at.is_none() && cycle >= maximum_cycles {
@@ -1687,12 +1709,7 @@ pub fn run_system_trace(words: &[u16], maximum_cycles: usize) -> SystemTrace {
     set_bit(icache_input.invalidate_all, false, &mut circuit);
     set_bit(dcache_input.invalidate_all, false, &mut circuit);
     set_bit(dcache_input.clean_all, false, &mut circuit);
-    set_bit(arbiter_input.dma_request_valid, false, &mut circuit);
-    set_bit(arbiter_input.dma_write, false, &mut circuit);
-    set_bit(arbiter_input.dma_response_ready, false, &mut circuit);
-    set_bits(arbiter_input.dma_address, 0, &mut circuit);
-    set_bits(arbiter_input.dma_write_data, 0, &mut circuit);
-    set_bit(arbiter_input.memory_error, false, &mut circuit);
+    drive_idle_arbiter_requests(&arbiter_input, &mut circuit);
 
     for cycle in 0..maximum_cycles + 100_000 {
         if halt_at.is_none() && cycle >= maximum_cycles {

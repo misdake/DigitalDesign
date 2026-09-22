@@ -6,12 +6,12 @@
 //! (device 0), with the flash image backing the DMA model.
 
 use cpu_v3::rcc_backend::{self, CompilerOptions, CpuV3Program};
-use cpu_v3::{decode_fpu_pair, CpuV3Sim, FpuScalarSubop, FpuSinCosMode, Instruction};
+use cpu_v3::CpuV3Sim;
 use cpu_v3_tang_nano_20k::boot::{
     BootDmaDevice, BootErrorReport, BootSelectDevice, BootTarget, SystemControlDevice,
     S1_APPLICATION_LAYOUT, S2_APPLICATION_LAYOUT,
 };
-use cpu_v3_tang_nano_20k::{DisplayDevice, DISPLAY_DEVICE};
+use cpu_v3_tang_nano_20k::{DisplayDevice, GpuDevice, DISPLAY_DEVICE, GPU_DEVICE};
 
 fn compile_cpu_v3(file: &str, opts: &CompilerOptions) -> CpuV3Program {
     let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
@@ -67,43 +67,13 @@ fn assert_canonical_cache_handoff(stage: &str, words: &[u16]) {
     );
 }
 
-/// C3 restores the Q16.16 FPU display demo in the S2 slot: it must compile
-/// (no software trig table) and emit the special-function subops it relies on.
+/// The S2 GPU demo must remain a bounded program image after the framebuffer
+/// drawing loop moves out of CPU code.
 #[test]
-fn c3_display_demo_lowers_to_fpu_special_subops() {
+fn gpu_display_demo_compiles_into_the_s2_slot() {
     let program = compile_cpu_v3("display-demo.rs", &CompilerOptions::default());
-
-    let mut rcp = 0usize;
-    let mut rsqrt = 0usize;
-    let mut sincos_single = 0usize;
-    let mut sincos_dual = 0usize;
-    let mut index = 0;
-    while index + 1 < program.words.len() {
-        if let Instruction::FpuScalar { subop, mode, .. } =
-            decode_fpu_pair(program.words[index], program.words[index + 1])
-        {
-            match subop {
-                FpuScalarSubop::Rcp => rcp += 1,
-                FpuScalarSubop::Rsqrt => rsqrt += 1,
-                FpuScalarSubop::SinCos => match FpuSinCosMode::from_mode(mode) {
-                    Some(FpuSinCosMode::SinCos) => sincos_dual += 1,
-                    Some(_) => sincos_single += 1,
-                    None => panic!("display-demo emitted a reserved SINCOS mode"),
-                },
-                _ => {}
-            }
-        }
-        index += 1;
-    }
-    assert!(
-        sincos_dual > 0,
-        "the display demo must emit the dual-output SINCOS"
-    );
-    assert_eq!(
-        (rcp, rsqrt, sincos_single),
-        (0, 0, 0),
-        "the demo uses only dual-output SINCOS"
-    );
+    assert!(!program.words.is_empty());
+    assert!(program.words.len() < 0x1_0000);
 }
 
 /// Loads the package generated from the declarative application project and
@@ -149,6 +119,7 @@ fn run_boot(
         Box::new(BootDmaDevice::new(flash, machine.physical_memory_words())),
     );
     machine.attach_device(DISPLAY_DEVICE, Box::<DisplayDevice>::default());
+    machine.attach_device(GPU_DEVICE, Box::<GpuDevice>::default());
     // Stage0 executes from the BSRAM boot window: on hardware, instruction
     // fetches from physical words 0x0000..0x03ff read BSRAM while data
     // accesses (descriptor scratch at word 0x40) go to SDRAM.
@@ -216,14 +187,13 @@ fn button_01_boots_the_primary_application_from_flash() {
     assert!((0xbfc0..=0xc000).contains(&sp), "sp = {sp:#06x}");
 }
 
-/// The default S2 boot runs the restored Q16.16 FPU display demo
-/// (`rcc/display-demo.rs`). Within the bounded run the demo reports its DDHT
-/// `0x0b` frame before the first frame is filled; the fill then keeps it busy
-/// in framebuffer segments, so only the early observable effects are asserted.
+/// The default S2 boot submits one complete dummy-GPU frame and waits for the
+/// host-driven display vblank. This raw CPU model intentionally does not
+/// generate vblank, so the pending swap is the bounded completion point.
 #[test]
-fn button_10_boots_the_restored_display_demo_from_flash() {
+fn button_10_boots_and_submits_the_gpu_display_demo_from_flash() {
     let (flash, stage0) = boot_setup();
-    let machine = run_boot(flash, &stage0, 0b10, 500_000);
+    let mut machine = run_boot(flash, &stage0, 0b10, 500_000);
 
     assert_eq!(
         machine.code_segment(),
@@ -239,16 +209,20 @@ fn button_10_boots_the_restored_display_demo_from_flash() {
         0xdead
     );
     let sysctl = machine.device::<SystemControlDevice>(0).unwrap();
-    // Stage0 invalidates I-cache once during the handoff; the demo reports its
-    // DDHT 0x0b display frame before it starts filling the framebuffers.
     assert_eq!(sysctl.icache_invalidations, 1);
+    assert!(sysctl.uart.is_empty(), "DDHT is emitted only after vblank");
+    let gpu = machine.device::<GpuDevice>(GPU_DEVICE).unwrap();
+    assert_eq!(gpu.received_count(), 1);
+    assert_eq!(gpu.executed_count(), 1);
+    assert!(!gpu.busy());
+    assert!(!gpu.command_error());
+    let display = machine.device::<DisplayDevice>(DISPLAY_DEVICE).unwrap();
+    assert!(display.swap_pending());
+    assert!(display.advance_frame());
+    machine.run(100_000).expect("resume after vblank");
+    let sysctl = machine.device::<SystemControlDevice>(0).unwrap();
     let frame = ddht_frame_with_test_id(0x0b);
-    assert!(
-        sysctl.uart.len() >= frame.len(),
-        "expected a display-demo DDHT frame, got {:02x?}",
-        sysctl.uart
-    );
-    assert_eq!(sysctl.uart[..frame.len()], frame);
+    assert_eq!(&sysctl.uart[..frame.len()], &frame);
 }
 
 #[test]

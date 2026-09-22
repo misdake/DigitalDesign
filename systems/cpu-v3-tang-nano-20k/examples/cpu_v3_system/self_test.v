@@ -235,11 +235,13 @@ wire [15:0] sysctl_read_data;
 wire [15:0] boot_select_read_data;
 wire [15:0] dma_device_read_data;
 wire [15:0] display_read_data;
+wire [15:0] gpu_read_data;
 wire [5:0] software_leds;
 
 // Unselected devices read back zero, so the core sees the OR of all buses.
 assign device_read_data =
-    sysctl_read_data | boot_select_read_data | dma_device_read_data | display_read_data;
+    sysctl_read_data | boot_select_read_data | dma_device_read_data | display_read_data |
+    gpu_read_data;
 
 // Buttons are reset inputs, so their live value is 00 by the time the boot
 // stage can run. Synchronize and remember only the two valid one-hot
@@ -534,6 +536,76 @@ wire memory_response_last;
 wire memory_error;
 wire memory_response_ready;
 
+// GPU: device 4 with one fixed 32-byte command read master and one fixed
+// 32-byte framebuffer write master. `gpu_fb_r` stays idle this milestone.
+wire gpu_ro_memory_request_valid;
+wire gpu_ro_memory_write;
+wire [21:0] gpu_ro_memory_address;
+wire [63:0] gpu_ro_memory_write_data;
+wire gpu_ro_memory_request_ready;
+wire gpu_ro_memory_response_valid;
+wire [63:0] gpu_ro_memory_read_data;
+wire gpu_ro_memory_response_last;
+wire gpu_ro_memory_error;
+wire gpu_fb_w_memory_request_valid;
+wire gpu_fb_w_memory_write;
+wire [21:0] gpu_fb_w_memory_address;
+wire [63:0] gpu_fb_w_memory_write_data;
+wire gpu_fb_w_memory_request_ready;
+wire gpu_fb_w_memory_response_valid;
+wire [63:0] gpu_fb_w_memory_read_data;
+wire gpu_fb_w_memory_response_last;
+wire gpu_fb_w_memory_error;
+
+// Display scanout client of the shared SDRAM port. The arbiter gives it strict
+// priority; the scanout captures each 64-bit line beat and drains it locally.
+// Declared here because the arbiter below already references it.
+wire display_memory_request_valid;
+wire display_memory_urgent;
+wire [21:0] display_memory_address;
+wire display_memory_request_ready;
+wire display_memory_data_valid;
+wire [63:0] display_memory_read_data;
+wire display_memory_last;
+wire display_memory_error;
+
+__GPU__ u_gpu (
+    .clk(clk),
+    .reset(reset),
+    .device_index(device_index),
+    .device_channel(device_channel),
+    .device_read_enable(device_read_enable),
+    .device_write_enable(device_write_enable),
+    .device_write_data(device_write_data),
+    .gpu_ro_request_ready(gpu_ro_memory_request_ready),
+    .gpu_ro_response_valid(gpu_ro_memory_response_valid),
+    .gpu_ro_read_data(gpu_ro_memory_read_data),
+    .gpu_ro_response_last(gpu_ro_memory_response_last),
+    .gpu_ro_error(gpu_ro_memory_error),
+    .gpu_fb_w_request_ready(gpu_fb_w_memory_request_ready),
+    .gpu_fb_w_response_valid(gpu_fb_w_memory_response_valid),
+    .gpu_fb_w_response_last(gpu_fb_w_memory_response_last),
+    .gpu_fb_w_error(gpu_fb_w_memory_error),
+    .gpu_fb_r_request_ready(1'b1),
+    .gpu_fb_r_response_valid(1'b0),
+    .gpu_fb_r_read_data(64'h0),
+    .gpu_fb_r_response_last(1'b0),
+    .gpu_fb_r_error(1'b0),
+    .device_read_data(gpu_read_data),
+    .gpu_ro_request_valid(gpu_ro_memory_request_valid),
+    .gpu_ro_write(gpu_ro_memory_write),
+    .gpu_ro_address(gpu_ro_memory_address),
+    .gpu_ro_write_data(gpu_ro_memory_write_data),
+    .gpu_fb_w_request_valid(gpu_fb_w_memory_request_valid),
+    .gpu_fb_w_write(gpu_fb_w_memory_write),
+    .gpu_fb_w_address(gpu_fb_w_memory_address),
+    .gpu_fb_w_write_data(gpu_fb_w_memory_write_data),
+    .gpu_fb_r_request_valid(),
+    .gpu_fb_r_write(),
+    .gpu_fb_r_address(),
+    .gpu_fb_r_write_data()
+);
+
 __ARBITER__ u_memory_arbiter (
     .clk(clk),
     .reset(reset),
@@ -551,6 +623,21 @@ __ARBITER__ u_memory_arbiter (
     .dma_address(dma_memory_address),
     .dma_write_data(dma_memory_write_data),
     .dma_response_ready(dma_memory_response_ready),
+    .display_request_valid(display_memory_request_valid),
+    .display_address(display_memory_address),
+    .display_response_ready(1'b1),
+    .gpu_ro_request_valid(gpu_ro_memory_request_valid),
+    .gpu_ro_write(gpu_ro_memory_write),
+    .gpu_ro_address(gpu_ro_memory_address),
+    .gpu_ro_write_data(gpu_ro_memory_write_data),
+    .gpu_fb_r_request_valid(1'b0),
+    .gpu_fb_r_write(1'b0),
+    .gpu_fb_r_address(22'h0),
+    .gpu_fb_r_write_data(64'h0),
+    .gpu_fb_w_request_valid(gpu_fb_w_memory_request_valid),
+    .gpu_fb_w_write(gpu_fb_w_memory_write),
+    .gpu_fb_w_address(gpu_fb_w_memory_address),
+    .gpu_fb_w_write_data(gpu_fb_w_memory_write_data),
     .memory_request_ready(memory_request_ready),
     .memory_response_valid(memory_response_valid),
     .memory_read_data(memory_read_data),
@@ -568,6 +655,26 @@ __ARBITER__ u_memory_arbiter (
     .dma_response_valid(dma_memory_response_valid),
     .dma_read_data(),
     .dma_error(dma_memory_error),
+    .display_request_ready(display_memory_request_ready),
+    .display_response_valid(display_memory_data_valid),
+    .display_read_data(display_memory_read_data),
+    .display_response_last(display_memory_last),
+    .display_error(display_memory_error),
+    .gpu_ro_request_ready(gpu_ro_memory_request_ready),
+    .gpu_ro_response_valid(gpu_ro_memory_response_valid),
+    .gpu_ro_read_data(gpu_ro_memory_read_data),
+    .gpu_ro_response_last(gpu_ro_memory_response_last),
+    .gpu_ro_error(gpu_ro_memory_error),
+    .gpu_fb_r_request_ready(),
+    .gpu_fb_r_response_valid(),
+    .gpu_fb_r_read_data(),
+    .gpu_fb_r_response_last(),
+    .gpu_fb_r_error(),
+    .gpu_fb_w_request_ready(gpu_fb_w_memory_request_ready),
+    .gpu_fb_w_response_valid(gpu_fb_w_memory_response_valid),
+    .gpu_fb_w_read_data(gpu_fb_w_memory_read_data),
+    .gpu_fb_w_response_last(gpu_fb_w_memory_response_last),
+    .gpu_fb_w_error(gpu_fb_w_memory_error),
     .memory_request_valid(memory_request_valid),
     .memory_write(memory_write),
     .memory_line(memory_line),
@@ -575,16 +682,6 @@ __ARBITER__ u_memory_arbiter (
     .memory_write_data(memory_write_data),
     .memory_response_ready(memory_response_ready)
 );
-
-// Display scanout client of the shared SDRAM port.
-wire display_memory_request_valid;
-wire display_memory_urgent;
-wire [21:0] display_memory_address;
-wire display_memory_request_ready;
-wire display_memory_data_valid;
-wire [31:0] display_memory_read_data;
-wire display_memory_last;
-wire display_memory_error;
 
 __SHARED_SDRAM_PORT__ u_shared_sdram_port (
     .clk(clk),
@@ -595,9 +692,6 @@ __SHARED_SDRAM_PORT__ u_shared_sdram_port (
     .cpu_address(memory_address),
     .cpu_write_data(memory_write_data),
     .cpu_response_ready(memory_response_ready),
-    .display_request_valid(display_memory_request_valid),
-    .display_urgent(display_memory_urgent),
-    .display_address(display_memory_address),
     .controller_read_data(sdram_read_data),
     .controller_read_valid(sdram_read_valid),
     .controller_init_done(sdram_init_done),
@@ -608,11 +702,6 @@ __SHARED_SDRAM_PORT__ u_shared_sdram_port (
     .cpu_read_data(memory_read_data),
     .cpu_response_last(memory_response_last),
     .cpu_error(memory_error),
-    .display_request_ready(display_memory_request_ready),
-    .display_data_valid(display_memory_data_valid),
-    .display_read_data(display_memory_read_data),
-    .display_last(display_memory_last),
-    .display_error(display_memory_error),
     .controller_command_valid(sdram_command_valid),
     .controller_command(sdram_command),
     .controller_precharge(sdram_precharge),

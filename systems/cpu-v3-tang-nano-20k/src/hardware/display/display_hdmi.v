@@ -2,7 +2,7 @@ module FramebufferHdmi(
     input wire clk, input wire reset,
     input wire pixel_clock, input wire serial_clock, input wire video_locked,
     input wire memory_request_ready, input wire memory_data_valid,
-    input wire [31:0] memory_read_data, input wire memory_last, input wire memory_error,
+    input wire [63:0] memory_read_data, input wire memory_last, input wire memory_error,
     input wire [2:0] device_index, input wire [3:0] device_channel,
     input wire device_read_enable, input wire device_write_enable,
     input wire [15:0] device_write_data,
@@ -12,9 +12,9 @@ module FramebufferHdmi(
     output wire tmds_clk_p, output wire tmds_clk_n,
     output wire [2:0] tmds_data_p, output wire [2:0] tmds_data_n
 );
-localparam [21:0] FB_BASE=22'h200100;
+localparam [21:0] FB_BASE=22'h200000;
 localparam [2:0] DISPLAY_DEVICE=3'd3;
-localparam [31:0] LAST_VALID_FB_BASE=32'h003ed400;
+localparam [31:0] LAST_VALID_FB_BASE=32'h003e8900;
 localparam [15:0] BORDER_COLOR=16'h1082;
 // Compile-time scanout configuration. The active mode's localparam block is
 // injected by the Rust host model so the RTL, testbench, and board video PLL
@@ -31,8 +31,14 @@ reg [1:0] release_meta=0, release_sync=0;
 reg fill_slot=0;
 reg [7:0] fill_y=0;
 reg [21:0] active_base=FB_BASE;
-reg [21:0] row_address=FB_BASE;
-reg [31:0] shadow_base=32'h00200100;
+// Tile-linear source address state. `tile_row_base` is the first word of the
+// current tile row, `local_y` the source row inside that tile row (0..15) and
+// `burst_index` the 16-pixel tile segment (0..24). One source row therefore
+// advances by 25 segments of +256 words; the next source row costs +16 words
+// and the next tile row +TILE_ROW_STRIDE words.
+reg [21:0] tile_row_base=FB_BASE;
+reg [3:0] local_y=0;
+reg [31:0] shadow_base=32'h00200000;
 reg [21:0] pending_base=FB_BASE;
 reg next_low_written=0, next_high_written=0;
 reg next_pending=0, invalid_address=0;
@@ -45,24 +51,36 @@ reg [4:0] burst_index=0;
 reg [2:0] beat_index=0;
 reg burst_active=0;
 reg memory_error_sticky=0;
+// A completed 4x64-bit line is captured whole, then drained as eight 32-bit
+// writes into the line-buffer BSRAM. Capturing first keeps the read stream
+// unstallable (the arbiter holds the owner to `last`) while the single write
+// port is reused over eight clocks.
+(* syn_ramstyle = "registers" *) reg [63:0] line_capture [0:3];
+reg drain_active=0;
+reg [2:0] drain_beat=0;
+reg [4:0] drain_burst=0;
+reg [9:0] drain_slot_base=0;
 wire fill_slot_free = published[fill_slot] == release_sync[fill_slot];
 wire [1:0] ready_count =
     (published[0] != release_sync[0]) +
     (published[1] != release_sync[1]);
 assign memory_urgent = ready_count <= 1;
-assign memory_request_valid = fill_slot_free && !burst_active && !frame_complete && !memory_error_sticky;
-assign memory_address = row_address + {13'b0,burst_index,4'b0};
+assign memory_request_valid = fill_slot_free && !burst_active && !drain_active &&
+                              !frame_complete && !memory_error_sticky;
+assign memory_address = tile_row_base + {9'b0,burst_index,8'b0} + {14'b0,local_y,4'b0};
 
-wire line_write = burst_active && memory_data_valid;
+wire line_write = drain_active;
 // Slot bases are 0 and LINE_SLOT_WORDS. A two-way constant select keeps the
 // slot index out of a synthesized DSP multiplier.
 wire [9:0] fill_slot_base = fill_slot ? LINE_SLOT_WORDS : 10'd0;
-wire [9:0] line_write_address = fill_slot_base + {burst_index, 3'b000} + beat_index;
+wire [9:0] line_write_address = drain_slot_base + {drain_burst, 3'b000} + drain_beat;
+wire [31:0] line_write_data = drain_beat[0] ?
+    line_capture[drain_beat[2:1]][63:32] : line_capture[drain_beat[2:1]][31:0];
 reg [9:0] line_read_address=0;
 wire [31:0] line_read_data;
 __LINE_BUFFER__ u_line_buffer(
     .write_clock(clk), .write_enable(line_write), .write_address(line_write_address),
-    .write_data(memory_read_data), .read_clock(pixel_clock),
+    .write_data(line_write_data), .read_clock(pixel_clock),
     .read_address(line_read_address), .read_data(line_read_data)
 );
 
@@ -74,13 +92,15 @@ always @(posedge clk) begin
     underflow_meta <= underflow_sticky;
     underflow_sync <= underflow_meta;
     if (reset) begin
-        published<=0; fill_slot<=0; fill_y<=0; active_base<=FB_BASE; row_address<=FB_BASE;
-        shadow_base<=32'h00200100; pending_base<=FB_BASE;
+        published<=0; fill_slot<=0; fill_y<=0; active_base<=FB_BASE;
+        tile_row_base<=FB_BASE; local_y<=0;
+        shadow_base<=32'h00200000; pending_base<=FB_BASE;
         next_low_written<=0; next_high_written<=0;
         next_pending<=0; invalid_address<=0; frame_complete<=0;
         frame_index<=0; frame_meta<=0; frame_sync<=0; frame_seen<=0;
         underflow_meta<=0; underflow_sync<=0;
         burst_index<=0; beat_index<=0; burst_active<=0; memory_error_sticky<=0;
+        drain_active<=0; drain_beat<=0; drain_burst<=0; drain_slot_base<=0;
     end else begin
         if (memory_error) memory_error_sticky<=1;
         if (frame_sync != frame_seen) begin
@@ -88,12 +108,13 @@ always @(posedge clk) begin
             frame_index<=frame_index+1'b1;
             if (frame_complete) begin
                 fill_y<=0;
+                local_y<=0;
                 frame_complete<=0;
                 if (next_pending) begin
                     active_base<=pending_base;
-                    row_address<=pending_base;
+                    tile_row_base<=pending_base;
                     next_pending<=0;
-                end else row_address<=active_base;
+                end else tile_row_base<=active_base;
             end
         end
         // Process device writes after the frame event so a NEXT_SWAP arriving
@@ -125,17 +146,34 @@ always @(posedge clk) begin
         if (memory_request_valid && memory_request_ready) begin
             burst_active<=1; beat_index<=0;
         end
-        if (line_write) begin
-            if (memory_last || beat_index==7) begin
+        // Capture the four unstallable 64-bit beats, then hand the completed
+        // line to the local 8x32-bit drain.
+        if (burst_active && memory_data_valid) begin
+            line_capture[beat_index] <= memory_read_data;
+            if (memory_last || beat_index==3) begin
                 burst_active<=0; beat_index<=0;
+                drain_active<=1; drain_beat<=0;
+                drain_burst<=burst_index;
+                drain_slot_base<=fill_slot_base;
+            end else beat_index<=beat_index+1'b1;
+        end
+        if (drain_active) begin
+            if (drain_beat==7) begin
+                drain_active<=0; drain_beat<=0;
                 if (burst_index==LAST_BURST) begin
                     published[fill_slot] <= ~published[fill_slot];
                     burst_index<=0;
                     fill_slot <= ~fill_slot;
                     if (fill_y==LAST_FILL_Y) begin frame_complete<=1; end
-                    else begin fill_y<=fill_y+1'b1; row_address<=row_address+ROW_STRIDE; end
+                    else begin
+                        fill_y<=fill_y+1'b1;
+                        if (local_y==4'd15) begin
+                            local_y<=0;
+                            tile_row_base<=tile_row_base+TILE_ROW_STRIDE;
+                        end else local_y<=local_y+1'b1;
+                    end
                 end else burst_index<=burst_index+1'b1;
-            end else beat_index<=beat_index+1'b1;
+            end else drain_beat<=drain_beat+1'b1;
         end
     end
 end

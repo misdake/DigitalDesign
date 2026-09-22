@@ -113,7 +113,7 @@ impl DisplayConfig {
              localparam [8:0] SIDE_BORDER={10}; localparam [1:0] SCALE={11}; localparam [1:0] LAST_REPEAT={12};\n\
              localparam [9:0] LINE_SLOT_WORDS=FB_WIDTH/2; localparam [4:0] BURSTS_PER_LINE=FB_WIDTH/16;\n\
              localparam [4:0] LAST_BURST=BURSTS_PER_LINE-1; localparam [7:0] LAST_FILL_Y=FB_HEIGHT-1;\n\
-             localparam [9:0] ROW_STRIDE=FB_WIDTH;",
+             localparam [12:0] TILE_ROW_STRIDE=FB_WIDTH*16;",
             self.h_total,
             self.h_sync_end,
             self.h_active_start,

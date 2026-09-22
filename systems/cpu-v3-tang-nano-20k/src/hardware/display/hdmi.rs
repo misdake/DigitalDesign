@@ -16,7 +16,7 @@ pub struct FramebufferHdmiInput {
     pub video_locked: Wire,
     pub memory_request_ready: Wire,
     pub memory_data_valid: Wire,
-    pub memory_read_data: Wires<32>,
+    pub memory_read_data: Wires<64>,
     pub memory_last: Wire,
     pub memory_error: Wire,
     pub device_index: Wires<3>,

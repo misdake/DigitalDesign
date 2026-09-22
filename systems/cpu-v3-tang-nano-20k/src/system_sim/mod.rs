@@ -6,8 +6,8 @@
 use crate::boot::{SystemControlDevice, SYSTEM_CONTROL_DEVICE};
 use crate::display::render_framebuffer_at;
 use crate::{
-    CpuV3Sim, DisplayDevice, Fault, RunOutcome, StepOutcome, DISPLAY_DEVICE, FRAMEBUFFER_HEIGHT,
-    FRAMEBUFFER_WIDTH,
+    CpuV3Sim, DisplayDevice, Fault, GpuDevice, RunOutcome, StepOutcome, DISPLAY_DEVICE,
+    FRAMEBUFFER_HEIGHT, FRAMEBUFFER_WIDTH, GPU_DEVICE,
 };
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
@@ -49,6 +49,7 @@ impl CpuV3SystemSim {
                 vblank_mode == VBlankMode::PauseOnFrameIndexWait,
             )),
         );
+        cpu.attach_device(GPU_DEVICE, Box::<GpuDevice>::default());
         Self { cpu, vblank_mode }
     }
 
@@ -117,6 +118,13 @@ impl CpuV3SystemSim {
             .device::<DisplayDevice>(DISPLAY_DEVICE)
             .expect("CpuV3SystemSim display device must remain attached")
     }
+
+    /// Read-only access to the GPU device model, e.g. for test assertions.
+    pub fn gpu(&self) -> &GpuDevice {
+        self.cpu
+            .device::<GpuDevice>(GPU_DEVICE)
+            .expect("CpuV3SystemSim GPU device must remain attached")
+    }
 }
 
 #[cfg(test)]
@@ -137,6 +145,69 @@ mod tests {
             .device::<SystemControlDevice>(SYSTEM_CONTROL_DEVICE)
             .is_some());
         assert!(sim.cpu().device::<DisplayDevice>(DISPLAY_DEVICE).is_some());
+        assert!(sim.cpu().device::<GpuDevice>(GPU_DEVICE).is_some());
+    }
+
+    #[test]
+    fn cpu_stages_and_submits_a_gpu_command_buffer() {
+        use crate::{
+            GPU_CMD_BASE_HIGH, GPU_CMD_BASE_LOW, GPU_CMD_WORDS_HIGH, GPU_CMD_WORDS_LOW,
+            GPU_EXECUTED_COUNT, GPU_OPCODE_END, GPU_OPCODE_FAKE_DRAW, GPU_OPCODE_SET_TARGET,
+            GPU_SUBMIT,
+        };
+        let mut sim = CpuV3SystemSim::default();
+        // Build the temporary command shell in physical memory.
+        let base = 0x100u32;
+        let qwords: [u64; 5] = [
+            GPU_OPCODE_SET_TARGET as u64 | (1u64 << 8) | (u64::from(FRAMEBUFFER_A_BASE_WORD) << 32),
+            GPU_OPCODE_FAKE_DRAW as u64 | (2u64 << 8) | (375u64 << 32),
+            0, // payload: phase 0, biases 0
+            GPU_OPCODE_END as u64 | (1u64 << 8),
+            0,
+        ];
+        {
+            let memory = sim.cpu_mut().physical_memory_mut();
+            let mut cursor = base as usize;
+            for qword in qwords {
+                memory[cursor] = qword as u16;
+                memory[cursor + 1] = (qword >> 16) as u16;
+                memory[cursor + 2] = (qword >> 32) as u16;
+                memory[cursor + 3] = (qword >> 48) as u16;
+                cursor += 4;
+            }
+        }
+        let mut words = Vec::new();
+        words.extend(crate::load_immediate16(1, base as u16));
+        words.extend(crate::load_immediate16(2, (base >> 16) as u16));
+        words.extend(crate::load_immediate16(3, (qwords.len() * 4) as u16));
+        words.extend(crate::load_immediate16(4, 0));
+        words.extend(crate::load_immediate16(5, 0));
+        words.push(device_send(1, GPU_DEVICE, GPU_CMD_BASE_LOW));
+        words.push(device_send(2, GPU_DEVICE, GPU_CMD_BASE_HIGH));
+        words.push(device_send(3, GPU_DEVICE, GPU_CMD_WORDS_LOW));
+        words.push(device_send(4, GPU_DEVICE, GPU_CMD_WORDS_HIGH));
+        words.push(device_send(5, GPU_DEVICE, GPU_SUBMIT));
+        // The host model advances one main clock per device access, so the
+        // submission retires only after the FSM has clocked through all 6000
+        // line writes. The software polls executed_count in a bounded loop.
+        words.extend(crate::load_immediate16(7, 1));
+        words.push(device_receive(6, GPU_DEVICE, GPU_EXECUTED_COUNT));
+        words.push(compare_unsigned(6, 7));
+        words.push(branch(TestCondition::NotEqual, -3));
+        words.push(halt());
+        sim.cpu_mut().load_program(0, &words).unwrap();
+        assert!(
+            matches!(sim.run(2_000_000), Ok(RunOutcome::Halted { .. })),
+            "GPU polling loop did not finish"
+        );
+        assert_eq!(sim.cpu().register(6), Some(1), "executed_count");
+        assert_eq!(sim.gpu().executed_count(), 1);
+        assert_eq!(sim.gpu().received_count(), 1);
+        assert!(!sim.gpu().command_error());
+        // The solid tile at (0, 0) is black for phase 0, biases 0.
+        let slot = FRAMEBUFFER_A_BASE_WORD as usize;
+        assert_eq!(sim.cpu_mut().physical_memory_mut()[slot], 0);
+        assert_eq!(sim.cpu_mut().physical_memory_mut()[slot + 16], 0);
     }
 
     #[test]

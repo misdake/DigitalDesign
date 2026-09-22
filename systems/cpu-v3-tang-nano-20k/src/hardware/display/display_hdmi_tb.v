@@ -6,7 +6,7 @@ __DISPLAY_CONFIG__
 reg clk=0,pixel_clock=0,serial_clock=0,reset=1,video_locked=0;
 always #9 clk=~clk; always #7 pixel_clock=~pixel_clock; always #1 serial_clock=~serial_clock;
 reg memory_request_ready=1,memory_data_valid=0,memory_last=0,memory_error=0;
-reg [31:0] memory_read_data=0;
+reg [63:0] memory_read_data=0;
 reg [2:0] device_index=3; reg [3:0] device_channel=0;
 reg device_read_enable=0,device_write_enable=0; reg [15:0] device_write_data=0;
 wire memory_request_valid,memory_urgent,underflow,tmds_clk_p,tmds_clk_n;
@@ -16,10 +16,12 @@ FramebufferHdmi dut(.*);
 integer beat=0,requests=0,cycles=0,bursts=0;
 integer col=0,bad=0,sampled=0,border_sampled=0,de_col=0,de_runs=0;
 integer old_frame=0;
+integer frame_requests=0,completed_source_frames=0,source_row,source_tile_x;
 reg [15:0] wa;
 reg [15:0] base=0;
 reg vis_d=0,fb_vis_d=0;
 reg saw_second_base=0;
+reg previous_frame_complete=0;
 wire vis = dut.visible_pipe3;
 wire fb_vis = dut.framebuffer_pipe3 && vis;
 
@@ -46,20 +48,32 @@ task expect_status;
  end
 endtask
 always @(posedge clk) begin
+ previous_frame_complete<=dut.frame_complete;
+ if(dut.frame_complete && !previous_frame_complete) begin
+  if(frame_requests!=6000)
+   $fatal(1,"source frame used %0d segments instead of 6000",frame_requests);
+  completed_source_frames<=completed_source_frames+1;
+  frame_requests<=0;
+ end
  memory_data_valid<=0; memory_last<=0;
  // Ignore requests while the DUT is in reset: its fill pointers do not
  // advance there, so accepting would desynchronize the burst count.
  if (!reset && memory_request_valid&&memory_request_ready) begin beat<=1; requests<=requests+1; bursts<=bursts+1; end
  else if(beat!=0) begin
-  // Position-dependent fill: each 32-bit beat carries its own two 16-bit
-  // word offsets within the row (low half = even pixel, high half = odd),
-  // so a displayed pixel value must equal its source x coordinate.
-  wa = (((bursts-1) % BURSTS_PER_LINE) * 16) + (beat-1)*2;
-  memory_data_valid<=1; memory_read_data<={wa+16'd1, wa}; memory_last<=beat==8;
-  if(beat==8) beat<=0; else beat<=beat+1;
+  // Tile-linear fill: a 32-byte segment carries 16 consecutive pixels of one
+  // source row across four 64-bit beats. Each 64-bit beat holds four 16-bit
+  // words (low word first), so the displayed pixel value equals its source x.
+  wa = (((bursts-1) % BURSTS_PER_LINE) * 16) + (beat-1)*4;
+  memory_data_valid<=1; memory_read_data<={wa+16'd3, wa+16'd2, wa+16'd1, wa}; memory_last<=beat==4;
+  if(beat==4) beat<=0; else beat<=beat+1;
  end
  if (!reset && memory_request_valid && memory_request_ready) begin
-  if (memory_address==22'h217800) saw_second_base<=1;
+  source_row=frame_requests/25;
+  source_tile_x=frame_requests%25;
+  if(memory_address!==dut.active_base+(source_row/16)*6400+(source_row%16)*16+source_tile_x*256)
+   $fatal(1,"tile-linear request %0d address %h is out of sequence",frame_requests,memory_address);
+  frame_requests<=frame_requests+1;
+  if (memory_address==22'h218000) saw_second_base<=1;
   if (memory_address<dut.active_base || memory_address>=dut.active_base+22'd96000)
    $fatal(1,"request %h outside active framebuffer %h",memory_address,dut.active_base);
  end
@@ -67,53 +81,54 @@ end
 initial begin
  repeat(4) @(posedge clk); reset=0; video_locked=1;
  // A command with only half an address is ignored and keeps the staged half.
- device_write(1,16'h7800);
+ device_write(1,16'h8000);
  expect_status(16'h0003,16'h0002);
  device_write(3,16'h0001);
  expect_status(16'h0003,16'h0002);
 
  // Repeated low/high writes overwrite the shadow address, but do not publish it.
- device_write(1,16'h0100);
- device_write(1,16'h7800);
+ device_write(1,16'h0000);
+ device_write(1,16'h8000);
  device_write(2,16'h0020);
  device_write(2,16'h0021);
  expect_status(16'h0003,16'h0000);
  old_frame=dut.frame_index;
  wait(dut.frame_index!=old_frame);
- if(dut.active_base!==22'h200100)
+ if(dut.active_base!==22'h200000)
   $fatal(1,"partial or unsubmitted address changed active base");
 
  // NEXT_SWAP snapshots the complete shadow address. Later staging cannot mutate
  // this pending swap, even though writes remain accepted while it is pending.
  device_write(3,16'h0001);
  expect_status(16'h0001,16'h0001);
- device_write(1,16'h0100);
- if(dut.pending_base!==22'h217800) $fatal(1,"staging mutated pending base: %h",dut.pending_base);
+ device_write(1,16'h0000);
+ if(dut.pending_base!==22'h218000) $fatal(1,"staging mutated pending base: %h",dut.pending_base);
 
  // An out-of-range complete pair is rejected and cannot replace the pending base.
  device_write(2,16'h0040);
  device_write(3,16'h0001);
  expect_status(16'h0005,16'h0005);
- wait(dut.active_base==22'h217800);
+ wait(dut.active_base==22'h218000);
 
  // A later complete submission replaces pending normally. If it lands on the
  // exact clock that applies the old pending base, it remains queued for the
  // following frame rather than being lost.
- device_write(1,16'h0100);
+ device_write(1,16'h0000);
  device_write(2,16'h0020);
  device_write(3,16'h0001);
- if(dut.pending_base!==22'h200100) $fatal(1,"first replacement was not submitted");
- device_write(1,16'h7800);
+ if(dut.pending_base!==22'h200000) $fatal(1,"first replacement was not submitted");
+ device_write(1,16'h8000);
  device_write(2,16'h0021);
  while (!(dut.frame_sync!=dut.frame_seen && dut.frame_complete)) @(negedge clk);
  device_channel=3; device_write_data=16'h0001; device_write_enable=1;
  @(negedge clk); device_write_enable=0;
- if(dut.active_base!==22'h200100) $fatal(1,"old pending base was not applied");
- if(!dut.next_pending || dut.pending_base!==22'h217800)
+ if(dut.active_base!==22'h200000) $fatal(1,"old pending base was not applied");
+ if(!dut.next_pending || dut.pending_base!==22'h218000)
   $fatal(1,"simultaneous replacement was lost");
  repeat(1000) @(posedge pixel_clock);
- if(dut.active_base!==22'h200100) $fatal(1,"replacement base was not applied");
+ if(dut.active_base!==22'h200000) $fatal(1,"replacement base was not applied");
  if(requests<4800) $fatal(1,"insufficient line fetches %0d",requests);
+ if(completed_source_frames<2) $fatal(1,"too few complete 6000-segment source frames");
  if(!saw_second_base) $fatal(1,"second framebuffer was never fetched");
  if(dut.frame_index<3) $fatal(1,"frame index did not advance enough: %0d",dut.frame_index);
  if(underflow) $fatal(1,"unexpected underflow");

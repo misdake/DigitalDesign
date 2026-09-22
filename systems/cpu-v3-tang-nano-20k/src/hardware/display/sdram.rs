@@ -1,8 +1,11 @@
-//! Shared CPU word/display burst adapter for the fitted Controller HS port.
+//! Single-upstream CPU word/line adapter for the fitted Controller HS port.
+//!
+//! Display, I-cache, D-cache, DMA and the three GPU masters all share the
+//! arbiter's one request stream, so this adapter no longer arbitrates between
+//! a CPU and a display client.
 
-use crate::DisplayGrant;
 use digital_design_circuit::{CircuitWires, Wire, Wires};
-use digital_design_hardware::{Hardware, HardwareIdentity, Module, ModuleIo, VerilogDependency};
+use digital_design_hardware::{Hardware, Module, ModuleIo};
 
 #[derive(Clone, ModuleIo)]
 pub struct SharedSdramPortInput {
@@ -13,9 +16,6 @@ pub struct SharedSdramPortInput {
     pub cpu_address: Wires<22>,
     pub cpu_write_data: Wires<64>,
     pub cpu_response_ready: Wire,
-    pub display_request_valid: Wire,
-    pub display_urgent: Wire,
-    pub display_address: Wires<22>,
     pub controller_read_data: Wires<64>,
     pub controller_read_valid: Wire,
     pub controller_init_done: Wire,
@@ -30,11 +30,6 @@ pub struct SharedSdramPortOutput {
     pub cpu_read_data: Wires<64>,
     pub cpu_response_last: Wire,
     pub cpu_error: Wire,
-    pub display_request_ready: Wire,
-    pub display_data_valid: Wire,
-    pub display_read_data: Wires<32>,
-    pub display_last: Wire,
-    pub display_error: Wire,
     pub controller_command_valid: Wire,
     pub controller_command: Wires<3>,
     pub controller_precharge: Wire,
@@ -63,18 +58,11 @@ impl Module for SharedSdramPort {
         _input: &Self::Input,
         _output: &Self::Output,
     ) {
-        panic!("SharedSdramPort uses the host display scheduler for emulation")
+        panic!("SharedSdramPort uses the host memory model for emulation")
     }
 
     fn verilog_source() -> Option<String> {
-        Some(include_str!("display_sdram.v").replace(
-            "__DISPLAY_GRANT__",
-            &DisplayGrant::verilog_identity().module_name(),
-        ))
-    }
-
-    fn verilog_dependencies() -> Vec<VerilogDependency> {
-        vec![VerilogDependency::new::<DisplayGrant>("u_grant")]
+        Some(include_str!("display_sdram.v").to_string())
     }
 
     fn verilog_testbench() -> Option<String> {
@@ -88,9 +76,13 @@ mod tests {
     use digital_design_hardware::VerilogProject;
 
     #[test]
-    fn export_contains_gate_grant_dependency() {
+    fn export_is_one_standalone_module() {
         let project = VerilogProject::generate::<SharedSdramPort>().unwrap();
-        assert_eq!(project.files.len(), 2);
+        assert_eq!(project.files.len(), 1);
+        assert!(!project
+            .files
+            .values()
+            .any(|source| source.contains("DisplayGrant")));
         assert!(project.resource_claims.is_empty());
     }
 
