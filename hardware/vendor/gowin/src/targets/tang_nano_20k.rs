@@ -14,6 +14,8 @@ use digital_design_circuit::Wires;
 
 mod sdram_word_port;
 pub use sdram_word_port::*;
+mod sdram_write_gearbox;
+pub use sdram_write_gearbox::*;
 
 /// Stable application-facing inputs fitted to every Tang Nano 20K board.
 #[derive(Clone, ModuleIo)]
@@ -700,6 +702,10 @@ impl TangNano20K {
                     1,
                     "sdram_write_data_valid",
                 ))
+                .add_source_file(
+                    "src/generated/target/tang_nano_20k/sdram/write_gearbox_108m_54m.v",
+                    include_str!("tang_nano_20k/sdram/write_gearbox_108m_54m.v"),
+                )
                 .add_source_file(
                     "src/generated/target/tang_nano_20k/sdram/pll_108m_54m.v",
                     include_str!("tang_nano_20k/sdram/pll_108m_54m.v"),

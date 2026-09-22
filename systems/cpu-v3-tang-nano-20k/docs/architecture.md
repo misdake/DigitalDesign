@@ -79,9 +79,16 @@ framebuffer reads, and GPU framebuffer writes onto the CPU-side memory port. Dis
 priority at transaction boundaries. The other owners use base priority plus a saturating four-bit
 age, with round-robin selection for equal scores; an accepted owner remains selected through its
 last response or error. GPU framebuffer reads are wired but idle in this milestone. The I-cache,
-D-cache, display, and GPU paths transfer fixed 4x64-bit lines; boot DMA retains its narrow-word
-mode. `SharedSdramPort` is now a single-client line/word adapter and no longer contains a second
-CPU/display arbiter.
+D-cache, and display paths transfer fixed 4x64-bit lines; boot DMA retains its narrow-word mode.
+The three GPU ports encode one through four consecutive lines as `line_count_minus_one`, giving
+32/64/96/128-byte requests that must remain within one 1-KiB SDRAM row. Reads return 4/8/12/16
+unstallable 64-bit beats. Long writes accept beat zero with the request and advance the source only
+when the per-beat write-ready signal is asserted. `SharedSdramPort` preloads four beats and then
+streams through one 8x64-bit circular 108/54-MHz gearbox while Controller HS consumes 8/16/24/32
+32-bit beats; it does not duplicate the complete request in the adapter. Current GPU logic still
+issues one-line transactions, while the wider contract is ready for the frontend and framebuffer
+cache. `SharedSdramPort` is a single-client line/word adapter and contains no second CPU/display
+arbiter.
 
 ## Clock domains
 

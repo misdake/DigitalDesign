@@ -24,9 +24,9 @@ reg device_read_enable = 0, device_write_enable = 0;
 reg [15:0] device_write_data = 0;
 wire [15:0] device_read_data;
 
-reg gpu_ro_request_ready = 0, gpu_ro_response_valid = 0, gpu_ro_response_last = 0, gpu_ro_error = 0;
+reg gpu_ro_request_ready = 0, gpu_ro_write_data_ready = 0, gpu_ro_response_valid = 0, gpu_ro_response_last = 0, gpu_ro_error = 0;
 reg [63:0] gpu_ro_read_data = 0;
-reg gpu_fb_w_request_ready = 0, gpu_fb_w_response_valid = 0, gpu_fb_w_response_last = 0, gpu_fb_w_error = 0;
+reg gpu_fb_w_request_ready = 0, gpu_fb_w_write_data_ready = 0, gpu_fb_w_response_valid = 0, gpu_fb_w_response_last = 0, gpu_fb_w_error = 0;
 
 wire gpu_ro_request_valid, gpu_ro_write;
 wire [21:0] gpu_ro_address;
@@ -42,12 +42,12 @@ reg reset = 1;
 CpuV3Gpu dut(.clk(clk), .reset(reset), .device_index(device_index), .device_channel(device_channel),
     .device_read_enable(device_read_enable), .device_write_enable(device_write_enable),
     .device_write_data(device_write_data), .device_read_data(device_read_data),
-    .gpu_ro_request_ready(gpu_ro_request_ready), .gpu_ro_response_valid(gpu_ro_response_valid),
+    .gpu_ro_request_ready(gpu_ro_request_ready), .gpu_ro_write_data_ready(gpu_ro_write_data_ready), .gpu_ro_response_valid(gpu_ro_response_valid),
     .gpu_ro_read_data(gpu_ro_read_data), .gpu_ro_response_last(gpu_ro_response_last),
     .gpu_ro_error(gpu_ro_error),
-    .gpu_fb_w_request_ready(gpu_fb_w_request_ready), .gpu_fb_w_response_valid(gpu_fb_w_response_valid),
+    .gpu_fb_w_request_ready(gpu_fb_w_request_ready), .gpu_fb_w_write_data_ready(gpu_fb_w_write_data_ready), .gpu_fb_w_response_valid(gpu_fb_w_response_valid),
     .gpu_fb_w_response_last(gpu_fb_w_response_last), .gpu_fb_w_error(gpu_fb_w_error),
-    .gpu_fb_r_request_ready(1'b1), .gpu_fb_r_response_valid(1'b0),
+    .gpu_fb_r_request_ready(1'b1), .gpu_fb_r_write_data_ready(1'b0), .gpu_fb_r_response_valid(1'b0),
     .gpu_fb_r_read_data(64'h0), .gpu_fb_r_response_last(1'b0), .gpu_fb_r_error(1'b0),
     .gpu_ro_request_valid(gpu_ro_request_valid), .gpu_ro_write(gpu_ro_write),
     .gpu_ro_address(gpu_ro_address), .gpu_ro_write_data(gpu_ro_write_data),

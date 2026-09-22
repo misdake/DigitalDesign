@@ -48,19 +48,23 @@ pub struct CpuV3MemoryArbiterInput {
     pub gpu_ro_request_valid: Wire,
     pub gpu_ro_write: Wire,
     pub gpu_ro_address: Wires<22>,
+    pub gpu_ro_line_count_minus_1: Wires<2>,
     pub gpu_ro_write_data: Wires<64>,
 
     pub gpu_fb_r_request_valid: Wire,
     pub gpu_fb_r_write: Wire,
     pub gpu_fb_r_address: Wires<22>,
+    pub gpu_fb_r_line_count_minus_1: Wires<2>,
     pub gpu_fb_r_write_data: Wires<64>,
 
     pub gpu_fb_w_request_valid: Wire,
     pub gpu_fb_w_write: Wire,
     pub gpu_fb_w_address: Wires<22>,
+    pub gpu_fb_w_line_count_minus_1: Wires<2>,
     pub gpu_fb_w_write_data: Wires<64>,
 
     pub memory_request_ready: Wire,
+    pub memory_write_data_ready: Wire,
     pub memory_response_valid: Wire,
     pub memory_read_data: Wires<64>,
     pub memory_response_last: Wire,
@@ -91,18 +95,21 @@ pub struct CpuV3MemoryArbiterOutput {
     pub display_error: Wire,
 
     pub gpu_ro_request_ready: Wire,
+    pub gpu_ro_write_data_ready: Wire,
     pub gpu_ro_response_valid: Wire,
     pub gpu_ro_read_data: Wires<64>,
     pub gpu_ro_response_last: Wire,
     pub gpu_ro_error: Wire,
 
     pub gpu_fb_r_request_ready: Wire,
+    pub gpu_fb_r_write_data_ready: Wire,
     pub gpu_fb_r_response_valid: Wire,
     pub gpu_fb_r_read_data: Wires<64>,
     pub gpu_fb_r_response_last: Wire,
     pub gpu_fb_r_error: Wire,
 
     pub gpu_fb_w_request_ready: Wire,
+    pub gpu_fb_w_write_data_ready: Wire,
     pub gpu_fb_w_response_valid: Wire,
     pub gpu_fb_w_read_data: Wires<64>,
     pub gpu_fb_w_response_last: Wire,
@@ -112,6 +119,7 @@ pub struct CpuV3MemoryArbiterOutput {
     pub memory_write: Wire,
     pub memory_line: Wire,
     pub memory_address: Wires<22>,
+    pub memory_line_count_minus_1: Wires<2>,
     pub memory_write_data: Wires<64>,
     pub memory_response_ready: Wire,
 }
@@ -158,6 +166,33 @@ const OWNER_CODES: [u8; 6] = [
     OWNER_GPU_FB_R,
     OWNER_GPU_FB_W,
 ];
+
+/// One fitted SDRAM row: 256 x 32-bit controller beats, i.e. 512 16-bit words
+/// (`controller_beat = word_address >> 1`, `row = controller_beat[18:8]`).
+pub const SDRAM_ROW_WORDS: u32 = 512;
+/// A line is 32 bytes, sixteen 16-bit words.
+pub const LINE_WORDS: u32 = 16;
+
+/// True when a `line_count_minus_1[1:0]` request starting at the 32-byte
+/// aligned word `address` transfers all of its `16 * (line_count + 1)` words
+/// inside one 1 KiB SDRAM row. An open-page burst that crossed a row would
+/// need a precharge/ACTIVE in the middle, which the adapter does not emit, so
+/// the requester must split such a request. The GPU hosts and test code check
+/// this with [`assert_line_request_fits_row`]; RTL clients are responsible for
+/// splitting before they issue.
+pub const fn line_request_fits_row(address: u32, line_count_minus_1: u32) -> bool {
+    let words = LINE_WORDS * ((line_count_minus_1 & 0x3) + 1);
+    address & (SDRAM_ROW_WORDS - 1) <= SDRAM_ROW_WORDS - words
+}
+
+/// Panics with a descriptive message when [`line_request_fits_row`] is false.
+pub fn assert_line_request_fits_row(address: u32, line_count_minus_1: u32) {
+    assert!(
+        line_request_fits_row(address, line_count_minus_1),
+        "line request at word {address:#x} for {} line(s) crosses a 1 KiB SDRAM row",
+        (line_count_minus_1 & 0x3) + 1
+    );
+}
 
 const OWNER_NONE: u8 = 0;
 const OWNER_DISPLAY: u8 = 1;
@@ -347,6 +382,21 @@ impl Module for CpuV3MemoryArbiter {
             | selected_gpu_ro
             | selected_gpu_fb_r
             | selected_gpu_fb_w;
+        // Only the three GPU masters carry a request length this milestone;
+        // display, instruction, and D-cache stay fixed at one line.
+        let selected_line_count = mux8_w(
+            &[
+                const_wires::<2>(0),
+                const_wires::<2>(0),
+                const_wires::<2>(0),
+                const_wires::<2>(0),
+                const_wires::<2>(0),
+                input.gpu_ro_line_count_minus_1,
+                input.gpu_fb_r_line_count_minus_1,
+                input.gpu_fb_w_line_count_minus_1,
+            ],
+            selected,
+        );
 
         let selected_address = mux8_w(
             &[
@@ -395,6 +445,9 @@ impl Module for CpuV3MemoryArbiter {
         let memory_write_data = mux2_w(held_write_data, selected_write_data, requesting);
 
         let responding = input.memory_response_valid;
+        let gpu_ro_write_data_ready = owner_gpu_ro & input.memory_write_data_ready;
+        let gpu_fb_r_write_data_ready = owner_gpu_fb_r & input.memory_write_data_ready;
+        let gpu_fb_w_write_data_ready = owner_gpu_fb_w & input.memory_write_data_ready;
         let instruction_responding = owner_instruction & responding;
         let data_responding = owner_data & responding;
         let dma_responding = owner_dma & responding;
@@ -437,6 +490,7 @@ impl Module for CpuV3MemoryArbiter {
             display_response_last: display_responding & input.memory_response_last,
             display_error: display_responding & input.memory_error,
             gpu_ro_request_ready: accepted & selected_gpu_ro,
+            gpu_ro_write_data_ready,
             gpu_ro_response_valid: gpu_ro_responding,
             gpu_ro_read_data: mux2_w(
                 const_wires::<64>(0),
@@ -446,6 +500,7 @@ impl Module for CpuV3MemoryArbiter {
             gpu_ro_response_last: gpu_ro_responding & input.memory_response_last,
             gpu_ro_error: gpu_ro_responding & input.memory_error,
             gpu_fb_r_request_ready: accepted & selected_gpu_fb_r,
+            gpu_fb_r_write_data_ready,
             gpu_fb_r_response_valid: gpu_fb_r_responding,
             gpu_fb_r_read_data: mux2_w(
                 const_wires::<64>(0),
@@ -455,6 +510,7 @@ impl Module for CpuV3MemoryArbiter {
             gpu_fb_r_response_last: gpu_fb_r_responding & input.memory_response_last,
             gpu_fb_r_error: gpu_fb_r_responding & input.memory_error,
             gpu_fb_w_request_ready: accepted & selected_gpu_fb_w,
+            gpu_fb_w_write_data_ready,
             gpu_fb_w_response_valid: gpu_fb_w_responding,
             gpu_fb_w_read_data: mux2_w(
                 const_wires::<64>(0),
@@ -467,6 +523,7 @@ impl Module for CpuV3MemoryArbiter {
             memory_write: requesting & selected_write,
             memory_line: requesting & selected_line,
             memory_address: mux2_w(const_wires::<22>(0), selected_address, requesting),
+            memory_line_count_minus_1: mux2_w(const_wires::<2>(0), selected_line_count, requesting),
             memory_write_data,
             memory_response_ready,
         }
@@ -640,6 +697,12 @@ fn compute_output(
         Owner::Data => input.data_line,
         Owner::None | Owner::Dma => false,
     };
+    let selected_line_count = match selected {
+        Owner::GpuRo => input.gpu_ro_line_count_minus_1,
+        Owner::GpuFbR => input.gpu_fb_r_line_count_minus_1,
+        Owner::GpuFbW => input.gpu_fb_w_line_count_minus_1,
+        _ => 0,
+    };
     let selected_address = match selected {
         Owner::None => 0,
         Owner::Display => input.display_address,
@@ -698,16 +761,19 @@ fn compute_output(
         display_response_last: respond_last(owner_responding(Owner::Display)),
         display_error: owner_responding(Owner::Display) && input.memory_error,
         gpu_ro_request_ready: accepted && selected_is(Owner::GpuRo),
+        gpu_ro_write_data_ready: owner == Owner::GpuRo && input.memory_write_data_ready,
         gpu_ro_response_valid: owner_responding(Owner::GpuRo),
         gpu_ro_read_data: read(owner_responding(Owner::GpuRo)),
         gpu_ro_response_last: respond_last(owner_responding(Owner::GpuRo)),
         gpu_ro_error: owner_responding(Owner::GpuRo) && input.memory_error,
         gpu_fb_r_request_ready: accepted && selected_is(Owner::GpuFbR),
+        gpu_fb_r_write_data_ready: owner == Owner::GpuFbR && input.memory_write_data_ready,
         gpu_fb_r_response_valid: owner_responding(Owner::GpuFbR),
         gpu_fb_r_read_data: read(owner_responding(Owner::GpuFbR)),
         gpu_fb_r_response_last: respond_last(owner_responding(Owner::GpuFbR)),
         gpu_fb_r_error: owner_responding(Owner::GpuFbR) && input.memory_error,
         gpu_fb_w_request_ready: accepted && selected_is(Owner::GpuFbW),
+        gpu_fb_w_write_data_ready: owner == Owner::GpuFbW && input.memory_write_data_ready,
         gpu_fb_w_response_valid: owner_responding(Owner::GpuFbW),
         gpu_fb_w_read_data: read(owner_responding(Owner::GpuFbW)),
         gpu_fb_w_response_last: respond_last(owner_responding(Owner::GpuFbW)),
@@ -716,6 +782,7 @@ fn compute_output(
         memory_write: requesting && selected_write,
         memory_line: requesting && selected_line,
         memory_address: if requesting { selected_address } else { 0 },
+        memory_line_count_minus_1: if requesting { selected_line_count } else { 0 },
         memory_write_data: if requesting {
             selected_write_data
         } else {
@@ -755,16 +822,20 @@ mod tests {
             gpu_ro_request_valid: false,
             gpu_ro_write: false,
             gpu_ro_address: 0,
+            gpu_ro_line_count_minus_1: 0,
             gpu_ro_write_data: 0,
             gpu_fb_r_request_valid: false,
             gpu_fb_r_write: false,
             gpu_fb_r_address: 0,
+            gpu_fb_r_line_count_minus_1: 0,
             gpu_fb_r_write_data: 0,
             gpu_fb_w_request_valid: false,
             gpu_fb_w_write: false,
             gpu_fb_w_address: 0,
+            gpu_fb_w_line_count_minus_1: 0,
             gpu_fb_w_write_data: 0,
             memory_request_ready: false,
+            memory_write_data_ready: false,
             memory_response_valid: false,
             memory_read_data: 0,
             memory_response_last: false,
@@ -792,16 +863,19 @@ mod tests {
             display_response_last: false,
             display_error: false,
             gpu_ro_request_ready: false,
+            gpu_ro_write_data_ready: false,
             gpu_ro_response_valid: false,
             gpu_ro_read_data: 0,
             gpu_ro_response_last: false,
             gpu_ro_error: false,
             gpu_fb_r_request_ready: false,
+            gpu_fb_r_write_data_ready: false,
             gpu_fb_r_response_valid: false,
             gpu_fb_r_read_data: 0,
             gpu_fb_r_response_last: false,
             gpu_fb_r_error: false,
             gpu_fb_w_request_ready: false,
+            gpu_fb_w_write_data_ready: false,
             gpu_fb_w_response_valid: false,
             gpu_fb_w_read_data: 0,
             gpu_fb_w_response_last: false,
@@ -810,6 +884,7 @@ mod tests {
             memory_write: false,
             memory_line: false,
             memory_address: 0,
+            memory_line_count_minus_1: 0,
             memory_write_data: 0,
             memory_response_ready: false,
         }
@@ -1114,6 +1189,135 @@ mod tests {
     }
 
     #[test]
+    fn emu_and_nand_forward_each_gpu_line_count_and_default_to_one_line() {
+        // gpu_ro carries four lines.
+        let mut steps = vec![reset_step()];
+        steps.push(TestStep::new(
+            CpuV3MemoryArbiterInputValue {
+                gpu_ro_request_valid: true,
+                gpu_ro_address: 0x1000,
+                gpu_ro_line_count_minus_1: 3,
+                ..idle()
+            },
+            CpuV3MemoryArbiterOutputValue {
+                memory_request_valid: true,
+                memory_line: true,
+                memory_address: 0x1000,
+                memory_line_count_minus_1: 3,
+                ..z()
+            },
+        ));
+        steps.push(reset_step());
+        // gpu_fb_r carries two lines.
+        steps.push(TestStep::new(
+            CpuV3MemoryArbiterInputValue {
+                gpu_fb_r_request_valid: true,
+                gpu_fb_r_address: 0x1080,
+                gpu_fb_r_line_count_minus_1: 1,
+                ..idle()
+            },
+            CpuV3MemoryArbiterOutputValue {
+                memory_request_valid: true,
+                memory_line: true,
+                memory_address: 0x1080,
+                memory_line_count_minus_1: 1,
+                ..z()
+            },
+        ));
+        steps.push(reset_step());
+        // gpu_fb_w carries four lines and a write beat.
+        steps.push(TestStep::new(
+            CpuV3MemoryArbiterInputValue {
+                gpu_fb_w_request_valid: true,
+                gpu_fb_w_write: true,
+                gpu_fb_w_address: 0x1100,
+                gpu_fb_w_line_count_minus_1: 3,
+                gpu_fb_w_write_data: 0xdead,
+                ..idle()
+            },
+            CpuV3MemoryArbiterOutputValue {
+                memory_request_valid: true,
+                memory_write: true,
+                memory_line: true,
+                memory_address: 0x1100,
+                memory_line_count_minus_1: 3,
+                memory_write_data: 0xdead,
+                ..z()
+            },
+        ));
+        steps.push(reset_step());
+        // A fixed one-line instruction request keeps the default length.
+        steps.push(TestStep::new(
+            CpuV3MemoryArbiterInputValue {
+                instruction_request_valid: true,
+                instruction_address: 0x0140,
+                ..idle()
+            },
+            CpuV3MemoryArbiterOutputValue {
+                memory_request_valid: true,
+                memory_line: true,
+                memory_address: 0x0140,
+                ..z()
+            },
+        ));
+        ModuleTest::<CpuV3MemoryArbiter>::new(steps).run_emu_and_nand();
+    }
+
+    #[test]
+    fn emu_and_nand_route_long_write_beat_ready_only_to_the_owner() {
+        let steps = vec![
+            reset_step(),
+            TestStep::new(
+                CpuV3MemoryArbiterInputValue {
+                    gpu_fb_w_request_valid: true,
+                    gpu_fb_w_write: true,
+                    gpu_fb_w_line_count_minus_1: 3,
+                    gpu_fb_w_write_data: 0x1111,
+                    ..idle()
+                },
+                CpuV3MemoryArbiterOutputValue {
+                    memory_request_valid: true,
+                    memory_write: true,
+                    memory_line: true,
+                    memory_line_count_minus_1: 3,
+                    memory_write_data: 0x1111,
+                    ..z()
+                },
+            ),
+            TestStep::new(
+                CpuV3MemoryArbiterInputValue {
+                    gpu_fb_w_request_valid: true,
+                    gpu_fb_w_write: true,
+                    gpu_fb_w_line_count_minus_1: 3,
+                    gpu_fb_w_write_data: 0x1111,
+                    memory_request_ready: true,
+                    ..idle()
+                },
+                CpuV3MemoryArbiterOutputValue {
+                    memory_write_data: 0x1111,
+                    memory_response_ready: true,
+                    ..z()
+                },
+            ),
+            TestStep::new(
+                CpuV3MemoryArbiterInputValue {
+                    gpu_fb_w_write: true,
+                    gpu_fb_w_write_data: 0x2222,
+                    memory_write_data_ready: true,
+                    ..idle()
+                },
+                CpuV3MemoryArbiterOutputValue {
+                    gpu_fb_w_write_data_ready: true,
+                    memory_write_data: 0x2222,
+                    memory_response_ready: true,
+                    ..z()
+                },
+            ),
+        ];
+        ModuleTest::<CpuV3MemoryArbiter>::new(steps).run_emu_and_nand();
+    }
+
+    #[test]
     fn emu_and_nand_release_on_an_error_beat_without_last() {
         let mut steps = vec![reset_step()];
         steps.push(TestStep::new(
@@ -1259,6 +1463,30 @@ mod tests {
         }
         assert!(instruction_wins > 0, "instruction never won");
         assert!(data_wins > 0, "data never won");
+    }
+
+    #[test]
+    fn row_boundary_check_accepts_row_filling_requests_and_rejects_crossings() {
+        // A row holds 32 lines (512 words / 16). Every aligned request that
+        // ends exactly at the row boundary fits.
+        assert!(line_request_fits_row(0x000, 0));
+        assert!(line_request_fits_row(0x1f0, 0));
+        assert!(line_request_fits_row(0x1e0, 1));
+        assert!(line_request_fits_row(0x1d0, 2));
+        assert!(line_request_fits_row(0x1c0, 3));
+        // One line further crosses into the next row.
+        assert!(!line_request_fits_row(0x1e0, 2));
+        assert!(!line_request_fits_row(0x1d0, 3));
+        assert!(!line_request_fits_row(0x1f0, 1));
+        // The row check ignores higher bits and only looks at the offset.
+        assert!(line_request_fits_row(0x800, 3));
+        assert!(!line_request_fits_row(0x9e0, 2));
+    }
+
+    #[test]
+    #[should_panic(expected = "crosses a 1 KiB SDRAM row")]
+    fn row_boundary_assertion_reports_a_crossing_request() {
+        assert_line_request_fits_row(0x1f0, 3);
     }
 
     #[test]
