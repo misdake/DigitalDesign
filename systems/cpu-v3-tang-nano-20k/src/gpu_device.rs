@@ -8,7 +8,7 @@
 //! by device-API tests and by `CpuV3SystemSim`. The model drives the *same*
 //! [`GpuCore`] state machine as the fitted hardware command processor (see
 //! `crate::hardware::gpu`), so the register contract, the command shell and the
-//! tile-linear framebuffer formula cannot drift between the two.
+//! tile-linear framebuffer cache cannot drift between the two.
 
 use crate::hardware::gpu::{GpuCore, GpuDeviceBus, HostGpuMemory};
 use crate::layout::{
@@ -82,10 +82,17 @@ pub const GPU_OPCODE_END: u8 = 0xff;
 
 /// `SET_TARGET.arg0` must be 32 KiB (2^14 words) aligned.
 pub const GPU_TARGET_ALIGN_WORDS: u32 = 1 << 14;
-/// A submission must accumulate exactly this many tiles before `END`.
+/// Total number of tile-linear tiles; every `FAKE_DRAW` tile index must be
+/// below this bound.
 pub const GPU_TILE_TOTAL: u32 = FRAMEBUFFER_TILE_COLUMNS * FRAMEBUFFER_TILE_ROWS;
-/// `FAKE_DRAW.arg0[31:16]` must be zero in this milestone.
-pub const GPU_COLOR_MODE_ZERO: u32 = 0;
+/// `FAKE_DRAW` is exactly three qwords: header, tile-list address, colors/mask.
+pub const GPU_FAKE_DRAW_QWORDS: u8 = 3;
+/// `FAKE_DRAW.arg0[17:16] == GPU_LOAD_OP_LOAD`: refill each tile from
+/// `gpu_fb_r` before applying the draw rows.
+pub const GPU_LOAD_OP_LOAD: u16 = 0;
+/// `FAKE_DRAW.arg0[17:16] == GPU_LOAD_OP_CLEAR`: initialize each tile to the
+/// clear color before applying the draw rows.
+pub const GPU_LOAD_OP_CLEAR: u16 = 1;
 
 /// Returns the fitted framebuffer slot base for a `SET_TARGET` word address, or
 /// `None` when the address is not one of the two fitted 32 KiB-aligned slots.
@@ -100,8 +107,8 @@ pub const fn gpu_target_slot(base: u32) -> Option<u32> {
     }
 }
 
-/// One RGB565 pixel of the dummy tile writer. `tile_x`/`tile_y` are the tile's
-/// own indices (0..24 and 0..14); every pixel of a tile is this solid color.
+/// One RGB565 pixel of the legacy dummy tile writer color formula. Retained as
+/// a test/reference helper; the cache milestone writes explicit draw colors.
 pub const fn gpu_dummy_pixel(
     tile_x: u32,
     tile_y: u32,
@@ -126,7 +133,7 @@ pub const fn gpu_dummy_beat(pixel: u16) -> u64 {
 ///
 /// Every `read` and `write` advances the machine one main clock, so a polling
 /// driver always makes progress. The submission FIFO, counters, sticky errors,
-/// command shell and tile-linear writes match the fitted hardware.
+/// command shell and tile-cache writes match the fitted hardware.
 #[derive(Default)]
 pub struct GpuDevice {
     core: GpuCore,
@@ -214,6 +221,8 @@ mod tests {
     /// Disjoint framebuffer slices for slot A and its guard words. The test
     /// memory is large enough for both slots and an explicit guard after A.
     const MEMORY_WORDS: usize = (FRAMEBUFFER_B_BASE_WORD + 0x1_8000) as usize;
+    /// 32-byte aligned word address reserved for the tile lists.
+    const LIST_BASE: u32 = 0x400;
 
     fn program(words: &[u64]) -> (Vec<Word>, u32) {
         let base = 0x100u32;
@@ -229,6 +238,12 @@ mod tests {
         (memory, base)
     }
 
+    fn write_tile_list(memory: &mut [Word], indices: &[u16]) {
+        for (offset, index) in indices.iter().enumerate() {
+            memory[LIST_BASE as usize + offset] = *index;
+        }
+    }
+
     fn word_count(words: &[u64]) -> u16 {
         (words.len() * 4) as u16
     }
@@ -237,11 +252,21 @@ mod tests {
         GPU_OPCODE_SET_TARGET as u64 | (1u64 << 8) | (u64::from(base) << 32)
     }
 
-    fn fake_draw(tiles: u16, color_mode: u16, payload: u64) -> [u64; 2] {
-        let arg0 = u64::from(tiles) | (u64::from(color_mode) << 16);
+    fn fake_draw(
+        list_addr: u32,
+        tile_count: u16,
+        load_op: u16,
+        clear_color: u16,
+        draw_color: u16,
+        row_mask: u16,
+    ) -> [u64; 3] {
+        let arg0 = u64::from(tile_count) | (u64::from(load_op) << 16);
+        let payload1 =
+            u64::from(clear_color) | (u64::from(draw_color) << 16) | (u64::from(row_mask) << 32);
         [
-            GPU_OPCODE_FAKE_DRAW as u64 | (2u64 << 8) | (arg0 << 32),
-            payload,
+            GPU_OPCODE_FAKE_DRAW as u64 | (u64::from(GPU_FAKE_DRAW_QWORDS) << 8) | (arg0 << 32),
+            u64::from(list_addr),
+            payload1,
         ]
     }
 
@@ -273,137 +298,173 @@ mod tests {
     }
 
     #[test]
-    fn host_device_fills_the_same_tile_linear_framebuffer() {
-        // Three draws with distinct parameters: tile 0..124, 125..249, 250..374.
-        let draws = [(3u16, 5u16, 7u16, 9u16), (100, 1, 2, 3), (200, 11, 12, 13)];
-        let payload = |(phase, r, g, b): (u16, u16, u16, u16)| {
-            u64::from(phase) | (u64::from(r) << 16) | (u64::from(g) << 32) | (u64::from(b) << 48)
-        };
+    fn host_device_clears_every_tile_through_the_cache() {
+        let indices: Vec<u16> = (0..GPU_TILE_TOTAL as u16).collect();
         let mut words = vec![set_target(FRAMEBUFFER_A_BASE_WORD)];
-        words.extend(fake_draw(125, 0, payload(draws[0])));
-        words.extend(fake_draw(125, 0, payload(draws[1])));
-        words.extend(fake_draw(125, 0, payload(draws[2])));
+        words.extend(fake_draw(
+            LIST_BASE,
+            GPU_TILE_TOTAL as u16,
+            GPU_LOAD_OP_CLEAR,
+            0,
+            0xabcd,
+            0xffff,
+        ));
         words.push(END);
         let (mut memory, base) = program(&words);
-        // Guard word after the 375 tiles of slot A's live payload.
+        write_tile_list(&mut memory, &indices);
         let guard = FRAMEBUFFER_A_BASE_WORD as usize + FRAMEBUFFER_WORDS as usize;
         memory[guard] = 0xbeef;
         let mut device = GpuDevice::default();
         stage_and_submit(&mut device, &mut memory, base, word_count(&words));
         assert_eq!(device.received_count(), 1);
-        let cycles = device.run_until_idle(&mut memory, 200_000);
-        assert!(cycles < 200_000, "submission did not retire");
+        let cycles = device.run_until_idle(&mut memory, 500_000);
+        assert!(cycles < 500_000, "submission did not retire");
         assert_eq!(device.executed_count(), 1);
         assert!(!device.command_error());
 
         let slot = FRAMEBUFFER_A_BASE_WORD as usize;
         for index in 0..GPU_TILE_TOTAL {
-            let tile_x = index % FRAMEBUFFER_TILE_COLUMNS;
-            let tile_y = index / FRAMEBUFFER_TILE_COLUMNS;
-            let (phase, r_bias, g_bias, b_bias) = draws[(index / 125) as usize];
-            let expected = gpu_dummy_pixel(tile_x, tile_y, phase, r_bias, g_bias, b_bias);
-            let base = slot + (index * FRAMEBUFFER_TILE_WORDS) as usize;
-            for word in &memory[base..base + FRAMEBUFFER_TILE_WORDS as usize] {
-                assert_eq!(*word, expected, "tile {index} pixel mismatch");
+            let tile_base = slot + (index * FRAMEBUFFER_TILE_WORDS) as usize;
+            for word in &memory[tile_base..tile_base + FRAMEBUFFER_TILE_WORDS as usize] {
+                assert_eq!(*word, 0xabcd, "tile {index} pixel mismatch");
             }
         }
         assert_eq!(memory[guard], 0xbeef, "guard word was overwritten");
     }
 
     #[test]
-    fn host_device_end_mismatch_is_a_command_error() {
-        let mut words = vec![set_target(FRAMEBUFFER_A_BASE_WORD)];
-        words.extend(fake_draw(10, 0, 0));
-        words.push(END);
-        let (mut memory, base) = program(&words);
-        let mut device = GpuDevice::default();
-        stage_and_submit(&mut device, &mut memory, base, word_count(&words));
-        device.run_until_idle(&mut memory, 100_000);
-        assert!(device.command_error());
-        assert_eq!(device.executed_count(), 1);
-        device.write(&mut memory, GPU_CONTROL, GPU_CONTROL_CLEAR_ERRORS);
-        assert_eq!(
-            device.read(&mut memory, GPU_STATUS) & GPU_STATUS_COMMAND_ERROR,
-            0
-        );
+    fn host_device_end_requires_a_target() {
+        // END before any SET_TARGET is a command error.
+        assert!(run_one(&[END]));
+        // SET_TARGET followed by END with no draws is legal: nothing to drain.
+        assert!(!run_one(&[set_target(FRAMEBUFFER_A_BASE_WORD), END]));
     }
 
     /// Runs one submission and returns whether it terminated with a command
     /// error, checking the retire/counter contract either way.
     fn run_one(words: &[u64]) -> bool {
+        run_one_with_list(words, &[])
+    }
+
+    fn run_one_with_list(words: &[u64], list: &[u16]) -> bool {
         let (mut memory, base) = program(words);
+        write_tile_list(&mut memory, list);
         let mut device = GpuDevice::default();
         stage_and_submit(&mut device, &mut memory, base, word_count(words));
         assert_eq!(device.received_count(), 1);
-        let cycles = device.run_until_idle(&mut memory, 200_000);
-        assert!(cycles < 200_000, "submission did not retire");
+        let cycles = device.run_until_idle(&mut memory, 500_000);
+        assert!(cycles < 500_000, "submission did not retire");
         assert_eq!(device.executed_count(), 1, "every submission retires once");
         device.command_error()
     }
 
     #[test]
     fn host_device_rejects_each_invalid_command_class() {
-        let payload = 0u64;
         // Unknown opcode.
         assert!(run_one(&[0x17u64 | (1u64 << 8)]));
         // Wrong qword count for SET_TARGET.
         assert!(run_one(&[GPU_OPCODE_SET_TARGET as u64 | (2u64 << 8)]));
-        // Nonzero reserved flags.
+        // Nonzero reserved header flags.
         assert!(run_one(&[GPU_OPCODE_END as u64
             | (1u64 << 8)
             | (1u64 << 16)]));
-        // Missing target before FAKE_DRAW.
-        assert!(run_one(&[fake_draw(1, 0, payload)[0], payload]));
-        // Unsupported color mode.
-        let arg0 = 1u64 | (1u64 << 16);
-        let draw = [
-            GPU_OPCODE_FAKE_DRAW as u64 | (2u64 << 8) | (arg0 << 32),
-            payload,
-        ];
+        // FAKE_DRAW without a target.
+        assert!(run_one(&fake_draw(
+            LIST_BASE,
+            0,
+            GPU_LOAD_OP_CLEAR,
+            0,
+            0,
+            0
+        )));
+        let target = set_target(FRAMEBUFFER_A_BASE_WORD);
+        // Wrong qword count for FAKE_DRAW.
+        let short = [GPU_OPCODE_FAKE_DRAW as u64 | (2u64 << 8), 0];
+        assert!(run_one(&[target, short[0], short[1]]));
+        // Reserved load-op value.
+        let mut reserved_load_op = fake_draw(LIST_BASE, 0, 2, 0, 0, 0);
+        reserved_load_op[0] = GPU_OPCODE_FAKE_DRAW as u64
+            | (u64::from(GPU_FAKE_DRAW_QWORDS) << 8)
+            | ((2u64 << 16) << 32);
         assert!(run_one(&[
-            set_target(FRAMEBUFFER_A_BASE_WORD),
-            draw[0],
-            draw[1]
+            target,
+            reserved_load_op[0],
+            reserved_load_op[1],
+            reserved_load_op[2]
         ]));
-        // END before any target.
-        assert!(run_one(&[END]));
-        // Tile total overflow within one submission.
+        // Nonzero reserved bits above the load op.
+        let mut reserved_bits = fake_draw(LIST_BASE, 0, GPU_LOAD_OP_LOAD, 0, 0, 0);
+        reserved_bits[0] |= 1u64 << 50; // arg0 bit 18
         assert!(run_one(&[
-            set_target(FRAMEBUFFER_A_BASE_WORD),
-            fake_draw(376, 0, payload)[0],
-            payload,
+            target,
+            reserved_bits[0],
+            reserved_bits[1],
+            reserved_bits[2]
         ]));
-        // END with the wrong accumulated total.
+        // Nonzero payload-0 high half.
+        let mut bad_high = fake_draw(LIST_BASE, 0, GPU_LOAD_OP_LOAD, 0, 0, 0);
+        bad_high[1] = 1u64 << 32;
+        assert!(run_one(&[target, bad_high[0], bad_high[1], bad_high[2]]));
+        // Nonzero payload-1 reserved bits.
+        let mut bad_color = fake_draw(LIST_BASE, 0, GPU_LOAD_OP_LOAD, 0, 0, 0);
+        bad_color[2] |= 1u64 << 48;
+        assert!(run_one(&[target, bad_color[0], bad_color[1], bad_color[2]]));
+        // Unaligned tile list.
         assert!(run_one(&[
-            set_target(FRAMEBUFFER_A_BASE_WORD),
-            fake_draw(374, 0, payload)[0],
-            payload,
-            END,
+            target,
+            fake_draw(LIST_BASE + 1, 1, GPU_LOAD_OP_CLEAR, 0, 0, 0)[0],
+            fake_draw(LIST_BASE + 1, 1, GPU_LOAD_OP_CLEAR, 0, 0, 0)[1],
+            fake_draw(LIST_BASE + 1, 1, GPU_LOAD_OP_CLEAR, 0, 0, 0)[2],
         ]));
+        // Tile list that leaves 22-bit word memory.
+        let draw = fake_draw((1 << 22) - 16, 32, GPU_LOAD_OP_CLEAR, 0, 0, 0);
+        assert!(run_one(&[target, draw[0], draw[1], draw[2]]));
+        // Tile index at or above the tile count.
+        let draw = fake_draw(LIST_BASE, 1, GPU_LOAD_OP_CLEAR, 0, 0, 0);
+        assert!(run_one_with_list(
+            &[target, draw[0], draw[1], draw[2]],
+            &[GPU_TILE_TOTAL as u16],
+        ));
     }
 
     #[test]
     fn host_device_accepts_a_command_crossing_a_32_byte_line() {
         // Three SET_TARGET qwords put the FAKE_DRAW header on qword 3 and its
-        // payload on qword 4, i.e. across the 32-byte (4-qword) line boundary.
-        let payload = 0x0003u64;
+        // payloads on qwords 4 and 5, i.e. across the 32-byte line boundary.
+        let draw = fake_draw(LIST_BASE, 1, GPU_LOAD_OP_CLEAR, 0, 0x2222, 0xffff);
         let words = [
             set_target(FRAMEBUFFER_A_BASE_WORD),
             set_target(FRAMEBUFFER_B_BASE_WORD),
             set_target(FRAMEBUFFER_A_BASE_WORD),
-            fake_draw(375, 0, payload)[0],
-            payload,
+            draw[0],
+            draw[1],
+            draw[2],
             END,
         ];
-        assert!(!run_one(&words));
+        let (mut memory, base) = program(&words);
+        write_tile_list(&mut memory, &[0]);
+        let mut device = GpuDevice::default();
+        stage_and_submit(&mut device, &mut memory, base, word_count(&words));
+        device.run_until_idle(&mut memory, 500_000);
+        assert!(!device.command_error());
+        assert_eq!(memory[FRAMEBUFFER_A_BASE_WORD as usize], 0x2222);
     }
 
     #[test]
     fn host_device_fifo_full_rejects_without_touching_received_count() {
+        let indices: Vec<u16> = (0..GPU_TILE_TOTAL as u16).collect();
         let mut words = vec![set_target(FRAMEBUFFER_A_BASE_WORD)];
-        words.extend(fake_draw(375, 0, 0));
+        words.extend(fake_draw(
+            LIST_BASE,
+            GPU_TILE_TOTAL as u16,
+            GPU_LOAD_OP_CLEAR,
+            0,
+            0x1234,
+            0xffff,
+        ));
         words.push(END);
         let (mut memory, base) = program(&words);
+        write_tile_list(&mut memory, &indices);
         let mut device = GpuDevice::default();
         // One submission activates immediately; the two FIFO slots then fill,
         // and the following doorbell is rejected without changing the count.

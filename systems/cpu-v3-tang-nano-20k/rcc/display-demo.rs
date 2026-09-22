@@ -1,10 +1,11 @@
 //! GPU memory-interface bring-up demo.
 //!
 //! The CPU owns two fixed, heap-backed command buffers and alternates them.
-//! Each frame updates a 64-byte temporary command stream, cleans its two cache
-//! lines, submits it to device 4, waits for retirement, and publishes the
-//! completed tile-linear framebuffer at display vblank. The CPU never writes
-//! framebuffer pixels in this milestone.
+//! Three permanent tile-index lists divide the framebuffer into 125-tile
+//! batches. Each frame updates an 88-byte temporary command stream, cleans its
+//! three cache lines, submits it to device 4, waits for cache-drained
+//! retirement, and publishes the completed tile-linear framebuffer at display
+//! vblank. The CPU never writes framebuffer pixels in this milestone.
 
 use crate::dsl_rt::*;
 use crate::rcc_std::*;
@@ -19,16 +20,26 @@ const FB_A_WORD_HIGH: u16 = 0x0020;
 const FB_B_WORD_LOW: u16 = 0x8000;
 const FB_B_WORD_HIGH: u16 = 0x0021;
 
-const COMMAND_WORDS: u16 = 32;
+const COMMAND_WORDS: u16 = 44;
 const COMMAND_ALLOCATION_WORDS: u16 = 128 + 15;
 const TILES_PER_DRAW: u16 = 125;
+// Reserve eight complete cache lines after alignment even though only 125
+// entries are live, so cleaning the final line never reaches another object.
+const TILE_LIST_ALLOCATION_WORDS: u16 = 128 + 15;
 
 const OPCODE_SET_TARGET: u16 = 0x01e0;
-const OPCODE_FAKE_DRAW: u16 = 0x02e1;
+const OPCODE_FAKE_DRAW: u16 = 0x03e1;
 const OPCODE_END: u16 = 0x01ff;
+const LOAD_OP_LOAD: u16 = 0;
+const LOAD_OP_CLEAR: u16 = 1;
 
 fn aligned_command_buffer() -> Ptr {
     let raw = malloc(COMMAND_ALLOCATION_WORDS);
+    Ptr::from_addr((raw.addr() + 15) & 0xfff0)
+}
+
+fn aligned_tile_list() -> Ptr {
+    let raw = malloc(TILE_LIST_ALLOCATION_WORDS);
     Ptr::from_addr((raw.addr() + 15) & 0xfff0)
 }
 
@@ -42,14 +53,28 @@ fn write_qword(buffer: Ptr, qword: u16, word0: u16, word1: u16, word2: u16, word
     }
 }
 
-fn write_fake_draw(buffer: Ptr, qword: u16, phase: u16, r: u16, g: u16, b: u16) {
-    write_qword(buffer, qword, OPCODE_FAKE_DRAW, 0, TILES_PER_DRAW, 0);
-    write_qword(buffer, qword + 1, phase, r, g, b);
+fn write_fake_draw(
+    buffer: Ptr,
+    qword: u16,
+    tile_list: Ptr,
+    load_op: u16,
+    clear_color: u16,
+    draw_color: u16,
+) {
+    write_qword(
+        buffer,
+        qword,
+        OPCODE_FAKE_DRAW,
+        0,
+        TILES_PER_DRAW,
+        load_op,
+    );
+    // All permanent demo allocations remain in physical page zero.
+    write_qword(buffer, qword + 1, tile_list.addr(), 0, 0, 0);
+    write_qword(buffer, qword + 2, clear_color, draw_color, 0xffff, 0);
 }
 
-/// Build the temporary 8-qword command stream. Draw two starts at qword 3,
-/// so its payload at qword 4 is fetched from the following 32-byte line.
-fn build_commands(buffer: Ptr, target_low: u16, target_high: u16, phase: u16) {
+fn write_target(buffer: Ptr, target_low: u16, target_high: u16) {
     write_qword(
         buffer,
         0,
@@ -58,16 +83,49 @@ fn build_commands(buffer: Ptr, target_low: u16, target_high: u16, phase: u16) {
         target_low,
         target_high,
     );
-    write_fake_draw(buffer, 1, phase, 0, 0, 0);
-    write_fake_draw(buffer, 3, phase + 7, 5, 11, 17);
-    write_fake_draw(buffer, 5, phase + 13, 19, 23, 29);
-    write_qword(buffer, 7, OPCODE_END, 0, 0, 0);
+}
+
+/// Draw three starts at qword 7, so its payload crosses the following 32-byte
+/// command-fetch boundary.
+fn write_animated_draws(
+    buffer: Ptr,
+    list_0: Ptr,
+    list_1: Ptr,
+    list_2: Ptr,
+    phase: u16,
+) {
+    let red = (((phase + 7) & 0x001f) << 11) | 0x001f;
+    let green = (((phase + 19) & 0x003f) << 5) | 0xf800;
+    let blue = ((phase + 3) & 0x001f) | 0x07e0;
+    write_fake_draw(buffer, 1, list_0, LOAD_OP_CLEAR, 0, red);
+    write_fake_draw(buffer, 4, list_1, LOAD_OP_LOAD, 0, green);
+    write_fake_draw(buffer, 7, list_2, LOAD_OP_CLEAR, 0, blue);
+    write_qword(buffer, 10, OPCODE_END, 0, 0, 0);
 }
 
 fn clean_commands(buffer: Ptr) {
     unsafe {
         dcache_clean_line(buffer);
         dcache_clean_line(buffer.add(16));
+        dcache_clean_line(buffer.add(32));
+    }
+    dcache_wait();
+}
+
+fn initialize_tile_list(list: Ptr, first_tile: u16) {
+    let mut index: u16 = 0;
+    while index < TILES_PER_DRAW {
+        unsafe {
+            list.write(index as i16, first_tile + index);
+        }
+        index += 1;
+    }
+    let mut offset: u16 = 0;
+    while offset < 128 {
+        unsafe {
+            dcache_clean_line(list.add(offset as i16));
+        }
+        offset += 16;
     }
     dcache_wait();
 }
@@ -138,6 +196,12 @@ fn uart_success() {
 fn main() {
     let command_a = aligned_command_buffer();
     let command_b = aligned_command_buffer();
+    let list_0 = aligned_tile_list();
+    let list_1 = aligned_tile_list();
+    let list_2 = aligned_tile_list();
+    initialize_tile_list(list_0, 0);
+    initialize_tile_list(list_1, 125);
+    initialize_tile_list(list_2, 250);
     let mut use_a: u16 = 0;
     let mut phase: u16 = 0;
 
@@ -155,7 +219,8 @@ fn main() {
             FB_A_WORD_HIGH
         };
 
-        build_commands(command, target_low, target_high, phase);
+        write_target(command, target_low, target_high);
+        write_animated_draws(command, list_0, list_1, list_2, phase);
         clean_commands(command);
         let previous = submit(command);
         wait_gpu(previous);

@@ -299,9 +299,10 @@ mod tests {
         assert_eq!(project.resources.claimed[&ResourceKind::SpiFlashDevice], 1);
         assert_eq!(project.resources.claimed[&ResourceKind::Pll], 2);
         assert_eq!(project.resources.claimed[&ResourceKind::HdmiOutput], 1);
-        // Boot BSRAM + two dual-port cache data banks + the FPU register RAM
-        // (two blocks) + the display line buffer.
-        assert_eq!(project.resources.claimed[&ResourceKind::Bsram18K], 8);
+        // Boot BSRAM + two dual-port CPU cache data banks + the FPU register
+        // RAM (two blocks) + the display line buffer + the two-bank GPU
+        // framebuffer tile cache.
+        assert_eq!(project.resources.claimed[&ResourceKind::Bsram18K], 10);
     }
 
     #[test]

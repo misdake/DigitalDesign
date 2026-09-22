@@ -88,8 +88,10 @@ always @(posedge clk) begin
         case (state)
         ST_WAIT: begin refresh_count <= 0; state <= ST_IDLE; end
         ST_IDLE: begin
-            if (refresh_due) state <= ST_REFRESH_REQ;
-            else if (cpu_request_valid) begin
+            // Ready is asserted throughout ST_IDLE, so an offered request must
+            // win this collision. The overdue refresh runs after this bounded
+            // transaction instead of silently dropping an accepted owner.
+            if (cpu_request_valid) begin
                 pending_write <= cpu_write;
                 pending_line <= cpu_line;
                 pending_address <= cpu_address;
@@ -122,7 +124,7 @@ always @(posedge clk) begin
                 end else begin
                     state <= ST_ACTIVE_REQ;
                 end
-            end
+            end else if (refresh_due) state <= ST_REFRESH_REQ;
         end
         // Legacy one-line capture: three more 64-bit beats into the ring.
         ST_WRITE_CAPTURE: begin

@@ -12,7 +12,7 @@ optimization Stage. Reusable processor details belong to the
 - the revision 0.9 `CpuV3Core` at the Stage 12 microarchitecture level;
 - a four-entry instruction fetch queue with a four-entry, two-word resolved-target BTC;
 - a Stage0 instruction BSRAM window and separate 4-KiB I-cache and D-cache;
-- the seven-owner CPU V3 memory arbiter, boot DMA, and dummy GPU bring-up engine;
+- the seven-owner CPU V3 memory arbiter, boot DMA, and first tile-cache GPU engine;
 - the related-clock SDRAM/display port and Gowin Controller HS boundary;
 - SPI-Flash boot DMA, system-control, boot-select, and framebuffer devices;
 - boot-progress reporting, UART, LEDs, and the HDMI output path (compile-time
@@ -78,17 +78,16 @@ larger architectural physical addresses instead of truncating or aliasing them.
 framebuffer reads, and GPU framebuffer writes onto the CPU-side memory port. Display has strict
 priority at transaction boundaries. The other owners use base priority plus a saturating four-bit
 age, with round-robin selection for equal scores; an accepted owner remains selected through its
-last response or error. GPU framebuffer reads are wired but idle in this milestone. The I-cache,
+last response or error. GPU framebuffer reads and writes are both active cache traffic. The I-cache,
 D-cache, and display paths transfer fixed 4x64-bit lines; boot DMA retains its narrow-word mode.
 The three GPU ports encode one through four consecutive lines as `line_count_minus_one`, giving
 32/64/96/128-byte requests that must remain within one 1-KiB SDRAM row. Reads return 4/8/12/16
 unstallable 64-bit beats. Long writes accept beat zero with the request and advance the source only
 when the per-beat write-ready signal is asserted. `SharedSdramPort` preloads four beats and then
 streams through one 8x64-bit circular 108/54-MHz gearbox while Controller HS consumes 8/16/24/32
-32-bit beats; it does not duplicate the complete request in the adapter. Current GPU logic still
-issues one-line transactions, while the wider contract is ready for the frontend and framebuffer
-cache. `SharedSdramPort` is a single-client line/word adapter and contains no second CPU/display
-arbiter.
+32-bit beats; it does not duplicate the complete request in the adapter. Command and tile-list
+fetches remain one line, while framebuffer cache refill and clean use four-line transactions.
+`SharedSdramPort` is a single-client line/word adapter and contains no second CPU/display arbiter.
 
 ## Clock domains
 
@@ -128,7 +127,7 @@ The fitted device allocation is:
 | 1 | Boot select | Latched reset-time application selection |
 | 2 | Boot DMA | SPI-Flash source, SDRAM destination, length, start, and status registers |
 | 3 | Display | Framebuffer configuration and scanout control |
-| 4 | GPU | Two-entry submit FIFO, completion/status registers, and temporary dummy commands |
+| 4 | GPU | Two-entry submit FIFO, completion/status registers, temporary commands, and an eight-entry tile cache |
 
 Device 0 channel 0 emits the registered one-cycle-delayed whole-I-cache invalidation pulse. Channel
 1 starts blocking D-cache clean-plus-invalidate, channel 4 starts blocking D-cache clean, and channel
@@ -161,9 +160,14 @@ channel 4 submits, and channel 5 performs an idle-only soft reset or sticky-erro
 channels 0..3 return accepted count, retired count, busy/full/error status, and queued depth. The
 queue holds two submissions in addition to the active one. Full or malformed submissions are
 rejected without incrementing the accepted count. The temporary command processor accepts only
-`SET_TARGET`, `FAKE_DRAW`, and `END`; it fetches one 32-byte command line at a time and the dummy
-writer keeps at most one 32-byte framebuffer write outstanding. This is a bring-up ABI, not the
-future geometry command-buffer contract.
+`SET_TARGET`, `FAKE_DRAW`, and `END`; it fetches one 32-byte command or tile-list line at a time.
+`FAKE_DRAW` supplies a 32-byte-aligned list of `u16` tile indices, a LOAD or CLEAR operation, two
+RGB565 colors, and a 16-row write mask. The framebuffer cache is eight-entry direct-mapped and
+stores eight complete 16x16 tiles in two inferred 512x32 BSRAM banks. A miss blocks while a dirty
+victim is cleaned or a LOAD tile is refilled; each tile transfer is four 128-byte transactions.
+`END` drains every dirty entry before incrementing the retired count, so completion fences all
+visible framebuffer writes. This is a bring-up ABI, not the future geometry command-buffer
+contract.
 
 CPU, DMA, display, and GPU clients share physical SDRAM without hardware snooping. Software
 transfers ownership explicitly: CPU-produced data becomes visible after blocking D-cache clean;
@@ -195,14 +199,13 @@ the same stable mapping through `LoaderError::boot_report`.
 
 ## Current fitted result and validation boundary
 
-The current full-system build uses 11,313 Logic (9,300 LUT, 1,431 ALU, 97 RAM16), 4,696 logic
-registers, 7,802 CLS, three SDPB, four DPB, one pROM, two `MULT18X18`, one `MULT36X36`, and one
-`MULTADDALU18X18`. Relative to the pre-GPU `3e2d4a0` baseline this milestone adds 1,534 Logic,
-seventeen RAM16 cells (1,088 physical bits), 423 logic FF, and
-759 CLS while leaving BSRAM and DSP counts unchanged. The CPU clock closes at 55.541 MHz against
-the 54-MHz constraint with 0.514 ns worst setup slack and zero setup/hold TNS. The limiting path is
-inside the existing FPU SINCOS result stage; GPU and arbiter endpoints are absent from the top setup
-path.
+The current full-system build uses 12,587 Logic (10,427 LUT, 1,536 ALU, 104 RAM16), 5,309 logic
+registers, 8,603 CLS, five SDPB, four DPB, one pROM, two `MULT18X18`, one `MULT36X36`, and one
+`MULTADDALU18X18`. The two additional SDPB blocks are the 512x64 framebuffer tile cache. The CPU
+clock closes at 54.562 MHz against the 54-MHz constraint with 0.191 ns worst setup slack and zero
+setup/hold TNS; the first setup path is an existing core-state-to-GPR-write-data path.
+Controller timing closes at 122.284 MHz against 108 MHz. These are fitted implementation results,
+not board evidence.
 
 The system-level emulator-vs-RTL co-simulation `tests/system_cosim.rs` drives the composed RTL
 (core, fetch queue, I-cache, D-cache, memory arbiter, and a behavioral SDRAM word port) in Icarus

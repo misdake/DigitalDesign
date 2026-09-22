@@ -163,17 +163,23 @@ mod tests {
         use crate::{
             GPU_CMD_BASE_HIGH, GPU_CMD_BASE_LOW, GPU_CMD_WORDS_HIGH, GPU_CMD_WORDS_LOW,
             GPU_EXECUTED_COUNT, GPU_OPCODE_END, GPU_OPCODE_FAKE_DRAW, GPU_OPCODE_SET_TARGET,
-            GPU_SUBMIT,
+            GPU_SUBMIT, GPU_TILE_TOTAL,
         };
         let mut sim = CpuV3SystemSim::default();
-        // Build the temporary command shell in physical memory.
+        // Build the temporary command shell in physical memory. The FAKE_DRAW
+        // is the three-qword framebuffer-cache form with a tile list that
+        // covers the whole 375-tile framebuffer as a solid clear.
         let base = 0x100u32;
+        let list_base = 0x400u32;
+        let tile_count = GPU_TILE_TOTAL as u16;
+        let list: Vec<u16> = (0..tile_count).collect();
+        let fake_arg0 = u64::from(tile_count) | (1u64 << 16); // CLEAR
         let qwords: [u64; 5] = [
             GPU_OPCODE_SET_TARGET as u64 | (1u64 << 8) | (u64::from(FRAMEBUFFER_A_BASE_WORD) << 32),
-            GPU_OPCODE_FAKE_DRAW as u64 | (2u64 << 8) | (375u64 << 32),
-            0, // payload: phase 0, biases 0
+            GPU_OPCODE_FAKE_DRAW as u64 | (3u64 << 8) | (fake_arg0 << 32),
+            u64::from(list_base),
+            0xffffu64 << 32, // clear 0, draw 0, every tile row selected
             GPU_OPCODE_END as u64 | (1u64 << 8),
-            0,
         ];
         {
             let memory = sim.cpu_mut().physical_memory_mut();
@@ -184,6 +190,9 @@ mod tests {
                 memory[cursor + 2] = (qword >> 32) as u16;
                 memory[cursor + 3] = (qword >> 48) as u16;
                 cursor += 4;
+            }
+            for (offset, index) in list.iter().enumerate() {
+                memory[list_base as usize + offset] = *index;
             }
         }
         let mut words = Vec::new();

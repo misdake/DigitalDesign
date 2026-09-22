@@ -13,7 +13,7 @@ wire [2:0] controller_command; wire [20:0] controller_address;
 wire [3:0] controller_write_mask; wire [63:0] controller_write_data; wire [7:0] controller_burst_length;
 SharedSdramPort dut(.*);
 localparam CMD_REFRESH=3'b001, CMD_ACTIVE=3'b011, CMD_WRITE=3'b100, CMD_READ=3'b101;
-localparam ST_WRITE_STAGE=13;
+localparam ST_REFRESH_WAIT=9, ST_WRITE_STAGE=13;
 integer cycles=0;
 always @(posedge clk) begin
   cycles<=cycles+1;
@@ -142,6 +142,17 @@ initial begin
     line_read(22'h000200 + i*22'h000020, i[1:0]);
     line_write(22'h000300 + i*22'h000020, i[1:0]);
   end
+
+  // A request offered exactly when refresh becomes due is accepted and
+  // completed first; the overdue refresh follows the bounded transaction.
+  @(negedge clk);
+  // `line_read` begins at the next negedge; the intervening posedge advances
+  // 599 to the due value while leaving the port in ST_IDLE.
+  dut.refresh_count=10'd599;
+  line_read(22'h000480, 0);
+  if(dut.state!=ST_REFRESH_WAIT) $fatal(1,"overdue refresh did not follow accepted request");
+  controller_command_ack=1; @(posedge clk); #1; controller_command_ack=0;
+  repeat(2) @(posedge clk);
 
   if(cpu_error) $fatal(1,"unexpected error");
   $display("DIGITAL_DESIGN_PASS"); $finish;

@@ -1,22 +1,41 @@
-// Explicit Icarus co-simulation of the handwritten GPU command FSM.
+// Bounded self-checking Icarus co-simulation of the handwritten GPU command
+// FSM and tile framebuffer cache.
 //
-// The testbench substitutes a small direct-memory responder for the arbiter and
-// SharedSdramPort: one 32-byte line read streams four 64-bit beats, and one
-// 32-byte framebuffer write captures four beats. It then drives the real device
-// register sequence for one submission whose three draws total 375 tiles and
-// checks the counter/status contract and the first/last tile pixel.
+// The testbench replaces the real arbiter/SharedSdramPort with a synchronous
+// direct-memory model that serves all three masters: `gpu_ro` streams four
+// 64-bit beats for a 32-byte line, `gpu_fb_r` streams sixteen beats for a
+// 128-byte refill, and `gpu_fb_w` captures sixteen beats for a 128-byte clean
+// before committing them to memory. The model presents request-ready in the
+// same cycle the DUT asserts a request, exactly like the host model, and is
+// the only driver of the DUT's memory handshake inputs.
+//
+// Scenarios are reset-separated and cover partial-row LOAD preservation, CLEAR
+// initialization, duplicate/unordered tile indices, dirty victim eviction
+// between tiles 0 and 8, END drain before retirement, invalid command fields,
+// a command crossing a 32-byte line, and the framebuffer guard. Every wait
+// loop is bounded, and a global clock limit fails the run if the DUT hangs.
 `timescale 1ns/1ps
 module tb;
-reg clk = 0; always #5 clk = ~clk;
+reg clk = 1'b0;
+always #5 clk = ~clk;
+
 integer cycles = 0;
 always @(posedge clk) begin
-    cycles <= cycles + 1;
+    cycles = cycles + 1;
     if (cycles > 4000000) $fatal(1, "GPU testbench cycle limit exceeded");
 end
 
-// Command buffer at word address 0x100; memory spans both framebuffer slots.
-localparam CMD_BASE = 22'h000100;
-reg [15:0] memory [0:22'h240000];
+// Command buffer at word address 0x100; 32-byte list slots at 0x400.
+localparam [21:0] CMD_BASE = 22'h000100;
+localparam [21:0] LIST_BASE = 22'h000400;
+localparam [21:0] LIST_STRIDE = 22'h000010;
+localparam [21:0] FB_A = 22'h200000;
+localparam [21:0] FB_B = 22'h218000;
+// 400x240 live pixels; the guard word sits just past the last tile.
+localparam [21:0] FB_GUARD = FB_A + 22'd96000;
+localparam MEM_WORDS = 22'h240000;
+
+reg [15:0] mem [0:MEM_WORDS];
 
 reg [2:0] device_index = 0;
 reg [3:0] device_channel = 0;
@@ -24,179 +43,557 @@ reg device_read_enable = 0, device_write_enable = 0;
 reg [15:0] device_write_data = 0;
 wire [15:0] device_read_data;
 
-reg gpu_ro_request_ready = 0, gpu_ro_write_data_ready = 0, gpu_ro_response_valid = 0, gpu_ro_response_last = 0, gpu_ro_error = 0;
+reg gpu_ro_request_ready = 0, gpu_ro_write_data_ready = 0;
+reg gpu_ro_response_valid = 0, gpu_ro_response_last = 0, gpu_ro_error = 0;
 reg [63:0] gpu_ro_read_data = 0;
-reg gpu_fb_w_request_ready = 0, gpu_fb_w_write_data_ready = 0, gpu_fb_w_response_valid = 0, gpu_fb_w_response_last = 0, gpu_fb_w_error = 0;
+reg gpu_fb_w_request_ready = 0, gpu_fb_w_write_data_ready = 0;
+reg gpu_fb_w_response_valid = 0, gpu_fb_w_response_last = 0, gpu_fb_w_error = 0;
+reg gpu_fb_r_request_ready = 0, gpu_fb_r_write_data_ready = 0;
+reg gpu_fb_r_response_valid = 0, gpu_fb_r_response_last = 0, gpu_fb_r_error = 0;
+reg [63:0] gpu_fb_r_read_data = 0;
 
 wire gpu_ro_request_valid, gpu_ro_write;
 wire [21:0] gpu_ro_address;
+wire [1:0] gpu_ro_line_count_minus_1;
 wire [63:0] gpu_ro_write_data;
 wire gpu_fb_w_request_valid, gpu_fb_w_write;
 wire [21:0] gpu_fb_w_address;
+wire [1:0] gpu_fb_w_line_count_minus_1;
 wire [63:0] gpu_fb_w_write_data;
 wire gpu_fb_r_request_valid, gpu_fb_r_write;
 wire [21:0] gpu_fb_r_address;
+wire [1:0] gpu_fb_r_line_count_minus_1;
 wire [63:0] gpu_fb_r_write_data;
 
 reg reset = 1;
-CpuV3Gpu dut(.clk(clk), .reset(reset), .device_index(device_index), .device_channel(device_channel),
+CpuV3Gpu dut(
+    .clk(clk), .reset(reset),
+    .device_index(device_index), .device_channel(device_channel),
     .device_read_enable(device_read_enable), .device_write_enable(device_write_enable),
     .device_write_data(device_write_data), .device_read_data(device_read_data),
-    .gpu_ro_request_ready(gpu_ro_request_ready), .gpu_ro_write_data_ready(gpu_ro_write_data_ready), .gpu_ro_response_valid(gpu_ro_response_valid),
-    .gpu_ro_read_data(gpu_ro_read_data), .gpu_ro_response_last(gpu_ro_response_last),
-    .gpu_ro_error(gpu_ro_error),
-    .gpu_fb_w_request_ready(gpu_fb_w_request_ready), .gpu_fb_w_write_data_ready(gpu_fb_w_write_data_ready), .gpu_fb_w_response_valid(gpu_fb_w_response_valid),
-    .gpu_fb_w_response_last(gpu_fb_w_response_last), .gpu_fb_w_error(gpu_fb_w_error),
-    .gpu_fb_r_request_ready(1'b1), .gpu_fb_r_write_data_ready(1'b0), .gpu_fb_r_response_valid(1'b0),
-    .gpu_fb_r_read_data(64'h0), .gpu_fb_r_response_last(1'b0), .gpu_fb_r_error(1'b0),
+    .gpu_ro_request_ready(gpu_ro_request_ready), .gpu_ro_write_data_ready(gpu_ro_write_data_ready),
+    .gpu_ro_response_valid(gpu_ro_response_valid), .gpu_ro_read_data(gpu_ro_read_data),
+    .gpu_ro_response_last(gpu_ro_response_last), .gpu_ro_error(gpu_ro_error),
+    .gpu_fb_w_request_ready(gpu_fb_w_request_ready), .gpu_fb_w_write_data_ready(gpu_fb_w_write_data_ready),
+    .gpu_fb_w_response_valid(gpu_fb_w_response_valid), .gpu_fb_w_response_last(gpu_fb_w_response_last),
+    .gpu_fb_w_error(gpu_fb_w_error),
+    .gpu_fb_r_request_ready(gpu_fb_r_request_ready), .gpu_fb_r_write_data_ready(gpu_fb_r_write_data_ready),
+    .gpu_fb_r_response_valid(gpu_fb_r_response_valid), .gpu_fb_r_read_data(gpu_fb_r_read_data),
+    .gpu_fb_r_response_last(gpu_fb_r_response_last), .gpu_fb_r_error(gpu_fb_r_error),
     .gpu_ro_request_valid(gpu_ro_request_valid), .gpu_ro_write(gpu_ro_write),
-    .gpu_ro_address(gpu_ro_address), .gpu_ro_write_data(gpu_ro_write_data),
+    .gpu_ro_address(gpu_ro_address), .gpu_ro_line_count_minus_1(gpu_ro_line_count_minus_1),
+    .gpu_ro_write_data(gpu_ro_write_data),
     .gpu_fb_w_request_valid(gpu_fb_w_request_valid), .gpu_fb_w_write(gpu_fb_w_write),
-    .gpu_fb_w_address(gpu_fb_w_address), .gpu_fb_w_write_data(gpu_fb_w_write_data),
+    .gpu_fb_w_address(gpu_fb_w_address), .gpu_fb_w_line_count_minus_1(gpu_fb_w_line_count_minus_1),
+    .gpu_fb_w_write_data(gpu_fb_w_write_data),
     .gpu_fb_r_request_valid(gpu_fb_r_request_valid), .gpu_fb_r_write(gpu_fb_r_write),
-    .gpu_fb_r_address(gpu_fb_r_address), .gpu_fb_r_write_data(gpu_fb_r_write_data));
+    .gpu_fb_r_address(gpu_fb_r_address), .gpu_fb_r_line_count_minus_1(gpu_fb_r_line_count_minus_1),
+    .gpu_fb_r_write_data(gpu_fb_r_write_data));
 
-// ---- memory responder ----
-integer beat;
-always @(posedge clk) begin
-    gpu_ro_response_valid <= 0;
-    gpu_fb_w_response_valid <= 0;
-    if (gpu_ro_request_valid && gpu_ro_request_ready) begin
-        // Stream four beats on the following four clocks.
-        for (beat = 0; beat < 4; beat = beat + 1) begin
-            @(negedge clk);
-            gpu_ro_read_data[15:0] = memory[gpu_ro_address + 4 * beat];
-            gpu_ro_read_data[31:16] = memory[gpu_ro_address + 4 * beat + 1];
-            gpu_ro_read_data[47:32] = memory[gpu_ro_address + 4 * beat + 2];
-            gpu_ro_read_data[63:48] = memory[gpu_ro_address + 4 * beat + 3];
-            gpu_ro_response_last = beat == 3;
-            gpu_ro_response_valid = 1;
-            @(posedge clk);
+// ---- direct-memory responder for all three masters ----
+// State is updated on the clock edge; response outputs are combinational from
+// that state, so the DUT samples a request/response in the same cycle.
+localparam MS_IDLE = 3'd0, MS_RD = 3'd1, MS_WR = 3'd2, MS_WRESP = 3'd3, MS_REC = 3'd4;
+reg [2:0] mstate = MS_IDLE;
+reg [21:0] maddr = 0;
+reg [4:0] mbeats = 0;
+reg [4:0] mbeat = 0;
+reg mport = 1'b0;
+reg [63:0] wbuf [0:15];
+
+function [63:0] beat_of;
+    input [21:0] a;
+    input [4:0] b;
+    reg [21:0] base;
+    begin
+        base = a + {b, 2'b0};
+        beat_of = {mem[base + 3], mem[base + 2], mem[base + 1], mem[base]};
+    end
+endfunction
+
+always @(*) begin
+    gpu_ro_request_ready = 1'b0;
+    gpu_fb_r_request_ready = 1'b0;
+    gpu_fb_w_request_ready = 1'b0;
+    gpu_ro_response_valid = 1'b0;
+    gpu_ro_response_last = 1'b0;
+    gpu_ro_read_data = 64'h0;
+    gpu_ro_error = 1'b0;
+    gpu_fb_r_response_valid = 1'b0;
+    gpu_fb_r_response_last = 1'b0;
+    gpu_fb_r_read_data = 64'h0;
+    gpu_fb_r_error = 1'b0;
+    gpu_fb_w_write_data_ready = 1'b0;
+    gpu_fb_w_response_valid = 1'b0;
+    gpu_fb_w_response_last = 1'b0;
+    gpu_fb_w_error = 1'b0;
+    case (mstate)
+        MS_IDLE: begin
+            gpu_ro_request_ready = 1'b1;
+            gpu_fb_r_request_ready = 1'b1;
+            gpu_fb_w_request_ready = 1'b1;
         end
-        @(negedge clk);
-        gpu_ro_response_valid = 0;
-        gpu_ro_response_last = 0;
-    end else if (gpu_fb_w_request_valid && gpu_fb_w_request_ready) begin
-        for (beat = 0; beat < 4; beat = beat + 1) begin
-            @(negedge clk);
-            gpu_fb_w_response_valid = 1;
-            gpu_fb_w_response_last = beat == 3;
-            if (beat == 0) begin
-                memory[gpu_fb_w_address] = gpu_fb_w_write_data[15:0];
-                memory[gpu_fb_w_address + 1] = gpu_fb_w_write_data[31:16];
-                memory[gpu_fb_w_address + 2] = gpu_fb_w_write_data[47:32];
-                memory[gpu_fb_w_address + 3] = gpu_fb_w_write_data[63:48];
+        MS_RD: begin
+            if (mport == 1'b0) begin
+                gpu_ro_response_valid = 1'b1;
+                gpu_ro_read_data = beat_of(maddr, mbeat);
+                gpu_ro_response_last = (mbeat + 5'd1 == mbeats);
             end else begin
-                memory[gpu_fb_w_address + 4 * beat] = gpu_fb_w_write_data[15:0];
-                memory[gpu_fb_w_address + 4 * beat + 1] = gpu_fb_w_write_data[31:16];
-                memory[gpu_fb_w_address + 4 * beat + 2] = gpu_fb_w_write_data[47:32];
-                memory[gpu_fb_w_address + 4 * beat + 3] = gpu_fb_w_write_data[63:48];
+                gpu_fb_r_response_valid = 1'b1;
+                gpu_fb_r_read_data = beat_of(maddr, mbeat);
+                gpu_fb_r_response_last = (mbeat + 5'd1 == mbeats);
             end
-            @(posedge clk);
         end
-        @(negedge clk);
-        gpu_fb_w_response_valid = 0;
-        gpu_fb_w_response_last = 0;
+        // Deterministic backpressure: hold every fourth write-data cycle so
+        // the DUT must retain the unaccepted cache beat and read address.
+        MS_WR: gpu_fb_w_write_data_ready = (cycles[1:0] != 2'b00);
+        MS_WRESP: begin
+            gpu_fb_w_response_valid = 1'b1;
+            gpu_fb_w_response_last = 1'b1;
+        end
+        default: ;
+    endcase
+end
+
+integer k;
+reg [21:0] cbase;
+always @(posedge clk) begin
+    if (reset) begin
+        mstate <= MS_IDLE;
+        maddr <= 0;
+        mbeats <= 0;
+        mbeat <= 0;
+        mport <= 1'b0;
+        for (k = 0; k < 16; k = k + 1) wbuf[k] <= 64'h0;
+    end else begin
+        case (mstate)
+            MS_IDLE: begin
+                if (gpu_ro_request_valid) begin
+                    maddr <= gpu_ro_address;
+                    mbeats <= 5'd4;
+                    mbeat <= 5'd0;
+                    mport <= 1'b0;
+                    mstate <= MS_RD;
+                end else if (gpu_fb_r_request_valid) begin
+                    maddr <= gpu_fb_r_address;
+                    mbeats <= 5'd16;
+                    mbeat <= 5'd0;
+                    mport <= 1'b1;
+                    mstate <= MS_RD;
+                end else if (gpu_fb_w_request_valid) begin
+                    maddr <= gpu_fb_w_address;
+                    mbeats <= 5'd16;
+                    mbeat <= 5'd1;
+                    wbuf[0] = gpu_fb_w_write_data;
+                    mstate <= MS_WR;
+                end
+            end
+            MS_RD: begin
+                if (mbeat + 5'd1 == mbeats) mstate <= MS_REC;
+                else mbeat <= mbeat + 5'd1;
+            end
+            MS_WR: begin
+                if (gpu_fb_w_write_data_ready) begin
+                    wbuf[mbeat[3:0]] = gpu_fb_w_write_data;
+                    if (mbeat + 5'd1 == mbeats) begin
+                        for (k = 0; k < 16; k = k + 1) begin
+                            cbase = maddr + {k[4:0], 2'b0};
+                            mem[cbase + 0] = wbuf[k][15:0];
+                            mem[cbase + 1] = wbuf[k][31:16];
+                            mem[cbase + 2] = wbuf[k][47:32];
+                            mem[cbase + 3] = wbuf[k][63:48];
+                        end
+                        mstate <= MS_WRESP;
+                    end else begin
+                        mbeat <= mbeat + 5'd1;
+                    end
+                end
+            end
+            MS_WRESP: mstate <= MS_REC;
+            default: mstate <= MS_IDLE;
+        endcase
     end
 end
 
-reg [15:0] read_result;
+// ---- device register helpers ----
+reg [15:0] read_result = 16'h0;
+reg [15:0] expected_exec = 16'h0;
+integer i;
+integer j;
 
-task device_write; input [3:0] channel; input [15:0] value; begin
-    @(negedge clk);
-    device_index = 3'd4; device_channel = channel;
-    device_write_enable = 1; device_write_data = value;
-    @(posedge clk);
-    @(negedge clk);
-    device_write_enable = 0;
-end endtask
+task device_write;
+    input [3:0] channel;
+    input [15:0] value;
+    begin
+        @(negedge clk);
+        device_index = 3'd4;
+        device_channel = channel;
+        device_write_enable = 1'b1;
+        device_write_data = value;
+        @(posedge clk);
+        @(negedge clk);
+        device_write_enable = 1'b0;
+        device_write_data = 16'h0;
+    end
+endtask
 
-task device_read; input [3:0] channel; begin
-    @(negedge clk);
-    device_index = 3'd4; device_channel = channel; device_read_enable = 1;
-    #1;
-    read_result = device_read_data;
-    device_read_enable = 0;
-end endtask
+task device_read;
+    input [3:0] channel;
+    begin
+        @(negedge clk);
+        device_index = 3'd4;
+        device_channel = channel;
+        device_read_enable = 1'b1;
+        #1;
+        read_result = device_read_data;
+        device_read_enable = 1'b0;
+    end
+endtask
 
-integer index;
-reg [4:0] tile_x;
-reg [3:0] tile_y;
-reg [4:0] r5;
-reg [5:0] g6;
-reg [4:0] b5;
-reg [15:0] expected;
+task do_submit;
+    input [21:0] base;
+    input [15:0] words;
+    begin
+        device_write(4'd0, base[15:0]);
+        device_write(4'd1, {10'b0, base[21:16]});
+        device_write(4'd2, words);
+        device_write(4'd3, 16'h0);
+        device_write(4'd4, 16'h0);
+    end
+endtask
+
+task wait_executed;
+    input [15:0] expected;
+    input integer limit;
+    integer waited;
+    begin
+        waited = 0;
+        device_read(4'd1);
+        while (read_result !== expected) begin
+            waited = waited + 1;
+            if (waited > limit) $fatal(1, "executed_count wait exceeded limit");
+            device_read(4'd1);
+        end
+    end
+endtask
+
+task run_ok_case;
+    input [15:0] words;
+    begin
+        do_submit(CMD_BASE, words);
+        wait_executed(expected_exec, 200000);
+        device_read(4'd2);
+        if ((read_result & 16'h0008) != 0) $fatal(1, "unexpected command error");
+        expected_exec = expected_exec + 16'd1;
+    end
+endtask
+
+task run_error_case;
+    input [15:0] words;
+    begin
+        do_submit(CMD_BASE, words);
+        wait_executed(expected_exec, 200000);
+        device_read(4'd2);
+        if ((read_result & 16'h0008) == 0) $fatal(1, "expected command error");
+        device_write(4'd5, 16'h0002);
+        expected_exec = expected_exec + 16'd1;
+    end
+endtask
+
 // Store one 64-bit qword as four little-endian 16-bit words.
-task set_qword; input [21:0] address; input [63:0] value; begin
-    memory[address] = value[15:0];
-    memory[address + 1] = value[31:16];
-    memory[address + 2] = value[47:32];
-    memory[address + 3] = value[63:48];
-end endtask
+task put_qword;
+    input [21:0] addr;
+    input [63:0] value;
+    begin
+        mem[addr + 0] = value[15:0];
+        mem[addr + 1] = value[31:16];
+        mem[addr + 2] = value[47:32];
+        mem[addr + 3] = value[63:48];
+    end
+endtask
+
+task put_set_target;
+    input [21:0] addr;
+    input [21:0] base;
+    begin
+        put_qword(addr, {10'b0, base, 16'h0000, 8'h01, 8'he0});
+    end
+endtask
+
+task put_fake_draw;
+    input [21:0] addr;
+    input [21:0] list;
+    input [15:0] tile_count;
+    input [1:0] load_op;
+    input [15:0] clear_color;
+    input [15:0] draw_color;
+    input [15:0] row_mask;
+    reg [31:0] arg0;
+    begin
+        arg0 = {14'b0, load_op, tile_count};
+        put_qword(addr, {arg0, 16'h0000, 8'd3, 8'he1});
+        put_qword(addr + 4, {32'h0, 10'b0, list});
+        put_qword(addr + 8, {16'h0000, row_mask, draw_color, clear_color});
+    end
+endtask
+
+task put_end;
+    input [21:0] addr;
+    begin
+        put_qword(addr, {32'h0, 16'h0000, 8'h01, 8'hff});
+    end
+endtask
+
+task do_reset;
+    begin
+        reset = 1'b1;
+        repeat (4) @(posedge clk);
+        reset = 1'b0;
+        repeat (2) @(posedge clk);
+    end
+endtask
+
+// Address of pixel (row, col) of `tile` within `base`.
+function [21:0] tile_word;
+    input [21:0] base;
+    input [15:0] tile;
+    input integer row;
+    input integer col;
+    begin
+        tile_word = base + {tile[8:0], 8'b0} + row * 16 + col;
+    end
+endfunction
+
+task check_uniform_tile;
+    input [15:0] tile;
+    input [21:0] base;
+    input [15:0] value;
+    integer r, c;
+    begin
+        for (r = 0; r < 16; r = r + 1) begin
+            for (c = 0; c < 16; c = c + 1) begin
+                if (mem[tile_word(base, tile, r, c)] !== value)
+                    $fatal(1, "tile %0d row %0d col %0d mismatch", tile, r, c);
+            end
+        end
+    end
+endtask
 
 initial begin
-    for (index = 0; index < 22'h240001; index = index + 1) memory[index] = 16'h0000;
+    for (i = 0; i < MEM_WORDS; i = i + 1) mem[i] = 16'h0;
 
-    // Three FAKE_DRAW packets, each 125 tiles, with distinct parameters.
-    // SET_TARGET slot A = 0x0020_0000: opcode e0, count 1, arg0 = 0x00200000.
-    set_qword(CMD_BASE, 64'h00200000_000001e0);
-    // draw 0: count 2, arg0 = 125 tiles, color mode 0; phase 3, biases 5/7/9
-    set_qword(CMD_BASE + 4, 64'h0000007d_000002e1);
-    set_qword(CMD_BASE + 8, 64'h0009_0007_0005_0003);
-    // draw 1: phase 100, biases 1/2/3
-    set_qword(CMD_BASE + 12, 64'h0000007d_000002e1);
-    set_qword(CMD_BASE + 16, 64'h0003_0002_0001_0064);
-    // draw 2: phase 200, biases 11/12/13
-    set_qword(CMD_BASE + 20, 64'h0000007d_000002e1);
-    set_qword(CMD_BASE + 24, 64'h000d_000c_000b_00c8);
-    // END
-    set_qword(CMD_BASE + 28, 64'h00000000_000001ff);
+    // ------------------------------------------------------------------
+    // Scenario A: partial-row LOAD preservation and CLEAR initialization.
+    // ------------------------------------------------------------------
+    do_reset();
+    for (i = 0; i < 256; i = i + 1) mem[FB_A + 512 + i] = 16'h1000 + i;
+    mem[FB_GUARD] = 16'hbeef;
+    put_set_target(CMD_BASE, FB_A);
+    put_fake_draw(CMD_BASE + 4, LIST_BASE, 16'd1, 2'd0, 16'hffff, 16'h1234, 16'h000f);
+    put_fake_draw(CMD_BASE + 16, LIST_BASE + LIST_STRIDE, 16'd1, 2'd1, 16'h0abc, 16'h5678, 16'h00f0);
+    put_end(CMD_BASE + 28);
+    mem[LIST_BASE] = 16'd2;
+    mem[LIST_BASE + LIST_STRIDE] = 16'd5;
+    expected_exec = 16'd1;
+    run_ok_case(16'd32);
 
-    // Response-ready is always asserted; the responder above is the master.
-    gpu_ro_request_ready = 1;
-    gpu_fb_w_request_ready = 1;
-
-    repeat(4) @(posedge clk);
-    reset = 0;
-    repeat(2) @(posedge clk);
-
-    device_write(4'd0, CMD_BASE[15:0]);
-    device_write(4'd1, CMD_BASE[21:16]);
-    device_write(4'd2, 16'd32);
-    device_write(4'd3, 16'd0);
-    device_write(4'd4, 16'd0);
-
-    device_read(4'd0);
-    if (read_result != 16'd1) $fatal(1, "received_count is not 1");
-
-    // Wait for retirement (bounded).
-    index = 0;
-    device_read(4'd1);
-    while (read_result != 16'd1) begin
-        index = index + 1;
-        if (index > 100000) $fatal(1, "submission did not retire");
-        device_read(4'd1);
+    for (i = 0; i < 16; i = i + 1) begin
+        for (j = 0; j < 16; j = j + 1) begin
+            if (mem[tile_word(FB_A, 16'd2, i, j)]
+                !== ((i < 4) ? 16'h1234 : 16'h1000 + i * 16 + j))
+                $fatal(1, "LOAD tile 2 row %0d col %0d mismatch", i, j);
+            if (mem[tile_word(FB_A, 16'd5, i, j)]
+                !== (((i >= 4) && (i < 8)) ? 16'h5678 : 16'h0abc))
+                $fatal(1, "CLEAR tile 5 row %0d col %0d mismatch", i, j);
+        end
     end
+    if (mem[FB_GUARD] !== 16'hbeef) $fatal(1, "framebuffer guard overwritten");
+
+    // ------------------------------------------------------------------
+    // Scenario B: duplicate/unordered indices, then dirty victim eviction.
+    // ------------------------------------------------------------------
+    do_reset();
+    put_set_target(CMD_BASE, FB_A);
+    put_fake_draw(CMD_BASE + 4, LIST_BASE, 16'd4, 2'd1, 16'h0, 16'h1111, 16'hffff);
+    put_fake_draw(CMD_BASE + 16, LIST_BASE + LIST_STRIDE, 16'd2, 2'd0, 16'h0, 16'h2222, 16'h0001);
+    put_end(CMD_BASE + 28);
+    mem[LIST_BASE + 0] = 16'd5;
+    mem[LIST_BASE + 1] = 16'd2;
+    mem[LIST_BASE + 2] = 16'd5;
+    mem[LIST_BASE + 3] = 16'd2;
+    mem[LIST_BASE + LIST_STRIDE + 0] = 16'd2;
+    mem[LIST_BASE + LIST_STRIDE + 1] = 16'd5;
+    expected_exec = 16'd1;
+    run_ok_case(16'd32);
+    for (i = 0; i < 16; i = i + 1) begin
+        if (mem[tile_word(FB_A, 16'd2, i, 0)] !== ((i == 0) ? 16'h2222 : 16'h1111))
+            $fatal(1, "unordered LOAD tile 2 mismatch");
+        if (mem[tile_word(FB_A, 16'd5, i, 0)] !== ((i == 0) ? 16'h2222 : 16'h1111))
+            $fatal(1, "unordered LOAD tile 5 mismatch");
+    end
+
+    do_reset();
+    for (i = 0; i < 256; i = i + 1) mem[FB_A + 2048 + i] = 16'h2000 + i;
+    put_set_target(CMD_BASE, FB_A);
+    put_fake_draw(CMD_BASE + 4, LIST_BASE, 16'd1, 2'd0, 16'h0, 16'haaaa, 16'hffff);
+    put_fake_draw(CMD_BASE + 16, LIST_BASE + LIST_STRIDE, 16'd1, 2'd0, 16'h0, 16'hbbbb, 16'hffff);
+    put_fake_draw(CMD_BASE + 28, LIST_BASE + 2 * LIST_STRIDE, 16'd1, 2'd0, 16'h0, 16'hcccc, 16'h0001);
+    put_end(CMD_BASE + 40);
+    mem[LIST_BASE] = 16'd0;
+    mem[LIST_BASE + LIST_STRIDE] = 16'd8;
+    mem[LIST_BASE + 2 * LIST_STRIDE] = 16'd0;
+    expected_exec = 16'd1;
+    run_ok_case(16'd44);
+    check_uniform_tile(16'd8, FB_A, 16'hbbbb);
+    for (i = 0; i < 16; i = i + 1) begin
+        if (mem[tile_word(FB_A, 16'd0, i, 0)] !== ((i == 0) ? 16'hcccc : 16'haaaa))
+            $fatal(1, "eviction-cleaned tile 0 mismatch");
+    end
+
+    // ------------------------------------------------------------------
+    // Scenario C: END retires only after every dirty entry is clean.
+    // ------------------------------------------------------------------
+    do_reset();
+    put_set_target(CMD_BASE, FB_A);
+    put_fake_draw(CMD_BASE + 4, LIST_BASE, 16'd3, 2'd1, 16'h0, 16'h0f0f, 16'hffff);
+    put_end(CMD_BASE + 16);
+    mem[LIST_BASE + 0] = 16'd0;
+    mem[LIST_BASE + 1] = 16'd1;
+    mem[LIST_BASE + 2] = 16'd2;
+    expected_exec = 16'd1;
+    run_ok_case(16'd20);
+    // Retirement implies the final clean write already committed to memory.
+    check_uniform_tile(16'd0, FB_A, 16'h0f0f);
+    check_uniform_tile(16'd1, FB_A, 16'h0f0f);
+    check_uniform_tile(16'd2, FB_A, 16'h0f0f);
+
+    // ------------------------------------------------------------------
+    // Scenario D: every invalid command class retires with command error.
+    // ------------------------------------------------------------------
+    do_reset();
+    expected_exec = 16'd1;
+
+    // Wrong qword count for FAKE_DRAW (two instead of three).
+    put_set_target(CMD_BASE, FB_A);
+    put_qword(CMD_BASE + 4, {32'h0, 16'h0000, 8'd2, 8'he1});
+    put_qword(CMD_BASE + 8, 64'h0);
+    run_error_case(16'd12);
+
+    // Reserved load op 2.
+    put_set_target(CMD_BASE, FB_A);
+    put_fake_draw(CMD_BASE + 4, LIST_BASE, 16'd0, 2'd2, 16'h0, 16'h0, 16'h0);
+    run_error_case(16'd16);
+
+    // Nonzero reserved arg0 bit above the load op.
+    put_set_target(CMD_BASE, FB_A);
+    put_qword(CMD_BASE + 4, {32'h00040000, 16'h0000, 8'd3, 8'he1});
+    put_qword(CMD_BASE + 8, 64'h0);
+    put_qword(CMD_BASE + 12, 64'h0);
+    run_error_case(16'd16);
+
+    // Nonzero payload-0 high half.
+    put_set_target(CMD_BASE, FB_A);
+    put_fake_draw(CMD_BASE + 4, LIST_BASE, 16'd0, 2'd0, 16'h0, 16'h0, 16'h0);
+    put_qword(CMD_BASE + 8, {32'h00000001, 32'h0});
+    run_error_case(16'd16);
+
+    // Nonzero payload-1 reserved bits.
+    put_set_target(CMD_BASE, FB_A);
+    put_fake_draw(CMD_BASE + 4, LIST_BASE, 16'd0, 2'd0, 16'h0, 16'h0, 16'h0);
+    put_qword(CMD_BASE + 12, {16'h0001, 48'h0});
+    run_error_case(16'd16);
+
+    // Unaligned tile list.
+    put_set_target(CMD_BASE, FB_A);
+    put_fake_draw(CMD_BASE + 4, LIST_BASE + 1, 16'd1, 2'd1, 16'h0, 16'h0, 16'h0);
+    mem[LIST_BASE + 1] = 16'd0;
+    run_error_case(16'd16);
+
+    // Tile list that leaves 22-bit word memory.
+    put_set_target(CMD_BASE, FB_A);
+    put_fake_draw(CMD_BASE + 4, 22'h3ffff0, 16'd32, 2'd1, 16'h0, 16'h0, 16'h0);
+    run_error_case(16'd16);
+
+    // Tile index at the tile limit.
+    put_set_target(CMD_BASE, FB_A);
+    put_fake_draw(CMD_BASE + 4, LIST_BASE, 16'd1, 2'd1, 16'h0, 16'h0, 16'h0);
+    mem[LIST_BASE] = 16'd375;
+    run_error_case(16'd16);
+
+    // FAKE_DRAW before any SET_TARGET.
+    put_fake_draw(CMD_BASE, LIST_BASE, 16'd0, 2'd1, 16'h0, 16'h0, 16'h0);
+    run_error_case(16'd12);
+
+    // A legal empty list performs no read and no error.
+    put_set_target(CMD_BASE, FB_A);
+    put_fake_draw(CMD_BASE + 4, LIST_BASE, 16'd0, 2'd0, 16'h0, 16'h0, 16'h0);
+    put_end(CMD_BASE + 16);
+    run_ok_case(16'd20);
+
+    // ------------------------------------------------------------------
+    // Scenario E: a command that crosses a 32-byte line boundary.
+    // ------------------------------------------------------------------
+    do_reset();
+    put_set_target(CMD_BASE, FB_A);
+    put_set_target(CMD_BASE + 4, FB_B);
+    put_set_target(CMD_BASE + 8, FB_A);
+    put_fake_draw(CMD_BASE + 12, LIST_BASE, 16'd1, 2'd1, 16'h0, 16'h2222, 16'hffff);
+    put_end(CMD_BASE + 24);
+    mem[LIST_BASE] = 16'd0;
+    expected_exec = 16'd1;
+    run_ok_case(16'd28);
+    if (mem[FB_A] !== 16'h2222) $fatal(1, "cross-line command landed at the wrong target");
+
+    // ------------------------------------------------------------------
+    // Scenario F: one active plus two queued submissions, then a rejection.
+    // ------------------------------------------------------------------
+    do_reset();
+    put_set_target(CMD_BASE, FB_A);
+    put_fake_draw(CMD_BASE + 4, LIST_BASE, 16'd3, 2'd1, 16'h0, 16'h0f0f, 16'hffff);
+    put_end(CMD_BASE + 16);
+    mem[LIST_BASE + 0] = 16'd0;
+    mem[LIST_BASE + 1] = 16'd1;
+    mem[LIST_BASE + 2] = 16'd2;
+    do_submit(CMD_BASE, 16'd20);
+    do_submit(CMD_BASE, 16'd20);
+    do_submit(CMD_BASE, 16'd20);
+    do_submit(CMD_BASE, 16'd20); // full two-deep FIFO: rejected
+    device_read(4'd0);
+    if (read_result !== 16'd3) $fatal(1, "expected three accepted submissions");
     device_read(4'd2);
-    if (read_result & 16'h0008) $fatal(1, "unexpected command error");
+    if ((read_result & 16'h0002) == 0) $fatal(1, "expected fifo-full status");
+    if ((read_result & 16'h0004) == 0) $fatal(1, "expected submit rejection");
     device_read(4'd3);
-    if (read_result != 16'd0) $fatal(1, "fifo not empty after retirement");
+    if (read_result !== 16'd2) $fatal(1, "expected two queued submissions");
+    wait_executed(16'd3, 200000);
+    device_read(4'd3);
+    if (read_result !== 16'd0) $fatal(1, "FIFO not drained after retirement");
+    check_uniform_tile(16'd0, FB_A, 16'h0f0f);
+    check_uniform_tile(16'd1, FB_A, 16'h0f0f);
+    check_uniform_tile(16'd2, FB_A, 16'h0f0f);
 
-    // Check the first tile (0,0, phase 3, biases 5/7/9).
-    tile_x = 5'd0; tile_y = 4'd0;
-    r5 = (tile_x + 5'd5 + 5'd3) & 5'd31;
-    g6 = ({tile_y, 2'b00} + 6'd7 + 6'd0) & 6'd63;
-    b5 = (tile_x + tile_y + 5'd9 + 5'd3) & 5'd31;
-    expected = {r5, g6, b5};
-    if (memory[22'h200000] != expected) $fatal(1, "first tile pixel mismatch");
+    // ------------------------------------------------------------------
+    // Scenario G: a target change with resident cache entries is illegal,
+    // while re-selecting the same target is legal.
+    // ------------------------------------------------------------------
+    do_reset();
+    put_set_target(CMD_BASE, FB_A);
+    put_fake_draw(CMD_BASE + 4, LIST_BASE, 16'd1, 2'd1, 16'h0, 16'h1234, 16'hffff);
+    put_set_target(CMD_BASE + 16, FB_B);
+    put_end(CMD_BASE + 20);
+    mem[LIST_BASE] = 16'd0;
+    expected_exec = 16'd1;
+    run_error_case(16'd24);
 
-    // Check the last tile (24,14, phase 200, biases 11/12/13).
-    tile_x = 5'd24; tile_y = 4'd14;
-    r5 = (tile_x + 5'd11 + 5'd8) & 5'd31;      // 200[4:0] = 8
-    g6 = ({tile_y, 2'b00} + 6'd12 + 6'd50) & 6'd63;  // 200[7:2] = 50
-    b5 = (tile_x + tile_y + 5'd13 + 5'd8) & 5'd31;
-    expected = {r5, g6, b5};
-    if (memory[22'h200000 + 374 * 256] != expected) $fatal(1, "last tile pixel mismatch");
+    do_reset();
+    put_set_target(CMD_BASE, FB_A);
+    put_fake_draw(CMD_BASE + 4, LIST_BASE, 16'd1, 2'd1, 16'h0, 16'h1234, 16'hffff);
+    put_set_target(CMD_BASE + 16, FB_A);
+    put_end(CMD_BASE + 20);
+    mem[LIST_BASE] = 16'd0;
+    expected_exec = 16'd1;
+    run_ok_case(16'd24);
+    check_uniform_tile(16'd0, FB_A, 16'h1234);
 
     $display("DIGITAL_DESIGN_PASS");
     $finish;

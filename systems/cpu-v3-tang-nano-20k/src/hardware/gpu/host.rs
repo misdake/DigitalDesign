@@ -1,13 +1,16 @@
-//! Cycle model of the arbiter plus `SharedSdramPort` line path for the two GPU
-//! masters.
+//! Cycle model of the arbiter plus `SharedSdramPort` line path for the three
+//! GPU masters.
 //!
 //! It is used by the host transaction model in `crate::gpu_device` so a
 //! polled submission reaches completion without a CPU or an RTL simulator. It
 //! reproduces the real handshake shape: a request is accepted in one cycle, a
-//! line read streams its 4/8/12/16 ordered 64-bit beats, and a line write
-//! captures those beats before committing. The request length comes from the
-//! GPU master's `line_count_minus_1[1:0]`, so the model already exercises the
-//! variable-length path even though the bring-up GPU always asks for one line.
+//! read transaction streams its 4/8/12/16 ordered 64-bit beats, and a write
+//! transaction captures those beats before committing. The request length comes
+//! from the GPU master's `line_count_minus_1[1:0]`, so the model exercises the
+//! variable-length path even while a single transaction is outstanding.
+//!
+//! `gpu_ro` serves both 32-byte command-line and tile-list reads, `gpu_fb_r`
+//! serves 128-byte tile refills and `gpu_fb_w` serves 128-byte tile cleans.
 
 use super::{GpuMemoryBus, GpuOutputs};
 
@@ -30,13 +33,29 @@ enum State {
     Recovery(u8),
 }
 
-/// Direct-memory line responder for `gpu_ro` and `gpu_fb_w`.
+/// Which read master a [`State::ReadBeats`] response belongs to.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+enum ReadPort {
+    #[default]
+    Ro,
+    FbR,
+}
+
+/// Direct-memory line responder for `gpu_ro`, `gpu_fb_r` and `gpu_fb_w`.
 #[derive(Clone)]
 pub(crate) struct HostGpuMemory {
     state: State,
     address: usize,
     /// Beats of the in-flight request; four to sixteen.
     beats: u8,
+    read_port: ReadPort,
+    active_error: bool,
+    fail_next_ro: bool,
+    fail_next_fb_r: bool,
+    fail_next_fb_w: bool,
+    ro_requests: u32,
+    fb_r_requests: u32,
+    fb_w_requests: u32,
     write_buffer: [u64; MAX_BEATS],
 }
 
@@ -46,12 +65,40 @@ impl Default for HostGpuMemory {
             state: State::Idle,
             address: 0,
             beats: 4,
+            read_port: ReadPort::Ro,
+            active_error: false,
+            fail_next_ro: false,
+            fail_next_fb_r: false,
+            fail_next_fb_w: false,
+            ro_requests: 0,
+            fb_r_requests: 0,
+            fb_w_requests: 0,
             write_buffer: [0; MAX_BEATS],
         }
     }
 }
 
 impl HostGpuMemory {
+    #[cfg(test)]
+    pub(crate) fn inject_next_ro_error(&mut self) {
+        self.fail_next_ro = true;
+    }
+
+    #[cfg(test)]
+    pub(crate) fn inject_next_fb_r_error(&mut self) {
+        self.fail_next_fb_r = true;
+    }
+
+    #[cfg(test)]
+    pub(crate) fn inject_next_fb_w_error(&mut self) {
+        self.fail_next_fb_w = true;
+    }
+
+    #[cfg(test)]
+    pub(crate) fn request_counts(&self) -> (u32, u32, u32) {
+        (self.ro_requests, self.fb_r_requests, self.fb_w_requests)
+    }
+
     fn line_beat(memory: &[u16], address: usize, beat: usize) -> u64 {
         let base = address + 4 * beat;
         let mut value = 0u64;
@@ -68,17 +115,33 @@ impl HostGpuMemory {
             State::Idle => GpuMemoryBus {
                 ro_request_ready: true,
                 fb_w_request_ready: true,
+                fb_r_request_ready: true,
                 ..GpuMemoryBus::default()
             },
-            State::ReadBeats(beat) => GpuMemoryBus {
-                ro_response_valid: true,
-                ro_read_data: Self::line_beat(memory, self.address, beat as usize),
-                ro_response_last: beat + 1 == self.beats,
-                ..GpuMemoryBus::default()
-            },
+            State::ReadBeats(beat) => {
+                let read_data = Self::line_beat(memory, self.address, beat as usize);
+                let response_last = beat + 1 == self.beats;
+                match self.read_port {
+                    ReadPort::Ro => GpuMemoryBus {
+                        ro_response_valid: true,
+                        ro_read_data: read_data,
+                        ro_response_last: response_last,
+                        ro_error: self.active_error,
+                        ..GpuMemoryBus::default()
+                    },
+                    ReadPort::FbR => GpuMemoryBus {
+                        fb_r_response_valid: true,
+                        fb_r_read_data: read_data,
+                        fb_r_response_last: response_last,
+                        fb_r_error: self.active_error,
+                        ..GpuMemoryBus::default()
+                    },
+                }
+            }
             State::WriteResponse => GpuMemoryBus {
                 fb_w_response_valid: true,
                 fb_w_response_last: true,
+                fb_w_error: self.active_error,
                 ..GpuMemoryBus::default()
             },
             State::WriteCapture(_) => GpuMemoryBus {
@@ -103,6 +166,22 @@ impl HostGpuMemory {
                     );
                     self.address = outputs.ro_address as usize;
                     self.beats = line_beat_count(outputs.ro_line_count_minus_1) as u8;
+                    self.read_port = ReadPort::Ro;
+                    self.active_error = self.fail_next_ro;
+                    self.fail_next_ro = false;
+                    self.ro_requests += 1;
+                    self.state = State::ReadBeats(0);
+                } else if outputs.fb_r_request_valid {
+                    crate::hardware::assert_line_request_fits_row(
+                        outputs.fb_r_address,
+                        u32::from(outputs.fb_r_line_count_minus_1),
+                    );
+                    self.address = outputs.fb_r_address as usize;
+                    self.beats = line_beat_count(outputs.fb_r_line_count_minus_1) as u8;
+                    self.read_port = ReadPort::FbR;
+                    self.active_error = self.fail_next_fb_r;
+                    self.fail_next_fb_r = false;
+                    self.fb_r_requests += 1;
                     self.state = State::ReadBeats(0);
                 } else if outputs.fb_w_request_valid {
                     crate::hardware::assert_line_request_fits_row(
@@ -111,6 +190,9 @@ impl HostGpuMemory {
                     );
                     self.address = outputs.fb_w_address as usize;
                     self.beats = line_beat_count(outputs.fb_w_line_count_minus_1) as u8;
+                    self.active_error = self.fail_next_fb_w;
+                    self.fail_next_fb_w = false;
+                    self.fb_w_requests += 1;
                     self.write_buffer[0] = outputs.fb_w_write_data;
                     self.state = State::WriteCapture(1);
                 }
@@ -125,12 +207,14 @@ impl HostGpuMemory {
             State::WriteCapture(beat) => {
                 self.write_buffer[beat as usize] = outputs.fb_w_write_data;
                 if beat + 1 == self.beats {
-                    for index in 0..self.beats as usize {
-                        let value = self.write_buffer[index];
-                        let base = self.address + 4 * index;
-                        for offset in 0..4 {
-                            if let Some(slot) = memory.get_mut(base + offset) {
-                                *slot = (value >> (16 * offset)) as u16;
+                    if !self.active_error {
+                        for index in 0..self.beats as usize {
+                            let value = self.write_buffer[index];
+                            let base = self.address + 4 * index;
+                            for offset in 0..4 {
+                                if let Some(slot) = memory.get_mut(base + offset) {
+                                    *slot = (value >> (16 * offset)) as u16;
+                                }
                             }
                         }
                     }
@@ -162,6 +246,15 @@ mod tests {
             ro_request_valid: true,
             ro_address: address,
             ro_line_count_minus_1: line_count_minus_1,
+            ..GpuOutputs::default()
+        }
+    }
+
+    fn fb_r_outputs(address: u32, line_count_minus_1: u8) -> GpuOutputs {
+        GpuOutputs {
+            fb_r_request_valid: true,
+            fb_r_address: address,
+            fb_r_line_count_minus_1: line_count_minus_1,
             ..GpuOutputs::default()
         }
     }
@@ -199,6 +292,34 @@ mod tests {
                         HostGpuMemory::line_beat(&memory, 0x40, beat as usize)
                     );
                     assert_eq!(inputs.ro_response_last, beat as usize + 1 == beats);
+                    seen += 1;
+                }
+                model.advance(&GpuOutputs::default(), &mut memory);
+            }
+            assert_eq!(seen, beats, "length {line_count_minus_1} beat mismatch");
+        }
+    }
+
+    #[test]
+    fn framebuffer_reads_use_the_fb_r_handshake_for_every_length() {
+        for line_count_minus_1 in 0..4u8 {
+            let beats = line_beat_count(line_count_minus_1);
+            let mut memory = vec![0u16; 0x1000];
+            for (index, word) in memory.iter_mut().enumerate() {
+                *word = index as u16;
+            }
+            let mut model = HostGpuMemory::default();
+            model.advance(&fb_r_outputs(0x80, line_count_minus_1), &mut memory);
+            let mut seen = 0usize;
+            while model.state != State::Idle {
+                if let State::ReadBeats(beat) = model.state {
+                    let inputs = model.inputs(&memory);
+                    assert!(inputs.fb_r_response_valid);
+                    assert_eq!(
+                        inputs.fb_r_read_data,
+                        HostGpuMemory::line_beat(&memory, 0x80, beat as usize)
+                    );
+                    assert_eq!(inputs.fb_r_response_last, beat as usize + 1 == beats);
                     seen += 1;
                 }
                 model.advance(&GpuOutputs::default(), &mut memory);

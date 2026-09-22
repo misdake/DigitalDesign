@@ -45,23 +45,23 @@ always #1 serial_clock = ~serial_clock;
 // The SharedSdramPort is a 64-bit gearbox: a cache line is eight 32-bit words
 // (four 64-bit beats), and it streams line-write beats through
 // sdram_write_data_valid BEFORE the ACTIVE/WRITE command pair. The model
-// therefore buffers the four 64-bit beats and commits them to memory when the
-// WRITE command acknowledges a burst of seven, and it returns line reads as
-// four ordered 64-bit beats. A 32-bit word W occupies memory[2*W] (low half)
+// therefore buffers up to sixteen 64-bit beats and commits them to memory when
+// WRITE acknowledges a 7/15/23/31-beat controller burst. Reads return the
+// corresponding 4/8/12/16 ordered 64-bit beats. A 32-bit word W occupies memory[2*W] (low half)
 // and memory[2*W+1] (high half), matching the port's packing.
 reg [15:0] memory [0:524287];
 integer read_delay = 0;
 integer read_beats = 0;
 reg [20:0] pending_read_address = 0;
 reg read_is_line = 0;
-reg [2:0] read_beat = 0;
+reg [3:0] read_beat = 0;
 reg word_read_seen = 0;
 reg line_burst_seen = 0;
 integer write_beats = 0;
 reg [20:0] pending_write_address = 0;
 reg [7:0] pending_write_length = 0;
-reg [63:0] write_capture [0:3];
-reg [2:0] write_capture_beat = 0;
+reg [63:0] write_capture [0:15];
+reg [4:0] write_capture_beat = 0;
 reg [17:0] idx;
 reg [17:0] idx2;
 integer cycle;
@@ -86,14 +86,16 @@ always @(posedge clk) begin
         write_capture_beat <= 0;
         pending_write_address <= sdram_address;
         pending_write_length <= sdram_burst_length;
-        if (sdram_burst_length != 0 && sdram_burst_length != 7)
+        if (sdram_burst_length != 0 && sdram_burst_length != 7 &&
+            sdram_burst_length != 15 && sdram_burst_length != 23 &&
+            sdram_burst_length != 31)
             $fatal(1, "unexpected write burst length %0d", sdram_burst_length);
-        if (sdram_burst_length == 7) begin
-            // Commit a cache line: beat j carries 32-bit words (base+2*j) and
+        if (sdram_burst_length != 0) begin
+            // Commit one through four cache lines: beat j carries 32-bit words (base+2*j) and
             // (base+2*j+1) in sdram_write_data[31:0] and [63:32].
             begin : line_write_commit
                 integer j;
-                for (j = 0; j < 4; j = j + 1) begin
+                for (j = 0; j < (sdram_burst_length + 1) / 2; j = j + 1) begin
                     idx = sdram_address[17:0] + 2*j;
                     memory[{idx, 1'b0}] <= write_capture[j][15:0];
                     memory[{idx, 1'b1}] <= write_capture[j][31:16];
@@ -114,13 +116,15 @@ always @(posedge clk) begin
     // (four beats) or one 32-bit word for a burst of zero.
     if (sdram_command_valid && sdram_command == 3'b101) begin
         if (sdram_burst_length == 0) word_read_seen <= 1;
-        else if (sdram_burst_length == 7) line_burst_seen <= 1;
+        else if (sdram_burst_length == 7 || sdram_burst_length == 15 ||
+                 sdram_burst_length == 23 || sdram_burst_length == 31)
+            line_burst_seen <= 1;
         else $fatal(1, "unexpected burst length %0d", sdram_burst_length);
         pending_read_address <= sdram_address;
-        read_is_line <= sdram_burst_length == 7;
+        read_is_line <= sdram_burst_length != 0;
         read_delay <= 2;
         read_beat <= 0;
-        read_beats <= sdram_burst_length == 7 ? 4 : 1;
+        read_beats <= sdram_burst_length == 0 ? 1 : (sdram_burst_length + 1) / 2;
         sdram_command_ack <= 1;
     end else if (read_delay != 0) begin
         read_delay <= read_delay - 1;
@@ -145,6 +149,17 @@ always @(posedge clk) begin
         end
         read_beat <= read_beat + 1'b1;
         read_beats <= read_beats - 1;
+    end
+end
+
+always @(posedge clk) begin
+    if (dut.icache_memory_request_ready &&
+        (!dut.memory_request_valid || dut.memory_write || !dut.memory_line ||
+         dut.memory_address != dut.icache_memory_address)) begin
+        $display("FAIL: instruction acceptance routed mismatched request (icache=0x%06x memory=0x%06x valid=%0d write=%0d line=%0d)",
+            dut.icache_memory_address, dut.memory_address,
+            dut.memory_request_valid, dut.memory_write, dut.memory_line);
+        $finish(1);
     end
 end
 
@@ -218,6 +233,8 @@ reg wait_sdram_phase_seen = 0;
 reg boot_phase_seen = 0;
 reg dma_phase_seen = 0;
 reg application_phase_seen = 0;
+integer pre_submit_stall_cycles = 0;
+reg [31:0] pre_submit_last_retired = 0;
 
 always @(posedge clk) begin
     case (dut.boot_phase)
@@ -227,6 +244,40 @@ always @(posedge clk) begin
         5: application_phase_seen <= 1;
         default: begin end
     endcase
+end
+
+// Before the first GPU submission there is no intentional long CPU sleep.
+// Catch a cache/CPU deadlock substantially earlier than the global scenario
+// timeout while leaving the later GPU and vblank waits unconstrained here.
+always @(posedge clk) begin
+    if (dut.code_segment != 16'd7 || dut.u_gpu.received_count != 0 ||
+        dut.retired_words != pre_submit_last_retired) begin
+        pre_submit_last_retired <= dut.retired_words;
+        pre_submit_stall_cycles <= 0;
+    end else begin
+        pre_submit_stall_cycles <= pre_submit_stall_cycles + 1;
+        if (pre_submit_stall_cycles == 1000000) begin
+            $display("FAIL: pre-submit CPU stall (pc=0x%04x retired=%0d core_state=%0d halted=%0d fault=%0d fault_code=0x%02x hold=%0d if_req=%0d if_ready=%0d icache_state=%0d refill_beat=%0d pending_addr=0x%08x ic_mem_req=%0d ic_mem_ready=%0d ic_mem_resp=%0d mem_resp=%0d/%0d port_state=%0d port_pending=%0d/%0d/0x%06x beats=%0d/%0d sdram_cmd=%0d/%0d sdram_read=%0d clean_valid=%0d clean_addr=0x%06x line_ready=%0d dcache_state=%0d maint_busy=%0d maint_done=%0d)",
+                dut.pc, dut.retired_words, dut.u_core.state, dut.halted,
+                dut.faulted, dut.fault_code, dut.sysctl_cpu_hold,
+                dut.core_instruction_request_valid, dut.core_instruction_request_ready,
+                dut.u_instruction_cache.u_cache.state,
+                dut.u_instruction_cache.u_cache.refill_beat,
+                dut.u_instruction_cache.u_cache.pending_address,
+                dut.icache_memory_request_valid, dut.icache_memory_request_ready,
+                dut.icache_memory_response_valid, dut.memory_response_valid,
+                dut.memory_response_last, dut.u_shared_sdram_port.state,
+                dut.u_shared_sdram_port.pending_write,
+                dut.u_shared_sdram_port.pending_line,
+                dut.u_shared_sdram_port.pending_address,
+                dut.u_shared_sdram_port.beat, dut.u_shared_sdram_port.line_total,
+                dut.sdram_command_valid, dut.sdram_command_ack, dut.sdram_read_valid,
+                dut.core_data_line_clean_valid, dut.core_data_line_clean_address,
+                dut.dcache_line_copy_ready, dut.u_data_cache.state,
+                dut.dcache_maintenance_busy, dut.dcache_maintenance_done);
+            $finish(1);
+        end
+    end
 end
 
 always @(posedge clk) begin
@@ -391,8 +442,12 @@ end
 
 initial begin
     repeat (8000000) @(posedge clk);
-    $display("FAIL: timeout (cseg=0x%04x dseg=0x%04x pc=0x%04x leds=%b retired=%0d)",
-        dut.code_segment, dut.data_segment, dut.pc, leds, dut.retired_words);
+    $display("FAIL: timeout (cseg=0x%04x dseg=0x%04x pc=0x%04x leds=%b retired=%0d gpu_phase=%0d recv=%0d exec=%0d fifo=%0d draw=%0d/%0d transfer=%0d/%0d/%0d cmd_error=%0d display_seen=%0d)",
+        dut.code_segment, dut.data_segment, dut.pc, leds, dut.retired_words,
+        dut.u_gpu.phase, dut.u_gpu.received_count, dut.u_gpu.executed_count,
+        dut.u_gpu.fifo_count, dut.u_gpu.draw_tile_pos, dut.u_gpu.draw_tile_count,
+        dut.u_gpu.transfer_entry, dut.u_gpu.transfer_line, dut.u_gpu.transfer_beat,
+        dut.u_gpu.command_error, display_frame_seen);
     $finish(1);
 end
 endmodule

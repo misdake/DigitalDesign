@@ -549,8 +549,8 @@ wire memory_response_last;
 wire memory_error;
 wire memory_response_ready;
 
-// GPU: device 4 with one fixed 32-byte command read master and one fixed
-// 32-byte framebuffer write master. `gpu_fb_r` stays idle this milestone.
+// GPU: device 4 with a command/tile-list read master plus independent
+// framebuffer read and write masters.
 wire gpu_ro_memory_request_valid;
 wire gpu_ro_memory_write;
 wire [21:0] gpu_ro_memory_address;
@@ -562,6 +562,17 @@ wire gpu_ro_memory_response_valid;
 wire [63:0] gpu_ro_memory_read_data;
 wire gpu_ro_memory_response_last;
 wire gpu_ro_memory_error;
+wire gpu_fb_r_memory_request_valid;
+wire gpu_fb_r_memory_write;
+wire [21:0] gpu_fb_r_memory_address;
+wire [1:0] gpu_fb_r_memory_line_count_minus_1;
+wire [63:0] gpu_fb_r_memory_write_data;
+wire gpu_fb_r_memory_request_ready;
+wire gpu_fb_r_memory_write_data_ready;
+wire gpu_fb_r_memory_response_valid;
+wire [63:0] gpu_fb_r_memory_read_data;
+wire gpu_fb_r_memory_response_last;
+wire gpu_fb_r_memory_error;
 wire gpu_fb_w_memory_request_valid;
 wire gpu_fb_w_memory_write;
 wire [21:0] gpu_fb_w_memory_address;
@@ -605,12 +616,12 @@ __GPU__ u_gpu (
     .gpu_fb_w_response_valid(gpu_fb_w_memory_response_valid),
     .gpu_fb_w_response_last(gpu_fb_w_memory_response_last),
     .gpu_fb_w_error(gpu_fb_w_memory_error),
-    .gpu_fb_r_request_ready(1'b1),
-    .gpu_fb_r_write_data_ready(1'b0),
-    .gpu_fb_r_response_valid(1'b0),
-    .gpu_fb_r_read_data(64'h0),
-    .gpu_fb_r_response_last(1'b0),
-    .gpu_fb_r_error(1'b0),
+    .gpu_fb_r_request_ready(gpu_fb_r_memory_request_ready),
+    .gpu_fb_r_write_data_ready(gpu_fb_r_memory_write_data_ready),
+    .gpu_fb_r_response_valid(gpu_fb_r_memory_response_valid),
+    .gpu_fb_r_read_data(gpu_fb_r_memory_read_data),
+    .gpu_fb_r_response_last(gpu_fb_r_memory_response_last),
+    .gpu_fb_r_error(gpu_fb_r_memory_error),
     .device_read_data(gpu_read_data),
     .gpu_ro_request_valid(gpu_ro_memory_request_valid),
     .gpu_ro_write(gpu_ro_memory_write),
@@ -622,11 +633,11 @@ __GPU__ u_gpu (
     .gpu_fb_w_address(gpu_fb_w_memory_address),
     .gpu_fb_w_line_count_minus_1(gpu_fb_w_memory_line_count_minus_1),
     .gpu_fb_w_write_data(gpu_fb_w_memory_write_data),
-    .gpu_fb_r_request_valid(),
-    .gpu_fb_r_write(),
-    .gpu_fb_r_address(),
-    .gpu_fb_r_line_count_minus_1(),
-    .gpu_fb_r_write_data()
+    .gpu_fb_r_request_valid(gpu_fb_r_memory_request_valid),
+    .gpu_fb_r_write(gpu_fb_r_memory_write),
+    .gpu_fb_r_address(gpu_fb_r_memory_address),
+    .gpu_fb_r_line_count_minus_1(gpu_fb_r_memory_line_count_minus_1),
+    .gpu_fb_r_write_data(gpu_fb_r_memory_write_data)
 );
 
 __ARBITER__ u_memory_arbiter (
@@ -654,11 +665,11 @@ __ARBITER__ u_memory_arbiter (
     .gpu_ro_address(gpu_ro_memory_address),
     .gpu_ro_line_count_minus_1(gpu_ro_memory_line_count_minus_1),
     .gpu_ro_write_data(gpu_ro_memory_write_data),
-    .gpu_fb_r_request_valid(1'b0),
-    .gpu_fb_r_write(1'b0),
-    .gpu_fb_r_address(22'h0),
-    .gpu_fb_r_line_count_minus_1(2'b00),
-    .gpu_fb_r_write_data(64'h0),
+    .gpu_fb_r_request_valid(gpu_fb_r_memory_request_valid),
+    .gpu_fb_r_write(gpu_fb_r_memory_write),
+    .gpu_fb_r_address(gpu_fb_r_memory_address),
+    .gpu_fb_r_line_count_minus_1(gpu_fb_r_memory_line_count_minus_1),
+    .gpu_fb_r_write_data(gpu_fb_r_memory_write_data),
     .gpu_fb_w_request_valid(gpu_fb_w_memory_request_valid),
     .gpu_fb_w_write(gpu_fb_w_memory_write),
     .gpu_fb_w_address(gpu_fb_w_memory_address),
@@ -693,12 +704,12 @@ __ARBITER__ u_memory_arbiter (
     .gpu_ro_read_data(gpu_ro_memory_read_data),
     .gpu_ro_response_last(gpu_ro_memory_response_last),
     .gpu_ro_error(gpu_ro_memory_error),
-    .gpu_fb_r_request_ready(),
-    .gpu_fb_r_write_data_ready(),
-    .gpu_fb_r_response_valid(),
-    .gpu_fb_r_read_data(),
-    .gpu_fb_r_response_last(),
-    .gpu_fb_r_error(),
+    .gpu_fb_r_request_ready(gpu_fb_r_memory_request_ready),
+    .gpu_fb_r_write_data_ready(gpu_fb_r_memory_write_data_ready),
+    .gpu_fb_r_response_valid(gpu_fb_r_memory_response_valid),
+    .gpu_fb_r_read_data(gpu_fb_r_memory_read_data),
+    .gpu_fb_r_response_last(gpu_fb_r_memory_response_last),
+    .gpu_fb_r_error(gpu_fb_r_memory_error),
     .gpu_fb_w_request_ready(gpu_fb_w_memory_request_ready),
     .gpu_fb_w_write_data_ready(gpu_fb_w_memory_write_data_ready),
     .gpu_fb_w_response_valid(gpu_fb_w_memory_response_valid),

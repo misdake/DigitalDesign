@@ -26,8 +26,10 @@ the slider diagnostic, and `11` is ignored. The current configuration uses the
 DDHT slider diagnostic for S1 and the GPU memory-interface demo
 (`rcc/display-demo.rs`) for S2. The display demo reports DDHT test ID `0x0b`
 after each published frame. It alternates two heap-backed command buffers,
-cleans their two cache lines, and lets GPU device 4 render the tile-linear
-framebuffer before requesting a vblank swap; the CPU no longer writes pixels.
+cleans their three cache lines, and reuses three permanent aligned tile-index
+lists. GPU device 4 runs CLEAR and LOAD fake draws through its tile cache,
+drains dirty entries, and then lets software request a vblank swap; the CPU no
+longer writes pixels.
 
 The current board's runtime SFDP probe reports an 8-MiB device. Its JEDEC ID is
 `EF 40 17`; this is a Winbond-family 64-Mbit part even though some board
