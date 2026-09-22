@@ -9,11 +9,15 @@ reg [15:0] device_write_data = 0;
 reg dcache_maintenance_busy = 0;
 reg dcache_maintenance_done = 0;
 reg dcache_maintenance_error = 0;
+reg [15:0] watch_read_data = 0;
 wire [15:0] device_read_data;
 wire icache_invalidate;
 wire dcache_invalidate;
 wire dcache_clean;
 wire cpu_hold;
+wire [2:0] watch_device_index;
+wire [3:0] watch_device_channel;
+wire watch_read_enable;
 wire [5:0] leds;
 wire uart_tx;
 
@@ -186,6 +190,27 @@ initial begin
     if (uart_tx !== 1'b1) fail("reset must abort the frame");
     if (leds !== 6'd0) fail("reset must clear leds again");
     check_busy(0);
+
+    // A staged generic watch holds only the CPU and continuously probes the
+    // selected device channel until its value changes.
+    write_channel(0, 6, {9'd0, 4'd1, 3'd4});
+    if (cpu_hold || watch_read_enable) fail("staging watch target must not hold");
+    watch_read_data = 16'd7;
+    write_channel(0, 7, 16'd7);
+    if (!cpu_hold || !watch_read_enable) fail("watch arm must hold CPU");
+    if (watch_device_index != 3'd4 || watch_device_channel != 4'd1)
+        fail("watch target output mismatch");
+    @(posedge clk); #1;
+    if (!cpu_hold) fail("equal watched value must keep CPU held");
+    watch_read_data = 16'd8;
+    @(posedge clk); #1;
+    if (cpu_hold || watch_read_enable) fail("changed watched value must release CPU");
+    // A change that happened before arming is caught by the first probe.
+    watch_read_data = 16'd10;
+    write_channel(0, 7, 16'd9);
+    if (!cpu_hold) fail("watch must enter hold on the arm edge");
+    @(posedge clk); #1;
+    if (cpu_hold) fail("pre-arm target change must not be missed");
 
     $display("DIGITAL_DESIGN_PASS");
     $finish;

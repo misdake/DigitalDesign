@@ -74,7 +74,7 @@ impl CpuV3SystemSim {
             if self.waiting_for_vblank() {
                 return Ok(RunOutcome::StepLimit { steps });
             }
-            if let StepOutcome::Halted { signal } = self.cpu.step()? {
+            if let StepOutcome::Halted { signal } = self.step()? {
                 return Ok(RunOutcome::Halted {
                     steps: steps + 1,
                     signal,
@@ -103,6 +103,16 @@ impl CpuV3SystemSim {
 
     pub fn waiting_for_vblank(&self) -> bool {
         self.display().waiting_for_vblank()
+            || (self.vblank_mode == VBlankMode::PauseOnFrameIndexWait
+                && self
+                    .cpu
+                    .device::<SystemControlDevice>(SYSTEM_CONTROL_DEVICE)
+                    .and_then(SystemControlDevice::active_watch)
+                    .is_some_and(|(device, channel, expected)| {
+                        device == DISPLAY_DEVICE
+                            && channel == crate::DISPLAY_FRAME_INDEX
+                            && self.display().frame_index() == expected
+                    }))
     }
 
     pub fn render_active_framebuffer(&self) -> Vec<u32> {
@@ -132,9 +142,9 @@ mod tests {
     use super::*;
     use crate::boot::{CACHE_MAINTENANCE_STATUS, CACHE_MAINTENANCE_STATUS_SUCCESS};
     use crate::{
-        branch, compare_unsigned, device_receive, device_send, halt, PhysicalWordAddress,
-        TestCondition, DISPLAY_CONTROL, DISPLAY_FRAMEBUFFER_HIGH, DISPLAY_FRAMEBUFFER_LOW,
-        DISPLAY_FRAME_INDEX, DISPLAY_NEXT_SWAP, FRAMEBUFFER_A_BASE_WORD, FRAMEBUFFER_B_BASE_WORD,
+        device_receive, device_send, halt, PhysicalWordAddress, DISPLAY_CONTROL,
+        DISPLAY_FRAMEBUFFER_HIGH, DISPLAY_FRAMEBUFFER_LOW, DISPLAY_FRAME_INDEX, DISPLAY_NEXT_SWAP,
+        FRAMEBUFFER_A_BASE_WORD, FRAMEBUFFER_B_BASE_WORD,
     };
 
     #[test]
@@ -187,18 +197,30 @@ mod tests {
         words.push(device_send(3, GPU_DEVICE, GPU_CMD_WORDS_LOW));
         words.push(device_send(4, GPU_DEVICE, GPU_CMD_WORDS_HIGH));
         words.push(device_send(5, GPU_DEVICE, GPU_SUBMIT));
-        // The host model advances one main clock per device access, so the
-        // submission retires only after the FSM has clocked through all 6000
-        // line writes. The software polls executed_count in a bounded loop.
-        words.extend(crate::load_immediate16(7, 1));
+        // Arm a generic watch on GPU executed_count == 0. While CPU
+        // retirement is held, the system model keeps probing the GPU, which
+        // advances the autonomous renderer until the value changes.
+        words.extend(crate::load_immediate16(
+            7,
+            crate::boot::sysctl_watch_target(GPU_DEVICE, GPU_EXECUTED_COUNT),
+        ));
+        words.extend(crate::load_immediate16(8, 0));
+        words.push(device_send(
+            7,
+            SYSTEM_CONTROL_DEVICE,
+            crate::boot::SYSCTL_WATCH_TARGET,
+        ));
+        words.push(device_send(
+            8,
+            SYSTEM_CONTROL_DEVICE,
+            crate::boot::SYSCTL_WATCH_EXPECTED,
+        ));
         words.push(device_receive(6, GPU_DEVICE, GPU_EXECUTED_COUNT));
-        words.push(compare_unsigned(6, 7));
-        words.push(branch(TestCondition::NotEqual, -3));
         words.push(halt());
         sim.cpu_mut().load_program(0, &words).unwrap();
         assert!(
             matches!(sim.run(2_000_000), Ok(RunOutcome::Halted { .. })),
-            "GPU polling loop did not finish"
+            "GPU device watch did not finish"
         );
         assert_eq!(sim.cpu().register(6), Some(1), "executed_count");
         assert_eq!(sim.gpu().executed_count(), 1);
@@ -247,25 +269,23 @@ mod tests {
     #[test]
     fn pause_mode_stops_at_a_frame_index_wait() {
         let mut sim = CpuV3SystemSim::new(VBlankMode::PauseOnFrameIndexWait);
-        sim.cpu_mut()
-            .load_program(
-                0,
-                &[
-                    device_receive(1, DISPLAY_DEVICE, DISPLAY_FRAME_INDEX),
-                    device_receive(2, DISPLAY_DEVICE, DISPLAY_FRAME_INDEX),
-                    compare_unsigned(2, 1),
-                    branch(TestCondition::Equal, -3),
-                    halt(),
-                ],
-            )
-            .unwrap();
-        assert_eq!(sim.run(16), Ok(RunOutcome::StepLimit { steps: 2 }));
-        assert_eq!(sim.cpu().register(1), Some(0));
+        let mut program = Vec::new();
+        program.extend(crate::load_immediate16(
+            1,
+            crate::boot::sysctl_watch_target(DISPLAY_DEVICE, DISPLAY_FRAME_INDEX),
+        ));
+        program.extend([
+            device_send(1, SYSTEM_CONTROL_DEVICE, crate::boot::SYSCTL_WATCH_TARGET),
+            device_send(2, SYSTEM_CONTROL_DEVICE, crate::boot::SYSCTL_WATCH_EXPECTED),
+            halt(),
+        ]);
+        sim.cpu_mut().load_program(0, &program).unwrap();
+        assert_eq!(sim.run(16), Ok(RunOutcome::StepLimit { steps: 4 }));
+        assert_eq!(sim.cpu().register(1), Some(3));
         assert_eq!(sim.cpu().register(2), Some(0));
         assert!(sim.waiting_for_vblank());
         assert!(!sim.advance_vblank());
         assert!(matches!(sim.run(16), Ok(RunOutcome::Halted { .. })));
-        assert_eq!(sim.cpu().register(2), Some(1));
         assert_eq!(sim.display_state().frame_index, 1);
     }
 

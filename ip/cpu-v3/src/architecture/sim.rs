@@ -63,6 +63,12 @@ pub trait Device {
     fn write(&mut self, memory: &mut [Word], channel: u8, value: Word);
     /// Downcast support for test assertions on attached models.
     fn as_any(&self) -> &dyn std::any::Any;
+    /// Optional CPU-local hold driven by a device-channel value watch.
+    fn cpu_hold_watch(&self) -> Option<(u8, u8, Word)> {
+        None
+    }
+    /// Supplies one sampled value to the active hold owner.
+    fn observe_cpu_hold(&mut self, _value: Word) {}
 }
 
 pub struct CpuV3Sim {
@@ -213,6 +219,16 @@ impl CpuV3Sim {
             .downcast_ref()
     }
 
+    /// Performs one device read without retiring a CPU instruction so an
+    /// autonomous target can advance while a watch holds the CPU.
+    fn cycle_device_read(&mut self, device: u8, channel: u8) -> Word {
+        let (devices, memory) = (&mut self.devices, &mut self.memory);
+        devices
+            .get_mut(usize::from(device))
+            .and_then(Option::as_mut)
+            .map_or(0, |handler| handler.read(memory, channel))
+    }
+
     /// Installs the BSRAM boot-window image (see the `boot_window` field).
     pub fn set_boot_window(&mut self, words: &[Word]) {
         self.boot_window = Some(words.to_vec().into_boxed_slice());
@@ -264,6 +280,24 @@ impl CpuV3Sim {
             return Ok(StepOutcome::Halted {
                 signal: self.halt_signal,
             });
+        }
+
+        if let Some((owner, device, channel)) =
+            self.devices
+                .iter()
+                .enumerate()
+                .find_map(|(owner, handler)| {
+                    handler
+                        .as_ref()
+                        .and_then(|handler| handler.cpu_hold_watch())
+                        .map(|(device, channel, _)| (owner, device, channel))
+                })
+        {
+            let value = self.cycle_device_read(device, channel);
+            if let Some(handler) = self.devices[owner].as_mut() {
+                handler.observe_cpu_hold(value);
+            }
+            return Ok(StepOutcome::Running);
         }
 
         let address = self.pc;

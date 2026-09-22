@@ -73,7 +73,7 @@ fn clean_commands(buffer: Ptr) {
 }
 
 fn submit(buffer: Ptr) -> u16 {
-    let expected = dev_recv(GPU_DEVICE, GPU_EXECUTED_COUNT) + 1;
+    let previous = dev_recv(GPU_DEVICE, GPU_EXECUTED_COUNT);
     dev_send(GPU_DEVICE, GPU_CMD_BASE_LOW, buffer.addr());
     // The S2 application data segment is physical page zero; both permanent
     // command buffers therefore have zero physical word-address high bits.
@@ -84,28 +84,38 @@ fn submit(buffer: Ptr) -> u16 {
     if dev_recv(GPU_DEVICE, GPU_STATUS) & GPU_STATUS_SUBMIT_REJECTED != 0 {
         halt(0x0b01);
     }
-    expected
+    previous
 }
 
-fn wait_gpu(expected: u16) {
-    while dev_recv(GPU_DEVICE, GPU_EXECUTED_COUNT) != expected {}
+fn wait_device_change(device: u16, channel: u16, previous: u16) {
+    dev_send(
+        SYSTEM_CONTROL_DEVICE,
+        SYSCTL_WATCH_TARGET,
+        sysctl_watch_target(device, channel),
+    );
+    dev_send(SYSTEM_CONTROL_DEVICE, SYSCTL_WATCH_EXPECTED, previous);
+}
+
+fn wait_gpu(previous: u16) {
+    wait_device_change(GPU_DEVICE, GPU_EXECUTED_COUNT, previous);
+    if dev_recv(GPU_DEVICE, GPU_EXECUTED_COUNT) != previous + 1 {
+        halt(0x0b03);
+    }
     if dev_recv(GPU_DEVICE, GPU_STATUS) & GPU_STATUS_COMMAND_ERROR != 0 {
         halt(0x0b02);
     }
 }
 
-fn request_display_swap(target_low: u16, target_high: u16) {
+fn request_display_swap(target_low: u16, target_high: u16) -> u16 {
+    let frame = dev_recv(DISPLAY_DEVICE, DISPLAY_FRAME_INDEX);
     dev_send(DISPLAY_DEVICE, DISPLAY_STAGE_FRAMEBUFFER_LOW, target_low);
     dev_send(DISPLAY_DEVICE, DISPLAY_STAGE_FRAMEBUFFER_HIGH, target_high);
     dev_send(DISPLAY_DEVICE, DISPLAY_SWAP_COMMAND, DISPLAY_NEXT_SWAP);
+    frame
 }
 
-fn wait_next_frame() {
-    let frame = dev_recv(DISPLAY_DEVICE, DISPLAY_FRAME_INDEX);
-    let mut current = frame;
-    while current == frame {
-        current = dev_recv(DISPLAY_DEVICE, DISPLAY_FRAME_INDEX);
-    }
+fn wait_next_frame(frame: u16) {
+    wait_device_change(DISPLAY_DEVICE, DISPLAY_FRAME_INDEX, frame);
 }
 
 fn uart_byte(byte: u16) {
@@ -147,10 +157,10 @@ fn main() {
 
         build_commands(command, target_low, target_high, phase);
         clean_commands(command);
-        let expected = submit(command);
-        wait_gpu(expected);
-        request_display_swap(target_low, target_high);
-        wait_next_frame();
+        let previous = submit(command);
+        wait_gpu(previous);
+        let frame = request_display_swap(target_low, target_high);
+        wait_next_frame(frame);
         uart_success();
 
         use_a ^= 1;

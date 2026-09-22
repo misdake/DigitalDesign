@@ -12,6 +12,8 @@
 //!   transmitter; (read): bit 0 is the transmitter busy flag.
 //! - channel 4 (write): start blocking D-cache clean;
 //! - channel 5 (read): return the final maintenance status.
+//! - channel 6 (write): stage a generic watch target as `{channel[3:0], device[2:0]}`;
+//! - channel 7 (write): arm a CPU-local sleep while the target equals the written value.
 //!
 //! Writes while the UART is busy are dropped; software must poll the busy
 //! flag before enqueueing the next byte. All accesses with a device index
@@ -27,6 +29,8 @@ pub use crate::boot::D_INVALIDATE_ALL as SYSTEM_CONTROL_CHANNEL_D_INVALIDATE_ALL
 pub use crate::boot::ICACHE_INVALIDATE_ALL_DELAYED as SYSTEM_CONTROL_CHANNEL_ICACHE_INVALIDATE_ALL_DELAYED;
 pub use crate::boot::SYSCTL_LED as SYSTEM_CONTROL_CHANNEL_LEDS;
 pub use crate::boot::SYSCTL_UART as SYSTEM_CONTROL_CHANNEL_UART;
+pub use crate::boot::SYSCTL_WATCH_EXPECTED as SYSTEM_CONTROL_CHANNEL_WATCH_EXPECTED;
+pub use crate::boot::SYSCTL_WATCH_TARGET as SYSTEM_CONTROL_CHANNEL_WATCH_TARGET;
 /// Device index of the system control device on the CpuV3 device port.
 pub use crate::boot::SYSTEM_CONTROL_DEVICE;
 
@@ -41,6 +45,8 @@ pub struct SystemControlDeviceInput {
     pub dcache_maintenance_busy: Wire,
     pub dcache_maintenance_done: Wire,
     pub dcache_maintenance_error: Wire,
+    /// Readback from the device/channel selected by the watch probe outputs.
+    pub watch_read_data: Wires<16>,
 }
 
 #[derive(Clone, ModuleIo)]
@@ -52,6 +58,9 @@ pub struct SystemControlDeviceOutput {
     /// CPU-local hold. This must never be used to gate DMA, display, SDRAM,
     /// or other machine-owned hardware while D-cache maintenance runs.
     pub cpu_hold: Wire,
+    pub watch_device_index: Wires<3>,
+    pub watch_device_channel: Wires<4>,
+    pub watch_read_enable: Wire,
     /// Logical LED value; board wrappers handle active-low inversion.
     pub leds: Wires<6>,
     /// 8N1 serial output, idle high.
@@ -72,7 +81,11 @@ pub struct SystemControlDeviceState {
     icache_invalidate: bool,
     dcache_invalidate: bool,
     dcache_clean: bool,
-    cpu_hold: bool,
+    maintenance_hold: bool,
+    watch_active: bool,
+    watch_device_index: u8,
+    watch_device_channel: u8,
+    watch_expected: u16,
     cache_maintenance_status: u16,
     pending_dcache_maintenance: u8,
     leds: u8,
@@ -88,7 +101,11 @@ impl Default for SystemControlDeviceState {
             icache_invalidate: false,
             dcache_invalidate: false,
             dcache_clean: false,
-            cpu_hold: false,
+            maintenance_hold: false,
+            watch_active: false,
+            watch_device_index: 0,
+            watch_device_channel: 0,
+            watch_expected: 0,
             cache_maintenance_status: crate::boot::CACHE_MAINTENANCE_STATUS_SUCCESS,
             pending_dcache_maintenance: 0,
             leds: 0,
@@ -159,7 +176,10 @@ impl<const CLOCKS_PER_BIT: u16> Module for SystemControlDevice<CLOCKS_PER_BIT> {
                 icache_invalidate: state.icache_invalidate,
                 dcache_invalidate: state.dcache_invalidate,
                 dcache_clean: state.dcache_clean,
-                cpu_hold: state.cpu_hold,
+                cpu_hold: state.maintenance_hold || state.watch_active,
+                watch_device_index: u64::from(state.watch_device_index),
+                watch_device_channel: u64::from(state.watch_device_channel),
+                watch_read_enable: state.watch_active,
                 leds: u64::from(state.leds),
                 uart_tx: !state.uart_busy || ((state.uart_frame >> state.uart_bit) & 1) == 1,
             },
@@ -182,7 +202,7 @@ impl<const CLOCKS_PER_BIT: u16> Module for SystemControlDevice<CLOCKS_PER_BIT> {
         state.dcache_clean = false;
 
         let maintenance_was_pending = state.pending_dcache_maintenance != 0;
-        if state.cpu_hold && maintenance_was_pending && !input.dcache_maintenance_busy {
+        if state.maintenance_hold && maintenance_was_pending && !input.dcache_maintenance_busy {
             state.dcache_invalidate = state.pending_dcache_maintenance == 1;
             state.dcache_clean = state.pending_dcache_maintenance == 2;
             state.pending_dcache_maintenance = 0;
@@ -191,13 +211,17 @@ impl<const CLOCKS_PER_BIT: u16> Module for SystemControlDevice<CLOCKS_PER_BIT> {
         // A line copy can lower busy and raise done on the same clock where a
         // deferred command becomes issuable. That completion belongs to the
         // copy, not to the maintenance operation emitted above.
-        if state.cpu_hold && !maintenance_was_pending && input.dcache_maintenance_done {
-            state.cpu_hold = false;
+        if state.maintenance_hold && !maintenance_was_pending && input.dcache_maintenance_done {
+            state.maintenance_hold = false;
             state.cache_maintenance_status = if input.dcache_maintenance_error {
                 crate::boot::CACHE_MAINTENANCE_STATUS_ERROR
             } else {
                 crate::boot::CACHE_MAINTENANCE_STATUS_SUCCESS
             };
+        }
+
+        if state.watch_active && input.watch_read_data as u16 != state.watch_expected {
+            state.watch_active = false;
         }
 
         let was_busy = state.uart_busy;
@@ -220,16 +244,20 @@ impl<const CLOCKS_PER_BIT: u16> Module for SystemControlDevice<CLOCKS_PER_BIT> {
         let value = input.device_write_data as u16;
         match input.device_channel as u8 {
             SYSTEM_CONTROL_CHANNEL_ICACHE_INVALIDATE_ALL_DELAYED => state.icache_invalidate = true,
-            SYSTEM_CONTROL_CHANNEL_D_INVALIDATE_ALL if !state.cpu_hold => {
-                state.cpu_hold = true;
+            SYSTEM_CONTROL_CHANNEL_D_INVALIDATE_ALL
+                if !state.maintenance_hold && !state.watch_active =>
+            {
+                state.maintenance_hold = true;
                 if input.dcache_maintenance_busy {
                     state.pending_dcache_maintenance = 1;
                 } else {
                     state.dcache_invalidate = true;
                 }
             }
-            SYSTEM_CONTROL_CHANNEL_D_CLEAN_ALL if !state.cpu_hold => {
-                state.cpu_hold = true;
+            SYSTEM_CONTROL_CHANNEL_D_CLEAN_ALL
+                if !state.maintenance_hold && !state.watch_active =>
+            {
+                state.maintenance_hold = true;
                 if input.dcache_maintenance_busy {
                     state.pending_dcache_maintenance = 2;
                 } else {
@@ -243,6 +271,16 @@ impl<const CLOCKS_PER_BIT: u16> Module for SystemControlDevice<CLOCKS_PER_BIT> {
                 state.uart_bit = 0;
                 state.uart_divider = 0;
                 state.uart_busy = true;
+            }
+            SYSTEM_CONTROL_CHANNEL_WATCH_TARGET => {
+                state.watch_device_index = (value & 7) as u8;
+                state.watch_device_channel = ((value >> 3) & 15) as u8;
+            }
+            SYSTEM_CONTROL_CHANNEL_WATCH_EXPECTED
+                if !state.maintenance_hold && !state.watch_active =>
+            {
+                state.watch_expected = value;
+                state.watch_active = true;
             }
             _ => {}
         }
@@ -296,6 +334,7 @@ mod tests {
         dcache_maintenance_busy: false,
         dcache_maintenance_done: false,
         dcache_maintenance_error: false,
+        watch_read_data: 0,
     };
 
     fn write(channel: u64, data: u64) -> SystemControlDeviceInputValue {
@@ -342,6 +381,9 @@ mod tests {
             dcache_invalidate,
             dcache_clean: false,
             cpu_hold: false,
+            watch_device_index: 0,
+            watch_device_channel: 0,
+            watch_read_enable: false,
             leds,
             uart_tx,
         }
@@ -360,6 +402,9 @@ mod tests {
             dcache_invalidate: invalidate,
             dcache_clean: clean,
             cpu_hold: hold,
+            watch_device_index: 0,
+            watch_device_channel: 0,
+            watch_read_enable: false,
             leds,
             uart_tx: true,
         }
@@ -500,6 +545,80 @@ mod tests {
                 output(0, false, false, 0, true),
             ),
             TestStep::new(read(uart), output(0, false, false, 0, true)),
+            // Stage GPU executed_count (device 4, channel 1), then sleep
+            // while its value is 7. The probe keeps running while the CPU is
+            // held and releases it on the first changed sample.
+            TestStep::new(
+                write(
+                    u64::from(SYSTEM_CONTROL_CHANNEL_WATCH_TARGET),
+                    u64::from(crate::boot::sysctl_watch_target(4, 1)),
+                ),
+                SystemControlDeviceOutputValue {
+                    watch_device_index: 4,
+                    watch_device_channel: 1,
+                    ..output(0, false, false, 0, true)
+                },
+            ),
+            TestStep::new(
+                write(u64::from(SYSTEM_CONTROL_CHANNEL_WATCH_EXPECTED), 7),
+                SystemControlDeviceOutputValue {
+                    cpu_hold: true,
+                    watch_device_index: 4,
+                    watch_device_channel: 1,
+                    watch_read_enable: true,
+                    ..output(0, false, false, 0, true)
+                },
+            ),
+            TestStep::new(
+                SystemControlDeviceInputValue {
+                    watch_read_data: 7,
+                    ..IDLE
+                },
+                SystemControlDeviceOutputValue {
+                    cpu_hold: true,
+                    watch_device_index: 4,
+                    watch_device_channel: 1,
+                    watch_read_enable: true,
+                    ..output(0, false, false, 0, true)
+                },
+            ),
+            TestStep::new(
+                SystemControlDeviceInputValue {
+                    watch_read_data: 8,
+                    ..IDLE
+                },
+                SystemControlDeviceOutputValue {
+                    watch_device_index: 4,
+                    watch_device_channel: 1,
+                    ..output(0, false, false, 0, true)
+                },
+            ),
+            // If the target changed between the software snapshot and arm,
+            // the first probe releases the CPU instead of missing the event.
+            TestStep::new(
+                SystemControlDeviceInputValue {
+                    watch_read_data: 10,
+                    ..write(u64::from(SYSTEM_CONTROL_CHANNEL_WATCH_EXPECTED), 9)
+                },
+                SystemControlDeviceOutputValue {
+                    cpu_hold: true,
+                    watch_device_index: 4,
+                    watch_device_channel: 1,
+                    watch_read_enable: true,
+                    ..output(0, false, false, 0, true)
+                },
+            ),
+            TestStep::new(
+                SystemControlDeviceInputValue {
+                    watch_read_data: 10,
+                    ..IDLE
+                },
+                SystemControlDeviceOutputValue {
+                    watch_device_index: 4,
+                    watch_device_channel: 1,
+                    ..output(0, false, false, 0, true)
+                },
+            ),
         ])
     }
 

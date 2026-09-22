@@ -9,6 +9,7 @@ module {{ module_name }} (
     input wire dcache_maintenance_busy,
     input wire dcache_maintenance_done,
     input wire dcache_maintenance_error,
+    input wire [15:0] watch_read_data,
     output reg [15:0] device_read_data,
     output reg icache_invalidate = 0,
     output reg dcache_invalidate = 0,
@@ -16,6 +17,9 @@ module {{ module_name }} (
     // This hold is deliberately CPU-local. Cache write-back traffic and all
     // non-CPU clients of the shared SDRAM continue to run during maintenance.
     output reg cpu_hold = 0,
+    output wire [2:0] watch_device_index,
+    output wire [3:0] watch_device_channel,
+    output wire watch_read_enable,
     output reg [5:0] leds = 0,
     output wire uart_tx
 );
@@ -30,6 +34,14 @@ reg [3:0] uart_bit = 0;
 reg [15:0] uart_divider = 0;
 reg [15:0] cache_maintenance_status = 0;
 reg [1:0] pending_dcache_maintenance = 0;
+reg watch_active = 0;
+reg [2:0] watch_index = 0;
+reg [3:0] watch_channel = 0;
+reg [15:0] watch_expected = 0;
+
+assign watch_device_index = watch_index;
+assign watch_device_channel = watch_channel;
+assign watch_read_enable = watch_active;
 
 always @* begin
     device_read_data = 0;
@@ -48,6 +60,10 @@ always @(posedge clk) begin
         dcache_invalidate <= 0;
         dcache_clean <= 0;
         cpu_hold <= 0;
+        watch_active <= 0;
+        watch_index <= 0;
+        watch_channel <= 0;
+        watch_expected <= 0;
         cache_maintenance_status <= 0;
         pending_dcache_maintenance <= 0;
         leds <= 0;
@@ -59,7 +75,7 @@ always @(posedge clk) begin
         icache_invalidate <= 0;
         dcache_invalidate <= 0;
         dcache_clean <= 0;
-        if (cpu_hold && pending_dcache_maintenance != 0 &&
+        if (cpu_hold && !watch_active && pending_dcache_maintenance != 0 &&
             !dcache_maintenance_busy) begin
             dcache_invalidate <= pending_dcache_maintenance == 1;
             dcache_clean <= pending_dcache_maintenance == 2;
@@ -67,10 +83,14 @@ always @(posedge clk) begin
         end
         // Ignore a completion from the operation that just released the
         // D-cache while a deferred command is being emitted.
-        if (cpu_hold && pending_dcache_maintenance == 0 &&
+        if (cpu_hold && !watch_active && pending_dcache_maintenance == 0 &&
             dcache_maintenance_done) begin
             cpu_hold <= 0;
             cache_maintenance_status <= dcache_maintenance_error ? 16'h8000 : 16'h0000;
+        end
+        if (watch_active && watch_read_data != watch_expected) begin
+            watch_active <= 0;
+            cpu_hold <= 0;
         end
         if (uart_busy) begin
             if (uart_divider == 16'd{{ clocks_per_bit_minus_one }}) begin
@@ -107,6 +127,15 @@ always @(posedge clk) begin
                         pending_dcache_maintenance <= 2;
                     else
                         dcache_clean <= 1;
+                end
+                6: begin
+                    watch_index <= device_write_data[2:0];
+                    watch_channel <= device_write_data[6:3];
+                end
+                7: if (!cpu_hold) begin
+                    watch_expected <= device_write_data;
+                    watch_active <= 1;
+                    cpu_hold <= 1;
                 end
                 default: begin end
             endcase

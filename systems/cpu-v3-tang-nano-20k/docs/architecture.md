@@ -133,7 +133,13 @@ The fitted device allocation is:
 Device 0 channel 0 emits the registered one-cycle-delayed whole-I-cache invalidation pulse. Channel
 1 starts blocking D-cache clean-plus-invalidate, channel 4 starts blocking D-cache clean, and channel
 5 returns final maintenance status. Channel 2 writes the six logical LEDs. Channel 3 transmits one
-UART byte and reports transmitter busy on reads.
+UART byte and reports transmitter busy on reads. Channels 6 and 7 implement a generic device-value
+watch: software writes `{channel[3:0], device[2:0]}` to channel 6, then writes the value it most
+recently observed to channel 7. The second write holds only CPU retirement while a registered probe
+continues reading the selected device; the first unequal value releases the CPU. A change between
+the software read and arm is therefore detected by the first probe rather than lost. Display, DMA,
+GPU, caches, and SDRAM remain clocked throughout the wait. Cache-maintenance and watch holds have
+independent state so neither completion source can release the other.
 
 Device 1 channel 0 returns the reset-time boot selection. The board-level selection latch powers up
 at `10`, so the boot stage selects the configured S2 application by default; holding the S1 button

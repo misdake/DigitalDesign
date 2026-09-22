@@ -14,6 +14,16 @@ pub const SYSCTL_LED: u8 = 2;
 /// Writes queue one UART transmit byte (8N1); reads report bit 0 set while
 /// the transmitter is busy.
 pub const SYSCTL_UART: u8 = 3;
+/// Stage a device/channel selector for the generic watch-change sleep.
+/// Bits 2:0 select the device and bits 6:3 select its channel; other bits are
+/// ignored.
+pub const SYSCTL_WATCH_TARGET: u8 = 6;
+/// Arm the staged watch while the selected channel equals the written value.
+pub const SYSCTL_WATCH_EXPECTED: u8 = 7;
+
+pub const fn sysctl_watch_target(device: u8, channel: u8) -> u16 {
+    ((channel as u16 & 0x0f) << 3) | (device as u16 & 0x07)
+}
 
 /// Boot-selection strap device. The fitted system latches a stable one-hot
 /// button value during reset and exposes it to the boot stage after button release.

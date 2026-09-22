@@ -237,6 +237,13 @@ wire [15:0] dma_device_read_data;
 wire [15:0] display_read_data;
 wire [15:0] gpu_read_data;
 wire [5:0] software_leds;
+wire [2:0] watch_device_index;
+wire [3:0] watch_device_channel;
+wire watch_read_enable;
+wire [2:0] device_query_index = watch_read_enable ? watch_device_index : device_index;
+wire [3:0] device_query_channel = watch_read_enable ? watch_device_channel : device_channel;
+wire device_query_read_enable = device_read_enable || watch_read_enable;
+wire device_query_write_enable = device_write_enable && !watch_read_enable;
 
 // Unselected devices read back zero, so the core sees the OR of all buses.
 assign device_read_data =
@@ -260,7 +267,7 @@ always @(posedge clk) begin
     endcase
 end
 assign boot_select_read_data =
-    device_read_enable && device_index == 3'd1 && device_channel == 4'd0
+    device_query_read_enable && device_query_index == 3'd1 && device_query_channel == 4'd0
         ? {14'b0, boot_select}
         : 16'b0;
 
@@ -268,19 +275,23 @@ assign boot_select_read_data =
 __SYSTEM_CONTROL__ u_sysctl (
     .clk(clk),
     .reset(reset),
-    .device_index(device_index),
-    .device_channel(device_channel),
-    .device_read_enable(device_read_enable),
-    .device_write_enable(device_write_enable),
+    .device_index(device_query_index),
+    .device_channel(device_query_channel),
+    .device_read_enable(device_query_read_enable),
+    .device_write_enable(device_query_write_enable),
     .device_write_data(device_write_data),
     .dcache_maintenance_busy(dcache_maintenance_busy),
     .dcache_maintenance_done(dcache_maintenance_done),
     .dcache_maintenance_error(dcache_maintenance_error),
+    .watch_read_data(device_read_data),
     .device_read_data(sysctl_read_data),
     .icache_invalidate(sysctl_icache_invalidate),
     .dcache_invalidate(sysctl_dcache_invalidate),
     .dcache_clean(sysctl_dcache_clean),
     .cpu_hold(sysctl_cpu_hold),
+    .watch_device_index(watch_device_index),
+    .watch_device_channel(watch_device_channel),
+    .watch_read_enable(watch_read_enable),
     .leds(software_leds),
     .uart_tx(uart_tx)
 );
@@ -300,10 +311,10 @@ wire [31:0] dma_completed_words;
 __BOOT_DMA_DEVICE__ u_boot_dma_device (
     .clk(clk),
     .reset(reset),
-    .device_index(device_index),
-    .device_channel(device_channel),
-    .device_read_enable(device_read_enable),
-    .device_write_enable(device_write_enable),
+    .device_index(device_query_index),
+    .device_channel(device_query_channel),
+    .device_read_enable(device_query_read_enable),
+    .device_write_enable(device_query_write_enable),
     .device_write_data(device_write_data),
     .dma_busy(dma_busy),
     .dma_done(dma_done),
@@ -503,7 +514,7 @@ wire diagnostic_active;
 wire [5:0] diagnostic_leds;
 wire [2:0] boot_phase;
 wire boot_error_sticky;
-wire software_led_write = device_write_enable && device_index == 0 && device_channel == 2;
+wire software_led_write = device_query_write_enable && device_index == 0 && device_channel == 2;
 
 // This observer never controls boot. It only makes pre-software progress
 // visible, then permanently hands the LEDs to the first software LED write.
@@ -578,10 +589,10 @@ wire display_memory_error;
 __GPU__ u_gpu (
     .clk(clk),
     .reset(reset),
-    .device_index(device_index),
-    .device_channel(device_channel),
-    .device_read_enable(device_read_enable),
-    .device_write_enable(device_write_enable),
+    .device_index(device_query_index),
+    .device_channel(device_query_channel),
+    .device_read_enable(device_query_read_enable),
+    .device_write_enable(device_query_write_enable),
     .device_write_data(device_write_data),
     .gpu_ro_request_ready(gpu_ro_memory_request_ready),
     .gpu_ro_write_data_ready(gpu_ro_memory_write_data_ready),
@@ -746,10 +757,10 @@ __FRAMEBUFFER_HDMI__ u_display (
     .memory_read_data(display_memory_read_data),
     .memory_last(display_memory_last),
     .memory_error(display_memory_error),
-    .device_index(device_index),
-    .device_channel(device_channel),
-    .device_read_enable(device_read_enable),
-    .device_write_enable(device_write_enable),
+    .device_index(device_query_index),
+    .device_channel(device_query_channel),
+    .device_read_enable(device_query_read_enable),
+    .device_write_enable(device_query_write_enable),
     .device_write_data(device_write_data),
     .memory_request_valid(display_memory_request_valid),
     .memory_urgent(display_memory_urgent),
