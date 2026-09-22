@@ -228,6 +228,20 @@ enum Pending {
         value: Word,
         way: usize,
     },
+    /// A dirty victim is written back before the copy source refills.
+    EvictThenCopy {
+        source: PhysicalWordAddress,
+        destination_segment: u8,
+        way: usize,
+    },
+    /// The copy source is being refilled into the selected way.
+    CopyRefill {
+        source: PhysicalWordAddress,
+        destination_segment: u8,
+        way: usize,
+    },
+    /// The resident source line is being written to the redirected segment.
+    CopyWriteback,
 }
 
 #[derive(Clone, Copy)]
@@ -259,6 +273,62 @@ impl Default for DataCache {
 }
 
 impl DataCache {
+    /// Copies one aligned resident-or-refilled line to the same offset in a
+    /// different physical segment. A resident destination alias is discarded
+    /// first because the complete destination line is overwritten. The
+    /// destination is not installed in the cache.
+    pub fn copy_line(
+        &mut self,
+        source: PhysicalWordAddress,
+        destination_segment: u8,
+    ) -> Result<CacheAction, CacheError> {
+        if self.pending.is_some() || self.maintenance.is_some() {
+            return Err(CacheError::Busy);
+        }
+        let decoded = decode(source);
+        let way = self.store.victim_way(decoded.set);
+        let destination = copy_destination(source, destination_segment);
+        if destination != source {
+            if let Some(destination_way) = self.store.hit_way(destination) {
+                self.store.valid[destination_way][decoded.set] = false;
+                self.dirty[destination_way][decoded.set] = false;
+            }
+        }
+        if let Some(way) = self.store.hit_way(source) {
+            self.pending = Some(Pending::CopyWriteback);
+            return Ok(CacheAction::MainMemoryRequest(
+                MainMemoryRequest::WriteLine {
+                    line_address: destination,
+                    words: self.store.line_words(way, decoded.set),
+                },
+            ));
+        }
+        if self.dirty[way][decoded.set] {
+            self.pending = Some(Pending::EvictThenCopy {
+                source,
+                destination_segment,
+                way,
+            });
+            Ok(CacheAction::MainMemoryRequest(
+                MainMemoryRequest::WriteLine {
+                    line_address: self.line_address(way, decoded.set),
+                    words: self.store.line_words(way, decoded.set),
+                },
+            ))
+        } else {
+            self.pending = Some(Pending::CopyRefill {
+                source,
+                destination_segment,
+                way,
+            });
+            Ok(CacheAction::MainMemoryRequest(
+                MainMemoryRequest::ReadLine {
+                    line_address: source.line_base(CACHE_LINE_WORDS as u32),
+                },
+            ))
+        }
+    }
+
     pub fn request(&mut self, request: CpuMemoryRequest) -> Result<CacheAction, CacheError> {
         if self.pending.is_some() || self.maintenance.is_some() {
             return Err(CacheError::Busy);
@@ -385,6 +455,49 @@ impl DataCache {
                     },
                 ))
             }
+            (
+                Pending::EvictThenCopy {
+                    source,
+                    destination_segment,
+                    way,
+                },
+                MainMemoryResponse::WriteComplete,
+            ) => {
+                let decoded = decode(source);
+                self.dirty[way][decoded.set] = false;
+                self.pending = Some(Pending::CopyRefill {
+                    source,
+                    destination_segment,
+                    way,
+                });
+                Ok(CacheAction::MainMemoryRequest(
+                    MainMemoryRequest::ReadLine {
+                        line_address: source.line_base(CACHE_LINE_WORDS as u32),
+                    },
+                ))
+            }
+            (
+                Pending::CopyRefill {
+                    source,
+                    destination_segment,
+                    way,
+                },
+                MainMemoryResponse::ReadLine { words },
+            ) => {
+                let decoded = decode(source);
+                self.store.install(way, source, words);
+                self.dirty[way][decoded.set] = false;
+                self.pending = Some(Pending::CopyWriteback);
+                Ok(CacheAction::MainMemoryRequest(
+                    MainMemoryRequest::WriteLine {
+                        line_address: copy_destination(source, destination_segment),
+                        words,
+                    },
+                ))
+            }
+            (Pending::CopyWriteback, MainMemoryResponse::WriteComplete) => {
+                Ok(CacheAction::CpuResponse(CpuMemoryResponse::WriteComplete))
+            }
             _ => Err(CacheError::UnexpectedMemoryResponse),
         }
     }
@@ -469,6 +582,13 @@ impl DataCache {
         }
         bits
     }
+}
+
+fn copy_destination(source: PhysicalWordAddress, destination_segment: u8) -> PhysicalWordAddress {
+    PhysicalWordAddress::new(
+        (u32::from(destination_segment & 0x3f) << 16)
+            | (source.get() & 0x0000_ffff & !((CACHE_LINE_WORDS as u32) - 1)),
+    )
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -619,6 +739,62 @@ mod tests {
             }),
             Ok(CacheAction::CpuResponse(CpuMemoryResponse::Read {
                 value: 0xabcd
+            }))
+        );
+    }
+
+    #[test]
+    fn line_copy_refills_source_redirects_writeback_and_preserves_source_dirty() {
+        let mut cache = DataCache::default();
+        let source = PhysicalWordAddress::new(0x1230);
+        assert_eq!(
+            cache.copy_line(source, 3),
+            Ok(CacheAction::MainMemoryRequest(
+                MainMemoryRequest::ReadLine {
+                    line_address: source
+                }
+            ))
+        );
+        let source_words = line(0x4000);
+        assert_eq!(
+            cache.complete(MainMemoryResponse::ReadLine {
+                words: source_words
+            }),
+            Ok(CacheAction::MainMemoryRequest(
+                MainMemoryRequest::WriteLine {
+                    line_address: PhysicalWordAddress::new(0x0003_1230),
+                    words: source_words
+                }
+            ))
+        );
+        assert_eq!(
+            cache.complete(MainMemoryResponse::WriteComplete),
+            Ok(CacheAction::CpuResponse(CpuMemoryResponse::WriteComplete))
+        );
+
+        cache
+            .request(CpuMemoryRequest::Write {
+                address: PhysicalWordAddress::new(0x1232),
+                value: 0x5a5a,
+            })
+            .unwrap();
+        let mut dirty_words = source_words;
+        dirty_words[2] = 0x5a5a;
+        assert_eq!(
+            cache.copy_line(source, 4),
+            Ok(CacheAction::MainMemoryRequest(
+                MainMemoryRequest::WriteLine {
+                    line_address: PhysicalWordAddress::new(0x0004_1230),
+                    words: dirty_words
+                }
+            ))
+        );
+        cache.complete(MainMemoryResponse::WriteComplete).unwrap();
+        assert_eq!(
+            cache.begin_maintenance(MaintenanceCommand::Clean),
+            Ok(Some(MainMemoryRequest::WriteLine {
+                line_address: source,
+                words: dirty_words
             }))
         );
     }

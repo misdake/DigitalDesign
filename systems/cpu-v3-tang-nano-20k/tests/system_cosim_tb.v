@@ -46,6 +46,10 @@ wire core_data_write;
 wire [31:0] core_data_address;
 wire [15:0] core_data_write_data;
 wire core_data_response_ready;
+wire core_data_line_copy_valid;
+wire [21:0] core_data_line_copy_source;
+wire [5:0] core_data_line_copy_destination_segment;
+wire dc_line_copy_ready;
 wire dc_cpu_request_ready;
 wire dc_cpu_response_valid;
 wire [15:0] dc_cpu_read_data;
@@ -113,6 +117,7 @@ __CORE__ u_core (
     .data_response_valid(dc_cpu_response_valid),
     .data_read_data(dc_cpu_read_data),
     .data_error(dc_cpu_error),
+    .data_line_copy_ready(dc_line_copy_ready),
     .device_read_data(16'h0000),
     .instruction_request_valid(core_instruction_request_valid),
     .instruction_address(core_instruction_address),
@@ -122,6 +127,9 @@ __CORE__ u_core (
     .data_address(core_data_address),
     .data_write_data(core_data_write_data),
     .data_response_ready(core_data_response_ready),
+    .data_line_copy_valid(core_data_line_copy_valid),
+    .data_line_copy_source(core_data_line_copy_source),
+    .data_line_copy_destination_segment(core_data_line_copy_destination_segment),
     .device_index(core_device_index),
     .device_channel(core_device_channel),
     .device_read_enable(core_device_read_enable),
@@ -188,6 +196,10 @@ __DCACHE__ u_dcache (
     .reset(reset),
     .clean_all(clean_all),
     .invalidate_all(1'b0),
+    .line_copy_start(core_data_line_copy_valid),
+    .line_copy_source(core_data_line_copy_source),
+    .line_copy_destination_segment(core_data_line_copy_destination_segment),
+    .line_copy_ready(dc_line_copy_ready),
     .cpu_request_valid(core_data_request_valid),
     .cpu_write(core_data_write),
     .cpu_address(core_data_address),
@@ -281,7 +293,7 @@ reg [2:0] beat = 0;
 reg [7:0] read_delay = 0;
 reg [7:0] recovery_count = 0;
 
-reg [15:0] memory [0:65535];
+reg [15:0] memory [0:131071];
 
 wire refresh_due = refresh_count >= 600;
 assign sdram_request_ready = sdram_state == ST_IDLE && refresh_count < 600;
@@ -408,7 +420,7 @@ reg started;
 reg end_flag;
 
 initial begin
-    for (init_index = 0; init_index < 65536; init_index = init_index + 1)
+    for (init_index = 0; init_index < 131072; init_index = init_index + 1)
         memory[init_index] = 16'h0000;
     __MEMORY_INIT__
     repeat (2) @(posedge clk);
@@ -421,7 +433,7 @@ initial begin
         if (started || core_instruction_request_valid)
             started = 1;
         if (started) begin
-            $display("CORE %0d %0d %0d %0d %0d %0d %0d %0d %0d %0d %0d %0d %0d %0d %0d %0d %0d %0d", cycles, pc, code_segment, data_segment, retired_words, halted, halt_signal, fault, fault_code, fault_pc, core_instruction_request_valid, core_instruction_address, core_instruction_response_ready, core_data_request_valid, core_data_write, core_data_address, core_data_write_data, core_data_response_ready);
+            $display("CORE %0d %0d %0d %0d %0d %0d %0d %0d %0d %0d %0d %0d %0d %0d %0d %0d %0d %0d %0d", cycles, pc, code_segment, data_segment, retired_words, halted, halt_signal, fault, fault_code, fault_pc, core_instruction_request_valid, core_instruction_address, core_instruction_response_ready, core_data_request_valid, core_data_write, core_data_address, core_data_write_data, core_data_response_ready, dc_maintenance_busy);
             if (halted || fault) end_flag = 1;
         end
         @(posedge clk);

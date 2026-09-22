@@ -10,8 +10,9 @@
 mod system_emu;
 
 use cpu_v3::{
-    alu, branch, halt, immediate_unsigned, load, load_immediate16, nop, store, AluOp, CpuV3Core,
-    CpuV3DataCache, CpuV3InstructionFetchQueue, CpuV3TwoWayCache, ImmediateOp, TestCondition,
+    alu, branch, halt, immediate_unsigned, line_copy, load, load_immediate16, nop, store, AluOp,
+    CpuV3Core, CpuV3DataCache, CpuV3InstructionFetchQueue, CpuV3TwoWayCache, ImmediateOp,
+    TestCondition,
 };
 use cpu_v3_tang_nano_20k::CpuV3MemoryArbiter;
 use digital_design_hardware::{HardwareIdentity, VerilogProject};
@@ -93,6 +94,39 @@ fn program_async_store_overlap() -> Vec<u16> {
     p.push(store(3, 1, 2)); // store the loaded value
     p.push(store(0, 1, 4)); // store while the store buffer is busy
     p.extend(load_immediate16(0, 0x2c));
+    p.push(halt());
+    p
+}
+
+/// A dirty source line is copied to another physical segment. LCOPY must wait
+/// for the older async store, retire when the D-cache accepts it, and then let
+/// independent ALU instructions run while the D-cache owns its line path. The
+/// first following load is the synchronization point; the destination is
+/// checked in physical memory after the final cache clean.
+fn program_async_line_copy() -> Vec<u16> {
+    let mut p = Vec::new();
+    p.extend(load_immediate16(1, 0x0100));
+    p.extend(load_immediate16(2, 1));
+    p.extend(load_immediate16(0, 0x55));
+    p.push(store(0, 1, 0));
+    p.push(line_copy(1, 2));
+    for _ in 0..4 {
+        p.push(immediate_unsigned(ImmediateOp::Add, 3, 1));
+    }
+    p.push(load(0, 1, 0));
+    p.push(halt());
+    p
+}
+
+/// HALT is also a D-cache synchronization point. The architectural halt is
+/// not exposed until a previously accepted LCOPY has completed its writeback.
+fn program_line_copy_halt_drain() -> Vec<u16> {
+    let mut p = Vec::new();
+    p.extend(load_immediate16(1, 0x0120));
+    p.extend(load_immediate16(2, 1));
+    p.extend(load_immediate16(0, 0x66));
+    p.push(store(0, 1, 0));
+    p.push(line_copy(1, 2));
     p.push(halt());
     p
 }
@@ -574,6 +608,22 @@ fn programs() -> Vec<CosimProgram> {
             expected_halt: Some(0x2c),
         },
         CosimProgram {
+            name: "async_line_copy",
+            words: program_async_line_copy(),
+            max_cycles: 20_000,
+            check_base: 0x1_0100,
+            check_len: 16,
+            expected_halt: Some(0x55),
+        },
+        CosimProgram {
+            name: "line_copy_halt_drain",
+            words: program_line_copy_halt_drain(),
+            max_cycles: 20_000,
+            check_base: 0x1_0120,
+            check_len: 16,
+            expected_halt: Some(0x66),
+        },
+        CosimProgram {
             name: "icache_loop",
             words: compile_cpu_v3_source(ICACHE_LOOP_SOURCE),
             max_cycles: 50_000,
@@ -811,7 +861,7 @@ fn run_system_rtl(program: &CosimProgram, sources: &[String], max_cycles: usize)
         let line = line.trim();
         if let Some(rest) = line.strip_prefix("CORE ") {
             let fields: Vec<&str> = rest.split_whitespace().collect();
-            assert_eq!(fields.len(), 18, "unexpected CORE line: {line}");
+            assert_eq!(fields.len(), 19, "unexpected CORE line: {line}");
             let num = |i: usize| fields[i].parse().unwrap_or(0);
             run.cycles.push(SystemCosimOut {
                 pc: num(1) as u16,
@@ -831,6 +881,7 @@ fn run_system_rtl(program: &CosimProgram, sources: &[String], max_cycles: usize)
                 data_address: num(15) as u32,
                 data_write_data: num(16) as u16,
                 data_response_ready: num(17) == 1,
+                dcache_maintenance_busy: num(18) == 1,
             });
         } else if let Some(rest) = line.strip_prefix("MEM ") {
             let fields: Vec<&str> = rest.split_whitespace().collect();
@@ -863,6 +914,23 @@ fn compare_program(program: &CosimProgram, sources: &[String]) -> Result<(), Str
     })?;
     if !emu.halted {
         return Err("emu did not halt".to_string());
+    }
+    if program.name == "async_line_copy"
+        && !emu
+            .cycles
+            .iter()
+            .any(|cycle| cycle.dcache_maintenance_busy && cycle.retired_words >= 8)
+    {
+        return Err("no ALU instruction retired while LCOPY kept D-cache busy".to_string());
+    }
+    if program.name == "line_copy_halt_drain"
+        && !emu.cycles.iter().any(|cycle| {
+            cycle.dcache_maintenance_busy
+                && !cycle.halted
+                && cycle.retired_words == program.words.len() as u32
+        })
+    {
+        return Err("HALT did not wait for the in-flight LCOPY writeback".to_string());
     }
     if let Some(expected) = program.expected_halt {
         if emu.halt_signal != expected {

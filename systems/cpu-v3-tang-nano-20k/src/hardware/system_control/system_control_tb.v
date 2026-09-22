@@ -6,6 +6,7 @@ reg [3:0] device_channel = 0;
 reg device_read_enable = 0;
 reg device_write_enable = 0;
 reg [15:0] device_write_data = 0;
+reg dcache_maintenance_busy = 0;
 reg dcache_maintenance_done = 0;
 reg dcache_maintenance_error = 0;
 wire [15:0] device_read_data;
@@ -90,6 +91,28 @@ initial begin
     dcache_maintenance_done = 1;
     @(posedge clk); #1; dcache_maintenance_done = 0;
     if (cpu_hold) fail("successful maintenance must release hold");
+
+    // A maintenance request made while LCOPY owns the cache is deferred. The
+    // LCOPY completion coincides with release of busy, but must not release
+    // the CPU before the deferred invalidate itself completes.
+    dcache_maintenance_busy = 1;
+    write_channel(0, 1, 16'd0);
+    if (dcache_invalidate || !cpu_hold)
+        fail("busy dcache must defer invalidate and hold CPU");
+    @(posedge clk); #1;
+    if (dcache_invalidate) fail("invalidate must remain deferred while busy");
+    dcache_maintenance_busy = 0;
+    dcache_maintenance_done = 1;
+    @(posedge clk); #1;
+    dcache_maintenance_done = 0;
+    if (!dcache_invalidate || !cpu_hold)
+        fail("deferred invalidate must ignore prior operation completion");
+    @(posedge clk); #1;
+    if (dcache_invalidate || !cpu_hold)
+        fail("deferred invalidate pulse width or hold is wrong");
+    dcache_maintenance_done = 1;
+    @(posedge clk); #1; dcache_maintenance_done = 0;
+    if (cpu_hold) fail("deferred invalidate completion must release hold");
 
     write_channel(0, 4, 16'd0);
     if (!dcache_clean || !cpu_hold) fail("channel 4 must start clean and hold");

@@ -38,6 +38,7 @@ pub struct SystemControlDeviceInput {
     pub device_read_enable: Wire,
     pub device_write_enable: Wire,
     pub device_write_data: Wires<16>,
+    pub dcache_maintenance_busy: Wire,
     pub dcache_maintenance_done: Wire,
     pub dcache_maintenance_error: Wire,
 }
@@ -73,6 +74,7 @@ pub struct SystemControlDeviceState {
     dcache_clean: bool,
     cpu_hold: bool,
     cache_maintenance_status: u16,
+    pending_dcache_maintenance: u8,
     leds: u8,
     uart_busy: bool,
     uart_frame: u16,
@@ -88,6 +90,7 @@ impl Default for SystemControlDeviceState {
             dcache_clean: false,
             cpu_hold: false,
             cache_maintenance_status: crate::boot::CACHE_MAINTENANCE_STATUS_SUCCESS,
+            pending_dcache_maintenance: 0,
             leds: 0,
             uart_busy: false,
             uart_frame: 0x3ff,
@@ -178,7 +181,17 @@ impl<const CLOCKS_PER_BIT: u16> Module for SystemControlDevice<CLOCKS_PER_BIT> {
         state.dcache_invalidate = false;
         state.dcache_clean = false;
 
-        if state.cpu_hold && input.dcache_maintenance_done {
+        let maintenance_was_pending = state.pending_dcache_maintenance != 0;
+        if state.cpu_hold && maintenance_was_pending && !input.dcache_maintenance_busy {
+            state.dcache_invalidate = state.pending_dcache_maintenance == 1;
+            state.dcache_clean = state.pending_dcache_maintenance == 2;
+            state.pending_dcache_maintenance = 0;
+        }
+
+        // A line copy can lower busy and raise done on the same clock where a
+        // deferred command becomes issuable. That completion belongs to the
+        // copy, not to the maintenance operation emitted above.
+        if state.cpu_hold && !maintenance_was_pending && input.dcache_maintenance_done {
             state.cpu_hold = false;
             state.cache_maintenance_status = if input.dcache_maintenance_error {
                 crate::boot::CACHE_MAINTENANCE_STATUS_ERROR
@@ -208,12 +221,20 @@ impl<const CLOCKS_PER_BIT: u16> Module for SystemControlDevice<CLOCKS_PER_BIT> {
         match input.device_channel as u8 {
             SYSTEM_CONTROL_CHANNEL_ICACHE_INVALIDATE_ALL_DELAYED => state.icache_invalidate = true,
             SYSTEM_CONTROL_CHANNEL_D_INVALIDATE_ALL if !state.cpu_hold => {
-                state.dcache_invalidate = true;
                 state.cpu_hold = true;
+                if input.dcache_maintenance_busy {
+                    state.pending_dcache_maintenance = 1;
+                } else {
+                    state.dcache_invalidate = true;
+                }
             }
             SYSTEM_CONTROL_CHANNEL_D_CLEAN_ALL if !state.cpu_hold => {
-                state.dcache_clean = true;
                 state.cpu_hold = true;
+                if input.dcache_maintenance_busy {
+                    state.pending_dcache_maintenance = 2;
+                } else {
+                    state.dcache_clean = true;
+                }
             }
             SYSTEM_CONTROL_CHANNEL_LEDS => state.leds = (value & 0x3f) as u8,
             // A write while busy is dropped; software polls the busy flag.
@@ -272,6 +293,7 @@ mod tests {
         device_read_enable: false,
         device_write_enable: false,
         device_write_data: 0,
+        dcache_maintenance_busy: false,
         dcache_maintenance_done: false,
         dcache_maintenance_error: false,
     };
@@ -362,6 +384,38 @@ mod tests {
             TestStep::new(IDLE, output(0, false, false, 0, true)),
             // Channel 1 pulses dcache_invalidate for exactly one clock.
             TestStep::new(write(1, 0), maintenance_output(0, true, false, true, 0)),
+            TestStep::new(IDLE, maintenance_output(0, false, false, true, 0)),
+            TestStep::new(
+                SystemControlDeviceInputValue {
+                    dcache_maintenance_done: true,
+                    ..IDLE
+                },
+                output(0, false, false, 0, true),
+            ),
+            // A command arriving while LCOPY owns the D-cache is retained.
+            // Its completion pulse must not be mistaken for this invalidate's
+            // completion when the deferred command is finally emitted.
+            TestStep::new(
+                SystemControlDeviceInputValue {
+                    dcache_maintenance_busy: true,
+                    ..write(1, 0)
+                },
+                maintenance_output(0, false, false, true, 0),
+            ),
+            TestStep::new(
+                SystemControlDeviceInputValue {
+                    dcache_maintenance_busy: true,
+                    ..IDLE
+                },
+                maintenance_output(0, false, false, true, 0),
+            ),
+            TestStep::new(
+                SystemControlDeviceInputValue {
+                    dcache_maintenance_done: true,
+                    ..IDLE
+                },
+                maintenance_output(0, true, false, true, 0),
+            ),
             TestStep::new(IDLE, maintenance_output(0, false, false, true, 0)),
             TestStep::new(
                 SystemControlDeviceInputValue {

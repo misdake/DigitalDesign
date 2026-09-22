@@ -9,7 +9,7 @@ optimization Stage. Reusable processor details belong to the
 
 `CpuV3System` is the final composition boundary for the Tang Nano 20K target. It connects:
 
-- the revision 0.8 `CpuV3Core` at the Stage 12 microarchitecture level;
+- the revision 0.9 `CpuV3Core` at the Stage 12 microarchitecture level;
 - a four-entry instruction fetch queue with a four-entry, two-word resolved-target BTC;
 - a Stage0 instruction BSRAM window and separate 4-KiB I-cache and D-cache;
 - the CPU V3 memory arbiter and boot DMA client;

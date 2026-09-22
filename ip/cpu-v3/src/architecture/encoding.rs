@@ -1,4 +1,4 @@
-//! Encoding helpers for CpuV3 revision 0.8.
+//! Encoding helpers for CpuV3 revision 0.9.
 
 pub type Word = u16;
 pub type Register = u8;
@@ -815,6 +815,13 @@ pub fn population_count(dst: Register, src: Register) -> Word {
 /// Replaces `dst` with `dst == src` as 0 or 1.
 pub fn set_equal(dst: Register, src: Register) -> Word {
     extended(6, dst, src)
+}
+
+/// Starts an asynchronous 32-byte cache-line copy. The source is
+/// `DSEG:r[offset]`; the destination keeps the same offset and takes its
+/// six-bit physical segment from `r[destination_segment]`.
+pub fn line_copy(offset: Register, destination_segment: Register) -> Word {
+    extended(7, offset, destination_segment)
 }
 
 /// Replaces `dst` with the signed comparison `dst < src` as 0 or 1.

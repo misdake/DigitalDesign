@@ -10,6 +10,7 @@ module CpuV3Core (
     input wire data_response_valid,
     input wire [15:0] data_read_data,
     input wire data_error,
+    input wire data_line_copy_ready,
     input wire [15:0] device_read_data,
     output wire instruction_request_valid,
     output wire [31:0] instruction_address,
@@ -19,6 +20,9 @@ module CpuV3Core (
     output wire [31:0] data_address,
     output wire [15:0] data_write_data,
     output wire data_response_ready,
+    output wire data_line_copy_valid,
+    output wire [21:0] data_line_copy_source,
+    output wire [5:0] data_line_copy_destination_segment,
     output wire [2:0] device_index,
     output wire [3:0] device_channel,
     output wire device_read_enable,
@@ -458,6 +462,13 @@ assign data_write_data = async_store_valid ? async_store_data :
 assign data_response_ready = !hold && ((async_store_valid && async_store_issued) ||
                              state == ST_DATA_RESPONSE ||
                              state == ST_FPU2_MEM_RESPONSE);
+wire line_copy_instruction = state == ST_EXECUTE && opcode == 4'h6 && field_d == 4'h7;
+wire line_copy_operands_valid = !(|data_segment_register[15:6]) &&
+    !(|gpr_read_b_data[15:6]) && !(|gpr_read_a_data[3:0]);
+assign data_line_copy_valid = !hold && line_copy_instruction &&
+    line_copy_operands_valid && !async_store_valid && fpu2_pending == 0;
+assign data_line_copy_source = {data_segment_register[5:0], gpr_read_a_data};
+assign data_line_copy_destination_segment = gpr_read_b_data[5:0];
 assign device_index = field_d[2:0];
 assign device_channel = field_a;
 assign device_read_enable = !hold && state == ST_EXECUTE && opcode == 4'h7 && !field_d[3];
@@ -465,7 +476,8 @@ assign device_write_enable = !hold && state == ST_EXECUTE && opcode == 4'h7 && f
 assign device_write_data = gpr_read_b_data;
 // Do not expose HALT until the last buffered store is globally observed and
 // the FST early-release drain has fully left the core.
-assign halted = state == ST_HALTED && !async_store_valid && fpu2_pending == 0;
+assign halted = state == ST_HALTED && !async_store_valid && fpu2_pending == 0 &&
+                data_line_copy_ready;
 assign fault = state == ST_FAULT;
 assign pc = pc_register;
 assign code_segment = code_segment_register;
@@ -737,6 +749,17 @@ always @(posedge clk) begin
                                         state <= ST_FETCH_REQUEST;
                                     end
                                     retired_words <= retired_words + success_retire_words;
+                                end
+                                7: begin
+                                    if (!line_copy_operands_valid) begin
+                                        fault_code <= FAULT_DATA_MEMORY;
+                                        fault_pc <= current_fault_pc;
+                                        state <= ST_FAULT;
+                                    end else if (!async_store_valid && fpu2_pending == 0 &&
+                                                 data_line_copy_ready) begin
+                                        retired_words <= retired_words + success_retire_words;
+                                        state <= ST_FETCH_REQUEST;
+                                    end
                                 end
                                 13: begin
                                     if (field_b == 0) begin

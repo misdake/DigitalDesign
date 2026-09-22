@@ -25,7 +25,7 @@ benchmark evidence live at the same commit.
   - **CPU V1**: pilot processor with assembler, core, reference model, and an
     abstract device bus; runs Sokoban in `cpu-v1-sim`.
   - **CPU V2**: 16-bit Harvard CPU, ISA 2.6, cycle model, and rcc backend.
-  - **CPU V3**: current ISA (revision 0.8) plus the two-word FPU v2
+  - **CPU V3**: current ISA (revision 0.9) plus the two-word FPU v2
     (`F0..F63` signed Q16.16, `vec2/3/4` as consecutive ranges, opcodes
     `0xC/0xD/0xE`), Stage 12 microarchitecture with overlapped integer
     execution, fetch queue, two-way I-cache, write-back D-cache with

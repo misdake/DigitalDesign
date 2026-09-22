@@ -74,6 +74,7 @@ wire dcache_maintenance_error;
 wire dcache_valid_sweep;
 wire halted;
 wire faulted;
+wire [15:0] data_segment;
 
 __FETCH_QUEUE__ u_instruction_fetch_queue (
     .clk(clk),
@@ -217,6 +218,10 @@ wire core_data_request_ready;
 wire core_data_response_valid;
 wire [15:0] core_data_read_data;
 wire core_data_error;
+wire core_data_line_copy_valid;
+wire [21:0] core_data_line_copy_source;
+wire [5:0] core_data_line_copy_destination_segment;
+wire dcache_line_copy_ready;
 
 wire [2:0] device_index;
 wire [3:0] device_channel;
@@ -264,6 +269,7 @@ __SYSTEM_CONTROL__ u_sysctl (
     .device_read_enable(device_read_enable),
     .device_write_enable(device_write_enable),
     .device_write_data(device_write_data),
+    .dcache_maintenance_busy(dcache_maintenance_busy),
     .dcache_maintenance_done(dcache_maintenance_done),
     .dcache_maintenance_error(dcache_maintenance_error),
     .device_read_data(sysctl_read_data),
@@ -398,6 +404,10 @@ __DATA_CACHE__ u_data_cache (
     .reset(reset),
     .clean_all(sysctl_dcache_clean),
     .invalidate_all(sysctl_dcache_invalidate),
+    .line_copy_start(core_data_line_copy_valid),
+    .line_copy_source(core_data_line_copy_source),
+    .line_copy_destination_segment(core_data_line_copy_destination_segment),
+    .line_copy_ready(dcache_line_copy_ready),
     .cpu_request_valid(core_data_request_valid),
     .cpu_write(core_data_write),
     .cpu_address(core_data_address),
@@ -433,7 +443,6 @@ wire [7:0] fault_code;
 wire [15:0] fault_pc;
 wire [15:0] pc;
 wire [15:0] code_segment;
-wire [15:0] data_segment;
 wire [31:0] retired_words;
 
 __CPU_V3_CORE__ u_core (
@@ -452,6 +461,7 @@ __CPU_V3_CORE__ u_core (
     .data_response_valid(core_data_response_valid),
     .data_read_data(core_data_read_data),
     .data_error(core_data_error),
+    .data_line_copy_ready(dcache_line_copy_ready),
     .device_read_data(device_read_data),
     .instruction_request_valid(core_instruction_request_valid),
     .instruction_address(core_instruction_address),
@@ -461,6 +471,9 @@ __CPU_V3_CORE__ u_core (
     .data_address(core_data_address),
     .data_write_data(core_data_write_data),
     .data_response_ready(core_data_response_ready),
+    .data_line_copy_valid(core_data_line_copy_valid),
+    .data_line_copy_source(core_data_line_copy_source),
+    .data_line_copy_destination_segment(core_data_line_copy_destination_segment),
     .device_index(device_index),
     .device_channel(device_channel),
     .device_read_enable(device_read_enable),

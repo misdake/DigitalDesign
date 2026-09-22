@@ -52,6 +52,7 @@ pub struct CpuV3CoreInput {
     pub data_response_valid: Wire,
     pub data_read_data: Wires<16>,
     pub data_error: Wire,
+    pub data_line_copy_ready: Wire,
     pub device_read_data: Wires<16>,
 }
 
@@ -65,6 +66,9 @@ pub struct CpuV3CoreOutput {
     pub data_address: Wires<32>,
     pub data_write_data: Wires<16>,
     pub data_response_ready: Wire,
+    pub data_line_copy_valid: Wire,
+    pub data_line_copy_source: Wires<22>,
+    pub data_line_copy_destination_segment: Wires<6>,
     pub device_index: Wires<3>,
     pub device_channel: Wires<4>,
     pub device_read_enable: Wire,
@@ -502,7 +506,7 @@ impl CpuV3CoreState {
         self.gpr_write_data = value;
     }
 
-    pub(crate) fn execute(&mut self, device_read_data: u16) {
+    pub(crate) fn execute(&mut self, device_read_data: u16, line_copy_ready: bool) {
         let instruction = self.instruction;
         let opcode = encoding::opcode(instruction);
         // The model-only SIGNAL event lives for one executed instruction.
@@ -596,7 +600,7 @@ impl CpuV3CoreState {
                     _ => self.fault(CPU_V3_FAULT_INVALID_INSTRUCTION, fault_pc),
                 }
             }
-            6 => self.execute_extended(instruction, retire_words, fault_pc),
+            6 => self.execute_extended(instruction, retire_words, fault_pc, line_copy_ready),
             7 => {
                 if dst & 8 == 0 {
                     self.write_gpr(rhs, device_read_data);
@@ -775,7 +779,13 @@ impl CpuV3CoreState {
         self.retire(retire_words);
     }
 
-    fn execute_extended(&mut self, instruction: u16, retire_words: u8, fault_pc: u16) {
+    fn execute_extended(
+        &mut self,
+        instruction: u16,
+        retire_words: u8,
+        fault_pc: u16,
+        line_copy_ready: bool,
+    ) {
         let function = field(instruction, 8);
         let dst = field(instruction, 4);
         let src = field(instruction, 0);
@@ -790,6 +800,20 @@ impl CpuV3CoreState {
                 dst,
                 u16::from(self.registers[usize::from(dst)] == self.registers[usize::from(src)]),
             ),
+            7 => {
+                let offset = self.registers[usize::from(dst)];
+                let destination_segment = self.registers[usize::from(src)];
+                if self.data_segment & !0x3f != 0
+                    || destination_segment & !0x3f != 0
+                    || offset & 0x0f != 0
+                {
+                    self.fault(CPU_V3_FAULT_DATA_MEMORY, fault_pc);
+                    return;
+                }
+                if self.async_store.valid || self.fpu2_pending != 0 || !line_copy_ready {
+                    return;
+                }
+            }
             8 => self.write_gpr(
                 dst,
                 u16::from(
@@ -911,6 +935,14 @@ impl Module for CpuV3Core {
         let device_instruction = state.phase == Phase::Execute && state.instruction >> 12 == 0x7;
         let device_field = field(state.instruction, 8);
         let device_register = field(state.instruction, 0);
+        let line_copy_instruction = state.phase == Phase::Execute
+            && state.instruction >> 12 == 0x6
+            && field(state.instruction, 8) == 0x7;
+        let line_copy_offset = state.registers[usize::from(field(state.instruction, 4))];
+        let line_copy_destination = state.registers[usize::from(field(state.instruction, 0))];
+        let line_copy_operands_valid = state.data_segment & !0x3f == 0
+            && line_copy_destination & !0x3f == 0
+            && line_copy_offset & 0x0f == 0;
         output.drive(
             circuit,
             &CpuV3CoreOutputValue {
@@ -958,12 +990,24 @@ impl Module for CpuV3Core {
                     && ((store.valid && store.issued)
                         || state.phase == Phase::DataResponse
                         || state.phase == Phase::Fpu2MemResponse),
+                data_line_copy_valid: !input.hold
+                    && line_copy_instruction
+                    && line_copy_operands_valid
+                    && !store.valid
+                    && state.fpu2_pending == 0,
+                data_line_copy_source: u64::from(
+                    (u32::from(state.data_segment) << 16) | u32::from(line_copy_offset),
+                ) & 0x3f_ffff,
+                data_line_copy_destination_segment: u64::from(line_copy_destination & 0x3f),
                 device_index: u64::from(device_field & 7),
                 device_channel: u64::from(field(state.instruction, 4)),
                 device_read_enable: !input.hold && device_instruction && device_field & 8 == 0,
                 device_write_enable: !input.hold && device_instruction && device_field & 8 != 0,
                 device_write_data: u64::from(state.registers[usize::from(device_register)]),
-                halted: state.phase == Phase::Halted && !store.valid && state.fpu2_pending == 0,
+                halted: state.phase == Phase::Halted
+                    && !store.valid
+                    && state.fpu2_pending == 0
+                    && input.data_line_copy_ready,
                 halt_signal: u64::from(state.halt_signal),
                 fault: state.phase == Phase::Fault,
                 fault_code: u64::from(state.fault_code),
@@ -1085,7 +1129,7 @@ impl Module for CpuV3Core {
                 }
             }
             Phase::Execute => {
-                state.execute(input.device_read_data as u16);
+                state.execute(input.device_read_data as u16, input.data_line_copy_ready);
                 if execute_pipelineable
                     && input.instruction_request_ready
                     && state.phase == Phase::FetchRequest

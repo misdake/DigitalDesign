@@ -21,6 +21,7 @@ pub const DEFAULT_PHYSICAL_MEMORY_WORDS: usize = 1 << 22;
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum FaultKind {
     InvalidInstruction,
+    UnalignedAddress { address: PhysicalWordAddress },
     PhysicalAddressOutOfRange { address: PhysicalWordAddress },
 }
 
@@ -838,6 +839,37 @@ impl CpuV3Sim {
                 self.registers[usize::from(dst)] =
                     Word::from(self.registers[usize::from(dst)] == self.registers[usize::from(src)])
             }
+            7 => {
+                let offset = self.registers[usize::from(dst)];
+                let destination_segment = self.registers[usize::from(src)];
+                let source = PhysicalWordAddress::from_segment_offset(self.data_segment, offset);
+                if offset & 0x0f != 0 {
+                    return Err(FaultKind::UnalignedAddress { address: source });
+                }
+                let destination =
+                    PhysicalWordAddress::from_segment_offset(destination_segment, offset);
+                let source_start = source.get() as usize;
+                let destination_start = destination.get() as usize;
+                let source_end = source_start
+                    .checked_add(16)
+                    .ok_or(FaultKind::PhysicalAddressOutOfRange { address: source })?;
+                let destination_end = destination_start.checked_add(16).ok_or(
+                    FaultKind::PhysicalAddressOutOfRange {
+                        address: destination,
+                    },
+                )?;
+                if source_end > self.memory.len() {
+                    return Err(FaultKind::PhysicalAddressOutOfRange { address: source });
+                }
+                if destination_end > self.memory.len() {
+                    return Err(FaultKind::PhysicalAddressOutOfRange {
+                        address: destination,
+                    });
+                }
+                let mut line = [0; 16];
+                line.copy_from_slice(&self.memory[source_start..source_end]);
+                self.memory[destination_start..destination_end].copy_from_slice(&line);
+            }
             8 => {
                 self.registers[usize::from(dst)] = Word::from(
                     (self.registers[usize::from(dst)] as i16)
@@ -965,12 +997,12 @@ mod tests {
         alu, branch, compare_signed, compare_unsigned, conditional_move, device_receive,
         device_send, fpu_aux, fpu_aux_raw, fpu_scalar, fpu_vector, fpu_vector_raw, halt,
         immediate_signed, immediate_unsigned, jump_and_link_register, jump_and_link_relative,
-        jump_register, jump_relative, jump_segment, load, load_immediate16, move_register,
-        multiply, multiply_immediate, nop, population_count, prefix12, prefixed, prefixed_branch,
-        read_special, set_less_than_signed, set_less_than_unsigned, shift_immediate,
-        shift_register, signal, store, write_data_segment, AluOp, FpuAuxKind, FpuAuxSubop,
-        FpuDotStride, FpuScalarSubop, FpuVectorLength, FpuVectorSubop, ImmediateOp, MultiplyWindow,
-        ShiftOp, SpecialRegister, TestCondition,
+        jump_register, jump_relative, jump_segment, line_copy, load, load_immediate16,
+        move_register, multiply, multiply_immediate, nop, population_count, prefix12, prefixed,
+        prefixed_branch, read_special, set_less_than_signed, set_less_than_unsigned,
+        shift_immediate, shift_register, signal, store, write_data_segment, AluOp, FpuAuxKind,
+        FpuAuxSubop, FpuDotStride, FpuScalarSubop, FpuVectorLength, FpuVectorSubop, ImmediateOp,
+        MultiplyWindow, ShiftOp, SpecialRegister, TestCondition,
     };
 
     #[test]
@@ -1001,6 +1033,37 @@ mod tests {
         assert_eq!(machine.register(3), Some(15));
         assert_eq!(machine.memory(0x4000), 15);
         assert_eq!(machine.retired_words(), 29);
+    }
+
+    #[test]
+    fn line_copy_moves_one_aligned_cache_line_between_segments() {
+        let mut program = Vec::new();
+        program.extend(load_immediate16(1, 1));
+        program.push(write_data_segment(1));
+        program.extend(load_immediate16(2, 0x20));
+        program.extend(load_immediate16(3, 2));
+        program.extend([line_copy(2, 3), halt()]);
+
+        let source: Vec<u16> = (0..16).map(|index| 0x9000 + index).collect();
+        let mut machine = CpuV3Sim::default();
+        machine.load_program(0, &program).unwrap();
+        machine.load_segment(1, 0x20, &source).unwrap();
+        assert_eq!(
+            machine.run(64).unwrap(),
+            RunOutcome::Halted {
+                steps: 9,
+                signal: 0
+            }
+        );
+        for (index, expected) in source.into_iter().enumerate() {
+            assert_eq!(
+                machine.physical_memory(PhysicalWordAddress::from_segment_offset(
+                    2,
+                    0x20 + index as u16,
+                )),
+                expected
+            );
+        }
     }
 
     #[test]

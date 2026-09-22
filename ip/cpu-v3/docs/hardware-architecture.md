@@ -1,6 +1,6 @@
 # CPU V3 hardware structure and timing
 
-This document describes the revision 0.8 ISA running on the current Stage 12
+This document describes the revision 0.9 ISA running on the current Stage 12
 microarchitecture, not an intended future pipeline. The maintainable PlantUML source is in
 [`cpu_v3_structure.puml`](cpu_v3_structure.puml).
 
@@ -118,6 +118,15 @@ interface. The system-control I-cache invalidation pulse is
 registered for one cycle so the compiler's adjacent invalidate-and-JSEG
 handoff resolves deterministically.
 
+`LCOPY` reuses the same lookup/refill and four-beat write-back path. The core
+waits for older buffered stores and command acceptance, then retires the
+instruction; only later D-cache users wait while the copy remains active, so
+integer/FPU computation, instruction fetch, and device accesses may overlap it.
+The D-cache latches the destination segment at acceptance and preserves the
+source dirty bit. A cold destination is not allocated. If the destination line
+is already resident, the cache refreshes that way after the redirected write
+so even a formerly dirty alias cannot expose or later write back stale data.
+
 ## Integer instruction latency
 
 | Operation class | Execute-to-retire cycles | Active phases |
@@ -127,6 +136,7 @@ handoff resolves deterministically.
 | Integer `MUL0`/`MUL8`/`MUL16`/`MULI` | 3 | `Execute -> MultiplyWait -> MultiplyCommit` |
 | Integer `LOAD`, minimum | 3 | `Execute -> DataRequest -> DataResponse` |
 | Integer `STORE` with an empty async buffer | 1 to retire | The buffered data request/response continues in the background; a later memory operation waits for it |
+| `LCOPY`, D-cache ready | 1 to retire | The 16-word copy continues in the D-cache; only a later D-cache operation waits |
 
 ## FPU v2 scheduling and latency
 

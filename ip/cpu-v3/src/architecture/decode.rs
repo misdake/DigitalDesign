@@ -1,4 +1,4 @@
-//! Disassembler for CpuV3 revision 0.8: word -> typed instruction + mnemonic text.
+//! Disassembler for CpuV3 revision 0.9: word -> typed instruction + mnemonic text.
 //!
 //! `decode` maps one physical word to an `Instruction`; `disassemble_words` walks
 //! a stream and merges a `PFX12` prefix with its consumer into one wide
@@ -149,6 +149,10 @@ pub enum Instruction {
         dst: u8,
         src: u8,
     },
+    LineCopy {
+        offset: u8,
+        destination_segment: u8,
+    },
     SetLessThanSigned {
         dst: u8,
         src: u8,
@@ -286,6 +290,10 @@ pub fn decode(word: Word) -> Instruction {
                 dst: reg(n1.into()),
                 src: reg(n0.into()),
             },
+            7 => Instruction::LineCopy {
+                offset: reg(n1.into()),
+                destination_segment: reg(n0.into()),
+            },
             8 => Instruction::SetLessThanSigned {
                 dst: reg(n1.into()),
                 src: reg(n0.into()),
@@ -321,7 +329,7 @@ pub fn decode(word: Word) -> Instruction {
                 segment: reg(n1.into()),
                 target: reg(n0.into()),
             },
-            // 7 is reserved; non-canonical special-register selectors fault.
+            // Non-canonical special-register selectors fault.
             _ => Instruction::Invalid { word },
         },
         7 if word & 0x800 == 0 => Instruction::DeviceReceive {
@@ -718,6 +726,10 @@ impl Instruction {
             Instruction::LeadingZeros { dst, src } => format!("clz r{dst}, r{src}"),
             Instruction::PopulationCount { dst, src } => format!("popcnt r{dst}, r{src}"),
             Instruction::SetEqual { dst, src } => format!("seq r{dst}, r{src}"),
+            Instruction::LineCopy {
+                offset,
+                destination_segment,
+            } => format!("lcopy r{offset}, r{destination_segment}"),
             Instruction::SetLessThanSigned { dst, src } => format!("slt r{dst}, r{src}"),
             Instruction::SetLessThanUnsigned { dst, src } => format!("sltu r{dst}, r{src}"),
             Instruction::CompareSigned { lhs, rhs } => format!("cmps r{lhs}, r{rhs}"),
@@ -1156,8 +1168,13 @@ mod tests {
             let word = 0x2000 | (function << 8);
             assert_eq!(decode(word), Instruction::Invalid { word });
         }
-        // Extended family function 7 is reserved.
-        assert_eq!(decode(0x6700), Instruction::Invalid { word: 0x6700 });
+        assert_eq!(
+            decode(0x6712),
+            Instruction::LineCopy {
+                offset: 1,
+                destination_segment: 2,
+            }
+        );
         // Non-canonical special-register selectors are invalid.
         assert_eq!(decode(0x6d32), Instruction::Invalid { word: 0x6d32 });
         assert_eq!(decode(0x6e04), Instruction::Invalid { word: 0x6e04 });

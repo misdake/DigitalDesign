@@ -93,7 +93,7 @@ the word an invalid encoding.
 | --- | --- | --- | --- |
 | 0/1/3/4/5 | Register ALU | `op rd ra rb` | Add, subtract, and three-operand logic |
 | 2 | Shift / multiply | `2 fn rd operand` | Destructive shifts and unsigned multiplies |
-| 6 | Extended / system | `6 fn a b` | Move, unary, bit queries, comparisons, SIGNAL, special registers, JSEG |
+| 6 | Extended / system | `6 fn a b` | Move, unary, bit queries, comparisons, asynchronous line copy, SIGNAL, special registers, JSEG |
 | 7 | Device | `7 dir/dev ch reg` | Single-cycle device channel receive/send |
 | 8 | `LOAD` | `8 rd base imm4` | Read one 16-bit word |
 | 9 | `STORE` | `9 rs base imm4` | Write one 16-bit word |
@@ -136,8 +136,7 @@ FPU.
 
 ### Extended and system (opcode 6)
 
-No instruction in this family consumes `PFX12`. Function 7 is reserved and
-invalid.
+No instruction in this family consumes `PFX12`.
 
 | fn | Mnemonic | Semantics |
 | --- | --- | --- |
@@ -148,12 +147,23 @@ invalid.
 | 4 | `CLZ rd, rs` | count leading zeros |
 | 5 | `POPCNT rd, rs` | population count |
 | 6 | `SEQ rd, rs` | `rd = (rd == rs) ? 1 : 0` |
+| 7 | `LCOPY roffset, rsegment` | asynchronously copy the aligned 16-word line at `DSEG:r[offset]` to `r[segment]:r[offset]` |
 | 8/9 | `SLT` / `SLTU rd, rs` | `rd = rd < rs` as 0 or 1, signed / unsigned |
 | A/B | `CMPS` / `CMPU ra, rb` | pending = ordering of `ra` vs `rb`, signed / unsigned; writes no register |
 | C | `SIGNAL rs, type4` | type 0 halts and latches `rs`; types 1..15 are simulator-side events that retire as a NOP in hardware |
 | D | `MFSR rd, sr` | read `CSEG` (`sr=0`) or `DSEG` (`sr=1`); other selectors are invalid |
 | E | `MTSR DSEG, rs` | set the data segment; other selectors are invalid |
 | F | `JSEG seg, target` | atomically `CSEG = r[seg]`, `PC = r[target]` |
+
+`LCOPY` requires `r[offset][3:0] = 0`; an unaligned source raises a data-memory
+fault. Both physical addresses must fit the implemented memory. It waits for
+older scalar/FPU stores and for D-cache command acceptance, then retires while
+the source lookup/refill and redirected line write continue. Instructions that
+do not use D-cache may execute during the copy. A later load, store, FLD/FST, or
+another `LCOPY` waits for completion. A cold destination is not allocated. Any
+resident destination alias, including a dirty one, is made coherent with the
+completed copy and cannot later write back stale data. The source remains
+resident and keeps its dirty state.
 
 ### Device access (opcode 7)
 
@@ -351,6 +361,7 @@ is the prefix address and neither word retires.
 | Reserved or malformed encoding (reserved subop/length/mode, non-canonical fields, a truncated FPU pair) | `InvalidInstruction` (code 1); the instruction does not retire |
 | Conditional branch or conditional move without a pending test | `InvalidInstruction`; does not retire |
 | Address outside fitted physical memory (including FLD/FST/FLDV/FSTV) | physical-address fault at the faulting offset; does not retire |
+| Unaligned `LCOPY` source | data-memory fault at the instruction offset; does not retire |
 | `SIGNAL` type 0 after halt | re-reports the latched halt signal |
 
 ## Revision 0.3
@@ -525,3 +536,9 @@ FPU pair, and the old single-word Q8.8 `Dxxx` encoding is no longer valid.
   without a canonical-value fault.
 - All unused fields are canonically `0`; any non-canonical field value is an
   invalid encoding. All reserved function slots are invalid in this revision.
+
+## Revision 0.9
+
+Revision 0.9 assigns major-6 function 7 to `LCOPY`. It adds the asynchronous,
+D-cache-coherent 32-byte line-copy contract documented above; other revision
+0.8 encodings are unchanged.

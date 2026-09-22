@@ -1,5 +1,9 @@
 module tb;
 reg clk=0, reset=1, clean_all=0, invalidate_all=0;
+reg line_copy_start=0;
+reg [21:0] line_copy_source=0;
+reg [5:0] line_copy_destination_segment=0;
+wire line_copy_ready;
 reg cpu_request_valid=0, cpu_write=0, cpu_response_ready=0;
 reg [31:0] cpu_address=0; reg [15:0] cpu_write_data=0;
 reg memory_request_ready=1, memory_response_valid=0, memory_error=0;
@@ -12,8 +16,9 @@ wire maintenance_busy, maintenance_done, maintenance_error, valid_sweep;
 CpuV3DataCache dut(.*);
 always #5 clk=~clk;
 
-reg [15:0] memory [0:4095];
-integer i, cycles=0, line_reads=0, line_writes=0;
+reg [15:0] memory [0:262143];
+integer i, j, cycles=0, line_reads=0, line_writes=0;
+integer copy_start_cycle=0;
 reg [3:0] read_remaining=0, write_remaining=0;
 reg [21:0] transfer_base=0;
 reg write_response_pending=0;
@@ -90,6 +95,23 @@ task maintain;
   end
 endtask
 
+task copy_line;
+  input [21:0] source; input [5:0] destination_segment;
+  begin
+    copy_start_cycle=cycles;
+    @(negedge clk);
+    line_copy_source=source;
+    line_copy_destination_segment=destination_segment;
+    line_copy_start=1;
+    @(posedge clk); @(negedge clk); line_copy_start=0;
+    while(!maintenance_done) @(posedge clk);
+    #1;
+    if(maintenance_error) $fatal(1,"line copy failed");
+    $display("LINE_COPY source=%h destination_segment=%h cycles=%0d",
+      source,destination_segment,cycles-copy_start_cycle);
+  end
+endtask
+
 initial begin
   for(i=0;i<4096;i=i+1) memory[i]=16'h8000^i;
   repeat(2) @(posedge clk); reset=0;
@@ -147,6 +169,55 @@ initial begin
   i=line_reads;
   access(0,32'h0203,0,16'h4444);
   if(line_reads!=i+1) $fatal(1,"swept invalidate left the line resident");
+
+  // A cold source refills once, then reuses the ordinary 64-bit write-back
+  // path at the same offset in another physical segment. The source remains
+  // resident and a hot repeat produces no memory read.
+  for(i=16'h310;i<16'h320;i=i+1) memory[i]=16'ha000+i;
+  i=line_reads;
+  copy_line(22'h000310,6'h01);
+  if(line_reads!=i+1) $fatal(1,"cold line copy did not refill exactly once");
+  if(line_writes==0) $fatal(1,"line copy did not use write-back path");
+  for(i=0;i<16;i=i+1)
+    if(memory[22'h010310+i] !== (16'ha310+i))
+      $fatal(1,"cold line copy mismatch at word %0d",i);
+  i=line_reads;
+  copy_line(22'h000310,6'h02);
+  if(line_reads!=i) $fatal(1,"hot line copy unexpectedly refilled");
+  for(i=0;i<16;i=i+1)
+    if(memory[22'h020310+i] !== (16'ha310+i))
+      $fatal(1,"hot line copy mismatch at word %0d",i);
+
+  // A resident dirty destination alias is obsolete because the copy
+  // overwrites the complete line. Do not write its stale contents; refresh it
+  // from the authoritative destination after the redirected write instead.
+  access(0,32'h00020312,0,16'ha312);
+  access(1,32'h00020312,16'hdead,0);
+  i=line_writes;
+  j=line_reads;
+  copy_line(22'h000310,6'h02);
+  if(line_writes!=i+1) $fatal(1,"copy wrote stale dirty destination alias");
+  if(line_reads!=j+1) $fatal(1,"copy did not refresh destination alias");
+  i=line_reads;
+  access(0,32'h00020312,0,16'ha312);
+  if(line_reads!=i) $fatal(1,"copy did not retain refreshed destination alias");
+
+  // Redirecting a dirty source must not clear its source dirty bit: a later
+  // clean still writes the modified line to the original segment.
+  access(1,32'h00000312,16'h5a5a,0);
+  copy_line(22'h000310,6'h03);
+  if(memory[22'h030312]!==16'h5a5a) $fatal(1,"copy lost dirty source data");
+  i=line_writes;
+  maintain(0);
+  if(line_writes!=i+1 || memory[22'h000312]!==16'h5a5a)
+    $fatal(1,"redirected write-back incorrectly cleaned source line");
+
+  // Alignment is part of the hardware primitive's contract.
+  @(negedge clk); line_copy_source=22'h311; line_copy_start=1;
+  @(posedge clk); @(negedge clk); line_copy_start=0;
+  while(!maintenance_done) @(posedge clk);
+  #1;
+  if(!maintenance_error) $fatal(1,"unaligned line copy was accepted");
 
   $display("DIGITAL_DESIGN_PASS"); $finish;
 end

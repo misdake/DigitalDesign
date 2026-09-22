@@ -906,6 +906,9 @@ pub struct CpuV3DataCacheInput {
     pub reset: Wire,
     pub clean_all: Wire,
     pub invalidate_all: Wire,
+    pub line_copy_start: Wire,
+    pub line_copy_source: Wires<22>,
+    pub line_copy_destination_segment: Wires<6>,
     pub cpu_request_valid: Wire,
     pub cpu_write: Wire,
     pub cpu_address: Wires<32>,
@@ -919,6 +922,7 @@ pub struct CpuV3DataCacheInput {
 
 #[derive(Clone, ModuleIo)]
 pub struct CpuV3DataCacheOutput {
+    pub line_copy_ready: Wire,
     pub cpu_request_ready: Wire,
     pub cpu_response_valid: Wire,
     pub cpu_read_data: Wires<16>,
@@ -1016,6 +1020,8 @@ enum DataMemoryPhase {
     ReadReceive,
     WriteStream,
     WriteResponse,
+    CopyPrepare,
+    CopyLookup,
     Scan,
 }
 
@@ -1033,6 +1039,9 @@ pub struct CpuV3DataCacheState {
     response_valid: bool,
     response_error: bool,
     maintenance_active: bool,
+    line_copy_active: bool,
+    line_copy_source: crate::PhysicalWordAddress,
+    line_copy_destination_segment: u8,
     maintenance_done: bool,
     maintenance_error: bool,
     // Mirror of the RTL maintenance dirty-line scan: one 16-entry window per
@@ -1069,6 +1078,9 @@ impl Default for CpuV3DataCacheState {
             response_valid: false,
             response_error: false,
             maintenance_active: false,
+            line_copy_active: false,
+            line_copy_source: crate::PhysicalWordAddress::new(0),
+            line_copy_destination_segment: 0,
             maintenance_done: false,
             maintenance_error: false,
             maintenance_command: None,
@@ -1177,6 +1189,7 @@ impl CpuV3DataCacheState {
         self.sweep_set = 0;
         if self.maintenance_active {
             self.maintenance_active = false;
+            self.line_copy_active = false;
             self.maintenance_done = true;
             self.maintenance_error = true;
         } else {
@@ -1187,7 +1200,21 @@ impl CpuV3DataCacheState {
     }
 
     fn complete_write(&mut self) {
-        if self.maintenance_active {
+        if self.line_copy_active {
+            let action = self
+                .cache
+                .complete(crate::MainMemoryResponse::WriteComplete)
+                .expect("line-copy completion must match a line transaction");
+            if matches!(action, crate::CacheAction::CpuResponse(_)) {
+                self.request = None;
+                self.phase = DataMemoryPhase::Idle;
+                self.line_copy_active = false;
+                self.maintenance_active = false;
+                self.maintenance_done = true;
+            } else {
+                self.apply_action(action);
+            }
+        } else if self.maintenance_active {
             // Mirror of the RTL dirty-write-back edge: the completed line's
             // dirty bit clears before the scan decision.
             self.maintenance_dirty &= !(1u128 << self.wb_index);
@@ -1276,11 +1303,18 @@ impl Module for CpuV3DataCache {
         output.drive(
             circuit,
             &CpuV3DataCacheOutputValue {
+                line_copy_ready: state.phase == DataMemoryPhase::Idle
+                    && !state.response_valid
+                    && !state.maintenance_active
+                    && !input.clean_all
+                    && !input.invalidate_all
+                    && !state.sweep_active,
                 cpu_request_ready: state.phase == DataMemoryPhase::Idle
                     && !state.response_valid
                     && !state.maintenance_active
                     && !input.clean_all
                     && !input.invalidate_all
+                    && !input.line_copy_start
                     && !state.sweep_active,
                 cpu_response_valid: state.response_valid,
                 cpu_read_data: u64::from(state.response_data),
@@ -1387,6 +1421,29 @@ impl Module for CpuV3DataCache {
                 state.scan_index = 16;
                 state.scan_active = true;
                 state.phase = DataMemoryPhase::Scan;
+            }
+            return;
+        }
+
+        if state.phase == DataMemoryPhase::Idle
+            && !state.response_valid
+            && !state.maintenance_active
+            && !input.clean_all
+            && !input.invalidate_all
+            && !state.sweep_active
+            && input.line_copy_start
+        {
+            state.maintenance_error = false;
+            if input.line_copy_source & 0x0f != 0 {
+                state.maintenance_done = true;
+                state.maintenance_error = true;
+            } else {
+                state.maintenance_active = true;
+                state.line_copy_active = true;
+                state.line_copy_source =
+                    crate::PhysicalWordAddress::new(input.line_copy_source as u32);
+                state.line_copy_destination_segment = input.line_copy_destination_segment as u8;
+                state.phase = DataMemoryPhase::CopyPrepare;
             }
             return;
         }
@@ -1524,6 +1581,16 @@ impl Module for CpuV3DataCache {
                 }
             }
             DataMemoryPhase::WriteResponse => {}
+            DataMemoryPhase::CopyPrepare => {
+                state.phase = DataMemoryPhase::CopyLookup;
+            }
+            DataMemoryPhase::CopyLookup => {
+                let action = state
+                    .cache
+                    .copy_line(state.line_copy_source, state.line_copy_destination_segment)
+                    .expect("prepared data cache must accept line copy");
+                state.apply_action(action);
+            }
             DataMemoryPhase::ReadReceive if input.memory_response_valid => {
                 if input.memory_error {
                     state.fail_transaction();

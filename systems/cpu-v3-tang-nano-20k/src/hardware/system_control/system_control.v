@@ -6,6 +6,7 @@ module {{ module_name }} (
     input wire device_read_enable,
     input wire device_write_enable,
     input wire [15:0] device_write_data,
+    input wire dcache_maintenance_busy,
     input wire dcache_maintenance_done,
     input wire dcache_maintenance_error,
     output reg [15:0] device_read_data,
@@ -28,6 +29,7 @@ reg [9:0] uart_frame = 10'h3ff;
 reg [3:0] uart_bit = 0;
 reg [15:0] uart_divider = 0;
 reg [15:0] cache_maintenance_status = 0;
+reg [1:0] pending_dcache_maintenance = 0;
 
 always @* begin
     device_read_data = 0;
@@ -47,6 +49,7 @@ always @(posedge clk) begin
         dcache_clean <= 0;
         cpu_hold <= 0;
         cache_maintenance_status <= 0;
+        pending_dcache_maintenance <= 0;
         leds <= 0;
         uart_busy <= 0;
         uart_frame <= 10'h3ff;
@@ -56,7 +59,16 @@ always @(posedge clk) begin
         icache_invalidate <= 0;
         dcache_invalidate <= 0;
         dcache_clean <= 0;
-        if (cpu_hold && dcache_maintenance_done) begin
+        if (cpu_hold && pending_dcache_maintenance != 0 &&
+            !dcache_maintenance_busy) begin
+            dcache_invalidate <= pending_dcache_maintenance == 1;
+            dcache_clean <= pending_dcache_maintenance == 2;
+            pending_dcache_maintenance <= 0;
+        end
+        // Ignore a completion from the operation that just released the
+        // D-cache while a deferred command is being emitted.
+        if (cpu_hold && pending_dcache_maintenance == 0 &&
+            dcache_maintenance_done) begin
             cpu_hold <= 0;
             cache_maintenance_status <= dcache_maintenance_error ? 16'h8000 : 16'h0000;
         end
@@ -76,8 +88,11 @@ always @(posedge clk) begin
             case (device_channel)
                 0: icache_invalidate <= 1;
                 1: if (!cpu_hold) begin
-                    dcache_invalidate <= 1;
                     cpu_hold <= 1;
+                    if (dcache_maintenance_busy)
+                        pending_dcache_maintenance <= 1;
+                    else
+                        dcache_invalidate <= 1;
                 end
                 2: leds <= device_write_data[5:0];
                 3: if (!uart_busy) begin
@@ -87,8 +102,11 @@ always @(posedge clk) begin
                     uart_busy <= 1;
                 end
                 4: if (!cpu_hold) begin
-                    dcache_clean <= 1;
                     cpu_hold <= 1;
+                    if (dcache_maintenance_busy)
+                        pending_dcache_maintenance <= 2;
+                    else
+                        dcache_clean <= 1;
                 end
                 default: begin end
             endcase

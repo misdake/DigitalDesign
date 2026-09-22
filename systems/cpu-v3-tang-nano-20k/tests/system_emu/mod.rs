@@ -233,7 +233,8 @@ fn write_btc_diagnostics(directory: Option<&Path>, stats: cpu_v3::CpuV3BtcStatis
     .unwrap();
 }
 
-const SDRAM_WORDS: usize = 0x10000;
+const BENCHMARK_SDRAM_WORDS: usize = 0x10000;
+const SYSTEM_COSIM_SDRAM_WORDS: usize = 0x20000;
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 enum SdramState {
@@ -925,7 +926,7 @@ fn run_benchmark_profiled_inner(
     start_from: Option<&Checkpoint>,
     mut checkpoint_at: Option<CheckpointFn<'_>>,
 ) -> (BenchResult, Vec<u16>, Option<Checkpoint>) {
-    let mut memory = vec![0u16; SDRAM_WORDS];
+    let mut memory = vec![0u16; BENCHMARK_SDRAM_WORDS];
     for (offset, word) in words.iter().copied().enumerate() {
         memory[offset] = word;
     }
@@ -999,6 +1000,10 @@ fn run_benchmark_profiled_inner(
         core_input.data_response_valid = dcache_output.cpu_response_valid;
         core_input.data_read_data = dcache_output.cpu_read_data;
         core_input.data_error = dcache_output.cpu_error;
+        dcache_input.line_copy_start = core_output.data_line_copy_valid;
+        dcache_input.line_copy_source = core_output.data_line_copy_source;
+        dcache_input.line_copy_destination_segment = core_output.data_line_copy_destination_segment;
+        core_input.data_line_copy_ready = dcache_output.line_copy_ready;
         // Hold the core while the D-cache RAM16 valid arrays sweep-clear,
         // mirroring the system template's `sysctl_cpu_hold || valid_sweep`.
         core_input.hold = dcache_output.valid_sweep;
@@ -1501,6 +1506,7 @@ pub struct SystemCosimOut {
     pub data_address: u32,
     pub data_write_data: u16,
     pub data_response_ready: bool,
+    pub dcache_maintenance_busy: bool,
 }
 
 impl SystemCosimOut {
@@ -1529,6 +1535,7 @@ impl From<&CpuV3CoreOutputValue> for SystemCosimOut {
             data_address: value.data_address as u32,
             data_write_data: value.data_write_data as u16,
             data_response_ready: value.data_response_ready,
+            dcache_maintenance_busy: false,
         }
     }
 }
@@ -1551,7 +1558,7 @@ pub struct SystemTrace {
 /// `maintenance_done`, and captures the final SDRAM contents. Panics on fault
 /// or when `maximum_cycles` is exceeded before halt.
 pub fn run_system_trace(words: &[u16], maximum_cycles: usize) -> SystemTrace {
-    let mut memory = vec![0u16; SDRAM_WORDS];
+    let mut memory = vec![0u16; SYSTEM_COSIM_SDRAM_WORDS];
     for (offset, word) in words.iter().copied().enumerate() {
         memory[offset] = word;
     }
@@ -1600,6 +1607,10 @@ pub fn run_system_trace(words: &[u16], maximum_cycles: usize) -> SystemTrace {
         core_input.data_response_valid = dcache_output.cpu_response_valid;
         core_input.data_read_data = dcache_output.cpu_read_data;
         core_input.data_error = dcache_output.cpu_error;
+        dcache_input.line_copy_start = core_output.data_line_copy_valid;
+        dcache_input.line_copy_source = core_output.data_line_copy_source;
+        dcache_input.line_copy_destination_segment = core_output.data_line_copy_destination_segment;
+        core_input.data_line_copy_ready = dcache_output.line_copy_ready;
         // Hold the core while the D-cache RAM16 valid arrays sweep-clear,
         // mirroring the system template's `sysctl_cpu_hold || valid_sweep`.
         core_input.hold = dcache_output.valid_sweep;
@@ -1727,7 +1738,9 @@ pub fn run_system_trace(words: &[u16], maximum_cycles: usize) -> SystemTrace {
         // as the core-level co-sim) through the halted cycle, inclusive.
         if !reset && halt_at.is_none() && (started || core.instruction_request_valid) {
             started = true;
-            cycles.push(SystemCosimOut::from(&core));
+            let mut observed = SystemCosimOut::from(&core);
+            observed.dcache_maintenance_busy = dcache.maintenance_busy;
+            cycles.push(observed);
         }
 
         circuit.clock_tick();
