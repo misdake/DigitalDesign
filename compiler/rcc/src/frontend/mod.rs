@@ -3539,7 +3539,7 @@ fn unsafe_block_value(l: &mut FnLower, u: &syn::ExprUnsafe) -> Result<Val, syn::
     if l.unsafe_ops == used_before {
         return Err(err(
             u,
-            "unsafe block contains no raw Ptr read/write/conversion",
+            "unsafe block contains no raw Ptr operation or cache-line command",
         ));
     }
     Ok(value)
@@ -4646,6 +4646,13 @@ fn call_expr(l: &mut FnLower, call: &syn::ExprCall) -> Result<Val, syn::Error> {
     }
     let name = &segs[0];
 
+    if matches!(name.as_str(), "dcache_line_copy" | "dcache_clean_line") {
+        if l.unsafe_depth == 0 {
+            return Err(err(call, format!("{name} requires an unsafe block")));
+        }
+        l.unsafe_ops += 1;
+    }
+
     // intrinsics with non-value arguments must be handled before generic arg
     // evaluation (assert takes a condition, addr_of takes a reference)
     match name.as_str() {
@@ -4786,6 +4793,36 @@ fn call_expr(l: &mut FnLower, call: &syn::ExprCall) -> Result<Val, syn::Error> {
         let zero = l.b.load_imm(0);
         l.b.dev_send(0, 4, zero);
         return Ok(Val::V(l.b.dev_recv(0, 5), Ty::U16));
+    }
+    if name.as_str() == "dcache_line_copy" {
+        if args.len() != 2 {
+            return Err(err(
+                call,
+                "dcache_line_copy(source, destination_page) takes 2 arguments",
+            ));
+        }
+        let (source, from) = &args[0];
+        let (source, _) = coerce(l, *source, from, &Ty::Ptr, &call.args[0])?;
+        let (destination_page, from) = &args[1];
+        let (destination_page, _) = coerce(l, *destination_page, from, &Ty::U16, &call.args[1])?;
+        l.b.dcache_line_copy(source, destination_page);
+        return Ok(Val::Unit);
+    }
+    if name.as_str() == "dcache_clean_line" {
+        if args.len() != 1 {
+            return Err(err(call, "dcache_clean_line(address) takes 1 argument"));
+        }
+        let (address, from) = &args[0];
+        let (address, _) = coerce(l, *address, from, &Ty::Ptr, &call.args[0])?;
+        l.b.dcache_clean_line(address);
+        return Ok(Val::Unit);
+    }
+    if name.as_str() == "dcache_wait" {
+        if !args.is_empty() {
+            return Err(err(call, "dcache_wait() takes no arguments"));
+        }
+        l.b.dcache_wait();
+        return Ok(Val::Unit);
     }
     if name.as_str() == "icache_invalidate_delayed_and_jump" {
         if args.len() != 2 {
@@ -6195,5 +6232,23 @@ mod tests {
             unused.contains("unsafe block contains no raw Ptr"),
             "{unused}"
         );
+
+        let cache_outside = parse_source_with(
+            "fn main() { let p = Ptr::from_addr(0x100); dcache_clean_line(p); halt(0); }",
+            0,
+        )
+        .err()
+        .unwrap()
+        .to_string();
+        assert!(
+            cache_outside.contains("dcache_clean_line requires an unsafe block"),
+            "{cache_outside}"
+        );
+
+        assert!(parse_source_with(
+            "fn main() { let p = Ptr::from_addr(0x100); unsafe { dcache_line_copy(p, 8); dcache_clean_line(p); }; dcache_wait(); halt(0); }",
+            0,
+        )
+        .is_ok());
     }
 }

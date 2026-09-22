@@ -13,10 +13,10 @@ under `ip/cpu-v3/docs` and `systems/cpu-v3-tang-nano-20k/docs`.
 
 ## Architectural boundary
 
-- Instructions and data use 16-bit word offsets within boot-selected code and
-  data segments. A physical word address is the direct concatenation
-  `{segment[15:0], offset[15:0]}`; segment arithmetic is never added to the
-  offset and offset wrap never advances a segment.
+- Instructions use a 16-bit word offset in `CSEG`. Data uses a 16-bit logical
+  offset split into four 16-Kword quarters. `DSEG0..DSEG3` independently map
+  those quarters to aligned physical 16-Kword pages:
+  `{DSEGn[7:0], offset[13:0]}`, where `n = offset[15:14]`.
 - There are sixteen writable 16-bit GPRs and no persistent architectural flags.
   The only cross-instruction execution state besides the `PFX12` prefix is the
   transient pending test result: a three-way ordering (Less/Equal/Greater) set
@@ -35,12 +35,13 @@ under `ip/cpu-v3/docs` and `systems/cpu-v3-tang-nano-20k/docs`.
   allocates `F28..F62`, and keeps `F63` as the parallel-move scratch. Every F
   register is caller-saved and the 64-bit Q32.32 accumulator is
   caller-clobbered.
-- `CSEG` supplies the high physical bits for instruction fetch. `DSEG` supplies
-  them for every ordinary load and store, including stack accesses and offsets
-  `0xff00..0xffff`.
-- Reset establishes `CSEG = 0`, `DSEG = 0`, and `PC = 0`. Normal applications
-  do not change either segment. Stage0 writes `DSEG` immediately before an
-  atomic segmented jump establishes the application `CSEG` and entry offset.
+- `CSEG` supplies the high physical bits for instruction fetch. `DSEG0..3`
+  translate every ordinary data access, including stack and FPU accesses.
+  The legacy `DSEG` view is `DSEG0 >> 2`; writing it atomically establishes
+  four consecutive pages `{value*4 + 0, 1, 2, 3}`.
+- Reset establishes `CSEG = 0`, `DSEG0..3 = {0,1,2,3}`, and `PC = 0`. Stage0
+  uses the legacy bulk `DSEG` write immediately before an atomic segmented
+  jump establishes the application `CSEG` and entry offset.
 - `PFX12` and an eligible adjacent consumer form one precise two-word
   operation. A consumer fault reports the prefix address and retires neither
   word. A non-consumer expires and separately retires a pending prefix.
@@ -51,21 +52,50 @@ under `ip/cpu-v3/docs` and `systems/cpu-v3-tang-nano-20k/docs`.
   signal at the retirement edge. `SIGNAL` types 1..15 are simulator-side
   events that retire as a NOP in hardware.
 
-Tang Nano 20K applications use distinct code and data segments. Linked instructions start at
-offset `0x0000` of CSEG, giving code the complete 128-KiB segment window. The default offset map
-inside DSEG is:
+## Segmented addressing and ABI memory map
 
-| Range | Initial use |
-| --- | --- |
-| `0x0000..0x1fff` | static data, growing upward |
-| `0x2000..0x9ffe` | heap (`0x7fff` words, the current boundary-tag limit) |
-| `0x9fff..0xffff` | stack capacity, growing downward from the exclusive segment top |
+All architectural addresses are **word addresses**. Instruction and data addresses use different
+translations:
 
-`CompilerOptions::for_separate_code_and_data_segments` selects these data boundaries. A zero
-initial stack pointer denotes the exclusive segment top `0x10000`; the first allocation therefore
-wraps naturally into offset `0xffff`. `CompilerOptions::default()` instead retains a conservative
-unified-segment layout for standalone images and simulators that do not establish distinct CSEG and
-DSEG values.
+- Instruction fetch forms the physical word address `{CSEG, PC}`. `PC` is a 16-bit offset, so one
+  CSEG value exposes 64 Kwords (128 KiB) of code. A fitted target reports an out-of-range physical
+  address instead of truncating unsupported high CSEG bits.
+- An ordinary data pointer remains a 16-bit logical offset. Its high two bits select one of four
+  page registers and its low 14 bits select a word within that page:
+
+  ```text
+  quarter = offset[15:14]
+  page    = DSEG[quarter]              // one of DSEG0..DSEG3
+  physical_word_address = {page[7:0], offset[13:0]}
+  ```
+
+  Each logical quarter and physical page is therefore 16 Kwords (32 KiB). The four page registers
+  are independent: pages need not be adjacent or ordered, and duplicate mappings are permitted.
+  Hardware does not check for aliasing. Offset arithmetic still wraps at 16 bits before translation.
+
+The legacy `DSEG` special-register view exists for boot and old bulk-switch code. Reading it returns
+`DSEG0 >> 2`. Writing a value `s < 64` atomically establishes the consecutive mapping
+`DSEG0..DSEG3 = {s*4, s*4+1, s*4+2, s*4+3}`. Individual `DSEG0..DSEG3` writes accept an 8-bit page
+number and may subsequently make the legacy readback only a base-page compatibility view.
+
+Tang Nano 20K applications use distinct code and data mappings. Linked instructions start at
+offset `0x0000` of CSEG. Boot uses the legacy DSEG write to establish four consecutive physical
+pages, after which libraries may remap the fourth quarter independently. The fitted compiler ABI is:
+
+| Logical word range | Initial use | Page mapping |
+| --- | --- | --- |
+| `0x0000..0x1fff` | static data, growing upward (16 KiB reservation) | first half of DSEG0 |
+| `0x2000..0x9ffe` | heap (`0x7fff` words, current boundary-tag limit) | remainder of DSEG0, all of DSEG1, and part of DSEG2 |
+| `0x9fff..0xbfff` | stack capacity, growing downward from exclusive top `0xc000` | remainder of DSEG2 |
+| `0xc000..0xffff` | dynamically remappable library/device window | all of DSEG3 |
+
+Thus DSEG0..2 provide the ordinary 96-KiB application arena; DSEG3 provides one 32-KiB scoped
+window. The ISA does not protect the heap/stack boundary and does not assign ownership to the
+dynamic window. Those policies belong to the runtime and device libraries.
+
+`CompilerOptions::for_separate_code_and_data_segments` selects these boundaries.
+`CompilerOptions::default()` retains a conservative unified-memory layout for standalone images
+and simulators that do not establish distinct CSEG and DSEG mappings.
 
 
 ## Instruction encoding reference
@@ -147,23 +177,35 @@ No instruction in this family consumes `PFX12`.
 | 4 | `CLZ rd, rs` | count leading zeros |
 | 5 | `POPCNT rd, rs` | population count |
 | 6 | `SEQ rd, rs` | `rd = (rd == rs) ? 1 : 0` |
-| 7 | `LCOPY roffset, rsegment` | asynchronously copy the aligned 16-word line at `DSEG:r[offset]` to `r[segment]:r[offset]` |
+| 7 | `LCOPY roffset, rpage` | asynchronously copy the aligned 16-word line selected by `r[offset]` to physical page `r[page]` at the same low 14-bit offset |
 | 8/9 | `SLT` / `SLTU rd, rs` | `rd = rd < rs` as 0 or 1, signed / unsigned |
 | A/B | `CMPS` / `CMPU ra, rb` | pending = ordering of `ra` vs `rb`, signed / unsigned; writes no register |
 | C | `SIGNAL rs, type4` | type 0 halts and latches `rs`; types 1..15 are simulator-side events that retire as a NOP in hardware |
-| D | `MFSR rd, sr` | read `CSEG` (`sr=0`) or `DSEG` (`sr=1`); other selectors are invalid |
-| E | `MTSR DSEG, rs` | set the data segment; other selectors are invalid |
+| D | `MFSR rd, sr` | read `CSEG` (`sr=0`), legacy `DSEG` (`sr=1`), or `DSEG0..3` (`sr=2..5`) |
+| E | `MTSR/control` | selector `a`: bulk/page mapping and asynchronous D-cache commands listed below |
 | F | `JSEG seg, target` | atomically `CSEG = r[seg]`, `PC = r[target]` |
+
+The function-E selector map is:
+
+| a | Encoding | Operation |
+| --- | --- | --- |
+| 1 | `6 E 1 rs` | `MTSR DSEG, rs`: require `rs < 64`; set `DSEG0..3 = rs*4 + {0,1,2,3}` atomically |
+| 2..5 | `6 E a rs` | `MTSR DSEG(a-2), rs`: require `rs < 256`; replace one physical page mapping |
+| 6 | `6 E 6 raddr` | `DCLEANL raddr`: asynchronously write back a dirty resident line; a miss/clean hit is a no-op |
+| 7 | reserved | invalid instruction |
+| 8 | `6 E 8 0` | `DWAIT`: wait for the D-cache command engine and raise a data-memory fault if its sticky command result is an error |
 
 `LCOPY` requires `r[offset][3:0] = 0`; an unaligned source raises a data-memory
 fault. Both physical addresses must fit the implemented memory. It waits for
 older scalar/FPU stores and for D-cache command acceptance, then retires while
 the source lookup/refill and redirected line write continue. Instructions that
 do not use D-cache may execute during the copy. A later load, store, FLD/FST, or
-another `LCOPY` waits for completion. A cold destination is not allocated. Any
-resident destination alias, including a dirty one, is made coherent with the
-completed copy and cannot later write back stale data. The source remains
-resident and keeps its dirty state.
+another D-cache command waits for acceptance. A cold destination is not
+allocated. Any resident destination alias, including a dirty one, is discarded
+before the complete-line overwrite and therefore cannot later write back stale
+data. The source remains resident and keeps its dirty state. `DCLEANL` uses the
+same issue rule: after acceptance, non-D-cache instructions
+continue; an actual D-cache access or `DWAIT` supplies the completion boundary.
 
 ### Device access (opcode 7)
 
@@ -184,7 +226,8 @@ instructions carry no immediate and never consume a prefix.
 | `LOAD rd, [base + off]` | `8 rd base imm4` | `rd = memory[base + sext4(imm4)]` | with PFX12, `off = {payload12, imm4}` |
 | `STORE rs, [base + off]` | `9 rs base imm4` | `memory[base + sext4(imm4)] = rs` | same |
 
-Address arithmetic wraps at 16 bits. Every final offset is ordinary memory in `DSEG`.
+Address arithmetic wraps at 16 bits. The final offset selects one of `DSEG0..3`
+with its high two bits and a word within that physical page with its low 14 bits.
 
 ### Immediate (opcode A)
 
@@ -293,7 +336,8 @@ subops are `00` FLD, `01` FST, `02` ILO2F, `03` IHI2F, `04` FLO2I, `05` FHI2I,
 `06` I16TOF, `07` FTOI16, and `08..3F` are reserved. FLD/FST use `mode[1:0] + 1`
 lanes (`00` scalar through `11` vec4) with `mode[3:2]` reserved. `FLD` loads
 `Fd+i = {mem[a+2i+1], mem[a+2i]}` and `FST` stores the same two halves, **low
-half first**, at `a = {DSEG, GPR[X]}`. `ILO2F`/`IHI2F` copy `GPR[X]` into the
+half first**, using the `DSEG0..3` translation selected by `GPR[X][15:14]`.
+`ILO2F`/`IHI2F` copy `GPR[X]` into the
 low/high half of `Fd`; `FLO2I`/`FHI2I` copy a half back; `I16TOF` sign-extends
 `GPR[X]` into a Q16.16 value; `FTOI16` truncates `Fa` toward zero into `GPR[X]`.
 
@@ -539,6 +583,8 @@ FPU pair, and the old single-word Q8.8 `Dxxx` encoding is no longer valid.
 
 ## Revision 0.9
 
-Revision 0.9 assigns major-6 function 7 to `LCOPY`. It adds the asynchronous,
-D-cache-coherent 32-byte line-copy contract documented above; other revision
-0.8 encodings are unchanged.
+Revision 0.9 assigns major-6 function 7 to `LCOPY`, replaces the single data
+segment with four 16-Kword page mappings while retaining atomic legacy `DSEG`
+setup, and assigns function-E selectors 6 and 8 to `DCLEANL` and `DWAIT`;
+selector 7 is reserved. These D-cache commands use the asynchronous contract
+documented above.

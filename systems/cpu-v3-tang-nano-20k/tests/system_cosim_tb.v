@@ -48,7 +48,9 @@ wire [15:0] core_data_write_data;
 wire core_data_response_ready;
 wire core_data_line_copy_valid;
 wire [21:0] core_data_line_copy_source;
-wire [5:0] core_data_line_copy_destination_segment;
+wire [7:0] core_data_line_copy_destination_page;
+wire core_data_line_clean_valid;
+wire [21:0] core_data_line_clean_address;
 wire dc_line_copy_ready;
 wire dc_cpu_request_ready;
 wire dc_cpu_response_valid;
@@ -118,6 +120,7 @@ __CORE__ u_core (
     .data_read_data(dc_cpu_read_data),
     .data_error(dc_cpu_error),
     .data_line_copy_ready(dc_line_copy_ready),
+    .data_cache_command_error(dc_maintenance_error),
     .device_read_data(16'h0000),
     .instruction_request_valid(core_instruction_request_valid),
     .instruction_address(core_instruction_address),
@@ -129,7 +132,9 @@ __CORE__ u_core (
     .data_response_ready(core_data_response_ready),
     .data_line_copy_valid(core_data_line_copy_valid),
     .data_line_copy_source(core_data_line_copy_source),
-    .data_line_copy_destination_segment(core_data_line_copy_destination_segment),
+    .data_line_copy_destination_page(core_data_line_copy_destination_page),
+    .data_line_clean_valid(core_data_line_clean_valid),
+    .data_line_clean_address(core_data_line_clean_address),
     .device_index(core_device_index),
     .device_channel(core_device_channel),
     .device_read_enable(core_device_read_enable),
@@ -198,7 +203,9 @@ __DCACHE__ u_dcache (
     .invalidate_all(1'b0),
     .line_copy_start(core_data_line_copy_valid),
     .line_copy_source(core_data_line_copy_source),
-    .line_copy_destination_segment(core_data_line_copy_destination_segment),
+    .line_copy_destination_page(core_data_line_copy_destination_page),
+    .line_clean_start(core_data_line_clean_valid),
+    .line_clean_address(core_data_line_clean_address),
     .line_copy_ready(dc_line_copy_ready),
     .cpu_request_valid(core_data_request_valid),
     .cpu_write(core_data_write),

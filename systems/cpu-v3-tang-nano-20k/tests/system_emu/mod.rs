@@ -1002,8 +1002,11 @@ fn run_benchmark_profiled_inner(
         core_input.data_error = dcache_output.cpu_error;
         dcache_input.line_copy_start = core_output.data_line_copy_valid;
         dcache_input.line_copy_source = core_output.data_line_copy_source;
-        dcache_input.line_copy_destination_segment = core_output.data_line_copy_destination_segment;
+        dcache_input.line_copy_destination_page = core_output.data_line_copy_destination_page;
+        dcache_input.line_clean_start = core_output.data_line_clean_valid;
+        dcache_input.line_clean_address = core_output.data_line_clean_address;
         core_input.data_line_copy_ready = dcache_output.line_copy_ready;
+        core_input.data_cache_command_error = dcache_output.maintenance_error;
         // Hold the core while the D-cache RAM16 valid arrays sweep-clear,
         // mirroring the system template's `sysctl_cpu_hold || valid_sweep`.
         core_input.hold = dcache_output.valid_sweep;
@@ -1609,8 +1612,11 @@ pub fn run_system_trace(words: &[u16], maximum_cycles: usize) -> SystemTrace {
         core_input.data_error = dcache_output.cpu_error;
         dcache_input.line_copy_start = core_output.data_line_copy_valid;
         dcache_input.line_copy_source = core_output.data_line_copy_source;
-        dcache_input.line_copy_destination_segment = core_output.data_line_copy_destination_segment;
+        dcache_input.line_copy_destination_page = core_output.data_line_copy_destination_page;
+        dcache_input.line_clean_start = core_output.data_line_clean_valid;
+        dcache_input.line_clean_address = core_output.data_line_clean_address;
         core_input.data_line_copy_ready = dcache_output.line_copy_ready;
+        core_input.data_cache_command_error = dcache_output.maintenance_error;
         // Hold the core while the D-cache RAM16 valid arrays sweep-clear,
         // mirroring the system template's `sysctl_cpu_hold || valid_sweep`.
         core_input.hold = dcache_output.valid_sweep;

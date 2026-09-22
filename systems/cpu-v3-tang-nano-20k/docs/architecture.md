@@ -92,7 +92,9 @@ clock-domain boundary.
 
 ## Boot chain
 
-Reset starts the single boot stage from initialized BSRAM with `CSEG = 0`, `DSEG = 0`, and `PC = 0`.
+Reset starts the single boot stage from initialized BSRAM with `CSEG = 0`,
+`DSEG0..3 = {0,1,2,3}`, and `PC = 0`. The manifest's legacy `DSEG` value is a
+four-page base; Stage0 writes it once to establish four consecutive mappings.
 It validates the fixed package descriptor, DMAs the extensible section manifest into its own static
 buffer, validates it, DMAs the reset-selected application from SPI Flash to SDRAM, initializes the
 application segments and stack, and enters it through adjacent `ICACHE_INVALIDATE_ALL_DELAYED; JSEG`

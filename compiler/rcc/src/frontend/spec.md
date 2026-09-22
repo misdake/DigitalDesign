@@ -123,10 +123,10 @@ impl Ptr {
 }
 ```
 
-`Ptr` remains the untyped interface at heap/MMIO/device boundaries. A dereference must appear in
-an `unsafe { ... }` block; empty/nested unsafe blocks and unsafe blocks without one of the four
-operations above are errors. Ordinary buffers and local values use `Buf`/`Array`/`view_of` without
-unsafe. Struct memory layouts remain out of scope.
+`Ptr` remains the untyped interface at heap/MMIO/device boundaries. A dereference or raw-address
+cache-line command must appear in an `unsafe { ... }` block; empty/nested unsafe blocks and unsafe
+blocks without one of those operations are errors. Ordinary buffers and local values use
+`Buf`/`Array`/`view_of` without unsafe. Struct memory layouts remain out of scope.
 
 ## 3. Function pointers
 
@@ -174,6 +174,9 @@ Declared for real in `dsl_rt` (so the IDE sees them); the compiler lowers them d
 | `dev_send(dev: u8, ch: u8, v: u16)` | write a device register; device and channel are compile-time constant IDs |
 | `dcache_clean_all() -> u16` | CPU V3-only: blocking full compiler memory/control barrier; write every dirty D-cache line and return final maintenance status |
 | `dcache_invalidate_all() -> u16` | CPU V3-only: blocking full compiler memory/control barrier; clean and invalidate the complete D-cache, then return final maintenance status |
+| `unsafe dcache_line_copy(source: Ptr, destination_page: u16)` | CPU V3-only: start an asynchronous copy of one aligned 32-byte line to the same offset in an 8-bit physical page |
+| `unsafe dcache_clean_line(address: Ptr)` | CPU V3-only: asynchronously write back one dirty resident line; miss/clean hit is a no-op |
+| `dcache_wait()` | CPU V3-only: wait for the asynchronous D-cache command and surface its remembered error |
 | `mtsr_dseg(v: u16)` | CPU V3-only: write the DSEG special register (MTSR DSEG) |
 | `jseg(cseg: u16, target: u16) -> !` | CPU V3-only: atomically switch CSEG to `cseg` and jump to `target` (JSEG); never returns |
 | `icache_invalidate_delayed_and_jump(cseg: u16, target: u16) -> !` | CPU V3-only: terminal barrier lowered to adjacent `ICACHE_INVALIDATE_ALL_DELAYED; JSEG`; never returns |
@@ -578,8 +581,11 @@ Memory-layout defaults belong to the target backend; the frontend only consumes 
 CpuV3's standalone default keeps code and data in one segment (`code_base=0`, static data at
 `0x4000`, heap `0x8000..0xe000`, stack from the exclusive `0x10000` top). A booted application
 whose CSEG and DSEG differ uses `CompilerOptions::for_separate_code_and_data_segments`: code starts
-at its supplied offset, while the 128-KiB data window uses static data from `0x0000`, heap
-`0x2000..0x9fff`, and a downward-growing stack from the exclusive `0x10000` top.
+at its supplied offset, while the paged data window uses static data at `0x0000..0x1fff`, heap
+`0x2000..0x9ffe`, and a downward-growing stack from exclusive top `0xc000`. The first three
+32-KiB logical quarters form the ordinary 96-KiB arena; the fourth is a remappable library/device
+window. The [CPU V3 ISA specification](../../../../ip/cpu-v3/docs/isa.md) owns the DSEG translation
+and page-register contract.
 
 | option | default | meaning |
 |---|---|---|

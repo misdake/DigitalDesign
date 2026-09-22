@@ -33,12 +33,12 @@ impl Default for CompilerOptions {
 impl CompilerOptions {
     /// Layout for an application entered with distinct CSEG and DSEG values.
     ///
-    /// The data segment's 128 KiB window is divided into 16 KiB of static
-    /// data, almost 64 KiB of heap (the current boundary-tag format's maximum),
-    /// and about 48 KiB for a stack growing down from the segment top.
+    /// The first three 32-KiB data pages form one 96-KiB logical arena: 16 KiB
+    /// is reserved for statics, almost 64 KiB for the current boundary-tag
+    /// heap, and about 16 KiB for a stack growing down from `0xc000`.
     pub fn for_separate_code_and_data_segments(code_base: u16) -> Self {
         Self {
-            stack_init: crate::DEFAULT_STACK_TOP,
+            stack_init: 0xc000,
             data_base: 0,
             code_base,
             separate_code_data_segments: true,

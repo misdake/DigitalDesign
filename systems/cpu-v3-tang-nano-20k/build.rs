@@ -223,6 +223,10 @@ fn main() {
         &s2_path,
         &CompilerOptions {
             stack_init: S2_APPLICATION_LAYOUT.entry.stack_offset,
+            // The standalone simulator image shares code and data, so keep
+            // its legacy data/heap bases while ending the heap below the new
+            // 0xc000 stack top.
+            heap_size: 0x3fff,
             ..CompilerOptions::default()
         },
         &[],

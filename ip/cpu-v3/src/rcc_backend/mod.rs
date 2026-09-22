@@ -662,6 +662,17 @@ fn lower_instruction(
             CACHE_MAINTENANCE_DEVICE,
             D_INVALIDATE_ALL,
         )),
+        Instr::DcacheLineCopy {
+            source,
+            destination_page,
+        } => lines.word(cpu_v3::line_copy(
+            register(*source),
+            register(*destination_page),
+        )),
+        Instr::DcacheCleanLine { address } => {
+            lines.word(cpu_v3::clean_data_line(register(*address)))
+        }
+        Instr::DcacheWait => lines.word(cpu_v3::wait_data_cache()),
         Instr::MtsrDseg { src } => lines.word(cpu_v3::write_data_segment(register(*src))),
         Instr::Jseg { cseg, target } => {
             lines.word(cpu_v3::jump_segment(register(*cseg), register(*target)))
@@ -3842,6 +3853,45 @@ mod tests {
     }
 
     #[test]
+    fn cache_line_intrinsics_lower_to_revision_0_9_commands() {
+        let source = r#"
+            fn main() {
+                let line = Ptr::from_addr(0x0100);
+                unsafe {
+                    dcache_line_copy(line, 1);
+                    dcache_clean_line(line);
+                };
+                dcache_wait();
+                halt(0);
+            }
+        "#;
+        let program = compile(source, CompilerOptions::default());
+        assert!(program.words.iter().any(|word| word & 0xff00 == 0x6700));
+        assert!(program.words.iter().any(|word| word & 0xfff0 == 0x6e60));
+        assert!(program.words.contains(&cpu_v3::wait_data_cache()));
+
+        let mut machine = cpu_v3::CpuV3Sim::default();
+        machine
+            .load_program(program.code_base, &program.words)
+            .unwrap();
+        let line: [u16; 16] = std::array::from_fn(|i| 0x1000 + i as u16);
+        machine.load_program(0x0100, &line).unwrap();
+        let outcome = machine.run(10_000);
+        assert!(
+            matches!(outcome, Ok(cpu_v3::RunOutcome::Halted { signal: 0, .. })),
+            "{outcome:?}"
+        );
+        for (index, expected) in line.into_iter().enumerate() {
+            assert_eq!(
+                machine.physical_memory(cpu_v3::PhysicalWordAddress::new(
+                    (1 << 14) | 0x0100 | index as u32
+                )),
+                expected
+            );
+        }
+    }
+
+    #[test]
     fn segment_switch_mirror_loop_copies_across_data_segments() {
         let source = r#"
             fn main() {
@@ -3916,7 +3966,7 @@ mod tests {
         assert_eq!(options.data_base, 0);
         assert_eq!(options.heap_begin, 0x2000);
         assert_eq!(options.heap_size, 0x7fff);
-        assert_eq!(options.stack_init, 0);
+        assert_eq!(options.stack_init, 0xc000);
         assert!(options.separate_code_data_segments);
 
         let program = compile(source, options);
@@ -3958,7 +4008,7 @@ mod tests {
         ));
         assert_eq!(machine.code_segment(), 3);
         assert_eq!(machine.data_segment(), 4);
-        assert!((0xff00..=0xffff).contains(&machine.register(13).unwrap()));
+        assert!((0xbf00..=0xbfff).contains(&machine.register(13).unwrap()));
         assert_eq!(
             machine.physical_memory(cpu_v3::PhysicalWordAddress::new(0x0004_2000)),
             0xffff

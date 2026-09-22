@@ -36,7 +36,7 @@ pub const S1_APPLICATION_LAYOUT: ApplicationLayout = ApplicationLayout {
         code_segment: 3,
         offset: 0,
         data_segment: 4,
-        stack_offset: 0,
+        stack_offset: 0xc000,
     },
 };
 
@@ -51,7 +51,7 @@ pub const S2_APPLICATION_LAYOUT: ApplicationLayout = ApplicationLayout {
         code_segment: 7,
         offset: 0,
         data_segment: 0,
-        stack_offset: 0,
+        stack_offset: 0xc000,
     },
 };
 
@@ -229,7 +229,7 @@ mod tests {
             S2_APPLICATION_LAYOUT.entry.data_segment
         );
         assert_eq!(S2_APPLICATION_LAYOUT.entry.data_segment, 0);
-        assert_eq!(S1_APPLICATION_LAYOUT.entry.stack_offset, 0);
-        assert_eq!(S2_APPLICATION_LAYOUT.entry.stack_offset, 0);
+        assert_eq!(S1_APPLICATION_LAYOUT.entry.stack_offset, 0xc000);
+        assert_eq!(S2_APPLICATION_LAYOUT.entry.stack_offset, 0xc000);
     }
 }

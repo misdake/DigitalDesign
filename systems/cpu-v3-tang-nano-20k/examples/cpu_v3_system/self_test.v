@@ -220,7 +220,9 @@ wire [15:0] core_data_read_data;
 wire core_data_error;
 wire core_data_line_copy_valid;
 wire [21:0] core_data_line_copy_source;
-wire [5:0] core_data_line_copy_destination_segment;
+wire [7:0] core_data_line_copy_destination_page;
+wire core_data_line_clean_valid;
+wire [21:0] core_data_line_clean_address;
 wire dcache_line_copy_ready;
 
 wire [2:0] device_index;
@@ -406,7 +408,9 @@ __DATA_CACHE__ u_data_cache (
     .invalidate_all(sysctl_dcache_invalidate),
     .line_copy_start(core_data_line_copy_valid),
     .line_copy_source(core_data_line_copy_source),
-    .line_copy_destination_segment(core_data_line_copy_destination_segment),
+    .line_copy_destination_page(core_data_line_copy_destination_page),
+    .line_clean_start(core_data_line_clean_valid),
+    .line_clean_address(core_data_line_clean_address),
     .line_copy_ready(dcache_line_copy_ready),
     .cpu_request_valid(core_data_request_valid),
     .cpu_write(core_data_write),
@@ -462,6 +466,7 @@ __CPU_V3_CORE__ u_core (
     .data_read_data(core_data_read_data),
     .data_error(core_data_error),
     .data_line_copy_ready(dcache_line_copy_ready),
+    .data_cache_command_error(dcache_maintenance_error),
     .device_read_data(device_read_data),
     .instruction_request_valid(core_instruction_request_valid),
     .instruction_address(core_instruction_address),
@@ -473,7 +478,9 @@ __CPU_V3_CORE__ u_core (
     .data_response_ready(core_data_response_ready),
     .data_line_copy_valid(core_data_line_copy_valid),
     .data_line_copy_source(core_data_line_copy_source),
-    .data_line_copy_destination_segment(core_data_line_copy_destination_segment),
+    .data_line_copy_destination_page(core_data_line_copy_destination_page),
+    .data_line_clean_valid(core_data_line_clean_valid),
+    .data_line_clean_address(core_data_line_clean_address),
     .device_index(device_index),
     .device_channel(device_channel),
     .device_read_enable(device_read_enable),

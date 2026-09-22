@@ -329,6 +329,38 @@ pub fn dcache_clean_all() -> u16 {
     unimplemented!("cache maintenance is not available on the host")
 }
 
+/// Start an asynchronous copy of the 32-byte cache line containing `source`
+/// to `destination_page` at the same in-page offset (CpuV3-only).
+///
+/// `source` must be 16-word aligned and `destination_page` must fit in eight
+/// bits. The caller must use `dcache_wait()` before relying on completion.
+///
+/// # Safety
+///
+/// `source` must identify a readable cache line in the current DSEG mapping,
+/// and the caller must own the destination physical line until completion.
+pub unsafe fn dcache_line_copy(source: Ptr, destination_page: u16) {
+    let _ = (source, destination_page);
+    unimplemented!("cache-line copy is not available on the host")
+}
+
+/// Start an asynchronous write-back of the resident line containing `address`
+/// (CpuV3-only). A miss or clean hit completes without memory traffic.
+///
+/// # Safety
+///
+/// `address` must belong to memory whose cache visibility the caller controls.
+pub unsafe fn dcache_clean_line(address: Ptr) {
+    let _ = address;
+    unimplemented!("cache-line clean is not available on the host")
+}
+
+/// Wait for the accepted asynchronous D-cache command to finish (CpuV3-only).
+/// A remembered command error becomes a data-memory fault on the target.
+pub fn dcache_wait() {
+    unimplemented!("D-cache command wait is not available on the host")
+}
+
 /// Invalidate the complete instruction cache on the registered delayed path,
 /// then immediately switch CSEG and jump (CpuV3-only). Never returns.
 pub fn icache_invalidate_delayed_and_jump(cseg: u16, target: u16) -> ! {

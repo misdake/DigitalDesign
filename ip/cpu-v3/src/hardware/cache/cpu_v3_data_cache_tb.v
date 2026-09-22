@@ -2,7 +2,9 @@ module tb;
 reg clk=0, reset=1, clean_all=0, invalidate_all=0;
 reg line_copy_start=0;
 reg [21:0] line_copy_source=0;
-reg [5:0] line_copy_destination_segment=0;
+reg [7:0] line_copy_destination_page=0;
+reg line_clean_start=0;
+reg [21:0] line_clean_address=0;
 wire line_copy_ready;
 reg cpu_request_valid=0, cpu_write=0, cpu_response_ready=0;
 reg [31:0] cpu_address=0; reg [15:0] cpu_write_data=0;
@@ -96,19 +98,32 @@ task maintain;
 endtask
 
 task copy_line;
-  input [21:0] source; input [5:0] destination_segment;
+  input [21:0] source; input [7:0] destination_page;
   begin
     copy_start_cycle=cycles;
     @(negedge clk);
     line_copy_source=source;
-    line_copy_destination_segment=destination_segment;
+    line_copy_destination_page=destination_page;
     line_copy_start=1;
     @(posedge clk); @(negedge clk); line_copy_start=0;
     while(!maintenance_done) @(posedge clk);
     #1;
     if(maintenance_error) $fatal(1,"line copy failed");
-    $display("LINE_COPY source=%h destination_segment=%h cycles=%0d",
-      source,destination_segment,cycles-copy_start_cycle);
+    $display("LINE_COPY source=%h destination_page=%h cycles=%0d",
+      source,destination_page,cycles-copy_start_cycle);
+  end
+endtask
+
+task clean_line;
+  input [21:0] address;
+  begin
+    @(negedge clk);
+    line_clean_address=address; line_clean_start=1;
+    @(posedge clk); @(negedge clk);
+    line_clean_start=0;
+    while(!maintenance_done) @(posedge clk);
+    #1;
+    if(maintenance_error) $fatal(1,"clean-line command failed");
   end
 endtask
 
@@ -179,38 +194,58 @@ initial begin
   if(line_reads!=i+1) $fatal(1,"cold line copy did not refill exactly once");
   if(line_writes==0) $fatal(1,"line copy did not use write-back path");
   for(i=0;i<16;i=i+1)
-    if(memory[22'h010310+i] !== (16'ha310+i))
-      $fatal(1,"cold line copy mismatch at word %0d",i);
+    if(memory[22'h004310+i] !== (16'ha310+i))
+      $fatal(1,"cold line copy mismatch at word %0d: %h != %h",
+        i,memory[22'h004310+i],16'ha310+i);
   i=line_reads;
   copy_line(22'h000310,6'h02);
   if(line_reads!=i) $fatal(1,"hot line copy unexpectedly refilled");
   for(i=0;i<16;i=i+1)
-    if(memory[22'h020310+i] !== (16'ha310+i))
+    if(memory[22'h008310+i] !== (16'ha310+i))
       $fatal(1,"hot line copy mismatch at word %0d",i);
 
   // A resident dirty destination alias is obsolete because the copy
-  // overwrites the complete line. Do not write its stale contents; refresh it
-  // from the authoritative destination after the redirected write instead.
-  access(0,32'h00020312,0,16'ha312);
-  access(1,32'h00020312,16'hdead,0);
+  // overwrites the complete line. Invalidate it directly without writing its
+  // stale contents or refilling it as part of the copy.
+  access(0,32'h00008312,0,16'ha312);
+  access(1,32'h00008312,16'hdead,0);
   i=line_writes;
   j=line_reads;
   copy_line(22'h000310,6'h02);
   if(line_writes!=i+1) $fatal(1,"copy wrote stale dirty destination alias");
-  if(line_reads!=j+1) $fatal(1,"copy did not refresh destination alias");
+  if(line_reads!=j) $fatal(1,"copy unnecessarily refreshed destination alias");
   i=line_reads;
-  access(0,32'h00020312,0,16'ha312);
-  if(line_reads!=i) $fatal(1,"copy did not retain refreshed destination alias");
+  access(0,32'h00008312,0,16'ha312);
+  if(line_reads!=i+1) $fatal(1,"copy did not invalidate destination alias");
 
   // Redirecting a dirty source must not clear its source dirty bit: a later
   // clean still writes the modified line to the original segment.
   access(1,32'h00000312,16'h5a5a,0);
   copy_line(22'h000310,6'h03);
-  if(memory[22'h030312]!==16'h5a5a) $fatal(1,"copy lost dirty source data");
+  if(memory[22'h00c312]!==16'h5a5a) $fatal(1,"copy lost dirty source data");
   i=line_writes;
   maintain(0);
   if(line_writes!=i+1 || memory[22'h000312]!==16'h5a5a)
     $fatal(1,"redirected write-back incorrectly cleaned source line");
+
+  // A line dirtied word-by-word must copy the complete resident contents,
+  // not only the word left on the RAM read ports by the final store.
+  for(i=0;i<16;i=i+1)
+    access(1,32'h00000500+i,16'h6000+i,0);
+  copy_line(22'h000500,6'h04);
+  for(i=0;i<16;i=i+1)
+    if(memory[22'h010500+i] !== (16'h6000+i))
+      $fatal(1,"multiword dirty line copy mismatch at word %0d: %h != %h",
+        i,memory[22'h010500+i],16'h6000+i);
+
+  // A clean-line command writes one dirty hit while retaining it.
+  access(1,32'h00000150,16'h6b6b,0);
+  i=line_writes; j=line_reads;
+  clean_line(22'h000150);
+  if(line_writes!=i+1 || memory[22'h000150]!==16'h6b6b)
+    $fatal(1,"clean-line hint did not write dirty hit");
+  access(0,32'h00000150,0,16'h6b6b);
+  if(line_reads!=j) $fatal(1,"clean-line hint invalidated its line");
 
   // Alignment is part of the hardware primitive's contract.
   @(negedge clk); line_copy_source=22'h311; line_copy_start=1;

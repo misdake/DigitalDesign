@@ -60,7 +60,7 @@ are additional when neither the queue, BTC nor bypass can supply the word.
 | Block | Current implementation | Per-cycle capability |
 |---|---|---|
 | GPR file | Explicit 16 x 16-bit distributed-RAM leaf with dual asynchronous reads and one synchronous write | One registered write per cycle; a forwarding mux exposes the pending write to a matching next instruction |
-| Control state | 16-bit PC, CSEG, DSEG, one PFX12 prefix, one transient three-way comparison | One instruction decoded; no speculative state |
+| Control state | 16-bit PC, CSEG, four 8-bit DSEG page mappings, one PFX12 prefix, one transient three-way comparison | One instruction decoded; no speculative state |
 | Integer ALU | 16-bit add/sub/logic/shift/compare plus CLZ and popcount | One non-multiply integer result |
 | Integer multiplier | One registered signed 18 x 18 `MULT18X18` lane | Accepts an input each cycle, but the blocking core uses one operation at a time |
 | FPU front-end | Two-word instruction latch: word0 exposes `Fa`/`Fb` (or AUX `X`/`Fa`) and drives the RF read addresses immediately; word1 carries `Fd`/subop/len/mode | One `instr_complete` pulse per pair; FPU instructions are fetch barriers and never consume `PFX12` |
@@ -118,14 +118,29 @@ interface. The system-control I-cache invalidation pulse is
 registered for one cycle so the compiler's adjacent invalidate-and-JSEG
 handoff resolves deterministically.
 
+Logical data offsets select one of four DSEG entries with bits 15:14, then form
+the physical word address from that 8-bit page and offset bits 13:0. The legacy
+bulk DSEG write still establishes four consecutive pages atomically; individual
+page writes support a fixed three-page application arena plus a remappable
+fourth window without widening program pointers.
+
 `LCOPY` reuses the same lookup/refill and four-beat write-back path. The core
 waits for older buffered stores and command acceptance, then retires the
 instruction; only later D-cache users wait while the copy remains active, so
 integer/FPU computation, instruction fetch, and device accesses may overlap it.
-The D-cache latches the destination segment at acceptance and preserves the
-source dirty bit. A cold destination is not allocated. If the destination line
-is already resident, the cache refreshes that way after the redirected write
-so even a formerly dirty alias cannot expose or later write back stale data.
+The D-cache latches the destination physical page at acceptance and preserves
+the source dirty bit. A cold destination is not allocated. If the destination
+line is already resident, its valid and dirty bits are cleared directly before
+the complete-line overwrite; stale destination data is neither written back nor
+refilled as part of the copy.
+
+`DCLEANL` shares this asynchronous command slot. It writes one dirty hit and
+otherwise completes locally. The core can continue
+with instructions that do not touch D-cache, while any later D-cache access
+waits at its ordinary request handshake. `DWAIT` gives software an explicit
+completion/error boundary. The present parity-bank geometry uses all four data
+RAM ports during each 64-bit refill/write-back beat, so foreground hits are not
+claimed concurrent with an active transfer.
 
 ## Integer instruction latency
 
@@ -137,6 +152,8 @@ so even a formerly dirty alias cannot expose or later write back stale data.
 | Integer `LOAD`, minimum | 3 | `Execute -> DataRequest -> DataResponse` |
 | Integer `STORE` with an empty async buffer | 1 to retire | The buffered data request/response continues in the background; a later memory operation waits for it |
 | `LCOPY`, D-cache ready | 1 to retire | The 16-word copy continues in the D-cache; only a later D-cache operation waits |
+| `DCLEANL`, D-cache ready | 1 to retire | The clean continues in the D-cache; only a later D-cache operation or `DWAIT` waits |
+| `DWAIT` | 1 after command idle | Raises a data-memory fault if the completed command reported an error |
 
 ## FPU v2 scheduling and latency
 

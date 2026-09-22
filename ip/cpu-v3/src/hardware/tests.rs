@@ -35,6 +35,7 @@ fn drive(
             data_read_data: u64::from(data_response.unwrap_or(0)),
             data_error: false,
             data_line_copy_ready: true,
+            data_cache_command_error: false,
             device_read_data: u64::from(device_read_data),
         },
     );
@@ -126,7 +127,7 @@ fn cycle_model_signal_events_are_single_cycle_and_model_only() {
 
     // A nonzero SIGNAL retires as a NOP and records the event.
     state.instruction = cpu_v3::signal(5, 1);
-    state.execute(0, true);
+    state.execute(0, true, false);
     assert_eq!(state.phase, Phase::FetchRequest);
     assert_eq!(state.retired_words, 1);
     assert_eq!(
@@ -144,13 +145,13 @@ fn cycle_model_signal_events_are_single_cycle_and_model_only() {
     // A fresh nonzero SIGNAL re-arms the event; the next executed
     // instruction ends the single-cycle window.
     state.instruction = cpu_v3::signal(5, 15);
-    state.execute(0, true);
+    state.execute(0, true, false);
     assert_eq!(
         state.signal_event().map(|event| event.signal_type),
         Some(15)
     );
     state.instruction = 0x0322; // ADD r3, r2, r2 (any ordinary instruction)
-    state.execute(0, true);
+    state.execute(0, true, false);
     assert_eq!(state.signal_event(), None);
 
     // Type 0 halts and latches the selected register, exactly like the
@@ -158,7 +159,7 @@ fn cycle_model_signal_events_are_single_cycle_and_model_only() {
     let mut state = CpuV3CoreState::default();
     state.registers[7] = 0x1234;
     state.instruction = cpu_v3::signal(7, 0);
-    state.execute(0, true);
+    state.execute(0, true, false);
     assert_eq!(state.phase, Phase::Halted);
     assert_eq!(state.halt_signal, 0x1234);
     assert_eq!(state.retired_words, 1);
@@ -172,7 +173,7 @@ fn emulator_async_store_overlaps_alu_and_blocks_next_memory_operation() {
     state.registers[2] = 10;
 
     state.instruction = 0x9210; // STORE r2, [r1]
-    state.execute(0, true);
+    state.execute(0, true, false);
     assert_eq!(state.phase, Phase::FetchRequest);
     assert!(state.async_store.valid);
     assert!(!state.async_store.issued);
@@ -180,14 +181,14 @@ fn emulator_async_store_overlaps_alu_and_blocks_next_memory_operation() {
     assert_eq!(state.async_store.write_data, 10);
 
     state.instruction = 0x0322; // ADD r3, r2, r2
-    state.execute(0, true);
+    state.execute(0, true, false);
     assert_eq!(state.phase, Phase::FetchRequest);
     assert!(state.async_store.valid);
     assert!(state.gpr_write_enable);
     assert_eq!(state.gpr_write_data, 20);
 
     state.instruction = 0x8010; // LOAD r0, [r1]
-    state.execute(0, true);
+    state.execute(0, true, false);
     assert_eq!(state.phase, Phase::AsyncStoreWait);
     assert!(!state.pending_data.write);
     assert_eq!(state.pending_data.address, 0x0100);
@@ -199,24 +200,24 @@ fn emulator_line_copy_waits_for_prior_stores_and_cache_acceptance() {
     state.phase = Phase::Execute;
     state.registers[4] = 3;
     state.instruction = cpu_v3::write_data_segment(4);
-    state.execute(0, true);
+    state.execute(0, true, false);
     state.phase = Phase::Execute;
     state.retired_words = 0;
     state.registers[1] = 0x0120;
     state.registers[2] = 5;
     state.instruction = cpu_v3::line_copy(1, 2);
 
-    state.execute(0, false);
+    state.execute(0, false, false);
     assert_eq!(state.phase, Phase::Execute);
     assert_eq!(state.retired_words, 0);
 
     state.async_store.valid = true;
-    state.execute(0, true);
+    state.execute(0, true, false);
     assert_eq!(state.phase, Phase::Execute);
     assert_eq!(state.retired_words, 0);
 
     state.async_store.valid = false;
-    state.execute(0, true);
+    state.execute(0, true, false);
     assert_eq!(state.phase, Phase::FetchRequest);
     assert_eq!(state.retired_words, 1);
 }
@@ -392,6 +393,7 @@ impl CoreCosimIn {
             data_read_data: u64::from(self.data_read_data),
             data_error: false,
             data_line_copy_ready: true,
+            data_cache_command_error: false,
             device_read_data: u64::from(self.device_read_data),
         }
     }
@@ -672,6 +674,7 @@ fn build_core_cosim_tb(program: &[u16], module_name: &str, max_cycles: usize) ->
              reg [15:0] data_read_data = 0;\n\
              reg data_error = 0;\n\
              reg data_line_copy_ready = 1;\n\
+             reg data_cache_command_error = 0;\n\
              wire [15:0] device_read_data;\n\
              wire instruction_request_valid;\n\
              wire [31:0] instruction_address;\n\
@@ -683,7 +686,9 @@ fn build_core_cosim_tb(program: &[u16], module_name: &str, max_cycles: usize) ->
              wire data_response_ready;\n\
              wire data_line_copy_valid;\n\
              wire [21:0] data_line_copy_source;\n\
-             wire [5:0] data_line_copy_destination_segment;\n\
+             wire [7:0] data_line_copy_destination_page;\n\
+             wire data_line_clean_valid;\n\
+             wire [21:0] data_line_clean_address;\n\
              wire [2:0] device_index;\n\
              wire [3:0] device_channel;\n\
              wire device_read_enable;\n\

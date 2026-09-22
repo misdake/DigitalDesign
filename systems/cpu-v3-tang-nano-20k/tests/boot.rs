@@ -210,10 +210,10 @@ fn button_01_boots_the_primary_application_from_flash() {
         0xdead,
         "the unselected display application must not be DMA-loaded"
     );
-    // A zero stack offset denotes the exclusive 0x10000 data-segment top;
-    // the application prologue has subtracted its small frame.
+    // The fitted three-page application arena ends at the exclusive 0xc000
+    // stack top; the application prologue has subtracted its small frame.
     let sp = machine.register(13).unwrap();
-    assert!((0xffc0..=0xffff).contains(&sp), "sp = {sp:#06x}");
+    assert!((0xbfc0..=0xc000).contains(&sp), "sp = {sp:#06x}");
 }
 
 /// The default S2 boot runs the restored Q16.16 FPU display demo

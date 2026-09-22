@@ -10,9 +10,9 @@
 mod system_emu;
 
 use cpu_v3::{
-    alu, branch, halt, immediate_unsigned, line_copy, load, load_immediate16, nop, store, AluOp,
-    CpuV3Core, CpuV3DataCache, CpuV3InstructionFetchQueue, CpuV3TwoWayCache, ImmediateOp,
-    TestCondition,
+    alu, branch, clean_data_line, halt, immediate_unsigned, line_copy, load, load_immediate16, nop,
+    store, wait_data_cache, write_data_segment_page, AluOp, CpuV3Core, CpuV3DataCache,
+    CpuV3InstructionFetchQueue, CpuV3TwoWayCache, ImmediateOp, TestCondition,
 };
 use cpu_v3_tang_nano_20k::CpuV3MemoryArbiter;
 use digital_design_hardware::{HardwareIdentity, VerilogProject};
@@ -127,6 +127,36 @@ fn program_line_copy_halt_drain() -> Vec<u16> {
     p.extend(load_immediate16(0, 0x66));
     p.push(store(0, 1, 0));
     p.push(line_copy(1, 2));
+    p.push(halt());
+    p
+}
+
+/// A per-line clean retires before its write-back completes; independent ALU
+/// work overlaps it and DWAIT supplies the explicit completion boundary.
+fn program_async_cache_hint() -> Vec<u16> {
+    let mut p = Vec::new();
+    p.extend(load_immediate16(1, 0x0200));
+    p.extend(load_immediate16(0, 0x77));
+    p.push(store(0, 1, 0));
+    p.push(clean_data_line(1));
+    for _ in 0..4 {
+        p.push(immediate_unsigned(ImmediateOp::Add, 3, 1));
+    }
+    p.push(wait_data_cache());
+    p.push(halt());
+    p
+}
+
+/// Remap only logical quarter 3, then prove an ordinary 16-bit pointer in
+/// that quarter reaches the selected physical 32-KiB page.
+fn program_individual_data_page() -> Vec<u16> {
+    let mut p = Vec::new();
+    p.extend(load_immediate16(1, 4));
+    p.push(write_data_segment_page(3, 1));
+    p.extend(load_immediate16(2, 0xc010));
+    p.extend(load_immediate16(0, 0x99));
+    p.push(store(0, 2, 0));
+    p.push(load(0, 2, 0));
     p.push(halt());
     p
 }
@@ -611,7 +641,7 @@ fn programs() -> Vec<CosimProgram> {
             name: "async_line_copy",
             words: program_async_line_copy(),
             max_cycles: 20_000,
-            check_base: 0x1_0100,
+            check_base: 0x4100,
             check_len: 16,
             expected_halt: Some(0x55),
         },
@@ -619,9 +649,25 @@ fn programs() -> Vec<CosimProgram> {
             name: "line_copy_halt_drain",
             words: program_line_copy_halt_drain(),
             max_cycles: 20_000,
-            check_base: 0x1_0120,
+            check_base: 0x4120,
             check_len: 16,
             expected_halt: Some(0x66),
+        },
+        CosimProgram {
+            name: "async_cache_hint",
+            words: program_async_cache_hint(),
+            max_cycles: 20_000,
+            check_base: 0x0200,
+            check_len: 16,
+            expected_halt: Some(0x77),
+        },
+        CosimProgram {
+            name: "individual_data_page",
+            words: program_individual_data_page(),
+            max_cycles: 20_000,
+            check_base: 0x1_0010,
+            check_len: 16,
+            expected_halt: Some(0x99),
         },
         CosimProgram {
             name: "icache_loop",
@@ -931,6 +977,14 @@ fn compare_program(program: &CosimProgram, sources: &[String]) -> Result<(), Str
         })
     {
         return Err("HALT did not wait for the in-flight LCOPY writeback".to_string());
+    }
+    if program.name == "async_cache_hint"
+        && !emu
+            .cycles
+            .iter()
+            .any(|cycle| cycle.dcache_maintenance_busy && cycle.retired_words >= 7)
+    {
+        return Err("no ALU instruction retired while DCLEANL kept D-cache busy".to_string());
     }
     if let Some(expected) = program.expected_halt {
         if emu.halt_signal != expected {
