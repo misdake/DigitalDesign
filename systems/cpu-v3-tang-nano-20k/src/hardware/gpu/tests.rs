@@ -637,9 +637,11 @@ mod host_model_parity {
         hardware.set_qwords(CMD_BASE, &program);
         hardware.set_words(LIST_BASE, &[0, 1]);
         hardware.set_words(LIST_BASE + LIST_STRIDE, &[1, 0]);
+        let guard = (FRAMEBUFFER_A_BASE_WORD + FRAMEBUFFER_WORDS) as usize;
+        hardware.words[guard] = 0xdead;
         let mut host_memory = hardware.words.clone();
         hardware.submit(words);
-        hardware.run_until_idle(500_000);
+        let hardware_cycles = hardware.run_until_idle(500_000);
 
         let mut host = GpuDevice::default();
         host.write(&mut host_memory, GPU_CMD_BASE_LOW, CMD_BASE as u16);
@@ -647,12 +649,30 @@ mod host_model_parity {
         host.write(&mut host_memory, GPU_CMD_WORDS_LOW, words);
         host.write(&mut host_memory, GPU_CMD_WORDS_HIGH, 0);
         host.write(&mut host_memory, GPU_SUBMIT, 0);
-        host.run_until_idle(&mut host_memory, 500_000);
+        let host_cycles = host.run_until_idle(&mut host_memory, 500_000);
 
+        assert!((1..500_000).contains(&hardware_cycles));
+        assert!((1..500_000).contains(&host_cycles));
+        assert_eq!(hardware.read(GPU_RECEIVED_COUNT), 1);
+        assert_eq!(hardware.read(GPU_EXECUTED_COUNT), 1);
+        assert_eq!(host.received_count(), 1);
+        assert_eq!(host.executed_count(), 1);
         assert_eq!(hardware.read(GPU_RECEIVED_COUNT), host.received_count());
         assert_eq!(hardware.read(GPU_EXECUTED_COUNT), host.executed_count());
         assert_eq!(hardware.read(GPU_STATUS) & GPU_STATUS_COMMAND_ERROR, 0);
         assert!(!host.command_error());
+        for tile in 0..2u16 {
+            assert_eq!(
+                hardware.words[tile_word(FRAMEBUFFER_A_BASE_WORD, tile, 0, 0)],
+                0x1234
+            );
+            assert_eq!(
+                hardware.words[tile_word(FRAMEBUFFER_A_BASE_WORD, tile, 15, 15)],
+                0x4321
+            );
+        }
+        assert_eq!(hardware.words[guard], 0xdead);
+        assert_eq!(host_memory[guard], 0xdead);
         assert_eq!(hardware.words, host_memory);
     }
 }

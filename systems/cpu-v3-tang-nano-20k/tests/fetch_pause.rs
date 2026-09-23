@@ -2,12 +2,13 @@
 //!
 //! This is the high-level alignment harness: run the same program image on both
 //! models, pause the emulator at a chosen point, wait until the architectural
-//! state has stopped changing, have the program dump its registers into memory,
-//! and require the **externally visible** state to be identical.
+//! state has stopped changing, and require the **externally visible** state to
+//! be identical. The GPR-only case pauses after its register dump; FPU cases
+//! compare a direct architectural view captured at the quiescent point.
 //!
-//! The pause is emulator-owned: it lives in the modelled system-control device
-//! (device 0 channel 6) and holds the fetch queue off the core without
-//! discarding its queue or BTC state. There is deliberately no hardware port.
+//! The pause is owned by a per-cycle emulator test hook. It holds new fetch
+//! requests off the core without discarding the fetch queue or BTC state and
+//! deliberately has no guest-visible device channel or hardware port.
 //!
 //! Externally visible state compared here:
 //! - the 16 architectural GPRs (dumped to a reserved data region by the program
@@ -31,7 +32,7 @@ use cpu_v3::{alu, halt, load_immediate16, store, AluOp, CpuV3Sim, RunOutcome, Wo
 use cpu_v3::{fpu_aux, fpu_vector, FpuAuxKind, FpuAuxSubop, FpuVectorLength, FpuVectorSubop};
 use system_emu::{
     compile_cpu_v3_source, run_benchmark_paused_memory, run_from_checkpoint, ArchitecturalView,
-    Checkpoint, FETCH_PAUSE_CHANNEL,
+    Checkpoint,
 };
 
 /// Data-visible region the program writes while it runs.
@@ -135,6 +136,24 @@ fn retired_timeline(program: &[u16]) -> Vec<(usize, u32)> {
     timeline
 }
 
+/// A bounded pause window that starts once `target` words have retired.
+///
+/// The start cycle is remembered separately from the retired count: retirement
+/// must stop while paused, so using the retired count as the release condition
+/// would create a pause that can never end.
+fn pause_for_cycles_after_retired(
+    target: u32,
+    hold_cycles: usize,
+) -> impl FnMut(usize, u32) -> bool {
+    let mut started_at = None;
+    move |cycle, retired| {
+        if started_at.is_none() && retired >= target {
+            started_at = Some(cycle);
+        }
+        started_at.is_some_and(|start| cycle < start + hold_cycles)
+    }
+}
+
 /// Alignment at a held fetch pause: the emulator is stopped at a chosen point
 /// and its externally visible state must equal the naive sim's state at the same
 /// retired-word count.
@@ -155,17 +174,47 @@ fn paused_emulator_alignment_against_naive_sim() {
             .find(|(_, retired)| *retired as usize >= sled)
             .map(|(cycle, _)| *cycle)
             .expect("the run must reach the sled");
+        const HOLD_CYCLES: usize = 40;
+        let paused_retired = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
+        let observed_retired = paused_retired.clone();
         let (emu, emu_memory) =
-            run_benchmark_paused_memory(&words, 2_000_000, |cycle, _| cycle >= pause_cycle);
+            run_benchmark_paused_memory(&words, 2_000_000, move |cycle, retired| {
+                let active = (pause_cycle..pause_cycle + HOLD_CYCLES).contains(&cycle);
+                if active {
+                    observed_retired.borrow_mut().push(retired);
+                }
+                active
+            });
+        assert_eq!(
+            emu.fetch_pause_cycles, HOLD_CYCLES as u32,
+            "seed {seed:#06x}: pause duration"
+        );
+        let paused_retired = paused_retired.borrow();
+        assert_eq!(paused_retired.len(), HOLD_CYCLES);
         assert!(
-            emu.fetch_pause_cycles > 0,
-            "seed {seed:#06x}: the pause must have been applied"
+            paused_retired.windows(2).all(|pair| pair[0] <= pair[1]),
+            "seed {seed:#06x}: retirement went backwards while paused: {paused_retired:?}"
+        );
+        assert!(
+            *paused_retired.last().unwrap() - *paused_retired.first().unwrap() <= 1,
+            "seed {seed:#06x}: more than the already-latched instruction retired while paused: {paused_retired:?}"
+        );
+        assert!(
+            paused_retired[paused_retired.len() - 3..]
+                .windows(2)
+                .all(|pair| pair[0] == pair[1]),
+            "seed {seed:#06x}: retirement did not settle while paused: {paused_retired:?}"
         );
 
         let emu_dump = emu_register_dump(&emu_memory);
         let frozen_at = emu
-            .retired_words_at_first_pause
-            .expect("the pause must record the retired count it froze at");
+            .retired_words_at_quiescence
+            .expect("the pause must reach a quiescent retired count");
+        assert_eq!(
+            frozen_at,
+            *paused_retired.last().unwrap(),
+            "seed {seed:#06x}: the recorded sync point is not the stable paused state"
+        );
 
         // The comparison is only valid once the data side has gone quiet: a store
         // that retired just before the pause keeps draining through the D-cache
@@ -240,14 +289,6 @@ fn paused_emulator_alignment_against_naive_sim() {
                 .collect::<Vec<_>>()
         );
     }
-}
-
-#[test]
-fn the_modelled_device_channel_is_the_documented_one() {
-    // The emulator pause is driven through device 0 channel 6, matching the
-    // system-control channel map. Guard against the harness and the device map
-    // drifting apart.
-    assert_eq!(FETCH_PAUSE_CHANNEL, 6);
 }
 
 /// The alignment harness also has to hold for a compiler-produced program, not
@@ -327,11 +368,14 @@ fn several_sync_points_align_with_the_naive_sim() {
             target < sim_retired as u32,
             "checkpoint {target} must fall before the halt at {sim_retired}"
         );
-        let (emu, emu_memory) =
-            run_benchmark_paused_memory(&words, 2_000_000, |_, retired| retired >= target);
+        let (emu, emu_memory) = run_benchmark_paused_memory(
+            &words,
+            2_000_000,
+            pause_for_cycles_after_retired(target, 40),
+        );
 
         let frozen = emu
-            .retired_words_at_first_pause
+            .retired_words_at_quiescence
             .expect("a held pause must record where it froze");
         // The request is evaluated before the combinational settle while the
         // gate engages on that same cycle, so one more instruction may retire
@@ -391,18 +435,24 @@ fn a_checkpoint_resumes_without_replaying_the_prefix() {
     // First run: pause at the sled and snapshot the machine while it is paused
     // and quiescent.
     let pause_from = sled as u32;
+    let release = std::rc::Rc::new(std::cell::Cell::new(false));
+    let release_from_observer = release.clone();
+    let release_from_hook = release.clone();
     let mut take_checkpoint =
-        |_cycle: usize, _handles: &system_emu::SystemHandles, _busy: bool| true;
+        move |_cycle: usize, _handles: &system_emu::SystemHandles, _busy: bool| {
+            release_from_observer.set(true);
+            true
+        };
     let (first, _, checkpoint) = run_from_checkpoint(
         &words,
         2_000_000,
-        |_, retired| retired >= pause_from,
+        move |_, retired| retired >= pause_from && !release_from_hook.get(),
         None,
         Some(&mut take_checkpoint),
     );
     let checkpoint: Checkpoint = checkpoint.expect("the paused point must yield a checkpoint");
     let frozen = first
-        .retired_words_at_first_pause
+        .retired_words_at_quiescence
         .expect("the first run must have paused");
     assert!(
         frozen >= sled as u32,
@@ -411,8 +461,31 @@ fn a_checkpoint_resumes_without_replaying_the_prefix() {
 
     // Second run: start from the snapshot. The prefix is not re-executed, so the
     // retired count when it starts is exactly the frozen one.
-    let (resumed, resumed_memory, _) =
-        run_from_checkpoint(&words, 2_000_000, |_, _| false, Some(&checkpoint), None);
+    let resumed_start = std::rc::Rc::new(std::cell::Cell::new(None));
+    let observed_start = resumed_start.clone();
+    let (resumed, resumed_memory, _) = run_from_checkpoint(
+        &words,
+        2_000_000,
+        move |_, retired| {
+            if observed_start.get().is_none() {
+                observed_start.set(Some(retired));
+            }
+            false
+        },
+        Some(&checkpoint),
+        None,
+    );
+    assert_eq!(
+        resumed_start.get(),
+        Some(frozen),
+        "resumed execution reset or replayed the saved prefix"
+    );
+    assert!(
+        resumed.cycles < reference.cycles,
+        "resuming a late checkpoint did not save any execution: resumed={} reference={}",
+        resumed.cycles,
+        reference.cycles
+    );
 
     assert_eq!(
         resumed.halt_signal, reference.halt_signal,
@@ -432,8 +505,12 @@ fn a_checkpoint_resumes_without_replaying_the_prefix() {
         "a resumed run must produce the same architectural memory as the reference"
     );
     println!(
-        "checkpoint at retired={frozen} resumed to halt={} retired={} (reference {})",
-        resumed.halt_signal, resumed.retired_words, reference.retired_words
+        "checkpoint at retired={frozen} resumed in {} cycles to halt={} retired={} (full run {} cycles / {} retired)",
+        resumed.cycles,
+        resumed.halt_signal,
+        resumed.retired_words,
+        reference.cycles,
+        reference.retired_words
     );
 }
 
@@ -466,22 +543,30 @@ fn snapshot_round_trip_matches_the_reference_at_several_points() {
         // mid-transaction, so the snapshot has to carry the controller phase.
         // Giving up after a bounded search still yields a checkpoint, so the
         // round trip is checked either way.
+        let release = std::rc::Rc::new(std::cell::Cell::new(false));
+        let release_from_observer = release.clone();
+        let release_from_hook = release.clone();
         let mut attempts = 0usize;
-        let mut take = |_cycle: usize, _handles: &system_emu::SystemHandles, sdram_busy: bool| {
-            attempts += 1;
-            sdram_busy || attempts > 5_000
-        };
+        let mut take =
+            move |_cycle: usize, _handles: &system_emu::SystemHandles, sdram_busy: bool| {
+                attempts += 1;
+                let accept = sdram_busy || attempts > 5_000;
+                if accept {
+                    release_from_observer.set(true);
+                }
+                accept
+            };
         let (first, _, checkpoint) = run_from_checkpoint(
             &words,
             2_000_000,
-            |_, retired| retired >= target,
+            move |_, retired| retired >= target && !release_from_hook.get(),
             None,
             Some(&mut take),
         );
         let checkpoint: Checkpoint =
             checkpoint.unwrap_or_else(|| panic!("no checkpoint at retired>={target}"));
         let frozen = first
-            .retired_words_at_first_pause
+            .retired_words_at_quiescence
             .expect("the run must have paused");
         if checkpoint.sdram_was_busy() {
             busy_sdram += 1;
@@ -555,20 +640,29 @@ fn check_fpu_program(name: &str, source: &str) {
     // halt loop is a point where the architectural FPU state is final.
     let spin_start = words.len().saturating_sub(3) as u32;
 
+    let release = std::rc::Rc::new(std::cell::Cell::new(false));
+    let release_from_observer = release.clone();
+    let release_from_hook = release.clone();
     let mut observed: Option<ArchitecturalView> = None;
     let mut take = |_cycle: usize, handles: &system_emu::SystemHandles, _busy: bool| {
         observed = Some(handles.architectural_view());
+        release_from_observer.set(true);
         true
     };
     let (emu, _emu_memory, checkpoint) = run_from_checkpoint(
         &words,
         500_000,
-        |_, retired| retired >= spin_start,
+        move |_, retired| retired >= spin_start && !release_from_hook.get(),
         None,
         Some(&mut take),
     );
     let observed = observed.unwrap_or_else(|| panic!("{name}: no architectural view taken"));
     let checkpoint = checkpoint.unwrap_or_else(|| panic!("{name}: no checkpoint taken"));
+    assert_eq!(
+        checkpoint.pending_accepted_words(),
+        1,
+        "{name}: checkpoint did not exercise restoration of an accepted prefix word"
+    );
 
     // 1. Retirement agreement.
     assert_eq!(
@@ -795,16 +889,20 @@ fn fpu_accumulator_is_compared_where_it_is_live() {
     let sim_retired = sim.retired_words();
 
     // Pause before the spin so the freeze sits after the accumulating dots.
+    let release = std::rc::Rc::new(std::cell::Cell::new(false));
+    let release_from_observer = release.clone();
+    let release_from_hook = release.clone();
     let mut observed: Option<ArchitecturalView> = None;
     let mut take = |_cycle: usize, handles: &system_emu::SystemHandles, _busy: bool| {
         observed = Some(handles.architectural_view());
+        release_from_observer.set(true);
         true
     };
     let pause_from = (words.len() - 40) as u32;
     let (emu, _memory, checkpoint) = run_from_checkpoint(
         &words,
         100_000,
-        |_, retired| retired >= pause_from,
+        move |_, retired| retired >= pause_from && !release_from_hook.get(),
         None,
         Some(&mut take),
     );

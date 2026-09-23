@@ -144,7 +144,7 @@ mod tests {
     use crate::{
         device_receive, device_send, halt, PhysicalWordAddress, DISPLAY_CONTROL,
         DISPLAY_FRAMEBUFFER_HIGH, DISPLAY_FRAMEBUFFER_LOW, DISPLAY_FRAME_INDEX, DISPLAY_NEXT_SWAP,
-        FRAMEBUFFER_A_BASE_WORD, FRAMEBUFFER_B_BASE_WORD,
+        FRAMEBUFFER_A_BASE_WORD, FRAMEBUFFER_B_BASE_WORD, FRAMEBUFFER_WORDS,
     };
 
     #[test]
@@ -173,12 +173,15 @@ mod tests {
         let list_base = 0x400u32;
         let tile_count = GPU_TILE_TOTAL as u16;
         let list: Vec<u16> = (0..tile_count).collect();
+        let draw_color = 0x2468u16;
+        let framebuffer_sentinel = 0xdead;
+        let guard_sentinel = 0xbeef;
         let fake_arg0 = u64::from(tile_count) | (1u64 << 16); // CLEAR
         let qwords: [u64; 5] = [
             GPU_OPCODE_SET_TARGET as u64 | (1u64 << 8) | (u64::from(FRAMEBUFFER_A_BASE_WORD) << 32),
             GPU_OPCODE_FAKE_DRAW as u64 | (3u64 << 8) | (fake_arg0 << 32),
             u64::from(list_base),
-            0xffffu64 << 32, // clear 0, draw 0, every tile row selected
+            0x1357u64 | (u64::from(draw_color) << 16) | (0xffffu64 << 32),
             GPU_OPCODE_END as u64 | (1u64 << 8),
         ];
         {
@@ -194,6 +197,10 @@ mod tests {
             for (offset, index) in list.iter().enumerate() {
                 memory[list_base as usize + offset] = *index;
             }
+            let slot = FRAMEBUFFER_A_BASE_WORD as usize;
+            memory[slot] = framebuffer_sentinel;
+            memory[slot + 16] = framebuffer_sentinel;
+            memory[slot + FRAMEBUFFER_WORDS as usize] = guard_sentinel;
         }
         let mut words = Vec::new();
         words.extend(crate::load_immediate16(1, base as u16));
@@ -235,10 +242,13 @@ mod tests {
         assert_eq!(sim.gpu().executed_count(), 1);
         assert_eq!(sim.gpu().received_count(), 1);
         assert!(!sim.gpu().command_error());
-        // The solid tile at (0, 0) is black for phase 0, biases 0.
+        // Nonzero initial and final values prove that framebuffer writeback ran;
+        // the word just beyond the payload catches an overrun.
         let slot = FRAMEBUFFER_A_BASE_WORD as usize;
-        assert_eq!(sim.cpu_mut().physical_memory_mut()[slot], 0);
-        assert_eq!(sim.cpu_mut().physical_memory_mut()[slot + 16], 0);
+        let memory = sim.cpu_mut().physical_memory_mut();
+        assert_eq!(memory[slot], draw_color);
+        assert_eq!(memory[slot + 16], draw_color);
+        assert_eq!(memory[slot + FRAMEBUFFER_WORDS as usize], guard_sentinel);
     }
 
     #[test]

@@ -19,20 +19,14 @@ use cpu_v3::{
 };
 use cpu_v3_tang_nano_20k::{
     CpuV3MemoryArbiter, CpuV3MemoryArbiterInput, CpuV3MemoryArbiterOutput, CpuV3MemoryArbiterState,
-    SYSTEM_CONTROL_DEVICE,
 };
-use digital_design_circuit::{build_circuit, Circuit, Wire, Wires};
+use digital_design_circuit::{build_circuit, input, Circuit, Wire, Wires};
 use digital_design_hardware::{Module, ModuleIo};
 use rcc::frontend::compile_program_named;
 use std::collections::VecDeque;
 use std::fs::{create_dir_all, File};
 use std::io::{BufWriter, Write};
 use std::path::Path;
-
-/// System-control channel carrying the fetch-pause register in the modelled
-/// device: a non-zero write holds the frontend off the core, a zero write
-/// releases it. The emulator owns this hold; there is no hardware port.
-pub const FETCH_PAUSE_CHANNEL: u8 = 6;
 
 // ---- complete-machine snapshot / restore (design/fetch-pause section 7.1) ----
 //
@@ -107,8 +101,6 @@ pub struct SystemSnapshot {
     /// flight also restores the controller phase (`state`, `beat`, `read_delay`,
     /// `pending_*`, `recovery_count`, refresh counter, response beat).
     sdram: SdramModel,
-    /// Pause request state at the snapshot point.
-    paused: bool,
 }
 
 /// Read-only architectural state of the cycle model, for direct comparison
@@ -150,7 +142,7 @@ impl SystemHandles {
 
     /// Captures the whole machine. `memory` must be the SDRAM image at the same
     /// instant, and `sdram` the port model at that instant.
-    pub fn snapshot(&self, memory: Vec<u16>, sdram: SdramModel, paused: bool) -> SystemSnapshot {
+    pub fn snapshot(&self, memory: Vec<u16>, sdram: SdramModel) -> SystemSnapshot {
         SystemSnapshot {
             core: self.core.borrow().clone(),
             fetch: self.fetch.borrow().clone(),
@@ -159,7 +151,6 @@ impl SystemHandles {
             arbiter: self.arbiter.borrow().clone(),
             memory,
             sdram,
-            paused,
         }
     }
 
@@ -469,10 +460,12 @@ pub struct BenchResult {
     pub store_latency_cycles: u64,
     pub opcode_retired: [u32; 16],
     pub sdram_state_cycles: [u64; 11],
-    /// Cycles during which the modelled system-control fetch pause was held.
+    /// Cycles during which the emulator-only fetch pause was held.
     pub fetch_pause_cycles: u32,
-    /// Retired word count at the first paused cycle, when a pause was requested.
-    pub retired_words_at_first_pause: Option<u32>,
+    /// Retired word count at the first quiescent paused cycle. An instruction
+    /// already latched by the core may retire after the request, so this is the
+    /// stable comparison point rather than merely the request cycle.
+    pub retired_words_at_quiescence: Option<u32>,
     /// Cycles on which the data side was busy: the core had a data request in
     /// flight or the D-cache was not accepting requests (refill, eviction,
     /// write-back or maintenance). Writes retired just before a pause keep
@@ -859,9 +852,10 @@ pub fn run_benchmark(words: &[u16], maximum_cycles: usize) -> BenchResult {
     run_benchmark_paused_memory(words, maximum_cycles, |_, _| false).0
 }
 
-/// Runs `words` with a per-cycle hook on the modelled system-control fetch
-/// pause: returning `true` holds the fetch queue off the core for that cycle.
-/// The pause is emulator-owned (device 0 channel 6); there is no hardware port.
+/// Runs `words` with a per-cycle emulator-only fetch-pause hook: returning
+/// `true` holds the fetch queue off the core for that cycle,
+/// and returning `false` releases a pause previously requested by the hook.
+/// There is no guest-visible device register or hardware port.
 pub fn run_benchmark_paused(
     words: &[u16],
     maximum_cycles: usize,
@@ -886,6 +880,10 @@ pub fn run_benchmark_paused_memory(
 /// A checkpoint taken from inside a run: the complete machine snapshot.
 pub struct Checkpoint {
     pub snapshot: SystemSnapshot,
+    // Prefix words are accepted by the harness before the paired instruction
+    // retires them. Preserve this verification queue alongside machine state so
+    // a checkpoint between the two words resumes without losing provenance.
+    accepted_instructions: VecDeque<(u32, u16)>,
 }
 
 impl Checkpoint {
@@ -894,6 +892,10 @@ impl Checkpoint {
     /// be exact.
     pub fn sdram_was_busy(&self) -> bool {
         self.snapshot.sdram.state != SdramState::Idle
+    }
+
+    pub fn pending_accepted_words(&self) -> usize {
+        self.accepted_instructions.len()
     }
 }
 
@@ -980,9 +982,6 @@ fn run_benchmark_profiled_inner(
     let arbiter_state: ArbiterHandle =
         std::rc::Rc::new(std::cell::RefCell::new(CpuV3MemoryArbiterState::default()));
     let mut handles: Option<SystemHandles> = None;
-    // Emulator-side fetch pause, owned by the system-control device model (see
-    // `ObservedFetch`). Shared into the circuit closure so tests can toggle it.
-    let fetch_pause = std::rc::Rc::new(std::cell::Cell::new(false));
     let (mut circuit, circuit_handles) = build_circuit(|| {
         let mut core_input = CpuV3CoreInput::allocate();
         let core_output = CpuV3CoreOutput::allocate();
@@ -999,12 +998,19 @@ fn run_benchmark_profiled_inner(
         let mut arbiter_input = CpuV3MemoryArbiterInput::allocate();
         let arbiter_output = CpuV3MemoryArbiterOutput::allocate();
 
-        // core <-> fetch queue
+        // core <-> fetch queue. Keep the pause control on its own input wire:
+        // directly forcing either fetch output is ineffective because the
+        // fetch external rewrites that shared wire during every settle pass.
+        let fetch_pause = input();
         fetch_input.core_request_valid = core_output.instruction_request_valid;
         fetch_input.core_address = core_output.instruction_address;
         fetch_input.core_response_ready = core_output.instruction_response_ready;
-        core_input.instruction_request_ready = fetch_output.core_request_ready;
-        core_input.instruction_response_valid = fetch_output.core_response_valid;
+        core_input.instruction_request_ready = fetch_output.core_request_ready & !fetch_pause;
+        // A response for a request accepted before pause must be allowed to
+        // drain. Once the core returns to FetchRequest, request_ready remains
+        // low and no new instruction can enter.
+        core_input.instruction_response_valid = fetch_output.core_response_valid
+            & (!fetch_pause | core_output.instruction_response_ready);
         core_input.instruction_data = fetch_output.core_read_data;
         core_input.instruction_error = fetch_output.core_error;
 
@@ -1107,6 +1113,7 @@ fn run_benchmark_profiled_inner(
             icache_output,
             dcache_output,
             fetch_output,
+            fetch_pause,
         )
     });
 
@@ -1121,6 +1128,7 @@ fn run_benchmark_profiled_inner(
         icache_output,
         dcache_output,
         fetch_output,
+        fetch_pause,
     ) = circuit_handles;
 
     // Restore a checkpoint before the run starts, so the prefix it covers is
@@ -1133,9 +1141,13 @@ fn run_benchmark_profiled_inner(
 
     let mut sdram = start_sdram.unwrap_or_else(|| SdramModel::new(memory));
     let mut trace = TraceRecorder::new(trace_directory);
-    let mut previous_retired = 0u32;
+    let mut previous_retired = start_from
+        .map(|checkpoint| checkpoint.snapshot.core.retired_words())
+        .unwrap_or(0);
     let mut retired_instructions = 0u32;
-    let mut accepted_instructions = VecDeque::new();
+    let mut accepted_instructions = start_from
+        .map(|checkpoint| checkpoint.accepted_instructions.clone())
+        .unwrap_or_default();
     let mut pending_redirect = None;
     let mut fetch_wait_cycles = 0usize;
     let mut execute_cycles = 0usize;
@@ -1163,8 +1175,7 @@ fn run_benchmark_profiled_inner(
     let mut opcode_retired = [0u32; 16];
     let mut sdram_state_cycles = [0u64; 11];
     let mut fetch_pause_cycles = 0u32;
-    let mut retired_words_at_first_pause = None;
-    let mut pause_requested = false;
+    let mut retired_words_at_quiescence = None;
     let mut data_side_busy_cycles = 0u32;
     let mut data_side_quiet_at = None;
     let mut halt_at = None;
@@ -1184,7 +1195,9 @@ fn run_benchmark_profiled_inner(
         if halt_at.is_none() && cycle >= maximum_cycles {
             panic!("benchmark exceeded {maximum_cycles} cycles");
         }
-        let reset = cycle < 2;
+        // A restored checkpoint already contains initialized module state. A
+        // reset here would silently discard it and replay the program prefix.
+        let reset = start_from.is_none() && cycle < 2;
         set_bit(core_input.reset, reset, &mut circuit);
         set_bit(fetch_input.reset, reset, &mut circuit);
         set_bit(icache_input.reset, reset, &mut circuit);
@@ -1213,26 +1226,12 @@ fn run_benchmark_profiled_inner(
             &mut circuit,
         );
 
-        // A test-supplied pause request (or the device's channel-6 register) is
-        // evaluated BEFORE the settle passes so that it takes effect in the very
-        // cycle it is asked for. Applying it after the passes would let the core
-        // advance one more instruction and then gate it mid-handshake, which
-        // never resumes.
-        if !reset && halt_at.is_none() {
-            pause_requested |= pause_at(cycle, previous_retired);
-        }
-        fetch_pause.set(pause_requested);
-        let handshake_low = fetch_pause.get();
-        set_bit(
-            core_input.instruction_response_valid,
-            !handshake_low && fetch_output.sample(&circuit).core_response_valid,
-            &mut circuit,
-        );
-        set_bit(
-            core_input.instruction_request_ready,
-            !handshake_low && fetch_output.sample(&circuit).core_request_ready,
-            &mut circuit,
-        );
+        // Evaluate the test control level BEFORE the settle passes. The
+        // dedicated circuit input feeds real AND gates, so fetch may recompute
+        // its outputs without overwriting the hold.
+        let hook_pause = !reset && halt_at.is_none() && pause_at(cycle, previous_retired);
+        let pause_active = !reset && hook_pause;
+        set_bit(fetch_pause, pause_active, &mut circuit);
 
         // The composed emulator externals form ready/valid paths in both
         // directions. Re-evaluate to a fixed point approximation so a
@@ -1249,38 +1248,23 @@ fn run_benchmark_profiled_inner(
         let dcache = dcache_output.sample(&circuit);
         let fetch = fetch_output.sample(&circuit);
 
-        // A pause request is sticky: it is honoured at the first cycle where the
-        // machine is settled rather than dropped if it arrives during the D-cache
-        // valid sweep (`valid_sweep` drives the core's `hold` through a gate, so
-        // freezing then would hold the core forever) or while the core is
-        // halting. The gate itself was already applied before the settle passes;
-        // this block only keeps the request state up to date.
-        if reset {
-            pause_requested = false;
-        } else if core.device_index == u64::from(SYSTEM_CONTROL_DEVICE)
-            && core.device_write_enable
-            && core.device_channel as u8 == FETCH_PAUSE_CHANNEL
-        {
-            pause_requested = core.device_write_data != 0;
-        }
-
-        if fetch_pause.get() {
+        if pause_active {
             fetch_pause_cycles = fetch_pause_cycles.wrapping_add(1);
-            if retired_words_at_first_pause.is_none() {
-                retired_words_at_first_pause = Some(core.retired_words as u32);
-            }
         }
 
-        // Data-side quiescence: with the pause held the core issues no new data
-        // request, so once the D-cache is accepting requests again every write
-        // that retired before the pause has drained and the architectural memory
-        // is stable. Record the first such cycle while paused.
+        // Quiescence requires both sides. The core must have drained its already
+        // latched instruction and returned to FetchRequest; the
+        // data side must also have accepted every request issued before pause.
+        // Only then are architectural state and memory stable enough to compare
+        // or checkpoint.
+        let frontend_waiting = core.instruction_request_valid;
         let data_side_busy = core.data_request_valid || !dcache.cpu_request_ready;
         if data_side_busy {
             data_side_busy_cycles = data_side_busy_cycles.wrapping_add(1);
-        } else if fetch_pause.get() {
+        } else if pause_active && frontend_waiting {
             if data_side_quiet_at.is_none() {
                 data_side_quiet_at = Some(cycle);
+                retired_words_at_quiescence = Some(core.retired_words as u32);
             }
             // Paused and quiescent: the architectural state is stable, so this is
             // a point a checkpoint may be taken from. The observer keeps being
@@ -1292,11 +1276,8 @@ fn run_benchmark_profiled_inner(
                     let sdram_busy = sdram.state != SdramState::Idle;
                     if observer(cycle, &live_handles, sdram_busy) {
                         taken_checkpoint = Some(Checkpoint {
-                            snapshot: live_handles.snapshot(
-                                sdram.memory().to_vec(),
-                                sdram.clone(),
-                                fetch_pause.get(),
-                            ),
+                            snapshot: live_handles.snapshot(sdram.memory().to_vec(), sdram.clone()),
+                            accepted_instructions: accepted_instructions.clone(),
                         });
                     }
                 }
@@ -1497,7 +1478,7 @@ fn run_benchmark_profiled_inner(
                     opcode_retired,
                     sdram_state_cycles,
                     fetch_pause_cycles,
-                    retired_words_at_first_pause,
+                    retired_words_at_quiescence,
                     data_side_busy_cycles,
                     data_side_quiet_at,
                 };

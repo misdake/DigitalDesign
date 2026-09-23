@@ -994,6 +994,19 @@ fn compare_program(program: &CosimProgram, sources: &[String]) -> Result<(), Str
             ));
         }
     }
+    let line_copy_golden = match program.name {
+        "async_line_copy" => Some((0x4100usize, 0x55u16)),
+        "line_copy_halt_drain" => Some((0x4120usize, 0x66u16)),
+        _ => None,
+    };
+    if let Some((address, expected)) = line_copy_golden {
+        let actual = emu.memory[address];
+        if actual != expected {
+            return Err(format!(
+                "LCOPY destination {address:#06x} was {actual:#06x}, expected {expected:#06x}"
+            ));
+        }
+    }
 
     let rtl = run_system_rtl(program, sources, emu.cycles.len() + 2000);
     if !rtl.halted {

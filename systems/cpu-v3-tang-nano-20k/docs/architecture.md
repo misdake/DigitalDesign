@@ -220,6 +220,9 @@ The system-level emulator-vs-RTL co-simulation `tests/system_cosim.rs` drives th
 against the cycle-accurate Rust system model shared with `tests/bench_emu.rs`, comparing the core
 ports cycle by cycle and the post-flush SDRAM contents exactly. It is ignored by default; run it
 with `cargo test -p cpu-v3-tang-nano-20k --test system_cosim -- --ignored --test-threads=1`.
+Differential equality is not treated as a semantic oracle by itself: cache-command scenarios also
+check explicit destination values, and GPU memory-effect tests start from nonzero sentinels, require
+known nonzero output pixels, and retain an unchanged guard word outside the framebuffer payload.
 
 This result is implementation evidence, not a substitute for board validation. Changes to clocks,
 memory geometry, cache policy, SDRAM protocol, CDC, display scheduling, or resource composition must
