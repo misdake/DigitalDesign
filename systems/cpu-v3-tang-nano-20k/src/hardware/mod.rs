@@ -9,6 +9,7 @@ mod tang_boot_dma;
 pub use boot_dma::*;
 pub use boot_progress::*;
 pub use display::*;
+pub use gpu::rastersim;
 pub use gpu::trace;
 pub use gpu::CpuV3Gpu;
 pub use memory_arbiter::*;

@@ -39,6 +39,7 @@ use digital_design_hardware::{
 };
 
 mod host;
+pub mod rastersim;
 pub mod trace;
 
 pub(crate) use host::HostGpuMemory;
