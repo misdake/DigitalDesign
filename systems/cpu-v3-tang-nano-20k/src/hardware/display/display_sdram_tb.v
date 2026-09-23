@@ -13,7 +13,7 @@ wire [2:0] controller_command; wire [20:0] controller_address;
 wire [3:0] controller_write_mask; wire [63:0] controller_write_data; wire [7:0] controller_burst_length;
 SharedSdramPort dut(.*);
 localparam CMD_REFRESH=3'b001, CMD_ACTIVE=3'b011, CMD_WRITE=3'b100, CMD_READ=3'b101;
-localparam ST_REFRESH_WAIT=9, ST_WRITE_STAGE=13;
+localparam ST_REFRESH_WAIT=9, ST_ACTIVE_REQ=2, ST_GEARBOX_PRELOAD=14;
 integer cycles=0;
 always @(posedge clk) begin
   cycles<=cycles+1;
@@ -28,7 +28,9 @@ reg driving=0;
 always @(posedge clk) begin
   if (cpu_request_valid && cpu_request_ready && cpu_line && cpu_write) begin
     driving <= 1;
-    drive_beat <= 5'd1;
+    // A fixed line is captured immediately by the adapter.  A long write has
+    // no local buffer, so beat zero remains presented until ready.
+    drive_beat <= cpu_line_count_minus_1 == 0 ? 5'd1 : 5'd0;
     drive_total <= {cpu_line_count_minus_1, 2'b00} + 5'd4;
   end else if (driving && (drive_total == 5'd4 || cpu_write_data_ready)) begin
     if (drive_beat == drive_total - 5'd1) driving <= 0;
@@ -121,18 +123,20 @@ end endtask
 initial begin
   repeat(2) @(posedge clk); controller_init_done=1; @(posedge clk);
 
-  // Dedicated word write from idle: the half-word must be staged through
-  // ST_WRITE_STAGE (controller_write_data_valid) so the 108/54 gearbox can
-  // capture it into write_buffer before ACTIVE/WRITE. A word write is a
-  // fixed one-word request and must stay length-independent.
+  // Dedicated word write from idle: the lane-positioned half-word remains
+  // stable through ACTIVE and the one-beat WRITE. A word write is fixed and
+  // must stay length-independent.
   cpu_address=22'h00000f; word_write_value=64'h1234; word_write_active=1; cpu_write=1; cpu_request_valid=1;
   while(!cpu_request_ready) @(posedge clk);
   @(posedge clk); cpu_request_valid=0; cpu_write=0;
-  if(dut.state!=ST_WRITE_STAGE || !controller_write_data_valid) $fatal(1,"word write did not enter ST_WRITE_STAGE");
-  if(controller_write_data!=32'h12340000) $fatal(1,"word write staged wrong data");
+  #1;
+  if(dut.state!=ST_ACTIVE_REQ) $fatal(1,"word write did not enter ACTIVE");
   ack(CMD_ACTIVE);
-  ack(CMD_WRITE);
+  while (!(controller_command_valid && controller_command==CMD_WRITE)) @(negedge clk);
+  @(posedge clk); #1;
+  if(controller_write_data_valid) $fatal(1,"word write must only feed gearbox during preload");
   if(controller_write_mask!=4'b0011 || controller_write_data!=32'h12340000) $fatal(1,"bad word lane");
+  controller_command_ack=1; @(posedge clk); #1; controller_command_ack=0;
   if(!cpu_response_valid || !cpu_response_last) $fatal(1,"word write completion must carry last");
   @(negedge clk); cpu_response_ready=1; @(posedge clk); #1; cpu_response_ready=0;
   word_write_active=0;

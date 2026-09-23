@@ -22,6 +22,7 @@ reg [3:0] controller_write_mask_108 = 0;
 reg [7:0] controller_burst_length_108 = 0;
 reg command_seen_108 = 0;
 reg command_inflight_108 = 0;
+reg command_issue_delay_108 = 0;
 
 wire sdram_command_valid;
 wire [2:0] sdram_command;
@@ -68,6 +69,7 @@ always @(posedge controller_clk) begin
         controller_command_valid_108 <= 0;
         command_seen_108 <= 0;
         command_inflight_108 <= 0;
+        command_issue_delay_108 <= 0;
         ack_event_108 <= 0;
         read_phase_108 <= 0;
         read_end_phase_108 <= 0;
@@ -86,11 +88,19 @@ always @(posedge controller_clk) begin
             controller_address_108 <= sdram_address;
             controller_write_mask_108 <= sdram_write_mask;
             controller_burst_length_108 <= sdram_burst_length;
-            controller_command_valid_108 <= 1;
             command_seen_108 <= 1;
             command_inflight_108 <= 1;
+            command_issue_delay_108 <= 1;
             read_is_line_108 <= sdram_burst_length != 0;
             read_word_published_108 <= 0;
+        end
+        // The extra controller cycle makes Controller HS sample commands on
+        // the logic-clock falling edge. For writes, the next (high-half) data
+        // sample then coincides with the logic rising edge, allowing a single
+        // 64-bit holding register to be refilled without a transaction FIFO.
+        if (command_issue_delay_108) begin
+            controller_command_valid_108 <= 1;
+            command_issue_delay_108 <= 0;
         end
         if (command_inflight_108 && controller_command_ack_108) begin
             command_inflight_108 <= 0;

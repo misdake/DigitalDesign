@@ -381,10 +381,11 @@ impl<I: CpuV3CacheImage> Module for CpuV3CacheValidRamWithImage<I> {
     output wire way_1_valid,
     output wire victim
 );
+localparam [63:0] INITIAL_VALID = 64'h{:016x};
+`ifdef __ICARUS__
 reg way_0_valid_ram [0:63];
 reg way_1_valid_ram [0:63];
 reg victim_ram [0:63];
-localparam [63:0] INITIAL_VALID = 64'h{:016x};
 integer initial_set;
 initial begin
     for (initial_set = 0; initial_set < 64; initial_set = initial_set + 1) begin
@@ -407,6 +408,42 @@ end
 assign way_0_valid = way_0_valid_ram[read_set];
 assign way_1_valid = way_1_valid_ram[read_set];
 assign victim = victim_ram[read_set];
+`else
+// Four explicit 16x1 banks per array make the Gowin RAM16 mapping a hard
+// contract.  Inference is otherwise context-sensitive: flattening the data
+// cache behind the system arbiter has previously expanded both valid ways
+// into 128 FF and roughly 386 LUTs even though this leaf is unchanged.
+wire [5:0] valid_write_set = clear_enable ? clear_set : write_set;
+wire valid_write_value = clear_enable ? 1'b0 : write_value;
+wire way_0_write = clear_enable || (write_enable && !write_way);
+wire way_1_write = clear_enable || (write_enable && write_way);
+wire [3:0] way_0_bank_data;
+wire [3:0] way_1_bank_data;
+wire [3:0] victim_bank_data;
+genvar bank;
+generate
+    for (bank = 0; bank < 4; bank = bank + 1) begin : valid_bank
+        RAM16SDP1 #(.INIT_0(INITIAL_VALID[bank*16 +: 16])) way_0_ram (
+            .DO(way_0_bank_data[bank]), .DI(valid_write_value),
+            .WAD(valid_write_set[3:0]), .RAD(read_set[3:0]),
+            .WRE(way_0_write && valid_write_set[5:4] == bank), .CLK(clk)
+        );
+        RAM16SDP1 #(.INIT_0(16'h0000)) way_1_ram (
+            .DO(way_1_bank_data[bank]), .DI(valid_write_value),
+            .WAD(valid_write_set[3:0]), .RAD(read_set[3:0]),
+            .WRE(way_1_write && valid_write_set[5:4] == bank), .CLK(clk)
+        );
+        RAM16SDP1 #(.INIT_0(16'h0000)) victim_ram (
+            .DO(victim_bank_data[bank]), .DI(victim_write_value),
+            .WAD(write_set[3:0]), .RAD(read_set[3:0]),
+            .WRE(victim_write_enable && write_set[5:4] == bank), .CLK(clk)
+        );
+    end
+endgenerate
+assign way_0_valid = way_0_bank_data[read_set[5:4]];
+assign way_1_valid = way_1_bank_data[read_set[5:4]];
+assign victim = victim_bank_data[read_set[5:4]];
+`endif
 endmodule
 "#,
             I::INITIAL_VALID

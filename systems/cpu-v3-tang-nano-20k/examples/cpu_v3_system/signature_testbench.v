@@ -45,10 +45,9 @@ always #1 serial_clock = ~serial_clock;
 // address so framebuffer traffic cannot alias command or tile-list storage.
 //
 // The SharedSdramPort is a 64-bit gearbox: a cache line is eight 32-bit words
-// (four 64-bit beats). One-line writes stage all four beats before
-// ACTIVE/WRITE; longer writes preload four and stream the remainder while the
-// controller transaction is active. The model therefore delays long-write
-// acknowledgement until all beats arrive. Reads return the
+// (four 64-bit beats). Line writes preload one 64-bit pair, then stream the
+// remaining pairs while the controller transaction is active. The model
+// therefore delays line-write acknowledgement until all beats arrive. Reads return the
 // corresponding 4/8/12/16 ordered 64-bit beats. A 32-bit word W occupies memory[2*W] (low half)
 // and memory[2*W+1] (high half), matching the port's packing.
 reg [15:0] memory [0:4194303];
@@ -64,7 +63,7 @@ reg [20:0] pending_write_address = 0;
 reg [7:0] pending_write_length = 0;
 reg [63:0] write_capture [0:15];
 reg [4:0] write_capture_beat = 0;
-reg long_write_pending = 0;
+reg line_write_pending = 0;
 reg [20:0] idx;
 reg [20:0] idx2;
 integer cycle;
@@ -73,8 +72,7 @@ always @(posedge clk) begin
     sdram_command_ack <= 0;
     sdram_read_valid <= 0;
 
-    // The word port streams the four line-write beats while it is in its
-    // ST_WRITE_STAGE, which runs before ACTIVE/WRITE. Capture each beat here.
+    // Capture the preloaded pair and each pair streamed during a line write.
     if (sdram_write_data_valid) begin
         write_capture[write_capture_beat] <= sdram_write_data;
         write_capture_beat <= write_capture_beat + 1'b1;
@@ -91,28 +89,11 @@ always @(posedge clk) begin
             sdram_burst_length != 15 && sdram_burst_length != 23 &&
             sdram_burst_length != 31)
             $fatal(1, "unexpected write burst length %0d", sdram_burst_length);
-        if (sdram_burst_length > 7) begin
-            // The 54/108-MHz adapter preloads four 64-bit beats before WRITE,
-            // then streams the remainder while the controller transaction is
-            // active. Delay the completion acknowledgement until every beat
-            // is present, matching the fitted controller's cmd_ack semantics.
-            long_write_pending <= 1;
-        end else if (sdram_burst_length != 0) begin
-            sdram_command_ack <= 1;
-            write_capture_beat <= 0;
-            // Commit one through four cache lines: beat j carries 32-bit words (base+2*j) and
-            // (base+2*j+1) in sdram_write_data[31:0] and [63:32].
-            begin : line_write_commit
-                integer j;
-                for (j = 0; j < (sdram_burst_length + 1) / 2; j = j + 1) begin
-                    idx = sdram_address + 2*j;
-                    memory[{idx, 1'b0}] <= write_capture[j][15:0];
-                    memory[{idx, 1'b1}] <= write_capture[j][31:16];
-                    idx = idx + 1;
-                    memory[{idx, 1'b0}] <= write_capture[j][47:32];
-                    memory[{idx, 1'b1}] <= write_capture[j][63:48];
-                end
-            end
+        if (sdram_burst_length != 0) begin
+            // Every line length uses the same one-pair gearbox. Delay the
+            // completion acknowledgement until all pairs are present,
+            // matching the fitted controller's cmd_ack semantics.
+            line_write_pending <= 1;
         end else begin
             sdram_command_ack <= 1;
             write_capture_beat <= 0;
@@ -123,9 +104,9 @@ always @(posedge clk) begin
         end
     end
 
-    if (long_write_pending &&
+    if (line_write_pending &&
         write_capture_beat == (pending_write_length + 1) / 2) begin
-        begin : long_line_write_commit
+        begin : line_write_commit
             integer j;
             for (j = 0; j < (pending_write_length + 1) / 2; j = j + 1) begin
                 idx = pending_write_address + 2*j;
@@ -138,7 +119,7 @@ always @(posedge clk) begin
         end
         sdram_command_ack <= 1;
         write_capture_beat <= 0;
-        long_write_pending <= 0;
+        line_write_pending <= 0;
     end
 
     // One READ command returns burst_length+1 ordered 64-bit beats for a line
@@ -192,7 +173,7 @@ always @(posedge clk) begin
             dut.u_shared_sdram_port.timeout_count,
             dut.u_shared_sdram_port.line_fed,
             dut.u_shared_sdram_port.line_total,
-            long_write_pending, write_capture_beat,
+            line_write_pending, write_capture_beat,
             (pending_write_length + 1) / 2, pending_write_address,
             dut.gpu_ro_memory_error, dut.gpu_fb_r_memory_error,
             dut.gpu_fb_w_memory_error);

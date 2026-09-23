@@ -8,10 +8,10 @@
 // beat. The request address must stay inside one 1 KiB SDRAM row; splitting a
 // request that would cross a row is the requester's responsibility.
 //
-// Length zero keeps the legacy four-beat adapter staging. Longer GPU writes
-// use an explicit per-beat ready: four beats are preloaded into the 108/54
-// gearbox, then the remainder streams while the controller drains that ring.
-// Thus neither side stores a complete 128-byte request.
+// Length zero keeps the legacy four-beat adapter staging because CPU caches do
+// not expose per-beat backpressure. Longer GPU writes remain in their source
+// cache entry and advance only when the related-clock width converter consumes
+// a low/high pair. The gearbox holds one 64-bit pair, not a transaction buffer.
 module SharedSdramPort (
     input wire clk, input wire reset,
     input wire cpu_request_valid, input wire cpu_write, input wire cpu_line,
@@ -38,7 +38,7 @@ localparam CMD_REFRESH=3'b001, CMD_ACTIVE=3'b011, CMD_WRITE=3'b100, CMD_READ=3'b
 localparam ST_WAIT=0, ST_IDLE=1, ST_ACTIVE_REQ=2, ST_ACTIVE_WAIT=3,
            ST_OP_REQ=4, ST_OP_WAIT=5, ST_CPU_RESPONSE=6,
            ST_RECOVERY=7, ST_REFRESH_REQ=8, ST_REFRESH_WAIT=9, ST_ERROR=10,
-           ST_WRITE_CAPTURE=11, ST_WRITE_STAGE=13, ST_LONG_PRELOAD=14;
+           ST_WRITE_CAPTURE=11, ST_GEARBOX_PRELOAD=14;
 localparam [19:0] TIMEOUT=20'hfffff;
 reg [3:0] state = ST_WAIT;
 reg pending_write = 0, pending_line = 0;
@@ -51,6 +51,7 @@ reg [63:0] word_write_data = 0;
 (* syn_ramstyle = "registers" *) reg [63:0] line_write_buffer [0:3];
 reg [4:0] line_fed = 0;
 reg [4:0] line_total = 0;
+reg write_stream_delay = 0;
 reg [3:0] beat = 0;
 reg read_ack_seen = 0;
 reg [9:0] refresh_count = 0;
@@ -59,22 +60,21 @@ reg [2:0] recovery_count = 0;
 
 wire refresh_due = refresh_count >= 10'd600;
 assign cpu_request_ready = state == ST_IDLE && controller_init_done;
-wire accepting_long_write = state == ST_IDLE && controller_init_done &&
-    cpu_request_valid && cpu_write && cpu_line &&
-    cpu_line_count_minus_1 != 0;
-wire feeding_long_write = pending_write && pending_line &&
-    pending_line_count != 0 &&
-    ((state == ST_LONG_PRELOAD) ||
-     (state == ST_OP_WAIT && line_fed < line_total));
+wire preloading_line_write = pending_write && pending_line &&
+    state == ST_GEARBOX_PRELOAD && line_fed < line_total;
+wire streaming_line_write = pending_write && pending_line &&
+    state == ST_OP_WAIT && !write_stream_delay && line_fed < line_total;
+wire feeding_line_write = preloading_line_write || streaming_line_write;
+wire feeding_long_write = feeding_line_write && pending_line_count != 0;
 assign cpu_write_data_ready = feeding_long_write && controller_write_data_ready;
-assign controller_write_data_valid = state == ST_WRITE_STAGE ||
-    accepting_long_write || (feeding_long_write && controller_write_data_ready);
+assign controller_write_data_valid = pending_write &&
+    ((pending_line && feeding_line_write) ||
+     (!pending_line && state == ST_GEARBOX_PRELOAD));
 // Legacy one-line writes stage through the local buffer. Long writes and word
 // writes present the source/held value directly.
 assign controller_write_data =
-    (accepting_long_write || pending_line_count != 0) ? cpu_write_data :
-    ((state == ST_WRITE_STAGE && pending_line) ? line_write_buffer[beat[1:0]] :
-     word_write_data);
+    pending_line_count != 0 ? cpu_write_data :
+    (pending_line ? line_write_buffer[beat[1:0]] : word_write_data);
 
 always @(posedge clk) begin
     controller_command_valid <= 0;
@@ -84,6 +84,7 @@ always @(posedge clk) begin
         state <= ST_WAIT; cpu_response_valid <= 0; cpu_response_last <= 0; cpu_error <= 0;
         refresh_count <= 0;
         pending_line_count <= 0; line_fed <= 0; line_total <= 0;
+        write_stream_delay <= 0;
     end else begin
         case (state)
         ST_WAIT: begin refresh_count <= 0; state <= ST_IDLE; end
@@ -100,27 +101,25 @@ always @(posedge clk) begin
                 if (cpu_write && cpu_line) begin
                     line_write_buffer[0] <= cpu_write_data;
                     if (cpu_line_count_minus_1 == 2'b00) begin
-                        // Legacy four-beat staging: capture beats 1..3, then
-                        // stream all four before ACTIVE/WRITE.
+                        // Legacy four-beat staging: capture beats 1..3 before
+                        // ACTIVE because this source has no beat-ready input.
                         beat <= 4'd1;
                         state <= ST_WRITE_CAPTURE;
                     end else begin
-                        // Beat zero is captured by the gearbox on this same
-                        // accepting edge. Preload beats 1..3 before ACTIVE.
-                        line_fed <= 5'd1;
-                        state <= ST_LONG_PRELOAD;
+                        // Preload the related-clock holding register. Every
+                        // later beat stays in the source cache.
+                        line_fed <= 0;
+                        state <= ST_GEARBOX_PRELOAD;
                     end
                 end else if (cpu_write) begin
                     // A word write has no 64-bit CPU stream to capture; hold
-                    // this lane-positioned value across ST_WRITE_STAGE so the
-                    // gearbox stays four-beat aligned (burst-zero writes read
-                    // entry zero). No later state rewrites it through a wide
-                    // mux.
+                    // this lane-positioned value through gearbox preload so the
+                    // width converter can present it for the one-beat WRITE.
                     word_write_data <= cpu_address[0] ?
                         {32'b0,cpu_write_data[15:0],16'b0} :
                         {48'b0,cpu_write_data[15:0]};
                     beat <= 0;
-                    state <= ST_WRITE_STAGE;
+                    state <= ST_GEARBOX_PRELOAD;
                 end else begin
                     state <= ST_ACTIVE_REQ;
                 end
@@ -129,18 +128,19 @@ always @(posedge clk) begin
         // Legacy one-line capture: three more 64-bit beats into the ring.
         ST_WRITE_CAPTURE: begin
             line_write_buffer[beat[1:0]] <= cpu_write_data;
-            if (beat == 4'd3) begin beat <= 0; state <= ST_WRITE_STAGE; end
+            if (beat == 4'd3) begin
+                beat <= 0;
+                line_fed <= 0;
+                state <= ST_GEARBOX_PRELOAD;
+            end
             else beat <= beat + 1'b1;
         end
-        // Beats 1..3 fill the gearbox's initial safety distance. The source
-        // changes its beat only on cpu_write_data_ready.
-        ST_LONG_PRELOAD: if (controller_write_data_ready) begin
-            if (line_fed == 5'd3) state <= ST_ACTIVE_REQ;
+        ST_GEARBOX_PRELOAD: if (controller_write_data_ready) begin
             line_fed <= line_fed + 5'd1;
-        end
-        ST_WRITE_STAGE: if (controller_write_data_ready) begin
-            if (beat == 4'd3) begin beat <= 0; state <= ST_ACTIVE_REQ; end
-            else beat <= beat + 1'b1;
+            if (pending_line_count == 0)
+                beat <= beat + 1'b1;
+            if (line_fed == 0)
+                state <= ST_ACTIVE_REQ;
         end
         ST_ACTIVE_REQ: begin
             controller_command <= CMD_ACTIVE; controller_precharge <= 0;
@@ -167,13 +167,25 @@ always @(posedge clk) begin
             // the physical SDRAM. Reads must keep all lanes enabled.
             controller_write_mask <= pending_write && !pending_line ?
                 (pending_address[0] ? 4'b0011 : 4'b1100) : 4'b0000;
-            controller_command_valid <= 1; beat <= 0; read_ack_seen <= 0;
+            controller_command_valid <= 1;
+            // The 108-MHz wrapper phase-aligns WRITE one controller cycle
+            // later. Skip the first ST_OP_WAIT rising edge; the following edge
+            // consumes the preloaded high half and can capture the next pair.
+            if (pending_write && pending_line)
+                write_stream_delay <= 1;
+            if (!(pending_write && pending_line)) beat <= 0;
+            read_ack_seen <= 0;
             timeout_count <= 0; state <= ST_OP_WAIT;
         end
         ST_OP_WAIT: begin
             if (controller_command_ack) read_ack_seen <= 1;
-            if (feeding_long_write && controller_write_data_ready)
+            if (pending_write && pending_line && write_stream_delay)
+                write_stream_delay <= 0;
+            if (feeding_line_write && controller_write_data_ready) begin
                 line_fed <= line_fed + 5'd1;
+                if (pending_line_count == 0)
+                    beat <= beat + 1'b1;
+            end
             if (pending_write && controller_command_ack) begin
                 cpu_read_data <= 0; cpu_response_last <= 1;
                 cpu_response_valid <= 1; state <= ST_CPU_RESPONSE;

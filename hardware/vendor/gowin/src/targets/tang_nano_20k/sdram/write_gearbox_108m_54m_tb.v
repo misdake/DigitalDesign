@@ -1,6 +1,8 @@
 `timescale 1ns/1ps
 module tb;
-reg logic_clk=0, controller_clk=0, reset=1;
+// The fitted PLL aligns every other controller rising edge with a logic rising
+// edge.  Start controller high so this testbench preserves that relationship.
+reg logic_clk=0, controller_clk=1, reset=1;
 always #10 logic_clk=~logic_clk;
 always #5 controller_clk=~controller_clk;
 reg capture_valid=0, write_start=0;
@@ -26,38 +28,51 @@ function [31:0] expected_word; input integer transaction; input integer physical
 end endfunction
 
 integer tx, count, total, physical;
-task capture_one; input integer transaction; input integer beat; begin
-  @(negedge logic_clk); capture_data=value(transaction,beat); capture_valid=1;
-  @(posedge logic_clk); #1; capture_valid=0;
-end endtask
+integer source_transaction=0, source_beat=0, source_total=0;
+reg source_active=0;
+always @(posedge logic_clk) begin
+  if(source_active) begin
+    if(source_beat==source_total-1) begin
+      source_active<=0;
+      capture_valid<=0;
+    end
+    else begin
+      source_beat<=source_beat+1;
+      capture_data<=value(source_transaction,source_beat+1);
+    end
+  end
+end
 
 task run_burst; input integer transaction; input [4:0] length; begin
   total=(length+1)/2;
-  for(count=0;count<4;count=count+1) capture_one(transaction,count);
+  source_transaction=transaction; source_beat=0; source_total=total;
+  source_active=1; capture_data=value(transaction,0); capture_valid=1;
   burst_length=length;
-  @(negedge controller_clk); write_start=1; #1;
+  // Fill the one holding register; the remainder stays at the source.
+  @(posedge logic_clk); #1;
+  // Start so M0 lands on the logic-clock falling edge. M1 then lands on the
+  // rising edge that refills the register for M2.
+  @(negedge controller_clk);
+  while(logic_clk!==1'b1) @(negedge controller_clk);
+  write_start=1; #1;
   if(controller_data!==expected_word(transaction,0))
     $fatal(1,"tx %0d physical 0 got %h",transaction,controller_data);
   @(posedge controller_clk); #1; write_start=0;
-  fork
-    begin
-      for(count=4;count<total;count=count+1) capture_one(transaction,count);
-    end
-    begin
-      for(physical=1;physical<=length;physical=physical+1) begin
-        @(negedge controller_clk); #1;
-        if(controller_data!==expected_word(transaction,physical))
-          $fatal(1,"tx %0d physical %0d got %h",transaction,physical,controller_data);
-        @(posedge controller_clk);
-      end
-    end
-  join
+  for(physical=1;physical<=length;physical=physical+1) begin
+    @(negedge controller_clk); #1;
+    if(controller_data!==expected_word(transaction,physical))
+      $fatal(1,"tx %0d physical %0d got %h",transaction,physical,controller_data);
+    @(posedge controller_clk);
+  end
+  @(posedge logic_clk); #1;
+  if(source_active) $fatal(1,"tx %0d source did not retire",transaction);
+  capture_valid=0;
   repeat(2) @(posedge controller_clk);
 end endtask
 
 initial begin
   repeat(3) @(posedge controller_clk); reset=0;
-  // The two one-line writes deliberately start at ring indices 0 then 4.
+  // Consecutive bursts exercise restart as well as every supported length.
   run_burst(0,5'd7);
   run_burst(1,5'd7);
   run_burst(2,5'd15);

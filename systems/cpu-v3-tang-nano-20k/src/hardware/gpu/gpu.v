@@ -56,7 +56,7 @@ module CpuV3Gpu (
     input wire [63:0] gpu_fb_r_read_data, input wire gpu_fb_r_response_last,
     input wire gpu_fb_r_error,
 
-    output wire [15:0] device_read_data,
+    output reg [15:0] device_read_data,
     output wire gpu_ro_request_valid, output wire gpu_ro_write,
     output wire [21:0] gpu_ro_address, output wire [1:0] gpu_ro_line_count_minus_1,
     output wire [63:0] gpu_ro_write_data,
@@ -176,11 +176,21 @@ module CpuV3Gpu (
         | (submit_rejected ? STATUS_SUBMIT_REJECTED : 16'h0000)
         | (command_error ? STATUS_COMMAND_ERROR : 16'h0000);
 
-    assign device_read_data = !read_selected ? 16'h0000 :
-        (device_channel == RECEIVED_COUNT) ? received_count :
-        (device_channel == EXECUTED_COUNT) ? executed_count :
-        (device_channel == STATUS) ? status_word :
-        (device_channel == QUEUE_LEVEL) ? {14'b0, fifo_count} : 16'h0000;
+    // Keep the readback mux structurally separate from the write-side staging
+    // decoder. Besides being clearer, this avoids a large shared decode cone
+    // between DEV_SEND data and DEV_RECV writeback in Gowin synthesis.
+    always @* begin
+        device_read_data = 0;
+        if (read_selected) begin
+            case (device_channel)
+                RECEIVED_COUNT: device_read_data = received_count;
+                EXECUTED_COUNT: device_read_data = executed_count;
+                STATUS: device_read_data = status_word;
+                QUEUE_LEVEL: device_read_data = {14'b0, fifo_count};
+                default: device_read_data = 0;
+            endcase
+        end
+    end
 
     // ---- submit acceptance ----
     wire stage_complete = base_low_written & base_high_written & words_low_written & words_high_written;

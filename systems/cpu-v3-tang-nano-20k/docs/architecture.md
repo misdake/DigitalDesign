@@ -50,10 +50,11 @@ The I-cache and D-cache are independently instantiated 4-KiB, two-way caches wit
 parity. Way zero and way one occupy the lower and upper halves of both parity banks. Resident reads
 pipeline lookup and selected-way response for one ordered hit per cycle when there is no conflict or
 backpressure. Both caches store their valid and victim bits in a RAM16 leaf with asynchronous reads:
-two valid ways and the victim bit per cache, twelve 16-deep cells in total. Gowin keeps that leaf in
-RAM16 only while no array write takes its way or enable from the same array's asynchronous read
-data, so the victim is invalidated from the registered pending way when the line request starts
-rather than from the combinationally selected victim or the request handshake. Because the RAM
+two valid ways and the victim bit per cache, twelve 16-deep cells in total. The synthesis branch
+instantiates twelve `RAM16SDP1` cells explicitly because otherwise whole-system context changes can
+expand the D-cache leaf into 128 FF plus read muxes even when its source is unchanged. The victim is
+still invalidated from the registered pending way when the line request starts rather than from the
+combinationally selected victim or the request handshake. Because the RAM
 cannot clear in one cycle, a global invalidate or reset clears one set of both ways
 per cycle and blocks lookups for the 64-set sweep. The D-cache additionally drives a hold so the core
 does not issue requests while its reset or error-scrub sweep runs.
@@ -82,10 +83,12 @@ last response or error. GPU framebuffer reads and writes are both active cache t
 D-cache, and display paths transfer fixed 4x64-bit lines; boot DMA retains its narrow-word mode.
 The three GPU ports encode one through four consecutive lines as `line_count_minus_one`, giving
 32/64/96/128-byte requests that must remain within one 1-KiB SDRAM row. Reads return 4/8/12/16
-unstallable 64-bit beats. Long writes accept beat zero with the request and advance the source only
-when the per-beat write-ready signal is asserted. `SharedSdramPort` preloads four beats and then
-streams through one 8x64-bit circular 108/54-MHz gearbox while Controller HS consumes 8/16/24/32
-32-bit beats; it does not duplicate the complete request in the adapter. Command and tile-list
+unstallable 64-bit beats. Long writes advance the source only when the per-beat write-ready signal
+is asserted. `SharedSdramPort` preloads one 64-bit holding pair, phase-aligns WRITE so Controller HS
+samples its low half on the 54-MHz falling edge, and replaces it as the high half is sampled on the
+following rising edge. The remaining 64-bit beats stay in the framebuffer-cache entry; neither the
+adapter nor gearbox contains a 128-byte transaction buffer. Controller HS consumes 8/16/24/32
+32-bit beats. Command and tile-list
 fetches remain one line, while framebuffer cache refill and clean use four-line transactions.
 An idle adapter accepts a long write even when refresh becomes due on the same cycle; the accepted
 finite transaction completes first and the overdue refresh runs immediately afterward, so beat zero
@@ -204,12 +207,12 @@ the same stable mapping through `LoaderError::boot_report`.
 
 ## Current fitted result and validation boundary
 
-The current full-system build uses 12,587 Logic (10,427 LUT, 1,536 ALU, 104 RAM16), 5,309 logic
-registers, 8,603 CLS, five SDPB, four DPB, one pROM, two `MULT18X18`, one `MULT36X36`, and one
+The current full-system build uses 11,744 Logic (9,530 LUT, 1,542 ALU, 112 RAM16), 4,731 logic
+registers, 7,981 CLS, five SDPB, four DPB, one pROM, two `MULT18X18`, one `MULT36X36`, and one
 `MULTADDALU18X18`. The two additional SDPB blocks are the 512x64 framebuffer tile cache. The CPU
-clock closes at 54.562 MHz against the 54-MHz constraint with 0.191 ns worst setup slack and zero
-setup/hold TNS; the first setup path is an existing core-state-to-GPR-write-data path.
-Controller timing closes at 122.284 MHz against 108 MHz. These are fitted implementation results,
+clock closes at 54.237 MHz against the 54-MHz constraint with 0.081 ns worst setup slack and zero
+setup/hold TNS; the first setup path is the existing core-to-D-cache control cone.
+Controller timing closes at 162.749 MHz against 108 MHz. These are fitted implementation results,
 not board evidence.
 
 The system-level emulator-vs-RTL co-simulation `tests/system_cosim.rs` drives the composed RTL

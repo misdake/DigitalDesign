@@ -72,10 +72,10 @@ impl TargetComponent for GpuResources {
 
     fn resource_requirements(&self) -> Vec<ResourceAmount> {
         vec![
-            // The three small command/list/payload arrays occupy 24 RAM16
+            // The small command/list/payload and submission arrays occupy 32 RAM16
             // primitives in the fitted system. Account the physical granularity,
             // not just their logical payload bits.
-            ResourceAmount::new(ResourceKind::SsramBit, 24 * 64),
+            ResourceAmount::new(ResourceKind::SsramBit, 32 * 64),
             ResourceAmount::new(ResourceKind::Bsram18K, 2),
         ]
     }
@@ -1028,8 +1028,8 @@ impl Module for CpuV3Gpu {
     const USES_MAIN_CLOCK: bool = true;
 
     fn target_resources() -> Vec<TargetResourceRequest> {
-        // Gowin maps the small command-line and two-entry submission arrays to
-        // seventeen 64-bit RAM16 leaves. The 512x64 framebuffer beat cache is
+        // Gowin maps the small command-line/list/payload/submission arrays to
+        // thirty-two 64-bit RAM16 leaves. The 512x64 framebuffer beat cache is
         // two inferred 512x32 synchronous 1R1W BSRAMs. Keep both parts in one
         // allocation because a target leaf has one hierarchical label.
         vec![TargetResourceRequest::new(GpuResources)]
