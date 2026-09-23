@@ -157,6 +157,10 @@ end
 
 integer k;
 reg [21:0] cbase;
+// Transaction trace sequence number; every GPU line bumps it. The comparison
+// in `tests/gpu_trace_cosim.rs` ignores the number and compares event bodies.
+integer tseq = 0;
+reg [63:0] tbeat = 64'h0;
 always @(posedge clk) begin
     if (reset) begin
         mstate <= MS_IDLE;
@@ -169,18 +173,32 @@ always @(posedge clk) begin
         case (mstate)
             MS_IDLE: begin
                 if (gpu_ro_request_valid) begin
+                    $display("GPU %0d REQ ro R %06h %0d", tseq, gpu_ro_address,
+                             gpu_ro_line_count_minus_1 + 1);
+                    tseq = tseq + 1;
                     maddr <= gpu_ro_address;
                     mbeats <= 5'd4;
                     mbeat <= 5'd0;
                     mport <= 1'b0;
                     mstate <= MS_RD;
                 end else if (gpu_fb_r_request_valid) begin
+                    $display("GPU %0d REQ fb_r R %06h %0d", tseq, gpu_fb_r_address,
+                             gpu_fb_r_line_count_minus_1 + 1);
+                    tseq = tseq + 1;
                     maddr <= gpu_fb_r_address;
                     mbeats <= 5'd16;
                     mbeat <= 5'd0;
                     mport <= 1'b1;
                     mstate <= MS_RD;
                 end else if (gpu_fb_w_request_valid) begin
+                    $display("GPU %0d REQ fb_w W %06h %0d", tseq, gpu_fb_w_address,
+                             gpu_fb_w_line_count_minus_1 + 1);
+                    tseq = tseq + 1;
+                    // Beat zero is captured on the accepting edge.
+                    $display("GPU %0d WDAT fb_w 0 %04h %04h %04h %04h", tseq,
+                             gpu_fb_w_write_data[15:0], gpu_fb_w_write_data[31:16],
+                             gpu_fb_w_write_data[47:32], gpu_fb_w_write_data[63:48]);
+                    tseq = tseq + 1;
                     maddr <= gpu_fb_w_address;
                     mbeats <= 5'd16;
                     mbeat <= 5'd1;
@@ -189,11 +207,33 @@ always @(posedge clk) begin
                 end
             end
             MS_RD: begin
+                tbeat = beat_of(maddr, mbeat);
+                if (mport == 1'b0) begin
+                    $display("GPU %0d RDAT ro %0d %04h %04h %04h %04h", tseq, mbeat,
+                             tbeat[15:0], tbeat[31:16], tbeat[47:32], tbeat[63:48]);
+                    tseq = tseq + 1;
+                    if (mbeat + 5'd1 == mbeats) begin
+                        $display("GPU %0d RESP ro 0", tseq);
+                        tseq = tseq + 1;
+                    end
+                end else begin
+                    $display("GPU %0d RDAT fb_r %0d %04h %04h %04h %04h", tseq, mbeat,
+                             tbeat[15:0], tbeat[31:16], tbeat[47:32], tbeat[63:48]);
+                    tseq = tseq + 1;
+                    if (mbeat + 5'd1 == mbeats) begin
+                        $display("GPU %0d RESP fb_r 0", tseq);
+                        tseq = tseq + 1;
+                    end
+                end
                 if (mbeat + 5'd1 == mbeats) mstate <= MS_REC;
                 else mbeat <= mbeat + 5'd1;
             end
             MS_WR: begin
                 if (gpu_fb_w_write_data_ready) begin
+                    $display("GPU %0d WDAT fb_w %0d %04h %04h %04h %04h", tseq, mbeat,
+                             gpu_fb_w_write_data[15:0], gpu_fb_w_write_data[31:16],
+                             gpu_fb_w_write_data[47:32], gpu_fb_w_write_data[63:48]);
+                    tseq = tseq + 1;
                     wbuf[mbeat[3:0]] = gpu_fb_w_write_data;
                     if (mbeat + 5'd1 == mbeats) begin
                         for (k = 0; k < 16; k = k + 1) begin
@@ -209,10 +249,34 @@ always @(posedge clk) begin
                     end
                 end
             end
-            MS_WRESP: mstate <= MS_REC;
+            MS_WRESP: begin
+                $display("GPU %0d RESP fb_w 0", tseq);
+                tseq = tseq + 1;
+                mstate <= MS_REC;
+            end
             default: mstate <= MS_IDLE;
         endcase
     end
+end
+
+// ---- completion-point trace ----
+// DONE submission: executed_count change. DONE draw: a nonempty draw handing
+// control back from PH_TILE_STEP (6) to PH_DECODE (3).
+reg [15:0] prev_executed_count = 16'h0;
+reg [4:0] prev_dut_phase = 5'd0;
+always @(posedge clk) begin
+    if (!reset) begin
+        if (dut.executed_count !== prev_executed_count) begin
+            $display("GPU %0d DONE submission %0d", tseq, dut.executed_count);
+            tseq = tseq + 1;
+        end
+        if ((prev_dut_phase == 5'd6) && (dut.phase == 5'd3)) begin
+            $display("GPU %0d DONE draw %0d", tseq, dut.draw_tile_count);
+            tseq = tseq + 1;
+        end
+    end
+    prev_executed_count <= dut.executed_count;
+    prev_dut_phase <= dut.phase;
 end
 
 // ---- device register helpers ----
@@ -416,6 +480,7 @@ initial begin
     // ------------------------------------------------------------------
     // Scenario A: partial-row LOAD preservation and CLEAR initialization.
     // ------------------------------------------------------------------
+    $display("GPU %0d SCENE A", tseq); tseq = tseq + 1;
     do_reset();
     for (i = 0; i < 256; i = i + 1) mem[FB_A + 512 + i] = 16'h1000 + i;
     mem[FB_GUARD] = 16'hbeef;
@@ -443,6 +508,7 @@ initial begin
     // ------------------------------------------------------------------
     // Scenario B: duplicate/unordered indices, then dirty victim eviction.
     // ------------------------------------------------------------------
+    $display("GPU %0d SCENE B_UNORDERED", tseq); tseq = tseq + 1;
     do_reset();
     put_set_target(CMD_BASE, FB_A);
     put_fake_draw(CMD_BASE + 4, LIST_BASE, 16'd4, 2'd1, 16'h0, 16'h1111, 16'hffff);
@@ -463,6 +529,7 @@ initial begin
             $fatal(1, "unordered LOAD tile 5 mismatch");
     end
 
+    $display("GPU %0d SCENE B_EVICT", tseq); tseq = tseq + 1;
     do_reset();
     for (i = 0; i < 256; i = i + 1) mem[FB_A + 2048 + i] = 16'h2000 + i;
     put_set_target(CMD_BASE, FB_A);
@@ -484,6 +551,7 @@ initial begin
     // ------------------------------------------------------------------
     // Scenario C: END retires only after every dirty entry is clean.
     // ------------------------------------------------------------------
+    $display("GPU %0d SCENE C_DRAIN", tseq); tseq = tseq + 1;
     do_reset();
     put_set_target(CMD_BASE, FB_A);
     put_fake_draw(CMD_BASE + 4, LIST_BASE, 16'd3, 2'd1, 16'h0, 16'h0f0f, 16'hffff);
@@ -500,6 +568,7 @@ initial begin
 
     // A new submission owns a fresh cache namespace and may switch targets
     // without a device reset after the preceding END drained all dirty data.
+    $display("GPU %0d SCENE C_GRADIENT", tseq); tseq = tseq + 1;
     put_set_target(CMD_BASE, FB_B);
     put_fake_draw_flags(CMD_BASE + 4, LIST_BASE, 16'd1, 2'd1,
                         16'h0, 16'h8215, 16'hffff, 16'h0001);
@@ -516,6 +585,7 @@ initial begin
     // ------------------------------------------------------------------
     // Scenario D: fake draw can generate a tile-local XY gradient.
     // ------------------------------------------------------------------
+    $display("GPU %0d SCENE D", tseq); tseq = tseq + 1;
     do_reset();
     put_set_target(CMD_BASE, FB_A);
     put_fake_draw_flags(CMD_BASE + 4, LIST_BASE, 16'd1, 2'd1,
@@ -534,6 +604,7 @@ initial begin
     // ------------------------------------------------------------------
     // Scenario E: every invalid command class retires with command error.
     // ------------------------------------------------------------------
+    $display("GPU %0d SCENE E1", tseq); tseq = tseq + 1;
     do_reset();
     expected_exec = 16'd1;
 
@@ -543,11 +614,13 @@ initial begin
     put_qword(CMD_BASE + 8, 64'h0);
     run_error_case(16'd12);
 
+    $display("GPU %0d SCENE E2", tseq); tseq = tseq + 1;
     // Reserved load op 2.
     put_set_target(CMD_BASE, FB_A);
     put_fake_draw(CMD_BASE + 4, LIST_BASE, 16'd0, 2'd2, 16'h0, 16'h0, 16'h0);
     run_error_case(16'd16);
 
+    $display("GPU %0d SCENE E3", tseq); tseq = tseq + 1;
     // Nonzero reserved arg0 bit above the load op.
     put_set_target(CMD_BASE, FB_A);
     put_qword(CMD_BASE + 4, {32'h00040000, 16'h0000, 8'd3, 8'he1});
@@ -555,39 +628,46 @@ initial begin
     put_qword(CMD_BASE + 12, 64'h0);
     run_error_case(16'd16);
 
+    $display("GPU %0d SCENE E4", tseq); tseq = tseq + 1;
     // Nonzero payload-0 high half.
     put_set_target(CMD_BASE, FB_A);
     put_fake_draw(CMD_BASE + 4, LIST_BASE, 16'd0, 2'd0, 16'h0, 16'h0, 16'h0);
     put_qword(CMD_BASE + 8, {32'h00000001, 32'h0});
     run_error_case(16'd16);
 
+    $display("GPU %0d SCENE E5", tseq); tseq = tseq + 1;
     // Nonzero payload-1 reserved bits.
     put_set_target(CMD_BASE, FB_A);
     put_fake_draw(CMD_BASE + 4, LIST_BASE, 16'd0, 2'd0, 16'h0, 16'h0, 16'h0);
     put_qword(CMD_BASE + 12, {16'h0001, 48'h0});
     run_error_case(16'd16);
 
+    $display("GPU %0d SCENE E6", tseq); tseq = tseq + 1;
     // Unaligned tile list.
     put_set_target(CMD_BASE, FB_A);
     put_fake_draw(CMD_BASE + 4, LIST_BASE + 1, 16'd1, 2'd1, 16'h0, 16'h0, 16'h0);
     mem[LIST_BASE + 1] = 16'd0;
     run_error_case(16'd16);
 
+    $display("GPU %0d SCENE E7", tseq); tseq = tseq + 1;
     // Tile list that leaves 22-bit word memory.
     put_set_target(CMD_BASE, FB_A);
     put_fake_draw(CMD_BASE + 4, 22'h3ffff0, 16'd32, 2'd1, 16'h0, 16'h0, 16'h0);
     run_error_case(16'd16);
 
+    $display("GPU %0d SCENE E8", tseq); tseq = tseq + 1;
     // Tile index at the tile limit.
     put_set_target(CMD_BASE, FB_A);
     put_fake_draw(CMD_BASE + 4, LIST_BASE, 16'd1, 2'd1, 16'h0, 16'h0, 16'h0);
     mem[LIST_BASE] = 16'd375;
     run_error_case(16'd16);
 
+    $display("GPU %0d SCENE E9", tseq); tseq = tseq + 1;
     // FAKE_DRAW before any SET_TARGET.
     put_fake_draw(CMD_BASE, LIST_BASE, 16'd0, 2'd1, 16'h0, 16'h0, 16'h0);
     run_error_case(16'd12);
 
+    $display("GPU %0d SCENE E10", tseq); tseq = tseq + 1;
     // A legal empty list performs no read and no error.
     put_set_target(CMD_BASE, FB_A);
     put_fake_draw(CMD_BASE + 4, LIST_BASE, 16'd0, 2'd0, 16'h0, 16'h0, 16'h0);
@@ -597,6 +677,7 @@ initial begin
     // ------------------------------------------------------------------
     // Scenario E: a command that crosses a 32-byte line boundary.
     // ------------------------------------------------------------------
+    $display("GPU %0d SCENE X", tseq); tseq = tseq + 1;
     do_reset();
     put_set_target(CMD_BASE, FB_A);
     put_set_target(CMD_BASE + 4, FB_B);
@@ -611,6 +692,7 @@ initial begin
     // ------------------------------------------------------------------
     // Scenario F: one active plus two queued submissions, then a rejection.
     // ------------------------------------------------------------------
+    $display("GPU %0d SCENE F", tseq); tseq = tseq + 1;
     do_reset();
     put_set_target(CMD_BASE, FB_A);
     put_fake_draw(CMD_BASE + 4, LIST_BASE, 16'd3, 2'd1, 16'h0, 16'h0f0f, 16'hffff);
@@ -640,6 +722,7 @@ initial begin
     // Scenario G: a target change with resident cache entries is illegal,
     // while re-selecting the same target is legal.
     // ------------------------------------------------------------------
+    $display("GPU %0d SCENE G1", tseq); tseq = tseq + 1;
     do_reset();
     put_set_target(CMD_BASE, FB_A);
     put_fake_draw(CMD_BASE + 4, LIST_BASE, 16'd1, 2'd1, 16'h0, 16'h1234, 16'hffff);
@@ -649,6 +732,7 @@ initial begin
     expected_exec = 16'd1;
     run_error_case(16'd24);
 
+    $display("GPU %0d SCENE G2", tseq); tseq = tseq + 1;
     do_reset();
     put_set_target(CMD_BASE, FB_A);
     put_fake_draw(CMD_BASE + 4, LIST_BASE, 16'd1, 2'd1, 16'h0, 16'h1234, 16'hffff);

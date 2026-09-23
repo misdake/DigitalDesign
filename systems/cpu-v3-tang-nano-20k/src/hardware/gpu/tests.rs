@@ -2,6 +2,7 @@
 //! direct-memory line responder and an explicit Icarus co-simulation of the
 //! handwritten command FSM.
 
+use super::trace::{check_invariants, GpuTraceCollector};
 use super::*;
 use crate::gpu_device::{
     gpu_gradient_pixel, GPU_CMD_BASE_HIGH, GPU_CMD_BASE_LOW, GPU_CMD_WORDS_HIGH, GPU_CMD_WORDS_LOW,
@@ -24,6 +25,7 @@ struct Harness {
     core: GpuCore,
     memory: HostGpuMemory,
     words: Vec<u16>,
+    trace: GpuTraceCollector,
 }
 
 impl Harness {
@@ -32,6 +34,7 @@ impl Harness {
             core: GpuCore::default(),
             memory: HostGpuMemory::default(),
             words: vec![0u16; MEMORY_WORDS],
+            trace: GpuTraceCollector::default(),
         }
     }
 
@@ -67,6 +70,7 @@ impl Harness {
         };
         let mem = self.memory.inputs(&self.words);
         let outputs = self.core.combine(dev, mem);
+        self.trace.on_cycle(&mem, &outputs, &self.core);
         self.core.advance(false, dev, mem);
         self.memory.advance(&outputs, &mut self.words);
         outputs.read_data
@@ -601,6 +605,50 @@ fn emulator_handles_a_command_that_crosses_a_32_byte_line() {
     assert_eq!(harness.read(GPU_STATUS) & GPU_STATUS_COMMAND_ERROR, 0);
     // The final target was slot A, and the tile landed there.
     assert_eq!(harness.words[FRAMEBUFFER_A_BASE_WORD as usize], 0x2222);
+}
+
+#[test]
+fn harness_cycle_hook_collects_a_wellformed_trace() {
+    let mut harness = Harness::new();
+    let target = FRAMEBUFFER_A_BASE_WORD;
+    // Two loads through the same cache entry force an eviction clean.
+    let a = fake_draw(LIST_BASE, 1, GPU_LOAD_OP_LOAD, 0, 0xaaaa, 0xffff);
+    let b = fake_draw(
+        LIST_BASE + LIST_STRIDE,
+        1,
+        GPU_LOAD_OP_LOAD,
+        0,
+        0xbbbb,
+        0xffff,
+    );
+    let mut program = vec![set_target(target)];
+    program.extend(a);
+    program.extend(b);
+    program.push(END);
+    harness.run_program(&program, &[&[0], &[8]]);
+    // The completion edge is recorded one cycle after the retire.
+    harness.cycle(None, None);
+    harness.cycle(None, None);
+
+    check_invariants(harness.trace.events()).unwrap();
+    let bodies: Vec<String> = harness
+        .trace
+        .events()
+        .iter()
+        .map(|event| event.body())
+        .collect();
+    assert!(
+        bodies.iter().any(|line| line.starts_with("REQ fb_r R")),
+        "expected fb_r refills in {bodies:?}"
+    );
+    assert!(
+        bodies.iter().any(|line| line.starts_with("REQ fb_w W")),
+        "expected fb_w cleans in {bodies:?}"
+    );
+    assert!(
+        bodies.contains(&"DONE submission 1".to_string()),
+        "expected the submission completion in {bodies:?}"
+    );
 }
 
 #[test]
