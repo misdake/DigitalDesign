@@ -1,8 +1,8 @@
 # CPU V3 Tang Nano 20K system architecture
 
-This document describes the current fitted Stage 12 system. It is the current-state companion to
-[`cpu-v3-optimization.md`](cpu-v3-optimization.md), which preserves the history and evidence for each
-optimization Stage. Reusable processor details belong to the
+This document describes the current fitted Stage 12 system. It is the current-state companion to the
+concise [`cpu-v3-optimization.md`](cpu-v3-optimization.md) index; long-form historical evidence lives
+in [`cpu-v3-optimization-record.md`](cpu-v3-optimization-record.md). Reusable processor details belong to the
 [`CPU V3 IP documentation`](../../../ip/cpu-v3/docs/README.md).
 
 ## Composition boundary
