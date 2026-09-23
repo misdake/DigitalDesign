@@ -187,9 +187,9 @@ fn button_01_boots_the_primary_application_from_flash() {
     assert!((0xbfc0..=0xc000).contains(&sp), "sp = {sp:#06x}");
 }
 
-/// The default S2 boot submits one complete dummy-GPU frame and waits for the
-/// host-driven display vblank. This raw CPU model intentionally does not
-/// generate vblank, so the pending swap is the bounded completion point.
+/// The default S2 boot initializes both framebuffer slots, then begins partial
+/// wave updates. This raw CPU model intentionally does not generate vblank,
+/// so each pending swap is advanced explicitly by the test.
 #[test]
 fn button_10_boots_and_submits_the_gpu_display_demo_from_flash() {
     let (flash, stage0) = boot_setup();
@@ -216,10 +216,12 @@ fn button_10_boots_and_submits_the_gpu_display_demo_from_flash() {
     assert_eq!(gpu.executed_count(), 1);
     assert!(!gpu.busy());
     assert!(!gpu.command_error());
-    let display = machine.device::<DisplayDevice>(DISPLAY_DEVICE).unwrap();
-    assert!(display.swap_pending());
-    assert!(display.advance_frame());
-    machine.run(100_000).expect("resume after vblank");
+    for _ in 0..3 {
+        let display = machine.device::<DisplayDevice>(DISPLAY_DEVICE).unwrap();
+        assert!(display.swap_pending());
+        assert!(display.advance_frame());
+        machine.run(500_000).expect("resume after vblank");
+    }
     let sysctl = machine.device::<SystemControlDevice>(0).unwrap();
     let frame = ddht_frame_with_test_id(0x0b);
     assert_eq!(&sysctl.uart[..frame.len()], &frame);

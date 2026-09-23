@@ -60,7 +60,7 @@ reg [2:0] recovery_count = 0;
 wire refresh_due = refresh_count >= 10'd600;
 assign cpu_request_ready = state == ST_IDLE && controller_init_done;
 wire accepting_long_write = state == ST_IDLE && controller_init_done &&
-    !refresh_due && cpu_request_valid && cpu_write && cpu_line &&
+    cpu_request_valid && cpu_write && cpu_line &&
     cpu_line_count_minus_1 != 0;
 wire feeding_long_write = pending_write && pending_line &&
     pending_line_count != 0 &&

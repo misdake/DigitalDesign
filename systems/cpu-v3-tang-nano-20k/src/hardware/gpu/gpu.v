@@ -144,7 +144,7 @@ module CpuV3Gpu (
     reg [15:0] draw_tile_pos = 0;
     reg [21:0] draw_list_addr = 0;
     reg [15:0] draw_clear_color = 0, draw_color = 0, draw_row_mask = 0;
-    reg draw_is_clear = 0;
+    reg draw_is_clear = 0, draw_gradient = 0;
 
     // ---- current tile access ----
     reg [15:0] cur_tile_index = 0;
@@ -301,15 +301,46 @@ module CpuV3Gpu (
         : ((phase == PH_CLEAR_FILL) ? {transfer_entry, transfer_beat[5:0]}
                                     : ((phase == PH_DRAW_APPLY) ? {cur_entry, transfer_beat[5:0]}
                                                                 : 9'd0));
+    // Temporary fake-draw gradient. The base color supplies the high channel
+    // bits while tile-local x/y provide the low bits. Four pixels are formed
+    // per beat without multipliers or wide adders.
+    wire [3:0] gradient_y = transfer_beat[5:2];
+    wire [3:0] gradient_x0 = {transfer_beat[1:0], 2'b00};
+    wire [3:0] gradient_phase = draw_color[3:0];
+    wire [3:0] gradient_shift_x0 = gradient_x0 + gradient_phase;
+    wire [3:0] gradient_x1 = gradient_shift_x0 + 4'd1;
+    wire [3:0] gradient_x2 = gradient_shift_x0 + 4'd2;
+    wire [3:0] gradient_x3 = gradient_shift_x0 + 4'd3;
+    wire [3:0] gradient_shift_y = gradient_y + gradient_phase;
+    wire [3:0] gradient_sum0 = gradient_x0 + gradient_y + gradient_phase;
+    wire [3:0] gradient_sum1 = gradient_sum0 + 4'd1;
+    wire [3:0] gradient_sum2 = gradient_sum0 + 4'd2;
+    wire [3:0] gradient_sum3 = gradient_sum0 + 4'd3;
+    wire [15:0] gradient_pixel0 = {draw_color[15], gradient_shift_x0,
+                                   draw_color[10:9], gradient_shift_y,
+                                   draw_color[4], gradient_sum0};
+    wire [15:0] gradient_pixel1 = {draw_color[15], gradient_x1,
+                                   draw_color[10:9], gradient_shift_y,
+                                   draw_color[4], gradient_sum1};
+    wire [15:0] gradient_pixel2 = {draw_color[15], gradient_x2,
+                                   draw_color[10:9], gradient_shift_y,
+                                   draw_color[4], gradient_sum2};
+    wire [15:0] gradient_pixel3 = {draw_color[15], gradient_x3,
+                                   draw_color[10:9], gradient_shift_y,
+                                   draw_color[4], gradient_sum3};
+    wire [63:0] draw_write_beat = draw_gradient
+        ? {gradient_pixel3, gradient_pixel2, gradient_pixel1, gradient_pixel0}
+        : {draw_color, draw_color, draw_color, draw_color};
+
     wire [31:0] cache_wr_lo = (phase == PH_REFILL_WAIT)
         ? gpu_fb_r_read_data[31:0]
         : ((phase == PH_CLEAR_FILL) ? {draw_clear_color, draw_clear_color}
-                                    : ((phase == PH_DRAW_APPLY) ? {draw_color, draw_color}
+                                    : ((phase == PH_DRAW_APPLY) ? draw_write_beat[31:0]
                                                                 : 32'h0));
     wire [31:0] cache_wr_hi = (phase == PH_REFILL_WAIT)
         ? gpu_fb_r_read_data[63:32]
         : ((phase == PH_CLEAR_FILL) ? {draw_clear_color, draw_clear_color}
-                                    : ((phase == PH_DRAW_APPLY) ? {draw_color, draw_color}
+                                    : ((phase == PH_DRAW_APPLY) ? draw_write_beat[63:32]
                                                                 : 32'h0));
 
     CpuV3GpuFramebufferCacheBank cache_lo_bank (
@@ -357,7 +388,7 @@ module CpuV3Gpu (
                     if (exec_count != 8'd3) exec_error = 1'b1;
                     else if ((exec_arg0[31:18] != 0) || (exec_arg0[17:16] > 2'd1)) exec_error = 1'b1;
                     else if (!target_set) exec_error = 1'b1;
-                    else if ((exec_payload0[63:32] != 0) || (exec_payload1[63:48] != 0)) exec_error = 1'b1;
+                    else if ((exec_payload0[63:32] != 0) || (exec_payload1[63:49] != 0)) exec_error = 1'b1;
                     else if ((exec_arg0[15:0] != 0)
                              && ((exec_payload0[3:0] != 0) || (fake_list_end > MEMORY_END)))
                         exec_error = 1'b1;
@@ -399,7 +430,7 @@ module CpuV3Gpu (
             list_fetch_start <= 0; list_chunk_start <= 0; list_chunk_valid <= 0;
             list_beat <= 0; draw_tile_count <= 0; draw_tile_pos <= 0;
             draw_list_addr <= 0; draw_clear_color <= 0; draw_color <= 0;
-            draw_row_mask <= 0; draw_is_clear <= 0;
+            draw_row_mask <= 0; draw_is_clear <= 0; draw_gradient <= 0;
             cur_tile_index <= 0; cur_entry <= 0; cur_tag <= 0;
             transfer_entry <= 0; transfer_line <= 0; transfer_beat <= 0; clean_for_end <= 0;
             end_scan_index <= 0;
@@ -719,6 +750,7 @@ module CpuV3Gpu (
                             draw_clear_color <= exec_payload1[15:0];
                             draw_color <= exec_payload1[31:16];
                             draw_row_mask <= exec_payload1[47:32];
+                            draw_gradient <= exec_payload1[48];
                             draw_is_clear <= (exec_arg0[17:16] == 2'd1);
                             list_chunk_valid <= 1'b0;
                             list_chunk_start <= 16'd0;

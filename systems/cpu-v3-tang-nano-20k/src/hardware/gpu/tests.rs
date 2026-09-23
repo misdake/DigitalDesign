@@ -4,10 +4,10 @@
 
 use super::*;
 use crate::gpu_device::{
-    GPU_CMD_BASE_HIGH, GPU_CMD_BASE_LOW, GPU_CMD_WORDS_HIGH, GPU_CMD_WORDS_LOW, GPU_CONTROL,
-    GPU_CONTROL_CLEAR_ERRORS, GPU_CONTROL_RESET, GPU_EXECUTED_COUNT, GPU_FAKE_DRAW_QWORDS,
-    GPU_LOAD_OP_CLEAR, GPU_LOAD_OP_LOAD, GPU_OPCODE_END, GPU_OPCODE_FAKE_DRAW,
-    GPU_OPCODE_SET_TARGET, GPU_QUEUE_LEVEL, GPU_RECEIVED_COUNT, GPU_STATUS,
+    gpu_gradient_pixel, GPU_CMD_BASE_HIGH, GPU_CMD_BASE_LOW, GPU_CMD_WORDS_HIGH, GPU_CMD_WORDS_LOW,
+    GPU_CONTROL, GPU_CONTROL_CLEAR_ERRORS, GPU_CONTROL_RESET, GPU_DRAW_FLAG_GRADIENT_XY,
+    GPU_EXECUTED_COUNT, GPU_FAKE_DRAW_QWORDS, GPU_LOAD_OP_CLEAR, GPU_LOAD_OP_LOAD, GPU_OPCODE_END,
+    GPU_OPCODE_FAKE_DRAW, GPU_OPCODE_SET_TARGET, GPU_QUEUE_LEVEL, GPU_RECEIVED_COUNT, GPU_STATUS,
     GPU_STATUS_COMMAND_ERROR, GPU_STATUS_SUBMIT_REJECTED, GPU_SUBMIT, GPU_TILE_TOTAL,
 };
 use crate::layout::{FRAMEBUFFER_A_BASE_WORD, FRAMEBUFFER_B_BASE_WORD, FRAMEBUFFER_WORDS};
@@ -122,9 +122,31 @@ fn fake_draw(
     draw_color: u16,
     row_mask: u16,
 ) -> [u64; 3] {
+    fake_draw_with_flags(
+        list_addr,
+        tile_count,
+        load_op,
+        clear_color,
+        draw_color,
+        row_mask,
+        0,
+    )
+}
+
+fn fake_draw_with_flags(
+    list_addr: u32,
+    tile_count: u16,
+    load_op: u16,
+    clear_color: u16,
+    draw_color: u16,
+    row_mask: u16,
+    flags: u16,
+) -> [u64; 3] {
     let arg0 = u64::from(tile_count) | (u64::from(load_op) << 16);
-    let payload1 =
-        u64::from(clear_color) | (u64::from(draw_color) << 16) | (u64::from(row_mask) << 32);
+    let payload1 = u64::from(clear_color)
+        | (u64::from(draw_color) << 16)
+        | (u64::from(row_mask) << 32)
+        | (u64::from(flags) << 48);
     [
         GPU_OPCODE_FAKE_DRAW as u64 | (u64::from(GPU_FAKE_DRAW_QWORDS) << 8) | (arg0 << 32),
         u64::from(list_addr),
@@ -199,6 +221,36 @@ fn emulator_loads_and_clears_tiles_with_partial_rows() {
         }
     }
     assert_eq!(harness.words[guard], 0xbeef, "guard word was overwritten");
+}
+
+#[test]
+fn emulator_generates_tile_local_xy_gradient() {
+    let mut harness = Harness::new();
+    let target = FRAMEBUFFER_A_BASE_WORD;
+    let base = 0x8215;
+    let draw = fake_draw_with_flags(
+        LIST_BASE,
+        1,
+        GPU_LOAD_OP_CLEAR,
+        0,
+        base,
+        0xffff,
+        GPU_DRAW_FLAG_GRADIENT_XY,
+    );
+    let mut program = vec![set_target(target)];
+    program.extend(draw);
+    program.push(END);
+    harness.run_program(&program, &[&[7]]);
+
+    for y in 0..16 {
+        for x in 0..16 {
+            assert_eq!(
+                harness.words[tile_word(target, 7, y, x)],
+                gpu_gradient_pixel(base, x as u16, y as u16),
+                "gradient mismatch at ({x}, {y})"
+            );
+        }
+    }
 }
 
 #[test]

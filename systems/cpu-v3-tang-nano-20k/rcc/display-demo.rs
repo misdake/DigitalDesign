@@ -1,11 +1,11 @@
 //! GPU memory-interface bring-up demo.
 //!
 //! The CPU owns two fixed, heap-backed command buffers and alternates them.
-//! Three permanent tile-index lists divide the framebuffer into 125-tile
-//! batches. Each frame updates an 88-byte temporary command stream, cleans its
-//! three cache lines, submits it to device 4, waits for cache-drained
-//! retirement, and publishes the completed tile-linear framebuffer at display
-//! vblank. The CPU never writes framebuffer pixels in this milestone.
+//! Three tile-index lists address five tile rows each. After both framebuffers
+//! receive an initial full gradient, each frame updates only a four-column
+//! window in each band. The windows advance left-to-right with different
+//! offsets, producing three staggered wave fronts while exercising partial
+//! cache residency. The CPU never writes framebuffer pixels directly.
 
 use crate::dsl_rt::*;
 use crate::rcc_std::*;
@@ -22,7 +22,11 @@ const FB_B_WORD_HIGH: u16 = 0x0021;
 
 const COMMAND_WORDS: u16 = 44;
 const COMMAND_ALLOCATION_WORDS: u16 = 128 + 15;
-const TILES_PER_DRAW: u16 = 125;
+const FULL_TILES_PER_DRAW: u16 = 125;
+const TILE_COLUMNS: u16 = 25;
+const BAND_ROWS: u16 = 5;
+const WAVE_COLUMNS: u16 = 4;
+const WAVE_TILES_PER_DRAW: u16 = BAND_ROWS * WAVE_COLUMNS;
 // Reserve eight complete cache lines after alignment even though only 125
 // entries are live, so cleaning the final line never reaches another object.
 const TILE_LIST_ALLOCATION_WORDS: u16 = 128 + 15;
@@ -32,6 +36,7 @@ const OPCODE_FAKE_DRAW: u16 = 0x03e1;
 const OPCODE_END: u16 = 0x01ff;
 const LOAD_OP_LOAD: u16 = 0;
 const LOAD_OP_CLEAR: u16 = 1;
+const DRAW_FLAG_GRADIENT_XY: u16 = 1;
 
 fn aligned_command_buffer() -> Ptr {
     let raw = malloc(COMMAND_ALLOCATION_WORDS);
@@ -57,8 +62,8 @@ fn write_fake_draw(
     buffer: Ptr,
     qword: u16,
     tile_list: Ptr,
+    tile_count: u16,
     load_op: u16,
-    clear_color: u16,
     draw_color: u16,
 ) {
     write_qword(
@@ -66,12 +71,19 @@ fn write_fake_draw(
         qword,
         OPCODE_FAKE_DRAW,
         0,
-        TILES_PER_DRAW,
+        tile_count,
         load_op,
     );
     // All permanent demo allocations remain in physical page zero.
     write_qword(buffer, qword + 1, tile_list.addr(), 0, 0, 0);
-    write_qword(buffer, qword + 2, clear_color, draw_color, 0xffff, 0);
+    write_qword(
+        buffer,
+        qword + 2,
+        0,
+        draw_color,
+        0xffff,
+        DRAW_FLAG_GRADIENT_XY,
+    );
 }
 
 fn write_target(buffer: Ptr, target_low: u16, target_high: u16) {
@@ -92,14 +104,33 @@ fn write_animated_draws(
     list_0: Ptr,
     list_1: Ptr,
     list_2: Ptr,
+    tile_count: u16,
     phase: u16,
 ) {
-    let red = (((phase + 7) & 0x001f) << 11) | 0x001f;
-    let green = (((phase + 19) & 0x003f) << 5) | 0xf800;
-    let blue = ((phase + 3) & 0x001f) | 0x07e0;
-    write_fake_draw(buffer, 1, list_0, LOAD_OP_CLEAR, 0, red);
-    write_fake_draw(buffer, 4, list_1, LOAD_OP_LOAD, 0, green);
-    write_fake_draw(buffer, 7, list_2, LOAD_OP_CLEAR, 0, blue);
+    write_fake_draw(
+        buffer,
+        1,
+        list_0,
+        tile_count,
+        LOAD_OP_CLEAR,
+        0x8000 | (phase & 0x000f),
+    );
+    write_fake_draw(
+        buffer,
+        4,
+        list_1,
+        tile_count,
+        LOAD_OP_LOAD,
+        0x0600 | (phase & 0x000f),
+    );
+    write_fake_draw(
+        buffer,
+        7,
+        list_2,
+        tile_count,
+        LOAD_OP_CLEAR,
+        0x0010 | (phase & 0x000f),
+    );
     write_qword(buffer, 10, OPCODE_END, 0, 0, 0);
 }
 
@@ -114,7 +145,7 @@ fn clean_commands(buffer: Ptr) {
 
 fn initialize_tile_list(list: Ptr, first_tile: u16) {
     let mut index: u16 = 0;
-    while index < TILES_PER_DRAW {
+    while index < FULL_TILES_PER_DRAW {
         unsafe {
             list.write(index as i16, first_tile + index);
         }
@@ -126,6 +157,43 @@ fn initialize_tile_list(list: Ptr, first_tile: u16) {
             dcache_clean_line(list.add(offset as i16));
         }
         offset += 16;
+    }
+    dcache_wait();
+}
+
+fn wrap_tile_x(value: u16) -> u16 {
+    if value >= TILE_COLUMNS {
+        value - TILE_COLUMNS
+    } else {
+        value
+    }
+}
+
+fn write_wave_tile_list(list: Ptr, first_row: u16, start_x: u16) {
+    let mut column: u16 = 0;
+    let mut index: u16 = 0;
+    while column < WAVE_COLUMNS {
+        let x = wrap_tile_x(start_x + column);
+        let mut row: u16 = 0;
+        while row < BAND_ROWS {
+            unsafe {
+                list.write(index as i16, (first_row + row) * TILE_COLUMNS + x);
+            }
+            index += 1;
+            row += 1;
+        }
+        column += 1;
+    }
+}
+
+fn clean_wave_tile_lists(list_0: Ptr, list_1: Ptr, list_2: Ptr) {
+    unsafe {
+        dcache_clean_line(list_0);
+        dcache_clean_line(list_0.add(16));
+        dcache_clean_line(list_1);
+        dcache_clean_line(list_1.add(16));
+        dcache_clean_line(list_2);
+        dcache_clean_line(list_2.add(16));
     }
     dcache_wait();
 }
@@ -202,8 +270,39 @@ fn main() {
     initialize_tile_list(list_0, 0);
     initialize_tile_list(list_1, 125);
     initialize_tile_list(list_2, 250);
+    // Initialize both framebuffer slots before beginning partial updates.
+    write_target(command_a, FB_B_WORD_LOW, FB_B_WORD_HIGH);
+    write_animated_draws(
+        command_a,
+        list_0,
+        list_1,
+        list_2,
+        FULL_TILES_PER_DRAW,
+        0,
+    );
+    clean_commands(command_a);
+    let previous_b = submit(command_a);
+    wait_gpu(previous_b);
+    let frame_b = request_display_swap(FB_B_WORD_LOW, FB_B_WORD_HIGH);
+    wait_next_frame(frame_b);
+
+    write_target(command_b, FB_A_WORD_LOW, FB_A_WORD_HIGH);
+    write_animated_draws(
+        command_b,
+        list_0,
+        list_1,
+        list_2,
+        FULL_TILES_PER_DRAW,
+        0,
+    );
+    clean_commands(command_b);
+    let previous_a = submit(command_b);
+    wait_gpu(previous_a);
+    let frame_a = request_display_swap(FB_A_WORD_LOW, FB_A_WORD_HIGH);
+    wait_next_frame(frame_a);
+
     let mut use_a: u16 = 0;
-    let mut phase: u16 = 0;
+    let mut wave_x: u16 = 0;
 
     // Display powers up on A, so the first completed render targets B.
     while 1 == 1 {
@@ -219,8 +318,20 @@ fn main() {
             FB_A_WORD_HIGH
         };
 
+        write_wave_tile_list(list_0, 0, wave_x);
+        write_wave_tile_list(list_1, 5, wrap_tile_x(wave_x + 8));
+        write_wave_tile_list(list_2, 10, wrap_tile_x(wave_x + 16));
+        clean_wave_tile_lists(list_0, list_1, list_2);
+
         write_target(command, target_low, target_high);
-        write_animated_draws(command, list_0, list_1, list_2, phase);
+        write_animated_draws(
+            command,
+            list_0,
+            list_1,
+            list_2,
+            WAVE_TILES_PER_DRAW,
+            wave_x,
+        );
         clean_commands(command);
         let previous = submit(command);
         wait_gpu(previous);
@@ -229,6 +340,10 @@ fn main() {
         uart_success();
 
         use_a ^= 1;
-        phase += 1;
+        // Draw the same wave position into B and A before advancing, so the
+        // two framebuffer histories stay visually coherent.
+        if use_a == 0 {
+            wave_x = wrap_tile_x(wave_x + 1);
+        }
     }
 }

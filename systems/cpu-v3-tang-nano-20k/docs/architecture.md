@@ -87,6 +87,9 @@ when the per-beat write-ready signal is asserted. `SharedSdramPort` preloads fou
 streams through one 8x64-bit circular 108/54-MHz gearbox while Controller HS consumes 8/16/24/32
 32-bit beats; it does not duplicate the complete request in the adapter. Command and tile-list
 fetches remain one line, while framebuffer cache refill and clean use four-line transactions.
+An idle adapter accepts a long write even when refresh becomes due on the same cycle; the accepted
+finite transaction completes first and the overdue refresh runs immediately afterward, so beat zero
+cannot be lost at the 54/108-MHz gearbox boundary.
 `SharedSdramPort` is a single-client line/word adapter and contains no second CPU/display arbiter.
 
 ## Clock domains
@@ -162,7 +165,9 @@ queue holds two submissions in addition to the active one. Full or malformed sub
 rejected without incrementing the accepted count. The temporary command processor accepts only
 `SET_TARGET`, `FAKE_DRAW`, and `END`; it fetches one 32-byte command or tile-list line at a time.
 `FAKE_DRAW` supplies a 32-byte-aligned list of `u16` tile indices, a LOAD or CLEAR operation, two
-RGB565 colors, and a 16-row write mask. The framebuffer cache is eight-entry direct-mapped and
+RGB565 colors, a 16-row write mask, and a temporary tile-local XY-gradient flag. Solid and gradient
+writes share the same cache path; the gradient uses channel-high bits plus local x/y and four-bit
+x+y, without multipliers. The framebuffer cache is eight-entry direct-mapped and
 stores eight complete 16x16 tiles in two inferred 512x32 BSRAM banks. A miss blocks while a dirty
 victim is cleaned or a LOAD tile is refilled; each tile transfer is four 128-byte transactions.
 `END` drains every dirty entry before incrementing the retired count, so completion fences all

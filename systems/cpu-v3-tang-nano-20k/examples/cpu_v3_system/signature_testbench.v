@@ -40,16 +40,18 @@ always #2 pixel_clock = ~pixel_clock;
 always #1 serial_clock = ~serial_clock;
 
 // SDRAM model: 16-bit words, two words per 32-bit controller word. The boot
-// sections stay below physical word 0x80000, so 19 index bits suffice.
+// CPU application data stays below physical word 0x80000, while the two GPU
+// framebuffers live at word 0x200000 and above. Model the complete 22-bit word
+// address so framebuffer traffic cannot alias command or tile-list storage.
 //
 // The SharedSdramPort is a 64-bit gearbox: a cache line is eight 32-bit words
-// (four 64-bit beats), and it streams line-write beats through
-// sdram_write_data_valid BEFORE the ACTIVE/WRITE command pair. The model
-// therefore buffers up to sixteen 64-bit beats and commits them to memory when
-// WRITE acknowledges a 7/15/23/31-beat controller burst. Reads return the
+// (four 64-bit beats). One-line writes stage all four beats before
+// ACTIVE/WRITE; longer writes preload four and stream the remainder while the
+// controller transaction is active. The model therefore delays long-write
+// acknowledgement until all beats arrive. Reads return the
 // corresponding 4/8/12/16 ordered 64-bit beats. A 32-bit word W occupies memory[2*W] (low half)
 // and memory[2*W+1] (high half), matching the port's packing.
-reg [15:0] memory [0:524287];
+reg [15:0] memory [0:4194303];
 integer read_delay = 0;
 integer read_beats = 0;
 reg [20:0] pending_read_address = 0;
@@ -62,8 +64,9 @@ reg [20:0] pending_write_address = 0;
 reg [7:0] pending_write_length = 0;
 reg [63:0] write_capture [0:15];
 reg [4:0] write_capture_beat = 0;
-reg [17:0] idx;
-reg [17:0] idx2;
+reg long_write_pending = 0;
+reg [20:0] idx;
+reg [20:0] idx2;
 integer cycle;
 
 always @(posedge clk) begin
@@ -82,21 +85,27 @@ always @(posedge clk) begin
         sdram_command_ack <= 1;
 
     if (sdram_command_valid && sdram_command == 3'b100) begin
-        sdram_command_ack <= 1;
-        write_capture_beat <= 0;
         pending_write_address <= sdram_address;
         pending_write_length <= sdram_burst_length;
         if (sdram_burst_length != 0 && sdram_burst_length != 7 &&
             sdram_burst_length != 15 && sdram_burst_length != 23 &&
             sdram_burst_length != 31)
             $fatal(1, "unexpected write burst length %0d", sdram_burst_length);
-        if (sdram_burst_length != 0) begin
+        if (sdram_burst_length > 7) begin
+            // The 54/108-MHz adapter preloads four 64-bit beats before WRITE,
+            // then streams the remainder while the controller transaction is
+            // active. Delay the completion acknowledgement until every beat
+            // is present, matching the fitted controller's cmd_ack semantics.
+            long_write_pending <= 1;
+        end else if (sdram_burst_length != 0) begin
+            sdram_command_ack <= 1;
+            write_capture_beat <= 0;
             // Commit one through four cache lines: beat j carries 32-bit words (base+2*j) and
             // (base+2*j+1) in sdram_write_data[31:0] and [63:32].
             begin : line_write_commit
                 integer j;
                 for (j = 0; j < (sdram_burst_length + 1) / 2; j = j + 1) begin
-                    idx = sdram_address[17:0] + 2*j;
+                    idx = sdram_address + 2*j;
                     memory[{idx, 1'b0}] <= write_capture[j][15:0];
                     memory[{idx, 1'b1}] <= write_capture[j][31:16];
                     idx = idx + 1;
@@ -105,11 +114,31 @@ always @(posedge clk) begin
                 end
             end
         end else begin
-            if (!sdram_write_mask[0]) memory[{sdram_address[17:0], 1'b0}][7:0] <= sdram_write_data[7:0];
-            if (!sdram_write_mask[1]) memory[{sdram_address[17:0], 1'b0}][15:8] <= sdram_write_data[15:8];
-            if (!sdram_write_mask[2]) memory[{sdram_address[17:0], 1'b1}][7:0] <= sdram_write_data[23:16];
-            if (!sdram_write_mask[3]) memory[{sdram_address[17:0], 1'b1}][15:8] <= sdram_write_data[31:24];
+            sdram_command_ack <= 1;
+            write_capture_beat <= 0;
+            if (!sdram_write_mask[0]) memory[{sdram_address, 1'b0}][7:0] <= sdram_write_data[7:0];
+            if (!sdram_write_mask[1]) memory[{sdram_address, 1'b0}][15:8] <= sdram_write_data[15:8];
+            if (!sdram_write_mask[2]) memory[{sdram_address, 1'b1}][7:0] <= sdram_write_data[23:16];
+            if (!sdram_write_mask[3]) memory[{sdram_address, 1'b1}][15:8] <= sdram_write_data[31:24];
         end
+    end
+
+    if (long_write_pending &&
+        write_capture_beat == (pending_write_length + 1) / 2) begin
+        begin : long_line_write_commit
+            integer j;
+            for (j = 0; j < (pending_write_length + 1) / 2; j = j + 1) begin
+                idx = pending_write_address + 2*j;
+                memory[{idx, 1'b0}] <= write_capture[j][15:0];
+                memory[{idx, 1'b1}] <= write_capture[j][31:16];
+                idx = idx + 1;
+                memory[{idx, 1'b0}] <= write_capture[j][47:32];
+                memory[{idx, 1'b1}] <= write_capture[j][63:48];
+            end
+        end
+        sdram_command_ack <= 1;
+        write_capture_beat <= 0;
+        long_write_pending <= 0;
     end
 
     // One READ command returns burst_length+1 ordered 64-bit beats for a line
@@ -131,7 +160,7 @@ always @(posedge clk) begin
     end else if (read_beats != 0) begin
         sdram_read_valid <= 1;
         if (read_is_line) begin
-            idx = pending_read_address[17:0] + 2*read_beat;
+            idx = pending_read_address + 2*read_beat;
             idx2 = idx + 1;
             sdram_read_data <= {
                 memory[{idx2, 1'b1}],
@@ -140,7 +169,7 @@ always @(posedge clk) begin
                 memory[{idx, 1'b0}]
             };
         end else begin
-            idx = pending_read_address[17:0];
+            idx = pending_read_address;
             sdram_read_data <= {
                 32'b0,
                 memory[{idx, 1'b1}],
@@ -153,6 +182,20 @@ always @(posedge clk) begin
 end
 
 always @(posedge clk) begin
+    if (dut.code_segment == 16'd7 && dut.memory_response_valid && dut.memory_error)
+        $display("FAIL: SDRAM adapter error (state=%0d pending=0x%06x write=%0d line=%0d count=%0d timeout=%0d fed=%0d/%0d model_pending=%0d model_capture=%0d/%0d model_address=0x%06x gpu=%0d/%0d/%0d)",
+            dut.u_shared_sdram_port.state,
+            dut.u_shared_sdram_port.pending_address,
+            dut.u_shared_sdram_port.pending_write,
+            dut.u_shared_sdram_port.pending_line,
+            dut.u_shared_sdram_port.pending_line_count,
+            dut.u_shared_sdram_port.timeout_count,
+            dut.u_shared_sdram_port.line_fed,
+            dut.u_shared_sdram_port.line_total,
+            long_write_pending, write_capture_beat,
+            (pending_write_length + 1) / 2, pending_write_address,
+            dut.gpu_ro_memory_error, dut.gpu_fb_r_memory_error,
+            dut.gpu_fb_w_memory_error);
     if (dut.icache_memory_request_ready &&
         (!dut.memory_request_valid || dut.memory_write || !dut.memory_line ||
          dut.memory_address != dut.icache_memory_address)) begin
@@ -234,9 +277,43 @@ reg boot_phase_seen = 0;
 reg dma_phase_seen = 0;
 reg application_phase_seen = 0;
 integer pre_submit_stall_cycles = 0;
+reg gpu_command_error_seen = 0;
 reg [31:0] pre_submit_last_retired = 0;
+wire [63:0] gpu_debug_payload0 = dut.u_gpu.pending_payload[0];
+wire [63:0] gpu_debug_payload1 = dut.u_gpu.pending_payload[1];
+wire [63:0] gpu_debug_line0 = dut.u_gpu.line_buffer[0];
+wire [7:0] gpu_debug_valid = {
+    dut.u_gpu.cache_valid[7], dut.u_gpu.cache_valid[6],
+    dut.u_gpu.cache_valid[5], dut.u_gpu.cache_valid[4],
+    dut.u_gpu.cache_valid[3], dut.u_gpu.cache_valid[2],
+    dut.u_gpu.cache_valid[1], dut.u_gpu.cache_valid[0]
+};
 
 always @(posedge clk) begin
+    if (!gpu_command_error_seen && dut.code_segment == 16'd7 && dut.u_gpu.phase == 5'd16) begin
+        $display("FAIL: S2 GPU entered PH_ERROR (qword=%0d tile_pos=%0d list_index=%0d chunk=%0d ro_error=%0d fb_r_error=%0d fb_w_error=%0d memory_error=%0d port_state=%0d)",
+            dut.u_gpu.qword_index, dut.u_gpu.draw_tile_pos,
+            dut.u_gpu.list_index, dut.u_gpu.list_chunk_start,
+            dut.gpu_ro_memory_error, dut.gpu_fb_r_memory_error,
+            dut.gpu_fb_w_memory_error, dut.memory_error,
+            dut.u_shared_sdram_port.state);
+    end
+    if (!gpu_command_error_seen && dut.code_segment == 16'd7 && dut.u_gpu.command_error) begin
+        gpu_command_error_seen <= 1'b1;
+        $display("FAIL: S2 GPU command error (phase=%0d active=0x%06x/%0d line=0x%04x data0=0x%016x opcode=0x%02x count=%0d arg0=0x%08x payload0=0x%016x payload1=0x%016x qword=%0d target_set=%0d target=0x%06x valid=0x%02x tile_pos=%0d list_index=%0d chunk=%0d list=%016x/%016x/%016x/%016x)",
+            dut.u_gpu.phase, dut.u_gpu.active_base, dut.u_gpu.active_words,
+            dut.u_gpu.line_qword_base, gpu_debug_line0,
+            dut.u_gpu.pending_opcode, dut.u_gpu.pending_count,
+            dut.u_gpu.pending_arg0, gpu_debug_payload0,
+            gpu_debug_payload1, dut.u_gpu.qword_index,
+            dut.u_gpu.target_set, dut.u_gpu.target_base, gpu_debug_valid,
+            dut.u_gpu.draw_tile_pos, dut.u_gpu.list_index,
+            dut.u_gpu.list_chunk_start, dut.u_gpu.list_buffer[0],
+            dut.u_gpu.list_buffer[1], dut.u_gpu.list_buffer[2],
+            dut.u_gpu.list_buffer[3]);
+        $finish(1);
+    end
+
     case (dut.boot_phase)
         1: wait_sdram_phase_seen <= 1;
         2: boot_phase_seen <= 1;

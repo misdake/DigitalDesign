@@ -85,7 +85,8 @@ pub const GPU_TARGET_ALIGN_WORDS: u32 = 1 << 14;
 /// Total number of tile-linear tiles; every `FAKE_DRAW` tile index must be
 /// below this bound.
 pub const GPU_TILE_TOTAL: u32 = FRAMEBUFFER_TILE_COLUMNS * FRAMEBUFFER_TILE_ROWS;
-/// `FAKE_DRAW` is exactly three qwords: header, tile-list address, colors/mask.
+/// `FAKE_DRAW` is exactly three qwords: header, tile-list address, and
+/// colors/row-mask/temporary draw flags.
 pub const GPU_FAKE_DRAW_QWORDS: u8 = 3;
 /// `FAKE_DRAW.arg0[17:16] == GPU_LOAD_OP_LOAD`: refill each tile from
 /// `gpu_fb_r` before applying the draw rows.
@@ -93,6 +94,11 @@ pub const GPU_LOAD_OP_LOAD: u16 = 0;
 /// `FAKE_DRAW.arg0[17:16] == GPU_LOAD_OP_CLEAR`: initialize each tile to the
 /// clear color before applying the draw rows.
 pub const GPU_LOAD_OP_CLEAR: u16 = 1;
+/// `FAKE_DRAW.payload1[48]`: generate an RGB565 gradient from tile-local
+/// `(x, y)` instead of repeating the explicit draw color. Higher flag bits are
+/// reserved. The draw color contributes the high channel bits, so three draws
+/// can retain distinct red/green/blue identities with very little logic.
+pub const GPU_DRAW_FLAG_GRADIENT_XY: u16 = 1;
 
 /// Returns the fitted framebuffer slot base for a `SET_TARGET` word address, or
 /// `None` when the address is not one of the two fitted 32 KiB-aligned slots.
@@ -127,6 +133,28 @@ pub const fn gpu_dummy_pixel(
 pub const fn gpu_dummy_beat(pixel: u16) -> u64 {
     let pixel = pixel as u64;
     pixel | (pixel << 16) | (pixel << 32) | (pixel << 48)
+}
+
+/// Temporary fake-draw RGB565 gradient. `x` and `y` are tile-local 0..15.
+/// The channel layout deliberately uses mostly wiring: the draw color selects
+/// high channel bits, x drives red, y drives green, and x+y drives blue.
+pub const fn gpu_gradient_pixel(base: u16, x: u16, y: u16) -> u16 {
+    let phase = base & 0xf;
+    let r5 = ((base >> 15) & 1) << 4 | ((x + phase) & 0xf);
+    let g6 = ((base >> 9) & 3) << 4 | ((y + phase) & 0xf);
+    let b5 = ((base >> 4) & 1) << 4 | ((x + y + phase) & 0xf);
+    (r5 << 11) | (g6 << 5) | b5
+}
+
+/// Four consecutive pixels for one 64-bit tile-cache beat.
+pub const fn gpu_gradient_beat(base: u16, beat: usize) -> u64 {
+    let y = ((beat >> 2) & 0xf) as u16;
+    let x = ((beat & 3) << 2) as u16;
+    let p0 = gpu_gradient_pixel(base, x, y) as u64;
+    let p1 = gpu_gradient_pixel(base, x + 1, y) as u64;
+    let p2 = gpu_gradient_pixel(base, x + 2, y) as u64;
+    let p3 = gpu_gradient_pixel(base, x + 3, y) as u64;
+    p0 | (p1 << 16) | (p2 << 32) | (p3 << 48)
 }
 
 /// Cycle model of the GPU device.
@@ -260,9 +288,31 @@ mod tests {
         draw_color: u16,
         row_mask: u16,
     ) -> [u64; 3] {
+        fake_draw_with_flags(
+            list_addr,
+            tile_count,
+            load_op,
+            clear_color,
+            draw_color,
+            row_mask,
+            0,
+        )
+    }
+
+    fn fake_draw_with_flags(
+        list_addr: u32,
+        tile_count: u16,
+        load_op: u16,
+        clear_color: u16,
+        draw_color: u16,
+        row_mask: u16,
+        flags: u16,
+    ) -> [u64; 3] {
         let arg0 = u64::from(tile_count) | (u64::from(load_op) << 16);
-        let payload1 =
-            u64::from(clear_color) | (u64::from(draw_color) << 16) | (u64::from(row_mask) << 32);
+        let payload1 = u64::from(clear_color)
+            | (u64::from(draw_color) << 16)
+            | (u64::from(row_mask) << 32)
+            | (u64::from(flags) << 48);
         [
             GPU_OPCODE_FAKE_DRAW as u64 | (u64::from(GPU_FAKE_DRAW_QWORDS) << 8) | (arg0 << 32),
             u64::from(list_addr),
@@ -330,6 +380,38 @@ mod tests {
             }
         }
         assert_eq!(memory[guard], 0xbeef, "guard word was overwritten");
+    }
+
+    #[test]
+    fn host_device_generates_tile_local_xy_gradient() {
+        let base_color = 0x8215;
+        let mut words = vec![set_target(FRAMEBUFFER_A_BASE_WORD)];
+        words.extend(fake_draw_with_flags(
+            LIST_BASE,
+            1,
+            GPU_LOAD_OP_CLEAR,
+            0,
+            base_color,
+            0xffff,
+            GPU_DRAW_FLAG_GRADIENT_XY,
+        ));
+        words.push(END);
+        let (mut memory, base) = program(&words);
+        write_tile_list(&mut memory, &[7]);
+        let mut device = GpuDevice::default();
+        stage_and_submit(&mut device, &mut memory, base, word_count(&words));
+        assert!(device.run_until_idle(&mut memory, 500_000) < 500_000);
+        assert!(!device.command_error());
+
+        let tile_base = (FRAMEBUFFER_A_BASE_WORD + 7 * FRAMEBUFFER_TILE_WORDS) as usize;
+        for y in 0..16usize {
+            for x in 0..16usize {
+                assert_eq!(
+                    memory[tile_base + y * 16 + x],
+                    gpu_gradient_pixel(base_color, x as u16, y as u16)
+                );
+            }
+        }
     }
 
     #[test]

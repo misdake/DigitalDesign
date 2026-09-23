@@ -264,10 +264,13 @@ wire [6:0] idle_window_first = {3'b000, first16(dirty_bits[15:0])};
 wire scan_background_state = state == ST_WB_PRIME || state == ST_WB_CAPTURE ||
     state == ST_WB_REQUEST || state == ST_WB_STREAM || state == ST_WB_RESPONSE;
 
+// ST_IDLE gives line-copy and line-clean commands priority over a CPU access.
+// Their start strobes therefore need not feed this ready path as additional
+// negative terms; the core never issues a normal access for the same
+// instruction, and removing those redundant terms keeps maintenance decode
+// off the cache-state clock-enable path.
 assign cpu_request_ready = state == ST_IDLE && !response_valid &&
-    !maintenance_active && !clean_all && !invalidate_all && !line_copy_start &&
-    !line_clean_start &&
-    !sweep_active;
+    !maintenance_active && !clean_all && !invalidate_all && !sweep_active;
 assign line_copy_ready = state == ST_IDLE && !response_valid &&
     !maintenance_active && !clean_all && !invalidate_all && !sweep_active;
 assign cpu_response_valid = response_valid;

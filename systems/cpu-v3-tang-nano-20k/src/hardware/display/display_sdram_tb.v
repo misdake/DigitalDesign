@@ -17,7 +17,8 @@ localparam ST_REFRESH_WAIT=9, ST_WRITE_STAGE=13;
 integer cycles=0;
 always @(posedge clk) begin
   cycles<=cycles+1;
-  if(cycles>200000) $fatal(1,"testbench cycle limit exceeded");
+  if(cycles>200000) $fatal(1,"testbench cycle limit exceeded: state=%0d refresh=%0d",
+    dut.state,dut.refresh_count);
 end
 integer i;
 
@@ -151,6 +152,19 @@ initial begin
   dut.refresh_count=10'd599;
   line_read(22'h000480, 0);
   if(dut.state!=ST_REFRESH_WAIT) $fatal(1,"overdue refresh did not follow accepted request");
+  controller_command_ack=1; @(posedge clk); #1; controller_command_ack=0;
+  repeat(2) @(posedge clk);
+
+  // A long write accepted on the same refresh boundary must expose beat zero
+  // to the gearbox on its request edge. Missing that beat shifts the circular
+  // buffer and corrupts this transaction plus the following one.
+  @(negedge clk);
+  // `start_write` spends one extra cycle clearing its capture scoreboard, so
+  // start at 598: the request edge itself then observes refresh_due.
+  dut.refresh_count=10'd598;
+  line_write(22'h000500, 3);
+  if(captured_count!==16) $fatal(1,"refresh-boundary long write lost a beat");
+  if(dut.state!=ST_REFRESH_WAIT) $fatal(1,"overdue refresh did not follow long write");
   controller_command_ack=1; @(posedge clk); #1; controller_command_ack=0;
   repeat(2) @(posedge clk);
 

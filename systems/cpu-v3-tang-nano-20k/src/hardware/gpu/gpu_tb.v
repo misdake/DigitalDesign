@@ -320,6 +320,24 @@ task put_set_target;
     end
 endtask
 
+task put_fake_draw_flags;
+    input [21:0] addr;
+    input [21:0] list;
+    input [15:0] tile_count;
+    input [1:0] load_op;
+    input [15:0] clear_color;
+    input [15:0] draw_color;
+    input [15:0] row_mask;
+    input [15:0] flags;
+    reg [31:0] arg0;
+    begin
+        arg0 = {14'b0, load_op, tile_count};
+        put_qword(addr, {arg0, 16'h0000, 8'd3, 8'he1});
+        put_qword(addr + 4, {32'h0, 10'b0, list});
+        put_qword(addr + 8, {flags, row_mask, draw_color, clear_color});
+    end
+endtask
+
 task put_fake_draw;
     input [21:0] addr;
     input [21:0] list;
@@ -328,12 +346,9 @@ task put_fake_draw;
     input [15:0] clear_color;
     input [15:0] draw_color;
     input [15:0] row_mask;
-    reg [31:0] arg0;
     begin
-        arg0 = {14'b0, load_op, tile_count};
-        put_qword(addr, {arg0, 16'h0000, 8'd3, 8'he1});
-        put_qword(addr + 4, {32'h0, 10'b0, list});
-        put_qword(addr + 8, {16'h0000, row_mask, draw_color, clear_color});
+        put_fake_draw_flags(addr, list, tile_count, load_op, clear_color,
+                            draw_color, row_mask, 16'h0000);
     end
 endtask
 
@@ -361,6 +376,22 @@ function [21:0] tile_word;
     input integer col;
     begin
         tile_word = base + {tile[8:0], 8'b0} + row * 16 + col;
+    end
+endfunction
+
+function [15:0] gradient_pixel;
+    input [15:0] base;
+    input integer x;
+    input integer y;
+    reg [3:0] x4, y4, sum4;
+    reg [3:0] phase4;
+    begin
+        x4 = x[3:0];
+        y4 = y[3:0];
+        phase4 = base[3:0];
+        sum4 = x4 + y4 + phase4;
+        gradient_pixel = {base[15], x4 + phase4,
+                          base[10:9], y4 + phase4, base[4], sum4};
     end
 endfunction
 
@@ -467,8 +498,41 @@ initial begin
     check_uniform_tile(16'd1, FB_A, 16'h0f0f);
     check_uniform_tile(16'd2, FB_A, 16'h0f0f);
 
+    // A new submission owns a fresh cache namespace and may switch targets
+    // without a device reset after the preceding END drained all dirty data.
+    put_set_target(CMD_BASE, FB_B);
+    put_fake_draw_flags(CMD_BASE + 4, LIST_BASE, 16'd1, 2'd1,
+                        16'h0, 16'h8215, 16'hffff, 16'h0001);
+    put_end(CMD_BASE + 16);
+    mem[LIST_BASE] = 16'd7;
+    run_ok_case(16'd20);
+    for (i = 0; i < 16; i = i + 1) begin
+        for (j = 0; j < 16; j = j + 1) begin
+            if (mem[tile_word(FB_B, 16'd7, i, j)] !== gradient_pixel(16'h8215, j, i))
+                $fatal(1, "target-switch gradient row %0d col %0d mismatch", i, j);
+        end
+    end
+
     // ------------------------------------------------------------------
-    // Scenario D: every invalid command class retires with command error.
+    // Scenario D: fake draw can generate a tile-local XY gradient.
+    // ------------------------------------------------------------------
+    do_reset();
+    put_set_target(CMD_BASE, FB_A);
+    put_fake_draw_flags(CMD_BASE + 4, LIST_BASE, 16'd1, 2'd1,
+                        16'h0, 16'h8215, 16'hffff, 16'h0001);
+    put_end(CMD_BASE + 16);
+    mem[LIST_BASE] = 16'd7;
+    expected_exec = 16'd1;
+    run_ok_case(16'd20);
+    for (i = 0; i < 16; i = i + 1) begin
+        for (j = 0; j < 16; j = j + 1) begin
+            if (mem[tile_word(FB_A, 16'd7, i, j)] !== gradient_pixel(16'h8215, j, i))
+                $fatal(1, "gradient tile row %0d col %0d mismatch", i, j);
+        end
+    end
+
+    // ------------------------------------------------------------------
+    // Scenario E: every invalid command class retires with command error.
     // ------------------------------------------------------------------
     do_reset();
     expected_exec = 16'd1;

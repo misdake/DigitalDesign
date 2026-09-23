@@ -25,12 +25,12 @@
 //! the co-simulation test drives a real command buffer through both.
 
 use crate::gpu_device::{
-    gpu_dummy_beat, gpu_target_slot, GPU_CMD_BASE_HIGH, GPU_CMD_BASE_LOW, GPU_CMD_WORDS_HIGH,
-    GPU_CMD_WORDS_LOW, GPU_CONTROL, GPU_CONTROL_CLEAR_ERRORS, GPU_CONTROL_RESET, GPU_DEVICE,
-    GPU_EXECUTED_COUNT, GPU_FAKE_DRAW_QWORDS, GPU_FIFO_DEPTH, GPU_LOAD_OP_CLEAR, GPU_OPCODE_END,
-    GPU_OPCODE_FAKE_DRAW, GPU_OPCODE_SET_TARGET, GPU_QUEUE_LEVEL, GPU_RECEIVED_COUNT, GPU_STATUS,
-    GPU_STATUS_BUSY, GPU_STATUS_COMMAND_ERROR, GPU_STATUS_FIFO_FULL, GPU_STATUS_SUBMIT_REJECTED,
-    GPU_SUBMIT, GPU_TILE_TOTAL,
+    gpu_dummy_beat, gpu_gradient_beat, gpu_target_slot, GPU_CMD_BASE_HIGH, GPU_CMD_BASE_LOW,
+    GPU_CMD_WORDS_HIGH, GPU_CMD_WORDS_LOW, GPU_CONTROL, GPU_CONTROL_CLEAR_ERRORS,
+    GPU_CONTROL_RESET, GPU_DEVICE, GPU_EXECUTED_COUNT, GPU_FAKE_DRAW_QWORDS, GPU_FIFO_DEPTH,
+    GPU_LOAD_OP_CLEAR, GPU_OPCODE_END, GPU_OPCODE_FAKE_DRAW, GPU_OPCODE_SET_TARGET,
+    GPU_QUEUE_LEVEL, GPU_RECEIVED_COUNT, GPU_STATUS, GPU_STATUS_BUSY, GPU_STATUS_COMMAND_ERROR,
+    GPU_STATUS_FIFO_FULL, GPU_STATUS_SUBMIT_REJECTED, GPU_SUBMIT, GPU_TILE_TOTAL,
 };
 use digital_design_circuit::{CircuitWires, Wire, Wires};
 use digital_design_hardware::{
@@ -234,6 +234,7 @@ pub struct GpuCore {
     draw_clear_color: u16,
     draw_color: u16,
     draw_row_mask: u16,
+    draw_gradient: bool,
     draw_is_clear: bool,
     // Current tile access.
     cur_tile_index: u16,
@@ -297,6 +298,7 @@ impl Default for GpuCore {
             draw_clear_color: 0,
             draw_color: 0,
             draw_row_mask: 0,
+            draw_gradient: false,
             draw_is_clear: false,
             cur_tile_index: 0,
             cur_entry: 0,
@@ -573,7 +575,7 @@ impl GpuCore {
                 }
                 let payload0 = self.pending_payload[0];
                 let payload1 = self.pending_payload[1];
-                if payload0 >> 32 != 0 || payload1 >> 48 != 0 {
+                if payload0 >> 32 != 0 || payload1 >> 49 != 0 {
                     self.enter_error();
                     return;
                 }
@@ -594,6 +596,7 @@ impl GpuCore {
                 self.draw_clear_color = payload1 as u16;
                 self.draw_color = (payload1 >> 16) as u16;
                 self.draw_row_mask = (payload1 >> 32) as u16;
+                self.draw_gradient = payload1 & (1u64 << 48) != 0;
                 self.draw_is_clear = load_op == u32::from(GPU_LOAD_OP_CLEAR);
                 self.list_chunk_valid = false;
                 self.list_chunk_start = 0;
@@ -921,7 +924,11 @@ impl GpuCore {
                 let beat = self.transfer_beat as usize;
                 let row = beat / (TILE_BEATS / 16);
                 if self.draw_row_mask & (1u16 << row) != 0 {
-                    self.cache[entry * TILE_BEATS + beat] = gpu_dummy_beat(self.draw_color);
+                    self.cache[entry * TILE_BEATS + beat] = if self.draw_gradient {
+                        gpu_gradient_beat(self.draw_color, beat)
+                    } else {
+                        gpu_dummy_beat(self.draw_color)
+                    };
                 }
                 if beat + 1 == TILE_BEATS {
                     self.cache_dirty[entry] = true;
