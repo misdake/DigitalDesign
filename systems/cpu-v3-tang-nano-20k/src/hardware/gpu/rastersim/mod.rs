@@ -12,8 +12,11 @@
 //! rasterizer -> RGB565 frame + coverage/performance statistics.
 
 pub mod clip;
+pub mod contract;
 pub mod depth;
+pub mod devices;
 pub mod fixed;
+pub mod oracle;
 pub mod raster;
 pub mod scenes;
 pub mod setup;
@@ -21,7 +24,7 @@ pub mod setup;
 #[cfg(test)]
 mod tests {
     use super::clip::{clip_triangle, ClipVertex};
-    use super::fixed::{mul_stats_reset, mul_stats_snapshot, q16_from_rational as q, MulStat};
+    use super::fixed::{mul_stats_reset, mul_stats_snapshot, q16_from_rational as q, MulStat, Q16};
     use super::raster::rasterize;
     use super::scenes::{depth_precision, performance_scene, scenes};
     use super::setup::{SetupStats, SetupUnit, TriangleSetup};
@@ -128,6 +131,8 @@ mod tests {
 
     #[test]
     fn performance_scene_stats_and_csv() {
+        // One run of the 20k-triangle performance scene feeds both CSVs and
+        // both assertion sets (scene stats and multiplier ranges).
         mul_stats_reset();
         let scene = performance_scene();
         let (setups, setup_stats, clip_stats) = process(&scene);
@@ -154,21 +159,9 @@ mod tests {
         row("pixels_covered", s.pixels_covered);
         std::fs::write(dir.join("performance.csv"), &csv).unwrap();
         println!("performance scene stats:\n{csv}");
-        // Sanity bounds, also acting as the step limit.
-        assert_eq!(s.triangles as usize, setups.len());
-        assert!(s.pixels_tested < 100_000_000, "pixel budget exceeded");
-        assert!(s.pixels_covered > 0);
-    }
 
-    #[test]
-    fn multiplier_stats_csv() {
-        mul_stats_reset();
-        let scene = performance_scene();
-        let (setups, ..) = process(&scene);
-        let _ = rasterize(&setups);
+        // Multiplier operand statistics from the same run.
         let stats = mul_stats_snapshot();
-        let dir = output_dir();
-        std::fs::create_dir_all(&dir).unwrap();
         let mut file = std::fs::File::create(dir.join("mul-stats.csv")).unwrap();
         writeln!(
             file,
@@ -190,8 +183,57 @@ mod tests {
             .unwrap();
         }
         drop(file);
-        println!("multiplier stats written: {} call sites", stats.len());
-        assert!(!stats.is_empty());
+        println!("multiplier stats: {} call sites", stats.len());
+        assert!(stats.contains_key("edge_eval"));
+        assert!(stats.contains_key("viewport.x"));
+        assert!(stats.contains_key("rcp.lerp"));
+
+        // Sanity bounds, also acting as the step limit.
+        assert_eq!(s.triangles as usize, setups.len());
+        assert!(s.pixels_tested < 100_000_000, "pixel budget exceeded");
+        assert!(s.pixels_covered > 0);
+    }
+
+    #[test]
+    fn no_device_overflows_and_saturation_rates_reported() {
+        // Run every scene plus the performance scene through the full
+        // pipeline, then check the device event registry: wrap-overflow
+        // events on the non-saturating devices are design errors.
+        let overflow_labels = [
+            "clip.dist",
+            "clip.lerp",
+            "edge.delta",
+            "edge.accum",
+            "setup.delta",
+            "setup.area",
+            "viewport.offset",
+            "raster.depth",
+        ];
+        for scene in scenes() {
+            let (setups, ..) = process(&scene);
+            rasterize(&setups);
+        }
+        let perf = performance_scene();
+        let (setups, ..) = process(&perf);
+        rasterize(&setups);
+        let events = super::fixed::device_events_snapshot();
+        println!("device events (all scenes + perf): {events:?}");
+        for label in overflow_labels {
+            assert!(
+                !events.contains_key(label),
+                "device overflow at {label}: {} events",
+                events[label]
+            );
+        }
+        // The saturators do fire at the documented rates (guard-band corners
+        // clamp on snap; w_min never triggers on legal scenes).
+        let get = |label: &str| events.get(label).copied().unwrap_or(0);
+        println!(
+            "saturation: viewport.snap={} setup.w_min={} setup.depth={}",
+            get("viewport.snap"),
+            get("setup.w_min"),
+            get("setup.depth")
+        );
     }
 
     #[test]
@@ -217,32 +259,46 @@ mod tests {
         // 1/32 px of exact division (checked inside setup tests per sweep);
         // here we assert snapped coordinates agree on all scene vertices,
         // under both LUT+lerp configurations.
-        use super::setup::{ndc_exact, ndc_rcp, snap_s12_4};
+        use super::contract;
+        use super::devices::{Multiplier18x18, RcpUnit, Saturator};
+        use super::fixed::{set_rcp_mode, RcpMode};
+        use super::oracle::ndc_exact;
+        use super::setup::ndc_rcp;
         use crate::hardware::gpu::rastersim::clip::W_MIN_RAW;
-        use crate::hardware::gpu::rastersim::fixed::{rcp_q16, set_rcp_mode, RcpMode};
-        for (mode, bound) in [(RcpMode::Lerp256, 1), (RcpMode::Lerp128, 2)] {
+        for (mode, bound) in [
+            (RcpMode::Lerp256, contract::ndc::SNAP_MATCH_SUBPIXELS),
+            (
+                RcpMode::Lerp128,
+                contract::ndc::SNAP_MATCH_SUBPIXELS_LERP128,
+            ),
+        ] {
             set_rcp_mode(mode);
-            let mut worst = 0i32;
+            let mut worst = 0i64;
             let mut steps = 0u64;
             for scene in scenes() {
                 for tri in &scene.triangles {
                     for v in tri {
-                        let w_raw = v.w.max(W_MIN_RAW);
-                        let (mag, shift) = rcp_q16(w_raw as u32);
-                        let approx = i64::from(ndc_rcp(v.x, mag, shift));
-                        let exact = ndc_exact(v.x, w_raw);
+                        let w_raw = v.w.raw().max(i64::from(W_MIN_RAW));
+                        let rcp = RcpUnit::rcp_q16(Q16::from_raw_const(w_raw));
                         // Viewport path: high 17 significant bits (>> 14) of
                         // the s2.29 NDC feed the 18-bit multiply by the
                         // half-width. Scene inputs may sit outside the guard
-                        // band (clip removes those first); skip them here.
+                        // band (clip removes those first); skip them before
+                        // touching the rcp path (its range check would fire).
+                        let exact = ndc_exact(v.x, w_raw);
                         if exact.abs() > (1 << 29) * 64 / 25 {
                             continue;
                         }
+                        let approx = ndc_rcp(v.x, rcp).raw();
                         let hi_a = (approx >> 14).clamp(-131071, 131071);
                         let hi_e = (exact >> 14).clamp(-131071, 131071);
-                        let x_a = snap_s12_4((hi_a * 200) << 1);
-                        let x_e = snap_s12_4((hi_e * 200) << 1);
-                        let diff = (i32::from(x_a) - i32::from(x_e)).abs();
+                        let x_a = Saturator::snap_s12_4(Q16::from_product(
+                            Multiplier18x18::mul("viewport.x", hi_a, 200) << 1,
+                        ));
+                        let x_e = Saturator::snap_s12_4(Q16::from_product(
+                            Multiplier18x18::mul("viewport.x", hi_e, 200) << 1,
+                        ));
+                        let diff = (x_a.raw() - x_e.raw()).abs();
                         worst = worst.max(diff);
                         assert!(
                             diff <= bound,
@@ -263,7 +319,7 @@ mod tests {
 
     #[test]
     fn q16_rational_basics() {
-        assert_eq!(q(1, 4), 1 << 14);
+        assert_eq!(q(1, 4).raw(), 1 << 14);
     }
 
     #[test]
@@ -271,7 +327,7 @@ mod tests {
         // Contract: after clip + divide, |ndc| <= 2.56 for every vertex, so
         // the NDC/viewport datapath fits 32-bit s2.30. Check all scenes plus
         // constructed cases straddling the guard-band boundary.
-        use super::setup::ndc_exact;
+        use super::oracle::ndc_exact;
         let limit = (1 << 29) * 64 / 25; // 2.56 in s2.29
         let epsilon = limit / 256 + 1; // rcp/interpolation slack
         let extra: Vec<[ClipVertex; 3]> = vec![
@@ -299,7 +355,7 @@ mod tests {
             for clipped in clip_triangle(tri) {
                 for v in &clipped {
                     for component in [v.x, v.y] {
-                        let ndc = ndc_exact(component, v.w);
+                        let ndc = ndc_exact(component, v.w.raw());
                         assert!(
                             ndc.abs() <= limit + epsilon,
                             "ndc {ndc} out of guard band for {v:?}"

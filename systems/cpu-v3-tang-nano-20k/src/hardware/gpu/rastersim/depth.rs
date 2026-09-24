@@ -261,13 +261,14 @@ pub fn interp_w_error() -> GroundError {
         let err = p.w_interp - p.w_true;
         worst = worst.max(err.abs());
         let low_m = ((p.w_true / 10_000) * 10) as u64;
-        let bucket = match buckets.iter_mut().find(|b| b.0 == low_m) {
-            Some(b) => b,
+        let idx = match buckets.iter().position(|b| b.0 == low_m) {
+            Some(i) => i,
             None => {
                 buckets.push((low_m, 0, 0, 0));
-                buckets.last_mut().unwrap()
+                buckets.len() - 1
             }
         };
+        let bucket = &mut buckets[idx];
         bucket.1 = bucket.1.max(err.abs());
         bucket.2 += err.unsigned_abs();
         bucket.3 += 1;
@@ -363,8 +364,12 @@ mod tests {
             assert!(exact.worst_mm * 65536 <= (quantum / 2) as i64 + 65536);
             // U4.28 inv_w adds less than 1 mm.
             assert!((quant.worst_mm - exact.worst_mm).abs() <= 1);
-            // The rcp unit keeps the total within a few mm of the ideal.
-            assert!(rcp.worst_mm <= exact.worst_mm + far_m as i64 * 1000 / 50);
+            // The rcp unit's contribution stays within the contract bound.
+            assert!(
+                rcp.worst_mm
+                    <= exact.worst_mm
+                        + crate::hardware::gpu::rastersim::contract::depth::RCP_CONTRIBUTION_MAX_MM
+            );
         }
     }
 

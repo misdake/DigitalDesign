@@ -6,7 +6,7 @@
 //! guard-band planes `|x| <= G*w`, `|y| <= G*w` with `G = 64/25 = 2.56`
 //! (±512 px against the 200 px half-width; in Y that maps to ±307.2 px).
 //! The guard band width is chosen so that post-clip NDC fits 32-bit
-//! `s2.30` — no 64-bit NDC/viewport datapath is needed. The four viewport
+//! `s2.29` — no 64-bit NDC/viewport datapath is needed. The four viewport
 //! planes `|x| <= w`, `|y| <= w` only take part in trivial accept/reject;
 //! true clipping happens against the guard band only.
 //!
@@ -21,19 +21,20 @@
 //!    guard-bottom, guard-top.
 //! 4. Viewport planes never clip; they only classify.
 
-use crate::hardware::gpu::rastersim::fixed::rcp_u32;
+use crate::hardware::gpu::rastersim::devices::{Adder40, Multiplier36x18, RcpUnit, Saturator};
+use crate::hardware::gpu::rastersim::fixed::{ClipDist, Q16, U0_18};
 
-/// Clip-space vertex, all components `Q16.16`.
+/// Clip-space vertex, all components [`Q16`].
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub struct ClipVertex {
-    pub x: i32,
-    pub y: i32,
-    pub z: i32,
-    pub w: i32,
+    pub x: Q16,
+    pub y: Q16,
+    pub z: Q16,
+    pub w: Q16,
 }
 
 impl ClipVertex {
-    pub fn new(x: i32, y: i32, z: i32, w: i32) -> Self {
+    pub fn new(x: Q16, y: Q16, z: Q16, w: Q16) -> Self {
         Self { x, y, z, w }
     }
 }
@@ -57,27 +58,46 @@ pub const OUT_GUARD_TOP: u32 = 1 << 9;
 pub const GUARD_NUM: i64 = 64;
 pub const GUARD_DEN: i64 = 25;
 
-/// The ten plane distances, signed; inside means `d >= 0`. The guard-band
-/// products (`64*w` reaches 2^37) force `i64` here — this is homogeneous
-/// clip space, not the 32-bit NDC/viewport datapath.
-fn distances(v: &ClipVertex) -> [i64; 10] {
-    let x = i64::from(v.x);
-    let y = i64::from(v.y);
-    let z = i64::from(v.z);
-    let w = i64::from(v.w);
+/// The ten plane distances, typed `ClipDist` (40-bit signed Q16.16); inside
+/// means `d >= 0`. The guard-band products (`64*w` reaches 2^37 raw) use
+/// `Adder40` shift-add chains (64 = one shift, 25 = 16+8+1), matching what
+/// hardware would synthesize. Non-saturating: any wrap would be reported as
+/// a device overflow (and never happens: values stay below 2^39).
+pub(crate) fn distances(v: &ClipVertex) -> [ClipDist; 10] {
+    let x = ClipDist::widen_q16(v.x);
+    let y = ClipDist::widen_q16(v.y);
+    let z = ClipDist::widen_q16(v.z);
+    let w = ClipDist::widen_q16(v.w);
+    let w64 = w.shl_bits(6);
+    let x25 = ClipDist::from_product(Adder40::add_fx(
+        "clip.dist",
+        ClipDist::from_product(Adder40::add_fx("clip.dist", x.shl_bits(4), x.shl_bits(3))),
+        x,
+    ));
+    let y25 = ClipDist::from_product(Adder40::add_fx(
+        "clip.dist",
+        ClipDist::from_product(Adder40::add_fx("clip.dist", y.shl_bits(4), y.shl_bits(3))),
+        y,
+    ));
+    let add = |a, b| ClipDist::from_product(Adder40::add_fx("clip.dist", a, b));
+    let sub = |a, b| ClipDist::from_product(Adder40::sub_fx("clip.dist", a, b));
     [
-        z,                             // near: z >= 0
-        w - z,                         // far: z <= w
-        x + w,                         // left viewport
-        w - x,                         // right viewport
-        y + w,                         // bottom viewport
-        w - y,                         // top viewport
-        GUARD_NUM * w + GUARD_DEN * x, // guard left
-        GUARD_NUM * w - GUARD_DEN * x, // guard right
-        GUARD_NUM * w + GUARD_DEN * y, // guard bottom
-        GUARD_NUM * w - GUARD_DEN * y, // guard top
+        z,             // near: z >= 0
+        sub(w, z),     // far: z <= w
+        add(x, w),     // left viewport
+        sub(w, x),     // right viewport
+        add(y, w),     // bottom viewport
+        sub(w, y),     // top viewport
+        add(w64, x25), // guard left
+        sub(w64, x25), // guard right
+        add(w64, y25), // guard bottom
+        sub(w64, y25), // guard top
     ]
 }
+
+/// Guard-band right-plane index into [`distances`], for tests.
+#[cfg(test)]
+pub(crate) const GUARD_RIGHT_PLANE: usize = 7;
 
 /// 10-bit outcode over near/far, the four viewport planes, and the four
 /// guard-band planes.
@@ -85,7 +105,7 @@ pub fn outcode(v: &ClipVertex) -> u32 {
     let d = distances(v);
     let mut code = 0;
     for (bit, distance) in d.iter().enumerate() {
-        if *distance < 0 {
+        if distance.is_negative() {
             code |= 1 << bit;
         }
     }
@@ -125,34 +145,51 @@ pub fn classify(tri: &[ClipVertex; 3]) -> Classify {
 /// from the outside endpoint: `t = |d_out| / (|d_out| + d_in)` via the rcp
 /// unit, then `p = out + t*(inside - out)`. Direction-independent, which is
 /// what makes `AB == BA` hold.
-fn intersect(out: &ClipVertex, d_out: i64, inside: &ClipVertex, d_in: i64) -> ClipVertex {
-    debug_assert!(d_out < 0 && d_in >= 0);
-    let num = -d_out;
-    let den = d_in - d_out; // > 0
-                            // Normalize both distances into u32, keeping their ratio.
-    let den_bits = 64 - den.leading_zeros();
-    let shift = den_bits.saturating_sub(32);
-    let den32 = (den >> shift) as u32;
-    let num32 = (num >> shift) as u64;
-    let (mag, rshift) = rcp_u32(den32);
-    // t18 = num32 * (1/den32) * 2^18, where 1/den32 = mag * 2^-rshift.
-    let product = num32 * u64::from(mag);
-    let t18 = if rshift >= 18 {
-        product >> (rshift - 18)
-    } else {
-        product << (18 - rshift)
-    };
-    let t18 = t18.min((1 << 18) - 1) as i64;
-    let lerp = |a: i32, b: i32| -> i32 {
-        let diff = i64::from(b) - i64::from(a);
-        (i64::from(a) + ((diff * t18) >> 18)) as i32
-    };
-    ClipVertex {
-        x: lerp(out.x, inside.x),
-        y: lerp(out.y, inside.y),
-        z: lerp(out.z, inside.z),
-        w: lerp(out.w, inside.w),
+fn intersect(out: &ClipVertex, d_out: ClipDist, inside: &ClipVertex, d_in: ClipDist) -> ClipVertex {
+    debug_assert!(d_out.is_negative() && !d_in.is_negative());
+    // U0.18 cannot represent t = 1. The inside endpoint is the exact
+    // intersection when it already lies on this plane.
+    if d_in == ClipDist::zero() {
+        return *inside;
     }
+    let num = -d_out;
+    let den = ClipDist::from_product(Adder40::sub_fx("clip.dist", d_in, d_out)); // > 0
+    let (num32, den32) = ClipDist::ratio_to_u32(num, den);
+    let rcp = RcpUnit::rcp_u32(den32);
+    // t18 = num32 * (1/den32) * 2^18, where 1/den32 = mag * 2^-rshift.
+    // num32 is 32-bit, mag 18-bit: a 36x18 multiplier site.
+    let product = Multiplier36x18::mul("clip.t", i64::from(num32), rcp.mag_raw()) as u64;
+    let t18 = if rcp.shift >= 18 {
+        product >> (rcp.shift - 18)
+    } else {
+        product << (18 - rcp.shift)
+    };
+    let t18 = Saturator::frac18(t18);
+    ClipVertex {
+        x: lerp_q16(out.x, inside.x, t18),
+        y: lerp_q16(out.y, inside.y, t18),
+        z: lerp_q16(out.z, inside.z, t18),
+        w: lerp_q16(out.w, inside.w, t18),
+    }
+}
+
+/// Linear interpolation `out + t*(inside - out)` on Q16 coordinates, used by
+/// clipping. The difference is widened to `ClipDist` (a Q16 subtraction can
+/// exceed the Q16 range); the wide difference times the U0.18 fraction is a
+/// 36x18 multiplier site; the result lies between the endpoints by
+/// construction, so the narrowing range check (class 3) never fires.
+fn lerp_q16(out: Q16, inside: Q16, t18: U0_18) -> Q16 {
+    let diff = ClipDist::from_product(Adder40::sub_fx(
+        "clip.lerp",
+        ClipDist::widen_q16(inside),
+        ClipDist::widen_q16(out),
+    ));
+    let step = ClipDist::from_product(Multiplier36x18::mul_fx("clip.lerp", diff, t18) >> 18);
+    Q16::narrow_from_clip_dist(ClipDist::from_product(Adder40::add_fx(
+        "clip.lerp",
+        ClipDist::widen_q16(out),
+        step,
+    )))
 }
 
 /// The six planes that truly clip, in fixed order, indexed into
@@ -166,7 +203,7 @@ fn clip_plane(poly: &[ClipVertex], plane: usize) -> Vec<ClipVertex> {
     let mut d_prev = distances(&prev)[plane];
     for &cur in poly {
         let d_cur = distances(&cur)[plane];
-        match (d_prev >= 0, d_cur >= 0) {
+        match (!d_prev.is_negative(), !d_cur.is_negative()) {
             (true, true) => out.push(cur),
             (true, false) => out.push(intersect(&cur, d_cur, &prev, d_prev)),
             (false, true) => {
@@ -241,19 +278,32 @@ mod tests {
             for vertex in t {
                 // Intersections use the approximate rcp unit, so allow a
                 // small epsilon past the plane (setup clamps z/w anyway).
-                assert!(vertex.z >= -1024, "near plane violated: {vertex:?}");
-                assert!(vertex.w >= -1024);
+                assert!(
+                    vertex.z >= Q16::from_raw_const(-1024),
+                    "near plane violated: {vertex:?}"
+                );
+                assert!(vertex.w >= Q16::from_raw_const(-1024));
             }
         }
+    }
+
+    #[test]
+    fn intersection_keeps_endpoint_on_near_plane() {
+        let outside = ClipVertex::new(q(-30000, 1), q(0, 1), q(-30000, 1), q(1, 1));
+        let on_plane = ClipVertex::new(q(0, 1), q(0, 1), q(0, 1), q(1, 1));
+        let d_out = distances(&outside)[0];
+        let d_in = distances(&on_plane)[0];
+        assert_eq!(intersect(&outside, d_out, &on_plane, d_in), on_plane);
     }
 
     #[test]
     fn intersection_matches_exact_oracle() {
         // Intersection accuracy against an exact rational oracle, sweeping
         // edges across the near plane at assorted lengths and positions.
-        // Error budget: |segment| * 2^-14 plus a few raw units (the lerp rcp
-        // is ~8 ppm, far below this bound).
+        // Bound from the contract: (segment >> REL_SHIFT) + ABS raw units.
+        use crate::hardware::gpu::rastersim::contract;
         use crate::hardware::gpu::rastersim::fixed::q16_from_rational as qr;
+        use crate::hardware::gpu::rastersim::oracle::clip_intersection_exact;
         let mut steps = 0u64;
         let mut seed = 0x12345u64;
         let mut lcg = move || {
@@ -275,33 +325,141 @@ mod tests {
                 qr(lcg() % 3000 + 1, 1000),
                 qr(lcg() % 3000 + 500, 1000),
             );
-            let d_out = i64::from(out_v.z);
-            let d_in = i64::from(in_v.z);
+            let d_out = ClipDist::widen_q16(out_v.z);
+            let d_in = ClipDist::widen_q16(in_v.z);
             let approx = intersect(&out_v, d_out, &in_v, d_in);
-            // Exact rational intersection: t = -d_out / (d_in - d_out).
-            let t_num = -i128::from(d_out);
-            let t_den = i128::from(d_in) - i128::from(d_out);
+            let exact = clip_intersection_exact(&out_v, d_out, &in_v, d_in);
             let mut segment_max = 0i64;
-            for (a, b, p) in [
-                (out_v.x, in_v.x, approx.x),
-                (out_v.y, in_v.y, approx.y),
-                (out_v.z, in_v.z, approx.z),
-                (out_v.w, in_v.w, approx.w),
+            for (a, b, p, e) in [
+                (out_v.x, in_v.x, approx.x, exact.x),
+                (out_v.y, in_v.y, approx.y, exact.y),
+                (out_v.z, in_v.z, approx.z, exact.z),
+                (out_v.w, in_v.w, approx.w, exact.w),
             ] {
-                let exact = i128::from(a) + (i128::from(b) - i128::from(a)) * t_num / t_den;
-                let error = (i128::from(p) - exact).abs() as i64;
+                let error = (p - e).abs().raw();
                 worst = worst.max(error);
-                segment_max = segment_max.max((i64::from(b) - i64::from(a)).abs());
+                // Widened difference: a Q16 sub could exceed the Q16 range.
+                segment_max = segment_max.max(
+                    (ClipDist::widen_q16(b) - ClipDist::widen_q16(a))
+                        .raw()
+                        .abs(),
+                );
             }
-            let bound = segment_max / 16_384 + 8;
+            let bound = (segment_max >> contract::clip::INTERSECTION_REL_SHIFT)
+                + contract::clip::INTERSECTION_ABS_RAW;
             assert!(
                 worst <= bound,
-                "intersection error {worst} exceeds {bound} (segment {segment_max})"
+                "intersection error {worst} exceeds contract {bound} (segment {segment_max})"
             );
             steps += 1;
         }
         assert_eq!(steps, 200);
         println!("clip intersection: worst error {worst} raw Q16.16 units over 200 edges");
+    }
+
+    #[test]
+    fn intersection_precision_holds_on_huge_edges() {
+        // Huge dynamic range: endpoints near the Q16.16 extremes (tens of
+        // thousands of metres, e.g. a giant triangle right in front of the
+        // camera), crossing the near plane. The contract bound scales with
+        // the segment length, but the absolute term must still dominate
+        // correctly: verify against the exact rational oracle.
+        use crate::hardware::gpu::rastersim::contract;
+        use crate::hardware::gpu::rastersim::fixed::q16_from_rational as qr;
+        use crate::hardware::gpu::rastersim::oracle::clip_intersection_exact;
+        let cases = [
+            // (out_v, in_v): outside endpoint behind near plane.
+            (
+                qr(-30000, 1),
+                qr(30000, 1),
+                qr(-2000, 1),
+                qr(3, 100),
+                qr(1, 100),
+                qr(0, 1),
+                qr(1, 2),
+                qr(1, 50),
+            ),
+            (
+                qr(32767, 1),
+                qr(-32767, 1),
+                qr(-500, 1),
+                qr(1, 1),
+                qr(12345, 1),
+                qr(-7, 1),
+                qr(3, 1),
+                qr(2, 1),
+            ),
+            (
+                qr(1, 1000),
+                qr(-1, 1000),
+                qr(-1, 1000),
+                qr(2, 100),
+                qr(-30000, 1),
+                qr(25000, 1),
+                qr(100, 1),
+                qr(150, 1),
+            ),
+        ];
+        let mut steps = 0u64;
+        for (ox, oy, oz, ow, ix, iy, iz, iw) in cases {
+            let out_v = ClipVertex::new(ox, oy, oz, ow);
+            let in_v = ClipVertex::new(ix, iy, iz, iw);
+            let d_out = ClipDist::widen_q16(out_v.z);
+            let d_in = ClipDist::widen_q16(in_v.z);
+            let approx = intersect(&out_v, d_out, &in_v, d_in);
+            let exact = clip_intersection_exact(&out_v, d_out, &in_v, d_in);
+            let mut segment_max = 0i64;
+            let mut worst = 0i64;
+            for (a, b, p, e) in [
+                (out_v.x, in_v.x, approx.x, exact.x),
+                (out_v.y, in_v.y, approx.y, exact.y),
+                (out_v.z, in_v.z, approx.z, exact.z),
+                (out_v.w, in_v.w, approx.w, exact.w),
+            ] {
+                worst = worst.max((p - e).abs().raw());
+                segment_max = segment_max.max(
+                    (ClipDist::widen_q16(b) - ClipDist::widen_q16(a))
+                        .raw()
+                        .abs(),
+                );
+            }
+            let bound = (segment_max >> contract::clip::INTERSECTION_REL_SHIFT)
+                + contract::clip::INTERSECTION_ABS_RAW;
+            assert!(
+                worst <= bound,
+                "huge-edge intersection error {worst} exceeds contract {bound} (segment {segment_max})"
+            );
+            steps += 1;
+        }
+        assert_eq!(steps, 3);
+    }
+
+    #[test]
+    fn intersection_huge_edges_stay_direction_independent() {
+        // AB == BA under huge dynamic range: clipping the same geometric edge
+        // in both windings must produce identical intersection vertices.
+        use crate::hardware::gpu::rastersim::fixed::q16_from_rational as qr;
+        let tri = [
+            ClipVertex::new(qr(-20000, 1), qr(20000, 1), qr(1, 1), qr(8000, 1)),
+            ClipVertex::new(qr(20000, 1), qr(20000, 1), qr(1, 1), qr(8000, 1)),
+            ClipVertex::new(qr(0, 1), qr(-100, 1), qr(-3, 1), qr(1, 50)),
+        ];
+        let fwd = clip_triangle(&tri);
+        let mut rev = tri;
+        rev.reverse();
+        let bwd = clip_triangle(&rev);
+        assert_eq!(fwd.len(), bwd.len());
+        assert!(!fwd.is_empty());
+        let mut fwd_v: Vec<_> = fwd.into_iter().flatten().collect();
+        let mut bwd_v: Vec<_> = bwd.into_iter().flatten().collect();
+        fwd_v.sort_by_key(|p| (p.x, p.y, p.z, p.w));
+        bwd_v.sort_by_key(|p| (p.x, p.y, p.z, p.w));
+        fwd_v.dedup();
+        bwd_v.dedup();
+        assert_eq!(
+            fwd_v, bwd_v,
+            "reversed winding changed huge-edge clip results"
+        );
     }
 
     #[test]
@@ -316,8 +474,8 @@ mod tests {
         // AB == BA: the same geometric edge in both directions.
         let out_v = v(0, 0, -1, 1);
         let in_v = v(1, 0, 1, 1);
-        let d_out = i64::from(out_v.z);
-        let d_in = i64::from(in_v.z);
+        let d_out = ClipDist::widen_q16(out_v.z);
+        let d_in = ClipDist::widen_q16(in_v.z);
         let ab = intersect(&out_v, d_out, &in_v, d_in);
         let ba = intersect(&out_v, d_out, &in_v, d_in);
         assert_eq!(ab, ba);
@@ -351,9 +509,9 @@ mod tests {
         assert!(!out.is_empty());
         for t in &out {
             for vertex in t {
-                let lhs = GUARD_NUM * i64::from(vertex.w) - GUARD_DEN * i64::from(vertex.x);
+                let lhs = distances(vertex)[GUARD_RIGHT_PLANE];
                 assert!(
-                    lhs >= -GUARD_DEN * 1024,
+                    lhs >= ClipDist::from_raw_const(-GUARD_DEN * 1024),
                     "guard band violated by {vertex:?}"
                 );
             }
@@ -367,16 +525,16 @@ mod tests {
 
     #[test]
     fn guard_band_clip_clamps_x() {
-        // Straddles the right guard band x = 10.24*w.
+        // Straddles the right guard band x = 2.56*w.
         let tri = [v(0, 0, 1, 1), v(20, 0, 1, 1), v(0, 1, 1, 1)];
         let out = clip_triangle(&tri);
         assert!(!out.is_empty());
         for t in &out {
             for vertex in t {
                 // Epsilon for the approximate rcp intersection.
-                let lhs = GUARD_NUM * i64::from(vertex.w) - GUARD_DEN * i64::from(vertex.x);
+                let lhs = distances(vertex)[GUARD_RIGHT_PLANE];
                 assert!(
-                    lhs >= -GUARD_DEN * 1024,
+                    lhs >= ClipDist::from_raw_const(-GUARD_DEN * 1024),
                     "guard band violated by {vertex:?}"
                 );
             }

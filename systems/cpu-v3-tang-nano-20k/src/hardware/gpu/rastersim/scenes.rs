@@ -6,6 +6,7 @@
 //! reverse-Z depth precision experiment.
 
 use crate::hardware::gpu::rastersim::clip::ClipVertex;
+use crate::hardware::gpu::rastersim::fixed::Q16;
 
 /// One named scene: a list of clip-space triangles.
 pub struct Scene {
@@ -23,7 +24,7 @@ fn cv(
     z_den: i64,
     w: i64,
 ) -> ClipVertex {
-    let q = |n: i64, d: i64| ((n << 16) / d) as i32;
+    let q = |n: i64, d: i64| Q16::from_raw_const((n << 16) / d);
     ClipVertex::new(q(x_num, x_den), q(y_num, y_den), q(z_num, z_den), q(w, 1))
 }
 
@@ -37,7 +38,12 @@ fn screen_tri(p16: [[i64; 2]; 3], z_num: i64, z_den: i64) -> [ClipVertex; 3] {
         // ndc_x = (X - 200)/200 with X = x16/16 -> x = ndc * w.
         let x = (x16 - 3200) * 15;
         let y = (1920 - y16) * 25;
-        ClipVertex::new(x as i32, y as i32, z as i32, w as i32)
+        ClipVertex::new(
+            Q16::from_raw_const(x),
+            Q16::from_raw_const(y),
+            Q16::from_raw_const(z),
+            Q16::from_raw_const(w),
+        )
     })
 }
 
@@ -190,7 +196,14 @@ pub fn scenes() -> Vec<Scene> {
         [48000, -48000],
         [-48000, -48000],
     ]
-    .map(|[x, y]| ClipVertex::new(x, y, 24000, 48000));
+    .map(|[x, y]| {
+        ClipVertex::new(
+            Q16::from_raw_const(x),
+            Q16::from_raw_const(y),
+            Q16::from_raw_const(24000),
+            Q16::from_raw_const(48000),
+        )
+    });
     scenes.push(Scene {
         name: "screen-borders",
         triangles: vec![
@@ -381,10 +394,14 @@ pub(crate) fn depth_code(z_mm: u64, near_mm: u64, far_mm: u64, reverse: bool) ->
     };
     let den = span * z;
     // U0.18 with round-to-nearest, then quantized to U0.16, mirroring the
-    // rasterizer's interpolate-then-quantize path.
+    // rasterizer's interpolate-then-quantize path. (Analysis-only code: the
+    // clamp/rounding here is the exact oracle, not the device path.)
     let depth18 = ((num << 18) + den / 2) / den;
-    let depth18 = depth18.min(0x3ffff) as u32;
-    crate::hardware::gpu::rastersim::fixed::depth18_to_16(depth18)
+    let depth18 = depth18.min(0x3ffff) as i64;
+    crate::hardware::gpu::rastersim::fixed::depth18_to_16(
+        crate::hardware::gpu::rastersim::fixed::U0_18::from_raw_const(depth18),
+    )
+    .to_bits()
 }
 
 /// Smallest gap in mm that maps to a different depth code, via binary search
