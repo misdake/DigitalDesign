@@ -17,7 +17,7 @@
 //! depth buffer is a byproduct for precision experiments, not a tested image.
 
 use crate::hardware::gpu::rastersim::devices::{Adder56, Multiplier36x18, Saturator};
-use crate::hardware::gpu::rastersim::fixed::S12_4;
+use crate::hardware::gpu::rastersim::fixed::{S12_4, S13_4};
 use crate::hardware::gpu::rastersim::setup::{edge_covered, edge_eval, TriangleSetup};
 use crate::{
     FRAMEBUFFER_HEIGHT, FRAMEBUFFER_TILE, FRAMEBUFFER_TILE_COLUMNS, FRAMEBUFFER_TILE_ROWS,
@@ -95,17 +95,68 @@ fn depth_at(setup: &TriangleSetup, px: S12_4, py: S12_4) -> u16 {
     depth18.quantize().to_bits()
 }
 
-/// Rasterizes every setup triangle onto a black-cleared frame.
-pub fn rasterize(setups: &[TriangleSetup]) -> Frame {
-    let width = FRAMEBUFFER_WIDTH as usize;
-    let height = FRAMEBUFFER_HEIGHT as usize;
-    let mut color = vec![0u16; width * height];
-    let mut depth = vec![0u16; width * height];
-    let mut covered = vec![false; width * height];
-    let mut stats = RasterStats::default();
+/// Conservative empty-tile rejection: for each edge, evaluate the coverage
+/// test at the tile corner that maximizes the edge function (chosen by the
+/// coefficient signs). If any edge fails at its best corner, no pixel in the
+/// tile can be covered. Shared by the reference traversal and the emu.
+pub fn tile_could_cover(setup: &TriangleSetup, tile_x: i32, tile_y: i32) -> bool {
+    (0..3).all(|i| tile_corner_covered(setup, i, tile_x, tile_y))
+}
+
+/// One edge of the worst-corner test (per-cycle form for the emu): evaluates
+/// the coverage test for edge `i` at the tile corner maximizing it.
+pub fn tile_corner_covered(setup: &TriangleSetup, i: usize, tile_x: i32, tile_y: i32) -> bool {
+    let tile = FRAMEBUFFER_TILE as i32;
+    let x_lo = S12_4::pixel_center(tile_x * tile);
+    let x_hi = S12_4::pixel_center(tile_x * tile + tile - 1);
+    let y_lo = S12_4::pixel_center(tile_y * tile);
+    let y_hi = S12_4::pixel_center(tile_y * tile + tile - 1);
+    // E grows with x when cx > 0 and with y when cy > 0.
+    let px = if setup.cx[i] > S13_4::zero() {
+        x_hi
+    } else {
+        x_lo
+    };
+    let py = if setup.cy[i] > S13_4::zero() {
+        y_hi
+    } else {
+        y_lo
+    };
+    edge_covered(setup, i, px, py)
+}
+
+/// One tile visit during traversal: tile index and the quad-clamped pixel
+/// rect within the tile.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct TileVisit {
+    pub index: u16,
+    pub rect: [i32; 4],
+}
+
+/// One quad visit during traversal: even-aligned origin pixel, the number of
+/// in-rect pixels, and the 4-bit coverage mask (bit `dy*2 + dx`).
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct QuadVisit {
+    pub x: i32,
+    pub y: i32,
+    pub valid: u8,
+    pub mask: u8,
+}
+
+/// Traverses the setup triangles tile-first: tiles of the screen-clamped
+/// AABB row by row (corner-test filtered), and within a tile the even-aligned
+/// 2x2 quad grid. This is the single traversal shared by the reference
+/// rasterizer and the emu, so their tile/quad streams are identical by
+/// construction. Per tile the callback order is `on_tile`, one `on_quad` per
+/// quad, then `on_tile_end`.
+pub fn traverse(
+    setups: &[TriangleSetup],
+    mut on_tile: impl FnMut(&TriangleSetup, TileVisit),
+    mut on_quad: impl FnMut(&TriangleSetup, TileVisit, QuadVisit),
+    mut on_tile_end: impl FnMut(&TriangleSetup, TileVisit),
+) {
     let tile = FRAMEBUFFER_TILE as i32;
     for setup in setups {
-        stats.triangles += 1;
         let [ax0, ay0, ax1, ay1] = setup.quad_aabb;
         let tx0 = (ax0 / tile).clamp(0, FRAMEBUFFER_TILE_COLUMNS as i32 - 1);
         let tx1 = (ax1 / tile).clamp(0, FRAMEBUFFER_TILE_COLUMNS as i32 - 1);
@@ -113,17 +164,25 @@ pub fn rasterize(setups: &[TriangleSetup]) -> Frame {
         let ty1 = (ay1 / tile).clamp(0, FRAMEBUFFER_TILE_ROWS as i32 - 1);
         for ty in ty0..=ty1 {
             for tx in tx0..=tx1 {
-                stats.tile_visits += 1;
-                // Quad grid intersected with this tile's pixel rect.
-                let qx0 = ax0.max(tx * tile);
-                let qy0 = ay0.max(ty * tile);
-                let qx1 = ax1.min(tx * tile + tile - 1);
-                let qy1 = ay1.min(ty * tile + tile - 1);
+                if !tile_could_cover(setup, tx, ty) {
+                    continue;
+                }
+                let rect = [
+                    ax0.max(tx * tile),
+                    ay0.max(ty * tile),
+                    ax1.min(tx * tile + tile - 1),
+                    ay1.min(ty * tile + tile - 1),
+                ];
+                let index = (ty * FRAMEBUFFER_TILE_COLUMNS as i32 + tx) as u16;
+                let tile_visit = TileVisit { index, rect };
+                on_tile(setup, tile_visit);
+                let [qx0, qy0, qx1, qy1] = rect;
                 let mut qy = qy0;
                 while qy <= qy1 {
                     let mut qx = qx0;
                     while qx <= qx1 {
-                        stats.quads_visited += 1;
+                        let mut mask = 0u8;
+                        let mut valid = 0u8;
                         for dy in 0..2 {
                             for dx in 0..2 {
                                 let x = qx + dx;
@@ -131,27 +190,70 @@ pub fn rasterize(setups: &[TriangleSetup]) -> Frame {
                                 if x > qx1 || y > qy1 {
                                     continue;
                                 }
-                                stats.pixels_tested += 1;
-                                // Pixel center in s12.4: integer pixel + 0.5.
+                                valid += 1;
                                 let px = S12_4::pixel_center(x);
                                 let py = S12_4::pixel_center(y);
-                                let is_covered = (0..3).all(|i| edge_covered(setup, i, px, py));
-                                if is_covered {
-                                    stats.pixels_covered += 1;
-                                    let index = y as usize * width + x as usize;
-                                    color[index] = pixel_color(x as u32, y as u32, setup.id);
-                                    depth[index] = depth_at(setup, px, py);
-                                    covered[index] = true;
+                                if (0..3).all(|i| edge_covered(setup, i, px, py)) {
+                                    mask |= 1 << (dy * 2 + dx);
                                 }
                             }
                         }
+                        on_quad(
+                            setup,
+                            tile_visit,
+                            QuadVisit {
+                                x: qx,
+                                y: qy,
+                                valid,
+                                mask,
+                            },
+                        );
                         qx += 2;
                     }
                     qy += 2;
                 }
+                on_tile_end(setup, tile_visit);
             }
         }
     }
+}
+/// Rasterizes every setup triangle onto a black-cleared frame, via the
+/// shared [`traverse`] walk.
+pub fn rasterize(setups: &[TriangleSetup]) -> Frame {
+    let width = FRAMEBUFFER_WIDTH as usize;
+    let height = FRAMEBUFFER_HEIGHT as usize;
+    let mut color = vec![0u16; width * height];
+    let mut depth = vec![0u16; width * height];
+    let mut covered = vec![false; width * height];
+    let mut stats = RasterStats::default();
+    stats.triangles = setups.len() as u64;
+    traverse(
+        setups,
+        |_, _| {
+            stats.tile_visits += 1;
+        },
+        |setup, _, quad| {
+            stats.quads_visited += 1;
+            stats.pixels_tested += u64::from(quad.valid);
+            for dy in 0..2 {
+                for dx in 0..2 {
+                    if quad.mask & (1 << (dy * 2 + dx)) == 0 {
+                        continue;
+                    }
+                    let x = quad.x + dx;
+                    let y = quad.y + dy;
+                    stats.pixels_covered += 1;
+                    let index = y as usize * width + x as usize;
+                    color[index] = pixel_color(x as u32, y as u32, setup.id);
+                    let px = S12_4::pixel_center(x);
+                    let py = S12_4::pixel_center(y);
+                    depth[index] = depth_at(setup, px, py);
+                    covered[index] = true;
+                }
+            }
+        },
+        |_, _| {},
+    );
     Frame {
         color,
         depth,
@@ -415,14 +517,15 @@ mod tests {
 
     #[test]
     fn huge_triangle_at_the_camera_covers_full_screen() {
-        // All three vertices 2 cm from the camera spanning +/-50 m: massive
-        // near/guard clipping; the result must fill the entire screen and no
-        // device may overflow.
+        // All three vertices 0.5 m from the camera (the legal projection
+        // limit is near >= 1/8 m) spanning +/-100 m: massive near/guard
+        // clipping; the result must fill the entire screen and no device
+        // may overflow.
         use crate::hardware::gpu::rastersim::fixed::device_events_snapshot;
         let tri = [
-            ClipVertex::new(q(-100, 1), q(50, 1), q(1, 50), q(1, 50)),
-            ClipVertex::new(q(100, 1), q(50, 1), q(1, 50), q(1, 50)),
-            ClipVertex::new(q(0, 1), q(-100, 1), q(1, 50), q(1, 50)),
+            ClipVertex::new(q(-100, 1), q(50, 1), q(1, 2), q(1, 2)),
+            ClipVertex::new(q(100, 1), q(50, 1), q(1, 2), q(1, 2)),
+            ClipVertex::new(q(0, 1), q(-100, 1), q(1, 2), q(1, 2)),
         ];
         let fans = clip_triangle(&tri);
         assert!(!fans.is_empty(), "huge triangle clipped away entirely");
@@ -476,5 +579,36 @@ mod tests {
                 "device overflow at {label} during the huge-triangle scene"
             );
         }
+    }
+
+    #[test]
+    fn guard_corner_triangle_is_not_clamped_away() {
+        // Regression for the old absolute ±511.9375 px snap clamp: legal
+        // screen X reaches 712 px inside the guard band. This triangle spans
+        // (712,0), (200,240), (-312,240) in screen space (exactly the guard
+        // corners at NDC ±2.56) and must cover the screen center (400,120).
+        let tri = [
+            ClipVertex::new(q(64, 25), q(1, 1), q(1, 2), q(1, 1)),
+            ClipVertex::new(q(0, 1), q(-1, 1), q(1, 2), q(1, 1)),
+            ClipVertex::new(q(-64, 25), q(-1, 1), q(1, 2), q(1, 1)),
+        ];
+        let setup = setup_one(&tri);
+        // Vertices must survive at the true guard extremes, not the old
+        // absolute ±511.9375 px clamp.
+        assert_eq!(setup.x[0].raw(), 712 * 16);
+        assert_eq!(setup.x[2].raw(), -312 * 16);
+        let frame = rasterize(&[setup]);
+        // Interior: rightmost center pixel, lower middle, and the right-edge
+        // middle band (the old clamp would have cut the true 392 px boundary
+        // at y=150 back to 317 px, losing these pixels).
+        assert!(
+            frame.covered[120 * 400 + 399],
+            "rightmost center pixel not covered"
+        );
+        assert!(frame.covered[210 * 400 + 200], "lower middle not covered");
+        assert!(
+            frame.covered[150 * 400 + 390],
+            "right-edge middle not covered"
+        );
     }
 }

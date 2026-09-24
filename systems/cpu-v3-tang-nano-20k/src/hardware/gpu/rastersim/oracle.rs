@@ -19,7 +19,7 @@ pub fn ndc_exact(x: Q16, w_raw: i64) -> i64 {
 /// `w_true = w_raw * 2^-16` implies `mag * w_raw == 2^shift`; returns
 /// `(mag * w_raw, 2^shift)` computed exactly.
 pub fn rcp_check(w_raw: u32) -> (u128, u128) {
-    let w_raw = w_raw.max(1024);
+    let w_raw = w_raw.max(8192);
     let (mag, shift) = rcp_q16(w_raw);
     let product = u128::from(mag) * u128::from(w_raw);
     (product, 1u128 << shift)

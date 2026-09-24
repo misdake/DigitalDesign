@@ -14,15 +14,15 @@
 //!
 //! 1. A fully inside triangle keeps its vertices bit-exact.
 //! 2. `AB == BA`: intersection points are always computed from the outside
-//!    endpoint towards the inside endpoint, `t = d_out * rcp(d_out - d_in)`
-//!    in distance magnitudes, so an edge gives the same point in either
-//!    direction.
+//!    endpoint towards the inside endpoint, `t = |d_out| / (|d_out| + d_in)`
+//!    with a 32-bit iterative quotient (deterministic), so an edge gives the
+//!    same point in either direction.
 //! 3. Plane order is fixed: near, far, guard-left, guard-right,
 //!    guard-bottom, guard-top.
 //! 4. Viewport planes never clip; they only classify.
 
-use crate::hardware::gpu::rastersim::devices::{Adder40, Multiplier36x18, RcpUnit, Saturator};
-use crate::hardware::gpu::rastersim::fixed::{ClipDist, Q16, U0_18};
+use crate::hardware::gpu::rastersim::devices::{Adder40, Adder41, Multiplier36x36};
+use crate::hardware::gpu::rastersim::fixed::{ClipDist, Q16};
 
 /// Clip-space vertex, all components [`Q16`].
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
@@ -39,8 +39,12 @@ impl ClipVertex {
     }
 }
 
-/// Minimum legal `w` (raw `Q16.16` value of `2^-6`). Setup saturates to this.
-pub const W_MIN_RAW: i32 = 1024;
+/// Minimum legal `w` (raw `Q16.16` value of `1/8`). Input contract: the
+/// projection must place the near plane at >= 1/8 m, so after clipping every
+/// vertex satisfies `w >= W_MIN_RAW` and `0 <= z <= w`. Primitives violating
+/// this are explicitly rejected in setup (`SetupStats::culled_invalid_w`);
+/// nothing is silently clamped.
+pub const W_MIN_RAW: i32 = 8192;
 
 // Outcode bits.
 pub const OUT_NEAR: u32 = 1 << 0;
@@ -147,54 +151,87 @@ pub fn classify(tri: &[ClipVertex; 3]) -> Classify {
 /// what makes `AB == BA` hold.
 fn intersect(out: &ClipVertex, d_out: ClipDist, inside: &ClipVertex, d_in: ClipDist) -> ClipVertex {
     debug_assert!(d_out.is_negative() && !d_in.is_negative());
-    // U0.18 cannot represent t = 1. The inside endpoint is the exact
-    // intersection when it already lies on this plane.
+    match intersect_prepare(d_out, d_in) {
+        // The inside endpoint is the exact intersection when it already lies
+        // on this plane (t = 1).
+        None => *inside,
+        Some((num, den)) => {
+            let t32 = intersect_quotient(num, den);
+            ClipVertex {
+                x: lerp_q16(out.x, inside.x, t32),
+                y: lerp_q16(out.y, inside.y, t32),
+                z: lerp_q16(out.z, inside.z, t32),
+                w: lerp_q16(out.w, inside.w, t32),
+            }
+        }
+    }
+}
+
+/// Stepwise leaf: distance-ratio preparation for [`intersect`]. Returns
+/// `None` when the inside endpoint lies exactly on the plane (t = 1),
+/// otherwise the 41-bit numerator and denominator (`num < den`, both
+/// positive).
+pub(crate) fn intersect_prepare(d_out: ClipDist, d_in: ClipDist) -> Option<(ClipDist, ClipDist)> {
     if d_in == ClipDist::zero() {
-        return *inside;
+        return None;
     }
     let num = -d_out;
-    let den = ClipDist::from_product(Adder40::sub_fx("clip.dist", d_in, d_out)); // > 0
-    let (num32, den32) = ClipDist::ratio_to_u32(num, den);
-    let rcp = RcpUnit::rcp_u32(den32);
-    // t18 = num32 * (1/den32) * 2^18, where 1/den32 = mag * 2^-rshift.
-    // num32 is 32-bit, mag 18-bit: a 36x18 multiplier site.
-    let product = Multiplier36x18::mul("clip.t", i64::from(num32), rcp.mag_raw()) as u64;
-    let t18 = if rcp.shift >= 18 {
-        product >> (rcp.shift - 18)
-    } else {
-        product << (18 - rcp.shift)
-    };
-    let t18 = Saturator::frac18(t18);
-    ClipVertex {
-        x: lerp_q16(out.x, inside.x, t18),
-        y: lerp_q16(out.y, inside.y, t18),
-        z: lerp_q16(out.z, inside.z, t18),
-        w: lerp_q16(out.w, inside.w, t18),
+    // Signed 41-bit difference (ClipDist is 40-bit; the difference of two
+    // distances can need one more bit).
+    let den = ClipDist::from_product(Adder41::sub_fx("clip.dist", d_in, d_out)); // > 0
+    Some((num, den))
+}
+
+/// Stepwise leaf: the interpolation quotient `t` as a 32-bit fraction, from
+/// the iterative shift-subtract divider (32 iterations; clip is low
+/// frequency, so the LUT rcp is not reused here).
+pub(crate) fn intersect_quotient(num: ClipDist, den: ClipDist) -> u32 {
+    let mut remainder = num.raw();
+    let denominator = den.raw();
+    debug_assert!(remainder >= 0 && denominator > remainder);
+    let mut quotient = 0u32;
+    for _ in 0..32 {
+        quotient_step(&mut remainder, &mut quotient, denominator);
+    }
+    quotient
+}
+
+/// One shift-subtract iteration of the divider (Adder41 semantics). The emu
+/// calls it once per cycle; the functional sim loops it 32 times.
+pub(crate) fn quotient_step(remainder: &mut i64, quotient: &mut u32, denominator: i64) {
+    *remainder = Adder41::add("clip.div", *remainder, *remainder);
+    *quotient <<= 1;
+    if *remainder >= denominator {
+        *remainder = Adder41::sub("clip.div", *remainder, denominator);
+        *quotient |= 1;
     }
 }
 
 /// Linear interpolation `out + t*(inside - out)` on Q16 coordinates, used by
 /// clipping. The difference is widened to `ClipDist` (a Q16 subtraction can
-/// exceed the Q16 range); the wide difference times the U0.18 fraction is a
-/// 36x18 multiplier site; the result lies between the endpoints by
-/// construction, so the narrowing range check (class 3) never fires.
-fn lerp_q16(out: Q16, inside: Q16, t18: U0_18) -> Q16 {
-    let diff = ClipDist::from_product(Adder40::sub_fx(
+/// exceed the Q16 range); the wide difference times the 32-bit fraction is a
+/// 36x36 multiplier site keeping the full product and rounding once at the
+/// end; the result lies between the endpoints by construction, so the
+/// narrowing range check (class 3) never fires.
+pub(crate) fn lerp_q16(out: Q16, inside: Q16, t32: u32) -> Q16 {
+    let diff = ClipDist::from_product(Adder41::sub_fx(
         "clip.lerp",
         ClipDist::widen_q16(inside),
         ClipDist::widen_q16(out),
     ));
-    let step = ClipDist::from_product(Multiplier36x18::mul_fx("clip.lerp", diff, t18) >> 18);
-    Q16::narrow_from_clip_dist(ClipDist::from_product(Adder40::add_fx(
+    // Wide intermediate product, single rounding at the end.
+    let product = Multiplier36x36::mul("clip.lerp", diff.raw(), i64::from(t32));
+    let step = (product + (1i64 << 31)) >> 32;
+    Q16::narrow_from_clip_dist(ClipDist::from_product(Adder41::add_fx(
         "clip.lerp",
         ClipDist::widen_q16(out),
-        step,
+        ClipDist::from_product(step),
     )))
 }
 
 /// The six planes that truly clip, in fixed order, indexed into
 /// [`distances`].
-const CLIP_PLANES: [usize; 6] = [0, 1, 6, 7, 8, 9];
+pub(crate) const CLIP_PLANES: [usize; 6] = [0, 1, 6, 7, 8, 9];
 
 /// Sutherland-Hodgman clip of a polygon against one plane.
 fn clip_plane(poly: &[ClipVertex], plane: usize) -> Vec<ClipVertex> {

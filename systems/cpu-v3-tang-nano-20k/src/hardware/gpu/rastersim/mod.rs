@@ -132,7 +132,9 @@ mod tests {
     #[test]
     fn performance_scene_stats_and_csv() {
         // One run of the 20k-triangle performance scene feeds both CSVs and
-        // both assertion sets (scene stats and multiplier ranges).
+        // both assertion sets (scene stats and multiplier ranges). The stats
+        // lock serializes the reset/run/snapshot against other heavy tests.
+        let _guard = super::fixed::stats_lock().lock().unwrap();
         mul_stats_reset();
         let scene = performance_scene();
         let (setups, setup_stats, clip_stats) = process(&scene);
@@ -225,13 +227,13 @@ mod tests {
                 events[label]
             );
         }
-        // The saturators do fire at the documented rates (guard-band corners
-        // clamp on snap; w_min never triggers on legal scenes).
+        // The saturators only fire at the documented rates (format-range
+        // snap on extreme guard-band corners; illegal w is rejected upstream,
+        // never clamped).
         let get = |label: &str| events.get(label).copied().unwrap_or(0);
         println!(
-            "saturation: viewport.snap={} setup.w_min={} setup.depth={}",
+            "saturation: viewport.snap={} setup.depth={}",
             get("viewport.snap"),
-            get("setup.w_min"),
             get("setup.depth")
         );
     }

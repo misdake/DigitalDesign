@@ -13,7 +13,9 @@
 //!
 //! 1. **Saturating, like the hardware** (`Saturator` in `devices.rs`):
 //!    viewport X/Y snap to ±511.9375 px, depth to its format range, `w`
-//!    clamped up to `w_min`. Every saturation is counted per call site.
+//!    viewport snap to the s12.4 format range, depth to its format range.
+//!    Every saturation is counted per call site. (Illegal `w` is rejected
+//!    upstream by `clip::clip_vertex_valid`, never clamped.)
 //! 2. **Non-saturating devices** (`Adder`/`Multiplier*` in `devices.rs`):
 //!    wrap exactly like the hardware, and the overflow is counted per call
 //!    site; tests assert the counts stay zero (a nonzero count means the
@@ -115,18 +117,6 @@ impl Fx<23, 16, true> {
     /// outputs, lerp steps); the headroom makes the range check unreachable.
     pub fn from_product(raw: i64) -> Self {
         Self::from_raw(raw)
-    }
-
-    /// Port-level bit-pattern extraction for the rcp unit: normalizes the
-    /// positive ratio `num/den` (`den > 0`) into a pair of u32 operands with
-    /// the ratio preserved, so the rcp unit's small multiplier suffices.
-    pub fn ratio_to_u32(num: Self, den: Self) -> (u32, u32) {
-        let num = num.raw();
-        let den = den.raw();
-        debug_assert!(num >= 0 && den > 0);
-        let den_bits = 64 - den.leading_zeros();
-        let shift = den_bits.saturating_sub(32);
-        ((num >> shift) as u32, (den >> shift) as u32)
     }
 }
 
@@ -321,6 +311,13 @@ pub fn mul_stats_reset() {
     mul_stats().lock().unwrap().clear();
 }
 
+/// Serializes tests that reset and snapshot the multiplier/device statistics
+/// against other long-running tests that record into them.
+pub fn stats_lock() -> &'static Mutex<()> {
+    static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+    LOCK.get_or_init(|| Mutex::new(()))
+}
+
 // ---------------------------------------------------------------------------
 // Saturation events (class 1) and device overflow reports (class 2).
 
@@ -487,12 +484,13 @@ pub fn rcp_u32(x: u32) -> (u32, i32) {
 
 /// Reciprocal of a positive `Q16.16` value (raw `u32`), returning
 /// `(mag, shift)` such that `1/w = mag * 2^(16 - shift)` with `mag` in
-/// `[2^17, 2^18]`. Inputs below `2^-6` (raw 1024) saturate to `2^-6` first,
-/// matching the documented `w_min` input restriction. Keeping the normalized
-/// magnitude plus exponent (instead of a fixed-scale output) preserves full
-/// precision across the whole `w` range.
+/// `[2^17, 2^18]`. Inputs below `2^-3` (raw 8192, the documented near
+/// limit of 1/8 m) saturate to `2^-3` as an
+/// absolute floor; the legal input contract (`w >= 1/8`, validated in setup)
+/// never engages it. Keeping the normalized magnitude plus exponent (instead
+/// of a fixed-scale output) preserves full precision across the `w` range.
 pub fn rcp_q16(w_raw: u32) -> (u32, i32) {
-    rcp_u32(w_raw.max(1024))
+    rcp_u32(w_raw.max(8192))
 }
 
 /// Converts a `Q16.16` value from a rational `num/den` without floats.
@@ -524,7 +522,7 @@ mod tests {
             // Sweep raw w from 2^-6 upward, dense near the small end, up to
             // the Q16.16 positive ceiling of 32768 - 2^-16.
             let mut steps = 0u64;
-            let mut w_raw = 1024u32;
+            let mut w_raw = 8192u32;
             while w_raw < 0x7fff_0000 && steps < 2_000_000 {
                 let (product, target) = oracle::rcp_check(w_raw);
                 let error = product.abs_diff(target);

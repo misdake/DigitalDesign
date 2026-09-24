@@ -19,10 +19,12 @@
 //!   range statistics per call site ([`fixed::mul_stats_snapshot`]), they
 //!   never panic — the report decides where a wide multiplier is needed.
 //! * [`Saturator`] — the saturating clamps the hardware performs: viewport
-//!   X/Y to ±511.9375 px, depth to format range, `w` up to `w_min`. Every
+//!   X/Y to the full s12.4 format range, depth to format range. Every
 //!   saturation event is counted per call site; tests assert the rates.
 //! * [`RcpUnit`] — the reciprocal unit (CLZ normalization + LUT + slope
-//!   lerp, one ~12x10 multiply; see `fixed.rs` for modes and tables).
+//!   lerp, one ~12x10 multiply; see `fixed.rs` for modes and tables). The
+//!   clip divider is a separate iterative shift-subtract unit (Adder41), not
+//!   this device.
 
 use crate::hardware::gpu::rastersim::fixed::{self, record_mul, record_overflow, record_sat, Q16};
 
@@ -87,6 +89,8 @@ pub type Adder18 = Adder<18>;
 pub type Adder32 = Adder<32>;
 /// 40-bit adder (edge-function accumulation, homogeneous clip distances).
 pub type Adder40 = Adder<40>;
+/// 41-bit adder (clip distance differences and the iterative divider).
+pub type Adder41 = Adder<41>;
 /// 56-bit adder (depth interpolation numerator).
 pub type Adder56 = Adder<56>;
 
@@ -149,28 +153,17 @@ multiplier!(Multiplier36x36);
 pub struct Saturator;
 
 impl Saturator {
-    /// Clamps `w` up to `w_min` (2^-6 in Q16.16), as the rcp input stage
-    /// does. Hardware reason: the LUT+lerp input must be positive and
-    /// normalized; a smaller `w` would break the range assumptions.
-    pub fn w_min(value: Q16) -> Q16 {
-        if value.raw() < 1024 {
-            record_sat("setup.w_min");
-            Q16::from_raw_const(1024)
-        } else {
-            value
-        }
-    }
-
-    /// Saturates a viewport Q16.16 coordinate to the s12.4 guard-band range
-    /// ±511.9375 px, via `floor(v*16 + 0.5)`. Hardware reason: the snapped
-    /// coordinate register is 16-bit and the guard band bounds all inputs;
-    /// the clamp only absorbs rcp/lerp epsilon and pre-clip stragglers.
+    /// Saturates a viewport Q16.16 coordinate to the full s12.4 format range
+    /// (±2047.9375 px), via `floor(v*16 + 0.5)`. Hardware reason: the snapped
+    /// coordinate register is 16-bit; the clamp is format-domain protection
+    /// only and must never fire on legal (guard-band clipped) input, whose
+    /// screen X reaches at most ±712 px.
     pub fn snap_s12_4(v_q16: Q16) -> fixed::S12_4 {
         let raw = (v_q16.raw() + 2048) >> 12;
-        if !(-8191..=8191).contains(&raw) {
+        if !(-32767..=32767).contains(&raw) {
             record_sat("viewport.snap");
         }
-        fixed::S12_4::from_raw_const(raw.clamp(-8191, 8191))
+        fixed::S12_4::from_raw_const(raw.clamp(-32767, 32767))
     }
 
     /// Saturates a depth product to the U0.18 range. Hardware reason: the
@@ -181,15 +174,6 @@ impl Saturator {
             record_sat("setup.depth");
         }
         fixed::U0_18::from_raw_const(value.min(0x3ffff) as i64)
-    }
-
-    /// Clamps the clip interpolation fraction to the U0.18 range.
-    /// Mathematically `t < 1` already; this only absorbs rcp epsilon.
-    pub fn frac18(value: u64) -> fixed::U0_18 {
-        if value > (1 << 18) - 1 {
-            record_sat("clip.t");
-        }
-        fixed::U0_18::from_raw_const(value.min((1 << 18) - 1) as i64)
     }
 
     /// Saturates the interpolated depth at a pixel before quantization.
@@ -225,7 +209,7 @@ pub struct RcpUnit;
 
 impl RcpUnit {
     /// `1/w` for a clip-space `w` (Q16.16). The caller is responsible for
-    /// the `w_min` saturator (`Saturator::w_min`) upstream.
+    /// legal-projection check (`clip_vertex_valid`) upstream.
     pub fn rcp_q16(w: Q16) -> RcpOutput {
         let (mag, shift) = fixed::rcp_q16(w.raw() as u32);
         RcpOutput { mag, shift }
@@ -281,26 +265,22 @@ mod tests {
         // Saturator labels are shared with scene tests, so only deltas of at
         // least the local contribution are asserted.
         let before = device_events_snapshot();
-        assert_eq!(
-            Saturator::w_min(Q16::from_raw_const(1 << 16)).raw(),
-            1 << 16
-        );
-        assert_eq!(Saturator::w_min(Q16::from_raw_const(100)).raw(), 1024);
+        // In-range viewport coordinates pass through; out-of-format-range
+        // (beyond ±2047.9375 px) saturates to the s12.4 limit.
         assert_eq!(
             Saturator::snap_s12_4(Q16::from_raw_const(100 << 16)).raw(),
             1600
         );
         assert_eq!(
             Saturator::snap_s12_4(Q16::from_raw_const(600 << 16)).raw(),
-            8191
+            9600
+        );
+        assert_eq!(
+            Saturator::snap_s12_4(Q16::from_raw_const(3000 << 16)).raw(),
+            32767
         );
         assert_eq!(Saturator::depth_u0_18(1 << 18).raw(), 0x3ffff);
         let after = device_events_snapshot();
-        assert!(
-            after.get("setup.w_min").copied().unwrap_or(0)
-                - before.get("setup.w_min").copied().unwrap_or(0)
-                >= 1
-        );
         assert!(
             after.get("viewport.snap").copied().unwrap_or(0)
                 - before.get("viewport.snap").copied().unwrap_or(0)
