@@ -4,8 +4,9 @@
 //! Three tile-index lists address five tile rows each. After both framebuffers
 //! receive an initial full gradient, each frame updates only a four-column
 //! window in each band. The windows advance left-to-right with different
-//! offsets, producing three staggered wave fronts while exercising partial
-//! cache residency. The CPU never writes framebuffer pixels directly.
+//! offsets, producing three staggered wave fronts. An inline viewport triangle
+//! is rendered on top through the rasterizer and tile cache. The CPU never
+//! writes framebuffer pixels directly.
 
 use crate::dsl_rt::*;
 use crate::rcc_std::*;
@@ -20,7 +21,7 @@ const FB_A_WORD_HIGH: u16 = 0x0020;
 const FB_B_WORD_LOW: u16 = 0x8000;
 const FB_B_WORD_HIGH: u16 = 0x0021;
 
-const COMMAND_WORDS: u16 = 44;
+const COMMAND_WORDS: u16 = 60;
 const COMMAND_ALLOCATION_WORDS: u16 = 128 + 15;
 const FULL_TILES_PER_DRAW: u16 = 125;
 const TILE_COLUMNS: u16 = 25;
@@ -33,6 +34,7 @@ const TILE_LIST_ALLOCATION_WORDS: u16 = 128 + 15;
 
 const OPCODE_SET_TARGET: u16 = 0x01e0;
 const OPCODE_FAKE_DRAW: u16 = 0x03e1;
+const OPCODE_TRIANGLE: u16 = 0x04e2;
 const OPCODE_END: u16 = 0x01ff;
 const LOAD_OP_LOAD: u16 = 0;
 const LOAD_OP_CLEAR: u16 = 1;
@@ -97,6 +99,14 @@ fn write_target(buffer: Ptr, target_low: u16, target_high: u16) {
     );
 }
 
+fn write_triangle(buffer: Ptr, qword: u16) {
+    write_qword(buffer, qword, OPCODE_TRIANGLE, 0, 0, 0);
+    // Each vertex is one {y:s12.4, x:s12.4} qword. The winding is front-facing.
+    write_qword(buffer, qword + 1, 80 << 4, 48 << 4, 0, 0);
+    write_qword(buffer, qword + 2, 320 << 4, 64 << 4, 0, 0);
+    write_qword(buffer, qword + 3, 200 << 4, 208 << 4, 0, 0);
+}
+
 /// Draw three starts at qword 7, so its payload crosses the following 32-byte
 /// command-fetch boundary.
 fn write_animated_draws(
@@ -131,7 +141,8 @@ fn write_animated_draws(
         LOAD_OP_CLEAR,
         0x0010 | (phase & 0x000f),
     );
-    write_qword(buffer, 10, OPCODE_END, 0, 0, 0);
+    write_triangle(buffer, 10);
+    write_qword(buffer, 14, OPCODE_END, 0, 0, 0);
 }
 
 fn clean_commands(buffer: Ptr) {
@@ -139,6 +150,7 @@ fn clean_commands(buffer: Ptr) {
         dcache_clean_line(buffer);
         dcache_clean_line(buffer.add(16));
         dcache_clean_line(buffer.add(32));
+        dcache_clean_line(buffer.add(48));
     }
     dcache_wait();
 }

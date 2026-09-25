@@ -451,6 +451,15 @@ initial begin
     if (dut.diagnostic_active !== 1 || leds !== 6'b100000)
         $fatal(1, "display application must leave diagnostic ownership at phase 5: active=%0d leds=%b",
             dut.diagnostic_active, leds);
+    // Pixel (200,100) lies strictly inside the viewport triangle. Both
+    // framebuffer slots were initialized before the first DDHT display frame.
+    if (memory[22'h20a248] !== 16'hcb2c || memory[22'h222248] !== 16'hcb2c)
+        $fatal(1, "S2 triangle missing: A=%04x B=%04x",
+            memory[22'h20a248], memory[22'h222248]);
+`ifdef CPU_V3_S2_RASTER_ONLY
+    $display("DIGITAL_DESIGN_PASS");
+    $finish;
+`endif
 
     // Phase 2: holding the S1 button (01) resets the CPU and latches the
     // slider boot. The live pins are 00 after release, so reaching CSEG 3 /

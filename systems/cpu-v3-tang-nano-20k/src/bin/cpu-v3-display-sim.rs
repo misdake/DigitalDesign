@@ -1,9 +1,8 @@
 //! Host display simulator for the configured S2 application.
 //!
-//! C3 restored the Q16.16 FPU display demo (`rcc/display-demo.rs`) in the S2
-//! slot, so this simulator renders the animated waveforms and circle the demo
-//! draws. `boot-applications.conf` selects the source and the build script
-//! compiles it into `DISPLAY_DEMO_PROGRAM`.
+//! The S2 application (`rcc/display-demo.rs`) renders tile-gradient waves and
+//! an inline viewport triangle. `boot-applications.conf` selects the source,
+//! and the build script compiles it into `DISPLAY_DEMO_PROGRAM`.
 
 use cpu_v3_tang_nano_20k::display::{render_frame_at, write_ppm};
 #[cfg(feature = "display-window")]

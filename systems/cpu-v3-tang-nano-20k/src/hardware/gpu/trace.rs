@@ -449,6 +449,44 @@ pub fn rust_cosim_trace() -> Vec<String> {
     render_trace(&run_cosim_scenarios())
 }
 
+/// Same inline viewport triangle and initial tile contents as the RTL raster
+/// scenario in `gpu_tb.v`.
+pub fn rust_raster_trace() -> Vec<String> {
+    let mut h = TraceHarness::new();
+    h.trace.scene("RASTER");
+    h.reset_dut();
+    let fb = FRAMEBUFFER_A_BASE_WORD as usize;
+    for y in 0..32 {
+        for x in 0..32 {
+            let tile = (y / 16) * 25 + x / 16;
+            h.words[fb + tile * 256 + (y % 16) * 16 + x % 16] = 0x5a5a;
+        }
+    }
+    h.words[FB_GUARD as usize] = 0xbeef;
+    h.set_qwords(
+        CMD_BASE,
+        &[
+            set_target(FRAMEBUFFER_A_BASE_WORD),
+            u64::from(crate::gpu_device::GPU_OPCODE_TRIANGLE)
+                | (u64::from(crate::gpu_device::GPU_TRIANGLE_QWORDS) << 8),
+            0,
+            0x0000_0200,
+            0x0200_0000,
+            END,
+        ],
+    );
+    h.run_ok_case(1, 24);
+    let tile_word = |tile: usize, row: usize, col: usize| fb + tile * 256 + row * 16 + col;
+    assert_eq!(h.words[tile_word(0, 1, 1)], 0x0000);
+    assert_eq!(h.words[tile_word(0, 4, 8)], 0x0820);
+    assert_eq!(h.words[tile_word(1, 4, 8)], 0x1821);
+    assert_eq!(h.words[tile_word(1, 15, 15)], 0x5a5a);
+    assert_eq!(h.words[tile_word(25, 0, 0)], 0x0080);
+    assert_eq!(h.words[tile_word(26, 0, 0)], 0x5a5a);
+    assert_eq!(h.words[FB_GUARD as usize], 0xbeef);
+    render_trace(&h.trace.events)
+}
+
 pub(crate) fn run_cosim_scenarios() -> Vec<GpuTraceEvent> {
     let mut h = TraceHarness::new();
     let fb_a = FRAMEBUFFER_A_BASE_WORD;

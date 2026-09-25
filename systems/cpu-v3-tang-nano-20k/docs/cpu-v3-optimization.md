@@ -2,7 +2,7 @@
 
 Status: concise milestone index
 Repository: `../../../`
-Updated: 2026-09-23
+Updated: 2026-09-26
 
 Add exactly one short sentence here for each completed optimization; append implementation detail,
 measurements, rejected alternatives, and validation evidence to
@@ -52,6 +52,7 @@ generated outside this document.
 - 2026-09-23 — The blocking GPU framebuffer cache added eight tile entries, LOAD/CLEAR, masked writes, and 128-byte cleaning.
 - 2026-09-23 — Partial GPU tile waves added tile-local gradients and three staggered left-to-right update fronts.
 - 2026-09-23 — GPU memory-path repair restored D-cache RAM16 mapping and reduced the long-write gearbox to one 64-bit pair.
+- 2026-09-26 — The viewport rasterizer joined the GPU tile cache, and a registered tile-corner result restored 54-MHz timing.
 
 ## Next work
 

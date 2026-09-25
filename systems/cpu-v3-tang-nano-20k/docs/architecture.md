@@ -133,7 +133,7 @@ The fitted device allocation is:
 | 1 | Boot select | Latched reset-time application selection |
 | 2 | Boot DMA | SPI-Flash source, SDRAM destination, length, start, and status registers |
 | 3 | Display | Framebuffer configuration and scanout control |
-| 4 | GPU | Two-entry submit FIFO, completion/status registers, temporary commands, and an eight-entry tile cache |
+| 4 | GPU | Two-entry submit FIFO, temporary commands, viewport triangle rasterizer, and an eight-entry tile cache |
 
 Device 0 channel 0 emits the registered one-cycle-delayed whole-I-cache invalidation pulse. Channel
 1 starts blocking D-cache clean-plus-invalidate, channel 4 starts blocking D-cache clean, and channel
@@ -149,8 +149,9 @@ independent state so neither completion source can release the other.
 Device 1 channel 0 returns the reset-time boot selection. The board-level selection latch powers up
 at `10`, so the boot stage selects the configured S2 application by default; holding the S1 button
 (`01`) selects the configured S1 slider diagnostic, and `11` is ignored. The current project selects
-the primary diagnostic as S1 and the GPU memory-interface demo as S2. S2 alternates two permanent,
-32-byte-aligned heap command buffers and the two framebuffer slots; it reports DDHT test ID `0x0b`
+the primary diagnostic as S1 and the GPU raster demo as S2. S2 alternates two permanent,
+32-byte-aligned heap command buffers and the two framebuffer slots; it overlays a viewport triangle
+on the three tile-gradient wave fronts and reports DDHT test ID `0x0b`
 after each completed GPU render and display vblank. S1 reports test ID `0x07`.
 
 Device 2 exposes the boot-DMA command and status register bank. It accepts a 24-bit absolute Flash
@@ -165,14 +166,19 @@ Device 4 stages a 22-bit command-buffer word address and a word count on write c
 channel 4 submits, and channel 5 performs an idle-only soft reset or sticky-error clear. Read
 channels 0..3 return accepted count, retired count, busy/full/error status, and queued depth. The
 queue holds two submissions in addition to the active one. Full or malformed submissions are
-rejected without incrementing the accepted count. The temporary command processor accepts only
-`SET_TARGET`, `FAKE_DRAW`, and `END`; it fetches one 32-byte command or tile-list line at a time.
+rejected without incrementing the accepted count. The temporary command processor accepts
+`SET_TARGET`, `FAKE_DRAW`, `TRIANGLE`, and `END`; it fetches one 32-byte command or tile-list line at a time.
 `FAKE_DRAW` supplies a 32-byte-aligned list of `u16` tile indices, a LOAD or CLEAR operation, two
 RGB565 colors, a 16-row write mask, and a temporary tile-local XY-gradient flag. Solid and gradient
 writes share the same cache path; the gradient uses channel-high bits plus local x/y and four-bit
 x+y, without multipliers. The framebuffer cache is eight-entry direct-mapped and
 stores eight complete 16x16 tiles in two inferred 512x32 BSRAM banks. A miss blocks while a dirty
 victim is cleaned or a LOAD tile is refilled; each tile transfer is four 128-byte transactions.
+`TRIANGLE` (`0xe2`) is four qwords: a zero-argument header followed by three viewport vertices,
+each packed as `{y:s12.4, x:s12.4}` in the low 32 bits of one qword. The rasterizer emits covered
+RGB565 pixels in tile order. Each pixel stalls at the cache boundary until the addressed 64-bit beat
+has been read and its 16-bit lane written; uncovered lanes retain the LOAD contents. The draw
+marker follows all accepted pixels, and the command processor waits for the scene-done pulse.
 `END` drains every dirty entry before incrementing the retired count, so completion fences all
 visible framebuffer writes. This is a bring-up ABI, not the future geometry command-buffer
 contract.
@@ -207,13 +213,13 @@ the same stable mapping through `LoaderError::boot_report`.
 
 ## Current fitted result and validation boundary
 
-The current full-system build uses 11,744 Logic (9,530 LUT, 1,542 ALU, 112 RAM16), 4,731 logic
-registers, 7,981 CLS, five SDPB, four DPB, one pROM, two `MULT18X18`, one `MULT36X36`, and one
-`MULTADDALU18X18`. The two additional SDPB blocks are the 512x64 framebuffer tile cache. The CPU
-clock closes at 54.237 MHz against the 54-MHz constraint with 0.081 ns worst setup slack and zero
-setup/hold TNS; the first setup path is the existing core-to-D-cache control cone.
-Controller timing closes at 162.749 MHz against 108 MHz. These are fitted implementation results,
-not board evidence.
+The current full-system build uses 15,660 Logic (12,475 LUT, 2,513 ALU, 112 RAM16), 7,647 logic
+registers, 9,343 CLS, six SDPB, four DPB, one pROM, two `MULT18X18`, one `MULT36X36`, and five
+`MULTADDALU18X18`. The rasterizer adds one BSRAM and four DSP macros to the earlier GPU cache.
+The CPU clock closes at 54.521 MHz against the 54-MHz constraint with 0.177 ns worst setup slack
+and zero setup/hold TNS; the first setup path is from the instruction fetch queue into core FPU
+memory control. Controller timing closes at 170.917 MHz against 108 MHz. These are fitted
+implementation results, not board evidence.
 
 The system-level emulator-vs-RTL co-simulation `tests/system_cosim.rs` drives the composed RTL
 (core, fetch queue, I-cache, D-cache, memory arbiter, and a behavioral SDRAM word port) in Icarus
@@ -223,6 +229,9 @@ with `cargo test -p cpu-v3-tang-nano-20k --test system_cosim -- --ignored --test
 Differential equality is not treated as a semantic oracle by itself: cache-command scenarios also
 check explicit destination values, and GPU memory-effect tests start from nonzero sentinels, require
 known nonzero output pixels, and retain an unchanged guard word outside the framebuffer payload.
+The focused GPU raster test also compares all 1,024 RGB565 pixels of a four-tile triangle crop
+against an independent integer pixel-center/top-left oracle, writing raw actual/reference frames
+and PNG actual/reference/difference images under `target/gpu-raster-image-diff`.
 
 This result is implementation evidence, not a substitute for board validation. Changes to clocks,
 memory geometry, cache policy, SDRAM protocol, CDC, display scheduling, or resource composition must

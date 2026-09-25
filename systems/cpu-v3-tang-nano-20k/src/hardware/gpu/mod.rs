@@ -9,7 +9,9 @@
 //! CLEAR initializes locally), writes the selected tile rows from the draw
 //! color and marks the entry dirty. A dirty victim is cleaned with four
 //! 128-byte `gpu_fb_w` transactions before it is reused, and `END` drains every
-//! dirty entry before the submission retires.
+//! dirty entry before the submission retires. The temporary inline triangle
+//! command sends viewport vertices through the rasterizer and writes covered
+//! RGB565 pixels through the same tile cache.
 //!
 //! The cache entry array is two synchronous 512x32 arrays addressed by
 //! `{entry, beat}`; `gpu.v` mirrors it with the same one-write/one-read port
@@ -29,14 +31,16 @@ use crate::gpu_device::{
     GPU_CMD_WORDS_HIGH, GPU_CMD_WORDS_LOW, GPU_CONTROL, GPU_CONTROL_CLEAR_ERRORS,
     GPU_CONTROL_RESET, GPU_DEVICE, GPU_EXECUTED_COUNT, GPU_FAKE_DRAW_QWORDS, GPU_FIFO_DEPTH,
     GPU_LOAD_OP_CLEAR, GPU_OPCODE_END, GPU_OPCODE_FAKE_DRAW, GPU_OPCODE_SET_TARGET,
-    GPU_QUEUE_LEVEL, GPU_RECEIVED_COUNT, GPU_STATUS, GPU_STATUS_BUSY, GPU_STATUS_COMMAND_ERROR,
-    GPU_STATUS_FIFO_FULL, GPU_STATUS_SUBMIT_REJECTED, GPU_SUBMIT, GPU_TILE_TOTAL,
+    GPU_OPCODE_TRIANGLE, GPU_QUEUE_LEVEL, GPU_RECEIVED_COUNT, GPU_STATUS, GPU_STATUS_BUSY,
+    GPU_STATUS_COMMAND_ERROR, GPU_STATUS_FIFO_FULL, GPU_STATUS_SUBMIT_REJECTED, GPU_SUBMIT,
+    GPU_TILE_TOTAL, GPU_TRIANGLE_QWORDS,
 };
 use digital_design_circuit::{CircuitWires, Wire, Wires};
 use digital_design_hardware::{
     Hardware, Module, ModuleIo, ResourceAmount, ResourceKind, TargetComponent,
     TargetResourceRequest,
 };
+use std::cell::RefCell;
 
 mod host;
 pub mod rasteremu;
@@ -61,6 +65,63 @@ const TILE_INDEX_LIMIT: u16 = GPU_TILE_TOTAL as u16;
 /// One 32-byte tile-list read carries sixteen u16 entries.
 const LIST_ENTRIES_PER_LINE: u16 = 16;
 
+#[derive(Clone, Copy)]
+struct ViewportPixel {
+    tile: u16,
+    x: u16,
+    y: u16,
+    color: u16,
+}
+
+fn viewport_triangle_pixels(payload: [u64; 3]) -> Vec<ViewportPixel> {
+    use rastersim::fixed::{S12_4, U0_18};
+    use rastersim::raster::{self, traverse};
+    use rastersim::setup::{area2, edge_coefficients, quad_aabb, TriangleSetup};
+
+    let x = std::array::from_fn(|i| S12_4::from_raw(i64::from(payload[i] as u16 as i16)));
+    let y = std::array::from_fn(|i| S12_4::from_raw(i64::from((payload[i] >> 16) as u16 as i16)));
+    let area = area2(&x, &y);
+    if area.raw() <= 0 {
+        return Vec::new();
+    }
+    let Some(aabb) = quad_aabb(&x, &y) else {
+        return Vec::new();
+    };
+    let (cx, cy, top_left) = edge_coefficients(&x, &y);
+    let setup = TriangleSetup {
+        id: 0,
+        x,
+        y,
+        depth: [U0_18::zero(); 3],
+        cx,
+        cy,
+        top_left,
+        area2: area,
+        quad_aabb: aabb,
+    };
+    let pixels = RefCell::new(Vec::new());
+    traverse(
+        &[setup],
+        |_, _| {},
+        |setup, tile, quad| {
+            for lane in 0..4 {
+                if quad.mask & (1 << lane) != 0 {
+                    let x = (quad.x + lane % 2) as u16;
+                    let y = (quad.y + lane / 2) as u16;
+                    pixels.borrow_mut().push(ViewportPixel {
+                        tile: tile.index,
+                        x,
+                        y,
+                        color: raster::pixel_color(u32::from(x), u32::from(y), setup.id),
+                    });
+                }
+            }
+        },
+        |_, _| {},
+    );
+    pixels.into_inner()
+}
+
 /// Physical resources inferred by the handwritten GPU leaf.
 ///
 /// A leaf gets one hierarchical allocation label, so resources of different
@@ -79,7 +140,11 @@ impl TargetComponent for GpuResources {
             // primitives in the fitted system. Account the physical granularity,
             // not just their logical payload bits.
             ResourceAmount::new(ResourceKind::SsramBit, 32 * 64),
-            ResourceAmount::new(ResourceKind::Bsram18K, 2),
+            // The viewport raster core adds one BSRAM FIFO and four DSP
+            // macros to the two BSRAM framebuffer banks.
+            ResourceAmount::new(ResourceKind::Bsram18K, 3),
+            // Four fitted DSP macros consume eight 18x18 resource slots.
+            ResourceAmount::new(ResourceKind::Multiplier18x18, 8),
         ]
     }
 }
@@ -170,6 +235,9 @@ enum Phase {
     ClearFill,
     /// Overwrite at most one row-mask-selected beat per clock.
     DrawApply,
+    RasterRun,
+    PixelPrime,
+    PixelWrite,
     /// END drain: scan all entries and clean the dirty ones.
     EndScan,
     Retire,
@@ -214,7 +282,7 @@ pub struct GpuCore {
     pending_opcode: u8,
     pending_qword_count: u8,
     pending_arg0: u32,
-    pending_payload: [u64; 2],
+    pending_payload: [u64; 3],
     pending_payload_remaining: u8,
     have_pending: bool,
     // Per-submission target.
@@ -239,6 +307,9 @@ pub struct GpuCore {
     draw_row_mask: u16,
     draw_gradient: bool,
     draw_is_clear: bool,
+    raster_pixels: Vec<ViewportPixel>,
+    raster_pixel_index: usize,
+    raster_tile_access: bool,
     // Current tile access.
     cur_tile_index: u16,
     cur_entry: u8,
@@ -281,7 +352,7 @@ impl Default for GpuCore {
             pending_opcode: 0,
             pending_qword_count: 0,
             pending_arg0: 0,
-            pending_payload: [0; 2],
+            pending_payload: [0; 3],
             pending_payload_remaining: 0,
             have_pending: false,
             target_set: false,
@@ -303,6 +374,9 @@ impl Default for GpuCore {
             draw_row_mask: 0,
             draw_gradient: false,
             draw_is_clear: false,
+            raster_pixels: Vec::new(),
+            raster_pixel_index: 0,
+            raster_tile_access: false,
             cur_tile_index: 0,
             cur_entry: 0,
             cur_tag: 0,
@@ -412,6 +486,9 @@ impl GpuCore {
         self.target_base = 0;
         self.draw_tile_count = 0;
         self.draw_tile_pos = 0;
+        self.raster_pixels.clear();
+        self.raster_pixel_index = 0;
+        self.raster_tile_access = false;
         self.list_chunk_valid = false;
         self.list_chunk_start = 0;
         self.end_scan_index = 0;
@@ -609,6 +686,21 @@ impl GpuCore {
                     Phase::TileStep
                 };
             }
+            GPU_OPCODE_TRIANGLE => {
+                if count != GPU_TRIANGLE_QWORDS
+                    || arg0 != 0
+                    || !self.target_set
+                    || self.pending_payload.iter().any(|word| word >> 32 != 0)
+                {
+                    self.enter_error();
+                    return;
+                }
+                self.raster_pixels = viewport_triangle_pixels(self.pending_payload);
+                self.raster_pixel_index = 0;
+                self.raster_tile_access = false;
+                self.draw_is_clear = false;
+                self.phase = Phase::RasterRun;
+            }
             GPU_OPCODE_END => {
                 if count != 1 || arg0 != 0 {
                     self.enter_error();
@@ -677,12 +769,12 @@ impl GpuCore {
     /// Extracts the tile index for `draw_tile_pos`, fetching the 32-byte list
     /// chunk first when the cursor entered a new one.
     fn tile_step(&mut self) {
-        if self.draw_tile_pos >= self.draw_tile_count {
+        if !self.raster_tile_access && self.draw_tile_pos >= self.draw_tile_count {
             self.phase = Phase::Decode;
             return;
         }
         let chunk = (self.draw_tile_pos / LIST_ENTRIES_PER_LINE) * LIST_ENTRIES_PER_LINE;
-        if !self.list_chunk_valid || self.list_chunk_start != chunk {
+        if !self.raster_tile_access && (!self.list_chunk_valid || self.list_chunk_start != chunk) {
             self.list_fetch_start = chunk;
             self.phase = Phase::ListFetch;
             return;
@@ -690,7 +782,11 @@ impl GpuCore {
         let offset = usize::from(self.draw_tile_pos - self.list_chunk_start);
         let beat = offset / 4;
         let shift = (offset % 4) * 16;
-        let index = ((self.list_buffer[beat] >> shift) & 0xffff) as u16;
+        let index = if self.raster_tile_access {
+            self.raster_pixels[self.raster_pixel_index].tile
+        } else {
+            ((self.list_buffer[beat] >> shift) & 0xffff) as u16
+        };
         if index >= TILE_INDEX_LIMIT {
             self.enter_error();
             return;
@@ -701,13 +797,17 @@ impl GpuCore {
         let entry = self.cur_entry as usize;
         if self.cache_valid[entry] && self.cache_tag[entry] == self.cur_tag {
             // Hit: LOAD keeps the line, CLEAR re-initializes it locally.
-            if self.draw_is_clear {
+            if self.draw_is_clear && !self.raster_tile_access {
                 self.transfer_entry = self.cur_entry;
                 self.transfer_beat = 0;
                 self.phase = Phase::ClearFill;
             } else {
                 self.transfer_beat = 0;
-                self.phase = Phase::DrawApply;
+                self.phase = if self.raster_tile_access {
+                    Phase::PixelPrime
+                } else {
+                    Phase::DrawApply
+                };
             }
         } else if self.cache_valid[entry] && self.cache_dirty[entry] {
             // Clean the dirty victim first; TileStep re-runs against the now
@@ -716,7 +816,7 @@ impl GpuCore {
         } else {
             self.cache_valid[entry] = false;
             self.cache_dirty[entry] = false;
-            if self.draw_is_clear {
+            if self.draw_is_clear && !self.raster_tile_access {
                 self.transfer_entry = self.cur_entry;
                 self.transfer_beat = 0;
                 self.phase = Phase::ClearFill;
@@ -811,6 +911,29 @@ impl GpuCore {
             }
             Phase::Decode => self.decode_step(),
             Phase::Execute => self.execute_command(),
+            Phase::RasterRun => {
+                if self.raster_pixel_index == self.raster_pixels.len() {
+                    self.raster_tile_access = false;
+                    self.phase = Phase::Decode;
+                } else {
+                    self.raster_tile_access = true;
+                    self.phase = Phase::TileStep;
+                }
+            }
+            Phase::PixelPrime => self.phase = Phase::PixelWrite,
+            Phase::PixelWrite => {
+                let pixel = self.raster_pixels[self.raster_pixel_index];
+                let entry = self.cur_entry as usize;
+                let beat = usize::from(pixel.y & 15) * 4 + usize::from((pixel.x & 15) >> 2);
+                let lane_shift = u32::from(pixel.x & 3) * 16;
+                let slot = entry * TILE_BEATS + beat;
+                self.cache[slot] = (self.cache[slot] & !(0xffffu64 << lane_shift))
+                    | (u64::from(pixel.color) << lane_shift);
+                self.cache_dirty[entry] = true;
+                self.raster_pixel_index += 1;
+                self.raster_tile_access = false;
+                self.phase = Phase::RasterRun;
+            }
             Phase::ListFetch => {
                 if mem.ro_request_ready {
                     self.phase = Phase::ListReceive;
@@ -897,7 +1020,11 @@ impl GpuCore {
                                 self.cache_tag[entry] = self.cur_tag;
                                 self.cache_dirty[entry] = false;
                                 self.transfer_beat = 0;
-                                self.phase = Phase::DrawApply;
+                                self.phase = if self.raster_tile_access {
+                                    Phase::PixelPrime
+                                } else {
+                                    Phase::DrawApply
+                                };
                             } else {
                                 self.transfer_line += 1;
                                 self.phase = Phase::RefillRequest;
@@ -1032,9 +1159,9 @@ impl Module for CpuV3Gpu {
 
     fn target_resources() -> Vec<TargetResourceRequest> {
         // Gowin maps the small command-line/list/payload/submission arrays to
-        // thirty-two 64-bit RAM16 leaves. The 512x64 framebuffer beat cache is
-        // two inferred 512x32 synchronous 1R1W BSRAMs. Keep both parts in one
-        // allocation because a target leaf has one hierarchical label.
+        // thirty-two 64-bit RAM16 leaves. The framebuffer cache uses two
+        // BSRAMs; the viewport raster core adds one BSRAM and four DSP macros.
+        // Keep the full leaf in one allocation label.
         vec![TargetResourceRequest::new(GpuResources)]
     }
 
@@ -1134,7 +1261,12 @@ impl Module for CpuV3Gpu {
     }
 
     fn verilog_source() -> Option<String> {
-        Some(include_str!("gpu.v").to_string())
+        Some(format!(
+            "{}\n{}\n{}",
+            include_str!("raster/raster.v"),
+            include_str!("raster/raster_pixel.v"),
+            include_str!("gpu.v")
+        ))
     }
 
     fn verilog_testbench() -> Option<String> {

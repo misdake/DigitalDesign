@@ -78,6 +78,8 @@ pub const GPU_FIFO_DEPTH: usize = 2;
 
 pub const GPU_OPCODE_SET_TARGET: u8 = 0xe0;
 pub const GPU_OPCODE_FAKE_DRAW: u8 = 0xe1;
+/// Temporary draw of one inline viewport-space triangle.
+pub const GPU_OPCODE_TRIANGLE: u8 = 0xe2;
 pub const GPU_OPCODE_END: u8 = 0xff;
 
 /// `SET_TARGET.arg0` must be 32 KiB (2^14 words) aligned.
@@ -88,6 +90,9 @@ pub const GPU_TILE_TOTAL: u32 = FRAMEBUFFER_TILE_COLUMNS * FRAMEBUFFER_TILE_ROWS
 /// `FAKE_DRAW` is exactly three qwords: header, tile-list address, and
 /// colors/row-mask/temporary draw flags.
 pub const GPU_FAKE_DRAW_QWORDS: u8 = 3;
+/// `TRIANGLE`: header with zero arg0, then three qwords whose low 32 bits
+/// contain `{y:s12.4, x:s12.4}`. All other payload bits are reserved.
+pub const GPU_TRIANGLE_QWORDS: u8 = 4;
 /// `FAKE_DRAW.arg0[17:16] == GPU_LOAD_OP_LOAD`: refill each tile from
 /// `gpu_fb_r` before applying the draw rows.
 pub const GPU_LOAD_OP_LOAD: u16 = 0;

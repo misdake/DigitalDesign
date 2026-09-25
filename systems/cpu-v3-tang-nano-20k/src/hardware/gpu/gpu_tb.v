@@ -284,6 +284,9 @@ reg [15:0] read_result = 16'h0;
 reg [15:0] expected_exec = 16'h0;
 integer i;
 integer j;
+integer raster_tile;
+integer raster_image;
+reg [15:0] raster_expected;
 
 task device_write;
     input [3:0] channel;
@@ -476,6 +479,66 @@ endtask
 
 initial begin
     for (i = 0; i < MEM_WORDS; i = i + 1) mem[i] = 16'h0;
+
+`ifdef GPU_RASTER_TEST
+    // One CPU-style command buffer: SET_TARGET, inline viewport triangle, END.
+    // The triangle spans four tiles, preserving every uncovered pixel on LOAD.
+    $display("GPU %0d SCENE RASTER", tseq); tseq = tseq + 1;
+    do_reset();
+    for (i = 0; i < 32; i = i + 1)
+        for (j = 0; j < 32; j = j + 1) begin
+            raster_tile = (i / 16) * 25 + (j / 16);
+            mem[tile_word(FB_A, raster_tile, i % 16, j % 16)] = 16'h5a5a;
+        end
+    mem[FB_GUARD] = 16'hbeef;
+    put_set_target(CMD_BASE, FB_A);
+    put_qword(CMD_BASE + 4, {32'd0, 16'd0, 8'd4, 8'he2});
+    put_qword(CMD_BASE + 8,  64'h0);                 // (0, 0)
+    put_qword(CMD_BASE + 12, 64'h0000000000000200); // (32, 0)
+    put_qword(CMD_BASE + 16, 64'h0000000002000000); // (0, 32)
+    put_end(CMD_BASE + 20);
+    expected_exec = 16'd1;
+    run_ok_case(16'd24);
+    // Export the complete 32x32 tile-linear framebuffer crop before local
+    // assertions, so an image mismatch still leaves diagnostic artifacts.
+    raster_image = $fopen("raster-frame.hex", "w");
+    if (raster_image == 0) $fatal(1, "cannot open raster-frame.hex");
+    for (i = 0; i < 32; i = i + 1)
+        for (j = 0; j < 32; j = j + 1) begin
+            raster_tile = (i / 16) * 25 + (j / 16);
+            $fdisplay(raster_image, "%04x",
+                mem[tile_word(FB_A, raster_tile, i % 16, j % 16)]);
+        end
+    $fclose(raster_image);
+    if (mem[tile_word(FB_A, 0, 1, 1)] !== 16'h0000)
+        $fatal(1, "covered origin pixel not committed");
+    if (mem[tile_word(FB_A, 0, 4, 8)] !== 16'h0820)
+        $fatal(1, "covered tile-0 pixel has wrong gradient");
+    if (mem[tile_word(FB_A, 1, 4, 8)] !== 16'h1821)
+        $fatal(1, "covered tile-1 pixel has wrong gradient");
+    if (mem[tile_word(FB_A, 1, 15, 15)] !== 16'h5a5a)
+        $fatal(1, "uncovered pixel changed");
+    // Keep direct RTL checks for strictly interior and exterior pixels,
+    // including the next tile row. The image differential also checks the
+    // diagonal's exact top-left tie against an independent oracle.
+    for (i = 0; i < 32; i = i + 1)
+        for (j = 0; j < 32; j = j + 1) begin
+            raster_tile = (i / 16) * 25 + (j / 16);
+            if (i + j != 31) begin
+                raster_expected = (i + j < 31)
+                    ? (((j >> 3) << 11) | ((i >> 2) << 5) | (j >> 4))
+                    : 16'h5a5a;
+                if (mem[tile_word(FB_A, raster_tile, i % 16, j % 16)] !== raster_expected)
+                    $fatal(1, "raster pixel (%0d,%0d) tile %0d: got %04x expected %04x",
+                        j, i, raster_tile,
+                        mem[tile_word(FB_A, raster_tile, i % 16, j % 16)], raster_expected);
+            end
+        end
+    if (mem[FB_GUARD] !== 16'hbeef)
+        $fatal(1, "raster crossed framebuffer guard");
+    $display("DIGITAL_DESIGN_RASTER_PASS");
+    $finish;
+`else
 
     // ------------------------------------------------------------------
     // Scenario A: partial-row LOAD preservation and CLEAR initialization.
@@ -745,5 +808,6 @@ initial begin
 
     $display("DIGITAL_DESIGN_PASS");
     $finish;
+`endif
 end
 endmodule

@@ -13,6 +13,11 @@ use digital_design_hardware_gowin::{
     TangNano20KBootHdmiWideInputs, TangNano20KBootHdmiWideOutputs, TangNano20KVideoMode,
     BSRAM_1024_DEPTH,
 };
+use std::cell::Cell;
+
+thread_local! {
+    static S2_RASTER_ONLY: Cell<bool> = const { Cell::new(false) };
+}
 
 fn main() -> Result<(), GowinCliError> {
     run_gowin_project_cli(gowin_project(), "target/cpu_v3_system_gowin")
@@ -155,11 +160,14 @@ impl Module for CpuV3System {
         for (index, byte) in FLASH_PACKAGE.iter().enumerate() {
             flash_init.push_str(&format!("        flash_image[{index}] = 8'h{byte:02x};\n"));
         }
-        Some(
-            include_str!("signature_testbench.v")
-                .replace("__FLASH_PACKAGE_SIZE__", &FLASH_PACKAGE.len().to_string())
-                .replace("__FLASH_PACKAGE_INIT__", &flash_init),
-        )
+        let testbench = include_str!("signature_testbench.v")
+            .replace("__FLASH_PACKAGE_SIZE__", &FLASH_PACKAGE.len().to_string())
+            .replace("__FLASH_PACKAGE_INIT__", &flash_init);
+        Some(if S2_RASTER_ONLY.with(Cell::get) {
+            format!("`define CPU_V3_S2_RASTER_ONLY\n{testbench}")
+        } else {
+            testbench
+        })
     }
 }
 
@@ -288,8 +296,7 @@ mod tests {
     fn project_contains_full_system_memory_flash_and_display() {
         let verilog = VerilogProject::generate::<CpuV3System>().unwrap();
         assert!(!verilog.resource_claims.is_empty());
-        // The GPU command processor and dummy framebuffer writer are part of
-        // the fitted system.
+        // The GPU command processor, tile cache and rasterizer are fitted.
         assert!(verilog
             .files
             .keys()
@@ -301,13 +308,22 @@ mod tests {
         assert_eq!(project.resources.claimed[&ResourceKind::HdmiOutput], 1);
         // Boot BSRAM + two dual-port CPU cache data banks + the FPU register
         // RAM (two blocks) + the display line buffer + the two-bank GPU
-        // framebuffer tile cache.
-        assert_eq!(project.resources.claimed[&ResourceKind::Bsram18K], 10);
+        // framebuffer tile cache + one raster output FIFO.
+        assert_eq!(project.resources.claimed[&ResourceKind::Bsram18K], 11);
     }
 
     #[test]
     #[ignore = "explicit external simulator validation"]
     fn flash_boot_executes_in_verilog() {
         digital_design_hardware::verify_verilog_with_iverilog::<CpuV3System>().unwrap();
+    }
+
+    #[test]
+    #[ignore = "explicit external simulator validation"]
+    fn flash_boot_renders_s2_triangle_in_verilog() {
+        S2_RASTER_ONLY.with(|flag| flag.set(true));
+        let result = digital_design_hardware::verify_verilog_with_iverilog::<CpuV3System>();
+        S2_RASTER_ONLY.with(|flag| flag.set(false));
+        result.unwrap();
     }
 }

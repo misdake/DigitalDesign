@@ -7,7 +7,9 @@
 // brings each tile into the cache (LOAD refills from `gpu_fb_r`, CLEAR
 // initializes locally), writes the selected rows and marks the entry dirty. A
 // dirty victim is cleaned with four 128-byte `gpu_fb_w` transactions before its
-// entry is reused, and END drains every dirty entry before retiring.
+// entry is reused, and END drains every dirty entry before retiring. A
+// temporary inline triangle command feeds the viewport rasterizer; its pixel
+// stream updates one RGB565 lane at a time through the same tile cache.
 //
 // The state machine, register set and cycle behavior mirror
 // `hardware::gpu::GpuCore` exactly: one clocked block applies the state
@@ -78,7 +80,8 @@ module CpuV3Gpu (
     localparam [15:0] STATUS_BUSY = 16'h0001, STATUS_FIFO_FULL = 16'h0002,
                        STATUS_SUBMIT_REJECTED = 16'h0004, STATUS_COMMAND_ERROR = 16'h0008;
 
-    localparam [7:0] OP_SET_TARGET = 8'he0, OP_FAKE_DRAW = 8'he1, OP_END = 8'hff;
+    localparam [7:0] OP_SET_TARGET = 8'he0, OP_FAKE_DRAW = 8'he1,
+                     OP_TRIANGLE = 8'he2, OP_END = 8'hff;
     localparam [21:0] FRAMEBUFFER_A = 22'h200000, FRAMEBUFFER_B = 22'h218000;
     localparam [31:0] FRAMEBUFFER_A_WORD = 32'h00200000, FRAMEBUFFER_B_WORD = 32'h00218000;
     localparam [8:0] TILE_TOTAL = 9'd375;
@@ -91,7 +94,9 @@ module CpuV3Gpu (
                      PH_REFILL_REQ = 5'd10, PH_REFILL_WAIT = 5'd11,
                      PH_CLEAR_FILL = 5'd12, PH_DRAW_APPLY = 5'd13,
                      PH_END_SCAN = 5'd14, PH_RETIRE = 5'd15, PH_ERROR = 5'd16,
-                     PH_EXECUTE = 5'd17;
+                     PH_EXECUTE = 5'd17, PH_RASTER_FEED = 5'd18,
+                     PH_RASTER_RUN = 5'd19, PH_PIXEL_PRIME = 5'd20,
+                     PH_PIXEL_WRITE = 5'd21, PH_RASTER_DRAIN = 5'd22;
 
     reg [4:0] phase = PH_IDLE;
 
@@ -121,7 +126,7 @@ module CpuV3Gpu (
     reg [7:0] pending_opcode = 0;
     reg [7:0] pending_count = 0;
     reg [31:0] pending_arg0 = 0;
-    reg [63:0] pending_payload [0:1];
+    reg [63:0] pending_payload [0:2];
     reg [7:0] pending_remaining = 0;
     reg have_pending = 0;
 
@@ -145,6 +150,29 @@ module CpuV3Gpu (
     reg [21:0] draw_list_addr = 0;
     reg [15:0] draw_clear_color = 0, draw_color = 0, draw_row_mask = 0;
     reg draw_is_clear = 0, draw_gradient = 0;
+    reg [1:0] raster_vertex = 0;
+    reg raster_tile_access = 0;
+
+    wire raster_input_ready, raster_pixel_valid, raster_pixel_marker;
+    wire raster_marker_draw, raster_scene_done;
+    wire [31:0] raster_pixel_tri;
+    wire [15:0] raster_pixel_tile, raster_pixel_x, raster_pixel_y, raster_pixel_color;
+    wire raster_pixel_ready = (phase == PH_PIXEL_WRITE)
+        || ((phase == PH_RASTER_RUN) && raster_pixel_marker);
+    CpuV3GpuRasterPixel raster (
+        .clk(clk), .reset(reset || ((phase == PH_EXECUTE) && (pending_opcode == OP_TRIANGLE))),
+        .input_valid(phase == PH_RASTER_FEED),
+        .input_last(raster_vertex == 2'd2),
+        .input_data(pending_payload[raster_vertex][31:0]),
+        .input_ready(raster_input_ready),
+        .pixel_ready(raster_pixel_ready), .pixel_valid(raster_pixel_valid),
+        .pixel_is_retire_marker(raster_pixel_marker),
+        .pixel_marker_draw(raster_marker_draw), .pixel_tri(raster_pixel_tri),
+        .pixel_tile(raster_pixel_tile), .pixel_x(raster_pixel_x),
+        .pixel_y(raster_pixel_y), .pixel_color(raster_pixel_color),
+        .prefetch_acquire_valid(), .prefetch_acquire_tile(),
+        .scene_done(raster_scene_done)
+    );
 
     // ---- current tile access ----
     reg [15:0] cur_tile_index = 0;
@@ -233,6 +261,7 @@ module CpuV3Gpu (
     wire [31:0] exec_arg0 = pending_arg0;
     wire [63:0] exec_payload0 = pending_payload[0];
     wire [63:0] exec_payload1 = pending_payload[1];
+    wire [63:0] exec_payload2 = pending_payload[2];
     wire [32:0] fake_list_end = {1'b0, exec_payload0[31:0]} + {17'b0, exec_arg0[15:0]};
 
     wire any_cache_valid = cache_valid[0] | cache_valid[1] | cache_valid[2] | cache_valid[3]
@@ -252,8 +281,9 @@ module CpuV3Gpu (
             default: list_index = selected_list_beat[63:48];
         endcase
     end
-    wire [2:0] tile_entry_sel = list_index[2:0];
-    wire [5:0] tile_tag_sel = list_index[8:3];
+    wire [15:0] selected_tile_index = raster_tile_access ? raster_pixel_tile : list_index;
+    wire [2:0] tile_entry_sel = selected_tile_index[2:0];
+    wire [5:0] tile_tag_sel = selected_tile_index[8:3];
 
     // ---- memory master addresses ----
     // Command line: active_base + (qword_index/4)*16 words.
@@ -300,17 +330,22 @@ module CpuV3Gpu (
                 ? (gpu_fb_w_write_data_ready
                     ? clean_prefetch_addr
                     : {transfer_entry, transfer_line, transfer_beat[3:0]})
-                : 9'd0));
+                : ((phase == PH_PIXEL_PRIME || phase == PH_PIXEL_WRITE)
+                    ? {raster_pixel_tile[2:0], raster_pixel_y[3:0], raster_pixel_x[3:2]}
+                    : 9'd0)));
 
     // Shared synchronous write port; address 0 when idle.
     wire cache_wr_en = ((phase == PH_REFILL_WAIT) && gpu_fb_r_response_valid && !gpu_fb_r_error)
                        || (phase == PH_CLEAR_FILL)
-                       || ((phase == PH_DRAW_APPLY) && draw_row_mask[transfer_beat[5:2]]);
+                       || ((phase == PH_DRAW_APPLY) && draw_row_mask[transfer_beat[5:2]])
+                       || (phase == PH_PIXEL_WRITE);
     wire [8:0] cache_wr_addr = (phase == PH_REFILL_WAIT)
         ? {transfer_entry, transfer_line, transfer_beat[3:0]}
         : ((phase == PH_CLEAR_FILL) ? {transfer_entry, transfer_beat[5:0]}
                                     : ((phase == PH_DRAW_APPLY) ? {cur_entry, transfer_beat[5:0]}
-                                                                : 9'd0));
+                                        : ((phase == PH_PIXEL_WRITE)
+                                            ? {cur_entry, raster_pixel_y[3:0], raster_pixel_x[3:2]}
+                                            : 9'd0)));
     // Temporary fake-draw gradient. The base color supplies the high channel
     // bits while tile-local x/y provide the low bits. Four pixels are formed
     // per beat without multipliers or wide adders.
@@ -342,16 +377,22 @@ module CpuV3Gpu (
         ? {gradient_pixel3, gradient_pixel2, gradient_pixel1, gradient_pixel0}
         : {draw_color, draw_color, draw_color, draw_color};
 
+    wire [63:0] pixel_old_beat = {cache_rd_hi, cache_rd_lo};
+    wire [63:0] pixel_lane_mask = 64'hffff << {raster_pixel_x[1:0], 4'b0};
+    wire [63:0] pixel_new_beat = (pixel_old_beat & ~pixel_lane_mask)
+        | ({48'd0, raster_pixel_color} << {raster_pixel_x[1:0], 4'b0});
     wire [31:0] cache_wr_lo = (phase == PH_REFILL_WAIT)
         ? gpu_fb_r_read_data[31:0]
         : ((phase == PH_CLEAR_FILL) ? {draw_clear_color, draw_clear_color}
                                     : ((phase == PH_DRAW_APPLY) ? draw_write_beat[31:0]
-                                                                : 32'h0));
+                                        : ((phase == PH_PIXEL_WRITE) ? pixel_new_beat[31:0]
+                                                                      : 32'h0)));
     wire [31:0] cache_wr_hi = (phase == PH_REFILL_WAIT)
         ? gpu_fb_r_read_data[63:32]
         : ((phase == PH_CLEAR_FILL) ? {draw_clear_color, draw_clear_color}
                                     : ((phase == PH_DRAW_APPLY) ? draw_write_beat[63:32]
-                                                                : 32'h0));
+                                        : ((phase == PH_PIXEL_WRITE) ? pixel_new_beat[63:32]
+                                                                      : 32'h0)));
 
     CpuV3GpuFramebufferCacheBank cache_lo_bank (
         .clk(clk),
@@ -405,6 +446,14 @@ module CpuV3Gpu (
                     else
                         exec_phase = (exec_arg0[15:0] == 16'h0) ? PH_DECODE : PH_TILE_STEP;
                 end
+                OP_TRIANGLE: begin
+                    if (exec_count != 8'd4 || exec_arg0 != 32'd0 || !target_set
+                        || exec_payload0[63:32] != 0 || exec_payload1[63:32] != 0
+                        || exec_payload2[63:32] != 0)
+                        exec_error = 1'b1;
+                    else
+                        exec_phase = PH_RASTER_FEED;
+                end
                 OP_END: begin
                     if ((exec_count != 8'd1) || (exec_arg0 != 32'h0)) exec_error = 1'b1;
                     else if (!target_set) exec_error = 1'b1;
@@ -441,6 +490,7 @@ module CpuV3Gpu (
             list_beat <= 0; draw_tile_count <= 0; draw_tile_pos <= 0;
             draw_list_addr <= 0; draw_clear_color <= 0; draw_color <= 0;
             draw_row_mask <= 0; draw_is_clear <= 0; draw_gradient <= 0;
+            raster_vertex <= 0; raster_tile_access <= 0;
             cur_tile_index <= 0; cur_entry <= 0; cur_tag <= 0;
             transfer_entry <= 0; transfer_line <= 0; transfer_beat <= 0; clean_for_end <= 0;
             end_scan_index <= 0;
@@ -490,6 +540,7 @@ module CpuV3Gpu (
                 have_pending <= 0; pending_remaining <= 0;
                 target_set <= 0; target_base <= 0;
                 draw_tile_count <= 0; draw_tile_pos <= 0;
+                raster_vertex <= 0; raster_tile_access <= 0;
                 list_chunk_valid <= 0; list_chunk_start <= 0;
                 end_scan_index <= 0;
                 for (i = 0; i < 8; i = i + 1) begin
@@ -515,6 +566,7 @@ module CpuV3Gpu (
                         pending_remaining <= 0;
                         target_set <= 0; target_base <= 0;
                         draw_tile_count <= 0; draw_tile_pos <= 0;
+                        raster_vertex <= 0; raster_tile_access <= 0;
                         list_chunk_valid <= 0; list_chunk_start <= 0;
                         end_scan_index <= 0;
                         for (i = 0; i < 8; i = i + 1) begin
@@ -547,7 +599,7 @@ module CpuV3Gpu (
                     if (!line_matches) phase <= PH_FETCH;
                     else if (qword_index >= total_qwords) phase <= PH_ERROR;
                     else if (have_pending) begin
-                        if (payload_slot < 8'd2) pending_payload[payload_slot[0]] <= decode_word;
+                        if (payload_slot < 8'd3) pending_payload[payload_slot[1:0]] <= decode_word;
                         pending_remaining <= pending_remaining - 8'd1;
                         qword_index <= qword_index + 16'd1;
                         if (pending_remaining == 8'd1) begin
@@ -573,6 +625,36 @@ module CpuV3Gpu (
                     // The registered command is applied by the execute block
                     // below, after this case statement.
                 end
+                PH_RASTER_FEED: begin
+                    if (raster_input_ready) begin
+                        if (raster_vertex == 2'd2)
+                            phase <= PH_RASTER_RUN;
+                        else
+                            raster_vertex <= raster_vertex + 2'd1;
+                    end
+                end
+                PH_RASTER_RUN: begin
+                    if (raster_pixel_valid) begin
+                        if (raster_pixel_marker) begin
+                            if (raster_marker_draw) phase <= PH_RASTER_DRAIN;
+                            else phase <= PH_ERROR;
+                        end else if (raster_pixel_tile >= {7'd0, TILE_TOTAL})
+                            phase <= PH_ERROR;
+                        else begin
+                            raster_tile_access <= 1'b1;
+                            phase <= PH_TILE_STEP;
+                        end
+                    end
+                end
+                PH_RASTER_DRAIN: begin
+                    if (raster_scene_done) phase <= PH_DECODE;
+                end
+                PH_PIXEL_PRIME: phase <= PH_PIXEL_WRITE;
+                PH_PIXEL_WRITE: begin
+                    cache_dirty[cur_entry] <= 1'b1;
+                    raster_tile_access <= 1'b0;
+                    phase <= PH_RASTER_RUN;
+                end
                 PH_LIST_FETCH: begin
                     if (gpu_ro_request_ready) begin
                         list_beat <= 2'd0;
@@ -595,26 +677,26 @@ module CpuV3Gpu (
                     end
                 end
                 PH_TILE_STEP: begin
-                    if (draw_tile_pos >= draw_tile_count) phase <= PH_DECODE;
-                    else if (!list_chunk_valid || (list_chunk_start != tile_chunk)) begin
+                    if (!raster_tile_access && draw_tile_pos >= draw_tile_count) phase <= PH_DECODE;
+                    else if (!raster_tile_access && (!list_chunk_valid || (list_chunk_start != tile_chunk))) begin
                         list_fetch_start <= tile_chunk;
                         phase <= PH_LIST_FETCH;
                     end
-                    else if (list_index >= {7'b0, TILE_TOTAL}) phase <= PH_ERROR;
+                    else if (selected_tile_index >= {7'b0, TILE_TOTAL}) phase <= PH_ERROR;
                     else begin
-                        cur_tile_index <= list_index;
+                        cur_tile_index <= selected_tile_index;
                         cur_entry <= tile_entry_sel;
                         cur_tag <= tile_tag_sel;
                         if (cache_valid[tile_entry_sel]
                             && (cache_tag[tile_entry_sel] == tile_tag_sel)) begin
                             // Hit: LOAD keeps the line, CLEAR re-initializes it.
-                            if (draw_is_clear) begin
+                            if (draw_is_clear && !raster_tile_access) begin
                                 transfer_entry <= tile_entry_sel;
                                 transfer_beat <= 6'd0;
                                 phase <= PH_CLEAR_FILL;
                             end else begin
                                 transfer_beat <= 6'd0;
-                                phase <= PH_DRAW_APPLY;
+                                phase <= raster_tile_access ? PH_PIXEL_PRIME : PH_DRAW_APPLY;
                             end
                         end
                         else if (cache_valid[tile_entry_sel] && cache_dirty[tile_entry_sel]) begin
@@ -628,7 +710,7 @@ module CpuV3Gpu (
                         else begin
                             cache_valid[tile_entry_sel] <= 1'b0;
                             cache_dirty[tile_entry_sel] <= 1'b0;
-                            if (draw_is_clear) begin
+                            if (draw_is_clear && !raster_tile_access) begin
                                 transfer_entry <= tile_entry_sel;
                                 transfer_beat <= 6'd0;
                                 phase <= PH_CLEAR_FILL;
@@ -690,7 +772,7 @@ module CpuV3Gpu (
                                 cache_valid[transfer_entry] <= 1'b1;
                                 cache_tag[transfer_entry] <= cur_tag;
                                 cache_dirty[transfer_entry] <= 1'b0;
-                                phase <= PH_DRAW_APPLY;
+                                phase <= raster_tile_access ? PH_PIXEL_PRIME : PH_DRAW_APPLY;
                             end else begin
                                 transfer_line <= transfer_line + 2'd1;
                                 phase <= PH_REFILL_REQ;
@@ -764,6 +846,11 @@ module CpuV3Gpu (
                             draw_is_clear <= (exec_arg0[17:16] == 2'd1);
                             list_chunk_valid <= 1'b0;
                             list_chunk_start <= 16'd0;
+                        end
+                        OP_TRIANGLE: begin
+                            raster_vertex <= 2'd0;
+                            raster_tile_access <= 1'b0;
+                            draw_is_clear <= 1'b0;
                         end
                         OP_END: begin
                             end_scan_index <= 4'd0;

@@ -482,6 +482,9 @@ reg signed [15:0] ty1 = 16'sd0;
 reg signed [15:0] tx = 16'sd0;
 reg signed [15:0] ty = 16'sd0;
 reg [1:0] corner_edge = 2'd0;
+reg corner_pending = 1'b0;
+reg signed [39:0] corner_value = 40'sd0;
+reg corner_top_left = 1'b0;
 
 // Quad stage.
 localparam Q_IDLE = 2'd0;
@@ -721,6 +724,7 @@ always @(posedge clk) begin : pipeline
         next_tri_id <= 32'd0;
         t_valid <= 1'b0;
         corner_edge <= 2'd0;
+        corner_pending <= 1'b0;
         quad_state <= Q_IDLE;
         pin_valid <= 1'b0;
         prefetch_outstanding <= 4'd0;
@@ -1212,10 +1216,23 @@ always @(posedge clk) begin : pipeline
                 if (ta > $signed({12'd0, TILE_ROWS} - 16'sd1)) ta = $signed({12'd0, TILE_ROWS} - 16'sd1);
                 ty1 <= ta;
                 corner_edge <= 2'd0;
+                corner_pending <= 1'b0;
                 t_valid <= 1'b1;
             end
+        end else if (corner_pending) begin
+            // Keep the DSP edge result off the tile-walk control path.
+            corner_pending <= 1'b0;
+            if (corner_top_left)
+                cov = (corner_value >= 40'sd0);
+            else
+                cov = (corner_value > 40'sd0);
+            if (!cov)
+                tile_next();
+            else
+                corner_edge <= corner_edge + 2'd1;
         end else if (corner_edge < 2'd3) begin
-            // Worst-corner test, one edge per cycle.
+            // Worst-corner test, one edge per two cycles. The product and
+            // comparison are separated by a register for the 54 MHz path.
             cxe = $signed(t_rec[SR_CX + corner_edge*18 +: 18]);
             cye = $signed(t_rec[SR_CY + corner_edge*18 +: 18]);
             xie = $signed(t_rec[SR_X + corner_edge*16 +: 16]);
@@ -1229,16 +1246,9 @@ always @(posedge clk) begin : pipeline
                 pyi = {ty[11:0], 4'b0000} + 16'd15;
             else
                 pyi = {ty[11:0], 4'b0000};
-            ev = edge_eval_raw(cxe, cye, xie, yie, pxi, pyi);
-            if (t_rec[SR_TL + corner_edge])
-                cov = (ev >= 40'sd0);
-            else
-                cov = (ev > 40'sd0);
-            if (!cov) begin
-                tile_next();
-            end else begin
-                corner_edge <= corner_edge + 2'd1;
-            end
+            corner_value <= edge_eval_raw(cxe, cye, xie, yie, pxi, pyi);
+            corner_top_left <= t_rec[SR_TL + corner_edge];
+            corner_pending <= 1'b1;
         end else begin
             // Accepted tile: backpressure from the tile FIFO and the
             // prefetch outstanding limit.
