@@ -416,8 +416,8 @@ initial begin
     for (cycle = 0; cycle < 524288; cycle = cycle + 1)
         memory[cycle] = 0;
     // Sentinels prove that the boot stage loads only the selected application
-    // slot.
-    memory[20'h30200] = 16'hdead;
+    // slot. S1 is shorter than 0x200 words, so probe its entry word.
+    memory[20'h30000] = 16'hdead;
     memory[20'h70200] = 16'hdead;
     repeat (16) @(posedge clk);
     sdram_init_done = 1;
@@ -434,7 +434,7 @@ initial begin
             dut.data_segment);
     if (memory[20'h70200] === 16'hdead)
         $fatal(1, "selected S2 application was not loaded");
-    if (memory[20'h30200] !== 16'hdead)
+    if (memory[20'h30000] !== 16'hdead)
         $fatal(1, "unselected S1 application was loaded");
     if (word_read_seen)
         $fatal(1, "a word read reached the SDRAM adapter; line refills must burst");
@@ -473,7 +473,7 @@ initial begin
     if (dut.code_segment !== 16'd3 || dut.data_segment !== 16'd4)
         $fatal(1, "S1 slider application segments not reached: cseg=0x%04x dseg=0x%04x",
             dut.code_segment, dut.data_segment);
-    if (memory[20'h30200] === 16'hdead)
+    if (memory[20'h30000] === 16'hdead)
         $fatal(1, "selected S1 application was not loaded");
     if (leds !== 6'b000001)
         $fatal(1, "slider application must light logical LED 000001, got %b", leds);
