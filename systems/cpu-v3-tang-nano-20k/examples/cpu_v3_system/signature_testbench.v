@@ -192,8 +192,14 @@ end
 // (placed at Flash byte 0x100000) read as erased Flash.
 localparam integer FLASH_BASE = 32'h00100000;
 localparam integer FLASH_PACKAGE_SIZE = __FLASH_PACKAGE_SIZE__;
+localparam integer S1_BASE = __S1_BASE__;
+localparam integer S2_BASE = __S2_BASE__;
+localparam integer S1_IMAGE_WORDS = __S1_IMAGE_WORDS__;
+localparam integer S2_IMAGE_WORDS = __S2_IMAGE_WORDS__;
 
 reg [7:0] flash_image [0:FLASH_PACKAGE_SIZE-1];
+reg [15:0] expected_s1 [0:S1_IMAGE_WORDS-1];
+reg [15:0] expected_s2 [0:S2_IMAGE_WORDS-1];
 reg [31:0] flash_command = 0;
 integer flash_command_bits = 0;
 reg [23:0] flash_byte_address = 0;
@@ -201,6 +207,7 @@ integer flash_data_bit = 0;
 reg [7:0] flash_current_byte = 0;
 reg [1:0] corrupt_metadata = 0;
 integer flash_init_index;
+integer image_word;
 
 initial begin
     for (flash_init_index = 0; flash_init_index < FLASH_PACKAGE_SIZE; flash_init_index = flash_init_index + 1)
@@ -415,10 +422,14 @@ end
 initial begin
     for (cycle = 0; cycle < 524288; cycle = cycle + 1)
         memory[cycle] = 0;
-    // Sentinels prove that the boot stage loads only the selected application
-    // slot. S1 is shorter than 0x200 words, so probe its entry word.
-    memory[20'h30000] = 16'hdead;
-    memory[20'h70200] = 16'hdead;
+    // Seed each application slot with the complement of its generated image.
+    // The comparisons below follow image length and contents automatically.
+__S1_IMAGE_INIT__
+__S2_IMAGE_INIT__
+    for (image_word = 0; image_word < S1_IMAGE_WORDS; image_word = image_word + 1)
+        memory[S1_BASE + image_word] = ~expected_s1[image_word];
+    for (image_word = 0; image_word < S2_IMAGE_WORDS; image_word = image_word + 1)
+        memory[S2_BASE + image_word] = ~expected_s2[image_word];
     repeat (16) @(posedge clk);
     sdram_init_done = 1;
 
@@ -432,10 +443,13 @@ initial begin
         dut.data_segment !== 16'h0021)
         $fatal(1, "S2 display application data segment is not a framebuffer store: dseg=0x%04x",
             dut.data_segment);
-    if (memory[20'h70200] === 16'hdead)
-        $fatal(1, "selected S2 application was not loaded");
-    if (memory[20'h30000] !== 16'hdead)
-        $fatal(1, "unselected S1 application was loaded");
+    for (image_word = 0; image_word < S2_IMAGE_WORDS; image_word = image_word + 1)
+        if (memory[S2_BASE + image_word] !== expected_s2[image_word])
+            $fatal(1, "selected S2 application word %0d: expected=%04x actual=%04x",
+                image_word, expected_s2[image_word], memory[S2_BASE + image_word]);
+    for (image_word = 0; image_word < S1_IMAGE_WORDS; image_word = image_word + 1)
+        if (memory[S1_BASE + image_word] !== ~expected_s1[image_word])
+            $fatal(1, "unselected S1 application word %0d changed", image_word);
     if (word_read_seen)
         $fatal(1, "a word read reached the SDRAM adapter; line refills must burst");
     if (!line_burst_seen)
@@ -473,8 +487,10 @@ initial begin
     if (dut.code_segment !== 16'd3 || dut.data_segment !== 16'd4)
         $fatal(1, "S1 slider application segments not reached: cseg=0x%04x dseg=0x%04x",
             dut.code_segment, dut.data_segment);
-    if (memory[20'h30000] === 16'hdead)
-        $fatal(1, "selected S1 application was not loaded");
+    for (image_word = 0; image_word < S1_IMAGE_WORDS; image_word = image_word + 1)
+        if (memory[S1_BASE + image_word] !== expected_s1[image_word])
+            $fatal(1, "selected S1 application word %0d: expected=%04x actual=%04x",
+                image_word, expected_s1[image_word], memory[S1_BASE + image_word]);
     if (leds !== 6'b000001)
         $fatal(1, "slider application must light logical LED 000001, got %b", leds);
 

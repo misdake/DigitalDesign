@@ -1,4 +1,5 @@
 use cpu_v3::{CpuV3Core, CpuV3DataCache, CpuV3InstructionCache, CpuV3InstructionFetchQueue};
+use cpu_v3_tang_nano_20k::boot::{S1_APPLICATION_LAYOUT, S2_APPLICATION_LAYOUT};
 use cpu_v3_tang_nano_20k::display::ACTIVE_DISPLAY_CONFIG;
 use cpu_v3_tang_nano_20k::{
     BootDmaDevice, BootDmaEngine, BootProgressMonitor, CpuV3Gpu, CpuV3MemoryArbiter,
@@ -24,6 +25,9 @@ fn main() -> Result<(), GowinCliError> {
 }
 
 include!(concat!(env!("OUT_DIR"), "/boot_images.rs"));
+
+const S1_IMAGE: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/application-s1.v3bin"));
+const S2_IMAGE: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/application-s2.v3bin"));
 
 struct BootImage;
 
@@ -160,9 +164,34 @@ impl Module for CpuV3System {
         for (index, byte) in FLASH_PACKAGE.iter().enumerate() {
             flash_init.push_str(&format!("        flash_image[{index}] = 8'h{byte:02x};\n"));
         }
+        let image_init = |name: &str, image: &[u8]| {
+            let (words, remainder) = image.as_chunks::<2>();
+            assert!(
+                remainder.is_empty(),
+                "application image must contain whole words"
+            );
+            let mut init = String::new();
+            for (index, bytes) in words.iter().enumerate() {
+                let word = u16::from_le_bytes([bytes[0], bytes[1]]);
+                init.push_str(&format!("        {name}[{index}] = 16'h{word:04x};\n"));
+            }
+            init
+        };
         let testbench = include_str!("signature_testbench.v")
             .replace("__FLASH_PACKAGE_SIZE__", &FLASH_PACKAGE.len().to_string())
-            .replace("__FLASH_PACKAGE_INIT__", &flash_init);
+            .replace("__FLASH_PACKAGE_INIT__", &flash_init)
+            .replace(
+                "__S1_BASE__",
+                &S1_APPLICATION_LAYOUT.destination().get().to_string(),
+            )
+            .replace(
+                "__S2_BASE__",
+                &S2_APPLICATION_LAYOUT.destination().get().to_string(),
+            )
+            .replace("__S1_IMAGE_WORDS__", &(S1_IMAGE.len() / 2).to_string())
+            .replace("__S2_IMAGE_WORDS__", &(S2_IMAGE.len() / 2).to_string())
+            .replace("__S1_IMAGE_INIT__", &image_init("expected_s1", S1_IMAGE))
+            .replace("__S2_IMAGE_INIT__", &image_init("expected_s2", S2_IMAGE));
         Some(if S2_RASTER_ONLY.with(Cell::get) {
             format!("`define CPU_V3_S2_RASTER_ONLY\n{testbench}")
         } else {
