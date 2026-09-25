@@ -141,7 +141,7 @@ fn arbitration_under_clip_load_preserves_values() {
 
 #[test]
 fn trace_render_format() {
-    let events = vec![
+    let events = [
         RasterEvent::Scene("A".to_string()),
         RasterEvent::Prefetch(7),
         RasterEvent::Quad(core::QuadItem::TileEnd { tile: 7 }),

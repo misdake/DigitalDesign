@@ -103,7 +103,6 @@ struct IsectState {
     prev: ClipVertex,
     d_prev: ClipDist,
     step: IsectStep,
-    num: ClipDist,
     den: ClipDist,
     /// Divider state: remaining remainder and the quotient being built.
     remainder: i64,
@@ -477,7 +476,6 @@ impl RasterCore {
                                     prev: cur,
                                     d_prev: d_cur,
                                     step: IsectStep::Quotient,
-                                    num,
                                     den,
                                     remainder: num.raw(),
                                     quotient: 0,

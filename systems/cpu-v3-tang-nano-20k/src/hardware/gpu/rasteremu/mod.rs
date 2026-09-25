@@ -23,6 +23,8 @@
 
 mod core;
 #[cfg(test)]
+mod rtl_tests;
+#[cfg(test)]
 mod tests;
 
 use std::collections::VecDeque;
@@ -48,7 +50,7 @@ impl Throttle {
         match self {
             Self::Always => true,
             Self::Periodic { run, stall } => cycle % u64::from(run + stall) < u64::from(run),
-            Self::Third => cycle % 3 == 0,
+            Self::Third => cycle.is_multiple_of(3),
         }
     }
 }

@@ -225,8 +225,10 @@ pub fn rasterize(setups: &[TriangleSetup]) -> Frame {
     let mut color = vec![0u16; width * height];
     let mut depth = vec![0u16; width * height];
     let mut covered = vec![false; width * height];
-    let mut stats = RasterStats::default();
-    stats.triangles = setups.len() as u64;
+    let mut stats = RasterStats {
+        triangles: setups.len() as u64,
+        ..RasterStats::default()
+    };
     traverse(
         setups,
         |_, _| {
