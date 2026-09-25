@@ -52,6 +52,7 @@ fn run_rtl_source(vectors: &str, testbench: &str, throttle: u8) -> String {
         .arg("-o")
         .arg(&output)
         .arg(source.join("raster.v"))
+        .arg(source.join("raster_pixel.v"))
         .arg(source.join(testbench))
         .output()
         .unwrap();
@@ -339,6 +340,39 @@ fn viewport_expected(case: &ViewportCase) -> (Vec<String>, Vec<String>) {
     (trace, output)
 }
 
+fn viewport_pixels_expected(case: &ViewportCase) -> Vec<String> {
+    let mut output = Vec::new();
+    let mut next_id = 0;
+    for (index, vertices) in case.triangles.iter().enumerate() {
+        if let Some(setup) = viewport_setup(vertices, next_id) {
+            next_id += 1;
+            raster::traverse(
+                &[setup],
+                |_, _| {},
+                |setup, tile, quad| {
+                    for lane in 0..4 {
+                        if quad.mask & (1 << lane) != 0 {
+                            let x = quad.x + (lane & 1);
+                            let y = quad.y + (lane >> 1);
+                            let color = raster::pixel_color(x as u32, y as u32, setup.id);
+                            output.push(format!(
+                                "PIXEL {} {} {x} {y} {color:04x}",
+                                setup.id, tile.index
+                            ));
+                        }
+                    }
+                },
+                |_, _| {},
+            );
+        }
+        output.push(format!(
+            "RETIRE_MARKER {index} DRAW {}",
+            u8::from(index + 1 == case.triangles.len())
+        ));
+    }
+    output
+}
+
 fn check_viewport(cases: &[ViewportCase], throttle: u8) {
     let stdout = run_rtl_source(&viewport_vectors(cases), "raster_viewport_tb.v", throttle);
     let actual = parse_rtl_scenes(&stdout);
@@ -394,4 +428,37 @@ fn viewport_raster_backpressure_preserves_stream() {
     assert_eq!(cases.len(), 4);
     check_viewport(&cases, 1);
     check_viewport(&cases, 2);
+}
+
+#[test]
+#[ignore = "explicit stage-5 pixel stream RTL co-simulation"]
+fn viewport_pixel_stream_matches_reference() {
+    let cases: Vec<ViewportCase> = viewport_cases()
+        .into_iter()
+        .filter(|case| {
+            [
+                "shared-edge-quad",
+                "screen-borders",
+                "viewport-degenerate",
+                "viewport-backface",
+                "viewport-offscreen",
+                "viewport-subpixel-sliver",
+            ]
+            .contains(&case.name.as_str())
+        })
+        .collect();
+    for throttle in [0, 1, 2] {
+        let stdout = run_rtl_source(&viewport_vectors(&cases), "raster_pixel_tb.v", throttle);
+        let actual = parse_rtl_scenes(&stdout);
+        assert_eq!(actual.len(), cases.len(), "pixel scene count");
+        for (case, (name, _, output)) in cases.iter().zip(&actual) {
+            assert_eq!(name, &case.name);
+            assert_bucket(
+                name,
+                "pixel stream",
+                &viewport_pixels_expected(case),
+                output,
+            );
+        }
+    }
 }

@@ -63,7 +63,7 @@ impl Frame {
 
 /// Color of one covered pixel: position gradient plus a per-triangle blue
 /// offset so overlapping triangles of the same scene stay distinguishable.
-fn pixel_color(x: u32, y: u32, id: u32) -> u16 {
+pub(crate) fn pixel_color(x: u32, y: u32, id: u32) -> u16 {
     let r = ((x >> 3) & 0x1f) as u16;
     let g = ((y >> 2) & 0x3f) as u16;
     let b = ((id.wrapping_mul(7) + (x >> 4)) & 0x1f) as u16;
