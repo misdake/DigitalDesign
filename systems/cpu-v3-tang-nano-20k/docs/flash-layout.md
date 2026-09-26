@@ -23,13 +23,15 @@ checks establish a successful boot.
 The board-level selection latch powers up at `10` (S2), so the configured S2
 application boots by default; holding the S1 button (`01`) during reset selects
 the slider diagnostic, and `11` is ignored. The current configuration uses the
-DDHT slider diagnostic for S1 and the GPU memory-interface demo
+DDHT slider diagnostic for S1 and the GPU viewport-raster demo
 (`rcc/display-demo.rs`) for S2. The display demo reports DDHT test ID `0x0b`
-after each published frame. It alternates two heap-backed command buffers,
-cleans their three cache lines, and reuses three permanent aligned tile-index
-lists. GPU device 4 runs CLEAR and LOAD fake draws through its tile cache,
-drains dirty entries, and then lets software request a vblank swap; the CPU no
-longer writes pixels.
+after each published frame. It initializes both framebuffer slots to black once
+using three aligned tile-index lists, then alternates two heap-backed command
+buffers containing only SET_TARGET, TRIANGLE, and END. The startup commands use
+four cache lines; the 24-word repeating commands use two. GPU device 4 renders
+the triangle through its tile cache, waits for raster retirement, drains dirty
+entries, and then lets software request a vblank swap; the CPU never writes
+framebuffer pixels and no background gradients or wave updates run.
 
 The current board's runtime SFDP probe reports an 8-MiB device. Its JEDEC ID is
 `EF 40 17`; this is a Winbond-family 64-Mbit part even though some board

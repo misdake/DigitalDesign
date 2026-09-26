@@ -66,6 +66,7 @@ CpuV3GpuRaster #(.VIEWPORT_ONLY(0)) dut(
     .retire_marker_draw(retire_marker_draw),
     .quad_tri(quad_tri), .quad_tile(quad_tile),
     .quad_x(quad_x), .quad_y(quad_y), .quad_mask(quad_mask),
+    .prefetch_acquire_ready((cycles % 7) != 0),
     .prefetch_acquire_valid(prefetch_acquire_valid),
     .prefetch_acquire_tile(prefetch_acquire_tile),
     .scene_done(scene_done));

@@ -4,7 +4,7 @@
 // enables the unfitted clip/rcp/viewport geometry probe for differential
 // testing; that path belongs to the later frontend stage.
 //
-// The stage decomposition, FIFO depths, prefetch limit (K = 2), merger
+// The stage decomposition, FIFO depths, prefetch limit (default K = 2), merger
 // pin/tile-end rules and every fixed-point arithmetic leaf match the Rust
 // emu; the emitted TRI/PREFETCH/QUAD/TILE_END/RETIRE_MARKER/DONE values are
 // bit-exact against the functional reference. Geometry-probe device
@@ -14,7 +14,7 @@
 // Input is a serial vertex beat stream with `input_last` on the last beat
 // of a scene. Output is an ordered stream (covered quads, tile-end, and
 // per-input-triangle retire markers) drained by `sink_ready`,
-// plus a prefetch-acquire observation port for the later cache integration.
+// plus a ready/valid prefetch-acquire port. The integrated blocking cache uses K=1.
 //
 // Trace (`$display`, simulation-only): one `RAST <seq> <body>` line per
 // event, emitted where the event happens; the quad stream itself flows
@@ -25,7 +25,8 @@
 // their own assignments or selected between in statement `if`/`case` form.
 
 module CpuV3GpuRaster #(
-    parameter VIEWPORT_ONLY = 1
+    parameter VIEWPORT_ONLY = 1,
+    parameter PREFETCH_LIMIT = 2
 ) (
     input wire clk,
     input wire reset,
@@ -52,9 +53,11 @@ module CpuV3GpuRaster #(
     output wire [15:0] quad_y,
     output wire [3:0] quad_mask,
 
-    // Prefetch acquire observation port (one pulse per accepted tile).
-    output reg prefetch_acquire_valid = 1'b0,
-    output reg [15:0] prefetch_acquire_tile = 16'd0,
+    // A tile enters the walker only when its acquire request is accepted.
+    // The descriptor remains stable during cache backpressure.
+    input wire prefetch_acquire_ready,
+    output wire prefetch_acquire_valid,
+    output wire [15:0] prefetch_acquire_tile,
 
     // One-cycle pulse when a scene's DONE event is emitted.
     output reg scene_done = 1'b0
@@ -77,7 +80,7 @@ localparam CLIP_OUT_DEPTH = 4;
 localparam TRI_DEPTH = 4;
 localparam TILE_DEPTH = 8;
 localparam QUAD_DEPTH = 24;
-localparam [3:0] K_PREFETCH = 4'd2;
+localparam [3:0] K_PREFETCH = PREFETCH_LIMIT;
 
 // Setup record bus layout ([356:0]).
 localparam SR_ID = 0;      // [31:0]
@@ -487,17 +490,22 @@ reg signed [39:0] corner_value = 40'sd0;
 reg corner_top_left = 1'b0;
 
 // Quad stage.
-localparam Q_IDLE = 2'd0;
-localparam Q_INIT = 2'd1;
-localparam Q_RUN = 2'd2;
-localparam Q_END = 2'd3;
-reg [1:0] quad_state = Q_IDLE;
+localparam Q_IDLE = 3'd0;
+localparam Q_INIT = 3'd1;
+localparam Q_RUN = 3'd2;
+localparam Q_END = 3'd3;
+localparam Q_INIT_COMMIT = 3'd4;
+localparam Q_COMMIT = 3'd5;
+reg [3:0] q_mask = 4'd0;
+reg q_advance_x = 1'b0, q_advance_y = 1'b0;
+reg [2:0] quad_state = Q_IDLE;
 reg [356:0] q_rec = 357'd0;
 reg [15:0] q_tile = 16'd0;
 reg [63:0] q_rect = 64'd0;
 reg signed [15:0] qx = 16'sd0;
 reg signed [15:0] qy = 16'sd0;
 reg [1:0] q_init = 2'd0;
+reg signed [39:0] q_init_value = 40'sd0;
 reg signed [39:0] e_base [0:2];
 reg signed [39:0] e_row [0:2];
 
@@ -505,6 +513,10 @@ reg signed [39:0] e_row [0:2];
 reg pin_valid = 1'b0;
 reg [15:0] pin_tile = 16'd0;
 reg [3:0] prefetch_outstanding = 4'd0;
+
+assign prefetch_acquire_valid = t_valid && !corner_pending && corner_edge == 2'd3
+                             && tj_count < 4'd8 && prefetch_outstanding < K_PREFETCH;
+assign prefetch_acquire_tile = {11'd0, ty[4:0]} * 16'd25 + {11'd0, tx[4:0]};
 reg [31:0] walked = 32'd0;
 
 // Scene bookkeeping.
@@ -735,7 +747,6 @@ always @(posedge clk) begin : pipeline
         marker_queued <= 1'b0;
         active_input_id <= 32'd0;
         next_input_id <= 32'd0;
-        prefetch_acquire_valid <= 1'b0;
         scene_done <= 1'b0;
         trace_seq = 0;
     end else begin
@@ -751,7 +762,6 @@ always @(posedge clk) begin : pipeline
         qd_pop = 1'b0;
         po_push = 1'b0;
         po_pop = 1'b0;
-        prefetch_acquire_valid <= 1'b0;
         scene_done <= 1'b0;
 
         // ---- input beat assembly --------------------------------------
@@ -1252,7 +1262,7 @@ always @(posedge clk) begin : pipeline
         end else begin
             // Accepted tile: backpressure from the tile FIFO and the
             // prefetch outstanding limit.
-            if (tj_count < 4'd8 && prefetch_outstanding < K_PREFETCH) begin
+            if (prefetch_acquire_valid && prefetch_acquire_ready) begin
                 r0 = $signed(t_rec[SR_AABB +: 16]);
                 ta = {tx[11:0], 4'b0000};
                 if (ta > r0) r0 = ta;
@@ -1274,8 +1284,6 @@ always @(posedge clk) begin : pipeline
                 tj_tail <= tj_tail + 3'd1;
                 tj_push = 1'b1;
                 po_push = 1'b1;
-                prefetch_acquire_valid <= 1'b1;
-                prefetch_acquire_tile <= tindex;
                 // synthesis translate_off
                 $display("RAST %0d PREFETCH %0d", trace_seq, tindex);
                 trace_seq = trace_seq + 1;
@@ -1310,17 +1318,21 @@ always @(posedge clk) begin : pipeline
                 cye = $signed(q_rec[SR_CY + q_init*18 +: 18]);
                 xie = $signed(q_rec[SR_X + q_init*16 +: 16]);
                 yie = $signed(q_rec[SR_Y + q_init*16 +: 16]);
-                ev = edge_eval_raw(cxe, cye, xie, yie, qx[15:0], qy[15:0]);
-                e_base[q_init] <= ev;
-                e_row[q_init] <= ev;
-                if (q_init == 2'd2)
-                    quad_state <= Q_RUN;
+                q_init_value <= edge_eval_raw(cxe, cye, xie, yie, qx[15:0], qy[15:0]);
+                quad_state <= Q_INIT_COMMIT;
+            end
+            Q_INIT_COMMIT: begin
+                // Separate DSP/selector delay from the edge-array write mux.
+                e_base[q_init] <= q_init_value;
+                e_row[q_init] <= q_init_value;
+                if (q_init == 2'd2) quad_state <= Q_RUN;
+                else quad_state <= Q_INIT;
                 q_init <= q_init + 2'd1;
             end
             Q_RUN: begin
                 // Depth gate matches the emu (checked once per quad).
                 if (qd_count < 6'd24) begin
-                    // One quad per cycle: the four pixel edge values derive
+                    // Compute coverage before the registered FIFO commit. Values derive
                     // from the quad origin by 40-bit adds (one pixel step =
                     // 16 raw units).
                     mask = 4'd0;
@@ -1348,43 +1360,53 @@ always @(posedge clk) begin : pipeline
                             end
                         end
                     end
-                    if (mask != 4'd0) begin
-                        if (VIEWPORT_ONLY)
-                            qd_item = {16'd0, 2'd0, q_tile[8:0], qx[8:0], qy[7:0], mask};
-                        else
-                            qd_item = {q_rec[15:0], 2'd0, q_tile[8:0], qx[8:0], qy[7:0], mask};
-                        qd_fifo[qd_tail] <= qd_item;
-                        qd_push = 2'd1;
-                        // synthesis translate_off
-                        $display("RAST %0d QUAD %0d %0d %0d %0x",
-                                 trace_seq, q_rec[31:0], qx, qy, mask);
-                        trace_seq = trace_seq + 1;
-                        // synthesis translate_on
+                    q_mask <= mask;
+                    q_advance_x <= (qx + 16'sd2) <= $signed(q_rect[32 +: 16]);
+                    q_advance_y <= (qy + 16'sd2) <= $signed(q_rect[48 +: 16]);
+                    quad_state <= Q_COMMIT;
+                end
+            end
+            Q_COMMIT: begin
+                // Space was reserved by Q_RUN; no other producer can push
+                // while this tile is active. Cut coverage/rectangle compares
+                // out of the FIFO enable and incremental-edge write muxes.
+                quad_state <= Q_RUN;
+                if (q_mask != 4'd0) begin
+                    if (VIEWPORT_ONLY)
+                        qd_item = {16'd0, 2'd0, q_tile[8:0], qx[8:0], qy[7:0], q_mask};
+                    else
+                        qd_item = {q_rec[15:0], 2'd0, q_tile[8:0], qx[8:0], qy[7:0], q_mask};
+                    qd_fifo[qd_tail] <= qd_item;
+                    qd_push = 2'd1;
+                    // synthesis translate_off
+                    $display("RAST %0d QUAD %0d %0d %0d %0x",
+                             trace_seq, q_rec[31:0], qx, qy, q_mask);
+                    trace_seq = trace_seq + 1;
+                    // synthesis translate_on
+                end
+                // Advance the quad cursor with incremental edge updates
+                // (one quad step = 2 pixels = 32 raw units).
+                if (q_advance_x) begin
+                    for (ci = 0; ci < 3; ci = ci + 1) begin
+                        stepx = $signed(q_rec[SR_CX + ci*18 +: 18]) <<< 5;
+                        e_base[ci] <= e_base[ci] + stepx;
                     end
-                    // Advance the quad cursor with incremental edge updates
-                    // (one quad step = 2 pixels = 32 raw units).
-                    if ((qx + 16'sd2) <= $signed(q_rect[32 +: 16])) begin
-                        for (ci = 0; ci < 3; ci = ci + 1) begin
-                            stepx = $signed(q_rec[SR_CX + ci*18 +: 18]) <<< 5;
-                            e_base[ci] <= e_base[ci] + stepx;
-                        end
-                        qx <= qx + 16'sd2;
-                        qd_tail <= qd_tail + {4'd0, qd_push[0]};
-                    end else if ((qy + 16'sd2) <= $signed(q_rect[48 +: 16])) begin
-                        for (ci = 0; ci < 3; ci = ci + 1) begin
-                            stepy = $signed(q_rec[SR_CY + ci*18 +: 18]) <<< 5;
-                            e_row[ci] <= e_row[ci] + stepy;
-                            e_base[ci] <= e_row[ci] + stepy;
-                        end
-                        qx <= $signed(q_rect[0 +: 16]);
-                        qy <= qy + 16'sd2;
-                        qd_tail <= qd_tail + {4'd0, qd_push[0]};
-                    end else begin
-                        // The tile-end uses the next write cycle so this
-                        // FIFO has a single write port.
-                        qd_tail <= qd_tail + {4'd0, qd_push[0]};
-                        quad_state <= Q_END;
+                    qx <= qx + 16'sd2;
+                    qd_tail <= qd_tail + {4'd0, qd_push[0]};
+                end else if (q_advance_y) begin
+                    for (ci = 0; ci < 3; ci = ci + 1) begin
+                        stepy = $signed(q_rec[SR_CY + ci*18 +: 18]) <<< 5;
+                        e_row[ci] <= e_row[ci] + stepy;
+                        e_base[ci] <= e_row[ci] + stepy;
                     end
+                    qx <= $signed(q_rect[0 +: 16]);
+                    qy <= qy + 16'sd2;
+                    qd_tail <= qd_tail + {4'd0, qd_push[0]};
+                end else begin
+                    // The tile-end uses the next write cycle so this
+                    // FIFO has a single write port.
+                    qd_tail <= qd_tail + {4'd0, qd_push[0]};
+                    quad_state <= Q_END;
                 end
             end
             Q_END: begin
@@ -1468,9 +1490,17 @@ always @(posedge clk) begin : pipeline
         co_count <= co_count + {2'b0, co_push} - {2'b0, co_pop};
         tri_count <= tri_count + {2'b0, tri_push} - {2'b0, tri_pop};
         tj_count <= tj_count + {3'b0, tj_push} - {3'b0, tj_pop};
-        qd_count <= qd_count + {5'b0, qd_push[0]} + {5'b0, qd_push[1]}
-                              + {5'b0, qd_push[2]}
-                              - {5'b0, qd_pop};
+        // QUAD, TILE_END and marker pushes are mutually exclusive. Avoid
+        // a multi-adder pop-control path back from the synchronous FIFO head.
+        case ({|qd_push, qd_pop})
+            2'b10: qd_count <= qd_count + 6'd1;
+            2'b01: qd_count <= qd_count - 6'd1;
+            default: qd_count <= qd_count;
+        endcase
+        // synthesis translate_off
+        if (qd_push != 0 && qd_push != 1 && qd_push != 2 && qd_push != 4)
+            $fatal(1, "more than one write to quad FIFO in a clock");
+        // synthesis translate_on
         prefetch_outstanding <= prefetch_outstanding + {3'b0, po_push} - {3'b0, po_pop};
 
         // ---- scene DONE ---------------------------------------------------

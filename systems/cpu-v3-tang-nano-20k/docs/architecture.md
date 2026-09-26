@@ -150,8 +150,8 @@ Device 1 channel 0 returns the reset-time boot selection. The board-level select
 at `10`, so the boot stage selects the configured S2 application by default; holding the S1 button
 (`01`) selects the configured S1 slider diagnostic, and `11` is ignored. The current project selects
 the primary diagnostic as S1 and the GPU raster demo as S2. S2 alternates two permanent,
-32-byte-aligned heap command buffers and the two framebuffer slots; it overlays a viewport triangle
-on the three tile-gradient wave fronts and reports DDHT test ID `0x0b`
+32-byte-aligned heap command buffers and the two framebuffer slots; it clears each slot to black
+once, then renders only the viewport triangle and reports DDHT test ID `0x0b`
 after each completed GPU render and display vblank. S1 reports test ID `0x07`.
 
 Device 2 exposes the boot-DMA command and status register bank. It accepts a 24-bit absolute Flash
@@ -172,13 +172,17 @@ rejected without incrementing the accepted count. The temporary command processo
 RGB565 colors, a 16-row write mask, and a temporary tile-local XY-gradient flag. Solid and gradient
 writes share the same cache path; the gradient uses channel-high bits plus local x/y and four-bit
 x+y, without multipliers. The framebuffer cache is eight-entry direct-mapped and
-stores eight complete 16x16 tiles in two inferred 512x32 BSRAM banks. A miss blocks while a dirty
+stores eight complete 16x16 tiles in four explicit 512x16 true-dual-port DPB banks. Bank selection is
+`(x + 2*y) mod 4`; the memory port transfers 64-bit beats and the render port writes RGB565 directly.
+A miss blocks while a dirty
 victim is cleaned or a LOAD tile is refilled; each tile transfer is four 128-byte transactions.
 `TRIANGLE` (`0xe2`) is four qwords: a zero-argument header followed by three viewport vertices,
 each packed as `{y:s12.4, x:s12.4}` in the low 32 bits of one qword. The rasterizer emits covered
-RGB565 pixels in tile order. Each pixel stalls at the cache boundary until the addressed 64-bit beat
-has been read and its 16-bit lane written; uncovered lanes retain the LOAD contents. The draw
-marker follows all accepted pixels, and the command processor waits for the scene-done pulse.
+RGB565 pixels in tile order. A ready/valid prefetch acquisition admits one outstanding tile (K=1);
+pixels of the acquired tile write the render port without a beat read-modify-write. Uncovered lanes
+retain the LOAD contents. The Phase-1 pixel record carries a draw epoch and triangle ID. The draw
+marker follows all accepted pixels and remains at the raster boundary until the cache returns the
+matching epoch/triangle retirement ACK; the command processor then waits for scene done.
 `END` drains every dirty entry before incrementing the retired count, so completion fences all
 visible framebuffer writes. This is a bring-up ABI, not the future geometry command-buffer
 contract.
@@ -213,13 +217,18 @@ the same stable mapping through `LoaderError::boot_report`.
 
 ## Current fitted result and validation boundary
 
-The current full-system build uses 15,660 Logic (12,475 LUT, 2,513 ALU, 112 RAM16), 7,647 logic
-registers, 9,343 CLS, six SDPB, four DPB, one pROM, two `MULT18X18`, one `MULT36X36`, and five
-`MULTADDALU18X18`. The rasterizer adds one BSRAM and four DSP macros to the earlier GPU cache.
-The CPU clock closes at 54.521 MHz against the 54-MHz constraint with 0.177 ns worst setup slack
-and zero setup/hold TNS; the first setup path is from the instruction fetch queue into core FPU
-memory control. Controller timing closes at 170.917 MHz against 108 MHz. These are fitted
-implementation results, not board evidence.
+The 2026-09-26 full-system GPU cache closure and triangle-only build uses 15,720 Logic
+(12,559 LUT, 2,489 ALU, 112 RAM16), 7,670 logic registers, 9,291 CLS, four SDPB, eight DPB,
+one pROM, two `MULT18X18`, one `MULT36X36`, and five `MULTADDALU18X18`. GPU storage is four
+cache DPBs plus one raster FIFO SDPB. The CPU clock closes at 54.057 MHz against the 54-MHz
+constraint with 0.020 ns worst setup slack and zero setup/hold TNS. The first setup path is core
+state to GPR write data (`state_2_s7` to `gpr_write_data_6_s0`), through the B-register
+address/read mux, device-write data, and a combinational LUT named `u_gpu/staging_bad_s11`.
+Its cell delay is 6.710 ns and routing delay is 11.522 ns (62.405% of data-path delay).
+The first wholly raster path is vertex Y to AABB register control, with 0.083 ns slack;
+its cell/routing delays are 5.329/12.839 ns. Controller timing closes at
+165.724 MHz against 108 MHz. The project uses Gowin place/route algorithms 1;
+`--check-existing` confirms matching generated sources; fitting is separate from board evidence.
 
 The system-level emulator-vs-RTL co-simulation `tests/system_cosim.rs` drives the composed RTL
 (core, fetch queue, I-cache, D-cache, memory arbiter, and a behavioral SDRAM word port) in Icarus
@@ -229,9 +238,17 @@ with `cargo test -p cpu-v3-tang-nano-20k --test system_cosim -- --ignored --test
 Differential equality is not treated as a semantic oracle by itself: cache-command scenarios also
 check explicit destination values, and GPU memory-effect tests start from nonzero sentinels, require
 known nonzero output pixels, and retain an unchanged guard word outside the framebuffer payload.
-The focused GPU raster test also compares all 1,024 RGB565 pixels of a four-tile triangle crop
-against an independent integer pixel-center/top-left oracle, writing raw actual/reference frames
-and PNG actual/reference/difference images under `target/gpu-raster-image-diff`.
+GPU raster tests compare a four-tile crop and 26 complete 400x240 RGB565 scenes against an
+independent integer pixel-center/top-left oracle. They check exact pixel/ACK conservation, stalled
+ports, alias eviction, LOAD/CLEAR preservation, guards, and terminal errors at all 36 read/write
+beat positions. The reproducible scene and throughput suite is `tests/gpu_trace_cosim.rs`.
+The earlier tile-display path and cold boot are user-confirmed. The current triangle-only image passes
+full-frame Flash RTL checks for both slots, including nonzero initial sentinels and payload guards.
+After USB reconnection, this image passed complete
+Flash Program/Verify and audited SRAM loading. Restarting BL616 recovered an initially empty UART
+capture; S2 UART passed after loading and after the requested power cycle, with no error frames.
+The user confirmed normal HDMI output; the image remains in complete Flash and the board is now off.
+K=1 and blocking refill/clean remain; geometry and varying interpolation are not implemented.
 
 This result is implementation evidence, not a substitute for board validation. Changes to clocks,
 memory geometry, cache policy, SDRAM protocol, CDC, display scheduling, or resource composition must

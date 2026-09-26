@@ -2,7 +2,7 @@
 
 Status: append-only detail record; normally read only when investigating an old decision
 Repository: `../../../`
-Updated: 2026-09-23
+Updated: 2026-09-26
 
 The concise milestone index lives in [`cpu-v3-optimization.md`](cpu-v3-optimization.md). This file
 preserves the former long-form roadmap, measurements, rejected alternatives, and validation notes.
@@ -408,7 +408,7 @@ the CSV schema, pinned to zero.
 
 - Add bounded full-system emulator benchmarks for recursive quicksort, control-flow-heavy code, and
   cached data traffic, with cycle categories, cache/SDRAM counters, opcode counts, and redirect waits.
-- Export durable text summaries and per-redirect CSV traces under `target/cpu-v3-bench/`.
+- Generate text summaries and per-redirect CSV traces for bounded benchmark analysis.
 - Issue a redirect target request in the restart cycle when request metadata capacity is available.
 - Tag that request with the new fetch epoch so old-path responses remain discardable.
 - When the queue is empty, fall through a matching response directly to a ready core; if the core is
@@ -981,10 +981,135 @@ Both capacities passed full-system Gowin PnR and `--check-existing` artifact aud
 No physical-board programming was performed; no commit or post-commit ledger row
 was made.
 
-Generated evidence remains untracked under `target/btc-analysis/`: `btc0.csv`,
-`btc4.csv`, `btc8.csv` retain the frozen schema with explicit capacity labels;
-each capacity directory holds per-program `summary.txt`, `btc.txt`, traces and
-`aggregate.json`; `4/fit/` and `8/fit/` hold fitted reports. Validation logs are in
-`target/cargo-summaries/`, with the aggregate quick/Icarus evidence under
-`target/hardware-validation/`. The normal Gowin output is restored to the default
-four-entry build after the eight-entry comparison.
+The default four-entry build was restored after the eight-entry comparison.
+
+## GPU viewport cache interface closure (2026-09-26)
+
+This closure follows the generated-Flash validation in `a831c9e`. Covered pixels previously read a
+64-bit cache beat before replacing one RGB565 lane. Four explicit true-dual-port 512x16
+DPBs now expose separate memory and render ports, with bank selection `(x + 2*y) mod 4`.
+Odd-row beat halves are swapped on refill and synchronous clean reads. A pixel of the
+acquired tile writes one render bank directly; uncovered lanes retain the LOAD contents.
+
+The 114-bit pixel/marker record carries draw epoch, triangle ID, tile ID, coordinates,
+and RGB565. A marker waits for the matching cache retirement ACK after all preceding
+pixels reach the cache. `END` separately drains dirty entries before submission
+completion: triangle retirement alone does not make framebuffer writes SDRAM-visible.
+Ready/valid prefetch acquisition admits K=1 tile; tile-end ordering pins the live tile
+until its pixels are consumed. Refill/clean remain blocking. Geometry, barycentrics,
+varying interpolation, and render/refill concurrency remain future work.
+
+The triangle-only S2 application clears both slots to black once, then reuses 24-word
+SET_TARGET/TRIANGLE/END buffers. Background gradients and wave updates no longer run.
+Removing this firmware does not remove the GPU's temporary gradient command hardware.
+
+Strengthening the Flash RTL regression to check every pixel of both slots, starting
+from nonzero sentinels and retaining payload guards, reproduced a missing pixel at
+(83,48). The GPU advanced clean beat zero on request acceptance, while SharedSdramPort
+requires every long-write beat on data-ready. Its host model and standalone responder
+had copied the same incorrect rule; differential equality and a single interior pixel
+therefore missed the integration error. GPU RTL, Rust model, host memory, and trace
+responder now hold beat zero through request acceptance. The adapter protocol is unchanged.
+Independent full-frame oracles must complement model/RTL agreement.
+
+Timing closure registers edge initialization before its array write, updates FIFO
+counts once for mutually exclusive push/pop, and drives render readiness from the
+registered acquired tile. Quad coverage and cursor-advance decisions register before
+a separate FIFO/edge commit cycle. Quad production takes two clocks per quad, excluding
+initialization and stalls. This trades scan throughput for a shorter control path.
+The firmware reduction, handshake repair, and quad retiming changed different parts
+of the system; a smaller application does not imply an easier physical FPGA layout.
+
+Default congestion-driven routing failed despite removal of the quad critical paths.
+The full-system project uses Gowin place algorithm 1 (additional placement effort)
+and route algorithm 1 (timing-driven routing), retaining the 54-MHz constraint and
+mandatory setup/hold audit. The final fit passes; the limiting path is CPU state to
+GPR write data, followed by raster vertex Y to AABB register control. Current fitted
+numbers and validation boundary live only in
+[architecture.md](architecture.md#current-fitted-result-and-validation-boundary).
+The setup margin is small; this fit is closure evidence, not broad timing headroom.
+
+Validation: 725 workspace tests pass, 62 are ignored; strict workspace Clippy,
+formatting, layering, source hygiene, and documentation checks pass. The five raster
+RTL tests, five GPU integration tests, 26 CPU emulator/RTL tests, two system co-sims,
+and both generated-image Flash RTL tests pass. Boot materialization and independent
+repacking agree byte for byte. The 26-scene GPU suite checks 2,496,000 pixels against
+independent integer pixel-center/top-left edges, exact pixel/ACK conservation, guards,
+LOAD/CLEAR preservation, alias eviction, boundaries, winding, degenerate/subpixel
+triangles, empty draws, and seeded scenes with independently stalled ports. Terminal
+errors are injected at all 36 command-read, tile-refill, and tile-clean beat positions.
+
+An isolated comparison recompiles `54950b6` with the same memory throttling and requires
+identical output images:
+
+| Scene | Old cycles | Current cycles | Current / old |
+| --- | ---: | ---: | ---: |
+| Shared edge | 5,303 | 2,272 | 0.428 |
+| Alias eviction | 33,533 | 13,568 | 0.405 |
+| Wide triangle | 229,344 | 87,363 | 0.381 |
+
+These are isolated workloads, not display-contention or board throughput. The historical
+source uses its request-consumes-first-beat responder; the current source consumes all
+long-write beats on data-ready. The comparison does not establish that the historical
+source was pixel-correct through the full-system adapter.
+
+Physical integration: the triangle-only complete image passed Flash Program/Verify at
+`0x000000`, including its generated boot package at `0x100000`, and audited SRAM loading.
+The first UART capture was empty. Restarting BL616 recovered the transport; the next
+capture contains 499 valid S2 `0x0b` success frames, with no failure, wrong-test, checksum,
+or boot-error frames. After the requested power cycle the user confirmed normal HDMI;
+an observation-only capture passed another 498 S2 success frames with no errors.
+The current image is retained in complete Flash; the user subsequently powered the board off.
+
+### Timing follow-up: operand selection and cross-module sharing
+
+The limiting path is more specific than a generic CPU writeback path: CPU state selects
+the B-register address, crosses the asynchronous register-read/bypass mux and the shared
+device-write bus, then traverses a combinational LUT named `u_gpu/staging_bad_s11`
+before returning to CPU writeback. The device-write bit on this path has fanout 80.
+GPU readback in the source depends on registered counters/status, not on live write
+data. The mapped LUT name and source isolation therefore suggest cross-module sharing
+of a common reduction expression, rather than a functional device read/write loop.
+The encrypted mapped netlist prevents confirming that LUT's exact Boolean expression;
+this remains a hypothesis to test, not a proven operation-level attribution.
+
+CPU B-address selection includes an Execute-state test for LOAD/STORE, although the
+register index can be decoded when a new instruction is accepted. The first candidate
+is to capture that index alongside the instruction at all three acceptance sites,
+preserving register forwarding, prefix handling, memory/device barriers, and existing
+retirement cycles. This can remove state-dependent operand selection from the read
+path without adding an instruction cycle; its actual fit benefit is still unmeasured.
+A separate controlled synthesis experiment should test whether isolating the GPU
+staging reduction removes the long cross-module excursion. Do not add false-path
+constraints based only on the suspicious mapped path or instruction exclusivity.
+
+The next raster candidate is the AABB setup stage: its serial min/max selection,
+viewport clamp, rectangle-valid comparison, and enabled register update occur in one
+cycle. Split extrema calculation from clamp/valid/commit while preserving signed
+comparisons and outward even/odd bounds. Setup runs once per triangle, so additional
+setup cycles should affect large-triangle throughput less than slowing quad production;
+this expected tradeoff also requires measurement. Current routing dominates both
+paths; detailed fitted delays remain in the current architecture section.
+
+These are ordered investigation candidates, not additional implemented changes.
+Compare each candidate against the verified baseline with identical project options,
+mandatory CPU/system co-simulation, full-frame GPU/Flash oracles, and full-system PnR.
+Keep the two changes separate so their resource and timing effects remain attributable.
+
+### Historical raster synthesis probe (2026-09-25)
+
+GowinSynthesis `run syn` on GW2AR-18C produced these standalone prototype measurements:
+
+| Top-level boundary | Logic | Registers | BSRAM | DSP |
+| --- | ---: | ---: | ---: | ---: |
+| Viewport raster core | 3,871 | 2,947 | 1 | 4 |
+| Viewport serial-pixel wrapper | 3,618 | 2,949 | 1 | 4 |
+| Full-geometry prototype | 17,091 | 7,524 | 45 | 11 |
+
+These predate the integrated cache/ACK and quad timing changes. Different top-level
+outputs prune different unused logic, so the wrapper delta is not a system resource
+saving. The full-geometry prototype also duplicates wide setup records in tile storage;
+its large memory cost cannot be attributed entirely to clipping or projection. Keep
+viewport specialization and compact inter-stage records as design choices, then measure
+the composed system. Standalone synthesis supplies neither a fitted resource delta nor
+a timing/board conclusion. The raw probe is retired; these conclusions supersede it.

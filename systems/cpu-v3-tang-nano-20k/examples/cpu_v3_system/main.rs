@@ -205,6 +205,7 @@ fn gowin_project() -> GowinModuleProject<TangNano20K, CpuV3System> {
     // pixel clock always matches the compiled-in scanout timing.
     let video_mode = TangNano20KVideoMode::from_pixel_clock(ACTIVE_DISPLAY_CONFIG.pixel_clock_hz);
     TangNano20K::boot_hdmi_memory_project::<CpuV3System>("cpu_v3_system", video_mode)
+        .with_timing_driven_implementation()
         .expect_bsram_blocks(ResourceCountExpectation::Claimed)
     // The per-mode MULT18X18=Claimed expectation was dropped when FPU v2
     // brought a MULT36X36 into the design: the audit's per-mode count no
@@ -336,9 +337,9 @@ mod tests {
         assert_eq!(project.resources.claimed[&ResourceKind::Pll], 2);
         assert_eq!(project.resources.claimed[&ResourceKind::HdmiOutput], 1);
         // Boot BSRAM + two dual-port CPU cache data banks + the FPU register
-        // RAM (two blocks) + the display line buffer + the two-bank GPU
+        // RAM (two blocks) + the display line buffer + the four-bank GPU
         // framebuffer tile cache + one raster output FIFO.
-        assert_eq!(project.resources.claimed[&ResourceKind::Bsram18K], 11);
+        assert_eq!(project.resources.claimed[&ResourceKind::Bsram18K], 13);
     }
 
     #[test]

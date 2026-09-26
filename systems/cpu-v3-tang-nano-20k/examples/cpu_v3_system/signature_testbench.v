@@ -209,6 +209,26 @@ reg [1:0] corrupt_metadata = 0;
 integer flash_init_index;
 integer image_word;
 
+function [15:0] triangle_only_pixel;
+    input integer x;
+    input integer y;
+    integer px, py, e0, e1, e2;
+    begin
+        px = 2*x + 1;
+        py = 2*y + 1;
+        e0 = 240*(py - 96) - 16*(px - 160);
+        e1 = -120*(py - 128) - 144*(px - 640);
+        e2 = -120*(py - 416) + 160*(px - 400);
+        if (e0 > 0 && e1 > 0 && e2 >= 0)
+            triangle_only_pixel = (((x >> 3) & 31) << 11) |
+                (((y >> 2) & 63) << 5) | ((x >> 4) & 31);
+        else triangle_only_pixel = 0;
+    end
+endfunction
+
+integer image_x, image_y, image_address;
+reg [15:0] expected_pixel;
+
 initial begin
     for (flash_init_index = 0; flash_init_index < FLASH_PACKAGE_SIZE; flash_init_index = flash_init_index + 1)
         flash_image[flash_init_index] = 8'hff;
@@ -422,6 +442,12 @@ end
 initial begin
     for (cycle = 0; cycle < 524288; cycle = cycle + 1)
         memory[cycle] = 0;
+    for (cycle = 0; cycle < 96000; cycle = cycle + 1) begin
+        memory[22'h200000 + cycle] = 16'h5a5a;
+        memory[22'h218000 + cycle] = 16'h5a5a;
+    end
+    memory[22'h217700] = 16'hbeef;
+    memory[22'h22f700] = 16'hbeef;
     // Seed each application slot with the complement of its generated image.
     // The comparisons below follow image length and contents automatically.
 __S1_IMAGE_INIT__
@@ -470,6 +496,21 @@ __S2_IMAGE_INIT__
     if (memory[22'h20a248] !== 16'hcb2c || memory[22'h222248] !== 16'hcb2c)
         $fatal(1, "S2 triangle missing: A=%04x B=%04x",
             memory[22'h20a248], memory[22'h222248]);
+    // Check the full triangle-only image against independent integer edges,
+    // including every black background pixel in both framebuffer slots.
+    for (image_y = 0; image_y < 240; image_y = image_y + 1)
+        for (image_x = 0; image_x < 400; image_x = image_x + 1) begin
+            image_address = ((image_y >> 4)*25 + (image_x >> 4))*256 +
+                (image_y & 15)*16 + (image_x & 15);
+            expected_pixel = triangle_only_pixel(image_x, image_y);
+            if (memory[22'h200000 + image_address] !== expected_pixel ||
+                memory[22'h218000 + image_address] !== expected_pixel)
+                $fatal(1, "triangle-only pixel (%0d,%0d): expected=%04x A=%04x B=%04x",
+                    image_x, image_y, expected_pixel,
+                    memory[22'h200000 + image_address], memory[22'h218000 + image_address]);
+        end
+    if (memory[22'h217700] !== 16'hbeef || memory[22'h22f700] !== 16'hbeef)
+        $fatal(1, "triangle-only draw changed framebuffer guards");
 `ifdef CPU_V3_S2_RASTER_ONLY
     $display("DIGITAL_DESIGN_PASS");
     $finish;

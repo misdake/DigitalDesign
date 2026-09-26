@@ -21,7 +21,7 @@ always #5 clk = ~clk;
 
 integer cycles = 0;
 always @(posedge clk) begin
-    cycles = cycles + 1;
+    cycles <= cycles + 1;
     if (cycles > 4000000) $fatal(1, "GPU testbench cycle limit exceeded");
 end
 
@@ -93,6 +93,21 @@ CpuV3Gpu dut(
 // ---- direct-memory responder for all three masters ----
 // State is updated on the clock edge; response outputs are combinational from
 // that state, so the DUT samples a request/response in the same cycle.
+`ifdef GPU_RASTER_SUITE
+`define GPU_RASTER_THROTTLE
+`endif
+`ifdef GPU_RASTER_FAULTS
+`define GPU_RASTER_THROTTLE
+`endif
+integer fault_port = 0;
+integer fault_beat = -1;
+reg write_fault = 0;
+wire memory_tick =
+`ifdef GPU_RASTER_THROTTLE
+    (cycles % 5) != 0;
+`else
+    1'b1;
+`endif
 localparam MS_IDLE = 3'd0, MS_RD = 3'd1, MS_WR = 3'd2, MS_WRESP = 3'd3, MS_REC = 3'd4;
 reg [2:0] mstate = MS_IDLE;
 reg [21:0] maddr = 0;
@@ -129,17 +144,17 @@ always @(*) begin
     gpu_fb_w_error = 1'b0;
     case (mstate)
         MS_IDLE: begin
-            gpu_ro_request_ready = 1'b1;
-            gpu_fb_r_request_ready = 1'b1;
-            gpu_fb_w_request_ready = 1'b1;
+            gpu_ro_request_ready = memory_tick;
+            gpu_fb_r_request_ready = memory_tick;
+            gpu_fb_w_request_ready = memory_tick;
         end
         MS_RD: begin
             if (mport == 1'b0) begin
-                gpu_ro_response_valid = 1'b1;
+                gpu_ro_response_valid = memory_tick;
                 gpu_ro_read_data = beat_of(maddr, mbeat);
                 gpu_ro_response_last = (mbeat + 5'd1 == mbeats);
             end else begin
-                gpu_fb_r_response_valid = 1'b1;
+                gpu_fb_r_response_valid = memory_tick;
                 gpu_fb_r_read_data = beat_of(maddr, mbeat);
                 gpu_fb_r_response_last = (mbeat + 5'd1 == mbeats);
             end
@@ -148,18 +163,41 @@ always @(*) begin
         // the DUT must retain the unaccepted cache beat and read address.
         MS_WR: gpu_fb_w_write_data_ready = (cycles[1:0] != 2'b00);
         MS_WRESP: begin
-            gpu_fb_w_response_valid = 1'b1;
+            gpu_fb_w_response_valid = memory_tick;
             gpu_fb_w_response_last = 1'b1;
         end
         default: ;
     endcase
+    if (mstate == MS_RD && memory_tick && fault_beat == mbeat) begin
+        if (fault_port == 1 && !mport) begin
+            gpu_ro_error = 1'b1; gpu_ro_response_last = 1'b1;
+        end
+        if (fault_port == 2 && mport) begin
+            gpu_fb_r_error = 1'b1; gpu_fb_r_response_last = 1'b1;
+        end
+    end
+    if (mstate == MS_WRESP && memory_tick) gpu_fb_w_error = write_fault;
+end
+
+integer tseq = 0;
+// Explicit marker retirement is independent of dirty-cache SDRAM drain.
+always @(posedge clk) begin
+    if (!reset && dut.retire_ack_valid) begin
+        $display("GPU %0d RACK %0d %0d", tseq, dut.retire_ack_epoch, dut.retire_ack_tri);
+        tseq = tseq + 1;
+    end
+`ifdef GPU_RASTER_SUITE
+    if (!reset && dut.render_write)
+        $display("PIXEL %0d %0d %0d %0d %04x", dut.draw_epoch,
+                 dut.raster_pixel_tri, dut.raster_pixel_x, dut.raster_pixel_y, dut.raster_pixel_color);
+`endif
 end
 
 integer k;
 reg [21:0] cbase;
 // Transaction trace sequence number; every GPU line bumps it. The comparison
 // in `tests/gpu_trace_cosim.rs` ignores the number and compares event bodies.
-integer tseq = 0;
+
 reg [63:0] tbeat = 64'h0;
 always @(posedge clk) begin
     if (reset) begin
@@ -168,11 +206,12 @@ always @(posedge clk) begin
         mbeats <= 0;
         mbeat <= 0;
         mport <= 1'b0;
+        write_fault <= 1'b0;
         for (k = 0; k < 16; k = k + 1) wbuf[k] <= 64'h0;
     end else begin
         case (mstate)
             MS_IDLE: begin
-                if (gpu_ro_request_valid) begin
+                if (gpu_ro_request_valid && gpu_ro_request_ready) begin
                     $display("GPU %0d REQ ro R %06h %0d", tseq, gpu_ro_address,
                              gpu_ro_line_count_minus_1 + 1);
                     tseq = tseq + 1;
@@ -181,7 +220,7 @@ always @(posedge clk) begin
                     mbeat <= 5'd0;
                     mport <= 1'b0;
                     mstate <= MS_RD;
-                end else if (gpu_fb_r_request_valid) begin
+                end else if (gpu_fb_r_request_valid && gpu_fb_r_request_ready) begin
                     $display("GPU %0d REQ fb_r R %06h %0d", tseq, gpu_fb_r_address,
                              gpu_fb_r_line_count_minus_1 + 1);
                     tseq = tseq + 1;
@@ -190,11 +229,13 @@ always @(posedge clk) begin
                     mbeat <= 5'd0;
                     mport <= 1'b1;
                     mstate <= MS_RD;
-                end else if (gpu_fb_w_request_valid) begin
+                end else if (gpu_fb_w_request_valid && gpu_fb_w_request_ready) begin
                     $display("GPU %0d REQ fb_w W %06h %0d", tseq, gpu_fb_w_address,
                              gpu_fb_w_line_count_minus_1 + 1);
                     tseq = tseq + 1;
-                    // Beat zero is captured on the accepting edge.
+`ifdef GPU_LEGACY_REQUEST_BEAT
+                    // Historical benchmark source consumed beat zero on the
+                    // accepting edge. Keep its old standalone contract only.
                     $display("GPU %0d WDAT fb_w 0 %04h %04h %04h %04h", tseq,
                              gpu_fb_w_write_data[15:0], gpu_fb_w_write_data[31:16],
                              gpu_fb_w_write_data[47:32], gpu_fb_w_write_data[63:48]);
@@ -203,10 +244,18 @@ always @(posedge clk) begin
                     mbeats <= 5'd16;
                     mbeat <= 5'd1;
                     wbuf[0] = gpu_fb_w_write_data;
+                    write_fault <= fault_port == 3 && fault_beat == 0;
+                    mstate <= (fault_port == 3 && fault_beat == 0) ? MS_WRESP : MS_WR;
+`else
+                    maddr <= gpu_fb_w_address;
+                    mbeats <= 5'd16;
+                    mbeat <= 5'd0;
+                    write_fault <= 1'b0;
                     mstate <= MS_WR;
+`endif
                 end
             end
-            MS_RD: begin
+            MS_RD: if (memory_tick) begin
                 tbeat = beat_of(maddr, mbeat);
                 if (mport == 1'b0) begin
                     $display("GPU %0d RDAT ro %0d %04h %04h %04h %04h", tseq, mbeat,
@@ -225,7 +274,7 @@ always @(posedge clk) begin
                         tseq = tseq + 1;
                     end
                 end
-                if (mbeat + 5'd1 == mbeats) mstate <= MS_REC;
+                if (mbeat + 5'd1 == mbeats || gpu_ro_error || gpu_fb_r_error) mstate <= MS_REC;
                 else mbeat <= mbeat + 5'd1;
             end
             MS_WR: begin
@@ -235,7 +284,10 @@ always @(posedge clk) begin
                              gpu_fb_w_write_data[47:32], gpu_fb_w_write_data[63:48]);
                     tseq = tseq + 1;
                     wbuf[mbeat[3:0]] = gpu_fb_w_write_data;
-                    if (mbeat + 5'd1 == mbeats) begin
+                    if (fault_port == 3 && fault_beat == mbeat) begin
+                        write_fault <= 1'b1;
+                        mstate <= MS_WRESP;
+                    end else if (mbeat + 5'd1 == mbeats) begin
                         for (k = 0; k < 16; k = k + 1) begin
                             cbase = maddr + {k[4:0], 2'b0};
                             mem[cbase + 0] = wbuf[k][15:0];
@@ -249,7 +301,7 @@ always @(posedge clk) begin
                     end
                 end
             end
-            MS_WRESP: begin
+            MS_WRESP: if (memory_tick) begin
                 $display("GPU %0d RESP fb_w 0", tseq);
                 tseq = tseq + 1;
                 mstate <= MS_REC;
@@ -286,6 +338,7 @@ integer i;
 integer j;
 integer raster_tile;
 integer raster_image;
+integer scene_start_cycle;
 reg [15:0] raster_expected;
 
 task device_write;
@@ -348,7 +401,7 @@ task run_ok_case;
     input [15:0] words;
     begin
         do_submit(CMD_BASE, words);
-        wait_executed(expected_exec, 200000);
+        wait_executed(expected_exec, 500000);
         device_read(4'd2);
         if ((read_result & 16'h0008) != 0) $fatal(1, "unexpected command error");
         expected_exec = expected_exec + 16'd1;
@@ -359,7 +412,7 @@ task run_error_case;
     input [15:0] words;
     begin
         do_submit(CMD_BASE, words);
-        wait_executed(expected_exec, 200000);
+        wait_executed(expected_exec, 500000);
         device_read(4'd2);
         if ((read_result & 16'h0008) == 0) $fatal(1, "expected command error");
         device_write(4'd5, 16'h0002);
@@ -479,6 +532,36 @@ endtask
 
 initial begin
     for (i = 0; i < MEM_WORDS; i = i + 1) mem[i] = 16'h0;
+
+`ifdef GPU_RASTER_FAULTS
+    for (fault_port=1; fault_port<=3; fault_port=fault_port+1) begin
+        for (fault_beat=0; fault_beat<((fault_port==1)?4:16); fault_beat=fault_beat+1) begin
+            do_reset();
+            for (i=0;i<256;i=i+1) mem[FB_A+i]=16'h5a5a;
+            mem[FB_A-1]=16'hbeef; mem[FB_A+256]=16'hbeef;
+            put_set_target(CMD_BASE,FB_A);
+            put_qword(CMD_BASE+4,64'h00000000000004e2);
+            put_qword(CMD_BASE+8,64'h0);
+            put_qword(CMD_BASE+12,64'h0000000000000100);
+            put_qword(CMD_BASE+16,64'h0000000001000000);
+            put_end(CMD_BASE+20);
+            expected_exec=1;
+            do_submit(CMD_BASE,24); wait_executed(1,500000);
+            device_read(2);
+            if (!read_result[3] || read_result[0]) $fatal(1,"fault did not retire with sticky error");
+            repeat(40) @(posedge clk);
+            device_read(1);
+            if(read_result!==1) $fatal(1,"fault retired more than once");
+            for(i=0;i<256;i=i+1) if(mem[FB_A+i]!==16'h5a5a) $fatal(1,"failed transaction committed memory");
+            if(mem[FB_A-1]!==16'hbeef || mem[FB_A+256]!==16'hbeef) $fatal(1,"fault crossed guard");
+            $display("FAULT_PASS %0d %0d",fault_port,fault_beat);
+        end
+    end
+    $display("DIGITAL_DESIGN_RASTER_FAULTS_PASS"); $finish;
+`endif
+`ifdef GPU_RASTER_SUITE
+__RASTER_SUITE__
+`endif
 
 `ifdef GPU_RASTER_TEST
     // One CPU-style command buffer: SET_TARGET, inline viewport triangle, END.

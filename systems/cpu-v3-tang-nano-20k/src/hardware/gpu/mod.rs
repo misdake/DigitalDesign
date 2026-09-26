@@ -13,9 +13,11 @@
 //! command sends viewport vertices through the rasterizer and writes covered
 //! RGB565 pixels through the same tile cache.
 //!
-//! The cache entry array is two synchronous 512x32 arrays addressed by
-//! `{entry, beat}`; `gpu.v` mirrors it with the same one-write/one-read port
-//! structure.
+//! The model stores logical 64-bit beats; RTL uses four true-dual-port
+//! 512x16 banks, with `(x + 2*y) mod 4` swizzle and direct pixel writes.
+//! K=1 ready/valid acquisition overlaps raster production with blocking refill.
+//! Pixel markers receive explicit epoch/triangle ACKs before command decode;
+//! submission completion separately waits for dirty-cache SDRAM drain.
 //!
 //! The same FSM contract is implemented by two backends:
 //!
@@ -65,15 +67,25 @@ const TILE_INDEX_LIMIT: u16 = GPU_TILE_TOTAL as u16;
 /// One 32-byte tile-list read carries sixteen u16 entries.
 const LIST_ENTRIES_PER_LINE: u16 = 16;
 
-#[derive(Clone, Copy)]
-struct ViewportPixel {
-    tile: u16,
-    x: u16,
-    y: u16,
-    color: u16,
+/// Phase-1 pixel record. The matching marker/ACK carries epoch and triangle;
+/// ACK commits preceding cache writes, while END separately drains SDRAM.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct RasterPixelRecord {
+    pub draw_epoch: u16,
+    pub triangle: u32,
+    pub tile: u16,
+    pub x: u16,
+    pub y: u16,
+    pub color: u16,
 }
 
-fn viewport_triangle_pixels(payload: [u64; 3]) -> Vec<ViewportPixel> {
+#[derive(Clone, Copy)]
+enum RasterStreamItem {
+    Acquire(u16),
+    Pixel(RasterPixelRecord),
+}
+
+fn viewport_triangle_pixels(payload: [u64; 3], draw_epoch: u16) -> Vec<RasterStreamItem> {
     use rastersim::fixed::{S12_4, U0_18};
     use rastersim::raster::{self, traverse};
     use rastersim::setup::{area2, edge_coefficients, quad_aabb, TriangleSetup};
@@ -102,18 +114,26 @@ fn viewport_triangle_pixels(payload: [u64; 3]) -> Vec<ViewportPixel> {
     let pixels = RefCell::new(Vec::new());
     traverse(
         &[setup],
-        |_, _| {},
+        |_, tile| {
+            pixels
+                .borrow_mut()
+                .push(RasterStreamItem::Acquire(tile.index))
+        },
         |setup, tile, quad| {
             for lane in 0..4 {
                 if quad.mask & (1 << lane) != 0 {
                     let x = (quad.x + lane % 2) as u16;
                     let y = (quad.y + lane / 2) as u16;
-                    pixels.borrow_mut().push(ViewportPixel {
-                        tile: tile.index,
-                        x,
-                        y,
-                        color: raster::pixel_color(u32::from(x), u32::from(y), setup.id),
-                    });
+                    pixels
+                        .borrow_mut()
+                        .push(RasterStreamItem::Pixel(RasterPixelRecord {
+                            draw_epoch,
+                            triangle: setup.id,
+                            tile: tile.index,
+                            x,
+                            y,
+                            color: raster::pixel_color(u32::from(x), u32::from(y), setup.id),
+                        }));
                 }
             }
         },
@@ -141,8 +161,8 @@ impl TargetComponent for GpuResources {
             // not just their logical payload bits.
             ResourceAmount::new(ResourceKind::SsramBit, 32 * 64),
             // The viewport raster core adds one BSRAM FIFO and four DSP
-            // macros to the two BSRAM framebuffer banks.
-            ResourceAmount::new(ResourceKind::Bsram18K, 3),
+            // macros to the four true-dual-port framebuffer banks.
+            ResourceAmount::new(ResourceKind::Bsram18K, 5),
             // Four fitted DSP macros consume eight 18x18 resource slots.
             ResourceAmount::new(ResourceKind::Multiplier18x18, 8),
         ]
@@ -236,7 +256,7 @@ enum Phase {
     /// Overwrite at most one row-mask-selected beat per clock.
     DrawApply,
     RasterRun,
-    PixelPrime,
+    RasterRetire,
     PixelWrite,
     /// END drain: scan all entries and clean the dirty ones.
     EndScan,
@@ -307,9 +327,13 @@ pub struct GpuCore {
     draw_row_mask: u16,
     draw_gradient: bool,
     draw_is_clear: bool,
-    raster_pixels: Vec<ViewportPixel>,
+    raster_pixels: Vec<RasterStreamItem>,
     raster_pixel_index: usize,
     raster_tile_access: bool,
+    raster_prefetch_access: bool,
+    raster_prefetch_tile: u16,
+    draw_epoch: u16,
+    raster_retire_ack: bool,
     // Current tile access.
     cur_tile_index: u16,
     cur_entry: u8,
@@ -377,6 +401,10 @@ impl Default for GpuCore {
             raster_pixels: Vec::new(),
             raster_pixel_index: 0,
             raster_tile_access: false,
+            raster_prefetch_access: false,
+            raster_prefetch_tile: 0,
+            draw_epoch: 0,
+            raster_retire_ack: false,
             cur_tile_index: 0,
             cur_entry: 0,
             cur_tag: 0,
@@ -695,7 +723,10 @@ impl GpuCore {
                     self.enter_error();
                     return;
                 }
-                self.raster_pixels = viewport_triangle_pixels(self.pending_payload);
+                self.draw_epoch = self.draw_epoch.wrapping_add(1);
+                self.raster_pixels =
+                    viewport_triangle_pixels(self.pending_payload, self.draw_epoch);
+                self.raster_prefetch_access = false;
                 self.raster_pixel_index = 0;
                 self.raster_tile_access = false;
                 self.draw_is_clear = false;
@@ -783,7 +814,7 @@ impl GpuCore {
         let beat = offset / 4;
         let shift = (offset % 4) * 16;
         let index = if self.raster_tile_access {
-            self.raster_pixels[self.raster_pixel_index].tile
+            self.raster_prefetch_tile
         } else {
             ((self.list_buffer[beat] >> shift) & 0xffff) as u16
         };
@@ -804,7 +835,11 @@ impl GpuCore {
             } else {
                 self.transfer_beat = 0;
                 self.phase = if self.raster_tile_access {
-                    Phase::PixelPrime
+                    if self.raster_prefetch_access {
+                        Phase::RasterRun
+                    } else {
+                        Phase::PixelWrite
+                    }
                 } else {
                     Phase::DrawApply
                 };
@@ -827,6 +862,21 @@ impl GpuCore {
                 self.phase = Phase::RefillRequest;
             }
         }
+    }
+
+    fn write_raster_pixel(&mut self, pixel: RasterPixelRecord) {
+        let entry = usize::from(pixel.tile & 7);
+        assert!(
+            self.cache_valid[entry] && self.cache_tag[entry] == pixel.tile >> 3,
+            "pixel consumed before tile acquisition"
+        );
+        let beat = usize::from(pixel.y & 15) * 4 + usize::from((pixel.x & 15) >> 2);
+        let shift = u32::from(pixel.x & 3) * 16;
+        let slot = entry * TILE_BEATS + beat;
+        self.cache[slot] =
+            (self.cache[slot] & !(0xffffu64 << shift)) | (u64::from(pixel.color) << shift);
+        self.cache_dirty[entry] = true;
+        self.raster_pixel_index += 1;
     }
 
     pub(crate) fn combine(&self, dev: GpuDeviceBus, mem: GpuMemoryBus) -> GpuOutputs {
@@ -881,6 +931,7 @@ impl GpuCore {
         if dev.write_enable && dev.index == GPU_DEVICE {
             self.device_write(dev.channel, dev.write_data);
         }
+        self.raster_retire_ack = false;
         match self.phase {
             Phase::Idle => {
                 if !self.active && self.fifo_count != 0 {
@@ -914,24 +965,29 @@ impl GpuCore {
             Phase::RasterRun => {
                 if self.raster_pixel_index == self.raster_pixels.len() {
                     self.raster_tile_access = false;
-                    self.phase = Phase::Decode;
+                    self.raster_prefetch_access = false;
+                    self.raster_retire_ack = true;
+                    self.phase = Phase::RasterRetire;
                 } else {
-                    self.raster_tile_access = true;
-                    self.phase = Phase::TileStep;
+                    match self.raster_pixels[self.raster_pixel_index] {
+                        RasterStreamItem::Acquire(tile) => {
+                            self.raster_prefetch_tile = tile;
+                            self.raster_tile_access = true;
+                            self.raster_prefetch_access = true;
+                            self.raster_pixel_index += 1;
+                            self.phase = Phase::TileStep;
+                        }
+                        RasterStreamItem::Pixel(pixel) => self.write_raster_pixel(pixel),
+                    }
                 }
             }
-            Phase::PixelPrime => self.phase = Phase::PixelWrite,
+            Phase::RasterRetire => self.phase = Phase::Decode,
             Phase::PixelWrite => {
-                let pixel = self.raster_pixels[self.raster_pixel_index];
-                let entry = self.cur_entry as usize;
-                let beat = usize::from(pixel.y & 15) * 4 + usize::from((pixel.x & 15) >> 2);
-                let lane_shift = u32::from(pixel.x & 3) * 16;
-                let slot = entry * TILE_BEATS + beat;
-                self.cache[slot] = (self.cache[slot] & !(0xffffu64 << lane_shift))
-                    | (u64::from(pixel.color) << lane_shift);
-                self.cache_dirty[entry] = true;
-                self.raster_pixel_index += 1;
-                self.raster_tile_access = false;
+                let RasterStreamItem::Pixel(pixel) = self.raster_pixels[self.raster_pixel_index]
+                else {
+                    panic!("cache pixel phase received an acquire");
+                };
+                self.write_raster_pixel(pixel);
                 self.phase = Phase::RasterRun;
             }
             Phase::ListFetch => {
@@ -963,9 +1019,8 @@ impl GpuCore {
             }
             Phase::CleanRequest => {
                 if mem.fb_w_request_ready {
-                    // Beat zero is captured on the accepting edge; present beat
-                    // one next cycle.
-                    self.transfer_beat = self.transfer_beat.wrapping_add(1);
+                    // The long-write request accepts address/length only.
+                    // Beat zero remains until the first write-data-ready edge.
                     self.phase = Phase::CleanWait;
                 }
             }
@@ -1021,7 +1076,11 @@ impl GpuCore {
                                 self.cache_dirty[entry] = false;
                                 self.transfer_beat = 0;
                                 self.phase = if self.raster_tile_access {
-                                    Phase::PixelPrime
+                                    if self.raster_prefetch_access {
+                                        Phase::RasterRun
+                                    } else {
+                                        Phase::PixelWrite
+                                    }
                                 } else {
                                     Phase::DrawApply
                                 };
@@ -1159,8 +1218,8 @@ impl Module for CpuV3Gpu {
 
     fn target_resources() -> Vec<TargetResourceRequest> {
         // Gowin maps the small command-line/list/payload/submission arrays to
-        // thirty-two 64-bit RAM16 leaves. The framebuffer cache uses two
-        // BSRAMs; the viewport raster core adds one BSRAM and four DSP macros.
+        // thirty-two 64-bit RAM16 leaves. The framebuffer cache uses four
+        // true-dual-port BSRAMs; the raster adds one BSRAM and four DSP macros.
         // Keep the full leaf in one allocation label.
         vec![TargetResourceRequest::new(GpuResources)]
     }

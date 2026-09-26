@@ -765,6 +765,22 @@ impl<T: GowinTarget, M: Module> GowinModuleProject<T, M> {
         self.project.export::<M>(directory)
     }
 
+    /// Spend additional placement effort and route according to timing.
+    /// These are Gowin IDE's place/route algorithms 1; timing audits remain mandatory.
+    pub fn with_timing_driven_implementation(mut self) -> Self {
+        let binding = self
+            .project
+            .board_binding
+            .take()
+            .expect("board binding required");
+        self.project.board_binding = Some(
+            binding
+                .with_process_option("-place_option", "1")
+                .with_process_option("-route_option", "1"),
+        );
+        self
+    }
+
     /// Require a physical DSP implementation shape after place-and-route.
     ///
     /// This is intended for characterization projects. Normal projects should

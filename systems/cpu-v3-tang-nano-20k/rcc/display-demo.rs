@@ -1,12 +1,9 @@
-//! GPU memory-interface bring-up demo.
+//! Viewport triangle-only GPU demo.
 //!
-//! The CPU owns two fixed, heap-backed command buffers and alternates them.
-//! Three tile-index lists address five tile rows each. After both framebuffers
-//! receive an initial full gradient, each frame updates only a four-column
-//! window in each band. The windows advance left-to-right with different
-//! offsets, producing three staggered wave fronts. An inline viewport triangle
-//! is rendered on top through the rasterizer and tile cache. The CPU never
-//! writes framebuffer pixels directly.
+//! Initialize both framebuffer slots to black once, then alternate two fixed
+//! command buffers containing only SET_TARGET, TRIANGLE, and END. No background
+//! gradients or wave updates run after initialization. The CPU never writes
+//! framebuffer pixels directly.
 
 use crate::dsl_rt::*;
 use crate::rcc_std::*;
@@ -21,13 +18,10 @@ const FB_A_WORD_HIGH: u16 = 0x0020;
 const FB_B_WORD_LOW: u16 = 0x8000;
 const FB_B_WORD_HIGH: u16 = 0x0021;
 
-const COMMAND_WORDS: u16 = 60;
-const COMMAND_ALLOCATION_WORDS: u16 = 128 + 15;
+const INITIAL_COMMAND_WORDS: u16 = 60;
+const TRIANGLE_COMMAND_WORDS: u16 = 24;
+const COMMAND_ALLOCATION_WORDS: u16 = 64 + 15;
 const FULL_TILES_PER_DRAW: u16 = 125;
-const TILE_COLUMNS: u16 = 25;
-const BAND_ROWS: u16 = 5;
-const WAVE_COLUMNS: u16 = 4;
-const WAVE_TILES_PER_DRAW: u16 = BAND_ROWS * WAVE_COLUMNS;
 // Reserve eight complete cache lines after alignment even though only 125
 // entries are live, so cleaning the final line never reaches another object.
 const TILE_LIST_ALLOCATION_WORDS: u16 = 128 + 15;
@@ -36,9 +30,7 @@ const OPCODE_SET_TARGET: u16 = 0x01e0;
 const OPCODE_FAKE_DRAW: u16 = 0x03e1;
 const OPCODE_TRIANGLE: u16 = 0x04e2;
 const OPCODE_END: u16 = 0x01ff;
-const LOAD_OP_LOAD: u16 = 0;
 const LOAD_OP_CLEAR: u16 = 1;
-const DRAW_FLAG_GRADIENT_XY: u16 = 1;
 
 fn aligned_command_buffer() -> Ptr {
     let raw = malloc(COMMAND_ALLOCATION_WORDS);
@@ -60,43 +52,22 @@ fn write_qword(buffer: Ptr, qword: u16, word0: u16, word1: u16, word2: u16, word
     }
 }
 
-fn write_fake_draw(
-    buffer: Ptr,
-    qword: u16,
-    tile_list: Ptr,
-    tile_count: u16,
-    load_op: u16,
-    draw_color: u16,
-) {
+fn write_black_clear(buffer: Ptr, qword: u16, tile_list: Ptr, tile_count: u16) {
     write_qword(
         buffer,
         qword,
         OPCODE_FAKE_DRAW,
         0,
         tile_count,
-        load_op,
+        LOAD_OP_CLEAR,
     );
     // All permanent demo allocations remain in physical page zero.
     write_qword(buffer, qword + 1, tile_list.addr(), 0, 0, 0);
-    write_qword(
-        buffer,
-        qword + 2,
-        0,
-        draw_color,
-        0xffff,
-        DRAW_FLAG_GRADIENT_XY,
-    );
+    write_qword(buffer, qword + 2, 0, 0, 0xffff, 0);
 }
 
 fn write_target(buffer: Ptr, target_low: u16, target_high: u16) {
-    write_qword(
-        buffer,
-        0,
-        OPCODE_SET_TARGET,
-        0,
-        target_low,
-        target_high,
-    );
+    write_qword(buffer, 0, OPCODE_SET_TARGET, 0, target_low, target_high);
 }
 
 fn write_triangle(buffer: Ptr, qword: u16) {
@@ -107,50 +78,28 @@ fn write_triangle(buffer: Ptr, qword: u16) {
     write_qword(buffer, qword + 3, 200 << 4, 208 << 4, 0, 0);
 }
 
-/// Draw three starts at qword 7, so its payload crosses the following 32-byte
-/// command-fetch boundary.
-fn write_animated_draws(
-    buffer: Ptr,
-    list_0: Ptr,
-    list_1: Ptr,
-    list_2: Ptr,
-    tile_count: u16,
-    phase: u16,
-) {
-    write_fake_draw(
-        buffer,
-        1,
-        list_0,
-        tile_count,
-        LOAD_OP_CLEAR,
-        0x8000 | (phase & 0x000f),
-    );
-    write_fake_draw(
-        buffer,
-        4,
-        list_1,
-        tile_count,
-        LOAD_OP_LOAD,
-        0x0600 | (phase & 0x000f),
-    );
-    write_fake_draw(
-        buffer,
-        7,
-        list_2,
-        tile_count,
-        LOAD_OP_CLEAR,
-        0x0010 | (phase & 0x000f),
-    );
+fn write_initial_draws(buffer: Ptr, list_0: Ptr, list_1: Ptr, list_2: Ptr) {
+    write_black_clear(buffer, 1, list_0, FULL_TILES_PER_DRAW);
+    write_black_clear(buffer, 4, list_1, FULL_TILES_PER_DRAW);
+    write_black_clear(buffer, 7, list_2, FULL_TILES_PER_DRAW);
     write_triangle(buffer, 10);
     write_qword(buffer, 14, OPCODE_END, 0, 0, 0);
 }
 
-fn clean_commands(buffer: Ptr) {
-    unsafe {
-        dcache_clean_line(buffer);
-        dcache_clean_line(buffer.add(16));
-        dcache_clean_line(buffer.add(32));
-        dcache_clean_line(buffer.add(48));
+fn write_triangle_draw(buffer: Ptr, target_low: u16, target_high: u16) {
+    write_target(buffer, target_low, target_high);
+    write_triangle(buffer, 1);
+    write_qword(buffer, 5, OPCODE_END, 0, 0, 0);
+    clean_commands(buffer, TRIANGLE_COMMAND_WORDS);
+}
+
+fn clean_commands(buffer: Ptr, words: u16) {
+    let mut offset: u16 = 0;
+    while offset < words {
+        unsafe {
+            dcache_clean_line(buffer.add(offset as i16));
+        }
+        offset += 16;
     }
     dcache_wait();
 }
@@ -173,50 +122,13 @@ fn initialize_tile_list(list: Ptr, first_tile: u16) {
     dcache_wait();
 }
 
-fn wrap_tile_x(value: u16) -> u16 {
-    if value >= TILE_COLUMNS {
-        value - TILE_COLUMNS
-    } else {
-        value
-    }
-}
-
-fn write_wave_tile_list(list: Ptr, first_row: u16, start_x: u16) {
-    let mut column: u16 = 0;
-    let mut index: u16 = 0;
-    while column < WAVE_COLUMNS {
-        let x = wrap_tile_x(start_x + column);
-        let mut row: u16 = 0;
-        while row < BAND_ROWS {
-            unsafe {
-                list.write(index as i16, (first_row + row) * TILE_COLUMNS + x);
-            }
-            index += 1;
-            row += 1;
-        }
-        column += 1;
-    }
-}
-
-fn clean_wave_tile_lists(list_0: Ptr, list_1: Ptr, list_2: Ptr) {
-    unsafe {
-        dcache_clean_line(list_0);
-        dcache_clean_line(list_0.add(16));
-        dcache_clean_line(list_1);
-        dcache_clean_line(list_1.add(16));
-        dcache_clean_line(list_2);
-        dcache_clean_line(list_2.add(16));
-    }
-    dcache_wait();
-}
-
-fn submit(buffer: Ptr) -> u16 {
+fn submit(buffer: Ptr, words: u16) -> u16 {
     let previous = dev_recv(GPU_DEVICE, GPU_EXECUTED_COUNT);
     dev_send(GPU_DEVICE, GPU_CMD_BASE_LOW, buffer.addr());
     // The S2 application data segment is physical page zero; both permanent
     // command buffers therefore have zero physical word-address high bits.
     dev_send(GPU_DEVICE, GPU_CMD_BASE_HIGH, 0);
-    dev_send(GPU_DEVICE, GPU_CMD_WORDS_LOW, COMMAND_WORDS);
+    dev_send(GPU_DEVICE, GPU_CMD_WORDS_LOW, words);
     dev_send(GPU_DEVICE, GPU_CMD_WORDS_HIGH, 0);
     dev_send(GPU_DEVICE, GPU_SUBMIT, 1);
     if dev_recv(GPU_DEVICE, GPU_STATUS) & GPU_STATUS_SUBMIT_REJECTED != 0 {
@@ -282,41 +194,26 @@ fn main() {
     initialize_tile_list(list_0, 0);
     initialize_tile_list(list_1, 125);
     initialize_tile_list(list_2, 250);
-    // Initialize both framebuffer slots before beginning partial updates.
+    // The one-time full clears remove uninitialized SDRAM from the background.
     write_target(command_a, FB_B_WORD_LOW, FB_B_WORD_HIGH);
-    write_animated_draws(
-        command_a,
-        list_0,
-        list_1,
-        list_2,
-        FULL_TILES_PER_DRAW,
-        0,
-    );
-    clean_commands(command_a);
-    let previous_b = submit(command_a);
+    write_initial_draws(command_a, list_0, list_1, list_2);
+    clean_commands(command_a, INITIAL_COMMAND_WORDS);
+    let previous_b = submit(command_a, INITIAL_COMMAND_WORDS);
     wait_gpu(previous_b);
     let frame_b = request_display_swap(FB_B_WORD_LOW, FB_B_WORD_HIGH);
     wait_next_frame(frame_b);
 
     write_target(command_b, FB_A_WORD_LOW, FB_A_WORD_HIGH);
-    write_animated_draws(
-        command_b,
-        list_0,
-        list_1,
-        list_2,
-        FULL_TILES_PER_DRAW,
-        0,
-    );
-    clean_commands(command_b);
-    let previous_a = submit(command_b);
+    write_initial_draws(command_b, list_0, list_1, list_2);
+    clean_commands(command_b, INITIAL_COMMAND_WORDS);
+    let previous_a = submit(command_b, INITIAL_COMMAND_WORDS);
     wait_gpu(previous_a);
     let frame_a = request_display_swap(FB_A_WORD_LOW, FB_A_WORD_HIGH);
     wait_next_frame(frame_a);
 
+    write_triangle_draw(command_a, FB_B_WORD_LOW, FB_B_WORD_HIGH);
+    write_triangle_draw(command_b, FB_A_WORD_LOW, FB_A_WORD_HIGH);
     let mut use_a: u16 = 0;
-    let mut wave_x: u16 = 0;
-
-    // Display powers up on A, so the first completed render targets B.
     while 1 == 1 {
         let command = if use_a == 0 { command_a } else { command_b };
         let target_low = if use_a == 0 {
@@ -329,33 +226,11 @@ fn main() {
         } else {
             FB_A_WORD_HIGH
         };
-
-        write_wave_tile_list(list_0, 0, wave_x);
-        write_wave_tile_list(list_1, 5, wrap_tile_x(wave_x + 8));
-        write_wave_tile_list(list_2, 10, wrap_tile_x(wave_x + 16));
-        clean_wave_tile_lists(list_0, list_1, list_2);
-
-        write_target(command, target_low, target_high);
-        write_animated_draws(
-            command,
-            list_0,
-            list_1,
-            list_2,
-            WAVE_TILES_PER_DRAW,
-            wave_x,
-        );
-        clean_commands(command);
-        let previous = submit(command);
+        let previous = submit(command, TRIANGLE_COMMAND_WORDS);
         wait_gpu(previous);
         let frame = request_display_swap(target_low, target_high);
         wait_next_frame(frame);
         uart_success();
-
         use_a ^= 1;
-        // Draw the same wave position into B and A before advancing, so the
-        // two framebuffer histories stay visually coherent.
-        if use_a == 0 {
-            wave_x = wrap_tile_x(wave_x + 1);
-        }
     }
 }

@@ -15,21 +15,34 @@ wire [15:0] pixel_tile, pixel_x, pixel_y, pixel_color;
 wire prefetch_acquire_valid;
 wire [15:0] prefetch_acquire_tile;
 wire scene_done;
+reg [3:0] ack_delay = 0;
+reg [31:0] ack_tri = 0;
+wire [113:0] pixel_record;
+always @(posedge clk) begin
+    if (reset) ack_delay <= 0;
+    else if (pixel_valid && pixel_ready && pixel_is_retire_marker) begin
+        ack_delay <= 7;
+        ack_tri <= pixel_tri;
+    end else if (ack_delay != 0) ack_delay <= ack_delay - 1;
+    if (!reset && scene_done && ack_delay != 0)
+        $fatal(1, "scene DONE preceded cache retire ACK");
+end
 reg held_valid = 0;
-reg [97:0] held_item = 0;
-wire [97:0] output_item = {pixel_is_retire_marker, pixel_marker_draw,
-                           pixel_tri, pixel_tile, pixel_x, pixel_y,
-                           pixel_color};
+reg [113:0] held_item = 0;
+wire [113:0] output_item = pixel_record;
 
 CpuV3GpuRasterPixel dut(
     .clk(clk), .reset(reset),
     .input_valid(input_valid), .input_last(input_last),
     .input_data(input_data), .input_ready(input_ready),
+    .draw_epoch(16'h1234), .pixel_record(pixel_record),
+    .retire_ack_valid(ack_delay == 1), .retire_ack_epoch(16'h1234), .retire_ack_tri(ack_tri),
     .pixel_ready(pixel_ready), .pixel_valid(pixel_valid),
     .pixel_is_retire_marker(pixel_is_retire_marker),
     .pixel_marker_draw(pixel_marker_draw), .pixel_tri(pixel_tri),
     .pixel_tile(pixel_tile), .pixel_x(pixel_x), .pixel_y(pixel_y),
     .pixel_color(pixel_color),
+    .prefetch_acquire_ready((cycles % 7) != 0),
     .prefetch_acquire_valid(prefetch_acquire_valid),
     .prefetch_acquire_tile(prefetch_acquire_tile),
     .scene_done(scene_done));

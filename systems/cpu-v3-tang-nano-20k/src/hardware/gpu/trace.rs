@@ -23,7 +23,7 @@
 //!
 //! `REQ` is recorded on the `request_valid && request_ready` accepting edge,
 //! `RDAT` on every read response beat, `WDAT` on every accepted write beat
-//! (beat zero rides the request-accepting edge), `RESP` on
+//! (`write_data_ready` for every beat of a long write), `RESP` on
 //! `response_valid && response_last`, `DONE submission` on an
 //! `executed_count` change, and `DONE draw` when a nonempty draw hands control
 //! back from tile stepping to decode. The RTL side prints the identical lines
@@ -87,6 +87,10 @@ pub(crate) enum GpuTraceEvent {
     DoneDraw {
         tile_count: u16,
     },
+    RasterRetire {
+        epoch: u16,
+        triangle: u32,
+    },
 }
 
 impl GpuTraceEvent {
@@ -95,6 +99,7 @@ impl GpuTraceEvent {
     pub(crate) fn body(&self) -> String {
         match self {
             Self::Scene(name) => format!("SCENE {name}"),
+            Self::RasterRetire { epoch, triangle } => format!("RACK {epoch} {triangle}"),
             Self::Req {
                 port,
                 write,
@@ -227,8 +232,8 @@ impl GpuTraceCollector {
             }
         }
 
-        // `gpu_fb_w`: 128-byte tile cleans. Beat zero is captured on the
-        // request-accepting edge, beats one onward on `write_data_ready`.
+        // `gpu_fb_w`: long tile cleans consume every beat on data-ready.
+        // Only legacy fixed-line writes capture beat zero on acceptance.
         if out.fb_w_request_valid && mem.fb_w_request_ready {
             self.events.push(GpuTraceEvent::Req {
                 port: TracePort::FbW,
@@ -236,14 +241,20 @@ impl GpuTraceCollector {
                 address: out.fb_w_address,
                 lines: out.fb_w_line_count_minus_1 + 1,
             });
-            self.events.push(GpuTraceEvent::Wdat {
-                port: TracePort::FbW,
-                beat: 0,
-                value: out.fb_w_write_data,
-            });
+            if out.fb_w_line_count_minus_1 == 0 {
+                self.events.push(GpuTraceEvent::Wdat {
+                    port: TracePort::FbW,
+                    beat: 0,
+                    value: out.fb_w_write_data,
+                });
+            }
             self.fb_w_active = true;
             self.fb_w_beats = (u32::from(out.fb_w_line_count_minus_1) + 1) as u8 * 4;
-            self.fb_w_beat = 1;
+            self.fb_w_beat = if out.fb_w_line_count_minus_1 == 0 {
+                1
+            } else {
+                0
+            };
         }
         if self.fb_w_active && self.fb_w_beat < self.fb_w_beats && mem.fb_w_write_data_ready {
             self.events.push(GpuTraceEvent::Wdat {
@@ -261,6 +272,13 @@ impl GpuTraceCollector {
             self.fb_w_active = false;
         }
 
+        // Marker ACK precedes END's external-memory visibility fence.
+        if core.raster_retire_ack {
+            self.events.push(GpuTraceEvent::RasterRetire {
+                epoch: core.draw_epoch,
+                triangle: 0,
+            });
+        }
         // Completion points.
         let executed_count = core.executed_count();
         if executed_count != self.prev_executed_count {
@@ -808,6 +826,171 @@ pub(crate) fn run_cosim_scenarios() -> Vec<GpuTraceEvent> {
 }
 
 // ---------------------------------------------------------------------------
+// Integration image fixtures. These are command inputs shared by the two
+// harnesses; expected coverage is computed independently in gpu_trace_cosim.
+// ---------------------------------------------------------------------------
+
+#[derive(Clone, Debug)]
+pub struct RasterSuiteScene {
+    pub name: String,
+    pub triangles: Vec<[[i16; 2]; 3]>,
+    pub clear: Option<u16>,
+    pub target: u32,
+}
+
+impl RasterSuiteScene {
+    pub fn commands(&self) -> Vec<u64> {
+        let mut words = vec![set_target(self.target)];
+        if let Some(color) = self.clear {
+            words.extend(fake_draw(LIST_BASE, 375, GPU_LOAD_OP_CLEAR, color, 0, 0, 0));
+        }
+        for vertices in &self.triangles {
+            words.push(u64::from(crate::gpu_device::GPU_OPCODE_TRIANGLE) | (4 << 8));
+            for [x, y] in vertices {
+                words.push(u64::from(*x as u16) | (u64::from(*y as u16) << 16));
+            }
+        }
+        words.push(END);
+        words
+    }
+}
+
+/// Deterministic snapped viewport inputs, including direct-map alias pressure.
+pub fn raster_suite_scenes() -> Vec<RasterSuiteScene> {
+    let mut result = Vec::new();
+    let mut add = |name: &str, triangles: Vec<[[i16; 2]; 3]>, clear| {
+        result.push(RasterSuiteScene {
+            name: name.into(),
+            triangles,
+            clear,
+            target: FRAMEBUFFER_A_BASE_WORD,
+        });
+    };
+    let tri = |v: [[i16; 2]; 3]| v.map(|p| p.map(|n| n * 16));
+    add(
+        "shared_edge",
+        vec![
+            tri([[0, 0], [32, 0], [0, 32]]),
+            tri([[32, 0], [32, 32], [0, 32]]),
+        ],
+        None,
+    );
+    add(
+        "opposite_winding",
+        vec![tri([[20, 20], [20, 80], [80, 20]])],
+        None,
+    );
+    add(
+        "zero_area",
+        vec![
+            tri([[30, 30], [30, 30], [30, 30]]),
+            tri([[0, 0], [16, 16], [32, 32]]),
+        ],
+        None,
+    );
+    add(
+        "subpixel",
+        vec![
+            [[160, 160], [161, 160], [160, 161]],
+            [[168, 168], [184, 168], [168, 184]],
+        ],
+        None,
+    );
+    add(
+        "screen_edges",
+        vec![
+            tri([[-16, -16], [48, -16], [-16, 48]]),
+            tri([[384, -16], [416, -16], [384, 48]]),
+            tri([[-16, 224], [48, 224], [-16, 256]]),
+            tri([[384, 224], [416, 224], [384, 256]]),
+        ],
+        None,
+    );
+    add(
+        "offscreen",
+        vec![
+            tri([[-80, 0], [-32, 0], [-80, 48]]),
+            tri([[448, 0], [480, 0], [448, 48]]),
+            tri([[0, -80], [48, -80], [0, -32]]),
+            tri([[0, 272], [48, 272], [0, 320]]),
+        ],
+        None,
+    );
+    add(
+        "alias_eviction",
+        vec![
+            tri([[0, 0], [176, 0], [0, 64]]),
+            tri([[0, 0], [48, 0], [0, 48]]),
+        ],
+        None,
+    );
+    add(
+        "clear_then_load",
+        vec![
+            tri([[0, 0], [48, 0], [0, 48]]),
+            tri([[16, 16], [80, 16], [16, 80]]),
+        ],
+        Some(0x1234),
+    );
+    add(
+        "wide_triangle",
+        vec![tri([[0, 0], [400, 0], [0, 240]])],
+        None,
+    );
+    add(
+        "empty_draws_between",
+        vec![
+            tri([[8, 8], [72, 8], [8, 72]]),
+            tri([[30, 30], [30, 30], [30, 30]]),
+            tri([[480, 0], [512, 0], [480, 32]]),
+            tri([[16, 16], [80, 16], [16, 80]]),
+        ],
+        None,
+    );
+    // Fixed seed is part of the fixture, with modest AABBs so replay is cheap.
+    let mut seed = 0x91e1_0da5u32;
+    for case in 0..16 {
+        let mut next = || {
+            seed ^= seed << 13;
+            seed ^= seed >> 17;
+            seed ^= seed << 5;
+            seed
+        };
+        let x = (next() % 448) as i16 - 24;
+        let y = (next() % 288) as i16 - 24;
+        let w = (next() % 72 + 1) as i16;
+        let h = (next() % 72 + 1) as i16;
+        add(
+            &format!("seeded_{case:02}"),
+            vec![tri([[x, y], [x + w, y], [x, y + h]])],
+            None,
+        );
+    }
+    result.last_mut().unwrap().target = FRAMEBUFFER_B_BASE_WORD;
+    result
+}
+
+pub fn rust_raster_suite_trace(scenes: &[RasterSuiteScene]) -> Vec<String> {
+    let mut h = TraceHarness::new();
+    for scene in scenes {
+        h.trace.scene(&scene.name);
+        h.reset_dut();
+        let base = scene.target as usize;
+        h.words[base..base + FRAMEBUFFER_WORDS as usize].fill(0x5a5a);
+        h.words[base - 1] = 0xbeef;
+        h.words[base + FRAMEBUFFER_WORDS as usize] = 0xbeef;
+        h.set_words(LIST_BASE, &(0..375).collect::<Vec<_>>());
+        let commands = scene.commands();
+        h.set_qwords(CMD_BASE, &commands);
+        h.run_ok_case(1, (commands.len() * 4) as u16);
+        assert_eq!(h.words[base - 1], 0xbeef);
+        assert_eq!(h.words[base + FRAMEBUFFER_WORDS as usize], 0xbeef);
+        assert_eq!(h.core.cache_dirty, [false; 8], "END retained dirty entries");
+    }
+    render_trace(&h.trace.events)
+}
+
+// ---------------------------------------------------------------------------
 // Trace comparison.
 // ---------------------------------------------------------------------------
 
@@ -855,7 +1038,7 @@ fn split_scenes(lines: &[String]) -> Result<Vec<SceneTrace>, String> {
                 Some("fb_w") => scene.fb_w.push(body),
                 other => return Err(format!("unknown port in trace line: {other:?}")),
             },
-            "DONE" => scene.done.push(body),
+            "DONE" | "RACK" => scene.done.push(body),
             _ => return Err(format!("unknown trace event kind: {body}")),
         }
     }
@@ -1018,7 +1201,7 @@ pub(crate) fn check_invariants(events: &[GpuTraceEvent]) -> Result<(), String> {
                 }
                 last_done = Some((scene.clone(), *executed_count));
             }
-            GpuTraceEvent::DoneDraw { .. } => {}
+            GpuTraceEvent::DoneDraw { .. } | GpuTraceEvent::RasterRetire { .. } => {}
         }
     }
     for (slot, state) in open.iter().enumerate() {
@@ -1153,9 +1336,18 @@ mod tests {
             ..GpuMemoryBus::default()
         };
         collector.on_cycle(&mem, &out, &core);
-        for beat in 1..16u8 {
+        assert_eq!(
+            collector.events().len(),
+            1,
+            "acceptance must not consume beat zero"
+        );
+        for beat in 0..16u8 {
             let out = GpuOutputs {
-                fb_w_write_data: u64::from(beat) * 0x10,
+                fb_w_write_data: if beat == 0 {
+                    0x11
+                } else {
+                    u64::from(beat) * 0x10
+                },
                 ..GpuOutputs::default()
             };
             let mem = GpuMemoryBus {

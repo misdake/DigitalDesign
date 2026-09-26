@@ -193,8 +193,14 @@ impl HostGpuMemory {
                     self.active_error = self.fail_next_fb_w;
                     self.fail_next_fb_w = false;
                     self.fb_w_requests += 1;
-                    self.write_buffer[0] = outputs.fb_w_write_data;
-                    self.state = State::WriteCapture(1);
+                    if outputs.fb_w_line_count_minus_1 == 0 {
+                        // Legacy fixed-line staging captures beat zero here.
+                        self.write_buffer[0] = outputs.fb_w_write_data;
+                        self.state = State::WriteCapture(1);
+                    } else {
+                        // Long writes consume every beat on data-ready.
+                        self.state = State::WriteCapture(0);
+                    }
                 }
             }
             State::ReadBeats(beat) => {
@@ -335,7 +341,8 @@ mod tests {
             let base = 0x80usize;
             let mut memory = vec![0u16; 0x4000];
             let mut model = HostGpuMemory::default();
-            // Beat zero is captured on the accepting edge.
+            // Fixed lines capture beat zero on acceptance; long writes consume
+            // all beats in WriteCapture, matching the fitted SDRAM adapter.
             let start = GpuOutputs {
                 fb_w_request_valid: true,
                 fb_w_write: true,

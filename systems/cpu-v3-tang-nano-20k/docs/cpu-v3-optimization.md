@@ -53,6 +53,7 @@ generated outside this document.
 - 2026-09-23 — Partial GPU tile waves added tile-local gradients and three staggered left-to-right update fronts.
 - 2026-09-23 — GPU memory-path repair restored D-cache RAM16 mapping and reduced the long-write gearbox to one 64-bit pair.
 - 2026-09-26 — The viewport rasterizer joined the GPU tile cache, and a registered tile-corner result restored 54-MHz timing.
+- 2026-09-26 — Four swizzled GPU cache DPBs removed pixel beat read-modify-write, added explicit retirement ACK and K=1 acquisition, and passed full-frame integration, 54-MHz timing, and triangle-only cold-boot validation.
 
 ## Next work
 
