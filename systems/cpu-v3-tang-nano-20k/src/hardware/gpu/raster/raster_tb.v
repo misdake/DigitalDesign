@@ -13,7 +13,7 @@
 // -DRASTER_COSIM; otherwise two small embedded smoke scenes run, so the
 // leaf's `verify_verilog_with_iverilog` smoke test stands alone.
 `timescale 1ns/1ps
-module tb;
+module tb #(parameter PIXELS_PER_CYCLE = 2, parameter SCANLINE = 0);
 reg clk = 1'b0;
 always #5 clk = ~clk;
 
@@ -56,7 +56,8 @@ reg [85:0] held_item = 0;
 wire [85:0] output_item = {quad_is_retire_marker, quad_is_tile_end,
                            quad_tri, quad_tile, quad_x, quad_y, quad_mask};
 
-CpuV3GpuRaster #(.VIEWPORT_ONLY(0)) dut(
+CpuV3GpuRaster #(.VIEWPORT_ONLY(0), .PIXELS_PER_CYCLE(PIXELS_PER_CYCLE),
+                .SCANLINE(SCANLINE)) dut(
     .clk(clk), .reset(reset),
     .input_valid(input_valid), .input_last(input_last),
     .input_data(input_data), .input_ready(input_ready),

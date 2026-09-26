@@ -85,6 +85,12 @@ accepts the pair and holds a registered select across the required beats. The as
 read address therefore does not depend on a live multi-state FPU decode; this preserves the same
 cycle schedule while removing that decode from the GPR read/compute/write timing cone.
 
+The scalar B-source address is also captured with each successfully accepted instruction:
+LOAD/STORE select field D, while other instructions select field B. FetchRequest bypass,
+FetchResponse, and overlapped Execute acceptance update the same four-bit latch. Reset clears
+it; hold and fetch errors retain it. The asynchronous GPR read and pending-write forwarding
+are unchanged, without an added execute cycle or a state-dependent B-address mux.
+
 The optional fitted system places separate 4 KiB instruction and data caches
 around the core. Each cache is two-way set-associative with 64 sets and 16 words per line.
 Two true-dual-port BSRAMs split every line strictly by word parity. During lookup,

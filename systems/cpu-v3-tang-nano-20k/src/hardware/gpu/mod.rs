@@ -156,10 +156,10 @@ impl TargetComponent for GpuResources {
 
     fn resource_requirements(&self) -> Vec<ResourceAmount> {
         vec![
-            // The small command/list/payload and submission arrays occupy 32 RAM16
-            // primitives in the fitted system. Account the physical granularity,
-            // not just their logical payload bits.
-            ResourceAmount::new(ResourceKind::SsramBit, 32 * 64),
+            // Command/list halves share 16 RAM16 cells; cache tags use two.
+            // K=1 uses one tile-job register. Account physical granularity,
+            // not just logical payload bits.
+            ResourceAmount::new(ResourceKind::SsramBit, 18 * 64),
             // The viewport raster core adds one BSRAM FIFO and four DSP
             // macros to the four true-dual-port framebuffer banks.
             ResourceAmount::new(ResourceKind::Bsram18K, 5),

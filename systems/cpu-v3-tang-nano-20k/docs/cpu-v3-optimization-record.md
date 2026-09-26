@@ -2,7 +2,7 @@
 
 Status: append-only detail record; normally read only when investigating an old decision
 Repository: `../../../`
-Updated: 2026-09-26
+Updated: 2026-09-27
 
 The concise milestone index lives in [`cpu-v3-optimization.md`](cpu-v3-optimization.md). This file
 preserves the former long-form roadmap, measurements, rejected alternatives, and validation notes.
@@ -1113,3 +1113,105 @@ its large memory cost cannot be attributed entirely to clipping or projection. K
 viewport specialization and compact inter-stage records as design choices, then measure
 the composed system. Standalone synthesis supplies neither a fitted resource delta nor
 a timing/board conclusion. The raw probe is retired; these conclusions supersede it.
+
+## CPU B-source and raster AABB timing closure (2026-09-27)
+
+Starting from the board-validated `11729ac`, the scalar B-address selection now decodes
+on successful instruction acceptance instead of using Execute state ahead of the GPR
+read port. FetchRequest bypass, FetchResponse, and overlapped Execute acceptance capture
+the same four-bit address: field D for LOAD/STORE, field B otherwise. Reset clears it;
+hold and fetch errors do not accept a new address. Pending-write forwarding, retirement,
+prefix handling, memory/device barriers, and instruction cycle counts are unchanged.
+Data on an inactive device bus need not match the former state-dependent read selection.
+
+A second, independently measured change splits raster AABB setup into extrema selection
+and clamp/valid/commit. Signed s12.4 coordinates are floored to signed 12-bit pixel
+coordinates before selecting extrema. Floor is monotone, so this produces the same
+bounds as flooring the original raw extrema, including negative and subpixel vertices.
+The next cycle clamps the bounds and retains outward even/odd rounding. This costs one
+setup cycle per triangle; quad production, cache acquisition, pixels, and marker ordering
+are unchanged. It applies to both viewport specialization and the full-geometry probe.
+
+Both experiments used the same 54/108-MHz clocks, constraints, and Gowin place/route
+algorithms 1. No timing exceptions were added. These are changes between measured fits:
+
+| Candidate | Comparison | Logic delta | Register delta | CPU Fmax delta | Worst setup slack delta |
+| --- | --- | ---: | ---: | ---: | ---: |
+| B-source predecode | Versus `11729ac` | -76 | +3 | +4.174 MHz | +1.325 ns |
+| Staged AABB | Versus B-source alone | +90 | +49 | +0.953 MHz | +0.277 ns |
+
+The B-source-only fit moved the first setup path to tile-corner edge selection feeding
+a DSP operand (1.345 ns slack), followed by D-cache state/tag/dirty control (1.440 ns).
+The selected combined fit is now limited by D-cache state through tag-read address,
+asynchronous tag comparison, hit-way selection, and dirty-array write enable. Neither
+the earlier CPU B-address path nor raster AABB is first. Absolute current resources,
+delays, and clock results live in [architecture.md](architecture.md#current-fitted-result-and-validation-boundary).
+The suspicious cross-module staging LUT is not needed for this improvement; its exact
+Boolean attribution remains unproven and the separate isolation experiment is deferred.
+
+The independent image/transaction tests pass for all 26 full-screen scenes and all 36
+error beat positions. The five raster tests, 26 CPU RTL tests, two system co-sims, and
+both full-image Flash RTL tests pass. All 20 aggregate hardware validation steps pass,
+including 725 workspace tests, strict Clippy, layering/hygiene/docs, reproducible boot
+packing, full-system PnR, and artifact audits; formatting also passes. Isolated throughput
+changes only slightly relative to the B-source-only fit:
+
+| Scene | B-source-only cycles | Combined cycles |
+| --- | ---: | ---: |
+| Shared edge | 2,272 | 2,275 |
+| Alias eviction | 13,568 | 13,575 |
+| Wide triangle | 87,363 | 87,357 |
+
+The extra setup clock can move memory-stall phase, so total cycle changes are not
+necessarily exactly one per triangle. These remain isolated workloads, not board or
+display-contention throughput. The frozen CPU workload and model are unchanged; core
+and composed-system cycle traces still match. No suite revision is introduced.
+
+Both changes are retained. Firmware remains the black-background triangle demo.
+The selected source fingerprint `52bcd5d7c3ab8911` and bitstream fingerprint
+`aaf141b95128d653` passed complete Flash Program/Verify at `0x000000`, with the
+boot package at `0x100000`, followed by audited SRAM loading. UART captured 3,984 bytes:
+498 S2 (`0x0b`) success frames and zero failure, wrong-test, bad-checksum, or boot-error
+frames. BL616 recovery was unnecessary. This image now remains in Flash; its cold-boot
+UART and user HDMI confirmation are pending. Geometry/varying and concurrent refill/render remain open.
+The next timing investigation should target the measured D-cache address/tag/dirty
+control path and tile-corner operand selection, with each change tested independently.
+
+## GPU raster and framebuffer-control Logic closure (2026-09-27)
+
+The overnight investigation keeps full-GPU requirements ahead of demo-only resource
+scores. Four physical true-dual-port framebuffer banks, LOAD/CLEAR preservation,
+dirty/error completion, epoch/triangle ACK, full-geometry clip/fan/setup queues,
+and the independent memory masters remain. Viewport single-triangle ownership
+removes duplicate wide setup/job copies; K=1 needs one compact pending job rather
+than a queue. Signed edge precision is narrowed only with an explicit bound.
+
+The additional scanline implementation uses two-row bands, shared edge DSPs for
+left-span testing, and right-tail rejection. Both traversals have one- and
+two-pixel coverage-generation rates; there is no four-pixel/clock implementation.
+Tile is selected at both rates because scanline costs more raster Logic and its
+row-major sweep causes repeated refill/dirty eviction in the tile-linear cache.
+The faster tile choice is retained as default. Measured resources, producer
+averages, full-frame cache transactions, timing owners, rejected alternatives,
+whole-system attribution and reproduction are recorded once in
+[gpu-raster-comparison.md](gpu-raster-comparison.md).
+
+Actual memory inference matters more than register count. Coordinate simplification
+made automatic quad FIFO mapping expand into FFs; explicitly keeping BSRAM restores
+the lower-Logic implementation. An aggressive setup-record alias reduces FF but
+increases Logic and is rejected. Cache tags share one read port, and command/list
+lines keep separate contents while sharing one eight-deep RAM16 array and port.
+Reserved payload bits remain rejection predicates. Cache clean reads now explicitly
+enable the memory port, removing the inactive-port collision-avoidance address mux.
+Command extent and physical-address arithmetic retain all legal maximum counts
+and empty-list semantics, checked by boundary regressions.
+
+The four candidate fits pass the unchanged 54/108-MHz constraints. All six raster
+RTL tests and eight GPU integration tests pass, including 40 scenes with three
+stall patterns, 26 full images per candidate, every read/write fault beat,
+143 individual reserved bits, stale-tag reset, maximum command extent and high
+address rejection. The 26 CPU and two system co-simulations also pass. Final
+aggregate artifact and physical evidence belongs to the current
+[architecture validation boundary](architecture.md#current-fitted-result-and-validation-boundary).
+Earlier framebuffer prefetch for future pixel processing is deliberately deferred;
+the existing K=1 acquisition is retained. No frozen CPU suite revision is introduced.

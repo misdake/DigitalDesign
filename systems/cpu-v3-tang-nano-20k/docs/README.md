@@ -10,6 +10,8 @@ the [`ip/cpu-v3` documentation](../../../ip/cpu-v3/docs/README.md).
 - [`cpu-v3-optimization.md`](cpu-v3-optimization.md): concise one-sentence optimization index.
 - [`cpu-v3-optimization-record.md`](cpu-v3-optimization-record.md): append-only implementation,
   measurement, rejected-alternative, and validation detail normally consulted only for archaeology.
+- [`gpu-raster-comparison.md`](gpu-raster-comparison.md): measured tile/scanline raster rates,
+  framebuffer-control savings, rejected alternatives, and full-GPU preservation boundaries.
 - [`boot-image-format.md`](boot-image-format.md): version 3 boot package and manifest format.
 - [`flash-layout.md`](flash-layout.md): fitted external-Flash placement, programming workflow, and
   boot-progress reporting.

@@ -17,6 +17,9 @@ use cpu_v3_tang_nano_20k::CpuV3Gpu;
 use digital_design_hardware::Module;
 use std::collections::BTreeSet;
 use std::path::Path;
+use std::sync::atomic::{AtomicU64, Ordering};
+
+static NEXT_GPU_RUN: AtomicU64 = AtomicU64::new(0);
 
 const RASTER_IMAGE_WIDTH: usize = 32;
 const RASTER_IMAGE_PIXELS: usize = RASTER_IMAGE_WIDTH * RASTER_IMAGE_WIDTH;
@@ -42,15 +45,39 @@ fn run_gpu_source(
     faults: bool,
     baseline: bool,
 ) -> RtlRun {
+    run_gpu_candidate(raster, suite, faults, baseline, 2, false)
+}
+
+fn run_gpu_candidate(
+    raster: bool,
+    suite: Option<&[RasterSuiteScene]>,
+    faults: bool,
+    baseline: bool,
+    pixels: u8,
+    scanline: bool,
+) -> RtlRun {
+    run_gpu_candidate_vectors(raster, suite, faults, baseline, pixels, scanline, None)
+}
+
+fn run_gpu_candidate_vectors(
+    raster: bool,
+    suite: Option<&[RasterSuiteScene]>,
+    faults: bool,
+    baseline: bool,
+    pixels: u8,
+    scanline: bool,
+    vectors: Option<&str>,
+) -> RtlRun {
+    let run = NEXT_GPU_RUN.fetch_add(1, Ordering::Relaxed);
     let directory = std::env::temp_dir().join(format!(
-        "gpu-trace-cosim-{}-{}",
+        "gpu-trace-cosim-{}-{run}-{}",
         std::process::id(),
         if raster { "raster" } else { "legacy" }
     ));
     std::fs::create_dir_all(&directory).unwrap();
     let module_path = directory.join("module.v");
     let testbench_path = directory.join("testbench.v");
-    let module = if baseline {
+    let mut module = if baseline {
         ["raster/raster.v", "raster/raster_pixel.v", "gpu.v"]
             .map(|file| {
                 let output = std::process::Command::new("git")
@@ -68,10 +95,25 @@ fn run_gpu_source(
     } else {
         CpuV3Gpu::verilog_source().unwrap()
     };
+    if !baseline {
+        let old = "CpuV3GpuRasterPixel #(.PREFETCH_LIMIT(1)) raster";
+        assert!(module.contains(old));
+        module = module.replace(old, &format!(
+            "CpuV3GpuRasterPixel #(.PREFETCH_LIMIT(1), .PIXELS_PER_CYCLE({pixels}), .SCANLINE({})) raster",
+            u8::from(scanline),
+        ));
+    }
     std::fs::write(&module_path, module).unwrap();
     let mut testbench = CpuV3Gpu::verilog_testbench().unwrap();
+    if scanline {
+        // Scanline revisits tile rows and can produce more memory traffic.
+        // Keep a finite bound sized for the complete candidate suite.
+        testbench = testbench.replace("4000000", "32000000");
+    }
     if let Some(scenes) = suite {
         testbench = testbench.replace("__RASTER_SUITE__", &suite_vectors(scenes));
+    } else if let Some(vectors) = vectors {
+        testbench = testbench.replace("__RASTER_SUITE__", vectors);
     }
     if baseline {
         testbench = format!("`define GPU_LEGACY_REQUEST_BEAT\n{testbench}");
@@ -94,7 +136,7 @@ fn run_gpu_source(
     if faults {
         compiler.arg("-DGPU_RASTER_FAULTS");
     }
-    if suite.is_some() {
+    if suite.is_some() || vectors.is_some() {
         compiler.arg("-DGPU_RASTER_SUITE");
     }
     if raster {
@@ -118,6 +160,10 @@ fn run_gpu_source(
         .output()
         .unwrap();
     let stdout = String::from_utf8_lossy(&simulation.stdout).into_owned();
+    assert!(
+        simulation.status.success(),
+        "RTL simulation failed:\n{stdout}"
+    );
     let raster_frame = raster
         .then(|| std::fs::read_to_string(directory.join("raster-frame.hex")).ok())
         .flatten();
@@ -590,6 +636,195 @@ fn gpu_raster_boundary_suite_matches_rtl() {
         }
     }
     println!("PASS {} integration scenes: {} pixels, complete pixel/ACK conservation and transaction parity",scenes.len(),scenes.len()*400*240);
+}
+
+#[test]
+#[ignore = "explicit four-candidate full-image/cache/marker validation and throughput"]
+fn gpu_raster_candidate_images_and_throughput() {
+    let scenes = raster_suite_scenes();
+    let mut csv = String::from(
+        "traversal,pixels_per_cycle,scene,cycles,fb_read_requests,fb_write_requests\n",
+    );
+    for scanline in [false, true] {
+        for pixels in [1, 2] {
+            let rtl = run_gpu_candidate(false, Some(&scenes), false, false, pixels, scanline);
+            assert_eq!(rtl.suite_frames.len(), scenes.len());
+            for (scene, frame) in scenes.iter().zip(&rtl.suite_frames) {
+                let image: Vec<u16> = frame
+                    .lines()
+                    .map(|s| u16::from_str_radix(s, 16).unwrap())
+                    .collect();
+                let output = scene_lines(&rtl.stdout, &scene.name);
+                if let Some(error) = scene_error(scene, &image, &output) {
+                    panic!(
+                        "candidate scanline={scanline} pixels={pixels}, {}: {error}",
+                        scene.name
+                    );
+                }
+                assert_eq!(
+                    image,
+                    suite_oracle(scene).0,
+                    "candidate image {}",
+                    scene.name
+                );
+            }
+            let cycles: Vec<u64> = rtl
+                .stdout
+                .lines()
+                .filter_map(|s| s.strip_prefix("PERF "))
+                .map(|s| s.split_once(' ').unwrap().1.parse().unwrap())
+                .collect();
+            assert_eq!(cycles.len(), scenes.len());
+            let traversal = if scanline { "scanline" } else { "tile" };
+            for (scene, cycles) in scenes.iter().zip(cycles) {
+                let output = scene_lines(&rtl.stdout, &scene.name);
+                let reads = output.iter().filter(|s| s.contains("REQ fb_r R")).count();
+                let writes = output.iter().filter(|s| s.contains("REQ fb_w W")).count();
+                csv.push_str(&format!(
+                    "{traversal},{pixels},{},{cycles},{reads},{writes}\n",
+                    scene.name
+                ));
+            }
+            // Every read/write error beat must terminate instead of leaking
+            // pixels or retiring an uncommitted marker, in every candidate.
+            let faults = run_gpu_candidate(false, None, true, false, pixels, scanline);
+            assert_eq!(
+                faults
+                    .stdout
+                    .lines()
+                    .filter(|s| s.starts_with("FAULT_PASS"))
+                    .count(),
+                36
+            );
+        }
+    }
+    let directory =
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("../../target/gpu-raster-candidates");
+    std::fs::create_dir_all(&directory).unwrap();
+    std::fs::write(directory.join("cache-throughput.csv"), csv).unwrap();
+}
+
+#[test]
+#[ignore = "explicit exhaustive reserved payload bits and stale tag reset regression"]
+fn gpu_reserved_payload_bits_and_tag_reset() {
+    // Each reserved bit must reject independently, with no framebuffer request.
+    // This checks the external command contract rather than the packed storage.
+    let mut vectors = String::from("    do_reset(); expected_exec=1;\n");
+    let mut count = 0;
+    for slot in 0..3 {
+        for bit in 32..64 {
+            vectors.push_str(&format!(
+                "    $display(\"GPU %0d SCENE reserved-tri-{slot}-{bit}\",tseq); tseq=tseq+1;\n\
+                 put_set_target(CMD_BASE,FB_A); put_qword(CMD_BASE+4,64'h00000000000004e2);\n\
+                 put_qword(CMD_BASE+8,0); put_qword(CMD_BASE+12,64'h100); put_qword(CMD_BASE+16,64'h01000000);\n\
+                 put_qword(CMD_BASE+{},64'h{:016x}); run_error_case(20);\n",
+                8 + slot * 4, 1u64 << bit,
+            ));
+            count += 1;
+        }
+    }
+    for (slot, first_bit) in [(0, 32), (1, 49)] {
+        for bit in first_bit..64 {
+            vectors.push_str(&format!(
+                "    $display(\"GPU %0d SCENE reserved-fake-{slot}-{bit}\",tseq); tseq=tseq+1;\n\
+                 put_set_target(CMD_BASE,FB_A); put_fake_draw(CMD_BASE+4,LIST_BASE,0,0,0,0,0);\n\
+                 put_qword(CMD_BASE+{},64'h{:016x}); run_error_case(16);\n",
+                8 + slot * 4,
+                1u64 << bit,
+            ));
+            count += 1;
+        }
+    }
+    // Populate a nonzero tag, soft reset, change target and load the same index.
+    // A stale tag must neither suppress the refill nor write back old data.
+    vectors.push_str(
+        "\
+    $display(\"GPU %0d SCENE stale-tag-before\",tseq); tseq=tseq+1;\n\
+    put_set_target(CMD_BASE,FB_A); put_fake_draw(CMD_BASE+4,LIST_BASE,1,1,16'h1234,0,0);\n\
+    mem[LIST_BASE]=8; put_end(CMD_BASE+16); run_ok_case(20);\n\
+    device_write(5,1);\n\
+    if(dut.cache_valid[0]!==0) $fatal(1,\"soft reset retained a valid cache entry\");\n\
+    for(i=0;i<256;i=i+1) mem[FB_B+2048+i]=16'h9876;\n\
+    $display(\"GPU %0d SCENE stale-tag-after\",tseq); tseq=tseq+1;\n\
+    put_set_target(CMD_BASE,FB_B); put_fake_draw(CMD_BASE+4,LIST_BASE,1,0,0,0,0);\n\
+    put_end(CMD_BASE+16); run_ok_case(20); check_uniform_tile(8,FB_B,16'h9876);\n\
+    $display(\"RESERVED_TAG_PASS\"); $finish;\n",
+    );
+    let rtl = run_gpu_candidate_vectors(false, None, false, false, 2, false, Some(&vectors));
+    assert!(rtl.stdout.contains("RESERVED_TAG_PASS"));
+    let reserved: Vec<_> = rtl
+        .stdout
+        .lines()
+        .filter(|s| s.contains("SCENE reserved-"))
+        .collect();
+    assert_eq!(reserved.len(), count);
+    for line in reserved {
+        let name = line.split("SCENE ").nth(1).unwrap();
+        let output = scene_lines(&rtl.stdout, name);
+        assert!(
+            !output.iter().any(|s| s.contains("REQ fb_")),
+            "reserved bit reached framebuffer: {name}"
+        );
+    }
+    let output = scene_lines(&rtl.stdout, "stale-tag-after");
+    assert_eq!(
+        output.iter().filter(|s| s.contains("REQ fb_r R")).count(),
+        4
+    );
+    assert_eq!(
+        output.iter().filter(|s| s.contains("REQ fb_w W")).count(),
+        4
+    );
+}
+
+#[test]
+#[ignore = "explicit maximum command count and 32-bit list address rejection"]
+fn gpu_command_count_and_address_boundaries() {
+    let mut vectors = String::from(
+        "\
+    do_reset(); expected_exec=1;\n\
+    $display(\"GPU %0d SCENE maximum-count\",tseq); tseq=tseq+1;\n\
+    for(i=0;i<16382;i=i+1) put_set_target(CMD_BASE+i*4,FB_A);\n\
+    put_end(CMD_BASE+65528); run_ok_case(16'd65532);\n\
+    $display(\"GPU %0d SCENE terminal-payload-overrun\",tseq); tseq=tseq+1;\n\
+    put_qword(CMD_BASE+65528,64'h00000000000003e1); run_error_case(16'd65532);\n",
+    );
+    for bit in 22..32 {
+        for (count, run) in [(0, "run_ok_case"), (1, "run_error_case")] {
+            vectors.push_str(&format!(
+                "    $display(\"GPU %0d SCENE address-{count}-{bit}\",tseq); tseq=tseq+1;\n\
+                 put_set_target(CMD_BASE,FB_A); put_fake_draw(CMD_BASE+4,LIST_BASE,{count},0,0,0,0);\n\
+                 put_qword(CMD_BASE+8,64'h{:016x}); put_end(CMD_BASE+16); {run}(20);\n",
+                1u64 << bit,
+            ));
+        }
+    }
+    vectors.push_str("    $display(\"COMMAND_BOUNDARY_PASS\"); $finish;\n");
+    let rtl = run_gpu_candidate_vectors(false, None, false, false, 2, false, Some(&vectors));
+    assert!(rtl.stdout.contains("COMMAND_BOUNDARY_PASS"));
+    for name in ["maximum-count", "terminal-payload-overrun"] {
+        let output = scene_lines(&rtl.stdout, name);
+        let requests: Vec<_> = output.iter().filter(|s| s.contains("REQ ro R")).collect();
+        assert_eq!(requests.len(), 4096, "{name}: command line count/wrap");
+        assert!(
+            requests.last().unwrap().contains("0100f0"),
+            "{name}: terminal address"
+        );
+        assert!(!output.iter().any(|s| s.contains("REQ fb_")));
+    }
+    for bit in 22..32 {
+        for count in [0, 1] {
+            let name = format!("address-{count}-{bit}");
+            let output = scene_lines(&rtl.stdout, &name);
+            let requests = output.iter().filter(|s| s.contains("REQ ro R")).count();
+            assert_eq!(
+                requests,
+                if count == 0 { 2 } else { 1 },
+                "{name}: unexpected list access"
+            );
+            assert!(!output.iter().any(|s| s.contains("REQ fb_")), "{name}");
+        }
+    }
 }
 
 #[test]

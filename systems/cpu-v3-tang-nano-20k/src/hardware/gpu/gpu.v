@@ -23,6 +23,7 @@ module CpuV3GpuFramebufferCacheBank (
     input  wire        write_enable,
     input  wire [8:0]  write_address,
     input  wire [15:0] write_data,
+    input  wire        read_enable,
     input  wire [8:0]  read_address,
     output wire [15:0] read_data,
     input wire render_write_enable,
@@ -36,9 +37,9 @@ module CpuV3GpuFramebufferCacheBank (
     assign read_data = memory_read;
     always @(posedge clk) begin
         if (write_enable) memory[memory_address] <= write_data;
-        else memory_read <= memory[memory_address];
+        else if (read_enable) memory_read <= memory[memory_address];
         if (render_write_enable) memory[render_address] <= render_write_data;
-        if (render_write_enable && memory_address == render_address)
+        if (render_write_enable && (write_enable || read_enable) && memory_address == render_address)
             $fatal(1, "framebuffer bank memory/render port collision");
     end
 `else
@@ -51,7 +52,7 @@ module CpuV3GpuFramebufferCacheBank (
         .ADB({1'b0, render_address, 2'b00, 2'b11}),
         .BLKSELA(3'b000), .BLKSELB(3'b000),
         .WREA(write_enable), .WREB(render_write_enable),
-        .CLKA(clk), .CLKB(clk), .CEA(1'b1), .CEB(1'b1),
+        .CLKA(clk), .CLKB(clk), .CEA(write_enable || read_enable), .CEB(1'b1),
         .OCEA(1'b0), .OCEB(1'b0), .RESETA(1'b0), .RESETB(1'b0));
 `endif
 endmodule
@@ -135,16 +136,24 @@ module CpuV3Gpu (
     reg active = 0;
     reg [21:0] active_base = 0;
     reg [15:0] active_words = 0;
-    reg [15:0] qword_index = 0;
-    reg [15:0] line_qword_base = 16'hffff;
-    reg [63:0] line_buffer [0:3];
+    // A nonzero aligned 16-bit word count contains at most 16383 qwords.
+    // The all-ones line sentinel cannot equal a four-qword-aligned base.
+    reg [13:0] qword_index = 0;
+    reg [13:0] line_qword_base = 14'h3fff;
+    // Separate four-beat command/list halves retain both lines. Their reads
+    // and fills are mutually exclusive, so one eight-deep RAM16 port suffices.
+    (* syn_ramstyle = "distributed_ram" *) reg [63:0] ro_buffer [0:7];
     reg [1:0] recv_beat = 0;
 
     // Header held between the header qword and its payload qwords.
     reg [7:0] pending_opcode = 0;
     reg [7:0] pending_count = 0;
     reg [31:0] pending_arg0 = 0;
-    reg [63:0] pending_payload [0:2];
+    // Reserved payload bits are predicates, not data. Preserve their
+    // nonzero status while avoiding wide FFs and selection muxes.
+    reg [32:0] payload_0;
+    reg [49:0] payload_1;
+    reg [32:0] payload_2;
     reg [7:0] pending_remaining = 0;
     reg have_pending = 0;
 
@@ -154,11 +163,15 @@ module CpuV3Gpu (
 
     // ---- framebuffer cache metadata ----
     reg cache_valid [0:7];
-    reg [5:0] cache_tag [0:7];
+    (* syn_ramstyle = "distributed_ram" *) reg [5:0] cache_tag [0:7];
+    integer tag_initial_index;
+    initial begin
+        for (tag_initial_index = 0; tag_initial_index < 8; tag_initial_index = tag_initial_index + 1)
+            cache_tag[tag_initial_index] = 0;
+    end
     reg cache_dirty [0:7];
 
     // ---- current draw ----
-    reg [63:0] list_buffer [0:3];
     reg [1:0] list_beat = 0;
     reg [15:0] list_fetch_start = 0;
     reg [15:0] list_chunk_start = 0;
@@ -169,6 +182,8 @@ module CpuV3Gpu (
     reg [15:0] draw_clear_color = 0, draw_color = 0, draw_row_mask = 0;
     reg draw_is_clear = 0, draw_gradient = 0;
     reg [1:0] raster_vertex = 0;
+    wire [31:0] raster_vertex_data = raster_vertex == 0 ? payload_0[31:0]
+                                  : raster_vertex == 1 ? payload_1[31:0] : payload_2[31:0];
     reg raster_tile_access = 0;
     reg raster_prefetch_access = 0;
     reg [15:0] raster_prefetch_tile = 0;
@@ -200,7 +215,7 @@ module CpuV3Gpu (
         .clk(clk), .reset(reset || ((phase == PH_EXECUTE) && (pending_opcode == OP_TRIANGLE))),
         .input_valid(phase == PH_RASTER_FEED),
         .input_last(raster_vertex == 2'd2),
-        .input_data(pending_payload[raster_vertex][31:0]), .draw_epoch(draw_epoch),
+        .input_data(raster_vertex_data), .draw_epoch(draw_epoch),
         .input_ready(raster_input_ready),
         .pixel_ready(raster_pixel_ready), .pixel_valid(raster_pixel_valid),
         .pixel_is_retire_marker(raster_pixel_marker),
@@ -281,17 +296,23 @@ module CpuV3Gpu (
     wire [21:0] pop_base = (submit_accepted && (fifo_count == 2'd0)) ? staging_base : fifo_base[fifo_head];
     wire [15:0] pop_words = (submit_accepted && (fifo_count == 2'd0)) ? staging_words : fifo_words[fifo_head];
 
-    // ---- command fetch/decode ----
-    wire [15:0] total_qwords = active_words >> 2;
-    wire line_matches = (line_qword_base == {qword_index[15:2], 2'b00});
+    wire [15:0] list_offset = draw_tile_pos - list_chunk_start;
+    wire [1:0] list_beat_sel = list_offset[3:2];
 
-    wire [63:0] decode_word = line_buffer[qword_index[1:0]];
+    // ---- command fetch/decode ----
+    wire [13:0] total_qwords = active_words[15:2];
+    wire line_matches = (line_qword_base == {qword_index[13:2], 2'b00});
+
+    wire [2:0] ro_buffer_read_address = phase == PH_TILE_STEP
+        ? {1'b1, list_beat_sel} : {1'b0, qword_index[1:0]};
+    wire [63:0] ro_buffer_read_data = ro_buffer[ro_buffer_read_address];
+    wire [63:0] decode_word = ro_buffer_read_data;
     wire [7:0] d_opcode = decode_word[7:0];
     wire [7:0] d_count = decode_word[15:8];
     wire [15:0] d_flags = decode_word[31:16];
     wire [31:0] d_arg0 = decode_word[63:32];
     wire header_qword_ok = (d_count != 8'd0) && (d_flags == 16'h0000)
-                           && ({1'b0, qword_index} + {9'b0, d_count} <= {1'b0, total_qwords});
+                           && ({1'b0, qword_index} + {7'b0, d_count} <= {1'b0, total_qwords});
     wire do_execute = (phase == PH_EXECUTE);
     wire [7:0] payload_slot = pending_count - 8'd1 - pending_remaining;
 
@@ -301,19 +322,18 @@ module CpuV3Gpu (
     wire [7:0] exec_opcode = pending_opcode;
     wire [7:0] exec_count = pending_count;
     wire [31:0] exec_arg0 = pending_arg0;
-    wire [63:0] exec_payload0 = pending_payload[0];
-    wire [63:0] exec_payload1 = pending_payload[1];
-    wire [63:0] exec_payload2 = pending_payload[2];
-    wire [32:0] fake_list_end = {1'b0, exec_payload0[31:0]} + {17'b0, exec_arg0[15:0]};
+    wire [63:0] exec_payload0 = {payload_0[32], 31'd0, payload_0[31:0]};
+    wire [63:0] exec_payload1 = {payload_1[49], 14'd0, payload_1[48:0]};
+    wire [63:0] exec_payload2 = {payload_2[32], 31'd0, payload_2[31:0]};
+    wire [22:0] fake_list_end = {1'b0, exec_payload0[21:0]} + {7'b0, exec_arg0[15:0]};
+    wire fake_list_outside = (|exec_payload0[31:22]) || fake_list_end > MEMORY_END;
 
     wire any_cache_valid = cache_valid[0] | cache_valid[1] | cache_valid[2] | cache_valid[3]
                            | cache_valid[4] | cache_valid[5] | cache_valid[6] | cache_valid[7];
 
     // ---- tile list indexing ----
     wire [15:0] tile_chunk = {draw_tile_pos[15:4], 4'b0};
-    wire [15:0] list_offset = draw_tile_pos - list_chunk_start;
-    wire [1:0] list_beat_sel = list_offset[3:2];
-    wire [63:0] selected_list_beat = list_buffer[list_beat_sel];
+    wire [63:0] selected_list_beat = ro_buffer_read_data;
     reg [15:0] list_index;
     always @(*) begin
         case (list_offset[1:0])
@@ -327,6 +347,10 @@ module CpuV3Gpu (
         ? (raster_prefetch_access ? raster_prefetch_tile : raster_pixel_tile) : list_index;
     wire [2:0] tile_entry_sel = selected_tile_index[2:0];
     wire [5:0] tile_tag_sel = selected_tile_index[8:3];
+    // Lookup and cleaner are serialized by the command FSM. One asynchronous
+    // tag read port serves both, avoiding a duplicated distributed RAM.
+    wire [2:0] tag_read_entry = phase == PH_TILE_STEP ? tile_entry_sel : transfer_entry;
+    wire [5:0] tag_read_value = cache_tag[tag_read_entry];
 
     // ---- memory master addresses ----
     // Command line: active_base + (qword_index/4)*16 words.
@@ -334,14 +358,14 @@ module CpuV3Gpu (
     assign gpu_ro_request_valid = (phase == PH_FETCH) || (phase == PH_LIST_FETCH);
     assign gpu_ro_write = 1'b0;
     assign gpu_ro_address = (phase == PH_FETCH)
-        ? (active_base + {qword_index[15:2], 4'b0})
+        ? (active_base + {qword_index[13:2], 4'b0})
         : ((phase == PH_LIST_FETCH) ? (draw_list_addr + {6'b0, list_fetch_start}) : 22'h0);
     // `gpu_ro` stays at the fixed 32-byte (one-line) command/list size.
     assign gpu_ro_line_count_minus_1 = 2'b00;
     assign gpu_ro_write_data = 64'h0;
 
     // Clean address: target_base + {tag, entry}*256 + line*64.
-    wire [16:0] clean_tile_offset = {cache_tag[transfer_entry], transfer_entry, 8'b0};
+    wire [16:0] clean_tile_offset = {tag_read_value, transfer_entry, 8'b0};
     wire [7:0] clean_line_offset = {transfer_line, 6'b0};
     assign gpu_fb_w_request_valid = (phase == PH_CLEAN_REQ);
     assign gpu_fb_w_write = 1'b1;
@@ -364,6 +388,7 @@ module CpuV3Gpu (
         ? {transfer_entry, transfer_line, 4'd15}
         : {transfer_entry, transfer_line, transfer_beat[3:0] + 4'd1};
     wire [8:0] cache_rd_addr;
+    wire cache_rd_en = phase == PH_CLEAN_PRIME || phase == PH_CLEAN_REQ || phase == PH_CLEAN_WAIT;
     assign cache_rd_addr = (phase == PH_CLEAN_PRIME)
         ? {transfer_entry, transfer_line, 4'b0}
         : ((phase == PH_CLEAN_REQ)
@@ -421,7 +446,7 @@ module CpuV3Gpu (
         ? {cache_write_beat[31:0], cache_write_beat[63:32]} : cache_write_beat;
     wire [63:0] bank_read_beat;
     reg cache_read_odd_row = 0;
-    always @(posedge clk) cache_read_odd_row <= cache_rd_addr[2];
+    always @(posedge clk) if (cache_rd_en) cache_read_odd_row <= cache_rd_addr[2];
     wire [63:0] cache_read_beat = cache_read_odd_row
         ? {bank_read_beat[31:0], bank_read_beat[63:32]} : bank_read_beat;
     assign cache_rd_lo = cache_read_beat[31:0];
@@ -434,8 +459,8 @@ module CpuV3Gpu (
         CpuV3GpuFramebufferCacheBank data (
             .clk(clk), .write_enable(cache_wr_en), .write_address(cache_wr_addr),
             .write_data(bank_write_beat[bank*16 +: 16]),
-            // Port A is idle while rendering. Avoid a same-address read/write.
-            .read_address(render_write ? (render_address ^ 9'h100) : cache_rd_addr),
+            // Disable idle port A while rendering through port B.
+            .read_enable(cache_rd_en), .read_address(cache_rd_addr),
             .read_data(bank_read_beat[bank*16 +: 16]),
             .render_write_enable(render_write && render_bank == bank),
             .render_address(render_address), .render_write_data(raster_pixel_color));
@@ -483,7 +508,7 @@ module CpuV3Gpu (
                     else if (!target_set) exec_error = 1'b1;
                     else if ((exec_payload0[63:32] != 0) || (exec_payload1[63:49] != 0)) exec_error = 1'b1;
                     else if ((exec_arg0[15:0] != 0)
-                             && ((exec_payload0[3:0] != 0) || (fake_list_end > MEMORY_END)))
+                             && ((exec_payload0[3:0] != 0) || fake_list_outside))
                         exec_error = 1'b1;
                     else
                         exec_phase = (exec_arg0[15:0] == 16'h0) ? PH_DECODE : PH_TILE_STEP;
@@ -507,6 +532,21 @@ module CpuV3Gpu (
         end
     end
 
+    // Only installed valid entries can expose a tag. Reset/error clears
+    // validity; retaining stale tags permits one distributed-RAM write port.
+    wire install_tag = !reset &&
+        ((phase == PH_REFILL_WAIT && gpu_fb_r_response_valid && !gpu_fb_r_error
+          && transfer_line == 2'd3 && (transfer_beat == 6'd15 || gpu_fb_r_response_last))
+         || (phase == PH_CLEAR_FILL && transfer_beat == 6'd63));
+    always @(posedge clk) if (install_tag) cache_tag[transfer_entry] <= cur_tag;
+
+    wire ro_buffer_write = !reset && gpu_ro_response_valid && !gpu_ro_error
+        && (phase == PH_RECEIVE || phase == PH_LIST_RECEIVE);
+    wire [2:0] ro_buffer_write_address = phase == PH_LIST_RECEIVE
+        ? {1'b1, list_beat} : {1'b0, recv_beat};
+    always @(posedge clk) if (ro_buffer_write)
+        ro_buffer[ro_buffer_write_address] <= gpu_ro_read_data;
+
     integer i;
     always @(posedge clk) begin
         if (reset) begin
@@ -525,12 +565,12 @@ module CpuV3Gpu (
                 fifo_base[i] <= 0; fifo_words[i] <= 0;
             end
             active <= 0; active_base <= 0; active_words <= 0;
-            qword_index <= 0; line_qword_base <= 16'hffff; recv_beat <= 0;
+            qword_index <= 0; line_qword_base <= 14'h3fff; recv_beat <= 0;
             pending_opcode <= 0; pending_count <= 0; pending_arg0 <= 0;
             pending_remaining <= 0; have_pending <= 0;
             target_set <= 0; target_base <= 0;
             for (i = 0; i < 8; i = i + 1) begin
-                cache_valid[i] <= 0; cache_tag[i] <= 0; cache_dirty[i] <= 0;
+                cache_valid[i] <= 0; cache_dirty[i] <= 0;
             end
             list_fetch_start <= 0; list_chunk_start <= 0; list_chunk_valid <= 0;
             list_beat <= 0; draw_tile_count <= 0; draw_tile_pos <= 0;
@@ -582,7 +622,7 @@ module CpuV3Gpu (
                 base_low_written <= 0; base_high_written <= 0;
                 words_low_written <= 0; words_high_written <= 0; staging_bad <= 0;
                 submit_rejected <= 0; command_error <= 0;
-                qword_index <= 0; line_qword_base <= 16'hffff; recv_beat <= 0;
+                qword_index <= 0; line_qword_base <= 14'h3fff; recv_beat <= 0;
                 have_pending <= 0; pending_remaining <= 0;
                 target_set <= 0; target_base <= 0;
                 draw_tile_count <= 0; draw_tile_pos <= 0;
@@ -612,7 +652,7 @@ module CpuV3Gpu (
                         active_words <= pop_words;
                         fifo_head <= ~fifo_head;
                         qword_index <= 0;
-                        line_qword_base <= 16'hffff;
+                        line_qword_base <= 14'h3fff;
                         recv_beat <= 0;
                         have_pending <= 0;
                         pending_remaining <= 0;
@@ -637,10 +677,9 @@ module CpuV3Gpu (
                     if (gpu_ro_response_valid) begin
                         if (gpu_ro_error) phase <= PH_ERROR;
                         else begin
-                            line_buffer[recv_beat] <= gpu_ro_read_data;
                             if ((recv_beat == 2'd3) || gpu_ro_response_last) begin
                                 recv_beat <= 2'd0;
-                                line_qword_base <= {qword_index[15:2], 2'b00};
+                                line_qword_base <= {qword_index[13:2], 2'b00};
                                 phase <= PH_DECODE;
                             end else
                                 recv_beat <= recv_beat + 2'd1;
@@ -651,9 +690,14 @@ module CpuV3Gpu (
                     if (!line_matches) phase <= PH_FETCH;
                     else if (qword_index >= total_qwords) phase <= PH_ERROR;
                     else if (have_pending) begin
-                        if (payload_slot < 8'd3) pending_payload[payload_slot[1:0]] <= decode_word;
+                        case (payload_slot)
+                            8'd0: payload_0 <= {|decode_word[63:32], decode_word[31:0]};
+                            8'd1: payload_1 <= {|decode_word[63:49], decode_word[48:0]};
+                            8'd2: payload_2 <= {|decode_word[63:32], decode_word[31:0]};
+                            default: begin end
+                        endcase
                         pending_remaining <= pending_remaining - 8'd1;
-                        qword_index <= qword_index + 16'd1;
+                        qword_index <= qword_index + 14'd1;
                         if (pending_remaining == 8'd1) begin
                             have_pending <= 1'b0;
                             phase <= PH_EXECUTE;
@@ -664,7 +708,7 @@ module CpuV3Gpu (
                         pending_opcode <= d_opcode;
                         pending_count <= d_count;
                         pending_arg0 <= d_arg0;
-                        qword_index <= qword_index + 16'd1;
+                        qword_index <= qword_index + 14'd1;
                         if (d_count == 8'd1)
                             phase <= PH_EXECUTE;
                         else begin
@@ -734,7 +778,6 @@ module CpuV3Gpu (
                     if (gpu_ro_response_valid) begin
                         if (gpu_ro_error) phase <= PH_ERROR;
                         else begin
-                            list_buffer[list_beat] <= gpu_ro_read_data;
                             if ((list_beat == 2'd3) || gpu_ro_response_last) begin
                                 list_beat <= 2'd0;
                                 list_chunk_start <= list_fetch_start;
@@ -757,7 +800,7 @@ module CpuV3Gpu (
                         cur_entry <= tile_entry_sel;
                         cur_tag <= tile_tag_sel;
                         if (cache_valid[tile_entry_sel]
-                            && (cache_tag[tile_entry_sel] == tile_tag_sel)) begin
+                            && (tag_read_value == tile_tag_sel)) begin
                             // Hit: LOAD keeps the line, CLEAR re-initializes it.
                             if (draw_is_clear && !raster_tile_access) begin
                                 transfer_entry <= tile_entry_sel;
@@ -841,7 +884,7 @@ module CpuV3Gpu (
                             transfer_beat <= 6'd0;
                             if (transfer_line == 2'd3) begin
                                 cache_valid[transfer_entry] <= 1'b1;
-                                cache_tag[transfer_entry] <= cur_tag;
+
                                 cache_dirty[transfer_entry] <= 1'b0;
                                 render_tile_valid <= raster_tile_access;
                                 phase <= raster_tile_access ? (raster_prefetch_access ? PH_RASTER_RUN : PH_PIXEL_WRITE) : PH_DRAW_APPLY;
@@ -856,7 +899,7 @@ module CpuV3Gpu (
                 PH_CLEAR_FILL: begin
                     if (transfer_beat == 6'd63) begin
                         cache_valid[transfer_entry] <= 1'b1;
-                        cache_tag[transfer_entry] <= cur_tag;
+
                         cache_dirty[transfer_entry] <= 1'b0;
                         transfer_beat <= 6'd0;
                         phase <= PH_DRAW_APPLY;

@@ -187,6 +187,15 @@ matching epoch/triangle retirement ACK; the command processor then waits for sce
 visible framebuffer writes. This is a bring-up ABI, not the future geometry command-buffer
 contract.
 
+The default coverage producer tests two pixels per clock, with one-pixel and experimental
+scanline alternatives measured in [gpu-raster-comparison.md](gpu-raster-comparison.md).
+Its quad/marker FIFO explicitly uses BSRAM. A locked viewport setup record is shared across
+compact tile jobs; the full-geometry path retains its separate setup/fan records. Command and
+tile-list lines occupy independent halves of one RAM16 array, sharing the serial FSM's port;
+cache tags also share their lookup/clean read port. Cache memory-port reads are enabled during
+clean, preserving the four independent render banks. This does not add concurrent refill/render
+or the earlier prefetch intended for a future pixel-processing pipeline.
+
 CPU, DMA, display, and GPU clients share physical SDRAM without hardware snooping. Software
 transfers ownership explicitly: CPU-produced data becomes visible after blocking D-cache clean;
 device-produced data becomes safely CPU-readable only after completion and blocking D-cache
@@ -217,17 +226,17 @@ the same stable mapping through `LoaderError::boot_report`.
 
 ## Current fitted result and validation boundary
 
-The 2026-09-26 full-system GPU cache closure and triangle-only build uses 15,720 Logic
-(12,559 LUT, 2,489 ALU, 112 RAM16), 7,670 logic registers, 9,291 CLS, four SDPB, eight DPB,
+The 2026-09-27 full-system Logic closure build defaults to tile traversal with a two-pixel
+coverage producer and uses 14,042 Logic (11,310 LUT, 2,144 ALU, 98 RAM16), 5,753 logic
+registers, 8,811 CLS, four SDPB, eight DPB,
 one pROM, two `MULT18X18`, one `MULT36X36`, and five `MULTADDALU18X18`. GPU storage is four
-cache DPBs plus one raster FIFO SDPB. The CPU clock closes at 54.057 MHz against the 54-MHz
-constraint with 0.020 ns worst setup slack and zero setup/hold TNS. The first setup path is core
-state to GPR write data (`state_2_s7` to `gpr_write_data_6_s0`), through the B-register
-address/read mux, device-write data, and a combinational LUT named `u_gpu/staging_bad_s11`.
-Its cell delay is 6.710 ns and routing delay is 11.522 ns (62.405% of data-path delay).
-The first wholly raster path is vertex Y to AABB register control, with 0.083 ns slack;
-its cell/routing delays are 5.329/12.839 ns. Controller timing closes at
-165.724 MHz against 108 MHz. The project uses Gowin place/route algorithms 1;
+cache DPBs plus one raster FIFO SDPB; command/list and tags share 18 RAM16 cells.
+The CPU clock closes at 55.665 MHz against 54 MHz with 0.554 ns worst setup slack and
+zero setup/hold TNS. Runtime clocks remain 54/108 MHz. The first setup path is fetch-queue
+head selection to BTC rank write enable (`queue_head_1_s0/Q` to
+`btc_rank_btc_rank_RAMREG_3_G[1]_s0/CE`): 19 logic levels, 7.633 ns cell, 10.064 ns route
+and 0.232 ns clock-to-Q. Raster and framebuffer control are not first.
+Controller timing closes at 174.001 MHz against 108 MHz. The project uses Gowin place/route algorithms 1;
 `--check-existing` confirms matching generated sources; fitting is separate from board evidence.
 
 The system-level emulator-vs-RTL co-simulation `tests/system_cosim.rs` drives the composed RTL
@@ -242,12 +251,14 @@ GPU raster tests compare a four-tile crop and 26 complete 400x240 RGB565 scenes 
 independent integer pixel-center/top-left oracle. They check exact pixel/ACK conservation, stalled
 ports, alias eviction, LOAD/CLEAR preservation, guards, and terminal errors at all 36 read/write
 beat positions. The reproducible scene and throughput suite is `tests/gpu_trace_cosim.rs`.
-The earlier tile-display path and cold boot are user-confirmed. The current triangle-only image passes
+The earlier tile-display path and cold boot are user-confirmed. The triangle-only application passes
 full-frame Flash RTL checks for both slots, including nonzero initial sentinels and payload guards.
-After USB reconnection, this image passed complete
-Flash Program/Verify and audited SRAM loading. Restarting BL616 recovered an initially empty UART
-capture; S2 UART passed after loading and after the requested power cycle, with no error frames.
-The user confirmed normal HDMI output; the image remains in complete Flash and the board is now off.
+All 20 aggregate hardware checks pass, including 725 workspace tests, strict Clippy and
+artifact audits; six raster, eight GPU, 26 CPU and two system co-sims pass separately.
+The previous `11729ac` image passed cold-boot UART/HDMI validation. The subsequent
+B-source/AABB image passed complete Flash Program/Verify, SRAM loading and S2 UART,
+and remains in Flash with cold boot pending. The new Logic closure image has passed
+offline/artifact validation; its programming and cold-boot UART/HDMI checks are pending.
 K=1 and blocking refill/clean remain; geometry and varying interpolation are not implemented.
 
 This result is implementation evidence, not a substitute for board validation. Changes to clocks,

@@ -84,6 +84,12 @@ reg pending_test_valid = 0;
 reg [1:0] pending_test_result = 0;
 reg [15:0] instruction = 0;
 reg [15:0] instruction_pc = 0;
+// Select the scalar B source when accepting the instruction, rather than
+// putting Execute-state and LOAD/STORE decode before the asynchronous read.
+reg [3:0] instruction_gpr_b = 0;
+wire [3:0] accepted_gpr_b =
+    (instruction_data[15:12] == 4'h8 || instruction_data[15:12] == 4'h9)
+        ? instruction_data[11:8] : instruction_data[3:0];
 
 reg pending_write = 0;
 reg [31:0] pending_address = 0;
@@ -175,8 +181,7 @@ wire [3:0] gpr_read_a_address =
     fpu2_gpr_x_valid ? fpu2_gpr_x :
     state == ST_HALTED ? 4'd0 :
     field_a;
-wire [3:0] gpr_read_b_address =
-    state == ST_EXECUTE && (opcode == 4'h8 || opcode == 4'h9) ? field_d : field_b;
+wire [3:0] gpr_read_b_address = instruction_gpr_b;
 wire [15:0] gpr_read_a_data =
     gpr_write_enable && gpr_write_address == gpr_read_a_address ?
     gpr_write_data : gpr_read_a_ram_data;
@@ -519,6 +524,7 @@ always @(posedge clk) begin
     if (reset) begin
         gpr_write_enable <= 0;
         state <= ST_RESET_CLEAR;
+        instruction_gpr_b <= 0;
         clear_index <= 0;
         pc_register <= 0;
         code_segment_register <= 0;
@@ -570,6 +576,7 @@ always @(posedge clk) begin
                             state <= ST_FAULT;
                         end else begin
                             instruction <= instruction_data;
+                            instruction_gpr_b <= accepted_gpr_b;
                             instruction_pc <= pc_register;
                             pc_register <= pc_register + 1'b1;
                             state <= ST_EXECUTE;
@@ -587,6 +594,7 @@ always @(posedge clk) begin
                         state <= ST_FAULT;
                     end else begin
                         instruction <= instruction_data;
+                        instruction_gpr_b <= accepted_gpr_b;
                         instruction_pc <= pc_register;
                         pc_register <= pc_register + 1'b1;
                         state <= ST_EXECUTE;
@@ -1062,6 +1070,7 @@ always @(posedge clk) begin
                             state <= ST_FAULT;
                         end else begin
                             instruction <= instruction_data;
+                            instruction_gpr_b <= accepted_gpr_b;
                             instruction_pc <= pc_register;
                             pc_register <= pc_register + 1'b1;
                             state <= ST_EXECUTE;

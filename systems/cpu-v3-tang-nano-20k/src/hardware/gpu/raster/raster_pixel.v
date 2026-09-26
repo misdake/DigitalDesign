@@ -5,7 +5,9 @@
 // retirement handshake; the core retains it until the matching epoch/triangle
 // ACK arrives. Scene DONE therefore cannot release stores before cache commit.
 module CpuV3GpuRasterPixel #(
-    parameter PREFETCH_LIMIT = 2
+    parameter PREFETCH_LIMIT = 2,
+    parameter PIXELS_PER_CYCLE = 2,
+    parameter SCANLINE = 0
 ) (
     input wire clk,
     input wire reset,
@@ -44,7 +46,8 @@ module CpuV3GpuRasterPixel #(
     wire marker_accept = pixel_valid && pixel_ready && quad_is_retire_marker;
     wire marker_ack = marker_waiting && retire_ack_valid;
 
-    CpuV3GpuRaster #(.PREFETCH_LIMIT(PREFETCH_LIMIT)) core (
+    CpuV3GpuRaster #(.PREFETCH_LIMIT(PREFETCH_LIMIT),
+                    .PIXELS_PER_CYCLE(PIXELS_PER_CYCLE), .SCANLINE(SCANLINE)) core (
         .clk(clk), .reset(reset),
         .input_valid(input_valid), .input_last(input_last),
         .input_data(input_data), .input_ready(input_ready),
@@ -75,8 +78,10 @@ module CpuV3GpuRasterPixel #(
     assign pixel_marker_draw = quad_is_retire_marker && retire_marker_draw;
     assign pixel_tri = quad_tri;
     assign pixel_tile = quad_tile;
-    assign pixel_x = quad_x + {15'd0, selected_lane[0]};
-    assign pixel_y = quad_y + {15'd0, selected_lane[1]};
+    // Quad origins are even. Lane selection supplies the low coordinate bit
+    // directly, without a variable carry through the pixel-coordinate bus.
+    assign pixel_x = {quad_x[15:1], selected_lane[0]};
+    assign pixel_y = {quad_y[15:1], selected_lane[1]};
     // Reference stage-5 gradient: RGB565 with a per-triangle blue offset.
     wire [4:0] blue = (pixel_tri[4:0] << 3) - pixel_tri[4:0]
                       + pixel_x[8:4];

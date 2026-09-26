@@ -1,5 +1,5 @@
 `timescale 1ns/1ps
-module tb;
+module tb #(parameter PIXELS_PER_CYCLE = 2, parameter SCANLINE = 0);
 reg clk = 0;
 always #5 clk = ~clk;
 reg reset = 1;
@@ -31,7 +31,7 @@ reg held_valid = 0;
 reg [113:0] held_item = 0;
 wire [113:0] output_item = pixel_record;
 
-CpuV3GpuRasterPixel dut(
+CpuV3GpuRasterPixel #(.PIXELS_PER_CYCLE(PIXELS_PER_CYCLE), .SCANLINE(SCANLINE)) dut(
     .clk(clk), .reset(reset),
     .input_valid(input_valid), .input_last(input_last),
     .input_data(input_data), .input_ready(input_ready),

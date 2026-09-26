@@ -2,7 +2,7 @@
 
 Status: concise milestone index
 Repository: `../../../`
-Updated: 2026-09-26
+Updated: 2026-09-27
 
 Add exactly one short sentence here for each completed optimization; append implementation detail,
 measurements, rejected alternatives, and validation evidence to
@@ -54,6 +54,8 @@ generated outside this document.
 - 2026-09-23 — GPU memory-path repair restored D-cache RAM16 mapping and reduced the long-write gearbox to one 64-bit pair.
 - 2026-09-26 — The viewport rasterizer joined the GPU tile cache, and a registered tile-corner result restored 54-MHz timing.
 - 2026-09-26 — Four swizzled GPU cache DPBs removed pixel beat read-modify-write, added explicit retirement ACK and K=1 acquisition, and passed full-frame integration, 54-MHz timing, and triangle-only cold-boot validation.
+- 2026-09-27 — CPU B-source predecode and two-stage pixel AABB improved fitted timing with unchanged ISA and pixel results; offline and loaded-UART validation passed, with cold boot pending.
+- 2026-09-27 — Compact raster ownership, shared edge stepping, stable BSRAM inference and shared cache/control RAM16 ports reduced Logic; measured tile/scanline candidates select tile at both quad rates, with two-pixel production as default.
 
 ## Next work
 

@@ -287,9 +287,9 @@ reg application_phase_seen = 0;
 integer pre_submit_stall_cycles = 0;
 reg gpu_command_error_seen = 0;
 reg [31:0] pre_submit_last_retired = 0;
-wire [63:0] gpu_debug_payload0 = dut.u_gpu.pending_payload[0];
-wire [63:0] gpu_debug_payload1 = dut.u_gpu.pending_payload[1];
-wire [63:0] gpu_debug_line0 = dut.u_gpu.line_buffer[0];
+wire [63:0] gpu_debug_payload0 = dut.u_gpu.exec_payload0;
+wire [63:0] gpu_debug_payload1 = dut.u_gpu.exec_payload1;
+wire [63:0] gpu_debug_line0 = dut.u_gpu.ro_buffer[0];
 wire [7:0] gpu_debug_valid = {
     dut.u_gpu.cache_valid[7], dut.u_gpu.cache_valid[6],
     dut.u_gpu.cache_valid[5], dut.u_gpu.cache_valid[4],
@@ -316,9 +316,9 @@ always @(posedge clk) begin
             gpu_debug_payload1, dut.u_gpu.qword_index,
             dut.u_gpu.target_set, dut.u_gpu.target_base, gpu_debug_valid,
             dut.u_gpu.draw_tile_pos, dut.u_gpu.list_index,
-            dut.u_gpu.list_chunk_start, dut.u_gpu.list_buffer[0],
-            dut.u_gpu.list_buffer[1], dut.u_gpu.list_buffer[2],
-            dut.u_gpu.list_buffer[3]);
+            dut.u_gpu.list_chunk_start, dut.u_gpu.ro_buffer[4],
+            dut.u_gpu.ro_buffer[5], dut.u_gpu.ro_buffer[6],
+            dut.u_gpu.ro_buffer[7]);
         $finish(1);
     end
 

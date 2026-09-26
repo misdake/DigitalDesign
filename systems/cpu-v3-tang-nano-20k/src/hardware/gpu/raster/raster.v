@@ -26,7 +26,9 @@
 
 module CpuV3GpuRaster #(
     parameter VIEWPORT_ONLY = 1,
-    parameter PREFETCH_LIMIT = 2
+    parameter PREFETCH_LIMIT = 2,
+    parameter PIXELS_PER_CYCLE = 2,
+    parameter SCANLINE = 0
 ) (
     input wire clk,
     input wire reset,
@@ -64,6 +66,17 @@ module CpuV3GpuRaster #(
 );
 
 // ---------------------------------------------------------------------------
+// synthesis translate_off
+initial begin
+    if (PIXELS_PER_CYCLE != 1 && PIXELS_PER_CYCLE != 2)
+        $fatal(1, "raster requires one or two pixels per cycle");
+    if (SCANLINE && !VIEWPORT_ONLY)
+        $fatal(1, "experimental scanline requires snapped viewport input");
+    if (PREFETCH_LIMIT < 1 || PREFETCH_LIMIT > 3)
+        $fatal(1, "raster prefetch limit must be in 1..3");
+end
+// synthesis translate_on
+
 // Constants (framebuffer geometry and device parameters).
 
 localparam [15:0] SCREEN_W = 16'd400;
@@ -75,6 +88,7 @@ localparam [3:0] TILE_SHIFT = 4'd4; // log2(16 px tile)
 localparam [9:0] CLIP_MASK = 10'b11_1100_0011; // near, far, four guard planes
 
 // FIFO depths (match the emu).
+localparam EDGE_BITS = VIEWPORT_ONLY ? 33 : 40;
 localparam IN_DEPTH = 4;
 localparam CLIP_OUT_DEPTH = 4;
 localparam TRI_DEPTH = 4;
@@ -376,14 +390,17 @@ reg [1:0] tri_tail = 2'd0;
 reg [2:0] tri_count = 3'd0;
 
 // Tile FIFO (tile jobs).
-(* syn_ramstyle = "registers" *) reg [436:0] tj_fifo [0:TILE_DEPTH-1];
+(* syn_ramstyle = "distributed_ram" *) reg [436:0] tj_fifo [0:TILE_DEPTH-1];
+reg [436:0] tj_single;
 reg [2:0] tj_head = 3'd0;
 reg [2:0] tj_tail = 3'd0;
 reg [3:0] tj_count = 4'd0;
 
 // Output FIFO. The logical depth gate is QUAD_DEPTH; the physical array has
 // 32 entries for natural pointer wrap. Only one entry is written per cycle.
-reg [47:0] qd_fifo [0:31];
+// Keep the quad/marker queue in BSRAM even when unused output bits are trimmed.
+// Automatic mapping otherwise expands the viewport queue into FFs and muxes.
+(* syn_ramstyle = "block_ram" *) reg [47:0] qd_fifo [0:31];
 reg [4:0] qd_head = 5'd0;
 reg [4:0] qd_tail = 5'd0;
 reg [5:0] qd_count = 6'd0;
@@ -455,6 +472,7 @@ localparam S_AREA = 4'd8;
 localparam S_COEFF = 4'd9;
 localparam S_AABB = 4'd10;
 localparam S_EMIT = 4'd11;
+localparam S_AABB_CLAMP = 4'd12;
 reg [3:0] setup_state = S_IDLE;
 reg [383:0] s_tri = 384'd0;
 reg [1:0] s_i = 2'd0;
@@ -472,6 +490,10 @@ reg signed [17:0] scx [0:2];
 reg signed [17:0] scy [0:2];
 reg stl [0:2];
 reg signed [15:0] saabb [0:3];
+// Floor is monotone: extrema of pixel coordinates equal floor of raw extrema.
+// Keep the 12-bit extrema selection separate from clamp/valid/record commit.
+reg signed [11:0] aabb_min_x = 0, aabb_max_x = 0;
+reg signed [11:0] aabb_min_y = 0, aabb_max_y = 0;
 reg saabb_valid = 1'b0;
 reg [31:0] next_tri_id = 32'd0;
 
@@ -486,7 +508,7 @@ reg signed [15:0] tx = 16'sd0;
 reg signed [15:0] ty = 16'sd0;
 reg [1:0] corner_edge = 2'd0;
 reg corner_pending = 1'b0;
-reg signed [39:0] corner_value = 40'sd0;
+reg signed [EDGE_BITS-1:0] corner_value = 40'sd0;
 reg corner_top_left = 1'b0;
 
 // Quad stage.
@@ -495,19 +517,35 @@ localparam Q_INIT = 3'd1;
 localparam Q_RUN = 3'd2;
 localparam Q_END = 3'd3;
 localparam Q_INIT_COMMIT = 3'd4;
-localparam Q_COMMIT = 3'd5;
+localparam Q_SPAN_SKIP = 3'd5;
+localparam Q_SPAN = 3'd6;
+localparam Q_SPAN_COMMIT = 3'd7;
+reg [1:0] q_phase = 0;
+reg scan_seed_valid = 0;
+reg scan_prefix_ready = 0;
+reg [6:0] scan_prefix_band = 0;
+reg signed [9:0] scan_prefix_x = 0;
+reg scan_skip_row = 0;
+reg [6:0] scan_skip_band = 0;
+reg [2:0] scan_right_mask = 0;
 reg [3:0] q_mask = 4'd0;
-reg q_advance_x = 1'b0, q_advance_y = 1'b0;
 reg [2:0] quad_state = Q_IDLE;
-reg [356:0] q_rec = 357'd0;
+reg [356:0] q_rec_storage = 357'd0;
+wire [356:0] q_rec = VIEWPORT_ONLY ? t_rec : q_rec_storage;
 reg [15:0] q_tile = 16'd0;
-reg [63:0] q_rect = 64'd0;
-reg signed [15:0] qx = 16'sd0;
-reg signed [15:0] qy = 16'sd0;
+// Rectangles are screen-clamped in both input modes. Keep a sign bit on
+// cursor arithmetic, but store only the nine/eight coordinate payload bits.
+reg [33:0] q_rect = 0;
+wire signed [15:0] q_min_x = {7'd0, q_rect[0 +: 9]};
+wire signed [15:0] q_min_y = {8'd0, q_rect[9 +: 8]};
+wire signed [15:0] q_max_x = {7'd0, q_rect[17 +: 9]};
+wire signed [15:0] q_max_y = {8'd0, q_rect[26 +: 8]};
+reg signed [9:0] qx = 0;
+reg signed [8:0] qy = 0;
 reg [1:0] q_init = 2'd0;
-reg signed [39:0] q_init_value = 40'sd0;
-reg signed [39:0] e_base [0:2];
-reg signed [39:0] e_row [0:2];
+reg signed [EDGE_BITS-1:0] q_init_value = 40'sd0;
+reg signed [EDGE_BITS-1:0] e_base [0:2];
+reg signed [EDGE_BITS-1:0] e_row [0:2];
 
 // Merger pin and prefetch accounting.
 reg pin_valid = 1'b0;
@@ -515,8 +553,12 @@ reg [15:0] pin_tile = 16'd0;
 reg [3:0] prefetch_outstanding = 4'd0;
 
 assign prefetch_acquire_valid = t_valid && !corner_pending && corner_edge == 2'd3
-                             && tj_count < 4'd8 && prefetch_outstanding < K_PREFETCH;
-assign prefetch_acquire_tile = {11'd0, ty[4:0]} * 16'd25 + {11'd0, tx[4:0]};
+                             && tj_count < 4'd8 && prefetch_outstanding < K_PREFETCH
+                             && !(SCANLINE && scan_skip_row && ty[6:0] == scan_skip_band)
+                             && !(SCANLINE && scan_prefix_ready && ty[6:0] == scan_prefix_band
+                                  && ((tx <<< 4) + 16'sd15) < scan_prefix_x);
+wire [15:0] traversal_tile_y = SCANLINE ? (ty >> 3) : ty;
+assign prefetch_acquire_tile = {11'd0, traversal_tile_y[4:0]} * 16'd25 + {11'd0, tx[4:0]};
 reg [31:0] walked = 32'd0;
 
 // Scene bookkeeping.
@@ -599,7 +641,8 @@ endtask
 // Advances the tile walk to the next tile (row-major over the tile AABB).
 task tile_next;
     begin
-        corner_edge <= 2'd0;
+        if (SCANLINE) corner_edge <= 2'd3;
+        else corner_edge <= 2'd0;
         if ((tx + 16'sd1) <= tx1) begin
             tx <= tx + 16'sd1;
         end else begin
@@ -688,11 +731,18 @@ always @(posedge clk) begin : pipeline
     reg signed [15:0] yie;
     reg [15:0] pxi;
     reg [15:0] pyi;
-    reg signed [39:0] ev;
+    reg signed [EDGE_BITS-1:0] ev;
     reg cov;
     reg [3:0] mask;
-    reg signed [39:0] stepx;
-    reg signed [39:0] stepy;
+    reg signed [EDGE_BITS-1:0] stepx;
+    reg signed [EDGE_BITS-1:0] stepy;
+    reg signed [39:0] step_delta;
+    reg final_phase;
+    reg [2:0] right_mask;
+    reg terminate_row;
+    reg advance_x;
+    reg advance_y;
+    integer lane_index;
     reg [47:0] qd_item;
     reg [436:0] tj_item;
     reg [356:0] rec;
@@ -735,9 +785,15 @@ always @(posedge clk) begin : pipeline
         setup_state <= S_IDLE;
         next_tri_id <= 32'd0;
         t_valid <= 1'b0;
-        corner_edge <= 2'd0;
+        if (SCANLINE) corner_edge <= 2'd3;
+        else corner_edge <= 2'd0;
         corner_pending <= 1'b0;
         quad_state <= Q_IDLE;
+        q_phase <= 0;
+        scan_seed_valid <= 0;
+        scan_prefix_ready <= 0;
+        scan_skip_row <= 0;
+        scan_right_mask <= 0;
         pin_valid <= 1'b0;
         prefetch_outstanding <= 4'd0;
         walked <= 32'd0;
@@ -1137,25 +1193,32 @@ always @(posedge clk) begin : pipeline
                 setup_state <= S_AABB;
             end
             S_AABB: begin
-                mn = sx[0];
-                if (sx[1] < mn) mn = sx[1];
-                if (sx[2] < mn) mn = sx[2];
-                mx = sx[0];
-                if (sx[1] > mx) mx = sx[1];
-                if (sx[2] > mx) mx = sx[2];
-                px0 = mn >>> 4;
+                mn = $signed(sx[0][15:4]);
+                if ($signed(sx[1][15:4]) < mn) mn = $signed(sx[1][15:4]);
+                if ($signed(sx[2][15:4]) < mn) mn = $signed(sx[2][15:4]);
+                mx = $signed(sx[0][15:4]);
+                if ($signed(sx[1][15:4]) > mx) mx = $signed(sx[1][15:4]);
+                if ($signed(sx[2][15:4]) > mx) mx = $signed(sx[2][15:4]);
+                aabb_min_x <= mn[11:0];
+                aabb_max_x <= mx[11:0];
+                mn = $signed(sy[0][15:4]);
+                if ($signed(sy[1][15:4]) < mn) mn = $signed(sy[1][15:4]);
+                if ($signed(sy[2][15:4]) < mn) mn = $signed(sy[2][15:4]);
+                mx = $signed(sy[0][15:4]);
+                if ($signed(sy[1][15:4]) > mx) mx = $signed(sy[1][15:4]);
+                if ($signed(sy[2][15:4]) > mx) mx = $signed(sy[2][15:4]);
+                aabb_min_y <= mn[11:0];
+                aabb_max_y <= mx[11:0];
+                setup_state <= S_AABB_CLAMP;
+            end
+            S_AABB_CLAMP: begin
+                px0 = aabb_min_x;
                 if (px0 < 16'sd0) px0 = 16'sd0;
-                px1 = mx >>> 4;
+                px1 = aabb_max_x;
                 if (px1 > $signed(SCREEN_W - 16'sd1)) px1 = $signed(SCREEN_W - 16'sd1);
-                mn = sy[0];
-                if (sy[1] < mn) mn = sy[1];
-                if (sy[2] < mn) mn = sy[2];
-                mx = sy[0];
-                if (sy[1] > mx) mx = sy[1];
-                if (sy[2] > mx) mx = sy[2];
-                py0 = mn >>> 4;
+                py0 = aabb_min_y;
                 if (py0 < 16'sd0) py0 = 16'sd0;
-                py1 = mx >>> 4;
+                py1 = aabb_max_y;
                 if (py1 > $signed(SCREEN_H - 16'sd1)) py1 = $signed(SCREEN_H - 16'sd1);
                 if (px0 > px1 || py0 > py1) begin
                     saabb_valid <= 1'b0;
@@ -1179,7 +1242,8 @@ always @(posedge clk) begin : pipeline
                                sy[2], sy[1], sy[0],
                                sx[2], sx[1], sx[0],
                                next_tri_id};
-                        tri_fifo[tri_tail] <= rec;
+                        if (VIEWPORT_ONLY) t_rec <= rec;
+                        else tri_fifo[tri_tail] <= rec;
                         tri_tail <= tri_tail + 2'd1;
                         tri_push = 1'b1;
                         // synthesis translate_off
@@ -1203,7 +1267,8 @@ always @(posedge clk) begin : pipeline
         // ---- tile stage --------------------------------------------------
         if (!t_valid) begin
             if (tri_count != 3'd0) begin
-                rec = tri_fifo[tri_head];
+                if (VIEWPORT_ONLY) rec = t_rec;
+                else rec = tri_fifo[tri_head];
                 tri_head <= tri_head + 2'd1;
                 tri_pop = 1'b1;
                 t_rec <= rec;
@@ -1216,19 +1281,34 @@ always @(posedge clk) begin : pipeline
                 if (ta < 16'sd0) ta = 16'sd0;
                 if (ta > $signed({11'd0, TILE_COLUMNS} - 16'sd1)) ta = $signed({11'd0, TILE_COLUMNS} - 16'sd1);
                 tx1 <= ta;
-                ta = $signed(rec[SR_AABB + 16 +: 16]) >>> 4;
+                if (SCANLINE) ta = $signed(rec[SR_AABB + 16 +: 16]) >>> 1;
+                else ta = $signed(rec[SR_AABB + 16 +: 16]) >>> 4;
                 if (ta < 16'sd0) ta = 16'sd0;
-                if (ta > $signed({12'd0, TILE_ROWS} - 16'sd1)) ta = $signed({12'd0, TILE_ROWS} - 16'sd1);
+                if (SCANLINE) begin
+                    if (ta > 16'sd119) ta = 16'sd119;
+                end else if (ta > $signed({12'd0, TILE_ROWS} - 16'sd1)) ta = $signed({12'd0, TILE_ROWS} - 16'sd1);
                 ty0 <= ta;
                 ty <= ta;
-                ta = $signed(rec[SR_AABB + 48 +: 16]) >>> 4;
+                if (SCANLINE) ta = $signed(rec[SR_AABB + 48 +: 16]) >>> 1;
+                else ta = $signed(rec[SR_AABB + 48 +: 16]) >>> 4;
                 if (ta < 16'sd0) ta = 16'sd0;
-                if (ta > $signed({12'd0, TILE_ROWS} - 16'sd1)) ta = $signed({12'd0, TILE_ROWS} - 16'sd1);
+                if (SCANLINE) begin
+                    if (ta > 16'sd119) ta = 16'sd119;
+                end else if (ta > $signed({12'd0, TILE_ROWS} - 16'sd1)) ta = $signed({12'd0, TILE_ROWS} - 16'sd1);
                 ty1 <= ta;
-                corner_edge <= 2'd0;
+                if (SCANLINE) corner_edge <= 2'd3;
+        else corner_edge <= 2'd0;
                 corner_pending <= 1'b0;
                 t_valid <= 1'b1;
             end
+        end else if (SCANLINE && scan_skip_row && ty[6:0] == scan_skip_band) begin
+            // Once a decreasing-x half-plane rejects the whole quad, every
+            // later x in this two-row band is outside. Do not acquire tiles
+            // that have not entered the queue; queued acquires still retire.
+            tile_next();
+        end else if (SCANLINE && scan_prefix_ready && ty[6:0] == scan_prefix_band
+                && ((tx <<< 4) + 16'sd15) < scan_prefix_x) begin
+            tile_next();
         end else if (corner_pending) begin
             // Keep the DSP edge result off the tile-walk control path.
             corner_pending <= 1'b0;
@@ -1267,21 +1347,26 @@ always @(posedge clk) begin : pipeline
                 ta = {tx[11:0], 4'b0000};
                 if (ta > r0) r0 = ta;
                 r1 = $signed(t_rec[SR_AABB + 16 +: 16]);
-                tb = {ty[11:0], 4'b0000};
+                if (SCANLINE) tb = ty <<< 1;
+                else tb = {ty[11:0], 4'b0000};
                 if (tb > r1) r1 = tb;
                 r2 = $signed(t_rec[SR_AABB + 32 +: 16]);
                 ta = {tx[11:0], 4'b0000} + 16'd15;
                 if (ta < r2) r2 = ta;
                 r3 = $signed(t_rec[SR_AABB + 48 +: 16]);
-                tb = {ty[11:0], 4'b0000} + 16'd15;
+                if (SCANLINE) tb = (ty <<< 1) + 16'sd1;
+                else tb = {ty[11:0], 4'b0000} + 16'd15;
                 if (tb < r3) r3 = tb;
-                tindex = {11'd0, ty[4:0]} * 16'd25 + {11'd0, tx[4:0]};
+                tindex = prefetch_acquire_tile;
                 if (VIEWPORT_ONLY)
-                    tj_item = {357'd0, r3, r2, r1, r0, tindex};
+                    tj_item = {416'd0, ty[6:0], tx[4:0], tindex[8:0]};
                 else
                     tj_item = {t_rec, r3, r2, r1, r0, tindex};
-                tj_fifo[tj_tail] <= tj_item;
-                tj_tail <= tj_tail + 3'd1;
+                if (PREFETCH_LIMIT == 1) tj_single <= tj_item;
+                else begin
+                    tj_fifo[tj_tail] <= tj_item;
+                    tj_tail <= tj_tail + 3'd1;
+                end
                 tj_push = 1'b1;
                 po_push = 1'b1;
                 // synthesis translate_off
@@ -1296,117 +1381,234 @@ always @(posedge clk) begin : pipeline
         case (quad_state)
             Q_IDLE: begin
                 if (tj_count != 4'd0) begin
-                    tj_item = tj_fifo[tj_head];
-                    tj_head <= tj_head + 3'd1;
+                    if (PREFETCH_LIMIT == 1) tj_item = tj_single;
+                    else begin
+                        tj_item = tj_fifo[tj_head];
+                        tj_head <= tj_head + 3'd1;
+                    end
                     tj_pop = 1'b1;
-                    if (VIEWPORT_ONLY)
-                        q_rec <= t_rec;
-                    else
-                        q_rec <= tj_item[TJ_REC +: 357];
-                    q_tile <= tj_item[TJ_INDEX +: 16];
-                    q_rect <= tj_item[TJ_RECT +: 64];
-                    qx <= $signed(tj_item[TJ_RECT +: 16]);
-                    qy <= $signed(tj_item[TJ_RECT + 16 +: 16]);
+                    if (VIEWPORT_ONLY) begin
+                        // A viewport triangle remains locked until its marker
+                        // ACK. Share its setup record instead of copying it
+                        // into a four-entry setup queue and each tile job.
+                        q_tile <= {7'd0, tj_item[8:0]};
+                        r0 = $signed(t_rec[SR_AABB +: 16]);
+                        ta = {7'd0, tj_item[13:9], 4'd0};
+                        if (ta > r0) r0 = ta;
+                        r2 = $signed(t_rec[SR_AABB + 32 +: 16]);
+                        ta = ta + 16'sd15;
+                        if (ta < r2) r2 = ta;
+                        r1 = $signed(t_rec[SR_AABB + 16 +: 16]);
+                        if (SCANLINE) tb = $signed({8'd0, tj_item[20:14], 1'b0});
+                        else tb = $signed({5'd0, tj_item[20:14], 4'd0});
+                        if (tb > r1) r1 = tb;
+                        r3 = $signed(t_rec[SR_AABB + 48 +: 16]);
+                        if (SCANLINE) tb = tb + 16'sd1;
+                        else tb = tb + 16'sd15;
+                        if (tb < r3) r3 = tb;
+                        q_rect <= {r3[7:0], r2[8:0], r1[7:0], r0[8:0]};
+                        qx <= r0; qy <= r1;
+                    end else begin
+                        q_rec_storage <= tj_item[TJ_REC +: 357];
+                        q_tile <= tj_item[TJ_INDEX +: 16];
+                        q_rect <= {tj_item[TJ_RECT + 48 +: 8], tj_item[TJ_RECT + 32 +: 9],
+                                   tj_item[TJ_RECT + 16 +: 8], tj_item[TJ_RECT +: 9]};
+                        qx <= $signed(tj_item[TJ_RECT +: 16]);
+                        qy <= $signed(tj_item[TJ_RECT + 16 +: 16]);
+                    end
                     q_init <= 2'd0;
-                    quad_state <= Q_INIT;
+                    q_phase <= 0;
+                    q_mask <= 0;
+                    if (SCANLINE && scan_skip_row && tj_item[20:14] == scan_skip_band)
+                        quad_state <= Q_END;
+                    else if (SCANLINE && scan_seed_valid) begin
+                        scan_skip_row <= 0;
+                        if (!scan_prefix_ready || scan_prefix_band != tj_item[20:14]) begin
+                            scan_prefix_ready <= 0;
+                            scan_prefix_band <= tj_item[20:14];
+                            quad_state <= Q_SPAN;
+                        end else if (r2 < scan_prefix_x) quad_state <= Q_END;
+                        else begin
+                            if (r0 < scan_prefix_x) qx <= scan_prefix_x;
+                            quad_state <= Q_RUN;
+                        end
+                    end
+                    else quad_state <= Q_INIT;
                 end
             end
-            Q_INIT: begin
-                // Per-tile initialization: the three edge values at the
-                // first quad origin, one edge per cycle.
+            Q_INIT, Q_SPAN: begin
+                // Reuse the same two edge DSP products for initialization
+                // and sequential scanline left-span tests.
                 cxe = $signed(q_rec[SR_CX + q_init*18 +: 18]);
                 cye = $signed(q_rec[SR_CY + q_init*18 +: 18]);
                 xie = $signed(q_rec[SR_X + q_init*16 +: 16]);
                 yie = $signed(q_rec[SR_Y + q_init*16 +: 16]);
-                q_init_value <= edge_eval_raw(cxe, cye, xie, yie, qx[15:0], qy[15:0]);
-                quad_state <= Q_INIT_COMMIT;
+                pxi = {6'd0, qx}; pyi = {7'd0, qy};
+                if (SCANLINE && quad_state == Q_SPAN) begin
+                    pxi = pxi + 16'd15;
+                    if (cye > 0) pyi = pyi + 16'd1;
+                    if (cxe <= 0) begin
+                        if (q_init == 2) begin
+                            scan_prefix_ready <= 1;
+                            scan_prefix_x <= qx;
+                            if (qx > q_max_x) quad_state <= Q_END;
+                            else quad_state <= Q_RUN;
+                        end else q_init <= q_init + 1;
+                    end else quad_state <= Q_SPAN_COMMIT;
+                end else quad_state <= Q_INIT_COMMIT;
+                q_init_value <= edge_eval_raw(cxe, cye, xie, yie, pxi, pyi);
             end
             Q_INIT_COMMIT: begin
                 // Separate DSP/selector delay from the edge-array write mux.
                 e_base[q_init] <= q_init_value;
                 e_row[q_init] <= q_init_value;
-                if (q_init == 2'd2) quad_state <= Q_RUN;
+                if (q_init == 2'd2) begin
+                    if (SCANLINE) begin
+                        scan_prefix_band <= qy[7:1];
+                        quad_state <= Q_SPAN;
+                    end else quad_state <= Q_RUN;
+                    scan_seed_valid <= 1;
+                end
                 else quad_state <= Q_INIT;
-                q_init <= q_init + 2'd1;
+                if (q_init == 2) q_init <= 0;
+                else q_init <= q_init + 2'd1;
             end
+            Q_SPAN_COMMIT: if (SCANLINE) begin
+                if (q_rec[SR_TL + q_init]) cov = q_init_value >= 0;
+                else cov = q_init_value > 0;
+                if (!cov) begin
+                    q_init <= 0;
+                    quad_state <= Q_SPAN_SKIP;
+                end else if (q_init == 2) begin
+                    scan_prefix_ready <= 1;
+                    scan_prefix_x <= qx;
+                    if (qx > q_max_x) quad_state <= Q_END;
+                    else quad_state <= Q_RUN;
+                end else begin
+                    q_init <= q_init + 1;
+                    quad_state <= Q_SPAN;
+                end
+            end else quad_state <= Q_IDLE;
+            Q_SPAN_SKIP: if (SCANLINE) begin
+                    if ((qx + 16'sd16) <= $signed(q_rec[SR_AABB + 32 +: 16])) begin
+                        for (ci = 0; ci < 3; ci = ci + 1) begin
+                            stepx = $signed(q_rec[SR_CX + ci*18 +: 18]) <<< 8;
+                            e_base[ci] <= e_base[ci] + stepx;
+                        end
+                        qx <= qx + 16'sd16;
+                        quad_state <= Q_SPAN;
+                    end else begin
+                        for (ci = 0; ci < 3; ci = ci + 1) begin
+                            stepy = $signed(q_rec[SR_CY + ci*18 +: 18]) <<< 5;
+                            e_base[ci] <= e_row[ci] + stepy;
+                            e_row[ci] <= e_row[ci] + stepy;
+                        end
+                        scan_skip_row <= 1;
+                        scan_skip_band <= qy[7:1];
+                        quad_state <= Q_END;
+                    end
+            end else quad_state <= Q_IDLE;
             Q_RUN: begin
-                // Depth gate matches the emu (checked once per quad).
+                // synthesis translate_off
+                if (qx[0] || qy[0] || q_min_x[0] || q_min_y[0]
+                        || !q_max_x[0] || !q_max_y[0]
+                        || qx < q_min_x || qx > q_max_x || qy < q_min_y || qy > q_max_y)
+                    $fatal(1, "quad cursor left the outward-rounded rectangle");
+                // synthesis translate_on
                 if (qd_count < 6'd24) begin
-                    // Compute coverage before the registered FIFO commit. Values derive
-                    // from the quad origin by 40-bit adds (one pixel step =
-                    // 16 raw units).
-                    mask = 4'd0;
-                    for (dy = 0; dy < 2; dy = dy + 1) begin
-                        for (dx = 0; dx < 2; dx = dx + 1) begin
-                            pxi = qx + dx[15:0];
-                            pyi = qy + dy[15:0];
-                            if ($signed(pxi) <= $signed(q_rect[32 +: 16])
-                                    && $signed(pyi) <= $signed(q_rect[48 +: 16])) begin
-                                cov = 1'b1;
-                                for (ci = 0; ci < 3; ci = ci + 1) begin
-                                    stepx = $signed(q_rec[SR_CX + ci*18 +: 18]) <<< 4;
-                                    stepy = $signed(q_rec[SR_CY + ci*18 +: 18]) <<< 4;
-                                    ev = e_base[ci];
-                                    if (dx == 1) ev = ev + stepx;
-                                    if (dy == 1) ev = ev + stepy;
-                                    if (q_rec[SR_TL + ci]) begin
-                                        if (!(ev >= 40'sd0)) cov = 1'b0;
-                                    end else begin
-                                        if (!(ev > 40'sd0)) cov = 1'b0;
-                                    end
-                                end
-                                if (cov)
-                                    mask[dy*2 + dx] = 1'b1;
+                    // One shared edge accumulator per edge. The two-pixel
+                    // version checks adjacent lanes; the one-pixel version
+                    // walks it in 00,01,10,11 order over four clocks. The
+                    // column order reuses one dx-dy step for both odd phases.
+                    mask = q_mask;
+                    if (q_phase == 0) right_mask = 3'b111;
+                    else right_mask = scan_right_mask;
+                    for (dx = 0; dx < PIXELS_PER_CYCLE; dx = dx + 1) begin
+                        if (PIXELS_PER_CYCLE == 1)
+                            lane_index = {q_phase[0], q_phase[1]};
+                        else
+                            lane_index = q_phase * 2 + dx;
+                        // Even origins and outward odd maxima make all four
+                        // lanes belong to the rectangle. Only edge coverage
+                        // needs a per-lane test.
+                        cov = 1'b1;
+                        for (ci = 0; ci < 3; ci = ci + 1) begin
+                            ev = e_base[ci];
+                            if (PIXELS_PER_CYCLE == 2 && dx == 1) begin
+                                stepx = $signed(q_rec[SR_CX + ci*18 +: 18]) <<< 4;
+                                ev = ev + stepx;
+                            end
+                            if (!q_rec[SR_CX + ci*18 + 17]) right_mask[ci] = 0;
+                            if (q_rec[SR_TL + ci]) begin
+                                if (ev < 40'sd0) cov = 1'b0;
+                                else right_mask[ci] = 0;
+                            end else begin
+                                if (ev <= 40'sd0) cov = 1'b0;
+                                else right_mask[ci] = 0;
                             end
                         end
+                        mask[lane_index] = cov;
                     end
-                    q_mask <= mask;
-                    q_advance_x <= (qx + 16'sd2) <= $signed(q_rect[32 +: 16]);
-                    q_advance_y <= (qy + 16'sd2) <= $signed(q_rect[48 +: 16]);
-                    quad_state <= Q_COMMIT;
-                end
-            end
-            Q_COMMIT: begin
-                // Space was reserved by Q_RUN; no other producer can push
-                // while this tile is active. Cut coverage/rectangle compares
-                // out of the FIFO enable and incremental-edge write muxes.
-                quad_state <= Q_RUN;
-                if (q_mask != 4'd0) begin
-                    if (VIEWPORT_ONLY)
-                        qd_item = {16'd0, 2'd0, q_tile[8:0], qx[8:0], qy[7:0], q_mask};
-                    else
-                        qd_item = {q_rec[15:0], 2'd0, q_tile[8:0], qx[8:0], qy[7:0], q_mask};
-                    qd_fifo[qd_tail] <= qd_item;
-                    qd_push = 2'd1;
-                    // synthesis translate_off
-                    $display("RAST %0d QUAD %0d %0d %0d %0x",
-                             trace_seq, q_rec[31:0], qx, qy, q_mask);
-                    trace_seq = trace_seq + 1;
-                    // synthesis translate_on
-                end
-                // Advance the quad cursor with incremental edge updates
-                // (one quad step = 2 pixels = 32 raw units).
-                if (q_advance_x) begin
+                    final_phase = (PIXELS_PER_CYCLE == 1 && q_phase == 2'd3)
+                               || (PIXELS_PER_CYCLE == 2 && q_phase == 2'd1);
+                    terminate_row = SCANLINE && (|right_mask);
+                    advance_x = !terminate_row && (qx + 16'sd2) <= q_max_x;
+                    advance_y = (qy + 16'sd2) <= q_max_y;
                     for (ci = 0; ci < 3; ci = ci + 1) begin
-                        stepx = $signed(q_rec[SR_CX + ci*18 +: 18]) <<< 5;
-                        e_base[ci] <= e_base[ci] + stepx;
+                        stepx = $signed(q_rec[SR_CX + ci*18 +: 18]) <<< 4;
+                        stepy = $signed(q_rec[SR_CY + ci*18 +: 18]) <<< 4;
+                        step_delta = stepx;
+                        if (PIXELS_PER_CYCLE == 1) begin
+                            if (q_phase[0]) step_delta = stepx - stepy;
+                            else step_delta = stepy;
+                        end else begin
+                            if (q_phase == 2'd0) step_delta = stepy;
+                            else step_delta = (stepx <<< 1) - stepy;
+                        end
+                        if (final_phase && terminate_row) begin
+                            e_base[ci] <= e_row[ci] + (stepy <<< 1);
+                            e_row[ci] <= e_row[ci] + (stepy <<< 1);
+                        end else if (!final_phase || advance_x
+                                || (SCANLINE && (qx + 16'sd2)
+                                    <= $signed(q_rec[SR_AABB + 32 +: 16])))
+                            e_base[ci] <= e_base[ci] + step_delta;
+                        else if (advance_y || (SCANLINE && (qy + 16'sd2)
+                                    <= $signed(q_rec[SR_AABB + 48 +: 16]))) begin
+                            e_base[ci] <= e_row[ci] + (stepy <<< 1);
+                            e_row[ci] <= e_row[ci] + (stepy <<< 1);
+                        end
                     end
-                    qx <= qx + 16'sd2;
-                    qd_tail <= qd_tail + {4'd0, qd_push[0]};
-                end else if (q_advance_y) begin
-                    for (ci = 0; ci < 3; ci = ci + 1) begin
-                        stepy = $signed(q_rec[SR_CY + ci*18 +: 18]) <<< 5;
-                        e_row[ci] <= e_row[ci] + stepy;
-                        e_base[ci] <= e_row[ci] + stepy;
+                    if (!final_phase) begin
+                        q_mask <= mask;
+                        scan_right_mask <= right_mask;
+                        q_phase <= q_phase + 2'd1;
+                    end else begin
+                        q_mask <= 0;
+                        q_phase <= 0;
+                        if (terminate_row) begin
+                            scan_skip_row <= 1;
+                            scan_skip_band <= qy[7:1];
+                        end
+                        if (mask != 4'd0) begin
+                            if (VIEWPORT_ONLY)
+                                qd_item = {16'd0, 2'd0, q_tile[8:0], qx[8:0], qy[7:0], mask};
+                            else
+                                qd_item = {q_rec[15:0], 2'd0, q_tile[8:0], qx[8:0], qy[7:0], mask};
+                            qd_fifo[qd_tail] <= qd_item;
+                            qd_push = 2'd1;
+                            qd_tail <= qd_tail + 5'd1;
+                            // synthesis translate_off
+                            $display("RAST %0d QUAD %0d %0d %0d %0x",
+                                     trace_seq, q_rec[31:0], qx, qy, mask);
+                            trace_seq = trace_seq + 1;
+                            // synthesis translate_on
+                        end
+                        if (advance_x) qx <= qx + 16'sd2;
+                        else if (advance_y) begin
+                            qx <= q_min_x;
+                            qy <= qy + 16'sd2;
+                        end else quad_state <= Q_END;
                     end
-                    qx <= $signed(q_rect[0 +: 16]);
-                    qy <= qy + 16'sd2;
-                    qd_tail <= qd_tail + {4'd0, qd_push[0]};
-                end else begin
-                    // The tile-end uses the next write cycle so this
-                    // FIFO has a single write port.
-                    qd_tail <= qd_tail + {4'd0, qd_push[0]};
-                    quad_state <= Q_END;
                 end
             end
             Q_END: begin
@@ -1476,6 +1678,10 @@ always @(posedge clk) begin : pipeline
             end else if (qd_item[QI_KIND +: 2] == 2'd2) begin
                 marker_queued <= 1'b0;
                 triangle_inflight <= 1'b0;
+                scan_seed_valid <= 0;
+                scan_prefix_ready <= 0;
+                scan_skip_row <= 0;
+                scan_right_mask <= 0;
             end else begin
                 // synthesis translate_off
                 $fatal(1, "invalid raster output kind");
@@ -1489,7 +1695,13 @@ always @(posedge clk) begin : pipeline
         in_count <= in_count + {2'b0, in_push} - {2'b0, in_pop};
         co_count <= co_count + {2'b0, co_push} - {2'b0, co_pop};
         tri_count <= tri_count + {2'b0, tri_push} - {2'b0, tri_pop};
-        tj_count <= tj_count + {3'b0, tj_push} - {3'b0, tj_pop};
+        if (PREFETCH_LIMIT == 1) begin
+            // synthesis translate_off
+            if (tj_push && tj_pop) $fatal(1, "K=1 tile slot ownership overlap");
+            // synthesis translate_on
+            if (tj_push) tj_count <= 1;
+            else if (tj_pop) tj_count <= 0;
+        end else tj_count <= tj_count + {3'b0, tj_push} - {3'b0, tj_pop};
         // QUAD, TILE_END and marker pushes are mutually exclusive. Avoid
         // a multi-adder pop-control path back from the synchronous FIFO head.
         case ({|qd_push, qd_pop})

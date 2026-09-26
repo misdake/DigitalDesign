@@ -10,6 +10,9 @@ use crate::hardware::gpu::rastersim::setup::{self, TriangleSetup};
 use std::cell::RefCell;
 use std::path::Path;
 use std::process::Command;
+use std::sync::atomic::{AtomicU64, Ordering};
+
+static NEXT_RASTER_RUN: AtomicU64 = AtomicU64::new(0);
 
 fn vectors(selected: &[&Scene]) -> String {
     let mut text = String::new();
@@ -34,10 +37,23 @@ fn vectors(selected: &[&Scene]) -> String {
 }
 
 fn run_rtl_source(vectors: &str, testbench: &str, throttle: u8) -> String {
+    run_rtl_source_mode(vectors, testbench, throttle, 2, false)
+}
+
+fn run_rtl_source_mode(
+    vectors: &str,
+    testbench: &str,
+    throttle: u8,
+    pixels: u8,
+    scanline: bool,
+) -> String {
     let manifest = Path::new(env!("CARGO_MANIFEST_DIR"));
     let source = manifest.join("src/hardware/gpu/raster");
+    // The candidate matrix and individual viewport tests run concurrently in
+    // aggregate validation, even with the same testbench and stall pattern.
+    let run = NEXT_RASTER_RUN.fetch_add(1, Ordering::Relaxed);
     let directory = std::env::temp_dir().join(format!(
-        "raster-cosim-{}-{testbench}-{throttle}",
+        "raster-cosim-{}-{run}-{testbench}-{throttle}",
         std::process::id()
     ));
     std::fs::create_dir_all(&directory).unwrap();
@@ -49,6 +65,8 @@ fn run_rtl_source(vectors: &str, testbench: &str, throttle: u8) -> String {
         .current_dir(&directory)
         .args(["-g2012", "-DRASTER_COSIM", "-s", "tb", "-I"])
         .arg(&directory)
+        .arg(format!("-Ptb.PIXELS_PER_CYCLE={pixels}"))
+        .arg(format!("-Ptb.SCANLINE={}", u8::from(scanline)))
         .arg("-o")
         .arg(&output)
         .arg(source.join("raster.v"))
@@ -256,7 +274,48 @@ fn viewport_cases() -> Vec<ViewportCase> {
             name: "viewport-subpixel-sliver".into(),
             triangles: vec![[[160, 160], [161, 160], [160, 161]]],
         },
+        ViewportCase {
+            name: "span-offset-shared-edge".into(),
+            triangles: vec![
+                [[54, 86], [3094, 86], [3094, 1846]],
+                [[54, 86], [3094, 1846], [54, 1846]],
+            ],
+        },
+        ViewportCase {
+            name: "span-bottom-right-sliver".into(),
+            triangles: vec![[[6241, 3745], [6400, 3839], [6240, 3840]]],
+        },
+        ViewportCase {
+            name: "span-guard-band".into(),
+            triangles: vec![[[-8192, -8192], [8192, 96], [96, 8192]]],
+        },
     ]);
+    // Reproducible small triangles exercise prefix offsets, partial tiles,
+    // and both increasing/decreasing edges without relying on the demo.
+    let mut seed = 0x7193_a0e5u32;
+    for index in 0..12 {
+        let mut next = || {
+            seed = seed.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
+            seed
+        };
+        let base_x = (next() % 5500) as i16 - 256;
+        let base_y = (next() % 3000) as i16 - 256;
+        let mut triangle = std::array::from_fn(|_| {
+            [
+                base_x + (next() % 1500) as i16,
+                base_y + (next() % 1100) as i16,
+            ]
+        });
+        let a = triangle.map(|[x, y]| [i64::from(x), i64::from(y)]);
+        if (a[1][0] - a[0][0]) * (a[2][1] - a[0][1]) - (a[2][0] - a[0][0]) * (a[1][1] - a[0][1]) < 0
+        {
+            triangle.swap(1, 2);
+        }
+        cases.push(ViewportCase {
+            name: format!("span-seeded-{index}"),
+            triangles: vec![triangle],
+        });
+    }
     cases
 }
 
@@ -408,6 +467,86 @@ fn check_viewport(cases: &[ViewportCase], throttle: u8) {
 #[ignore = "explicit stage-5 viewport raster RTL co-simulation"]
 fn viewport_raster_matches_reference() {
     check_viewport(&viewport_cases(), 0);
+}
+
+#[test]
+#[ignore = "explicit tile/scanline resource and throughput candidate differential"]
+fn viewport_raster_candidate_matrix() {
+    let cases = viewport_cases();
+    let mut csv = String::from("traversal,pixels_per_cycle,throttle,scene,cycles,quads,visited,peak_quad_gap,cycles_per_quad\n");
+    for scanline in [false, true] {
+        for pixels in [1, 2] {
+            for throttle in [0, 1, 2] {
+                let stdout = run_rtl_source_mode(
+                    &viewport_vectors(&cases),
+                    "raster_viewport_tb.v",
+                    throttle,
+                    pixels,
+                    scanline,
+                );
+                let actual = parse_rtl_scenes(&stdout);
+                assert!(stdout.contains(&format!("RAST_CONFIG {pixels} {}", u8::from(scanline))));
+                assert_eq!(actual.len(), cases.len());
+                for (case, (name, _, output)) in cases.iter().zip(&actual) {
+                    assert_eq!(name, &case.name);
+                    let (_, expected) = viewport_expected(case);
+                    // Traversal differs, but each quad and lane mask must be
+                    // exactly equal, including multiplicity and triangle ID.
+                    for kind in ["QUAD", "RETIRE_MARKER"] {
+                        let mut e: Vec<_> = expected
+                            .iter()
+                            .filter(|s| s.starts_with(kind))
+                            .cloned()
+                            .collect();
+                        let mut a: Vec<_> = output
+                            .iter()
+                            .filter(|s| s.starts_with(kind))
+                            .cloned()
+                            .collect();
+                        if kind == "QUAD" {
+                            e.sort();
+                            a.sort();
+                        }
+                        assert_bucket(name, kind, &e, &a);
+                    }
+                }
+                let metrics: Vec<_> = stdout
+                    .lines()
+                    .filter_map(|s| s.strip_prefix("RAST_METRICS "))
+                    .collect();
+                assert_eq!(metrics.len(), cases.len());
+                for line in metrics {
+                    let fields: Vec<_> = line.split_whitespace().collect();
+                    assert_eq!(fields.len(), 5);
+                    let cycles: u64 = fields[1].parse().unwrap();
+                    let quads: u64 = fields[2].parse().unwrap();
+                    let average = if quads == 0 {
+                        String::new()
+                    } else {
+                        format!("{:.6}", cycles as f64 / quads as f64)
+                    };
+                    let peak: u64 = fields[4].parse().unwrap();
+                    if throttle == 0 && fields[0] == "screen-borders" {
+                        assert_eq!(peak, 4 / u64::from(pixels), "dense producer peak");
+                    }
+                    let traversal = if scanline { "scanline" } else { "tile" };
+                    let peak = if quads < 2 {
+                        String::new()
+                    } else {
+                        peak.to_string()
+                    };
+                    csv.push_str(&format!(
+                        "{traversal},{pixels},{throttle},{},{cycles},{quads},{},{peak},{average}\n",
+                        fields[0], fields[3]
+                    ));
+                }
+            }
+        }
+    }
+    let directory =
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("../../target/gpu-raster-candidates");
+    std::fs::create_dir_all(&directory).unwrap();
+    std::fs::write(directory.join("throughput.csv"), csv).unwrap();
 }
 
 #[test]
