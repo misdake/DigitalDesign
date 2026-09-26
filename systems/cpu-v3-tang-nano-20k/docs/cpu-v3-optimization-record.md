@@ -1215,3 +1215,22 @@ aggregate artifact and physical evidence belongs to the current
 [architecture validation boundary](architecture.md#current-fitted-result-and-validation-boundary).
 Earlier framebuffer prefetch for future pixel processing is deliberately deferred;
 the existing K=1 acquisition is retained. No frozen CPU suite revision is introduced.
+
+Commit `6149698` passed the complete 20-step hardware validation, including 725
+workspace tests and both full-image Flash RTL tests. Its post-commit rebuild reproduces
+the candidate resources/timing and archives the reports; the frozen 22-program suite
+matches `11729ac` in every CSV field except commit, with unchanged suite/schema hashes.
+Parallel test runs now allocate distinct raster/GPU simulation directories; the
+full-system diagnostic testbench observes the updated logical payload and line storage.
+
+Only the audited post-commit image was programmed: source fingerprint
+`9773b306c6894463`, bitstream fingerprint `e88e600dc255a42a`, bitstream SHA-256
+`3751beb3596811dae05f79e0da1153c843791d0884166d6b407c09864d2c3321`.
+SRAM-only loading passed 499 strict S2 `0x0b` success frames. Complete Flash
+Program/Verify at `0x000000`, including the generated boot package at `0x100000`,
+then another SRAM load passed 499 further S2 success frames. Both captures have zero
+failure, wrong-test, checksum or boot-error frames; no BL616 restart was needed.
+The complete image SHA-256 is
+`22b4b8460b7d9f2851c06c85370a1c7453e2e40cc23eb09d4c64329373df6ecf`.
+The optimized default is now retained in both Flash and SRAM. These are loaded-image
+UART results; user power-cycle, cold-boot UART and HDMI observation remain pending.

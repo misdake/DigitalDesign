@@ -226,9 +226,8 @@ the same stable mapping through `LoaderError::boot_report`.
 
 ## Current fitted result and validation boundary
 
-The 2026-09-27 full-system Logic closure build defaults to tile traversal with a two-pixel
-coverage producer and uses 14,042 Logic (11,310 LUT, 2,144 ALU, 98 RAM16), 5,753 logic
-registers, 8,811 CLS, four SDPB, eight DPB,
+The 2026-09-27 default tile two-pixel coverage producer uses 14,042 system Logic
+(11,310 LUT, 2,144 ALU, 98 RAM16), 5,753 logic registers, 8,811 CLS, four SDPB, eight DPB,
 one pROM, two `MULT18X18`, one `MULT36X36`, and five `MULTADDALU18X18`. GPU storage is four
 cache DPBs plus one raster FIFO SDPB; command/list and tags share 18 RAM16 cells.
 The CPU clock closes at 55.665 MHz against 54 MHz with 0.554 ns worst setup slack and
@@ -255,10 +254,11 @@ The earlier tile-display path and cold boot are user-confirmed. The triangle-onl
 full-frame Flash RTL checks for both slots, including nonzero initial sentinels and payload guards.
 All 20 aggregate hardware checks pass, including 725 workspace tests, strict Clippy and
 artifact audits; six raster, eight GPU, 26 CPU and two system co-sims pass separately.
-The previous `11729ac` image passed cold-boot UART/HDMI validation. The subsequent
-B-source/AABB image passed complete Flash Program/Verify, SRAM loading and S2 UART,
-and remains in Flash with cold boot pending. The new Logic closure image has passed
-offline/artifact validation; its programming and cold-boot UART/HDMI checks are pending.
+The previous `11729ac` image passed cold-boot UART/HDMI validation. The Logic closure
+image at `6149698` passed audited SRAM loading, then complete Flash Program/Verify
+at `0x000000` (boot package at `0x100000`) and another SRAM load. Each UART capture
+passes 499 strict S2 `0x0b` success frames with zero errors; BL616 recovery was unnecessary.
+This optimized image now remains in Flash and SRAM; its cold-boot UART/HDMI check is pending.
 K=1 and blocking refill/clean remain; geometry and varying interpolation are not implemented.
 
 This result is implementation evidence, not a substitute for board validation. Changes to clocks,

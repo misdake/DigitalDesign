@@ -175,6 +175,13 @@ large consumers. These values are not added to the PnR total.
 | SDRAM controller | 230 | Vendor controller boundary. |
 | System control | 81 | Cache-maintenance and device contracts. |
 | Write gearbox | 51 | Ordered 108/54-MHz write transfer. |
+| Composition / board glue | 341 | Own attributes of the system composition and board wrapper. |
+
+The resource ledger's 3,968-Logic `logic_glue` category includes the 3,566-Logic
+GPU; it is not a separate large glue circuit. The other 402 are composition/board
+glue, the write gearbox, reset and boot-progress control. Similarly, the ledger
+groups fetch/BTC with I-cache, arbiter with system control, and the small boot
+device with boot DMA. The hierarchy table separates these actual owners.
 
 The D-cache dirty bitmap is deliberately still FF storage: it supplies a sixteen-entry
 maintenance window and global dirty status while accepting dirty updates. A simple
