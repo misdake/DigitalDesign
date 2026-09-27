@@ -22,6 +22,12 @@ The system owns concrete memory layout, device indices and channels, board clock
 firmware, display scheduling, and physical validation. The CPU IP sees only physical instruction and
 data word ports plus the narrow device port.
 
+The [eight-DPB C16/Z16 storage and quad owner](framebuffer-cache.md) is instantiated
+by the production GPU. It retains source quads through atomic masked writes and
+executes in physical bank order. The controller retains blocking acquisition and
+color-only SDRAM traffic; local Z initializes to far depth. Real depth/blend,
+depth surface binding and concurrent sector scheduling remain separate work.
+
 ## Processor and instruction path
 
 The core is precise and in order. Stage 12 adds a conservative two-stage frontend: eligible
@@ -172,14 +178,15 @@ rejected without incrementing the accepted count. The temporary command processo
 RGB565 colors, a 16-row write mask, and a temporary tile-local XY-gradient flag. Solid and gradient
 writes share the same cache path; the gradient uses channel-high bits plus local x/y and four-bit
 x+y, without multipliers. The framebuffer cache is eight-entry direct-mapped and
-stores eight complete 16x16 tiles in four explicit 512x16 true-dual-port DPB banks. Bank selection is
-`(x + 2*y) mod 4`; the memory port transfers 64-bit beats and the render port writes RGB565 directly.
+stores eight complete 16x16 C16/Z16 tiles in eight explicit true-dual-port DPBs.
+Bank selection is `(x + 2*y) mod 4`; each plane transfers horizontal 64-bit memory
+beats and the render owner reads/writes a masked quad in two clocks.
 A miss blocks while a dirty
 victim is cleaned or a LOAD tile is refilled; each tile transfer is four 128-byte transactions.
 `TRIANGLE` (`0xe2`) is four qwords: a zero-argument header followed by three viewport vertices,
 each packed as `{y:s12.4, x:s12.4}` in the low 32 bits of one qword. The rasterizer emits covered
-RGB565 pixels in tile order. A ready/valid prefetch acquisition admits one outstanding tile (K=1);
-pixels of the acquired tile write the render port without a beat read-modify-write. Uncovered lanes
+RGB565 quads in tile order. A ready/valid prefetch acquisition admits one outstanding tile (K=1);
+the source FIFO head is retained until the owner completes the write. Uncovered lanes
 retain the LOAD contents. The Phase-1 pixel record carries a draw epoch and triangle ID. The draw
 marker follows all accepted pixels and remains at the raster boundary until the cache returns the
 matching epoch/triangle retirement ACK; the command processor then waits for scene done.
@@ -245,7 +252,7 @@ the published line groups before conversion begins.
 
 Display retains strict priority. A caught-up refill is 50 segments per two source rows;
 initial fill is at most 100 segments. The conditional ideal scheduling estimate and its
-refresh/contention limitations are in the [upgrade comparison](../../../target/display-upgrade/comparison.md).
+refresh/contention limitations are in the upgrade comparison (archived work-1 report).
 
 On boot failure, the boot stage repeatedly emits a ten-byte UART frame containing ASCII `CV3B`,
 stage, category, error code, two detail bytes, and an XOR checksum. The stage byte is always `1` for
@@ -254,16 +261,33 @@ the same stable mapping through `LoaderError::boot_report`.
 
 ## Current fitted result and validation boundary
 
-The 2026-09-27 default 2x four-line display/sRGB upgrade with the original pixel-pair
-FIFO uses 13,986 system Logic (11,182 LUT, 2,144 ALU, 110 RAM16), 5,618 FF, 8,780 CLS,
-five SDPB, eight DPB, one pROM, two `MULT18X18`, one `MULT36X36`, and five `MULTADDALU18X18`. GPU storage is four
-cache DPBs plus one raster FIFO SDPB; command/list and tags share 18 RAM16 cells.
-The CPU clock closes at 57.469 MHz against 54 MHz with 1.118 ns worst setup slack and
-zero setup/hold TNS. Runtime clocks remain 54/108 MHz. The first setup path is GPU phase
-control (`u_gpu/phase_0_s3/Q` to `u_gpu/phase_4_s3/D`).
-Controller timing closes at 180.633 MHz against 108 MHz. Place/route algorithms remain 1.
-Restoration checks, the default artifact in `target/cpu_v3_system_gowin` and superseded
-comparisons are linked in the [FIFO restoration report](../../../target/display-fifo-restored/comparison.md).
+The 2026-09-27 default 2x four-line display/sRGB path with the original pixel-pair
+FIFO now includes the production eight-DPB framebuffer and quad owner. The matched
+work-1 baseline was reproduced before attachment; exported sources differ only in GPU RTL.
+
+| Production fit | Logic | LUT | ALU | RAM16 | Logic FF | BSRAM | CPU fitted fmax | Worst setup slack |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| Display work-1, four color cache DPBs | 13,986 | 11,182 | 2,144 | 110 | 5,618 | 14 | 57.469 MHz | 1.118 ns |
+| **Display + eight-DPB C/Z quad owner** | **14,152** | **11,317** | **2,175** | **110** | **5,620** | **18** | **54.260 MHz** | **0.089 ns** |
+
+The integration adds 166 Logic, 135 LUT, two FF and four BSRAM. It adds quad old-value
+reads and local Z initialization; it is not a net Logic reduction against the simpler
+color-only pixel writer. The matched standalone lane-order saving is a different boundary.
+The current fit uses 8,806 CLS, five SDPB, twelve DPB, one pROM, two `MULT18X18`, one
+`MULT36X36` and five `MULTADDALU18X18`. GPU storage is eight cache DPBs plus one raster
+FIFO SDPB; command/list and tags share 18 RAM16 cells. Real shader/depth/blend and depth
+surface traffic are outside this fit; the reserved Z DPBs are included.
+
+Runtime clocks remain 54/108 MHz, with zero setup/hold TNS and violated endpoints.
+CPU timing closes with little margin. The first setup path is GPU phase control
+(`u_gpu/phase_0_s3/Q` to `u_gpu/cache_valid_2_s1/CE`); controller timing closes at
+160.256 MHz against 108 MHz. Place/route algorithms remain 1.
+Full hardware validation, 727 workspace tests, strict Clippy, CPU/system co-simulations
+(26/2) and ten GPU integration tests passed. Source/constraints, baseline and routed reports
+are preserved in local record `gpu-display-framebuffer-2026-09-27`, indexed by the agent guide.
+The integration has no new physical-board proof.
+
+## Verification and physical evidence
 
 The system-level emulator-vs-RTL co-simulation `tests/system_cosim.rs` drives the composed RTL
 (core, fetch queue, I-cache, D-cache, memory arbiter, and a behavioral SDRAM word port) in Icarus

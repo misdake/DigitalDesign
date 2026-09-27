@@ -34,9 +34,9 @@ foreach ($variant in $variants) {
     Copy-Item -LiteralPath (Join-Path $base "build.tcl") -Destination $directory
     $source = Join-Path $directory $sourceRelative
     $text = [IO.File]::ReadAllText($source)
-    $anchor = "CpuV3GpuRasterPixel #(.PREFETCH_LIMIT(1)) raster"
+    $anchor = "CpuV3GpuRasterPixel #(.PREFETCH_LIMIT(1), .QUAD_MODE(1)) raster"
     if (!$text.Contains($anchor)) { throw "Raster parameter anchor missing" }
-    $replacement = "CpuV3GpuRasterPixel #(.PREFETCH_LIMIT(1), .PIXELS_PER_CYCLE($($variant.pixels)), .SCANLINE($($variant.scanline))) raster"
+    $replacement = "CpuV3GpuRasterPixel #(.PREFETCH_LIMIT(1), .QUAD_MODE(1), .PIXELS_PER_CYCLE($($variant.pixels)), .SCANLINE($($variant.scanline))) raster"
     [IO.File]::WriteAllText($source, $text.Replace($anchor, $replacement), [Text.UTF8Encoding]::new($false))
     $variant.directory = $directory
     $variant.log = Join-Path $directory "gowin.log"

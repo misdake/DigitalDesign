@@ -9,54 +9,18 @@
 // dirty victim is cleaned with four 128-byte `gpu_fb_w` transactions before its
 // entry is reused, and END drains every dirty entry before retiring. A
 // temporary inline triangle command feeds the viewport rasterizer; its pixel
-// stream updates one RGB565 lane at a time through the same tile cache.
+// stream retains each covered quad until its masked RGB565 write completes.
 //
 // Command/cache transaction behavior matches `hardware::gpu::GpuCore`.
 // Raster setup has its own cycle timing; differential tests compare ordered
-// transactions, pixels and cache marker ACKs. Four 512x16 true-dual-port banks
-// form a swizzled 512x64 memory port and independent 16-bit render ports.
+// transactions, pixels and cache marker ACKs. Four color and four depth
+// true-dual-port banks form separate swizzled 64-bit memory planes and a
+// two-clock quad read/write owner. Eight entries use half of each 1024x16 DPB.
 // CLEAN_PRIME primes the registered memory read before each clean transaction.
-// The output merger writes one covered RGB565 pixel directly, without beat RMW.
+// The current test shader replaces covered colors; depth/blend execution and
+// a depth surface binding remain separate work. New entries initialize Z16
+// locally to far depth. Tags, whole-tile cleaning and END ordering are retained.
 // Explicit DPB leaves preserve both physical write ports through synthesis.
-module CpuV3GpuFramebufferCacheBank (
-    input  wire        clk,
-    input  wire        write_enable,
-    input  wire [8:0]  write_address,
-    input  wire [15:0] write_data,
-    input  wire        read_enable,
-    input  wire [8:0]  read_address,
-    output wire [15:0] read_data,
-    input wire render_write_enable,
-    input wire [8:0] render_address,
-    input wire [15:0] render_write_data
-);
-    wire [8:0] memory_address = write_enable ? write_address : read_address;
-`ifdef __ICARUS__
-    reg [15:0] memory [0:511];
-    reg [15:0] memory_read = 0;
-    assign read_data = memory_read;
-    always @(posedge clk) begin
-        if (write_enable) memory[memory_address] <= write_data;
-        else if (read_enable) memory_read <= memory[memory_address];
-        if (render_write_enable) memory[render_address] <= render_write_data;
-        if (render_write_enable && (write_enable || read_enable) && memory_address == render_address)
-            $fatal(1, "framebuffer bank memory/render port collision");
-    end
-`else
-    DPB #(.READ_MODE0(1'b0), .READ_MODE1(1'b0),
-          .WRITE_MODE0(2'b00), .WRITE_MODE1(2'b00),
-          .BIT_WIDTH_0(16), .BIT_WIDTH_1(16),
-          .BLK_SEL_0(3'b000), .BLK_SEL_1(3'b000), .RESET_MODE("SYNC")) memory (
-        .DOA(read_data), .DOB(), .DIA(write_data), .DIB(render_write_data),
-        .ADA({1'b0, memory_address, 2'b00, 2'b11}),
-        .ADB({1'b0, render_address, 2'b00, 2'b11}),
-        .BLKSELA(3'b000), .BLKSELB(3'b000),
-        .WREA(write_enable), .WREB(render_write_enable),
-        .CLKA(clk), .CLKB(clk), .CEA(write_enable || read_enable), .CEB(1'b1),
-        .OCEA(1'b0), .OCEB(1'b0), .RESETA(1'b0), .RESETB(1'b0));
-`endif
-endmodule
-
 module CpuV3Gpu (
     input wire clk, input wire reset,
     input wire [2:0] device_index, input wire [3:0] device_channel,
@@ -115,7 +79,7 @@ module CpuV3Gpu (
                      PH_END_SCAN = 5'd14, PH_RETIRE = 5'd15, PH_ERROR = 5'd16,
                      PH_EXECUTE = 5'd17, PH_RASTER_FEED = 5'd18,
                      PH_RASTER_RUN = 5'd19,
-                     PH_PIXEL_WRITE = 5'd21, PH_RASTER_DRAIN = 5'd22;
+                     PH_PIXEL_WRITE = 5'd21, PH_RASTER_DRAIN = 5'd22, PH_DEPTH_CLEAR = 5'd23;
 
     reg [4:0] phase = PH_IDLE;
 
@@ -206,12 +170,17 @@ module CpuV3Gpu (
     // The accepted K=1 acquire owns cur_tile_index/cur_entry until tile-end.
     // Keep the render ready path independent of FIFO tile -> cache tag muxes.
     wire raster_hit = render_tile_valid;
-    wire raster_pixel_ready = ((phase == PH_PIXEL_WRITE) && render_tile_valid)
-        || ((phase == PH_RASTER_RUN) && !raster_prefetch_valid
-            && (raster_pixel_marker || render_tile_valid));
+    wire framebuffer_input_ready;
+    wire framebuffer_input_valid = raster_pixel_valid && !raster_pixel_marker
+        && ((phase == PH_PIXEL_WRITE) || (phase == PH_RASTER_RUN && !raster_prefetch_valid))
+        && render_tile_valid;
+    wire raster_pixel_ready = raster_pixel_marker
+        ? (phase == PH_RASTER_RUN && !raster_prefetch_valid)
+        : framebuffer_input_ready;
+    wire [3:0] raster_quad_mask;
     // K=1 serializes acquire against the blocking cleaner while raster setup
     // and quad production continue during the refill.
-    CpuV3GpuRasterPixel #(.PREFETCH_LIMIT(1)) raster (
+    CpuV3GpuRasterPixel #(.PREFETCH_LIMIT(1), .QUAD_MODE(1)) raster (
         .clk(clk), .reset(reset || ((phase == PH_EXECUTE) && (pending_opcode == OP_TRIANGLE))),
         .input_valid(phase == PH_RASTER_FEED),
         .input_last(raster_vertex == 2'd2),
@@ -221,7 +190,7 @@ module CpuV3Gpu (
         .pixel_is_retire_marker(raster_pixel_marker),
         .pixel_marker_draw(raster_marker_draw), .pixel_tri(raster_pixel_tri),
         .pixel_tile(raster_pixel_tile), .pixel_x(raster_pixel_x),
-        .pixel_y(raster_pixel_y), .pixel_color(raster_pixel_color),
+        .pixel_y(raster_pixel_y), .pixel_color(raster_pixel_color), .pixel_quad_mask(raster_quad_mask),
         .pixel_record(raster_pixel_record),
         .retire_ack_valid(retire_ack_valid), .retire_ack_epoch(retire_ack_epoch),
         .retire_ack_tri(retire_ack_tri),
@@ -244,7 +213,7 @@ module CpuV3Gpu (
     // ---- END drain cursor ----
     reg [3:0] end_scan_index = 0;
 
-    // ---- cache data: four true-dual-port 512x16 banks ----
+    // ---- cache data: four C16 + four Z16 true-dual-port banks ----
     wire [31:0] cache_rd_lo, cache_rd_hi;
 
     // Device port selection.
@@ -401,11 +370,11 @@ module CpuV3Gpu (
 
     // Shared synchronous write port; address 0 when idle.
     wire cache_wr_en = ((phase == PH_REFILL_WAIT) && gpu_fb_r_response_valid && !gpu_fb_r_error)
-                       || (phase == PH_CLEAR_FILL)
+                       || (phase == PH_CLEAR_FILL) || (phase == PH_DEPTH_CLEAR)
                        || ((phase == PH_DRAW_APPLY) && draw_row_mask[transfer_beat[5:2]]);
     wire [8:0] cache_wr_addr = (phase == PH_REFILL_WAIT)
         ? {transfer_entry, transfer_line, transfer_beat[3:0]}
-        : ((phase == PH_CLEAR_FILL) ? {transfer_entry, transfer_beat[5:0]}
+        : ((phase == PH_CLEAR_FILL || phase == PH_DEPTH_CLEAR) ? {transfer_entry, transfer_beat[5:0]}
                                     : ((phase == PH_DRAW_APPLY) ? {cur_entry, transfer_beat[5:0]} : 9'd0));
     // Temporary fake-draw gradient. The base color supplies the high channel
     // bits while tile-local x/y provide the low bits. Four pixels are formed
@@ -440,31 +409,55 @@ module CpuV3Gpu (
 
     wire [63:0] cache_write_beat = (phase == PH_REFILL_WAIT)
         ? gpu_fb_r_read_data
-        : ((phase == PH_CLEAR_FILL) ? {4{draw_clear_color}} : draw_write_beat);
-    // Bank = (x + 2*y) mod 4. Odd rows exchange the beat's two halves.
-    wire [63:0] bank_write_beat = cache_wr_addr[2]
-        ? {cache_write_beat[31:0], cache_write_beat[63:32]} : cache_write_beat;
-    wire [63:0] bank_read_beat;
-    reg cache_read_odd_row = 0;
-    always @(posedge clk) if (cache_rd_en) cache_read_odd_row <= cache_rd_addr[2];
-    wire [63:0] cache_read_beat = cache_read_odd_row
-        ? {bank_read_beat[31:0], bank_read_beat[63:32]} : bank_read_beat;
+        : ((phase == PH_DEPTH_CLEAR) ? 64'hffffffffffffffff
+           : ((phase == PH_CLEAR_FILL) ? {4{draw_clear_color}} : draw_write_beat));
+    // Horizontal memory beats, bank-order execution, logical completion mask.
+    wire [63:0] cache_read_beat;
+    wire framebuffer_memory_write_ready,framebuffer_memory_read_ready;
+    wire framebuffer_memory_response_valid,framebuffer_execute_valid,framebuffer_commit_valid;
+    wire [3:0] framebuffer_commit_mask;
+    wire [127:0] framebuffer_execute_colors;
+    wire [63:0] framebuffer_execute_depths,framebuffer_old_colors,framebuffer_old_depths;
+    wire [3:0] framebuffer_execute_mask;
+    wire [31:0] rgba = {raster_pixel_color[15:11],raster_pixel_color[15:13],
+        raster_pixel_color[10:5],raster_pixel_color[10:9],
+        raster_pixel_color[4:0],raster_pixel_color[4:2],8'hff};
+    // The current 2D test shader has one color throughout each even 2x2 quad.
+    // Real RGBA/Z execution attaches to this owner boundary separately.
+    wire [63:0] framebuffer_result_colors = {4{raster_pixel_color}};
+    FusedFramebufferPipe #(.SLOT_BITS(2),.HALF_CAPACITY(1),.BANK_ORDER(1),
+`ifdef __ICARUS__
+`ifdef GPU_FRAMEBUFFER_VENDOR
+        .PORTABLE_MODEL(0)
+`else
+        .PORTABLE_MODEL(1)
+`endif
+`else
+        .PORTABLE_MODEL(0)
+`endif
+    ) framebuffer (
+        .clk(clk),.reset(reset || control_reset),
+        .input_valid(framebuffer_input_valid),.input_ready(framebuffer_input_ready),.resident(render_tile_valid),
+        .input_group(cur_entry[2]),.input_way(cur_entry[1:0]),
+        .input_x(raster_pixel_x[3:0]),.input_y(raster_pixel_y[3:0]),
+        .input_colors({4{rgba}}),.input_depths(64'hffffffffffffffff),.input_mask(raster_quad_mask),
+        .depth_enable(1'b0),.depth_write(1'b0),.depth_func(3'd7),.blend_mode(2'd0),
+        .execute_valid(framebuffer_execute_valid),.execute_ready(1'b1),
+        .execute_colors(framebuffer_execute_colors),.execute_depths(framebuffer_execute_depths),
+        .execute_mask(framebuffer_execute_mask),.old_colors(framebuffer_old_colors),.old_depths(framebuffer_old_depths),
+        .result_colors(framebuffer_result_colors),.result_mask(4'b1111),
+        .commit_valid(framebuffer_commit_valid),.commit_ready(1'b1),.commit_mask(framebuffer_commit_mask),
+        .memory_write_valid(cache_wr_en),.memory_write_ready(framebuffer_memory_write_ready),
+        .memory_write_group(cache_wr_addr[8]),
+        .memory_write_address({1'b0,cache_wr_addr[7:6],(phase == PH_DEPTH_CLEAR),cache_wr_addr[5:0]}),
+        .memory_write_data(cache_write_beat),.memory_write_mask(8'hff),
+        .memory_read_valid(cache_rd_en),.memory_read_ready(framebuffer_memory_read_ready),
+        .memory_read_group(cache_rd_addr[8]),.memory_read_address({1'b0,cache_rd_addr[7:6],1'b0,cache_rd_addr[5:0]}),
+        .memory_response_valid(framebuffer_memory_response_valid),.memory_response_ready(1'b1),
+        .memory_response_data(cache_read_beat));
     assign cache_rd_lo = cache_read_beat[31:0];
     assign cache_rd_hi = cache_read_beat[63:32];
-    wire render_write = !reset && raster_pixel_valid && raster_pixel_ready && !raster_pixel_marker;
-    wire [1:0] render_bank = raster_pixel_x[1:0] ^ {raster_pixel_y[0], 1'b0};
-    wire [8:0] render_address = {cur_entry, raster_pixel_y[3:0], raster_pixel_x[3:2]};
-    genvar bank;
-    generate for (bank = 0; bank < 4; bank = bank + 1) begin: framebuffer_banks
-        CpuV3GpuFramebufferCacheBank data (
-            .clk(clk), .write_enable(cache_wr_en), .write_address(cache_wr_addr),
-            .write_data(bank_write_beat[bank*16 +: 16]),
-            // Disable idle port A while rendering through port B.
-            .read_enable(cache_rd_en), .read_address(cache_rd_addr),
-            .read_data(bank_read_beat[bank*16 +: 16]),
-            .render_write_enable(render_write && render_bank == bank),
-            .render_address(render_address), .render_write_data(raster_pixel_color));
-    end endgenerate
+    wire render_write = framebuffer_commit_valid;
     // synthesis translate_off
     always @(posedge clk) begin
         if (!reset && render_write) begin
@@ -765,8 +758,10 @@ module CpuV3Gpu (
                     end
                 end
                 PH_PIXEL_WRITE: begin
-                    raster_tile_access <= 1'b0;
-                    phase <= PH_RASTER_RUN;
+                    if(framebuffer_input_ready) begin
+                        raster_tile_access <= 1'b0;
+                        phase <= PH_RASTER_RUN;
+                    end
                 end
                 PH_LIST_FETCH: begin
                     if (gpu_ro_request_ready) begin
@@ -886,8 +881,7 @@ module CpuV3Gpu (
                                 cache_valid[transfer_entry] <= 1'b1;
 
                                 cache_dirty[transfer_entry] <= 1'b0;
-                                render_tile_valid <= raster_tile_access;
-                                phase <= raster_tile_access ? (raster_prefetch_access ? PH_RASTER_RUN : PH_PIXEL_WRITE) : PH_DRAW_APPLY;
+                                phase <= PH_DEPTH_CLEAR;
                             end else begin
                                 transfer_line <= transfer_line + 2'd1;
                                 phase <= PH_REFILL_REQ;
@@ -902,9 +896,18 @@ module CpuV3Gpu (
 
                         cache_dirty[transfer_entry] <= 1'b0;
                         transfer_beat <= 6'd0;
-                        phase <= PH_DRAW_APPLY;
+                        phase <= PH_DEPTH_CLEAR;
                     end else
                         transfer_beat <= transfer_beat + 6'd1;
+                end
+                PH_DEPTH_CLEAR: begin
+                    // The bring-up ABI has no depth surface. Local Z starts at
+                    // far depth; its four banks remain for the future executor.
+                    if(transfer_beat == 6'd63) begin
+                        transfer_beat <= 0;
+                        render_tile_valid <= raster_tile_access;
+                        phase <= raster_tile_access ? (raster_prefetch_access ? PH_RASTER_RUN : PH_PIXEL_WRITE) : PH_DRAW_APPLY;
+                    end else transfer_beat <= transfer_beat + 6'd1;
                 end
                 PH_DRAW_APPLY: begin
                     if (transfer_beat == 6'd63) begin

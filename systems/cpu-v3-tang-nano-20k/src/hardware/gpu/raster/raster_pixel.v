@@ -7,7 +7,8 @@
 module CpuV3GpuRasterPixel #(
     parameter PREFETCH_LIMIT = 2,
     parameter PIXELS_PER_CYCLE = 2,
-    parameter SCANLINE = 0
+    parameter SCANLINE = 0,
+    parameter QUAD_MODE = 0
 ) (
     input wire clk,
     input wire reset,
@@ -25,6 +26,7 @@ module CpuV3GpuRasterPixel #(
     output wire [15:0] pixel_x,
     output wire [15:0] pixel_y,
     output wire [15:0] pixel_color,
+    output wire [3:0] pixel_quad_mask,
     // Phase-1 PIXEL record: kind, draw-end, epoch, triangle, tile, x, y, RGB565.
     output wire [113:0] pixel_record,
     input wire retire_ack_valid,
@@ -73,15 +75,16 @@ module CpuV3GpuRasterPixel #(
     wire pixel_fire = pixel_valid && pixel_ready && !quad_is_retire_marker;
 
     assign pixel_valid = quad_valid && !quad_is_tile_end && !marker_waiting
-                       && (quad_is_retire_marker || has_pixel);
+                       && (quad_is_retire_marker || (QUAD_MODE ? (|quad_mask) : has_pixel));
     assign pixel_is_retire_marker = quad_is_retire_marker;
     assign pixel_marker_draw = quad_is_retire_marker && retire_marker_draw;
     assign pixel_tri = quad_tri;
     assign pixel_tile = quad_tile;
     // Quad origins are even. Lane selection supplies the low coordinate bit
     // directly, without a variable carry through the pixel-coordinate bus.
-    assign pixel_x = {quad_x[15:1], selected_lane[0]};
-    assign pixel_y = {quad_y[15:1], selected_lane[1]};
+    assign pixel_x = {quad_x[15:1], QUAD_MODE ? 1'b0 : selected_lane[0]};
+    assign pixel_y = {quad_y[15:1], QUAD_MODE ? 1'b0 : selected_lane[1]};
+    assign pixel_quad_mask = QUAD_MODE ? quad_mask : (4'b0001 << selected_lane);
     // Reference stage-5 gradient: RGB565 with a per-triangle blue offset.
     wire [4:0] blue = (pixel_tri[4:0] << 3) - pixel_tri[4:0]
                       + pixel_x[8:4];
@@ -91,7 +94,7 @@ module CpuV3GpuRasterPixel #(
     assign quad_ready = quad_valid &&
         (quad_is_tile_end || (!quad_is_retire_marker && !has_pixel)
          || (quad_is_retire_marker && marker_ack)
-         || (!quad_is_retire_marker && pixel_ready && last_lane));
+         || (!quad_is_retire_marker && pixel_ready && (QUAD_MODE || last_lane)));
 
     always @(posedge clk) begin
         if (reset)

@@ -1245,9 +1245,9 @@ Both banks contain linear-to-sRGB tables; a staged format bit follows NEXT_SWAP 
 The reset-default encoded format preserves the existing applications' pixel interpretation.
 The separate adapter buffer for legacy writes into SDRAM remains unchanged.
 
-The [complete upgrade comparison](../../../target/display-upgrade/comparison.md) measures
+The complete upgrade comparison (archived work-1 report) measures
 the superseded direct-handoff candidate against the original same-mode build taken before
-these edits. The selected FIFO build is in the restoration report below. Other-client wait
+these edits. The selected FIFO build is in the archived restoration report below. Other-client wait
 estimates remain conditional on controller response timing; refresh/contention and board validation are
 not established by these offline checks.
 
@@ -1262,7 +1262,7 @@ Mutually exclusive Cargo features `display-2x` and `display-3x` select the sched
 video timing and PLL together; neither flag preserves the default 2x mode. Full-frame
 pixel checks cover both modes, both color formats, bank/row/group boundaries and
 pixel output alignment. Restoration checks and fitted artifacts are linked in the
-[FIFO restoration report](../../../target/display-fifo-restored/comparison.md).
+FIFO restoration report (archived work-1 report).
 No new physical-board validation was performed.
 
 The original top-level resource assertion still expected the single display BSRAM;
@@ -1272,15 +1272,68 @@ boot, SDRAM, GPU render and display request path beyond the isolated scanout tes
 Both required co-simulation layers and both pixel modes also pass.
 
 Measured display savings and the full-system remapping limitation are kept in the
-[generated comparison](../../../target/display-pair-handoff/comparison.md). The 2x
+generated comparison (archived work-1 report). The 2x
 display hierarchy shrinks while the full-system total grows because other synthesis
 hierarchies map differently; no SDRAM-adapter source was changed. The 3x fit is a
 separate video-mode characterization, not a same-mode FIFO comparison.
 
-The follow-up [RAM16 packing study](../../../target/display-ram16-study/comparison.md)
+The follow-up RAM16 packing study (archived work-1 report)
 reproduces the previous FIFO fit with a byte-identical synthesis hierarchy report.
 Serializing each pair's channels into a narrower memory retains the queue capacity
 and passes both modes' pixel checks, but its full-system fit is larger. The user
 selected the original FIFO for its lower whole-system fit. Fewer RAM16 cells alone
 do not preserve the old SDRAM-adapter mapping. Direct handoff remains a measured,
 superseded experiment rather than the current scanout implementation.
+
+The work-1 comparison/restoration/packing reports cited above are preserved in the
+local SHA256-manifested worktree archive at commit `5545c4e`; the agent guide indexes
+that archive. Generated reports are evidence artifacts rather than maintained specs.
+
+## Accepted framebuffer component, 2026-09-27
+
+The [eight-DPB framebuffer contract](framebuffer-cache.md) replaces physical tile groups and
+a numerical color queue with fixed memory/render ports and source ownership through the final
+write. The independent component and reproducible vendor tests are committed together; its
+resource/throughput table is the sole home for these measurements. Earlier queue, shared-pool
+and array alternatives remain in local record `gpu-merger-study-2026-09-27`. The final component
+also verifies zero-byte writes do not steal concurrent read addresses. This does not change the
+production GPU export, boot images or fitted-system accounting. Controller/sector/lease/cleaner
+integration and real depth/blend arithmetic remain pending; no new board validation is claimed.
+
+## Standalone framebuffer execution lanes, 2026-09-27
+
+The [framebuffer component](framebuffer-cache.md#measured-component-boundary) now executes
+pointwise operations in physical bank order. One latched lane-control bit converts the held
+RGBA8888/Z16 source and completion mask, removing wide old-value and render-write permutations.
+The matched full-source-width probe retains all alpha/color bits and preserves word-level
+conflict checks; its fitted results live only in the component resource table. Extra memory
+response registers and one-hot selection cost more LUTs; broader sector blocking also stalls
+legitimate accesses to other words in the active sector, so these alternatives were rejected.
+
+Six native tests cover seven configurations/callbacks/delays and five independently reproduced
+faults, including lane ordering. Same-sector different-word access and same-tile different-sector
+streams retain concurrency. All 725 workspace tests, workspace Clippy, and the mandatory CPU/system
+co-simulations (26/2) passed. Local record `gpu-framebuffer-resource-2026-09-27` retains source hashes,
+vendor models, routed reports, rejected candidates and validation logs. This remains a standalone
+component change: no production GPU export, frozen CPU suite or board-validation claim changes.
+
+## Production framebuffer attachment to display work-1, 2026-09-27
+
+The [eight-DPB storage and quad owner](framebuffer-cache.md#production-attachment)
+is attached to the production GPU on work-1's four-row display/sRGB baseline.
+Whole covered quads retain the raster FIFO head through actual masked writes;
+the serial pixel splitter and former four-bank array are replaced. Existing tags,
+color LOAD/CLEAR/clean, K=1 blocking acquisition and ordered marker/END behavior
+are retained. Local Z initializes to far depth because the current command ABI
+has no depth surface binding. The four Z DPBs are retained in synthesis, so the
+full-system fit includes the accepted physical storage. Depth/blend arithmetic
+and concurrent sector scheduling remain separate work.
+
+Ten GPU integration tests pass, including 26 scenes with an independent complete
+image oracle, transactions, pixel/ACK conservation, faults and reset. An actual
+vendor-DPB production run agrees with the reference; omitting depth initialization
+reproduces a semantic audit failure. Full-system resource results belong only to
+the [current architecture result](architecture.md#current-fitted-result-and-validation-boundary).
+Local record `gpu-display-framebuffer-2026-09-27` preserves the matched production
+baseline, integration sources and validation reports. Geometry/frontend and SDRAM
+branch changes are outside this integration. No new board validation is claimed.

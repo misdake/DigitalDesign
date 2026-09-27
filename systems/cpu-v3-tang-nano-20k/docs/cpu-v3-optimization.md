@@ -61,5 +61,17 @@ generated outside this document.
 
 ## Next work
 
+The production framebuffer storage/quad attachment to the display work-1 baseline
+is complete, with full integration regression and routed resources recorded in
+[`architecture.md`](architecture.md#current-fitted-result-and-validation-boundary).
+
+The accepted [eight-DPB framebuffer component](framebuffer-cache.md) reduces LUT use in a matched
+standalone comparison and removes the numerical color queue. Its contract and tests are complete;
+bank-order execution with one latched lane-control bit further reduces selection logic while
+preserving word-level memory/render concurrency. Production storage/quad integration retains
+blocking color traffic and initializes local Z to far depth. Depth/blend execution, depth
+surface binding and concurrent sector scheduling remain pending; whole-system fit is recorded
+in the architecture document.
+
 Future CPU or system optimizations are added here only after completion; planned GPU work is tracked
 in the GPU design documents and the project todo rather than expanded in this index.

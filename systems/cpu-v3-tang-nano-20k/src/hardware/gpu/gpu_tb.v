@@ -182,14 +182,28 @@ end
 integer tseq = 0;
 // Explicit marker retirement is independent of dirty-cache SDRAM drain.
 always @(posedge clk) begin
+`ifndef GPU_FRAMEBUFFER_SERIAL_TRACE
+    if (!reset && dut.framebuffer_execute_valid && dut.framebuffer_old_depths !== 64'hffffffffffffffff)
+        $fatal(1, "integrated depth initialization mismatch");
+`endif
     if (!reset && dut.retire_ack_valid) begin
         $display("GPU %0d RACK %0d %0d", tseq, dut.retire_ack_epoch, dut.retire_ack_tri);
         tseq = tseq + 1;
     end
 `ifdef GPU_RASTER_SUITE
+`ifdef GPU_FRAMEBUFFER_SERIAL_TRACE
     if (!reset && dut.render_write)
         $display("PIXEL %0d %0d %0d %0d %04x", dut.draw_epoch,
                  dut.raster_pixel_tri, dut.raster_pixel_x, dut.raster_pixel_y, dut.raster_pixel_color);
+`else
+    if (!reset && dut.render_write) begin
+        for(integer committed_lane=0;committed_lane<4;committed_lane=committed_lane+1)
+            if(dut.framebuffer_commit_mask[committed_lane])
+                $display("PIXEL %0d %0d %0d %0d %04x", dut.draw_epoch,
+                    dut.raster_pixel_tri,dut.raster_pixel_x+(committed_lane%2),
+                    dut.raster_pixel_y+(committed_lane/2),dut.raster_pixel_color);
+    end
+`endif
 `endif
 end
 

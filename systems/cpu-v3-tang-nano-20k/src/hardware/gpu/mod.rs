@@ -13,8 +13,10 @@
 //! command sends viewport vertices through the rasterizer and writes covered
 //! RGB565 pixels through the same tile cache.
 //!
-//! The model stores logical 64-bit beats; RTL uses four true-dual-port
-//! 512x16 banks, with `(x + 2*y) mod 4` swizzle and direct pixel writes.
+//! The model stores logical color beats; RTL uses four color and four depth
+//! true-dual-port banks, with `(x + 2*y) mod 4` swizzle and atomic quad writes.
+//! New entries initialize local Z16 to far depth. Depth surface binding and
+//! depth/blend arithmetic are separate work; the model has no active depth plane.
 //! K=1 ready/valid acquisition overlaps raster production with blocking refill.
 //! Pixel markers receive explicit epoch/triangle ACKs before command decode;
 //! submission completion separately waits for dirty-cache SDRAM drain.
@@ -161,8 +163,8 @@ impl TargetComponent for GpuResources {
             // not just logical payload bits.
             ResourceAmount::new(ResourceKind::SsramBit, 18 * 64),
             // The viewport raster core adds one BSRAM FIFO and four DSP
-            // macros to the four true-dual-port framebuffer banks.
-            ResourceAmount::new(ResourceKind::Bsram18K, 5),
+            // macros to the eight true-dual-port C/Z framebuffer banks.
+            ResourceAmount::new(ResourceKind::Bsram18K, 9),
             // Four fitted DSP macros consume eight 18x18 resource slots.
             ResourceAmount::new(ResourceKind::Multiplier18x18, 8),
         ]
@@ -1218,7 +1220,7 @@ impl Module for CpuV3Gpu {
 
     fn target_resources() -> Vec<TargetResourceRequest> {
         // Gowin maps the small command-line/list/payload/submission arrays to
-        // thirty-two 64-bit RAM16 leaves. The framebuffer cache uses four
+        // thirty-two 64-bit RAM16 leaves. The framebuffer cache uses eight
         // true-dual-port BSRAMs; the raster adds one BSRAM and four DSP macros.
         // Keep the full leaf in one allocation label.
         vec![TargetResourceRequest::new(GpuResources)]
@@ -1321,7 +1323,9 @@ impl Module for CpuV3Gpu {
 
     fn verilog_source() -> Option<String> {
         Some(format!(
-            "{}\n{}\n{}",
+            "{}\n{}\n{}\n{}\n{}",
+            include_str!("framebuffer_lane_array.v"),
+            include_str!("fused_framebuffer_pipe.v"),
             include_str!("raster/raster.v"),
             include_str!("raster/raster_pixel.v"),
             include_str!("gpu.v")
@@ -1344,5 +1348,7 @@ fn sample_wires<const W: usize>(wires: &Wires<W>, circuit: &CircuitWires) -> u64
 }
 
 // ---------------------------------------------------------------------------
+#[cfg(test)]
+mod fused_framebuffer_tests;
 #[cfg(test)]
 mod tests;

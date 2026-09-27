@@ -30,6 +30,13 @@ struct RtlRun {
     suite_frames: Vec<String>,
 }
 
+#[derive(Default)]
+struct FramebufferFixture {
+    baseline: bool,
+    vendor: bool,
+    skip_depth_init: bool,
+}
+
 /// Compiles `gpu.v` + `gpu_tb.v` with Icarus and captures the raster image.
 fn run_gpu_rtl(raster: bool) -> RtlRun {
     run_gpu_fixture(raster, None, false)
@@ -68,6 +75,30 @@ fn run_gpu_candidate_vectors(
     scanline: bool,
     vectors: Option<&str>,
 ) -> RtlRun {
+    run_gpu_candidate_impl(
+        raster,
+        suite,
+        faults,
+        FramebufferFixture {
+            baseline,
+            ..FramebufferFixture::default()
+        },
+        pixels,
+        scanline,
+        vectors,
+    )
+}
+
+fn run_gpu_candidate_impl(
+    raster: bool,
+    suite: Option<&[RasterSuiteScene]>,
+    faults: bool,
+    fixture: FramebufferFixture,
+    pixels: u8,
+    scanline: bool,
+    vectors: Option<&str>,
+) -> RtlRun {
+    let baseline = fixture.baseline;
     let run = NEXT_GPU_RUN.fetch_add(1, Ordering::Relaxed);
     let directory = std::env::temp_dir().join(format!(
         "gpu-trace-cosim-{}-{run}-{}",
@@ -96,12 +127,17 @@ fn run_gpu_candidate_vectors(
         CpuV3Gpu::verilog_source().unwrap()
     };
     if !baseline {
-        let old = "CpuV3GpuRasterPixel #(.PREFETCH_LIMIT(1)) raster";
+        let old = "CpuV3GpuRasterPixel #(.PREFETCH_LIMIT(1), .QUAD_MODE(1)) raster";
         assert!(module.contains(old));
         module = module.replace(old, &format!(
-            "CpuV3GpuRasterPixel #(.PREFETCH_LIMIT(1), .PIXELS_PER_CYCLE({pixels}), .SCANLINE({})) raster",
+            "CpuV3GpuRasterPixel #(.PREFETCH_LIMIT(1), .QUAD_MODE(1), .PIXELS_PER_CYCLE({pixels}), .SCANLINE({})) raster",
             u8::from(scanline),
         ));
+    }
+    if fixture.skip_depth_init {
+        let initialization = "phase <= PH_DEPTH_CLEAR;";
+        assert_eq!(module.matches(initialization).count(), 2);
+        module = module.replace(initialization, "render_tile_valid <= raster_tile_access;\n                    phase <= raster_tile_access ? (raster_prefetch_access ? PH_RASTER_RUN : PH_PIXEL_WRITE) : PH_DRAW_APPLY;");
     }
     std::fs::write(&module_path, module).unwrap();
     let mut testbench = CpuV3Gpu::verilog_testbench().unwrap();
@@ -116,7 +152,9 @@ fn run_gpu_candidate_vectors(
         testbench = testbench.replace("__RASTER_SUITE__", vectors);
     }
     if baseline {
-        testbench = format!("`define GPU_LEGACY_REQUEST_BEAT\n{testbench}");
+        testbench = format!(
+            "`define GPU_LEGACY_REQUEST_BEAT\n`define GPU_FRAMEBUFFER_SERIAL_TRACE\n{testbench}"
+        );
         testbench = testbench.replace("dut.retire_ack_valid", "(dut.phase == 5'd19 && dut.raster_pixel_valid && dut.raster_pixel_marker)")
             .replace("dut.retire_ack_epoch", "baseline_epoch")
             .replace("dut.retire_ack_tri", "dut.raster_pixel_tri")
@@ -142,13 +180,19 @@ fn run_gpu_candidate_vectors(
     if raster {
         compiler.arg("-DGPU_RASTER_TEST");
     }
-    let compile = compiler
+    if fixture.vendor {
+        compiler.arg("-DGPU_FRAMEBUFFER_VENDOR");
+    }
+    compiler
         .arg("-o")
         .arg(&output_path)
         .arg(&module_path)
-        .arg(&testbench_path)
-        .output()
-        .unwrap();
+        .arg(&testbench_path);
+    if fixture.vendor {
+        let gowin = std::env::var_os("GOWIN_HOME").expect("vendor integration requires GOWIN_HOME");
+        compiler.arg(Path::new(&gowin).join("IDE/simlib/gw2a/prim_sim.v"));
+    }
+    let compile = compiler.output().unwrap();
     assert!(
         compile.status.success(),
         "iverilog compile failed:\n{}",
@@ -160,10 +204,18 @@ fn run_gpu_candidate_vectors(
         .output()
         .unwrap();
     let stdout = String::from_utf8_lossy(&simulation.stdout).into_owned();
-    assert!(
-        simulation.status.success(),
-        "RTL simulation failed:\n{stdout}"
-    );
+    if fixture.skip_depth_init {
+        assert!(
+            !simulation.status.success()
+                && stdout.contains("integrated depth initialization mismatch"),
+            "depth-init mutation did not fail at its semantic audit:\n{stdout}"
+        );
+    } else {
+        assert!(
+            simulation.status.success(),
+            "RTL simulation failed:\n{stdout}"
+        );
+    }
     let raster_frame = raster
         .then(|| std::fs::read_to_string(directory.join("raster-frame.hex")).ok())
         .flatten();
@@ -371,6 +423,58 @@ fn gpu_raster_trace_matches_rtl() {
         actual.len()
     );
     println!("PASS raster GPU trace: {} events", rust_trace.len());
+}
+
+#[test]
+#[ignore = "explicit eight-DPB vendor primitive production integration"]
+fn gpu_framebuffer_vendor_matches_reference() {
+    let run = run_gpu_candidate_impl(
+        true,
+        None,
+        false,
+        FramebufferFixture {
+            vendor: true,
+            ..FramebufferFixture::default()
+        },
+        2,
+        false,
+        None,
+    );
+    let frame: Vec<u16> = run
+        .raster_frame
+        .expect("vendor raster frame missing")
+        .lines()
+        .map(|word| u16::from_str_radix(word.trim(), 16).unwrap())
+        .collect();
+    assert_eq!(frame, raster_reference_frame());
+    let trace: Vec<String> = run
+        .stdout
+        .lines()
+        .filter(|line| line.trim_start().starts_with("GPU "))
+        .map(|line| line.trim().to_string())
+        .collect();
+    compare_traces(&rust_raster_trace(), &trace).unwrap();
+    assert!(run.stdout.contains("DIGITAL_DESIGN_RASTER_PASS"));
+}
+
+#[test]
+#[ignore = "explicit production depth initialization negative regression"]
+fn gpu_framebuffer_missing_depth_init_is_detected() {
+    let run = run_gpu_candidate_impl(
+        true,
+        None,
+        false,
+        FramebufferFixture {
+            skip_depth_init: true,
+            ..FramebufferFixture::default()
+        },
+        2,
+        false,
+        None,
+    );
+    assert!(run
+        .stdout
+        .contains("integrated depth initialization mismatch"));
 }
 
 fn suite_vectors(scenes: &[RasterSuiteScene]) -> String {
