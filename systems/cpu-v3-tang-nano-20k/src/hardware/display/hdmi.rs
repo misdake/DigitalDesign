@@ -4,7 +4,7 @@
 //! `ACTIVE_DISPLAY_CONFIG` constant.
 
 use crate::display::{DisplayConfig, ACTIVE_DISPLAY_CONFIG};
-use crate::{DisplayLineBuffer, Rgb565ToRgb888};
+use crate::{DisplayLineBuffer, DisplayPairFifo};
 use digital_design_circuit::{CircuitWires, Wire, Wires};
 use digital_design_hardware::{Hardware, HardwareIdentity, Module, ModuleIo, VerilogDependency};
 
@@ -66,7 +66,7 @@ impl Module for FramebufferHdmi {
     fn verilog_dependencies() -> Vec<VerilogDependency> {
         vec![
             VerilogDependency::new::<DisplayLineBuffer>("u_line_buffer"),
-            VerilogDependency::new::<Rgb565ToRgb888>("u_rgb"),
+            VerilogDependency::new::<DisplayPairFifo>("u_pair_fifo"),
         ]
     }
 
@@ -84,8 +84,8 @@ fn verilog_source_for(config: &DisplayConfig) -> Option<String> {
                 &DisplayLineBuffer::verilog_identity().module_name(),
             )
             .replace(
-                "__RGB565__",
-                &Rgb565ToRgb888::verilog_identity().module_name(),
+                "__PAIR_FIFO__",
+                &DisplayPairFifo::verilog_identity().module_name(),
             ),
     )
 }
@@ -94,6 +94,10 @@ fn verilog_testbench_for(config: &DisplayConfig) -> Option<String> {
     Some(
         include_str!("display_hdmi_tb.v")
             .replace("__DISPLAY_CONFIG__", &config.verilog_localparams())
+            .replace(
+                "__PIXEL_HALF_PERIOD__",
+                &(500_000_000.0 / config.pixel_clock_hz as f64).to_string(),
+            )
             .to_string(),
     )
 }
@@ -105,14 +109,19 @@ mod tests {
     use digital_design_hardware::{ResourceKind, VerilogProject};
 
     #[test]
-    fn display_claims_one_line_buffer_block() {
+    fn display_claims_two_line_buffer_blocks() {
         let project = VerilogProject::generate::<FramebufferHdmi>().unwrap();
-        assert_eq!(project.resource_claims.len(), 1);
-        assert_eq!(
-            project.resource_claims[0].resources[0].kind,
-            ResourceKind::Bsram18K
-        );
-        assert_eq!(project.resource_claims[0].resources[0].amount, 1);
+        let amount = |kind| {
+            project
+                .resource_claims
+                .iter()
+                .flat_map(|claim| &claim.resources)
+                .filter(|resource| resource.kind == kind)
+                .map(|resource| resource.amount)
+                .sum::<u64>()
+        };
+        assert_eq!(amount(ResourceKind::Bsram18K), 2);
+        assert_eq!(amount(ResourceKind::SsramBit), 12 * 64);
     }
 
     #[test]
@@ -139,6 +148,8 @@ mod tests {
             let source = verilog_source_for(&config).unwrap();
             assert!(!source.contains("__DISPLAY_CONFIG__"));
             assert!(source.contains(&format!("H_ACTIVE_END={}", config.h_active_end)));
+            assert!(!source.contains("__PAIR_"));
+            assert!(source.contains("fifo_count<3"));
             let testbench = verilog_testbench_for(&config).unwrap();
             assert!(!testbench.contains("__DISPLAY_CONFIG__"));
         }
@@ -148,5 +159,66 @@ mod tests {
     #[ignore = "explicit external simulation of active HDMI timing and burst fetch"]
     fn framebuffer_hdmi_runs_in_iverilog() {
         digital_design_hardware::verify_verilog_with_iverilog::<FramebufferHdmi>().unwrap();
+    }
+
+    #[derive(Hardware)]
+    #[hardware(namespace = "tests/display_720p")]
+    struct FramebufferHdmi720p;
+
+    impl Module for FramebufferHdmi720p {
+        type Input = FramebufferHdmiInput;
+        type Output = FramebufferHdmiOutput;
+        type EmuState = ();
+        const USES_MAIN_CLOCK: bool = true;
+        const EMU_AVAILABLE: bool = false;
+        fn execute_emu(_: &mut (), _: &mut CircuitWires, _: &Self::Input, _: &Self::Output) {
+            panic!("Verilog-only test");
+        }
+        fn verilog_source() -> Option<String> {
+            verilog_source_for(&crate::display::VGA_720P_3X)
+                .map(|s| s.replace("FramebufferHdmi", "FramebufferHdmi720p"))
+        }
+        fn verilog_testbench() -> Option<String> {
+            verilog_testbench_for(&crate::display::VGA_720P_3X)
+                .map(|s| s.replace("FramebufferHdmi", "FramebufferHdmi720p"))
+        }
+        fn verilog_dependencies() -> Vec<VerilogDependency> {
+            FramebufferHdmi::verilog_dependencies()
+        }
+    }
+
+    #[test]
+    #[ignore = "explicit full-frame scanout in the alternative 3x video mode"]
+    fn framebuffer_hdmi_720p_runs_in_iverilog() {
+        digital_design_hardware::verify_verilog_with_iverilog::<FramebufferHdmi720p>().unwrap();
+    }
+
+    #[derive(Hardware)]
+    #[hardware(namespace = "tests/display_fault")]
+    struct FramebufferHdmiFault;
+    impl Module for FramebufferHdmiFault {
+        type Input = FramebufferHdmiInput;
+        type Output = FramebufferHdmiOutput;
+        type EmuState = ();
+        const USES_MAIN_CLOCK: bool = true;
+        const EMU_AVAILABLE: bool = false;
+        fn execute_emu(_: &mut (), _: &mut CircuitWires, _: &Self::Input, _: &Self::Output) {
+            panic!("Verilog-only test");
+        }
+        fn verilog_source() -> Option<String> {
+            verilog_source_for(&crate::display::VGA_800X480_2X)
+                .map(|s| s.replace("FramebufferHdmi", "FramebufferHdmiFault"))
+        }
+        fn verilog_testbench() -> Option<String> {
+            Some(include_str!("display_fault_tb.v").to_string())
+        }
+        fn verilog_dependencies() -> Vec<VerilogDependency> {
+            FramebufferHdmi::verilog_dependencies()
+        }
+    }
+    #[test]
+    #[ignore = "external failed-fill, malformed-LAST and scanout underflow scenarios"]
+    fn framebuffer_faults_run_in_iverilog() {
+        digital_design_hardware::verify_verilog_with_iverilog::<FramebufferHdmiFault>().unwrap();
     }
 }

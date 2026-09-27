@@ -4,7 +4,9 @@ module tb;
 // whichever HDMI mode the DUT was compiled with.
 __DISPLAY_CONFIG__
 reg clk=0,pixel_clock=0,serial_clock=0,reset=1,video_locked=0;
-always #9 clk=~clk; always #7 pixel_clock=~pixel_clock; always #1 serial_clock=~serial_clock;
+always #9.259 clk=~clk;
+always #(__PIXEL_HALF_PERIOD__) pixel_clock=~pixel_clock;
+always #1 serial_clock=~serial_clock;
 reg memory_request_ready=1,memory_data_valid=0,memory_last=0,memory_error=0;
 reg [63:0] memory_read_data=0;
 reg [2:0] device_index=3; reg [3:0] device_channel=0;
@@ -14,12 +16,40 @@ wire [21:0] memory_address; wire [2:0] tmds_data_p,tmds_data_n;
 wire [15:0] device_read_data;
 FramebufferHdmi dut(.*);
 integer beat=0,requests=0,cycles=0,bursts=0;
+integer memory_cycles=0;
 integer col=0,bad=0,sampled=0,border_sampled=0,de_col=0,de_runs=0;
 integer old_frame=0;
 integer frame_requests=0,completed_source_frames=0,source_row,source_tile_x;
+integer request_row=0,request_x=0,pixel_y=0,linear_samples=0,raw_samples=0;
+integer table_i;
+real table_linear,table_encoded;
+reg [7:0] expected_table [0:63];
+reg [15:0] expected_pixel;
+reg [23:0] expected_rgb;
+reg monitor_linear=0;
+initial begin
+ for(table_i=0;table_i<64;table_i=table_i+1) begin
+  table_linear=table_i/63.0;
+  if(table_linear<=0.0031308) table_encoded=12.92*table_linear;
+  else table_encoded=1.055*(table_linear**(1.0/2.4))-0.055;
+  expected_table[table_i]=$rtoi(255.0*table_encoded+0.5);
+ end
+end
+function [15:0] pattern;
+ input integer x,y;
+ begin pattern=x*73+y*977; end
+endfunction
+function [23:0] color;
+ input [15:0] p; input linear;
+ begin
+  if(linear) color={expected_table[{p[15:11],p[15]}],expected_table[p[10:5]],expected_table[{p[4:0],p[4]}]};
+  else color={p[15:11],p[15:13],p[10:5],p[10:9],p[4:0],p[4:2]};
+ end
+endfunction
 reg [15:0] wa;
 reg [15:0] base=0;
 reg vis_d=0,fb_vis_d=0;
+reg hsync_d=0,vsync_d=0;
 reg saw_second_base=0;
 reg previous_frame_complete=0;
 wire vis = dut.visible_pipe3;
@@ -48,6 +78,8 @@ task expect_status;
  end
 endtask
 always @(posedge clk) begin
+ memory_cycles=memory_cycles+1;
+ memory_request_ready<=memory_cycles%19>=4;
  previous_frame_complete<=dut.frame_complete;
  if(dut.frame_complete && !previous_frame_complete) begin
   if(frame_requests!=6000)
@@ -58,18 +90,24 @@ always @(posedge clk) begin
  memory_data_valid<=0; memory_last<=0;
  // Ignore requests while the DUT is in reset: its fill pointers do not
  // advance there, so accepting would desynchronize the burst count.
- if (!reset && memory_request_valid&&memory_request_ready) begin beat<=1; requests<=requests+1; bursts<=bursts+1; end
- else if(beat!=0) begin
+ if (!reset && memory_request_valid&&memory_request_ready) begin
+  beat<=1; requests<=requests+1; bursts<=bursts+1;
+  request_row=(frame_requests/50)*2+(frame_requests%2);
+  request_x=((frame_requests%50)/2)*16;
+ end
+ else if(beat!=0 && memory_cycles%7!=0) begin
   // Tile-linear fill: a 32-byte segment carries 16 consecutive pixels of one
   // source row across four 64-bit beats. Each 64-bit beat holds four 16-bit
-  // words (low word first), so the displayed pixel value equals its source x.
-  wa = (((bursts-1) % BURSTS_PER_LINE) * 16) + (beat-1)*4;
-  memory_data_valid<=1; memory_read_data<={wa+16'd3, wa+16'd2, wa+16'd1, wa}; memory_last<=beat==4;
+  // words (low word first), with a coordinate-dependent pattern for every pixel.
+  wa = request_x + (beat-1)*4;
+  memory_data_valid<=1;
+  memory_read_data<={pattern(wa+3,request_row),pattern(wa+2,request_row),pattern(wa+1,request_row),pattern(wa,request_row)};
+  memory_last<=beat==4;
   if(beat==4) beat<=0; else beat<=beat+1;
  end
  if (!reset && memory_request_valid && memory_request_ready) begin
-  source_row=frame_requests/25;
-  source_tile_x=frame_requests%25;
+  source_row=(frame_requests/50)*2+(frame_requests%2);
+  source_tile_x=(frame_requests%50)/2;
   if(memory_address!==dut.active_base+(source_row/16)*6400+(source_row%16)*16+source_tile_x*256)
    $fatal(1,"tile-linear request %0d address %h is out of sequence",frame_requests,memory_address);
   frame_requests<=frame_requests+1;
@@ -99,7 +137,10 @@ initial begin
 
  // NEXT_SWAP snapshots the complete shadow address. Later staging cannot mutate
  // this pending swap, even though writes remain accepted while it is pending.
+ device_write(4,16'h0001);
  device_write(3,16'h0001);
+ device_write(4,16'h0000);
+ if(!dut.pending_linear) $fatal(1,"staging mutated pending color format");
  expect_status(16'h0001,16'h0001);
  device_write(1,16'h0000);
  if(dut.pending_base!==22'h218000) $fatal(1,"staging mutated pending base: %h",dut.pending_base);
@@ -109,6 +150,7 @@ initial begin
  device_write(3,16'h0001);
  expect_status(16'h0005,16'h0005);
  wait(dut.active_base==22'h218000);
+ if(!dut.active_linear) $fatal(1,"linear format did not follow swap");
 
  // A later complete submission replaces pending normally. If it lands on the
  // exact clock that applies the old pending base, it remains queued for the
@@ -135,17 +177,25 @@ initial begin
  if(tmds_clk_n!==~tmds_clk_p || tmds_data_n!==~tmds_data_p) $fatal(1,"bad differential outputs");
  if(bad>0) $fatal(1,"pixel mismatches: %0d of %0d sampled",bad,sampled);
  if(sampled<100000) $fatal(1,"too few visible pixels sampled: %0d",sampled);
+ if(linear_samples<100000 || raw_samples<100000) $fatal(1,"both formats were not sampled");
  if(SIDE_BORDER!=0 && border_sampled<100000) $fatal(1,"too few border pixels sampled: %0d",border_sampled);
  if(de_runs<100) $fatal(1,"too few complete active-video lines: %0d",de_runs);
  $display("DIGITAL_DESIGN_PASS"); $finish;
 end
-// Pixel-accuracy monitor: every visible pixel carries its source x
-// coordinate as its value, so within one visible run column c must show
-// exactly base + c/SCALE, where base is the run's first value. The run can
-// start mid-row because a slot may be published after the line began (the
-// demo is deliberately unsynchronized), so only the relative alignment is
-// checked.
+// Pixel-accuracy monitor: derive the expected RGB from absolute source x/y,
+// vertical/horizontal scale and the row's snapshotted format. No DUT pixel is
+// used as a golden anchor, so a shifted row or stale pair cannot pass by merely
+// preserving the relative progression. Sync and DE must match the RGB stage.
 always @(posedge pixel_clock) begin
+ if(!dut.pixel_reset && dut.started) begin
+  if(dut.hsync_pipe3!==hsync_d || dut.vsync_pipe3!==vsync_d)
+   $fatal(1,"sync/RGB pipeline delay mismatch");
+ end
+ hsync_d<=dut.hsync; vsync_d<=dut.vsync;
+ if(dut.h_count==H_ACTIVE_START+SIDE_BORDER) begin
+  pixel_y=(dut.v_count-V_ACTIVE_START)/SCALE;
+  monitor_linear=dut.scan_linear;
+ end
  vis_d <= vis;
  fb_vis_d <= fb_vis;
  if (vis && !vis_d) de_col=0;
@@ -155,19 +205,21 @@ always @(posedge pixel_clock) begin
    $fatal(1,"active-video width was %0d instead of %0d",de_col,H_ACTIVE_END-H_ACTIVE_START);
   de_runs=de_runs+1;
  end
- if (fb_vis && !fb_vis_d) begin col=0; base=dut.pixel565_pipe; end
+ if (fb_vis && !fb_vis_d) col=0;
  if (fb_vis) begin
   sampled=sampled+1;
-  if (dut.pixel565_pipe !== base + col/SCALE) begin
-   if (bad<10) $display("pixel mismatch at column %0d: got %h want %h", col, dut.pixel565_pipe, base + col/SCALE);
+  expected_pixel=pattern(col/SCALE,pixel_y);
+  expected_rgb=color(expected_pixel,monitor_linear);
+  if(monitor_linear) linear_samples=linear_samples+1; else raw_samples=raw_samples+1;
+  if (dut.rgb_pipe !== expected_rgb) begin
+   if (bad<10) $display("pixel mismatch x=%0d y=%0d linear=%0d: got %h want %h", col, pixel_y,monitor_linear,dut.rgb_pipe,expected_rgb);
    bad=bad+1;
   end
   col=col+1;
  end
  if (vis && !fb_vis) begin
   border_sampled=border_sampled+1;
-  if (dut.pixel565_pipe!==16'h1082)
-   $fatal(1,"border pixel was %h instead of dark gray",dut.pixel565_pipe);
+  if (dut.rgb_pipe!==color(16'h1082,0)) $fatal(1,"border pixel mismatch");
  end
 end
 endmodule

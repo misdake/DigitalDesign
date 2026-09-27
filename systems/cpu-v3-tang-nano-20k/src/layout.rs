@@ -132,6 +132,7 @@ impl SystemDeviceLayout for TangNano20kDeviceLayout {
                 crate::DISPLAY_FRAMEBUFFER_LOW,
                 crate::DISPLAY_FRAMEBUFFER_HIGH,
                 crate::DISPLAY_CONTROL,
+                crate::DISPLAY_COLOR_FORMAT,
             ],
         },
         DeviceAllocation {

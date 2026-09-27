@@ -1234,3 +1234,53 @@ The complete image SHA-256 is
 `22b4b8460b7d9f2851c06c85370a1c7453e2e40cc23eb09d4c64329373df6ecf`.
 The optimized default is now retained in both Flash and SRAM. These are loaded-image
 UART results; user power-cycle, cold-boot UART and HDMI observation remain pending.
+
+## Display four-row buffering and pixel-pair FIFO (2026-09-27)
+
+The complete upgrade also replaces the original single-BSRAM, two-row scanout buffer
+with two 512x32 banks and four rows, published/released in two-row groups. Each tile's
+two adjacent rows are fetched as two fixed 32-byte transactions. Every 64-bit response
+writes both banks directly, removing the original 256-bit capture and eight-cycle drain.
+Both banks contain linear-to-sRGB tables; a staged format bit follows NEXT_SWAP atomically.
+The reset-default encoded format preserves the existing applications' pixel interpretation.
+The separate adapter buffer for legacy writes into SDRAM remains unchanged.
+
+The [complete upgrade comparison](../../../target/display-upgrade/comparison.md) measures
+the superseded direct-handoff candidate against the original same-mode build taken before
+these edits. The selected FIFO build is in the restoration report below. Other-client wait
+estimates remain conditional on controller response timing; refresh/contention and board validation are
+not established by these offline checks.
+
+The scanout conversion pipeline retains the original four-entry, 48-bit RAM16 FIFO
+as a separate inferred-memory leaf. Conversion starts every four pixel clocks when
+the occupancy guard permits and begins sixteen clocks before the framebuffer window.
+Scanout pops one pair every four clocks in 2x or six in 3x, retaining it in one output
+register for the remaining repeats. This is the original FIFO structure, not the
+narrower serialized-channel experiment.
+
+Mutually exclusive Cargo features `display-2x` and `display-3x` select the schedule,
+video timing and PLL together; neither flag preserves the default 2x mode. Full-frame
+pixel checks cover both modes, both color formats, bank/row/group boundaries and
+pixel output alignment. Restoration checks and fitted artifacts are linked in the
+[FIFO restoration report](../../../target/display-fifo-restored/comparison.md).
+No new physical-board validation was performed.
+
+The original top-level resource assertion still expected the single display BSRAM;
+it now expects the fitted total for both banks. The selected FIFO passes the complete
+hardware validation, including both complete Flash RTL tests covering the composed
+boot, SDRAM, GPU render and display request path beyond the isolated scanout tests.
+Both required co-simulation layers and both pixel modes also pass.
+
+Measured display savings and the full-system remapping limitation are kept in the
+[generated comparison](../../../target/display-pair-handoff/comparison.md). The 2x
+display hierarchy shrinks while the full-system total grows because other synthesis
+hierarchies map differently; no SDRAM-adapter source was changed. The 3x fit is a
+separate video-mode characterization, not a same-mode FIFO comparison.
+
+The follow-up [RAM16 packing study](../../../target/display-ram16-study/comparison.md)
+reproduces the previous FIFO fit with a byte-identical synthesis hierarchy report.
+Serializing each pair's channels into a narrower memory retains the queue capacity
+and passes both modes' pixel checks, but its full-system fit is larger. The user
+selected the original FIFO for its lower whole-system fit. Fewer RAM16 cells alone
+do not preserve the old SDRAM-adapter mapping. Direct handoff remains a measured,
+superseded experiment rather than the current scanout implementation.

@@ -20,70 +20,56 @@ localparam [15:0] BORDER_COLOR=16'h1082;
 // injected by the Rust host model so the RTL, testbench, and board video PLL
 // all derive from the single `ACTIVE_DISPLAY_CONFIG` constant.
 __DISPLAY_CONFIG__
-// Two line slots: the producer fills one while the display reads the other.
-// The display is always urgent when it requests (it only requests once the
-// consumer has freed a slot, when exactly one line is buffered), so it never
-// round-robins with the CPU; a single line of lead covers refresh and the
-// in-flight transaction.
-reg [1:0] published=0;
-reg [1:0] released=0;
+// Two published groups, each containing two source rows. A group is released
+// only after the final vertical repeat of its second row. Toggle metadata is
+// stable until release and crosses through the publish synchronizer.
+reg [1:0] published=0, released=0;
 reg [1:0] release_meta=0, release_sync=0;
 reg fill_slot=0;
+// fill_y/local_y identify the even first row of a two-row group. Fetch both
+// rows of one tile before advancing burst_index to the next tile column.
 reg [7:0] fill_y=0;
-reg [21:0] active_base=FB_BASE;
-// Tile-linear source address state. `tile_row_base` is the first word of the
-// current tile row, `local_y` the source row inside that tile row (0..15) and
-// `burst_index` the 16-pixel tile segment (0..24). One source row therefore
-// advances by 25 segments of +256 words; the next source row costs +16 words
-// and the next tile row +TILE_ROW_STRIDE words.
-reg [21:0] tile_row_base=FB_BASE;
+reg [21:0] active_base=FB_BASE, tile_row_base=FB_BASE;
 reg [3:0] local_y=0;
 reg [31:0] shadow_base=32'h00200000;
 reg [21:0] pending_base=FB_BASE;
+reg shadow_linear=0, pending_linear=0, active_linear=0;
+reg [1:0] group_linear=0;
 reg next_low_written=0, next_high_written=0;
 reg next_pending=0, invalid_address=0;
 reg frame_complete=0;
 reg [15:0] frame_index=0;
-reg frame_meta=0, frame_sync=0, frame_seen=0;
-reg frame_toggle=0;
+reg frame_meta=0, frame_sync=0, frame_seen=0, frame_toggle=0;
 reg underflow_sticky=0, underflow_meta=0, underflow_sync=0;
 reg [4:0] burst_index=0;
-reg [2:0] beat_index=0;
-reg burst_active=0;
-reg memory_error_sticky=0;
-// A completed 4x64-bit line is captured whole, then drained as eight 32-bit
-// writes into the line-buffer BSRAM. Capturing first keeps the read stream
-// unstallable (the arbiter holds the owner to `last`) while the single write
-// port is reused over eight clocks.
-(* syn_ramstyle = "registers" *) reg [63:0] line_capture [0:3];
-reg drain_active=0;
-reg [2:0] drain_beat=0;
-reg [4:0] drain_burst=0;
-reg [9:0] drain_slot_base=0;
+reg fill_second=0;
+reg [1:0] beat_index=0;
+reg burst_active=0, memory_error_sticky=0;
 wire fill_slot_free = published[fill_slot] == release_sync[fill_slot];
-wire [1:0] ready_count =
-    (published[0] != release_sync[0]) +
-    (published[1] != release_sync[1]);
-assign memory_urgent = ready_count <= 1;
-assign memory_request_valid = fill_slot_free && !burst_active && !drain_active &&
+assign memory_urgent = 1'b1;
+assign memory_request_valid = fill_slot_free && !burst_active &&
                               !frame_complete && !memory_error_sticky;
-assign memory_address = tile_row_base + {9'b0,burst_index,8'b0} + {14'b0,local_y,4'b0};
-
-wire line_write = drain_active;
-// Slot bases are 0 and LINE_SLOT_WORDS. A two-way constant select keeps the
-// slot index out of a synthesized DSP multiplier.
-wire [9:0] fill_slot_base = fill_slot ? LINE_SLOT_WORDS : 10'd0;
-wire [9:0] line_write_address = drain_slot_base + {drain_burst, 3'b000} + drain_beat;
-wire [31:0] line_write_data = drain_beat[0] ?
-    line_capture[drain_beat[2:1]][63:32] : line_capture[drain_beat[2:1]][31:0];
-reg [9:0] line_read_address=0;
-wire [31:0] line_read_data;
+// Adjacent rows of each tile are fetched consecutively. The arbiter retains
+// its fixed 32-byte display transactions: the pair is two requests, not a
+// longer non-preemptible owner interval.
+assign memory_address = tile_row_base + {9'b0,burst_index,8'b0} +
+                        {14'b0,local_y,4'b0} + (fill_second ? 22'd16 : 22'd0);
+// Each shared address holds four RGB565 pixels across the two banks. One row
+// uses 100 addresses, one group 200; addresses 400..447 are unused and 448..511
+// are the read-only sRGB tables. SDRAM beats can therefore bypass staging.
+wire [8:0] fill_slot_base = fill_slot ? 9'd200 : 9'd0;
+wire [8:0] line_write_address = fill_slot_base +
+    (fill_second ? 9'd100 : 9'd0) + {2'b0,burst_index,2'b00} + {7'b0,beat_index};
+wire line_write = burst_active && memory_data_valid && !memory_error &&
+                  !memory_error_sticky && !reset;
+reg [8:0] line_read_address_a, line_read_address_b;
+wire [31:0] line_read_data_a, line_read_data_b;
 __LINE_BUFFER__ u_line_buffer(
     .write_clock(clk), .write_enable(line_write), .write_address(line_write_address),
-    .write_data(line_write_data), .read_clock(pixel_clock),
-    .read_address(line_read_address), .read_data(line_read_data)
+    .write_data(memory_read_data), .read_clock(pixel_clock),
+    .read_address_a(line_read_address_a), .read_address_b(line_read_address_b),
+    .read_data_a(line_read_data_a), .read_data_b(line_read_data_b)
 );
-
 always @(posedge clk) begin
     release_meta <= released;
     release_sync <= release_meta;
@@ -100,9 +86,9 @@ always @(posedge clk) begin
         frame_index<=0; frame_meta<=0; frame_sync<=0; frame_seen<=0;
         underflow_meta<=0; underflow_sync<=0;
         burst_index<=0; beat_index<=0; burst_active<=0; memory_error_sticky<=0;
-        drain_active<=0; drain_beat<=0; drain_burst<=0; drain_slot_base<=0;
+        fill_second<=0; shadow_linear<=0; pending_linear<=0; active_linear<=0; group_linear<=0;
     end else begin
-        if (memory_error) memory_error_sticky<=1;
+        if (memory_error) begin memory_error_sticky<=1; burst_active<=0; end
         if (frame_sync != frame_seen) begin
             frame_seen<=frame_sync;
             frame_index<=frame_index+1'b1;
@@ -111,7 +97,7 @@ always @(posedge clk) begin
                 local_y<=0;
                 frame_complete<=0;
                 if (next_pending) begin
-                    active_base<=pending_base;
+                    active_base<=pending_base; active_linear<=pending_linear;
                     tile_row_base<=pending_base;
                     next_pending<=0;
                 end else tile_row_base<=active_base;
@@ -129,13 +115,15 @@ always @(posedge clk) begin
                 shadow_base[31:16]<=device_write_data;
                 next_high_written<=1;
                 invalid_address<=0;
+            end else if (device_channel==4'd4) begin
+                shadow_linear<=device_write_data[0];
             end else if (device_channel==4'd3 && device_write_data==16'd1 &&
                          next_low_written && next_high_written) begin
                 next_low_written<=0;
                 next_high_written<=0;
                 if (shadow_base[31:22]==0 && shadow_base[3:0]==0 &&
                     shadow_base<=LAST_VALID_FB_BASE) begin
-                    pending_base<=shadow_base[21:0];
+                    pending_base<=shadow_base[21:0]; pending_linear<=shadow_linear;
                     next_pending<=1;
                     invalid_address<=0;
                 end else begin
@@ -146,49 +134,43 @@ always @(posedge clk) begin
         if (memory_request_valid && memory_request_ready) begin
             burst_active<=1; beat_index<=0;
         end
-        // Capture the four unstallable 64-bit beats, then hand the completed
-        // line to the local 8x32-bit drain.
-        if (burst_active && memory_data_valid) begin
-            line_capture[beat_index] <= memory_read_data;
-            if (memory_last || beat_index==3) begin
+        // Each unstallable 64-bit beat writes both BSRAM banks directly.
+        // A malformed/failed segment is never published; reset is recovery.
+        if (burst_active && memory_data_valid && !memory_error_sticky) begin
+            if (memory_error || (memory_last != (beat_index==3))) begin
+                memory_error_sticky<=1; burst_active<=0;
+            end else if (beat_index==3) begin
                 burst_active<=0; beat_index<=0;
-                drain_active<=1; drain_beat<=0;
-                drain_burst<=burst_index;
-                drain_slot_base<=fill_slot_base;
+                if (!fill_second) fill_second<=1;
+                else begin
+                    fill_second<=0;
+                    if (burst_index==LAST_BURST) begin
+                        published[fill_slot]<=~published[fill_slot];
+                        group_linear[fill_slot]<=active_linear;
+                        burst_index<=0; fill_slot<=~fill_slot;
+                        if (fill_y==LAST_FILL_Y-1) frame_complete<=1;
+                        else begin
+                            fill_y<=fill_y+8'd2;
+                            if (local_y==4'd14) begin
+                                local_y<=0; tile_row_base<=tile_row_base+TILE_ROW_STRIDE;
+                            end else local_y<=local_y+4'd2;
+                        end
+                    end else burst_index<=burst_index+1'b1;
+                end
             end else beat_index<=beat_index+1'b1;
-        end
-        if (drain_active) begin
-            if (drain_beat==7) begin
-                drain_active<=0; drain_beat<=0;
-                if (burst_index==LAST_BURST) begin
-                    published[fill_slot] <= ~published[fill_slot];
-                    burst_index<=0;
-                    fill_slot <= ~fill_slot;
-                    if (fill_y==LAST_FILL_Y) begin frame_complete<=1; end
-                    else begin
-                        fill_y<=fill_y+1'b1;
-                        if (local_y==4'd15) begin
-                            local_y<=0;
-                            tile_row_base<=tile_row_base+TILE_ROW_STRIDE;
-                        end else local_y<=local_y+1'b1;
-                    end
-                end else burst_index<=burst_index+1'b1;
-            end else drain_beat<=drain_beat+1'b1;
         end
     end
 end
-
-reg [2:0] publish_meta=0, publish_sync=0;
-// The board reset and the video PLL lock live outside the pixel domain.
-// Synchronize their release into pixel_clock before any pixel-domain logic
-// consumes them; the synchronizer input is an intended asynchronous crossing.
+reg [1:0] publish_meta=0, publish_sync=0;
+// Reset/PLL lock are asynchronous to pixel_clock. Delay their release here
+// before scanout consumes the line-group publication toggles or queue state.
 reg [2:0] pixel_reset_sync=0;
 always @(posedge pixel_clock)
     pixel_reset_sync <= {pixel_reset_sync[1:0], ~(reset | ~video_locked)};
 wire pixel_reset = ~pixel_reset_sync[2];
-reg display_slot=0;
-// Slot base for the displayed slot, selected without a DSP multiplier.
-wire [9:0] display_slot_base = display_slot ? LINE_SLOT_WORDS : 10'd0;
+reg display_slot=0, display_second=0;
+wire [8:0] display_slot_base = (display_slot ? 9'd200 : 9'd0) +
+                                             (display_second ? 9'd100 : 9'd0);
 reg [1:0] vertical_repeat=0;
 reg started=0;
 reg [10:0] h_count=0;
@@ -197,44 +179,79 @@ wire hsync = h_count < H_SYNC_END;
 wire vsync = v_count < V_SYNC_END;
 wire active = h_count>=H_ACTIVE_START && h_count<H_ACTIVE_END &&
                v_count>=V_ACTIVE_START && v_count<V_ACTIVE_END;
-// These counters are range-constrained by the comparisons below. Their
-// explicit destination widths intentionally discard only constant high bits.
-wire [10:0] active_x = h_count-H_ACTIVE_START; // gowin-lint: allow EX3791
-wire framebuffer_x = active && active_x>=SIDE_BORDER &&
-                     active_x<SIDE_BORDER+FB_WIDTH*SCALE;
-wire [10:0] scaled_x = active_x-SIDE_BORDER; // gowin-lint: allow EX3791
-// scaled_x is at most FB_WIDTH*SCALE-1, so floor(scaled_x/SCALE) is at most
-// FB_WIDTH-1 and always fits in nine bits. Gowin reports the unsized
-// constant's expression width before the intentional narrowing; keep the
-// compact constant divider and suppress only this line.
-wire [8:0] source_x = scaled_x / SCALE; // gowin-lint: allow EX3791
+wire framebuffer_x = active && h_count>=H_ACTIVE_START+SIDE_BORDER &&
+                     h_count<H_ACTIVE_END-SIDE_BORDER;
 wire line_ready = publish_sync[display_slot] != released[display_slot];
-wire visible_request = started && active;
-wire framebuffer_request = started && framebuffer_x;
-wire framebuffer_ready_request = framebuffer_request && line_ready;
-reg visible_pipe=0, visible_pipe2=0, visible_pipe3=0;
-reg framebuffer_pipe=0, framebuffer_pipe2=0, framebuffer_pipe3=0;
-reg framebuffer_ready_pipe=0, framebuffer_ready_pipe2=0;
-reg lane_pipe=0, lane_pipe2=0;
-reg hsync_pipe=0, hsync_pipe2=0, hsync_pipe3=0;
-reg vsync_pipe=0, vsync_pipe2=0, vsync_pipe3=0;
-reg [15:0] pixel565_pipe=0;
-// The lane select uses the twice-delayed lane so it matches the line buffer's
-// two-cycle address-to-data latency.
-wire [15:0] pixel565 = lane_pipe2 ? line_read_data[31:16] : line_read_data[15:0];
-
+reg scan_line_ready=0, scan_linear=0;
+reg visible_pipe3=0, framebuffer_pipe3=0;
+reg hsync_pipe3=0, vsync_pipe3=0;
+reg [23:0] rgb_pipe=0;
+// Independent bank addresses use seven of eight read slots per pixel pair:
+// source qword, then two R, two G, two B lookups. The next source read
+// overlaps the previous pair's blue capture. Initiation interval is four.
+reg [2:0] read_phase=0;
+reg [7:0] fetch_pair=0;
+reg pair_bank=0;
+reg [31:0] raw_pair=0;
+reg [7:0] r0=0,r1=0,g0=0,g1=0;
+wire [31:0] source_pair = pair_bank ? line_read_data_b : line_read_data_a;
+wire [5:0] source_r0 = {source_pair[15:11],source_pair[15]};
+wire [5:0] source_r1 = {source_pair[31:27],source_pair[31]};
+wire [5:0] raw_g0 = raw_pair[10:5], raw_g1 = raw_pair[26:21];
+wire [5:0] raw_b0 = {raw_pair[4:0],raw_pair[4]};
+wire [5:0] raw_b1 = {raw_pair[20:16],raw_pair[20]};
+reg [1:0] fifo_write=0, fifo_read=0;
+reg [2:0] fifo_count=0;
+// Converted pairs enter a four-slot FIFO; the output register retains a popped
+// pair while its two pixels repeat SCALE times. Both sides use pixel_clock.
+// Conversion can start every four clocks; consumption takes four clocks in 2x
+// and six in 3x, so 3x relies on the occupancy guard to pause conversion.
+reg [47:0] output_pair=0;
+reg [2:0] output_repeat=0;
+reg output_second=0;
+wire push_pair = read_phase==4;
+wire pop_pair = started && framebuffer_x && scan_line_ready &&
+                output_repeat==0 && !output_second && fifo_count!=0;
+// Starting with at most two queued pairs reserves room for the pair still in
+// flight. At phase 4, the previous push can overlap the next source read, so
+// admission must account for that push before the new conversion completes.
+// Sixteen clocks of row lead-in prefill the queue before the first pop.
+wire start_pair = (read_phase==0 || read_phase==4) && started && scan_line_ready &&
+    v_count>=V_ACTIVE_START && v_count<V_ACTIVE_END &&
+    h_count>=H_ACTIVE_START+SIDE_BORDER-16 && h_count<H_ACTIVE_END-SIDE_BORDER &&
+    fetch_pair<FB_WIDTH/2 && fifo_count<3;
+wire [47:0] fifo_head;
+wire [47:0] current_pair = pop_pair ? fifo_head : output_pair;
+wire [23:0] current_rgb = output_second ? current_pair[47:24] : current_pair[23:0];
+function [23:0] expand565;
+    input [15:0] p;
+    begin expand565={p[15:11],p[15:13],p[10:5],p[10:9],p[4:0],p[4:2]}; end
+endfunction
+wire [47:0] fifo_write_data = scan_linear ?
+    {r1,g1,line_read_data_b[7:0],r0,g0,line_read_data_a[7:0]} :
+    {expand565(raw_pair[31:16]),expand565(raw_pair[15:0])};
+__PAIR_FIFO__ u_pair_fifo(.write_clock(pixel_clock),
+    .write_enable(push_pair && !pixel_reset && h_count!=0),
+    .write_address(fifo_write), .write_data(fifo_write_data),
+    .read_address(fifo_read), .read_data(fifo_head));
+always @* begin
+    line_read_address_a=display_slot_base+{2'b0,fetch_pair[7:1]};
+    line_read_address_b=line_read_address_a;
+    case (read_phase)
+        1: begin line_read_address_a={3'b111,source_r0}; line_read_address_b={3'b111,source_r1}; end
+        2: begin line_read_address_a={3'b111,raw_g0}; line_read_address_b={3'b111,raw_g1}; end
+        3: begin line_read_address_a={3'b111,raw_b0}; line_read_address_b={3'b111,raw_b1}; end
+        default: begin end
+    endcase
+end
 always @(posedge pixel_clock) begin
     publish_meta<=published; publish_sync<=publish_meta;
     if (pixel_reset) begin
-        h_count<=0; v_count<=0; released<=0; display_slot<=0; frame_toggle<=0;
+        h_count<=0; v_count<=0; released<=0; display_slot<=0; display_second<=0; frame_toggle<=0;
         vertical_repeat<=0; started<=0; underflow_sticky<=0;
-        visible_pipe<=0; visible_pipe2<=0; visible_pipe3<=0;
-        framebuffer_pipe<=0; framebuffer_pipe2<=0; framebuffer_pipe3<=0;
-        framebuffer_ready_pipe<=0; framebuffer_ready_pipe2<=0;
-        lane_pipe<=0; lane_pipe2<=0;
-        hsync_pipe<=0; hsync_pipe2<=0; hsync_pipe3<=0;
-        vsync_pipe<=0; vsync_pipe2<=0; vsync_pipe3<=0;
-        pixel565_pipe<=0;
+        visible_pipe3<=0; framebuffer_pipe3<=0; hsync_pipe3<=0; vsync_pipe3<=0; rgb_pipe<=0;
+        scan_line_ready<=0; scan_linear<=0; read_phase<=0; fetch_pair<=0;
+        fifo_write<=0; fifo_read<=0; fifo_count<=0; output_repeat<=0; output_second<=0;
     end else begin
         if (h_count==H_TOTAL-1) begin
             h_count<=0;
@@ -244,30 +261,58 @@ always @(posedge pixel_clock) begin
                 if (!started && publish_sync!=released) started<=1;
             end else v_count<=v_count+1'b1;
         end else h_count<=h_count+1'b1;
-        if (framebuffer_x)
-            line_read_address <= display_slot_base + source_x[8:1];
-        // Pipeline alignment: the line buffer data for a position arrives two
-        // pixel clocks late (address register, then synchronous RAM read), so
-        // the lane select and the visible/sync strobes are delayed to match,
-        // and the registered pixel word adds a third stage for the encoders.
-        lane_pipe<=source_x[0]; lane_pipe2<=lane_pipe;
-        visible_pipe<=visible_request; visible_pipe2<=visible_pipe; visible_pipe3<=visible_pipe2;
-        framebuffer_pipe<=framebuffer_request;
-        framebuffer_pipe2<=framebuffer_pipe;
-        framebuffer_pipe3<=framebuffer_pipe2;
-        framebuffer_ready_pipe<=framebuffer_ready_request;
-        framebuffer_ready_pipe2<=framebuffer_ready_pipe;
-        hsync_pipe<=hsync; hsync_pipe2<=hsync_pipe; hsync_pipe3<=hsync_pipe2;
-        vsync_pipe<=vsync; vsync_pipe2<=vsync_pipe; vsync_pipe3<=vsync_pipe2;
-        pixel565_pipe<=framebuffer_pipe2 ?
-            (framebuffer_ready_pipe2 ? pixel565 : 16'h0000) : BORDER_COLOR;
-        if (started && h_count==H_ACTIVE_END-1 && v_count>=V_ACTIVE_START &&
-            v_count<V_ACTIVE_END) begin
+        visible_pipe3<=started && active;
+        framebuffer_pipe3<=started && framebuffer_x;
+        hsync_pipe3<=hsync; vsync_pipe3<=vsync;
+        rgb_pipe<=0;
+        if (started && active) begin
+            if (!framebuffer_x) rgb_pipe<=expand565(BORDER_COLOR);
+            else if (scan_line_ready) begin
+                if (output_repeat==0 && !output_second && fifo_count==0) underflow_sticky<=1;
+                else rgb_pipe<=current_rgb;
+                if (output_repeat==SCALE-1) begin
+                    output_repeat<=0; output_second<=~output_second;
+                end else output_repeat<=output_repeat+1'b1;
+            end
+        end
+        if (h_count==0) begin
+            // Readiness is sampled for the whole output row. A late publish
+            // cannot reveal a partial row or consume data from a failed fill.
+            scan_line_ready<=line_ready; scan_linear<=group_linear[display_slot];
+            read_phase<=0; fetch_pair<=0; fifo_write<=0; fifo_read<=0; fifo_count<=0;
+            output_repeat<=0; output_second<=0;
+        end else begin
+            case (read_phase)
+                1: begin raw_pair<=source_pair; read_phase<=2; end
+                2: begin r0<=line_read_data_a[7:0]; r1<=line_read_data_b[7:0]; read_phase<=3; end
+                3: begin g0<=line_read_data_a[7:0]; g1<=line_read_data_b[7:0]; read_phase<=4; end
+                default: begin
+                    read_phase<=0;
+                    if (start_pair) begin
+                        pair_bank<=fetch_pair[0]; fetch_pair<=fetch_pair+1'b1; read_phase<=1;
+                    end
+                end
+            endcase
+            if (push_pair) begin
+                fifo_write<=fifo_write+1'b1;
+            end
+            // The asynchronous old head feeds this edge's RGB and is retained
+            // for subsequent repeats. Simultaneous push/pop preserves count.
+            if (pop_pair) begin output_pair<=fifo_head; fifo_read<=fifo_read+1'b1; end
+            case ({push_pair,pop_pair})
+                2'b10: fifo_count<=fifo_count+1'b1;
+                2'b01: fifo_count<=fifo_count-1'b1;
+                default: begin end
+            endcase
+        end
+        if (started && h_count==H_ACTIVE_END-1 && v_count>=V_ACTIVE_START && v_count<V_ACTIVE_END) begin
             if (vertical_repeat==LAST_REPEAT) begin
                 vertical_repeat<=0;
-                if (line_ready) begin
-                    released[display_slot]<=~released[display_slot];
-                    display_slot<=~display_slot;
+                if (scan_line_ready) begin
+                    display_second<=~display_second;
+                    if (display_second) begin
+                        released[display_slot]<=~released[display_slot]; display_slot<=~display_slot;
+                    end
                 end else underflow_sticky<=1;
             end else vertical_repeat<=vertical_repeat+1'b1;
         end
@@ -282,18 +327,13 @@ always @* begin
             2: device_read_data={10'b0,active_base[21:16]};
             3: device_read_data={11'b0,memory_error_sticky,underflow_sync,
                 invalid_address,(next_low_written ^ next_high_written),next_pending};
+            4: device_read_data={15'b0,active_linear};
             default: device_read_data=0;
         endcase
     end
 end
 assign underflow = underflow_sticky | memory_error_sticky;
-// Register the pixel word before the RGB565 expansion and the TMDS encode:
-// the line-buffer read, lane mux, color expansion, and transition-minimized
-// encode do not meet the pixel clock as one combinational path. All video
-// signals receive the same three-stage delay.
-wire [7:0] red,green,blue;
-// This combinational leaf is intentionally flattened into the TMDS datapath.
-__RGB565__ u_rgb(.pixel(pixel565_pipe),.visible(visible_pipe3),.red(red),.green(green),.blue(blue)); // gowin-lint: allow NL0002
+wire [7:0] red=rgb_pipe[23:16], green=rgb_pipe[15:8], blue=rgb_pipe[7:0];
 
 wire [9:0] blue_symbol,green_symbol,red_symbol;
 HdmiTmdsEncoder u_blue(.clk(pixel_clock),.reset(pixel_reset),.de(visible_pipe3),

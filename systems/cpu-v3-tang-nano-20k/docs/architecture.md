@@ -207,17 +207,45 @@ addresses.
 The application framebuffer is 400x240 RGB565 in SDRAM, arranged as 25x15 consecutive 16x16
 tiles. Slots A and B begin at word addresses `0x0020_0000` and `0x0021_8000`; each reserves
 `0x18000` words, including padding after the 96,000-word pixel payload. The display path issues
-6,000 fixed 32-byte segment reads per source frame, stages each 4x64-bit response locally, drains
-it as 8x32-bit writes into the existing dual-clock line buffers, and produces the fitted
-HDMI TMDS output. The scanout mode is a single compile-time configuration
-(`display::ACTIVE_DISPLAY_CONFIG`), currently 800x480@60 with a 2x upscale and no
-side border; the retained 1280x720p60 3x mode is the one-word alternative and
+6,000 fixed 32-byte segment reads per source frame, fetching each tile's adjacent two source rows
+consecutively as two separate transactions. Every 64-bit response beat writes two dual-clock
+512x32 BSRAM banks directly, with no response capture buffer or eight-cycle drain. Four rows
+occupy qword addresses 0..399 in two groups of two. Publication toggles cross through two-stage
+synchronizers; group metadata is stable until release. The consumer releases a group only after
+the second row's final vertical repeat. An unavailable row is black and sets sticky underflow;
+an error or malformed LAST stops filling without publishing the incomplete group. Reset clears
+the faults and restores producer/consumer ownership.
+
+Each bank's spare addresses 448..511 contain a 64-entry linear-to-sRGB table, one byte per
+32-bit word. Green indexes its six bits; red/blue replicate five bits to six. Values evaluate
+the sRGB transfer at `i/63`, rounded to nearest 8-bit output. Device 3 channel 4 writes the staged
+format bit (`0`: encoded RGB565, the reset default; `1`: linear RGB565) and reads the active bit.
+NEXT_SWAP snapshots format and address together; later staging cannot change a pending swap.
+The host display-device model and renderer follow the same selection.
+
+The scanout mode is a single compile-time configuration
+(`display::ACTIVE_DISPLAY_CONFIG`), selected by mutually exclusive Cargo features
+`display-2x` (the default when neither is specified) or `display-3x`. The default
+is 800x480@60 with a 2x upscale and no
+side border; the retained 1280x720p60 3x mode is the other build option and
 leaves 40-pixel side borders. The framebuffer is always upscaled uniformly and
-centered, so any remaining horizontal strip stays a black border. The board video
+centered, with encoded dark-gray borders (`BORDER_COLOR`). The board video
 PLL follows the same switch through the example project. Boot progress owns
 the six LEDs until the first software LED write, after which software owns them until reset. LED
 patterns are progress evidence only; UART frames and system-level checks establish boot success or a
 structured boot failure.
+
+The pixel-clock conversion pipeline starts a pair every four clocks when the completed-pair
+queue has room. Each row starts reading sixteen clocks before its first framebuffer output.
+A separate four-entry, 48-bit asynchronous-read FIFO stores completed RGB888 pairs in
+twelve RAM16 cells. The occupancy guard reserves space for the in-flight conversion.
+Scanout consumes a pair every four clocks in 2x or six clocks in 3x, and one 48-bit output
+register holds the popped pair for the remaining repeats. SDRAM latency is absorbed by
+the published line groups before conversion begins.
+
+Display retains strict priority. A caught-up refill is 50 segments per two source rows;
+initial fill is at most 100 segments. The conditional ideal scheduling estimate and its
+refresh/contention limitations are in the [upgrade comparison](../../../target/display-upgrade/comparison.md).
 
 On boot failure, the boot stage repeatedly emits a ten-byte UART frame containing ASCII `CV3B`,
 stage, category, error code, two detail bytes, and an XOR checksum. The stage byte is always `1` for
@@ -226,17 +254,16 @@ the same stable mapping through `LoaderError::boot_report`.
 
 ## Current fitted result and validation boundary
 
-The 2026-09-27 default tile two-pixel coverage producer uses 14,042 system Logic
-(11,310 LUT, 2,144 ALU, 98 RAM16), 5,753 logic registers, 8,811 CLS, four SDPB, eight DPB,
-one pROM, two `MULT18X18`, one `MULT36X36`, and five `MULTADDALU18X18`. GPU storage is four
+The 2026-09-27 default 2x four-line display/sRGB upgrade with the original pixel-pair
+FIFO uses 13,986 system Logic (11,182 LUT, 2,144 ALU, 110 RAM16), 5,618 FF, 8,780 CLS,
+five SDPB, eight DPB, one pROM, two `MULT18X18`, one `MULT36X36`, and five `MULTADDALU18X18`. GPU storage is four
 cache DPBs plus one raster FIFO SDPB; command/list and tags share 18 RAM16 cells.
-The CPU clock closes at 55.665 MHz against 54 MHz with 0.554 ns worst setup slack and
-zero setup/hold TNS. Runtime clocks remain 54/108 MHz. The first setup path is fetch-queue
-head selection to BTC rank write enable (`queue_head_1_s0/Q` to
-`btc_rank_btc_rank_RAMREG_3_G[1]_s0/CE`): 19 logic levels, 7.633 ns cell, 10.064 ns route
-and 0.232 ns clock-to-Q. Raster and framebuffer control are not first.
-Controller timing closes at 174.001 MHz against 108 MHz. The project uses Gowin place/route algorithms 1;
-`--check-existing` confirms matching generated sources; fitting is separate from board evidence.
+The CPU clock closes at 57.469 MHz against 54 MHz with 1.118 ns worst setup slack and
+zero setup/hold TNS. Runtime clocks remain 54/108 MHz. The first setup path is GPU phase
+control (`u_gpu/phase_0_s3/Q` to `u_gpu/phase_4_s3/D`).
+Controller timing closes at 180.633 MHz against 108 MHz. Place/route algorithms remain 1.
+Restoration checks, the default artifact in `target/cpu_v3_system_gowin` and superseded
+comparisons are linked in the [FIFO restoration report](../../../target/display-fifo-restored/comparison.md).
 
 The system-level emulator-vs-RTL co-simulation `tests/system_cosim.rs` drives the composed RTL
 (core, fetch queue, I-cache, D-cache, memory arbiter, and a behavioral SDRAM word port) in Icarus
@@ -252,13 +279,14 @@ ports, alias eviction, LOAD/CLEAR preservation, guards, and terminal errors at a
 beat positions. The reproducible scene and throughput suite is `tests/gpu_trace_cosim.rs`.
 The earlier tile-display path and cold boot are user-confirmed. The triangle-only application passes
 full-frame Flash RTL checks for both slots, including nonzero initial sentinels and payload guards.
-All 20 aggregate hardware checks pass, including 725 workspace tests, strict Clippy and
-artifact audits; six raster, eight GPU, 26 CPU and two system co-sims pass separately.
+For this display upgrade, 727 workspace tests, strict Clippy, five display RTL tests, both
+video-mode PnR/audits, 26 CPU and two system co-sims pass. Both complete Flash RTL tests and
+four top-level resource tests also pass; this upgrade has no new physical-board evidence.
 The previous `11729ac` image passed cold-boot UART/HDMI validation. The Logic closure
 image at `6149698` passed audited SRAM loading, then complete Flash Program/Verify
 at `0x000000` (boot package at `0x100000`) and another SRAM load. Each UART capture
 passes 499 strict S2 `0x0b` success frames with zero errors; BL616 recovery was unnecessary.
-This optimized image now remains in Flash and SRAM; its cold-boot UART/HDMI check is pending.
+That earlier optimized image remains in Flash and SRAM; its cold-boot UART/HDMI check is pending.
 K=1 and blocking refill/clean remain; geometry and varying interpolation are not implemented.
 
 This result is implementation evidence, not a substitute for board validation. Changes to clocks,

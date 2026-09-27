@@ -42,6 +42,10 @@ pub const DISPLAY_STAGE_FRAMEBUFFER_LOW: u16 = 1;
 pub const DISPLAY_STAGE_FRAMEBUFFER_HIGH: u16 = 2;
 pub const DISPLAY_SWAP_COMMAND: u16 = 3;
 pub const DISPLAY_NEXT_SWAP: u16 = 1;
+// Staged with NEXT_SWAP; read returns the active format.
+pub const DISPLAY_COLOR_FORMAT: u16 = 4;
+pub const DISPLAY_RGB565: u16 = 0;
+pub const DISPLAY_LINEAR_RGB565: u16 = 1;
 
 pub const GPU_DEVICE: u16 = 4;
 pub const GPU_CMD_BASE_LOW: u16 = 0;

@@ -78,16 +78,41 @@ pub const VGA_800X480_2X: DisplayConfig = DisplayConfig {
 
 pub const DISPLAY_MODES: [DisplayConfig; 2] = [VGA_720P_3X, VGA_800X480_2X];
 
-/// The compiled-in display mode. This is the one-word switch: point it at the
-/// other constant to retime the scanout RTL, the host renderer, and (through
-/// `examples/cpu_v3_system/main.rs`) the board video PLL together.
+/// The compiled-in display mode. `display-2x` (also the default) and
+/// `display-3x` select the scanout schedule, host renderer and board PLL
+/// together; both features cannot be enabled in the same build.
+#[cfg(all(feature = "display-2x", feature = "display-3x"))]
+compile_error!("display-2x and display-3x are mutually exclusive");
+
+#[cfg(not(feature = "display-3x"))]
 pub const ACTIVE_DISPLAY_CONFIG: DisplayConfig = VGA_800X480_2X;
+#[cfg(feature = "display-3x")]
+pub const ACTIVE_DISPLAY_CONFIG: DisplayConfig = VGA_720P_3X;
 
 pub const HDMI_WIDTH: usize = ACTIVE_DISPLAY_CONFIG.hdmi_width;
 pub const HDMI_HEIGHT: usize = ACTIVE_DISPLAY_CONFIG.hdmi_height;
 pub const DISPLAY_SCALE: usize = ACTIVE_DISPLAY_CONFIG.scale;
 pub const DISPLAY_SIDE_BORDER: usize = ACTIVE_DISPLAY_CONFIG.side_border;
-pub const DISPLAY_LINE_SLOTS: usize = 2;
+/// IEC sRGB transfer at i/63, rounded to the nearest 8-bit value.
+pub const LINEAR6_TO_SRGB8: [u8; 64] = [
+    0, 34, 50, 62, 71, 80, 87, 94, 100, 106, 111, 116, 121, 125, 130, 134, 138, 142, 146, 149, 153,
+    156, 160, 163, 166, 169, 172, 175, 178, 181, 183, 186, 189, 191, 194, 197, 199, 201, 204, 206,
+    209, 211, 213, 215, 218, 220, 222, 224, 226, 228, 230, 232, 234, 236, 238, 240, 242, 244, 246,
+    248, 250, 251, 253, 255,
+];
+
+/// Linear RGB565 uses bit replication from five to six bits for red/blue.
+pub fn linear_rgb565_to_srgb888(pixel: u16) -> (u8, u8, u8) {
+    let r = ((pixel >> 11) & 31) as usize;
+    let g = ((pixel >> 5) & 63) as usize;
+    let b = (pixel & 31) as usize;
+    (
+        LINEAR6_TO_SRGB8[(r << 1) | (r >> 4)],
+        LINEAR6_TO_SRGB8[g],
+        LINEAR6_TO_SRGB8[(b << 1) | (b >> 4)],
+    )
+}
+pub const DISPLAY_LINE_SLOTS: usize = 4;
 pub const DISPLAY_LINE_WORDS: usize = FRAMEBUFFER_WIDTH as usize;
 pub const DISPLAY_LINE_BUFFER_WORDS: usize = DISPLAY_LINE_SLOTS * DISPLAY_LINE_WORDS;
 pub const DISPLAY_BURST_PIXELS: usize = 16;
@@ -135,14 +160,21 @@ pub fn render_frame(machine: &CpuV3Sim) -> Vec<u32> {
     render_frame_at(machine, FRAMEBUFFER_A_BASE_WORD)
 }
 
-/// Renders the logical 320x240 RGB565 framebuffer as packed 0x00RRGGBB pixels.
+/// Renders the logical 400x240 RGB565 framebuffer as packed 0x00RRGGBB pixels.
 pub fn render_framebuffer_at(machine: &CpuV3Sim, framebuffer_base: u32) -> Vec<u32> {
     let mut frame = vec![0; FRAMEBUFFER_WIDTH as usize * FRAMEBUFFER_HEIGHT as usize];
+    let linear = machine
+        .device::<crate::DisplayDevice>(crate::DISPLAY_DEVICE)
+        .is_some_and(crate::DisplayDevice::linear_rgb565);
     for y in 0..FRAMEBUFFER_HEIGHT {
         for x in 0..FRAMEBUFFER_WIDTH {
             let address = framebuffer_word_at(framebuffer_base, x, y);
             let pixel = machine.physical_memory(PhysicalWordAddress::new(address));
-            let (red, green, blue) = rgb565_to_rgb888(pixel, true);
+            let (red, green, blue) = if linear {
+                linear_rgb565_to_srgb888(pixel)
+            } else {
+                rgb565_to_rgb888(pixel, true)
+            };
             frame[(y * FRAMEBUFFER_WIDTH + x) as usize] =
                 (u32::from(red) << 16) | (u32::from(green) << 8) | u32::from(blue);
         }
@@ -240,13 +272,37 @@ mod tests {
     use super::*;
 
     #[test]
-    fn two_rgb565_lines_fit_one_18k_block() {
-        // Two 400-pixel lines pack into 400 32-bit words = 12800 bits, which
-        // fits one 18432-bit block, so the line buffer uses one.
+    fn four_rgb565_lines_and_tables_fit_two_blocks() {
         assert_eq!(DISPLAY_LINE_WORDS, 400);
-        assert_eq!(DISPLAY_LINE_BUFFER_WORDS, 800);
-        assert_eq!(DISPLAY_LINE_SLOTS * (DISPLAY_LINE_WORDS / 2), 400);
+        assert_eq!(DISPLAY_LINE_BUFFER_WORDS, 1600);
+        assert_eq!(DISPLAY_LINE_SLOTS * (DISPLAY_LINE_WORDS / 4), 400);
         assert_eq!(DISPLAY_BURSTS_PER_LINE, 25);
+    }
+
+    #[test]
+    fn srgb_table_and_all_rgb565_pixels_match_the_transfer_function() {
+        let transfer = |v: usize| {
+            let linear = v as f64 / 63.0;
+            let encoded = if linear <= 0.0031308 {
+                linear * 12.92
+            } else {
+                1.055 * linear.powf(1.0 / 2.4) - 0.055
+            };
+            (encoded * 255.0).round() as u8
+        };
+        for pixel in 0..=u16::MAX {
+            let r = usize::from(pixel >> 11);
+            let g = usize::from((pixel >> 5) & 63);
+            let b = usize::from(pixel & 31);
+            assert_eq!(
+                linear_rgb565_to_srgb888(pixel),
+                (
+                    transfer((r << 1) | (r >> 4)),
+                    transfer(g),
+                    transfer((b << 1) | (b >> 4))
+                )
+            );
+        }
     }
 
     #[test]

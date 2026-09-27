@@ -57,6 +57,8 @@ generated outside this document.
 - 2026-09-27 — CPU B-source predecode and two-stage pixel AABB improved fitted timing with unchanged ISA and pixel results; offline and loaded-UART validation passed, with cold boot pending.
 - 2026-09-27 — Compact raster ownership, shared edge stepping, stable BSRAM inference and shared cache/control RAM16 ports reduced Logic; tile wins at both quad rates, and the two-pixel default passed complete Flash Verify and loaded UART, with cold boot pending.
 
+- 2026-09-27 — Four-row display buffering in two BSRAMs removed response staging and added linear RGB565-to-sRGB conversion; the completed-pair RAM16 FIFO is retained after whole-system comparisons, with mutually exclusive 2x/3x build features.
+
 ## Next work
 
 Future CPU or system optimizations are added here only after completion; planned GPU work is tracked

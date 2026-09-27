@@ -2,10 +2,12 @@
 
 mod hdmi;
 mod line_buffer;
+mod pair_fifo;
 mod sdram;
 
 pub use hdmi::*;
 pub use line_buffer::*;
+pub use pair_fifo::*;
 pub use sdram::*;
 
 use digital_design_circuit::{CircuitWires, Wire, Wires};

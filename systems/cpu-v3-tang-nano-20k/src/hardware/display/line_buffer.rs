@@ -1,4 +1,4 @@
-//! One dual-clock line buffer for two 400-pixel lines (one 18-Kbit BSRAM).
+//! Four RGB565 lines and two sRGB tables in two dual-clock 512x32 BSRAMs.
 
 use digital_design_circuit::{CircuitWires, Wire, Wires};
 use digital_design_hardware::{BsramBlocks, Hardware, Module, ModuleIo, TargetResourceRequest};
@@ -7,15 +7,17 @@ use digital_design_hardware::{BsramBlocks, Hardware, Module, ModuleIo, TargetRes
 pub struct DisplayLineBufferInput {
     pub write_clock: Wire,
     pub write_enable: Wire,
-    pub write_address: Wires<10>,
-    pub write_data: Wires<32>,
+    pub write_address: Wires<9>,
+    pub write_data: Wires<64>,
     pub read_clock: Wire,
-    pub read_address: Wires<10>,
+    pub read_address_a: Wires<9>,
+    pub read_address_b: Wires<9>,
 }
 
 #[derive(Clone, ModuleIo)]
 pub struct DisplayLineBufferOutput {
-    pub read_data: Wires<32>,
+    pub read_data_a: Wires<32>,
+    pub read_data_b: Wires<32>,
 }
 
 #[derive(Hardware)]
@@ -30,7 +32,7 @@ impl Module for DisplayLineBuffer {
     const EMU_AVAILABLE: bool = false;
 
     fn target_resources() -> Vec<TargetResourceRequest> {
-        vec![TargetResourceRequest::new(BsramBlocks::new(1))]
+        vec![TargetResourceRequest::new(BsramBlocks::new(2))]
     }
 
     fn execute_emu(
@@ -43,7 +45,18 @@ impl Module for DisplayLineBuffer {
     }
 
     fn verilog_source() -> Option<String> {
-        Some(include_str!("display_line_buffer.v").to_string())
+        let init = crate::display::LINEAR6_TO_SRGB8
+            .iter()
+            .enumerate()
+            .map(|(index, value)| {
+                format!(
+                    "    memory_a[{}]=32'h{value:08x}; memory_b[{}]=32'h{value:08x};\n",
+                    448 + index,
+                    448 + index
+                )
+            })
+            .collect::<String>();
+        Some(include_str!("display_line_buffer.v").replace("__SRGB_INIT__", &init))
     }
 
     fn verilog_testbench() -> Option<String> {

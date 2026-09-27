@@ -337,9 +337,9 @@ mod tests {
         assert_eq!(project.resources.claimed[&ResourceKind::Pll], 2);
         assert_eq!(project.resources.claimed[&ResourceKind::HdmiOutput], 1);
         // Boot BSRAM + two dual-port CPU cache data banks + the FPU register
-        // RAM (two blocks) + the display line buffer + the four-bank GPU
+        // RAM (two blocks) + the two display line-buffer banks + the four-bank GPU
         // framebuffer tile cache + one raster output FIFO.
-        assert_eq!(project.resources.claimed[&ResourceKind::Bsram18K], 13);
+        assert_eq!(project.resources.claimed[&ResourceKind::Bsram18K], 14);
     }
 
     #[test]
