@@ -466,6 +466,10 @@ impl Module for CpuV3FpuScalarAlu {
 
 #[derive(Clone, ModuleIo)]
 pub struct CpuV3FpuScalarPathInput {
+    pub alu_result: Wires<32>,
+    pub alu_lt: Wire,
+    pub alu_eq: Wire,
+    pub alu_gt: Wire,
     pub abort: Wire,
     pub instr_complete: Wire,
     pub instr_opcode: Wires<4>,
@@ -476,6 +480,7 @@ pub struct CpuV3FpuScalarPathInput {
 
 #[derive(Clone, ModuleIo)]
 pub struct CpuV3FpuScalarPathOutput {
+    pub alu_request_op: Wires<4>,
     pub rf_write_enable: Wire,
     pub rf_write_address: Wires<9>,
     pub rf_write_data: Wires<32>,
@@ -489,8 +494,8 @@ pub struct CpuV3FpuScalarPathOutput {
 }
 
 /// FPU v2 scalar execution-path controller: on instr_complete (opcode 0xD)
-/// it evaluates the combinational scalar ALU on the already-valid RF read
-/// data (T0), captures the result, writes back on T1, and drives the
+/// it requests the unit-wide combinational ALU on the already-valid RF read
+/// data (T0), captures the supplied result, writes back on T1, and drives the
 /// section-16 R/W/X countdown skeleton. CMP only updates the flag registers;
 /// abort cancels any in-flight write.
 pub struct CpuV3FpuScalarPath;
@@ -583,14 +588,20 @@ impl Module for CpuV3FpuScalarPath {
         output: &Self::Output,
     ) {
         let input = input.sample(circuit);
+        let subop = encoding::scalar_subop(input.word1_raw as u16);
         let load_now = input.instr_complete
             && input.instr_opcode == u64::from(encoding::OPCODE_SCALAR)
+            && !matches!(
+                subop,
+                encoding::MUL | encoding::RCP | encoding::RSQRT | encoding::SINCOS
+            )
             && !input.abort;
         let w_wait = if load_now { 2 } else { state.w_count };
         let x_wait = if load_now { 2 } else { state.x_count };
         output.drive(
             circuit,
             &CpuV3FpuScalarPathOutputValue {
+                alu_request_op: u64::from(subop & 0xF),
                 rf_write_enable: state.write_enable && !input.abort,
                 rf_write_address: u64::from(state.write_address),
                 rf_write_data: u64::from(state.write_data),
@@ -622,23 +633,21 @@ impl Module for CpuV3FpuScalarPath {
         let subop = encoding::scalar_subop(word1);
         let fd = encoding::word1_fd(word1);
         let is_cmp = subop == encoding::CMP;
-        // MUL is owned by the multiply path; never fire here.
+        // Other arithmetic owners never fire this scalar controller.
         let load_now = input.instr_complete
             && input.instr_opcode == u64::from(encoding::OPCODE_SCALAR)
-            && subop != encoding::MUL;
+            && !matches!(
+                subop,
+                encoding::MUL | encoding::RCP | encoding::RSQRT | encoding::SINCOS
+            );
         state.write_enable = load_now && !is_cmp;
         if load_now {
-            let (result, lt, eq, gt) = Self::EmuState::alu(
-                input.rf_read_a_data as u32,
-                input.rf_read_b_data as u32,
-                subop,
-            );
             state.write_address = u16::from(fd);
-            state.write_data = result;
+            state.write_data = input.alu_result as u32;
             if is_cmp {
-                state.flag_lt = lt;
-                state.flag_eq = eq;
-                state.flag_gt = gt;
+                state.flag_lt = input.alu_lt;
+                state.flag_eq = input.alu_eq;
+                state.flag_gt = input.alu_gt;
             }
             state.w_count = 1;
             state.x_count = 1;
@@ -652,12 +661,13 @@ impl Module for CpuV3FpuScalarPath {
         Some(include_str!("cpu_v3_fpu_scalar_path.v").to_string())
     }
 
-    fn verilog_dependencies() -> Vec<VerilogDependency> {
-        vec![VerilogDependency::new::<CpuV3FpuScalarAlu>("scalar_alu")]
-    }
-
     fn verilog_testbench() -> Option<String> {
-        Some(include_str!("cpu_v3_fpu_scalar_path_tb.v").to_string())
+        // Test-only ALU definition is not a physical child/resource of this controller.
+        Some(format!(
+            "{}\n{}",
+            include_str!("cpu_v3_fpu_scalar_path_tb.v"),
+            include_str!("cpu_v3_fpu_scalar_alu.v")
+        ))
     }
 }
 
@@ -1190,6 +1200,7 @@ impl Module for CpuV3FpuSpecialPath {
 
 #[derive(Clone, ModuleIo)]
 pub struct CpuV3FpuVectorPathInput {
+    pub alu_result: Wires<32>,
     pub abort: Wire,
     pub instr_complete: Wire,
     pub instr_opcode: Wires<4>,
@@ -1202,6 +1213,7 @@ pub struct CpuV3FpuVectorPathInput {
 
 #[derive(Clone, ModuleIo)]
 pub struct CpuV3FpuVectorPathOutput {
+    pub alu_request_op: Wires<4>,
     pub rf_read_a_address: Wires<9>,
     pub rf_read_b_address: Wires<9>,
     pub rf_write_enable: Wire,
@@ -1235,12 +1247,85 @@ impl Module for CpuV3FpuVectorPath {
         Some(include_str!("cpu_v3_fpu_vector_path.v").to_string())
     }
 
-    fn verilog_dependencies() -> Vec<VerilogDependency> {
-        vec![VerilogDependency::new::<CpuV3FpuScalarAlu>("vector_alu")]
+    fn verilog_testbench() -> Option<String> {
+        Some(format!(
+            "{}\n{}",
+            include_str!("cpu_v3_fpu_vector_path_tb.v"),
+            include_str!("cpu_v3_fpu_scalar_alu.v")
+        ))
+    }
+}
+
+#[derive(Clone, ModuleIo)]
+pub struct CpuV3FpuAluPathInput {
+    pub abort: Wire,
+    pub instr_complete: Wire,
+    pub instr_opcode: Wires<4>,
+    pub word1_raw: Wires<16>,
+    pub base_a: Wires<6>,
+    pub base_b: Wires<6>,
+    pub alu_result: Wires<32>,
+    pub alu_lt: Wire,
+    pub alu_eq: Wire,
+    pub alu_gt: Wire,
+}
+
+#[derive(Clone, ModuleIo)]
+pub struct CpuV3FpuAluPathOutput {
+    pub alu_request_op: Wires<4>,
+    pub rf_read_a_address: Wires<9>,
+    pub rf_read_b_address: Wires<9>,
+    pub rf_write_enable: Wire,
+    pub rf_write_address: Wires<9>,
+    pub rf_write_data: Wires<32>,
+    pub flag_lt: Wire,
+    pub flag_eq: Wire,
+    pub flag_gt: Wire,
+    pub vector_busy: Wire,
+    pub busy: Wire,
+}
+
+/// One scalar/vector instruction descriptor and RF result commit stage.
+/// Scalar operands enter ready at T0, preserving T1 writeback; vector lanes
+/// keep the synchronous-read pipeline. The unit value model remains cycle exact.
+pub struct CpuV3FpuAluPath;
+
+impl HardwareIdentity for CpuV3FpuAluPath {
+    const TARGET_RESOURCE_LEAF: bool = false;
+
+    fn verilog_identity() -> VerilogIdentity {
+        VerilogIdentity::new("CpuV3FpuAluPath").namespace(["components", "cpu", "cpu_v3"])
+    }
+}
+
+impl Module for CpuV3FpuAluPath {
+    type Input = CpuV3FpuAluPathInput;
+    type Output = CpuV3FpuAluPathOutput;
+    type EmuState = ();
+
+    const USES_MAIN_CLOCK: bool = true;
+    const EMU_AVAILABLE: bool = false;
+
+    fn verilog_source() -> Option<String> {
+        Some(include_str!("cpu_v3_fpu_alu_path.v").to_string())
     }
 
     fn verilog_testbench() -> Option<String> {
-        Some(include_str!("cpu_v3_fpu_vector_path_tb.v").to_string())
+        // Reuse the independent vector golden unchanged through the new ports.
+        // Scalar fast-entry timing/flags/numerics are covered by the unit TB.
+        let vector_tb = include_str!("cpu_v3_fpu_vector_path_tb.v")
+            .replace(
+                "CpuV3FpuVectorPath vector_path (",
+                "CpuV3FpuAluPath vector_path (\n\
+                 .alu_lt(alu_lt), .alu_eq(alu_eq), .alu_gt(alu_gt),\n\
+                 .flag_lt(), .flag_eq(), .flag_gt(), .vector_busy(),",
+            )
+            .replace("    .rf_read_a_data(rf_read_a_data),", "")
+            .replace("    .rf_read_b_data(rf_read_b_data),", "");
+        Some(format!(
+            "{vector_tb}\n{}",
+            include_str!("cpu_v3_fpu_scalar_alu.v")
+        ))
     }
 }
 
@@ -1699,9 +1784,9 @@ impl Module for CpuV3Fpu {
         vec![
             VerilogDependency::new::<CpuV3FpuFrontend>("frontend"),
             VerilogDependency::new::<CpuV3FpuRegisterRam>("rf"),
-            VerilogDependency::new::<CpuV3FpuScalarPath>("scalar_path"),
+            VerilogDependency::new::<CpuV3FpuScalarAlu>("shared_alu"),
+            VerilogDependency::new::<CpuV3FpuAluPath>("alu_path"),
             VerilogDependency::new::<CpuV3FpuSpecialPath>("special_path"),
-            VerilogDependency::new::<CpuV3FpuVectorPath>("vector_path"),
             VerilogDependency::new::<CpuV3FpuMultiplyPath>("multiply_path"),
             VerilogDependency::new::<CpuV3FpuDotPath>("dot_path"),
             VerilogDependency::new::<CpuV3FpuMulPipe>("mul_pipe"),
@@ -2250,6 +2335,12 @@ impl CpuV3FpuState {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    #[ignore = "explicit external simulation of the unified FPU ALU lane/commit engine"]
+    fn verify_fpu_unified_alu_path_with_iverilog() {
+        digital_design_hardware::verify_verilog_with_iverilog::<CpuV3FpuAluPath>().unwrap();
+    }
 
     /// The architecture `encoding` module is the public source of truth for
     /// every FPU v2 field. This module keeps a private copy for the Verilog

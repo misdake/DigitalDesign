@@ -96,7 +96,20 @@ initial begin
         rf_mem[rf_init] = 32'b0;
 end
 
+// Test-only ALU connection: production owns this instance at the FPU top.
+wire [31:0] alu_result;
+wire [3:0] alu_request_op;
+wire alu_lt;
+wire alu_eq;
+wire alu_gt;
+CpuV3FpuScalarAlu test_alu (
+    .a(rf_read_a_data), .b(rf_read_b_data), .op(alu_request_op),
+    .result(alu_result), .flag_lt(alu_lt), .flag_eq(alu_eq), .flag_gt(alu_gt)
+);
+
 CpuV3FpuScalarPath scalar_path (
+    .alu_result(alu_result), .alu_request_op(alu_request_op),
+    .alu_lt(alu_lt), .alu_eq(alu_eq), .alu_gt(alu_gt),
     .clk(clk),
     .abort(abort),
     .instr_complete(instr_complete),

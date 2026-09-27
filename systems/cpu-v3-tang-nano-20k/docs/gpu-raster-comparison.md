@@ -183,11 +183,13 @@ glue, the write gearbox, reset and boot-progress control. Similarly, the ledger
 groups fetch/BTC with I-cache, arbiter with system control, and the small boot
 device with boot DMA. The hierarchy table separates these actual owners.
 
-The D-cache dirty bitmap is deliberately still FF storage: it supplies a sixteen-entry
+In this historical tile candidate, the D-cache dirty bitmap remains FF storage: it supplies a sixteen-entry
 maintenance window and global dirty status while accepting dirty updates. A simple
 single-address RAM16 replacement would change these accesses and require summary or
 pipeline work. Its small measured ownership does not justify an unrelated cache rewrite.
-No other inspected owner showed a confirmed large, unnecessary storage structure.
+No other inspected owner showed a confirmed large, unnecessary storage structure in that audit.
+The later CPU/cache restructuring replaces this bitmap and the age-based arbiter;
+the current contracts and fitted system are in [architecture.md](architecture.md).
 
 Smaller Logic does not guarantee faster routing. The two-pixel tile candidate is
 limited by fetch-queue head selection through BTC replacement-rank write enable,

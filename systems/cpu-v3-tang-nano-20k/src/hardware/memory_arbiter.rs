@@ -2,9 +2,9 @@
 //! and data caches, boot DMA, the three GPU masters, and the Tang Nano 20K
 //! physical SDRAM line/word port.
 //!
-//! Cache and GPU clients speak fixed one-line transactions: one aligned
-//! request transfers four ordered 64-bit beats (beat n carries words 4*n
-//! through 4*n+3). Display is also a fixed-line read master. The arbiter
+//! Caches and display transfer one 32-byte line; GPU clients transfer one to
+//! four consecutive lines. Each line contains four ordered 64-bit beats
+//! (beat n carries words 4*n through 4*n+3). The arbiter
 //! forwards one request to the SDRAM adapter, holds ownership while the
 //! adapter streams the real burst, and releases the owner on the accepted beat
 //! carrying `memory_response_last` (or any error beat). The DMA client keeps
@@ -12,13 +12,12 @@
 //! qualifies it with its own response-valid/error rather than a wide zero mux.
 //!
 //! Display has strict priority at every transaction boundary. The other six
-//! requesters score `base + saturating_age[3:0]` with bases DMA 5, I/D 4,
-//! `gpu_ro` 3, `gpu_fb_r` 2, `gpu_fb_w` 1; equal scores rotate through a
-//! round-robin pointer so no requester can be starved.
+//! requesters share a circular first-ready schedule. The cursor advances only
+//! after an accepted non-display transaction; its accepted owner remains fixed
+//! until an accepted last/error response. Fairness is bounded in accepted
+//! non-display transactions, excluding display demand and stalled memory.
 
-use digital_design_circuit::{
-    add_naive, input_const, mux2_w, mux8_w, reg_w, CircuitWires, Regs, Wire, Wires,
-};
+use digital_design_circuit::{input_const, mux2_w, mux8_w, reg_w, CircuitWires, Wire, Wires};
 use digital_design_hardware::{HardwareIdentity, Module, ModuleIo, VerilogIdentity};
 
 #[derive(Clone, ModuleIo)]
@@ -150,7 +149,7 @@ enum Owner {
 }
 
 /// Non-display requesters in rotation order. Index `i` maps to the same slot
-/// in [`REQUESTER_BASES`] and [`OWNER_CODES`].
+/// in [`OWNER_CODES`].
 const REQUESTER_OWNERS: [Owner; 6] = [
     Owner::Instruction,
     Owner::Data,
@@ -159,7 +158,6 @@ const REQUESTER_OWNERS: [Owner; 6] = [
     Owner::GpuFbR,
     Owner::GpuFbW,
 ];
-const REQUESTER_BASES: [u8; 6] = [4, 4, 5, 3, 2, 1];
 const OWNER_CODES: [u8; 6] = [
     OWNER_INSTRUCTION,
     OWNER_DATA,
@@ -208,9 +206,7 @@ const OWNER_GPU_FB_W: u8 = 7;
 #[derive(Clone, Default)]
 pub struct CpuV3MemoryArbiterState {
     owner: Owner,
-    /// Saturating wait age, one counter per non-display requester.
-    age: [u8; 6],
-    /// Round-robin tie-breaker cursor over the six non-display requesters.
+    /// Round-robin service cursor over the six non-display requesters.
     rotate: u8,
 }
 
@@ -248,7 +244,6 @@ impl Module for CpuV3MemoryArbiter {
     fn nand(input: &Self::Input) -> Self::Output {
         let zero = input_const(0);
         let owner = reg_w::<3>();
-        let age_regs: [Regs<4>; 6] = std::array::from_fn(|_| reg_w::<4>());
         let rotate = reg_w::<3>();
 
         let requests: [Wire; 6] = [
@@ -259,30 +254,23 @@ impl Module for CpuV3MemoryArbiter {
             input.gpu_fb_r_request_valid,
             input.gpu_fb_w_request_valid,
         ];
-        let ages: [Wires<4>; 6] = std::array::from_fn(|index| age_regs[index].out);
-        let score: [Wires<5>; 6] = std::array::from_fn(|index| {
-            add_naive(
-                ages[index].expand_unsigned::<5>(),
-                const_wires::<5>(REQUESTER_BASES[index]),
-            )
-            .sum
+        // Prefer the first request at/after the cursor. If none is present,
+        // wrap to the first request before it. No scores or wait counters.
+        let cursor_at: [Wire; 6] = std::array::from_fn(|i| eq_const(rotate.out, i as u8));
+        let mut cursor_before = zero;
+        let masked: [Wire; 6] = std::array::from_fn(|i| {
+            cursor_before = cursor_before | cursor_at[i];
+            requests[i] & cursor_before
         });
-
-        // A requester wins when it beats every other requester that is also
-        // asking. Non-requesting masters are ignored.
-        let mut wins = [zero; 6];
-        for index in 0..6 {
-            let mut win = requests[index];
-            for other in 0..6 {
-                if index == other {
-                    continue;
-                }
-                let (greater, equal) = cmp(score[index], score[other]);
-                let better = greater | (equal & earlier(index, other, rotate.out));
-                win = win & (!requests[other] | better);
-            }
-            wins[index] = win;
-        }
+        let masked_any = masked.iter().fold(zero, |acc, &request| acc | request);
+        let mut earlier_any = zero;
+        let mut earlier_masked = zero;
+        let wins: [Wire; 6] = std::array::from_fn(|i| {
+            let win = (masked[i] & !earlier_masked) | (!masked_any & requests[i] & !earlier_any);
+            earlier_any = earlier_any | requests[i];
+            earlier_masked = earlier_masked | masked[i];
+            win
+        });
 
         let mut selected_bits = [zero; 3];
         for index in 0..6 {
@@ -340,20 +328,6 @@ impl Module for CpuV3MemoryArbiter {
             const_wires::<3>(OWNER_NONE),
             input.reset,
         ));
-
-        for index in 0..6 {
-            let request = requests[index];
-            let selected_this = eq_const(selected, OWNER_CODES[index]);
-            let incremented = {
-                let sum = add_naive(ages[index], const_wires::<4>(1)).sum;
-                mux2_w(sum, const_wires::<4>(15), eq_const(ages[index], 15))
-            };
-            let after = mux2_w(ages[index], const_wires::<4>(0), !request);
-            let after = mux2_w(after, incremented, request & !selected_this);
-            let after = mux2_w(after, const_wires::<4>(0), selected_this);
-            let next = mux2_w(after, ages[index], !owner_none);
-            age_regs[index].set_in(mux2_w(next, const_wires::<4>(0), input.reset));
-        }
 
         let non_display_accepted = accepted & !selected_display;
         let mut rotate_bits = [zero; 3];
@@ -509,10 +483,6 @@ fn const_wires<const WIDTH: usize>(value: u8) -> Wires<WIDTH> {
     }
 }
 
-fn bool_wire(value: bool) -> Wire {
-    input_const(u8::from(value))
-}
-
 /// `value == constant` for a narrow bus.
 fn eq_const<const WIDTH: usize>(value: Wires<WIDTH>, constant: u8) -> Wire {
     let mut equal = input_const(1);
@@ -520,31 +490,6 @@ fn eq_const<const WIDTH: usize>(value: Wires<WIDTH>, constant: u8) -> Wire {
         equal = equal & value.wires[bit].eq_const((constant >> bit) & 1);
     }
     equal
-}
-
-/// `(a > b, a == b)` for an unsigned bus.
-fn cmp<const WIDTH: usize>(a: Wires<WIDTH>, b: Wires<WIDTH>) -> (Wire, Wire) {
-    let mut greater = input_const(0);
-    let mut equal = input_const(1);
-    for bit in (0..WIDTH).rev() {
-        let a_bit = a.wires[bit];
-        let b_bit = b.wires[bit];
-        greater = greater | (equal & a_bit & !b_bit);
-        equal = equal & !(a_bit ^ b_bit);
-    }
-    (greater, equal)
-}
-
-/// True when requester `index` sits before `other` in the rotation that starts
-/// at `rotate`. Used only to break equal-score ties.
-fn earlier(index: usize, other: usize, rotate: Wires<3>) -> Wire {
-    let table: [Wires<1>; 8] = std::array::from_fn(|value| {
-        let value = value % 6;
-        Wires {
-            wires: [bool_wire((index + 6 - value) % 6 < (other + 6 - value) % 6)],
-        }
-    });
-    mux8_w(&table, rotate).wires[0]
 }
 
 fn request_bits(input: &CpuV3MemoryArbiterInputValue) -> [bool; 6] {
@@ -558,48 +503,19 @@ fn request_bits(input: &CpuV3MemoryArbiterInputValue) -> [bool; 6] {
     ]
 }
 
-fn position(index: usize, rotate: u8) -> u8 {
-    (index as u8 + 6 - rotate) % 6
-}
-
-/// The winning non-display requester, or [`Owner::Display`] when the display
-/// is asking, or [`Owner::None`] when nothing is.
-fn select(
-    input: &CpuV3MemoryArbiterInputValue,
-    age: &[u8; 6],
-    rotate: u8,
-) -> (Owner, Option<usize>) {
+/// Circular first-ready selection, independently described from the RTL mask.
+fn select(input: &CpuV3MemoryArbiterInputValue, rotate: u8) -> (Owner, Option<usize>) {
     if input.display_request_valid {
         return (Owner::Display, None);
     }
     let requests = request_bits(input);
-    let mut winner = None;
-    'requesters: for index in 0..6 {
-        if !requests[index] {
-            continue;
+    for offset in 0..6 {
+        let index = (usize::from(rotate) + offset) % 6;
+        if requests[index] {
+            return (REQUESTER_OWNERS[index], Some(index));
         }
-        let score = u16::from(REQUESTER_BASES[index]) + u16::from(age[index]);
-        for other in 0..6 {
-            if index == other || !requests[other] {
-                continue;
-            }
-            let other_score = u16::from(REQUESTER_BASES[other]) + u16::from(age[other]);
-            let better = if score != other_score {
-                score > other_score
-            } else {
-                position(index, rotate) < position(other, rotate)
-            };
-            if !better {
-                continue 'requesters;
-            }
-        }
-        winner = Some(index);
-        break;
     }
-    match winner {
-        Some(index) => (REQUESTER_OWNERS[index], Some(index)),
-        None => (Owner::None, None),
-    }
+    (Owner::None, None)
 }
 
 fn owner_response_ready(owner: Owner, input: &CpuV3MemoryArbiterInputValue) -> bool {
@@ -618,19 +534,9 @@ fn advance_state(state: &mut CpuV3MemoryArbiterState, input: &CpuV3MemoryArbiter
         *state = CpuV3MemoryArbiterState::default();
         return;
     }
-    let requests = request_bits(input);
-    let (selected, winner) = select(input, &state.age, state.rotate);
+    let (selected, winner) = select(input, state.rotate);
     let at_boundary = state.owner == Owner::None;
     if at_boundary {
-        // One arbitration boundary: the winner and any silent client reset
-        // their age, every other waiting client ages one step (saturating).
-        for index in 0..6 {
-            if !requests[index] || selected == REQUESTER_OWNERS[index] {
-                state.age[index] = 0;
-            } else {
-                state.age[index] = (state.age[index] + 1).min(15);
-            }
-        }
         if selected != Owner::None && input.memory_request_ready {
             if let Some(index) = winner {
                 state.rotate = ((index + 1) % 6) as u8;
@@ -649,7 +555,7 @@ fn compute_output(
     state: &CpuV3MemoryArbiterState,
     input: &CpuV3MemoryArbiterInputValue,
 ) -> CpuV3MemoryArbiterOutputValue {
-    let (selected, _) = select(input, &state.age, state.rotate);
+    let (selected, _) = select(input, state.rotate);
     let requesting = state.owner == Owner::None && selected != Owner::None;
     let accepted = requesting && input.memory_request_ready;
     let responding = input.memory_response_valid;
@@ -1029,8 +935,7 @@ mod tests {
             },
             z(),
         ));
-        // DMA word transaction; its base score outranks the idle data client
-        // and the age-free rotator, so it is forwarded immediately.
+        // DMA is the only requesting client and is forwarded immediately.
         steps.push(step(
             CpuV3MemoryArbiterInputValue {
                 dma_request_valid: true,
@@ -1446,55 +1351,210 @@ mod tests {
         input.gpu_fb_w_request_valid = true;
         // The display wins the selection immediately and keeps winning.
         for _ in 0..40 {
-            let (selected, _) = select(&input, &state.age, state.rotate);
+            let (selected, _) = select(&input, state.rotate);
             assert_eq!(selected, Owner::Display);
             advance_state(&mut state, &input);
         }
     }
 
     #[test]
-    fn every_non_display_requester_ages_up_and_is_eventually_served() {
-        let mut served = [false; 6];
-        for requester in 0..6 {
-            let mut state = CpuV3MemoryArbiterState::default();
-            let mut input = idle();
-            // The highest-base master always asks as well.
-            input.dma_request_valid = true;
-            set_request(&mut input, requester, true);
-            let mut selected_winner = false;
-            for _ in 0..40 {
-                let (selected, _) = select(&input, &state.age, state.rotate);
-                if selected == REQUESTER_OWNERS[requester] {
-                    selected_winner = true;
-                    break;
-                }
-                advance_state(&mut state, &input);
-            }
-            served[requester] = selected_winner;
+    fn persistent_clients_are_served_within_six_non_display_acceptances() {
+        let mut input = idle();
+        input.memory_request_ready = true;
+        for i in 0..6 {
+            set_request(&mut input, i, true);
         }
-        // Every requester, including the lowest-base framebuffer writer,
-        // eventually overtakes the highest-base DMA after waiting long enough.
-        assert!(served.iter().all(|s| *s));
+        let mut state = CpuV3MemoryArbiterState::default();
+        for transaction in 0..120 {
+            let expected = transaction % 6;
+            assert_eq!(select(&input, state.rotate).0, REQUESTER_OWNERS[expected]);
+            advance_state(&mut state, &input);
+            assert_eq!(state.owner, REQUESTER_OWNERS[expected]);
+            let mut response = idle();
+            response.memory_response_valid = true;
+            response.memory_response_last = true;
+            response.instruction_response_ready = true;
+            response.data_response_ready = true;
+            response.dma_response_ready = true;
+            advance_state(&mut state, &response);
+            assert_eq!(state.owner, Owner::None);
+        }
     }
 
     #[test]
-    fn equal_score_requesters_share_the_arbiter() {
-        let mut state = CpuV3MemoryArbiterState::default();
+    fn sparse_requests_wrap_without_advancing_on_stall_or_display() {
         let mut input = idle();
-        input.instruction_request_valid = true;
         input.data_request_valid = true;
-        let mut instruction_wins = 0;
-        let mut data_wins = 0;
-        for _ in 0..12 {
-            match select(&input, &state.age, state.rotate).0 {
-                Owner::Instruction => instruction_wins += 1,
-                Owner::Data => data_wins += 1,
-                other => panic!("unexpected winner {other:?}"),
-            }
+        input.gpu_fb_w_request_valid = true;
+        let mut state = CpuV3MemoryArbiterState {
+            rotate: 3,
+            ..CpuV3MemoryArbiterState::default()
+        };
+        for _ in 0..20 {
             advance_state(&mut state, &input);
         }
-        assert!(instruction_wins > 0, "instruction never won");
-        assert!(data_wins > 0, "data never won");
+        assert_eq!(state.rotate, 3);
+        assert_eq!(select(&input, state.rotate).0, Owner::GpuFbW);
+        input.memory_request_ready = true;
+        input.display_request_valid = true;
+        advance_state(&mut state, &input);
+        assert_eq!(state.owner, Owner::Display);
+        assert_eq!(state.rotate, 3);
+        input.display_response_ready = true;
+        input.memory_response_valid = true;
+        input.memory_response_last = true;
+        advance_state(&mut state, &input);
+        input.display_request_valid = false;
+        advance_state(&mut state, &input);
+        assert_eq!(state.owner, Owner::GpuFbW);
+        assert_eq!(state.rotate, 0);
+    }
+
+    #[test]
+    fn mixed_lengths_persistent_and_temporary_requests_match_independent_schedule() {
+        let mut state = CpuV3MemoryArbiterState::default();
+        let mut owner = Owner::None;
+        let mut cursor = 0usize;
+        let mut beats_left = 0usize;
+        let mut rng = 0x8af931d2u32;
+        let mut steps = vec![reset_step()];
+        let mut served = [0usize; 6];
+        let mut display_served = 0usize;
+        let mut error_releases = 0usize;
+        let mut held = 0usize;
+        for cycle in 0..6000 {
+            rng ^= rng << 13;
+            rng ^= rng >> 17;
+            rng ^= rng << 5;
+            let mut input = idle();
+            for i in 0..6 {
+                set_request(&mut input, i, cycle < 3000 || (rng >> (i + 4)) & 1 != 0);
+            }
+            input.instruction_address = 0x100;
+            input.data_address = 0x200;
+            input.dma_address = 0x300;
+            input.gpu_ro_address = 0x400;
+            input.gpu_fb_r_address = 0x500;
+            input.gpu_fb_w_address = 0x600;
+            input.display_address = 0x700;
+            input.data_line = true;
+            input.data_write = true;
+            input.dma_write = true;
+            input.data_write_data = 0x2222;
+            input.dma_write_data = 0x3333;
+            input.gpu_ro_write_data = 0x4444;
+            input.gpu_fb_r_write_data = 0x5555;
+            input.gpu_fb_w_write_data = 0x6666;
+            input.gpu_fb_w_write = true;
+            input.gpu_ro_line_count_minus_1 = 1;
+            input.gpu_fb_r_line_count_minus_1 = 2;
+            input.gpu_fb_w_line_count_minus_1 = 3;
+            input.display_request_valid = cycle % 101 < 3;
+            input.memory_request_ready = rng & 3 != 0;
+            input.memory_write_data_ready = rng & 8 != 0;
+            input.instruction_response_ready = rng & 16 != 0;
+            input.data_response_ready = rng & 32 != 0;
+            input.dma_response_ready = rng & 64 != 0;
+            input.display_response_ready = rng & 128 != 0;
+            input.memory_response_valid = owner != Owner::None && rng & 256 != 0;
+            input.memory_response_last = beats_left == 1;
+            input.memory_error = input.memory_response_valid && cycle % 97 == 0;
+            input.memory_read_data = u64::from(rng) | (u64::from(rng.rotate_left(9)) << 32);
+            let output = compute_output(&state, &input);
+            assert_eq!(state.owner, owner);
+            if owner == Owner::None {
+                let expected = if input.display_request_valid {
+                    Owner::Display
+                } else {
+                    let requests = request_bits(&input);
+                    (0..6)
+                        .map(|n| (cursor + n) % 6)
+                        .find(|&i| requests[i])
+                        .map_or(Owner::None, |i| REQUESTER_OWNERS[i])
+                };
+                assert_eq!(output.memory_request_valid, expected != Owner::None);
+                if expected != Owner::None {
+                    let address = match expected {
+                        Owner::Instruction => 0x100,
+                        Owner::Data => 0x200,
+                        Owner::Dma => 0x300,
+                        Owner::GpuRo => 0x400,
+                        Owner::GpuFbR => 0x500,
+                        Owner::GpuFbW => 0x600,
+                        Owner::Display => 0x700,
+                        Owner::None => unreachable!(),
+                    };
+                    assert_eq!(output.memory_address, address);
+                    if input.memory_request_ready {
+                        owner = expected;
+                        if let Some(index) = REQUESTER_OWNERS.iter().position(|&o| o == owner) {
+                            cursor = (index + 1) % 6;
+                            served[index] += 1;
+                        } else {
+                            display_served += 1;
+                        }
+                        beats_left = match owner {
+                            Owner::GpuRo => 8,
+                            Owner::GpuFbR => 12,
+                            Owner::GpuFbW => 16,
+                            Owner::Dma => 1,
+                            _ => 4,
+                        };
+                    }
+                }
+            } else {
+                assert!(!output.memory_request_valid);
+                let valids = [
+                    output.instruction_response_valid,
+                    output.data_response_valid,
+                    output.dma_response_valid,
+                    output.gpu_ro_response_valid,
+                    output.gpu_fb_r_response_valid,
+                    output.gpu_fb_w_response_valid,
+                ];
+                for i in 0..6 {
+                    assert_eq!(
+                        valids[i],
+                        owner == REQUESTER_OWNERS[i] && input.memory_response_valid
+                    );
+                }
+                assert_eq!(
+                    output.display_response_valid,
+                    owner == Owner::Display && input.memory_response_valid
+                );
+                let write_ready = [
+                    output.data_write_data_ready,
+                    output.gpu_ro_write_data_ready,
+                    output.gpu_fb_r_write_data_ready,
+                    output.gpu_fb_w_write_data_ready,
+                ];
+                for (ready, candidate) in write_ready.into_iter().zip([
+                    Owner::Data,
+                    Owner::GpuRo,
+                    Owner::GpuFbR,
+                    Owner::GpuFbW,
+                ]) {
+                    assert_eq!(ready, owner == candidate && input.memory_write_data_ready);
+                }
+                if input.memory_response_valid && output.memory_response_ready {
+                    beats_left -= 1;
+                    if input.memory_error || input.memory_response_last {
+                        error_releases += usize::from(input.memory_error);
+                        owner = Owner::None;
+                    }
+                } else {
+                    held += 1;
+                }
+            }
+            advance_state(&mut state, &input);
+            steps.push(TestStep::new(input.clone(), compute_output(&state, &input)));
+            assert_eq!(state.owner, owner);
+            assert_eq!(usize::from(state.rotate), cursor);
+        }
+        assert!(served.iter().all(|&n| n > 10));
+        assert!(display_served > 0 && error_releases > 0 && held > 100);
+        println!("mixed arbitration served={served:?} display={display_served} error_releases={error_releases} held={held}");
+        ModuleTest::<CpuV3MemoryArbiter>::new(steps).run_emu_and_nand();
     }
 
     #[test]

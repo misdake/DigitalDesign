@@ -287,6 +287,29 @@ initial begin
   access(0,32'h00000150,0,16'h6b6b);
   if(line_reads!=j) $fatal(1,"clean-line hint invalidated its line");
 
+  // A cold source uses the way just freed by destination invalidation. The
+  // other resident line must survive even when ordinary replacement would
+  // have chosen it. This also forbids writeback of the obsolete destination.
+  maintain(1);
+  for(i=0;i<16;i=i+1) begin
+    memory[22'h000360+i]=16'ha500+i;
+    memory[22'h004360+i]=16'hd500+i;
+    memory[22'h008360+i]=16'hc500+i;
+  end
+  access(0,32'h00000360,0,16'ha500);
+  access(0,32'h00004360,0,16'hd500);
+  access(1,32'h00004362,16'hdead,0);
+  i=line_reads;j=line_writes;
+  copy_line(22'h008360,8'h01);
+  if(line_reads!=i+1 || line_writes!=j+1)
+    $fatal(1,"cold source copied obsolete destination or wrong victim");
+  for(i=0;i<16;i=i+1)
+    if(memory[22'h004360+i] !== (16'hc500+i))
+      $fatal(1,"cold copy did not replace complete dirty destination word %0d",i);
+  i=line_reads;
+  access(0,32'h00000360,0,16'ha500);
+  if(line_reads!=i) $fatal(1,"cold copy evicted unrelated resident way");
+
   // Alignment is part of the hardware primitive's contract.
   @(negedge clk); line_copy_source=22'h311; line_copy_start=1;
   @(posedge clk); @(negedge clk); line_copy_start=0;

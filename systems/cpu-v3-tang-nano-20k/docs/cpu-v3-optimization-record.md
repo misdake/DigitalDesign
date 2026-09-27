@@ -1382,3 +1382,34 @@ all data-beat stall positions, consecutive ready, and errors before/mid/after da
 a deliberately advancing stalled-address mutant fails. Workspace, CPU/system co-sim,
 GPU integration, complete Flash RTL boot, hardware validation and routed artifact
 audit pass. No new physical-board proof is claimed.
+
+## 2026-09-28 — CPU/cache architecture consolidation
+
+Mutually exclusive scalar/vector arithmetic now shares one FPU lane controller,
+ALU and result-commit path. Integer register/immediate arithmetic and comparisons
+use common operands/results while retaining the sequential one-instruction-per-cycle
+path. Fetch reconstructs ordered addresses from one head cursor; stale-response
+ownership and BTC replay remain independent. Display retains strict priority and
+the other six memory clients rotate at transaction boundaries with six total state bits.
+
+D-cache metadata uses spare bits of its existing tag DPB for valid, dirty and victim.
+A single pending scan candidate overlaps maintenance with source-held write-back;
+a conservative dirty hint skips repeated empty full cleans. Capacity, associativity,
+data-bank count and parallel-way hit timing are unchanged. LCOPY adds one metadata
+refresh cycle after destination invalidation. Independent goldens also exposed an
+old functional-model victim-selection error in cold-source LCOPY and a standalone
+held-request acceptance error during scrub; both are repaired with regressions.
+
+Tag-first, sequential-way data lookup, extra data DPBs, post-refill store reuse and
+LCOPY comparator sharing were measured but did not improve the selected final
+area/performance tradeoff. Source-held blocking FST lost substantial transform/store
+overlap and was not adopted. A shared I/D miss engine was structurally reviewed;
+independent pending/response state and existing single-owner memory service limit
+its remaining opportunity. GPU implementation and SDRAM backend sources are unchanged.
+
+Current fitted values and acceptance are in the
+[architecture table](architecture.md#current-fitted-result-and-validation-boundary).
+Local record `cpu-v3-architecture-logic-2026-09-28` preserves matched source variants,
+whole-system fits, native/vendor goldens, FPU/integer differentials, per-program
+performance, dense/sparse clean timing and the selected production source audit.
+The complete offline validation passes; this unit has no new physical-board proof.

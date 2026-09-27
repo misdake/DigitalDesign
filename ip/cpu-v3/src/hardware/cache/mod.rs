@@ -1018,45 +1018,43 @@ pub struct CpuV3DataCacheOutput {
 pub struct CpuV3DataCache;
 
 #[derive(Clone, ModuleIo)]
-struct CpuV3DataCacheDirtyRamInput {
-    write_enable: Wire,
-    write_way: Wire,
-    write_set: Wires<6>,
-    write_value: Wire,
-    clear_all: Wire,
+struct CpuV3DataCacheMetadataInput {
+    read_set: Wires<6>,
+    write_0: Wire,
+    write_set_0: Wires<6>,
+    write_data_0: Wires<16>,
+    write_1: Wire,
+    write_set_1: Wires<6>,
+    write_data_1: Wires<16>,
 }
 
 #[derive(Clone, ModuleIo)]
-struct CpuV3DataCacheDirtyRamOutput {
-    way_0: Wires<64>,
-    way_1: Wires<64>,
+struct CpuV3DataCacheMetadataOutput {
+    q0: Wires<16>,
+    q1: Wires<16>,
 }
 
-struct CpuV3DataCacheDirtyRam;
+/// One synchronous record per way/set: tag, valid, dirty and the way-zero victim bit.
+struct CpuV3DataCacheMetadata;
 
-impl HardwareIdentity for CpuV3DataCacheDirtyRam {
+impl HardwareIdentity for CpuV3DataCacheMetadata {
     const TARGET_RESOURCE_LEAF: bool = true;
 
     fn verilog_identity() -> VerilogIdentity {
-        VerilogIdentity::new("CpuV3DataCacheDirtyRam").namespace(["components", "cpu", "cpu_v3"])
+        VerilogIdentity::new("CpuV3DataCacheMetadata").namespace(["components", "cpu", "cpu_v3"])
     }
 }
 
-impl Module for CpuV3DataCacheDirtyRam {
-    type Input = CpuV3DataCacheDirtyRamInput;
-    type Output = CpuV3DataCacheDirtyRamOutput;
+impl Module for CpuV3DataCacheMetadata {
+    type Input = CpuV3DataCacheMetadataInput;
+    type Output = CpuV3DataCacheMetadataOutput;
     type EmuState = ();
 
     const USES_MAIN_CLOCK: bool = true;
     const EMU_AVAILABLE: bool = false;
 
     fn target_resources() -> Vec<TargetResourceRequest> {
-        // The maintenance scan reads both whole 64-bit words every cycle
-        // (`assign way_0 = dirty[0]`), so the bitmap cannot be an addressed
-        // RAM: Gowin keeps it in 128 flip-flops plus its 7-to-128 write decode
-        // and never reports an SSRAM cell for this module. The previous claim
-        // of 128 SSRAM bits was never honoured by the tool.
-        Vec::new()
+        vec![TargetResourceRequest::new(BsramBlocks::new(1))]
     }
 
     fn execute_emu(
@@ -1065,15 +1063,15 @@ impl Module for CpuV3DataCacheDirtyRam {
         _input: &Self::Input,
         _output: &Self::Output,
     ) {
-        panic!("data-cache dirty bitmap is Verilog-only")
+        panic!("metadata BSRAM is verified through the independent cache cycle model")
     }
 
     fn verilog_source() -> Option<String> {
-        Some(include_str!("cpu_v3_data_cache_dirty_ram.v").to_string())
+        Some(include_str!("cpu_v3_data_cache_metadata.v").to_string())
     }
 
     fn verilog_testbench() -> Option<String> {
-        Some(include_str!("cpu_v3_data_cache_dirty_ram_tb.v").to_string())
+        Some(include_str!("cpu_v3_data_cache_metadata_tb.v").to_string())
     }
 }
 
@@ -1098,8 +1096,10 @@ enum DataMemoryPhase {
     WriteResponse,
     CopyPrepare,
     CopyInvalidate,
+    CopyRefresh,
     CopyLookup,
     CleanLookup,
+    ScanPrime,
     Scan,
 }
 
@@ -1124,18 +1124,20 @@ pub struct CpuV3DataCacheState {
     line_clean_address: crate::PhysicalWordAddress,
     maintenance_done: bool,
     maintenance_error: bool,
-    // Mirror of the RTL maintenance dirty-line scan: one 16-entry window per
-    // cycle, overlapped with the in-flight write-back. `maintenance_dirty`
-    // snapshots the dirty bitmap at maintenance start; completed write-backs
-    // clear their bit. `scan_index` is the next entry to examine and a found
-    // candidate is latched in `found_index` until its write-back starts.
-    maintenance_command: Option<crate::MaintenanceCommand>,
-    maintenance_dirty: u128,
+    // Full maintenance owns the cache. Its metadata read pipeline holds only
+    // one addressed set and at most one next writeback candidate.
+    full_maintenance: bool,
+    may_have_dirty: bool,
+    scan_set: u8,
+    metadata_output: [Option<crate::PhysicalWordAddress>; 2],
     scan_active: bool,
-    scan_index: u8,
+    scan_valid: bool,
+    scan_done: bool,
+    scan_read_set: u8,
+    scan_return_set: u8,
     found_index: Option<u8>,
     wb_index: u8,
-    // Mirror of the RTL RAM16 valid-array sweep: reset, a full invalidate, or
+    // Metadata valid/dirty scrub timing: reset, a full invalidate, or
     // a memory error clears one set of both ways per cycle; requests are
     // blocked meanwhile, and an invalidate's maintenance_done is delayed
     // until the sweep completes.
@@ -1165,10 +1167,15 @@ impl Default for CpuV3DataCacheState {
             line_clean_address: crate::PhysicalWordAddress::new(0),
             maintenance_done: false,
             maintenance_error: false,
-            maintenance_command: None,
-            maintenance_dirty: 0,
+            full_maintenance: false,
+            may_have_dirty: false,
+            scan_set: 0,
+            metadata_output: [None; 2],
             scan_active: false,
-            scan_index: 0,
+            scan_valid: false,
+            scan_done: false,
+            scan_read_set: 0,
+            scan_return_set: 0,
             found_index: None,
             wb_index: 0,
             maintenance_invalidate: false,
@@ -1215,50 +1222,107 @@ impl CpuV3DataCacheState {
         }
     }
 
-    /// The lowest dirty entry in the current 16-entry scan window, masked to
-    /// entries at or after `scan_index` — mirror of the RTL `scan_masked`
-    /// window priority encoder.
-    fn scan_window_hit(&self) -> Option<u8> {
-        let window = (self.maintenance_dirty >> (self.scan_index & 0x70)) as u16;
-        let masked = window & (0xffffu16 << (self.scan_index & 0x0f));
-        (masked != 0).then(|| (self.scan_index & 0x70) | masked.trailing_zeros() as u8)
+    fn metadata_at(&self, set: u8) -> [Option<crate::PhysicalWordAddress>; 2] {
+        std::array::from_fn(|way| self.cache.dirty_line_address(way, usize::from(set)))
     }
 
-    /// Background scan step during a write-back: latch a found candidate or
-    /// advance one 16-entry window.
-    fn scan_step(&mut self) {
-        if let Some(index) = self.scan_window_hit() {
-            self.found_index = Some(index);
-            self.scan_active = false;
-        } else if self.scan_index >> 4 == 7 {
-            self.scan_active = false;
+    fn metadata_read_set(&self) -> u8 {
+        let scanning = self.scan_active
+            && matches!(
+                self.phase,
+                DataMemoryPhase::Request | DataMemoryPhase::WriteStream
+            );
+        if scanning {
+            self.scan_read_set
         } else {
-            self.scan_index = ((self.scan_index >> 4) + 1) << 4;
+            match self.phase {
+                DataMemoryPhase::ScanPrime => self.scan_set,
+                DataMemoryPhase::Scan => self.scan_set.saturating_add(1).min(63),
+                _ => self.wb_index % 64,
+            }
         }
     }
 
-    /// Resumes the scan strictly after a consumed candidate.
-    fn scan_resume_after(&mut self, index: u8) {
-        self.scan_index = index + 1;
-        self.scan_active = index != 127;
-        self.found_index = None;
+    fn metadata_candidate(&self, set: u8) -> Option<u8> {
+        self.metadata_output
+            .iter()
+            .position(Option::is_some)
+            .map(|way| way as u8 * 64 + set)
     }
 
-    /// Produces the write-back request for a found scan candidate: the first
-    /// candidate begins the crate-model maintenance, later ones continue it.
-    /// `DataCache::next_maintenance_write` selects lines in the same way-major
-    /// order as the RTL window scan, so the request matches the scanned entry.
-    fn next_maintenance_request(&mut self) -> crate::MainMemoryRequest {
-        if let Some(command) = self.maintenance_command.take() {
+    /// The independent functional cache supplies data and dirty semantics.
+    /// The cycle wrapper selects one addressed entry and starts its existing
+    /// single-line operation; it never snapshots a full dirty bitmap.
+    fn next_maintenance_request(&mut self, index: u8) -> crate::MainMemoryRequest {
+        let address = self
+            .cache
+            .dirty_line_address(usize::from(index / 64), usize::from(index % 64))
+            .expect("selected metadata record must still be resident and dirty");
+        self.wb_index = index;
+        match self
+            .cache
+            .clean_line(address)
+            .expect("full maintenance exclusively owns the cache")
+        {
+            crate::CacheAction::MainMemoryRequest(request) => request,
+            crate::CacheAction::CpuResponse(_) => unreachable!("dirty entry must write back"),
+        }
+    }
+
+    fn finish_maintenance(&mut self) {
+        let command = if self.maintenance_invalidate {
+            crate::MaintenanceCommand::Invalidate
+        } else {
+            crate::MaintenanceCommand::Clean
+        };
+        assert!(
             self.cache
                 .begin_maintenance(command)
-                .expect("idle data cache must accept maintenance")
-                .expect("a found scan candidate must have a pending write-back")
+                .expect("completed single-line operation must release the functional cache")
+                .is_none(),
+            "a completed scan must not leave dirty data behind"
+        );
+        self.request = None;
+        self.phase = DataMemoryPhase::Idle;
+        self.full_maintenance = false;
+        self.may_have_dirty = false;
+        if self.maintenance_invalidate {
+            self.sweep_active = true;
+            self.sweep_set = 0;
+            self.sweep_finishes_maintenance = true;
         } else {
-            self.cache
-                .continue_maintenance(crate::MainMemoryResponse::WriteComplete)
-                .expect("maintenance completion must match a line write")
-                .expect("a found scan candidate must have a pending write-back")
+            self.maintenance_active = false;
+            self.maintenance_done = true;
+        }
+    }
+
+    /// Capture only a single future candidate while the source data DPBs are
+    /// independently streaming. A pending synchronous lookup is retested if
+    /// completion interrupts it; no metadata read is consumed on the clear edge.
+    fn background_scan_step(&mut self) {
+        if !self.scan_active
+            || !matches!(
+                self.phase,
+                DataMemoryPhase::Request | DataMemoryPhase::WriteStream
+            )
+        {
+            return;
+        }
+        let tested_set = self.scan_return_set;
+        let old_valid = self.scan_valid;
+        self.scan_return_set = self.scan_read_set;
+        self.scan_read_set = self.scan_read_set.saturating_add(1).min(63);
+        self.scan_valid = true;
+        if old_valid {
+            if let Some(index) = self.metadata_candidate(tested_set) {
+                self.found_index = Some(index);
+                self.scan_active = false;
+                self.scan_valid = false;
+            } else if tested_set == 63 {
+                self.scan_active = false;
+                self.scan_valid = false;
+                self.scan_done = true;
+            }
         }
     }
 
@@ -1266,13 +1330,13 @@ impl CpuV3DataCacheState {
         // After a physical-memory error no cache line is allowed to remain
         // architecturally visible: the controller may have accepted an
         // unknown prefix of a burst. The crate model clears instantly; the
-        // RTL sweeps its RAM16 valid arrays, which blocks new requests.
+        // RTL scrubs its metadata records, which blocks new requests.
         self.cache = crate::DataCache::default();
         self.pending_cpu_request = None;
         self.request = None;
         self.phase = DataMemoryPhase::Idle;
-        self.maintenance_command = None;
-        self.maintenance_dirty = 0;
+        self.full_maintenance = false;
+        self.may_have_dirty = false;
         self.scan_active = false;
         self.found_index = None;
         self.sweep_active = true;
@@ -1311,40 +1375,27 @@ impl CpuV3DataCacheState {
                 .complete(crate::MainMemoryResponse::WriteComplete)
                 .expect("clean-line completion must match a line write");
             self.apply_action(action);
-        } else if self.maintenance_active {
-            // Mirror of the RTL dirty-write-back edge: the completed line's
-            // dirty bit clears before the scan decision.
-            self.maintenance_dirty &= !(1u128 << self.wb_index);
-            if let Some(index) = self.found_index {
-                // The overlapped scan already latched the next dirty line:
-                // launch it without a gap.
-                let request = self.next_maintenance_request();
-                self.wb_index = index;
-                self.scan_resume_after(index);
+        } else if self.full_maintenance {
+            let action = self
+                .cache
+                .complete(crate::MainMemoryResponse::WriteComplete)
+                .expect("maintenance completion must match the selected single-line write");
+            assert!(matches!(
+                action,
+                crate::CacheAction::CpuResponse(crate::CpuMemoryResponse::WriteComplete)
+            ));
+            if let Some(index) = self.found_index.take() {
+                let request = self.next_maintenance_request(index);
+                self.scan_set = index % 64;
                 self.start_request(request);
-            } else if self.scan_active {
-                self.request = None;
-                self.phase = DataMemoryPhase::Scan;
+            } else if self.scan_done {
+                self.finish_maintenance();
             } else {
-                match self
-                    .cache
-                    .continue_maintenance(crate::MainMemoryResponse::WriteComplete)
-                    .expect("maintenance completion must match a line write")
-                {
-                    Some(_) => unreachable!("scan exhausted but a dirty line remains"),
-                    None => {
-                        self.request = None;
-                        self.phase = DataMemoryPhase::Idle;
-                        if self.maintenance_invalidate {
-                            self.sweep_active = true;
-                            self.sweep_set = 0;
-                            self.sweep_finishes_maintenance = true;
-                        } else {
-                            self.maintenance_active = false;
-                            self.maintenance_done = true;
-                        }
-                    }
-                }
+                self.scan_set = self.scan_return_set;
+                self.scan_active = false;
+                self.scan_valid = false;
+                self.request = None;
+                self.phase = DataMemoryPhase::ScanPrime;
             }
         } else {
             let action = self
@@ -1411,8 +1462,6 @@ impl Module for CpuV3DataCache {
                     && !state.maintenance_active
                     && !input.clean_all
                     && !input.invalidate_all
-                    && !input.line_copy_start
-                    && !input.line_clean_start
                     && !state.sweep_active,
                 cpu_response_valid: state.response_valid,
                 cpu_read_data: u64::from(state.response_data),
@@ -1443,12 +1492,29 @@ impl Module for CpuV3DataCache {
         let input = input.sample(circuit);
         if input.reset {
             *state = CpuV3DataCacheState::default();
-            // The RTL RAM16 valid arrays sweep-clear after reset instead of
+            // The RTL metadata records sweep-clear after reset instead of
             // clearing in one cycle; the system holds the core for the sweep.
             state.sweep_active = true;
             state.sweep_set = 0;
             return;
         }
+        // Acceptance is decided from pre-edge ownership and sweep state.
+        // Clearing response-valid or finishing scrub on this edge must not
+        // consume a held CPU request until ready was actually asserted.
+        let command_ready = state.phase == DataMemoryPhase::Idle
+            && !state.response_valid
+            && !state.maintenance_active
+            && !state.sweep_active
+            && !input.clean_all
+            && !input.invalidate_all;
+        let accept_cpu = command_ready
+            && !input.line_copy_start
+            && !input.line_clean_start
+            && input.cpu_request_valid;
+        let metadata_next = state.metadata_at(state.metadata_read_set());
+        let metadata_old = state.metadata_output;
+        state.background_scan_step();
+        state.metadata_output = metadata_next;
         state.maintenance_done = false;
         if state.response_valid && input.cpu_response_ready {
             state.response_valid = false;
@@ -1477,60 +1543,19 @@ impl Module for CpuV3DataCache {
         {
             state.maintenance_active = true;
             state.maintenance_error = false;
-            let command = if input.invalidate_all {
-                crate::MaintenanceCommand::Invalidate
-            } else {
-                crate::MaintenanceCommand::Clean
-            };
             state.maintenance_invalidate = input.invalidate_all;
-            state.maintenance_command = Some(command);
+            state.full_maintenance = true;
             state.found_index = None;
-            state.maintenance_dirty = state.cache.dirty_bits();
-            if state.maintenance_dirty == 0 {
-                // No dirty line: a clean completes immediately; an invalidate
-                // sweeps the valid arrays and reports done at sweep end.
-                match state
-                    .cache
-                    .begin_maintenance(command)
-                    .expect("idle data cache must accept maintenance")
-                {
-                    Some(_) => unreachable!("empty dirty bitmap produced a write-back"),
-                    None => {
-                        state.maintenance_command = None;
-                        if state.maintenance_invalidate {
-                            state.sweep_active = true;
-                            state.sweep_set = 0;
-                            state.sweep_finishes_maintenance = true;
-                        } else {
-                            state.maintenance_active = false;
-                            state.maintenance_done = true;
-                        }
-                    }
-                }
-            } else if state.maintenance_dirty as u16 != 0 {
-                // First dirty line sits in window zero: start its write-back
-                // immediately and scan on from after it.
-                let index = (state.maintenance_dirty as u16).trailing_zeros() as u8;
-                let request = state.next_maintenance_request();
-                state.wb_index = index;
-                state.scan_resume_after(index);
-                state.start_request(request);
+            state.scan_set = 0;
+            if state.may_have_dirty {
+                state.phase = DataMemoryPhase::ScanPrime;
             } else {
-                state.scan_index = 16;
-                state.scan_active = true;
-                state.phase = DataMemoryPhase::Scan;
+                state.finish_maintenance();
             }
             return;
         }
 
-        if state.phase == DataMemoryPhase::Idle
-            && !state.response_valid
-            && !state.maintenance_active
-            && !input.clean_all
-            && !input.invalidate_all
-            && !state.sweep_active
-            && input.line_copy_start
-        {
+        if command_ready && input.line_copy_start {
             state.maintenance_error = false;
             if input.line_copy_source & 0x0f != 0 {
                 state.maintenance_done = true;
@@ -1546,14 +1571,7 @@ impl Module for CpuV3DataCache {
             return;
         }
 
-        if state.phase == DataMemoryPhase::Idle
-            && !state.response_valid
-            && !state.maintenance_active
-            && !input.clean_all
-            && !input.invalidate_all
-            && !state.sweep_active
-            && input.line_clean_start
-        {
+        if command_ready && input.line_clean_start {
             state.maintenance_error = false;
             state.maintenance_active = true;
             state.line_clean_active = true;
@@ -1563,12 +1581,10 @@ impl Module for CpuV3DataCache {
             return;
         }
 
-        if state.phase == DataMemoryPhase::Idle
-            && !state.response_valid
-            && !state.maintenance_active
-            && !state.sweep_active
-            && input.cpu_request_valid
-        {
+        if accept_cpu {
+            if input.cpu_write {
+                state.may_have_dirty = true;
+            }
             let address = crate::PhysicalWordAddress::new(input.cpu_address as u32);
             state.pending_cpu_request = Some(if input.cpu_write {
                 crate::CpuMemoryRequest::Write {
@@ -1604,58 +1620,22 @@ impl Module for CpuV3DataCache {
             return;
         }
 
-        let scan_background = state.scan_active
-            && state.found_index.is_none()
-            && matches!(
-                state.phase,
-                DataMemoryPhase::WritebackPrime
-                    | DataMemoryPhase::WritebackCapture
-                    | DataMemoryPhase::Request
-                    | DataMemoryPhase::WriteStream
-                    | DataMemoryPhase::WriteResponse
-            );
         match state.phase {
             DataMemoryPhase::Idle => {}
             DataMemoryPhase::Lookup => unreachable!(),
+            DataMemoryPhase::ScanPrime => state.phase = DataMemoryPhase::Scan,
             DataMemoryPhase::Scan => {
-                if let Some(index) = state.found_index {
-                    // Latched by the background scan in the previous cycle.
-                    let request = state.next_maintenance_request();
-                    state.wb_index = index;
-                    state.scan_resume_after(index);
+                let candidate = metadata_old
+                    .iter()
+                    .position(Option::is_some)
+                    .map(|way| way as u8 * 64 + state.scan_set);
+                if let Some(index) = candidate {
+                    let request = state.next_maintenance_request(index);
                     state.start_request(request);
-                } else if let Some(index) = state.scan_window_hit() {
-                    let request = state.next_maintenance_request();
-                    state.wb_index = index;
-                    state.scan_resume_after(index);
-                    state.start_request(request);
-                } else if state.scan_index >> 4 == 7 {
-                    // The scan found no further dirty line: maintenance ends.
-                    state.scan_active = false;
-                    if state.maintenance_command.is_some() {
-                        unreachable!("nonempty dirty bitmap survived a full scan");
-                    }
-                    match state
-                        .cache
-                        .continue_maintenance(crate::MainMemoryResponse::WriteComplete)
-                        .expect("maintenance completion must match a line write")
-                    {
-                        Some(_) => unreachable!("scan exhausted but a dirty line remains"),
-                        None => {
-                            state.request = None;
-                            state.phase = DataMemoryPhase::Idle;
-                            if state.maintenance_invalidate {
-                                state.sweep_active = true;
-                                state.sweep_set = 0;
-                                state.sweep_finishes_maintenance = true;
-                            } else {
-                                state.maintenance_active = false;
-                                state.maintenance_done = true;
-                            }
-                        }
-                    }
+                } else if state.scan_set == 63 {
+                    state.finish_maintenance();
                 } else {
-                    state.scan_index = ((state.scan_index >> 4) + 1) << 4;
+                    state.scan_set += 1;
                 }
             }
             DataMemoryPhase::WritebackPrime => {
@@ -1665,6 +1645,23 @@ impl Module for CpuV3DataCache {
             // The RTL assembles the synchronous tag result in CAPTURE.
             // Data remains in the cache DPB until each ready-qualified beat.
             DataMemoryPhase::WritebackCapture => {
+                if state.full_maintenance {
+                    state.found_index = None;
+                    state.scan_valid = false;
+                    state.scan_done = false;
+                    let other = 1 - state.wb_index / 64;
+                    if metadata_old[usize::from(other)].is_some() {
+                        state.found_index = Some(other * 64 + state.wb_index % 64);
+                        state.scan_active = false;
+                    } else if state.wb_index % 64 == 63 {
+                        state.scan_active = false;
+                        state.scan_done = true;
+                    } else {
+                        state.scan_active = true;
+                        state.scan_read_set = state.wb_index % 64 + 1;
+                        state.scan_return_set = state.scan_read_set;
+                    }
+                }
                 state.phase = DataMemoryPhase::Request;
             }
             DataMemoryPhase::Request if input.memory_request_ready => {
@@ -1702,6 +1699,9 @@ impl Module for CpuV3DataCache {
                 state.phase = DataMemoryPhase::CopyInvalidate;
             }
             DataMemoryPhase::CopyInvalidate => {
+                state.phase = DataMemoryPhase::CopyRefresh;
+            }
+            DataMemoryPhase::CopyRefresh => {
                 state.phase = DataMemoryPhase::CopyLookup;
             }
             DataMemoryPhase::CopyLookup => {
@@ -1743,12 +1743,6 @@ impl Module for CpuV3DataCache {
             }
             DataMemoryPhase::ReadReceive => {}
         }
-        // Background scan step, evaluated against pre-edge scan state and
-        // applied after the phase logic, exactly like the RTL's separate
-        // nonblocking assignment block.
-        if scan_background {
-            state.scan_step();
-        }
     }
 
     fn verilog_source() -> Option<String> {
@@ -1759,16 +1753,8 @@ impl Module for CpuV3DataCache {
                     &CpuV3DualPortCacheData::<ZeroBsramImage>::verilog_identity().module_name(),
                 )
                 .replace(
-                    "__CACHE_TAGS__",
-                    &CpuV3CacheTagBsram::verilog_identity().module_name(),
-                )
-                .replace(
-                    "__DIRTY_RAM__",
-                    &CpuV3DataCacheDirtyRam::verilog_identity().module_name(),
-                )
-                .replace(
-                    "__CACHE_VALID__",
-                    &CpuV3CacheValidRam::verilog_identity().module_name(),
+                    "__CACHE_METADATA__",
+                    &CpuV3DataCacheMetadata::verilog_identity().module_name(),
                 ),
         )
     }
@@ -1776,9 +1762,7 @@ impl Module for CpuV3DataCache {
     fn verilog_dependencies() -> Vec<VerilogDependency> {
         vec![
             VerilogDependency::new::<CpuV3DualPortCacheData<ZeroBsramImage>>("u_data_banks"),
-            VerilogDependency::new::<CpuV3CacheTagBsram>("u_tags"),
-            VerilogDependency::new::<CpuV3DataCacheDirtyRam>("u_dirty"),
-            VerilogDependency::new::<CpuV3CacheValidRam>("u_valid"),
+            VerilogDependency::new::<CpuV3DataCacheMetadata>("u_metadata"),
         ]
     }
 
@@ -1801,6 +1785,9 @@ const fn decode(address: u32) -> (usize, u16, usize) {
 const fn data_index(way: usize, set: usize, word: usize) -> usize {
     (way * CPU_V3_CACHE_SETS + set) * CPU_V3_CACHE_LINE_WORDS + word
 }
+
+#[cfg(test)]
+mod data_tests;
 
 #[cfg(test)]
 mod tests {
@@ -2140,7 +2127,7 @@ mod tests {
     }
 
     #[test]
-    fn data_cache_exports_two_data_bsrams_tag_bsram_and_ff_dirty_bitmap() {
+    fn data_cache_exports_two_data_bsrams_and_one_metadata_bsram() {
         let project = VerilogProject::generate::<CpuV3DataCache>().unwrap();
         let resources: Vec<_> = project
             .resource_claims
@@ -2161,13 +2148,75 @@ mod tests {
             .filter(|resource| resource.kind == ResourceKind::SsramBit)
             .map(|resource| resource.amount)
             .sum();
-        assert_eq!(ssram, CPU_V3_CACHE_VALID_PHYSICAL_BITS as u64);
+        assert_eq!(ssram, 0);
     }
 
     #[test]
     #[ignore = "explicit external simulation of the write-back data cache"]
     fn verify_data_cache_with_iverilog() {
         digital_design_hardware::verify_verilog_with_iverilog::<CpuV3DataCache>().unwrap();
+    }
+
+    #[test]
+    #[ignore = "explicit external simulation of synchronous D-cache metadata"]
+    fn verify_data_cache_metadata_with_iverilog() {
+        digital_design_hardware::verify_verilog_with_iverilog::<CpuV3DataCacheMetadata>().unwrap();
+    }
+
+    #[test]
+    #[ignore = "official Gowin DPB model for synchronous D-cache metadata"]
+    fn verify_data_cache_metadata_with_vendor_dpb() {
+        let directory =
+            std::env::temp_dir().join(format!("cache-metadata-vendor-{}", std::process::id()));
+        std::fs::create_dir_all(&directory).unwrap();
+        std::fs::write(
+            directory.join("metadata.v"),
+            CpuV3DataCacheMetadata::verilog_source().unwrap(),
+        )
+        .unwrap();
+        std::fs::write(
+            directory.join("tb.v"),
+            CpuV3DataCacheMetadata::verilog_testbench().unwrap(),
+        )
+        .unwrap();
+        let prim = std::path::PathBuf::from(std::env::var_os("GOWIN_HOME").unwrap())
+            .join("IDE/simlib/gw2a/prim_sim.v");
+        let exe = std::env::var_os("IVERILOG_EXE").unwrap_or_else(|| "iverilog".into());
+        let compile = std::process::Command::new(exe)
+            .current_dir(&directory)
+            .args([
+                "-g2012",
+                "-D__ICARUS__",
+                "-DCPU_V3_CACHE_METADATA_VENDOR",
+                "-s",
+                "tb",
+                "-o",
+                "sim.vvp",
+                "metadata.v",
+                "tb.v",
+            ])
+            .arg(prim)
+            .output()
+            .unwrap();
+        assert!(
+            compile.status.success(),
+            "metadata vendor compile failed: {}",
+            String::from_utf8_lossy(&compile.stderr)
+        );
+        let exe = std::env::var_os("VVP_EXE").unwrap_or_else(|| "vvp".into());
+        let run = std::process::Command::new(exe)
+            .current_dir(&directory)
+            .arg("sim.vvp")
+            .output()
+            .unwrap();
+        assert!(
+            run.status.success()
+                && String::from_utf8_lossy(&run.stdout).contains("DIGITAL_DESIGN_PASS"),
+            "metadata vendor simulation failed: {}{}",
+            String::from_utf8_lossy(&run.stdout),
+            String::from_utf8_lossy(&run.stderr)
+        );
+        std::fs::remove_dir_all(directory).unwrap();
     }
 
     #[test]

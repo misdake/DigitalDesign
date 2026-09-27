@@ -5,8 +5,8 @@
 // leaves. (Instantiating the real leaves here would make the framework count
 // them as physical children again, double-claiming the BSRAM; the full leaf
 // interconnection is covered by the CpuV3Fpu unit testbench.) Only the
-// combinational CpuV3FpuScalarAlu leaf is instantiated, through the vector
-// path itself. This TB drives instr_complete / instr_opcode / word1_raw /
+// combinational CpuV3FpuScalarAlu leaf is connected explicitly through the
+// path's request/result ports. This TB drives instr_complete / instr_opcode / word1_raw /
 // base_a / base_b directly and owns a behavioral 2R1W register file.
 //
 // The reference model is written out separately from the RTL: it computes the
@@ -30,7 +30,8 @@ end
 // Instruction inputs, driven directly by this TB.
 reg instr_complete = 0;
 reg [3:0] instr_opcode = 0;
-reg [15:0] word1_raw = 0;
+// Make the first legal subop an explicit transition for the combinational decoder.
+reg [15:0] word1_raw = 16'hffff;
 reg [5:0] base_a = 0;
 reg [5:0] base_b = 0;
 reg abort = 0;
@@ -78,7 +79,19 @@ initial begin
         rf_mem[rf_init] = 32'b0;
 end
 
+// Test-only ALU connection: production owns this instance at the FPU top.
+wire [31:0] alu_result;
+wire [3:0] alu_request_op;
+wire alu_lt;
+wire alu_eq;
+wire alu_gt;
+CpuV3FpuScalarAlu test_alu (
+    .a(rf_read_a_data), .b(rf_read_b_data), .op(alu_request_op),
+    .result(alu_result), .flag_lt(alu_lt), .flag_eq(alu_eq), .flag_gt(alu_gt)
+);
+
 CpuV3FpuVectorPath vector_path (
+    .alu_result(alu_result), .alu_request_op(alu_request_op),
     .clk(clk),
     .abort(abort),
     .instr_complete(instr_complete),

@@ -32,19 +32,19 @@ module CpuV3DataCache (
     output wire maintenance_busy,
     output reg maintenance_done = 0,
     output reg maintenance_error = 0,
-    // High while the RAM16 valid arrays are sweep-clearing. The system holds
+    // High while metadata valid/dirty records are sweep-clearing. The system holds
     // the core for this window so a reset clear cannot surface as a
     // not-ready D-cache on the core's first access.
     output wire valid_sweep
 );
 
-localparam [3:0] ST_IDLE=0, ST_LOOKUP=1, ST_LINE_REQUEST=2,
+localparam [4:0] ST_IDLE=0, ST_LOOKUP=1, ST_LINE_REQUEST=2,
     ST_LINE_RECEIVE=3, ST_COPY_RESPONSE=4, ST_WB_PRIME=5,
     ST_WB_CAPTURE=6, ST_WB_REQUEST=7, ST_WB_STREAM=8,
     ST_WB_RESPONSE=9, ST_SCAN=10, ST_COPY_PREPARE=11,
-    ST_COPY_INVALIDATE=12;
+    ST_COPY_INVALIDATE=12, ST_SCAN_PRIME=13, ST_META_REFRESH=14;
 
-reg [3:0] state = ST_IDLE;
+reg [4:0] state = ST_IDLE;
 reg pending_write = 0;
 reg [31:0] pending_address = 0;
 reg [15:0] pending_write_data = 0;
@@ -60,13 +60,10 @@ reg maintenance_invalidate = 0;
 reg [15:0] response_data = 0;
 reg response_error = 0;
 reg response_valid = 0;
-// Valid and victim bits live in a RAM16 leaf (asynchronous read, synchronous
-// write, one set per access), like the tag arrays. A full clear (invalidate
-// maintenance or a memory error) starts a 64-set sweep that clears both ways
-// in parallel; requests are blocked during the sweep and hit qualification
-// treats every line as invalid while it runs. A clean keeps lines valid and
-// needs no sweep. `sweep_finishes_maintenance` delays maintenance_done of an
-// invalidate until the sweep completes.
+// Each synchronous metadata DPB word holds tag, valid and dirty; way zero also
+// holds the per-set victim bit. Reset, full invalidate and memory errors clear
+// both ways in a 64-set sweep. Requests are blocked during that scrub. Clean
+// retains validity. Invalidate reports done only after its sweep completes.
 reg sweep_active = 0;
 reg [5:0] sweep_set = 0;
 reg sweep_finishes_maintenance = 0;
@@ -84,23 +81,29 @@ reg [7:0] line_copy_destination_page_latched = 0;
 reg line_copy_destination_hit_latched = 0;
 reg line_copy_destination_way_latched = 0;
 
-// Maintenance dirty-line scan: one 16-entry window per cycle, overlapped with
-// the in-flight write-back. `scan_index` is the next entry to examine; a found
-// candidate is latched and the scan pauses until that line's write-back
-// starts, then resumes from the following entry.
-reg scan_active = 0;
-reg [6:0] scan_index = 0;
-reg found_valid = 0;
-reg [6:0] found_index = 0;
+// Serialized metadata scan; no complete dirty bitmap exists.
+reg [5:0] scan_set=0;
+reg [15:0] wb_metadata=0;
+wire [15:0] meta0,meta1;
+reg bg_active=0,bg_valid=0,bg_done=0,found_valid=0;
+reg may_have_dirty=0;
 
+reg [5:0] bg_read_set=0,bg_pipe_set=0;
+reg [6:0] found_index=0;
+wire bg_state=state==ST_WB_REQUEST || state==ST_WB_STREAM;
+wire bg_hit=(meta0[12]&&meta0[13]) || (meta1[12]&&meta1[13]);
+wire bg_way=!(meta0[12]&&meta0[13]);
 wire [5:0] pending_set = pending_address[9:4];
 wire [11:0] pending_tag = pending_address[21:10];
 wire [3:0] pending_word = pending_address[3:0];
 wire pending_address_valid = pending_address[31:22] == 0;
-// Synchronous tags launch alongside data on CPU acceptance. Maintenance
+// Synchronous metadata launches alongside data on CPU acceptance. Maintenance
 // sources share that stage; write-back assembles its address in CAPTURE after
 // PRIME has read the selected tag, without adding a transaction cycle.
-wire [5:0] tag_read_set = (state == ST_WB_PRIME || state == ST_WB_CAPTURE) ? wb_set :
+wire [5:0] tag_read_set = (bg_active && bg_state) ? bg_read_set : (state == ST_SCAN_PRIME) ? scan_set :
+    (state == ST_SCAN) ? (scan_set==63 ? scan_set : scan_set+6'd1) :
+    (state == ST_WB_PRIME || state == ST_WB_CAPTURE || state == ST_WB_REQUEST ||
+     state == ST_WB_STREAM || state == ST_WB_RESPONSE || state == ST_COPY_RESPONSE) ? wb_set :
     (state == ST_IDLE && line_copy_start && line_copy_ready) ? line_copy_source[9:4] :
     (state == ST_IDLE && line_clean_start && line_copy_ready) ? line_clean_address[9:4] :
     (state == ST_IDLE && cpu_request_valid && cpu_request_ready) ? cpu_address[9:4] : pending_set;
@@ -118,13 +121,9 @@ wire selected_victim = !way_0_valid_read ? 1'b0 :
 
 wire refill_commit = state == ST_LINE_RECEIVE && memory_response_valid &&
     !memory_error && refill_beat == 3 && !sweep_active;
-wire tag_write_enable = refill_commit;
-__CACHE_TAGS__ u_tags (
-    .clk(clk), .write_enable(tag_write_enable), .write_way(pending_way),
-    .address(tag_read_set), .write_data(pending_tag),
-    .way_0_read_data(way_0_tag), .way_1_read_data(way_1_tag)
-);
-
+assign way_0_tag=meta0[11:0]; assign way_1_tag=meta1[11:0];
+assign way_0_valid_read=meta0[12]; assign way_1_valid_read=meta1[12];
+assign victim_read=meta0[14];
 wire writeback_read_mode = state == ST_WB_PRIME || state == ST_WB_CAPTURE ||
     state == ST_WB_REQUEST || state == ST_WB_STREAM;
 // Hold the current DPB beat during stalls; read the next beat on consumption.
@@ -177,100 +176,40 @@ __CACHE_DATA_BANKS__ u_data_banks (
     .bank_1_b_write_data(refill_word_3), .bank_1_b_read_data(bank_1_b_read_data)
 );
 
-wire [63:0] way_0_dirty;
-wire [63:0] way_1_dirty;
-wire pending_hit_dirty = hit_way ? way_1_dirty[pending_set] : way_0_dirty[pending_set];
+wire pending_hit_dirty = hit_way ? meta1[13] : meta0[13];
+wire selected_victim_dirty = selected_victim ? meta1[13] : meta0[13];
 wire [11:0] prepared_line_copy_destination_tag =
     {line_copy_destination_page_latched, pending_address[13:10]};
 wire prepared_line_copy_destination_way_0_hit =
-    prepared_line_copy_destination_tag != pending_tag &&
-    way_0_valid_read && way_0_tag == prepared_line_copy_destination_tag;
+    prepared_line_copy_destination_tag != pending_tag && way_0_valid_read &&
+    way_0_tag == prepared_line_copy_destination_tag;
 wire prepared_line_copy_destination_way_1_hit =
-    prepared_line_copy_destination_tag != pending_tag &&
-    way_1_valid_read && way_1_tag == prepared_line_copy_destination_tag;
-wire dirty_write_hit = state == ST_LOOKUP && pending_write && pending_hit;
-wire dirty_write_install = refill_commit;
-wire dirty_write_back = state == ST_WB_RESPONSE && memory_response_valid && !memory_error;
-wire line_copy_destination_invalidate = state == ST_COPY_INVALIDATE &&
-    line_copy_destination_hit_latched;
-wire dirty_write_enable = dirty_write_hit || dirty_write_install || dirty_write_back ||
-    line_copy_destination_invalidate;
-wire dirty_write_way = dirty_write_hit ? hit_way :
-    dirty_write_install ? pending_way :
-    line_copy_destination_invalidate ? line_copy_destination_way_latched : wb_way;
-wire [5:0] dirty_write_set = dirty_write_hit ? pending_set :
-    dirty_write_install ? pending_set :
-    line_copy_destination_invalidate ? pending_set : wb_set;
-wire dirty_write_value = dirty_write_hit ? 1'b1 :
-    dirty_write_install ? pending_write : 1'b0;
-wire dirty_clear_all = reset ||
-    ((state == ST_LINE_RECEIVE || state == ST_WB_RESPONSE ||
-      state == ST_COPY_RESPONSE) &&
-     memory_response_valid && memory_error);
-__DIRTY_RAM__ u_dirty (
-    .clk(clk), .write_enable(dirty_write_enable),
-    .write_way(dirty_write_way), .write_set(dirty_write_set),
-    .write_value(dirty_write_value), .clear_all(dirty_clear_all),
-    .way_0(way_0_dirty), .way_1(way_1_dirty)
-);
-
-wire [127:0] dirty_bits = {way_1_dirty, way_0_dirty};
-wire selected_victim_dirty = selected_victim ?
-    way_1_dirty[pending_set] : way_0_dirty[pending_set];
-
-// Single valid-array write port: the sweep has priority; otherwise the line
-// request holds the pending way invalid (the refill data beats can land before
-// the tag commits) and a refill commit installs the line. Every write selects
-// the registered `pending_way`: selecting the victim combinationally in
-// ST_LOOKUP would make the write address depend on this array's own
-// asynchronous read data, and Gowin then maps the three arrays as 128
-// flip-flops plus read multiplexers instead of twelve RAM16 cells.
-wire refill_prime = state == ST_LINE_REQUEST;
-wire eviction_done = state == ST_WB_RESPONSE && !wb_for_maintenance &&
-    !wb_for_line_clean &&
-    memory_response_valid && !memory_error;
-wire valid_write_enable = !sweep_active &&
-    (refill_commit || refill_prime || eviction_done ||
-     line_copy_destination_invalidate);
-
-__CACHE_VALID__ u_valid (
-    .clk(clk), .clear_enable(sweep_active), .clear_set(sweep_set),
-    .write_enable(valid_write_enable), .write_way(pending_way),
-    .write_set(pending_set),
-    .write_value(refill_commit),
-    .victim_write_enable(refill_commit), .victim_write_value(!pending_way),
-    .read_set(pending_set),
-    .way_0_valid(way_0_valid_read), .way_1_valid(way_1_valid_read),
-    .victim(victim_read)
-);
-
-// 16-entry scan window at the current scan position, masked so the scan only
-// ever looks at entries strictly after the last consumed candidate.
-wire [15:0] scan_window_bits = dirty_bits[scan_index[6:4] * 16 +: 16];
-wire [15:0] scan_masked = scan_window_bits & (16'hffff << scan_index[3:0]);
-function [3:0] first16;
-    input [15:0] bits;
-    integer index;
-    reg found;
-    begin
-        first16 = 0;
-        found = 0;
-        for (index = 0; index < 16; index = index + 1)
-            if (bits[index] && !found) begin
-                first16 = index[3:0];
-                found = 1;
-            end
-    end
-endfunction
-wire scan_window_hit = |scan_masked;
-wire [6:0] scan_window_first = {scan_index[6:4], first16(scan_masked)};
-wire scan_last_window = scan_index[6:4] == 3'd7;
-wire [6:0] idle_window_first = {3'b000, first16(dirty_bits[15:0])};
-// Background scan stepping while a write-back is in flight; ST_SCAN and the
-// write-back launch paths drive the scan registers explicitly instead.
-wire scan_background_state = state == ST_WB_PRIME || state == ST_WB_CAPTURE ||
-    state == ST_WB_REQUEST || state == ST_WB_STREAM || state == ST_WB_RESPONSE;
-
+    prepared_line_copy_destination_tag != pending_tag && way_1_valid_read &&
+    way_1_tag == prepared_line_copy_destination_tag;
+wire dest_invalidate=state==ST_COPY_INVALIDATE && line_copy_destination_hit_latched;
+wire wb_clear=state==ST_WB_RESPONSE && memory_response_valid && !memory_error;
+wire refill_prime=state==ST_LINE_REQUEST;
+wire meta_update=hit_store || refill_prime || refill_commit || dest_invalidate;
+wire update_way=hit_store?hit_way:dest_invalidate?line_copy_destination_way_latched:pending_way;
+wire [15:0] old_word=update_way?meta1:meta0;
+wire [15:0] install_word={1'b0,!pending_way,pending_write,1'b1,pending_tag};
+wire [15:0] update_word=refill_commit?install_word:
+    hit_store?(old_word | 16'h2000):(old_word & 16'hcfff);
+// A way-one install also updates the victim bit in the current way-zero word.
+// No stale pre-eviction snapshot is reused here.
+wire meta_write0=sweep_active || (wb_clear&&!wb_way) ||
+    (meta_update&&!update_way) || (refill_commit&&pending_way);
+wire meta_write1=sweep_active || (wb_clear&&wb_way) || (meta_update&&update_way);
+wire [5:0] meta_set0=sweep_active?sweep_set:wb_clear?wb_set:pending_set;
+wire [5:0] meta_set1=sweep_active?sweep_set:wb_clear?wb_set:pending_set;
+wire [15:0] wb_cleared=wb_for_maintenance || wb_for_line_clean ?
+    (wb_metadata & 16'hdfff):(wb_metadata & 16'hcfff);
+wire [15:0] meta_word0=sweep_active?16'b0:wb_clear?wb_cleared:
+    (refill_commit&&pending_way)?(meta0 & 16'hbfff):update_word;
+wire [15:0] meta_word1=sweep_active?16'b0:wb_clear?wb_cleared:update_word;
+__CACHE_METADATA__ u_metadata(.clk(clk),.read_set(tag_read_set),
+ .write_0(meta_write0),.write_set_0(meta_set0),.write_data_0(meta_word0),
+ .write_1(meta_write1),.write_set_1(meta_set1),.write_data_1(meta_word1),.q0(meta0),.q1(meta1));
 // ST_IDLE gives line-copy and line-clean commands priority over a CPU access.
 // Their start strobes therefore need not feed this ready path as additional
 // negative terms; the core never issues a normal access for the same
@@ -294,6 +233,20 @@ assign memory_response_ready = state == ST_LINE_RECEIVE ||
 assign maintenance_busy = maintenance_active;
 assign valid_sweep = sweep_active;
 
+// A conservative hint, never an exact count. Any accepted store sets it;
+// single-line clean/copy does not attempt to subtract from the hint.
+// Set has priority over done/scrub if interfaces are ever extended to overlap.
+wire full_clean_finished=(state==ST_SCAN && scan_set==63 && !bg_hit) ||
+    (state==ST_WB_RESPONSE && wb_for_maintenance && memory_response_valid &&
+     !memory_error && !found_valid && bg_done);
+wire fault_scrub=(state==ST_LINE_RECEIVE || state==ST_WB_RESPONSE ||
+    state==ST_COPY_RESPONSE) && memory_response_valid && memory_error;
+always @(posedge clk) begin
+    if(reset) may_have_dirty<=0;
+    else if(cpu_request_valid && cpu_request_ready && cpu_write) may_have_dirty<=1;
+    else if(full_clean_finished || fault_scrub) may_have_dirty<=0;
+end
+
 always @(posedge clk) begin
     maintenance_done <= 0;
     if (reset) begin
@@ -309,15 +262,14 @@ always @(posedge clk) begin
         line_copy_destination_hit_latched <= 0;
         line_copy_destination_way_latched <= 0;
         maintenance_error <= 0;
-        scan_active <= 0;
-        found_valid <= 0;
+        scan_set <= 0; bg_active<=0; bg_valid<=0; bg_done<=0; found_valid<=0;
         sweep_active <= 1;
         sweep_set <= 0;
         sweep_finishes_maintenance <= 0;
     end else begin
         if (response_valid && cpu_response_ready)
             response_valid <= 0;
-        // Sweep control: one set of both valid ways cleared per cycle; an
+        // Sweep control: both metadata ways scrubbed one set per cycle; an
         // invalidate that finished its write-backs reports done when the
         // sweep completes.
         if (sweep_active) begin
@@ -331,15 +283,19 @@ always @(posedge clk) begin
                 end
             end
         end
-        if (scan_active && !found_valid && scan_background_state) begin
-            if (scan_window_hit) begin
-                found_valid <= 1;
-                found_index <= scan_window_first;
-                scan_active <= 0;
-            end else if (scan_last_window) begin
-                scan_active <= 0;
-            end else begin
-                scan_index <= {scan_index[6:4] + 3'd1, 4'b0000};
+        // One synchronous set lookup per WB cycle, at most one pending hit.
+        // Never scan on the response/metadata-clear edge: DPB writes hold DO.
+        if(bg_active && bg_state) begin
+            bg_pipe_set<=bg_read_set;
+            bg_valid<=1;
+            if(bg_read_set!=63) bg_read_set<=bg_read_set+1'b1;
+            if(bg_valid) begin
+                if(bg_hit) begin
+                    found_valid<=1; found_index<={bg_way,bg_pipe_set};
+                    bg_active<=0; bg_valid<=0;
+                end else if(bg_pipe_set==63) begin
+                    bg_active<=0; bg_valid<=0; bg_done<=1;
+                end
             end
         end
         case (state)
@@ -353,35 +309,13 @@ always @(posedge clk) begin
                     wb_for_line_clean <= 0;
                     maintenance_invalidate <= invalidate_all;
                     maintenance_error <= 0;
-                    found_valid <= 0;
-                    if (|dirty_bits) begin
-                        wb_for_maintenance <= 1;
-                        wb_beat <= 0;
-                        if (|dirty_bits[15:0]) begin
-                            // First dirty line sits in window zero: start its
-                            // write-back immediately and scan on from after it.
-                            wb_way <= idle_window_first[6];
-                            wb_set <= idle_window_first[5:0];
-                            scan_index <= idle_window_first + 1'b1;
-                            scan_active <= idle_window_first != 7'd127;
-                            state <= ST_WB_PRIME;
-                        end else begin
-                            scan_index <= 7'd16;
-                            scan_active <= 1;
-                            state <= ST_SCAN;
-                        end
-                    end else begin
-                        if (invalidate_all) begin
-                            // Invalidate sweeps the valid arrays; done is
-                            // reported when the sweep completes.
-                            sweep_active <= 1;
-                            sweep_set <= 0;
-                            sweep_finishes_maintenance <= 1;
-                        end else begin
-                            maintenance_active <= 0;
-                            maintenance_done <= 1;
-                        end
-                    end
+                    wb_for_maintenance <= 1;
+                    scan_set <= 0;
+                    if(!may_have_dirty) begin
+                        if(invalidate_all) begin
+                            sweep_active<=1;sweep_set<=0;sweep_finishes_maintenance<=1;
+                        end else begin maintenance_active<=0;maintenance_done<=1;end
+                    end else state <= ST_SCAN_PRIME;
                 end else if (line_copy_start && line_copy_ready) begin
                     maintenance_error <= 0;
                     if (|line_copy_source[3:0]) begin
@@ -409,7 +343,7 @@ always @(posedge clk) begin
                     pending_write <= 0;
                     pending_address <= {10'b0, line_clean_address};
                     state <= ST_LOOKUP;
-                end else if (!response_valid && cpu_request_valid) begin
+                end else if (cpu_request_valid && cpu_request_ready) begin
                     line_copy_active <= 0;
                     wb_for_line_copy <= 0;
                     wb_for_maintenance <= 0;
@@ -489,13 +423,28 @@ always @(posedge clk) begin
                 state <= ST_COPY_INVALIDATE;
             end
             ST_COPY_INVALIDATE: begin
-                state <= ST_LOOKUP;
+                state <= ST_META_REFRESH;
             end
+            ST_META_REFRESH: state <= ST_LOOKUP;
+            ST_SCAN_PRIME: state <= ST_SCAN;
             ST_WB_PRIME: begin
                 wb_beat <= 0;
                 state <= ST_WB_CAPTURE;
             end
             ST_WB_CAPTURE: begin
+                wb_metadata <= wb_way?meta1:meta0;
+                if(wb_for_maintenance) begin
+                    found_valid<=0; bg_valid<=0; bg_done<=0;
+                    if((wb_way ? meta0[12]&&meta0[13] : meta1[12]&&meta1[13])) begin
+                        // The other way in this set can already be queued.
+                        found_valid<=1; found_index<={!wb_way,wb_set}; bg_active<=0;
+                    end else if(wb_set==63) begin
+                        bg_active<=0; bg_done<=1;
+                    end else begin
+                        bg_active<=1; bg_read_set<=wb_set+1'b1;
+                        bg_pipe_set<=wb_set+1'b1;
+                    end
+                end
                 wb_address <= line_copy_active && wb_for_line_copy ?
                     {line_copy_destination_page_latched,
                      pending_address[13:4], 4'b0} :
@@ -560,28 +509,20 @@ always @(posedge clk) begin
                     state <= ST_IDLE;
                 end else begin
                     if (wb_for_maintenance) begin
-                        if (found_valid) begin
-                            // The overlapped scan already latched the next
-                            // dirty line: launch it without a gap.
-                            wb_way <= found_index[6];
-                            wb_set <= found_index[5:0];
-                            wb_beat <= 0;
-                            found_valid <= 0;
-                            scan_index <= found_index + 1'b1;
-                            scan_active <= found_index != 7'd127;
-                            state <= ST_WB_PRIME;
-                        end else if (scan_active) begin
-                            state <= ST_SCAN;
+                        if(found_valid) begin
+                            wb_way<=found_index[6];wb_set<=found_index[5:0];
+                            scan_set<=found_index[5:0];wb_beat<=0;found_valid<=0;
+                            state<=ST_WB_PRIME;
+                        end else if(bg_done) begin
+                            if(maintenance_invalidate) begin
+                                sweep_active<=1;sweep_set<=0;sweep_finishes_maintenance<=1;
+                            end else begin maintenance_active<=0;maintenance_done<=1;end
+                            state<=ST_IDLE;
                         end else begin
-                            if (maintenance_invalidate) begin
-                                sweep_active <= 1;
-                                sweep_set <= 0;
-                                sweep_finishes_maintenance <= 1;
-                            end else begin
-                                maintenance_active <= 0;
-                                maintenance_done <= 1;
-                            end
-                            state <= ST_IDLE;
+                            // Re-read the final not-yet-tested set. This also
+                            // drains a synchronous scan read interrupted by WB completion.
+                            scan_set<=bg_pipe_set;bg_active<=0;bg_valid<=0;
+                            state<=ST_SCAN_PRIME;
                         end
                     end else if (wb_for_line_clean) begin
                         maintenance_active <= 0;
@@ -596,35 +537,22 @@ always @(posedge clk) begin
                 end
             end
             ST_SCAN: begin
-                if (found_valid) begin
-                    wb_way <= found_index[6];
-                    wb_set <= found_index[5:0];
+                if (meta0[12] && meta0[13] || meta1[12] && meta1[13]) begin
+                    wb_way <= !(meta0[12] && meta0[13]);
+                    wb_set <= scan_set;
                     wb_beat <= 0;
-                    found_valid <= 0;
-                    scan_index <= found_index + 1'b1;
-                    scan_active <= found_index != 7'd127;
                     state <= ST_WB_PRIME;
-                end else if (scan_window_hit) begin
-                    wb_way <= scan_window_first[6];
-                    wb_set <= scan_window_first[5:0];
-                    wb_beat <= 0;
-                    scan_index <= scan_window_first + 1'b1;
-                    scan_active <= scan_window_first != 7'd127;
-                    state <= ST_WB_PRIME;
-                end else if (scan_last_window) begin
-                    // The scan found no further dirty line: maintenance ends.
+                end else if (scan_set == 63) begin
                     if (maintenance_invalidate) begin
-                        sweep_active <= 1;
-                        sweep_set <= 0;
+                        sweep_active <= 1; sweep_set <= 0;
                         sweep_finishes_maintenance <= 1;
                     end else begin
-                        maintenance_active <= 0;
-                        maintenance_done <= 1;
+                        maintenance_active <= 0; maintenance_done <= 1;
                     end
-                    scan_active <= 0;
                     state <= ST_IDLE;
                 end else begin
-                    scan_index <= {scan_index[6:4] + 3'd1, 4'b0000};
+                    scan_set <= scan_set+1'b1;
+                    // Next set was read on this edge; stay in SCAN.
                 end
             end
             ST_LINE_REQUEST: if (memory_request_ready) begin

@@ -54,27 +54,28 @@ software-controlled invalidation preserve precise handoff semantics.
 The I-cache and D-cache are independently instantiated 4-KiB, two-way caches with 64 sets and 16
 16-bit words per line. Each cache uses two 1024x16 true-dual-port data BSRAMs split strictly by word
 parity. Way zero and way one occupy the lower and upper halves of both parity banks. Each cache
-also uses one 1024x16 DPB for its two 64x12 tag arrays; both tag reads launch alongside the data
-reads in the existing lookup stage. Normal-mode tag writes hold the selected port's output.
+also uses one 1024x16 DPB for its two 64x12 tag arrays; D-cache valid, dirty and victim
+metadata occupy spare bits in that same DPB. Both tag reads launch alongside the data
+reads in the existing lookup stage. Normal-mode metadata writes hold the selected port's output.
 D-cache write-back assembles its address in the existing capture stage after the tag read.
 The I-cache accepts one resident read per cycle without backpressure. The D-cache serializes
 request acceptance, lookup and response consumption, accepting a resident request every three
-cycles with a continuously ready sink. Both caches store their valid and victim bits in a RAM16 leaf with asynchronous reads:
-two valid ways and the victim bit per cache, twelve 16-deep cells in total. The synthesis branch
-instantiates twelve `RAM16SDP1` cells explicitly because otherwise whole-system context changes can
-expand the D-cache leaf into 128 FF plus read muxes even when its source is unchanged. The victim is
-still invalidated from the registered pending way when the line request starts rather than from the
-combinationally selected victim or the request handshake. Because the RAM
-cannot clear in one cycle, a global invalidate or reset clears one set of both ways
+cycles with a continuously ready sink. The I-cache stores valid and victim bits in twelve
+explicit `RAM16SDP1` cells with asynchronous reads. The D-cache synchronously reads and
+updates complete metadata words through its two DPB ports, with the victim bit stored in
+way zero. The registered pending way is invalidated when its line request starts.
+Because the metadata RAM cannot clear in one cycle, a global invalidate or reset clears one set of both ways
 per cycle and blocks lookups for the 64-set sweep. The D-cache additionally drives a hold so the core
 does not issue requests while its reset or error-scrub sweep runs.
 
 The D-cache is write-back and write-allocate. Stores dirty resident or newly allocated lines. A dirty
 victim is written back before replacement. Full clean preserves valid lines; full invalidate first
-writes dirty lines and then clears validity. Dirty-line maintenance examines one 16-entry window of
-the 128-bit dirty bitmap per cycle and runs that scan ahead of the in-flight write-back, so
-consecutive write-backs start back to back. The system-control device holds the CPU internally until
-maintenance reports success or failure. There is no per-line snoop or range-maintenance interface.
+writes dirty lines and then clears validity. Maintenance scans the synchronous metadata one
+set per cycle. A single pending line index overlaps this scan with write-back, preserving dense
+clean throughput without a complete dirty bitmap. A conservative dirty hint skips repeated
+empty full cleans; single-line clean leaves the hint set. The system-control device holds the CPU
+internally until full maintenance reports success or failure. `DCLEANL` and `DWAIT` support
+explicit single-line ownership handoff; there is no hardware snoop or range-maintenance interface.
 
 One cache line crosses the CPU-side memory interface as four ordered 64-bit beats at 54 MHz. Refill
 and write-back transfer those beats directly through the parity-bank ports; neither cache retains a
@@ -94,8 +95,8 @@ larger architectural physical addresses instead of truncating or aliasing them.
 
 `CpuV3MemoryArbiter` serializes display, boot DMA, I-cache, D-cache, GPU command reads, GPU
 framebuffer reads, and GPU framebuffer writes onto the CPU-side memory port. Display has strict
-priority at transaction boundaries. The other owners use base priority plus a saturating four-bit
-age, with round-robin selection for equal scores; an accepted owner remains selected through its
+priority at transaction boundaries. The other six owners use round-robin selection with one
+three-bit cursor; no age or score arrays remain. An accepted owner remains selected through its
 last response or error. GPU framebuffer reads and writes are both active cache traffic. The I-cache,
 D-cache, and display paths transfer fixed 4x64-bit lines; boot DMA retains its narrow-word mode.
 The three GPU ports encode one through four consecutive lines as `line_count_minus_one`, giving
@@ -272,38 +273,38 @@ the same stable mapping through `LoaderError::boot_report`.
 
 ## Current fitted result and validation boundary
 
-The 2026-09-27 default 2x four-line display/sRGB path with the original pixel-pair
-FIFO now includes the production eight-DPB framebuffer and quad owner. The matched
-work-1 baseline was reproduced before attachment; exported sources differ only in GPU RTL.
+The default 2x four-line display/sRGB system retains the eight-DPB framebuffer and
+quad owner. The latest production fit adds CPU/cache architecture consolidation to
+`eb41760`; its generated GPU, display and SDRAM backend sources are unchanged.
 
 | Production fit | Logic | LUT | ALU | RAM16 | Logic FF | BSRAM | CPU fitted fmax | Worst setup slack |
 | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
 | Display work-1, four color cache DPBs | 13,986 | 11,182 | 2,144 | 110 | 5,618 | 14 | 57.469 MHz | 1.118 ns |
 | Display + eight-DPB C/Z quad owner | 14,152 | 11,317 | 2,175 | 110 | 5,620 | 18 | 54.260 MHz | 0.089 ns |
 | Same GPU + fetch/arbiter/cache-tag optimization | 13,478 | 10,963 | 2,143 | 62 | 5,493 | 20 | 56.218 MHz | 0.730 ns |
-| **Same system + source-held D-cache writeback** | **13,380** | **10,866** | **2,142** | **62** | **5,174** | **20** | **58.403 MHz** | **1.396 ns** |
+| Same system + source-held D-cache writeback | 13,380 | 10,866 | 2,142 | 62 | 5,174 | 20 | 58.403 MHz | 1.396 ns |
+| **CPU/cache architecture consolidation** | **12,093** | **9,833** | **1,960** | **50** | **4,896** | **20** | **58.800 MHz** | **1.512 ns** |
 
-The integration adds 166 Logic, 135 LUT, two FF and four BSRAM. It adds quad old-value
-reads and local Z initialization; it is not a net Logic reduction against the simpler
-color-only pixel writer. The matched standalone lane-order saving is a different boundary.
-The subsequent non-GPU optimization removes 674 Logic by narrowing stream-owned fetch offsets,
-broadcasting owner-qualified response payload and moving both cache tags to two additional DPBs.
-The source-held writeback removes another 98 Logic and 319 FF by deleting the adapter's fixed-line
-buffer and cache first-beat copy, and sharing arbiter payload qualification.
-The current fit uses 8,645 CLS, five SDPB, fourteen DPB, one pROM, two `MULT18X18`, one
-`MULT36X36` and five `MULTADDALU18X18`. GPU storage is eight cache DPBs plus one raster
+The consolidation shares scalar/vector FPU lane control and ALU commitment, integer
+operands/arithmetic, ordered fetch position and D-cache metadata, and replaces age
+scores with a six-client round-robin cursor. It removes 1,287 Logic without adding RAM
+or DSP. The current fit uses 7,899 CLS, five SDPB, fourteen DPB, one pROM, two `MULT18X18`,
+one `MULT36X36` and five `MULTADDALU18X18`: sixteen 18x18-equivalent multiplier lanes,
+reported as 34% DSP utilization. GPU storage is eight cache DPBs plus one raster
 FIFO SDPB; command/list and tags share 18 RAM16 cells. Real shader/depth/blend and depth
 surface traffic are outside this fit; the reserved Z DPBs are included.
 
 Runtime clocks remain 54/108 MHz, with zero setup/hold TNS and violated endpoints.
-The first setup path is core instruction decode to the I-cache data-DPB address;
-controller timing closes at 192.576 MHz against 108 MHz. Place/route algorithms remain 1.
-Full hardware validation, 728 workspace tests, strict Clippy, CPU/system co-simulations
-(26/2) and ten GPU integration tests passed. Source/constraints, baseline and routed reports
-are preserved in local record `gpu-display-framebuffer-2026-09-27`, indexed by the agent guide.
-The non-GPU source/fit alternatives are preserved in local record `cpu-v3-non-gpu-logic-2026-09-27`.
-The streaming-writeback sources, ablation fits and directed fault evidence are preserved in
-`cpu-v3-dcache-stream-writeback-2026-09-28`. None of these changes has new physical-board proof.
+The first setup path is core instruction decode to fetch metadata-current clock enable;
+controller timing closes at 145.872 MHz against 108 MHz. Place/route algorithms remain 1.
+All twenty hardware-validation steps, 732 workspace tests, strict Clippy, 31 CPU ignored
+RTL tests, two system co-sims, 22 system RTL tests and both full Flash-image tests passed.
+All 22 frozen benchmarks retain their execution cycles; including one final full clean
+per program increases geometric-mean completion cycles by 0.34%; the worst case is the
+short FPU spill stress at +4.94% (61 clocks). Sparse clean pays a
+bounded set scan; dense full clean retains write-back throughput. Sources, matched fits,
+independent goldens and raw performance are archived in local record
+`cpu-v3-architecture-logic-2026-09-28`. This result is not new physical-board proof.
 
 ## Verification and physical evidence
 

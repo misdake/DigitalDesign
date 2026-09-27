@@ -2,7 +2,7 @@
 
 Status: concise milestone index
 Repository: `../../../`
-Updated: 2026-09-27
+Updated: 2026-09-28
 
 Add exactly one short sentence here for each completed optimization; append implementation detail,
 measurements, rejected alternatives, and validation evidence to
@@ -60,6 +60,8 @@ generated outside this document.
 - 2026-09-27 — Four-row display buffering in two BSRAMs removed response staging and added linear RGB565-to-sRGB conversion; the completed-pair RAM16 FIFO is retained after whole-system comparisons, with mutually exclusive 2x/3x build features.
 
 - 2026-09-28 — Stream-owned fetch offsets, owner-qualified response broadcast and synchronous I/D-cache tag DPBs reduce whole-system Logic while preserving cache cycles and GPU behavior; matched RAM16, staging and arbitration alternatives remain in the local resource audit.
+
+- 2026-09-28 — Unified FPU lanes, common integer operands/results, synchronous D-cache metadata, ordered fetch cursors and six-client round robin reduce Logic while retaining two-way caches, dense clean throughput and frozen-suite execution cycles; full offline validation passed.
 
 ## Next work
 
