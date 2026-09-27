@@ -298,6 +298,41 @@ impl Module for CpuV3CacheTagRam {
     }
 }
 
+/// Synchronous two-way tag lookup sharing one true-dual-port BSRAM.
+struct CpuV3CacheTagBsram;
+
+impl HardwareIdentity for CpuV3CacheTagBsram {
+    const TARGET_RESOURCE_LEAF: bool = true;
+    fn verilog_identity() -> VerilogIdentity {
+        VerilogIdentity::new("CpuV3CacheTagBsram").namespace(["components", "cpu", "cpu_v3"])
+    }
+}
+
+impl Module for CpuV3CacheTagBsram {
+    type Input = CpuV3CacheTagRamInput;
+    type Output = CpuV3CacheTagRamOutput;
+    type EmuState = ();
+    const USES_MAIN_CLOCK: bool = true;
+    const EMU_AVAILABLE: bool = false;
+    fn target_resources() -> Vec<TargetResourceRequest> {
+        vec![TargetResourceRequest::new(BsramBlocks::new(1))]
+    }
+    fn execute_emu(
+        _state: &mut Self::EmuState,
+        _circuit: &mut CircuitWires,
+        _input: &Self::Input,
+        _output: &Self::Output,
+    ) {
+        panic!("synchronous tag BSRAM is verified through the cache cycle model")
+    }
+    fn verilog_source() -> Option<String> {
+        Some(include_str!("cpu_v3_cache_tag_bsram.v").to_string())
+    }
+    fn verilog_testbench() -> Option<String> {
+        Some(include_str!("cpu_v3_cache_tag_bsram_tb.v").to_string())
+    }
+}
+
 /// RAM16 valid (2 x 64) and victim (64) arrays with asynchronous read, a
 /// synchronous single-way write port, and a sweep clear that takes priority
 /// and clears both ways of one set per cycle. Way zero initializes from the
@@ -913,7 +948,7 @@ impl<I: CpuV3CacheImage> Module for CpuV3TwoWayCacheWithImage<I> {
                 )
                 .replace(
                     "__CACHE_TAGS__",
-                    &CpuV3CacheTagRam::verilog_identity().module_name(),
+                    &CpuV3CacheTagBsram::verilog_identity().module_name(),
                 )
                 .replace(
                     "__CACHE_VALID__",
@@ -925,7 +960,7 @@ impl<I: CpuV3CacheImage> Module for CpuV3TwoWayCacheWithImage<I> {
     fn verilog_dependencies() -> Vec<VerilogDependency> {
         vec![
             VerilogDependency::new::<CpuV3DualPortCacheData<I>>("u_data_banks"),
-            VerilogDependency::new::<CpuV3CacheTagRam>("u_tags"),
+            VerilogDependency::new::<CpuV3CacheTagBsram>("u_tags"),
             VerilogDependency::new::<CpuV3CacheValidRamWithImage<I>>("u_valid"),
         ]
     }
@@ -940,6 +975,8 @@ impl<I: CpuV3CacheImage> Module for CpuV3TwoWayCacheWithImage<I> {
 
 #[derive(Clone, ModuleIo)]
 pub struct CpuV3DataCacheInput {
+    /// Consume one 64-bit write beat after address acceptance.
+    pub memory_write_data_ready: Wire,
     pub reset: Wire,
     pub clean_all: Wire,
     pub invalidate_all: Wire,
@@ -1625,9 +1662,8 @@ impl Module for CpuV3DataCache {
                 state.beat = 0;
                 state.phase = DataMemoryPhase::WritebackCapture;
             }
-            // The RTL spends a single ST_WB_CAPTURE cycle latching the first
-            // writeback beat; the emulator snapshots the whole line in the
-            // request, so capture lasts one cycle as well.
+            // The RTL assembles the synchronous tag result in CAPTURE.
+            // Data remains in the cache DPB until each ready-qualified beat.
             DataMemoryPhase::WritebackCapture => {
                 state.phase = DataMemoryPhase::Request;
             }
@@ -1637,20 +1673,23 @@ impl Module for CpuV3DataCache {
                     state.request,
                     Some(crate::MainMemoryRequest::WriteLine { .. })
                 ) {
-                    state.beat = 1;
                     DataMemoryPhase::WriteStream
                 } else {
                     DataMemoryPhase::ReadReceive
                 };
             }
             DataMemoryPhase::Request => {}
-            DataMemoryPhase::WriteStream => {
+            DataMemoryPhase::WriteStream if input.memory_response_valid && input.memory_error => {
+                state.phase = DataMemoryPhase::WriteResponse;
+            }
+            DataMemoryPhase::WriteStream if input.memory_write_data_ready => {
                 if state.beat == CPU_V3_CACHE_MEMORY_BEATS - 1 {
                     state.phase = DataMemoryPhase::WriteResponse;
                 } else {
                     state.beat += 1;
                 }
             }
+            DataMemoryPhase::WriteStream => {}
             DataMemoryPhase::WriteResponse if input.memory_response_valid => {
                 if input.memory_error {
                     state.fail_transaction();
@@ -1721,7 +1760,7 @@ impl Module for CpuV3DataCache {
                 )
                 .replace(
                     "__CACHE_TAGS__",
-                    &CpuV3CacheTagRam::verilog_identity().module_name(),
+                    &CpuV3CacheTagBsram::verilog_identity().module_name(),
                 )
                 .replace(
                     "__DIRTY_RAM__",
@@ -1737,7 +1776,7 @@ impl Module for CpuV3DataCache {
     fn verilog_dependencies() -> Vec<VerilogDependency> {
         vec![
             VerilogDependency::new::<CpuV3DualPortCacheData<ZeroBsramImage>>("u_data_banks"),
-            VerilogDependency::new::<CpuV3CacheTagRam>("u_tags"),
+            VerilogDependency::new::<CpuV3CacheTagBsram>("u_tags"),
             VerilogDependency::new::<CpuV3DataCacheDirtyRam>("u_dirty"),
             VerilogDependency::new::<CpuV3CacheValidRam>("u_valid"),
         ]
@@ -2070,7 +2109,7 @@ mod tests {
     }
 
     #[test]
-    fn export_claims_two_data_bsram_and_characterized_tag_ssram_leaves() {
+    fn export_claims_two_data_bsram_one_tag_bsram_and_valid_ssram() {
         let project = VerilogProject::generate::<CpuV3TwoWayCache>().unwrap();
         let resources: Vec<_> = project
             .resource_claims
@@ -2078,15 +2117,20 @@ mod tests {
             .flat_map(|claim| claim.resources.iter().copied())
             .collect();
         assert!(resources.contains(&ResourceAmount::new(ResourceKind::Bsram18K, 2)));
+        assert_eq!(
+            resources
+                .iter()
+                .filter(|r| r.kind == ResourceKind::Bsram18K)
+                .map(|r| r.amount)
+                .sum::<u64>(),
+            3
+        );
         let ssram: u64 = resources
             .iter()
             .filter(|resource| resource.kind == ResourceKind::SsramBit)
             .map(|resource| resource.amount)
             .sum();
-        assert_eq!(
-            ssram,
-            (CPU_V3_CACHE_TAG_PHYSICAL_BITS + CPU_V3_CACHE_VALID_PHYSICAL_BITS) as u64
-        );
+        assert_eq!(ssram, CPU_V3_CACHE_VALID_PHYSICAL_BITS as u64);
     }
 
     #[test]
@@ -2096,7 +2140,7 @@ mod tests {
     }
 
     #[test]
-    fn data_cache_exports_two_data_bsrams_tag_ssram_and_ff_dirty_bitmap() {
+    fn data_cache_exports_two_data_bsrams_tag_bsram_and_ff_dirty_bitmap() {
         let project = VerilogProject::generate::<CpuV3DataCache>().unwrap();
         let resources: Vec<_> = project
             .resource_claims
@@ -2104,15 +2148,20 @@ mod tests {
             .flat_map(|claim| claim.resources.iter().copied())
             .collect();
         assert!(resources.contains(&ResourceAmount::new(ResourceKind::Bsram18K, 2)));
+        assert_eq!(
+            resources
+                .iter()
+                .filter(|r| r.kind == ResourceKind::Bsram18K)
+                .map(|r| r.amount)
+                .sum::<u64>(),
+            3
+        );
         let ssram: u64 = resources
             .iter()
             .filter(|resource| resource.kind == ResourceKind::SsramBit)
             .map(|resource| resource.amount)
             .sum();
-        assert_eq!(
-            ssram,
-            (CPU_V3_CACHE_TAG_PHYSICAL_BITS + CPU_V3_CACHE_VALID_PHYSICAL_BITS) as u64
-        );
+        assert_eq!(ssram, CPU_V3_CACHE_VALID_PHYSICAL_BITS as u64);
     }
 
     #[test]
@@ -2556,7 +2605,7 @@ mod tests {
         let mut s = String::new();
         s.push_str(&CpuV3DualPortCacheData::<ZeroBsramImage>::verilog_source().unwrap());
         s.push('\n');
-        s.push_str(&CpuV3CacheTagRam::verilog_source().unwrap());
+        s.push_str(&CpuV3CacheTagBsram::verilog_source().unwrap());
         s.push('\n');
         s.push_str(&CpuV3CacheValidRam::verilog_source().unwrap());
         s.push('\n');

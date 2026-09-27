@@ -335,7 +335,7 @@ fn btc_protocol_matches_iverilog() {
             u8::from(o.core_request_ready),u8::from(o.core_response_valid),u8::from(o.memory_request_valid),u8::from(o.memory_response_ready)).unwrap();
         if o.core_response_valid {
             writeln!(tb, "if (core_read_data !== 16'h{:04x} || core_error !== 1'b{}) $fatal(1, \"BTC data cycle {cycle}\");",o.core_read_data,u8::from(o.core_error)).unwrap();
-            tb.push_str("if (dut.btc_response) source_address = dut.next_word({10'b0,dut.btc_tag[dut.response_entry]},dut.first_btc_word ? 2'd0 : 2'd1); else if (dut.response_bypass) source_address=dut.metadata_address[dut.metadata_head]; else source_address=dut.queue_address[dut.queue_head];\nif (source_address !== core_address) $fatal(1, \"BTC provenance\");\n");
+            tb.push_str("if (dut.btc_response) source_address = dut.next_word({10'b0,dut.btc_tag[dut.response_entry]},dut.first_btc_word ? 2'd0 : 2'd1); else if (dut.response_bypass) source_address={dut.expected_core_address[31:16],dut.metadata_address[dut.metadata_head]}; else source_address={dut.expected_core_address[31:16],dut.queue_address[dut.queue_head]};\nif (source_address !== core_address) $fatal(1, \"BTC provenance\");\n");
         }
         writeln!(tb, "if (memory_address !== 32'h{:08x}) $fatal(1, \"BTC request address cycle {cycle}\");\n@(negedge clk);\nif (dut.queue_count > 4 || dut.metadata_count > 4 || dut.queue_count + dut.metadata_count > 4) $fatal(1, \"BTC reservation overflow\");",o.memory_address).unwrap();
     }

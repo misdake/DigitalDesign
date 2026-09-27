@@ -65,6 +65,8 @@ wire [21:0] dc_memory_address;
 wire [63:0] dc_memory_write_data;
 wire dc_memory_response_ready;
 wire arb_data_request_ready;
+wire arb_data_write_data_ready;
+wire sdram_write_data_ready;
 wire arb_data_response_valid;
 wire [63:0] arb_data_read_data;
 wire arb_data_error;
@@ -213,6 +215,7 @@ __DCACHE__ u_dcache (
     .cpu_write_data(core_data_write_data),
     .cpu_response_ready(core_data_response_ready),
     .memory_request_ready(arb_data_request_ready),
+    .memory_write_data_ready(arb_data_write_data_ready),
     .memory_response_valid(arb_data_response_valid),
     .memory_read_data(arb_data_read_data),
     .memory_error(arb_data_error),
@@ -269,7 +272,7 @@ __ARBITER__ u_arbiter (
     .gpu_fb_w_line_count_minus_1(2'b00),
     .gpu_fb_w_write_data(64'h0),
     .memory_request_ready(sdram_request_ready),
-    .memory_write_data_ready(1'b0),
+    .memory_write_data_ready(sdram_write_data_ready),
     .memory_response_valid(sdram_response_valid),
     .memory_read_data(sdram_read_data),
     .memory_response_last(sdram_response_last),
@@ -279,6 +282,7 @@ __ARBITER__ u_arbiter (
     .instruction_read_data(arb_instruction_read_data),
     .instruction_error(arb_instruction_error),
     .data_request_ready(arb_data_request_ready),
+    .data_write_data_ready(arb_data_write_data_ready),
     .data_response_valid(arb_data_response_valid),
     .data_read_data(arb_data_read_data),
     .data_error(arb_data_error),
@@ -338,7 +342,6 @@ reg pending_write = 0;
 reg pending_line = 0;
 reg [21:0] pending_address = 0;
 reg [63:0] pending_write_data = 0;
-reg [63:0] line_write_buffer [0:3];
 reg [2:0] beat = 0;
 reg [7:0] read_delay = 0;
 reg [7:0] recovery_count = 0;
@@ -347,6 +350,8 @@ reg [15:0] memory [0:131071];
 
 wire refresh_due = refresh_count >= 600;
 assign sdram_request_ready = sdram_state == ST_IDLE && refresh_count < 600;
+assign sdram_write_data_ready = sdram_state == ST_WRITE_CAPTURE ||
+    (sdram_state == ST_OP_WAIT && pending_write && pending_line && read_delay == 0);
 
 integer beat_index;
 always @(posedge clk) begin
@@ -361,13 +366,10 @@ always @(posedge clk) begin
                 pending_address <= arb_memory_address;
                 pending_write_data <= arb_memory_write_data;
                 if (arb_memory_write && arb_memory_line) begin
-                    line_write_buffer[0] <= arb_memory_write_data;
-                    beat <= 1;
+                    beat <= 0;
                     sdram_state <= ST_WRITE_CAPTURE;
                 end else if (arb_memory_write) begin
-                    // Word write: the full four-beat ST_WRITE_STAGE keeps the
-                    // gearbox write_buffer capture pointer aligned, mirroring
-                    // the RTL port.
+                    // Word writes hold their value across one preload stage.
                     beat <= 0;
                     sdram_state <= ST_WRITE_STAGE;
                 end else begin
@@ -376,26 +378,18 @@ always @(posedge clk) begin
             end
         end
         ST_WRITE_CAPTURE: begin
-            line_write_buffer[beat] <= arb_memory_write_data;
-            if (beat == 3) begin
-                beat <= 0;
-                sdram_state <= ST_WRITE_STAGE;
-            end else begin
-                beat <= beat + 1;
-            end
+            // Source-held preload beat; the remaining beats stay in cache.
+            for (beat_index = 0; beat_index < 4; beat_index = beat_index + 1)
+                memory[pending_address + beat_index] <= arb_memory_write_data[16*beat_index +: 16];
+            beat <= 1;
+            sdram_state <= ST_ACTIVE_REQ;
         end
-        ST_WRITE_STAGE: begin
-            if (beat == 3) begin
-                beat <= 0;
-                sdram_state <= ST_ACTIVE_REQ;
-            end else begin
-                beat <= beat + 1;
-            end
-        end
+        ST_WRITE_STAGE: sdram_state <= ST_ACTIVE_REQ;
         ST_ACTIVE_REQ: sdram_state <= ST_ACTIVE_WAIT;
         ST_ACTIVE_WAIT: sdram_state <= ST_OP_REQ;
         ST_OP_REQ: begin
             if (pending_write) begin
+                read_delay <= pending_line ? 1 : 0;
                 sdram_state <= ST_OP_WAIT;
             end else begin
                 read_delay <= 2;
@@ -405,20 +399,24 @@ always @(posedge clk) begin
         end
         ST_OP_WAIT: begin
             if (pending_write) begin
-                if (pending_line) begin
-                    for (beat_index = 0; beat_index < 4; beat_index = beat_index + 1) begin
-                        memory[pending_address + 4 * beat_index] <= line_write_buffer[beat_index][15:0];
-                        memory[pending_address + 4 * beat_index + 1] <= line_write_buffer[beat_index][31:16];
-                        memory[pending_address + 4 * beat_index + 2] <= line_write_buffer[beat_index][47:32];
-                        memory[pending_address + 4 * beat_index + 3] <= line_write_buffer[beat_index][63:48];
-                    end
+                if (read_delay != 0) begin
+                    read_delay <= read_delay - 1;
                 end else begin
-                    memory[pending_address] <= pending_write_data[15:0];
+                    if (pending_line) begin
+                        for (beat_index = 0; beat_index < 4; beat_index = beat_index + 1)
+                            memory[pending_address + 4*beat + beat_index] <= arb_memory_write_data[16*beat_index +: 16];
+                    end else begin
+                        memory[pending_address] <= pending_write_data[15:0];
+                    end
+                    if (pending_line && beat < 3) begin
+                        beat <= beat + 1;
+                    end else begin
+                        sdram_response_valid <= 1;
+                        sdram_read_data <= 0;
+                        sdram_response_last <= 1;
+                        sdram_state <= ST_CPU_RESPONSE;
+                    end
                 end
-                sdram_response_valid <= 1;
-                sdram_read_data <= 0;
-                sdram_response_last <= 1;
-                sdram_state <= ST_CPU_RESPONSE;
             end else if (read_delay != 0) begin
                 read_delay <= read_delay - 1;
             end else begin

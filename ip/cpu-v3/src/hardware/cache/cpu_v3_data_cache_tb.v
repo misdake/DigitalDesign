@@ -11,6 +11,7 @@ reg [31:0] cpu_address=0; reg [15:0] cpu_write_data=0;
 reg memory_request_ready=1, memory_response_valid=0, memory_error=0;
 reg [63:0] memory_read_data=0;
 wire cpu_request_ready, cpu_response_valid, cpu_error;
+wire memory_write_data_ready;
 wire [15:0] cpu_read_data;
 wire memory_request_valid, memory_write, memory_line, memory_response_ready;
 wire [21:0] memory_address; wire [63:0] memory_write_data;
@@ -21,17 +22,38 @@ always #5 clk=~clk;
 reg [15:0] memory [0:262143];
 integer i, j, cycles=0, line_reads=0, line_writes=0;
 integer copy_start_cycle=0;
+always @(negedge clk) memory_request_ready = cycles % 7 >= 3;
+reg request_stalled=0;
+reg [21:0] held_request_address;
+reg [63:0] held_request_data;
+integer request_stall_cycles=0;
 reg [3:0] read_remaining=0, write_remaining=0;
 reg [21:0] transfer_base=0;
 reg write_response_pending=0;
+reg inject_write_error=0, write_error_pending=0;
+integer error_after_beats=0, failed_accepted_beats=0;
 wire [3:0] read_index = 4-read_remaining;
 wire [3:0] write_index = 4-write_remaining;
+// Burst-ready windows exercise all beat stalls and consecutive transfers.
+assign memory_write_data_ready = write_remaining != 0 &&
+    (line_writes % 2 == 1 ? cycles % 5 == 4 : cycles % 11 >= 4);
+reg [63:0] stalled_data;
+reg was_stalled=0;
+integer stalled_beats=0, accepted_beats=0, failed_writes=0;
 
 always @(posedge clk) begin
   cycles <= cycles+1;
   if(cycles>20000) $fatal(1,"data-cache test cycle limit state=%0d addr=%h valid=%b hit=%b resp=%b rr=%0d wr=%0d",
       dut.state,dut.pending_address,dut.pending_address_valid,dut.pending_hit,
       dut.response_valid,read_remaining,write_remaining);
+  if (request_stalled && (!memory_request_valid || !memory_write ||
+      memory_address !== held_request_address || memory_write_data !== held_request_data))
+    $fatal(1,"write request/data changed before address acceptance");
+  request_stalled <= memory_request_valid && memory_write && !memory_request_ready;
+  held_request_address <= memory_address;
+  held_request_data <= memory_write_data;
+  if (memory_request_valid && memory_write && !memory_request_ready)
+    request_stall_cycles <= request_stall_cycles + 1;
   memory_response_valid <= 0; memory_error <= 0;
   if(read_remaining!=0) begin
     memory_response_valid <= 1;
@@ -40,28 +62,46 @@ always @(posedge clk) begin
                          memory[transfer_base+4*read_index+1],
                          memory[transfer_base+4*read_index]};
     read_remaining <= read_remaining-1;
+  end else if(write_error_pending) begin
+    memory_response_valid <= 1;
+    memory_error <= 1;
+    if (memory_response_ready) write_error_pending <= 0;
   end else if(write_response_pending) begin
     memory_response_valid <= 1;
     write_response_pending <= 0;
   end
-  if(write_remaining!=0) begin
+  if (was_stalled && memory_write_data !== stalled_data)
+    $fatal(1,"write-back data changed during a stall");
+  was_stalled <= write_remaining != 0 && !memory_write_data_ready;
+  stalled_data <= memory_write_data;
+  if (write_remaining != 0 && !memory_write_data_ready)
+    stalled_beats <= stalled_beats | (1 << write_index);
+  if(write_remaining!=0 && memory_write_data_ready) begin
+    accepted_beats <= accepted_beats + 1;
     memory[transfer_base+4*write_index] <= memory_write_data[15:0];
     memory[transfer_base+4*write_index+1] <= memory_write_data[31:16];
     memory[transfer_base+4*write_index+2] <= memory_write_data[47:32];
     memory[transfer_base+4*write_index+3] <= memory_write_data[63:48];
-    if(write_remaining==1) write_response_pending <= 1;
-    write_remaining <= write_remaining-1;
+    if (inject_write_error && write_index + 1 == error_after_beats) begin
+      write_error_pending <= 1;
+      failed_accepted_beats <= failed_accepted_beats + error_after_beats;
+      write_remaining <= 0;
+    end else begin
+      if(write_remaining==1) write_response_pending <= 1;
+      write_remaining <= write_remaining-1;
+    end
   end
   if(memory_request_valid && memory_request_ready) begin
     if(!memory_line) $fatal(1,"D-cache emitted a word transaction");
     transfer_base <= memory_address;
     if(memory_write) begin
       line_writes <= line_writes+1;
-      memory[memory_address] <= memory_write_data[15:0];
-      memory[memory_address+1] <= memory_write_data[31:16];
-      memory[memory_address+2] <= memory_write_data[47:32];
-      memory[memory_address+3] <= memory_write_data[63:48];
-      write_remaining <= 3;
+      if (inject_write_error) begin
+        if (error_after_beats == 0) write_error_pending <= 1;
+        else write_remaining <= 4;
+        failed_writes <= failed_writes + 1;
+      end
+      else write_remaining <= 4;
     end else begin
       line_reads <= line_reads+1;
       read_remaining <= 4;
@@ -254,6 +294,51 @@ initial begin
   #1;
   if(!maintenance_error) $fatal(1,"unaligned line copy was accepted");
 
+  // Errors may arrive before the first data-ready edge. The cache must
+  // leave STREAM, consume the held error and finish maintenance/CPU faults.
+  access(1,32'h00000150,16'h9090,0);
+  @(negedge clk); inject_write_error=1;
+  line_clean_address=22'h000150; line_clean_start=1;
+  @(posedge clk); @(negedge clk); line_clean_start=0;
+  while(!maintenance_done) @(posedge clk);
+  #1; if(!maintenance_error) $fatal(1,"early clean write error lost");
+  @(negedge clk); inject_write_error=0;
+  access(1,32'h00000150,16'h9191,0);
+  @(negedge clk); inject_write_error=1;
+  line_copy_source=22'h000150; line_copy_destination_page=8'h05; line_copy_start=1;
+  @(posedge clk); @(negedge clk); line_copy_start=0;
+  while(!maintenance_done) @(posedge clk);
+  #1; if(!maintenance_error) $fatal(1,"early copy write error lost");
+  @(negedge clk); inject_write_error=0;
+  access(1,32'h00000150,16'h9292,0);
+  access(1,32'h00000550,16'h9393,0);
+  while(!cpu_request_ready) @(posedge clk);
+  @(negedge clk); inject_write_error=1;
+  cpu_address=32'h00000950; cpu_write=0; cpu_request_valid=1;
+  @(posedge clk); @(negedge clk); cpu_request_valid=0;
+  while(!cpu_response_valid) @(posedge clk);
+  #1; if(!cpu_error) $fatal(1,"early eviction write error lost");
+  cpu_response_ready=1; @(posedge clk); #1; cpu_response_ready=0;
+  @(negedge clk); inject_write_error=0;
+  access(0,32'h00000950,0,16'h8950);
+  if(failed_writes!=3) $fatal(1,"early-error paths were not exercised");
+  for(j=1;j<=2;j=j+1) begin
+    access(1,32'h00000150,16'h9494+j,0);
+    @(negedge clk); inject_write_error=1; error_after_beats=2*j;
+    line_clean_address=22'h000150; line_clean_start=1;
+    @(posedge clk); @(negedge clk); line_clean_start=0;
+    while(!maintenance_done) @(posedge clk);
+    #1; if(!maintenance_error) $fatal(1,"partial/final write error lost");
+    @(negedge clk); inject_write_error=0;
+  end
+  if(failed_writes!=5 || failed_accepted_beats!=6)
+    $fatal(1,"partial/final error coverage missing");
+
+  if (request_stall_cycles == 0) $fatal(1,"request-stall path was not exercised");
+  if (stalled_beats != 15 || accepted_beats != (line_writes - failed_writes) * 4 + failed_accepted_beats)
+    $fatal(1,"missing stall/beat coverage mask=%h accepted=%0d writes=%0d",
+      stalled_beats,accepted_beats,line_writes);
+  $display("WRITEBACK_STALL_MASK=%h ACCEPTED_BEATS=%0d",stalled_beats,accepted_beats);
   $display("DIGITAL_DESIGN_PASS"); $finish;
 end
 endmodule

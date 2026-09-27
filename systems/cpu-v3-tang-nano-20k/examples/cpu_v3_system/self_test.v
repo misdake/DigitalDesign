@@ -409,6 +409,7 @@ wire [21:0] dcache_memory_address;
 wire [63:0] dcache_memory_write_data;
 wire dcache_memory_line;
 wire dcache_memory_request_ready;
+wire dcache_memory_write_data_ready;
 wire dcache_memory_response_valid;
 wire [63:0] dcache_memory_read_data;
 wire dcache_memory_error;
@@ -431,6 +432,7 @@ __DATA_CACHE__ u_data_cache (
     .cpu_write_data(core_data_write_data),
     .cpu_response_ready(core_data_response_ready),
     .memory_request_ready(dcache_memory_request_ready),
+    .memory_write_data_ready(dcache_memory_write_data_ready),
     .memory_response_valid(dcache_memory_response_valid),
     .memory_read_data(dcache_memory_read_data),
     .memory_error(dcache_memory_error),
@@ -686,6 +688,7 @@ __ARBITER__ u_memory_arbiter (
     .instruction_read_data(icache_memory_read_data),
     .instruction_error(icache_memory_error),
     .data_request_ready(dcache_memory_request_ready),
+    .data_write_data_ready(dcache_memory_write_data_ready),
     .data_response_valid(dcache_memory_response_valid),
     .data_read_data(dcache_memory_read_data),
     .data_error(dcache_memory_error),

@@ -21,18 +21,18 @@ always @(posedge clk) begin
     dut.state,dut.refresh_count);
 end
 integer i;
+reg stall_controller=0;
 
-// ---- unstallable line-write beat driver ----
+// ---- ready-qualified line-write beat driver ----
 reg [4:0] drive_beat=0, drive_total=0;
 reg driving=0;
 always @(posedge clk) begin
   if (cpu_request_valid && cpu_request_ready && cpu_line && cpu_write) begin
     driving <= 1;
-    // A fixed line is captured immediately by the adapter.  A long write has
-    // no local buffer, so beat zero remains presented until ready.
-    drive_beat <= cpu_line_count_minus_1 == 0 ? 5'd1 : 5'd0;
+    // No line length consumes beat zero on address acceptance.
+    drive_beat <= 0;
     drive_total <= {cpu_line_count_minus_1, 2'b00} + 5'd4;
-  end else if (driving && (drive_total == 5'd4 || cpu_write_data_ready)) begin
+  end else if (driving && cpu_write_data_ready) begin
     if (drive_beat == drive_total - 5'd1) driving <= 0;
     else drive_beat <= drive_beat + 5'd1;
   end
@@ -53,6 +53,23 @@ always @(*) cpu_write_data = word_write_active ? word_write_value :
 reg clear_capture=0;
 reg check_capture=0;
 reg [4:0] captured_count=0;
+reg [63:0] held_write_data;
+reg held_write=0;
+reg [15:0] stalled_positions=0;
+always @(negedge clk) begin
+  if (stall_controller) controller_write_data_ready = cycles % 5 == 4 &&
+      (!check_capture || stalled_positions[captured_count]);
+end
+always @(posedge clk) begin
+  if (held_write && controller_write_data !== held_write_data)
+    $fatal(1,"source changed a stalled controller beat");
+  held_write <= controller_write_data_valid && !controller_write_data_ready;
+  held_write_data <= controller_write_data;
+  if (controller_write_data_valid && !controller_write_data_ready && check_capture)
+    stalled_positions[captured_count] <= 1;
+end
+
+
 always @(posedge clk) begin
   if (clear_capture) captured_count <= 0;
   else if (controller_write_data_valid && controller_write_data_ready) begin
@@ -142,7 +159,8 @@ initial begin
   word_write_active=0;
   repeat(6) @(posedge clk);
 
-  // Every supported request length, read then write.
+  stall_controller=1;
+  // Every supported request length, read then write with per-beat stalls.
   for(i=0;i<4;i=i+1) begin
     line_read(22'h000200 + i*22'h000020, i[1:0]);
     line_write(22'h000300 + i*22'h000020, i[1:0]);
@@ -159,9 +177,8 @@ initial begin
   controller_command_ack=1; @(posedge clk); #1; controller_command_ack=0;
   repeat(2) @(posedge clk);
 
-  // A long write accepted on the same refresh boundary must expose beat zero
-  // to the gearbox on its request edge. Missing that beat shifts the circular
-  // buffer and corrupts this transaction plus the following one.
+  // A long write at the refresh boundary must hold beat zero until the
+  // gearbox preload accepts it, then defer refresh until completion.
   @(negedge clk);
   // `start_write` spends one extra cycle clearing its capture scoreboard, so
   // start at 598: the request edge itself then observes refresh_due.
@@ -173,6 +190,7 @@ initial begin
   repeat(2) @(posedge clk);
 
   if(cpu_error) $fatal(1,"unexpected error");
+  if(stalled_positions != 16'hffff) $fatal(1,"missing controller-stall coverage %h",stalled_positions);
   $display("DIGITAL_DESIGN_PASS"); $finish;
 end
 endmodule

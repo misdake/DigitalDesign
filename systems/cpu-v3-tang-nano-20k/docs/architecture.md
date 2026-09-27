@@ -53,9 +53,13 @@ software-controlled invalidation preserve precise handoff semantics.
 
 The I-cache and D-cache are independently instantiated 4-KiB, two-way caches with 64 sets and 16
 16-bit words per line. Each cache uses two 1024x16 true-dual-port data BSRAMs split strictly by word
-parity. Way zero and way one occupy the lower and upper halves of both parity banks. Resident reads
-pipeline lookup and selected-way response for one ordered hit per cycle when there is no conflict or
-backpressure. Both caches store their valid and victim bits in a RAM16 leaf with asynchronous reads:
+parity. Way zero and way one occupy the lower and upper halves of both parity banks. Each cache
+also uses one 1024x16 DPB for its two 64x12 tag arrays; both tag reads launch alongside the data
+reads in the existing lookup stage. Normal-mode tag writes hold the selected port's output.
+D-cache write-back assembles its address in the existing capture stage after the tag read.
+The I-cache accepts one resident read per cycle without backpressure. The D-cache serializes
+request acceptance, lookup and response consumption, accepting a resident request every three
+cycles with a continuously ready sink. Both caches store their valid and victim bits in a RAM16 leaf with asynchronous reads:
 two valid ways and the victim bit per cache, twelve 16-deep cells in total. The synthesis branch
 instantiates twelve `RAM16SDP1` cells explicitly because otherwise whole-system context changes can
 expand the D-cache leaf into 128 FF plus read muxes even when its source is unchanged. The victim is
@@ -78,6 +82,13 @@ private complete-line buffer. The related-clock gearbox converts a line to eight
 Controller HS beats at 108 MHz. The boundary is fixed 2:1 related-clock logic, not an asynchronous
 FIFO.
 
+D-cache write-back retains the locked line in its data DPBs. Request acceptance consumes only
+the address; all four data beats, including beat zero, require `memory_write_data_ready`.
+The DPB read address advances on that consume edge and holds during stalls, allowing consecutive
+64-bit transfers without a first-beat FF copy. The arbiter forwards ready only to its accepted
+owner. A held error response can terminate a partially streamed write; dirty/maintenance completion
+still waits for the response. The adapter has no duplicate 256-bit fixed-line write buffer.
+
 The fitted SDRAM is 8 MiB: 23 byte-address bits or 22 CPU word-address bits. The system rejects
 larger architectural physical addresses instead of truncating or aliasing them.
 
@@ -89,11 +100,11 @@ last response or error. GPU framebuffer reads and writes are both active cache t
 D-cache, and display paths transfer fixed 4x64-bit lines; boot DMA retains its narrow-word mode.
 The three GPU ports encode one through four consecutive lines as `line_count_minus_one`, giving
 32/64/96/128-byte requests that must remain within one 1-KiB SDRAM row. Reads return 4/8/12/16
-unstallable 64-bit beats. Long writes advance the source only when the per-beat write-ready signal
+unstallable 64-bit beats. All line writes advance the source only when the per-beat write-ready signal
 is asserted. `SharedSdramPort` preloads one 64-bit holding pair, phase-aligns WRITE so Controller HS
 samples its low half on the 54-MHz falling edge, and replaces it as the high half is sampled on the
-following rising edge. The remaining 64-bit beats stay in the framebuffer-cache entry; neither the
-adapter nor gearbox contains a 128-byte transaction buffer. Controller HS consumes 8/16/24/32
+following rising edge. The remaining 64-bit beats stay in their source cache entry; neither the
+adapter nor gearbox contains a complete-line transaction buffer. Controller HS consumes 8/16/24/32
 32-bit beats. Command and tile-list
 fetches remain one line, while framebuffer cache refill and clean use four-line transactions.
 An idle adapter accepts a long write even when refresh becomes due on the same cycle; the accepted
@@ -268,24 +279,31 @@ work-1 baseline was reproduced before attachment; exported sources differ only i
 | Production fit | Logic | LUT | ALU | RAM16 | Logic FF | BSRAM | CPU fitted fmax | Worst setup slack |
 | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
 | Display work-1, four color cache DPBs | 13,986 | 11,182 | 2,144 | 110 | 5,618 | 14 | 57.469 MHz | 1.118 ns |
-| **Display + eight-DPB C/Z quad owner** | **14,152** | **11,317** | **2,175** | **110** | **5,620** | **18** | **54.260 MHz** | **0.089 ns** |
+| Display + eight-DPB C/Z quad owner | 14,152 | 11,317 | 2,175 | 110 | 5,620 | 18 | 54.260 MHz | 0.089 ns |
+| Same GPU + fetch/arbiter/cache-tag optimization | 13,478 | 10,963 | 2,143 | 62 | 5,493 | 20 | 56.218 MHz | 0.730 ns |
+| **Same system + source-held D-cache writeback** | **13,380** | **10,866** | **2,142** | **62** | **5,174** | **20** | **58.403 MHz** | **1.396 ns** |
 
 The integration adds 166 Logic, 135 LUT, two FF and four BSRAM. It adds quad old-value
 reads and local Z initialization; it is not a net Logic reduction against the simpler
 color-only pixel writer. The matched standalone lane-order saving is a different boundary.
-The current fit uses 8,806 CLS, five SDPB, twelve DPB, one pROM, two `MULT18X18`, one
+The subsequent non-GPU optimization removes 674 Logic by narrowing stream-owned fetch offsets,
+broadcasting owner-qualified response payload and moving both cache tags to two additional DPBs.
+The source-held writeback removes another 98 Logic and 319 FF by deleting the adapter's fixed-line
+buffer and cache first-beat copy, and sharing arbiter payload qualification.
+The current fit uses 8,645 CLS, five SDPB, fourteen DPB, one pROM, two `MULT18X18`, one
 `MULT36X36` and five `MULTADDALU18X18`. GPU storage is eight cache DPBs plus one raster
 FIFO SDPB; command/list and tags share 18 RAM16 cells. Real shader/depth/blend and depth
 surface traffic are outside this fit; the reserved Z DPBs are included.
 
 Runtime clocks remain 54/108 MHz, with zero setup/hold TNS and violated endpoints.
-CPU timing closes with little margin. The first setup path is GPU phase control
-(`u_gpu/phase_0_s3/Q` to `u_gpu/cache_valid_2_s1/CE`); controller timing closes at
-160.256 MHz against 108 MHz. Place/route algorithms remain 1.
-Full hardware validation, 727 workspace tests, strict Clippy, CPU/system co-simulations
+The first setup path is core instruction decode to the I-cache data-DPB address;
+controller timing closes at 192.576 MHz against 108 MHz. Place/route algorithms remain 1.
+Full hardware validation, 728 workspace tests, strict Clippy, CPU/system co-simulations
 (26/2) and ten GPU integration tests passed. Source/constraints, baseline and routed reports
 are preserved in local record `gpu-display-framebuffer-2026-09-27`, indexed by the agent guide.
-The integration has no new physical-board proof.
+The non-GPU source/fit alternatives are preserved in local record `cpu-v3-non-gpu-logic-2026-09-27`.
+The streaming-writeback sources, ablation fits and directed fault evidence are preserved in
+`cpu-v3-dcache-stream-writeback-2026-09-28`. None of these changes has new physical-board proof.
 
 ## Verification and physical evidence
 

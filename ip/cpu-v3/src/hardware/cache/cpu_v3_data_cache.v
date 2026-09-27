@@ -15,6 +15,7 @@ module CpuV3DataCache (
     input wire [15:0] cpu_write_data,
     input wire cpu_response_ready,
     input wire memory_request_ready,
+    input wire memory_write_data_ready,
     input wire memory_response_valid,
     input wire [63:0] memory_read_data,
     input wire memory_error,
@@ -70,7 +71,6 @@ reg sweep_active = 0;
 reg [5:0] sweep_set = 0;
 reg sweep_finishes_maintenance = 0;
 reg [15:0] refill_response_data = 0;
-reg [63:0] wb_first_data = 0;
 // A line copy is a normal source lookup/refill followed by the existing
 // write-back path with only the physical segment redirected. The destination
 // is not allocated on a cold destination. A resident destination is directly
@@ -97,8 +97,13 @@ wire [5:0] pending_set = pending_address[9:4];
 wire [11:0] pending_tag = pending_address[21:10];
 wire [3:0] pending_word = pending_address[3:0];
 wire pending_address_valid = pending_address[31:22] == 0;
-wire [5:0] tag_read_set = (state == ST_WB_PRIME || state == ST_WB_CAPTURE) ?
-    wb_set : pending_set;
+// Synchronous tags launch alongside data on CPU acceptance. Maintenance
+// sources share that stage; write-back assembles its address in CAPTURE after
+// PRIME has read the selected tag, without adding a transaction cycle.
+wire [5:0] tag_read_set = (state == ST_WB_PRIME || state == ST_WB_CAPTURE) ? wb_set :
+    (state == ST_IDLE && line_copy_start && line_copy_ready) ? line_copy_source[9:4] :
+    (state == ST_IDLE && line_clean_start && line_copy_ready) ? line_clean_address[9:4] :
+    (state == ST_IDLE && cpu_request_valid && cpu_request_ready) ? cpu_address[9:4] : pending_set;
 wire [11:0] way_0_tag;
 wire [11:0] way_1_tag;
 wire way_0_valid_read;
@@ -122,8 +127,10 @@ __CACHE_TAGS__ u_tags (
 
 wire writeback_read_mode = state == ST_WB_PRIME || state == ST_WB_CAPTURE ||
     state == ST_WB_REQUEST || state == ST_WB_STREAM;
-wire [1:0] writeback_read_beat = state == ST_WB_PRIME || state == ST_WB_CAPTURE ? 2'd0 :
-    state == ST_WB_REQUEST ? 2'd1 : wb_beat[1:0] + 2'd1;
+// Hold the current DPB beat during stalls; read the next beat on consumption.
+// Consecutive ready edges transfer consecutive beats without FF staging.
+wire [1:0] writeback_read_beat = state == ST_WB_STREAM ?
+    wb_beat[1:0] + {1'b0, memory_write_data_ready} : 2'd0;
 wire [5:0] data_read_set = writeback_read_mode ? wb_set :
     (state == ST_IDLE && cpu_request_valid ? cpu_address[9:4] : pending_set);
 wire [3:0] data_read_word = state == ST_IDLE && cpu_request_valid ?
@@ -281,7 +288,7 @@ assign memory_write = state == ST_WB_REQUEST || state == ST_WB_STREAM ||
     state == ST_WB_RESPONSE || state == ST_COPY_RESPONSE;
 assign memory_line = state != ST_IDLE && state != ST_LOOKUP;
 assign memory_address = memory_write ? wb_address : {pending_address[21:4],4'b0};
-assign memory_write_data = state == ST_WB_REQUEST ? wb_first_data : wb_read_data;
+assign memory_write_data = wb_read_data;
 assign memory_response_ready = state == ST_LINE_RECEIVE ||
     state == ST_WB_RESPONSE || state == ST_COPY_RESPONSE;
 assign maintenance_busy = maintenance_active;
@@ -485,22 +492,27 @@ always @(posedge clk) begin
                 state <= ST_LOOKUP;
             end
             ST_WB_PRIME: begin
-                wb_address <= line_copy_active && wb_for_line_copy ?
-                    {line_copy_destination_page_latched,
-                     pending_address[13:4], 4'b0} :
-                    {(wb_way ? way_1_tag : way_0_tag), wb_set, 4'b0};
                 wb_beat <= 0;
                 state <= ST_WB_CAPTURE;
             end
             ST_WB_CAPTURE: begin
-                wb_first_data <= wb_read_data;
+                wb_address <= line_copy_active && wb_for_line_copy ?
+                    {line_copy_destination_page_latched,
+                     pending_address[13:4], 4'b0} :
+                    {(wb_way ? way_1_tag : way_0_tag), wb_set, 4'b0};
                 state <= ST_WB_REQUEST;
             end
             ST_WB_REQUEST: if (memory_request_ready) begin
-                wb_beat <= 1;
+                // Address acceptance does not consume beat zero.
+                wb_beat <= 0;
                 state <= ST_WB_STREAM;
             end
-            ST_WB_STREAM: begin
+            ST_WB_STREAM: if (memory_response_valid && memory_error) begin
+                // An error may terminate the burst before all source beats.
+                // Keep response-ready low until the existing error handler.
+                state <= line_copy_active && wb_for_line_copy ?
+                    ST_COPY_RESPONSE : ST_WB_RESPONSE;
+            end else if (memory_write_data_ready) begin
                 if (wb_beat == 3)
                     state <= line_copy_active && wb_for_line_copy ?
                         ST_COPY_RESPONSE : ST_WB_RESPONSE;

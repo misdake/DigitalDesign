@@ -28,6 +28,12 @@ CSEG. A queued word or matching memory-response bypass can be accepted directly
 in FetchRequest or in the Stage 12 pipelineable Execute subset; backpressured
 responses are queued.
 
+Live queue and request-metadata slots store only the 16-bit word offset. Their
+segment belongs to the current stream, whose full address still participates in
+restart detection. Every restart clears queue occupancy and all old request
+ownership before a late response can enter the new stream. BTC tags remain full
+physical targets because those entries survive ordinary redirects.
+
 The queue also contains a fully associative resolved-target BTC, defaulting to
 four entries of two 16-bit instruction words (not necessarily two instructions).
 It compares the full physical target using a 22-bit tag plus a zero check on the
@@ -147,6 +153,13 @@ waits at its ordinary request handshake. `DWAIT` gives software an explicit
 completion/error boundary. The present parity-bank geometry uses all four data
 RAM ports during each 64-bit refill/write-back beat, so foreground hits are not
 claimed concurrent with an active transfer.
+
+D-cache line-write address acceptance consumes no payload. Each of the four
+64-bit beats requires `memory_write_data_ready`, routed by the arbiter to the
+accepted owner. During write-back the line remains locked in its data DPBs;
+the next synchronous read launches on consumption and stalled outputs stay
+stable. There is no first-beat FF copy or downstream complete-line staging.
+An error response may terminate the stream before all four beats are consumed.
 
 ## Integer instruction latency
 

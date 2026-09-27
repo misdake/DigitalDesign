@@ -27,10 +27,13 @@ reg stream_valid = 0;
 reg [31:0] expected_core_address = 0;
 reg [31:0] next_memory_address = 0;
 
-// These small FIFOs and the BTC intentionally use FFs, not scarce RAM16 cells.
+// Only offsets belong to individual queue slots. Current ownership guarantees
+// that live slots belong to the stream's segment; redirects invalidate every
+// old slot before any response can be bypassed or enqueued into the new stream.
+// BTC tags remain full physical addresses because entries survive redirects.
 (* syn_ramstyle = "registers" *) reg [15:0] queue_data [0:3];
 (* syn_ramstyle = "registers" *) reg queue_error [0:3];
-(* syn_ramstyle = "registers" *) reg [31:0] queue_address [0:3];
+(* syn_ramstyle = "registers" *) reg [15:0] queue_address [0:3];
 reg [1:0] queue_head = 0;
 reg [1:0] queue_tail = 0;
 reg [2:0] queue_count = 0;
@@ -38,7 +41,7 @@ reg [2:0] queue_count = 0;
 // Clear live ownership on every restart. Unlike a toggled epoch, these bits
 // cannot alias an old request after a sequence of fast BTC redirects.
 reg [3:0] metadata_current = 0;
-(* syn_ramstyle = "registers" *) reg [31:0] metadata_address [0:3];
+(* syn_ramstyle = "registers" *) reg [15:0] metadata_address [0:3];
 reg [1:0] metadata_head = 0;
 reg [1:0] metadata_tail = 0;
 reg [2:0] metadata_count = 0;
@@ -61,7 +64,7 @@ function [31:0] next_word;
 endfunction
 
 wire core_address_matches = stream_valid && core_address == expected_core_address;
-wire queue_head_matches = queue_count != 0 && queue_address[queue_head] == core_address;
+wire queue_head_matches = queue_count != 0 && queue_address[queue_head] == core_address[15:0];
 wire restart = core_request_valid && (!core_address_matches ||
                (replay_remaining == 0 && queue_count != 0 && !queue_head_matches));
 reg btc_hit;
@@ -97,7 +100,7 @@ wire btc_response = !reset && !flush && core_request_valid &&
 wire response_is_current = metadata_count != 0 && metadata_current[metadata_head];
 wire response_bypass = !reset && !flush && !restart && !btc_response &&
     core_request_valid && core_address_matches && queue_count == 0 &&
-    memory_response_valid && response_is_current && metadata_address[metadata_head] == core_address;
+    memory_response_valid && response_is_current && metadata_address[metadata_head] == core_address[15:0];
 assign core_response_valid = !reset && !flush && core_request_valid &&
     (btc_response || (!restart && core_address_matches && (queue_head_matches || response_bypass)));
 wire core_pop = core_response_valid && core_response_ready;
@@ -216,7 +219,7 @@ always @(posedge clk) begin
         end
         if (memory_request_fire) begin
             metadata_current[metadata_tail] <= 1;
-            metadata_address[metadata_tail] <= memory_address;
+            metadata_address[metadata_tail] <= memory_address[15:0];
             metadata_tail <= metadata_tail + 1'b1;
         end
         case ({memory_request_fire, memory_response_fire})

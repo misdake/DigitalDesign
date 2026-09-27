@@ -23,7 +23,7 @@
 //!
 //! `REQ` is recorded on the `request_valid && request_ready` accepting edge,
 //! `RDAT` on every read response beat, `WDAT` on every accepted write beat
-//! (`write_data_ready` for every beat of a long write), `RESP` on
+//! (`write_data_ready` for every line-write beat), `RESP` on
 //! `response_valid && response_last`, `DONE submission` on an
 //! `executed_count` change, and `DONE draw` when a nonempty draw hands control
 //! back from tile stepping to decode. The RTL side prints the identical lines
@@ -233,7 +233,7 @@ impl GpuTraceCollector {
         }
 
         // `gpu_fb_w`: long tile cleans consume every beat on data-ready.
-        // Only legacy fixed-line writes capture beat zero on acceptance.
+        // Address acceptance consumes no data, regardless of line count.
         if out.fb_w_request_valid && mem.fb_w_request_ready {
             self.events.push(GpuTraceEvent::Req {
                 port: TracePort::FbW,
@@ -241,20 +241,9 @@ impl GpuTraceCollector {
                 address: out.fb_w_address,
                 lines: out.fb_w_line_count_minus_1 + 1,
             });
-            if out.fb_w_line_count_minus_1 == 0 {
-                self.events.push(GpuTraceEvent::Wdat {
-                    port: TracePort::FbW,
-                    beat: 0,
-                    value: out.fb_w_write_data,
-                });
-            }
             self.fb_w_active = true;
             self.fb_w_beats = (u32::from(out.fb_w_line_count_minus_1) + 1) as u8 * 4;
-            self.fb_w_beat = if out.fb_w_line_count_minus_1 == 0 {
-                1
-            } else {
-                0
-            };
+            self.fb_w_beat = 0;
         }
         if self.fb_w_active && self.fb_w_beat < self.fb_w_beats && mem.fb_w_write_data_ready {
             self.events.push(GpuTraceEvent::Wdat {
@@ -1321,54 +1310,64 @@ mod tests {
 
     #[test]
     fn collector_records_a_full_fb_w_write_transaction() {
-        let mut collector = GpuTraceCollector::default();
-        let core = GpuCore::default();
-        let out = GpuOutputs {
-            fb_w_request_valid: true,
-            fb_w_write: true,
-            fb_w_address: 0x200000,
-            fb_w_line_count_minus_1: 3,
-            fb_w_write_data: 0x11,
-            ..GpuOutputs::default()
-        };
-        let mem = GpuMemoryBus {
-            fb_w_request_ready: true,
-            ..GpuMemoryBus::default()
-        };
-        collector.on_cycle(&mem, &out, &core);
-        assert_eq!(
-            collector.events().len(),
-            1,
-            "acceptance must not consume beat zero"
-        );
-        for beat in 0..16u8 {
+        for lines in 1..=4u8 {
+            let mut collector = GpuTraceCollector::default();
+            let core = GpuCore::default();
             let out = GpuOutputs {
-                fb_w_write_data: if beat == 0 {
-                    0x11
-                } else {
-                    u64::from(beat) * 0x10
-                },
+                fb_w_request_valid: true,
+                fb_w_write: true,
+                fb_w_address: 0x200000,
+                fb_w_line_count_minus_1: lines - 1,
+                fb_w_write_data: 0x11,
                 ..GpuOutputs::default()
             };
             let mem = GpuMemoryBus {
-                fb_w_write_data_ready: true,
+                fb_w_request_ready: true,
                 ..GpuMemoryBus::default()
             };
             collector.on_cycle(&mem, &out, &core);
+            assert_eq!(
+                collector.events().len(),
+                1,
+                "acceptance must not consume beat zero"
+            );
+            for beat in 0..lines * 4 {
+                let out = GpuOutputs {
+                    fb_w_write_data: if beat == 0 {
+                        0x11
+                    } else {
+                        u64::from(beat) * 0x10
+                    },
+                    ..GpuOutputs::default()
+                };
+                let mem = GpuMemoryBus {
+                    fb_w_write_data_ready: true,
+                    ..GpuMemoryBus::default()
+                };
+                collector.on_cycle(&mem, &out, &core);
+            }
+            let mem = GpuMemoryBus {
+                fb_w_response_valid: true,
+                fb_w_response_last: true,
+                ..GpuMemoryBus::default()
+            };
+            collector.on_cycle(&mem, &GpuOutputs::default(), &core);
+            let bodies = bodies(collector.events());
+            assert_eq!(bodies[0], format!("REQ fb_w W 200000 {lines}"));
+            assert_eq!(bodies[1], "WDAT fb_w 0 0011 0000 0000 0000");
+            let beats = usize::from(lines) * 4;
+            assert_eq!(
+                bodies[beats],
+                format!(
+                    "WDAT fb_w {} {:04x} 0000 0000 0000",
+                    beats - 1,
+                    (beats - 1) * 16
+                )
+            );
+            assert_eq!(bodies[beats + 1], "RESP fb_w 0");
+            assert_eq!(bodies.len(), beats + 2);
+            check_invariants(collector.events()).unwrap();
         }
-        let mem = GpuMemoryBus {
-            fb_w_response_valid: true,
-            fb_w_response_last: true,
-            ..GpuMemoryBus::default()
-        };
-        collector.on_cycle(&mem, &GpuOutputs::default(), &core);
-        let bodies = bodies(collector.events());
-        assert_eq!(bodies[0], "REQ fb_w W 200000 4");
-        assert_eq!(bodies[1], "WDAT fb_w 0 0011 0000 0000 0000");
-        assert_eq!(bodies[16], "WDAT fb_w 15 00f0 0000 0000 0000");
-        assert_eq!(bodies[17], "RESP fb_w 0");
-        assert_eq!(bodies.len(), 18);
-        check_invariants(collector.events()).unwrap();
     }
 
     #[test]

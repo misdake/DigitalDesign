@@ -242,7 +242,8 @@ enum SdramState {
     RefreshWait,
 }
 
-/// Cycle-faithful model of `SharedSdramPort` for the CPU port only. Refresh is
+/// Matched CPU-port service model used by the Rust/RTL system co-simulation.
+/// Controller command acknowledgements use fixed abstract latencies. Refresh is
 /// due every 600 clocks; a line read costs ACTIVE + READ + four 64-bit beats + three
 /// recovery clocks.
 ///
@@ -258,7 +259,6 @@ pub struct SdramModel {
     pending_line: bool,
     pending_address: usize,
     pending_write_data: u64,
-    line_write_buffer: [u64; 4],
     beat: u8,
     read_delay: u8,
     response_valid: bool,
@@ -277,7 +277,6 @@ impl SdramModel {
             pending_line: false,
             pending_address: 0,
             pending_write_data: 0,
-            line_write_buffer: [0; 4],
             beat: 0,
             read_delay: 0,
             response_valid: false,
@@ -294,6 +293,21 @@ impl SdramModel {
 
     fn request_ready(&self) -> bool {
         self.state == SdramState::Idle && self.refresh_count < 600
+    }
+
+    fn store_beat(&mut self, data: u64) {
+        let address = self.pending_address + 4 * self.beat as usize;
+        for lane in 0..4 {
+            self.memory[address + lane] = (data >> (lane * 16)) as u16;
+        }
+    }
+
+    fn write_data_ready(&self) -> bool {
+        self.state == SdramState::WriteCapture
+            || (self.state == SdramState::OpWait
+                && self.pending_write
+                && self.pending_line
+                && self.read_delay == 0)
     }
 
     fn clock(
@@ -322,13 +336,10 @@ impl SdramModel {
                     self.pending_address = address as usize;
                     self.pending_write_data = write_data;
                     if write && line {
-                        self.line_write_buffer[0] = write_data;
-                        self.beat = 1;
+                        self.beat = 0;
                         self.state = SdramState::WriteCapture;
                     } else if write {
-                        // Word write: the full four-beat ST_WRITE_STAGE keeps
-                        // the gearbox write_buffer capture pointer aligned,
-                        // mirroring the RTL port.
+                        // Word writes hold their value across one preload stage.
                         self.beat = 0;
                         self.state = SdramState::WriteStage;
                     } else {
@@ -337,26 +348,17 @@ impl SdramModel {
                 }
             }
             SdramState::WriteCapture => {
-                self.line_write_buffer[self.beat as usize] = write_data;
-                if self.beat == 3 {
-                    self.beat = 0;
-                    self.state = SdramState::WriteStage;
-                } else {
-                    self.beat += 1;
-                }
+                // One source-held preload beat, then ACTIVATE/WRITE. No line copy.
+                self.store_beat(write_data);
+                self.beat = 1;
+                self.state = SdramState::ActiveReq;
             }
-            SdramState::WriteStage => {
-                if self.beat == 3 {
-                    self.beat = 0;
-                    self.state = SdramState::ActiveReq;
-                } else {
-                    self.beat += 1;
-                }
-            }
+            SdramState::WriteStage => self.state = SdramState::ActiveReq,
             SdramState::ActiveReq => self.state = SdramState::ActiveWait,
             SdramState::ActiveWait => self.state = SdramState::OpReq,
             SdramState::OpReq => {
                 if self.pending_write {
+                    self.read_delay = u8::from(self.pending_line);
                     self.state = SdramState::OpWait;
                 } else {
                     self.read_delay = 2;
@@ -366,20 +368,22 @@ impl SdramModel {
             }
             SdramState::OpWait => {
                 if self.pending_write {
-                    if self.pending_line {
-                        for (beat, data) in self.line_write_buffer.iter().copied().enumerate() {
-                            self.memory[self.pending_address + 4 * beat] = data as u16;
-                            self.memory[self.pending_address + 4 * beat + 1] = (data >> 16) as u16;
-                            self.memory[self.pending_address + 4 * beat + 2] = (data >> 32) as u16;
-                            self.memory[self.pending_address + 4 * beat + 3] = (data >> 48) as u16;
-                        }
+                    if self.read_delay != 0 {
+                        self.read_delay -= 1;
+                    } else if self.pending_line && self.beat < 3 {
+                        self.store_beat(write_data);
+                        self.beat += 1;
                     } else {
-                        self.memory[self.pending_address] = self.pending_write_data as u16;
+                        if self.pending_line {
+                            self.store_beat(write_data);
+                        } else {
+                            self.memory[self.pending_address] = self.pending_write_data as u16;
+                        }
+                        self.response_valid = true;
+                        self.response_data = 0;
+                        self.response_last = true;
+                        self.state = SdramState::CpuResponse;
                     }
-                    self.response_valid = true;
-                    self.response_data = 0;
-                    self.response_last = true;
-                    self.state = SdramState::CpuResponse;
                 } else if self.read_delay != 0 {
                     self.read_delay -= 1;
                 } else {
@@ -1061,6 +1065,7 @@ fn run_benchmark_profiled_inner(
         arbiter_input.data_write_data = dcache_output.memory_write_data;
         arbiter_input.data_response_ready = dcache_output.memory_response_ready;
         dcache_input.memory_request_ready = arbiter_output.data_request_ready;
+        dcache_input.memory_write_data_ready = arbiter_output.data_write_data_ready;
         dcache_input.memory_response_valid = arbiter_output.data_response_valid;
         dcache_input.memory_read_data = arbiter_output.data_read_data;
         dcache_input.memory_error = arbiter_output.data_error;
@@ -1208,6 +1213,11 @@ fn run_benchmark_profiled_inner(
         set_bit(
             arbiter_input.memory_request_ready,
             sdram.request_ready(),
+            &mut circuit,
+        );
+        set_bit(
+            arbiter_input.memory_write_data_ready,
+            sdram.write_data_ready(),
             &mut circuit,
         );
         set_bit(
@@ -1641,6 +1651,7 @@ pub fn run_system_trace(words: &[u16], maximum_cycles: usize) -> SystemTrace {
         arbiter_input.data_write_data = dcache_output.memory_write_data;
         arbiter_input.data_response_ready = dcache_output.memory_response_ready;
         dcache_input.memory_request_ready = arbiter_output.data_request_ready;
+        dcache_input.memory_write_data_ready = arbiter_output.data_write_data_ready;
         dcache_input.memory_response_valid = arbiter_output.data_response_valid;
         dcache_input.memory_read_data = arbiter_output.data_read_data;
         dcache_input.memory_error = arbiter_output.data_error;
@@ -1707,6 +1718,11 @@ pub fn run_system_trace(words: &[u16], maximum_cycles: usize) -> SystemTrace {
         set_bit(
             arbiter_input.memory_request_ready,
             sdram.request_ready(),
+            &mut circuit,
+        );
+        set_bit(
+            arbiter_input.memory_write_data_ready,
+            sdram.write_data_ready(),
             &mut circuit,
         );
         set_bit(

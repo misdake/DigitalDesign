@@ -59,6 +59,8 @@ generated outside this document.
 
 - 2026-09-27 — Four-row display buffering in two BSRAMs removed response staging and added linear RGB565-to-sRGB conversion; the completed-pair RAM16 FIFO is retained after whole-system comparisons, with mutually exclusive 2x/3x build features.
 
+- 2026-09-28 — Stream-owned fetch offsets, owner-qualified response broadcast and synchronous I/D-cache tag DPBs reduce whole-system Logic while preserving cache cycles and GPU behavior; matched RAM16, staging and arbitration alternatives remain in the local resource audit.
+
 ## Next work
 
 The production framebuffer storage/quad attachment to the display work-1 baseline
@@ -75,3 +77,7 @@ in the architecture document.
 
 Future CPU or system optimizations are added here only after completion; planned GPU work is tracked
 in the GPU design documents and the project todo rather than expanded in this index.
+
+2026-09-28: source-held D-cache writeback removes duplicate FF payload storage and shares arbiter
+payload qualification; details are in the append-only record and current fit in
+[`architecture.md`](architecture.md#current-fitted-result-and-validation-boundary).

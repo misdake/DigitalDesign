@@ -1337,3 +1337,48 @@ the [current architecture result](architecture.md#current-fitted-result-and-vali
 Local record `gpu-display-framebuffer-2026-09-27` preserves the matched production
 baseline, integration sources and validation reports. Geometry/frontend and SDRAM
 branch changes are outside this integration. No new board validation is claimed.
+
+## Non-GPU Logic and data-flow audit, 2026-09-28
+
+The fetch queue stores 16-bit offsets for stream-owned queue and request slots;
+the complete stream address and redirect invalidation still protect segment changes.
+BTC entries retain physical tags. A delayed same-offset response across two segment
+redirects and a PC wrap regression pass; preserving stale request ownership deliberately
+reproduces a failure in the new regression.
+
+The arbiter broadcasts read payload and selects only response-valid/error/last by owner.
+Its arbitration policy, transaction lock and fair rotation are unchanged. I/D-cache tags
+each use one DPB, sharing the existing data lookup stage. D-cache write-back assembles
+its address during the existing capture stage. Independent cache models retain their
+original external cycle behavior, including invalidation and line-copy maintenance.
+
+Matched whole-system results belong to the [architecture resource table](architecture.md#current-fitted-result-and-validation-boundary).
+Local record `cpu-v3-non-gpu-logic-2026-09-27` contains source-frozen comparisons,
+resource hierarchy, vendor-DPB checks, rejected RAM16/arbitration/staging alternatives,
+and a rendered data-flow diagram. Reducing FF or expression count alone often increased
+whole-system Logic or failed timing. Cache valid RAM16, parity data DPBs, GPR RAM16,
+source-held GPU writes and the single-pair gearbox remain the useful earlier patterns.
+GPU RTL and physical memory timing constraints are unchanged; no new board proof is claimed.
+
+## 2026-09-28 - Source-held D-cache writeback
+
+The cache-to-adapter interface previously advanced fixed-line data without per-beat
+backpressure, forcing a duplicate four-beat adapter FF buffer. All line writes now
+consume data only on ready, including beat zero after address acceptance. D-cache
+keeps its line locked in the existing parity DPBs, launches the next synchronous read
+on consumption, and removes its first-beat FF copy. The arbiter forwards ready to
+the accepted owner and shares request/owner payload source qualification.
+
+Early errors transition from STREAM to the existing held-response error handler;
+clean, invalidate, eviction and line-copy still wait for completion. The SystemSim
+and RTL service goldens now preload and stream without a complete-line copy; their
+command latencies remain abstract. GPU hardware and 54/108 MHz clocks are unchanged.
+
+The [architecture table](architecture.md#current-fitted-result-and-validation-boundary)
+is the current fitted-number source. Local record `cpu-v3-dcache-stream-writeback-2026-09-28`
+preserves both ablation fits, hierarchy, source/constraints, a rendered data-flow diagram,
+and native/vendor-DPB stall and fault evidence. The regression checks request stalls,
+all data-beat stall positions, consecutive ready, and errors before/mid/after data;
+a deliberately advancing stalled-address mutant fails. Workspace, CPU/system co-sim,
+GPU integration, complete Flash RTL boot, hardware validation and routed artifact
+audit pass. No new physical-board proof is claimed.

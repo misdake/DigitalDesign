@@ -8,7 +8,8 @@
 //! forwards one request to the SDRAM adapter, holds ownership while the
 //! adapter streams the real burst, and releases the owner on the accepted beat
 //! carrying `memory_response_last` (or any error beat). The DMA client keeps
-//! single 16-bit word transactions.
+//! single 16-bit word transactions. Read payload is broadcast; each client
+//! qualifies it with its own response-valid/error rather than a wide zero mux.
 //!
 //! Display has strict priority at every transaction boundary. The other six
 //! requesters score `base + saturating_age[3:0]` with bases DMA 5, I/D 4,
@@ -79,6 +80,7 @@ pub struct CpuV3MemoryArbiterOutput {
     pub instruction_error: Wire,
 
     pub data_request_ready: Wire,
+    pub data_write_data_ready: Wire,
     pub data_response_valid: Wire,
     pub data_read_data: Wires<64>,
     pub data_error: Wire,
@@ -411,38 +413,32 @@ impl Module for CpuV3MemoryArbiter {
             ],
             selected,
         );
-        let dma_write_data = input.dma_write_data.expand_unsigned::<64>();
-        let selected_write_data = mux8_w(
-            &[
+        // Choose each payload source once. Address-acceptance and held-owner
+        // qualification are shared across the 64-bit lane, rather than two
+        // wide mux trees followed by another requesting/owner mux.
+        let use_data = (requesting & selected_data) | (owner_data & input.data_line);
+        let use_dma = requesting & selected_dma;
+        let use_gpu_ro = (requesting & selected_gpu_ro) | (owner_gpu_ro & input.gpu_ro_write);
+        let use_gpu_fb_r =
+            (requesting & selected_gpu_fb_r) | (owner_gpu_fb_r & input.gpu_fb_r_write);
+        let use_gpu_fb_w = (requesting & selected_gpu_fb_w) | owner_gpu_fb_w;
+        let memory_write_data = mux2_w(const_wires::<64>(0), input.data_write_data, use_data)
+            | mux2_w(
                 const_wires::<64>(0),
+                input.dma_write_data.expand_unsigned::<64>(),
+                use_dma,
+            )
+            | mux2_w(const_wires::<64>(0), input.gpu_ro_write_data, use_gpu_ro)
+            | mux2_w(
                 const_wires::<64>(0),
-                const_wires::<64>(0),
-                input.data_write_data,
-                dma_write_data,
-                input.gpu_ro_write_data,
                 input.gpu_fb_r_write_data,
+                use_gpu_fb_r,
+            )
+            | mux2_w(
+                const_wires::<64>(0),
                 input.gpu_fb_w_write_data,
-            ],
-            selected,
-        );
-        let held_write_data = mux2_w(
-            const_wires::<64>(0),
-            input.data_write_data,
-            owner_data & input.data_line,
-        ) | mux2_w(
-            const_wires::<64>(0),
-            input.gpu_ro_write_data,
-            owner_gpu_ro & input.gpu_ro_write,
-        ) | mux2_w(
-            const_wires::<64>(0),
-            input.gpu_fb_r_write_data,
-            owner_gpu_fb_r & input.gpu_fb_r_write,
-        ) | mux2_w(
-            const_wires::<64>(0),
-            input.gpu_fb_w_write_data,
-            owner_gpu_fb_w,
-        );
-        let memory_write_data = mux2_w(held_write_data, selected_write_data, requesting);
+                use_gpu_fb_w,
+            );
 
         let responding = input.memory_response_valid;
         let gpu_ro_write_data_ready = owner_gpu_ro & input.memory_write_data_ready;
@@ -462,61 +458,38 @@ impl Module for CpuV3MemoryArbiter {
         CpuV3MemoryArbiterOutput {
             instruction_request_ready: accepted & selected_instruction,
             instruction_response_valid: instruction_responding,
-            instruction_read_data: mux2_w(
-                const_wires::<64>(0),
-                input.memory_read_data,
-                instruction_responding,
-            ),
+            instruction_read_data: input.memory_read_data,
             instruction_error: instruction_responding & input.memory_error,
             data_request_ready: accepted & selected_data,
+            data_write_data_ready: owner_data & input.memory_write_data_ready,
             data_response_valid: data_responding,
-            data_read_data: mux2_w(
-                const_wires::<64>(0),
-                input.memory_read_data,
-                data_responding,
-            ),
+            data_read_data: input.memory_read_data,
             data_error: data_responding & input.memory_error,
             dma_request_ready: accepted & selected_dma,
             dma_response_valid: dma_responding,
-            dma_read_data: mux2_w(const_wires::<16>(0), dma_read_data, dma_responding),
+            dma_read_data,
             dma_error: dma_responding & input.memory_error,
             display_request_ready: accepted & selected_display,
             display_response_valid: display_responding,
-            display_read_data: mux2_w(
-                const_wires::<64>(0),
-                input.memory_read_data,
-                display_responding,
-            ),
+            display_read_data: input.memory_read_data,
             display_response_last: display_responding & input.memory_response_last,
             display_error: display_responding & input.memory_error,
             gpu_ro_request_ready: accepted & selected_gpu_ro,
             gpu_ro_write_data_ready,
             gpu_ro_response_valid: gpu_ro_responding,
-            gpu_ro_read_data: mux2_w(
-                const_wires::<64>(0),
-                input.memory_read_data,
-                gpu_ro_responding,
-            ),
+            gpu_ro_read_data: input.memory_read_data,
             gpu_ro_response_last: gpu_ro_responding & input.memory_response_last,
             gpu_ro_error: gpu_ro_responding & input.memory_error,
             gpu_fb_r_request_ready: accepted & selected_gpu_fb_r,
             gpu_fb_r_write_data_ready,
             gpu_fb_r_response_valid: gpu_fb_r_responding,
-            gpu_fb_r_read_data: mux2_w(
-                const_wires::<64>(0),
-                input.memory_read_data,
-                gpu_fb_r_responding,
-            ),
+            gpu_fb_r_read_data: input.memory_read_data,
             gpu_fb_r_response_last: gpu_fb_r_responding & input.memory_response_last,
             gpu_fb_r_error: gpu_fb_r_responding & input.memory_error,
             gpu_fb_w_request_ready: accepted & selected_gpu_fb_w,
             gpu_fb_w_write_data_ready,
             gpu_fb_w_response_valid: gpu_fb_w_responding,
-            gpu_fb_w_read_data: mux2_w(
-                const_wires::<64>(0),
-                input.memory_read_data,
-                gpu_fb_w_responding,
-            ),
+            gpu_fb_w_read_data: input.memory_read_data,
             gpu_fb_w_response_last: gpu_fb_w_responding & input.memory_response_last,
             gpu_fb_w_error: gpu_fb_w_responding & input.memory_error,
             memory_request_valid: requesting,
@@ -729,53 +702,43 @@ fn compute_output(
         _ => 0,
     };
     let memory_response_ready = owner_response_ready(owner, input);
-    let read = |is_responding| {
-        if is_responding {
-            input.memory_read_data
-        } else {
-            0
-        }
-    };
     let respond_last = |is_responding: bool| is_responding && input.memory_response_last;
 
     CpuV3MemoryArbiterOutputValue {
         instruction_request_ready: accepted && selected_is(Owner::Instruction),
         instruction_response_valid: owner_responding(Owner::Instruction),
-        instruction_read_data: read(owner_responding(Owner::Instruction)),
+        instruction_read_data: input.memory_read_data,
         instruction_error: owner_responding(Owner::Instruction) && input.memory_error,
         data_request_ready: accepted && selected_is(Owner::Data),
+        data_write_data_ready: owner == Owner::Data && input.memory_write_data_ready,
         data_response_valid: owner_responding(Owner::Data),
-        data_read_data: read(owner_responding(Owner::Data)),
+        data_read_data: input.memory_read_data,
         data_error: owner_responding(Owner::Data) && input.memory_error,
         dma_request_ready: accepted && selected_is(Owner::Dma),
         dma_response_valid: owner_responding(Owner::Dma),
-        dma_read_data: if owner_responding(Owner::Dma) {
-            input.memory_read_data & 0xffff
-        } else {
-            0
-        },
+        dma_read_data: input.memory_read_data & 0xffff,
         dma_error: owner_responding(Owner::Dma) && input.memory_error,
         display_request_ready: accepted && selected_is(Owner::Display),
         display_response_valid: owner_responding(Owner::Display),
-        display_read_data: read(owner_responding(Owner::Display)),
+        display_read_data: input.memory_read_data,
         display_response_last: respond_last(owner_responding(Owner::Display)),
         display_error: owner_responding(Owner::Display) && input.memory_error,
         gpu_ro_request_ready: accepted && selected_is(Owner::GpuRo),
         gpu_ro_write_data_ready: owner == Owner::GpuRo && input.memory_write_data_ready,
         gpu_ro_response_valid: owner_responding(Owner::GpuRo),
-        gpu_ro_read_data: read(owner_responding(Owner::GpuRo)),
+        gpu_ro_read_data: input.memory_read_data,
         gpu_ro_response_last: respond_last(owner_responding(Owner::GpuRo)),
         gpu_ro_error: owner_responding(Owner::GpuRo) && input.memory_error,
         gpu_fb_r_request_ready: accepted && selected_is(Owner::GpuFbR),
         gpu_fb_r_write_data_ready: owner == Owner::GpuFbR && input.memory_write_data_ready,
         gpu_fb_r_response_valid: owner_responding(Owner::GpuFbR),
-        gpu_fb_r_read_data: read(owner_responding(Owner::GpuFbR)),
+        gpu_fb_r_read_data: input.memory_read_data,
         gpu_fb_r_response_last: respond_last(owner_responding(Owner::GpuFbR)),
         gpu_fb_r_error: owner_responding(Owner::GpuFbR) && input.memory_error,
         gpu_fb_w_request_ready: accepted && selected_is(Owner::GpuFbW),
         gpu_fb_w_write_data_ready: owner == Owner::GpuFbW && input.memory_write_data_ready,
         gpu_fb_w_response_valid: owner_responding(Owner::GpuFbW),
-        gpu_fb_w_read_data: read(owner_responding(Owner::GpuFbW)),
+        gpu_fb_w_read_data: input.memory_read_data,
         gpu_fb_w_response_last: respond_last(owner_responding(Owner::GpuFbW)),
         gpu_fb_w_error: owner_responding(Owner::GpuFbW) && input.memory_error,
         memory_request_valid: requesting,
@@ -798,6 +761,21 @@ mod tests {
     use digital_design_hardware::{ModuleTest, TestStep, VerilogProject};
 
     type Step = TestStep<CpuV3MemoryArbiterInputValue, CpuV3MemoryArbiterOutputValue>;
+
+    // Payload is a shared wire; ownership/valid/error assertions remain exact.
+    fn step(
+        input: CpuV3MemoryArbiterInputValue,
+        mut expected: CpuV3MemoryArbiterOutputValue,
+    ) -> Step {
+        expected.instruction_read_data = input.memory_read_data;
+        expected.data_read_data = input.memory_read_data;
+        expected.dma_read_data = input.memory_read_data & 0xffff;
+        expected.display_read_data = input.memory_read_data;
+        expected.gpu_ro_read_data = input.memory_read_data;
+        expected.gpu_fb_r_read_data = input.memory_read_data;
+        expected.gpu_fb_w_read_data = input.memory_read_data;
+        TestStep::new(input, expected)
+    }
 
     fn idle() -> CpuV3MemoryArbiterInputValue {
         CpuV3MemoryArbiterInputValue {
@@ -850,6 +828,7 @@ mod tests {
             instruction_read_data: 0,
             instruction_error: false,
             data_request_ready: false,
+            data_write_data_ready: false,
             data_response_valid: false,
             data_read_data: 0,
             data_error: false,
@@ -891,7 +870,7 @@ mod tests {
     }
 
     fn reset_step() -> Step {
-        TestStep::new(
+        step(
             CpuV3MemoryArbiterInputValue {
                 reset: true,
                 ..idle()
@@ -909,7 +888,7 @@ mod tests {
 
     /// Forward one instruction beat through to the client.
     fn instruction_beat(steps: &mut Vec<Step>, n: u64, last: bool) {
-        steps.push(TestStep::new(
+        steps.push(step(
             CpuV3MemoryArbiterInputValue {
                 memory_response_valid: true,
                 memory_read_data: beat_data(n),
@@ -934,7 +913,7 @@ mod tests {
     /// Present a request, accept it, and stream a whole instruction line.
     fn instruction_line_steps(steps: &mut Vec<Step>, base: u64) {
         // The request is forwarded combinationally while the port is busy.
-        steps.push(TestStep::new(
+        steps.push(step(
             CpuV3MemoryArbiterInputValue {
                 instruction_request_valid: true,
                 instruction_address: base,
@@ -948,7 +927,7 @@ mod tests {
             },
         ));
         // The port accepts it; the arbiter captures the owner.
-        steps.push(TestStep::new(
+        steps.push(step(
             CpuV3MemoryArbiterInputValue {
                 instruction_request_valid: true,
                 instruction_address: base,
@@ -962,7 +941,7 @@ mod tests {
         }
         // The last beat is first presented without the client ready, proving
         // the response holds, then consumed, releasing the owner.
-        steps.push(TestStep::new(
+        steps.push(step(
             CpuV3MemoryArbiterInputValue {
                 memory_response_valid: true,
                 memory_read_data: beat_data(3),
@@ -983,7 +962,7 @@ mod tests {
         let mut steps = vec![reset_step()];
         instruction_line_steps(&mut steps, 0x120);
         // A follow-up request is forwarded as soon as the owner is released.
-        steps.push(TestStep::new(
+        steps.push(step(
             CpuV3MemoryArbiterInputValue {
                 instruction_request_valid: true,
                 instruction_address: 0x2a0,
@@ -1003,7 +982,7 @@ mod tests {
     fn emu_and_nand_forward_data_and_dma_word_writes() {
         let mut steps = vec![reset_step()];
         // Data single-word transaction.
-        steps.push(TestStep::new(
+        steps.push(step(
             CpuV3MemoryArbiterInputValue {
                 data_request_valid: true,
                 data_write: true,
@@ -1019,7 +998,7 @@ mod tests {
                 ..z()
             },
         ));
-        steps.push(TestStep::new(
+        steps.push(step(
             CpuV3MemoryArbiterInputValue {
                 data_request_valid: true,
                 data_write: true,
@@ -1030,7 +1009,7 @@ mod tests {
             },
             z(),
         ));
-        steps.push(TestStep::new(
+        steps.push(step(
             CpuV3MemoryArbiterInputValue {
                 memory_response_valid: true,
                 memory_response_last: true,
@@ -1041,7 +1020,7 @@ mod tests {
                 ..z()
             },
         ));
-        steps.push(TestStep::new(
+        steps.push(step(
             CpuV3MemoryArbiterInputValue {
                 memory_response_valid: true,
                 memory_response_last: true,
@@ -1052,7 +1031,7 @@ mod tests {
         ));
         // DMA word transaction; its base score outranks the idle data client
         // and the age-free rotator, so it is forwarded immediately.
-        steps.push(TestStep::new(
+        steps.push(step(
             CpuV3MemoryArbiterInputValue {
                 dma_request_valid: true,
                 dma_write: true,
@@ -1068,7 +1047,7 @@ mod tests {
                 ..z()
             },
         ));
-        steps.push(TestStep::new(
+        steps.push(step(
             CpuV3MemoryArbiterInputValue {
                 dma_request_valid: true,
                 dma_write: true,
@@ -1079,7 +1058,7 @@ mod tests {
             },
             z(),
         ));
-        steps.push(TestStep::new(
+        steps.push(step(
             CpuV3MemoryArbiterInputValue {
                 memory_response_valid: true,
                 memory_response_last: true,
@@ -1092,7 +1071,7 @@ mod tests {
                 ..z()
             },
         ));
-        steps.push(TestStep::new(
+        steps.push(step(
             CpuV3MemoryArbiterInputValue {
                 memory_response_valid: true,
                 memory_response_last: true,
@@ -1110,7 +1089,7 @@ mod tests {
         let mut steps = vec![reset_step()];
         // A framebuffer write issues and holds its stream while the owner
         // stays latched until `last`.
-        steps.push(TestStep::new(
+        steps.push(step(
             CpuV3MemoryArbiterInputValue {
                 gpu_fb_w_request_valid: true,
                 gpu_fb_w_write: true,
@@ -1128,7 +1107,7 @@ mod tests {
             },
         ));
         // The port accepts it; the owner latches and the write stream is held.
-        steps.push(TestStep::new(
+        steps.push(step(
             CpuV3MemoryArbiterInputValue {
                 gpu_fb_w_request_valid: true,
                 gpu_fb_w_write: true,
@@ -1146,7 +1125,7 @@ mod tests {
         // The write stream advances while the arbitration port stays busy.
         for beat in 0..2u64 {
             let data = 0x1111_2222_3333_0000 + beat;
-            steps.push(TestStep::new(
+            steps.push(step(
                 CpuV3MemoryArbiterInputValue {
                     gpu_fb_w_request_valid: true,
                     gpu_fb_w_write: true,
@@ -1163,7 +1142,7 @@ mod tests {
         }
         // A non-final response beat is visible to the client while the owner
         // holds; the GPU masters keep response-ready asserted.
-        steps.push(TestStep::new(
+        steps.push(step(
             CpuV3MemoryArbiterInputValue {
                 memory_response_valid: true,
                 memory_read_data: 0xdead_beef_0000_0001,
@@ -1177,7 +1156,7 @@ mod tests {
             },
         ));
         // The last beat releases the owner.
-        steps.push(TestStep::new(
+        steps.push(step(
             CpuV3MemoryArbiterInputValue {
                 memory_response_valid: true,
                 memory_response_last: true,
@@ -1192,7 +1171,7 @@ mod tests {
     fn emu_and_nand_forward_each_gpu_line_count_and_default_to_one_line() {
         // gpu_ro carries four lines.
         let mut steps = vec![reset_step()];
-        steps.push(TestStep::new(
+        steps.push(step(
             CpuV3MemoryArbiterInputValue {
                 gpu_ro_request_valid: true,
                 gpu_ro_address: 0x1000,
@@ -1209,7 +1188,7 @@ mod tests {
         ));
         steps.push(reset_step());
         // gpu_fb_r carries two lines.
-        steps.push(TestStep::new(
+        steps.push(step(
             CpuV3MemoryArbiterInputValue {
                 gpu_fb_r_request_valid: true,
                 gpu_fb_r_address: 0x1080,
@@ -1226,7 +1205,7 @@ mod tests {
         ));
         steps.push(reset_step());
         // gpu_fb_w carries four lines and a write beat.
-        steps.push(TestStep::new(
+        steps.push(step(
             CpuV3MemoryArbiterInputValue {
                 gpu_fb_w_request_valid: true,
                 gpu_fb_w_write: true,
@@ -1247,7 +1226,7 @@ mod tests {
         ));
         steps.push(reset_step());
         // A fixed one-line instruction request keeps the default length.
-        steps.push(TestStep::new(
+        steps.push(step(
             CpuV3MemoryArbiterInputValue {
                 instruction_request_valid: true,
                 instruction_address: 0x0140,
@@ -1267,7 +1246,7 @@ mod tests {
     fn emu_and_nand_route_long_write_beat_ready_only_to_the_owner() {
         let steps = vec![
             reset_step(),
-            TestStep::new(
+            step(
                 CpuV3MemoryArbiterInputValue {
                     gpu_fb_w_request_valid: true,
                     gpu_fb_w_write: true,
@@ -1284,7 +1263,7 @@ mod tests {
                     ..z()
                 },
             ),
-            TestStep::new(
+            step(
                 CpuV3MemoryArbiterInputValue {
                     gpu_fb_w_request_valid: true,
                     gpu_fb_w_write: true,
@@ -1299,7 +1278,7 @@ mod tests {
                     ..z()
                 },
             ),
-            TestStep::new(
+            step(
                 CpuV3MemoryArbiterInputValue {
                     gpu_fb_w_write: true,
                     gpu_fb_w_write_data: 0x2222,
@@ -1318,9 +1297,62 @@ mod tests {
     }
 
     #[test]
+    fn emu_and_nand_route_data_write_beat_ready_only_after_ownership() {
+        let steps = vec![
+            reset_step(),
+            step(
+                CpuV3MemoryArbiterInputValue {
+                    data_request_valid: true,
+                    data_write: true,
+                    data_line: true,
+                    data_write_data: 0x1111,
+                    ..idle()
+                },
+                CpuV3MemoryArbiterOutputValue {
+                    memory_request_valid: true,
+                    memory_write: true,
+                    memory_line: true,
+                    memory_write_data: 0x1111,
+                    ..z()
+                },
+            ),
+            step(
+                CpuV3MemoryArbiterInputValue {
+                    data_request_valid: true,
+                    data_write: true,
+                    data_line: true,
+                    data_write_data: 0x1111,
+                    memory_request_ready: true,
+                    ..idle()
+                },
+                CpuV3MemoryArbiterOutputValue {
+                    memory_write_data: 0x1111,
+                    ..z()
+                },
+            ),
+            step(
+                CpuV3MemoryArbiterInputValue {
+                    data_write: true,
+                    data_line: true,
+                    instruction_request_valid: true,
+                    data_write_data: 0x2222,
+                    memory_write_data_ready: true,
+                    ..idle()
+                },
+                CpuV3MemoryArbiterOutputValue {
+                    data_write_data_ready: true,
+                    memory_write_data: 0x2222,
+                    ..z()
+                },
+            ),
+        ];
+        ModuleTest::<CpuV3MemoryArbiter>::new(steps).run_emu_and_nand();
+    }
+
+    #[test]
     fn emu_and_nand_release_on_an_error_beat_without_last() {
         let mut steps = vec![reset_step()];
-        steps.push(TestStep::new(
+        steps.push(step(
             CpuV3MemoryArbiterInputValue {
                 instruction_request_valid: true,
                 instruction_address: 0x120,
@@ -1331,7 +1363,7 @@ mod tests {
         ));
         instruction_beat(&mut steps, 0, false);
         // An error beat is presented with its error flag.
-        steps.push(TestStep::new(
+        steps.push(step(
             CpuV3MemoryArbiterInputValue {
                 memory_response_valid: true,
                 memory_read_data: beat_data(1),
@@ -1346,7 +1378,7 @@ mod tests {
             },
         ));
         // Consuming the error beat releases the owner even without last.
-        steps.push(TestStep::new(
+        steps.push(step(
             CpuV3MemoryArbiterInputValue {
                 memory_response_valid: true,
                 memory_read_data: beat_data(1),
@@ -1356,7 +1388,7 @@ mod tests {
             },
             z(),
         ));
-        steps.push(TestStep::new(
+        steps.push(step(
             CpuV3MemoryArbiterInputValue {
                 instruction_request_valid: true,
                 instruction_address: 0x2a0,
@@ -1375,7 +1407,7 @@ mod tests {
     #[test]
     fn emu_and_nand_reset_releases_the_owner_mid_transaction() {
         let mut steps = vec![reset_step()];
-        steps.push(TestStep::new(
+        steps.push(step(
             CpuV3MemoryArbiterInputValue {
                 instruction_request_valid: true,
                 instruction_address: 0x120,
@@ -1386,8 +1418,8 @@ mod tests {
         ));
         instruction_beat(&mut steps, 0, false);
         steps.push(reset_step());
-        steps.push(TestStep::new(idle(), z()));
-        steps.push(TestStep::new(
+        steps.push(step(idle(), z()));
+        steps.push(step(
             CpuV3MemoryArbiterInputValue {
                 instruction_request_valid: true,
                 instruction_address: 0x2a0,
