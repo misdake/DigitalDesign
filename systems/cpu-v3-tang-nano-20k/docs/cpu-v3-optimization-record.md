@@ -1245,3 +1245,20 @@ and array alternatives remain in local record `gpu-merger-study-2026-09-27`. The
 also verifies zero-byte writes do not steal concurrent read addresses. This does not change the
 production GPU export, boot images or fitted-system accounting. Controller/sector/lease/cleaner
 integration and real depth/blend arithmetic remain pending; no new board validation is claimed.
+
+## Standalone framebuffer execution lanes, 2026-09-27
+
+The [framebuffer component](framebuffer-cache.md#measured-component-boundary) now executes
+pointwise operations in physical bank order. One latched lane-control bit converts the held
+RGBA8888/Z16 source and completion mask, removing wide old-value and render-write permutations.
+The matched full-source-width probe retains all alpha/color bits and preserves word-level
+conflict checks; its fitted results live only in the component resource table. Extra memory
+response registers and one-hot selection cost more LUTs; broader sector blocking also stalls
+legitimate accesses to other words in the active sector, so these alternatives were rejected.
+
+Six native tests cover seven configurations/callbacks/delays and five independently reproduced
+faults, including lane ordering. Same-sector different-word access and same-tile different-sector
+streams retain concurrency. All 725 workspace tests, workspace Clippy, and the mandatory CPU/system
+co-simulations (26/2) passed. Local record `gpu-framebuffer-resource-2026-09-27` retains source hashes,
+vendor models, routed reports, rejected candidates and validation logs. This remains a standalone
+component change: no production GPU export, frozen CPU suite or board-validation claim changes.

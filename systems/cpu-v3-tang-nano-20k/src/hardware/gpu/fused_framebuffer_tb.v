@@ -1,5 +1,5 @@
 `timescale 1ns/1ps
-module fused_framebuffer_tb #(parameter SECTOR=0,parameter HALF_CAPACITY=1,parameter EXEC_DELAY=0);
+module fused_framebuffer_tb #(parameter SECTOR=0,parameter HALF_CAPACITY=1,parameter EXEC_DELAY=0,parameter BANK_ORDER=1,parameter EXEC_FOLD=0);
     localparam WIDE=1, ATOMIC_COMMIT=1, LANE_PORTS=1;
     localparam integer SLOT_BITS=(WIDE ? 3 : 2)+(SECTOR ? 2 : 0)-HALF_CAPACITY;
     localparam integer ROWS=SECTOR ? 4 : 16,SLOTS=32'd1<<SLOT_BITS,ADDR_BITS=9+WIDE-HALF_CAPACITY;
@@ -10,15 +10,22 @@ module fused_framebuffer_tb #(parameter SECTOR=0,parameter HALF_CAPACITY=1,param
     reg [127:0] colors=0;reg [63:0] depths=0;
     reg de=1,dw=1;reg [2:0] df=1;reg [1:0] blend=0;
     wire ev,cv;reg er=1,cr=1;wire [3:0] cm;wire [63:0] oc,oz;
+    wire [127:0] ec;wire [63:0] ez;wire [3:0] em;
+    wire reorder=BANK_ORDER && x[1];
+    wire [63:0] logical_oc=reorder ? {oc[31:0],oc[63:32]} : oc;
+    wire [127:0] logical_ec=reorder ? {ec[63:0],ec[127:64]} : ec;
+    wire [63:0] logical_ez=reorder ? {ez[31:0],ez[63:32]} : ez;
+    wire [3:0] logical_em=reorder ? {em[1:0],em[3:2]} : em;
+    wire [63:0] logical_oz=reorder ? {oz[31:0],oz[63:32]} : oz;
     reg [63:0] result_c;reg [3:0] result_m;
     reg mwv=0,mwg=0,mrv=0,mrg=0;wire mwr,mrr,msv;reg msr=1;
     reg [ADDR_BITS-1:0] mwa=0,mra=0;reg [63:0] mwd=0;reg [7:0] mwm=255;wire [63:0] msd;
     wire [WIDE+8:0] extended_mwa=mwa,extended_mra=mra;
-    FusedFramebufferPipe #(.SLOT_BITS(SLOT_BITS),.HALF_CAPACITY(HALF_CAPACITY)) dut (
+    FusedFramebufferPipe #(.SLOT_BITS(SLOT_BITS),.HALF_CAPACITY(HALF_CAPACITY),.BANK_ORDER(BANK_ORDER)) dut (
         .clk(clk),.reset(reset),.input_valid(iv),.input_ready(ir),.resident(resident),
         .input_group(ig),.input_way(way),.input_x(x),.input_y(y),.input_colors(colors),.input_depths(depths),
         .input_mask(mask),.depth_enable(de),.depth_write(dw),.depth_func(df),.blend_mode(blend),
-        .execute_valid(ev),.execute_ready(er),.old_colors(oc),.old_depths(oz),.result_colors(result_c),.result_mask(result_m),
+        .execute_valid(ev),.execute_ready(er),.execute_colors(ec),.execute_depths(ez),.execute_mask(em),.old_colors(oc),.old_depths(oz),.result_colors(result_c),.result_mask(result_m),
         .commit_valid(cv),.commit_ready(cr),.commit_mask(cm),
         .memory_write_valid(mwv),.memory_write_ready(mwr),.memory_write_group(mwg),.memory_write_address(extended_mwa),.memory_write_data(mwd),.memory_write_mask(mwm),
         .memory_read_valid(mrv),.memory_read_ready(mrr),.memory_read_group(mrg),.memory_read_address(extended_mra),
@@ -34,13 +41,16 @@ module fused_framebuffer_tb #(parameter SECTOR=0,parameter HALF_CAPACITY=1,param
     always @* begin
         result_m=0;result_c=0;
         for(integer lane=0;lane<4;lane=lane+1) begin
-            result_m[lane]=!de || depth_pass(depths[16*lane +:16],oz[16*lane +:16],df);
-            result_c[16*lane +:16]={colors[32*lane+27 +:5],colors[32*lane+18 +:6],colors[32*lane+11 +:5]};
+            result_m[lane]=!de || depth_pass(ez[16*lane +:16],oz[16*lane +:16],df);
+            result_c[16*lane +:16]={ec[32*lane+27 +:5],ec[32*lane+18 +:6],ec[32*lane+11 +:5]};
+            if(EXEC_FOLD) result_c[16*lane +:16]=ec[32*lane +:16]^ec[32*lane+16 +:16];
             // Synthetic old-color dependency checks the callback boundary.
             // This XOR is deliberately NOT production blend arithmetic.
             if(blend!=0) result_c[16*lane +:16]=result_c[16*lane +:16]^oc[16*lane +:16];
         end
     end
+    wire [63:0] logical_result=reorder ? {result_c[31:0],result_c[63:32]} : result_c;
+    wire [3:0] logical_pass=reorder ? {(result_m[1:0]&em[1:0]),(result_m[3:2]&em[3:2])} : (result_m & em);
     reg [15:0] pixels [0:2*GROUP_PIXELS-1];
     function integer pixel;
         input integer g,w,p,px,py;
@@ -55,16 +65,18 @@ module fused_framebuffer_tb #(parameter SECTOR=0,parameter HALF_CAPACITY=1,param
         begin seed=(p*391)^(p/7)^16'ha537;end
     endfunction
     reg [63:0] expected_memory=0,expected_colors=0,expected_depths=0,expected_result=0;
-    reg expected_memory_valid=0,expected_exec=0;reg [3:0] expected_mask=0;
+    reg expected_exec=0;
+    reg [63:0] memory_gold [0:7];
+    integer memory_head=0,memory_tail=0,memory_count=0;reg [3:0] expected_mask=0;
     integer cycles=0,commits=0,covered=0,passed=0,reads=0,writes=0;
     integer background_reads=0,background_writes=0,miss_wait=0;
-    integer raw_wait=0;
+    integer raw_wait=0,near_wait=0,other_sector_wait=0,audit_stress=0;
     reg held_memory=0,held_commit=0;reg [63:0] held_memory_data;reg [3:0] held_commit_mask;
     integer lane,p,b;
     always @(posedge clk) begin
         cycles=cycles+1;
         if(cycles>200000) $fatal(1,"fused watchdog");
-        if(reset) begin expected_memory_valid=0;expected_exec=0;held_memory=0;held_commit=0;end
+        if(reset) begin memory_head=0;memory_tail=0;memory_count=0;expected_exec=0;held_memory=0;held_commit=0;end
         else begin
             if(held_memory && (!msv || msd!==held_memory_data)) $fatal(1,"memory output changed under stall");
             if(!ATOMIC_COMMIT && held_commit && (!cv || cm!==held_commit_mask)) $fatal(1,"commit changed under stall");
@@ -72,13 +84,13 @@ module fused_framebuffer_tb #(parameter SECTOR=0,parameter HALF_CAPACITY=1,param
             held_memory=msv && !msr;held_memory_data=msd;
             held_commit=cv && !cr;held_commit_mask=cm;
             if(msv) begin
-                if(!expected_memory_valid || msd!==expected_memory) $fatal(1,"memory mismatch cycle=%0d got=%h expected=%h",cycles,msd,expected_memory);
-                if(msr) expected_memory_valid=0;
+                if(memory_count==0 || msd!==memory_gold[memory_head]) $fatal(1,"memory mismatch cycle=%0d got=%h expected=%h",cycles,msd,memory_gold[memory_head]);
+                if(msr) begin memory_head=(memory_head+1)%8;memory_count=memory_count-1;end
             end
             if(mrv && mrr) begin
-                if(expected_memory_valid) $fatal(1,"memory output overwritten");
+                if(memory_count>=8) $fatal(1,"memory oracle queue overflow");
                 for(lane=0;lane<4;lane=lane+1) expected_memory[16*lane +:16]=pixels[mpixel(mrg,mra,lane)];
-                expected_memory_valid=1;background_reads=background_reads+1;
+                memory_gold[memory_tail]=expected_memory;memory_tail=(memory_tail+1)%8;memory_count=memory_count+1;background_reads=background_reads+1;
             end
             if(mwv && mwr) begin
                 for(b=0;b<8;b=b+1) if(mwm[b]) begin
@@ -91,21 +103,27 @@ module fused_framebuffer_tb #(parameter SECTOR=0,parameter HALF_CAPACITY=1,param
                 if(dut.rrv || dut.rwv || ir) $fatal(1,"miss accessed render ports");
             end
             if(ev) begin
-                if(!expected_exec || oc!==expected_colors || oz!==expected_depths)
+                if(logical_ec!==colors || logical_ez!==depths || logical_em!==mask)
+                    $fatal(1,"execution source bits/order mismatch");
+                if(!expected_exec || logical_oc!==expected_colors || logical_oz!==expected_depths)
                     $fatal(1,"old quad mismatch cycle=%0d c=%h/%h z=%h/%h",cycles,oc,expected_colors,oz,expected_depths);
-                if(result_c!==expected_result || (result_m & mask)!==expected_mask) $fatal(1,"execution golden mismatch");
+                if(logical_result!==expected_result || logical_pass!==expected_mask) $fatal(1,"execution golden mismatch");
             end
             // Audit each actual render write, not merely returned mask.
             if(dut.rwv && dut.rwr) begin
                 for(lane=0;lane<(WIDE ? 4 : 2);lane=lane+1) begin
-                    p=pixel(ig,way,0,x+(lane%2),dut.wy+lane/2);
+                    p=pixel(ig,way,0,x+(lane%2),dut.wy+((reorder ? ((lane+2)%4) : lane)/2));
                     if(dut.cm[lane]) pixels[p]=dut.wc[16*lane +:16];
                     if(dut.zm[lane]) pixels[p+ROWS*16]=dut.wz[16*lane +:16];
                 end
                 writes=writes+1;
             end
             if(dut.rrv && dut.rrr) reads=reads+1;
-            if(ev && er && mrv && mrr && !dut.rwr) raw_wait=raw_wait+1;
+            if(ev && er && mrv && mrr && !dut.rwr) begin
+                if(audit_stress==4) raw_wait=raw_wait+1;
+                if(audit_stress==5) near_wait=near_wait+1;
+                if(audit_stress==6) other_sector_wait=other_sector_wait+1;
+            end
             if(cv && cr) begin
                 if(!iv || !ir || !expected_exec || cm!==expected_mask) $fatal(1,"commit/ownership mismatch");
                 // Independent final per-quad expected C/Z (different from port audit).
@@ -138,6 +156,7 @@ module fused_framebuffer_tb #(parameter SECTOR=0,parameter HALF_CAPACITY=1,param
                 expected_mask[l]=m[l] && (!enable || expected_mask[l]);
                 r=(rgba/16777216)%256;gc=(rgba/65536)%256;bc=(rgba/256)%256;
                 expected_result[16*l +:16]=(r/8)*2048+(gc/4)*32+(bc/8);
+                if(EXEC_FOLD) expected_result[16*l +:16]=(rgba%65536)^(rgba/65536);
                 if(mode!=0) expected_result[16*l +:16]=expected_result[16*l +:16]^pixels[q];
             end
             expected_exec=1;
@@ -148,6 +167,7 @@ module fused_framebuffer_tb #(parameter SECTOR=0,parameter HALF_CAPACITY=1,param
     task run_item;
         input integer id,group_id,way_id,px,py,m,f,en,we,mode,stress;
         begin
+            audit_stress=stress;
             prepare(id,group_id,way_id,px,py,m,f,en,we,mode);
             if(stress==1 && id%11==0) resident=0;
             t=0;exec_age=0;
@@ -169,6 +189,16 @@ module fused_framebuffer_tb #(parameter SECTOR=0,parameter HALF_CAPACITY=1,param
                     if(stress==4) begin
                         er=!ev || exec_age>EXEC_DELAY;cr=1;msr=1;mwv=0;mrv=t==1;mrg=group_id;
                         mra=way_id*(ROWS*8)+py*4+px/4;
+                    end
+                    if(stress==5) begin
+                        er=!ev || exec_age>EXEC_DELAY;cr=1;msr=1;mwv=0;mrv=t==1;mrg=group_id;
+                        mra=way_id*(ROWS*8)+py*4+((px/4+1)%4);
+                    end
+                    if(stress==6) begin
+                        er=!ev || exec_age>EXEC_DELAY;cr=1;msr=1;mrv=1;mwv=t%2==0;
+                        mrg=group_id;mwg=group_id;
+                        mra=way_id*(ROWS*8)+((py+4)%ROWS)*4+px/4;
+                        mwa=way_id*(ROWS*8)+ROWS*4+((py+4)%ROWS)*4+px/4;mwm=255;
                     end
                     if(!resident && t>=13) resident=1;
                     @(posedge clk);
@@ -207,6 +237,18 @@ module fused_framebuffer_tb #(parameter SECTOR=0,parameter HALF_CAPACITY=1,param
         for(g=0;g<2;g=g+1) for(a=0;a<SLOTS-1;a=a+1)
             for(integer qy=0;qy<ROWS;qy=qy+2) for(integer qx=0;qx<16;qx=qx+2)
                 run_item(1600+a+qy+qx,g,a,qx,qy,15,7,0,0,2,0);
+        // Same entry/sector but another word: retain fine RAW granularity.
+        run_item(1900,0,0,0,0,15,7,1,1,2,5);
+        if(near_wait!=0) $fatal(1,"nonconflicting same-sector word stalled");
+        // Refill/read another sector of the active tile without render bubbles.
+        if(!SECTOR) begin
+            start=cycles;start_commits=commits;start_bg_r=background_reads;start_bg_w=background_writes;
+            for(i=0;i<256;i=i+1) run_item(1950+i,0,0,2*(i%8),2*((i/8)%2),15,7,1,1,2,6);
+            if(other_sector_wait!=0) $fatal(1,"another active-tile sector blocked render");
+            if(EXEC_DELAY==0 && (cycles-start!=512 || background_reads-start_bg_r!=512 || background_writes-start_bg_w!=256))
+                $fatal(1,"same-entry different-sector bandwidth regressed");
+            $display("RATE_OTHER_SECTOR quads=%0d cycles=%0d memory64_reads=%0d memory64_writes=%0d",commits-start_commits,cycles-start,background_reads-start_bg_r,background_writes-start_bg_w);
+        end
         start=cycles;start_commits=commits;start_covered=covered;start_reads=reads;start_writes=writes;
         for(i=0;i<256;i=i+1) run_item(2000+i,i%2,0,2*(i%8),2*((i/8)%(ROWS/2)),15,7,1,1,1,0);
         if (cycles-start != 256*(2+EXEC_DELAY)) $fatal(1,"dense quad interval regression");
@@ -230,7 +272,8 @@ module fused_framebuffer_tb #(parameter SECTOR=0,parameter HALF_CAPACITY=1,param
             @(posedge clk);if(!mrr) $fatal(1,"final memory audit bubble");
         end
         @(negedge clk);mrv=0;repeat(3) @(negedge clk);
-        if(background_reads<100 || background_writes<100 || miss_wait<100 || commits!=1601+2*(SLOTS-1)*(ROWS/2)*8+(LANE_PORTS ? 257 : 0)) $fatal(1,"coverage missing commits=%0d",commits);
+        if(memory_count!=0) $fatal(1,"memory audit responses missing");
+        if(background_reads<100 || background_writes<100 || miss_wait<100 || commits!=1602+(!SECTOR ? 256 : 0)+2*(SLOTS-1)*(ROWS/2)*8+(LANE_PORTS ? 257 : 0)) $fatal(1,"coverage missing commits=%0d",commits);
         if(LANE_PORTS && EXEC_DELAY==0 && raw_wait==0) $fatal(1,"same-word RAW audit did not execute");
         $display("PASS fused framebuffer: wide=%0d sector=%0d commits=%0d covered=%0d passed=%0d cycles=%0d bg_r=%0d bg_w=%0d miss=%0d",WIDE,SECTOR,commits,covered,passed,cycles,background_reads,background_writes,miss_wait);
         $finish;

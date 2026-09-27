@@ -3,7 +3,7 @@
 // A belongs to memory, B to render. Group is only a compatibility address bit;
 // there is no checkerboard port grouping or group-wide data selection.
 // bank=(x+2*y)%4 permits both aligned quads and horizontal memory beats.
-module FramebufferLaneArray #(parameter SLOT_BITS=2,parameter HALF_CAPACITY=1) (
+module FramebufferLaneArray #(parameter SLOT_BITS=2,parameter HALF_CAPACITY=1,parameter BANK_ORDER=0) (
     input wire clk,input wire reset,
     input wire memory_write_valid,output wire memory_write_ready,
     input wire memory_write_group,input wire [9:0] memory_write_address,
@@ -53,15 +53,15 @@ module FramebufferLaneArray #(parameter SLOT_BITS=2,parameter HALF_CAPACITY=1) (
     wire [63:0] memory_data [0:1],render_data [0:1];
     wire [63:0] mraw=mplane ? memory_data[1] : memory_data[0];
     assign memory_response_data=mrow ? {mraw[31:0],mraw[63:32]} : mraw;
-    assign render_response_colors=rswap ? {render_data[0][31:0],render_data[0][63:32]} : render_data[0];
-    assign render_response_depths=rswap ? {render_data[1][31:0],render_data[1][63:32]} : render_data[1];
+    assign render_response_colors=(!BANK_ORDER && rswap) ? {render_data[0][31:0],render_data[0][63:32]} : render_data[0];
+    assign render_response_depths=(!BANK_ORDER && rswap) ? {render_data[1][31:0],render_data[1][63:32]} : render_data[1];
     wire [63:0] mwd=memory_write_address[2] ? {memory_write_data[31:0],memory_write_data[63:32]} : memory_write_data;
     wire [7:0] mwm=memory_write_address[2] ? {memory_write_mask[3:0],memory_write_mask[7:4]} : memory_write_mask;
     wire [63:0] rwd [0:1];wire [3:0] rwm [0:1];
-    assign rwd[0]=render_write_x[1] ? {render_write_colors[31:0],render_write_colors[63:32]} : render_write_colors;
-    assign rwd[1]=render_write_x[1] ? {render_write_depths[31:0],render_write_depths[63:32]} : render_write_depths;
-    assign rwm[0]=render_write_x[1] ? {render_write_color_mask[1:0],render_write_color_mask[3:2]} : render_write_color_mask;
-    assign rwm[1]=render_write_x[1] ? {render_write_depth_mask[1:0],render_write_depth_mask[3:2]} : render_write_depth_mask;
+    assign rwd[0]=(!BANK_ORDER && render_write_x[1]) ? {render_write_colors[31:0],render_write_colors[63:32]} : render_write_colors;
+    assign rwd[1]=(!BANK_ORDER && render_write_x[1]) ? {render_write_depths[31:0],render_write_depths[63:32]} : render_write_depths;
+    assign rwm[0]=(!BANK_ORDER && render_write_x[1]) ? {render_write_color_mask[1:0],render_write_color_mask[3:2]} : render_write_color_mask;
+    assign rwm[1]=(!BANK_ORDER && render_write_x[1]) ? {render_write_depth_mask[1:0],render_write_depth_mask[3:2]} : render_write_depth_mask;
     always @(posedge clk) begin
         if(reset) begin memory_response_valid<=0;render_response_valid<=0;end
         else begin

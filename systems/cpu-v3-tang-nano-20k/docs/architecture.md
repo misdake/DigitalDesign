@@ -23,7 +23,8 @@ firmware, display scheduling, and physical validation. The CPU IP sees only phys
 data word ports plus the narrow device port.
 
 The accepted [eight-DPB C16/Z16 storage and quad-owner component](framebuffer-cache.md)
-has independent vendor-model and PnR validation. It is not instantiated by the current GPU export;
+executes pointwise operations in physical bank order while preserving logical source/completion
+order, with independent vendor-model and PnR validation. It is not instantiated by the current GPU export;
 the fitted system still uses the blocking color-only cache described below. Cache-controller,
 shader/source ownership and real depth/blend integration remain separate work.
 

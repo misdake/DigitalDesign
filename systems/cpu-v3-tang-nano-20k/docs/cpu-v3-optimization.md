@@ -61,7 +61,9 @@ generated outside this document.
 
 The accepted [eight-DPB framebuffer component](framebuffer-cache.md) reduces LUT use in a matched
 standalone comparison and removes the numerical color queue. Its contract and tests are complete;
-production GPU integration is pending, so it does not add a fitted-system milestone or ledger row.
+bank-order execution with one latched lane-control bit further reduces selection logic while
+preserving word-level memory/render concurrency. Production GPU integration is pending, so this
+component does not add a fitted-system milestone or ledger row.
 
 Future CPU or system optimizations are added here only after completion; planned GPU work is tracked
 in the GPU design documents and the project todo rather than expanded in this index.

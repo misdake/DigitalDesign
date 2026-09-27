@@ -3,7 +3,8 @@
 // through the actual masked-write/input-ready edge. Execution is external.
 module FusedFramebufferPipe #(
     parameter SLOT_BITS = 2,
-    parameter HALF_CAPACITY = 1
+    parameter HALF_CAPACITY = 1,
+    parameter BANK_ORDER = 1
 ) (
     input wire clk, input wire reset,
     input wire input_valid, output wire input_ready, input wire resident,
@@ -13,6 +14,8 @@ module FusedFramebufferPipe #(
     input wire [3:0] input_mask, input wire depth_enable, input wire depth_write,
     input wire [2:0] depth_func, input wire [1:0] blend_mode,
     output wire execute_valid, input wire execute_ready,
+    output wire [127:0] execute_colors, output wire [63:0] execute_depths,
+    output wire [3:0] execute_mask,
     output wire [63:0] old_colors, output wire [63:0] old_depths,
     input wire [63:0] result_colors, input wire [3:0] result_mask,
     output wire commit_valid, input wire commit_ready, output wire [3:0] commit_mask,
@@ -28,22 +31,31 @@ module FusedFramebufferPipe #(
     reg state = IDLE;
     wire rsv, rrr, rwr;
     wire rrv = !reset && state == IDLE && input_valid && resident;
+    // execute_ready means the external result is available, not a separate
+    // request acceptance. Execution side effects advance on commit_valid only.
     assign execute_valid = !reset && state == EXECUTE && rsv;
     wire rwv = execute_valid && execute_ready && commit_ready;
     wire execute_fire = rwv && rwr;
-    wire [3:0] cm = input_mask & result_mask;
+    // Capture only the lane-order bit at the accepted read. No numeric payload
+    // is copied; source fields and the resident lease still belong upstream.
+    reg reorder = 0;
+    always @(posedge clk) if (rrv && rrr) reorder <= BANK_ORDER && input_x[1];
+    assign execute_colors = reorder ? {input_colors[63:0], input_colors[127:64]} : input_colors;
+    assign execute_depths = reorder ? {input_depths[31:0], input_depths[63:32]} : input_depths;
+    assign execute_mask = reorder ? {input_mask[1:0], input_mask[3:2]} : input_mask;
+    wire [3:0] cm = execute_mask & result_mask;
     wire [3:0] zm = depth_enable && depth_write ? cm : 4'b0;
     wire [63:0] wc = result_colors;
-    wire [63:0] wz = input_depths;
+    wire [63:0] wz = execute_depths;
     wire [3:0] wy = input_y;
 
     // Completion is an event on the actual-write edge. Permission may stall
     // execution; this is not a separately backpressured valid/result stream.
     assign commit_valid = execute_fire;
     assign input_ready = execute_fire;
-    assign commit_mask = cm;
+    assign commit_mask = reorder ? {cm[1:0], cm[3:2]} : cm;
 
-    FramebufferLaneArray #(.SLOT_BITS(SLOT_BITS), .HALF_CAPACITY(HALF_CAPACITY)) array (
+    FramebufferLaneArray #(.SLOT_BITS(SLOT_BITS), .HALF_CAPACITY(HALF_CAPACITY), .BANK_ORDER(BANK_ORDER)) array (
         .clk(clk), .reset(reset),
         .memory_write_valid(memory_write_valid), .memory_write_ready(memory_write_ready),
         .memory_write_group(memory_write_group), .memory_write_address(memory_write_address),

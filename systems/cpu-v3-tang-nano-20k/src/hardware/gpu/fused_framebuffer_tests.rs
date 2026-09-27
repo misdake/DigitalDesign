@@ -6,8 +6,16 @@ use std::process::Command;
 #[test]
 #[ignore = "requires Icarus and GOWIN_HOME with GW2A DPB simulation models"]
 fn fused_framebuffer_vendor_geometry_masks_stalls_and_bandwidth() {
-    for (sector, half_capacity, delay) in [(0, 1, 0), (1, 1, 0), (0, 0, 0), (0, 1, 4), (0, 1, 6)] {
-        let stdout = run_vendor(sector, half_capacity, delay, None);
+    for (sector, half_capacity, delay, bank_order, fold) in [
+        (0, 1, 0, 0, 0),
+        (0, 1, 0, 1, 0),
+        (1, 1, 0, 1, 0),
+        (0, 0, 0, 1, 0),
+        (0, 1, 4, 1, 0),
+        (0, 1, 6, 1, 0),
+        (0, 1, 0, 1, 1),
+    ] {
+        let stdout = run_vendor_order(sector, half_capacity, delay, bank_order, fold, None);
         assert!(stdout.contains("PASS fused framebuffer:"), "{stdout}");
     }
 }
@@ -44,13 +52,35 @@ fn fused_framebuffer_rejects_source_release_before_commit() {
     );
 }
 
+#[test]
+#[ignore = "requires Icarus and GOWIN_HOME with GW2A DPB simulation models"]
+fn fused_framebuffer_rejects_wrong_execution_lane_order() {
+    run_vendor(
+        0,
+        1,
+        0,
+        Some(("lane_order", "execution source bits/order mismatch")),
+    );
+}
+
 fn run_vendor(sector: u32, half_capacity: u32, delay: u32, fault: Option<(&str, &str)>) -> String {
+    run_vendor_order(sector, half_capacity, delay, 1, 0, fault)
+}
+
+fn run_vendor_order(
+    sector: u32,
+    half_capacity: u32,
+    delay: u32,
+    bank_order: u32,
+    fold: u32,
+    fault: Option<(&str, &str)>,
+) -> String {
     let source = Path::new(env!("CARGO_MANIFEST_DIR")).join("src/hardware/gpu");
     let gowin = std::env::var_os("GOWIN_HOME").expect("GOWIN_HOME is required for the DPB model");
     let primitive = Path::new(&gowin).join("IDE/simlib/gw2a/prim_sim.v");
     assert!(primitive.is_file(), "missing {}", primitive.display());
     let output = std::env::temp_dir().join(format!(
-        "gpu-fused-{}-{sector}-{half_capacity}-{delay}-{}",
+        "gpu-fused-{}-{sector}-{half_capacity}-{delay}-{bank_order}-{fold}-{}",
         std::process::id(),
         fault.map_or("native", |(name, _)| name)
     ));
@@ -66,6 +96,9 @@ fn run_vendor(sector: u32, half_capacity: u32, delay: u32, fault: Option<(&str, 
                 "wire [3:0] zm = depth_enable && depth_write ? cm : 4'b0;",
                 "wire [3:0] zm = 4'b0;",
             )),
+            ("fused_framebuffer_pipe.v", Some("lane_order")) => {
+                Some(("reorder <= BANK_ORDER && input_x[1];", "reorder <= 1'b0;"))
+            }
             ("framebuffer_lane_array.v", Some("row_bank")) => {
                 Some(("render_read_x[1]!=(bank/2)", "render_read_x[1]==(bank/2)"))
             }
@@ -96,6 +129,8 @@ fn run_vendor(sector: u32, half_capacity: u32, delay: u32, fault: Option<(&str, 
         format!("-Pfused_framebuffer_tb.SECTOR={sector}"),
         format!("-Pfused_framebuffer_tb.HALF_CAPACITY={half_capacity}"),
         format!("-Pfused_framebuffer_tb.EXEC_DELAY={delay}"),
+        format!("-Pfused_framebuffer_tb.BANK_ORDER={bank_order}"),
+        format!("-Pfused_framebuffer_tb.EXEC_FOLD={fold}"),
     ]);
     for file in [
         "framebuffer_lane_array.v",
