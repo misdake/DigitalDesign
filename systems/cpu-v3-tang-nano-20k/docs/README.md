@@ -12,6 +12,8 @@ the [`ip/cpu-v3` documentation](../../../ip/cpu-v3/docs/README.md).
   measurement, rejected-alternative, and validation detail normally consulted only for archaeology.
 - [`gpu-raster-comparison.md`](gpu-raster-comparison.md): measured tile/scanline raster rates,
   framebuffer-control savings, rejected alternatives, and full-GPU preservation boundaries.
+- [`framebuffer-cache.md`](framebuffer-cache.md): accepted eight-DPB storage and fused quad-owner
+  contract, independent resource/throughput results, and the pending system-integration boundary.
 - [`boot-image-format.md`](boot-image-format.md): version 3 boot package and manifest format.
 - [`flash-layout.md`](flash-layout.md): fitted external-Flash placement, programming workflow, and
   boot-progress reporting.

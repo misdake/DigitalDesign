@@ -1234,3 +1234,14 @@ The complete image SHA-256 is
 `22b4b8460b7d9f2851c06c85370a1c7453e2e40cc23eb09d4c64329373df6ecf`.
 The optimized default is now retained in both Flash and SRAM. These are loaded-image
 UART results; user power-cycle, cold-boot UART and HDMI observation remain pending.
+
+## Accepted framebuffer component, 2026-09-27
+
+The [eight-DPB framebuffer contract](framebuffer-cache.md) replaces physical tile groups and
+a numerical color queue with fixed memory/render ports and source ownership through the final
+write. The independent component and reproducible vendor tests are committed together; its
+resource/throughput table is the sole home for these measurements. Earlier queue, shared-pool
+and array alternatives remain in local record `gpu-merger-study-2026-09-27`. The final component
+also verifies zero-byte writes do not steal concurrent read addresses. This does not change the
+production GPU export, boot images or fitted-system accounting. Controller/sector/lease/cleaner
+integration and real depth/blend arithmetic remain pending; no new board validation is claimed.

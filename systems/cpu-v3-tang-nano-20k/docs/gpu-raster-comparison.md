@@ -224,6 +224,10 @@ is paid for before that schedule is defined.
 
 ## Reproduction and evidence boundary
 
+The accepted, independently validated C16/Z16 replacement component is documented in
+[`framebuffer-cache.md`](framebuffer-cache.md). Its matched resource and throughput results
+have a different boundary from the fitted color-only GPU described here.
+
 ```powershell
 scripts/measure-gpu-raster.ps1 -Jobs 4 -GowinHome $env:GOWIN_HOME
 scripts/run-cargo.ps1 -Subcommand test -Label raster-matrix -CargoArgs @(

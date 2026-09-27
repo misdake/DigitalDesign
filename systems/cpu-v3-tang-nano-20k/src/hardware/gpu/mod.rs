@@ -1345,4 +1345,6 @@ fn sample_wires<const W: usize>(wires: &Wires<W>, circuit: &CircuitWires) -> u64
 
 // ---------------------------------------------------------------------------
 #[cfg(test)]
+mod fused_framebuffer_tests;
+#[cfg(test)]
 mod tests;
