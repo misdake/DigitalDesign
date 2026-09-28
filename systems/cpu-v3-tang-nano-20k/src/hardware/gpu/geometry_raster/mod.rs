@@ -107,3 +107,25 @@ pub fn color_at(triangle: &[ColorVertex; 3], setup: &setup::TriangleSetup, x: u1
     });
     (rgb[0] << 11) | (rgb[1] << 5) | rgb[2]
 }
+
+/// Standalone microcore sources. The fitted GPU does not instantiate this top.
+pub fn microcore_verilog_source() -> String {
+    [
+        include_str!("../frontend/frontend_mvp.v"),
+        include_str!("../frontend/frontend_memory.v"),
+        include_str!("../raster/raster.v"),
+        include_str!("geometry.v"),
+        include_str!("color_setup.v"),
+        include_str!("geometry_microcore.v"),
+        include_str!("meshlet_microcore.v"),
+        include_str!("meshlet_quad.v"),
+        include_str!("interpolator.v"),
+        include_str!("varying.v"),
+        include_str!("color_quad.v"),
+    ]
+    .join("\n")
+}
+
+#[cfg(test)]
+#[path = "microcore_rtl_tests.rs"]
+mod rtl_tests;
