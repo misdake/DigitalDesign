@@ -47,6 +47,7 @@ use digital_design_hardware::{
 use std::cell::RefCell;
 
 mod host;
+pub mod geometry_raster;
 pub mod rasteremu;
 pub mod rastersim;
 pub mod trace;
