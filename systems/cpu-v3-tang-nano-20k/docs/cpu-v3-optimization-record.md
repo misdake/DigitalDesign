@@ -2,7 +2,7 @@
 
 Status: append-only detail record; normally read only when investigating an old decision
 Repository: `../../../`
-Updated: 2026-09-27
+Updated: 2026-09-28
 
 The concise milestone index lives in [`cpu-v3-optimization.md`](cpu-v3-optimization.md). This file
 preserves the former long-form roadmap, measurements, rejected alternatives, and validation notes.
@@ -1413,3 +1413,25 @@ Local record `cpu-v3-architecture-logic-2026-09-28` preserves matched source var
 whole-system fits, native/vendor goldens, FPU/integer differentials, per-program
 performance, dense/sparse clean timing and the selected production source audit.
 The complete offline validation passes; this unit has no new physical-board proof.
+
+## 2026-09-28 — Native SDRAM integration
+
+The full CPU V3 system uses the CL2/RCD2/RP2/RFC9 native controller at 108 MHz.
+`BANK_BIT=5` distributes consecutive aligned 128-byte sectors over four banks;
+the controller owns row state, refresh and physical command timing. The existing
+one-owner arbiter and 54-MHz cache streams meet it through a two-pair 64/32-bit
+bridge. Each 64-bit source beat advances only when accepted, and the bridge
+assembles ordered read pairs and clears its transaction token on reset. The
+single-client adapter converts masked 16-bit accesses and 32/64/128-byte lines
+to native descriptors. Because the arbiter presents only one outstanding
+descriptor, the controller's optional next-request chaining remains disabled
+at this system boundary.
+
+The 99-MHz CL2 pin-level model checks four consecutive bank-striped sectors,
+masked scalar writes, read ordering, refresh and reset during a read. The
+full Flash-boot RTL test, 23 ignored system RTL tests, CPU and system co-sims,
+workspace tests, strict Clippy and generated bitstream audit pass. The final
+full-system fit uses 12,304 Logic, 50 RAM16 and 20 BSRAM; the 54-MHz CPU and
+108-MHz controller clocks close at fitted limits of 55.547 and 136.790 MHz,
+respectively, with no setup or hold violations. Board UART validation of this
+integrated image remains pending.

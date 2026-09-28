@@ -1,4 +1,4 @@
-//! Single-upstream CPU word/line adapter for the fitted Controller HS port.
+//! Single-upstream CPU word/line adapter for the native SDRAM request port.
 //!
 //! Display, I-cache, D-cache, DMA and the three GPU masters all share the
 //! arbiter's one request stream, so this adapter no longer arbitrates between
@@ -20,7 +20,8 @@ pub struct SharedSdramPortInput {
     pub controller_read_data: Wires<64>,
     pub controller_read_valid: Wire,
     pub controller_init_done: Wire,
-    pub controller_command_ack: Wire,
+    pub controller_request_ready: Wire,
+    pub controller_done: Wire,
     pub controller_write_data_ready: Wire,
 }
 
@@ -32,14 +33,13 @@ pub struct SharedSdramPortOutput {
     pub cpu_read_data: Wires<64>,
     pub cpu_response_last: Wire,
     pub cpu_error: Wire,
-    pub controller_command_valid: Wire,
-    pub controller_command: Wires<3>,
-    pub controller_precharge: Wire,
+    pub controller_request_valid: Wire,
+    pub controller_write: Wire,
     pub controller_address: Wires<21>,
     pub controller_write_mask: Wires<4>,
     pub controller_write_data: Wires<64>,
     pub controller_write_data_valid: Wire,
-    pub controller_burst_length: Wires<8>,
+    pub controller_words: Wires<6>,
 }
 
 #[derive(Hardware)]
@@ -76,6 +76,8 @@ impl Module for SharedSdramPort {
 mod tests {
     use super::*;
     use digital_design_hardware::VerilogProject;
+    use std::path::Path;
+    use std::process::Command;
 
     #[test]
     fn export_is_one_standalone_module() {
@@ -92,5 +94,40 @@ mod tests {
     #[ignore = "explicit external simulation of shared SDRAM timing"]
     fn shared_word_and_burst_port_runs_in_iverilog() {
         digital_design_hardware::verify_verilog_with_iverilog::<SharedSdramPort>().unwrap();
+    }
+
+    #[test]
+    #[ignore = "explicit CL2 pin-model validation of the related-clock native bridge"]
+    fn native_bridge_bank_striping_runs_in_iverilog() {
+        let system = Path::new(env!("CARGO_MANIFEST_DIR"));
+        let root = system.parent().unwrap().parent().unwrap();
+        let display = system.join("src/hardware/display");
+        let controller = root.join("hardware/vendor/gowin/src/targets/tang_nano_20k/sdram");
+        let executable =
+            std::env::temp_dir().join(format!("cpu-v3-native-sdram-{}.vvp", std::process::id()));
+        let iverilog = std::env::var_os("IVERILOG_EXE").unwrap_or_else(|| "iverilog".into());
+        let vvp = std::env::var_os("VVP_EXE").unwrap_or_else(|| "vvp".into());
+        let compile = Command::new(iverilog)
+            .args(["-g2012", "-s", "tb", "-o"])
+            .arg(&executable)
+            .arg(controller.join("sdram_controller.v"))
+            .arg(controller.join("native_bridge_108m_54m.v"))
+            .arg(display.join("sdram_pin_model.v"))
+            .arg(display.join("sdram_native_bridge_tb.v"))
+            .output()
+            .unwrap();
+        assert!(
+            compile.status.success(),
+            "Icarus compile: {}",
+            String::from_utf8_lossy(&compile.stderr)
+        );
+        let run = Command::new(vvp).arg(&executable).output().unwrap();
+        let _ = std::fs::remove_file(&executable);
+        let stdout = String::from_utf8_lossy(&run.stdout);
+        assert!(
+            run.status.success() && stdout.contains("PASS native 64/32 bridge"),
+            "Icarus run: {stdout} {}",
+            String::from_utf8_lossy(&run.stderr)
+        );
     }
 }

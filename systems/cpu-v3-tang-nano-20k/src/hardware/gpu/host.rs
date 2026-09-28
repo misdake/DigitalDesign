@@ -4,7 +4,7 @@
 //! It is used by the host transaction model in `crate::gpu_device` so a
 //! polled submission reaches completion without a CPU or an RTL simulator. It
 //! reproduces the real handshake shape: a request is accepted in one cycle, a
-//! read transaction streams its 4/8/12/16 ordered 64-bit beats, and a write
+//! read transaction streams its 4/8/16 ordered 64-bit beats, and a write
 //! transaction captures those beats before committing. The request length comes
 //! from the GPU master's `line_count_minus_1[1:0]`, so the model exercises the
 //! variable-length path even while a single transaction is outstanding.
@@ -20,7 +20,12 @@ const MAX_BEATS: usize = 16;
 
 /// Number of 64-bit beats for a `line_count_minus_1` encoding.
 pub(crate) const fn line_beat_count(line_count_minus_1: u8) -> usize {
-    ((line_count_minus_1 as usize & 0x3) + 1) * 4
+    match line_count_minus_1 {
+        0 => 4,
+        1 => 8,
+        3 => 16,
+        _ => panic!("unsupported line request length"),
+    }
 }
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
@@ -157,10 +162,9 @@ impl HostGpuMemory {
         match self.state {
             State::Idle => {
                 if outputs.ro_request_valid {
-                    // A host model accepts what the RTL cannot: assert the same
-                    // row contract the fitted adapter assumes, so a crossing
-                    // request fails the test instead of silently truncating.
-                    crate::hardware::assert_line_request_fits_row(
+                    // Fail an unsupported size or alignment here, as the
+                    // fitted adapter would reject the request.
+                    crate::hardware::assert_line_request_is_legal(
                         outputs.ro_address,
                         u32::from(outputs.ro_line_count_minus_1),
                     );
@@ -172,7 +176,7 @@ impl HostGpuMemory {
                     self.ro_requests += 1;
                     self.state = State::ReadBeats(0);
                 } else if outputs.fb_r_request_valid {
-                    crate::hardware::assert_line_request_fits_row(
+                    crate::hardware::assert_line_request_is_legal(
                         outputs.fb_r_address,
                         u32::from(outputs.fb_r_line_count_minus_1),
                     );
@@ -184,7 +188,7 @@ impl HostGpuMemory {
                     self.fb_r_requests += 1;
                     self.state = State::ReadBeats(0);
                 } else if outputs.fb_w_request_valid {
-                    crate::hardware::assert_line_request_fits_row(
+                    crate::hardware::assert_line_request_is_legal(
                         outputs.fb_w_address,
                         u32::from(outputs.fb_w_line_count_minus_1),
                     );
@@ -193,14 +197,9 @@ impl HostGpuMemory {
                     self.active_error = self.fail_next_fb_w;
                     self.fail_next_fb_w = false;
                     self.fb_w_requests += 1;
-                    if outputs.fb_w_line_count_minus_1 == 0 {
-                        // Legacy fixed-line staging captures beat zero here.
-                        self.write_buffer[0] = outputs.fb_w_write_data;
-                        self.state = State::WriteCapture(1);
-                    } else {
-                        // Long writes consume every beat on data-ready.
-                        self.state = State::WriteCapture(0);
-                    }
+                    // Descriptor acceptance never consumes source data. The
+                    // first beat advances only on write_data_ready.
+                    self.state = State::WriteCapture(0);
                 }
             }
             State::ReadBeats(beat) => {
@@ -271,16 +270,15 @@ mod tests {
     }
 
     #[test]
-    fn line_beat_count_spans_one_to_four_lines() {
+    fn line_beat_count_spans_supported_lengths() {
         assert_eq!(line_beat_count(0), 4);
         assert_eq!(line_beat_count(1), 8);
-        assert_eq!(line_beat_count(2), 12);
         assert_eq!(line_beat_count(3), 16);
     }
 
     #[test]
     fn reads_stream_exactly_the_requested_number_of_beats_with_last_at_the_end() {
-        for line_count_minus_1 in 0..4u8 {
+        for line_count_minus_1 in [0u8, 1, 3] {
             let beats = line_beat_count(line_count_minus_1);
             let mut memory = vec![0u16; 0x1000];
             for (index, word) in memory.iter_mut().enumerate() {
@@ -308,7 +306,7 @@ mod tests {
 
     #[test]
     fn framebuffer_reads_use_the_fb_r_handshake_for_every_length() {
-        for line_count_minus_1 in 0..4u8 {
+        for line_count_minus_1 in [0u8, 1, 3] {
             let beats = line_beat_count(line_count_minus_1);
             let mut memory = vec![0u16; 0x1000];
             for (index, word) in memory.iter_mut().enumerate() {
@@ -336,13 +334,12 @@ mod tests {
 
     #[test]
     fn writes_commit_consecutive_beats_in_order_for_every_length() {
-        for line_count_minus_1 in 0..4u8 {
+        for line_count_minus_1 in [0u8, 1, 3] {
             let beats = line_beat_count(line_count_minus_1);
             let base = 0x80usize;
             let mut memory = vec![0u16; 0x4000];
             let mut model = HostGpuMemory::default();
-            // Fixed lines capture beat zero on acceptance; long writes consume
-            // all beats in WriteCapture, matching the fitted SDRAM adapter.
+            // Every line size consumes beat zero on write-data-ready.
             let start = GpuOutputs {
                 fb_w_request_valid: true,
                 fb_w_write: true,

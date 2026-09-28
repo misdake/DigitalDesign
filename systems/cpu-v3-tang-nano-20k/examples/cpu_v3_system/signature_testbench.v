@@ -11,21 +11,21 @@ reg flash_miso = 1;
 reg [63:0] sdram_read_data = 0;
 reg sdram_read_valid = 0;
 reg sdram_init_done = 0;
-reg sdram_command_ack = 0;
-reg sdram_write_data_ready = 1;
+wire sdram_request_ready;
+reg sdram_done = 0;
+reg sdram_write_data_ready = 0;
 wire [5:0] leds;
 wire uart_tx;
 wire flash_clk;
 wire flash_cs_n;
 wire flash_mosi;
-wire sdram_command_valid;
-wire [2:0] sdram_command;
-wire sdram_precharge;
+wire sdram_request_valid;
+wire sdram_write;
 wire [20:0] sdram_address;
+wire [5:0] sdram_words;
 wire [3:0] sdram_write_mask;
 wire [63:0] sdram_write_data;
 wire sdram_write_data_valid;
-wire [7:0] sdram_burst_length;
 reg pixel_clock = 0;
 reg serial_clock = 0;
 reg video_locked = 1;
@@ -39,150 +39,105 @@ always #5 clk = ~clk;
 always #2 pixel_clock = ~pixel_clock;
 always #1 serial_clock = ~serial_clock;
 
-// SDRAM model: 16-bit words, two words per 32-bit controller word. The boot
-// CPU application data stays below physical word 0x80000, while the two GPU
-// framebuffers live at word 0x200000 and above. Model the complete 22-bit word
-// address so framebuffer traffic cannot alias command or tile-list storage.
-//
-// The SharedSdramPort is a 64-bit gearbox: a cache line is eight 32-bit words
-// (four 64-bit beats). Line writes preload one 64-bit pair, then stream the
-// remaining pairs while the controller transaction is active. The model
-// therefore delays line-write acknowledgement until all beats arrive. Reads return the
-// corresponding 4/8/12/16 ordered 64-bit beats. A 32-bit word W occupies memory[2*W] (low half)
-// and memory[2*W+1] (high half), matching the port's packing.
+// Abstract native 32-bit controller port. Address is a 32-bit word address.
+// The board bridge groups two native words into each 64-bit system beat.
 reg [15:0] memory [0:4194303];
+reg write_pending = 0;
+reg [20:0] transfer_address = 0;
+reg [5:0] transfer_words = 0;
+reg [3:0] transfer_mask = 0;
+integer transfer_pairs = 0;
+integer transfer_pair = 0;
 integer read_delay = 0;
-integer read_beats = 0;
-reg [20:0] pending_read_address = 0;
-reg read_is_line = 0;
-reg [3:0] read_beat = 0;
+integer read_pairs = 0;
 reg word_read_seen = 0;
 reg line_burst_seen = 0;
-integer write_beats = 0;
-reg [20:0] pending_write_address = 0;
-reg [7:0] pending_write_length = 0;
-reg [63:0] write_capture [0:15];
-reg [4:0] write_capture_beat = 0;
-reg line_write_pending = 0;
 reg [20:0] idx;
 reg [20:0] idx2;
 integer cycle;
 
+assign sdram_request_ready = !(|buttons) && !write_pending &&
+    read_delay == 0 && read_pairs == 0;
+always @(*) sdram_write_data_ready = !(|buttons) && write_pending;
+
 always @(posedge clk) begin
-    sdram_command_ack <= 0;
+    sdram_done <= 0;
     sdram_read_valid <= 0;
-
-    // Capture the preloaded pair and each pair streamed during a line write.
-    if (sdram_write_data_valid) begin
-        write_capture[write_capture_beat] <= sdram_write_data;
-        write_capture_beat <= write_capture_beat + 1'b1;
-    end
-
-    // The word port interleaves a refresh command every 600 clocks.
-    if (sdram_command_valid && (sdram_command == 3'b001 || sdram_command == 3'b011))
-        sdram_command_ack <= 1;
-
-    if (sdram_command_valid && sdram_command == 3'b100) begin
-        pending_write_address <= sdram_address;
-        pending_write_length <= sdram_burst_length;
-        if (sdram_burst_length != 0 && sdram_burst_length != 7 &&
-            sdram_burst_length != 15 && sdram_burst_length != 23 &&
-            sdram_burst_length != 31)
-            $fatal(1, "unexpected write burst length %0d", sdram_burst_length);
-        if (sdram_burst_length != 0) begin
-            // Every line length uses the same one-pair gearbox. Delay the
-            // completion acknowledgement until all pairs are present,
-            // matching the fitted controller's cmd_ack semantics.
-            line_write_pending <= 1;
+    if (|buttons) begin
+        write_pending <= 0;
+        read_delay <= 0;
+        read_pairs <= 0;
+        transfer_pair <= 0;
+    end else begin
+    if (sdram_request_valid && sdram_request_ready) begin
+        if (sdram_words != 1 && sdram_words != 8 &&
+            sdram_words != 16 && sdram_words != 32)
+            $fatal(1, "illegal native descriptor length %0d", sdram_words);
+        if (write_pending || read_delay != 0 || read_pairs != 0)
+            $fatal(1, "overlapping native descriptors write=%0d delay=%0d pairs=%0d new_write=%0d new_words=%0d new_addr=%h old_words=%0d old_addr=%h port_state=%0d",
+                write_pending, read_delay, read_pairs, sdram_write,
+                sdram_words, sdram_address, transfer_words,
+                transfer_address, dut.u_shared_sdram_port.state);
+        transfer_address <= sdram_address;
+        transfer_words <= sdram_words;
+        transfer_mask <= sdram_write_mask;
+        transfer_pair <= 0;
+        transfer_pairs <= sdram_words == 1 ? 1 : sdram_words / 2;
+        if (sdram_write) begin
+            write_pending <= 1;
         end else begin
-            sdram_command_ack <= 1;
-            write_capture_beat <= 0;
-            if (!sdram_write_mask[0]) memory[{sdram_address, 1'b0}][7:0] <= sdram_write_data[7:0];
-            if (!sdram_write_mask[1]) memory[{sdram_address, 1'b0}][15:8] <= sdram_write_data[15:8];
-            if (!sdram_write_mask[2]) memory[{sdram_address, 1'b1}][7:0] <= sdram_write_data[23:16];
-            if (!sdram_write_mask[3]) memory[{sdram_address, 1'b1}][15:8] <= sdram_write_data[31:24];
+            read_delay <= 2;
+            read_pairs <= sdram_words == 1 ? 1 : sdram_words / 2;
+            if (sdram_write_mask != 0) $fatal(1, "read DQM mask not zero");
+            if (sdram_words == 1) word_read_seen <= 1;
+            else line_burst_seen <= 1;
         end
     end
 
-    if (line_write_pending &&
-        write_capture_beat == (pending_write_length + 1) / 2) begin
-        begin : line_write_commit
-            integer j;
-            for (j = 0; j < (pending_write_length + 1) / 2; j = j + 1) begin
-                idx = pending_write_address + 2*j;
-                memory[{idx, 1'b0}] <= write_capture[j][15:0];
-                memory[{idx, 1'b1}] <= write_capture[j][31:16];
-                idx = idx + 1;
-                memory[{idx, 1'b0}] <= write_capture[j][47:32];
-                memory[{idx, 1'b1}] <= write_capture[j][63:48];
-            end
-        end
-        sdram_command_ack <= 1;
-        write_capture_beat <= 0;
-        line_write_pending <= 0;
-    end
-
-    // One READ command returns burst_length+1 ordered 64-bit beats for a line
-    // (four beats) or one 32-bit word for a burst of zero.
-    if (sdram_command_valid && sdram_command == 3'b101) begin
-        if (sdram_burst_length == 0) word_read_seen <= 1;
-        else if (sdram_burst_length == 7 || sdram_burst_length == 15 ||
-                 sdram_burst_length == 23 || sdram_burst_length == 31)
-            line_burst_seen <= 1;
-        else $fatal(1, "unexpected burst length %0d", sdram_burst_length);
-        pending_read_address <= sdram_address;
-        read_is_line <= sdram_burst_length != 0;
-        read_delay <= 2;
-        read_beat <= 0;
-        read_beats <= sdram_burst_length == 0 ? 1 : (sdram_burst_length + 1) / 2;
-        sdram_command_ack <= 1;
-    end else if (read_delay != 0) begin
-        read_delay <= read_delay - 1;
-    end else if (read_beats != 0) begin
-        sdram_read_valid <= 1;
-        if (read_is_line) begin
-            idx = pending_read_address + 2*read_beat;
+    if (write_pending && sdram_write_data_valid && sdram_write_data_ready) begin
+        idx = transfer_address + 2*transfer_pair;
+        if (transfer_words == 1) begin
+            if (!transfer_mask[0]) memory[{idx,1'b0}] <= sdram_write_data[15:0];
+            if (!transfer_mask[2]) memory[{idx,1'b1}] <= sdram_write_data[31:16];
+        end else begin
             idx2 = idx + 1;
-            sdram_read_data <= {
-                memory[{idx2, 1'b1}],
-                memory[{idx2, 1'b0}],
-                memory[{idx, 1'b1}],
-                memory[{idx, 1'b0}]
-            };
-        end else begin
-            idx = pending_read_address;
-            sdram_read_data <= {
-                32'b0,
-                memory[{idx, 1'b1}],
-                memory[{idx, 1'b0}]
-            };
+            memory[{idx,1'b0}] <= sdram_write_data[15:0];
+            memory[{idx,1'b1}] <= sdram_write_data[31:16];
+            memory[{idx2,1'b0}] <= sdram_write_data[47:32];
+            memory[{idx2,1'b1}] <= sdram_write_data[63:48];
         end
-        read_beat <= read_beat + 1'b1;
-        read_beats <= read_beats - 1;
+        transfer_pair <= transfer_pair + 1;
+        if (transfer_pair == transfer_pairs - 1) begin
+            write_pending <= 0;
+            sdram_done <= 1;
+        end
+    end
+
+    if (read_delay != 0) read_delay <= read_delay - 1;
+    else if (read_pairs != 0) begin
+        idx = transfer_address + 2*transfer_pair;
+        idx2 = idx + 1;
+        sdram_read_data <= transfer_words == 1 ?
+            {32'b0, memory[{idx,1'b1}], memory[{idx,1'b0}]} :
+            {memory[{idx2,1'b1}], memory[{idx2,1'b0}],
+             memory[{idx,1'b1}], memory[{idx,1'b0}]};
+        sdram_read_valid <= 1;
+        transfer_pair <= transfer_pair + 1;
+        read_pairs <= read_pairs - 1;
+        if (read_pairs == 1) sdram_done <= 1;
+    end
     end
 end
 
 always @(posedge clk) begin
     if (dut.code_segment == 16'd7 && dut.memory_response_valid && dut.memory_error)
-        $display("FAIL: SDRAM adapter error (state=%0d pending=0x%06x write=%0d line=%0d count=%0d timeout=%0d fed=%0d/%0d model_pending=%0d model_capture=%0d/%0d model_address=0x%06x gpu=%0d/%0d/%0d)",
-            dut.u_shared_sdram_port.state,
-            dut.u_shared_sdram_port.pending_address,
-            dut.u_shared_sdram_port.pending_write,
-            dut.u_shared_sdram_port.pending_line,
-            dut.u_shared_sdram_port.pending_line_count,
-            dut.u_shared_sdram_port.timeout_count,
-            dut.u_shared_sdram_port.line_fed,
-            dut.u_shared_sdram_port.line_total,
-            line_write_pending, write_capture_beat,
-            (pending_write_length + 1) / 2, pending_write_address,
-            dut.gpu_ro_memory_error, dut.gpu_fb_r_memory_error,
-            dut.gpu_fb_w_memory_error);
+        $fatal(1, "SDRAM native adapter error: state=%0d fed=%0d/%0d words=%0d address=%h",
+            dut.u_shared_sdram_port.state, dut.u_shared_sdram_port.line_fed,
+            dut.u_shared_sdram_port.line_total, transfer_words, transfer_address);
     if (dut.icache_memory_request_ready &&
         (!dut.memory_request_valid || dut.memory_write || !dut.memory_line ||
          dut.memory_address != dut.icache_memory_address)) begin
-        $display("FAIL: instruction acceptance routed mismatched request (icache=0x%06x memory=0x%06x valid=%0d write=%0d line=%0d)",
-            dut.icache_memory_address, dut.memory_address,
-            dut.memory_request_valid, dut.memory_write, dut.memory_line);
+        $display("FAIL: instruction acceptance routed mismatched request");
         $finish(1);
     end
 end
@@ -354,9 +309,9 @@ always @(posedge clk) begin
                 dut.memory_response_last, dut.u_shared_sdram_port.state,
                 dut.u_shared_sdram_port.pending_write,
                 dut.u_shared_sdram_port.pending_line,
-                dut.u_shared_sdram_port.pending_address,
-                dut.u_shared_sdram_port.beat, dut.u_shared_sdram_port.line_total,
-                dut.sdram_command_valid, dut.sdram_command_ack, dut.sdram_read_valid,
+                dut.memory_address,
+                dut.u_shared_sdram_port.read_beats, dut.u_shared_sdram_port.line_total,
+                dut.sdram_request_valid, dut.sdram_done, dut.sdram_read_valid,
                 dut.core_data_line_clean_valid, dut.core_data_line_clean_address,
                 dut.dcache_line_copy_ready, dut.u_data_cache.state,
                 dut.dcache_maintenance_busy, dut.dcache_maintenance_done);

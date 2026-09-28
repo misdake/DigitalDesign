@@ -230,6 +230,7 @@ const SYSTEM_COSIM_SDRAM_WORDS: usize = 0x20000;
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 enum SdramState {
     Idle,
+    NativeActive,
     WriteCapture,
     WriteStage,
     ActiveReq,
@@ -240,6 +241,34 @@ enum SdramState {
     Recovery,
     RefreshReq,
     RefreshWait,
+}
+
+/// CPU-port timing calibrated against the native controller, two-pair bridge,
+/// adapter, and SDRAM pin model at BANK_BIT=5. Only the benchmark harness opts
+/// into this profile; the system co-simulation retains its matched RTL oracle.
+#[derive(Clone)]
+struct NativeSdramService {
+    open_rows: [Option<u16>; 4],
+    elapsed: u8,
+    first_read: u8,
+    response_cycle: u8,
+    ready_cycle: u8,
+    write_resume: u8,
+    write_fed: u8,
+}
+
+impl NativeSdramService {
+    fn new() -> Self {
+        Self {
+            open_rows: [None; 4],
+            elapsed: 0,
+            first_read: 0,
+            response_cycle: 0,
+            ready_cycle: 0,
+            write_resume: 0,
+            write_fed: 0,
+        }
+    }
 }
 
 /// Matched CPU-port service model used by the Rust/RTL system co-simulation.
@@ -254,6 +283,7 @@ enum SdramState {
 pub struct SdramModel {
     memory: Vec<u16>,
     state: SdramState,
+    native: Option<NativeSdramService>,
     refresh_count: u16,
     pending_write: bool,
     pending_line: bool,
@@ -272,6 +302,7 @@ impl SdramModel {
         Self {
             memory,
             state: SdramState::Idle,
+            native: None,
             refresh_count: 0,
             pending_write: false,
             pending_line: false,
@@ -284,6 +315,12 @@ impl SdramModel {
             response_last: false,
             recovery_count: 0,
         }
+    }
+
+    fn new_native_128b(memory: Vec<u16>) -> Self {
+        let mut model = Self::new(memory);
+        model.native = Some(NativeSdramService::new());
+        model
     }
 
     /// Final SDRAM contents (meaningful after the post-halt D-cache clean).
@@ -303,6 +340,14 @@ impl SdramModel {
     }
 
     fn write_data_ready(&self) -> bool {
+        if let Some(native) = &self.native {
+            let next_cycle = native.elapsed + 1;
+            return self.state == SdramState::NativeActive
+                && self.pending_write
+                && self.pending_line
+                && native.write_fed < 4
+                && (next_cycle <= 2 || next_cycle >= native.write_resume);
+        }
         self.state == SdramState::WriteCapture
             || (self.state == SdramState::OpWait
                 && self.pending_write
@@ -318,6 +363,10 @@ impl SdramModel {
         address: u32,
         write_data: u64,
     ) {
+        if self.native.is_some() {
+            self.clock_native(request_valid, write, line, address, write_data);
+            return;
+        }
         // Evaluate the refresh condition against the pre-edge counter, exactly
         // like the `SharedSdramPort` RTL (refresh_due = refresh_count >= 600). The
         // counter is incremented afterwards and stops at 600, so a request
@@ -420,11 +469,167 @@ impl SdramModel {
                 self.refresh_count = 0;
                 self.state = SdramState::Idle;
             }
+            SdramState::NativeActive => unreachable!("legacy service entered a native phase"),
         }
 
         if !in_refresh_wait && !refresh_due {
             self.refresh_count += 1;
         }
+    }
+
+    fn clock_native(
+        &mut self,
+        request_valid: bool,
+        write: bool,
+        line: bool,
+        address: u32,
+        write_data: u64,
+    ) {
+        // Keep the legacy refresh cadence in this paired benchmark so the
+        // comparison isolates request service. The controller's real refresh
+        // interval is checked separately by the pin-level integration test.
+        let refresh_due = self.refresh_count >= 600;
+        let in_refresh_wait = self.state == SdramState::RefreshWait;
+        match self.state {
+            SdramState::Idle => {
+                self.response_valid = false;
+                if refresh_due {
+                    self.state = SdramState::RefreshReq;
+                } else if request_valid {
+                    assert!(
+                        line,
+                        "native128 benchmark profile expects cache-line requests"
+                    );
+                    let native = self.native.as_mut().unwrap();
+                    let bank = ((address >> 6) & 3) as usize;
+                    let row = (address >> 11) as u16;
+                    let row_penalty = match native.open_rows[bank] {
+                        Some(open) if open == row => 0,
+                        None => 1,
+                        Some(_) => 2,
+                    };
+                    native.open_rows[bank] = Some(row);
+                    native.elapsed = 0;
+                    native.write_fed = 0;
+                    native.write_resume = 4 + row_penalty;
+                    native.first_read = 7 + u8::from(row_penalty == 2);
+                    native.response_cycle = if write {
+                        10 + row_penalty
+                    } else {
+                        native.first_read + 3
+                    };
+                    native.ready_cycle = native.response_cycle + 1;
+                    self.pending_write = write;
+                    self.pending_line = line;
+                    self.pending_address = address as usize;
+                    self.pending_write_data = write_data;
+                    self.beat = 0;
+                    self.state = SdramState::NativeActive;
+                }
+            }
+            SdramState::NativeActive => {
+                let feed = self.write_data_ready();
+                let native = self.native.as_mut().unwrap();
+                native.elapsed += 1;
+                let elapsed = native.elapsed;
+                let first_read = native.first_read;
+                let response_cycle = native.response_cycle;
+                let ready_cycle = native.ready_cycle;
+                let write_fed = native.write_fed + u8::from(feed);
+                native.write_fed = write_fed;
+                if feed {
+                    self.store_beat(write_data);
+                    self.beat += 1;
+                }
+                self.response_valid = false;
+                if self.pending_write {
+                    if elapsed == response_cycle {
+                        debug_assert_eq!(write_fed, 4);
+                        self.response_valid = true;
+                        self.response_data = 0;
+                        self.response_last = true;
+                    }
+                } else if elapsed >= first_read && elapsed <= response_cycle {
+                    let offset = self.pending_address + 4 * self.beat as usize;
+                    self.response_data = u64::from(self.memory[offset])
+                        | u64::from(self.memory[offset + 1]) << 16
+                        | u64::from(self.memory[offset + 2]) << 32
+                        | u64::from(self.memory[offset + 3]) << 48;
+                    self.response_valid = true;
+                    self.response_last = elapsed == response_cycle;
+                    self.beat += 1;
+                }
+                if elapsed == ready_cycle {
+                    self.response_valid = false;
+                    self.state = SdramState::Idle;
+                }
+            }
+            SdramState::RefreshReq => self.state = SdramState::RefreshWait,
+            SdramState::RefreshWait => {
+                self.refresh_count = 0;
+                self.native.as_mut().unwrap().open_rows = [None; 4];
+                self.state = SdramState::Idle;
+            }
+            _ => unreachable!("native service entered a legacy phase"),
+        }
+        if !in_refresh_wait && !refresh_due {
+            self.refresh_count += 1;
+        }
+    }
+}
+
+#[cfg(test)]
+mod native_timing_tests {
+    use super::SdramModel;
+
+    fn line_service(
+        model: &mut SdramModel,
+        address: u32,
+        writing: bool,
+    ) -> (usize, usize, usize, Vec<usize>) {
+        assert!(model.request_ready());
+        model.clock(true, writing, true, address, 0);
+        let mut first = None;
+        let mut last = None;
+        let mut feeds = Vec::new();
+        for cycle in 1..=40 {
+            let feed = model.write_data_ready();
+            model.clock(false, writing, true, address, 0x1122_3344_5566_7788);
+            if feed {
+                feeds.push(cycle);
+            }
+            if model.response_valid {
+                first.get_or_insert(cycle);
+                last = Some(cycle);
+            }
+            if model.request_ready() {
+                return (first.unwrap(), last.unwrap(), cycle, feeds);
+            }
+        }
+        panic!("native benchmark service exceeded 40 CPU cycles");
+    }
+
+    #[test]
+    fn bank_striped_service_matches_pin_level_cpu_port_timings() {
+        let mut model = SdramModel::new_native_128b(vec![0; 0x4000]);
+        assert_eq!(line_service(&mut model, 0, false), (7, 10, 11, vec![]));
+        assert_eq!(line_service(&mut model, 16, false), (7, 10, 11, vec![]));
+        assert_eq!(line_service(&mut model, 64, false), (7, 10, 11, vec![]));
+        assert_eq!(line_service(&mut model, 2048, false), (8, 11, 12, vec![]));
+        // Bank 1 remains open while bank 0 changes row.
+        assert_eq!(line_service(&mut model, 64, false), (7, 10, 11, vec![]));
+        assert_eq!(
+            line_service(&mut model, 0, true),
+            (12, 12, 13, vec![1, 2, 6, 7])
+        );
+        assert_eq!(
+            line_service(&mut model, 16, true),
+            (10, 10, 11, vec![1, 2, 4, 5])
+        );
+        assert_eq!(
+            line_service(&mut model, 128, true),
+            (11, 11, 12, vec![1, 2, 5, 6])
+        );
     }
 }
 
@@ -790,6 +995,7 @@ fn next_physical_word(address: u32) -> u32 {
 fn sdram_state_index(state: SdramState) -> usize {
     match state {
         SdramState::Idle => 0,
+        SdramState::NativeActive => 4,
         SdramState::ActiveReq => 1,
         SdramState::ActiveWait => 2,
         SdramState::OpReq => 3,
@@ -1144,7 +1350,12 @@ fn run_benchmark_profiled_inner(
         live_handles.restore(&checkpoint.snapshot);
     }
 
-    let mut sdram = start_sdram.unwrap_or_else(|| SdramModel::new(memory));
+    let memory_profile = std::env::var("CPU_V3_BENCH_SDRAM_PROFILE").ok();
+    let mut sdram = start_sdram.unwrap_or_else(|| match memory_profile.as_deref() {
+        None | Some("legacy") => SdramModel::new(memory),
+        Some("native128") => SdramModel::new_native_128b(memory),
+        Some(other) => panic!("unknown CPU_V3_BENCH_SDRAM_PROFILE={other}"),
+    });
     let mut trace = TraceRecorder::new(trace_directory);
     let mut previous_retired = start_from
         .map(|checkpoint| checkpoint.snapshot.core.retired_words())

@@ -167,30 +167,25 @@ const OWNER_CODES: [u8; 6] = [
     OWNER_GPU_FB_W,
 ];
 
-/// One fitted SDRAM row: 256 x 32-bit controller beats, i.e. 512 16-bit words
-/// (`controller_beat = word_address >> 1`, `row = controller_beat[18:8]`).
-pub const SDRAM_ROW_WORDS: u32 = 512;
-/// A line is 32 bytes, sixteen 16-bit words.
+/// A cache line is 32 bytes, sixteen 16-bit words. The native controller
+/// owns the physical bank/row mapping after the halfword lane is removed.
 pub const LINE_WORDS: u32 = 16;
 
-/// True when a `line_count_minus_1[1:0]` request starting at the 32-byte
-/// aligned word `address` transfers all of its `16 * (line_count + 1)` words
-/// inside one 1 KiB SDRAM row. An open-page burst that crossed a row would
-/// need a precharge/ACTIVE in the middle, which the adapter does not emit, so
-/// the requester must split such a request. The GPU hosts and test code check
-/// this with [`assert_line_request_fits_row`]; RTL clients are responsible for
-/// splitting before they issue.
-pub const fn line_request_fits_row(address: u32, line_count_minus_1: u32) -> bool {
-    let words = LINE_WORDS * ((line_count_minus_1 & 0x3) + 1);
-    address & (SDRAM_ROW_WORDS - 1) <= SDRAM_ROW_WORDS - words
+/// The native controller accepts 32, 64 and 128-byte naturally aligned line
+/// requests. Encoding 2 is reserved; bank/row transitions are controller-owned.
+pub const fn line_request_is_legal(address: u32, line_count_minus_1: u32) -> bool {
+    if line_count_minus_1 > 3 || line_count_minus_1 == 2 {
+        return false;
+    }
+    let words = LINE_WORDS * (line_count_minus_1 + 1);
+    address & (words - 1) == 0
 }
 
-/// Panics with a descriptive message when [`line_request_fits_row`] is false.
-pub fn assert_line_request_fits_row(address: u32, line_count_minus_1: u32) {
+/// Panics when a host request cannot be sent to the native controller.
+pub fn assert_line_request_is_legal(address: u32, line_count_minus_1: u32) {
     assert!(
-        line_request_fits_row(address, line_count_minus_1),
-        "line request at word {address:#x} for {} line(s) crosses a 1 KiB SDRAM row",
-        (line_count_minus_1 & 0x3) + 1
+        line_request_is_legal(address, line_count_minus_1),
+        "line request at word {address:#x} has unsupported length/alignment encoding {line_count_minus_1}"
     );
 }
 
@@ -1447,7 +1442,7 @@ mod tests {
             input.gpu_fb_w_write_data = 0x6666;
             input.gpu_fb_w_write = true;
             input.gpu_ro_line_count_minus_1 = 1;
-            input.gpu_fb_r_line_count_minus_1 = 2;
+            input.gpu_fb_r_line_count_minus_1 = 0;
             input.gpu_fb_w_line_count_minus_1 = 3;
             input.display_request_valid = cycle % 101 < 3;
             input.memory_request_ready = rng & 3 != 0;
@@ -1495,7 +1490,7 @@ mod tests {
                         }
                         beats_left = match owner {
                             Owner::GpuRo => 8,
-                            Owner::GpuFbR => 12,
+                            Owner::GpuFbR => 4,
                             Owner::GpuFbW => 16,
                             Owner::Dma => 1,
                             _ => 4,
@@ -1558,27 +1553,22 @@ mod tests {
     }
 
     #[test]
-    fn row_boundary_check_accepts_row_filling_requests_and_rejects_crossings() {
-        // A row holds 32 lines (512 words / 16). Every aligned request that
-        // ends exactly at the row boundary fits.
-        assert!(line_request_fits_row(0x000, 0));
-        assert!(line_request_fits_row(0x1f0, 0));
-        assert!(line_request_fits_row(0x1e0, 1));
-        assert!(line_request_fits_row(0x1d0, 2));
-        assert!(line_request_fits_row(0x1c0, 3));
-        // One line further crosses into the next row.
-        assert!(!line_request_fits_row(0x1e0, 2));
-        assert!(!line_request_fits_row(0x1d0, 3));
-        assert!(!line_request_fits_row(0x1f0, 1));
-        // The row check ignores higher bits and only looks at the offset.
-        assert!(line_request_fits_row(0x800, 3));
-        assert!(!line_request_fits_row(0x9e0, 2));
+    fn native_line_request_requires_supported_size_and_alignment() {
+        assert!(line_request_is_legal(0x000, 0));
+        assert!(line_request_is_legal(0x1f0, 0));
+        assert!(line_request_is_legal(0x1e0, 1));
+        assert!(line_request_is_legal(0x1c0, 3));
+        assert!(line_request_is_legal(0x800, 3));
+        assert!(!line_request_is_legal(0x1f0, 1));
+        assert!(!line_request_is_legal(0x1e0, 3));
+        assert!(!line_request_is_legal(0x1d0, 2));
+        assert!(!line_request_is_legal(0x800, 4));
     }
 
     #[test]
-    #[should_panic(expected = "crosses a 1 KiB SDRAM row")]
-    fn row_boundary_assertion_reports_a_crossing_request() {
-        assert_line_request_fits_row(0x1f0, 3);
+    #[should_panic(expected = "unsupported length/alignment")]
+    fn native_line_assertion_reports_invalid_alignment() {
+        assert_line_request_is_legal(0x1f0, 3);
     }
 
     #[test]

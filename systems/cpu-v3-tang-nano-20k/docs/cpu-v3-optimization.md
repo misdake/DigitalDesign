@@ -62,6 +62,7 @@ generated outside this document.
 - 2026-09-28 — Stream-owned fetch offsets, owner-qualified response broadcast and synchronous I/D-cache tag DPBs reduce whole-system Logic while preserving cache cycles and GPU behavior; matched RAM16, staging and arbitration alternatives remain in the local resource audit.
 
 - 2026-09-28 — Unified FPU lanes, common integer operands/results, synchronous D-cache metadata, ordered fetch cursors and six-client round robin reduce Logic while retaining two-way caches, dense clean throughput and frozen-suite execution cycles; full offline validation passed.
+- 2026-09-28 — The native SDRAM controller and two-pair 54/108-MHz bridge integrate bank-striped, naturally aligned line bursts with scalar masking; full-system simulation and routed timing pass.
 
 ## Next work
 

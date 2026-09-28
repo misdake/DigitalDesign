@@ -13,7 +13,7 @@ in [`cpu-v3-optimization-record.md`](cpu-v3-optimization-record.md). Reusable pr
 - a four-entry instruction fetch queue with a four-entry, two-word resolved-target BTC;
 - a Stage0 instruction BSRAM window and separate 4-KiB I-cache and D-cache;
 - the seven-owner CPU V3 memory arbiter, boot DMA, and first tile-cache GPU engine;
-- the related-clock SDRAM/display port and Gowin Controller HS boundary;
+- the related-clock SDRAM/display port and native controller boundary;
 - SPI-Flash boot DMA, system-control, boot-select, and framebuffer devices;
 - boot-progress reporting, UART, LEDs, and the HDMI output path (compile-time
   display mode from `display::ACTIVE_DISPLAY_CONFIG`).
@@ -79,9 +79,9 @@ explicit single-line ownership handoff; there is no hardware snoop or range-main
 
 One cache line crosses the CPU-side memory interface as four ordered 64-bit beats at 54 MHz. Refill
 and write-back transfer those beats directly through the parity-bank ports; neither cache retains a
-private complete-line buffer. The related-clock gearbox converts a line to eight ordered 32-bit
-Controller HS beats at 108 MHz. The boundary is fixed 2:1 related-clock logic, not an asynchronous
-FIFO.
+private complete-line buffer. The related-clock bridge converts a line to eight ordered 32-bit
+native controller beats at 108 MHz. The bridge holds at most two 64-bit write pairs, independently
+of burst length; the cache retains the rest. Its clocks are an exact 2:1 PLL pair.
 
 D-cache write-back retains the locked line in its data DPBs. Request acceptance consumes only
 the address; all four data beats, including beat zero, require `memory_write_data_ready`.
@@ -99,25 +99,29 @@ priority at transaction boundaries. The other six owners use round-robin selecti
 three-bit cursor; no age or score arrays remain. An accepted owner remains selected through its
 last response or error. GPU framebuffer reads and writes are both active cache traffic. The I-cache,
 D-cache, and display paths transfer fixed 4x64-bit lines; boot DMA retains its narrow-word mode.
-The three GPU ports encode one through four consecutive lines as `line_count_minus_one`, giving
-32/64/96/128-byte requests that must remain within one 1-KiB SDRAM row. Reads return 4/8/12/16
-unstallable 64-bit beats. All line writes advance the source only when the per-beat write-ready signal
-is asserted. `SharedSdramPort` preloads one 64-bit holding pair, phase-aligns WRITE so Controller HS
-samples its low half on the 54-MHz falling edge, and replaces it as the high half is sampled on the
-following rising edge. The remaining 64-bit beats stay in their source cache entry; neither the
-adapter nor gearbox contains a complete-line transaction buffer. Controller HS consumes 8/16/24/32
-32-bit beats. Command and tile-list
-fetches remain one line, while framebuffer cache refill and clean use four-line transactions.
-An idle adapter accepts a long write even when refresh becomes due on the same cycle; the accepted
-finite transaction completes first and the overdue refresh runs immediately afterward, so beat zero
-cannot be lost at the 54/108-MHz gearbox boundary.
-`SharedSdramPort` is a single-client line/word adapter and contains no second CPU/display arbiter.
+The three GPU ports use `line_count_minus_one` to request 32, 64 or 128 bytes; encoding 2 is
+reserved and the adapter rejects it. Each burst is naturally aligned. Reads return 4, 8 or 16
+unstallable 64-bit beats. All line writes advance their cache source only when the bridge accepts
+each beat. `SharedSdramPort` translates this contract to one native descriptor: one 32-bit word
+for a masked 16-bit access, or 8, 16 or 32 words for a line burst. It does not issue ACT, PRE or
+refresh. The native controller handles those operations, tracks open rows in all four banks, and
+performs a 128-byte bank permutation (`BANK_BIT=5`) internally. Halfword-to-native address
+conversion drops only the halfword lane bit, so the permutation is applied exactly once.
+
+The bridge preloads two 64-bit write pairs, then replaces the consumed head as the controller
+samples its high half. A write begins on the CPU falling edge; the following rising edge both
+consumes the old high half and may accept the next pair. Reads group two native return words into
+one ordered 64-bit response. Transaction completion and reset clear the bridge's ownership token.
+Command and tile-list fetches remain one line, while framebuffer cache refill and clean use four
+line transactions. The arbiter has one outstanding request, so the controller's optional
+next-descriptor chaining is not enabled in this system.
 
 ## Clock domains
 
-- CPU core, fetch queue, caches, arbiter, boot DMA, devices, and the CPU side of the SDRAM gearbox run
+- CPU core, fetch queue, caches, arbiter, boot DMA, devices, and the CPU side of the SDRAM bridge run
   at 54 MHz.
-- Gowin Controller HS and the physical 32-bit SDRAM beat side run at the exact related 108-MHz clock.
+- The native controller and physical 32-bit SDRAM beat side run at the related 108-MHz clock.
+  The SDRAM output clock is shifted by 292.5 degrees from the controller clock.
 - HDMI scanout uses separate pixel and serialization clocks. The display path owns the explicit
   crossings and line buffering; CPU IP does not depend on video clocks.
 
@@ -274,8 +278,8 @@ the same stable mapping through `LoaderError::boot_report`.
 ## Current fitted result and validation boundary
 
 The default 2x four-line display/sRGB system retains the eight-DPB framebuffer and
-quad owner. The latest production fit adds CPU/cache architecture consolidation to
-`eb41760`; its generated GPU, display and SDRAM backend sources are unchanged.
+quad owner. The CPU/cache architecture consolidation fit is the baseline for the
+native SDRAM integration below.
 
 | Production fit | Logic | LUT | ALU | RAM16 | Logic FF | BSRAM | CPU fitted fmax | Worst setup slack |
 | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
@@ -283,28 +287,28 @@ quad owner. The latest production fit adds CPU/cache architecture consolidation 
 | Display + eight-DPB C/Z quad owner | 14,152 | 11,317 | 2,175 | 110 | 5,620 | 18 | 54.260 MHz | 0.089 ns |
 | Same GPU + fetch/arbiter/cache-tag optimization | 13,478 | 10,963 | 2,143 | 62 | 5,493 | 20 | 56.218 MHz | 0.730 ns |
 | Same system + source-held D-cache writeback | 13,380 | 10,866 | 2,142 | 62 | 5,174 | 20 | 58.403 MHz | 1.396 ns |
-| **CPU/cache architecture consolidation** | **12,093** | **9,833** | **1,960** | **50** | **4,896** | **20** | **58.800 MHz** | **1.512 ns** |
+| CPU/cache architecture consolidation | 12,093 | 9,833 | 1,960 | 50 | 4,896 | 20 | 58.800 MHz | 1.512 ns |
+| **Native SDRAM, 54/108-MHz bridge** | **12,304** | **10,005** | **1,999** | **50** | **4,979** | **20** | **55.547 MHz** | **0.516 ns** |
 
-The consolidation shares scalar/vector FPU lane control and ALU commitment, integer
+The previous consolidation shares scalar/vector FPU lane control and ALU commitment, integer
 operands/arithmetic, ordered fetch position and D-cache metadata, and replaces age
 scores with a six-client round-robin cursor. It removes 1,287 Logic without adding RAM
-or DSP. The current fit uses 7,899 CLS, five SDPB, fourteen DPB, one pROM, two `MULT18X18`,
+or DSP. The native-controller fit uses 8,006 CLS, five SDPB, fourteen DPB, one pROM, two `MULT18X18`,
 one `MULT36X36` and five `MULTADDALU18X18`: sixteen 18x18-equivalent multiplier lanes,
 reported as 34% DSP utilization. GPU storage is eight cache DPBs plus one raster
 FIFO SDPB; command/list and tags share 18 RAM16 cells. Real shader/depth/blend and depth
 surface traffic are outside this fit; the reserved Z DPBs are included.
 
-Runtime clocks remain 54/108 MHz, with zero setup/hold TNS and violated endpoints.
-The first setup path is core instruction decode to fetch metadata-current clock enable;
-controller timing closes at 145.872 MHz against 108 MHz. Place/route algorithms remain 1.
-All twenty hardware-validation steps, 732 workspace tests, strict Clippy, 31 CPU ignored
-RTL tests, two system co-sims, 22 system RTL tests and both full Flash-image tests passed.
-All 22 frozen benchmarks retain their execution cycles; including one final full clean
-per program increases geometric-mean completion cycles by 0.34%; the worst case is the
-short FPU spill stress at +4.94% (61 clocks). Sparse clean pays a
-bounded set scan; dense full clean retains write-back throughput. Sources, matched fits,
-independent goldens and raw performance are archived in local record
-`cpu-v3-architecture-logic-2026-09-28`. This result is not new physical-board proof.
+The native fit adds 211 Logic against that baseline and keeps the 54/108-MHz runtime clocks.
+The fitted controller clock limit is 136.790 MHz; the CPU limit is 55.547 MHz. Both setup
+and hold have zero violated endpoints and zero TNS; the tightest setup path is in the CPU
+core, with 0.516 ns slack. The full-system bitstream passed its generated-source audit.
+The previous consolidation retained all 22 frozen benchmark execution cycles; its
+benchmark and source evidence is archived in local record
+`cpu-v3-architecture-logic-2026-09-28`. The native fit is offline evidence until the
+integrated image is checked on the board. The 108-MHz CL2 clock is 9.259 ns, below the
+10-ns CL2 minimum in the [EM638325 -6 reference](https://etron.com/wp-content/uploads/2022/04/EM638325_Rev-3.2.pdf);
+board success at this point is empirical overclock evidence, not a PVT guarantee.
 
 ## Verification and physical evidence
 
@@ -329,7 +333,6 @@ The previous `11729ac` image passed cold-boot UART/HDMI validation. The Logic cl
 image at `6149698` passed audited SRAM loading, then complete Flash Program/Verify
 at `0x000000` (boot package at `0x100000`) and another SRAM load. Each UART capture
 passes 499 strict S2 `0x0b` success frames with zero errors; BL616 recovery was unnecessary.
-That earlier optimized image remains in Flash and SRAM; its cold-boot UART/HDMI check is pending.
 K=1 and blocking refill/clean remain; geometry and varying interpolation are not implemented.
 
 This result is implementation evidence, not a substitute for board validation. Changes to clocks,
