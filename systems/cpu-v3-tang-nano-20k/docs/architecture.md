@@ -1,6 +1,11 @@
 # CPU V3 Tang Nano 20K system architecture
 
-This document describes the current fitted Stage 12 system. It is the current-state companion to the
+This document records the last fitted Stage 12 system before the GPU v2 reset. GPU resource,
+timing, raster, and framebuffer results below are historical, not measurements of the current
+GPU integration leaf. Device 4 now rejects legacy submissions and issues no memory requests;
+the standalone v2 cmodel is at `src/hardware/gpu/sim/`.
+
+It is the companion to the
 concise [`cpu-v3-optimization.md`](cpu-v3-optimization.md) index; long-form historical evidence lives
 in [`cpu-v3-optimization-record.md`](cpu-v3-optimization-record.md). Reusable processor details belong to the
 [`CPU V3 IP documentation`](../../../ip/cpu-v3/docs/README.md).
@@ -12,7 +17,7 @@ in [`cpu-v3-optimization-record.md`](cpu-v3-optimization-record.md). Reusable pr
 - the revision 0.9 `CpuV3Core` at the Stage 12 microarchitecture level;
 - a four-entry instruction fetch queue with a four-entry, two-word resolved-target BTC;
 - a Stage0 instruction BSRAM window and separate 4-KiB I-cache and D-cache;
-- the seven-owner CPU V3 memory arbiter, boot DMA, and first tile-cache GPU engine;
+- the seven-owner CPU V3 memory arbiter, boot DMA, and reserved GPU ports;
 - the related-clock SDRAM/display port and native controller boundary;
 - SPI-Flash boot DMA, system-control, boot-select, and framebuffer devices;
 - boot-progress reporting, UART, LEDs, and the HDMI output path (compile-time
@@ -22,11 +27,8 @@ The system owns concrete memory layout, device indices and channels, board clock
 firmware, display scheduling, and physical validation. The CPU IP sees only physical instruction and
 data word ports plus the narrow device port.
 
-The [eight-DPB C16/Z16 storage and quad owner](framebuffer-cache.md) is instantiated
-by the production GPU. It retains source quads through atomic masked writes and
-executes in physical bank order. The controller retains blocking acquisition and
-color-only SDRAM traffic; local Z initializes to far depth. Real depth/blend,
-depth surface binding and concurrent sector scheduling remain separate work.
+The [eight-DPB C16/Z16 storage and quad owner](framebuffer-cache.md) describes the
+retired GPU implementation. The current integration leaf has no framebuffer storage.
 
 ## Processor and instruction path
 

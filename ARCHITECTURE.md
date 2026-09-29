@@ -54,12 +54,14 @@ CPU V2/V3 systems use physical addresses only. CPU V3 forms a 32-bit word addres
 16-bit-word ready/valid single-outstanding memory contract, two-byte write masks, and system-owned
 device-channel allocation.
 
-`dev_send`/`dev_recv` are the control plane. Shared physical memory is the CPU/GPU/DMA data plane.
-The CPU D-cache is write-back. CPU-to-GPU ownership transfer waits until a blocking full clean has
-made CPU writes visible in DRAM; GPU completion makes all
-of its writes visible in DRAM; CPU ownership resumes only after the system-control device completes
-a D-cache invalidation. There is no MMU, snooping, burst protocol, transaction ID, or multiple
-outstanding request support yet.
+`dev_send`/`dev_recv` are the control plane. Shared physical memory is the CPU/DMA data plane and
+the reserved GPU data plane. The former production GPU was retired during the v2 redesign; its
+standalone cmodel lives at `systems/cpu-v3-tang-nano-20k/src/hardware/gpu/sim`. Device 4 currently
+reports submit rejected and its three memory masters remain idle. The CPU D-cache is
+write-back. When the new GPU is integrated, CPU-to-GPU ownership transfer requires a blocking full
+clean to make CPU writes visible in DRAM, and GPU completion must make its writes visible before CPU
+ownership resumes after system-control D-cache invalidation. There is no MMU, snooping, transaction
+ID, or multiple outstanding request support yet.
 
 ## CPU V1 pilot review
 
