@@ -1,6 +1,6 @@
 //! Provisional 96-bit compact vertex stream experiment.
 //!
-//! The stream is 32-bit-cell aligned over the existing 64-bit synchronous
+//! GV2M v6 vertices are 32-bit-cell aligned over the existing 64-bit synchronous
 //! scratchpad port. It deliberately does not replace the current v4 meshlet
 //! format or freeze a driver ABI. Vertex IDs are implicit in stream order.
 
@@ -11,15 +11,16 @@ const VERTEX_TAG: u32 = 0;
 const TRIANGLE_TAG: u32 = 1;
 const END_TAG: u32 = 2;
 const POSITION_MASK: u32 = 0x3ff;
-const NORMAL_MASK: u32 = 0xfff;
-const ATTRIBUTE_MASK: u32 = (1 << 22) - 1;
+const NORMAL_MASK: u32 = 0xff;
+const UV_MASK: u32 = 0xfff;
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum Record {
     Vertex {
         xyz10: [u16; 3],
         normal: [Q14; 3],
-        attribute22: u32,
+        uv12: [u16; 2],
+        color565: u16,
     },
     Triangle([u8; 3]),
     End,
@@ -41,43 +42,47 @@ impl From<NumericFault> for StreamFault {
     }
 }
 
-fn normal12(normal: Q14) -> Result<u32, StreamFault> {
+fn normal8(normal: Q14) -> Result<u32, StreamFault> {
     if !(-16384..=16384).contains(&normal.raw()) {
         return Err(StreamFault::Numeric(NumericFault::OutOfRange));
     }
-    let raw = round_shift_ties_even(i128::from(normal.raw()), 3)?.clamp(-2048, 2047);
+    let raw = round_shift_ties_even(i128::from(normal.raw()), 7)?.clamp(-128, 127);
     Ok((raw as i32 as u32) & NORMAL_MASK)
 }
 
 fn decode_normal(bits: u32) -> Q14 {
-    let signed = ((bits as i32) << 20) >> 20;
-    Q14::from_raw(i128::from(signed) << 3).expect("12-bit normal fits Q2.14")
+    let signed = ((bits as i32) << 24) >> 24;
+    Q14::from_raw(i128::from(signed) << 7).expect("8-bit normal fits Q2.14")
 }
 
-/// 2-bit tag, XYZ10, direct signed normal3x12, attribute22, six zero bits.
+/// 2-bit tag, XYZ10, signed normal3x8, UV12x2, RGB565; exactly 96 bits.
 pub fn encode_record(record: &Record) -> Result<Vec<u32>, StreamFault> {
     match record {
         Record::Vertex {
             xyz10,
             normal,
-            attribute22,
+            uv12,
+            color565,
         } => {
-            if xyz10.iter().any(|x| u32::from(*x) > POSITION_MASK) || *attribute22 > ATTRIBUTE_MASK
+            if xyz10.iter().any(|x| u32::from(*x) > POSITION_MASK)
+                || uv12.iter().any(|x| u32::from(*x) > UV_MASK)
             {
                 return Err(StreamFault::Numeric(NumericFault::OutOfRange));
             }
             let n = [
-                normal12(normal[0])?,
-                normal12(normal[1])?,
-                normal12(normal[2])?,
+                normal8(normal[0])?,
+                normal8(normal[1])?,
+                normal8(normal[2])?,
             ];
             Ok(vec![
                 VERTEX_TAG
                     | (u32::from(xyz10[0]) << 2)
                     | (u32::from(xyz10[1]) << 12)
                     | (u32::from(xyz10[2]) << 22),
-                n[0] | (n[1] << 12) | ((n[2] & 0xff) << 24),
-                (n[2] >> 8) | (attribute22 << 4),
+                n[0] | (n[1] << 8) | (n[2] << 16) | ((u32::from(uv12[0]) & 0xff) << 24),
+                (u32::from(uv12[0]) >> 8)
+                    | (u32::from(uv12[1]) << 4)
+                    | (u32::from(*color565) << 16),
             ])
         }
         Record::Triangle(refs) => {
@@ -192,9 +197,6 @@ pub fn decode_stream(
                 let second = reader.tick()?;
                 let third = reader.tick()?;
                 used += 2;
-                if third >> 26 != 0 {
-                    return Err(StreamFault::ReservedBits);
-                }
                 let xyz10 = [
                     ((first >> 2) & POSITION_MASK) as u16,
                     ((first >> 12) & POSITION_MASK) as u16,
@@ -202,13 +204,17 @@ pub fn decode_stream(
                 ];
                 let normal = [
                     decode_normal(second & NORMAL_MASK),
-                    decode_normal((second >> 12) & NORMAL_MASK),
-                    decode_normal((second >> 24) | ((third & 15) << 8)),
+                    decode_normal((second >> 8) & NORMAL_MASK),
+                    decode_normal((second >> 16) & NORMAL_MASK),
                 ];
                 records.push(Record::Vertex {
                     xyz10,
                     normal,
-                    attribute22: (third >> 4) & ATTRIBUTE_MASK,
+                    uv12: [
+                        ((second >> 24) | ((third & 15) << 8)) as u16,
+                        ((third >> 4) & UV_MASK) as u16,
+                    ],
+                    color565: (third >> 16) as u16,
                 });
                 vertices += 1;
             }
@@ -247,6 +253,24 @@ mod tests {
     use super::*;
 
     #[test]
+    fn vertex_cells_match_the_offline_packer_golden() {
+        let record = Record::Vertex {
+            xyz10: [1, 2, 3],
+            normal: [
+                Q14::from_raw(-16384).unwrap(),
+                Q14::from_raw(0).unwrap(),
+                Q14::from_raw(16384).unwrap(),
+            ],
+            uv12: [0xabc, 0x123],
+            color565: 0xf81f,
+        };
+        assert_eq!(
+            encode_record(&record).unwrap(),
+            [0x00c0_2004, 0xbc7f_0080, 0xf81f_123a]
+        );
+    }
+
+    #[test]
     fn interleaved_records_cross_64_bit_boundaries_without_padding() {
         let vertex = |x| Record::Vertex {
             xyz10: [x, 1023 - x, x + 7],
@@ -255,7 +279,8 @@ mod tests {
                 Q14::from_raw(0).unwrap(),
                 Q14::from_raw(16384).unwrap(),
             ],
-            attribute22: 0x3a_5a5,
+            uv12: [0xaaa, 0x555],
+            color565: 0xa55a,
         };
         let stream = [
             vertex(1),
@@ -274,7 +299,7 @@ mod tests {
         assert_eq!(parsed[3], Record::Triangle([0, 1, 2]));
         if let Record::Vertex { normal, .. } = &parsed[0] {
             assert_eq!(normal[0].raw(), -16384);
-            assert_eq!(normal[2].raw(), 16376); // Q1.11 +1 saturation is explicit.
+            assert_eq!(normal[2].raw(), 16256); // Q1.7 +1 saturation is explicit.
         } else {
             panic!("first record should be a vertex");
         }
@@ -292,35 +317,40 @@ mod tests {
     }
 
     #[test]
-    fn signed_half_ties_and_reserved_bits_are_checked_at_format_boundary() {
+    fn signed_half_ties_and_invalid_tags_are_checked_at_format_boundary() {
         let vertex = Record::Vertex {
             xyz10: [0, 0, 0],
             normal: [
-                Q14::from_raw(4).unwrap(),
-                Q14::from_raw(12).unwrap(),
-                Q14::from_raw(-12).unwrap(),
+                Q14::from_raw(64).unwrap(),
+                Q14::from_raw(192).unwrap(),
+                Q14::from_raw(-192).unwrap(),
             ],
-            attribute22: 0,
+            uv12: [4095, 0x123],
+            color565: 0xf81f,
         };
         let words = encode_stream(&[vertex, Record::End]).unwrap();
         let mut reader = CellReader::new(words.clone());
         let decoded = decode_stream(&mut reader, 4).unwrap();
         match &decoded[0] {
-            Record::Vertex { normal, .. } => {
-                assert_eq!(normal.map(|value| value.raw()), [0, 16, -16]);
+            Record::Vertex {
+                normal,
+                uv12,
+                color565,
+                ..
+            } => {
+                assert_eq!(normal.map(|value| value.raw()), [0, 256, -256]);
+                assert_eq!(*uv12, [4095, 0x123]);
+                assert_eq!(*color565, 0xf81f);
             }
             _ => panic!("first record should be a vertex"),
         }
         let mut damaged = words;
-        damaged[1] |= 1_u64 << 26;
+        damaged[1] |= 1_u64 << 32;
         let mut reader = CellReader::new(damaged);
+        assert_eq!(decode_stream(&mut reader, 4), Err(StreamFault::BadTag));
+        assert_eq!(reader.edges(), 4);
         assert_eq!(
-            decode_stream(&mut reader, 4),
-            Err(StreamFault::ReservedBits)
-        );
-        assert_eq!(reader.edges(), 3);
-        assert_eq!(
-            normal12(Q14::from_raw(16385).unwrap()),
+            normal8(Q14::from_raw(16385).unwrap()),
             Err(StreamFault::Numeric(NumericFault::OutOfRange))
         );
     }
