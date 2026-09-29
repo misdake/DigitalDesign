@@ -18,6 +18,7 @@ pub mod probe;
 pub mod result_store;
 pub mod scratchpad;
 pub mod setup;
+pub mod stream96;
 pub mod timing;
 pub mod transform;
 pub mod vertex;
