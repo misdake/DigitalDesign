@@ -62,6 +62,19 @@ accumulator/result. Absorbed intermediates may not escape. Bound dependencies
 preserve external operands and every control gate; a certificate with different
 operands, overlapping groups or an internal escape is rejected.
 
+`physical::LogicCone` certifies a connected pure-logic subgraph with one result,
+at most 64 absorbed events, an explicit width cap and a positive result latency.
+Its sorted external operands and every control gate are preserved. Multipliers,
+memory, publication and control effects cannot be absorbed; internal values must
+not escape. Absorbed events become zero-time aliases at the result-ready edge.
+`composed_dependencies`, the composed memory audits and
+`lifecycle::analyze_composed_policy` combine these cones with DSP fusion, reject
+overlap and account for the cone result's retained storage. Every original
+numerical operation remains in the independently replayed ledger. This is a
+declared circuit boundary; its width and latency do not prove a clock frequency
+or its physical adder count. An IP must declare cone lanes and validate timing
+through synthesis before treating the estimate as hardware evidence.
+
 `DspInventory` describes two macros per tile. A macro holds four 9x9 lanes,
 two 18x18 lanes or one paired/ALU/MAC mode; different kinds cannot share it.
 A 36x36 instance owns both macros of its tile. Independent pre-add and ALU modes
