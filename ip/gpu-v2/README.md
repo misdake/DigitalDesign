@@ -6,7 +6,10 @@ board-system dependency. The earlier standalone cmodel remains under the Tang
 Nano system as a historical development harness; new components belong here.
 
 See [architecture](docs/architecture.md) for component ownership and the model
-directions and [lighting](docs/lighting.md) for the implemented Rust models.
+directions, [lighting](docs/lighting.md) and [frontend](docs/frontend.md) for the
+implemented Rust models.
+The [triangle setup oracle](docs/triangle.md) is complete only through its first
+Rust step; counted/timed and hardware directions remain future work.
 The independent [scheduler](../../modeling/scheduler/README.md) supports bounded
 batch planning. Target specifications and ongoing experiments remain in the local
 GPU v2 design documents until their contracts have been implemented and verified.

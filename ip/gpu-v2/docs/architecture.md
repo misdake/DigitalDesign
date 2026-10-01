@@ -9,7 +9,12 @@ ip/gpu-v2/
   Cargo.toml                   gpu-v2 library
   src/
     lib.rs
-    system/                    future composition through component ports
+    system/                    future whole-GPU composition through component ports
+    command_processor/         typed command guards and fixed event identities
+    scratchpad/                four banks, DMA/core ports and region leases
+    vertex/                    v6 decode, matrix transforms and seven-row output
+    frontend/                  bounded command/DMA/vertex composition
+    triangle/                  owned transformed inputs and setup oracle only
     lighting/
       ports.rs                 component input/output and context contracts
       sim/
@@ -19,6 +24,8 @@ ip/gpu-v2/
         binding.rs             checked DSP fusion and small-logic lowering
         periodic.rs            static modulo calendar and repeating-slot audit
         physical.rs            concrete DSP/ROM placement and retained-value audit
+        stream.rs              bounded mixed-mode admission, CE and ordered commit
+        adder.rs               ordinary/increment sites, including embedded cones
       emu/                     future independent cycle/state model
       rtl/                     future hardware implementation
   tests/support/               deterministic stimuli and comparison helpers
@@ -35,13 +42,15 @@ connects ports, queues and context lifetimes when integration is defined.
 Simulation has three stages: configurable oracle determines numerical needs;
 counted matches a chosen format configuration bit for bit and records all work;
 timed starts by binding capacities and verifying static batch reservations.
-The periodic variant uses the generic resource scheduler and checks a repeating
-arithmetic calendar at the target II=2. Physical certificates additionally check
-DSP placement, concrete ROM banks/replicas/ports and retained-value capacity;
-runtime streaming, backpressure and a cycle-stepped datapath remain future work.
-The generic audited framework also supplies bounded context/FIFO/CE/commit
-control-token transitions. They are tested independently of lighting arithmetic;
-they have not been connected as a GPU runtime controller.
+The periodic variant uses the generic resource scheduler and checks repeating
+arithmetic calendars. Physical certificates additionally check DSP placement,
+concrete ROM banks/replicas/ports and retained-value capacity. Lighting connects
+the framework's context/FIFO/CE/commit control tokens to a bounded mixed-mode
+reservation stream; payload arithmetic is separately evaluated by counted.
+Frontend replays DMA payloads, scratchpad leases and the vertex issue ROM with
+an independent trace audit. Its current serial sequencer acceptance rate is
+reported separately from the resource lower bound of a periodic vertex body.
+Neither reservation model is a numerical cycle executor or complete GPU runtime.
 Emulation and RTL remain independent verification paths.
 Tests use stage goldens rather than treating audit success as an accuracy oracle.
 
@@ -53,4 +62,10 @@ components. Component calculations can be tested without a GPU system.
 Web code will call the same Rust numerical model through WASM. It owns controls
 and presentation only; it must not reproduce the arithmetic in JavaScript. The
 runtime-format audited lane and the WASM interface have not been implemented.
-Implemented lighting behavior and validation are in [lighting](lighting.md).
+Implemented behavior and validation are in [lighting](lighting.md) and
+[frontend](frontend.md). The frontend does not consume triangle records or define
+an encoded GPU command ABI; framebuffer/cache, sampling and final system
+integration remain separate work.
+The [triangle oracle](triangle.md) consumes the vertex component's owned output
+records directly. It provides self-contained source fields and coverage fans;
+it does not read live/released vertex slots or instantiate a timed triangle queue.

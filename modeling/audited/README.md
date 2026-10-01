@@ -118,5 +118,37 @@ transition model; it does not execute numerical payloads or provide an independe
 arithmetic oracle. Uniform values, datapath stalls and payload queues still need
 an IP-specific cycle executor.
 
-The public physical/lifecycle/flow acceptance tests currently live in
-`ip/gpu-v2/tests/physical.rs`; this milestone runs `cargo test -p gpu-v2` only.
+The public physical/lifecycle/flow acceptance tests live in
+`ip/gpu-v2/tests/physical.rs`, with composed logic certificates in
+`ip/gpu-v2/tests/logic_cones.rs`. This milestone runs `cargo test -p gpu-v2` only.
+
+## Experience from the GPU components
+
+The closed numerical ledger is effective at exposing hidden host arithmetic:
+the frontend now derives its DMA/vertex addresses and assembles its 96-bit packets
+in component-owned frames. Stage goldens remain independent; successful audit
+does not prove the algorithm matches the intended equations.
+
+Physical and state certificates are necessary alongside that ledger. Mode
+packing, memory replicas/shared ports, same-address hazards, CE/context leases,
+publication and retained-value accounting are implemented. They prevent many
+optimistic schedules, but they still describe a declared target model. Cone
+latency is not measured timing. The lighting review found a reconvergent
+five-adder path misclassified as four levels: its IP adapter now independently
+checks the longest primitive path when generating and auditing certificates.
+
+The [lighting study](../../ip/gpu-v2/docs/lighting.md) and
+[frontend study](../../ip/gpu-v2/docs/frontend.md) demonstrate why increasing a
+resource can have no throughput benefit: dependency chains or memory bandwidth
+may dominate. Bounded list-priority/modulo search and ALAP are useful experiments;
+their candidates must pass the independent physical/lifetime checks. The result
+is a legal candidate, not a proof of optimality or an implemented acceptance rate.
+
+Before large mutable BSRAM/SSRAM designs, the next required layer is a bounded
+numerical cycle executor: replay actual state, dynamic addresses, collision
+observations and CE/backpressure across iterations. Current periodic memory
+certificates are read-only. Payload FIFOs, hardware register allocation, DSP
+internal stages, mux/control/ROM costs and RTL-derived timing remain separate
+work. New resource aliases or signed/mode restrictions belong in the physical
+target policy and need tamper regressions, rather than loosening the numerical
+value constructor. Runtime-format/WASM support is still unimplemented.
