@@ -95,11 +95,130 @@ impl FusedGroup {
     }
 }
 
+/// A bounded pure-logic subgraph implemented with one declared result latency.
+/// The certificate proves provenance and closure, not area or achievable fmax.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct LogicCone {
+    pub result_event: usize,
+    pub absorbed_events: Vec<usize>,
+    /// Sorted unique external value IDs, including constants.
+    pub operands: Vec<usize>,
+    pub max_width: u32,
+    pub latency: u64,
+}
+impl LogicCone {
+    pub fn audit(&self, frame: &FrameReport) -> Result<(), Fault> {
+        frame.audit()?;
+        if self.absorbed_events.is_empty()
+            || self.absorbed_events.len() > 64
+            || !(1..=126).contains(&self.max_width)
+            || self.latency == 0
+        {
+            return Err(bad("logic cone bounds"));
+        }
+        let members: BTreeSet<_> = std::iter::once(self.result_event)
+            .chain(self.absorbed_events.iter().copied())
+            .collect();
+        if members.len() != self.absorbed_events.len() + 1 {
+            return Err(bad("logic cone duplicate member"));
+        }
+        let mut external = BTreeSet::new();
+        for &id in &members {
+            let e = frame
+                .events
+                .get(id)
+                .ok_or_else(|| bad("logic cone event index"))?;
+            if !matches!(
+                e.operation,
+                Operation::Add
+                    | Operation::Sub
+                    | Operation::Resize
+                    | Operation::ShiftLeft(_)
+                    | Operation::Shift
+                    | Operation::LeadingZeros
+                    | Operation::Slice(_)
+                    | Operation::RescaleFloor(_)
+                    | Operation::BinaryScale
+                    | Operation::Less
+                    | Operation::Select
+                    | Operation::RoundIncrement(_)
+            ) {
+                return Err(bad("logic cone is not pure logic"));
+            }
+            let output = e.output.ok_or_else(|| bad("logic cone output"))?;
+            if std::iter::once(output)
+                .chain(e.inputs.iter().copied())
+                .any(|v| frame.values[v].format.bits > self.max_width)
+            {
+                return Err(bad("logic cone width"));
+            }
+            for &input in &e.inputs {
+                if !members.contains(&frame.values[input].producer) {
+                    external.insert(input);
+                }
+            }
+            if e.control.is_some_and(|c| members.contains(&c)) {
+                return Err(bad("logic cone internal control"));
+            }
+            if id != self.result_event
+                && (frame.outputs.iter().any(|o| o.value == output)
+                    || frame.events.iter().any(|other| {
+                        !members.contains(&other.id)
+                            && (other.inputs.contains(&output) || other.control == Some(id))
+                    }))
+            {
+                return Err(bad("logic cone internal value escapes"));
+            }
+        }
+        if self.operands != external.into_iter().collect::<Vec<_>>() {
+            return Err(bad("logic cone operand certificate"));
+        }
+        let mut reachable = BTreeSet::new();
+        let mut pending = vec![self.result_event];
+        while let Some(id) = pending.pop() {
+            if reachable.insert(id) {
+                pending.extend(
+                    frame.events[id]
+                        .inputs
+                        .iter()
+                        .map(|&v| frame.values[v].producer)
+                        .filter(|p| members.contains(p)),
+                );
+            }
+        }
+        if reachable != members {
+            return Err(bad("logic cone disconnected member"));
+        }
+        Ok(())
+    }
+}
+
 pub fn bound_dependencies(
     frame: &FrameReport,
     groups: &[FusedGroup],
 ) -> Result<Vec<Vec<usize>>, Fault> {
+    composed_dependencies(frame, groups, &[])
+}
+
+pub fn logic_dependencies(
+    frame: &FrameReport,
+    cones: &[LogicCone],
+) -> Result<Vec<Vec<usize>>, Fault> {
+    composed_dependencies(frame, &[], cones)
+}
+
+pub fn composed_dependencies(
+    frame: &FrameReport,
+    groups: &[FusedGroup],
+    cones: &[LogicCone],
+) -> Result<Vec<Vec<usize>>, Fault> {
     frame.audit()?;
+    for g in groups {
+        g.audit(frame)?;
+    }
+    for c in cones {
+        c.audit(frame)?;
+    }
     let mut deps: Vec<Vec<_>> = frame
         .events
         .iter()
@@ -116,31 +235,32 @@ pub fn bound_dependencies(
         })
         .collect();
     let mut used = BTreeSet::new();
-    for g in groups {
-        g.audit(frame)?;
-        for &id in std::iter::once(&g.result_event).chain(&g.absorbed_events) {
+    for (result, absorbed, operands) in groups
+        .iter()
+        .map(|g| (g.result_event, &g.absorbed_events, &g.operands))
+        .chain(
+            cones
+                .iter()
+                .map(|c| (c.result_event, &c.absorbed_events, &c.operands)),
+        )
+    {
+        for &id in std::iter::once(&result).chain(absorbed) {
             if !used.insert(id) {
-                return Err(bad("overlapping fused groups"));
+                return Err(bad("overlapping physical groups"));
             }
         }
-        let mut d: Vec<_> = g
-            .operands
-            .iter()
-            .map(|&v| frame.values[v].producer)
-            .collect();
-        for &id in std::iter::once(&g.result_event).chain(&g.absorbed_events) {
+        let mut d: Vec<_> = operands.iter().map(|&v| frame.values[v].producer).collect();
+        for &id in std::iter::once(&result).chain(absorbed) {
             d.extend(frame.events[id].control);
         }
         d.sort_unstable();
         d.dedup();
-        if d.iter()
-            .any(|id| *id == g.result_event || g.absorbed_events.contains(id))
-        {
+        if d.iter().any(|id| *id == result || absorbed.contains(id)) {
             return Err(bad("fusion dependency cycle"));
         }
-        deps[g.result_event] = d;
-        for &id in &g.absorbed_events {
-            deps[id] = vec![g.result_event];
+        deps[result] = d;
+        for &id in absorbed {
+            deps[id] = vec![result];
         }
     }
     Ok(deps)
@@ -161,9 +281,43 @@ pub fn audit_bound_dependencies(
     groups: &[FusedGroup],
     max_cycle: u64,
 ) -> Result<(), Fault> {
-    let dependencies = bound_dependencies(frame, groups)?;
+    audit_composed_dependencies(frame, times, groups, &[], max_cycle)
+}
+
+pub fn audit_logic_dependencies(
+    frame: &FrameReport,
+    times: &[Timing],
+    cones: &[LogicCone],
+    max_cycle: u64,
+) -> Result<(), Fault> {
+    audit_composed_dependencies(frame, times, &[], cones, max_cycle)
+}
+
+pub fn audit_composed_dependencies(
+    frame: &FrameReport,
+    times: &[Timing],
+    groups: &[FusedGroup],
+    cones: &[LogicCone],
+    max_cycle: u64,
+) -> Result<(), Fault> {
+    let dependencies = composed_dependencies(frame, groups, cones)?;
     if times.len() != frame.events.len() || max_cycle == 0 {
         return Err(bad("physical timing shape"));
+    }
+    for cone in cones {
+        let root = times[cone.result_event];
+        if root.issue.checked_add(cone.latency) != Some(root.ready) {
+            return Err(bad("logic cone latency"));
+        }
+        if cone.absorbed_events.iter().any(|&id| {
+            times[id]
+                != (Timing {
+                    issue: root.ready,
+                    ready: root.ready,
+                })
+        }) {
+            return Err(bad("logic cone absorbed timing"));
+        }
     }
     for (event, time) in frame.events.iter().zip(times) {
         if time.issue > time.ready || time.ready > max_cycle {
@@ -713,7 +867,20 @@ impl MemoryLayout {
         accesses: &[MemoryAccess],
         max_cycle: u64,
     ) -> Result<(), Fault> {
-        audit_bound_dependencies(frame, times, groups, max_cycle)?;
+        self.audit_composed_accesses(frame, times, groups, &[], accesses, max_cycle)
+    }
+
+    #[allow(clippy::too_many_arguments)] // Parallel DSP/logic certificates share the existing access API.
+    pub fn audit_composed_accesses(
+        &self,
+        frame: &FrameReport,
+        times: &[Timing],
+        groups: &[FusedGroup],
+        cones: &[LogicCone],
+        accesses: &[MemoryAccess],
+        max_cycle: u64,
+    ) -> Result<(), Fault> {
+        audit_composed_dependencies(frame, times, groups, cones, max_cycle)?;
         self.audit(frame)?;
         if accesses.len() > 1_000_000 {
             return Err(bad("access certificate bounds"));
@@ -850,7 +1017,21 @@ impl MemoryLayout {
         ii: u64,
         max_cycle: u64,
     ) -> Result<(), Fault> {
-        self.audit_bound_accesses(frame, times, groups, accesses, max_cycle)?;
+        self.audit_periodic_composed_accesses(frame, times, groups, &[], accesses, ii, max_cycle)
+    }
+
+    #[allow(clippy::too_many_arguments)] // Explicit certificates, calendar and bound are independently audited.
+    pub fn audit_periodic_composed_accesses(
+        &self,
+        frame: &FrameReport,
+        times: &[Timing],
+        groups: &[FusedGroup],
+        cones: &[LogicCone],
+        accesses: &[MemoryAccess],
+        ii: u64,
+        max_cycle: u64,
+    ) -> Result<(), Fault> {
+        self.audit_composed_accesses(frame, times, groups, cones, accesses, max_cycle)?;
         if ii == 0 {
             return Err(bad("memory periodic interval"));
         }
