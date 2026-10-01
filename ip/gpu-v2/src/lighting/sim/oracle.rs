@@ -50,6 +50,9 @@ pub struct Config {
     pub approximate_rsqrt: bool,
     pub approximate_power: bool,
     pub rounding: RoundingPolicy,
+    /// Explicit oracle-only approximation experiment; never implicit sharing.
+    pub half_ndc_override: Option<[i32; 2]>,
+    pub normal_override: Option<[i16; 3]>,
 }
 impl Default for Config {
     fn default() -> Self {
@@ -64,6 +67,8 @@ impl Default for Config {
             approximate_rsqrt: true,
             approximate_power: true,
             rounding: RoundingPolicy::default(),
+            half_ndc_override: None,
+            normal_override: None,
         }
     }
 }
@@ -255,6 +260,8 @@ pub fn evaluate(
     if !(10..=20).contains(&c.direction_fraction)
         || !(10..=24).contains(&c.reciprocal_fraction)
         || c.reciprocal_work_extra > 8
+        || c.half_ndc_override
+            .is_some_and(|p| p.iter().any(|&x| !(-65536..=65536).contains(&x)))
         || !(8..=24).contains(&c.dot_fraction)
         || !(8..=24).contains(&c.power_fraction)
         || !(4..=16).contains(&c.intensity_fraction)
@@ -276,7 +283,10 @@ pub fn evaluate(
     } else if id == 0 {
         g.g = ia;
     } else {
-        let nraw = pixel.normal.map(|v| rescale(i128::from(v), 14, f));
+        let nraw = c
+            .normal_override
+            .unwrap_or(pixel.normal)
+            .map(|v| rescale(i128::from(v), 14, f));
         let n = normalize(nraw, rescale(4, 14, f).max(1), false, c, "n", &mut g);
         let l = light.direction.map(|v| rescale(i128::from(v), 14, f));
         let nl = n.iter().zip(l).map(|(a, b)| a * b).sum::<i128>();
@@ -287,13 +297,15 @@ pub fn evaluate(
         if material.specular_color != [0; 3] {
             let vraw = [
                 rescale_with(
-                    i128::from(pixel.ndc[0]) * i128::from(projection.ray_scale[0]),
+                    i128::from(c.half_ndc_override.unwrap_or(pixel.ndc)[0])
+                        * i128::from(projection.ray_scale[0]),
                     30,
                     f,
                     c.rounding.projection,
                 ),
                 rescale_with(
-                    i128::from(pixel.ndc[1]) * i128::from(projection.ray_scale[1]),
+                    i128::from(c.half_ndc_override.unwrap_or(pixel.ndc)[1])
+                        * i128::from(projection.ray_scale[1]),
                     30,
                     f,
                     c.rounding.projection,

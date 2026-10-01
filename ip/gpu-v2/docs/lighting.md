@@ -4,6 +4,35 @@ Lighting is a pixel component. Its public ports are in `src/lighting/ports.rs`.
 There is no quad allocation, GPU command ABI, final-color calculation, emulator,
 RTL or web implementation in this milestone.
 
+## Current architecture alternatives
+
+The historical optimized profile remains available bit for bit. The new
+`counted::Config::architecture()` exploits validated bounds, prepares material
+power fields once, and narrows integer shift/exponent controls to six bits.
+`Hardware::lighting_architecture_ii2()` adds certified, registered pure-logic
+cones with at most four serial nonwiring operations and a conservative declared
+**two-cycle** result latency. DSP/ROM operations stay separate. The exploratory
+`lighting_experimental_ii2()` declares one cycle instead; neither declaration
+proves 54 MHz. All rows use the same numerical contract and power-floor option.
+
+| Profile | Full II / latency | Diffuse II / latency | DSP half-slots / macros / tiles | Pixel BSRAM |
+| --- | --- | --- | --- | ---: |
+| Historical optimized, individual primitive delays | 2 / 135 | — | 25 / 7 / 4 | 8 |
+| Exact dataflow, same primitive delays | 2 / 113 | 1 / 71 | 25 / 7 / 4 | 8 |
+| Four-level cones, two cycles | **2 / 95** | **1 / 56** | 25 / 7 / 4 | 8 |
+| Four-level cones, one cycle, exploratory | 2 / 73 | 1 / 42 | 25 / 7 / 4 | 8 |
+| Reduced inventory: 5 small, 5 large, 1 pair, 4 reads | 3 / 95 | 1 / 56 | 19 / 6 / 3 | 6 |
+| Reduced inventory: 4 small, 4 large, 1 pair, 3 reads | 4 / 98 | 2 / 58 | 16 / 4 / 2 | 5 |
+
+Latency includes one ordered output-write cycle and excludes already captured
+inputs and separately reported context/ray/flat preparation. The full two-cycle
+cone profile retains 5,502 bits, versus 9,693 for the historical profile; this
+excludes DSP/cone internal stage registers, mux/control registers, FIFO and RAM cells.
+Its 64-pixel repeating output calendar is 95,97,...,221. A material-context
+preparation ROM still costs **86 RAM16 cells**, although it disappears from the
+pixel frame's ROM access report; two immutable context copies also retain their
+43-bit prepared fields. Resource counts describe static models, not PnR results.
+
 ## Numerical contract
 
 The raster input carries an unnormalized signed 16-bit Q14 normal and two
@@ -63,10 +92,12 @@ there is no repeated squaring, runtime floating power or integer divider in coun
 
 The default retains the documented RNE interpolation. The explicit optimized
 profile's power-floor option is the separately measured truncation experiment
-described below; it uses the same ROM, segments and addressing. Counted still
-charges a `POWER_CONTEXT` ROM read per nonendpoint pixel. Moving that lookup
-to material-context preparation is a remaining integration task; the current
-model does not implement a `SET_MATERIAL` command or context-bank lifetime.
+described below; it uses the same ROM, segments and addressing. The historical profile
+charges a `POWER_CONTEXT` read per nonendpoint pixel. The architecture profile
+uses `prepare_context` once before pixels, returning an independently audited
+preparation ledger, then captures the 43-bit result as immutable context input.
+The bounded mixed-mode reservation model below checks context references; there
+is still no integrated `SET_MATERIAL` command or numerical cycle executor.
 
 ## Three stages and evidence
 
@@ -102,7 +133,7 @@ remain separate; the additional two large products construct the NDC ray.
 The lane budget is 12.5 equivalent 18x18 multipliers when a 9x9 lane is
 weighted as half an 18x18 lane. Physical macro packing is a separate binding.
 
-The current full template has 107 add/sub events: 88 mapped to the shared
+The historical pre-architecture full template has 107 add/sub events: 88 mapped to the shared
 18-bit class and 19 to the 36-bit class. The 88 comprise 34 RNE increment
 adds, 18 absolute-value negations, 13 exponent/shift-control subtractions,
 9 square-slope `2a+1` adds, 3 rsqrt page/segment adds, 3 rsqrt corrections,
@@ -411,7 +442,7 @@ per class. Kernel configuration is part of the plan's audited certificate.
 The first extra large lane occupies the unused slot in kind-separated packing;
 this is still an unfitted estimate. Every row passes periodic phase/dependency
 audit, finite expansion and its matching numerical oracle. The optimized
-64-pixel calendar writes at 135,137,...,261. The current selected optimized
+64-pixel calendar writes at 135,137,...,261. The historical selected optimized
 profile keeps the original DSP budget because extra lanes do little for latency
 and do not improve the already-achieved static II=2.
 
@@ -593,3 +624,206 @@ This supports bounded priority restarts and backfilling, without claiming a
 globally optimal schedule. For fixed II lighting, compare latency and retained
 bits as separate objectives; resource lower bounds guide feasibility, not a
 proof that a heuristic will find a candidate.
+
+## Architecture reasoning and exact preparation
+
+The view ray is constrained by the input validator: `Vz>=8192` and each
+component magnitude is at most 12288. Its magnitude/max/zero selection and
+common shift are therefore redundant, as is the final zero-result selection.
+The half-vector is the rounded average of two clamped Q14 unit vectors, so its
+maximum magnitude is at most 16384. It cannot hit the normal input's 32767 RNE
+pre-shift overflow case. The normal path retains that guard. These eliminations
+preserve every published numerical stage; full backlit pixels still compute V,
+H, the specular dot and power. Six-bit exact integer controls replace the former
+18-bit exponent/shift subtractions without changing any shift or golden value.
+
+Certified cones contract only closed, connected pure logic; no multiply, memory
+read, branch, publication or externally observed internal value is absorbed.
+Their resource identity is the exact canonical operation/format/operand graph,
+including literal values and external-value aliasing. Identical functions use
+the same physical resource identity across modes. Each function has three
+provisioned II1 lanes; lowering to one or two globally fails the full II2
+capacity bound (required body II rises to six or three respectively). Cones keep
+all numerical events for independent replay and report their embedded adders.
+Their declared result latency is a design assumption that needs later fitting.
+
+Member discovery proceeds in reverse topological order, taking the maximum
+root-to-node distance at reconvergence. Generation and production plan audits
+then independently check the longest physical path using primitive lane kinds;
+proved wiring contributes zero levels. A regression covers both operand orders
+of a five-adder reconvergent graph with a zero-level resize, and rejects its
+otherwise valid numerical certificate at a four-level limit. Earlier89/47
+results used a first-visit DFS that underestimated this depth and are superseded.
+The bounded probe now increases II if needed: two-level cones require II3 and
+give84 cycles; three-level cones run at II2 and79 cycles.
+
+Adding a seventh normalization read port costs one additional 512x36 BSRAM
+replica. It reduces the conservative full profile from95 to94 cycles and
+retained bits from5502 to5370, while the one-cycle profile stays73 cycles.
+Adding an18x18 lane reduces neither selected full-profile latency: it increases
+the budget to27 half-slots while
+still fitting seven kind-separated macros, using an otherwise unused slot.
+These are fixed-hardware, 32-candidate comparisons, not globally optimal proofs.
+The long dependency chain, especially V -> H -> specular dot -> power, dominates.
+The one-cycle improvement alone does not select an extra BSRAM.
+
+`prepare_ray` is a separate closed model costing two 18x18 products and two
+RNE operations. `Config::prepared()` consumes Q14 rays in three 36-bit rows:
+normal XY; normal Z/ray X; ray Y/Z. Payload grows from 84 to 96 bits. This gives
+108 cycles with individual logic delays, or70 with exploratory one-cycle cones;
+these are lighting-entry latencies, not end-to-end claims after moving work.
+`scanline_rays` provides an exact upstream alternative for up to 64 uniformly
+stepped quantized NDC X positions. Three one-time products seed X/Y and X-step;
+Q30 accumulation adds one 34-bit value per subsequent pixel. Y RNE is shared,
+X RNE stays per pixel. This retains more guard bits than the proposed Q22 seed
+and avoids drift from repeatedly adding Q14 results. Arbitrary raster positions
+must restart from an appropriate seed or use separately prepared coordinates.
+
+Current row scheduling supports the historical four-row context. Architecture
+profiles require register inputs; their additional 43-bit material fields and
+shared geometry need an explicit future context-load interface. No extra fields
+are silently squeezed into the old four rows.
+
+## Ordinary sums, increments, and real cone costs
+
+The architecture full pixel contains 34 general add/sub sites after dot fusion:
+19 in the <=18-bit class and 15 in the <=36-bit class. The actual general-site
+widths are 6:8, 10:1, 16:5, 17:4, 18:1, 30:15. There are 39 carry-chain sites:
+29 RNE conditional increments and 10 two's-complement negations. Negation is
+bit inversion plus one, rather than a two-variable sum; dedicated negator lanes
+keep it separate from conditional RNE increments. Slope `2a+1` and rsqrt page
+addresses stay proved concatenations. Dot XY and final sums remain in pair+ALU
+macros. Square accumulation, rsqrt correction, half-vector sums, power correction
+and intensity addition still require real adders.
+
+| Four-level, two-cycle profile inventory | Provisioned | Occupied by this full calendar |
+| --- | ---: | ---: |
+| General <=18-bit class | 47 | 16 |
+| General <=36-bit class | 15 | 10 |
+| Increment/negation <=18-bit class | 54 | 28 |
+| Combinational cone copies | 78 | 42 |
+
+Both columns include cone-contained sites and standalone lanes consistently.
+Provisioned counts include all three copies of each exact function; occupied
+counts reconstruct the lane set used by the selected calendar. Width classes
+are conservative: eight general controls need only six real bits, and the
+increment/negation sites span 6,9,10,16,17,18 bits. None of these counts includes
+routing, operand selection, control or DSP internal adders. This trade spends
+fabric logic to shorten latency; reducing unused scalar-function copies requires
+an explicit global per-function inventory shared across full and diffuse modes,
+not just removing zero entries from one frame. `adder_inventory` and the probe's
+per-profile reports retain both columns.
+
+## Uniform modes, mixed streams, and shared geometry
+
+Diffuse-only emits no V/H/specular work. Its II1 calendar uses spare capacity
+within the same full-mode DSP and ROM inventory, giving twice the ordinary full
+pixel rate. Under the smaller II4 inventory it instead runs at II2, still twice
+the full rate. This is arithmetic sharing; it does not instantiate a separate
+fixed specular engine and claim it can execute an arbitrary diffuse program.
+Unlit/ambient shortcuts and full-mode per-pixel backlighting retain their
+original numerical semantics.
+
+`timed::stream` supports at most two immutable contexts, 64 input pixels, 128
+FIFO tokens and 20,000 wall ticks. It chooses the first legal II in a bounded
+1..8 search for each context. Admission reserves every future arithmetic slot
+and a strictly later ordered result cycle. CE pauses freeze arithmetic time,
+phase, ID, reservations and context references; result commit releases the
+context lease. IDs are bounded to 32 bits and epochs to 16; each token declares
+18 payload bits. A separate audit rebuilds the resource calendar, validates
+accept/completion times against the token trace, and compares numerical outputs
+with the independent oracle. This is a bounded reservation/control model, not a
+numerical cycle executor or an implemented runtime arbitration circuit.
+
+This exercise makes the closed ledger useful as a refactoring boundary:
+numerical goldens catch mistakes independently of resource certificates, and
+composed DSP/logic certificates reject escaping intermediates and preserve
+control dependencies. Its main cost is adapter bookkeeping: a mathematical
+expression expands into many events, and assigning a cycle to every event can
+overstate the real pipeline depth. Exact graph contraction fixes that problem
+without changing arithmetic. For larger modules, prioritize a global inventory
+of physical functions/banks and context-loading interfaces, then search
+placement/replication and schedules jointly. Local per-frame counts cannot prove
+that two modes fit the same fabric. Preserve numerical provenance while adding
+actual DSP register modes, cone timing evidence, and register/FIFO allocation.
+Critical-path list scheduling with bounded priority restarts is a practical
+baseline; modulo calendars enforce steady II, while latency and live storage
+remain separate objectives. More restarts cannot remove a serial V/H dependency
+or make an invalid storage interface valid.
+
+For eight full, 48 diffuse, then eight full pixels, the conservative profile's
+first full->diffuse acceptance gap is 43 CE cycles. The short result at cycle
+115 follows the last old full result at111; it was accepted at59 while the old
+full pipeline remained active. Further transitional resource bubbles remain,
+then diffuse reaches II1. The diffuse->full acceptance gap is34 cycles. This
+mixed stream does not maintain II1 across transitions. FIFO peak is3060 bits,
+and the stream takes264 advancing cycles in `lighting_stream_probe`; a paused replay retains the same advancing-cycle
+schedule and numerical results. Shared-half/flat stream ownership is explicitly
+rejected until an external cache/triangle owner supplies it.
+
+Exact sharing has two useful boundaries:
+
+* `prepare_half` builds V/H independently of normal and material shininess.
+  `evaluate_reusing_half` checks the exact NDC/projection/L key; different normal,
+  intensity and shininess can reuse the same H. Cache hits give81 cycles without
+  cones at II2; adding one pair macro and one standalone18x18 lane permitsII1
+  at the same81-cycle latency (31 half-slots/eight macros). Preparation, storage,
+  fill, cache lookup and hit rate are separate costs. This is useful for repeated
+  draws/overdraw at the same coordinate and light/projection context, not for
+  four different positions merely because they belong to one quad.
+* `prepare_flat` computes N, nl, d and g once for an explicitly flat triangle and
+  light/intensity context. `evaluate_reusing_flat` verifies the raw normal and
+  light/intensity key. The diagnostic nl34 and d9 fields could later be replaced
+  by a one-bit `nl>0` and preparation-only goldens, reducing the functional
+  N/sign/g payload from100 to58 bits; that compact context is not implemented.
+  Full specular still computes its per-coordinate V/H and
+  power: conservative latency95, II2. Flat diffuse has no pixel multiply or ROM
+  work: it returns prepared g/h at latency4, II1. The implemented triangle context retains100 bits of
+  N/nl/d/g, and preparation is accounted separately. A timed flat batch rejects
+  unequal raw normals rather than silently treating smooth shading as flat.
+
+Across a smooth triangle, N direction is generally not constant, and H changes
+with screen position. Same-triangle/quad identity alone proves neither can be
+shared. An oracle-only stress sweep (`lighting_sharing_probe`) explicitly replaces
+H coordinates and/or normals; it is not enabled in counted. Across widths128,
+320,640,1920 and shininess4/16/64, near the half-vector threshold even center-H
+sharing reaches224/256 h error. Normal sharing can reach100/256 g and224/256 h
+error near cancellation. Thus neither approximation is accepted. Away from the
+threshold, a less-stressed preliminary sample showed1..4 raw h differences, but
+that smaller measurement is not a safety bound. High shininess and hard threshold
+behavior rule out an unconditional quad-center substitution.
+
+## Architecture reproduction and review boundary
+
+The conservative Rust reference maps six normalization ROM copies to BSRAM
+and keeps two BSRAM for power: eight BSRAM plus86 RAM16 for context preparation.
+This is an accepted mapping revision under design specification§20.4. Relative
+to the earlier SSRAM normalization sketch, the§20.3 subtotal changes from23 to29
+BSRAM; that subtotal already includes four scratchpad and two transformed-cache
+blocks. CPU/display, RCP and queues have not been fitted together, so this is
+not a whole-chip fit result. The II3/II4 alternatives reduce this pressure.
+
+A future exact SQ folding candidate could restore the smaller SSRAM table.
+After common pre-scaling, raw Q14 is in[-16384,16383]. For negative signed bin
+`a = v >> 7`, choose `k = -a-1` (complement its low seven bits) and unsigned
+`b' = 128-b`. The signed-table interpolation is exactly
+`k*k*16384 + (2*k+1)*b'*128`. This needs a128x14 square table and a small
+eight-bit subtract/select, instead of the256-entry signed table. It remains a
+candidate, requiring exhaustive verification over all32768 pre-scaled codes
+and separate signed16 normalization/pre-scaling tests; it is not implemented.
+
+```powershell
+& scripts/run-cargo.ps1 -Subcommand test -Label gpu-v2 -CargoArgs @('-p','gpu-v2')
+& scripts/run-cargo.ps1 -Subcommand clippy -Label gpu-v2 -CargoArgs @('-p','gpu-v2','--all-targets','--','-D','warnings')
+& scripts/run-cargo.ps1 -Subcommand run -Label lighting-architecture -CargoArgs @('-p','gpu-v2','--example','lighting_architecture_probe')
+& scripts/run-cargo.ps1 -Subcommand run -Label lighting-stream -CargoArgs @('-p','gpu-v2','--example','lighting_stream_probe')
+& scripts/run-cargo.ps1 -Subcommand run -Label lighting-sharing -CargoArgs @('-p','gpu-v2','--example','lighting_sharing_probe')
+```
+
+Detailed bounded reports go to `target/gpu-v2-lighting/architecture-upgrade`.
+Architecture tests compare all historical goldens on975 representative inputs,
+add128 seeded vectors, prepared-ray boundaries, a64-pixel exact scan, cache-key
+rejections, flat-sharing equivalence, full/diffuse calendars, corrupted cone
+aliases, mixed-mode ordering, CE stalls, output tampering and watchdog expiry.
+The existing exhaustive power sweep and historical tests remain. Emulator, RTL,
+PnR, whole-GPU integration and CPU-crate tests are outside this Rust milestone.
