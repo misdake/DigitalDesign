@@ -2,28 +2,68 @@
 //! It never calls audited arithmetic. Stage integers are the counted-model goldens.
 use super::super::{format, ports::*};
 
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum Rounding {
+    #[default]
+    NearestEven,
+    Floor,
+    /// Equivalent to flooring unsigned magnitude and then restoring its sign.
+    TowardZero,
+}
+
+/// Stage-isolated precision experiments. Generated ROM endpoints stay RNE.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct RoundingPolicy {
+    pub normalization: Rounding,
+    pub projection: Rounding,
+    pub half: Rounding,
+    pub dot: Rounding,
+    pub rsqrt: Rounding,
+    pub power: Rounding,
+    pub output: Rounding,
+}
+impl RoundingPolicy {
+    pub fn floor_all() -> Self {
+        Self {
+            normalization: Rounding::Floor,
+            projection: Rounding::Floor,
+            half: Rounding::Floor,
+            dot: Rounding::Floor,
+            rsqrt: Rounding::Floor,
+            power: Rounding::Floor,
+            output: Rounding::Floor,
+        }
+    }
+}
+
 #[derive(Clone, Copy, Debug)]
 pub struct Config {
     pub direction_fraction: u32,
     pub reciprocal_fraction: u32,
+    /// Extra interpolation/product fractional bits; ROM endpoints retain their format.
+    /// This is an oracle experiment, not a change to the counted contract.
+    pub reciprocal_work_extra: u32,
     pub dot_fraction: u32,
     pub power_fraction: u32,
     pub intensity_fraction: u32,
     pub approximate_square: bool,
     pub approximate_rsqrt: bool,
     pub approximate_power: bool,
+    pub rounding: RoundingPolicy,
 }
 impl Default for Config {
     fn default() -> Self {
         Self {
             direction_fraction: format::Direction::FORMAT.fraction,
             reciprocal_fraction: format::Reciprocal::FORMAT.fraction,
+            reciprocal_work_extra: 0,
             dot_fraction: format::Specular::FORMAT.fraction,
             power_fraction: format::Specular::FORMAT.fraction,
             intensity_fraction: format::Intensity::FORMAT.fraction,
             approximate_square: true,
             approximate_rsqrt: true,
             approximate_power: true,
+            rounding: RoundingPolicy::default(),
         }
     }
 }
@@ -56,12 +96,22 @@ fn rne(n: i128, shift: u32) -> i128 {
     let r = n.rem_euclid(d);
     q + i128::from(r * 2 > d || r * 2 == d && q % 2 != 0)
 }
+fn rounded(n: i128, shift: u32, rounding: Rounding) -> i128 {
+    match rounding {
+        Rounding::NearestEven => rne(n, shift),
+        Rounding::Floor => n >> shift,
+        Rounding::TowardZero => n / (1_i128 << shift),
+    }
+}
 fn quantize(v: f64, f: u32) -> i128 {
     (v * (1_u64 << f) as f64).round_ties_even() as i128
 }
 fn rescale(raw: i128, source: u32, target: u32) -> i128 {
+    rescale_with(raw, source, target, Rounding::NearestEven)
+}
+fn rescale_with(raw: i128, source: u32, target: u32, rounding: Rounding) -> i128 {
     if source > target {
-        rne(raw, source - target)
+        rounded(raw, source - target, rounding)
     } else {
         raw << (target - source)
     }
@@ -82,7 +132,12 @@ fn normalize(
     let m = raw.iter().map(|v| v.abs()).max().unwrap();
     let highest = 127 - m.leading_zeros() as i32;
     let mut shift = if bounded { 0 } else { f as i32 - 1 - highest };
-    if !bounded && shift < 0 && rne(m, (-shift) as u32) >= 1 << f {
+    if !bounded
+        && shift < 0
+        && raw
+            .iter()
+            .any(|&a| rounded(a, (-shift) as u32, c.rounding.normalization).abs() >= 1 << f)
+    {
         shift -= 1;
     }
     g.stage(format!("{prefix}.shift"), i128::from(shift));
@@ -90,7 +145,7 @@ fn normalize(
         if shift >= 0 {
             a << shift
         } else {
-            rne(a, (-shift) as u32)
+            rounded(a, (-shift) as u32, c.rounding.normalization)
         }
     });
     let low = f - 7;
@@ -129,17 +184,18 @@ fn normalize(
         };
         let base = endpoint(segment);
         let delta = base - endpoint(segment + 1);
-        let r0 = base - rne(delta * fraction, 8);
+        let extra = c.reciprocal_work_extra;
+        let r0 = (base << extra) - rounded(delta * fraction, 8 - extra, c.rounding.rsqrt);
         let restore = -exponent.div_euclid(2);
         if restore >= 0 {
             r0 << restore
         } else {
-            rne(r0, (-restore) as u32)
+            rounded(r0, (-restore) as u32, c.rounding.normalization)
         }
     } else {
         quantize(
             1.0 / (q as f64 / 2_f64.powi((2 * f) as i32)).sqrt(),
-            c.reciprocal_fraction,
+            c.reciprocal_fraction + c.reciprocal_work_extra,
         )
     };
     g.stage(format!("{prefix}.r"), r);
@@ -148,7 +204,12 @@ fn normalize(
         if zero {
             0
         } else {
-            rne(a * r, c.reciprocal_fraction).clamp(-limit, limit)
+            rounded(
+                a * r,
+                c.reciprocal_fraction + c.reciprocal_work_extra,
+                c.rounding.normalization,
+            )
+            .clamp(-limit, limit)
         }
     });
     for (i, value) in unit.iter().enumerate() {
@@ -159,6 +220,9 @@ fn normalize(
 
 /// Quantized contract of the generated table, independently addressed by segments.
 pub fn power_table(x: u32, code: u8) -> Result<u32, InputError> {
+    power_table_with(x, code, Rounding::NearestEven)
+}
+pub fn power_table_with(x: u32, code: u8, rounding: Rounding) -> Result<u32, InputError> {
     if code > 16 || x > 32768 {
         return Err(InputError::Shininess);
     }
@@ -176,7 +240,8 @@ pub fn power_table(x: u32, code: u8) -> Result<u32, InputError> {
         )
     };
     let entry = format::POWER_RAW[index as usize];
-    Ok((entry & 65535) as u32 + rne(i128::from(entry >> 16) * i128::from(tail), shift) as u32)
+    Ok((entry & 65535) as u32
+        + rounded(i128::from(entry >> 16) * i128::from(tail), shift, rounding) as u32)
 }
 
 pub fn evaluate(
@@ -189,6 +254,7 @@ pub fn evaluate(
     validate(pixel, material, light, projection)?;
     if !(10..=20).contains(&c.direction_fraction)
         || !(10..=24).contains(&c.reciprocal_fraction)
+        || c.reciprocal_work_extra > 8
         || !(8..=24).contains(&c.dot_fraction)
         || !(8..=24).contains(&c.power_fraction)
         || !(4..=16).contains(&c.intensity_fraction)
@@ -215,20 +281,22 @@ pub fn evaluate(
         let l = light.direction.map(|v| rescale(i128::from(v), 14, f));
         let nl = n.iter().zip(l).map(|(a, b)| a * b).sum::<i128>();
         g.stage("nl", nl);
-        let d = rescale(nl.clamp(0, 1 << (2 * f)), 2 * f, fi);
+        let d = rescale_with(nl.clamp(0, 1 << (2 * f)), 2 * f, fi, c.rounding.dot);
         g.stage("d", d);
-        g.g = (ia + rne(id * d, fi)).min((2 << fi) - 1);
+        g.g = (ia + rounded(id * d, fi, c.rounding.output)).min((2 << fi) - 1);
         if material.specular_color != [0; 3] {
             let vraw = [
-                rescale(
+                rescale_with(
                     i128::from(pixel.ndc[0]) * i128::from(projection.ray_scale[0]),
                     30,
                     f,
+                    c.rounding.projection,
                 ),
-                rescale(
+                rescale_with(
                     i128::from(pixel.ndc[1]) * i128::from(projection.ray_scale[1]),
                     30,
                     f,
+                    c.rounding.projection,
                 ),
                 rescale(i128::from(projection.k), 14, f),
             ];
@@ -236,17 +304,23 @@ pub fn evaluate(
                 g.stage(format!("ray.{i}"), *value);
             }
             let v = normalize(vraw, rescale(4, 14, f).max(1), true, c, "v", &mut g);
-            let hraw = std::array::from_fn(|i| rne(l[i] + v[i], 1));
+            let hraw = std::array::from_fn(|i| rounded(l[i] + v[i], 1, c.rounding.half));
             let h = normalize(hraw, rescale(64, 14, f), false, c, "h", &mut g);
             let nh = n.iter().zip(h).map(|(a, b)| a * b).sum::<i128>();
-            let x = rescale(nh.clamp(0, 1 << (2 * f)), 2 * f, c.dot_fraction);
+            let x = rescale_with(
+                nh.clamp(0, 1 << (2 * f)),
+                2 * f,
+                c.dot_fraction,
+                c.rounding.dot,
+            );
             g.stage("nh", nh);
             g.stage("x", x);
             let p = if c.approximate_power {
                 rescale(
-                    i128::from(power_table(
+                    i128::from(power_table_with(
                         rescale(x, c.dot_fraction, 15) as u32,
                         material.shininess_code,
+                        c.rounding.power,
                     )?),
                     15,
                     c.power_fraction,
@@ -260,12 +334,12 @@ pub fn evaluate(
             };
             g.stage("power", p);
             let p = if nl > 0 {
-                rescale(p, c.power_fraction, fi)
+                rescale_with(p, c.power_fraction, fi, c.rounding.output)
             } else {
                 0
             };
             g.stage("p9", p);
-            g.h = rne(id * p, fi);
+            g.h = rounded(id * p, fi, c.rounding.output);
         }
     }
     g.stage("g", g.g);

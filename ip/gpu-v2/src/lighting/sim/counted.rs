@@ -22,8 +22,27 @@ pub struct Report {
     pub output: LightingOutput,
     pub frame: FrameReport,
 }
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Config {
+    /// Use signed quadratic chords to avoid the second abs in each normalize.
+    pub signed_square: bool,
+    /// Truncate only the nonnegative power interpolation correction.
+    pub power_floor: bool,
+}
+impl Config {
+    pub fn optimized() -> Self {
+        Self {
+            signed_square: true,
+            power_floor: true,
+        }
+    }
+}
+enum SquareTable {
+    Magnitude(Memory<14, 0, false>),
+    Signed(Memory<15, 0, false>),
+}
 struct Tables {
-    square: Memory<14, 0, false>,
+    square: SquareTable,
     rsqrt: Memory<24, 0, false>,
     power: Memory<28, 0, false>,
     context: Memory<43, 0, false>,
@@ -103,17 +122,36 @@ fn normalize(
     }
     let mut squares = [SquareSum::constant::<0>(); 3];
     for i in 0..3 {
-        let u = magnitude(f, v[i])?;
-        let a = f.slice::<7, 0, false, 7>(u)?;
-        let b = f.slice::<7, 0, false, 0>(u)?;
-        let base = f.read(t.square.indexed(a))?;
-        let a = f.resize_exact::<8, 0, false>(a)?;
-        let twice = f.shift_left_const::<1, 8, 0, false>(a)?;
-        let slope = f.add_same(twice, Fixed::<8, 0, false>::constant::<1>())?;
-        let correction: Fixed<15, 0, false> = f.product(slope, b)?;
-        let base = f.shift_left_const::<14, 30, 0, false>(f.resize_exact(base)?)?;
-        let correction = f.shift_left_const::<7, 30, 0, false>(f.resize_exact(correction)?)?;
-        squares[i] = f.binary_scale(f.add_same(base, correction)?)?;
+        squares[i] = match t.square {
+            SquareTable::Magnitude(table) => {
+                let u = magnitude(f, v[i])?;
+                let a = f.slice::<7, 0, false, 7>(u)?;
+                let b = f.slice::<7, 0, false, 0>(u)?;
+                let base = f.read(table.indexed(a))?;
+                let a = f.resize_exact::<8, 0, false>(a)?;
+                let twice = f.shift_left_const::<1, 8, 0, false>(a)?;
+                let slope = f.add_same(twice, Fixed::<8, 0, false>::constant::<1>())?;
+                let correction: Fixed<15, 0, false> = f.product(slope, b)?;
+                let base = f.shift_left_const::<14, 30, 0, false>(f.resize_exact(base)?)?;
+                let correction =
+                    f.shift_left_const::<7, 30, 0, false>(f.resize_exact(correction)?)?;
+                f.binary_scale(f.add_same(base, correction)?)?
+            }
+            SquareTable::Signed(table) => {
+                let a = f.slice::<8, 0, false, 7>(v[i])?;
+                let b = f.slice::<7, 0, false, 0>(v[i])?;
+                let base = f.read(table.indexed(a))?;
+                let signed_a = f.slice::<8, 0, true, 0>(a)?;
+                let twice = f.shift_left_const::<1, 9, 0, true>(f.resize_exact(signed_a)?)?;
+                let slope = f.add_same(twice, Fixed::<9, 0, true>::constant::<1>())?;
+                let tail: Fixed<8, 0, true> = f.resize_exact(b)?;
+                let correction: Fixed<17, 0, true> = f.product(slope, tail)?;
+                let base = f.shift_left_const::<14, 30, 0, false>(f.resize_exact(base)?)?;
+                let correction =
+                    f.shift_left_const::<7, 30, 0, true>(f.resize_exact(correction)?)?;
+                f.binary_scale(f.add::<30, 0, false>(base, correction)?)?
+            }
+        };
     }
     let q = f.add_same(f.add_same(squares[0], squares[1])?, squares[2])?;
     f.publish(&format!("{prefix}.q"), q)?;
@@ -165,6 +203,7 @@ fn power(
     x: Specular,
     code: Fixed<5, 0, false>,
     t: &Tables,
+    floor: bool,
 ) -> Result<Specular, Fault> {
     f.branch_value(
         f.less(x, Specular::constant::<32768>())?,
@@ -192,7 +231,13 @@ fn power(
             let product: Fixed<24, 0, false> = f.product(delta, tail)?;
             let padded = f.shift_left_const::<12, 36, 0, false>(f.resize_exact(product)?)?;
             let padded = f.binary_scale::<36, 12, false>(f.shift(padded, neg)?)?;
-            let result = f.add_same(left, f.round_to(padded)?)?;
+            let correction = if floor {
+                // Preserve every nonfractional source bit before checked narrowing.
+                f.resize_exact(f.slice::<24, 0, false, 12>(padded)?)?
+            } else {
+                f.round_to(padded)?
+            };
+            let result = f.add_same(left, correction)?;
             f.binary_scale(result)
         },
         |_| Ok(Specular::constant::<32768>()),
@@ -218,7 +263,7 @@ fn outputs(f: &Frame<'_>, g: Intensity, h: Intensity) -> Result<(), Fault> {
     f.publish("g", g)?;
     f.publish("h", h)
 }
-fn kernel(f: &Frame<'_>, input: &Inputs, t: &Tables) -> Result<(), Fault> {
+fn kernel(f: &Frame<'_>, input: &Inputs, t: &Tables, config: Config) -> Result<(), Fault> {
     let mode = f.read(input.mode.at::<0>())?;
     f.branch(
         f.less(mode, Fixed::<2, 0, false>::constant::<1>())?,
@@ -287,7 +332,8 @@ fn kernel(f: &Frame<'_>, input: &Inputs, t: &Tables) -> Result<(), Fault> {
                                 clamp(f, nh, Dot::constant::<0>(), Dot::constant::<268435456>())?;
                             let x: Specular = f.round_to(nh)?;
                             f.publish("x", x)?;
-                            let p = power(f, x, f.read(input.code.at::<0>())?, t)?;
+                            let p =
+                                power(f, x, f.read(input.code.at::<0>())?, t, config.power_floor)?;
                             f.publish("power", p)?;
                             let p9: Intensity = f.round_to(p)?;
                             let p9 = f.select(
@@ -312,6 +358,24 @@ pub fn evaluate(
     light: Light,
     projection: Projection,
     max_events: usize,
+) -> Result<Report, Error> {
+    evaluate_with_config(
+        pixel,
+        material,
+        light,
+        projection,
+        max_events,
+        Config::default(),
+    )
+}
+
+pub fn evaluate_with_config(
+    pixel: PixelInput,
+    material: Material,
+    light: Light,
+    projection: Projection,
+    max_events: usize,
+    config: Config,
 ) -> Result<Report, Error> {
     validate(pixel, material, light, projection)?;
     let mut model = Model::numerical();
@@ -343,13 +407,17 @@ pub fn evaluate(
         code: model.input("context.shininess", &[i128::from(material.shininess_code)])?,
     };
     let t = Tables {
-        square: model.table("SQ", &SQUARE)?,
+        square: if config.signed_square {
+            SquareTable::Signed(model.table("SQ", &SQUARE_SIGNED)?)
+        } else {
+            SquareTable::Magnitude(model.table("SQ", &SQUARE)?)
+        },
         rsqrt: model.table("RSQRT", &RSQRT)?,
         power: model.table("POWER", &POWER)?,
         context: model.table("POWER_CONTEXT", &CONTEXT)?,
     };
     let f = model.compute("pixel_lighting", max_events)?;
-    kernel(&f, &input, &t)?;
+    kernel(&f, &input, &t, config)?;
     let frame = f.finish();
     frame.audit()?;
     if !frame.valid {

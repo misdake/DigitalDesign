@@ -16,6 +16,8 @@ ip/gpu-v2/
         oracle.rs              configurable reference and stage goldens
         counted.rs             closed audited fixed-point implementation
         timed.rs               bounded capacity and static batch reservations
+        binding.rs             checked DSP fusion and small-logic lowering
+        periodic.rs            static modulo calendar and repeating-slot audit
       emu/                     future independent cycle/state model
       rtl/                     future hardware implementation
   tests/support/               deterministic stimuli and comparison helpers
@@ -32,8 +34,9 @@ connects ports, queues and context lifetimes when integration is defined.
 Simulation has three stages: configurable oracle determines numerical needs;
 counted matches a chosen format configuration bit for bit and records all work;
 timed starts by binding capacities and verifying static batch reservations.
-Continuous throughput, backpressure and a cycle-stepped datapath remain future
-work. The generic audited ledger and resource scheduler support planning.
+The periodic variant checks a repeating arithmetic calendar at the target II=2;
+runtime streaming, backpressure and a cycle-stepped datapath remain future work.
+The generic audited ledger and resource scheduler support planning.
 Emulation and RTL remain independent verification paths.
 Tests use stage goldens rather than treating audit success as an accuracy oracle.
 

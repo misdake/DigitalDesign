@@ -115,6 +115,48 @@ fn oracle_known_directions_and_modes() {
 }
 
 #[test]
+fn reciprocal_work_precision_experiment_preserves_external_formats() {
+    // Reproduced input where retaining an interpolation bit reaches the output.
+    let pixel = PixelInput {
+        normal: [31689, 5502, -5932],
+        ndc: [-56255, -29532],
+    };
+    let material = Material {
+        shininess_code: 3,
+        ..Material::default()
+    };
+    let light = Light {
+        direction: [15050, -2994, -5741],
+        ambient: 32,
+        directional: 256,
+    };
+    let projection = Projection {
+        ray_scale: [-12288, -8192],
+        k: 10240,
+    };
+    let evaluate = |extra| {
+        oracle::evaluate(
+            pixel,
+            material,
+            light,
+            projection,
+            oracle::Config {
+                reciprocal_work_extra: extra,
+                ..oracle::Config::default()
+            },
+        )
+    };
+    assert_eq!(compare(pixel, material, light, projection).output.h, 143);
+    assert_eq!(evaluate(0).unwrap().h, 143);
+    for extra in [1, 3, 8] {
+        let higher = evaluate(extra).unwrap();
+        assert_eq!(higher.h, 142);
+        assert_eq!(higher.intensity_fraction, 8);
+    }
+    assert!(matches!(evaluate(9), Err(InputError::Configuration)));
+}
+
+#[test]
 fn representative_stage_goldens_match_counted() {
     for (pixel, material, light, projection) in support::representative() {
         compare(pixel, material, light, projection);
@@ -326,4 +368,118 @@ fn half_threshold_is_applied_after_rne_and_normal_extreme_is_safe() {
             assert_eq!(h_x, -16384);
         }
     }
+}
+
+#[test]
+fn optimized_counted_matches_independent_stages_and_limits_output_change() {
+    let signed_only = counted::Config {
+        signed_square: true,
+        power_floor: false,
+    };
+    let optimized = counted::Config::optimized();
+    for (pixel, material, light, projection) in support::representative() {
+        let old = counted::evaluate(pixel, material, light, projection, MAX_EVENTS).unwrap();
+        let exact = counted::evaluate_with_config(
+            pixel,
+            material,
+            light,
+            projection,
+            MAX_EVENTS,
+            signed_only,
+        )
+        .unwrap();
+        let old_stages: Vec<_> = old.frame.outputs.iter().map(|v| (&v.name, v.raw)).collect();
+        let exact_stages: Vec<_> = exact
+            .frame
+            .outputs
+            .iter()
+            .map(|v| (&v.name, v.raw))
+            .collect();
+        assert_eq!(old_stages, exact_stages);
+        let new = counted::evaluate_with_config(
+            pixel, material, light, projection, MAX_EVENTS, optimized,
+        )
+        .unwrap();
+        let golden = oracle::evaluate(
+            pixel,
+            material,
+            light,
+            projection,
+            oracle::Config {
+                rounding: oracle::RoundingPolicy {
+                    power: oracle::Rounding::Floor,
+                    ..oracle::RoundingPolicy::default()
+                },
+                ..oracle::Config::default()
+            },
+        )
+        .unwrap();
+        let stages: Vec<_> = new
+            .frame
+            .outputs
+            .iter()
+            .map(|v| (v.name.clone(), v.raw))
+            .collect();
+        assert_eq!(stages, golden.stages);
+        assert_eq!(new.output.g, old.output.g);
+        assert!(old.output.h >= new.output.h && old.output.h - new.output.h <= 1);
+        new.frame.audit().unwrap();
+    }
+}
+
+#[test]
+fn power_floor_is_monotone_and_at_most_one_q15_unit_below_rne() {
+    for code in 0..17 {
+        let mut previous = 0;
+        for x in 0..=32768 {
+            let old = oracle::power_table(x, code).unwrap();
+            let new = oracle::power_table_with(x, code, oracle::Rounding::Floor).unwrap();
+            assert!(
+                new >= previous && new <= old && old - new <= 1,
+                "code={code}, x={x}"
+            );
+            previous = new;
+        }
+        assert_eq!(previous, 32768);
+    }
+}
+
+#[test]
+fn flooring_half_moves_degeneracy_boundary_and_cannot_replace_rne() {
+    let pixel = PixelInput {
+        normal: [16384, 0, 0],
+        ndc: [0; 2],
+    };
+    let light = Light {
+        direction: [127, 0, -16384],
+        ambient: 32,
+        directional: 256,
+    };
+    let material = Material {
+        shininess_code: 11,
+        ..Material::default()
+    };
+    let rne = oracle::evaluate(
+        pixel,
+        material,
+        light,
+        Projection::default(),
+        oracle::Config::default(),
+    )
+    .unwrap();
+    let floor = oracle::evaluate(
+        pixel,
+        material,
+        light,
+        Projection::default(),
+        oracle::Config {
+            rounding: oracle::RoundingPolicy {
+                half: oracle::Rounding::Floor,
+                ..oracle::RoundingPolicy::default()
+            },
+            ..oracle::Config::default()
+        },
+    )
+    .unwrap();
+    assert_eq!((rne.h, floor.h), (256, 0));
 }

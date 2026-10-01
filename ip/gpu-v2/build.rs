@@ -67,6 +67,21 @@ fn main() {
         "SquareEntry",
         &(0..128).map(|a| a * a).collect::<Vec<_>>(),
     );
+    // Signed coarse coordinate a in [-128,127], base a*a. Its signed slope
+    // 2*a+1 is concatenation wiring in the target binding, not ROM payload.
+    // x = 128*a+b; the chord formula also works for negative x without abs.
+    let signed_square: Vec<_> = (0..256)
+        .map(|index| {
+            let a = if index >= 128 { index - 256 } else { index };
+            (a * a) as u64
+        })
+        .collect();
+    emit_table(
+        &mut out,
+        "SQUARE_SIGNED",
+        "SquareSignedEntry",
+        &signed_square,
+    );
     let mut rsqrt = Vec::new();
     for parity in 0..2 {
         for segment in 0..64 {

@@ -2,13 +2,25 @@
 //! Uses the counted full-path DAG as a conservative template, including power
 //! endpoint slots. This is a compile-time planning experiment, not an RTL arbiter.
 use super::super::ports::*;
+use super::binding::BoundDag;
+pub use super::binding::FusedGroup;
 use super::{counted, oracle};
 use audited::{FrameReport, MemoryKind, Operation, Resource};
 use std::cmp::Reverse;
 use std::collections::{BTreeMap, BinaryHeap};
 
+#[path = "periodic.rs"]
+mod periodic;
+pub use periodic::PeriodicSchedule;
+
 #[derive(Clone, Copy, Debug)]
 pub struct Hardware {
+    pub kernel: counted::Config,
+    pub binding: Binding,
+    pub narrow_adders: usize,
+    pub incrementers_per_width: usize,
+    pub paired_macros: usize,
+    pub paired_latency: u64,
     pub small_multiply: usize,
     pub large_multiply: usize,
     pub adders_per_width: usize,
@@ -16,6 +28,7 @@ pub struct Hardware {
     pub selects_per_width: usize,
     pub shifts_per_width: usize,
     pub rounders_per_width: usize,
+    pub leading_zeros_per_width: usize,
     pub normalize_reads: usize,
     pub multiply_latency: u64,
     pub logic_latency: u64,
@@ -25,6 +38,12 @@ pub struct Hardware {
 impl Default for Hardware {
     fn default() -> Self {
         Self {
+            kernel: counted::Config::default(),
+            binding: Binding::Generic,
+            narrow_adders: 2,
+            incrementers_per_width: 2,
+            paired_macros: 0,
+            paired_latency: 4,
             small_multiply: 7,
             large_multiply: 9,
             adders_per_width: 2,
@@ -32,6 +51,7 @@ impl Default for Hardware {
             selects_per_width: 3,
             shifts_per_width: 2,
             rounders_per_width: 2,
+            leading_zeros_per_width: 1,
             normalize_reads: 6,
             multiply_latency: 3,
             logic_latency: 1,
@@ -39,6 +59,11 @@ impl Default for Hardware {
             max_cycles: 20000,
         }
     }
+}
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Binding {
+    Generic,
+    LightingDsp,
 }
 #[derive(Clone, Copy, Debug)]
 pub enum Storage {
@@ -56,6 +81,8 @@ pub enum Strategy {
 pub enum LaneKind {
     SmallMultiply,
     LargeMultiply,
+    PairMultiplyAdd,
+    Increment(u32),
     Add(u32),
     Compare(u32),
     Select(u32),
@@ -103,6 +130,8 @@ pub struct Plan {
     pub pixel_payload_bits: usize,
     pub uniform_payload_bits: usize,
     gates: Vec<u64>,
+    binding: BoundDag,
+    kernel: counted::Config,
 }
 fn width(w: u32) -> u32 {
     if w <= 18 {
@@ -113,7 +142,7 @@ fn width(w: u32) -> u32 {
         54
     }
 }
-fn kind(report: &FrameReport, event: usize) -> Result<Option<LaneKind>, String> {
+pub(super) fn kind(report: &FrameReport, event: usize) -> Result<Option<LaneKind>, String> {
     let e = &report.events[event];
     Ok(match e.resource {
         None => None,
@@ -146,22 +175,88 @@ fn kind(report: &FrameReport, event: usize) -> Result<Option<LaneKind>, String> 
     })
 }
 impl Hardware {
+    /// Twice the 18x18-equivalent multiplier budget, avoiding fractional counts.
+    pub fn multiplier_half_slots(self) -> usize {
+        self.small_multiply
+            + 2 * self.large_multiply
+            + if self.binding == Binding::LightingDsp {
+                4 * self.paired_macros
+            } else {
+                0
+            }
+    }
+    /// Kind-separated macro budget; excludes fabric logic, routing and registers.
+    pub fn multiplier_macros(self) -> usize {
+        self.small_multiply.div_ceil(4)
+            + self.large_multiply.div_ceil(2)
+            + if self.binding == Binding::LightingDsp {
+                self.paired_macros
+            } else {
+                0
+            }
+    }
+    /// Same 9 large multiplier slots: 5 standalone, 2 dedicated pair+ALU macros.
+    /// Pipeline latency assumptions are planning inputs, not fitted timing.
+    pub fn lighting_dsp() -> Self {
+        Self {
+            binding: Binding::LightingDsp,
+            large_multiply: 5,
+            paired_macros: 2,
+            narrow_adders: 8,
+            incrementers_per_width: 8,
+            rounders_per_width: 8,
+            ..Self::default()
+        }
+    }
+    /// Capacity target for the current full-path graph at II=2.
+    /// One pair+ALU macro is enough for the two dot groups per pixel; returning
+    /// the other macro to standalone multiplication preserves the DSP budget.
+    /// Logic counts are ledger-based planning capacities, not fitted area.
+    pub fn lighting_ii2() -> Self {
+        Self {
+            large_multiply: 7,
+            paired_macros: 1,
+            narrow_adders: 21,
+            adders_per_width: 8,
+            incrementers_per_width: 17,
+            compares_per_width: 27,
+            selects_per_width: 35,
+            shifts_per_width: 8,
+            rounders_per_width: 13,
+            leading_zeros_per_width: 2,
+            ..Self::lighting_dsp()
+        }
+    }
+    pub fn lighting_optimized_ii2() -> Self {
+        Self {
+            kernel: counted::Config::optimized(),
+            narrow_adders: 17,
+            compares_per_width: 23,
+            selects_per_width: 31,
+            ..Self::lighting_ii2()
+        }
+    }
     fn unit(self, k: &LaneKind) -> (usize, u64) {
         match k {
             LaneKind::SmallMultiply => (self.small_multiply, self.multiply_latency),
             LaneKind::LargeMultiply => (self.large_multiply, self.multiply_latency),
+            LaneKind::PairMultiplyAdd => (self.paired_macros, self.paired_latency),
+            LaneKind::Increment(_) => (self.incrementers_per_width, self.logic_latency),
+            LaneKind::Add(18) if self.binding == Binding::LightingDsp => {
+                (self.narrow_adders, self.logic_latency)
+            }
             LaneKind::Add(_) => (self.adders_per_width, self.logic_latency),
             LaneKind::Compare(_) => (self.compares_per_width, self.logic_latency),
             LaneKind::Select(_) => (self.selects_per_width, self.logic_latency),
             LaneKind::Shift(_) => (self.shifts_per_width, self.logic_latency),
             LaneKind::Round(_) => (self.rounders_per_width, self.logic_latency),
-            LaneKind::LeadingZeros(_) => (1, self.logic_latency),
+            LaneKind::LeadingZeros(_) => (self.leading_zeros_per_width, self.logic_latency),
             LaneKind::NormalizeRead => (self.normalize_reads, self.rom_latency),
             LaneKind::PowerRead | LaneKind::ContextRead => (1, self.rom_latency),
         }
     }
 }
-fn dependencies(template: &FrameReport, event: usize) -> Vec<usize> {
+pub(super) fn dependencies(template: &FrameReport, event: usize) -> Vec<usize> {
     let e = &template.events[event];
     let mut deps: Vec<_> = e
         .inputs
@@ -193,16 +288,26 @@ pub fn plan(
         normal: [0; 3],
         ndc: [0; 2],
     };
-    let template = counted::evaluate(template_pixel, material, light, projection, 2048)
-        .map_err(|e| format!("template: {e:?}"))?
-        .frame;
+    let template = counted::evaluate_with_config(
+        template_pixel,
+        material,
+        light,
+        projection,
+        2048,
+        hardware.kernel,
+    )
+    .map_err(|e| format!("template: {e:?}"))?
+    .frame;
     let mut outputs = Vec::new();
+    let binding = BoundDag::new(&template, hardware)?;
     // Physical context rows are latched before logical counted context reads.
     let _context_rows =
         UniformRows::encode(material, light, projection).map_err(|e| format!("context: {e:?}"))?;
     for &p in pixels {
-        let report = counted::evaluate(p, material, light, projection, 2048)
-            .map_err(|e| format!("pixel: {e:?}"))?;
+        let report =
+            counted::evaluate_with_config(p, material, light, projection, 2048, hardware.kernel)
+                .map_err(|e| format!("pixel: {e:?}"))?;
+        BoundDag::new(&report.frame, hardware)?;
         // The only data-dependent skipped arithmetic is the power endpoint.
         for (resource, count) in &report.frame.counts.resources {
             if *count
@@ -234,7 +339,7 @@ pub fn plan(
     };
     let mut units = BTreeMap::<LaneKind, Vec<u64>>::new();
     for e in 0..template.events.len() {
-        if let Some(k) = kind(&template, e)? {
+        if let Some(k) = binding.kinds[e].clone() {
             let (lanes, latency) = hardware.unit(&k);
             if lanes == 0 || lanes > 64 || latency == 0 || latency > hardware.max_cycles {
                 return Err("invalid hardware".into());
@@ -301,9 +406,9 @@ pub fn plan(
                 }
             }
             earliest[id] = gates[id];
-            let deps = dependencies(&template, event);
+            let deps = &binding.dependencies[event];
             deps_left[id] = deps.len();
-            for dep in deps {
+            for &dep in deps {
                 children[pixel * stride + dep].push(id);
             }
         }
@@ -318,7 +423,7 @@ pub fn plan(
     while let Some(Reverse((start, id))) = heap.pop() {
         let pixel = id / stride;
         let event = id % stride;
-        let k = kind(&template, event)?;
+        let k = binding.kinds[event].clone();
         let (issue, ready, lane) = if let Some(k) = &k {
             let slots = units.get_mut(k).unwrap();
             let (lane, free) = slots
@@ -395,6 +500,8 @@ pub fn plan(
         pixel_payload_bits: 84 * n,
         uniform_payload_bits: 121,
         gates,
+        binding,
+        kernel: hardware.kernel,
     };
     plan.audit()?;
     Ok(plan)
@@ -431,8 +538,8 @@ impl Plan {
             });
             graph.nodes.push(Node {
                 name: format!("pixel{}.event{}", r.pixel, r.event),
-                predecessors: dependencies(&self.template, r.event)
-                    .into_iter()
+                predecessors: self.binding.dependencies[r.event]
+                    .iter()
                     .map(|e| r.pixel * stride + e)
                     .collect(),
                 earliest: self.gates[id],
@@ -496,9 +603,16 @@ impl Plan {
     }
     /// Verify every static slot, input gate, dependency and ordered result write.
     pub fn audit(&self) -> Result<(), String> {
+        if self.kernel != self.hardware.kernel {
+            return Err("kernel config certificate".into());
+        }
         self.template
             .audit()
             .map_err(|e| format!("template: {e:?}"))?;
+        let expected = BoundDag::new(&self.template, self.hardware)?;
+        if expected != self.binding {
+            return Err("binding certificate".into());
+        }
         let stride = self.template.events.len();
         if stride == 0
             || self.outputs.is_empty()
@@ -604,7 +718,7 @@ impl Plan {
         for (id, r) in self.events.iter().enumerate() {
             if r.pixel != id / stride
                 || r.event != id % stride
-                || r.kind != kind(&self.template, r.event)?
+                || r.kind != self.binding.kinds[r.event]
                 || r.issue < self.gates[id]
             {
                 return Err("slot identity/resource/gate".into());
@@ -624,7 +738,7 @@ impl Plan {
             } else if r.lane.is_some() || r.issue != r.ready {
                 return Err("wiring timing".into());
             }
-            for d in dependencies(&self.template, r.event) {
+            for &d in &self.binding.dependencies[r.event] {
                 if self.events[r.pixel * stride + d].ready > r.issue {
                     return Err("operand/control not ready".into());
                 }
@@ -673,6 +787,9 @@ impl Plan {
         }
         counts
     }
+    pub fn fused_groups(&self) -> &[FusedGroup] {
+        &self.binding.groups
+    }
     pub fn compare_oracle(
         &self,
         pixels: &[PixelInput],
@@ -689,7 +806,17 @@ impl Plan {
                 material,
                 light,
                 projection,
-                oracle::Config::default(),
+                oracle::Config {
+                    rounding: oracle::RoundingPolicy {
+                        power: if self.kernel.power_floor {
+                            oracle::Rounding::Floor
+                        } else {
+                            oracle::Rounding::NearestEven
+                        },
+                        ..oracle::RoundingPolicy::default()
+                    },
+                    ..oracle::Config::default()
+                },
             )
             .map_err(|e| format!("{e:?}"))?;
             if i128::from(output.g) != golden.g || i128::from(output.h) != golden.h {
