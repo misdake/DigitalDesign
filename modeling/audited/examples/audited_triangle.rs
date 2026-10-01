@@ -1,6 +1,8 @@
 //! Small framework driver. Host formatting happens only after the frame closes.
 #![forbid(unsafe_code)]
-use gpu_v2_cmodel::audited_fixed::{triangle, FrameReport, ProductRoute, Resource};
+use audited::{ExecutionMode, FrameReport, ProductRoute, Resource};
+#[path = "support/triangle.rs"]
+mod triangle;
 use std::fmt::Write as _;
 use std::path::Path;
 
@@ -8,21 +10,29 @@ fn csv_field(value: impl std::fmt::Display) -> String {
     format!("\"{}\"", value.to_string().replace('"', "\"\""))
 }
 fn save(report: &FrameReport, directory: &Path, label: &str) -> Result<(), String> {
+    let cycle = |value: u64| {
+        if report.mode == ExecutionMode::Scheduled {
+            value.to_string()
+        } else {
+            String::new()
+        }
+    };
     let mut csv = String::from(
-        "event,operation,resource,lane,issue_cycle,ready_cycle,inputs,output,format,raw\n",
+        "event,operation,resource,lane,issue_cycle,ready_cycle,inputs,control,output,format,raw\n",
     );
     for e in &report.events {
         let value = e.output.map(|i| &report.values[i]);
         writeln!(
             csv,
-            "{},{},{},{},{},{},{},{},{},{}",
+            "{},{},{},{},{},{},{},{},{},{},{}",
             e.id,
             csv_field(format!("{:?}", e.operation)),
             csv_field(format!("{:?}", e.resource)),
             csv_field(format!("{:?}", e.lane)),
-            e.issue_cycle,
-            e.ready_cycle,
+            cycle(e.issue_cycle),
+            cycle(e.ready_cycle),
             csv_field(format!("{:?}", e.inputs)),
+            csv_field(format!("{:?}", e.control)),
             csv_field(format!("{:?}", e.output)),
             csv_field(value.map_or_else(String::new, |v| format!("{:?}", v.format))),
             value.map_or_else(String::new, |v| v.raw.to_string())
@@ -35,7 +45,7 @@ fn save(report: &FrameReport, directory: &Path, label: &str) -> Result<(), Strin
         "memory,operation,event,issue_cycle,ready_cycle,row,bits,fraction,signed,raw\n",
     );
     for e in &report.events {
-        use gpu_v2_cmodel::audited_fixed::Operation;
+        use audited::Operation;
         let (memory, row, id, operation) = match e.operation {
             Operation::Read { memory, row } => (memory, row, e.output.unwrap(), "read"),
             Operation::Write { memory, row } => (memory, row, e.inputs[0], "write"),
@@ -48,8 +58,8 @@ fn save(report: &FrameReport, directory: &Path, label: &str) -> Result<(), Strin
             csv_field(&report.memories[memory].name),
             operation,
             e.id,
-            e.issue_cycle,
-            e.ready_cycle,
+            cycle(e.issue_cycle),
+            cycle(e.ready_cycle),
             row,
             v.format.bits,
             v.format.fraction,
@@ -76,13 +86,29 @@ fn main() -> Result<(), String> {
     for (label, route) in [
         ("native-pair", ProductRoute::Native18Pair),
         ("wide-route", ProductRoute::Wide36),
+        ("numerical", ProductRoute::Native18Pair),
     ] {
-        let report = triangle::run(route).map_err(|e| format!("{e:?}"))?;
+        let report = if label == "numerical" {
+            triangle::run_numerical(route, &[16, 32, 80, 32, 16, 96], &[32, 160, 224])
+        } else {
+            triangle::run(route)
+        }
+        .map_err(|e| format!("{e:?}"))?;
         report.audit().map_err(|e| format!("{e:?}"))?;
         if !report.valid {
             return Err(format!("invalid frame: {:?}", report.faults));
         }
-        println!("audited_triangle,route={label},cycles={},events={},DSP18_capacity={},physical18={},physical36={},add18={},add36={},add54={},valid={}",report.cycles,report.events.len(),report.hardware.dsp18_units(),report.counts.resources.get(&Resource::Dsp18).copied().unwrap_or(0),report.counts.resources.get(&Resource::Dsp36).copied().unwrap_or(0),report.counts.resources.get(&Resource::Adder(18)).copied().unwrap_or(0),report.counts.resources.get(&Resource::Adder(36)).copied().unwrap_or(0),report.counts.resources.get(&Resource::Adder(54)).copied().unwrap_or(0),report.valid);
+        let cycles = if report.mode == ExecutionMode::Scheduled {
+            report.cycles.to_string()
+        } else {
+            "not_scheduled".into()
+        };
+        let capacity = if report.mode == ExecutionMode::Scheduled {
+            report.hardware.dsp18_units().to_string()
+        } else {
+            "not_bound".into()
+        };
+        println!("audited_triangle,route={label},mode={:?},cycles={cycles},events={},DSP18_capacity={capacity},physical18={},physical36={},adders={:?},valid={}",report.mode,report.events.len(),report.counts.resources.get(&Resource::Dsp18).copied().unwrap_or(0),report.counts.resources.get(&Resource::Dsp36).copied().unwrap_or(0),report.counts.resources.iter().filter(|(r,_)| matches!(r,Resource::Adder(_))).collect::<Vec<_>>(),report.valid);
         // Report all declared units, including unused capacity, without hiding control costs.
         for (resource, unit) in &report.hardware.units {
             let issues = report.counts.resources.get(resource).copied().unwrap_or(0);
@@ -103,7 +129,25 @@ fn main() -> Result<(), String> {
             );
         }
         for (id, m) in report.memories.iter().enumerate() {
-            println!("memory,{label},{},reads={},writes={},read_bits={},write_bits={},limits_reads_writes={}/{}",m.name,report.counts.resources.get(&Resource::Read(id)).copied().unwrap_or(0),report.counts.resources.get(&Resource::Write(id)).copied().unwrap_or(0),report.counts.read_bits.get(&id).copied().unwrap_or(0),report.counts.write_bits.get(&id).copied().unwrap_or(0),m.ports.max_reads_per_frame,m.ports.max_writes_per_frame);
+            println!(
+                "memory,{label},{},kind={:?},reads={},writes={},read_bits={},write_bits={}",
+                m.name,
+                m.kind,
+                report
+                    .counts
+                    .resources
+                    .get(&Resource::Read(id))
+                    .copied()
+                    .unwrap_or(0),
+                report
+                    .counts
+                    .resources
+                    .get(&Resource::Write(id))
+                    .copied()
+                    .unwrap_or(0),
+                report.counts.read_bits.get(&id).copied().unwrap_or(0),
+                report.counts.write_bits.get(&id).copied().unwrap_or(0)
+            );
         }
         save(&report, directory, label)?;
     }

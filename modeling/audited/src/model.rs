@@ -6,6 +6,9 @@ use std::sync::atomic::{AtomicU64, Ordering};
 static NEXT_ID: AtomicU64 = AtomicU64::new(1);
 pub type ValueId = usize;
 
+#[path = "scheduling.rs"]
+mod scheduling;
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum Operation {
     Literal,
@@ -32,6 +35,7 @@ pub enum Operation {
     },
     Publish(String),
     Require(bool),
+    Branch(bool),
     ProductMapping {
         a_bits: u32,
         b_bits: u32,
@@ -59,6 +63,7 @@ impl Operation {
             Self::Write { .. } => "write",
             Self::Publish(_) => "publish",
             Self::Require(_) => "control_guard",
+            Self::Branch(_) => "branch",
             Self::ProductMapping { .. } => "logical_multiply_mapping",
         }
     }
@@ -72,6 +77,8 @@ pub struct Event {
     pub issue_cycle: u64,
     pub ready_cycle: u64,
     pub inputs: Vec<ValueId>,
+    /// The preceding branch/guard event, independent of optional cycle timing.
+    pub control: Option<usize>,
     pub output: Option<ValueId>,
 }
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -96,6 +103,12 @@ pub struct Counts {
     pub read_bits: BTreeMap<usize, u64>,
     pub write_bits: BTreeMap<usize, u64>,
 }
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum MemoryKind {
+    Ram,
+    Rom,
+    Input,
+}
 #[derive(Clone, Debug)]
 pub struct MemoryReport {
     pub name: String,
@@ -103,10 +116,12 @@ pub struct MemoryReport {
     pub rows: usize,
     pub ports: PortShape,
     pub read_only: bool,
+    pub kind: MemoryKind,
 }
 #[derive(Clone, Debug)]
 pub struct FrameReport {
     pub name: String,
+    pub mode: ExecutionMode,
     pub limits: Limits,
     pub cycles: u64,
     /// Provenance, width and resource audit status; not a numerical-error contract.
@@ -122,25 +137,33 @@ pub struct FrameReport {
     initial: BTreeMap<(usize, usize), i128>,
 }
 impl FrameReport {
+    /// A numerical report deliberately has no completion-cycle estimate.
+    pub fn scheduled_cycles(&self) -> Option<u64> {
+        (self.mode == ExecutionMode::Scheduled).then_some(self.cycles)
+    }
     /// Independent replay of value provenance, arithmetic, memory, timing and counters.
     /// A resource omission or forged output is an error, even when the number looks right.
     pub fn audit(&self) -> Result<(), Fault> {
         let bad = |s: &str| Fault::Audit(s.into());
         if self.cycles != self.events.iter().map(|e| e.ready_cycle).max().unwrap_or(0)
-            || self.cycles > self.limits.max_cycle
+            || (self.mode == ExecutionMode::Scheduled && self.cycles > self.limits.max_cycle)
             || self.events.len() > self.limits.max_events
             || self.valid != self.faults.is_empty()
         {
             return Err(bad("frame totals, limits or validity"));
         }
+        self.audit_timing()?;
         let mut expected_counts = Counts::default();
         let mut histogram = BTreeMap::new();
-        let mut last_issue = BTreeMap::new();
         let mut producers = vec![false; self.values.len()];
         let mut control_ready = 0;
+        let mut control = None;
         for (id, e) in self.events.iter().enumerate() {
             if e.id != id {
                 return Err(bad("event identity"));
+            }
+            if e.control != control {
+                return Err(bad("control dependency omission"));
             }
             if e.issue_cycle < control_ready {
                 return Err(bad("operation before control guard"));
@@ -169,28 +192,8 @@ impl FrameReport {
                 }
                 producers[v] = true;
             }
-            let unit = e
-                .resource
-                .map(|r| {
-                    self.hardware
-                        .units
-                        .get(&r)
-                        .ok_or_else(|| bad("unconfigured resource"))
-                })
-                .transpose()?;
-            if let (Some(r), Some(unit)) = (e.resource, unit) {
-                let lane = e.lane.ok_or_else(|| bad("missing lane"))?;
-                if lane >= unit.lanes || e.ready_cycle != e.issue_cycle + unit.latency {
-                    return Err(bad("latency or lane"));
-                }
-                if let Some(previous) = last_issue.insert((r, lane), e.issue_cycle) {
-                    if e.issue_cycle < previous + unit.initiation {
-                        return Err(bad("initiation interval"));
-                    }
-                }
+            if let Some(r) = e.resource.filter(|_| self.mode == ExecutionMode::Scheduled) {
                 *histogram.entry((r, e.issue_cycle)).or_default() += 1;
-            } else if e.lane.is_some() || e.ready_cycle != e.issue_cycle {
-                return Err(bad("unclocked operation shape"));
             }
             let out = || result.ok_or_else(|| bad("operation without result"));
             let required = match &e.operation {
@@ -450,24 +453,49 @@ impl FrameReport {
                         return Err(bad("control guard"));
                     }
                     control_ready = control_ready.max(e.ready_cycle);
+                    control = Some(e.id);
                     None
                 }
-                Operation::ProductMapping { a_bits, b_bits, .. } => {
+                Operation::Branch(taken) => {
+                    if operands.len() != 1
+                        || operands[0].format != Fixed::<1, 0, false>::FORMAT
+                        || (operands[0].raw != 0) != *taken
+                        || result.is_some()
+                    {
+                        return Err(bad("branch decision"));
+                    }
+                    control_ready = control_ready.max(e.ready_cycle);
+                    control = Some(e.id);
+                    None
+                }
+                Operation::ProductMapping {
+                    a_bits,
+                    b_bits,
+                    route,
+                } => {
                     if operands.len() != 3
                         || operands[0].format.bits != *a_bits
                         || operands[1].format.bits != *b_bits
                         || operands[0].raw.checked_mul(operands[1].raw) != Some(operands[2].raw)
+                        || operands[2].format.bits != a_bits + b_bits
+                        || operands[2].format.fraction
+                            != operands[0].format.fraction + operands[1].format.fraction
+                        || operands[2].format.signed
+                            != (operands[0].format.signed || operands[1].format.signed)
                         || result.is_some()
                     {
                         return Err(bad("logical/physical product mapping"));
                     }
+                    self.audit_product_mapping(e, *route)?;
                     None
                 }
             };
             if required != e.resource {
                 return Err(bad("unexpected or missing resource"));
             }
-            count_event(&mut expected_counts, e, &self.memories);
+            count_event(&mut expected_counts, e, |memory| {
+                self.memories[memory].format.bits
+            });
         }
         if producers.iter().any(|&v| !v)
             || expected_counts != self.counts
@@ -475,39 +503,26 @@ impl FrameReport {
         {
             return Err(bad("counter or producer omission"));
         }
+        for (i, m) in self.memories.iter().enumerate() {
+            if !m.format.valid() || m.rows == 0 || m.read_only != (m.kind != MemoryKind::Ram) {
+                return Err(bad("storage kind/format"));
+            }
+            if m.read_only
+                && (0..m.rows).any(|row| {
+                    self.initial
+                        .get(&(i, row))
+                        .is_none_or(|&raw| !m.format.fits(raw))
+                })
+            {
+                return Err(bad("input/ROM initial data"));
+            }
+        }
         for (&(r, _), &n) in &histogram {
             if n > self.hardware.units[&r].lanes {
                 return Err(bad("per-cycle capacity"));
             }
         }
-        for (i, m) in self.memories.iter().enumerate() {
-            if self.hardware.units.get(&Resource::Read(i))
-                != Some(&Unit::pipelined(m.ports.read_ports, m.ports.read_latency))
-                || (!m.read_only
-                    && self.hardware.units.get(&Resource::Write(i))
-                        != Some(&Unit::pipelined(m.ports.write_ports, 1)))
-            {
-                return Err(bad("storage port configuration"));
-            }
-            if self
-                .counts
-                .resources
-                .get(&Resource::Read(i))
-                .copied()
-                .unwrap_or(0)
-                > m.ports.max_reads_per_frame
-                || self
-                    .counts
-                    .resources
-                    .get(&Resource::Write(i))
-                    .copied()
-                    .unwrap_or(0)
-                    > m.ports.max_writes_per_frame
-            {
-                return Err(bad("frame port budget"));
-            }
-        }
-        // Memory semantics are checked in physical cycle order, not API call order.
+        // Numerical mode uses event order; scheduled mode uses physical cycle order.
         let mut memory = self.initial.clone();
         let mut memory_events = self
             .events
@@ -559,18 +574,58 @@ impl FrameReport {
         }
         Ok(())
     }
+    fn audit_product_mapping(&self, mapping: &Event, route: ProductRoute) -> Result<(), Fault> {
+        let bad = || Fault::Audit("product route/physical lowering".into());
+        let a = mapping.inputs[0];
+        let b = mapping.inputs[1];
+        let widths = (self.values[a].format.bits, self.values[b].format.bits);
+        let mut stack = vec![mapping.inputs[2]];
+        let mut visited = std::collections::BTreeSet::new();
+        let mut work = BTreeMap::new();
+        while let Some(value) = stack.pop() {
+            if !visited.insert(value) || value == a || value == b {
+                continue;
+            }
+            let producer = &self.events[self.values[value].producer];
+            if let Some(resource) = producer.resource {
+                *work.entry(resource).or_insert(0_u64) += 1;
+            }
+            stack.extend(&producer.inputs);
+        }
+        let shape = match route {
+            ProductRoute::Native18 => {
+                widths.0 <= 18 && widths.1 <= 18 && work == BTreeMap::from([(Resource::Dsp18, 1)])
+            }
+            ProductRoute::Wide36 => {
+                widths.0 <= 36 && widths.1 <= 36 && work == BTreeMap::from([(Resource::Dsp36, 1)])
+            }
+            ProductRoute::Native18Pair => {
+                ((19..=36).contains(&widths.0) && widths.1 <= 18
+                    || (19..=36).contains(&widths.1) && widths.0 <= 18)
+                    && work.len() == 2
+                    && work.get(&Resource::Dsp18) == Some(&2)
+                    && work.iter().any(|(r, n)| {
+                        matches!(r,Resource::Adder(w) if *w >= widths.0+widths.1) && *n == 1
+                    })
+            }
+        };
+        if !shape || !visited.contains(&a) || !visited.contains(&b) {
+            return Err(bad());
+        }
+        Ok(())
+    }
 }
-fn count_event(counts: &mut Counts, e: &Event, memories: &[MemoryReport]) {
+fn count_event(counts: &mut Counts, e: &Event, memory_width: impl Fn(usize) -> u32) {
     *counts.operations.entry(e.operation.label()).or_default() += 1;
     if let Some(r) = e.resource {
         *counts.resources.entry(r).or_default() += 1;
     }
     match e.operation {
         Operation::Read { memory, .. } => {
-            *counts.read_bits.entry(memory).or_default() += u64::from(memories[memory].format.bits)
+            *counts.read_bits.entry(memory).or_default() += u64::from(memory_width(memory))
         }
         Operation::Write { memory, .. } => {
-            *counts.write_bits.entry(memory).or_default() += u64::from(memories[memory].format.bits)
+            *counts.write_bits.entry(memory).or_default() += u64::from(memory_width(memory))
         }
         Operation::ProductMapping { a_bits, b_bits, .. } => {
             *counts.logical_products.entry((a_bits, b_bits)).or_default() += 1
@@ -620,10 +675,22 @@ struct Store {
 }
 pub struct Model {
     id: u64,
+    mode: ExecutionMode,
     hardware: Hardware,
     stores: RefCell<Vec<Store>>,
 }
 impl Model {
+    /// Step 1: sealed numerical data and exact work counts, without scheduling.
+    pub fn numerical() -> Self {
+        Self {
+            id: NEXT_ID.fetch_add(1, Ordering::Relaxed),
+            mode: ExecutionMode::Numerical,
+            hardware: Hardware {
+                units: BTreeMap::new(),
+            },
+            stores: RefCell::new(Vec::new()),
+        }
+    }
     pub fn new(hardware: Hardware) -> Result<Self, Fault> {
         if hardware
             .units
@@ -634,9 +701,68 @@ impl Model {
         }
         Ok(Self {
             id: NEXT_ID.fetch_add(1, Ordering::Relaxed),
+            mode: ExecutionMode::Scheduled,
             hardware,
             stores: RefCell::new(Vec::new()),
         })
+    }
+    /// External raw data is checked here, before any computation can begin.
+    /// This returns a read-only storage handle, never a runtime Fixed value.
+    pub fn input<const B: u32, const F: u32, const S: bool>(
+        &mut self,
+        name: &str,
+        raw: &[i128],
+    ) -> Result<Memory<B, F, S>, Fault> {
+        if self.mode != ExecutionMode::Numerical {
+            return Err(Fault::Format);
+        }
+        if raw.iter().any(|&v| !Fixed::<B, F, S>::FORMAT.fits(v)) {
+            return Err(Fault::Range);
+        }
+        let memory = self.memory(name, raw.len(), Self::untimed_ports(), Some(raw.to_vec()))?;
+        self.stores.borrow_mut()[memory.id].description.kind = MemoryKind::Input;
+        Ok(memory)
+    }
+    pub fn scratch<const B: u32, const F: u32, const S: bool>(
+        &mut self,
+        name: &str,
+        rows: usize,
+    ) -> Result<Memory<B, F, S>, Fault> {
+        if self.mode != ExecutionMode::Numerical {
+            return Err(Fault::Format);
+        }
+        self.ram(name, rows, Self::untimed_ports())
+    }
+    pub fn table<const B: u32, const F: u32, const S: bool>(
+        &mut self,
+        name: &str,
+        constants: &[Fixed<B, F, S>],
+    ) -> Result<Memory<B, F, S>, Fault> {
+        if self.mode != ExecutionMode::Numerical {
+            return Err(Fault::Format);
+        }
+        self.rom(name, constants, Self::untimed_ports())
+    }
+    fn untimed_ports() -> PortShape {
+        PortShape {
+            read_ports: 0,
+            write_ports: 0,
+            read_latency: 0,
+            max_reads_per_frame: 0,
+            max_writes_per_frame: 0,
+        }
+    }
+    pub fn compute(&mut self, name: &str, max_events: usize) -> Result<Frame<'_>, Fault> {
+        if self.mode != ExecutionMode::Numerical {
+            return Err(Fault::Format);
+        }
+        Ok(self.begin_frame(
+            name,
+            Limits {
+                max_cycle: 0,
+                max_events,
+            },
+        ))
     }
     pub fn ram<const B: u32, const F: u32, const S: bool>(
         &mut self,
@@ -671,22 +797,25 @@ impl Model {
     ) -> Result<Memory<B, F, S>, Fault> {
         if rows == 0
             || !Fixed::<B, F, S>::FORMAT.valid()
-            || ports.read_ports == 0
-            || ports.read_latency == 0
-            || constants.is_none() && ports.write_ports == 0
+            || (self.mode == ExecutionMode::Scheduled
+                && (ports.read_ports == 0
+                    || ports.read_latency == 0
+                    || constants.is_none() && ports.write_ports == 0))
         {
             return Err(Fault::Format);
         }
         let mut stores = self.stores.borrow_mut();
         let id = stores.len();
-        self.hardware.units.insert(
-            Resource::Read(id),
-            Unit::pipelined(ports.read_ports, ports.read_latency),
-        );
-        if constants.is_none() {
-            self.hardware
-                .units
-                .insert(Resource::Write(id), Unit::pipelined(ports.write_ports, 1));
+        if self.mode == ExecutionMode::Scheduled {
+            self.hardware.units.insert(
+                Resource::Read(id),
+                Unit::pipelined(ports.read_ports, ports.read_latency),
+            );
+            if constants.is_none() {
+                self.hardware
+                    .units
+                    .insert(Resource::Write(id), Unit::pipelined(ports.write_ports, 1));
+            }
         }
         let read_only = constants.is_some();
         stores.push(Store {
@@ -696,6 +825,11 @@ impl Model {
                 rows,
                 ports,
                 read_only,
+                kind: if read_only {
+                    MemoryKind::Rom
+                } else {
+                    MemoryKind::Ram
+                },
             },
             cells: constants
                 .map_or_else(|| vec![None; rows], |v| v.into_iter().map(Some).collect()),
@@ -738,6 +872,7 @@ impl Model {
                 last_read: BTreeMap::new(),
                 outputs: Vec::new(),
                 control_ready: 0,
+                control: None,
             }),
         }
     }
@@ -757,6 +892,7 @@ struct State {
     last_read: BTreeMap<(usize, usize), u64>,
     outputs: Vec<(String, ValueId)>,
     control_ready: u64,
+    control: Option<usize>,
 }
 pub struct Frame<'a> {
     model: &'a Model,
@@ -805,31 +941,6 @@ impl Frame<'_> {
             }
         }
     }
-    pub(super) fn unit_for(
-        &self,
-        kind: fn(u32) -> Resource,
-        width: u32,
-    ) -> Result<Resource, Fault> {
-        self.model
-            .hardware
-            .units
-            .keys()
-            .copied()
-            .filter(|r| match r {
-                Resource::Adder(w)
-                | Resource::Compare(w)
-                | Resource::RoundControl(w)
-                | Resource::Select(w)
-                | Resource::LeadingZeros(w)
-                | Resource::Shift(w) => *w >= width && kind(*w) == *r,
-                _ => false,
-            })
-            .min()
-            .ok_or_else(|| {
-                self.state.borrow_mut().faults.push(Fault::MissingResource);
-                Fault::MissingResource
-            })
-    }
     pub(super) fn emit(
         &self,
         op: Operation,
@@ -846,52 +957,13 @@ impl Frame<'_> {
             drop(state);
             return self.fail(Fault::EventLimit);
         }
-        let earliest = inputs
-            .iter()
-            .map(|&i| state.values[i].ready_cycle)
-            .chain([extra, state.control_ready])
-            .max()
-            .unwrap();
-        let (issue, ready, lane) = if let Some(r) = resource {
-            let Some(unit) = self.model.hardware.units.get(&r) else {
+        let (issue, ready, lane) = match self.schedule(&mut state, resource, inputs, extra) {
+            Ok(timing) => timing,
+            Err(fault) => {
                 drop(state);
-                return self.fail(Fault::MissingResource);
-            };
-            let slots = &state.availability[&r];
-            let (lane, &free) = slots.iter().enumerate().min_by_key(|(_, v)| **v).unwrap();
-            let cycle = earliest.max(free);
-            (cycle, cycle + unit.latency, Some(lane))
-        } else {
-            (earliest, earliest, None)
-        };
-        if ready > state.limits.max_cycle {
-            drop(state);
-            return self.fail(Fault::Deadline);
-        }
-        if let Some(r) = resource {
-            let cap = match r {
-                Resource::Read(m) => Some(
-                    self.model.stores.borrow()[m]
-                        .description
-                        .ports
-                        .max_reads_per_frame,
-                ),
-                Resource::Write(m) => Some(
-                    self.model.stores.borrow()[m]
-                        .description
-                        .ports
-                        .max_writes_per_frame,
-                ),
-                _ => None,
-            };
-            if cap.is_some_and(|cap| state.counts.resources.get(&r).copied().unwrap_or(0) >= cap) {
-                drop(state);
-                return self.fail(Fault::PortFrameLimit);
+                return self.fail(fault);
             }
-            state.availability.get_mut(&r).unwrap()[lane.unwrap()] =
-                issue + self.model.hardware.units[&r].initiation;
-            *state.histogram.entry((r, issue)).or_default() += 1;
-        }
+        };
         let id = state.events.len();
         let value = output.map(|(format, raw)| {
             let value = state.values.len();
@@ -911,16 +983,13 @@ impl Frame<'_> {
             issue_cycle: issue,
             ready_cycle: ready,
             inputs: inputs.to_vec(),
+            control: state.control,
             output: value,
         };
-        let descriptions = self
-            .model
-            .stores
-            .borrow()
-            .iter()
-            .map(|s| s.description.clone())
-            .collect::<Vec<_>>();
-        count_event(&mut state.counts, &event, &descriptions);
+        let stores = self.model.stores.borrow();
+        count_event(&mut state.counts, &event, |memory| {
+            stores[memory].description.format.bits
+        });
         state.events.push(event);
         Ok(value)
     }
@@ -1093,7 +1162,53 @@ impl Frame<'_> {
         self.emit(Operation::Require(EXPECTED), None, &[id], None, 0)?;
         let mut state = self.state.borrow_mut();
         state.control_ready = state.control_ready.max(state.values[id].ready_cycle);
+        state.control = Some(state.events.last().unwrap().id);
         Ok(())
+    }
+    fn branch_decision(&self, p: Fixed<1, 0, false>) -> Result<bool, Fault> {
+        let (id, value) = self.resolve(p)?;
+        let taken = value.bits != 0;
+        self.emit(Operation::Branch(taken), None, &[id], None, 0)?;
+        let mut state = self.state.borrow_mut();
+        state.control_ready = state.control_ready.max(state.values[id].ready_cycle);
+        state.control = Some(state.events.last().unwrap().id);
+        Ok(taken)
+    }
+    /// Execute and count only the selected path; false is a normal algorithm result.
+    /// No host predicate or raw data escapes the computation boundary.
+    pub fn branch(
+        &self,
+        p: Fixed<1, 0, false>,
+        yes: impl FnOnce(&Self) -> Result<(), Fault>,
+        no: impl FnOnce(&Self) -> Result<(), Fault>,
+    ) -> Result<(), Fault> {
+        let result = if self.branch_decision(p)? {
+            yes(self)
+        } else {
+            no(self)
+        };
+        match result {
+            Ok(()) => Ok(()),
+            Err(fault) => self.fail(fault),
+        }
+    }
+    pub fn branch_value<const B: u32, const F: u32, const S: bool>(
+        &self,
+        p: Fixed<1, 0, false>,
+        yes: impl FnOnce(&Self) -> Result<Fixed<B, F, S>, Fault>,
+        no: impl FnOnce(&Self) -> Result<Fixed<B, F, S>, Fault>,
+    ) -> Result<Fixed<B, F, S>, Fault> {
+        let result = if self.branch_decision(p)? {
+            yes(self)
+        } else {
+            no(self)
+        };
+        let value = match result {
+            Ok(value) => value,
+            Err(fault) => return self.fail(fault),
+        };
+        // Preserve branch/control provenance even when a path returns a literal.
+        self.resize_exact(value)
     }
     /// Consume the computation boundary before exposing host integers.
     pub fn finish(self) -> FrameReport {
@@ -1120,6 +1235,7 @@ impl Frame<'_> {
             .collect();
         let mut report = FrameReport {
             name: state.name,
+            mode: self.model.mode,
             limits: state.limits,
             cycles: state
                 .events

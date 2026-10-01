@@ -1,8 +1,9 @@
 //! Framework driver: Q4 edge coefficients, one attribute sample and a small rcp.
 //! This is deliberately a bounded kernel, not the existing full GPU setup model.
 #![forbid(unsafe_code)]
-use crate::audited_fixed::{
-    Fault, Fixed, Frame, FrameReport, Hardware, Limits, Memory, Model, PortShape, ProductRoute,
+use audited::{
+    ExecutionMode, Fault, Fixed, Frame, FrameReport, Hardware, Limits, Memory, Model, PortShape,
+    ProductRoute,
 };
 
 type Coordinate = Fixed<18, 4, true>;
@@ -29,10 +30,37 @@ fn normalized_rcp(
 }
 
 pub fn run(route: ProductRoute) -> Result<FrameReport, Fault> {
+    run_kernel(
+        route,
+        ExecutionMode::Scheduled,
+        &[16, 32, 80, 32, 16, 96],
+        &[32, 160, 224],
+    )
+}
+
+/// Step-1 driver: external inputs and the same numerical kernel, no schedule.
+pub fn run_numerical(
+    route: ProductRoute,
+    coordinates: &[i128; 6],
+    attributes: &[i128; 3],
+) -> Result<FrameReport, Fault> {
+    run_kernel(route, ExecutionMode::Numerical, coordinates, attributes)
+}
+
+fn run_kernel(
+    route: ProductRoute,
+    mode: ExecutionMode,
+    xy: &[i128; 6],
+    attr: &[i128; 3],
+) -> Result<FrameReport, Fault> {
     if route == ProductRoute::Native18 {
         return Err(Fault::Format);
     }
-    let mut model = Model::new(Hardware::one_wide_two_narrow())?;
+    let mut model = if mode == ExecutionMode::Numerical {
+        Model::numerical()
+    } else {
+        Model::new(Hardware::one_wide_two_narrow())?
+    };
     let ports = PortShape {
         read_ports: 1,
         write_ports: 1,
@@ -40,42 +68,64 @@ pub fn run(route: ProductRoute) -> Result<FrameReport, Fault> {
         max_reads_per_frame: 32,
         max_writes_per_frame: 32,
     };
-    let coordinates = model.ram::<18, 4, true>("vertices_xy", 6, ports)?;
-    let attributes = model.ram::<18, 8, true>("vertex_attribute", 3, ports)?;
-    let coefficients = model.ram::<36, 8, true>("edge_c", 3, ports)?;
-    let samples = model.ram::<18, 8, true>("sample", 1, ports)?;
-    let table = model.rom(
-        "rcp_seed",
-        &[
-            Seed::constant::<65536>(),
-            Seed::constant::<52429>(),
-            Seed::constant::<43691>(),
-            Seed::constant::<37449>(),
-        ],
-        PortShape {
-            write_ports: 0,
-            max_reads_per_frame: 2,
-            max_writes_per_frame: 0,
-            ..ports
-        },
-    )?;
-    let frame = model.begin_frame(
-        "triangle_edge_attribute_rcp",
-        Limits {
-            max_cycle: 256,
-            max_events: 1024,
-        },
-    );
+    let (coordinates, attributes, coefficients, samples) = if mode == ExecutionMode::Numerical {
+        (
+            model.input::<18, 4, true>("vertices_xy", xy)?,
+            model.input::<18, 8, true>("vertex_attribute", attr)?,
+            model.scratch::<36, 8, true>("edge_c", 3)?,
+            model.scratch::<18, 8, true>("sample", 1)?,
+        )
+    } else {
+        (
+            model.ram::<18, 4, true>("vertices_xy", 6, ports)?,
+            model.ram::<18, 8, true>("vertex_attribute", 3, ports)?,
+            model.ram::<36, 8, true>("edge_c", 3, ports)?,
+            model.ram::<18, 8, true>("sample", 1, ports)?,
+        )
+    };
+    let seeds = [
+        Seed::constant::<65536>(),
+        Seed::constant::<52429>(),
+        Seed::constant::<43691>(),
+        Seed::constant::<37449>(),
+    ];
+    let table = if mode == ExecutionMode::Numerical {
+        model.table("rcp_seed", &seeds)?
+    } else {
+        model.rom(
+            "rcp_seed",
+            &seeds,
+            PortShape {
+                write_ports: 0,
+                max_reads_per_frame: 2,
+                max_writes_per_frame: 0,
+                ..ports
+            },
+        )?
+    };
+    let frame = if mode == ExecutionMode::Numerical {
+        model.compute("triangle_edge_attribute_rcp", 1024)?
+    } else {
+        model.begin_frame(
+            "triangle_edge_attribute_rcp",
+            Limits {
+                max_cycle: 256,
+                max_events: 1024,
+            },
+        )
+    };
     // Compile-time literals can enter runtime data only through recorded writes.
-    frame.write(coordinates.at::<0>(), Coordinate::constant::<16>())?;
-    frame.write(coordinates.at::<1>(), Coordinate::constant::<32>())?;
-    frame.write(coordinates.at::<2>(), Coordinate::constant::<80>())?;
-    frame.write(coordinates.at::<3>(), Coordinate::constant::<32>())?;
-    frame.write(coordinates.at::<4>(), Coordinate::constant::<16>())?;
-    frame.write(coordinates.at::<5>(), Coordinate::constant::<96>())?;
-    frame.write(attributes.at::<0>(), Attribute::constant::<32>())?;
-    frame.write(attributes.at::<1>(), Attribute::constant::<160>())?;
-    frame.write(attributes.at::<2>(), Attribute::constant::<224>())?;
+    if mode == ExecutionMode::Scheduled {
+        frame.write(coordinates.at::<0>(), Coordinate::constant::<16>())?;
+        frame.write(coordinates.at::<1>(), Coordinate::constant::<32>())?;
+        frame.write(coordinates.at::<2>(), Coordinate::constant::<80>())?;
+        frame.write(coordinates.at::<3>(), Coordinate::constant::<32>())?;
+        frame.write(coordinates.at::<4>(), Coordinate::constant::<16>())?;
+        frame.write(coordinates.at::<5>(), Coordinate::constant::<96>())?;
+        frame.write(attributes.at::<0>(), Attribute::constant::<32>())?;
+        frame.write(attributes.at::<1>(), Attribute::constant::<160>())?;
+        frame.write(attributes.at::<2>(), Attribute::constant::<224>())?;
+    }
     let x = [
         frame.read(coordinates.at::<0>())?,
         frame.read(coordinates.at::<2>())?,
@@ -94,8 +144,8 @@ pub fn run(route: ProductRoute) -> Result<FrameReport, Fault> {
         let k = (i + 2) % 3;
         let a = frame.sub_same(y[j], y[k])?;
         let b = frame.sub_same(x[k], x[j])?;
-        let xy = frame.mul::<36, 8, true>(x[j], y[k], ProductRoute::Native18)?;
-        let yx = frame.mul::<36, 8, true>(x[k], y[j], ProductRoute::Native18)?;
+        let xy: Edge = frame.product(x[j], y[k])?;
+        let yx: Edge = frame.product(x[k], y[j])?;
         c[i] = frame.sub_same(xy, yx)?;
         let ax =
             frame.mul::<36, 8, true>(a, Coordinate::constant::<32>(), ProductRoute::Native18)?;

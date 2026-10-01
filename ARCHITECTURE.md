@@ -4,6 +4,8 @@ The workspace is organized by technical layer rather than by project age:
 
 ```text
 circuit/                         gate graph, simulation, Verilog rendering
+modeling/
+  audited/                       independent closed numerical modeling and work audit
 hardware/
   core/                          hardware description and project/resource APIs
   macros/                        hardware derive macros
@@ -14,6 +16,7 @@ ip/
   cpu-v1/                        reusable CPU V1 processor IP
   cpu-v2/                        CPU V2 ISA, model, and RCC backend
   cpu-v3/                        CPU V3 ISA, model, Gowin-bound cache/RTL, and RCC backend
+  gpu-v2/                        reusable GPU components, owned ports and staged models
 compiler/
   rcc/                           frontend, target-independent IR and passes
   isa-macros/                    ISA definition macros
@@ -28,6 +31,9 @@ systems/
 ## Ownership rules
 
 - `circuit` has no knowledge of hardware targets, processors, compilers, or systems.
+- `modeling/audited` is an independent development tool with no workspace-package
+  dependencies. Its filesystem home is parallel to `compiler`, but its dependency
+  rank is foundational: IP and systems may consume it, never the reverse.
 - `hardware/core` describes modules, projects, resources, and tests. Vendor APIs live below
   `hardware/vendor`, and concrete board integration never moves into `hardware/core`.
 - `ip` crates expose reusable, narrow ports. They do not receive a complete system memory map as
@@ -56,7 +62,9 @@ device-channel allocation.
 
 `dev_send`/`dev_recv` are the control plane. Shared physical memory is the CPU/DMA data plane and
 the reserved GPU data plane. The former production GPU was retired during the v2 redesign; its
-standalone cmodel lives at `systems/cpu-v3-tang-nano-20k/src/hardware/gpu/sim`. Device 4 currently
+earlier standalone cmodel remains at `systems/cpu-v3-tang-nano-20k/src/hardware/gpu/sim`.
+New reusable development lives in `ip/gpu-v2`, with the generic framework in
+`modeling/audited`; see [GPU component ownership](ip/gpu-v2/docs/architecture.md). Device 4 currently
 reports submit rejected and its three memory masters remain idle. The CPU D-cache is
 write-back. When the new GPU is integrated, CPU-to-GPU ownership transfer requires a blocking full
 clean to make CPU writes visible in DRAM, and GPU completion must make its writes visible before CPU

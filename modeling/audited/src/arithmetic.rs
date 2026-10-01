@@ -239,6 +239,9 @@ impl Frame<'_> {
         let result = match route {
             ProductRoute::Native18 => self.physical_product(a, b, Resource::Dsp18)?,
             ProductRoute::Wide36 => {
+                if a.format.bits > 36 || b.format.bits > 36 {
+                    return self.fail(Fault::Format);
+                }
                 let x = self.resize(
                     a,
                     Format {
@@ -257,9 +260,9 @@ impl Frame<'_> {
                 self.resize(p, out)?
             }
             ProductRoute::Native18Pair => {
-                let (wide, narrow) = if a.format.bits == 36 && b.format.bits == 18 {
+                let (wide, narrow) = if (19..=36).contains(&a.format.bits) && b.format.bits <= 18 {
                     (a, b)
-                } else if b.format.bits == 36 && a.format.bits == 18 {
+                } else if (19..=36).contains(&b.format.bits) && a.format.bits <= 18 {
                     (b, a)
                 } else {
                     return self.fail(Fault::Format);
@@ -267,7 +270,7 @@ impl Frame<'_> {
                 let hi = self.slice_value(
                     wide,
                     Format {
-                        bits: 18,
+                        bits: wide.format.bits - 18,
                         ..wide.format
                     },
                     18,
@@ -307,6 +310,28 @@ impl Frame<'_> {
         )?;
         self.typed(result)
     }
+    /// Infer output type from a typed destination; choose a fully counted lowering.
+    /// Narrow x narrow uses one DSP18, wide x narrow uses two DSP18 returns,
+    /// and wide x wide uses one DSP36. Explicit `mul` still overrides the route.
+    pub fn product<const B: u32, const F: u32, const S: bool>(
+        &self,
+        a: impl FixedValue,
+        b: impl FixedValue,
+    ) -> Result<Fixed<B, F, S>, Fault> {
+        let a = a.operand();
+        let b = b.operand();
+        let route = if a.format.bits <= 18 && b.format.bits <= 18 {
+            ProductRoute::Native18
+        } else if a.format.bits <= 36
+            && b.format.bits <= 36
+            && (a.format.bits <= 18 || b.format.bits <= 18)
+        {
+            ProductRoute::Native18Pair
+        } else {
+            ProductRoute::Wide36
+        };
+        self.mul(a, b, route)
+    }
     pub fn less(
         &self,
         a: impl FixedValue,
@@ -342,7 +367,8 @@ impl Frame<'_> {
         )?)
     }
     /// Fixed-format ties-even rounding: explicit bit wiring and round control,
-    /// followed by an actual counted adder of the output width, including +0.
+    /// followed by a counted adder (including +0) and checked final narrowing.
+    /// A guard bit is retained whenever the source domain can cross an output edge.
     pub fn round_to<const B: u32, const F: u32, const S: bool>(
         &self,
         a: impl FixedValue,
@@ -362,15 +388,34 @@ impl Frame<'_> {
         let base = a.bits >> shift;
         let rem = a.bits & ((1_i128 << shift) - 1);
         let half = 1_i128 << (shift - 1);
-        let floor = self.dynamic(Operation::RescaleFloor(shift), None, &[a], out, base)?;
+        let signed = a.format.signed || out.signed;
+        let needed =
+            a.format.bits.saturating_sub(shift).max(1) + u32::from(!a.format.signed && signed);
+        let intermediate = Format {
+            bits: B + u32::from(needed > B),
+            fraction: F,
+            signed,
+        };
+        let floor = self.dynamic(
+            Operation::RescaleFloor(shift),
+            None,
+            &[a],
+            intermediate,
+            base,
+        )?;
         let resource = self.unit_for(Resource::RoundControl, a.format.bits)?;
         let increment = self.dynamic(
             Operation::RoundIncrement(shift),
             Some(resource),
             &[a],
-            out,
+            Format {
+                bits: 1,
+                fraction: F,
+                signed: false,
+            },
             i128::from(rem > half || rem == half && base & 1 != 0),
         )?;
-        self.typed(self.binary(floor, increment, out, false)?)
+        let rounded = self.binary(floor, increment, intermediate, false)?;
+        self.typed(self.resize(rounded, out)?)
     }
 }

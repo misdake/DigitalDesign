@@ -49,6 +49,8 @@ benchmark evidence live at the same commit.
 
 ```
 circuit/                         gate graph, simulation, Verilog rendering
+modeling/
+  audited/                       independent fixed-point modeling and work audit
 hardware/
   core/                          hardware description and project/resource APIs
   macros/                        hardware derive macros
@@ -59,6 +61,7 @@ ip/
   cpu-v1/                        reusable CPU V1 processor IP
   cpu-v2/                        CPU V2 ISA, model, and rcc backend
   cpu-v3/                        CPU V3 ISA, model, Gowin-bound cache/RTL, and rcc backend
+  gpu-v2/                        reusable GPU components and staged numerical models
 compiler/
   rcc/                           frontend, target-independent IR and passes
   isa-macros/                    ISA definition macros
@@ -71,7 +74,8 @@ systems/
 
 Dependencies point upward through the layers: `circuit -> hardware ->
 ip/compiler -> systems`. A later layer may use an earlier layer, never the
-reverse. See [`ARCHITECTURE.md`](ARCHITECTURE.md) for the detailed ownership
+reverse. The independent `modeling/audited` tool is another foundational input
+to IP models. See [`ARCHITECTURE.md`](ARCHITECTURE.md) for the detailed ownership
 rules and the memory/device model.
 
 ## Prerequisites
@@ -160,6 +164,8 @@ the next browser `requestAnimationFrame`, without starting an unbounded CPU run.
 - rcc language: `compiler/rcc/src/frontend/spec.md`.
 - Hardware framework: `hardware/core/README.md` and
   `hardware/vendor/gowin/scripts/README.md`.
+- Audited modeling: [`modeling/audited/README.md`](modeling/audited/README.md).
+- GPU v2 IP: [`ip/gpu-v2/README.md`](ip/gpu-v2/README.md).
 
 ## License
 

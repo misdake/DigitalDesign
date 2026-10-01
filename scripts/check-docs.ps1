@@ -99,6 +99,8 @@ function Test-IsArchivedBuildArtifact([string]$RelativePath) {
 }
 
 function Test-IsLocalDocument([string]$RelativePath) {
+    # Installed third-party dependencies are not authored project documents.
+    if ($RelativePath -match '(^|/)(node_modules|vendor)/') { return $false }
     if (Test-IsArchivedBuildArtifact $RelativePath) { return $false }
     $name = Split-Path -Leaf $RelativePath
     if ($name -eq "README.md" -or $name -eq "todo.md") { return $false }

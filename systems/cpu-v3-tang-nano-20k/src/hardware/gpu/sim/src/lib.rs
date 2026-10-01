@@ -4,8 +4,6 @@
 //! values and named rounding/overflow operations. This crate has no RTL,
 //! board, system-emulator, or production-GPU dependency.
 
-pub mod audited_fixed;
-pub mod audited_triangle_trial;
 pub mod dma;
 pub mod dualwide;
 pub mod events;

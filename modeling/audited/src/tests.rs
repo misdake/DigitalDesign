@@ -32,7 +32,8 @@ fn triangle_and_non_power_of_two_rcp_have_independent_host_goldens() {
         let exact = (n * 2 + d / 2) / d;
         assert!((raw("two_over_one_point_five_q12") - exact).abs() <= 1);
         assert_eq!(report.hardware.dsp18_units(), 6);
-        assert_eq!(report.counts.resources.get(&Resource::Adder(18)), Some(&13));
+        // Four Q16/Q8/Q12 roundings now retain and count a guard bit.
+        assert_eq!(report.counts.resources.get(&Resource::Adder(18)), Some(&9));
         assert_eq!(report.counts.resources[&Resource::LeadingZeros(18)], 1);
         assert_eq!(report.counts.resources[&Resource::Shift(18)], 1);
         assert_eq!(report.counts.resources[&Resource::Shift(54)], 1);
@@ -679,6 +680,371 @@ fn dynamic_shift_sign_overflow_and_resource_audit() {
             Fixed::<18, 0, true>::constant::<0>()
         ),
         Err(Fault::MissingResource)
+    ));
+    assert!(!frame.finish().valid);
+}
+
+#[test]
+fn rounding_checks_the_final_value_and_counts_the_guard_bit() {
+    let mut model = Model::numerical();
+    let input = model
+        .input::<36, 2, true>("round_edges", &[-524290, -1])
+        .unwrap();
+    let frame = model.compute("round_edges", 128).unwrap();
+    let signed = frame
+        .round_to::<18, 0, true>(frame.read(input.at::<0>()).unwrap())
+        .unwrap();
+    let unsigned = frame
+        .round_to::<18, 0, false>(frame.read(input.at::<1>()).unwrap())
+        .unwrap();
+    frame.publish("signed", signed).unwrap();
+    frame.publish("unsigned", unsigned).unwrap();
+    let report = frame.finish();
+    assert!(report.valid, "{:?}", report.faults);
+    report.audit().unwrap();
+    assert_eq!(
+        report.outputs.iter().map(|o| o.raw).collect::<Vec<_>>(),
+        [-131072, 0]
+    );
+    assert_eq!(report.counts.resources[&Resource::Adder(19)], 2);
+    assert!(!report.counts.resources.contains_key(&Resource::Adder(18)));
+}
+
+#[test]
+fn small_signed_and_unsigned_rounding_matches_an_independent_oracle() {
+    // Finite input sweep covers both edges, signs and all four remainder cases.
+    for raw in -36..=36 {
+        for signed in [false, true] {
+            let mut model = Model::numerical();
+            let input = model.input::<18, 2, true>("raw", &[raw]).unwrap();
+            let frame = model.compute("round_sweep", 64).unwrap();
+            let a = frame.read(input.at::<0>()).unwrap();
+            let result = if signed {
+                frame
+                    .round_to::<3, 0, true>(a)
+                    .and_then(|v| frame.publish("q", v))
+            } else {
+                frame
+                    .round_to::<3, 0, false>(a)
+                    .and_then(|v| frame.publish("q", v))
+            };
+            let report = frame.finish();
+            let expected = (raw as f64 * 0.25).round_ties_even() as i128;
+            let fits = if signed {
+                (-4..=3).contains(&expected)
+            } else {
+                (0..=7).contains(&expected)
+            };
+            assert_eq!(result.is_ok(), fits, "raw={raw}, signed={signed}");
+            assert_eq!(report.valid, fits, "{:?}", report.faults);
+            report.audit().unwrap();
+            if fits {
+                assert_eq!(report.outputs[0].raw, expected);
+            }
+        }
+    }
+}
+
+#[test]
+fn numerical_mode_records_wide_work_and_io_without_any_bound_hardware() {
+    let mut model = Model::numerical();
+    let input = model.input::<18, 0, true>("external", &[7]).unwrap();
+    let scratch = model.scratch::<18, 0, true>("scratch", 1).unwrap();
+    let frame = model.compute("work_only", 128).unwrap();
+    let a = frame.read(input.at::<0>()).unwrap();
+    for _ in 0..4 {
+        frame.write(scratch.at::<0>(), a).unwrap();
+        frame.read(scratch.at::<0>()).unwrap();
+    }
+    let sum = frame
+        .add::<92, 0, true>(
+            Fixed::<92, 0, true>::constant::<1>(),
+            Fixed::<92, 0, true>::constant::<2>(),
+        )
+        .unwrap();
+    frame.publish("wide_sum", sum).unwrap();
+    let report = frame.finish();
+    assert!(report.valid, "{:?}", report.faults);
+    report.audit().unwrap();
+    assert_eq!(report.scheduled_cycles(), None);
+    assert!(report.hardware.units.is_empty());
+    assert!(report.issue_histogram.is_empty());
+    assert_eq!(report.counts.resources[&Resource::Adder(92)], 1);
+    assert_eq!(report.counts.read_bits[&0], 18);
+    assert!(!report.counts.write_bits.contains_key(&0));
+    assert_eq!(report.counts.write_bits[&1], 72);
+    assert!(report
+        .events
+        .iter()
+        .all(|e| e.issue_cycle == 0 && e.ready_cycle == 0 && e.lane.is_none()));
+    let mut tampered = report;
+    tampered.events[0].ready_cycle = 1;
+    assert!(tampered.audit().is_err());
+}
+
+#[test]
+fn external_input_is_checked_read_only_and_keeps_data_provenance() {
+    let mut model = Model::numerical();
+    assert!(matches!(
+        model.input::<18, 0, true>("overflow", &[131072]),
+        Err(Fault::Range)
+    ));
+    assert!(matches!(
+        model.input::<18, 0, true>("empty", &[]),
+        Err(Fault::Format)
+    ));
+    let input = model.input::<18, 0, true>("external", &[-7]).unwrap();
+    let frame = model.compute("input", 64).unwrap();
+    let value = frame.read(input.at::<0>()).unwrap();
+    let square: Fixed<36, 0, true> = frame.product(value, value).unwrap();
+    frame.publish("square", square).unwrap();
+    let good = frame.finish();
+    assert!(good.valid);
+    assert_eq!(good.memories[0].kind, MemoryKind::Input);
+    assert_eq!(good.outputs[0].raw, 49);
+    assert_eq!(good.counts.resources[&Resource::Read(0)], 1);
+    assert_eq!(good.counts.resources[&Resource::Dsp18], 1);
+    assert!(!good.counts.resources.contains_key(&Resource::Write(0)));
+    let mut tampered = good;
+    let read = tampered
+        .events
+        .iter()
+        .find(|e| matches!(e.operation, Operation::Read { .. }))
+        .unwrap();
+    tampered.values[read.output.unwrap()].raw = -8;
+    assert!(tampered.audit().is_err());
+    let frame = model.compute("readonly", 16).unwrap();
+    assert!(matches!(
+        frame.write(input.at::<0>(), Fixed::<18, 0, true>::constant::<0>()),
+        Err(Fault::ReadOnly)
+    ));
+    assert!(!frame.finish().valid);
+    let mut scheduled = Model::new(Hardware::one_wide_two_narrow()).unwrap();
+    assert!(matches!(
+        scheduled.input::<18, 0, true>("no_free_ports", &[7]),
+        Err(Fault::Format)
+    ));
+}
+
+#[test]
+fn branch_records_only_the_taken_path_and_false_is_not_a_fault() {
+    for raw in [-7, 7] {
+        let mut model = Model::numerical();
+        let input = model.input::<18, 0, true>("external", &[raw]).unwrap();
+        let frame = model.compute("branch", 128).unwrap();
+        let a = frame.read(input.at::<0>()).unwrap();
+        let zero = Fixed::<18, 0, true>::constant::<0>();
+        let negative = frame.less(a, zero).unwrap();
+        let value = frame
+            .branch_value(
+                negative,
+                |f| f.sub_same(zero, a),
+                |f| f.add_same(a, Fixed::<18, 0, true>::constant::<1>()),
+            )
+            .unwrap();
+        frame.publish("result", value).unwrap();
+        // A normal empty path can represent a degenerate primitive.
+        frame.branch(negative, |_| Ok(()), |_| Ok(())).unwrap();
+        let report = frame.finish();
+        assert!(report.valid, "{:?}", report.faults);
+        report.audit().unwrap();
+        assert_eq!(report.outputs[0].raw, if raw < 0 { 7 } else { 8 });
+        assert_eq!(report.counts.operations["branch"], 2);
+        assert_eq!(
+            report.counts.operations.get("add").copied().unwrap_or(0),
+            u64::from(raw > 0)
+        );
+        assert_eq!(
+            report
+                .counts
+                .operations
+                .get("subtract")
+                .copied()
+                .unwrap_or(0),
+            u64::from(raw < 0)
+        );
+        let mut missing_control = report.clone();
+        missing_control
+            .events
+            .iter_mut()
+            .find(|e| e.control.is_some())
+            .unwrap()
+            .control = None;
+        assert!(missing_control.audit().is_err());
+        let mut tampered = report;
+        let event = tampered
+            .events
+            .iter_mut()
+            .find(|e| matches!(e.operation, Operation::Branch(_)))
+            .unwrap();
+        event.operation = Operation::Branch(raw >= 0);
+        assert!(tampered.audit().is_err());
+    }
+}
+
+#[test]
+fn scheduled_branch_waits_for_its_predicate_and_ignores_the_other_path() {
+    let mut model = Model::new(Hardware::one_wide_two_narrow()).unwrap();
+    let frame = model.begin_frame("branch_timing", limits());
+    let a = frame
+        .add_same(
+            Fixed::<18, 0, true>::constant::<2>(),
+            Fixed::<18, 0, true>::constant::<3>(),
+        )
+        .unwrap();
+    let p = frame
+        .less(a, Fixed::<18, 0, true>::constant::<4>())
+        .unwrap();
+    frame
+        .branch(
+            p,
+            |_| panic!("unselected path executed"),
+            |f| {
+                f.publish(
+                    "chosen",
+                    f.sub_same(a, Fixed::<18, 0, true>::constant::<1>())?,
+                )
+            },
+        )
+        .unwrap();
+    let report = frame.finish();
+    assert!(report.valid, "{:?}", report.faults);
+    report.audit().unwrap();
+    assert_eq!(report.outputs[0].raw, 4);
+    let branch = report
+        .events
+        .iter()
+        .find(|e| matches!(e.operation, Operation::Branch(false)))
+        .unwrap();
+    let sub = report
+        .events
+        .iter()
+        .find(|e| e.operation == Operation::Sub)
+        .unwrap();
+    assert!(sub.issue_cycle >= branch.ready_cycle);
+    assert_eq!(report.scheduled_cycles(), Some(3));
+}
+
+#[test]
+fn automatic_products_cross_the_18_bit_threshold_and_routes_are_audited() {
+    let mut model = Model::numerical();
+    let frame = model.compute("product_threshold", 256).unwrap();
+    let wide = Fixed::<19, 0, true>::constant::<-262144>();
+    let narrow = Fixed::<18, 0, true>::constant::<-131072>();
+    let product: Fixed<37, 0, true> = frame.product(wide, narrow).unwrap();
+    frame.publish("product", product).unwrap();
+    let good = frame.finish();
+    assert!(good.valid, "{:?}", good.faults);
+    good.audit().unwrap();
+    assert_eq!(good.outputs[0].raw, 1_i128 << 35);
+    assert_eq!(good.counts.logical_products[&(19, 18)], 1);
+    assert_eq!(good.counts.resources[&Resource::Dsp18], 2);
+    assert_eq!(good.counts.resources[&Resource::Adder(37)], 1);
+    let mut tampered = good;
+    let mapping = tampered
+        .events
+        .iter_mut()
+        .find(|e| matches!(e.operation, Operation::ProductMapping { .. }))
+        .unwrap();
+    if let Operation::ProductMapping { route, .. } = &mut mapping.operation {
+        *route = ProductRoute::Wide36;
+    }
+    assert!(tampered.audit().is_err());
+
+    let frame = model.compute("narrow_product", 64).unwrap();
+    let product: Fixed<36, 0, true> = frame.product(narrow, narrow).unwrap();
+    frame.publish("product", product).unwrap();
+    let report = frame.finish();
+    assert!(report.valid);
+    assert_eq!(report.counts.resources[&Resource::Dsp18], 1);
+    assert!(!report
+        .counts
+        .resources
+        .keys()
+        .any(|r| matches!(r, Resource::Adder(_))));
+
+    let frame = model.compute("mixed_small_pins", 128).unwrap();
+    let product: Fixed<36, 0, true> = frame
+        .product(
+            Fixed::<19, 0, true>::constant::<262143>(),
+            Fixed::<17, 0, false>::constant::<131071>(),
+        )
+        .unwrap();
+    frame.publish("product", product).unwrap();
+    let report = frame.finish();
+    assert!(report.valid, "{:?}", report.faults);
+    assert_eq!(report.outputs[0].raw, 262143_i128 * 131071);
+    assert_eq!(report.counts.resources[&Resource::Dsp18], 2);
+}
+
+#[test]
+fn numerical_triangle_uses_external_data_and_agrees_with_the_scheduled_kernel() {
+    let baseline = triangle::run(ProductRoute::Native18Pair).unwrap();
+    let numerical = triangle::run_numerical(
+        ProductRoute::Native18Pair,
+        &[16, 32, 80, 32, 16, 96],
+        &[32, 160, 224],
+    )
+    .unwrap();
+    assert!(baseline.valid && numerical.valid);
+    numerical.audit().unwrap();
+    assert_eq!(
+        baseline
+            .outputs
+            .iter()
+            .map(|v| (&v.name, v.raw, v.format))
+            .collect::<Vec<_>>(),
+        numerical
+            .outputs
+            .iter()
+            .map(|v| (&v.name, v.raw, v.format))
+            .collect::<Vec<_>>()
+    );
+    assert_eq!(
+        baseline.counts.logical_products,
+        numerical.counts.logical_products
+    );
+    assert_eq!(numerical.scheduled_cycles(), None);
+    assert!(!numerical.counts.write_bits.contains_key(&0));
+    assert!(!numerical.counts.write_bits.contains_key(&1));
+    let changed = triangle::run_numerical(
+        ProductRoute::Wide36,
+        &[16, 32, 80, 32, 16, 96],
+        &[64, 64, 64],
+    )
+    .unwrap();
+    assert!(changed.valid, "{:?}", changed.faults);
+    assert_eq!(
+        changed
+            .outputs
+            .iter()
+            .find(|o| o.name == "sample_q8")
+            .unwrap()
+            .raw,
+        64
+    );
+}
+
+#[test]
+fn numerical_event_limits_and_branch_failures_still_invalidate_the_computation() {
+    let mut model = Model::numerical();
+    let frame = model.compute("step_limit", 1).unwrap();
+    assert!(matches!(
+        frame.add_same(
+            Fixed::<18, 0, true>::constant::<1>(),
+            Fixed::<18, 0, true>::constant::<2>()
+        ),
+        Err(Fault::EventLimit)
+    ));
+    assert!(!frame.finish().valid);
+    let frame = model.compute("branch_failure", 64).unwrap();
+    assert!(matches!(
+        frame.branch(
+            Fixed::<1, 0, false>::constant::<0>(),
+            |_| Ok(()),
+            |_| Err(Fault::Range)
+        ),
+        Err(Fault::Range)
     ));
     assert!(!frame.finish().valid);
 }

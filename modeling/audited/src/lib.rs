@@ -2,74 +2,109 @@
 //!
 //! Runtime constructors, raw getters, primitive operators and division are absent.
 //! Only compile-time literals, audited operations and typed memory reads produce values.
+//! External data enters through a checked input store, never a Fixed constructor.
 //! Host observations become available only after consuming the frame.
-//! Timing is an ASAP dependency/resource schedule with declared latencies,
+//! Numerical mode counts work without imposing hardware or port capacities.
+//! Optional timing is an ASAP dependency/resource schedule with declared latencies,
 //! not an executed microcode machine or an FPGA timing claim.
 //!
+//! ```
+//! use audited::{Fixed, Model};
+//! let mut model = Model::numerical();
+//! let input = model.input::<18, 4, true>("x", &[16, 32]).unwrap();
+//! let frame = model.compute("square", 64).unwrap();
+//! let x = frame.read(input.at::<0>()).unwrap();
+//! let squared: Fixed<36, 8, true> = frame.product(x, x).unwrap();
+//! frame.publish("square", squared).unwrap();
+//! let report = frame.finish();
+//! report.audit().unwrap();
+//! assert_eq!(report.scheduled_cycles(), None);
+//! assert_eq!(report.outputs[0].raw, 256);
+//! ```
 //! ```compile_fail
-//! use gpu_v2_cmodel::audited_fixed::Fixed;
+//! use audited::Model;
+//! let mut model = Model::numerical();
+//! let frame = model.compute("closed_input_boundary", 64).unwrap();
+//! let late_input = model.input::<18,0,true>("late", &[37]);
+//! frame.finish();
+//! ```
+//! ```compile_fail
+//! use audited::{Fixed, Model};
+//! let mut model = Model::numerical();
+//! let frame = model.compute("no_host_predicate", 64).unwrap();
+//! let primitive = frame.branch_value(Fixed::<1,0,false>::constant::<1>(),
+//!     |_| Ok(37_i128), |_| Ok(42_i128));
+//! ```
+//! ```compile_fail
+//! use audited::Model;
+//! let mut model = Model::numerical();
+//! let input = model.input::<18,4,true>("no_float_input", &[1.0_f64]);
+//! ```
+//!
+//! ```compile_fail
+//! use audited::Fixed;
 //! let runtime = std::env::args().count() as i128;
 //! let value = Fixed::<18, 4, true>::constant::<runtime>();
 //! ```
 //! ```compile_fail
-//! use gpu_v2_cmodel::audited_fixed::Fixed;
+//! use audited::Fixed;
 //! let value = Fixed::<18, 4, true>::from_raw(123);
 //! ```
 //! ```compile_fail
-//! use gpu_v2_cmodel::audited_fixed::Fixed;
+//! use audited::Fixed;
 //! let a = Fixed::<18, 4, true>::constant::<16>();
 //! let quotient = a / a;
 //! ```
 //! ```compile_fail
-//! use gpu_v2_cmodel::audited_fixed::Fixed;
+//! use audited::Fixed;
 //! let a = Fixed::<18, 4, true>::constant::<16>();
 //! let sum = a + a;
 //! ```
 //! ```compile_fail
-//! use gpu_v2_cmodel::audited_fixed::Fixed;
+//! use audited::Fixed;
 //! let a = Fixed::<18, 4, true>::constant::<16>();
 //! let raw = a.raw();
 //! ```
 //! ```compile_fail
-//! use gpu_v2_cmodel::audited_fixed::{Model,Hardware,Limits};
+//! use audited::{Model,Hardware,Limits};
 //! let mut model = Model::new(Hardware::one_wide_two_narrow()).unwrap();
 //! let frame = model.begin_frame("bad",Limits { max_cycle: 32, max_events: 128 });
 //! let output = frame.add::<18,0,true>(123_i128,456_i128);
 //! ```
 //! ```compile_fail
-//! use gpu_v2_cmodel::audited_fixed::Fixed;
+//! use audited::Fixed;
 //! let forged = Fixed::<18,0,true> { bits: 37, origin: todo!() };
 //! ```
 //! ```compile_fail
-//! use gpu_v2_cmodel::audited_fixed::Fixed;
+//! use audited::Fixed;
 //! let a = Fixed::<18,0,true>::constant::<37>();
 //! let primitive_comparison = a < a;
 //! ```
 //! ```compile_fail,E0277
-//! use gpu_v2_cmodel::audited_fixed::FixedValue;
+//! use audited::FixedValue;
 //! struct Forged;
 //! impl FixedValue for Forged {}
 //! ```
 //! ```compile_fail
-//! use gpu_v2_cmodel::audited_fixed::{Fixed, Frame, Memory};
+//! use audited::{Fixed, Frame, Memory};
 //! fn wrong_format(frame: &Frame<'_>, memory: Memory<18,4,true>) {
 //!     frame.write(memory.at::<0>(), Fixed::<18,8,true>::constant::<16>());
 //! }
 //! ```
 //! ```compile_fail
-//! use gpu_v2_cmodel::audited_fixed::Memory;
+//! use audited::Memory;
 //! fn runtime_host_address(memory: Memory<18,4,true>, row: usize) {
 //!     let address = memory.at::<row>();
 //! }
 //! ```
 //! ```compile_fail
-//! use gpu_v2_cmodel::audited_fixed::Memory;
+//! use audited::Memory;
 //! fn primitive_address(memory: Memory<18,4,true>, row: usize) {
 //!     let address = memory.indexed(row);
 //! }
 //! ```
 //! ```compile_fail
-//! use gpu_v2_cmodel::audited_fixed::{Fixed, Memory};
+//! use audited::{Fixed, Memory};
 //! fn fractional_address(memory: Memory<18,4,true>) {
 //!     let address = memory.indexed(Fixed::<18,1,false>::constant::<1>());
 //! }
@@ -78,14 +113,25 @@
 
 mod arithmetic;
 mod model;
-pub use crate::audited_triangle_trial as triangle;
+#[cfg(test)]
+extern crate self as audited;
+#[cfg(test)]
+#[path = "../examples/support/triangle.rs"]
+mod triangle;
 
 use std::collections::BTreeMap;
 use std::fmt;
 
 pub use model::{
-    Address, Event, Frame, FrameReport, Memory, Model, Observation, Operation, ValueId,
+    Address, Event, Frame, FrameReport, Memory, MemoryKind, Model, Observation, Operation, ValueId,
 };
+
+/// Numerical work has no cycle meaning. Scheduled mode additionally binds hardware.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ExecutionMode {
+    Numerical,
+    Scheduled,
+}
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd)]
 pub struct Format {
