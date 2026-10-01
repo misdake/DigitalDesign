@@ -1,7 +1,7 @@
 //! Width-weighted retained values; wiring aliases share their producer storage.
 //! Pipeline-internal registers and control state are separate inventories.
 use crate::{
-    physical::{audit_bound_dependencies, FusedGroup, Timing},
+    physical::{audit_composed_dependencies, FusedGroup, LogicCone, Timing},
     Fault, FrameReport, Operation,
 };
 use std::collections::BTreeMap;
@@ -88,20 +88,32 @@ pub fn analyze_bound_policy(
     groups: &[FusedGroup],
     policy: &LifetimePolicy,
 ) -> Result<LiveReport, Fault> {
+    analyze_composed_policy(frame, times, groups, &[], policy)
+}
+
+pub fn analyze_composed_policy(
+    frame: &FrameReport,
+    times: &[Timing],
+    groups: &[FusedGroup],
+    cones: &[LogicCone],
+    policy: &LifetimePolicy,
+) -> Result<LiveReport, Fault> {
     let LifetimePolicy {
         commit_cycle,
         period,
         max_cycle,
         ..
     } = *policy;
-    audit_bound_dependencies(frame, times, groups, max_cycle)?;
+    audit_composed_dependencies(frame, times, groups, cones, max_cycle)?;
     let roots: BTreeMap<_, _> = groups
         .iter()
         .map(|g| (g.result_event, &g.operands))
+        .chain(cones.iter().map(|c| (c.result_event, &c.operands)))
         .collect();
     let absorbed: std::collections::BTreeSet<_> = groups
         .iter()
         .flat_map(|g| g.absorbed_events.iter().copied())
+        .chain(cones.iter().flat_map(|c| c.absorbed_events.iter().copied()))
         .collect();
     let bad = || Fault::Audit("lifetime bounds or arithmetic".into());
     if period == Some(0) || commit_cycle > max_cycle {
@@ -140,7 +152,8 @@ pub fn analyze_bound_policy(
             continue;
         }
         if let Some(value) = e.output {
-            let alias = e.inputs.len() == 1
+            let alias = !roots.contains_key(&e.id)
+                && e.inputs.len() == 1
                 && matches!(
                     e.operation,
                     Operation::Resize
@@ -190,8 +203,13 @@ pub fn analyze_bound_policy(
             .map(|c| frame.events[c].inputs.as_slice())
             .unwrap_or(&[])
             .to_vec();
-        if let Some(group) = groups.iter().find(|g| g.result_event == e.id) {
-            for &id in &group.absorbed_events {
+        for (_, members) in groups
+            .iter()
+            .map(|g| (g.result_event, &g.absorbed_events))
+            .chain(cones.iter().map(|c| (c.result_event, &c.absorbed_events)))
+            .filter(|(root, _)| *root == e.id)
+        {
+            for &id in members {
                 if let Some(control) = frame.events[id].control {
                     controls.extend(&frame.events[control].inputs);
                 }
