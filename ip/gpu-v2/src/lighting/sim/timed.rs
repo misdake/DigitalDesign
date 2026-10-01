@@ -694,6 +694,8 @@ impl Plan {
         self.template
             .audit()
             .map_err(|e| format!("template: {e:?}"))?;
+        self.binding
+            .audit_logic_depth(&self.template, self.hardware)?;
         let expected = BoundDag::new(&self.template, self.hardware)?;
         if expected != self.binding {
             return Err("binding certificate".into());

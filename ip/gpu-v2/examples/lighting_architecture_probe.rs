@@ -273,7 +273,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             Storage::Registers,
             Strategy::Interleaved,
         )?;
-        let schedule = PeriodicSchedule::search(&plan, ii, 32)?;
+        let (ii, schedule) = (ii..=8)
+            .find_map(|candidate| {
+                PeriodicSchedule::search(&plan, candidate, 32)
+                    .ok()
+                    .map(|schedule| (candidate, schedule))
+            })
+            .ok_or_else(|| format!("profile {name}: no legal II in {ii}..8"))?;
         let phy = schedule.audit_physical(
             &plan,
             audited::physical::GowinMemoryBudget {

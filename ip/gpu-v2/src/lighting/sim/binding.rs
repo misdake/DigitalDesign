@@ -162,6 +162,25 @@ fn dot_group(f: &FrameReport, name: &str) -> Result<Option<FusedGroup>, String> 
     Ok(Some(group))
 }
 impl BoundDag {
+    /// Rebuild primitive physical kinds and independently check every supplied
+    /// cone certificate; scheduling audit does not trust the member search.
+    pub(super) fn audit_logic_depth(&self, f: &FrameReport, h: Hardware) -> Result<(), String> {
+        if self.cones.is_empty() {
+            return Ok(());
+        }
+        let primitive = Self::new(f, Hardware { cone_depth: 0, ..h })?;
+        for cone in &self.cones {
+            cone.audit(f)
+                .map_err(|e| format!("logic certificate: {e:?}"))?;
+            let members = std::iter::once(cone.result_event)
+                .chain(cone.absorbed_events.iter().copied())
+                .collect();
+            if longest_logic_path(f, &members, &primitive.kinds)? > h.cone_depth {
+                return Err("logic certificate exceeds physical depth".into());
+            }
+        }
+        Ok(())
+    }
     pub fn new(f: &FrameReport, h: Hardware) -> Result<Self, String> {
         let mut kinds = (0..f.events.len())
             .map(|e| timed::kind(f, e))
@@ -258,6 +277,28 @@ fn pure(op: &Operation) -> bool {
             | Operation::RoundIncrement(_)
     )
 }
+/// Longest serial physical path in the selected numerical DAG. Ledger event IDs
+/// are topological; reconvergent inputs take a maximum rather than first visit.
+/// A proved wiring operation contributes zero, regardless of its ledger opcode.
+fn longest_logic_path(
+    f: &FrameReport,
+    members: &BTreeSet<usize>,
+    primitive_kinds: &[Option<LaneKind>],
+) -> Result<usize, String> {
+    let mut depths = BTreeMap::new();
+    for &id in members {
+        let mut input_depth = 0;
+        for &value in &f.events[id].inputs {
+            let producer = f.values[value].producer;
+            if members.contains(&producer) {
+                let depth = *depths.get(&producer).ok_or("non-topological logic cone")?;
+                input_depth = input_depth.max(depth);
+            }
+        }
+        depths.insert(id, input_depth + usize::from(primitive_kinds[id].is_some()));
+    }
+    Ok(depths.values().copied().max().unwrap_or(0))
+}
 fn contract_logic(
     f: &FrameReport,
     h: Hardware,
@@ -272,6 +313,7 @@ fn contract_logic(
     {
         return Err("logic cone profile bounds".into());
     }
+    let primitive_kinds = kinds.to_vec();
     let mut used = BTreeSet::new();
     for g in groups {
         used.insert(g.result_event);
@@ -291,8 +333,11 @@ fn contract_logic(
             continue;
         }
         let mut members = BTreeSet::new();
-        let mut pending = vec![(root, 0usize)];
-        while let Some((id, depth)) = pending.pop() {
+        // Reverse topological discovery visits every possible selected user
+        // before its producer. A reconvergent producer accumulates the maximum
+        // distance from the root before deciding whether it fits the bound.
+        let mut pending = BTreeMap::from([(root, 0usize)]);
+        while let Some((id, depth)) = pending.pop_last() {
             let e = &f.events[id];
             if depth > h.cone_depth
                 || used.contains(&id)
@@ -306,11 +351,13 @@ fn contract_logic(
                 continue;
             }
             if depth + level <= h.cone_depth {
-                pending.extend(
-                    e.inputs
-                        .iter()
-                        .map(|&v| (f.values[v].producer, depth + level)),
-                );
+                for &value in &e.inputs {
+                    let producer = f.values[value].producer;
+                    pending
+                        .entry(producer)
+                        .and_modify(|distance| *distance = (*distance).max(depth + level))
+                        .or_insert(depth + level);
+                }
             }
         }
         loop {
@@ -335,6 +382,10 @@ fn contract_logic(
             }
         }
         if members.len() < 2 || members.iter().filter(|&&id| kinds[id].is_some()).count() < 2 {
+            continue;
+        }
+        // Independently prove the completed subgraph after escape pruning.
+        if longest_logic_path(f, &members, &primitive_kinds)? > h.cone_depth {
             continue;
         }
         let mut operands = BTreeSet::new();
@@ -397,6 +448,95 @@ fn contract_logic(
 mod tests {
     use super::*;
     use audited::{Fixed, Model};
+    #[test]
+    fn reconvergent_cone_depth_uses_the_longest_path_and_zero_cost_wiring() {
+        for short_first in [true, false] {
+            let mut model = Model::numerical();
+            let input = model.input::<16, 0, false>("input", &[1]).unwrap();
+            let f = model.compute("reconvergent depth", 128).unwrap();
+            let x = f.read(input.at::<0>()).unwrap();
+            let shared = f.add_same(x, x).unwrap();
+            let arm1 = f.add_same(shared, x).unwrap();
+            let arm2 = f.add_same(arm1, x).unwrap();
+            let arm3 = f.add_same(arm2, x).unwrap();
+            let wire: Fixed<17, 0, false> = f.resize_exact(arm3).unwrap();
+            // LIFO DFS visits the last operand first. The short-first case used
+            // to absorb all five adders into a declared four-level cone.
+            let root: Fixed<18, 0, false> = if short_first {
+                f.add(wire, shared).unwrap()
+            } else {
+                f.add(shared, wire).unwrap()
+            };
+            f.publish("result", root).unwrap();
+            let frame = f.finish();
+            frame.audit().unwrap();
+            let primitive = BoundDag::new(&frame, Hardware::default()).unwrap();
+            let all_logic = frame
+                .events
+                .iter()
+                .filter(|e| pure(&e.operation))
+                .map(|e| e.id)
+                .collect::<BTreeSet<_>>();
+            assert_eq!(all_logic.len(), 6);
+            assert_eq!(
+                longest_logic_path(&frame, &all_logic, &primitive.kinds).unwrap(),
+                5
+            );
+            let hardware = Hardware {
+                cone_depth: 4,
+                ..Hardware::default()
+            };
+            let bound = BoundDag::new(&frame, hardware).unwrap();
+            // Independently recurse over every emitted certificate. There is
+            // no visited-set shortcut, so reconvergence counts each full path.
+            fn depth(
+                f: &FrameReport,
+                id: usize,
+                members: &BTreeSet<usize>,
+                kinds: &[Option<LaneKind>],
+            ) -> usize {
+                f.events[id]
+                    .inputs
+                    .iter()
+                    .map(|&v| f.values[v].producer)
+                    .filter(|p| members.contains(p))
+                    .map(|p| depth(f, p, members, kinds))
+                    .max()
+                    .unwrap_or(0)
+                    + usize::from(kinds[id].is_some())
+            }
+            assert!(!bound.cones.is_empty());
+            for cone in &bound.cones {
+                let members = std::iter::once(cone.result_event)
+                    .chain(cone.absorbed_events.iter().copied())
+                    .collect();
+                assert!(depth(&frame, cone.result_event, &members, &primitive.kinds) <= 4);
+            }
+            bound.audit_logic_depth(&frame, hardware).unwrap();
+            let root = frame.values[frame.outputs[0].value].producer;
+            let operands = all_logic
+                .iter()
+                .flat_map(|&id| frame.events[id].inputs.iter().copied())
+                .filter(|&v| !all_logic.contains(&frame.values[v].producer))
+                .collect::<BTreeSet<_>>()
+                .into_iter()
+                .collect();
+            let too_deep = audited::physical::LogicCone {
+                result_event: root,
+                absorbed_events: all_logic.iter().copied().filter(|&id| id != root).collect(),
+                operands,
+                max_width: 18,
+                latency: 1,
+            };
+            too_deep.audit(&frame).unwrap(); // Numerical subgraph is still valid.
+            let mut forged = bound;
+            forged.cones = vec![too_deep];
+            assert!(forged
+                .audit_logic_depth(&frame, hardware)
+                .unwrap_err()
+                .contains("depth"));
+        }
+    }
     #[test]
     fn valid_numerical_frame_with_observed_product_cannot_be_fused() {
         let mut model = Model::numerical();

@@ -19,16 +19,16 @@ proves 54 MHz. All rows use the same numerical contract and power-floor option.
 | --- | --- | --- | --- | ---: |
 | Historical optimized, individual primitive delays | 2 / 135 | — | 25 / 7 / 4 | 8 |
 | Exact dataflow, same primitive delays | 2 / 113 | 1 / 71 | 25 / 7 / 4 | 8 |
-| Four-level cones, two cycles | **2 / 89** | **1 / 47** | 25 / 7 / 4 | 8 |
-| Four-level cones, one cycle, exploratory | 2 / 71 | 1 / 38 | 25 / 7 / 4 | 8 |
-| Reduced inventory: 5 small, 5 large, 1 pair, 4 reads | 3 / 88 | 1 / 47 | 19 / 6 / 3 | 6 |
-| Reduced inventory: 4 small, 4 large, 1 pair, 3 reads | 4 / 93 | 2 / 48 | 16 / 4 / 2 | 5 |
+| Four-level cones, two cycles | **2 / 95** | **1 / 56** | 25 / 7 / 4 | 8 |
+| Four-level cones, one cycle, exploratory | 2 / 73 | 1 / 42 | 25 / 7 / 4 | 8 |
+| Reduced inventory: 5 small, 5 large, 1 pair, 4 reads | 3 / 95 | 1 / 56 | 19 / 6 / 3 | 6 |
+| Reduced inventory: 4 small, 4 large, 1 pair, 3 reads | 4 / 98 | 2 / 58 | 16 / 4 / 2 | 5 |
 
 Latency includes one ordered output-write cycle and excludes already captured
 inputs and separately reported context/ray/flat preparation. The full two-cycle
-cone profile retains 5,229 bits, versus 9,693 for the historical profile; this
+cone profile retains 5,502 bits, versus 9,693 for the historical profile; this
 excludes DSP/cone internal stage registers, mux/control registers, FIFO and RAM cells.
-Its 64-pixel repeating output calendar is 89,91,...,215. A material-context
+Its 64-pixel repeating output calendar is 95,97,...,221. A material-context
 preparation ROM still costs **86 RAM16 cells**, although it disappears from the
 pixel frame's ROM access report; two immutable context copies also retain their
 43-bit prepared fields. Resource counts describe static models, not PnR results.
@@ -647,18 +647,30 @@ capacity bound (required body II rises to six or three respectively). Cones keep
 all numerical events for independent replay and report their embedded adders.
 Their declared result latency is a design assumption that needs later fitting.
 
+Member discovery proceeds in reverse topological order, taking the maximum
+root-to-node distance at reconvergence. Generation and production plan audits
+then independently check the longest physical path using primitive lane kinds;
+proved wiring contributes zero levels. A regression covers both operand orders
+of a five-adder reconvergent graph with a zero-level resize, and rejects its
+otherwise valid numerical certificate at a four-level limit. Earlier89/47
+results used a first-visit DFS that underestimated this depth and are superseded.
+The bounded probe now increases II if needed: two-level cones require II3 and
+give84 cycles; three-level cones run at II2 and79 cycles.
+
 Adding a seventh normalization read port costs one additional 512x36 BSRAM
-replica. It reduces none of the selected full-profile latencies. Adding an
-18x18 lane also reduces none: it increases the budget to 27 half-slots while
+replica. It reduces the conservative full profile from95 to94 cycles and
+retained bits from5502 to5370, while the one-cycle profile stays73 cycles.
+Adding an18x18 lane reduces neither selected full-profile latency: it increases
+the budget to27 half-slots while
 still fitting seven kind-separated macros, using an otherwise unused slot.
 These are fixed-hardware, 32-candidate comparisons, not globally optimal proofs.
 The long dependency chain, especially V -> H -> specular dot -> power, dominates.
-Spending those resources is not selected.
+The one-cycle improvement alone does not select an extra BSRAM.
 
 `prepare_ray` is a separate closed model costing two 18x18 products and two
 RNE operations. `Config::prepared()` consumes Q14 rays in three 36-bit rows:
 normal XY; normal Z/ray X; ray Y/Z. Payload grows from 84 to 96 bits. This gives
-108 cycles with individual logic delays, or 67 with exploratory one-cycle cones;
+108 cycles with individual logic delays, or70 with exploratory one-cycle cones;
 these are lighting-entry latencies, not end-to-end claims after moving work.
 `scanline_rays` provides an exact upstream alternative for up to 64 uniformly
 stepped quantized NDC X positions. Three one-time products seed X/Y and X-step;
@@ -688,8 +700,8 @@ and intensity addition still require real adders.
 | --- | ---: | ---: |
 | General <=18-bit class | 47 | 16 |
 | General <=36-bit class | 15 | 10 |
-| Increment/negation <=18-bit class | 57 | 30 |
-| Combinational cone copies | 60 | 33 |
+| Increment/negation <=18-bit class | 54 | 28 |
+| Combinational cone copies | 78 | 42 |
 
 Both columns include cone-contained sites and standalone lanes consistently.
 Provisioned counts include all three copies of each exact function; occupied
@@ -741,11 +753,11 @@ or make an invalid storage interface valid.
 
 For eight full, 48 diffuse, then eight full pixels, the conservative profile's
 first full->diffuse acceptance gap is 43 CE cycles. The short result at cycle
-106 follows the last old full result at105; it was accepted at59 while the old
+115 follows the last old full result at111; it was accepted at59 while the old
 full pipeline remained active. Further transitional resource bubbles remain,
-then diffuse reaches II1. The diffuse->full acceptance gap is22 cycles. This
-mixed stream does not maintain II1 across transitions. FIFO peak is reported by
-`lighting_stream_probe`; a paused replay retains the same advancing-cycle
+then diffuse reaches II1. The diffuse->full acceptance gap is34 cycles. This
+mixed stream does not maintain II1 across transitions. FIFO peak is3060 bits,
+and the stream takes264 advancing cycles in `lighting_stream_probe`; a paused replay retains the same advancing-cycle
 schedule and numerical results. Shared-half/flat stream ownership is explicitly
 rejected until an external cache/triangle owner supplies it.
 
@@ -765,7 +777,7 @@ Exact sharing has two useful boundaries:
   by a one-bit `nl>0` and preparation-only goldens, reducing the functional
   N/sign/g payload from100 to58 bits; that compact context is not implemented.
   Full specular still computes its per-coordinate V/H and
-  power: conservative latency88, II2. Flat diffuse has no pixel multiply or ROM
+  power: conservative latency95, II2. Flat diffuse has no pixel multiply or ROM
   work: it returns prepared g/h at latency4, II1. The implemented triangle context retains100 bits of
   N/nl/d/g, and preparation is accounted separately. A timed flat batch rejects
   unequal raw normals rather than silently treating smooth shading as flat.
