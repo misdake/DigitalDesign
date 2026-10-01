@@ -2,7 +2,7 @@
 //! Matrix and vertex operands have already crossed the synchronous BSRAM read
 //! boundary into local staging registers before the first product is issued.
 
-use crate::fixed::{round_shift_ties_even, NumericFault, Q14, Q16};
+use crate::fixed::{round_shift_ties_even, Fx, NumericFault, WideFx, Q14, Q16};
 use crate::format::{InputVertex, Uniform};
 use crate::result_store::TransformedVertex;
 use crate::timing::{Mult18Pipeline, Mult36Pipeline, RamRead};
@@ -45,8 +45,8 @@ pub struct TransformUnit {
     small_next: u8,
     wide_retired: u8,
     small_retired: u8,
-    clip_sums: [i128; 4],
-    normal_sums: [i128; 3],
+    clip_sums: [WideFx<66, true>; 4],
+    normal_sums: [Fx<32, 0, true>; 3],
     clip: [Q16; 4],
     normal: [Q14; 3],
 }
@@ -87,8 +87,8 @@ impl TransformUnit {
             small_next: 0,
             wide_retired: 0,
             small_retired: 0,
-            clip_sums: [0; 4],
-            normal_sums: [0; 3],
+            clip_sums: [WideFx::from_raw(0).unwrap(); 4],
+            normal_sums: [Fx::from_raw(0).unwrap(); 3],
             clip: [Q16::from_raw(0).unwrap(); 4],
             normal: [Q14::from_raw(0).unwrap(); 3],
         }
@@ -169,9 +169,11 @@ impl TransformUnit {
             cycle.wide_retire = Some(tag);
             self.wide_retired += 1;
             let row = usize::from(tag / 4);
-            self.clip_sums[row] += product;
+            self.clip_sums[row] = self.clip_sums[row]
+                .checked_add(WideFx::from_raw(product).map_err(TransformError::DspOperand)?)
+                .map_err(TransformError::DspOperand)?;
             if tag % 4 == 3 {
-                let rounded = round_shift_ties_even(self.clip_sums[row], 16)
+                let rounded = round_shift_ties_even(self.clip_sums[row].raw(), 16)
                     .map_err(TransformError::DspOperand)?;
                 self.clip[row] = Q16::from_raw(rounded)
                     .map_err(|_| TransformError::ClipOverflow { row: row as u8 })?;
@@ -186,9 +188,11 @@ impl TransformUnit {
             cycle.small_retire = Some(tag);
             self.small_retired += 1;
             let row = usize::from(tag / 3);
-            self.normal_sums[row] += i128::from(product);
+            self.normal_sums[row] = self.normal_sums[row]
+                .checked_add(Fx::from_raw(i128::from(product)).map_err(TransformError::DspOperand)?)
+                .map_err(TransformError::DspOperand)?;
             if tag % 3 == 2 {
-                let rounded = round_shift_ties_even(self.normal_sums[row], 14)
+                let rounded = round_shift_ties_even(i128::from(self.normal_sums[row].raw()), 14)
                     .map_err(TransformError::DspOperand)?;
                 self.normal[row] = Q14::from_raw(rounded)
                     .map_err(|_| TransformError::NormalOverflow { row: row as u8 })?;
@@ -211,6 +215,19 @@ impl TransformUnit {
 mod tests {
     use super::*;
     use crate::timing::SyncRam64;
+
+    #[test]
+    fn accumulator_widths_cover_raw_operand_extrema() {
+        let clip_product = i128::from(i32::MIN) * i128::from(i32::MIN);
+        let clip_sum = 4 * clip_product;
+        assert!(WideFx::<65, true>::from_raw(clip_sum).is_err());
+        assert!(WideFx::<66, true>::from_raw(clip_sum).is_ok());
+
+        let normal_product = i128::from(i16::MIN) * i128::from(i16::MIN);
+        let normal_sum = 3 * normal_product;
+        assert!(Fx::<31, 0, true>::from_raw(normal_sum).is_err());
+        assert!(Fx::<32, 0, true>::from_raw(normal_sum).is_ok());
+    }
 
     fn q16(raw: i32) -> Q16 {
         Q16::from_raw(i128::from(raw)).unwrap()

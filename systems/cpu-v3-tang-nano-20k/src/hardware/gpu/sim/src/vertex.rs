@@ -4,7 +4,7 @@
 //! is the former vertex profile and remains provisional until the v2 spec sets
 //! the formats and overflow response.
 
-use crate::fixed::{round_shift_ties_even, NumericFault, Q16};
+use crate::fixed::{round_shift_ties_even, NumericFault, WideFx, Q16};
 use crate::timing::{Mult36Pipeline, RamRead, SyncRam64};
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -75,14 +75,14 @@ fn ram_data(output: RamRead) -> Result<u64, VertexError> {
 fn retire_product(
     tag: u64,
     product: i128,
-    sums: &mut [i128; 4],
+    sums: &mut [WideFx<66, true>; 4],
     clip: &mut [Q16; 4],
     overflow_row: &mut Option<u8>,
 ) -> Result<u8, VertexError> {
     let row = (tag / 4) as usize;
-    sums[row] += product;
+    sums[row] = sums[row].checked_add(WideFx::from_raw(product)?)?;
     if tag % 4 == 3 {
-        let rounded = round_shift_ties_even(sums[row], 16)?;
+        let rounded = round_shift_ties_even(sums[row].raw(), 16)?;
         if Q16::from_raw(rounded).is_err() && overflow_row.is_none() {
             *overflow_row = Some(row as u8);
         }
@@ -127,7 +127,7 @@ pub fn run_vertex_program(
     let mut pc = 0;
     let mut next_product: Option<u8> = None;
     let mut coefficient_high = 0_i32;
-    let mut sums = [0_i128; 4];
+    let mut sums = [WideFx::from_raw(0)?; 4];
     let mut dsp = Mult36Pipeline::default();
     let mut results = Vec::new();
     let mut trace = Vec::new();
@@ -208,7 +208,7 @@ pub fn run_vertex_program(
                     if loaded.is_none() {
                         return Err(VertexError::NoLoadedVertex);
                     }
-                    sums = [0; 4];
+                    sums = [WideFx::from_raw(0)?; 4];
                     clip = [zero; 4];
                     overflow_row = None;
                     read_address = Some(matrix_base);

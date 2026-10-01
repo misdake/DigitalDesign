@@ -55,6 +55,51 @@ fn decode_normal(bits: u32) -> Q14 {
     Q14::from_raw(i128::from(signed) << 7).expect("8-bit normal fits Q2.14")
 }
 
+pub(crate) fn decode_vertex_cells(
+    first: u32,
+    second: u32,
+    third: u32,
+) -> Result<Record, StreamFault> {
+    if first & 3 != VERTEX_TAG {
+        return Err(StreamFault::BadTag);
+    }
+    Ok(Record::Vertex {
+        xyz10: [
+            ((first >> 2) & POSITION_MASK) as u16,
+            ((first >> 12) & POSITION_MASK) as u16,
+            ((first >> 22) & POSITION_MASK) as u16,
+        ],
+        normal: [
+            decode_normal(second & NORMAL_MASK),
+            decode_normal((second >> 8) & NORMAL_MASK),
+            decode_normal((second >> 16) & NORMAL_MASK),
+        ],
+        uv12: [
+            ((second >> 24) | ((third & 15) << 8)) as u16,
+            ((third >> 4) & UV_MASK) as u16,
+        ],
+        color565: (third >> 16) as u16,
+    })
+}
+
+pub(crate) fn decode_triangle_cell(cell: u32, vertices: usize) -> Result<Record, StreamFault> {
+    if cell & 3 != TRIANGLE_TAG {
+        return Err(StreamFault::BadTag);
+    }
+    if cell >> 20 != 0 {
+        return Err(StreamFault::ReservedBits);
+    }
+    let refs = [
+        ((cell >> 2) & 63) as u8,
+        ((cell >> 8) & 63) as u8,
+        ((cell >> 14) & 63) as u8,
+    ];
+    if refs.iter().any(|x| usize::from(*x) >= vertices) {
+        return Err(StreamFault::ForwardReference);
+    }
+    Ok(Record::Triangle(refs))
+}
+
 /// 2-bit tag, XYZ10, signed normal3x8, UV12x2, RGB565; exactly 96 bits.
 pub fn encode_record(record: &Record) -> Result<Vec<u32>, StreamFault> {
     match record {
@@ -197,40 +242,11 @@ pub fn decode_stream(
                 let second = reader.tick()?;
                 let third = reader.tick()?;
                 used += 2;
-                let xyz10 = [
-                    ((first >> 2) & POSITION_MASK) as u16,
-                    ((first >> 12) & POSITION_MASK) as u16,
-                    ((first >> 22) & POSITION_MASK) as u16,
-                ];
-                let normal = [
-                    decode_normal(second & NORMAL_MASK),
-                    decode_normal((second >> 8) & NORMAL_MASK),
-                    decode_normal((second >> 16) & NORMAL_MASK),
-                ];
-                records.push(Record::Vertex {
-                    xyz10,
-                    normal,
-                    uv12: [
-                        ((second >> 24) | ((third & 15) << 8)) as u16,
-                        ((third >> 4) & UV_MASK) as u16,
-                    ],
-                    color565: (third >> 16) as u16,
-                });
+                records.push(decode_vertex_cells(first, second, third)?);
                 vertices += 1;
             }
             TRIANGLE_TAG => {
-                if first >> 20 != 0 {
-                    return Err(StreamFault::ReservedBits);
-                }
-                let refs = [
-                    ((first >> 2) & 63) as u8,
-                    ((first >> 8) & 63) as u8,
-                    ((first >> 14) & 63) as u8,
-                ];
-                if refs.iter().any(|x| usize::from(*x) >= vertices) {
-                    return Err(StreamFault::ForwardReference);
-                }
-                records.push(Record::Triangle(refs));
+                records.push(decode_triangle_cell(first, vertices)?);
             }
             END_TAG => {
                 if first != END_TAG {

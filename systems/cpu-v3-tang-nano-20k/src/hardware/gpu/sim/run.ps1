@@ -1,5 +1,5 @@
 param(
-    [ValidateSet('test', 'vertex', 'memory', 'microkernel', 'meshlet', 'lint')]
+    [ValidateSet('test', 'vertex', 'memory', 'microkernel', 'meshlet', 'mvp-width', 'lint')]
     [string] $Mode = 'test',
     [UInt64] $Seed = 19,
     [switch] $Staged,
@@ -42,6 +42,9 @@ if ($Mode -eq 'test') {
     if ($NormalMatrixPath) { $exampleArgs += @('--normal', $NormalMatrixPath) }
     if ($SetupJsonOut) { $exampleArgs += @('--setup-json', $SetupJsonOut) }
     & cargo run --example meshlet_probe --manifest-path $manifest --target-dir $targetDir -- @exampleArgs
+} elseif ($Mode -eq 'mvp-width') {
+    if (-not $MeshPath -or -not $MatrixPath) { throw 'MeshPath and MatrixPath are required for mvp-width mode' }
+    & cargo run --example mvp_width_probe --manifest-path $manifest --target-dir $targetDir -- $MeshPath $MatrixPath
 } else {
     & cargo run --example vertex_smoke --manifest-path $manifest --target-dir $targetDir
 }

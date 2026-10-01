@@ -12,7 +12,6 @@ use std::fmt;
 pub enum NumericFault {
     InvalidFormat,
     OutOfRange,
-    DivideByZero,
 }
 
 /// `INT` integer bits excluding sign, `FRAC` fractional bits, and an explicit
@@ -100,6 +99,87 @@ impl<const INT: u32, const FRAC: u32, const SIGNED: bool> fmt::Debug for Fx<INT,
     }
 }
 
+/// A checked integer intermediate wider than the `i64` storage of `Fx`.
+/// `BITS` includes the sign bit when `SIGNED` is true. Keeping the host
+/// carrier at `i128` does not grant the modeled datapath 128 bits: every
+/// construction and arithmetic result is checked against `BITS`.
+#[derive(Clone, Copy, Eq, PartialEq, Ord, PartialOrd, Hash)]
+pub struct WideFx<const BITS: u32, const SIGNED: bool> {
+    raw: i128,
+}
+
+impl<const BITS: u32, const SIGNED: bool> WideFx<BITS, SIGNED> {
+    pub const WIDTH: u32 = BITS;
+
+    pub fn from_raw(raw: i128) -> Result<Self, NumericFault> {
+        if !(64..=127).contains(&BITS) {
+            return Err(NumericFault::InvalidFormat);
+        }
+        let (low, high) = if SIGNED {
+            (-(1_i128 << (BITS - 1)), (1_i128 << (BITS - 1)) - 1)
+        } else {
+            (
+                0,
+                if BITS == 127 {
+                    i128::MAX
+                } else {
+                    (1_i128 << BITS) - 1
+                },
+            )
+        };
+        if !(low..=high).contains(&raw) {
+            return Err(NumericFault::OutOfRange);
+        }
+        Ok(Self { raw })
+    }
+
+    pub const fn raw(self) -> i128 {
+        self.raw
+    }
+
+    pub fn checked_add(self, other: Self) -> Result<Self, NumericFault> {
+        Self::from_raw(
+            self.raw
+                .checked_add(other.raw)
+                .ok_or(NumericFault::OutOfRange)?,
+        )
+    }
+
+    pub fn checked_sub(self, other: Self) -> Result<Self, NumericFault> {
+        Self::from_raw(
+            self.raw
+                .checked_sub(other.raw)
+                .ok_or(NumericFault::OutOfRange)?,
+        )
+    }
+
+    pub fn checked_mul_i128(self, factor: i128) -> Result<Self, NumericFault> {
+        Self::from_raw(
+            self.raw
+                .checked_mul(factor)
+                .ok_or(NumericFault::OutOfRange)?,
+        )
+    }
+
+    pub fn checked_shl(self, bits: u32) -> Result<Self, NumericFault> {
+        if bits > 126 {
+            return Err(NumericFault::OutOfRange);
+        }
+        let scale = 1_i128.checked_shl(bits).ok_or(NumericFault::OutOfRange)?;
+        let shifted = self
+            .raw
+            .checked_mul(scale)
+            .ok_or(NumericFault::OutOfRange)?;
+        Self::from_raw(shifted)
+    }
+}
+
+impl<const BITS: u32, const SIGNED: bool> fmt::Debug for WideFx<BITS, SIGNED> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "WideFx<{BITS},{SIGNED}>({})", self.raw)
+    }
+}
+
 /// The existing vertex input/output profile. V2 may replace this alias after
 /// the vertex/setup numerical contract is frozen.
 pub type Q16 = Fx<15, 16, true>;
@@ -127,8 +207,8 @@ pub fn round_shift_ties_even(raw: i128, shift: u32) -> Result<i128, NumericFault
         return Ok(raw);
     }
     let denominator = 1_i128 << shift;
-    let quotient = raw.div_euclid(denominator);
-    let remainder = raw.rem_euclid(denominator);
+    let quotient = raw >> shift;
+    let remainder = raw & (denominator - 1);
     let half = denominator >> 1;
     Ok(quotient + i128::from(remainder > half || (remainder == half && quotient & 1 != 0)))
 }
@@ -155,6 +235,44 @@ mod tests {
         let (value, saturated) = Q16::saturating_from_raw(1_i128 << 31).unwrap();
         assert!(saturated);
         assert_eq!(value.raw(), i64::from(i32::MAX));
+    }
+
+    #[test]
+    fn wide_intermediate_checks_width_after_each_operation() {
+        type Signed72 = WideFx<72, true>;
+        let max = (1_i128 << 71) - 1;
+        assert_eq!(Signed72::from_raw(max).unwrap().raw(), max);
+        assert_eq!(Signed72::from_raw(max + 1), Err(NumericFault::OutOfRange));
+        assert_eq!(
+            Signed72::from_raw(-(1_i128 << 71)).unwrap().raw(),
+            -(1_i128 << 71)
+        );
+        assert_eq!(
+            Signed72::from_raw(-(1_i128 << 71) - 1),
+            Err(NumericFault::OutOfRange)
+        );
+        assert_eq!(
+            Signed72::from_raw(max)
+                .unwrap()
+                .checked_add(Signed72::from_raw(1).unwrap()),
+            Err(NumericFault::OutOfRange)
+        );
+        assert_eq!(
+            Signed72::from_raw(1_i128 << 70).unwrap().checked_shl(1),
+            Err(NumericFault::OutOfRange)
+        );
+        assert_eq!(
+            WideFx::<128, false>::from_raw(0),
+            Err(NumericFault::InvalidFormat)
+        );
+        assert_eq!(
+            WideFx::<127, false>::from_raw(i128::MAX).unwrap().raw(),
+            i128::MAX
+        );
+        assert_eq!(
+            Signed72::from_raw(-1).unwrap().checked_shl(71),
+            Ok(Signed72::from_raw(-(1_i128 << 71)).unwrap())
+        );
     }
 
     #[test]
