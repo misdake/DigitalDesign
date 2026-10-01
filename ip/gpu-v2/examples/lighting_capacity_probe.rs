@@ -4,9 +4,11 @@ use std::{fmt::Write, fs, path::PathBuf};
 
 fn capacity(h: Hardware, k: &LaneKind) -> usize {
     match k {
+        LaneKind::LogicCone { .. } => h.cone_lanes_per_shape,
         LaneKind::SmallMultiply => h.small_multiply,
         LaneKind::LargeMultiply => h.large_multiply,
         LaneKind::PairMultiplyAdd => h.paired_macros,
+        LaneKind::Negate(_) => h.negators_per_width,
         LaneKind::Increment(_) => h.incrementers_per_width,
         LaneKind::Add(18) => h.narrow_adders,
         LaneKind::Add(_) => h.adders_per_width,

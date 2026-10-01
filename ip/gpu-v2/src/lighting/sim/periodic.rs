@@ -152,6 +152,13 @@ impl PeriodicSchedule {
             r.ready = n.issue + r.kind.as_ref().map_or(0, |k| plan.hardware.unit(k).1);
             r.lane = n.lane;
         }
+        for cone in plan.logic_cones() {
+            let ready = self.slots[cone.result_event].ready;
+            for &id in &cone.absorbed_events {
+                self.slots[id].issue = ready;
+                self.slots[id].ready = ready;
+            }
+        }
         self.write_issue = compact.nodes.last().ok_or("missing commit")?.issue;
         self.audit(plan)?;
         Ok(self)

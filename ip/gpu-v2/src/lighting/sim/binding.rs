@@ -1,6 +1,7 @@
 //! Checked physical-planning lowering, separate from the counted numerical ledger.
 use super::timed::{self, Binding, Hardware, LaneKind};
 use audited::{FrameReport, Operation};
+use std::collections::{BTreeMap, BTreeSet};
 
 /// One MULTADDALU18X18 candidate: A0*B0 + A1*B1 + C, without rounding.
 pub use audited::physical::FusedGroup;
@@ -9,6 +10,7 @@ pub(super) struct BoundDag {
     pub kinds: Vec<Option<LaneKind>>,
     pub dependencies: Vec<Vec<usize>>,
     pub groups: Vec<FusedGroup>,
+    pub cones: Vec<audited::physical::LogicCone>,
 }
 fn literal(f: &FrameReport, v: usize, raw: i128) -> bool {
     matches!(f.events[f.values[v].producer].operation, Operation::Literal) && f.values[v].raw == raw
@@ -81,6 +83,10 @@ fn dot_group(f: &FrameReport, name: &str) -> Result<Option<FusedGroup>, String> 
     };
     let result = f.values[publish.inputs[0]].producer;
     let root = &f.events[result];
+    if matches!(root.operation,Operation::Read{memory,..} if f.memories[memory].name=="context.flat-nl")
+    {
+        return Ok(None);
+    }
     if !matches!(root.operation, Operation::Add) || root.inputs.len() != 2 {
         return Err("dot tail pattern".into());
     }
@@ -168,6 +174,13 @@ impl BoundDag {
             for e in &f.events {
                 if wiring_add(f, e.id) {
                     kinds[e.id] = None;
+                } else if h.kernel.dataflow
+                    && matches!(e.operation, Operation::Sub)
+                    && literal(f, e.inputs[0], 0)
+                {
+                    // Two's-complement negation is invert plus one rather than a
+                    // two-variable adder; reserve a dedicated carry-chain lane.
+                    kinds[e.id] = Some(LaneKind::Negate(18));
                 } else if matches!(e.operation, Operation::Add)
                     && e.inputs.iter().any(|&v| {
                         matches!(
@@ -210,12 +223,174 @@ impl BoundDag {
                 }
             }
         }
+        let cones = if h.cone_depth > 0 {
+            contract_logic(f, h, &mut kinds, &groups)?
+        } else {
+            Vec::new()
+        };
+        if !cones.is_empty() {
+            dependencies = audited::physical::composed_dependencies(f, &groups, &cones)
+                .map_err(|e| format!("logic dependencies: {e:?}"))?;
+        }
         Ok(Self {
+            cones,
             kinds,
             dependencies,
             groups,
         })
     }
+}
+
+fn pure(op: &Operation) -> bool {
+    matches!(
+        op,
+        Operation::Add
+            | Operation::Sub
+            | Operation::Resize
+            | Operation::ShiftLeft(_)
+            | Operation::Shift
+            | Operation::LeadingZeros
+            | Operation::Slice(_)
+            | Operation::RescaleFloor(_)
+            | Operation::BinaryScale
+            | Operation::Less
+            | Operation::Select
+            | Operation::RoundIncrement(_)
+    )
+}
+fn contract_logic(
+    f: &FrameReport,
+    h: Hardware,
+    kinds: &mut [Option<LaneKind>],
+    groups: &[FusedGroup],
+) -> Result<Vec<audited::physical::LogicCone>, String> {
+    if h.cone_depth > 4
+        || h.cone_latency == 0
+        || h.cone_latency > 4
+        || h.cone_lanes_per_shape == 0
+        || h.cone_lanes_per_shape > 16
+    {
+        return Err("logic cone profile bounds".into());
+    }
+    let mut used = BTreeSet::new();
+    for g in groups {
+        used.insert(g.result_event);
+        used.extend(g.absorbed_events.iter().copied());
+    }
+    let mut roots = Vec::new();
+    // Retain all stage goldens; a golden may escape only as a cone root.
+    for e in f.events.iter().rev() {
+        if matches!(e.operation, Operation::Publish(_)) {
+            roots.push(f.values[e.inputs[0]].producer);
+        }
+    }
+    roots.extend((0..f.events.len()).rev());
+    let mut cones = Vec::new();
+    for root in roots {
+        if used.contains(&root) || !pure(&f.events[root].operation) {
+            continue;
+        }
+        let mut members = BTreeSet::new();
+        let mut pending = vec![(root, 0usize)];
+        while let Some((id, depth)) = pending.pop() {
+            let e = &f.events[id];
+            if depth > h.cone_depth
+                || used.contains(&id)
+                || !pure(&e.operation)
+                || members.len() >= 64
+            {
+                continue;
+            }
+            let level = usize::from(e.resource.is_some() && kinds[id].is_some());
+            if depth + level > h.cone_depth || !members.insert(id) {
+                continue;
+            }
+            if depth + level <= h.cone_depth {
+                pending.extend(
+                    e.inputs
+                        .iter()
+                        .map(|&v| (f.values[v].producer, depth + level)),
+                );
+            }
+        }
+        loop {
+            let escape: Vec<_> = members
+                .iter()
+                .copied()
+                .filter(|&id| id != root)
+                .filter(|&id| {
+                    let value = f.events[id].output.unwrap();
+                    f.outputs.iter().any(|o| o.value == value)
+                        || f.events.iter().any(|e| {
+                            !members.contains(&e.id)
+                                && (e.inputs.contains(&value) || e.control == Some(id))
+                        })
+                })
+                .collect();
+            if escape.is_empty() {
+                break;
+            }
+            for id in escape {
+                members.remove(&id);
+            }
+        }
+        if members.len() < 2 || members.iter().filter(|&&id| kinds[id].is_some()).count() < 2 {
+            continue;
+        }
+        let mut operands = BTreeSet::new();
+        let mut max_width = 1;
+        let external: BTreeSet<_> = members
+            .iter()
+            .flat_map(|&id| f.events[id].inputs.iter().copied())
+            .filter(|&v| !members.contains(&f.values[v].producer))
+            .collect();
+        let external_order: BTreeMap<_, _> =
+            external.iter().enumerate().map(|(i, &v)| (v, i)).collect();
+        let mut shape = String::new();
+        let order: BTreeMap<_, _> = members.iter().enumerate().map(|(i, &id)| (id, i)).collect();
+        for &id in &members {
+            let e = &f.events[id];
+            let format = f.values[e.output.unwrap()].format;
+            let mut signature = format!("{:?}:{format:?}:", e.operation);
+            max_width = max_width.max(format.bits);
+            for &v in &e.inputs {
+                let producer = f.values[v].producer;
+                let vf = f.values[v].format;
+                max_width = max_width.max(vf.bits);
+                if !members.contains(&producer) {
+                    operands.insert(v);
+                }
+                if let Some(i) = order.get(&producer) {
+                    signature.push_str(&format!("member{i}:{vf:?};"));
+                } else if matches!(f.events[producer].operation, Operation::Literal) {
+                    signature.push_str(&format!("constant{}:{vf:?};", f.values[v].raw));
+                } else {
+                    signature.push_str(&format!("external{}:{vf:?};", external_order[&v]));
+                }
+            }
+            shape.push_str(&signature);
+            shape.push('|');
+        }
+        let cone = audited::physical::LogicCone {
+            result_event: root,
+            absorbed_events: members.iter().copied().filter(|&id| id != root).collect(),
+            operands: operands.into_iter().collect(),
+            max_width,
+            latency: h.cone_latency,
+        };
+        cone.audit(f)
+            .map_err(|e| format!("contracted logic: {e:?}"))?;
+        for &id in &cone.absorbed_events {
+            kinds[id] = None;
+        }
+        kinds[root] = Some(LaneKind::LogicCone {
+            shape,
+            width: max_width,
+        });
+        used.extend(members);
+        cones.push(cone);
+    }
+    Ok(cones)
 }
 
 #[cfg(test)]

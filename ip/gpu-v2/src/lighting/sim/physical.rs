@@ -223,10 +223,11 @@ impl PeriodicSchedule {
             }
         }
         layout
-            .audit_periodic_accesses(
+            .audit_periodic_composed_accesses(
                 frame,
                 &times,
                 &plan.binding.groups,
+                &plan.binding.cones,
                 &accesses,
                 self.initiation_interval,
                 h.max_cycles,
@@ -238,10 +239,11 @@ impl PeriodicSchedule {
         let memory_cells = layout
             .audit_gowin_budget(frame, memory_budget)
             .map_err(|e| format!("memory budget: {e:?}"))?;
-        let retained = lifecycle::analyze_bound_policy(
+        let retained = lifecycle::analyze_composed_policy(
             frame,
             &times,
             &plan.binding.groups,
+            &plan.binding.cones,
             &lifecycle::LifetimePolicy {
                 commit_cycle: self.write_issue,
                 period: Some(self.initiation_interval),

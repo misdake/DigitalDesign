@@ -15,14 +15,25 @@ pub use periodic::PeriodicSchedule;
 #[path = "physical.rs"]
 mod physical;
 pub use physical::PhysicalReport;
+#[path = "adder.rs"]
+mod adder;
+pub use adder::AdderInventory;
+#[path = "stream.rs"]
+mod stream;
+pub use stream::{stream, StreamContext, StreamResult, StreamRun};
 
 #[derive(Clone, Copy, Debug)]
 pub struct Hardware {
     pub dsp_tiles: usize,
+    /// Maximum serial nonwiring logic levels per explicitly certified cone; zero disables.
+    pub cone_depth: usize,
+    pub cone_latency: u64,
+    pub cone_lanes_per_shape: usize,
     pub kernel: counted::Config,
     pub binding: Binding,
     pub narrow_adders: usize,
     pub incrementers_per_width: usize,
+    pub negators_per_width: usize,
     pub paired_macros: usize,
     pub paired_latency: u64,
     pub small_multiply: usize,
@@ -43,10 +54,14 @@ impl Default for Hardware {
     fn default() -> Self {
         Self {
             dsp_tiles: 12,
+            cone_depth: 0,
+            cone_latency: 1,
+            cone_lanes_per_shape: 3,
             kernel: counted::Config::default(),
             binding: Binding::Generic,
             narrow_adders: 2,
             incrementers_per_width: 2,
+            negators_per_width: 6,
             paired_macros: 0,
             paired_latency: 4,
             small_multiply: 7,
@@ -84,10 +99,12 @@ pub enum Strategy {
 }
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub enum LaneKind {
+    LogicCone { shape: String, width: u32 },
     SmallMultiply,
     LargeMultiply,
     PairMultiplyAdd,
     Increment(u32),
+    Negate(u32),
     Add(u32),
     Compare(u32),
     Select(u32),
@@ -268,11 +285,29 @@ impl Hardware {
             ..Self::lighting_ii2()
         }
     }
+    /// Registered bounded-logic alternative; conservative two-cycle cone contract.
+    pub fn lighting_architecture_ii2() -> Self {
+        Self {
+            kernel: counted::Config::architecture(),
+            cone_depth: 4,
+            cone_latency: 2,
+            ..Self::lighting_optimized_ii2()
+        }
+    }
+    /// Exploratory one-cycle cones; requires later synthesis/timing evidence.
+    pub fn lighting_experimental_ii2() -> Self {
+        Self {
+            cone_latency: 1,
+            ..Self::lighting_architecture_ii2()
+        }
+    }
     fn unit(self, k: &LaneKind) -> (usize, u64) {
         match k {
+            LaneKind::LogicCone { .. } => (self.cone_lanes_per_shape, self.cone_latency),
             LaneKind::SmallMultiply => (self.small_multiply, self.multiply_latency),
             LaneKind::LargeMultiply => (self.large_multiply, self.multiply_latency),
             LaneKind::PairMultiplyAdd => (self.paired_macros, self.paired_latency),
+            LaneKind::Negate(_) => (self.negators_per_width, self.logic_latency),
             LaneKind::Increment(_) => (self.incrementers_per_width, self.logic_latency),
             LaneKind::Add(18) if self.binding == Binding::LightingDsp => {
                 (self.narrow_adders, self.logic_latency)
@@ -313,8 +348,16 @@ pub fn plan(
     if pixels.is_empty() || pixels.len() > 64 {
         return Err("batch must contain 1..64 pixels".into());
     }
+    if (hardware.kernel.shared_half || hardware.kernel.dataflow || hardware.kernel.flat_normal)
+        && !matches!(storage, Storage::Registers)
+    {
+        return Err("architecture context currently requires explicit register inputs".into());
+    }
     if hardware.max_cycles == 0 || hardware.max_cycles > 1_000_000 {
         return Err("max_cycles must be 1..1000000".into());
+    }
+    if hardware.kernel.flat_normal && pixels.iter().any(|p| p.normal != pixels[0].normal) {
+        return Err("flat-normal promise requires identical raw normals".into());
     }
     let template_pixel = PixelInput {
         normal: [0; 3],
@@ -529,8 +572,14 @@ pub fn plan(
         cycles: output_free,
         source_reads,
         reads,
-        pixel_payload_bits: 84 * n,
-        uniform_payload_bits: 121,
+        pixel_payload_bits: (if hardware.kernel.shared_half || hardware.kernel.prepared_ray {
+            96
+        } else {
+            84
+        }) * n,
+        uniform_payload_bits: 121
+            + if hardware.kernel.dataflow { 43 } else { 0 }
+            + if hardware.kernel.flat_normal { 100 } else { 0 },
         gates,
         binding,
         kernel: hardware.kernel,
@@ -822,6 +871,9 @@ impl Plan {
             }
         }
         counts
+    }
+    pub fn logic_cones(&self) -> &[audited::physical::LogicCone] {
+        &self.binding.cones
     }
     pub fn fused_groups(&self) -> &[FusedGroup] {
         &self.binding.groups

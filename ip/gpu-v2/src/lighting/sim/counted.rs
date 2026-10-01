@@ -18,9 +18,43 @@ impl From<InputError> for Error {
     }
 }
 
+#[derive(Clone)]
+pub struct HalfPreparation {
+    ray: FrameReport,
+    half: FrameReport,
+    ndc: [i32; 2],
+    light: [i16; 3],
+    projection: Projection,
+}
+impl HalfPreparation {
+    pub fn ray_frame(&self) -> &FrameReport {
+        &self.ray
+    }
+    pub fn half_frame(&self) -> &FrameReport {
+        &self.half
+    }
+}
+#[derive(Clone)]
+pub struct FlatPreparation {
+    frame: FrameReport,
+    normal: [i16; 3],
+    light: Light,
+}
+impl FlatPreparation {
+    pub fn frame(&self) -> &FrameReport {
+        &self.frame
+    }
+}
 pub struct Report {
     pub output: LightingOutput,
     pub frame: FrameReport,
+    /// Separate upstream NDC-ray preparation, when the prepared input profile is used.
+    pub ray_preparation: Option<FrameReport>,
+    /// Material update work; amortized once per context rather than per pixel.
+    pub context_preparation: Option<FrameReport>,
+    /// Optional exact shared screen-coordinate/view-light work.
+    pub half_preparation: Option<HalfPreparation>,
+    pub flat_preparation: Option<FlatPreparation>,
 }
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct Config {
@@ -28,12 +62,35 @@ pub struct Config {
     pub signed_square: bool,
     /// Truncate only the nonnegative power interpolation correction.
     pub power_floor: bool,
+    /// Exploit validated view bounds and latch material lookup fields before pixels.
+    pub dataflow: bool,
+    /// Consume a separately prepared Q14 ray in three 36-bit pixel rows.
+    pub prepared_ray: bool,
+    /// Cache H by screen coordinate and projection/light context.
+    pub shared_half: bool,
+    /// Reuse exact flat-triangle N/NL/d/g; source normal and light must stay fixed.
+    pub flat_normal: bool,
 }
 impl Config {
     pub fn optimized() -> Self {
         Self {
             signed_square: true,
             power_floor: true,
+            ..Self::default()
+        }
+    }
+}
+impl Config {
+    pub fn architecture() -> Self {
+        Self {
+            dataflow: true,
+            ..Self::optimized()
+        }
+    }
+    pub fn prepared() -> Self {
+        Self {
+            prepared_ray: true,
+            ..Self::architecture()
         }
     }
 }
@@ -46,6 +103,7 @@ struct Tables {
     rsqrt: Memory<24, 0, false>,
     power: Memory<28, 0, false>,
     context: Memory<43, 0, false>,
+    context_is_latched: bool,
 }
 
 fn clamp<const B: u32, const F: u32, const S: bool>(
@@ -78,48 +136,66 @@ fn normalize(
     bounded: bool,
     t: &Tables,
     prefix: &str,
+    fast: bool,
 ) -> Result<[Direction; 3], Fault> {
-    let mags = [
-        magnitude(f, raw[0])?,
-        magnitude(f, raw[1])?,
-        magnitude(f, raw[2])?,
-    ];
-    let mut m = mags[0];
-    for v in &mags[1..] {
-        m = f.select(f.less(m, *v)?, *v, m)?;
-    }
-    let zero = f.less(m, threshold)?;
-    let safe = [
-        Direction::constant::<8192>(),
-        Direction::constant::<0>(),
-        Direction::constant::<0>(),
-    ];
-    let mut v = raw;
-    for i in 0..3 {
-        v[i] = f.select(zero, safe[i], v[i])?;
-    }
-    m = f.select(zero, Magnitude::constant::<8192>(), m)?;
-    let mut amount = if bounded {
-        Fixed::<18, 0, true>::constant::<0>()
+    // Vz >= 8192 is established at the external input boundary. The validated
+    // bounded view ray cannot degenerate and has no common pre-shift.
+    let (mut v, zero, amount) = if bounded && fast {
+        (
+            raw,
+            Fixed::<1, 0, false>::constant::<0>(),
+            Fixed::<18, 0, true>::constant::<0>(),
+        )
     } else {
-        f.sub_same(f.leading_zeros(m)?, Fixed::<18, 0, true>::constant::<3>())?
+        let mags = [
+            magnitude(f, raw[0])?,
+            magnitude(f, raw[1])?,
+            magnitude(f, raw[2])?,
+        ];
+        let mut m = mags[0];
+        for v in &mags[1..] {
+            m = f.select(f.less(m, *v)?, *v, m)?;
+        }
+        let zero = f.less(m, threshold)?;
+        let safe = [
+            Direction::constant::<8192>(),
+            Direction::constant::<0>(),
+            Direction::constant::<0>(),
+        ];
+        let mut v = raw;
+        for i in 0..3 {
+            v[i] = f.select(zero, safe[i], v[i])?;
+        }
+        m = f.select(zero, Magnitude::constant::<8192>(), m)?;
+        let mut amount = if bounded {
+            Fixed::<18, 0, true>::constant::<0>()
+        } else {
+            if fast {
+                let zeros = f.resize_exact::<6, 0, true>(f.leading_zeros(m)?)?;
+                f.resize_exact(f.sub_same(zeros, Fixed::<6, 0, true>::constant::<3>())?)?
+            } else {
+                f.sub_same(f.leading_zeros(m)?, Fixed::<18, 0, true>::constant::<3>())?
+            }
+        };
+        if !bounded && !(fast && prefix == "h") {
+            // RNE can turn 32767/2 into 16384. Keep the SQ index strictly below 128.
+            let mw = f.resize_exact::<32, 14, true>(m)?;
+            let mw = f.binary_scale::<32, 28, true>(f.shift_left_const::<14, 32, 14, true>(mw)?)?;
+            let rounded: Magnitude = f.round_to(f.shift(mw, amount)?)?;
+            let below = f.less(rounded, Magnitude::constant::<16384>())?;
+            amount = f.select(
+                below,
+                amount,
+                f.sub_same(amount, Fixed::<18, 0, true>::constant::<1>())?,
+            )?;
+        }
+
+        for value in &mut v {
+            *value = shifted(f, *value, amount)?;
+        }
+        (v, zero, amount)
     };
-    if !bounded {
-        // RNE can turn 32767/2 into 16384. Keep the SQ index strictly below 128.
-        let mw = f.resize_exact::<32, 14, true>(m)?;
-        let mw = f.binary_scale::<32, 28, true>(f.shift_left_const::<14, 32, 14, true>(mw)?)?;
-        let rounded: Magnitude = f.round_to(f.shift(mw, amount)?)?;
-        let below = f.less(rounded, Magnitude::constant::<16384>())?;
-        amount = f.select(
-            below,
-            amount,
-            f.sub_same(amount, Fixed::<18, 0, true>::constant::<1>())?,
-        )?;
-    }
     f.publish(&format!("{prefix}.shift"), amount)?;
-    for value in &mut v {
-        *value = shifted(f, *value, amount)?;
-    }
     let mut squares = [SquareSum::constant::<0>(); 3];
     for i in 0..3 {
         squares[i] = match t.square {
@@ -156,8 +232,19 @@ fn normalize(
     let q = f.add_same(f.add_same(squares[0], squares[1])?, squares[2])?;
     f.publish(&format!("{prefix}.q"), q)?;
     let zeros = f.leading_zeros(q)?;
-    let exponent = f.sub_same(Fixed::<18, 0, true>::constant::<1>(), zeros)?;
-    let align = f.sub_same(zeros, Fixed::<18, 0, true>::constant::<15>())?;
+    let (exponent, align) = if fast {
+        // Normalized q lies in [1/4,3), so its LZD and integer controls are tiny.
+        let z = f.resize_exact::<6, 0, true>(zeros)?;
+        (
+            f.resize_exact(f.sub_same(Fixed::<6, 0, true>::constant::<1>(), z)?)?,
+            f.resize_exact(f.sub_same(z, Fixed::<6, 0, true>::constant::<15>())?)?,
+        )
+    } else {
+        (
+            f.sub_same(Fixed::<18, 0, true>::constant::<1>(), zeros)?,
+            f.sub_same(zeros, Fixed::<18, 0, true>::constant::<15>())?,
+        )
+    };
     let mantissa = f.shift(q, align)?;
     let segment = f.slice::<6, 0, false, 8>(mantissa)?;
     let fraction = f.slice::<8, 8, false, 0>(mantissa)?;
@@ -170,7 +257,12 @@ fn normalize(
     let correction: Fixed<16, 23, false> = f.product(delta, fraction)?;
     let r0 = f.sub_same(base, f.round_to(correction)?)?;
     let half_exp = f.shift(exponent, Fixed::<18, 0, true>::constant::<-1>())?;
-    let restore = f.sub_same(Fixed::<18, 0, true>::constant::<0>(), half_exp)?;
+    let restore = if fast {
+        let e = f.resize_exact::<6, 0, true>(half_exp)?;
+        f.resize_exact(f.sub_same(Fixed::<6, 0, true>::constant::<0>(), e)?)?
+    } else {
+        f.sub_same(Fixed::<18, 0, true>::constant::<0>(), half_exp)?
+    };
     let r: Reciprocal = f.shift(f.resize_exact(r0)?, restore)?;
     f.publish(&format!("{prefix}.r"), r)?;
     for (i, value) in v.iter_mut().enumerate() {
@@ -182,7 +274,11 @@ fn normalize(
             Fixed::<18, 14, true>::constant::<-16384>(),
             Fixed::<18, 14, true>::constant::<16384>(),
         )?;
-        *value = f.select(zero, Direction::constant::<0>(), f.resize_exact(clamped)?)?;
+        *value = if bounded && fast {
+            f.resize_exact(clamped)?
+        } else {
+            f.select(zero, Direction::constant::<0>(), f.resize_exact(clamped)?)?
+        };
         f.publish(&format!("{prefix}.{i}"), *value)?;
     }
     Ok(v)
@@ -208,7 +304,11 @@ fn power(
     f.branch_value(
         f.less(x, Specular::constant::<32768>())?,
         |f| {
-            let context = f.read(t.context.indexed(code))?;
+            let context = if t.context_is_latched {
+                f.read(t.context.at::<0>())?
+            } else {
+                f.read(t.context.indexed(code))?
+            };
             let boundary = f.slice::<15, 0, false, 0>(context)?;
             let wide = f.slice::<4, 0, false, 15>(context)?;
             let fine = f.slice::<4, 0, false, 19>(context)?;
@@ -251,6 +351,14 @@ struct Inputs {
     intensities: Memory<9, 8, false>,
     mode: Memory<2, 0, false>,
     code: Memory<5, 0, false>,
+    half: Option<Memory<16, 14, true>>,
+    flat: Option<FlatInputs>,
+}
+struct FlatInputs {
+    normal: Memory<16, 14, true>,
+    nl: Memory<34, 28, true>,
+    d: Memory<9, 8, false>,
+    g: Memory<9, 8, false>,
 }
 fn read3(f: &Frame<'_>, m: Memory<16, 14, true>) -> Result<[Direction; 3], Fault> {
     Ok([
@@ -275,57 +383,114 @@ fn kernel(f: &Frame<'_>, input: &Inputs, t: &Tables, config: Config) -> Result<(
                 |f| outputs(f, ia, Intensity::constant::<0>()),
                 |f| {
                     let id = f.read(input.intensities.at::<1>())?;
-                    let row0 = f.read(input.pixel.at::<0>())?;
+                    let row0 = if input.flat.is_none() {
+                        Some(f.read(input.pixel.at::<0>())?)
+                    } else {
+                        None
+                    };
                     let row1 = f.read(input.pixel.at::<1>())?;
-                    let normal = [
-                        f.slice::<16, 14, true, 0>(row0)?,
-                        f.slice::<16, 14, true, 16>(row0)?,
-                        f.slice::<16, 14, true, 0>(row1)?,
-                    ];
-                    let n = normalize(f, normal, Magnitude::constant::<4>(), false, t, "n")?;
-                    let l = read3(f, input.light)?;
-                    let nl = dot(f, n, l)?;
-                    f.publish("nl", nl)?;
-                    let d = clamp(f, nl, Dot::constant::<0>(), Dot::constant::<268435456>())?;
-                    let d: Intensity = f.round_to(d)?;
-                    f.publish("d", d)?;
-                    let product: Fixed<18, 16, false> = f.product(id, d)?;
-                    let diffuse: Intensity = f.round_to(product)?;
-                    let sum: IntensitySum = f.add(ia, diffuse)?;
-                    let sum = clamp(
-                        f,
-                        sum,
-                        IntensitySum::constant::<0>(),
-                        IntensitySum::constant::<511>(),
-                    )?;
-                    let g: Intensity = f.resize_exact(sum)?;
+                    let (n, nl, g, l) = if let Some(flat) = &input.flat {
+                        let n = read3(f, flat.normal)?;
+                        for (i, value) in n.iter().enumerate() {
+                            f.publish(&format!("n.{i}"), *value)?;
+                        }
+                        let nl = f.read(flat.nl.at::<0>())?;
+                        f.publish("nl", nl)?;
+                        f.publish("d", f.read(flat.d.at::<0>())?)?;
+                        (n, nl, f.read(flat.g.at::<0>())?, read3(f, input.light)?)
+                    } else {
+                        let normal = [
+                            f.slice::<16, 14, true, 0>(row0.unwrap())?,
+                            f.slice::<16, 14, true, 16>(row0.unwrap())?,
+                            f.slice::<16, 14, true, 0>(row1)?,
+                        ];
+                        let n = normalize(
+                            f,
+                            normal,
+                            Magnitude::constant::<4>(),
+                            false,
+                            t,
+                            "n",
+                            config.dataflow,
+                        )?;
+                        let l = read3(f, input.light)?;
+                        let nl = dot(f, n, l)?;
+                        f.publish("nl", nl)?;
+                        let d = clamp(f, nl, Dot::constant::<0>(), Dot::constant::<268435456>())?;
+                        let d: Intensity = f.round_to(d)?;
+                        f.publish("d", d)?;
+                        let product: Fixed<18, 16, false> = f.product(id, d)?;
+                        let diffuse: Intensity = f.round_to(product)?;
+                        let sum: IntensitySum = f.add(ia, diffuse)?;
+                        let sum = clamp(
+                            f,
+                            sum,
+                            IntensitySum::constant::<0>(),
+                            IntensitySum::constant::<511>(),
+                        )?;
+                        let g: Intensity = f.resize_exact(sum)?;
+                        (n, nl, g, l)
+                    };
                     f.branch(
                         f.less(mode, Fixed::<2, 0, false>::constant::<3>())?,
                         |f| outputs(f, g, Intensity::constant::<0>()),
                         |f| {
-                            let x: Ndc = f.slice::<18, 16, true, 16>(row1)?;
-                            let y: Ndc =
-                                f.slice::<18, 16, true, 0>(f.read(input.pixel.at::<2>())?)?;
-                            let px: Fixed<34, 30, true> =
-                                f.product(x, f.read(input.projection.at::<0>())?)?;
-                            let py: Fixed<34, 30, true> =
-                                f.product(y, f.read(input.projection.at::<1>())?)?;
-                            let ray = [
-                                f.round_to(px)?,
-                                f.round_to(py)?,
-                                f.read(input.projection.at::<2>())?,
-                            ];
-                            for (i, value) in ray.iter().enumerate() {
-                                f.publish(&format!("ray.{i}"), *value)?;
-                            }
-                            let v = normalize(f, ray, Magnitude::constant::<4>(), true, t, "v")?;
-                            let mut half = [Direction::constant::<0>(); 3];
-                            for i in 0..3 {
-                                let sum: HalfSum = f.add(l[i], v[i])?;
-                                let sum = f.binary_scale::<17, 15, true>(sum)?;
-                                half[i] = f.round_to(sum)?;
-                            }
-                            let h = normalize(f, half, Magnitude::constant::<64>(), false, t, "h")?;
+                            let h = if let Some(half) = input.half {
+                                let h = read3(f, half)?;
+                                for (i, value) in h.iter().enumerate() {
+                                    f.publish(&format!("h.{i}"), *value)?;
+                                }
+                                h
+                            } else {
+                                let ray = if config.prepared_ray {
+                                    let row2 = f.read(input.pixel.at::<2>())?;
+                                    [
+                                        f.slice::<16, 14, true, 16>(row1)?,
+                                        f.slice::<16, 14, true, 0>(row2)?,
+                                        f.slice::<16, 14, true, 16>(row2)?,
+                                    ]
+                                } else {
+                                    let x: Ndc = f.slice::<18, 16, true, 16>(row1)?;
+                                    let y: Ndc =
+                                        f.slice::<18, 16, true, 0>(f.read(input.pixel.at::<2>())?)?;
+                                    let px: Fixed<34, 30, true> =
+                                        f.product(x, f.read(input.projection.at::<0>())?)?;
+                                    let py: Fixed<34, 30, true> =
+                                        f.product(y, f.read(input.projection.at::<1>())?)?;
+                                    [
+                                        f.round_to(px)?,
+                                        f.round_to(py)?,
+                                        f.read(input.projection.at::<2>())?,
+                                    ]
+                                };
+                                for (i, value) in ray.iter().enumerate() {
+                                    f.publish(&format!("ray.{i}"), *value)?;
+                                }
+                                let v = normalize(
+                                    f,
+                                    ray,
+                                    Magnitude::constant::<4>(),
+                                    true,
+                                    t,
+                                    "v",
+                                    config.dataflow,
+                                )?;
+                                let mut half = [Direction::constant::<0>(); 3];
+                                for i in 0..3 {
+                                    let sum: HalfSum = f.add(l[i], v[i])?;
+                                    let sum = f.binary_scale::<17, 15, true>(sum)?;
+                                    half[i] = f.round_to(sum)?;
+                                }
+                                normalize(
+                                    f,
+                                    half,
+                                    Magnitude::constant::<64>(),
+                                    false,
+                                    t,
+                                    "h",
+                                    config.dataflow,
+                                )?
+                            };
                             let nh = dot(f, n, h)?;
                             f.publish("nh", nh)?;
                             let nh =
@@ -377,7 +542,56 @@ pub fn evaluate_with_config(
     max_events: usize,
     config: Config,
 ) -> Result<Report, Error> {
+    evaluate_with_preparation(
+        pixel,
+        material,
+        light,
+        projection,
+        max_events,
+        config,
+        (None, None),
+    )
+}
+/// Reuse an independently prepared H only for the exact coordinate and context.
+/// Different normal, material shininess or intensity may use the same H key.
+pub fn evaluate_reusing_half(
+    pixel: PixelInput,
+    material: Material,
+    light: Light,
+    projection: Projection,
+    max_events: usize,
+    mut config: Config,
+    cached: &HalfPreparation,
+) -> Result<Report, Error> {
+    if cached.ndc != pixel.ndc
+        || cached.light != light.direction
+        || cached.projection.ray_scale != projection.ray_scale
+        || cached.projection.k != projection.k
+    {
+        return Err(InputError::Configuration.into());
+    }
+    config.shared_half = true;
+    evaluate_with_preparation(
+        pixel,
+        material,
+        light,
+        projection,
+        max_events,
+        config,
+        (Some(cached), None),
+    )
+}
+fn evaluate_with_preparation(
+    pixel: PixelInput,
+    material: Material,
+    light: Light,
+    projection: Projection,
+    max_events: usize,
+    config: Config,
+    cached: (Option<&HalfPreparation>, Option<&FlatPreparation>),
+) -> Result<Report, Error> {
     validate(pixel, material, light, projection)?;
+    let (cached_half, cached_flat) = cached;
     let mut model = Model::numerical();
     let mode = if material.unlit {
         0
@@ -388,8 +602,73 @@ pub fn evaluate_with_config(
     } else {
         3
     };
+    let flat_preparation = if config.flat_normal && mode >= 2 {
+        Some(if let Some(cached) = cached_flat {
+            cached.clone()
+        } else {
+            prepare_flat(pixel.normal, light, max_events, config)?
+        })
+    } else {
+        None
+    };
+    let half_preparation = if config.shared_half && mode == 3 {
+        Some(if let Some(cached) = cached_half {
+            cached.clone()
+        } else {
+            prepare_half(pixel, light, projection, max_events, config)?
+        })
+    } else {
+        None
+    };
+    let (pixel_rows, ray_preparation) = if config.prepared_ray && mode == 3 && !config.shared_half {
+        let prepared = prepare_ray(pixel, projection, max_events)?;
+        let ray = prepared.0;
+        let rows = [
+            u64::from(pixel.normal[0] as u16) | (u64::from(pixel.normal[1] as u16) << 16),
+            u64::from(pixel.normal[2] as u16) | (u64::from(ray[0] as u16) << 16),
+            u64::from(ray[1] as u16) | (u64::from(ray[2] as u16) << 16),
+        ];
+        (rows, Some(prepared.1))
+    } else {
+        (PixelRows::encode(pixel)?.0, None)
+    };
+    let half_input = if let Some(prep) = &half_preparation {
+        Some(model.input(
+            "pixel.prepared-half",
+            &std::array::from_fn::<_, 3, _>(|i| {
+                prep.half
+                    .outputs
+                    .iter()
+                    .find(|o| o.name == format!("h.{i}"))
+                    .unwrap()
+                    .raw
+            }),
+        )?)
+    } else {
+        None
+    };
+    let flat_input = if let Some(prep) = &flat_preparation {
+        let get = |name: &str| {
+            prep.frame
+                .outputs
+                .iter()
+                .find(|o| o.name == name)
+                .unwrap()
+                .raw
+        };
+        Some(FlatInputs {
+            normal: model.input("context.flat-normal", &[get("n.0"), get("n.1"), get("n.2")])?,
+            nl: model.input("context.flat-nl", &[get("nl")])?,
+            d: model.input("context.flat-d", &[get("d")])?,
+            g: model.input("context.flat-g", &[get("g")])?,
+        })
+    } else {
+        None
+    };
     let input = Inputs {
-        pixel: model.input("pixel.rows", &PixelRows::encode(pixel)?.0.map(i128::from))?,
+        flat: flat_input,
+        half: half_input,
+        pixel: model.input("pixel.rows", &pixel_rows.map(i128::from))?,
         light: model.input("context.light", &light.direction.map(i128::from))?,
         projection: model.input(
             "context.projection",
@@ -406,7 +685,13 @@ pub fn evaluate_with_config(
         mode: model.input("context.mode", &[mode])?,
         code: model.input("context.shininess", &[i128::from(material.shininess_code)])?,
     };
+    let context_preparation = if config.dataflow && mode == 3 {
+        Some(prepare_context(material.shininess_code, max_events)?)
+    } else {
+        None
+    };
     let t = Tables {
+        context_is_latched: config.dataflow,
         square: if config.signed_square {
             SquareTable::Signed(model.table("SQ", &SQUARE_SIGNED)?)
         } else {
@@ -414,7 +699,15 @@ pub fn evaluate_with_config(
         },
         rsqrt: model.table("RSQRT", &RSQRT)?,
         power: model.table("POWER", &POWER)?,
-        context: model.table("POWER_CONTEXT", &CONTEXT)?,
+        context: if config.dataflow {
+            // SET_MATERIAL prepares this invariant before the pixel frame starts.
+            model.input(
+                "context.power",
+                &[context_preparation.as_ref().map_or(0, |r| r.outputs[0].raw)],
+            )?
+        } else {
+            model.table("POWER_CONTEXT", &CONTEXT)?
+        },
     };
     let f = model.compute("pixel_lighting", max_events)?;
     kernel(&f, &input, &t, config)?;
@@ -437,5 +730,269 @@ pub fn evaluate_with_config(
             h: get("h"),
         },
         frame,
+        ray_preparation,
+        context_preparation,
+        half_preparation,
+        flat_preparation,
     })
+}
+
+/// Exact reference preparation; costs two 18x18 products and two RNE operations.
+/// A raster may replace repeated products with a Q30 scan accumulator, provided
+/// its seed/step represent the same quantized NDC sequence.
+pub fn prepare_ray(
+    pixel: PixelInput,
+    projection: Projection,
+    max_events: usize,
+) -> Result<([i16; 3], FrameReport), Error> {
+    if pixel.ndc.iter().any(|&x| !(-65536..=65536).contains(&x)) {
+        return Err(InputError::ViewRay.into());
+    }
+    if !(8192..=12288).contains(&projection.k)
+        || projection
+            .ray_scale
+            .iter()
+            .any(|&x| i32::from(x).abs() > 12288)
+    {
+        return Err(InputError::ViewRay.into());
+    }
+    let mut m = Model::numerical();
+    let ndc = m.input::<18, 16, true>("raster.ndc", &pixel.ndc.map(i128::from))?;
+    let scale =
+        m.input::<16, 14, true>("context.ray-scale", &projection.ray_scale.map(i128::from))?;
+    let k = m.input::<16, 14, true>("context.k", &[i128::from(projection.k)])?;
+    let f = m.compute("upstream ray preparation", max_events)?;
+    let x: Fixed<34, 30, true> = f.product(f.read(ndc.at::<0>())?, f.read(scale.at::<0>())?)?;
+    let y: Fixed<34, 30, true> = f.product(f.read(ndc.at::<1>())?, f.read(scale.at::<1>())?)?;
+    f.publish("ray.0", f.round_to::<16, 14, true>(x)?)?;
+    f.publish("ray.1", f.round_to::<16, 14, true>(y)?)?;
+    f.publish("ray.2", f.read(k.at::<0>())?)?;
+    let report = f.finish();
+    report.audit()?;
+    let result = std::array::from_fn(|i| report.outputs[i].raw as i16);
+    Ok((result, report))
+}
+
+/// One read at material preparation, retained until the last context consumer.
+pub fn prepare_context(code: u8, max_events: usize) -> Result<FrameReport, Error> {
+    if code > 16 {
+        return Err(InputError::Shininess.into());
+    }
+    let mut m = Model::numerical();
+    let input = m.input::<5, 0, false>("material.shininess", &[i128::from(code)])?;
+    let table = m.table("POWER_CONTEXT", &CONTEXT)?;
+    let f = m.compute("material power context preparation", max_events)?;
+    f.publish(
+        "power-context",
+        f.read(table.indexed(f.read(input.at::<0>())?))?,
+    )?;
+    let report = f.finish();
+    report.audit()?;
+    Ok(report)
+}
+
+/// Exact reusable half vector. Its key MUST include screen coordinate and the
+/// immutable projection/light context. A quad or triangle identity alone is not
+/// a valid key. This preparation has its own closed numerical ledger.
+pub fn prepare_half(
+    pixel: PixelInput,
+    light: Light,
+    projection: Projection,
+    max_events: usize,
+    config: Config,
+) -> Result<HalfPreparation, Error> {
+    validate(pixel, Material::default(), light, projection)?;
+    let (ray, ray_report) = prepare_ray(pixel, projection, max_events)?;
+    let mut m = Model::numerical();
+    let input = m.input::<16, 14, true>("ray", &ray.map(i128::from))?;
+    let l = m.input::<16, 14, true>("context.light", &light.direction.map(i128::from))?;
+    let t = Tables {
+        square: if config.signed_square {
+            SquareTable::Signed(m.table("SQ", &SQUARE_SIGNED)?)
+        } else {
+            SquareTable::Magnitude(m.table("SQ", &SQUARE)?)
+        },
+        rsqrt: m.table("RSQRT", &RSQRT)?,
+        power: m.table("POWER", &POWER)?,
+        context: m.table("POWER_CONTEXT", &CONTEXT)?,
+        context_is_latched: false,
+    };
+    let f = m.compute("shared half-vector preparation", max_events)?;
+    let v = normalize(
+        &f,
+        read3(&f, input)?,
+        Magnitude::constant::<4>(),
+        true,
+        &t,
+        "v",
+        config.dataflow,
+    )?;
+    let l = read3(&f, l)?;
+    let mut half = [Direction::constant::<0>(); 3];
+    for i in 0..3 {
+        let sum: HalfSum = f.add(l[i], v[i])?;
+        half[i] = f.round_to(f.binary_scale::<17, 15, true>(sum)?)?;
+    }
+    normalize(
+        &f,
+        half,
+        Magnitude::constant::<64>(),
+        false,
+        &t,
+        "h",
+        config.dataflow,
+    )?;
+    let report = f.finish();
+    report.audit()?;
+    Ok(HalfPreparation {
+        ray: ray_report,
+        half: report,
+        ndc: pixel.ndc,
+        light: light.direction,
+        projection,
+    })
+}
+
+/// Exact linear NDC scan candidate. Seeds and step use the quantized NDC contract;
+/// Q30 accumulation avoids drift from repeatedly adding already rounded Q14 rays.
+/// Three one-time products (X/Y seeds and X step), one wide add per later pixel,
+/// and X RNE per pixel replace two repeated products. Y RNE is shared once.
+pub fn scanline_rays(
+    seed: PixelInput,
+    ndc_step: i32,
+    count: usize,
+    projection: Projection,
+    max_events: usize,
+) -> Result<(Vec<[i16; 3]>, FrameReport), Error> {
+    if count == 0 || count > 64 || !(-65536..=65536).contains(&ndc_step) {
+        return Err(InputError::Configuration.into());
+    }
+    let last = i64::from(seed.ndc[0]) + i64::from(ndc_step) * (count as i64 - 1);
+    if !(-65536..=65536).contains(&last) {
+        return Err(InputError::ViewRay.into());
+    }
+    validate(seed, Material::default(), Light::default(), projection)?;
+    let mut m = Model::numerical();
+    let xy = m.input::<18, 16, true>("raster.seed", &seed.ndc.map(i128::from))?;
+    let step = m.input::<18, 16, true>("raster.step", &[i128::from(ndc_step)])?;
+    let scale = m.input::<16, 14, true>("context.scale", &projection.ray_scale.map(i128::from))?;
+    let k = m.input::<16, 14, true>("context.k", &[i128::from(projection.k)])?;
+    let f = m.compute("exact Q30 scan rays", max_events)?;
+    let mut x: Fixed<34, 30, true> = f.product(f.read(xy.at::<0>())?, f.read(scale.at::<0>())?)?;
+    let y: Fixed<34, 30, true> = f.product(f.read(xy.at::<1>())?, f.read(scale.at::<1>())?)?;
+    let delta: Fixed<34, 30, true> =
+        f.product(f.read(step.at::<0>())?, f.read(scale.at::<0>())?)?;
+    let y: Direction = f.round_to(y)?;
+    let z = f.read(k.at::<0>())?;
+    for i in 0..count {
+        f.publish(&format!("ray.{i}.0"), f.round_to::<16, 14, true>(x)?)?;
+        f.publish(&format!("ray.{i}.1"), y)?;
+        f.publish(&format!("ray.{i}.2"), z)?;
+        if i + 1 < count {
+            x = f.add_same(x, delta)?;
+        }
+    }
+    let report = f.finish();
+    report.audit()?;
+    let rows = (0..count)
+        .map(|i| std::array::from_fn(|c| report.outputs[i * 3 + c].raw as i16))
+        .collect();
+    Ok((rows, report))
+}
+
+/// Once per explicitly flat triangle and light/intensity context. N/NL/d/g are
+/// invariant; H and the specular dot/power remain per-coordinate work.
+pub fn prepare_flat(
+    normal: [i16; 3],
+    light: Light,
+    max_events: usize,
+    config: Config,
+) -> Result<FlatPreparation, Error> {
+    validate(
+        PixelInput {
+            normal,
+            ndc: [0; 2],
+        },
+        Material::default(),
+        light,
+        Projection::default(),
+    )?;
+    let mut m = Model::numerical();
+    let source = m.input::<16, 14, true>("normal", &normal.map(i128::from))?;
+    let l = m.input::<16, 14, true>("context.light", &light.direction.map(i128::from))?;
+    let intensity = m.input::<9, 8, false>(
+        "context.intensity",
+        &[i128::from(light.ambient), i128::from(light.directional)],
+    )?;
+    let t = Tables {
+        square: if config.signed_square {
+            SquareTable::Signed(m.table("SQ", &SQUARE_SIGNED)?)
+        } else {
+            SquareTable::Magnitude(m.table("SQ", &SQUARE)?)
+        },
+        rsqrt: m.table("RSQRT", &RSQRT)?,
+        power: m.table("POWER", &POWER)?,
+        context: m.table("POWER_CONTEXT", &CONTEXT)?,
+        context_is_latched: false,
+    };
+    let f = m.compute("flat triangle diffuse preparation", max_events)?;
+    let n = normalize(
+        &f,
+        read3(&f, source)?,
+        Magnitude::constant::<4>(),
+        false,
+        &t,
+        "n",
+        config.dataflow,
+    )?;
+    let nl = dot(&f, n, read3(&f, l)?)?;
+    f.publish("nl", nl)?;
+    let d = clamp(&f, nl, Dot::constant::<0>(), Dot::constant::<268435456>())?;
+    let d: Intensity = f.round_to(d)?;
+    f.publish("d", d)?;
+    let product: Fixed<18, 16, false> = f.product(f.read(intensity.at::<1>())?, d)?;
+    let diffuse: Intensity = f.round_to(product)?;
+    let sum: IntensitySum = f.add(f.read(intensity.at::<0>())?, diffuse)?;
+    let g = clamp(
+        &f,
+        sum,
+        IntensitySum::constant::<0>(),
+        IntensitySum::constant::<511>(),
+    )?;
+    f.publish("g", f.resize_exact::<9, 8, false>(g)?)?;
+    let frame = f.finish();
+    frame.audit()?;
+    Ok(FlatPreparation {
+        frame,
+        normal,
+        light,
+    })
+}
+/// Key-checked flat sharing. Never silently substitute a neighbor's normal.
+pub fn evaluate_reusing_flat(
+    pixel: PixelInput,
+    material: Material,
+    light: Light,
+    projection: Projection,
+    max_events: usize,
+    mut config: Config,
+    cached: &FlatPreparation,
+) -> Result<Report, Error> {
+    if cached.normal != pixel.normal
+        || cached.light.direction != light.direction
+        || cached.light.ambient != light.ambient
+        || cached.light.directional != light.directional
+    {
+        return Err(InputError::Configuration.into());
+    }
+    config.flat_normal = true;
+    evaluate_with_preparation(
+        pixel,
+        material,
+        light,
+        projection,
+        max_events,
+        config,
+        (None, Some(cached)),
+    )
 }

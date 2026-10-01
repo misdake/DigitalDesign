@@ -375,6 +375,7 @@ fn optimized_counted_matches_independent_stages_and_limits_output_change() {
     let signed_only = counted::Config {
         signed_square: true,
         power_floor: false,
+        ..counted::Config::default()
     };
     let optimized = counted::Config::optimized();
     for (pixel, material, light, projection) in support::representative() {
