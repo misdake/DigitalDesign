@@ -51,6 +51,7 @@ benchmark evidence live at the same commit.
 circuit/                         gate graph, simulation, Verilog rendering
 modeling/
   audited/                       independent fixed-point modeling and work audit
+  scheduler/                     bounded resource-constrained DAG scheduling
 hardware/
   core/                          hardware description and project/resource APIs
   macros/                        hardware derive macros

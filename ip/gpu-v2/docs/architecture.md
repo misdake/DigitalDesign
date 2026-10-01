@@ -15,7 +15,7 @@ ip/gpu-v2/
       sim/
         oracle.rs              configurable reference and stage goldens
         counted.rs             closed audited fixed-point implementation
-        timed.rs               future capacity/static-pipeline verification
+        timed.rs               bounded capacity and static batch reservations
       emu/                     future independent cycle/state model
       rtl/                     future hardware implementation
   tests/support/               deterministic stimuli and comparison helpers
@@ -31,9 +31,10 @@ connects ports, queues and context lifetimes when integration is defined.
 
 Simulation has three stages: configurable oracle determines numerical needs;
 counted matches a chosen format configuration bit for bit and records all work;
-timed binds real capacities and verifies a static pipeline, throughput and
-backpressure. The generic audited scheduler is a supporting tool, not the
-pipeline controller. Emulation and RTL remain independent verification paths.
+timed starts by binding capacities and verifying static batch reservations.
+Continuous throughput, backpressure and a cycle-stepped datapath remain future
+work. The generic audited ledger and resource scheduler support planning.
+Emulation and RTL remain independent verification paths.
 Tests use stage goldens rather than treating audit success as an accuracy oracle.
 
 Lighting starts at a single pixel and returns two scalar intensities, g and h.
@@ -44,3 +45,4 @@ components. Component calculations can be tested without a GPU system.
 Web code will call the same Rust numerical model through WASM. It owns controls
 and presentation only; it must not reproduce the arithmetic in JavaScript. The
 runtime-format audited lane and the WASM interface have not been implemented.
+Implemented lighting behavior and validation are in [lighting](lighting.md).

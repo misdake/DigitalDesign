@@ -1,6 +1,7 @@
 [workspace]
 members = [
     "modeling/audited",
+    "modeling/scheduler",
     "circuit",
     "hardware/core",
     "hardware/common",

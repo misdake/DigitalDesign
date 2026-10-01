@@ -6,6 +6,7 @@ The workspace is organized by technical layer rather than by project age:
 circuit/                         gate graph, simulation, Verilog rendering
 modeling/
   audited/                       independent closed numerical modeling and work audit
+  scheduler/                     independent bounded resource-constrained DAG search
 hardware/
   core/                          hardware description and project/resource APIs
   macros/                        hardware derive macros
@@ -31,7 +32,7 @@ systems/
 ## Ownership rules
 
 - `circuit` has no knowledge of hardware targets, processors, compilers, or systems.
-- `modeling/audited` is an independent development tool with no workspace-package
+- `modeling/audited` and `modeling/scheduler` are independent tools with no workspace-package
   dependencies. Its filesystem home is parallel to `compiler`, but its dependency
   rank is foundational: IP and systems may consume it, never the reverse.
 - `hardware/core` describes modules, projects, resources, and tests. Vendor APIs live below
