@@ -12,9 +12,13 @@ use std::collections::{BTreeMap, BinaryHeap};
 #[path = "periodic.rs"]
 mod periodic;
 pub use periodic::PeriodicSchedule;
+#[path = "physical.rs"]
+mod physical;
+pub use physical::PhysicalReport;
 
 #[derive(Clone, Copy, Debug)]
 pub struct Hardware {
+    pub dsp_tiles: usize,
     pub kernel: counted::Config,
     pub binding: Binding,
     pub narrow_adders: usize,
@@ -38,6 +42,7 @@ pub struct Hardware {
 impl Default for Hardware {
     fn default() -> Self {
         Self {
+            dsp_tiles: 12,
             kernel: counted::Config::default(),
             binding: Binding::Generic,
             narrow_adders: 2,
@@ -175,6 +180,33 @@ pub(super) fn kind(report: &FrameReport, event: usize) -> Result<Option<LaneKind
     })
 }
 impl Hardware {
+    pub fn dsp_inventory(self) -> Result<audited::physical::DspInventory, String> {
+        use audited::physical::{DspInventory, DspMode};
+        let paired = if self.binding == Binding::LightingDsp {
+            self.paired_macros
+        } else {
+            0
+        };
+        DspInventory::pack(
+            self.dsp_tiles,
+            &[
+                (
+                    DspMode::Multiply9,
+                    self.small_multiply,
+                    self.multiply_latency,
+                    1,
+                ),
+                (
+                    DspMode::Multiply18,
+                    self.large_multiply,
+                    self.multiply_latency,
+                    1,
+                ),
+                (DspMode::PairMultiplyAdd, paired, self.paired_latency, 1),
+            ],
+        )
+        .map_err(|e| format!("DSP placement: {e:?}"))
+    }
     /// Twice the 18x18-equivalent multiplier budget, avoiding fractional counts.
     pub fn multiplier_half_slots(self) -> usize {
         self.small_multiply
@@ -603,6 +635,10 @@ impl Plan {
     }
     /// Verify every static slot, input gate, dependency and ordered result write.
     pub fn audit(&self) -> Result<(), String> {
+        self.hardware
+            .dsp_inventory()?
+            .audit()
+            .map_err(|e| format!("DSP inventory: {e:?}"))?;
         if self.kernel != self.hardware.kernel {
             return Err("kernel config certificate".into());
         }

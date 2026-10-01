@@ -13,24 +13,63 @@ pub struct PeriodicSchedule {
     pub searched_candidates: usize,
 }
 
-fn priority(id: usize, candidate: usize, tail: &[u64]) -> u64 {
-    match candidate {
-        0 => 0,
-        1 => u64::MAX - tail[id],
-        _ => {
-            let mut x = (id as u64) ^ (candidate as u64 * 0x9e37_79b9);
-            x ^= x >> 30;
-            x = x.wrapping_mul(0xbf58_476d_1ce4_e5b9);
-            x ^= x >> 27;
-            x.wrapping_mul(0x94d0_49bb_1331_11eb) ^ (x >> 31)
-        }
-    }
-}
-
 impl PeriodicSchedule {
-    /// Bounded phase-aware list search. Reusing a lane/phase would collide
-    /// with another pixel in steady state, irrespective of local stage time.
+    fn graph(plan: &Plan) -> Result<resource_scheduler::ModuloGraph, String> {
+        use resource_scheduler::{Graph, ModuloGraph, Node, Resource as Unit};
+        let mut graph = Graph::default();
+        let mut resource_ids = BTreeMap::new();
+        for (id, kind) in plan.binding.kinds.iter().enumerate() {
+            let resource = kind.as_ref().map(|k| {
+                *resource_ids.entry(k.clone()).or_insert_with(|| {
+                    let (lanes, latency) = plan.hardware.unit(k);
+                    let index = graph.resources.len();
+                    graph.resources.push(Unit {
+                        name: format!("{k:?}"),
+                        lanes,
+                        latency,
+                        initiation_interval: 1,
+                    });
+                    index
+                })
+            });
+            graph.nodes.push(Node {
+                name: format!("event{id}"),
+                predecessors: plan.binding.dependencies[id].clone(),
+                earliest: 0,
+                resource,
+            });
+        }
+        let result_events: Vec<_> = plan
+            .template
+            .events
+            .iter()
+            .filter(|e| matches!(&e.operation,Operation::Publish(name) if name=="g"||name=="h"))
+            .map(|e| e.id)
+            .collect();
+        if result_events.len() != 2 {
+            return Err("missing g/h".into());
+        }
+        let output_resource = graph.resources.len();
+        graph.resources.push(Unit {
+            name: "result row".into(),
+            lanes: 1,
+            latency: 1,
+            initiation_interval: 1,
+        });
+        graph.nodes.push(Node {
+            name: "commit".into(),
+            predecessors: result_events,
+            earliest: 0,
+            resource: Some(output_resource),
+        });
+        let modulo =
+            ModuloGraph::from_graph(&graph).map_err(|e| format!("periodic graph: {e:?}"))?;
+        Ok(modulo)
+    }
+
+    /// Use the generic modulo tool, then independently check the lighting binding.
     pub fn search(plan: &Plan, ii: u64, candidates: usize) -> Result<Self, String> {
+        use resource_scheduler::{Limits, SearchConfig};
         plan.audit()?;
         if !matches!(plan.storage, Storage::Registers) {
             return Err("periodic scheduling currently requires register inputs".into());
@@ -38,142 +77,85 @@ impl PeriodicSchedule {
         if ii == 0 || ii > 64 || candidates == 0 || candidates > 64 {
             return Err("periodic II/candidate limit".into());
         }
-        let n = plan.template.events.len();
-        let h = plan.hardware;
-        let mut children = vec![Vec::new(); n];
-        let mut degree = vec![0; n];
-        let mut counts = BTreeMap::<LaneKind, usize>::new();
-        for (id, deps) in plan.binding.dependencies.iter().enumerate() {
-            degree[id] = deps.len();
-            for &d in deps {
-                children[d].push(id);
-            }
-            if let Some(k) = &plan.binding.kinds[id] {
-                *counts.entry(k.clone()).or_default() += 1;
-            }
+        let modulo = Self::graph(plan)?;
+        if modulo.resource_lower_bound() > ii {
+            return Err(format!(
+                "II={ii} capacity: lower bound {}",
+                modulo.resource_lower_bound()
+            ));
         }
-        for (k, count) in &counts {
-            let (lanes, latency) = h.unit(k);
-            if lanes == 0 || lanes > 64 || latency == 0 {
-                return Err("invalid periodic hardware".into());
-            }
-            if *count as u64 > lanes as u64 * ii {
-                return Err(format!(
-                    "II={ii} capacity: {k:?} needs {count}, has {}",
-                    lanes as u64 * ii
-                ));
-            }
+        let calendar = resource_scheduler::modulo_schedule_bounded(
+            &modulo,
+            ii,
+            &Limits::new(4096, plan.hardware.max_cycles, candidates),
+            &SearchConfig::default(),
+        )
+        .map_err(|e| format!("periodic search: {e:?}"))?;
+        if !resource_scheduler::check_modulo(&modulo, &calendar).is_ok() {
+            return Err("generic modulo audit".into());
         }
-        let mut topo_degree = degree.clone();
-        let mut queue: Vec<_> = (0..n).filter(|&id| topo_degree[id] == 0).collect();
-        let mut index = 0;
-        while index < queue.len() {
-            let id = queue[index];
-            index += 1;
-            for &child in &children[id] {
-                topo_degree[child] -= 1;
-                if topo_degree[child] == 0 {
-                    queue.push(child);
-                }
-            }
-        }
-        if queue.len() != n {
-            return Err("periodic dependency cycle".into());
-        }
-        let mut tail = vec![0; n];
-        for &id in queue.iter().rev() {
-            let own = plan.binding.kinds[id].as_ref().map_or(0, |k| h.unit(k).1);
-            tail[id] = own + children[id].iter().map(|&c| tail[c]).max().unwrap_or(0);
-        }
-        let results: Vec<_> = plan
-            .template
-            .events
+        let slots = calendar.nodes[..plan.template.events.len()]
             .iter()
-            .filter(
-                |e| matches!(&e.operation, Operation::Publish(name) if name == "g" || name == "h"),
-            )
-            .map(|e| e.id)
+            .enumerate()
+            .map(|(event, s)| Reservation {
+                pixel: 0,
+                event,
+                kind: plan.binding.kinds[event].clone(),
+                lane: s.lane,
+                issue: s.issue,
+                ready: s.issue
+                    + plan.binding.kinds[event]
+                        .as_ref()
+                        .map_or(0, |k| plan.hardware.unit(k).1),
+            })
             .collect();
-        let mut best: Option<Self> = None;
-        for candidate in 0..candidates {
-            let mut pending = degree.clone();
-            let mut earliest = vec![0; n];
-            let mut used: BTreeMap<_, _> = counts
-                .keys()
-                .map(|k| (k.clone(), vec![vec![false; ii as usize]; h.unit(k).0]))
-                .collect();
-            let mut heap = BinaryHeap::new();
-            for (id, &remaining) in pending.iter().enumerate() {
-                if remaining == 0 {
-                    heap.push(Reverse((0, priority(id, candidate, &tail), id)));
-                }
-            }
-            let mut slots = vec![None; n];
-            while let Some(Reverse((start, _, id))) = heap.pop() {
-                let kind = plan.binding.kinds[id].clone();
-                let (issue, ready, lane) = if let Some(k) = &kind {
-                    let calendar = used.get_mut(k).unwrap();
-                    let mut selected = None;
-                    for delay in 0..ii {
-                        let issue = start + delay;
-                        let phase = (issue % ii) as usize;
-                        if let Some(lane) = calendar.iter().position(|phases| !phases[phase]) {
-                            calendar[lane][phase] = true;
-                            selected = Some((issue, issue + h.unit(k).1, Some(lane)));
-                            break;
-                        }
-                    }
-                    selected.ok_or("periodic resource exhausted")?
-                } else {
-                    (start, start, None)
-                };
-                if ready > h.max_cycles {
-                    return Err("periodic cycle limit".into());
-                }
-                slots[id] = Some(Reservation {
-                    pixel: 0,
-                    event: id,
-                    kind,
-                    lane,
-                    issue,
-                    ready,
-                });
-                for &child in &children[id] {
-                    earliest[child] = earliest[child].max(ready);
-                    pending[child] -= 1;
-                    if pending[child] == 0 {
-                        heap.push(Reverse((
-                            earliest[child],
-                            priority(child, candidate, &tail),
-                            child,
-                        )));
-                    }
-                }
-            }
-            let slots: Vec<_> = slots
-                .into_iter()
-                .map(|s| s.ok_or("missing periodic slot"))
-                .collect::<Result<_, _>>()?;
-            let write_issue = results
-                .iter()
-                .map(|&id| slots[id].ready)
-                .max()
-                .ok_or("missing g/h")?;
-            let proposed = Self {
-                initiation_interval: ii,
-                slots,
-                write_issue,
-                latency: write_issue + 1,
-                searched_candidates: candidates,
-            };
-            proposed.audit(plan)?;
-            if best.as_ref().is_none_or(|b| proposed.latency < b.latency) {
-                best = Some(proposed);
-            }
-        }
-        best.ok_or("no periodic candidate".into())
+        let write_issue = calendar.nodes.last().ok_or("missing commit")?.issue;
+        let proposed = Self {
+            initiation_interval: ii,
+            slots,
+            write_issue,
+            latency: write_issue + 1,
+            searched_candidates: candidates,
+        };
+        proposed.audit(plan)?;
+        Ok(proposed)
     }
-
+    /// Try ALAP placement with unchanged phases and latency. Compare live bits
+    /// before selecting it: shorter individual lifetimes do not guarantee a lower peak.
+    pub fn compact_lifetimes(mut self, plan: &Plan) -> Result<Self, String> {
+        use resource_scheduler::{ModuloNode, ModuloSchedule};
+        self.audit(plan)?;
+        let graph = Self::graph(plan)?;
+        let mut nodes: Vec<_> = self
+            .slots
+            .iter()
+            .map(|r| ModuloNode {
+                issue: r.issue,
+                lane: r.lane,
+            })
+            .collect();
+        nodes.push(ModuloNode {
+            issue: self.write_issue,
+            lane: Some(0),
+        });
+        let compact = resource_scheduler::compact_modulo(
+            &graph,
+            &ModuloSchedule {
+                initiation_interval: self.initiation_interval,
+                nodes,
+                span: self.latency,
+            },
+        )
+        .map_err(|e| format!("lifetime compact: {e:?}"))?;
+        for (r, n) in self.slots.iter_mut().zip(&compact.nodes) {
+            r.issue = n.issue;
+            r.ready = n.issue + r.kind.as_ref().map_or(0, |k| plan.hardware.unit(k).1);
+            r.lane = n.lane;
+        }
+        self.write_issue = compact.nodes.last().ok_or("missing commit")?.issue;
+        self.audit(plan)?;
+        Ok(self)
+    }
     /// Lane/phase uniqueness proves noncollision for arbitrarily many pixels.
     /// Also check same-pixel data/control dependencies and fixed output delay.
     pub fn audit(&self, plan: &Plan) -> Result<(), String> {

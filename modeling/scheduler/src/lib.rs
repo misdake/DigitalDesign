@@ -50,24 +50,37 @@
 //!
 //! # Boundaries
 //!
-//! The scheduler is a greedy list scheduler; it does not backtrack within a
-//! candidate and never adds resources to improve a result. It does not do
-//! exact optimization or ILP, does not model a runtime arbiter, and does not
-//! model storage or a numerical framework. All search is bounded by
-//! [`Limits`].
+//! The finite scheduler is a greedy list scheduler plus a backfilling
+//! insertion scheduler; it does not backtrack within a candidate and never adds
+//! resources to improve a result. It does not do exact optimization or ILP,
+//! does not model a runtime arbiter, and does not model storage or a numerical
+//! framework. All finite search is bounded by [`Limits`].
+//!
+//! [`modulo_schedule`] adds the periodic case: a calendar that reserves
+//! one position per node and repeats it every requested initiation interval.
+//! The independent [`check_modulo`] proves that no physical lane is
+//! overbooked across repeated iterations and that real dependency latency is
+//! respected. It is also a bounded construction, not exact optimization.
 
 #![forbid(unsafe_code)]
 
 mod check;
+mod compact;
 mod error;
 mod limits;
 mod model;
+mod modulo;
 mod schedule;
 mod search;
 
 pub use check::{check, CheckReport, Violation};
+pub use compact::compact_modulo;
 pub use error::ScheduleError;
 pub use limits::{Limits, SearchConfig};
 pub use model::{Graph, Node, NodeId, Resource, ResourceId};
+pub use modulo::{
+    check_modulo, modulo_schedule, modulo_schedule_bounded, ModuloCheckReport, ModuloError,
+    ModuloGraph, ModuloNode, ModuloSchedule, ModuloViolation,
+};
 pub use schedule::{NodeSchedule, Schedule};
-pub use search::{plan, Candidate, SearchOutcome};
+pub use search::{lower_bound, plan, Candidate, SearchOutcome};

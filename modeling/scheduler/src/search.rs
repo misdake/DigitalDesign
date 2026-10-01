@@ -1,5 +1,15 @@
 //! Candidate generation: deterministic baseline, critical-path list schedule,
-//! and bounded seeded random multi-start.
+//! backfilling insertion schedules, and bounded seeded random multi-start.
+//!
+//! Two construction methods share the same fixed hardware and graph:
+//!
+//! * *List scheduling* (baseline and the seeded restarts) walks every node in
+//!   priority order and appends it after the earliest free lane time. It can
+//!   never backfill an earlier idle hole.
+//! * *Insertion scheduling* considers every lane of the node's resource and
+//!   places the node at the earliest hole that is legal for its release gate,
+//!   its predecessors and the lane's initiation interval, so earlier gaps are
+//!   reused.
 
 use crate::error::ScheduleError;
 use crate::limits::{Limits, SearchConfig};
@@ -57,6 +67,23 @@ fn priority_key(priority: &Priority<'_>, critical: &[u64], node: NodeId, earlies
         Priority::Release => earliest,
         // Bitwise inversion reverses the order so the longest path wins a
         // min-heap.
+        Priority::CriticalPath => !critical[node],
+        Priority::Random(keys) => keys[node],
+    }
+}
+
+/// Primary ordering key for insertion scheduling.
+///
+/// Unlike the append-only list scheduler, `CriticalPath` and `Random` order by
+/// their key *first* and by readiness second. Placing a later-critical node
+/// before an earlier-ready one can open a hole in a lane calendar that the
+/// insertion walk then backfills, which a strictly readiness-first order can
+/// never exploit. `Release` keeps the readiness-first order and therefore
+/// degenerates to the baseline list schedule.
+fn insertion_primary(priority: &Priority<'_>, critical: &[u64], node: NodeId) -> u64 {
+    match priority {
+        Priority::Release => 0,
+        // Longest path first (inverted for the min-heap).
         Priority::CriticalPath => !critical[node],
         Priority::Random(keys) => keys[node],
     }
@@ -164,6 +191,176 @@ fn list_schedule(
     Ok(Schedule { nodes, cycles })
 }
 
+/// The earliest legal hole for a new issue on one lane.
+///
+/// `start` is the lower bound from gate and predecessors. `times` holds the
+/// already-placed issue times on this lane in ascending order. The candidate
+/// issue must keep at least `initiation` cycles from both neighbours, and the
+/// returned value is the smallest such cycle at or after `start`.
+fn earliest_hole(start: u64, times: &[u64], initiation: u64) -> Result<u64, ScheduleError> {
+    let mut issue = start;
+    // `times` is short (bounded by the node count) and the walk terminates
+    // because each conflicting neighbour either precedes `issue` or pushes it
+    // past itself.
+    for &other in times {
+        if other > issue && other - issue >= initiation {
+            return Ok(issue);
+        }
+        if issue.abs_diff(other) < initiation {
+            issue = other
+                .checked_add(initiation)
+                .ok_or(ScheduleError::ArithmeticOverflow { node: None })?;
+        }
+    }
+    Ok(issue)
+}
+
+/// Schedule every node exactly once, inserting each ready node at the earliest
+/// legal hole on any lane of its resource.
+///
+/// Wiring nodes still issue at their readiness time. Resource nodes choose the
+/// lane (and issue cycle) that finishes first among all legal holes, which lets
+/// them reuse gaps the greedy append-only list scheduler would skip. The
+/// resulting schedule is checked by the same independent [`crate::check`] as
+/// every other candidate.
+fn insertion_schedule(
+    prepared: &Prepared<'_>,
+    priority: Priority<'_>,
+) -> Result<Schedule, ScheduleError> {
+    let node_count = prepared.graph.nodes.len();
+    let mut lane_times: BTreeMap<ResourceId, Vec<Vec<u64>>> = prepared
+        .lane_capacity
+        .iter()
+        .map(|(&resource, &capacity)| (resource, vec![Vec::new(); capacity]))
+        .collect();
+    let mut deps_left: Vec<usize> = prepared
+        .graph
+        .nodes
+        .iter()
+        .map(|node| node.predecessors.len())
+        .collect();
+    let mut earliest: Vec<u64> = prepared
+        .graph
+        .nodes
+        .iter()
+        .map(|node| node.earliest)
+        .collect();
+    let mut placed: Vec<Option<NodeSchedule>> = vec![None; node_count];
+    // Primary priority key first, then readiness, then node id for determinism.
+    let mut heap: BinaryHeap<Reverse<(u64, u64, NodeId)>> = BinaryHeap::new();
+
+    for node in 0..node_count {
+        if deps_left[node] == 0 {
+            let key = insertion_primary(&priority, &prepared.critical, node);
+            heap.push(Reverse((key, earliest[node], node)));
+        }
+    }
+
+    let mut cycles = 0u64;
+    while let Some(Reverse((_, start, node))) = heap.pop() {
+        let spec = &prepared.graph.nodes[node];
+        let assignment = match spec.resource {
+            None => NodeSchedule {
+                issue: start,
+                ready: start,
+                lane: None,
+            },
+            Some(resource) => {
+                let slots = lane_times
+                    .get_mut(&resource)
+                    .ok_or(ScheduleError::InvalidResourceIndex { node, resource })?;
+                if slots.is_empty() {
+                    return Err(ScheduleError::ZeroLanes { resource });
+                }
+                let initiation = prepared.graph.resources[resource].initiation_interval;
+                let mut best: Option<(u64, u64, usize)> = None;
+                for (lane, times) in slots.iter().enumerate() {
+                    let issue = earliest_hole(start, times, initiation)?;
+                    let ready = issue
+                        .checked_add(prepared.latency[node])
+                        .ok_or(ScheduleError::ArithmeticOverflow { node: Some(node) })?;
+                    // Prefer the earliest finish, then the earliest issue, then
+                    // the lowest lane id for determinism.
+                    let better = match best {
+                        None => true,
+                        Some((best_ready, best_issue, best_lane)) => {
+                            (ready, issue, lane) < (best_ready, best_issue, best_lane)
+                        }
+                    };
+                    if better {
+                        best = Some((ready, issue, lane));
+                    }
+                }
+                let (ready, issue, lane) = best.ok_or(ScheduleError::ZeroLanes { resource })?;
+                slots[lane].push(issue);
+                slots[lane].sort_unstable();
+                NodeSchedule {
+                    issue,
+                    ready,
+                    lane: Some(lane),
+                }
+            }
+        };
+
+        cycles = cycles.max(assignment.ready);
+        for &child in &prepared.children[node] {
+            earliest[child] = earliest[child].max(assignment.ready);
+            deps_left[child] -= 1;
+            if deps_left[child] == 0 {
+                let key = insertion_primary(&priority, &prepared.critical, child);
+                heap.push(Reverse((key, earliest[child], child)));
+            }
+        }
+        placed[node] = Some(assignment);
+    }
+
+    let nodes = placed
+        .into_iter()
+        .collect::<Option<Vec<_>>>()
+        .ok_or(ScheduleError::Cycle { nodes: Vec::new() })?;
+    Ok(Schedule { nodes, cycles })
+}
+
+/// Lower bound on the makespan from resource capacity alone.
+///
+/// For every used resource the total issue demand is `node_count` slots across
+/// `lanes` physical lanes, and each lane may start a new operation only every
+/// `initiation_interval` cycles. A final result also needs its resource latency
+/// after the last issue, so the bound is
+/// `max_r ((ceil(count_r / lanes_r) - 1) * II_r + latency_r + release_floor)`.
+/// It is a necessary bound only: dependencies and release gates can push the
+/// real makespan higher. It is reported for honest comparison, never used to
+/// prune the search.
+fn resource_lower_bound(prepared: &Prepared<'_>) -> u64 {
+    let mut bound = 0u64;
+    let mut per_resource: BTreeMap<ResourceId, (u64, u64, u64)> = BTreeMap::new();
+    for spec in &prepared.graph.nodes {
+        if let Some(resource) = spec.resource {
+            let entry = per_resource.entry(resource).or_insert((0, 0, u64::MAX));
+            entry.0 += 1;
+            entry.1 = prepared.graph.resources[resource].latency;
+            entry.2 = entry.2.min(spec.earliest);
+        }
+    }
+    for (&resource, &(count, latency, release_floor)) in &per_resource {
+        let lanes = prepared
+            .lane_capacity
+            .get(&resource)
+            .copied()
+            .unwrap_or(1)
+            .max(1) as u64;
+        let initiation = prepared.graph.resources[resource].initiation_interval;
+        let issues = count.div_ceil(lanes);
+        let span = issues
+            .saturating_sub(1)
+            .saturating_mul(initiation)
+            .saturating_add(latency);
+        // The first issue cannot precede the resource's earliest release gate.
+        bound = bound.max(release_floor.saturating_add(span));
+    }
+    bound
+}
+
 /// Peak number of results live at the same time.
 ///
 /// A result is live from its `ready` cycle until the last issue of any
@@ -240,8 +437,16 @@ fn candidate_from(
 ///
 /// The candidate set always starts with the deterministic `baseline`. With
 /// `max_candidates >= 2` the deterministic `critical-path` schedule follows.
-/// Every remaining slot becomes a seeded random restart. The best feasible
-/// candidate is chosen by `(makespan, live_pressure, evaluation order)`.
+/// From six candidates onward the backfilling `insertion` and
+/// `insertion-critical-path` schedules are added, and every remaining slot
+/// becomes a seeded random restart (list schedule up to five candidates, then
+/// insertion schedules so the seeded alternatives can also backfill). The best
+/// feasible candidate is chosen by `(makespan, live_pressure, evaluation
+/// order)`.
+///
+/// Every candidate is a complete, independently checkable schedule; the search
+/// never mutates the graph, never adds hardware, and performs no unbounded
+/// exact search.
 ///
 /// Returns [`ScheduleError::NoFeasibleSchedule`] if every evaluated candidate
 /// exceeds `Limits::max_cycle`, and a structural error before evaluating
@@ -273,12 +478,40 @@ pub fn plan(
         ));
     }
 
+    // Insertion candidates are deterministic and free of any seed. They are
+    // skipped for the smallest budgets so the historical candidate sequence
+    // (`baseline`, `critical-path`, seeded restarts) is unchanged there.
+    if limits.max_candidates >= 6 {
+        let insertion = insertion_schedule(&prepared, Priority::Release)?;
+        candidates.push(candidate_from(
+            "insertion".to_owned(),
+            None,
+            insertion,
+            limits,
+            &prepared,
+        ));
+        let insertion_critical = insertion_schedule(&prepared, Priority::CriticalPath)?;
+        candidates.push(candidate_from(
+            "insertion-critical-path".to_owned(),
+            None,
+            insertion_critical,
+            limits,
+            &prepared,
+        ));
+    }
+
     while candidates.len() < limits.max_candidates {
         let index = candidates.len();
         let seed = restart_seed(config.base_seed, index);
         let mut rng = Rng::new(seed);
         let keys: Vec<u64> = (0..graph.nodes.len()).map(|_| rng.next()).collect();
-        let schedule = list_schedule(&prepared, Priority::Random(&keys))?;
+        // Small budgets keep the original seeded list schedules; larger budgets
+        // use seeded insertion schedules so restarts can backfill as well.
+        let schedule = if limits.max_candidates < 6 {
+            list_schedule(&prepared, Priority::Random(&keys))?
+        } else {
+            insertion_schedule(&prepared, Priority::Random(&keys))?
+        };
         candidates.push(candidate_from(
             format!("random-{index}"),
             Some(seed),
@@ -288,6 +521,17 @@ pub fn plan(
         ));
     }
 
+    // Deadline failures remain observable, but every assignment must be legal.
+    let audit_limits = Limits::new(limits.max_nodes, u64::MAX, limits.max_candidates);
+    for candidate in &candidates {
+        let report = crate::check(graph, &audit_limits, &candidate.schedule);
+        if !report.is_ok() {
+            return Err(ScheduleError::InvalidCandidate(format!(
+                "{}: {:?}",
+                candidate.label, report.violations
+            )));
+        }
+    }
     let best = candidates
         .iter()
         .enumerate()
@@ -303,4 +547,16 @@ pub fn plan(
         })?;
 
     Ok(SearchOutcome { candidates, best })
+}
+
+/// Necessary makespan lower bound from resource capacity and initiation
+/// intervals.
+///
+/// The bound is recomputed from the graph alone and the graph is validated
+/// first, so it is safe to compare against any candidate. See
+/// [`resource_lower_bound`] for the derivation; it ignores dependencies and is
+/// therefore a lower bound, not a guarantee.
+pub fn lower_bound(graph: &Graph, limits: &Limits) -> Result<u64, ScheduleError> {
+    let prepared = graph.prepare(limits)?;
+    Ok(resource_lower_bound(&prepared))
 }

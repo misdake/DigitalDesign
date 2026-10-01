@@ -519,3 +519,57 @@ fn optimized_ii2_avoids_secondary_abs_and_preserves_macro_budget() {
     expanded.hardware.kernel = gpu_v2::lighting::sim::counted::Config::default();
     assert_eq!(expanded.audit().unwrap_err(), "kernel config certificate");
 }
+
+#[test]
+fn lighting_physical_certificate_enforces_memory_and_retained_value_budgets() {
+    use audited::{lifecycle::RegisterBudget, physical::GowinMemoryBudget};
+    use std::collections::BTreeMap;
+    for h in [Hardware::lighting_ii2(), Hardware::lighting_optimized_ii2()] {
+        let p = run(1, Strategy::Interleaved, h, Storage::Registers);
+        let calendar = PeriodicSchedule::search(&p, 2, 32).unwrap();
+        let budget = GowinMemoryBudget {
+            bsram_blocks: 8,
+            ssram_cells: 86,
+        };
+        let registers = RegisterBudget {
+            total_bits: 20_000,
+            by_width: BTreeMap::new(),
+        };
+        let physical = calendar.audit_physical(&p, budget, &registers).unwrap();
+        assert_eq!(physical.dsp.macros, 7);
+        assert_eq!(physical.dsp.tiles, 4);
+        assert_eq!(physical.dsp.multiplier_half_slots, 25);
+        assert_eq!(physical.memory_cells.bsram_blocks, 8);
+        assert_eq!(physical.memory_cells.ssram_cells, 86);
+        assert!(physical.retained.peak_bits > 0);
+        assert!(calendar
+            .audit_physical(
+                &p,
+                GowinMemoryBudget {
+                    bsram_blocks: 7,
+                    ..budget
+                },
+                &registers
+            )
+            .is_err());
+        assert!(calendar
+            .audit_physical(
+                &p,
+                GowinMemoryBudget {
+                    ssram_cells: 85,
+                    ..budget
+                },
+                &registers
+            )
+            .is_err());
+        let small = RegisterBudget {
+            total_bits: physical.retained.peak_bits - 1,
+            by_width: BTreeMap::new(),
+        };
+        assert!(calendar.audit_physical(&p, budget, &small).is_err());
+        let latency = calendar.latency;
+        let compact = calendar.compact_lifetimes(&p).unwrap();
+        compact.audit_physical(&p, budget, &registers).unwrap();
+        assert_eq!(compact.latency, latency);
+    }
+}

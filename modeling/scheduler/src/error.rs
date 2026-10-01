@@ -11,6 +11,8 @@ use std::fmt;
 /// candidate was evaluated and none met `Limits::max_cycle`.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum ScheduleError {
+    /// A generated or supplied optimization candidate failed its checker.
+    InvalidCandidate(String),
     /// A `Limits` field that is a capacity was zero.
     ZeroLimit(&'static str),
     /// The graph has more nodes than `Limits::max_nodes`.
@@ -42,6 +44,7 @@ pub enum ScheduleError {
 impl fmt::Display for ScheduleError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
+            ScheduleError::InvalidCandidate(message) => write!(f, "candidate audit: {message}"),
             ScheduleError::ZeroLimit(name) => write!(f, "limit {name} must be non-zero"),
             ScheduleError::TooManyNodes { count, max } => {
                 write!(f, "graph has {count} nodes, limit is {max}")

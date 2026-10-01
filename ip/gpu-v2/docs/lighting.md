@@ -88,9 +88,10 @@ dependencies on finite resources, verifies lane initiation spacing and result
 latencies, waits for source data, and preserves output order. Counted evaluates
 the actual numerical outputs separately; timed is an offline reservation
 experiment, not a cycle-stepped datapath or runtime queue controller. It does
-not yet prove runtime streaming, backpressure, register capacity, physical RAM
-allocation, DSP packing, RTL equivalence or fmax. The periodic variant below
-additionally proves a repeating arithmetic resource calendar at II=2.
+not yet prove runtime streaming, backpressure, RTL equivalence or fmax. The
+periodic variant below proves a repeating arithmetic resource calendar at II=2;
+its physical certificate checks declared DSP packing, ROM allocation/ports and
+retained-value capacity. These are static model checks, not hardware fitting.
 
 Default abstract hardware provides 7 small and 9 large multiply lanes (3-cycle
 latency, II=1), 2 add/compare/shift/round lanes per 18/36/54-bit class, 3 select
@@ -119,7 +120,9 @@ The `lighting_add_audit` example exports each contributing event and its
 operand producers to `additions.tsv`, plus a category/stage summary.
 
 The `resource-scheduler` adapter compares the same DAG and hardware with an
-earliest-ready baseline, critical-path tie-breaking and seeded random ties.
+earliest-ready baseline, critical-path priority, calendar insertion and seeded
+restarts. Critical/random insertion priorities are primary keys so later-ready
+work can be placed first and earlier holes subsequently backfilled.
 Ordered output writes are graph nodes. At most 64 candidates are allowed; the
 probe uses 32. All feasible candidates pass the generic independent timing
 checker, and the selected plan passes the lighting-specific audit. Search
@@ -181,8 +184,10 @@ reduction and control. FPGA carry-chain mapping can make a general adder quite
 efficient too, so an area-saving percentage requires synthesis. The reservation
 gain here comes from separating incrementers from general adders.
 
-The following register-input measurements compare the same full-path batch
-and 32-candidate search. Average cycles are finite-batch completion divided
+The following initial binding measurements were recorded at `712365b` with
+the earlier append-only 32-candidate search. They compare the same full-path batch.
+Current generic search measurements are in the periodic and validation sections.
+Average cycles are finite-batch completion divided
 by pixel count, not continuous-stream II:
 
 | Binding | One pixel cycles | 16-pixel first result | 16-pixel completion | Average cycles/pixel | 32-pixel average |
@@ -200,7 +205,7 @@ completion. These results support trying fewer fabric wide adders, rather than
 establishing a physical area optimum. The remaining narrow compare workload
 is 54 operations on two lanes, giving a 27-cycle-per-pixel resource lower bound.
 
-GPU-only validation has 58 passing tests, including all shininess codes,
+GPU-only validation has 107 passing tests, including all shininess codes,
 signed/degenerate boundaries, short modes, numerical fusion checks, forbidden
 intermediate escape, corrupted reservations and cross-iteration phase conflicts.
 GPU clippy and formatting pass.
@@ -208,6 +213,7 @@ No emulator, RTL or place-and-route validation is included.
 
 ### Capacity sweep after supplying enough adders
 
+This initial capacity sweep records the earlier append-only search at `712365b`.
 `lighting_capacity_probe` keeps the pair+ALU binding, DSP/ROM budgets, input
 storage and latency assumptions fixed. It searches 32 candidates for each
 batch of 1, 16, 32 and 64 pixels. Extra capacities are sensitivity experiments;
@@ -236,7 +242,8 @@ changes: additional lanes alter greedy choices and may yield a slightly worse
 candidate, even though the old calendar is physically still feasible.
 For the all-logic profiles, isolated single-pixel completion stays 135 cycles;
 the 64-pixel figures include fill, drain and ordered output. Static reservations
-still do not model bounded live-register storage or streaming backpressure.
+in this historical sweep did not model retained-value budgets or backpressure.
+The current II=2 certificate below adds retained-value capacity checks.
 
 ## II=2 is the throughput target
 
@@ -276,8 +283,8 @@ inputs, not a final placement or area recommendation. Width classes reserve
 separate units; some wider classes are overprovisioned by the shared field.
 Further abs/clamp/shift-RNE lowering may reduce this conservative logic budget.
 
-`sim/periodic.rs` performs a bounded phase-aware list search on the checked
-bound DAG. Each resource operation occupies a unique `(kind, lane, issue % II)`
+`sim/periodic.rs` adapts the checked bound DAG to the generic bounded modulo
+search in `modeling/scheduler`. Each resource operation occupies a unique `(kind, lane, issue % II)`
 slot. Scheduling delays an operation to the next available phase while keeping
 all operand/control dependencies. An independent audit checks slot identity,
 latency, dependencies, lane/phase uniqueness and result readiness. Uniqueness
@@ -286,20 +293,20 @@ than relying only on one finite expansion. Input and output times repeat with
 the same period. No loop-carried mutable state is modeled.
 
 With 32 candidates, the baseline full-mode register-input calendar has **II=2 and fixed
-147-cycle output latency**. Pixel p is released at `2*p`, and its result is
-reserved at `147 + 2*p`. The 64-pixel expansion is checked by the existing
+142-cycle output latency**. Pixel p is released at `2*p`, and its result is
+reserved at `142 + 2*p`. The 64-pixel expansion is checked by the existing
 finite-plan auditor and matches oracle outputs:
 
 | Pixels | First result | Last result | Consecutive output interval |
 | --- | ---: | ---: | ---: |
-| 1 | 147 | 147 | — |
-| 4 | 147 | 153 | 2 |
-| 16 | 147 | 177 | 2 |
-| 32 | 147 | 209 | 2 |
-| 64 | 147 | 273 | 2 |
+| 1 | 142 | 142 | — |
+| 4 | 142 | 148 | 2 |
+| 16 | 142 | 172 | 2 |
+| 32 | 142 | 204 | 2 |
+| 64 | 142 | 268 | 2 |
 
-The last row averages 4.2656 cycles/pixel because it includes fill; its recurring
-calendar still produces one result every two cycles. The 147-cycle latency is
+The last row averages 4.1875 cycles/pixel because it includes fill; its recurring
+calendar still produces one result every two cycles. The 142-cycle latency is
 a result of the explicit current counted-operation graph and configurable
 pipeline assumptions; it does not validate the separate target-spec C37
 candidate or establish optimal latency.
@@ -308,8 +315,9 @@ Periodic tests include all 17 codes, signed/degenerate boundaries, backlight,
 uniform short modes, 64-pixel expansion and deliberately distinct local times
 that collide across iterations. The current API requires precaptured register
 inputs and one uniform context; row input scheduling is explicitly rejected.
-Physical bank placement, fixed input/result mux pairs, live-register capacity,
-CE freeze, context changes, numeric cycle execution and RTL remain future work.
+The physical certificate below supplies ROM placement and retained-value budgets.
+Fixed input/result mux pairs, connected CE/context control, numeric cycle
+execution and RTL remain future work.
 
 ## Avoiding repeated abs and choosing where to truncate
 
@@ -349,7 +357,8 @@ This avoids nine secondary abs operations per full pixel, including their
 negation, comparison and selection. Nine initial abs operations for the N/V/H
 maximum and degeneracy checks remain. The SQ payload grows from 128x14=1,792
 bits to 256x15=3,840 bits per table copy; it still makes nine SQ reads per pixel.
-No physical ROM bank allocation or fitted logic/BRAM tradeoff is claimed.
+The concrete layout below allocates the ROM copies; no fitted logic/BRAM tradeoff
+is claimed.
 
 The oracle has stage-isolated `RoundingPolicy` controls. The bounded rounding
 probe evaluates 32,768 random inputs at full intensity, another 32,768 at varied
@@ -394,17 +403,77 @@ per class. Kernel configuration is part of the plan's audited certificate.
 
 | II=2 profile, 32 candidates | 18x18-equivalent budget | Estimated macros | Output latency |
 | --- | ---: | ---: | ---: |
-| Baseline | 12.5 | 7 | 147 |
-| Signed SQ + power floor | 12.5 | 7 | 139 |
-| Optimized + one standalone large lane | 13.5 | 7 | 139 |
-| Optimized + two standalone large lanes | 14.5 | 8 | 137 |
+| Baseline | 12.5 | 7 | 142 |
+| Signed SQ + power floor | 12.5 | 7 | 135 |
+| Optimized + one standalone large lane | 13.5 | 7 | 134 |
+| Optimized + two standalone large lanes | 14.5 | 8 | 134 |
 
 The first extra large lane occupies the unused slot in kind-separated packing;
 this is still an unfitted estimate. Every row passes periodic phase/dependency
 audit, finite expansion and its matching numerical oracle. The optimized
-64-pixel calendar writes at 139,141,...,265. The current selected optimized
+64-pixel calendar writes at 135,137,...,261. The current selected optimized
 profile keeps the original DSP budget because extra lanes do little for latency
 and do not improve the already-achieved static II=2.
+
+These rows use the generic modulo search. The prior local search at `712365b`
+measured 147/139/139/137 cycles respectively; numerical formats and DSP budgets
+are unchanged. A long dependency chain does not require a large II: absolute
+body times preserve dependencies while only resource occupancy is reduced
+modulo II. Independent checks include release gates and solitary cross-iteration
+unit-II conflicts.
+
+## Physical placement and retained state
+
+`PeriodicSchedule::audit_physical` checks the counted report, fused provenance,
+every recurring DSP issue, ROM placement and port calendar, target memory budget
+and retained-value budget. The selected optimized layout uses:
+
+| Declared resource | Layout / accounting |
+| --- | --- |
+| DSP | 7 kind-separated macros in 4 tiles; 25 multiplier half-slots |
+| Normalization ROM | Six 512x36 BSRAM banks; each contains one SQ and one RSQRT copy |
+| POWER ROM | Two 1024x18 BSRAM banks, splitting 886x28 into 16+12 bits |
+| POWER context ROM | One 32x43 SSRAM bank, composed from 86 RAM16 cells |
+| Total declared memory | 8 BSRAM blocks; 86 RAM16 cells |
+| ROM payload | 32,451 logical bits; 67,011 bits including replicas |
+| Physical bank capacity | 148,832 bits including unused rows/columns |
+| Retained values at II=2 | Peak 9,693 bits, with uniform inputs shared as invariants |
+
+Normalization copies follow the actual reserved read lane, and each wide POWER
+read checks both slice ports and their result latency. All reads use the declared
+one-cycle result latency, including a register on SSRAM's possible async output.
+This is deliberately conservative: six complete SQ/RSQRT copies simplify
+contention, rather than attempting dual-port reuse or a minimal ROM layout.
+Baseline SQ uses less payload but the same primitive geometry and bank count.
+The context ROM is still accessed per pixel; material-context latch/hoisting is
+a future datapath change.
+
+Retained-value analysis counts captured pixel inputs from body time zero,
+operand/control lifetimes, alias sharing, g/h held through commit and cross-pixel
+overlap. Diagnostic goldens and absorbed fused intermediates allocate no output
+registers. Uniform input context is already captured and counts once. DSP
+internal pipeline registers, mux/control registers and runtime FIFOs are separate;
+9,693 bits is not the total FF count or a completed register allocation.
+The ALAP pass preserves phases/II/latency but increases this measurement to
+10,582 bits, so the probe keeps the original calendar. Baseline similarly rises
+from 10,221 to 11,373 bits. Later consumption extends captured-input lifetimes;
+an ALAP label alone does not establish a storage saving.
+
+The generic framework now checks finite mutable memory semantics and provides
+bounded control-token context leases, FIFO credits, CE freeze and ordered commit.
+GPU tests cover their rejection paths and transactional state preservation.
+Lighting currently uses the read-only periodic certificate, not a connected
+runtime controller or numerical cycle executor. See the implemented contracts
+in [audited](../../../modeling/audited/README.md) and the scheduling algorithms
+in [resource-scheduler](../../../modeling/scheduler/README.md).
+
+For larger DSP/BSRAM/SSRAM users, the next step is a shared typed physical plan:
+allow bank/replica/port alternatives to affect scheduling instead of only
+validating a fixed layout afterward. Multi-resource operations, internal DSP
+register modes, per-port clock/control compatibility, numerical mutable-state
+replay, backpressure and actual register/FIFO allocation remain open. Keep the
+closed numerical ledger as the reference and require a replayable certificate
+for every lowering. Packing assumptions still need matched synthesis/PnR.
 
 ## Intermediate precision experiments
 
@@ -491,7 +560,9 @@ The binding probe exports `summary.csv` plus per-profile work counts, fused
 groups and ordered write calendars. `lighting_add_audit` exports the original
 addition provenance so physical lowering can be compared with the logical work.
 The II=2 probe exports its per-event lane/phase calendar, hardware capacities
-and finite expansion summary in `target/gpu-v2-lighting/ii2`.
+and finite expansion summary in `target/gpu-v2-lighting/ii2`. `physical.txt`
+contains placement usage and per-width/live-interval measurements. The probe
+checks ALAP against the original retained-bit objective before selecting it.
 The rounding probe exports `summary.csv` and worst-case input examples. The
 II=2 example also accepts `optimized-extra1` and `optimized-extra2` as its
 second argument after the report directory to reproduce the DSP sensitivity rows.
@@ -502,14 +573,23 @@ the same full-mode graph and default hardware in every column:
 
 | Pixels | Serial cycles | Interleaved cycles | Best of 32 cycles |
 | --- | ---: | ---: | ---: |
-| 1 | 148 | 148 | 140 |
-| 2 | 296 | 167 | 157 |
-| 4 | 592 | 225 | 223 |
-| 8 | 1184 | 392 | 390 |
-| 16 | 2368 | 749 | 749 |
+| 1 | 148 | 148 | 139 |
+| 2 | 296 | 167 | 150 |
+| 4 | 592 | 225 | 209 |
+| 8 | 1184 | 392 | 375 |
+| 16 | 2368 | 749 | 712 |
 
 Interleaving gives the main gain. Heuristic search produces smaller additional
-gains and sometimes none. A greedy schedule can get slightly worse when an
+gains. The 16-pixel selected finite candidate uses critical-path insertion;
+the old append-only search at `712365b` measured 749 cycles. A greedy schedule can get slightly worse when an
 input port is added because readiness changes its choices. The restricted
 one-small/one-large multiply, one-normalization-read experiment is also in the
 probe. The objective is finite batch completion, not steady-state throughput.
+
+`scheduler_upgrade_probe` supplies a bounded 4,000-graph survey plus independent
+finite/modulo checks. Earliest-ready insertion alone improves none of these
+graphs; using critical path as the primary insertion order improves 276 graphs.
+This supports bounded priority restarts and backfilling, without claiming a
+globally optimal schedule. For fixed II lighting, compare latency and retained
+bits as separate objectives; resource lower bounds guide feasibility, not a
+proof that a heuristic will find a candidate.

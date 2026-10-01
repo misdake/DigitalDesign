@@ -122,6 +122,10 @@ mod triangle;
 use std::collections::BTreeMap;
 use std::fmt;
 
+pub mod flow;
+pub mod lifecycle;
+pub mod physical;
+
 pub use model::{
     Address, Event, Frame, FrameReport, Memory, MemoryKind, Model, Observation, Operation, ValueId,
 };

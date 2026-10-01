@@ -49,6 +49,40 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         Strategy::Interleaved,
     )?;
     let periodic = PeriodicSchedule::search(&reference, 2, 32)?;
+    let initial_physical = periodic.audit_physical(
+        &reference,
+        audited::physical::GowinMemoryBudget {
+            bsram_blocks: 46,
+            ssram_cells: 2048,
+        },
+        &audited::lifecycle::RegisterBudget {
+            total_bits: 1_000_000,
+            by_width: Default::default(),
+        },
+    )?;
+    let compact = periodic.clone().compact_lifetimes(&reference)?;
+    let compact_physical = compact.audit_physical(
+        &reference,
+        audited::physical::GowinMemoryBudget {
+            bsram_blocks: 46,
+            ssram_cells: 2048,
+        },
+        &audited::lifecycle::RegisterBudget {
+            total_bits: 1_000_000,
+            by_width: Default::default(),
+        },
+    )?;
+    println!(
+        "retained bits initial={} compact={}",
+        initial_physical.retained.peak_bits, compact_physical.retained.peak_bits
+    );
+    let (periodic, physical) =
+        if compact_physical.retained.peak_bits <= initial_physical.retained.peak_bits {
+            (compact, compact_physical)
+        } else {
+            (periodic, initial_physical)
+        };
+    fs::write(root.join("physical.txt"),format!("DSP={:?}\nMemory={:?}\nCells={:?}\nPeak retained bits={}\nBy width={:?}\nIntervals={:#?}\n",physical.dsp,physical.memory,physical.memory_cells,physical.retained.peak_bits,physical.retained.peak_bits_by_width,physical.retained.intervals))?;
     let mut calendar = String::from("event,kind,lane,phase,issue,ready\n");
     for s in &periodic.slots {
         if let Some(k) = &s.kind {

@@ -18,6 +18,7 @@ ip/gpu-v2/
         timed.rs               bounded capacity and static batch reservations
         binding.rs             checked DSP fusion and small-logic lowering
         periodic.rs            static modulo calendar and repeating-slot audit
+        physical.rs            concrete DSP/ROM placement and retained-value audit
       emu/                     future independent cycle/state model
       rtl/                     future hardware implementation
   tests/support/               deterministic stimuli and comparison helpers
@@ -34,9 +35,13 @@ connects ports, queues and context lifetimes when integration is defined.
 Simulation has three stages: configurable oracle determines numerical needs;
 counted matches a chosen format configuration bit for bit and records all work;
 timed starts by binding capacities and verifying static batch reservations.
-The periodic variant checks a repeating arithmetic calendar at the target II=2;
+The periodic variant uses the generic resource scheduler and checks a repeating
+arithmetic calendar at the target II=2. Physical certificates additionally check
+DSP placement, concrete ROM banks/replicas/ports and retained-value capacity;
 runtime streaming, backpressure and a cycle-stepped datapath remain future work.
-The generic audited ledger and resource scheduler support planning.
+The generic audited framework also supplies bounded context/FIFO/CE/commit
+control-token transitions. They are tested independently of lighting arithmetic;
+they have not been connected as a GPU runtime controller.
 Emulation and RTL remain independent verification paths.
 Tests use stage goldens rather than treating audit success as an accuracy oracle.
 

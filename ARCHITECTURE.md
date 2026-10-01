@@ -5,8 +5,8 @@ The workspace is organized by technical layer rather than by project age:
 ```text
 circuit/                         gate graph, simulation, Verilog rendering
 modeling/
-  audited/                       independent closed numerical modeling and work audit
-  scheduler/                     independent bounded resource-constrained DAG search
+  audited/                       closed numerical work, physical certificates and state contracts
+  scheduler/                     bounded finite/modulo resource-constrained DAG search
 hardware/
   core/                          hardware description and project/resource APIs
   macros/                        hardware derive macros

@@ -3,14 +3,7 @@ use super::timed::{self, Binding, Hardware, LaneKind};
 use audited::{FrameReport, Operation};
 
 /// One MULTADDALU18X18 candidate: A0*B0 + A1*B1 + C, without rounding.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct FusedGroup {
-    pub result_event: usize,
-    /// Internal products/sum have no independently accessible physical result.
-    pub absorbed_events: Vec<usize>,
-    /// A0, B0, A1, B1, C value ids in the numerical ledger.
-    pub operands: Vec<usize>,
-}
+pub use audited::physical::FusedGroup;
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(super) struct BoundDag {
     pub kinds: Vec<Option<LaneKind>>,
@@ -154,11 +147,13 @@ fn dot_group(f: &FrameReport, name: &str) -> Result<Option<FusedGroup>, String> 
     if expected != f.values[root.output.unwrap()].raw {
         return Err("fused arithmetic mismatch".into());
     }
-    Ok(Some(FusedGroup {
+    let group = FusedGroup {
         result_event: result,
         absorbed_events: absorbed,
         operands,
-    }))
+    };
+    group.audit(f).map_err(|e| format!("fusion: {e:?}"))?;
+    Ok(Some(group))
 }
 impl BoundDag {
     pub fn new(f: &FrameReport, h: Hardware) -> Result<Self, String> {
