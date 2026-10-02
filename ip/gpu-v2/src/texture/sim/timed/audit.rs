@@ -83,15 +83,30 @@ pub fn audit(report: &Report) -> Result<(), Error> {
             submission: 0,
         };
         let got = if report.hardware.preparation == PreparationMode::BoundStages {
-            replay.step_external(
-                &mut memory,
-                offered,
-                step.control,
-                step.external_packet,
-                step.prepared.clone(),
-            )?
+            if report.hardware.packet_storage == PacketStorage::Pool64 {
+                replay.step_pooled(
+                    &mut memory,
+                    offered,
+                    step.control,
+                    step.external_packet,
+                    step.prepared.clone(),
+                    step.packet_issues.clone(),
+                )?
+            } else {
+                replay.step_external(
+                    &mut memory,
+                    offered,
+                    step.control,
+                    step.external_packet,
+                    step.prepared.clone(),
+                )?
+            }
         } else {
-            if step.external_packet.is_some() || !step.prepared.is_empty() {
+            if step.external_packet.is_some()
+                || !step.prepared.is_empty()
+                || !step.packet_issues.is_empty()
+                || !step.packet_events.is_empty()
+            {
                 return Err("external data in legacy mode".into());
             }
             replay.step(&mut memory, offered, step.control)?

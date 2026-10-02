@@ -12,6 +12,7 @@ use resource_scheduler::{
 use std::{collections::BTreeMap, sync::Arc};
 pub mod control;
 pub mod inventory;
+pub mod storage;
 pub mod system;
 
 pub struct Lane {
@@ -345,14 +346,31 @@ pub struct StagePlan {
     retained: Vec<String>,
     certified_sites: Vec<(Resource, usize)>,
     pub ff_banks: Vec<FfBank>,
+    pub packed: storage::Layout,
+    pub packed_fields: Vec<FfBank>,
+}
+fn storage_ports(f: &FrameReport, ports: &[String]) -> Vec<String> {
+    ports
+        .iter()
+        .filter(|name| {
+            !(matches!(
+                f.name.as_str(),
+                "texture_derivatives" | "texture_lod_context"
+            ) && *name == "base")
+                && !(f.name == "texture_lod_context" && *name == "shift1")
+        })
+        .cloned()
+        .collect()
 }
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct FfBank {
     pub value: usize,
+    pub source_low: u32,
     pub width: u32,
     pub slots: u64,
     pub birth: u64,
     pub last_read: u64,
+    pub read_times: Vec<u64>,
 }
 fn operand_mux_bits(
     f: &FrameReport,
@@ -456,10 +474,12 @@ fn storage_banks(
                 i.value,
                 FfBank {
                     value: i.value,
+                    source_low: 0,
                     width: i.bits,
                     slots: 0,
                     birth: i.start,
                     last_read: i.end - 1,
+                    read_times: vec![],
                 },
             )
         })
@@ -605,7 +625,19 @@ impl StagePlan {
             .filter(|(r, _)| *r == Resource::Dsp18)
             .map(|(_, n)| *n as u64 * 17 * 3)
             .sum();
+        let packed_retained = storage_ports(f, &retained);
+        let packed_fields = storage::fields(
+            f,
+            &graph,
+            &times,
+            &cones,
+            &lowering,
+            &packed_retained,
+            calendar.span,
+        )?;
         let result = Self {
+            packed: storage::Layout::build(&packed_fields, ii)?,
+            packed_fields,
             operand_mux_tree_bits: operand_mux_bits(f, &graph, &calendar, &cones),
             certified_sites: sites.clone(),
             ff_banks,
@@ -664,6 +696,20 @@ impl StagePlan {
         let life = lifecycle::analyze_composed_policy(f, &self.times, &[], &self.cones, &policy)
             .map_err(|e| format!("lifecycle reuse: {e:?}"))?;
         let banks = storage_banks(f, &life, &self.lowering, self.ii())?;
+        let packed_retained = storage_ports(f, &self.retained);
+        let packed_fields = storage::fields(
+            f,
+            &self.graph,
+            &self.times,
+            &self.cones,
+            &self.lowering,
+            &packed_retained,
+            self.span(),
+        )?;
+        self.packed.audit(&packed_fields, self.ii())?;
+        if self.packed_fields != packed_fields {
+            return Err("packed field liveness mutation".into());
+        }
         let ff: u64 = banks.iter().map(|b| u64::from(b.width) * b.slots).sum();
         if life != self.life || ff != self.fixed_ff_bits {
             return Err("bound retained storage mutation".into());

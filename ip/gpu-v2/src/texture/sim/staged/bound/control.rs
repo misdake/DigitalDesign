@@ -3,6 +3,7 @@ use super::*;
 use std::collections::VecDeque;
 #[derive(Clone, Copy, Debug)]
 pub struct Hardware {
+    pub storage: Storage,
     pub contexts: usize,
     pub release_after_capture: bool,
     pub coordinate_credits: usize,
@@ -10,9 +11,16 @@ pub struct Hardware {
     pub packet_credits: usize,
     pub max_cycles: u64,
 }
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum Storage {
+    #[default]
+    Dedicated,
+    Packed,
+}
 impl Default for Hardware {
     fn default() -> Self {
         Self {
+            storage: Storage::Dedicated,
             contexts: 8,
             release_after_capture: true,
             coordinate_credits: 6,
@@ -80,6 +88,7 @@ pub struct Step {
     pub cycle: u64,
     pub ce: bool,
     pub ready: bool,
+    pub packet_issue_ready: bool,
     pub offered: Option<usize>,
     pub accepted: bool,
     pub events: Vec<Event>,
@@ -127,6 +136,9 @@ pub struct Machine {
     pub dsp_issues: Vec<physical::DspIssue>,
 }
 impl Machine {
+    pub(crate) fn pending_packets(&self) -> usize {
+        self.packet_count
+    }
     pub fn new(binding: Arc<Binding>, hardware: Hardware) -> Result<Self, String> {
         hardware.validate()?;
         Ok(Self {
@@ -177,6 +189,15 @@ impl Machine {
         ce: bool,
         ready: bool,
     ) -> Result<Step, String> {
+        self.step_packet_port(offer, ce, ready, true)
+    }
+    pub(crate) fn step_packet_port(
+        &mut self,
+        offer: Option<(usize, Arc<Program>)>,
+        ce: bool,
+        ready: bool,
+        packet_issue_ready: bool,
+    ) -> Result<Step, String> {
         if self.stats.cycles >= self.hardware.max_cycles {
             return Err("bound watchdog".into());
         }
@@ -223,6 +244,7 @@ impl Machine {
             }
             if t.is_multiple_of(self.binding.packet.ii())
                 && self.packet_count < self.hardware.packet_credits
+                && packet_issue_ready
             {
                 if let Some(mut w) = self.work.front().cloned() {
                     let count = w.source.preparation.lanes[w.lane].packets[w.plane].len();
@@ -456,6 +478,7 @@ impl Machine {
             cycle: self.stats.cycles,
             ce,
             ready,
+            packet_issue_ready,
             offered,
             accepted,
             events,

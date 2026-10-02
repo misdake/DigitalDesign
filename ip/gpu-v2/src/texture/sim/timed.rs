@@ -6,6 +6,7 @@ use audited::physical::{DspInventory, DspMode};
 use std::{collections::VecDeque, sync::Arc};
 mod audit;
 mod filter;
+pub mod packet;
 mod schedule;
 pub use schedule::ArithmeticPlan;
 
@@ -32,6 +33,7 @@ pub struct Hardware {
     /// PreparedGroups isolates cache/color throughput; Reserved includes the
     /// conservative counted primitive calendar. Neither claims optimized RTL.
     pub preparation: PreparationMode,
+    pub packet_storage: PacketStorage,
     pub group_capacity: usize,
     pub quad_capacity: usize,
     pub hint_capacity: usize,
@@ -52,6 +54,7 @@ impl Default for Hardware {
     fn default() -> Self {
         Self {
             preparation: PreparationMode::Reserved,
+            packet_storage: PacketStorage::Native,
             group_capacity: 32,
             quad_capacity: 4,
             hint_capacity: 8,
@@ -76,8 +79,21 @@ pub enum PreparationMode {
     /// Separate checked universal preparation controller owns admission/packets.
     BoundStages,
 }
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum PacketStorage {
+    #[default]
+    Native,
+    Pool64,
+}
 impl Hardware {
     pub fn validate(&self) -> Result<(), Error> {
+        if self.packet_storage == PacketStorage::Pool64
+            && (self.preparation != PreparationMode::BoundStages
+                || self.group_capacity != 32
+                || self.prefetch)
+        {
+            return Err("packet pool requires bound stages/P16/G32/no hints".into());
+        }
         if ![16, 32].contains(&self.group_capacity)
             || !(1..=8).contains(&self.quad_capacity)
             || !(1..=16).contains(&self.hint_capacity)
@@ -285,6 +301,7 @@ pub struct Snapshot {
     pub reservations: u64,
     pub live_quads: u16,
     pub producer_clock: Option<u64>,
+    pub packet_pool: Option<packet::Snapshot>,
 }
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Step {
@@ -297,6 +314,14 @@ pub struct Step {
     pub snapshot: Snapshot,
     pub external_packet: Option<i128>,
     pub prepared: Vec<u8>,
+    pub packet_issues: Vec<packet::Owner>,
+    pub packet_events: Vec<packet::Event>,
+}
+#[derive(Default)]
+struct External {
+    packet: Option<i128>,
+    prepared: Vec<u8>,
+    issues: Vec<packet::Owner>,
 }
 #[derive(Clone, Copy)]
 struct Line {
@@ -343,6 +368,7 @@ pub struct Machine {
     quads: VecDeque<Arc<Program>>,
     producer: Option<Producer>,
     groups: VecDeque<Packet>,
+    packet_pool: Option<packet::Pool>,
     hints: VecDeque<TileKey>,
     pending: VecDeque<Descriptor>,
     active: Option<Active>,
@@ -358,6 +384,7 @@ pub struct Machine {
     pub stats: Stats,
     external_programs: Vec<Option<Arc<Program>>>,
     external_cursor: [usize; 16],
+    admitted_slot: [u8; 16],
 }
 impl Machine {
     pub fn new(slots: Vec<Slot>, hardware: Hardware) -> Result<Self, Error> {
@@ -370,6 +397,7 @@ impl Machine {
                 s.validate()?;
             }
         }
+        let pooled = hardware.packet_storage == PacketStorage::Pool64;
         Ok(Self {
             slots,
             hardware,
@@ -382,6 +410,7 @@ impl Machine {
             quads: VecDeque::new(),
             producer: None,
             groups: VecDeque::new(),
+            packet_pool: pooled.then(packet::Pool::default),
             hints: VecDeque::new(),
             pending: VecDeque::new(),
             active: None,
@@ -397,12 +426,14 @@ impl Machine {
             stats: Stats::default(),
             external_programs: (0..16).map(|_| None).collect(),
             external_cursor: [0; 16],
+            admitted_slot: [0; 16],
         })
     }
     pub fn idle(&self) -> bool {
         self.quads.is_empty()
             && self.producer.is_none()
             && self.groups.is_empty()
+            && self.packet_pool.as_ref().is_none_or(packet::Pool::idle)
             && self.hints.is_empty()
             && self.pending.is_empty()
             && self.active.is_none()
@@ -717,8 +748,15 @@ impl Machine {
         written: Option<usize>,
         refill_overlap: bool,
         events: &mut Vec<Event>,
+        packet_events: &mut Vec<packet::Event>,
     ) -> Result<(), Error> {
-        let head = self.groups.front().map(|p| p.group.clone());
+        let head = if let Some(p) = &self.packet_pool {
+            p.front()
+                .map(|w| self.decode_packet(w).map(|p| p.group))
+                .transpose()?
+        } else {
+            self.groups.front().map(|p| p.group.clone())
+        };
         let mut allocated = false;
         if let Some(g) = &head {
             match self.lookup(g.key) {
@@ -775,7 +813,19 @@ impl Machine {
                 if self.reservations >> line & 1 != 0 {
                     return Ok(());
                 }
-                let packet = self.groups.pop_front().unwrap();
+                let packet = if let Some(payload) =
+                    self.packet_pool.as_ref().and_then(packet::Pool::front)
+                {
+                    let p = self.decode_packet(payload)?;
+                    self.packet_pool.as_mut().unwrap().consume(
+                        self.stats.enabled_cycles - 1,
+                        payload,
+                        packet_events,
+                    )?;
+                    p
+                } else {
+                    self.groups.pop_front().unwrap()
+                };
                 self.reservations |= 1 << line;
                 if g.last {
                     self.credits += 1;
@@ -816,7 +866,7 @@ impl Machine {
                     .into(),
             );
         }
-        let result = self.step_inner(memory, offered, control, None, vec![]);
+        let result = self.step_inner(memory, offered, control, External::default());
         if result.is_err() {
             self.faulted = true;
         }
@@ -827,20 +877,30 @@ impl Machine {
         memory: &mut M,
         offered: Option<(usize, Arc<Program>)>,
         control: Control,
-        external_packet: Option<i128>,
-        prepared: Vec<u8>,
+        external: External,
     ) -> Result<Step, Error> {
+        let External {
+            packet: external_packet,
+            prepared,
+            issues: packet_issues,
+        } = external;
+        if packet_issues.len() > 1 {
+            return Err("packet pool has one producer issue per edge".into());
+        }
         if self.stats.wall_cycles >= self.hardware.max_cycles {
             return Err("texture wall-cycle watchdog".into());
         }
         self.stats.wall_cycles += 1;
         let mut events = Vec::new();
+        let mut packet_events = Vec::new();
         let overlap = self.active.is_some();
         let responses = memory.step()?;
         let written = self.responses(&responses, &mut events)?;
         let mut accepted = false;
         let offer_index = offered.as_ref().map(|(i, _)| *i);
         if control.ce {
+            let t = self.stats.enabled_cycles;
+            let previous_groups = self.group_occupancy();
             self.stats.enabled_cycles += 1;
             if control.result_ready {
                 if let Some(pixel) = self.results.pop_front() {
@@ -857,7 +917,12 @@ impl Machine {
                 }
             }
             self.pipeline(&mut events)?;
-            self.tags(written, overlap || written.is_some(), &mut events)?;
+            self.tags(
+                written,
+                overlap || written.is_some(),
+                &mut events,
+                &mut packet_events,
+            )?;
             self.produce(&mut events)?;
             if let Some((_, program)) = offered {
                 let id = program.input.quad_id;
@@ -865,6 +930,7 @@ impl Machine {
                     program.audit(&self.slots, &self.hardware)?;
                     self.live |= 1 << id;
                     self.remaining[usize::from(id)] = program.input.mask;
+                    self.admitted_slot[usize::from(id)] = program.input.slot;
                     self.produced[usize::from(id)] = false;
                     events.push(Event::Accepted {
                         quad: id,
@@ -882,9 +948,18 @@ impl Machine {
                 }
             }
             if self.hardware.preparation == PreparationMode::BoundStages {
+                if let Some(pool) = self.packet_pool.as_mut() {
+                    for &owner in &packet_issues {
+                        pool.reserve(owner, &mut packet_events)?;
+                    }
+                } else if !packet_issues.is_empty() {
+                    return Err("packet reservations without pool".into());
+                }
+                let mut pool_write = None;
                 if let Some(payload) = external_packet {
                     if !(0..1_i128 << 72).contains(&payload)
-                        || self.groups.len() == self.hardware.group_capacity
+                        || (self.packet_pool.is_none()
+                            && self.groups.len() == self.hardware.group_capacity)
                     {
                         return Err("external packet port overflow".into());
                     }
@@ -898,13 +973,22 @@ impl Machine {
                     {
                         return Err("external packet golden/order".into());
                     }
-                    let group = program.preparation.groups[cursor].clone();
+                    // Golden only checks numerical/order provenance. Runtime
+                    // key, coordinates, coefficients and flags come from bits.
+                    let group = self.decode_packet(payload)?.group;
                     self.external_cursor[id] += 1;
-                    self.groups.push_back(Packet {
-                        group: group.clone(),
-                        payload,
-                    });
+                    if let Some(pool) = self.packet_pool.as_mut() {
+                        pool_write = Some(pool.write(t, payload, &mut packet_events)?);
+                    } else {
+                        self.groups.push_back(Packet {
+                            group: group.clone(),
+                            payload,
+                        });
+                    }
                     events.push(Event::Produced { group, payload });
+                }
+                if let Some(pool) = self.packet_pool.as_mut() {
+                    pool.advance(t, previous_groups, pool_write, &mut packet_events)?;
                 }
                 for &id in &prepared {
                     let i = usize::from(id);
@@ -924,7 +1008,7 @@ impl Machine {
             } else if external_packet.is_some() || !prepared.is_empty() {
                 return Err("unexpected external preparation port".into());
             }
-        } else if external_packet.is_some() || !prepared.is_empty() {
+        } else if external_packet.is_some() || !prepared.is_empty() || !packet_issues.is_empty() {
             return Err("external preparation advanced under CE=0".into());
         }
         // Accepted response beats and directory commits continue under consumer CE=0.
@@ -962,13 +1046,37 @@ impl Machine {
             snapshot,
             external_packet,
             prepared,
+            packet_issues,
+            packet_events,
         })
+    }
+    fn decode_packet(&self, payload: i128) -> Result<Packet, Error> {
+        let group = Group4::unpack72(payload)?;
+        let id = usize::from(group.quad_id);
+        if self.live >> id & 1 == 0
+            || self.remaining[id] >> group.lane & 1 == 0
+            || group.key.slot != self.admitted_slot[id]
+        {
+            return Err("packet without legal admitted slot/lane context".into());
+        }
+        group.key.address(&self.slots)?;
+        Ok(Packet { group, payload })
+    }
+    fn group_occupancy(&self) -> usize {
+        self.packet_pool
+            .as_ref()
+            .map_or(self.groups.len(), |p| p.snapshot().groups)
+    }
+    pub(crate) fn packet_issue_ready(&self) -> bool {
+        self.packet_pool
+            .as_ref()
+            .is_none_or(packet::Pool::producer_ready)
     }
     pub(crate) fn external_ready(&self, quad: u8) -> bool {
         !self.faulted && self.live >> quad & 1 == 0
     }
     pub(crate) fn packet_ready(&self) -> bool {
-        self.groups.len() < self.hardware.group_capacity
+        self.packet_pool.is_some() || self.groups.len() < self.hardware.group_capacity
     }
     pub(crate) fn step_external<M: RefillPort + ?Sized>(
         &mut self,
@@ -981,7 +1089,43 @@ impl Machine {
         if self.faulted || self.hardware.preparation != PreparationMode::BoundStages {
             return Err("external sampler mode/fault".into());
         }
-        let result = self.step_inner(memory, offered, control, packet, prepared);
+        let result = self.step_inner(
+            memory,
+            offered,
+            control,
+            External {
+                packet,
+                prepared,
+                issues: vec![],
+            },
+        );
+        if result.is_err() {
+            self.faulted = true;
+        }
+        result
+    }
+    pub(crate) fn step_pooled<M: RefillPort + ?Sized>(
+        &mut self,
+        memory: &mut M,
+        offered: Option<(usize, Arc<Program>)>,
+        control: Control,
+        packet: Option<i128>,
+        prepared: Vec<u8>,
+        issues: Vec<packet::Owner>,
+    ) -> Result<Step, Error> {
+        if self.faulted || self.packet_pool.is_none() {
+            return Err("pooled sampler mode/fault".into());
+        }
+        let result = self.step_inner(
+            memory,
+            offered,
+            control,
+            External {
+                packet,
+                prepared,
+                issues,
+            },
+        );
         if result.is_err() {
             self.faulted = true;
         }
@@ -989,7 +1133,7 @@ impl Machine {
     }
     pub fn snapshot(&self) -> Snapshot {
         Snapshot {
-            groups: self.groups.len(),
+            groups: self.group_occupancy(),
             hints: self.hints.len(),
             descriptors: self.descriptors(),
             quads: self.quads.len(),
@@ -999,6 +1143,7 @@ impl Machine {
             reservations: self.reservations,
             live_quads: self.live,
             producer_clock: self.producer.as_ref().map(|p| p.clock),
+            packet_pool: self.packet_pool.as_ref().map(packet::Pool::snapshot),
         }
     }
 }
@@ -1066,6 +1211,68 @@ pub fn run<M: RefillPort + ?Sized>(
 mod tests {
     use super::*;
     #[test]
+    fn external_semantics_are_decoded_from_bits_not_program_groups() {
+        struct Empty;
+        impl RefillPort for Empty {
+            fn step(&mut self) -> Result<Vec<RefillEvent>, String> {
+                Ok(vec![])
+            }
+            fn submit_read(&mut self, _: u64, _: usize) -> Result<u64, String> {
+                Err("no refill before first payload publication".into())
+            }
+        }
+        let slot = Slot {
+            base_address: 128,
+            has_full_mip: true,
+            max_size_log2: 5,
+            valid: true,
+        };
+        let hw = Hardware {
+            preparation: PreparationMode::BoundStages,
+            packet_storage: PacketStorage::Pool64,
+            prefetch: false,
+            ..Default::default()
+        };
+        let q = QuadInput {
+            quad_id: 0,
+            mask: 1,
+            uv: [[0.13, 0.07]; 4],
+            slot: 0,
+            material_size_log2: 5,
+            filter: Filter::Bilinear,
+            lod_bias: 0.0,
+        };
+        let mut p = Program::compile(&q, &[slot], &hw).unwrap();
+        let payload = p.preparation.payload(0);
+        let g = &mut Arc::get_mut(&mut p).unwrap().preparation.groups[0];
+        g.key.slot = 15;
+        g.top_left_local = [7, 7];
+        g.coefficients = [0; 4];
+        g.first = !g.first;
+        g.last = !g.last;
+        let mut m = Machine::new(vec![slot], hw).unwrap();
+        let s = m
+            .step_pooled(
+                &mut Empty,
+                Some((0, p)),
+                Control::default(),
+                Some(payload),
+                vec![],
+                vec![packet::Owner { quad: 0, lane: 0 }],
+            )
+            .unwrap();
+        let actual = s
+            .events
+            .iter()
+            .find_map(|e| match e {
+                Event::Produced { group, .. } => Some(group),
+                _ => None,
+            })
+            .unwrap();
+        assert_eq!(*actual, Group4::unpack72(payload).unwrap());
+        assert_eq!(actual.key.slot, 0);
+    }
+    #[test]
     fn pending_demand_promotion_preserves_active_burst_and_merges_dual_lookup() {
         let slot = Slot {
             base_address: 0x1000,
@@ -1109,7 +1316,7 @@ mod tests {
         });
         machine.hints.push_back(keys[2]);
         events.clear();
-        machine.tags(None, true, &mut events).unwrap();
+        machine.tags(None, true, &mut events, &mut vec![]).unwrap();
         assert!(events
             .iter()
             .any(|e| matches!(e, Event::Promote { key } if *key == keys[2])));
@@ -1124,7 +1331,7 @@ mod tests {
         assert_eq!(machine.stats.allocations, 4); // Demand/hint FILLING merge.
         let plru = machine.plru;
         events.clear();
-        machine.tags(None, true, &mut events).unwrap();
+        machine.tags(None, true, &mut events, &mut vec![]).unwrap();
         assert!(events.is_empty()); // A stalled FILLING lookup never repeats touch.
         assert_eq!(machine.plru, plru);
     }

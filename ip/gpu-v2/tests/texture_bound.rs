@@ -135,13 +135,20 @@ fn bound_end_to_end_uses_serial_cycle_memory_and_commits_oracle_pixels() {
                 })
         })
         .collect();
-    for loaded in [false, true] {
+    for (storage, loaded) in [
+        (bound::control::Storage::Dedicated, false),
+        (bound::control::Storage::Packed, false),
+        (bound::control::Storage::Packed, true),
+    ] {
         let mut memory = physical::Physical::new(u64::from(BASE), bytes.clone(), true, loaded);
         let mut report = bound::system::run(
             &inputs,
             &[s],
             &mut memory,
-            Hardware::default(),
+            Hardware {
+                storage,
+                ..Default::default()
+            },
             timed::Hardware {
                 prefetch: false,
                 ..Default::default()
@@ -178,6 +185,60 @@ fn bound_end_to_end_uses_serial_cycle_memory_and_commits_oracle_pixels() {
         report.preparation[at].ready = false;
         assert!(report.audit().is_err());
     }
+}
+
+#[test]
+fn physical_bit_layout_rejects_alias_lifetime_address_and_bill_mutations() {
+    let mut q = input(9, Filter::Trilinear, [0.003; 2]);
+    q.uv[1][0] += 1.0 / 512.0;
+    q.lod_bias = 0.5;
+    let p = bound::prepare(&q, &[slot(9, true)]).unwrap();
+    let mut binding = bound::Binding::build().unwrap();
+    let b = std::sync::Arc::get_mut(&mut binding).unwrap();
+    let original = b.packet.packed.clone();
+    b.packet.packed.placements[0].low = b.packet.packed.ff_bits;
+    assert!(b.audit(&p).is_err());
+    b.packet.packed = original.clone();
+    b.packet.packed.placements[0].live_phases = 0;
+    assert!(b.audit(&p).is_err());
+    b.packet.packed = original.clone();
+    b.packet.packed.read_selector_tree_bits -= 1;
+    assert!(b.audit(&p).is_err());
+    b.packet.packed = original;
+    b.packet.packed_fields[0].source_low += 1;
+    assert!(b.audit(&p).is_err());
+    b.packet.packed_fields[0].source_low -= 1;
+    b.audit(&p).unwrap();
+    let frame = &p.lanes[0].packets[0][0].frame;
+    let mut replay = bound::storage::Replay::new(&b.packet);
+    replay.issue(0, frame).unwrap();
+    assert!(replay.issue(0, frame).is_err());
+    replay.tick(0).unwrap();
+    assert!(replay.tick(0).is_err()); // Owner checking catches duplicate writes even for identical values.
+}
+
+#[test]
+fn physical_storage_rejects_unsorted_lookup_and_duplicate_idle_edges() {
+    let binding = bound::Binding::build().unwrap();
+    let plan = &binding.packet;
+    let mut layout = plan.packed.clone();
+    layout.placements.reverse();
+    assert!(
+        layout.audit(&plan.packed_fields, plan.ii()).is_err(),
+        "binary-search placement certificate accepted an unsorted table"
+    );
+
+    let mut replay = bound::storage::Replay::new(plan);
+    replay.tick(0).unwrap();
+    assert!(
+        replay.tick(0).is_err(),
+        "an idle duplicate edge must also be rejected"
+    );
+    assert!(
+        replay.tick(2).is_err(),
+        "enabled edges cannot be silently skipped"
+    );
+    replay.tick(1).unwrap();
 }
 #[test]
 fn bound_pipeline_preserves_masks_context_reuse_and_backpressure() {
