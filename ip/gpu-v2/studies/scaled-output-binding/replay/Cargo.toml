@@ -1,0 +1,10 @@
+[package]
+name = "gpu-v2-scaled-output-replay"
+version = "0.1.0"
+edition = "2021"
+
+[workspace]
+
+[dependencies]
+gpu-v2-scaled-output-binding = { path = ".." }
+gpu-v2-geometry-study = { path = "../../geometry" }

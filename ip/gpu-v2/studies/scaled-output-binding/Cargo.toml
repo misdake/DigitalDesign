@@ -1,0 +1,10 @@
+[package]
+name = "gpu-v2-scaled-output-binding"
+version = "0.1.0"
+edition = "2021"
+
+[workspace]
+
+[dependencies]
+audited = { path = "../../../../modeling/audited" }
+resource-scheduler = { path = "../../../../modeling/scheduler" }
