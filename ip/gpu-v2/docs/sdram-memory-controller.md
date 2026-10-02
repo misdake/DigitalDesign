@@ -1,5 +1,44 @@
 # SDRAM memory controller integration
 
+## GPU burst transport
+
+`memory::ports::MemoryPort` is the GPU-owned cycle interface for a single
+outstanding, naturally aligned 128-byte read or write. Addresses are bytes;
+there are sixteen ordered 64-bit beats. Request acceptance, write-beat
+acceptance, read-beat delivery and terminal success/error are separate fields.
+The last write beat never substitutes for the controller's write ACK. An error
+may terminate early; already written bytes are not rolled back. The caller
+retains ownership until terminal completion and clocks accepted work during
+compute CE stalls or a fault drain.
+
+A read requires all sixteen destination credits before admission. A write
+requires its first beat before presenting the descriptor and a reserved source
+for continuous remaining data. The current physical MC has no arbitrary
+mid-burst write-valid stall. Optional write input permits initial preparation
+and expresses source availability; it does not promise such a physical stall.
+Blocked descriptors/data stay stable. A `Result::Err` denotes adapter/caller
+protocol failure; `Response::complete=Some(false)` denotes a memory error.
+Reset/cancel is deliberately absent: system reset must drain before resetting
+this ownership state. Four serial requests form a 512-byte tile plane; this
+interface does not implicitly enable group mode.
+
+`tests/support/sdram/burst.rs` maps this interface directly to the existing
+serial `emu::Combination`, with no Service host queue or latency estimate.
+It checks address/image bounds, converts byte addresses to halfword addresses,
+uses framebuffer read/write clients, counts actual handshakes and forwards the
+terminal response. It stores counters/held control, not a second burst payload.
+`memory_burst` independently checks four-bank write/read data and guards,
+the real write-data-to-ACK gap, first-beat reservation, stable blocked inputs,
+address rejection and second-request rejection. These bounded Rust adapter
+tests reuse the previously co-simulated MC; they are not new adapter RTL,
+framebuffer integration, concurrent-client qualification or reset-drain proof.
+
+```powershell
+& scripts/run-cargo.ps1 -Subcommand test -Label gpu-memory-burst -CargoArgs @('-p','gpu-v2','--test','memory_burst')
+```
+
+## Existing oracle and texture adapters
+
 The shared combination belongs to the Gowin vendor crate, consumed here only via
 dev dependency. Its ownership, host data boundary, traffic configuration and timing
 assumptions are defined in the [vendor contract](../../../hardware/vendor/gowin/doc/sdram-memory-controller.md).

@@ -80,6 +80,32 @@ pub struct Transformed {
     pub rgb565: u16,
 }
 impl Transformed {
+    /// Decode the current seven-row baseline, rejecting noncanonical spare bits.
+    /// This host transport conversion is not an audited arithmetic operation.
+    pub fn from_rows(rows: [u64; 7]) -> Result<Self, String> {
+        let masks = [
+            u32::MAX as u64,
+            u32::MAX as u64,
+            u32::MAX as u64,
+            u32::MAX as u64,
+            u32::MAX as u64,
+            (1 << 28) - 1,
+            (1 << 28) - 1,
+        ];
+        if rows.iter().zip(masks).any(|(&row, mask)| row & !mask != 0) {
+            return Err("noncanonical transformed row".into());
+        }
+        Ok(Self {
+            clip: std::array::from_fn(|i| rows[i] as u32 as i32),
+            normal: [
+                rows[4] as u16 as i16,
+                (rows[4] >> 16) as u16 as i16,
+                rows[5] as u16 as i16,
+            ],
+            uv: [(rows[5] >> 16) as u16, (rows[6] & 4095) as u16],
+            rgb565: (rows[6] >> 12) as u16,
+        })
+    }
     /// Seven 36-bit rows; unused upper bits are zero, signed fields are raw bits.
     pub fn rows(&self) -> [u64; 7] {
         [
