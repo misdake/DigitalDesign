@@ -16,6 +16,9 @@ minifb = { version = "0.24", optional = true }
 
 [features]
 display-window = ["dep:minifb"]
+# With neither flag, retain the board's 800x480 2x default.
+display-2x = []
+display-3x = []
 
 [build-dependencies]
 cpu-v3 = { path = "../../ip/cpu-v3" }

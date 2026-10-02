@@ -34,9 +34,9 @@ pub const S1_APPLICATION_LAYOUT: ApplicationLayout = ApplicationLayout {
     asset_name: "application-s1.v3bin",
     entry: BootEntry {
         code_segment: 3,
-        offset: 0x0200,
+        offset: 0,
         data_segment: 4,
-        stack_offset: 0xe000,
+        stack_offset: 0xc000,
     },
 };
 
@@ -49,9 +49,9 @@ pub const S2_APPLICATION_LAYOUT: ApplicationLayout = ApplicationLayout {
     asset_name: "application-s2.v3bin",
     entry: BootEntry {
         code_segment: 7,
-        offset: 0x0200,
+        offset: 0,
         data_segment: 0,
-        stack_offset: 0xf000,
+        stack_offset: 0xc000,
     },
 };
 
@@ -211,13 +211,25 @@ mod tests {
     }
 
     #[test]
-    fn derived_slots_are_disjoint_and_keep_existing_entries() {
+    fn derived_slots_use_disjoint_code_and_data_segments_from_offset_zero() {
         assert_ne!(
             S1_APPLICATION_LAYOUT.destination(),
             S2_APPLICATION_LAYOUT.destination()
         );
         assert_eq!(S1_APPLICATION_LAYOUT.entry.code_segment, 3);
         assert_eq!(S2_APPLICATION_LAYOUT.entry.code_segment, 7);
+        assert_eq!(S1_APPLICATION_LAYOUT.entry.offset, 0);
+        assert_eq!(S2_APPLICATION_LAYOUT.entry.offset, 0);
+        assert_ne!(
+            S1_APPLICATION_LAYOUT.entry.code_segment,
+            S1_APPLICATION_LAYOUT.entry.data_segment
+        );
+        assert_ne!(
+            S2_APPLICATION_LAYOUT.entry.code_segment,
+            S2_APPLICATION_LAYOUT.entry.data_segment
+        );
         assert_eq!(S2_APPLICATION_LAYOUT.entry.data_segment, 0);
+        assert_eq!(S1_APPLICATION_LAYOUT.entry.stack_offset, 0xc000);
+        assert_eq!(S2_APPLICATION_LAYOUT.entry.stack_offset, 0xc000);
     }
 }

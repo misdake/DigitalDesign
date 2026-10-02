@@ -5,16 +5,45 @@ use digital_design_ip_common::{
 
 pub const FRAMEBUFFER_WIDTH: u32 = 400;
 pub const FRAMEBUFFER_HEIGHT: u32 = 240;
-pub const FRAMEBUFFER_STRIDE_WORDS: u32 = FRAMEBUFFER_WIDTH;
-pub const FRAMEBUFFER_WORDS: u32 = FRAMEBUFFER_STRIDE_WORDS * FRAMEBUFFER_HEIGHT;
-pub const FRAMEBUFFER_A_BASE_WORD: u32 = 0x0020_0100;
-pub const FRAMEBUFFER_B_BASE_WORD: u32 = FRAMEBUFFER_A_BASE_WORD + FRAMEBUFFER_WORDS;
+/// Framebuffer V1 is tile-linear: 16x16 RGB565 tiles packed tile-row-major.
+pub const FRAMEBUFFER_TILE: u32 = 16;
+/// One 16x16 tile is 256 16-bit words.
+pub const FRAMEBUFFER_TILE_WORDS: u32 = FRAMEBUFFER_TILE * FRAMEBUFFER_TILE;
+pub const FRAMEBUFFER_TILE_COLUMNS: u32 = FRAMEBUFFER_WIDTH / FRAMEBUFFER_TILE;
+pub const FRAMEBUFFER_TILE_ROWS: u32 = FRAMEBUFFER_HEIGHT / FRAMEBUFFER_TILE;
+/// Words between the starts of two adjacent tile rows (25 tiles x 256 words).
+pub const FRAMEBUFFER_TILE_ROW_STRIDE_WORDS: u32 =
+    FRAMEBUFFER_TILE_COLUMNS * FRAMEBUFFER_TILE_WORDS;
+/// Live pixel payload of one framebuffer, in 16-bit words.
+pub const FRAMEBUFFER_WORDS: u32 = FRAMEBUFFER_WIDTH * FRAMEBUFFER_HEIGHT;
+/// Per-framebuffer slot, including the padding that 16x16 tiles leave after
+/// the last tile row.
+pub const FRAMEBUFFER_SLOT_WORDS: u32 = 0x0001_8000;
+pub const FRAMEBUFFER_A_BASE_WORD: u32 = 0x0020_0000;
+pub const FRAMEBUFFER_B_BASE_WORD: u32 = FRAMEBUFFER_A_BASE_WORD + FRAMEBUFFER_SLOT_WORDS;
 pub const FRAMEBUFFER_BASE_WORD: u32 = FRAMEBUFFER_A_BASE_WORD;
-pub const FRAMEBUFFER_END_WORD: u32 = FRAMEBUFFER_B_BASE_WORD + FRAMEBUFFER_WORDS;
+pub const FRAMEBUFFER_END_WORD: u32 = FRAMEBUFFER_B_BASE_WORD + FRAMEBUFFER_SLOT_WORDS;
 
 /// Physical word address of pixel `(x, y)` relative to an explicit framebuffer base.
 pub const fn framebuffer_word_at(base: u32, x: u32, y: u32) -> u32 {
-    base + y * FRAMEBUFFER_STRIDE_WORDS + x
+    let tile_x = x / FRAMEBUFFER_TILE;
+    let tile_y = y / FRAMEBUFFER_TILE;
+    let local_x = x % FRAMEBUFFER_TILE;
+    let local_y = y % FRAMEBUFFER_TILE;
+    let tile = tile_y * FRAMEBUFFER_TILE_COLUMNS + tile_x;
+    base + tile * FRAMEBUFFER_TILE_WORDS + local_y * FRAMEBUFFER_TILE + local_x
+}
+
+/// Physical word address of the 16-pixel segment `tile_x` of source row `y`,
+/// i.e. the first pixel of the 32-byte line the display fetches for that
+/// position. The display walks `tile_x` 0..24 with a +256 word step, then the
+/// next source row with +16 words, and the next tile row with +6400 words.
+pub const fn framebuffer_segment_word(base: u32, y: u32, tile_x: u32) -> u32 {
+    let tile_y = y / FRAMEBUFFER_TILE;
+    let local_y = y % FRAMEBUFFER_TILE;
+    base + tile_y * FRAMEBUFFER_TILE_ROW_STRIDE_WORDS
+        + tile_x * FRAMEBUFFER_TILE_WORDS
+        + local_y * FRAMEBUFFER_TILE
 }
 
 /// Physical word address of pixel `(x, y)` in the default framebuffer A.
@@ -42,7 +71,7 @@ impl SystemMemoryLayout for TangNano20kMemoryLayout {
         MemoryRegion {
             name: "framebuffer",
             base: PhysicalWordAddress::new(FRAMEBUFFER_BASE_WORD),
-            words: FRAMEBUFFER_WORDS * 2,
+            words: FRAMEBUFFER_SLOT_WORDS * 2,
             kind: MemoryRegionKind::Shared,
         },
         MemoryRegion {
@@ -103,6 +132,22 @@ impl SystemDeviceLayout for TangNano20kDeviceLayout {
                 crate::DISPLAY_FRAMEBUFFER_LOW,
                 crate::DISPLAY_FRAMEBUFFER_HIGH,
                 crate::DISPLAY_CONTROL,
+                crate::DISPLAY_COLOR_FORMAT,
+            ],
+        },
+        DeviceAllocation {
+            // Read and write channels share one 4-bit channel space, so each
+            // GPU channel number appears once even though channels 0..3 are
+            // read/write pairs.
+            name: "gpu",
+            device: crate::GPU_DEVICE,
+            channels: &[
+                crate::GPU_CMD_BASE_LOW,
+                crate::GPU_CMD_BASE_HIGH,
+                crate::GPU_CMD_WORDS_LOW,
+                crate::GPU_CMD_WORDS_HIGH,
+                crate::GPU_SUBMIT,
+                crate::GPU_CONTROL,
             ],
         },
     ];
@@ -193,18 +238,42 @@ mod tests {
             .find(|region| region.name == "framebuffer")
             .unwrap();
         assert_eq!(framebuffer.base.get(), FRAMEBUFFER_BASE_WORD);
-        assert_eq!(framebuffer.words, FRAMEBUFFER_WORDS * 2);
+        assert_eq!(framebuffer.words, FRAMEBUFFER_SLOT_WORDS * 2);
         assert_eq!(framebuffer.kind, MemoryRegionKind::Shared);
-        assert_eq!(framebuffer_word(0, 203), 0x0021_3e30);
-        assert_eq!(framebuffer_word(399, 203), 0x0021_3fbf);
-        assert_eq!(framebuffer_word(0, 204), 0x0021_3fc0);
-        assert_eq!(framebuffer_word(399, 239), FRAMEBUFFER_B_BASE_WORD - 1);
-        assert_eq!(FRAMEBUFFER_B_BASE_WORD, 0x0021_7800);
-        assert_eq!(FRAMEBUFFER_END_WORD, 0x0022_ef00);
+        assert_eq!(framebuffer_word(0, 203), 0x0021_2cb0);
+        assert_eq!(framebuffer_word(399, 203), 0x0021_44bf);
+        assert_eq!(framebuffer_word(0, 204), 0x0021_2cc0);
+        assert_eq!(framebuffer_word(399, 239), 0x0021_76ff);
+        assert_eq!(FRAMEBUFFER_B_BASE_WORD, 0x0021_8000);
+        assert_eq!(FRAMEBUFFER_END_WORD, 0x0023_0000);
         assert_eq!(
             framebuffer_word_at(FRAMEBUFFER_B_BASE_WORD, 399, 239),
-            FRAMEBUFFER_END_WORD - 1
+            FRAMEBUFFER_B_BASE_WORD + 0x0001_76ff
         );
+    }
+
+    #[test]
+    fn tile_linear_segments_cover_the_payload_exactly_once() {
+        let mut seen = vec![false; FRAMEBUFFER_WORDS as usize];
+        for y in 0..FRAMEBUFFER_HEIGHT {
+            for tile_x in 0..FRAMEBUFFER_TILE_COLUMNS {
+                let segment = framebuffer_segment_word(0, y, tile_x);
+                for offset in 0..16 {
+                    let address = segment + offset;
+                    assert!(address < FRAMEBUFFER_WORDS, "segment left the payload");
+                    assert!(!seen[address as usize], "word {address:#x} covered twice");
+                    seen[address as usize] = true;
+                }
+            }
+        }
+        assert!(seen.into_iter().all(|covered| covered));
+        // A single segment spans 16 consecutive pixels of one source row.
+        for x in 0..16 {
+            assert_eq!(
+                framebuffer_word_at(0, 16 + x, 7),
+                framebuffer_segment_word(0, 7, 1) + x
+            );
+        }
     }
 
     #[test]

@@ -42,6 +42,8 @@
 // combinationally as well as cleared on the edge, and busy drops to zero in the
 // same cycle.
 module CpuV3FpuVectorPath (
+    input wire [31:0] alu_result,
+    output wire [3:0] alu_request_op,
     input wire clk,
     input wire abort,
     input wire instr_complete,
@@ -88,18 +90,9 @@ always @(*) begin
     endcase
 end
 
-// One combinational scalar ALU instance is shared by every lane; the lane
-// sequencer reuses it once per cycle. The comparison flags are unused here.
-wire [31:0] alu_result;
-CpuV3FpuScalarAlu vector_alu (
-    .a(rf_read_a_data),
-    .b(rf_read_b_data),
-    .op(alu_op),
-    .result(alu_result),
-    .flag_lt(),
-    .flag_eq(),
-    .flag_gt()
-);
+// The unit-wide combinational ALU serves scalar instructions and every vector
+// lane. This sequencer requests its operation once per cycle; flags are unused.
+assign alu_request_op = alu_op;
 
 // Latched instruction state, loaded on the T0 edge.
 reg run_r = 1'b0;

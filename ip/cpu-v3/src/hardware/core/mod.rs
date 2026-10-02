@@ -52,6 +52,8 @@ pub struct CpuV3CoreInput {
     pub data_response_valid: Wire,
     pub data_read_data: Wires<16>,
     pub data_error: Wire,
+    pub data_line_copy_ready: Wire,
+    pub data_cache_command_error: Wire,
     pub device_read_data: Wires<16>,
 }
 
@@ -65,6 +67,11 @@ pub struct CpuV3CoreOutput {
     pub data_address: Wires<32>,
     pub data_write_data: Wires<16>,
     pub data_response_ready: Wire,
+    pub data_line_copy_valid: Wire,
+    pub data_line_copy_source: Wires<22>,
+    pub data_line_copy_destination_page: Wires<8>,
+    pub data_line_clean_valid: Wire,
+    pub data_line_clean_address: Wires<22>,
     pub device_index: Wires<3>,
     pub device_channel: Wires<4>,
     pub device_read_enable: Wire,
@@ -235,6 +242,9 @@ pub(crate) struct AsyncStore {
     pub(crate) fault_pc: u16,
 }
 
+/// Cloneable so a test harness can snapshot and restore the emulated core state
+/// (see the fetch-pause sync-point work in the system harness).
+#[derive(Clone)]
 pub struct CpuV3CoreState {
     pub(crate) registers: [u16; 16],
     pub(crate) gpr_write_enable: bool,
@@ -242,7 +252,7 @@ pub struct CpuV3CoreState {
     pub(crate) gpr_write_data: u16,
     pc: u16,
     code_segment: u16,
-    data_segment: u16,
+    data_segments: [u16; 4],
     prefix: Option<Prefix>,
     /// Transient result of the last CMP-class instruction; mirrors the
     /// architectural `CpuV3Sim::pending_test` (consumed by conditional
@@ -311,7 +321,7 @@ impl Default for CpuV3CoreState {
             gpr_write_data: 0,
             pc: 0,
             code_segment: 0,
-            data_segment: 0,
+            data_segments: [0, 1, 2, 3],
             prefix: None,
             pending_test: None,
             phase: Phase::FetchRequest,
@@ -356,6 +366,38 @@ impl Default for CpuV3CoreState {
 }
 
 impl CpuV3CoreState {
+    /// Read-only architectural view for the system harness: the 16 GPRs, the 64
+    /// FPU registers, the shared accumulator, the PC and the segment registers.
+    /// Used to compare the cycle model against the naive `CpuV3Sim` directly
+    /// instead of inferring equivalence from a resumed run.
+    pub fn architectural_gprs(&self) -> [u16; 16] {
+        self.registers
+    }
+
+    pub fn architectural_f_registers(&self) -> [i32; 64] {
+        self.fpu.architectural_f_registers()
+    }
+
+    pub fn accumulator(&self) -> i64 {
+        self.fpu.accumulator()
+    }
+
+    pub fn program_counter(&self) -> u16 {
+        self.pc
+    }
+
+    pub fn retired_words(&self) -> u32 {
+        self.retired_words
+    }
+
+    pub fn segments(&self) -> (u16, u16) {
+        (self.code_segment, self.data_segments[0] >> 2)
+    }
+
+    pub fn data_segments(&self) -> [u16; 4] {
+        self.data_segments
+    }
+
     /// This cycle's FPU v2 unit inputs, mirroring the RTL wiring: the
     /// registered word stream plus the combinational ext channel (owned by
     /// the core during the FPU memory states).
@@ -471,7 +513,12 @@ impl CpuV3CoreState {
         self.gpr_write_data = value;
     }
 
-    pub(crate) fn execute(&mut self, device_read_data: u16) {
+    pub(crate) fn execute(
+        &mut self,
+        device_read_data: u16,
+        line_copy_ready: bool,
+        cache_command_error: bool,
+    ) {
         let instruction = self.instruction;
         let opcode = encoding::opcode(instruction);
         // The model-only SIGNAL event lives for one executed instruction.
@@ -565,7 +612,13 @@ impl CpuV3CoreState {
                     _ => self.fault(CPU_V3_FAULT_INVALID_INSTRUCTION, fault_pc),
                 }
             }
-            6 => self.execute_extended(instruction, retire_words, fault_pc),
+            6 => self.execute_extended(
+                instruction,
+                retire_words,
+                fault_pc,
+                line_copy_ready,
+                cache_command_error,
+            ),
             7 => {
                 if dst & 8 == 0 {
                     self.write_gpr(rhs, device_read_data);
@@ -577,7 +630,7 @@ impl CpuV3CoreState {
                 let logical = self.registers[usize::from(lhs)].wrapping_add(offset);
                 let pending = PendingData {
                     write: opcode == 9,
-                    address: physical_address(self.data_segment, logical),
+                    address: physical_data_address(self.data_segments, logical),
                     write_data: self.registers[usize::from(dst)],
                     destination: dst,
                     retire_words,
@@ -744,7 +797,14 @@ impl CpuV3CoreState {
         self.retire(retire_words);
     }
 
-    fn execute_extended(&mut self, instruction: u16, retire_words: u8, fault_pc: u16) {
+    fn execute_extended(
+        &mut self,
+        instruction: u16,
+        retire_words: u8,
+        fault_pc: u16,
+        line_copy_ready: bool,
+        cache_command_error: bool,
+    ) {
         let function = field(instruction, 8);
         let dst = field(instruction, 4);
         let src = field(instruction, 0);
@@ -759,6 +819,17 @@ impl CpuV3CoreState {
                 dst,
                 u16::from(self.registers[usize::from(dst)] == self.registers[usize::from(src)]),
             ),
+            7 => {
+                let offset = self.registers[usize::from(dst)];
+                let destination_page = self.registers[usize::from(src)];
+                if destination_page & !0xff != 0 || offset & 0x0f != 0 {
+                    self.fault(CPU_V3_FAULT_DATA_MEMORY, fault_pc);
+                    return;
+                }
+                if self.async_store.valid || self.fpu2_pending != 0 || !line_copy_ready {
+                    return;
+                }
+            }
             8 => self.write_gpr(
                 dst,
                 u16::from(
@@ -798,7 +869,8 @@ impl CpuV3CoreState {
             13 => {
                 let value = match src {
                     0 => self.code_segment,
-                    1 => self.data_segment,
+                    1 => self.data_segments[0] >> 2,
+                    2..=5 => self.data_segments[usize::from(src - 2)],
                     _ => {
                         self.fault(CPU_V3_FAULT_INVALID_INSTRUCTION, fault_pc);
                         return;
@@ -806,7 +878,37 @@ impl CpuV3CoreState {
                 };
                 self.write_gpr(dst, value);
             }
-            14 if dst == 1 => self.data_segment = self.registers[usize::from(src)],
+            14 if dst == 1 => {
+                let value = self.registers[usize::from(src)];
+                if value & !0x3f != 0 {
+                    self.fault(CPU_V3_FAULT_DATA_MEMORY, fault_pc);
+                    return;
+                }
+                let base = value << 2;
+                self.data_segments = [base, base + 1, base + 2, base + 3];
+            }
+            14 if (2..=5).contains(&dst) => {
+                let value = self.registers[usize::from(src)];
+                if value & !0xff != 0 {
+                    self.fault(CPU_V3_FAULT_DATA_MEMORY, fault_pc);
+                    return;
+                }
+                self.data_segments[usize::from(dst - 2)] = value;
+            }
+            14 if matches!(dst, 6 | 7) => {
+                if self.async_store.valid || self.fpu2_pending != 0 || !line_copy_ready {
+                    return;
+                }
+            }
+            14 if dst == 8 => {
+                if !line_copy_ready {
+                    return;
+                }
+                if cache_command_error {
+                    self.fault(CPU_V3_FAULT_DATA_MEMORY, fault_pc);
+                    return;
+                }
+            }
             15 => {
                 self.code_segment = self.registers[usize::from(dst)];
                 self.pc = self.registers[usize::from(src)];
@@ -880,6 +982,28 @@ impl Module for CpuV3Core {
         let device_instruction = state.phase == Phase::Execute && state.instruction >> 12 == 0x7;
         let device_field = field(state.instruction, 8);
         let device_register = field(state.instruction, 0);
+        let line_copy_instruction = state.phase == Phase::Execute
+            && state.instruction >> 12 == 0x6
+            && field(state.instruction, 8) == 0x7;
+        let cache_control_instruction = state.phase == Phase::Execute
+            && state.instruction >> 12 == 0x6
+            && field(state.instruction, 8) == 0xe;
+        let cache_control_selector = field(state.instruction, 4);
+        // Match the RTL register-file read bypass. A pipelined producer's RAM
+        // write lands at this edge, while the following instruction already
+        // exposes its operands combinationally before the edge.
+        let read_gpr = |address: u8| {
+            if state.gpr_write_enable && state.gpr_write_address == address {
+                state.gpr_write_data
+            } else {
+                state.registers[usize::from(address)]
+            }
+        };
+        let line_copy_offset = read_gpr(field(state.instruction, 4));
+        let line_copy_destination = read_gpr(field(state.instruction, 0));
+        let cache_control_address = read_gpr(field(state.instruction, 0));
+        let line_copy_operands_valid =
+            line_copy_destination & !0xff == 0 && line_copy_offset & 0x0f == 0;
         output.drive(
             circuit,
             &CpuV3CoreOutputValue {
@@ -927,19 +1051,41 @@ impl Module for CpuV3Core {
                     && ((store.valid && store.issued)
                         || state.phase == Phase::DataResponse
                         || state.phase == Phase::Fpu2MemResponse),
+                data_line_copy_valid: !input.hold
+                    && line_copy_instruction
+                    && line_copy_operands_valid
+                    && !store.valid
+                    && state.fpu2_pending == 0,
+                data_line_copy_source: u64::from(physical_data_address(
+                    state.data_segments,
+                    line_copy_offset,
+                )),
+                data_line_copy_destination_page: u64::from(line_copy_destination & 0xff),
+                data_line_clean_valid: !input.hold
+                    && cache_control_instruction
+                    && cache_control_selector == 6
+                    && !store.valid
+                    && state.fpu2_pending == 0,
+                data_line_clean_address: u64::from(physical_data_address(
+                    state.data_segments,
+                    cache_control_address,
+                )),
                 device_index: u64::from(device_field & 7),
                 device_channel: u64::from(field(state.instruction, 4)),
                 device_read_enable: !input.hold && device_instruction && device_field & 8 == 0,
                 device_write_enable: !input.hold && device_instruction && device_field & 8 != 0,
-                device_write_data: u64::from(state.registers[usize::from(device_register)]),
-                halted: state.phase == Phase::Halted && !store.valid && state.fpu2_pending == 0,
+                device_write_data: u64::from(read_gpr(device_register)),
+                halted: state.phase == Phase::Halted
+                    && !store.valid
+                    && state.fpu2_pending == 0
+                    && input.data_line_copy_ready,
                 halt_signal: u64::from(state.halt_signal),
                 fault: state.phase == Phase::Fault,
                 fault_code: u64::from(state.fault_code),
                 fault_pc: u64::from(state.fault_pc),
                 pc: u64::from(state.pc),
                 code_segment: u64::from(state.code_segment),
-                data_segment: u64::from(state.data_segment),
+                data_segment: u64::from(state.data_segments[0] >> 2),
                 retired_words: u64::from(state.retired_words),
             },
         );
@@ -1054,7 +1200,11 @@ impl Module for CpuV3Core {
                 }
             }
             Phase::Execute => {
-                state.execute(input.device_read_data as u16);
+                state.execute(
+                    input.device_read_data as u16,
+                    input.data_line_copy_ready,
+                    input.data_cache_command_error,
+                );
                 if execute_pipelineable
                     && input.instruction_request_ready
                     && state.phase == Phase::FetchRequest
@@ -1137,8 +1287,8 @@ impl Module for CpuV3Core {
                         // defined to behave as the scalar form (len 1).
                         let mode = encoding::word1_mode(word1);
                         state.fpu2_len = if mode & 0xC != 0 { 1 } else { (mode & 0x3) + 1 };
-                        state.fpu2_address = physical_address(
-                            state.data_segment,
+                        state.fpu2_address = physical_data_address(
+                            state.data_segments,
                             state.registers[usize::from(encoding::aux_x(state.fpu2_word0))],
                         );
                         state.fpu2_beat = 0;
@@ -1328,6 +1478,11 @@ impl Module for CpuV3Core {
 
 fn physical_address(segment: u16, offset: u16) -> u32 {
     (u32::from(segment) << 16) | u32::from(offset)
+}
+
+fn physical_data_address(pages: [u16; 4], offset: u16) -> u32 {
+    let page = pages[usize::from(offset >> 14)];
+    (u32::from(page) << 14) | u32::from(offset & 0x3fff)
 }
 
 fn field(instruction: u16, shift: u32) -> u8 {

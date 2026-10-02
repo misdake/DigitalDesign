@@ -3,8 +3,9 @@
 > rcc (retro console compiler) is a **tiny strict subset of Rust syntax**: every valid rcc
 > program is also a valid Rust program, so rust-analyzer parses, highlights and navigates
 > it with no plugin at all.
-> The design is **C's memory model under Rust syntax**: all code is semantically unsafe
-> bare-metal operation — no borrow checking, no lifetimes, no bounds checks.
+> The design uses a low-level C-like address model under Rust syntax. Ordinary storage uses
+> `Buf`/`Array`; raw `Ptr` dereference and typed conversion are the explicit `unsafe` boundary.
+> The target has no reference values, lifetimes, or dynamic bounds checks.
 > Anything outside the subset is a **hard error with a source location**.
 >
 > Target: a 16-bit Harvard-architecture CPU (separate instruction/data stores, see `isa.html`).
@@ -106,24 +107,26 @@ lowering, including the constant-divisor specialization (`x /= 4` is a shift, `x
 so a compound form never costs more than the two-operand spelling.
 ## 2. The `Ptr` data pointer
 
-Raw pointer arithmetic needs `unsafe {}` in real Rust (which would make rust-analyzer
-complain), so all pointer operations go through `Ptr`'s inherent methods (the compiler
-recognizes them as intrinsics; the IDE sees ordinary methods):
+`Ptr` is an address value. Constructing, inspecting and offsetting one is safe; dereferencing
+or converting an untyped address into a typed view is the narrow `unsafe` boundary. The compiler
+recognizes the methods as intrinsics and rust-analyzer sees the same signatures:
 
 ```rust
 impl Ptr {
     fn from_addr(addr: u16) -> Ptr;   // build from a word address
     fn addr(self) -> u16;             // extract the word address
     fn add(self, off: i16) -> Ptr;    // address + off (may be negative)
-    fn read(self, off: i16) -> u16;   // mem[self + off]
-    fn write(self, off: i16, v: u16); // mem[self + off] = v
-    fn as_u16_array(self) -> Array<u16>;
-    fn as_i16_array(self) -> Array<i16>;
+    unsafe fn read(self, off: i16) -> u16;   // mem[self + off]
+    unsafe fn write(self, off: i16, v: u16); // mem[self + off] = v
+    unsafe fn as_u16_array(self) -> Array<u16>;
+    unsafe fn as_i16_array(self) -> Array<i16>;
 }
 ```
 
-`Ptr` remains the untyped interface for address arithmetic and raw words. Convert it to
-an `Array<T>` when typed indexing is clearer. Struct memory layouts remain out of scope.
+`Ptr` remains the untyped interface at heap/MMIO/device boundaries. A dereference or raw-address
+cache-line command must appear in an `unsafe { ... }` block; empty/nested unsafe blocks and unsafe
+blocks without one of those operations are errors. Ordinary buffers and local values use
+`Buf`/`Array`/`view_of` without unsafe. Struct memory layouts remain out of scope.
 
 ## 3. Function pointers
 
@@ -171,6 +174,9 @@ Declared for real in `dsl_rt` (so the IDE sees them); the compiler lowers them d
 | `dev_send(dev: u8, ch: u8, v: u16)` | write a device register; device and channel are compile-time constant IDs |
 | `dcache_clean_all() -> u16` | CPU V3-only: blocking full compiler memory/control barrier; write every dirty D-cache line and return final maintenance status |
 | `dcache_invalidate_all() -> u16` | CPU V3-only: blocking full compiler memory/control barrier; clean and invalidate the complete D-cache, then return final maintenance status |
+| `unsafe dcache_line_copy(source: Ptr, destination_page: u16)` | CPU V3-only: start an asynchronous copy of one aligned 32-byte line to the same offset in an 8-bit physical page |
+| `unsafe dcache_clean_line(address: Ptr)` | CPU V3-only: asynchronously write back one dirty resident line; miss/clean hit is a no-op |
+| `dcache_wait()` | CPU V3-only: wait for the asynchronous D-cache command and surface its remembered error |
 | `mtsr_dseg(v: u16)` | CPU V3-only: write the DSEG special register (MTSR DSEG) |
 | `jseg(cseg: u16, target: u16) -> !` | CPU V3-only: atomically switch CSEG to `cseg` and jump to `target` (JSEG); never returns |
 | `icache_invalidate_delayed_and_jump(cseg: u16, target: u16) -> !` | CPU V3-only: terminal barrier lowered to adjacent `ICACHE_INVALIDATE_ALL_DELAYED; JSEG`; never returns |
@@ -221,7 +227,8 @@ they are not part of this surface.
   implicit conversions hide too many bugs on a 16-bit machine.
 - **Unsupported means error**: these Rust features are rejected with a span — generics,
   traits, impls and methods, closures, macros, references `&`, slices and native `[T; N]` arrays
-  (§10), strings, floats, other integer types, `unsafe`, `extern`, lifetimes, items declared
+  (§10), strings, floats, other integer types, unsafe operations other than the narrow `Ptr`
+  boundary in §2, `extern`, lifetimes, items declared
   inside a function body, attributes (except the ignored `#[allow(...)]` and the `#[doc]` /
   `#[repr(...)]` / `#[derive(PartialEq)]` that §9b/§9d accept), and `use` (parsed but ignored; it
   exists for the IDE). Patterns are limited to a plain identifier or a tuple in `let` (§9c) and to
@@ -348,11 +355,11 @@ struct Point { x: u16, y: u16, inner: Inner, flags: Buf<u16, 2>, valid: bool }
   no copy at the call site. `return Point { .. };`, `return other;` and `return shifted(...)` all
   work, and a struct can be assigned wholesale (`p = make(1u16);`).
   Whole-aggregate assignment evaluates the complete right-hand value before the destination
-  place, using temporary frame storage before copying it back. Thus `p = swap(view_of(&p))`
+  place, using temporary frame storage before copying it back. Thus `p = swap(view_of(&mut p))`
   reads the old `p` throughout the call. Initialization of a new binding still uses direct sret.
 - **Passing structs**: a function takes a struct by pointer, written `Array<Point>` (the one-word
   typed view). Two ways to make one:
-  - `view_of(&value)` — the address of one struct (or addressable scalar) value;
+  - `view_of(&mut value)` — the address of one mutable struct (or addressable scalar) value;
   - `buf.as_array()` — the first-element address of a buffer, including a buffer of structs.
   Inside the callee, `p[i]` is the element *address* (a struct value), so `p[i].x` reads a field at
   `i * sizeof` words: a shift for word-sized elements, a real multiply otherwise. A `mut view:
@@ -455,8 +462,10 @@ fn clear_first(mut words: Array<u16>) { words[0u16] = 0; }
 clear_first(storage.as_array());
 ```
 
-Convert a raw pointer with `p.as_u16_array()` or `p.as_i16_array()`. The explicit method
-name supplies the element type without generic-method inference.
+Convert a raw pointer with `unsafe { p.as_u16_array() }` or
+`unsafe { p.as_i16_array() }`. The explicit method name supplies the element type without
+generic-method inference, while the unsafe block marks the point where an untyped address is
+asserted to denote live storage.
 
 ### 10.3 Buffer methods
 
@@ -561,21 +570,31 @@ passed by value:
 1. the main source plus any `mod name;` files resolved through `loader`;
 2. the **rcc_std library** (`compiler/rcc/src/rcc_std/`, written in rcc itself) is always appended;
    unused functions are dropped by the linker;
-3. **automatic library initialization**: if the program's call graph reaches `malloc`/`free`,
+3. **automatic library initialization**: if the program's call graph reaches a heap entry point,
    a single `init_heap(heap_begin, heap_size)` call is inserted at the start of `main`; if it
    reaches `vec_*`, a single `init_vec(vec_init_cap)` call follows. each init runs exactly once
    per program, with parameters from `CompilerOptions`.
 
 ### 13.2 `CompilerOptions`
 
+Memory-layout defaults belong to the target backend; the frontend only consumes `RccConfig`.
+CpuV3's standalone default keeps code and data in one segment (`code_base=0`, static data at
+`0x4000`, heap `0x8000..0xe000`, stack from the exclusive `0x10000` top). A booted application
+whose CSEG and DSEG differ uses `CompilerOptions::for_separate_code_and_data_segments`: code starts
+at its supplied offset, while the paged data window uses static data at `0x0000..0x1fff`, heap
+`0x2000..0x9ffe`, and a downward-growing stack from exclusive top `0xc000`. The first three
+32-KiB logical quarters form the ordinary 96-KiB arena; the fourth is a remappable library/device
+window. The [CPU V3 ISA specification](../../../../ip/cpu-v3/docs/isa.md) owns the DSEG translation
+and page-register contract.
+
 | option | default | meaning |
 |---|---|---|
 | `opt` | all on | optimization passes (const-prop/cse/dce/coalesce) |
-| `stack_init` | 0 | initial sp of the entry fn (0 = simulator default; frames grow downward) |
+| `stack_init` | backend | initial sp of the entry fn (0 denotes the exclusive segment top; frames grow downward) |
 | `function_table` | `Auto` | `Disabled`, automatically profitable/hot direct callees, all direct callees, or an explicit list of function names |
-| `data_base` | 0 | static data section base address |
-| `heap_begin` | 0x1000 | heap region start |
-| `heap_size` | 20 | heap region size in words |
+| `data_base` | backend | static data section base address |
+| `heap_begin` | backend | heap region start |
+| `heap_size` | backend | heap region size in words |
 | `vec_init_cap` | 4 | `vec_new()` initial capacity |
 
 ### 13.3 Artifacts
@@ -626,6 +645,16 @@ lexical lifetime; optimized builds may report such SSA locals as unavailable.
 `init_heap` stores the heap bounds in static cells (`HEAP_BEGIN`/`HEAP_END` in the data
 section) which `malloc`/`free` read at run time — no compile-time patching of library code.
 `init_vec` does the same for `VEC_INIT_CAP`.
+
+The heap uses boundary tags plus four segregated intrusive free lists. Allocation chooses the
+smallest fitting block in the first usable size class; `free` coalesces both neighbours, and
+`heap_realloc` first tries to resize in place. Invalid frees, exhaustion, and invalid heap
+configuration halt with `0xffe2`, `0xffe1`, and `0xffe0` respectively.
+
+The `u16` vector API provides `vec_new`/`vec_with_capacity`, checked `vec_get`/`vec_set`,
+`vec_push`/`vec_pop`, `vec_reserve`, `vec_clear`, `vec_shrink_to_fit`, and `vec_free`. Growth is
+approximately 1.5x to balance copying against memory use; bounds and capacity failures halt with
+`0xffe3` and `0xffe4`.
 
 ### 13.5 Host/IDE side
 

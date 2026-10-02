@@ -79,7 +79,8 @@ $componentRoots = [ordered]@{
     display    = @("u_display")
     boot       = @("u_boot", "u_boot_dma_engine", "u_boot_dma_device")
     flash      = @("u_flash")
-    sdram_ctrl = @("u_sdram_controller")
+    # Keep the core-only category across the legacy and native wrappers.
+    sdram_ctrl = @("u_sdram_controller", "u_controller")
     sysctl     = @("u_sysctl", "u_memory_arbiter")
 }
 

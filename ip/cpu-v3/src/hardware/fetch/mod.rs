@@ -73,12 +73,11 @@ pub struct CpuV3InstructionFetchQueueState {
     next_memory_address: u32,
     queue_data: [u16; QUEUE_DEPTH],
     queue_error: [bool; QUEUE_DEPTH],
-    queue_address: [u32; QUEUE_DEPTH],
+    downstream_head_offset: u16,
     queue_head: u8,
     queue_tail: u8,
     queue_count: u8,
     metadata_current: [bool; QUEUE_DEPTH],
-    metadata_address: [u32; QUEUE_DEPTH],
     metadata_head: u8,
     metadata_tail: u8,
     metadata_count: u8,
@@ -116,8 +115,7 @@ impl CpuV3InstructionFetchQueueState {
     fn signals(&self, input: &CpuV3InstructionFetchQueueInputValue) -> FetchSignals {
         let address = input.core_address as u32;
         let address_matches = self.stream_valid && address == self.expected_core_address;
-        let head_matches =
-            self.queue_count != 0 && self.queue_address[self.queue_head as usize] == address;
+        let head_matches = self.queue_count != 0 && self.downstream_head_offset == address as u16;
         let replay = self.replay_remaining != 0;
         let restart = input.core_request_valid
             && (!address_matches || (!replay && self.queue_count != 0 && !head_matches));
@@ -143,7 +141,7 @@ impl CpuV3InstructionFetchQueueState {
             && self.queue_count == 0
             && input.memory_response_valid
             && current
-            && self.metadata_address[self.metadata_head as usize] == address;
+            && self.downstream_head_offset == address as u16;
         let valid = !input.reset
             && !input.flush
             && input.core_request_valid
@@ -225,7 +223,6 @@ impl CpuV3InstructionFetchQueueState {
         let sig = self.signals(input);
         let address = input.core_address as u32;
         let issue_address = sig.output.memory_address as u32;
-        let response_address = self.metadata_address[self.metadata_head as usize];
         if (input.flush || sig.restart) && self.fill_phase != 0 {
             self.statistics.cancelled_fills += 1;
         }
@@ -324,6 +321,8 @@ impl CpuV3InstructionFetchQueueState {
             self.queue_count = 0;
             self.stream_valid = input.core_request_valid;
             if input.core_request_valid {
+                self.downstream_head_offset =
+                    if input.flush { address } else { issue_address } as u16;
                 self.expected_core_address = next_word(address, u32::from(sig.core_pop));
                 self.next_memory_address = if input.flush {
                     address
@@ -332,6 +331,9 @@ impl CpuV3InstructionFetchQueueState {
                 };
             }
         } else {
+            if sig.core_pop && !sig.btc_response {
+                self.downstream_head_offset = self.downstream_head_offset.wrapping_add(1);
+            }
             if sig.core_pop {
                 self.expected_core_address = next_word(self.expected_core_address, 1);
             }
@@ -341,7 +343,6 @@ impl CpuV3InstructionFetchQueueState {
             if sig.enqueue {
                 self.queue_data[self.queue_tail as usize] = input.memory_read_data as u16;
                 self.queue_error[self.queue_tail as usize] = input.memory_error;
-                self.queue_address[self.queue_tail as usize] = response_address;
                 self.queue_tail = (self.queue_tail + 1) & 3;
             }
             self.queue_count = self.queue_count + u8::from(sig.enqueue) - u8::from(sig.queue_pop);
@@ -356,7 +357,6 @@ impl CpuV3InstructionFetchQueueState {
         }
         if sig.request_fire {
             self.metadata_current[self.metadata_tail as usize] = true;
-            self.metadata_address[self.metadata_tail as usize] = issue_address;
             self.metadata_tail = (self.metadata_tail + 1) & 3;
         }
         self.metadata_count =

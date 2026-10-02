@@ -759,10 +759,13 @@ fn emit_inst(
         Instr::Mfsr { .. } | Instr::Bool { .. } | Instr::CMov { .. } => {
             panic!("mfsr/bool/cmov are CpuV3-only forms; the v2.6 ISA cannot encode them")
         }
-        Instr::MtsrDseg { .. } | Instr::Jseg { .. } | Instr::DcacheInvalidateAll => {
-            panic!(
-                "mtsr_dseg/jseg are CpuV3-only intrinsics; the v2.6 ISA has no segment registers"
-            )
+        Instr::MtsrDseg { .. }
+        | Instr::Jseg { .. }
+        | Instr::DcacheInvalidateAll
+        | Instr::DcacheLineCopy { .. }
+        | Instr::DcacheCleanLine { .. }
+        | Instr::DcacheWait => {
+            panic!("segment/cache-control forms are CpuV3-only; the v2.6 ISA cannot encode them")
         }
         Instr::LoadSp { dst, slot } => {
             let (hi, lo) = hi_lo(local_base + n_locals + *slot);

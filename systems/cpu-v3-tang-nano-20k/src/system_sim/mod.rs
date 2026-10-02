@@ -6,8 +6,8 @@
 use crate::boot::{SystemControlDevice, SYSTEM_CONTROL_DEVICE};
 use crate::display::render_framebuffer_at;
 use crate::{
-    CpuV3Sim, DisplayDevice, Fault, RunOutcome, StepOutcome, DISPLAY_DEVICE, FRAMEBUFFER_HEIGHT,
-    FRAMEBUFFER_WIDTH,
+    CpuV3Sim, DisplayDevice, Fault, GpuDevice, RunOutcome, StepOutcome, DISPLAY_DEVICE,
+    FRAMEBUFFER_HEIGHT, FRAMEBUFFER_WIDTH, GPU_DEVICE,
 };
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
@@ -49,6 +49,7 @@ impl CpuV3SystemSim {
                 vblank_mode == VBlankMode::PauseOnFrameIndexWait,
             )),
         );
+        cpu.attach_device(GPU_DEVICE, Box::<GpuDevice>::default());
         Self { cpu, vblank_mode }
     }
 
@@ -73,7 +74,7 @@ impl CpuV3SystemSim {
             if self.waiting_for_vblank() {
                 return Ok(RunOutcome::StepLimit { steps });
             }
-            if let StepOutcome::Halted { signal } = self.cpu.step()? {
+            if let StepOutcome::Halted { signal } = self.step()? {
                 return Ok(RunOutcome::Halted {
                     steps: steps + 1,
                     signal,
@@ -102,6 +103,16 @@ impl CpuV3SystemSim {
 
     pub fn waiting_for_vblank(&self) -> bool {
         self.display().waiting_for_vblank()
+            || (self.vblank_mode == VBlankMode::PauseOnFrameIndexWait
+                && self
+                    .cpu
+                    .device::<SystemControlDevice>(SYSTEM_CONTROL_DEVICE)
+                    .and_then(SystemControlDevice::active_watch)
+                    .is_some_and(|(device, channel, expected)| {
+                        device == DISPLAY_DEVICE
+                            && channel == crate::DISPLAY_FRAME_INDEX
+                            && self.display().frame_index() == expected
+                    }))
     }
 
     pub fn render_active_framebuffer(&self) -> Vec<u32> {
@@ -117,6 +128,13 @@ impl CpuV3SystemSim {
             .device::<DisplayDevice>(DISPLAY_DEVICE)
             .expect("CpuV3SystemSim display device must remain attached")
     }
+
+    /// Read-only access to the GPU device model, e.g. for test assertions.
+    pub fn gpu(&self) -> &GpuDevice {
+        self.cpu
+            .device::<GpuDevice>(GPU_DEVICE)
+            .expect("CpuV3SystemSim GPU device must remain attached")
+    }
 }
 
 #[cfg(test)]
@@ -124,9 +142,9 @@ mod tests {
     use super::*;
     use crate::boot::{CACHE_MAINTENANCE_STATUS, CACHE_MAINTENANCE_STATUS_SUCCESS};
     use crate::{
-        branch, compare_unsigned, device_receive, device_send, halt, PhysicalWordAddress,
-        TestCondition, DISPLAY_CONTROL, DISPLAY_FRAMEBUFFER_HIGH, DISPLAY_FRAMEBUFFER_LOW,
-        DISPLAY_FRAME_INDEX, DISPLAY_NEXT_SWAP, FRAMEBUFFER_A_BASE_WORD, FRAMEBUFFER_B_BASE_WORD,
+        device_receive, device_send, halt, PhysicalWordAddress, DISPLAY_CONTROL,
+        DISPLAY_FRAMEBUFFER_HIGH, DISPLAY_FRAMEBUFFER_LOW, DISPLAY_FRAME_INDEX, DISPLAY_NEXT_SWAP,
+        FRAMEBUFFER_A_BASE_WORD, FRAMEBUFFER_B_BASE_WORD,
     };
 
     #[test]
@@ -137,6 +155,7 @@ mod tests {
             .device::<SystemControlDevice>(SYSTEM_CONTROL_DEVICE)
             .is_some());
         assert!(sim.cpu().device::<DisplayDevice>(DISPLAY_DEVICE).is_some());
+        assert!(sim.cpu().device::<GpuDevice>(GPU_DEVICE).is_some());
     }
 
     #[test]
@@ -176,25 +195,23 @@ mod tests {
     #[test]
     fn pause_mode_stops_at_a_frame_index_wait() {
         let mut sim = CpuV3SystemSim::new(VBlankMode::PauseOnFrameIndexWait);
-        sim.cpu_mut()
-            .load_program(
-                0,
-                &[
-                    device_receive(1, DISPLAY_DEVICE, DISPLAY_FRAME_INDEX),
-                    device_receive(2, DISPLAY_DEVICE, DISPLAY_FRAME_INDEX),
-                    compare_unsigned(2, 1),
-                    branch(TestCondition::Equal, -3),
-                    halt(),
-                ],
-            )
-            .unwrap();
-        assert_eq!(sim.run(16), Ok(RunOutcome::StepLimit { steps: 2 }));
-        assert_eq!(sim.cpu().register(1), Some(0));
+        let mut program = Vec::new();
+        program.extend(crate::load_immediate16(
+            1,
+            crate::boot::sysctl_watch_target(DISPLAY_DEVICE, DISPLAY_FRAME_INDEX),
+        ));
+        program.extend([
+            device_send(1, SYSTEM_CONTROL_DEVICE, crate::boot::SYSCTL_WATCH_TARGET),
+            device_send(2, SYSTEM_CONTROL_DEVICE, crate::boot::SYSCTL_WATCH_EXPECTED),
+            halt(),
+        ]);
+        sim.cpu_mut().load_program(0, &program).unwrap();
+        assert_eq!(sim.run(16), Ok(RunOutcome::StepLimit { steps: 4 }));
+        assert_eq!(sim.cpu().register(1), Some(3));
         assert_eq!(sim.cpu().register(2), Some(0));
         assert!(sim.waiting_for_vblank());
         assert!(!sim.advance_vblank());
         assert!(matches!(sim.run(16), Ok(RunOutcome::Halted { .. })));
-        assert_eq!(sim.cpu().register(2), Some(1));
         assert_eq!(sim.display_state().frame_index, 1);
     }
 

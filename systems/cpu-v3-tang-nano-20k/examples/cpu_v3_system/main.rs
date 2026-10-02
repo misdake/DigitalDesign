@@ -1,8 +1,9 @@
 use cpu_v3::{CpuV3Core, CpuV3DataCache, CpuV3InstructionCache, CpuV3InstructionFetchQueue};
+use cpu_v3_tang_nano_20k::boot::{S1_APPLICATION_LAYOUT, S2_APPLICATION_LAYOUT};
 use cpu_v3_tang_nano_20k::display::ACTIVE_DISPLAY_CONFIG;
 use cpu_v3_tang_nano_20k::{
-    BootDmaDevice, BootDmaEngine, BootProgressMonitor, CpuV3MemoryArbiter, FramebufferHdmi,
-    SharedSdramPort, SystemControlDevice,
+    BootDmaDevice, BootDmaEngine, BootProgressMonitor, CpuV3Gpu, CpuV3MemoryArbiter,
+    FramebufferHdmi, SharedSdramPort, SystemControlDevice,
 };
 use digital_design_circuit::CircuitWires;
 use digital_design_hardware::{Hardware, HardwareIdentity, Module, VerilogDependency};
@@ -13,12 +14,20 @@ use digital_design_hardware_gowin::{
     TangNano20KBootHdmiWideInputs, TangNano20KBootHdmiWideOutputs, TangNano20KVideoMode,
     BSRAM_1024_DEPTH,
 };
+use std::cell::Cell;
+
+thread_local! {
+    static S2_REJECTION_ONLY: Cell<bool> = const { Cell::new(false) };
+}
 
 fn main() -> Result<(), GowinCliError> {
     run_gowin_project_cli(gowin_project(), "target/cpu_v3_system_gowin")
 }
 
 include!(concat!(env!("OUT_DIR"), "/boot_images.rs"));
+
+const S1_IMAGE: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/application-s1.v3bin"));
+const S2_IMAGE: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/application-s2.v3bin"));
 
 struct BootImage;
 
@@ -94,6 +103,7 @@ impl Module for CpuV3System {
                     "__ARBITER__",
                     &CpuV3MemoryArbiter::verilog_identity().module_name(),
                 )
+                .replace("__GPU__", &CpuV3Gpu::verilog_identity().module_name())
                 .replace(
                     "__SYSTEM_CONTROL__",
                     &SystemControl::verilog_identity().module_name(),
@@ -137,6 +147,7 @@ impl Module for CpuV3System {
             VerilogDependency::new::<CpuV3InstructionCache>("u_instruction_cache"),
             VerilogDependency::new::<CpuV3DataCache>("u_data_cache"),
             VerilogDependency::new::<CpuV3MemoryArbiter>("u_memory_arbiter"),
+            VerilogDependency::new::<CpuV3Gpu>("u_gpu"),
             VerilogDependency::new::<SystemControl>("u_sysctl"),
             VerilogDependency::new::<BootDmaDevice>("u_boot_dma_device"),
             VerilogDependency::new::<BootDmaEngine>("u_boot_dma_engine"),
@@ -153,11 +164,39 @@ impl Module for CpuV3System {
         for (index, byte) in FLASH_PACKAGE.iter().enumerate() {
             flash_init.push_str(&format!("        flash_image[{index}] = 8'h{byte:02x};\n"));
         }
-        Some(
-            include_str!("signature_testbench.v")
-                .replace("__FLASH_PACKAGE_SIZE__", &FLASH_PACKAGE.len().to_string())
-                .replace("__FLASH_PACKAGE_INIT__", &flash_init),
-        )
+        let image_init = |name: &str, image: &[u8]| {
+            let (words, remainder) = image.as_chunks::<2>();
+            assert!(
+                remainder.is_empty(),
+                "application image must contain whole words"
+            );
+            let mut init = String::new();
+            for (index, bytes) in words.iter().enumerate() {
+                let word = u16::from_le_bytes([bytes[0], bytes[1]]);
+                init.push_str(&format!("        {name}[{index}] = 16'h{word:04x};\n"));
+            }
+            init
+        };
+        let testbench = include_str!("signature_testbench.v")
+            .replace("__FLASH_PACKAGE_SIZE__", &FLASH_PACKAGE.len().to_string())
+            .replace("__FLASH_PACKAGE_INIT__", &flash_init)
+            .replace(
+                "__S1_BASE__",
+                &S1_APPLICATION_LAYOUT.destination().get().to_string(),
+            )
+            .replace(
+                "__S2_BASE__",
+                &S2_APPLICATION_LAYOUT.destination().get().to_string(),
+            )
+            .replace("__S1_IMAGE_WORDS__", &(S1_IMAGE.len() / 2).to_string())
+            .replace("__S2_IMAGE_WORDS__", &(S2_IMAGE.len() / 2).to_string())
+            .replace("__S1_IMAGE_INIT__", &image_init("expected_s1", S1_IMAGE))
+            .replace("__S2_IMAGE_INIT__", &image_init("expected_s2", S2_IMAGE));
+        Some(if S2_REJECTION_ONLY.with(Cell::get) {
+            format!("`define CPU_V3_S2_REJECTION_ONLY\n{testbench}")
+        } else {
+            testbench
+        })
     }
 }
 
@@ -166,6 +205,7 @@ fn gowin_project() -> GowinModuleProject<TangNano20K, CpuV3System> {
     // pixel clock always matches the compiled-in scanout timing.
     let video_mode = TangNano20KVideoMode::from_pixel_clock(ACTIVE_DISPLAY_CONFIG.pixel_clock_hz);
     TangNano20K::boot_hdmi_memory_project::<CpuV3System>("cpu_v3_system", video_mode)
+        .with_timing_driven_implementation()
         .expect_bsram_blocks(ResourceCountExpectation::Claimed)
     // The per-mode MULT18X18=Claimed expectation was dropped when FPU v2
     // brought a MULT36X36 into the design: the audit's per-mode count no
@@ -286,17 +326,34 @@ mod tests {
     fn project_contains_full_system_memory_flash_and_display() {
         let verilog = VerilogProject::generate::<CpuV3System>().unwrap();
         assert!(!verilog.resource_claims.is_empty());
+        // The GPU command processor, tile cache and rasterizer are fitted.
+        assert!(verilog
+            .files
+            .keys()
+            .any(|path| path.to_string_lossy().contains("gpu")));
         let project = gowin_project().generate().unwrap();
         assert_eq!(project.resources.claimed[&ResourceKind::SdrSdramDevice], 1);
         assert_eq!(project.resources.claimed[&ResourceKind::SpiFlashDevice], 1);
         assert_eq!(project.resources.claimed[&ResourceKind::Pll], 2);
         assert_eq!(project.resources.claimed[&ResourceKind::HdmiOutput], 1);
-        assert_eq!(project.resources.claimed[&ResourceKind::Bsram18K], 6);
+        // Boot BSRAM + two data banks and one tag bank per CPU cache + the FPU register
+        // RAM (two blocks) + the two display line-buffer banks + the eight-bank GPU
+        // framebuffer tile cache + one raster output FIFO.
+        assert_eq!(project.resources.claimed[&ResourceKind::Bsram18K], 20);
     }
 
     #[test]
     #[ignore = "explicit external simulator validation"]
     fn flash_boot_executes_in_verilog() {
         digital_design_hardware::verify_verilog_with_iverilog::<CpuV3System>().unwrap();
+    }
+
+    #[test]
+    #[ignore = "explicit external simulator validation"]
+    fn flash_boot_rejects_retired_s2_gpu_in_verilog() {
+        S2_REJECTION_ONLY.with(|flag| flag.set(true));
+        let result = digital_design_hardware::verify_verilog_with_iverilog::<CpuV3System>();
+        S2_REJECTION_ONLY.with(|flag| flag.set(false));
+        result.unwrap();
     }
 }

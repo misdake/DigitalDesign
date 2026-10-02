@@ -14,6 +14,8 @@ struct Pending {
 struct Rig {
     state: CpuV3InstructionFetchQueueState,
     pending: VecDeque<Pending>,
+    // Test-only full-address provenance, populated from accepted memory responses.
+    queued_addresses: VecDeque<u32>,
     trace: Vec<(
         CpuV3InstructionFetchQueueInputValue,
         CpuV3InstructionFetchQueueOutputValue,
@@ -28,6 +30,7 @@ impl Rig {
         Self {
             state: Default::default(),
             pending: VecDeque::new(),
+            queued_addresses: VecDeque::new(),
             trace: Vec::new(),
             cycle: 0,
             version: 0,
@@ -85,11 +88,21 @@ impl Rig {
                     u32::from(sig.hit.is_none() && self.state.replay_remaining == 1),
                 )
             } else if self.state.queue_count != 0 {
-                self.state.queue_address[self.state.queue_head as usize]
+                *self.queued_addresses.front().unwrap()
             } else {
                 self.pending.front().unwrap().address
             };
             assert_eq!(source, address, "response provenance");
+        }
+        if flush || sig.restart {
+            self.queued_addresses.clear();
+        } else {
+            if sig.queue_pop {
+                self.queued_addresses.pop_front().unwrap();
+            }
+            if sig.enqueue {
+                self.queued_addresses.push_back(response.unwrap().address);
+            }
         }
         if out.memory_response_ready && input.memory_response_valid {
             self.pending.pop_front();
@@ -105,6 +118,7 @@ impl Rig {
         assert!(self.state.queue_count <= 4 && self.state.metadata_count <= 4);
         assert!(self.state.queue_count + self.state.metadata_count <= 4);
         assert_eq!(self.state.metadata_count as usize, self.pending.len());
+        assert_eq!(self.state.queue_count as usize, self.queued_addresses.len());
         let mut ranks: Vec<_> = self
             .state
             .btc
@@ -162,6 +176,7 @@ impl Rig {
         );
         self.state.clock(&input);
         self.pending.clear();
+        self.queued_addresses.clear();
         self.trace.push((input, out));
         self.cycle += 1;
     }
@@ -256,6 +271,35 @@ fn scenarios() -> Rig {
         assert_eq!(r.state.statistics.installed, installs);
         assert!(r.state.statistics.cancelled_fills > 0);
     }
+    // A delayed same-offset response must remain stale across repeated segment
+    // redirects. Drain it while accepting the current stream request.
+    r.reset(0x91abc);
+    r.tick(Some(0x71abc), false, true, false, false);
+    r.tick(Some(0x81abc), false, false, false, false);
+    r.tick(Some(0x91abc), false, false, false, false);
+    let out = r.tick(Some(0x91abc), true, true, true, false);
+    assert!(!out.core_response_valid);
+    assert!(out.memory_response_ready && out.memory_request_valid);
+    r.pair(0x91abc);
+    // Fill and reuse a metadata slot without relying on BTC being enabled.
+    r.reset(0xb1abc);
+    for segment in 7..11 {
+        let out = r.tick(Some((segment << 16) | 0x1abc), false, true, false, false);
+        assert!(out.memory_request_valid);
+    }
+    assert_eq!(r.state.metadata_count, 4);
+    let reused = r.state.metadata_head as usize;
+    let out = r.tick(Some(0xb1abc), false, true, true, false);
+    assert!(!out.core_response_valid);
+    assert!(out.memory_request_valid && out.memory_response_ready);
+    assert_eq!(r.state.metadata_count, 4);
+    assert!(
+        r.state.metadata_current[reused],
+        "new slot owner wins stale drain"
+    );
+    r.pair(0xb1abc);
+    r.pair(0xaffff);
+    r.fetch(0xa0001);
     // Invalid high address must not alias a resident legal target.
     r.pair(0x12340);
     assert!(r.fetch(0x00412340) > 0);
@@ -335,7 +379,7 @@ fn btc_protocol_matches_iverilog() {
             u8::from(o.core_request_ready),u8::from(o.core_response_valid),u8::from(o.memory_request_valid),u8::from(o.memory_response_ready)).unwrap();
         if o.core_response_valid {
             writeln!(tb, "if (core_read_data !== 16'h{:04x} || core_error !== 1'b{}) $fatal(1, \"BTC data cycle {cycle}\");",o.core_read_data,u8::from(o.core_error)).unwrap();
-            tb.push_str("if (dut.btc_response) source_address = dut.next_word({10'b0,dut.btc_tag[dut.response_entry]},dut.first_btc_word ? 2'd0 : 2'd1); else if (dut.response_bypass) source_address=dut.metadata_address[dut.metadata_head]; else source_address=dut.queue_address[dut.queue_head];\nif (source_address !== core_address) $fatal(1, \"BTC provenance\");\n");
+            tb.push_str("if (dut.btc_response) source_address = dut.next_word({10'b0,dut.btc_tag[dut.response_entry]},dut.first_btc_word ? 2'd0 : 2'd1); else source_address={dut.expected_core_address[31:16],dut.downstream_head_offset};\nif (source_address !== core_address) $fatal(1, \"BTC provenance\");\n");
         }
         writeln!(tb, "if (memory_address !== 32'h{:08x}) $fatal(1, \"BTC request address cycle {cycle}\");\n@(negedge clk);\nif (dut.queue_count > 4 || dut.metadata_count > 4 || dut.queue_count + dut.metadata_count > 4) $fatal(1, \"BTC reservation overflow\");",o.memory_address).unwrap();
     }

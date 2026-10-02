@@ -4,6 +4,7 @@ pub use digital_design_hardware::*;
 pub use digital_design_hardware_common::*;
 
 pub mod primitives;
+pub mod sdram_memory_controller;
 pub mod targets;
 mod toolchain;
 

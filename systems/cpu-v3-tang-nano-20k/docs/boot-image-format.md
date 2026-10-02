@@ -42,7 +42,8 @@ at word `0x40` and validates the SDRAM copy: magic, version, target, and every
 Flash and SDRAM extent. It then DMAs the manifest into its own data-segment
 buffer, validates it, DMAs every selected application section to its
 destination, performs complete D-cache invalidation through the semantic
-compiler barrier, sets `DSEG` and the stack pointer, then executes the adjacent
+compiler barrier, atomically expands the manifest's legacy `DSEG` base into
+four consecutive 32-KiB page mappings, sets the stack pointer, then executes the adjacent
 `ICACHE_INVALIDATE_ALL_DELAYED; JSEG` terminal handoff. The packer reserves the
 descriptor scratch range against every loadable section.
 
@@ -58,7 +59,7 @@ descriptor scratch range against every loadable section.
 | 16 | 4 | complete package size |
 | 20 | 2 | application `CSEG` |
 | 22 | 2 | application entry offset |
-| 24 | 2 | application `DSEG` |
+| 24 | 2 | application legacy `DSEG` base (expanded to four consecutive pages) |
 | 26 | 2 | application initial stack offset |
 | 28 | 4 | section table offset from manifest start |
 | 32 | 4 | section table size |
@@ -107,11 +108,11 @@ continues to work offline. `#` starts a comment. Numbers are decimal or
 ```text
 format 1
 target tang-nano-20k
-application-entry 0x0003 0x0200 0x0004 0xf000
+application-entry 0x0003 0x0000 0x0004 0x0000
 
-load code   0x00030200 rx 32 32768 game-code.bin
-load data   0x00044000 rw 32 16384 game-data.bin
-zero bss    0x00048000 rw 32 8192
+load code   0x00030000 rx 32 32768 game-code.bin
+load data   0x00040000 rw 32 16384 game-data.bin
+zero bss    0x00042000 rw 32 8192
 ```
 
 The columns after a `load` name are physical destination word, flags,

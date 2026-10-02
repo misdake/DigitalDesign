@@ -54,11 +54,13 @@ fn compile(
 }
 
 fn options(layout: ApplicationLayout) -> CompilerOptions {
-    CompilerOptions {
-        code_base: layout.entry.offset,
-        stack_init: layout.entry.stack_offset,
-        ..CompilerOptions::default()
-    }
+    assert_ne!(
+        layout.entry.code_segment, layout.entry.data_segment,
+        "segmented application layout requires distinct CSEG and DSEG"
+    );
+    let mut options = CompilerOptions::for_separate_code_and_data_segments(layout.entry.offset);
+    options.stack_init = layout.entry.stack_offset;
+    options
 }
 
 fn word_bytes(words: &[u16]) -> Vec<u8> {
@@ -221,6 +223,10 @@ fn main() {
         &s2_path,
         &CompilerOptions {
             stack_init: S2_APPLICATION_LAYOUT.entry.stack_offset,
+            // The standalone simulator image shares code and data, so keep
+            // its legacy data/heap bases while ending the heap below the new
+            // 0xc000 stack top.
+            heap_size: 0x3fff,
             ..CompilerOptions::default()
         },
         &[],
@@ -250,11 +256,13 @@ fn main() {
     // Stage0 now also compiles the generated `boot_selection` constants, so a
     // change to the S1/S2 layout changes these bytes too. The ISA 0.8
     // amendment (unsigned ADDI/SUBI, LDC/ADDC) changed the compiler's
-    // immediate emission and was re-pinned deliberately. Any such change must
-    // re-baseline deliberately, never silently.
+    // immediate emission, and the split CSEG/DSEG layout later moved each
+    // application entry and stack to offset zero. Both were re-pinned
+    // deliberately. Any such change must re-baseline deliberately, never
+    // silently.
     assert_eq!(
         fnv1a64(&stage0_bytes),
-        11_746_644_041_991_125_477,
+        18_227_800_129_459_938_807,
         "Stage0 bytes changed from the CPU V3 boot-format baseline"
     );
 

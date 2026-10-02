@@ -10,6 +10,12 @@ pub const D_CLEAN_ALL: u16 = 4;
 pub const CACHE_MAINTENANCE_STATUS: u16 = 5;
 pub const CACHE_MAINTENANCE_STATUS_SUCCESS: u16 = 0;
 pub const CACHE_MAINTENANCE_STATUS_ERROR: u16 = 0x8000;
+pub const SYSCTL_WATCH_TARGET: u16 = 6;
+pub const SYSCTL_WATCH_EXPECTED: u16 = 7;
+
+pub fn sysctl_watch_target(device: u16, channel: u16) -> u16 {
+    ((channel & 15) << 3) | (device & 7)
+}
 
 pub const BOOT_SELECT_DEVICE: u16 = 1;
 pub const BOOT_SELECT_VALUE: u16 = 0;
@@ -36,3 +42,18 @@ pub const DISPLAY_STAGE_FRAMEBUFFER_LOW: u16 = 1;
 pub const DISPLAY_STAGE_FRAMEBUFFER_HIGH: u16 = 2;
 pub const DISPLAY_SWAP_COMMAND: u16 = 3;
 pub const DISPLAY_NEXT_SWAP: u16 = 1;
+// Staged with NEXT_SWAP; read returns the active format.
+pub const DISPLAY_COLOR_FORMAT: u16 = 4;
+pub const DISPLAY_RGB565: u16 = 0;
+pub const DISPLAY_LINEAR_RGB565: u16 = 1;
+
+pub const GPU_DEVICE: u16 = 4;
+pub const GPU_CMD_BASE_LOW: u16 = 0;
+pub const GPU_CMD_BASE_HIGH: u16 = 1;
+pub const GPU_CMD_WORDS_LOW: u16 = 2;
+pub const GPU_CMD_WORDS_HIGH: u16 = 3;
+pub const GPU_SUBMIT: u16 = 4;
+pub const GPU_EXECUTED_COUNT: u16 = 1;
+pub const GPU_STATUS: u16 = 2;
+pub const GPU_STATUS_SUBMIT_REJECTED: u16 = 1 << 2;
+pub const GPU_STATUS_COMMAND_ERROR: u16 = 1 << 3;

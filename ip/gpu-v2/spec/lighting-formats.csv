@@ -1,0 +1,18 @@
+# name,bits,fraction,signed
+Direction,16,14,true
+Ndc,18,16,true
+PixelWord,36,0,false
+Magnitude,17,14,false
+NormalizedWork,32,28,true
+SquareSum,30,28,false
+Reciprocal,17,15,false
+Dot,34,28,true
+Specular,16,15,false
+Intensity,9,8,false
+IntensitySum,10,8,false
+HalfSum,17,14,true
+SquareEntry,14,0,false
+SquareSignedEntry,15,0,false
+ReciprocalEntry,24,0,false
+PowerEntry,28,0,false
+PowerContext,43,0,false

@@ -539,6 +539,21 @@ impl FuncBuilder {
         self.push(Instr::DcacheInvalidateAll);
     }
 
+    pub fn dcache_line_copy(&mut self, source: VReg, destination_page: VReg) {
+        self.push(Instr::DcacheLineCopy {
+            source,
+            destination_page,
+        });
+    }
+
+    pub fn dcache_clean_line(&mut self, address: VReg) {
+        self.push(Instr::DcacheCleanLine { address });
+    }
+
+    pub fn dcache_wait(&mut self) {
+        self.push(Instr::DcacheWait);
+    }
+
     /// CpuV3-only: write the DSEG special register from `src`
     pub fn mtsr_dseg(&mut self, src: VReg) {
         self.push(Instr::MtsrDseg { src });

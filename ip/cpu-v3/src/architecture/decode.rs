@@ -1,4 +1,4 @@
-//! Disassembler for CpuV3 revision 0.8: word -> typed instruction + mnemonic text.
+//! Disassembler for CpuV3 revision 0.9: word -> typed instruction + mnemonic text.
 //!
 //! `decode` maps one physical word to an `Instruction`; `disassemble_words` walks
 //! a stream and merges a `PFX12` prefix with its consumer into one wide
@@ -149,6 +149,10 @@ pub enum Instruction {
         dst: u8,
         src: u8,
     },
+    LineCopy {
+        offset: u8,
+        destination_page: u8,
+    },
     SetLessThanSigned {
         dst: u8,
         src: u8,
@@ -174,8 +178,13 @@ pub enum Instruction {
         special: SpecialRegister,
     },
     WriteDataSegment {
+        index: Option<u8>,
         src: u8,
     },
+    DataCacheCleanLine {
+        address: u8,
+    },
+    DataCacheWait,
     JumpSegment {
         segment: u8,
         target: u8,
@@ -286,6 +295,10 @@ pub fn decode(word: Word) -> Instruction {
                 dst: reg(n1.into()),
                 src: reg(n0.into()),
             },
+            7 => Instruction::LineCopy {
+                offset: reg(n1.into()),
+                destination_page: reg(n0.into()),
+            },
             8 => Instruction::SetLessThanSigned {
                 dst: reg(n1.into()),
                 src: reg(n0.into()),
@@ -306,22 +319,31 @@ pub fn decode(word: Word) -> Instruction {
                 src: reg(n1.into()),
                 signal_type: n0,
             },
-            0xd if n0 <= 1 => Instruction::ReadSpecial {
+            0xd if n0 <= 5 => Instruction::ReadSpecial {
                 dst: reg(n1.into()),
-                special: if n0 == 0 {
-                    SpecialRegister::CodeSegment
-                } else {
-                    SpecialRegister::DataSegment
+                special: match n0 {
+                    0 => SpecialRegister::CodeSegment,
+                    1 => SpecialRegister::DataSegment,
+                    2 => SpecialRegister::DataSegment0,
+                    3 => SpecialRegister::DataSegment1,
+                    4 => SpecialRegister::DataSegment2,
+                    5 => SpecialRegister::DataSegment3,
+                    _ => unreachable!(),
                 },
             },
-            0xe if n1 == 1 => Instruction::WriteDataSegment {
+            0xe if (1..=5).contains(&n1) => Instruction::WriteDataSegment {
+                index: if n1 >= 2 { Some(n1 - 2) } else { None },
                 src: reg(n0.into()),
             },
+            0xe if n1 == crate::DATA_CACHE_CLEAN_LINE_SELECTOR => Instruction::DataCacheCleanLine {
+                address: reg(n0.into()),
+            },
+            0xe if n1 == crate::DATA_CACHE_WAIT_SELECTOR && n0 == 0 => Instruction::DataCacheWait,
             0xf => Instruction::JumpSegment {
                 segment: reg(n1.into()),
                 target: reg(n0.into()),
             },
-            // 7 is reserved; non-canonical special-register selectors fault.
+            // Non-canonical special-register selectors fault.
             _ => Instruction::Invalid { word },
         },
         7 if word & 0x800 == 0 => Instruction::DeviceReceive {
@@ -718,6 +740,10 @@ impl Instruction {
             Instruction::LeadingZeros { dst, src } => format!("clz r{dst}, r{src}"),
             Instruction::PopulationCount { dst, src } => format!("popcnt r{dst}, r{src}"),
             Instruction::SetEqual { dst, src } => format!("seq r{dst}, r{src}"),
+            Instruction::LineCopy {
+                offset,
+                destination_page,
+            } => format!("lcopy r{offset}, r{destination_page}"),
             Instruction::SetLessThanSigned { dst, src } => format!("slt r{dst}, r{src}"),
             Instruction::SetLessThanUnsigned { dst, src } => format!("sltu r{dst}, r{src}"),
             Instruction::CompareSigned { lhs, rhs } => format!("cmps r{lhs}, r{rhs}"),
@@ -730,8 +756,18 @@ impl Instruction {
             Instruction::ReadSpecial { dst, special } => match special {
                 SpecialRegister::CodeSegment => format!("mfsr r{dst}, CSEG"),
                 SpecialRegister::DataSegment => format!("mfsr r{dst}, DSEG"),
+                SpecialRegister::DataSegment0 => format!("mfsr r{dst}, DSEG0"),
+                SpecialRegister::DataSegment1 => format!("mfsr r{dst}, DSEG1"),
+                SpecialRegister::DataSegment2 => format!("mfsr r{dst}, DSEG2"),
+                SpecialRegister::DataSegment3 => format!("mfsr r{dst}, DSEG3"),
             },
-            Instruction::WriteDataSegment { src } => format!("mtsr DSEG, r{src}"),
+            Instruction::WriteDataSegment { index: None, src } => format!("mtsr DSEG, r{src}"),
+            Instruction::WriteDataSegment {
+                index: Some(index),
+                src,
+            } => format!("mtsr DSEG{index}, r{src}"),
+            Instruction::DataCacheCleanLine { address } => format!("dcleanl r{address}"),
+            Instruction::DataCacheWait => "dwait".to_string(),
             Instruction::JumpSegment { segment, target } => {
                 format!("jseg r{segment}, r{target}")
             }
@@ -1156,11 +1192,29 @@ mod tests {
             let word = 0x2000 | (function << 8);
             assert_eq!(decode(word), Instruction::Invalid { word });
         }
-        // Extended family function 7 is reserved.
-        assert_eq!(decode(0x6700), Instruction::Invalid { word: 0x6700 });
+        assert_eq!(
+            decode(0x6712),
+            Instruction::LineCopy {
+                offset: 1,
+                destination_page: 2,
+            }
+        );
         // Non-canonical special-register selectors are invalid.
-        assert_eq!(decode(0x6d32), Instruction::Invalid { word: 0x6d32 });
+        assert_eq!(decode(0x6d36), Instruction::Invalid { word: 0x6d36 });
         assert_eq!(decode(0x6e04), Instruction::Invalid { word: 0x6e04 });
+        assert_eq!(
+            decode(0x6e24),
+            Instruction::WriteDataSegment {
+                index: Some(0),
+                src: 4
+            }
+        );
+        assert_eq!(
+            decode(0x6e64),
+            Instruction::DataCacheCleanLine { address: 4 }
+        );
+        assert_eq!(decode(0x6e74), Instruction::Invalid { word: 0x6e74 });
+        assert_eq!(decode(0x6e80), Instruction::DataCacheWait);
         // Immediate reserved functions E and F.
         for function in [0xeu16, 0xf] {
             let word = 0xa000 | (function << 8);

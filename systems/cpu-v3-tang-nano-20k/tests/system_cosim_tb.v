@@ -46,6 +46,12 @@ wire core_data_write;
 wire [31:0] core_data_address;
 wire [15:0] core_data_write_data;
 wire core_data_response_ready;
+wire core_data_line_copy_valid;
+wire [21:0] core_data_line_copy_source;
+wire [7:0] core_data_line_copy_destination_page;
+wire core_data_line_clean_valid;
+wire [21:0] core_data_line_clean_address;
+wire dc_line_copy_ready;
 wire dc_cpu_request_ready;
 wire dc_cpu_response_valid;
 wire [15:0] dc_cpu_read_data;
@@ -59,6 +65,8 @@ wire [21:0] dc_memory_address;
 wire [63:0] dc_memory_write_data;
 wire dc_memory_response_ready;
 wire arb_data_request_ready;
+wire arb_data_write_data_ready;
+wire sdram_write_data_ready;
 wire arb_data_response_valid;
 wire [63:0] arb_data_read_data;
 wire arb_data_error;
@@ -113,6 +121,8 @@ __CORE__ u_core (
     .data_response_valid(dc_cpu_response_valid),
     .data_read_data(dc_cpu_read_data),
     .data_error(dc_cpu_error),
+    .data_line_copy_ready(dc_line_copy_ready),
+    .data_cache_command_error(dc_maintenance_error),
     .device_read_data(16'h0000),
     .instruction_request_valid(core_instruction_request_valid),
     .instruction_address(core_instruction_address),
@@ -122,6 +132,11 @@ __CORE__ u_core (
     .data_address(core_data_address),
     .data_write_data(core_data_write_data),
     .data_response_ready(core_data_response_ready),
+    .data_line_copy_valid(core_data_line_copy_valid),
+    .data_line_copy_source(core_data_line_copy_source),
+    .data_line_copy_destination_page(core_data_line_copy_destination_page),
+    .data_line_clean_valid(core_data_line_clean_valid),
+    .data_line_clean_address(core_data_line_clean_address),
     .device_index(core_device_index),
     .device_channel(core_device_channel),
     .device_read_enable(core_device_read_enable),
@@ -188,12 +203,19 @@ __DCACHE__ u_dcache (
     .reset(reset),
     .clean_all(clean_all),
     .invalidate_all(1'b0),
+    .line_copy_start(core_data_line_copy_valid),
+    .line_copy_source(core_data_line_copy_source),
+    .line_copy_destination_page(core_data_line_copy_destination_page),
+    .line_clean_start(core_data_line_clean_valid),
+    .line_clean_address(core_data_line_clean_address),
+    .line_copy_ready(dc_line_copy_ready),
     .cpu_request_valid(core_data_request_valid),
     .cpu_write(core_data_write),
     .cpu_address(core_data_address),
     .cpu_write_data(core_data_write_data),
     .cpu_response_ready(core_data_response_ready),
     .memory_request_ready(arb_data_request_ready),
+    .memory_write_data_ready(arb_data_write_data_ready),
     .memory_response_valid(arb_data_response_valid),
     .memory_read_data(arb_data_read_data),
     .memory_error(arb_data_error),
@@ -230,7 +252,27 @@ __ARBITER__ u_arbiter (
     .dma_address(22'h0),
     .dma_write_data(16'h0000),
     .dma_response_ready(1'b0),
+    // Display and the three GPU masters stay idle in the CPU-only co-sim.
+    .display_request_valid(1'b0),
+    .display_address(22'h0),
+    .display_response_ready(1'b1),
+    .gpu_ro_request_valid(1'b0),
+    .gpu_ro_write(1'b0),
+    .gpu_ro_address(22'h0),
+    .gpu_ro_line_count_minus_1(2'b00),
+    .gpu_ro_write_data(64'h0),
+    .gpu_fb_r_request_valid(1'b0),
+    .gpu_fb_r_write(1'b0),
+    .gpu_fb_r_address(22'h0),
+    .gpu_fb_r_line_count_minus_1(2'b00),
+    .gpu_fb_r_write_data(64'h0),
+    .gpu_fb_w_request_valid(1'b0),
+    .gpu_fb_w_write(1'b0),
+    .gpu_fb_w_address(22'h0),
+    .gpu_fb_w_line_count_minus_1(2'b00),
+    .gpu_fb_w_write_data(64'h0),
     .memory_request_ready(sdram_request_ready),
+    .memory_write_data_ready(sdram_write_data_ready),
     .memory_response_valid(sdram_response_valid),
     .memory_read_data(sdram_read_data),
     .memory_response_last(sdram_response_last),
@@ -240,6 +282,7 @@ __ARBITER__ u_arbiter (
     .instruction_read_data(arb_instruction_read_data),
     .instruction_error(arb_instruction_error),
     .data_request_ready(arb_data_request_ready),
+    .data_write_data_ready(arb_data_write_data_ready),
     .data_response_valid(arb_data_response_valid),
     .data_read_data(arb_data_read_data),
     .data_error(arb_data_error),
@@ -247,6 +290,29 @@ __ARBITER__ u_arbiter (
     .dma_response_valid(arb_dma_response_valid),
     .dma_read_data(arb_dma_read_data),
     .dma_error(arb_dma_error),
+    .display_request_ready(),
+    .display_response_valid(),
+    .display_read_data(),
+    .display_response_last(),
+    .display_error(),
+    .gpu_ro_request_ready(),
+    .gpu_ro_write_data_ready(),
+    .gpu_ro_response_valid(),
+    .gpu_ro_read_data(),
+    .gpu_ro_response_last(),
+    .gpu_ro_error(),
+    .gpu_fb_r_request_ready(),
+    .gpu_fb_r_write_data_ready(),
+    .gpu_fb_r_response_valid(),
+    .gpu_fb_r_read_data(),
+    .gpu_fb_r_response_last(),
+    .gpu_fb_r_error(),
+    .gpu_fb_w_request_ready(),
+    .gpu_fb_w_write_data_ready(),
+    .gpu_fb_w_response_valid(),
+    .gpu_fb_w_read_data(),
+    .gpu_fb_w_response_last(),
+    .gpu_fb_w_error(),
     .memory_request_valid(arb_memory_request_valid),
     .memory_write(arb_memory_write),
     .memory_line(arb_memory_line),
@@ -276,15 +342,16 @@ reg pending_write = 0;
 reg pending_line = 0;
 reg [21:0] pending_address = 0;
 reg [63:0] pending_write_data = 0;
-reg [63:0] line_write_buffer [0:3];
 reg [2:0] beat = 0;
 reg [7:0] read_delay = 0;
 reg [7:0] recovery_count = 0;
 
-reg [15:0] memory [0:65535];
+reg [15:0] memory [0:131071];
 
 wire refresh_due = refresh_count >= 600;
 assign sdram_request_ready = sdram_state == ST_IDLE && refresh_count < 600;
+assign sdram_write_data_ready = sdram_state == ST_WRITE_CAPTURE ||
+    (sdram_state == ST_OP_WAIT && pending_write && pending_line && read_delay == 0);
 
 integer beat_index;
 always @(posedge clk) begin
@@ -299,13 +366,10 @@ always @(posedge clk) begin
                 pending_address <= arb_memory_address;
                 pending_write_data <= arb_memory_write_data;
                 if (arb_memory_write && arb_memory_line) begin
-                    line_write_buffer[0] <= arb_memory_write_data;
-                    beat <= 1;
+                    beat <= 0;
                     sdram_state <= ST_WRITE_CAPTURE;
                 end else if (arb_memory_write) begin
-                    // Word write: the full four-beat ST_WRITE_STAGE keeps the
-                    // gearbox write_buffer capture pointer aligned, mirroring
-                    // the RTL port.
+                    // Word writes hold their value across one preload stage.
                     beat <= 0;
                     sdram_state <= ST_WRITE_STAGE;
                 end else begin
@@ -314,26 +378,18 @@ always @(posedge clk) begin
             end
         end
         ST_WRITE_CAPTURE: begin
-            line_write_buffer[beat] <= arb_memory_write_data;
-            if (beat == 3) begin
-                beat <= 0;
-                sdram_state <= ST_WRITE_STAGE;
-            end else begin
-                beat <= beat + 1;
-            end
+            // Source-held preload beat; the remaining beats stay in cache.
+            for (beat_index = 0; beat_index < 4; beat_index = beat_index + 1)
+                memory[pending_address + beat_index] <= arb_memory_write_data[16*beat_index +: 16];
+            beat <= 1;
+            sdram_state <= ST_ACTIVE_REQ;
         end
-        ST_WRITE_STAGE: begin
-            if (beat == 3) begin
-                beat <= 0;
-                sdram_state <= ST_ACTIVE_REQ;
-            end else begin
-                beat <= beat + 1;
-            end
-        end
+        ST_WRITE_STAGE: sdram_state <= ST_ACTIVE_REQ;
         ST_ACTIVE_REQ: sdram_state <= ST_ACTIVE_WAIT;
         ST_ACTIVE_WAIT: sdram_state <= ST_OP_REQ;
         ST_OP_REQ: begin
             if (pending_write) begin
+                read_delay <= pending_line ? 1 : 0;
                 sdram_state <= ST_OP_WAIT;
             end else begin
                 read_delay <= 2;
@@ -343,20 +399,24 @@ always @(posedge clk) begin
         end
         ST_OP_WAIT: begin
             if (pending_write) begin
-                if (pending_line) begin
-                    for (beat_index = 0; beat_index < 4; beat_index = beat_index + 1) begin
-                        memory[pending_address + 4 * beat_index] <= line_write_buffer[beat_index][15:0];
-                        memory[pending_address + 4 * beat_index + 1] <= line_write_buffer[beat_index][31:16];
-                        memory[pending_address + 4 * beat_index + 2] <= line_write_buffer[beat_index][47:32];
-                        memory[pending_address + 4 * beat_index + 3] <= line_write_buffer[beat_index][63:48];
-                    end
+                if (read_delay != 0) begin
+                    read_delay <= read_delay - 1;
                 end else begin
-                    memory[pending_address] <= pending_write_data[15:0];
+                    if (pending_line) begin
+                        for (beat_index = 0; beat_index < 4; beat_index = beat_index + 1)
+                            memory[pending_address + 4*beat + beat_index] <= arb_memory_write_data[16*beat_index +: 16];
+                    end else begin
+                        memory[pending_address] <= pending_write_data[15:0];
+                    end
+                    if (pending_line && beat < 3) begin
+                        beat <= beat + 1;
+                    end else begin
+                        sdram_response_valid <= 1;
+                        sdram_read_data <= 0;
+                        sdram_response_last <= 1;
+                        sdram_state <= ST_CPU_RESPONSE;
+                    end
                 end
-                sdram_response_valid <= 1;
-                sdram_read_data <= 0;
-                sdram_response_last <= 1;
-                sdram_state <= ST_CPU_RESPONSE;
             end else if (read_delay != 0) begin
                 read_delay <= read_delay - 1;
             end else begin
@@ -408,7 +468,7 @@ reg started;
 reg end_flag;
 
 initial begin
-    for (init_index = 0; init_index < 65536; init_index = init_index + 1)
+    for (init_index = 0; init_index < 131072; init_index = init_index + 1)
         memory[init_index] = 16'h0000;
     __MEMORY_INIT__
     repeat (2) @(posedge clk);
@@ -421,7 +481,7 @@ initial begin
         if (started || core_instruction_request_valid)
             started = 1;
         if (started) begin
-            $display("CORE %0d %0d %0d %0d %0d %0d %0d %0d %0d %0d %0d %0d %0d %0d %0d %0d %0d %0d", cycles, pc, code_segment, data_segment, retired_words, halted, halt_signal, fault, fault_code, fault_pc, core_instruction_request_valid, core_instruction_address, core_instruction_response_ready, core_data_request_valid, core_data_write, core_data_address, core_data_write_data, core_data_response_ready);
+            $display("CORE %0d %0d %0d %0d %0d %0d %0d %0d %0d %0d %0d %0d %0d %0d %0d %0d %0d %0d %0d", cycles, pc, code_segment, data_segment, retired_words, halted, halt_signal, fault, fault_code, fault_pc, core_instruction_request_valid, core_instruction_address, core_instruction_response_ready, core_data_request_valid, core_data_write, core_data_address, core_data_write_data, core_data_response_ready, dc_maintenance_busy);
             if (halted || fault) end_flag = 1;
         end
         @(posedge clk);

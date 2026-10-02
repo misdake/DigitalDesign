@@ -1,289 +1,236 @@
-//! Comprehensive physical-board demo for the CPU, write-back D-cache, FPU,
-//! SDRAM framebuffer, and display handoff. The CPU redraws an RGB565 back
-//! buffer, the FPU evaluates animated sine/cosine curves and a parametric
-//! circle, and rounded FPU results return through integer registers before
-//! normal cached stores write the pixels. Each completed buffer is cleaned
-//! before it is published to the display at vertical blanking. Every published
-//! frame also reports a DDHT success status frame (test ID `0x0b`) through the
-//! device-0 system-control UART, so the default S2 boot passes the board UART
-//! check without holding the S1 button.
+//! Viewport triangle-only GPU demo.
+//!
+//! Initialize both framebuffer slots to black once, then alternate two fixed
+//! command buffers containing only SET_TARGET, TRIANGLE, and END. No background
+//! gradients or wave updates run after initialization. The CPU never writes
+//! framebuffer pixels directly.
 
 use crate::dsl_rt::*;
+use crate::rcc_std::*;
 mod device_abi;
 
-/// DDHT test ID for the display application's per-frame status report.
+use device_abi::*;
+
 const DISPLAY_TEST_ID: u16 = 0x0b;
 
-const WIDTH: u16 = 400;
-const HEIGHT: u16 = 240;
-const FB_A_SEGMENT: u16 = 0x20;
-const FB_A_OFFSET: u16 = 0x0100;
-const FB_B_SEGMENT: u16 = 0x21;
-const FB_B_OFFSET: u16 = 0x7800;
+const FB_A_WORD_LOW: u16 = 0x0000;
+const FB_A_WORD_HIGH: u16 = 0x0020;
+const FB_B_WORD_LOW: u16 = 0x8000;
+const FB_B_WORD_HIGH: u16 = 0x0021;
 
-/// Horizontal center of the framed circle and the vertical axis.
-const CENTER_X: u16 = 200;
+const INITIAL_COMMAND_WORDS: u16 = 60;
+const TRIANGLE_COMMAND_WORDS: u16 = 24;
+const COMMAND_ALLOCATION_WORDS: u16 = 64 + 15;
+const FULL_TILES_PER_DRAW: u16 = 125;
+// Reserve eight complete cache lines after alignment even though only 125
+// entries are live, so cleaning the final line never reaches another object.
+const TILE_LIST_ALLOCATION_WORDS: u16 = 128 + 15;
 
-fn background(x: u16, y: u16) -> u16 {
-    if x & 31 == 0 || y & 31 == 0 {
-        0x18e3
-    } else {
-        0x0841 | ((x >> 4) & 1) | (((y >> 4) & 1) << 5)
+const OPCODE_SET_TARGET: u16 = 0x01e0;
+const OPCODE_FAKE_DRAW: u16 = 0x03e1;
+const OPCODE_TRIANGLE: u16 = 0x04e2;
+const OPCODE_END: u16 = 0x01ff;
+const LOAD_OP_CLEAR: u16 = 1;
+
+fn aligned_command_buffer() -> Ptr {
+    let raw = malloc(COMMAND_ALLOCATION_WORDS);
+    Ptr::from_addr((raw.addr() + 15) & 0xfff0)
+}
+
+fn aligned_tile_list() -> Ptr {
+    let raw = malloc(TILE_LIST_ALLOCATION_WORDS);
+    Ptr::from_addr((raw.addr() + 15) & 0xfff0)
+}
+
+fn write_qword(buffer: Ptr, qword: u16, word0: u16, word1: u16, word2: u16, word3: u16) {
+    let base = (qword << 2) as i16;
+    unsafe {
+        buffer.write(base, word0);
+        buffer.write(base + 1, word1);
+        buffer.write(base + 2, word2);
+        buffer.write(base + 3, word3);
     }
 }
 
-/// The immutable layer underneath the animated curves and circle. Keeping the
-/// axes here lets an erase pass restore crossings without punching holes in
-/// the static drawing.
-fn static_pixel(x: u16, y: u16) -> u16 {
-    if y == 58
-        || y == 118
-        || (x == CENTER_X && y >= 132 && y < 232)
-        || (y == 182 && x >= 148 && x < 253)
-    {
-        0x39e7
-    } else {
-        background(x, y)
-    }
-}
-
-/// Compute every address/value before changing DSEG. Only the store itself is
-/// performed while the framebuffer segment is selected, so the compiler's
-/// stack and static data remain in segment zero.
-fn store_at(segment: u16, offset: u16, value: u16) {
-    let mut pixel = Ptr::from_addr(offset).as_u16_array();
-    mtsr_dseg(segment);
-    pixel[0u16] = value;
-    mtsr_dseg(0);
-}
-
-fn fill_buffer(base_segment: u16, base_offset: u16) {
-    let mut segment = base_segment;
-    let mut offset = base_offset;
-    let mut y: u16 = 0;
-    while y < HEIGHT {
-        let mut x: u16 = 0;
-        while x < WIDTH {
-            store_at(segment, offset, static_pixel(x, y));
-            offset += 1;
-            if offset == 0 {
-                segment += 1;
-            }
-            x += 1;
-        }
-        y += 1;
-    }
-}
-
-/// Resolve a screen coordinate in constant time without 32-bit arithmetic.
-/// `239 * 400` crosses the 16-bit boundary once; the two following additions
-/// can each carry into the segment as well.
-fn plot(base_segment: u16, base_offset: u16, x: u16, y: u16, color: u16) {
-    let mut segment = base_segment;
-    let row_offset = y * WIDTH;
-    if y >= 164 {
-        segment += 1;
-    }
-    let offset = base_offset + row_offset;
-    if offset < base_offset {
-        segment += 1;
-    }
-    let pixel_offset = offset + x;
-    if pixel_offset < offset {
-        segment += 1;
-    }
-    store_at(segment, pixel_offset, color);
-}
-
-/// Convert a raw angle step count at `1/256` radians into signed Q16.16.
-/// The old raw Q8.8 constructor interpreted `raw` as an `i16`; preserve that
-/// wrap by sign-extending its high byte into the Q16.16 high word.
-fn angle_q16(raw: u16) -> fix32 {
-    fix32::from_words(raw << 8, ((raw as i16) >> 8) as u16)
-}
-
-/// Draw two independently visible sincos results. Multiplication scales
-/// Q16.16 values to pixels; FROUND followed by `to_int()` deliberately exercises
-/// the FPU-to-integer path before every framebuffer store. When `restore` is
-/// nonzero, recompute the old geometry but replace it with the static layer.
-fn draw_waveforms(base_segment: u16, base_offset: u16, phase: u16, restore: u16) {
-    let amplitude = fix32::from_int(24);
-    let mut x: u16 = 0;
-    while x < WIDTH {
-        // 8 / 256 radians per pixel gives almost two periods across 400 px.
-        let angle = angle_q16(phase + x * 8);
-        let sc = fsincos(angle);
-        let sine_offset = (sc.x() * amplitude).round().to_int();
-        let cosine_offset = (sc.y() * amplitude).round().to_int();
-        let sine_y = (58i16 + sine_offset) as u16;
-        let cosine_y = (118i16 + cosine_offset) as u16;
-        let sine_color = if restore == 0 {
-            0x07e0
-        } else {
-            static_pixel(x, sine_y)
-        };
-        let sine_color_2 = if restore == 0 {
-            0x07e0
-        } else {
-            static_pixel(x, sine_y + 1)
-        };
-        let cosine_color = if restore == 0 {
-            0x07ff
-        } else {
-            static_pixel(x, cosine_y)
-        };
-        let cosine_color_2 = if restore == 0 {
-            0x07ff
-        } else {
-            static_pixel(x, cosine_y + 1)
-        };
-        plot(base_segment, base_offset, x, sine_y, sine_color);
-        plot(base_segment, base_offset, x, sine_y + 1, sine_color_2);
-        plot(base_segment, base_offset, x, cosine_y, cosine_color);
-        plot(base_segment, base_offset, x, cosine_y + 1, cosine_color_2);
-        x += 1;
-    }
-}
-
-fn draw_circle(base_segment: u16, base_offset: u16, phase: u16, restore: u16) {
-    let radius = fix32::from_int(46);
-    let mut angle_bits = phase;
-    let mut sample: u16 = 0;
-    while sample < 256 {
-        let sc = fsincos(angle_q16(angle_bits));
-        let x_offset = (sc.y() * radius).round().to_int();
-        let y_offset = (sc.x() * radius).round().to_int();
-        let x = (CENTER_X as i16 + x_offset) as u16;
-        let y = (182i16 + y_offset) as u16;
-        let color = if restore != 0 {
-            static_pixel(x, y)
-        } else {
-            if sample < 128 {
-                0xffe0
-            } else {
-                0xf81f
-            }
-        };
-        plot(base_segment, base_offset, x, y, color);
-
-        // 6.25 raw 1/256-radian steps approximate 2*pi over 256 samples without
-        // integer division: three 6s followed by a 7.
-        angle_bits += 6;
-        if sample & 3 == 3 {
-            angle_bits += 1;
-        }
-        sample += 1;
-    }
-
-    // A red phase marker makes it obvious that new FPU results, CPU stores,
-    // cache cleaning, and display swaps continue to complete frame by frame.
-    let marker = fsincos(angle_q16(phase));
-    let marker_x = (CENTER_X as i16 + (marker.y() * radius).round().to_int()) as u16;
-    let marker_y = (182i16 + (marker.x() * radius).round().to_int()) as u16;
-    let marker_color = if restore == 0 {
-        0xf800
-    } else {
-        static_pixel(marker_x, marker_y)
-    };
-    let marker_x_color = if restore == 0 {
-        0xf800
-    } else {
-        static_pixel(marker_x + 1, marker_y)
-    };
-    let marker_y_color = if restore == 0 {
-        0xf800
-    } else {
-        static_pixel(marker_x, marker_y + 1)
-    };
-    plot(base_segment, base_offset, marker_x, marker_y, marker_color);
-    plot(
-        base_segment,
-        base_offset,
-        marker_x + 1,
-        marker_y,
-        marker_x_color,
+fn write_black_clear(buffer: Ptr, qword: u16, tile_list: Ptr, tile_count: u16) {
+    write_qword(
+        buffer,
+        qword,
+        OPCODE_FAKE_DRAW,
+        0,
+        tile_count,
+        LOAD_OP_CLEAR,
     );
-    plot(
-        base_segment,
-        base_offset,
-        marker_x,
-        marker_y + 1,
-        marker_y_color,
+    // All permanent demo allocations remain in physical page zero.
+    write_qword(buffer, qword + 1, tile_list.addr(), 0, 0, 0);
+    write_qword(buffer, qword + 2, 0, 0, 0xffff, 0);
+}
+
+fn write_target(buffer: Ptr, target_low: u16, target_high: u16) {
+    write_qword(buffer, 0, OPCODE_SET_TARGET, 0, target_low, target_high);
+}
+
+fn write_triangle(buffer: Ptr, qword: u16) {
+    write_qword(buffer, qword, OPCODE_TRIANGLE, 0, 0, 0);
+    // Each vertex is one {y:s12.4, x:s12.4} qword. The winding is front-facing.
+    write_qword(buffer, qword + 1, 80 << 4, 48 << 4, 0, 0);
+    write_qword(buffer, qword + 2, 320 << 4, 64 << 4, 0, 0);
+    write_qword(buffer, qword + 3, 200 << 4, 208 << 4, 0, 0);
+}
+
+fn write_initial_draws(buffer: Ptr, list_0: Ptr, list_1: Ptr, list_2: Ptr) {
+    write_black_clear(buffer, 1, list_0, FULL_TILES_PER_DRAW);
+    write_black_clear(buffer, 4, list_1, FULL_TILES_PER_DRAW);
+    write_black_clear(buffer, 7, list_2, FULL_TILES_PER_DRAW);
+    write_triangle(buffer, 10);
+    write_qword(buffer, 14, OPCODE_END, 0, 0, 0);
+}
+
+fn write_triangle_draw(buffer: Ptr, target_low: u16, target_high: u16) {
+    write_target(buffer, target_low, target_high);
+    write_triangle(buffer, 1);
+    write_qword(buffer, 5, OPCODE_END, 0, 0, 0);
+    clean_commands(buffer, TRIANGLE_COMMAND_WORDS);
+}
+
+fn clean_commands(buffer: Ptr, words: u16) {
+    let mut offset: u16 = 0;
+    while offset < words {
+        unsafe {
+            dcache_clean_line(buffer.add(offset as i16));
+        }
+        offset += 16;
+    }
+    dcache_wait();
+}
+
+fn initialize_tile_list(list: Ptr, first_tile: u16) {
+    let mut index: u16 = 0;
+    while index < FULL_TILES_PER_DRAW {
+        unsafe {
+            list.write(index as i16, first_tile + index);
+        }
+        index += 1;
+    }
+    let mut offset: u16 = 0;
+    while offset < 128 {
+        unsafe {
+            dcache_clean_line(list.add(offset as i16));
+        }
+        offset += 16;
+    }
+    dcache_wait();
+}
+
+fn submit(buffer: Ptr, words: u16) -> u16 {
+    let previous = dev_recv(GPU_DEVICE, GPU_EXECUTED_COUNT);
+    dev_send(GPU_DEVICE, GPU_CMD_BASE_LOW, buffer.addr());
+    // The S2 application data segment is physical page zero; both permanent
+    // command buffers therefore have zero physical word-address high bits.
+    dev_send(GPU_DEVICE, GPU_CMD_BASE_HIGH, 0);
+    dev_send(GPU_DEVICE, GPU_CMD_WORDS_LOW, words);
+    dev_send(GPU_DEVICE, GPU_CMD_WORDS_HIGH, 0);
+    dev_send(GPU_DEVICE, GPU_SUBMIT, 1);
+    if dev_recv(GPU_DEVICE, GPU_STATUS) & GPU_STATUS_SUBMIT_REJECTED != 0 {
+        halt(0x0b01);
+    }
+    previous
+}
+
+fn wait_device_change(device: u16, channel: u16, previous: u16) {
+    dev_send(
+        SYSTEM_CONTROL_DEVICE,
+        SYSCTL_WATCH_TARGET,
+        sysctl_watch_target(device, channel),
     );
+    dev_send(SYSTEM_CONTROL_DEVICE, SYSCTL_WATCH_EXPECTED, previous);
 }
 
-fn render_dynamic(base_segment: u16, base_offset: u16, phase: u16, restore: u16) {
-    draw_waveforms(base_segment, base_offset, phase, restore);
-    draw_circle(base_segment, base_offset, phase, restore);
+fn wait_gpu(previous: u16) {
+    wait_device_change(GPU_DEVICE, GPU_EXECUTED_COUNT, previous);
+    if dev_recv(GPU_DEVICE, GPU_EXECUTED_COUNT) != previous + 1 {
+        halt(0x0b03);
+    }
+    if dev_recv(GPU_DEVICE, GPU_STATUS) & GPU_STATUS_COMMAND_ERROR != 0 {
+        halt(0x0b02);
+    }
 }
 
-/// Transmits one byte through the device-0 system-control UART, polling its
-/// busy bit first.
+fn request_display_swap(target_low: u16, target_high: u16) -> u16 {
+    let frame = dev_recv(DISPLAY_DEVICE, DISPLAY_FRAME_INDEX);
+    dev_send(DISPLAY_DEVICE, DISPLAY_STAGE_FRAMEBUFFER_LOW, target_low);
+    dev_send(DISPLAY_DEVICE, DISPLAY_STAGE_FRAMEBUFFER_HIGH, target_high);
+    dev_send(DISPLAY_DEVICE, DISPLAY_SWAP_COMMAND, DISPLAY_NEXT_SWAP);
+    frame
+}
+
+fn wait_next_frame(frame: u16) {
+    wait_device_change(DISPLAY_DEVICE, DISPLAY_FRAME_INDEX, frame);
+}
+
 fn uart_byte(byte: u16) {
     while dev_recv(SYSTEM_CONTROL_DEVICE, SYSCTL_UART_STATUS) & 1 != 0 {}
     dev_send(SYSTEM_CONTROL_DEVICE, SYSCTL_UART_TX_DATA, byte);
 }
 
-/// Transmits the 8-byte DDHT success frame for the display application.
 fn uart_success() {
-    uart_byte(0x44); // 'D'
-    uart_byte(0x44); // 'D'
-    uart_byte(0x48); // 'H'
-    uart_byte(0x54); // 'T'
-    uart_byte(1); // protocol version
+    uart_byte(0x44);
+    uart_byte(0x44);
+    uart_byte(0x48);
+    uart_byte(0x54);
+    uart_byte(1);
     uart_byte(DISPLAY_TEST_ID);
-    uart_byte(0); // status: success
-                  // XOR of 'D' 'D' 'H' 'T' 1 test ID 0 (the two 'D' bytes cancel).
+    uart_byte(0);
     uart_byte(0x48 ^ 0x54 ^ 1 ^ DISPLAY_TEST_ID);
-}
-
-fn select_next_framebuffer(segment: u16, offset: u16) {
-    // The display reads SDRAM directly and does not snoop the CPU's write-back
-    // D-cache. Complete the ownership handoff before publishing this buffer.
-    let clean_status = dcache_clean_all();
-    if clean_status != CACHE_MAINTENANCE_STATUS_SUCCESS {
-        halt(clean_status);
-    }
-    dev_send(DISPLAY_DEVICE, DISPLAY_STAGE_FRAMEBUFFER_LOW, offset);
-    dev_send(DISPLAY_DEVICE, DISPLAY_STAGE_FRAMEBUFFER_HIGH, segment);
-    dev_send(DISPLAY_DEVICE, DISPLAY_SWAP_COMMAND, DISPLAY_NEXT_SWAP);
-}
-
-fn wait_next_frame() {
-    let frame = dev_recv(DISPLAY_DEVICE, DISPLAY_FRAME_INDEX);
-    let mut current = frame;
-    while current == frame {
-        current = dev_recv(DISPLAY_DEVICE, DISPLAY_FRAME_INDEX);
-    }
 }
 
 #[allow(clippy::eq_op)]
 fn main() {
-    let mut phase: u16 = 0;
-    let mut phase_a: u16 = 0;
-    let mut phase_b: u16 = 0;
-    let mut back: u16 = 0;
-    // Report once before the first frames complete so the boot chain's status
-    // is observable early, then once per published frame below.
-    uart_success();
-    fill_buffer(FB_A_SEGMENT, FB_A_OFFSET);
-    fill_buffer(FB_B_SEGMENT, FB_B_OFFSET);
+    let command_a = aligned_command_buffer();
+    let command_b = aligned_command_buffer();
+    let list_0 = aligned_tile_list();
+    let list_1 = aligned_tile_list();
+    let list_2 = aligned_tile_list();
+    initialize_tile_list(list_0, 0);
+    initialize_tile_list(list_1, 125);
+    initialize_tile_list(list_2, 250);
+    // The one-time full clears remove uninitialized SDRAM from the background.
+    write_target(command_a, FB_B_WORD_LOW, FB_B_WORD_HIGH);
+    write_initial_draws(command_a, list_0, list_1, list_2);
+    clean_commands(command_a, INITIAL_COMMAND_WORDS);
+    let previous_b = submit(command_a, INITIAL_COMMAND_WORDS);
+    wait_gpu(previous_b);
+    let frame_b = request_display_swap(FB_B_WORD_LOW, FB_B_WORD_HIGH);
+    wait_next_frame(frame_b);
+
+    write_target(command_b, FB_A_WORD_LOW, FB_A_WORD_HIGH);
+    write_initial_draws(command_b, list_0, list_1, list_2);
+    clean_commands(command_b, INITIAL_COMMAND_WORDS);
+    let previous_a = submit(command_b, INITIAL_COMMAND_WORDS);
+    wait_gpu(previous_a);
+    let frame_a = request_display_swap(FB_A_WORD_LOW, FB_A_WORD_HIGH);
+    wait_next_frame(frame_a);
+
+    write_triangle_draw(command_a, FB_B_WORD_LOW, FB_B_WORD_HIGH);
+    write_triangle_draw(command_b, FB_A_WORD_LOW, FB_A_WORD_HIGH);
+    let mut use_a: u16 = 0;
     while 1 == 1 {
-        if back == 0 {
-            render_dynamic(FB_A_SEGMENT, FB_A_OFFSET, phase_a, 1);
-            render_dynamic(FB_A_SEGMENT, FB_A_OFFSET, phase, 0);
-            select_next_framebuffer(FB_A_SEGMENT, FB_A_OFFSET);
-            phase_a = phase;
-            back = 1;
+        let command = if use_a == 0 { command_a } else { command_b };
+        let target_low = if use_a == 0 {
+            FB_B_WORD_LOW
         } else {
-            render_dynamic(FB_B_SEGMENT, FB_B_OFFSET, phase_b, 1);
-            render_dynamic(FB_B_SEGMENT, FB_B_OFFSET, phase, 0);
-            select_next_framebuffer(FB_B_SEGMENT, FB_B_OFFSET);
-            phase_b = phase;
-            back = 0;
-        }
-        wait_next_frame();
+            FB_A_WORD_LOW
+        };
+        let target_high = if use_a == 0 {
+            FB_B_WORD_HIGH
+        } else {
+            FB_A_WORD_HIGH
+        };
+        let previous = submit(command, TRIANGLE_COMMAND_WORDS);
+        wait_gpu(previous);
+        let frame = request_display_swap(target_low, target_high);
+        wait_next_frame(frame);
         uart_success();
-        phase += 24;
+        use_a ^= 1;
     }
 }

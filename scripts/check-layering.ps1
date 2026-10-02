@@ -13,6 +13,7 @@ function Get-Layer {
     }
     $relative = $resolvedManifest.Substring($prefix.Length)
     $relative = $relative.Replace("\", "/")
+    if ($relative.StartsWith("modeling/")) { return [pscustomobject]@{ Name = "modeling"; Rank = 0; Path = $relative } }
     if ($relative -eq "circuit/Cargo.toml") { return [pscustomobject]@{ Name = "circuit"; Rank = 0; Path = $relative } }
     if ($relative.StartsWith("hardware/")) { return [pscustomobject]@{ Name = "hardware"; Rank = 1; Path = $relative } }
     if ($relative.StartsWith("ip/")) { return [pscustomobject]@{ Name = "ip"; Rank = 2; Path = $relative } }
@@ -28,6 +29,9 @@ foreach ($owner in $metadata.packages) {
         if (-not $packages.ContainsKey($dependency.name)) { continue }
         $target = $packages[$dependency.name]
         $targetLayer = Get-Layer $target.manifest_path
+        if ($ownerLayer.Name -eq "modeling") {
+            $errors += "$($owner.name) is an independent modeling tool and must not depend on workspace package $($target.name)"
+        }
         if ($targetLayer.Rank -gt $ownerLayer.Rank) {
             $errors += "$($owner.name) ($($ownerLayer.Name)) must not depend upward on $($target.name) ($($targetLayer.Name))"
         }

@@ -21,6 +21,7 @@ pub const DEFAULT_PHYSICAL_MEMORY_WORDS: usize = 1 << 22;
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum FaultKind {
     InvalidInstruction,
+    UnalignedAddress { address: PhysicalWordAddress },
     PhysicalAddressOutOfRange { address: PhysicalWordAddress },
 }
 
@@ -62,6 +63,12 @@ pub trait Device {
     fn write(&mut self, memory: &mut [Word], channel: u8, value: Word);
     /// Downcast support for test assertions on attached models.
     fn as_any(&self) -> &dyn std::any::Any;
+    /// Optional CPU-local hold driven by a device-channel value watch.
+    fn cpu_hold_watch(&self) -> Option<(u8, u8, Word)> {
+        None
+    }
+    /// Supplies one sampled value to the active hold owner.
+    fn observe_cpu_hold(&mut self, _value: Word) {}
 }
 
 pub struct CpuV3Sim {
@@ -77,7 +84,7 @@ pub struct CpuV3Sim {
     boot_window: Option<Box<[Word]>>,
     pc: Word,
     code_segment: Word,
-    data_segment: Word,
+    data_segments: [Word; 4],
     prefix: Option<Prefix>,
     /// Transient result of the last CMP-class instruction, consumed by the
     /// next conditional branch and expired by any other retired
@@ -114,7 +121,7 @@ impl CpuV3Sim {
             boot_window: None,
             pc: 0,
             code_segment: 0,
-            data_segment: 0,
+            data_segments: [0, 1, 2, 3],
             prefix: None,
             pending_test: None,
             retired_words: 0,
@@ -212,6 +219,16 @@ impl CpuV3Sim {
             .downcast_ref()
     }
 
+    /// Performs one device read without retiring a CPU instruction so an
+    /// autonomous target can advance while a watch holds the CPU.
+    fn cycle_device_read(&mut self, device: u8, channel: u8) -> Word {
+        let (devices, memory) = (&mut self.devices, &mut self.memory);
+        devices
+            .get_mut(usize::from(device))
+            .and_then(Option::as_mut)
+            .map_or(0, |handler| handler.read(memory, channel))
+    }
+
     /// Installs the BSRAM boot-window image (see the `boot_window` field).
     pub fn set_boot_window(&mut self, words: &[Word]) {
         self.boot_window = Some(words.to_vec().into_boxed_slice());
@@ -226,7 +243,11 @@ impl CpuV3Sim {
     }
 
     pub fn data_segment(&self) -> Word {
-        self.data_segment
+        self.data_segments[0] >> 2
+    }
+
+    pub fn data_segments(&self) -> [Word; 4] {
+        self.data_segments
     }
 
     pub fn retired_words(&self) -> u64 {
@@ -259,6 +280,24 @@ impl CpuV3Sim {
             return Ok(StepOutcome::Halted {
                 signal: self.halt_signal,
             });
+        }
+
+        if let Some((owner, device, channel)) =
+            self.devices
+                .iter()
+                .enumerate()
+                .find_map(|(owner, handler)| {
+                    handler
+                        .as_ref()
+                        .and_then(|handler| handler.cpu_hold_watch())
+                        .map(|(device, channel, _)| (owner, device, channel))
+                })
+        {
+            let value = self.cycle_device_read(device, channel);
+            if let Some(handler) = self.devices[owner].as_mut() {
+                handler.observe_cpu_hold(value);
+            }
+            return Ok(StepOutcome::Running);
         }
 
         let address = self.pc;
@@ -838,6 +877,41 @@ impl CpuV3Sim {
                 self.registers[usize::from(dst)] =
                     Word::from(self.registers[usize::from(dst)] == self.registers[usize::from(src)])
             }
+            7 => {
+                let offset = self.registers[usize::from(dst)];
+                let destination_page = self.registers[usize::from(src)];
+                let source = self.data_address(offset);
+                if offset & 0x0f != 0 {
+                    return Err(FaultKind::UnalignedAddress { address: source });
+                }
+                if destination_page & !0xff != 0 {
+                    return Err(FaultKind::PhysicalAddressOutOfRange { address: source });
+                }
+                let destination = PhysicalWordAddress::new(
+                    (u32::from(destination_page) << 14) | u32::from(offset & 0x3fff),
+                );
+                let source_start = source.get() as usize;
+                let destination_start = destination.get() as usize;
+                let source_end = source_start
+                    .checked_add(16)
+                    .ok_or(FaultKind::PhysicalAddressOutOfRange { address: source })?;
+                let destination_end = destination_start.checked_add(16).ok_or(
+                    FaultKind::PhysicalAddressOutOfRange {
+                        address: destination,
+                    },
+                )?;
+                if source_end > self.memory.len() {
+                    return Err(FaultKind::PhysicalAddressOutOfRange { address: source });
+                }
+                if destination_end > self.memory.len() {
+                    return Err(FaultKind::PhysicalAddressOutOfRange {
+                        address: destination,
+                    });
+                }
+                let mut line = [0; 16];
+                line.copy_from_slice(&self.memory[source_start..source_end]);
+                self.memory[destination_start..destination_end].copy_from_slice(&line);
+            }
             8 => {
                 self.registers[usize::from(dst)] = Word::from(
                     (self.registers[usize::from(dst)] as i16)
@@ -878,13 +952,35 @@ impl CpuV3Sim {
             13 => {
                 self.registers[usize::from(dst)] = match src {
                     value if value == SpecialRegister::CodeSegment as u8 => self.code_segment,
-                    value if value == SpecialRegister::DataSegment as u8 => self.data_segment,
+                    1 => self.data_segments[0] >> 2,
+                    2..=5 => self.data_segments[usize::from(src - 2)],
                     _ => return Err(FaultKind::InvalidInstruction),
                 }
             }
-            14 if dst == SpecialRegister::DataSegment as u8 => {
-                self.data_segment = self.registers[usize::from(src)];
+            14 if dst == 1 => {
+                let value = self.registers[usize::from(src)];
+                if value & !0x3f != 0 {
+                    return Err(FaultKind::PhysicalAddressOutOfRange {
+                        address: self.data_address(0),
+                    });
+                }
+                let base = value << 2;
+                self.data_segments = [base, base + 1, base + 2, base + 3];
             }
+            14 if (2..=5).contains(&dst) => {
+                let value = self.registers[usize::from(src)];
+                if value & !0xff != 0 {
+                    return Err(FaultKind::PhysicalAddressOutOfRange {
+                        address: self.data_address(0),
+                    });
+                }
+                self.data_segments[usize::from(dst - 2)] = value;
+            }
+            // Cache-only commands have no architectural-memory effect or
+            // asynchronous latency in the naive interpreter. DWAIT therefore
+            // completes immediately; command timing/errors belong to the
+            // cycle model and RTL.
+            14 if matches!(dst, 6 | 8) => {}
             15 => {
                 self.code_segment = self.registers[usize::from(dst)];
                 self.pc = self.registers[usize::from(src)];
@@ -895,7 +991,8 @@ impl CpuV3Sim {
     }
 
     fn data_address(&self, offset: Word) -> PhysicalWordAddress {
-        PhysicalWordAddress::from_segment_offset(self.data_segment, offset)
+        let page = self.data_segments[usize::from(offset >> 14)];
+        PhysicalWordAddress::new((u32::from(page) << 14) | u32::from(offset & 0x3fff))
     }
 
     fn read_data(&mut self, address: PhysicalWordAddress) -> Result<Word, FaultKind> {
@@ -965,12 +1062,12 @@ mod tests {
         alu, branch, compare_signed, compare_unsigned, conditional_move, device_receive,
         device_send, fpu_aux, fpu_aux_raw, fpu_scalar, fpu_vector, fpu_vector_raw, halt,
         immediate_signed, immediate_unsigned, jump_and_link_register, jump_and_link_relative,
-        jump_register, jump_relative, jump_segment, load, load_immediate16, move_register,
-        multiply, multiply_immediate, nop, population_count, prefix12, prefixed, prefixed_branch,
-        read_special, set_less_than_signed, set_less_than_unsigned, shift_immediate,
-        shift_register, signal, store, write_data_segment, AluOp, FpuAuxKind, FpuAuxSubop,
-        FpuDotStride, FpuScalarSubop, FpuVectorLength, FpuVectorSubop, ImmediateOp, MultiplyWindow,
-        ShiftOp, SpecialRegister, TestCondition,
+        jump_register, jump_relative, jump_segment, line_copy, load, load_immediate16,
+        move_register, multiply, multiply_immediate, nop, population_count, prefix12, prefixed,
+        prefixed_branch, read_special, set_less_than_signed, set_less_than_unsigned,
+        shift_immediate, shift_register, signal, store, write_data_segment, AluOp, FpuAuxKind,
+        FpuAuxSubop, FpuDotStride, FpuScalarSubop, FpuVectorLength, FpuVectorSubop, ImmediateOp,
+        MultiplyWindow, ShiftOp, SpecialRegister, TestCondition,
     };
 
     #[test]
@@ -1001,6 +1098,34 @@ mod tests {
         assert_eq!(machine.register(3), Some(15));
         assert_eq!(machine.memory(0x4000), 15);
         assert_eq!(machine.retired_words(), 29);
+    }
+
+    #[test]
+    fn line_copy_moves_one_aligned_cache_line_between_segments() {
+        let mut program = Vec::new();
+        program.extend(load_immediate16(1, 1));
+        program.push(write_data_segment(1));
+        program.extend(load_immediate16(2, 0x20));
+        program.extend(load_immediate16(3, 2));
+        program.extend([line_copy(2, 3), halt()]);
+
+        let source: Vec<u16> = (0..16).map(|index| 0x9000 + index).collect();
+        let mut machine = CpuV3Sim::default();
+        machine.load_program(0, &program).unwrap();
+        machine.load_segment(1, 0x20, &source).unwrap();
+        assert_eq!(
+            machine.run(64).unwrap(),
+            RunOutcome::Halted {
+                steps: 9,
+                signal: 0
+            }
+        );
+        for (index, expected) in source.into_iter().enumerate() {
+            assert_eq!(
+                machine.physical_memory(PhysicalWordAddress::new(0x8000 + 0x20 + index as u32,)),
+                expected
+            );
+        }
     }
 
     #[test]
@@ -1742,6 +1867,38 @@ mod tests {
         assert_eq!(machine.data_segment(), 2);
         assert_eq!(machine.register(4), Some(1));
         assert_eq!(machine.register(5), Some(2));
+    }
+
+    #[test]
+    fn four_data_pages_translate_each_logical_quarter_independently() {
+        let mut program = vec![];
+        for (register, page) in [(1, 8), (2, 9), (3, 10), (4, 11)] {
+            program.extend(load_immediate16(register, page));
+            program.push(crate::write_data_segment_page(register - 1, register));
+        }
+        for (base, offset) in [(5, 0x0010), (6, 0x4010), (7, 0x8010), (8, 0xc010)] {
+            program.extend(load_immediate16(base, offset));
+        }
+        program.extend(load_immediate16(9, 0x5aa5));
+        program.extend([
+            store(9, 5, 0),
+            store(9, 6, 0),
+            store(9, 7, 0),
+            store(9, 8, 0),
+            halt(),
+        ]);
+
+        let mut machine = CpuV3Sim::default();
+        machine.load_program(0, &program).unwrap();
+        machine.run(64).unwrap();
+
+        assert_eq!(machine.data_segments(), [8, 9, 10, 11]);
+        for address in [0x0002_0010, 0x0002_4010, 0x0002_8010, 0x0002_c010] {
+            assert_eq!(
+                machine.physical_memory(PhysicalWordAddress::new(address)),
+                0x5aa5
+            );
+        }
     }
 
     #[test]

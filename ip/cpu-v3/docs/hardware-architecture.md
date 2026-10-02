@@ -1,6 +1,6 @@
 # CPU V3 hardware structure and timing
 
-This document describes the revision 0.8 ISA running on the current Stage 12
+This document describes the revision 0.9 ISA running on the current Stage 12
 microarchitecture, not an intended future pipeline. The maintainable PlantUML source is in
 [`cpu_v3_structure.puml`](cpu_v3_structure.puml).
 
@@ -27,6 +27,14 @@ an old response returns. Sequential word addresses wrap PC without carrying into
 CSEG. A queued word or matching memory-response bypass can be accepted directly
 in FetchRequest or in the Stage 12 pipelineable Execute subset; backpressured
 responses are queued.
+
+Live queue and request-metadata slots do not store individual addresses. Ordered
+delivery uses one 16-bit downstream head offset, advanced only when the core
+consumes an ordinary queued or bypassed word. Restart initializes it to the target
+(plus two on a BTC hit). Full stream addresses still participate in restart
+detection. Every restart clears queue occupancy and marks old requests stale
+before a late response can enter the new stream. BTC replay does not advance the
+downstream head; BTC tags retain full physical targets across ordinary redirects.
 
 The queue also contains a fully associative resolved-target BTC, defaulting to
 four entries of two 16-bit instruction words (not necessarily two instructions).
@@ -60,15 +68,20 @@ are additional when neither the queue, BTC nor bypass can supply the word.
 | Block | Current implementation | Per-cycle capability |
 |---|---|---|
 | GPR file | Explicit 16 x 16-bit distributed-RAM leaf with dual asynchronous reads and one synchronous write | One registered write per cycle; a forwarding mux exposes the pending write to a matching next instruction |
-| Control state | 16-bit PC, CSEG, DSEG, one PFX12 prefix, one transient three-way comparison | One instruction decoded; no speculative state |
-| Integer ALU | 16-bit add/sub/logic/shift/compare plus CLZ and popcount | One non-multiply integer result |
+| Control state | 16-bit PC, CSEG, four 8-bit DSEG page mappings, one PFX12 prefix, one transient three-way comparison | One instruction decoded; no speculative state |
+| Integer ALU | One common operand pair for register/immediate add/sub/logic/compare; the add/subtract lane also forms effective addresses and relative targets; separate shift, CLZ and popcount paths | One non-multiply integer result; sequential PC increment remains independent for overlapped instruction acceptance |
 | Integer multiplier | One registered signed 18 x 18 `MULT18X18` lane | Accepts an input each cycle, but the blocking core uses one operation at a time |
 | FPU front-end | Two-word instruction latch: word0 exposes `Fa`/`Fb` (or AUX `X`/`Fa`) and drives the RF read addresses immediately; word1 carries `Fd`/subop/len/mode | One `instr_complete` pulse per pair; FPU instructions are fetch barriers and never consume `PFX12` |
 | FPR file | Two mirrored 512 x 32 SDPB BSRAMs giving 2R1W; architectural `F0..F63` are addresses `0..63`, the hidden LUT region is `64..511` (mirror A: RCP and SINCOS; mirror B: RSQRT even/odd) | Two registered-address synchronous reads and one broadcast write per cycle; a same-cycle write/read returns the old word on both ports |
-| FPU scalar/vector ALU | One combinational 32-bit Q16.16 ALU (add/sub/min/max/abs/neg/floor/ceil/round/trunc, all wrapping) shared lane-serially by the scalar and vector paths | One lane per cycle; the vector path sequences 2/3/4 consecutive lanes |
+| FPU scalar/vector ALU | One combinational 32-bit Q16.16 ALU (add/sub/min/max/abs/neg/floor/ceil/round/trunc, all wrapping), one scalar/vector lane controller, and one shared result/address commit register | Scalar operands capture at `T0` and write at `T1`; vector lanes retain II = 1 across 2/3/4 consecutive registers |
 | FPU multiplier | One shared inferred 36 x 36 pipe (four 18 x 18 lanes), three stages, II = 1, with a 9-bit destination tag | The multiply, dot and SINCOS range-reduction owners time-share it; the core serializes FPU instructions |
 | ACC | Signed 64-bit Q32.32 accumulator | One exact product enters per cycle; accumulation wraps modulo 2^64, and `DOTSTORE` narrows `ACC[47:16]` once |
 | Special path | Blocking RCP/RSQRT/SINCOS controller over the hidden BSRAM tables, one local inferred 18 x 18 interpolation lane, and the shared pipe for SINCOS range reduction | RCP/RSQRT `T0..T3`; SINCOS `T0..T7` dual, `T0..T6` single; owns both RF read ports while active |
+
+Integer unsigned comparison uses the shared subtractor's carry; signed comparison
+first checks differing operand signs, then uses the difference sign for equal-sign
+operands. Negation selects zero as the left operand. Prefix and immediate signedness
+are selected before execution, preserving the defined wrapping 16-bit results.
 
 The integer `ASR`/`ASRI` instructions shift `signed(rd)` arithmetically. The RTL computes the
 shift result in a statement-based `case` and the FSM selects it; it never places `>>>` inside a
@@ -85,24 +98,28 @@ accepts the pair and holds a registered select across the required beats. The as
 read address therefore does not depend on a live multi-state FPU decode; this preserves the same
 cycle schedule while removing that decode from the GPR read/compute/write timing cone.
 
+The scalar B-source address is also captured with each successfully accepted instruction:
+LOAD/STORE select field D, while other instructions select field B. FetchRequest bypass,
+FetchResponse, and overlapped Execute acceptance update the same four-bit latch. Reset clears
+it; hold and fetch errors retain it. The asynchronous GPR read and pending-write forwarding
+are unchanged, without an added execute cycle or a state-dependent B-address mux.
+
 The optional fitted system places separate 4 KiB instruction and data caches
 around the core. Each cache is two-way set-associative with 64 sets and 16 words per line.
 Two true-dual-port BSRAMs split every line strictly by word parity. During lookup,
 the two ports of the selected parity bank read the same word from way 0 and way 1;
 the parallel tag comparison selects the corresponding registered bank result.
-While that resident read resolves, the next lookup may start, allowing one
-ordered hit request and response per cycle when there is no miss, invalidate,
-write, or response backpressure. The instruction cache exposes only reads. The
-data cache is write-back: stores allocate on a miss and set a dirty bit in a
-separate flip-flop bitmap, not in a RAM leaf, because the maintenance scan reads
-a 16-entry window of both ways every cycle; replacing a dirty victim first
-writes its complete line. Valid and victim bits live in a RAM16 leaf with
-asynchronous reads: each cache keeps its two valid ways and the victim bit in
-twelve 16-deep cells. That inference only holds while no array write selects its
-way or enable from the same array's asynchronous read data, so both caches clear
-the victim from the registered pending way when the line request starts. A
-global invalidate, reset, or memory-error scrub clears one set of both ways per
-cycle, and the system holds the CPU for that sweep.
+The read-only I-cache can start its next lookup while a resident read resolves,
+allowing one ordered hit per cycle without backpressure. The write-back D-cache
+serializes acceptance, lookup and response consumption. Stores allocate on a
+miss; replacing a dirty victim first writes its complete line.
+Each cache uses a third DPB for tags. The I-cache keeps valid/victim bits in twelve
+RAM16 cells. The D-cache packs tag, valid and dirty into each way's 16-bit metadata
+word, with the set's victim bit in way zero. Lookup reads both metadata words
+synchronously alongside data; stores, refill and maintenance share their update
+ports. There is no D-cache dirty bitmap or separate valid/victim RAM.
+A global invalidate, reset, or memory-error scrub clears one set of both ways per
+cycle, and the system holds the CPU for the D-cache sweep.
 A read or write-allocate miss issues one aligned line request; the system arbiter
 streams four ordered 64-bit beats at 54 MHz. Each beat writes four words directly
 through the four BSRAM ports, and tag/valid state commits only on the fourth
@@ -111,12 +128,45 @@ cannot expose a partial line. Dirty eviction primes the synchronous DPB outputs,
 then streams four ordered 64-bit beats without a private line buffer. The board
 gearbox pairs/splits those logical beats against the 32-bit SDRAM controller at
 the related 108 MHz clock. The boot DMA keeps
-single-word transactions. Full D-cache clean and clean-plus-invalidate scan the
-128-bit dirty bitmap one 16-entry window per cycle, overlapped with the
-in-flight write-back while the CPU is held; there is no per-line snoop
-interface. The system-control I-cache invalidation pulse is
+single-word transactions. Full D-cache clean and clean-plus-invalidate read one
+metadata set per cycle. A single pending line index lets that scan overlap an
+in-flight write-back. Dirty clears only after successful write completion. A
+conservative one-bit hint skips scans after a completed full clean; single-line
+clean never clears that hint. The CPU is held during full maintenance; there is
+no per-line snoop interface. The system-control I-cache invalidation pulse is
 registered for one cycle so the compiler's adjacent invalidate-and-JSEG
 handoff resolves deterministically.
+
+Logical data offsets select one of four DSEG entries with bits 15:14, then form
+the physical word address from that 8-bit page and offset bits 13:0. The legacy
+bulk DSEG write still establishes four consecutive pages atomically; individual
+page writes support a fixed three-page application arena plus a remappable
+fourth window without widening program pointers.
+
+`LCOPY` reuses the same lookup/refill and four-beat write-back path. The core
+waits for older buffered stores and command acceptance, then retires the
+instruction; only later D-cache users wait while the copy remains active, so
+integer/FPU computation, instruction fetch, and device accesses may overlap it.
+The D-cache latches the destination physical page at acceptance and preserves
+the source dirty bit. A cold destination is not allocated. If the destination
+line is already resident, its valid and dirty bits are cleared directly before
+the complete-line overwrite; stale destination data is neither written back nor
+refilled as part of the copy.
+
+`DCLEANL` shares this asynchronous command slot. It writes one dirty hit and
+otherwise completes locally. The core can continue
+with instructions that do not touch D-cache, while any later D-cache access
+waits at its ordinary request handshake. `DWAIT` gives software an explicit
+completion/error boundary. The present parity-bank geometry uses all four data
+RAM ports during each 64-bit refill/write-back beat, so foreground hits are not
+claimed concurrent with an active transfer.
+
+D-cache line-write address acceptance consumes no payload. Each of the four
+64-bit beats requires `memory_write_data_ready`, routed by the arbiter to the
+accepted owner. During write-back the line remains locked in its data DPBs;
+the next synchronous read launches on consumption and stalled outputs stay
+stable. There is no first-beat FF copy or downstream complete-line staging.
+An error response may terminate the stream before all four beats are consumed.
 
 ## Integer instruction latency
 
@@ -127,18 +177,25 @@ handoff resolves deterministically.
 | Integer `MUL0`/`MUL8`/`MUL16`/`MULI` | 3 | `Execute -> MultiplyWait -> MultiplyCommit` |
 | Integer `LOAD`, minimum | 3 | `Execute -> DataRequest -> DataResponse` |
 | Integer `STORE` with an empty async buffer | 1 to retire | The buffered data request/response continues in the background; a later memory operation waits for it |
+| `LCOPY`, D-cache ready | 1 to retire | The 16-word copy continues in the D-cache; only a later D-cache operation waits |
+| `DCLEANL`, D-cache ready | 1 to retire | The clean continues in the D-cache; only a later D-cache operation or `DWAIT` waits |
+| `DWAIT` | 1 after command idle | Raises a data-memory fault if the completed command reported an error |
 
 ## FPU v2 scheduling and latency
 
 FPU v2 has no scoreboard, forwarding, or dependency comparison. Each operation
 belongs to a fixed timing profile, and the core starts the next FPU instruction
-only when the current instruction's `R_WAIT`, `W_WAIT`, and required `X_WAIT`
-countdowns have all reached zero. The two-word front-end is a fetch barrier:
+only after the current owner's busy window, outstanding products and writes
+have drained. The two-word front-end is a fetch barrier:
 word0 is accepted in `Execute`, word1 through the normal instruction port, and
 the pair retires as two words.
 
-- Scalar ALU, vector ALU, `VMUL`/`VMULS` and `MOV` run one lane per cycle; the
-  vector read window is `T0..T(last_lane)` and the writes trail by two beats.
+- Scalar and vector ALU instructions share one lane controller and one result
+  commit register. The scalar entry uses operands read by the two-word frontend,
+  captures at `T0`, and writes at `T1`; `CMP` updates only the persistent flags.
+  Vector operations and `MOV` retain one lane per cycle, with the read window
+  `T0..T(last_lane)` and writes trailing by two beats. Destination aliasing and
+  abort cancellation retain the same read-first register-file schedule.
 - The shared 36 x 36 pipe has latency 3 and II = 1, so `VMUL`/`VMULS`/scalar
   `MUL` write back three beats after the lane's operands are captured. Its
   return-valid signal is not path ownership: the multiply and dot sequencers

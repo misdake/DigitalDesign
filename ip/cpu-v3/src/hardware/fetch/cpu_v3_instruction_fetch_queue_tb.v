@@ -9,6 +9,7 @@ reg memory_request_ready = 1;
 reg memory_response_valid = 0;
 reg [15:0] memory_read_data = 0;
 reg memory_error = 0;
+reg manual_memory = 0;
 wire core_request_ready;
 wire core_response_valid;
 wire [15:0] core_read_data;
@@ -34,9 +35,10 @@ always @(posedge clk) begin
     cycles <= cycles + 1;
     if (cycles > 500)
         $fatal(1, "fetch queue test exceeded cycle limit");
-    memory_response_valid <= memory_request_valid && memory_request_ready;
+    if (!manual_memory)
+        memory_response_valid <= memory_request_valid && memory_request_ready;
     if (memory_request_valid && memory_request_ready) begin
-        memory_read_data <= word_pattern(memory_address);
+        if (!manual_memory) memory_read_data <= word_pattern(memory_address);
         accepts <= accepts + 1;
         if (previous_accept_cycle >= 0 && cycles == previous_accept_cycle + 1)
             consecutive_accepts <= consecutive_accepts + 1;
@@ -140,6 +142,53 @@ initial begin
     core_request_valid <= 0;
 
     consume(32'h0005_500a);
+
+    // Segment is stream-owned, not replicated in queue/metadata slots. Check
+    // low-offset aliasing and wrapping with independently segment-sensitive data.
+    consume_redirect_fast(32'h0006_500a);
+    consume(32'h0006_ffff);
+    consume(32'h0006_0000);
+
+    // Delay an old response across two segment redirects to the SAME offset.
+    // Its payload must not bypass or enter the current queue, including when
+    // that response drains on the edge accepting the new stream's request.
+    @(negedge clk);
+    manual_memory = 1;
+    reset = 1;
+    memory_response_valid = 0;
+    core_request_valid = 0;
+    repeat (2) @(negedge clk);
+    reset = 0;
+    core_request_valid = 1;
+    core_response_ready = 0;
+    memory_request_ready = 1;
+    core_address = 32'h0007_1abc;
+    #1;
+    if (!memory_request_valid || memory_address != core_address)
+        $fatal(1, "old alias request missing");
+    @(negedge clk);
+    memory_request_ready = 0;
+    core_address = 32'h0008_1abc;
+    @(negedge clk);
+    core_address = 32'h0009_1abc;
+    @(negedge clk);
+    memory_request_ready = 1;
+    memory_response_valid = 1;
+    memory_read_data = word_pattern(32'h0007_1abc);
+    #1;
+    if (core_response_valid || !memory_response_ready ||
+        !memory_request_valid || memory_address != 32'h0009_1abc)
+        $fatal(1, "obsolete same-offset segment response escaped ownership");
+    @(negedge clk);
+    memory_request_ready = 0;
+    memory_read_data = word_pattern(32'h0009_1abc);
+    core_response_ready = 1;
+    #1;
+    if (!core_response_valid || core_read_data != word_pattern(32'h0009_1abc))
+        $fatal(1, "current segment alias response was lost");
+    @(negedge clk);
+    memory_response_valid = 0;
+    core_request_valid = 0;
 
     $display("DIGITAL_DESIGN_PASS");
     $finish;
