@@ -75,6 +75,48 @@ declared circuit boundary; its width and latency do not prove a clock frequency
 or its physical adder count. An IP must declare cone lanes and validate timing
 through synthesis before treating the estimate as hardware evidence.
 
+`physical::lowering::WiringAdd::prove(report, event)` binds an existing Add to
+field wiring only when conservative possible-one masks do not overlap. Facts
+come from full types, Literal nodes, slices, exact resizes, constant shifts and
+already provable disjoint additions. All ranges must fit the result, including
+sign extension and fractional alignment. Input samples never narrow a domain.
+For example, two 8-bit fields placed at bits 0 and 7 overlap even when a sample
+does not carry; placing them at bits 0 and 8 can be certified.
+
+`physical::lowering::Equality::prove(report, event)` recognizes the closed
+`(a < b) + (b < a) < literal(1)` graph. Operand types must match completely,
+predicate/sum formats must prove the sum domain [0,1], and internal results must
+not escape. Equal Literal nodes may have different value IDs; equal sampled
+runtime values may not. `EqualityKind::ReduceNor` marks a same-format literal-zero
+comparison; otherwise it is a bit equality comparator.
+
+Construct `physical::lowering::Plan { wiring_adds, equalities }` and call
+`resources(report)` or `counts(report)` for independently recomputed physical
+work. Wiring Adds consume no adder; each equality consumes one `Compare(width)`
+(also the conservative budget for NOR). Other hardware operations remain charged,
+and overlapping certificates fail. The numerical report and its original counters
+stay intact. `logic_cones(report, latency)` exposes equalities to the existing
+composed memory/dependency/lifecycle APIs. `audit_timing` checks these dependencies
+and zero-latency wiring, but does not enforce resource lanes or prove fmax; the
+IP scheduler must enforce the returned resource work separately.
+
+```rust
+use audited::physical::lowering::{Equality, Plan, WiringAdd};
+// report is a finished, valid numerical report; IDs identify existing events.
+let plan = Plan {
+    wiring_adds: vec![WiringAdd::prove(&report, packing_add_event)?],
+    equalities: vec![Equality::prove(&report, equality_event)?],
+};
+let physical_work = plan.resources(&report)?;
+let equality_cones = plan.logic_cones(&report, 1)?;
+// Schedule physical_work and compose equality_cones with existing DSP bindings.
+```
+
+This does not add automatic RTL generation or multi-output regions. A retained
+comparison output still prevents absorbing that comparison. Multi-output regions
+need explicit retained values, output timing and lifetime accounting; callers
+must not hide escapes by deleting numerical events or duplicating cones.
+
 `DspInventory` describes two macros per tile. A macro holds four 9x9 lanes,
 two 18x18 lanes or one paired/ALU/MAC mode; different kinds cannot share it.
 A 36x36 instance owns both macros of its tile. Independent pre-add and ALU modes

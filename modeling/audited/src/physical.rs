@@ -3,6 +3,9 @@
 use crate::{Fault, FrameReport, MemoryKind, Operation};
 use std::collections::{BTreeMap, BTreeSet};
 
+/// Structural logic bindings preserve the independently replayed numerical graph.
+pub mod lowering;
+
 fn bad(message: &str) -> Fault {
     Fault::Audit(message.into())
 }
