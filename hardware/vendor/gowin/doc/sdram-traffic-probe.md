@@ -13,7 +13,8 @@ input/output constraints. The production system configuration is unchanged.
 The independent cycle combination and connected pin fixture pass. Nine shortened
 workload windows pass pin-model data/guard checks, real UART bit decoding and CRC32.
 The full board image passes Gowin 1.9.8.11 Education PnR and setup/hold audit for
-GW2AR-LV18QN88C8/I7. No board has been programmed or measured in this qualification.
+GW2AR-LV18QN88C8/I7. Physical qualification on 2026-10-02 passes the nine workloads
+below using the same fitted image.
 
 | Measurement | Result | Scope |
 | --- | --- | --- |
@@ -33,6 +34,60 @@ are not a universal MC budget. Address-dependent xorshift patterns exercise all 
 lanes rather than presenting fixed high-word constants.
 `resources.py` collects these reports and records source/constraint/bitstream SHA256
 in `measurement-manifest.json` inside the selected project output.
+
+## Physical measurements, 2026-10-02
+
+The `3b69ba5` image was audited before SRAM programming with Gowin Programmer
+1.9.8.11 Education, USB Debugger A (location 401), device ID `0x0000081B`, and
+COM4 through the BL616 UART route. Image SHA256 is
+`eb8334c2aab01eb802dc22e00954fa3da694651310be941d171631b665938d2b`.
+Two captures of 20 and 10 seconds contain 546 complete CRC-valid records, 60--62
+per mode, with no reported pattern/protocol/watchdog failure. An independent
+accounting check confirms every client drains, total useful bytes equal completed
+requests times payload length, and every GPU group has exactly four sectors.
+Together the measured windows complete 2,906,012,416 useful bytes. Both captures
+produce identical per-mode aggregate bandwidth and group means at stored precision.
+These are observed repeat results, not worst-case or PVT guarantees.
+
+| Mode | Traffic | Effective MB/s | Useful bus % | Owner occupancy % | 512 B group mean / observed max, logic clocks |
+| --- | --- | ---: | ---: | ---: | ---: |
+| 0 | GPU read, row hit | 287.48 | 66.55 | 91.68 | 95.17 / 96 |
+| 1 | GPU write, row hit | 285.93 | 66.19 | 91.73 | 95.70 / 100 |
+| 2 | GPU read, sequential banks/rows | 286.25 | 66.26 | 91.72 | 95.59 / 99 |
+| 3 | GPU read, row conflicts | 275.73 | 63.83 | 92.02 | 99.27 / 102 |
+| 4 | GPU + periodic Display | 277.90 | 64.33 | 92.27 | 102.79 / 112 |
+| 5 | GPU + normal CPU/command | 278.08 | 64.37 | 92.42 | 106.35 / 157 |
+| 6 | GPU + CPU/command + periodic Display | 267.98 | 62.03 | 92.86 | 116.18 / 174 |
+| 7 | GPU + CPU/command + batched Display | 269.06 | 62.28 | 92.77 | 115.66 / 243 |
+| 8 | Saturated CPU/command + GPU + periodic Display | 238.23 | 55.15 | 94.08 | 298.97 / 320 |
+
+All means below include release-to-accept waiting. Mode 6 represents the normal
+mixed workload; a logic clock is 1/54 microsecond. Write first response is its ack.
+
+| Client | Mean wait | First response mean / observed min / max | Completion mean / observed min / max |
+| --- | ---: | ---: | ---: |
+| Display, 32 B | 12.62 | 20.16 / 9 / 37 | 23.16 / 12 / 40 |
+| Instruction, 32 B | 13.75 | 21.65 / 8 / 68 | 24.65 / 11 / 71 |
+| Data, 32 B mixed read/write | 17.14 | 26.28 / 8 / 86 | 28.28 / 11 / 89 |
+| DMA, scalar | 16.34 | 25.10 / 9 / 74 | 25.10 / 9 / 74 |
+| GPU read-only, 128 B | 16.89 | 24.71 / 8 / 84 | 39.71 / 23 / 99 |
+| Framebuffer read, 128 B | 5.80 | 13.09 / 8 / 76 | 28.09 / 23 / 91 |
+| Framebuffer write, 128 B | 5.87 | 28.50 / 23 / 91 | 28.50 / 23 / 91 |
+
+Solo framebuffer read averages 8.04 clocks to first data and 23.04 to completion;
+solo write averages 23.17 to ack. In mode 7, fifty Display requests share their
+batch release: mean completion is 837.29 clocks, observed max 1703. This includes
+the earlier Display members, rather than implying each native transfer takes that
+long. Modes 0--7 have zero missed release opportunities. Saturation deliberately
+over-offers three clients and skips an average 3,104,910 release opportunities per
+window; accepted jobs still drain. It is not a promise to service all offered load.
+
+The initial raw-port captures were empty. The unchanged board-health control also
+captured zero until BL616 reboot/route recovery, then passed 23 valid health frames.
+No MC source change was needed. The SDRAM image was restored before both successful
+captures and remains in FPGA SRAM; external Flash was not modified. Evidence and
+full per-client results are under `target/gpu-v2-sdram/board-2026-10-02/`, with image
+identity in `session.json` and independently checked aggregates in `measurements.json`.
 
 ## Workloads
 
@@ -108,14 +163,22 @@ python hardware/vendor/gowin/examples/sdram_traffic_probe/resources.py target/sd
 Board enablement comes from the user. The built SRAM image is
 `target/sdram_traffic_probe_gowin/impl/pnr/sdram_traffic_probe.fs`; preserve and verify
 its manifest SHA before programming. No Flash image replacement is required.
-After the board is enabled, use the project's existing-image programmer and capture
-the chosen UART port explicitly:
+After the board is enabled, use the project's existing-image programmer. On the
+Tang Nano 20K, UART goes through the BL616 console: select `choose uart` and keep
+that same serial session open. Use the existing bounded capture script with the
+verified port, then decode the saved bytes:
 
 ```powershell
-python hardware/vendor/gowin/examples/sdram_traffic_probe/decode.py --port COM_PORT --seconds 30 --output target/gpu-v2-sdram/board-capture
+& hardware/vendor/gowin/scripts/capture_bl616_uart.ps1 -Port COM_PORT -Seconds 30 -Out target/gpu-v2-sdram/board-capture/uart.bin
+python hardware/vendor/gowin/examples/sdram_traffic_probe/decode.py --input target/gpu-v2-sdram/board-capture/uart.bin --output target/gpu-v2-sdram/board-capture
 ```
 
-`COM_PORT` is a placeholder for the verified board port. Offline input uses
+`COM_PORT` is a placeholder for the verified board port. If the BL616 route is
+stuck, confirm with the unchanged board-health image and use the capture script's
+`-ResetBl616` recovery; this reboots the bridge MCU, preserving the FPGA image.
+Opening a raw serial port alone does not select the FPGA UART route. The decoder's
+`--port` option requires pyserial and a UART interface that is already transparent.
+Offline input uses
 `--input CAPTURE.bin`, or `--input uart.hex --hex` for pin-fixture records.
 The capture has a time/byte limit and saves original bytes, JSON records and a
 per-client CSV. Record image hash, board/tool identity, capture interval and repeat
