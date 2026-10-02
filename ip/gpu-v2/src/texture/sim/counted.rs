@@ -46,20 +46,26 @@ pub struct Report {
 }
 type Bit = Fixed<1, 0, false>;
 type Shift = Fixed<18, 0, true>;
-fn not(f: &Frame<'_>, p: Bit) -> Result<Bit, Fault> {
+pub(crate) fn not(f: &Frame<'_>, p: Bit) -> Result<Bit, Fault> {
     f.sub_same(Bit::constant::<1>(), p)
 }
-fn eq(f: &Frame<'_>, a: impl FixedValue + Copy, b: impl FixedValue + Copy) -> Result<Bit, Fault> {
+pub(crate) fn eq(
+    f: &Frame<'_>,
+    a: impl FixedValue + Copy,
+    b: impl FixedValue + Copy,
+) -> Result<Bit, Fault> {
     let either: Fixed<2, 0, false> = f.add(f.less(a, b)?, f.less(b, a)?)?;
     f.less(either, Fixed::<2, 0, false>::constant::<1>())
 }
 fn both(f: &Frame<'_>, a: Bit, b: Bit) -> Result<Bit, Fault> {
     f.select(a, b, Bit::constant::<0>())
 }
-fn z<T: FixedValue + Copy>(f: &Frame<'_>, x: T) -> Result<Bit, Fault> {
-    eq(f, x, Fixed::<1, 0, false>::constant::<0>())
+fn z<const B: u32>(f: &Frame<'_>, x: Fixed<B, 0, false>) -> Result<Bit, Fault> {
+    // Preserve the operand format so the structural zero-equality proof can
+    // recognize a reduction NOR without relying on sampled values.
+    eq(f, x, Fixed::<B, 0, false>::constant::<0>())
 }
-fn clamp(f: &Frame<'_>, x: LogWork, max: LogWork) -> Result<LogWork, Fault> {
+pub(crate) fn clamp(f: &Frame<'_>, x: LogWork, max: LogWork) -> Result<LogWork, Fault> {
     let x = f.select(
         f.less(x, LogWork::constant::<0>())?,
         LogWork::constant::<0>(),
@@ -67,7 +73,7 @@ fn clamp(f: &Frame<'_>, x: LogWork, max: LogWork) -> Result<LogWork, Fault> {
     )?;
     f.select(f.less(max, x)?, max, x)
 }
-fn split(
+pub(crate) fn split(
     f: &Frame<'_>,
     parent: Coefficient,
     frac: Fraction,
@@ -131,7 +137,7 @@ fn bank_address(
     )?;
     Ok((bank, address))
 }
-fn pack_field<const LOW: u32>(
+pub(crate) fn pack_field<const LOW: u32>(
     f: &Frame<'_>,
     word: GroupWord,
     field: impl FixedValue,

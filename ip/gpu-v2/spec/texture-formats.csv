@@ -6,6 +6,8 @@ Magnitude,40,0,false,exact checked range,ALU or wiring
 Slope,20,0,false,exact checked range,ALU or wiring
 Normalized,40,0,false,exact checked range,ALU or wiring
 MantissaTail,38,32,false,exact normalized tail F32,slice wiring
+NormalizedShort,20,0,false,exact bounded slope normalized to bit19,variable shift
+MantissaShort,19,13,false,exact normalized tail F13,slice wiring
 TableIndex,7,0,false,RNE nearest mantissa grid,round control
 LogEntry,8,0,false,RNE log2 endpoint,ROM 64x8
 Bias,16,0,true,RNE Q8 clamp +/-32,input

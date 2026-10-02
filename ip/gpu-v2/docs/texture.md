@@ -120,6 +120,8 @@ Equality tests expand into audited comparisons/adds, and nonoverlapping packet
 packing/bank concatenation currently uses counted add operations. Physical
 logic/wiring certificates must handle those graphs before sizing ALUs; primitive
 operation counts must not be interpreted as dedicated physical adder counts.
+The staged companion now consumes structural wiring/equality certificates;
+the original static reservation deliberately retains its conservative mapping.
 This numerical work ledger does not establish a schedule or FPGA resource result.
 The separately checked timed baseline is described below.
 
@@ -222,6 +224,46 @@ Malformed IDs/beat order/last flags, incomplete completion, memory errors and
 watchdog expiration cause a terminal sampler fault. FILLING is not published as
 READY. An accepted Service transaction remains owned by the Service: drain it
 externally before recreating the sampler; a sampler fault never cancels a burst.
+
+### Closed preparation boundaries and control proposals
+
+`sim::staged` finishes separate derivative, LOD, coordinate, row, column and
+plane numerical frames. Each successor captures verbatim typed outputs of its
+predecessors. Balanced derivative reduction, exact 20-bit normalization,
+single-boundary tap wrapping and shared X/Y tile comparisons preserve the
+existing counted/oracle packets. UNORM9 precision and rounding are unchanged.
+
+`staged::binding` uses the public structural WiringAdd/Equality proofs without
+changing the numerical ledger. It checks resource counts and dependency timing;
+unlimited primitive lanes are a diagnostic assumption, not a physical schedule.
+Its actual LOD counterexample shows why a single-output cone cannot absorb the
+shared `h=19-clz(slope)` used by both normalization and exponent calculation.
+
+`staged::stream` executes bounded contexts, coordinate credits, coefficient
+reservations and ordered plane/packet control. Fixed three-lane coefficient
+issues have period two and are audited against all actual 9x8 products.
+Optional shared-context release occurs after the last covered lane captures
+its operands. Verbatim lane/plane records retain later operands, while a
+separate 16-entry completion table protects live quad IDs until packet drain.
+Sparse/empty masks still execute helper derivatives and LOD. CE freezes this
+controller; the separate timed cache retains its independent refill contract.
+
+These stage latencies remain **proposals**: the numerical primitives are not
+independently executed each cycle, multi-output logic and register cuts are not
+yet certified, and record-bit telemetry covers boundary payloads only. This
+companion is not connected to cache/color and cannot establish whole-sampler
+II, fitted area, production SDRAM-chain benefit or RTL correctness. The existing
+`Reserved`/`PreparedGroups` evidence below retains its original meaning.
+
+```powershell
+& scripts/run-cargo.ps1 -Subcommand test -Label texture-staged -CargoArgs @('-p','gpu-v2','--test','texture_staged')
+& scripts/run-cargo.ps1 -Subcommand run -Label texture-staged-probe -CargoArgs @('-p','gpu-v2','--example','texture_staged_probe')
+```
+
+The probe exports bounded context/release/credit/mask/backpressure comparisons
+and checked structural work. Every control CSV row has `latency_certified=false`.
+Context release, slot reuse, captured operands, ordering and tampered snapshots
+are audited; independent oracle/count comparisons include LOD ties and UV seams.
 
 ### Timed evidence and remaining bottleneck
 

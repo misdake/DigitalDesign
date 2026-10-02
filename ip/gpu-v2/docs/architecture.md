@@ -83,6 +83,8 @@ The [triangle oracle](triangle.md) consumes the vertex component's owned output
 records directly. It provides self-contained source fields and coverage fans;
 it does not read live/released vertex slots or instantiate a timed triangle queue.
 The [texture models](texture.md) implement independent reference sampling, a
-closed counted datapath and a functional cache through the existing MemoryPort.
-Queue/tag/refill concurrency and physical
-sampling throughput remain separate future work.
+closed counted datapath, a functional cache through MemoryPort, and bounded
+timed cache/refill/color execution through the existing SDRAM Service. A staged
+companion verifies numerical boundaries and context/credit control proposals;
+optimized preparation latency, independent cycle arithmetic and physical
+sampling throughput remain unverified.
