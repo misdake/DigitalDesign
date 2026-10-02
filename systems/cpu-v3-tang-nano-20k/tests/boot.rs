@@ -6,14 +6,14 @@
 //! (device 0), with the flash image backing the DMA model.
 
 use cpu_v3::rcc_backend::{self, CompilerOptions, CpuV3Program};
-use cpu_v3::CpuV3Sim;
+use cpu_v3::{CpuV3Sim, RunOutcome};
 use cpu_v3_tang_nano_20k::boot::{
     BootDmaDevice, BootErrorReport, BootSelectDevice, BootTarget, SystemControlDevice,
     S1_APPLICATION_LAYOUT, S2_APPLICATION_LAYOUT,
 };
 use cpu_v3_tang_nano_20k::{
-    framebuffer_word_at, DisplayDevice, GpuDevice, DISPLAY_DEVICE, FRAMEBUFFER_A_BASE_WORD,
-    FRAMEBUFFER_B_BASE_WORD, FRAMEBUFFER_HEIGHT, FRAMEBUFFER_WIDTH, FRAMEBUFFER_WORDS, GPU_DEVICE,
+    DisplayDevice, GpuDevice, DISPLAY_DEVICE, FRAMEBUFFER_A_BASE_WORD, FRAMEBUFFER_B_BASE_WORD,
+    FRAMEBUFFER_WORDS, GPU_DEVICE,
 };
 use digital_design_ip_common::PhysicalWordAddress;
 
@@ -205,11 +205,10 @@ fn button_01_boots_the_primary_application_from_flash() {
     assert!((0xbfc0..=0xc000).contains(&sp), "sp = {sp:#06x}");
 }
 
-/// The default S2 boot clears both framebuffer slots once, then renders only
-/// the viewport triangle. This raw CPU model intentionally does not generate vblank,
-/// so each pending swap is advanced explicitly by the test.
+/// S2 still loads the historical demo, but the retired GPU rejects its first
+/// submit. The application must halt before a draw, swap or success report.
 #[test]
-fn button_10_boots_and_submits_the_gpu_display_demo_from_flash() {
+fn button_10_boots_and_rejects_the_retired_gpu_demo_without_memory_effects() {
     let (flash, stage0) = boot_setup();
     let mut machine = run_boot(flash, &stage0, 0b10, 500_000);
 
@@ -228,48 +227,38 @@ fn button_10_boots_and_submits_the_gpu_display_demo_from_flash() {
     );
     let sysctl = machine.device::<SystemControlDevice>(0).unwrap();
     assert_eq!(sysctl.icache_invalidations, 1);
-    assert!(sysctl.uart.is_empty(), "DDHT is emitted only after vblank");
+    assert!(
+        sysctl.uart.is_empty(),
+        "a rejected draw must not report success"
+    );
     let gpu = machine.device::<GpuDevice>(GPU_DEVICE).unwrap();
-    assert_eq!(gpu.received_count(), 1);
-    assert_eq!(gpu.executed_count(), 1);
+    assert_eq!(gpu.received_count(), 0);
+    assert_eq!(gpu.executed_count(), 0);
     assert!(!gpu.busy());
     assert!(!gpu.command_error());
-    assert_triangle_only_frame(&machine, FRAMEBUFFER_B_BASE_WORD);
-    for _ in 0..3 {
-        let display = machine.device::<DisplayDevice>(DISPLAY_DEVICE).unwrap();
-        assert!(display.swap_pending());
-        assert!(display.advance_frame());
-        machine.run(500_000).expect("resume after vblank");
-    }
-    let sysctl = machine.device::<SystemControlDevice>(0).unwrap();
-    let frame = ddht_frame_with_test_id(0x0b);
-    assert_eq!(&sysctl.uart[..frame.len()], &frame);
+    assert!(gpu.submit_rejected());
+    assert!(!machine
+        .device::<DisplayDevice>(DISPLAY_DEVICE)
+        .unwrap()
+        .swap_pending());
+    assert!(matches!(
+        machine.run(1),
+        Ok(RunOutcome::Halted { signal: 0x0b01, .. })
+    ));
     for base in [FRAMEBUFFER_A_BASE_WORD, FRAMEBUFFER_B_BASE_WORD] {
-        assert_triangle_only_frame(&machine, base);
+        assert_framebuffer_unchanged(&machine, base);
     }
 }
 
-/// Independent pixel-center edge tests for (80,48), (320,64), (200,208).
-/// All pixels outside the triangle must be black, including after repeated draws.
-fn assert_triangle_only_frame(machine: &CpuV3Sim, base: u32) {
-    for y in 0..FRAMEBUFFER_HEIGHT {
-        for x in 0..FRAMEBUFFER_WIDTH {
-            let px = 2 * x as i32 + 1;
-            let py = 2 * y as i32 + 1;
-            let inside = 240 * (py - 96) - 16 * (px - 160) > 0
-                && -120 * (py - 128) - 144 * (px - 640) > 0
-                && -120 * (py - 416) + 160 * (px - 400) >= 0;
-            let expected = if inside {
-                ((((x >> 3) & 31) << 11) | (((y >> 2) & 63) << 5) | ((x >> 4) & 31)) as u16
-            } else {
-                0
-            };
-            assert_eq!(
-                machine.physical_memory(PhysicalWordAddress::new(framebuffer_word_at(base, x, y))),
-                expected,
-                "triangle-only framebuffer {base:#x}, pixel ({x},{y})"
-            );
-        }
+/// Check every initialized word, including tile padding and the outside guard.
+fn assert_framebuffer_unchanged(machine: &CpuV3Sim, base: u32) {
+    for offset in 0..FRAMEBUFFER_WORDS {
+        assert_eq!(
+            machine.physical_memory(PhysicalWordAddress::new(base + offset)),
+            0x5a5a,
+            "rejected GPU draw modified framebuffer word {:#x}",
+            base + offset
+        );
     }
     assert_eq!(
         machine.physical_memory(PhysicalWordAddress::new(base + FRAMEBUFFER_WORDS)),
