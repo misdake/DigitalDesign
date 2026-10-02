@@ -7,10 +7,11 @@ This component implements oracle, counted and a bounded timed baseline.
 `texture::sim::oracle` owns preparation, filtering, a functional cache and an
 independent continuous reference. `texture::sim::counted` implements the frozen
 UNORM9 datapath with independently replayable numerical ledgers.
-`texture::sim::timed` combines conservative static preparation reservations with
-cycle execution of the bounded cache/color controller. An optimized II=2
-preparation calendar, independent emulation, RTL, GPU dispatch integration and
-fitted physical performance remain future work.
+`texture::sim::timed` executes the bounded cache/color controller. It supports
+the historical static preparation baseline and checked input from
+`staged::bound`: universal periodic stage calendars with finite credits,
+registered boundaries and optional early shared-context release. Independent
+arithmetic emulation, RTL, GPU dispatch and fitted performance remain future work.
 
 Refills reuse the existing GPU-owned `frontend::ports::MemoryPort` facade,
 re-exported by texture. The existing generic test adapter connects it to the
@@ -20,7 +21,10 @@ Each tile requests 128 aligned bytes and consumes sixteen actual little-endian
 64-bit beats. Timed uses the GPU-owned `RefillPort` cycle projection of that
 same service's submit/step/events. The composition adapter forwards directly;
 the vendor service owns all latency/load behavior. There is no texture-specific
-memory timing model or production vendor dependency.
+memory timing model or production vendor dependency. The bound-stage acceptance
+fixture uses the actual `emu::service::Memory`, `Config::default()` serial MC
+at source `358a4e9` (local dependency cherry-pick `f6b61ec`). Early grant and
+512-byte groups stay disabled; each texture request is still one 128-byte tile.
 
 `Config::default()` preserves the historical precision-study candidate.
 `Config::counted()` selects the frozen step-1 contract below. Ongoing timed
@@ -225,7 +229,7 @@ watchdog expiration cause a terminal sampler fault. FILLING is not published as
 READY. An accepted Service transaction remains owned by the Service: drain it
 externally before recreating the sampler; a sampler fault never cancels a burst.
 
-### Closed preparation boundaries and control proposals
+### Closed preparation boundaries and historical control proposals
 
 `sim::staged` finishes separate derivative, LOD, coordinate, row, column and
 plane numerical frames. Each successor captures verbatim typed outputs of its
@@ -264,6 +268,125 @@ The probe exports bounded context/release/credit/mask/backpressure comparisons
 and checked structural work. Every control CSV row has `latency_certified=false`.
 Context release, slot reuse, captured operands, ordering and tampered snapshots
 are audited; independent oracle/count comparisons include LOD ties and UV seams.
+
+### Universal preparation binding and cycle-MC composition
+
+`staged::bound` replaces the proposed latencies with one calendar per kernel.
+Memory shapes, literals, operands, control dependencies and value formats must
+match across every numerical input; indexed ROM rows may vary. Input-specific
+omission of covered lanes/zero-parent planes changes admission work, never the
+arithmetic body or its phase. Equality cones and WiringAdd are structurally
+proved. The LOD `h`/shift use charged public singleton cones, preserving both
+outputs and the original escape counterexample without a fusion discount.
+
+| Kernel | Fixed II | Primitive span | Rotating FF allocation |
+| --- | ---: | ---: | ---: |
+| Quad derivatives | 8 | 16 | 2440 bits |
+| Quad LOD/context | 8 | 27 | 793 bits |
+| Pixel coordinates | 2 | 9 | 890 bits |
+| Pixel coefficients | 2 | 10 | 419 bits |
+| Plane membership | 1 | 6 | 691 bits |
+| Group4 packet | 1 | 7 | 674 bits |
+
+These are declared registered primitive latencies, not a verified clock period.
+There is a separate holding-register edge after primitive completion; consumers
+read stable ready records on a later edge. D/LOD shared-context updates have
+the same cuts. No same-edge producer-result bypass is assumed. CE freezes the
+enabled phase clock and all preparation/color state; the MC and refill sink
+continue on wall clocks. The coefficient body always pays for six 9x8 products
+per covered pixel, including bilinear/nearest zeros, on three fixed sites.
+
+FF input fields have continuous fanout. Each retained origin owns rotating
+slots derived from its last read, with a checked overwrite distance; wiring
+packet aggregates extend their physical field lifetimes instead of allocating
+an extra 72-bit register at every concatenation. Shared ALUs and their operand
+selection are explicit sites. ROM reads have one port/site and registered
+outputs; replication needed for another simultaneous read is rejected.
+
+Default preparation has eight contexts, six coordinate credits, sixteen plane
+credits and sixteen packet credits. A last coordinate capture may release the
+shared context, but a separate sixteen-entry completion table retains prep ID
+ownership until every packet emits. The cache keeps the ID until every covered
+pixel commits. The external 72-bit packet port is ready only when the bounded
+Group FIFO has space; composition audit checks that readiness, CE, admission,
+packet provenance, completion and physical DSP occupancy. It also retains the
+independent cache/bank/color audit and compares pixels with the oracle.
+
+```mermaid
+flowchart LR
+    D[Shared D / LOD] --> C[Coordinate capture]
+    C --> R[Release shared slot after last lane]
+    C --> W[Coordinates / coefficients]
+    W --> P[94-bit plane work / packet expansion]
+    P --> G[72-bit Group FIFO]
+    G --> K[Cache / registered bank read / color]
+    M[Cycle MC and ungated refill sink] --> K
+    K --> O[Ordered pixel commit / outer ID release]
+```
+
+The cycle-MC probe uses RAW565 size 512, no prefetch, 32 Group entries and 16
+result credits. The first 64 quads warm an initially invalid cache; the next 64
+repeat that input. The hot window spans commit edges of quads 80..111, excluding
+initial fill and final drain. All hot windows below submit zero GPU refills.
+Whole-batch values include cold-cache misses and pipeline fill/drain, with the
+MC's separately measured 10813 initialization clocks excluded. Units are wall
+clocks per covered pixel:
+
+| Profile | 5 early contexts: hot / batch | 8 late contexts: hot / batch | 8 early contexts: hot / batch |
+| --- | ---: | ---: | ---: |
+| Bilinear | 3.312500 / 3.394531 | 3.250000 / 3.394531 | 2.000000 / 2.503906 |
+| Fractional trilinear | 3.109375 / 3.613281 | 3.500000 / 3.863281 | 2.703125 / 3.394531 |
+| Two-mip repeat seams | 8.000000 / 8.609375 | 8.000000 / 8.609375 | 8.000000 / 8.609375 |
+
+Eight early contexts are needed for this registered pipeline's full-quad rate;
+the five-slot historical proposal does not carry over. Trilinear still pays
+variable Group expansion and finite-record pressure. At a seam, eight groups
+per pixel force eight clocks even when every tile hits. One/two covered lanes
+per quad cost 8/4 clocks per pixel in the hot window because D/LOD still execute
+once per quad. A 64-quad cold tile scan costs 7.476562 clocks/pixel, with 64
+refills. One bilinear quad takes 142 clocks after MC initialization, or 10850
+clocks including a fresh MC start. Four trilinear quads take 221 clocks.
+
+The loaded comparison generates actual 32-byte reads from Display/Instruction/
+Data every 128/256/512 clocks, with one outstanding request per client. Eight
+early-context bilinear costs 2.519531 clocks/pixel for the batch and 2.000000 in
+the hot window. This is bounded synthetic traffic; it does not establish a
+production display/CDC margin or board behavior. Optional 512-byte groups are
+not enabled or used to infer a gain for isolated 128-byte refills.
+
+`inventory` bills dedicated allocations, not the prior boundary-data peak:
+all kernel FF banks, contexts, pass-through/ready records, completion, phase/
+queue control, slot/tag/PLRU/line state, miss directory, Group/result FIFOs and
+color tokens/tree/feedback. The conservative mapping needs **16469 FF bits for
+five contexts or 17690 for eight**, plus four data BSRAMs, eight DSP18 slots,
+765 hard-DSP pipeline bits and **92 RAM16SDP4 cells**. The latter consists of
+12 ROM, 24 plane-work, 20 four-way tag and 36 Group-FIFO cells. The public
+framework's conservative 16x1 composition count is separately reported as 355;
+it must not be confused with 355 four-bit primitives. The target-spec's six
+Logic/cell accounting gives a 552-Logic RAM base fee before selection/control.
+
+Rotating-bank read selection and stage operand selection also have declared
+2:1 tree demand (2619 and 4526 bit nodes), not fitted Logic counts. Arithmetic,
+write decode, distinct read phases and queue/control mux costs remain unpriced
+in Logic. This deliberately simple FF mapping needs compaction before a viable
+target implementation: even the five-slot allocation exceeds the board's total
+15552 FF capacity. These allocations are not a minimum bound on another layout.
+The 1500-Logic target and frequency are **unverified**; no texture RTL/PnR result
+is claimed. Arithmetic goldens remain immutable closed frames evaluated ahead
+of the finite cycle controller, rather than an independent arithmetic emulator.
+
+Four new integration tests, the scoped 50-test regression and strict component
+clippy pass. Coverage includes all size/filter shapes, missing mips, sparse/empty
+masks, context/ID reuse, minimal/maximal credits, CE, result stalls, actual MC
+beats during CE=0 and rejection of timing/storage/site/provenance mutations.
+The probe exports `performance.csv`, `stages.csv` and `storage.csv` under the
+chosen output directory; no full-repository or board validation is part of this
+unit.
+
+```powershell
+& scripts/run-cargo.ps1 -Subcommand test -Label texture-bound -CargoArgs @('-p','gpu-v2','--test','texture_bound')
+& scripts/run-cargo.ps1 -Subcommand run -Label texture-bound-probe -CargoArgs @('-p','gpu-v2','--example','texture_bound_probe','--','target/gpu-v2-texture-bound')
+```
 
 ### Timed evidence and remaining bottleneck
 

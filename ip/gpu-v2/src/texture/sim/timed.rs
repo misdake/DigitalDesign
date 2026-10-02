@@ -73,6 +73,8 @@ impl Default for Hardware {
 pub enum PreparationMode {
     Reserved,
     PreparedGroups,
+    /// Separate checked universal preparation controller owns admission/packets.
+    BoundStages,
 }
 impl Hardware {
     pub fn validate(&self) -> Result<(), Error> {
@@ -293,6 +295,8 @@ pub struct Step {
     pub responses: Vec<RefillEvent>,
     pub events: Vec<Event>,
     pub snapshot: Snapshot,
+    pub external_packet: Option<i128>,
+    pub prepared: Vec<u8>,
 }
 #[derive(Clone, Copy)]
 struct Line {
@@ -352,6 +356,8 @@ pub struct Machine {
     accumulator: Option<((u8, u8), [u32; 3])>,
     faulted: bool,
     pub stats: Stats,
+    external_programs: Vec<Option<Arc<Program>>>,
+    external_cursor: [usize; 16],
 }
 impl Machine {
     pub fn new(slots: Vec<Slot>, hardware: Hardware) -> Result<Self, Error> {
@@ -389,6 +395,8 @@ impl Machine {
             accumulator: None,
             faulted: false,
             stats: Stats::default(),
+            external_programs: (0..16).map(|_| None).collect(),
+            external_cursor: [0; 16],
         })
     }
     pub fn idle(&self) -> bool {
@@ -644,6 +652,9 @@ impl Machine {
         Ok(())
     }
     fn produce(&mut self, events: &mut Vec<Event>) -> Result<(), Error> {
+        if self.hardware.preparation == PreparationMode::BoundStages {
+            return Ok(());
+        }
         if self.producer.is_none() {
             if let Some(program) = self.quads.pop_front() {
                 self.producer = Some(Producer {
@@ -805,7 +816,7 @@ impl Machine {
                     .into(),
             );
         }
-        let result = self.step_inner(memory, offered, control);
+        let result = self.step_inner(memory, offered, control, None, vec![]);
         if result.is_err() {
             self.faulted = true;
         }
@@ -816,6 +827,8 @@ impl Machine {
         memory: &mut M,
         offered: Option<(usize, Arc<Program>)>,
         control: Control,
+        external_packet: Option<i128>,
+        prepared: Vec<u8>,
     ) -> Result<Step, Error> {
         if self.stats.wall_cycles >= self.hardware.max_cycles {
             return Err("texture wall-cycle watchdog".into());
@@ -857,12 +870,62 @@ impl Machine {
                         quad: id,
                         mask: program.input.mask,
                     });
-                    self.quads.push_back(program);
+                    if self.hardware.preparation == PreparationMode::BoundStages {
+                        self.external_cursor[usize::from(id)] = 0;
+                        self.external_programs[usize::from(id)] = Some(program);
+                    } else {
+                        self.quads.push_back(program);
+                    }
                     accepted = true;
                 } else {
                     self.stats.input_stalls += 1;
                 }
             }
+            if self.hardware.preparation == PreparationMode::BoundStages {
+                if let Some(payload) = external_packet {
+                    if !(0..1_i128 << 72).contains(&payload)
+                        || self.groups.len() == self.hardware.group_capacity
+                    {
+                        return Err("external packet port overflow".into());
+                    }
+                    let id = ((payload >> 66) & 15) as usize;
+                    let program = self.external_programs[id]
+                        .as_ref()
+                        .ok_or("external packet without admission")?;
+                    let cursor = self.external_cursor[id];
+                    if cursor >= program.preparation.groups.len()
+                        || payload != program.preparation.payload(cursor)
+                    {
+                        return Err("external packet golden/order".into());
+                    }
+                    let group = program.preparation.groups[cursor].clone();
+                    self.external_cursor[id] += 1;
+                    self.groups.push_back(Packet {
+                        group: group.clone(),
+                        payload,
+                    });
+                    events.push(Event::Produced { group, payload });
+                }
+                for &id in &prepared {
+                    let i = usize::from(id);
+                    if i >= 16 {
+                        return Err("external completion ID".into());
+                    }
+                    let p = self.external_programs[i]
+                        .as_ref()
+                        .ok_or("external completion without admission")?;
+                    if self.external_cursor[i] != p.preparation.groups.len() {
+                        return Err("incomplete external preparation".into());
+                    }
+                    self.external_programs[i] = None;
+                    self.produced[i] = true;
+                    self.release_quad(id);
+                }
+            } else if external_packet.is_some() || !prepared.is_empty() {
+                return Err("unexpected external preparation port".into());
+            }
+        } else if external_packet.is_some() || !prepared.is_empty() {
+            return Err("external preparation advanced under CE=0".into());
         }
         // Accepted response beats and directory commits continue under consumer CE=0.
         if self.active.is_none() {
@@ -897,7 +960,32 @@ impl Machine {
             responses,
             events,
             snapshot,
+            external_packet,
+            prepared,
         })
+    }
+    pub(crate) fn external_ready(&self, quad: u8) -> bool {
+        !self.faulted && self.live >> quad & 1 == 0
+    }
+    pub(crate) fn packet_ready(&self) -> bool {
+        self.groups.len() < self.hardware.group_capacity
+    }
+    pub(crate) fn step_external<M: RefillPort + ?Sized>(
+        &mut self,
+        memory: &mut M,
+        offered: Option<(usize, Arc<Program>)>,
+        control: Control,
+        packet: Option<i128>,
+        prepared: Vec<u8>,
+    ) -> Result<Step, Error> {
+        if self.faulted || self.hardware.preparation != PreparationMode::BoundStages {
+            return Err("external sampler mode/fault".into());
+        }
+        let result = self.step_inner(memory, offered, control, packet, prepared);
+        if result.is_err() {
+            self.faulted = true;
+        }
+        result
     }
     pub fn snapshot(&self) -> Snapshot {
         Snapshot {
@@ -935,6 +1023,9 @@ pub fn run<M: RefillPort + ?Sized>(
     mut control: impl FnMut(u64) -> Control,
 ) -> Result<Report, Error> {
     hardware.validate()?;
+    if hardware.preparation == PreparationMode::BoundStages {
+        return Err("use staged bound system runner".into());
+    }
     if inputs.len() > hardware.max_quads {
         return Err("quad budget".into());
     }

@@ -6,6 +6,7 @@ use audited::{Fault, Fixed, Frame, FrameReport, Model};
 type Bit = Fixed<1, 0, false>;
 type Shift = Fixed<18, 0, true>;
 pub mod binding;
+pub mod bound;
 pub mod stream;
 
 pub struct Stage {
@@ -250,6 +251,10 @@ fn lod(d: &Stage) -> Result<Stage, Fault> {
         f.sub_same(Coefficient::constant::<511>(), lambda)?,
     )?;
     f.publish("parent1", lambda)?;
+    f.publish(
+        "last_fine",
+        counted::eq(&f, lambda, Coefficient::constant::<0>())?,
+    )?;
     f.publish("quad", f.read(meta.at::<1>())?)?;
     f.publish("mask", f.read(meta.at::<2>())?)?;
     f.publish("slot", f.read(meta.at::<3>())?)?;
@@ -431,6 +436,8 @@ fn plane(c: &Stage, q: &Stage, w: &Stage, lane: usize, which: usize) -> Result<P
         &[c.raw("slot"), c.raw(&format!("n{which}")), c.raw("quad")],
     )?;
     let coarse_parent: CoefficientStore = m.input("coarse_parent", &[c.raw("parent1")])?;
+    let lane_id = m.input::<2, 0, false>("lane", &[lane as i128])?;
+    let fine_plane = m.input::<1, 0, false>("fine_plane", &[i128::from(which == 0)])?;
     let f = m.compute("texture_group_expansion", 2500)?;
     let ws: [Coefficient; 4] = std::array::from_fn(|_| Coefficient::constant::<0>());
     let mut ws = ws;
@@ -451,15 +458,17 @@ fn plane(c: &Stage, q: &Stage, w: &Stage, lane: usize, which: usize) -> Result<P
     let slot = f.read(meta.at::<0>())?;
     let n = f.read(meta.at::<1>())?;
     let quad = f.read(meta.at::<2>())?;
-    let final_plane = if which == 1 {
-        Bit::constant::<1>()
-    } else {
+    let is_fine = f.read(fine_plane.at::<0>())?;
+    let lane_value = f.read(lane_id.at::<0>())?;
+    let final_plane = f.select(
+        is_fine,
         counted::eq(
             &f,
             f.read(coarse_parent.at::<0>())?,
             Coefficient::constant::<0>(),
-        )?
-    };
+        )?,
+        Bit::constant::<1>(),
+    )?;
     f.publish("final_plane", final_plane)?;
     let mut same = [[Bit::constant::<0>(); 4]; 4];
     let same_x = counted::eq(&f, tx[0], tx[1])?;
@@ -510,20 +519,14 @@ fn plane(c: &Stage, q: &Stage, w: &Stage, lane: usize, which: usize) -> Result<P
             };
         }
         // A conserving floor split leaves positive tap0 for every active plane.
-        let first = if which == 0 && t == 0 {
-            Bit::constant::<1>()
+        let first = if t == 0 {
+            is_fine
         } else {
             Bit::constant::<0>()
         };
         word = counted::pack_field::<64>(&f, word, first)?;
         word = counted::pack_field::<65>(&f, word, last)?;
         word = counted::pack_field::<66>(&f, word, quad)?;
-        let lane_value = match lane {
-            0 => Fixed::<2, 0, false>::constant::<0>(),
-            1 => Fixed::<2, 0, false>::constant::<1>(),
-            2 => Fixed::<2, 0, false>::constant::<2>(),
-            _ => Fixed::<2, 0, false>::constant::<3>(),
-        };
         word = counted::pack_field::<70>(&f, word, lane_value)?;
         f.publish(&format!("emit{t}"), emit[t])?;
         f.publish(&format!("packet{t}"), word)?;

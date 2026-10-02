@@ -82,7 +82,20 @@ pub fn audit(report: &Report) -> Result<(), Error> {
             step,
             submission: 0,
         };
-        let got = replay.step(&mut memory, offered, step.control)?;
+        let got = if report.hardware.preparation == PreparationMode::BoundStages {
+            replay.step_external(
+                &mut memory,
+                offered,
+                step.control,
+                step.external_packet,
+                step.prepared.clone(),
+            )?
+        } else {
+            if step.external_packet.is_some() || !step.prepared.is_empty() {
+                return Err("external data in legacy mode".into());
+            }
+            replay.step(&mut memory, offered, step.control)?
+        };
         if &got != step {
             return Err(format!("controller replay differs at cycle {}", step.cycle).into());
         }
