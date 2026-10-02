@@ -154,3 +154,40 @@ fn port_does_not_allow_a_second_request_before_terminal_ack() {
     }
     assert!(complete && port.idle());
 }
+
+#[test]
+fn accepted_write_requires_reserved_continuous_source() {
+    let mut port = burst::Adapter::new(OracleImage::filled::<0>(0, 4096).unwrap(), 2000).unwrap();
+    let request = Request {
+        address_bytes: 128,
+        write: true,
+    };
+    let mut accepted = false;
+    let mut first_consumed = false;
+    for _ in 0..1000 {
+        let r = port
+            .cycle((!accepted).then_some(request), Some(0x1234_5678))
+            .unwrap();
+        accepted |= r.accepted;
+        if r.write_accepted {
+            first_consumed = true;
+            assert!(accepted && r.complete.is_none());
+            break;
+        }
+    }
+    assert!(first_consumed);
+    let mut rejected = false;
+    for _ in 0..64 {
+        match port.cycle(None, None) {
+            Err(e) => {
+                assert!(e.contains("source underrun"));
+                rejected = true;
+                break;
+            }
+            Ok(r) => assert!(r.complete.is_none()),
+        }
+    }
+    // This is an illegal source/protocol failure, not a simulated recoverable
+    // memory error. Do not claim that the rejected partial transfer completed.
+    assert!(rejected && !port.idle());
+}

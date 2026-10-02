@@ -3,6 +3,7 @@
 #![forbid(unsafe_code)]
 
 pub mod command_processor;
+pub mod framebuffer;
 pub mod frontend;
 pub mod lighting;
 pub mod memory;

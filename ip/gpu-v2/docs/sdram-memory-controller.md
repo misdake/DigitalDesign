@@ -28,7 +28,8 @@ It checks address/image bounds, converts byte addresses to halfword addresses,
 uses framebuffer read/write clients, counts actual handshakes and forwards the
 terminal response. It stores counters/held control, not a second burst payload.
 `memory_burst` independently checks four-bank write/read data and guards,
-the real write-data-to-ACK gap, first-beat reservation, stable blocked inputs,
+the real write-data-to-ACK gap, first-beat reservation, accepted source underrun,
+stable blocked inputs,
 address rejection and second-request rejection. These bounded Rust adapter
 tests reuse the previously co-simulated MC; they are not new adapter RTL,
 framebuffer integration, concurrent-client qualification or reset-drain proof.
