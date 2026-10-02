@@ -239,6 +239,30 @@ pub struct TangNano20KBootHdmiWideOutputs {
     pub tmds_data_n: Wires<3>,
 }
 
+/// Native 54/108 MHz SDRAM service without Flash or video circuitry.
+#[derive(Clone, ModuleIo)]
+pub struct TangNano20KSdramWideInputs {
+    pub buttons: Wires<2>,
+    pub sdram_read_data: Wires<64>,
+    pub sdram_read_valid: digital_design_circuit::Wire,
+    pub sdram_init_done: digital_design_circuit::Wire,
+    pub sdram_request_ready: digital_design_circuit::Wire,
+    pub sdram_done: digital_design_circuit::Wire,
+    pub sdram_write_data_ready: digital_design_circuit::Wire,
+}
+#[derive(Clone, ModuleIo)]
+pub struct TangNano20KSdramWideOutputs {
+    pub leds: Wires<6>,
+    pub uart_tx: digital_design_circuit::Wire,
+    pub sdram_request_valid: digital_design_circuit::Wire,
+    pub sdram_write: digital_design_circuit::Wire,
+    pub sdram_address: Wires<21>,
+    pub sdram_write_mask: Wires<4>,
+    pub sdram_write_data: Wires<64>,
+    pub sdram_write_data_valid: digital_design_circuit::Wire,
+    pub sdram_words: Wires<6>,
+}
+
 /// Fitted onboard HDMI video modes. The board wrapper selects the video PLL
 /// source and the pixel-clock SDC constraint from this mode; the CPU V3 system
 /// derives the mode from its single `ACTIVE_DISPLAY_CONFIG` constant.
@@ -532,7 +556,9 @@ impl TangNano20K {
         wide_2x: bool,
         video_mode: TangNano20KVideoMode,
     ) -> GowinBoardBinding<Self> {
-        let wrapper = if wide_2x {
+        let wrapper = if wide_2x && !video {
+            include_str!("tang_nano_20k/sdram/service_108m_54m.v")
+        } else if wide_2x {
             include_str!("tang_nano_20k/sdram/service_108m_54m_hdmi.v")
         } else if video {
             include_str!("tang_nano_20k/sdram/service_54m_hdmi.v")
@@ -808,6 +834,11 @@ impl TangNano20K {
                 );
         }
 
+        if wide_2x && !video {
+            extension = extension.add_sdc_constraint(
+                "create_generated_clock -name sdram_clk -source [get_ports {clk}] -multiply_by 4 -phase 292.5 [get_pins {u_sdram_pll/rpll_inst/CLKOUTP}]"
+            );
+        }
         let mut binding = Self::user_io_binding()
             .require(DebugUartTx)
             .require(Pll)
@@ -862,6 +893,24 @@ impl TangNano20K {
     {
         GowinModuleProject::new(
             GowinProject::new(project_name).with_board_binding(Self::sdram_debug_uart_binding()),
+        )
+    }
+
+    pub fn sdram_wide_debug_uart_project<M>(
+        project_name: impl Into<String>,
+    ) -> GowinModuleProject<Self, M>
+    where
+        M: Module<Input = TangNano20KSdramWideInputs, Output = TangNano20KSdramWideOutputs>,
+    {
+        GowinModuleProject::new(
+            GowinProject::new(project_name).with_board_binding(
+                Self::sdram_debug_uart_binding_with_video(
+                    false,
+                    true,
+                    TangNano20KVideoMode::Hdmi720p60,
+                )
+                .with_process_option("-ioreg_in_iob", "1"),
+            ),
         )
     }
 

@@ -15,11 +15,15 @@ HEAD after line-ending normalization; module identities and generated source pat
 are preserved. `RtlSources` provides the authoritative bundle used by the target.
 This migration does not enable the production bridge's continuation inputs.
 
-The independent cycle emu and reusable connected RTL fixture are separate work.
-The existing SharedSdramPort still declares `EMU_AVAILABLE=false`. The Rust timing
-study is an event approximation with estimated bridge transports, not that emu or
-a pin-level qualification. No CPU tests, system co-simulation, PnR or board test is
-claimed by this GPU Rust validation. No DSP/BSRAM/SSRAM resource ledger is applied.
+The independent `emu::Combination` now executes arbiter, adapter, two-entry pair
+gearbox and rising-capture native controller state on related clock edges.
+SharedSdramPort exposes its own executable Module emu. `combination::rtl_sources`
+exports the connected standalone RTL using the authoritative components. GPU tests
+compare every observable logic-clock handshake against the real controller and pin
+model, including scalar lanes, refresh, invalid requests, reset and response waits.
+The approximate timing study remains separate from this cycle implementation.
+The standalone [traffic probe](sdram-traffic-probe.md) has passed PnR; physical board
+qualification is pending. CPU tests/system co-simulation were not run in this unit.
 
 ## Host service and data boundary
 
@@ -57,6 +61,7 @@ through checked Model input storage and frame reads, never a new Fixed construct
 | `sim::average::Memory` | Reproducible performance experiments with a fixed Profile | Already included in the profile; never injected a second time |
 | `sim::oracle::Memory` | Functional service with explicit configured contention | Generates periodic traffic and runs event-level arbitration/controller timing |
 | `sim::calibration::analyze` | Measure service means and derive a Profile | Same controller/traffic assumptions, bounded synthetic experiment |
+| `emu::service::Memory` | Functional host facade over independent cycle handshakes | Explicit live client submissions, arbitrated by the production arbiter state |
 
 The fixed service has an ordered foreground FIFO. It applies per-class first-read
 or write-completion offsets and adds its own queue waiting. A 512 B read profile
@@ -122,6 +127,32 @@ Compare Solo/CpuOnly/DisplayOnly/Both using the same foreground trace; nonlinear
 contention means separate CPU/display increments need not sum to the Both result.
 ExistingUnchained is the production configuration; ChainedCandidate only studies
 the controller's continuation potential until gearbox/arbiter integration is tested.
+
+## Independent cycle protocol boundary
+
+One logic tick advances two controller rising edges and their intervening transport
+and device phases. The integrated BANK_BIT=5, CL2/RCD2/RP2/RFC9, open-row,
+request-pipeline and rising-capture profile is fixed; initialization length is
+configurable. This is a protocol model, not an analog or arbitrary-clock SDRAM model.
+The cycle engine does not import sim::average or sim::controller.
+
+Intermediate line read beats cannot be stalled by the existing RTL; consumers must
+reserve the whole native response. Scalar and final line responses remain stable
+until accepted. A write may wait before its first payload, but once DQ streaming
+starts its supply must be continuous. The cycle engine detects underrun; the host
+facade reserves the complete payload. Arbitrary per-byte burst masks are rejected
+before ID acceptance. Native scalar halfword lanes remain supported through the
+low-level DMA port, and host DMA bursts are serialized into those scalar operations.
+
+The host facade splits 512 B into four real 128 B transactions. Display arrivals
+can intervene at each sector boundary. No linked physical 512 B continuation is
+claimed by the unchained cycle engine or board probe. Configured oracle chain
+experiments remain candidates requiring their separate emu/RTL integration.
+
+Cycle reset aborts queued and active host IDs while retaining the memory image and
+already clocked writes. IDs remain monotonic across reset. Configuration bounds
+queue capacity, lifetime submissions and total logic clocks; external fixture
+processes additionally have a wall watchdog.
 
 GPU-owned reproduction and tests are documented in
 [GPU SDRAM integration](../../../../ip/gpu-v2/docs/sdram-memory-controller.md).

@@ -524,7 +524,10 @@ fn owner_response_ready(owner: Owner, input: &CpuV3MemoryArbiterInputValue) -> b
     }
 }
 
-fn advance_state(state: &mut CpuV3MemoryArbiterState, input: &CpuV3MemoryArbiterInputValue) {
+pub(crate) fn advance_state(
+    state: &mut CpuV3MemoryArbiterState,
+    input: &CpuV3MemoryArbiterInputValue,
+) {
     if input.reset {
         *state = CpuV3MemoryArbiterState::default();
         return;
@@ -546,7 +549,7 @@ fn advance_state(state: &mut CpuV3MemoryArbiterState, input: &CpuV3MemoryArbiter
     }
 }
 
-fn compute_output(
+pub(crate) fn compute_output(
     state: &CpuV3MemoryArbiterState,
     input: &CpuV3MemoryArbiterInputValue,
 ) -> CpuV3MemoryArbiterOutputValue {

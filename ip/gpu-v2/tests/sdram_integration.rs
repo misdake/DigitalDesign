@@ -1,6 +1,7 @@
 #[path = "support/sdram/mod.rs"]
 mod sdram;
 use digital_design_hardware_gowin::sdram_memory_controller::{
+    emu::service,
     ports::*,
     sim::{average, oracle, traffic::*},
 };
@@ -113,6 +114,34 @@ fn frontend_oracle_consumes_real_service_beats_in_both_modes() {
         cycles.push(source.service.cycle());
     }
     assert!(cycles[1] > cycles[0]); // same average display bandwidth, different short-batch wait
+}
+
+#[test]
+fn frontend_oracle_runs_on_independent_cycle_combination() {
+    let input = program();
+    let golden = frontend::run(&input).unwrap();
+    let memory = service::Memory::new(
+        image(&input),
+        service::Config {
+            init_cycles: 32,
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    let mut adapter = sdram::Adapter {
+        service: memory,
+        max_cycles: 20000,
+        events: Vec::new(),
+    };
+    let observed = frontend::run_with_memory(&input, &mut adapter).unwrap();
+    assert_eq!(observed.outputs, golden.outputs);
+    assert_eq!(observed.fence, golden.fence);
+    assert!(adapter.service.idle());
+    assert_eq!(adapter.service.bytes(), input.memory);
+    assert!(adapter
+        .events
+        .iter()
+        .any(|e| matches!(e, Event::ReadBeat { .. })));
 }
 #[test]
 fn insufficient_tail_cover_is_a_real_source_error_not_zero_padding() {

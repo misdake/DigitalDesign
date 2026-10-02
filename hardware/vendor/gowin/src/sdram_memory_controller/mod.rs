@@ -1,7 +1,10 @@
 //! Reusable shared SDRAM service. Board clocks/pads remain target-owned.
 //! The legacy module identities are deliberately retained during migration.
 pub mod arbiter;
+pub mod combination;
+pub mod emu;
 pub mod ports;
+pub mod probe;
 pub mod shared_port;
 pub mod sim;
 

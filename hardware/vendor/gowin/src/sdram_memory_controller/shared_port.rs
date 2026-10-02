@@ -49,18 +49,31 @@ pub struct SharedSdramPort;
 impl Module for SharedSdramPort {
     type Input = SharedSdramPortInput;
     type Output = SharedSdramPortOutput;
-    type EmuState = ();
+    type EmuState = super::emu::adapter::State;
 
     const USES_MAIN_CLOCK: bool = true;
-    const EMU_AVAILABLE: bool = false;
+    const EMU_AVAILABLE: bool = true;
+
+    fn create_emu(_input: &Self::Input, _output: &Self::Output) -> Self::EmuState {
+        Self::EmuState::default()
+    }
 
     fn execute_emu(
-        _state: &mut Self::EmuState,
-        _circuit: &mut CircuitWires,
-        _input: &Self::Input,
+        state: &mut Self::EmuState,
+        circuit: &mut CircuitWires,
+        input: &Self::Input,
+        output: &Self::Output,
+    ) {
+        output.drive(circuit, &state.output(&input.sample(circuit)));
+    }
+
+    fn clock_emu(
+        state: &mut Self::EmuState,
+        circuit: &mut CircuitWires,
+        input: &Self::Input,
         _output: &Self::Output,
     ) {
-        panic!("SharedSdramPort uses the host memory model for emulation")
+        state.clock(&input.sample(circuit));
     }
 
     fn verilog_source() -> Option<String> {
