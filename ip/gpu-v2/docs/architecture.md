@@ -15,7 +15,7 @@ ip/gpu-v2/
     vertex/                    v6 decode, matrix transforms and seven-row output
     frontend/                  bounded command/DMA/vertex composition
     triangle/                  owned transformed inputs and setup oracle only
-    texture/                   sampling ports, precision oracle and functional cache
+    texture/                   precision oracle, closed counted sampler and functional cache
     lighting/
       ports.rs                 component input/output and context contracts
       sim/
@@ -75,6 +75,7 @@ integration remain separate work.
 The [triangle oracle](triangle.md) consumes the vertex component's owned output
 records directly. It provides self-contained source fields and coverage fans;
 it does not read live/released vertex slots or instantiate a timed triangle queue.
-The [texture oracle](texture.md) implements independent sampling and a functional
-cache through the existing MemoryPort. Queue/tag/refill concurrency and physical
+The [texture models](texture.md) implement independent reference sampling, a
+closed counted datapath and a functional cache through the existing MemoryPort.
+Queue/tag/refill concurrency and physical
 sampling throughput remain separate future work.

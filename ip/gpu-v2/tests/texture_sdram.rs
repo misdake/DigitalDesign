@@ -182,3 +182,66 @@ fn missing_tile_and_exhausted_service_budget_do_not_publish_ready() {
         Some((0, sampler::State::Filling))
     );
 }
+
+#[test]
+fn counted_uses_real_sdram_beats_and_warmed_prefetch_without_another_interface() {
+    use gpu_v2::texture::sim::counted;
+    let s = slot(9, true);
+    let bytes = asset(s, pattern);
+    let mut q = input(9, Filter::Trilinear, [0.0; 2]);
+    q.uv[1][0] = 1.0 / 512.0;
+    q.lod_bias = 0.5;
+    let mut direct = Image {
+        bytes: bytes.clone(),
+        requests: vec![],
+    };
+    let mut reference = sampler::Cache::new(vec![s]).unwrap();
+    let expected = sampler::sample(&q, &mut reference, &mut direct, Config::counted()).unwrap();
+    for loaded in [false, true] {
+        let service = oracle::Memory::new(
+            service_image(&bytes),
+            oracle::Config {
+                load: if loaded {
+                    Load::display_and_cpu(50)
+                } else {
+                    Load::solo()
+                },
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        let mut source = sdram::Adapter {
+            service,
+            max_cycles: 100_000,
+            events: vec![],
+        };
+        let mut cache = sampler::Cache::new(vec![s]).unwrap();
+        let hint = counted::prepare(&q, &[s]).unwrap().groups[0].key;
+        cache.prefetch(hint, &mut source).unwrap();
+        let actual = counted::sample(&q, &mut cache, &mut source).unwrap();
+        assert_eq!(
+            actual.pixels.iter().map(|p| p.rgb).collect::<Vec<_>>(),
+            expected.pixels.iter().map(|p| p.rgb).collect::<Vec<_>>()
+        );
+        actual.preparation.frame.audit().unwrap();
+        for p in &actual.pixels {
+            p.frame.audit().unwrap();
+        }
+        assert!(actual
+            .cache_events
+            .iter()
+            .any(|e| matches!(e,sampler::CacheEvent::Hit{key,..} if *key==hint)));
+        let before = source.events.len();
+        counted::sample(&q, &mut cache, &mut source).unwrap();
+        assert_eq!(source.events.len(), before);
+        assert_eq!(
+            source
+                .events
+                .iter()
+                .filter(|e| matches!(e, Event::ReadBeat { .. }))
+                .count(),
+            cache.stats.refills * 16
+        );
+        assert_eq!(source.service.bytes(), bytes);
+    }
+}

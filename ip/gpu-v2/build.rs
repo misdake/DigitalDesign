@@ -47,6 +47,51 @@ fn emit_table(out: &mut String, name: &str, ty: &str, values: &[u64]) {
 }
 
 fn main() {
+    let mut texture = String::new();
+    for row in rows("spec/texture-formats.csv") {
+        assert_eq!(row.len(), 6);
+        let bits: u32 = row[1].parse().unwrap();
+        let fraction: u32 = row[2].parse().unwrap();
+        let _: bool = row[3].parse().unwrap();
+        assert!(bits > 0 && bits <= 126 && fraction <= 126);
+        writeln!(
+            texture,
+            "// Quantization/range: {}; route: {}.",
+            row[4], row[5]
+        )
+        .unwrap();
+        writeln!(
+            texture,
+            "pub type {} = audited::Fixed<{},{},{}>;",
+            row[0], row[1], row[2], row[3]
+        )
+        .unwrap();
+        writeln!(
+            texture,
+            "pub type {}Store = audited::Memory<{},{},{}>;",
+            row[0], row[1], row[2], row[3]
+        )
+        .unwrap();
+    }
+    emit_table(
+        &mut texture,
+        "LOG",
+        "LogEntry",
+        &(0..64)
+            .map(|k| ((1.0 + k as f64 / 64.0).log2() * 256.0).round_ties_even() as u64)
+            .collect::<Vec<_>>(),
+    );
+    emit_table(
+        &mut texture,
+        "PREFIX",
+        "Prefix",
+        &[0, 1, 2, 3, 4, 8, 24, 88, 344, 1368, 5464],
+    );
+    fs::write(
+        PathBuf::from(std::env::var_os("OUT_DIR").unwrap()).join("texture.rs"),
+        texture,
+    )
+    .unwrap();
     let mut out = String::new();
     for row in rows("spec/lighting-formats.csv") {
         assert_eq!(row.len(), 4);

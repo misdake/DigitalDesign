@@ -1,0 +1,35 @@
+# name,bits,fraction,signed,rounding_or_range,route
+Uv,40,18,true,RNE Q18 external capture,input
+UvRaw,40,0,true,exact checked range,ALU or wiring
+Difference,41,0,true,exact checked range,ALU or wiring
+Magnitude,40,0,false,exact checked range,ALU or wiring
+Slope,20,0,false,exact checked range,ALU or wiring
+Normalized,40,0,false,exact checked range,ALU or wiring
+MantissaTail,38,32,false,exact normalized tail F32,slice wiring
+TableIndex,7,0,false,RNE nearest mantissa grid,round control
+LogEntry,8,0,false,RNE log2 endpoint,ROM 64x8
+Bias,16,0,true,RNE Q8 clamp +/-32,input
+LogWork,18,0,true,exact checked range,ALU or wiring
+Lod,12,0,false,exact checked range,ALU or wiring
+Size,4,0,false,exact checked range,ALU or wiring
+Fraction,8,0,false,exact checked range,ALU or wiring
+Coefficient,9,0,false,floor conserving split; scale511,ALU or Native18
+WeightProduct,17,0,false,exact before floor >>8,Native18 9x8
+Coordinate,20,0,true,floor Q8,variable shift and subtract
+IntegerCoordinate,12,0,true,floor >>8,signed slice wiring
+WrapWork,13,0,true,exact 13bit guard,ALU and select
+TexelCoordinate,10,0,false,exact checked range,ALU or wiring
+TileCoordinate,7,0,false,exact checked range,ALU or wiring
+LocalCoordinate,3,0,false,exact checked range,ALU or wiring
+Key,22,0,false,exact checked range,ALU or wiring
+GroupWord,72,0,false,exact 72bit packet,pack wiring and FIFO32
+Texel,16,0,false,exact checked range,ALU or wiring
+Color,8,0,false,RNE division511 or exact expansion,carry formula or wiring
+Accumulator,17,0,false,exact <=130305,Native18 9x8 and ALU17
+Prefix,13,0,false,exact checked range,ALU or wiring
+ByteAddress,32,0,false,exact checked range,ALU or wiring
+FilterCode,2,0,false,exact checked range,ALU or wiring
+GroupCursor,6,0,false,exact checked range,ALU or wiring
+LineIndex,6,0,false,exact checked range,ALU or wiring
+BankIndex,2,0,false,exact checked range,ALU or wiring
+BankAddress,10,0,false,exact checked range,ALU or wiring

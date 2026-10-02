@@ -1,12 +1,14 @@
-# Texture sampling oracle
+# Texture sampling oracle and counted model
 
 ## Current boundary
 
-This component implements **oracle only** (step 0 of oracle/counted/timed).
+This component implements **oracle and counted** (steps 0 and 1).
 `texture::ports` owns slot, quad, Group4 and precision configuration records;
 `texture::sim::oracle` owns preparation, filtering, a functional cache and an
-independent continuous reference. Counted/timed, cycle emulation, RTL, GPU
-dispatch integration and physical performance results remain future work.
+independent continuous reference. `texture::sim::counted` implements the frozen
+UNORM9 datapath with independently replayable numerical ledgers. Timed, cycle
+emulation, RTL, GPU dispatch integration and physical performance results remain
+future work.
 
 Refills reuse the existing GPU-owned `frontend::ports::MemoryPort` facade,
 re-exported by texture. The existing generic test adapter connects it to the
@@ -16,9 +18,118 @@ Each tile requests 128 aligned bytes and consumes sixteen actual little-endian
 64-bit beats. The vendor service owns latency/load behavior; sampling introduces
 no second memory interface or texture-specific latency fixture.
 
-Default formats and policies below are executable study candidates, not frozen
-hardware contracts. Ongoing design choices remain in the local GPU v2 texture
-specification and development process.
+`Config::default()` preserves the historical precision-study candidate.
+`Config::counted()` selects the frozen step-1 contract below. Ongoing timed
+choices remain in the local GPU v2 texture specification and development process.
+
+## Frozen counted contract
+
+The single signal-format source is [`texture-formats.csv`](../spec/texture-formats.csv).
+It contains width, binary point, rounding/range and arithmetic route. The build
+script generates typed values, typed stores and ROM literals; no runtime `Fixed`
+constructor or division is used. `format.rs` includes that generated source.
+UV is captured as signed Q18 with magnitude <=2^20. After the capture, most
+signals carry integer codes (CSV fraction zero): coordinates are Q8 codes,
+LOD/bias are Q8 codes and coefficients/colors are separately interpreted UNORM
+codes. Explicit slicing and scaling preserve those units.
+
+| Boundary | Frozen behavior |
+| --- | --- |
+| Helper UV | RNE Q18; all four unwrapped edges and both components |
+| LOD | 64x8 ROM; `k=RNE(64*(mantissa-1))`; k=64 carries into exponent |
+| LOD bias | RNE Q8 at capture; clamp to +/-32 before capture is output-equivalent for this UV/size contract |
+| LOD guards | slope >2 forces coarsest available mip; zero slope selects zero; bias then clamp otherwise |
+| Mips | Single-layer floor LOD; trilinear linear mip + bilinear; mag is one bilinear layer |
+| Coordinates | Floor Q8; n=0/1 both address a physical 2x2 footprint |
+| Weights | Nine-bit UNORM 0..511; each pixel sums exactly to 511 |
+| Group4 | Actual ordered groups; 72 bits; 32-row numerical scratch FIFO |
+| Color | RAW565 replication; 9x8 raw products; 17-bit sums <=130305; one final exact nearest /511 |
+
+`prepare` reads inputs/context through typed stores and derives derivatives,
+LOD/index/exponent, mip parents, coordinates, taps, coefficients, first/last,
+complete packed Group4 records and 32-bit tile addresses in a single closed
+frame. Slot/material validity and allocation bounds are checked at the external
+boundary. Mask, filter and all data-dependent arithmetic paths are audited.
+The preparation writes each real packet to a 32x72 scratch store; the complete
+two-mip repeat-seam test fills all 32 rows. This establishes a numerical capacity
+bound for one quad, not FIFO admission/credit behavior across quads.
+
+`sample` transfers the **verbatim finished packet words**, not oracle goldens or
+host-reconstructed weights, into per-lane color frames. Atomic cache reads supply
+external RAW565 words and the short reserved line identity. Each color frame
+audits virtual +1 bank/local addresses, expansion, all twelve products per group,
+partial sums, running accumulators and final RGB. The functional adapter still
+owns tag/PLRU/replacement/refill state; those controller operations are not in
+the arithmetic ledger. Its real 128-byte MemoryPort transactions, beat counts
+and warm/prefetch hits are separately tested against the existing SDRAM service.
+
+Implemented reductions:
+
+- LOD, mip parents/lambda, layer size, coordinate shift, tile stride and prefix
+  are prepared once per quad. Layer prefix ROM reads are not repeated per group.
+- Full-parent row split is `2*fv-(fv!=0)`, leaving two column products per pixel.
+  General fractional trilinear requires two row and four column products.
+- `lambda=2*f-(f>128)` exactly replaces the 511-by-fraction multiply/RNE.
+- Coarse Q8 coordinates use signed `(fine_Q-128)>>1` when fine n>=2; n=1 to 0
+  reuses Q. Integer/fraction extraction and constant right shifts use bit slices.
+- Final normalization uses `h=N>>9`, an eight-bit carry from `h+N[7:0]`, and
+  `increment=N[8] OR carry`; output is `h+increment`. No reciprocal/divider is
+  needed. Exhaustive closed-frame audit covers all 130306 valid accumulator codes.
+
+### Counted evidence and limits
+
+`texture_counted` compares every published stage against independently executed
+oracle goldens: 2112 mixed preparation cases, 1728 LOD-grid/tie stimuli, bias
+boundaries, a full 32-group seam, 336 sampling cases and exhaustive normalization.
+Sizes 0..10, full/missing mip chains, all filters/masks, helper-only gradients,
+negative UV, UV endpoints, overflow and maximum slot/quad IDs are covered.
+Tamper tests remove a DSP count or change an output and require audit rejection.
+The 1024 nearest endpoint exposed an insufficient wrap temporary: both mux
+inputs exist and 1024+1024 needs 13 signed bits. `WrapWork` now records that guard;
+the narrower 12-bit integer coordinate remains valid.
+
+The bounded probe audits 128 quads per profile. With optional existing photo
+assets, all ten profiles total 1280 quads. The following are measured work counts,
+not resource instances or cycles:
+
+| Profile | Pixels | Groups/pixel | Coefficient products/pixel | Color products/pixel |
+| --- | ---: | ---: | ---: | ---: |
+| Bilinear / integer LOD | 512 | 1.265625 | 2 | 15.1875 |
+| Fractional LOD | 512 | 2.529297 | 6 | 30.351563 |
+| Affine mixed LOD | 512 | 2.203125 | 5 | 26.4375 |
+| Perspective with mixed masks | 269 | 1.583643 | 3.011152 | 19.003717 |
+| Two-mip repeat seam | 512 | 8 | 6 | 96 |
+
+Every group writes/reads 72 payload bits, reads 64 RAW565 bits and issues twelve
+9x8 color products, including zero-weight slots. The seam batch performs only
+eight cold refills yet 4096 group reads: color work can dominate even with hot
+cache data. The four 512-square natural-photo subsets use the same affine
+coordinates and produce 1128 groups/512 pixels each. Max/mean RGB-code errors
+against the continuous reference are Peppers 1.058388/0.225828, Mandrill
+1.077418/0.252385, Sailboat 1.462432/0.241775 and Airplane 0.938736/0.210665.
+These are bounded subset results with the new LOD algorithm, not replacements
+for the larger historical photo study below.
+
+The generic framework lowers each logical 9x8 product to one Native18/DSP18
+operation; the ledger does **not** certify a small Logic multiplier or its area.
+Equality tests expand into audited comparisons/adds, and nonoverlapping packet
+packing/bank concatenation currently uses counted add operations. Physical
+logic/wiring certificates must handle those graphs before sizing ALUs; primitive
+operation counts must not be interpreted as dedicated physical adder counts.
+There is no schedule, throughput claim, FPGA synthesis or PnR result here.
+
+```powershell
+& scripts/run-cargo.ps1 -Subcommand test -Label texture-counted -CargoArgs @('-p','gpu-v2','--lib','--test','texture_counted','--test','texture','--test','texture_sdram')
+& scripts/run-cargo.ps1 -Subcommand run -Label texture-counted-probe -CargoArgs @('-p','gpu-v2','--example','texture_counted_probe','--','target/gpu-v2-texture-counted','target/gpu-v2-texture-photos/assets')
+```
+
+Omit the second probe path for six synthetic profiles without downloaded assets.
+It exports `summary.csv`, `operations.csv` and first-case stage goldens. Relevant
+tests and strict component clippy pass; only the pre-existing Windows linker
+stdout diagnostic remains. No whole-repository checks were run for this step.
+Work stops here for discussion. Timed must execute the 32-entry queue, optional
+prefetch, FILLING merge, demand recheck/reservation, READY hits during refill,
+CE/backpressure and fault/drain behavior before concurrency can be claimed.
 
 ```mermaid
 flowchart LR
@@ -50,7 +161,7 @@ flowchart LR
   single-mip selection are separate policies. Missing mip chains use base only.
 - Bilinear splits row then column with floor and conserved total; trilinear
   splits mip parents first and folds their weights into eight taps. Total weight
-  is exactly `2^coefficient_fraction`. There is no final two-mip lerp.
+  is exactly the configured scale (`2^F` or `2^B-1`). There is no final two-mip lerp.
 - Group4 retains four tap positions and zeroes other tiles' coefficients.
   Zero-only groups are omitted before rebuilding first/last. Groups are
   contiguous per sample, in first-tap order within a mip, finer mip first.
@@ -77,9 +188,9 @@ flowchart LR
 Host inputs must be finite with absolute UV <=2^20. Finite derivatives beyond
 the configured limit force coarsest available LOD regardless of bias; zero
 derivatives select LOD zero. Otherwise bias precedes clamp. Table entries are
-oracle-generated `RNE(log2(1+i/64)*256)`. A future counted implementation must
-own the selected immutable table and account for its physical storage. Derivative
-limits and single-mip rounding remain explicit discussion choices.
+oracle-generated `RNE(log2(1+i/64)*256)`. The counted implementation owns
+the selected immutable 64x8 table. Its nearest-grid indexing and frozen derivative
+limit/single-mip policies are specified below; physical placement remains timed work.
 
 `PreparedQuad` records UV, helper differences, rho, overflow, exponent/table
 index, ideal/selected/raw LOD, mip parents, coordinate floors/fractions, taps,

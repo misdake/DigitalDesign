@@ -94,6 +94,8 @@ pub enum LodMethod {
     Exact,
     /// Leading exponent and floor-indexed 64-entry log2 mantissa table.
     Table64,
+    /// RNE mantissa grid; index 64 carries into the exponent.
+    Table64Nearest,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -147,6 +149,17 @@ impl Default for Config {
     }
 }
 impl Config {
+    /// Frozen step-1 contract; historical default remains an oracle experiment.
+    pub fn counted() -> Self {
+        Self {
+            uv_fraction: Some(18),
+            coefficient_fraction: 9,
+            coefficient_encoding: CoefficientEncoding::Unorm,
+            lod_method: LodMethod::Table64Nearest,
+            mip_selection: MipSelection::Floor,
+            ..Self::default()
+        }
+    }
     /// coefficient_fraction is F for FixedPoint, or storage width B for UNORM.
     pub fn coefficient_scale(self) -> u32 {
         (1_u32 << self.coefficient_fraction)

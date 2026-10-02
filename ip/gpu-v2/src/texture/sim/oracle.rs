@@ -66,7 +66,7 @@ pub struct PreparedQuad {
     pub config: Config,
 }
 
-fn check_input(input: &QuadInput, slots: &[Slot]) -> Result<Slot, String> {
+pub(crate) fn check_input(input: &QuadInput, slots: &[Slot]) -> Result<Slot, String> {
     if input.quad_id > 15
         || input.mask > 15
         || !input.lod_bias.is_finite()
@@ -127,6 +127,11 @@ pub fn prepare(input: &QuadInput, slots: &[Slot], config: Config) -> Result<Prep
         0
     };
     let mut table_index = None;
+    let bias = if config.lod_method == LodMethod::Table64Nearest {
+        (input.lod_bias * 256.0).round_ties_even() / 256.0
+    } else {
+        input.lod_bias
+    };
     let selected = if overflow {
         f64::from(max_lod)
     } else if rho == 0.0 {
@@ -144,8 +149,19 @@ pub fn prepare(input: &QuadInput, slots: &[Slot], config: Config) -> Result<Prep
                     ((1.0 + f64::from(index) / 64.0).log2() * 256.0).round_ties_even() / 256.0;
                 f64::from(exponent) + fraction
             }
+            LodMethod::Table64Nearest => {
+                let mantissa = rho / 2.0_f64.powi(exponent);
+                let index = ((mantissa - 1.0) * 64.0).round_ties_even() as u8;
+                table_index = Some(index);
+                if index == 64 {
+                    f64::from(exponent + 1)
+                } else {
+                    f64::from(exponent)
+                        + ((1.0 + f64::from(index) / 64.0).log2() * 256.0).round_ties_even() / 256.0
+                }
+            }
         };
-        clamp_lod(log, input.lod_bias, max_lod)
+        clamp_lod(log, bias, max_lod)
     };
     let lod_scale = 1_u32 << config.lod_fraction;
     let raw = (selected * f64::from(lod_scale)).round_ties_even() as u32;
@@ -503,7 +519,7 @@ impl Cache {
         self.ensure(key, Access::Prefetch, memory, &mut events)?;
         Ok(events)
     }
-    fn read_group<M: MemoryPort>(
+    pub(crate) fn read_group<M: MemoryPort>(
         &mut self,
         group: &Group4,
         memory: &mut M,
