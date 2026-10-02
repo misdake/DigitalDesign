@@ -96,6 +96,14 @@ pub enum LodMethod {
     Table64,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum CoefficientEncoding {
+    /// Binary weights divided by 2^F; unity needs F+1 storage bits.
+    FixedPoint,
+    /// Weights divided by 2^B-1; both endpoints fit in B storage bits.
+    Unorm,
+}
+
 #[derive(Clone, Debug)]
 pub struct QuadInput {
     pub quad_id: u8,
@@ -115,6 +123,7 @@ pub struct Config {
     pub uv_fraction: Option<u8>,
     pub coordinate_fraction: u8,
     pub coefficient_fraction: u8,
+    pub coefficient_encoding: CoefficientEncoding,
     pub lod_fraction: u8,
     pub lod_method: LodMethod,
     pub mip_selection: MipSelection,
@@ -128,6 +137,7 @@ impl Default for Config {
             uv_fraction: Some(17),
             coordinate_fraction: 8,
             coefficient_fraction: 8,
+            coefficient_encoding: CoefficientEncoding::FixedPoint,
             lod_fraction: 8,
             lod_method: LodMethod::Table64,
             mip_selection: MipSelection::Nearest,
@@ -137,6 +147,12 @@ impl Default for Config {
     }
 }
 impl Config {
+    /// coefficient_fraction is F for FixedPoint, or storage width B for UNORM.
+    pub fn coefficient_scale(self) -> u32 {
+        (1_u32 << self.coefficient_fraction)
+            - u32::from(self.coefficient_encoding == CoefficientEncoding::Unorm)
+    }
+
     pub fn validate(self) -> Result<(), String> {
         if self.uv_fraction.is_some_and(|f| f > 30)
             || !(1..=16).contains(&self.coordinate_fraction)
@@ -171,11 +187,11 @@ impl Group4 {
             || self.key.x > 127
             || self.key.y > 127
             || self.top_left_local.iter().any(|&v| v > 7)
-            || self.coefficients.iter().any(|&v| v > 256)
+            || self.coefficients.iter().any(|&v| v > 511)
             || self.quad_id > 15
             || self.lane > 3
         {
-            return Err("Group4 cannot be represented in baseline 72 bits".into());
+            return Err("Group4 cannot be represented in 72 bits".into());
         }
         let fields = [
             (u128::from(self.key.slot), 4),
@@ -200,5 +216,23 @@ impl Group4 {
             shift += width;
         }
         Ok(word)
+    }
+
+    /// Experimental binary 9-fraction encoding: w=1..511 keeps its value;
+    /// w=512 uses code 0. Four appended mask bits distinguish zero from unity
+    /// (both have code 0). This costs 76 bits, not the baseline 72 bits.
+    pub fn pack76_zero_mask(&self) -> Result<u128, String> {
+        let mut encoded = self.clone();
+        let mut zero_mask = 0_u128;
+        for (tap, weight) in encoded.coefficients.iter_mut().enumerate() {
+            if *weight > 512 {
+                return Err("zero-mask coefficient exceeds 512".into());
+            }
+            if *weight == 0 {
+                zero_mask |= 1 << tap;
+            }
+            *weight &= 511;
+        }
+        Ok(encoded.pack72()? | (zero_mask << 72))
     }
 }

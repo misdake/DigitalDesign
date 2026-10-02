@@ -162,32 +162,34 @@ pub fn prepare(input: &QuadInput, slots: &[Slot], config: Config) -> Result<Prep
         raw,
     };
     let mut pixels = Vec::new();
-    let scale = 1_u32 << config.coefficient_fraction;
+    let scale = config.coefficient_scale();
+    // These depend only on the shared quad LOD/material, never on lane UV.
+    let level = if input.filter == Filter::Trilinear {
+        raw / lod_scale
+    } else {
+        match config.mip_selection {
+            MipSelection::Floor => raw / lod_scale,
+            MipSelection::Nearest => (raw + lod_scale / 2) / lod_scale,
+        }
+    }
+    .min(u32::from(max_lod)) as u8;
+    let n = slot.max_size_log2 - level;
+    let lambda = if input.filter == Filter::Trilinear && level < max_lod {
+        rne_div(
+            u64::from(raw % lod_scale) * u64::from(scale),
+            u64::from(lod_scale),
+        ) as u32
+    } else {
+        0
+    };
+    let mip_parents = [(n, scale - lambda), (n.saturating_sub(1), lambda)];
     for (lane, &pixel_uv) in uv.iter().enumerate() {
         if input.mask & (1 << lane) == 0 {
             continue;
         }
-        let level = if input.filter == Filter::Trilinear {
-            raw / lod_scale
-        } else {
-            match config.mip_selection {
-                MipSelection::Floor => raw / lod_scale,
-                MipSelection::Nearest => (raw + lod_scale / 2) / lod_scale,
-            }
-        }
-        .min(u32::from(max_lod)) as u8;
-        let n = slot.max_size_log2 - level;
-        let lambda = if input.filter == Filter::Trilinear && level < max_lod {
-            rne_div(
-                u64::from(raw % lod_scale) * u64::from(scale),
-                u64::from(lod_scale),
-            ) as u32
-        } else {
-            0
-        };
         let mut layers = Vec::new();
         let mut groups = Vec::new();
-        for (size, parent) in [(n, scale - lambda), (n.saturating_sub(1), lambda)] {
+        for (size, parent) in mip_parents {
             if parent == 0 {
                 continue;
             }
@@ -548,7 +550,7 @@ pub fn sample<M: MemoryPort>(
     let prepared = prepare(input, cache.slots(), config)?;
     let mut pixels = Vec::new();
     let mut cache_events = Vec::new();
-    let scale = 1_u64 << config.coefficient_fraction;
+    let scale = u64::from(config.coefficient_scale());
     for pixel in &prepared.pixels {
         let mut accumulator = [0_u64; 3];
         let mut groups = Vec::new();

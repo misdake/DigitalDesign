@@ -68,7 +68,7 @@ flowchart LR
 | --- | --- | --- |
 | Input UV quantization | RNE, 17 fractional bits | None, or 0..30 bits |
 | Coordinate fraction | Floor, 8 bits | 1..16 bits |
-| Coefficient unit | 256, 8 fractional bits | 1..16 bits |
+| Coefficient unit | 256, 8 fractional bits | Binary 2^F or UNORM 2^B-1, 1..16 bits |
 | LOD output | RNE, 8 fractional bits | 1..16 bits |
 | Log2 method | 64x8 table, floor mantissa index | Exact CPU log2 or table |
 | Single-mip selection | Nearest, half selects coarser | Floor or nearest |
@@ -134,17 +134,195 @@ traffic after warming, and unchanged backing data. This is Rust service evidence
 & scripts/run-cargo.ps1 -Subcommand run -Label texture-probe -CargoArgs @('-p','gpu-v2','--example','texture_oracle_probe','--','target/gpu-v2-texture')
 ```
 
-The probe scans eight configurations across 216 bounded pressure/random quads
-at 1024x1024 (2592 output channels). `precision.csv` reports max/mean RGB code
-error and LOD error against continuous input; `stages.csv` exports named baseline
-goldens. Reports stay in the worktree's `target/gpu-v2-texture`, not version control.
+The probe scans twenty configurations across 216 bounded pressure/random quads
+(2592 output channels). An optional second argument selects size_log2 9 or 10
+(512x512 or the default 1024x1024). Coordinates and helper gradients specified in
+texels scale with that size; the deterministic random seed is unchanged. The
+stress asset generates each mip independently, so size comparisons change the
+source colors and are not comparisons of one downsampled photograph.
+
+`precision.csv` reports max/mean RGB code error and LOD error against continuous
+input; `stages.csv` exports named baseline goldens. `worst.csv` identifies each
+configuration's maximum by case, lane and channel; `worst_taps.csv` exports its
+ideal/actual tap colors and weights; `worst-detail.txt` contains the full stage
+trace. `fixed_case.csv` compares configurations at the baseline's fixed maximum
+input, avoiding attribution from aggregate maxima whose locations can change.
+Reports stay in the requested worktree `target/` directory, not version control.
 The mip-varying asset stresses filtering: these are sampled errors, not exhaustive
 image-quality bounds. Increasing one precision can move conservative split
 boundaries and need not monotonically reduce worst-case error.
 
+Nine-bit coefficient experiments retain the default UV, coordinate and LOD
+settings unless the configuration name says otherwise. UNORM9 has 512 values
+including zero and unity, uses denominator 511, and conserves a total of 511.
+`coefficient_fraction` selects its storage width B when the encoding is UNORM.
+It fits the four existing nine-bit coefficient fields in `pack72`. The binary
+alternative has 512 nonzero values plus zero and denominator 512. Its
+`pack76_zero_mask` stores 1..511 directly, unity as code zero, and four extra zero
+mask bits distinguish zero from unity. `zero_mask9` and `coefficient9` have the
+same numerical result; the former names the tested storage alternative. The
+functional cache consumes decoded weights. Neither encoding changes the default
+configuration or freezes a counted/RTL ABI. UNORM final normalization uses RNE
+division by 511; the binary alternative uses RNE division by 512.
+
+Tests exhaust all 65536 bilinear coordinate fraction pairs for both new scales,
+check trilinear conservation across the LOD fraction range, preserve black,
+white and primary-color assets exactly, and distinguish all 513 binary weights
+through the 76-bit packing. Exported ideal/actual tap contributions reconstruct
+the independent reference and oracle accumulator, respectively.
+
+```powershell
+& scripts/run-cargo.ps1 -Subcommand run -Label texture-error-1024 -CargoArgs @('-p','gpu-v2','--example','texture_oracle_probe','--','target/gpu-v2-texture-error-study/1024','10')
+& scripts/run-cargo.ps1 -Subcommand run -Label texture-error-512 -CargoArgs @('-p','gpu-v2','--example','texture_oracle_probe','--','target/gpu-v2-texture-error-study/512','9')
+```
+
 See [SDRAM integration](sdram-memory-controller.md) for service ownership and
 assumptions. Discuss precision/LOD policy and implementation details before
 starting counted work.
+
+### Natural-photo study
+
+The offline photo tools use four original 512x512 RGB photographs from the
+[USC-SIPI miscellaneous collection](https://sipi.usc.edu/database/database.php?volume=misc):
+Peppers (4.2.07), Mandrill (4.2.03), Sailboat (4.2.06), and Airplane (4.2.05).
+Downloaded TIFFs, source URLs/hashes, generated assets and reports remain under
+`target/gpu-v2-texture-photos`. No external images are checked in.
+
+`texture_photo_assets.py` builds coherent mips by recursive RGB8 code-space BOX
+downsampling, then quantizes each layer to nearest RAW565 values. Small layers
+are padded periodically. Pillow/NumPy versions and asset hashes are recorded in
+`assets/manifest.json`. Both the Rust float reference and quantized sampler read
+the same asset; reported differences measure sampler precision rather than
+RGB565 encoding loss relative to the source photograph.
+
+The bounded Rust probe uses UV18, eight coordinate fractional bits and the
+unchanged floor-indexed LOD table, comparing baseline /256, UNORM9 /511, and
+binary9 with zero mask /512. Each photo has 183272 quads / 733081 active pixels:
+seven full-image scales (640, 400, 256, 160, 80, 20 and 3 pixels per side) plus
+16384 deterministic random affine quads spanning magnification and fractional
+LOD minification. Repeat-border footprints are reported separately from image
+interiors in `precision.csv`; `summary.csv` combines both scopes. Full-size PPM
+renders, maximum sample traces and unamplified comparison figures are retained.
+
+The Python report independently decodes all 1398784 RAW565 asset words, compares
+2670180 rendered reference pixels with a planar-mip float sampler and replays
+all 24 scope/configuration maxima from the original helper UVs. Maximum float
+reference disagreement is zero at those samples. Twelve rendered channel codes
+differ by one only at floating-point half-code rounding boundaries (distance
+from the halfway value <1e-8). `independent-check.json` records these checks.
+
+Observed maximum / mean RGB8 code errors, including repeat-border samples:
+
+| Photo | Baseline /256 | UNORM9 /511 | Zero mask /512 |
+| --- | --- | --- | --- |
+| Peppers | 3.374 / 0.241 | 2.468 / 0.235 | 2.468 / 0.234 |
+| Mandrill | 2.848 / 0.272 | 1.977 / 0.261 | 1.977 / 0.258 |
+| Sailboat | 3.438 / 0.249 | 2.402 / 0.239 | 2.348 / 0.238 |
+| Airplane | 3.375 / 0.200 | 2.518 / 0.195 | 2.518 / 0.194 |
+
+For both nine-bit alternatives the largest measured error is Airplane case
+179835/lane2, at UV (0.6726631784860123, 0.4248005344153869), with reference RGB
+(89.51257753621461, 76.51823864168183, 118.26701445680673) and output (87,74,117).
+Ideal LOD is 4.0432075410609905 and table LOD is 4.0234375. These are sampled
+errors for this corpus, not an exhaustive image-quality bound. The study does
+not measure concurrent cache behavior or advance counted/timed implementation.
+
+```powershell
+python ip/gpu-v2/examples/texture_photo_assets.py target/gpu-v2-texture-photos/assets
+& scripts/run-cargo.ps1 -Subcommand run -Label texture-photos -CargoArgs @('-p','gpu-v2','--example','texture_photo_probe','--','target/gpu-v2-texture-photos')
+python ip/gpu-v2/examples/texture_photo_report.py target/gpu-v2-texture-photos
+```
+
+### Arithmetic choice and sharing opportunities
+
+The accepted target coefficient encoding is UNORM9. This is a Logic estimate,
+not a synthesis result: it keeps the Group4 width at 72 bits (36 RAM16SDP4 cells
+for 32 entries, versus 38 for a 76-bit zero-mask representation), represents
+unity directly in nine bits, and needs no zero/unity mask decode. Accumulators
+need 17 bits for a conserved bound of 255*511=130305. Division by 511 is not a
+general divider: exact nearest rounding over that bound is
+
+```text
+h = N >> 9; l = N & 511
+RGB8 = h + (h + l >= 256)
+increment = l[8] OR carry8(h + l[7:0])
+```
+
+Since `N=511*h+(h+l)` and `h+l<=764`, `(h+l+255)/511` is either zero or one,
+with threshold 256. The implementation needs a small carry calculation and an
+eight-bit increment per channel. The final target format remains distinct from
+the historical /256 default used by regression tests; UNORM9 studies explicitly
+select the accepted encoding. Hardware formats/scheduling remain unimplemented.
+
+`prepare` now computes level, two mip identities, lambda and parent weights once
+per quad, outside the lane loop. UV quantization, all eight helper differences
+and LOD were already shared. Pixel coordinates and coefficients remain separate.
+For eight-bit LOD fraction f, `RNE(511*f/256)=2*f-(f>128)`; a full-parent split
+uses `floor(511*f/256)=2*f-(f!=0)`. Both eliminate generic multiplication.
+Coordinate size scaling and wrapping are bit operations in a fixed-point target.
+If Q is a fine-mip filtered coordinate floored to eight fractional bits, the next
+mip coordinate is exactly `floor((Q-128)/2)` for n>=2. For n=1 to n=0 both physical
+addressing dimensions are two, so Q is reused unchanged. Negative values require
+an arithmetic shift with adequate signed width before wrapping.
+
+The diagnostic work module observes oracle goldens and reports structural
+opportunities. **It is not the staged counted model, a schedule, or a performance
+measurement.** It counts actual groups/nonzero coefficients and unique integer
+multiply operands, tile keys and texels within each quad. Unique products are an
+optimistic bound requiring additional comparison/storage; they are not free.
+Color datapath slots count twelve per Group4 regardless of zero coefficients.
+
+The photo probe writes `<photo>-work.csv`. Geometry determines these counts, so
+all four photos give identical work profiles for the same sample inputs.
+`texture_work_probe` additionally observes 32768 bounded synthetic perspective
+helper quads, with w gradients of 2% or 30% and mixed masks. All four helper UVs
+are evaluated from affine homogeneous numerator/w fields; the study does not
+assume perspective UV is itself affine.
+
+| Scenario | Generic coefficient multiplies/pixel after simple reductions | With perfect quad operand reuse | Reusable fraction | Groups/pixel |
+| --- | ---: | ---: | ---: | ---: |
+| Axis-aligned 256-pixel image, integer LOD | 2.0000 | 0.5000 | 75.00% | 1.2656 |
+| Axis-aligned 400-pixel image, fractional LOD | 6.0000 | 4.9968 | 16.72% | 2.5072 |
+| Random affine quad | 5.4235 | 5.4015 | 0.406% | 2.1893 |
+| Mild perspective quad | 5.7971 | 5.7731 | 0.414% | 2.3141 |
+| Strong perspective quad | 5.8677 | 5.8383 | 0.502% | 2.2254 |
+
+General bilinear preparation needs two column multiplies; general trilinear
+needs six split multiplies. Color work is up to 12/24 nonzero tap-channel
+products per pixel; splitting into Group4 consumes more physical product slots.
+The 400-pixel scene uses 30.0864 slots/pixel, of which 23.6532 are nonzero
+(78.62%). Zero slots do not by themselves justify reducing the physical twelve
+color multipliers or reducing the three coefficient multipliers needed for the
+two-phase trilinear preparation target.
+
+Prioritize unconditional quad scalar sharing, exact strength reductions,
+zero-parent omission and existing bounded prefetch deduplication. In the
+400-pixel scene, Group4 keys fall from 401152 references to 123072 distinct
+quad keys, a potential 69.32% hint reduction. Perspective scenes show potential
+59.75%/61.14% reductions. These unique-key bounds do not prove a three-entry
+recent-key filter captures every duplicate. Demand must still recheck the
+logical key at consumption; an old physical way cannot be held across eviction.
+
+Do not add general coefficient memoization: perspective cases save only about
+half a percent before paying for that state. Texel gathering can also reuse
+38.5%/42.9% of nonzero references in the perspective cases, but needs buffering,
+bank arbitration and read protection while per-lane color products remain. A
+lower read count therefore does not establish a throughput improvement.
+
+The n=0 layer is a separate optional opportunity guaranteed by the asset
+contract: constant-only sampling can forward its color, and its weighted partial
+in a two-layer sample can be computed once per quad. It occurs in 2843/3419
+pixels of the two perspective sets (about 6.1%/7.4%), so any future bypass must
+account for context lifetime, Group4 ordering and first/last across the FIFO.
+Other small mips are not constant. No gather/memo/bypass architecture is added.
+
+The work examples exhaust all 130306 valid accumulator values, all 256 LOD and
+full-parent fractions, and 262145 signed coordinate stimuli to check the exact
+strength reductions independently. Texture/SDRAM regression remains unchanged.
+
+```powershell
+& scripts/run-cargo.ps1 -Subcommand run -Label texture-work -CargoArgs @('-p','gpu-v2','--example','texture_work_probe','--','target/gpu-v2-texture-work')
+```
 
 Validation on this branch: GPU v2 release regression, texture debug tests,
 strict workspace clippy, layering/source hygiene and required CPU/core/system

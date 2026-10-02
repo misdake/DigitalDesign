@@ -142,6 +142,113 @@ fn all_bilinear_fractions_conserve_and_trilinear_endpoints_conserve() {
 }
 
 #[test]
+fn nine_bit_coefficient_encodings_conserve_and_preserve_constant_colors() {
+    let s = slot(4, true);
+    for encoding in [CoefficientEncoding::Unorm, CoefficientEncoding::FixedPoint] {
+        let config = Config {
+            coefficient_fraction: 9,
+            coefficient_encoding: encoding,
+            ..Default::default()
+        };
+        let scale = if encoding == CoefficientEncoding::Unorm {
+            511
+        } else {
+            512
+        };
+        assert_eq!(config.coefficient_scale(), scale);
+        let mut q = input(4, Filter::Bilinear, [0.0; 2]);
+        q.mask = 1;
+        for fu in 0..256 {
+            for fv in 0..256 {
+                q.uv = [[
+                    (5.5 + f64::from(fu) / 256.0) / 16.0,
+                    (5.5 + f64::from(fv) / 256.0) / 16.0,
+                ]; 4];
+                let p = prepare(&q, &[s], config).unwrap();
+                let weights = p.pixels[0].layers[0].coefficients;
+                assert_eq!(weights.iter().sum::<u32>(), scale);
+                assert!(weights.iter().all(|&w| w <= scale));
+            }
+        }
+        q.filter = Filter::Trilinear;
+        q.uv[1][0] = q.uv[0][0] + 1.0 / 16.0;
+        for lambda in 0..=256 {
+            q.lod_bias = f64::from(lambda) / 256.0;
+            let p = prepare(&q, &[s], config).unwrap();
+            assert_eq!(
+                p.pixels[0]
+                    .groups
+                    .iter()
+                    .flat_map(|g| g.coefficients)
+                    .sum::<u32>(),
+                scale
+            );
+        }
+        for (word, want) in [
+            (0, [0, 0, 0]),
+            (0xffff, [255, 255, 255]),
+            (0xf800, [255, 0, 0]),
+            (0x07e0, [0, 255, 0]),
+            (0x001f, [0, 0, 255]),
+        ] {
+            let mut memory = Image {
+                bytes: asset(s, |_, _, _| word),
+                requests: vec![],
+            };
+            let mut cache = Cache::new(vec![s]).unwrap();
+            for filter in [Filter::Nearest, Filter::Bilinear, Filter::Trilinear] {
+                q.filter = filter;
+                for bias in [0.0, 0.5, 4.0] {
+                    q.lod_bias = bias;
+                    assert_eq!(
+                        sample(&q, &mut cache, &mut memory, config).unwrap().pixels[0].rgb,
+                        want
+                    );
+                }
+            }
+        }
+    }
+    // Odd UNORM denominator has no exact halfway remainder.
+    for (value, want) in [(255, 0), (256, 1), (766, 1), (767, 2), (511 * 255, 255)] {
+        assert_eq!(rne_div(value, 511), want);
+    }
+}
+
+#[test]
+fn zero_mask_distinguishes_all_513_weights_without_widening_coefficient_fields() {
+    let p = prepare(
+        &input(4, Filter::Nearest, [0.5; 2]),
+        &[slot(4, true)],
+        Config::default(),
+    )
+    .unwrap();
+    let mut group = p.pixels[0].groups[0].clone();
+    for weight in 0..=512 {
+        group.coefficients = [weight, 512 - weight, 0, 1];
+        let word = group.pack76_zero_mask().unwrap();
+        assert!(word < 1_u128 << 76);
+        for tap in 0..4 {
+            let code = ((word >> (28 + 9 * tap)) & 511) as u32;
+            let is_zero = word >> (72 + tap) & 1 != 0;
+            let decoded = if is_zero {
+                0
+            } else if code == 0 {
+                512
+            } else {
+                code
+            };
+            assert_eq!(decoded, group.coefficients[tap]);
+        }
+    }
+    group.coefficients = [511, 0, 0, 0];
+    assert_eq!((group.pack72().unwrap() >> 28) & 511, 511);
+    group.coefficients[0] = 512;
+    assert!(group.pack72().is_err());
+    group.coefficients[0] = 513;
+    assert!(group.pack76_zero_mask().is_err());
+}
+
+#[test]
 fn wrap_seams_groups_zero_omission_and_saturated_smallest_mip() {
     let slots = [slot(4, true)];
     let q = input(4, Filter::Bilinear, [0.5, 0.5]);
