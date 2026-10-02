@@ -5,6 +5,9 @@ use std::collections::VecDeque;
 #[derive(Clone, Debug)]
 pub struct Config {
     pub init_cycles: u32,
+    pub early_grant: bool,
+    /// Hold ownership for one aligned GPU 512-byte group. Defaults off.
+    pub chained_groups: bool,
     pub max_cycles: u64,
     pub max_requests: usize,
     pub max_queued: usize,
@@ -13,6 +16,8 @@ impl Default for Config {
     fn default() -> Self {
         Self {
             init_cycles: 21600,
+            early_grant: false,
+            chained_groups: false,
             max_cycles: 1_000_000,
             max_requests: 4096,
             max_queued: 256,
@@ -20,12 +25,14 @@ impl Default for Config {
     }
 }
 struct Job {
+    grouped: bool,
     id: u64,
     client: Client,
     request: Request,
     arrival: u64,
     offset: usize,
     accepted: bool,
+    next_accepted: bool,
     fed: usize,
     read: usize,
     started: bool,
@@ -44,7 +51,12 @@ impl Memory {
             return Err("cycle service bounds".into());
         }
         Ok(Self {
-            combination: Combination::new(image, config.init_cycles)?,
+            combination: Combination::with_options(
+                image,
+                config.init_cycles,
+                config.early_grant,
+                config.chained_groups,
+            )?,
             config,
             queues: std::array::from_fn(|_| VecDeque::new()),
             next_id: 0,
@@ -64,7 +76,9 @@ impl Memory {
         self.combination.tick(&input)
     }
     fn sector(job: &Job) -> usize {
-        if job.client == Client::Dma {
+        if job.grouped {
+            512
+        } else if job.client == Client::Dma {
             2
         } else if matches!(
             job.client,
@@ -75,10 +89,15 @@ impl Memory {
             job.request.burst().unwrap().bytes.min(128)
         }
     }
-    fn drive(job: &Job, input: &mut CpuV3MemoryArbiterInputValue) {
+    fn drive(job: &Job, early_grant: bool, input: &mut CpuV3MemoryArbiterInputValue) {
         let burst = job.request.burst().unwrap();
-        let address = (burst.address + job.offset as u64) / 2;
         let bytes = Self::sector(job);
+        // Descriptor lookahead never advances the active write payload/read
+        // index. Only completion promotes the accepted successor segment.
+        let successor =
+            early_grant && job.accepted && !job.next_accepted && job.offset + bytes < burst.bytes;
+        let descriptor_offset = job.offset + if successor { bytes } else { 0 };
+        let address = (burst.address + descriptor_offset as u64) / 2;
         let writing = burst.access == Access::Write;
         let data = if let Request::Write { data, .. } = &job.request {
             if bytes == 2 {
@@ -89,8 +108,12 @@ impl Memory {
         } else {
             0
         };
-        let valid = !job.accepted;
-        let length = (bytes as u64 / 32).saturating_sub(1);
+        let valid = !job.accepted || successor;
+        let length = if job.grouped {
+            2
+        } else {
+            (bytes as u64 / 32).saturating_sub(1)
+        };
         match job.client {
             Client::Display => {
                 input.display_request_valid = valid;
@@ -140,6 +163,10 @@ impl Memory {
 impl Service for Memory {
     fn submit(&mut self, client: Client, request: Request) -> Result<u64, String> {
         let b = request.burst()?;
+        let grouped = self.config.chained_groups && b.bytes == 512 && client.index() >= 4;
+        if grouped && b.address & 511 != 0 {
+            return Err("chained group requires 512-byte alignment".into());
+        }
         if !self.combination.bridge.pins.contains(b.address, b.bytes) {
             return Err("cycle request outside image".into());
         }
@@ -159,12 +186,14 @@ impl Service for Memory {
         self.next_id += 1;
         self.pending += 1;
         self.queues[client.index()].push_back(Job {
+            grouped,
             id,
             client,
             request,
             arrival: self.cycle(),
             offset: 0,
             accepted: false,
+            next_accepted: false,
             fed: 0,
             read: 0,
             started: false,
@@ -183,7 +212,7 @@ impl Service for Memory {
         input.dma_response_ready = true;
         for queue in &self.queues {
             if let Some(job) = queue.front() {
-                Self::drive(job, &mut input);
+                Self::drive(job, self.config.early_grant, &mut input);
             }
         }
         let o = self.combination.output(&input);
@@ -252,7 +281,11 @@ impl Service for Memory {
                 ),
             };
             if ready {
-                job.accepted = true;
+                if job.accepted {
+                    job.next_accepted = true;
+                } else {
+                    job.accepted = true;
+                }
                 if !job.started {
                     events.push(Event::Started {
                         id: job.id,
@@ -298,7 +331,8 @@ impl Service for Memory {
                 }
                 if last {
                     job.offset += bytes;
-                    job.accepted = false;
+                    job.accepted = job.next_accepted;
+                    job.next_accepted = false;
                     job.fed = 0;
                     job.read = 0;
                     if job.offset == burst.bytes {

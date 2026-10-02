@@ -9,6 +9,8 @@ module tb;
  wire [5:0] leds;
  wire uart_tx;
  wire [63:0] sdram_read_data,sdram_write_data;
+ wire sdram_stream_active,sdram_next_valid;
+ wire [20:0] sdram_next_address;
  wire sdram_read_valid,sdram_init_done,sdram_request_ready,sdram_done,sdram_write_data_ready;
  wire sdram_request_valid,sdram_write,sdram_write_data_valid;
  wire [20:0] sdram_address;
@@ -20,8 +22,9 @@ module tb;
  wire [1:0] O_sdram_ba;
  wire [31:0] IO_sdram_dq;
  SdramTrafficProbe dut(.*);
- TangNano20KSdramNativeBridge108M54M bridge(
+ TangNano20KSdramNativeBridge108M54M #(.PREPARE_NEXT(1)) bridge(
   .logic_clk(clk),.controller_clk(controller_clk),.sdram_clk(sdram_clk),.reset(|buttons),
+  .next_valid(sdram_next_valid),.next_address(sdram_next_address),.stream_active(sdram_stream_active),
   .request_valid(sdram_request_valid),.writing(sdram_write),.address(sdram_address),.words(sdram_words),
   .write_mask(sdram_write_mask),.write_data(sdram_write_data),.write_data_valid(sdram_write_data_valid),
   .request_ready(sdram_request_ready),.write_data_ready(sdram_write_data_ready),.read_data(sdram_read_data),
@@ -44,6 +47,8 @@ module tb;
   for(b=0;b<8;b=b+1)begin value[b]=uart_tx;repeat(dut.UART_DIV)@(posedge clk);end
   if(uart_tx!==1)$fatal(1,"UART stop");
  end endtask
+ always @(posedge clk)if(!dut.reset && dut.memory_busy !== (|dut.active))
+  $fatal(1,"owner occupancy differs from accepted client accounting");
  always @(posedge clk)begin cycles=cycles+1;if(cycles>20000000)$fatal(1,"probe watchdog");end
  initial begin
   // The guard is mapped to logical byte 8192, beyond all test patterns.
@@ -53,6 +58,9 @@ module tb;
   for(phase=0;phase<9;phase=phase+1)begin
    for(byte_index=0;byte_index<420;byte_index=byte_index+1)begin receive_byte();$fwrite(f,"%02x",value);end
    $fwrite(f,"\n");$fflush(f);
+   if(phase==0 && dut.EARLY_GRANT && !dut.CHAIN_GROUP_FOUR && dut.early_grants==0)$fatal(1,"early admission was never exercised");
+   if(phase==0 && dut.CHAIN_GROUP_FOUR && bridge.u_controller.stream_stats[23:8]==0)$fatal(1,"physical chaining was never exercised");
+   if(dut.CHAIN_GROUP_FOUR && bridge.u_controller.stream_stats[7])$fatal(1,"noncontiguous chained column commands");
    if(dut.failed)$fatal(1,"probe pattern/timeout failure phase %0d",phase);
   end
   if(pin.physical_word(21'h200)!==32'h51a79bc3)$fatal(1,"image guard changed");

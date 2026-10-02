@@ -2,7 +2,8 @@ wire logic_clk;
 wire controller_clk;
 wire sdram_phy_clk;
 wire sdram_pll_locked;
-wire sdram_request_valid;
+wire sdram_request_valid, sdram_next_valid, sdram_stream_active;
+wire [20:0] sdram_next_address;
 wire sdram_write;
 wire [20:0] sdram_address;
 wire [5:0] sdram_words;
@@ -21,9 +22,11 @@ TangNano20KSdramPll108M54M u_sdram_pll (
     .sdram_clk(sdram_phy_clk), .locked(sdram_pll_locked)
 );
 
-TangNano20KSdramNativeBridge108M54M u_sdram_bridge (
+TangNano20KSdramNativeBridge108M54M #(.PREPARE_NEXT(1)) u_sdram_bridge (
     .logic_clk(logic_clk), .controller_clk(controller_clk),
     .sdram_clk(sdram_phy_clk), .reset(!sdram_pll_locked || (|buttons)),
+    .next_valid(sdram_next_valid), .next_address(sdram_next_address),
+    .stream_active(sdram_stream_active),
     .request_valid(sdram_request_valid), .writing(sdram_write),
     .address(sdram_address), .words(sdram_words),
     .write_mask(sdram_write_mask), .write_data(sdram_write_data),

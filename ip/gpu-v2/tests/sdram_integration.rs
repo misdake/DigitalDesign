@@ -160,3 +160,166 @@ fn insufficient_tail_cover_is_a_real_source_error_not_zero_padding() {
     };
     assert!(frontend::run_with_memory(&input, &mut source).is_err());
 }
+
+#[test]
+fn early_average_oracle_is_calibrated_deterministic_and_matches_functional_data() {
+    use digital_design_hardware_gowin::sdram_memory_controller::sim::{
+        calibration, cycle_calibration,
+    };
+    let trace = calibration::representative_trace(8).unwrap();
+    let config = cycle_calibration::Config {
+        service: service::Config {
+            init_cycles: 32,
+            early_grant: true,
+            max_queued: 512,
+            ..Default::default()
+        },
+        load: Load::display_and_cpu(50),
+        ..Default::default()
+    };
+    let first = cycle_calibration::analyze(&trace, config.clone()).unwrap();
+    let repeat = cycle_calibration::analyze(&trace, config).unwrap();
+    assert_eq!(first.classes, repeat.classes);
+    let profile = first.profile().unwrap();
+    assert_eq!(profile, repeat.profile().unwrap());
+    assert!(first.background_submitted > 50 && first.background_completed > 0);
+    assert!(first.classes.iter().all(|s| s.samples == 8));
+    let input = program();
+    let golden = frontend::run(&input).unwrap();
+    let mut source = sdram::Adapter {
+        service: average::Memory::new(image(&input), profile, Default::default()).unwrap(),
+        max_cycles: 20000,
+        events: vec![],
+    };
+    let got = frontend::run_with_memory(&input, &mut source).unwrap();
+    assert_eq!(got.outputs, golden.outputs);
+    assert_eq!(source.service.bytes(), input.memory);
+    // An incomplete calibration cannot silently invent timing for missing sizes.
+    assert!(cycle_calibration::analyze(&trace[..1], Default::default())
+        .unwrap()
+        .profile()
+        .is_err());
+    let mut overlap = cycle_calibration::Config {
+        load: Load::display(1),
+        ..Default::default()
+    };
+    overlap.load.streams[0].base = 0;
+    assert!(cycle_calibration::analyze(&trace, overlap)
+        .unwrap_err()
+        .contains("isolated"));
+}
+#[test]
+fn early_cycle_service_matches_independent_oracle_for_read_write_and_guards() {
+    for chained_groups in [false, true] {
+        let mut observed = service::Memory::new(
+            OracleImage::filled::<0xa5>(0, 8192).unwrap(),
+            service::Config {
+                init_cycles: 32,
+                early_grant: true,
+                chained_groups,
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        let mut expected = oracle::Memory::new(
+            OracleImage::filled::<0xa5>(0, 8192).unwrap(),
+            Default::default(),
+        )
+        .unwrap();
+        for bytes in [32, 64, 128, 512] {
+            // SAFETY: independent external stimulus, not an audited intermediate.
+            let data = (0..bytes / 8)
+                .map(|n| unsafe {
+                    OracleWord::from_host(
+                        0xc7e1357902468abdu64 ^ (n as u64 * 0x01010101),
+                        "oracle differential stimulus",
+                    )
+                    .unwrap()
+                })
+                .collect::<Vec<_>>();
+            for request in [
+                Request::Write {
+                    address: 4096,
+                    data,
+                    enables: vec![255; bytes / 8],
+                },
+                Request::Read {
+                    address: 4096,
+                    bytes,
+                },
+            ] {
+                let mut results = Vec::new();
+                for model in [
+                    &mut expected as &mut dyn Service,
+                    &mut observed as &mut dyn Service,
+                ] {
+                    model.submit(Client::GpuReadOnly, request.clone()).unwrap();
+                    let mut read = Vec::new();
+                    let mut complete = 0;
+                    for _ in 0..20000 {
+                        for event in model.step().unwrap() {
+                            match event {
+                                Event::ReadBeat {
+                                    index, data, last, ..
+                                } => read.push((index, data.bits(), last)),
+                                Event::Complete { .. } => complete += 1,
+                                _ => {}
+                            }
+                        }
+                        if model.idle() {
+                            break;
+                        }
+                    }
+                    assert!(model.idle());
+                    assert_eq!(complete, 1);
+                    results.push(read);
+                }
+                assert_eq!(results[0], results[1]);
+                assert_eq!(expected.bytes(), observed.bytes());
+                assert!(observed.bytes()[..4096].iter().all(|&b| b == 0xa5));
+                assert!(observed.bytes()[4608..].iter().all(|&b| b == 0xa5));
+            }
+        }
+    }
+}
+
+#[test]
+fn chained_group_average_profile_is_repeatable_and_reduces_group_latency() {
+    use digital_design_hardware_gowin::sdram_memory_controller::sim::{
+        calibration, cycle_calibration,
+    };
+    let trace = calibration::representative_trace(8).unwrap();
+    let mut config = cycle_calibration::Config {
+        service: service::Config {
+            init_cycles: 32,
+            early_grant: true,
+            ..Default::default()
+        },
+        ..Default::default()
+    };
+    let baseline = cycle_calibration::analyze(&trace, config.clone()).unwrap();
+    config.service.chained_groups = true;
+    let grouped = cycle_calibration::analyze(&trace, config.clone()).unwrap();
+    let repeat = cycle_calibration::analyze(&trace, config).unwrap();
+    assert_eq!(grouped.classes, repeat.classes);
+    let profile = grouped.profile().unwrap();
+    assert!(grouped.classes[3].mean_complete() < baseline.classes[3].mean_complete());
+    assert!(grouped.classes[7].mean_complete() < baseline.classes[7].mean_complete());
+    assert!(profile
+        .read_sector_first
+        .windows(2)
+        .all(|p| p[1] >= p[0] + 16));
+    let input = program();
+    let golden = frontend::run(&input).unwrap();
+    let mut source = sdram::Adapter {
+        service: average::Memory::new(image(&input), profile, Default::default()).unwrap(),
+        max_cycles: 20000,
+        events: vec![],
+    };
+    assert_eq!(
+        frontend::run_with_memory(&input, &mut source)
+            .unwrap()
+            .outputs,
+        golden.outputs
+    );
+}

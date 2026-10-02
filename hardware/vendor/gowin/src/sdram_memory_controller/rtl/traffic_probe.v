@@ -3,14 +3,17 @@ module SdramTrafficProbe (
  input wire clk, input wire [1:0] buttons,
  input wire [63:0] sdram_read_data, input wire sdram_read_valid,
  input wire sdram_init_done, input wire sdram_request_ready,
- input wire sdram_done, input wire sdram_write_data_ready,
+ input wire sdram_stream_active, input wire sdram_done, input wire sdram_write_data_ready,
  output wire [5:0] leds, output reg uart_tx=1,
+ output wire sdram_next_valid, output wire [20:0] sdram_next_address,
  output wire sdram_request_valid,output wire sdram_write,
  output wire [20:0] sdram_address,output wire [3:0] sdram_write_mask,
  output wire [63:0] sdram_write_data,output wire sdram_write_data_valid,
  output wire [5:0] sdram_words
 );
  localparam WINDOW=__WINDOW__, UART_DIV=__UART_DIV__;
+ localparam EARLY_GRANT=__EARLY_GRANT__;
+ localparam CHAIN_GROUP_FOUR=__CHAIN_GROUP_FOUR__;
  localparam FILL=0, VERIFY=1, RUN=2, DRAIN=3, REPORT=4, CLEAR=5, STOP=6;
  reg [2:0] state=FILL;
  wire reset=(|buttons)||!sdram_init_done;
@@ -23,11 +26,16 @@ module SdramTrafficProbe (
  // display batch (at most 50*elapsed). WINDOW <= 2^24 fits u32, including drain.
  reg [31:0] group_sum=0;
  reg [31:0] group_stamp=0;
- reg failed=0, memory_busy=0;
+ reg failed=0, memory_busy=0, memory_reserved=0;
  reg report_done=0,report_active=0;
  reg [6:0] pending=0,active=0,writes=0;
+ reg [6:0] reserved=0;
+ reg [21:0] next_gpu_address=0;
+ reg [31:0] next_gpu_arrival=0, next_gpu_grant=0;
+ wire lookahead_window, lookahead_enable;
+ assign lookahead_enable=EARLY_GRANT && lookahead_window;
  reg [21:0] addresses[0:6];
- reg [4:0] feed[0:6],received[0:6];
+ reg [6:0] feed[0:6],received[0:6];
  reg [31:0] arrival[0:6],grant[0:6],timer[0:6],request_number[0:6];
  reg [5:0] display_left=0;
  reg [31:0] display_stamp=0;
@@ -42,6 +50,7 @@ module SdramTrafficProbe (
  wire [63:0] response_data[0:6];
  wire [15:0] dma_result;
  wire [63:0] payload[0:6];
+ wire [21:0] request_address[0:6];
  wire [15:0] dma_payload;
  wire memory_request_valid,memory_write,memory_line,memory_request_ready,memory_write_data_ready;
  wire [21:0] memory_address;
@@ -53,6 +62,11 @@ module SdramTrafficProbe (
  assign response_last[2]=writes[2]||received[2]==3;
  assign response_last[3]=1;
  assign response_data[3]={48'd0,dma_result};
+ // synthesis translate_off
+ integer early_grants=0;
+ always @(posedge clk) if(!reset && |(request_ready & active)) early_grants=early_grants+1;
+ // synthesis translate_on
+
  assign leds=~{failed,state==STOP,mode};
  function [31:0] pattern;
   input [21:0] halfword;
@@ -67,6 +81,7 @@ module SdramTrafficProbe (
  endfunction
  genvar g;
  generate for(g=0;g<7;g=g+1)begin: data_sources
+  assign request_address[g]=(g>=5 && active[g] && pending[g])?next_gpu_address:addresses[g];
   assign payload[g]={pattern(addresses[g]+feed[g]*4+2),pattern(addresses[g]+feed[g]*4)};
  end endgenerate
  wire [31:0] dma_word=pattern(addresses[3]);
@@ -74,12 +89,14 @@ module SdramTrafficProbe (
  __ARBITER__ arbiter (
  __CLIENT_CONNECTIONS__
  );
- __SHARED_PORT__ adapter (
+ __SHARED_PORT__ #(.EARLY_GRANT(EARLY_GRANT), .CHAIN_GROUP_FOUR(CHAIN_GROUP_FOUR)) adapter (
  .clk(clk),.reset(reset),.cpu_request_valid(memory_request_valid),.cpu_write(memory_write),
  .cpu_line(memory_line),.cpu_address(memory_address),.cpu_line_count_minus_1(memory_line_count_minus_1),
  .cpu_write_data(memory_write_data),.cpu_response_ready(memory_response_ready),
  .controller_read_data(sdram_read_data),.controller_read_valid(sdram_read_valid),
  .controller_init_done(sdram_init_done),.controller_request_ready(sdram_request_ready),
+ .controller_stream_active(sdram_stream_active),.cpu_lookahead_window(lookahead_window),
+ .controller_next_valid(sdram_next_valid),.controller_next_address(sdram_next_address),
  .controller_done(sdram_done),.controller_write_data_ready(sdram_write_data_ready),
  .cpu_request_ready(memory_request_ready),.cpu_write_data_ready(memory_write_data_ready),
  .cpu_response_valid(memory_response_valid),.cpu_read_data(memory_read_data),
@@ -126,7 +143,8 @@ module SdramTrafficProbe (
   if(reset)begin
    state<=FILL;mode<=0;tick<=0;elapsed<=0;pending<=0;active<=0;writes<=0;
    fill_sector<=0;gpu_sector<=0;gpu_group<=0;gpu_writing<=0;display_left<=0;
-   failed<=0;memory_busy<=0;
+   failed<=0;memory_busy<=0;memory_reserved<=0;reserved<=0;
+   next_gpu_address<=0;next_gpu_arrival<=0;next_gpu_grant<=0;
    busy_cycles<=0;read_bytes<=0;write_bytes<=0;groups<=0;group_sum<=0;group_max<=0;missed<=0;
    for(i=0;i<7;i=i+1)begin
     addresses[i]<=0;feed[i]<=0;received[i]<=0;arrival[i]<=0;grant[i]<=0;timer[i]<=0;request_number[i]<=0;
@@ -140,14 +158,20 @@ module SdramTrafficProbe (
     elapsed<=elapsed+1;
     if(memory_busy)busy_cycles<=busy_cycles+1;
    end
-   if(memory_request_valid&&memory_request_ready)memory_busy<=1;
-   if(memory_response_valid&&memory_response_ready&&memory_response_last)memory_busy<=0;
+   if(memory_request_valid&&memory_request_ready)begin
+    if(memory_busy)memory_reserved<=1;else memory_busy<=1;
+   end
+   if(memory_response_valid&&memory_response_ready&&memory_response_last)begin
+    memory_busy<=memory_reserved;memory_reserved<=0;
+   end
    for(i=0;i<7;i=i+1)begin
     if(request_ready[i])begin
-     pending[i]<=0;active[i]<=1;feed[i]<=0;received[i]<=0;grant[i]<=tick;
+     pending[i]<=0;
+     if(active[i])begin reserved[i]<=1;next_gpu_grant<=tick;end
+     else begin active[i]<=1;feed[i]<=0;received[i]<=0;grant[i]<=tick;end
      if(state==RUN||state==DRAIN)begin
       requests[i]<=requests[i]+1;
-      wait_latency=tick-arrival[i];wait_sum[i]<=wait_sum[i]+wait_latency;
+      wait_latency=tick-(active[i]?next_gpu_arrival:arrival[i]);wait_sum[i]<=wait_sum[i]+wait_latency;
       if(wait_latency>max_wait[i])max_wait[i]<=wait_latency;
      end
     end
@@ -174,21 +198,24 @@ module SdramTrafficProbe (
       if(!writes[i])read_bytes<=read_bytes+(i==3?2:8);
      end
      if(response_last[i])begin
-      active[i]<=0;request_number[i]<=request_number[i]+1;
+      active[i]<=reserved[i];reserved[i]<=0;
+      if(i>=5 && pending[i])begin addresses[i]<=next_gpu_address;arrival[i]<=next_gpu_arrival;end
+      if(reserved[i])begin addresses[i]<=next_gpu_address;arrival[i]<=next_gpu_arrival;grant[i]<=next_gpu_grant;feed[i]<=0;received[i]<=0;end
+      request_number[i]<=request_number[i]+1;
       if(i==2)cpu_write_phase<=cpu_write_phase==2?0:cpu_write_phase+1;
       if(state==RUN||state==DRAIN)begin
        completed[i]<=completed[i]+1;total_latency=tick-arrival[i];total_sum[i]<=total_sum[i]+total_latency;
        if(total_latency>max_total[i])max_total[i]<=total_latency;
        if(total_latency<min_total[i])min_total[i]<=total_latency;
-       if(writes[i])write_bytes<=write_bytes+(i==3?2:i<4?32:128);
+       if(writes[i])write_bytes<=write_bytes+(i==3?2:i<4?32:i>=5&&CHAIN_GROUP_FOUR?512:128);
       end
       if(i==5||i==6)begin
        if(state==FILL||state==VERIFY)begin
         if(fill_sector==63)begin fill_sector<=0;state<=state==FILL?VERIFY:CLEAR;end
         else fill_sector<=fill_sector+1;
        end else begin
-        gpu_sector<=gpu_sector+1;
-        if(gpu_sector==3)begin
+        gpu_sector<=CHAIN_GROUP_FOUR?0:gpu_sector+1;
+        if(gpu_sector==3 || CHAIN_GROUP_FOUR)begin
          gpu_group<=gpu_group+1;gpu_writing<=mode>=5?!gpu_writing:mode==1;
          groups<=groups+1;group_sum<=group_sum+(tick-group_stamp);
          if(tick-group_stamp>group_max)group_max<=tick-group_stamp;
@@ -197,6 +224,11 @@ module SdramTrafficProbe (
       end
      end
     end
+   end
+   if(EARLY_GRANT && !CHAIN_GROUP_FOUR && (state==RUN||state==DRAIN) && gpu_sector!=3 &&
+      !pending[5]&&!pending[6]&&!reserved[5]&&!reserved[6]&&(active[5]||active[6])&&!response_last[5]&&!response_last[6])begin
+    next_gpu_address<=gpu_address(gpu_group,gpu_sector+1'b1);next_gpu_arrival<=tick;
+    if(active[5])pending[5]<=1;else pending[6]<=1;
    end
    case(state)
     FILL,VERIFY:if(!pending[5]&&!active[5]&&!pending[6]&&!active[6])begin
@@ -266,7 +298,7 @@ module SdramTrafficProbe (
   selected_word=0;client=0;field=0;
   case(report_word)
    0:selected_word=32'h434d4453;
-   1:selected_word={15'd0,failed,4'd0,mode,8'd1};
+   1:selected_word={15'd0,failed,4'd0,mode,CHAIN_GROUP_FOUR?8'd2:8'd1};
    2:selected_word=54000000;
    3:selected_word=WINDOW;
    4:selected_word=measured_elapsed;

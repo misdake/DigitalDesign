@@ -10,10 +10,10 @@ The vendor never depends on GPU, CPU or system crates.
 
 The Rust service oracle and calibration experiments are executable, and the GPU
 frontend oracle consumes their real DMA responses. System all-targets compilation
-checks the relocated dependencies. Six relocated Verilog sources match the previous
-HEAD after line-ending normalization; module identities and generated source paths
+checks the relocated dependencies. Module identities and generated source paths
 are preserved. `RtlSources` provides the authoritative bundle used by the target.
-This migration does not enable the production bridge's continuation inputs.
+Production continuation remains off; independent configurations exercise early
+admission and explicit four-sector groups below.
 
 The independent `emu::Combination` now executes arbiter, adapter, two-entry pair
 gearbox and rising-capture native controller state on related clock edges.
@@ -22,8 +22,9 @@ exports the connected standalone RTL using the authoritative components. GPU tes
 compare every observable logic-clock handshake against the real controller and pin
 model, including scalar lanes, refresh, invalid requests, reset and response waits.
 The approximate timing study remains separate from this cycle implementation.
-The standalone [traffic probe](sdram-traffic-probe.md) has passed PnR; physical board
-qualification is pending. CPU tests/system co-simulation were not run in this unit.
+The standalone [traffic probes](sdram-traffic-probe.md) have passed PnR. The serial
+baseline has physical measurements; updated early/group qualification is pending
+usable UART data. CPU tests/system co-simulation were not run in this unit.
 
 ## Host service and data boundary
 
@@ -144,10 +145,13 @@ facade reserves the complete payload. Arbitrary per-byte burst masks are rejecte
 before ID acceptance. Native scalar halfword lanes remain supported through the
 low-level DMA port, and host DMA bursts are serialized into those scalar operations.
 
-The host facade splits 512 B into four real 128 B transactions. Display arrivals
-can intervene at each sector boundary. No linked physical 512 B continuation is
-claimed by the unchained cycle engine or board probe. Configured oracle chain
-experiments remain candidates requiring their separate emu/RTL integration.
+The host facade splits 512 B into four real 128 B transactions. In the default
+configuration, Display arrivals can intervene at each sector boundary. The optional
+early-grant configuration makes one successor irrevocable before that boundary;
+Display retains priority only until the successor is granted. No linked physical
+512 B continuation is claimed by either configuration. The separately enabled
+four-sector group below provides physical chaining through a different admission
+contract; it is not an automatic extension of a per-sector grant.
 
 Cycle reset aborts queued and active host IDs while retaining the memory image and
 already clocked writes. IDs remain monotonic across reset. Configuration bounds
@@ -159,3 +163,115 @@ GPU-owned reproduction and tests are documented in
 The bounded probe writes calibration.csv and profiles.txt under the selected target
 directory. Preserve those reports with the source/configuration used to create them;
 they are estimates, not physical bandwidth evidence.
+
+## Optional early admission
+
+`Combination::with_early_grant`, `combination::rtl_sources_with_early_grant` and
+`emu::service::Config::early_grant` enable the same one-slot protocol. The default
+remains serial. `SharedSdramPort` defaults `EARLY_GRANT=0`; the CPU system ties
+`lookahead_enable` and `controller_stream_active` low. Production activation and
+whole-system resource/timing qualification are separate from the standalone probe.
+
+The adapter opens its successor slot in the last four logic beats of an active
+line while the native stream is active. The arbiter records a reserved owner and
+the adapter records its descriptor. Grants advance the non-display cursor; a later
+Display arrival cannot revoke a grant. No new grant occurs on a terminal response
+edge. LAST/error retirement promotes the reserved owner, with no second reservation
+until the slot is released. Reset aborts both slots. Native initialization loss
+requires a shared upstream reset, as in the board wrapper.
+
+Active write payload selection uses its owner, independently of the next
+request's direction/length. A same-client next descriptor may change address or
+read/write mode while its payload still describes the active segment. Only accepted
+LAST promotes payload/response indices. A promoted line write has one source-prime
+cycle. Scalar writes are excluded from early grants because their request-edge
+payload shares the current stream bus. Scalar/final read responses remain stable
+under backpressure; intermediate line beats still require a reserved sink.
+
+The gearbox transports a stable next address to the core. `PREPARE_NEXT` can open
+a closed *other* bank while the current DQ stream continues, subject to refresh
+age and tRCD/tRP. It never precharges the active bank or an already open conflicting
+row in this mode. CHAIN/READ_CHAIN remain zero: every segment still has its own
+native completion, adapter LAST and remaining transport gaps.
+
+## Optional four-sector physical groups
+
+`emu::service::Config::chained_groups`, `Combination::with_options` and
+`combination::rtl_sources_with_options` enable `CHAIN_GROUP_FOUR` in both adapter
+and gearbox. Defaults remain off. In that configuration alone, line-count code
+2 means one naturally aligned 512 B GPU group; the default still rejects code 2.
+The existing six-bit native word-count wire uses zero as its opt-in group sentinel.
+The adapter expands it to 64 logic beats, and the gearbox issues four physical
+32-word READ or WRITE segments. A group has one arbiter grant and one final
+LAST/write ack. It does not expose four separately arbitrated completions.
+
+Display wins before admission. Once admitted, all four segments are irrevocable;
+later Display work waits for the group, although early admission may reserve its
+tail slot. Only one successor transaction may be reserved. This changes the
+priority boundary and can increase another client's maximum waiting time. It
+does not promise fairness under unlimited Display demand.
+
+The gearbox snapshots the stable descriptor into the 108 MHz domain before core
+admission. This is an explicit pipeline with normal related-clock timing checks.
+Group alignment turns sector addressing into wiring. Two 64-bit write entries
+carry the continuous stream; no 512 B payload RAM is added. The host facade owns
+the complete payload and response sink before submission. Initial source delay
+is allowed; source underrun during DQ streaming is an error. Intermediate read
+beats require an always-ready sink; final responses retain the adapter's hold
+semantics. Reset aborts the group and any reserved successor without rolling back
+already clocked writes.
+
+The native core enables CHAIN/READ_CHAIN only for the group wrapper. Its internal
+next descriptor is valid only while another group segment remains. Other-bank
+PRE/ACT may overlap current DQ, subject to bank timing and refresh. A qualified
+continuation issues the next column command exactly 32 native clocks after the
+previous one. A failed qualification stops the stream and restarts the remaining
+segments with normal row/refresh delays, retaining group ownership. Completion
+is published only after the fourth segment. Groups are bounded to four segments;
+the refresh-age continuation gate prevents indefinite refresh postponement.
+
+Independent functional-oracle comparisons check all sizes and memory guards.
+Cycle/RTL tests cover read/write, conflicting rows, refresh fallback, Display
+before/after admission, alignment rejection, source underrun and midstream reset.
+The pin fixture separately counts accepted chains and checks physical column
+intervals. Standalone resource/timing and board status live in the
+[probe qualification](sdram-traffic-probe.md#four-sector-group-probe).
+
+## Cycle-derived average Rust oracle
+
+`sim::cycle_calibration::analyze` measures the actual independent cycle facade
+with serial, early admission or explicit groups and validated `traffic::Load` streams.
+Initialization is excluded. Background reads/writes use real arbiter clients and
+an isolated pin-memory region; overlap with foreground data is rejected. Idle
+refresh and bank/row state continue across samples. There is one eligible foreground
+job at a time; its backlog is reported separately and excluded from service means.
+Cycle, sample, queue and submission bounds terminate overload.
+
+The report records first/completion means, p95, grant wait and four 512 B sector
+first offsets. `Report::profile()` rounds each mean upward once; missing classes
+fail. `average::Memory` then provides the functional oracle with stable offsets
+and its own FIFO wait, without re-adding background delay or running the cycle
+engine per runtime access. `Profile::gpu_early_grant(load)` is the bounded default
+calibration helper; `Profile::gpu_chained_groups(load)` selects physical groups.
+Functional expected bytes are checked independently of the cycle engine; it
+supplies edge-by-edge protocol expectations for RTL co-simulation. The configured event oracle and its
+ideal `ChainedCandidate` study remain separate from both implemented configurations.
+
+The GPU example `sdram_early_grant_model_probe` compares 128 samples per class for
+Solo/CPU/Display/Both/Batch50. The representative trace mixes bank and row locality;
+these averages depend on its addresses and phases, rather than being latency
+promises for every workload. Current model completion means (54 MHz logic clocks):
+
+| Estimated load | Serial read512 | Early read512 | Group read512 | Serial write512 | Early write512 | Group write512 |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| Solo | 91.97 | 89.16 | 72.41 | 93.11 | 91.30 | 71.71 |
+| CPU | 96.54 | 93.44 | 73.00 | 98.19 | 96.61 | 72.80 |
+| Periodic Display | 98.30 | 94.81 | 72.73 | 100.33 | 98.06 | 72.84 |
+| CPU + periodic Display | 103.40 | 99.18 | 73.89 | 105.82 | 103.30 | 73.79 |
+| CPU + batch50 Display | 110.04 | 100.38 | 74.22 | 103.20 | 103.41 | 74.03 |
+
+These are cycle-model averages, not physical-board measurements. Changed arbitration
+phase can worsen a class even if group throughput improves. Early admission removes
+some dispatch and bank preparation delay; it does not remove every physical gap.
+Groups additionally remove per-sector arbitration/dispatch, but change the
+irreversible priority boundary. Evidence is under `target/gpu-v2-sdram/chained-model/`.

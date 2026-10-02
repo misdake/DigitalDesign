@@ -19,34 +19,76 @@ pub struct State {
     data: u64,
     last: bool,
     error: bool,
+    queued: Option<Input>,
+    write_hold: bool,
+    early_grant: bool,
+    chained_groups: bool,
 }
 impl State {
-    fn legal(i: &Input) -> bool {
+    pub fn with_early_grant(early_grant: bool) -> Self {
+        Self::with_options(early_grant, false)
+    }
+    pub fn with_options(early_grant: bool, chained_groups: bool) -> Self {
+        Self {
+            early_grant,
+            chained_groups,
+            ..Self::default()
+        }
+    }
+    fn legal(&self, i: &Input) -> bool {
         !i.cpu_line
+            || (self.chained_groups && i.cpu_line_count_minus_1 == 2 && i.cpu_address & 255 == 0)
             || (i.cpu_line_count_minus_1 != 2
                 && i.cpu_address & ((16 * (i.cpu_line_count_minus_1 + 1)) - 1) == 0)
     }
     fn active(&self) -> bool {
         self.state == 1 && self.writing && self.fed < if self.line { self.total } else { 1 }
     }
+    fn window(&self, i: &Input) -> bool {
+        self.early_grant
+            && self.state == 1
+            && i.controller_stream_active
+            && self.line
+            && self.queued.is_none()
+            && u16::from(if self.writing { self.fed } else { self.beats }) + 4
+                >= u16::from(self.total)
+    }
+    fn terminal(&self, i: &Input) -> bool {
+        self.queued.is_some()
+            && !self.error
+            && i.cpu_response_ready
+            && (self.state == 4 || self.state == 2 && (self.done_seen || i.controller_done))
+    }
     pub fn output(&self, i: &Input) -> Output {
+        let launch = self.queued.as_ref().unwrap_or(i);
         Output {
-            cpu_request_ready: self.state == 0
-                && i.controller_init_done
-                && (!i.cpu_request_valid || !Self::legal(i) || i.controller_request_ready),
-            cpu_write_data_ready: self.active() && self.line && i.controller_write_data_ready,
+            cpu_request_ready: i.controller_init_done
+                && self.queued.is_none()
+                && if self.state == 0 {
+                    !i.cpu_request_valid || !self.legal(launch) || i.controller_request_ready
+                } else {
+                    self.window(i)
+                },
+            cpu_lookahead_window: self.window(i),
+            cpu_write_data_ready: self.active()
+                && !self.write_hold
+                && self.line
+                && i.controller_write_data_ready,
             cpu_response_valid: self.valid,
             cpu_read_data: self.data,
             cpu_response_last: self.last,
             cpu_error: self.error,
-            controller_request_valid: self.state == 0
-                && i.cpu_request_valid
+            controller_request_valid: (self.state == 0 || self.terminal(i))
+                && (self.queued.is_some() || i.cpu_request_valid)
                 && i.controller_init_done
-                && Self::legal(i),
-            controller_write: i.cpu_write,
-            controller_address: i.cpu_address >> 1,
-            controller_write_mask: if i.cpu_write && !i.cpu_line {
-                if i.cpu_address & 1 != 0 {
+                && self.legal(launch),
+            controller_next_valid: self.queued.as_ref().is_some_and(|q| self.legal(q))
+                && self.state == 1,
+            controller_next_address: self.queued.as_ref().map_or(0, |q| q.cpu_address >> 1),
+            controller_write: launch.cpu_write,
+            controller_address: launch.cpu_address >> 1,
+            controller_write_mask: if launch.cpu_write && !launch.cpu_line {
+                if launch.cpu_address & 1 != 0 {
                     3
                 } else {
                     12
@@ -59,11 +101,13 @@ impl State {
             } else {
                 self.scalar_write
             },
-            controller_write_data_valid: self.active(),
-            controller_words: if !i.cpu_line {
+            controller_write_data_valid: self.active() && !self.write_hold,
+            controller_words: if !launch.cpu_line {
                 1
+            } else if self.chained_groups && launch.cpu_line_count_minus_1 == 2 {
+                0
             } else {
-                8 * (i.cpu_line_count_minus_1 + 1)
+                8 * (launch.cpu_line_count_minus_1 + 1)
             },
         }
     }
@@ -79,38 +123,30 @@ impl State {
             self.read_seen = false;
             self.done_seen = false;
             self.timeout = 0;
+            self.queued = None;
+            self.write_hold = false;
             return;
+        }
+        self.write_hold = false;
+        if (o.early_grant || o.chained_groups) && o.state == 2 && i.controller_done {
+            self.done_seen = true;
+        }
+        if o.state != 0 && i.cpu_request_valid && output.cpu_request_ready {
+            self.queued = Some(i.clone());
         }
         match o.state {
             0 => {
-                if i.cpu_request_valid && output.cpu_request_ready {
-                    self.writing = i.cpu_write;
-                    self.line = i.cpu_line;
-                    self.lane = i.cpu_address & 1 != 0;
-                    self.total = (4 * (i.cpu_line_count_minus_1 + 1)) as u8;
-                    self.fed = 0;
-                    self.beats = 0;
-                    self.read_seen = false;
-                    self.done_seen = false;
-                    self.timeout = 0;
-                    self.valid = false;
-                    self.last = false;
-                    self.error = !Self::legal(i);
-                    if self.error {
-                        self.data = 0;
-                        self.valid = true;
-                        self.last = true;
-                        self.state = 4;
-                    } else {
-                        self.scalar_write =
-                            (i.cpu_write_data & 65535) << if self.lane { 16 } else { 0 };
-                        self.state = 1;
-                    }
+                let launch = o.queued.as_ref().unwrap_or(i);
+                if (o.queued.is_some() || i.cpu_request_valid)
+                    && (!o.legal(launch) || i.controller_request_ready)
+                {
+                    self.launch(launch);
                 }
             }
+
             1 => {
                 self.timeout = (o.timeout + 1) & 0xfffff;
-                if o.active() && i.controller_write_data_ready {
+                if output.controller_write_data_valid && i.controller_write_data_ready {
                     self.fed = o.fed + 1;
                 }
                 if i.controller_done {
@@ -191,6 +227,41 @@ impl State {
                 }
             }
             _ => self.state = 0,
+        }
+        if o.terminal(i) {
+            let launch = o.queued.as_ref().unwrap();
+            if !o.legal(launch) || i.controller_request_ready {
+                self.launch(launch);
+                self.write_hold = launch.cpu_write && launch.cpu_line;
+            }
+        }
+    }
+    fn launch(&mut self, i: &Input) {
+        self.queued = None;
+        self.writing = i.cpu_write;
+        self.line = i.cpu_line;
+        self.lane = i.cpu_address & 1 != 0;
+        self.total = if self.chained_groups && i.cpu_line_count_minus_1 == 2 {
+            64
+        } else {
+            (4 * (i.cpu_line_count_minus_1 + 1)) as u8
+        };
+        self.fed = 0;
+        self.beats = 0;
+        self.read_seen = false;
+        self.done_seen = false;
+        self.timeout = 0;
+        self.valid = false;
+        self.last = false;
+        self.error = !self.legal(i);
+        if self.error {
+            self.data = 0;
+            self.valid = true;
+            self.last = true;
+            self.state = 4;
+        } else {
+            self.scalar_write = (i.cpu_write_data & 65535) << if self.lane { 16 } else { 0 };
+            self.state = 1;
         }
     }
 }

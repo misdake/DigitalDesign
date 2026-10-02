@@ -465,7 +465,10 @@ fn background_overload_and_invalid_calibration_fail_with_bounded_work() {
 }
 #[test]
 fn migrated_rtl_bundle_preserves_existing_bridge_chain_default() {
-    assert!(RtlSources::GEARBOX.contains(".next_valid(1'b0)"));
+    assert!(RtlSources::GEARBOX.contains("parameter PREPARE_NEXT = 0"));
+    assert!(RtlSources::CONTROLLER.contains("parameter CHAIN = 0"));
+    assert!(RtlSources::CONTROLLER.contains("parameter READ_CHAIN = 0"));
+    assert!(RtlSources::SHARED_PORT.contains("parameter EARLY_GRANT = 0"));
     assert!(RtlSources::CONTROLLER.contains("module SdramController"));
     assert!(RtlSources::SHARED_PORT.contains("module SharedSdramPort"));
 }

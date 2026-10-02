@@ -28,14 +28,14 @@ def decode(raw):
             raise ValueError(f"UART record CRC mismatch at byte {offset}")
         offset += FRAME_BYTES
         version, mode, failed = words[1] & 255, (words[1] >> 8) & 255, bool(words[1] >> 16)
-        if version != 1 or mode >= len(MODES) or words[2] != 54_000_000:
+        if version not in (1, 2) or mode >= len(MODES) or words[2] != 54_000_000:
             raise ValueError("unsupported board record configuration")
         if failed:
             raise ValueError(f"board pattern/protocol/watchdog failure in mode {mode}")
         window, elapsed, busy, read_bytes, write_bytes = words[3:8]
         if not window or elapsed < window or busy > elapsed or read_bytes + write_bytes > elapsed * 8:
             raise ValueError("invalid board accounting")
-        record = dict(mode=mode, name=MODES[mode], clock_hz=words[2], window_cycles=window,
+        record = dict(version=version, mode=mode, name=MODES[mode], clock_hz=words[2], window_cycles=window,
                       elapsed_cycles=elapsed, drain_cycles=elapsed-window, busy_cycles=busy,
                       occupancy_percent=100*busy/elapsed,
                       read_bytes=read_bytes, write_bytes=write_bytes,
@@ -61,6 +61,12 @@ def decode(raw):
                                   and client["min_complete_cycles"] <= client["mean_complete_cycles"] <= client["max_complete_cycles"]):
                 raise ValueError(f"latency accounting for {name}")
             record["clients"].append(client)
+        sizes = [32, 32, 32, 2, 128, 512 if version == 2 else 128, 512 if version == 2 else 128]
+        if sum(c["completed"] * size for c, size in zip(record["clients"], sizes)) != read_bytes + write_bytes:
+            raise ValueError("useful bytes disagree with completed client payloads")
+        sectors = sum(record["clients"][i]["completed"] for i in [5, 6])
+        if sectors != words[8] * (1 if version == 2 else 4):
+            raise ValueError("framebuffer group accounting")
         records.append(record)
     if not records:
         raise ValueError("no complete valid CRC-protected records")

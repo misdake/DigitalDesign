@@ -17,6 +17,7 @@ module SdramController #(
     parameter CAPTURE_FALLING = 0,
     parameter CHAIN = 0,
     parameter READ_CHAIN = 0,
+    parameter PREPARE_NEXT = 0,
     parameter SCALAR_TAIL_CYCLES = 2,
     parameter READ_CAPTURE_ALWAYS = 1,
     parameter REQUEST_PIPELINE = 1
@@ -32,6 +33,7 @@ module SdramController #(
     input             next_valid,
     input      [20:0] next_address,
     output            chain_accept,
+    output            read_chain_accept,
     input             read_boundary,
     output reg        read_chain_pending = 0,
     output            ready,
@@ -115,6 +117,7 @@ module SdramController #(
     reg capture_window = 0;
     reg [7:0] read_limit = 0;
     reg [11:0] refresh_age = 0;
+    reg prep_refresh_ok = 1;
     reg [3:0] row_valid = 0;
     reg [10:0] row[0:3];
 
@@ -167,12 +170,14 @@ module SdramController #(
     reg read_chain_slot_q = 0;
     wire read_chain_issue = READ_CHAIN && read_chain_slot_q && next_valid && qualified_next_match &&
         prep_wait == 0;
+    assign read_chain_accept = read_chain_issue;
     reg [7:0] launch_age = 0;
     reg observed_chain = 0;
     assign chain_accept = CHAIN && OPEN_ROW && state == ST_WRITE_STREAM &&
         write_index == saved_last && write_chain_eligible && next_valid && qualified_next_match &&
         prep_wait == 0 && refresh_age < 1000 && group_extra_segments != 3;
-    assign ready = state == ST_IDLE && initialized && refresh_age < 1100;
+    assign ready = state == ST_IDLE && initialized && refresh_age < 1100 &&
+        prep_wait == 0 && prep_rp == 0;
     // Capture validity gates ownership; free-running data may be meaningless.
     generate
         if (CAPTURE_FALLING) begin : falling
@@ -238,6 +243,7 @@ module SdramController #(
             end
         end
         if (refresh_age < 4095) refresh_age <= refresh_age + 1'b1;
+        prep_refresh_ok <= refresh_age < 989;
         if (read_active) read_age <= read_age + 1'b1;
         if (read_active) command_age <= command_age + 1'b1;
         if (read_boundary) read_chain_pending <= 0;
@@ -286,7 +292,10 @@ module SdramController #(
                 state <= ST_IDLE;
             end
             ST_IDLE:
-            if (refresh_age >= 1100) begin
+            if (prep_wait != 0 || prep_rp != 0) begin
+                // A prepared bank must satisfy tRCD/tRP before a new column
+                // command or an all-bank refresh can consume its row state.
+            end else if (refresh_age >= 1100) begin
                 if (row_valid != 0) begin
                     command <= 2;
                     O_sdram_addr <= 11'h400;
@@ -364,7 +373,15 @@ module SdramController #(
                     prep_open <= row_valid[mapped_next_address[20:19]];
                     prep_address <= mapped_next_address;
                 end
-                if (CHAIN && prep_needed && prep_rp == 0 && write_index < saved_words) begin
+                if (PREPARE_NEXT && next_valid && next_other_bank &&
+                    !row_valid[mapped_next_address[20:19]] && !prep_needed &&
+                    prep_refresh_ok && write_index < saved_words) begin
+                    prep_needed <= 1;
+                    prep_open <= 0;
+                    prep_address <= mapped_next_address;
+                end
+                if ((CHAIN || PREPARE_NEXT) && prep_needed && prep_rp == 0 &&
+                    write_index < saved_words) begin
                     O_sdram_ba <= prep_address[20:19];
                     if (prep_open) begin
                         command <= 2;
@@ -397,6 +414,7 @@ module SdramController #(
             end
             ST_WRITE_END: begin
                 dq_drive <= 0;
+                if (PREPARE_NEXT) prep_needed <= 0;
                 if (OPEN_ROW) begin
                     done  <= 1;
                     state <= ST_IDLE;
@@ -425,7 +443,14 @@ module SdramController #(
                     prep_open <= row_valid[mapped_next_address[20:19]];
                     prep_address <= mapped_next_address;
                 end
-                if (READ_CHAIN && prep_needed && prep_rp == 0) begin
+                if (PREPARE_NEXT && next_valid && next_other_bank &&
+                    !row_valid[mapped_next_address[20:19]] && !prep_needed &&
+                    prep_refresh_ok && command_age < saved_last) begin
+                    prep_needed <= 1;
+                    prep_open <= 0;
+                    prep_address <= mapped_next_address;
+                end
+                if ((READ_CHAIN || PREPARE_NEXT) && prep_needed && prep_rp == 0) begin
                     O_sdram_ba <= prep_address[20:19];
                     if (prep_open) begin
                         command <= 2;
@@ -454,6 +479,7 @@ module SdramController #(
                     command <= 6;
                 if (read_age == read_finish) begin
                     read_active <= 0;
+                    if (PREPARE_NEXT) prep_needed <= 0;
                     if (OPEN_ROW) begin
                         done  <= 1;
                         state <= ST_IDLE;
@@ -517,6 +543,7 @@ module SdramController #(
             initialized <= 0;
             init_count <= 0;
             refresh_age <= 0;
+            prep_refresh_ok <= 1;
             row_valid <= 0;
             read_active <= 0;
             read_age <= 0;

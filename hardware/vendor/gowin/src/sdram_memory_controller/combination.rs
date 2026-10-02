@@ -7,6 +7,23 @@ use std::path::PathBuf;
 /// The original module identities are retained in both the system and this
 /// wrapper; exported arbiter logic comes from the same NAND implementation.
 pub fn rtl_sources(init_cycles: u32) -> Result<BTreeMap<PathBuf, String>, String> {
+    rtl_sources_with_early_grant(init_cycles, false)
+}
+
+/// One irrevocable successor slot and native closed-bank preparation. Physical
+/// READ/WRITE chaining remains disabled; final responses stay per transaction.
+pub fn rtl_sources_with_early_grant(
+    init_cycles: u32,
+    early_grant: bool,
+) -> Result<BTreeMap<PathBuf, String>, String> {
+    rtl_sources_with_options(init_cycles, early_grant, false)
+}
+
+pub fn rtl_sources_with_options(
+    init_cycles: u32,
+    early_grant: bool,
+    chained_groups: bool,
+) -> Result<BTreeMap<PathBuf, String>, String> {
     if !(1..=65535).contains(&init_cycles) {
         return Err("init cycles must be 1..65535".into());
     }
@@ -30,7 +47,7 @@ pub fn rtl_sources(init_cycles: u32) -> Result<BTreeMap<PathBuf, String>, String
             } else {
                 format!("[{}:0] ", v.width - 1)
             };
-            if v.name.starts_with("memory_") {
+            if v.name.starts_with("memory_") || v.name == "lookahead_enable" {
                 declarations.push_str(&format!("wire {width}{};\n", v.name));
             } else {
                 ports.push(format!("{dir} wire {width}{}", v.name));
@@ -60,7 +77,14 @@ pub fn rtl_sources(init_cycles: u32) -> Result<BTreeMap<PathBuf, String>, String
         CpuV3MemoryArbiter::verilog_identity().module_name(),
         links.join(",\n")
     );
-    text.push_str(include_str!("rtl/combination_connections.vh"));
+    text.push_str(
+        &include_str!("rtl/combination_connections.vh")
+            .replace("__EARLY_GRANT__", if early_grant { "1'b1" } else { "1'b0" })
+            .replace(
+                "__CHAIN_GROUP_FOUR__",
+                if chained_groups { "1'b1" } else { "1'b0" },
+            ),
+    );
     text = text.replace(
         "__SHARED_PORT__",
         &SharedSdramPort::verilog_identity().module_name(),

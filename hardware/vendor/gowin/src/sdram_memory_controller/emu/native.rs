@@ -56,6 +56,8 @@ pub struct Controller {
     prep_rp: u8,
     pub read_chain_pending: bool,
     pub chain: bool,
+    prepare_next: bool,
+    prep_refresh_ok: bool,
 }
 pub fn mapped(address: u32) -> u32 {
     ((address >> 5 & 3) << 19) | (address & 31) | ((address >> 7) << 5)
@@ -104,10 +106,21 @@ impl Controller {
             prep_rp: 0,
             read_chain_pending: false,
             chain,
+            prepare_next: false,
+            prep_refresh_ok: true,
         }
     }
+    pub fn with_prepare_next(init_cycles: u32, prepare_next: bool) -> Self {
+        let mut controller = Self::new(init_cycles, false);
+        controller.prepare_next = prepare_next;
+        controller
+    }
     pub fn ready(&self) -> bool {
-        self.state == 10 && self.initialized && self.refresh_age < 1100
+        self.state == 10
+            && self.initialized
+            && self.refresh_age < 1100
+            && self.prep_wait == 0
+            && self.prep_rp == 0
     }
     pub fn phase(&self) -> u8 {
         self.command << 5 | self.state
@@ -158,6 +171,7 @@ impl Controller {
             && o.refresh_age < 999
             && o.extra != 3;
         self.refresh_age = (o.refresh_age + 1).min(4095);
+        self.prep_refresh_ok = o.refresh_age < 989;
         if o.read_active {
             self.read_age = o.read_age.wrapping_add(1);
             self.command_age = o.command_age.wrapping_add(1);
@@ -210,7 +224,9 @@ impl Controller {
                 self.state = 10;
             }
             10 => {
-                if o.refresh_age >= 1100 {
+                if o.prep_wait != 0 || o.prep_rp != 0 {
+                    // Finish bank timing before dispatch/refresh.
+                } else if o.refresh_age >= 1100 {
                     if o.rows.iter().any(Option::is_some) {
                         self.command = 2;
                         self.pin_address = 1024;
@@ -263,7 +279,22 @@ impl Controller {
                         .map(mapped);
                     self.prep_open = o.rows[(next >> 19) as usize].is_some();
                 }
-                if o.chain && o.prep.is_some() && o.prep_rp == 0 && o.write_index < o.words {
+                if o.prepare_next
+                    && i.next.is_some()
+                    && next >> 19 != o.saved >> 19
+                    && o.rows[(next >> 19) as usize].is_none()
+                    && o.prep.is_none()
+                    && o.prep_refresh_ok
+                    && o.write_index < o.words
+                {
+                    self.prep = Some(next);
+                    self.prep_open = false;
+                }
+                if (o.chain || o.prepare_next)
+                    && o.prep.is_some()
+                    && o.prep_rp == 0
+                    && o.write_index < o.words
+                {
                     self.prepare(&o);
                 }
                 if o.write_index < o.words {
@@ -281,6 +312,9 @@ impl Controller {
                 }
             }
             16 => {
+                if o.prepare_next {
+                    self.prep = None;
+                }
                 self.drive = false;
                 self.done = true;
                 self.state = 10;
@@ -303,13 +337,27 @@ impl Controller {
                         .map(mapped);
                     self.prep_open = o.rows[(next >> 19) as usize].is_some();
                 }
-                if o.chain && o.prep.is_some() && o.prep_rp == 0 {
+                if o.prepare_next
+                    && i.next.is_some()
+                    && next >> 19 != o.saved >> 19
+                    && o.rows[(next >> 19) as usize].is_none()
+                    && o.prep.is_none()
+                    && o.prep_refresh_ok
+                    && o.command_age < o.last
+                {
+                    self.prep = Some(next);
+                    self.prep_open = false;
+                }
+                if (o.chain || o.prepare_next) && o.prep.is_some() && o.prep_rp == 0 {
                     self.prepare(&o);
                 }
                 if o.command_age == o.words + if o.words == 1 { 2 } else { 0 } {
                     self.command = 6;
                 }
                 if o.read_age == o.finish {
+                    if o.prepare_next {
+                        self.prep = None;
+                    }
                     self.read_active = false;
                     self.done = true;
                     self.state = 10;
@@ -345,6 +393,7 @@ impl Controller {
         }
         if i.reset {
             *self = Self::new(o.init_cycles, o.chain);
+            self.prepare_next = o.prepare_next;
         }
     }
     fn prepare(&mut self, o: &Self) {

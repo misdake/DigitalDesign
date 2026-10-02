@@ -32,6 +32,7 @@ TangNano20KSdramPll108M54M u_sdram_pll (
 TangNano20KSdramNativeBridge108M54M u_sdram_bridge (
     .logic_clk(logic_clk), .controller_clk(controller_clk),
     .sdram_clk(sdram_phy_clk), .reset(!sdram_pll_locked || (|buttons)),
+    .next_valid(1'b0), .next_address(21'd0),
     .request_valid(sdram_request_valid), .writing(sdram_write),
     .address(sdram_address), .words(sdram_words),
     .write_mask(sdram_write_mask), .write_data(sdram_write_data),

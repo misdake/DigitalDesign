@@ -12,6 +12,9 @@ module tb;
     end
 
     reg reset = 1;
+    reg next_valid = 0;
+    reg [20:0] next_address = 0;
+    wire stream_active;
     reg request_valid = 0, writing = 0;
     reg [20:0] address = 0;
     reg [5:0] words = 0;

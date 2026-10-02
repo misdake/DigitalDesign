@@ -40,6 +40,27 @@ impl Profile {
             Default::default(),
         )?)
     }
+    /// Calibrate early admission with actual cycle handshakes and the requested
+    /// deterministic background load, then retain only stable average offsets.
+    pub fn gpu_early_grant(load: super::traffic::Load) -> Result<Self, String> {
+        Self::gpu_cycle_profile(load, false)
+    }
+    pub fn gpu_chained_groups(load: super::traffic::Load) -> Result<Self, String> {
+        Self::gpu_cycle_profile(load, true)
+    }
+    fn gpu_cycle_profile(load: super::traffic::Load, chained_groups: bool) -> Result<Self, String> {
+        let config = super::cycle_calibration::Config {
+            service: crate::sdram_memory_controller::emu::service::Config {
+                early_grant: true,
+                chained_groups,
+                ..Default::default()
+            },
+            load,
+            ..Default::default()
+        };
+        super::cycle_calibration::analyze(&calibration::representative_trace(128)?, config)?
+            .profile()
+    }
     pub fn validate(self) -> Result<(), String> {
         if self
             .read_first

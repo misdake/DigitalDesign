@@ -42,6 +42,17 @@ impl SdramTrafficProbe {
     /// Simulation can shorten the sampling window/UART divisor; board defaults
     /// are 2^20 logic clocks and 115200 baud. Clock frequency stays target-owned.
     pub fn source(window: u32, uart_div: u32) -> String {
+        Self::source_with_early_grant(window, uart_div, false)
+    }
+    pub fn source_with_early_grant(window: u32, uart_div: u32, early_grant: bool) -> String {
+        Self::source_with_options(window, uart_div, early_grant, false)
+    }
+    pub fn source_with_options(
+        window: u32,
+        uart_div: u32,
+        early_grant: bool,
+        chained_groups: bool,
+    ) -> String {
         assert!((1..=1 << 24).contains(&window));
         assert!((1..=65535).contains(&uart_div));
         include_str!("rtl/traffic_probe.v")
@@ -56,6 +67,11 @@ impl SdramTrafficProbe {
             .replace("__WINDOW__", &window.to_string())
             .replace("__UART_DIV__", &uart_div.to_string())
             .replace("__CLIENT_CONNECTIONS__", &Self::connections())
+            .replace("__EARLY_GRANT__", if early_grant { "1" } else { "0" })
+            .replace(
+                "__CHAIN_GROUP_FOUR__",
+                if chained_groups { "1" } else { "0" },
+            )
     }
     fn connections() -> String {
         let i = super::emu::idle_inputs();
@@ -77,13 +93,17 @@ impl SdramTrafficProbe {
             for (n, p) in prefixes.iter().enumerate() {
                 if let Some(field) = v.name.strip_prefix(&format!("{p}_")) {
                     connection = match field {
-                        "request_valid" => format!("pending[{n}] && !active[{n}]"),
-                        "address" => format!("addresses[{n}]"),
+                        "request_valid" => format!("pending[{n}]"),
+                        "address" => format!("request_address[{n}]"),
                         "write" => format!("writes[{n}]"),
                         "line" => "1'b1".into(),
                         "line_count_minus_1" => {
                             if n >= 4 {
-                                "2'd3".into()
+                                if n >= 5 {
+                                    "(CHAIN_GROUP_FOUR && (state==RUN || state==DRAIN)) ? 2'd2 : 2'd3".into()
+                                } else {
+                                    "2'd3".into()
+                                }
                             } else {
                                 "2'd0".into()
                             }
@@ -118,5 +138,77 @@ impl SdramTrafficProbe {
     }
     pub fn project() -> GowinModuleProject<TangNano20K, Self> {
         TangNano20K::sdram_wide_debug_uart_project::<Self>("sdram_traffic_probe")
+    }
+}
+
+/// Qualified early-admission probe, with the same nine workload definitions.
+#[derive(Hardware)]
+#[hardware(namespace = "vendor/gowin/sdram")]
+pub struct SdramEarlyGrantProbe;
+impl Module for SdramEarlyGrantProbe {
+    type Input = TangNano20KSdramWideInputs;
+    type Output = TangNano20KSdramWideOutputs;
+    type EmuState = ();
+    const USES_MAIN_CLOCK: bool = true;
+    const EMU_AVAILABLE: bool = false;
+    fn execute_emu(_: &mut (), _: &mut CircuitWires, _: &Self::Input, _: &Self::Output) {
+        panic!("run connected pin fixture");
+    }
+    fn verilog_source() -> Option<String> {
+        Some(
+            SdramTrafficProbe::source_with_early_grant(1 << 20, 469, true)
+                .replace("module SdramTrafficProbe", "module SdramEarlyGrantProbe"),
+        )
+    }
+    fn verilog_dependencies() -> Vec<VerilogDependency> {
+        SdramTrafficProbe::verilog_dependencies()
+    }
+    fn verilog_testbench() -> Option<String> {
+        SdramTrafficProbe::verilog_testbench()
+            .map(|s| s.replace("SdramTrafficProbe dut", "SdramEarlyGrantProbe dut"))
+    }
+}
+impl SdramEarlyGrantProbe {
+    pub fn project() -> GowinModuleProject<TangNano20K, Self> {
+        TangNano20K::sdram_wide_debug_uart_project::<Self>("sdram_early_grant_probe")
+    }
+}
+
+/// Explicit 512-byte group admission; group source/sink never waits for
+/// per-sector completion to supply the next sector's payload.
+#[derive(Hardware)]
+#[hardware(namespace = "vendor/gowin/sdram")]
+pub struct SdramChainedGroupProbe;
+impl Module for SdramChainedGroupProbe {
+    type Input = TangNano20KSdramWideInputs;
+    type Output = TangNano20KSdramWideOutputs;
+    type EmuState = ();
+    const USES_MAIN_CLOCK: bool = true;
+    const EMU_AVAILABLE: bool = false;
+    fn execute_emu(_: &mut (), _: &mut CircuitWires, _: &Self::Input, _: &Self::Output) {
+        panic!("run connected pin fixture");
+    }
+    fn verilog_source() -> Option<String> {
+        Some(
+            SdramTrafficProbe::source_with_options(1 << 20, 469, true, true)
+                .replace("module SdramTrafficProbe", "module SdramChainedGroupProbe"),
+        )
+    }
+    fn verilog_dependencies() -> Vec<VerilogDependency> {
+        SdramTrafficProbe::verilog_dependencies()
+    }
+    fn verilog_testbench() -> Option<String> {
+        SdramTrafficProbe::verilog_testbench().map(|s| {
+            s.replace("SdramTrafficProbe dut", "SdramChainedGroupProbe dut")
+                .replace(".PREPARE_NEXT(1)", ".PREPARE_NEXT(1), .CHAIN_GROUP_FOUR(1)")
+        })
+    }
+}
+impl SdramChainedGroupProbe {
+    pub fn project() -> GowinModuleProject<TangNano20K, Self> {
+        TangNano20K::sdram_wide_debug_uart_project_with_chained_groups::<Self>(
+            "sdram_chained_group_probe",
+            true,
+        )
     }
 }

@@ -643,6 +643,7 @@ __GPU__ u_gpu (
 );
 
 __ARBITER__ u_memory_arbiter (
+    .lookahead_enable(1'b0),
     .clk(clk),
     .reset(reset),
     .instruction_request_valid(icache_memory_request_valid),
@@ -742,6 +743,7 @@ __SHARED_SDRAM_PORT__ u_shared_sdram_port (
     .controller_read_valid(sdram_read_valid),
     .controller_init_done(sdram_init_done),
     .controller_request_ready(sdram_request_ready),
+    .controller_stream_active(1'b0),
     .controller_done(sdram_done),
     .controller_write_data_ready(sdram_write_data_ready),
     .cpu_request_ready(memory_request_ready),

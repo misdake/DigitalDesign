@@ -1,19 +1,19 @@
-//! Vendor-owned shared arbiter between display scanout, instruction
+//! Vendor-owned arbiter between display scanout, instruction
 //! and data caches, boot DMA, the three GPU masters, and the Tang Nano 20K
 //! physical SDRAM line/word port.
 //!
 //! Caches and display transfer one 32-byte line; GPU clients transfer one to
 //! four consecutive lines. Each line contains four ordered 64-bit beats
 //! (beat n carries words 4*n through 4*n+3). The arbiter
-//! forwards one request to the SDRAM adapter, holds ownership while the
-//! adapter streams the real burst, and releases the owner on the accepted beat
-//! carrying `memory_response_last` (or any error beat). The DMA client keeps
+//! forwards one active request and can grant one following request while the
+//! adapter streams the active burst. An early grant owns the next slot and is
+//! never revoked by a later, higher-priority arrival. The DMA client keeps
 //! single 16-bit word transactions. Read payload is broadcast; each client
 //! qualifies it with its own response-valid/error rather than a wide zero mux.
 //!
-//! Display has strict priority at every transaction boundary. The other six
+//! Display has strict priority at each grant decision. The other six
 //! requesters share a circular first-ready schedule. The cursor advances only
-//! after an accepted non-display transaction; its accepted owner remains fixed
+//! after an accepted non-display grant; the active response owner remains fixed
 //! until an accepted last/error response. Fairness is bounded in accepted
 //! non-display transactions, excluding display demand and stalled memory.
 
@@ -23,6 +23,8 @@ use digital_design_hardware::{HardwareIdentity, Module, ModuleIo, VerilogIdentit
 #[derive(Clone, ModuleIo)]
 pub struct CpuV3MemoryArbiterInput {
     pub reset: Wire,
+    /// The memory port has room for one request behind its active transaction.
+    pub lookahead_enable: Wire,
 
     pub instruction_request_valid: Wire,
     pub instruction_address: Wires<22>,
@@ -201,6 +203,8 @@ const OWNER_GPU_FB_W: u8 = 7;
 #[derive(Clone, Default)]
 pub struct CpuV3MemoryArbiterState {
     owner: Owner,
+    /// One irrevocably granted request waiting behind the active response.
+    reserved: Owner,
     /// Round-robin service cursor over the six non-display requesters.
     rotate: u8,
 }
@@ -239,6 +243,7 @@ impl Module for CpuV3MemoryArbiter {
     fn nand(input: &Self::Input) -> Self::Output {
         let zero = input_const(0);
         let owner = reg_w::<3>();
+        let reserved = reg_w::<3>();
         let rotate = reg_w::<3>();
 
         let requests: [Wire; 6] = [
@@ -286,7 +291,20 @@ impl Module for CpuV3MemoryArbiter {
         let non_display_any = wins.iter().fold(zero, |acc, &win| acc | win);
         let selected_any = input.display_request_valid | non_display_any;
         let owner_none = eq_const(owner.out, OWNER_NONE);
-        let requesting = owner_none & selected_any;
+        let reserved_none = eq_const(reserved.out, OWNER_NONE);
+        // A scalar write carries its only data word on the request edge. The
+        // active stream owns the existing payload bus until its response ends.
+        let scalar_write = (eq_const(selected, OWNER_DATA) & input.data_write & !input.data_line)
+            | (eq_const(selected, OWNER_DMA) & input.dma_write);
+        // Do not grant and retire on the same edge: the response owner must
+        // promote its already granted successor before another slot opens.
+        let terminal_response = !owner_none
+            & input.memory_response_valid
+            & (input.memory_response_last | input.memory_error);
+        let requesting = reserved_none
+            & selected_any
+            & !terminal_response
+            & (owner_none | (input.lookahead_enable & !scalar_write));
         let accepted = requesting & input.memory_request_ready;
 
         let owner_display = eq_const(owner.out, OWNER_DISPLAY);
@@ -316,10 +334,17 @@ impl Module for CpuV3MemoryArbiter {
             & input.memory_response_valid
             & memory_response_ready
             & (input.memory_response_last | input.memory_error);
-        let next_owner = mux2_w(owner.out, selected, accepted);
-        let next_owner = mux2_w(next_owner, const_wires::<3>(OWNER_NONE), release);
+        let next_owner = mux2_w(owner.out, selected, accepted & owner_none);
+        let next_owner = mux2_w(next_owner, reserved.out, release);
         owner.set_in(mux2_w(
             next_owner,
+            const_wires::<3>(OWNER_NONE),
+            input.reset,
+        ));
+        let next_reserved = mux2_w(reserved.out, selected, accepted & !owner_none);
+        let next_reserved = mux2_w(next_reserved, const_wires::<3>(OWNER_NONE), release);
+        reserved.set_in(mux2_w(
+            next_reserved,
             const_wires::<3>(OWNER_NONE),
             input.reset,
         ));
@@ -383,14 +408,14 @@ impl Module for CpuV3MemoryArbiter {
             selected,
         );
         // Choose each payload source once. Address-acceptance and held-owner
-        // qualification are shared across the 64-bit lane, rather than two
+        // qualification uses the active owner, never the next descriptor mode.
+        // Shared gating across the 64-bit lane avoids two
         // wide mux trees followed by another requesting/owner mux.
-        let use_data = (requesting & selected_data) | (owner_data & input.data_line);
-        let use_dma = requesting & selected_dma;
-        let use_gpu_ro = (requesting & selected_gpu_ro) | (owner_gpu_ro & input.gpu_ro_write);
-        let use_gpu_fb_r =
-            (requesting & selected_gpu_fb_r) | (owner_gpu_fb_r & input.gpu_fb_r_write);
-        let use_gpu_fb_w = (requesting & selected_gpu_fb_w) | owner_gpu_fb_w;
+        let use_data = (requesting & owner_none & selected_data) | owner_data;
+        let use_dma = requesting & owner_none & selected_dma;
+        let use_gpu_ro = (requesting & owner_none & selected_gpu_ro) | owner_gpu_ro;
+        let use_gpu_fb_r = (requesting & owner_none & selected_gpu_fb_r) | owner_gpu_fb_r;
+        let use_gpu_fb_w = (requesting & owner_none & selected_gpu_fb_w) | owner_gpu_fb_w;
         let memory_write_data = mux2_w(const_wires::<64>(0), input.data_write_data, use_data)
             | mux2_w(
                 const_wires::<64>(0),
@@ -533,19 +558,32 @@ pub(crate) fn advance_state(
         return;
     }
     let (selected, winner) = select(input, state.rotate);
-    let at_boundary = state.owner == Owner::None;
-    if at_boundary {
-        if selected != Owner::None && input.memory_request_ready {
-            if let Some(index) = winner {
-                state.rotate = ((index + 1) % 6) as u8;
-            }
-            state.owner = selected;
-        }
-    } else if input.memory_response_valid
+    let release = state.owner != Owner::None
+        && input.memory_response_valid
         && owner_response_ready(state.owner, input)
-        && (input.memory_response_last || input.memory_error)
+        && (input.memory_response_last || input.memory_error);
+    if release {
+        state.owner = state.reserved;
+        state.reserved = Owner::None;
+    } else if state.reserved == Owner::None
+        && selected != Owner::None
+        && input.memory_request_ready
+        && !(state.owner != Owner::None
+            && input.memory_response_valid
+            && (input.memory_response_last || input.memory_error))
+        && (state.owner == Owner::None
+            || (input.lookahead_enable
+                && !((selected == Owner::Data && input.data_write && !input.data_line)
+                    || (selected == Owner::Dma && input.dma_write))))
     {
-        state.owner = Owner::None;
+        if let Some(index) = winner {
+            state.rotate = ((index + 1) % 6) as u8;
+        }
+        if state.owner == Owner::None {
+            state.owner = selected;
+        } else {
+            state.reserved = selected;
+        }
     }
 }
 
@@ -554,7 +592,14 @@ pub(crate) fn compute_output(
     input: &CpuV3MemoryArbiterInputValue,
 ) -> CpuV3MemoryArbiterOutputValue {
     let (selected, _) = select(input, state.rotate);
-    let requesting = state.owner == Owner::None && selected != Owner::None;
+    let scalar_write = (selected == Owner::Data && input.data_write && !input.data_line)
+        || (selected == Owner::Dma && input.dma_write);
+    let requesting = state.reserved == Owner::None
+        && selected != Owner::None
+        && !(state.owner != Owner::None
+            && input.memory_response_valid
+            && (input.memory_response_last || input.memory_error))
+        && (state.owner == Owner::None || (input.lookahead_enable && !scalar_write));
     let accepted = requesting && input.memory_request_ready;
     let responding = input.memory_response_valid;
     let owner = state.owner;
@@ -599,9 +644,9 @@ pub(crate) fn compute_output(
         Owner::None | Owner::Display | Owner::Instruction => 0,
     };
     let held_write_data = match owner {
-        Owner::Data if input.data_line => input.data_write_data,
-        Owner::GpuRo if input.gpu_ro_write => input.gpu_ro_write_data,
-        Owner::GpuFbR if input.gpu_fb_r_write => input.gpu_fb_r_write_data,
+        Owner::Data => input.data_write_data,
+        Owner::GpuRo => input.gpu_ro_write_data,
+        Owner::GpuFbR => input.gpu_fb_r_write_data,
         Owner::GpuFbW => input.gpu_fb_w_write_data,
         _ => 0,
     };
@@ -650,7 +695,7 @@ pub(crate) fn compute_output(
         memory_line: requesting && selected_line,
         memory_address: if requesting { selected_address } else { 0 },
         memory_line_count_minus_1: if requesting { selected_line_count } else { 0 },
-        memory_write_data: if requesting {
+        memory_write_data: if requesting && owner == Owner::None {
             selected_write_data
         } else {
             held_write_data
@@ -684,6 +729,7 @@ mod tests {
     fn idle() -> CpuV3MemoryArbiterInputValue {
         CpuV3MemoryArbiterInputValue {
             reset: false,
+            lookahead_enable: false,
             instruction_request_valid: false,
             instruction_address: 0,
             instruction_response_ready: false,
@@ -1406,6 +1452,139 @@ mod tests {
         advance_state(&mut state, &input);
         assert_eq!(state.owner, Owner::GpuFbW);
         assert_eq!(state.rotate, 0);
+    }
+
+    #[test]
+    fn early_grant_keeps_its_slot_when_display_arrives_later() {
+        let mut state = CpuV3MemoryArbiterState::default();
+        let mut current = idle();
+        current.gpu_fb_w_request_valid = true;
+        current.gpu_fb_w_write = true;
+        current.gpu_fb_w_address = 0x200000;
+        current.gpu_fb_w_line_count_minus_1 = 3;
+        current.memory_request_ready = true;
+        assert!(compute_output(&state, &current).gpu_fb_w_request_ready);
+        advance_state(&mut state, &current);
+        assert_eq!(state.owner, Owner::GpuFbW);
+
+        let mut next = idle();
+        next.lookahead_enable = true;
+        next.gpu_fb_w_request_valid = true;
+        next.gpu_fb_w_write = true;
+        next.gpu_fb_w_address = 0x200040;
+        next.gpu_fb_w_line_count_minus_1 = 3;
+        next.memory_request_ready = true;
+        let grant = compute_output(&state, &next);
+        assert!(grant.gpu_fb_w_request_ready);
+        assert_eq!(grant.memory_address, 0x200040);
+        advance_state(&mut state, &next);
+        assert_eq!(state.reserved, Owner::GpuFbW);
+
+        let mut display = idle();
+        display.lookahead_enable = true;
+        display.display_request_valid = true;
+        display.display_address = 0x210000;
+        display.memory_request_ready = true;
+        assert!(!compute_output(&state, &display).display_request_ready);
+
+        let mut complete = display.clone();
+        complete.memory_response_valid = true;
+        complete.memory_response_last = true;
+        assert!(compute_output(&state, &complete).gpu_fb_w_response_valid);
+        advance_state(&mut state, &complete);
+        assert_eq!(state.owner, Owner::GpuFbW);
+        assert_eq!(state.reserved, Owner::None);
+
+        assert!(compute_output(&state, &display).display_request_ready);
+        advance_state(&mut state, &display);
+        assert_eq!(state.reserved, Owner::Display);
+        let mut finish_next = idle();
+        finish_next.memory_response_valid = true;
+        finish_next.memory_response_last = true;
+        advance_state(&mut state, &finish_next);
+        assert_eq!(state.owner, Owner::Display);
+    }
+
+    #[test]
+    fn early_grant_preserves_priority_at_grant_and_scalar_write_payload() {
+        let mut state = CpuV3MemoryArbiterState {
+            owner: Owner::GpuFbW,
+            ..CpuV3MemoryArbiterState::default()
+        };
+        let mut input = idle();
+        input.lookahead_enable = true;
+        input.gpu_fb_w_request_valid = true;
+        input.display_request_valid = true;
+        input.memory_request_ready = true;
+        assert!(compute_output(&state, &input).display_request_ready);
+        advance_state(&mut state, &input);
+        assert_eq!(state.reserved, Owner::Display);
+
+        state.reserved = Owner::None;
+        input.display_request_valid = false;
+        input.gpu_fb_w_request_valid = false;
+        input.data_request_valid = true;
+        input.data_write = true;
+        input.data_line = false;
+        assert!(!compute_output(&state, &input).memory_request_valid);
+        advance_state(&mut state, &input);
+        assert_eq!(state.reserved, Owner::None);
+
+        input.reset = true;
+        advance_state(&mut state, &input);
+        assert_eq!(state.owner, Owner::None);
+        assert_eq!(state.reserved, Owner::None);
+    }
+
+    #[test]
+    fn early_grant_matches_generated_rtl() {
+        let mut first = idle();
+        first.gpu_fb_w_request_valid = true;
+        first.gpu_fb_w_write = true;
+        first.gpu_fb_w_address = 0x200000;
+        first.gpu_fb_w_line_count_minus_1 = 3;
+        first.memory_request_ready = true;
+
+        let mut second = idle();
+        second.lookahead_enable = true;
+        second.gpu_fb_w_request_valid = true;
+        second.gpu_fb_w_write = true;
+        second.gpu_fb_w_address = 0x200040;
+        second.gpu_fb_w_line_count_minus_1 = 3;
+        second.memory_request_ready = true;
+
+        let mut late_display = idle();
+        late_display.lookahead_enable = true;
+        late_display.display_request_valid = true;
+        late_display.display_address = 0x210000;
+        late_display.memory_request_ready = true;
+
+        let mut complete = idle();
+        complete.memory_response_valid = true;
+        complete.memory_response_last = true;
+
+        let inputs = [
+            CpuV3MemoryArbiterInputValue {
+                reset: true,
+                ..idle()
+            },
+            first,
+            second,
+            late_display.clone(),
+            complete.clone(),
+            late_display,
+            complete,
+        ];
+        let mut state = CpuV3MemoryArbiterState::default();
+        let steps: Vec<Step> = inputs
+            .into_iter()
+            .map(|input| {
+                advance_state(&mut state, &input);
+                let expected = compute_output(&state, &input);
+                step(input, expected)
+            })
+            .collect();
+        ModuleTest::<CpuV3MemoryArbiter>::new(steps).run_emu_and_nand();
     }
 
     #[test]

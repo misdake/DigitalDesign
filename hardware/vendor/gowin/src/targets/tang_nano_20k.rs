@@ -247,6 +247,7 @@ pub struct TangNano20KSdramWideInputs {
     pub sdram_read_valid: digital_design_circuit::Wire,
     pub sdram_init_done: digital_design_circuit::Wire,
     pub sdram_request_ready: digital_design_circuit::Wire,
+    pub sdram_stream_active: digital_design_circuit::Wire,
     pub sdram_done: digital_design_circuit::Wire,
     pub sdram_write_data_ready: digital_design_circuit::Wire,
 }
@@ -254,6 +255,8 @@ pub struct TangNano20KSdramWideInputs {
 pub struct TangNano20KSdramWideOutputs {
     pub leds: Wires<6>,
     pub uart_tx: digital_design_circuit::Wire,
+    pub sdram_next_valid: digital_design_circuit::Wire,
+    pub sdram_next_address: Wires<21>,
     pub sdram_request_valid: digital_design_circuit::Wire,
     pub sdram_write: digital_design_circuit::Wire,
     pub sdram_address: Wires<21>,
@@ -556,6 +559,15 @@ impl TangNano20K {
         wide_2x: bool,
         video_mode: TangNano20KVideoMode,
     ) -> GowinBoardBinding<Self> {
+        Self::sdram_debug_uart_binding_with_options(video, wide_2x, video_mode, false)
+    }
+    fn sdram_debug_uart_binding_with_options(
+        video: bool,
+        wide_2x: bool,
+        video_mode: TangNano20KVideoMode,
+        chained_groups: bool,
+    ) -> GowinBoardBinding<Self> {
+        assert!(!chained_groups || (wide_2x && !video));
         let wrapper = if wide_2x && !video {
             include_str!("tang_nano_20k/sdram/service_108m_54m.v")
         } else if wide_2x {
@@ -564,6 +576,11 @@ impl TangNano20K {
             include_str!("tang_nano_20k/sdram/service_54m_hdmi.v")
         } else {
             include_str!("tang_nano_20k/sdram/service_54m.v")
+        };
+        let wrapper = if chained_groups {
+            wrapper.replace(".PREPARE_NEXT(1)", ".PREPARE_NEXT(1), .CHAIN_GROUP_FOUR(1)")
+        } else {
+            wrapper.to_string()
         };
         let mut extension = GowinBoardExtension::new(wrapper)
             .with_logic_clock("logic_clk")
@@ -835,6 +852,25 @@ impl TangNano20K {
         }
 
         if wide_2x && !video {
+            extension = extension
+                .connect_logic(GowinLogicConnection::new(
+                    "sdram_stream_active",
+                    GowinPortDirection::Input,
+                    1,
+                    "sdram_stream_active",
+                ))
+                .connect_logic(GowinLogicConnection::new(
+                    "sdram_next_valid",
+                    GowinPortDirection::Output,
+                    1,
+                    "sdram_next_valid",
+                ))
+                .connect_logic(GowinLogicConnection::new(
+                    "sdram_next_address",
+                    GowinPortDirection::Output,
+                    21,
+                    "sdram_next_address",
+                ));
             extension = extension.add_sdc_constraint(
                 "create_generated_clock -name sdram_clk -source [get_ports {clk}] -multiply_by 4 -phase 292.5 [get_pins {u_sdram_pll/rpll_inst/CLKOUTP}]"
             );
@@ -902,12 +938,22 @@ impl TangNano20K {
     where
         M: Module<Input = TangNano20KSdramWideInputs, Output = TangNano20KSdramWideOutputs>,
     {
+        Self::sdram_wide_debug_uart_project_with_chained_groups(project_name, false)
+    }
+    pub fn sdram_wide_debug_uart_project_with_chained_groups<M>(
+        project_name: impl Into<String>,
+        chained_groups: bool,
+    ) -> GowinModuleProject<Self, M>
+    where
+        M: Module<Input = TangNano20KSdramWideInputs, Output = TangNano20KSdramWideOutputs>,
+    {
         GowinModuleProject::new(
             GowinProject::new(project_name).with_board_binding(
-                Self::sdram_debug_uart_binding_with_video(
+                Self::sdram_debug_uart_binding_with_options(
                     false,
                     true,
                     TangNano20KVideoMode::Hdmi720p60,
+                    chained_groups,
                 )
                 .with_process_option("-ioreg_in_iob", "1"),
             ),

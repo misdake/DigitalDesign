@@ -21,6 +21,7 @@ pub struct SharedSdramPortInput {
     pub controller_read_valid: Wire,
     pub controller_init_done: Wire,
     pub controller_request_ready: Wire,
+    pub controller_stream_active: Wire,
     pub controller_done: Wire,
     pub controller_write_data_ready: Wire,
 }
@@ -28,12 +29,15 @@ pub struct SharedSdramPortInput {
 #[derive(Clone, ModuleIo)]
 pub struct SharedSdramPortOutput {
     pub cpu_request_ready: Wire,
+    pub cpu_lookahead_window: Wire,
     pub cpu_write_data_ready: Wire,
     pub cpu_response_valid: Wire,
     pub cpu_read_data: Wires<64>,
     pub cpu_response_last: Wire,
     pub cpu_error: Wire,
     pub controller_request_valid: Wire,
+    pub controller_next_valid: Wire,
+    pub controller_next_address: Wires<21>,
     pub controller_write: Wire,
     pub controller_address: Wires<21>,
     pub controller_write_mask: Wires<4>,
