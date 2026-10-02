@@ -20,6 +20,27 @@ impl Input {
         Ok(u64::from_le_bytes(bytes.try_into().expect("eight bytes")))
     }
 }
+/// GPU-owned functional DMA source. A test adapter may use a vendor Service;
+/// production GPU code has no dependency on that implementation or its timing.
+pub trait MemoryPort {
+    /// Return exactly bytes/8 little-endian beats, in address order, or an error.
+    fn read_dma(&mut self, address: u64, bytes: usize) -> Result<Vec<u64>, String>;
+}
+impl MemoryPort for &Input {
+    fn read_dma(&mut self, address: u64, bytes: usize) -> Result<Vec<u64>, String> {
+        if bytes == 0
+            || bytes & 7 != 0
+            || address & 7 != 0
+            || bytes > crate::scratchpad::ports::REGION_BYTES
+            || address.checked_add(bytes as u64).is_none()
+        {
+            return Err("DMA source request shape".into());
+        }
+        (0..bytes / 8)
+            .map(|beat| self.read_beat(address + beat as u64 * 8))
+            .collect()
+    }
+}
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct DrawOutput {
     pub slot: usize,

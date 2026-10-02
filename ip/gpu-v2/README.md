@@ -10,6 +10,9 @@ directions, [lighting](docs/lighting.md) and [frontend](docs/frontend.md) for th
 implemented Rust models.
 The [triangle setup oracle](docs/triangle.md) is complete only through its first
 Rust step; counted/timed and hardware directions remain future work.
+The [SDRAM memory controller combination](docs/sdram-memory-controller.md) is
+provided by the Gowin vendor crate through a dev dependency. Its Rust oracle
+supports real data, calibrated average service and configured CPU/display loads.
 The independent [scheduler](../../modeling/scheduler/README.md) supports bounded
 batch planning. Target specifications and ongoing experiments remain in the local
 GPU v2 design documents until their contracts have been implemented and verified.

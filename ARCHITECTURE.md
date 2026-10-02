@@ -37,6 +37,9 @@ systems/
   rank is foundational: IP and systems may consume it, never the reverse.
 - `hardware/core` describes modules, projects, resources, and tests. Vendor APIs live below
   `hardware/vendor`, and concrete board integration never moves into `hardware/core`.
+  The Gowin vendor owns the reusable SDRAM arbiter/adapter/gearbox/controller
+  combination and its Rust service oracle. The CPU system uses its normal dependency;
+  GPU v2 consumes it only as a dev dependency through GPU-owned test ports.
 - `ip` crates expose reusable, narrow ports. They do not receive a complete system memory map as
   a generic type parameter.
 - `compiler/rcc` owns parsing, validation, target-independent IR, optimization, allocation

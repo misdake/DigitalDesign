@@ -12,6 +12,10 @@ pub struct Report {
     pub fence: bool,
 }
 pub fn run(input: &Input) -> Result<Report, String> {
+    let mut memory = input;
+    run_with_memory(input, &mut memory)
+}
+pub fn run_with_memory(input: &Input, memory: &mut impl MemoryPort) -> Result<Report, String> {
     commands::validate(&input.commands, 64)?;
     if input.memory.len() > 1_048_576 {
         return Err("frontend memory bound".into());
@@ -30,8 +34,12 @@ pub fn run(input: &Input) -> Result<Report, String> {
                 }
                 let lease = sp.reserve(*d)?;
                 leases[lease.region] = Some(lease);
-                for beat in 0..d.byte_count / 8 {
-                    sp.dma_beat(lease, input.read_beat(d.physical_addr + beat as u64 * 8)?)?;
+                let data = memory.read_dma(d.physical_addr, d.byte_count)?;
+                if data.len() != d.byte_count / 8 {
+                    return Err("DMA source returned the wrong number of beats".into());
+                }
+                for word in data {
+                    sp.dma_beat(lease, word)?;
                 }
                 sp.complete(lease)?;
                 tokens[usize::from(d.completion_token)] = true;

@@ -6,3 +6,6 @@ edition = "2021"
 [dependencies]
 audited = { path = "../../modeling/audited" }
 resource-scheduler = { path = "../../modeling/scheduler" }
+
+[dev-dependencies]
+digital-design-hardware-gowin = { path = "../../hardware/vendor/gowin" }

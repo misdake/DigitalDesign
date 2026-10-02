@@ -659,11 +659,11 @@ impl TangNano20K {
                 ))
                 .add_source_file(
                     "src/generated/target/tang_nano_20k/sdram/sdram_controller.v",
-                    include_str!("tang_nano_20k/sdram/sdram_controller.v"),
+                    crate::sdram_memory_controller::RtlSources::CONTROLLER,
                 )
                 .add_source_file(
                     "src/generated/target/tang_nano_20k/sdram/native_bridge_108m_54m.v",
-                    include_str!("tang_nano_20k/sdram/native_bridge_108m_54m.v"),
+                    crate::sdram_memory_controller::RtlSources::GEARBOX,
                 )
                 .add_source_file(
                     "src/generated/target/tang_nano_20k/sdram/pll_108m_54m.v",

@@ -6,6 +6,10 @@ Frontend composition consumes finished numerical reports at narrow typed
 boundaries. This milestone stops at transformed vertices. It implements no
 triangle generation, framebuffer cache, emulator, RTL or command-machine ABI.
 
+The oracle can also consume a GPU-owned MemoryPort through `run_with_memory`.
+The [SDRAM combination adapter](sdram-memory-controller.md) uses the vendor service
+only in GPU tests; the existing timed service fixture remains independent.
+
 Command counted publishes DMA source/destination pointers and both aligned
 vertex-word addresses with their half-word selection. Scratchpad counted
 assembles each 96-bit packet from the audited bank reads; the consumer receives

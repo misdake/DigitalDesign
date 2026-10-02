@@ -51,6 +51,11 @@ Frontend replays DMA payloads, scratchpad leases and the vertex issue ROM with
 an independent trace audit. Its current serial sequencer acceptance rate is
 reported separately from the resource lower bound of a periodic vertex body.
 Neither reservation model is a numerical cycle executor or complete GPU runtime.
+The [SDRAM memory controller combination](sdram-memory-controller.md) belongs to
+the Gowin vendor crate. GPU tests use it through a dev dependency, with a GPU-owned
+MemoryPort adapter for the frontend oracle. Both fixed-average and configured-load
+Rust services return real data. The existing timed frontend still uses its explicit
+latency fixture; it has not become a numerical cycle executor for this combination.
 Emulation and RTL remain independent verification paths.
 Tests use stage goldens rather than treating audit success as an accuracy oracle.
 

@@ -362,6 +362,7 @@ name = "gpu-v2"
 version = "0.1.0"
 dependencies = [
  "audited",
+ "digital-design-hardware-gowin",
  "resource-scheduler",
 ]
 
