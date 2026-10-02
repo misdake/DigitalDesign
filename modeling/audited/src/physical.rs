@@ -6,6 +6,9 @@ use std::collections::{BTreeMap, BTreeSet};
 /// Structural logic bindings preserve the independently replayed numerical graph.
 pub mod lowering;
 
+#[cfg(test)]
+mod logic_split_tests;
+
 fn bad(message: &str) -> Fault {
     Fault::Audit(message.into())
 }
@@ -99,6 +102,7 @@ impl FusedGroup {
 }
 
 /// A bounded pure-logic subgraph implemented with one declared result latency.
+/// An empty absorbed set declares a charged singleton, preserving shared outputs.
 /// The certificate proves provenance and closure, not area or achievable fmax.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct LogicCone {
@@ -110,10 +114,44 @@ pub struct LogicCone {
     pub latency: u64,
 }
 impl LogicCone {
+    /// Keep one charged logic operation as its own boundary. This does not fuse
+    /// work, remove a resource, or shorten the path to any downstream consumer.
+    pub fn singleton(
+        frame: &FrameReport,
+        result_event: usize,
+        latency: u64,
+    ) -> Result<Self, Fault> {
+        frame.audit()?;
+        let e = frame
+            .events
+            .get(result_event)
+            .ok_or_else(|| bad("logic cone event index"))?;
+        let output = e.output.ok_or_else(|| bad("logic cone output"))?;
+        let operands: BTreeSet<_> = e.inputs.iter().copied().collect();
+        let proof = Self {
+            result_event,
+            absorbed_events: Vec::new(),
+            operands: operands.into_iter().collect(),
+            max_width: e
+                .inputs
+                .iter()
+                .copied()
+                .chain([output])
+                .map(|v| frame.values[v].format.bits)
+                .max()
+                .unwrap_or(1),
+            latency,
+        };
+        proof.audit(frame)?;
+        Ok(proof)
+    }
+
     pub fn audit(&self, frame: &FrameReport) -> Result<(), Fault> {
         frame.audit()?;
-        if self.absorbed_events.is_empty()
-            || self.absorbed_events.len() > 64
+        if !frame.valid {
+            return Err(bad("logic cone requires a valid numerical frame"));
+        }
+        if self.absorbed_events.len() > 64
             || !(1..=126).contains(&self.max_width)
             || self.latency == 0
         {
@@ -149,6 +187,9 @@ impl LogicCone {
                 return Err(bad("logic cone is not pure logic"));
             }
             let output = e.output.ok_or_else(|| bad("logic cone output"))?;
+            if self.absorbed_events.is_empty() && e.resource.is_none() {
+                return Err(bad("singleton cone requires charged logic"));
+            }
             if std::iter::once(output)
                 .chain(e.inputs.iter().copied())
                 .any(|v| frame.values[v].format.bits > self.max_width)

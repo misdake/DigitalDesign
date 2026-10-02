@@ -117,6 +117,35 @@ comparison output still prevents absorbing that comparison. Multi-output regions
 need explicit retained values, output timing and lifetime accounting; callers
 must not hide escapes by deleting numerical events or duplicating cones.
 
+Shared logic can instead be split at retained values. `LogicCone::singleton`
+declares one charged pure-logic event, derives its exact external operands and
+width, and absorbs nothing. For LOD `h = 19 - clz`, `shift = 19 - h`, with another
+consumer of `h`, use two distinct singleton cones:
+
+```rust
+use audited::physical::{LogicCone, logic_dependencies, audit_logic_dependencies};
+let mut cones = plan.logic_cones(&report, 1)?;
+cones.push(LogicCone::singleton(&report, h_event, 1)?);
+cones.push(LogicCone::singleton(&report, shift_event, 1)?);
+let dependencies = logic_dependencies(&report, &cones)?;
+// Schedule all events using dependencies and plan.resources(&report).
+audit_logic_dependencies(&report, &times, &cones, max_cycle)?;
+plan.audit_timing(&report, &times, 1, max_cycle)?;
+```
+
+Both 18-bit subtractors remain charged once. From the CLZ result, `h` has one
+declared subtractor latency and `shift` has two; this split provides no latency
+reduction. Each output keeps its own readiness and downstream dependencies.
+`lifecycle::analyze_composed_policy` accepts these cones unchanged and retains
+both values, including uses outside the split and publications through commit.
+Do not pass them as absorbed values or exclude publications to reduce storage.
+Disjoint wiring proofs still have zero latency outside the singleton cones;
+real adders, comparators and variable shifts retain their work and latency.
+Singletons reject wiring-only events, DSPs, memory reads/writes and invalid
+numerical frames. Existing overlap, control, cycle, width and escape checks
+still apply. Resource lanes, register budgets and target latency remain the
+caller's responsibilities; this is not a physical timing or area measurement.
+
 `DspInventory` describes two macros per tile. A macro holds four 9x9 lanes,
 two 18x18 lanes or one paired/ALU/MAC mode; different kinds cannot share it.
 A 36x36 instance owns both macros of its tile. Independent pre-add and ALU modes
