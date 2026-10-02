@@ -53,6 +53,15 @@ pub struct Config {
     /// Explicit oracle-only approximation experiment; never implicit sharing.
     pub half_ndc_override: Option<[i32; 2]>,
     pub normal_override: Option<[i16; 3]>,
+    /// Independent scalar-dot normalization experiment (fixed Q14/Q15 ports).
+    pub scalar_norm: bool,
+    /// System candidate: scalar N normalization and raw-dot sign gate.
+    pub scalar_normal: bool,
+    pub exact_normal_gate: bool,
+    /// Use exact H squares while preserving N, V and half-vector generation.
+    pub direct_square: bool,
+    pub direct_all_squares: bool,
+    pub square9: bool,
 }
 impl Default for Config {
     fn default() -> Self {
@@ -69,6 +78,12 @@ impl Default for Config {
             rounding: RoundingPolicy::default(),
             half_ndc_override: None,
             normal_override: None,
+            scalar_norm: false,
+            scalar_normal: false,
+            exact_normal_gate: false,
+            direct_square: false,
+            direct_all_squares: false,
+            square9: false,
         }
     }
 }
@@ -158,7 +173,13 @@ fn normalize(
         .iter()
         .map(|a| {
             let u = a.abs();
-            if c.approximate_square {
+            if c.square9 && prefix != "v" {
+                let magnitude_q8 = rne(u, 6);
+                (magnitude_q8 * magnitude_q8) << 12
+            } else if c.approximate_square
+                && !c.direct_all_squares
+                && !(c.direct_square && prefix == "h")
+            {
                 let high = u >> low;
                 let tail = u % (1 << low);
                 ((high * high) << (2 * low)) + (((2 * high + 1) * tail) << low)
@@ -204,6 +225,9 @@ fn normalize(
         )
     };
     g.stage(format!("{prefix}.r"), r);
+    if c.scalar_norm && (prefix == "h" || c.scalar_normal && prefix == "n") {
+        return v;
+    }
     let limit = 1_i128 << f;
     let unit = v.map(|a| {
         if zero {
@@ -268,6 +292,17 @@ pub fn evaluate(
     {
         return Err(InputError::Configuration);
     }
+    if c.scalar_normal && !c.scalar_norm {
+        return Err(InputError::Configuration);
+    }
+    if c.scalar_norm
+        && (c.direction_fraction != 14
+            || c.reciprocal_fraction != 15
+            || c.reciprocal_work_extra != 0
+            || c.rounding.normalization != Rounding::NearestEven)
+    {
+        return Err(InputError::Configuration);
+    }
     let mut g = Golden {
         stages: Vec::new(),
         g: 0,
@@ -289,7 +324,45 @@ pub fn evaluate(
             .map(|v| rescale(i128::from(v), 14, f));
         let n = normalize(nraw, rescale(4, 14, f).max(1), false, c, "n", &mut g);
         let l = light.direction.map(|v| rescale(i128::from(v), 14, f));
-        let nl = n.iter().zip(l).map(|(a, b)| a * b).sum::<i128>();
+        let nl_raw = n.iter().zip(l).map(|(a, b)| a * b).sum::<i128>();
+        let normal_zero = nraw.iter().map(|x| x.abs()).max().unwrap() < 4;
+        let rn = if c.scalar_normal {
+            g.stages.iter().find(|(name, _)| name == "n.r").unwrap().1
+        } else {
+            0
+        };
+        let nl = if c.scalar_normal {
+            g.stage("nl.raw", nl_raw);
+            let input_dot = nraw.iter().zip(l).map(|(a, b)| a * b).sum::<i128>();
+            g.stage(
+                "nl.gate",
+                i128::from(
+                    !normal_zero
+                        && if c.exact_normal_gate {
+                            input_dot > 0
+                        } else {
+                            nl_raw > 0
+                        },
+                ),
+            );
+            if normal_zero {
+                0
+            } else {
+                rne(rne(nl_raw, 12) * rn, 16) << 13
+            }
+        } else {
+            nl_raw
+        };
+        let positive_nl = if c.scalar_normal {
+            !normal_zero
+                && if c.exact_normal_gate {
+                    nraw.iter().zip(l).map(|(a, b)| a * b).sum::<i128>() > 0
+                } else {
+                    nl_raw > 0
+                }
+        } else {
+            nl > 0
+        };
         g.stage("nl", nl);
         let d = rescale_with(nl.clamp(0, 1 << (2 * f)), 2 * f, fi, c.rounding.dot);
         g.stage("d", d);
@@ -318,7 +391,29 @@ pub fn evaluate(
             let v = normalize(vraw, rescale(4, 14, f).max(1), true, c, "v", &mut g);
             let hraw = std::array::from_fn(|i| rounded(l[i] + v[i], 1, c.rounding.half));
             let h = normalize(hraw, rescale(64, 14, f), false, c, "h", &mut g);
-            let nh = n.iter().zip(h).map(|(a, b)| a * b).sum::<i128>();
+            let nh_raw = n.iter().zip(h).map(|(a, b)| a * b).sum::<i128>();
+            let nh = if c.scalar_norm {
+                g.stage("nh.raw", nh_raw);
+                let rh = g.stages.iter().find(|(name, _)| name == "h.r").unwrap().1;
+                let first = if c.scalar_normal {
+                    if normal_zero {
+                        0
+                    } else {
+                        rne(rne(nh_raw, 13) * rn, 14)
+                    }
+                } else {
+                    rne(nh_raw, 12)
+                };
+                if nraw.iter().map(|x| x.abs()).max().unwrap() < 4
+                    || hraw.iter().map(|x| x.abs()).max().unwrap() < 64
+                {
+                    0
+                } else {
+                    rne(first * rh, 16) << 13
+                }
+            } else {
+                nh_raw
+            };
             let x = rescale_with(
                 nh.clamp(0, 1 << (2 * f)),
                 2 * f,
@@ -345,7 +440,7 @@ pub fn evaluate(
                 )
             };
             g.stage("power", p);
-            let p = if nl > 0 {
+            let p = if positive_nl {
                 rescale_with(p, c.power_fraction, fi, c.rounding.output)
             } else {
                 0

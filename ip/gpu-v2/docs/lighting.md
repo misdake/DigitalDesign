@@ -1,10 +1,681 @@
-# Implemented Rust lighting models
+# Lighting models, emulator and RTL
 
 Lighting is a pixel component. Its public ports are in `src/lighting/ports.rs`.
-There is no quad allocation, GPU command ABI, final-color calculation, emulator,
-RTL or web implementation in this milestone.
+The independent numerical cycle emulator and synthesizable RTL implement the
+single-pixel component. Quad allocation, GPU command ABI, final color and the
+web adapter remain outside this component.
 
-## Current architecture alternatives
+## Cycle pipeline contract
+
+`LightingProfile::Fast` implements full/specular II2 and diffuse II1;
+`LightingProfile::Compact` implements full/specular II3 and diffuse II2.
+`LightingEmu::with_profile(profile, max_wall_ticks)` and
+`rtl::generate_with_profile(profile)` select the same independently checked
+static calendar. `new` / `generate` default to Fast. The full path also computes
+diffuse g; both profiles produce the same g/h bits. Historical Rust scheduling
+alternatives below remain modeling evidence, with their own reported latencies.
+The separately selected [resource profiles](#resource-profile-contract) keep these
+II targets and the port/ownership contract, but change H rounding. The original
+profile remains the default and the numerical comparison baseline.
+The additional [system candidates](#system-candidates-and-selection) use II2/II4
+in both modes and expose their changed N/NL semantics explicitly.
+
+```mermaid
+flowchart LR
+    C[Drained context load] --> P[Mode and prepared power context]
+    I[Three pixel rows and ID] --> S[Static calendar and retained values]
+    P --> S
+    S --> N[Shared normalization ROM and DSP lanes]
+    N --> D[Diffuse g]
+    N --> V[View and half vector]
+    V --> H[Dot and power interpolation]
+    D --> O[Ordered g/h and ID/epoch]
+    H --> O
+    O --> F[CE and output backpressure freeze]
+    F --> S
+```
+
+The calendar is compiled once from the architecture graph, independently checked
+for cross-iteration collisions and dependency timing. It contains no runtime
+resource arbitration. Registered one-hot full/diffuse phase selectors drive
+physical lane input muxes. Identical typed cones share arithmetic; their declared two-cycle latency is
+implemented as two actual combinational segments separated by a packed register
+of live intermediate values. DSP operands
+are selected before multiplication, and ROM addresses before synchronous reads. Free slots use one real operand choice
+as a harmless default instead of masking every inactive slot to zero. Only the
+checked occupied slot has consumers; ROMs are read-only and the DSP macro does
+not accumulate. Valid, CE and retained-value ownership remain unchanged.
+Each value is retained only until its scheduled consumers, using II-spaced delay
+registers. Uniform sources bypass these per-pixel delays. The two modes share DSP
+and ROM hardware, but have separately retimed pixel/ID/value storage. They cannot
+be in flight together: mode/context changes require complete drain.
+
+Context includes mode, shininess, light/projection fields and a 16-bit epoch;
+43 derived power fields are prepared and latched once on context load. Pixel
+input is three simultaneous 36-bit rows plus a 32-bit ID. Output is g9/h9, ID32
+and epoch16. The interface is defined by `LightingTick` / `LightingSignals` and
+the generated `gpu_v2_lighting` ports:
+
+- `tick` returns pre-edge signals and then applies the edge. Transfers require
+  CE and ready/valid. The emu validates accepted inputs, with an explicit wall
+  clock budget; parked inputs do not fault.
+- Reset wins even when CE is zero, invalidates context and drops all tokens.
+  Numerical registers need no reset because valid/ownership is cleared.
+- CE pauses and a held valid output freeze the entire datapath, token ages,
+  calendars and retiming. Output payload remains stable until accepted.
+- Context ready requires an empty pipeline and CE. A context request suppresses
+  pixel acceptance; context changes are atomic. This drain rule is intentionally
+  simpler than the exploratory mixed-context Rust reservation model.
+- Unlit/ambient use the diffuse calendar and select the specified constant at
+  commit. Their latency is not an early-return bypass.
+
+The emu executes operations when their stage issues and publishes them at their
+ready age. It never calls the oracle or counted evaluator on pixel acceptance.
+The RTL generator reads template values only for literals; runtime pixels,
+uniforms and immutable table contents drive every other value. Signed results
+are computed explicitly before selection. The static power path clamps the
+interpolation coordinate to32767 and then selects the exact32768 endpoint;
+this makes one fixed graph safe for every pixel without a sample-dependent
+endpoint branch. RNE remains in normalization and final output, with floor only
+in the nonnegative power interpolation as specified by the architecture profile.
+
+Gowin mode instantiates registered MULT9X9 / MULT18X18 (three advancing edges)
+and MULTADDALU18X18 (four, including a tail register and aligned C input). The
+behavioral backend uses matching latencies. Normalization tables are packed
+SQ256 plus RSQRT128 into one512x36 ROM per read lane; power uses two ROMs.
+Synthesis can additionally map long retained-value chains into BSRAM/SSRAM;
+counted ROM budgets therefore do not describe the total fitted memory usage.
+
+## Isolated implementation validation
+
+Both profiles compare all published numerical stages on975 representative inputs
+against counted and final g/h against the independent oracle. The stream test
+uses27 contexts,112 pixels each, all17 shininess codes, thresholds/endpoints,
+all normalization power-of-two boundaries and signs,
+negative extremes, random normals and projections, CE pauses, prolonged output
+backpressure, drained context changes and in-flight reset followed by restart.
+Each profile commits3025 distinct tokens after dropping the reset-aborted token.
+Icarus checks every handshake, ordered payload and currently produced stage
+against the independent numerical emu, for both behavioral arithmetic and the
+actual Gowin DSP simulation library. Repeated held outputs/stages are observations,
+not additional retired pixels. The watchdog bounds each test.
+
+The fit comparison uses the same serial anti-optimization `lighting_probe`
+harness, GW2AR-LV18QN88C8/I7 versionC, Gowin V1.9.8.11 Education and an18.518ns
+clock. All pixel/context bits remain variable and all output bits feed a checksum.
+These are complete PnR results for the isolated probe, including its309 registers
+and surrounding logic, not a whole-GPU/CPU/display fit or physical-board proof.
+The original registered-calendar baseline is:
+
+| Quantity | Fast | Compact |
+| --- | ---: | ---: |
+| Full/specular II / latency (advancing edges) | 2 / 97 | 3 / 95 |
+| Diffuse II / latency (advancing edges) | 1 / 56 | 2 / 56 |
+| PnR Logic, including RAM16 charge | **4195** | **3818** |
+| LUT / ALU / RAM16 | 3091 / 750 / 59 | 2834 / 582 / 67 |
+| Fitted registers | 4068 | 3521 |
+| BSRAM, total | 18 | 13 |
+| BSRAM ROM / retained-chain blocks | 8 / 10 | 6 / 7 |
+| MULT9X9 / MULT18X18 / MULTADDALU18X18 | 7 / 7 / 1 | 5 / 5 / 1 |
+| Actual Fmax (MHz) | 79.109 | 83.209 |
+| Worst setup slack at54.002MHz (ns) | 5.877 | 6.500 |
+| Setup / hold violated endpoints | 0 / 0 | 0 / 0 |
+
+Compact saves377 Logic (8.99%),547 fitted registers and five BSRAM blocks
+relative to Fast. Both return to the original DSP inventory. Compared with the
+same-DSP split-cone baseline, Fast saves20.19% Logic and Compact16.71%, while
+preserving II and latency. Fast Fmax decreases from84.765MHz but still passes
+the54.002MHz constraint; Compact Fmax improves from64.530MHz. Whole-GPU
+selection must also include retained memory, registers and system timing.
+
+`structure.txt` reports13998/9650 behavioral register declaration bits, not fitted
+FF. Synthesis absorbs storage into DSP/BSRAM/SSRAM and propagates narrow control
+ranges. Raw final reports are under `target/gpu-v2-lighting/shift-study/q-domain-fast`
+and `q-domain-compact`: `impl/pnr/lighting.rpt.txt`, `lighting.tr`, and
+`impl/gwsynthesis/lighting_syn_rsc.xml`. Selected final reports are also retained
+in the local `gpu-v2-lighting-fit-evidence` record under `shift-fast/compact`.
+Earlier `fit-*-calendar` and `logic-study` reports are historical evidence.
+All compared builds use the same harness, device, constraints and tool version.
+
+## Resource profile contract
+
+`LightingEmu::with_resource_profile(profile, max_wall_ticks)` and
+`rtl::generate_resource_profile(profile)` select the completed area alternative.
+`counted::Config::resource_profile(profile)` supplies its numerical graph.
+Both profiles have identical g/h semantics; the original default remains available.
+N normalization, NL and its positive specular gate, V normalization, half-vector
+construction and the raw H threshold64 retain the original numerical contract.
+Only H component normalization moves after its dot product:
+
+```mermaid
+flowchart LR
+    N[Original N normalization] --> NL[Original NL and diffuse g]
+    N --> D[Dot N with scaled H]
+    V[Original ray and V normalization] --> H[Raw H and bounded common scale]
+    H --> D
+    H --> Q[Original SQ and RSQRT for H]
+    D --> R[RNE to signed 18-bit Q16]
+    R --> M[One scalar DSP multiply]
+    Q --> M
+    M --> X[RNE to Q15, zero mask and clamp]
+    X --> P[Original power interpolation and h]
+    NL --> P
+```
+
+The raw Q28 dot fits signed30 bits. Its signed18 Q16 operand multiplies the
+unsigned17 Q15 reciprocal; the product rounds to signed18 Q15 before clamping
+to0..32768. The published `nh` is this Q15 result rescaled to Q28, without another
+round. Scalar H does not publish `h.0..2`; its observable boundaries are
+`h.shift`, `h.q`, `h.r` and the scalar dot/product stages.
+
+The calendar partitions large DSPs by semantic role: one ray lane; two/one V
+component lanes for Fast/Compact; four/three remaining arithmetic lanes.
+Fast dedicates separate paired MACs to NL and NH; Compact shares one. An independent
+modulo checker verifies both role restrictions and the merged physical calendar.
+No runtime arbiter or multi-pixel batching is added. Both modes share one complete
+32-bit ID delay chain, selecting its capture phase and output tap by drained mode.
+
+## Resource profile storage and scaling
+
+Compact replaces wide variable prescale plus sticky-bit rounding with a16-bit
+left shifter and two fixed signed right-RNE cases. A normal needs at most a
+two-bit downscale; H needs at most one. The only maximum-magnitude guard adjustment
+is32767 to shift-2. Exhaustive scalar bounds and stage comparisons preserve the
+original N and H pre-scale values. Fast retains the original prescale because it
+fits better under its different sharing/calendar structure.
+
+Compact explicitly stores up to six large distant token taps in synchronous
+BSRAM arrays. A candidate has width9..36 and exactly one distinct distant depth
+D>=4; nearby taps remain in FFs. Each ring has next-power-of-two(D+1) words.
+Its producer phase writes and advances the pointer; the consumer phase reads
+one edge early, with offset D-1 if that edge also writes and D otherwise.
+There is no same-address read/write dependence. Reset/context load resets ownership
+and pointers without clearing data. CE and backpressure freeze reads, writes and
+pointers together. A bounded independent FIFO proof covers every phase at II1..3,
+depths4..64, pointer wrap, CE pauses and restart with stale memory.
+
+Forcing the same RAM policy in Fast fitted slightly worse, so Fast retains its
+inferred delay storage. Whole-mode value-chain merging and further constant-cone
+sharing also fitted worse despite smaller declaration counts. Neither is selected.
+The unchanged uniform context already avoids per-pixel uniform retention.
+
+## Resource profile fitted comparison
+
+These flat builds use exactly the same isolated probe, device, tools and timing
+constraint as the original baseline above. The resource export is byte-identical
+to its fitted source; hashes and selected reports are retained in the local
+`gpu-v2-lighting-fit-evidence` record under `resource-fast/compact`.
+
+| Quantity | Resource Fast | Resource Compact |
+| --- | ---: | ---: |
+| Full/specular II / latency (advancing edges) | 2 / 86 | 3 / 88 |
+| Diffuse II / latency (advancing edges) | 1 / 56 | 2 / 53 |
+| PnR Logic, including RAM16 charge | **3738** | **3601** |
+| Change from original profile | -457 (-10.89%) | -217 (-5.68%) |
+| LUT / ALU / RAM16 | 2600 / 676 / 77 | 2763 / 568 / 45 |
+| Fitted registers | 3959 (-109) | 4050 (+529) |
+| BSRAM total; ROM / retained blocks | 16; 8 / 8 | 13; 6 / 7 |
+| MULT9X9 / MULT18X18 / MULTADDALU18X18 | 7 / 7 / 2 | 5 / 5 / 1 |
+| Actual Fmax (MHz) | 90.418 | 100.371 |
+| Worst setup slack at54.002MHz (ns) | 7.458 | 8.555 |
+| Setup / hold violated endpoints | 0 / 0 | 0 / 0 |
+
+Fast spends one additional paired MAC and saves two BSRAM blocks. Compact keeps
+its DSP/BSRAM inventory but uses more fitted FFs: this is an area trade, not a
+reduction of every resource. Compact saves only137 Logic over resource Fast.
+Declaration counts11494/8764 include inferred/explicit memory and are not FF counts.
+These remain isolated complete lighting PnR results, not whole-GPU or board proof.
+
+Diagnostic hierarchy synthesis gives the following exclusive attribution. Its
+PnR totals3723/3587 differ from the selected flat totals by15/14 Logic; its
+synthesis sums are a separate boundary and must not be added to the flat table.
+
+| Local synthesis Logic category | Original Fast | Resource Fast | Resource Compact |
+| --- | ---: | ---: | ---: |
+| Variable scaling, including rounding inside shifts | 1197 | 1163 | 959 |
+| Other rounding | 557 | 399 | 343 |
+| Magnitude, comparison and selection | 518 | 506 | 605 |
+| Ordinary sums and increments | 369 | 385 | 351 |
+| DSP inputs and external pair tail | 597 | 365 | 568 |
+| LZD | 104 | 95 | 125 |
+| ROM address/interface | 80 | 41 | 67 |
+| Parent DUT: context, retained storage and control | 622 | 660 | 467 |
+| Serial harness | 93 | 76 | 76 |
+| Synthesis total | 4137 | 3690 | 3561 |
+
+Fast's main savings are DSP operand selection and independent rounding, rather
+than a smaller phase controller. Variable scaling still costs31.52% of its
+synthesis total; rounding10.81%, DSP inputs9.89%, and the parent17.89%.
+Compact's narrower scaling costs26.93%; its shared DSP inputs still cost15.95%.
+The small Logic gap therefore reflects different arithmetic/sharing/storage
+tradeoffs, rather than an expectation that increasing II alone halves area.
+
+## Resource profile numerical and cycle validation
+
+The independent oracle implements the revised H expression separately from the
+audited graph. Tests compare every published counted stage, then cycle emu and RTL.
+The57,548-input corpus includes all17 shininess codes, signs, pre-scale boundaries,
+H degeneration thresholds, highlight-biased random inputs and22,450 NL-cancellation
+inputs. g is unchanged; h differs from the original in2338 inputs, by at most one
+output code (1/256). This is a measured corpus bound, not a universal error proof
+or an improvement claim against the continuous ideal. The existing hard H threshold
+can create large differences from that ideal in both versions.
+
+Moving N normalization after NL was rejected: the cancellation sweep changed the
+NL>0 gate259 times and allowed a256-code h difference. For example, normal
+`[1023,0,8]`, NDC`[0,0]`, light`[128,0,-16383]`, shininess16 changed old
+NL128/h256 to scalar-N NL0/h0. Changing V squares was also rejected because
+half-vector cancellation magnifies its error. Direct H squares were measured
+but offered no useful area/DSP trade and allowed a two-code h difference.
+These were the previous round's contract-preserving decisions. The next study
+compares revised numerical contracts against the continuous ideal: the fixture's
+exact input NL is -120, so its original h256 is itself incorrect.
+
+The completed checks are128 GPU tests (one separately run ignored RTL test),
+strict GPU clippy and formatting; original and resource RTL stage/cycle comparisons
+with behavioral and actual Gowin DSP models; the synchronous-ring phase/wrap proof;
+and the mandatory CPU core31/system2 co-simulations. Resource stream observations
+are Fast14864 cycles/8713 outputs/161228 stages and Compact19038/9277/136401.
+Both commit3025 distinct tokens, with full32-bit IDs, CE, held outputs, drained
+context changes and reset/drop/restart. BSRAM arrays are inferred RTL tested with
+the synchronous behavioral model and fitted in Gowin; a vendor BSRAM primitive
+simulation and GPU/system integration remain separate verification boundaries.
+
+```powershell
+& scripts/run-cargo.ps1 -Subcommand test -Label lighting-resource-numerical -CargoArgs @('-p','gpu-v2','--test','lighting_scalar','--','--nocapture')
+$env:LIGHTING_RESOURCE_PROFILE='1'
+& scripts/run-cargo.ps1 -Subcommand test -Label lighting-resource-rtl -CargoArgs @('-p','gpu-v2','--test','lighting_cycles','verilog_matches','--','--ignored','--nocapture','--test-threads=1')
+Remove-Item Env:LIGHTING_RESOURCE_PROFILE
+& scripts/run-cargo.ps1 -Subcommand run -Label lighting-resource-fast -CargoArgs @('-p','gpu-v2','--example','lighting_rtl_export','--','target/gpu-v2-lighting/scalar-study/selected-fast','gowin','fast','resource')
+& scripts/run-cargo.ps1 -Subcommand run -Label lighting-resource-compact -CargoArgs @('-p','gpu-v2','--example','lighting_rtl_export','--','target/gpu-v2-lighting/scalar-study/selected-compact','gowin','compact','resource')
+# Run gw_sh build.tcl in the exported directory; resource-hierarchy exports the diagnostic hierarchy.
+```
+
+Raw candidates and rejected generator snapshots remain under
+`target/gpu-v2-lighting/scalar-study`. The selected flat fits are `dots-fast` and
+`ram-compact`; `selected-*` are reproducible exports of those sources. CSV block
+calendar studies remain alternative scheduling models, not the implemented role calendar.
+
+## System candidates and selection
+
+`SystemFast` and `SystemCompact` add full/diffuse II2 and II4 respectively.
+`LightingEmu::with_system_profile` and `rtl::generate_with_options(profile,
+LightingRtlOptions::system_profile())` explicitly select the gate-corrected
+N/H scalar kernel. Original default and earlier resource exports are unchanged,
+including their fitted source identities. These are isolated integration
+candidates; no whole-GPU composition or board validation is claimed.
+
+The aspiration was2200 Logic /9 BSRAM /12 DSP18 within the proposed whole-GPU
+budget. **No tested candidate meets it.** The gate-corrected Fast even costs more
+Logic than the original Fast. The smaller scaled-gate variants have demonstrated
+new NL sign errors. On2026-10-02 the user accepted the NL errors in all reviewed
+examples, including area-introduced cases, as visually tolerable edge offsets of
+about one pixel. This is a visual decision, not a mathematical one-pixel bound for
+all inputs, and does not accept half-vector degeneration. Area-oriented follow-up
+uses the scaled-gate candidate; exact NL recovery remains a diagnostic/regression
+comparison rather than a required cost for those accepted NL cases. No production
+default or whole-GPU integration is changed by this decision.
+The H-only reference keeps the previous N/NL contract
+and is a useful resource alternative under these slower throughput targets.
+
+The bounded search compared H-only, direct N/V/H DSP18 squares, N/H DSP9 squares,
+terminal-only logic registers, and an exact NL low-bit correction. There is no
+new quad/warp state: context uniformity was already shared, while N and H vary
+per pixel. Grouping pixels alone does not remove their computations or lifetimes.
+
+## System arithmetic boundaries
+
+```mermaid
+flowchart LR
+    N[Normal input] --> F[N scale, exact squares and reciprocal]
+    B[N low three bits per axis] --> G[Exact NL sign residual]
+    F --> D[Dot scaled N with L]
+    D --> G
+    D --> NL[Scalar N reciprocal, RNE and diffuse g]
+    F --> NH[Dot scaled N with scaled H]
+    V[Ray and explicit unit V] --> H[H scale, exact squares and reciprocal]
+    H --> NH
+    NH --> R[Scalar N then H reciprocals]
+    R --> P[Q15 clamp, original power and h]
+    G --> P
+```
+
+N/H are factors rather than three unit-vector outputs. V still produces a vector
+for L+V. DSP18 squares remove SQ chord reads, interpolation and associated muxes;
+RSQRT approximation and power interpolation remain. NL raw Q28 rounds to signed18
+Q16, multiplies unsigned17 Q15 rN, narrows to signed34 Q31, and rounds to signed18
+Q15. NH raw Q28 narrows to signed31, rounds to signed18 Q15, multiplies rN and
+narrows to signed32 Q30 before RNE to signed18 Q16; multiplication by rH then
+uses the NL product/round formats. Checked narrowing is part of the audited graph.
+Published `nl`/`nh` rescale the Q15 scalar results to Q28; `nl.gate` is separate.
+
+For N right prescale k=1/2, raw N = RNE(N/2^k)*2^k + residual. Three original low
+bits per axis determine residual in -2..2. Odd tails use the same +/-L correction
+for both k; only an even tail2 at k2 needs +/-2L. The corrected sign uses a small
+21-bit sum, with no multiplier. Outside signed18 scaled-dot range, the largest
+three-axis residual98304 cannot flip the sign. Left prescale preserves sign.
+Normal zero still disables specular. All131072 signed16/k reconstruction cases
+pass the independent integer proof; the oracle computes input NL directly.
+
+## System scheduling and storage boundaries
+
+The static schedule partitions large multipliers into ray, V and remaining
+arithmetic roles. Capacities are ceil(complete full-path work / full II), also
+for diffuse mode; identical logic-cone capacities cover both graphs. Both the
+restricted calendar and its merged physical pool pass independent modulo checks.
+This keeps fixed operand calendars and does not add an arbiter, feedback queue,
+or run-time per-pixel instruction selection. Two real logic segments remain.
+
+```mermaid
+sequenceDiagram
+    participant I as Input phase
+    participant P as Static numerical pipeline
+    participant Q as Complete ID FIFO
+    participant O as Ordered output
+    I->>P: pixel A at advancing edge0
+    I->>Q: complete 32-bit external ID A
+    I->>P: pixel B at edge II
+    I->>Q: complete ID B
+    Q->>O: synchronous pre-read at L-1
+    P->>O: A g/h valid at L
+    Note over I,O: CE pause or held output freezes all state
+```
+
+The ID FIFO has64/32 slots,2048/1024 payload bits,12/10 pointer bits and one32-bit
+output register. Capacity is nextPow2(max(ceil(fullL/fullII),ceil(diffL/diffII))+2).
+Writes occur only on acceptance; ordered synchronous reads occur one advancing
+edge before valid. Static age/valid is internal token identity; arbitrary32-bit
+external IDs remain intact. There is no extra runtime credit loop. Reset/drained
+context load resets ownership and pointers without clearing SRAM; simultaneous
+read/write addresses are checked to differ. CE/backpressure freeze both ports.
+
+Each export's `storage.csv` lists ready/last-use/II/width/words for every retained
+value, input row and nine-bit normal-LSB capture, plus context/control/ID/ROM
+boundaries. `lanes.csv` and emitted RTL include physical lane pipeline registers.
+The three36-bit external rows are unchanged; the LSB source is fixed wiring from
+them, not a new upstream arithmetic requirement. Uniform context is180 bits;
+phase/calendar/configured is11, with86/90 valid ages. Both modes share ID capacity
+and context, while numerical retained values are still mode specific.
+
+## System fitted resource record
+
+All rows use the complete isolated probe,309 harness FFs, GW2AR-LV18QN88C8/I7 C,
+Gowin Education1.9.8.11, and18.518ns/54.002MHz constraints. Logic=LUT+ALU+6*RAM16.
+The selected exact-gate exports are byte-identical to `factored-fast/compact`;
+scaled-gate exports to `square18-fast/compact`. Reports and identities are retained
+under the existing local `gpu-v2-lighting-fit-evidence` record. FF includes harness.
+
+| Kernel / profile | Full / diffuse II | Logic | FF | BSRAM ROM + retained | MULT9 / MULT18 / pair | Fmax MHz |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| H-only reference Fast | 2 / 2 | 3731 | 4268 | 8 + 6 | 7 / 7 / 1 | 93.793 |
+| H-only reference Compact | 4 / 4 | 3235 | 4113 | 5 + 2 | 4 / 4 / 1 | 91.169 |
+| DSP18 squares, scaled NL gate Fast | 2 / 2 | 3502 | 3852 | 4 + 2 | 3 / 10 / 1 | 86.838 |
+| DSP18 squares, scaled NL gate Compact | 4 / 4 | 2842 | 3455 | 3 + 1 | 2 / 6 / 1 | 83.451 |
+| N/H DSP9 squares Fast | 2 / 2 | 3385 | 3857 | 4 + 2 | 6 / 7 / 1 | 78.361 |
+| N/H DSP9 squares Compact | 4 / 4 | 2949 | 3489 | 3 + 1 | 3 / 5 / 1 | 98.613 |
+| **DSP18 squares, exact NL gate Fast** | **2 / 2** | **4215** | **4171** | **4 + 7** | **3 / 10 / 1** | **83.769** |
+| **DSP18 squares, exact NL gate Compact** | **4 / 4** | **3553** | **4046** | **3 + 5** | **2 / 6 / 1** | **86.370** |
+
+Exact-gate LUT/ALU/RAM16 are3225/576/69 and2883/484/31, with setup slack6.580/
+6.940ns and zero setup/hold violations. Declared payload/register bits12070/8099
+include arrays and are not FF counts. The correction costs713/711 Logic and5/4
+BSRAM over scaled-gate variants; input LSB capture itself is only9 bits per token.
+Its additional cone boundaries and retained lifetimes account for the larger cost.
+The first nested correction fitted4306/3568 Logic; factoring residual cases reduced
+Logic by91/15 but changed inferred storage/FF mapping substantially.
+
+Terminal-only logic registering fitted3884/3204 Logic,2846/2739 FF, and134/84
+RAM16. Fmax53.499/54.480MHz: Fast misses54.002MHz and Compact has only0.163ns
+slack. Fewer FFs therefore did not produce lower fitted Logic or robust timing.
+
+## System DSP and ROM accounting
+
+The independent `dsp-packing.csv` certificate allocates four MULT9 or two MULT18
+per compatible macro; a paired MAC owns a macro, and two macros form a tile.
+DSP9 and DSP18 modes do not mix in a macro. Fast needs7 macros/4 tiles, Compact
+5 macros/3 tiles. Nominal DSP18 equivalents13.5/9 differ from conservative whole
+macro charges14/10, or16/12 if whole tiles are reserved. The Fast candidate exceeds
+the12-DSP18 aspiration under each allocation convention. These certificates use
+real coexistence rules; text fitter reports confirm primitive counts, not complete
+site placement or future cross-component whole-GPU packing.
+The H-only reference needs7/4 macros and4/2 tiles for Fast/Compact respectively;
+Fast direct squares increase nominal DSP use without increasing that certificate's
+macro/tile allocation, while Compact direct squares add one macro and one tile.
+
+N/H DSP9 variants still require the same7/5 macros and4/3 tiles under this
+certificate. Their small nominal occupancy reduction does not free an allocation
+unit, and the Compact variant uses more Logic than DSP18. Its much larger ordinary
+highlight errors make it an unattractive trade here.
+
+System normalization declares512x36 per read lane, but unused SQ fields disappear
+with direct squares: only128x24 RSQRT payload per lane is needed. Fast/Compact
+fit two/one RSQRT BSRAMs. The power read lane has two synchronous ROMs1024x16 and
+1024x12, totaling28672 bits and two BSRAMs; this is two blocks for one access lane.
+The32x43 prepared-context ROM has17 meaningful entries and remains LUT logic.
+All retained SRAM, ID FIFO, synchronous output registers and controls are included
+in the fitted totals; they have not been moved outside the accounting boundary.
+
+## System Logic attribution
+
+Exclusive diagnostic hierarchy synthesis sums4164/3538 Logic; hierarchy PnR is
+4206/3542, distinct from flat4215/3553. Categories include their own operand muxes
+and lane registers, and do not attribute individual flat PnR cells exactly.
+
+| Local synthesis category | Exact gate Fast | Exact gate Compact |
+| --- | ---: | ---: |
+| Variable scaling and rounding inside shifts | 1013 (24.33%) | 825 (23.32%) |
+| Magnitude, comparisons and selections | 986 (23.68%) | 903 (25.52%) |
+| Parent context, retained storage and control | 645 (15.49%) | 389 (10.99%) |
+| Ordinary sums and increments | 519 (12.46%) | 488 (13.79%) |
+| DSP inputs and external tail | 423 (10.16%) | 496 (14.02%) |
+| Other rounding | 369 (8.86%) | 292 (8.25%) |
+| LZD | 144 (3.46%) | 89 (2.52%) |
+| Serial harness | 63 (1.51%) | 54 (1.53%) |
+| ROM address/interface | 2 (0.05%) | 2 (0.06%) |
+
+The largest remaining categories are numerical scaling and comparisons/selects,
+not phase control. Exact gate recovery removed new sign failures, but generic
+small-cone scheduling and value retention made it expensive. A future resource
+boundary should expose a bounded vector/factor operation and explicit small
+correction result lifetime; this round has not proved that redesign saves area.
+Context-only negations are also still scheduled as per-pixel arithmetic: current
+invariant propagation recognizes wiring, not arithmetic resources. Preparing
+these once per context is a concrete next boundary to investigate, including its
+update latency and total context storage; no fitted saving is claimed for it.
+The existing generic audited API was sufficient for this implementation; no
+common-framework modification or unaudited arithmetic shortcut was required.
+Another boundary is the normal input range: when every component has absolute
+raw magnitude strictly below16384, normalization only left-shifts, so scalar NL
+preserves the input dot sign without a low-bit correction. Quantized normals
+at exactly16384 do not satisfy this strict bound, and the current signed16 ABI
+also permits larger unnormalized vectors. Any narrower contract needs proof at
+the producer and a complete resource comparison; it is not enabled here.
+
+## System numerical and motion record
+
+The28618-input corpus compares independent oracle, audited stages and outputs:
+975 boundaries,3000 ordinary/highlight inputs,22450 NL cancellations and2193 H
+degenerations. For DSP18 scalar candidates, ordinary changes from original are
+at most one g code/two h codes; maximum h error against ideal is2.086047 codes.
+This is a measured corpus bound. N/H DSP9 reaches73-code changes and73.733978
+ideal error in ordinary inputs, with362 changes above4 codes; it is not selected.
+
+| NL gate classification against ideal | Scaled gate | Exact gate |
+| --- | ---: | ---: |
+| Both original and candidate correct | 20803 | 21170 |
+| Old error repaired | 972 | 1280 |
+| New error introduced | 367 | 0 |
+| Both wrong | 308 | 0 |
+
+Exact gate reconstruction removes those sign errors, but the NL sweep still has
+maximum ideal h error256 due to downstream half-vector/threshold sensitivity.
+Its mean absolute h error falls from7.344749 to0.762665 codes. The retained fixture
+N`[1023,0,8]`, L`[128,0,-16383]`, NDC`[0,0]`, shininess16 has exact dot-120:
+ideal/candidate h0, original NL128/h256. A256-code difference is not automatically
+an improvement or a regression; gate classification and ideal error are separate.
+
+`lighting_system_visual` renders three400x240 scenes over12 frames with identical
+quantized inputs, direct g/h color mapping and no error amplification. The native
+PNG/GIF/interactive review and CSV are under `system-study/visual-exact`. Sphere
+maximum h errors are2.363208 original,2.792229 DSP18 and58.849653 mixed9 codes;
+mixed9 has visible highlight banding and maximum temporal residual101.343247.
+Exact gate greatly reduces grazing NL streaks, but H-stress still has217-code
+errors and219.078947 temporal residual in original and DSP18. Those extreme
+discontinuities remain an explicit review boundary, not a silent acceptance.
+Temporal residual measures change of numerical error between adjacent frames.
+The [interactive Rust WASM review](../web/README.md) exposes these algorithm
+alternatives with shared controllable inputs and deterministic frame links. It
+does not replace the counted/emu/RTL verification layers;3672 native/WASM scalar
+results are bit-identical. Four selected native400x240 scene frames also match
+WASM RGBA/g-h bytes exactly, with f64 statistics within1e-8. The review includes
+a continuous sphere, uniform light and constant-length inverse-scale normals:
+its selected grazing frame has two large original errors, repaired equally by
+area and exact candidates. This is separate from constructed NL cases with
+area-introduced errors. The review README gives exact frames, coordinates and
+RGB values; it does not claim global extrema or human acceptance.
+Scene switching, playback, pause, time slider, optional
+heatmap and material controls were checked in the browser with no console errors.
+
+## System batch and verification record
+
+Measured no-stall emu edges below include context capture, ordered output transfer
+and drain. First-valid latency is85/43 for SystemFast full/diffuse and89/45 for
+SystemCompact; first transfer is one edge later. Steady II does not describe small
+triangle throughput or frequent context changes.
+
+| Profile / mode | 16 / 64 / 256 pixel context-to-next-context edges | Peak tokens at256 | ID capacity |
+| --- | ---: | ---: | ---: |
+| SystemFast full | 118 / 214 / 598 | 43 | 64 |
+| SystemFast diffuse | 76 / 172 / 556 | 22 | 64 |
+| SystemCompact full | 152 / 344 / 1112 | 23 | 32 |
+| SystemCompact diffuse | 108 / 300 / 1068 | 12 | 32 |
+
+The final checks pass129 GPU tests, strict GPU clippy and formatting, both system
+profiles' behavioral/native Gowin DSP cycle and every published stage comparisons,
+full-ID wraps and synchronous FIFO collision checks, and mandatory CPU31/system2
+co-simulations. Exact-gate RTL observations: Fast15123 cycles/8590 output observations/
+149759 stage observations; Compact23732/10027/127832. Both commit3025 distinct
+tokens over reset, CE pauses, held outputs and drained context changes. Native DSP
+simulation is not vendor BSRAM primitive simulation; inferred synchronous arrays
+and isolated fitting are separate from GPU integration and board proof.
+
+```powershell
+& scripts/run-cargo.ps1 -Subcommand test -Label lighting-system-numerical -CargoArgs @('-p','gpu-v2','--test','lighting_system','--','--nocapture')
+$env:LIGHTING_SYSTEM_PROFILE='1'
+& scripts/run-cargo.ps1 -Subcommand test -Label lighting-system-rtl -CargoArgs @('-p','gpu-v2','--test','lighting_cycles','verilog_matches','--','--ignored','--nocapture')
+Remove-Item Env:LIGHTING_SYSTEM_PROFILE
+& scripts/run-cargo.ps1 -Subcommand run -Label lighting-system-fast -CargoArgs @('-p','gpu-v2','--example','lighting_rtl_export','--','target/gpu-v2-lighting/system-fast','gowin','system-fast','system')
+# system-compact selects II4. system-scaled-gate, system-reference, system-mixed9,
+# system-terminal and system-hierarchy reproduce the bounded diagnostics.
+# Run gw_sh build.tcl in the exported directory for a complete isolated fit.
+```
+
+## Area audit and scheduling experiments
+
+A diagnostic hierarchy emits one child per physical arithmetic/ROM lane while
+retaining external stage probes. The final hierarchy differs from flat PnR by one
+Logic. Its synthesis XML attributes **local** LUT/ALU/RAM16 usage to each child;
+the sum below uses LUT+ALU+6xRAM16 and does not attribute final PnR cells exactly.
+Each category includes operand selection and local pipeline storage. Shifts that
+include rounding are entirely in the variable-scaling category.
+
+| Fast hierarchy synthesis attribution | Before shift optimization | After |
+| --- | ---: | ---: |
+| Variable scaling cones, including their rounding | 2203 | 1197 |
+| Other rounding cones | 567 | 557 |
+| Magnitude, comparison and selection | 516 | 518 |
+| Ordinary sums and increments | 376 | 369 |
+| DSP operand inputs and external pair tail | 597 | 597 |
+| LZD | 126 | 104 |
+| ROM address/interface logic | 80 | 80 |
+| Context, wiring, retained values and control in parent DUT | 634 | 622 |
+| Serial harness | 93 | 93 |
+| Synthesis total (different boundary from PnR) | 5192 | 4137 |
+
+The adopted lowering makes equal typed scalar operations share one function after
+input selection. Heterogeneous opcodes, formats, argument order or literals retain
+separate functions. Constant/type/operator interval propagation bounds every shift;
+nonliteral numerical template values are never range evidence. Shared cones union
+all corresponding ranges across full/diffuse operations, including split segments.
+Only required shift directions are emitted; oversized counts are detected before
+narrowing. Signed arithmetic remains in explicit assignments and statements.
+
+Normalization has at least one component with magnitude8192 or greater, with all
+components at most16384. Signed square chords bound x*x from above and are at most
+2^28. Hence2^26<=q<=3*2^28 and the30-bit q has only0..3 leading zeros. Checked
+U2 narrowing records this domain in counted/emu/RTL. An independent exhaustive
+scalar proof covers every normal/half magnitude, RNE boundaries, zero fallback,
+and every signed-square chord; bounded Vz establishes the view-ray lower bound.
+Mantissa alignment is now only a right shift by12..15, and reciprocal restoration
+only a left shift by0..1. Normal pre-scaling remains bidirectional with range
+[-4,14]; power index/correction use right shifts and alignment uses left shifts.
+Numerical outputs, DSP count, storage ownership, II and latency are preserved.
+
+All shift candidates passed Gowin-primitive cycle/stage checks before selection.
+The final widened stream passes both behavioral and vendor comparisons: Fast
+15174 cycles/8641 output observations/174767 stage observations, Compact
+19250/9196/165302. GPU tests and clippy, plus CPU/core and system co-sim, pass.
+The isolated PnR progression is:
+
+| Experiment | Fast Logic | Compact Logic | Decision |
+| --- | ---: | ---: | --- |
+| Original terminal cone registers and zero-masked slots | 6051 | 5625 | Historical baseline |
+| Remove unnecessary idle-slot zero masks | 5517 | 4885 | Retain |
+| Also share left/right barrel networks | 5512 | 4963 | Reject: worse timing |
+| Also split cones into actual segments, stock DSP | 5256 | 4584 | This study's baseline |
+| Permanent DSP lane per multiply, no cone split | 5076 | 4658 | Reject default:14 small+14 large |
+| Permanent DSP lane per multiply plus cone split | 4909 | — | PnR only, reject DSP cost |
+| Cone split plus modest Fast DSP increase | 5069 | 4584 | Superseded; DSP inventory restored |
+| Stock DSP plus explicit scalar input sharing | 5073 | 4440 | Retain |
+| Stock DSP plus structural shift bounds alone | 4496 | 3971 | Retain |
+| Combine scalar sharing and structural bounds | 4412 | 3900 | Retain |
+| Also expose normalized q domain | See final table | See final table | Default |
+
+Earlier redundant zero masks and terminal cone delay registers were removed;
+real cone partitioning mainly improved RAM16 mapping and timing. The shift study
+instead removes data-path logic: almost all additional savings are in variable
+scaling. Reports, candidates and attribution CSV remain under
+`target/gpu-v2-lighting/shift-study`; no candidate is whole-GPU or board evidence.
+Dedicated-DSP and packed-calendar options remain diagnostic experiments only.
+Uniform light/projection/power context already bypasses per-pixel retention.
+
+For packed pixels, `calendar_study` reserves one virtual block per operation,
+ceil-divides each hardware latency by block size, schedules the blocks, and
+independently expands back into real DSP/ROM cycles. The expanded checker audits
+all within-group issues and wraparound to the next group. With B consecutive
+pixels and a period2B for full mode, the same average II2 and inventory remain.
+The modeled retained-value peak below excludes pipeline-internal registers,
+ID/control, input rows and physical RAM rounding. It includes live escaping
+values and is a scheduling metric rather than an allocation or fitted count.
+
+| Full-mode block size, original Fast inventory | Input period | Latency | Operand choices | Retained-value peak bits |
+| --- | ---: | ---: | ---: | ---: |
+| 1 | 2 | 97 | 336 | 5597 |
+| 2 | 4 | 123 | 336 | 7445 |
+| 3 | 6 | 157 | 336 | 8863 |
+| 4 | 8 | 201 | 336 | 12155 |
+
+Thus merely moving two/three/four pixels through each operation as a block did
+not remove operand sources and increased waiting/storage. No burst interface
+was implemented or fitted for this rejected schedule. The existing II2 calendar
+already supports odd/even operation roles and synchronous ROM/DSP issue.
+Quad context sharing alone adds no savings over the existing batch uniform
+context. Distinct N and position-dependent H remain independent; an exact flat
+triangle or repeated-coordinate cache is a separate contract, as discussed below.
+A group of four is therefore not used to substitute one shared normal/half vector.
+
+Reproduce the emulator/RTL evidence and export either build:
+
+```powershell
+& scripts/run-cargo.ps1 -Subcommand test -Label lighting-cycles -CargoArgs @('-p','gpu-v2','--test','lighting_cycles')
+& scripts/run-cargo.ps1 -Subcommand test -Label lighting-rtl -CargoArgs @('-p','gpu-v2','--test','lighting_cycles','--','--ignored','--nocapture')
+& scripts/run-cargo.ps1 -Subcommand run -Label lighting-fast-export -CargoArgs @('-p','gpu-v2','--example','lighting_rtl_export','--','target/gpu-v2-lighting/shift-study/q-domain-fast','gowin','fast')
+& scripts/run-cargo.ps1 -Subcommand run -Label lighting-compact-export -CargoArgs @('-p','gpu-v2','--example','lighting_rtl_export','--','target/gpu-v2-lighting/shift-study/q-domain-compact','gowin','compact')
+# In either exported directory:
+& "$env:GOWIN_HOME/IDE/bin/gw_sh.exe" build.tcl
+```
+
+## Rust architecture alternatives
 
 The historical optimized profile remains available bit for bit. The new
 `counted::Config::architecture()` exploits validated bounds, prepares material
@@ -236,11 +907,12 @@ completion. These results support trying fewer fabric wide adders, rather than
 establishing a physical area optimum. The remaining narrow compare workload
 is 54 operations on two lanes, giving a 27-cycle-per-pixel resource lower bound.
 
-GPU-only validation has 107 passing tests, including all shininess codes,
+The historical binding milestone had107 passing GPU-only tests, including all shininess codes,
 signed/degenerate boundaries, short modes, numerical fusion checks, forbidden
 intermediate escape, corrupted reservations and cross-iteration phase conflicts.
 GPU clippy and formatting pass.
-No emulator, RTL or place-and-route validation is included.
+Those binding tests alone include no emulator, RTL or place-and-route proof;
+the independent implementation evidence is reported above.
 
 ### Capacity sweep after supplying enough adders
 
@@ -347,8 +1019,8 @@ uniform short modes, 64-pixel expansion and deliberately distinct local times
 that collide across iterations. The current API requires precaptured register
 inputs and one uniform context; row input scheduling is explicitly rejected.
 The physical certificate below supplies ROM placement and retained-value budgets.
-Fixed input/result mux pairs, connected CE/context control, numeric cycle
-execution and RTL remain future work.
+The periodic API itself does not implement input/result muxes or numerical
+CE/context execution; these are provided by the independent pipeline above.
 
 ## Avoiding repeated abs and choosing where to truncate
 
@@ -681,8 +1353,9 @@ must restart from an appropriate seed or use separately prepared coordinates.
 
 Current row scheduling supports the historical four-row context. Architecture
 profiles require register inputs; their additional 43-bit material fields and
-shared geometry need an explicit future context-load interface. No extra fields
-are silently squeezed into the old four rows.
+shared geometry are outside that row interface. The independent pipeline above
+loads the43-bit material fields explicitly; shared geometry remains future work.
+No extra fields are silently squeezed into the old four rows.
 
 ## Ordinary sums, increments, and real cone costs
 
@@ -825,5 +1498,6 @@ Architecture tests compare all historical goldens on975 representative inputs,
 add128 seeded vectors, prepared-ray boundaries, a64-pixel exact scan, cache-key
 rejections, flat-sharing equivalence, full/diffuse calendars, corrupted cone
 aliases, mixed-mode ordering, CE stalls, output tampering and watchdog expiry.
-The existing exhaustive power sweep and historical tests remain. Emulator, RTL,
-PnR, whole-GPU integration and CPU-crate tests are outside this Rust milestone.
+The existing exhaustive power sweep and historical tests remain. These are
+historical Rust milestone tests; the independent cycle implementation and its
+PnR boundary are described above. Whole-GPU integration remains future work.

@@ -301,7 +301,7 @@ impl Hardware {
             ..Self::lighting_architecture_ii2()
         }
     }
-    fn unit(self, k: &LaneKind) -> (usize, u64) {
+    pub(crate) fn unit(self, k: &LaneKind) -> (usize, u64) {
         match k {
             LaneKind::LogicCone { .. } => (self.cone_lanes_per_shape, self.cone_latency),
             LaneKind::SmallMultiply => (self.small_multiply, self.multiply_latency),

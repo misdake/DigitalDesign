@@ -6,7 +6,7 @@ use std::collections::{BTreeMap, BTreeSet};
 /// One MULTADDALU18X18 candidate: A0*B0 + A1*B1 + C, without rounding.
 pub use audited::physical::FusedGroup;
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub(super) struct BoundDag {
+pub(crate) struct BoundDag {
     pub kinds: Vec<Option<LaneKind>>,
     pub dependencies: Vec<Vec<usize>>,
     pub groups: Vec<FusedGroup>,
@@ -164,7 +164,7 @@ fn dot_group(f: &FrameReport, name: &str) -> Result<Option<FusedGroup>, String> 
 impl BoundDag {
     /// Rebuild primitive physical kinds and independently check every supplied
     /// cone certificate; scheduling audit does not trust the member search.
-    pub(super) fn audit_logic_depth(&self, f: &FrameReport, h: Hardware) -> Result<(), String> {
+    pub(crate) fn audit_logic_depth(&self, f: &FrameReport, h: Hardware) -> Result<(), String> {
         if self.cones.is_empty() {
             return Ok(());
         }
@@ -217,6 +217,12 @@ impl BoundDag {
             }
             if h.paired_macros > 0 {
                 for name in ["nl", "nh"] {
+                    let raw_name = format!("{name}.raw");
+                    let name = if f.outputs.iter().any(|o| o.name == raw_name) {
+                        raw_name.as_str()
+                    } else {
+                        name
+                    };
                     if let Some(g) = dot_group(f, name)? {
                         let mut deps: Vec<_> =
                             g.operands.iter().map(|&v| f.values[v].producer).collect();

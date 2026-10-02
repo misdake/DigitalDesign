@@ -27,11 +27,12 @@ ip/gpu-v2/
         physical.rs            concrete DSP/ROM placement and retained-value audit
         stream.rs              bounded mixed-mode admission, CE and ordered commit
         adder.rs               ordinary/increment sites, including embedded cones
-      emu/                     future independent cycle/state model
-      rtl/                     future hardware implementation
+      datapath.rs              compiled audited calendars and numerical executor
+      emu/                     independent CE/backpressure numerical cycle model
+      rtl/                     synthesizable shared lanes, retiming and Gowin probe
   tests/support/               deterministic stimuli and comparison helpers
   examples/                    bounded component probes and report export
-  web/                         future WASM display/control adapter
+  web/                         standalone Rust WASM lighting review and controls
   docs/                        implemented contracts and validation boundaries
 ```
 
@@ -45,13 +46,18 @@ counted matches a chosen format configuration bit for bit and records all work;
 timed starts by binding capacities and verifying static batch reservations.
 The periodic variant uses the generic resource scheduler and checks repeating
 arithmetic calendars. Physical certificates additionally check DSP placement,
-concrete ROM banks/replicas/ports and retained-value capacity. Lighting connects
-the framework's context/FIFO/CE/commit control tokens to a bounded mixed-mode
-reservation stream; payload arithmetic is separately evaluated by counted.
+concrete ROM banks/replicas/ports and retained-value capacity. Lighting's
+independent emu/RTL implement numerical streaming, CE and backpressure for a
+single drained context. Fast and Compact select full/diffuse II2/II1 and II3/II2
+respectively. Resource/system alternatives remain explicitly selected candidates;
+the original numerical profile stays the default. The isolated probes have
+fitted evidence; whole-GPU/system composition remains future work.
+The earlier mixed-mode reservation stream uses the framework's context/FIFO/
+CE/commit control tokens with separately evaluated counted arithmetic.
 Frontend replays DMA payloads, scratchpad leases and the vertex issue ROM with
 an independent trace audit. Its current serial sequencer acceptance rate is
 reported separately from the resource lower bound of a periodic vertex body.
-Neither reservation model is a numerical cycle executor or complete GPU runtime.
+These reservation models are not numerical cycle executors or complete GPU runtimes.
 The [SDRAM memory controller combination](sdram-memory-controller.md) belongs to
 the Gowin vendor crate. GPU tests use it through a dev dependency, with a GPU-owned
 MemoryPort adapter for the frontend oracle. Both fixed-average and configured-load
@@ -74,9 +80,11 @@ Quad allocation, coverage, four-pixel grouping and branch joins belong to the
 future composition. Final color, texture sampling and framebuffer are separate
 components. Component calculations can be tested without a GPU system.
 
-Web code will call the same Rust numerical model through WASM. It owns controls
-and presentation only; it must not reproduce the arithmetic in JavaScript. The
-runtime-format audited lane and the WASM interface have not been implemented.
+Web code calls the same Rust oracle through bare WASM exports. It owns controls
+and presentation only; it does not reproduce the arithmetic in JavaScript. The
+[lighting review](../web/README.md) keeps scene/algorithm/ideal calculations in
+Rust and has a native/WASM bit comparison. The planned runtime-format audited
+lane and a complete GPU browser adapter have not been implemented.
 Implemented behavior and validation are in [lighting](lighting.md) and
 [frontend](frontend.md). The frontend does not consume triangle records or define
 an encoded GPU command ABI; framebuffer/cache and final system
@@ -88,5 +96,4 @@ The [texture models](texture.md) implement independent reference sampling, a
 closed counted datapath, a functional cache through MemoryPort, and bounded
 timed cache/refill/color execution through the existing SDRAM Service. A staged
 companion verifies numerical boundaries and context/credit control proposals;
-optimized preparation latency, independent cycle arithmetic and physical
-sampling throughput remain unverified.
+independent cycle arithmetic and physical sampling throughput remain unverified.

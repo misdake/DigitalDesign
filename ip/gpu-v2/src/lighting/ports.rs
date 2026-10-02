@@ -138,6 +138,70 @@ pub struct LightingOutput {
     pub h: u16,
 }
 
+/// Immutable register context. Updates are accepted only after pipeline drain.
+#[derive(Clone, Copy, Debug)]
+pub struct LightingContext {
+    pub material: Material,
+    pub light: Light,
+    pub projection: Projection,
+    pub epoch: u16,
+}
+impl LightingContext {
+    pub fn validate(self) -> Result<(), InputError> {
+        validate(
+            PixelInput {
+                normal: [0; 3],
+                ndc: [0; 2],
+            },
+            self.material,
+            self.light,
+            self.projection,
+        )
+    }
+    pub fn mode(self) -> u8 {
+        if self.material.unlit {
+            0
+        } else if self.light.directional == 0 {
+            1
+        } else if self.material.specular_color == [0; 3] {
+            2
+        } else {
+            3
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug)]
+pub struct LightingRequest {
+    pub pixel: PixelInput,
+    pub id: u32,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct LightingResult {
+    pub output: LightingOutput,
+    pub id: u32,
+    pub epoch: u16,
+}
+
+/// Clock inputs. Reset has priority over CE; transfers require CE.
+#[derive(Clone, Copy, Debug)]
+pub struct LightingTick {
+    pub reset: bool,
+    pub ce: bool,
+    pub context: Option<LightingContext>,
+    pub input: Option<LightingRequest>,
+    pub output_ready: bool,
+}
+
+/// Signals immediately before an edge. Output is held through CE/ready stalls.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct LightingSignals {
+    pub context_ready: bool,
+    pub input_ready: bool,
+    pub output: Option<LightingResult>,
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum InputError {
     Shininess,

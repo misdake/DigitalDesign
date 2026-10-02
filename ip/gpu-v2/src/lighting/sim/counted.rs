@@ -70,6 +70,22 @@ pub struct Config {
     pub shared_half: bool,
     /// Reuse exact flat-triangle N/NL/d/g; source normal and light must stay fixed.
     pub flat_normal: bool,
+    /// Normalize NH with one scalar H reciprocal instead of three H components.
+    pub scalar_norm: bool,
+    /// Explicit system candidate: apply N reciprocal to scalar dots, gate before RNE.
+    pub scalar_normal: bool,
+    /// Recover the exact input NL sign from three low bits per component.
+    pub exact_normal_gate: bool,
+    /// Use bounded block-floating prescale (two fixed right-RNE cases).
+    pub block_prescale: bool,
+    /// Replace H SQ chords with DSP squares; N and V remain numerically frozen.
+    pub direct_square: bool,
+    /// Explicit system candidate: direct DSP squares for all N/V/H lengths.
+    pub direct_all_squares: bool,
+    /// Round N/H magnitudes to U9 Q8 and square in DSP9. V stays DSP18.
+    pub square9: bool,
+    /// Permanently separate NL and NH DSP dot lanes.
+    pub dedicated_dots: bool,
 }
 impl Config {
     pub fn optimized() -> Self {
@@ -87,6 +103,43 @@ impl Config {
             ..Self::optimized()
         }
     }
+    pub fn scalar() -> Self {
+        Self {
+            scalar_norm: true,
+            ..Self::architecture()
+        }
+    }
+    pub fn scalar_pipeline() -> Self {
+        Self {
+            scalar_norm: true,
+            block_prescale: true,
+            ..Self::architecture()
+        }
+    }
+    pub fn system_candidate(direct_all_squares: bool) -> Self {
+        Self {
+            scalar_norm: true,
+            scalar_normal: true,
+            block_prescale: true,
+            direct_all_squares,
+            ..Self::architecture()
+        }
+    }
+    pub fn system_profile() -> Self {
+        Self {
+            exact_normal_gate: true,
+            ..Self::system_candidate(true)
+        }
+    }
+    /// Selected resource alternative; N/NL and V retain the baseline contract.
+    pub fn resource_profile(profile: super::super::LightingProfile) -> Self {
+        Self {
+            scalar_norm: true,
+            block_prescale: profile == super::super::LightingProfile::Compact,
+            dedicated_dots: profile == super::super::LightingProfile::Fast,
+            ..Self::architecture()
+        }
+    }
     pub fn prepared() -> Self {
         Self {
             prepared_ray: true,
@@ -94,16 +147,21 @@ impl Config {
         }
     }
 }
+#[derive(Clone, Copy)]
 enum SquareTable {
+    Exact,
+    Magnitude9,
     Magnitude(Memory<14, 0, false>),
     Signed(Memory<15, 0, false>),
 }
 struct Tables {
+    direct_square: bool,
     square: SquareTable,
     rsqrt: Memory<24, 0, false>,
     power: Memory<28, 0, false>,
     context: Memory<43, 0, false>,
     context_is_latched: bool,
+    static_power: bool,
 }
 
 fn clamp<const B: u32, const F: u32, const S: bool>(
@@ -129,18 +187,49 @@ fn shifted(f: &Frame<'_>, x: Direction, amount: Fixed<18, 0, true>) -> Result<Di
     let x: NormalizedWork = f.binary_scale(x)?;
     f.round_to(f.shift(x, amount)?)
 }
-fn normalize(
+fn block_shifted(
+    f: &Frame<'_>,
+    value: Direction,
+    amount: Fixed<18, 0, true>,
+) -> Result<Direction, Fault> {
+    let negative = f.less(amount, Fixed::<18, 0, true>::constant::<0>())?;
+    let left = f.select(negative, Fixed::<18, 0, true>::constant::<0>(), amount)?;
+    let left = f.resize_exact::<4, 0, false>(left)?;
+    let left = f.shift(value, f.resize_exact::<18, 0, true>(left)?)?;
+    // A 16-bit normal needs at most a two-bit downscale. Half-vector inputs
+    // need at most one. Keep two static signed RNE circuits instead of a
+    // wide barrel shift followed by a variable sticky-bit reduction.
+    let one = f.round_to::<16, 14, true>(f.binary_scale::<16, 15, true>(value)?)?;
+    let two = f.round_to::<16, 14, true>(f.binary_scale::<16, 16, true>(value)?)?;
+    let right = f.select(
+        f.less(amount, Fixed::<18, 0, true>::constant::<-1>())?,
+        two,
+        one,
+    )?;
+    f.select(negative, right, left)
+}
+
+#[derive(Clone, Copy)]
+struct Normalization {
+    scaled: [Direction; 3],
+    reciprocal: Reciprocal,
+    zero: Fixed<1, 0, false>,
+    amount: Fixed<18, 0, true>,
+}
+
+fn prepare_normalization(
     f: &Frame<'_>,
     raw: [Direction; 3],
     threshold: Magnitude,
     bounded: bool,
     t: &Tables,
     prefix: &str,
-    fast: bool,
-) -> Result<[Direction; 3], Fault> {
+    policy: (bool, bool),
+) -> Result<Normalization, Fault> {
+    let (fast, block) = policy;
     // Vz >= 8192 is established at the external input boundary. The validated
     // bounded view ray cannot degenerate and has no common pre-shift.
-    let (mut v, zero, amount) = if bounded && fast {
+    let (v, zero, amount) = if bounded && fast {
         (
             raw,
             Fixed::<1, 0, false>::constant::<0>(),
@@ -177,7 +266,18 @@ fn normalize(
                 f.sub_same(f.leading_zeros(m)?, Fixed::<18, 0, true>::constant::<3>())?
             }
         };
-        if !bounded && !(fast && prefix == "h") {
+        if block && !bounded && prefix == "n" {
+            // In the entire i16 input domain, common prescale RNE overflows
+            // 16383 only at max-magnitude 32767. Handle that single exponent
+            // boundary directly, without scaling and rounding the maximum.
+            let below = f.less(m, Magnitude::constant::<32767>())?;
+            let above = f.less(Magnitude::constant::<32767>(), m)?;
+            amount = f.select(
+                below,
+                amount,
+                f.select(above, amount, Fixed::<18, 0, true>::constant::<-2>())?,
+            )?;
+        } else if !bounded && !(fast && prefix == "h") {
             // RNE can turn 32767/2 into 16384. Keep the SQ index strictly below 128.
             let mw = f.resize_exact::<32, 14, true>(m)?;
             let mw = f.binary_scale::<32, 28, true>(f.shift_left_const::<14, 32, 14, true>(mw)?)?;
@@ -191,14 +291,35 @@ fn normalize(
         }
 
         for value in &mut v {
-            *value = shifted(f, *value, amount)?;
+            *value = if block {
+                block_shifted(f, *value, amount)?
+            } else {
+                shifted(f, *value, amount)?
+            };
         }
         (v, zero, amount)
     };
     f.publish(&format!("{prefix}.shift"), amount)?;
     let mut squares = [SquareSum::constant::<0>(); 3];
     for i in 0..3 {
-        squares[i] = match t.square {
+        let square_table = if (t.direct_square && prefix == "h")
+            || (matches!(t.square, SquareTable::Magnitude9) && prefix == "v")
+        {
+            SquareTable::Exact
+        } else {
+            t.square
+        };
+        squares[i] = match square_table {
+            SquareTable::Magnitude9 => {
+                let u = magnitude(f, v[i])?;
+                let u = f.round_to::<9, 8, false>(u)?;
+                let product: Fixed<18, 16, false> = f.product(u, u)?;
+                f.binary_scale(f.shift_left_const::<12, 30, 16, false>(f.resize_exact(product)?)?)?
+            }
+            SquareTable::Exact => {
+                let product: Fixed<32, 28, true> = f.product(v[i], v[i])?;
+                f.resize_exact(product)?
+            }
             SquareTable::Magnitude(table) => {
                 let u = magnitude(f, v[i])?;
                 let a = f.slice::<7, 0, false, 7>(u)?;
@@ -233,8 +354,14 @@ fn normalize(
     f.publish(&format!("{prefix}.q"), q)?;
     let zeros = f.leading_zeros(q)?;
     let (exponent, align) = if fast {
-        // Normalized q lies in [1/4,3), so its LZD and integer controls are tiny.
-        let z = f.resize_exact::<6, 0, true>(zeros)?;
+        // One pre-scaled component has |v| >= 8192, and every component has
+        // |v| <= 16384. Signed square chords lie above x*x and at most 2^28,
+        // so 2^26 <= q <= 3*2^28. The bounded view ray establishes the same
+        // bounds through Vz >= 8192. A 30-bit q therefore has only 0..3 LZD.
+        // Checked narrowing makes this domain explicit in the hardware graph;
+        // the exhaustive scalar-boundary proof is in format::tests.
+        let z = f.resize_exact::<2, 0, false>(zeros)?;
+        let z = f.resize_exact::<6, 0, true>(z)?;
         (
             f.resize_exact(f.sub_same(Fixed::<6, 0, true>::constant::<1>(), z)?)?,
             f.resize_exact(f.sub_same(z, Fixed::<6, 0, true>::constant::<15>())?)?,
@@ -265,6 +392,31 @@ fn normalize(
     };
     let r: Reciprocal = f.shift(f.resize_exact(r0)?, restore)?;
     f.publish(&format!("{prefix}.r"), r)?;
+    Ok(Normalization {
+        scaled: v,
+        reciprocal: r,
+        zero,
+        amount,
+    })
+}
+
+fn normalize(
+    f: &Frame<'_>,
+    raw: [Direction; 3],
+    threshold: Magnitude,
+    bounded: bool,
+    t: &Tables,
+    prefix: &str,
+    policy: (bool, bool),
+) -> Result<[Direction; 3], Fault> {
+    let (fast, _) = policy;
+    let factors = prepare_normalization(f, raw, threshold, bounded, t, prefix, policy)?;
+    let Normalization {
+        scaled: mut v,
+        reciprocal: r,
+        zero,
+        ..
+    } = factors;
     for (i, value) in v.iter_mut().enumerate() {
         let product: Fixed<33, 29, true> = f.product(*value, r)?;
         let rounded = f.round_to::<18, 14, true>(product)?;
@@ -294,6 +446,93 @@ fn dot(f: &Frame<'_>, a: [Direction; 3], b: [Direction; 3]) -> Result<Dot, Fault
     f.add(xy, p[2])
 }
 
+fn scalar_half_dot(
+    f: &Frame<'_>,
+    normal: [Direction; 3],
+    half: Normalization,
+    normal_factors: Option<Normalization>,
+) -> Result<Fixed<18, 15, true>, Fault> {
+    let raw = dot(f, normal, half.scaled)?;
+    f.publish("nh.raw", raw)?;
+    // Unit N times pre-scaled H is bounded by sqrt(3). Keep two guard bits
+    // in the DSP18 operand, then round once to the final specular coordinate.
+    let narrow = if let Some(n) = normal_factors {
+        // Two scaled vectors can have a raw dot up to three. Keep Q15 before
+        // the N reciprocal; the resulting dot with unit N then fits Q16.
+        let operand = f.round_to::<18, 15, true>(f.resize_exact::<31, 28, true>(raw)?)?;
+        let product: Fixed<35, 30, true> = f.product(operand, n.reciprocal)?;
+        let unit_n = f.round_to::<18, 16, true>(f.resize_exact::<32, 30, true>(product)?)?;
+        f.select(n.zero, Fixed::<18, 16, true>::constant::<0>(), unit_n)?
+    } else {
+        f.round_to::<18, 16, true>(f.resize_exact::<30, 28, true>(raw)?)?
+    };
+    let product: Fixed<35, 31, true> = f.product(narrow, half.reciprocal)?;
+    let value = f.round_to::<18, 15, true>(f.resize_exact::<34, 31, true>(product)?)?;
+    f.select(half.zero, Fixed::<18, 15, true>::constant::<0>(), value)
+}
+
+// For a right prescale k=1/2, raw N = scaled N*2^k + residual.
+// RNE residuals are in [-2,2] and depend only on the original three low bits.
+// Reconstruct dot(raw N,L)'s sign without three more multipliers or retaining
+// the original 48-bit vector. The large-dot guard safely narrows the correction.
+fn exact_normal_gate(
+    f: &Frame<'_>,
+    low: Fixed<9, 0, false>,
+    light: [Direction; 3],
+    factors: Normalization,
+    scaled_dot: Dot,
+) -> Result<Fixed<1, 0, false>, Fault> {
+    let two = f.less(factors.amount, Fixed::<18, 0, true>::constant::<-1>())?;
+    let negative = f.less(factors.amount, Fixed::<18, 0, true>::constant::<0>())?;
+    let mut terms = [Fixed::<18, 28, true>::constant::<0>(); 3];
+    for axis in 0..3 {
+        let lo = match axis {
+            0 => f.slice::<3, 0, false, 0>(low)?,
+            1 => f.slice::<3, 0, false, 3>(low)?,
+            _ => f.slice::<3, 0, false, 6>(low)?,
+        };
+        let bit0 = f.slice::<1, 0, false, 0>(lo)?;
+        let bit1 = f.slice::<1, 0, false, 1>(lo)?;
+        let bit2 = f.slice::<1, 0, false, 2>(lo)?;
+        let l = f.binary_scale::<18, 28, true>(f.resize_exact::<18, 14, true>(light[axis])?)?;
+        let neg = f.sub_same(Fixed::<18, 28, true>::constant::<0>(), l)?;
+        let twice = f.shift_left_const::<1, 18, 28, true>(l)?;
+        let neg_twice = f.shift_left_const::<1, 18, 28, true>(neg)?;
+        let one = f.select(
+            bit0,
+            f.select(bit1, neg, l)?,
+            Fixed::<18, 28, true>::constant::<0>(),
+        )?;
+        let pair = f.select(bit2, neg_twice, twice)?;
+        // Odd tails have the same +/-L residual for both prescale amounts.
+        // Only an even two-bit tail 2 differs: it contributes +/-2L.
+        let even_tail_two = f.select(bit0, Fixed::<1, 0, false>::constant::<0>(), bit1)?;
+        let use_pair = f.select(two, even_tail_two, Fixed::<1, 0, false>::constant::<0>())?;
+        terms[axis] = f.select(use_pair, pair, one)?;
+    }
+    let residual = f.add::<21, 28, true>(f.add::<20, 28, true>(terms[0], terms[1])?, terms[2])?;
+    let tiny = f.slice::<18, 28, true, 0>(scaled_dot)?;
+    let expanded = f.select(
+        two,
+        f.shift_left_const::<2, 20, 28, true>(f.resize_exact(tiny)?)?,
+        f.shift_left_const::<1, 20, 28, true>(f.resize_exact(tiny)?)?,
+    )?;
+    let corrected = f.add::<21, 28, true>(expanded, residual)?;
+    let small = f.select(
+        f.less(scaled_dot, Dot::constant::<-131072>())?,
+        Fixed::<1, 0, false>::constant::<0>(),
+        f.less(scaled_dot, Dot::constant::<131072>())?,
+    )?;
+    let positive = f.less(Dot::constant::<0>(), scaled_dot)?;
+    let corrected = f.select(
+        small,
+        f.less(Fixed::<21, 28, true>::constant::<0>(), corrected)?,
+        positive,
+    )?;
+    let gate = f.select(negative, corrected, positive)?;
+    f.select(factors.zero, Fixed::<1, 0, false>::constant::<0>(), gate)
+}
+
 fn power(
     f: &Frame<'_>,
     x: Specular,
@@ -301,50 +540,67 @@ fn power(
     t: &Tables,
     floor: bool,
 ) -> Result<Specular, Fault> {
+    if t.static_power {
+        // A streaming circuit evaluates both paths. Keep the endpoint out of
+        // the last segment's address, then select its exact value afterwards.
+        let endpoint = f.less(x, Specular::constant::<32768>())?;
+        let safe = f.select(endpoint, x, Specular::constant::<32767>())?;
+        let interpolated = power_interpolate(f, safe, code, t, floor)?;
+        return f.select(endpoint, interpolated, Specular::constant::<32768>());
+    }
     f.branch_value(
         f.less(x, Specular::constant::<32768>())?,
-        |f| {
-            let context = if t.context_is_latched {
-                f.read(t.context.at::<0>())?
-            } else {
-                f.read(t.context.indexed(code))?
-            };
-            let boundary = f.slice::<15, 0, false, 0>(context)?;
-            let wide = f.slice::<4, 0, false, 15>(context)?;
-            let fine = f.slice::<4, 0, false, 19>(context)?;
-            let base_w = f.slice::<10, 0, false, 23>(context)?;
-            let base_f = f.slice::<10, 0, false, 33>(context)?;
-            let raw = f.binary_scale::<16, 0, false>(x)?;
-            let coarse = f.less(raw, boundary)?;
-            let shift: Fixed<18, 0, true> = f.resize_exact(f.select(coarse, wide, fine)?)?;
-            let base = f.select(coarse, base_w, base_f)?;
-            let neg = f.sub_same(Fixed::<18, 0, true>::constant::<0>(), shift)?;
-            let index = f.shift(raw, neg)?;
-            let offset = f.add::<17, 0, false>(base, index)?;
-            let address = f.slice::<10, 0, false, 0>(offset)?;
-            let aligned = f.shift(index, shift)?;
-            let tail = f.sub_same(raw, aligned)?;
-            let tail = f.resize_exact::<12, 0, false>(tail)?;
-            let entry = f.read(t.power.indexed(address))?;
-            let left = f.slice::<16, 0, false, 0>(entry)?;
-            let delta = f.slice::<12, 0, false, 16>(entry)?;
-            let product: Fixed<24, 0, false> = f.product(delta, tail)?;
-            let padded = f.shift_left_const::<12, 36, 0, false>(f.resize_exact(product)?)?;
-            let padded = f.binary_scale::<36, 12, false>(f.shift(padded, neg)?)?;
-            let correction = if floor {
-                // Preserve every nonfractional source bit before checked narrowing.
-                f.resize_exact(f.slice::<24, 0, false, 12>(padded)?)?
-            } else {
-                f.round_to(padded)?
-            };
-            let result = f.add_same(left, correction)?;
-            f.binary_scale(result)
-        },
+        |f| power_interpolate(f, x, code, t, floor),
         |_| Ok(Specular::constant::<32768>()),
     )
 }
 
+fn power_interpolate(
+    f: &Frame<'_>,
+    x: Specular,
+    code: Fixed<5, 0, false>,
+    t: &Tables,
+    floor: bool,
+) -> Result<Specular, Fault> {
+    let context = if t.context_is_latched {
+        f.read(t.context.at::<0>())?
+    } else {
+        f.read(t.context.indexed(code))?
+    };
+    let boundary = f.slice::<15, 0, false, 0>(context)?;
+    let wide = f.slice::<4, 0, false, 15>(context)?;
+    let fine = f.slice::<4, 0, false, 19>(context)?;
+    let base_w = f.slice::<10, 0, false, 23>(context)?;
+    let base_f = f.slice::<10, 0, false, 33>(context)?;
+    let raw = f.binary_scale::<16, 0, false>(x)?;
+    let coarse = f.less(raw, boundary)?;
+    let shift: Fixed<18, 0, true> = f.resize_exact(f.select(coarse, wide, fine)?)?;
+    let base = f.select(coarse, base_w, base_f)?;
+    let neg = f.sub_same(Fixed::<18, 0, true>::constant::<0>(), shift)?;
+    let index = f.shift(raw, neg)?;
+    let offset = f.add::<17, 0, false>(base, index)?;
+    let address = f.slice::<10, 0, false, 0>(offset)?;
+    let aligned = f.shift(index, shift)?;
+    let tail = f.sub_same(raw, aligned)?;
+    let tail = f.resize_exact::<12, 0, false>(tail)?;
+    let entry = f.read(t.power.indexed(address))?;
+    let left = f.slice::<16, 0, false, 0>(entry)?;
+    let delta = f.slice::<12, 0, false, 16>(entry)?;
+    let product: Fixed<24, 0, false> = f.product(delta, tail)?;
+    let padded = f.shift_left_const::<12, 36, 0, false>(f.resize_exact(product)?)?;
+    let padded = f.binary_scale::<36, 12, false>(f.shift(padded, neg)?)?;
+    let correction = if floor {
+        // Preserve every nonfractional source bit before checked narrowing.
+        f.resize_exact(f.slice::<24, 0, false, 12>(padded)?)?
+    } else {
+        f.round_to(padded)?
+    };
+    let result = f.add_same(left, correction)?;
+    f.binary_scale(result)
+}
+
 struct Inputs {
+    normal_lsb: Option<Memory<9, 0, false>>,
     pixel: Memory<36, 0, false>,
     light: Memory<16, 14, true>,
     projection: Memory<16, 14, true>,
@@ -389,6 +645,8 @@ fn kernel(f: &Frame<'_>, input: &Inputs, t: &Tables, config: Config) -> Result<(
                         None
                     };
                     let row1 = f.read(input.pixel.at::<1>())?;
+                    let mut normal_factors = None;
+                    let mut normal_gate = None;
                     let (n, nl, g, l) = if let Some(flat) = &input.flat {
                         let n = read3(f, flat.normal)?;
                         for (i, value) in n.iter().enumerate() {
@@ -404,17 +662,69 @@ fn kernel(f: &Frame<'_>, input: &Inputs, t: &Tables, config: Config) -> Result<(
                             f.slice::<16, 14, true, 16>(row0.unwrap())?,
                             f.slice::<16, 14, true, 0>(row1)?,
                         ];
-                        let n = normalize(
-                            f,
-                            normal,
-                            Magnitude::constant::<4>(),
-                            false,
-                            t,
-                            "n",
-                            config.dataflow,
-                        )?;
+                        let n = if config.scalar_normal {
+                            let factors = prepare_normalization(
+                                f,
+                                normal,
+                                Magnitude::constant::<4>(),
+                                false,
+                                t,
+                                "n",
+                                (config.dataflow, config.block_prescale),
+                            )?;
+                            normal_factors = Some(factors);
+                            factors.scaled
+                        } else {
+                            normalize(
+                                f,
+                                normal,
+                                Magnitude::constant::<4>(),
+                                false,
+                                t,
+                                "n",
+                                (config.dataflow, config.block_prescale),
+                            )?
+                        };
                         let l = read3(f, input.light)?;
-                        let nl = dot(f, n, l)?;
+                        let raw = dot(f, n, l)?;
+                        let nl = if let Some(factors) = normal_factors {
+                            f.publish("nl.raw", raw)?;
+                            let gate = f.select(
+                                factors.zero,
+                                Fixed::<1, 0, false>::constant::<0>(),
+                                f.less(Dot::constant::<0>(), raw)?,
+                            )?;
+                            let gate = if config.exact_normal_gate {
+                                exact_normal_gate(
+                                    f,
+                                    f.read(input.normal_lsb.unwrap().at::<0>())?,
+                                    l,
+                                    factors,
+                                    raw,
+                                )?
+                            } else {
+                                gate
+                            };
+                            f.publish("nl.gate", gate)?;
+                            normal_gate = Some(gate);
+                            let narrow =
+                                f.round_to::<18, 16, true>(f.resize_exact::<30, 28, true>(raw)?)?;
+                            let product: Fixed<35, 31, true> =
+                                f.product(narrow, factors.reciprocal)?;
+                            let rounded = f.round_to::<18, 15, true>(
+                                f.resize_exact::<34, 31, true>(product)?,
+                            )?;
+                            let rounded = f.select(
+                                factors.zero,
+                                Fixed::<18, 15, true>::constant::<0>(),
+                                rounded,
+                            )?;
+                            f.binary_scale(
+                                f.shift_left_const::<13, 34, 15, true>(f.resize_exact(rounded)?)?,
+                            )?
+                        } else {
+                            raw
+                        };
                         f.publish("nl", nl)?;
                         let d = clamp(f, nl, Dot::constant::<0>(), Dot::constant::<268435456>())?;
                         let d: Intensity = f.round_to(d)?;
@@ -435,6 +745,7 @@ fn kernel(f: &Frame<'_>, input: &Inputs, t: &Tables, config: Config) -> Result<(
                         f.less(mode, Fixed::<2, 0, false>::constant::<3>())?,
                         |f| outputs(f, g, Intensity::constant::<0>()),
                         |f| {
+                            let mut half_factors = None;
                             let h = if let Some(half) = input.half {
                                 let h = read3(f, half)?;
                                 for (i, value) in h.iter().enumerate() {
@@ -473,7 +784,7 @@ fn kernel(f: &Frame<'_>, input: &Inputs, t: &Tables, config: Config) -> Result<(
                                     true,
                                     t,
                                     "v",
-                                    config.dataflow,
+                                    (config.dataflow, config.block_prescale),
                                 )?;
                                 let mut half = [Direction::constant::<0>(); 3];
                                 for i in 0..3 {
@@ -481,31 +792,62 @@ fn kernel(f: &Frame<'_>, input: &Inputs, t: &Tables, config: Config) -> Result<(
                                     let sum = f.binary_scale::<17, 15, true>(sum)?;
                                     half[i] = f.round_to(sum)?;
                                 }
-                                normalize(
-                                    f,
-                                    half,
-                                    Magnitude::constant::<64>(),
-                                    false,
-                                    t,
-                                    "h",
-                                    config.dataflow,
-                                )?
+                                if config.scalar_norm {
+                                    let factors = prepare_normalization(
+                                        f,
+                                        half,
+                                        Magnitude::constant::<64>(),
+                                        false,
+                                        t,
+                                        "h",
+                                        (true, config.block_prescale),
+                                    )?;
+                                    half_factors = Some(factors);
+                                    factors.scaled
+                                } else {
+                                    normalize(
+                                        f,
+                                        half,
+                                        Magnitude::constant::<64>(),
+                                        false,
+                                        t,
+                                        "h",
+                                        (config.dataflow, config.block_prescale),
+                                    )?
+                                }
                             };
-                            let nh = dot(f, n, h)?;
-                            f.publish("nh", nh)?;
-                            let nh =
-                                clamp(f, nh, Dot::constant::<0>(), Dot::constant::<268435456>())?;
-                            let x: Specular = f.round_to(nh)?;
+                            let x: Specular = if let Some(hf) = half_factors {
+                                let nh = scalar_half_dot(f, n, hf, normal_factors)?;
+                                let published: Dot = f.binary_scale(
+                                    f.shift_left_const::<13, 34, 15, true>(f.resize_exact(nh)?)?,
+                                )?;
+                                f.publish("nh", published)?;
+                                f.resize_exact(clamp(
+                                    f,
+                                    nh,
+                                    Fixed::<18, 15, true>::constant::<0>(),
+                                    Fixed::<18, 15, true>::constant::<32768>(),
+                                )?)?
+                            } else {
+                                let nh = dot(f, n, h)?;
+                                f.publish("nh", nh)?;
+                                f.round_to(clamp(
+                                    f,
+                                    nh,
+                                    Dot::constant::<0>(),
+                                    Dot::constant::<268435456>(),
+                                )?)?
+                            };
                             f.publish("x", x)?;
                             let p =
                                 power(f, x, f.read(input.code.at::<0>())?, t, config.power_floor)?;
                             f.publish("power", p)?;
                             let p9: Intensity = f.round_to(p)?;
-                            let p9 = f.select(
-                                f.less(Dot::constant::<0>(), nl)?,
-                                p9,
-                                Intensity::constant::<0>(),
-                            )?;
+                            let positive = match normal_gate {
+                                Some(gate) => gate,
+                                None => f.less(Dot::constant::<0>(), nl)?,
+                            };
+                            let p9 = f.select(positive, p9, Intensity::constant::<0>())?;
                             f.publish("p9", p9)?;
                             let product: Fixed<18, 16, false> = f.product(id, p9)?;
                             outputs(f, g, f.round_to(product)?)
@@ -549,9 +891,29 @@ pub fn evaluate_with_config(
         projection,
         max_events,
         config,
-        (None, None),
+        (None, None, None),
     )
 }
+/// Complete architecture graph for static hardware lowering. Runtime power
+/// endpoints use a safe address and an explicit exact-result selection.
+pub(crate) fn hardware_template(full: bool) -> Result<Report, Error> {
+    hardware_template_with_config(full, Config::architecture())
+}
+pub(crate) fn hardware_template_with_config(full: bool, config: Config) -> Result<Report, Error> {
+    evaluate_with_preparation(
+        PixelInput {
+            normal: [0; 3],
+            ndc: [0; 2],
+        },
+        Material::default(),
+        Light::default(),
+        Projection::default(),
+        2048,
+        config,
+        (None, None, Some(if full { 3 } else { 2 })),
+    )
+}
+
 /// Reuse an independently prepared H only for the exact coordinate and context.
 /// Different normal, material shininess or intensity may use the same H key.
 pub fn evaluate_reusing_half(
@@ -578,7 +940,7 @@ pub fn evaluate_reusing_half(
         projection,
         max_events,
         config,
-        (Some(cached), None),
+        (Some(cached), None, None),
     )
 }
 fn evaluate_with_preparation(
@@ -588,12 +950,22 @@ fn evaluate_with_preparation(
     projection: Projection,
     max_events: usize,
     config: Config,
-    cached: (Option<&HalfPreparation>, Option<&FlatPreparation>),
+    cached: (
+        Option<&HalfPreparation>,
+        Option<&FlatPreparation>,
+        Option<u8>,
+    ),
 ) -> Result<Report, Error> {
     validate(pixel, material, light, projection)?;
-    let (cached_half, cached_flat) = cached;
+    if config.scalar_normal && (!config.scalar_norm || config.flat_normal || config.shared_half) {
+        return Err(InputError::Configuration.into());
+    }
+    let (cached_half, cached_flat, hardware_mode) = cached;
+    let static_power = hardware_mode.is_some();
     let mut model = Model::numerical();
-    let mode = if material.unlit {
+    let mode = if let Some(mode) = hardware_mode {
+        i128::from(mode)
+    } else if material.unlit {
         0
     } else if light.directional == 0 {
         1
@@ -666,6 +1038,18 @@ fn evaluate_with_preparation(
         None
     };
     let input = Inputs {
+        normal_lsb: if config.exact_normal_gate {
+            Some(model.input(
+                "pixel.normal-lsb",
+                &[i128::from(
+                    (pixel.normal[0] as u16 & 7)
+                        | ((pixel.normal[1] as u16 & 7) << 3)
+                        | ((pixel.normal[2] as u16 & 7) << 6),
+                )],
+            )?)
+        } else {
+            None
+        },
         flat: flat_input,
         half: half_input,
         pixel: model.input("pixel.rows", &pixel_rows.map(i128::from))?,
@@ -691,8 +1075,14 @@ fn evaluate_with_preparation(
         None
     };
     let t = Tables {
+        direct_square: config.direct_square,
+        static_power,
         context_is_latched: config.dataflow,
-        square: if config.signed_square {
+        square: if config.square9 {
+            SquareTable::Magnitude9
+        } else if config.direct_all_squares {
+            SquareTable::Exact
+        } else if config.signed_square || config.direct_square {
             SquareTable::Signed(model.table("SQ", &SQUARE_SIGNED)?)
         } else {
             SquareTable::Magnitude(model.table("SQ", &SQUARE)?)
@@ -807,7 +1197,13 @@ pub fn prepare_half(
     let input = m.input::<16, 14, true>("ray", &ray.map(i128::from))?;
     let l = m.input::<16, 14, true>("context.light", &light.direction.map(i128::from))?;
     let t = Tables {
-        square: if config.signed_square {
+        direct_square: config.direct_square,
+        static_power: false,
+        square: if config.square9 {
+            SquareTable::Magnitude9
+        } else if config.direct_all_squares {
+            SquareTable::Exact
+        } else if config.signed_square || config.direct_square {
             SquareTable::Signed(m.table("SQ", &SQUARE_SIGNED)?)
         } else {
             SquareTable::Magnitude(m.table("SQ", &SQUARE)?)
@@ -825,7 +1221,7 @@ pub fn prepare_half(
         true,
         &t,
         "v",
-        config.dataflow,
+        (config.dataflow, config.block_prescale),
     )?;
     let l = read3(&f, l)?;
     let mut half = [Direction::constant::<0>(); 3];
@@ -840,7 +1236,7 @@ pub fn prepare_half(
         false,
         &t,
         "h",
-        config.dataflow,
+        (config.dataflow, config.block_prescale),
     )?;
     let report = f.finish();
     report.audit()?;
@@ -925,7 +1321,13 @@ pub fn prepare_flat(
         &[i128::from(light.ambient), i128::from(light.directional)],
     )?;
     let t = Tables {
-        square: if config.signed_square {
+        direct_square: config.direct_square,
+        static_power: false,
+        square: if config.square9 {
+            SquareTable::Magnitude9
+        } else if config.direct_all_squares {
+            SquareTable::Exact
+        } else if config.signed_square || config.direct_square {
             SquareTable::Signed(m.table("SQ", &SQUARE_SIGNED)?)
         } else {
             SquareTable::Magnitude(m.table("SQ", &SQUARE)?)
@@ -943,7 +1345,7 @@ pub fn prepare_flat(
         false,
         &t,
         "n",
-        config.dataflow,
+        (config.dataflow, config.block_prescale),
     )?;
     let nl = dot(&f, n, read3(&f, l)?)?;
     f.publish("nl", nl)?;
@@ -993,6 +1395,6 @@ pub fn evaluate_reusing_flat(
         projection,
         max_events,
         config,
-        (None, Some(cached)),
+        (None, Some(cached), None),
     )
 }
