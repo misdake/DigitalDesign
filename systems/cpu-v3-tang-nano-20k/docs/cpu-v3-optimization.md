@@ -2,7 +2,7 @@
 
 Status: concise milestone index
 Repository: `../../../`
-Updated: 2026-09-28
+Updated: 2026-10-02
 
 Add exactly one short sentence here for each completed optimization; append implementation detail,
 measurements, rejected alternatives, and validation evidence to
@@ -66,11 +66,11 @@ generated outside this document.
 
 ## Next work
 
-The production framebuffer storage/quad attachment to the display work-1 baseline
-is complete, with full integration regression and routed resources recorded in
+Before the GPU v2 reset, the framebuffer storage/quad attachment to the display work-1 baseline
+completed full integration regression and routed resources recorded in
 [`architecture.md`](architecture.md#current-fitted-result-and-validation-boundary).
 
-The accepted [eight-DPB framebuffer component](framebuffer-cache.md) reduces LUT use in a matched
+The historical [eight-DPB framebuffer component](framebuffer-cache.md) reduces LUT use in a matched
 standalone comparison and removes the numerical color queue. Its contract and tests are complete;
 bank-order execution with one latched lane-control bit further reduces selection logic while
 preserving word-level memory/render concurrency. Production storage/quad integration retains
@@ -80,6 +80,11 @@ in the architecture document.
 
 Future CPU or system optimizations are added here only after completion; planned GPU work is tracked
 in the GPU design documents and the project todo rather than expanded in this index.
+
+The 2026-10-02 development baseline integrates independent GPU v2 Rust components,
+their explicit research alternatives and the shared vendor SDRAM service while
+retaining serial production memory and an inactive GPU shell; current offline
+qualification and the physical boundary are described in [architecture](architecture.md).
 
 2026-09-28: source-held D-cache writeback removes duplicate FF payload storage and shares arbiter
 payload qualification; details are in the append-only record and current fit in
