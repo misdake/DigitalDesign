@@ -1,7 +1,8 @@
 # CPU V3 Tang Nano 20K system documentation
 
 These documents describe the fitted CPU V3 system. Reusable ISA and processor-IP contracts live in
-the [`ip/cpu-v3` documentation](../../../ip/cpu-v3/docs/README.md).
+the [`ip/cpu-v3` documentation](../../../ip/cpu-v3/docs/README.md). Gowin primitive references
+live in [`hardware/vendor/gowin/doc`](../../../hardware/vendor/gowin/doc/README.md).
 
 ## Documents
 
@@ -14,9 +15,6 @@ the [`ip/cpu-v3` documentation](../../../ip/cpu-v3/docs/README.md).
   framebuffer-control savings, rejected alternatives, and full-GPU preservation boundaries.
 - [`framebuffer-cache.md`](framebuffer-cache.md): accepted eight-DPB storage and fused quad-owner
   contract, independent resource/throughput results, and the pending system-integration boundary.
-- [`gowin-dsp-coexistence.md`](gowin-dsp-coexistence.md): measured GW2AR-18 DSP macro packing
-  rules — which primitives share a macro, fused-primitive forms, per-slot control sets, the
-  absent MULT36X18, and the tile counting model for design budgets.
 - [`boot-image-format.md`](boot-image-format.md): version 3 boot package and manifest format.
 - [`flash-layout.md`](flash-layout.md): fitted external-Flash placement, programming workflow, and
   boot-progress reporting.

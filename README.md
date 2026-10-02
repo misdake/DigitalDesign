@@ -165,6 +165,7 @@ the next browser `requestAnimationFrame`, without starting an unbounded CPU run.
 - rcc language: `compiler/rcc/src/frontend/spec.md`.
 - Hardware framework: `hardware/core/README.md` and
   `hardware/vendor/gowin/scripts/README.md`.
+- Gowin device references: [`hardware/vendor/gowin/doc/`](hardware/vendor/gowin/doc/README.md).
 - Audited modeling: [`modeling/audited/README.md`](modeling/audited/README.md).
 - GPU v2 IP: [`ip/gpu-v2/README.md`](ip/gpu-v2/README.md).
 

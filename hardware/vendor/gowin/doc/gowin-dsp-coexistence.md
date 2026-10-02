@@ -1,3 +1,9 @@
+---
+id: gowin-dsp-coexistence
+status: frozen
+last-verified: 2026-10-02
+---
+
 # GW2AR-18 DSP macro coexistence rules
 
 Measured 2026-10-01 on `GW2AR-LV18QN88C8/I7` (Tang Nano 20K) with Gowin V1.9.8.11
@@ -85,7 +91,8 @@ tiles  = ceil(macros / 2)   must be <= 12
 ## Case summary
 
 macro/instance = distinct macro sites in the post-place file / N (MULT36X36 tile sites
-count as 2 macros). Discriminant builds are listed only by their verdict.
+count as 2 macros). Discriminant builds are listed only by their verdict; c18 lists
+the full-build totals rather than per-instance content.
 
 | Case | Per-instance content | macro/instance | Verdict |
 | --- | --- | ---: | --- |
@@ -106,7 +113,7 @@ count as 2 macros). Discriminant builds are listed only by their verdict.
 | c15 | 1x MULTALU18X18 | 1.00 | fused 18x18 + ALU (one multiplier slot wasted) |
 | c16 | 3x MULT18X18 + 2x MULT9X9 | 2.11 | matches kind-separated minimum |
 | c17 | 2x MULT18X18, different CLK | 1.00 | control sets are per-slot |
-| c18 | 15x MULT18X18 + 6x MULT9X9 | PnR fail | discriminant: 9x9 and 18x18 never mix |
+| c18 | 45x MULT18X18 + 6x MULT9X9 (full build) | PnR fail | PR0003 placement overflow; 9x9 and 18x18 do not mix |
 
 ## Implications for datapath design
 
@@ -128,7 +135,7 @@ count as 2 macros). Discriminant builds are listed only by their verdict.
 Conclusions are synthesis + PnR evidence on the stated device/tool version; they describe
 packing behavior, not on-board function, so no board run is applicable. Raw artifacts,
 all 18 case modules, the LFSR/checksum anti-optimization harness, build scripts, and the
-full case log live in the `gowin-dsp-coexistence` experiment workspace (an untracked
+full case log live in `D:/fpga/experiments/gowin-dsp-coexistence/` (an untracked
 local working area outside this repository; rerun: `scripts/gen_builds.py`, then
 `scripts/run_all.sh`, then `scripts/parse_results.py`; full narrative in its
 `results.md`). If the tool version changes, rerun before relying on the packing rules.
